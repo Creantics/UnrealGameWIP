@@ -3,9 +3,10 @@
 // A boss weak point that is locked until one of its keys unlocks it. See docs/SHARED_COMBAT_INPUTS.md
 // section 6.
 //
-// * Keys (a mask, UnlockKey bits): SharedBlow (a blow on a called count, CountOutcome::OnCount, or a
-//   hit a lead took half of), ReadClause (the lock's hidden clause read: the id must match), Refusal (a
-//   HeldRefusal resolved Refused). A boss's data lists the keys that open it.
+// * Keys (a mask, UnlockKey bits): SharedBlow (a blow in a joined count window: CountOutcome::OnCount
+//   at once or by a BlowSettled event, or a hit a lead took half of), ReadClause (the lock's hidden
+//   clause read: the id must match), Refusal (a HeldRefusal resolved Refused). A boss's data lists
+//   the keys that open it.
 // * offer(key, t, clause): unlocks when the key is in the mask (and the clause matches for ReadClause).
 //   Offered while open, it restarts the open time. Open for openSeconds, or until relock() when 0.
 // * onDeferred(t): a deferred refusal ("not yet" is a yes). Counted; it relocks an open lock when
@@ -45,7 +46,11 @@ inline bool validLockTuning(const LockTuning& t) {
 }
 
 // True when a judged blow counts as a shared blow.
-inline bool sharedBlow(const CountHit& hit) { return hit.outcome == CountOutcome::OnCount; }
+inline bool sharedBlow(const CountHit& hit) { return sharedOutcome(hit.outcome); }
+// True when a held blow settled as a shared blow (StrikeCount's BlowSettled event).
+inline bool sharedBlow(const CountEvent& e) {
+    return e.type == CountEventType::BlowSettled && sharedOutcome(e.outcome);
+}
 
 class WeakPointLock {
 public:
@@ -71,14 +76,14 @@ public:
         open_ = true;
         until_ = tuning_.openSeconds > 0.0 ? t + tuning_.openSeconds : kInf;
         if (was) return UnlockResult::Refreshed;
-        ++opens_;
+        if (opens_ < kIntMax) ++opens_;
         return UnlockResult::Unlocked;
     }
 
     // True when it relocked an open lock.
     bool onDeferred(double t) {
         t = advance(t);
-        ++deferrals_;
+        if (deferrals_ < kIntMax) ++deferrals_;
         if (!tuning_.relockOnDefer || !open(t)) return false;
         open_ = false;
         return true;
@@ -98,6 +103,7 @@ public:
 
 private:
     static constexpr double kInf = std::numeric_limits<double>::infinity();
+    static constexpr int kIntMax = std::numeric_limits<int>::max(); // counters saturate
     double advance(double t) {
         now_ = inputTime(now_, t);
         if (open_ && now_ >= until_) open_ = false;

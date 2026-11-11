@@ -43,7 +43,7 @@ public:
         stale_ = false;
         if (state_ != RefusalState::Holding) return RefusalInput::Ignored;
         state_ = RefusalState::Offered;
-        ++repeats_;
+        if (repeats_ < kMaxRepeats) ++repeats_;
         return RefusalInput::RepeatPrompt;
     }
 
@@ -79,7 +79,15 @@ public:
     bool holding() const { return state_ == RefusalState::Holding; }
     int repeats() const { return repeats_; }
 
+    // The button is no longer known to be down (focus lost, device gone): forget it without a release,
+    // so a hold in progress stays a hold until the next holdUp(), and a stale press is cleared.
+    void clearButton() {
+        down_ = false;
+        stale_ = false;
+    }
+
 private:
+    static constexpr int kMaxRepeats = 1 << 30; // saturates
     RefusalState state_ = RefusalState::Idle;
     int repeats_ = 0;
     bool down_ = false;  // the button, as last reported

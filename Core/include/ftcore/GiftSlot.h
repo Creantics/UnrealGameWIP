@@ -3,8 +3,10 @@
 // The third party slot's gifts: a heal, a guard and a shared count on one button, never an attack. See
 // docs/SHARED_COMBAT_INPUTS.md section 2.
 //
-// * The slot is a Companion (gifts work), an EmptyChair (the button does nothing; the press is
-//   remembered apart as emptyPresses) or Hostile (the button does nothing and nothing is counted).
+// * The slot is a Companion (gifts work), an EmptyChair (the button does nothing) or Hostile (the
+//   button does nothing). No press is ever discarded: three save-wide tallies keep them, given gifts
+//   per gift (tally()), presses in the empty chair (emptyPresses()) and presses while hostile
+//   (hostilePresses()); allPresses() is every press in the save across the three.
 // * select(gift) picks what the button gives; press(target, t, count) gives it to a lead. A given gift
 //   cannot be taken back (there is no cancel). Each gift has its own cooldown. The Count gift calls
 //   `count` with the third slot as the caller; when the count refuses, the gift is not given.
@@ -18,6 +20,7 @@
 #include "ftcore/StrikeCount.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -32,7 +35,7 @@ struct GiftTuning {
     std::array<double, kGiftKinds> cooldown{8.0, 6.0, 4.0}; // seconds, 0..60, per gift
     float healShare = 0.15f; // of the target's max HP: 0..1
     int healLoad = 20;       // Load moved off the target: 0..kMaxLoad
-    float guardScale = 0.0f; // damage the guarded lead takes, times this: 0..1 (0: he takes it all)
+    float guardScale = 0.0f; // damage the guarded lead takes, times this: 0..1 (0: the guarded lead takes nothing)
     double guardSeconds = 1.2; // 0..10
 };
 
@@ -53,6 +56,7 @@ struct GiftSave {
     std::uint32_t version = kGiftSaveVersion;
     std::array<std::uint32_t, kGiftKinds> presses{}; // given gifts, per Gift
     std::uint32_t emptyPresses = 0;                  // presses on the empty chair
+    std::uint32_t hostilePresses = 0;                // presses while hostile
     std::array<std::uint32_t, 2> threads{};          // per lead (kLeadA, kLeadB)
     std::uint8_t selected = 0;                       // Gift
     std::uint8_t state = 0;                          // SlotState
@@ -100,11 +104,18 @@ public:
         tuning_ = ok ? tuning : GiftTuning{};
         tally_ = GiftTally{};
         emptyPresses_ = 0;
+        hostilePresses_ = 0;
         threads_.fill(0);
         selected_ = Gift::Heal;
         state_ = SlotState::Companion;
         resetFight();
         return ok;
+    }
+    // New tuning, keeping the save-wide tally and the fight state. Returns false (unchanged) on bad tuning.
+    bool setTuning(const GiftTuning& tuning) {
+        if (!validGiftTuning(tuning)) return false;
+        tuning_ = tuning;
+        return true;
     }
     // Clears the fight state only (cooldowns, guards, the clock) at a fight's start.
     void resetFight() {
@@ -131,6 +142,7 @@ public:
         r.gift = selected_;
         r.target = target;
         if (state_ == SlotState::Hostile) {
+            hostilePresses_ = saturatingAdd(hostilePresses_, 1);
             r.error = GiftError::Hostile;
             return r;
         }
@@ -176,11 +188,17 @@ public:
         return static_cast<std::size_t>(g) < kGiftKinds && t >= readyAt_[static_cast<std::size_t>(g)];
     }
     double readyAt(Gift g) const {
-        return static_cast<std::size_t>(g) < kGiftKinds ? readyAt_[static_cast<std::size_t>(g)] : 0.0;
+        return static_cast<std::size_t>(g) < kGiftKinds ? readyAt_[static_cast<std::size_t>(g)]
+                                                        : std::numeric_limits<double>::infinity(); // never
     }
 
     const GiftTally& tally() const { return tally_; }
     std::uint32_t emptyPresses() const { return emptyPresses_; }
+    std::uint32_t hostilePresses() const { return hostilePresses_; }
+    // Every press in the save: given gifts, the empty chair and while hostile.
+    std::uint64_t allPresses() const {
+        return tally_.total() + static_cast<std::uint64_t>(emptyPresses_) + static_cast<std::uint64_t>(hostilePresses_);
+    }
     std::uint32_t threads(FighterId lead) const { return isLead(lead) ? threads_[lead] : 0u; }
     const GiftTuning& tuning() const { return tuning_; }
 
@@ -188,6 +206,7 @@ public:
         GiftSave s;
         s.presses = tally_.presses;
         s.emptyPresses = emptyPresses_;
+        s.hostilePresses = hostilePresses_;
         s.threads = threads_;
         s.selected = static_cast<std::uint8_t>(selected_);
         s.state = static_cast<std::uint8_t>(state_);
@@ -201,6 +220,7 @@ public:
         if (s.state > static_cast<std::uint8_t>(SlotState::Hostile)) return false;
         tally_.presses = s.presses;
         emptyPresses_ = s.emptyPresses;
+        hostilePresses_ = s.hostilePresses;
         threads_ = s.threads;
         selected_ = static_cast<Gift>(s.selected);
         state_ = static_cast<SlotState>(s.state);
@@ -217,6 +237,7 @@ private:
     GiftTuning tuning_{};
     GiftTally tally_{};
     std::uint32_t emptyPresses_ = 0;
+    std::uint32_t hostilePresses_ = 0;
     std::array<std::uint32_t, 2> threads_{};
     Gift selected_ = Gift::Heal;
     SlotState state_ = SlotState::Companion;

@@ -132,7 +132,12 @@ public:
         }
         return -1;
     }
-    const Place& place(int chair) const { return places_[static_cast<std::size_t>(chair)]; }
+    // The place at `chair`; outside 0..seats()-1, a Free place.
+    const Place& place(int chair) const {
+        static const Place kOutside{};
+        if (chair < 0 || chair >= seats_) return kOutside;
+        return places_[static_cast<std::size_t>(chair)];
+    }
     int countOf(PlaceState s) const {
         int n = 0;
         for (int i = 0; i < seats_; ++i)

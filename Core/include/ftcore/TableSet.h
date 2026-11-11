@@ -11,6 +11,9 @@
 //   minSeats. `seated` is the mask of fighters at the table (fighterBit; the enemy bit is ignored, the
 //   setter is always seated). On success the host spends the setter's Load (load.release()).
 // * interrupt(t) while Setting (the setter staggered or downed): the table fails. The Load stays spent.
+// * checkSeats(places, t) while Setting or Set (call it whenever a place changes): with fewer than
+//   minSeats named or left open, the table gutters out for want of a seat: Guttered, failed(), and
+//   failCooldown. An open chair is a seat; an emptied one is not.
 // * seatEnemy(t) while Set: the enemy sits until the table clears.
 // * split(target, amount, t) while Set: a blow on a seated fighter is shared evenly by everyone at the
 //   table, the seated enemy included (its share, times enemyShare, is real damage to it: this is how
@@ -32,7 +35,7 @@ namespace ftcore {
 
 enum class TableState : std::uint8_t { Ready, Setting, Set, Cooling }; // append only
 enum class TableError : std::uint8_t { None, NotFull, TooFewSeats, Busy, Cooling, BadSetter }; // append only
-enum class TableEventType : std::uint8_t { Setting, Set, Failed, EnemySeated, Cleared, Ready }; // append only
+enum class TableEventType : std::uint8_t { Setting, Set, Failed, EnemySeated, Cleared, Ready, Guttered }; // append only
 
 struct TableTuning {
     int minSeats = 3;          // 1..kMaxPlaces
@@ -122,6 +125,18 @@ public:
         if (state_ != TableState::Setting) return false;
         failed_ = true;
         pending_.push(TableEventType::Failed, t);
+        startCooling(t, tuning_.failCooldown);
+        return true;
+    }
+
+    // The seats under a setting or set table changed. True when the table guttered out.
+    bool checkSeats(const PlaceTable& places, double t) {
+        t = advance(t);
+        if (state_ != TableState::Setting && state_ != TableState::Set) return false;
+        if (places.tableSeats() >= tuning_.minSeats) return false;
+        failed_ = true;
+        enemySeated_ = false;
+        pending_.push(TableEventType::Guttered, t);
         startCooling(t, tuning_.failCooldown);
         return true;
     }

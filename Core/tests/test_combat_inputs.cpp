@@ -56,8 +56,9 @@ TEST_CASE("gifts: each gift is given to a lead, counted, and leaves a thread") {
     CHECK(r.given);
     CHECK(count.live());
     CHECK(count.caller() == kThirdSlot);
-    // The slot's count boosts the lead's blow (the slot is the caller, the lead the partner).
-    CHECK(count.judgeBlow(kLeadA, 4.0).outcome == CountOutcome::OnCount);
+    // The slot's count: one lead's blow alone waits; a second fighter's blow in the window boosts both.
+    CHECK(count.judgeBlow(kLeadA, 4.0).outcome == CountOutcome::Held);
+    CHECK(count.judgeBlow(kLeadB, 4.05).outcome == CountOutcome::OnCount);
 
     CHECK(g.tally().count(Gift::Heal) == 1);
     CHECK(g.tally().count(Gift::Guard) == 1);
@@ -113,7 +114,7 @@ TEST_CASE("gifts: a count gift the count refuses is not given and not counted") 
     CHECK(count.caller() == kLeadB);  // the lead's count stands
 }
 
-TEST_CASE("gifts: the empty chair does nothing but remembers the press; hostile does nothing at all") {
+TEST_CASE("gifts: the empty chair and a hostile slot do nothing, but every press is remembered") {
     GiftSlot g;
     StrikeCount count;
     g.setState(SlotState::EmptyChair);
@@ -130,11 +131,14 @@ TEST_CASE("gifts: the empty chair does nothing but remembers the press; hostile 
     g.setState(SlotState::Hostile);
     CHECK(g.press(kLeadA, 0.2, &count).error == GiftError::Hostile);
     CHECK(g.emptyPresses() == 2);
+    CHECK(g.hostilePresses() == 1);
     CHECK(g.tally().total() == 0);
+    CHECK(g.allPresses() == 3);
     CHECK_FALSE(count.live());
 
     g.setState(SlotState::Companion);
     CHECK(g.press(kLeadA, 0.3, &count).given);
+    CHECK(g.allPresses() == 4);
 }
 
 TEST_CASE("gifts: most used, with ties going to the earliest gift") {
@@ -179,6 +183,9 @@ TEST_CASE("gifts: the tally, threads, choice and state survive save and load; th
     a.press(kLeadA, 10.0, &count);
     a.setState(SlotState::EmptyChair);
     a.press(kLeadA, 11.0);
+    a.setState(SlotState::Hostile);
+    a.press(kLeadA, 11.5);
+    a.press(kLeadB, 11.6);
     a.setState(SlotState::Companion);
     REQUIRE(a.select(Gift::Guard));
 
@@ -191,6 +198,8 @@ TEST_CASE("gifts: the tally, threads, choice and state survive save and load; th
     CHECK(b.tally().count(Gift::Count) == 1);
     CHECK(b.tally().mostUsed() == Gift::Guard);
     CHECK(b.emptyPresses() == 1);
+    CHECK(b.hostilePresses() == 2);
+    CHECK(b.allPresses() == 7);
     CHECK(b.threads(kLeadA) == 2);
     CHECK(b.threads(kLeadB) == 2);
     CHECK(b.selected() == Gift::Guard);
@@ -529,6 +538,44 @@ TEST_CASE("table: an interrupt after it is set does nothing; cancel clears it") 
     CHECK(t.until() == doctest::Approx(22.0));
 }
 
+TEST_CASE("table: a place emptied under a set table gutters it out; a chair left open holds it") {
+    Setter s;
+    TableSet t;
+    REQUIRE(t.begin(kLeadA, s.load, s.places, kParty, 0.0) == TableError::None);
+    t.update(1.0);
+    REQUIRE(t.set());
+    CHECK_FALSE(t.checkSeats(s.places, 1.0)); // three seats: it holds
+    REQUIRE(t.seatEnemy(1.0));
+    s.places.emptyPlace(3);
+    CHECK(t.checkSeats(s.places, 2.0));
+    CHECK(t.failed());
+    CHECK(t.state() == TableState::Cooling);
+    CHECK(t.until() == doctest::Approx(10.0));
+    CHECK_FALSE(t.enemySeated());
+    CHECK_FALSE(t.split(kLeadB, 30.0f, 2.0).shared);
+    const TableEvents& ev = t.update(2.0);
+    REQUIRE_FALSE(ev.empty());
+    CHECK(ev[ev.size() - 1].type == TableEventType::Guttered);
+    CHECK(ev[ev.size() - 1].at == doctest::Approx(2.0));
+    CHECK_FALSE(t.checkSeats(s.places, 2.5)); // already out
+
+    // Two named and one left open: an open seat is a seat, and the table holds.
+    TableSet u;
+    PlaceTable open;
+    open.reset(3);
+    open.layPlace(1);
+    open.layPlace(2);
+    open.leaveOpen();
+    Load full;
+    full.store(100);
+    REQUIRE(u.begin(kLeadA, full, open, kParty, 0.0) == TableError::None);
+    CHECK_FALSE(u.checkSeats(open, 0.2));
+    CHECK(u.state() == TableState::Setting);
+    open.emptyPlace(2);
+    CHECK(u.checkSeats(open, 0.3)); // while setting too
+    CHECK(u.failed());
+}
+
 TEST_CASE("table: a seated enemy takes its share of every blow on the party; a blow on it is its own") {
     Setter s;
     TableSet t;
@@ -746,9 +793,14 @@ TEST_CASE("lock: a shared blow opens a sharing lock for its open time") {
     REQUIRE(count.reset(tempo60()));
     REQUIRE(count.call(kLeadA, 0.0) == CountError::None);
     const CountHit own = count.judgeBlow(kLeadA, 2.0);
+    CHECK(own.outcome == CountOutcome::Held);
     CHECK_FALSE(sharedBlow(own));
     const CountHit hit = count.judgeBlow(kLeadB, 2.0);
     REQUIRE(sharedBlow(hit));
+    // The held blow settles shared too, by an event.
+    bool settledShared = false;
+    for (const CountEvent& e : count.update(2.0)) settledShared = settledShared || (sharedBlow(e) && e.blow == own.blow);
+    CHECK(settledShared);
     CHECK(l.offer(kUnlockSharedBlow, 2.0) == UnlockResult::Unlocked);
     CHECK(l.open(2.0));
     CHECK(l.until() == doctest::Approx(5.0));
@@ -869,6 +921,7 @@ TEST_CASE("combat inputs: a scripted fight of every input allocates nothing") {
         if (frame % 5 == 0) {
             const CountHit h = count.judgeBlow(static_cast<FighterId>(frame % 2), now);
             if (sharedBlow(h)) sink += lock.offer(kUnlockSharedBlow, now) == UnlockResult::Unlocked;
+            sink += table.checkSeats(s.places, now);
             const TableSplit sp = table.split(kLeadA, 10.0f, now);
             sink += sp.shared;
         }
@@ -881,10 +934,46 @@ TEST_CASE("combat inputs: a scripted fight of every input allocates nothing") {
         if (frame % 600 == 30) refusal.holdDown();
         if (frame % 600 == 300) refusal.offerEnded();
         if (frame % 600 == 301) refusal.holdUp();
-        sink += count.update(now).size() + table.update(now).size();
+        for (const CountEvent& e : count.update(now))
+            if (sharedBlow(e)) sink += lock.offer(kUnlockSharedBlow, now) == UnlockResult::Unlocked;
+        sink += table.update(now).size();
     }
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(sink > 0);
     CHECK(lock.opens() > 0);
     CHECK(gifts.tally().total() > 0);
+}
+
+TEST_CASE("combat inputs: small guards (place index, new gift tuning, a lost button, a bad gift)") {
+    PlaceTable p;
+    p.reset(3);
+    p.layPlace(1);
+    CHECK(p.place(0).state == PlaceState::Named);
+    CHECK(p.place(-1).state == PlaceState::Free);
+    CHECK(p.place(3).state == PlaceState::Free);
+    CHECK(p.place(1000).state == PlaceState::Free);
+
+    GiftSlot g;
+    g.press(kLeadA, 0.0);
+    GiftTuning slow;
+    slow.cooldown[0] = 30.0;
+    CHECK(g.setTuning(slow));
+    CHECK(g.tally().total() == 1); // the save survives new tuning
+    GiftTuning bad;
+    bad.guardScale = 2.0f;
+    CHECK_FALSE(g.setTuning(bad));
+    CHECK(g.tuning().cooldown[0] == doctest::Approx(30.0));
+    CHECK_FALSE(g.ready(static_cast<Gift>(9), 1e9));
+    CHECK(g.readyAt(static_cast<Gift>(9)) == std::numeric_limits<double>::infinity());
+
+    HeldRefusal r;
+    r.holdDown(); // down before the offer
+    r.offer();
+    CHECK(r.holdDown() == RefusalInput::Ignored);
+    r.clearButton(); // focus lost: the stale press is forgotten
+    CHECK(r.holdDown() == RefusalInput::Holding);
+    r.clearButton(); // a hold in progress stays a hold
+    CHECK(r.holding());
+    CHECK(r.offerEnded() == RefusalInput::Resolved);
+    CHECK(r.refused());
 }

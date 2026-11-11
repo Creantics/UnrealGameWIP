@@ -1,17 +1,17 @@
 # Shared combat inputs (Core)
 
 Five inputs every arena fight can use, plus the weak-point lock they serve. All of it is plain C++20 in
-`Core/include/ftcore/`, header-only (no new `Core/src` file, so no Unreal wrapper), no allocation after
+`Core/include/ftcore/`, header-only (no new `Core/src` file), no allocation after
 construction, deterministic for a given input order. One header per piece:
 
 | Header | Types | What it is |
 |---|---|---|
 | `CombatInputs.h` | `FighterId`, `kLeadA/kLeadB/kThirdSlot`, `inputTime` | shared ids and the clock rule |
-| `StrikeCount.h` | `StrikeCount`, `CountTuning`, `CountCue`, `CountHit` | the count |
+| `StrikeCount.h` | `StrikeCount`, `CountTuning`, `CountEvent`, `CountHit` | the count |
 | `GiftSlot.h` | `GiftSlot`, `GiftTally`, `GiftSave`, `GiftTuning` | the third slot's gifts |
 | `Places.h` | `PlaceTable`, `PlaceTuning`, `PlaceSave` | laying a place |
 | `TableSet.h` | `TableSet`, `TableTuning`, `TableSplit` | setting the table |
-| `HeldRefusal.h` | `HeldRefusal`, `RefusalOutcome` | held refusals |
+| `HeldRefusal.h` | `HeldRefusal`, `RefusalState`, `RefusalInput` | held refusals |
 | `WeakPointLock.h` | `WeakPointLock`, `UnlockKey` | the locked weak point |
 
 ## Common rules
@@ -27,7 +27,9 @@ construction, deterministic for a given input order. One header per piece:
 
 ## 1. The count (`StrikeCount`)
 
-One fighter calls a short shared strike window: "two, three, now".
+One fighter calls a short shared strike window: "two, three, now". The count rewards blows landed
+**together**: a blow cannot know whether a partner will join it, so a lone blow in a live window is
+held and settles when the window decides.
 
 ```
 Idle --call(caller, t, voice)--> Live (cues, then the window) --(window closes)--> Idle
@@ -35,45 +37,55 @@ Idle --call(caller, t, voice)--> Live (cues, then the window) --(window closes)-
 ```
 
 * `call(caller, t, voice)`: `caller` is a lead, the third slot, or `kNoFighter` (a silenced count).
-  Cues: `Two` at `t`, `Three` at `t + 1 beat`, `Now` at `t + 2 beats` (`leadBeats`, default 2). The
-  window is `[now - before, now + after]`, edges inclusive. Returns `CountError`: `Live` (a true count
-  is live), `Cooling`, `BadCaller` (the enemy or an unknown id: enemies only play false counts).
+  Cues at `t`, `t + 1 beat`, and the "now" at `t + leadBeats` beats (default 2). The window is
+  `[now - before, now + after]`, edges inclusive. Returns `CountError`: `Live` (a true count is live),
+  `Cooling`, `BadCaller` (the enemy or an unknown id: enemies only play false counts).
 * `voice`: `Voice` (spoken) or `Click` (tempo click only). A silenced count is `kNoFighter`, always
-  `Click`: the host plays clicks. The voice is cosmetic; the caller decides the rule below.
-* **The rule.** A blow landed in the window by a fighter who is **not the caller** hits for
-  `onCountMultiplier` (2.5). The caller's own blow is plain (nobody counts themself in). A fighter's
-  first blow per count is boosted; later blows in the same window are plain (`perFighterBoosts`, 1).
-  A silenced count has no caller, so any fighter's blow can be boosted, but at
-  `silencedMultiplier` (1.6) with the narrower `silencedWindowScale` (0.6): the click helps, less.
-  A blow outside every window is `Alone` (x1).
-* **False counts.** `falseCall(t, shiftSeconds)`: the enemy plays `Two`, `Three` on the true tempo and
-  `Now` shifted early (negative) or late (positive) by `shiftSeconds`, flagged `False` in the cues so
-  the host can pick the false voice. Its `Now` is never moved before its `Three` (the cues stay in order); a NaN
-  shift reads as 0. It opens no window events. A blow inside
-  `[falseNow - before, falseNow + after]` and in no true window is `FalseCount`: x`falseMultiplier`
-  (0.75) and `punishable = true` (the boss rule may answer it). A false count may overlap a true one;
-  a blow in the true window is judged by the true one. At most one false count at a time; a new one
-  replaces it.
-* `cancel(t)`: drops a live count with no event (caller staggered, cutscene); the cooldown runs from
-  `t`. `cancelFalse(t)` drops the false count.
-* `judgeBlow(striker, t) -> CountHit { outcome, multiplier, punishable, caller }`. Outcomes:
-  `Alone`, `OnCount`, `CallersOwn`, `Spent` (already boosted this count), `FalseCount`.
-* `update(now) -> const CountEvents&` (16 slots, `dropped` counts overflow): `Cue`, `WindowOpened`,
-  `WindowClosed`, each `{index, isNow, isFalse, voice, caller, at}`. A late frame emits every step it
-  passed, true and false runs merged in time order (true first on a tie). Call it every frame: a
-  count replaced before an update has played its last steps drops them.
-* Tuning (`CountTuning`): `bpm` (90), `leadBeats` 2, `windowBefore` 0.12 s, `windowAfter` 0.18 s,
-  `onCountMultiplier` 2.5, `silencedMultiplier` 1.6, `silencedWindowScale` 0.6, `falseMultiplier`
-  0.75, `perFighterBoosts` 1, `cooldown` 1.5 s. The loader limit set lives with each boss's or lead's
-  data later; `validCountTuning` checks ranges (windows shorter than a beat) and `reset` falls back
-  to the defaults on bad tuning.
+  `Click`. The voice is cosmetic; the caller decides the rule below.
+* **The rule.** If two or more different fighters land inside one window, every blow in it is boosted
+  by `onCountMultiplier` (2.5), the caller's included: the window is *joined*. A blow landed alone
+  inside a called window gets no boost, whoever threw it. A caller who calls and gets no partner blow
+  at all lands at `callerAloneMultiplier` (0.5, a knob, 0..1); anyone else's lone blow is plain (x1).
+  * `judgeBlow(striker, t) -> CountHit { outcome, multiplier, punishable, caller, blow }`. In the true
+    window: before it is joined, the blow is `Held` (x1 for now, settled later); the first blow by a
+    second fighter joins the window, comes back `OnCount`, and the held blows settle `OnCount` at that
+    time; once joined, every blow is `OnCount` at once. Outside every window: `Alone`.
+  * When the window closes (or the count is cancelled or replaced) still unjoined, each held blow
+    settles `Unanswered` (the caller's: x`callerAloneMultiplier`) or `Alone` (anyone else's: x1).
+  * The host applies a `Held` blow's damage when its `BlowSettled` event arrives (matched by `blow`,
+    a per-blow id that is never 0 for a lead or slot blow).
+  * At most `kMaxHeldBlows` (8) are held; past that a lone blow settles at once with its lone outcome.
+  * Enemy and unknown strikers are never held or boosted (`Alone`, `blow` 0).
+* **Silenced.** A silenced count has no caller. Two fighters together still join it, at
+  `silencedMultiplier` (1.6), on the narrower `silencedWindowScale` (0.6) window: the click helps,
+  less. A lone blow on it is plain (nobody called).
+* **False counts.** `falseCall(t, shiftSeconds)`: the enemy plays the first two cues on the true tempo
+  and the "now" shifted early (negative) or late (positive), flagged `isFalse` so the host picks the
+  false voice. The shift is clamped to one beat either way (the cues stay in order; a NaN or infinite
+  shift reads as 0). It opens no window events. A blow inside `[falseNow - before, falseNow + after]`
+  and in no true window is `FalseCount`: it misses (x`falseMultiplier`, default 0) and
+  `punishable = true`: it leaves the fighter open. A blow in the true window is judged by the true
+  one. At most one false count; a new one replaces it.
+* `cancel(t)`: drops a live count (caller staggered, cutscene). Steps already due play; an opened
+  window closes at `t` (`WindowClosed`); held blows settle at `t`; the cooldown runs from `t`.
+  `cancelFalse(t)` drops the false count after its due steps.
+* `update(now) -> const CountEvents&` (32 slots, `dropped` counts overflow): `Cue`, `WindowOpened`,
+  `WindowClosed`, `BlowSettled`, each `{index, isNow, isFalse, voice, caller, at}` plus, for a
+  settle, `{blow, striker, outcome, multiplier}`. A late frame plays every step it passed in time
+  order (true run, then settles, then the false run on a tie). **Call order per frame:** judge the
+  frame's blows, then call `update(frameEnd)` once.
+* Tuning (`CountTuning`): `bpm` 90, `leadBeats` 2, `windowBefore` 0.12 s, `windowAfter` 0.18 s,
+  `onCountMultiplier` 2.5, `silencedMultiplier` 1.6, `silencedWindowScale` 0.6,
+  `callerAloneMultiplier` 0.5, `falseMultiplier` 0, `cooldown` 1.5 s. `validCountTuning` checks
+  ranges (windows shorter than a beat); `reset` falls back to the defaults on bad tuning.
+* `sharedOutcome(outcome)` is true for `OnCount`: what the lock's `SharedBlow` key takes.
 
 ## 2. The third slot's gifts (`GiftSlot`)
 
 One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no enum for one).
 
 * **States** (`SlotState`): `Companion` (gifts work), `EmptyChair` (button does nothing), `Hostile`
-  (button does nothing; the boss uses the tally). Set by the story through `setState`.
+  (button does nothing; the boss uses the tallies). No press is ever discarded. Set by the story through `setState`.
 * `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr)`:
   - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down. A
     pressed gift cannot be taken back: there is no cancel. Returns `GiftResult { given, gift, target,
@@ -85,17 +97,21 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   - Errors (`GiftError`): `EmptyChair`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
     `CountRefused`, `NoGift`.
   - `EmptyChair`: nothing happens; `emptyPresses` goes up (the game remembers you reached for him).
-  - `Hostile`: nothing happens, nothing counted.
+  - `Hostile`: nothing happens; `hostilePresses` goes up.
 * **Threads.** Every given gift adds one thread to its target lead (`threads(lead)`), forever.
 * **The tally** (`GiftTally`): presses per gift, save-wide, saturating at `UINT32_MAX`. Read any time:
   `count(gift)`, `total()`, `mostUsed()` (the most pressed; on a tie the earliest in `Heal, Guard,
-  Count` order; `Gift::None` when the total is 0). Only given gifts count.
-* **Save** (`GiftSave`): plain data, `version` (1), `presses[3]`, `emptyPresses`, `threads[2]`,
+  Count` order; `Gift::None` when the total is 0). Only given gifts count here.
+* **Three tallies.** Companion gifts (per gift, above), `emptyPresses()` and `hostilePresses()`;
+  `allPresses()` is the total across all three. A companion press refused for its cooldown or target
+  is not counted.
+* **Save** (`GiftSave`): plain data, `version` (1), `presses[3]`, `emptyPresses`, `hostilePresses`, `threads[2]`,
   `selected`, `state`. `save()` / `load(const GiftSave&)`; load rejects (returns false, changes
   nothing) version 0, a newer version or an out-of-range enum. Cooldowns and live guards are not
-  saved (a load is never mid-fight); `load` and `resetFight()` clear them.
+  saved (a load is never mid-fight); `load` and `resetFight()` clear them. `reset()` wipes the save
+  data too; `setTuning()` changes the tuning and keeps it.
 * Tuning (`GiftTuning`): per-gift `cooldown` (heal 8 s, guard 6 s, count 4 s), `healShare` 0.15,
-  `healLoad` 20, `guardScale` 0 (stands in your place: takes the blow), `guardSeconds` 1.2.
+  `healLoad` 20, `guardScale` 0 (the third stands in the lead's place: the guarded lead takes x0, nothing), `guardSeconds` 1.2.
 
 ## 3. Laying a place (`PlaceTable`)
 
@@ -135,6 +151,10 @@ Ready --begin--> Setting --(setTime)--> Set --(setDuration)--> Cooling --(cooldo
   `Cooling`, `NotFull`, `TooFewSeats`, checked in that order. On begin the fighter's Load is spent (the host calls `load.release()`).
 * `interrupt(t)` during `Setting` (the fighter staggered or downed): a `Failed` event, `failed()`, the Load stays spent,
   `failCooldown` applies. This is the "can fail" rule.
+* **The seat rule.** The table holds only with at least `minSeats` seats, each filled (`Named`) or
+  deliberately left open (`LeftOpen`); an open seat is a state of its own, not an empty one. The host
+  calls `checkSeats(places, t)` whenever a place changes: while `Setting` or `Set` with too few seats,
+  the table gutters out (`Guttered` event, `failed()`, the enemy unseated, `failCooldown`).
 * `seatEnemy(t)` while `Set` and the boss allows it: the enemy is seated until the table clears.
 * `split(target, amount, t) -> TableSplit`: while `Set`, a blow on a seated fighter is shared: every
   seated fighter (and a seated enemy, at `enemyShare` x its share) takes `amount / n` each, where n
@@ -144,7 +164,7 @@ Ready --begin--> Setting --(setTime)--> Set --(setDuration)--> Cooling --(cooldo
 * Tuning: `minSeats` 3, `setTime` 0.8 s, `setDuration` 6 s, `cooldown` 20 s, `failCooldown` 8 s,
   `enemyShare` 1.0.
 * Events (`update(now) -> const TableEvents&`): `Setting`, `Set`, `Failed`, `EnemySeated`, `Cleared`,
-  `Ready`, each at its own time; a late frame plays every timed change it passed.
+  `Ready`, `Guttered`, each at its own time; a late frame plays every timed change it passed.
 
 ## 5. Held refusals (`HeldRefusal`)
 
@@ -164,12 +184,16 @@ Offered --accept()--> Accepted          Offered --offerEnded / defer()--> Deferr
   `Deferred`, and `accepted()` is true for both `Accepted` and `Deferred`. Only a hold held to the end
   is `Refused`.
 * A hold that starts before `offer()` does not count; it must start while the prompt is up.
+* `defer()` works from `Offered` or `Holding`. `clearButton()` forgets the button without a release
+  (focus lost): a stale press is cleared, a hold in progress stays a hold.
 
 ## 6. The locked weak point (`WeakPointLock`)
 
 A boss weak point that is locked until one of its keys unlocks it.
 
-* Keys (`UnlockKey`, a mask): `SharedBlow` (an `OnCount` hit, or a hit a lead took half of),
+* Keys (`UnlockKey`, a mask): `SharedBlow` (`sharedBlow(hit)` or `sharedBlow(event)`: an `OnCount`
+  hit or a `BlowSettled` event that settled `OnCount`; for a hit a lead took half of, the host calls
+  `offer(kUnlockSharedBlow, t)` directly),
   `ReadClause` (the right hidden clause read: `offer(kUnlockReadClause, t, clauseId)` with the lock's
   `clause`), `Refusal`
   (a `HeldRefusal` resolved `Refused`). Each boss's lock lists the keys that open it (one world's
@@ -193,13 +217,16 @@ A boss weak point that is locked until one of its keys unlocks it.
 
 ## Edge cases the tests cover
 
-Calls during a live count or cooldown; enemy calling a true count; the caller's own blow; a second
-blow by one fighter; blows on the window's edges (inclusive); a silenced count; false counts early and
+Calls during a live count or cooldown; enemy calling a true count; two fighters joining (either
+order), the caller alone (light), a partner alone (plain), held overflow, blow ids wrapping; a second
+blow by one fighter; cancel and replace settling held blows; blows on the window's edges (inclusive); a silenced count; false counts early and
 late, overlapping a true one, replaced; a late frame passing several cues; NaN and earlier times; a
 gift pressed while cooling, in the empty chair, hostile; a count gift that the count refuses; tally
 ties, zero, saturation, save/load round trip and bad saves; laying past the rating, the same person
 twice, emptying an absent person, cap after emptying, the fall past the cap; the table with two
 seats, two plus an open chair, not full, interrupted, cancelled, enemy share, unseated targets; the
-refusal released early (repeats), held to the end, never held (deferred), held before the offer; each
+table guttering when a place empties; the
+refusal released early (repeats), held to the end, never held (deferred), held before the offer, a
+lost button; each
 lock key, wrong clause, key not in the mask, relock after time and on deferral; zero allocations in
 every tick and judge call.
