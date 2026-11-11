@@ -549,7 +549,7 @@ bool importArenaWeakPoints(const JsonValue& v, const std::string& path, ArenaWea
     out = ArenaWeakPoints{};
     const std::size_t before = errors.size();
     if (!abObject(v, path, true, errors)) return false;
-    abUnknownKeys(v, path, {"halfWidth", "points"}, {}, warnings);
+    abUnknownKeys(v, path, {"halfWidth", "points", "lock"}, {}, warnings);
     WeakPoints& wp = out.points;
     abNum(v, "halfWidth", wp.halfWidth, 0.0, 1.0, false, path, errors);
     if (!(wp.halfWidth > 0.0f)) errors.push_back(abJoin(path, "halfWidth") + ": expected a number above 0");
@@ -580,6 +580,42 @@ bool importArenaWeakPoints(const JsonValue& v, const std::string& path, ArenaWea
             abNum(p, "arc", g.arc, 0.0, 180.0, false, pp, errors);
             wp.add(w);
         }
+    }
+    const JsonValue lock = v["lock"];
+    const std::string lk = abJoin(path, "lock");
+    if (abObject(lock, lk, false, errors)) {
+        abUnknownKeys(lock, lk, {"keys", "clause", "openSeconds", "relockOnDefer"}, {}, warnings);
+        LockTuning t;
+        t.keys = 0;
+        const JsonValue keys = lock["keys"];
+        const std::string kp = abJoin(lk, "keys");
+        if (!keys.isArray() || keys.size() < 1 || keys.size() > 3) {
+            errors.push_back(kp + ": expected 1..3 of \"shared_blow\", \"read_clause\", \"refusal\"");
+        } else {
+            for (std::uint32_t i = 0; i < keys.size(); ++i) {
+                const std::string_view k = keys[i].string();
+                std::uint8_t bit = 0;
+                if (keys[i].isString() && k == "shared_blow") bit = kUnlockSharedBlow;
+                else if (keys[i].isString() && k == "read_clause") bit = kUnlockReadClause;
+                else if (keys[i].isString() && k == "refusal") bit = kUnlockRefusal;
+                if (bit == 0) errors.push_back(abAt(kp, i) + ": expected \"shared_blow\", \"read_clause\" or \"refusal\"");
+                else if (t.keys & bit) errors.push_back(abAt(kp, i) + ": duplicate key " + std::string(k));
+                t.keys = static_cast<std::uint8_t>(t.keys | bit);
+            }
+        }
+        int clause = 0;
+        abInt(lock, "clause", clause, 1, 65535, false, lk, errors);
+        t.clause = static_cast<std::uint16_t>(clause);
+        if ((t.keys & kUnlockReadClause) && t.clause == 0)
+            errors.push_back(abJoin(lk, "clause") + ": required with \"read_clause\"");
+        if (!(t.keys & kUnlockReadClause) && !lock["clause"].isAbsent())
+            errors.push_back(abJoin(lk, "clause") + ": only with \"read_clause\"");
+        abNum(lock, "openSeconds", t.openSeconds, 0.0, 30.0, false, lk, errors);
+        if (t.openSeconds > 0.0 && t.openSeconds < 0.1)
+            errors.push_back(abJoin(lk, "openSeconds") + ": expected 0 or a number in 0.1..30");
+        abBool(lock, "relockOnDefer", t.relockOnDefer, lk, errors);
+        out.locked = true;
+        out.lock = t;
     }
     return errors.size() == before;
 }
@@ -720,6 +756,8 @@ void ArenaBossRun::begin(const ArenaBossDef& def, double now) {
     strike_.update(now_);
     guest_.reset(def.bpm, def.guestCall);
     crit_.reset(def.weakPoints);
+    lock_.reset(def.weakPoints.locked ? def.weakPoints.lock : LockTuning{});
+    lock_.relock(now_);
     events_.clear();
     live_ = kArenaBossNoMove;
     liveStart_ = now_;
@@ -889,11 +927,63 @@ const ArenaBossEvents& ArenaBossRun::onHit(Vec2 from, Vec2 pos, Vec2 facing, dou
                                            CritResult* result) {
     events_.clear();
     advance(t);
-    const CritResult r = at ? crit_.judge(from, pos, facing, *at, now_) : crit_.judgeLockOn(from, pos, facing, now_);
+    CritResult r;
+    if (weakPointOpen())
+        r = at ? crit_.judge(from, pos, facing, *at, now_) : crit_.judgeLockOn(from, pos, facing, now_);
     if (r.crit)
         events_.push({ArenaBossEventType::Crit, kArenaBossNoMove, r.point, CalledOutcome::Pending, r.first ? 1 : 0, 0,
                       now_, 0.0});
     if (result) *result = r;
+    return events_;
+}
+
+const ArenaBossEvents& ArenaBossRun::offerUnlock(UnlockKey key, double t, std::uint16_t clause, UnlockResult* result) {
+    events_.clear();
+    advance(t);
+    UnlockResult u = UnlockResult::BadKey;
+    if (weakPointLocked()) u = lock_.offer(key, now_, clause);
+    if (result) *result = u;
+    if (u != UnlockResult::Unlocked && u != UnlockResult::Refreshed) return events_;
+    const double until = lock_.until();
+    // The window stays open at least as long as the lock (a longer opening already running is kept).
+    const double end = critWasOpen_ && crit_.closesAt() > until ? crit_.closesAt() : until;
+    if (critWasOpen_ && crit_.isOpen(now_)) {
+        if (end > crit_.closesAt()) crit_.open(now_, end - now_); // a new opening: its first crit is flagged again
+    } else {
+        crit_.open(now_, end - now_);
+    }
+    critWasOpen_ = true;
+    ArenaBossEvent e{ArenaBossEventType::Unlocked, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_, until};
+    if (u == UnlockResult::Unlocked) e.value = key;
+    else e.amount = 1;
+    events_.push(e);
+    events_.push({ArenaBossEventType::CritOpened, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_,
+                  crit_.closesAt()});
+    return events_;
+}
+
+void ArenaBossRun::shutLock() {
+    events_.push({ArenaBossEventType::Relocked, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_, 0.0});
+    if (critWasOpen_) {
+        crit_.close();
+        critWasOpen_ = false;
+        events_.push({ArenaBossEventType::CritClosed, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_, 0.0});
+    }
+}
+
+const ArenaBossEvents& ArenaBossRun::onDeferred(double t) {
+    events_.clear();
+    advance(t);
+    if (weakPointLocked() && lock_.onDeferred(now_)) shutLock();
+    return events_;
+}
+
+const ArenaBossEvents& ArenaBossRun::relock(double t) {
+    events_.clear();
+    advance(t);
+    if (!weakPointLocked() || !lock_.open(now_)) return events_;
+    lock_.relock(now_);
+    shutLock();
     return events_;
 }
 

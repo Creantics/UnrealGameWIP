@@ -203,6 +203,12 @@ A boss weak point that is locked until one of its keys unlocks it.
   counts `deferrals()` and relocks an open lock when `relockOnDefer` (default true).
 * Open: `openSeconds` (3.0) after the unlock, or until `relock()` when 0. While open the host opens the
   `CritWindow` (`ArenaBoss.h`) with `until()`; locked, it keeps it closed. `opens()` counts unlocks.
+* **Wired to the boss data.** A boss's `weakPoints` block may carry a `lock` (`keys` of `shared_blow`,
+  `read_clause`, `refusal`; `clause`; `openSeconds`; `relockOnDefer`), in the boss file or the
+  standalone weak-point file. `ArenaBossRun` then owns the lock: `offerUnlock(key, t, clause)` opens
+  the lock and the crit window together (`Unlocked`, `CritOpened`), `onDeferred(t)` and `relock(t)`
+  shut both (`Relocked`, `CritClosed`), and `onHit` lands no crit while it is locked, even through a
+  full intercept's opening. A boss with no `lock` is unchanged.
 
 ## What the Unreal wrapper needs
 
