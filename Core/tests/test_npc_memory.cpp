@@ -1101,9 +1101,13 @@ struct Slice {
 
 }  // namespace
 
-TEST_CASE("npc slice: the shipped tables load, three NPCs, every hook deed resolves") {
+TEST_CASE("npc slice: the shipped tables load, the slice's three NPCs, every hook deed resolves") {
     Slice s;
-    CHECK(s.t.npcs.size() == 3u);
+    // The slice's three, plus the city profiles (test_npc_profiles.cpp).
+    CHECK(s.t.npcs.size() >= 3u);
+    CHECK(s.t.npcIndex("npc_shop_01") >= 0);
+    CHECK(s.t.npcIndex("npc_fixer_01") >= 0);
+    CHECK(s.t.npcIndex("npc_kid_01") >= 0);
     CHECK(s.g.vanKnockdown != kNoType);
     CHECK(s.g.meet != kNoType);
     CHECK(s.t.expIndex("exp_meet_dusk") >= 0);

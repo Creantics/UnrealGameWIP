@@ -1,0 +1,17 @@
+npc_id,from,to,place_id
+npc_sol_01,04:30,19:00,sol_place_01
+npc_sol_01,19:00,22:00,sol_place_06
+npc_sol_02,07:30,15:00,sol_place_08
+npc_sol_02,15:00,19:00,sol_place_01
+npc_sol_02,19:00,21:30,sol_place_06
+npc_sol_03,08:00,16:00,sol_place_07
+npc_sol_03,16:00,18:00,sol_place_02
+npc_sol_03,18:00,20:00,sol_place_03
+npc_sol_04,06:00,21:00,sol_place_02
+npc_sol_05,08:00,15:00,sol_place_08
+npc_sol_05,15:00,19:00,sol_place_02
+npc_sol_05,19:00,23:00,sol_place_04
+npc_sol_06,17:00,02:00,sol_place_05
+npc_sol_07,07:00,09:00,sol_place_09
+npc_sol_07,18:00,22:00,sol_place_09
+npc_sol_08,08:00,20:00,sol_place_10
