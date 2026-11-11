@@ -60,6 +60,9 @@ TEST_CASE("arena soft target: picks in the arc and range, aligned and near") {
     SUBCASE("ties go to the nearer body, then the lower index") {
         const std::array<ArenaSoftBody, 3> mirror{body(2.f, 1.f), body(2.f, -1.f), body(2.f, 1.f)};
         CHECK(arenaSoftTarget({}, kAhead, mirror.data(), mirror.size(), aim) == 0);
+        // Same score (alignment and edge distance), different centres: the bigger body is farther and loses.
+        const std::array<ArenaSoftBody, 2> sizes{body(3.f, 0.f, 1.f), body(2.4f, 0.f, 0.4f)};
+        CHECK(arenaSoftTarget({}, kAhead, sizes.data(), sizes.size(), aim) == 1);
     }
     SUBCASE("the direction decides: the stick turned left picks the body on the left") {
         const std::array<ArenaSoftBody, 2> b{body(3.f, 0.f), body(0.f, -3.f)};
@@ -74,6 +77,8 @@ TEST_CASE("arena soft target: picks in the arc and range, aligned and near") {
         const std::array<ArenaSoftBody, 1> b{body(1.f, 2.f)}; // dot ~ 0.45
         CHECK(arenaSoftTarget({}, kAhead, b.data(), b.size(), softAim(6.f, 0.6f)) == kArenaNobody);
         CHECK(arenaSoftTarget({}, kAhead, b.data(), b.size(), softAim(6.f, 0.3f)) == 0);
+        const std::array<ArenaSoftBody, 1> behind{body(-2.f, 0.f)};
+        CHECK(arenaSoftTarget({}, kAhead, behind.data(), behind.size(), softAim(6.f, -1.f)) == 0); // all round
     }
 }
 
@@ -169,6 +174,7 @@ TEST_CASE("arena soft target: the queries allocate nothing") {
     const ArenaSoftAim aim = softAim();
     const std::uint64_t before = ftcore_test::allocStats().count;
     const std::uint8_t pick = arenaSoftTarget({}, kAhead, b.data(), b.size(), aim);
+    REQUIRE(pick < b.size());
     const ArenaHoming h = arenaHoming({}, 0.4f, kAhead, b[pick], 1.f, 0.3f, aim);
     const float step = arenaHomingStep(h.close, 0.3f, 0.f, 0.016f);
     CHECK(ftcore_test::allocStats().count == before);

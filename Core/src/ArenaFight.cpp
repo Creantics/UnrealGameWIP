@@ -298,7 +298,8 @@ struct ArenaFightImpl {
         po.backstep = pl.backstep;
         po.load = pl.gauge.value;
         po.overloaded = pl.gauge.overloaded();
-        // A fight that is over pauses nobody (its clock stands still), nor does a dead enemy.
+        // A fight that is over pauses nobody (its clock stands still), nor does a dead enemy: the last blow's
+        // pause, if the host wants one, is its own to play from that Hit event's attack.
         const bool fighting = fight.phase_ == ArenaPhase::Fighting;
         po.stopLeft = fighting ? std::max(0.f, pl.stopUntil - fight.time_) : 0.f;
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
@@ -2623,7 +2624,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         errors.push_back(path + ".breakMove: expected -1 or one of its " + std::to_string(k.moveCount) + " moves");
     if (k.breakAt > 0 && k.breakMove < 0) errors.push_back(path + ".breakMove: breakAt needs a move to break out with");
     if (k.breakAt > 1 && !(k.breakDecay > 0.f))
-        errors.push_back(path + ".breakDecay: breakAt above 1 needs a decay above 0 (the count would never grow)");
+        errors.push_back(path + ".breakDecay: breakAt above 1 needs a decay above 0 to count blows across ticks");
     // A string may not loop: following the chain from any move must end within moveCount steps.
     for (std::uint32_t m = 0; m < k.moveCount; ++m) {
         const std::uint32_t most = k.moveCount;

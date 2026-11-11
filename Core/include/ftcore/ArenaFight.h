@@ -134,7 +134,8 @@
 //   is paused and, in a tick a pause ends inside, advances by the part after it. The shared combat inputs
 //   the host ticks beside the fight are ticked every frame with the held clock, never with time(); the host
 //   reads hitStopLeft() for the player's pause, and ArenaPlayerOut::stopLeft / ArenaEnemyOut::stopLeft to
-//   stop each figure.
+//   stop each figure. Both read 0 once the fight is over and on a dead enemy, so the blow that ends a fight
+//   reports no pause (the host may play one from its Hit event).
 // * Flinch. An enemy kind with flinchTime > 0 flinches (Flinch, the Flinched event) when a player's blow
 //   of at least flinchPoise poise damage lands and its poise holds: in Approach, Strafe, Flinch (it
 //   starts again) or an attack's startup or recovery, never in its active part or while its `armor` is on.

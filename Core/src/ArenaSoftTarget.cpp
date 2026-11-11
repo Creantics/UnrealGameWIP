@@ -49,14 +49,15 @@ std::uint8_t arenaSoftTarget(Vec2 from, Vec2 dir, const ArenaSoftBody* bodies, s
         if (edge > aim.range) continue;
         // A body on top of the attacker lies straight ahead.
         const Vec2 to = unitOr(d, way);
-        const float align = way.x * to.x + way.y * to.y;
-        if (align < aim.arcCos) continue;
+        const float align = std::clamp(way.x * to.x + way.y * to.y, -1.f, 1.f);
+        if (align < aim.arcCos - kSoftTie) continue; // an arc at -1 or 1 takes what rounding puts on its edge
         const float score = kSoftAlignWeight * align + kSoftNearWeight * (1.f - edge / aim.range);
         const bool better = best == kArenaNobody || score > bestScore + kSoftTie ||
                             (score >= bestScore - kSoftTie && distance < bestDist);
         if (better) {
+            // A nearer body winning a tie keeps the higher score, so a run of near-ties can't drift.
+            bestScore = best == kArenaNobody ? score : std::max(score, bestScore);
             best = static_cast<std::uint8_t>(i);
-            bestScore = score;
             bestDist = distance;
         }
     }

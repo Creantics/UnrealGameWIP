@@ -6,7 +6,8 @@
 //   within `range` and whose direction from the attacker is within the arc (dot(dir, to body) >= arcCos), the
 //   one with the best score 0.7 * alignment + 0.3 * nearness (1 - distance / range); scores within a tie go to
 //   the nearer body, then the lower index. `dir` is the stick when it is pushed, else the facing
-//   (arenaSoftDir). range 0 turns it off.
+//   (arenaSoftDir). range 0 turns it off. Unlike the lock (centre distance), range and nearness are measured to
+//   the near edge, so a big body is picked as soon as its edge is in range.
 // * Homing (arenaHoming): the facing an attack on that body starts with (straight at it) and how far the
 //   attacker closes in on top of the attack's own lunge so it lands: what is missing from the attack's reach
 //   (range + the body's radius) after the lunge, capped at `homing` and never past the two bodies touching.
@@ -49,7 +50,7 @@ enum class ArenaAimSource : std::uint8_t { Riposte, Aim, Lock, Soft, Stick, Faci
 
 FTCORE_API ArenaSoftAim arenaSoftAimOf(const ArenaFighter& kit);
 
-// The stick when it is pushed (a length above the rest dead zone), else the facing; unit.
+// The stick when it is pushed (longer than 1e-4, as the fight takes a stick at rest), else the facing; unit.
 FTCORE_API Vec2 arenaSoftDir(Vec2 stick, Vec2 facing);
 
 // The soft target's index in `bodies`, or kArenaNobody.
