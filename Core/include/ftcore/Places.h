@@ -1,17 +1,19 @@
 #pragma once
 
-// Laying a place: a fighter names someone they fight for. Each named place raises what the fighter can
-// carry (the cap on their Load); a place can empty, and its weight then falls back on the fighter. See
-// docs/SHARED_COMBAT_INPUTS.md section 3.
+// Laying a place: a fighter assigns a chair to a person id. Each named place raises what the fighter
+// can carry (the cap on their Load); a place can empty, and its weight then falls back on the fighter.
+// See docs/SHARED_COMBAT_INPUTS.md section 3.
 //
 // * Chairs 0..seats-1 (the fighter's rating, 1..kMaxPlaces; only ever raised). Each chair is Free,
-//   Named (a person, by an opaque id from the story data; 0 is no one), LeftOpen (deliberately left
-//   open) or Emptied (the person died or forgot; the chair stays, empty).
+//   Named (a person, by an opaque id from data; 0 is no one), LeftOpen (deliberately left open) or
+//   Emptied (the host emptied it; the chair stays taken, with nobody in it, and keeps the person id).
+// * One chair per person: a person in a Named or an Emptied chair cannot be laid again until that
+//   chair is cleared (clearPlace), so a person id is never in two chairs.
 // * carryCap() = baseCarry + perPlace x Named chairs, at most kMaxLoad. An open or emptied chair holds
 //   nobody, so it carries nothing.
 // * emptyPlace(person, load): the chair turns Emptied, the cap falls, and fallLoad Load is stored on
-//   the fighter past the cap (up to kMaxLoad): the weight falls on them. Over the cap they are
-//   overCap(), as a full Load is overloaded.
+//   the fighter past the cap (up to kMaxLoad). Over the cap the fighter is overCap(), as a full Load
+//   is overloaded.
 // * tableSeats(): Named + LeftOpen, what setting the table counts (TableSet.h).
 //
 // No allocation. Plain data save (PlaceSave).
@@ -87,9 +89,10 @@ public:
         return true;
     }
 
+    // AlreadySeated when the person is in a Named or an Emptied chair (clear an emptied one first).
     PlaceError layPlace(PersonId person) {
         if (person == kNoPerson) return PlaceError::BadPerson;
-        if (find(person) >= 0) return PlaceError::AlreadySeated;
+        if (holding(person)) return PlaceError::AlreadySeated;
         return fillFree(PlaceState::Named, person);
     }
     PlaceError leaveOpen() { return fillFree(PlaceState::LeftOpen, kNoPerson); }
@@ -114,7 +117,7 @@ public:
         return r;
     }
 
-    // Frees an Emptied or LeftOpen chair (story only). A Named chair is never cleared here: it empties.
+    // Frees an Emptied or LeftOpen chair. A Named chair is never cleared here: it empties first.
     PlaceError clearPlace(int chair) {
         if (chair < 0 || chair >= seats_) return PlaceError::BadChair;
         Place& p = places_[static_cast<std::size_t>(chair)];
@@ -131,6 +134,15 @@ public:
             if (p.state == PlaceState::Named && p.person == person) return i;
         }
         return -1;
+    }
+    // The person is in a chair, Named or Emptied.
+    bool holding(PersonId person) const {
+        if (person == kNoPerson) return false;
+        for (int i = 0; i < seats_; ++i) {
+            const Place& p = places_[static_cast<std::size_t>(i)];
+            if ((p.state == PlaceState::Named || p.state == PlaceState::Emptied) && p.person == person) return true;
+        }
+        return false;
     }
     // The place at `chair`; outside 0..seats()-1, a Free place.
     const Place& place(int chair) const {
@@ -172,7 +184,8 @@ public:
         return s;
     }
     // False, and nothing changed, for a newer version, a bad rating, a bad state, a chair past the
-    // rating that is not Free, a Named or Emptied chair with no person, or a person named twice.
+    // rating that is not Free, a Named or Emptied chair with no person, or a person in two chairs
+    // (Named or Emptied).
     bool load(const PlaceSave& s) {
         if (s.version == 0 || s.version > kPlaceSaveVersion) return false;
         if (s.seats < 1 || s.seats > kMaxPlaces) return false;
@@ -185,9 +198,9 @@ public:
             if (hasPerson && s.persons[i] == kNoPerson) return false;
             next[i].state = st;
             next[i].person = hasPerson ? s.persons[i] : kNoPerson;
-            if (st == PlaceState::Named)
+            if (hasPerson)
                 for (std::size_t j = 0; j < i; ++j)
-                    if (next[j].state == PlaceState::Named && next[j].person == s.persons[i]) return false;
+                    if (next[j].person == s.persons[i]) return false; // only Named/Emptied keep a person
         }
         seats_ = s.seats;
         places_ = next;

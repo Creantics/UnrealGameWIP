@@ -22,21 +22,31 @@
 //   - When the window closes unjoined, the held blows settle: the caller's as Unanswered
 //     (x callerAloneMultiplier: a call nobody answered lands light), anyone else's as Alone (x1).
 //   - Outside every window a blow is Alone (x1) at once. An enemy's blow is always Alone.
-//   - More than kMaxHeldBlows held blows in one window: the extra ones settle at once as if unjoined.
+//   - There is no cap on held blows: until the window is joined every blow in it is by one fighter
+//     (a second fighter joins it), so the held blows are one run of consecutive blow ids, kept as a
+//     first id and a count. Each still gets its own BlowSettled event.
 // * falseCall(t, shift): the enemy plays the count with its "now" moved early (shift < 0) or late
 //   (shift > 0) off the beat. Its cues are flagged false. A blow inside [falseNow - before,
 //   falseNow + after] and in no live true window is FalseCount at once: x falseMultiplier (0: it
 //   misses) and punishable (it leaves the fighter open). A new false count replaces the last.
 // * cancel(t): drops the live true count. Steps already due still play; its later cues go; a window
 //   that had opened gets WindowClosed at t; its held blows settle as unjoined at t; the cooldown runs
-//   from t. cancelFalse(t) drops the false count the same way (no window events: it has none).
+//   from t. A count whose window has already closed (by t) is over: cancel leaves it, and its
+//   cooldown, as they are. cancelFalse(t) drops the false count the same way (no window events).
 // * update(now): the cues, window edges and settled blows that fell due, in time order (on a tie: the
 //   true count's step, then a settled blow, then the false count's step). Steps of a count replaced or
 //   cancelled before an update still play if they were due. Call order each frame: judge the frame's
 //   blows (at their own times), then update(frameEnd) once; a call after update with an earlier time
 //   reads as frameEnd.
+// * Full buffers. Events wait for update() in a buffer of kMaxCountEvents. When it is full, a
+//   BlowSettled event pushes out the earliest event that is not one (cues and window edges are
+//   cosmetic; a settle carries damage), and anything pushed out or turned away is counted in the
+//   `dropped` of the next CountEvents update() returns. A settle is turned away only when the buffer
+//   holds nothing but settles; it is then counted in `droppedSettles` too, and the host applies every
+//   blow it still holds back at x1 (the plain value).
 //
-// Times as CombatInputs.h: an earlier or non-finite time reads as the latest seen. No allocation.
+// Times as CombatInputs.h (queries included): an earlier or non-finite time reads as the latest seen,
+// and a forward jump is capped at kMaxTimeStep. No allocation.
 
 #include "ftcore/CombatInputs.h"
 
@@ -81,8 +91,6 @@ enum class CountVoice : std::uint8_t { Voice, Click }; // append only
 enum class CountOutcome : std::uint8_t { Alone, Held, OnCount, Unanswered, FalseCount }; // append only
 enum class CountError : std::uint8_t { None, Live, Cooling, BadCaller }; // append only
 
-inline constexpr std::size_t kMaxHeldBlows = 8;
-
 struct CountHit {
     CountOutcome outcome = CountOutcome::Alone;
     float multiplier = 1.0f;       // final unless Held (then 1 until its BlowSettled event)
@@ -108,22 +116,54 @@ struct CountEvent {
     float multiplier = 1.0f;
 };
 
-inline constexpr std::size_t kMaxCountEvents = 32;
+inline constexpr std::size_t kMaxCountEvents = 64;
 
 struct CountEvents {
     std::array<CountEvent, kMaxCountEvents> items{};
     std::size_t count = 0;
-    std::size_t dropped = 0;
+    std::size_t dropped = 0;        // events lost to a full buffer since the last update
+    std::size_t droppedSettles = 0; // of those, BlowSettled events (the host applies its held blows at x1)
 
     const CountEvent* begin() const { return items.data(); }
     const CountEvent* end() const { return items.data() + count; }
     std::size_t size() const { return count; }
     bool empty() const { return count == 0; }
     const CountEvent& operator[](std::size_t i) const { return items[i]; }
-    void clear() { count = 0; dropped = 0; }
+    void clear() {
+        count = 0;
+        dropped = 0;
+        droppedSettles = 0;
+    }
+    // Appends (the caller pushes in time order).
     void push(const CountEvent& e) {
-        if (count < items.size()) items[count++] = e;
-        else ++dropped;
+        if (count >= items.size() && !makeRoom(e)) return;
+        items[count++] = e;
+    }
+    // Inserts in time order (after any event at the same time).
+    void insert(const CountEvent& e) {
+        if (count >= items.size() && !makeRoom(e)) return;
+        std::size_t i = count++;
+        while (i > 0 && items[i - 1].at > e.at) {
+            items[i] = items[i - 1];
+            --i;
+        }
+        items[i] = e;
+    }
+
+private:
+    // Full: a settle pushes out the earliest event that is not a settle; anything else is turned away.
+    bool makeRoom(const CountEvent& e) {
+        ++dropped;
+        if (e.type == CountEventType::BlowSettled) {
+            for (std::size_t i = 0; i < count; ++i) {
+                if (items[i].type == CountEventType::BlowSettled) continue;
+                for (std::size_t j = i + 1; j < count; ++j) items[j - 1] = items[j];
+                --count;
+                return true;
+            }
+            ++droppedSettles;
+        }
+        return false;
     }
 };
 
@@ -139,7 +179,7 @@ public:
         true_ = Run{};
         false_ = Run{};
         readyAt_ = -kInf;
-        heldCount_ = 0;
+        held_ = HeldRun{};
         joined_ = false;
         pending_.clear();
         pendingHead_ = 0;
@@ -167,7 +207,7 @@ public:
         true_.caller = caller;
         true_.voice = silenced ? CountVoice::Click : voice;
         readyAt_ = true_.hi + tuning_.cooldown;
-        heldCount_ = 0;
+        held_ = HeldRun{};
         joined_ = false;
         return CountError::None;
     }
@@ -195,7 +235,9 @@ public:
 
     void cancel(double t) {
         t = advance(t);
-        if (!true_.active) return;
+        // Nothing live, or a count whose window closed before t (over, though update() has not yet
+        // played its end): nothing to drop, and its cooldown stands.
+        if (!true_.active || t > true_.hi) return;
         drainDue(true_, t);
         // A window that had opened closes now, so a host that opened on WindowOpened can close.
         const int last = tuning_.leadBeats;
@@ -207,7 +249,7 @@ public:
             e.at = t;
             pushPending(e);
         }
-        settleHeld(t);
+        settleLone(t);
         true_.active = false;
         readyAt_ = t + tuning_.cooldown;
     }
@@ -225,30 +267,23 @@ public:
         if (!(striker == kLeadA || striker == kLeadB || striker == kThirdSlot)) return hit;
         hit.blow = takeBlowId();
         if (true_.active && t >= true_.lo && t <= true_.hi) {
-            if (!joined_) {
-                bool partner = false;
-                for (std::size_t i = 0; i < heldCount_; ++i)
-                    if (held_[i].striker != striker) partner = true;
-                if (partner) {
-                    joined_ = true;
-                    // The held blows were joined at t.
-                    for (std::size_t i = 0; i < heldCount_; ++i)
-                        queueSettle(held_[i], CountOutcome::OnCount, boost(), t);
-                    heldCount_ = 0;
-                }
+            if (!joined_ && held_.count > 0 && held_.striker != striker) {
+                joined_ = true;
+                settleHeld(CountOutcome::OnCount, boost(), t); // the held blows were joined at t
             }
             if (joined_) {
                 hit.outcome = CountOutcome::OnCount;
                 hit.multiplier = boost();
                 return hit;
             }
-            if (heldCount_ < held_.size()) {
-                held_[heldCount_++] = Held{hit.blow, striker};
-                hit.outcome = CountOutcome::Held;
-                return hit;
+            // Unjoined, so every blow held so far is this fighter's, and their ids run on without a
+            // gap up to this one (each judged blow takes the next id).
+            if (held_.count == 0) {
+                held_.striker = striker;
+                held_.first = hit.blow;
             }
-            hit.outcome = loneOutcome(striker);
-            hit.multiplier = loneMultiplier(striker);
+            ++held_.count;
+            hit.outcome = CountOutcome::Held;
             return hit;
         }
         if (false_.active && t >= false_.lo && t <= false_.hi) {
@@ -278,6 +313,9 @@ public:
                 break;
             }
         }
+        // What the waiting buffer lost since the last update reaches the host here.
+        events_.dropped += pending_.dropped;
+        events_.droppedSettles += pending_.droppedSettles;
         pending_.clear();
         pendingHead_ = 0;
         // A run is over once everything of it has played and its window has passed.
@@ -288,9 +326,13 @@ public:
 
     // A true count is called and its window has not closed (by the latest time seen).
     bool live() const { return true_.active && now_ <= true_.hi; }
-    bool open(double t) const { return true_.active && t >= true_.lo && t <= true_.hi; }
+    // t inside the true window (t read as CombatInputs.h against the latest time seen, without moving it).
+    bool open(double t) const {
+        const double c = inputTime(now_, t);
+        return true_.active && c >= true_.lo && c <= true_.hi;
+    }
     bool joined() const { return joined_; }
-    std::size_t heldBlows() const { return heldCount_; }
+    std::size_t heldBlows() const { return held_.count; }
     bool falseLive() const { return false_.active && now_ <= false_.hi; }
     FighterId caller() const { return true_.caller; }
     bool silenced() const { return true_.active && true_.caller == kNoFighter; }
@@ -319,24 +361,27 @@ private:
         int step = 0;
     };
 
-    struct Held {
-        std::uint16_t blow = 0;
+    // The held blows of an unjoined window: one fighter's, ids first, first + 1, ... (skipping 0).
+    struct HeldRun {
         FighterId striker = kNoFighter;
+        std::uint16_t first = 0;
+        std::size_t count = 0;
     };
 
     double advance(double t) {
         now_ = inputTime(now_, t);
         // The window closed unjoined: its held blows settle at its end.
-        if (heldCount_ > 0 && true_.active && now_ > true_.hi) {
+        if (held_.count > 0 && true_.active && now_ > true_.hi) {
             drainDue(true_, true_.hi); // its steps first, so WindowClosed comes before the settles
-            settleHeld(true_.hi);
+            settleLone(true_.hi);
         }
         return now_;
     }
 
+    static std::uint16_t nextId(std::uint16_t id) { return static_cast<std::uint16_t>(id == 0xFFFF ? 1 : id + 1); }
     std::uint16_t takeBlowId() {
         const std::uint16_t id = nextBlow_;
-        nextBlow_ = static_cast<std::uint16_t>(nextBlow_ == 0xFFFF ? 1 : nextBlow_ + 1);
+        nextBlow_ = nextId(nextBlow_);
         return id;
     }
 
@@ -348,38 +393,31 @@ private:
         return striker == true_.caller ? tuning_.callerAloneMultiplier : 1.0f;
     }
 
-    void settleHeld(double at) {
-        for (std::size_t i = 0; i < heldCount_; ++i)
-            queueSettle(held_[i], loneOutcome(held_[i].striker), loneMultiplier(held_[i].striker), at);
-        heldCount_ = 0;
+    // The held blows settle unjoined: the caller's light, anyone else's plain.
+    void settleLone(double at) {
+        settleHeld(loneOutcome(held_.striker), loneMultiplier(held_.striker), at);
     }
 
-    void queueSettle(const Held& h, CountOutcome outcome, float multiplier, double at) {
+    // One BlowSettled event per held blow, then none held.
+    void settleHeld(CountOutcome outcome, float multiplier, double at) {
         CountEvent e;
         e.type = CountEventType::BlowSettled;
         e.caller = true_.caller;
         e.voice = true_.voice;
         e.at = at;
-        e.blow = h.blow;
-        e.striker = h.striker;
+        e.striker = held_.striker;
         e.outcome = outcome;
         e.multiplier = multiplier;
-        pushPending(e);
+        std::uint16_t id = held_.first;
+        for (std::size_t i = 0; i < held_.count; ++i, id = nextId(id)) {
+            e.blow = id;
+            pushPending(e);
+        }
+        held_ = HeldRun{};
     }
 
     // Keeps pending_ in time order (a later push on a tie goes after).
-    void pushPending(const CountEvent& e) {
-        if (pending_.count >= pending_.items.size()) {
-            ++pending_.dropped;
-            return;
-        }
-        std::size_t i = pending_.count++;
-        while (i > 0 && pending_.items[i - 1].at > e.at) {
-            pending_.items[i] = pending_.items[i - 1];
-            --i;
-        }
-        pending_.items[i] = e;
-    }
+    void pushPending(const CountEvent& e) { pending_.insert(e); }
 
     // Moves the run's steps due by t into pending_ (before the run is replaced or dropped).
     void drainDue(Run& r, double t) {
@@ -436,8 +474,7 @@ private:
     Run true_{};
     Run false_{};
     double readyAt_ = -kInf;
-    std::array<Held, kMaxHeldBlows> held_{};
-    std::size_t heldCount_ = 0;
+    HeldRun held_{};
     bool joined_ = false;
     CountEvents pending_{}; // settled blows and drained steps waiting for the next update, in time order
     std::size_t pendingHead_ = 0;
