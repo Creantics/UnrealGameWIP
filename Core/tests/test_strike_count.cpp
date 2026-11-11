@@ -169,6 +169,31 @@ TEST_CASE("count: the window's edges are inclusive") {
     StrikeCount f = count60();
     REQUIRE(f.call(kLeadA, 0.0) == CountError::None);
     CHECK(f.judgeBlow(kLeadB, std::nextafter(f.windowEnd(), 10.0)).outcome == CountOutcome::Alone);
+
+    // A lone blow exactly on the upper edge is held, and settles when the window closes.
+    StrikeCount g = count60();
+    REQUIRE(g.call(kLeadA, 0.0) == CountError::None);
+    const CountHit edge = g.judgeBlow(kLeadB, g.windowEnd());
+    CHECK(edge.outcome == CountOutcome::Held);
+    CHECK(g.open(g.windowEnd()));
+    CountEvent s[2];
+    REQUIRE(settled(g.update(3.0), s, 2) == 1);
+    CHECK(s[0].blow == edge.blow);
+    CHECK(s[0].outcome == CountOutcome::Alone);
+    CHECK(s[0].at == doctest::Approx(g.windowEnd()));
+}
+
+TEST_CASE("count: cancel after the window has closed leaves the cooldown and the events as they were") {
+    StrikeCount c = count60();
+    REQUIRE(c.call(kLeadA, 0.0) == CountError::None);
+    CHECK(c.readyAt() == doctest::Approx(3.68));
+    c.cancel(3.0); // the window closed at 2.18; update has not played it yet
+    CHECK(c.readyAt() == doctest::Approx(3.68));
+    const CountEvents& ev = c.update(3.0);
+    REQUIRE(ev.size() == 5);
+    CHECK(ev[4].type == CountEventType::WindowClosed);
+    CHECK(ev[4].at == doctest::Approx(2.18));
+    CHECK(c.call(kLeadB, 3.68) == CountError::None);
 }
 
 TEST_CASE("count: calls are refused while live, while cooling, and for the enemy or a bad id") {
@@ -407,6 +432,22 @@ TEST_CASE("count: earlier and non-finite times read as the latest seen") {
     CHECK(c.now() == doctest::Approx(5.0));
     CHECK(c.judgeBlow(kLeadB, 7.0).outcome == CountOutcome::Held);
     CHECK(c.judgeBlow(kLeadA, 6.0).outcome == CountOutcome::OnCount); // read as 7
+    CHECK(c.open(1.0));                                                // a query reads as 7 too
+}
+
+TEST_CASE("count: a junk far-future time moves the clock at most kMaxTimeStep") {
+    StrikeCount c = count60();
+    c.update(1e300);
+    CHECK(c.now() == doctest::Approx(kMaxTimeStep));
+    c.update(1e300);
+    CHECK(c.now() == doctest::Approx(2.0 * kMaxTimeStep));
+    REQUIRE(c.call(kLeadA, 1e300) == CountError::None); // read as 3 x kMaxTimeStep
+    CHECK(c.nowAt() == doctest::Approx(3.0 * kMaxTimeStep + 2.0));
+    CHECK_FALSE(c.open(1e300)); // read as now + kMaxTimeStep: long past the window
+    CHECK(c.judgeBlow(kLeadA, c.nowAt()).outcome == CountOutcome::Held);
+    CHECK(inputTime(5.0, 5.0 + kMaxTimeStep) == doctest::Approx(5.0 + kMaxTimeStep));
+    CHECK(inputTime(5.0, 6.0 + kMaxTimeStep) == doctest::Approx(5.0 + kMaxTimeStep));
+    CHECK(inputTime(5.0, 6.0, 0.5) == doctest::Approx(5.5));
 }
 
 TEST_CASE("count: enemy and bad strikers are never held or boosted, and take no blow id") {
@@ -421,18 +462,89 @@ TEST_CASE("count: enemy and bad strikers are never held or boosted, and take no 
     CHECK_FALSE(c.joined());
 }
 
-TEST_CASE("count: past kMaxHeldBlows lone blows settle at once; a partner still joins the held ones") {
+TEST_CASE("count: held blows have no cap; every one is boosted when a partner joins") {
+    constexpr int kBlows = 40;
     StrikeCount c = count60();
     REQUIRE(c.call(kLeadA, 0.0) == CountError::None);
     c.update(0.0);
-    for (std::size_t i = 0; i < kMaxHeldBlows; ++i) CHECK(c.judgeBlow(kLeadA, 2.0).outcome == CountOutcome::Held);
-    const CountHit extra = c.judgeBlow(kLeadA, 2.0);
-    CHECK(extra.outcome == CountOutcome::Unanswered);
-    CHECK(extra.multiplier == doctest::Approx(0.5f));
+    std::uint16_t ids[kBlows] = {};
+    for (int i = 0; i < kBlows; ++i) {
+        const CountHit h = c.judgeBlow(kLeadA, 2.0);
+        CHECK(h.outcome == CountOutcome::Held);
+        ids[i] = h.blow;
+    }
+    CHECK(c.heldBlows() == static_cast<std::size_t>(kBlows));
     CHECK(c.judgeBlow(kLeadB, 2.1).outcome == CountOutcome::OnCount);
-    CountEvent s[kMaxHeldBlows + 2];
-    CHECK(settled(c.update(2.1), s, static_cast<int>(kMaxHeldBlows) + 2) == static_cast<int>(kMaxHeldBlows));
-    CHECK(s[0].outcome == CountOutcome::OnCount);
+    const CountEvents& ev = c.update(2.1);
+    CHECK(ev.dropped == 0);
+    CHECK(ev.droppedSettles == 0);
+    CountEvent s[kBlows + 2];
+    REQUIRE(settled(ev, s, kBlows + 2) == kBlows);
+    for (int i = 0; i < kBlows; ++i) {
+        CHECK(s[i].blow == ids[i]);
+        CHECK(s[i].outcome == CountOutcome::OnCount);
+        CHECK(s[i].multiplier == doctest::Approx(2.5f));
+    }
+
+    // Unjoined, they all settle when the window closes.
+    StrikeCount d = count60();
+    REQUIRE(d.call(kLeadA, 0.0) == CountError::None);
+    for (int i = 0; i < kBlows; ++i) d.judgeBlow(kLeadB, 2.0);
+    REQUIRE(settled(d.update(3.0), s, kBlows + 2) == kBlows);
+    CHECK(s[kBlows - 1].outcome == CountOutcome::Alone);
+}
+
+TEST_CASE("count: held blow ids that wrap past 0 settle under the ids they were given") {
+    StrikeCount c = count60();
+    for (int i = 0; i < 65533; ++i) c.judgeBlow(kLeadA, 0.0); // ids 1..65533, no count
+    REQUIRE(c.call(kLeadA, 0.0) == CountError::None);
+    std::uint16_t ids[4] = {};
+    for (std::uint16_t& id : ids) id = c.judgeBlow(kLeadA, 2.0).blow;
+    CHECK(ids[0] == 65534);
+    CHECK(ids[1] == 65535);
+    CHECK(ids[2] == 1);
+    CHECK(ids[3] == 2);
+    c.judgeBlow(kThirdSlot, 2.0);
+    CountEvent s[6];
+    REQUIRE(settled(c.update(2.0), s, 6) == 4);
+    for (int i = 0; i < 4; ++i) CHECK(s[i].blow == ids[i]);
+}
+
+TEST_CASE("count: events lost to a full buffer reach the host, and a settle pushes out a cue") {
+    // Many false counts before an update: their due cues overflow the waiting buffer.
+    StrikeCount c = count60();
+    for (int i = 0; i < 40; ++i) c.falseCall(i * 3.0, 0.0); // each drains the last one's three cues
+    const CountEvents& ev = c.update(200.0);
+    CHECK(ev.dropped >= std::size_t{39 * 3} - kMaxCountEvents);
+    CHECK(ev.droppedSettles == 0);
+    CHECK(c.update(201.0).dropped == 0); // reported once
+
+    // A full buffer of cues: a held blow's settle still gets through, pushing out the earliest cue.
+    StrikeCount d = count60();
+    REQUIRE(d.call(kLeadA, 0.0) == CountError::None);
+    for (int i = 0; i < 70; ++i) d.falseCall(i * 0.01, 0.0); // one cue each, due at once
+    const CountHit h = d.judgeBlow(kLeadA, 2.0);
+    REQUIRE(h.outcome == CountOutcome::Held);
+    d.cancel(2.05);
+    const CountEvents& ev2 = d.update(2.05);
+    CHECK(ev2.dropped > 0);
+    CHECK(ev2.droppedSettles == 0);
+    CountEvent s[2];
+    REQUIRE(settled(ev2, s, 2) == 1);
+    CHECK(s[0].blow == h.blow);
+    CHECK(s[0].outcome == CountOutcome::Unanswered);
+
+    // More settles than the buffer holds: the lost ones are counted for the host (it applies them x1).
+    StrikeCount e = count60();
+    REQUIRE(e.call(kLeadA, 0.0) == CountError::None);
+    constexpr int kMany = static_cast<int>(kMaxCountEvents) + 6;
+    for (int i = 0; i < kMany; ++i) e.judgeBlow(kLeadA, 2.0);
+    e.judgeBlow(kLeadB, 2.1);
+    const CountEvents& ev3 = e.update(2.1);
+    CHECK(ev3.droppedSettles == 6);
+    CHECK(ev3.dropped >= 6);
+    CountEvent many[kMany];
+    CHECK(settled(ev3, many, kMany) == static_cast<int>(kMaxCountEvents));
 }
 
 TEST_CASE("count: blow ids skip 0 when they wrap") {

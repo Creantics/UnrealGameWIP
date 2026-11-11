@@ -13,7 +13,7 @@
 //   relockOnDefer.
 // * While open() the host keeps the boss's CritWindow (ArenaBoss.h) open until until(); locked, closed.
 //
-// Times as CombatInputs.h. No allocation.
+// Times as CombatInputs.h (queries included). No allocation.
 
 #include "ftcore/CombatInputs.h"
 #include "ftcore/StrikeCount.h"
@@ -94,7 +94,8 @@ public:
         open_ = false;
     }
 
-    bool open(double t) const { return open_ && t < until_; }
+    // Open at t (t read as CombatInputs.h against the latest time seen, without moving it).
+    bool open(double t) const { return open_ && inputTime(now_, t) < until_; }
     // The end of the open time (+inf while open with openSeconds 0; meaningless while locked).
     double until() const { return until_; }
     int opens() const { return opens_; }
