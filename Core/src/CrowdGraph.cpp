@@ -151,7 +151,7 @@ struct Split {
 
 std::int64_t cellKey(std::int64_t x, std::int64_t y) { return (x << 32) ^ (y & 0xffffffffLL); }
 
-constexpr float kSameSpot = 0.05f; // m: crossings or feet this close are one node
+constexpr float kSameSpot = 0.5f; // m: crossings or feet this close are one node (a nearer pair would make a sliver walkers jam in)
 
 class NodeMaker {
 public:

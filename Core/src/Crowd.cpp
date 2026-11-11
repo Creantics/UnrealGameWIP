@@ -39,6 +39,8 @@ constexpr float kSafeSpread = 15.f;
 // S-286: how far short of a dead end's end node the first row of cornered members stands (m).
 constexpr float kBraceEnd = 0.3f;
 constexpr float kKnotRadius = 3.f; // S-366: the stopped-group gate's radius
+// m: no idle stop this close to either end of its street (a junction, where walkers cross); short links never.
+constexpr float kIdleClear = 3.f;
 // m/s: how fast members standing too close step apart.
 constexpr float kStandApart = 0.8f;
 // S-366: the margin round a view's frame within which a drawn member stays drawn (half a body at the edge).
@@ -1136,10 +1138,11 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             arrive(a);
             stopped = a.state != CrowdState::Walk;
         }
-    } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong && !roomToWatch(a)) {
-        a.idleAlong = -1.f; // S-332: no room to stand here; it walks on
+    } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong &&
+               (!roomToWatch(a) || a.idleAlong < kIdleClear || a.len - a.along < kIdleClear)) {
+        a.idleAlong = -1.f; // S-332: no room to stand here, or a junction (walkers cross it): it walks on
     } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong) {
-        a.along = a.idleAlong;
+        // It stands where it is: one that came past the spot doing something else is never pulled back to it.
         setState(a, CrowdState::Idle);
         a.idleLeft = tuning_.idleMin + rand01() * (tuning_.idleMax - tuning_.idleMin);
         stopped = true;
@@ -1609,7 +1612,7 @@ void CrowdSim::separate() {
     for (Agent& a : agents_)
         if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < tuning_.graph.wallInset - 1e-3f)
             place(a, a.pos);
-    for (int it = 0; it < 24 && g > 0.f; ++it) {
+    for (int it = 0; it < 64 && g > 0.f; ++it) {
         bool any = false;
         for (std::uint32_t i = 0; i < agents_.size(); ++i) {
             if (hiddenMember(agents_[i].state, agents_[i].doorPhase)) continue;
