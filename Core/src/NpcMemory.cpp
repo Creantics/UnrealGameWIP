@@ -154,6 +154,9 @@ std::array<std::int32_t, 3> appraise(const NpcMemoryWorld& w, const NpcTables& t
     return out;
 }
 
+// (deed minute, seq) as one ordering key: the later deed has the larger key.
+std::uint64_t entryKey(const NpcMemoryEntry& e) { return (std::uint64_t{e.deedMinute} << 32) | e.seq; }
+
 void evictOne(NpcState& s, const NpcTables& t, std::uint32_t now) {
     int victim = -1;
     std::int32_t bestS = 0;
@@ -179,6 +182,18 @@ void evictOne(NpcState& s, const NpcTables& t, std::uint32_t now) {
             if (!b || e.s0 < b->s0 || (e.s0 == b->s0 && (e.ts < b->ts || (e.ts == b->ts && e.seq < b->seq)))) victim = static_cast<int>(i);
         }
     }
+    {  // A releasing memory (a mend) goes only after the older unpinned memory it released at its place (the break).
+        const NpcMemoryEntry& v = s.mem[static_cast<std::size_t>(victim)];
+        const std::uint16_t rel = v.type < t.deeds.size() ? t.deeds[v.type].releases : kNoType;
+        if (rel != kNoType)
+            for (std::uint32_t i = 0; i < s.memCount; ++i) {
+                const NpcMemoryEntry& x = s.mem[i];
+                if (x.type == rel && x.place == v.place && !x.pinned && entryKey(x) < entryKey(v)) {
+                    victim = static_cast<int>(i);
+                    break;
+                }
+            }
+    }
     const NpcMemoryEntry& gone = s.mem[static_cast<std::size_t>(victim)];
     const std::uint32_t mask = typeMask(t, gone.type);
     for (std::uint32_t b = 0; b < kNpcTagMax; ++b) {
@@ -192,19 +207,57 @@ void evictOne(NpcState& s, const NpcTables& t, std::uint32_t now) {
     --s.memCount;
 }
 
-void pin(NpcState& s, NpcMemoryEntry& e, std::uint32_t now) {
-    if (e.pinned) return;
-    std::uint32_t pinned = 0;
-    int oldest = -1;
+std::uint32_t pinCount(const NpcState& s) {
+    std::uint32_t n = 0;
+    for (std::uint32_t i = 0; i < s.memCount; ++i) n += s.mem[i].pinned ? 1u : 0u;
+    return n;
+}
+
+// The pin to let go when pins are full (the rule under Pins in NpcMemory.h): the oldest pinned memory whose type
+// releases another (a mend), else the oldest pin; oldest by ts, then seq. -1 when nothing is pinned.
+int pinToDrop(const NpcState& s, const NpcTables& t) {
+    int best = -1;
+    bool bestRel = false;
     for (std::uint32_t i = 0; i < s.memCount; ++i) {
-        if (!s.mem[i].pinned) continue;
-        ++pinned;
-        if (oldest < 0 || s.mem[i].ts < s.mem[static_cast<std::size_t>(oldest)].ts) oldest = static_cast<int>(i);
+        const NpcMemoryEntry& e = s.mem[i];
+        if (!e.pinned) continue;
+        const bool rel = e.type < t.deeds.size() && t.deeds[e.type].releases != kNoType;
+        const NpcMemoryEntry* b = best < 0 ? nullptr : &s.mem[static_cast<std::size_t>(best)];
+        if (!b || (rel && !bestRel) ||
+            (rel == bestRel && (e.ts < b->ts || (e.ts == b->ts && e.seq < b->seq)))) {
+            best = static_cast<int>(i);
+            bestRel = rel;
+        }
     }
-    if (pinned >= kPinnedMax && oldest >= 0) {
-        NpcMemoryEntry& o = s.mem[static_cast<std::size_t>(oldest)];
-        o.pinned = false;
-        o.ts = now;  // fades from now on
+    return best;
+}
+
+void unpin(NpcMemoryEntry& e, std::uint32_t now) {
+    e.pinned = false;
+    e.ts = now;  // fades from now on
+}
+
+// Lets go of the pins `by` releases: memories of its `releases` type at its place from an earlier deed. Returns how
+// many were let go.
+std::uint32_t releaseFor(NpcState& s, const NpcTables& t, const NpcMemoryEntry& by, std::uint32_t now) {
+    const std::uint16_t rel = by.type < t.deeds.size() ? t.deeds[by.type].releases : kNoType;
+    if (rel == kNoType) return 0;
+    std::uint32_t n = 0;
+    for (std::uint32_t i = 0; i < s.memCount; ++i) {
+        NpcMemoryEntry& x = s.mem[i];
+        if (x.pinned && x.type == rel && x.place == by.place && entryKey(x) < entryKey(by)) {
+            unpin(x, now);
+            ++n;
+        }
+    }
+    return n;
+}
+
+void pin(NpcState& s, const NpcTables& t, NpcMemoryEntry& e, std::uint32_t now) {
+    if (e.pinned) return;
+    if (pinCount(s) >= kPinnedMax) {
+        const int drop = pinToDrop(s, t);
+        if (drop >= 0) unpin(s.mem[static_cast<std::size_t>(drop)], now);
     }
     e.pinned = true;
 }
@@ -289,8 +342,12 @@ bool learn(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed
         e->lead = memLead;
         e->leads = memLead < kLeadCount ? static_cast<std::uint8_t>(1u << memLead) : 0;
     }
-    // Pins are for what the NPC lived through or was told outright; hearsay of a pinned deed fades like any other.
-    if (dt.pin && (how == NpcLearn::Victim || how == NpcLearn::Witness)) pin(s, *e, w.now);
+    // Pins and releases act only on a deed learned as the victim or a witness (a reveal learns as a witness); hearsay
+    // of a pinned deed fades like any other and releases nothing. Release first, so a mend arriving with six pins
+    // held frees its break's slot instead of unpinning something else.
+    const bool firstHand = how == NpcLearn::Victim || how == NpcLearn::Witness;
+    if (firstHand) releaseFor(s, t, *e, w.now);
+    if (dt.pin && firstHand) pin(s, t, *e, w.now);
     updateStances(w, t, n);
     return true;
 }
@@ -1048,6 +1105,14 @@ bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* er
             if (d.id.empty() || t.deedIndex(d.id) >= 0) return s.fail(i + 1, "empty or repeated deed_id");
             t.deeds.push_back(d);
         }
+        // `releases` (optional) names any deed in the sheet, so it is read once every row is in.
+        for (std::size_t i = 0; i < s.rows.size(); ++i) {
+            const std::string_view rel = s.get(s.rows[i], "releases");
+            std::uint16_t r = kNoType;
+            if (!deedOrNone(t, rel, r)) return s.fail(i + 1, "unknown releases deed " + std::string(rel));
+            if (r == i) return s.fail(i + 1, "a deed cannot release itself");
+            t.deeds[i].releases = r;
+        }
     }
     if (!src.npcValues.empty()) {
         Sheet s("npc_values.csv", error);
@@ -1500,12 +1565,16 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
             if (m.lead < kLeadCount) m.leads = static_cast<std::uint8_t>(m.leads | (1u << m.lead));
             m.pinned = e.pinned;
         }
-        std::uint32_t pins = 0;
+        // A pinned memory still pinning what it releases (a save from before releases, or edited) lets go of it as
+        // play would have; then more pins than fit let go by the rule a new pin uses (mends first, then the oldest).
         for (std::uint32_t i = 0; i < st.memCount; ++i)
-            if (st.mem[i].pinned && ++pins > kPinnedMax) {
-                st.mem[i].pinned = false;
-                ++rep.clamped;
-            }
+            if (st.mem[i].pinned) rep.clamped += releaseFor(st, t, st.mem[i], s.now);
+        for (std::uint32_t pins = pinCount(st); pins > kPinnedMax; --pins) {
+            const int drop = pinToDrop(st, t);
+            if (drop < 0) break;
+            unpin(st.mem[static_cast<std::size_t>(drop)], s.now);
+            ++rep.clamped;
+        }
         for (const auto& ag : o.aggregates) {
             const int b = t.tagIndex(ag.first);
             if (b < 0) {

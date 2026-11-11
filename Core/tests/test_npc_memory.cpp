@@ -6,6 +6,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <initializer_list>
@@ -1469,5 +1470,402 @@ TEST_CASE("npc memory: not_since takes same_place and nothing else after the sec
                             "\"not_since:deed=deed_a,deed=deed_c,same_place,x\"", "\"not_since:deed=deed_a,deed=deed_a\""}) {
         INFO(bad);
         CHECK_FALSE(importNpcLines(std::string(head) + "l0,npc_a,greet,any,1,0,0," + bad + "\n", f.t, out, &err));
+    }
+}
+
+// ---- Pins: a mend releases its break, full pins drop a mend first, saves, by= with since, places, hearsay ----
+namespace {
+
+constexpr const char* kGateLines = R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
+plain,npc_shop_01,greet,any,1,0,0,
+gate_open,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken>=0;not_since:deed=gate_broken,deed=gate_mended,same_place"
+)";
+
+NpcLineTable linesFor(const Slice& s, const char* csv) {
+    NpcLineTable out;
+    std::string err;
+    const bool ok = importNpcLines(csv, s.t, out, &err);
+    INFO(err);
+    REQUIRE(ok);
+    return out;
+}
+
+int pickIn(Slice& s, const NpcLineTable& lines, std::uint8_t lead = 0) {
+    return npcPickLine(*s.w, s.t, lines, s.npc("npc_shop_01"), lead, NpcLineKind::Greet).line;
+}
+
+std::uint32_t gate(Slice& s, std::uint16_t place, bool mended, std::uint8_t lead = 0) {
+    NpcWhere a = s.where({}, lead);
+    a.place = place;
+    return npcOnGate(*s.w, s.t, s.g, a, s.npc("npc_shop_01"), mended);
+}
+
+const NpcMemoryEntry* memAt(const Slice& s, std::uint16_t type, std::uint16_t place) {
+    const NpcState& st = s.w->npcs[s.npc("npc_shop_01")];
+    for (std::uint32_t i = 0; i < st.memCount; ++i)
+        if (st.mem[i].type == type && st.mem[i].place == place) return &st.mem[i];
+    return nullptr;
+}
+
+bool pinnedAt(const Slice& s, std::uint16_t type, std::uint16_t place) {
+    const NpcMemoryEntry* m = memAt(s, type, place);
+    return m != nullptr && m->pinned;
+}
+
+std::uint32_t shopPins(const Slice& s) {
+    const NpcState& st = s.w->npcs[s.npc("npc_shop_01")];
+    std::uint32_t n = 0;
+    for (std::uint32_t i = 0; i < st.memCount; ++i) n += st.mem[i].pinned ? 1u : 0u;
+    return n;
+}
+
+// A gift (at where()'s place 7), a gate left broken at 40, then five gates at 30..34 broken and mended.
+void giftOpenGateFiveMended(Slice& s) {
+    REQUIRE(npcOnGift(*s.w, s.t, s.g, s.where({}, 0), s.npc("npc_shop_01"), true) != 0u);
+    s.setTime(1, 10.0);
+    REQUIRE(gate(s, 40, false) != 0u);
+    for (int i = 0; i < 5; ++i) {
+        const auto p = static_cast<std::uint16_t>(30 + i);
+        s.setTime(2, 8.0 + i);
+        REQUIRE(gate(s, p, false) != 0u);
+        s.setTime(2, 8.5 + i);
+        REQUIRE(gate(s, p, true) != 0u);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("npc slice: pins past the maximum - a mend is let go first; open breaks and a gift stay; with no mend the oldest goes") {
+    const std::uint16_t gift = 7;
+    {  // A gift, then six gates broken and mended: seven pins wanted, the oldest mend gives way.
+        Slice s;
+        const NpcLineTable lines = linesFor(s, kGateLines);
+        REQUIRE(npcOnGift(*s.w, s.t, s.g, s.where({}, 0), s.npc("npc_shop_01"), true) != 0u);
+        for (int i = 0; i < 6; ++i) {
+            const auto p = static_cast<std::uint16_t>(30 + i);
+            s.setTime(2, 8.0 + i);
+            REQUIRE(gate(s, p, false) != 0u);
+            s.setTime(2, 8.5 + i);
+            REQUIRE(gate(s, p, true) != 0u);
+        }
+        CHECK(s.w->npcs[s.npc("npc_shop_01")].memCount == 13u);
+        CHECK(shopPins(s) == kPinnedMax);
+        CHECK(pinnedAt(s, s.g.giftAccepted, gift));
+        for (int i = 0; i < 6; ++i) {
+            const auto p = static_cast<std::uint16_t>(30 + i);
+            INFO("gate " << p);
+            REQUIRE(memAt(s, s.g.gateBroken, p) != nullptr);  // released, still held
+            CHECK_FALSE(pinnedAt(s, s.g.gateBroken, p));
+            REQUIRE(memAt(s, s.g.gateMended, p) != nullptr);
+            CHECK(pinnedAt(s, s.g.gateMended, p) == (i > 0));
+        }
+        CHECK(pickIn(s, lines) == lines.lineIndex("plain"));  // every gate reads mended
+    }
+    {  // A gift, an open break, then five handled gates: the open break and the gift keep their pins.
+        Slice s;
+        const NpcLineTable lines = linesFor(s, kGateLines);
+        giftOpenGateFiveMended(s);
+        CHECK(shopPins(s) == kPinnedMax);
+        CHECK(pinnedAt(s, s.g.giftAccepted, gift));
+        CHECK(pinnedAt(s, s.g.gateBroken, 40));
+        CHECK_FALSE(pinnedAt(s, s.g.gateMended, 30));
+        for (std::uint16_t p = 31; p < 35; ++p) CHECK(pinnedAt(s, s.g.gateMended, p));
+        CHECK(pickIn(s, lines) == lines.lineIndex("gate_open"));
+        // One more pin, a new break: the next oldest mend goes, never the gift or an open break.
+        s.setTime(3, 9.0);
+        REQUIRE(gate(s, 41, false) != 0u);
+        CHECK(shopPins(s) == kPinnedMax);
+        CHECK_FALSE(pinnedAt(s, s.g.gateMended, 31));
+        CHECK(pinnedAt(s, s.g.giftAccepted, gift));
+        CHECK(pinnedAt(s, s.g.gateBroken, 40));
+        CHECK(pinnedAt(s, s.g.gateBroken, 41));
+    }
+    {  // No mend held: a seventh pin unpins the oldest, here the gift.
+        Slice s;
+        REQUIRE(npcOnGift(*s.w, s.t, s.g, s.where({}, 0), s.npc("npc_shop_01"), true) != 0u);
+        for (int i = 0; i < 6; ++i) {
+            s.setTime(2, 8.0 + i);
+            REQUIRE(gate(s, static_cast<std::uint16_t>(30 + i), false) != 0u);
+        }
+        CHECK(shopPins(s) == kPinnedMax);
+        CHECK_FALSE(pinnedAt(s, s.g.giftAccepted, gift));
+        for (std::uint16_t p = 30; p < 36; ++p) CHECK(pinnedAt(s, s.g.gateBroken, p));
+    }
+}
+
+TEST_CASE("npc slice: a mend releases its break's pin; the gate reads mended while the mend is held; a re-break pins and reopens it") {
+    Slice s;
+    const NpcLineTable lines = linesFor(s, kGateLines);
+    const std::uint16_t shop = s.npc("npc_shop_01");
+    REQUIRE(gate(s, 9, false, 1) != 0u);
+    CHECK(pinnedAt(s, s.g.gateBroken, 9));
+    CHECK(pickIn(s, lines) == lines.lineIndex("gate_open"));
+
+    s.setTime(2, 9.0);
+    REQUIRE(gate(s, 9, true, 0) != 0u);
+    const NpcMemoryEntry* b = memAt(s, s.g.gateBroken, 9);
+    REQUIRE(b != nullptr);
+    CHECK_FALSE(b->pinned);
+    CHECK(b->ts == s.w->now);  // fades from the mend on
+    CHECK(pinnedAt(s, s.g.gateMended, 9));
+    CHECK(pickIn(s, lines) == lines.lineIndex("plain"));
+    const std::int32_t s0 = npcSalience(*s.w, s.t, shop, *b);
+
+    s.setTime(4, 9.0);
+    b = memAt(s, s.g.gateBroken, 9);
+    REQUIRE(b != nullptr);
+    CHECK(npcSalience(*s.w, s.t, shop, *b) < s0);
+    CHECK(pickIn(s, lines) == lines.lineIndex("plain"));
+
+    s.setTime(4, 10.0);  // broken again: one memory, reinforced and pinned again; the gate is open
+    REQUIRE(gate(s, 9, false, 2) != 0u);
+    b = memAt(s, s.g.gateBroken, 9);
+    REQUIRE(b != nullptr);
+    CHECK(b->count == 2u);
+    CHECK(b->pinned);
+    CHECK(pickIn(s, lines) == lines.lineIndex("gate_open"));
+
+    s.setTime(5, 9.0);  // mended again: the reinforced mend releases it again
+    REQUIRE(gate(s, 9, true, 0) != 0u);
+    REQUIRE(memAt(s, s.g.gateMended, 9) != nullptr);
+    CHECK(memAt(s, s.g.gateMended, 9)->count == 2u);
+    CHECK(pinnedAt(s, s.g.gateMended, 9));
+    CHECK_FALSE(pinnedAt(s, s.g.gateBroken, 9));
+    CHECK(pickIn(s, lines) == lines.lineIndex("plain"));
+
+    // A full store drops the released break before the mend that settled it, even when the mend is the weaker.
+    NpcState& st = s.w->npcs[shop];
+    for (std::uint32_t i = 0; i < st.memCount; ++i) {
+        if (st.mem[i].type == s.g.gateBroken) st.mem[i].s0 = 1000;
+        if (st.mem[i].type == s.g.gateMended) {
+            st.mem[i].pinned = false;
+            st.mem[i].s0 = 50;
+        }
+    }
+    for (int i = 0; i <= static_cast<int>(kMemPerNpc); ++i) {
+        NpcWhere p = s.where({"npc_shop_01"}, 0);
+        p.place = static_cast<std::uint16_t>(100 + i);
+        npcOnHelpedPedestrian(*s.w, s.t, s.g, p);
+        if (memAt(s, s.g.gateBroken, 9) == nullptr) break;
+    }
+    CHECK(st.memCount == kMemPerNpc);
+    CHECK(memAt(s, s.g.gateBroken, 9) == nullptr);
+    CHECK(memAt(s, s.g.gateMended, 9) != nullptr);
+    CHECK(pickIn(s, lines) == lines.lineIndex("plain"));
+}
+
+TEST_CASE("npc slice: a gate through save and load; a save with too many pins is clamped as play would have left it") {
+    {
+        Slice s;
+        const NpcLineTable lines = linesFor(s, kGateLines);
+        REQUIRE(gate(s, 9, false, 1) != 0u);
+        s.setTime(2, 9.0);
+        REQUIRE(gate(s, 9, true, 0) != 0u);
+        const NpcMemorySave save = npcCaptureSave(*s.w, s.t, lines);
+        Slice r;
+        const NpcMemoryLoadReport rep = npcApplySave(*r.w, r.t, lines, save);
+        CHECK(rep.formatOk);
+        CHECK(rep.unknownIds.empty());
+        CHECK(rep.clamped == 0u);
+        CHECK(dump(*r.w, r.t, lines) == dump(*s.w, s.t, lines));
+        CHECK_FALSE(pinnedAt(r, r.g.gateBroken, 9));
+        CHECK(pinnedAt(r, r.g.gateMended, 9));
+        CHECK(pickIn(r, lines) == lines.lineIndex("plain"));
+        r.setTime(3, 9.0);
+        REQUIRE(gate(r, 9, false, 1) != 0u);
+        CHECK(pinnedAt(r, r.g.gateBroken, 9));
+        CHECK(pickIn(r, lines) == lines.lineIndex("gate_open"));
+    }
+    {  // The live state is saved, then the save is edited to pin every memory since it was learned (as a save made
+       // before mends released anything would hold it), in reverse order.
+        Slice s;
+        const NpcLineTable lines = linesFor(s, kGateLines);
+        giftOpenGateFiveMended(s);
+        NpcMemorySave save = npcCaptureSave(*s.w, s.t, lines);
+        std::uint32_t forged = 0;
+        for (auto& n : save.npcs) {
+            if (n.id != "npc_shop_01") continue;
+            for (auto& e : n.mem) {
+                if (e.pinned) continue;
+                ++forged;
+                e.pinned = true;
+                e.ts = e.learned;
+            }
+            std::reverse(n.mem.begin(), n.mem.end());
+        }
+        REQUIRE(forged == 6u);  // 12 memories, all pinned in the save
+        Slice r;
+        const NpcMemoryLoadReport rep = npcApplySave(*r.w, r.t, lines, save);
+        CHECK(rep.clamped == 6u);  // five breaks released by their mends, then the oldest mend
+        CHECK(shopPins(r) == kPinnedMax);
+        const NpcState& live = s.w->npcs[s.npc("npc_shop_01")];
+        for (std::uint32_t i = 0; i < live.memCount; ++i) {
+            const NpcMemoryEntry& e = live.mem[i];
+            const NpcMemoryEntry* m = memAt(r, e.type, e.place);
+            REQUIRE(m != nullptr);
+            INFO("type " << e.type << " place " << e.place);
+            CHECK(m->pinned == e.pinned);
+            if (!m->pinned) CHECK(m->ts == save.now);
+        }
+        CHECK(pickIn(r, lines) == lines.lineIndex("gate_open"));  // gate 40 is still open
+    }
+}
+
+TEST_CASE("npc slice: by=self and by=other combine with since and not_since") {
+    Slice s;
+    const NpcLineTable lines = linesFor(s, R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
+plain,npc_shop_01,greet,any,1,0,0,
+open_self,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken,by=self>=0;not_since:deed=gate_broken,deed=gate_mended,same_place;since_deed:gate_broken>=60"
+open_other,npc_shop_01,greet,any,6,0,0,"mem:deed=gate_broken,by=other>=0;not_since:deed=gate_broken,deed=gate_mended"
+mended_self,npc_shop_01,greet,any,5,0,0,"mem:deed=gate_mended,by=self>=0;since_deed:gate_mended<=1440"
+)");
+    const int plain = lines.lineIndex("plain"), openSelf = lines.lineIndex("open_self"),
+              openOther = lines.lineIndex("open_other"), mendedSelf = lines.lineIndex("mended_self");
+    const std::uint32_t m0 = s.w->now;
+    auto at = [&](std::uint32_t minute) { npcCheckpoint(*s.w, s.t, minute, 0); };
+    REQUIRE(gate(s, 9, false, 1) != 0u);
+    CHECK(pickIn(s, lines, 1) == plain);  // the one who did it, not yet an hour on
+    CHECK(pickIn(s, lines, 0) == openOther);
+    CHECK(pickIn(s, lines, 2) == openOther);
+    at(m0 + 59);
+    CHECK(pickIn(s, lines, 1) == plain);
+    at(m0 + 60);
+    CHECK(pickIn(s, lines, 1) == openSelf);
+    CHECK(pickIn(s, lines, 0) == openOther);
+    at(m0 + 120);
+    REQUIRE(gate(s, 9, true, 0) != 0u);
+    CHECK(pickIn(s, lines, 0) == mendedSelf);
+    CHECK(pickIn(s, lines, 1) == plain);  // mended by another lead: no gate line for the one who broke it
+    CHECK(pickIn(s, lines, 2) == plain);
+    at(m0 + 120 + 1440);
+    CHECK(pickIn(s, lines, 0) == mendedSelf);
+    at(m0 + 120 + 1441);
+    CHECK(pickIn(s, lines, 0) == plain);
+}
+
+TEST_CASE("npc slice: same_place works at place 0; a mend at another place does not mend the break") {
+    Slice s;
+    const NpcLineTable lines = linesFor(s, kGateLines);
+    const NpcLineTable anyPlace = linesFor(s, R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
+plain,npc_shop_01,greet,any,1,0,0,
+gate_open_any,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken>=0;not_since:deed=gate_broken,deed=gate_mended"
+)");
+    REQUIRE(gate(s, 0, false) != 0u);
+    CHECK(pinnedAt(s, s.g.gateBroken, 0));
+    CHECK(pickIn(s, lines) == lines.lineIndex("gate_open"));
+
+    s.setTime(1, 10.0);
+    REQUIRE(gate(s, 9, true) != 0u);  // another gate mended: the break at 0 keeps its pin and stays open
+    CHECK(pinnedAt(s, s.g.gateBroken, 0));
+    CHECK(pinnedAt(s, s.g.gateMended, 9));
+    CHECK(pickIn(s, lines) == lines.lineIndex("gate_open"));
+    CHECK(pickIn(s, anyPlace) == anyPlace.lineIndex("plain"));  // without same_place any later mend counts
+
+    s.setTime(1, 11.0);
+    REQUIRE(gate(s, 0, true) != 0u);
+    CHECK_FALSE(pinnedAt(s, s.g.gateBroken, 0));
+    CHECK(pinnedAt(s, s.g.gateMended, 0));
+    CHECK(pinnedAt(s, s.g.gateMended, 9));
+    CHECK(pickIn(s, lines) == lines.lineIndex("plain"));
+}
+
+TEST_CASE("npc slice: a since_deed bound of 1440 minutes holds across midnight to the minute") {
+    Slice s;
+    const NpcLineTable within = linesFor(s, R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
+plain,npc_shop_01,greet,any,1,0,0,
+thanks,npc_shop_01,greet,any,5,0,0,"mem:deed=gate_mended>=0;since_deed:gate_mended<=1440"
+)");
+    const NpcLineTable after = linesFor(s, R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
+plain,npc_shop_01,greet,any,1,0,0,
+late,npc_shop_01,greet,any,5,0,0,"mem:deed=gate_mended>=0;since_deed:gate_mended>=1440"
+)");
+    const std::uint32_t d = 2u * 1440u + 23u * 60u + 31u;  // 23:31 on day 2
+    auto at = [&](std::uint32_t minute) { npcCheckpoint(*s.w, s.t, minute, 0); };
+    at(d);
+    REQUIRE(gate(s, 9, true) != 0u);
+    CHECK(npcDeedAt(*s.w, s.w->nextSeq - 1u)->minute == d);
+    const int thanks = within.lineIndex("thanks"), late = after.lineIndex("late");
+    const int plainW = within.lineIndex("plain"), plainA = after.lineIndex("plain");
+    CHECK(pickIn(s, within) == thanks);
+    CHECK(pickIn(s, after) == plainA);
+    at(3u * 1440u + 29u);  // past midnight
+    CHECK(pickIn(s, within) == thanks);
+    CHECK(pickIn(s, after) == plainA);
+    at(d + 1439u);
+    CHECK(pickIn(s, within) == thanks);
+    CHECK(pickIn(s, after) == plainA);
+    at(d + 1440u);  // both bounds hold on the minute
+    CHECK(pickIn(s, within) == thanks);
+    CHECK(pickIn(s, after) == late);
+    at(d + 1441u);
+    CHECK(pickIn(s, within) == plainW);
+    CHECK(pickIn(s, after) == late);
+}
+
+TEST_CASE("npc slice: hearsay with no known doer matches neither by=self nor by=other; the line without by plays") {
+    constexpr const char* kKnockLines = R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
+plain,npc_shop_01,greet,any,1,0,0,
+knock_self,npc_shop_01,greet,any,5,0,0,"mem:deed=van_knockdown,by=self>=0"
+knock_other,npc_shop_01,greet,any,4,0,0,"mem:deed=van_knockdown,by=other>=0"
+knock_any,npc_shop_01,greet,any,2,0,0,"mem:deed=van_knockdown>=0"
+)";
+    Slice s;
+    const NpcLineTable lines = linesFor(s, kKnockLines);
+    s.setTime(1, 12.0);
+    const std::uint32_t seq = npcOnVanKnockdown(*s.w, s.t, s.g, s.where({}, 0), kNoNpc);  // no important NPC saw it
+    REQUIRE(seq != 0u);
+    CHECK(npcDeedAt(*s.w, seq)->lead == 0u);
+    s.setTime(1, 13.5);  // street hearsay on a busy afternoon
+    const NpcMemoryEntry* m = npcFindMemory(*s.w, s.npc("npc_shop_01"), seq);
+    REQUIRE(m != nullptr);
+    CHECK(m->hops == static_cast<std::uint8_t>(NpcLearn::Hop1));
+    CHECK(m->leads == 0u);
+    CHECK(m->lead == kNoLead);
+    for (const std::uint8_t lead : {std::uint8_t{0}, std::uint8_t{1}, std::uint8_t{2}, kNoLead}) {
+        INFO("lead " << int(lead));
+        CHECK(pickIn(s, lines, lead) == lines.lineIndex("knock_any"));
+    }
+    // Seen first hand, the doer is known.
+    Slice k;
+    const NpcLineTable kl = linesFor(k, kKnockLines);
+    REQUIRE(npcOnVanKnockdown(*k.w, k.t, k.g, k.where({"npc_shop_01"}, 0), kNoNpc) != 0u);
+    CHECK(pickIn(k, kl, 0) == kl.lineIndex("knock_self"));
+    CHECK(pickIn(k, kl, 1) == kl.lineIndex("knock_other"));
+}
+
+TEST_CASE("npc slice: the debug view of an NPC with a full memory") {
+    Slice s;
+    const std::uint16_t shop = s.npc("npc_shop_01");
+    REQUIRE(npcOnGift(*s.w, s.t, s.g, s.where({}, 0), shop, true) != 0u);
+    REQUIRE(gate(s, 9, false, 1) != 0u);
+    for (int i = 0; i < 16; ++i) {
+        NpcWhere p = s.where({"npc_shop_01"}, 2);
+        p.place = static_cast<std::uint16_t>(20 + i);
+        npcOnHelpedPedestrian(*s.w, s.t, s.g, p);
+    }
+    const NpcState& st = s.w->npcs[shop];
+    REQUIRE(st.memCount == kMemPerNpc);  // 18 learned, the two weakest folded away
+    const int help = s.t.tagIndex("help");
+    REQUIRE(help >= 0);
+    CHECK(st.aggregates[static_cast<std::size_t>(help)].count == 2u);
+    NpcDebugView v;
+    const auto a0 = ftcore_test::allocStats();
+    REQUIRE(npcDebugView(*s.w, s.t, shop, v));
+    const auto a1 = ftcore_test::allocStats();
+    CHECK(a1.count == a0.count);
+    CHECK(v.memCount == kMemPerNpc);
+    CHECK(v.topCount == 5u);
+    for (std::size_t i = 1; i < v.topCount; ++i) CHECK(v.top[i - 1].salience >= v.top[i].salience);
+    std::uint32_t stronger = 0;
+    for (std::uint32_t i = 0; i < st.memCount; ++i)
+        if (npcSalience(*s.w, s.t, shop, st.mem[i]) > v.top[4].salience) ++stronger;
+    CHECK(stronger <= 4u);
+    // The two pinned first-hand memories lead the view; the rest are the help the shopkeeper saw.
+    CHECK(v.top[0].pinned);
+    CHECK(v.top[1].pinned);
+    for (std::size_t i = 2; i < v.topCount; ++i) {
+        CHECK_FALSE(v.top[i].pinned);
+        CHECK(v.top[i].type == s.g.helpedPedestrian);
+        CHECK(v.top[i].leads == 0b100u);
     }
 }
