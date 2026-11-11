@@ -261,7 +261,8 @@ bool learn(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed
         e->s0 = static_cast<std::int16_t>(std::min(1000, salienceAt(tu, *e, w.now) + sNew / 2));
         e->ts = w.now;
         e->count = static_cast<std::uint8_t>(std::min(255, e->count + 1));
-        // Hearsay can bring an older deed after a newer one: the entry keeps the latest deed (its seq, minute and doer).
+        // Hearsay can bring an older deed after a newer one: the entry keeps the latest deed's seq and minute, and the
+        // latest doer known (a newer deed heard without its doer leaves the last known one).
         const bool newer = d.minute > e->deedMinute || (d.minute == e->deedMinute && d.seq > e->seq);
         if (newer) {
             e->seq = d.seq;
@@ -428,6 +429,19 @@ std::int64_t latestOf(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t
     return best;
 }
 
+// The latest (deed minute, seq) among memories of a type or tag as one key; 0 when none (seqs start at 1).
+std::uint64_t latestKey(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, int type, int tag) {
+    if (!validNpc(w, n) || tag >= static_cast<int>(kNpcTagMax)) return 0;
+    const NpcState& s = w.npcs[n];
+    std::uint64_t best = 0;
+    for (std::uint32_t i = 0; i < s.memCount; ++i) {
+        const NpcMemoryEntry& e = s.mem[i];
+        const bool match = tag >= 0 ? (typeMask(t, e.type) & (1u << tag)) != 0 : e.type == type;
+        if (match) best = std::max(best, (std::uint64_t{e.deedMinute} << 32) | e.seq);
+    }
+    return best;
+}
+
 // not_since with same_place: true when there is no X at all, or some place holds an X with no Y there at or after it.
 bool notSinceSamePlace(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, int type, int tag, int other) {
     if (!validNpc(w, n) || tag >= static_cast<int>(kNpcTagMax)) return true;
@@ -440,7 +454,8 @@ bool notSinceSamePlace(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_
         anyX = true;
         bool redeemed = false;
         for (std::uint32_t j = 0; j < s.memCount && !redeemed; ++j)
-            redeemed = s.mem[j].type == other && s.mem[j].place == x.place && s.mem[j].deedMinute >= x.deedMinute;
+            redeemed = s.mem[j].type == other && s.mem[j].place == x.place &&
+                       ((std::uint64_t{s.mem[j].deedMinute} << 32) | s.mem[j].seq) > ((std::uint64_t{x.deedMinute} << 32) | x.seq);
         if (!redeemed) return true;
     }
     return !anyX;
@@ -756,9 +771,9 @@ NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTabl
                     ok = notSinceSamePlace(w, t, npc, c.type, c.tag, c.other);
                     break;
                 }
-                const std::int64_t x = latestOf(w, t, npc, c.type, c.tag);
-                const std::int64_t y = latestOf(w, t, npc, c.other, -1);
-                ok = x < 0 || y < x;
+                // Ordered by deed minute, then seq, so two deeds in one minute still have an order.
+                const std::uint64_t x = latestKey(w, t, npc, c.type, c.tag);
+                ok = x == 0 || latestKey(w, t, npc, c.other, -1) < x;
                 break;
             }
             case NpcCondKind::Exp:
@@ -1265,7 +1280,7 @@ bool parseCond(const NpcTables& t, std::string_view s, NpcCond& c) {
             second = second.substr(0, more);
         }
         NpcCond y;
-        if (!memRef(rest.substr(0, comma), c) || !memRef(second, y) || y.type < 0) return false;
+        if (!memRef(rest.substr(0, comma), c) || !memRef(second, y) || y.type < 0 || y.type == c.type) return false;
         c.other = y.type;
         return true;
     }

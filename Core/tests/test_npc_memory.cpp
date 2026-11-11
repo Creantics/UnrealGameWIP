@@ -660,7 +660,10 @@ TEST_CASE("npc memory: line_pick_priority_salience") {
     // Redemption: line_04 needs Warm and no deed_c since the last tag_a deed.
     f.w->npcs[f.npc("npc_a")].axes[kAxisT] = 60;
     f.w->npcs[f.npc("npc_a")].axesTs = f.w->now;
-    CHECK(f.pick("npc_a", NpcLineKind::Talk, 1) < 0);  // deed_c at the same minute as deed_a: redeemed
+    // Same minute: recorded order decides. deed_c came before deed_a, so not redeemed yet.
+    CHECK(f.pick("npc_a", NpcLineKind::Talk, 1) == f.line("line_04"));
+    f.record("deed_c", {"npc_a"});  // a deed_c after it in the same minute redeems
+    CHECK(f.pick("npc_a", NpcLineKind::Talk, 1) < 0);
     // A foreshadow bark only inside the lead time before the event.
     CHECK(f.pick("npc_a", NpcLineKind::Bark) < 0);
     f.at(npcMinute(2, 6.5));
@@ -1040,7 +1043,7 @@ remind_meet,npc_fixer_01,remind,any,3,0,0,exp:exp_meet_dusk=reminding
 greet_delivery_self,npc_shop_01,greet,any,4,0,0,"mem:deed=delivery_made,by=self"
 greet_delivery_other,npc_shop_01,greet,any,3,0,0,"mem:deed=delivery_made,by=other"
 greet_gate_broken,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken;not_since:deed=gate_broken,deed=gate_mended,same_place"
-greet_gate_mended,npc_shop_01,greet,any,6,720,0,mem:deed=gate_mended
+greet_gate_mended,npc_shop_01,greet,any,6,720,0,"mem:deed=gate_mended;since_deed:gate_mended<=1440"
 greet_kid_plain,npc_kid_01,greet,any,1,0,0,
 greet_gift_kept,npc_kid_01,greet,any,6,0,0,"mem:deed=gift_accepted;not_since:deed=gift_accepted,deed=gift_returned"
 greet_gift_back,npc_kid_01,greet,any,6,0,0,"mem:deed=gift_returned;not_since:deed=gift_returned,deed=gift_accepted"
@@ -1383,6 +1386,11 @@ TEST_CASE("npc slice: the debug view shows axes, stances, the strongest memories
     CHECK(v.memCount == 7u);
     CHECK(v.topCount == 5u);
     for (std::size_t i = 1; i < v.topCount; ++i) CHECK(v.top[i - 1].salience >= v.top[i].salience);
+    // Nothing left out is stronger than the weakest shown.
+    std::uint32_t stronger = 0;
+    for (std::uint32_t i = 0; i < s.w->npcs[shop].memCount; ++i)
+        if (npcSalience(*s.w, s.t, shop, s.w->npcs[shop].mem[i]) > v.top[4].salience) ++stronger;
+    CHECK(stronger <= 4u);
     CHECK(v.top[0].type == s.g.gateBroken);  // the strongest: pinned, first hand, magnitude 2
     CHECK(v.top[0].pinned);
     CHECK(v.top[0].leads == 0b010u);
@@ -1422,7 +1430,15 @@ TEST_CASE("npc slice: a gift handed back then taken after all is asked about as 
     CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.line("greet_gate_broken"));
     s.setTime(3, 10.0);
     npcOnGate(*s.w, s.t, s.g, back, shop, true);
-    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) != s.line("greet_gate_broken"));
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.line("greet_gate_mended"));  // both up again
+    s.setTime(5, 9.0);  // the mends are pinned but thanked only within a day
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.line("greet_plain"));
+
+    // Taken and handed back in the same minute: the later one recorded is the one asked about.
+    Slice k;
+    npcOnGift(*k.w, k.t, k.g, k.where({}, 0), kid, true);
+    npcOnGift(*k.w, k.t, k.g, k.where({}, 0), kid, false);
+    CHECK(k.pick("npc_kid_01", NpcLineKind::Greet) == k.line("greet_gift_back"));
 }
 
 TEST_CASE("npc memory: an older deed heard late never rewinds a memory's minute or its latest doer") {
@@ -1450,7 +1466,7 @@ TEST_CASE("npc memory: not_since takes same_place and nothing else after the sec
     REQUIRE(importNpcLines(std::string(head) + "l0,npc_a,greet,any,1,0,0,\"not_since:deed=deed_a,deed=deed_c,same_place\"\n", f.t, out, &err));
     CHECK(out.lines[0].cond[0].value == 1);
     for (const char* bad : {"\"not_since:deed=deed_a,deed=deed_c,place\"", "\"not_since:deed=deed_a,deed=deed_c,\"",
-                            "\"not_since:deed=deed_a,deed=deed_c,same_place,x\""}) {
+                            "\"not_since:deed=deed_a,deed=deed_c,same_place,x\"", "\"not_since:deed=deed_a,deed=deed_a\""}) {
         INFO(bad);
         CHECK_FALSE(importNpcLines(std::string(head) + "l0,npc_a,greet,any,1,0,0," + bad + "\n", f.t, out, &err));
     }

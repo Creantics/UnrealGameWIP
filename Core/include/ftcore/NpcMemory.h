@@ -383,8 +383,10 @@ FTCORE_API bool importNpcTables(const NpcTableSources& src, NpcTables& out, std:
 // uses the tuning's recall bar. `mem:deed=X,by=W` (W: self, other or 0..2) asks who did it: the lead
 // being spoken to, another lead, or one lead (hearsay keeps the doer only at closeness 70 and up,
 // so author a line without `by` beside it). `not_since:deed=X,deed=Y` holds while no Y came after
-// the latest X (and when there is no X, so pair it with mem:deed=X); a Y in the same minute counts
-// as after. `not_since:deed=X,deed=Y,same_place` asks it place by place: it holds while any place's
+// the latest X (and when there is no X, so pair it with mem:deed=X); deeds in the same minute are
+// ordered as they were recorded. Y must be another deed. Y is read from memory, so a Y that is
+// evicted no longer counts: pin the redeeming deed when the line must hold for good (and limit its
+// thanks with since_deed). `not_since:deed=X,deed=Y,same_place` asks it place by place: it holds while any place's
 // X has no Y there after it (one line for several gates). Pins share six slots per NPC; a seventh
 // unpins the oldest, so keep pinned deeds for what must be asked about at every meeting.
 FTCORE_API bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out, std::string* error = nullptr);

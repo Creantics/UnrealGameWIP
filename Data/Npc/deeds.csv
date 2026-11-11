@@ -13,4 +13,4 @@ delivery_made,delivery,1,1,0,0,1
 gift_accepted,gift,2,1,0,1,1
 gift_returned,gift,2,-1,0,1,1
 gate_broken,damage,2,-1,0,1,1
-gate_mended,repair,2,1,0,0,1
+gate_mended,repair,2,1,0,1,1
