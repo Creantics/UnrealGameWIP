@@ -1039,11 +1039,11 @@ greet_knockdown,npc_shop_01,greet,any,5,240,0,mem:deed=van_knockdown
 remind_meet,npc_fixer_01,remind,any,3,0,0,exp:exp_meet_dusk=reminding
 greet_delivery_self,npc_shop_01,greet,any,4,0,0,"mem:deed=delivery_made,by=self"
 greet_delivery_other,npc_shop_01,greet,any,3,0,0,"mem:deed=delivery_made,by=other"
-greet_gate_broken,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken;not_since:deed=gate_broken,deed=gate_mended"
+greet_gate_broken,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken;not_since:deed=gate_broken,deed=gate_mended,same_place"
 greet_gate_mended,npc_shop_01,greet,any,6,720,0,mem:deed=gate_mended
 greet_kid_plain,npc_kid_01,greet,any,1,0,0,
-greet_gift_kept,npc_kid_01,greet,any,6,0,0,mem:deed=gift_accepted
-greet_gift_back,npc_kid_01,greet,any,6,0,0,mem:deed=gift_returned
+greet_gift_kept,npc_kid_01,greet,any,6,0,0,"mem:deed=gift_accepted;not_since:deed=gift_accepted,deed=gift_returned"
+greet_gift_back,npc_kid_01,greet,any,6,0,0,"mem:deed=gift_returned;not_since:deed=gift_returned,deed=gift_accepted"
 )";
 
 struct Slice {
@@ -1359,4 +1359,99 @@ TEST_CASE("npc memory: who did it survives a save; an older save without the doe
     const NpcMemoryEntry* r = npcRecall(*h.w, h.t, h.npc("npc_a"), h.deed("deed_c"), -1);
     REQUIRE(r != nullptr);
     CHECK(r->leads == 0b100u);
+}
+
+TEST_CASE("npc slice: the debug view shows axes, stances, the strongest memories, queued rumours and expectations") {
+    Slice s;
+    const std::uint16_t shop = s.npc("npc_shop_01"), kid = s.npc("npc_kid_01"), fixer = s.npc("npc_fixer_01");
+    NpcDebugView v;
+    CHECK_FALSE(npcDebugView(*s.w, s.t, kNoNpc, v));
+    const std::uint32_t knock = npcOnVanKnockdown(*s.w, s.t, s.g, s.where({"npc_shop_01"}), kNoNpc);
+    npcOnDelivery(*s.w, s.t, s.g, s.where({}, 2), shop);
+    NpcWhere gate = s.where({}, 1);
+    gate.place = 9;
+    npcOnGate(*s.w, s.t, s.g, gate, shop, false);
+    for (int i = 0; i < 4; ++i) {  // more than five memories: only the strongest five show
+        NpcWhere p = s.where({"npc_shop_01"}, 0);
+        p.place = static_cast<std::uint16_t>(20 + i);
+        npcOnHelpedPedestrian(*s.w, s.t, s.g, p);
+    }
+    const auto a0 = ftcore_test::allocStats();
+    REQUIRE(npcDebugView(*s.w, s.t, shop, v));
+    const auto a1 = ftcore_test::allocStats();
+    CHECK(a1.count == a0.count);
+    CHECK(v.memCount == 7u);
+    CHECK(v.topCount == 5u);
+    for (std::size_t i = 1; i < v.topCount; ++i) CHECK(v.top[i - 1].salience >= v.top[i].salience);
+    CHECK(v.top[0].type == s.g.gateBroken);  // the strongest: pinned, first hand, magnitude 2
+    CHECK(v.top[0].pinned);
+    CHECK(v.top[0].leads == 0b010u);
+    for (int a = 0; a < 3; ++a) CHECK(v.axes[static_cast<std::size_t>(a)] == npcAxis(*s.w, s.t, shop, static_cast<NpcAxis>(a)));
+    CHECK(v.offsets[1][0] == npcOffset(*s.w, s.t, shop, 1, kAxisT));
+    CHECK(v.offsets[1][0] < 0);
+    CHECK(v.stance[1] == npcStance(*s.w, s.t, shop, 1));
+    CHECK(v.stance[kLeadCount] == npcStance(*s.w, s.t, shop, kNoLead));
+    CHECK(v.expCount == 0u);
+    // The kid has the knock-down coming by hearsay; the fixer has the dusk meeting.
+    REQUIRE(npcDebugView(*s.w, s.t, kid, v));
+    CHECK(v.rumoursQueued >= 1u);
+    CHECK(v.nextRumourDue == npcDeedAt(*s.w, knock)->minute + 60u);
+    REQUIRE(npcDebugView(*s.w, s.t, fixer, v));
+    REQUIRE(v.expCount == 1u);
+    CHECK(v.exps[0].exp == static_cast<std::uint16_t>(s.t.expIndex("exp_meet_dusk")));
+    CHECK(v.exps[0].state == NpcExpState::Pending);
+}
+
+TEST_CASE("npc slice: a gift handed back then taken after all is asked about as taken; two gates are tracked apart") {
+    Slice s;
+    const std::uint16_t kid = s.npc("npc_kid_01"), shop = s.npc("npc_shop_01");
+    npcOnGift(*s.w, s.t, s.g, s.where({}, 0), kid, false);
+    CHECK(s.pick("npc_kid_01", NpcLineKind::Greet) == s.line("greet_gift_back"));
+    s.setTime(2, 9.0);
+    npcOnGift(*s.w, s.t, s.g, s.where({}, 0), kid, true);
+    CHECK(s.pick("npc_kid_01", NpcLineKind::Greet) == s.line("greet_gift_kept"));
+    CHECK(s.pick("npc_kid_01", NpcLineKind::Greet) == s.line("greet_gift_kept"));
+
+    NpcWhere front = s.where({}, 1), back = s.where({}, 1);
+    front.place = 9;
+    back.place = 10;
+    npcOnGate(*s.w, s.t, s.g, front, shop, false);
+    npcOnGate(*s.w, s.t, s.g, back, shop, false);
+    s.setTime(3, 9.0);
+    npcOnGate(*s.w, s.t, s.g, front, shop, true);  // one mended, the other still down
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.line("greet_gate_broken"));
+    s.setTime(3, 10.0);
+    npcOnGate(*s.w, s.t, s.g, back, shop, true);
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) != s.line("greet_gate_broken"));
+}
+
+TEST_CASE("npc memory: an older deed heard late never rewinds a memory's minute or its latest doer") {
+    Fx f;
+    const std::uint32_t m0 = npcMinute(1, 9.0);
+    f.at(m0);
+    f.record("deed_c", {"npc_a"}, nullptr, 0, 5);  // the rumour reaches npc_b at m0 + 60
+    f.at(m0 + 30);
+    const std::uint32_t seq2 = f.record("deed_c", {"npc_b"}, nullptr, 1, 5);
+    f.at(m0 + 61);
+    const NpcMemoryEntry* m = npcRecall(*f.w, f.t, f.npc("npc_b"), f.deed("deed_c"), -1);
+    REQUIRE(m != nullptr);
+    CHECK(m->count == 2u);
+    CHECK(m->deedMinute == m0 + 30);
+    CHECK(m->seq == seq2);
+    CHECK(m->lead == 1u);
+    CHECK(m->leads == 0b011u);
+}
+
+TEST_CASE("npc memory: not_since takes same_place and nothing else after the second deed") {
+    Fx f;
+    NpcLineTable out;
+    std::string err;
+    const char* head = "line_id,npc_id,kind,lead,priority,cooldown_min,once,cond\n";
+    REQUIRE(importNpcLines(std::string(head) + "l0,npc_a,greet,any,1,0,0,\"not_since:deed=deed_a,deed=deed_c,same_place\"\n", f.t, out, &err));
+    CHECK(out.lines[0].cond[0].value == 1);
+    for (const char* bad : {"\"not_since:deed=deed_a,deed=deed_c,place\"", "\"not_since:deed=deed_a,deed=deed_c,\"",
+                            "\"not_since:deed=deed_a,deed=deed_c,same_place,x\""}) {
+        INFO(bad);
+        CHECK_FALSE(importNpcLines(std::string(head) + "l0,npc_a,greet,any,1,0,0," + bad + "\n", f.t, out, &err));
+    }
 }

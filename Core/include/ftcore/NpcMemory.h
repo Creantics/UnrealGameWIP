@@ -258,6 +258,34 @@ FTCORE_API const NpcDeed* npcDeedAt(const NpcMemoryWorld& w, std::uint32_t seq);
 FTCORE_API std::array<std::int32_t, 3> npcAppraise(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc,
                                                    const NpcDeed& deed, NpcLearn how);
 
+// ---- Debug view (the dev overlay draws this; no allocation) ----
+struct NpcDebugMemory {
+    std::uint16_t type = kNoType;
+    std::int32_t salience = 0;  // S(now)
+    std::uint32_t deedMinute = 0;
+    std::uint8_t hops = 0, count = 0, leads = 0;
+    bool pinned = false;
+};
+struct NpcDebugExp {
+    std::uint16_t exp = 0;  // index into NpcTables::expectations
+    NpcExpState state = NpcExpState::Pending;
+};
+struct NpcDebugView {
+    std::array<std::int32_t, 3> axes{};                        // party, at now
+    std::array<std::array<std::int32_t, 3>, kLeadCount> offsets{};
+    std::array<NpcStance, kLeadCount + 1> stance{};            // per lead, last = party
+    bool dead = false;
+    std::array<NpcDebugMemory, 5> top{};                       // strongest first (S(now), then latest)
+    std::uint8_t topCount = 0;
+    std::uint8_t memCount = 0;
+    std::uint16_t rumoursQueued = 0;                           // waiting to reach this NPC
+    std::uint32_t nextRumourDue = 0;                           // 0 when none
+    std::array<NpcDebugExp, 8> exps{};                         // this NPC's expectations, table order
+    std::uint8_t expCount = 0;
+};
+// False for an unknown NPC. The last line pick and its score are the caller's to keep (npcPickLine returns both).
+FTCORE_API bool npcDebugView(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, NpcDebugView& out);
+
 // ---- Lines (ids and conditions only; text lives in private data) ----
 enum class NpcCondKind : std::uint8_t { None, Mem, StanceGe, StanceLe, StanceEq, SinceGe, SinceLe, NotSince, Exp, EventLe, Dead };
 struct NpcCond {
@@ -265,7 +293,7 @@ struct NpcCond {
     std::int16_t type = -1;  // deed type
     std::int16_t tag = -1;   // tag bit
     std::int16_t other = -1; // NotSince: the redeeming deed type; Exp: exp index; EventLe: event; Dead: npc
-    std::int32_t value = 0;  // salience bar, minutes, stance rank or exp state
+    std::int32_t value = 0;  // salience bar, minutes, stance rank or exp state (NotSince: 1 = same_place)
     std::int8_t by = -1;     // Mem only, who did the deed: -1 anyone, 0..2 that lead, kBySelf, kByOther
 };
 // `by` against the lead being spoken to: the one listening did it, or another lead did.
@@ -355,7 +383,10 @@ FTCORE_API bool importNpcTables(const NpcTableSources& src, NpcTables& out, std:
 // uses the tuning's recall bar. `mem:deed=X,by=W` (W: self, other or 0..2) asks who did it: the lead
 // being spoken to, another lead, or one lead (hearsay keeps the doer only at closeness 70 and up,
 // so author a line without `by` beside it). `not_since:deed=X,deed=Y` holds while no Y came after
-// the latest X (and when there is no X, so pair it with mem:deed=X).
+// the latest X (and when there is no X, so pair it with mem:deed=X); a Y in the same minute counts
+// as after. `not_since:deed=X,deed=Y,same_place` asks it place by place: it holds while any place's
+// X has no Y there after it (one line for several gates). Pins share six slots per NPC; a seventh
+// unpins the oldest, so keep pinned deeds for what must be asked about at every meeting.
 FTCORE_API bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out, std::string* error = nullptr);
 
 // ---- Save (string ids, never indices) ----

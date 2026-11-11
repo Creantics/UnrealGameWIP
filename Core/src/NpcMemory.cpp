@@ -261,11 +261,15 @@ bool learn(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed
         e->s0 = static_cast<std::int16_t>(std::min(1000, salienceAt(tu, *e, w.now) + sNew / 2));
         e->ts = w.now;
         e->count = static_cast<std::uint8_t>(std::min(255, e->count + 1));
-        e->seq = d.seq;
-        e->deedMinute = d.minute;
+        // Hearsay can bring an older deed after a newer one: the entry keeps the latest deed (its seq, minute and doer).
+        const bool newer = d.minute > e->deedMinute || (d.minute == e->deedMinute && d.seq > e->seq);
+        if (newer) {
+            e->seq = d.seq;
+            e->deedMinute = d.minute;
+        }
         e->hops = std::min(e->hops, static_cast<std::uint8_t>(how));
         if (memLead < kLeadCount) {
-            e->lead = memLead;
+            if (newer || e->lead == kNoLead) e->lead = memLead;
             e->leads = static_cast<std::uint8_t>(e->leads | (1u << memLead));
         }
     } else {
@@ -422,6 +426,24 @@ std::int64_t latestOf(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t
         if (match && static_cast<std::int64_t>(e.deedMinute) > best) best = e.deedMinute;
     }
     return best;
+}
+
+// not_since with same_place: true when there is no X at all, or some place holds an X with no Y there at or after it.
+bool notSinceSamePlace(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, int type, int tag, int other) {
+    if (!validNpc(w, n) || tag >= static_cast<int>(kNpcTagMax)) return true;
+    const NpcState& s = w.npcs[n];
+    bool anyX = false;
+    for (std::uint32_t i = 0; i < s.memCount; ++i) {
+        const NpcMemoryEntry& x = s.mem[i];
+        const bool match = tag >= 0 ? (typeMask(t, x.type) & (1u << tag)) != 0 : x.type == type;
+        if (!match) continue;
+        anyX = true;
+        bool redeemed = false;
+        for (std::uint32_t j = 0; j < s.memCount && !redeemed; ++j)
+            redeemed = s.mem[j].type == other && s.mem[j].place == x.place && s.mem[j].deedMinute >= x.deedMinute;
+        if (!redeemed) return true;
+    }
+    return !anyX;
 }
 
 }  // namespace
@@ -641,6 +663,55 @@ std::array<std::int32_t, 3> npcAppraise(const NpcMemoryWorld& w, const NpcTables
     return appraise(w, t, npc, deed, how, 0);
 }
 
+bool npcDebugView(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, NpcDebugView& out) {
+    out = NpcDebugView{};
+    if (!validNpc(w, npc) || npc >= t.npcs.size()) return false;
+    const NpcState& s = w.npcs[npc];
+    for (int a = 0; a < 3; ++a) {
+        out.axes[static_cast<std::size_t>(a)] = npcAxis(w, t, npc, static_cast<NpcAxis>(a));
+        for (std::uint8_t l = 0; l < kLeadCount; ++l)
+            out.offsets[l][static_cast<std::size_t>(a)] = npcOffset(w, t, npc, l, static_cast<NpcAxis>(a));
+    }
+    for (std::uint8_t l = 0; l <= kLeadCount; ++l)
+        out.stance[l] = npcStance(w, t, npc, l == kLeadCount ? kNoLead : l);
+    out.dead = s.dead;
+    out.memCount = s.memCount;
+    // Top five by S(now), the later deed first on ties: a small insertion into the fixed array.
+    const std::uint32_t at = readTime(w, npc);
+    for (std::uint32_t i = 0; i < s.memCount; ++i) {
+        const NpcMemoryEntry& e = s.mem[i];
+        NpcDebugMemory m;
+        m.type = e.type;
+        m.salience = salienceAt(t.tuning, e, at);
+        m.deedMinute = e.deedMinute;
+        m.hops = e.hops;
+        m.count = e.count;
+        m.leads = e.leads;
+        m.pinned = e.pinned;
+        auto better = [](const NpcDebugMemory& x, const NpcDebugMemory& y) {
+            return x.salience != y.salience ? x.salience > y.salience : x.deedMinute > y.deedMinute;
+        };
+        std::size_t pos = out.topCount;
+        while (pos > 0 && better(m, out.top[pos - 1])) --pos;
+        if (pos >= out.top.size()) continue;
+        const std::size_t last = std::min<std::size_t>(out.topCount, out.top.size() - 1);
+        for (std::size_t j = last; j > pos; --j) out.top[j] = out.top[j - 1];
+        out.top[pos] = m;
+        if (out.topCount < out.top.size()) ++out.topCount;
+    }
+    for (std::uint32_t i = 0; i < w.rumourCount; ++i) {
+        const NpcRumour& r = w.rumours[i];
+        if (r.target != npc) continue;
+        ++out.rumoursQueued;
+        if (out.nextRumourDue == 0 || r.due < out.nextRumourDue) out.nextRumourDue = r.due;
+    }
+    for (std::size_t i = 0; i < t.expectations.size() && i < kExpMax && out.expCount < out.exps.size(); ++i) {
+        if (t.expectations[i].npc != npc) continue;
+        out.exps[out.expCount++] = {static_cast<std::uint16_t>(i), w.exp[i]};
+    }
+    return true;
+}
+
 NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable& lines, std::uint16_t npc,
                         std::uint8_t lead, NpcLineKind kind) {
     NpcLinePick best;
@@ -681,6 +752,10 @@ NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTabl
                 break;
             }
             case NpcCondKind::NotSince: {
+                if (c.value == 1) {  // same_place: some place's latest X has no Y there after it
+                    ok = notSinceSamePlace(w, t, npc, c.type, c.tag, c.other);
+                    break;
+                }
                 const std::int64_t x = latestOf(w, t, npc, c.type, c.tag);
                 const std::int64_t y = latestOf(w, t, npc, c.other, -1);
                 ok = x < 0 || y < x;
@@ -1182,8 +1257,15 @@ bool parseCond(const NpcTables& t, std::string_view s, NpcCond& c) {
         const auto comma = rest.find(',');
         if (comma == std::string_view::npos) return false;
         c.kind = NpcCondKind::NotSince;
+        std::string_view second = rest.substr(comma + 1);
+        const auto more = second.find(',');
+        if (more != std::string_view::npos) {
+            if (second.substr(more + 1) != "same_place") return false;
+            c.value = 1;
+            second = second.substr(0, more);
+        }
         NpcCond y;
-        if (!memRef(rest.substr(0, comma), c) || !memRef(rest.substr(comma + 1), y) || y.type < 0) return false;
+        if (!memRef(rest.substr(0, comma), c) || !memRef(second, y) || y.type < 0) return false;
         c.other = y.type;
         return true;
     }
