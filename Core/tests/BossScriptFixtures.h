@@ -1,6 +1,7 @@
 #pragma once
 
-// The first three shared-input bosses as BossScriptDef tables (docs/BOSS_SCRIPT.md). Tuning numbers
+// Test fixtures: the first three shared-input bosses as BossScriptDef tables, kept equal to their data
+// files in Data/Battle/boss_script (docs/BOSS_SCRIPT.md); the game loads the files. Tuning numbers
 // are first guesses for playtests; the structure (phases, the five moves and their counters, the
 // lock and its key, the offer) is the design.
 
@@ -24,7 +25,7 @@ inline BossPhaseDef bossPhase(float enterAt, std::initializer_list<std::uint8_t>
     BossPhaseDef p;
     p.enterAt = enterAt;
     for (const std::uint8_t m : moves)
-        if (p.moveCount < kMaxBossMoves) p.moves[p.moveCount++] = m;
+        if (p.moveCount < kMaxScriptMoves) p.moves[p.moveCount++] = m;
     return p;
 }
 } // namespace detail
@@ -87,14 +88,14 @@ inline BossScriptDef bearerBossDef() {
     return d;
 }
 
-// The lamp eater: an arena of lamps it eats. Phases follow the lamps left (eight, three, one). Its
+// The snuffer: an arena of lamps it eats. Phases follow the lamps left (eight, three, one). Its
 // belly opens only as it swallows, and only while a bystander keeps a lamp lit behind it (the ward:
 // the fight is lost if they fall). The end: the bystander answers its offer, and a blow on the count
 // finishes it.
-inline BossScriptDef lampBossDef() {
+inline BossScriptDef snufferBossDef() {
     using detail::bossMove;
     BossScriptDef d;
-    d.setId("lamp_eater");
+    d.setId("snuffer");
     d.hp = 3200;
     d.gauge = BossGauge::Resource;
     d.resourceMax = 8;

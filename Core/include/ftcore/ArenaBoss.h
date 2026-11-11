@@ -174,6 +174,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
+#include "ftcore/BossScript.h"
 #include "ftcore/WeakPoint.h"
 #include "ftcore/WeakPointLock.h"
 
@@ -591,6 +592,13 @@ FTCORE_API bool importArenaWeakPoints(const JsonValue& v, const std::string& pat
 FTCORE_API bool importArenaWeakPoints(std::string_view json, ArenaWeakPoints& out, std::string* error = nullptr,
                                       std::vector<std::string>* warnings = nullptr);
 
+// Reads a boss script file (Data/Battle/boss_script/<id>.json; docs/BOSS_SCRIPT.md has the format) into
+// `out`, with the same checks as the arena bosses: each range and name is an error with its path, an
+// unknown key a warning, and the def must pass validBossScript. On failure `out` is default and *error
+// lists each problem, one per line.
+FTCORE_API bool importBossScript(std::string_view json, BossScriptDef& out, std::string* error = nullptr,
+                                 std::vector<std::string>* warnings = nullptr);
+
 // ---- The run ---------------------------------------------------------------------------------------
 
 enum class ArenaBossEventType : std::uint8_t { // append only
@@ -680,10 +688,10 @@ public:
                                                   UnlockResult* result = nullptr);
     FTCORE_API const ArenaBossEvents& onDeferred(double t);
     FTCORE_API const ArenaBossEvents& relock(double t);
-    bool weakPointLocked() const { return def_ && def_->weakPoints.locked; }
+    bool weakPointLocked() const { return lock_.locked(); }
     // The lock is open now (always true for a boss whose points are not locked).
-    bool weakPointOpen() const { return !weakPointLocked() || lock_.open(now_); }
-    const WeakPointLock& lock() const { return lock_; }
+    bool weakPointOpen() const { return lock_.open(now_); }
+    const WeakPointLock& lock() const { return lock_.lock(); }
 
     const ArenaBossDef& def() const { return *def_; }
     double now() const { return now_; }
@@ -716,7 +724,7 @@ private:
     CalledStrike strike_{};
     GuestCaller guest_{};
     CritWindow crit_{};
-    WeakPointLock lock_{};
+    LockedPoint lock_{};
     ArenaBossEvents events_{};
     double now_ = 0.0;
     std::uint8_t live_ = kArenaBossNoMove;

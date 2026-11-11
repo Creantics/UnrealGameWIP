@@ -1,14 +1,18 @@
-// The data-driven boss state machine (BossScript.h) and the first three boss tables (BossScriptData.h).
+// The data-driven boss state machine (BossScript.h), its loader (importBossScript) and the boss files in
+// Data/Battle/boss_script against their fixtures (BossScriptFixtures.h).
 
-#include "ftcore/BossScriptData.h"
+#include "BossScriptFixtures.h"
+#include "ftcore/ArenaBoss.h"
 #include "ftcore/StrikeCount.h"
 
 #include "AllocCounter.h"
+#include "TestAssets.h"
 
 #include <doctest/doctest.h>
 
 #include <limits>
 #include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -83,7 +87,7 @@ BossScriptDef smallDef() {
 } // namespace
 
 TEST_CASE("boss script: the three boss tables are valid, five moves each, three phases") {
-    for (const BossScriptDef& d : {gliderBossDef(), bearerBossDef(), lampBossDef()}) {
+    for (const BossScriptDef& d : {gliderBossDef(), bearerBossDef(), snufferBossDef()}) {
         CAPTURE(std::string(d.id()));
         CHECK(validBossScript(d));
         CHECK(d.moveCount == 5);
@@ -217,7 +221,7 @@ TEST_CASE("boss script: the locked weak point: exposed by a counter, opened by a
     BossScript s;
     REQUIRE(s.reset(d, 0.0));
     CHECK(!s.unlocked());
-    BossHit h = s.hit(10, true, 0.5);
+    ScriptHit h = s.hit(10, true, 0.5);
     CHECK(!h.crit);
     CHECK(h.damage == 10);
     CHECK(!s.sharedBlow(0.6)); // not exposed: nothing
@@ -364,8 +368,8 @@ TEST_CASE("boss script: bearer: carry phase is the turn and the shoulder; the fr
     CHECK(s.ended());
 }
 
-TEST_CASE("boss script: lamp eater: phases follow the lamps; relit lamps hold it back; the ward can fall") {
-    const BossScriptDef d = lampBossDef();
+TEST_CASE("boss script: snuffer: phases follow the lamps; relit lamps hold it back; the ward can fall") {
+    const BossScriptDef d = snufferBossDef();
     BossScript s;
     REQUIRE(s.reset(d, 0.0));
     CHECK(s.resource() == 8);
@@ -460,7 +464,7 @@ TEST_CASE("boss script: a fight's ticks and inputs allocate nothing") {
         MESSAGE("alloc hook not linked; skipping");
         return;
     }
-    const BossScriptDef d = lampBossDef();
+    const BossScriptDef d = snufferBossDef();
     BossScript s;
     REQUIRE(s.reset(d, 0.0));
     const auto before = ftcore_test::allocStats().count;
@@ -478,4 +482,184 @@ TEST_CASE("boss script: a fight's ticks and inputs allocate nothing") {
         if (s.phase() == 2) s.answer(t);
     }
     CHECK(ftcore_test::allocStats().count == before);
+}
+
+namespace {
+
+bool sameMove(const BossMoveDef& a, const BossMoveDef& b) {
+    return a.id() == b.id() && a.counter == b.counter && a.tell == b.tell && a.window == b.window &&
+           a.recover == b.recover && a.exposeSeconds == b.exposeSeconds && a.unlocksOnCounter == b.unlocksOnCounter &&
+           a.harmsWard == b.harmsWard && a.needsAnswer == b.needsAnswer && a.needsWatch == b.needsWatch &&
+           a.resourceOnLand == b.resourceOnLand && a.resourceOnCounter == b.resourceOnCounter;
+}
+
+bool sameDef(const BossScriptDef& a, const BossScriptDef& b) {
+    if (a.id() != b.id() || a.hp != b.hp || a.gauge != b.gauge || a.resourceMax != b.resourceMax ||
+        a.resourceStart != b.resourceStart || a.wardLimit != b.wardLimit || a.critMultiplier != b.critMultiplier ||
+        a.restSeconds != b.restSeconds || a.lock.keys != b.lock.keys || a.lock.clause != b.lock.clause ||
+        a.lock.openSeconds != b.lock.openSeconds || a.lock.relockOnDefer != b.lock.relockOnDefer ||
+        a.moveCount != b.moveCount || a.phaseCount != b.phaseCount || !sameMove(a.offer, b.offer))
+        return false;
+    for (std::size_t i = 0; i < a.moveCount; ++i)
+        if (!sameMove(a.moves[i], b.moves[i])) return false;
+    for (std::size_t p = 0; p < a.phaseCount; ++p) {
+        const BossPhaseDef& x = a.phases[p];
+        const BossPhaseDef& y = b.phases[p];
+        if ((p > 0 && x.enterAt != y.enterAt) || x.moveCount != y.moveCount) return false; // phase 0: no enterAt
+        for (std::size_t i = 0; i < x.moveCount; ++i)
+            if (x.moves[i] != y.moves[i]) return false;
+    }
+    return true;
+}
+
+constexpr const char* kSmallBoss = R"({
+  "version": 1, "id": "small", "hp": 100,
+  "lock": { "keys": ["shared_blow"], "openSeconds": 2 },
+  "moves": [ { "id": "jab", "counter": "guard", "tell": 1, "window": 0.5, "recover": 1, "exposeSeconds": 2 } ],
+  "offer": { "id": "offer", "counter": "answer", "tell": 1, "window": 2, "recover": 0, "needsAnswer": true },
+  "phases": [ { "moves": ["jab"] }, { "enterAt": 0.5, "moves": [] } ]
+})";
+
+std::string loadError(const std::string& json) {
+    BossScriptDef d;
+    std::string error;
+    if (importBossScript(json, d, &error)) return "";
+    CHECK(d.moveCount == 0); // default on failure
+    return error;
+}
+
+std::string patchedBoss(std::string_view from, std::string_view to) {
+    std::string s = kSmallBoss;
+    const std::size_t at = s.find(from);
+    REQUIRE(at != std::string::npos);
+    s.replace(at, from.size(), to);
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("boss script data: every file in Data/Battle/boss_script loads without warnings and matches its fixture") {
+    const BossScriptDef fixtures[] = {gliderBossDef(), bearerBossDef(), snufferBossDef()};
+    for (const BossScriptDef& want : fixtures) {
+        const std::string name = std::string(want.id());
+        CAPTURE(name);
+        std::string text;
+        if (!ftcore_test::readProjectData("Battle/boss_script/" + name + ".json", text))
+            FAIL("Data/Battle/boss_script file not found");
+        BossScriptDef got;
+        std::string error;
+        std::vector<std::string> warnings;
+        REQUIRE_MESSAGE(importBossScript(text, got, &error, &warnings), error);
+        CHECK(warnings.empty());
+        CHECK(sameDef(got, want));
+    }
+}
+
+TEST_CASE("boss script data: the loader reports each problem with its path") {
+    BossScriptDef d;
+    std::vector<std::string> warnings;
+    REQUIRE(importBossScript(kSmallBoss, d, nullptr, &warnings));
+    CHECK(warnings.empty());
+    CHECK(std::string(d.id()) == "small");
+    CHECK(d.phaseCount == 2);
+    CHECK(d.phases[1].moveCount == 0);
+    CHECK(d.moves[0].exposeSeconds == doctest::Approx(2.0f));
+
+    CHECK(loadError("not json").find("boss script:") == 0);
+    CHECK(loadError("[]") == "boss script: expected an object");
+    CHECK(loadError(patchedBoss("\"version\": 1", "\"version\": 2")) == "version: expected 1");
+    CHECK(loadError(patchedBoss("\"id\": \"small\"", "\"id\": \"Small\"")).find("id: expected an id") == 0);
+    CHECK(loadError(patchedBoss("\"hp\": 100", "\"hp\": 0")) == "hp: expected an integer in 1..100000");
+    CHECK(loadError(patchedBoss("\"counter\": \"guard\"", "\"counter\": \"parry\"")).find("moves[0].counter:") == 0);
+    CHECK(loadError(patchedBoss("\"tell\": 1, \"window\": 0.5", "\"tell\": 9, \"window\": 0.5")) ==
+          "moves[0].tell: expected a number in 0.2..5");
+    CHECK(loadError(patchedBoss("\"moves\": [\"jab\"]", "\"moves\": [\"kick\"]")) ==
+          "phases[0].moves[0]: expected the id of a move");
+    CHECK(loadError(patchedBoss("\"id\": \"offer\"", "\"id\": \"jab\"")) == "offer.id: a move already has id jab");
+    CHECK(loadError(patchedBoss("{ \"moves\": [\"jab\"] }", "{ \"enterAt\": 1, \"moves\": [\"jab\"] }")) ==
+          "phases[0].enterAt: the first phase starts the fight");
+    CHECK(loadError(patchedBoss("\"lock\": { \"keys\": [\"shared_blow\"]", "\"lock\": { \"keys\": [\"wish\"]")) ==
+          "lock.keys[0]: expected \"shared_blow\", \"read_clause\" or \"refusal\"");
+    CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"resourceMax\": 4,")) ==
+          "resourceMax, resourceStart: only with \"gauge\": \"resource\"");
+    CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"gauge\": \"mana\",")) ==
+          "gauge: expected \"hp\" or \"resource\"");
+    // Counts past the fixed arrays.
+    const std::string jab =
+        R"({ "id": "jab", "counter": "guard", "tell": 1, "window": 0.5, "recover": 1, "exposeSeconds": 2 })";
+    std::string six = "\"moves\": [" + jab;
+    for (int i = 1; i < 6; ++i) six += ", " + jab;
+    six += " ]";
+    CHECK(loadError(patchedBoss("\"moves\": [ " + jab + " ]", six)).find("moves: expected an array of 1..5 moves") == 0);
+    CHECK(loadError(patchedBoss("{ \"enterAt\": 0.5, \"moves\": [] }",
+                                "{ \"enterAt\": 0.5, \"moves\": [] }, { \"enterAt\": 0.4, \"moves\": [] }, "
+                                "{ \"enterAt\": 0.3, \"moves\": [] }")) == "phases: expected an array of 1..3 phases");
+    CHECK(loadError(patchedBoss("{ \"moves\": [\"jab\"] }",
+                                "{ \"moves\": [\"jab\", \"jab\", \"jab\", \"jab\", \"jab\", \"jab\"] }")) ==
+          "phases[0].moves: expected an array of up to 5 move ids");
+    // Malformed entries.
+    CHECK(loadError(patchedBoss("\"moves\": [ " + jab + " ]", "\"moves\": [ " + jab + ", " + jab + " ]")) ==
+          "moves[1].id: duplicate id jab");
+    CHECK(loadError(patchedBoss("\"moves\": [ " + jab + " ]", "\"moves\": [ 1 ]")).find("moves[0]") == 0);
+    CHECK(loadError(patchedBoss("\"moves\": [\"jab\"]", "\"moves\": [3]")) ==
+          "phases[0].moves[0]: expected the id of a move");
+    CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"gauge\": \"resource\", \"resourceMax\": 4, "
+                                                "\"resourceStart\": 5,"))
+              .find("resourceStart: expected at most resourceMax") == 0);
+    // The rules across fields, each with its path.
+    CHECK(loadError(patchedBoss("\"enterAt\": 0.5", "\"enterAt\": 1")) ==
+          "phases[1].enterAt: expected below the start of the phase before");
+    CHECK(loadError(patchedBoss("\"enterAt\": 0.5", "\"enterAt\": 0")) ==
+          "phases[1].enterAt: expected above 0 (a share of hp)");
+    CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"gauge\": \"resource\", \"resourceMax\": 4, "
+                                                "\"resourceStart\": 4,")) ==
+          "phases[1].enterAt: expected a whole number of the resource");
+    CHECK(loadError(patchedBoss("\"moves\": [\"jab\"]", "\"moves\": [\"jab\", \"jab\"]")) ==
+          "phases[0].moves[1]: the move is listed twice");
+    CHECK(loadError(patchedBoss("{ \"moves\": [\"jab\"] }", "{ \"moves\": [] }")) ==
+          "phases[0].moves: only the last phase may be empty");
+    CHECK(loadError(patchedBoss("\"keys\": [\"shared_blow\"]", "\"keys\": [\"refusal\"]")) ==
+          "lock.keys: a move exposes or unlocks the weak point, so expected \"shared_blow\"");
+    CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"wardLimit\": 2,")) ==
+          "wardLimit: no move has harmsWard");
+    CHECK(loadError(patchedBoss("\"needsAnswer\": true", "\"needsAnswer\": true, \"harmsWard\": true")) ==
+          "offer.harmsWard: the offer cannot harm the ward");
+    // Two problems, two lines.
+    const std::string two = loadError(patchedBoss("\"hp\": 100", "\"hp\": 0, \"wardLimit\": 99"));
+    CHECK(two.find('\n') != std::string::npos);
+    // Unknown keys are warnings, not errors.
+    warnings.clear();
+    CHECK(importBossScript(patchedBoss("\"hp\": 100", "\"hp\": 100, \"colour\": 1"), d, nullptr, &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "unknown key: colour");
+}
+
+TEST_CASE("locked point: the one adapter over the lock") {
+    LockedPoint none;
+    none.reset(false, LockTuning{}, 0.0);
+    CHECK(!none.locked());
+    CHECK(none.open(0.0));
+    CHECK(none.offer(kUnlockSharedBlow, 1.0) == UnlockResult::BadKey);
+    CHECK(!none.onDeferred(1.0));
+    CHECK(!none.relock(1.0));
+
+    LockTuning t;
+    t.keys = static_cast<std::uint8_t>(kUnlockSharedBlow | kUnlockRefusal);
+    t.openSeconds = 2.0;
+    LockedPoint p;
+    p.reset(true, t, 0.0);
+    CHECK(p.locked());
+    CHECK(!p.open(0.0));
+    CHECK(LockedPoint::opened(p.offer(kUnlockSharedBlow, 1.0)));
+    CHECK(p.open(1.5));
+    CHECK(p.until() == doctest::Approx(3.0));
+    CHECK(LockedPoint::opened(p.offer(kUnlockRefusal, 1.5))); // refreshed
+    CHECK(!LockedPoint::opened(p.offer(kUnlockReadClause, 1.6)));
+    CHECK(p.relock(1.7));
+    CHECK(!p.open(1.7));
+    CHECK(!p.relock(1.8)); // already shut
+    CHECK(LockedPoint::opened(p.offer(kUnlockSharedBlow, 2.0)));
+    CHECK(p.onDeferred(2.1));
+    CHECK(p.lock().opens() == 2);
+    CHECK(p.lock().deferrals() == 1);
 }

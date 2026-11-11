@@ -544,6 +544,46 @@ void abTable(JsonValue v, const std::string& path, const ArenaBossDef& def, Aren
 
 } // namespace
 
+namespace {
+
+// A "lock" object (the WeakPointLock keys and tuning) at `lk` into `out`.
+void abLock(JsonValue lock, const std::string& lk, LockTuning& out, std::vector<std::string>& errors,
+            std::vector<std::string>* warnings) {
+    abUnknownKeys(lock, lk, {"keys", "clause", "openSeconds", "relockOnDefer"}, {}, warnings);
+    LockTuning t;
+    t.keys = 0;
+    const JsonValue keys = lock["keys"];
+    const std::string kp = abJoin(lk, "keys");
+    if (!keys.isArray() || keys.size() < 1 || keys.size() > 3) {
+        errors.push_back(kp + ": expected 1..3 of \"shared_blow\", \"read_clause\", \"refusal\"");
+    } else {
+        for (std::uint32_t i = 0; i < keys.size(); ++i) {
+            const std::string_view k = keys[i].string();
+            std::uint8_t bit = 0;
+            if (keys[i].isString() && k == "shared_blow") bit = kUnlockSharedBlow;
+            else if (keys[i].isString() && k == "read_clause") bit = kUnlockReadClause;
+            else if (keys[i].isString() && k == "refusal") bit = kUnlockRefusal;
+            if (bit == 0) errors.push_back(abAt(kp, i) + ": expected \"shared_blow\", \"read_clause\" or \"refusal\"");
+            else if (t.keys & bit) errors.push_back(abAt(kp, i) + ": duplicate key " + std::string(k));
+            t.keys = static_cast<std::uint8_t>(t.keys | bit);
+        }
+    }
+    int clause = 0;
+    abInt(lock, "clause", clause, 1, 65535, false, lk, errors);
+    t.clause = static_cast<std::uint16_t>(clause);
+    if ((t.keys & kUnlockReadClause) && t.clause == 0)
+        errors.push_back(abJoin(lk, "clause") + ": required with \"read_clause\"");
+    if (!(t.keys & kUnlockReadClause) && !lock["clause"].isAbsent())
+        errors.push_back(abJoin(lk, "clause") + ": only with \"read_clause\"");
+    abNum(lock, "openSeconds", t.openSeconds, 0.0, 30.0, false, lk, errors);
+    if (t.openSeconds > 0.0 && t.openSeconds < 0.1)
+        errors.push_back(abJoin(lk, "openSeconds") + ": expected 0 or a number in 0.1..30");
+    abBool(lock, "relockOnDefer", t.relockOnDefer, lk, errors);
+    out = t;
+}
+
+} // namespace
+
 bool importArenaWeakPoints(const JsonValue& v, const std::string& path, ArenaWeakPoints& out,
                            std::vector<std::string>& errors, std::vector<std::string>* warnings) {
     out = ArenaWeakPoints{};
@@ -584,38 +624,8 @@ bool importArenaWeakPoints(const JsonValue& v, const std::string& path, ArenaWea
     const JsonValue lock = v["lock"];
     const std::string lk = abJoin(path, "lock");
     if (abObject(lock, lk, false, errors)) {
-        abUnknownKeys(lock, lk, {"keys", "clause", "openSeconds", "relockOnDefer"}, {}, warnings);
-        LockTuning t;
-        t.keys = 0;
-        const JsonValue keys = lock["keys"];
-        const std::string kp = abJoin(lk, "keys");
-        if (!keys.isArray() || keys.size() < 1 || keys.size() > 3) {
-            errors.push_back(kp + ": expected 1..3 of \"shared_blow\", \"read_clause\", \"refusal\"");
-        } else {
-            for (std::uint32_t i = 0; i < keys.size(); ++i) {
-                const std::string_view k = keys[i].string();
-                std::uint8_t bit = 0;
-                if (keys[i].isString() && k == "shared_blow") bit = kUnlockSharedBlow;
-                else if (keys[i].isString() && k == "read_clause") bit = kUnlockReadClause;
-                else if (keys[i].isString() && k == "refusal") bit = kUnlockRefusal;
-                if (bit == 0) errors.push_back(abAt(kp, i) + ": expected \"shared_blow\", \"read_clause\" or \"refusal\"");
-                else if (t.keys & bit) errors.push_back(abAt(kp, i) + ": duplicate key " + std::string(k));
-                t.keys = static_cast<std::uint8_t>(t.keys | bit);
-            }
-        }
-        int clause = 0;
-        abInt(lock, "clause", clause, 1, 65535, false, lk, errors);
-        t.clause = static_cast<std::uint16_t>(clause);
-        if ((t.keys & kUnlockReadClause) && t.clause == 0)
-            errors.push_back(abJoin(lk, "clause") + ": required with \"read_clause\"");
-        if (!(t.keys & kUnlockReadClause) && !lock["clause"].isAbsent())
-            errors.push_back(abJoin(lk, "clause") + ": only with \"read_clause\"");
-        abNum(lock, "openSeconds", t.openSeconds, 0.0, 30.0, false, lk, errors);
-        if (t.openSeconds > 0.0 && t.openSeconds < 0.1)
-            errors.push_back(abJoin(lk, "openSeconds") + ": expected 0 or a number in 0.1..30");
-        abBool(lock, "relockOnDefer", t.relockOnDefer, lk, errors);
+        abLock(lock, lk, out.lock, errors, warnings);
         out.locked = true;
-        out.lock = t;
     }
     return errors.size() == before;
 }
@@ -756,8 +766,7 @@ void ArenaBossRun::begin(const ArenaBossDef& def, double now) {
     strike_.update(now_);
     guest_.reset(def.bpm, def.guestCall);
     crit_.reset(def.weakPoints);
-    lock_.reset(def.weakPoints.locked ? def.weakPoints.lock : LockTuning{});
-    lock_.relock(now_);
+    lock_.reset(def.weakPoints.locked, def.weakPoints.lock, now_);
     events_.clear();
     live_ = kArenaBossNoMove;
     liveStart_ = now_;
@@ -940,10 +949,9 @@ const ArenaBossEvents& ArenaBossRun::onHit(Vec2 from, Vec2 pos, Vec2 facing, dou
 const ArenaBossEvents& ArenaBossRun::offerUnlock(UnlockKey key, double t, std::uint16_t clause, UnlockResult* result) {
     events_.clear();
     advance(t);
-    UnlockResult u = UnlockResult::BadKey;
-    if (weakPointLocked()) u = lock_.offer(key, now_, clause);
+    const UnlockResult u = lock_.offer(key, now_, clause);
     if (result) *result = u;
-    if (u != UnlockResult::Unlocked && u != UnlockResult::Refreshed) return events_;
+    if (!LockedPoint::opened(u)) return events_;
     const double until = lock_.until();
     // The window stays open at least as long as the lock (a longer opening already running is kept).
     const double end = critWasOpen_ && crit_.closesAt() > until ? crit_.closesAt() : until;
@@ -974,17 +982,194 @@ void ArenaBossRun::shutLock() {
 const ArenaBossEvents& ArenaBossRun::onDeferred(double t) {
     events_.clear();
     advance(t);
-    if (weakPointLocked() && lock_.onDeferred(now_)) shutLock();
+    if (lock_.onDeferred(now_)) shutLock();
     return events_;
 }
 
 const ArenaBossEvents& ArenaBossRun::relock(double t) {
     events_.clear();
     advance(t);
-    if (!weakPointLocked() || !lock_.open(now_)) return events_;
-    lock_.relock(now_);
-    shutLock();
+    if (lock_.relock(now_)) shutLock();
     return events_;
+}
+
+namespace {
+
+bool bsCounter(std::string_view s, BossCounter& out) {
+    static constexpr std::array<std::string_view, kBossCounterKinds> kNames{
+        "guard", "dodge", "strike", "strike_on_count", "take_half",
+        "listen", "get_clear", "recover", "carry_together", "answer"};
+    for (std::size_t i = 0; i < kNames.size(); ++i)
+        if (s == kNames[i]) {
+            out = static_cast<BossCounter>(i);
+            return true;
+        }
+    return false;
+}
+
+void bsMove(JsonValue m, const std::string& path, float maxWindow, BossMoveDef& out, std::vector<std::string>& errors,
+            std::vector<std::string>* warnings) {
+    if (!abObject(m, path, true, errors)) return;
+    abUnknownKeys(m, path,
+                  {"id", "counter", "tell", "window", "recover", "exposeSeconds", "unlocksOnCounter", "harmsWard",
+                   "needsAnswer", "needsWatch", "resourceOnLand", "resourceOnCounter"},
+                  {}, warnings);
+    const JsonValue id = m["id"];
+    if (!id.isString() || !abId(id.string(), kBossIdCapacity - 1))
+        errors.push_back(abJoin(path, "id") + ": expected an id of a-z, 0-9 and _, up to " +
+                         std::to_string(kBossIdCapacity - 1) + " characters");
+    else
+        out.setId(id.string());
+    const JsonValue c = m["counter"];
+    if (!c.isString() || !bsCounter(c.string(), out.counter))
+        errors.push_back(abJoin(path, "counter") +
+                         ": expected guard, dodge, strike, strike_on_count, take_half, listen, get_clear, recover, "
+                         "carry_together or answer");
+    abNum(m, "tell", out.tell, 0.2, 5.0, true, path, errors);
+    abNum(m, "window", out.window, 0.1, maxWindow, true, path, errors);
+    abNum(m, "recover", out.recover, 0.0, 5.0, true, path, errors);
+    abNum(m, "exposeSeconds", out.exposeSeconds, 0.0, 10.0, false, path, errors);
+    abBool(m, "unlocksOnCounter", out.unlocksOnCounter, path, errors);
+    abBool(m, "harmsWard", out.harmsWard, path, errors);
+    abBool(m, "needsAnswer", out.needsAnswer, path, errors);
+    abBool(m, "needsWatch", out.needsWatch, path, errors);
+    int land = 0;
+    int counter = 0;
+    abInt(m, "resourceOnLand", land, -8, 8, false, path, errors);
+    abInt(m, "resourceOnCounter", counter, -8, 8, false, path, errors);
+    out.resourceOnLand = static_cast<std::int8_t>(land);
+    out.resourceOnCounter = static_cast<std::int8_t>(counter);
+}
+
+} // namespace
+
+bool importBossScript(std::string_view json, BossScriptDef& out, std::string* error,
+                      std::vector<std::string>* warnings) {
+    out = BossScriptDef{};
+    std::vector<std::string> errors;
+    JsonDocument doc;
+    std::string parseError;
+    if (!doc.parse(json, &parseError)) {
+        errors.push_back("boss script: " + parseError);
+    } else if (!doc.root().isObject()) {
+        errors.push_back("boss script: expected an object");
+    } else {
+        const JsonValue root = doc.root();
+        if (const JsonValue v = root["version"]; !v.isAbsent() && !(v.isInteger() && v.integer() == 1))
+            errors.push_back("version: expected 1");
+        abUnknownKeys(root, "",
+                      {"version", "id", "hp", "gauge", "resourceMax", "resourceStart", "wardLimit", "critMultiplier",
+                       "restSeconds", "lock", "moves", "offer", "phases"},
+                      {}, warnings);
+        const JsonValue id = root["id"];
+        if (!id.isString() || !abId(id.string(), kBossIdCapacity - 1))
+            errors.push_back("id: expected an id of a-z, 0-9 and _, up to " + std::to_string(kBossIdCapacity - 1) +
+                             " characters");
+        else
+            out.setId(id.string());
+        abInt(root, "hp", out.hp, 1, 100000, true, "", errors);
+        const JsonValue gauge = root["gauge"];
+        if (gauge.isAbsent() || (gauge.isString() && gauge.string() == "hp")) {
+            out.gauge = BossGauge::Hp;
+        } else if (gauge.isString() && gauge.string() == "resource") {
+            out.gauge = BossGauge::Resource;
+            abInt(root, "resourceMax", out.resourceMax, 1, kMaxBossResource, true, "", errors);
+            abInt(root, "resourceStart", out.resourceStart, 1, kMaxBossResource, true, "", errors);
+            if (out.resourceStart > out.resourceMax) errors.push_back("resourceStart: expected at most resourceMax");
+        } else {
+            errors.push_back("gauge: expected \"hp\" or \"resource\"");
+        }
+        if (out.gauge == BossGauge::Hp && (root.has("resourceMax") || root.has("resourceStart")))
+            errors.push_back("resourceMax, resourceStart: only with \"gauge\": \"resource\"");
+        abInt(root, "wardLimit", out.wardLimit, 0, 10, false, "", errors);
+        abNum(root, "critMultiplier", out.critMultiplier, 1.0, 4.0, false, "", errors);
+        abNum(root, "restSeconds", out.restSeconds, 0.0, 10.0, false, "", errors);
+        if (const JsonValue lock = root["lock"]; abObject(lock, "lock", true, errors))
+            abLock(lock, "lock", out.lock, errors, warnings);
+
+        const JsonValue moves = root["moves"];
+        if (!moves.isArray() || moves.size() < 1 || moves.size() > kMaxScriptMoves) {
+            errors.push_back("moves: expected an array of 1.." + std::to_string(kMaxScriptMoves) + " moves");
+        } else {
+            for (std::uint32_t i = 0; i < moves.size(); ++i) {
+                bsMove(moves[i], abAt("moves", i), 10.0f, out.moves[out.moveCount], errors, warnings);
+                for (std::uint8_t j = 0; j < out.moveCount; ++j)
+                    if (!out.moves[i].id().empty() && out.moves[j].id() == out.moves[i].id())
+                        errors.push_back(abAt("moves", i) + ".id: duplicate id " + std::string(out.moves[i].id()));
+                ++out.moveCount;
+            }
+        }
+        bsMove(root["offer"], "offer", 30.0f, out.offer, errors, warnings);
+        if (!out.offer.id().empty() && out.find(out.offer.id()) != kBossNoMove)
+            errors.push_back("offer.id: a move already has id " + std::string(out.offer.id()));
+
+        const JsonValue phases = root["phases"];
+        if (!phases.isArray() || phases.size() < 1 || phases.size() > kMaxScriptPhases) {
+            errors.push_back("phases: expected an array of 1.." + std::to_string(kMaxScriptPhases) + " phases");
+        } else {
+            for (std::uint32_t i = 0; i < phases.size(); ++i) {
+                const JsonValue p = phases[i];
+                const std::string pp = abAt("phases", i);
+                BossPhaseDef& ph = out.phases[out.phaseCount++];
+                if (!abObject(p, pp, true, errors)) continue;
+                abUnknownKeys(p, pp, {"enterAt", "moves"}, {}, warnings);
+                if (i == 0 && p.has("enterAt")) errors.push_back(pp + ".enterAt: the first phase starts the fight");
+                if (i > 0) abNum(p, "enterAt", ph.enterAt, 0.0, static_cast<double>(kMaxBossResource), true, pp, errors);
+                const JsonValue list = p["moves"];
+                const std::string mp = pp + ".moves";
+                if (!list.isArray() || list.size() > kMaxScriptMoves) {
+                    errors.push_back(mp + ": expected an array of up to " + std::to_string(kMaxScriptMoves) + " move ids");
+                    continue;
+                }
+                for (std::uint32_t k = 0; k < list.size(); ++k) {
+                    const std::uint8_t m = list[k].isString() ? out.find(list[k].string()) : kBossNoMove;
+                    if (m == kBossNoMove) {
+                        errors.push_back(abAt(mp, k) + ": expected the id of a move");
+                        continue;
+                    }
+                    for (std::uint8_t j = 0; j < ph.moveCount; ++j)
+                        if (ph.moves[j] == m) errors.push_back(abAt(mp, k) + ": the move is listed twice");
+                    ph.moves[ph.moveCount++] = m;
+                }
+                if (ph.moveCount == 0 && list.size() == 0 && i + 1 < phases.size())
+                    errors.push_back(mp + ": only the last phase may be empty");
+                if (i == 0 || !p.has("enterAt")) continue;
+                const float prev = i == 1 ? (out.gauge == BossGauge::Hp ? 1.0f : static_cast<float>(out.resourceStart))
+                                          : out.phases[i - 1].enterAt;
+                if (!(ph.enterAt < prev))
+                    errors.push_back(pp + ".enterAt: expected below the start of the phase before");
+                else if (out.gauge == BossGauge::Hp && !(ph.enterAt > 0.0f))
+                    errors.push_back(pp + ".enterAt: expected above 0 (a share of hp)");
+                else if (out.gauge == BossGauge::Resource && ph.enterAt != std::floor(ph.enterAt))
+                    errors.push_back(pp + ".enterAt: expected a whole number of the resource");
+            }
+        }
+        // The rules across fields, each with its path; validBossScript stays the backstop.
+        if (errors.empty()) {
+            bool needsShared = out.offer.exposeSeconds > 0.0f || out.offer.unlocksOnCounter;
+            bool harms = false;
+            for (std::uint8_t i = 0; i < out.moveCount; ++i) {
+                needsShared = needsShared || out.moves[i].exposeSeconds > 0.0f || out.moves[i].unlocksOnCounter;
+                harms = harms || out.moves[i].harmsWard;
+            }
+            if (needsShared && (out.lock.keys & kUnlockSharedBlow) == 0)
+                errors.push_back("lock.keys: a move exposes or unlocks the weak point, so expected \"shared_blow\"");
+            if (out.wardLimit > 0 && !harms) errors.push_back("wardLimit: no move has harmsWard");
+            if (out.offer.harmsWard) errors.push_back("offer.harmsWard: the offer cannot harm the ward");
+        }
+        if (errors.empty() && !validBossScript(out))
+            errors.push_back("boss script: breaks a rule across fields (see validBossScript in BossScript.h)");
+    }
+    if (errors.empty()) return true;
+    out = BossScriptDef{};
+    if (error) {
+        error->clear();
+        for (const std::string& e : errors) {
+            if (!error->empty()) *error += '\n';
+            *error += e;
+        }
+    }
+    return false;
 }
 
 } // namespace ftcore

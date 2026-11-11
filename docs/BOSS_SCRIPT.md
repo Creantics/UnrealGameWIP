@@ -1,8 +1,13 @@
-# Boss script (`BossScript`, `BossScriptData`)
+# Boss script (`BossScript`, `importBossScript`)
 
-One data-driven state machine for the shared-input bosses, plus the first three boss tables. These
-are header-only in `Core/include/ftcore/`, with no allocation after `reset`. Tests are in
+One data-driven state machine for the shared-input bosses (`Core/include/ftcore/BossScript.h`, header-only, no
+allocation after `reset`) and its loader (`importBossScript` in `ArenaBoss.h`, with the arena bosses' checks).
+Each boss is one file in `Data/Battle/boss_script/<id>.json`. The same tables as C++
+(`Core/tests/BossScriptFixtures.h`) are test fixtures only; a test keeps them equal to the files. Tests are in
 `Core/tests/test_boss_script.cpp`.
+
+The weak point goes through `LockedPoint` (`WeakPointLock.h`), the one adapter both `BossScript` and
+`ArenaBossRun` use over the lock.
 
 ## Rules
 
@@ -29,12 +34,33 @@ are header-only in `Core/include/ftcore/`, with no allocation after `reset`. Tes
 * **Ward (optional):** someone the party keeps alive. Each landed `harmsWard` move harms it. At `wardLimit` the fight is lost (`Lost`).
 * **Time:** times follow `CombatInputs.h`. A late frame plays every step it passed, in order. One call plays at most 4096 steps, and the rest play on the next call.
 
-## The three tables
+## The file
+
+```json
+{ "version": 1, "id": "glider", "hp": 3000, "gauge": "hp", "critMultiplier": 2.5, "restSeconds": 1.2,
+  "lock": { "keys": ["shared_blow"], "openSeconds": 3 },
+  "moves": [ { "id": "swoop", "counter": "guard", "tell": 1.4, "window": 0.4, "recover": 1, "exposeSeconds": 2.5 } ],
+  "offer": { "id": "offer", "counter": "answer", "tell": 2, "window": 6, "recover": 1, "needsAnswer": true },
+  "phases": [ { "moves": ["swoop"] }, { "enterAt": 0.5, "moves": ["swoop"] } ] }
+```
+
+* `gauge`: `"hp"` (default) or `"resource"` with `resourceMax` and `resourceStart` (1..32).
+* `wardLimit` 0..10, `critMultiplier` 1..4, `restSeconds` 0..10. `lock` is required: the arena boss lock format.
+* A move: `id`, `counter` (`guard`, `dodge`, `strike`, `strike_on_count`, `take_half`, `listen`, `get_clear`,
+  `recover`, `carry_together`, `answer`), `tell` 0.2..5, `window` 0.1..10 (the offer: ..30), `recover` 0..5;
+  optional `exposeSeconds`, `unlocksOnCounter`, `harmsWard`, `needsAnswer`, `needsWatch`, `resourceOnLand`,
+  `resourceOnCounter` (-8..8).
+* `phases`: 1..3; the first has no `enterAt`; `moves` lists move ids.
+* Across fields: each phase starts below the one before (hp: a share above 0; resource: a whole count), a move
+  is listed once per phase, only the last phase may be empty, exposing or unlocking needs the `shared_blow` key,
+  `wardLimit` needs a `harmsWard` move, and the offer never harms the ward. Each error names its path.
+
+## The three bosses
 
 | id | gauge | moves (counter) | phases | weak point | end |
 |---|---|---|---|---|---|
 | `glider` | hp | swoop (guard, exposes), tail_lash (dodge), lull (on count), grab (take half), updraft (recover) | 1.0 / 0.5 / 0.1 | a guarded swoop pins it; a shared blow opens it | the offer, answered, then `Answer` |
 | `bearer` | hp | turn (strike), shoulder_shift (strike, exposes), set_down (get clear), two_knocks (on count), free_end (carry together, unlocks) | 1.0 / 0.6 / 0.25 | two fighters take the free end together | `carry_home`, carried together |
-| `lamp_eater` | lamps 8 | snuff (strike; eats a lamp), swallow (on count, unlocks), dark_step (listen; a lamp dies), glass_breath (guard), reach (take half; harms the ward) | 8 / 3 / 1 lamps | struck on the count as it swallows, only while watched (`setWatched`) | the offer, answered, then a blow on the count |
+| `snuffer` | lamps 8 | snuff (strike; eats a lamp), swallow (on count, unlocks), dark_step (listen; a lamp dies), glass_breath (guard), reach (take half; harms the ward) | 8 / 3 / 1 lamps | struck on the count as it swallows, only while watched (`setWatched`) | the offer, answered, then a blow on the count |
 
 The tuning numbers are first guesses for playtests.

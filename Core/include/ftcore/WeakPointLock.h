@@ -118,4 +118,36 @@ private:
     int deferrals_ = 0;
 };
 
+// The one adapter every boss machine uses over a WeakPointLock (ArenaBossRun, BossScript): a boss whose
+// weak point is not locked is always open, and offers to it are BadKey.
+class LockedPoint {
+public:
+    // Starts shut at t (or, not locked, always open).
+    void reset(bool locked, const LockTuning& tuning, double t) {
+        locked_ = locked;
+        lock_.reset(locked ? tuning : LockTuning{});
+        lock_.relock(t);
+    }
+    bool locked() const { return locked_; }
+    bool open(double t) const { return !locked_ || lock_.open(t); }
+    UnlockResult offer(UnlockKey key, double t, std::uint16_t clause = 0) {
+        return locked_ ? lock_.offer(key, t, clause) : UnlockResult::BadKey;
+    }
+    static bool opened(UnlockResult u) { return u == UnlockResult::Unlocked || u == UnlockResult::Refreshed; }
+    // True when the deferral shut an open lock.
+    bool onDeferred(double t) { return locked_ && lock_.onDeferred(t); }
+    // True when it shut an open lock.
+    bool relock(double t) {
+        if (!locked_ || !lock_.open(t)) return false;
+        lock_.relock(t);
+        return true;
+    }
+    double until() const { return lock_.until(); }
+    const WeakPointLock& lock() const { return lock_; }
+
+private:
+    bool locked_ = false;
+    WeakPointLock lock_{};
+};
+
 } // namespace ftcore

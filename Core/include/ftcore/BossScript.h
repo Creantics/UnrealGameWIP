@@ -3,13 +3,13 @@
 // A data-driven boss state machine for the shared-input bosses (docs/BOSS_SCRIPT.md). One machine,
 // many bosses: each boss is a BossScriptDef (BossScriptData.h holds the first three).
 //
-// * Moves (at most kMaxBossMoves): each is a tell, a window and a recovery. The host reads the Tell
+// * Moves (at most kMaxScriptMoves): each is a tell, a window and a recovery. The host reads the Tell
 //   event to play the move's tell; the counter is accepted only inside the window. A window that runs
 //   out uncountered lands (Landed: the host applies the move's damage). A countered move goes straight
 //   to its recovery. Counters a lone fighter cannot make (StrikeOnCount, TakeHalf, CarryTogether) need
 //   the shared input (`onCount`: StrikeCount's OnCount, or a hit a lead took half of); CarryTogether
 //   needs two different fighters in the same window.
-// * Phases (at most kMaxBossPhases): each has its own move rotation, played in order and repeated. A
+// * Phases (at most kMaxScriptPhases): each has its own move rotation, played in order and repeated. A
 //   phase starts when the boss's gauge falls to its `enterAt`: the hp share (Hp gauge) or a resource
 //   count (Resource gauge, e.g. something in the arena the boss consumes). Phases never go back.
 // * The locked weak point (WeakPointLock.h). Countering a move with exposeSeconds exposes the point
@@ -38,8 +38,8 @@
 
 namespace ftcore {
 
-inline constexpr std::size_t kMaxBossMoves = 5;
-inline constexpr std::size_t kMaxBossPhases = 3;
+inline constexpr std::size_t kMaxScriptMoves = 5;
+inline constexpr std::size_t kMaxScriptPhases = 3;
 inline constexpr std::size_t kBossIdCapacity = 16; // bytes, terminator included
 inline constexpr std::uint8_t kBossNoMove = 0xFF;
 inline constexpr std::uint8_t kBossOffer = 0xFE; // the offer, in events and current()
@@ -88,7 +88,7 @@ struct BossMoveDef {
 
 struct BossPhaseDef {
     float enterAt = 1.0f; // phase 0: ignored; later: the gauge value at or below which it starts
-    std::array<std::uint8_t, kMaxBossMoves> moves{};
+    std::array<std::uint8_t, kMaxScriptMoves> moves{};
     std::uint8_t moveCount = 0;
 };
 
@@ -102,10 +102,10 @@ struct BossScriptDef {
     float critMultiplier = 2.0f; // 1..4
     float restSeconds = 1.0f;   // between moves, 0..10
     LockTuning lock{};
-    std::array<BossMoveDef, kMaxBossMoves> moves{};
+    std::array<BossMoveDef, kMaxScriptMoves> moves{};
     std::uint8_t moveCount = 0;
     BossMoveDef offer{};
-    std::array<BossPhaseDef, kMaxBossPhases> phases{};
+    std::array<BossPhaseDef, kMaxScriptPhases> phases{};
     std::uint8_t phaseCount = 0;
 
     std::string_view id() const { return std::string_view(idChars.data()); }
@@ -139,7 +139,7 @@ inline bool bossMoveOk(const BossMoveDef& m, float maxWindow) {
 } // namespace detail
 
 // Every range above, plus: unique move ids (the offer's too); each phase's moves known and not
-// repeated, 1..kMaxBossMoves of them (the last phase may have none: it plays the offer alone); later
+// repeated, 1..kMaxScriptMoves of them (the last phase may have none: it plays the offer alone); later
 // phases' enterAt strictly falling (Hp: in (0, 1); Resource: whole numbers in [0, resourceStart)); a
 // lock that takes the shared blow when any move exposes or unlocks it; a ward only with a move that
 // harms it.
@@ -153,7 +153,7 @@ inline bool validBossScript(const BossScriptDef& d) {
         (d.resourceMax < 1 || d.resourceMax > kMaxBossResource || d.resourceStart < 1 || d.resourceStart > d.resourceMax))
         return false;
     if (d.wardLimit < 0 || d.wardLimit > 10 || !validLockTuning(d.lock)) return false;
-    if (d.moveCount < 1 || d.moveCount > kMaxBossMoves || d.phaseCount < 1 || d.phaseCount > kMaxBossPhases)
+    if (d.moveCount < 1 || d.moveCount > kMaxScriptMoves || d.phaseCount < 1 || d.phaseCount > kMaxScriptPhases)
         return false;
     bool needsShared = false;
     bool harms = false;
@@ -172,7 +172,7 @@ inline bool validBossScript(const BossScriptDef& d) {
     for (std::size_t p = 0; p < d.phaseCount; ++p) {
         const BossPhaseDef& ph = d.phases[p];
         const bool last = p + 1 == d.phaseCount;
-        if (ph.moveCount > kMaxBossMoves || (ph.moveCount == 0 && !last)) return false;
+        if (ph.moveCount > kMaxScriptMoves || (ph.moveCount == 0 && !last)) return false;
         for (std::size_t i = 0; i < ph.moveCount; ++i) {
             if (ph.moves[i] >= d.moveCount) return false;
             for (std::size_t j = 0; j < i; ++j)
@@ -217,10 +217,10 @@ struct BossEvent {
     double until = 0.0;
 };
 
-inline constexpr std::size_t kMaxBossEvents = 32;
+inline constexpr std::size_t kMaxScriptEvents = 32;
 
 struct BossEvents {
-    std::array<BossEvent, kMaxBossEvents> items{};
+    std::array<BossEvent, kMaxScriptEvents> items{};
     std::size_t count = 0;
     std::size_t dropped = 0;
 
@@ -231,7 +231,7 @@ struct BossEvents {
     const BossEvent& operator[](std::size_t i) const { return items[i]; }
     void clear() { count = dropped = 0; }
     void push(const BossEvent& e) {
-        if (count < kMaxBossEvents) items[count++] = e;
+        if (count < kMaxScriptEvents) items[count++] = e;
         else ++dropped;
     }
 };
@@ -248,7 +248,7 @@ enum class BossInput : std::uint8_t { // append only
     Over,         // the fight has ended or been lost
 };
 
-struct BossHit {
+struct ScriptHit {
     int damage = 0;
     bool crit = false;
 };
@@ -276,8 +276,7 @@ public:
         watched_ = true;
         exposedOpen_ = false;
         exposedUntil_ = 0.0;
-        lock_.reset(valid_ ? def.lock : LockTuning{});
-        lock_.relock(now_);
+        lock_.reset(valid_, def.lock, now_);
         return valid_;
     }
 
@@ -327,8 +326,8 @@ public:
 
     // A blow of `amount` (0 or more) on the boss; on the weak point it crits while the point is unlocked.
     // Hp never falls below 1: the fight ends only on the answered offer.
-    BossHit hit(int amount, bool onWeakPoint, double t) {
-        BossHit r;
+    ScriptHit hit(int amount, bool onWeakPoint, double t) {
+        ScriptHit r;
         if (!valid_) return r;
         advance(t);
         if (over() || amount <= 0) return r;
@@ -392,18 +391,18 @@ public:
     bool watched() const { return watched_; }
     bool exposed() const { return exposedOpen_; }
     double exposedUntil() const { return exposedUntil_; }
-    bool unlocked() const { return lock_.open(now_); }
-    const WeakPointLock& lock() const { return lock_; }
+    bool unlocked() const { return valid_ && lock_.open(now_); }
+    const WeakPointLock& lock() const { return lock_.lock(); }
     double now() const { return now_; }
     // When the current step ends (the tell, the window, the recovery or the rest).
     double stepEnds() const { return stepAt_; }
     const BossScriptDef& def() const { return *def_; }
     // The move with that index (kBossOffer: the offer); an empty move for anything else.
     const BossMoveDef& move(std::uint8_t m) const {
-        static const BossMoveDef kNone{};
-        if (!def_) return kNone;
+        static const BossMoveDef kEmptyMove{};
+        if (!def_) return kEmptyMove;
         if (m == kBossOffer) return def_->offer;
-        return m < def_->moveCount ? def_->moves[m] : kNone;
+        return m < def_->moveCount ? def_->moves[m] : kEmptyMove;
     }
 
 private:
@@ -417,8 +416,7 @@ private:
     }
 
     bool unlock() {
-        const UnlockResult u = lock_.offer(kUnlockSharedBlow, now_);
-        if (u != UnlockResult::Unlocked && u != UnlockResult::Refreshed) return false;
+        if (!LockedPoint::opened(lock_.offer(kUnlockSharedBlow, now_))) return false;
         pending_.push({BossEventType::Unlocked, current_, 0, 0, now_, lock_.until()});
         return true;
     }
@@ -541,7 +539,7 @@ private:
     bool watched_ = true;
     bool exposedOpen_ = false;
     double exposedUntil_ = 0.0;
-    WeakPointLock lock_{};
+    LockedPoint lock_{};
 };
 
 } // namespace ftcore
