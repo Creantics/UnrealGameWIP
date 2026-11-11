@@ -9,6 +9,7 @@
 #include "Engine/Texture2D.h"
 #include "FTBuildShopInteriors.h"
 #include "FTImportMaterials.h"
+#include "FTJointCollection.h"
 #include "FTText.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
@@ -318,13 +319,11 @@ UMaterial* NewMaster(const TCHAR* Path)
 	return Material;
 }
 
-// The window collection's JointDepth (the run-time switch on every surface's joint depth; -JointDepth=<0..1>), or a
-// constant 1 where the collection is not built yet or older than the switch.
+// The joint collection's JointDepth (FTJointCollection.h: the run-time switch on every surface's joint depth), or a constant 1.
 UMaterialExpression* AddJointSwitch(UMaterial* Material, int32 Y)
 {
-	const FString Path = FString(FTScene::WindowCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::WindowCollection);
-	UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
-	if (Collection && Collection->GetParameterId(TEXT("JointDepth")).IsValid())
+	UMaterialParameterCollection* Collection = FTJoint::LoadOrBuild();
+	if (Collection && Collection->GetParameterId(FTJoint::Depth).IsValid())
 	{
 		UMaterialExpressionCollectionParameter* Switch = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
 		Switch->Collection = Collection;
@@ -332,7 +331,7 @@ UMaterialExpression* AddJointSwitch(UMaterial* Material, int32 Y)
 		Switch->ParameterId = Collection->GetParameterId(TEXT("JointDepth"));
 		return Switch;
 	}
-	UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildSurfaces: the window collection has no JointDepth; joint depth is always on in %s."),
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildSurfaces: the joint collection could not be made; joint depth is always on in %s."),
 		*Material->GetName());
 	UMaterialExpressionConstant* One = AddExpression<UMaterialExpressionConstant>(Material, -900, Y);
 	One->R = 1.f;
@@ -703,8 +702,8 @@ UMaterialParameterCollection* BuildWindowCollection(float Parallax)
 	UPackage* Package = CreatePackage(FTScene::WindowCollection);
 	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
 		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
-	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel, TEXT("JointDepth")};
-	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f, 1.f};
+	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel};
+	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f};
 	for (int32 P = 0; P < static_cast<int32>(UE_ARRAY_COUNT(Names)); ++P)
 	{
 		FCollectionScalarParameter& Scalar = Collection->ScalarParameters.AddDefaulted_GetRef();

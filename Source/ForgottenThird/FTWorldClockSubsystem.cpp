@@ -1,5 +1,7 @@
 #include "FTWorldClockSubsystem.h"
 
+#include "FTJointCollection.h"
+
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/SkyLightComponent.h"
@@ -165,6 +167,8 @@ bool UFTWorldClockSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
+	// -JointDepth=<0..1>: the surfaces' joint depth (parallax, joint normals and cavities), in any world, still or played.
+	FTJoint::ApplyCommandLine(InWorld);
 	const TCHAR* Cmd = FCommandLine::Get();
 	float Fixed = -1.f;
 	const bool bFixed = FParse::Value(Cmd, TEXT("TimeOfDay="), Fixed);
@@ -400,17 +404,6 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 			FParse::Value(FCommandLine::Get(), TEXT("ShopNightLevel="), Value.Y);
 			return Value;
 		}();
-		// -JointDepth=<0..1>: the surfaces' joint depth (parallax, joint normals and cavities); 0 as before it.
-		static const float JointDepth = []
-		{
-			float Value = -1.f;
-			FParse::Value(FCommandLine::Get(), TEXT("JointDepth="), Value);
-			return Value;
-		}();
-		if (JointDepth >= 0.f)
-		{
-			WindowParams->SetScalarParameterValue(TEXT("JointDepth"), FMath::Clamp(JointDepth, 0.f, 1.f));
-		}
 		if (ShopLevels.X >= 0.f)
 		{
 			WindowParams->SetScalarParameterValue(TEXT("ShopDayLevel"), ShopLevels.X);

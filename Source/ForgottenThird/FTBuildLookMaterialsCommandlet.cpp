@@ -1,5 +1,7 @@
 #include "FTBuildLookMaterialsCommandlet.h"
 
+#include "FTJointCollection.h"
+
 #include "ForgottenThird.h"
 #include "FTSceneLook.h"
 
@@ -257,6 +259,8 @@ UMaterialParameterCollection* BuildCollection()
 		Vector.DefaultValue = FLinearColor(Default.*(Parameter.R), Default.*(Parameter.G), Default.*(Parameter.B), 1.f);
 		Vector.Id = FGuid::NewDeterministicGuid(FString(TEXT("FTLook.")) + Parameter.Name);
 	}
+	// The surfaces' joint depth switch lives here too (FTJointCollection.h).
+	FTJoint::AddScalarTo(*Collection);
 	Collection->PostEditChange();
 	return Collection;
 }

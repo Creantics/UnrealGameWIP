@@ -294,10 +294,10 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		const bool bWet = Look && LookParams && LookParams->SetScalarParameterValue(TEXT("Wetness"), Wet);
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: wetness %.3f %s."), Wet, bWet ? TEXT("written") : TEXT("not written (no look or MPC_Look)"));
 		// For a still alone (the clock does not run under a still): -WindowParallax=<0..1>, 0 shows every room and shop
-		// display case flat; -JointDepth=<0..1>, 0 the surfaces without joint depth; -ShopDayLevel= and -ShopNightLevel=.
-		const TCHAR* const Switches[] = {TEXT("WindowParallax="), TEXT("JointDepth="), TEXT("ShopDayLevel="), TEXT("ShopNightLevel=")};
-		const TCHAR* const Names[] = {TEXT("Parallax"), TEXT("JointDepth"), TEXT("ShopDayLevel"), TEXT("ShopNightLevel")};
-		for (int32 S = 0; S < 4; ++S)
+		// display case flat; -ShopDayLevel= and -ShopNightLevel=.
+		const TCHAR* const Switches[] = {TEXT("WindowParallax="), TEXT("ShopDayLevel="), TEXT("ShopNightLevel=")};
+		const TCHAR* const Names[] = {TEXT("Parallax"), TEXT("ShopDayLevel"), TEXT("ShopNightLevel")};
+		for (int32 S = 0; S < 3; ++S)
 		{
 			float Value = -1.f;
 			if (FParse::Value(FCommandLine::Get(), Switches[S], Value) && Value >= 0.f)
@@ -306,7 +306,7 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 				UMaterialParameterCollection* WindowCollection = LoadObject<UMaterialParameterCollection>(
 					nullptr, *(WindowPath + TEXT(".") + FPackageName::GetShortName(WindowPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 				UMaterialParameterCollectionInstance* WindowParams = WindowCollection ? World.GetParameterCollectionInstance(WindowCollection) : nullptr;
-				const bool bSet = WindowParams && WindowParams->SetScalarParameterValue(Names[S], S < 2 ? FMath::Clamp(Value, 0.f, 1.f) : Value);
+				const bool bSet = WindowParams && WindowParams->SetScalarParameterValue(Names[S], S < 1 ? FMath::Clamp(Value, 0.f, 1.f) : Value);
 				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: window collection %s %.2f %s."), Names[S], Value, bSet ? TEXT("written") : TEXT("not written"));
 			}
 		}

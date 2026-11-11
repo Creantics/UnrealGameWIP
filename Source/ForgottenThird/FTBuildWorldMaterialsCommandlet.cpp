@@ -7,6 +7,7 @@
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "FTImportMaterials.h"
+#include "FTJointCollection.h"
 #include "FTText.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
@@ -173,16 +174,15 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	AddWeatherInput(Weather, TEXT("AxisY"), AddWeatherAxis(Material, FLinearColor(0.f, 1.f, 0.f), 1200), 0);
 	AddWeatherInput(Weather, TEXT("AxisZ"), AddWeatherAxis(Material, FLinearColor(0.f, 0.f, 1.f), 1300), 0);
 	AddWeatherInput(Weather, TEXT("Street"), Street, 0);
-	// Joint depth: the pixel-to-camera vector (cm) and the window collection's JointDepth (the run-time switch; a constant
+	// Joint depth: the pixel-to-camera vector (cm) and the joint collection's JointDepth (the run-time switch; a constant
 	// 1 where the collection is not built yet).
 	UMaterialExpressionCameraPositionWS* CameraPos = AddExpression<UMaterialExpressionCameraPositionWS>(Material, -900, 1500);
 	UMaterialExpressionSubtract* ViewVec = AddExpression<UMaterialExpressionSubtract>(Material, -700, 1500);
 	ViewVec->A.Connect(0, CameraPos);
 	ViewVec->B.Connect(0, WorldPos);
 	AddWeatherInput(Weather, TEXT("ViewVec"), ViewVec, 0);
-	const FString JointPath = FString(FTScene::WindowCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::WindowCollection);
-	UMaterialParameterCollection* JointCollection = LoadObject<UMaterialParameterCollection>(nullptr, *JointPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
-	if (JointCollection && JointCollection->GetParameterId(TEXT("JointDepth")).IsValid())
+	UMaterialParameterCollection* JointCollection = FTJoint::LoadOrBuild();
+	if (JointCollection && JointCollection->GetParameterId(FTJoint::Depth).IsValid())
 	{
 		UMaterialExpressionCollectionParameter* Switch = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 1600);
 		Switch->Collection = JointCollection;
@@ -192,7 +192,7 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	}
 	else
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildWorldMaterials: the window collection has no JointDepth; joint depth is always on."));
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildWorldMaterials: the joint collection could not be made; joint depth is always on."));
 		UMaterialExpressionConstant* One = AddExpression<UMaterialExpressionConstant>(Material, -900, 1600);
 		One->R = 1.f;
 		AddWeatherInput(Weather, TEXT("JointDepth"), One, 0);
