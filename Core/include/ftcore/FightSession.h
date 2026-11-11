@@ -36,6 +36,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <span>
 
 namespace ftcore {
 
@@ -76,13 +77,23 @@ struct FightSessionCheck {
     bool table = true;
     bool lock = true;
     bool boss = true;
-    bool start = true; // false: the start was past kMaxFightStart (clamped) or not finite (0)
-    bool ok() const { return count && gift && places && table && lock && boss && start; }
+    bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
+    // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
+    bool ok() const { return count && gift && places && table && lock && boss; }
 };
 
-// What one tick emitted. The pointers stay valid until the next tick or begin.
+// A held blow's settle above x1: the extra damage its enemy takes now (the blow itself landed at base).
+struct HeldBonus {
+    std::uint8_t enemy = 0;
+    std::uint8_t move = 0;
+    int extraDamage = 0; // round(baseDamage * (multiplier - 1)), above 0
+};
+
+// Held blows the session can wait on at once (judgeHeldBlow); one more lands at base with no bonus.
+inline constexpr std::size_t kMaxHeldBlows = 16;
+
 // One tick's results. The event buffers are the pieces' own (no copy): read them before the next session call,
-// which may refill them.
+// which may refill them; the pointers stay valid until the next tick or begin.
 struct FightTick {
     double now = 0.0;
     double step = 0.0; // the fight time this tick added (0 during hit-stop)
@@ -90,6 +101,9 @@ struct FightTick {
     const TableEvents* table = nullptr;
     const BossEvents* boss = nullptr; // empty when there is no boss script
     int sharedBlows = 0;              // shared blows the settled count blows dealt the boss or the lock
+    std::span<const HeldBonus> bonuses; // this tick's held-blow bonuses (the session's own buffer)
+    int heldDropped = 0;  // held blows judged since the last tick with no room to wait (they stay at base)
+    int heldExpired = 0;  // held blows whose settle never came (a dropped settle): they stay at base
 };
 
 // What a press did, for the generic press(); the typed calls return the pieces' own results.
@@ -107,8 +121,8 @@ public:
     FightSession(const FightSession&) = delete;
     FightSession& operator=(const FightSession&) = delete;
 
-    // Starts a fight at `start` on the fight clock (not bound by kMaxTimeJump; clamped to +-kMaxFightStart, a
-    // start that is not finite is 0).
+    // Starts a fight at `start` on the fight clock (not bound by kMaxTimeJump). A start past +-kMaxFightStart, or
+    // an infinite one, is clamped to +-kMaxFightStart; a NaN start is 0. Either way the fight begins (check.start).
     FightSessionCheck begin(const FightSessionDef& def, double start) {
         FightSessionCheck c;
         c.start = std::isfinite(start) && start >= -kMaxFightStart && start <= kMaxFightStart;
@@ -134,6 +148,8 @@ public:
         hasBoss_ = def_.hasBoss && c.boss;
         lastStory_ = SetResult::Unchanged;
         tick_ = FightTick{};
+        heldCount_ = 0; // a held blow from the last fight never pays out
+        heldDropped_ = 0;
         tick_.now = now_;
         tick_.count = &kNoCount;
         tick_.table = &kNoTable;
@@ -157,8 +173,20 @@ public:
         tick_.step = step;
         tick_.sharedBlows = 0;
         tick_.count = &count_.update(now_);
-        for (const CountEvent& e : *tick_.count)
+        tick_.heldDropped = heldDropped_;
+        heldDropped_ = 0;
+        tick_.heldExpired = 0;
+        std::size_t bonuses = 0;
+        for (const CountEvent& e : *tick_.count) {
             if (sharedBlow(e) && shareBlow()) ++tick_.sharedBlows;
+            if (e.type == CountEventType::BlowSettled) settleHeld(e, bonuses);
+        }
+        // Every held blow has settled or its settle was dropped: what is still waiting never will.
+        if (count_.heldBlows() == 0) {
+            tick_.heldExpired = static_cast<int>(heldCount_);
+            heldCount_ = 0;
+        }
+        tick_.bonuses = std::span<const HeldBonus>(bonuses_.data(), bonuses);
         gift_.update(now_);
         tick_.table = &table_.update(now_);
         lock_.update(now_);
@@ -244,7 +272,13 @@ public:
 
     void offerRefusal() { refusal_.offer(); }
     RefusalInput acceptRefusal() { return refusal_.accept(); }
-    RefusalInput deferRefusal() { return refusal_.defer(); }
+    // "Not yet" (a yes): the deferral relocks an unlocked point, the boss script's or the session's own lock, when
+    // that lock's relockOnDefer says so. An offer that ends unheld (endRefusal) is a deferral too.
+    RefusalInput deferRefusal() {
+        const RefusalInput r = refusal_.defer();
+        if (r == RefusalInput::Resolved) deferLocks();
+        return r;
+    }
     // Ends the host's prompt; a refusal kept to the end offers the refusal key: to the boss script when there is one
     // (it opens the point only when refusal is its key kind and a counter has the point exposed), else to the
     // session's own lock. Only the call that resolves the refusal offers it: ending an ended prompt again offers nothing.
@@ -253,6 +287,8 @@ public:
         if (r == RefusalInput::Resolved && refusal_.refused()) {
             if (hasBoss_) boss_.offerKey(kUnlockRefusal, now_);
             else if (def_.locked) lock_.offer(kUnlockRefusal, now_);
+        } else if (r == RefusalInput::Resolved && refusal_.deferred()) {
+            deferLocks();
         }
         return r;
     }
@@ -261,6 +297,20 @@ public:
     CountHit judgeBlow(FighterId striker) {
         const CountHit h = count_.judgeBlow(striker, now_);
         if (sharedBlow(h)) shareBlow();
+        return h;
+    }
+    // judgeBlow for a blow the host lands at `baseDamage` on `enemy` now. A Held blow lands at base and the session
+    // waits on it: when it settles above x1, a later tick's `bonuses` lists the extra damage to add (the host deals
+    // it outside a blow). A settle at x1 or below, a dropped settle (heldExpired) or no room to wait (heldDropped)
+    // adds nothing. Other outcomes are final: the host multiplies as with judgeBlow.
+    CountHit judgeHeldBlow(FighterId striker, std::uint8_t enemy, int baseDamage, std::uint8_t move) {
+        const CountHit h = judgeBlow(striker);
+        if (h.outcome != CountOutcome::Held || baseDamage <= 0) return h;
+        if (heldCount_ == kMaxHeldBlows) {
+            ++heldDropped_;
+            return h;
+        }
+        held_[heldCount_++] = HeldRecord{h.blow, enemy, move, baseDamage};
         return h;
     }
     // An unlock key (a read clause with its id, a refusal, a shared blow) offered to the boss script's point when
@@ -324,6 +374,30 @@ private:
         const UnlockResult u = lock_.offer(kUnlockSharedBlow, now_);
         return u == UnlockResult::Unlocked || u == UnlockResult::Refreshed;
     }
+    struct HeldRecord {
+        std::uint16_t blow = 0;
+        std::uint8_t enemy = 0;
+        std::uint8_t move = 0;
+        int baseDamage = 0;
+    };
+    // Frees the settled blow's record; above x1 it adds a bonus (at most one per record, so the buffer fits).
+    void settleHeld(const CountEvent& e, std::size_t& bonuses) {
+        for (std::size_t i = 0; i < heldCount_; ++i) {
+            if (held_[i].blow != e.blow) continue;
+            const HeldRecord r = held_[i];
+            held_[i] = held_[--heldCount_];
+            if (!(e.multiplier > 1.0f) || !std::isfinite(e.multiplier)) return;
+            const double extra = std::round(static_cast<double>(r.baseDamage) * (static_cast<double>(e.multiplier) - 1.0));
+            if (extra < 1.0) return;
+            const int add = extra > 1e9 ? 1000000000 : static_cast<int>(extra);
+            bonuses_[bonuses++] = HeldBonus{r.enemy, r.move, add};
+            return;
+        }
+    }
+    void deferLocks() {
+        if (hasBoss_) boss_.onDeferred(now_);
+        else if (def_.locked) lock_.onDeferred(now_);
+    }
 
     double now_ = 0.0;
     FightSessionDef def_{};
@@ -340,6 +414,10 @@ private:
     const FactRegistry* reg_ = nullptr;
     SetResult lastStory_ = SetResult::Unchanged;
     FightTick tick_{};
+    std::array<HeldRecord, kMaxHeldBlows> held_{};
+    std::size_t heldCount_ = 0;
+    int heldDropped_ = 0;
+    std::array<HeldBonus, kMaxHeldBlows> bonuses_{};
     // The empty buffers a tick points at before the first tick and when there is no boss script.
     static inline const CountEvents kNoCount{};
     static inline const TableEvents kNoTable{};

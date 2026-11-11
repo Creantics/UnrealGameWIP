@@ -217,6 +217,7 @@ enum class BossEventType : std::uint8_t { // append only
     Crit,            // value = the damage dealt
     Ended,           // the offer was answered: the fight is over
     Lost,            // the ward fell
+    Relocked,        // a deferred refusal shut the unlocked point (the lock's relockOnDefer)
 };
 
 struct BossEvent {
@@ -343,6 +344,16 @@ public:
         if (key != bossUnlockKey(def_->key)) return UnlockResult::WrongKey;
         if (over() || !exposedOpen_) return UnlockResult::NotExposed;
         return unlock(clause);
+    }
+
+    // A deferred refusal ("not yet" counts as a yes): it shuts an unlocked point when the lock's relockOnDefer says
+    // so, with a Relocked event. True when it shut one. After the end, or without a lock, it does nothing.
+    bool onDeferred(double t) {
+        if (!valid_) return false;
+        advance(t);
+        if (over() || !lock_.onDeferred(now_)) return false;
+        push(BossEventType::Relocked, current_, 0, 0, now_);
+        return true;
     }
 
     // A blow of `amount` (0 or more) on the boss; on the weak point it crits while the point is unlocked.

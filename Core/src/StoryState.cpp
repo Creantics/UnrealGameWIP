@@ -1478,4 +1478,73 @@ bool importStoryRegistry(std::string_view csv, std::string_view json, FactRegist
     return true;
 }
 
+namespace {
+std::string_view trimField(std::string_view v) {
+    while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.remove_prefix(1);
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r')) v.remove_suffix(1);
+    return v;
+}
+} // namespace
+
+bool importStorySceneMap(std::string_view csv, const FactRegistry& reg, std::vector<StorySceneLink>& out,
+                         std::string* error) {
+    out.clear();
+    auto fail = [&](std::size_t line, const char* why) {
+        out.clear();
+        if (error) *error = "line " + std::to_string(line) + ": " + why;
+        return false;
+    };
+    if (csv.size() >= 3 && static_cast<unsigned char>(csv[0]) == 0xEF && static_cast<unsigned char>(csv[1]) == 0xBB &&
+        static_cast<unsigned char>(csv[2]) == 0xBF)
+        csv.remove_prefix(3);
+    bool header = false;
+    std::size_t line = 0;
+    while (!csv.empty()) {
+        const std::size_t nl = csv.find('\n');
+        std::string_view row = trimField(csv.substr(0, nl));
+        csv = nl == std::string_view::npos ? std::string_view() : csv.substr(nl + 1);
+        ++line;
+        if (row.empty() || row.front() == '#') continue;
+        const std::size_t comma = row.find(',');
+        if (comma == std::string_view::npos || row.find(',', comma + 1) != std::string_view::npos)
+            return fail(line, "expected two fields: scene,code");
+        const std::string_view scene = trimField(row.substr(0, comma));
+        const std::string_view code = trimField(row.substr(comma + 1));
+        if (!header) {
+            if (scene != "scene" || code != "code") return fail(line, "expected the header scene,code");
+            header = true;
+            continue;
+        }
+        if (scene.empty() || code.empty()) return fail(line, "empty field");
+        const std::uint8_t ordinal = storySceneOrdinal(reg, code);
+        if (ordinal == kNoScene) return fail(line, "the registry lists no such scene code");
+        for (const StorySceneLink& l : out)
+            if (l.scene == scene) return fail(line, "scene id given twice");
+        out.push_back(StorySceneLink{std::string(scene), ordinal});
+    }
+    if (!header) return fail(line, "expected the header scene,code");
+    return true;
+}
+
+StorySceneStep storyEnterScene(StoryState& s, const FactRegistry& reg, std::uint8_t scene) {
+    StorySceneStep step;
+    if (s.openScene != kNoScene && s.openScene == scene) {
+        step.restarted = storyRestartScene(s, reg);
+        step.refused = !step.restarted;
+        return step;
+    }
+    if (s.openScene != kNoScene) {
+        step.committed = storyCommitScene(s, reg);
+        if (!step.committed) {
+            step.refused = true;
+            return step; // the open scene stays open: nothing begins over it
+        }
+    }
+    if (scene != kNoScene) {
+        step.began = storyBeginScene(s, reg, scene);
+        step.refused = !step.began;
+    }
+    return step;
+}
+
 } // namespace ftcore

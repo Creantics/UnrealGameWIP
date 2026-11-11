@@ -15,6 +15,11 @@
 // * A new game resets the state (NewGame). A block autosaved at a scene start holds whatever scene the
 //   state has open then: the host calls BeginScene when its scene starts, so the order of the two
 //   decides it; both load back as saved.
+// * The scene flow: with a scene map (story_scene_map.csv in the same folder: `scene,code`, a story-runner scene
+//   id and the registry scene it plays; private, beside the registry) it follows UFTStorySubsystem. A new scene
+//   commits the open one and begins its own (ftcore::storyEnterScene); a scene with no code, or the story's end,
+//   only commits; consecutive runner scenes that share a code continue the one registry scene; a load
+//   (SyncToRunnerScene) restarts the open scene when the runner is still in it. Without a map it calls nothing.
 // * -StoryStateCheck: a headless check. It round-trips the block in memory, logs one
 //   "StoryState check:" line and asks the engine to quit. It never writes a save slot.
 
@@ -36,14 +41,24 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	// Imports the registry from Dir (relative: to the project folder). Called by Initialize with
-	// Data/Story; call it again only before any fight session is bound (the registry is assigned in place).
+	// Imports the registry from Dir (relative: to the project folder). Called by Initialize with the story folder
+	// and by UFTGameInstance::ReloadStory, with the scene map beside it. The registry is assigned in place and the state reset to a new
+	// game's (its slots and scenes belong to the registry); a bound fight session is unbound first (bind it again
+	// after its next Begin).
 	bool LoadRegistry(const FString& Dir);
 	// True when the registry was imported (false: the empty registry).
 	UFUNCTION(BlueprintPure, Category = "Story")
 	bool HasRegistry() const { return bRegistryLoaded; }
 
 	// ---- the scene ----
+
+	// The scene flow (the scene map): the runner's scene SceneId began; empty: the story ended. Nothing without a map.
+	void EnterRunnerScene(const FString& SceneId);
+	// After a load: brings the state to the runner's current scene (restart when it is the open one). Nothing without a map.
+	void SyncToRunnerScene(const FString& SceneId);
+	// The number of runner scenes the map links (0: no map, the flow calls nothing).
+	UFUNCTION(BlueprintPure, Category = "Story")
+	int32 GetSceneMapSize() const { return SceneMap.Num(); }
 
 	// Opens the scene with that code (the registry's scene list). False for an unknown code, a scene
 	// already open, or one not after the last committed scene.
@@ -69,13 +84,26 @@ public:
 
 	// ---- the save block (UFTStorySaveGame) ----
 
-	// Writes the block. False (Out emptied) before Initialize.
+	// Writes the block into Out. False (Out kept as it was, with a warning) before Initialize or when Core refuses.
 	bool EncodeBlock(TArray<uint8>& Out);
 	// Loads the block, or a new game's state when it is empty or Core refuses it. Returns Core's result.
 	ftcore::StoryLoad DecodeBlock(const TArray<uint8>& In);
 
 private:
+	void Unbind();
+	void LoadSceneMap(const FString& Base);
+	UFUNCTION()
+	void HandleRunnerScene(const FString& SceneId);
+	UFUNCTION()
+	void HandleRunnerFinished();
+
 	TUniquePtr<ftcore::FactRegistry> Registry;
 	TUniquePtr<ftcore::StoryState> State;
 	bool bRegistryLoaded = false;
+	// The fight session last bound (weak: the runner owns it); unbound on a registry import and on Deinitialize.
+	TWeakObjectPtr<UFTFightSession> BoundSession;
+	// Runner scene id to registry scene ordinal (empty: no map). The runner scene last entered, so a scene that
+	// shares its code with the one before continues it and only the same id again restarts.
+	TMap<FString, uint8> SceneMap;
+	FString LastRunnerScene;
 };

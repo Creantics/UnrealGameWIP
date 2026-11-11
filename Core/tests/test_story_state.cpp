@@ -1834,7 +1834,100 @@ TEST_CASE("story state: load or new") {
     CHECK(out.facts == fresh.facts);
     CHECK(out.openScene == fresh.openScene);
 
+    // A late refusal (a bad stamp in the extension, past every early check): decode leaves its output as it
+    // was, and load-or-new gives a new game's state.
+    StoryState mid;
+    REQUIRE(storyBeginScene(mid, r, sc("s2")));
+    REQUIRE(storySet(mid, r, fs("a_ev"), 1) == SetResult::Ok);
+    std::array<std::uint8_t, kStoryStateBlockSize> midBlock{};
+    REQUIRE(storyEncode(mid, r, midBlock));
+    REQUIRE(midBlock[kStoryExtensionOffset] != 0);
+    midBlock[kStoryExtensionOffset + 4 + 3] = static_cast<std::uint8_t>(kMaxStoryScenes);
+    fixCrc(midBlock);
+    out = played;
+    CHECK(storyDecode(midBlock, r, out) == StoryLoad::BadScene);
+    CHECK(out.facts == played.facts);
+    CHECK(out.openScene == played.openScene);
+    CHECK(storyLoadOrNew(midBlock, r, out) == StoryLoad::BadScene);
+    CHECK(out.facts == fresh.facts);
+    CHECK(out.openScene == fresh.openScene);
+
     CHECK(std::string(storyLoadName(StoryLoad::Ok)) == "ok");
     CHECK(std::string(storyLoadName(StoryLoad::BadChecksum)) == "bad checksum");
     CHECK(std::string(storyLoadName(StoryLoad::BadVersion)) == "bad version");
+}
+
+// ---- The scene flow ----
+
+TEST_CASE("story state: scene map import") {
+    std::vector<StorySceneLink> links;
+    std::string err;
+    REQUIRE(importStorySceneMap("\xEF\xBB\xBFscene,code\r\n# a comment\n\n r-one , s1 \nr-two,s3\n", reg(), links, &err));
+    REQUIRE(links.size() == 2);
+    CHECK(links[0].scene == "r-one");
+    CHECK(links[0].ordinal == sc("s1"));
+    CHECK(links[1].scene == "r-two");
+    CHECK(links[1].ordinal == sc("s3"));
+    CHECK(importStorySceneMap("scene,code\n", reg(), links, &err));
+    CHECK(links.empty());
+
+    auto fails = [&](const char* csv) {
+        links.assign(1, StorySceneLink{"stale", 0});
+        err.clear();
+        CHECK_FALSE(importStorySceneMap(csv, reg(), links, &err));
+        CHECK(links.empty());
+        CHECK_FALSE(err.empty());
+    };
+    fails("");
+    fails("id,code\nr-one,s1\n");
+    fails("scene,code\nr-one\n");
+    fails("scene,code\nr-one,s1,x\n");
+    fails("scene,code\n,s1\n");
+    fails("scene,code\nr-one, \n");
+    fails("scene,code\nr-one,s99\n");
+    fails("scene,code\nr-one,s1\nr-one,s2\n");
+}
+
+TEST_CASE("story state: entering scenes") {
+    StoryState s;
+    StorySceneStep st = storyEnterScene(s, reg(), sc("s1"));
+    CHECK(st.began);
+    CHECK_FALSE(st.committed);
+    CHECK_FALSE(st.refused);
+    CHECK(s.openScene == sc("s1"));
+
+    SUBCASE("the same scene again restarts it") {
+        st = storyEnterScene(s, reg(), sc("s1"));
+        CHECK(st.restarted);
+        CHECK_FALSE(st.began);
+        CHECK_FALSE(st.committed);
+        CHECK(s.openScene == sc("s1"));
+    }
+    SUBCASE("the next scene commits the open one and begins") {
+        st = storyEnterScene(s, reg(), sc("s3"));
+        CHECK(st.committed);
+        CHECK(st.began);
+        CHECK_FALSE(st.refused);
+        CHECK(s.lastCommitted == sc("s1"));
+        CHECK(s.openScene == sc("s3"));
+    }
+    SUBCASE("an earlier scene commits the open one, then its begin is refused") {
+        st = storyEnterScene(s, reg(), sc("s3"));
+        st = storyEnterScene(s, reg(), sc("s2"));
+        CHECK(st.committed);
+        CHECK_FALSE(st.began);
+        CHECK(st.refused);
+        CHECK(s.lastCommitted == sc("s3"));
+        CHECK(s.openScene == kNoScene);
+    }
+    SUBCASE("a scene with no code commits the open one and opens nothing") {
+        st = storyEnterScene(s, reg(), kNoScene);
+        CHECK(st.committed);
+        CHECK_FALSE(st.began);
+        CHECK_FALSE(st.refused);
+        CHECK(s.openScene == kNoScene);
+        st = storyEnterScene(s, reg(), kNoScene);
+        CHECK_FALSE(st.committed);
+        CHECK_FALSE(st.refused);
+    }
 }

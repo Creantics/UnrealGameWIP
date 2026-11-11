@@ -26,6 +26,7 @@ The weak point goes through `LockedPoint` (`WeakPointLock.h`), the one adapter b
 * **Locked weak point (`WeakPointLock`):**
   * A move with `exposeSeconds` exposes the point when it is countered. The point's key kind (`key`: a shared blow, a read clause or a refusal) offered while exposed (`sharedBlow`, `offerKey`) unlocks it. Any other key opens nothing (`WrongKey`), and the point's own kind with no exposure (or after the end) is `NotExposed`.
   * A move with `unlocksOnCounter` unlocks the point on its counter, with its own key kind (a read kind uses the lock's `clause`).
+  * A deferred refusal (`onDeferred`: "not yet" counts as a yes) shuts an unlocked point when the lock's `relockOnDefer` is on, with a `Relocked` event; the fight session routes its deferrals here.
   * A `needsWatch` move does either only while the host says the point is watched (`setWatched`).
   * Blows on the point crit only while it is unlocked.
 * **The end is an answered offer.** Hp never falls below 1.

@@ -128,6 +128,8 @@ public:
 	EFTStoryState GetState() const;
 	UFUNCTION(BlueprintPure, Category = "Story")
 	FString GetSceneId() const;
+	// True while ApplySave reports the loaded scene (its scene event is a load, not a move).
+	bool IsApplyingSave() const { return bApplyingSave; }
 	UFUNCTION(BlueprintPure, Category = "Story")
 	int32 GetBeatIndex() const;
 	UFUNCTION(BlueprintPure, Category = "Story")

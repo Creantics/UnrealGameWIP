@@ -257,7 +257,8 @@ the pieces.
 
 * **One clock.** `begin(def, start)` resets every piece at `start`, clamped to +-`kMaxFightStart`
   (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
-  `FightSessionCheck::start` reports a clamp). `tick(fightDt)`
+  NaN starts at 0; `FightSessionCheck::start` reports either move, and the fight begins anyway, so `ok()`
+  leaves it out). `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
@@ -281,7 +282,7 @@ the pieces.
   shared). Its own kind opens the point while a counter has it exposed, and `unlocksOnCounter` still
   unlocks it on the counter; any other key opens nothing (`WrongKey`), and its own kind with no exposure
   (or after the end) is `NotExposed`. Only the `endRefusal` that resolves a held refusal offers the key. A
-  shared blow passed to `offerKey` is the host's own and skips the count. A deferred refusal relocks nothing, in either lock. Every change to a fighter's places through the session re-checks the table when
+  shared blow passed to `offerKey` is the host's own and skips the count. A deferred refusal (`deferRefusal`, or an offer that ends unheld) counts as a yes and relocks an unlocked point in either lock, the boss script's (a `Relocked` event) or the session's own, when that lock's `relockOnDefer` is on (the default). Every change to a fighter's places through the session re-checks the table when
   that fighter is its setter; after changing places directly (`places(who)` or a load), call
   `recheckTable`. Without a lock and without a boss script the weak point is always open. A boss def
   that `begin` refuses leaves no boss script (`hasBoss` false), so the session's lock rules instead.
