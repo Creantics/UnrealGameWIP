@@ -649,6 +649,14 @@ void viewTurn(const MapView& v, float& c, float& s) {
 }
 } // namespace minimap_detail
 
+Vec2 mapAreaUv(const MiniMapModel& m, Vec2 world, bool* clamped) {
+    const float sx = m.maxX - m.minX, sy = m.maxY - m.minY;
+    const float u = sx > 0.f ? (world.x - m.minX) / sx : 0.5f, v = sy > 0.f ? (world.y - m.minY) / sy : 0.5f;
+    const Vec2 out{std::clamp(u, 0.f, 1.f), std::clamp(v, 0.f, 1.f)};
+    if (clamped) *clamped = out.x != u || out.y != v;
+    return out;
+}
+
 Vec2 mapToView(const MapView& v, Vec2 world) {
     float c = 1.f, s = 0.f;
     md::viewTurn(v, c, s);

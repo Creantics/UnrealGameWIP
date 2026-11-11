@@ -151,6 +151,9 @@ struct MapPin {
     float distance = 0.f; // m from the view's centre
 };
 FTCORE_API MapPin mapPin(const MapView& v, Vec2 world, float edge = 0.9f);
+// A world point as the model area's 0..1 (x west to east, y north to south), held to the area's edge when outside it
+// (clamped says so): where the overlay draws a marker, so the player and the van stay on it wherever they are.
+FTCORE_API Vec2 mapAreaUv(const MiniMapModel& m, Vec2 world, bool* clamped = nullptr);
 // A world point as image UVs (0..1).
 FTCORE_API Vec2 mapImageUv(const MapImage& img, Vec2 world);
 
