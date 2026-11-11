@@ -343,6 +343,10 @@ struct ArenaFighter {
 
     float lockRange = 15.f;
     float lockBreak = 20.f;
+    // Soft target and homing for an attack started with no lock (ArenaSoftTarget.h; the host asks for them).
+    float softRange = 0.f;      // metres to an enemy's near edge; 0: no soft target
+    float softArcCos = 0.5f;    // the arc either side of the stick or the facing (dot)
+    float homingReach = 0.f;    // most metres an attack closes in on top of its lunge
 
     float moveAccel = 0.f;      // m/s^2: how fast the velocity gains speed toward the one the stick asks for ...
     float moveBrake = 0.f;      // ... and loses it (a slower one asked for); 0: instant. Idle, Move, Guard, Heal only

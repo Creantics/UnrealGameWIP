@@ -2252,6 +2252,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             guardArcCos -1..1; riposteReach (0, 100]; healCharges 0..99; healAmount 0..100000;
 //             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000;
 //             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; parryStop 0..1;
+//             softRange 0..100; softArcCos -1..1; homingReach 0..20;
 //             attacks a bool; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000
 //   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
@@ -2396,7 +2397,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "parryRearm", "riposteReach", "healCharges", "healAmount", "healTime", "healRecovery",
                       "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
-                      "readWrongPoise", "attacks", "shot", "parryStop"},
+                      "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -2447,6 +2448,9 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "pairWindow", f.pairWindow, 0, 1, false, path, errors);
     arenaByte(j, "pairHits", f.pairHits, 0, 10, path, errors);
     arenaNum(j, "parryStop", f.parryStop, 0, 1, false, path, errors);
+    arenaNum(j, "softRange", f.softRange, 0, 100, false, path, errors);
+    arenaNum(j, "softArcCos", f.softArcCos, -1, 1, false, path, errors);
+    arenaNum(j, "homingReach", f.homingReach, 0, 20, false, path, errors);
     arenaNum(j, "readPower", f.readPower, 0, 100, false, path, errors);
     arenaNum(j, "readStackPower", f.readStackPower, 0, 10, false, path, errors);
     arenaNum(j, "readPoise", f.readPoise, 0, 100000, false, path, errors);

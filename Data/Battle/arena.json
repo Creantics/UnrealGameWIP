@@ -17,7 +17,7 @@
       "riposte": { "startup": 0.12, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 48, "poiseDamage": 0, "lunge": 0.5, "tracking": 12, "stamina": 0, "cancel": 0.5, "maxTargets": 1, "hitStop": 0.12 },
       "release": { "startup": 0.2, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 30, "poiseDamage": 0, "lunge": 0.5, "tracking": 10, "stamina": 0, "cancel": 0.5, "maxTargets": 1 },
       "dodgeTime": 0.6, "dodgeDistance": 3.5, "dodgeInvulnStart": 0.05, "dodgeInvulnEnd": 0.4, "dodgeStamina": 20, "dodgeCancel": 0.75,
-      "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 2.2, "parryStop": 0.12,
+      "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 2.2, "parryStop": 0.12, "softRange": 3.5, "softArcCos": 0.6, "homingReach": 1.0,
       "healCharges": 3, "healAmount": 45, "healTime": 0.9, "healRecovery": 0.4, "healMoveScale": 0.35,
       "lockRange": 15, "lockBreak": 20,
       "loadShare": 1, "releasePoise": 1, "pairWindow": 0.12, "pairHits": 3,
@@ -36,7 +36,7 @@
       "riposte": { "damage": 60, "range": 2.8 },
       "release": { "damage": 36 },
       "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.55, "guardBreakTime": 1.0,
-      "parryWindow": 0.2, "parryRearm": 0.4, "riposteReach": 2.4, "parryStop": 0.1,
+      "parryWindow": 0.2, "parryRearm": 0.4, "riposteReach": 2.4, "parryStop": 0.1, "softRange": 6, "softArcCos": 0.25, "homingReach": 2.5,
       "dodgeStamina": 18
     },
     {
@@ -51,7 +51,7 @@
       "heavy": { "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 2.7, "arcCos": -0.2, "damage": 36, "poiseDamage": 45, "lunge": 0.8, "tracking": 6, "armor": 0.3, "stamina": 24, "cancel": 0.7 },
       "riposte": { "damage": 44 },
       "guardArcCos": 0.35, "guardAbsorb": 0.85, "guardMoveScale": 0.8, "guardBreakTime": 0.9,
-      "parryWindow": 0.13, "parryRearm": 0.45, "parryStop": 0.12
+      "parryWindow": 0.13, "parryRearm": 0.45, "parryStop": 0.12, "softRange": 5, "softArcCos": 0.4, "homingReach": 1.8
     },
     {
       "id": "third", "weapon": "none", "attacks": false,
