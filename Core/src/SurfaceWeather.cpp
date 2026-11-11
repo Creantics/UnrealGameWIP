@@ -626,7 +626,7 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
          ", Pud));\n";
     h += "float R = min(Rgh, lerp(Rgh, " + num(spec.soakRough) + ", pow(saturate(Soak), " + num(spec.roughCurve) + ")));\n";
     h += "R = lerp(R, " + num(spec.puddleRough) + ", Pud);\n";
-    if (relief) h += "R = min(R, lerp(R, 0.06, RlWet));\n";  // water held in the joints
+    if (relief) h += "R = min(R, lerp(R, 0.3, RlWet));\n";  // water held in the joints
     h += "float A = AO;\n";
     if (relief) h += "A *= 1.0 - " + num(1.f - street.jointCavityAO) + " * RlCav;\n";
     const std::string tint = "float3(" + num(spec.dirtR) + ", " + num(spec.dirtG) + ", " + num(spec.dirtB) + ")";

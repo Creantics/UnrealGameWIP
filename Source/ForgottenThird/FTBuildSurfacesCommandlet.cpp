@@ -1516,6 +1516,30 @@ int32 BuildMasterOnly(const FString& Params)
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Master: saved %s%s (%d expressions)."), FTScene::SurfaceTexMaterial,
 		Look ? TEXT(" with the weather node") : TEXT(""), Master->GetExpressionCollection().Expressions.Num());
+	// The built instances take their surface's joints (ftcore::surfaceJointFor), so a master-only build gives them depth.
+	int32 Jointed = 0;
+	for (const ftcore::SurfaceSpec& Spec : Table.surfaces)
+	{
+		const ftcore::SurfaceJointSurface Joint = ftcore::surfaceJointFor(Spec.id);
+		const FString Path = FTScene::SurfaceInstancePackage(FT::ToFString(Spec.id));
+		UMaterialInstanceConstant* Mic = Joint.depthCm > 0.f
+			? LoadObject<UMaterialInstanceConstant>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet)
+			: nullptr;
+		if (!Mic)
+		{
+			continue;
+		}
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointDepthCm")), Joint.depthCm);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointLo")), Joint.aoLo);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointHi")), Joint.aoHi);
+		Mic->PostEditChange();
+		if (!SaveAsset(Mic, Bytes))
+		{
+			return 1;
+		}
+		++Jointed;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Master: joint depth set on %d surface instances."), Jointed);
 	return 0;
 }
 } // namespace FTSurfaceBuild

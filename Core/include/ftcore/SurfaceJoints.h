@@ -32,9 +32,9 @@ struct SurfaceJointSpec {
     float grazeFull = 0.25f, grazeOff = 0.12f; // dot(N, V): parallax full from grazeFull, none at grazeOff and below
     int maxSteps = 8, minSteps = 3;            // march steps: maxSteps at grazeFull and below, minSteps facing square on
     float maxSlope = 4.f;                      // the march's sideways run per unit of depth is held to this
-    float normalStrength = 1.f;                // scale on the slope got from the height
+    float normalStrength = 1.3f;               // scale on the slope got from the height
     float cavityAO = 0.45f;                    // AO multiplier on a joint's floor
-    float cavityAlbedo = 0.6f;                 // albedo multiplier on a joint's floor
+    float cavityAlbedo = 0.5f;                // albedo multiplier on a joint's floor
     float cavityRough = 0.2f;                  // roughness added on a joint's floor
     float dirt = 0.25f;                        // extra darkening gathered in the joints, broken up by a noise
     float uneven = 0.35f;                      // share of the depth a large-scale noise takes away (courses vary)

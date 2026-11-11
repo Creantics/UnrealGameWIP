@@ -233,7 +233,7 @@ TEST_CASE("HLSL: joint depth is its own option; off, the node is as it was") {
     on.jointDepth = true;
     const std::string relief = surfaceWeatherHlsl(spec, on);
     for (const char* name : {"ViewVec / 100.0", "saturate(JointDepth)", "struct FTRelief", "if (RlW > 0.001)",
-                             "A *= 1.0 - ", "R = min(R, lerp(R, 0.06, RlWet));", "RlP = lerp(RlO, RlP, RlW);"})
+                             "A *= 1.0 - ", "R = min(R, lerp(R, 0.3, RlWet));", "RlP = lerp(RlO, RlP, RlW);"})
         CHECK(relief.find(name) != std::string::npos);
     // The solve runs in each jointed kind (pavers, pavement, kerbs), behind the near-only branch.
     CHECK(countOf(relief, "if (RlW > 0.001)") == 3);
