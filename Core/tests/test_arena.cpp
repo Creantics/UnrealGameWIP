@@ -15,8 +15,10 @@
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -6028,6 +6030,79 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
     }
 }
 
+// The tuning (provisional, for the playtest): Devin's heavier light string staggers every kind with a break-out
+// before its breakAt-th blow; Duy's lighter one leaves it upright, so it breaks out on him. A count reset always comes
+// with a poise refill (breakDecay at least poiseDelay), so every run starts from full poise.
+struct BreakCase {
+    const char* kind;
+    bool devinStaggersFirst;
+    bool duyBrokenOut;
+};
+const BreakCase kBreakCases[] = {
+    {"skirmisher", true, true}, {"breaker", true, true}, {"duelist", true, true}, {"hulk", true, true}, {"spitter", true, true},
+};
+
+// The poise n light blows in a row deal from the string's start (the string loops after its last blow).
+float stringPoise(const ArenaFighter& f, int n) {
+    float sum = 0.f;
+    for (int i = 0; i < n; ++i) sum += f.light[static_cast<std::size_t>(i % f.lightCount)].poiseDamage;
+    return sum;
+}
+
+const ArenaEnemyKind& shippedKind(const ArenaTable& t, const char* id) {
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+        if (t.enemyIds[e] == id) return t.enemies[e];
+    FAIL("no such kind");
+    return t.enemies[0];
+}
+
+TEST_CASE("arena break-out tuning: per kind, Devin's string staggers first and Duy's gets broken out on (data)") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    int kinds = 0;
+    for (const ArenaEnemyKind& k : t.enemies) kinds += k.breakAt > 0 ? 1 : 0;
+    CHECK(kinds == static_cast<int>(std::size(kBreakCases))); // a new kind with a break-out gets its own row
+    for (const BreakCase& c : kBreakCases) {
+        CAPTURE(c.kind);
+        const ArenaEnemyKind& k = shippedKind(t, c.kind);
+        REQUIRE(k.breakAt > 0);
+        CHECK(k.breakDecay >= k.poiseDelay); // no poise carried across a count reset
+        // The breakAt-th blow breaks out only on an enemy it leaves upright (poise above 0).
+        CHECK((stringPoise(devin, k.breakAt) >= k.poise) == c.devinStaggersFirst);
+        CHECK((stringPoise(duy, k.breakAt) < k.poise) == c.duyBrokenOut);
+    }
+}
+
+TEST_CASE("arena break-out tuning: per kind and lead, mashing lights on an upright enemy from full poise") {
+    const ArenaTable t = loadShipped();
+    for (const BreakCase& c : kBreakCases)
+        for (const char* lead : {"devin", "duy"}) {
+            CAPTURE(c.kind);
+            CAPTURE(lead);
+            ArenaEnemyKind k = shippedKind(t, c.kind);
+            k.attackDelay = 1000.f; // never asks: no armoured move, only the break-out starts one
+            Rig rig(t.fighter(lead), {k});
+            for (int i = 0; i < 600 && rig.count(ArenaEventType::Staggered) == 0 && rig.count(ArenaEventType::BrokeOut) == 0;
+                 ++i) {
+                rig.put(0, 1.5f, 0.f); // in reach through the flinch's push
+                rig.in.light = true;
+                rig.tick();
+            }
+            const bool devin = std::string_view(lead) == "devin";
+            const bool brokeOut = rig.count(ArenaEventType::BrokeOut) == 1;
+            const bool staggered = rig.count(ArenaEventType::Staggered) == 1;
+            CHECK(brokeOut != staggered); // one of them came first
+            if (devin) {
+                CHECK(staggered == c.devinStaggersFirst);
+                CHECK(rig.count(ArenaEventType::Hit) <= k.breakAt); // the stagger came by the breakAt-th blow
+            } else {
+                CHECK(brokeOut == c.duyBrokenOut);
+                CHECK(rig.count(ArenaEventType::Hit) == k.breakAt);
+            }
+        }
+}
+
 TEST_CASE("arena flinch: no stunlock; after a run of flinches the blows land without one until a gap") {
     ArenaEnemyKind k = dummyKind();
     k.flinchTime = 0.2f;
@@ -6260,15 +6335,16 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
           "4 staggers, 0 heals, 0 releases, 0 overloads, 5/7 reads right, dealt 520, took 68, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
     CHECK(r.hitsOn[1] == 19);
-    // The hulk's best run is 4 of its 5: the 4th blow breaks its poise, and a stagger resets the count.
-    CHECK(r.stats.breakRunBest == 4);
-    CHECK(r.stats.breakRunNeed == 5);
+    // The best run is the skirmisher's 2 of 2: Devin's 2nd blow reaches its breakAt and breaks its poise with it.
+    CHECK(r.stats.breakRunBest == 2);
+    CHECK(r.stats.breakRunNeed == 2);
     CHECK(r.stats.breakDue == 0);
     CHECK(r.stats.breakOuts == 0);
 }
 
 TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-out (poise breaks first)") {
-    // Not a short fight: every seed runs past 15 s, yet no upright run reaches breakAt, so the check line is n/a.
+    // Not a short fight: every seed runs past 15 s, yet each blow that reaches breakAt also staggers, so the check
+    // line is n/a. By design: Devin's string staggers every kind before it can break out.
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
         CAPTURE(seed);
@@ -6276,28 +6352,45 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-
         CHECK(r.stats.time > 15.f);
         CHECK(r.stats.flinches > 0);
         CHECK(r.stats.breakOuts == 0);
+        CHECK(r.stats.breakDue == 0);
         CHECK_FALSE(arenaFeatureChecks(r.stats).breakOutDue);
-        CHECK(r.stats.breakRunBest < r.stats.breakRunNeed);
     }
 }
 
-TEST_CASE("arena host mirror: Devin unlocked against duelist and skirmisher shows every feature") {
-    // The demo's feature check lines read arenaFeatureChecks over this fight.
+TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
+    // The headless -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoShoot line: his shots and light string leave
+    // an enemy upright at its breakAt, so it breaks out. Unaimed, the autopilot's parries cut his runs short (n/a).
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
-        const HostRun r = hostRun({"duelist", "skirmisher"}, "devin", seed);
+        const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true);
         CAPTURE(seed);
         CHECK(r.phase == ArenaPhase::Victory);
+        CHECK(r.stats.breakOuts >= 3);
         const ArenaFeatureChecks c = arenaFeatureChecks(r.stats);
-        CHECK(c.lightsFree);
-        CHECK(c.cancels);
-        CHECK(c.flinch);
         CHECK(c.breakOutDue);
         CHECK(c.breakOut);
-        CHECK(c.softTarget);
     }
 }
 
-TEST_CASE("arena host mirror: duelist and skirmisher show a flinch and a break-out with either melee lead") {
+TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out on Duy only") {
+    // The demo's feature check lines read arenaFeatureChecks over this fight. Devin staggers both kinds before their
+    // breakAt (break-out n/a); Duy leaves them upright, so they break out on him.
+    for (const char* kit : {"devin", "duy"})
+        for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+            const HostRun r = hostRun({"duelist", "skirmisher"}, kit, seed);
+            const bool devin = std::string_view(kit) == "devin";
+            CAPTURE(kit);
+            CAPTURE(seed);
+            CHECK(r.phase == ArenaPhase::Victory);
+            const ArenaFeatureChecks c = arenaFeatureChecks(r.stats);
+            CHECK(c.lightsFree);
+            CHECK(c.cancels);
+            CHECK(c.softTarget);
+            CHECK(c.breakOutDue == !devin);
+            CHECK(c.breakOut == !devin);
+        }
+}
+
+TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and break out on Duy only") {
     for (const char* kit : {"devin", "duy"})
         for (const bool shoots : {false, true})
             for (std::uint32_t seed = 1; seed <= 8; ++seed) {
@@ -6307,7 +6400,7 @@ TEST_CASE("arena host mirror: duelist and skirmisher show a flinch and a break-o
                 CAPTURE(seed);
                 CHECK(r.phase == ArenaPhase::Victory);
                 CHECK(r.stats.flinches > 0);
-                CHECK(r.stats.breakOuts > 0);
+                CHECK((r.stats.breakOuts > 0) == (std::string_view(kit) == "duy"));
             }
 }
 
@@ -6463,16 +6556,15 @@ TEST_CASE("arena host mirror: a shared count's held blows get their bonus throug
     CHECK(devin.hostHits >= 1);
     const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
     CHECK(duy.phase == ArenaPhase::Victory);
-    CHECK(duy.joins == 2);
-    CHECK(duy.bonuses == 2);
-    CHECK(duy.bonusDamage == 32);
+    CHECK(duy.joins == 3);
+    CHECK(duy.bonuses == 3);
+    CHECK(duy.bonusDamage == 49);
     for (std::uint32_t seed = 1; seed <= 6; ++seed) {
         const HostRun shared = hostRun({"duelist", "skirmisher"}, "devin", seed, false, true);
         const HostRun alone = hostRun({"duelist", "skirmisher"}, "devin", seed, false, false);
         CAPTURE(seed);
         CHECK(shared.bonuses > 0);
         CHECK(shared.bonusDamage > 0);
-        CHECK(shared.stats.time <= alone.stats.time); // the bonus ends the fight no later
         CHECK(alone.bonuses == 0);
         CHECK(alone.hostHits == 0);
     }

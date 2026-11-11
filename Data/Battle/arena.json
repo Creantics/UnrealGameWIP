@@ -75,7 +75,7 @@
       "id": "skirmisher",
       "hp": 70, "poise": 22, "poiseDelay": 2.5, "staggerTime": 0.8, "openTime": 1.4, "downTime": 1,
       "walkSpeed": 2.4, "runSpeed": 5, "strafeSpeed": 2.2, "accel": 14, "turnRate": 9,
-      "preferredRange": 3, "runRange": 8, "attackDelay": 0.9, "bodyRadius": 0.4, "flinchTime": 0.35, "flinchPoise": 12, "flinchPush": 0.5, "breakAt": 4, "breakDecay": 1.5, "breakMove": 1,
+      "preferredRange": 3, "runRange": 8, "attackDelay": 0.9, "bodyRadius": 0.4, "flinchTime": 0.35, "flinchPoise": 12, "flinchPush": 0.5, "breakAt": 2, "breakDecay": 2.5, "breakMove": 1,
       "moves": [
         { "tell": "thrust", "startup": 0.4, "active": 0.12, "recovery": 0.45, "range": 2, "arcCos": 0.4, "damage": 8, "poiseDamage": 8, "guardDamage": 10, "lunge": 1, "tracking": 5, "minRange": 0, "maxRange": 2.3, "weight": 1, "chain": 1 },
         { "tell": "slash", "armor": 0.6, "startup": 0.4, "active": 0.12, "recovery": 0.7, "range": 2, "arcCos": 0.4, "damage": 8, "poiseDamage": 8, "guardDamage": 10, "lunge": 0.8, "tracking": 4, "minRange": 0, "maxRange": 2.3, "weight": 0 }
@@ -85,7 +85,7 @@
       "id": "breaker",
       "hp": 260, "poise": 80, "poiseDelay": 3, "staggerTime": 1, "openTime": 1.6, "downTime": 1.4,
       "walkSpeed": 1.5, "runSpeed": 3.5, "strafeSpeed": 1.1, "accel": 6, "turnRate": 4,
-      "preferredRange": 3.5, "runRange": 9, "attackDelay": 1.8, "bodyRadius": 0.5, "flinchTime": 0.2, "flinchPoise": 20, "flinchPush": 0.2, "breakAt": 3, "breakDecay": 1.5, "breakMove": 1,
+      "preferredRange": 3.5, "runRange": 9, "attackDelay": 1.8, "bodyRadius": 0.5, "flinchTime": 0.2, "flinchPoise": 20, "flinchPush": 0.2, "breakAt": 5, "breakDecay": 3, "breakMove": 1,
       "moves": [
         { "tell": "sweep", "startup": 0.8, "active": 0.25, "recovery": 1, "range": 2.5, "arcCos": 0.5, "damage": 24, "poiseDamage": 30, "guardDamage": 35, "lunge": 0.7, "tracking": 2, "minRange": 0, "maxRange": 2.7, "weight": 1 },
         { "tell": "slam", "startup": 1.2, "active": 0.2, "recovery": 1.2, "range": 2.2, "arcCos": 0.5, "damage": 28, "poiseDamage": 30, "guardDamage": 0, "lunge": 1.2, "tracking": 2.5, "armor": 0.5, "minRange": 0, "maxRange": 2.6, "cooldown": 5, "weight": 0.6, "unblockable": true, "parryable": false }
@@ -93,9 +93,9 @@
     },
     {
       "id": "duelist",
-      "hp": 260, "poise": 50, "poiseDelay": 2.5, "staggerTime": 0.9, "openTime": 1.5, "downTime": 1.1,
+      "hp": 260, "poise": 65, "poiseDelay": 2.5, "staggerTime": 0.9, "openTime": 1.5, "downTime": 1.1,
       "walkSpeed": 2.2, "runSpeed": 4.8, "strafeSpeed": 2, "accel": 12, "turnRate": 8,
-      "preferredRange": 3, "runRange": 8, "attackDelay": 1, "bodyRadius": 0.4, "flinchTime": 0.25, "flinchPoise": 10, "flinchPush": 0.3, "breakAt": 3, "breakDecay": 1.2, "breakMove": 1, "height": 1.8,
+      "preferredRange": 3, "runRange": 8, "attackDelay": 1, "bodyRadius": 0.4, "flinchTime": 0.25, "flinchPoise": 10, "flinchPush": 0.3, "breakAt": 4, "breakDecay": 2.5, "breakMove": 1, "height": 1.8,
       "moves": [
         { "tell": "thrust", "startup": 0.4, "active": 0.12, "recovery": 0.5, "range": 2, "arcCos": 0.4, "damage": 10, "poiseDamage": 10, "guardDamage": 12, "lunge": 1, "tracking": 5, "minRange": 0, "maxRange": 2.3, "weight": 1, "chain": 1 },
         { "tell": "slash", "armor": 0.6, "startup": 0.4, "active": 0.12, "recovery": 0.7, "range": 2.1, "arcCos": 0.4, "damage": 10, "poiseDamage": 10, "guardDamage": 12, "lunge": 0.8, "tracking": 4, "minRange": 0, "maxRange": 2.4, "weight": 0 },
@@ -106,7 +106,7 @@
       "id": "hulk",
       "hp": 450, "poise": 110, "poiseDelay": 3, "staggerTime": 1.1, "openTime": 1.6, "downTime": 1.3,
       "walkSpeed": 1.8, "runSpeed": 4, "strafeSpeed": 1.4, "accel": 8, "turnRate": 4,
-      "preferredRange": 4.9, "runRange": 11, "attackDelay": 1.4, "bodyRadius": 1.2, "breakAt": 5, "breakDecay": 2, "breakMove": 1, "height": 3.5,
+      "preferredRange": 4.9, "runRange": 11, "attackDelay": 1.4, "bodyRadius": 1.2, "breakAt": 7, "breakDecay": 3, "breakMove": 1, "height": 3.5,
       "moves": [
         { "tell": "overhead", "startup": 1.2, "active": 0.25, "recovery": 1, "range": 3.6, "arcCos": 0.5, "damage": 24, "poiseDamage": 24, "guardDamage": 30, "lunge": 0.6, "tracking": 2.5, "minRange": 0, "maxRange": 3.9, "weight": 1, "chain": 1 },
         { "tell": "backhand", "armor": 0.8, "startup": 0.8, "active": 0.25, "recovery": 1.1, "range": 3.8, "arcCos": 0.4, "damage": 20, "poiseDamage": 20, "guardDamage": 26, "lunge": 0.8, "tracking": 2, "minRange": 0, "maxRange": 4.1, "weight": 0 },
@@ -174,7 +174,7 @@
       "id": "spitter",
       "hp": 70, "poise": 25, "poiseDelay": 2.5, "staggerTime": 0.8, "openTime": 1.4, "downTime": 1,
       "walkSpeed": 2, "runSpeed": 3.6, "strafeSpeed": 1.6, "accel": 10, "turnRate": 6,
-      "preferredRange": 6, "runRange": 10, "attackDelay": 1.4, "bodyRadius": 0.4, "flinchTime": 0.35, "flinchPoise": 12, "flinchPush": 0.5, "breakAt": 4, "breakDecay": 1.5, "breakMove": 0,
+      "preferredRange": 6, "runRange": 10, "attackDelay": 1.4, "bodyRadius": 0.4, "flinchTime": 0.35, "flinchPoise": 12, "flinchPush": 0.5, "breakAt": 2, "breakDecay": 2.5, "breakMove": 0,
       "moves": [
         { "tell": "strike", "armor": 0.6, "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 1.8, "arcCos": 0.5, "damage": 6, "poiseDamage": 6, "guardDamage": 8, "lunge": 0.5, "tracking": 4, "minRange": 0, "maxRange": 2.2, "weight": 1 },
         { "tell": "shot", "startup": 0.8, "active": 0.08, "recovery": 0.6, "range": 9, "width": 0.5, "damage": 12, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 0.3, "minRange": 3, "maxRange": 8.5, "cooldown": 1.5, "weight": 1.5, "parryable": false },
