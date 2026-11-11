@@ -86,10 +86,10 @@ struct TableSplit {
 
 class TableSet {
 public:
-    TableSet() { reset(); }
+    TableSet() { reset({}, 0.0); }
 
     // Starts over with its clock at t (CombatInputs.h startTime).
-    bool reset(const TableTuning& tuning = {}, double t = 0.0) {
+    bool reset(const TableTuning& tuning, double t) {
         const bool ok = validTableTuning(tuning);
         tuning_ = ok ? tuning : TableTuning{};
         state_ = TableState::Ready;

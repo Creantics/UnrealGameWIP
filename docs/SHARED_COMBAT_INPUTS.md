@@ -122,7 +122,7 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
     `CountRefused`, `NoGift`.
   - `Vacant`: nothing happens; `vacantPresses` goes up.
-  - `Hostile`: nothing happens; `hostilePresses` goes up.
+  - `Hostile`: nothing happens; `hostilePresses` goes up (the host reads the tallies).
 * **Threads and cooldowns** follow given gifts only: every given gift adds one thread to its target
   lead (`threads(lead)`), forever, and starts that gift's cooldown. A refused press does neither.
 * **The tally** (`GiftTally`): every `Companion` press, save-wide, saturating at `UINT32_MAX`:

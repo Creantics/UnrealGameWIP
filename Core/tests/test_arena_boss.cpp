@@ -6,6 +6,8 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <limits>
+
 #include <cmath>
 #include <string>
 #include <vector>
@@ -228,6 +230,30 @@ TEST_CASE("called blow: a Guard meets a side blow from either side, never a path
     w.start(&path, 1);
     w.interceptDown(CalledZone::Right, T + 5.0 - 0.1);
     CHECK(w.update(T + 5.0)[0].outcome == CalledOutcome::Missed);
+}
+
+TEST_CASE("called blow: the clock starts at reset; a junk far-future time is ignored, even first") {
+    const CalledImpact one = impactAt(20.0, CalledZone::Left);
+    CalledStrike s;
+    s.setWindows(CalledWindows{0.3, 0.5});
+    s.reset(13.0);
+    s.start(&one, 1);
+    CHECK(s.now() == 13.0);
+    CHECK(s.windows().window == 0.3); // kept
+    CHECK(s.update(1e300).empty()); // junk as the first time: not stored, the impact does not resolve
+    CHECK(s.now() == 13.0);
+    CHECK_FALSE(s.complete());
+    CHECK(s.update(20.0).size() == 1);
+
+    CalledStrike neg; // a fight clock may start below 0
+    neg.reset(-50.0);
+    CHECK(neg.now() == -50.0);
+    neg.reset(std::numeric_limits<double>::quiet_NaN());
+    CHECK(neg.now() == 0.0);
+    CalledStrike fresh;
+    CHECK(fresh.now() == 0.0);
+    CHECK(fresh.update(1e300).empty());
+    CHECK(fresh.now() == 0.0);
 }
 
 TEST_CASE("called blow: one hold at a time, and the Intercept rearms") {
@@ -1044,8 +1070,9 @@ TEST_CASE("arena boss run: a fight clock that starts below 0 plays its blows on 
         CHECK(a->outcome == CalledOutcome::Intercepted);
     }
     {
-        // The strike on its own, never updated before its impacts.
+        // The strike on its own, reset to a start below 0 and never updated before its impacts.
         CalledStrike s;
+        s.reset(-10.0);
         const CalledImpact imp = impactAt(-5.0, CalledZone::Left);
         s.start(&imp, 1);
         CHECK(s.update(-6.0).empty());
@@ -1279,6 +1306,26 @@ TEST_CASE("locked weak point: a long quiet stretch before the first offer leaves
     CHECK(run.weakPointOpen());
     run.update(703.5, 1.0f);
     CHECK_FALSE(run.weakPointOpen());
+}
+
+TEST_CASE("locked weak point: a junk far-future time is ignored and not stored by the run") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    ArenaBossRun junk, clean;
+    junk.begin(def, 0.0);
+    clean.begin(def, 0.0);
+    UnlockResult u = UnlockResult::BadKey;
+    junk.offerUnlock(kUnlockSharedBlow, 1e300, 0, &u);
+    CHECK(junk.now() == 0.0);
+    junk.relock(1e12);
+    CHECK(junk.now() == 0.0);
+    for (const double t : {13.0, 14.0}) {
+        junk.update(t, 1.0f);
+        clean.update(t, 1.0f);
+    }
+    CHECK(junk.now() == clean.now());
+    junk.offerUnlock(kUnlockSharedBlow, 14.0, 0, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    CHECK(junk.weakPointOpen());
 }
 
 TEST_CASE("locked weak point: a longer intercept opening is kept; an offer while open restarts the lock") {

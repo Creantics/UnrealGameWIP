@@ -112,6 +112,7 @@ add_library(ftcore STATIC
     src/SeaWaves.cpp
     src/StylePack.cpp
     src/StorySave.cpp
+    src/StoryState.cpp
     src/TurnQueue.cpp
     src/Version.cpp
     src/Vfx.cpp
@@ -277,6 +278,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
+        tests/test_story_state.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp
         tests/test_look_grade.cpp

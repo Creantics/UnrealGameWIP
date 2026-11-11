@@ -315,7 +315,7 @@ TEST_CASE("boss script: table 1: a guarded move exposes the point, a shared blow
     StrikeCount count;
     CountTuning ct;
     ct.bpm = 60.0;
-    REQUIRE(count.reset(ct));
+    REQUIRE(count.reset(ct, 0.0));
     BossScript s;
     REQUIRE(s.reset(g, 0.0));
     double t = untilWindow(s, g.find("swoop"), 0.0);
@@ -715,4 +715,33 @@ TEST_CASE("boss script: a long quiet stretch before the shared blow leaves the l
     CHECK(s.unlocked());
     s.update(t + 2.2);
     CHECK_FALSE(s.unlocked());
+}
+
+TEST_CASE("boss script: one update stops at the step cap and the next ones catch up") {
+    BossScriptDef d = smallDef();
+    d.restSeconds = 0.0f;
+    for (std::size_t i = 0; i < d.moveCount; ++i) {
+        d.moves[i].tell = 0.2f;
+        d.moves[i].window = 0.1f;
+        d.moves[i].recover = 0.0f;
+    }
+    BossScript s;
+    REQUIRE(s.reset(d, 0.0));
+    // About 13 steps a second: 500 s is far more than one update's 4096 steps.
+    const BossEvents& first = s.update(500.0);
+    CHECK(first.count + first.dropped > 0);
+    const double lag = s.now();
+    CHECK(lag > 100.0);
+    CHECK(lag < 500.0);
+    CHECK_FALSE(s.ended());
+    // The next call is judged against the latest time seen (500), not the lagging step position: a time
+    // 550 s on is still within the jump bound, so it plays.
+    s.update(1050.0);
+    CHECK(s.now() > lag);
+    double t = 1050.0;
+    for (int i = 0; i < 8 && s.now() < t; ++i) s.update(t);
+    CHECK(s.now() == t);
+    // Past the bound from the latest time: ignored.
+    s.update(t + 700.0);
+    CHECK(s.now() == t);
 }
