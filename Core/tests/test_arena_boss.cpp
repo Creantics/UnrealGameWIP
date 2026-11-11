@@ -6,6 +6,8 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <limits>
+
 #include <cmath>
 #include <string>
 #include <vector>
@@ -230,16 +232,28 @@ TEST_CASE("called blow: a Guard meets a side blow from either side, never a path
     CHECK(w.update(T + 5.0)[0].outcome == CalledOutcome::Missed);
 }
 
-TEST_CASE("called blow: the first time sets the clock; a later junk far-future time is ignored") {
+TEST_CASE("called blow: the clock starts at reset; a junk far-future time is ignored, even first") {
     const CalledImpact one = impactAt(20.0, CalledZone::Left);
     CalledStrike s;
+    s.setWindows(CalledWindows{0.3, 0.5});
+    s.reset(13.0);
     s.start(&one, 1);
-    CHECK(s.update(13.0).empty()); // the first time, however far from nothing
     CHECK(s.now() == 13.0);
-    CHECK(s.update(1e300).empty()); // junk: not stored, the impact does not resolve
+    CHECK(s.windows().window == 0.3); // kept
+    CHECK(s.update(1e300).empty()); // junk as the first time: not stored, the impact does not resolve
     CHECK(s.now() == 13.0);
     CHECK_FALSE(s.complete());
     CHECK(s.update(20.0).size() == 1);
+
+    CalledStrike neg; // a fight clock may start below 0
+    neg.reset(-50.0);
+    CHECK(neg.now() == -50.0);
+    neg.reset(std::numeric_limits<double>::quiet_NaN());
+    CHECK(neg.now() == 0.0);
+    CalledStrike fresh;
+    CHECK(fresh.now() == 0.0);
+    CHECK(fresh.update(1e300).empty());
+    CHECK(fresh.now() == 0.0);
 }
 
 TEST_CASE("called blow: one hold at a time, and the Intercept rearms") {
@@ -1056,8 +1070,9 @@ TEST_CASE("arena boss run: a fight clock that starts below 0 plays its blows on 
         CHECK(a->outcome == CalledOutcome::Intercepted);
     }
     {
-        // The strike on its own, never updated before its impacts.
+        // The strike on its own, reset to a start below 0 and never updated before its impacts.
         CalledStrike s;
+        s.reset(-10.0);
         const CalledImpact imp = impactAt(-5.0, CalledZone::Left);
         s.start(&imp, 1);
         CHECK(s.update(-6.0).empty());

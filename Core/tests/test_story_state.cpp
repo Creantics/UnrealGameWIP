@@ -9,109 +9,178 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace ftcore;
 
 namespace {
 
-constexpr std::size_t slotOf(StoryFact f) { return static_cast<std::size_t>(f); }
-constexpr std::size_t slotOf(StoryWide w) { return static_cast<std::size_t>(w); }
+// ---- A small registry built here: every public test runs on it ----
 
-// The game's registry lives in Data/Story/, which stays out of the public repo. Tests that need it skip
-// when it is absent (a clean clone); when it is present it must import cleanly.
-struct RealRegistry {
-    FactRegistry reg;
-    bool present = false;
-    std::string error;
-};
+const char* kCsv =
+    "slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive\n"
+    "1,a_ev,EV,1,0,once,s2,-,s3,-,-\n"
+    "2,a_num,NUM,9,3,mono,s2 s3,-,-,-,-\n"
+    "3,a_ch,C3,3,0,once,s2,-,s4,all,-\n"
+    "4,a_gated,C2,2,0,once,s3,a_ch=B,-,all,-\n"
+    "5,a_bits,BITS,7,0,mono,s2 s3,-,-,-,-\n"
+    "6,a_pk,PK,31,0,mono,s2 s3,-,-,-,-\n"
+    "7,a_once_pk,PK,15,0,once,s2,-,-,-,-\n"
+    "8,a_free,NUM,3,0,free,any,-,-,-,-\n"
+    "9,a_op,OP,2,0,once,s3,a_ch=A,-,all,-\n"
+    "10,a_opt,C2,2,0,once,s3,B:a_ch=C,-,all,-\n"
+    "11,a_der,EV,1,0,once,s4,-,-,-,1:a_ch=A\n"
+    "12,a_c4,C4,4,0,once,s5,D:a_ch=C,s6,all,-\n"
+    "13,a_step,ST,3,0,mono,s5 s7 s9,-,s10,-,-\n"
+    "14,a_last0,NUM,3,0,free,any,-,-,-,-\n"
+    "15,a_last1,NUM,3,0,free,any,-,-,-,-\n"
+    "16,a_first,EV,1,0,once,any,-,all,-,-\n"
+    "17,a_open1,NUM,3,0,free,any,-,-,-,-\n"
+    "18,a_need,OP,2,0,once,s8,a_pk.f1=2,s9,all,-\n"
+    "19,a_late,C2,2,0,once,s11,a_c4=2,s12,all,-\n"
+    "0,w_ctr,CTR,3,0,-,any,-,s3,-,-\n"
+    "1,w_raw,RAW,100,0,-,any,-,-,-,-\n"
+    "2,w_mask,MASK,15,0,-,s2,-,-,-,-\n"
+    "3,w_p00,CTR,65535,0,-,any,-,s6,-,-\n"
+    "4,w_p01,CTR,65535,0,-,any,-,s6,-,-\n"
+    "5,w_p02,CTR,65535,0,-,any,-,s6,-,-\n"
+    "6,w_p10,CTR,65535,0,-,any,-,s6,-,-\n"
+    "7,w_p11,CTR,65535,0,-,any,-,s6,-,-\n"
+    "8,w_p12,CTR,65535,0,-,any,-,s6,-,-\n"
+    "9,w_scene,CTR,255,0,-,any,-,-,-,-\n"
+    "10,w_mark,CTR,255,0,-,s6,-,s6,-,-\n"
+    "11,w_mile,CTR,255,0,-,s5 s8,-,s9,-,-\n"
+    "12,w_late,CTR,9,0,-,s9,-,-,-,-\n"
+    "13,w_retry,RAW,65535,0,-,any,-,-,-,-\n"
+    "14,w_total,RAW,4294967295,0,-,any,-,-,-,-\n";
 
-const RealRegistry& real() {
-    static const RealRegistry r = [] {
-        RealRegistry out;
-        std::string csv, json;
-        if (!ftcore_test::readProjectData("Story/story_facts.csv", csv)) return out;
-        if (!ftcore_test::readProjectData("Story/story_tuning.json", json)) return out;
-        out.present = true;
-        if (!importStoryFacts(csv, out.reg, &out.error)) return out;
-        importStoryTuning(json, out.reg.tuning, &out.error);
+const char* kJson = R"({
+  "version": 2,
+  "scenes": ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12"],
+  "roles": {
+    "pressCounters": [["w_p00", "w_p01", "w_p02"], ["w_p10", "w_p11", "w_p12"]],
+    "pressScene": "w_scene",
+    "pressTotal": "w_total",
+    "retries": "w_retry",
+    "milestone": "w_mile",
+    "trackMark": "w_mark",
+    "lastKind": ["a_last0", "a_last1"],
+    "firstPress": "a_first",
+    "sideOpen": ["", "a_open1"]
+  },
+  "track": { "length": 4, "scene": "s6", "side": 1 },
+  "milestones": [
+    { "scene": "s5", "value": 10 },
+    { "scene": "s8", "value": 20, "needs": "a_free" }
+  ],
+  "derived": [
+    { "kind": "in", "fact": "a_ch", "values": [2, 3] },
+    { "kind": "read", "fact": "a_num" },
+    { "kind": "value", "fact": "a_c4" },
+    { "kind": "upgrade", "fact": "a_c4", "from": 1, "to": 3, "if": "a_num=7" },
+    { "kind": "leadKind" },
+    { "kind": "pressShown" }
+  ],
+  "rules": [
+    { "number": 41, "kind": "needs", "when": "a_pk.f1=2", "then": "a_need" },
+    { "number": 42, "kind": "needs", "when": "a_need=2", "then": "a_pk.f1=2", "settled": true },
+    { "number": 43, "kind": "bitsInOrder", "fact": "a_bits" },
+    { "number": 44, "kind": "needs", "when": "a_bits&4", "then": "a_ev" }
+  ]
+})";
+
+const FactRegistry& reg() {
+    static const FactRegistry r = [] {
+        FactRegistry out;
+        std::string err;
+        const bool ok = importStoryRegistry(kCsv, kJson, out, &err);
+        if (!ok) {
+            MESSAGE(err);
+            std::abort();
+        }
         return out;
     }();
     return r;
 }
 
-// True when the game's registry is here; it then must have imported without an error.
-bool haveRegistry() {
-    if (!real().present) {
-        MESSAGE("Data/Story is absent: skipped");
-        return false;
-    }
-    INFO(real().error);
-    REQUIRE(real().error.empty());
-    return true;
-}
+std::uint8_t sc(const char* code) { return storySceneOrdinal(reg(), code); }
+std::uint16_t fs(const char* id) { return storyFactSlot(reg(), id); }
+std::uint8_t ws(const char* id) { return storyWideSlot(reg(), id); }
 
-const FactRegistry& registry() { return real().reg; }
-
-std::uint8_t sc(const char* code) { return storySceneOrdinal(code); }
-
-std::uint32_t issues(const StoryState& s, std::vector<StoryIssue>* list = nullptr,
-                     const FactRegistry* reg = nullptr) {
+std::uint32_t issues(const StoryState& s, const FactRegistry& r, std::vector<StoryIssue>* list = nullptr) {
     std::array<StoryIssue, kMaxStoryIssues> out{};
-    const std::uint32_t n = storyValidate(s, reg ? *reg : registry(), out);
+    const std::uint32_t n = storyValidate(s, r, out);
     if (list) list->assign(out.begin(), out.begin() + n);
     return n;
 }
 
-bool hasRule(const StoryState& s, std::uint8_t rule, const FactRegistry* reg = nullptr) {
+bool hasRule(const StoryState& s, std::uint8_t rule, const FactRegistry& r = reg()) {
     std::vector<StoryIssue> list;
-    issues(s, &list, reg);
+    issues(s, r, &list);
     for (const StoryIssue& i : list)
         if (i.rule == rule) return true;
     return false;
 }
 
-std::string describe(const StoryState& s) {
+std::string describe(const StoryState& s, const FactRegistry& r) {
     std::vector<StoryIssue> list;
-    issues(s, &list);
+    issues(s, r, &list);
     std::string out;
     for (const StoryIssue& i : list)
         out += "V" + std::to_string(i.rule) + "(" + std::to_string(i.factA) + "," + std::to_string(i.factB) + ") ";
     return out;
 }
 
-// A minimal registry for rule tests: one row of each kind.
-const char* kSmallCsv =
-    "slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive\n"
-    "1,a_ev,EV,1,0,once,p02,-,p03,-,-\n"
-    "2,a_num,NUM,9,3,mono,p02 p03,-,-,-,-\n"
-    "3,a_ch,C3,3,0,once,p02,-,p04,all,-\n"
-    "4,a_gated,C2,2,0,once,p03,a_ch=B,-,all,-\n"
-    "5,a_bits,BITS,7,0,mono,p02 p03,-,-,-,-\n"
-    "6,a_pk,PK,31,0,mono,p02 p03,-,-,-,-\n"
-    "7,a_once_pk,PK,15,0,once,p02,-,-,-,-\n"
-    "8,a_free,NUM,3,0,free,any,-,-,-,-\n"
-    "9,a_op,OP,2,0,once,p03,a_ch=A,-,all,-\n"
-    "10,a_opt,C2,2,0,once,p03,B:a_ch=C,-,all,-\n"
-    "11,a_der,EV,1,0,once,p04,-,-,-,1:a_ch=A\n"
-    "0,w_ctr,CTR,3,0,-,any,-,p03,-,-\n"
-    "1,w_raw,RAW,100,0,-,any,-,-,-,-\n"
-    "2,w_mask,MASK,15,0,-,p02,-,-,-,-\n";
+void fixCrc(std::array<std::uint8_t, kStoryStateBlockSize>& b) {
+    std::uint32_t crc = storyCrc32(std::span<const std::uint8_t>(b).first(28));
+    crc = storyCrc32(std::span<const std::uint8_t>(b).subspan(32), crc);
+    for (std::size_t i = 0; i < 4; ++i) b[28 + i] = static_cast<std::uint8_t>(crc >> (8 * i));
+}
 
-FactRegistry small() {
-    FactRegistry r;
-    std::string err;
-    const bool ok = importStoryFacts(kSmallCsv, r, &err);
-    INFO(err);
-    REQUIRE(ok);
+// Sets a fact as if a committed scene had written it.
+void put(StoryState& s, std::uint16_t slot, std::uint8_t v) {
+    s.facts[slot] = v;
+    s.factsEntry[slot] = v;
+}
+void putWide(StoryState& s, std::uint8_t slot, std::uint32_t v) {
+    s.wide[slot] = v;
+    s.wideEntry[slot] = v;
+}
+StoryState committedThrough(const char* code) {
+    StoryState s;
+    s.lastCommitted = sc(code);
+    return s;
+}
+
+// The game's registry, when Data/Story is here: extra cases only.
+struct PrivateRegistry {
+    FactRegistry reg;
+    bool present = false;
+    bool ok = false;
+    std::string error;
+};
+
+const PrivateRegistry& privateRegistry() {
+    static const PrivateRegistry r = [] {
+        PrivateRegistry out;
+        std::string csv, json;
+        const bool haveCsv = ftcore_test::readProjectData("Story/story_facts.csv", csv);
+        const bool haveJson = ftcore_test::readProjectData("Story/story_tuning.json", json);
+        out.present = haveCsv || haveJson;
+        if (!out.present) return out;
+        // One without the other is a failure: importStoryRegistry refuses an empty half.
+        out.ok = importStoryRegistry(csv, json, out.reg, &out.error);
+        return out;
+    }();
     return r;
 }
 
-StoryFact sf(int slot) { return static_cast<StoryFact>(slot); }
-StoryWide sw(int slot) { return static_cast<StoryWide>(slot); }
-
 } // namespace
+
+// ---- Formulas and the import ----
 
 TEST_CASE("story state: formulas") {
     CHECK(storySaturatingAdd(5, 3, 10) == 8);
@@ -121,189 +190,266 @@ TEST_CASE("story state: formulas") {
     CHECK(storyCrc32(digits) == 0xCBF43926u);
     CHECK(storyCrc32(std::span(digits).subspan(4), storyCrc32(std::span(digits).first(4))) == 0xCBF43926u);
 
+    const FactRegistry& r = reg();
+    const auto& c = r.roles.pressCounters;
     StoryState s;
-    CHECK(storyHelpShown(s) == 2);
-    CHECK(storyLeadKind(s) == 0);
-    s.wide[slotOf(StoryWide::c_help_s0_k1)] = 1;
-    CHECK(storyHelpShown(s) == 2);
-    for (int k = 0; k < 6; ++k) s.wide[static_cast<std::size_t>(k)] = 65535;
-    CHECK(storyHelpShown(s) == 393210);
+    CHECK(storyHelpShown(s, r) == 2);
+    CHECK(storyLeadKind(s, r) == 0);
+    s.wide[c[0][1]] = 1;
+    CHECK(storyHelpShown(s, r) == 2);
+    for (int side = 0; side < 2; ++side)
+        for (int k = 0; k < 3; ++k) s.wide[c[static_cast<std::size_t>(side)][static_cast<std::size_t>(k)]] = 65535;
+    CHECK(storyHelpShown(s, r) == 393210);
+    // The totals saturate, even past the caps.
+    for (int side = 0; side < 2; ++side)
+        for (int k = 0; k < 3; ++k) s.wide[c[static_cast<std::size_t>(side)][static_cast<std::size_t>(k)]] = 0xFFFFFFFFu;
+    CHECK(storyHelpShown(s, r) == 0xFFFFFFFFu);
+    CHECK(storyHelpShown(s, FactRegistry{}) == 2); // nothing bound
 
-    // Most pressed wins; a tie goes to the last kind pressed, else heal, guard, count.
+    // Most pressed wins; a tie goes to the last kind pressed if it is tied, else to the lowest tied kind.
+    const std::uint16_t last0 = r.roles.lastKind[0];
     StoryState t;
-    t.wide[0] = 2;
-    t.wide[1] = 3;
-    t.wide[2] = 3;
-    CHECK(storyLeadKind(t) == 1);
-    t.facts[slotOf(StoryFact::sg_hl0)] = 3;
-    CHECK(storyLeadKind(t) == 2);
-    t.facts[slotOf(StoryFact::sg_hl0)] = 1; // last kind not among the tied
-    CHECK(storyLeadKind(t) == 1);
-    // The tie order heal, guard, count replaces "highest kind": (0,0,0) with no last kind is 0, and
-    // (3,9,9) with last kind 0 is 1.
+    t.wide[c[0][0]] = 2;
+    t.wide[c[0][1]] = 3;
+    t.wide[c[0][2]] = 3;
+    CHECK(storyLeadKind(t, r) == 1);
+    t.facts[last0] = 3;
+    CHECK(storyLeadKind(t, r) == 2);
+    t.facts[last0] = 1; // the last kind is not among the tied
+    CHECK(storyLeadKind(t, r) == 1);
     StoryState u;
-    CHECK(storyLeadKind(u) == 0);
-    u.wide[0] = 3;
-    u.wide[1] = 9;
-    u.wide[2] = 9;
-    u.facts[slotOf(StoryFact::sg_hl0)] = 1;
-    CHECK(storyLeadKind(u) == 1);
-    u.wide[0] = u.wide[1] = u.wide[2] = 7;
-    u.facts[slotOf(StoryFact::sg_hl0)] = 2;
-    CHECK(storyLeadKind(u) == 1);
+    u.wide[c[0][0]] = u.wide[c[0][1]] = u.wide[c[0][2]] = 7;
+    u.facts[last0] = 2;
+    CHECK(storyLeadKind(u, r) == 1);
+    CHECK(storyLeadKind(u, FactRegistry{}) == 0);
 }
 
-TEST_CASE("story state: scene codes") {
-    CHECK(sc("p01") == 0);
-    CHECK(sc("p08") == 7);
-    CHECK(sc("101") == 8);
-    CHECK(sc("115") == 22);
-    CHECK(sc("117") == 24);
-    CHECK(sc("201") == 25);
-    CHECK(sc("301") == 41);
-    CHECK(sc("401") == 56);
-    CHECK(sc("f01") == 65);
-    CHECK(sc("f10") == 74);
-    CHECK(sc("118") == kNoScene);
-    CHECK(sc("p09") == kNoScene);
-    CHECK(sc("x01") == kNoScene);
-    CHECK(sc("1015") == kNoScene);
-    for (std::uint8_t i = 0; i < kStoryScenes; ++i) CHECK(storySceneOrdinal(storySceneCode(i)) == i);
-    CHECK(storySceneCode(kStoryScenes).empty());
+TEST_CASE("story state: scene codes and ids") {
+    const FactRegistry& r = reg();
+    CHECK(r.sceneCount == 12);
+    CHECK(sc("s1") == 0);
+    CHECK(sc("s12") == 11);
+    CHECK(sc("s13") == kNoScene);
+    CHECK(sc("") == kNoScene);
+    for (std::uint8_t i = 0; i < r.sceneCount; ++i) CHECK(storySceneOrdinal(r, storySceneCode(r, i)) == i);
+    CHECK(storySceneCode(r, r.sceneCount).empty());
+    CHECK(fs("a_ev") == 1);
+    CHECK(fs("w_ctr") == 0); // a wide id is not a fact
+    CHECK(fs("nope") == 0);
+    CHECK(ws("w_total") == 14);
+    CHECK(ws("a_ev") == kNoWide);
+    CHECK(r.factsKnown == 19);
+    CHECK(r.wideKnown == 15);
+    CHECK(r.hash != 0);
+    CHECK(r.tuning.trackScene == sc("s6"));
+    CHECK(r.tuning.milestoneCount == 2);
+    CHECK(r.derivedCount == 6);
+    CHECK(r.ruleCount == 4);
+    for (std::uint8_t k = 0; k < r.sceneCount; ++k) CHECK(storySceneReads(StoryState{}, r, k).complete);
+    CHECK_FALSE(storySceneReads(StoryState{}, r, r.sceneCount).complete);
 }
 
-TEST_CASE("story state: the data matches the enums") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
-    for (int i = 1; i < static_cast<int>(StoryFact::Count); ++i) {
-        CAPTURE(i);
-        CHECK(reg.facts[static_cast<std::size_t>(i)].used);
-        CHECK(std::string(reg.facts[static_cast<std::size_t>(i)].id()) == std::string(storyFactId(sf(i))));
-    }
-    for (int i = 0; i < static_cast<int>(StoryWide::Count); ++i) {
-        CAPTURE(i);
-        CHECK(reg.wide[static_cast<std::size_t>(i)].kind != WideKind::None);
-        CHECK(std::string(reg.wide[static_cast<std::size_t>(i)].id()) == std::string(storyWideId(sw(i))));
-    }
-    CHECK(reg.factsKnown == static_cast<std::uint16_t>(StoryFact::Count) - 1);
-    CHECK(reg.wideKnown == static_cast<std::uint16_t>(StoryWide::Count));
-    CHECK(reg.hash != 0);
-    CHECK(reg.tuning.trackScene == sc("115"));
-    CHECK(reg.tuning.trackLength == 7);
-    CHECK(reg.tuning.milestoneCount == 4);
-    // No scene reads more than its limits.
-    for (std::uint8_t k = 0; k < kStoryScenes; ++k) CHECK(storySceneReads(StoryState{}, reg, k).complete);
-}
-
-TEST_CASE("story state: the registry refuses bad rows") {
+TEST_CASE("story state: the csv refuses bad rows") {
     const std::string head = "slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive\n";
+    const std::string json = R"({"version":2,"scenes":["s1","s2","s3","s4","s5"]})";
     auto fails = [&](const std::string& rows, const std::string& expect) {
         FactRegistry r;
         std::string err;
         CAPTURE(rows);
-        CHECK_FALSE(importStoryFacts(head + rows, r, &err));
+        CHECK_FALSE(importStoryRegistry(head + rows, json, r, &err));
         CAPTURE(err);
         CHECK(err.find(expect) != std::string::npos);
         CHECK_FALSE(r.facts[1].used); // nothing half-loaded
+        CHECK(r.hash == 0);
+        CHECK(r.sceneCount == 0);
     };
     {
         FactRegistry r;
         std::string err;
-        CHECK_FALSE(importStoryFacts("slot,id\n", r, &err));
+        CHECK_FALSE(importStoryRegistry("slot,id\n", json, r, &err));
         CHECK(err.find("header") != std::string::npos);
     }
-    fails("1,a,EV,1,0,once,p02,-,-,-\n", "expected 11 fields");
-    fails("1,Bad,EV,1,0,once,p02,-,-,-,-\n", "id:");
-    fails("1,a,EV,1,0,once,p02,-,-,-,-\n2,a,EV,1,0,once,p02,-,-,-,-\n", "id duplicated: a");
-    fails("1,a,EV,1,0,once,p02,-,-,-,-\n1,b,EV,1,0,once,p02,-,-,-,-\n", "slot reused: 1");
-    fails("0,a,EV,1,0,once,p02,-,-,-,-\n", "slot: expected 1..255");
+    fails("1,a,EV,1,0,once,s2,-,-,-\n", "expected 11 fields");
+    fails("1,Bad,EV,1,0,once,s2,-,-,-,-\n", "id:");
+    fails("1,a,EV,1,0,once,s2,-,-,-,-\n2,a,EV,1,0,once,s2,-,-,-,-\n", "id duplicated: a");
+    fails("1,a,EV,1,0,once,s2,-,-,-,-\n1,b,EV,1,0,once,s2,-,-,-,-\n", "slot reused: 1");
+    fails("0,a,EV,1,0,once,s2,-,-,-,-\n", "slot: expected 1..255");
     fails("64,w,CTR,3,0,-,any,-,-,-,-\n", "slot: expected 0..63");
-    fails("1,a,XX,1,0,once,p02,-,-,-,-\n", "kind:");
-    fails("1,a,C3,2,0,once,p02,-,-,all,-\n", "max: does not fit the kind");
-    fails("1,a,NUM,5,6,mono,p02,-,-,-,-\n", "default not representable");
-    fails("1,a,EV,1,0,maybe,p02,-,-,-,-\n", "mut:");
-    fails("1,a,EV,1,0,once,p02 p03,-,-,-,-\n", "a once fact with more than one set scene");
-    fails("1,a,EV,1,0,once,q02,-,-,-,-\n", "set_scenes");
-    fails("1,a,EV,1,0,once,p03,-,p02,-,-\n", "before any scene sets it");
-    fails("1,a,C2,2,0,once,p03,-,p04 p05,p04,-\n", "no fallback marked for the read in p05");
-    fails("1,a,C2,2,0,once,p03,nope=A,-,all,-\n", "unknown fact nope");
-    fails("1,a,C2,2,0,once,p03,b=A,-,all,-\n2,b,C2,2,0,once,p04,-,-,all,-\n", "is set in a later scene");
-    fails("1,a,C2,2,0,once,p03,C:b=A,-,all,-\n2,b,C2,2,0,once,p02,-,-,all,-\n", "option gate");
-    fails("1,a,C2,2,0,once,p03,b.f2=1,-,all,-\n2,b,PK,15,0,mono,p02,-,-,-,-\n", "has no field 2");
-    fails("1,a,EV,1,0,once,p03,-,-,-,5:b=1\n2,b,EV,1,0,once,p02,-,-,-,-\n", "derive:");
-    fails("1,a,C2,2,0,once,p03,b=7,-,all,-\n2,b,C3,3,0,once,p02,-,-,all,-\n", "7 is not a value of b");
-    fails("1,a,C2,2,0,once,p03,b.f0=3,-,all,-\n2,b,PK,15,0,mono,p02,-,-,-,-\n", "3 is not a value of b");
-    fails("1,a,C2,2,0,once,p03,a=A,-,all,-\n", "names its own fact");
+    fails("1,a,XX,1,0,once,s2,-,-,-,-\n", "kind:");
+    fails("1,a,C3,2,0,once,s2,-,-,all,-\n", "max: does not fit the kind");
+    fails("1,a,NUM,5,6,mono,s2,-,-,-,-\n", "default not representable");
+    fails("1,a,EV,1,0,maybe,s2,-,-,-,-\n", "mut:");
+    fails("1,a,EV,1,0,once,s2 s3,-,-,-,-\n", "a once fact with more than one set scene");
+    fails("1,a,EV,1,0,once,q2,-,-,-,-\n", "set_scenes");
+    fails("1,a,EV,1,0,once,s3,-,s2,-,-\n", "before any scene sets it");
+    fails("1,a,C2,2,0,once,s3,-,s4 s5,s4,-\n", "no fallback marked for the read in s5");
+    fails("1,a,C2,2,0,once,s3,nope=A,-,all,-\n", "unknown fact nope");
+    fails("1,a,C2,2,0,once,s3,b=A,-,all,-\n2,b,C2,2,0,once,s4,-,-,all,-\n", "is set in a later scene");
+    fails("1,a,C2,2,0,once,s3,C:b=A,-,all,-\n2,b,C2,2,0,once,s2,-,-,all,-\n", "option gate");
+    fails("1,a,C2,2,0,once,s3,b.f2=1,-,all,-\n2,b,PK,15,0,mono,s2,-,-,-,-\n", "has no field 2");
+    fails("1,a,EV,1,0,once,s3,-,-,-,5:b=1\n2,b,EV,1,0,once,s2,-,-,-,-\n", "derive:");
+    fails("1,a,C2,2,0,once,s3,b=7,-,all,-\n2,b,C3,3,0,once,s2,-,-,all,-\n", "7 is not a value of b");
+    fails("1,a,C2,2,0,once,s3,b.f0=3,-,all,-\n2,b,PK,15,0,mono,s2,-,-,-,-\n", "3 is not a value of b");
+    fails("1,a,C2,2,0,once,s3,a=A,-,all,-\n", "names its own fact");
     std::string many;
-    for (int i = 1; i <= 25; ++i) many += std::to_string(i) + ",f" + std::to_string(i) + ",EV,1,0,once,p02,-,p03,-,-\n";
-    fails(many, "scene p03 reads more than 24 facts");
+    for (int i = 1; i <= 25; ++i) many += std::to_string(i) + ",f" + std::to_string(i) + ",EV,1,0,once,s2,-,s3,-,-\n";
+    fails(many, "scene s3 reads more than 24 facts");
 }
 
-TEST_CASE("story state: tuning import") {
-    StoryTuning t;
+TEST_CASE("story state: the json refuses bad settings") {
+    const std::string scenes = R"("scenes":["s1","s2","s3","s4","s5","s6","s7","s8","s9","s10","s11","s12"])";
+    auto build = [&](const std::string& rest) { return "{\"version\":2," + scenes + rest + "}"; };
+    auto fails = [&](const std::string& json, const std::string& expect, const std::string& csv = kCsv) {
+        FactRegistry r;
+        std::string err;
+        CAPTURE(json);
+        CHECK_FALSE(importStoryRegistry(csv, json, r, &err));
+        CAPTURE(err);
+        CHECK(err.find(expect) != std::string::npos);
+        CHECK(r.hash == 0);
+        CHECK(r.sceneCount == 0);
+        CHECK_FALSE(r.facts[1].used);
+    };
+    {   // Both halves are required: one alone is an error, never a skip.
+        FactRegistry r;
+        std::string err;
+        CHECK_FALSE(importStoryRegistry(kCsv, "", r, &err));
+        CHECK(err.find("missing") != std::string::npos);
+        CHECK_FALSE(importStoryRegistry("", kJson, r, &err));
+        CHECK(err.find("missing") != std::string::npos);
+    }
+    fails("{\"version\":1," + scenes + "}", "version");
+    fails("{\"version\":2,\"scenes\":[]}", "scenes");
+    fails("{\"version\":2,\"scenes\":[\"s1\",\"s1\"]}", "duplicated: s1");
+    fails("{\"version\":2,\"scenes\":[\"S1\"]}", "expected 1..7 characters");
+    fails("{\"version\":2,\"scenes\":[\"abcdefgh\"]}", "expected 1..7 characters");
+    fails("not json", "story_tuning.json");
+    // Roles.
+    fails(build(R"(,"roles":{"pressScene":"nope"})"), "roles.pressScene");
+    fails(build(R"(,"roles":{"pressScene":"w_mask"})"), "expected a counter id");
+    fails(build(R"(,"roles":{"pressCounters":[["w_p00"]]})"), "roles.pressCounters");
+    fails(build(R"(,"roles":{"pressCounters":[["w_p00","w_p01","w_total"],["w_p10","w_p11","w_p12"]]})"),
+          "a press counter is a CTR with max at most 65535");
+    {   // A press counter with a cap past 65535 is refused (the totals rely on it).
+        std::string csv = kCsv;
+        const std::string from = "3,w_p00,CTR,65535,";
+        csv.replace(csv.find(from), from.size(), "3,w_p00,CTR,65536,");
+        fails(build(R"(,"roles":{"pressCounters":[["w_p00","w_p01","w_p02"],["w_p10","w_p11","w_p12"]]})"),
+              "a press counter is a CTR with max at most 65535", csv);
+    }
+    fails(build(R"(,"roles":{"firstPress":"nope"})"), "roles.firstPress");
+    fails(build(R"(,"roles":{"lastKind":["a_ev","a_last1"]})"), "expected a NUM fact with max at least 3");
+    fails(build(R"(,"roles":{"sideOpen":["a_ev"]})"), "roles.sideOpen");
+    // The track.
+    fails(build(R"(,"roles":{"trackMark":"w_mark"})"), "the trackMark role needs a track");
+    fails(build(R"(,"track":{"length":0,"scene":"s6","side":1})"), "track.length");
+    fails(build(R"(,"track":{"length":4,"scene":"zz","side":1})"), "track.scene");
+    fails(build(R"(,"track":{"length":4,"scene":"s6","side":2})"), "track.side");
+    fails(build(R"(,"roles":{"trackMark":"w_ctr"},"track":{"length":4,"scene":"s6","side":1})"),
+          "above the trackMark counter's max");
+    // Milestones.
+    fails(build(R"(,"milestones":[{"scene":"s5","value":10}])"), "need the milestone role");
+    const std::string mile = R"(,"roles":{"milestone":"w_mile"})";
+    fails(build(mile + R"(,"milestones":[{"scene":"s8","value":10},{"scene":"s5","value":20}])"),
+          "expected a later scene and a value no lower");
+    fails(build(mile + R"(,"milestones":[{"scene":"s5","value":10},{"scene":"s8","value":5}])"),
+          "expected a later scene and a value no lower");
+    fails(build(mile + R"(,"milestones":[{"scene":"s5","value":256}])"), "above the milestone counter's max");
+    fails(build(mile + R"(,"milestones":[{"scene":"s5","value":0}])"), "milestones[0].value");
+    fails(build(mile + R"(,"milestones":[{"scene":"zz","value":3}])"), "milestones[0].scene");
+    // Derived values.
+    fails(build(R"(,"derived":[{"kind":"guess","fact":"a_ch"}])"), "derived[0].kind");
+    fails(build(R"(,"derived":[{"kind":"read"}])"), "derived[0].fact");
+    fails(build(R"(,"derived":[{"kind":"in","fact":"a_ch","values":[]}])"), "derived[0].values");
+    fails(build(R"(,"derived":[{"kind":"in","fact":"a_ch","values":[32]}])"), "expected 0..31");
+    fails(build(R"(,"derived":[{"kind":"upgrade","fact":"a_c4","from":9,"to":3,"if":"a_num=7"}])"), "upgrade:");
+    fails(build(R"(,"derived":[{"kind":"upgrade","fact":"a_c4","from":1,"to":3,"if":"a_pk.f0=1"}])"),
+          "derived[0].if");
+    // Rules.
+    fails(build(R"(,"rules":[{"number":0,"kind":"needs","when":"a_ev","then":"a_ch"}])"), "rules[0].number");
+    fails(build(R"(,"rules":[{"number":5,"kind":"maybe","when":"a_ev","then":"a_ch"}])"), "rules[0].kind");
+    fails(build(R"(,"rules":[{"number":5,"kind":"needs","when":"nope","then":"a_ch"}])"), "rules[0].when");
+    fails(build(R"(,"rules":[{"number":5,"kind":"needs","when":"a_ev","then":"a_pk.f9=1"}])"), "rules[0].then");
+    fails(build(R"(,"rules":[{"number":5,"kind":"bitsInOrder","fact":"a_num"}])"), "expected a BITS fact");
+    // A minimal registry: the scenes alone.
+    FactRegistry r;
     std::string err;
-    CHECK_FALSE(importStoryTuning("{\"version\":2,\"trackLength\":7,\"trackScene\":\"115\",\"milestones\":[]}", t, &err));
-    CHECK(err.find("version") != std::string::npos);
-    CHECK_FALSE(importStoryTuning("{\"version\":1,\"trackLength\":0,\"trackScene\":\"999\",\"milestones\":[]}", t, &err));
-    CHECK(err.find("trackLength") != std::string::npos);
-    CHECK(err.find("trackScene") != std::string::npos);
-    CHECK_FALSE(importStoryTuning("{\"version\":1,\"trackLength\":7,\"trackScene\":\"115\",\"milestones\":"
-                                  "[{\"scene\":\"115\",\"value\":5},{\"scene\":\"p07\",\"value\":6}]}",
-                                  t, &err));
-    CHECK(err.find("milestones[1]") != std::string::npos);
-    CHECK(importStoryTuning("{\"version\":1,\"trackLength\":3,\"trackScene\":\"p05\",\"milestones\":[]}", t, &err));
-    CHECK(t.trackLength == 3);
-    CHECK(t.trackScene == sc("p05"));
-    CHECK(t.milestoneCount == 0);
+    CHECK(importStoryRegistry(kCsv, build(""), r, &err));
+    CAPTURE(err);
+    CHECK(r.roles.milestone == kNoWide);
+    CHECK(r.derivedCount == 0);
 }
+
+TEST_CASE("story state: the csv may start with a byte order mark") {
+    FactRegistry r;
+    std::string err;
+    CHECK(importStoryRegistry(std::string("\xEF\xBB\xBF") + kCsv, kJson, r, &err));
+    CAPTURE(err);
+    CHECK(r.facts[1].used);
+    CHECK(r.hash == reg().hash);
+}
+
+TEST_CASE("story state: a gate naming its own fact gives one error") {
+    FactRegistry r;
+    std::string err;
+    CHECK_FALSE(importStoryRegistry("slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive\n"
+                                    "1,a,C2,2,0,once,s3,a=7,-,all,-\n",
+                                    R"({"version":2,"scenes":["s1","s2","s3"]})", r, &err));
+    CAPTURE(err);
+    CHECK(err.find("names its own fact") != std::string::npos);
+    CHECK(err.find("not a value") == std::string::npos);
+}
+
+// ---- Play ----
 
 TEST_CASE("story state: set and get") {
-    const FactRegistry r = small();
+    const FactRegistry& r = reg();
     StoryState s;
-    CHECK(storyGet(s, r, sf(2)).status == FactStatus::Unset);
-    CHECK(storyGet(s, r, sf(2)).value == 3); // the default
-    CHECK(storyGet(s, r, sf(40)).status == FactStatus::Unknown);
-    CHECK(storySet(s, r, sf(1), 1) == SetResult::RejectedNoScene);
-    CHECK(storySet(s, r, sf(40), 1) == SetResult::UnknownFact);
+    CHECK(storyGet(s, r, fs("a_num")).status == FactStatus::Unset);
+    CHECK(storyGet(s, r, fs("a_num")).value == 3); // the default
+    CHECK(storyGet(s, r, 40).status == FactStatus::Unknown);
+    CHECK(storySet(s, r, fs("a_ev"), 1) == SetResult::RejectedNoScene);
+    CHECK(storySet(s, r, 40, 1) == SetResult::UnknownFact);
 
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    CHECK(storySet(s, r, sf(4), 1) == SetResult::RejectedWrongScene);
-    CHECK(storySet(s, r, sf(1), 2) == SetResult::RejectedRange);
-    CHECK(storySet(s, r, sf(1), 0) == SetResult::RejectedRange);
-    CHECK(storySet(s, r, sf(1), kNotOffered) == SetResult::RejectedRange);
-    CHECK(storySet(s, r, sf(1), 1) == SetResult::Ok);
-    CHECK(storySet(s, r, sf(1), 1) == SetResult::Unchanged);
-    CHECK(storyGet(s, r, sf(1)).status == FactStatus::Set);
-    CHECK(s.stamp[1] == sc("p02"));
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    CHECK(storySet(s, r, fs("a_gated"), 1) == SetResult::RejectedWrongScene);
+    CHECK(storySet(s, r, fs("a_ev"), 2) == SetResult::RejectedRange);
+    CHECK(storySet(s, r, fs("a_ev"), 0) == SetResult::RejectedRange);
+    CHECK(storySet(s, r, fs("a_ev"), kNotOffered) == SetResult::RejectedRange);
+    CHECK(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    CHECK(storySet(s, r, fs("a_ev"), 1) == SetResult::Unchanged);
+    CHECK(storyGet(s, r, fs("a_ev")).status == FactStatus::Set);
+    CHECK(s.stamp[fs("a_ev")] == sc("s2"));
 
-    CHECK(storySet(s, r, sf(2), 2) == SetResult::RejectedDownward); // below the default
-    CHECK(storySet(s, r, sf(2), 5) == SetResult::Ok);
-    CHECK(storySet(s, r, sf(2), 4) == SetResult::RejectedDownward);
-    CHECK(storySet(s, r, sf(2), 10) == SetResult::RejectedRange);
+    CHECK(storySet(s, r, fs("a_num"), 2) == SetResult::RejectedDownward); // below the default
+    CHECK(storySet(s, r, fs("a_num"), 5) == SetResult::Ok);
+    CHECK(storySet(s, r, fs("a_num"), 4) == SetResult::RejectedDownward);
+    CHECK(storySet(s, r, fs("a_num"), 10) == SetResult::RejectedRange);
 
-    CHECK(storySet(s, r, sf(3), 4) == SetResult::RejectedRange);
-    CHECK(storySet(s, r, sf(3), 2) == SetResult::Ok);
-    CHECK(storySet(s, r, sf(3), 3) == SetResult::RejectedOnce);
+    CHECK(storySet(s, r, fs("a_ch"), 4) == SetResult::RejectedRange);
+    CHECK(storySet(s, r, fs("a_ch"), 2) == SetResult::Ok);
+    CHECK(storySet(s, r, fs("a_ch"), 3) == SetResult::RejectedOnce);
 
-    CHECK(storySetBits(s, r, sf(5), 1) == SetResult::Ok);
-    CHECK(storySetBits(s, r, sf(5), 4) == SetResult::Ok);
-    CHECK(storyGet(s, r, sf(5)).value == 5);
-    CHECK(storySet(s, r, sf(5), 4) == SetResult::RejectedDownward);
-    CHECK(storySetBits(s, r, sf(5), 8) == SetResult::RejectedRange);
+    CHECK(storySetBits(s, r, fs("a_bits"), 1) == SetResult::Ok);
+    CHECK(storySetBits(s, r, fs("a_bits"), 4) == SetResult::Ok);
+    CHECK(storyGet(s, r, fs("a_bits")).value == 5);
+    CHECK(storySet(s, r, fs("a_bits"), 4) == SetResult::RejectedDownward);
+    CHECK(storySetBits(s, r, fs("a_bits"), 8) == SetResult::RejectedRange);
 
     // Packed: fields 0..1 (bits 0..3), flag bit 4; a field never holds 3.
-    CHECK(storySet(s, r, sf(6), 3) == SetResult::RejectedRange);
-    CHECK(storySet(s, r, sf(6), 1) == SetResult::Ok);
-    CHECK(storySet(s, r, sf(6), 2) == SetResult::Ok);           // field 0 up
-    CHECK(storySet(s, r, sf(6), 1) == SetResult::RejectedDownward);
-    CHECK(storySetBits(s, r, sf(6), 16) == SetResult::Ok);      // the flag
-    CHECK(storySet(s, r, sf(6), 2 | 4) == SetResult::RejectedDownward); // drops the flag
-    CHECK(storySet(s, r, sf(7), 1) == SetResult::Ok);
-    CHECK(storySet(s, r, sf(7), 1 | 8) == SetResult::Ok);       // a new field is fine once
-    CHECK(storySet(s, r, sf(7), 2 | 8) == SetResult::RejectedOnce);
+    const std::uint16_t pk = fs("a_pk"), once = fs("a_once_pk");
+    CHECK(storySet(s, r, pk, 3) == SetResult::RejectedRange);
+    CHECK(storySet(s, r, pk, 1) == SetResult::Ok);
+    CHECK(storySet(s, r, pk, 2) == SetResult::Ok); // field 0 up
+    CHECK(storySet(s, r, pk, 1) == SetResult::RejectedDownward);
+    CHECK(storySetBits(s, r, pk, 16) == SetResult::Ok); // the flag
+    CHECK(storySet(s, r, pk, 2 | 4) == SetResult::RejectedDownward); // drops the flag
+    CHECK(storySet(s, r, once, 1) == SetResult::Ok);
+    CHECK(storySet(s, r, once, 1 | 8) == SetResult::Ok); // a new field is fine once
+    CHECK(storySet(s, r, once, 2 | 8) == SetResult::RejectedOnce);
 
-    CHECK(storySet(s, r, sf(8), 3) == SetResult::Ok); // any scene, free
-    CHECK(storySet(s, r, sf(8), 1) == SetResult::Ok);
+    CHECK(storySet(s, r, fs("a_free"), 3) == SetResult::Ok); // any scene, free
+    CHECK(storySet(s, r, fs("a_free"), 1) == SetResult::Ok);
 
     // Every rejection is an event.
     std::array<StoryEvent, kStoryEventRing> ev{};
@@ -314,39 +460,62 @@ TEST_CASE("story state: set and get") {
     CHECK(storyDrainEvents(s, ev) == 0);
 }
 
+TEST_CASE("story state: stepped facts and their check") {
+    const FactRegistry& r = reg();
+    const std::uint16_t st = fs("a_step");
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, sc("s5")));
+    CHECK(storySet(s, r, st, 4) == SetResult::RejectedRange);
+    CHECK(storySet(s, r, st, 1) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    CHECK_FALSE(hasRule(s, 18));
+    REQUIRE(storyBeginScene(s, r, sc("s7")));
+    CHECK(storySet(s, r, st, 2) == SetResult::Ok);
+    CHECK(storySet(s, r, st, 1) == SetResult::RejectedDownward);
+    REQUIRE(storyCommitScene(s, r));
+    CHECK_FALSE(hasRule(s, 18));
+    // Two steps in one scene is taken, and validation names it.
+    StoryState t;
+    REQUIRE(storyBeginScene(t, r, sc("s5")));
+    REQUIRE(storySet(t, r, st, 2) == SetResult::Ok);
+    REQUIRE(storyCommitScene(t, r));
+    CHECK(hasRule(t, 18));
+}
+
 TEST_CASE("story state: gates and the commit") {
-    const FactRegistry r = small();
+    const FactRegistry& r = reg();
     for (std::uint8_t choice = 1; choice <= 3; ++choice) {
         CAPTURE(int(choice));
         StoryState s;
-        REQUIRE(storyBeginScene(s, sc("p02")));
-        REQUIRE(storySet(s, r, sf(1), 1) == SetResult::Ok);
-        REQUIRE(storySet(s, r, sf(3), choice) == SetResult::Ok);
+        REQUIRE(storyBeginScene(s, r, sc("s2")));
+        REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+        REQUIRE(storySet(s, r, fs("a_ch"), choice) == SetResult::Ok);
         REQUIRE(storyCommitScene(s, r));
-        REQUIRE(storyBeginScene(s, sc("p03")));
-        CHECK((storySet(s, r, sf(4), 1) == SetResult::Ok) == (choice == 2));
-        CHECK((storySet(s, r, sf(10), 2) == SetResult::Ok) == (choice == 3)); // option B needs a_ch=C
+        REQUIRE(storyBeginScene(s, r, sc("s3")));
+        CHECK((storySet(s, r, fs("a_gated"), 1) == SetResult::Ok) == (choice == 2));
+        CHECK((storySet(s, r, fs("a_opt"), 2) == SetResult::Ok) == (choice == 3)); // option B needs a_ch=C
         REQUIRE(storyCommitScene(s, r));
         // A gated choice left unanswered closes as not offered; an optional act as passed or not offered.
-        CHECK(storyGet(s, r, sf(4)).status == (choice == 2 ? FactStatus::Set : FactStatus::NotOffered));
-        CHECK(storyGet(s, r, sf(9)).value == (choice == 1 ? 1 : kNotOffered));
-        CHECK(storyGet(s, r, sf(10)).status == (choice == 3 ? FactStatus::Set : FactStatus::Unset));
+        CHECK(storyGet(s, r, fs("a_gated")).status == (choice == 2 ? FactStatus::Set : FactStatus::NotOffered));
+        CHECK(storyGet(s, r, fs("a_op")).value == (choice == 1 ? 1 : kNotOffered));
+        CHECK(storyGet(s, r, fs("a_opt")).status == (choice == 3 ? FactStatus::Set : FactStatus::Unset));
     }
 }
 
 TEST_CASE("story state: wide values") {
-    const FactRegistry r = small();
+    const FactRegistry& r = reg();
+    const std::uint8_t ctr = ws("w_ctr"), mask = ws("w_mask");
     StoryState s;
-    CHECK(storyAdd(s, r, sw(0), 1) == SetResult::RejectedNoScene);
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    CHECK(storyAdd(s, r, sw(0), 2) == SetResult::Ok);
-    CHECK(storyAdd(s, r, sw(0), 5) == SetResult::Ok);
-    CHECK(storyWide(s, sw(0)) == 3);
-    CHECK(storyAdd(s, r, sw(0), 1) == SetResult::Unchanged);
-    CHECK(storyAdd(s, r, sw(2), 16) == SetResult::RejectedRange);
-    CHECK(storyAdd(s, r, sw(2), 5) == SetResult::Ok);
-    CHECK(storyAdd(s, r, sw(2), 1) == SetResult::Unchanged);
-    CHECK(storyAdd(s, r, sw(9), 1) == SetResult::UnknownFact);
+    CHECK(storyAdd(s, r, ctr, 1) == SetResult::RejectedNoScene);
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    CHECK(storyAdd(s, r, ctr, 2) == SetResult::Ok);
+    CHECK(storyAdd(s, r, ctr, 5) == SetResult::Ok);
+    CHECK(storyWide(s, ctr) == 3);
+    CHECK(storyAdd(s, r, ctr, 1) == SetResult::Unchanged);
+    CHECK(storyAdd(s, r, mask, 16) == SetResult::RejectedRange);
+    CHECK(storyAdd(s, r, mask, 5) == SetResult::Ok);
+    CHECK(storyAdd(s, r, mask, 1) == SetResult::Unchanged);
+    CHECK(storyAdd(s, r, 40, 1) == SetResult::UnknownFact);
     std::array<StoryEvent, kStoryEventRing> ev{};
     const std::uint32_t n = storyDrainEvents(s, ev);
     std::uint32_t saturated = 0, wideRejected = 0;
@@ -357,91 +526,162 @@ TEST_CASE("story state: wide values") {
     CHECK(saturated == 1);
     CHECK(wideRejected == 3); // no scene, range, unknown
     REQUIRE(storyCommitScene(s, r));
-    REQUIRE(storyBeginScene(s, sc("p03")));
-    CHECK(storyAdd(s, r, sw(2), 8) == SetResult::RejectedWrongScene);
+    REQUIRE(storyBeginScene(s, r, sc("s3")));
+    CHECK(storyAdd(s, r, mask, 8) == SetResult::RejectedWrongScene);
+}
+
+TEST_CASE("story state: presses, the track and milestones") {
+    const FactRegistry& r = reg();
+    const StoryRoles& ro = r.roles;
+    StoryState s;
+    CHECK(storyCountHelp(s, r, 0, 0) == SetResult::RejectedNoScene);
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ch"), 3) == SetResult::Ok);
+    CHECK(storyCountHelp(s, r, 2, 0) == SetResult::RejectedRange);
+    CHECK(storyCountHelp(s, r, 0, 3) == SetResult::RejectedRange);
+    CHECK(storyCountHelp(s, r, 1, 0) == SetResult::RejectedGate); // side 1 waits for its open fact
+    CHECK(storyCountHelp(s, r, 0, 2) == SetResult::Ok);
+    CHECK(storyWide(s, ro.pressCounters[0][2]) == 1);
+    CHECK(storyWide(s, ro.pressScene) == 1);
+    CHECK(storyWide(s, ro.pressTotal) == 1);
+    CHECK(s.facts[ro.lastKind[0]] == 3);
+    CHECK(s.facts[ro.firstPress] == 1);
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyBeginScene(s, r, sc("s3")));
+    REQUIRE(storySet(s, r, fs("a_opt"), 1) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyBeginScene(s, r, sc("s4")));
+    REQUIRE(storySet(s, r, fs("a_der"), 1) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyBeginScene(s, r, sc("s5")));
+    CHECK(storyWide(s, ro.pressScene) == 0); // zeroed as the scene began
+    REQUIRE(storySet(s, r, fs("a_open1"), 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_c4"), 1) == SetResult::Ok);
+    REQUIRE(storyCountHelp(s, r, 1, 0) == SetResult::Ok); // before the track scene: not on the mark
+    REQUIRE(storyCommitScene(s, r));
+    CHECK(storyWide(s, ro.milestone) == 10);
+    REQUIRE(storyBeginScene(s, r, sc("s6")));
+    for (int i = 0; i < 6; ++i) REQUIRE(storyCountHelp(s, r, 1, static_cast<std::uint8_t>(i % 3)) == SetResult::Ok);
+    REQUIRE(storyCountHelp(s, r, 0, 0) == SetResult::Ok); // the other side: not on the mark
+    REQUIRE(storyCommitScene(s, r));
+    CHECK(storyWide(s, ro.trackMark) == 4); // six presses, four squares
+    CHECK(s.facts[ro.lastKind[1]] == 3);
+    CHECK(storyHelpShown(s, r) == 2 + 7);
+    CAPTURE(describe(s, r));
+    CHECK(issues(s, r) == 0);
+
+    // Nothing bound: a press is unknown and nothing moves.
+    const FactRegistry none;
+    StoryState t;
+    REQUIRE(storyBeginScene(t, none, 3));
+    CHECK(storyCountHelp(t, none, 0, 0) == SetResult::UnknownFact);
+    CHECK(t.wide == StoryState{}.wide);
 }
 
 TEST_CASE("story state: restart and the scene order") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
+    const FactRegistry& r = reg();
+    const StoryRoles& ro = r.roles;
     StoryState s;
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    CHECK_FALSE(storyBeginScene(s, sc("p03"))); // one open scene
-    REQUIRE(storySet(s, reg, StoryFact::sp02_1, 5) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, reg, 0, 1) == SetResult::Ok);
-    CHECK(storyWide(s, StoryWide::c_help_all) == 1);
-    REQUIRE(storyRestartScene(s, reg));
-    CHECK(storyGet(s, reg, StoryFact::sp02_1).status == FactStatus::Unset);
-    CHECK(storyGet(s, reg, StoryFact::sp03_3).status == FactStatus::Unset);
-    CHECK(storyWide(s, StoryWide::c_help_s0_k1) == 0);
-    CHECK(storyWide(s, StoryWide::c_help_all) == 1); // raw: kept
-    CHECK(storyWide(s, StoryWide::c_retries) == 1);
-    CHECK(s.stamp[slotOf(StoryFact::sp02_1)] == kNoScene);
-    REQUIRE(storySet(s, reg, StoryFact::sp02_1, 4) == SetResult::Ok);
-    REQUIRE(storyCommitScene(s, reg));
-    CHECK_FALSE(storyRestartScene(s, reg));
-    CHECK_FALSE(storyCommitScene(s, reg));
-    CHECK_FALSE(storyBeginScene(s, sc("p02"))); // not after the last committed
-    CHECK_FALSE(storyBeginScene(s, kStoryScenes));
-    CHECK(storyBeginScene(s, sc("p04")));      // skipping is allowed
-    CHECK(issues(s) == 0);
-
-    // Side 1 needs its slot named.
-    CHECK(storyCountHelp(s, reg, 1, 0) == SetResult::RejectedGate);
-    CHECK(storyCountHelp(s, reg, 2, 0) == SetResult::RejectedRange);
-    CHECK(storyCountHelp(s, reg, 0, 3) == SetResult::RejectedRange);
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    CHECK_FALSE(storyBeginScene(s, r, sc("s3"))); // one open scene
+    REQUIRE(storySet(s, r, fs("a_num"), 5) == SetResult::Ok);
+    REQUIRE(storyCountHelp(s, r, 0, 1) == SetResult::Ok);
+    REQUIRE(storyAdd(s, r, ws("w_raw"), 7) == SetResult::Ok);
+    CHECK(storyWide(s, ro.pressTotal) == 1);
+    REQUIRE(storyRestartScene(s, r));
+    CHECK(storyGet(s, r, fs("a_num")).status == FactStatus::Unset);
+    CHECK(storyGet(s, r, ro.firstPress).status == FactStatus::Unset);
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 0);
+    CHECK(storyWide(s, ro.pressTotal) == 1); // raw: kept
+    CHECK(storyWide(s, ws("w_raw")) == 7);
+    CHECK(storyWide(s, ro.retries) == 1);
+    CHECK(s.stamp[fs("a_num")] == kNoScene);
+    REQUIRE(storySet(s, r, fs("a_num"), 4) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ch"), 2) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    CHECK_FALSE(storyRestartScene(s, r));
+    CHECK_FALSE(storyCommitScene(s, r));
+    CHECK_FALSE(storyBeginScene(s, r, sc("s2"))); // not after the last committed
+    CHECK_FALSE(storyBeginScene(s, r, kMaxStoryScenes));
+    CHECK(storyBeginScene(s, r, sc("s3"))); // the next one
+    CHECK(issues(s, r) == 0);
 }
 
-TEST_CASE("story state: the sandbox is never written") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
-    StoryState real;
-    REQUIRE(storyBeginScene(real, sc("p02")));
-    REQUIRE(storyCommitScene(real, reg));
+TEST_CASE("story state: the sandbox leaves the real state byte for byte") {
+    const FactRegistry& r = reg();
+    StoryState played;
+    REQUIRE(storyBeginScene(played, r, sc("s2")));
+    REQUIRE(storySet(played, r, fs("a_ev"), 1) == SetResult::Ok);
+    REQUIRE(storySet(played, r, fs("a_ch"), 2) == SetResult::Ok); // a_ch = B
+    REQUIRE(storySet(played, r, fs("a_num"), 5) == SetResult::Ok); // written in s2 and s3
+    REQUIRE(storyCountHelp(played, r, 0, 0) == SetResult::Ok);
+    REQUIRE(storyCommitScene(played, r));
+    REQUIRE(storyBeginScene(played, r, sc("s3")));
+    REQUIRE(storySet(played, r, fs("a_gated"), 1) == SetResult::Ok); // once, gated on a_ch = B
+    REQUIRE(storySet(played, r, fs("a_num"), 7) == SetResult::Ok);
+    REQUIRE(storySet(played, r, fs("a_opt"), 1) == SetResult::Ok);
+    REQUIRE(storyCommitScene(played, r));
+    std::array<StoryEvent, kStoryEventRing> ev{};
+    storyDrainEvents(played, ev);
+
+    std::array<std::uint8_t, kStoryStateBlockSize> realBefore{};
+    StoryState forBytes = played;
+    REQUIRE(storyEncode(forBytes, r, realBefore));
+    const StoryState snapshot = played;
+
     StoryState box;
-    storyMakeSandbox(real, reg, sc("p05"), box);
-    CHECK(box.lastCommitted == sc("p04"));
-    CHECK(storyBeginScene(box, sc("p05")));
-    {   // Facts written at the chosen scene or later read as unset in the box; earlier ones stay.
-        const FactRegistry r = small();
-        StoryState played;
-        REQUIRE(storyBeginScene(played, sc("p02")));
-        REQUIRE(storySet(played, r, sf(1), 1) == SetResult::Ok);
-        REQUIRE(storySet(played, r, sf(3), 2) == SetResult::Ok); // a_ch = B
-        REQUIRE(storySet(played, r, sf(2), 5) == SetResult::Ok); // a_num, written in p02 and p03
-        REQUIRE(storyCommitScene(played, r));
-        REQUIRE(storyBeginScene(played, sc("p03")));
-        REQUIRE(storySet(played, r, sf(4), 1) == SetResult::Ok); // once, gated on a_ch = B
-        REQUIRE(storySet(played, r, sf(2), 7) == SetResult::Ok);
-        REQUIRE(storyCommitScene(played, r));
-        StoryState b3;
-        storyMakeSandbox(played, r, sc("p03"), b3);
-        CHECK(storyGet(b3, r, sf(1)).value == 1);
-        CHECK(storyGet(b3, r, sf(4)).status == FactStatus::Unset);
-        CHECK(b3.stamp[4] == kNoScene);
-        CHECK(storyGet(b3, r, sf(2)).value == 7); // several writers: kept
-        REQUIRE(storyBeginScene(b3, sc("p03")));
-        CHECK(storySet(b3, r, sf(4), 1) == SetResult::Ok);
-    }
+    storyMakeSandbox(played, r, sc("s3"), box);
+    CHECK(box.lastCommitted == sc("s2"));
+    CHECK(storyGet(box, r, fs("a_ev")).value == 1);
+    CHECK(storyGet(box, r, fs("a_gated")).status == FactStatus::Unset); // written at the chosen scene
+    CHECK(box.stamp[fs("a_gated")] == kNoScene);
+    CHECK(storyGet(box, r, fs("a_num")).value == 7); // several writers: kept
+    // Use the box hard: replay, press, restart, commit, read, validate.
+    REQUIRE(storyBeginScene(box, r, sc("s3")));
+    CHECK(storySet(box, r, fs("a_gated"), 2) == SetResult::Ok);
+    REQUIRE(storyCountHelp(box, r, 0, 2) == SetResult::Ok);
+    REQUIRE(storyRestartScene(box, r));
+    REQUIRE(storySet(box, r, fs("a_gated"), 1) == SetResult::Ok);
+    REQUIRE(storyCommitScene(box, r));
+    REQUIRE(storyBeginScene(box, r, sc("s4")));
+    REQUIRE(storySet(box, r, fs("a_der"), 1) == SetResult::Ok);
+    storySceneReads(box, r, sc("s4"));
+    std::array<StoryIssue, kMaxStoryIssues> out{};
+    storyValidate(box, r, out);
     std::array<std::uint8_t, kStoryStateBlockSize> block{};
     block[0] = 7;
-    CHECK_FALSE(storyEncode(box, reg, block));
+    CHECK_FALSE(storyEncode(box, r, block)); // never encoded
     CHECK(block[0] == 7);
+
+    // The real state is untouched: the same bytes, the same fields.
+    CHECK(played.facts == snapshot.facts);
+    CHECK(played.stamp == snapshot.stamp);
+    CHECK(played.wide == snapshot.wide);
+    CHECK(played.eventCount == snapshot.eventCount);
+    std::array<std::uint8_t, kStoryStateBlockSize> realAfter{};
+    forBytes = played;
+    REQUIRE(storyEncode(forBytes, r, realAfter));
+    CHECK(realAfter == realBefore);
 }
 
+// ---- The block ----
+
 TEST_CASE("story state: the block") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
+    const FactRegistry& r = reg();
     StoryState s;
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    REQUIRE(storySet(s, reg, StoryFact::sp02_1, 6) == SetResult::Ok);
-    REQUIRE(storyCommitScene(s, reg));
-    REQUIRE(storyBeginScene(s, sc("p03")));
-    REQUIRE(storySet(s, reg, StoryFact::sp03_2, 2) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, reg, 0, 2) == SetResult::Ok);
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 6) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ch"), 1) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyBeginScene(s, r, sc("s3")));
+    REQUIRE(storySet(s, r, fs("a_num"), 8) == SetResult::Ok);
+    REQUIRE(storyCountHelp(s, r, 0, 2) == SetResult::Ok);
 
     std::array<std::uint8_t, kStoryStateBlockSize> block{};
-    REQUIRE(storyEncode(s, reg, block));
+    REQUIRE(storyEncode(s, r, block));
     CHECK(s.saveSerial == 1);
     CHECK(block[0] == 0x46);
     CHECK(block[3] == 0x53);
@@ -449,96 +689,93 @@ TEST_CASE("story state: the block") {
 
     StoryState back;
     StoryStateLoadReport rep;
-    REQUIRE(storyDecode(block, reg, back, &rep) == StoryLoad::Ok);
+    REQUIRE(storyDecode(block, r, back, &rep) == StoryLoad::Ok);
     CHECK(back.facts == s.facts);
     CHECK(back.factsEntry == s.factsEntry);
     CHECK(back.stamp == s.stamp);
     CHECK(back.stampEntry == s.stampEntry);
     CHECK(back.wide == s.wide);
     CHECK(back.wideEntry == s.wideEntry);
-    CHECK(back.openScene == sc("p03"));
-    CHECK(back.lastCommitted == sc("p02"));
+    CHECK(back.openScene == sc("s3"));
+    CHECK(back.lastCommitted == sc("s2"));
     CHECK(back.saveSerial == 1);
+    CHECK(back.registryHash == r.hash);
     CHECK_FALSE(rep.registryMismatch);
     CHECK(rep.unknownTags == 0);
     // A restart after loading still goes back to the scene's start.
-    REQUIRE(storyRestartScene(back, reg));
-    CHECK(storyGet(back, reg, StoryFact::sp03_2).status == FactStatus::Unset);
-    CHECK(back.stamp[slotOf(StoryFact::sp02_1)] == sc("p02"));
+    REQUIRE(storyRestartScene(back, r));
+    CHECK(storyGet(back, r, fs("a_num")).value == 6);
+    CHECK(back.stamp[fs("a_num")] == sc("s2"));
 
     std::array<std::uint8_t, kStoryStateBlockSize> again{};
     StoryState copy = s;
     copy.saveSerial = 0;
-    REQUIRE(storyEncode(copy, reg, again));
+    REQUIRE(storyEncode(copy, r, again));
     CHECK(again == block);
 
     // Refusals.
     StoryState untouched;
-    CHECK(storyDecode({}, reg, untouched) == StoryLoad::Empty);
-    CHECK(storyDecode(std::span(block).first(4), reg, untouched) == StoryLoad::BadSize);
-    CHECK(storyDecode(std::span(block).first(2000), reg, untouched) == StoryLoad::BadSize);
+    CHECK(storyDecode({}, r, untouched) == StoryLoad::Empty);
+    CHECK(storyDecode(std::span(block).first(4), r, untouched) == StoryLoad::BadSize);
+    CHECK(storyDecode(std::span(block).first(2000), r, untouched) == StoryLoad::BadSize);
     auto bad = block;
     bad[0] = 'X';
-    CHECK(storyDecode(bad, reg, untouched) == StoryLoad::BadMagic);
+    CHECK(storyDecode(bad, r, untouched) == StoryLoad::BadMagic);
     bad = block;
     bad[4] = 2;
-    CHECK(storyDecode(bad, reg, untouched) == StoryLoad::NewerLayout);
+    CHECK(storyDecode(bad, r, untouched) == StoryLoad::NewerLayout);
+    bad = block;
+    bad[4] = 0;
+    bad[5] = 0;
+    CHECK(storyDecode(bad, r, untouched) == StoryLoad::BadVersion); // checked before the checksum
+    fixCrc(bad);
+    CHECK(storyDecode(bad, r, untouched) == StoryLoad::BadVersion);
     bad = block;
     bad[100] ^= 1;
-    CHECK(storyDecode(bad, reg, untouched) == StoryLoad::BadChecksum);
+    CHECK(storyDecode(bad, r, untouched) == StoryLoad::BadChecksum);
     for (const std::size_t at : {std::size_t{16}, std::size_t{17}}) { // a scene out of range, checksum fixed
         bad = block;
-        bad[at] = kStoryScenes;
-        std::uint32_t crc = storyCrc32(std::span<const std::uint8_t>(bad).first(28));
-        crc = storyCrc32(std::span<const std::uint8_t>(bad).subspan(32), crc);
-        for (std::size_t i = 0; i < 4; ++i) bad[28 + i] = static_cast<std::uint8_t>(crc >> (8 * i));
-        CHECK(storyDecode(bad, reg, untouched) == StoryLoad::BadScene);
+        bad[at] = static_cast<std::uint8_t>(kMaxStoryScenes);
+        fixCrc(bad);
+        CHECK(storyDecode(bad, r, untouched) == StoryLoad::BadScene);
     }
     CHECK(untouched.facts == StoryState{}.facts);
 }
 
 TEST_CASE("story state: a newer writer's slots and records survive") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
+    const FactRegistry& r = reg();
     StoryState s;
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    REQUIRE(storyCommitScene(s, reg));
+    REQUIRE(storyBeginScene(s, r, sc("s1")));
+    REQUIRE(storyCommitScene(s, r));
     std::array<std::uint8_t, kStoryStateBlockSize> block{};
-    REQUIRE(storyEncode(s, reg, block));
-    // As a newer build: two more facts, one more wide slot, an unknown record.
-    block[8] = static_cast<std::uint8_t>(reg.factsKnown + 2);
-    block[10] = static_cast<std::uint8_t>(reg.wideKnown + 1);
-    block[32 + reg.factsKnown + 1] = 2;
-    block[800 + 4 * reg.wideKnown] = 9;
+    REQUIRE(storyEncode(s, r, block));
+    // As a newer build: two more facts, one more wide slot, an unknown record, another registry.
+    block[8] = static_cast<std::uint8_t>(r.factsKnown + 2);
+    block[10] = static_cast<std::uint8_t>(r.wideKnown + 1);
+    block[32 + r.factsKnown + 1] = 2;
+    block[800 + 4 * r.wideKnown] = 9;
     std::uint8_t* e = block.data() + kStoryExtensionOffset;
     e[0] = 7;
     e[2] = 3;
     e[4] = 'a';
     e[5] = 'b';
     e[6] = 'c';
-    block[12] ^= 0x55; // a different registry
-    block[28] = block[29] = block[30] = block[31] = 0;
-    const std::uint32_t crc = [&] {
-        std::array<std::uint8_t, kStoryStateBlockSize> tmp = block;
-        tmp[28] = tmp[29] = tmp[30] = tmp[31] = 0;
-        std::uint32_t c = storyCrc32(std::span(tmp).first(28));
-        return storyCrc32(std::span(tmp).subspan(32), c);
-    }();
-    for (int i = 0; i < 4; ++i) block[28 + i] = static_cast<std::uint8_t>(crc >> (8 * i));
+    block[12] ^= 0x55;
+    fixCrc(block);
 
     StoryState back;
     StoryStateLoadReport rep;
-    REQUIRE(storyDecode(block, reg, back, &rep) == StoryLoad::Ok);
+    REQUIRE(storyDecode(block, r, back, &rep) == StoryLoad::Ok);
     CHECK(rep.unknownSlotsPreserved == 3);
     CHECK(rep.unknownTags == 1);
     CHECK(rep.registryMismatch);
-    CHECK(storyGetSlot(back, reg, static_cast<std::uint16_t>(reg.factsKnown + 1)).status == FactStatus::Unknown);
-    CHECK(hasRule(back, 20) == false); // the writer knew more slots: newer, not a mismatch to warn on
+    CHECK(storyGet(back, r, static_cast<std::uint16_t>(r.factsKnown + 1)).status == FactStatus::Unknown);
+    CHECK_FALSE(hasRule(back, 20)); // the writer knew more slots: newer, not a mismatch to warn on
     std::array<std::uint8_t, kStoryStateBlockSize> out{};
-    REQUIRE(storyEncode(back, reg, out));
-    CHECK(out[32 + reg.factsKnown + 1] == 2);
-    CHECK(out[800 + 4 * reg.wideKnown] == 9);
-    CHECK(out[8] == reg.factsKnown + 2);
+    REQUIRE(storyEncode(back, r, out));
+    CHECK(out[32 + r.factsKnown + 1] == 2);
+    CHECK(out[800 + 4 * r.wideKnown] == 9);
+    CHECK(out[8] == r.factsKnown + 2);
     CHECK(out[kStoryExtensionOffset] == 7);
     CHECK(out[kStoryExtensionOffset + 6] == 'c');
 
@@ -549,23 +786,56 @@ TEST_CASE("story state: a newer writer's slots and records survive") {
     broken.extension[2] = 0xFF;
     broken.extension[3] = 0x0F;
     broken.extensionLength = 4;
-    REQUIRE(storyEncode(broken, reg, out));
+    REQUIRE(storyEncode(broken, r, out));
     StoryState back2;
-    REQUIRE(storyDecode(out, reg, back2, &rep) == StoryLoad::Ok);
+    REQUIRE(storyDecode(out, r, back2, &rep) == StoryLoad::Ok);
     CHECK(rep.extensionMalformed);
     std::array<std::uint8_t, kStoryStateBlockSize> out2{};
-    REQUIRE(storyEncode(back2, reg, out2));
+    REQUIRE(storyEncode(back2, r, out2));
     CHECK(std::equal(out.begin() + kStoryExtensionOffset, out.end(), out2.begin() + kStoryExtensionOffset));
 }
 
-TEST_CASE("story state: derive on load") {
-    const FactRegistry r = small();
+TEST_CASE("story state: no registry: begin, commit, encode, decode") {
+    const FactRegistry& r = reg();
     StoryState s;
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    REQUIRE(storySet(s, r, sf(3), 1) == SetResult::Ok);
-    REQUIRE(storySet(s, r, sf(1), 1) == SetResult::Ok);
+    for (std::uint8_t w = 0; w < kWideSlots; ++w) s.wide[w] = s.wideEntry[w] = 1000u + w;
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncode(s, r, block));
+    // A build with no registry loads it, plays every ordinal, and saves.
+    const FactRegistry none;
+    StoryState loaded;
+    REQUIRE(storyDecode(block, none, loaded) == StoryLoad::Ok);
+    REQUIRE(loaded.registryHash == r.hash);
+    for (std::uint8_t k = 0; k < kMaxStoryScenes; ++k) {
+        CAPTURE(int(k));
+        REQUIRE(storyBeginScene(loaded, none, k));
+        REQUIRE(storyCommitScene(loaded, none));
+    }
+    CHECK(loaded.wide == s.wide); // no unregistered wide slot written
+    std::array<std::uint8_t, kStoryStateBlockSize> out{};
+    REQUIRE(storyEncode(loaded, none, out));
+    StoryState back;
+    REQUIRE(storyDecode(out, r, back) == StoryLoad::Ok);
+    CHECK(back.registryHash == r.hash); // the hash is kept, not zeroed
+    CHECK(back.wide == s.wide);
+    // A new game with no registry encodes and decodes too.
+    StoryState fresh;
+    REQUIRE(storyBeginScene(fresh, none, 0));
+    REQUIRE(storyCommitScene(fresh, none));
+    REQUIRE(storyEncode(fresh, none, out));
+    REQUIRE(storyDecode(out, none, back) == StoryLoad::Ok);
+    CHECK(back.registryHash == 0);
+    CHECK(back.lastCommitted == 0);
+}
+
+TEST_CASE("story state: derive on load") {
+    const FactRegistry& r = reg();
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_ch"), 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
     REQUIRE(storyCommitScene(s, r));
-    REQUIRE(storyBeginScene(s, sc("p04")));
+    REQUIRE(storyBeginScene(s, r, sc("s4")));
     REQUIRE(storyCommitScene(s, r));
     std::array<std::uint8_t, kStoryStateBlockSize> block{};
     REQUIRE(storyEncode(s, r, block));
@@ -574,378 +844,316 @@ TEST_CASE("story state: derive on load") {
         StoryStateLoadReport rep;
         REQUIRE(storyDecode(block, r, back, &rep) == StoryLoad::Ok);
         CHECK(rep.derived == 0);
-        CHECK(storyGet(back, r, sf(11)).status == FactStatus::Unset);
+        CHECK(storyGet(back, r, fs("a_der")).status == FactStatus::Unset);
     }
     // An older writer that knew slots 1..10 only.
     block[8] = 10;
     block[9] = 0;
-    std::uint32_t crc = storyCrc32(std::span<const std::uint8_t>(block).first(28));
-    crc = storyCrc32(std::span<const std::uint8_t>(block).subspan(32), crc);
-    for (int i = 0; i < 4; ++i) block[28 + static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(crc >> (8 * i));
+    fixCrc(block);
     StoryState back;
     StoryStateLoadReport rep;
     REQUIRE(storyDecode(block, r, back, &rep) == StoryLoad::Ok);
     CHECK(rep.derived == 1);
-    CHECK(storyGet(back, r, sf(11)).value == 1);
+    CHECK(storyGet(back, r, fs("a_der")).value == 1);
 }
 
+TEST_CASE("story state: stamps out of range are refused on load") {
+    const FactRegistry& r = reg();
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncode(s, r, block)); // mid-scene: the stamps-at-entry record is at the extension's start
+    REQUIRE(s.lostStampRecords == 0);
+    StoryState back;
+    REQUIRE(storyDecode(block, r, back) == StoryLoad::Ok);
+    CHECK(back.stamp[fs("a_ev")] == sc("s2"));
+
+    auto bad = block;
+    bad[544 + 1] = static_cast<std::uint8_t>(kMaxStoryScenes); // a stamp
+    fixCrc(bad);
+    CHECK(storyDecode(bad, r, back) == StoryLoad::BadScene);
+    bad = block;
+    bad[544 + 2] = 200;
+    fixCrc(bad);
+    CHECK(storyDecode(bad, r, back) == StoryLoad::BadScene);
+    bad = block;
+    REQUIRE(bad[kStoryExtensionOffset] != 0);
+    bad[kStoryExtensionOffset + 4 + 3] = static_cast<std::uint8_t>(kMaxStoryScenes); // a stamp at entry
+    fixCrc(bad);
+    CHECK(storyDecode(bad, r, back) == StoryLoad::BadScene);
+    bad[kStoryExtensionOffset + 4 + 3] = kNoScene;
+    fixCrc(bad);
+    CHECK(storyDecode(bad, r, back) == StoryLoad::Ok);
+}
+
+TEST_CASE("story state: a stamps-at-entry record with no room is counted") {
+    const FactRegistry& r = reg();
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyBeginScene(s, r, sc("s3")));
+    REQUIRE(storySet(s, r, fs("a_num"), 5) == SetResult::Ok);
+    // Another build's record fills all but 10 bytes of the extension.
+    const std::uint16_t len = static_cast<std::uint16_t>(kStoryExtensionBytes - 10 - 4);
+    s.extension[0] = 9;
+    s.extension[2] = static_cast<std::uint8_t>(len & 0xFF);
+    s.extension[3] = static_cast<std::uint8_t>(len >> 8);
+    s.extensionLength = static_cast<std::uint16_t>(4 + len);
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncode(s, r, block));
+    CHECK(s.lostStampRecords == 1);
+    StoryState back;
+    StoryStateLoadReport rep;
+    REQUIRE(storyDecode(block, r, back, &rep) == StoryLoad::Ok);
+    CHECK(rep.unknownTags == 1);
+    CHECK(back.stampEntry == back.stamp); // the record was not written
+    // A raw (malformed) extension leaves no room either.
+    StoryState raw = s;
+    raw.extensionRaw = true;
+    REQUIRE(storyEncode(raw, r, block));
+    CHECK(raw.lostStampRecords == 2);
+    // Between scenes nothing is lost.
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyEncode(s, r, block));
+    CHECK(s.lostStampRecords == 1);
+}
+
+// ---- Validation ----
+
 TEST_CASE("story state: validation rules") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
-    auto at = [](std::uint8_t committedUpTo) {
-        StoryState s;
-        s.lastCommitted = committedUpTo;
-        return s;
-    };
-    auto put = [](StoryState& s, StoryFact f, std::uint8_t v) {
-        s.facts[slotOf(f)] = v;
-        s.factsEntry[slotOf(f)] = v;
-    };
-    CHECK(issues(StoryState{}) == 0);
-    {   // V01, V02 and V07 on the small table (the full one at a late scene hits the cap first).
-        const FactRegistry r = small();
-        StoryState s = at(sc("p03"));
-        put(s, sf(1), 1);
-        put(s, sf(3), 1);
-        put(s, sf(4), 1); // its gate a_ch=B is false
-        CHECK(hasRule(s, 1, &r));
-        put(s, sf(3), 2);
-        put(s, sf(4), kNotOffered); // the gate holds, yet not offered
-        CHECK(hasRule(s, 2, &r));
-        put(s, sf(10), 2); // option B needs a_ch=C
-        CHECK(hasRule(s, 7, &r));
-        put(s, sf(3), 3);
-        CHECK_FALSE(hasRule(s, 7, &r));
+    const FactRegistry& r = reg();
+    const StoryRoles& ro = r.roles;
+    CHECK(issues(StoryState{}, r) == 0);
+    {   // V01, V02, V07 and V06: the gates.
+        StoryState s = committedThrough("s3");
+        put(s, fs("a_ev"), 1);
+        put(s, fs("a_ch"), 1);
+        put(s, fs("a_gated"), 1); // its gate a_ch=B is false
+        CHECK(hasRule(s, 1));
+        put(s, fs("a_ch"), 2);
+        put(s, fs("a_gated"), kNotOffered); // the gate holds, yet not offered
+        CHECK(hasRule(s, 2));
+        put(s, fs("a_opt"), 2); // option B needs a_ch=C
+        CHECK(hasRule(s, 7));
+        put(s, fs("a_ch"), 3);
+        CHECK_FALSE(hasRule(s, 7));
+        StoryState d = committedThrough("s5");
+        put(d, fs("a_ch"), 1);
+        put(d, fs("a_c4"), 4); // option D needs a_ch=C
+        CHECK(hasRule(d, 6));
+        CHECK_FALSE(hasRule(d, 7));
+        put(d, fs("a_ch"), 3);
+        CHECK_FALSE(hasRule(d, 6));
     }
     {   // V03 and V04: a past scene left a choice or an event at 0.
-        StoryState s = at(sc("p04"));
+        const StoryState s = committedThrough("s4");
         CHECK(hasRule(s, 3));
         CHECK(hasRule(s, 4));
     }
     {   // V05: written for a scene not reached.
         StoryState s;
-        put(s, StoryFact::s104_1, 1);
+        put(s, fs("a_c4"), 1);
         CHECK(hasRule(s, 5));
     }
-    {   // V08: the count below a passed milestone.
-        StoryState s = at(sc("p07"));
+    {   // V08: the count below a passed milestone, above a later one, and a milestone's needed fact.
+        StoryState s = committedThrough("s5");
         CHECK(hasRule(s, 8));
-        s.wide[slotOf(StoryWide::c_milestone)] = 48;
-        s.wideEntry = s.wide;
+        putWide(s, ro.milestone, 10);
         CHECK_FALSE(hasRule(s, 8));
+        putWide(s, ro.milestone, 20); // past s8's value before s8
+        CHECK(hasRule(s, 8));
+        StoryState n = committedThrough("s8");
+        putWide(n, ro.milestone, 20);
+        std::vector<StoryIssue> list;
+        issues(n, r, &list);
+        const bool needs = std::any_of(list.begin(), list.end(), [&](const StoryIssue& i) {
+            return i.rule == 8 && i.factB == fs("a_free");
+        });
+        CHECK(needs);
+        put(n, fs("a_free"), 1);
+        list.clear();
+        issues(n, r, &list);
+        CHECK(std::none_of(list.begin(), list.end(), [](const StoryIssue& i) { return i.rule == 8; }));
     }
-    {   // V10 and V15: presses without their slot, or without a last kind.
+    {   // V10 and V15: presses without their open fact or first-press latch, or without a last kind.
         StoryState s;
-        s.wide[slotOf(StoryWide::c_help_s1_k0)] = 1;
+        putWide(s, ro.pressCounters[1][0], 1);
         CHECK(hasRule(s, 10));
         CHECK(hasRule(s, 15));
+        put(s, ro.sideOpen[1], 1);
+        put(s, ro.lastKind[1], 1);
+        CHECK_FALSE(hasRule(s, 10));
+        CHECK_FALSE(hasRule(s, 15));
+        put(s, ro.lastKind[1], 2); // a kind never pressed
+        CHECK(hasRule(s, 15));
+        StoryState z;
+        putWide(z, ro.pressCounters[0][2], 1);
+        put(z, ro.lastKind[0], 3);
+        CHECK(hasRule(z, 10)); // the first press was not latched
+        put(z, ro.firstPress, 1);
+        CHECK_FALSE(hasRule(z, 10));
     }
-    {   // V11: the track mark past the presses.
+    {   // V11: the track mark past the presses or the track.
         StoryState s;
-        s.wide[slotOf(StoryWide::c_115_help)] = 1;
+        putWide(s, ro.trackMark, 1);
+        CHECK(hasRule(s, 11));
+        putWide(s, ro.pressCounters[1][0], 9);
+        put(s, ro.sideOpen[1], 1);
+        put(s, ro.lastKind[1], 1);
+        CHECK_FALSE(hasRule(s, 11));
+        putWide(s, ro.trackMark, 5);
         CHECK(hasRule(s, 11));
     }
-    {   // V12: bits out of order.
-        StoryState s;
-        put(s, StoryFact::sp05_1, 2);
-        CHECK(hasRule(s, 12));
-    }
-    {   // V13: a last-act fact without the choice.
-        StoryState s;
-        put(s, StoryFact::sf10_1, 1);
-        CHECK(hasRule(s, 13));
-    }
     {   // V14 and V19: a packed field holding 3 is also out of range.
-        StoryState s;
-        put(s, StoryFact::s203_1, 3);
+        StoryState s = committedThrough("s3");
+        put(s, fs("a_pk"), 3);
         CHECK(hasRule(s, 14));
         CHECK(hasRule(s, 19));
     }
     {   // V16: a scene counter before its scene.
         StoryState s;
-        s.wide[slotOf(StoryWide::c_303_declines)] = 1;
+        putWide(s, ws("w_late"), 1);
         CHECK(hasRule(s, 16));
+        StoryState t = committedThrough("s9");
+        putWide(t, ws("w_late"), 1);
+        CHECK_FALSE(hasRule(t, 16));
     }
     {   // V17: facts moved with no scene open.
         StoryState s;
-        s.facts[slotOf(StoryFact::sp02_1)] = 4;
+        s.facts[fs("a_free")] = 2;
         CHECK(hasRule(s, 17));
     }
-    {   // V18: the rank ahead of its scenes.
-        StoryState s = at(sc("115"));
-        put(s, StoryFact::s112_1, 2);
+    {   // V18: a stepped value ahead of its set scenes.
+        StoryState s = committedThrough("s6");
+        put(s, fs("a_step"), 2);
         CHECK(hasRule(s, 18));
+        put(s, fs("a_step"), 1);
+        CHECK_FALSE(hasRule(s, 18));
+        s.lastCommitted = sc("s7");
+        put(s, fs("a_step"), 2);
+        CHECK_FALSE(hasRule(s, 18));
     }
     {   // V20: another registry of the same size.
         StoryState s;
-        s.registryHash = reg.hash ^ 1u;
-        s.factsKnown = reg.factsKnown;
+        s.registryHash = r.hash ^ 1u;
+        s.factsKnown = r.factsKnown;
         CHECK(hasRule(s, 20));
     }
     {   // The cap: never more than the span or 32.
-        StoryState s = at(sc("f10"));
+        const StoryState s = committedThrough("s12");
         std::array<StoryIssue, 3> few{};
-        CHECK(storyValidate(s, reg, few) == 3);
-        CHECK(issues(s) == kMaxStoryIssues);
+        CHECK(storyValidate(s, r, few) == 3);
+        CHECK(issues(s, r) > 3);
     }
 }
 
+TEST_CASE("story state: rules bound in data") {
+    const FactRegistry& r = reg();
+    auto ruleIssue = [&](const StoryState& s, std::uint8_t number, std::uint16_t a, std::uint16_t b) {
+        std::vector<StoryIssue> list;
+        issues(s, r, &list);
+        return std::any_of(list.begin(), list.end(),
+                           [&](const StoryIssue& i) { return i.rule == number && i.factA == a && i.factB == b; });
+    };
+    const std::uint16_t pk = fs("a_pk"), need = fs("a_need"), bits = fs("a_bits"), ev = fs("a_ev");
+    {   // Needs, on a packed field: when a_pk.f1 = 2, a_need must be set.
+        StoryState s;
+        put(s, pk, 8);
+        CHECK(ruleIssue(s, 41, pk, need));
+        put(s, need, 1);
+        CHECK_FALSE(ruleIssue(s, 41, pk, need));
+        put(s, need, kNotOffered); // not offered is not set
+        CHECK(ruleIssue(s, 41, pk, need));
+        put(s, pk, 4); // field 1 = 1: the rule does not apply
+        CHECK_FALSE(ruleIssue(s, 41, pk, need));
+    }
+    {   // Settled: checked only once the when-fact's first set scene is committed.
+        StoryState s;
+        put(s, need, 2); // a_pk.f1 is not 2
+        CHECK_FALSE(ruleIssue(s, 42, need, pk));
+        s.lastCommitted = sc("s8");
+        CHECK(ruleIssue(s, 42, need, pk));
+        put(s, pk, 8);
+        CHECK_FALSE(ruleIssue(s, 42, need, pk));
+    }
+    {   // Any bits, and bits in order.
+        StoryState s;
+        put(s, bits, 4);
+        CHECK(ruleIssue(s, 44, bits, ev));
+        CHECK(ruleIssue(s, 43, bits, 0));
+        put(s, bits, 7);
+        CHECK_FALSE(ruleIssue(s, 43, bits, 0));
+        put(s, ev, 1);
+        CHECK_FALSE(ruleIssue(s, 44, bits, ev));
+        put(s, bits, 2);
+        CHECK(ruleIssue(s, 43, bits, 0));
+        CHECK_FALSE(ruleIssue(s, 44, bits, ev));
+    }
+}
+
+TEST_CASE("story state: scene reads and derived values") {
+    const FactRegistry& r = reg();
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ch"), 3) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_num"), 7) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    SceneReads reads = storySceneReads(s, r, sc("s3"));
+    CHECK(reads.complete);
+    REQUIRE(reads.count == 2); // a_ev, and a_first (every scene reads it)
+    CHECK(reads.facts[0].fact == fs("a_ev"));
+    CHECK(reads.facts[0].status == FactStatus::Set);
+    CHECK(reads.facts[1].fact == fs("a_first"));
+    CHECK(reads.facts[1].status == FactStatus::Unset);
+    REQUIRE(reads.wideCount == 1);
+    CHECK(reads.wide[0].wide == ws("w_ctr"));
+    const DerivedValues& d = reads.derived;
+    CHECK((d.valid & 1u) != 0);
+    CHECK(d.value[0] == 1); // a_ch in {B, C}
+    CHECK(d.value[1] == 7); // a_num read
+    CHECK((d.valid & 4u) == 0); // a_c4 not set: no value
+    CHECK((d.valid & 8u) != 0); // an upgrade of an unset fact is 0
+    CHECK(d.value[3] == 0);
+    CHECK((d.valid & 48u) == 48u);
+    CHECK(d.value[5] == 2);
+    REQUIRE(storyBeginScene(s, r, sc("s5")));
+    REQUIRE(storySet(s, r, fs("a_c4"), 1) == SetResult::Ok);
+    reads = storySceneReads(s, r, sc("s6"));
+    CHECK(reads.derived.value[2] == 1);
+    CHECK(reads.derived.value[3] == 3); // 1 becomes 3 while a_num = 7
+}
+
+// ---- No heap while playing ----
+
 TEST_CASE("story state: no heap use while playing") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
+    REQUIRE(ftcore_test::allocHookInstalled());
+    const FactRegistry& r = reg();
     StoryState s;
     const auto before = ftcore_test::allocStats();
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    REQUIRE(storySet(s, reg, StoryFact::sp02_1, 4) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, reg, 0, 0) == SetResult::Ok);
-    const SceneReads reads = storySceneReads(s, reg, sc("p02"));
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 4) == SetResult::Ok);
+    REQUIRE(storyCountHelp(s, r, 0, 0) == SetResult::Ok);
+    const SceneReads reads = storySceneReads(s, r, sc("s2"));
     std::array<StoryIssue, kMaxStoryIssues> out{};
-    storyValidate(s, reg, out);
-    REQUIRE(storyCommitScene(s, reg));
+    storyValidate(s, r, out);
+    REQUIRE(storyRestartScene(s, r));
+    REQUIRE(storyCommitScene(s, r));
     std::array<std::uint8_t, kStoryStateBlockSize> block{};
-    REQUIRE(storyEncode(s, reg, block));
+    REQUIRE(storyEncode(s, r, block));
     StoryState back;
-    REQUIRE(storyDecode(block, reg, back) == StoryLoad::Ok);
+    REQUIRE(storyDecode(block, r, back) == StoryLoad::Ok);
+    StoryState box;
+    storyMakeSandbox(back, r, sc("s2"), box);
     CHECK(ftcore_test::allocStats().count == before.count);
     CHECK(reads.complete);
 }
 
-// ---- act 1: every branch ----
+// ---- The fact reader ----
 
 namespace {
-
-struct Walk {
-    const FactRegistry* reg = nullptr;
-    std::uint64_t leaves = 0;
-    std::uint64_t failures = 0;
-    std::string firstFailure;
-    // What the leaf checks against.
-    std::uint8_t choice032 = 0, ch104 = 0, ch116 = 0, ch113 = 0;
-    std::uint32_t presses = 0;
-};
-
-using Apply = void (*)(StoryState&, const FactRegistry&, int);
-struct Step {
-    const char* scene;
-    int variants;
-    Apply apply;
-};
-
-void must(StoryState& s, const FactRegistry& r, StoryFact f, std::uint8_t v) {
-    const SetResult res = storySet(s, r, f, v);
-    if (res != SetResult::Ok) FAIL_CHECK("set " << std::string(storyFactId(f)) << "=" << int(v) << " -> " << int(res));
-}
-void bits(StoryState& s, const FactRegistry& r, StoryFact f, std::uint8_t b) {
-    const SetResult res = storySetBits(s, r, f, b);
-    if (res != SetResult::Ok) FAIL_CHECK("bits " << std::string(storyFactId(f)) << " -> " << int(res));
-}
-// OP: variant 1 does the act; variant 0 lets the commit mark it passed.
-void op(StoryState& s, const FactRegistry& r, StoryFact f, int v) {
-    if (v == 1) must(s, r, f, 2);
-}
-
-constexpr std::uint32_t kPresses[] = {0, 1, 7, 12};
-
-const Step kAct1Steps[] = {
-    {"p01", 1, [](StoryState&, const FactRegistry&, int) {}},
-    {"p02", 1, [](StoryState& s, const FactRegistry& r, int) { must(s, r, StoryFact::sp02_1, 4); }},
-    {"p03", 3,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         must(s, r, StoryFact::sp03_1, 1);
-         must(s, r, StoryFact::sp03_2, static_cast<std::uint8_t>(v + 1));
-         if (storyCountHelp(s, r, 0, static_cast<std::uint8_t>(v)) != SetResult::Ok) FAIL_CHECK("press side 0");
-     }},
-    {"p04", 1,
-     [](StoryState& s, const FactRegistry& r, int) {
-         must(s, r, StoryFact::sp04_1, 1);
-         must(s, r, StoryFact::sp04_2, 1);
-         must(s, r, StoryFact::sp04_3, 1);
-         must(s, r, StoryFact::sp04_4, 1);
-     }},
-    {"p05", 1, [](StoryState& s, const FactRegistry& r, int) { bits(s, r, StoryFact::sp05_1, 1); }},
-    {"p06", 1,
-     [](StoryState& s, const FactRegistry& r, int) {
-         must(s, r, StoryFact::sp06_1, 1);
-         must(s, r, StoryFact::sp06_2, 1);
-     }},
-    {"p07", 1,
-     [](StoryState& s, const FactRegistry& r, int) {
-         must(s, r, StoryFact::sp07_1, 1);
-         must(s, r, StoryFact::sp07_2, 1);
-         must(s, r, StoryFact::sp07_3, 8);
-         must(s, r, StoryFact::sp07_4, 1);
-     }},
-    {"p08", 1, [](StoryState&, const FactRegistry&, int) {}},
-    {"101", 1, [](StoryState&, const FactRegistry&, int) {}},
-    {"102", 1,
-     [](StoryState& s, const FactRegistry& r, int) {
-         bits(s, r, StoryFact::sp05_1, 2);
-         bits(s, r, StoryFact::sp07_3, 2 | 16);
-     }},
-    {"103", 1, [](StoryState&, const FactRegistry&, int) {}},
-    {"104", 2,
-     [](StoryState& s, const FactRegistry& r, int v) { must(s, r, StoryFact::s104_1, static_cast<std::uint8_t>(v + 1)); }},
-    {"105", 2,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         op(s, r, StoryFact::s105_1, v);
-         must(s, r, StoryFact::s105_2, 1);
-     }},
-    {"106", 2,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         must(s, r, StoryFact::s106_1, 1);
-         must(s, r, StoryFact::s106_2, static_cast<std::uint8_t>(v + 1));
-         must(s, r, StoryFact::s106_3, 1);
-         bits(s, r, StoryFact::sp07_3, 64);
-     }},
-    {"107", 1, [](StoryState& s, const FactRegistry& r, int) { must(s, r, StoryFact::s107_1, 1); }},
-    {"108", 2,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         if (v == 1) must(s, r, StoryFact::s108_1, 7);
-     }},
-    {"109", 2, [](StoryState& s, const FactRegistry& r, int v) { op(s, r, StoryFact::s109_1, v); }},
-    {"110", 4,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         must(s, r, StoryFact::s110_1, static_cast<std::uint8_t>(v + 1));
-         must(s, r, StoryFact::s110_2, 1);
-     }},
-    {"111", 4,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         op(s, r, StoryFact::s111_1, v & 1);
-         must(s, r, StoryFact::s111_2, static_cast<std::uint8_t>((v >> 1) + 1));
-     }},
-    {"112", 1,
-     [](StoryState& s, const FactRegistry& r, int) {
-         must(s, r, StoryFact::s112_1, 1);
-         must(s, r, StoryFact::s112_2, 1);
-         must(s, r, StoryFact::s112_3, 1);
-         bits(s, r, StoryFact::sp05_1, 4);
-     }},
-    {"113", 2,
-     [](StoryState& s, const FactRegistry& r, int v) { must(s, r, StoryFact::s113_1, static_cast<std::uint8_t>(v + 1)); }},
-    {"114", 2,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         op(s, r, StoryFact::s114_1, v);
-         must(s, r, StoryFact::s114_2, 1);
-     }},
-    {"115", 8,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         for (std::uint32_t i = 0; i < kPresses[v >> 1]; ++i)
-             if (storyCountHelp(s, r, 1, static_cast<std::uint8_t>(i % 3)) != SetResult::Ok) FAIL_CHECK("press side 1");
-         must(s, r, StoryFact::s115_1, 1);
-         bits(s, r, StoryFact::sp05_1, 8);
-         must(s, r, StoryFact::s115_2, 1);
-         op(s, r, StoryFact::s115_3, v & 1);
-     }},
-    {"116", 4,
-     [](StoryState& s, const FactRegistry& r, int v) {
-         must(s, r, StoryFact::s116_1, static_cast<std::uint8_t>((v & 1) + 1));
-         must(s, r, StoryFact::s116_2, static_cast<std::uint8_t>((v >> 1) + 1));
-     }},
-    {"117", 1, [](StoryState&, const FactRegistry&, int) {}},
-};
-constexpr std::size_t kSteps = sizeof(kAct1Steps) / sizeof(kAct1Steps[0]);
-
-void leaf(Walk& w, StoryState& s) {
-    const FactRegistry& r = *w.reg;
-    ++w.leaves;
-    std::string why;
-    std::array<StoryIssue, kMaxStoryIssues> out{};
-    if (storyValidate(s, r, out) != 0) why += "issues " + describe(s);
-    if (storyWide(s, StoryWide::c_milestone) != 61) why += " mile";
-    if (s.facts[slotOf(StoryFact::sp05_1)] != 15) why += " bits05";
-    if (s.facts[slotOf(StoryFact::sp07_3)] != 90) why += " packed";
-    if (storyWide(s, StoryWide::c_115_help) != std::min<std::uint32_t>(w.presses, r.tuning.trackLength)) why += " mark";
-    const SceneReads reads = storySceneReads(s, r, sc("117"));
-    if (!reads.complete) why += " reads";
-    bool saw116 = false;
-    for (std::uint8_t i = 0; i < reads.count; ++i)
-        if (reads.facts[i].fact == slotOf(StoryFact::s116_1))
-            saw116 = reads.facts[i].status == FactStatus::Set && reads.facts[i].value == w.ch116;
-    if (!saw116) why += " read116";
-    const DerivedValues& d = reads.derived;
-    if (d.d1 != (w.choice032 != 1) || d.d3 != (w.ch116 == 1 ? 1 : 2) || d.d5 != w.ch113 || (d.valid & 0x77) != 0x77)
-        why += " derived";
-    if (d.d7 != std::max<std::uint32_t>(1, 1) + std::max<std::uint32_t>(1, w.presses)) why += " shown";
-    // The block round-trips byte for byte (every eighth leaf: the rest are the same code path).
-    if ((w.leaves & 7u) == 0) {
-        std::array<std::uint8_t, kStoryStateBlockSize> a{}, b{};
-        StoryState copy = s;
-        storyEncode(copy, r, a);
-        StoryState back;
-        if (storyDecode(a, r, back) != StoryLoad::Ok) why += " decode";
-        back.saveSerial = s.saveSerial;
-        storyEncode(back, r, b);
-        if (a != b) why += " bytes";
-    }
-    if (!why.empty()) {
-        if (w.failures++ == 0) w.firstFailure = why;
-    }
-}
-
-void walk(Walk& w, const StoryState& s, std::size_t step) {
-    if (step == kSteps) {
-        StoryState copy = s;
-        leaf(w, copy);
-        return;
-    }
-    const Step& st = kAct1Steps[step];
-    for (int v = 0; v < st.variants; ++v) {
-        StoryState next = s;
-        if (!storyBeginScene(next, sc(st.scene))) FAIL_CHECK("begin " << st.scene);
-        st.apply(next, *w.reg, v);
-        if (!storyCommitScene(next, *w.reg)) FAIL_CHECK("commit " << st.scene);
-        std::array<StoryEvent, kStoryEventRing> ev{};
-        storyDrainEvents(next, ev);
-        const std::string code = st.scene;
-        if (code == "p03") w.choice032 = static_cast<std::uint8_t>(v + 1);
-        if (code == "113") w.ch113 = static_cast<std::uint8_t>(v + 1);
-        if (code == "115") w.presses = kPresses[v >> 1];
-        if (code == "116") w.ch116 = static_cast<std::uint8_t>((v & 1) + 1);
-        walk(w, next, step + 1);
-    }
-}
-
-} // namespace
-
-TEST_CASE("story state: every act 1 branch") {
-    if (!haveRegistry()) return;
-    Walk w;
-    w.reg = &registry();
-    const auto t0 = std::chrono::steady_clock::now();
-    walk(w, StoryState{}, 0);
-    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    MESSAGE("act 1 leaves: " << w.leaves << " in " << secs << " s");
-    CHECK(w.leaves == 3ull * 2 * 2 * 2 * 2 * 2 * 4 * 4 * 2 * 2 * 8 * 4);
-    CAPTURE(w.firstFailure);
-    CHECK(w.failures == 0);
-}
-
-TEST_CASE("story state: a restart in each act 1 scene gives the same end") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
-    StoryState straight;
-    for (const Step& st : kAct1Steps) {
-        REQUIRE(storyBeginScene(straight, sc(st.scene)));
-        st.apply(straight, reg, st.variants - 1);
-        REQUIRE(storyCommitScene(straight, reg));
-    }
-    StoryState retried;
-    for (const Step& st : kAct1Steps) {
-        REQUIRE(storyBeginScene(retried, sc(st.scene)));
-        st.apply(retried, reg, 0);
-        REQUIRE(storyRestartScene(retried, reg));
-        st.apply(retried, reg, st.variants - 1);
-        REQUIRE(storyCommitScene(retried, reg));
-    }
-    CHECK(retried.facts == straight.facts);
-    CHECK(storyWide(retried, StoryWide::c_retries) == kSteps);
-    CHECK(storyWide(retried, StoryWide::c_help_all) > storyWide(straight, StoryWide::c_help_all));
-    CHECK(storyWide(retried, StoryWide::c_115_help) == storyWide(straight, StoryWide::c_115_help));
-    CHECK(issues(retried) == 0);
-}
-
-namespace {
-// The shape of the fact-reading interface the NPC memory uses.
+// The shape of the fact-reading interface other systems use.
 struct FakeFactSource {
     virtual int npcFactIndex(std::string_view id) const = 0;
     virtual bool npcFactValue(int index, std::uint8_t& value) const = 0;
@@ -956,16 +1164,16 @@ protected:
 } // namespace
 
 TEST_CASE("story state: the fact reader for other systems") {
-    if (!haveRegistry()) return;
-    const FactRegistry& reg = registry();
+    REQUIRE(ftcore_test::allocHookInstalled());
+    const FactRegistry& r = reg();
     StoryState s;
-    const StoryFactReader<FakeFactSource> reader(s, reg);
+    const StoryFactReader<FakeFactSource> reader(s, r);
     const FakeFactSource& src = reader;
-    const int choice = src.npcFactIndex("p03_2");
-    const int number = src.npcFactIndex("p02_1");
-    CHECK(choice == static_cast<int>(slotOf(StoryFact::sp03_2)));
+    const int choice = src.npcFactIndex("a_ch");
+    const int number = src.npcFactIndex("a_num");
+    CHECK(choice == static_cast<int>(fs("a_ch")));
     CHECK(src.npcFactIndex("nope") == -1);
-    CHECK(src.npcFactIndex("c_milestone") == -1); // wide values are not facts
+    CHECK(src.npcFactIndex("w_mile") == -1); // wide values are not facts
     std::uint8_t v = 99;
     CHECK_FALSE(src.npcFactValue(choice, v)); // unset
     CHECK_FALSE(src.npcFactValue(number, v)); // unset reads its default, yet is not set
@@ -973,21 +1181,603 @@ TEST_CASE("story state: the fact reader for other systems") {
     CHECK_FALSE(src.npcFactValue(0, v));
     CHECK_FALSE(src.npcFactValue(9999, v));
     CHECK(v == 99);
-    REQUIRE(storyBeginScene(s, sc("p02")));
-    REQUIRE(storySet(s, reg, StoryFact::sp02_1, 5) == SetResult::Ok);
-    REQUIRE(storyCommitScene(s, reg));
-    REQUIRE(storyBeginScene(s, sc("p03")));
-    REQUIRE(storySet(s, reg, StoryFact::sp03_2, 2) == SetResult::Ok);
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 5) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ch"), 2) == SetResult::Ok);
     CHECK(src.npcFactValue(choice, v));
     CHECK(v == 2);
     CHECK(src.npcFactValue(number, v));
     CHECK(v == 5);
     // Not offered and stale read as false.
-    s.facts[slotOf(StoryFact::s104_1)] = kNotOffered;
-    CHECK_FALSE(src.npcFactValue(src.npcFactIndex("104_1"), v));
-    s.facts[slotOf(StoryFact::s104_1)] = 9;
-    CHECK_FALSE(src.npcFactValue(src.npcFactIndex("104_1"), v));
+    const int gated = src.npcFactIndex("a_gated");
+    s.facts[fs("a_gated")] = kNotOffered;
+    CHECK_FALSE(src.npcFactValue(gated, v));
+    s.facts[fs("a_gated")] = 9;
+    CHECK_FALSE(src.npcFactValue(gated, v));
     const auto before = ftcore_test::allocStats();
     for (int i = 0; i < 100; ++i) src.npcFactValue(choice, v);
     CHECK(ftcore_test::allocStats().count == before.count);
+}
+
+// ---- The walk: every branch of a scripted playthrough, driven by a walk file ----
+//
+// part every=N save=M leaves=K   a part is walked from the previous part's ends 1, N+1, 2N+1...; a
+//                                mid-scene save every M scenes played; K ends per entry
+// scene CODE VARIANTS
+// set ID VALUES [if ID=V | ID.fN=V]   a value per variant ("-" skips); with the condition false, refused
+// bits ID VALUES                       bits added
+// press SIDE KINDS                     a digit per press (0..2)
+// wide ID VALUES / derived INDEX VALUES   checked after the commit
+// end fact|wide ID VALUE               checked at every end of the part
+// One value stands for every variant. '#' starts a comment.
+
+namespace {
+
+struct WLine {
+    enum class Op : std::uint8_t { Set, Bits, Press, Wide, Derived } op = Op::Set;
+    std::uint16_t slot = 0; // fact slot, wide slot, side, or derived index
+    std::vector<std::string> vals;
+    FactCond cond;
+    bool hasCond = false;
+};
+struct WScene {
+    std::uint8_t ord = kNoScene;
+    int variants = 1;
+    std::vector<WLine> lines;
+};
+struct WEnd {
+    bool wide = false;
+    std::uint16_t slot = 0;
+    std::uint32_t value = 0;
+};
+struct WPart {
+    std::uint64_t every = 1, save = 1, leaves = 0;
+    std::vector<WScene> scenes;
+    std::vector<WEnd> ends;
+};
+
+std::vector<std::string> splitWords(std::string_view line) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i < line.size()) {
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) ++i;
+        std::size_t j = i;
+        while (j < line.size() && line[j] != ' ' && line[j] != '\t' && line[j] != '\r') ++j;
+        if (j > i) out.emplace_back(line.substr(i, j - i));
+        i = j;
+    }
+    return out;
+}
+
+bool toNum(const std::string& t, std::uint64_t& out) {
+    if (t.empty() || t.size() > 10) return false;
+    out = 0;
+    for (char c : t) {
+        if (c < '0' || c > '9') return false;
+        out = out * 10 + static_cast<std::uint64_t>(c - '0');
+    }
+    return true;
+}
+
+bool keyNum(const std::string& word, const char* key, std::uint64_t& out) {
+    const std::string k = std::string(key) + "=";
+    return word.rfind(k, 0) == 0 && toNum(word.substr(k.size()), out);
+}
+
+bool parseWalk(const FactRegistry& r, std::string_view text, std::vector<WPart>& parts, std::string& err) {
+    std::size_t lineNo = 0, at = 0;
+    auto fail = [&](const std::string& why) {
+        err = "walk line " + std::to_string(lineNo) + ": " + why;
+        return false;
+    };
+    while (at <= text.size()) {
+        std::size_t nl = text.find('\n', at);
+        if (nl == std::string_view::npos) nl = text.size();
+        std::string_view line = text.substr(at, nl - at);
+        at = nl + 1;
+        ++lineNo;
+        if (const std::size_t hash = line.find('#'); hash != std::string_view::npos) line = line.substr(0, hash);
+        const std::vector<std::string> w = splitWords(line);
+        if (w.empty()) continue;
+        if (w[0] == "part") {
+            WPart p;
+            if (w.size() != 4 || !keyNum(w[1], "every", p.every) || !keyNum(w[2], "save", p.save) ||
+                !keyNum(w[3], "leaves", p.leaves) || p.every == 0 || p.save == 0)
+                return fail("expected part every=N save=M leaves=K");
+            parts.push_back(p);
+            continue;
+        }
+        if (parts.empty()) return fail("before any part");
+        WPart& part = parts.back();
+        if (w[0] == "scene") {
+            WScene s;
+            std::uint64_t n = 0;
+            if (w.size() != 3 || !toNum(w[2], n) || n < 1 || n > 64) return fail("expected scene CODE VARIANTS");
+            s.ord = storySceneOrdinal(r, w[1]);
+            if (s.ord == kNoScene) return fail("unknown scene " + w[1]);
+            s.variants = static_cast<int>(n);
+            part.scenes.push_back(s);
+            continue;
+        }
+        if (w[0] == "end") {
+            WEnd e;
+            std::uint64_t v = 0;
+            if (w.size() != 4 || (w[1] != "fact" && w[1] != "wide") || !toNum(w[3], v)) return fail("expected end fact|wide ID VALUE");
+            e.wide = w[1] == "wide";
+            e.slot = e.wide ? storyWideSlot(r, w[2]) : storyFactSlot(r, w[2]);
+            if (e.wide ? e.slot == kNoWide : e.slot == 0) return fail("unknown id " + w[2]);
+            e.value = static_cast<std::uint32_t>(v);
+            part.ends.push_back(e);
+            continue;
+        }
+        if (part.scenes.empty()) return fail("before any scene");
+        WScene& sc = part.scenes.back();
+        WLine l;
+        std::size_t valsEnd = w.size();
+        if (w[0] == "set" || w[0] == "bits") {
+            l.op = w[0] == "set" ? WLine::Op::Set : WLine::Op::Bits;
+            if (w.size() < 3) return fail("expected " + w[0] + " ID VALUES");
+            l.slot = storyFactSlot(r, w[1]);
+            if (l.slot == 0) return fail("unknown fact " + w[1]);
+            if (w.size() >= 5 && w[w.size() - 2] == "if") {
+                if (l.op != WLine::Op::Set) return fail("if on bits");
+                const std::string& c = w.back();
+                const std::size_t eq = c.find('=');
+                if (eq == std::string::npos) return fail("expected if ID=V or ID.fN=V");
+                std::string id = c.substr(0, eq);
+                std::uint64_t v = 0;
+                if (!toNum(c.substr(eq + 1), v) || v > 255) return fail("bad condition value");
+                l.cond.value = static_cast<std::uint8_t>(v);
+                if (const std::size_t dot = id.find(".f"); dot != std::string::npos) {
+                    std::uint64_t f = 0;
+                    if (!toNum(id.substr(dot + 2), f) || f > 3) return fail("bad field");
+                    l.cond.field = static_cast<std::uint8_t>(f);
+                    id = id.substr(0, dot);
+                }
+                l.cond.fact = storyFactSlot(r, id);
+                if (l.cond.fact == 0) return fail("unknown fact " + id);
+                l.hasCond = true;
+                valsEnd = w.size() - 2;
+            }
+        } else if (w[0] == "press") {
+            l.op = WLine::Op::Press;
+            std::uint64_t side = 0;
+            if (w.size() < 3 || !toNum(w[1], side) || side > 1) return fail("expected press SIDE KINDS");
+            l.slot = static_cast<std::uint16_t>(side);
+        } else if (w[0] == "wide") {
+            l.op = WLine::Op::Wide;
+            if (w.size() < 3) return fail("expected wide ID VALUES");
+            const std::uint8_t ws = storyWideSlot(r, w[1]);
+            if (ws == kNoWide) return fail("unknown wide " + w[1]);
+            l.slot = ws;
+        } else if (w[0] == "derived") {
+            l.op = WLine::Op::Derived;
+            std::uint64_t idx = 0;
+            if (w.size() < 3 || !toNum(w[1], idx) || idx >= r.derivedCount) return fail("expected derived INDEX VALUES");
+            l.slot = static_cast<std::uint16_t>(idx);
+        } else {
+            return fail("unknown line " + w[0]);
+        }
+        l.vals.assign(w.begin() + 2, w.begin() + static_cast<std::ptrdiff_t>(valsEnd));
+        if (l.vals.size() != 1 && static_cast<int>(l.vals.size()) != sc.variants)
+            return fail("expected 1 or " + std::to_string(sc.variants) + " values");
+        for (const std::string& v : l.vals) {
+            std::uint64_t n = 0;
+            if (v == "-") continue;
+            if (l.op == WLine::Op::Press) {
+                for (char c : v)
+                    if (c < '0' || c > '2') return fail("press kinds are digits 0..2");
+            } else if (!toNum(v, n) || ((l.op == WLine::Op::Set || l.op == WLine::Op::Bits) && n > 255)) {
+                return fail("bad value " + v);
+            }
+        }
+        sc.lines.push_back(l);
+    }
+    if (parts.empty()) return fail("no part");
+    return true;
+}
+
+// The expected stored facts, kept beside the state.
+using Model = std::array<std::uint8_t, kFactSlots>;
+
+bool modelCond(const Model& m, const FactCond& c) {
+    const std::uint8_t v = m[c.fact];
+    if (c.field == 0xFF) return v == c.value;
+    return ((v >> (2 * c.field)) & 3u) == c.value;
+}
+
+bool choiceKind(FactKind k) { return k == FactKind::Choice2 || k == FactKind::Choice3 || k == FactKind::Choice4; }
+
+const std::string* valueFor(const WLine& l, int variant) {
+    const std::string& v = l.vals.size() == 1 ? l.vals[0] : l.vals[static_cast<std::size_t>(variant)];
+    return v == "-" ? nullptr : &v;
+}
+
+std::uint32_t num(const std::string& v) {
+    std::uint64_t n = 0;
+    toNum(v, n);
+    return static_cast<std::uint32_t>(n);
+}
+
+struct Walker {
+    const FactRegistry* reg = nullptr;
+    std::vector<WPart> parts;
+    std::vector<std::uint64_t> leaves, entries;
+    std::uint64_t nodes = 0, saves = 0, failures = 0;
+    std::string firstFailure;
+
+    void note(const std::string& why) {
+        if (!why.empty() && failures++ == 0) firstFailure = why;
+    }
+
+    // Plays one variant's lines into the open scene; `why` collects surprises.
+    void apply(StoryState& s, Model& m, const WScene& scene, int variant, std::string& why) const {
+        const FactRegistry& r = *reg;
+        const std::string code(storySceneCode(r, scene.ord));
+        for (const WLine& l : scene.lines) {
+            const std::string* v = valueFor(l, variant);
+            if (!v) continue;
+            switch (l.op) {
+            case WLine::Op::Set: {
+                const std::uint8_t x = static_cast<std::uint8_t>(num(*v));
+                const bool offered = !l.hasCond || modelCond(m, l.cond);
+                const SetResult res = storySet(s, r, l.slot, x);
+                if (res != (offered ? SetResult::Ok : SetResult::RejectedGate))
+                    why += " " + code + " set " + std::string(r.facts[l.slot].id()) + "=" + *v + " -> " +
+                           std::to_string(int(res));
+                if (offered) m[l.slot] = x;
+                break;
+            }
+            case WLine::Op::Bits: {
+                const std::uint8_t x = static_cast<std::uint8_t>(num(*v));
+                const SetResult res = storySetBits(s, r, l.slot, x);
+                if (res != SetResult::Ok) why += " " + code + " bits " + std::string(r.facts[l.slot].id());
+                m[l.slot] = static_cast<std::uint8_t>(m[l.slot] | x);
+                break;
+            }
+            case WLine::Op::Press: {
+                const std::uint8_t side = static_cast<std::uint8_t>(l.slot);
+                for (char c : *v) {
+                    const std::uint8_t kind = static_cast<std::uint8_t>(c - '0');
+                    if (storyCountHelp(s, r, side, kind) != SetResult::Ok) why += " " + code + " press";
+                    if (const std::uint16_t lk = r.roles.lastKind[side]; lk != 0)
+                        m[lk] = static_cast<std::uint8_t>(kind + 1);
+                    if (side == 0 && r.roles.firstPress != 0 && m[r.roles.firstPress] == 0) m[r.roles.firstPress] = 1;
+                }
+                break;
+            }
+            case WLine::Op::Wide:
+            case WLine::Op::Derived: break;
+            }
+        }
+    }
+
+    // What the commit does to facts the scene left at 0.
+    void commitModel(Model& m, std::uint8_t scene) const {
+        for (std::uint16_t slot = 1; slot < kFactSlots; ++slot) {
+            const FactRow& row = reg->facts[slot];
+            if (!row.used || row.setAny || !row.setScenes.has(scene) || m[slot] != 0) continue;
+            const bool gateFalse = row.gate.fact != 0 && !modelCond(m, row.gate);
+            if (choiceKind(row.kind) && gateFalse) m[slot] = kNotOffered;
+            else if (row.kind == FactKind::Optional) m[slot] = gateFalse ? kNotOffered : 1;
+        }
+    }
+
+    // The scene's reads match the model.
+    void checkReads(const StoryState& s, const Model& m, std::uint8_t scene, std::string& why) const {
+        const SceneReads reads = storySceneReads(s, *reg, scene);
+        const std::string code(storySceneCode(*reg, scene));
+        if (!reads.complete) why += " incomplete " + code;
+        for (std::uint8_t i = 0; i < reads.count; ++i) {
+            const FactRead& f = reads.facts[i];
+            const std::uint8_t want = m[f.fact];
+            const bool ok = want == 0             ? f.status == FactStatus::Unset
+                            : want == kNotOffered ? f.status == FactStatus::NotOffered
+                                                  : f.status == FactStatus::Set && f.value == want;
+            if (!ok) why += " read " + std::string(reg->facts[f.fact].id()) + " in " + code;
+        }
+    }
+
+    // After the commit: the wide and derived lines.
+    void checkAfter(const StoryState& s, const WScene& scene, int variant, std::string& why) const {
+        const std::string code(storySceneCode(*reg, scene.ord));
+        DerivedValues d;
+        bool haveD = false;
+        for (const WLine& l : scene.lines) {
+            const std::string* v = valueFor(l, variant);
+            if (!v) continue;
+            if (l.op == WLine::Op::Wide && storyWide(s, static_cast<std::uint8_t>(l.slot)) != num(*v))
+                why += " " + code + " wide " + std::string(reg->wide[l.slot].id()) + " " +
+                       std::to_string(storyWide(s, static_cast<std::uint8_t>(l.slot)));
+            if (l.op == WLine::Op::Derived) {
+                if (!haveD) {
+                    d = storySceneReads(s, *reg, 0).derived;
+                    haveD = true;
+                }
+                if (((d.valid >> l.slot) & 1u) == 0 || d.value[l.slot] != num(*v))
+                    why += " " + code + " derived " + std::to_string(l.slot) + "=" + std::to_string(d.value[l.slot]);
+            }
+        }
+    }
+
+    // A save in the middle of the scene, loaded back, then the scene played again from its start.
+    void saveAndRestart(StoryState& s, const Model& entryModel, const WScene& scene, int variant) {
+        const FactRegistry& r = *reg;
+        ++saves;
+        std::string why;
+        std::array<std::uint8_t, kStoryStateBlockSize> blk{};
+        StoryState copy = s;
+        StoryState back;
+        if (!storyEncode(copy, r, blk) || storyDecode(blk, r, back) != StoryLoad::Ok) {
+            why += " save";
+        } else {
+            if (back.openScene != s.openScene || back.facts != s.facts || back.stamp != s.stamp ||
+                back.stampEntry != s.stampEntry || back.wide != s.wide || copy.lostStampRecords != 0)
+                why += " loaded";
+            if (!storyRestartScene(back, r) || back.facts != s.factsEntry || back.stamp != s.stampEntry)
+                why += " restart";
+            Model m = entryModel;
+            apply(back, m, scene, variant, why);
+            if (back.facts != s.facts || back.stamp != s.stamp) why += " replay";
+            s = back;
+        }
+        if (!why.empty()) note(std::string(storySceneCode(r, scene.ord)) + why);
+    }
+
+    void leaf(std::size_t p, StoryState& s, const Model& m) {
+        const FactRegistry& r = *reg;
+        const std::uint64_t n = ++leaves[p];
+        std::string why;
+        std::array<StoryIssue, kMaxStoryIssues> out{};
+        if (storyValidate(s, r, out) != 0) why += " issues " + describe(s, r);
+        for (std::uint16_t slot = 1; slot <= r.factsKnown; ++slot)
+            if (s.facts[slot] != m[slot]) why += " fact " + std::string(r.facts[slot].id());
+        for (const WEnd& e : parts[p].ends) {
+            const std::uint32_t got = e.wide ? storyWide(s, static_cast<std::uint8_t>(e.slot)) : s.facts[e.slot];
+            if (got != e.value)
+                why += " end " + std::string(e.wide ? r.wide[e.slot].id() : r.facts[e.slot].id()) + "=" +
+                       std::to_string(got);
+        }
+        // Every eighth end: the block round-trips byte for byte, and every later scene reads the model.
+        if ((n & 7u) == 1) {
+            std::array<std::uint8_t, kStoryStateBlockSize> a{}, b{};
+            StoryState copy = s;
+            storyEncode(copy, r, a);
+            StoryState back;
+            if (storyDecode(a, r, back) != StoryLoad::Ok) why += " decode";
+            back.saveSerial = s.saveSerial;
+            storyEncode(back, r, b);
+            if (a != b) why += " bytes";
+            for (std::uint8_t k = static_cast<std::uint8_t>(s.lastCommitted + 1u); k < r.sceneCount; ++k)
+                checkReads(s, m, k, why);
+        }
+        if (!why.empty()) note("part " + std::to_string(p + 1) + " end " + std::to_string(n) + ":" + why);
+        if (p + 1 < parts.size() && (n - 1) % parts[p + 1].every == 0) {
+            ++entries[p + 1];
+            play(p + 1, 0, s, m);
+        }
+    }
+
+    void play(std::size_t p, std::size_t i, const StoryState& s, const Model& m) {
+        const WPart& part = parts[p];
+        if (i == part.scenes.size()) {
+            StoryState copy = s;
+            leaf(p, copy, m);
+            return;
+        }
+        const WScene& scene = part.scenes[i];
+        for (int v = 0; v < scene.variants; ++v) {
+            StoryState n = s;
+            Model nm = m;
+            std::string why;
+            if (!storyBeginScene(n, *reg, scene.ord)) why += " begin";
+            checkReads(n, nm, scene.ord, why);
+            apply(n, nm, scene, v, why);
+            if (++nodes % part.save == 0) saveAndRestart(n, m, scene, v);
+            if (!storyCommitScene(n, *reg)) why += " commit";
+            commitModel(nm, scene.ord);
+            checkAfter(n, scene, v, why);
+            std::array<StoryEvent, kStoryEventRing> ev{};
+            storyDrainEvents(n, ev);
+            if (!why.empty()) note(std::string(storySceneCode(*reg, scene.ord)) + " v" + std::to_string(v) + ":" + why);
+            play(p, i + 1, n, nm);
+        }
+    }
+};
+
+// Walks every branch; then a restart in every scene must give the same end as a straight run.
+void runWalk(const FactRegistry& r, std::string_view text, const char* what) {
+    Walker w;
+    w.reg = &r;
+    std::string err;
+    REQUIRE_MESSAGE(parseWalk(r, text, w.parts, err), err);
+    w.leaves.assign(w.parts.size(), 0);
+    w.entries.assign(w.parts.size(), 0);
+    w.entries[0] = 1;
+    const auto t0 = std::chrono::steady_clock::now();
+    w.play(0, 0, StoryState{}, Model{});
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::string counts;
+    for (std::size_t p = 0; p < w.parts.size(); ++p) counts += " " + std::to_string(w.leaves[p]);
+    MESSAGE(std::string(what) << ": ends per part" << counts << ", mid-scene saves " << w.saves << ", " << secs << " s");
+    for (std::size_t p = 0; p < w.parts.size(); ++p) {
+        CAPTURE(p);
+        CHECK(w.leaves[p] == w.entries[p] * w.parts[p].leaves);
+        CHECK(w.entries[p] > 0);
+    }
+    CHECK(w.saves > 0);
+    CAPTURE(w.firstFailure);
+    CHECK(w.failures == 0);
+
+    // A restart in each scene: the facts end the same; retries count them, presses stay counted.
+    std::vector<const WScene*> all;
+    for (const WPart& p : w.parts)
+        for (const WScene& s : p.scenes) all.push_back(&s);
+    StoryState straight, retried;
+    Model ms{}, mr{};
+    std::string why;
+    for (const WScene* scene : all) {
+        REQUIRE(storyBeginScene(straight, r, scene->ord));
+        w.apply(straight, ms, *scene, scene->variants - 1, why);
+        REQUIRE(storyCommitScene(straight, r));
+        w.commitModel(ms, scene->ord);
+        REQUIRE(storyBeginScene(retried, r, scene->ord));
+        Model scratch = mr;
+        std::string ignored;
+        w.apply(retried, scratch, *scene, 0, ignored);
+        REQUIRE(storyRestartScene(retried, r));
+        w.apply(retried, mr, *scene, scene->variants - 1, why);
+        REQUIRE(storyCommitScene(retried, r));
+        w.commitModel(mr, scene->ord);
+    }
+    CAPTURE(why);
+    CHECK(why.empty());
+    CHECK(retried.facts == straight.facts);
+    CHECK(retried.facts == mr);
+    const StoryRoles& ro = r.roles;
+    if (ro.retries != kNoWide) CHECK(storyWide(retried, ro.retries) == all.size());
+    if (ro.pressTotal != kNoWide) CHECK(storyWide(retried, ro.pressTotal) > storyWide(straight, ro.pressTotal));
+    if (ro.trackMark != kNoWide) CHECK(storyWide(retried, ro.trackMark) == storyWide(straight, ro.trackMark));
+    CHECK(issues(retried, r) == 0);
+}
+
+const char* kWalk = R"(# A walk over the small registry.
+part every=1 save=5 leaves=48
+scene s1 1
+scene s2 3
+set a_ev 1
+set a_ch 1 2 3
+set a_num 5
+bits a_bits 1
+set a_pk 1
+press 0 - 0 12
+derived 0 0 1 1
+derived 4 0 0 2
+derived 5 2 2 3
+scene s3 2
+set a_gated 1 2 if a_ch=2
+set a_op - 2 if a_ch=1
+set a_opt 1
+set a_num 7
+bits a_bits 2
+set a_pk 2 10
+scene s4 1
+set a_der 1
+scene s5 2
+set a_c4 1 2
+set a_step 1
+set a_open1 1
+derived 2 1 2
+derived 3 3 2
+wide w_mile 10
+scene s6 2
+press 1 0 01201
+wide w_mark 1 4
+scene s7 1
+set a_step 2
+scene s8 2
+set a_need - 2 if a_pk.f1=2
+set a_free 2
+wide w_mile 20
+end wide w_mile 20
+end fact a_bits 3
+
+part every=5 save=3 leaves=2
+scene s9 1
+set a_step 3
+scene s10 1
+scene s11 2
+set a_late 1 2 if a_c4=2
+scene s12 1
+end fact a_step 3
+end wide w_mile 20
+)";
+
+} // namespace
+
+TEST_CASE("story state: the walk parser refuses bad lines") {
+    const FactRegistry& r = reg();
+    auto fails = [&](const char* text, const char* expect) {
+        std::vector<WPart> parts;
+        std::string err;
+        CAPTURE(text);
+        CHECK_FALSE(parseWalk(r, text, parts, err));
+        CAPTURE(err);
+        CHECK(err.find(expect) != std::string::npos);
+    };
+    fails("", "no part");
+    fails("scene s1 1\n", "before any part");
+    fails("part every=0 save=1 leaves=1\n", "expected part");
+    fails("part every=1 save=1 leaves=1\nscene zz 1\n", "unknown scene zz");
+    fails("part every=1 save=1 leaves=1\nset a_ev 1\n", "before any scene");
+    fails("part every=1 save=1 leaves=1\nscene s2 2\nset a_ch 1 2 3\n", "expected 1 or 2 values");
+    fails("part every=1 save=1 leaves=1\nscene s2 1\nset nope 1\n", "unknown fact nope");
+    fails("part every=1 save=1 leaves=1\nscene s2 1\npress 0 3\n", "digits 0..2");
+    fails("part every=1 save=1 leaves=1\nscene s2 1\nderived 9 1\n", "expected derived");
+    fails("part every=1 save=1 leaves=1\nscene s2 1\nset a_ch 1 if a_ev\n", "expected if ID=V");
+    fails("part every=1 save=1 leaves=1\nscene s2 1\nhop 1\n", "unknown line hop");
+}
+
+TEST_CASE("story state: every branch of the small walk") { runWalk(reg(), kWalk, "small walk"); }
+
+TEST_CASE("story state: the walk catches a wrong expectation") {
+    // The walker is only worth its passes if it fails: each changed line must be caught.
+    const std::string base = kWalk;
+    const std::pair<const char*, const char*> breaks[] = {
+        {"derived 0 0 1 1", "derived 0 1 1 1"},
+        {"wide w_mark 1 4", "wide w_mark 1 5"},
+        {"set a_gated 1 2 if a_ch=2", "set a_gated 1 2 if a_ch=1"},
+        {"end fact a_bits 3", "end fact a_bits 1"},
+        {"part every=1 save=5 leaves=48", "part every=1 save=5 leaves=47"},
+        {"set a_need - 2 if a_pk.f1=2", "set a_need - 2"},
+    };
+    for (const auto& [from, to] : breaks) {
+        CAPTURE(to);
+        std::string text = base;
+        const std::size_t at = text.find(from);
+        REQUIRE(at != std::string::npos);
+        text.replace(at, std::string(from).size(), to);
+        Walker w;
+        w.reg = &reg();
+        std::string err;
+        REQUIRE(parseWalk(reg(), text, w.parts, err));
+        w.leaves.assign(w.parts.size(), 0);
+        w.entries.assign(w.parts.size(), 0);
+        w.entries[0] = 1;
+        w.play(0, 0, StoryState{}, Model{});
+        bool counted = true;
+        for (std::size_t p = 0; p < w.parts.size(); ++p) counted = counted && w.leaves[p] == w.entries[p] * w.parts[p].leaves;
+        CHECK((w.failures > 0 || !counted));
+    }
+}
+
+// ---- With the game's registry (Data/Story, outside the public repo): extra cases ----
+
+TEST_CASE("story state: the game's registry, when present") {
+    const PrivateRegistry& p = privateRegistry();
+    if (!p.present) {
+        MESSAGE("Data/Story is absent: the game's registry cases did not run");
+        return;
+    }
+    CAPTURE(p.error);
+    REQUIRE(p.ok);
+    const FactRegistry& r = p.reg;
+    CHECK(r.hash != 0);
+    for (std::uint8_t k = 0; k < r.sceneCount; ++k) CHECK(storySceneReads(StoryState{}, r, k).complete);
+    CHECK(issues(StoryState{}, r) == 0);
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, 0));
+    REQUIRE(storyCommitScene(s, r));
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncode(s, r, block));
+    StoryState back;
+    REQUIRE(storyDecode(block, r, back) == StoryLoad::Ok);
+    CHECK(back.facts == s.facts);
+
+    std::string walk;
+    if (!ftcore_test::readProjectData("Story/story_walk.txt", walk)) {
+        MESSAGE("no walk file: the game's walk did not run");
+        return;
+    }
+    runWalk(r, walk, "game walk");
 }

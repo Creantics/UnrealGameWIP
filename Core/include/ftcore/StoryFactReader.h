@@ -29,7 +29,7 @@ public:
 
     bool npcFactValue(int index, std::uint8_t& value) const override {
         if (index <= 0 || index >= static_cast<int>(kFactSlots)) return false;
-        const FactRead r = storyGetSlot(*state_, *reg_, static_cast<std::uint16_t>(index));
+        const FactRead r = storyGet(*state_, *reg_, static_cast<std::uint16_t>(index));
         if (r.status != FactStatus::Set) return false;
         value = r.value;
         return true;

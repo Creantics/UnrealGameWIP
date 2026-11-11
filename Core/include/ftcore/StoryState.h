@@ -3,24 +3,25 @@
 // Story state: the facts a playthrough remembers (what happened, what the player chose, a few counts),
 // kept as one fixed-size, versioned, checksummed save block next to StorySave.
 //
-//   ftcore::FactRegistry reg;                                   // load time (allocates while importing)
-//   ftcore::importStoryFacts(csvText, reg, &error);             // Data/Story/story_facts.csv
-//   ftcore::importStoryTuning(jsonText, reg.tuning, &error);    // Data/Story/story_tuning.json
-//   ftcore::StoryState s;                                       // a new game
-//   ftcore::storyBeginScene(s, ftcore::storySceneOrdinal("p03"));
-//   ftcore::storySet(s, reg, ftcore::StoryFact::sp03_2, 2);     // B
-//   ftcore::storyCountHelp(s, reg, 0, 1);                       // one accepted press: side 0, kind 1
+//   ftcore::FactRegistry reg;                                        // load time (allocates while importing)
+//   ftcore::importStoryRegistry(csvText, jsonText, reg, &error);     // story_facts.csv + story_tuning.json
+//   ftcore::StoryState s;                                            // a new game
+//   ftcore::storyBeginScene(s, reg, ftcore::storySceneOrdinal(reg, code));
+//   ftcore::storySet(s, reg, ftcore::storyFactSlot(reg, id), 2);
+//   ftcore::storyCountHelp(s, reg, 0, 1);                            // one accepted press: side 0, kind 1
 //   ftcore::storyCommitScene(s, reg);
-//   ftcore::SceneReads r = ftcore::storySceneReads(s, reg, ftcore::storySceneOrdinal("p04"));
+//   ftcore::SceneReads r = ftcore::storySceneReads(s, reg, nextScene);
 //   std::array<std::uint8_t, ftcore::kStoryStateBlockSize> block;
 //   ftcore::storyEncode(s, reg, block);
 //
-// Facts are one byte in a numbered slot; counters are u32 in a numbered "wide" slot. The registry (csv)
-// names each slot, its kind, range, mutability, the scenes that may set it, an optional gate, and the
-// scenes that read it. Slots are append-only and never reused, so a save from any build loads in any
-// other: unknown slots are carried through untouched, new slots read as their default.
-// Scenes are ordinals 0..74 (p01..p08, 101..117, 201..216, 301..315, 401..409, f01..f10).
-// Nothing here allocates except the two importers. docs/STORY_STATE.md has the format and rules.
+// The code is the machine; the data is the map. Facts are one byte in a numbered slot; counters are u32
+// in a numbered "wide" slot. The csv names each slot, its kind, range, mutability, the scenes that may
+// set it, an optional gate, and the scenes that read it. The json lists the scenes in play order and
+// binds the generic features (press counters, milestones, the track, derived values, cross-fact rules)
+// to slots. Slots are append-only and never reused, so a save from any build loads in any other:
+// unknown slots are carried through untouched, new slots read as their default. A feature whose
+// binding is absent does nothing. Nothing here allocates except the importer.
+// docs/STORY_STATE.md has the format and rules.
 
 #include "ftcore/Api.h"
 
@@ -42,46 +43,18 @@ constexpr std::uint32_t kMaxReadsPerScene = 24;
 constexpr std::uint32_t kMaxWideReadsPerScene = 8;
 constexpr std::uint32_t kStoryEventRing = 32;
 constexpr std::uint32_t kMaxStoryIssues = 32;
-constexpr std::uint8_t kStoryScenes = 75;
+constexpr std::uint32_t kMaxStoryScenes = 128; // scene ordinals 0..127
+constexpr std::uint32_t kMaxMilestones = 8;
+constexpr std::uint32_t kMaxDerived = 16;
+constexpr std::uint32_t kMaxStoryRules = 32;
+constexpr std::uint32_t kMaxPressCap = 65535; // the largest cap a press counter may have
 constexpr std::uint8_t kNoScene = 255;
+constexpr std::uint8_t kNoWide = 255;
 constexpr std::uint8_t kNotOffered = 255;
 constexpr std::uint16_t kStoryLayoutVersion = 1;
 constexpr std::uint16_t kStoryMidScene = 1; // header flags: written while a scene was open
 constexpr std::uint16_t kStorySandbox = 2;  // a replay copy (never encoded)
 constexpr std::uint16_t kStoryWideEventBit = 0x8000; // a Rejected event's id for a wide slot
-
-// "p03" -> 2, "117" -> 24, "f10" -> 74; kNoScene for anything else.
-FTCORE_API std::uint8_t storySceneOrdinal(std::string_view code);
-// The code for an ordinal ("" when out of range).
-FTCORE_API std::string_view storySceneCode(std::uint8_t ordinal);
-
-// The fact slots this build knows. The enumerator is the slot; the registry id is the name without the
-// leading 's' (sp03_1 is "p03_1", s104_1 is "104_1"). Append only.
-enum class StoryFact : std::uint16_t {
-    None = 0,
-    sp03_1, sp07_1, sp03_2, sp03_3, sp04_1, sp04_2, sp02_1, sp04_3, sp04_4, sp06_1,       // 1..10
-    sp06_2, sp05_1, sp07_2, sp07_3, sp07_4, s104_1, s105_1, s105_2, s106_1, s106_2,       // 11..20
-    s106_3, s107_1, s108_1, s109_1, s110_1, s110_2, s111_1, s111_2, s112_1, s112_2,       // 21..30
-    s112_3, s113_1, s114_1, s114_2, s115_1, s115_2, s116_1, s116_2, s115_3, s203_1,       // 31..40
-    s203_2, s203_3, s205_1, s206_1, s207_1, s207_2, s211_1, s213_1, s214_1, s215_1,       // 41..50
-    s215_2, s216_1, s302_1, s303_1, s303_2, s304_1, s305_1, s305_2, s305_3, s306_1,       // 51..60
-    s307_1, s310_1, s313_1, s314_1, s315_1, s315_2, s404_1, s405_1, s406_1, s406_2,       // 61..70
-    s407_1, s407_2, s408_1, s409_1, sf05_1, sf07_1, sf07_2, sf09_1, sf10_1, sg_hl0,       // 71..80
-    sg_hl1,                                                                               // 81
-    Count
-};
-
-// The wide slots this build knows (the enumerator is the slot and the registry id). Append only.
-enum class StoryWide : std::uint8_t {
-    c_help_s0_k0, c_help_s0_k1, c_help_s0_k2, c_help_s1_k0, c_help_s1_k1, c_help_s1_k2,
-    c_help_scene, c_115_help, c_milestone, c_hold_done, c_hold_slips, c_203_found, c_303_declines,
-    c_retries, c_help_all, m_108,
-    Count
-};
-
-// The registry id an enumerator stands for ("" for None / Count).
-FTCORE_API std::string_view storyFactId(StoryFact fact);
-FTCORE_API std::string_view storyWideId(StoryWide wide);
 
 // ---- The registry ----
 
@@ -94,7 +67,7 @@ enum class FactKind : std::uint8_t {
     Number,   // NUM: 0..max (stored 0 reads as the row's default)
     Bits,     // BITS: a mask, max = the legal bits
     Packed,   // PK: 2-bit fields from bit 0 (0 unset, 1, 2; 3 is illegal); a lone top bit is a flag
-    Stepped,  // ST: 0..max, only upward
+    Stepped,  // ST: 0..max, only upward, at most one step per set scene
     Retired,  // a dropped fact: its slot stays dead
 };
 enum class FactMut : std::uint8_t { Once, Mono, Free };
@@ -144,16 +117,76 @@ struct WideRow {
     std::uint32_t cap = 0; // Counter / Raw: the logical cap; Mask: the legal bits
     bool setAny = false;
     SceneSet setScenes;
+    std::uint8_t firstSet = kNoScene;
     SceneSet reads;
     std::string_view id() const { return {idChars.data(), std::char_traits<char>::length(idChars.data())}; }
 };
 
+// The slots the generic features use (kNoWide / 0: not bound, the feature does nothing).
+struct StoryRoles {
+    std::array<std::array<std::uint8_t, 3>, 2> pressCounters{{{kNoWide, kNoWide, kNoWide}, {kNoWide, kNoWide, kNoWide}}};
+    std::uint8_t pressScene = kNoWide;  // presses in the open scene (zeroed as a scene begins)
+    std::uint8_t pressTotal = kNoWide;  // every press
+    std::uint8_t retries = kNoWide;     // +1 per restart
+    std::uint8_t milestone = kNoWide;   // raised by the milestones
+    std::uint8_t trackMark = kNoWide;   // the track side's presses in the track scene
+    std::array<std::uint16_t, 2> lastKind{0, 0}; // per side: the last kind pressed + 1
+    std::uint16_t firstPress = 0;       // latched to 1 by side 0's first press
+    std::array<std::uint16_t, 2> sideOpen{0, 0}; // a side presses only while this fact is set
+};
+
 struct StoryTuning {
-    std::uint8_t trackLength = 7;   // squares on the track
-    std::uint8_t trackScene = 22;  // the scene whose side-1 presses move the mark ("115")
-    std::uint8_t milestoneCount = 4;   // milestones: at a scene's commit the milestone count rises to the value
-    std::array<std::uint8_t, 8> milestoneScene{6, 22, 50, 68};
-    std::array<std::uint8_t, 8> milestoneValue{48, 61, 62, 63};
+    std::uint8_t trackLength = 0;  // squares on the track
+    std::uint8_t trackScene = kNoScene;
+    std::uint8_t trackSide = 1;
+    std::uint8_t milestoneCount = 0; // at a milestone scene's commit the milestone count rises to the value
+    std::array<std::uint8_t, kMaxMilestones> milestoneScene{};
+    std::array<std::uint32_t, kMaxMilestones> milestoneValue{};
+    std::array<std::uint16_t, kMaxMilestones> milestoneNeeds{}; // a fact that must be set once reached (0: none)
+};
+
+// A derived value: computed from facts at scene start, never stored.
+enum class DeriveKind : std::uint8_t {
+    None,
+    Value,      // the fact's value; valid when set
+    Read,       // the fact's read value (unset reads the default, 255 never offered); valid unless unknown
+    In,         // 1 when the value's bit is in `mask`, else 0; valid when set
+    Upgrade,    // 0 unset, else the value, or `to` when it is `from` and `cond` holds; valid when unset or set
+    LeadKind,   // storyLeadKind
+    PressShown, // storyHelpShown
+};
+struct DeriveRow {
+    DeriveKind kind = DeriveKind::None;
+    std::uint16_t fact = 0;
+    std::uint32_t mask = 0;
+    std::uint8_t from = 0;
+    std::uint8_t to = 0;
+    FactCond cond;
+};
+
+// A cross-fact validation rule bound in data.
+enum class RuleOp : std::uint8_t {
+    Set,     // holds an in-range value (not 0, not 255)
+    Equals,  // == value
+    Field,   // packed field `field` == value
+    AnyBits, // value & mask != 0
+};
+struct RuleCond {
+    std::uint16_t fact = 0;
+    RuleOp op = RuleOp::Set;
+    std::uint8_t field = 0;
+    std::uint8_t value = 0;
+};
+enum class RuleKind : std::uint8_t {
+    Needs,       // when `when` holds, `then` must hold (settled: only once `when`'s first set scene is committed)
+    BitsInOrder, // a mask fact sets bit n only after bit n-1
+};
+struct StoryRule {
+    std::uint8_t number = 0; // the issue's rule number
+    RuleKind kind = RuleKind::Needs;
+    bool settled = false;
+    RuleCond when;
+    RuleCond then;
 };
 
 struct FactRegistry {
@@ -161,15 +194,30 @@ struct FactRegistry {
     std::array<WideRow, kWideSlots> wide{};
     std::uint16_t factsKnown = 0; // highest fact slot in the table
     std::uint16_t wideKnown = 0;  // highest wide slot + 1
-    std::uint32_t hash = 0;       // FNV-1a 32 of the ids in slot order
+    std::uint32_t hash = 0;       // FNV-1a 32 of the scene codes and the ids in slot order (0: empty)
+    std::array<std::array<char, 8>, kMaxStoryScenes> sceneCodes{};
+    std::uint8_t sceneCount = 0;
+    StoryRoles roles;
     StoryTuning tuning;
+    std::array<DeriveRow, kMaxDerived> derived{};
+    std::uint8_t derivedCount = 0;
+    std::array<StoryRule, kMaxStoryRules> rules{};
+    std::uint8_t ruleCount = 0;
 };
 
-// Reads the csv (header: slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive).
-// On failure `out` is left empty and `error` lists every problem, one per line, with its csv line.
-FTCORE_API bool importStoryFacts(std::string_view csv, FactRegistry& out, std::string* error = nullptr);
-// {"version":1,"trackLength":7,"trackScene":"115","milestones":[{"scene":"p07","value":48},...]}
-FTCORE_API bool importStoryTuning(std::string_view json, StoryTuning& out, std::string* error = nullptr);
+// Reads the csv (header: slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive) and
+// the json (scenes, roles, track, milestones, derived values, rules); both are required. On failure
+// `out` is left empty and `error` lists every problem, one per line.
+FTCORE_API bool importStoryRegistry(std::string_view csv, std::string_view json, FactRegistry& out,
+                                    std::string* error = nullptr);
+
+// A scene code's ordinal (its place in the json's scene list); kNoScene when not listed.
+FTCORE_API std::uint8_t storySceneOrdinal(const FactRegistry& reg, std::string_view code);
+// The code for an ordinal ("" when out of range).
+FTCORE_API std::string_view storySceneCode(const FactRegistry& reg, std::uint8_t ordinal);
+// A fact's slot by id (0 when unknown or retired); a wide slot by id (kNoWide when unknown).
+FTCORE_API std::uint16_t storyFactSlot(const FactRegistry& reg, std::string_view id);
+FTCORE_API std::uint8_t storyWideSlot(const FactRegistry& reg, std::string_view id);
 
 // ---- The state ----
 
@@ -178,8 +226,9 @@ enum class SetResult : std::uint8_t {
     Ok, Unchanged, RejectedOnce, RejectedRange, RejectedDownward, RejectedGate, RejectedNoScene,
     RejectedWrongScene, UnknownFact
 };
-// BadScene: the open or last committed scene is neither a scene nor 255 (none).
-enum class StoryLoad : std::uint8_t { Ok, Empty, BadMagic, BadSize, BadChecksum, NewerLayout, BadScene };
+// BadScene: the open or last committed scene, or a stamp, is neither a scene ordinal nor 255 (none).
+// BadVersion: a layout version of 0.
+enum class StoryLoad : std::uint8_t { Ok, Empty, BadMagic, BadSize, BadChecksum, NewerLayout, BadScene, BadVersion };
 
 struct StoryEvent {
     enum class Kind : std::uint8_t {
@@ -222,6 +271,9 @@ struct StoryState {
     std::uint8_t eventHead = 0;
     std::uint8_t eventCount = 0;
     std::uint32_t lostEvents = 0; // not saved
+    // Mid-scene encodes that wrote no stamps-at-entry record (not saved): the extension had no room or
+    // was kept raw. That block restarts the open scene with the stamps as saved, not as the scene began.
+    std::uint32_t lostStampRecords = 0;
 };
 
 struct FactRead {
@@ -234,16 +286,10 @@ struct WideRead {
     std::uint32_t value = 0;
 };
 
-// Values computed from facts, never stored. valid: bit n-1 for Dn.
+// The registry's derived values in its order; valid: bit i for value i.
 struct DerivedValues {
-    std::uint8_t valid = 0;
-    bool d1 = false;            // p03_2 is B or C
-    std::uint8_t d2[2] = {0, 0}; // the two third-slot states (p03_1, p07_1)
-    std::uint8_t d3 = 0;        // 116_1: 0 unset, 1 A, 2 B, 3 A and 315_1 done
-    std::uint8_t d4 = 0;        // 1 when f07_1 is A, else 0 (only when f07_1 is set)
-    std::uint8_t d5 = 0;        // 1 or 2 from 113_1
-    std::uint8_t d6 = 0;        // storyLeadKind
-    std::uint32_t d7 = 0;       // storyHelpShown
+    std::uint16_t valid = 0;
+    std::array<std::uint32_t, kMaxDerived> value{};
 };
 
 struct SceneReads {
@@ -258,7 +304,7 @@ struct SceneReads {
 
 enum class IssueSeverity : std::uint8_t { Warning, Error };
 struct StoryIssue {
-    std::uint8_t rule = 0;    // 1..20 for V01..V20
+    std::uint8_t rule = 0;    // V01..V20, or a data rule's number
     std::uint16_t factA = 0;  // a fact slot, or kStoryWideEventBit | wide slot
     std::uint16_t factB = 0;
     IssueSeverity severity = IssueSeverity::Error;
@@ -277,37 +323,40 @@ struct StoryStateLoadReport {
 
 // min(c + n, cap), without wrapping.
 FTCORE_API std::uint32_t storySaturatingAdd(std::uint32_t c, std::uint32_t n, std::uint32_t cap);
-// The help total: per side, the larger of 1 and that side's presses, summed (2 at least).
-FTCORE_API std::uint32_t storyHelpShown(const StoryState& s);
-// The kind side 0 pressed most; a tie goes to the last kind pressed if it is tied, else to the first of
-// heal (0), guard (1), count (2) among the tied. No presses: 0.
-FTCORE_API std::uint8_t storyLeadKind(const StoryState& s);
+// The press total shown: per side, the larger of 1 and that side's presses, summed (saturating).
+FTCORE_API std::uint32_t storyHelpShown(const StoryState& s, const FactRegistry& reg);
+// The kind side 0 pressed most; a tie goes to the last kind pressed if it is tied, else to the lowest
+// tied kind. No presses (or no counters bound): 0.
+FTCORE_API std::uint8_t storyLeadKind(const StoryState& s, const FactRegistry& reg);
 // CRC-32 (reflected 0xEDB88320); storyCrc32 of "123456789" is 0xCBF43926.
 FTCORE_API std::uint32_t storyCrc32(std::span<const std::uint8_t> bytes, std::uint32_t crc = 0);
 
 // ---- Use ----
 
 FTCORE_API void storyReset(StoryState& s); // a new game
-FTCORE_API FactRead storyGet(const StoryState& s, const FactRegistry& reg, StoryFact fact);
-FTCORE_API FactRead storyGetSlot(const StoryState& s, const FactRegistry& reg, std::uint16_t slot);
-FTCORE_API SetResult storySet(StoryState& s, const FactRegistry& reg, StoryFact fact, std::uint8_t value);
+FTCORE_API FactRead storyGet(const StoryState& s, const FactRegistry& reg, std::uint16_t slot);
+FTCORE_API SetResult storySet(StoryState& s, const FactRegistry& reg, std::uint16_t slot, std::uint8_t value);
 // Adds bits to a Bits fact or a Packed fact's flag bit (the result goes through storySet's rules).
-FTCORE_API SetResult storySetBits(StoryState& s, const FactRegistry& reg, StoryFact fact, std::uint8_t bits);
-FTCORE_API std::uint32_t storyWide(const StoryState& s, StoryWide wide);
+FTCORE_API SetResult storySetBits(StoryState& s, const FactRegistry& reg, std::uint16_t slot, std::uint8_t bits);
+FTCORE_API std::uint32_t storyWide(const StoryState& s, std::uint8_t slot);
 // A counter: saturating add (Saturated once on reaching the cap). A mask: adds the bits in n.
-FTCORE_API SetResult storyAdd(StoryState& s, const FactRegistry& reg, StoryWide wide, std::uint32_t n);
-// One accepted press of the third slot's button: side 0..1, kind 0 heal, 1 guard, 2 the shared count.
-// Counts the kind, the scene and the raw total, records the last kind, latches p03_3 on side 0.
-// Side 1 needs its slot named (p07_1). Ok when the kind's counter rose, Unchanged at its cap.
+FTCORE_API SetResult storyAdd(StoryState& s, const FactRegistry& reg, std::uint8_t slot, std::uint32_t n);
+// One accepted press: side 0..1, kind 0..2. Counts the kind and, where
+// bound, the scene and the total, records the last kind and latches the first press on side 0.
+// A side with an open fact bound presses only while it is set. Ok when the kind's counter rose,
+// Unchanged at its cap, UnknownFact when that counter is not bound.
 FTCORE_API SetResult storyCountHelp(StoryState& s, const FactRegistry& reg, std::uint8_t side, std::uint8_t kind);
-// Every fact the scene reads (registry order), its wide values, and D1..D7. Scene start, not per frame.
+// Every fact the scene reads (registry order), its wide values, and the derived values. Scene start,
+// not per frame.
 FTCORE_API SceneReads storySceneReads(const StoryState& s, const FactRegistry& reg, std::uint8_t scene);
 
-// False when a scene is open, the ordinal is unknown, or the scene is not after the last committed one.
-FTCORE_API bool storyBeginScene(StoryState& s, std::uint8_t scene);
-// Back to the scene's start: facts, stamps and counters (not the Raw ones); c_retries + 1.
+// False when a scene is open, the ordinal is past kMaxStoryScenes, or the scene is not after the last
+// committed one. Zeroes the per-scene press count when bound.
+FTCORE_API bool storyBeginScene(StoryState& s, const FactRegistry& reg, std::uint8_t scene);
+// Back to the scene's start: facts, stamps and counters (not the Raw ones); retries + 1 when bound.
 FTCORE_API bool storyRestartScene(StoryState& s, const FactRegistry& reg);
-// Closes the scene: unanswered gated choices and optional acts become 255 / 1, milestones apply.
+// Closes the scene: unanswered gated choices and optional acts become 255 / 1, milestones and the
+// track mark apply.
 FTCORE_API bool storyCommitScene(StoryState& s, const FactRegistry& reg);
 // A replay copy for a scene select: committed up to the scene before, never encoded. Once facts
 // stamped with this scene or a later one read as unset again; facts written in several scenes and
@@ -319,7 +368,8 @@ FTCORE_API std::uint32_t storyDrainEvents(StoryState& s, std::span<StoryEvent> o
 // The impossible combinations; never repairs. Returns the number written (at most out.size(), 32).
 FTCORE_API std::uint32_t storyValidate(const StoryState& s, const FactRegistry& reg, std::span<StoryIssue> out);
 
-// Writes the block (and bumps saveSerial). False for a sandbox (out untouched).
+// Writes the block (and bumps saveSerial). False for a sandbox (out untouched). With an empty registry
+// the loaded registry hash is kept.
 FTCORE_API bool storyEncode(StoryState& s, const FactRegistry& reg, std::span<std::uint8_t, kStoryStateBlockSize> out);
 FTCORE_API StoryLoad storyDecode(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
                                  StoryStateLoadReport* report = nullptr);

@@ -4,7 +4,9 @@
 
 The facts a playthrough remembers, kept as one plain value (`StoryState`, under 4 KB) and saved as one
 fixed 2048-byte block. Facts are bytes in numbered slots; counters are u32 in numbered "wide" slots.
-Ids are neutral (`p03_1`, `104_1`, `c_milestone`); what they mean lives outside this repo.
+This repo holds the machine only. Which slots exist, what they are called, which scenes there are
+and which rules bind to which ids all come from the registry in `Data/Story`, which is gitignored and
+never committed. Generic rule kinds are code; their bindings are data.
 
 ## The registry: `Data/Story/story_facts.csv`
 
@@ -27,26 +29,41 @@ slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive
 
 Import collects every error as `story_facts.csv line N: ...` and leaves the registry empty on failure.
 It also checks a gate's fact is set no later than the gated fact and that no scene reads more than 24
-facts or 8 wide values. The registry hash is FNV-1a over the ids in slot order.
+facts or 8 wide values. The registry hash is FNV-1a over the scene codes, then the fact and wide ids in slot order. A UTF-8 byte order
+mark before the header is skipped.
 
-`Data/Story/story_tuning.json`: the track length and scene, and the counter milestones (a scene
-and a value; at that scene's commit the count rises to the value).
+### `Data/Story/story_tuning.json`
+
+Required with the csv: one without the other is an import error. Every field but `version` and
+`scenes` is optional; an unbound role switches its behaviour off.
+
+| Key | Meaning |
+|---|---|
+| `version` | 2 |
+| `scenes` | the scene codes in play order (`[a-z0-9_]{1,7}`, at most 128); a scene's index is its ordinal |
+| `roles` | ids bound to built-in jobs: `pressCounters` (2 sides x 3 kinds, CTR with max at most 65535), `pressScene`, `pressTotal`, `retries`, `milestone`, `trackMark` (wide ids); `lastKind` (2 NUM facts, max at least 3), `firstPress`, `sideOpen` (2 facts, `""` for none) |
+| `track` | `length`, `scene`, `side`: the presses on that side in that scene, capped at the length, go to `trackMark` |
+| `milestones` | `scene`, `value`, optional `needs` (a fact): at the scene's commit the milestone counter rises to the value; scenes and values must rise |
+| `derived` | up to 16 values computed for a scene's reads: `value` (a fact's value), `read` (its stored byte), `in` (1 when the fact's value is in `values`), `upgrade` (`from` becomes `to` while `if` holds), `leadKind`, `pressShown` |
+| `rules` | data-bound checks with their own issue number: `needs` (`when` holds → `then` holds; `settled` checks only after the when-fact's first set scene is committed), `bitsInOrder` (a BITS fact's bits set from bit 0 up) |
+
+A condition is `id` (set), `id=V`, `id.fN=V` (a packed field) or `id&M` (any of the bits).
 
 ## Use
 
 - `storyBeginScene` / `storyCommitScene` / `storyRestartScene`: one open scene, strictly after the last
-  committed. A restart restores facts, stamps and counters (not RAW) and bumps `c_retries`. A commit
+  committed. A restart restores facts, stamps and counters (not RAW) and bumps the `retries` counter. A commit
   closes unanswered gated choices as 255 (not offered) and optional acts as 1 or 255, then applies the
-  milestones and the track mark (side 1's presses in the track scene, capped at the track length).
+  milestones and the track mark.
 - `storySet` checks in order: unknown, no scene, wrong scene, range, gate, unchanged, once, mono.
   Every refusal is a `Rejected` event (`id` with bit 15 for wide slots).
 - `storyGet` reads Unset (the default), Set, NotOffered, Stale (out of range: the default) or Unknown.
-- `storyCountHelp(side, kind)` counts one third-slot press (per kind, per scene, raw total) and records
-  the last kind.
-- `storySceneReads(scene)`: every fact and wide value the scene reads plus derived values D1..D7.
+- `storyCountHelp(side, kind)` counts one press (per side and kind, per scene, raw total), records
+  the last kind and latches the first press; a side with an unset `sideOpen` fact refuses it.
+- `storySceneReads(scene)`: every fact and wide value the scene reads plus the derived values.
   Call at scene start; it does not allocate.
-- `storyValidate`: rules V01..V20; reports, never repairs; at most 32 issues. V16 checks only that a
-  scene counter is zero before its scene; the order it was counted in is not in the state.
+- `storyValidate`: the built-in rules plus the registry's rules; reports, never repairs; at most 32
+  issues. V16 checks only that a scene counter is zero before its scene; the order it was counted in is not in the state.
 - `storyMakeSandbox`: a scene-select copy that can never be encoded. Once facts written at the chosen
   scene or later read as unset; facts written in several scenes and the counters keep their values.
 
@@ -75,11 +92,21 @@ and a value; at that scene's commit the count rises to the value).
 
 Tag 1 holds the stamps at scene entry (written only mid-scene). Unknown tags, slots past this build's
 registry, and a malformed extension (kept raw) are written back unchanged. Decode refuses, in order:
-empty, too short, bad magic, a newer layout, a wrong size, a bad checksum, an open or last committed
-scene that is neither a scene nor 255.
+empty, too short, bad magic, a version of 0, a newer layout, a wrong size, a bad checksum, an open or last committed
+scene or a stamp that is neither a scene nor 255. A mid-scene save with no room left in the extension
+for tag 1 is still written, without it, and counts in `StoryState::lostStampRecords`: that save
+restarts the open scene with the stamps as saved.
 
 ## Tests
 
-`Core/tests/test_story_state.cpp`, including a walk through every act 1 branch (196,608 paths,
-about 5 s in Debug) that validates each end state, its reads and derived values, and round-trips the
-block.
+`Core/tests/test_story_state.cpp`. Every public test runs on a small registry built in the test and
+never skips: import errors, set and get, gates and the commit, presses and milestones, restart, the
+sandbox (the real state stays byte-identical), the block, a newer writer, no registry, derive on
+load, every validation rule, no heap use, and a walk through every branch of a small walk script.
+The walker validates each end, checks each scene's reads against a model, saves mid-scene, loads,
+restarts and replays, round-trips the block, and is itself checked to fail on wrong expectations.
+
+When `Data/Story` is present, its registry must import cleanly and its walk file
+(`story_walk.txt`, same format, documented in the test) is walked too; a csv without the json fails.
+
+Nothing in `Source/` imports the registry yet; until it does, the game runs without story state.

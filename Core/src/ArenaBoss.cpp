@@ -80,6 +80,13 @@ void CalledStrike::start(const CalledImpact* impacts, std::size_t count) {
 
 void CalledStrike::cancel() { count_ = next_; }
 
+void CalledStrike::reset(double start) {
+    const CalledWindows w = windows_;
+    *this = CalledStrike{};
+    windows_ = w;
+    now_ = startTime(start);
+}
+
 CalledOutcome CalledStrike::judge(const CalledImpact& imp) const {
     if (hold_ == ArenaHold::None) return CalledOutcome::Missed;
     if (imp.zone == CalledZone::Path && holdZone_ != CalledZone::Path) return CalledOutcome::Missed;
@@ -91,8 +98,8 @@ CalledOutcome CalledStrike::judge(const CalledImpact& imp) const {
 
 CalledResults CalledStrike::resolveUpTo(double t) {
     CalledResults out;
-    // The first time sets the clock; after that a jump past kMaxTimeJump is ignored (CombatInputs.h).
-    if (std::isfinite(t) && t > now_ && (now_ == kCalledClockUnset || t - now_ <= kMaxTimeJump)) now_ = t;
+    // A jump past kMaxTimeJump is ignored (CombatInputs.h).
+    if (std::isfinite(t) && t > now_ && t - now_ <= kMaxTimeJump) now_ = t;
     while (next_ < count_ && impacts_[next_].at <= now_) {
         const CalledOutcome o = judge(impacts_[next_]);
         outcomes_[next_] = o;
@@ -761,10 +768,9 @@ void ArenaBossRun::begin(const ArenaBossDef& def, double now) {
     def_ = &def;
     phases_.reset(def.phases.data(), def.phaseCount);
     breakable_ = {};
-    strike_ = CalledStrike{};
     now_ = startTime(now);
     strike_.setWindows(def.intercept);
-    strike_.update(now_);
+    strike_.reset(now_);
     guest_.reset(def.bpm, def.guestCall);
     crit_.reset(def.weakPoints);
     lock_.reset(def.weakPoints.locked, def.weakPoints.lock, now_);
