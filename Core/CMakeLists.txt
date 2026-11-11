@@ -186,6 +186,16 @@ else()
     target_compile_options(ftcore_frontcount PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_storywalk: plays a story folder through the runner with the story state bound, headless (an offline check).
+add_executable(ftcore_storywalk tools/ftcore_storywalk.cpp)
+target_link_libraries(ftcore_storywalk PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_storywalk PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_storywalk PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_storywalk PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 if(FTCORE_BUILD_TESTS)
     include(FetchContent)
     # CMake 4 rejects cmake_minimum_required(< 3.5), which doctest 2.4.11 still declares.
@@ -331,6 +341,18 @@ if(FTCORE_BUILD_TESTS)
         --placed ${CMAKE_CURRENT_BINARY_DIR}/place_example_placed.csv
         --summary ${CMAKE_CURRENT_BINARY_DIR}/place_example_summary.txt)
     set_tests_properties(place_example PROPERTIES PASS_REGULAR_EXPRESSION "PLACE OK")
+
+    # The story walker on a small story: a given result, a stub, and a refused write.
+    set(FTCORE_WALK_DATA ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk)
+    add_test(NAME storywalk_result COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_pick=2)
+    set_tests_properties(storywalk_result PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=2\r?\nscene s1\r?\nset f_pick 2\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 2\r?\nWALK OK")
+    add_test(NAME storywalk_stub COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA})
+    set_tests_properties(storywalk_stub PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=1 [(]stub[)]\r?\nscene s1\r?\nset f_pick 1\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 0\r?\nWALK OK")
+    add_test(NAME storywalk_refused COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_pick=7)
+    set_tests_properties(storywalk_refused PROPERTIES PASS_REGULAR_EXPRESSION
+        "refused sf.f_pick 7 .*WALK FAILED: the bridge reported a refusal")
 
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
