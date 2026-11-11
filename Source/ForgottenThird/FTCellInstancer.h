@@ -69,6 +69,9 @@ struct FFTCellOptions
 {
 	EFTCellCull Cull = EFTCellCull::None;
 	bool bCastShadow = true;
+	// A flush piece that casts no shadow still shows in ray-traced reflections and bounce (a street's gutter, grate or
+	// marking: without it a reflected road has none).
+	bool bRayTraced = false;
 	FName Tag;     // on the component (ComponentTags); NAME_None for none
 	FString Label; // the actor's label when the piece falls back to an actor
 };
@@ -123,10 +126,11 @@ private:
 		EFTCellKind Kind = EFTCellKind::Solid;
 		EFTCellCull Cull = EFTCellCull::None;
 		bool bCastShadow = true;
+		bool bRayTraced = false;
 		bool operator==(const FKey& Other) const
 		{
 			return Cell == Other.Cell && Mesh == Other.Mesh && Materials == Other.Materials && Kind == Other.Kind && Cull == Other.Cull &&
-				bCastShadow == Other.bCastShadow;
+				bCastShadow == Other.bCastShadow && bRayTraced == Other.bRayTraced;
 		}
 		friend uint32 GetTypeHash(const FKey& Key)
 		{
@@ -135,7 +139,7 @@ private:
 			{
 				Hash = HashCombine(Hash, PointerHash(Material));
 			}
-			return HashCombine(Hash, (static_cast<uint32>(Key.Kind) << 8) | (static_cast<uint32>(Key.Cull) << 1) | (Key.bCastShadow ? 1u : 0u));
+			return HashCombine(Hash, (static_cast<uint32>(Key.Kind) << 8) | (static_cast<uint32>(Key.Cull) << 2) | (Key.bRayTraced ? 2u : 0u) | (Key.bCastShadow ? 1u : 0u));
 		}
 	};
 	struct FGroup

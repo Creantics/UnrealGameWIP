@@ -1291,7 +1291,7 @@ UMaterial* BuildKitGlassMaster(UMaterialParameterCollection* Collection, const F
 // each copying that surface's instance with one of kWindowWidths, and the street lamps' heads (FTScene::NightLampMaterial).
 // Only those packages are replaced. -FacadeR5 writes the round 5 master (ftcore/WindowFacade.h) at the same path; without
 // it the master is r4's, byte for byte.
-// Round 10: -WindowParallax=<0|1> the collection's Parallax default (1); -ShopHoles (with -FacadeR5) the masked master
+// Round 10: -WindowParallax=<0|1> the collection's Parallax default (0); -ShopHoles (with -FacadeR5) the masked master
 // with the kerbed shop glass cut open and the shop interiors' master (FTShopInteriors::ShopMaterial); -KitGlass the kit
 // modules' master with night glass (FTShopInteriors::KitGlassMaterial).
 // Round 11: -WindowGlowCap=, -ShopGlowCap=, -SignGlowCap= the night light's soft caps (FWindowCaps), on all three masters.
@@ -1368,7 +1368,7 @@ int32 BuildWindows(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: -ShopHoles needs -FacadeR5."));
 		return 1;
 	}
-	float Parallax = 1.f;
+	float Parallax = 0.f; // off by default: the user finds the still picture easier to watch; a player setting may turn it on
 	FParse::Value(*Params, TEXT("WindowParallax="), Parallax);
 	Parallax = FMath::Clamp(Parallax, 0.f, 1.f);
 

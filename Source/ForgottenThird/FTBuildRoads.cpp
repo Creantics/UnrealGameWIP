@@ -143,6 +143,8 @@ struct FRoadPainter
 		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::Water;
 		Options.Cull = bVehicle ? EFTCellCull::Car : ((bGround || bMarking) ? EFTCellCull::None : EFTCellCull::Prop);
 		Options.bCastShadow = !bFlat;
+		// Gutters, grates and markings stay in the ray-traced scene: a reflected or bounced road shows them.
+		Options.bRayTraced = !bVehicle;
 		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));
 		Options.Label = RoadsUtf8(Box.id);
 		const EFTCellKind Kind = !Solid.collide ? EFTCellKind::NoCollide : (bGround ? EFTCellKind::Walk : EFTCellKind::Solid);

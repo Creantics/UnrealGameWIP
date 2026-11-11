@@ -290,6 +290,7 @@ FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInter
 	Key.Kind = Kind == EFTCellKind::Walk ? EFTCellKind::Solid : Kind;
 	Key.Cull = Options.Cull;
 	Key.bCastShadow = Options.bCastShadow && Kind != EFTCellKind::Hidden;
+	Key.bRayTraced = Options.bRayTraced;
 	if (Key.bCastShadow && Kind == EFTCellKind::Walk && GroundFlush(*Mesh, Transform))
 	{
 		Key.bCastShadow = false;
@@ -386,7 +387,7 @@ void FFTCellInstancer::Flush()
 			if (Key.Cull == EFTCellCull::Dressing || Key.Cull == EFTCellCull::Interior ||
 				(Key.Kind == EFTCellKind::NoCollide && !Key.bCastShadow))
 			{
-				Comp->SetVisibleInRayTracing(false);
+				Comp->SetVisibleInRayTracing(Key.bRayTraced && Key.Cull != EFTCellCull::Dressing && Key.Cull != EFTCellCull::Interior);
 				Comp->SetAffectDistanceFieldLighting(false);
 				Comp->SetAffectDynamicIndirectLighting(false);
 				++Totals.LightComponents;
