@@ -18,6 +18,7 @@
 
 #include "FTCrowdSubsystem.h"
 #include "FTExploreCharacter.h"
+#include "FTNpcSubsystem.h"
 #include "FTPartyFollower.h"
 #include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
@@ -655,6 +656,15 @@ void AFTPartyVan::ReactPedestrian(float Ahead, float Side, AActor* Who, int32 Cr
 	{
 		// The crowd scatters from a van passing close, and a knock-down frightens it like a fall.
 		Crowd->RaiseEvent(O.react == ftcore::PedReact::Dodge ? ftcore::CrowdEventKind::PlayerSprint : ftcore::CrowdEventKind::LoudNoise, At);
+	}
+	if (O.react == ftcore::PedReact::KnockDown)
+	{
+		if (UFTNpcSubsystem* Npcs = UFTNpcSubsystem::Get(this))
+		{
+			// A crowd member or a placed NPC; the NPCs in sight witness it.
+			const AFTExploreCharacter* Lead = Driver.Get();
+			Npcs->OnVanKnockdown(At, Who, Lead ? Lead->GetLeadIndex() : -1, this);
+		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("VANPED %s %.0f cm ahead, %.0f to the side, at %.1f km/h (contact %.1f)."),
 		O.react == ftcore::PedReact::Dodge ? TEXT("dodge") : O.react == ftcore::PedReact::Stumble ? TEXT("stumble") : TEXT("knock-down"),

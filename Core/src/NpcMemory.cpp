@@ -728,7 +728,7 @@ bool npcDebugView(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc
 }
 
 NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable& lines, std::uint16_t npc,
-                        std::uint8_t lead, NpcLineKind kind) {
+                        std::uint8_t lead, NpcLineKind kind, const NpcFactSource* facts) {
     NpcLinePick best;
     if (!validNpc(w, npc)) return best;
     const NpcStance stance = npcStance(w, t, npc, lead);
@@ -792,6 +792,11 @@ NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTabl
                 ok = c.other >= 0 && validNpc(w, static_cast<std::uint16_t>(c.other)) &&
                      w.npcs[static_cast<std::size_t>(c.other)].dead;
                 break;
+            case NpcCondKind::Fact: {
+                std::uint8_t v = 0;
+                ok = facts && facts->npcFactValue(c.other, v) && v == c.value;
+                break;
+            }
             }
         }
         if (!ok) continue;
@@ -1207,7 +1212,7 @@ bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* er
 namespace {
 
 // One clause of a line condition.
-bool parseCond(const NpcTables& t, std::string_view s, NpcCond& c) {
+bool parseCond(const NpcTables& t, const NpcFactSource* facts, std::string_view s, NpcCond& c) {
     auto memRef = [&](std::string_view ref, NpcCond& into) {
         if (ref.substr(0, 5) == "deed=") {
             into.type = static_cast<std::int16_t>(t.deedIndex(ref.substr(5)));
@@ -1307,12 +1312,31 @@ bool parseCond(const NpcTables& t, std::string_view s, NpcCond& c) {
         c.other = static_cast<std::int16_t>(t.npcIndex(s.substr(5)));
         return c.other >= 0;
     }
+    if (s.substr(0, 5) == "fact:") {
+        const std::string_view rest = s.substr(5);
+        const auto eq = rest.find('=');
+        if (!facts || eq == std::string_view::npos || eq == 0) return false;
+        const std::string_view val = rest.substr(eq + 1);
+        if (val.size() == 1 && val[0] >= 'A' && val[0] <= 'D') v = val[0] - 'A' + 1;
+        else if (!toInt(val, v) || v < 0 || v > 254) return false;
+        const int f = facts->npcFactIndex(rest.substr(0, eq));
+        if (f < 0 || f > 0x7FFF) return false;
+        c.kind = NpcCondKind::Fact;
+        c.other = static_cast<std::int16_t>(f);
+        c.value = static_cast<std::int32_t>(v);
+        return true;
+    }
     return false;
 }
 
 }  // namespace
 
 bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out, std::string* error) {
+    return importNpcLines(csv, t, nullptr, out, error);
+}
+
+bool importNpcLines(std::string_view csv, const NpcTables& t, const NpcFactSource* facts, NpcLineTable& out,
+                    std::string* error) {
     Sheet s("npc_lines.csv", error);
     if (!s.open(csv, {"line_id", "npc_id", "kind", "lead", "priority", "cooldown_min", "once", "cond"})) return false;
     NpcLineTable table;
@@ -1345,7 +1369,7 @@ bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out,
         const auto clauses = splitOn(s.get(r, "cond"), ';');
         if (clauses.size() > kCondMax) return s.fail(i + 1, "more than 6 clauses");
         for (std::size_t c = 0; c < clauses.size(); ++c)
-            if (!parseCond(t, clauses[c], L.cond[c])) return s.fail(i + 1, "bad clause " + std::string(clauses[c]));
+            if (!parseCond(t, facts, clauses[c], L.cond[c])) return s.fail(i + 1, "bad clause " + std::string(clauses[c]));
         table.lines.push_back(std::move(L));
     }
     out = std::move(table);

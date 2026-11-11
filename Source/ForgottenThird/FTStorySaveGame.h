@@ -22,6 +22,10 @@ public:
 	UPROPERTY(SaveGame, BlueprintReadOnly, Category = "Story")
 	FString SaveJson;
 
+	// JSON from ftcore::encodeNpcMemorySave: the important NPCs' memories, beside the story (empty: none saved).
+	UPROPERTY(SaveGame, BlueprintReadOnly, Category = "Story")
+	FString NpcSaveJson;
+
 	// Stores the subsystem's current story progress. False (SaveJson untouched) when the story
 	// isn't on a scene.
 	UFUNCTION(BlueprintCallable, Category = "Story")

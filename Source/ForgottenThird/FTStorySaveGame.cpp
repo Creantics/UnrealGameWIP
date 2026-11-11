@@ -1,11 +1,14 @@
 #include "FTStorySaveGame.h"
 
+#include "FTNpcSubsystem.h"
 #include "FTStorySubsystem.h"
+#include "ForgottenThird.h"
 #include "FTText.h"
 
 #include "ftcore/Seen.h"
 #include "ftcore/StorySave.h"
 
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "FTWorldClockSubsystem.h"
 
@@ -53,6 +56,9 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 		Save.hasClock = true;
 	}
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
+	const UGameInstance* GI = Story->GetGameInstance();
+	const UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
+	NpcSaveJson = Npcs ? Npcs->CaptureSaveJson() : FString();
 	return true;
 }
 
@@ -100,6 +106,19 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 			SavedClock.paused = true; // a capture run's fixed clock stays fixed
 		}
 		Clock->SetClock(SavedClock); // a save from before the clock: the world keeps its own time
+	}
+	const UGameInstance* GI = Story->GetGameInstance();
+	UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
+	FString NpcError;
+	if (Npcs && NpcSaveJson.IsEmpty())
+	{
+		Npcs->ResetMemory(); // a save from before NPC memory: nobody remembers this session's deeds
+	}
+	else if (Npcs && !Npcs->ApplySaveJson(NpcSaveJson, NpcError))
+	{
+		// The story loads anyway; a damaged NPC block leaves everyone remembering nothing rather than this session.
+		Npcs->ResetMemory();
+		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory not loaded from the save: %s"), *NpcError);
 	}
 	return true;
 }

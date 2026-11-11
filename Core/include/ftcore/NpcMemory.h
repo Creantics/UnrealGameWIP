@@ -287,13 +287,13 @@ struct NpcDebugView {
 FTCORE_API bool npcDebugView(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, NpcDebugView& out);
 
 // ---- Lines (ids and conditions only; text lives in private data) ----
-enum class NpcCondKind : std::uint8_t { None, Mem, StanceGe, StanceLe, StanceEq, SinceGe, SinceLe, NotSince, Exp, EventLe, Dead };
+enum class NpcCondKind : std::uint8_t { None, Mem, StanceGe, StanceLe, StanceEq, SinceGe, SinceLe, NotSince, Exp, EventLe, Dead, Fact };
 struct NpcCond {
     NpcCondKind kind = NpcCondKind::None;
     std::int16_t type = -1;  // deed type
     std::int16_t tag = -1;   // tag bit
-    std::int16_t other = -1; // NotSince: the redeeming deed type; Exp: exp index; EventLe: event; Dead: npc
-    std::int32_t value = 0;  // salience bar, minutes, stance rank or exp state (NotSince: 1 = same_place)
+    std::int16_t other = -1; // NotSince: the redeeming deed type; Exp: exp index; EventLe: event; Dead: npc; Fact: fact
+    std::int32_t value = 0;  // salience bar, minutes, stance rank, exp state or fact value (NotSince: 1 = same_place)
     std::int8_t by = -1;     // Mem only, who did the deed: -1 anyone, 0..2 that lead, kBySelf, kByOther
 };
 // `by` against the lead being spoken to: the one listening did it, or another lead did.
@@ -312,13 +312,26 @@ struct NpcLineTable {
     std::vector<NpcLine> lines;  // at most kSaidMax
     FTCORE_API int lineIndex(std::string_view id) const;
 };
+// Read-only story facts for the `fact:<id>=<value>` clause. The story state implements it; Core's NPC memory never
+// writes a fact and never includes the story state (the owner hands one to both). No allocation.
+struct NpcFactSource {
+    // The fact's index, -1 when there is none. Called at line import only.
+    virtual int npcFactIndex(std::string_view id) const = 0;
+    // The fact's value when it is set; false when it is unset, never offered, stale or unknown (the clause then fails,
+    // so author a fallback line without it).
+    virtual bool npcFactValue(int index, std::uint8_t& value) const = 0;
+
+protected:
+    ~NpcFactSource() = default;
+};
 struct NpcLinePick {
     std::int32_t line = -1;
     std::int32_t score = 0;
 };
 // Picks the best line and marks it said at w.now. -1 when none qualifies.
+// A fact clause holds only with `facts` given and the fact set to the value.
 FTCORE_API NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable& lines, std::uint16_t npc,
-                                   std::uint8_t lead, NpcLineKind kind);
+                                   std::uint8_t lead, NpcLineKind kind, const NpcFactSource* facts = nullptr);
 
 // ---- Game hooks: what the game reports, turned into deeds (no allocation) ----
 // The deed types the hooks record, resolved once at load from deeds.csv.
@@ -387,9 +400,13 @@ FTCORE_API bool importNpcTables(const NpcTableSources& src, NpcTables& out, std:
 // ordered as they were recorded. Y must be another deed. Y is read from memory, so a Y that is
 // evicted no longer counts: pin the redeeming deed when the line must hold for good (and limit its
 // thanks with since_deed). `not_since:deed=X,deed=Y,same_place` asks it place by place: it holds while any place's
-// X has no Y there after it (one line for several gates). Pins share six slots per NPC; a seventh
+// X has no Y there after it (one line for several gates). `fact:<id>=<value>` reads a story fact (value A..D for a
+// choice, or a number 0..254); it needs the fact source at import (an unknown fact fails the import) and holds only
+// while that fact is set to the value. Pins share six slots per NPC; a seventh
 // unpins the oldest, so keep pinned deeds for what must be asked about at every meeting.
 FTCORE_API bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out, std::string* error = nullptr);
+FTCORE_API bool importNpcLines(std::string_view csv, const NpcTables& t, const NpcFactSource* facts, NpcLineTable& out,
+                               std::string* error = nullptr);
 
 // ---- Save (string ids, never indices) ----
 struct NpcMemorySaveEntry {
@@ -446,5 +463,10 @@ FTCORE_API NpcMemorySave npcCaptureSave(const NpcMemoryWorld& w, const NpcTables
 // Rebuilds the world from tables + save; unknown ids are dropped and reported, values clamped.
 FTCORE_API NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable& lines,
                                             const NpcMemorySave& s);
+// The save as JSON text (NpcMemorySave.cpp), for a save slot. Decoding fails on bad JSON, an unknown format or a
+// record without its id; numbers out of range are clamped, missing ones read as their defaults (an older text without
+// `leads` reads 0, which npcApplySave rebuilds). On failure `out` is untouched and `*error` says why.
+FTCORE_API std::string encodeNpcMemorySave(const NpcMemorySave& s);
+FTCORE_API bool decodeNpcMemorySave(std::string_view text, NpcMemorySave& out, std::string* error = nullptr);
 
 }  // namespace ftcore
