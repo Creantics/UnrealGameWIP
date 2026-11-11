@@ -157,6 +157,22 @@ FTCORE_API Vec2 mapAreaUv(const MiniMapModel& m, Vec2 world, bool* clamped = nul
 // A world point as image UVs (0..1).
 FTCORE_API Vec2 mapImageUv(const MapImage& img, Vec2 world);
 
+// The corner map's place on screen (px, y down): top right, inside the HUD's safe margin. All sizes are 1080p values
+// times scale (screen height / 1080 times the UI scale). The box holds everything it draws: the disc and its rim, and
+// the street-name line under it; other HUD keeps kMapCornerGutter clear of the box.
+inline constexpr float kMapCornerRadius = 125.f;
+inline constexpr float kMapCornerRim = 3.f;
+inline constexpr float kMapSafeMargin = 48.f;
+inline constexpr float kMapRoadLineGap = 8.f;   // disc to street line
+inline constexpr float kMapRoadLineHeight = 32.f;
+inline constexpr float kMapCornerGutter = 16.f;
+struct MapCorner {
+    Vec2 centre{};
+    float radius = 0.f;
+    float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f; // the box
+};
+FTCORE_API MapCorner mapCorner(float screenW, float scale);
+
 // The road over a point (index into roads), -1 for none. Sticky: while the point stays within the previous road's half
 // width plus kMapRoadHold, that road is kept, so the street line doesn't flicker at junctions.
 inline constexpr float kMapRoadHold = 2.f;

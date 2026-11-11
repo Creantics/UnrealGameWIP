@@ -307,6 +307,88 @@ TEST_CASE("minimap: drawn once, water, blocks and roads in their colours") {
     CHECK(uv.x == doctest::Approx(40.f / (256.f * 0.3f)));
 }
 
+TEST_CASE("minimap: a crossroads and a dead end bake whole, the block beyond the dead end stays a block") {
+    // A main road (plan y 440) crossed by a street (plan x 915); an alley north from the main road at x 935 that ends at
+    // y 450, with a house across its end (plan y 453..457). No sea.
+    Fixture f;
+    f.src.roads = "id,kind,width_m,pts,canal\n"
+                  "RD-1,coast_road,10,900:440;944:440,\n";
+    f.src.streets = "id,kind,width_m,pts,pavement_m\n"
+                    "ST-1,street,6,915:420;915:460,\n"
+                    "LN-1,alley,3,935:440;935:450,\n";
+    f.src.boxes = "id,row,src,kind,cx,cy,sx,sy,rot,z0,z1,cover,slope\n"
+                  "B-1,R,BLD,kit,935,455,6,4,0,0,9,False,\n";
+    f.src.towers = "id,kind,cx,cy,z0,sx,sy,rot,floors,height_m,note\n";
+    f.src.doors = "id,kind,width_m,pts,pavement_m\n";
+    f.src.seaFromX = 1.0e9;
+    f.src.areaX0 = 900.0;
+    f.src.areaY0 = 418.0;
+    f.src.areaX1 = 944.0;
+    f.src.areaY1 = 460.0;
+    MiniMapModel m;
+    REQUIRE(buildMiniMap(f.src, m));
+    REQUIRE(m.roads.size() == 3);
+    MapImage img;
+    rasterMiniMap(m, 0.25f, img);
+    auto at = [&](float x, float y) {
+        const Vec2 uv = mapImageUv(img, {x, y});
+        return img.px[static_cast<std::size_t>(uv.y * static_cast<float>(img.h)) * img.w +
+                      static_cast<std::size_t>(uv.x * static_cast<float>(img.w))];
+    };
+    // Engine metres: plan (x, y) is (x - 500, 500 - y).
+    // The crossing is the main road's (main roads lie on top); all four arms leave it in their own colours.
+    CHECK(at(415.1f, 60.1f) == kMapRoadColor[0]);
+    CHECK(at(405.1f, 60.1f) == kMapRoadColor[0]);
+    CHECK(at(425.1f, 60.1f) == kMapRoadColor[0]);
+    CHECK(at(415.1f, 48.1f) == kMapRoadColor[1]);
+    CHECK(at(415.1f, 75.1f) == kMapRoadColor[1]);
+    // The corner between two arms is ground: off the main road's 5 m and the street's 3 m half widths.
+    CHECK(at(420.1f, 54.1f) == kMapGround);
+    // The alley joins the main road and runs to its dead end; its round end stops 1.5 m past it, short of the house.
+    CHECK(at(435.1f, 53.1f) == kMapRoadColor[2]);
+    CHECK(at(435.1f, 49.2f) == kMapRoadColor[2]);
+    CHECK(at(435.1f, 47.8f) == kMapGround);
+    CHECK(at(435.1f, 45.1f) == kMapBuilding);
+    CHECK(at(438.1f, 54.1f) == kMapGround);
+    // The lookup grid agrees: the main road at the crossing, the street up its arm, the alley to its end, none past it.
+    CHECK(mapRoadAt(m, {415.1f, 60.1f}) == 0);
+    CHECK(mapRoadAt(m, {415.1f, 48.1f}) == 1);
+    CHECK(mapRoadAt(m, {435.1f, 49.2f}) == 2);
+    CHECK(mapRoadAt(m, {435.1f, 47.8f}) == -1);
+    CHECK(mapRoadAt(m, {435.1f, 45.1f}) == -1);
+}
+
+TEST_CASE("minimap: the corner map sits top right in the safe margin, clear of the other HUD corners") {
+    struct Box {
+        float x0, y0, x1, y1;
+    };
+    auto overlaps = [](const Box& a, const Box& b) { return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1; };
+    // 1080p at 100% first, then 720p, 1440p at 150% UI scale, 4:3 and 21:9.
+    const float sizes[][3] = {{1920.f, 1080.f, 1.f}, {1280.f, 720.f, 1.f}, {2560.f, 1440.f, 1.5f},
+                              {1440.f, 1080.f, 1.f}, {2560.f, 1080.f, 1.f}};
+    for (const auto& sz : sizes) {
+        const float w = sz[0], h = sz[1], s = h / 1080.f * sz[2];
+        CAPTURE(w);
+        CAPTURE(h);
+        const MapCorner c = mapCorner(w, s);
+        CHECK(c.x1 == doctest::Approx(w - 48.f * s));
+        CHECK(c.y0 == doctest::Approx(48.f * s));
+        CHECK(c.x1 - c.x0 == doctest::Approx(2.f * (125.f + 3.f) * s));
+        CHECK(c.centre.x + c.radius <= c.x1);
+        CHECK(c.centre.y - c.radius >= c.y0);
+        const float g = kMapCornerGutter * s;
+        const Box map{c.x0 - g, c.y0 - g, c.x1 + g, c.y1 + g};
+        // The window cards, top left: 420 px wide from (48, 48), never below y 520.
+        CHECK_FALSE(overlaps(map, {48.f * s, 48.f * s, 468.f * s, 520.f * s}));
+        // The lead panels and count prompt, bottom left; the third slot and gift button, bottom right (lower half).
+        CHECK_FALSE(overlaps(map, {0.f, h * 0.5f, w * 0.5f, h}));
+        CHECK_FALSE(overlaps(map, {w * 0.5f, h * 0.5f, w, h}));
+        // The centre keep-out, 768 x 432 about the middle (the reticle's area: it follows the resolution, not the UI scale).
+        const float r = h / 1080.f;
+        CHECK_FALSE(overlaps(map, {w * 0.5f - 384.f * r, h * 0.5f - 216.f * r, w * 0.5f + 384.f * r, h * 0.5f + 216.f * r}));
+    }
+}
+
 TEST_CASE("minimap: the per-frame queries allocate nothing") {
     Fixture f;
     MiniMapModel m;

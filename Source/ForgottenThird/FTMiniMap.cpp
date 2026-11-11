@@ -316,8 +316,10 @@ void UFTMiniMap::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 		DrawOverlay(Hud, Canvas, S);
 		return;
 	}
-	const float Radius = 125.f * S;
-	DrawCorner(Hud, Canvas, S, FVector2D(Canvas.ClipX - Radius - 28.f * S, Radius + 28.f * S), Radius);
+	// Top right inside the safe margin; the box it draws in, gutter and all, is kept clear of the other HUD corners (see
+	// ftcore::mapCorner).
+	const ftcore::MapCorner Corner = ftcore::mapCorner(Canvas.ClipX, S);
+	DrawCorner(Hud, Canvas, S, FVector2D(Corner.centre.x, Corner.centre.y), Corner.radius);
 }
 
 void UFTMiniMap::DrawCorner(AHUD& Hud, UCanvas& Canvas, float S, const FVector2D& Centre, float Radius)
@@ -446,8 +448,12 @@ void UFTMiniMap::DrawCorner(AHUD& Hud, UCanvas& Canvas, float S, const FVector2D
 	if (!RoadLine.IsEmpty())
 	{
 		Hud.GetTextSize(RoadLine, W, H, Small, S);
-		Hud.DrawRect(kRim, Centre.X - W * 0.5f - 8.f * S, Centre.Y + Radius + 8.f * S, W + 16.f * S, H + 6.f * S);
-		Hud.DrawText(RoadLine, kText, Centre.X - W * 0.5f, Centre.Y + Radius + 11.f * S, Small, S);
+		// Centred under the disc, held inside the right safe margin when the name is wider than the disc.
+		const float Right = Centre.X + Radius + ftcore::kMapCornerRim * S;
+		const float X = FMath::Min(Centre.X - W * 0.5f - 8.f * S, Right - W - 16.f * S);
+		const float Y = Centre.Y + Radius + ftcore::kMapRoadLineGap * S;
+		Hud.DrawRect(kRim, X, Y, W + 16.f * S, FMath::Min(H + 6.f * S, ftcore::kMapRoadLineHeight * S));
+		Hud.DrawText(RoadLine, kText, X + 8.f * S, Y + 3.f * S, Small, S);
 	}
 }
 
