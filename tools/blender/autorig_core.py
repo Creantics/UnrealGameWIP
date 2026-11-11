@@ -19,8 +19,11 @@ Pipeline (each step a function below):
    (blend width scales with the local limb radius), loose cloth below the crotch blended toward the pelvis
    (hem rule), Laplacian smoothing on the position-welded surface, twist bands, top-K influences, normalise.
 
-Anatomical ratios used where the mesh shows nothing (straight elbow, covered knee, hidden finger joints) are
-the textbook segment proportions (Drillis and Contini), not values taken from any other rig.
+Where the mesh shows nothing (straight elbow, covered knee, hidden finger joints) the joints come from
+segment proportions: the elbow's and ankle's from published anthropometry (Drillis and Contini), the rest
+(spine fractions, finger joint spacing, hip offset) are our own estimates, set on the self-check figure and on
+test meshes. The weight fall-offs (SHARP_HEAD) and the joint offsets were tuned by eye and by deformation
+tests on clothed meshes, so they are not anatomical constants.
 """
 import math
 import sys
