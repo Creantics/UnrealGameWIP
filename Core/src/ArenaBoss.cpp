@@ -91,7 +91,8 @@ CalledOutcome CalledStrike::judge(const CalledImpact& imp) const {
 
 CalledResults CalledStrike::resolveUpTo(double t) {
     CalledResults out;
-    if (std::isfinite(t) && t > now_) now_ = t;
+    // The first time sets the clock; after that a jump past kMaxTimeJump is ignored (CombatInputs.h).
+    if (std::isfinite(t) && t > now_ && (now_ == kCalledClockUnset || t - now_ <= kMaxTimeJump)) now_ = t;
     while (next_ < count_ && impacts_[next_].at <= now_) {
         const CalledOutcome o = judge(impacts_[next_]);
         outcomes_[next_] = o;

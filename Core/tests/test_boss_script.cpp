@@ -315,7 +315,7 @@ TEST_CASE("boss script: table 1: a guarded move exposes the point, a shared blow
     StrikeCount count;
     CountTuning ct;
     ct.bpm = 60.0;
-    REQUIRE(count.reset(ct));
+    REQUIRE(count.reset(ct, 0.0));
     BossScript s;
     REQUIRE(s.reset(g, 0.0));
     double t = untilWindow(s, g.find("swoop"), 0.0);

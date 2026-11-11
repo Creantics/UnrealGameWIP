@@ -257,7 +257,8 @@ public:
 
     // Moves the clock to `now`: impacts at or before it resolve against the hold. The clock starts
     // before any time, so the first update or press sets it (a fight clock may start below 0). A time
-    // that is not finite moves nothing (here and in every press).
+    // that is not finite, or more than kMaxTimeJump past the clock, moves nothing (here and in every
+    // press).
     FTCORE_API CalledResults update(double now);
     // The lead's buttons, pressed with the body in `zone`.
     FTCORE_API CalledResults interceptDown(CalledZone zone, double t);
@@ -292,7 +293,8 @@ private:
     std::array<CalledOutcome, kMaxCalledImpacts> outcomes_{};
     std::size_t count_ = 0;
     std::size_t next_ = 0;
-    double now_ = -1.0e300;
+    static constexpr double kCalledClockUnset = -1.0e300;
+    double now_ = kCalledClockUnset;
     ArenaHold hold_ = ArenaHold::None;
     double holdFrom_ = 0.0;
     CalledZone holdZone_ = CalledZone::Left;
@@ -701,8 +703,9 @@ public:
     std::uint8_t liveMove() const { return live_; }
     // The live move still has a call or an impact to come.
     bool pending() const { return live_ != kArenaBossNoMove && (cueNext_ < cueCount_ || !strike_.complete()); }
-    // `t` as the run reads it: now() when it is earlier or not finite.
-    double timeOf(double t) const { return std::isfinite(t) && t > now_ ? t : now_; }
+    // `t` as the run reads it (CombatInputs.h inputTime): now() when it is earlier, not finite, or more
+    // than kMaxTimeJump ahead.
+    double timeOf(double t) const { return inputTime(now_, t); }
     double liveStart() const { return liveStart_; }
     const CalledStrike& strike() const { return strike_; }
     const GuestCaller& guest() const { return guest_; }

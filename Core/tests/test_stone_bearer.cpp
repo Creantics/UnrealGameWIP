@@ -1119,11 +1119,14 @@ TEST_CASE("stone bearer: a non-finite time or hp stalls the boss instead of hang
     // The move plays on from there.
     CHECK(countOf(b.update(1.0 + 3 * B + 0.01, 1.0f), ArenaBossEventType::Answered) == 1);
 
-    // On the pedestal: a stalled clock emits no call storm, and a huge jump plays only the last period.
+    // On the pedestal: a stalled clock emits no call storm, a junk jump past kMaxTimeJump is ignored,
+    // and a long real jump plays only the last period.
     b.update(20.0, 0.2f);
     REQUIRE(b.invulnerable());
     CHECK(countOf(b.update(kInf, 0.2f), ArenaBossEventType::Call) == 0);
-    const ArenaBossEvents& jump = b.update(20.0 + 1.0e7, 0.2f);
+    CHECK(countOf(b.update(20.0 + 1.0e7, 0.2f), ArenaBossEventType::Call) == 0);
+    CHECK(b.run().now() == 20.0);
+    const ArenaBossEvents& jump = b.update(20.0 + 500.0, 0.2f);
     CHECK(countOf(jump, ArenaBossEventType::Call) >= 4);
     CHECK(countOf(jump, ArenaBossEventType::Call) <= 5);
     CHECK(jump.dropped == 0);

@@ -1,7 +1,7 @@
 #pragma once
 
 // A data-driven boss state machine for the shared-input bosses (docs/BOSS_SCRIPT.md). One machine,
-// many bosses: each boss is a BossScriptDef (BossScriptData.h holds the first three).
+// many bosses: each boss is a BossScriptDef, loaded from Data/Battle/boss_script JSON (docs/BOSS_SCRIPT.md).
 //
 // * Moves (at most kMaxScriptMoves): each is a tell, a window and a recovery. The host reads the Tell
 //   event to play the move's tell; the counter is accepted only inside the window. A window that runs

@@ -32,7 +32,7 @@ CountTuning tempo60() {
 TEST_CASE("gifts: each gift is given to a lead, counted, and leaves a thread") {
     GiftSlot g;
     StrikeCount count;
-    REQUIRE(count.reset(tempo60()));
+    REQUIRE(count.reset(tempo60(), 0.0));
     CHECK(g.state() == SlotState::Companion);
     CHECK(g.selected() == Gift::Heal);
 
@@ -124,7 +124,7 @@ TEST_CASE("gifts: a count gift with no count, or one the count refuses, is not g
     CHECK(g.tally().refusedOf(Gift::Count) == 1);
     CHECK(g.ready(Gift::Count, 0.0));
     StrikeCount count;
-    REQUIRE(count.reset(tempo60()));
+    REQUIRE(count.reset(tempo60(), 0.0));
     REQUIRE(count.call(kLeadB, 0.0) == CountError::None);
     const GiftResult r = g.press(kLeadA, 0.5, &count);
     CHECK_FALSE(r.given);
@@ -140,7 +140,7 @@ TEST_CASE("gifts: a count gift with no count, or one the count refuses, is not g
 TEST_CASE("gifts: the count gift at its cooldown boundary") {
     GiftSlot g;
     StrikeCount count;
-    REQUIRE(count.reset(tempo60()));
+    REQUIRE(count.reset(tempo60(), 0.0));
     REQUIRE(g.select(Gift::Count));
     REQUIRE(g.press(kLeadA, 0.0, &count).given);
     CHECK(g.readyAt(Gift::Count) == doctest::Approx(4.0));
@@ -228,7 +228,7 @@ TEST_CASE("gifts: counters saturate instead of wrapping") {
 TEST_CASE("gifts: the tally, threads, choice and state survive save and load; the fight state does not") {
     GiftSlot a;
     StrikeCount count;
-    REQUIRE(count.reset(tempo60()));
+    REQUIRE(count.reset(tempo60(), 0.0));
     a.press(kLeadA, 0.0);
     REQUIRE(a.select(Gift::Guard));
     a.press(kLeadB, 0.0);
@@ -310,7 +310,7 @@ TEST_CASE("gifts: tuning is validated; NaN and earlier times read as the latest"
     GiftSlot g;
     GiftTuning bad;
     bad.cooldown[1] = -1.0;
-    CHECK_FALSE(g.reset(bad));
+    CHECK_FALSE(g.reset(bad, 0.0));
     CHECK(g.tuning().cooldown[1] == doctest::Approx(6.0));
     GiftTuning nanGuard;
     nanGuard.guardSeconds = kNaN;
@@ -339,6 +339,20 @@ TEST_CASE("gifts: update keeps the clock moving through a long stretch without p
     CHECK(g.now() == 702.0);
     g.update(1e12); // junk is still ignored
     CHECK(g.now() == 702.0);
+}
+
+TEST_CASE("gifts: a slot not ticked for more than kMaxTimeJump stops at its clock (the host must tick it)") {
+    GiftSlot g;
+    REQUIRE(g.press(kLeadA, 0.0).given);
+    // No update for 700 s: every later time is more than kMaxTimeJump ahead and is ignored.
+    g.press(kLeadA, 700.0);
+    g.update(701.0);
+    CHECK(g.now() == 0.0);
+    CHECK_FALSE(g.ready(Gift::Heal, 702.0));
+    // A start time puts it back on the fight clock.
+    g.resetFight(702.0);
+    CHECK(g.now() == 702.0);
+    CHECK(g.press(kLeadA, 702.5).given);
 }
 
 TEST_CASE("places: each named place raises the carry cap, to kMaxLoad at most") {
@@ -658,7 +672,7 @@ TEST_CASE("table: events past the buffer are counted as dropped and reach the ho
     tune.setTime = 0.0;
     tune.cooldown = 0.0;
     TableSet t;
-    REQUIRE(t.reset(tune));
+    REQUIRE(t.reset(tune, 0.0));
     Setter s;
     // Each begin and cancel makes Setting, Set, Cleared and Ready: five rounds make 20 events.
     for (int i = 0; i < 5; ++i) {
@@ -814,7 +828,7 @@ TEST_CASE("table: enemy share is tunable; a setter alone shares with no one") {
     TableTuning tune;
     tune.enemyShare = 2.0f;
     TableSet t;
-    REQUIRE(t.reset(tune));
+    REQUIRE(t.reset(tune, 0.0));
     Setter s;
     REQUIRE(t.begin(kLeadB, s.load, s.places, 0, 0.0) == TableError::None);
     t.update(1.0);
@@ -849,7 +863,7 @@ TEST_CASE("table: zero set time and zero cooldown; bad tuning; NaN time") {
     tune.setTime = 0.0;
     tune.cooldown = 0.0;
     TableSet t;
-    REQUIRE(t.reset(tune));
+    REQUIRE(t.reset(tune, 0.0));
     Setter s;
     REQUIRE(t.begin(kLeadA, s.load, s.places, kParty, 1.0) == TableError::None);
     CHECK(t.set());
@@ -862,7 +876,7 @@ TEST_CASE("table: zero set time and zero cooldown; bad tuning; NaN time") {
 
     TableTuning bad;
     bad.minSeats = 0;
-    CHECK_FALSE(t.reset(bad));
+    CHECK_FALSE(t.reset(bad, 0.0));
     CHECK(t.tuning().minSeats == 3);
     bad = TableTuning{};
     bad.setDuration = kNaN;
@@ -980,14 +994,14 @@ TEST_CASE("lock: a shared blow opens a sharing lock for its open time") {
     WeakPointLock l;
     LockTuning tune;
     tune.keys = kUnlockSharedBlow;
-    REQUIRE(l.reset(tune));
+    REQUIRE(l.reset(tune, 0.0));
     CHECK_FALSE(l.open(0.0));
     CHECK(l.offer(kUnlockRefusal, 0.0) == UnlockResult::WrongKey);
     CHECK(l.offer(kUnlockReadClause, 0.0, 5) == UnlockResult::WrongKey);
     CHECK_FALSE(l.open(0.0));
 
     StrikeCount count;
-    REQUIRE(count.reset(tempo60()));
+    REQUIRE(count.reset(tempo60(), 0.0));
     REQUIRE(count.call(kLeadA, 0.0) == CountError::None);
     const CountHit own = count.judgeBlow(kLeadA, 2.0);
     CHECK(own.outcome == CountOutcome::Held);
@@ -1018,7 +1032,7 @@ TEST_CASE("lock: reading the right hidden clause opens a reading lock; a wrong o
     LockTuning tune;
     tune.keys = kUnlockReadClause;
     tune.clause = 42;
-    REQUIRE(l.reset(tune));
+    REQUIRE(l.reset(tune, 0.0));
     CHECK(l.offer(kUnlockReadClause, 0.0, 41) == UnlockResult::WrongClause);
     CHECK(l.offer(kUnlockReadClause, 0.0, 0) == UnlockResult::WrongClause);
     CHECK_FALSE(l.open(0.0));
@@ -1032,7 +1046,7 @@ TEST_CASE("lock: a refusal opens a refusing lock; a deferral relocks it") {
     LockTuning tune;
     tune.keys = kUnlockRefusal;
     tune.openSeconds = 0.0; // open until relocked
-    REQUIRE(l.reset(tune));
+    REQUIRE(l.reset(tune, 0.0));
     HeldRefusal r;
     r.offer();
     r.holdDown();
@@ -1049,7 +1063,7 @@ TEST_CASE("lock: a refusal opens a refusing lock; a deferral relocks it") {
     LockTuning keep = tune;
     keep.relockOnDefer = false;
     WeakPointLock m;
-    REQUIRE(m.reset(keep));
+    REQUIRE(m.reset(keep, 0.0));
     m.offer(kUnlockRefusal, 0.0);
     CHECK_FALSE(m.onDeferred(1.0));
     CHECK(m.open(1.0));
@@ -1061,7 +1075,7 @@ TEST_CASE("lock: a boss can take two keys; bad keys and tuning are refused") {
     WeakPointLock l;
     LockTuning tune;
     tune.keys = kUnlockSharedBlow | kUnlockRefusal;
-    REQUIRE(l.reset(tune));
+    REQUIRE(l.reset(tune, 0.0));
     CHECK(l.offer(kUnlockRefusal, 0.0) == UnlockResult::Unlocked);
     CHECK(l.offer(static_cast<UnlockKey>(3), 0.0) == UnlockResult::BadKey);
     CHECK(l.offer(static_cast<UnlockKey>(0), 0.0) == UnlockResult::BadKey);
@@ -1078,7 +1092,7 @@ TEST_CASE("lock: a boss can take two keys; bad keys and tuning are refused") {
     LockTuning shortOpen;
     shortOpen.openSeconds = 0.05;
     CHECK_FALSE(validLockTuning(shortOpen));
-    CHECK_FALSE(l.reset(shortOpen));
+    CHECK_FALSE(l.reset(shortOpen, 0.0));
     CHECK(l.tuning().keys == kUnlockSharedBlow);
 }
 
@@ -1087,7 +1101,7 @@ TEST_CASE("lock: update closes a run-out window and keeps the clock moving betwe
     LockTuning tune;
     tune.keys = kUnlockRefusal;
     tune.openSeconds = 3.0;
-    REQUIRE(l.reset(tune));
+    REQUIRE(l.reset(tune, 0.0));
     for (double t = 1.0; t <= 700.0; t += 1.0) l.update(t);
     CHECK(l.offer(kUnlockRefusal, 701.0) == UnlockResult::Unlocked);
     CHECK(l.until() == doctest::Approx(704.0));
@@ -1101,7 +1115,7 @@ TEST_CASE("lock: update closes a run-out window and keeps the clock moving betwe
 
 TEST_CASE("lock: earlier and NaN times read as the latest") {
     WeakPointLock l;
-    REQUIRE(l.reset());
+    REQUIRE(l.reset({}, 0.0));
     CHECK(l.offer(kUnlockSharedBlow, 10.0) == UnlockResult::Unlocked);
     CHECK(l.offer(kUnlockSharedBlow, kNaN) == UnlockResult::Refreshed);
     CHECK(l.until() == doctest::Approx(13.0));
@@ -1112,8 +1126,8 @@ TEST_CASE("lock: earlier and NaN times read as the latest") {
 TEST_CASE("lock: a time more than kMaxTimeJump ahead is ignored and not stored, queries included") {
     WeakPointLock a;
     WeakPointLock b;
-    REQUIRE(a.reset());
-    REQUIRE(b.reset());
+    REQUIRE(a.reset({}, 0.0));
+    REQUIRE(b.reset({}, 0.0));
     CHECK(a.offer(kUnlockRefusal, 1e12) == UnlockResult::WrongKey); // junk: the clock stays at 0
     CHECK(a.offer(kUnlockSharedBlow, 13.0) == UnlockResult::Unlocked);
     CHECK(b.offer(kUnlockSharedBlow, 13.0) == UnlockResult::Unlocked);
@@ -1167,13 +1181,13 @@ TEST_CASE("gifts: a time more than kMaxTimeJump ahead is ignored and not stored,
 TEST_CASE("combat inputs: a scripted fight of every input allocates nothing") {
     REQUIRE(ftcore_test::allocHookInstalled()); // a missing hook fails the test, it never skips it
     StrikeCount count;
-    REQUIRE(count.reset(tempo60()));
+    REQUIRE(count.reset(tempo60(), 0.0));
     GiftSlot gifts;
     Setter s;
     TableSet table;
     HeldRefusal refusal;
     WeakPointLock lock;
-    REQUIRE(lock.reset());
+    REQUIRE(lock.reset({}, 0.0));
     std::size_t sink = 0;
     const std::uint64_t before = ftcore_test::allocStats().count;
     for (int frame = 0; frame < 7200; ++frame) {

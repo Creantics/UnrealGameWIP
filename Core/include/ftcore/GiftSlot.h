@@ -127,10 +127,10 @@ struct GiftResult {
 
 class GiftSlot {
 public:
-    GiftSlot() { reset(); }
+    GiftSlot() { reset({}, 0.0); }
 
     // Fight state and save-wide state both start over. Returns false (defaults used) on bad tuning.
-    bool reset(const GiftTuning& tuning = {}, double t = 0.0) {
+    bool reset(const GiftTuning& tuning, double t) {
         const bool ok = validGiftTuning(tuning);
         tuning_ = ok ? tuning : GiftTuning{};
         tally_ = GiftTally{};
@@ -149,7 +149,7 @@ public:
         return true;
     }
     // Clears the fight state only (cooldowns, guards) and sets the clock to the fight's start t.
-    void resetFight(double t = 0.0) {
+    void resetFight(double t) {
         now_ = startTime(t);
         readyAt_.fill(-std::numeric_limits<double>::infinity());
         guardUntil_.fill(-std::numeric_limits<double>::infinity());

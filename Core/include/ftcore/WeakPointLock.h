@@ -54,10 +54,10 @@ inline bool sharedBlow(const CountEvent& e) {
 
 class WeakPointLock {
 public:
-    WeakPointLock() { reset(); }
+    WeakPointLock() { reset({}, 0.0); }
 
     // Starts over with its clock at t (CombatInputs.h startTime).
-    bool reset(const LockTuning& tuning = {}, double t = 0.0) {
+    bool reset(const LockTuning& tuning, double t) {
         const bool ok = validLockTuning(tuning);
         tuning_ = ok ? tuning : LockTuning{};
         now_ = startTime(t);

@@ -172,10 +172,10 @@ private:
 
 class StrikeCount {
 public:
-    StrikeCount() { reset(); }
+    StrikeCount() { reset({}, 0.0); }
 
     // Starts over with `tuning` (the defaults when it is not valid: returns false then), clock at t.
-    bool reset(const CountTuning& tuning = {}, double t = 0.0) {
+    bool reset(const CountTuning& tuning, double t) {
         const bool ok = validCountTuning(tuning);
         tuning_ = ok ? tuning : CountTuning{};
         now_ = startTime(t);

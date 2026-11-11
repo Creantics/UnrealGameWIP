@@ -20,7 +20,7 @@ CountTuning tempo60() {
 
 StrikeCount count60() {
     StrikeCount c;
-    REQUIRE(c.reset(tempo60()));
+    REQUIRE(c.reset(tempo60(), 0.0));
     return c;
 }
 
@@ -38,7 +38,7 @@ TEST_CASE("count: tuning is validated, a bad one falls back to the defaults") {
     StrikeCount c;
     CountTuning bad = tempo60();
     bad.windowBefore = 1.0; // a whole beat: the window would reach the previous cue
-    CHECK_FALSE(c.reset(bad));
+    CHECK_FALSE(c.reset(bad, 0.0));
     CHECK(c.tuning().bpm == doctest::Approx(CountTuning{}.bpm));
     CountTuning nan = tempo60();
     nan.bpm = std::numeric_limits<double>::quiet_NaN();
@@ -136,7 +136,7 @@ TEST_CASE("count: the caller-alone weight is a knob") {
     CountTuning t = tempo60();
     t.callerAloneMultiplier = 0.25f;
     StrikeCount c;
-    REQUIRE(c.reset(t));
+    REQUIRE(c.reset(t, 0.0));
     REQUIRE(c.call(kLeadB, 0.0) == CountError::None);
     c.judgeBlow(kLeadB, 2.0);
     CountEvent s[2];
@@ -217,7 +217,7 @@ TEST_CASE("count: a count replaced before an update still plays its due steps an
     CountTuning t = tempo60();
     t.cooldown = 0.0;
     StrikeCount c;
-    REQUIRE(c.reset(t));
+    REQUIRE(c.reset(t, 0.0));
     REQUIRE(c.call(kLeadA, 0.0) == CountError::None);
     const CountHit h = c.judgeBlow(kLeadA, 2.0);
     REQUIRE(c.call(kLeadB, 2.5) == CountError::None);
@@ -326,7 +326,7 @@ TEST_CASE("count: a false count early or late, flagged; a blow on it misses and 
     CountTuning t = tempo60();
     t.falseMultiplier = 0.5f;
     StrikeCount g;
-    REQUIRE(g.reset(t));
+    REQUIRE(g.reset(t, 0.0));
     g.falseCall(0.0, 0.3);
     CHECK(g.judgeBlow(kLeadA, 2.3).multiplier == doctest::Approx(0.5f));
 }
@@ -576,7 +576,7 @@ TEST_CASE("count: a different tempo and lead") {
     t.bpm = 120.0;
     t.leadBeats = 3;
     StrikeCount c;
-    REQUIRE(c.reset(t));
+    REQUIRE(c.reset(t, 0.0));
     REQUIRE(c.call(kLeadB, 0.0) == CountError::None);
     CHECK(c.nowAt() == doctest::Approx(1.5));
     const CountEvents& ev = c.update(5.0);

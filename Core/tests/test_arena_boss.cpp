@@ -230,6 +230,18 @@ TEST_CASE("called blow: a Guard meets a side blow from either side, never a path
     CHECK(w.update(T + 5.0)[0].outcome == CalledOutcome::Missed);
 }
 
+TEST_CASE("called blow: the first time sets the clock; a later junk far-future time is ignored") {
+    const CalledImpact one = impactAt(20.0, CalledZone::Left);
+    CalledStrike s;
+    s.start(&one, 1);
+    CHECK(s.update(13.0).empty()); // the first time, however far from nothing
+    CHECK(s.now() == 13.0);
+    CHECK(s.update(1e300).empty()); // junk: not stored, the impact does not resolve
+    CHECK(s.now() == 13.0);
+    CHECK_FALSE(s.complete());
+    CHECK(s.update(20.0).size() == 1);
+}
+
 TEST_CASE("called blow: one hold at a time, and the Intercept rearms") {
     const double T = 10.0;
     const CalledImpact one = impactAt(T, CalledZone::Right);
@@ -1279,6 +1291,26 @@ TEST_CASE("locked weak point: a long quiet stretch before the first offer leaves
     CHECK(run.weakPointOpen());
     run.update(703.5, 1.0f);
     CHECK_FALSE(run.weakPointOpen());
+}
+
+TEST_CASE("locked weak point: a junk far-future time is ignored and not stored by the run") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    ArenaBossRun junk, clean;
+    junk.begin(def, 0.0);
+    clean.begin(def, 0.0);
+    UnlockResult u = UnlockResult::BadKey;
+    junk.offerUnlock(kUnlockSharedBlow, 1e300, 0, &u);
+    CHECK(junk.now() == 0.0);
+    junk.relock(1e12);
+    CHECK(junk.now() == 0.0);
+    for (const double t : {13.0, 14.0}) {
+        junk.update(t, 1.0f);
+        clean.update(t, 1.0f);
+    }
+    CHECK(junk.now() == clean.now());
+    junk.offerUnlock(kUnlockSharedBlow, 14.0, 0, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    CHECK(junk.weakPointOpen());
 }
 
 TEST_CASE("locked weak point: a longer intercept opening is kept; an offer while open restarts the lock") {
