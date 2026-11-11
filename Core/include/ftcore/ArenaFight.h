@@ -128,9 +128,12 @@
 //   end at the latest, never added up. A tick that a pause ends inside advances that body by the part of
 //   the tick after it, so the result doesn't hang on the step. Everything else runs on fight time: the
 //   fight's clock (time(), stats.time, every event's time), stamina and poise refill, cooldowns, attack
-//   tokens and attackDelay, the parry window, the pair window and the Read deal. So the host and anything
-//   it ticks beside the fight (the shared combat inputs) see fight time, which a pause never stops; a host
-//   that wants its figures to stop reads ArenaPlayerOut::stopLeft and ArenaEnemyOut::stopLeft.
+//   tokens and attackDelay, the parry window, the pair window and the Read deal. Beside it runs the held
+//   clock (heldTime()): the fight clock less the player's hit pauses, so it stands still while the player
+//   is paused and, in a tick a pause ends inside, advances by the part after it. The shared combat inputs
+//   the host ticks beside the fight are ticked every frame with the held clock, never with time(); the host
+//   reads hitStopLeft() for the player's pause, and ArenaPlayerOut::stopLeft / ArenaEnemyOut::stopLeft to
+//   stop each figure.
 // * Flinch. An enemy kind with flinchTime > 0 flinches (Flinch, the Flinched event) when a player's blow
 //   of at least flinchPoise poise damage lands and its poise holds: in Approach, Strafe, Flinch (it
 //   starts again) or an attack's startup or recovery, never in its active part or while its `armor` is on.
@@ -748,6 +751,10 @@ public:
         return p == ArenaPhase::Victory || p == ArenaPhase::Defeat;
     }
     FTCORE_API float time() const; // seconds since begin() / restart()
+    // The held clock (see Hit pause): time() less the player's hit pauses; 0 at begin() / restart(). The clock
+    // the shared combat inputs are ticked with. hitStopLeft: seconds left in the player's hit pause (0: none).
+    FTCORE_API float heldTime() const;
+    FTCORE_API float hitStopLeft() const;
     FTCORE_API const ArenaDef& def() const;
     FTCORE_API const ArenaRing& ring() const;
     FTCORE_API const ArenaOutput& output() const; // the last tick's
@@ -925,6 +932,7 @@ private:
     std::uint32_t rng_ = 1;                 // xorshift32 state: a copy or a restart replays the same numbers
     ArenaPhase phase_ = ArenaPhase::NotStarted;
     float time_ = 0.f;
+    float heldTime_ = 0.f;                  // time_ less the player's hit pauses
     std::size_t enemyCount_ = 0;
     Vec2 playerStart_;
     Vec2 playerStartFacing_{1.f, 0.f};

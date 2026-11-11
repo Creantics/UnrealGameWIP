@@ -3957,22 +3957,27 @@ TEST_CASE("arena: a whole autopilot fight that stores Load and releases it alloc
     ArenaFight fight;
     ArenaBodies bodies;
     const bool counting = ftcore_test::allocHookInstalled();
-    const auto before = ftcore_test::allocStats().count;
-    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
-    bodies.player = fight.playerStart();
-    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
     int fullDeals = 0, deals = 0;
-    while (!fight.over() && fight.time() < 120.f) {
-        const ArenaOutput& out = fight.tick(kDt, fight.autopilot(), bodies);
-        for (const ArenaEvent& e : out.events) {
-            if (e.type != ArenaEventType::CardsDealt) continue;
-            ++deals;
-            if (e.amount == static_cast<int>(kReadCards)) ++fullDeals;
+    // The first seed whose fight reaches a Release (the autopilot's path through the Load hangs on the seed).
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+        fullDeals = deals = 0;
+        const auto before = ftcore_test::allocStats().count;
+        fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, seed);
+        bodies.player = fight.playerStart();
+        for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+        while (!fight.over() && fight.time() < 120.f) {
+            const ArenaOutput& out = fight.tick(kDt, fight.autopilot(), bodies);
+            for (const ArenaEvent& e : out.events) {
+                if (e.type != ArenaEventType::CardsDealt) continue;
+                ++deals;
+                if (e.amount == static_cast<int>(kReadCards)) ++fullDeals;
+            }
+            arenaStep(fight, bodies, kDt);
         }
-        arenaStep(fight, bodies, kDt);
+        const auto allocs = ftcore_test::allocStats().count - before;
+        if (counting) CHECK(allocs == 0); // every Read deal and pick included
+        if (fight.stats().releases > 0) break;
     }
-    const auto allocs = ftcore_test::allocStats().count - before;
-    if (counting) CHECK(allocs == 0); // every Read deal and pick included
     INFO("load stored " << fight.stats().loadStored << ", load " << fight.load() << ", time " << fight.time());
     CHECK(fight.phase() == ArenaPhase::Victory);
     CHECK(fight.stats().loadStored > 0); // the fight went through the Load and the Release
@@ -5663,6 +5668,33 @@ TEST_CASE("arena hit pause: the attacker and the target stand still for hitStop;
     CHECK(std::fabs(slow - fine) <= kDt + 1e-4f);
     // Two targets at once: the pauses overlap, they don't add up.
     CHECK(lightEndsAt(0.1f, kDt, 2) == doctest::Approx(slow));
+}
+
+TEST_CASE("arena hit pause: the held clock stands still while the player is paused, for the shared inputs") {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = 0.1f;
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    CHECK(rig.fight.heldTime() == 0.f);
+    CHECK(rig.fight.hitStopLeft() == 0.f);
+    rig.run(3);
+    CHECK(rig.fight.heldTime() == rig.fight.time()); // no pause: the same clock
+    rig.in.light = true;
+    bool paused = false;
+    for (int i = 0; i < 40; ++i) {
+        const float held = rig.fight.heldTime();
+        const ArenaOutput& out = rig.tick();
+        CHECK(rig.fight.hitStopLeft() == out.player.stopLeft);
+        if (out.player.stopLeft > 0.f && rig.fight.hitStopLeft() < 0.1f - kDt) { // a whole tick inside the pause
+            paused = true;
+            CHECK(rig.fight.heldTime() == held);
+        }
+        CHECK(rig.fight.heldTime() >= held);
+    }
+    CHECK(paused);
+    CHECK(rig.fight.time() - rig.fight.heldTime() == doctest::Approx(0.1f).epsilon(0.01));
+    rig.fight.restart();
+    CHECK(rig.fight.heldTime() == 0.f);
 }
 
 TEST_CASE("arena hit pause: hitStopSelf, an enemy's blow, a parry, and a press that waits out the pause") {

@@ -247,6 +247,7 @@ struct ArenaFightImpl {
         fight.rng_ = detail::mixSeed(fight.seed_);
         fight.phase_ = ArenaPhase::Fighting;
         fight.time_ = 0.f;
+        fight.heldTime_ = 0.f;
         pl = Player{};
         pl.pos = fight.playerStart_;
         pl.facing = fight.playerStartFacing_;
@@ -363,6 +364,7 @@ struct ArenaFightImpl {
                                : arenaCutVelocity(fight.ring_, foe.pos, foe.velocity, dt, def.enemies[i].bodyRadius);
         }
         fight.time_ = t1;
+        fight.heldTime_ += playerOwn;
         stats.time += dt;
         if (pl.hp <= 0 || allDead()) closeRead();
         if (pl.hp <= 0) {
@@ -1870,6 +1872,8 @@ ArenaInput ArenaFight::autopilot() const { return ArenaFightImpl::autopilot(*thi
 
 ArenaPhase ArenaFight::phase() const { return phase_; }
 float ArenaFight::time() const { return time_; }
+float ArenaFight::heldTime() const { return heldTime_; }
+float ArenaFight::hitStopLeft() const { return output().player.stopLeft; }
 const ArenaDef& ArenaFight::def() const { return def_; }
 const ArenaRing& ArenaFight::ring() const { return ring_; }
 const ArenaOutput& ArenaFight::output() const { return out_; }
