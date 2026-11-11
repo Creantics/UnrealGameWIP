@@ -26,6 +26,7 @@
 #include "ftcore/InputBindings.h"
 
 #include "FTArenaBossVfx.h"
+#include "FTFightSession.h"
 #include "FTKiteHost.h"
 #include "FTKiteVfx.h"
 #include "FTLeadWeapons.h"
@@ -306,8 +307,14 @@ private:
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
 	ftcore::ArenaInput TakeInput();
+	void HoldPausedEnemies();
 	void StepFight();
 	void HandleEvents(const ftcore::ArenaEvents& Events);
+	// The shared combat inputs beside the fight (docs/SHARED_COMBAT_INPUTS.md section 7): presses before the step,
+	// then the session ticked by the held clock's advance and the player's landed blows judged on the count.
+	void PressSession(const ftcore::ArenaInput& In);
+	void FeedSession(const ftcore::ArenaEvents& Events);
+	void BeginSession();
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
@@ -320,9 +327,21 @@ private:
 	// One "Arena check:" line per combat feature (Core's arenaFeatureChecks over the fight's stats), for the headless
 	// demo: PASS, FAIL, or n/a where nothing in the line-up can show it.
 	void LogFeatureChecks() const;
+	// The fight session (the shared combat inputs) the runner owns and ticks on the held clock, and its lead slot (the
+	// one the player's figure fills: SessionLeadOf the lead's look, set at Begin).
+	UFTFightSession* GetSession() const { return Session; }
+	uint8 GetSessionLead() const { return SessionLead; }
+	static uint8 SessionLeadOf(const FFTLeadLook* Look);
+	// The story state the session writes given gifts to (both or neither; they must outlive the binding). Bind it
+	// before Begin; Begin and Restart keep it.
+	void BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 
+	// The shared combat inputs, ticked on Fight.heldTime() (it stands still in the player's hit pauses). Declared
+	// first among the members: UHT keeps a property's offset in 16 bits, and the fight state below is large.
+	UPROPERTY()
+	TObjectPtr<UFTFightSession> Session;
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
 	UPROPERTY()
@@ -423,6 +442,9 @@ private:
 	int32 ZoneStyle = 0;
 	ftcore::ArenaDef Def;
 	ftcore::ArenaFight Fight;
+	float SessionHeld = 0.f;         // Fight.heldTime() at the last session tick
+	bool bSessionGuard = false;      // the guard as last sent to the session (refusal hold edges)
+	uint8 SessionLead = ftcore::kLeadA; // the lead slot the player's figure fills
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
 	uint32 Seed = 1;
@@ -491,6 +513,8 @@ private:
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;
+	// Seconds of each enemy's hit pause the steps of this frame covered (its clips leave them out).
+	float PausedThisFrame[ftcore::kMaxArenaEnemies] = {};
 	// -ArenaBossLoop: the clip's name, the boss's slot and the clip's table index (-1: off, or not found), whether it was
 	// looked for, and the wraps logged this fight.
 	FString BossLoopName;

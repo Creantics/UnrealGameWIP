@@ -561,6 +561,13 @@ struct ArenaFightImpl {
     // An attack that costs stamina needs some to start; a free one starts whatever the stamina.
     bool affords(const ArenaAttack& a) const { return a.stamina <= 0.f || pl.stamina > 0.f; }
 
+    // An attack under way, short of its plain cancel point (startup + active + cancel of recovery): an action
+    // started now comes through one of its own cancel windows. A chained light after that point is no cancel.
+    bool earlyCut() const {
+        const ArenaAttack* a = attackOf(pl, fi);
+        return a && pl.actionTime < a->startup + a->active + a->cancel * a->recovery;
+    }
+
     bool startLight(const ArenaInput& in) {
         const int riposteAt = riposteTarget();
         if (riposteAt >= 0) {
@@ -826,7 +833,7 @@ struct ArenaFightImpl {
             return;
         }
         bool began = false;
-        const bool inAttack = attackOf(pl, fi) != nullptr; // an attack under way: starting anything cancels it
+        const bool inAttack = earlyCut(); // starting anything now cuts the attack before its plain cancel point
         if (pl.buffered != Press::None && canStart(pl, fi, cutOf(pl.buffered)) && startAction(pl.buffered, in)) {
             pl.buffered = Press::None;
             began = true;
@@ -978,7 +985,9 @@ struct ArenaFightImpl {
         if (pl.homeClose > 0.f && alive(pl.soft) && span > kArenaEps) {
             const Vec2 to = arenaSub(foes[pl.soft].pos, pl.pos);
             const float gap = arenaLength(to) - fi.bodyRadius - def.enemies[pl.soft].bodyRadius;
-            const float step = std::min(arenaHomingStep(pl.homeClose, span, a0, a1), std::max(0.f, gap));
+            const Vec2 toward = arenaUnit(to, pl.facing);
+            const float lunged = std::max(0.f, arenaDot(vel, toward)) * dt; // this tick's lunge toward it
+            const float step = std::min(arenaHomingStep(pl.homeClose, span, a0, a1), std::max(0.f, gap - lunged));
             if (step > 0.f) {
                 const Vec2 way = arenaUnit(to, pl.facing);
                 vel = Vec2{vel.x + way.x * step / dt, vel.y + way.y * step / dt};
@@ -1204,7 +1213,7 @@ struct ArenaFightImpl {
     void countBlow(std::size_t i) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        if (k.breakAt == 0 || !upright(foe)) return;
+        if (k.breakAt == 0 || !foe.flinchAllowed || !upright(foe)) return; // the host's veto bars it as it bars a flinch
         if (foe.brain == ArenaBrain::Attack && static_cast<int>(foe.move) == k.breakMove) return;
         if (t1 - foe.lastBreakHit > k.breakDecay) foe.breakHits = 0;
         if (foe.breakHits < 255) ++foe.breakHits;
@@ -1215,7 +1224,7 @@ struct ArenaFightImpl {
     bool breakOut(std::size_t i) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        if (k.breakAt == 0 || foe.breakHits < k.breakAt) return false;
+        if (k.breakAt == 0 || !foe.flinchAllowed || foe.breakHits < k.breakAt) return false;
         foe.breakHits = 0; // spent, even when the move is barred
         if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u)
             return false;
@@ -1234,6 +1243,10 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (!(k.flinchTime > 0.f) || !foe.flinchAllowed || poise < k.flinchPoise) return;
+        // No stunlock: the run of flinches starts again only after a gap with no blow that could flinch it.
+        if (t1 - foe.lastFlinch > kArenaFlinchChainGap) foe.flinchChain = 0;
+        foe.lastFlinch = t1;
+        if (foe.flinchChain >= kArenaMaxFlinchChain) return; // the blow lands, the enemy fights on
         if (foe.brain == ArenaBrain::Attack) {
             const ArenaAttack& own = k.moves[foe.move].attack;
             const ArenaPart part = arenaPartOf(own, foe.stateTime);
@@ -1241,6 +1254,7 @@ struct ArenaFightImpl {
         }
         interrupt(i, ArenaBrain::Flinch);
         if (!alive(i) || foe.brain != ArenaBrain::Flinch) return; // the read counter it brought ended it
+        ++foe.flinchChain;
         ++stats.flinches;
         emit(ArenaEventType::Flinched, kArenaPlayer, id(i), 0, 0, foe.pos);
     }
@@ -1783,7 +1797,7 @@ struct ArenaFightImpl {
             if (mv.parryable && f.parryWindow >= kArenaAutoParryWindow && inArc && rearmed) {
                 // Guard goes up when the active part is half a window away, and stays up till it is spent.
                 if (soonest <= f.parryWindow * 0.5f && canStart(p, f)) in.guard = true;
-            } else if (p.action != ArenaAction::Dodge && p.stamina > 0.f) {
+            } else if (p.action != ArenaAction::Dodge && (f.dodgeStamina <= 0.f || p.stamina > 0.f)) {
                 if (soonest <= 0.5f * (f.dodgeInvulnStart + f.dodgeInvulnEnd)) {
                     in.dodge = true;
                     in.move = sideStep(self, foe.pos);
@@ -1863,7 +1877,8 @@ struct ArenaFightImpl {
             bool danger = false; // an enemy that can still act: keep a dodge in reserve
             for (std::size_t i = 0; i < count; ++i)
                 if (living(i) && !down(i)) danger = true;
-            if (p.stamina > 0.f && p.stamina >= cost + (danger ? f.dodgeStamina : 0.f)) in.light = true;
+            // A free light is always afforded; one that costs keeps a dodge in reserve.
+            if (cost <= 0.f || (p.stamina > 0.f && p.stamina >= cost + (danger ? f.dodgeStamina : 0.f))) in.light = true;
         }
         return in;
     }
@@ -2306,7 +2321,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             dodgeStamina 0..100000; dodgeCancel, guardAbsorb, guardMoveScale, healMoveScale 0..1;
 //             guardArcCos -1..1; riposteReach (0, 100]; healCharges 0..99; healAmount 0..100000;
 //             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000;
-//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; parryStop 0..1;
+//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; parryStop 0..0.3;
 //             softRange 0..100; softArcCos -1..1; homingReach 0..20;
 //             attacks a bool; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000
@@ -2316,7 +2331,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //   attack    startup, recovery 0..10; active (0, 10]; range (0, 100]; arcCos -1..1; damage, poiseDamage,
 //             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6; width 0..20;
 //             cancelGuard, cancelRoll, cancelLight -1..1 (below 0: `cancel`; the player's, an enemy's move ignores
-//             them, as it does stamina and cancel); hitStop, hitStopSelf 0..1
+//             them, as it does stamina and cancel; none before the active part); hitStop 0..0.3, hitStopSelf 0..1
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
@@ -2427,8 +2442,19 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaNum(j, "cancelGuard", a.cancelGuard, -1, 1, false, path, errors);
     arenaNum(j, "cancelRoll", a.cancelRoll, -1, 1, false, path, errors);
     arenaNum(j, "cancelLight", a.cancelLight, -1, 1, false, path, errors);
-    arenaNum(j, "hitStop", a.hitStop, 0, 1, false, path, errors);
+    arenaNum(j, "hitStop", a.hitStop, 0, kArenaMaxStop, false, path, errors);
     arenaNum(j, "hitStopSelf", a.hitStopSelf, 0, 1, false, path, errors);
+    // A cancel window opens no sooner than the active part: an earlier one would let the attack be cut before it
+    // could hit (a feint), which no attack offers.
+    const float whole = a.startup + a.active + a.recovery;
+    const auto early = [&](const char* key, float share) {
+        if (share >= 0.f && share * whole < a.startup - kArenaEps)
+            errors.push_back(path + "." + key + ": opens before the active part (at least " +
+                             std::to_string(whole > 0.f ? a.startup / whole : 0.f) + " of the attack)");
+    };
+    early("cancelGuard", a.cancelGuard);
+    early("cancelRoll", a.cancelRoll);
+    early("cancelLight", a.cancelLight);
 }
 
 // An attack object that is a value of its own (light entries, heavy, riposte, release).
@@ -2502,7 +2528,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "releasePoise", f.releasePoise, 0, 1000, false, path, errors);
     arenaNum(j, "pairWindow", f.pairWindow, 0, 1, false, path, errors);
     arenaByte(j, "pairHits", f.pairHits, 0, 10, path, errors);
-    arenaNum(j, "parryStop", f.parryStop, 0, 1, false, path, errors);
+    arenaNum(j, "parryStop", f.parryStop, 0, kArenaMaxStop, false, path, errors);
     arenaNum(j, "softRange", f.softRange, 0, 100, false, path, errors);
     arenaNum(j, "softArcCos", f.softArcCos, -1, 1, false, path, errors);
     arenaNum(j, "homingReach", f.homingReach, 0, 20, false, path, errors);

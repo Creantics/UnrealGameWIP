@@ -224,6 +224,7 @@ bool ReadCarriedSplit(const FString& File, FName& HideSlot, TArray<FFTCarriedPie
 
 UFTArenaRunner::UFTArenaRunner()
 {
+	Session = CreateDefaultSubobject<UFTFightSession>(TEXT("FightSession"));
 	PrimaryComponentTick.bCanEverTick = false; // the owner ticks it, in its own order
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
@@ -283,6 +284,8 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	PrepareStoneBearer();
 	PrepareKite();
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
+	SessionLead = SessionLeadOf(Setup.Lead);
+	BeginSession();
 	BeginStoneBearer();
 	BeginKite();
 	BeginKindCrits();
@@ -317,6 +320,10 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	TickAim(DeltaSeconds);
 
 	const float HeldBefore = Fight.heldTime();
+	for (float& Paused : PausedThisFrame)
+	{
+		Paused = 0.f;
+	}
 	if (!Fight.over() && !bHold)
 	{
 		Accumulator = FMath::Min(Accumulator + static_cast<double>(DeltaSeconds), static_cast<double>(StepSeconds * MaxStepsPerFrame));
@@ -676,23 +683,9 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		return;
 	}
-	// A hit pause holds the figure: the stamps its clips are timed from move on with the screen's clock, the walk's phase
-	// and the crossfade wait. (A move's clip runs on Core's state time, which a pause already holds.)
-	const double Held = Out.brain != ftcore::ArenaBrain::Dead && Out.stopLeft > 0.f
-		? FMath::Min(static_cast<double>(FrameDelta), static_cast<double>(Out.stopLeft)) : 0.0;
-	if (Held > 0.0)
-	{
-		SkinSince[I] += Held;
-		HitSince[I] += Held;
-		RecoilSince[I] += Held;
-		KneelSince[I] += Held;
-		UpOwedUntil[I] += Held;
-		if (I == StoneBearerSlot)
-		{
-			StoneWalkSince += Held;
-		}
-	}
-	const float ClipDelta = FrameDelta - static_cast<float>(Held);
+	// A hit pause holds the figure: HoldPausedEnemies moved its stamps on by the paused part of each step; the walk's
+	// phase and the crossfade wait leave out what of this frame was paused.
+	const float ClipDelta = FMath::Max(0.f, FrameDelta - FMath::Min(FrameDelta, PausedThisFrame[I]));
 	int32 Clip = Skin.Idle;
 	bool bTimed = false;  // the time is Core's, not the time since the clip began
 	bool bPhased = false; // the time is the walk's own phase (it still loops)
@@ -1322,6 +1315,104 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	return In;
 }
 
+// Before a step: an enemy in a hit pause stands still for the part of the step the pause covers (Core's stopLeft after
+// the last step), so the screen-clock stamps its clips are timed from, and the stone bearer's walk and turn, move on by
+// that much. Stamps the step's events set come after, so they are never moved; a step not taken (a hold) moves nothing.
+void UFTArenaRunner::HoldPausedEnemies()
+{
+	const ftcore::ArenaOutput& Last = Fight.output();
+	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
+	{
+		const ftcore::ArenaEnemyOut& E = Last.enemies[static_cast<size_t>(I)];
+		const float Paused = E.brain == ftcore::ArenaBrain::Dead ? 0.f : FMath::Min(StepSeconds, E.stopLeft);
+		if (!(Paused > 0.f))
+		{
+			continue;
+		}
+		PausedThisFrame[I] += Paused;
+		SkinSince[I] += Paused;
+		HitSince[I] += Paused;
+		RecoilSince[I] += Paused;
+		KneelSince[I] += Paused;
+		UpOwedUntil[I] += Paused;
+		if (I == StoneBearerSlot)
+		{
+			StoneWalkSince += Paused;
+			StoneTurnStart += Paused;
+		}
+	}
+}
+
+// The fight session's lead slot for the look the player's figure wears: Devin fills kLeadA and Duy kLeadB (the
+// story's two sides); any other look, or none (the test human), stands in as kLeadA.
+uint8 UFTArenaRunner::SessionLeadOf(const FFTLeadLook* Look)
+{
+	return Look && Look->Name.Equals(TEXT("Duy"), ESearchCase::IgnoreCase) ? ftcore::kLeadB : ftcore::kLeadA;
+}
+
+void UFTArenaRunner::BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry)
+{
+	if (Session)
+	{
+		Session->BindStory(Story, Registry);
+	}
+}
+
+void UFTArenaRunner::BeginSession()
+{
+	SessionHeld = Fight.heldTime();
+	bSessionGuard = false;
+	if (Session)
+	{
+		Session->Begin(ftcore::FightSessionDef{}, static_cast<double>(SessionHeld));
+	}
+}
+
+// Before the step, from the step's input (the player's, or the autopilot's in an unattended run): its gift and
+// count presses, and the guard's edges (a refusal hold; the session's prompt ignores a guard already down when it
+// is offered). The fight takes the same presses as its own heal and pair until those actions move over.
+void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
+{
+	if (!Session)
+	{
+		return;
+	}
+	if (In.heal)
+	{
+		Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
+	}
+	if (In.pair)
+	{
+		Session->Press(EFTSharedAction::Count, SessionLead);
+	}
+	if (In.guard != bSessionGuard)
+	{
+		bSessionGuard = In.guard;
+		Session->Press(In.guard ? EFTSharedAction::RefuseDown : EFTSharedAction::RefuseUp, SessionLead);
+	}
+}
+
+// After the step: the session moves by what the held clock moved (0 through a hit pause, so hit-stop is never
+// subtracted twice), then each blow the player landed (Hit from the player; the partner's counters are other event types) is judged on the count at the session's time.
+void UFTArenaRunner::FeedSession(const ftcore::ArenaEvents& Events)
+{
+	if (!Session)
+	{
+		return;
+	}
+	const float Held = Fight.heldTime();
+	Session->Tick(FMath::Max(0.f, Held - SessionHeld));
+	SessionHeld = Held;
+	for (size_t I = 0; I < Events.count; ++I)
+	{
+		const ftcore::ArenaEvent& E = Events.items[I];
+		if (E.type == ftcore::ArenaEventType::Hit && E.source == ftcore::kArenaPlayer && E.target != ftcore::kArenaPlayer)
+		{
+			Session->Get().judgeBlow(SessionLead);
+		}
+	}
+}
+
 void UFTArenaRunner::StepFight()
 {
 	ftcore::ArenaInput In;
@@ -1392,6 +1483,8 @@ void UFTArenaRunner::StepFight()
 	}
 	PrevBodies = Bodies;
 	PrevHeldTime = static_cast<double>(Fight.heldTime());
+	HoldPausedEnemies();
+	PressSession(In);
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
 	if (bBoss && StoneBearer.AfterTick(Out.events, Bodies))
@@ -1417,6 +1510,7 @@ void UFTArenaRunner::StepFight()
 	}
 	// The lead's strike clips run on the held clock, so they stand still through its hit pauses as its action does.
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
+	FeedSession(Out.events);
 	HandleEvents(Out.events);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
@@ -2307,6 +2401,7 @@ void UFTArenaRunner::LogFeatureChecks() const
 void UFTArenaRunner::Restart()
 {
 	Fight.restart();
+	BeginSession();
 	LeadWeapons.Restart();
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.

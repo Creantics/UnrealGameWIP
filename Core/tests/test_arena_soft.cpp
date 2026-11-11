@@ -172,6 +172,7 @@ TEST_CASE("arena soft target: the shipped leads' profiles, fast to grounded") {
 TEST_CASE("arena soft target: the queries allocate nothing") {
     const std::array<ArenaSoftBody, 3> b{body(3.f, 0.f), body(2.f, 1.f), body(-1.f, 0.f)};
     const ArenaSoftAim aim = softAim();
+    REQUIRE(ftcore_test::allocHookInstalled());
     const std::uint64_t before = ftcore_test::allocStats().count;
     const std::uint8_t pick = arenaSoftTarget({}, kAhead, b.data(), b.size(), aim);
     REQUIRE(pick < b.size());

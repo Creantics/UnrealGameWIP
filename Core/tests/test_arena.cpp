@@ -5990,22 +5990,63 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
         CHECK(rig.count(ArenaEventType::Hit) >= 3);
         CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
     }
-    {   // a stagger starts the count again
+    {   // a stagger starts the count again: with breakAt 2 and a decay longer than the whole run, hit, the hit that
+        // staggers, the recovery, then one more hit, which would be the third in a row without the reset
         ArenaFighter f = ruleFighter();
         f.light[1].poiseDamage = 40.f; // the second hit staggers
-        Rig rig(f, {k});
+        ArenaEnemyKind two = k;
+        two.breakAt = 2;
+        two.breakDecay = 30.f;
+        Rig rig(f, {two});
         rig.put(0, 1.5f, 0.f);
-        mash(rig, 1.6f);
-        CHECK(rig.count(ArenaEventType::Staggered) == 1);
+        for (int i = 0; i < 200 && rig.count(ArenaEventType::Staggered) == 0; ++i) {
+            rig.in.light = true;
+            rig.tick();
+        }
+        REQUIRE(rig.count(ArenaEventType::Staggered) == 1);
+        CHECK(rig.count(ArenaEventType::Hit) == 2);
+        rig.runFor(two.staggerTime + two.openTime + 0.5f);
+        const ArenaBrain up = rig.out().enemies[0].brain;
+        REQUIRE((up == ArenaBrain::Approach || up == ArenaBrain::Strafe));
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        rig.run(40);
+        CHECK(rig.count(ArenaEventType::Hit) == 3);
         CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
     }
+    {   // the host's flinch veto bars the break-out too
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyFlinch(0, false);
+        mash(rig, 1.6f);
+        CHECK(rig.count(ArenaEventType::Hit) >= 3);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+        CHECK(rig.fight.stats().breakOuts == 0);
+    }
+}
+
+TEST_CASE("arena flinch: no stunlock; after a run of flinches the blows land without one until a gap") {
+    ArenaEnemyKind k = dummyKind();
+    k.flinchTime = 0.2f;
+    k.flinchPush = 0.f; // stays in reach
+    k.hp = 1000;        // lives through the run
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    mash(rig, 4.f);
+    CHECK(rig.count(ArenaEventType::Hit) > static_cast<int>(kArenaMaxFlinchChain));
+    CHECK(rig.count(ArenaEventType::Flinched) == static_cast<int>(kArenaMaxFlinchChain));
+    rig.runFor(kArenaFlinchChainGap + 0.5f); // a gap with no flinch: the run starts again
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    rig.run(30);
+    CHECK(rig.count(ArenaEventType::Flinched) == static_cast<int>(kArenaMaxFlinchChain) + 1);
 }
 
 TEST_CASE("arena table: the pause, cancel, flinch and break-out keys load and are checked") {
     ArenaTable t;
     const std::string ok = loadError(
         tableJson(R"([ { "id": "default", "parryStop": 0.1,
-                         "light": [ { "hitStop": 0.05, "hitStopSelf": 0.5, "cancelGuard": 0, "cancelRoll": 0.4,
+                         "light": [ { "hitStop": 0.05, "hitStopSelf": 0.5, "cancelGuard": 0.4, "cancelRoll": 0.4,
                                       "cancelLight": 0.5, "stamina": 0 } ] } ])",
                   R"([ { "id": "dummy", "flinchTime": 0.3, "flinchPoise": 4, "flinchPush": 0.5, "breakAt": 5,
                          "breakDecay": 2, "breakMove": 0, "moves": [ {} ] } ])"),
@@ -6015,7 +6056,7 @@ TEST_CASE("arena table: the pause, cancel, flinch and break-out keys load and ar
     CHECK(f.parryStop == doctest::Approx(0.1f));
     CHECK(f.light[0].hitStop == doctest::Approx(0.05f));
     CHECK(f.light[0].hitStopSelf == doctest::Approx(0.5f));
-    CHECK(f.light[0].cancelGuard == 0.f);
+    CHECK(f.light[0].cancelGuard == doctest::Approx(0.4f));
     CHECK(f.light[0].cancelRoll == doctest::Approx(0.4f));
     CHECK(f.light[0].cancelLight == doctest::Approx(0.5f));
     CHECK(f.heavy.cancelGuard < 0.f); // absent: the `cancel` rule
@@ -6039,6 +6080,20 @@ TEST_CASE("arena table: the pause, cancel, flinch and break-out keys load and ar
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakAt": 3, "moves": [ {} ] } ])")),
                    "breakAt needs a move"));
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": -1 } ])")), "flinchTime"));
+    // pauses at most kArenaMaxStop; no cancel window before the active part
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "light": [ { "hitStop": 0.31 } ] } ])", kEnemiesOk)),
+                   "fighters[0].light[0].hitStop"));
+    CHECK(loadError(tableJson(R"([ { "id": "default", "light": [ { "hitStop": 0.3 } ] } ])", kEnemiesOk)).empty());
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "parryStop": 0.5 } ])", kEnemiesOk)), "parryStop"));
+    for (const char* key : {"cancelGuard", "cancelRoll", "cancelLight"}) {
+        const std::string one = std::string(R"([ { "id": "default", "light": [ { "startup": 0.3, "active": 0.1, )") +
+                                R"("recovery": 0.6, ")" + key + R"(": 0.2 } ] } ])";
+        const std::string err = loadError(tableJson(one.c_str(), kEnemiesOk));
+        CHECK(contains(err, (std::string("fighters[0].light[0].") + key).c_str()));
+        CHECK(contains(err, "before the active part"));
+    }
+    CHECK(loadError(tableJson(R"([ { "id": "default", "light": [ { "startup": 0.3, "active": 0.1, "recovery": 0.6,
+                                     "cancelRoll": 0.3 } ] } ])", kEnemiesOk)).empty()); // opens with the active part
 }
 
 TEST_CASE("arena hit pause: a killing blow leaves no pause on the dead or once the fight is over") {

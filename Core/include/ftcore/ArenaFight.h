@@ -145,12 +145,15 @@
 //   metres straight away from the player over the flinch, then walks again. A broken poise staggers
 //   instead. The host may forbid it for one enemy (setEnemyFlinch: a boss whose script allows it only in
 //   some phases; a restart allows it again, so the host sets it after restart()); bosses leave flinchTime at 0.
+//   No stunlock: after kArenaMaxFlinchChain flinches in a run, blows land on it without a flinch until
+//   kArenaFlinchChainGap passes with no blow of flinchPoise or more (every kind's poise still breaks).
 // * Break-out. An enemy kind with breakAt > 0 counts the player's blows that land on it while it is
 //   upright (Approach, Strafe, Attack, Flinch), the count going back to 0 after breakDecay with none, when
 //   it goes down (Staggered, Open, Down) and on a break-out. The blow that reaches breakAt, if it
 //   doesn't stagger it, starts its breakMove at once (BrokeOut, then AttackStarted): whatever the token count, its cooldown and the
 //   flinch, though never a move the host's move mask clears. That move should carry `armor`. A stagger,
-//   Open or Down never counts and never breaks out.
+//   Open or Down never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the
+//   count and the break-out too.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
 //   lets go when already locked. lockSwitch moves the lock to the next living enemy in range to the
@@ -246,6 +249,11 @@ inline constexpr std::uint8_t kArenaShotMove = 11;
 inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
 // An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.
 inline constexpr float kArenaBeatTolerance = 0.002f;
+// The longest hit pause or parry pause the table takes (hitStop, parryStop), in seconds.
+inline constexpr float kArenaMaxStop = 0.3f;
+// No flinch stunlock: at most this many flinches in a run; the run ends after kArenaFlinchChainGap s with no blow.
+inline constexpr std::uint8_t kArenaMaxFlinchChain = 3;
+inline constexpr float kArenaFlinchChainGap = 1.f;
 
 // How many whole beats of `bpm` `seconds` lasts (1 or more, within kArenaBeatTolerance), else -1 (also
 // for bpm <= 0). A host counts an attack in from it: the impact is that many beats after AttackStarted.
@@ -950,6 +958,8 @@ private:
         bool flinchAllowed = true;          // the host's: false, it never flinches
         float stopUntil = -1.0e9f;          // fight time a hit pause ends
         std::uint8_t breakHits = 0;         // the player's blows in a row toward a break-out
+        std::uint8_t flinchChain = 0;       // flinches in a row (see Flinch)
+        float lastFlinch = -1.0e9f;         // fight time of the last blow that could flinch it
         float lastBreakHit = -1.0e9f;       // fight time of the last of them
     };
 
