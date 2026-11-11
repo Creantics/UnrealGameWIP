@@ -231,6 +231,35 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		Finish(1);
 		return;
 	}
+	// -WorldEyePathTrace=<samples>: a reference still. The path tracer takes the settled view over, one sample a frame
+	// with the camera still, and the still is the viewport itself (a HighResShot would restart the samples), so its
+	// size is the window's (-ResX, -ResY).
+	static int32 PathSamples = -1;
+	static int32 PathFrames = 0;
+	if (PathSamples < 0)
+	{
+		PathSamples = 0;
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyePathTrace="), PathSamples);
+		if (PathSamples > 0)
+		{
+			Viewport->EngineShowFlags.SetPathTracing(true);
+			Viewport->Exec(World, *FString::Printf(TEXT("r.PathTracing.SamplesPerPixel %d"), PathSamples), *GLog);
+			Viewport->Exec(World, TEXT("r.PathTracing.MaxBounces 8"), *GLog);
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: path tracing, %d samples a pixel."), PathSamples);
+		}
+	}
+	if (PathSamples > 0)
+	{
+		// A few frames over the sample count, for the denoiser and the frame the samples finish on.
+		if (++PathFrames < PathSamples + 8)
+		{
+			return;
+		}
+		FScreenshotRequest::RequestScreenshot(File, false, false);
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: path-traced still after %d frames."), PathFrames);
+		bShot = true;
+		return;
+	}
 	Viewport->Exec(World, *FString::Printf(TEXT("HighResShot %s filename=\"%s\""), *Size, *File), *GLog);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: shooting after %.1f s settled."), Waited);
 	bShot = true;
