@@ -3,16 +3,26 @@
 // the game.
 //
 //   ftcore_storywalk <story dir> <registry dir> [--result FLAG=VALUE]... [--steps N]
+//   ftcore_storywalk <story dir> <registry dir> --inputs FILE [--steps N]
 //
 // <story dir> holds story.json and scenes/<scene id>.json. <registry dir> holds story_facts.csv and story_tuning.json,
 // and may hold story_scene_map.csv. Lines, directions and holds are passed; a choice takes its first selectable option.
 // A gameplay beat whose `sets` flag has a --result takes that value (true, false or an integer); one with a `stub`
 // takes the stub; one with `sets` and neither fails the walk. Gameplay without `sets` is resumed as done.
 //
+// --inputs FILE scripts every gameplay hand-off instead (no stubs, no --result): one entry per hand-off, in order,
+//   gameplay KIND [FLAG=VALUE] [press SIDE:KIND]...     ('#' starts a comment)
+// The entry's kind must be the beat's; it gives a value exactly when the beat `sets` a flag, and that flag. Its
+// presses are counted on the state (storyCountPress) before the beat resumes. A hand-off with no entry left, an
+// entry left over, a mismatch or a refused press fails the walk. It also traces writes in the order they happen:
+//   press SIDE KIND CODE  a press counted, with the registry scene open at the time
+//   write ID VALUE CODE   a fact the state took, with the registry scene open at the time
+//
 // Output, one record per line:
 //   scene CODE            a registry scene committed
 //   set ID VALUE          a fact that scene was the last to write, as it stands
 //   wide ID VALUE         a wide value that changed since the last commit
+//   derived INDEX VALUE   after a commit: each registry derived value that is valid and changed
 //   gameplay KIND [FLAG=VALUE]
 //   choice INDEX
 //   flag ID VALUE         at the end: every flag that is not a fact flag (sf.)
@@ -98,6 +108,64 @@ struct Reports {
     const FactRegistry* reg = nullptr;
 };
 
+// One scripted gameplay hand-off.
+struct Input {
+    int line = 0;
+    std::string kind, flag;
+    FlagValue value;
+    bool hasValue = false;
+    std::vector<std::array<std::uint8_t, 2>> presses; // side, kind
+};
+
+bool parseInputs(const std::string& text, std::vector<Input>& out, std::string& error) {
+    int lineNo = 0;
+    for (std::size_t at = 0; at < text.size();) {
+        std::size_t end = text.find('\n', at);
+        if (end == std::string::npos) end = text.size();
+        std::string_view line(text.data() + at, end - at);
+        at = end + 1;
+        ++lineNo;
+        if (const std::size_t hash = line.find('#'); hash != std::string_view::npos) line = line.substr(0, hash);
+        std::vector<std::string_view> w;
+        for (std::size_t i = 0; i < line.size();) {
+            while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) ++i;
+            std::size_t j = i;
+            while (j < line.size() && line[j] != ' ' && line[j] != '\t' && line[j] != '\r') ++j;
+            if (j > i) w.push_back(line.substr(i, j - i));
+            i = j;
+        }
+        if (w.empty()) continue;
+        const std::string where = "inputs line " + std::to_string(lineNo) + ": ";
+        if (w[0] != "gameplay" || w.size() < 2) return error = where + "expected gameplay KIND ...", false;
+        Input in;
+        in.line = lineNo;
+        in.kind = std::string(w[1]);
+        for (std::size_t i = 2; i < w.size(); ++i) {
+            if (w[i] == "press") {
+                const std::string_view sk = i + 1 < w.size() ? w[++i] : std::string_view();
+                if (sk.size() != 3 || sk[1] != ':' || sk[0] < '0' || sk[0] > '1' || sk[2] < '0' || sk[2] > '2')
+                    return error = where + "press: expected SIDE:KIND (side 0..1, kind 0..2)", false;
+                in.presses.push_back({static_cast<std::uint8_t>(sk[0] - '0'), static_cast<std::uint8_t>(sk[2] - '0')});
+                continue;
+            }
+            const std::size_t eq = w[i].find('=');
+            if (in.hasValue || eq == std::string_view::npos || eq == 0 || !parseValue(w[i].substr(eq + 1), in.value))
+                return error = where + "expected one FLAG=VALUE (true, false or an integer) or press SIDE:KIND", false;
+            in.flag = std::string(w[i].substr(0, eq));
+            in.hasValue = true;
+        }
+        out.push_back(std::move(in));
+    }
+    return true;
+}
+
+void onWrite(void* user, std::uint16_t fact, std::uint8_t value, std::uint8_t ordinal) {
+    const FactRegistry& reg = *static_cast<const Reports*>(user)->reg;
+    const std::string_view id = reg.facts[fact].id();
+    std::printf("write %.*s %u %s\n", static_cast<int>(id.size()), id.data(), static_cast<unsigned>(value),
+                ordinal == kNoScene ? "-" : std::string(storySceneCode(reg, ordinal)).c_str());
+}
+
 void onReport(void* user, const StoryBridgeReport& r) {
     Reports& rep = *static_cast<Reports*>(user);
     const std::string_view flag = r.flag < rep.db->flagCount() ? rep.db->view(rep.db->flag(r.flag).id) : "?";
@@ -119,11 +187,12 @@ void onReport(void* user, const StoryBridgeReport& r) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: ftcore_storywalk <story dir> <registry dir> [--result FLAG=VALUE]... [--steps N]\n");
+        std::fprintf(stderr, "usage: ftcore_storywalk <story dir> <registry dir> [--result FLAG=VALUE]... | --inputs FILE [--steps N]\n");
         return 2;
     }
     const std::string storyDir = argv[1], regDir = argv[2];
     std::vector<Result> results;
+    std::string inputsPath;
     long steps = 100000;
     for (int i = 3; i < argc; ++i) {
         const std::string_view a = argv[i];
@@ -137,6 +206,8 @@ int main(int argc, char** argv) {
             for (const Result& o : results)
                 if (o.flag == r.flag) return usage("--result: " + r.flag + " given twice");
             results.push_back(r);
+        } else if (a == "--inputs" && i + 1 < argc && inputsPath.empty()) {
+            inputsPath = argv[++i];
         } else if (a == "--steps" && i + 1 < argc) {
             const char* text = argv[++i];
             char* end = nullptr;
@@ -146,6 +217,15 @@ int main(int argc, char** argv) {
             return usage("unknown argument: " + std::string(a));
         }
     }
+    if (!inputsPath.empty() && !results.empty()) return usage("--inputs scripts every gameplay value: no --result");
+    std::vector<Input> inputs;
+    if (!inputsPath.empty()) {
+        std::string text, error;
+        if (!readFile(inputsPath, text)) return usage("--inputs: cannot read " + inputsPath);
+        if (!parseInputs(text, inputs, error)) return usage(error);
+    }
+    const bool scripted = !inputsPath.empty();
+    std::size_t nextInput = 0;
 
     // The registry and the optional scene map.
     std::string csv, json, mapCsv, error;
@@ -182,11 +262,13 @@ int main(int argc, char** argv) {
     StoryBridge bridge;
     Reports reports{0, &db, reg.get()};
     bridge.setReportHandler(onReport, &reports);
+    if (scripted) bridge.setWriteHandler(onWrite, &reports);
     if (!bridge.bind(runner, *state, *reg, links, &error)) return fail("bind refused: " + error);
     if (!runner.start()) return fail("the story does not start");
 
     std::uint8_t committed = kNoScene;
     std::array<std::uint32_t, kWideSlots> wideBefore{};
+    DerivedValues derivedBefore;
     // Prints the scenes committed since the last call, each with the facts it was the last to write. False when the
     // last committed scene went backwards (the state only moves forward while the story plays).
     auto printCommits = [&]() -> bool {
@@ -211,6 +293,13 @@ int main(int argc, char** argv) {
             std::printf("wide %.*s %u\n", static_cast<int>(id.size()), id.data(), static_cast<unsigned>(s.wide[w]));
             wideBefore[w] = s.wide[w];
         }
+        const DerivedValues d = storySceneReads(s, *reg, 0).derived;
+        for (std::uint8_t i = 0; i < reg->derivedCount; ++i) {
+            const bool valid = ((d.valid >> i) & 1u) != 0;
+            if (!valid || (((derivedBefore.valid >> i) & 1u) != 0 && derivedBefore.value[i] == d.value[i])) continue;
+            std::printf("derived %u %u\n", static_cast<unsigned>(i), static_cast<unsigned>(d.value[i]));
+        }
+        derivedBefore = d;
         committed = s.lastCommitted;
         return true;
     };
@@ -235,6 +324,30 @@ int main(int argc, char** argv) {
         case StoryRunner::State::Gameplay: {
             const std::string kind(runner.gameplayKindName());
             const std::string sets(runner.param("sets"));
+            if (scripted) {
+                if (nextInput == inputs.size()) return fail("a " + kind + " hand-off with no input left");
+                const Input& in = inputs[nextInput++];
+                const std::string at = "inputs line " + std::to_string(in.line) + ": ";
+                if (in.kind != kind) return fail(at + "expected gameplay " + in.kind + ", the story hands off " + kind);
+                if (in.hasValue != !sets.empty() || (in.hasValue && in.flag != sets))
+                    return fail(at + "the hand-off sets " + (sets.empty() ? std::string("nothing") : sets) + ", the input gives " +
+                                (in.hasValue ? in.flag : std::string("no value")));
+                if (in.hasValue)
+                    std::printf("gameplay %s %s=%s\n", kind.c_str(), sets.c_str(), db.formatFlagValue(in.value).c_str());
+                else
+                    std::printf("gameplay %s\n", kind.c_str());
+                for (const auto& pk : in.presses) {
+                    const auto factsBefore = state->facts;
+                    const SetResult res = storyCountPress(*state, *reg, pk[0], pk[1]);
+                    std::printf("press %u %u %s\n", static_cast<unsigned>(pk[0]), static_cast<unsigned>(pk[1]),
+                                state->openScene == kNoScene ? "-" : std::string(storySceneCode(*reg, state->openScene)).c_str());
+                    if (res != SetResult::Ok) return fail(at + "press refused (result " + std::to_string(static_cast<int>(res)) + ")");
+                    for (std::uint16_t f = 1; f <= reg->factsKnown; ++f)
+                        if (state->facts[f] != factsBefore[f]) onWrite(&reports, f, state->facts[f], state->openScene);
+                }
+                moved = in.hasValue ? runner.resume(in.value) : runner.resume();
+                break;
+            }
             if (sets.empty()) {
                 std::printf("gameplay %s\n", kind.c_str());
                 moved = runner.resume();
@@ -274,6 +387,8 @@ int main(int argc, char** argv) {
     if (reports.count) return fail("the bridge reported a refusal");
     for (const Result& r : results)
         if (!r.used) return fail("--result " + r.flag + ": no gameplay beat set it");
+    if (nextInput < inputs.size())
+        return fail("inputs line " + std::to_string(inputs[nextInput].line) + ": no hand-off left for it");
     std::printf("WALK OK\n");
     return 0;
 }

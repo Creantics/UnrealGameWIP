@@ -360,6 +360,21 @@ if(FTCORE_BUILD_TESTS)
     add_test(NAME storywalk_unused_result COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_seen=true)
     set_tests_properties(storywalk_unused_result PROPERTIES PASS_REGULAR_EXPRESSION
         "WALK FAILED: --result sf.f_seen: no gameplay beat set it")
+    # --inputs: scripted hand-offs and presses, the write order traced; a swapped, extra or missing entry fails.
+    set(FTCORE_WALK_IN ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk_inputs)
+    add_test(NAME storywalk_inputs COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_ok.txt)
+    set_tests_properties(storywalk_inputs PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=2\r?\nwrite f_pick 2 s1\r?\ngameplay PLAY\r?\npress 0 1 s1\r?\nwrite f_first 1 s1\r?\nwrite f_after 1 s1\r?\nscene s1\r?\nset f_pick 2\r?\nset f_first 1\r?\nset f_after 1\r?\nwide w_p01 1\r?\nderived 0 1\r?\ngameplay CMB\r?\nscene s2\r?\nWALK OK")
+    add_test(NAME storywalk_inputs_swapped COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_swapped.txt)
+    set_tests_properties(storywalk_inputs_swapped PROPERTIES PASS_REGULAR_EXPRESSION
+        "WALK FAILED: inputs line 2: expected gameplay CMB, the story hands off PLAY")
+    add_test(NAME storywalk_inputs_extra COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_extra.txt)
+    set_tests_properties(storywalk_inputs_extra PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: inputs line 4: no hand-off left for it")
+    add_test(NAME storywalk_inputs_short COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_short.txt)
+    set_tests_properties(storywalk_inputs_short PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: a CMB hand-off with no input left")
+    add_test(NAME storywalk_inputs_value COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_value.txt)
+    set_tests_properties(storywalk_inputs_value PROPERTIES PASS_REGULAR_EXPRESSION
+        "WALK FAILED: inputs line 2: the hand-off sets nothing, the input gives sf.f_pick")
 
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}

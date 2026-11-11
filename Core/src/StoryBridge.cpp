@@ -233,6 +233,8 @@ void StoryBridge::onFlag(void* user, StoryRunner& r, std::uint32_t flag) {
     } else {
         rep.result = storySet(*b.state_, *b.reg_, rep.fact, static_cast<std::uint8_t>(want));
     }
+    if (rep.result == SetResult::Ok && b.onWrite_)
+        b.onWrite_(b.writeUser_, rep.fact, b.state_->facts[rep.fact], b.state_->openScene);
     if (rep.result != SetResult::Ok && rep.result != SetResult::Unchanged) b.report(rep);
     b.pushOne(flag, b.ordinalOf(r.sceneIndex()));
 }

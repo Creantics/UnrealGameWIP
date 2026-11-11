@@ -70,6 +70,9 @@ struct StoryBridgeReport {
 class StoryBridge {
 public:
     using ReportHandler = void (*)(void* user, const StoryBridgeReport& r);
+    // A fact write the state took (storySet returned Ok), in the order the story made it: the fact slot, its new
+    // value and the registry scene open at the time. For tools that trace write order; the game needs none.
+    using WriteHandler = void (*)(void* user, std::uint16_t fact, std::uint8_t value, std::uint8_t ordinal);
 
     StoryBridge() = default;
     ~StoryBridge() { unbind(); }
@@ -87,6 +90,10 @@ public:
     void setReportHandler(ReportHandler h, void* user) {
         onReport_ = h;
         reportUser_ = user;
+    }
+    void setWriteHandler(WriteHandler h, void* user) {
+        onWrite_ = h;
+        writeUser_ = user;
     }
 
     // After a load: the runner restored and the state decoded. See the header comment.
@@ -131,6 +138,8 @@ private:
     std::uint32_t boundFlags_ = 0, mappedScenes_ = 0;
     ReportHandler onReport_ = nullptr;
     void* reportUser_ = nullptr;
+    WriteHandler onWrite_ = nullptr;
+    void* writeUser_ = nullptr;
 };
 
 } // namespace ftcore
