@@ -1,0 +1,2 @@
+from_id,to_id,kind,tie,closeness,delay_min
+npc_shop_01,npc_kid_01,npc,60,80,60

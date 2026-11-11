@@ -1,0 +1,11 @@
+npc_id,stance,price_pct,shop_open,door_open,quest_open,fight_role,greet_anim,greet_dist_cm,van_ride
+npc_shop_01,loyal,85,1,1,1,aid,2,150,1
+npc_shop_01,warm,95,1,1,1,none,2,150,0
+npc_shop_01,neutral,110,1,1,1,none,1,200,0
+npc_shop_01,wary,130,1,0,0,inform,3,400,0
+npc_shop_01,hostile,150,0,0,0,inform,3,600,0
+npc_fixer_01,warm,100,1,1,1,aid,2,150,1
+npc_fixer_01,neutral,100,1,1,1,none,1,200,0
+npc_fixer_01,wary,100,1,0,0,none,3,400,0
+npc_kid_01,warm,100,1,1,1,none,2,150,0
+npc_kid_01,wary,100,1,0,0,none,3,500,0

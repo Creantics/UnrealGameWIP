@@ -7,7 +7,10 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <fstream>
+#include <initializer_list>
 #include <memory>
+#include <sstream>
 #include <string>
 
 using namespace ftcore;
@@ -1017,4 +1020,197 @@ TEST_CASE("npc memory: malformed_and_truncated_saves") {
         k.record("deed_z", {"npc_x"});
         CHECK((k.w->npcs[ka].seen[0] & 1u) != 0u);
     }
+}
+
+// ---- The slice: the shipped Data/Npc tables and the game hooks ----
+namespace {
+
+std::string readData(const char* name) {
+    std::ifstream f(std::string(FTCORE_PROJECT_DATA_DIR) + "/" + name, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+// Ids only, like the private lines table: the shopkeeper's greets and the fixer's reminder.
+constexpr const char* kSliceLines = R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
+greet_plain,npc_shop_01,greet,any,1,0,0,
+greet_knockdown,npc_shop_01,greet,any,5,240,0,mem:deed=van_knockdown
+remind_meet,npc_fixer_01,remind,any,3,0,0,exp:exp_meet_dusk=reminding
+)";
+
+struct Slice {
+    std::string files[9];
+    NpcTables t;
+    NpcLineTable lines;
+    NpcGameDeeds g;
+    TimeCurves curves;
+    std::unique_ptr<NpcMemoryWorld> w = std::make_unique<NpcMemoryWorld>();
+    WorldClock clock;
+
+    Slice() {
+        const char* names[] = {"Npc/tags.csv",     "Npc/deeds.csv",        "Npc/npc_values.csv",
+                               "Npc/ties.csv",     "Npc/consequences.csv", "Npc/expectations.csv",
+                               "Npc/schedule.csv", "Npc/memory_tuning.json", "time_curves.csv"};
+        for (int i = 0; i < 9; ++i) {
+            files[i] = readData(names[i]);
+            INFO(names[i]);
+            REQUIRE(!files[i].empty());
+        }
+        NpcTableSources src{files[0], files[1], files[2], files[3], files[4], files[5], files[6], files[7]};
+        std::string err;
+        const bool ok = importNpcTables(src, t, &err);
+        INFO(err);
+        REQUIRE(ok);
+        REQUIRE(importNpcLines(kSliceLines, t, lines, &err));
+        REQUIRE(npcResolveGameDeeds(t, g, &err));
+        REQUIRE(parseTimeCurves(files[8], curves, &err));
+        npcInit(*w, t);
+        setTime(1, 9.0);
+    }
+    std::uint16_t npc(const char* id) const { return static_cast<std::uint16_t>(t.npcIndex(id)); }
+    void setTime(std::uint32_t day, double hours) {
+        clock.day = day;
+        clock.hours = hours;
+        npcOnClock(*w, t, clock, curves);
+    }
+    NpcWhere where(std::initializer_list<const char*> witnesses, std::uint8_t lead = 0) const {
+        NpcWhere a;
+        a.place = 7;
+        a.district = 1;
+        a.lead = lead;
+        std::size_t i = 0;
+        for (const char* x : witnesses) a.witnesses[i++] = npc(x);
+        return a;
+    }
+    bool remembers(const char* who, std::uint16_t type) const { return npcRemembers(*w, t, npc(who), type, -1); }
+    int pick(const char* who, NpcLineKind k) { return npcPickLine(*w, t, lines, npc(who), 0, k).line; }
+};
+
+}  // namespace
+
+TEST_CASE("npc slice: the shipped tables load, three NPCs, every hook deed resolves") {
+    Slice s;
+    CHECK(s.t.npcs.size() == 3u);
+    CHECK(s.g.vanKnockdown != kNoType);
+    CHECK(s.g.meet != kNoType);
+    CHECK(s.t.expIndex("exp_meet_dusk") >= 0);
+    // Tables without the slice's deeds: resolving names the first missing one and leaves out alone.
+    Fx k;
+    NpcGameDeeds g;
+    std::string err;
+    CHECK_FALSE(npcResolveGameDeeds(k.t, g, &err));
+    CHECK(err.find("van_knockdown") != std::string::npos);
+    CHECK(g.vanKnockdown == kNoType);
+}
+
+TEST_CASE("npc slice: remember and feel - the shopkeeper sees a van knock-down; prices rise, warm drops to neutral, "
+          "the tied kid hears of it later") {
+    Slice s;
+    const std::uint16_t shop = s.npc("npc_shop_01");
+    CHECK(npcStance(*s.w, s.t, shop, 0) == NpcStance::Warm);
+    const NpcConsequence before = npcOnShop(*s.w, s.t, s.g, s.where({}), shop, NpcShopAct::Enter);
+    CHECK(before.shopOpen);
+    const std::uint32_t seq = npcOnVanKnockdown(*s.w, s.t, s.g, s.where({"npc_shop_01"}), kNoNpc);
+    REQUIRE(seq != 0u);
+    CHECK(npcDeedAt(*s.w, seq)->type == s.g.vanKnockdown);
+    CHECK(s.remembers("npc_shop_01", s.g.vanKnockdown));
+    CHECK(npcStance(*s.w, s.t, shop, 0) == NpcStance::Neutral);
+    const NpcConsequence after = npcOnShop(*s.w, s.t, s.g, s.where({}), shop, NpcShopAct::Enter);
+    CHECK(after.pricePct > before.pricePct);
+    CHECK(after.shopOpen);
+    // Hearsay: not a witness, so not yet; after the tie's delay it is.
+    CHECK(npcFindMemory(*s.w, s.npc("npc_kid_01"), seq) == nullptr);
+    s.setTime(1, 10.5);
+    CHECK(npcFindMemory(*s.w, s.npc("npc_kid_01"), seq) != nullptr);
+}
+
+TEST_CASE("npc slice: recall - the shopkeeper's greet cites the knock-down once, then cools down") {
+    Slice s;
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.lines.lineIndex("greet_plain"));
+    npcOnVanKnockdown(*s.w, s.t, s.g, s.where({"npc_shop_01"}), kNoNpc);
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.lines.lineIndex("greet_knockdown"));
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.lines.lineIndex("greet_plain"));
+    s.setTime(1, 12.0);
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.lines.lineIndex("greet_plain"));
+    s.setTime(1, 13.5); // past the 240-minute cooldown, still remembered
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet) == s.lines.lineIndex("greet_knockdown"));
+}
+
+TEST_CASE("npc slice: anticipate - the fixer reminds at 18:00; missed once 21:00 has passed leaves a pinned broken promise") {
+    Slice s;
+    const auto e = static_cast<std::size_t>(s.t.expIndex("exp_meet_dusk"));
+    const auto brokenType = static_cast<std::uint16_t>(s.t.deedIndex("promise_broken"));
+    s.setTime(1, 17.5);
+    CHECK(s.w->exp[e] == NpcExpState::Pending);
+    CHECK(s.pick("npc_fixer_01", NpcLineKind::Remind) == -1);
+    s.setTime(1, 18.0);
+    CHECK(s.w->exp[e] == NpcExpState::Reminding);
+    CHECK(s.pick("npc_fixer_01", NpcLineKind::Remind) == s.lines.lineIndex("remind_meet"));
+    s.setTime(1, 21.0); // the window's last minute: it could still be kept
+    CHECK(s.w->exp[e] == NpcExpState::Reminding);
+    s.setTime(1, 21.0 + 1.0 / 60.0);
+    CHECK(s.w->exp[e] == NpcExpState::Missed);
+    const NpcMemoryEntry* m = npcRecall(*s.w, s.t, s.npc("npc_fixer_01"), brokenType, -1);
+    REQUIRE(m != nullptr);
+    CHECK(m->pinned);
+    s.setTime(5, 12.0); // days on, a pinned memory stays
+    CHECK(s.remembers("npc_fixer_01", brokenType));
+
+    // Turning up keeps it instead.
+    Slice k;
+    k.setTime(1, 19.25);
+    CHECK(npcOnMeet(*k.w, k.t, k.g, k.where({}), k.npc("npc_fixer_01")) != 0u);
+    CHECK(k.w->exp[e] == NpcExpState::Kept);
+    k.setTime(1, 21.5);
+    CHECK(k.w->exp[e] == NpcExpState::Kept);
+    CHECK_FALSE(k.remembers("npc_fixer_01", brokenType));
+}
+
+TEST_CASE("npc slice: day and night - an unseen knock-down spreads through a busy noon street, not at midnight") {
+    for (const bool night : {false, true}) {
+        Slice s;
+        const std::uint32_t day = night ? 2u : 1u;
+        s.setTime(day, night ? 0.0 : 12.0);
+        const std::uint32_t seq = npcOnVanKnockdown(*s.w, s.t, s.g, s.where({}), kNoNpc);
+        REQUIRE(seq != 0u);
+        s.setTime(day, night ? 1.5 : 13.5);
+        INFO("night " << night);
+        CHECK((npcFindMemory(*s.w, s.npc("npc_shop_01"), seq) != nullptr) == !night);
+        CHECK((npcFindMemory(*s.w, s.npc("npc_fixer_01"), seq) != nullptr) == !night);
+    }
+}
+
+TEST_CASE("npc slice: each hook records its own deed; a tied victim learns it as the victim; nothing allocates") {
+    Slice s;
+    const std::uint16_t kid = s.npc("npc_kid_01");
+    const std::uint16_t shop = s.npc("npc_shop_01");
+    const std::int32_t respect0 = npcAxis(*s.w, s.t, s.npc("npc_fixer_01"), kAxisR);
+    const auto a0 = ftcore_test::allocStats();
+    const std::uint32_t tied = npcOnVanKnockdown(*s.w, s.t, s.g, s.where({}), kid);
+    const std::uint32_t fight = npcOnFightEnd(*s.w, s.t, s.g, s.where({"npc_fixer_01"}), true, false);
+    const std::uint32_t mercy = npcOnFightEnd(*s.w, s.t, s.g, s.where({"npc_fixer_01"}), true, true);
+    const std::uint32_t none = npcOnFightEnd(*s.w, s.t, s.g, s.where({}), false, false);
+    npcOnShop(*s.w, s.t, s.g, s.where({}), shop, NpcShopAct::Buy);
+    const std::uint32_t bought = s.w->nextSeq - 1u;
+    npcOnShop(*s.w, s.t, s.g, s.where({}), shop, NpcShopAct::Steal);
+    const std::uint32_t stolen = s.w->nextSeq - 1u;
+    const std::uint32_t helped = npcOnHelpedPedestrian(*s.w, s.t, s.g, s.where({"npc_kid_01"}));
+    const auto a1 = ftcore_test::allocStats();
+    CHECK(a1.count == a0.count);
+    CHECK(none == 0u);
+    CHECK(npcDeedAt(*s.w, tied)->type == s.g.vanKnockdownTied);
+    CHECK(npcDeedAt(*s.w, tied)->victim == kid);
+    const NpcMemoryEntry* km = npcFindMemory(*s.w, kid, tied);
+    REQUIRE(km != nullptr);
+    CHECK(km->hops == static_cast<std::uint8_t>(NpcLearn::Victim));
+    CHECK(npcDeedAt(*s.w, fight)->type == s.g.fightWon);
+    CHECK(npcDeedAt(*s.w, mercy)->type == s.g.enemySpared);
+    CHECK(npcDeedAt(*s.w, mercy - 1u)->type == s.g.fightWon);
+    CHECK(npcDeedAt(*s.w, bought)->type == s.g.shopBought);
+    CHECK(npcDeedAt(*s.w, stolen)->type == s.g.shopTheft);
+    CHECK(npcDeedAt(*s.w, stolen)->victim == shop);
+    CHECK(npcDeedAt(*s.w, helped)->type == s.g.helpedPedestrian);
+    // The fixer respects violence: the wins it saw raise its respect.
+    CHECK(npcAxis(*s.w, s.t, s.npc("npc_fixer_01"), kAxisR) > respect0);
 }

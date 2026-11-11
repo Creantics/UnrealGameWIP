@@ -16,6 +16,7 @@
 // crowd only delays it, until its ring slot is reused.
 
 #include "ftcore/Api.h"
+#include "ftcore/WorldClock.h"
 
 #include <array>
 #include <cstdint>
@@ -286,6 +287,45 @@ struct NpcLinePick {
 // Picks the best line and marks it said at w.now. -1 when none qualifies.
 FTCORE_API NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable& lines, std::uint16_t npc,
                                    std::uint8_t lead, NpcLineKind kind);
+
+// ---- Game hooks: what the game reports, turned into deeds (no allocation) ----
+// The deed types the hooks record, resolved once at load from deeds.csv.
+struct NpcGameDeeds {
+    std::uint16_t vanKnockdown = kNoType, vanKnockdownTied = kNoType, fightWon = kNoType, enemySpared = kNoType,
+                  shopTheft = kNoType, shopBought = kNoType, helpedPedestrian = kNoType, meet = kNoType;
+};
+// False, naming the first missing deed id, when deeds.csv lacks one (out is left unchanged).
+FTCORE_API bool npcResolveGameDeeds(const NpcTables& t, NpcGameDeeds& out, std::string* error = nullptr);
+
+// Where a deed happened and who saw it: important NPCs in sight (kNoNpc pads), the lead who did it.
+struct NpcWhere {
+    std::uint16_t place = 0;
+    std::uint16_t district = 0;
+    std::uint8_t lead = kNoLead;
+    std::array<std::uint16_t, kDeedWitnessMax> witnesses{kNoNpc, kNoNpc, kNoNpc, kNoNpc,
+                                                         kNoNpc, kNoNpc, kNoNpc, kNoNpc};
+};
+// The party's van knocked someone down: a crowd member (victim kNoNpc) or an important NPC (the tied deed, the
+// victim learns it as such). Returns the deed's seq, 0 when nothing was recorded.
+FTCORE_API std::uint32_t npcOnVanKnockdown(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g,
+                                           const NpcWhere& at, std::uint16_t victim);
+// A street fight ended: won records the win, spared (the last enemy let go) records the mercy too. Returns the last
+// seq recorded, 0 when none.
+FTCORE_API std::uint32_t npcOnFightEnd(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g,
+                                       const NpcWhere& at, bool won, bool spared);
+enum class NpcShopAct : std::uint8_t { Enter = 0, Buy = 1, Steal = 2 };
+// At a shop: the keeper's terms for this lead as they stand before the act (shopOpen gates the door, pricePct the
+// sale). Enter records nothing; Buy and Steal record their deed with the keeper as the one dealt with.
+FTCORE_API NpcConsequence npcOnShop(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                                    std::uint16_t keeper, NpcShopAct act);
+FTCORE_API std::uint32_t npcOnHelpedPedestrian(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g,
+                                               const NpcWhere& at);
+// The lead turned up to meet an NPC (who witnesses it): keeps an expectation whose kept_by is the meet deed.
+FTCORE_API std::uint32_t npcOnMeet(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                                   std::uint16_t npc);
+// Day and night: moves the memory clock to the world clock's minute and runs a checkpoint with the crowd density of
+// that hour (busier by day, so street hearsay spreads by day and seldom at night).
+FTCORE_API void npcOnClock(NpcMemoryWorld& w, const NpcTables& t, const WorldClock& clock, const TimeCurves& curves);
 
 // ---- Loading (allocates; once at load) ----
 // tags.csv, deeds.csv, npc_values.csv, ties.csv, consequences.csv, expectations.csv, schedule.csv,

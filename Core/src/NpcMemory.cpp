@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <initializer_list>
 #include <string>
@@ -1451,6 +1452,96 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
         if (static_cast<std::uint32_t>(i) < kSaidMax) w.lastSaid[static_cast<std::size_t>(i)] = std::min(e.second, satAdd(s.now, 1u));
     }
     return rep;
+}
+
+// ---- Game hooks ----
+bool npcResolveGameDeeds(const NpcTables& t, NpcGameDeeds& out, std::string* error) {
+    NpcGameDeeds g;
+    const std::pair<std::string_view, std::uint16_t*> want[] = {
+        {"van_knockdown", &g.vanKnockdown},   {"van_knockdown_tied", &g.vanKnockdownTied},
+        {"street_fight_won", &g.fightWon},    {"enemy_spared", &g.enemySpared},
+        {"shop_theft", &g.shopTheft},         {"shop_bought", &g.shopBought},
+        {"helped_pedestrian", &g.helpedPedestrian}, {"promise_meet_dusk", &g.meet},
+    };
+    for (const auto& [id, slot] : want) {
+        const int i = t.deedIndex(id);
+        if (i < 0) {
+            if (error) *error = "deeds.csv: no deed " + std::string(id);
+            return false;
+        }
+        *slot = static_cast<std::uint16_t>(i);
+    }
+    out = g;
+    return true;
+}
+
+namespace {
+
+// Records a deed of this type where it happened; `also` (an NPC who is there whatever the caller saw: the keeper, the
+// one met) joins the witnesses when there is room and it is not one already.
+std::uint32_t recordAt(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t type, const NpcWhere& at,
+                       std::uint16_t victim, std::uint16_t also) {
+    if (type == kNoType || type >= t.deeds.size()) return 0;
+    NpcDeed d;
+    d.type = type;
+    d.place = at.place;
+    d.district = at.district;
+    d.victim = victim;
+    d.lead = at.lead;
+    d.witnesses = at.witnesses;
+    if (also != kNoNpc) {
+        bool there = false;
+        for (const std::uint16_t x : d.witnesses) there = there || x == also;
+        for (std::uint16_t& x : d.witnesses)
+            if (!there && x == kNoNpc) {
+                x = also;
+                there = true;
+            }
+    }
+    return npcRecordDeed(w, t, d);
+}
+
+}  // namespace
+
+std::uint32_t npcOnVanKnockdown(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                                std::uint16_t victim) {
+    const bool tied = victim != kNoNpc && victim < w.npcCount;
+    return recordAt(w, t, tied ? g.vanKnockdownTied : g.vanKnockdown, at, tied ? victim : kNoNpc, kNoNpc);
+}
+
+std::uint32_t npcOnFightEnd(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at, bool won,
+                            bool spared) {
+    std::uint32_t seq = 0;
+    if (won) seq = recordAt(w, t, g.fightWon, at, kNoNpc, kNoNpc);
+    if (spared) {
+        const std::uint32_t s = recordAt(w, t, g.enemySpared, at, kNoNpc, kNoNpc);
+        if (s != 0) seq = s;
+    }
+    return seq;
+}
+
+NpcConsequence npcOnShop(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                         std::uint16_t keeper, NpcShopAct act) {
+    const NpcConsequence terms = npcConsequence(w, t, keeper, at.lead);
+    if (act == NpcShopAct::Buy) recordAt(w, t, g.shopBought, at, keeper, kNoNpc); // the keeper learns it as the one dealt with
+    else if (act == NpcShopAct::Steal) recordAt(w, t, g.shopTheft, at, keeper, kNoNpc);
+    return terms;
+}
+
+std::uint32_t npcOnHelpedPedestrian(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at) {
+    return recordAt(w, t, g.helpedPedestrian, at, kNoNpc, kNoNpc);
+}
+
+std::uint32_t npcOnMeet(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                        std::uint16_t npc) {
+    return recordAt(w, t, g.meet, at, kNoNpc, npc < w.npcCount ? npc : kNoNpc);
+}
+
+void npcOnClock(NpcMemoryWorld& w, const NpcTables& t, const WorldClock& clock, const TimeCurves& curves) {
+    const std::uint32_t minute = npcMinute(clock.day, clock.hours);
+    const float crowd = std::clamp(timeCurveAt(curves.crowd, clock.hours), 0.f, 1.f);
+    npcAdvance(w, minute);
+    npcCheckpoint(w, t, w.now, static_cast<std::uint16_t>(std::lround(crowd * 1000.f)));
 }
 
 }  // namespace ftcore

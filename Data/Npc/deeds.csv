@@ -1,0 +1,11 @@
+deed_id,tags,magnitude,polarity,secret,pin,attributable
+van_knockdown,reckless_driving;collateral,2,-1,0,0,1
+van_knockdown_tied,reckless_driving;collateral,3,-1,0,0,1
+street_fight_won,violence,2,0,0,0,1
+enemy_spared,mercy,2,1,0,0,1
+shop_theft,theft,2,-1,0,0,1
+shop_bought,commerce,1,1,0,0,1
+helped_pedestrian,help,1,1,0,0,1
+promise_meet_dusk,promise,1,0,0,0,1
+promise_kept,promise,2,1,0,0,1
+promise_broken,promise,3,-1,0,1,1
