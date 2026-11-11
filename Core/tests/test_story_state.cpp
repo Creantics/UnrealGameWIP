@@ -72,6 +72,7 @@ const char* kJson = R"({
     "sideOpen": ["", "a_open1"]
   },
   "track": { "length": 4, "scene": "s6", "side": 1 },
+  "pressFloor": 1,
   "milestones": [
     { "scene": "s5", "value": 10 },
     { "scene": "s8", "value": 20, "needs": "a_free" }
@@ -81,8 +82,8 @@ const char* kJson = R"({
     { "kind": "read", "fact": "a_num" },
     { "kind": "value", "fact": "a_c4" },
     { "kind": "upgrade", "fact": "a_c4", "from": 1, "to": 3, "if": "a_num=7" },
-    { "kind": "leadKind" },
-    { "kind": "pressShown" }
+    { "kind": "topKind" },
+    { "kind": "pressTotal" }
   ],
   "rules": [
     { "number": 41, "kind": "needs", "when": "a_pk.f1=2", "then": "a_need" },
@@ -178,6 +179,13 @@ const PrivateRegistry& privateRegistry() {
     return r;
 }
 
+bool projectFile(const char* path) {
+    std::string unused;
+    return ftcore_test::readProjectData(path, unused);
+}
+bool storyDataAbsent() { return !projectFile("Story/story_facts.csv") && !projectFile("Story/story_tuning.json"); }
+bool walkAbsent() { return !projectFile("Story/story_walk.txt"); }
+
 } // namespace
 
 // ---- Formulas and the import ----
@@ -193,18 +201,21 @@ TEST_CASE("story state: formulas") {
     const FactRegistry& r = reg();
     const auto& c = r.roles.pressCounters;
     StoryState s;
-    CHECK(storyHelpShown(s, r) == 2);
-    CHECK(storyLeadKind(s, r) == 0);
+    CHECK(storyPressTotal(s, r) == 2);
+    CHECK(storyTopKind(s, r) == 0);
     s.wide[c[0][1]] = 1;
-    CHECK(storyHelpShown(s, r) == 2);
+    CHECK(storyPressTotal(s, r) == 2);
     for (int side = 0; side < 2; ++side)
         for (int k = 0; k < 3; ++k) s.wide[c[static_cast<std::size_t>(side)][static_cast<std::size_t>(k)]] = 65535;
-    CHECK(storyHelpShown(s, r) == 393210);
+    CHECK(storyPressTotal(s, r) == 393210);
     // The totals saturate, even past the caps.
     for (int side = 0; side < 2; ++side)
         for (int k = 0; k < 3; ++k) s.wide[c[static_cast<std::size_t>(side)][static_cast<std::size_t>(k)]] = 0xFFFFFFFFu;
-    CHECK(storyHelpShown(s, r) == 0xFFFFFFFFu);
-    CHECK(storyHelpShown(s, FactRegistry{}) == 2); // nothing bound
+    CHECK(storyPressTotal(s, r) == 0xFFFFFFFFu);
+    CHECK(storyPressTotal(s, FactRegistry{}) == 0); // nothing bound, no floor
+    FactRegistry floored;
+    floored.tuning.pressFloor = 5;
+    CHECK(storyPressTotal(StoryState{}, floored) == 10);
 
     // Most pressed wins; a tie goes to the last kind pressed if it is tied, else to the lowest tied kind.
     const std::uint16_t last0 = r.roles.lastKind[0];
@@ -212,16 +223,16 @@ TEST_CASE("story state: formulas") {
     t.wide[c[0][0]] = 2;
     t.wide[c[0][1]] = 3;
     t.wide[c[0][2]] = 3;
-    CHECK(storyLeadKind(t, r) == 1);
+    CHECK(storyTopKind(t, r) == 1);
     t.facts[last0] = 3;
-    CHECK(storyLeadKind(t, r) == 2);
+    CHECK(storyTopKind(t, r) == 2);
     t.facts[last0] = 1; // the last kind is not among the tied
-    CHECK(storyLeadKind(t, r) == 1);
+    CHECK(storyTopKind(t, r) == 1);
     StoryState u;
     u.wide[c[0][0]] = u.wide[c[0][1]] = u.wide[c[0][2]] = 7;
     u.facts[last0] = 2;
-    CHECK(storyLeadKind(u, r) == 1);
-    CHECK(storyLeadKind(u, FactRegistry{}) == 0);
+    CHECK(storyTopKind(u, r) == 1);
+    CHECK(storyTopKind(u, FactRegistry{}) == 0);
 }
 
 TEST_CASE("story state: scene codes and ids") {
@@ -340,6 +351,12 @@ TEST_CASE("story state: the json refuses bad settings") {
     fails(build(R"(,"roles":{"firstPress":"nope"})"), "roles.firstPress");
     fails(build(R"(,"roles":{"lastKind":["a_ev","a_last1"]})"), "expected a NUM fact with max at least 3");
     fails(build(R"(,"roles":{"sideOpen":["a_ev"]})"), "roles.sideOpen");
+    fails(build(R"(,"roles":{"pressTotal":"w_retry","retries":"w_retry"})"), "wide w_retry bound to two roles");
+    fails(build(R"(,"roles":{"pressCounters":[["w_p00","w_p01","w_p02"],["w_p10","w_p11","w_p00"]]})"),
+          "wide w_p00 bound to two roles");
+    fails(build(R"(,"roles":{"firstPress":"a_open1","sideOpen":["","a_open1"]})"), "fact a_open1 bound to two roles");
+    fails(build(R"(,"pressFloor":70000)"), "pressFloor");
+    fails(build(R"(,"pressFloor":"one")"), "pressFloor");
     // The track.
     fails(build(R"(,"roles":{"trackMark":"w_mark"})"), "the trackMark role needs a track");
     fails(build(R"(,"track":{"length":0,"scene":"s6","side":1})"), "track.length");
@@ -359,6 +376,7 @@ TEST_CASE("story state: the json refuses bad settings") {
     fails(build(mile + R"(,"milestones":[{"scene":"zz","value":3}])"), "milestones[0].scene");
     // Derived values.
     fails(build(R"(,"derived":[{"kind":"guess","fact":"a_ch"}])"), "derived[0].kind");
+    fails(build(R"(,"derived":[{"kind":"leadKind"}])"), "derived[0].kind"); // the old name is gone
     fails(build(R"(,"derived":[{"kind":"read"}])"), "derived[0].fact");
     fails(build(R"(,"derived":[{"kind":"in","fact":"a_ch","values":[]}])"), "derived[0].values");
     fails(build(R"(,"derived":[{"kind":"in","fact":"a_ch","values":[32]}])"), "expected 0..31");
@@ -534,14 +552,14 @@ TEST_CASE("story state: presses, the track and milestones") {
     const FactRegistry& r = reg();
     const StoryRoles& ro = r.roles;
     StoryState s;
-    CHECK(storyCountHelp(s, r, 0, 0) == SetResult::RejectedNoScene);
+    CHECK(storyCountPress(s, r, 0, 0) == SetResult::RejectedNoScene);
     REQUIRE(storyBeginScene(s, r, sc("s2")));
     REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
     REQUIRE(storySet(s, r, fs("a_ch"), 3) == SetResult::Ok);
-    CHECK(storyCountHelp(s, r, 2, 0) == SetResult::RejectedRange);
-    CHECK(storyCountHelp(s, r, 0, 3) == SetResult::RejectedRange);
-    CHECK(storyCountHelp(s, r, 1, 0) == SetResult::RejectedGate); // side 1 waits for its open fact
-    CHECK(storyCountHelp(s, r, 0, 2) == SetResult::Ok);
+    CHECK(storyCountPress(s, r, 2, 0) == SetResult::RejectedRange);
+    CHECK(storyCountPress(s, r, 0, 3) == SetResult::RejectedRange);
+    CHECK(storyCountPress(s, r, 1, 0) == SetResult::RejectedGate); // side 1 waits for its open fact
+    CHECK(storyCountPress(s, r, 0, 2) == SetResult::Ok);
     CHECK(storyWide(s, ro.pressCounters[0][2]) == 1);
     CHECK(storyWide(s, ro.pressScene) == 1);
     CHECK(storyWide(s, ro.pressTotal) == 1);
@@ -558,16 +576,16 @@ TEST_CASE("story state: presses, the track and milestones") {
     CHECK(storyWide(s, ro.pressScene) == 0); // zeroed as the scene began
     REQUIRE(storySet(s, r, fs("a_open1"), 1) == SetResult::Ok);
     REQUIRE(storySet(s, r, fs("a_c4"), 1) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, r, 1, 0) == SetResult::Ok); // before the track scene: not on the mark
+    REQUIRE(storyCountPress(s, r, 1, 0) == SetResult::Ok); // before the track scene: not on the mark
     REQUIRE(storyCommitScene(s, r));
     CHECK(storyWide(s, ro.milestone) == 10);
     REQUIRE(storyBeginScene(s, r, sc("s6")));
-    for (int i = 0; i < 6; ++i) REQUIRE(storyCountHelp(s, r, 1, static_cast<std::uint8_t>(i % 3)) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, r, 0, 0) == SetResult::Ok); // the other side: not on the mark
+    for (int i = 0; i < 6; ++i) REQUIRE(storyCountPress(s, r, 1, static_cast<std::uint8_t>(i % 3)) == SetResult::Ok);
+    REQUIRE(storyCountPress(s, r, 0, 0) == SetResult::Ok); // the other side: not on the mark
     REQUIRE(storyCommitScene(s, r));
     CHECK(storyWide(s, ro.trackMark) == 4); // six presses, four squares
     CHECK(s.facts[ro.lastKind[1]] == 3);
-    CHECK(storyHelpShown(s, r) == 2 + 7);
+    CHECK(storyPressTotal(s, r) == 2 + 7);
     CAPTURE(describe(s, r));
     CHECK(issues(s, r) == 0);
 
@@ -575,7 +593,7 @@ TEST_CASE("story state: presses, the track and milestones") {
     const FactRegistry none;
     StoryState t;
     REQUIRE(storyBeginScene(t, none, 3));
-    CHECK(storyCountHelp(t, none, 0, 0) == SetResult::UnknownFact);
+    CHECK(storyCountPress(t, none, 0, 0) == SetResult::UnknownFact);
     CHECK(t.wide == StoryState{}.wide);
 }
 
@@ -586,7 +604,7 @@ TEST_CASE("story state: restart and the scene order") {
     REQUIRE(storyBeginScene(s, r, sc("s2")));
     CHECK_FALSE(storyBeginScene(s, r, sc("s3"))); // one open scene
     REQUIRE(storySet(s, r, fs("a_num"), 5) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, r, 0, 1) == SetResult::Ok);
+    REQUIRE(storyCountPress(s, r, 0, 1) == SetResult::Ok);
     REQUIRE(storyAdd(s, r, ws("w_raw"), 7) == SetResult::Ok);
     CHECK(storyWide(s, ro.pressTotal) == 1);
     REQUIRE(storyRestartScene(s, r));
@@ -616,7 +634,7 @@ TEST_CASE("story state: the sandbox leaves the real state byte for byte") {
     REQUIRE(storySet(played, r, fs("a_ev"), 1) == SetResult::Ok);
     REQUIRE(storySet(played, r, fs("a_ch"), 2) == SetResult::Ok); // a_ch = B
     REQUIRE(storySet(played, r, fs("a_num"), 5) == SetResult::Ok); // written in s2 and s3
-    REQUIRE(storyCountHelp(played, r, 0, 0) == SetResult::Ok);
+    REQUIRE(storyCountPress(played, r, 0, 0) == SetResult::Ok);
     REQUIRE(storyCommitScene(played, r));
     REQUIRE(storyBeginScene(played, r, sc("s3")));
     REQUIRE(storySet(played, r, fs("a_gated"), 1) == SetResult::Ok); // once, gated on a_ch = B
@@ -641,7 +659,7 @@ TEST_CASE("story state: the sandbox leaves the real state byte for byte") {
     // Use the box hard: replay, press, restart, commit, read, validate.
     REQUIRE(storyBeginScene(box, r, sc("s3")));
     CHECK(storySet(box, r, fs("a_gated"), 2) == SetResult::Ok);
-    REQUIRE(storyCountHelp(box, r, 0, 2) == SetResult::Ok);
+    REQUIRE(storyCountPress(box, r, 0, 2) == SetResult::Ok);
     REQUIRE(storyRestartScene(box, r));
     REQUIRE(storySet(box, r, fs("a_gated"), 1) == SetResult::Ok);
     REQUIRE(storyCommitScene(box, r));
@@ -678,7 +696,7 @@ TEST_CASE("story state: the block") {
     REQUIRE(storyCommitScene(s, r));
     REQUIRE(storyBeginScene(s, r, sc("s3")));
     REQUIRE(storySet(s, r, fs("a_num"), 8) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, r, 0, 2) == SetResult::Ok);
+    REQUIRE(storyCountPress(s, r, 0, 2) == SetResult::Ok);
 
     std::array<std::uint8_t, kStoryStateBlockSize> block{};
     REQUIRE(storyEncode(s, r, block));
@@ -925,7 +943,7 @@ TEST_CASE("story state: validation rules") {
     const FactRegistry& r = reg();
     const StoryRoles& ro = r.roles;
     CHECK(issues(StoryState{}, r) == 0);
-    {   // V01, V02, V07 and V06: the gates.
+    {   // V01, V02 and V06: the gates.
         StoryState s = committedThrough("s3");
         put(s, fs("a_ev"), 1);
         put(s, fs("a_ch"), 1);
@@ -935,13 +953,13 @@ TEST_CASE("story state: validation rules") {
         put(s, fs("a_gated"), kNotOffered); // the gate holds, yet not offered
         CHECK(hasRule(s, 2));
         put(s, fs("a_opt"), 2); // option B needs a_ch=C
-        CHECK(hasRule(s, 7));
+        CHECK(hasRule(s, 6));
         put(s, fs("a_ch"), 3);
-        CHECK_FALSE(hasRule(s, 7));
+        CHECK_FALSE(hasRule(s, 6));
         StoryState d = committedThrough("s5");
         put(d, fs("a_ch"), 1);
         put(d, fs("a_c4"), 4); // option D needs a_ch=C
-        CHECK(hasRule(d, 6));
+        CHECK(hasRule(d, 6)); // one number for any option
         CHECK_FALSE(hasRule(d, 7));
         put(d, fs("a_ch"), 3);
         CHECK_FALSE(hasRule(d, 6));
@@ -1134,7 +1152,7 @@ TEST_CASE("story state: no heap use while playing") {
     const auto before = ftcore_test::allocStats();
     REQUIRE(storyBeginScene(s, r, sc("s2")));
     REQUIRE(storySet(s, r, fs("a_num"), 4) == SetResult::Ok);
-    REQUIRE(storyCountHelp(s, r, 0, 0) == SetResult::Ok);
+    REQUIRE(storyCountPress(s, r, 0, 0) == SetResult::Ok);
     const SceneReads reads = storySceneReads(s, r, sc("s2"));
     std::array<StoryIssue, kMaxStoryIssues> out{};
     storyValidate(s, r, out);
@@ -1439,7 +1457,7 @@ struct Walker {
                 const std::uint8_t side = static_cast<std::uint8_t>(l.slot);
                 for (char c : *v) {
                     const std::uint8_t kind = static_cast<std::uint8_t>(c - '0');
-                    if (storyCountHelp(s, r, side, kind) != SetResult::Ok) why += " " + code + " press";
+                    if (storyCountPress(s, r, side, kind) != SetResult::Ok) why += " " + code + " press";
                     if (const std::uint16_t lk = r.roles.lastKind[side]; lk != 0)
                         m[lk] = static_cast<std::uint8_t>(kind + 1);
                     if (side == 0 && r.roles.firstPress != 0 && m[r.roles.firstPress] == 0) m[r.roles.firstPress] = 1;
@@ -1753,12 +1771,9 @@ TEST_CASE("story state: the walk catches a wrong expectation") {
 
 // ---- With the game's registry (Data/Story, outside the public repo): extra cases ----
 
-TEST_CASE("story state: the game's registry, when present") {
+// Skipped (and counted as skipped) when Data/Story is absent.
+TEST_CASE("story state: the game's registry" * doctest::skip(storyDataAbsent())) {
     const PrivateRegistry& p = privateRegistry();
-    if (!p.present) {
-        MESSAGE("Data/Story is absent: the game's registry cases did not run");
-        return;
-    }
     CAPTURE(p.error);
     REQUIRE(p.ok);
     const FactRegistry& r = p.reg;
@@ -1773,11 +1788,14 @@ TEST_CASE("story state: the game's registry, when present") {
     StoryState back;
     REQUIRE(storyDecode(block, r, back) == StoryLoad::Ok);
     CHECK(back.facts == s.facts);
+}
 
+// Skipped when the walk file is absent; a walk file without the registry fails.
+TEST_CASE("story state: every branch of the game's walk" * doctest::skip(walkAbsent())) {
+    const PrivateRegistry& p = privateRegistry();
+    CAPTURE(p.error);
+    REQUIRE(p.ok);
     std::string walk;
-    if (!ftcore_test::readProjectData("Story/story_walk.txt", walk)) {
-        MESSAGE("no walk file: the game's walk did not run");
-        return;
-    }
-    runWalk(r, walk, "game walk");
+    REQUIRE(ftcore_test::readProjectData("Story/story_walk.txt", walk));
+    runWalk(p.reg, walk, "game walk");
 }

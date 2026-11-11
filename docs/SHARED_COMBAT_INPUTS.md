@@ -1,6 +1,7 @@
 # Shared combat inputs (Core)
 
-Five inputs every arena fight can use, plus the weak-point lock they serve. All of it is plain C++20 in
+Five inputs every arena fight can use, the weak-point lock they serve, and the fight session that
+owns them all. All of it is plain C++20 in
 `Core/include/ftcore/`, header-only (no new `Core/src` file), no allocation after
 construction, deterministic for a given input order. One header per piece:
 
@@ -13,6 +14,7 @@ construction, deterministic for a given input order. One header per piece:
 | `TableSet.h` | `TableSet`, `TableTuning`, `TableSplit` | setting the table |
 | `HeldRefusal.h` | `HeldRefusal`, `RefusalState`, `RefusalInput` | held refusals |
 | `WeakPointLock.h` | `WeakPointLock`, `UnlockKey` | the locked weak point |
+| `FightSession.h` | `FightSession`, `FightSessionDef`, `FightTick`, `SharedAction` | one fight's pieces on one clock |
 
 ## Common rules
 
@@ -246,8 +248,58 @@ A boss weak point that is locked until one of its keys unlocks it.
   shut both (`Relocked`, `CritClosed`), and `onHit` lands no crit while it is locked, even through a
   full intercept's opening. A boss with no `lock` is unchanged.
 
+## 7. The fight session (`FightSession`)
+
+`FightSession.h` owns one of each piece for a fight (the count, the gift slot, a `PlaceTable` per
+fighter, the table, the held refusal, its own `WeakPointLock`, and an optional `BossScript` with its
+own copy of the boss def) and moves them all on one fight clock. It is what a host holds instead of
+the pieces.
+
+* **One clock.** `begin(def, start)` resets every piece at `start` (any finite time). `tick(fightDt)`
+  is the only time input after that: it adds the step to the session's clock and updates every piece
+  with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
+  A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
+  (0.25 s; a longer frame loses the rest), so the pieces can never be pushed past `kMaxTimeJump`.
+* **Hit-stop.** The shared inputs see fight time, which does not advance during the host's hit-stop:
+  the host passes 0 (or only the part of the frame outside the hit-stop) while it holds. So:
+  * presses and blows during a hit-stop are accepted, stamped at the frozen time;
+  * windows, cooldowns, gift guards, the table's timers, the lock's open time and the boss script's
+    steps all stretch in real time by the hit-stop's length;
+  * the count's cues fire in fight time, so the host plays each cue when its event arrives and never
+    schedules cues ahead on the audio clock.
+* **Events.** `tick` returns a `FightTick`: the count's, the table's and the boss script's events
+  since the last tick (a call between ticks buffers its events into the next one), the step taken,
+  and how many settled count blows were shared blows.
+* **Glue.** A blow judged a shared outcome (at once in `judgeBlow`, or when a held blow settles) is a
+  shared blow (a settle lost to a full count event buffer is not): `BossScript::sharedBlow` with a boss script, else the shared-blow key offered to the session's
+  lock (`def.locked`). A refusal held to the end of its prompt (`endRefusal`) offers the refusal key to
+  the session's lock. Every change to a fighter's places through the session re-checks the table when
+  that fighter is its setter; after changing places directly (`places(who)` or a load), call
+  `recheckTable`. Without a lock and without a boss script the weak point is always open. A boss def
+  that `begin` refuses leaves no boss script (`hasBoss` false), so the session's lock rules instead.
+* **Presses.** `press(SharedAction, who, target)` maps a host's input action onto the session
+  (`Count`, `Gift`, `RefuseDown`, `RefuseUp`, `LeaveOpen`; `SetTable` needs the setter's `Load`, so it
+  goes through `setTable`). The host's binding table decides which of its actions make which press:
+  the count action makes `Count`, the gift action `Gift` with the chosen lead, and the guard button
+  held while a refusal prompt is up makes `RefuseDown`/`RefuseUp`. The typed calls (`callCount`,
+  `giveGift`, `layPlace`, `setTable`, `counter`, `bossHit`, ...) return each piece's own result.
+* **Story.** With a story state bound (`bindStory(state, registry)`, both or neither), every given
+  gift is one press in it (`storyCountPress`): the side is the lead it went to (`kLeadA` 0, `kLeadB`
+  1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused gift writes nothing; a closed side,
+  a counter at its cap or an unbound counter is a normal answer (`lastStoryWrite`). The per-kind press
+  counters (counter wides) roll back with a scene restart, so a retried fight counts afresh; a raw
+  total does not.
+* **Boss counters.** `counter(kind, who, shared)`: `shared` is the host's word that the counter carries
+  the shared input (a blow judged a shared outcome, or a hit the lead took half of). An open count
+  window alone is not it; a shared counter kind without it is refused (`NeedsShared`).
+* The session cannot be copied or moved (its boss script points into its def), and allocates nothing
+  after construction.
+
 ## What the Unreal wrapper needs
 
+* `UFTFightSession` (`Source/ForgottenThird/FTFightSession.h`) holds a `FightSession` for a host:
+  `Begin`, `Tick(FightDeltaSeconds)` (0 during hit-stop), `Press(EFTSharedAction, ...)`, and the story
+  binding. A host makes one per fight and ticks it every frame.
 * Input actions: `Count` (call), the gift button and a gift select, `LayPlace` (with a person id from
   data), `SetTable`, `Refuse` (a hold). Blows report `(striker, time)` to `StrikeCount::judgeBlow`
   before damage, and their damage through `TableSet::split`.
@@ -286,5 +338,9 @@ with two seats, two plus an open chair, not full, interrupted, cancelled, enemy 
 targets, the Load spent by `begin` (and kept on an error), lost table events; the table guttering
 when a place empties; the refusal released early (repeats), held to the end, never held (deferred),
 held before the offer, a lost button; each lock key, wrong clause, key not in the mask, relock after
-time and on deferral; zero allocations in every tick and judge call (the test fails if the
+time and on deferral; the fight session's clock (a late start, bad and oversized steps, a hundred
+thousand hit-stop ticks that expire nothing, 2000 s of ticks after which every piece still answers),
+a shared blow opening its lock or a boss script's point, events made between ticks, the table
+re-checked when a place empties, gifts written to the story state (unbound, closed side, cap); zero
+allocations in every tick and judge call (the test fails if the
 allocation hook is missing).

@@ -256,7 +256,9 @@ public:
     FTCORE_API void cancel();
 
     // A new fight: no impacts, no hold, no rearm, the clock at `start` (0 when not finite). The windows
-    // are kept.
+    // are kept. A strike's clock starts at 0, so an owner whose fight clock may be past kMaxTimeJump
+    // must reset(start) before using it: until then every such time is junk and nothing resolves.
+    // ArenaBossRun::begin does this for the strike it owns.
     FTCORE_API void reset(double start);
 
     // Moves the clock to `now`: impacts at or before it resolve against the hold. The clock starts at

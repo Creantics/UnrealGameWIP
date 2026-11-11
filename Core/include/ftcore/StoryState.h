@@ -8,7 +8,7 @@
 //   ftcore::StoryState s;                                            // a new game
 //   ftcore::storyBeginScene(s, reg, ftcore::storySceneOrdinal(reg, code));
 //   ftcore::storySet(s, reg, ftcore::storyFactSlot(reg, id), 2);
-//   ftcore::storyCountHelp(s, reg, 0, 1);                            // one accepted press: side 0, kind 1
+//   ftcore::storyCountPress(s, reg, 0, 1);                            // one accepted press: side 0, kind 1
 //   ftcore::storyCommitScene(s, reg);
 //   ftcore::SceneReads r = ftcore::storySceneReads(s, reg, nextScene);
 //   std::array<std::uint8_t, ftcore::kStoryStateBlockSize> block;
@@ -143,6 +143,7 @@ struct StoryTuning {
     std::array<std::uint8_t, kMaxMilestones> milestoneScene{};
     std::array<std::uint32_t, kMaxMilestones> milestoneValue{};
     std::array<std::uint16_t, kMaxMilestones> milestoneNeeds{}; // a fact that must be set once reached (0: none)
+    std::uint32_t pressFloor = 0; // storyPressTotal counts each side as at least this
 };
 
 // A derived value: computed from facts at scene start, never stored.
@@ -152,8 +153,8 @@ enum class DeriveKind : std::uint8_t {
     Read,       // the fact's read value (unset reads the default, 255 never offered); valid unless unknown
     In,         // 1 when the value's bit is in `mask`, else 0; valid when set
     Upgrade,    // 0 unset, else the value, or `to` when it is `from` and `cond` holds; valid when unset or set
-    LeadKind,   // storyLeadKind
-    PressShown, // storyHelpShown
+    TopKind,    // storyTopKind
+    PressTotal, // storyPressTotal
 };
 struct DeriveRow {
     DeriveKind kind = DeriveKind::None;
@@ -323,11 +324,12 @@ struct StoryStateLoadReport {
 
 // min(c + n, cap), without wrapping.
 FTCORE_API std::uint32_t storySaturatingAdd(std::uint32_t c, std::uint32_t n, std::uint32_t cap);
-// The press total shown: per side, the larger of 1 and that side's presses, summed (saturating).
-FTCORE_API std::uint32_t storyHelpShown(const StoryState& s, const FactRegistry& reg);
-// The kind side 0 pressed most; a tie goes to the last kind pressed if it is tied, else to the lowest
+// The press total: per side, the larger of the registry's press floor and that side's presses, summed
+// (saturating).
+FTCORE_API std::uint32_t storyPressTotal(const StoryState& s, const FactRegistry& reg);
+// The top kind: the kind side 0 pressed most; a tie goes to the last kind pressed if it is tied, else to the lowest
 // tied kind. No presses (or no counters bound): 0.
-FTCORE_API std::uint8_t storyLeadKind(const StoryState& s, const FactRegistry& reg);
+FTCORE_API std::uint8_t storyTopKind(const StoryState& s, const FactRegistry& reg);
 // CRC-32 (reflected 0xEDB88320); storyCrc32 of "123456789" is 0xCBF43926.
 FTCORE_API std::uint32_t storyCrc32(std::span<const std::uint8_t> bytes, std::uint32_t crc = 0);
 
@@ -345,7 +347,7 @@ FTCORE_API SetResult storyAdd(StoryState& s, const FactRegistry& reg, std::uint8
 // bound, the scene and the total, records the last kind and latches the first press on side 0.
 // A side with an open fact bound presses only while it is set. Ok when the kind's counter rose,
 // Unchanged at its cap, UnknownFact when that counter is not bound.
-FTCORE_API SetResult storyCountHelp(StoryState& s, const FactRegistry& reg, std::uint8_t side, std::uint8_t kind);
+FTCORE_API SetResult storyCountPress(StoryState& s, const FactRegistry& reg, std::uint8_t side, std::uint8_t kind);
 // Every fact the scene reads (registry order), its wide values, and the derived values. Scene start,
 // not per frame.
 FTCORE_API SceneReads storySceneReads(const StoryState& s, const FactRegistry& reg, std::uint8_t scene);
