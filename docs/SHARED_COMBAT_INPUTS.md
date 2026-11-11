@@ -17,7 +17,11 @@ construction, deterministic for a given input order. One header per piece:
 ## Common rules
 
 * **Time.** Every time is the fight clock in seconds (as `ArenaBoss.h`). Each object keeps `now`; a
-  time that is earlier than `now` or not finite is read as `now` (a bad clock stalls, never hangs).
+  time that is earlier than `now` or not finite is read as `now` (a bad clock stalls, never hangs),
+  and a time more than `kMaxTimeStep` (3600 s) past `now` is read as `now + kMaxTimeStep` (a junk
+  far-future time moves the clock by at most that step; a real clock keeps advancing). Queries
+  (`open(t)`, `guarded(lead, t)`, `guardScaleFor(lead, t)`, `ready(gift, t)`) read their time the
+  same way without moving `now`. `inputTime(now, t, maxStep)` is the one rule.
 * **Fighters.** `FighterId` is a `uint8_t` index, 0..`kMaxFighters`-1 (4): `kLeadA` 0, `kLeadB` 1,
   `kThirdSlot` 2, `kEnemyFighter` 3 (the enemy side, for the false count and the table's seated enemy).
   The host maps its pawns to these ids; Core never knows names.
@@ -54,7 +58,9 @@ Idle --call(caller, t, voice)--> Live (cues, then the window) --(window closes)-
     settles `Unanswered` (the caller's: x`callerAloneMultiplier`) or `Alone` (anyone else's: x1).
   * The host applies a `Held` blow's damage when its `BlowSettled` event arrives (matched by `blow`,
     a per-blow id that is never 0 for a lead or slot blow).
-  * At most `kMaxHeldBlows` (8) are held; past that a lone blow settles at once with its lone outcome.
+  * There is no cap on held blows: before a window is joined they are all one fighter's, so their ids
+    run in order and Core keeps them as one run (first id and count). Every one of them is boosted
+    when a partner joins.
   * Enemy and unknown strikers are never held or boosted (`Alone`, `blow` 0).
 * **Silenced.** A silenced count has no caller. Two fighters together still join it, at
   `silencedMultiplier` (1.6), on the narrower `silencedWindowScale` (0.6) window: the click helps,
@@ -66,14 +72,20 @@ Idle --call(caller, t, voice)--> Live (cues, then the window) --(window closes)-
   and in no true window is `FalseCount`: it misses (x`falseMultiplier`, default 0) and
   `punishable = true`: it leaves the fighter open. A blow in the true window is judged by the true
   one. At most one false count; a new one replaces it.
-* `cancel(t)`: drops a live count (caller staggered, cutscene). Steps already due play; an opened
+* `cancel(t)`: drops a live count (the host stops it). Steps already due play; an opened
   window closes at `t` (`WindowClosed`); held blows settle at `t`; the cooldown runs from `t`.
+  A cancel at a time past the window's end does nothing beyond playing those due steps: the window
+  closed on its own, and the count and its cooldown stand as they were.
   `cancelFalse(t)` drops the false count after its due steps.
-* `update(now) -> const CountEvents&` (32 slots, `dropped` counts overflow): `Cue`, `WindowOpened`,
+* `update(now) -> const CountEvents&` (`kMaxCountEvents` = 64 slots): `Cue`, `WindowOpened`,
   `WindowClosed`, `BlowSettled`, each `{index, isNow, isFalse, voice, caller, at}` plus, for a
   settle, `{blow, striker, outcome, multiplier}`. A late frame plays every step it passed in time
   order (true run, then settles, then the false run on a tie). **Call order per frame:** judge the
   frame's blows, then call `update(frameEnd)` once.
+* **Full buffers.** `dropped` counts every event lost to a full buffer, including ones lost between
+  updates; the returned events carry it to the host. A `BlowSettled` pushes out the earliest event
+  that is not a settle (a cue or window event) to make room; only when every slot is a settle is it
+  lost, and `droppedSettles` counts it. A lost settle never strands a blow: see the wrapper section.
 * Tuning (`CountTuning`): `bpm` 90, `leadBeats` 2, `windowBefore` 0.12 s, `windowAfter` 0.18 s,
   `onCountMultiplier` 2.5, `silencedMultiplier` 1.6, `silencedWindowScale` 0.6,
   `callerAloneMultiplier` 0.5, `falseMultiplier` 0, `cooldown` 1.5 s. `validCountTuning` checks
@@ -84,58 +96,68 @@ Idle --call(caller, t, voice)--> Live (cues, then the window) --(window closes)-
 
 One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no enum for one).
 
-* **States** (`SlotState`): `Companion` (gifts work), `EmptyChair` (button does nothing), `Hostile`
-  (button does nothing; the boss uses the tallies). No press is ever discarded. Set by the story through `setState`.
+* **States** (`SlotState`): `Companion` (gifts work), `Vacant` (button does nothing), `Hostile`
+  (button does nothing; the boss uses the tallies). No press is ever discarded. The host sets it
+  through `setState`.
 * `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr)`:
   - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down. A
     pressed gift cannot be taken back: there is no cancel. Returns `GiftResult { given, gift, target,
-    error }`; the host applies it: `Heal` (heal `healShare` of max HP and move `healLoad` Load off the
-    target), `Guard` (the target takes x`guardScale` damage for `guardSeconds`, Core keeps the timer:
-    `guardScaleFor(lead, t)`), `Count` (the slot calls a `StrikeCount` with caller `kThirdSlot`;
-    `GiftSlot::press` takes the count so the call and the gift are one action; if the count refuses
-    or is null, the error is `CountRefused`, the gift is not given and nothing is counted).
-  - Errors (`GiftError`): `EmptyChair`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
+    error, healShare, healLoad, guardScale, guardUntil }`, everything the host needs to apply it:
+    `Heal` (heal `healShare` of max HP and move `healLoad` Load off the target), `Guard` (the target
+    takes x`guardScale` damage until `guardUntil`; Core also keeps the timer: `guardScaleFor(lead, t)`),
+    `Count` (the slot calls a `StrikeCount` with caller `kThirdSlot`; `GiftSlot::press` takes the
+    count so the call and the gift are one action; if the count refuses or is null, the error is
+    `CountRefused` and the gift is not given). A refused press leaves the heal and guard fields at
+    their neutral values (0, 0, 1, 0).
+  - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
     `CountRefused`, `NoGift`.
-  - `EmptyChair`: nothing happens; `emptyPresses` goes up (the game remembers you reached for him).
+  - `Vacant`: nothing happens; `vacantPresses` goes up.
   - `Hostile`: nothing happens; `hostilePresses` goes up.
-* **Threads.** Every given gift adds one thread to its target lead (`threads(lead)`), forever.
-* **The tally** (`GiftTally`): presses per gift, save-wide, saturating at `UINT32_MAX`. Read any time:
-  `count(gift)`, `total()`, `mostUsed()` (the most pressed; on a tie the earliest in `Heal, Guard,
-  Count` order; `Gift::None` when the total is 0). Only given gifts count here.
-* **Three tallies.** Companion gifts (per gift, above), `emptyPresses()` and `hostilePresses()`;
-  `allPresses()` is the total across all three. A companion press refused for its cooldown or target
-  is not counted.
-* **Save** (`GiftSave`): plain data, `version` (1), `presses[3]`, `emptyPresses`, `hostilePresses`, `threads[2]`,
-  `selected`, `state`. `save()` / `load(const GiftSave&)`; load rejects (returns false, changes
-  nothing) version 0, a newer version or an out-of-range enum. Cooldowns and live guards are not
-  saved (a load is never mid-fight); `load` and `resetFight()` clear them. `reset()` wipes the save
-  data too; `setTuning()` changes the tuning and keeps it.
+* **Threads and cooldowns** follow given gifts only: every given gift adds one thread to its target
+  lead (`threads(lead)`), forever, and starts that gift's cooldown. A refused press does neither.
+* **The tally** (`GiftTally`): every `Companion` press, save-wide, saturating at `UINT32_MAX`:
+  `given[3]` per gift and `refused[4]` per gift, the last slot for a press with no gift selected.
+  Read any time: `givenOf(gift)`, `refusedOf(gift)`, `count(gift)` (given + refused), `total()` (every
+  press in the tally), `mostUsed()` (the gift with the highest `count`; on a tie the earliest in
+  `Heal, Guard, Count` order; `Gift::None` when no gift has a press).
+* **Three tallies.** Companion presses (per gift, above), `vacantPresses()` and `hostilePresses()`;
+  `allPresses()` is the total across all three. Every press lands in exactly one of them.
+* **Save** (`GiftSave`): plain data, `version` (2), `given[3]`, `refused[4]`, `vacantPresses`,
+  `hostilePresses`, `threads[2]`, `selected`, `state`. `save()` / `load(const GiftSave&)`; load
+  rejects (returns false, changes nothing) version 0, a newer version or an out-of-range enum. A
+  version 1 save (no refused counts) loads with `refused` all 0. `SlotState` keeps its stored
+  integers (`Vacant` is 1). Cooldowns and live guards are not saved (a load is never mid-fight);
+  `load` and `resetFight()` clear them. `reset()` wipes the save data too; `setTuning()` changes
+  the tuning and keeps it.
 * Tuning (`GiftTuning`): per-gift `cooldown` (heal 8 s, guard 6 s, count 4 s), `healShare` 0.15,
-  `healLoad` 20, `guardScale` 0 (the third stands in the lead's place: the guarded lead takes x0, nothing), `guardSeconds` 1.2.
+  `healLoad` 20, `guardScale` 0 (the guarded lead takes x0), `guardSeconds` 1.2.
 
 ## 3. Laying a place (`PlaceTable`)
 
 One per fighter that can lay places. A place is a chair at the fighter's table.
 
 * Place states: `Named` (a person, by an opaque `uint16_t` id from data), `LeftOpen` (deliberately
-  left open), `Emptied` (the person died or forgot; the chair stays, empty), `Free` (no chair).
+  left open), `Emptied` (the host emptied it; the chair stays taken, with nobody in it, and keeps the
+  person id), `Free` (no chair).
 * `seats` (rating, progression, saved): how many chairs the fighter can hold, 1..`kMaxPlaces` (8).
-* `layPlace(person)`: needs a free chair within the rating and the person not already seated;
-  `leaveOpen()`: the same for an open chair. Errors: `NoSeat`, `AlreadySeated`, `BadPerson`.
+* **One chair per person.** `layPlace(person)` needs a free chair within the rating and the person
+  in no `Named` or `Emptied` chair (`holding(person)`); a person whose chair was emptied can be laid
+  again only after that chair is cleared. `leaveOpen()` needs a free chair. Errors: `NoSeat`,
+  `AlreadySeated`, `BadPerson`.
 * `carryCap()`: `baseCarry + perPlace x named` capped at `kMaxLoad` (40 + 20 each: three places carry
   a full 100). Only `Named` raises it; an open chair holds nobody.
 * `emptyPlace(person, Load* load = nullptr)`: the chair becomes `Emptied`, `carryCap()` falls, and
   the weight falls on the fighter: `fallLoad` (20) is stored on `load` past the cap, up to `kMaxLoad`.
   Returns `PlaceEmptied { emptied, error, chair, capBefore, capAfter, fell, excess }`; `excess` is how
-  far the Load now stands above the new cap. The same person may be laid again later (a new chair). Over the cap the fighter
-  is overloaded (`overCap(load)`), as `Load.h` already treats a full Load.
-* `clearPlace(chair)` frees an `Emptied` or `LeftOpen` chair (story only).
+  far the Load now stands above the new cap. Over the cap the fighter is overloaded
+  (`overCap(load)`), as `Load.h` already treats a full Load.
+* `clearPlace(chair)` frees an `Emptied` or `LeftOpen` chair; a `Named` chair empties first.
 * `tableSeats()`: `Named + LeftOpen` (an emptied chair does not count).
 * `PlaceTable::storeCapped(Load&, amount)` stores up to the place cap and returns what it stored.
 * `raiseSeats(n)` only raises the rating.
 * Save (`PlaceSave`): `version`, `seats`, `states[8]`, `persons[8]`. `load` rejects a bad version,
   rating or state, a chair past the rating that is not `Free`, a `Named` or `Emptied` chair with no
-  person, and a person `Named` twice.
+  person, and a person in two chairs (`Named` or `Emptied`).
 
 ## 4. Setting the table (`TableSet`)
 
@@ -148,13 +170,15 @@ Ready --begin--> Setting --(setTime)--> Set --(setDuration)--> Cooling --(cooldo
 * `begin(setter, load, places, seated, t)`: needs `load >= places.carryCap()` (full Load) and
   `places.tableSeats() >= minSeats` (3). `seated` is the bit mask of fighters at the table in this
   fight (bit i = FighterId i, the enemy bit ignored; the setter always sits). Errors: `BadSetter`, `Busy`,
-  `Cooling`, `NotFull`, `TooFewSeats`, checked in that order. On begin the fighter's Load is spent (the host calls `load.release()`).
+  `Cooling`, `NotFull`, `TooFewSeats`, checked in that order. On success `begin` spends the setter's
+  Load itself (`load.release()`); on an error the Load is untouched.
 * `interrupt(t)` during `Setting` (the fighter staggered or downed): a `Failed` event, `failed()`, the Load stays spent,
-  `failCooldown` applies. This is the "can fail" rule.
+  `failCooldown` applies.
 * **The seat rule.** The table holds only with at least `minSeats` seats, each filled (`Named`) or
-  deliberately left open (`LeftOpen`); an open seat is a state of its own, not an empty one. The host
-  calls `checkSeats(places, t)` whenever a place changes: while `Setting` or `Set` with too few seats,
-  the table gutters out (`Guttered` event, `failed()`, the enemy unseated, `failCooldown`).
+  deliberately left open (`LeftOpen`); an open seat is a state of its own, not an empty one.
+  `TableSet` keeps no reference to the `PlaceTable`, so **the host must call `checkSeats(places, t)`
+  after every change to the setter's places** while the table is `Setting` or `Set`: with too few
+  seats the table gutters out (`Guttered` event, `failed()`, the enemy unseated, `failCooldown`).
 * `seatEnemy(t)` while `Set` and the boss allows it: the enemy is seated until the table clears.
 * `split(target, amount, t) -> TableSplit`: while `Set`, a blow on a seated fighter is shared: every
   seated fighter (and a seated enemy, at `enemyShare` x its share) takes `amount / n` each, where n
@@ -164,7 +188,9 @@ Ready --begin--> Setting --(setTime)--> Set --(setDuration)--> Cooling --(cooldo
 * Tuning: `minSeats` 3, `setTime` 0.8 s, `setDuration` 6 s, `cooldown` 20 s, `failCooldown` 8 s,
   `enemyShare` 1.0.
 * Events (`update(now) -> const TableEvents&`): `Setting`, `Set`, `Failed`, `EnemySeated`, `Cleared`,
-  `Ready`, `Guttered`, each at its own time; a late frame plays every timed change it passed.
+  `Ready`, `Guttered`, each at its own time; a late frame plays every timed change it passed. Past
+  `kMaxTableEvents` (16) waiting, later events are lost and the returned `dropped` counts them; the
+  host reads the table's state (`state()`, `set()`, `failed()`) when `dropped > 0`.
 
 ## 5. Held refusals (`HeldRefusal`)
 
@@ -196,8 +222,7 @@ A boss weak point that is locked until one of its keys unlocks it.
   `offer(kUnlockSharedBlow, t)` directly),
   `ReadClause` (the right hidden clause read: `offer(kUnlockReadClause, t, clauseId)` with the lock's
   `clause`), `Refusal`
-  (a `HeldRefusal` resolved `Refused`). Each boss's lock lists the keys that open it (one world's
-  bosses take one key; nothing stops a boss taking two).
+  (a `HeldRefusal` resolved `Refused`). Each boss's lock lists the keys that open it (one or more).
 * `offer(key, t, clause)` -> `UnlockResult` (`Unlocked`, `Refreshed` when already open: the open time
   restarts, `WrongKey`, `WrongClause`, `BadKey`). `onDeferred(t)` reports a `Deferred` refusal: it
   counts `deferrals()` and relocks an open lock when `relockOnDefer` (default true).
@@ -213,26 +238,42 @@ A boss weak point that is locked until one of its keys unlocks it.
 ## What the Unreal wrapper needs
 
 * Input actions: `Count` (call), the gift button and a gift select, `LayPlace` (with a person id from
-  the story data), `SetTable`, `Refuse` (a hold). Blows report `(striker, time)` to
-  `StrikeCount::judgeBlow` before damage, and their damage through `TableSet::split`.
+  data), `SetTable`, `Refuse` (a hold). Blows report `(striker, time)` to `StrikeCount::judgeBlow`
+  before damage, and their damage through `TableSet::split`.
+* **Held damage.** A blow judged `Held` deals no damage yet: the host buffers its damage by `blow` id
+  and applies it, times the event's `multiplier`, when that id's `BlowSettled` event arrives. A held
+  blow settles within one window (at the latest when the window closes, or on cancel or replace), so
+  the buffer holds at most one window's blows. If an update reports `droppedSettles > 0`, the host
+  applies every blow still buffered at x1 and clears the buffer: a lost settle never strands damage.
+* **Gifts.** The host applies a given gift from the `GiftResult` alone (`healShare`, `healLoad`,
+  `guardScale`, `guardUntil`), or asks `guardScaleFor(lead, t)` on each blow the lead takes.
+* **The table.** The host calls `TableSet::checkSeats(places, t)` after every change to the setter's
+  places (`layPlace`, `leaveOpen`, `emptyPlace`, `clearPlace`, a load) while the table is `Setting` or
+  `Set`; `TableSet` does not watch the `PlaceTable` itself.
 * Audio and HUD: the count cues (three voices plus a false voice, and a click), the gift threads per
   lead, the place chairs (`Named`, `LeftOpen`, `Emptied`), the table state, the refusal prompt with no
   meter.
 * Saves: `GiftSave` and one `PlaceSave` per fighter in the SaveGame object (plain integers).
-* Story hooks: `GiftSlot::setState`, `PlaceTable::emptyPlace`, the boss's lock keys from its data.
+* Data and host hooks: `GiftSlot::setState`, `PlaceTable::emptyPlace`, the boss's lock keys from its
+  data.
 
 ## Edge cases the tests cover
 
 Calls during a live count or cooldown; enemy calling a true count; two fighters joining (either
-order), the caller alone (light), a partner alone (plain), held overflow, blow ids wrapping; a second
-blow by one fighter; cancel and replace settling held blows; blows on the window's edges (inclusive); a silenced count; false counts early and
-late, overlapping a true one, replaced; a late frame passing several cues; NaN and earlier times; a
-gift pressed while cooling, in the empty chair, hostile; a count gift that the count refuses; tally
-ties, zero, saturation, save/load round trip and bad saves; laying past the rating, the same person
-twice, emptying an absent person, cap after emptying, the fall past the cap; the table with two
-seats, two plus an open chair, not full, interrupted, cancelled, enemy share, unseated targets; the
-table guttering when a place empties; the
-refusal released early (repeats), held to the end, never held (deferred), held before the offer, a
-lost button; each
-lock key, wrong clause, key not in the mask, relock after time and on deferral; zero allocations in
-every tick and judge call.
+order), the caller alone (light), a partner alone (plain), many held blows all boosted when a partner
+joins, blow ids wrapping past 0; a second blow by one fighter; cancel and replace settling held
+blows; a cancel after the window closed leaving the cooldown alone; blows on the window's edges
+(inclusive, including a blow exactly at the upper edge); a silenced count; false counts early and
+late, overlapping a true one, replaced; a late frame passing several cues; full event buffers (lost
+events counted, a settle pushing out a cue, lost settles counted); NaN, earlier and junk far-future
+times, for every piece; a gift pressed while cooling, with a bad target, vacant, hostile, all
+tallied; a count gift with no count, one the count refuses, one at its cooldown boundary; the gift
+result's heal and guard fields; tally ties, zero, saturation, save/load round trip, a version 1 save
+and bad saves; laying past the rating, the same person twice (named or emptied), emptying an absent
+person, cap after emptying, the fall past the cap, a save with one person in two chairs; the table
+with two seats, two plus an open chair, not full, interrupted, cancelled, enemy share, unseated
+targets, the Load spent by `begin` (and kept on an error), lost table events; the table guttering
+when a place empties; the refusal released early (repeats), held to the end, never held (deferred),
+held before the offer, a lost button; each lock key, wrong clause, key not in the mask, relock after
+time and on deferral; zero allocations in every tick and judge call (the test fails if the
+allocation hook is missing).
