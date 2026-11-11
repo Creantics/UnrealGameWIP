@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <ostream>
 #include <string>
 
 using namespace ftcore;
@@ -135,4 +136,51 @@ TEST_CASE("held input: held follows the key, toggled flips on each press, reset 
     HeldInput r;
     r.reset();
     CHECK(r.tick(true, false)); // held mode reads the key as it is
+}
+
+TEST_CASE("input bindings: in every mode no key does two things, and every action is reachable on both devices") {
+    const InputBindings b = defaultInputBindings();
+    InputAction missing = InputAction::Pause;
+    CHECK_MESSAGE(inputAllReachable(b, &missing), inputActionKey(missing));
+    for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
+        // Foot alone, and Read held (the ReadHeld keys over Foot's: a Foot action keeps a key only if no ReadHeld
+        // action takes it).
+        for (const bool readHeld : {false, true}) {
+            for (std::size_t i = 0; i < kInputActionCount; ++i) {
+                const InputAction a = act(i);
+                const InputContext ci = inputActionContext(a);
+                if (b.keys[d][i].empty() || (!readHeld && ci == InputContext::ReadHeld)) continue;
+                for (std::size_t j = i + 1; j < kInputActionCount; ++j) {
+                    const InputContext cj = inputActionContext(act(j));
+                    if (b.keys[d][j].view() != b.keys[d][i].view() || (!readHeld && cj == InputContext::ReadHeld)) continue;
+                    // The same key in both contexts is the overlay's shadow, not a double: allowed only while one
+                    // is the Foot action it stands in for.
+                    CHECK_MESSAGE(ci != cj, inputActionKey(a), " and ", inputActionKey(act(j)));
+                }
+            }
+        }
+        // Read and Guard keep their keys while Read is held.
+        for (std::size_t j = 0; j < kInputActionCount; ++j) {
+            if (inputActionContext(act(j)) != InputContext::ReadHeld) continue;
+            CHECK(b.keys[d][j].view() != b.keys[d][static_cast<std::size_t>(InputAction::Read)].view());
+            CHECK(b.keys[d][j].view() != b.keys[d][static_cast<std::size_t>(InputAction::Guard)].view());
+        }
+    }
+    // Guard keeps a button that can be held (a shoulder, a modifier key) with its toggle option.
+    CHECK(inputActionHeld(InputAction::Guard));
+    InputBindings unbound = b;
+    REQUIRE(rebindInput(unbound, InputAction::Map, InputDevice::Pad, ""));
+    CHECK_FALSE(inputAllReachable(unbound, &missing));
+    CHECK(missing == InputAction::Party); // its pad route rides the map button
+}
+
+TEST_CASE("input bindings: a Read-held key may not sit on Read's or Guard's key") {
+    InputBindings b = defaultInputBindings();
+    const std::string before = encodeInputBindings(b);
+    CHECK_FALSE(rebindInput(b, InputAction::ReadPick1, InputDevice::Keys, "LeftControl"));
+    CHECK_FALSE(rebindInput(b, InputAction::LineNext, InputDevice::Pad, "Gamepad_RightShoulder"));
+    CHECK(encodeInputBindings(b) == before);
+    std::string error;
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"read_pick_2": "Q"}})", b, &error));
+    CHECK(error.find("read") != std::string::npos);
 }

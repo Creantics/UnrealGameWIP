@@ -433,12 +433,15 @@ private:
 	ftcore::PressHold AttackHold;
 	// Guard's hold or toggle latch (FTInputBindings).
 	ftcore::HeldInput GuardInput;
+	ftcore::HeldInput AimInput;
+	ftcore::HeldInput InterceptInput;
 	bool bAimRulesTried = false;
 	bool bAimHeld = false;
 	bool bAimCamera = false;
 	FVector ReticlePoint = FVector::ZeroVector;
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
+	bool bMouseFlicked = false;
 
 	double Now = 0.0;
 	double Accumulator = 0.0;

@@ -31,19 +31,28 @@ spots say which objective they wait for.
 
 | | Keyboard and mouse | Gamepad |
 |---|---|---|
-| Move | W A S D or arrow keys | Left stick |
+| Move | W A S D | Left stick |
 | Look | Mouse | Right stick |
-| Run | Left Shift (hold) | Left trigger (hold) |
+| Run (hold or toggle) | Left Shift | Left stick pushed all the way |
 | Jump | Space | A |
-| Crouch (while sprinting: slide) | C or Left Ctrl | Right stick click |
+| Crouch (hold or toggle; while sprinting: slide) | C | D-pad left |
 | Roll (dodge) | Left Alt | B |
-| Use (talk, pick up, open) | E or Enter | X |
-| Switch lead (with a party in config) | Tab | RB |
-| Show or hide the followers | P | LB |
-| Weapon, light attack (chain) | Left mouse (tap) or J | Right trigger |
-| Weapon, heavy attack | Left mouse held 0.25 s, or K | Y |
-| Aim (hold): camera over the shoulder, reticle; the pistol fires and the bolt flies at it, the gauntlets lunge toward it | Right mouse | |
+| Use (talk, pick up, open) | E | X |
+| Switch lead (with a party in config) | Tab | D-pad right |
+| Show or hide the followers | P, or hold M | hold View |
+| Weapon, light attack (chain) | Left mouse (tap) | RT (tap) |
+| Weapon, heavy attack | Left mouse held 0.25 s | RT held 0.25 s |
+| Aim (hold or toggle): camera over the shoulder, reticle; the pistol fires one round per press and the bolt flies at it, the gauntlets lunge toward it | Right mouse | LT |
 | Pause menu | Esc | Start |
+
+Every key here comes from the binding table (`ftcore/InputBindings.h`, one set for the field and the arena; the
+defaults are provisional). Override any of them in `Saved/InputBindings.json`, read once at start, e.g.
+`{"version": 1, "keys": {"guard": "Z"}, "pad": {"read": "Gamepad_RightShoulder"}, "hold": {"guard": "toggle"}}`
+(engine key names; `""` unbinds; a key twice in one context, or a Read-held key on Read's or Guard's, refuses the
+whole file). Each held action (Aim, Guard, Read, Run, Crouch, Intercept) is held, or pressed once to toggle when
+the game's hold-toggle setting is on or its own `"hold"` mode says `"toggle"`.
+Read (Q / RB), Gift (G / D-pad up), Count (F / Y), the map (M / View) and Guard (Left Ctrl / LB) have keys but no
+field behaviour yet.
 
 The slide, landing roll, dodge roll and ledge grab, and their tunables, are in
 [MOVEMENT.md](MOVEMENT.md).

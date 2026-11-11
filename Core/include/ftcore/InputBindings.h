@@ -100,9 +100,19 @@ FTCORE_API bool validInputKeyName(std::string_view key);
 // The action in `a`'s context already on `key` for that device, other than `a`; false when none.
 FTCORE_API bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction& clash);
 // Puts `key` (empty: unbind) on `a` for that device. A key another action in the same context has moves to it from
-// `a` (the two swap), and `swapped` names it. False (nothing changed) for a bad key name.
+// `a` (the two swap), and `swapped` names it. False (nothing changed) for a bad key name or a result
+// validateInputBindings refuses.
 FTCORE_API bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction* swapped = nullptr);
-// No key twice in one context for one device, every name valid. The first problem in `error`.
+// How an action with no key on that device is still reached: "left_stick" (moving), "left_stick_full" (the stick
+// pushed all the way runs), "mouse_flick" / "right_stick_flick" (locked on, a flick switches the target),
+// "map_hold" (holding the map button shows or hides the party). Null when the action has no such route.
+FTCORE_API const char* inputActionRoute(InputAction a, InputDevice d);
+// Holding the map button this long, on either device, is the party toggle (inputActionRoute "map_hold").
+inline constexpr float kInputMapHoldForParty = 0.6f;
+// Every action has a key or a route on both devices (the defaults' promise; an override may unbind).
+FTCORE_API bool inputAllReachable(const InputBindings& b, InputAction* missing = nullptr);
+// No key twice in one context for one device, every name valid, and no ReadHeld key on Read's or Guard's key (a
+// refusal is a held Guard, so Guard must keep working while Read is held). The first problem in `error`.
 FTCORE_API bool validateInputBindings(const InputBindings& b, std::string* error = nullptr);
 
 // {"version": 1, "keys": {"guard": "LeftControl"}, "pad": {"guard": "Gamepad_LeftShoulder"}, "hold": {"guard": "toggle"}}

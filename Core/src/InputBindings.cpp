@@ -135,14 +135,49 @@ bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice d, std::st
 
 bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction* swapped) {
     if (!key.empty() && !validInputKeyName(key)) return false;
-    auto& keys = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount];
+    InputBindings next = b;
+    auto& keys = next.keys[static_cast<std::size_t>(d) % kInputDeviceCount];
     InputKeyName& mine = keys[static_cast<std::size_t>(a) % kInputActionCount];
     InputAction other{};
-    if (inputKeyClash(b, a, d, key, other)) {
-        keys[static_cast<std::size_t>(other)] = mine; // the two swap
-        if (swapped) *swapped = other;
-    }
+    const bool clash = inputKeyClash(next, a, d, key, other);
+    if (clash) keys[static_cast<std::size_t>(other)] = mine; // the two swap
     setName(mine, key);
+    if (!validateInputBindings(next)) return false; // e.g. a Read-held key onto Read's or Guard's
+    b = next;
+    if (clash && swapped) *swapped = other;
+    return true;
+}
+
+const char* inputActionRoute(InputAction a, InputDevice d) {
+    const bool pad = d == InputDevice::Pad;
+    switch (a) {
+    case InputAction::MoveForward:
+    case InputAction::MoveBack:
+    case InputAction::MoveLeft:
+    case InputAction::MoveRight: return pad ? "left_stick" : nullptr;
+    case InputAction::Run: return pad ? "left_stick_full" : nullptr;
+    case InputAction::TargetPrev:
+    case InputAction::TargetNext: return pad ? "right_stick_flick" : "mouse_flick";
+    case InputAction::Party: return "map_hold";
+    default: break;
+    }
+    return nullptr;
+}
+
+bool inputAllReachable(const InputBindings& b, InputAction* missing) {
+    for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
+        const InputDevice device = static_cast<InputDevice>(d);
+        for (const ActionRow& r : kRows) {
+            if (!b.keys[d][static_cast<std::size_t>(r.action)].empty()) continue;
+            const char* route = inputActionRoute(r.action, device);
+            // The party route rides the map button, so it needs one.
+            const bool ok = route && (r.action != InputAction::Party || !b.keys[d][static_cast<std::size_t>(InputAction::Map)].empty());
+            if (!ok) {
+                if (missing) *missing = r.action;
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -152,6 +187,16 @@ bool validateInputBindings(const InputBindings& b, std::string* error) {
         for (const ActionRow& r : kRows) {
             const InputKeyName& n = b.keys[d][static_cast<std::size_t>(r.action)];
             if (n.empty()) continue;
+            if (r.context == InputContext::ReadHeld) {
+                for (const InputAction kept : {InputAction::Read, InputAction::Guard}) {
+                    if (b.keys[d][static_cast<std::size_t>(kept)].view() == n.view()) {
+                        if (error)
+                            *error = std::string(deviceKey(device)) + "." + r.key + ": " + std::string(n.view()) +
+                                     " is " + inputActionKey(kept) + ", which works while Read is held";
+                        return false;
+                    }
+                }
+            }
             if (!validInputKeyName(n.view())) {
                 if (error) *error = std::string(deviceKey(device)) + "." + r.key + ": not a key name";
                 return false;

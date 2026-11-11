@@ -87,6 +87,7 @@
 #include "FTLeadWeapons.h"
 #include "FTLocomotionAnimInstance.h"
 #include "ftcore/AimStance.h"
+#include "ftcore/InputBindings.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/FieldUnstick.h"
 #include "ftcore/FieldStrike.h"
@@ -213,8 +214,11 @@ private:
 	void HandleInteractRelease();
 	void HandleSwitchLead();
 	void HandleToggleParty();
-	void HandleLight();
-	void HandleHeavy();
+	// Run, crouch, and the map button held for the party toggle: polled from the binding table each frame, so a held
+	// action can be held or toggled (FTInputBindings).
+	void TickHeldKeys(float DeltaSeconds);
+	// Whether the game takes the player's keys this frame: on foot, no menu, pause or scene.
+	bool TakesInput();
 	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
 	void BeginWeapon(const FFTLeadLook& Look);
 	// Reads Data/Battle/arena.json into WeaponTable once (logged, built-in kits when missing or refused).
@@ -288,19 +292,11 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> RollAction;
 	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> RunAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> CrouchAction;
-	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> InteractAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> LightAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> HeavyAction;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
@@ -417,6 +413,14 @@ private:
 	// movement handlers last set (the aim scales it) and what the aim set it to, -ExploreAim's start (below 0: off).
 	ftcore::AimStance Aim;
 	ftcore::PressHold AttackHold;
+	// The held actions' hold or toggle latches, the crouch key's last state, whether the run is on, how long the map
+	// button has been held (the party toggle) and whether that hold already toggled.
+	ftcore::HeldInput AimInput;
+	ftcore::HeldInput RunInput;
+	bool bCrouchKeyWas = true;
+	bool bRunOn = false;
+	float MapHeld = 0.f;
+	bool bMapHoldUsed = false;
 	bool bAimRulesTried = false;
 	ftcore::AttackMoveRules AttackMoveTable;
 	ftcore::FieldUnstick Unstick;

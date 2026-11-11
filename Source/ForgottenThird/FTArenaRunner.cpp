@@ -118,6 +118,10 @@ constexpr float kArenaMouseTurn = 2.5f; // degrees per unit of mouse axis (as th
 // A right-stick flick switches the lock: past this, after returning under the rest.
 constexpr float kArenaFlickOut = 0.7f;
 constexpr float kArenaFlickRest = 0.3f;
+// Locked on, a sideways mouse move past this in one frame switches the target; under the rest it re-arms
+// (provisional, to tune on a run).
+constexpr float kArenaMouseFlickOut = 8.f;
+constexpr float kArenaMouseFlickRest = 2.f;
 
 // Body colours: the player's, and an enemy's by its kind's index in the table.
 const FLinearColor kArenaPlayerColor(0.18f, 0.42f, 0.85f);
@@ -1077,68 +1081,97 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		bGuardHeld = false;
 		GuardInput.reset();
 		bInterceptHeld = false;
+		InterceptInput.reset();
 		bAimHeld = false;
+		AimInput.reset();
 		AttackHold.reset();
 		Stick = ftcore::Vec2();
 		return;
 	}
-	using namespace FTActionButtons;
-	const int32 AttackB = static_cast<int32>(ftcore::ActionButton::Attack);
-	const int32 DodgeB = static_cast<int32>(ftcore::ActionButton::Dodge);
-	const int32 HeavyB = static_cast<int32>(ftcore::ActionButton::Jump);
-
-	bPressLight |= ArenaAnyJustPressed(*PC, Key(AttackB, 0), Key(AttackB, 1), EKeys::Gamepad_RightShoulder);
-	bPressHeavy |= ArenaAnyJustPressed(*PC, Key(HeavyB, 0), Key(HeavyB, 1), EKeys::Gamepad_RightTrigger);
-	// Left mouse: a tap is the light, held ftcore::AimRules::heavyHold the heavy. Right mouse held aims; a gun kit
-	// aiming fires one round per press, at the press, and never a heavy.
-	bAimHeld = PC->IsInputKeyDown(EKeys::RightMouseButton);
-	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, PC->IsInputKeyDown(EKeys::LeftMouseButton), ArenaAim.rules().heavyHold,
+	// Every key here comes from the binding table (FTInputBindings, ftcore/InputBindings.h): one set for the field
+	// and the arena, remappable in Saved/InputBindings.json.
+	using ftcore::InputAction;
+	const UWorld* World = GetWorld();
+	// Light: a tap is the light, held ftcore::AimRules::heavyHold the heavy. Aim held aims; a gun kit aiming fires
+	// one round per press, at the press, and never a heavy.
+	bAimHeld = AimInput.tick(FTInputBindings::IsDown(*PC, InputAction::Aim), FTInputBindings::Toggles(World, InputAction::Aim));
+	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, FTInputBindings::IsDown(*PC, InputAction::Light), ArenaAim.rules().heavyHold,
 		Fight.output().player.action == ftcore::ArenaAction::Light || Fight.output().player.action == ftcore::ArenaAction::Heavy,
 		bAimHeld && Def.fighter.weapon == ftcore::ArenaWeapon::Guns);
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
-	bPressDodge |= ArenaAnyJustPressed(*PC, Key(DodgeB, 0), Key(DodgeB, 1), EKeys::SpaceBar);
-	// The partner's Read: 1 / 2 / 3, or on a pad the d-pad's left, up and right while the cards are up, picked or
-	// not, until the move goes active (they switch the target and heal at any other time; the d-pad's down stays
-	// the partner's pair). Core refuses a second pick, so after one those three do nothing until the cards go.
+	bPressDodge |= FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
+	// The partner's Read: the three pick keys (1 / 2 / 3, the d-pad's left, up and right) while the cards are up,
+	// picked or not, until the move goes active. Core refuses a second pick. While the cards are up those keys are
+	// the picks only, so the d-pad's up is not also the heal.
 	const bool bCardsOpen = Fight.readCards().dealt();
-	if (PC->WasInputKeyJustPressed(EKeys::One) || (bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Left)))
+	if (bCardsOpen)
 	{
-		PressRead = 0;
+		const InputAction Picks[] = {InputAction::ReadPick1, InputAction::ReadPick2, InputAction::ReadPick3};
+		for (int32 Pick = 0; Pick < 3; ++Pick)
+		{
+			if (FTInputBindings::WasJustPressed(*PC, Picks[Pick]))
+			{
+				PressRead = Pick;
+				break;
+			}
+		}
 	}
-	else if (PC->WasInputKeyJustPressed(EKeys::Two) || (bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Up)))
+	// Heal on Gift's key and the partner's pair on Count's, until those actions have their own logic.
+	const auto Shadowed = [bCardsOpen](InputAction Action, ftcore::InputDevice Device)
 	{
-		PressRead = 1;
-	}
-	else if (PC->WasInputKeyJustPressed(EKeys::Three) || (bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Right)))
+		if (!bCardsOpen)
+		{
+			return false;
+		}
+		const FKey& Mine = FTInputBindings::Key(Action, Device);
+		for (const InputAction Pick : {InputAction::ReadPick1, InputAction::ReadPick2, InputAction::ReadPick3})
+		{
+			if (FTInputBindings::Key(Pick, Device) == Mine)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	const auto Pressed = [PC, &Shadowed](InputAction Action)
 	{
-		PressRead = 2;
-	}
-	bPressHeal |= PC->WasInputKeyJustPressed(EKeys::H) || (!bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Up));
-	bPressLock |= ArenaAnyJustPressed(*PC, EKeys::Tab, EKeys::MiddleMouseButton, EKeys::Gamepad_RightThumbstick);
-	bPressRelease |= ArenaAnyJustPressed(*PC, EKeys::R, EKeys::Gamepad_LeftTrigger);
-	bPressPair |= ArenaAnyJustPressed(*PC, EKeys::F, EKeys::Gamepad_DPad_Down);
-	// Guard: its bound keys (Left Ctrl, LB by default; Saved/InputBindings.json), held, or pressed once to toggle.
-	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, ftcore::InputAction::Guard),
-		FTInputBindings::Toggles(GetWorld(), ftcore::InputAction::Guard));
-	// A called-blow boss's Intercept (its Guard is the guard above): U, the mouse's thumb button or the left stick's
-	// click, held.
-	bInterceptHeld = PC->IsInputKeyDown(EKeys::U) || PC->IsInputKeyDown(EKeys::ThumbMouseButton)
-		|| PC->IsInputKeyDown(EKeys::Gamepad_LeftThumbstick);
-	if (PC->WasInputKeyJustPressed(EKeys::Q) || (!bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Left)))
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& K = FTInputBindings::Key(Action, Device);
+			if (K.IsValid() && !Shadowed(Action, Device) && PC->WasInputKeyJustPressed(K))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	bPressHeal |= Pressed(InputAction::Gift);
+	bPressLock |= Pressed(InputAction::LockOn);
+	bPressRelease |= Pressed(InputAction::Release);
+	bPressPair |= Pressed(InputAction::Count);
+	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
+	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
+	// A called-blow boss's Intercept (its Guard is the guard above), held or toggled.
+	bInterceptHeld = InterceptInput.tick(FTInputBindings::IsDown(*PC, InputAction::Intercept),
+		FTInputBindings::Toggles(World, InputAction::Intercept));
+	// Target switch: its keys when bound (none by default), else a flick of the mouse or the right stick while locked
+	// (below).
+	if (Pressed(InputAction::TargetPrev))
 	{
 		PressSwitch = -1;
 	}
-	if (PC->WasInputKeyJustPressed(EKeys::E) || (!bCardsOpen && PC->WasInputKeyJustPressed(EKeys::Gamepad_DPad_Right)))
+	if (Pressed(InputAction::TargetNext))
 	{
 		PressSwitch = 1;
 	}
 
-	// The left stick or WASD: forward and right, at most 1 long.
+	// The left stick or the move keys: forward and right, at most 1 long.
 	float Forward = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY);
 	float Right = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftX);
-	Forward += (PC->IsInputKeyDown(EKeys::W) ? 1.f : 0.f) - (PC->IsInputKeyDown(EKeys::S) ? 1.f : 0.f);
-	Right += (PC->IsInputKeyDown(EKeys::D) ? 1.f : 0.f) - (PC->IsInputKeyDown(EKeys::A) ? 1.f : 0.f);
+	const auto Down = [PC](InputAction Action) { return FTInputBindings::IsDown(*PC, Action) ? 1.f : 0.f; };
+	Forward += Down(InputAction::MoveForward) - Down(InputAction::MoveBack);
+	Right += Down(InputAction::MoveRight) - Down(InputAction::MoveLeft);
 	const float Length = FMath::Sqrt(Forward * Forward + Right * Right);
 	if (Length > 1.f)
 	{
@@ -1160,6 +1193,19 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	const float LookY = PC->GetInputAnalogKeyState(EKeys::Gamepad_RightY);
 	if (Fight.lock() != ftcore::kArenaNobody)
 	{
+		// The mouse: a sharp sideways move switches, and it re-arms once the mouse slows.
+		float MouseX = 0.f;
+		float MouseY = 0.f;
+		PC->GetInputMouseDelta(MouseX, MouseY);
+		if (!bMouseFlicked && FMath::Abs(MouseX) > kArenaMouseFlickOut)
+		{
+			bMouseFlicked = true;
+			PressSwitch = MouseX > 0.f ? 1 : -1;
+		}
+		else if (bMouseFlicked && FMath::Abs(MouseX) < kArenaMouseFlickRest)
+		{
+			bMouseFlicked = false;
+		}
 		if (!bStickFlicked && FMath::Abs(LookX) > kArenaFlickOut)
 		{
 			bStickFlicked = true;
@@ -1179,6 +1225,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		CameraPitch = FMath::Clamp(CameraPitch + MouseY * kArenaMouseTurn + LookY * kArenaStickTurn * 0.6f * DeltaSeconds,
 			kArenaPitchMin, kArenaPitchMax);
 		bStickFlicked = false;
+		bMouseFlicked = false;
 	}
 }
 

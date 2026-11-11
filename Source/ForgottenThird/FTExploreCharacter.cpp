@@ -38,6 +38,7 @@
 #include "FTCutsceneDirector.h"
 #include "FTFieldDummy.h"
 #include "FTGameInstance.h"
+#include "FTInputBindings.h"
 #include "FTPauseSubsystem.h"
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
@@ -484,14 +485,78 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 		Kit.heavy.total(), Weapons.IsOn() ? TEXT("props and clips on") : TEXT("no body to wear them"));
 }
 
-void AFTExploreCharacter::HandleLight()
+bool AFTExploreCharacter::TakesInput()
 {
-	bPressLight = !Van.IsValid(); // the van's inputs never reach the weapon
+	const APlayerController* PC = Cast<APlayerController>(Controller);
+	return PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this) && !ScenePlaying();
 }
 
-void AFTExploreCharacter::HandleHeavy()
+void AFTExploreCharacter::TickHeldKeys(float DeltaSeconds)
 {
-	bPressHeavy = !Van.IsValid();
+	using ftcore::InputAction;
+	const APlayerController* PC = Cast<APlayerController>(Controller);
+	if (!TakesInput())
+	{
+		// Taken away (the van, a menu, a pause, a scene): the latches let go. Getting into the van stops the run
+		// itself (ResetHeldInput); the van's own speed is not ours to touch.
+		RunInput.reset();
+		bCrouchKeyWas = true;
+		MapHeld = 0.f;
+		bMapHoldUsed = true;
+		if (bRunOn && !Van.IsValid())
+		{
+			bRunOn = false;
+			HandleRunStop();
+		}
+		return;
+	}
+	// Run: its key held or toggled, or on a pad the left stick pushed all the way.
+	const float StickX = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftX);
+	const float StickY = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY);
+	const bool bStickFull = StickX * StickX + StickY * StickY >= 0.95f * 0.95f;
+	const bool bRunKey = RunInput.tick(FTInputBindings::IsDown(*PC, InputAction::Run), FTInputBindings::Toggles(GetWorld(), InputAction::Run));
+	const bool bRun = bRunKey || bStickFull;
+	if (bRun != bRunOn)
+	{
+		bRunOn = bRun;
+		if (bRun)
+		{
+			HandleRunStart();
+		}
+		else
+		{
+			HandleRunStop();
+		}
+	}
+	// Crouch: the press crouches (or slides in a sprint, or lets go of a ledge); held, letting go stands up; toggled,
+	// the next press does.
+	const bool bCrouchKey = FTInputBindings::IsDown(*PC, InputAction::Crouch);
+	if (bCrouchKey && !bCrouchKeyWas)
+	{
+		HandleCrouch();
+	}
+	else if (!bCrouchKey && bCrouchKeyWas && !FTInputBindings::Toggles(GetWorld(), InputAction::Crouch)
+		&& GetCharacterMovement()->bWantsToCrouch)
+	{
+		UnCrouch();
+	}
+	bCrouchKeyWas = bCrouchKey;
+	// The map button held shows or hides the party (the pad has no button of its own for it); a short press will be
+	// the map.
+	if (FTInputBindings::IsDown(*PC, InputAction::Map))
+	{
+		MapHeld += DeltaSeconds;
+		if (!bMapHoldUsed && MapHeld >= ftcore::kInputMapHoldForParty)
+		{
+			bMapHoldUsed = true;
+			HandleToggleParty();
+		}
+	}
+	else
+	{
+		MapHeld = 0.f;
+		bMapHoldUsed = false;
+	}
 }
 
 void AFTExploreCharacter::SpawnFieldDummy()
@@ -676,13 +741,20 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 	}
 	const ftcore::AimRules& Rules = Aim.rules();
 	// The mouse buttons count only on foot, with the game taking input: not in the van, a menu, a pause or a scene.
+	// Aim and Light from the binding table (right and left mouse, LT and RT by default): Aim held or toggled, Light a
+	// tap for the light and held for the heavy.
 	const APlayerController* PC = Cast<APlayerController>(Controller);
-	const bool bInput = PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this) && !ScenePlaying();
+	const bool bInput = TakesInput();
 	const bool bForced = AimFrom >= 0.f && GetWorld()->GetTimeSeconds() >= AimFrom && !Van.IsValid() && !ScenePlaying();
-	const bool bHeld = (bInput && PC->IsInputKeyDown(EKeys::RightMouseButton)) || bForced;
+	if (!bInput)
+	{
+		AimInput.reset();
+	}
+	const bool bHeld = (bInput && AimInput.tick(FTInputBindings::IsDown(*PC, ftcore::InputAction::Aim),
+		FTInputBindings::Toggles(GetWorld(), ftcore::InputAction::Aim))) || bForced;
 	// A gun kit aiming fires one round per press, at the press, and never a heavy.
-	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, bInput && PC->IsInputKeyDown(EKeys::LeftMouseButton), Rules.heavyHold, Strike.attacking(),
-		bHeld && Strike.kit().weapon == ftcore::ArenaWeapon::Guns);
+	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, bInput && FTInputBindings::IsDown(*PC, ftcore::InputAction::Light),
+		Rules.heavyHold, Strike.attacking(), bHeld && Strike.kit().weapon == ftcore::ArenaWeapon::Guns);
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
 	if (!bInput)
@@ -926,58 +998,54 @@ void AFTExploreCharacter::CreateInputObjects()
 			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(Context));
 		}
 	};
-	MapMove(EKeys::W, true, false);
-	MapMove(EKeys::S, true, true);
-	MapMove(EKeys::D, false, false);
-	MapMove(EKeys::A, false, true);
-	MapMove(EKeys::Up, true, false);
-	MapMove(EKeys::Down, true, true);
-	MapMove(EKeys::Right, false, false);
-	MapMove(EKeys::Left, false, true);
+	// Every key from the binding table (FTInputBindings); the left stick and the look axes are analog and fixed.
+	for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+	{
+		const auto Move = [&MapMove, Device](ftcore::InputAction Bound, bool bSwizzle, bool bNegate)
+		{
+			const FKey& Key = FTInputBindings::Key(Bound, Device);
+			if (Key.IsValid())
+			{
+				MapMove(Key, bSwizzle, bNegate);
+			}
+		};
+		Move(ftcore::InputAction::MoveForward, true, false);
+		Move(ftcore::InputAction::MoveBack, true, true);
+		Move(ftcore::InputAction::MoveRight, false, false);
+		Move(ftcore::InputAction::MoveLeft, false, true);
+	}
 	MapMove(EKeys::Gamepad_Left2D, false, false);
+	const auto Both = [this](UInputAction* Action, ftcore::InputAction Bound)
+	{
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& Key = FTInputBindings::Key(Bound, Device);
+			if (Key.IsValid())
+			{
+				Context->MapKey(Action, Key);
+			}
+		}
+	};
 
 	LookAction = MakeAction(TEXT("IA_ExploreLook"), true);
 	Context->MapKey(LookAction, EKeys::Mouse2D);
 	Context->MapKey(LookAction, EKeys::Gamepad_Right2D);
 
 	JumpAction = MakeAction(TEXT("IA_ExploreJump"), false);
-	Context->MapKey(JumpAction, EKeys::SpaceBar);
-	Context->MapKey(JumpAction, EKeys::Gamepad_FaceButton_Bottom);
+	Both(JumpAction, ftcore::InputAction::Jump);
 
 	RollAction = MakeAction(TEXT("IA_ExploreRoll"), false);
-	Context->MapKey(RollAction, EKeys::LeftAlt);
-	Context->MapKey(RollAction, EKeys::Gamepad_FaceButton_Right);
-
-	RunAction = MakeAction(TEXT("IA_ExploreRun"), false);
-	Context->MapKey(RunAction, EKeys::LeftShift);
-	Context->MapKey(RunAction, EKeys::Gamepad_LeftTrigger);
-
-	CrouchAction = MakeAction(TEXT("IA_ExploreCrouch"), false);
-	Context->MapKey(CrouchAction, EKeys::C);
-	Context->MapKey(CrouchAction, EKeys::LeftControl);
-	Context->MapKey(CrouchAction, EKeys::Gamepad_RightThumbstick);
+	Both(RollAction, ftcore::InputAction::Roll);
 
 	InteractAction = MakeAction(TEXT("IA_ExploreInteract"), false);
-	Context->MapKey(InteractAction, EKeys::E);
-	Context->MapKey(InteractAction, EKeys::Enter);
-	Context->MapKey(InteractAction, EKeys::Gamepad_FaceButton_Left);
+	Both(InteractAction, ftcore::InputAction::Interact);
 
 	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
-	Context->MapKey(SwitchLeadAction, EKeys::Tab);
-	Context->MapKey(SwitchLeadAction, EKeys::Gamepad_RightShoulder);
+	Both(SwitchLeadAction, ftcore::InputAction::SwitchLead);
 
 	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
-	Context->MapKey(PartyAction, EKeys::P);
-	Context->MapKey(PartyAction, EKeys::Gamepad_LeftShoulder);
-
-	// Left mouse (tap light, hold heavy) and right mouse (aim) are read in TickAim.
-	LightAction = MakeAction(TEXT("IA_ExploreLight"), false);
-	Context->MapKey(LightAction, EKeys::J);
-	Context->MapKey(LightAction, EKeys::Gamepad_RightTrigger);
-
-	HeavyAction = MakeAction(TEXT("IA_ExploreHeavy"), false);
-	Context->MapKey(HeavyAction, EKeys::K);
-	Context->MapKey(HeavyAction, EKeys::Gamepad_FaceButton_Top);
+	Both(PartyAction, ftcore::InputAction::Party);
+	// Run, Crouch, Aim, Light and the map button's party hold are polled (TickHeldKeys, TickAim): held or toggled.
 }
 
 UInputAction* AFTExploreCharacter::MakeAction(const TCHAR* Name, bool bAxis2D)
@@ -1014,15 +1082,10 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(JumpAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleJump);
 	Input->BindAction(JumpAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleJumpRelease);
 	Input->BindAction(RollAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRoll);
-	Input->BindAction(RunAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRunStart);
-	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
-	Input->BindAction(CrouchAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleCrouch);
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
 	Input->BindAction(InteractAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleInteractRelease);
 	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
 	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
-	Input->BindAction(LightAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleLight);
-	Input->BindAction(HeavyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleHeavy);
 }
 
 void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
@@ -1904,6 +1967,9 @@ void AFTExploreCharacter::HandleRunStop()
 void AFTExploreCharacter::ResetHeldInput()
 {
 	HandleRunStop();
+	bRunOn = false;
+	RunInput.reset();
+	AimInput.reset();
 	RollAsked = 0.f;
 	bRollAskedAir = false;
 	SlideJumpAsked = 0.f;
@@ -2079,6 +2145,7 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	TickHeldKeys(DeltaSeconds);
 	// A frame after a traversal or slide hands back: how far CharacterMovement moved the capsule (a pop if not ~0).
 	if (bHandBackPending)
 	{

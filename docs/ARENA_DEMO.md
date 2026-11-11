@@ -416,30 +416,31 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
 |---|---|---|
 | Move (camera-relative) | W A S D | Left stick |
 | Look (when not locked) | Mouse | Right stick |
-| Light attack (a chain of hits; on an open enemy, a riposte) | J or left mouse (tap) | X or RB |
-| Heavy attack | K or left mouse held 0.25 s | A or RT |
-| Aim (hold): camera over the shoulder, reticle, face the aim, strafe | Right mouse | |
-| Guard (hold, or press to toggle); parry (tap just before a hit) | Left Ctrl | LB |
-| Roll (backstep with no direction) | L or Space | B |
-| Heal (uses a charge) | H | D-pad up (not while Read cards are up) |
-| Release (above a third of the Load) | R | LT |
-| Partner (the second lead's press, paired with a parry) | F | D-pad down |
-| Intercept a called blow (stone_bearer; hold) | U or mouse thumb button | L3 |
-
-The player's light attacks don't root the lead: it keeps walking at the move table's pace (`Data/Battle/attack_move.json`)
-and turns at a capped rate (`ArenaInput::attackSpeed`, `attackTurn`); heavies root only for their commit.
-| Read (the second lead's pick, while the cards are up) | 1 / 2 / 3 | D-pad left / up / right |
-| Lock on / off | Tab or middle mouse | R3 |
-| Switch lock target | Q / E | D-pad left / right (not while Read cards are up), or flick the right stick |
+| Light attack (a chain of hits; on an open enemy, a riposte) | Left mouse (tap) | RT (tap) |
+| Heavy attack | Left mouse held 0.25 s | RT held 0.25 s |
+| Aim (hold or toggle): camera over the shoulder, reticle, face the aim, strafe; a gun kit fires one round per press | Right mouse | LT |
+| Guard (hold or toggle); parry (tap just before a hit) | Left Ctrl | LB |
+| Roll (backstep with no direction) | Left Alt | B |
+| Heal (uses a charge; on Gift's key for now) | G | D-pad up |
+| Release (above a third of the Load) | R | D-pad down |
+| Partner (the second lead's press, paired with a parry; on Count's key for now) | F | Y |
+| Intercept a called blow (stone_bearer; hold or toggle) | V | L3 |
+| Read (the second lead's pick, while the cards are up; those keys are the picks only then) | 1 / 2 / 3 | D-pad left / up / right |
+| Lock on / off | Middle mouse | R3 |
+| Switch lock target (locked) | flick the mouse sideways | flick the right stick |
 | Fight again (after the outcome) | Enter or Space | A |
 | Pause menu | Esc | Start |
 
-The action keys are the four action buttons (`FTActionButtons.h`: Attack J / pad X,
-Dodge L / pad B, Jump K / pad A), with the mouse and the shoulders as second keys. Guard comes from the binding
-table (`ftcore/InputBindings.h`, overrides in `Saved/InputBindings.json`, e.g.
-`{"version": 1, "keys": {"guard": "Z"}, "hold": {"guard": "toggle"}}`); with the game's hold-toggle setting on, or
-its own `"toggle"`, one press raises it and the next lowers it. Presses are read
-each frame and handed to the fight on its next step, so no press is lost between steps.
+The player's light attacks don't root the lead: it keeps walking at the move table's pace (`Data/Battle/attack_move.json`)
+and turns at a capped rate (`ArenaInput::attackSpeed`, `attackTurn`); heavies root only for their commit.
+
+Every key here comes from the binding table (`ftcore/InputBindings.h`, one set for the field and the arena; the
+defaults are provisional). Override any of them in `Saved/InputBindings.json`, read once at start, e.g.
+`{"version": 1, "keys": {"guard": "Z"}, "pad": {"read": "Gamepad_RightShoulder"}, "hold": {"guard": "toggle"}}`
+(engine key names; `""` unbinds; a key twice in one context, or a Read-held key on Read's or Guard's, refuses the
+whole file). Each held action (Aim, Guard, Read, Run, Crouch, Intercept) is held, or pressed once to toggle when
+the game's hold-toggle setting is on or its own `"hold"` mode says `"toggle"`.
+Presses are read each frame and handed to the fight on its next step, so no press is lost between steps.
 
 ## HUD
 
