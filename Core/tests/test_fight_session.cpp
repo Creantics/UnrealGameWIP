@@ -350,6 +350,62 @@ TEST_CASE("fight session: a boss point of the read kind opens on its clause, not
     CHECK(s.boss().lock().opens() == 1);
 }
 
+namespace {
+bool tickHas(FightSession& s, BossEventType type) {
+    const FightTick& t = s.tick(kFrame);
+    for (int i = 0; i < t.boss->count; ++i)
+        if (t.boss->items[i].type == type) return true;
+    return false;
+}
+} // namespace
+
+TEST_CASE("fight session: a deferred refusal relocks the boss point, by defer or by an unheld end") {
+    FightSession s;
+    beginExposed(s, BossKey::Read);
+    REQUIRE(s.offerKey(kUnlockReadClause, 7) == UnlockResult::Unlocked);
+    REQUIRE(s.weakPointOpen());
+    s.offerRefusal();
+    CHECK(s.deferRefusal() == RefusalInput::Resolved);
+    CHECK(!s.weakPointOpen());
+    CHECK(s.boss().lock().deferrals() == 1);
+    CHECK(tickHas(s, BossEventType::Relocked));
+    CHECK(!s.bossHit(10, true).crit);
+
+    // Unlocked again, then an offer that ends unheld: a deferral too.
+    REQUIRE(s.offerKey(kUnlockReadClause, 7) == UnlockResult::Unlocked);
+    s.offerRefusal();
+    CHECK(s.endRefusal() == RefusalInput::Resolved);
+    CHECK(s.refusal().deferred());
+    CHECK(!s.weakPointOpen());
+    CHECK(s.boss().lock().deferrals() == 2);
+    // A second end, or a defer with no prompt, defers nothing more.
+    CHECK(s.endRefusal() == RefusalInput::Ignored);
+    CHECK(s.deferRefusal() == RefusalInput::Ignored);
+    CHECK(s.boss().lock().deferrals() == 2);
+    // Accepting is a yes but not a deferral: the point stays unlocked.
+    REQUIRE(s.offerKey(kUnlockReadClause, 7) == UnlockResult::Unlocked);
+    s.offerRefusal();
+    CHECK(s.acceptRefusal() == RefusalInput::Resolved);
+    CHECK(s.weakPointOpen());
+}
+
+TEST_CASE("fight session: a deferred refusal relocks the session's own lock unless relockOnDefer is off") {
+    for (const bool relock : {true, false}) {
+        CAPTURE(relock);
+        FightSession s;
+        FightSessionDef d;
+        d.locked = true;
+        d.lock.keys = kUnlockSharedBlow;
+        d.lock.relockOnDefer = relock;
+        REQUIRE(s.begin(d, 0.0).ok());
+        REQUIRE(s.offerKey(kUnlockSharedBlow) == UnlockResult::Unlocked);
+        s.offerRefusal();
+        CHECK(s.deferRefusal() == RefusalInput::Resolved);
+        CHECK(s.weakPointOpen() == !relock);
+        CHECK(s.lock().deferrals() == 1);
+    }
+}
+
 TEST_CASE("fight session: a tick always points at event buffers, the same ones every tick") {
     FightSession s;
     REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
