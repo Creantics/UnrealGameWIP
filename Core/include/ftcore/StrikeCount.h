@@ -39,14 +39,14 @@
 //   blows (at their own times), then update(frameEnd) once; a call after update with an earlier time
 //   reads as frameEnd.
 // * Full buffers. Events wait for update() in a buffer of kMaxCountEvents. When it is full, a
-//   BlowSettled event pushes out the earliest event that is not one (cues and window edges are
-//   cosmetic; a settle carries damage), and anything pushed out or turned away is counted in the
+//   BlowSettled event pushes out the earliest Cue, else the earliest WindowOpened, else the earliest
+//   WindowClosed (cues and window edges are cosmetic; a settle carries damage), and anything pushed out or turned away is counted in the
 //   `dropped` of the next CountEvents update() returns. A settle is turned away only when the buffer
 //   holds nothing but settles; it is then counted in `droppedSettles` too, and the host applies every
 //   blow it still holds back at x1 (the plain value).
 //
 // Times as CombatInputs.h (queries included): an earlier or non-finite time reads as the latest seen,
-// and a forward jump is capped at kMaxTimeStep. No allocation.
+// and a time more than kMaxTimeJump ahead is ignored (not stored). No allocation.
 
 #include "ftcore/CombatInputs.h"
 
@@ -151,18 +151,21 @@ struct CountEvents {
     }
 
 private:
-    // Full: a settle pushes out the earliest event that is not a settle; anything else is turned away.
+    // Full: a settle pushes out the earliest Cue, else the earliest WindowOpened, else the earliest
+    // WindowClosed; anything else is turned away.
     bool makeRoom(const CountEvent& e) {
         ++dropped;
-        if (e.type == CountEventType::BlowSettled) {
+        if (e.type != CountEventType::BlowSettled) return false;
+        for (const CountEventType victim :
+             {CountEventType::Cue, CountEventType::WindowOpened, CountEventType::WindowClosed}) {
             for (std::size_t i = 0; i < count; ++i) {
-                if (items[i].type == CountEventType::BlowSettled) continue;
+                if (items[i].type != victim) continue;
                 for (std::size_t j = i + 1; j < count; ++j) items[j - 1] = items[j];
                 --count;
                 return true;
             }
-            ++droppedSettles;
         }
+        ++droppedSettles;
         return false;
     }
 };
@@ -171,11 +174,11 @@ class StrikeCount {
 public:
     StrikeCount() { reset(); }
 
-    // Starts over with `tuning` (the defaults when it is not valid: returns false then).
-    bool reset(const CountTuning& tuning = {}) {
+    // Starts over with `tuning` (the defaults when it is not valid: returns false then), clock at t.
+    bool reset(const CountTuning& tuning = {}, double t = 0.0) {
         const bool ok = validCountTuning(tuning);
         tuning_ = ok ? tuning : CountTuning{};
-        now_ = 0.0;
+        now_ = startTime(t);
         true_ = Run{};
         false_ = Run{};
         readyAt_ = -kInf;

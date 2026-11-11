@@ -1,8 +1,7 @@
 #pragma once
 
-// Held refusals: the player refuses an offer by holding a button, with no meter and no timer. The hold
-// lasts as long as the offer does; the host plays the offer (a line, a beat) and ends it with
-// offerEnded(). See docs/SHARED_COMBAT_INPUTS.md section 5.
+// Held refusals: a refusal input made by holding a button, with no meter and no timer. The hold lasts
+// as long as the host's prompt does; the host ends the prompt with offerEnded(). See docs/SHARED_COMBAT_INPUTS.md section 5.
 //
 //   Offered --holdDown--> Holding --offerEnded--> Refused
 //      ^                     |

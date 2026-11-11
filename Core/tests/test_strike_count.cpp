@@ -435,19 +435,31 @@ TEST_CASE("count: earlier and non-finite times read as the latest seen") {
     CHECK(c.open(1.0));                                                // a query reads as 7 too
 }
 
-TEST_CASE("count: a junk far-future time moves the clock at most kMaxTimeStep") {
-    StrikeCount c = count60();
-    c.update(1e300);
-    CHECK(c.now() == doctest::Approx(kMaxTimeStep));
-    c.update(1e300);
-    CHECK(c.now() == doctest::Approx(2.0 * kMaxTimeStep));
-    REQUIRE(c.call(kLeadA, 1e300) == CountError::None); // read as 3 x kMaxTimeStep
-    CHECK(c.nowAt() == doctest::Approx(3.0 * kMaxTimeStep + 2.0));
-    CHECK_FALSE(c.open(1e300)); // read as now + kMaxTimeStep: long past the window
-    CHECK(c.judgeBlow(kLeadA, c.nowAt()).outcome == CountOutcome::Held);
-    CHECK(inputTime(5.0, 5.0 + kMaxTimeStep) == doctest::Approx(5.0 + kMaxTimeStep));
-    CHECK(inputTime(5.0, 6.0 + kMaxTimeStep) == doctest::Approx(5.0 + kMaxTimeStep));
-    CHECK(inputTime(5.0, 6.0, 0.5) == doctest::Approx(5.5));
+TEST_CASE("count: a time more than kMaxTimeJump ahead is ignored and not stored") {
+    StrikeCount a = count60();
+    StrikeCount b = count60();
+    CHECK(a.update(1e12).empty());
+    CHECK(a.update(1e300).empty());
+    CHECK(a.now() == doctest::Approx(0.0));
+    REQUIRE(a.call(kLeadA, 13.0) == CountError::None);
+    REQUIRE(b.call(kLeadA, 13.0) == CountError::None);
+    CHECK(a.nowAt() == doctest::Approx(b.nowAt()));
+    CHECK(a.windowStart() == doctest::Approx(b.windowStart()));
+    CHECK(a.windowEnd() == doctest::Approx(b.windowEnd()));
+    CHECK(a.update(14.0).size() == b.update(14.0).size());
+    CHECK(a.now() == doctest::Approx(14.0));
+    CHECK(a.open(1e12) == a.open(14.0)); // a junk query reads as the clock
+    // A reset starts the clock late with no jump bound.
+    StrikeCount late;
+    REQUIRE(late.reset(tempo60(), 7200.0));
+    REQUIRE(late.call(kLeadA, 7200.5) == CountError::None);
+    CHECK(late.nowAt() == doctest::Approx(b.nowAt() - 13.0 + 7200.5));
+    CHECK(inputTime(5.0, 5.0 + kMaxTimeJump) == doctest::Approx(5.0 + kMaxTimeJump));
+    CHECK(inputTime(5.0, 6.0 + kMaxTimeJump) == doctest::Approx(5.0));
+    CHECK(inputTime(5.0, 6.0, 0.5) == doctest::Approx(5.0));
+    CHECK(inputTime(5.0, 5.4, 0.5) == doctest::Approx(5.4));
+    CHECK(startTime(7200.0) == doctest::Approx(7200.0));
+    CHECK(startTime(std::numeric_limits<double>::quiet_NaN()) == doctest::Approx(0.0));
 }
 
 TEST_CASE("count: enemy and bad strikers are never held or boosted, and take no blow id") {
@@ -607,4 +619,33 @@ TEST_CASE("count: a long fight of counts allocates nothing and is deterministic"
     REQUIRE(ftcore_test::allocHookInstalled());
     CHECK(a1 == 0);
     CHECK(a2 == 0);
+}
+
+TEST_CASE("count: a full buffer gives up cues first, then window openings, then window closings") {
+    CountEvents b;
+    auto ev = [](CountEventType type, double at) {
+        CountEvent e;
+        e.type = type;
+        e.at = at;
+        return e;
+    };
+    b.push(ev(CountEventType::WindowClosed, 0.0));
+    b.push(ev(CountEventType::WindowOpened, 0.1));
+    for (std::size_t i = 2; i < kMaxCountEvents; ++i) b.push(ev(CountEventType::Cue, 0.2));
+    REQUIRE(b.size() == kMaxCountEvents);
+    b.push(ev(CountEventType::Cue, 0.3)); // not a settle: turned away
+    CHECK(b.dropped == 1);
+    // Every cue goes before the window edges.
+    for (std::size_t i = 2; i < kMaxCountEvents; ++i) b.push(ev(CountEventType::BlowSettled, 0.4));
+    CHECK(b[0].type == CountEventType::WindowClosed);
+    CHECK(b[1].type == CountEventType::WindowOpened);
+    b.push(ev(CountEventType::BlowSettled, 0.5)); // then the opening
+    CHECK(b[0].type == CountEventType::WindowClosed);
+    CHECK(b[1].type == CountEventType::BlowSettled);
+    b.push(ev(CountEventType::BlowSettled, 0.6)); // then the closing
+    CHECK(b[0].type == CountEventType::BlowSettled);
+    CHECK(b.droppedSettles == 0);
+    b.push(ev(CountEventType::BlowSettled, 0.7)); // all settles: this one is lost
+    CHECK(b.droppedSettles == 1);
+    CHECK(b.size() == kMaxCountEvents);
 }

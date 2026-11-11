@@ -1213,7 +1213,7 @@ TEST_CASE("locked weak point: no crit while locked, even through an intercept op
     CHECK(run.onHit({-2, 0}, {0, 0}, {1, 0}, 1.0, nullptr, &r).empty());
     CHECK_FALSE(r.crit);
 
-    // A full intercept opens the window (the boss kneels), but the locked point takes no crit.
+    // A full intercept opens the window, but the locked point takes no crit.
     run.startMove(def.find("fist"), 10.0, CalledZone::Left);
     run.interceptDown(CalledZone::Left, 11.4);
     CHECK(has(run.update(11.6, 1.0f), ArenaBossEventType::CritOpened));
@@ -1248,6 +1248,36 @@ TEST_CASE("locked weak point: no crit while locked, even through an intercept op
     CHECK_FALSE(run.weakPointOpen());
     CHECK(run.onHit({-2, 0}, {0, 0}, {1, 0}, 16.0, nullptr, &r).empty());
     CHECK(run.lock().opens() == 1);
+}
+
+TEST_CASE("locked weak point: a run that begins late on the clock opens for the full window") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    for (double start : {3601.0, 7200.0, 1e6}) {
+        ArenaBossRun run;
+        run.begin(def, start);
+        UnlockResult u = UnlockResult::BadKey;
+        const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, start + 1.0, 0, &u);
+        CHECK(u == UnlockResult::Unlocked);
+        REQUIRE_FALSE(ev.empty());
+        CHECK(ev[0].type == ArenaBossEventType::Unlocked);
+        CHECK(ev[0].until == doctest::Approx(start + 4.0));
+        CHECK(run.lock().open(start + 3.9));
+    }
+}
+
+TEST_CASE("locked weak point: a long quiet stretch before the first offer leaves the lock in step") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    ArenaBossRun run;
+    run.begin(def, 0.0);
+    for (double t = 1.0; t <= 700.0; t += 1.0) run.update(t, 1.0f);
+    UnlockResult u = UnlockResult::BadKey;
+    const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, 700.0, 0, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    REQUIRE_FALSE(ev.empty());
+    CHECK(ev[0].until == doctest::Approx(703.0));
+    CHECK(run.weakPointOpen());
+    run.update(703.5, 1.0f);
+    CHECK_FALSE(run.weakPointOpen());
 }
 
 TEST_CASE("locked weak point: a longer intercept opening is kept; an offer while open restarts the lock") {

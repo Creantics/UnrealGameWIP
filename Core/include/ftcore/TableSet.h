@@ -88,11 +88,12 @@ class TableSet {
 public:
     TableSet() { reset(); }
 
-    bool reset(const TableTuning& tuning = {}) {
+    // Starts over with its clock at t (CombatInputs.h startTime).
+    bool reset(const TableTuning& tuning = {}, double t = 0.0) {
         const bool ok = validTableTuning(tuning);
         tuning_ = ok ? tuning : TableTuning{};
         state_ = TableState::Ready;
-        now_ = 0.0;
+        now_ = startTime(t);
         until_ = 0.0;
         setter_ = kNoFighter;
         seated_ = 0;

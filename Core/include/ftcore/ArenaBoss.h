@@ -50,8 +50,8 @@
 //   that open them: a shared blow, a read clause, a refusal. Locked, its points take no crit, whatever
 //   opened the window. The host reports each key to the run (offerUnlock); an unlock opens the lock and
 //   the crit window together for the lock's openSeconds (Unlocked, CritOpened), a deferred refusal or
-//   relock() shuts both (Relocked, CritClosed). A full intercept still opens the window (the boss
-//   kneels) but a locked point stays shut through it. A boss whose points are not locked is unchanged.
+//   relock() shuts both (Relocked, CritClosed). A full intercept still opens the window, but a
+//   locked point stays shut through it. A boss whose points are not locked is unchanged.
 //
 // * The breakable (ArenaBreakable). A piece the boss carries breaks on its first Stagger, in any phase,
 //   once, or earlier when a boss rule breaks it (breakNow: a beat of its own, which cuts nothing). The

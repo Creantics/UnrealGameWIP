@@ -18,7 +18,7 @@
 //   A move with needsWatch does either only while the host says the point is watched (setWatched).
 // * The end is an answered offer, never zero health: hp never falls below 1. The last phase plays the
 //   def's `offer` first and between its moves; countering the offer ends the fight (Ended). An offer
-//   with needsAnswer takes its counter only after the host's answer() (a story beat).
+//   with needsAnswer takes its counter only after the host calls answer().
 // * A ward (wardLimit above 0): someone the party keeps alive. Each landed move with harmsWard harms
 //   it; at the limit the fight is lost (Lost).
 //
@@ -260,7 +260,8 @@ public:
     bool reset(const BossScriptDef& def, double t) {
         def_ = &def;
         valid_ = validBossScript(def);
-        now_ = std::isfinite(t) ? t : 0.0;
+        now_ = startTime(t);
+        clock_ = now_;
         pending_.clear();
         out_.clear();
         state_ = valid_ ? BossState::Rest : BossState::Ended;
@@ -342,7 +343,7 @@ public:
         return r;
     }
 
-    // The story's answer the offer waits for (needsAnswer). Only in the last phase; true when taken.
+    // The host's go-ahead an offer with needsAnswer waits for. Only in the last phase; true when taken.
     bool answer(double t) {
         if (!valid_) return false;
         advance(t);
@@ -501,8 +502,10 @@ private:
     }
 
     void advance(double t) {
-        t = inputTime(now_, t);
-        // A bound on the steps one call plays (a far-future time): the rest play on the next call.
+        // clock_ is the latest time seen (the jump rule reads against it); now_ may lag it when a call
+        // hits the step bound, and the rest play on the next call.
+        clock_ = inputTime(clock_, t);
+        t = clock_;
         for (int guard = 0; guard < kMaxBossSteps; ++guard) {
             const double due = over() ? kInf : stepAt_;
             const double expose = exposedOpen_ ? exposedUntil_ : kInf;
@@ -524,6 +527,7 @@ private:
     const BossScriptDef* def_ = nullptr;
     bool valid_ = false;
     double now_ = 0.0;
+    double clock_ = 0.0; // the latest time seen (CombatInputs.h); now_ <= clock_
     BossEvents pending_{};
     BossEvents out_{};
     BossState state_ = BossState::Ended;

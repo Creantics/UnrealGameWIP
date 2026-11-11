@@ -8,17 +8,20 @@
 //
 // Time is the fight clock in seconds. Each input object keeps the latest time it has seen; a time that
 // is earlier, or not finite, reads as that latest time (a bad clock stalls a piece, never hangs it). A
-// time more than kMaxTimeStep past the latest reads as latest + kMaxTimeStep, so one junk far-future
-// time moves a clock at most that far (every timed state here ends well within it). Queries that take
-// a time read it the same way, against the latest time without moving it.
+// time more than kMaxTimeJump past the latest is junk: that call reads it as the latest time and stores
+// nothing, so the next real time works as if the junk call never happened. The host therefore advances
+// every piece at least once per kMaxTimeJump of fight time (each frame does), and a reset takes the
+// fight's start time (startTime: no jump bound). Queries that take a time read it the same way,
+// against the latest time without moving it.
 
 #include <cmath>
 #include <cstdint>
 
 namespace ftcore {
 
-// The largest forward step one call can move an input object's clock, in seconds.
-inline constexpr double kMaxTimeStep = 3600.0;
+// The largest forward step one call can move an input object's clock, in seconds; a larger one is
+// ignored. Above every timed state here (the longest cooldown is 300 s).
+inline constexpr double kMaxTimeJump = 600.0;
 
 using FighterId = std::uint8_t;
 inline constexpr std::uint8_t kMaxFighters = 4;
@@ -32,10 +35,13 @@ inline constexpr bool isLead(FighterId f) { return f == kLeadA || f == kLeadB; }
 inline constexpr bool isFighter(FighterId f) { return f < kMaxFighters; }
 inline constexpr std::uint8_t fighterBit(FighterId f) { return isFighter(f) ? static_cast<std::uint8_t>(1u << f) : 0u; }
 
-// `t` when it is finite and not before `now`, else `now`; never more than `maxStep` past `now`.
-inline double inputTime(double now, double t, double maxStep = kMaxTimeStep) {
-    if (!std::isfinite(t) || !(t > now)) return now;
-    return t - now > maxStep ? now + maxStep : t;
+// `t` when it is finite, not before `now` and at most `maxJump` past it; else `now`.
+inline double inputTime(double now, double t, double maxJump = kMaxTimeJump) {
+    if (!std::isfinite(t) || !(t > now) || t - now > maxJump) return now;
+    return t;
 }
+
+// A reset's start time: `t` when finite, else 0 (no jump bound: a fight may start late on the clock).
+inline double startTime(double t) { return std::isfinite(t) ? t : 0.0; }
 
 } // namespace ftcore

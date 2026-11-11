@@ -50,7 +50,7 @@
     }
   ],
   "offer": {
-    "id": "carry_home",
+    "id": "offer_carry",
     "counter": "carry_together",
     "tell": 2.0,
     "window": 8.0,

@@ -18,10 +18,16 @@ construction, deterministic for a given input order. One header per piece:
 
 * **Time.** Every time is the fight clock in seconds (as `ArenaBoss.h`). Each object keeps `now`; a
   time that is earlier than `now` or not finite is read as `now` (a bad clock stalls, never hangs),
-  and a time more than `kMaxTimeStep` (3600 s) past `now` is read as `now + kMaxTimeStep` (a junk
-  far-future time moves the clock by at most that step; a real clock keeps advancing). Queries
+  and a time more than `kMaxTimeJump` (600 s, above the longest cooldown of 300 s) past `now` is junk:
+  that call reads it as `now` and stores nothing, so the next real time works as if the junk call never
+  happened. Because of that the host must advance every object at least once per `kMaxTimeJump` of
+  fight time (each frame does); an object left alone longer would ignore every later time. Every
+  `reset` (and `GiftSlot::resetFight`) takes the fight's start time with no jump bound (`startTime`),
+  so a fight may begin late on the clock; a host that starts a fight away from 0 must pass it (the
+  constructors start at 0). `GiftSlot::load` keeps the clock. A lock inside a boss machine
+  (`LockedPoint`) follows its owner's clock instead, with no bound. Queries
   (`open(t)`, `guarded(lead, t)`, `guardScaleFor(lead, t)`, `ready(gift, t)`) read their time the
-  same way without moving `now`. `inputTime(now, t, maxStep)` is the one rule.
+  same way without moving `now`. `inputTime(now, t, maxJump)` is the one rule.
 * **Fighters.** `FighterId` is a `uint8_t` index, 0..`kMaxFighters`-1 (4): `kLeadA` 0, `kLeadB` 1,
   `kThirdSlot` 2, `kEnemyFighter` 3 (the enemy side, for the false count and the table's seated enemy).
   The host maps its pawns to these ids; Core never knows names.
@@ -58,9 +64,10 @@ Idle --call(caller, t, voice)--> Live (cues, then the window) --(window closes)-
     settles `Unanswered` (the caller's: x`callerAloneMultiplier`) or `Alone` (anyone else's: x1).
   * The host applies a `Held` blow's damage when its `BlowSettled` event arrives (matched by `blow`,
     a per-blow id that is never 0 for a lead or slot blow).
-  * There is no cap on held blows: before a window is joined they are all one fighter's, so their ids
+  * Holding has no cap: before a window is joined the held blows are all one fighter's, so their ids
     run in order and Core keeps them as one run (first id and count). Every one of them is boosted
-    when a partner joins.
+    when a partner joins. Their `BlowSettled` events do share the 64-slot buffer below: past 64 in
+    one update the rest are counted in `droppedSettles`, and the host applies those blows at x1.
   * Enemy and unknown strikers are never held or boosted (`Alone`, `blow` 0).
 * **Silenced.** A silenced count has no caller. Two fighters together still join it, at
   `silencedMultiplier` (1.6), on the narrower `silencedWindowScale` (0.6) window: the click helps,
@@ -83,8 +90,8 @@ Idle --call(caller, t, voice)--> Live (cues, then the window) --(window closes)-
   order (true run, then settles, then the false run on a tie). **Call order per frame:** judge the
   frame's blows, then call `update(frameEnd)` once.
 * **Full buffers.** `dropped` counts every event lost to a full buffer, including ones lost between
-  updates; the returned events carry it to the host. A `BlowSettled` pushes out the earliest event
-  that is not a settle (a cue or window event) to make room; only when every slot is a settle is it
+  updates; the returned events carry it to the host. A `BlowSettled` pushes out the earliest `Cue`, else
+  the earliest `WindowOpened`, else the earliest `WindowClosed`, to make room; only when every slot is a settle is it
   lost, and `droppedSettles` counts it. A lost settle never strands a blow: see the wrapper section.
 * Tuning (`CountTuning`): `bpm` 90, `leadBeats` 2, `windowBefore` 0.12 s, `windowAfter` 0.18 s,
   `onCountMultiplier` 2.5, `silencedMultiplier` 1.6, `silencedWindowScale` 0.6,
@@ -125,7 +132,8 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
 * **Save** (`GiftSave`): plain data, `version` (2), `given[3]`, `refused[4]`, `vacantPresses`,
   `hostilePresses`, `threads[2]`, `selected`, `state`. `save()` / `load(const GiftSave&)`; load
   rejects (returns false, changes nothing) version 0, a newer version or an out-of-range enum. A
-  version 1 save (no refused counts) loads with `refused` all 0. `SlotState` keeps its stored
+  version 1 save (no refused counts) loads with `refused` all 0, and its old per-gift tally loads as
+  `given` (version 1 counted given presses only). `SlotState` keeps its stored
   integers (`Vacant` is 1). Cooldowns and live guards are not saved (a load is never mid-fight);
   `load` and `resetFight()` clear them. `reset()` wipes the save data too; `setTuning()` changes
   the tuning and keeps it.
@@ -140,7 +148,7 @@ One per fighter that can lay places. A place is a chair at the fighter's table.
   left open), `Emptied` (the host emptied it; the chair stays taken, with nobody in it, and keeps the
   person id), `Free` (no chair).
 * `seats` (rating, progression, saved): how many chairs the fighter can hold, 1..`kMaxPlaces` (8).
-* **One chair per person.** `layPlace(person)` needs a free chair within the rating and the person
+* **One chair per id.** `layPlace(person)` needs a free chair within the rating and the person
   in no `Named` or `Emptied` chair (`holding(person)`); a person whose chair was emptied can be laid
   again only after that chair is cleared. `leaveOpen()` needs a free chair. Errors: `NoSeat`,
   `AlreadySeated`, `BadPerson`.
@@ -194,8 +202,8 @@ Ready --begin--> Setting --(setTime)--> Set --(setDuration)--> Cooling --(cooldo
 
 ## 5. Held refusals (`HeldRefusal`)
 
-An offer the player refuses by holding a button. No meter, no timer: the hold lasts as long as the
-offer does, which the host plays (a line, a beat) and ends with `offerEnded()`.
+A refusal input made by holding a button. No meter, no timer: the hold lasts as long as the host's
+prompt does, and the host ends the prompt with `offerEnded()`.
 
 ```
 Offered --holdDown--> Holding --offerEnded--> Refused
@@ -205,8 +213,8 @@ Offered --accept()--> Accepted          Offered --offerEnded / defer()--> Deferr
 ```
 
 * `offer()` starts (or restarts) the prompt. `repeats()` counts early releases so the host can vary
-  the line. There is no limit.
-* **"Not yet" is a yes.** An offer that ends without a hold, or an explicit `defer()`, resolves as
+  the prompt. There is no limit.
+* **An unheld end accepts.** An offer that ends without a hold, or an explicit `defer()`, resolves as
   `Deferred`, and `accepted()` is true for both `Accepted` and `Deferred`. Only a hold held to the end
   is `Refused`.
 * A hold that starts before `offer()` does not count; it must start while the prompt is up.

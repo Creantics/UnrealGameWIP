@@ -761,7 +761,7 @@ void ArenaBossRun::begin(const ArenaBossDef& def, double now) {
     phases_.reset(def.phases.data(), def.phaseCount);
     breakable_ = {};
     strike_ = CalledStrike{};
-    now_ = std::isfinite(now) ? now : 0.0;
+    now_ = startTime(now);
     strike_.setWindows(def.intercept);
     strike_.update(now_);
     guest_.reset(def.bpm, def.guestCall);

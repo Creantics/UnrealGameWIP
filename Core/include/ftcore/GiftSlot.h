@@ -130,7 +130,7 @@ public:
     GiftSlot() { reset(); }
 
     // Fight state and save-wide state both start over. Returns false (defaults used) on bad tuning.
-    bool reset(const GiftTuning& tuning = {}) {
+    bool reset(const GiftTuning& tuning = {}, double t = 0.0) {
         const bool ok = validGiftTuning(tuning);
         tuning_ = ok ? tuning : GiftTuning{};
         tally_ = GiftTally{};
@@ -139,7 +139,7 @@ public:
         threads_.fill(0);
         selected_ = Gift::Heal;
         state_ = SlotState::Companion;
-        resetFight();
+        resetFight(t);
         return ok;
     }
     // New tuning, keeping the save-wide tally and the fight state. Returns false (unchanged) on bad tuning.
@@ -148,9 +148,9 @@ public:
         tuning_ = tuning;
         return true;
     }
-    // Clears the fight state only (cooldowns, guards, the clock) at a fight's start.
-    void resetFight() {
-        now_ = 0.0;
+    // Clears the fight state only (cooldowns, guards) and sets the clock to the fight's start t.
+    void resetFight(double t = 0.0) {
+        now_ = startTime(t);
         readyAt_.fill(-std::numeric_limits<double>::infinity());
         guardUntil_.fill(-std::numeric_limits<double>::infinity());
     }
@@ -241,7 +241,7 @@ public:
     }
     // False, and nothing changed, for version 0, a newer version or an out-of-range enum. A version 1
     // save has no refused presses (they read as 0). The fight state is cleared (a load is never
-    // mid-fight).
+    // mid-fight); the clock is kept.
     bool load(const GiftSave& s) {
         if (s.version == 0 || s.version > kGiftSaveVersion) return false;
         if (s.selected >= kGiftKinds) return false;
@@ -254,7 +254,7 @@ public:
         threads_ = s.threads;
         selected_ = static_cast<Gift>(s.selected);
         state_ = static_cast<SlotState>(s.state);
-        resetFight();
+        resetFight(now_); // the clock stays where it was
         return true;
     }
 

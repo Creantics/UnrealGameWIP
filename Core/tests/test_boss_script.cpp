@@ -209,7 +209,7 @@ TEST_CASE("boss script: counters: right kind in the window, shared ones need the
     const BossScriptDef g = gliderBossDef();
     BossScript k;
     REQUIRE(k.reset(g, 0.0));
-    k.hit(1600, false, 0.0); // to the grounded phase (lull is in it)
+    k.hit(1600, false, 0.0); // to phase 1 (lull is in it)
     const double t = untilWindow(k, g.find("lull"), 0.0);
     REQUIRE(k.current() == g.find("lull"));
     CHECK(k.counter(BossCounter::StrikeOnCount, 0, t, false) == BossInput::NeedsShared);
@@ -310,7 +310,7 @@ TEST_CASE("boss script: carrying together needs two different fighters on the co
     CHECK(s.hit(10, true, t + 0.4).crit);
 }
 
-TEST_CASE("boss script: glider: a guarded swoop pins it, a blow on the count opens the weak point") {
+TEST_CASE("boss script: table 1: a guarded move exposes the point, a shared blow unlocks it") {
     const BossScriptDef g = gliderBossDef();
     StrikeCount count;
     CountTuning ct;
@@ -332,7 +332,7 @@ TEST_CASE("boss script: glider: a guarded swoop pins it, a blow on the count ope
     CHECK(s.sharedBlow(now) == sharedBlow(b));
     CHECK(s.unlocked());
     CHECK(s.hit(100, true, now).damage == 250);
-    // To the last phase: at a tenth of its health the offer comes, answered by a bystander.
+    // To the last phase: at a tenth of its health the offer plays; it needs answer().
     s.hit(100000, false, now);
     CHECK(s.hp() == 1);
     CHECK(s.phase() == 2);
@@ -343,11 +343,11 @@ TEST_CASE("boss script: glider: a guarded swoop pins it, a blow on the count ope
     CHECK(s.ended());
 }
 
-TEST_CASE("boss script: bearer: carry phase is the turn and the shoulder; the free end opens it; carried home") {
+TEST_CASE("boss script: table 2: phase 0 rotation; a carry-together counter unlocks; the offer takes one") {
     const BossScriptDef d = bearerBossDef();
     BossScript s;
     REQUIRE(s.reset(d, 0.0));
-    // Phase one plays only the turn and the shoulder shift.
+    // Phase 0 plays only its two moves.
     double t = 0.0;
     for (int i = 0; i < 6; ++i) {
         const BossEvents& ev = s.update(t += 1.0);
@@ -368,17 +368,17 @@ TEST_CASE("boss script: bearer: carry phase is the turn and the shoulder; the fr
     CHECK(s.ended());
 }
 
-TEST_CASE("boss script: snuffer: phases follow the lamps; relit lamps hold it back; the ward can fall") {
+TEST_CASE("boss script: table 3: phases follow the resource; adding it back holds the phase; the ward can fall") {
     const BossScriptDef d = snufferBossDef();
     BossScript s;
     REQUIRE(s.reset(d, 0.0));
     CHECK(s.resource() == 8);
     CHECK(s.addResource(-4, 0.1) == -4);
     CHECK(s.phase() == 0);
-    CHECK(s.addResource(3, 0.2) == 3); // a lamp relit (capped at 8)
+    CHECK(s.addResource(3, 0.2) == 3); // resource added (capped at 8)
     CHECK(s.addResource(5, 0.2) == 1);
     CHECK(s.resource() == 8);
-    // A snuff that lands eats a lamp.
+    // A landed move with resourceOnLand -1 spends one.
     double t = untilWindow(s, d.find("snuff"), 0.2);
     REQUIRE(s.current() == d.find("snuff"));
     const BossEvents& ev = s.update(t + 1.0);
@@ -387,13 +387,13 @@ TEST_CASE("boss script: snuffer: phases follow the lamps; relit lamps hold it ba
     CHECK(rc->value == 7);
     CHECK(rc->amount == -1);
     s.addResource(-4, t + 1.0);
-    CHECK(s.phase() == 1); // three lamps
+    CHECK(s.phase() == 1); // resource 3
     s.addResource(-2, t + 1.0);
-    CHECK(s.phase() == 2); // one lamp
+    CHECK(s.phase() == 2); // resource 1
     s.addResource(5, t + 1.0);
     CHECK(s.phase() == 2); // never back
 
-    // The ward: three uncountered reaches lose the fight.
+    // The ward: three landed harmsWard moves lose the fight.
     BossScript w;
     REQUIRE(w.reset(d, 0.0));
     double u = 0.0;
@@ -406,13 +406,13 @@ TEST_CASE("boss script: snuffer: phases follow the lamps; relit lamps hold it ba
     CHECK(w.wardHarm() == 3);
     CHECK(w.counter(BossCounter::TakeHalf, 0, u, true) == BossInput::Over);
 
-    // The end: in the last phase the bystander answers, a blow on the count finishes it.
+    // Last phase: after answer(), an on-count counter to the offer ends the fight.
     BossScript e;
     REQUIRE(e.reset(d, 0.0));
     e.addResource(-7, 0.0);
     REQUIRE(e.phase() == 2);
     double v = untilWindow(e, d.find("swallow"), 0.0);
-    e.setWatched(false, v); // no lamp behind it: the counter lands but opens nothing
+    e.setWatched(false, v); // not watched: the counter lands but opens nothing
     CHECK(!e.watched());
     REQUIRE(e.counter(BossCounter::StrikeOnCount, 0, v, true) == BossInput::Countered);
     CHECK(!e.unlocked());
@@ -430,7 +430,7 @@ TEST_CASE("boss script: snuffer: phases follow the lamps; relit lamps hold it ba
     CHECK(e.ended());
 }
 
-TEST_CASE("boss script: time: late frames play in order, bad times read as now, far futures are bounded") {
+TEST_CASE("boss script: time: late frames play in order, bad times read as now, far futures are ignored") {
     const BossScriptDef d = smallDef();
     BossScript a;
     BossScript b;
@@ -448,14 +448,14 @@ TEST_CASE("boss script: time: late frames play in order, bad times read as now, 
     CHECK(b.update(kNaN).empty());
     CHECK(b.update(3.0).empty());
     CHECK(b.now() == doctest::Approx(10.0));
-    // A far-future time plays a bounded number of steps per call, and keeps going on the next.
+    // A time more than kMaxTimeJump ahead is ignored; a real late frame plays its steps.
     BossScript c;
     REQUIRE(c.reset(d, 0.0));
-    c.update(1e9);
-    CHECK(c.now() < 1e9);
-    const double before = c.now();
-    c.update(1e9);
-    CHECK(c.now() > before);
+    CHECK(c.update(1e9).empty());
+    CHECK(c.now() == doctest::Approx(0.0));
+    c.update(kMaxTimeJump);
+    CHECK(c.now() > 0.0);
+    CHECK(c.now() <= kMaxTimeJump);
     CHECK(c.update(kInfT).empty()); // +inf reads as now: nothing new
 }
 
@@ -662,4 +662,56 @@ TEST_CASE("locked point: the one adapter over the lock") {
     CHECK(p.onDeferred(2.1));
     CHECK(p.lock().opens() == 2);
     CHECK(p.lock().deferrals() == 1);
+}
+
+TEST_CASE("boss script: a script reset late on the clock unlocks for the full window") {
+    const BossScriptDef d = smallDef();
+    BossScript s;
+    REQUIRE(s.reset(d, 7200.0));
+    s.update(7202.1);
+    REQUIRE(s.counter(BossCounter::Guard, 0, 7202.1, false) == BossInput::Countered);
+    CHECK(s.sharedBlow(7202.3));
+    CHECK(s.unlocked());
+    CHECK(s.hit(10, true, 7202.4).crit);
+}
+
+TEST_CASE("boss script: a time more than kMaxTimeJump ahead is ignored and not stored") {
+    const BossScriptDef d = smallDef();
+    BossScript a;
+    BossScript b;
+    REQUIRE(a.reset(d, 0.0));
+    REQUIRE(b.reset(d, 0.0));
+    CHECK(a.update(1e12).empty());
+    for (double t : {13.0, 14.0}) {
+        CHECK(a.update(t).size() == b.update(t).size());
+        CHECK(a.now() == doctest::Approx(b.now()));
+        CHECK(a.state() == b.state());
+        CHECK(a.current() == b.current());
+    }
+    // Exactly kMaxTimeJump ahead still counts.
+    CHECK(a.update(14.0 + kMaxTimeJump).size() == b.update(14.0 + kMaxTimeJump).size());
+    CHECK(a.now() == doctest::Approx(14.0 + kMaxTimeJump));
+}
+
+TEST_CASE("boss script: a long quiet stretch before the shared blow leaves the lock in step") {
+    const BossScriptDef d = smallDef();
+    BossScript s;
+    REQUIRE(s.reset(d, 0.0));
+    for (double t = 0.5; t <= 700.0; t += 0.5) s.update(t);
+    // Bring up an exposing counter at the next tell, as the first locked-point test does.
+    double t = 700.0;
+    BossInput in = BossInput::Early;
+    while (t < 720.0) {
+        s.update(t);
+        in = s.counter(BossCounter::Guard, 0, t, false);
+        if (in == BossInput::Countered) break;
+        t += 0.05;
+    }
+    REQUIRE(in == BossInput::Countered);
+    REQUIRE(s.sharedBlow(t + 0.1));
+    CHECK(s.unlocked());
+    s.update(t + 2.0); // openSeconds 2 from the blow
+    CHECK(s.unlocked());
+    s.update(t + 2.2);
+    CHECK_FALSE(s.unlocked());
 }

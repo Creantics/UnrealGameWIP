@@ -602,14 +602,40 @@ TEST_CASE("table: begin spends the setter's Load on success and leaves it on an 
     CHECK(other.value == 100);
 }
 
-TEST_CASE("table: a junk far-future time moves its clock at most kMaxTimeStep") {
-    Setter s;
-    TableSet t;
-    REQUIRE(t.begin(kLeadA, s.load, s.places, kParty, 1e9) == TableError::None);
-    CHECK(t.until() == doctest::Approx(kMaxTimeStep + 0.8));
-    const TableEvents& ev = t.update(1e300);
-    REQUIRE(ev.size() == 4); // setting, set, cleared, ready: all inside one capped step
-    CHECK(ev[3].at == doctest::Approx(kMaxTimeStep + 26.8));
+TEST_CASE("table: a time more than kMaxTimeJump ahead is ignored and not stored") {
+    Setter sa;
+    Setter sb;
+    TableSet a;
+    TableSet b;
+    REQUIRE(a.begin(kLeadA, sa.load, sa.places, kParty, 0.0) == TableError::None);
+    REQUIRE(b.begin(kLeadA, sb.load, sb.places, kParty, 0.0) == TableError::None);
+    REQUIRE(a.update(0.0).size() == 1); // Setting
+    REQUIRE(b.update(0.0).size() == 1);
+    CHECK(a.update(1e12).empty()); // junk: nothing happens, the clock stays at 0
+    CHECK(a.update(1e300).empty());
+    for (double t : {13.0, 14.0, 30.0}) {
+        const TableEvents& ea = a.update(t);
+        const TableEvents& eb = b.update(t);
+        REQUIRE(ea.size() == eb.size());
+        for (std::size_t i = 0; i < ea.size(); ++i) {
+            CHECK(ea[i].type == eb[i].type);
+            CHECK(ea[i].at == doctest::Approx(eb[i].at));
+        }
+        CHECK(a.state() == b.state());
+        CHECK(a.until() == doctest::Approx(b.until()));
+    }
+    CHECK(a.state() == TableState::Ready);
+    // A step of exactly kMaxTimeJump still counts.
+    TableSet c;
+    Setter sc;
+    REQUIRE(c.begin(kLeadA, sc.load, sc.places, kParty, 0.0) == TableError::None);
+    CHECK_FALSE(c.update(kMaxTimeJump).empty());
+    // A reset or begin may start late on the clock.
+    TableSet d;
+    Setter sd;
+    REQUIRE(d.reset({}, 7200.0));
+    REQUIRE(d.begin(kLeadA, sd.load, sd.places, kParty, 7200.0) == TableError::None);
+    CHECK(d.until() == doctest::Approx(7200.8));
 }
 
 TEST_CASE("table: events past the buffer are counted as dropped and reach the host") {
@@ -791,7 +817,7 @@ TEST_CASE("table: one late frame plays setting, set, cleared and ready in order"
     Setter s;
     TableSet t;
     REQUIRE(t.begin(kLeadA, s.load, s.places, kParty, 0.0) == TableError::None);
-    const TableEvents& ev = t.update(1000.0);
+    const TableEvents& ev = t.update(500.0);
     REQUIRE(ev.size() == 4);
     CHECK(ev[0].type == TableEventType::Setting);
     CHECK(ev[1].type == TableEventType::Set);
@@ -1051,36 +1077,60 @@ TEST_CASE("lock: earlier and NaN times read as the latest") {
     CHECK_FALSE(l.open(10.0));
 }
 
-TEST_CASE("lock: a junk far-future time moves its clock at most kMaxTimeStep, queries included") {
-    WeakPointLock l;
-    REQUIRE(l.reset());
-    CHECK(l.offer(kUnlockSharedBlow, 1e9) == UnlockResult::Unlocked);
-    CHECK(l.until() == doctest::Approx(kMaxTimeStep + 3.0));
-    CHECK(l.open(kMaxTimeStep + 1.0));
-    // A junk query reads as one capped step past the clock, not as itself.
-    CHECK_FALSE(l.open(1e9));
-    CHECK(l.offer(kUnlockSharedBlow, 1e300) == UnlockResult::Unlocked); // the old window ran out
-    CHECK(l.until() == doctest::Approx(2.0 * kMaxTimeStep + 3.0));
+TEST_CASE("lock: a time more than kMaxTimeJump ahead is ignored and not stored, queries included") {
+    WeakPointLock a;
+    WeakPointLock b;
+    REQUIRE(a.reset());
+    REQUIRE(b.reset());
+    CHECK(a.offer(kUnlockRefusal, 1e12) == UnlockResult::WrongKey); // junk: the clock stays at 0
+    CHECK(a.offer(kUnlockSharedBlow, 13.0) == UnlockResult::Unlocked);
+    CHECK(b.offer(kUnlockSharedBlow, 13.0) == UnlockResult::Unlocked);
+    CHECK(a.until() == doctest::Approx(16.0));
+    CHECK(a.until() == doctest::Approx(b.until()));
+    CHECK(a.open(14.0));
+    CHECK(a.open(1e12)); // a junk query reads as the clock (13): still open
+    CHECK(a.offer(kUnlockSharedBlow, 14.0) == UnlockResult::Refreshed);
+    CHECK(a.until() == doctest::Approx(17.0));
+    CHECK_FALSE(a.open(17.0));
+    // A reset starts the clock late with no jump bound: the window is open for its full length.
+    WeakPointLock late;
+    REQUIRE(late.reset({}, 7200.0));
+    CHECK(late.offer(kUnlockSharedBlow, 7201.0) == UnlockResult::Unlocked);
+    CHECK(late.until() == doctest::Approx(7204.0));
+    CHECK(late.open(7203.9));
+    LockedPoint p;
+    p.reset(true, LockTuning{}, 1e5);
+    CHECK(p.offer(kUnlockSharedBlow, 1e5 + 1.0) == UnlockResult::Unlocked);
+    CHECK(p.open(1e5 + 3.9));
+    CHECK_FALSE(p.open(1e5 + 4.0));
 }
 
-TEST_CASE("gifts: a junk far-future time moves the slot's clock at most kMaxTimeStep, queries included") {
-    GiftSlot g;
-    REQUIRE(g.press(kLeadA, 1e9).given);
-    CHECK(g.now() == doctest::Approx(kMaxTimeStep));
-    CHECK(g.readyAt(Gift::Heal) == doctest::Approx(kMaxTimeStep + 8.0));
-    CHECK(g.press(kLeadA, kMaxTimeStep + 7.0).error == GiftError::Cooling);
-    CHECK(g.press(kLeadA, kMaxTimeStep + 8.0).given);
-    REQUIRE(g.select(Gift::Guard));
-    REQUIRE(g.press(kLeadB, 1e9).given);
-    const double at = g.now();
-    CHECK(at == doctest::Approx(2.0 * kMaxTimeStep + 8.0));
-    CHECK(g.guardScaleFor(kLeadB, at + 0.5) == doctest::Approx(0.0f));
-    // A junk query reads as one capped step past the clock: the guard has run out by then.
-    CHECK(g.guardScaleFor(kLeadB, 1e9) == doctest::Approx(1.0f));
-    CHECK(g.ready(Gift::Heal, 1e9));
+TEST_CASE("gifts: a time more than kMaxTimeJump ahead is ignored and not stored, queries included") {
+    GiftSlot a;
+    GiftSlot b;
+    REQUIRE(a.press(kLeadA, 1e12).given); // given at the clock (0); the junk time is not stored
+    REQUIRE(b.press(kLeadA, 0.0).given);
+    CHECK(a.now() == doctest::Approx(0.0));
+    for (double t : {13.0, 14.0}) {
+        const GiftResult ra = a.press(kLeadA, t);
+        const GiftResult rb = b.press(kLeadA, t);
+        CHECK(ra.given == rb.given);
+        CHECK(ra.error == rb.error);
+        CHECK(a.now() == doctest::Approx(b.now()));
+        CHECK(a.readyAt(Gift::Heal) == doctest::Approx(b.readyAt(Gift::Heal)));
+    }
+    CHECK(a.readyAt(Gift::Heal) == doctest::Approx(21.0));
+    REQUIRE(a.select(Gift::Guard));
+    REQUIRE(a.press(kLeadB, 15.0).given);
+    CHECK(a.guarded(kLeadB, 1e12)); // a junk query reads as the clock (15)
+    CHECK_FALSE(a.ready(Gift::Heal, 1e12));
+    // resetFight starts the clock late with no jump bound.
+    GiftSlot late;
+    late.resetFight(7200.0);
+    CHECK(late.now() == doctest::Approx(7200.0));
+    REQUIRE(late.press(kLeadA, 7201.0).given);
+    CHECK(late.readyAt(Gift::Heal) == doctest::Approx(7209.0));
 }
-
-// ---- All of it together ----------------------------------------------------------------------------
 
 TEST_CASE("combat inputs: a scripted fight of every input allocates nothing") {
     REQUIRE(ftcore_test::allocHookInstalled()); // a missing hook fails the test, it never skips it
@@ -1158,4 +1208,15 @@ TEST_CASE("combat inputs: small guards (place index, new gift tuning, a lost but
     CHECK(r.holding());
     CHECK(r.offerEnded() == RefusalInput::Resolved);
     CHECK(r.refused());
+}
+
+TEST_CASE("gifts: a load keeps the slot's clock, so a slot loaded late keeps working") {
+    GiftSlot a;
+    a.resetFight(7200.0);
+    REQUIRE(a.press(kLeadA, 7201.0).given);
+    REQUIRE(a.load(a.save()));
+    CHECK(a.now() == doctest::Approx(7201.0));
+    CHECK(a.ready(Gift::Heal, 7201.0)); // cooldowns cleared by the load
+    REQUIRE(a.press(kLeadA, 7202.0).given);
+    CHECK(a.readyAt(Gift::Heal) == doctest::Approx(7210.0));
 }

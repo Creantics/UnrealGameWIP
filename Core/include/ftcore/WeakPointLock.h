@@ -9,7 +9,7 @@
 //   the keys that open it.
 // * offer(key, t, clause): unlocks when the key is in the mask (and the clause matches for ReadClause).
 //   Offered while open, it restarts the open time. Open for openSeconds, or until relock() when 0.
-// * onDeferred(t): a deferred refusal ("not yet" is a yes). Counted; it relocks an open lock when
+// * onDeferred(t): a deferred refusal (it counts as accepted). Counted; it relocks an open lock when
 //   relockOnDefer.
 // * While open() the host keeps the boss's CritWindow (ArenaBoss.h) open until until(); locked, closed.
 //
@@ -56,10 +56,11 @@ class WeakPointLock {
 public:
     WeakPointLock() { reset(); }
 
-    bool reset(const LockTuning& tuning = {}) {
+    // Starts over with its clock at t (CombatInputs.h startTime).
+    bool reset(const LockTuning& tuning = {}, double t = 0.0) {
         const bool ok = validLockTuning(tuning);
         tuning_ = ok ? tuning : LockTuning{};
-        now_ = 0.0;
+        now_ = startTime(t);
         open_ = false;
         until_ = 0.0;
         opens_ = 0;
@@ -96,6 +97,14 @@ public:
 
     // Open at t (t read as CombatInputs.h against the latest time seen, without moving it).
     bool open(double t) const { return open_ && inputTime(now_, t) < until_; }
+
+    // For an owner with its own checked clock (LockedPoint): moves the clock to t with no jump bound
+    // (an earlier or non-finite t does nothing), so the lock never falls behind its owner.
+    void follow(double t) {
+        if (std::isfinite(t) && t > now_) advance(t, std::numeric_limits<double>::infinity());
+    }
+    // Open at the owner's time t, with no jump bound.
+    bool openAt(double t) const { return open_ && (std::isfinite(t) && t > now_ ? t : now_) < until_; }
     // The end of the open time (+inf while open with openSeconds 0; meaningless while locked).
     double until() const { return until_; }
     int opens() const { return opens_; }
@@ -105,8 +114,8 @@ public:
 private:
     static constexpr double kInf = std::numeric_limits<double>::infinity();
     static constexpr int kIntMax = std::numeric_limits<int>::max(); // counters saturate
-    double advance(double t) {
-        now_ = inputTime(now_, t);
+    double advance(double t, double maxJump = kMaxTimeJump) {
+        now_ = inputTime(now_, t, maxJump);
         if (open_ && now_ >= until_) open_ = false;
         return now_;
     }
@@ -120,26 +129,35 @@ private:
 };
 
 // The one adapter every boss machine uses over a WeakPointLock (ArenaBossRun, BossScript): a boss whose
-// weak point is not locked is always open, and offers to it are BadKey.
+// weak point is not locked is always open, and offers to it are BadKey. Every call takes the owner's
+// clock, which the owner has already checked: the lock follows it with no jump bound, so a long quiet
+// stretch before the first offer cannot leave the lock behind.
 class LockedPoint {
 public:
     // Starts shut at t (or, not locked, always open).
     void reset(bool locked, const LockTuning& tuning, double t) {
         locked_ = locked;
-        lock_.reset(locked ? tuning : LockTuning{});
-        lock_.relock(t);
+        lock_.reset(locked ? tuning : LockTuning{}, t);
     }
     bool locked() const { return locked_; }
-    bool open(double t) const { return !locked_ || lock_.open(t); }
+    bool open(double t) const { return !locked_ || lock_.openAt(t); }
     UnlockResult offer(UnlockKey key, double t, std::uint16_t clause = 0) {
-        return locked_ ? lock_.offer(key, t, clause) : UnlockResult::BadKey;
+        if (!locked_) return UnlockResult::BadKey;
+        lock_.follow(t);
+        return lock_.offer(key, t, clause);
     }
     static bool opened(UnlockResult u) { return u == UnlockResult::Unlocked || u == UnlockResult::Refreshed; }
     // True when the deferral shut an open lock.
-    bool onDeferred(double t) { return locked_ && lock_.onDeferred(t); }
+    bool onDeferred(double t) {
+        if (!locked_) return false;
+        lock_.follow(t);
+        return lock_.onDeferred(t);
+    }
     // True when it shut an open lock.
     bool relock(double t) {
-        if (!locked_ || !lock_.open(t)) return false;
+        if (!locked_) return false;
+        lock_.follow(t);
+        if (!lock_.open(t)) return false;
         lock_.relock(t);
         return true;
     }

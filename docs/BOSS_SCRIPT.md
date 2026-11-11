@@ -55,12 +55,11 @@ The weak point goes through `LockedPoint` (`WeakPointLock.h`), the one adapter b
   is listed once per phase, only the last phase may be empty, exposing or unlocking needs the `shared_blow` key,
   `wardLimit` needs a `harmsWard` move, and the offer never harms the ward. Each error names its path.
 
-## The three bosses
+## The test tables
 
-| id | gauge | moves (counter) | phases | weak point | end |
-|---|---|---|---|---|---|
-| `glider` | hp | swoop (guard, exposes), tail_lash (dodge), lull (on count), grab (take half), updraft (recover) | 1.0 / 0.5 / 0.1 | a guarded swoop pins it; a shared blow opens it | the offer, answered, then `Answer` |
-| `bearer` | hp | turn (strike), shoulder_shift (strike, exposes), set_down (get clear), two_knocks (on count), free_end (carry together, unlocks) | 1.0 / 0.6 / 0.25 | two fighters take the free end together | `carry_home`, carried together |
-| `snuffer` | lamps 8 | snuff (strike; eats a lamp), swallow (on count, unlocks), dark_step (listen; a lamp dies), glass_breath (guard), reach (take half; harms the ward) | 8 / 3 / 1 lamps | struck on the count as it swallows, only while watched (`setWatched`) | the offer, answered, then a blow on the count |
+`Data/Battle/boss_script/` holds three tables (`glider`, `bearer`, `snuffer`) that together cover both
+gauges, every counter kind, an exposing move, unlocking on a counter, `needsWatch`, a ward and an offer
+with and without `needsAnswer`. `Core/tests/BossScriptFixtures.h` builds the same tables in C++ and the
+tests check the files match them.
 
 The tuning numbers are first guesses for playtests.
