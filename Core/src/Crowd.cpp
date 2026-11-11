@@ -388,6 +388,14 @@ void CrowdSim::free(std::uint32_t i) {
     views_[i].live = false;
     views_[i].drawn = false;
     views_[i].state = CrowdState::Free;
+    // Its undrawing is judged here, where it stood: a spawn later in the step may reuse the slot somewhere else.
+    if (i < wasDrawn_.size() && wasDrawn_[i]) {
+        if (viewCount_ > 0 && (inSteadyView(a.pos) || inSteadyView(a.prev))) {
+            ++counts_.popsInView;
+            ++counts_.popsLive;
+        }
+        wasDrawn_[i] = 0;
+    }
 }
 
 void CrowdSim::despawnFar(Vec2 player) {
@@ -719,11 +727,11 @@ void CrowdSim::decide(std::uint32_t i) {
     const float notice = tuning_.noticeFear * s, back = tuning_.backFear * s, flee = tuning_.fleeFear * s;
     const float f = a.fear;
     a.stateTime += tuning_.step;
-    // A knot of four or more standing, whatever their states: a backer, cowerer or runner in it that is far enough
-    // from the threat walks on, away from it (the states' own knot rules cover the watchers).
+    // Two others standing round it (a knot of three), whatever their states: a backer, cowerer or runner that is far
+    // enough from the threat walks on, away from it (the states' own knot rules cover the watchers).
     if (a.speed <= 0.05f &&
         (a.state == CrowdState::BackAway || a.state == CrowdState::Cower || a.state == CrowdState::Flee) &&
-        dist(a.pos, a.threat) >= tuning_.safeDist - kSafeSlack && standersNear(a, kKnotRadius) >= 3u) {
+        dist(a.pos, a.threat) >= tuning_.safeDist - kSafeSlack && standersNear(a, kKnotRadius) >= 2u) {
         setState(a, CrowdState::Walk);
         a.hold = false;
         a.walkedOn = true;

@@ -1023,6 +1023,39 @@ TEST_CASE("crowd first second: cornered in a dead end by a fight at its mouth, m
     CHECK(sim.agent(a).state != CrowdState::Cower);
 }
 
+TEST_CASE("crowd knot: backers, cowerers and runners far enough from a fight break up; cornered ones inside stay") {
+    // A dead end off a cross street, the fight just past its mouth; members in it run to the far end. Ending 21 m from
+    // the fight (inside the safe distance, past its slack) they used to stand there in a knot of seven or more; now
+    // no more than three stand within 3 m. Ending 9 m from it they are cornered and stay where they braced.
+    for (const float len : {20.f, 8.f})
+        for (const std::uint32_t cnt : {8u, 16u}) {
+            CAPTURE(len);
+            CAPTURE(cnt);
+            CrowdGraph g;
+            REQUIRE(g.build({line({0.f, 0.f}, {len, 0.f}), line({len, -100.f}, {len, 0.f}), line({len, 0.f}, {len, 100.f})}, loose()));
+            CrowdTuning t = quiet();
+            t.reactRadius = 22.f;
+            t.safeDist = 22.f;
+            CrowdSim sim;
+            REQUIRE(sim.init(g, t, 11));
+            sim.setPopulationFrozen(true);
+            const std::uint32_t end = nodeAt(g, {0.f, 0.f});
+            for (std::uint32_t k = 0; k < cnt; ++k)
+                REQUIRE(sim.spawnAt(end, 0, static_cast<float>(k % 4) * 0.3f, len * (0.3f + 0.6f * static_cast<float>(k) / static_cast<float>(cnt))) != UINT32_MAX);
+            run(sim, 0.2f);
+            const Vec2 fight{len + 1.f, 0.f};
+            sim.pushEvent({CrowdEventKind::FightStart, fight});
+            std::uint32_t worst = 0;
+            for (int s = 0; s < 60; ++s) { // 30 s: strikes for the first 10, every half second
+                if (s < 20) sim.pushEvent({CrowdEventKind::Strike, fight});
+                run(sim, 0.5f);
+                worst = std::max(worst, sim.largestStoppedGroup(3.f));
+            }
+            if (len > 10.f) CHECK(worst <= 3u);
+            else CHECK(worst >= 4u);
+        }
+}
+
 TEST_CASE("crowd on a real street table (opt-in)") {
     const std::string path = envText("FT_CROWD_STREETS");
     if (path.empty()) return;
