@@ -15,6 +15,7 @@
 // * The locked weak point (WeakPointLock.h). Countering a move with exposeSeconds exposes the point
 //   for that long; a shared blow while exposed (sharedBlow) unlocks it. A move with unlocksOnCounter
 //   unlocks it on its counter. Blows on the weak point crit (critMultiplier) only while it is unlocked.
+//   A move with needsWatch does either only while the host says the point is watched (setWatched).
 // * The end is an answered offer, never zero health: hp never falls below 1. The last phase plays the
 //   def's `offer` first and between its moves; countering the offer ends the fight (Ended). An offer
 //   with needsAnswer takes its counter only after the host's answer() (a story beat).
@@ -73,6 +74,7 @@ struct BossMoveDef {
     bool unlocksOnCounter = false;
     bool harmsWard = false;
     bool needsAnswer = false;        // the counter waits for answer()
+    bool needsWatch = false;         // its counter exposes or unlocks only while watched (setWatched)
     std::int8_t resourceOnLand = 0;  // -8..8: the resource changes when it lands
     std::int8_t resourceOnCounter = 0; // -8..8: ... when it is countered
 
@@ -271,6 +273,7 @@ public:
         ward_ = 0;
         carriers_ = 0;
         answered_ = false;
+        watched_ = true;
         exposedOpen_ = false;
         exposedUntil_ = 0.0;
         lock_.reset(valid_ ? def.lock : LockTuning{});
@@ -295,12 +298,13 @@ public:
         }
         push(BossEventType::Countered, current_, static_cast<int>(kind), 0, now_);
         if (m.resourceOnCounter != 0) changeResource(m.resourceOnCounter);
-        if (m.exposeSeconds > 0.0f) {
+        const bool seen = !m.needsWatch || watched_;
+        if (m.exposeSeconds > 0.0f && seen) {
             exposedOpen_ = true;
             exposedUntil_ = now_ + m.exposeSeconds;
             pending_.push({BossEventType::Exposed, current_, 0, 0, now_, exposedUntil_});
         }
-        if (m.unlocksOnCounter) unlock();
+        if (m.unlocksOnCounter && seen) unlock();
         if (current_ == kBossOffer) {
             state_ = BossState::Ended;
             push(BossEventType::Ended, kBossOffer, 0, 0, now_);
@@ -348,6 +352,13 @@ public:
         return true;
     }
 
+    // Whether the weak point is watched (needsWatch moves). True after reset.
+    void setWatched(bool watched, double t) {
+        if (!valid_) return;
+        advance(t);
+        watched_ = watched;
+    }
+
     // Adds `n` (negative takes away) to the resource, within 0..resourceMax. Returns the change made.
     int addResource(int n, double t) {
         if (!valid_ || def_->gauge != BossGauge::Resource) return 0;
@@ -378,6 +389,7 @@ public:
     int resource() const { return resource_; }
     int wardHarm() const { return ward_; }
     bool answered() const { return answered_; }
+    bool watched() const { return watched_; }
     bool exposed() const { return exposedOpen_; }
     double exposedUntil() const { return exposedUntil_; }
     bool unlocked() const { return lock_.open(now_); }
@@ -386,7 +398,13 @@ public:
     // When the current step ends (the tell, the window, the recovery or the rest).
     double stepEnds() const { return stepAt_; }
     const BossScriptDef& def() const { return *def_; }
-    const BossMoveDef& move(std::uint8_t m) const { return m == kBossOffer ? def_->offer : def_->moves[m]; }
+    // The move with that index (kBossOffer: the offer); an empty move for anything else.
+    const BossMoveDef& move(std::uint8_t m) const {
+        static const BossMoveDef kNone{};
+        if (!def_) return kNone;
+        if (m == kBossOffer) return def_->offer;
+        return m < def_->moveCount ? def_->moves[m] : kNone;
+    }
 
 private:
     static constexpr double kInf = std::numeric_limits<double>::infinity();
@@ -520,6 +538,7 @@ private:
     int ward_ = 0;
     std::uint8_t carriers_ = 0;
     bool answered_ = false;
+    bool watched_ = true;
     bool exposedOpen_ = false;
     double exposedUntil_ = 0.0;
     WeakPointLock lock_{};

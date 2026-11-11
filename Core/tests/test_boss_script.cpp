@@ -98,6 +98,12 @@ TEST_CASE("boss script: the three boss tables are valid, five moves each, three 
     }
     CHECK(gliderBossDef().find("swoop") == 0);
     CHECK(gliderBossDef().find("nope") == kBossNoMove);
+    BossScript idle;
+    CHECK(idle.move(0).id().empty()); // no def: an empty move
+    const BossScriptDef g = gliderBossDef();
+    REQUIRE(idle.reset(g, 0.0));
+    CHECK(idle.move(kBossNoMove).id().empty());
+    CHECK(std::string(idle.move(kBossOffer).id()) == "offer");
 }
 
 TEST_CASE("boss script: validation rejects bad defs and the script stays inert") {
@@ -300,7 +306,7 @@ TEST_CASE("boss script: carrying together needs two different fighters on the co
     CHECK(s.hit(10, true, t + 0.4).crit);
 }
 
-TEST_CASE("boss script: glider: a guarded swoop pins it, a blow on the count opens the knot") {
+TEST_CASE("boss script: glider: a guarded swoop pins it, a blow on the count opens the weak point") {
     const BossScriptDef g = gliderBossDef();
     StrikeCount count;
     CountTuning ct;
@@ -402,6 +408,13 @@ TEST_CASE("boss script: lamp eater: phases follow the lamps; relit lamps hold it
     e.addResource(-7, 0.0);
     REQUIRE(e.phase() == 2);
     double v = untilWindow(e, d.find("swallow"), 0.0);
+    e.setWatched(false, v); // no lamp behind it: the counter lands but opens nothing
+    CHECK(!e.watched());
+    REQUIRE(e.counter(BossCounter::StrikeOnCount, 0, v, true) == BossInput::Countered);
+    CHECK(!e.unlocked());
+    e.setWatched(true, v);
+    v = untilWindow(e, d.find("swallow"), v + 0.1);
+    REQUIRE(e.current() == d.find("swallow"));
     REQUIRE(e.counter(BossCounter::StrikeOnCount, 0, v, true) == BossInput::Countered);
     CHECK(e.unlocked());
     CHECK(e.hit(100, true, v).crit);

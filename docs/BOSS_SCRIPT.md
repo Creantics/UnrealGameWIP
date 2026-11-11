@@ -21,6 +21,7 @@ are header-only in `Core/include/ftcore/`, with no allocation after `reset`. Tes
 * **Locked weak point (`WeakPointLock`):**
   * A move with `exposeSeconds` exposes the point when it is countered. A shared blow while exposed (`sharedBlow`) unlocks it.
   * A move with `unlocksOnCounter` unlocks the point on its counter.
+  * A `needsWatch` move does either only while the host says the point is watched (`setWatched`).
   * Blows on the point crit only while it is unlocked.
 * **The end is an answered offer.** Hp never falls below 1.
   * The last phase plays the def's `offer` first and between its moves. Countering the offer ends the fight (`Ended`).
@@ -34,6 +35,6 @@ are header-only in `Core/include/ftcore/`, with no allocation after `reset`. Tes
 |---|---|---|---|---|---|
 | `glider` | hp | swoop (guard, exposes), tail_lash (dodge), lull (on count), grab (take half), updraft (recover) | 1.0 / 0.5 / 0.1 | a guarded swoop pins it; a shared blow opens it | the offer, answered, then `Answer` |
 | `bearer` | hp | turn (strike), shoulder_shift (strike, exposes), set_down (get clear), two_knocks (on count), free_end (carry together, unlocks) | 1.0 / 0.6 / 0.25 | two fighters take the free end together | `carry_home`, carried together |
-| `lamp_eater` | lamps 8 | snuff (strike; eats a lamp), swallow (on count, unlocks), dark_step (listen; a lamp dies), glass_breath (guard), reach (take half; harms the ward) | 8 / 3 / 1 lamps | struck on the count as it swallows | the offer, answered, then a blow on the count |
+| `lamp_eater` | lamps 8 | snuff (strike; eats a lamp), swallow (on count, unlocks), dark_step (listen; a lamp dies), glass_breath (guard), reach (take half; harms the ward) | 8 / 3 / 1 lamps | struck on the count as it swallows, only while watched (`setWatched`) | the offer, answered, then a blow on the count |
 
 The tuning numbers are first guesses for playtests.

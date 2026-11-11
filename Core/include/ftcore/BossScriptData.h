@@ -43,7 +43,7 @@ inline BossScriptDef gliderBossDef() {
     d.lock.openSeconds = 3.0;
     enum : std::uint8_t { Swoop, Lash, Lull, Grab, Updraft };
     d.moves[Swoop] = bossMove("swoop", BossCounter::Guard, 1.4f, 0.4f, 1.0f); // shadow narrows
-    d.moves[Swoop].exposeSeconds = 2.5f; // guarded, it is pinned: the knot shows
+    d.moves[Swoop].exposeSeconds = 2.5f; // guarded, it is pinned: the weak point shows
     d.moves[Lash] = bossMove("tail_lash", BossCounter::Dodge, 0.9f, 0.35f, 1.2f); // rattle; snags a post
     d.moves[Lull] = bossMove("lull", BossCounter::StrikeOnCount, 2.0f, 1.5f, 0.8f); // colours dim
     d.moves[Grab] = bossMove("grab", BossCounter::TakeHalf, 1.2f, 1.0f, 1.0f); // takes a bystander
@@ -109,6 +109,7 @@ inline BossScriptDef lampBossDef() {
     d.moves[Snuff].resourceOnLand = -1;
     d.moves[Swallow] = bossMove("swallow", BossCounter::StrikeOnCount, 1.4f, 1.0f, 1.0f); // head tips back
     d.moves[Swallow].unlocksOnCounter = true;
+    d.moves[Swallow].needsWatch = true; // the host: watched while a lamp burns behind it
     d.moves[DarkStep] = bossMove("dark_step", BossCounter::Listen, 1.0f, 0.8f, 0.8f); // a lamp dies
     d.moves[DarkStep].resourceOnLand = -1;
     d.moves[DarkStep].resourceOnCounter = -1; // the lamp dies either way; listening finds it
