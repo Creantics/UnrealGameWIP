@@ -94,6 +94,37 @@ struct StreetSurfaceSpec {
     float laneSlabM = 3.6f;              // a lane's concrete panel
     float cornerSlabM = 0.311f;          // a pavement box this thick (within 4 mm) is a junction corner's piece: its
                                          // tiles lie on the world's grid, not the box's (Roads.h kRoadCornerPaveDeep)
+    // Joint depth (SurfaceWeatherOptions::jointDepth): real groove depths, an imperfect grid and parallax near by.
+    float paveJointDepthM = 0.0065f;     // a pavement tile's joint floor under its face
+    float paverJointDepthM = 0.005f;     // a lane paver's
+    float kerbJointDepthM = 0.008f;      // a kerb stone's
+    float sunkShare = 0.06f;             // tiles (by their hash) sunk sinkMinM..sinkMaxM
+    float tiltShare = 0.06f;             // tiles tilted tiltMinRad..tiltMaxRad across (a constant slope, any direction)
+    float chipShare = 0.05f;             // tiles with one chipped corner, chipMinM..chipMaxM across (not kerbs)
+    float sinkMinM = 0.001f, sinkMaxM = 0.003f;
+    float tiltMinRad = 0.003f, tiltMaxRad = 0.008f;  // 0.17-0.46 degrees
+    float chipMinM = 0.02f, chipMaxM = 0.03f;
+    float parallaxNearM = 12.0f;         // parallax full within this of the camera, gone by parallaxFarM
+    float parallaxFarM = 15.0f;
+    float parallaxNdVFull = 0.25f;       // ... and full where the view's cosine to the face is over this, gone under
+    float parallaxNdVNone = 0.12f;       // parallaxNdVNone
+    float parallaxSlopeClamp = 0.2f;     // the view's cosine floor in the relief solve's slope
+    float jointCavityAO = 0.45f;         // AO on a joint's floor
+};
+
+// A jointed grid's numbers for the relief: cells cellX by cellY (m), every other row offset by bond cells, joints
+// halfJointM half wide, arrises bevelM round, the floor depthM under the face.
+struct StreetJointGrid {
+    float cellX = 0.4f, cellY = 0.4f, bond = 0.f, halfJointM = 0.005f, bevelM = 0.008f, depthM = 0.0065f;
+};
+// A tile's flaws from its key (its cell id plus the box's offset, as the HLSL's): sinkM down, a tilt (rad, x and y),
+// a chipped corner (chipX, chipY its signs, chipR its size in m; 0 none).
+struct StreetTileFlaw {
+    float sinkM = 0.f, tiltX = 0.f, tiltY = 0.f;
+    float chipX = 0.f, chipY = 0.f, chipR = 0.f;
+};
+struct StreetPoint {
+    float x = 0.f, y = 0.f;
 };
 
 // 0..1 wheel-path weight at fromLowM across a carriageway half from its low edge, the half sizeY across.
@@ -107,6 +138,22 @@ FTCORE_API float streetPaintLeft(float fade, float wheel, float chip);
 FTCORE_API bool streetCornerSlab(float sz, const StreetSurfaceSpec& spec);
 // A pavement tile's height, 0 (a joint's floor) to 1 (its face), dM from its nearest edge.
 FTCORE_API float streetTileHeight(float dM, const StreetSurfaceSpec& spec);
+// The jointDepth grids: StreetKind::Pavement (tiles), Lane (pavers, running bond) or Kerb (stones along x; the grid
+// is 10 km across y, so pass y = 5000 and there are no corners). Any other kind gives the pavement's.
+FTCORE_API StreetJointGrid streetJointGrid(StreetKind kind, const StreetSurfaceSpec& spec);
+// The HLSL's FTRelief.Hs flaws for a tile key (cell id + box offset).
+FTCORE_API StreetTileFlaw streetTileFlaw(float keyX, float keyY, const StreetSurfaceSpec& spec);
+// The HLSL's FTRelief.Z: height (m; 0 the nominal face, -depthM a joint's floor) at (x, y) m in the grid's frame, the
+// box's key offset (keyX, keyY) added to the cell id for the flaws. Sunk, tilted and chipped tiles included.
+FTCORE_API float streetJointZ(float x, float y, float keyX, float keyY, const StreetJointGrid& grid,
+                              const StreetSurfaceSpec& spec);
+// The HLSL's parallax weight RlW: switch 0..1, distM to the camera, nDotV the view's cosine to the face, fine the
+// detail fade (1 near).
+FTCORE_API float streetParallaxWeight(float distM, float nDotV, float jointDepth, float fine, const StreetSurfaceSpec& spec);
+// The HLSL's relief solve (before its weight): the point (x, y) shifted for a view whose unit vector toward the
+// camera has (viewX, viewY) in the grid's plane and nDotV along its normal.
+FTCORE_API StreetPoint streetReliefShift(float x, float y, float viewX, float viewY, float nDotV, float keyX, float keyY,
+                                         const StreetJointGrid& grid, const StreetSurfaceSpec& spec);
 // 1 when a box (thickness and plan sides, m) counts as a ground slab.
 FTCORE_API float weatherGroundSlab(float sz, float sx, float sy, const SurfaceWeatherSpec& spec);
 // Top grime on a ground slab: edgeM from its dirty edge, noise 0..1, slab 0..1.
@@ -118,6 +165,7 @@ struct SurfaceWeatherOptions {
     bool aboveInput = false; // dirt measures height from an Above input (m over the ground), not the box's bottom
     bool topGrime = true;    // dirt along a ground slab's top edges (needs boxFrame)
     bool street = false;     // the street layer, by a Street input (needs boxFrame)
+    bool jointDepth = false; // the street's joints as real recesses, by ViewVec and JointDepth inputs (needs street)
 };
 
 // 0..1, how up-facing a pixel is from its vertex normal's world z.
@@ -141,8 +189,18 @@ FTCORE_API float weatherAlbedoScale(int channel, float soak, float puddle, float
 
 // The node's body. Inputs: Albedo, Normal (world), Rough, AO, WorldPos, VertexNormal, Wetness, Amount (0 opts a
 // material out); with boxFrame LocalPos, AxisX, AxisY, AxisZ (the instance's axes in world space, scale included, on the
-// engine's 100 cm cube); with aboveInput Above; with street Street. Returns the albedo; outputs NormalOut, RoughOut,
-// AOOut. At Street 0 and Wetness 0, NormalOut is the Normal input, so a mesh's own normal stays as it was.
+// engine's 100 cm cube); with aboveInput Above; with street Street; with street and jointDepth ViewVec (float3, world,
+// cm, from the pixel to the camera, not normalised) and JointDepth (0..1, a run-time switch). Returns the albedo;
+// outputs NormalOut, RoughOut, AOOut. At Street 0 and Wetness 0, NormalOut is the Normal input, so a mesh's own normal
+// stays as it was; at JointDepth 0 every output is what the node gives without jointDepth.
+//
+// jointDepth: pavement tiles, lane pavers and kerb stones get joints paveJointDepthM, paverJointDepthM and
+// kerbJointDepthM deep with round arrises; by a per-tile hash sunkShare of tiles sit sunk, tiltShare tilt slightly and
+// chipShare (not kerbs) lose a corner to the joint floor. The normal is the height's true slope (faded with the fine
+// detail). The joint is darker and rougher (a noisy dirt), its AO falls to jointCavityAO on the floor, and with the
+// wetness it darkens further and holds water (smooth). Near by (parallaxNearM..parallaxFarM, and not glancing) the
+// tile coordinate is shifted by an analytic relief solve on the top face (a kerb's side faces get no parallax). No new
+// screen derivatives: the only one is the street layer's footprint, as before.
 FTCORE_API std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeatherOptions& options,
                                           const StreetSurfaceSpec& street = StreetSurfaceSpec{});
 

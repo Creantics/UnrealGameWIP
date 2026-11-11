@@ -13,8 +13,10 @@
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCameraVectorWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
@@ -22,6 +24,7 @@
 #include "Materials/MaterialExpressionOneMinus.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionTransform.h"
@@ -38,6 +41,7 @@
 #include "UObject/SavePackage.h"
 
 #include "ftcore/MassingPlan.h"
+#include "ftcore/SurfaceJoints.h"
 #include "ftcore/SurfaceTable.h"
 #include "ftcore/SurfaceWeather.h"
 #include "ftcore/WindowFacade.h"
@@ -86,6 +90,7 @@ float TopDown = AxY.z > 0.0 ? -1.0 : 1.0;
 float2 UvX = float2(Q.y, SideDown * Q.z);
 float2 UvY = float2(Q.x, SideDown * Q.z);
 float2 UvZ = float2(Q.x, TopDown * Q.y);
+//FT_JOINT_PARALLAX
 // The engine's Texture2DSample, never Tex.Sample: a ray-tracing hit shader has no derivatives, and there it takes the
 // mip from the ray cone. A plain Sample fails that shader, and the whole material falls back to the default one.
 float3 Albedo = Blend.x * Texture2DSample(AlbedoTex, AlbedoTexSampler, UvX).rgb
@@ -137,6 +142,7 @@ MetalOut = Arm.b;
 AOOut = Arm.r;
 float3 Color = Albedo * Tint.rgb * (1.0 + Amount * (2.0 * Mottle[0] - 1.0)) * (1.0 + Macro * (2.0 * Mottle[2] - 1.0));
 Color *= min(1.0, 0.8 / max(max(Color.r, Color.g), max(Color.b, 1e-4)));
+//FT_JOINT_SHADE
 return max(Color, 0.03);
 )HLSL");
 
@@ -312,6 +318,27 @@ UMaterial* NewMaster(const TCHAR* Path)
 	return Material;
 }
 
+// The window collection's JointDepth (the run-time switch on every surface's joint depth; -JointDepth=<0..1>), or a
+// constant 1 where the collection is not built yet or older than the switch.
+UMaterialExpression* AddJointSwitch(UMaterial* Material, int32 Y)
+{
+	const FString Path = FString(FTScene::WindowCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::WindowCollection);
+	UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (Collection && Collection->GetParameterId(TEXT("JointDepth")).IsValid())
+	{
+		UMaterialExpressionCollectionParameter* Switch = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
+		Switch->Collection = Collection;
+		Switch->ParameterName = TEXT("JointDepth");
+		Switch->ParameterId = Collection->GetParameterId(TEXT("JointDepth"));
+		return Switch;
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildSurfaces: the window collection has no JointDepth; joint depth is always on in %s."),
+		*Material->GetName());
+	UMaterialExpressionConstant* One = AddExpression<UMaterialExpressionConstant>(Material, -900, Y);
+	One->R = 1.f;
+	return One;
+}
+
 // The photographed surface's parameters and its Custom node (kSurfaceCode), the textures' defaults Defaults. Output 0 is
 // the code's return value (the albedo), then NormalOut, RoughOut, MetalOut and AOOut.
 FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Defaults)
@@ -344,7 +371,13 @@ FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Def
 	UMaterialExpressionCustom* Custom = AddExpression<UMaterialExpressionCustom>(Material, -450, 0);
 	Custom->Description = TEXT("FTWorldSurfaceTex");
 	Custom->OutputType = CMOT_Float3;
-	Custom->Code = kSurfaceCode;
+	// Joint depth (ftcore::surfaceJoint*Hlsl): the view ray marched through a height got from the AO map, then the
+	// joint's normal and cavity. JointDepthCm 0 (a surface with no joints) or the collection's JointDepth 0 leaves the
+	// surface as it was.
+	const ftcore::SurfaceJointSpec JointSpec;
+	Custom->Code = FString(kSurfaceCode)
+		.Replace(TEXT("//FT_JOINT_PARALLAX"), *FT::ToFString(ftcore::surfaceJointParallaxHlsl(JointSpec)))
+		.Replace(TEXT("//FT_JOINT_SHADE"), *FT::ToFString(ftcore::surfaceJointShadeHlsl(JointSpec)));
 	Custom->Inputs.Reset();
 	AddInput(Custom, TEXT("Tint"), Color);
 	AddInput(Custom, TEXT("AlbedoTex"), Albedo);
@@ -364,6 +397,18 @@ FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Def
 	AddInput(Custom, TEXT("AxisX"), AxisX);
 	AddInput(Custom, TEXT("AxisY"), AxisY);
 	AddInput(Custom, TEXT("AxisZ"), AxisZ);
+	UMaterialExpressionCameraPositionWS* CameraPos = AddExpression<UMaterialExpressionCameraPositionWS>(Material, -900, 1050);
+	UMaterialExpressionSubtract* ViewVec = AddExpression<UMaterialExpressionSubtract>(Material, -700, 1050);
+	ViewVec->A.Connect(0, CameraPos);
+	ViewVec->B.Connect(0, WorldPos);
+	AddInput(Custom, TEXT("ViewVec"), ViewVec);
+	AddInput(Custom, TEXT("JointDepth"), AddJointSwitch(Material, 1150));
+	UMaterialExpressionScalarParameter* JointDepthCm = AddScalar(Material, TEXT("JointDepthCm"), 0.f, 1250);
+	UMaterialExpressionScalarParameter* JointLo = AddScalar(Material, TEXT("JointLo"), 0.6f, 1350);
+	UMaterialExpressionScalarParameter* JointHi = AddScalar(Material, TEXT("JointHi"), 0.92f, 1450);
+	AddInput(Custom, TEXT("JointDepthCm"), JointDepthCm);
+	AddInput(Custom, TEXT("JointLo"), JointLo);
+	AddInput(Custom, TEXT("JointHi"), JointHi);
 	AddOutput(Custom, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Custom, TEXT("MetalOut"), CMOT_Float1);
@@ -658,8 +703,8 @@ UMaterialParameterCollection* BuildWindowCollection(float Parallax)
 	UPackage* Package = CreatePackage(FTScene::WindowCollection);
 	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
 		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
-	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel};
-	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f};
+	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel, TEXT("JointDepth")};
+	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f, 1.f};
 	for (int32 P = 0; P < static_cast<int32>(UE_ARRAY_COUNT(Names)); ++P)
 	{
 		FCollectionScalarParameter& Scalar = Collection->ScalarParameters.AddDefaulted_GetRef();
@@ -979,7 +1024,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 // An instance of the window master with the values Source (a surface's instance of M_WorldSurfaceTex) sets, and its
 // window width in metres (one a finish, so a building never mixes sizes).
 UMaterialInstanceConstant* BuildWindowInstance(const FString& Path, UMaterial* Master, const UMaterialInstanceConstant* Source,
-	float WindowWidth)
+	float WindowWidth, const ftcore::SurfaceJointSurface& Joint)
 {
 	UPackage* Package = CreatePackage(*Path);
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FPackageName::GetShortName(Path),
@@ -998,6 +1043,10 @@ UMaterialInstanceConstant* BuildWindowInstance(const FString& Path, UMaterial* M
 		Mic->SetVectorParameterValueEditorOnly(V.ParameterInfo, V.ParameterValue);
 	}
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WindowWidth")), WindowWidth);
+	// The wall's joints (ftcore::surfaceJointFor): their depth and the AO levels of a joint's floor and a unit's face.
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointDepthCm")), Joint.depthCm);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointLo")), Joint.aoLo);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointHi")), Joint.aoHi);
 	Mic->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Mic);
 	return Mic;
@@ -1363,7 +1412,9 @@ int32 BuildWindows(const FString& Params)
 	for (int32 I = 0; I < Ids.Num(); ++I)
 	{
 		const float Width = kWindowWidths[I % static_cast<int32>(UE_ARRAY_COUNT(kWindowWidths))];
-		Instances.Add(BuildWindowInstance(FTScene::WindowInstancePackage(Ids[I]), Master, Sources[I], Width));
+		const FTCHARToUTF8 IdUtf8(*Ids[I]);
+		Instances.Add(BuildWindowInstance(FTScene::WindowInstancePackage(Ids[I]), Master, Sources[I], Width,
+			ftcore::surfaceJointFor(std::string_view(IdUtf8.Get(), static_cast<size_t>(IdUtf8.Length())))));
 		Widths.Add(FString::Printf(TEXT("%s %.2f m"), *Ids[I], Width));
 	}
 

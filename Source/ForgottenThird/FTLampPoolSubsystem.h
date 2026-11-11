@@ -87,8 +87,8 @@ private:
 
 	FPool Lamps;
 	FPool Shops;
-	int32 WantLamps = kMaxLamps;
-	int32 WantShops = kMaxShops;
+	int32 WantLamps = 48; // of kMaxLamps: measured about 0.3 ms a night frame under the whole pool
+	int32 WantShops = 24;
 	float ReachCm = kReachMetres * 100.f;
 	float LampCandelaOverride = 0.f, LampReachOverride = 0.f, ShopCandelaOverride = 0.f, ShopReachOverride = 0.f;
 	float SincePick = 0.f;

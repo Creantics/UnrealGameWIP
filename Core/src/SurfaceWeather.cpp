@@ -75,9 +75,110 @@ void noiseLoop(std::string& h, const SurfaceWeatherSpec& spec, int channels) {
     h += "}\n";
 }
 
+constexpr int kReliefSteps = 3;      // the relief solve's fixed-point iterations
+constexpr float kReliefRelax = 1.0f;  // each step's share of the move (1: the plain fixed point)
+constexpr float kPaverJointM = 0.003f;  // a lane paver's half joint and bevel (the street layer's literals)
+constexpr float kPaverBevelM = 0.006f;
+constexpr float kKerbAcrossM = 10000.f;  // a kerb's grid is one cell across: no corners, no chips
+constexpr float kTwoPi = 6.28318531f;
+
+float sgn(float x) { return x > 0.f ? 1.f : (x < 0.f ? -1.f : 0.f); }
+// FTRelief.Hs.
+float reliefHash(float kx, float ky, float sx, float sy, float m) { return frac(std::sin(kx * sx + ky * sy) * m); }
+
+// FTRelief.Z without the gradient (see streetJointZ).
+float jointZ(float x, float y, float keyX, float keyY, const StreetJointGrid& g, const StreetSurfaceSpec& st) {
+    float qx = x / g.cellX;
+    const float qy = y / g.cellY;
+    qx += g.bond * std::fmod(std::floor(qy), 2.f);
+    const float idx = std::floor(qx), idy = std::floor(qy);
+    const float tfx = frac(qx) - 0.5f, tfy = frac(qy) - 0.5f;
+    const float ddx = (0.5f - std::fabs(tfx)) * g.cellX, ddy = (0.5f - std::fabs(tfy)) * g.cellY;
+    const float ht = smoothstep(g.halfJointM, g.halfJointM + g.bevelM, std::min(ddx, ddy));
+    const StreetTileFlaw f = streetTileFlaw(idx + keyX, idy + keyY, st);
+    const float face = g.depthM - f.sinkM + f.tiltX * tfx * g.cellX + f.tiltY * tfy * g.cellY;
+    float kc = 1.f;
+    if (f.chipR > 0.f) {
+        const float rx = (tfx - 0.5f * f.chipX) * g.cellX, ry = (tfy - 0.5f * f.chipY) * g.cellY;
+        kc = smoothstep(0.55f * f.chipR, f.chipR, std::max(std::sqrt(rx * rx + ry * ry), 1e-5f));
+    }
+    return -g.depthM + ht * kc * face;
+}
+
+// FTRelief: Hs, a tile hash, and Z, a jointed grid's height (m; 0 the face, -D the joint floor) at P (m) with its
+// gradient G (m per m) and floor share Fl (1 in a joint or chip, 0 on a face). Sunk, tilted and chipped tiles by
+// three hashes of the tile's key, none of them the tone's.
+void reliefStructHlsl(std::string& h, const StreetSurfaceSpec& st) {
+    h += "struct FTRelief\n{\n";
+    h += "\tfloat Hs(float2 k, float2 s, float m) { return frac(sin(dot(k, s)) * m); }\n";
+    h += "\tfloat Z(float2 P, float2 Cell, float Bond, float J, float B, float D, float2 Key, out float2 G, out float Fl)\n\t{\n";
+    h += "\t\tfloat2 Q = P / Cell;\n";
+    h += "\t\tQ.x += Bond * fmod(floor(Q.y), 2.0);\n";
+    h += "\t\tfloat2 Id = floor(Q);\n";
+    h += "\t\tfloat2 TF = frac(Q) - 0.5;\n";
+    h += "\t\tfloat2 Dd = (0.5 - abs(TF)) * Cell;\n";
+    h += "\t\tfloat t = saturate((min(Dd.x, Dd.y) - J) / B);\n";
+    h += "\t\tfloat Ht = t * t * (3.0 - 2.0 * t);\n";
+    h += "\t\tfloat2 DHt = (Dd.x < Dd.y ? float2(-sign(TF.x), 0.0) : float2(0.0, -sign(TF.y))) * 6.0 * t * (1.0 - t) / B;\n";
+    h += "\t\tfloat2 K = Id + Key;\n";
+    h += "\t\tfloat U = Hs(K, float2(39.3467, 11.1351), 24634.6345);\n";
+    h += "\t\tfloat V = Hs(K, float2(73.156, 52.235), 35791.137);\n";
+    h += "\t\tfloat C = Hs(K, float2(27.619, 91.427), 17369.917);\n";
+    h += "\t\tfloat Sink = U < " + num(st.sunkShare) + " ? lerp(" + num(st.sinkMinM) + ", " + num(st.sinkMaxM) + ", V) : 0.0;\n";
+    h += "\t\tfloat Ang = " + num(kTwoPi) + " * frac(V * 7.13);\n";
+    h += "\t\tfloat2 Tg = (U >= " + num(st.sunkShare) + " && U < " + num(st.sunkShare + st.tiltShare) + ") ? lerp(" +
+         num(st.tiltMinRad) + ", " + num(st.tiltMaxRad) + ", V) * float2(cos(Ang), sin(Ang)) : float2(0.0, 0.0);\n";
+    h += "\t\tfloat Face = D - Sink + dot(Tg, TF * Cell);\n";
+    h += "\t\tfloat Kc = 1.0;\n";
+    h += "\t\tfloat2 DK = float2(0.0, 0.0);\n";
+    h += "\t\tif (C < " + num(st.chipShare) + ")\n\t\t{\n";
+    h += "\t\t\tfloat q = C / " + num(st.chipShare) + ";\n";
+    h += "\t\t\tfloat2 Cs = float2(q < 0.5 ? -1.0 : 1.0, frac(q * 2.0) < 0.5 ? -1.0 : 1.0);\n";
+    h += "\t\t\tfloat R = lerp(" + num(st.chipMinM) + ", " + num(st.chipMaxM) + ", frac(q * 4.0));\n";
+    h += "\t\t\tfloat2 Rv = (TF - 0.5 * Cs) * Cell;\n";
+    h += "\t\t\tfloat Rc = max(length(Rv), 1e-5);\n";
+    h += "\t\t\tfloat s = saturate((Rc - 0.55 * R) / (0.45 * R));\n";
+    h += "\t\t\tKc = s * s * (3.0 - 2.0 * s);\n";
+    h += "\t\t\tDK = 6.0 * s * (1.0 - s) / (0.45 * R) * Rv / Rc;\n";
+    h += "\t\t}\n";
+    h += "\t\tfloat HK = Ht * Kc;\n";
+    h += "\t\tG = (DHt * Kc + Ht * DK) * Face + HK * Tg;\n";
+    h += "\t\tFl = 1.0 - HK;\n";
+    h += "\t\treturn -D + HK * Face;\n";
+    h += "\t}\n};\n";
+}
+
+// A grid's arguments to FTRelief.Z after P: Cell, Bond, J, B, D.
+std::string reliefArgs(const StreetJointGrid& g) {
+    return "float2(" + num(g.cellX) + ", " + num(g.cellY) + "), " + num(g.bond) + ", " + num(g.halfJointM) + ", " +
+           num(g.bevelM) + ", " + num(g.depthM);
+}
+
+// The relief solve on RlP (m, the grid's frame) by the view's tangent RlT in that frame, inside the near-only branch:
+// each step moves the point to where the view ray is at the height under it, then the weight blends it in.
+void reliefSolveHlsl(std::string& h, const std::string& args, const std::string& key, const StreetSurfaceSpec& st) {
+    h += "\t\tif (RlW > 0.001)\n\t\t{\n";
+    h += "\t\t\tfloat2 RlS = RlT / max(RlN, " + num(st.parallaxSlopeClamp) + ");\n";
+    h += "\t\t\tfloat2 RlO = RlP;\n";
+    for (int i = 0; i < kReliefSteps; ++i) {
+        const std::string to = "RlO + RlR.Z(RlP, " + args + ", " + key + ", RlG, RlF) * RlS";
+        h += "\t\t\tRlP = " + (kReliefRelax >= 1.f ? to : "lerp(RlP, " + to + ", " + num(kReliefRelax) + ")") + ";\n";
+    }
+    h += "\t\t\tRlP = lerp(RlO, RlP, RlW);\n";
+    h += "\t\t}\n";
+}
+
 // The street layer's body (inside the node, after the box frame): reads Street, Pw, Foot, VN, Lm, Sx, Sy, Sz, Ux, Uy,
-// Uy.z, GutD; changes Alb, Rgh and Nrm.
-void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurfaceSpec& st) {
+// Uy.z, GutD (with relief also ViewVec, JointDepth, Wet, Up); changes Alb, Rgh and Nrm (with relief declares RlCav and
+// RlWet for the AO and the wet roughness after it).
+void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurfaceSpec& st, bool relief) {
+    const StreetJointGrid paveG = streetJointGrid(StreetKind::Pavement, st);
+    const StreetJointGrid paverG = streetJointGrid(StreetKind::Lane, st);
+    const StreetJointGrid kerbG = streetJointGrid(StreetKind::Kerb, st);
+    if (relief) {
+        h += "float RlCav = 0.0;\n";
+        h += "float RlWet = 0.0;\n";
+    }
     h += "int SK = (int)round(Street);\n";
     h += "bool Tilted = abs(Uy.z) > " + num(spec.tiltMin) + ";\n";
     h += "if (SK > 0)\n{\n";
@@ -90,6 +191,22 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\tfloat2 SlopeB = float2(0.0, 0.0);\n";  // the same in the box's own x and y
     h += "\tfloat FaceW = TopF;\n";
     h += "\tfloat Mid = 1.0 - smoothstep(" + num(kMidFrom) + ", " + num(kMidTo) + ", Foot);\n";
+    if (relief) {
+        // The joint relief: the switch, the view (metres, unit, its cosine to the face) and the parallax weight; RlG and
+        // RlF take each FTRelief.Z's gradient and floor share, RlFl and RlMean the piece's floor share and its mean.
+        h += "\tfloat RlD = saturate(JointDepth);\n";
+        h += "\tfloat3 RlV = ViewVec / 100.0;\n";
+        h += "\tfloat RlL = max(length(RlV), 1e-4);\n";
+        h += "\tRlV = RlV / RlL;\n";
+        h += "\tfloat RlN = dot(VN, RlV);\n";
+        h += "\tfloat RlW = RlD * (1.0 - smoothstep(" + num(st.parallaxNearM) + ", " + num(st.parallaxFarM) +
+             ", RlL)) * smoothstep(" + num(st.parallaxNdVNone) + ", " + num(st.parallaxNdVFull) + ", RlN) * Fine * TopF;\n";
+        h += "\tFTRelief RlR;\n";
+        h += "\tfloat2 RlG = float2(0.0, 0.0);\n";
+        h += "\tfloat RlF = 1.0;\n";
+        h += "\tfloat RlFl = 0.0;\n";
+        h += "\tfloat RlMean = 0.0;\n";
+    }
     // Asphalt: the tone layer, aggregate with light chips, ravelled blotches, wheel paths (on a flat slab across its
     // short side too), oil down a lane's centre, joints, sealed cracks and open hairlines.
     h += "\tif (SK == 1)\n\t{\n";
@@ -157,6 +274,14 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\telse if (SK == 5)\n\t{\n";
     h += "\t\tbool LongX = Sx >= Sy;\n";
     h += "\t\tfloat2 PL = LongX ? Lm.xy + 0.5 * float2(Sx, Sy) : float2(Lm.y + 0.5 * Sy, Lm.x + 0.5 * Sx);\n";
+    if (relief) {
+        // The paver frame swaps the box's axes when the run is along y: the view's tangent swaps with it.
+        h += "\t\tfloat2 RlKey = float2(round(Sx * 7.0), round(Sy * 13.0));\n";
+        h += "\t\tfloat2 RlT = LongX ? float2(dot(RlV, Ux), dot(RlV, Uy)) : float2(dot(RlV, Uy), dot(RlV, Ux));\n";
+        h += "\t\tfloat2 RlP = PL;\n";
+        reliefSolveHlsl(h, reliefArgs(paverG), "RlKey", st);
+        h += "\t\tPL = RlP;\n";
+    }
     h += "\t\tfloat2 PP = PL / float2(0.2, 0.1);\n";
     h += "\t\tPP.x += 0.5 * fmod(floor(PP.y), 2.0);\n";
     h += "\t\tfloat2 PId = floor(PP);\n";
@@ -167,6 +292,12 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Pt = saturate((PD - 0.003) / 0.006);\n";
     h += "\t\tfloat PH = Pt * Pt * (3.0 - 2.0 * Pt);\n";
     h += "\t\tfloat2 PSl = (PNearX ? float2(-sign(PF.x), 0.0) : float2(0.0, -sign(PF.y))) * 6.0 * Pt * (1.0 - Pt) / 0.006 * 0.003 * Fine;\n";
+    if (relief) {
+        h += "\t\tRlR.Z(PL, " + reliefArgs(paverG) + ", RlKey, RlG, RlF);\n";
+        h += "\t\tPSl = lerp(PSl, RlG * Fine, RlD);\n";
+        h += "\t\tRlFl = RlF;\n";
+        h += "\t\tRlMean = 0.2;\n";
+    }
     h += "\t\tSlopeB += LongX ? PSl : PSl.yx;\n";
     h += "\t\tfloat Ph = frac(sin(dot(PId + float2(round(Sx * 7.0), round(Sy * 13.0)), float2(12.9898, 78.233))) * 43758.5453);\n";
     h += "\t\tfloat PJ = lerp(0.2, 1.0 - PH, Mid);\n";  // joint share: 1 in a joint, its mean further out

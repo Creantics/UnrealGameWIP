@@ -293,16 +293,22 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		const float Wet = Look ? Look->GetLook().wetness * ftcore::nightFrame(FTNight::Look(), bWetNight ? 1.f : 0.f).wetShare : 0.f;
 		const bool bWet = Look && LookParams && LookParams->SetScalarParameterValue(TEXT("Wetness"), Wet);
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: wetness %.3f %s."), Wet, bWet ? TEXT("written") : TEXT("not written (no look or MPC_Look)"));
-		// -WindowParallax=<0..1>: 0 shows every room and shop display case flat, for a still alone.
-		float Parallax = -1.f;
-		if (FParse::Value(FCommandLine::Get(), TEXT("WindowParallax="), Parallax) && Parallax >= 0.f)
+		// For a still alone (the clock does not run under a still): -WindowParallax=<0..1>, 0 shows every room and shop
+		// display case flat; -JointDepth=<0..1>, 0 the surfaces without joint depth; -ShopDayLevel= and -ShopNightLevel=.
+		const TCHAR* const Switches[] = {TEXT("WindowParallax="), TEXT("JointDepth="), TEXT("ShopDayLevel="), TEXT("ShopNightLevel=")};
+		const TCHAR* const Names[] = {TEXT("Parallax"), TEXT("JointDepth"), TEXT("ShopDayLevel"), TEXT("ShopNightLevel")};
+		for (int32 S = 0; S < 4; ++S)
 		{
-			const FString WindowPath = FTScene::WindowCollection;
-			UMaterialParameterCollection* WindowCollection = LoadObject<UMaterialParameterCollection>(
-				nullptr, *(WindowPath + TEXT(".") + FPackageName::GetShortName(WindowPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
-			UMaterialParameterCollectionInstance* WindowParams = WindowCollection ? World.GetParameterCollectionInstance(WindowCollection) : nullptr;
-			const bool bSet = WindowParams && WindowParams->SetScalarParameterValue(TEXT("Parallax"), FMath::Clamp(Parallax, 0.f, 1.f));
-			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: window parallax %.2f %s."), Parallax, bSet ? TEXT("written") : TEXT("not written"));
+			float Value = -1.f;
+			if (FParse::Value(FCommandLine::Get(), Switches[S], Value) && Value >= 0.f)
+			{
+				const FString WindowPath = FTScene::WindowCollection;
+				UMaterialParameterCollection* WindowCollection = LoadObject<UMaterialParameterCollection>(
+					nullptr, *(WindowPath + TEXT(".") + FPackageName::GetShortName(WindowPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+				UMaterialParameterCollectionInstance* WindowParams = WindowCollection ? World.GetParameterCollectionInstance(WindowCollection) : nullptr;
+				const bool bSet = WindowParams && WindowParams->SetScalarParameterValue(Names[S], S < 2 ? FMath::Clamp(Value, 0.f, 1.f) : Value);
+				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: window collection %s %.2f %s."), Names[S], Value, bSet ? TEXT("written") : TEXT("not written"));
+			}
 		}
 	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))

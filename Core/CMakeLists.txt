@@ -61,6 +61,7 @@ add_library(ftcore STATIC
     src/WindowInterior.cpp
     src/WindowFacade.cpp
     src/SurfaceWeather.cpp
+    src/SurfaceJoints.cpp
     src/FrameStats.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
@@ -272,6 +273,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_window_interior.cpp
         tests/test_window_facade.cpp
         tests/test_surface_weather.cpp
+        tests/test_surface_joints.cpp
         tests/test_frame_stats.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
