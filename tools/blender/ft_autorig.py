@@ -4,14 +4,16 @@ mesh with voxel-geodesic weights and exports an FBX that FTImportCharacter takes
 
   blender -b --factory-startup --python-exit-code 1 --python tools/blender/ft_autorig.py -- \
       in.glb out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--voxels 160] \
-      [--report report.json] [--blend out.blend] [--no-hem] [--no-twist] [--heat] [--keep-weights]
+      [--report report.json] [--blend out.blend] [--no-hem] [--no-twist] [--heat] [--keep-weights [--hem]]
 
 --height 0 keeps the mesh's own size. --guides is a json {joint name: [x, y, z]} in the output frame (metres,
 Z up, facing -Y, soles on z = 0, after --height scaling) that overrides detected landmarks. --heat binds with
 Blender's heat weights instead (for comparisons). --keep-weights takes the joints and skin weights from a
 rig the source file already carries (a Tripo export with mannequin bone names): it rebuilds the skeleton with
 the mannequin's axes, twist and ik bones, then repairs the weights (hem rule, smoothing, twist bands, influence
-limit, normalise) instead of binding from scratch. Bone axes: each Blender bone's Y (head to tail) is the
+limit, normalise) instead of binding from scratch. The hem rule is off there unless --hem is given: with
+no landmark detection to trust, cloth and leg armour cannot be told apart reliably (on a test mesh it moved
+most of the thigh plates to the pelvis). Bone axes: each Blender bone's Y (head to tail) is the
 mannequin bone's Y and its X the mannequin's X, so the FBX exporter's default axis mapping writes the
 mannequin's frames.
 """
@@ -56,6 +58,8 @@ def args():
             o["heat"] = True
         elif k == "--keep-weights":
             o["keep"] = True
+        elif k == "--hem":
+            o["hem_on"] = True
         else:
             pos.append(k)
         i += 1
@@ -262,8 +266,40 @@ def main():
             say("source weights: %d vertices unweighted, row sums %.3f..%.3f, up to %d influences"
                 % (int((s_[:, 0] < 1e-6).sum()), float(s_.min()), float(s_.max()), int((Wk > 1e-4).sum(1).max())))
             Wk = Wk / np.maximum(s_, 1e-12)
-            names, W = ac.finish_weights(V, F, J, info, [gnames[i] for i in use], Wk, max_infl=o["max_infl"],
-                                         twist=o["twist"], hem=o["hem"], log=say)
+            # the hem rule works from the source rig, not from detection (which fails on the cloth this rule is
+            # for): leg axes from the thigh and calf bones, leg radius from the inner vertices the source thighs own (skirts are thigh-weighted too),
+            # and only vertices the source gives mostly to the pelvis and thighs count as hanging cloth
+            def part(*bases):  # a segment's weight with its twist bones folded in
+                return sum(Wk[:, k] for k, n in enumerate(gnames[i] for i in use)
+                           if n in bases or any(n.startswith(b_[:-2] + "_twist") and n.endswith(b_[-2:])
+                                                for b_ in bases if b_[-2:] in ("_l", "_r")))
+            hips = part("pelvis", "thigh_l", "thigh_r", "spine_01")
+            info["hem_gate"] = hips > 0.5
+            for s in "lr":
+                c, d = L["thigh_" + s], ac.unit(L["calf_" + s] - L["thigh_" + s])
+                own = (part("thigh_" + s) > 0.5) & (V[:, 2] < c[2]) & (V[:, 2] > L["calf_" + s][2])
+                rel = V[own] - c
+                dist = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
+                r = float(np.percentile(dist, 15)) if len(dist) > 50 else 0.06 * info["H"]
+                info["leg"][s] = dict(c=c, d=d, r=r, pts=np.zeros((0, 4)))
+            info.pop("arm", None)  # the gate already leaves the arms out
+            if o.get("hem_on"):
+                say("hem rule from the source rig: %d candidate vertices, leg radius %.3f / %.3f m"
+                % (int((info["hem_gate"] & (V[:, 2] < info["crotch"])).sum()), info["leg"]["l"]["r"],
+                   info["leg"]["r"]["r"]))
+            srcn = [gnames[i] for i in use]
+            names, W = ac.finish_weights(V, F, J, info, srcn, Wk, max_infl=o["max_infl"],
+                                         twist=o["twist"], hem=o["hem"] and o.get("hem_on", False), log=say)
+            # what the repair changed, by the bone that owned each vertex in the source (twists folded into
+            # their segments for the comparison)
+            base = [n.split("_twist")[0] + n[-2:] if "_twist" in n else n for n in srcn]
+            sb = np.array(base)[Wk.argmax(1)]
+            nb = np.array([n.split("_twist")[0] + n[-2:] if "_twist" in n else n for n in names])[W.argmax(1)]
+            moved = sb != nb
+            if moved.any():
+                u, c = np.unique(sb[moved], return_counts=True)
+                say("dominant bone changed on %d vertices; by source bone: %s" % (int(moved.sum()), ", ".join(
+                    "%s %d" % (b_, c_) for b_, c_ in sorted(zip(u, c), key=lambda x: -x[1])[:10])))
         else:
             names, W = ac.bind(V, F, J, dirs, info, max_infl=o["max_infl"], twist=o["twist"], hem=o["hem"],
                                log=say)

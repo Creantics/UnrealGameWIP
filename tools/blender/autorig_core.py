@@ -959,6 +959,8 @@ def hem_rule(V, W, col, info, say):
     cand = (zc < crotch + 0.02 * H) & (zc > 0.08 * H)
     for s in info.get("arm", {}):  # hands hanging beside the hips are not cloth
         cand[info["arm"][s]["verts"]] = False
+    if info.get("hem_gate") is not None:  # a caller that knows the body parts (a source rig) limits the cloth
+        cand &= info["hem_gate"]
     if not cand.any():
         return W
     ex = np.full(len(V), np.inf)  # stand-off beyond the nearer leg's surface, in leg radii
