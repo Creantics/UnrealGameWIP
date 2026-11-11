@@ -49,6 +49,10 @@ public:
 	ftcore::SharedReply Press(EFTSharedAction Action, uint8 Who, uint8 Target = ftcore::kNoFighter);
 	// The story state gift presses at a lead are written to, given or refused (both or neither), until the next Begin.
 	void BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry);
+	// The lead the player's figure fills (an ftcore lead slot); call after Begin and on every lead switch. False for a
+	// non-lead (unchanged).
+	bool SetActiveLead(uint8 Lead) { return Session->setActiveLead(Lead); }
+	uint8 GetActiveLead() const { return Session->activeLead(); }
 
 	ftcore::FightSession& Get() { return *Session; }
 	const ftcore::FightSession& Get() const { return *Session; }

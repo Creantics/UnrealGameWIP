@@ -296,6 +296,9 @@ the pieces.
   a counter at its cap or an unbound counter is a normal answer (`lastStoryWrite`). The per-kind press
   counters (counter wides) roll back with a scene restart, so a retried fight counts afresh; a raw
   total does not.
+* **Active lead.** `setActiveLead(lead)` names the lead the player's figure fills (`kLeadA` until
+  set; it stays across `begin`). The host sets it at fight start and on every lead switch, and aims
+  its gift presses, count calls and blow reports for the player at `activeLead()`.
 * **Boss counters.** `counter(kind, who, shared)`: `shared` is the host's word that the counter carries
   the shared input (a blow judged a shared outcome, or a hit the lead took half of). An open count
   window alone is not it; a shared counter kind without it is refused (`NeedsShared`).

@@ -168,6 +168,16 @@ public:
 
     double now() const { return now_; }
 
+    // The lead the player's figure fills (kLeadA until set): the host aims its gift presses at it and reports its
+    // blows and calls for it. The host sets it when the fight begins and whenever the player switches lead; it
+    // stays across begin (a party fact, not a fight's). False (unchanged) for a non-lead.
+    bool setActiveLead(FighterId lead) {
+        if (!isLead(lead)) return false;
+        activeLead_ = lead;
+        return true;
+    }
+    FighterId activeLead() const { return activeLead_; }
+
     // ---- Presses (stamped with now()) ----
 
     SharedReply press(SharedAction action, FighterId who, FighterId target = kNoFighter) {
@@ -318,6 +328,7 @@ private:
     WeakPointLock lock_{};
     bool hasBoss_ = false;
     BossScript boss_{};
+    FighterId activeLead_ = kLeadA;
     StoryState* story_ = nullptr;
     const FactRegistry* reg_ = nullptr;
     SetResult lastStory_ = SetResult::Unchanged;

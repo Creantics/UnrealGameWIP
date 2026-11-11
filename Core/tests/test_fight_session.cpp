@@ -480,6 +480,18 @@ TEST_CASE("fight session: refused gift presses at a lead count in the story stat
     CHECK(slot.tally().givenOf(Gift::Count) == 0);
 }
 
+TEST_CASE("fight session: the active lead is a lead, kept across begin") {
+    FightSession s;
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.setActiveLead(kLeadB));
+    CHECK(s.activeLead() == kLeadB);
+    CHECK(!s.setActiveLead(kThirdSlot));
+    CHECK(!s.setActiveLead(kNoFighter));
+    CHECK(s.activeLead() == kLeadB);
+    REQUIRE(s.begin(FightSessionDef{}, 10.0).ok());
+    CHECK(s.activeLead() == kLeadB);
+}
+
 TEST_CASE("fight session: a fight's frames allocate nothing") {
     FightSession s;
     FightSessionDef d;
