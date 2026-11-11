@@ -18,7 +18,8 @@
 // own lunge, stopping short of the point).
 //
 // PressHold: the attack button (left mouse) as light on a tap and heavy on a hold. A release before heavyHold seconds
-// is a light; holding to heavyHold is a heavy, once per press, and its release does nothing more.
+// is a light; holding to heavyHold is a heavy, once per press, and its release does nothing more. With `single` (a gun
+// kit aiming) the press is one light at once, held or not: no heavy can come of it, and a heavy waiting is dropped.
 //
 // The tunables are in Data/Battle/aim.json (importAimRules). Nothing allocates after import.
 
@@ -110,8 +111,10 @@ public:
     };
     // One frame: down = the button is down now. A press shorter than `hold` gives a light on its release; reaching
     // `hold` gives a heavy at once, or, while busy (an attack under way the host can't queue a heavy into), on the
-    // first frame it isn't, unless a new press has begun by then.
-    Out tick(float dt, bool down, float hold, bool busy = false);
+    // first frame it isn't, unless a new press has begun by then. With `single` a new press is a light on its first
+    // frame and nothing after; a press already under way gives no heavy while `single` holds (its release is a light
+    // unless it already gave one), and a heavy still waiting is dropped.
+    Out tick(float dt, bool down, float hold, bool busy = false, bool single = false);
     // Forgets a press under way (the button's input was taken away: a menu, the vehicle).
     void reset() {
         downFor_ = -1.f;

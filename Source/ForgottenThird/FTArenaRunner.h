@@ -23,6 +23,7 @@
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
+#include "ftcore/InputBindings.h"
 
 #include "FTArenaBossVfx.h"
 #include "FTKiteHost.h"
@@ -430,6 +431,8 @@ private:
 	// Attacking on the move (Data/Battle/attack_move.json, loaded with aim.json).
 	ftcore::AttackMoveRules AttackMoveTable;
 	ftcore::PressHold AttackHold;
+	// Guard's hold or toggle latch (FTInputBindings).
+	ftcore::HeldInput GuardInput;
 	bool bAimRulesTried = false;
 	bool bAimHeld = false;
 	bool bAimCamera = false;

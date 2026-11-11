@@ -700,6 +700,18 @@ TEST_CASE("arena attack: Duy fires one round per aimed press, kicks again once t
     rig.in.aim = false;
     rig.tick();
     CHECK(rig.out().player.move == kArenaShotMove);
+    settle();
+    // Aiming is the pistol only: a heavy press (its own key, or the button held) is a round too, never the heavy kick.
+    rig.in.aim = true;
+    rig.in.heavy = true;
+    rig.tick();
+    CHECK(rig.out().player.action == ArenaAction::Light);
+    CHECK(rig.out().player.move == kArenaShotMove);
+    settle();
+    // Unaimed, the heavy is the kick again.
+    rig.in.heavy = true;
+    rig.tick();
+    CHECK(rig.out().player.action == ArenaAction::Heavy);
 }
 
 namespace {

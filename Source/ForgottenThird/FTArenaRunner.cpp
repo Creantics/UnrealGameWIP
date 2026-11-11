@@ -15,6 +15,7 @@
 #include "FTActionButtons.h"
 #include "FTArenaFighter.h"
 #include "FTGameInstance.h"
+#include "FTInputBindings.h"
 #include "FTPauseSubsystem.h"
 #include "FTText.h"
 #include "FTVfxComponent.h"
@@ -1074,6 +1075,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
 	{
 		bGuardHeld = false;
+		GuardInput.reset();
 		bInterceptHeld = false;
 		bAimHeld = false;
 		AttackHold.reset();
@@ -1082,18 +1084,19 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	}
 	using namespace FTActionButtons;
 	const int32 AttackB = static_cast<int32>(ftcore::ActionButton::Attack);
-	const int32 GuardB = static_cast<int32>(ftcore::ActionButton::Guard);
 	const int32 DodgeB = static_cast<int32>(ftcore::ActionButton::Dodge);
 	const int32 HeavyB = static_cast<int32>(ftcore::ActionButton::Jump);
 
 	bPressLight |= ArenaAnyJustPressed(*PC, Key(AttackB, 0), Key(AttackB, 1), EKeys::Gamepad_RightShoulder);
 	bPressHeavy |= ArenaAnyJustPressed(*PC, Key(HeavyB, 0), Key(HeavyB, 1), EKeys::Gamepad_RightTrigger);
-	// Left mouse: a tap is the light, held ftcore::AimRules::heavyHold the heavy. Right mouse held aims.
+	// Left mouse: a tap is the light, held ftcore::AimRules::heavyHold the heavy. Right mouse held aims; a gun kit
+	// aiming fires one round per press, at the press, and never a heavy.
+	bAimHeld = PC->IsInputKeyDown(EKeys::RightMouseButton);
 	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, PC->IsInputKeyDown(EKeys::LeftMouseButton), ArenaAim.rules().heavyHold,
-		Fight.output().player.action == ftcore::ArenaAction::Light || Fight.output().player.action == ftcore::ArenaAction::Heavy);
+		Fight.output().player.action == ftcore::ArenaAction::Light || Fight.output().player.action == ftcore::ArenaAction::Heavy,
+		bAimHeld && Def.fighter.weapon == ftcore::ArenaWeapon::Guns);
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
-	bAimHeld = PC->IsInputKeyDown(EKeys::RightMouseButton);
 	bPressDodge |= ArenaAnyJustPressed(*PC, Key(DodgeB, 0), Key(DodgeB, 1), EKeys::SpaceBar);
 	// The partner's Read: 1 / 2 / 3, or on a pad the d-pad's left, up and right while the cards are up, picked or
 	// not, until the move goes active (they switch the target and heal at any other time; the d-pad's down stays
@@ -1115,8 +1118,9 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressLock |= ArenaAnyJustPressed(*PC, EKeys::Tab, EKeys::MiddleMouseButton, EKeys::Gamepad_RightThumbstick);
 	bPressRelease |= ArenaAnyJustPressed(*PC, EKeys::R, EKeys::Gamepad_LeftTrigger);
 	bPressPair |= ArenaAnyJustPressed(*PC, EKeys::F, EKeys::Gamepad_DPad_Down);
-	bGuardHeld = PC->IsInputKeyDown(Key(GuardB, 0)) || PC->IsInputKeyDown(Key(GuardB, 1)) || PC->IsInputKeyDown(EKeys::LeftControl)
-		|| PC->IsInputKeyDown(EKeys::Gamepad_LeftShoulder);
+	// Guard: its bound keys (Left Ctrl, LB by default; Saved/InputBindings.json), held, or pressed once to toggle.
+	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, ftcore::InputAction::Guard),
+		FTInputBindings::Toggles(GetWorld(), ftcore::InputAction::Guard));
 	// A called-blow boss's Intercept (its Guard is the guard above): U, the mouse's thumb button or the left stick's
 	// click, held.
 	bInterceptHeld = PC->IsInputKeyDown(EKeys::U) || PC->IsInputKeyDown(EKeys::ThumbMouseButton)

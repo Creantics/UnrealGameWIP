@@ -69,18 +69,23 @@ float AimStance::alpha() const {
     return a * a * (3.f - 2.f * a);
 }
 
-PressHold::Out PressHold::tick(float dt, bool down, float hold, bool busy) {
+PressHold::Out PressHold::tick(float dt, bool down, float hold, bool busy, bool single) {
     Out o;
     if (!(dt > 0.f) || !std::isfinite(dt)) dt = 0.f;
+    if (single) heavyPending_ = false; // aiming a gun: no heavy, not even one already waiting
     if (down) {
         if (downFor_ < 0.f) {
             downFor_ = 0.f;
             heavyDone_ = false;
             heavyPending_ = false; // a new press replaces a heavy still waiting
+            if (single) {
+                o.light = true;    // the round goes at the press
+                heavyDone_ = true; // and its hold and release give nothing more
+            }
         } else {
             downFor_ += dt;
         }
-        if (!heavyDone_ && downFor_ >= hold) {
+        if (!heavyDone_ && !single && downFor_ >= hold) {
             heavyDone_ = true;
             heavyPending_ = true;
         }

@@ -243,7 +243,8 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
     // A kit with no attacks of its own (ArenaFighter::attacks) drops every press. A guns kit's light on the reticle is
     // its shot, decided at the press.
     if ((heavy || light) && kit_.attacks) {
-        buffered_ = heavy ? kArenaHeavyMove : reticleOn_ && kit_.weapon == ArenaWeapon::Guns ? kArenaShotMove : 0;
+        // A gun kit on the reticle fires a round, light or heavy pressed: aiming is the pistol only.
+        buffered_ = reticleOn_ && kit_.weapon == ArenaWeapon::Guns ? kArenaShotMove : heavy ? kArenaHeavyMove : 0;
         bufferedAt_ = time_;
     }
     if (buffered_ != kNoMove && time_ - bufferedAt_ > kit_.bufferTime) buffered_ = kNoMove;

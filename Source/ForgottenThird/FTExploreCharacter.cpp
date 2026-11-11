@@ -680,7 +680,9 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 	const bool bInput = PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this) && !ScenePlaying();
 	const bool bForced = AimFrom >= 0.f && GetWorld()->GetTimeSeconds() >= AimFrom && !Van.IsValid() && !ScenePlaying();
 	const bool bHeld = (bInput && PC->IsInputKeyDown(EKeys::RightMouseButton)) || bForced;
-	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, bInput && PC->IsInputKeyDown(EKeys::LeftMouseButton), Rules.heavyHold, Strike.attacking());
+	// A gun kit aiming fires one round per press, at the press, and never a heavy.
+	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, bInput && PC->IsInputKeyDown(EKeys::LeftMouseButton), Rules.heavyHold, Strike.attacking(),
+		bHeld && Strike.kit().weapon == ftcore::ArenaWeapon::Guns);
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
 	if (!bInput)

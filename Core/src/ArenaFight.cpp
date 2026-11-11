@@ -749,7 +749,8 @@ struct ArenaFightImpl {
         Press press = Press::None;
         // A gun kit's light while aiming is its shot, decided at the press: a buffered shot stays one if aim lets go.
         if (in.light) press = in.aim && fi.weapon == ArenaWeapon::Guns ? Press::Shot : Press::Light;
-        if (in.heavy) press = Press::Heavy;
+        // Aiming a gun kit is the pistol only: a heavy press is a round too.
+        if (in.heavy) press = in.aim && fi.weapon == ArenaWeapon::Guns ? Press::Shot : Press::Heavy;
         if (in.heal) press = Press::Heal;
         if (in.dodge) press = Press::Dodge;
         if (in.release) press = Press::Release;

@@ -140,6 +140,39 @@ TEST_CASE("aim: what each lead's aimed attack does") {
     CHECK(aimKindOf(magic) == AimKind::Cast);
 }
 
+TEST_CASE("aim: aiming a gun, the attack button is one light at the press however long it is held, and never a heavy") {
+    const float hold = 0.25f;
+    PressHold p;
+    PressHold::Out o = p.tick(kDt, true, hold, false, true);
+    CHECK(o.light); // at the press, not on release
+    CHECK_FALSE(o.heavy);
+    for (int i = 0; i < 120; ++i) { // held two seconds: nothing more
+        o = p.tick(kDt, true, hold, false, true);
+        CHECK_FALSE(o.light);
+        CHECK_FALSE(o.heavy);
+    }
+    o = p.tick(kDt, false, hold, false, true); // the release gives nothing either
+    CHECK_FALSE(o.light);
+    CHECK_FALSE(o.heavy);
+    CHECK(p.tick(kDt, true, hold, false, true).light); // the next press is the next round
+    p.reset();
+
+    // A press begun unaimed, then the aim taken: no heavy while aiming; its release is one light (the round).
+    CHECK_FALSE(p.tick(kDt, true, hold).light);
+    for (int i = 0; i < 60; ++i) CHECK_FALSE(p.tick(kDt, true, hold, false, true).heavy);
+    o = p.tick(kDt, false, hold, false, true);
+    CHECK(o.light);
+    CHECK_FALSE(o.heavy);
+
+    // A heavy waiting on a busy attack is dropped once the aim is taken.
+    p.reset();
+    for (int i = 0; i < 30; ++i) CHECK_FALSE(p.tick(kDt, true, hold, true).heavy);
+    CHECK(p.heavyPending());
+    o = p.tick(kDt, true, hold, false, true);
+    CHECK_FALSE(o.heavy);
+    CHECK_FALSE(p.heavyPending());
+}
+
 TEST_CASE("aim: the attack button is light on a tap and heavy on a hold, once") {
     PressHold p;
     const float hold = 0.25f;

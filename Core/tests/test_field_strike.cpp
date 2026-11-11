@@ -149,6 +149,10 @@ TEST_CASE("field strike: Duy's round on the reticle reaches down its lane, his u
         press(s, false, r, &far, 1); // a second press fires again: no chain of rounds
         CHECK(r.lastMove == kArenaShotMove);
         CHECK(r.started == 2);
+        idle(s, shot->total() + 0.1f, r, &far, 1);
+        press(s, true, r, &far, 1); // a heavy press on the reticle is a round too, never the heavy kick
+        CHECK(r.lastMove == kArenaShotMove);
+        CHECK(r.started == 3);
         CHECK(arenaPlayerStrike(duy, kArenaShotMove) == FightClip::WeaponRight);
     }
     {   // the reticle off: the same press is the chain's first kick, which reaches nothing that far

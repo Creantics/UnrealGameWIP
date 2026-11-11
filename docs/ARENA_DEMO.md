@@ -419,7 +419,7 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
 | Light attack (a chain of hits; on an open enemy, a riposte) | J or left mouse (tap) | X or RB |
 | Heavy attack | K or left mouse held 0.25 s | A or RT |
 | Aim (hold): camera over the shoulder, reticle, face the aim, strafe | Right mouse | |
-| Guard (hold); parry (tap just before a hit) | I or Left Ctrl | Y or LB |
+| Guard (hold, or press to toggle); parry (tap just before a hit) | Left Ctrl | LB |
 | Roll (backstep with no direction) | L or Space | B |
 | Heal (uses a charge) | H | D-pad up (not while Read cards are up) |
 | Release (above a third of the Load) | R | LT |
@@ -434,8 +434,11 @@ and turns at a capped rate (`ArenaInput::attackSpeed`, `attackTurn`); heavies ro
 | Fight again (after the outcome) | Enter or Space | A |
 | Pause menu | Esc | Start |
 
-The action keys are the four action buttons (`FTActionButtons.h`: Attack J / pad X, Guard I / pad Y,
-Dodge L / pad B, Jump K / pad A), with the mouse and the shoulders as second keys. Presses are read
+The action keys are the four action buttons (`FTActionButtons.h`: Attack J / pad X,
+Dodge L / pad B, Jump K / pad A), with the mouse and the shoulders as second keys. Guard comes from the binding
+table (`ftcore/InputBindings.h`, overrides in `Saved/InputBindings.json`, e.g.
+`{"version": 1, "keys": {"guard": "Z"}, "hold": {"guard": "toggle"}}`); with the game's hold-toggle setting on, or
+its own `"toggle"`, one press raises it and the next lowers it. Presses are read
 each frame and handed to the fight on its next step, so no press is lost between steps.
 
 ## HUD
