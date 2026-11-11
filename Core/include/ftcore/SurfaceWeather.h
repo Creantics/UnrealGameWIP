@@ -147,8 +147,8 @@ FTCORE_API StreetTileFlaw streetTileFlaw(float keyX, float keyY, const StreetSur
 // box's key offset (keyX, keyY) added to the cell id for the flaws. Sunk, tilted and chipped tiles included.
 FTCORE_API float streetJointZ(float x, float y, float keyX, float keyY, const StreetJointGrid& grid,
                               const StreetSurfaceSpec& spec);
-// The HLSL's parallax weight RlW: switch 0..1, distM to the camera, nDotV the view's cosine to the face, fine the
-// detail fade (1 near).
+// The HLSL's parallax weight RlW on a top face (the HLSL also multiplies by TopF): switch 0..1, distM to the camera,
+// nDotV the view's cosine to the face, fine the detail fade (1 near).
 FTCORE_API float streetParallaxWeight(float distM, float nDotV, float jointDepth, float fine, const StreetSurfaceSpec& spec);
 // The HLSL's relief solve (before its weight): the point (x, y) shifted for a view whose unit vector toward the
 // camera has (viewX, viewY) in the grid's plane and nDotV along its normal.

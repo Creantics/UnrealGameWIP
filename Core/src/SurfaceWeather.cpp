@@ -76,13 +76,13 @@ void noiseLoop(std::string& h, const SurfaceWeatherSpec& spec, int channels) {
 }
 
 constexpr int kReliefSteps = 3;      // the relief solve's fixed-point iterations
-constexpr float kReliefRelax = 1.0f;  // each step's share of the move (1: the plain fixed point)
+constexpr float kReliefRelax = 0.5f;  // steps after the first (a full one) move this share of the way: no fold-back
+                                      // on a groove wall
 constexpr float kPaverJointM = 0.003f;  // a lane paver's half joint and bevel (the street layer's literals)
 constexpr float kPaverBevelM = 0.006f;
 constexpr float kKerbAcrossM = 10000.f;  // a kerb's grid is one cell across: no corners, no chips
 constexpr float kTwoPi = 6.28318531f;
 
-float sgn(float x) { return x > 0.f ? 1.f : (x < 0.f ? -1.f : 0.f); }
 // FTRelief.Hs.
 float reliefHash(float kx, float ky, float sx, float sy, float m) { return frac(std::sin(kx * sx + ky * sy) * m); }
 
@@ -162,7 +162,7 @@ void reliefSolveHlsl(std::string& h, const std::string& args, const std::string&
     h += "\t\t\tfloat2 RlO = RlP;\n";
     for (int i = 0; i < kReliefSteps; ++i) {
         const std::string to = "RlO + RlR.Z(RlP, " + args + ", " + key + ", RlG, RlF) * RlS";
-        h += "\t\t\tRlP = " + (kReliefRelax >= 1.f ? to : "lerp(RlP, " + to + ", " + num(kReliefRelax) + ")") + ";\n";
+        h += "\t\t\tRlP = " + (i == 0 ? to : "lerp(RlP, " + to + ", " + num(kReliefRelax) + ")") + ";\n";
     }
     h += "\t\t\tRlP = lerp(RlO, RlP, RlW);\n";
     h += "\t\t}\n";
@@ -314,7 +314,16 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     // A junction corner's pieces (told by their depth, cornerSlabM) lay their tiles on the world's grid: the wedges of a
     // fan and the apron behind them share one square grid. The rest keep their own box's.
     h += "\t\tbool CornerP = abs(Sz - " + num(st.cornerSlabM) + ") < 0.004;\n";
-    h += "\t\tfloat2 T = (CornerP ? Pw : Lm.xy + 0.5 * float2(Sx, Sy)) / " + num(st.tileM) + ";\n";
+    if (relief) {
+        // A corner piece's tiles are on the world's plan: its view tangent is the world's x and y, its slope SlopeW's.
+        h += "\t\tfloat2 IdB = CornerP ? float2(0.0, 0.0) : float2(round(Sx * 7.0), round(Sy * 13.0));\n";
+        h += "\t\tfloat2 RlT = CornerP ? RlV.xy : float2(dot(RlV, Ux), dot(RlV, Uy));\n";
+        h += "\t\tfloat2 RlP = CornerP ? Pw : Lm.xy + 0.5 * float2(Sx, Sy);\n";
+        reliefSolveHlsl(h, reliefArgs(paveG), "IdB", st);
+        h += "\t\tfloat2 T = RlP / " + num(st.tileM) + ";\n";
+    } else {
+        h += "\t\tfloat2 T = (CornerP ? Pw : Lm.xy + 0.5 * float2(Sx, Sy)) / " + num(st.tileM) + ";\n";
+    }
     h += "\t\tfloat2 Id = floor(T);\n";
     h += "\t\tfloat2 TF = frac(T) - 0.5;\n";
     h += "\t\tfloat2 Dd = (0.5 - abs(TF)) * " + num(st.tileM) + ";\n";
@@ -324,10 +333,16 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Ht = Tt * Tt * (3.0 - 2.0 * Tt);\n";
     h += "\t\tfloat Dh = 6.0 * Tt * (1.0 - Tt) / " + num(st.tileBevelM) + ";\n";
     h += "\t\tfloat2 TSl = (NearX ? float2(-sign(TF.x), 0.0) : float2(0.0, -sign(TF.y))) * Dh * " + num(st.tileDepthM) + " * Fine;\n";
+    if (relief) {
+        h += "\t\tRlR.Z(RlP, " + reliefArgs(paveG) + ", IdB, RlG, RlF);\n";
+        h += "\t\tTSl = lerp(TSl, RlG * Fine, RlD);\n";
+        h += "\t\tRlFl = RlF;\n";
+        h += "\t\tRlMean = 0.12;\n";
+    }
     h += "\t\tif (CornerP) { SlopeW += TSl; } else { SlopeB += TSl; }\n";
     h += "\t\tfloat TJ = lerp(0.12, 1.0 - Ht, Mid);\n";  // joint share, its mean further out
     h += "\t\tTone *= " + num(kPaveAlbedo) + " * lerp(1.0, 0.45, TJ);\n";
-    h += "\t\tfloat2 IdB = CornerP ? float2(0.0, 0.0) : float2(round(Sx * 7.0), round(Sy * 13.0));\n";
+    if (!relief) h += "\t\tfloat2 IdB = CornerP ? float2(0.0, 0.0) : float2(round(Sx * 7.0), round(Sy * 13.0));\n";
     h += "\t\tfloat Th = frac(sin(dot(Id + IdB, float2(12.9898, 78.233))) * 43758.5453);\n";
     h += "\t\tTone *= 1.0 + " + num(st.tileTone) + " * 1.5 * (2.0 * Th - 1.0) * Mid;\n";
     h += "\t\tTone *= 1.0 + 0.16 * (SNz.N(Pw / 0.006 + 8.0) - 0.5) * Fine;\n";
@@ -340,13 +355,31 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     // Kerbs: stones along the run, jointed on top and sides.
     h += "\telse if (SK == 3)\n\t{\n";
     h += "\t\tbool LongX = Sx >= Sy;\n";
-    h += "\t\tfloat KL = (LongX ? Lm.x + 0.5 * Sx : Lm.y + 0.5 * Sy) / " + num(st.kerbStoneM) + ";\n";
+    if (relief) {
+        // Along the run only (the grid is one cell across); the solve runs on the top face (RlW has TopF), the jointed
+        // side faces take the height's normal and cavity without parallax.
+        h += "\t\tfloat2 RlKey = float2(round(Sx * 7.0 + Sy * 3.0), 0.0);\n";
+        h += "\t\tfloat2 RlT = float2(dot(RlV, LongX ? Ux : Uy), 0.0);\n";
+        h += "\t\tfloat2 RlP = float2(LongX ? Lm.x + 0.5 * Sx : Lm.y + 0.5 * Sy, " + num(0.5f * kKerbAcrossM) + ");\n";
+        reliefSolveHlsl(h, reliefArgs(kerbG), "RlKey", st);
+        h += "\t\tfloat KL = RlP.x / " + num(st.kerbStoneM) + ";\n";
+    } else {
+        h += "\t\tfloat KL = (LongX ? Lm.x + 0.5 * Sx : Lm.y + 0.5 * Sy) / " + num(st.kerbStoneM) + ";\n";
+    }
     h += "\t\tfloat KF = frac(KL) - 0.5;\n";
     h += "\t\tfloat KD = (0.5 - abs(KF)) * " + num(st.kerbStoneM) + ";\n";
     h += "\t\tfloat Kt = saturate((KD - " + num(st.tileJointM) + ") / " + num(st.tileBevelM) + ");\n";
     h += "\t\tfloat KH = Kt * Kt * (3.0 - 2.0 * Kt);\n";
     h += "\t\tfloat KDh = 6.0 * Kt * (1.0 - Kt) / " + num(st.tileBevelM) + ";\n";
-    h += "\t\tSlopeB += (LongX ? float2(-sign(KF), 0.0) : float2(0.0, -sign(KF))) * KDh * 0.006 * Fine;\n";
+    if (relief) {
+        h += "\t\tRlR.Z(RlP, " + reliefArgs(kerbG) + ", RlKey, RlG, RlF);\n";
+        h += "\t\tSlopeB += lerp((LongX ? float2(-sign(KF), 0.0) : float2(0.0, -sign(KF))) * KDh * 0.006 * Fine, "
+             "(LongX ? float2(RlG.x, 0.0) : float2(0.0, RlG.x)) * Fine, RlD);\n";
+        h += "\t\tRlFl = RlF;\n";
+        h += "\t\tRlMean = 0.03;\n";
+    } else {
+        h += "\t\tSlopeB += (LongX ? float2(-sign(KF), 0.0) : float2(0.0, -sign(KF))) * KDh * 0.006 * Fine;\n";
+    }
     h += "\t\tFaceW = 1.0;\n";
     h += "\t\tTone *= lerp(1.0, lerp(0.6, 1.0, KH), Fine);\n";
     h += "\t\tfloat Kh = frac(sin(floor(KL) * 12.9898 + round(Sx * 7.0 + Sy * 3.0) * 4.1) * 43758.5453);\n";
@@ -373,6 +406,17 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tAlb = lerp(float3(0.045, 0.045, 0.05), Paint, Left);\n";
     h += "\t\tRgh = lerp(0.85, Rgh, Left);\n";
     h += "\t}\n";
+    if (relief) {
+        // The groove: dirt broken up by a noise (its mean far off), darker and rougher; wet, it darkens further and
+        // holds water (the weather's wetness, thrice as fast: grooves stay wet longest). RlC is 0 off the jointed kinds.
+        h += "\tfloat RlC = lerp(RlMean, RlFl, Mid) * RlD;\n";
+        h += "\tfloat RlDn = lerp(0.5, SNz.N(Pw / 0.03 + 29.0), Fine);\n";
+        h += "\tfloat RlWk = saturate(Wet * 3.0) * Up;\n";
+        h += "\tTone *= 1.0 - RlC * (1.0 - lerp(0.85, 0.6, RlDn) * lerp(1.0, 0.7, RlWk));\n";
+        h += "\tRoughMul *= 1.0 + RlC * lerp(0.05, 0.2, RlDn);\n";
+        h += "\tRlCav = RlC;\n";
+        h += "\tRlWet = RlC * RlWk;\n";
+    }
     h += "\tAlb *= Tone;\n";
     h += "\tRgh = saturate(Rgh * RoughMul);\n";
     h += "\tNrm = normalize(Nrm - FaceW * (SlopeB.x * Ux + SlopeB.y * Uy + float3(SlopeW, 0.0)));\n";
@@ -457,14 +501,84 @@ float streetTileHeight(float dM, const StreetSurfaceSpec& spec) {
     return smoothstep(spec.tileJointM, spec.tileJointM + spec.tileBevelM, dM);
 }
 
+StreetJointGrid streetJointGrid(StreetKind kind, const StreetSurfaceSpec& spec) {
+    StreetJointGrid g;
+    if (kind == StreetKind::Lane) {
+        g.cellX = 0.2f;
+        g.cellY = 0.1f;
+        g.bond = 0.5f;
+        g.halfJointM = kPaverJointM;
+        g.bevelM = kPaverBevelM;
+        g.depthM = spec.paverJointDepthM;
+    } else if (kind == StreetKind::Kerb) {
+        g.cellX = spec.kerbStoneM;
+        g.cellY = kKerbAcrossM;
+        g.halfJointM = spec.tileJointM;
+        g.bevelM = spec.tileBevelM;
+        g.depthM = spec.kerbJointDepthM;
+    } else {
+        g.cellX = spec.tileM;
+        g.cellY = spec.tileM;
+        g.halfJointM = spec.tileJointM;
+        g.bevelM = spec.tileBevelM;
+        g.depthM = spec.paveJointDepthM;
+    }
+    return g;
+}
+
+StreetTileFlaw streetTileFlaw(float keyX, float keyY, const StreetSurfaceSpec& spec) {
+    const float u = reliefHash(keyX, keyY, 39.3467f, 11.1351f, 24634.6345f);
+    const float v = reliefHash(keyX, keyY, 73.156f, 52.235f, 35791.137f);
+    const float c = reliefHash(keyX, keyY, 27.619f, 91.427f, 17369.917f);
+    StreetTileFlaw f;
+    if (u < spec.sunkShare) f.sinkM = lerp(spec.sinkMinM, spec.sinkMaxM, v);
+    if (u >= spec.sunkShare && u < spec.sunkShare + spec.tiltShare) {
+        const float ang = kTwoPi * frac(v * 7.13f);
+        const float s = lerp(spec.tiltMinRad, spec.tiltMaxRad, v);
+        f.tiltX = s * std::cos(ang);
+        f.tiltY = s * std::sin(ang);
+    }
+    if (c < spec.chipShare) {
+        const float q = c / spec.chipShare;
+        f.chipX = q < 0.5f ? -1.f : 1.f;
+        f.chipY = frac(q * 2.f) < 0.5f ? -1.f : 1.f;
+        f.chipR = lerp(spec.chipMinM, spec.chipMaxM, frac(q * 4.f));
+    }
+    return f;
+}
+
+float streetJointZ(float x, float y, float keyX, float keyY, const StreetJointGrid& grid, const StreetSurfaceSpec& spec) {
+    return jointZ(x, y, keyX, keyY, grid, spec);
+}
+
+float streetParallaxWeight(float distM, float nDotV, float jointDepth, float fine, const StreetSurfaceSpec& spec) {
+    return saturate(jointDepth) * (1.f - smoothstep(spec.parallaxNearM, spec.parallaxFarM, distM)) *
+           smoothstep(spec.parallaxNdVNone, spec.parallaxNdVFull, nDotV) * fine;
+}
+
+StreetPoint streetReliefShift(float x, float y, float viewX, float viewY, float nDotV, float keyX, float keyY,
+                              const StreetJointGrid& grid, const StreetSurfaceSpec& spec) {
+    const float c = std::max(nDotV, spec.parallaxSlopeClamp);
+    const float sx = viewX / c, sy = viewY / c;
+    StreetPoint p{x, y};
+    for (int i = 0; i < kReliefSteps; ++i) {
+        const float z = jointZ(p.x, p.y, keyX, keyY, grid, spec);
+        p.x = lerp(p.x, x + z * sx, i == 0 ? 1.f : kReliefRelax);
+        p.y = lerp(p.y, y + z * sy, i == 0 ? 1.f : kReliefRelax);
+    }
+    return p;
+}
+
 std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeatherOptions& options,
                                const StreetSurfaceSpec& street) {
     const bool box = options.boxFrame;
     const bool dirt = box && options.grime;
     const bool top = box && options.topGrime;
     const bool streets = box && options.street;
+    const bool relief = streets && options.jointDepth;
     std::string h;
     h.reserve(16384);
+    if (relief) reliefStructHlsl(h, street);
     if (streets) {
         // A 2D value noise for the street layer (the lattice hash the decals use).
         h += "struct FTStreetNoise\n{\n";
@@ -505,14 +619,16 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
         h += "float GutD = 0.5 * Sy + (Uy.z > 0.0 ? Lm.y : -Lm.y);\n";
         h += "Gut = abs(Uy.z) > " + num(spec.tiltMin) + " ? 1.0 - smoothstep(0.0, " + num(spec.gutterM) + ", GutD) : 0.0;\n";
     }
-    if (streets) streetHlsl(h, spec, street);
+    if (streets) streetHlsl(h, spec, street, relief);
     h += "float Pud = Up * saturate(Wet * " + num(kWetRamp) + ") * smoothstep(0.0, " + num(spec.puddleEdge) + ", Noise[0] + " +
          num(spec.gutterBias) + " * Gut - (1.0 - " + num(spec.puddleCover) + " * Wet));\n";
     h += "float3 C = Alb * (lerp(1.0, " + num(spec.soakDarken) + ", Soak) * lerp(1.0, " + num(spec.puddleDarken) +
          ", Pud));\n";
     h += "float R = min(Rgh, lerp(Rgh, " + num(spec.soakRough) + ", pow(saturate(Soak), " + num(spec.roughCurve) + ")));\n";
     h += "R = lerp(R, " + num(spec.puddleRough) + ", Pud);\n";
+    if (relief) h += "R = min(R, lerp(R, 0.06, RlWet));\n";  // water held in the joints
     h += "float A = AO;\n";
+    if (relief) h += "A *= 1.0 - " + num(1.f - street.jointCavityAO) + " * RlCav;\n";
     const std::string tint = "float3(" + num(spec.dirtR) + ", " + num(spec.dirtG) + ", " + num(spec.dirtB) + ")";
     if (dirt) {
         h += "float Side = 1.0 - smoothstep(" + num(kSideFrom) + ", " + num(kSideTo) + ", abs(VN.z));\n";

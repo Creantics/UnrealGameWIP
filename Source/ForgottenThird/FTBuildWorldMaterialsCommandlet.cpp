@@ -10,12 +10,14 @@
 #include "FTText.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionTransform.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
@@ -139,6 +141,7 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	ftcore::SurfaceWeatherOptions Options;
 	Options.grime = false;
 	Options.street = true;
+	Options.jointDepth = true;
 	UMaterialExpressionCollectionParameter* Wetness = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 600);
 	Wetness->Collection = Look;
 	Wetness->ParameterName = TEXT("Wetness");
@@ -170,6 +173,30 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	AddWeatherInput(Weather, TEXT("AxisY"), AddWeatherAxis(Material, FLinearColor(0.f, 1.f, 0.f), 1200), 0);
 	AddWeatherInput(Weather, TEXT("AxisZ"), AddWeatherAxis(Material, FLinearColor(0.f, 0.f, 1.f), 1300), 0);
 	AddWeatherInput(Weather, TEXT("Street"), Street, 0);
+	// Joint depth: the pixel-to-camera vector (cm) and the window collection's JointDepth (the run-time switch; a constant
+	// 1 where the collection is not built yet).
+	UMaterialExpressionCameraPositionWS* CameraPos = AddExpression<UMaterialExpressionCameraPositionWS>(Material, -900, 1500);
+	UMaterialExpressionSubtract* ViewVec = AddExpression<UMaterialExpressionSubtract>(Material, -700, 1500);
+	ViewVec->A.Connect(0, CameraPos);
+	ViewVec->B.Connect(0, WorldPos);
+	AddWeatherInput(Weather, TEXT("ViewVec"), ViewVec, 0);
+	const FString JointPath = FString(FTScene::WindowCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::WindowCollection);
+	UMaterialParameterCollection* JointCollection = LoadObject<UMaterialParameterCollection>(nullptr, *JointPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (JointCollection && JointCollection->GetParameterId(TEXT("JointDepth")).IsValid())
+	{
+		UMaterialExpressionCollectionParameter* Switch = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 1600);
+		Switch->Collection = JointCollection;
+		Switch->ParameterName = TEXT("JointDepth");
+		Switch->ParameterId = JointCollection->GetParameterId(TEXT("JointDepth"));
+		AddWeatherInput(Weather, TEXT("JointDepth"), Switch, 0);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildWorldMaterials: the window collection has no JointDepth; joint depth is always on."));
+		UMaterialExpressionConstant* One = AddExpression<UMaterialExpressionConstant>(Material, -900, 1600);
+		One->R = 1.f;
+		AddWeatherInput(Weather, TEXT("JointDepth"), One, 0);
+	}
 	const TCHAR* const Outputs[] = {TEXT("NormalOut"), TEXT("RoughOut"), TEXT("AOOut")};
 	const ECustomMaterialOutputType Types[] = {CMOT_Float3, CMOT_Float1, CMOT_Float1};
 	for (int32 O = 0; O < 3; ++O)
