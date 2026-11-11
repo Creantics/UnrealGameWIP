@@ -213,6 +213,26 @@ TEST_CASE("minimap: off-map markers pin to the rim with their distance") {
     CHECK(out.distance == doctest::Approx(400.f));
 }
 
+TEST_CASE("minimap: overlay markers off the area hold to its edge") {
+    MiniMapModel m;
+    m.minX = 400.f;
+    m.minY = 40.f;
+    m.maxX = 440.f;
+    m.maxY = 80.f;
+    bool clamped = true;
+    CHECK(closeTo(mapAreaUv(m, Vec2{410.f, 70.f}, &clamped), Vec2{0.25f, 0.75f}));
+    CHECK_FALSE(clamped);
+    // East of the area and north of it: the north-east corner.
+    CHECK(closeTo(mapAreaUv(m, Vec2{900.f, -500.f}, &clamped), Vec2{1.f, 0.f}));
+    CHECK(clamped);
+    // West only: held to the west edge, its y kept.
+    CHECK(closeTo(mapAreaUv(m, Vec2{0.f, 50.f}, &clamped), Vec2{0.f, 0.25f}));
+    CHECK(clamped);
+    // An empty area puts everything in the middle rather than dividing by zero.
+    MiniMapModel empty;
+    CHECK(closeTo(mapAreaUv(empty, Vec2{5.f, 5.f}), Vec2{0.5f, 0.5f}));
+}
+
 TEST_CASE("minimap: zoom and what shows at each") {
     Fixture f;
     MiniMapModel m;

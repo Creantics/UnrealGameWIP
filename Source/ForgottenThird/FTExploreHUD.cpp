@@ -65,6 +65,29 @@ AFTExploreDirector* AFTExploreHUD::FindDirector()
 	return CachedDirector.Get();
 }
 
+void AFTExploreHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	if (const AFTExploreDirector* Found = FindDirector())
+	{
+		TryMakeMiniMap(*Found);
+	}
+}
+
+void AFTExploreHUD::TryMakeMiniMap(const AFTExploreDirector& D)
+{
+	if (bMiniMapTried)
+	{
+		return;
+	}
+	bMiniMapTried = true;
+	MiniMap = NewObject<UFTMiniMap>(this);
+	if (!MiniMap->Init(D))
+	{
+		MiniMap = nullptr;
+	}
+}
+
 void AFTExploreHUD::ToggleMapOverlay()
 {
 	if (MiniMap)
@@ -101,15 +124,7 @@ void AFTExploreHUD::DrawHUD()
 	}
 	else if (Found->IsWorldMode() || Found->IsOverworld())
 	{
-		if (!bMiniMapTried)
-		{
-			bMiniMapTried = true;
-			MiniMap = NewObject<UFTMiniMap>(this);
-			if (!MiniMap->Init(*Found))
-			{
-				MiniMap = nullptr;
-			}
-		}
+		TryMakeMiniMap(*Found); // a director that came after BeginPlay
 		if (MiniMap)
 		{
 			MiniMap->Draw(*this, *Canvas, UiScale);

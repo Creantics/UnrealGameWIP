@@ -325,21 +325,29 @@ void UFTMiniMap::DrawCorner(AHUD& Hud, UCanvas& Canvas, float S, const FVector2D
 	using namespace FTMiniMapDetail;
 	APlayerController* PC = Hud.GetOwningPlayerController();
 	APawn* Pawn = PC ? PC->GetPawn() : nullptr;
-	if (!Pawn)
+	if (!Pawn && !bHaveView)
 	{
 		return;
 	}
+	// With no pawn (a respawn or a possession change) the map stays where it last was, without the player's arrow.
 	const AFTExploreCharacter* Lead = Cast<AFTExploreCharacter>(Pawn);
 	AFTPartyVan* TheVan = Van.Get();
-	const bool bInVan = TheVan && TheVan->IsAboard(Lead);
+	const bool bInVan = Pawn ? TheVan && TheVan->IsAboard(Lead) : bLastInVan;
 	const ftcore::MapMode Mode = bInVan ? ftcore::MapMode::InVan : ftcore::MapMode::OnFoot;
-	const FVector At = bInVan ? TheVan->GetActorLocation() : Pawn->GetActorLocation();
-	ftcore::MapView View;
-	View.centre = Metres(At);
-	View.radius = ftcore::mapZoomRadius(Mode, Model);
-	View.yawDeg = static_cast<float>(bInVan ? TheVan->GetActorRotation().Yaw : PC->GetControlRotation().Yaw);
-	View.rotate = ftcore::mapRotates(Mode);
-	const float Facing = static_cast<float>(bInVan ? TheVan->GetActorRotation().Yaw : Pawn->GetActorRotation().Yaw);
+	ftcore::MapView View = LastView;
+	float Facing = 0.f;
+	if (Pawn)
+	{
+		const AActor* Who = bInVan ? static_cast<const AActor*>(TheVan) : Pawn;
+		View.centre = Metres(Who->GetActorLocation());
+		View.radius = ftcore::mapZoomRadius(Mode, Model);
+		View.yawDeg = static_cast<float>(bInVan ? TheVan->GetActorRotation().Yaw : PC->GetControlRotation().Yaw);
+		View.rotate = ftcore::mapRotates(Mode);
+		Facing = static_cast<float>(Who->GetActorRotation().Yaw);
+		LastView = View;
+		bLastInVan = bInVan;
+		bHaveView = true;
+	}
 
 	// The rim, then the map: a fan whose rim UVs sample the turned map, so the circle is exact and the turn free.
 	RimItem->TriangleList.Reset();
@@ -400,8 +408,14 @@ void UFTMiniMap::DrawCorner(AHUD& Hud, UCanvas& Canvas, float S, const FVector2D
 		const ftcore::Vec2 D = ftcore::mapHeadingDir(View, static_cast<float>(TheVan->GetActorRotation().Yaw));
 		AddQuad(Screen(VanPin.at), 5.f * S, kVanMark, FMath::Atan2(D.y, D.x));
 	}
-	AddArrow(Centre, V2(ftcore::mapHeadingDir(View, Facing)), 9.f * S, bInVan ? kVanMark : kPlayer);
-	Canvas.DrawItem(*MarkItem);
+	if (Pawn)
+	{
+		AddArrow(Centre, V2(ftcore::mapHeadingDir(View, Facing)), 9.f * S, bInVan ? kVanMark : kPlayer);
+	}
+	if (MarkItem->TriangleList.Num() > 0) // the item asserts on an empty list
+	{
+		Canvas.DrawItem(*MarkItem);
+	}
 
 	UFont* Small = GEngine->GetSmallFont();
 	float W = 0.f, H = 0.f;
@@ -461,7 +475,8 @@ void UFTMiniMap::DrawOverlay(AHUD& Hud, UCanvas& Canvas, float S)
 
 	// Markers off the map's area stay on its edge, so the player and the van are always on the overlay.
 	auto Screen = [&](const ftcore::Vec2 P) {
-		return Origin + FVector2D(FMath::Clamp((P.x - Model.minX) / SpanX, 0.f, 1.f) * W, FMath::Clamp((P.y - Model.minY) / SpanY, 0.f, 1.f) * H);
+		const ftcore::Vec2 Uv = ftcore::mapAreaUv(Model, P);
+		return Origin + FVector2D(Uv.x * W, Uv.y * H);
 	};
 	auto Heading = [](double Yaw) { return FVector2D(FMath::Cos(FMath::DegreesToRadians(Yaw)), FMath::Sin(FMath::DegreesToRadians(Yaw))); };
 	MarkItem->TriangleList.Reset();

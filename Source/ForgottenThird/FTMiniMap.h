@@ -74,6 +74,11 @@ private:
 	TWeakObjectPtr<AFTPartyFollower> Followers[2];
 	double NextScan = 0.0;
 
+	// The corner view last drawn with a pawn, kept while there is none.
+	ftcore::MapView LastView;
+	bool bHaveView = false;
+	bool bLastInVan = false;
+
 	int32 Road = -1;
 	int32 RoadShown = -2;
 	FString RoadLine;
