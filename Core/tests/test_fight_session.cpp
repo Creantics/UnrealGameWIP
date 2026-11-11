@@ -2,6 +2,7 @@
 
 #include "AllocCounter.h"
 
+#include <cmath>
 #include <doctest/doctest.h>
 
 #include <limits>
@@ -645,4 +646,91 @@ TEST_CASE("fight session: a fight's frames allocate nothing") {
         s.bossHit(1, true);
     }
     CHECK(ftcore_test::allocStats().count == before);
+}
+
+namespace {
+// Begins a plain fight and calls a count with the first lead, ticking until its window is open.
+void openCountWindow(FightSession& s) {
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    REQUIRE(tickUntil(s, [&] { return s.strikeCount().open(s.now()); }));
+}
+} // namespace
+
+TEST_CASE("fight session: a held blow joined on the count pays its bonus on a later tick") {
+    FightSession s;
+    openCountWindow(s);
+    const CountHit h = s.judgeHeldBlow(kLeadA, 2, 10, 3);
+    REQUIRE(h.outcome == CountOutcome::Held);
+    CHECK(s.tick(0.0).bonuses.empty()); // nothing settled yet
+    const CountHit j = s.judgeHeldBlow(kLeadB, 4, 10, 5);
+    REQUIRE(j.outcome == CountOutcome::OnCount); // final at once: no record, the host multiplies
+    const FightTick& t = s.tick(kFrame);
+    REQUIRE(t.bonuses.size() == 1);
+    CHECK(t.bonuses[0].enemy == 2);
+    CHECK(t.bonuses[0].move == 3);
+    const float mult = CountTuning{}.onCountMultiplier;
+    CHECK(t.bonuses[0].extraDamage == static_cast<int>(std::round(10.0 * (static_cast<double>(mult) - 1.0))));
+    CHECK(t.heldDropped == 0);
+    CHECK(t.heldExpired == 0);
+    CHECK(s.tick(kFrame).bonuses.empty()); // paid once
+}
+
+TEST_CASE("fight session: a held blow left alone settles at or below x1 and pays nothing") {
+    FightSession s;
+    openCountWindow(s);
+    REQUIRE(s.judgeHeldBlow(kLeadA, 1, 10, 0).outcome == CountOutcome::Held);
+    bool settled = false;
+    int bonuses = 0;
+    int expired = 0;
+    for (int i = 0; i < 600 && !settled; ++i) {
+        const FightTick& t = s.tick(kFrame);
+        bonuses += static_cast<int>(t.bonuses.size());
+        expired += t.heldExpired;
+        for (const CountEvent& e : *t.count)
+            if (e.type == CountEventType::BlowSettled) settled = true;
+    }
+    REQUIRE(settled);
+    CHECK(bonuses == 0);
+    CHECK(expired == 0); // freed by its settle, not expired
+}
+
+TEST_CASE("fight session: held blows past the buffer are dropped, and begin forgets the rest") {
+    FightSession s;
+    openCountWindow(s);
+    for (std::size_t i = 0; i < kMaxHeldBlows + 2; ++i)
+        REQUIRE(s.judgeHeldBlow(kLeadA, 0, 10, 0).outcome == CountOutcome::Held);
+    REQUIRE(s.judgeHeldBlow(kLeadB, 0, 10, 0).outcome == CountOutcome::OnCount);
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.heldDropped == 2);
+    CHECK(t.bonuses.size() == kMaxHeldBlows);
+    CHECK(s.tick(kFrame).heldDropped == 0); // reported once
+
+    // A held blow, then a new fight: its settle never pays.
+    openCountWindow(s);
+    REQUIRE(s.judgeHeldBlow(kLeadA, 0, 10, 0).outcome == CountOutcome::Held);
+    openCountWindow(s);
+    REQUIRE(s.judgeHeldBlow(kLeadB, 0, 10, 0).outcome == CountOutcome::Held);
+    REQUIRE(s.judgeHeldBlow(kLeadA, 0, 10, 0).outcome == CountOutcome::OnCount);
+    CHECK(s.tick(kFrame).bonuses.size() == 1);
+    // A zero or negative base waits on nothing.
+    openCountWindow(s);
+    REQUIRE(s.judgeHeldBlow(kLeadA, 0, 0, 0).outcome == CountOutcome::Held);
+    REQUIRE(s.judgeHeldBlow(kLeadB, 0, 10, 0).outcome == CountOutcome::OnCount);
+    CHECK(s.tick(kFrame).bonuses.empty());
+}
+
+TEST_CASE("fight session: a held blow whose settle is dropped expires at base") {
+    FightSession s;
+    openCountWindow(s);
+    // Enough held blows that the settles overflow the count's event buffer; the session waits on the last ones.
+    const std::size_t plain = kMaxCountEvents + 8;
+    for (std::size_t i = 0; i < plain; ++i) REQUIRE(s.judgeBlow(kLeadA).outcome == CountOutcome::Held);
+    for (std::size_t i = 0; i < kMaxHeldBlows; ++i) REQUIRE(s.judgeHeldBlow(kLeadA, 0, 10, 0).outcome == CountOutcome::Held);
+    REQUIRE(s.judgeBlow(kLeadB).outcome == CountOutcome::OnCount);
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.count->droppedSettles > 0);
+    CHECK(t.heldExpired == static_cast<int>(kMaxHeldBlows));
+    CHECK(t.bonuses.empty());
+    CHECK(s.tick(kFrame).heldExpired == 0);
 }
