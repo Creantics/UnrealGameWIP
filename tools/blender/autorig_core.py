@@ -110,10 +110,13 @@ def axis_sign(n):
 
 def y_hint(n):
     """The mannequin's bone Y before orthogonalising: backward (+Y) on the spine, the left arm and the left leg,
-    forward on the right ones; the hand and finger bones take the palm side (forward on the left)."""
+    forward on the right ones; the hand and finger bones take the palm side (forward on the left), the thumb the
+    back of the hand, the ball bone up (down on the right)."""
     c, s = chain_of(n), side_of(n)
     v = np.array([0.0, 1.0, 0.0])
-    if c == "hand":
+    if n.startswith("ball"):
+        v = np.array([0.0, 0.0, 1.0])
+    elif c == "hand" and not n.startswith("thumb"):
         v = -v
     if s == "r":
         v = -v
@@ -279,6 +282,29 @@ def _slice_parts(g, k):
     return parts
 
 
+def arm_vertices(g, V, s, edge, armpit, seed_parts, seed_z):
+    """Vertices of the arm: the solid lateral of the torso's edge that is connected to the free arm seen in the
+    slice just under the armpit (a hand that hangs beside a coat stays apart from the coat)."""
+    sg = 1 if s == "l" else -1
+    xs = g.lo[0] + (np.arange(g.shape[0]) + 0.5) * g.h
+    allow = g.solid & ((xs * sg > edge + 0.5 * g.h)[:, None, None])
+    reg = np.zeros_like(allow)
+    k = g.k_of(seed_z)
+    p = max(seed_parts, key=lambda q: q["n"])
+    reg[p["ii"], p["jj"], k] = True
+    reg &= allow
+    while True:
+        n = reg
+        for _ in range(6):
+            n = dilate(n, 1) & allow
+        if n.sum() == reg.sum():
+            break
+        reg = n
+    reg = dilate(reg, 1)
+    vi = g.index(V)
+    return reg[vi[:, 0], vi[:, 1], vi[:, 2]] & (V[:, 0] * sg > edge)
+
+
 def _line_fit(P):
     c = P.mean(0)
     _u, _s, vt = np.linalg.svd(P - c)
@@ -315,19 +341,19 @@ def find_landmarks(V, F, voxels=160, guides=None, log=None):
         return [p for p in parts(z) if (p["x0"] * sg > -0.25 * h if sg > 0 else p["x1"] < 0.25 * h)
                 and abs(p["cx"]) < 0.17 * H and p["n"] * h * h > 0.0008 * H * H]
 
-    # crotch: lowest z above 0.3 H where the centre column is solid through most of the body's depth
+    # crotch: coming down from the waist, the last slice where the centre column (x = 0) is still solid through
+    # nearly all of the body's depth; below it the legs part (an open jacket or coat hem leaves that gap outside)
     crotch = None
-    for z in zs[(zs > 0.30 * H) & (zs < 0.62 * H)]:
+    i0 = int(np.floor((0.0 - g.lo[0]) / h))
+    xs_c = g.lo[0] + (np.arange(g.shape[0]) + 0.5) * h
+    for z in zs[(zs > 0.30 * H) & (zs < 0.62 * H)][::-1]:
         k = g.k_of(z)
-        i0 = int(np.floor((0.0 - g.lo[0]) / h))
         col = g.solid[max(0, i0 - 1):i0 + 2, :, k].any(0)
-        sl = g.solid[:, :, k]
-        jj = np.nonzero(sl[np.abs(g.lo[0] + (np.arange(sl.shape[0]) + 0.5) * h) < 0.15 * H].any(0))[0]
+        jj = np.nonzero(g.solid[np.abs(xs_c) < 0.15 * H, :, k].any(0))[0]
         if len(jj) == 0:
             continue
-        depth = jj.max() - jj.min() + 1
-        if col.sum() >= 0.5 * depth:
-            crotch = z
+        if col.sum() < 0.8 * (jj.max() - jj.min() + 1):  # a notch at x = 0 even where trouser legs touch
+            crotch = z + h
             break
     if crotch is None:
         crotch = 0.47 * H
@@ -375,9 +401,11 @@ def find_landmarks(V, F, voxels=160, guides=None, log=None):
         how = "detected"
         if zt is None:
             zt, how = 0.045 * H, "ratio"
-        ankle_z = zt - 0.005 * H
+        # the ankle joint: the textbook ankle height (0.039 H) plus a shoe sole, kept under the shoe's collar
+        # (where the foot's length gives way to the leg's round section) when that is seen lower
+        ankle_z = min(0.055 * H, zt - 0.005 * H) if how == "detected" else 0.055 * H
         foot = [p for z in zs[zs < max(zt, 0.03 * H)] for p in leg_parts(z, s)]
-        put("foot_" + s, on_leg(s, ankle_z), how)
+        put("foot_" + s, on_leg(s, ankle_z), "ratio")
         if foot:
             y_toe = min(p["y0"] for p in foot)
             y_heel = max(p["y1"] for p in foot)
@@ -432,7 +460,7 @@ def find_landmarks(V, F, voxels=160, guides=None, log=None):
         # arm vertices: lateral of the torso's edge below the armpit
         cp = centre_part(armpit - 2 * h)
         edge = (cp["x1"] if sg > 0 else -cp["x0"]) if cp else 0.12 * H
-        mask = (V[:, 0] * sg > edge) & (V[:, 2] < armpit + 0.10 * H)
+        mask = arm_vertices(g, V, s, edge, armpit, arm_parts(armpit - 2 * h, s), armpit - 2 * h)
         AV = V[mask]
         c0, d = _line_fit(pts[pts[:, 2] > pts[:, 2].min() + 0.35 * (top - pts[:, 2].min())]) if len(pts) > 8 \
             else _line_fit(pts)
@@ -509,9 +537,9 @@ def find_landmarks(V, F, voxels=160, guides=None, log=None):
     for s in "lr":
         sg = 1 if s == "l" else -1
         sh = L["upperarm_" + s]
-        c = centre_part(n1z - 0.02 * H)
-        front = c["y0"] if c else L["neck_01"][1] - 0.04 * H
-        put("clavicle_" + s, (sg * 0.2 * abs(sh[0]), 0.6 * L["neck_01"][1] + 0.4 * front,
+        # the collar bone runs out to the shoulder about level in depth: its root sits half way between the
+        # neck's and the shoulder joint's depth
+        put("clavicle_" + s, (sg * 0.2 * abs(sh[0]), 0.5 * (L["neck_01"][1] + sh[1]),
                               sh[2] + 0.35 * (n1z - sh[2])), "ratio")
     # --- hands --------------------------------------------------------------------------------------------
     for s in "lr":
@@ -668,12 +696,11 @@ def build_skeleton(L, info):
             length = max(np.linalg.norm(tip - h) if tip is not None else 0.0, 0.008 * H)
         else:
             d, length = unit(h - heads[PARENT[n]]), 0.03 * H
-        if n.startswith("foot"):  # the mannequin's foot X runs up the shin
-            d = unit(heads["calf_" + n[-1]] - h)
-            length = 0.06 * H
-            sgn = 1.0 if n.endswith("_r") else -1.0
-            x = -sgn * d * -1.0
-            x = d if n.endswith("_l") else -d
+        if n.startswith("foot"):  # the mannequin's foot X runs up the shin; the bone still binds toward the ball
+            up = unit(heads["calf_" + n[-1]] - h)
+            x = up if n.endswith("_l") else -up
+        elif n in ("root", "ik_foot_root", "ik_hand_root"):
+            x = np.array([1.0, 0.0, 0.0])
         else:
             x = axis_sign(n) * d
         y = y_hint(n)
@@ -681,15 +708,40 @@ def build_skeleton(L, info):
         if np.linalg.norm(y) < 1e-6:
             y = np.array([0.0, 0.0, 1.0]) - x[2] * x
         J[n] = (h, h + x * max(length, 0.004 * H), unit(y), d)
+    for ik, src_ in (("ik_foot_l", "foot_l"), ("ik_foot_r", "foot_r"), ("ik_hand_l", "hand_l"), ("ik_hand_r", "hand_r"),
+                     ("ik_hand_gun", "hand_r")):
+        h0, t0, y0, d0 = J[src_]
+        J[ik] = (h0, t0, y0, d0)
     return {n: (v[0], v[1], v[2]) for n, v in J.items()}, {n: v[3] for n, v in J.items()}
 
 
 # ------------------------------------------------------------------------------------------------
 # 4. Binding
 # ------------------------------------------------------------------------------------------------
-# Sharpness k of the exp fall-off per chain (higher = narrower blend at the joint, measured in local radii).
-SHARP = {"spine": 3.0, "arm": 4.5, "hand": 6.0, "leg": 4.5, "other": 3.0}
-SHARP_BONE = {"clavicle": 2.5, "upperarm": 3.5, "thigh": 3.5, "pelvis": 3.0, "neck_01": 3.0, "head": 4.0}
+# Sharpness k of the exp fall-off at the joint at each bone's head (higher = a narrower blend, in local radii).
+# A vertex takes the sharpness of the joint between its two nearest bones (the deeper bone's head): hinge joints
+# (elbow, knee, wrist, ankle, fingers) blend over about a limb radius, ball joints (shoulder, hip) and the spine
+# over two to three.
+SHARP_HEAD = {"pelvis": 3.0, "spine": 3.5, "neck_01": 4.5, "neck_02": 4.5, "head": 6.0, "clavicle": 3.0,
+              "upperarm": 4.0, "lowerarm": 8.0, "hand": 9.0, "finger": 9.0, "thigh": 4.5, "calf": 8.0, "foot": 8.0,
+              "ball": 8.0}
+
+
+def _sharp_key(n):
+    if n.startswith(("spine",)):
+        return "spine"
+    if any(n.startswith(f) for f in FINGERS + ("thumb",)):
+        return "finger"
+    return n[:-2] if n.endswith(("_l", "_r")) else n
+
+
+def _depth(n):
+    d = 0
+    while PARENT[n]:
+        n, d = PARENT[n], d + 1
+    return d
+
+
 NO_WEIGHT = TWIST_NAMES | {"root"} | {n for n in NAMES if n.startswith("ik_")}
 
 _OFFS = [(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1) if (a, b, c) != (0, 0, 0)]
@@ -745,6 +797,8 @@ def bone_segments(J, dirs, info):
             continue
         h, t, _y = J[n]
         length = np.linalg.norm(t - h)
+        if n.startswith("clavicle"):  # the collar bone stops short of the shoulder: the deltoid cap is the arm's
+            length *= 0.55
         segs[n] = (h, h + dirs[n] * length)
     return segs
 
@@ -776,6 +830,8 @@ def bind(V, F, J, dirs, info, max_infl=8, smooth_iters=3, twist=True, hem=True, 
         a, e = segs[n]
         cap = (0.06 if chain_of(n) == "hand" else 0.16 if n.startswith(("spine", "pelvis", "clavicle")) else 0.12) * H
         seeds = _segment_cells(g, a, e)
+        if n == "pelvis":  # the pelvis bone spans the hips, not just its short stub up to spine_01
+            seeds = np.unique(np.concatenate([seeds, _segment_cells(g, J["thigh_l"][0], J["thigh_r"][0])]), axis=0)
         lo = np.maximum(seeds.min(0) - int(cap / g.h) - 2, 0)
         hi = np.minimum(seeds.max(0) + int(cap / g.h) + 3, np.array(g.shape))
         F_ = geodesic_field(g, seeds, cap, (lo, hi))
@@ -792,10 +848,11 @@ def bind(V, F, J, dirs, info, max_infl=8, smooth_iters=3, twist=True, hem=True, 
             t = np.clip(((V[lost] - a) @ d) / max(d @ d, 1e-12), 0, 1)
             D[lost, b] = np.linalg.norm(V[lost] - (a + np.outer(t, d)), axis=1)
     dmin = D.min(1)
-    k = np.array([SHARP_BONE.get(n.rsplit("_", 1)[0] if n.endswith(("_l", "_r")) else n, SHARP[chain_of(n)])
-                  for n in names])
-    best = np.argmin(D, axis=1)
-    kv = k[best]
+    k = np.array([SHARP_HEAD.get(_sharp_key(n), 4.0) for n in names])
+    dep = np.array([_depth(n) for n in names])
+    two = np.argsort(D, axis=1)[:, :2]
+    deeper = np.where(dep[two[:, 0]] >= dep[two[:, 1]], two[:, 0], two[:, 1])
+    kv = k[deeper]
     rloc = np.maximum(dmin, 0.012 * H)
     W = np.exp(-kv[:, None] * (D - dmin[:, None]) / rloc[:, None])
     W[~np.isfinite(D)] = 0.0
@@ -876,23 +933,31 @@ def hem_rule(V, W, col, info, say):
         return W
     zc = V[:, 2]
     cand = (zc < crotch + 0.02 * H) & (zc > 0.08 * H)
+    for s in info.get("arm", {}):  # hands hanging beside the hips are not cloth
+        cand[info["arm"][s]["verts"]] = False
     if not cand.any():
         return W
-    ex = np.full(len(V), -1.0)
-    rl = np.ones(len(V))
+    ex = np.full(len(V), np.inf)  # stand-off beyond the nearer leg's surface, in leg radii
     for s in "lr":
         c, d, r = leg[s]["c"], leg[s]["d"], leg[s]["r"]
+        pts = leg[s]["pts"]
+        if len(pts) >= 3:  # the leg's own radius at each height (wider trouser cuffs are leg, not cloth)
+            o = np.argsort(pts[:, 2])
+            r = np.interp(zc, pts[o, 2], pts[o, 3])
         rel = V - c
         dist = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
-        e = (dist - 1.3 * r) / r
-        sel = (np.sign(V[:, 0]) == (1 if s == "l" else -1)) | (np.abs(V[:, 0]) < r)
-        upd = sel & ((ex < 0) | (e < ex))
-        ex = np.where(upd & cand, np.maximum(e, ex) if False else e, ex)
-        rl = np.where(upd & cand, r, rl)
+        ex = np.minimum(ex, (dist - 1.3 * r) / r)
+    ex = np.where(cand, ex, -1.0)
     cloth = cand & (ex > 0)
     if not cloth.any():
         return W
-    hem_z = zc[cloth].min()
+    # the hanging cloth runs down from the crotch without a break; flared cuffs and shoes below a gap are not it
+    hem_z = crotch
+    for z in np.arange(crotch, 0.08 * H, -0.01 * H):
+        if not (cloth & (zc < z) & (zc >= z - 0.02 * H)).any():
+            break
+        hem_z = z - 0.02 * H
+    cloth &= zc >= hem_z
     if crotch - hem_z < 0.03 * H:
         hem_z = crotch - 0.03 * H
     t = np.clip((crotch + 0.02 * H - zc) / (crotch + 0.02 * H - hem_z), 0, 1)
