@@ -112,6 +112,7 @@ add_library(ftcore STATIC
     src/SeaWaves.cpp
     src/StylePack.cpp
     src/StorySave.cpp
+    src/StoryState.cpp
     src/TurnQueue.cpp
     src/Version.cpp
     src/Vfx.cpp
@@ -213,6 +214,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_read_cards.cpp
         tests/test_turns_demo.cpp
         tests/test_load.cpp
+        tests/test_strike_count.cpp
+        tests/test_combat_inputs.cpp
+        tests/test_boss_script.cpp
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
         tests/test_conductor.cpp
@@ -278,6 +282,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
+        tests/test_story_state.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp
         tests/test_look_grade.cpp

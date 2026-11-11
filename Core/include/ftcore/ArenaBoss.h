@@ -46,6 +46,13 @@
 //   all-round gate (arc 180). open() starts a new opening (and replaces the end time); the first crit of
 //   each opening is flagged `first`.
 //
+// * The locked weak point (WeakPointLock.h). A boss's weak points may be declared locked, with the keys
+//   that open them: a shared blow, a read clause, a refusal. Locked, its points take no crit, whatever
+//   opened the window. The host reports each key to the run (offerUnlock); an unlock opens the lock and
+//   the crit window together for the lock's openSeconds (Unlocked, CritOpened), a deferred refusal or
+//   relock() shuts both (Relocked, CritClosed). A full intercept still opens the window, but a
+//   locked point stays shut through it. A boss whose points are not locked is unchanged.
+//
 // * The breakable (ArenaBreakable). A piece the boss carries breaks on its first Stagger, in any phase,
 //   once, or earlier when a boss rule breaks it (breakNow: a beat of its own, which cuts nothing). The
 //   run then plays each phase's broken move table.
@@ -82,6 +89,9 @@
 //     breakNow()                 a boss rule's break at now(): Broke the first time, with
 //                                kArenaBossNoMove (it cuts nothing: the live move plays on).
 //     onHit(...)                 a lead's blow on the boss: the crit judge (Crit).
+//     offerUnlock(key, t, clause) a key for the locked weak point (Unlocked, CritOpened).
+//     onDeferred(t), relock(t)   a deferred refusal (when the lock relocks on one) or a rule shuts the lock
+//                                (Relocked, CritClosed).
 //   Answered for the last impact of an Intercept move whose impacts were all Intercepted opens the crit
 //   window for the move's `opens` seconds from that impact (CritOpened) and gives its `load`
 //   (LoadGained). The first Missed or WrongZone impact of each use of a move is flagged (its Answered has
@@ -98,7 +108,8 @@
 //     "intercept": { "window": 0.15, "rearm": 0.4 },
 //     "guestCall": { "fromBeats": 1, "minLeadBeats": 2, "missShiftBeats": 0.5 },
 //     "weakPoints": { "halfWidth": 0.5, "points": [ { "id": "nape", "x": 0, "y": 0.78, "radius": 0.1,
-//                     "multiplier": 2.0, "facing": 180, "arc": 60 } ] },
+//                     "multiplier": 2.0, "facing": 180, "arc": 60 } ],
+//                     "lock": { "keys": ["shared_blow"], "openSeconds": 3.0 } },
 //     "keepOut": { "bearing": 90, "distance": 20, "radius": 3 },
 //     "moves": [ { "id": "called_fist", "answer": "intercept", "impacts": [3], "calls": [1],
 //                  "zones": ["side"], "sheds": [true], "active": 0.2, "recovery": 1.2, "range": 2.6,
@@ -110,6 +121,9 @@
 //   guestCall: fromBeats 0..8, minLeadBeats 0.5..8, missShiftBeats 0..minLeadBeats (below it).
 //   weakPoints: as Data/Battle/weakpoints.json's entries (WeakPoint.h) plus each point's gate,
 //   facing 0..360 and arc 0..180 degrees (defaults 0 and 180: all round).
+//   lock (optional; absent: not locked): keys, 1..3 distinct of "shared_blow", "read_clause", "refusal";
+//   clause 1..65535 (required with "read_clause", else not allowed); openSeconds 0 (open until a relock)
+//   or 0.1..30 (default 3); relockOnDefer (default true).
 //   A boss whose moves are not in this format (a kind that keeps arena.json's) can still have weak points:
 //   a standalone file { "version": 1, "weakPoints": { ... } } with the same block, read by
 //   importArenaWeakPoints (Data/Battle/arena_boss/kite_boss_weak.json is the first).
@@ -160,7 +174,9 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
+#include "ftcore/BossScript.h"
 #include "ftcore/WeakPoint.h"
+#include "ftcore/WeakPointLock.h"
 
 #include <array>
 #include <cmath>
@@ -239,9 +255,13 @@ public:
     // Drops every pending impact unresolved (the move was cancelled).
     FTCORE_API void cancel();
 
-    // Moves the clock to `now`: impacts at or before it resolve against the hold. The clock starts
-    // before any time, so the first update or press sets it (a fight clock may start below 0). A time
-    // that is not finite moves nothing (here and in every press).
+    // A new fight: no impacts, no hold, no rearm, the clock at `start` (0 when not finite). The windows
+    // are kept.
+    FTCORE_API void reset(double start);
+
+    // Moves the clock to `now`: impacts at or before it resolve against the hold. The clock starts at
+    // reset's time (0 for a new strike). A time that is not finite, or more than kMaxTimeJump past the
+    // clock, moves nothing (here and in every press).
     FTCORE_API CalledResults update(double now);
     // The lead's buttons, pressed with the body in `zone`.
     FTCORE_API CalledResults interceptDown(CalledZone zone, double t);
@@ -276,7 +296,7 @@ private:
     std::array<CalledOutcome, kMaxCalledImpacts> outcomes_{};
     std::size_t count_ = 0;
     std::size_t next_ = 0;
-    double now_ = -1.0e300;
+    double now_ = 0.0;
     ArenaHold hold_ = ArenaHold::None;
     double holdFrom_ = 0.0;
     CalledZone holdZone_ = CalledZone::Left;
@@ -294,6 +314,8 @@ struct ArenaWeakGate {
 struct ArenaWeakPoints {
     WeakPoints points;
     std::array<ArenaWeakGate, kMaxWeakPoints> gates{};
+    bool locked = false; // the points are behind a WeakPointLock with `lock`
+    LockTuning lock{};
 };
 
 // A body at `from` is inside `gate` of a boss at `pos` facing `facing` (unit).
@@ -574,6 +596,13 @@ FTCORE_API bool importArenaWeakPoints(const JsonValue& v, const std::string& pat
 FTCORE_API bool importArenaWeakPoints(std::string_view json, ArenaWeakPoints& out, std::string* error = nullptr,
                                       std::vector<std::string>* warnings = nullptr);
 
+// Reads a boss script file (Data/Battle/boss_script/<id>.json; docs/BOSS_SCRIPT.md has the format) into
+// `out`, with the same checks as the arena bosses: each range and name is an error with its path, an
+// unknown key a warning, and the def must pass validBossScript. On failure `out` is default and *error
+// lists each problem, one per line.
+FTCORE_API bool importBossScript(std::string_view json, BossScriptDef& out, std::string* error = nullptr,
+                                 std::vector<std::string>* warnings = nullptr);
+
 // ---- The run ---------------------------------------------------------------------------------------
 
 enum class ArenaBossEventType : std::uint8_t { // append only
@@ -595,6 +624,9 @@ enum class ArenaBossEventType : std::uint8_t { // append only
     Invulnerable,   // value = 1 on, 0 off
     Lifted,         // a Release on the call ended the invulnerable phase; down until `until`
     Recovered,      // the boss is up again
+    Unlocked,       // the locked weak point opened: value = the UnlockKey, until = when it relocks
+                    // (+inf: until a relock); value 0 with amount 1: an offer while open restarted it
+    Relocked,       // the locked weak point shut before its time (a deferral or a rule)
 };
 
 struct ArenaBossEvent {
@@ -654,6 +686,17 @@ public:
     // Drops the live move's pending calls and impacts (no events).
     FTCORE_API void cancelMove();
 
+    // The locked weak point. `result` (optional) says what the lock made of the key; with no lock
+    // declared nothing happens and it is BadKey.
+    FTCORE_API const ArenaBossEvents& offerUnlock(UnlockKey key, double t, std::uint16_t clause = 0,
+                                                  UnlockResult* result = nullptr);
+    FTCORE_API const ArenaBossEvents& onDeferred(double t);
+    FTCORE_API const ArenaBossEvents& relock(double t);
+    bool weakPointLocked() const { return lock_.locked(); }
+    // The lock is open now (always true for a boss whose points are not locked).
+    bool weakPointOpen() const { return lock_.open(now_); }
+    const WeakPointLock& lock() const { return lock_.lock(); }
+
     const ArenaBossDef& def() const { return *def_; }
     double now() const { return now_; }
     std::size_t phase() const { return phases_.phase(); }
@@ -662,8 +705,9 @@ public:
     std::uint8_t liveMove() const { return live_; }
     // The live move still has a call or an impact to come.
     bool pending() const { return live_ != kArenaBossNoMove && (cueNext_ < cueCount_ || !strike_.complete()); }
-    // `t` as the run reads it: now() when it is earlier or not finite.
-    double timeOf(double t) const { return std::isfinite(t) && t > now_ ? t : now_; }
+    // `t` as the run reads it (CombatInputs.h inputTime): now() when it is earlier, not finite, or more
+    // than kMaxTimeJump ahead.
+    double timeOf(double t) const { return inputTime(now_, t); }
     double liveStart() const { return liveStart_; }
     const CalledStrike& strike() const { return strike_; }
     const GuestCaller& guest() const { return guest_; }
@@ -677,6 +721,7 @@ public:
 private:
     void advance(double t);
     void absorb(const CalledResults& results);
+    void shutLock();
 
     const ArenaBossDef* def_ = nullptr;
     ArenaBossPhaseTrack phases_{};
@@ -684,6 +729,7 @@ private:
     CalledStrike strike_{};
     GuestCaller guest_{};
     CritWindow crit_{};
+    LockedPoint lock_{};
     ArenaBossEvents events_{};
     double now_ = 0.0;
     std::uint8_t live_ = kArenaBossNoMove;
