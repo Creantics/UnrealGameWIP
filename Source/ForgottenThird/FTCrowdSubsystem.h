@@ -81,6 +81,7 @@ private:
 	bool Clear(const FVector& Eye, const FVector& To) const;
 	void BuildMassing();
 	void LogGroundAt();
+	void LogStoppedGroup(uint32 Size) const;
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
 	// S-332: the cameras the crowd must not pop in front of (the player's view and the stills' cameras), every frame.

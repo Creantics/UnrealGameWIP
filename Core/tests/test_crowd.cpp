@@ -1161,12 +1161,26 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
     float worstPair = 1e30f, worstWall = 1e30f;
     Vec2 worstPairAt{}, worstWallAt{};
     std::uint32_t worstSeed = 0, worstPathSeed = 0;
+    // A render's own fight: FT_CROWD_FIGHT_AT "x,y" (engine frame, m) runs only that point, FT_CROWD_SEEDS seeds
+    // (default 6), on to the render's +35 s, and prints who stands in any knot over the gate.
+    const std::string fightAt = envText("FT_CROWD_FIGHT_AT");
+    Vec2 pinned{};
+    if (!fightAt.empty()) {
+        char* rest = nullptr;
+        pinned.x = std::strtof(fightAt.c_str(), &rest);
+        REQUIRE((rest && *rest == ','));
+        pinned.y = std::strtof(rest + 1, nullptr);
+        const std::uint32_t pn = g.nearest(pinned, 50.f);
+        REQUIRE(pn != UINT32_MAX);
+        nodes.assign(1, pn);
+    }
+    const std::uint32_t seeds = envText("FT_CROWD_SEEDS").empty() ? 6u : static_cast<std::uint32_t>(std::max(1, std::atoi(envText("FT_CROWD_SEEDS").c_str())));
     for (const std::uint32_t n : nodes) {
-        const Vec2 fight = g.node(n);
+        const Vec2 fight = fightAt.empty() ? g.node(n) : pinned;
         const std::uint32_t pn = g.nearest({fight.x - 30.f, fight.y}, 50.f);
         const Vec2 player = pn == UINT32_MAX ? fight : g.node(pn);
         bool used = false;
-        for (std::uint32_t seed = 1; seed <= 6; ++seed) {
+        for (std::uint32_t seed = 1; seed <= seeds; ++seed) {
             CrowdSim sim;
             REQUIRE(sim.init(g, t, seed));
             if (!doors.empty()) {
@@ -1197,7 +1211,32 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
                     sim.tick(1.f / 15.f, standAt, {0.f, 0.f});
                     runPair = std::min(runPair, sim.minPairDistance(2.f));
                     slowRunAll += sim.runPoseSlow();
-                    if (++stepAll % 8 == 0) groupWorst = std::max(groupWorst, sim.largestStoppedGroup(3.f));
+                    if (++stepAll % (fightAt.empty() ? 8 : 1) == 0) {
+                        const std::uint32_t grp = sim.largestStoppedGroup(3.f);
+                        if (!fightAt.empty() && grp > 3u && grp > groupWorst) {
+                            for (std::uint32_t m = 0; m < sim.capacity(); ++m) {
+                                const CrowdAgentView& a = sim.agent(m);
+                                if (!a.live || a.indoors || a.speed > 0.05f) continue;
+                                std::uint32_t near = 0;
+                                for (std::uint32_t o = 0; o < sim.capacity(); ++o) {
+                                    const CrowdAgentView& b = sim.agent(o);
+                                    near += o != m && b.live && !b.indoors && b.speed <= 0.05f && dist(a.pos, b.pos) < 3.f;
+                                }
+                                if (near + 1 < grp) continue;
+                                std::printf("crowd knot seed %u step %d: %u standing round %u:", seed, stepAll, grp, m);
+                                for (std::uint32_t o = 0; o < sim.capacity(); ++o) {
+                                    const CrowdAgentView& b = sim.agent(o);
+                                    if (!b.live || b.indoors || b.speed > 0.05f || dist(a.pos, b.pos) >= 3.f) continue;
+                                    const std::string_view nm = crowdStateName(b.state);
+                                    std::printf(" [%u %.*s%s fear %.2f, %.1f m from the fight]", o, static_cast<int>(nm.size()), nm.data(),
+                                                b.cornered ? " cornered" : "", static_cast<double>(b.fear), static_cast<double>(dist(b.pos, fight)));
+                                }
+                                std::printf("\n");
+                                break;
+                            }
+                        }
+                        groupWorst = std::max(groupWorst, grp);
+                    }
                     for (std::uint32_t m = 0; m < sim.capacity(); ++m)
                         if (sim.agent(m).live) runWall = std::min(runWall, sim.wallClearance(m));
                 }
@@ -1225,6 +1264,7 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
                 if (h == 20) sim.pushEvent({CrowdEventKind::Death, fight});
                 go(0.5f);
             }
+            if (!fightAt.empty()) go(4.5f); // the render quits at +35 s
             const std::uint32_t backNear = near(true);
             const bool back = backNear * 2u >= calmNear;
             backFail += !back;

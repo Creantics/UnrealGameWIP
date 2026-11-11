@@ -828,7 +828,12 @@ void UFTCrowdSubsystem::Tick(float DeltaTime)
 		// Every 8th frame once the streets have filled (the first members stand still on their first step).
 		if (RunTime >= 2.0 && ++GroupTick % 8 == 0)
 		{
-			WorstGroup = FMath::Max(WorstGroup, Sim.largestStoppedGroup(3.f));
+			const uint32 Group = Sim.largestStoppedGroup(3.f);
+			if (Group > kGroupGate && Group > WorstGroup)
+			{
+				LogStoppedGroup(Group);
+			}
+			WorstGroup = FMath::Max(WorstGroup, Group);
 		}
 		for (uint32 i = 0; i < Sim.capacity(); ++i)
 		{
@@ -1201,6 +1206,44 @@ void UFTCrowdSubsystem::BuildMassing()
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide), %d grid cells."), MassBoxes.Num(),
 		kMassMinHeight / 100.0, kMassMinSide / 100.0, MassGrid.Num());
+}
+
+// A knot over the gate: who stands in it (state, speed, metres from the fight), so a failed run says why.
+void UFTCrowdSubsystem::LogStoppedGroup(uint32 Size) const
+{
+	auto Stopped = [](const ftcore::CrowdAgentView& V) { return V.live && !V.indoors && V.speed <= 0.05f; };
+	const ftcore::Vec2 Fight = ToSim(TestFightPoint);
+	for (uint32 i = 0; i < Sim.capacity(); ++i)
+	{
+		const ftcore::CrowdAgentView& A = Sim.agent(i);
+		if (!Stopped(A))
+		{
+			continue;
+		}
+		TArray<uint32> Members{i};
+		for (uint32 j = 0; j < Sim.capacity(); ++j)
+		{
+			const ftcore::CrowdAgentView& B = Sim.agent(j);
+			if (j != i && Stopped(B) && FMath::Square(A.pos.x - B.pos.x) + FMath::Square(A.pos.y - B.pos.y) < 9.f)
+			{
+				Members.Add(j);
+			}
+		}
+		if (static_cast<uint32>(Members.Num()) < Size)
+		{
+			continue;
+		}
+		FString Who;
+		for (const uint32 m : Members)
+		{
+			const ftcore::CrowdAgentView& V = Sim.agent(m);
+			const std::string_view N = ftcore::crowdStateName(V.state);
+			Who += FString::Printf(TEXT(" [%u %s%s fear %.2f, %.1f m from the fight]"), m, *FString(static_cast<int32>(N.size()), N.data()),
+				V.cornered ? TEXT(" cornered") : TEXT(""), V.fear, FMath::Sqrt(FMath::Square(V.pos.x - Fight.x) + FMath::Square(V.pos.y - Fight.y)));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: knot of %u standing at t=%.1f s:%s."), Size, RunTime, *Who);
+		return;
+	}
 }
 
 void UFTCrowdSubsystem::LogGroundAt()

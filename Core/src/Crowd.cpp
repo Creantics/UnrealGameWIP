@@ -719,6 +719,17 @@ void CrowdSim::decide(std::uint32_t i) {
     const float notice = tuning_.noticeFear * s, back = tuning_.backFear * s, flee = tuning_.fleeFear * s;
     const float f = a.fear;
     a.stateTime += tuning_.step;
+    // A knot of four or more standing, whatever their states: a backer, cowerer or runner in it that is far enough
+    // from the threat walks on, away from it (the states' own knot rules cover the watchers).
+    if (a.speed <= 0.05f &&
+        (a.state == CrowdState::BackAway || a.state == CrowdState::Cower || a.state == CrowdState::Flee) &&
+        dist(a.pos, a.threat) >= tuning_.safeDist - kSafeSlack && standersNear(a, kKnotRadius) >= 3u) {
+        setState(a, CrowdState::Walk);
+        a.hold = false;
+        a.walkedOn = true;
+        a.heading = a.walkHeading = yawTo(a.threat, a.pos);
+        return;
+    }
     switch (a.state) {
     case CrowdState::Walk:
     case CrowdState::Idle:
