@@ -10,7 +10,9 @@
 //    projection marches the view ray down through the height field (parallax occlusion: linear steps, then one
 //    interpolation between the last two) and writes the shifted UV back. It fades out between fadeNearM and fadeFarM
 //    and on glancing views, and costs a few instructions when the JointDepth switch is 0 (all work sits inside ifs).
-//  - the shade snippet, just before the return. It bends the normal by the height's slope, and because a wall in
+//  - the shade snippet, just before the return. It bends the normal by the height's slope (central differences 2.5
+//    texels either side, a mip coarser than the colour, through a narrower smoothstep so only the arris bends, held
+//    within maxBendDeg: the 1k JPEG AO is noisy and a fine slope turns it into speckle), and because a wall in
 //    shade has no direct light for that normal, the recess is also carried by the cavity terms: a directional cavity
 //    (the joint's upper wall, under the brick above, darkest; its lower edge, open to the sky, lighter), a wider AO
 //    from taps 3 and 6 texels out (a soft dark core, not a one-texel edge), stronger on deeper joints and glancing
@@ -54,7 +56,12 @@ struct SurfaceJointSpec {
     float cavityRefCm = 0.8f;                  // the cavity is full on joints this deep and over, less on shallower
     float viewDark = 0.5f;                     // extra cavity on glancing views (the floor hidden by the faces)
     float mortarR = 0.42f, mortarG = 0.40f, mortarB = 0.37f; // mortar albedo, times the tint's luminance
-    float mortarBlend = 0.5f;                  // how far a joint's floor goes to the mortar albedo
+    float mortarTintFloor = 0.5f;              // the tint luminance the mortar is scaled by never falls under this
+    float mortarBlend = 0.5f;                  // how far a joint's floor goes to the mortar albedo on a mid-tone wall
+    float mortarBlendDark = 0.8f;              // and on a dark one (contrast in shade, where cavity darkening is lost)
+    float mortarMidLum = 0.3f, mortarDarkLum = 0.08f; // wall luminance for mortarBlend and for mortarBlendDark
+    float normalNarrow = 0.15f;                // the normal's smoothstep starts and ends this share of lo..hi further in
+    float maxBendDeg = 55.f;                   // the bent normal stays within this of the face normal
     float mortarRough = 0.9f;                  // and to this roughness
     float toneVar = 0.06f;                     // per-unit albedo shift, plus or minus
     float roughVar = 0.05f;                    // per-unit roughness shift, plus or minus (relative)
@@ -95,8 +102,20 @@ FTCORE_API float surfaceJointUnitTone(const SurfaceJointSpec& spec, float u, flo
 struct SurfaceJointRgb {
     float r = 0.f, g = 0.f, b = 0.f;
 };
-// The mortar albedo for a surface tint (its luminance scales the spec's grey).
+// The mortar albedo for a surface tint (its luminance, never under mortarTintFloor, scales the spec's grey).
 FTCORE_API SurfaceJointRgb surfaceJointMortar(const SurfaceJointSpec& spec, float tintR, float tintG, float tintB);
+// How far a joint's floor goes to the mortar on a wall of this albedo luminance: mortarBlend from mortarMidLum up,
+// rising to mortarBlendDark at mortarDarkLum and under.
+FTCORE_API float surfaceJointMortarBlend(const SurfaceJointSpec& spec, float wallLum);
+// The normal's height from the AO: the smoothstep narrowed by normalNarrow at each end (flat face and floor: no slope).
+FTCORE_API float surfaceJointNormalHeight(const SurfaceJointSpec& spec, float ao, float lo, float hi);
+
+struct SurfaceJointVec {
+    float x = 0.f, y = 0.f, z = 0.f;
+};
+// The bent normal: normal less slopeU * tu + slopeV * tv, normalised, then held within maxBendDeg of up.
+FTCORE_API SurfaceJointVec surfaceJointBend(const SurfaceJointSpec& spec, SurfaceJointVec normal, SurfaceJointVec up,
+                                            SurfaceJointVec tu, SurfaceJointVec tv, float slopeU, float slopeV);
 
 // A height field for the reference march: height 0..1 at (u, v) in tile units.
 using SurfaceJointHeightFn = float (*)(float u, float v, const void* user);

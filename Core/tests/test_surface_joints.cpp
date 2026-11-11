@@ -161,11 +161,66 @@ TEST_CASE("joints: mortar grey scaled by the tint's luminance") {
     CHECK(white.r == doctest::Approx(0.42f));
     CHECK(white.g == doctest::Approx(0.40f));
     CHECK(white.b == doctest::Approx(0.37f));
-    const SurfaceJointRgb dark = surfaceJointMortar(spec, 0.3f, 0.3f, 0.3f);
-    CHECK(dark.r == doctest::Approx(0.3f * 0.42f));
+    const SurfaceJointRgb grey = surfaceJointMortar(spec, 0.7f, 0.7f, 0.7f);
+    CHECK(grey.r == doctest::Approx(0.7f * 0.42f));
+    // A dark painted wall's mortar stays at half the grey, paler than the wall.
+    const SurfaceJointRgb dark = surfaceJointMortar(spec, 0.1f, 0.1f, 0.1f);
+    CHECK(dark.r == doctest::Approx(0.5f * 0.42f));
     CHECK(dark.b < white.b);
     CHECK(spec.mortarRough > 0.85f);
-    CHECK(spec.mortarBlend == doctest::Approx(0.5f));
+}
+
+TEST_CASE("joints: mortar blend: 0.5 on mid-tone walls, rising to 0.8 on dark ones") {
+    const SurfaceJointSpec spec;
+    CHECK(surfaceJointMortarBlend(spec, 0.6f) == doctest::Approx(0.5f));
+    CHECK(surfaceJointMortarBlend(spec, 0.3f) == doctest::Approx(0.5f));
+    CHECK(surfaceJointMortarBlend(spec, 0.08f) == doctest::Approx(0.8f));
+    CHECK(surfaceJointMortarBlend(spec, 0.02f) == doctest::Approx(0.8f));
+    const float mid = surfaceJointMortarBlend(spec, 0.19f);
+    CHECK(mid > 0.5f);
+    CHECK(mid < 0.8f);
+    float last = 1.f;
+    for (int i = 0; i <= 100; ++i) {
+        const float b = surfaceJointMortarBlend(spec, static_cast<float>(i) / 100.f);
+        CHECK(b <= last + 1e-6f);  // never less mortar on a darker wall
+        last = b;
+    }
+    // In shade, a dark wall (0.06) shows a paler joint: its floor after the mortar blend, before the cavity, is lighter
+    // than the wall, and even after a full cavity (x cavityAlbedo) it still reads against the upper edge's darkness.
+    const float wall = 0.06f;
+    const float mortar = surfaceJointMortar(spec, 0.2f, 0.2f, 0.2f).g;
+    const float floorLum = wall + (mortar - wall) * surfaceJointMortarBlend(spec, wall);
+    CHECK(floorLum > 2.f * wall);
+    CHECK(floorLum * (1.f - spec.cavityBase * (1.f - spec.cavityAlbedo)) > 1.5f * wall);
+}
+
+TEST_CASE("joints: the normal: no slope on a flat face or floor, only the arris bends, held within 55 degrees") {
+    const SurfaceJointSpec spec;
+    // The narrowed height: flat (0 or 1) beyond the narrowed ends, so neither gives a slope; steeper in between.
+    CHECK(surfaceJointNormalHeight(spec, 0.95f, 0.6f, 0.92f) == doctest::Approx(1.f));
+    CHECK(surfaceJointNormalHeight(spec, 0.88f, 0.6f, 0.92f) == doctest::Approx(1.f));  // in the face's noise band
+    CHECK(surfaceJointNormalHeight(spec, 0.64f, 0.6f, 0.92f) == doctest::Approx(0.f));  // in the floor's noise band
+    CHECK(surfaceJointNormalHeight(spec, 0.76f, 0.6f, 0.92f) == doctest::Approx(0.5f));
+    CHECK(surfaceJointHeight(0.88f, 0.6f, 0.92f) < 1.f);  // the cavity's full smoothstep still sees it
+    // Noise on a flat face (AO 0.88..0.95) gives no slope at all.
+    const float a = surfaceJointNormalHeight(spec, 0.88f, 0.6f, 0.92f), b = surfaceJointNormalHeight(spec, 0.95f, 0.6f, 0.92f);
+    CHECK(a - b == doctest::Approx(0.f));
+    // The bend: the face normal is kept exactly with no slope.
+    const SurfaceJointVec up{0.f, -1.f, 0.f}, tu{1.f, 0.f, 0.f}, tv{0.f, 0.f, -1.f};
+    const SurfaceJointVec flat = surfaceJointBend(spec, up, up, tu, tv, 0.f, 0.f);
+    CHECK(flat.x == doctest::Approx(0.f));
+    CHECK(flat.y == doctest::Approx(-1.f));
+    CHECK(flat.z == doctest::Approx(0.f));
+    // A gentle slope bends by atan(slope); a steep one is held at 55 degrees, on the same side.
+    const SurfaceJointVec gentle = surfaceJointBend(spec, up, up, tu, tv, 0.5f, 0.f);
+    CHECK(std::acos(-gentle.y) * 180.f / 3.14159265f == doctest::Approx(26.565f).epsilon(1e-3));
+    CHECK(gentle.x < 0.f);
+    for (float s : {2.f, 6.f, 40.f}) {
+        const SurfaceJointVec steep = surfaceJointBend(spec, up, up, tu, tv, 0.f, s);
+        CHECK(std::acos(-steep.y) * 180.f / 3.14159265f == doctest::Approx(55.f).epsilon(1e-3));
+        CHECK(steep.z > 0.f);
+        CHECK(steep.x * steep.x + steep.y * steep.y + steep.z * steep.z == doctest::Approx(1.f));
+    }
 }
 
 TEST_CASE("joints: per-unit tone: flat inside a unit, soft at its edges, half a unit offset per course") {
@@ -330,19 +385,28 @@ TEST_CASE("joints: the HLSL: no derivatives, the march behind the switch, every 
     CHECK(contains(shade, "if (JtShade > 0.0)"));
     CHECK_FALSE(contains(shade, "for ("));
     CHECK_FALSE(contains(shade, "Mottle[2]"));  // the parallax snippet's JtDeep instead
-    CHECK_FALSE(contains(shade, "Texture2DSampleLevel"));
-    // Six taps: the pixel, 1.5 texels on u and v, 3 up and down the image, 6 back along u; all inside the branch.
+    // Six taps, as in pass 2: the pixel at the colour's mip; 2.5 texels either side on u and v and 6 back along u, a
+    // mip coarser; all inside the branch.
     const size_t branch = shade.find("if (JtShade > 0.0)");
     CHECK(shade.find("Texture2DSample(ArmTex") > branch);
+    CHECK(shade.find("Texture2DSampleLevel(ArmTex") > branch);
     CHECK(contains(shade, "Texture2DSample(ArmTex, ArmTexSampler, JtUv)"));
-    CHECK(contains(shade, "JtUv + float2(0.00146484375, 0.0))"));
-    CHECK(contains(shade, "JtUv - float2(0.0, 0.0029296875))"));
-    CHECK(contains(shade, "JtUv + float2(0.0, 0.0029296875))"));
-    CHECK(contains(shade, "JtUv - float2(0.005859375, 0.0))"));
-    size_t taps = 0;
-    for (size_t at = shade.find("Texture2DSample("); at != std::string::npos; at = shade.find("Texture2DSample(", at + 1))
-        ++taps;
-    CHECK(taps == 6);
+    for (const char* off : {"JtUv + float2(0.00244140625, 0.0), JtLod + 1.0)", "JtUv - float2(0.00244140625, 0.0), JtLod + 1.0)",
+                            "JtUv - float2(0.0, 0.00244140625), JtLod + 1.0)", "JtUv + float2(0.0, 0.00244140625), JtLod + 1.0)",
+                            "JtUv - float2(0.005859375, 0.0), JtLod + 1.0)"})
+        CHECK_MESSAGE(contains(shade, off), off);
+    const auto count = [&](const char* what) {
+        size_t n = 0;
+        for (size_t at = shade.find(what); at != std::string::npos; at = shade.find(what, at + 1)) ++n;
+        return n;
+    };
+    CHECK(count("Texture2DSample(") == 1);
+    CHECK(count("Texture2DSampleLevel(") == 5);
+    // The slope: central differences of the narrowed height, and the 55 degree hold (cos 55 = 0.5736).
+    CHECK(contains(shade, "float2(JtNup - JtNum, JtNb - JtNa)"));
+    CHECK(contains(shade, "if (JtAlong < 0.573576"));
+    CHECK(contains(shade, "JtWallLum = dot(Color,"));
+    CHECK(contains(shade, "float JtMortarK = lerp(0.800000012, 0.5, smoothstep(0.0799999982, 0.300000012, JtWallLum))"));
     for (const char* in : {"JointDepth)", "JointDepthCm", "JointLo", "JointHi", "TileCm", "JtUv", "JtTu", "JtTv",
                            "JtLod", "JtDeep", "JtNdotV", "Mottle[0]", "Tint.rgb", "JointUnitsU", "JointUnitsV",
                            "JointBond", "NormalOut =", "AOOut *=", "RoughOut =", "Color *=", "Color = lerp(Color, float3(0.419999987, 0.400000006, 0.370000005)"})

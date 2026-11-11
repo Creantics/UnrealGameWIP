@@ -12,7 +12,8 @@ namespace {
 constexpr int kUnitSalt = 7;                 // the per-unit hash's third lattice coordinate
 constexpr float kUnevenOffset[3] = {31.7f, -12.9f, 7.3f}; // keeps the uneven noise off Mottle's lattice
 constexpr float kLum[3] = {0.2126f, 0.7152f, 0.0722f};
-constexpr float kAboveTexels = 3.f, kRingTexels = 6.f, kSlopeTexels = 1.5f;
+constexpr float kStepTexels = 2.5f;  // the slope's and the directional cavity's taps, either side of the pixel
+constexpr float kRingTexels = 6.f;   // the wide ring's far tap
 
 std::string jointNum(float f) {
     char buf[48];
@@ -60,6 +61,19 @@ std::string latticeHlsl(const std::string& indent, const std::string& dst, const
 std::string heightHlsl(const std::string& indent, const std::string& dst, const std::string& src) {
     return indent + "float " + dst + " = saturate((" + src + ".r - JointLo) / max(JointHi - JointLo, 1e-4));\n" +
            indent + dst + " = " + dst + " * " + dst + " * (3.0 - 2.0 * " + dst + ");\n";
+}
+
+// The normal's height from an AO value (a float expression): the smoothstep narrowed by normalNarrow at each end.
+std::string normalHeightHlsl(const SurfaceJointSpec& spec, const std::string& dst, const std::string& ao) {
+    const std::string k = jointNum(spec.normalNarrow), w = jointNum(std::max(1.f - 2.f * spec.normalNarrow, 1e-3f));
+    return "\tfloat " + dst + " = saturate((" + ao + " - JointLo - " + k + " * (JointHi - JointLo)) / max(" + w +
+           " * (JointHi - JointLo), 1e-4));\n\t" + dst + " = " + dst + " * " + dst + " * (3.0 - 2.0 * " + dst + ");\n";
+}
+
+// The cavity's height from an AO value (a float expression): the full smoothstep.
+std::string cavityHeightHlsl(const std::string& dst, const std::string& ao) {
+    return "\tfloat " + dst + " = saturate((" + ao + " - JointLo) / max(JointHi - JointLo, 1e-4));\n\t" + dst + " = " +
+           dst + " * " + dst + " * (3.0 - 2.0 * " + dst + ");\n";
 }
 
 // One course's tone along u (cu in unit cells, less half a cell), with its half-unit bond offset on odd courses; the
@@ -146,8 +160,38 @@ float surfaceJointUnitTone(const SurfaceJointSpec& spec, float u, float v, float
 }
 
 SurfaceJointRgb surfaceJointMortar(const SurfaceJointSpec& spec, float tintR, float tintG, float tintB) {
-    const float lum = kLum[0] * tintR + kLum[1] * tintG + kLum[2] * tintB;
+    const float lum = std::max(kLum[0] * tintR + kLum[1] * tintG + kLum[2] * tintB, spec.mortarTintFloor);
     return {spec.mortarR * lum, spec.mortarG * lum, spec.mortarB * lum};
+}
+
+float surfaceJointMortarBlend(const SurfaceJointSpec& spec, float wallLum) {
+    return jointLerp(spec.mortarBlendDark, spec.mortarBlend,
+                     jointSmoothstep(spec.mortarDarkLum, spec.mortarMidLum, wallLum));
+}
+
+float surfaceJointNormalHeight(const SurfaceJointSpec& spec, float ao, float lo, float hi) {
+    const float range = hi - lo;
+    const float t = jointSaturate((ao - lo - spec.normalNarrow * range) /
+                                  std::max(std::max(1.f - 2.f * spec.normalNarrow, 1e-3f) * range, 1e-4f));
+    return t * t * (3.f - 2.f * t);
+}
+
+SurfaceJointVec surfaceJointBend(const SurfaceJointSpec& spec, SurfaceJointVec normal, SurfaceJointVec up,
+                                 SurfaceJointVec tu, SurfaceJointVec tv, float slopeU, float slopeV) {
+    SurfaceJointVec n{normal.x - (slopeU * tu.x + slopeV * tv.x), normal.y - (slopeU * tu.y + slopeV * tv.y),
+                      normal.z - (slopeU * tu.z + slopeV * tv.z)};
+    float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    n = {n.x / len, n.y / len, n.z / len};
+    const float cosMax = std::cos(spec.maxBendDeg * 3.14159265f / 180.f);
+    const float along = n.x * up.x + n.y * up.y + n.z * up.z;
+    if (along < cosMax) {
+        const SurfaceJointVec side{n.x - along * up.x, n.y - along * up.y, n.z - along * up.z};
+        len = std::max(std::sqrt(side.x * side.x + side.y * side.y + side.z * side.z), 1e-5f);
+        const float sinMax = std::sqrt(1.f - cosMax * cosMax);
+        n = {cosMax * up.x + sinMax * side.x / len, cosMax * up.y + sinMax * side.y / len,
+             cosMax * up.z + sinMax * side.z / len};
+    }
+    return n;
 }
 
 SurfaceJointShift surfaceJointMarch(const SurfaceJointSpec& spec, SurfaceJointHeightFn height, const void* user,
@@ -274,8 +318,9 @@ std::string surfaceJointParallaxHlsl(const SurfaceJointSpec& spec) {
 
 std::string surfaceJointShadeHlsl(const SurfaceJointSpec& spec) {
     const float texel = 1.f / std::max(spec.texels, 1.f);
-    const std::string slope = jointNum(kSlopeTexels * texel), above = jointNum(kAboveTexels * texel),
-                      ring = jointNum(kRingTexels * texel);
+    const std::string step = jointNum(kStepTexels * texel), ring = jointNum(kRingTexels * texel);
+    const std::string lum = "float3(" + jointNum(kLum[0]) + ", " + jointNum(kLum[1]) + ", " + jointNum(kLum[2]) + ")";
+    const float cosMax = std::cos(spec.maxBendDeg * 3.14159265f / 180.f);
     std::string h;
     h += "// Joint depth, shading: the slope of the joint mask bends the normal, and for walls in shade (no direct light\n";
     h += "// for the normal) the recess is carried by a directional cavity and a wider AO; the floor takes a mortar grey,\n";
@@ -284,19 +329,40 @@ std::string surfaceJointShadeHlsl(const SurfaceJointSpec& spec) {
     h += "float JtShade = saturate(JointDepth) * saturate(JointDepthCm) * (1.0 - smoothstep(" +
          jointNum(spec.shadeLodFull) + ", " + jointNum(spec.shadeLodOff) + ", JtLod));\n";
     h += "if (JtShade > 0.0)\n{\n";
-    h += "\t// On the dominant projection (Arm blends all three): the pixel, 1.5 texels along u and v for the slope, 3 up\n";
-    h += "\t// and down the image (under the unit above, over the one below) and 6 back along u for the wide ring.\n";
-    const std::string arm = "Texture2DSample(ArmTex, ArmTexSampler, JtUv";
-    h += heightHlsl("\t", "JtH0", arm + ")");
-    h += heightHlsl("\t", "JtHu", arm + " + float2(" + slope + ", 0.0))");
-    h += heightHlsl("\t", "JtHv", arm + " + float2(0.0, " + slope + "))");
-    h += heightHlsl("\t", "JtHa", arm + " - float2(0.0, " + above + "))");
-    h += heightHlsl("\t", "JtHb", arm + " + float2(0.0, " + above + "))");
-    h += heightHlsl("\t", "JtHw", arm + " - float2(" + ring + ", 0.0))");
-    h += "\t// The height's rise per unit of u and v, both in tile units: a world slope along JtTu and JtTv.\n";
-    h += "\tfloat2 JtSlope = (" + jointNum(spec.normalStrength / (kSlopeTexels * texel)) +
-         " * JointDepthCm / max(TileCm, 1.0) * JtDeep) * float2(JtHu - JtH0, JtHv - JtH0);\n";
-    h += "\tNormalOut = normalize(NormalOut - JtShade * (JtSlope.x * JtTu + JtSlope.y * JtTv));\n";
+    h += "\tfloat JtWallLum = dot(Color, " + lum + ");\n";
+    h += "\t// On the dominant projection (Arm blends all three): the pixel at the colour's mip; four taps " +
+         jointNum(kStepTexels) + " texels either side along u\n";
+    h += "\t// and v, and one " + jointNum(kRingTexels) +
+         " back along u, a mip coarser (the 1k JPEG's AO is noisy and a slope amplifies it).\n";
+    h += heightHlsl("\t", "JtH0", "Texture2DSample(ArmTex, ArmTexSampler, JtUv)");
+    const auto tap = [&](const std::string& dst, const std::string& off) {
+        return "\tfloat " + dst + " = Texture2DSampleLevel(ArmTex, ArmTexSampler, JtUv " + off + ", JtLod + 1.0).r;\n";
+    };
+    h += tap("JtAup", "+ float2(" + step + ", 0.0)");
+    h += tap("JtAum", "- float2(" + step + ", 0.0)");
+    h += tap("JtAa", "- float2(0.0, " + step + ")");  // up the image, under the unit above
+    h += tap("JtAb", "+ float2(0.0, " + step + ")");  // down the image, over the unit below
+    h += tap("JtAw", "- float2(" + ring + ", 0.0)");
+    h += "\t// The normal's height: a narrower smoothstep, so the flat face and the flat floor give no slope, only the arris.\n";
+    h += normalHeightHlsl(spec, "JtNup", "JtAup");
+    h += normalHeightHlsl(spec, "JtNum", "JtAum");
+    h += normalHeightHlsl(spec, "JtNa", "JtAa");
+    h += normalHeightHlsl(spec, "JtNb", "JtAb");
+    h += cavityHeightHlsl("JtHu", "JtAup");
+    h += cavityHeightHlsl("JtHa", "JtAa");
+    h += cavityHeightHlsl("JtHb", "JtAb");
+    h += cavityHeightHlsl("JtHw", "JtAw");
+    h += "\t// The height's rise per unit of u and v (central differences), both in tile units: a world slope along JtTu\n";
+    h += "\t// and JtTv. The bent normal is held within " + jointNum(spec.maxBendDeg) + " degrees of the face's.\n";
+    h += "\tfloat2 JtSlope = (" + jointNum(spec.normalStrength / (2.f * kStepTexels * texel)) +
+         " * JointDepthCm / max(TileCm, 1.0) * JtDeep * JtShade) * float2(JtNup - JtNum, JtNb - JtNa);\n";
+    h += "\tNormalOut = normalize(NormalOut - (JtSlope.x * JtTu + JtSlope.y * JtTv));\n";
+    h += "\tfloat JtAlong = dot(NormalOut, Up);\n";
+    h += "\tif (JtAlong < " + jointNum(cosMax) + ")\n\t{\n";
+    h += "\t\tfloat3 JtSide = NormalOut - JtAlong * Up;\n";
+    h += "\t\tNormalOut = " + jointNum(cosMax) + " * Up + " + jointNum(std::sqrt(1.f - cosMax * cosMax)) +
+         " * JtSide / max(length(JtSide), 1e-5);\n";
+    h += "\t}\n";
     h += "\t// Per-unit tone on a grid of JointUnitsU x JointUnitsV per tile (every other course offset by half a unit when\n";
     h += "\t// JointBond is 1), each cell blending into the next over " + jointNum(spec.unitEdge) +
          " of a cell: the photo's units are not known.\n";
@@ -311,11 +377,17 @@ std::string surfaceJointShadeHlsl(const SurfaceJointSpec& spec) {
     h += "\t\tColor *= 1.0 + " + jointNum(spec.toneVar) + " * JtToneK;\n";
     h += "\t\tRoughOut = saturate(RoughOut * (1.0 + " + jointNum(spec.roughVar) + " * JtToneK));\n";
     h += "\t}\n";
-    h += "\t// Mortar on the joint's floor: a grey scaled by the tint's luminance, rough.\n";
-    h += "\tfloat JtMortarK = " + jointNum(spec.mortarBlend) + " * (1.0 - JtH0) * JtShade;\n";
+    h += "\t// Mortar on the joint's floor: a grey scaled by the tint's luminance (never below " +
+         jointNum(spec.mortarTintFloor) + "), rough; a dark wall goes\n";
+    h += "\t// further to it (" + jointNum(spec.mortarBlend) + " at luminance " + jointNum(spec.mortarMidLum) + ", " +
+         jointNum(spec.mortarBlendDark) + " at " + jointNum(spec.mortarDarkLum) +
+         ") so in shade a paler joint line reads against it.\n";
+    h += "\tfloat JtMortarK = lerp(" + jointNum(spec.mortarBlendDark) + ", " + jointNum(spec.mortarBlend) +
+         ", smoothstep(" + jointNum(spec.mortarDarkLum) + ", " + jointNum(spec.mortarMidLum) +
+         ", JtWallLum)) * (1.0 - JtH0) * JtShade;\n";
     h += "\tColor = lerp(Color, float3(" + jointNum(spec.mortarR) + ", " + jointNum(spec.mortarG) + ", " +
-         jointNum(spec.mortarB) + ") * dot(Tint.rgb, float3(" + jointNum(kLum[0]) + ", " + jointNum(kLum[1]) + ", " +
-         jointNum(kLum[2]) + ")), JtMortarK);\n";
+         jointNum(spec.mortarB) + ") * max(dot(Tint.rgb, " + lum + "), " + jointNum(spec.mortarTintFloor) +
+         "), JtMortarK);\n";
     h += "\tRoughOut = lerp(RoughOut, " + jointNum(spec.mortarRough) + ", JtMortarK);\n";
     h += "\t// The cavity: the floor, darkest on the upper wall under the unit above, lighter on the lower edge open to the\n";
     h += "\t// sky, plus the ring standing higher than the pixel (a soft core); full from " +
