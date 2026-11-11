@@ -252,6 +252,11 @@ FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "
 // parry numbers (guardArcCos, guardAbsorb, guardMoveScale, guardBreakTime, parryWindow, parryRearm).
 struct ArenaFighter {
     ArenaWeapon weapon = ArenaWeapon::None; // a lead's kit inherits the default's like every other key
+    // Whether the lead has attacks of its own (arena.json "attacks", default true). False: light, heavy, the riposte a
+    // light would start and the Release are refused (the press is dropped); guard, parry, dodge, heal, the partner's
+    // pair and Read still work. Such a kit stores no Load (a parry stores none, giveLoad gives 0), so it never
+    // overloads. A lead whose part in a fight is helping the others has none.
+    bool attacks = true;
     int hp = 100;
     float stamina = 100.f;
     float staminaRegen = 45.f;  // per second, once staminaDelay has passed since the last spend
@@ -480,8 +485,9 @@ struct ArenaInput {
     float aimSpeed = 1.f;
     // Attacking on the move (AttackMove, the host's attackMove for the attack under way): walking during an attack at
     // attackSpeed (0..1) of the pace, and turning at up to attackTurn rad/s all through it toward the aim, the lock or
-    // the stick (during startup the attack's own tracking if faster). Both 0: the attack roots and holds its facing
-    // after startup.
+    // the stick (during startup the attack's own tracking if faster). Both 0 (the defaults, for a host that moves
+    // nothing): the attack roots and holds its facing after startup. The game's hosts always fill both from
+    // attackMove, which never gives 0, so no lead's attack roots.
     float attackSpeed = 0.f;
     float attackTurn = 0.f;
 };
@@ -767,7 +773,7 @@ public:
     // overloaded() and output().player show it at once; stats().overloads counts the fill at once, and
     // stats().loadStored stays the parries'. begin() and restart() empty the gauge and drop events not yet reported;
     // a fill already counted stays in the stats until begin() clears them. 0, and nothing stored, when the fight is
-    // not running (before begin(), after Victory or Defeat). kMaxLoad (Load.h) is the gauge's cap.
+    // not running (before begin(), after Victory or Defeat), or for a kit with no attacks. kMaxLoad (Load.h) is the gauge's cap.
     FTCORE_API int giveLoad(int amount);
 
 private:

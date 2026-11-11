@@ -537,7 +537,7 @@ DealerRun playDealer(const char* lead, std::uint32_t seed) {
 
 // Its poise breaks a few times a fight, whoever fights it: the demo's seed (1), each lead's kit.
 TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopilot") {
-    for (const std::string lead : {"devin", "duy", "third"}) {
+    for (const std::string lead : {"devin", "duy"}) { // the Third has no attack of his own
         const DealerRun run = playDealer(lead.c_str(), 1);
         MESSAGE(lead << ": " << std::string(run.phase == ArenaPhase::Victory ? "won" : "lost") << " in " << run.time << " s, hp " << run.hp
                      << ", staggers " << run.staggers << ", crits " << run.crits);

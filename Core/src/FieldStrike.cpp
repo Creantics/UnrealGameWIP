@@ -240,16 +240,20 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
     }
 
     gather(pos, targets, targetCount);
-    if (heavy || light) {
+    // A kit with no attacks of its own (ArenaFighter::attacks) drops every press.
+    if ((heavy || light) && kit_.attacks) {
         buffered_ = heavy ? kArenaHeavyMove : 0;
         bufferedAt_ = time_;
     }
     if (buffered_ != kNoMove && time_ - bufferedAt_ > kit_.bufferTime) buffered_ = kNoMove;
 
-    // On the move with nothing to face: the attack under way turns with the body, capped, before its hit test.
-    if (attack_ && steerRate_ > 0.f && !aim_.aimed && !reticleOn_ && dt > 0.f) {
+    // On the move with nothing to face: the attack under way turns with the body, capped, before its hit test. Aimed at
+    // a target it holds on it only until its hit is over: through the recovery it turns with the body too.
+    const bool pastHit = attack_ && actionTime_ >= attack_->startup + attack_->active;
+    if (attack_ && steerRate_ > 0.f && (!aim_.aimed || pastHit) && !reticleOn_ && dt > 0.f) {
         facing_ = turnCapped(facing_, steerWant_, steerRate_ * dt);
-        aim_.at = Vec2{pos.x + facing_.x * attack_->range, pos.y + facing_.y * attack_->range};
+        // An aimed attack keeps its hit point (the arm eases off it through the recovery).
+        if (!aim_.aimed) aim_.at = Vec2{pos.x + facing_.x * attack_->range, pos.y + facing_.y * attack_->range};
     }
     // The attack under way runs on. A frame that reaches into its active part, or passes over it whole, tests hits.
     if (attack_) {

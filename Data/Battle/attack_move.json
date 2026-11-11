@@ -6,9 +6,9 @@
     "cast": { "speedScale": 0.6, "turnRate": 6 }
   },
   "heavy": {
-    "focus": { "speedScale": 0.4, "turnRate": 4, "commit": 0.3 },
-    "fire": { "speedScale": 0.45, "turnRate": 5, "commit": 0.25 },
-    "cast": { "speedScale": 0.4, "turnRate": 4, "commit": 0.3 }
+    "focus": { "speedScale": 0.4, "turnRate": 4, "commit": 0.3, "commitScale": 0.25 },
+    "fire": { "speedScale": 0.45, "turnRate": 5, "commit": 0.25, "commitScale": 0.3 },
+    "cast": { "speedScale": 0.4, "turnRate": 4, "commit": 0.3, "commitScale": 0.25 }
   },
   "upperNone": 0.15,
   "upperFull": 0.6

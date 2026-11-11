@@ -37,6 +37,9 @@ TEST_CASE("attack move: the shipped table loads and every weapon keeps the lead 
         CHECK(r.light[k].turnRate > 0.f);
         CHECK(r.heavy[k].commit > 0.f);
         CHECK(r.heavy[k].commit <= 0.4f);
+        CHECK(r.heavy[k].speedScale > 0.f); // no attack roots the lead
+        CHECK(r.heavy[k].turnRate > 0.f);
+        CHECK(r.heavy[k].commitScale >= 0.2f);
     }
     CHECK(r.upperNone < r.upperFull);
 }
@@ -50,6 +53,11 @@ TEST_CASE("attack move: the import rejects unknown keys, a light commit and valu
     CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"commit": 0.2}}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"fire": {"speedScale": 1.5}}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"upperNone": 0.8, "upperFull": 0.6})", r, &err));
+    // Nothing may root the lead or hold its facing.
+    CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"speedScale": 0}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"fire": {"turnRate": 0}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"focus": {"commitScale": 0}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"commitScale": 0.5}}})", r, &err));
     CHECK(r.light[0].speedScale == before.light[0].speedScale);
     REQUIRE(importAttackMoveRules(R"({"heavy": {"cast": {"commit": 0.2}}})", r, &err));
     CHECK(r.heavy[2].commit == doctest::Approx(0.2f));
@@ -61,7 +69,7 @@ TEST_CASE("attack move: a light never roots, walks at its scale through active a
     const ArenaAttack a = swing(0.2f, 0.1f, 0.4f);
     for (float t = 0.f; t < a.total(); t += kDt) {
         const AttackMoveOut o = attackMove(r, AimKind::Focus, false, a, t);
-        CHECK_FALSE(o.rooted);
+        CHECK(o.speedScale > 0.f);
         CHECK(o.turnRate == doctest::Approx(r.light[0].turnRate)); // capped, never locked
         if (t < 0.3f) CHECK(o.speedScale == doctest::Approx(0.6f));
         else CHECK(o.speedScale >= 0.6f - 1e-5f);
@@ -72,26 +80,24 @@ TEST_CASE("attack move: a light never roots, walks at its scale through active a
     CHECK(after.turnRate == 0.f);
 }
 
-TEST_CASE("attack move: a heavy walks, commits before its hit frame still steering, and holds through active") {
-    const AttackMoveRules r; // focus heavy: 0.4 speed, 4 rad/s, commit 0.3
+TEST_CASE("attack move: a heavy walks, slows into its hit and back out, and never roots or stops turning") {
+    const AttackMoveRules r; // focus heavy: 0.4 speed, 4 rad/s, commit 0.3, commitScale 0.25
     const ArenaAttack a = swing(0.5f, 0.15f, 0.5f);
     const AttackMoveOut walk = attackMove(r, AimKind::Focus, true, a, 0.1f);
-    CHECK_FALSE(walk.rooted);
     CHECK(walk.speedScale == doctest::Approx(0.4f));
-    const AttackMoveOut commit = attackMove(r, AimKind::Focus, true, a, 0.3f); // 0.2 s..0.5 s is the commit
-    CHECK(commit.rooted);
-    CHECK(commit.speedScale == 0.f);
-    CHECK(commit.turnRate == doctest::Approx(4.f));
+    const AttackMoveOut commit = attackMove(r, AimKind::Focus, true, a, 0.3f); // 0.2 s..0.65 s is the commit
+    CHECK(commit.speedScale == doctest::Approx(0.25f));
     const AttackMoveOut hit = attackMove(r, AimKind::Focus, true, a, 0.55f);
-    CHECK(hit.rooted);
-    CHECK(hit.turnRate == 0.f);
+    CHECK(hit.speedScale == doctest::Approx(0.25f));
     const AttackMoveOut rec = attackMove(r, AimKind::Focus, true, a, 0.65f + 0.25f);
-    CHECK_FALSE(rec.rooted);
-    CHECK(rec.speedScale == doctest::Approx(0.5f));
-    // The root lasts commit + active, about 0.3 s plus the hit.
-    float rooted = 0.f;
-    for (float t = 0.f; t < a.total(); t += 0.001f) rooted += attackMove(r, AimKind::Focus, true, a, t).rooted ? 0.001f : 0.f;
-    CHECK(rooted == doctest::Approx(0.45f).epsilon(0.02));
+    CHECK(rec.speedScale == doctest::Approx(0.625f)); // halfway from 0.25 back to 1
+    // Every moment of every heavy walks and turns.
+    for (int k = 0; k < 3; ++k)
+        for (float t = 0.f; t < a.total(); t += 0.001f) {
+            const AttackMoveOut o = attackMove(r, static_cast<AimKind>(k), true, a, t);
+            CHECK(o.speedScale >= 0.25f - 1e-5f);
+            CHECK(o.turnRate == doctest::Approx(r.heavy[k].turnRate));
+        }
 }
 
 TEST_CASE("attack move: the strike plays on the whole body standing and on the upper body walking") {
@@ -277,6 +283,55 @@ TEST_CASE("attack move: in the arena a light on the move keeps walking and turni
     CHECK(moving.speedY == doctest::Approx(0.6f * pace).epsilon(0.1)); // walking on at 60 percent
     CHECK(std::fabs(rooted.facingY) < 0.05f);                 // the old hold after startup
     CHECK(moving.facingY > 0.9f);                             // turned on toward the stick through the swing
+}
+
+TEST_CASE("attack move: in the arena every attack the host moves by the shipped rules walks and turns") {
+    // The arena host feeds attackMove's numbers for the light, and the heavy's for the heavy, the riposte and the
+    // Release: none of them is ever 0, so the arena's own root (attackSpeed 0) never happens.
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/attack_move.json", text));
+    AttackMoveRules r;
+    REQUIRE(importAttackMoveRules(text, r));
+    const ArenaTable t = shippedArenaTable();
+    for (const char* id : {"devin", "duy"}) {
+        CAPTURE(id);
+        const ArenaFighter& kit = t.fighter(id);
+        for (const std::uint8_t move : {std::uint8_t(0), kArenaHeavyMove, kArenaRiposteMove, kArenaReleaseMove}) {
+            const ArenaAttack* a = arenaPlayerAttack(kit, move);
+            REQUIRE(a != nullptr);
+            for (float s = 0.f; s < a->total(); s += kDt) {
+                const AttackMoveOut o = attackMove(r, aimKindOf(kit), move != 0, *a, s);
+                CHECK(o.speedScale > 0.f);
+                CHECK(o.turnRate > 0.f);
+            }
+        }
+    }
+}
+
+TEST_CASE("attack move: a field strike aimed at a target turns with the body once its hit is over") {
+    const ArenaTable t = shippedArenaTable();
+    const ArenaFighter kit = t.fighter("devin");
+    const ArenaAttack* jab = arenaPlayerAttack(kit, 0);
+    REQUIRE(jab != nullptr);
+    FieldStrike s;
+    s.begin(kit);
+    const FieldTarget dummy{Vec2{jab->range * 0.8f, 0.f}, 0.4f, true};
+    s.tick(kDt, true, false, Vec2{}, Vec2{1.f, 0.f}, &dummy, 1);
+    REQUIRE(s.attacking());
+    REQUIRE(s.aim().aimed);
+    Vec2 f{1.f, 0.f};
+    float hitOver = -1.f;
+    while (s.attacking()) {
+        s.setSteer(Vec2{0.f, 1.f}, 6.f);
+        const bool inHit = s.actionTime() < jab->startup + jab->active;
+        const Vec2 now = s.tick(kDt, false, false, Vec2{}, Vec2{1.f, 0.f}, &dummy, 1).player.facing;
+        if (s.attacking()) f = now;
+        if (inHit) CHECK(now.x == doctest::Approx(1.f).epsilon(0.01)); // held on the target through the hit
+        else if (hitOver < 0.f) hitOver = s.actionTime();
+        if (s.attacking() && !inHit) CHECK(s.aim().aimed);           // its hit point stays for the arm to ease off
+    }
+    CHECK(hitOver > 0.f);
+    CHECK(f.y > 0.3f); // turned toward the stick through the recovery
 }
 
 TEST_CASE("attack move: a field strike with nothing to face turns with the body, capped; a reticle holds it") {

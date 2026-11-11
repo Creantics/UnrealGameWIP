@@ -53,14 +53,7 @@
       "parryWindow": 0.13, "parryRearm": 0.45
     },
     {
-      "id": "third", "weapon": "magic",
-      "light": [
-        { "startup": 0.2, "range": 3.2, "arcCos": 0.6, "damage": 11, "poiseDamage": 9, "lunge": 0, "tracking": 10 },
-        { "startup": 0.2, "range": 3.2, "arcCos": 0.6, "damage": 11, "poiseDamage": 9, "lunge": 0, "tracking": 10 },
-        { "startup": 0.26, "range": 3.4, "arcCos": 0.4, "damage": 17, "poiseDamage": 20, "lunge": 0, "tracking": 10 }
-      ],
-      "heavy": { "startup": 0.6, "range": 3.0, "arcCos": -1, "damage": 34, "poiseDamage": 40, "lunge": 0, "armor": 0.4 },
-      "release": { "range": 3.2, "arcCos": -1, "lunge": 0, "maxTargets": 0 },
+      "id": "third", "weapon": "none", "attacks": false,
       "guardArcCos": -1, "guardAbsorb": 0.75, "guardMoveScale": 0.35, "guardBreakTime": 1.4,
       "parryWindow": 0.12, "parryRearm": 0.5
     }

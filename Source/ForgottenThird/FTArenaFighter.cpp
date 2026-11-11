@@ -178,6 +178,7 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	Height = HeightMeters > 0.f ? FMath::Clamp(HeightMeters, 0.5f, 30.f) * 100.f : FMath::Clamp(Radius / 40.f, 0.8f, 1.6f) * 175.f;
 
 	SkinKind = ESkin::Shapes;
+	bPlayerFigure = bPlayer;
 	bool bLead = false;
 	if (bPlayer)
 	{
@@ -592,7 +593,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	Arm->SetRelativeLocation(FVector(ArmReach.X, Radius * 0.95f, Height * 0.68f));
 	Arm->SetRelativeRotation(ArmRotation);
 
-	const bool bShield = Pose.bGuard && !Pose.bLying;
+	// The guard plate is an enemy's: a lead guards with what the kit gives (gauntlets, a pistol, a stance), never a shield.
+	const bool bShield = !bPlayerFigure && Pose.bGuard && !Pose.bLying;
 	if (bShield != bShieldShown)
 	{
 		bShieldShown = bShield;

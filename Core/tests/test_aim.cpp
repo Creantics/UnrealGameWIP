@@ -128,8 +128,11 @@ TEST_CASE("aim: the body's own moves block it; falling keeps it; a roll holds it
 TEST_CASE("aim: what each lead's aimed attack does") {
     const ArenaTable t = shippedArena();
     CHECK(aimKindOf(t.fighter("duy")) == AimKind::Fire);
-    CHECK(aimKindOf(t.fighter("third")) == AimKind::Cast);
+    CHECK(aimKindOf(t.fighter("third")) == AimKind::Focus); // no weapon of his own
     CHECK(aimKindOf(t.fighter("devin")) == AimKind::Focus);
+    ArenaFighter magic;
+    magic.weapon = ArenaWeapon::Magic; // no lead uses it; the kind stays for old data
+    CHECK(aimKindOf(magic) == AimKind::Cast);
 }
 
 TEST_CASE("aim: the attack button is light on a tap and heavy on a hold, once") {

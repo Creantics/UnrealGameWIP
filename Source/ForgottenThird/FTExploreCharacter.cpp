@@ -675,7 +675,7 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 	}
 	if (!Van.IsValid())
 	{
-		// An attack under way slows the walk (a light) or roots it (a heavy's commit) too.
+		// An attack under way slows the walk too (a heavy's commit more), never to a stop.
 		Move->MaxWalkSpeed = AimSpeedBase * Aim.speedScale() * AttackMoveNow().speedScale;
 		AimSpeedSet = Move->MaxWalkSpeed;
 	}

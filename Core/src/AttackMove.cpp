@@ -2,6 +2,7 @@
 
 #include "ftcore/Json.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace ftcore {
@@ -20,12 +21,13 @@ bool readTune(const JsonValue& v, AttackMoveTune& t, bool heavy, std::string& wh
         float* value;
         double lo, hi;
     };
-    const Field fields[] = {{"speedScale", &t.speedScale, 0.0, 1.0}, {"turnRate", &t.turnRate, 0.0, 60.0},
-                            {"commit", &t.commit, 0.0, 2.0}};
+    const Field fields[] = {{"speedScale", &t.speedScale, 0.05, 1.0}, {"turnRate", &t.turnRate, 0.5, 60.0},
+                            {"commit", &t.commit, 0.0, 2.0}, {"commitScale", &t.commitScale, AttackMoveTune::kMinCommitScale, 1.0}};
     for (std::uint32_t i = 0; i < v.size(); ++i) {
         const std::string_view k = v.key(i);
         bool known = false;
-        for (const Field& f : fields) known = known || (k == f.name && (heavy || k != "commit"));
+        for (const Field& f : fields)
+            known = known || (k == f.name && (heavy || (k != "commit" && k != "commitScale")));
         if (!known) {
             where = std::string(k);
             why = "not a known tunable";
@@ -119,19 +121,17 @@ AttackMoveOut attackMove(const AttackMoveRules& rules, AimKind kind, bool heavy,
         }
         return o;
     }
-    // A heavy: walk, then commit (rooted, still steering) up to the hit frame, rooted and set through active, then
-    // the recovery ramps from standing back to full pace.
+    // A heavy: walk, then commit (a slower, heavier step, still turning) from `commit` before the hit frame through
+    // active, then the recovery ramps from there back to full pace. It never roots and never holds its facing.
     const float commitFrom = hitAt - tune.commit;
+    const float slow = std::max(tune.commitScale, AttackMoveTune::kMinCommitScale);
+    o.turnRate = tune.turnRate;
     if (t < commitFrom) {
         o.speedScale = tune.speedScale;
-        o.turnRate = tune.turnRate;
     } else if (t < activeEnd) {
-        o.speedScale = 0.f;
-        o.rooted = true;
-        o.turnRate = t < hitAt ? tune.turnRate : 0.f;
+        o.speedScale = slow;
     } else {
-        o.speedScale = attack.recovery > 0.f ? (t - activeEnd) / attack.recovery : 1.f;
-        o.turnRate = tune.turnRate;
+        o.speedScale = attack.recovery > 0.f ? slow + (1.f - slow) * (t - activeEnd) / attack.recovery : 1.f;
     }
     return o;
 }

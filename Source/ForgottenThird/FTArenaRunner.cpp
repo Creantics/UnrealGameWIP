@@ -1222,16 +1222,18 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	}
 	In.aimTurn = ArenaAim.rules().turnRate;
 	In.aimSpeed = ArenaAim.speedScale();
-	// Attacking on the move: a light or a heavy under way (as the last step left it) walks and turns by its rules; a
-	// riposte or a release stays rooted.
+	// Attacking on the move: every attack under way (as the last step left it) walks and turns by its rules, none
+	// roots: a light by the light's numbers, a heavy, a riposte and a Release by the heavy's.
 	const ftcore::ArenaPlayerOut& Last = Fight.output().player;
-	if (Last.action == ftcore::ArenaAction::Light || Last.action == ftcore::ArenaAction::Heavy)
+	const bool bLightNow = Last.action == ftcore::ArenaAction::Light;
+	if (bLightNow || Last.action == ftcore::ArenaAction::Heavy || Last.action == ftcore::ArenaAction::Riposte
+		|| Last.action == ftcore::ArenaAction::Release)
 	{
 		if (const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Def.fighter, Last.move))
 		{
 			const ftcore::AttackMoveOut Move = ftcore::attackMove(AttackMoveTable, ftcore::aimKindOf(Def.fighter),
-				Last.action == ftcore::ArenaAction::Heavy, *Attack, Last.actionTime);
-			In.attackSpeed = Move.rooted ? 0.f : Move.speedScale;
+				!bLightNow, *Attack, Last.actionTime);
+			In.attackSpeed = Move.speedScale;
 			In.attackTurn = Move.turnRate;
 		}
 	}

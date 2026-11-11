@@ -582,15 +582,23 @@ struct ArenaFightImpl {
         return true;
     }
 
+    // A refused attack press of a kit with no attacks: cleared from the buffer at once, so it can't wait there and
+    // start nothing in place of a later press.
+    bool dropPress() {
+        pl.buffered = Press::None;
+        return false;
+    }
+
     bool startAction(Press what, const ArenaInput& in) {
         // Overloaded: light (and so the riposte), heavy and heal are refused until a Release.
+        // A kit with no attacks of its own (ArenaFighter::attacks) starts none: the press is dropped.
         const bool locked = pl.gauge.overloaded();
         switch (what) {
-        case Press::Light: return !locked && startLight(in);
-        case Press::Heavy: return !locked && startHeavy(in);
+        case Press::Light: return fi.attacks ? !locked && startLight(in) : dropPress();
+        case Press::Heavy: return fi.attacks ? !locked && startHeavy(in) : dropPress();
         case Press::Dodge: return startDodge(in);
         case Press::Heal: return !locked && startHeal();
-        case Press::Release: return startRelease(in);
+        case Press::Release: return fi.attacks ? startRelease(in) : dropPress();
         default: return false;
         }
     }
@@ -1306,7 +1314,9 @@ struct ArenaFightImpl {
     }
 
     // A parry stores the parried attack's damage times loadShare; Overloaded comes once, as the gauge fills.
+    // A kit with no attacks stores none: it has no Release to spend it, and a full gauge would lock its heal for good.
     void storeLoad(std::uint8_t source, std::uint8_t move, int damage) {
+        if (!fi.attacks) return;
         const bool was = pl.gauge.overloaded();
         const float share = std::min(static_cast<float>(damage) * fi.loadShare, static_cast<float>(kMaxLoad));
         const int stored = pl.gauge.store(static_cast<int>(std::lround(share)));
@@ -1323,6 +1333,7 @@ struct ArenaFightImpl {
     // The host's Load (giveLoad): stored, counted and shown now. Inside the blow hook its events join this tick's;
     // otherwise they wait for the next tick, which reports them first.
     int giveLoad(int amount) {
+        if (!fi.attacks) return 0;
         const bool was = pl.gauge.overloaded();
         const int stored = pl.gauge.store(amount);
         const bool filled = !was && pl.gauge.overloaded();
@@ -2073,7 +2084,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             dodgeStamina 0..100000; dodgeCancel, guardAbsorb, guardMoveScale, healMoveScale 0..1;
 //             guardArcCos -1..1; riposteReach (0, 100]; healCharges 0..99; healAmount 0..100000;
 //             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000;
-//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; release an attack;
+//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; attacks a bool; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000
 //   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
 //             kArenaBeatTolerance. An enemy may carry a bpm of its own, which its startups are checked against
@@ -2207,7 +2218,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "parryRearm", "riposteReach", "healCharges", "healAmount", "healTime", "healRecovery",
                       "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
-                      "readWrongPoise"},
+                      "readWrongPoise", "attacks"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -2218,6 +2229,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
         }
         if (!known) errors.push_back(path + ".weapon: expected one of none, gauntlets, guns, magic");
     }
+    arenaBool(j, "attacks", f.attacks, path, errors);
     arenaInt(j, "hp", f.hp, 1, 100000, path, errors);
     arenaNum(j, "stamina", f.stamina, 0, 100000, true, path, errors);
     arenaNum(j, "staminaRegen", f.staminaRegen, 0, 100000, false, path, errors);

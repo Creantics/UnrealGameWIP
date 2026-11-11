@@ -71,7 +71,8 @@ public:
     // Takes the kit and stops any attack. The clock goes back to 0.
     void begin(const ArenaFighter& kit);
 
-    // One host frame of dt seconds. light / heavy: pressed this frame (heavy wins). A press while an attack can't
+    // One host frame of dt seconds. light / heavy: pressed this frame (heavy wins; both dropped for a kit with no
+    // attacks of its own, ArenaFighter::attacks). A press while an attack can't
     // start yet is kept for the kit's bufferTime and starts as soon as it can (from the cancel share of the
     // recovery on, as in the arena). The light chain goes on when the next light starts during the recovery or
     // within chainGap after it, and wraps after lightCount. Hits are tested on each frame that ends in the active
@@ -110,8 +111,9 @@ public:
     }
     bool reticleOn() const { return reticleOn_; }
     // Attacking on the move (AttackMove): on the next tick an attack under way that has no target or reticle to face
-    // turns toward `want` (the body's move or the camera's way, on the ground) by at most rate rad/s, and its hit test
-    // goes with it. Rate 0 (the default): its facing holds as it started.
+    // (or is aimed at a target but past its active part) turns toward `want` (the body's move or the camera's way, on
+    // the ground) by at most rate rad/s, and its hit test goes with it. Rate 0 (the default): its facing holds as it
+    // started.
     void setSteer(Vec2 want, float rate) {
         steerWant_ = want;
         steerRate_ = rate > 0.f ? rate : 0.f;

@@ -68,7 +68,7 @@ void press(FieldStrike& s, bool heavy, Run& r, const FieldTarget* t, std::size_t
 
 TEST_CASE("field strike: every lead's light hits a dummy in front, once per attack, with the kit's damage") {
     const ArenaTable table = shipped();
-    for (const char* lead : {"devin", "duy", "third"}) {
+    for (const char* lead : {"devin", "duy"}) {
         CAPTURE(lead);
         const ArenaFighter kit = table.fighter(lead);
         FieldStrike s;
@@ -130,7 +130,7 @@ TEST_CASE("field strike: a target behind in reach is turned to; nothing out of r
     CHECK(r2.hits == 0);
 }
 
-TEST_CASE("field strike: Duy's shot reaches down its lane, the Third's cast hits at range") {
+TEST_CASE("field strike: Duy's shot reaches down its lane, the unused magic kind's cast hits at range") {
     const ArenaTable table = shipped();
     const ArenaFighter duy = table.fighter("duy");
     const ArenaAttack* shot = arenaPlayerAttack(duy, 0);
@@ -145,7 +145,8 @@ TEST_CASE("field strike: Duy's shot reaches down its lane, the Third's cast hits
     CHECK(r.hits == 1);
     CHECK(arenaPlayerStrike(duy, 0) == FightClip::WeaponRight);
 
-    const ArenaFighter third = table.fighter("third");
+    ArenaFighter third = table.fighter("default"); // the unused magic kind (the shipped Third has none)
+    third.weapon = ArenaWeapon::Magic;
     const ArenaAttack* cast = arenaPlayerAttack(third, 0);
     REQUIRE(cast != nullptr);
     FieldStrike m;
@@ -156,6 +157,23 @@ TEST_CASE("field strike: Duy's shot reaches down its lane, the Third's cast hits
     idle(m, cast->total() + 0.1f, c, &mid, 1);
     CHECK(c.hits == 1);
     CHECK(arenaPlayerStrike(third, 0) == FightClip::Cast);
+}
+
+TEST_CASE("field strike: the Third has no attack of his own, so every press is dropped") {
+    const ArenaTable table = shipped();
+    const ArenaFighter third = table.fighter("third");
+    REQUIRE_FALSE(third.attacks);
+    FieldStrike s;
+    s.begin(third);
+    const FieldTarget dummy{Vec2{1.f, 0.f}, 0.4f, true};
+    Run r;
+    press(s, false, r, &dummy, 1);
+    press(s, true, r, &dummy, 1);
+    idle(s, 1.f, r, &dummy, 1);
+    CHECK(r.started == 0);
+    CHECK(r.hits == 0);
+    CHECK_FALSE(s.attacking());
+    CHECK(s.output().player.action == ArenaAction::Idle);
 }
 
 TEST_CASE("field strike: the light chain goes on when pressed in time, wraps, and starts over after a pause") {

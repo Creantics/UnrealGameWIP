@@ -547,10 +547,11 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     CHECK(duy.heavy.range < kArenaShotRange);
     CHECK(duy.heavy.lunge > 0.f);
     CHECK(duy.heavy.poiseDamage >= base.heavy.poiseDamage);
-    // The Third: spells at range with no lunge, a ward all round, and an even-handed parry.
-    CHECK(third.light[0].range > base.light[0].range);
-    CHECK(third.light[0].lunge == 0.f);
-    CHECK(third.heavy.arcCos <= -1.f);
+    // The Third: no weapon and no attack of his own, a guard all round. Devin and Duy attack.
+    CHECK(third.weapon == ArenaWeapon::None);
+    CHECK_FALSE(third.attacks);
+    CHECK(devin.attacks);
+    CHECK(duy.attacks);
     CHECK(third.guardArcCos <= -1.f);
     // Each lead blocks its own way.
     CHECK(devin.guardArcCos != duy.guardArcCos);
@@ -561,6 +562,59 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     CHECK(duy.moveBrake == base.moveBrake);
     CHECK(third.moveAccel == base.moveAccel);
     CHECK(third.hp == base.hp);
+}
+
+TEST_CASE("arena data: a kit with no attacks of its own drops light, heavy and Release; guard and dodge still work") {
+    const ArenaTable t = loadShipped();
+    ArenaDef def = t.fallback;
+    def.fighter = t.fighter("third");
+    REQUIRE_FALSE(def.fighter.attacks);
+    def.enemyCount = 1;
+    ArenaFight fight;
+    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 40.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    ArenaBodies bodies;
+    bodies.enemies[0] = Vec2{30.f, 30.f}; // far off: nothing of its own gets in the way
+    const float dt = 1.f / 60.f;
+    int started = 0;
+    const auto step = [&](const ArenaInput& in) {
+        const ArenaOutput& out = fight.tick(dt, in, bodies);
+        for (const ArenaEvent& e : out.events)
+            started += e.type == ArenaEventType::AttackStarted && e.source == kArenaPlayer ? 1 : 0;
+        return out.player.action;
+    };
+    for (int press = 0; press < 3; ++press) {
+        ArenaInput in;
+        in.light = press == 0;
+        in.heavy = press == 1;
+        in.release = press == 2;
+        const ArenaAction a = step(in);
+        CHECK(a != ArenaAction::Light);
+        CHECK(a != ArenaAction::Heavy);
+        CHECK(a != ArenaAction::Release);
+    }
+    // The refused presses are not kept: idle ticks after them start nothing.
+    for (int i = 0; i < 30; ++i) CHECK(step(ArenaInput{}) != ArenaAction::Light);
+    // Load given to him is not stored, so a Release has nothing to spend and his heal never locks.
+    CHECK(fight.giveLoad(kMaxLoad) == 0);
+    CHECK_FALSE(fight.overloaded());
+    ArenaInput rel;
+    rel.release = true;
+    CHECK(step(rel) != ArenaAction::Release);
+    // Guard and dodge still work.
+    ArenaInput guard;
+    guard.guard = true;
+    CHECK(step(guard) == ArenaAction::Guard);
+    step(ArenaInput{});
+    ArenaInput dodge;
+    dodge.dodge = true;
+    dodge.move = Vec2{0.f, 1.f};
+    CHECK(step(dodge) == ArenaAction::Dodge);
+    CHECK(started == 0);
+    // A kit that doesn't say keeps the default: it attacks.
+    std::string error;
+    ArenaTable bad;
+    CHECK_FALSE(importArenaTable(R"({"version": 1, "fighters": [{"id": "default", "attacks": 1}]})", bad, &error));
+    CHECK(t.fighter("default").attacks);
 }
 
 TEST_CASE("arena attack: Duy's pistol shot connects far off, with the nearest body only, and not past its range") {
@@ -3780,6 +3834,7 @@ TEST_CASE("arena balance: every lead's kit plays the default's fights") {
     REQUIRE(table.fighterIds.size() >= 4); // default, devin, duy, third
     for (std::size_t f = 1; f < table.fighterIds.size(); ++f) {
         const std::string& id = table.fighterIds[f];
+        if (!table.fighters[f].attacks) continue; // a lead with no attack of his own never fights alone
         ArenaDef fallback = table.fallback;
         fallback.fighter = table.fighters[f];
         checkBalance(id + ": shipped default fight", fallback);
@@ -5332,7 +5387,10 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     CHECK(t.fighter("default").weapon == ArenaWeapon::None);
     CHECK(t.fighter("devin").weapon == ArenaWeapon::Gauntlets);
     CHECK(t.fighter("duy").weapon == ArenaWeapon::Guns);
-    CHECK(t.fighter("third").weapon == ArenaWeapon::Magic);
+    CHECK(t.fighter("third").weapon == ArenaWeapon::None);
+    for (const char* id : {"default", "devin", "duy", "third"}) CHECK(t.fighter(id).weapon != ArenaWeapon::Magic);
+    ArenaFighter magic = t.fighter("default"); // the magic kind: no lead uses it, its clips stay for old data
+    magic.weapon = ArenaWeapon::Magic;
 
     FightClip p[kMaxLightChain];
     // Devin punches, a side in turn, one per hit of his four-hit chain.
@@ -5354,15 +5412,15 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::WeaponRight); // the chain is all shots
     CHECK(arenaHeavyStrike(duy) == FightClip::KickRight);                    // the heavy is a kick
     CHECK(arenaHeavyStrike(t.fighter("devin")) == FightClip::StrikeRight);
-    CHECK(arenaHeavyStrike(t.fighter("third")) == FightClip::Cast);
+    CHECK(arenaHeavyStrike(magic) == FightClip::Cast);
     {   // a gun's heavy that reaches is a shot
         ArenaFighter gun = duy;
         gun.heavy.range = 9.f;
         CHECK(arenaHeavyStrike(gun) == FightClip::WeaponRight);
     }
-    // The Third casts.
-    n = arenaStrikePattern(t.fighter("third"), p, kMaxLightChain);
-    REQUIRE(n == t.fighter("third").lightCount);
+    // A magic kit casts.
+    n = arenaStrikePattern(magic, p, kMaxLightChain);
+    REQUIRE(n == magic.lightCount);
     for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::Cast);
     // Every pattern is one an animator takes; a short buffer cuts it.
     for (const char* id : {"default", "devin", "duy", "third"}) {
@@ -5378,7 +5436,8 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     const ArenaTable t = loadShipped();
     const ArenaFighter& devin = t.fighter("devin");
     const ArenaFighter& duy = t.fighter("duy");
-    const ArenaFighter& third = t.fighter("third");
+    ArenaFighter third = t.fighter("default"); // the unused magic kind (the shipped Third has none)
+    third.weapon = ArenaWeapon::Magic;
 
     // The attack each move id names.
     CHECK(arenaPlayerAttack(devin, 0) == &devin.light[0]);
