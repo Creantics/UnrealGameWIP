@@ -13,9 +13,9 @@
 //   (range + the body's radius) after the lunge, capped at `homing` and never past the two bodies touching.
 //   0 when the attack already reaches. arenaHomingStep spreads it over startup and active like the lunge, so
 //   the distance covered is the same at any frame rate.
-// * Precedence (arenaAimSource), for the host that wires it into the fight: a riposte's own enemy, then the
-//   aim, then the lock, then the soft target, then the pushed stick, then the facing it has. The soft target is
-//   never asked for while aiming or locked.
+// * Precedence (arenaAimSource), as ArenaFight applies it at each attack's start: a riposte's own enemy, then
+//   the aim, then the lock, then the soft target, then the pushed stick, then the facing it has. The soft target
+//   is never asked for while aiming or locked.
 //
 // Each lead's numbers are its kit's softRange, softArcCos and homingReach (arena.json, a lead inheriting the
 // default's). Nothing here allocates.

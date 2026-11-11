@@ -6067,3 +6067,59 @@ TEST_CASE("arena table: a break-out count above 1 needs a decay") {
                               R"([ { "id": "dummy", "breakAt": 1, "breakDecay": 0, "breakMove": 0, "moves": [ {} ] } ])"))
               .empty());
 }
+
+// The headless demo's check lines read arenaFeatureChecks: Devin's shipped kit, played by the autopilot with the
+// lock pressed never (so attacks pick soft targets), against two shipped standard kinds that flinch and break out.
+TEST_CASE("arena feature checks: Devin unlocked on the autopilot shows every feature") {
+    const ArenaTable t = loadShipped();
+    const auto kind = [&](std::string_view id) {
+        for (std::size_t i = 0; i < t.enemyIds.size(); ++i)
+            if (t.enemyIds[i] == id) return t.enemies[i];
+        FAIL("no enemy kind ", id);
+        return ArenaEnemyKind{};
+    };
+    ArenaDef def = defaultArenaDef();
+    def.fighter = t.fighter("devin");
+    def.enemyCount = 2;
+    def.enemies[0] = kind("skirmisher");
+    def.enemies[1] = kind("hulk");
+    def.attackers = 2;
+    ArenaFight fight;
+    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 12.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    int softShown = 0; // ticks the output named the attack's soft target
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    for (int i = 0; i < 6000 && !fight.over(); ++i) {
+        ArenaInput in = fight.autopilot();
+        in.lock = false;
+        if (fight.tick(kDt, in, bodies).player.soft != kArenaNobody) ++softShown;
+        arenaStep(fight, bodies, kDt);
+    }
+    const ArenaStats& s = fight.stats();
+    INFO("lights ", s.lights, " cancels ", s.cancels, " flinches ", s.flinches, " breakOuts ", s.breakOuts,
+         " soft ", s.softTargets, " phase ", static_cast<int>(fight.phase()));
+    const ArenaFeatureChecks c = arenaFeatureChecks(s);
+    CHECK(c.lightsFree);
+    CHECK(c.cancels);
+    CHECK(c.flinch);
+    CHECK(c.breakOut);
+    CHECK(c.softTarget);
+    CHECK(softShown > 0);
+    CHECK(fight.lock() == kArenaNobody);
+}
+
+TEST_CASE("arena feature checks: each verdict reads its own counter") {
+    ArenaStats s;
+    CHECK(!arenaFeatureChecks(s).lightsFree); // no lights, nothing shown
+    s.lights = 3;
+    CHECK(arenaFeatureChecks(s).lightsFree);
+    s.lightStamina = 5.f;
+    CHECK(!arenaFeatureChecks(s).lightsFree);
+    s.cancels = 1;
+    s.flinches = 1;
+    s.breakOuts = 1;
+    s.softTargets = 1;
+    const ArenaFeatureChecks c = arenaFeatureChecks(s);
+    CHECK((c.cancels && c.flinch && c.breakOut && c.softTarget));
+}

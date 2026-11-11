@@ -106,8 +106,10 @@
 //     Hitstun (cancelling the current action) and poise refills. Poise also refills after poiseDelay
 //     with no poise damage. hp 0: Downed, then Defeat.
 //   - Facing: locked, the player faces the lock target (and strafes); otherwise it turns toward the
-//     stick at turnRate. An attack starts facing the lock target, or the stick when it is pushed,
-//     then turns only at its `tracking`.
+//     stick at turnRate. An attack starts facing, in this order: a riposte's enemy, the aim, the lock
+//     target, the soft target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed;
+//     then turns only at its `tracking` toward the same. On a soft target the attack also closes in by
+//     up to homingReach on top of its lunge, never past touching.
 // * Enemies. Each enemy's brain is Approach (run when farther than runRange, else walk, toward its
 //   preferred range), Strafe (circle the player at preferredRange, changing direction now and then
 //   from the seeded RNG), Attack (one move's startup, active and recovery; then its `chain` move at
@@ -581,6 +583,7 @@ struct ArenaPlayerOut {
     bool invulnerable = false;        // dodge i-frames, a riposte or a Release
     bool parrying = false;            // inside a parry window
     std::uint8_t lock = kArenaNobody; // the locked enemy
+    std::uint8_t soft = kArenaNobody; // the current attack's soft target (living), else kArenaNobody
     Vec2 dodgeDir{1.f, 0.f};          // unit: set once when a dodge starts (the stick, or the backstep's direction,
                                       // before any ring cut) and kept until the next dodge
     bool backstep = false;            // whether the current or last dodge is a backstep
@@ -670,6 +673,10 @@ struct ArenaStats {
     int staggers = 0;  // enemy poise breaks
     int flinches = 0;  // enemy flinches
     int breakOuts = 0; // enemy break-outs
+    int cancels = 0;          // actions the player started inside an attack (its recovery or cancel window)
+    int lights = 0;           // light attacks started (not ripostes or shots)
+    float lightStamina = 0.f; // stamina those lights cost
+    int softTargets = 0;      // attacks started on a soft target
     int guardBreaks = 0;
     int restarts = 0;
     int loadStored = 0;      // Load stored by parries
@@ -682,6 +689,18 @@ struct ArenaStats {
     int readCounters = 0;    // Read counters that landed
     int readDamage = 0;      // their damage (also in damageDealt)
 };
+
+// Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
+// showed the feature at least once.
+struct ArenaFeatureChecks {
+    bool lightsFree = false; // lights were started and cost no stamina
+    bool cancels = false;    // an action cut into an attack
+    bool flinch = false;     // an enemy flinched
+    bool breakOut = false;   // an enemy broke out
+    bool softTarget = false; // an attack started on a soft target
+};
+
+FTCORE_API ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats);
 
 enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
 
@@ -874,6 +893,8 @@ private:
         std::uint8_t move = 0;              // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove
         std::uint8_t hitMask = 0;           // enemies the current attack has hit (one bit each)
         std::uint8_t target = kArenaNobody; // the enemy a riposte is aimed at
+        std::uint8_t soft = kArenaNobody;   // the current attack's soft target ...
+        float homeClose = 0.f;              // ... and the metres it closes in on it over startup and active
         bool healApplied = false;
         bool invulnerable = false;          // this tick: dodge frames or a riposte
         Vec2 dodgeDir{1.f, 0.f};            // the current or last dodge's direction (unit)

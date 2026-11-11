@@ -1,4 +1,5 @@
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaSoftTarget.h"
 
 #include "SeedMix.h"
 #include "ftcore/Json.h"
@@ -294,6 +295,7 @@ struct ArenaFightImpl {
                            pl.actionTime < fi.dodgeInvulnEnd);
         po.parrying = pl.action == ArenaAction::Guard && pl.parryLeft > 0.f;
         po.lock = pl.lock;
+        po.soft = attackOf(pl, fi) != nullptr && alive(pl.soft) ? pl.soft : kArenaNobody;
         po.dodgeDir = pl.dodgeDir;
         po.backstep = pl.backstep;
         po.load = pl.gauge.value;
@@ -485,6 +487,8 @@ struct ArenaFightImpl {
     void endAction() {
         pl.action = ArenaAction::Idle;
         pl.actionTime = 0.f;
+        pl.soft = kArenaNobody;
+        pl.homeClose = 0.f;
     }
 
     void spend(float cost) {
@@ -495,18 +499,36 @@ struct ArenaFightImpl {
         if (had && pl.stamina <= 0.f) emit(ArenaEventType::StaminaEmpty, kArenaPlayer, kArenaNobody, 0, 0, pl.pos);
     }
 
-    // An attack starts facing the lock target, or the stick when it is pushed.
-    void faceAtStart(const ArenaInput& in) {
-        if (aimOn) { // aimed: the attack goes where the camera aims, lock or not
-            pl.facing = aimWay;
-            return;
-        }
-        if (pl.lock != kArenaNobody) {
-            pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
-            return;
-        }
+    // An attack `a` starts facing the aim, the lock target, the soft target, or the stick when it is pushed
+    // (arenaAimSource; a riposte faces its own enemy before this). On a soft target it also sets how far the
+    // attack closes in.
+    void faceAtStart(const ArenaInput& in, const ArenaAttack& a) {
+        pl.soft = kArenaNobody;
+        pl.homeClose = 0.f;
         const Vec2 stick = arenaClampLength(in.move, 1.f);
-        if (arenaLength(stick) > kArenaEps) pl.facing = arenaUnit(stick, pl.facing);
+        const ArenaSoftAim softAim = arenaSoftAimOf(fi);
+        std::uint8_t pick = kArenaNobody;
+        std::array<ArenaSoftBody, kMaxArenaEnemies> bodies{};
+        if (!aimOn && pl.lock == kArenaNobody && softAim.range > 0.f) {
+            for (std::size_t i = 0; i < n; ++i)
+                bodies[i] = ArenaSoftBody{foes[i].pos, def.enemies[i].bodyRadius, alive(i)};
+            pick = arenaSoftTarget(pl.pos, arenaSoftDir(stick, pl.facing), bodies.data(), n, softAim);
+        }
+        switch (arenaAimSource(false, aimOn, pl.lock != kArenaNobody, pick != kArenaNobody, stick)) {
+        case ArenaAimSource::Aim: pl.facing = aimWay; break; // where the camera aims, lock or not
+        case ArenaAimSource::Lock: pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing); break;
+        case ArenaAimSource::Soft: {
+            const ArenaHoming h =
+                arenaHoming(pl.pos, fi.bodyRadius, pl.facing, bodies[pick], a.range, a.lunge, softAim);
+            pl.facing = h.facing;
+            pl.soft = pick;
+            pl.homeClose = h.close;
+            ++stats.softTargets;
+            break;
+        }
+        case ArenaAimSource::Stick: pl.facing = arenaUnit(stick, pl.facing); break;
+        default: break;
+        }
     }
 
     // The Open enemy within riposteReach and in front of the player that a light press performs the riposte on, or -1.
@@ -544,6 +566,8 @@ struct ArenaFightImpl {
         if (riposteAt >= 0) {
             if (!affords(fi.riposte)) return false;
             pl.chainLive = false;
+            pl.soft = kArenaNobody;
+            pl.homeClose = 0.f;
             pl.target = id(static_cast<std::size_t>(riposteAt));
             pl.facing = arenaUnit(arenaSub(foes[static_cast<std::size_t>(riposteAt)].pos, pl.pos), pl.facing);
             beginAttack(ArenaAction::Riposte, kArenaRiposteMove, fi.riposte);
@@ -555,7 +579,9 @@ struct ArenaFightImpl {
         if (!affords(fi.light[index])) return false;
         pl.chainNext = static_cast<std::uint8_t>((index + 1u) % fi.lightCount);
         pl.chainLive = true;
-        faceAtStart(in);
+        faceAtStart(in, fi.light[index]);
+        ++stats.lights;
+        stats.lightStamina += std::max(0.f, fi.light[index].stamina);
         beginAttack(ArenaAction::Light, index, fi.light[index]);
         return true;
     }
@@ -564,7 +590,7 @@ struct ArenaFightImpl {
     bool startShot(const ArenaInput& in) {
         if (!affords(fi.shot)) return false;
         pl.chainLive = false;
-        faceAtStart(in);
+        faceAtStart(in, fi.shot);
         beginAttack(ArenaAction::Light, kArenaShotMove, fi.shot);
         return true;
     }
@@ -572,7 +598,7 @@ struct ArenaFightImpl {
     bool startHeavy(const ArenaInput& in) {
         if (!affords(fi.heavy)) return false;
         pl.chainLive = false;
-        faceAtStart(in);
+        faceAtStart(in, fi.heavy);
         beginAttack(ArenaAction::Heavy, kArenaHeavyMove, fi.heavy);
         return true;
     }
@@ -615,7 +641,7 @@ struct ArenaFightImpl {
     bool startRelease(const ArenaInput& in) {
         if (pl.gauge.value <= kArenaReleaseOpenLoad) return false;
         pl.chainLive = false;
-        faceAtStart(in);
+        faceAtStart(in, fi.release);
         pl.releaseSpent = pl.gauge.release();
         ++stats.releases;
         beginAttack(ArenaAction::Release, kArenaReleaseMove, fi.release);
@@ -800,11 +826,16 @@ struct ArenaFightImpl {
             return;
         }
         bool began = false;
+        const bool inAttack = attackOf(pl, fi) != nullptr; // an attack under way: starting anything cancels it
         if (pl.buffered != Press::None && canStart(pl, fi, cutOf(pl.buffered)) && startAction(pl.buffered, in)) {
             pl.buffered = Press::None;
             began = true;
+            if (inAttack) ++stats.cancels;
         }
-        if (!began && in.guard && pl.action != ArenaAction::Guard && canStart(pl, fi, Cut::Guard)) startGuard();
+        if (!began && in.guard && pl.action != ArenaAction::Guard && canStart(pl, fi, Cut::Guard)) {
+            startGuard();
+            if (inAttack) ++stats.cancels;
+        }
 
         if (playerOwn >= dt) {
             advancePlayer(in);
@@ -923,6 +954,9 @@ struct ArenaFightImpl {
             } else if (pl.lock != kArenaNobody) {
                 want = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
                 have = true;
+            } else if (alive(pl.soft)) {
+                want = arenaUnit(arenaSub(foes[pl.soft].pos, pl.pos), pl.facing);
+                have = true;
             } else if (pushed) {
                 want = arenaUnit(stick, pl.facing);
                 have = true;
@@ -939,6 +973,16 @@ struct ArenaFightImpl {
         if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
             vel = arenaScaled(pl.facing, a.lunge / span * moving / dt);
+        }
+        // Homing on a soft target: its share this tick, toward it, never past touching (it may have moved).
+        if (pl.homeClose > 0.f && alive(pl.soft) && span > kArenaEps) {
+            const Vec2 to = arenaSub(foes[pl.soft].pos, pl.pos);
+            const float gap = arenaLength(to) - fi.bodyRadius - def.enemies[pl.soft].bodyRadius;
+            const float step = std::min(arenaHomingStep(pl.homeClose, span, a0, a1), std::max(0.f, gap));
+            if (step > 0.f) {
+                const Vec2 way = arenaUnit(to, pl.facing);
+                vel = Vec2{vel.x + way.x * step / dt, vel.y + way.y * step / dt};
+            }
         }
         // Walking on through the attack (attackSpeed of the pace, ramped like a walk), on top of the lunge.
         // The walk ramps on its own (from the pace the attack began at), so the lunge doesn't feed it.
@@ -2157,6 +2201,16 @@ ArenaDef defaultArenaDef() {
     second.minRange = 0.f; second.maxRange = 3.f; second.weight = 0.f; second.tell = ArenaTell::Backhand;
     def.enemyCount = 1;
     return def;
+}
+
+ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
+    ArenaFeatureChecks c;
+    c.lightsFree = stats.lights > 0 && stats.lightStamina <= 0.f;
+    c.cancels = stats.cancels > 0;
+    c.flinch = stats.flinches > 0;
+    c.breakOut = stats.breakOuts > 0;
+    c.softTarget = stats.softTargets > 0;
+    return c;
 }
 
 ArenaRing arenaRingAt(Vec2 playerPos, Vec2 facing, float radius, const ArenaRing& bounds) {
