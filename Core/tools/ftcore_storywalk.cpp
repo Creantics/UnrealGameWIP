@@ -22,7 +22,8 @@
 //   scene CODE            a registry scene committed
 //   set ID VALUE          a fact that scene was the last to write, as it stands
 //   wide ID VALUE         a wide value that changed since the last commit
-//   derived INDEX VALUE   after a commit: each registry derived value that is valid and changed
+//   derived INDEX VALUE   after a commit: each registry derived value that is valid and changed (read after the move
+//                         that committed, so flag beats the same move ran at the start of the next scene count)
 //   gameplay KIND [FLAG=VALUE]
 //   choice INDEX
 //   flag ID VALUE         at the end: every flag that is not a fact flag (sf.)
@@ -119,7 +120,8 @@ struct Input {
 
 bool parseInputs(const std::string& text, std::vector<Input>& out, std::string& error) {
     int lineNo = 0;
-    for (std::size_t at = 0; at < text.size();) {
+    const std::size_t start = text.rfind("\xEF\xBB\xBF", 0) == 0 ? 3 : 0; // a UTF-8 byte order mark
+    for (std::size_t at = start; at < text.size();) {
         std::size_t end = text.find('\n', at);
         if (end == std::string::npos) end = text.size();
         std::string_view line(text.data() + at, end - at);
@@ -206,8 +208,10 @@ int main(int argc, char** argv) {
             for (const Result& o : results)
                 if (o.flag == r.flag) return usage("--result: " + r.flag + " given twice");
             results.push_back(r);
-        } else if (a == "--inputs" && i + 1 < argc && inputsPath.empty()) {
+        } else if (a == "--inputs" && i + 1 < argc) {
+            if (!inputsPath.empty()) return usage("--inputs given twice");
             inputsPath = argv[++i];
+            if (inputsPath.empty()) return usage("--inputs: expected a file");
         } else if (a == "--steps" && i + 1 < argc) {
             const char* text = argv[++i];
             char* end = nullptr;
@@ -341,7 +345,8 @@ int main(int argc, char** argv) {
                     const SetResult res = storyCountPress(*state, *reg, pk[0], pk[1]);
                     std::printf("press %u %u %s\n", static_cast<unsigned>(pk[0]), static_cast<unsigned>(pk[1]),
                                 state->openScene == kNoScene ? "-" : std::string(storySceneCode(*reg, state->openScene)).c_str());
-                    if (res != SetResult::Ok) return fail(at + "press refused (result " + std::to_string(static_cast<int>(res)) + ")");
+                    // Unchanged: accepted with its counter at the cap.
+                    if (res != SetResult::Ok && res != SetResult::Unchanged) return fail(at + "press refused (result " + std::to_string(static_cast<int>(res)) + ")");
                     for (std::uint16_t f = 1; f <= reg->factsKnown; ++f)
                         if (state->facts[f] != factsBefore[f]) onWrite(&reports, f, state->facts[f], state->openScene);
                 }

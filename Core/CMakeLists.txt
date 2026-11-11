@@ -375,6 +375,8 @@ if(FTCORE_BUILD_TESTS)
     add_test(NAME storywalk_inputs_value COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_value.txt)
     set_tests_properties(storywalk_inputs_value PROPERTIES PASS_REGULAR_EXPRESSION
         "WALK FAILED: inputs line 2: the hand-off sets nothing, the input gives sf.f_pick")
+    add_test(NAME storywalk_inputs_bad_press COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_badpress.txt)
+    set_tests_properties(storywalk_inputs_bad_press PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: inputs line 2: press: expected SIDE:KIND")
 
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
