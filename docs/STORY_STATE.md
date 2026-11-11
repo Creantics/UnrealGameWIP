@@ -109,5 +109,6 @@ restarts and replays, round-trips the block, and is itself checked to fail on wr
 
 When `Data/Story` is present, its registry must import cleanly and its walk file
 (`story_walk.txt`, same format, documented in the test) is walked too; a csv without the json fails.
+A clean clone has no `Data/Story`, so it runs fewer story tests: those cases show as skipped, not failed.
 
 Nothing in `Source/` imports the registry yet; until it does, the game runs without story state.

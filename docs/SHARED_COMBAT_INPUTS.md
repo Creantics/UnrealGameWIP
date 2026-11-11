@@ -255,7 +255,9 @@ fighter, the table, the held refusal, its own `WeakPointLock`, and an optional `
 own copy of the boss def) and moves them all on one fight clock. It is what a host holds instead of
 the pieces.
 
-* **One clock.** `begin(def, start)` resets every piece at `start` (any finite time). `tick(fightDt)`
+* **One clock.** `begin(def, start)` resets every piece at `start`, clamped to +-`kMaxFightStart`
+  (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
+  `FightSessionCheck::start` reports a clamp). `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
@@ -269,11 +271,13 @@ the pieces.
     schedules cues ahead on the audio clock.
 * **Events.** `tick` returns a `FightTick`: the count's, the table's and the boss script's events
   since the last tick (a call between ticks buffers its events into the next one), the step taken,
-  and how many settled count blows were shared blows.
+  and how many settled count blows were shared blows. The buffers are the pieces' own, not copies:
+  read them before the next session call.
 * **Glue.** A blow judged a shared outcome (at once in `judgeBlow`, or when a held blow settles) is a
   shared blow (a settle lost to a full count event buffer is not): `BossScript::sharedBlow` with a boss script, else the shared-blow key offered to the session's
   lock (`def.locked`). A refusal held to the end of its prompt (`endRefusal`) offers the refusal key to
-  the session's lock. Every change to a fighter's places through the session re-checks the table when
+  the session's lock; a boss script's weak point opens only through its counters and the shared
+  blow, so with a boss script a refusal opens nothing. Every change to a fighter's places through the session re-checks the table when
   that fighter is its setter; after changing places directly (`places(who)` or a load), call
   `recheckTable`. Without a lock and without a boss script the weak point is always open. A boss def
   that `begin` refuses leaves no boss script (`hasBoss` false), so the session's lock rules instead.
@@ -302,7 +306,8 @@ the pieces.
 
 * `UFTFightSession` (`Source/ForgottenThird/FTFightSession.h`) holds a `FightSession` for a host:
   `Begin`, `Tick(FightDeltaSeconds)` (0 during hit-stop), `Press(EFTSharedAction, ...)`, and the story
-  binding. A host makes one per fight and ticks it every frame.
+  binding, which `Begin` drops (bind again after each `Begin`). A host makes one per fight, keeps it in
+  a `UPROPERTY`, ticks it every frame, and reads `Get()` and a tick's result within the frame.
 * Input actions: `Count` (call), the gift button and a gift select, `LayPlace` (with a person id from
   data), `SetTable`, `Refuse` (a hold). Blows report `(striker, time)` to `StrikeCount::judgeBlow`
   before damage, and their damage through `TableSet::split`.

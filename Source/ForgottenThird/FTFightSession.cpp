@@ -16,13 +16,15 @@ UFTFightSession::UFTFightSession()
 
 bool UFTFightSession::Begin(const ftcore::FightSessionDef& Def, double StartSeconds)
 {
+	Session->bindStory(nullptr, nullptr); // a binding lasts one fight
 	const ftcore::FightSessionCheck Check = Session->begin(Def, StartSeconds);
 	if (!Check.ok())
 	{
-		UE_LOG(LogFTFightSession, Warning, TEXT("Fight session: refused tuning kept its defaults:%s%s%s%s%s%s"),
+		UE_LOG(LogFTFightSession, Warning, TEXT("Fight session: refused tuning kept its defaults:%s%s%s%s%s%s%s"),
 			Check.count ? TEXT("") : TEXT(" count"), Check.gift ? TEXT("") : TEXT(" gift"),
 			Check.places ? TEXT("") : TEXT(" places"), Check.table ? TEXT("") : TEXT(" table"),
-			Check.lock ? TEXT("") : TEXT(" lock"), Check.boss ? TEXT("") : TEXT(" boss"));
+			Check.lock ? TEXT("") : TEXT(" lock"), Check.boss ? TEXT("") : TEXT(" boss"),
+			Check.start ? TEXT("") : TEXT(" start (clamped)"));
 	}
 	return Check.ok();
 }

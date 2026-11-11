@@ -105,8 +105,21 @@ TEST_CASE("fight session: one clock that starts anywhere and only moves by a cla
     CHECK(s.now() == doctest::Approx(5000.1 + kMaxFightStep));
     CHECK(s.strikeCount().now() == s.now());
     CHECK(s.giftSlot().now() == s.now());
-    CHECK(s.begin(FightSessionDef{}, std::numeric_limits<double>::quiet_NaN()).ok());
+    const FightSessionCheck nan = s.begin(FightSessionDef{}, std::numeric_limits<double>::quiet_NaN());
+    CHECK(!nan.start);
+    CHECK(!nan.ok());
     CHECK(s.now() == 0.0);
+    // A start past kMaxFightStart is clamped and reported; there a frame's step still moves the clock.
+    CHECK(s.begin(FightSessionDef{}, kMaxFightStart).ok());
+    const FightSessionCheck far = s.begin(FightSessionDef{}, 1.0e17);
+    CHECK(!far.start);
+    CHECK(far.count);
+    CHECK(s.now() == kMaxFightStart);
+    s.tick(1.0 / 60.0);
+    CHECK(s.now() > kMaxFightStart);
+    CHECK(s.now() == doctest::Approx(kMaxFightStart + 1.0 / 60.0).epsilon(1e-15));
+    CHECK(!s.begin(FightSessionDef{}, -1.0e17).start);
+    CHECK(s.now() == -kMaxFightStart);
 }
 
 TEST_CASE("fight session: begin reports a refused tuning and keeps the defaults") {
@@ -238,6 +251,42 @@ TEST_CASE("fight session: a refusal held to the end of the prompt offers the ref
     CHECK(s.endRefusal() == RefusalInput::Resolved);
     CHECK(s.refusal().deferred());
     CHECK(!s.weakPointOpen());
+}
+
+TEST_CASE("fight session: with a boss script a held refusal opens nothing") {
+    // The boss script's weak point opens only through its counters and the shared blow, even when its lock lists the
+    // refusal key; the session's own lock is not used while a boss script runs.
+    FightSession s;
+    FightSessionDef d;
+    d.hasBoss = true;
+    d.boss = oneMoveBoss();
+    d.boss.lock.keys = kUnlockSharedBlow | kUnlockRefusal;
+    d.locked = true;
+    d.lock.keys = kUnlockRefusal;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.hasBoss());
+    s.offerRefusal();
+    CHECK(s.press(SharedAction::RefuseDown, kLeadA).refusal == RefusalInput::Holding);
+    s.tick(kFrame);
+    CHECK(s.endRefusal() == RefusalInput::Resolved);
+    CHECK(s.refusal().refused());
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::BadKey);
+    CHECK(s.boss().lock().opens() == 0);
+}
+
+TEST_CASE("fight session: a tick always points at event buffers, the same ones every tick") {
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    const CountEvents* count = s.tick(kFrame).count;
+    const TableEvents* table = s.tick(kFrame).table;
+    const FightTick& t = s.tick(kFrame);
+    REQUIRE(t.count != nullptr);
+    REQUIRE(t.table != nullptr);
+    REQUIRE(t.boss != nullptr);
+    CHECK(t.count == count);
+    CHECK(t.table == table);
+    CHECK(t.boss->count == 0);
 }
 
 TEST_CASE("fight session: events made between ticks arrive with the next tick") {
