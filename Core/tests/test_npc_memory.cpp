@@ -242,6 +242,62 @@ TEST_CASE("npc memory: repeat_damping_floor") {
     CHECK(npcAppraise(*f.w, f.t, r, d, NpcLearn::Witness)[0] == -10);
 }
 
+TEST_CASE("npc memory: repeat_floor_survives_other_types") {
+    // Many learns of another type in between never push a type's own repeats out: Rk still reaches its floor.
+    Fx f;
+    f.at(1000);
+    const std::uint16_t r = f.npc("npc_r");
+    NpcDeed d;
+    d.type = f.deed("deed_a");
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        f.record("deed_a", {"npc_r"});
+        f.at(1000u + 10u * (i + 1u));
+    }
+    for (std::uint32_t i = 0; i < 2u * kRecentMax; ++i) {
+        f.record("deed_b", {"npc_r"});
+        f.at(1100u + i);
+    }
+    CHECK(npcAppraise(*f.w, f.t, r, d, NpcLearn::Witness)[0] == -2);  // k 3: floor 25
+    // And through a save and load.
+    const NpcMemorySave save = npcCaptureSave(*f.w, f.t, f.lines);
+    Fx g;
+    npcApplySave(*g.w, g.t, g.lines, save);
+    CHECK(npcAppraise(*g.w, g.t, r, d, NpcLearn::Witness)[0] == -2);
+}
+
+TEST_CASE("npc memory: init_resets_a_used_world") {
+    Fx f;
+    f.at(1000);
+    const std::uint16_t r = f.npc("npc_r");
+    NpcDeed d;
+    d.type = f.deed("deed_a");
+    f.record("deed_a", {"npc_r"});
+    f.record("deed_a", {"npc_a"});
+    REQUIRE(f.w->nextSeq > 1u);
+    npcInit(*f.w, f.t);
+    CHECK(f.w->now == 0u);
+    CHECK(f.w->nextSeq == 1u);
+    CHECK(f.w->rumourCount == 0u);
+    CHECK(npcDeedAt(*f.w, 1) == nullptr);
+    CHECK(f.w->npcs[r].memCount == 0u);
+    CHECK(f.ax("npc_a", kAxisT) == 20);  // its baseline
+    CHECK(npcAppraise(*f.w, f.t, r, d, NpcLearn::Witness)[0] == -10);  // no repeats left
+}
+
+TEST_CASE("npc memory: load_keeps_a_future_dated_deed_minute") {
+    Fx f;
+    f.at(1000);
+    const std::uint32_t seq = f.record("deed_a", {"npc_a"});
+    NpcMemorySave save = npcCaptureSave(*f.w, f.t, f.lines);
+    REQUIRE(!save.deeds.empty());
+    save.deeds[0].minute = save.now + 500;  // a deed timed ahead (a scheduled event), not damage
+    Fx g;
+    const NpcMemoryLoadReport rep = npcApplySave(*g.w, g.t, g.lines, save);
+    CHECK(rep.clamped == 0);
+    REQUIRE(npcDeedAt(*g.w, seq) != nullptr);
+    CHECK(npcDeedAt(*g.w, seq)->minute == save.now + 500);
+}
+
 TEST_CASE("npc memory: decay_lands_on_baseline") {
     Fx f;
     f.at(1000);

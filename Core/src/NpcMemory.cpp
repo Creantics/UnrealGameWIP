@@ -88,16 +88,36 @@ void updateStances(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n) {
 std::int32_t repeatCount(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, std::uint16_t type) {
     const NpcState& s = w.npcs[n];
     std::int32_t k = 0;
-    for (std::uint32_t i = 0; i < s.recentCount; ++i)
-        if (s.recentType[i] == type && w.now - std::min(w.now, s.recentMinute[i]) < static_cast<std::uint32_t>(t.tuning.rkWindowMin)) ++k;
+    for (const NpcRecent& r : s.recent) {
+        if (r.type != type) continue;
+        for (std::uint32_t i = 0; i < r.count; ++i)
+            if (w.now - std::min(w.now, r.minute[i]) < static_cast<std::uint32_t>(t.tuning.rkWindowMin)) ++k;
+        break;
+    }
     return k;
 }
 
 void noteLearn(NpcState& s, std::uint16_t type, std::uint32_t minute) {
-    s.recentType[s.recentHead] = type;
-    s.recentMinute[s.recentHead] = minute;
-    s.recentHead = static_cast<std::uint8_t>((s.recentHead + 1u) % kRecentMax);
-    if (s.recentCount < kRecentMax) ++s.recentCount;
+    NpcRecent* slot = nullptr;
+    NpcRecent* stalest = &s.recent[0];
+    for (NpcRecent& r : s.recent) {
+        if (r.type == type) {
+            slot = &r;
+            break;
+        }
+        if (r.type == kNoType) {
+            if (!slot) slot = &r;  // the first free one, unless the type is further on
+            continue;
+        }
+        if (stalest->type != kNoType && r.minute[r.count - 1u] < stalest->minute[stalest->count - 1u]) stalest = &r;
+    }
+    if (!slot) slot = stalest;
+    if (slot->type != type) *slot = NpcRecent{type, 0, {}};
+    if (slot->count == kRepeatKeep) {
+        for (std::uint32_t i = 1; i < kRepeatKeep; ++i) slot->minute[i - 1u] = slot->minute[i];
+        --slot->count;
+    }
+    slot->minute[slot->count++] = minute;
 }
 
 void setSeen(NpcState& s, std::uint32_t seq, bool on) {
@@ -423,7 +443,17 @@ int NpcLineTable::lineIndex(std::string_view id) const {
 }
 
 void npcInit(NpcMemoryWorld& w, const NpcTables& t) {
-    w = NpcMemoryWorld{};
+    // Cleared in place, field by field: `w = NpcMemoryWorld{}` would build the whole world (see the size check in
+    // NpcMemory.h) as a temporary on the stack first. A field added to NpcMemoryWorld must be cleared here too.
+    w.now = 0;
+    w.nextSeq = 1;
+    w.npcCount = 0;
+    for (NpcState& s : w.npcs) s = NpcState{};
+    w.ring.fill(NpcDeed{});
+    w.rumours.fill(NpcRumour{});
+    w.rumourCount = 0;
+    w.lastSaid.fill(0u);
+    w.droppedRumours = 0;
     w.npcCount = static_cast<std::uint16_t>(std::min<std::size_t>(t.npcs.size(), kNpcMax));
     for (std::uint16_t i = 0; i < w.npcCount; ++i) {
         w.npcs[i].axes = t.npcs[i].base;
@@ -1229,10 +1259,8 @@ NpcMemorySave npcCaptureSave(const NpcMemoryWorld& w, const NpcTables& t, const 
         for (std::uint32_t slot = 0; slot < kDeedRing; ++slot)
             if ((st.seen[slot / 32u] & (1u << (slot % 32u))) && w.ring[slot].seq) o.seen.push_back(w.ring[slot].seq);
         std::sort(o.seen.begin(), o.seen.end());
-        for (std::uint32_t i = 0; i < st.recentCount; ++i) {
-            const std::uint32_t k = (st.recentHead + kRecentMax - st.recentCount + i) % kRecentMax;
-            o.recent.emplace_back(typeId(st.recentType[k]), st.recentMinute[k]);
-        }
+        for (const NpcRecent& r : st.recent)
+            for (std::uint32_t i = 0; i < r.count; ++i) o.recent.emplace_back(typeId(r.type), r.minute[i]);
         s.npcs.push_back(std::move(o));
     }
     for (const NpcDeed& d : w.ring) {
@@ -1364,7 +1392,6 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
         d.place = o.place;
         d.district = o.district;
         d.lead = o.lead < kLeadCount ? o.lead : kNoLead;
-        d.minute = std::min(d.minute, s.now);
         d.flags = static_cast<std::uint8_t>(o.flags & kFlagKnown);
         if (d.flags != o.flags || d.minute != o.minute) ++rep.clamped;
         if (!o.victim.empty()) {

@@ -157,6 +157,14 @@ struct NpcTagAggregate {
     std::uint32_t lastMinute = 0;
 };
 
+constexpr std::uint32_t kRepeatKeep = 4;
+
+struct NpcRecent {
+    std::uint16_t type = kNoType;
+    std::uint8_t count = 0;                             // minutes kept, oldest first
+    std::array<std::uint32_t, kRepeatKeep> minute{};
+};
+
 struct NpcState {
     std::array<std::int16_t, 3> axes{0, 0, 0};  // A_s at axesTs
     std::uint32_t axesTs = 0;
@@ -172,11 +180,11 @@ struct NpcState {
     // Deeds still in the ring that this NPC has learned (bit = seq % kDeedRing, cleared when the
     // slot is reused), so reinforcement or eviction never lets a late rumour be learned twice.
     std::array<std::uint32_t, kDeedRing / 32> seen{};
-    // Recent learn events (type, minute) for the F1 repeat count; k saturates at 3 with the
-    // default tuning, so 32 events cover any plausible 3-day window.
-    std::array<std::uint16_t, kRecentMax> recentType{};
-    std::array<std::uint32_t, kRecentMax> recentMinute{};
-    std::uint8_t recentHead = 0, recentCount = 0;
+    // Recent learn events for the F1 repeat count, kept per deed type: each type's last
+    // kRepeatKeep minutes, so other types never push a type's repeats out and Rk reaches its
+    // floor (needs (100 - rkFloor) / rkStep <= kRepeatKeep; 3 with the default tuning). Up to
+    // kRecentMax types; a new one replaces the type learned longest ago.
+    std::array<NpcRecent, kRecentMax> recent{};
 };
 
 struct NpcRumour {
@@ -200,6 +208,9 @@ struct NpcMemoryWorld {
     std::array<std::uint32_t, kSaidMax> lastSaid{};  // minute + 1, 0 = never said
     std::uint32_t droppedRumours = 0;
 };
+// The whole state, held by its owner (about 108 KB with these limits: 64 NPCs of about 1.4 KB, the 256-deed ring,
+// the said-line table). Never build one on the stack; npcInit clears it in place.
+static_assert(sizeof(NpcMemoryWorld) <= 128u * 1024u, "NpcMemoryWorld over its 128 KB budget");
 
 // Sets the world up from the tables: baselines, expectation states, a clear store.
 FTCORE_API void npcInit(NpcMemoryWorld& w, const NpcTables& t);
