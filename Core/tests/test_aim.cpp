@@ -128,6 +128,11 @@ TEST_CASE("aim: the body's own moves block it; falling keeps it; a roll holds it
 TEST_CASE("aim: what each lead's aimed attack does") {
     const ArenaTable t = shippedArena();
     CHECK(aimKindOf(t.fighter("duy")) == AimKind::Fire);
+    // Per move: Duy's round fires, his kicks take the focus numbers.
+    CHECK(aimKindOfMove(t.fighter("duy"), kArenaShotMove) == AimKind::Fire);
+    CHECK(aimKindOfMove(t.fighter("duy"), 0) == AimKind::Focus);
+    CHECK(aimKindOfMove(t.fighter("duy"), kArenaHeavyMove) == AimKind::Focus);
+    CHECK(aimKindOfMove(t.fighter("devin"), 0) == AimKind::Focus);
     CHECK(aimKindOf(t.fighter("third")) == AimKind::Focus); // no weapon of his own
     CHECK(aimKindOf(t.fighter("devin")) == AimKind::Focus);
     ArenaFighter magic;
@@ -185,11 +190,12 @@ TEST_CASE("aim: an aimed shot faces the reticle and hits only what lies on its l
     CHECK(s2.aim().aimed);
     CHECK(s2.aim().target == 0xFF);
     CHECK(s2.aim().at.x == doctest::Approx(4.f));
-    // No reticle: the old aim, the nearest in reach (a gun's 9 m) in any direction.
+    // No reticle: the light is a kick, which reaches neither dummy 6 m out.
     FieldStrike s3;
     s3.begin(t.fighter("duy"));
     const Swing w3 = swing(s3, false, Vec2{}, targets, 2);
-    CHECK(w3.hits == 1);
+    CHECK(w3.hits == 0);
+    CHECK(s3.moveNow() == 0);
 }
 
 TEST_CASE("aim: the focus stance's light lunges toward the reticle and stops short of it") {

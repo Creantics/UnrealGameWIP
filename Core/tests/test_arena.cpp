@@ -535,14 +535,16 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     CHECK(devin.parryWindow > base.parryWindow);
     CHECK(devin.parryWindow > duy.parryWindow);
     CHECK(devin.parryWindow > third.parryWindow);
-    // Duy: a chain of pistol shots (long, narrow, one target, no lunge) and a kick for the heavy that reaches
-    // further than the default's light and breaks poise.
+    // Duy: a chain of kicks (close in), one pistol round on the aimed light (long, narrow, one target, no lunge) and
+    // a kick for the heavy that reaches further than the default's light and breaks poise.
     for (std::size_t i = 0; i < duy.lightCount; ++i) {
-        CHECK(duy.light[i].range >= 8.f);
-        CHECK(duy.light[i].arcCos >= 0.95f);
-        CHECK(duy.light[i].maxTargets == 1);
-        CHECK(duy.light[i].lunge == 0.f);
+        CHECK(duy.light[i].range < kArenaShotRange);
+        CHECK(duy.light[i].lunge > 0.f);
     }
+    CHECK(duy.shot.range >= 8.f);
+    CHECK(duy.shot.arcCos >= 0.95f);
+    CHECK(duy.shot.maxTargets == 1);
+    CHECK(duy.shot.lunge == 0.f);
     CHECK(duy.heavy.range > base.light[0].range);
     CHECK(duy.heavy.range < kArenaShotRange);
     CHECK(duy.heavy.lunge > 0.f);
@@ -617,33 +619,87 @@ TEST_CASE("arena data: a kit with no attacks of its own drops light, heavy and R
     CHECK(t.fighter("default").attacks);
 }
 
-TEST_CASE("arena attack: Duy's pistol shot connects far off, with the nearest body only, and not past its range") {
+TEST_CASE("arena attack: Duy's aimed light is one pistol round that connects far off, with the nearest body only, and not past its range") {
     const ArenaTable t = loadShipped();
     const ArenaFighter duy = t.fighter("duy");
-    {   // 8 m out, straight ahead, with another body behind it (one shot: the next is still winding up)
+    const auto aimed = [](Rig& rig) {
+        rig.in.aim = true;
+        rig.in.aimDir = Vec2{1.f, 0.f};
+        rig.in.light = true;
+    };
+    {   // 8 m out, straight ahead, with another body behind it (one round: the press fired once)
         Rig rig(duy, {dummyKind(), dummyKind()});
         rig.put(0, 8.f, 0.f);
         rig.put(1, 8.8f, 0.f);
-        rig.in.light = true;
+        aimed(rig);
         rig.runFor(0.45f);
         REQUIRE(rig.count(ArenaEventType::Hit) == 1);
         CHECK(rig.find(ArenaEventType::Hit)->event.target == 0);
+        CHECK(rig.find(ArenaEventType::Hit)->event.move == kArenaShotMove);
         CHECK(rig.fight.enemyHp(1) == 100);
     }
     {   // well past its range: nothing
         Rig rig(duy, {dummyKind()});
         rig.put(0, 12.f, 0.f);
-        rig.in.light = true;
+        aimed(rig);
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
     }
     {   // a body well off the line of the shot is missed, where a kick's wide arc would not care
         Rig rig(duy, {dummyKind()});
         rig.put(0, 6.f, 4.f);
-        rig.in.light = true;
+        aimed(rig);
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
     }
+    {   // unaimed, the same press at 8 m is a kick: it starts as chain light 0 and reaches nothing
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 8.f, 0.f);
+        rig.in.light = true;
+        rig.tick();
+        CHECK(rig.out().player.action == ArenaAction::Light);
+        CHECK(rig.out().player.move == 0);
+        rig.runFor(0.6f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
+TEST_CASE("arena attack: Duy fires one round per aimed press, kicks again once the aim lets go, and a round ends the kick chain") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    Rig rig(duy, {dummyKind()});
+    rig.put(0, 30.f, 30.f); // out of the way
+    rig.in.aimDir = Vec2{1.f, 0.f};
+    const auto press = [&](bool aim) {
+        rig.in.aim = aim;
+        rig.in.light = true;
+        rig.tick();
+        return rig.out().player;
+    };
+    const auto settle = [&] { rig.in.aim = false; rig.run(90); }; // past any recovery and chainGap
+    // A kick opens the chain; an aimed press during its recovery is a round, not the chain's next kick.
+    ArenaPlayerOut p = press(false);
+    CHECK(p.action == ArenaAction::Light);
+    CHECK(p.move == 0);
+    rig.run(20);
+    p = press(true);
+    rig.run(15);
+    CHECK(rig.count(ArenaEventType::AttackStarted) == 2);
+    CHECK(rig.find(ArenaEventType::AttackStarted, 1)->event.move == kArenaShotMove);
+    settle();
+    // A second aimed press fires again (no chain of rounds).
+    p = press(true);
+    CHECK(p.move == kArenaShotMove);
+    settle();
+    // The aim let go: the light is a kick again, and the chain opens anew at 0.
+    p = press(false);
+    CHECK(p.move == 0);
+    settle();
+    // A press made while aimed stays a round though the aim lets go on the next tick.
+    p = press(true);
+    rig.in.aim = false;
+    rig.tick();
+    CHECK(rig.out().player.move == kArenaShotMove);
 }
 
 namespace {
@@ -5352,7 +5408,7 @@ TEST_CASE("arena table: the weapon key parses each value, inherits from the defa
     ArenaTable t;
     const std::string err = loadError(
         R"({ "version": 1,
-             "fighters": [ { "id": "a", "weapon": "gauntlets" }, { "id": "b", "weapon": "guns" },
+             "fighters": [ { "id": "a", "weapon": "gauntlets" }, { "id": "b", "weapon": "guns", "shot": {} },
                            { "id": "c", "weapon": "magic" }, { "id": "d" }, { "id": "e", "weapon": "none" },
                            { "id": "default" } ],
              "enemies": [ { "id": "dummy" } ],
@@ -5368,7 +5424,7 @@ TEST_CASE("arena table: the weapon key parses each value, inherits from the defa
 
     ArenaTable inherited;
     CHECK(loadError(R"({ "version": 1,
-             "fighters": [ { "id": "lead", "hp": 80 }, { "id": "default", "weapon": "guns" } ],
+             "fighters": [ { "id": "lead", "hp": 80 }, { "id": "default", "weapon": "guns", "shot": {} } ],
              "enemies": [ { "id": "dummy" } ], "default": { "enemies": ["dummy"] } })",
                     &inherited)
               .empty());
@@ -5384,6 +5440,10 @@ TEST_CASE("arena table: the weapon key parses each value, inherits from the defa
 
 TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's kit gives") {
     const ArenaTable t = loadShipped();
+    CHECK(arenaPlayable(t.fighter("devin")));
+    CHECK(arenaPlayable(t.fighter("duy")));
+    CHECK_FALSE(arenaPlayable(t.fighter("third"))); // a party slot only
+    CHECK(arenaPlayable(t.fighter("default")));
     CHECK(t.fighter("default").weapon == ArenaWeapon::None);
     CHECK(t.fighter("devin").weapon == ArenaWeapon::Gauntlets);
     CHECK(t.fighter("duy").weapon == ArenaWeapon::Guns);
@@ -5400,23 +5460,21 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     CHECK(p[1] == FightClip::StrikeRight);
     CHECK(p[2] == FightClip::StrikeLeft);
     CHECK(p[3] == FightClip::StrikeRight);
-    // Duy: shots on the right-hand weapon, kicks on the legs, in chain order.
+    // Duy: the chain is kicks, a leg in turn; the round is the aimed light, never in the chain.
     const ArenaFighter& duy = t.fighter("duy");
     n = arenaStrikePattern(duy, p, kMaxLightChain);
     REQUIRE(n == duy.lightCount);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (duy.light[i].range >= kArenaShotRange) CHECK(p[i] == FightClip::WeaponRight);
-        else CHECK((p[i] == FightClip::KickLeft || p[i] == FightClip::KickRight));
-    }
     CHECK(duy.lightCount == 3);
-    for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::WeaponRight); // the chain is all shots
-    CHECK(arenaHeavyStrike(duy) == FightClip::KickRight);                    // the heavy is a kick
+    CHECK(p[0] == FightClip::KickLeft);
+    CHECK(p[1] == FightClip::KickRight);
+    CHECK(p[2] == FightClip::KickLeft);
+    CHECK(arenaHeavyStrike(duy) == FightClip::KickRight); // the heavy is a kick
     CHECK(arenaHeavyStrike(t.fighter("devin")) == FightClip::StrikeRight);
     CHECK(arenaHeavyStrike(magic) == FightClip::Cast);
-    {   // a gun's heavy that reaches is a shot
+    {   // a gun's heavy is a kick however far it reaches: the only round is the aimed light
         ArenaFighter gun = duy;
         gun.heavy.range = 9.f;
-        CHECK(arenaHeavyStrike(gun) == FightClip::WeaponRight);
+        CHECK(arenaHeavyStrike(gun) == FightClip::KickRight);
     }
     // A magic kit casts.
     n = arenaStrikePattern(magic, p, kMaxLightChain);
@@ -5445,6 +5503,8 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(arenaPlayerAttack(duy, kArenaHeavyMove) == &duy.heavy);
     CHECK(arenaPlayerAttack(duy, kArenaRiposteMove) == &duy.riposte);
     CHECK(arenaPlayerAttack(duy, kArenaReleaseMove) == &duy.release);
+    CHECK(arenaPlayerAttack(duy, kArenaShotMove) == &duy.shot);
+    CHECK(arenaPlayerAttack(devin, kArenaShotMove) == nullptr); // only a guns kit has a round
     CHECK(arenaPlayerAttack(duy, duy.lightCount) == nullptr); // past the chain
     CHECK(arenaPlayerAttack(duy, 7) == nullptr);
     CHECK(arenaPlayerAttack(duy, kArenaNobody) == nullptr);
@@ -5453,7 +5513,9 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(arenaPlayerStrike(devin, 0) == FightClip::StrikeLeft);
     CHECK(arenaPlayerStrike(devin, 1) == FightClip::StrikeRight);
     CHECK(arenaPlayerStrike(devin, kArenaHeavyMove) == FightClip::StrikeRight);
-    CHECK(arenaPlayerStrike(duy, 0) == FightClip::WeaponRight);
+    CHECK(arenaPlayerStrike(duy, 0) == FightClip::KickLeft);
+    CHECK(arenaPlayerStrike(duy, kArenaShotMove) == FightClip::WeaponRight);
+    CHECK(arenaPlayerStrike(devin, kArenaShotMove) == FightClip::Stance);
     CHECK(arenaPlayerStrike(duy, kArenaHeavyMove) == FightClip::KickRight);
     CHECK(arenaPlayerStrike(third, 1) == FightClip::Cast);
     CHECK(arenaPlayerStrike(third, kArenaRiposteMove) == FightClip::Counter);
@@ -5464,7 +5526,7 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     // Each move's clip has a lead clip id: Duy's shot is lead_fire, the Third's cast lead_cast.
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(devin, 0))) == "lead_jab");
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(devin, 1))) == "lead_cross");
-    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, 0))) == "lead_fire");
+    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, kArenaShotMove))) == "lead_fire");
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, kArenaHeavyMove))) == "lead_kick_r");
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(third, 0))) == "lead_cast");
     CHECK(std::string(arenaLeadClipId(FightClip::Counter)) == "lead_counter");
@@ -5484,7 +5546,7 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     leadClips(a);
     CHECK(a.playStrike(arenaPlayerStrike(devin, 0), 0.0, 0.3) == FightClip::StrikeLeft);
     CHECK(a.playStrike(arenaPlayerStrike(devin, 1), 0.0, 0.3) == FightClip::StrikeRight);
-    CHECK(a.playStrike(arenaPlayerStrike(duy, 0), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.playStrike(arenaPlayerStrike(duy, kArenaShotMove), 0.0, 0.3) == FightClip::StrikeRight);
     CHECK(a.playStrike(arenaPlayerStrike(duy, kArenaHeavyMove), 0.0, 0.3) == FightClip::KickRight);
     CHECK(a.playStrike(arenaPlayerStrike(third, 0), 0.0, 0.3) == FightClip::StrikeRight);
     CHECK(a.play(arenaPlayerStrike(third, kArenaRiposteMove), 0.0, 0.3));
@@ -5498,20 +5560,20 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(b.lastKeyTime() == doctest::Approx(1.0 + static_cast<double>(jab->startup)));
 }
 
-TEST_CASE("arena data: Duy's chain shoots from range, Devin's fists reach less than a blade did") {
+TEST_CASE("arena data: Duy's chain kicks and his round shoots from range, Devin's fists reach less than a blade did") {
     const ArenaTable t = loadShipped();
     const ArenaFighter& duy = t.fighter("duy");
-    std::size_t shots = 0;
-    for (std::size_t i = 0; i < duy.lightCount; ++i) {
-        if (duy.light[i].range < kArenaShotRange) continue;
-        ++shots;
-        CHECK(duy.light[i].arcCos >= 0.95f);
-        CHECK(duy.light[i].maxTargets == 1);
-        CHECK(duy.light[i].lunge == 0.f);
-    }
-    CHECK(shots == duy.lightCount); // all shots
-    CHECK(duy.light[duy.lightCount - 1].damage > duy.light[0].damage); // the last is a double-tap
+    for (std::size_t i = 0; i < duy.lightCount; ++i) CHECK(duy.light[i].range < kArenaShotRange); // all kicks
+    CHECK(duy.light[duy.lightCount - 1].damage > duy.light[0].damage); // the last kick lands hardest
+    CHECK(duy.shot.range >= kArenaShotRange);
     CHECK(duy.heavy.range < kArenaShotRange); // the heavy is the kick
+    // The round is refused on any kit but guns, and a guns kit must give one.
+    std::string error;
+    ArenaTable bad;
+    CHECK_FALSE(importArenaTable(R"({"version": 1, "fighters": [{"id": "default"}, {"id": "x", "weapon": "gauntlets", "shot": {}}]})", bad, &error));
+    CHECK(error.find("shot") != std::string::npos);
+    CHECK_FALSE(importArenaTable(R"({"version": 1, "fighters": [{"id": "default"}, {"id": "x", "weapon": "guns"}]})", bad, &error));
+    CHECK(error.find("shot") != std::string::npos);
     const ArenaFighter& devin = t.fighter("devin");
     CHECK(devin.lightCount == 4);
     for (std::size_t i = 0; i < devin.lightCount; ++i) {

@@ -151,12 +151,17 @@ private:
 	void BuildZoneDressing();
 	// The ground, the zone's dressing, then the runner's fight.
 	void Begin();
-	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first;
-	// null (logged) when the config has none.
+	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first
+	// playable one; null (logged) when the config has none. A look whose kit has no attacks is never picked.
 	const FFTLeadLook* FindLead() const;
 	// The fighter kit's id in arena.json: -ArenaLead=<name> lower-cased (even when no look of that name loads), else
-	// the first PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it lacks.
+	// the first playable PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it
+	// lacks. A name whose kit has no attacks (a party slot, ftcore::arenaPlayable) is refused with a warning.
 	FString FindKitId() const;
+	// -ArenaLead=<name>, trimmed; empty when missing or when that kit has no attacks (warned).
+	FString WantedLead() const;
+	bool IsPlayable(const FString& Name) const;
+	mutable bool bLeadWarned = false; // WantedLead warns once
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);
 	void TakeShot(const TCHAR* Name, bool bCounted = true);

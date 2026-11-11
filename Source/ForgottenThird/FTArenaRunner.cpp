@@ -1231,7 +1231,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	{
 		if (const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Def.fighter, Last.move))
 		{
-			const ftcore::AttackMoveOut Move = ftcore::attackMove(AttackMoveTable, ftcore::aimKindOf(Def.fighter),
+			const ftcore::AttackMoveOut Move = ftcore::attackMove(AttackMoveTable, ftcore::aimKindOfMove(Def.fighter, Last.move),
 				!bLightNow, *Attack, Last.actionTime);
 			In.attackSpeed = Move.speedScale;
 			In.attackTurn = Move.turnRate;
@@ -1830,6 +1830,13 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		switch (P.action)
 		{
 		case ftcore::ArenaAction::Light:
+			// A gun kit's aimed round is a light with its own move id; its numbers are the kit's shot.
+			if (P.move == ftcore::kArenaShotMove)
+			{
+				Attack = ftcore::arenaPlayerAttack(D.fighter, P.move);
+				Pose.Swing = EFTArenaSwing::Across;
+				break;
+			}
 			Attack = &D.fighter.light[FMath::Min<size_t>(P.move, ftcore::kMaxLightChain - 1)];
 			Pose.Swing = (P.move + 1 >= D.fighter.lightCount) ? EFTArenaSwing::Overhead : ((P.move % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 			break;

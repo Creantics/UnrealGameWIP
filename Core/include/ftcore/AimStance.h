@@ -11,8 +11,9 @@
 // the aim at once and it blends out; rolling holds it out for the roll (it comes back if still held after); falling
 // keeps it. A host in a menu or a pause passes held = false.
 //
-// What the lead's attack does while aiming (aimKindOf, from the kit's weapon): guns fire at the reticle (the hit test
-// is the shot's lane along the facing toward the reticle point), magic casts its bolt at the reticle, melee (the
+// What the lead's attack does while aiming (aimKindOf, from the kit's weapon): guns fire one round per light press at
+// the reticle (the kit's shot; the hit test is the shot's lane along the facing toward the reticle point), and kick
+// again once the aim lets go, magic casts its bolt at the reticle, melee (the
 // gauntlets, kicks) is a focus stance whose light attack lunges toward the reticle point (lungeScale times the attack's
 // own lunge, stopping short of the point).
 //
@@ -92,6 +93,12 @@ inline constexpr AimKind aimKindOf(const ArenaFighter& kit) {
     return kit.weapon == ArenaWeapon::Guns ? AimKind::Fire
         : kit.weapon == ArenaWeapon::Magic ? AimKind::Cast
                                            : AimKind::Focus;
+}
+
+// The kind of one of the kit's moves (AttackMove's numbers): a guns kit's shot (kArenaShotMove) fires, its kicks take
+// the focus numbers; any other kit as aimKindOf.
+inline constexpr AimKind aimKindOfMove(const ArenaFighter& kit, std::uint8_t move) {
+    return kit.weapon == ArenaWeapon::Guns ? (move == kArenaShotMove ? AimKind::Fire : AimKind::Focus) : aimKindOf(kit);
 }
 
 // The attack button as tap = light, hold = heavy.

@@ -574,15 +574,34 @@ void AFTArenaGameMode::Begin()
 	Runner->Begin(Setup);
 }
 
-FString AFTArenaGameMode::FindKitId() const
+bool AFTArenaGameMode::IsPlayable(const FString& Name) const
+{
+	return ftcore::arenaPlayable(Table.fighter(FT::ToUtf8(Name.ToLower())));
+}
+
+FString AFTArenaGameMode::WantedLead() const
 {
 	FString Want;
 	FParse::Value(FCommandLine::Get(), TEXT("ArenaLead="), Want, false);
 	Want = Want.TrimStartAndEnd();
+	if (!Want.IsEmpty() && !IsPlayable(Want))
+	{
+		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s has no attacks and can't be the lead; using the first who has."), *Want);
+		bLeadWarned = true;
+		Want.Reset();
+	}
+	return Want;
+}
+
+FString AFTArenaGameMode::FindKitId() const
+{
+	FString Want = WantedLead();
 	if (Want.IsEmpty())
 	{
 		const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
-		Want = Party.IsEmpty() ? FString(TEXT("default")) : Party[0].Name;
+		const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
+		First = First ? First : (Party.IsEmpty() ? nullptr : &Party[0]);
+		Want = First ? First->Name : FString(TEXT("default"));
 	}
 	return Want.ToLower();
 }
@@ -595,9 +614,9 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: no PartyLooks in config; the lead is the test human."));
 		return nullptr;
 	}
-	FString Want;
-	FParse::Value(FCommandLine::Get(), TEXT("ArenaLead="), Want, false);
-	Want = Want.TrimStartAndEnd();
+	const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
+	First = First ? First : &Party[0];
+	const FString Want = WantedLead();
 	if (!Want.IsEmpty())
 	{
 		for (const FFTLeadLook& Member : Party)
@@ -607,9 +626,9 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 				return &Member;
 			}
 		}
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want, *Party[0].Name);
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want, *First->Name);
 	}
-	return &Party[0];
+	return First;
 }
 
 void AFTArenaGameMode::Tick(float DeltaSeconds)

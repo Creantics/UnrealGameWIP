@@ -313,14 +313,14 @@ The Unbending also needs its slab halves, which its Broke split hangs on the `sl
 An import replaces what is there, so rerunning it after a boss's model changes is safe. Exit code 0 is a clean import (the
 log's "face bones" line is a warning for a boss, which has no human head).
 
-Pick the lead with `-ArenaLead=Devin`, `-ArenaLead=Duy` or `-ArenaLead=Third` (the name of a `PartyLooks` entry in the local
-`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets, Duy guns, the Third magic).
-Without the flag the lead is the first look (Devin in the main checkout).
+Pick the lead with `-ArenaLead=Devin` or `-ArenaLead=Duy` (the name of a `PartyLooks` entry in the local
+`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets; Duy kicks, and fires his pistol only
+while aiming). The Third has no attacks: he is a party slot, never the lead, so `-ArenaLead=Third` is refused with a
+warning and the first lead with attacks plays. Without the flag the lead is the first such look (Devin in the main checkout).
 
 ```
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring -ArenaLead=Duy
-UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLineup=white_glove -ArenaLead=Third
 ```
 
 `-ArenaStage=stone_ring` hosts `stone_bearer` and `-ArenaStage=kite_ring` hosts `kite_boss`; `-ArenaLineup=<kind>` fights a
@@ -331,7 +331,8 @@ For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaS
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips
-retargeted onto its body, Devin wears gauntlets, Duy holds a pistol, and each weapon has its effects. Nothing below is
+retargeted onto its body, Devin wears gauntlets, Duy holds a pistol (his light is a kick; with aim held, light fires one
+round), and each weapon has its effects. Nothing below is
 committed; a lead without it fights as before (one warning per missing piece). In order, from the checkout the game runs
 from:
 
@@ -348,8 +349,8 @@ from:
    ([BEAT_ANIMS.md](BEAT_ANIMS.md)) retargeted onto each lead's body into its look's `ClipFolder`:
    `-run=FTBuildRig -Mesh=<the look's body> -Dest=/Game/Characters/<Lead>/RigReal3/LeadRig
    -RetargetFrom=/Game/Characters/TestHuman/Rig/IK_test_human.IK_test_human -Clips=<the five> -Names=<their names>
-   -Out=<the look's ClipFolder> -AlignPose`. Duy's shot plays `lead_fire` (one-hand aimed pistol, recoil) and the
-   Third's cast `lead_cast` (palm push); both are hand-keyed outside the repo and listed in `beat_clips.json` without an
+   -Out=<the look's ClipFolder> -AlignPose`. Duy's aimed round plays `lead_fire` (one-hand aimed pistol, recoil) and
+   the unused magic kit's cast `lead_cast` (palm push); both are hand-keyed outside the repo and listed in `beat_clips.json` without an
    asset, so they are first retargeted onto the test human locally, then onto the leads with the other five.
 
 To try a weapon without being hit back, fight the target dummy: `-ArenaLineup=dummy` is a passive enemy kind (it never
@@ -482,7 +483,7 @@ each frame and handed to the fight on its next step, so no press is lost between
 | `-ArenaSeed=N` | The fight's seed (default 1). |
 | `-ArenaStage=<id>` | The zone, by id from `arenas.json` (see "Zones"); the default is `sand_ring`. A zone in a world opens that world's map. Its bosses are the line-up, and the walls, spawn, obstacles and camera are fitted to the enemies in it. An unknown id logs the ids and uses the default. |
 | `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`, `spitter`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
-| `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`, `third`), even when no look loads; without the flag it is the first look's name, and an id with no kit plays `default`. The start line names the kit (`kit devin`). |
+| `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`), even when no look loads; without the flag it is the first playable look's name, and an id with no kit plays `default`. A kit without attacks (`third`) is refused with a warning. The start line names the kit (`kit devin`). |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaParryHold=<s>` | No follow-up for s seconds after each parry: the autopilot's blows and Release and the partner's press are dropped, so the open boss's own clips (face down, the get-up) show. A check of the clips, not a way to play; the fight differs from plain autoplay. |
@@ -520,8 +521,8 @@ warning and quits with exit code 2, so an unattended run never hangs.
 - The lead is `AFTArenaFighter` wearing a look from `PartyLooks` (body, face, outfit and grooms; idle, walk and run by speed
   from the look's retargeted locomotion clips, `UFTLocomotionAnimInstance`), else the test human. Its attacks play the
   strike clips retargeted onto its body over that locomotion, and it carries its weapon (see "The leads' weapons"); without
-  the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a shield plate, a
-  crouch and lean). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
+  the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a
+  crouch and lean; enemy figures also show a guard plate, the player's never). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking
   on or looking up, from -50 to +15 degrees). The arm probes the world (it may leave the zone's walls but never passes through a building or the

@@ -204,6 +204,8 @@ inline constexpr std::uint8_t kArenaNobody = 0xFF;
 inline constexpr std::uint8_t kArenaHeavyMove = 8;
 inline constexpr std::uint8_t kArenaRiposteMove = 9;
 inline constexpr std::uint8_t kArenaReleaseMove = 10;
+// A gun kit's aimed light: one round (ArenaAction::Light with this move, never part of the chain).
+inline constexpr std::uint8_t kArenaShotMove = 11;
 // A Release is open only with more Load than this: a third of kMaxLoad.
 inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
 // An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.
@@ -270,10 +272,14 @@ struct ArenaFighter {
     float bufferTime = 0.2f;
 
     std::array<ArenaAttack, kMaxLightChain> light{};
+
     std::uint8_t lightCount = 3;
     float chainGap = 0.3f;
     ArenaAttack heavy;
     ArenaAttack riposte;
+    // Guns: the one round a light fires while aiming (ArenaInput::aim); unaimed, a light is the kit's own chain
+    // (kicks). arena.json "shot", required on a guns kit and refused on any other.
+    ArenaAttack shot;
 
     float dodgeTime = 0.6f;
     float dodgeDistance = 3.5f;
@@ -313,21 +319,25 @@ struct ArenaFighter {
     float readWrongPoise = 10.f; // poise a misread gives the attacker back (up to its kind's poise)
 };
 
-// A shot from a gun reaches at least this far; a light, heavy or riposte shorter than that is a close-in move.
+// Whether the player may take this kit as the lead: only one with attacks of its own. A kit without is a party
+// slot, never played alone: the explore start, the explore lead switch and the arena's lead pick pass over it.
+inline bool arenaPlayable(const ArenaFighter& kit) { return kit.attacks; }
+
+// A gun kit's shot reaches at least this far (the shipped data holds to it); its kicks are close-in moves.
 inline constexpr float kArenaShotRange = 5.f;
 // The strike pattern of a lead's kit for a FightAnimator::setPattern, in chain order (one entry per light, so at most
-// kMaxLightChain): None and Gauntlets punch (StrikeLeft, StrikeRight, ...), Magic casts (Cast), Guns shoots
-// (WeaponRight) with every light that reaches kArenaShotRange and kicks (KickLeft, KickRight in turn) with the
-// rest. Writes up to `cap` entries to `out` and returns how many (no allocation).
+// kMaxLightChain): None and Gauntlets punch (StrikeLeft, StrikeRight, ...), Magic casts (Cast), Guns kicks (KickLeft,
+// KickRight in turn; its shot is the aimed light, kArenaShotMove, never in the chain). Writes up to `cap` entries to
+// `out` and returns how many (no allocation).
 FTCORE_API std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::size_t cap);
-// The clip of the kit's heavy: a gun's heavy that reaches kArenaShotRange is a shot (WeaponRight), a shorter one a
-// kick (KickRight); Magic casts, the rest punch (StrikeRight).
+// The clip of the kit's heavy: Guns kicks (KickRight), Magic casts, the rest punch (StrikeRight).
 FTCORE_API FightClip arenaHeavyStrike(const ArenaFighter& kit);
 // The kit's attack for the player's move id (an event's or ArenaPlayerOut::move: a light's chain index below
-// lightCount, kArenaHeavyMove, kArenaRiposteMove or kArenaReleaseMove); nullptr for any other id.
+// lightCount, kArenaHeavyMove, kArenaRiposteMove, kArenaReleaseMove, or kArenaShotMove on a guns kit); nullptr for any
+// other id.
 FTCORE_API const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move);
 // The clip that shows the player's move: a light its pattern strike (arenaStrikePattern), the heavy
-// arenaHeavyStrike's, a riposte Counter, a Release Finisher; Stance for any other id. A host plays it with
+// arenaHeavyStrike's, a riposte Counter, a Release Finisher, a guns kit's shot WeaponRight; Stance for any other id. A host plays it with
 // FightAnimator::playStrike (a riposte or Release with play) keyed to the attack's active part, startup after
 // AttackStarted.
 FTCORE_API FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move);
@@ -478,7 +488,7 @@ struct ArenaInput {
     std::int8_t read = -1;      // the partner's Read: the index of the card picked, or -1
     // The aim (AimStance, right mouse held): while on, the player turns toward aimDir (the camera's aim on the ground,
     // unit) at aimTurn rad/s (0: the kit's turnRate) instead of the stick or the lock, attacks start and track toward
-    // it, and walking is scaled by aimSpeed (0..1).
+    // it, and walking is scaled by aimSpeed (0..1). A guns kit's light pressed while aiming is its shot.
     bool aim = false;
     Vec2 aimDir{1.f, 0.f};
     float aimTurn = 0.f;
@@ -516,7 +526,7 @@ struct ArenaPlayerOut {
     Vec2 facing{1.f, 0.f};            // unit
     ArenaAction action = ArenaAction::Idle;
     ArenaPart part = ArenaPart::None; // Light, Heavy, Riposte, Release
-    std::uint8_t move = 0;            // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove; kArenaReleaseMove
+    std::uint8_t move = 0;            // Light: the chain index or kArenaShotMove; kArenaHeavyMove; kArenaRiposteMove; kArenaReleaseMove
     float actionTime = 0.f;           // seconds since the action started
     bool invulnerable = false;        // dodge i-frames, a riposte or a Release
     bool parrying = false;            // inside a parry window
@@ -781,7 +791,7 @@ private:
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
     friend struct ArenaFightImpl;
 
-    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release }; // an action waiting in the input buffer
+    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release, Shot }; // an action waiting in the input buffer
     enum class HoldAsk : std::uint8_t { None, Hold, Release };                     // a host's hold request
 
     struct PlayerState {

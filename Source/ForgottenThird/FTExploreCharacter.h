@@ -217,6 +217,10 @@ private:
 	void HandleHeavy();
 	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
 	void BeginWeapon(const FFTLeadLook& Look);
+	// Reads Data/Battle/arena.json into WeaponTable once (logged, built-in kits when missing or refused).
+	void LoadWeaponTable();
+	// Whether the player may play this look as the lead: its kit has attacks (ftcore::arenaPlayable).
+	bool IsPlayableLead(const FFTLeadLook& Look);
 	void TickWeapon(float DeltaSeconds);
 	// The aim and the attack button for this frame (TickWeapon, before the strike's step): the presses, the stance, the
 	// camera, the body's turn and speed, the reticle point.

@@ -296,11 +296,16 @@ TEST_CASE("attack move: in the arena every attack the host moves by the shipped 
     for (const char* id : {"devin", "duy"}) {
         CAPTURE(id);
         const ArenaFighter& kit = t.fighter(id);
-        for (const std::uint8_t move : {std::uint8_t(0), kArenaHeavyMove, kArenaRiposteMove, kArenaReleaseMove}) {
+        for (const std::uint8_t move : {std::uint8_t(0), kArenaShotMove, kArenaHeavyMove, kArenaRiposteMove, kArenaReleaseMove}) {
             const ArenaAttack* a = arenaPlayerAttack(kit, move);
+            if (move == kArenaShotMove && kit.weapon != ArenaWeapon::Guns) {
+                CHECK(a == nullptr);
+                continue;
+            }
             REQUIRE(a != nullptr);
+            const bool heavy = move != 0 && move != kArenaShotMove;
             for (float s = 0.f; s < a->total(); s += kDt) {
-                const AttackMoveOut o = attackMove(r, aimKindOf(kit), move != 0, *a, s);
+                const AttackMoveOut o = attackMove(r, aimKindOfMove(kit, move), heavy, *a, s);
                 CHECK(o.speedScale > 0.f);
                 CHECK(o.turnRate > 0.f);
             }

@@ -191,7 +191,7 @@ void FieldStrike::push(ArenaEventType type, std::uint8_t target, int amount, Vec
 
 bool FieldStrike::start(std::uint8_t move, Vec2 facing) {
     std::uint8_t m = move;
-    if (m != kArenaHeavyMove) {
+    if (m != kArenaHeavyMove && m != kArenaShotMove) {
         // The chain: the next light during the last light's recovery or within chainGap after it. A heavy (or a cut)
         // in between ends it: the next light opens a new chain.
         const bool chained = chainLive_
@@ -206,7 +206,7 @@ bool FieldStrike::start(std::uint8_t move, Vec2 facing) {
     move_ = m;
     actionTime_ = 0.f;
     facing_ = unit(facing);
-    lastWasLight_ = m != kArenaHeavyMove;
+    lastWasLight_ = m != kArenaHeavyMove && m != kArenaShotMove; // a chain light: the shot and the heavy end a chain
     chainLive_ = lastWasLight_;
     if (lastWasLight_) lastLight_ = m;
     hitCount_ = 0;
@@ -240,9 +240,10 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
     }
 
     gather(pos, targets, targetCount);
-    // A kit with no attacks of its own (ArenaFighter::attacks) drops every press.
+    // A kit with no attacks of its own (ArenaFighter::attacks) drops every press. A guns kit's light on the reticle is
+    // its shot, decided at the press.
     if ((heavy || light) && kit_.attacks) {
-        buffered_ = heavy ? kArenaHeavyMove : 0;
+        buffered_ = heavy ? kArenaHeavyMove : reticleOn_ && kit_.weapon == ArenaWeapon::Guns ? kArenaShotMove : 0;
         bufferedAt_ = time_;
     }
     if (buffered_ != kNoMove && time_ - bufferedAt_ > kit_.bufferTime) buffered_ = kNoMove;

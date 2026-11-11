@@ -192,7 +192,8 @@ struct ArenaFightImpl {
     // The attack the player's current action performs, or nullptr.
     static const ArenaAttack* attackOf(const Player& p, const ArenaFighter& f) {
         switch (p.action) {
-        case ArenaAction::Light: return &f.light[std::min<std::size_t>(p.move, f.lightCount - 1u)];
+        case ArenaAction::Light:
+            return p.move == kArenaShotMove ? &f.shot : &f.light[std::min<std::size_t>(p.move, f.lightCount - 1u)];
         case ArenaAction::Heavy: return &f.heavy;
         case ArenaAction::Riposte: return &f.riposte;
         case ArenaAction::Release: return &f.release;
@@ -528,6 +529,15 @@ struct ArenaFightImpl {
         return true;
     }
 
+    // A gun kit's aimed light: one round at the aim, no riposte (that stays the unaimed light's), and it ends a chain.
+    bool startShot(const ArenaInput& in) {
+        if (pl.stamina <= 0.f) return false;
+        pl.chainLive = false;
+        faceAtStart(in);
+        beginAttack(ArenaAction::Light, kArenaShotMove, fi.shot);
+        return true;
+    }
+
     bool startHeavy(const ArenaInput& in) {
         if (pl.stamina <= 0.f) return false;
         pl.chainLive = false;
@@ -596,6 +606,7 @@ struct ArenaFightImpl {
         switch (what) {
         case Press::Light: return fi.attacks ? !locked && startLight(in) : dropPress();
         case Press::Heavy: return fi.attacks ? !locked && startHeavy(in) : dropPress();
+        case Press::Shot: return fi.attacks ? !locked && startShot(in) : dropPress();
         case Press::Dodge: return startDodge(in);
         case Press::Heal: return !locked && startHeal();
         case Press::Release: return fi.attacks ? startRelease(in) : dropPress();
@@ -736,7 +747,8 @@ struct ArenaFightImpl {
         // The input buffer: only the latest press is kept, for bufferTime. Pressed in one tick, a defensive action
         // beats an attack.
         Press press = Press::None;
-        if (in.light) press = Press::Light;
+        // A gun kit's light while aiming is its shot, decided at the press: a buffered shot stays one if aim lets go.
+        if (in.light) press = in.aim && fi.weapon == ArenaWeapon::Guns ? Press::Shot : Press::Light;
         if (in.heavy) press = Press::Heavy;
         if (in.heal) press = Press::Heal;
         if (in.dodge) press = Press::Dodge;
@@ -1838,9 +1850,7 @@ std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::siz
     std::size_t punches = 0, kicks = 0;
     for (std::size_t i = 0; i < count; ++i) {
         FightClip c = FightClip::Cast;
-        if (kit.weapon == ArenaWeapon::Guns && kit.light[i].range >= kArenaShotRange) {
-            c = FightClip::WeaponRight;
-        } else if (kit.weapon == ArenaWeapon::Guns) {
+        if (kit.weapon == ArenaWeapon::Guns) {
             c = (kicks++ % 2u == 0u) ? FightClip::KickLeft : FightClip::KickRight;
         } else if (kit.weapon != ArenaWeapon::Magic) {
             c = (punches++ % 2u == 0u) ? FightClip::StrikeLeft : FightClip::StrikeRight;
@@ -1853,7 +1863,7 @@ std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::siz
 FightClip arenaHeavyStrike(const ArenaFighter& kit) {
     switch (kit.weapon) {
     case ArenaWeapon::Magic: return FightClip::Cast;
-    case ArenaWeapon::Guns: return kit.heavy.range >= kArenaShotRange ? FightClip::WeaponRight : FightClip::KickRight;
+    case ArenaWeapon::Guns: return FightClip::KickRight;
     case ArenaWeapon::None:
     case ArenaWeapon::Gauntlets: break;
     }
@@ -1865,6 +1875,7 @@ const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move)
     case kArenaHeavyMove: return &kit.heavy;
     case kArenaRiposteMove: return &kit.riposte;
     case kArenaReleaseMove: return &kit.release;
+    case kArenaShotMove: return kit.weapon == ArenaWeapon::Guns ? &kit.shot : nullptr;
     default: break;
     }
     if (move < kit.lightCount && static_cast<std::size_t>(move) < kMaxLightChain) return &kit.light[move];
@@ -1876,6 +1887,7 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     case kArenaHeavyMove: return arenaHeavyStrike(kit);
     case kArenaRiposteMove: return FightClip::Counter;
     case kArenaReleaseMove: return FightClip::Finisher;
+    case kArenaShotMove: return kit.weapon == ArenaWeapon::Guns ? FightClip::WeaponRight : FightClip::Stance;
     default: break;
     }
     if (move >= kit.lightCount || static_cast<std::size_t>(move) >= kMaxLightChain) return FightClip::Stance;
@@ -2218,7 +2230,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "parryRearm", "riposteReach", "healCharges", "healAmount", "healTime", "healRecovery",
                       "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
-                      "readWrongPoise", "attacks"},
+                      "readWrongPoise", "attacks", "shot"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -2286,6 +2298,12 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     if (j.has("heavy")) arenaParseAttackObject(j["heavy"], path + ".heavy", f.heavy, errors, warnings);
     if (j.has("riposte")) arenaParseAttackObject(j["riposte"], path + ".riposte", f.riposte, errors, warnings);
     if (j.has("release")) arenaParseAttackObject(j["release"], path + ".release", f.release, errors, warnings);
+    if (j.has("shot")) {
+        if (f.weapon != ArenaWeapon::Guns) errors.push_back(path + ".shot: only a guns kit has a shot");
+        else arenaParseAttackObject(j["shot"], path + ".shot", f.shot, errors, warnings);
+    } else if (f.weapon == ArenaWeapon::Guns && j.has("weapon")) {
+        errors.push_back(path + ".shot: a guns kit needs its shot");
+    }
 
     if (f.dodgeInvulnStart > f.dodgeInvulnEnd)
         errors.push_back(path + ".dodgeInvulnStart: expected at most dodgeInvulnEnd");

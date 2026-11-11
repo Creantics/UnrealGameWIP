@@ -176,6 +176,17 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			return Member.Name.Equals(Lead, ESearchCase::IgnoreCase);
 		}));
+		// A party slot without attacks is never the lead: the first look that has them starts instead.
+		if (!IsPlayableLead(PartyLooks[LeadIndex]))
+		{
+			const int32 Playable = PartyLooks.IndexOfByPredicate([this](const FFTLeadLook& Member)
+			{
+				return IsPlayableLead(Member);
+			});
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: %s has no attacks and can't be the lead; starting as %s."),
+				*PartyLooks[LeadIndex].Name, Playable >= 0 ? *PartyLooks[Playable].Name : TEXT("him anyway (no look has attacks)"));
+			LeadIndex = Playable >= 0 ? Playable : LeadIndex;
+		}
 		WearLook(PartyLooks[LeadIndex]);
 	}
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
@@ -416,7 +427,7 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 	BeginWeapon(Look);
 }
 
-void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
+void AFTExploreCharacter::LoadWeaponTable()
 {
 	if (!bWeaponTableTried)
 	{
@@ -434,6 +445,17 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 			WeaponTable = ftcore::ArenaTable();
 		}
 	}
+}
+
+bool AFTExploreCharacter::IsPlayableLead(const FFTLeadLook& Look)
+{
+	LoadWeaponTable();
+	return ftcore::arenaPlayable(WeaponTable.fighter(FT::ToUtf8(Look.Name.ToLower())));
+}
+
+void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
+{
+	LoadWeaponTable();
 	const ftcore::ArenaFighter& Kit = WeaponTable.fighter(FT::ToUtf8(Look.Name.ToLower()));
 	// The body and its anim instance may be new: the props, effects and clips go on again.
 	Weapons.End();
@@ -723,7 +745,9 @@ bool AFTExploreCharacter::ScenePlaying()
 ftcore::AttackMoveOut AFTExploreCharacter::AttackMoveNow() const
 {
 	const ftcore::ArenaAttack* Attack = Strike.attack();
-	return Attack ? ftcore::attackMove(AttackMoveTable, AimKindNow, Strike.heavyNow(), *Attack, Strike.actionTime()) : ftcore::AttackMoveOut();
+	// By the move's own kind: a gun kit's shot fires, its kicks take the focus numbers.
+	return Attack ? ftcore::attackMove(AttackMoveTable, ftcore::aimKindOfMove(Strike.kit(), Strike.moveNow()), Strike.heavyNow(),
+		*Attack, Strike.actionTime()) : ftcore::AttackMoveOut();
 }
 
 void AFTExploreCharacter::TickUnstick(float DeltaSeconds)
@@ -1925,8 +1949,24 @@ void AFTExploreCharacter::HandleSwitchLead()
 	{
 		return;
 	}
+	// The next look the player may play; a party slot without attacks is passed over.
+	int32 Next = LeadIndex;
+	for (int32 Step = 1; Step < PartyLooks.Num(); ++Step)
+	{
+		const int32 Try = (LeadIndex + Step) % PartyLooks.Num();
+		if (IsPlayableLead(PartyLooks[Try]))
+		{
+			Next = Try;
+			break;
+		}
+	}
+	if (Next == LeadIndex)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: no other playable lead in PartyLooks."));
+		return;
+	}
 	UnCrouch();
-	LeadIndex = (LeadIndex + 1) % PartyLooks.Num();
+	LeadIndex = Next;
 	const FFTLeadLook& Look = PartyLooks[LeadIndex];
 	WearLook(Look);
 	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())

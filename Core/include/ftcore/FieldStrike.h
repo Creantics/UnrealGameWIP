@@ -75,7 +75,8 @@ public:
     // attacks of its own, ArenaFighter::attacks). A press while an attack can't
     // start yet is kept for the kit's bufferTime and starts as soon as it can (from the cancel share of the
     // recovery on, as in the arena). The light chain goes on when the next light starts during the recovery or
-    // within chainGap after it, and wraps after lightCount. Hits are tested on each frame that ends in the active
+    // within chainGap after it, and wraps after lightCount. A guns kit's light while the reticle is on (setReticle) is
+    // its shot (kArenaShotMove), one round per press; it and the heavy end a chain. Hits are tested on each frame that ends in the active
     // part, and on a frame that passes over it whole (a long frame): each target once per attack, at most maxTargets of
     // them (0: all), nearest first. Hit events carry the target's index in this frame's list.
     const ArenaOutput& tick(float dt, bool light, bool heavy, Vec2 pos, Vec2 facing, const FieldTarget* targets,
@@ -121,6 +122,9 @@ public:
     // The attack under way (null: none), whether it is the heavy, and how far into it (s).
     const ArenaAttack* attack() const { return attack_; }
     bool heavyNow() const { return attack_ != nullptr && move_ == kArenaHeavyMove; }
+    // The move id of the attack under way (or the last one): a light's chain index, kArenaHeavyMove or kArenaShotMove.
+    std::uint8_t moveNow() const { return move_; }
+    const ArenaFighter& kit() const { return kit_; }
     float actionTime() const { return actionTime_; }
     // The lead's own chest height (m) for an aim with no target. Default kFieldChestHeight.
     void setChestHeight(float height) { chest_ = height; }

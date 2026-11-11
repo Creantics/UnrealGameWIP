@@ -43,10 +43,11 @@
       "id": "duy", "weapon": "guns",
       "hp": 135, "moveSpeed": 4.9, "moveAccel": 30,
       "light": [
-        { "startup": 0.2, "active": 0.06, "recovery": 0.3, "range": 9, "arcCos": 0.98, "damage": 10, "poiseDamage": 6, "lunge": 0, "tracking": 6, "stamina": 12, "cancel": 0.55, "maxTargets": 1 },
-        { "startup": 0.18, "active": 0.06, "recovery": 0.3, "range": 9, "arcCos": 0.98, "damage": 10, "poiseDamage": 6, "lunge": 0, "tracking": 6, "stamina": 12, "cancel": 0.55, "maxTargets": 1 },
-        { "startup": 0.24, "active": 0.08, "recovery": 0.35, "range": 9, "arcCos": 0.98, "damage": 14, "poiseDamage": 8, "lunge": 0, "tracking": 6, "stamina": 14, "cancel": 0.55, "maxTargets": 1 }
+        { "startup": 0.18, "active": 0.1, "recovery": 0.32, "range": 2.4, "arcCos": 0.3, "damage": 11, "poiseDamage": 10, "lunge": 0.45, "tracking": 7, "stamina": 12, "cancel": 0.5 },
+        { "startup": 0.16, "active": 0.1, "recovery": 0.32, "range": 2.4, "arcCos": 0.3, "damage": 11, "poiseDamage": 10, "lunge": 0.45, "tracking": 7, "stamina": 12, "cancel": 0.5 },
+        { "startup": 0.24, "active": 0.12, "recovery": 0.45, "range": 2.6, "arcCos": 0.1, "damage": 17, "poiseDamage": 20, "lunge": 0.6, "tracking": 7, "stamina": 16, "cancel": 0.5 }
       ],
+      "shot": { "startup": 0.2, "active": 0.06, "recovery": 0.3, "range": 9, "arcCos": 0.98, "damage": 10, "poiseDamage": 6, "lunge": 0, "tracking": 6, "stamina": 12, "cancel": 0.55, "maxTargets": 1 },
       "heavy": { "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 2.7, "arcCos": -0.2, "damage": 36, "poiseDamage": 45, "lunge": 0.8, "tracking": 6, "armor": 0.3, "stamina": 24, "cancel": 0.7 },
       "riposte": { "damage": 44 },
       "guardArcCos": 0.35, "guardAbsorb": 0.85, "guardMoveScale": 0.8, "guardBreakTime": 0.9,
