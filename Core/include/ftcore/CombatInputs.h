@@ -9,8 +9,9 @@
 // Time is the fight clock in seconds. Each input object keeps the latest time it has seen; a time that
 // is earlier, or not finite, reads as that latest time (a bad clock stalls a piece, never hangs it). A
 // time more than kMaxTimeJump past the latest is junk: that call reads it as the latest time and stores
-// nothing, so the next real time works as if the junk call never happened. The host therefore advances
-// every piece at least once per kMaxTimeJump of fight time (each frame does), and a reset takes the
+// nothing, so the next real time works as if the junk call never happened. The host therefore calls
+// update(t) on every piece each frame (a piece left alone past kMaxTimeJump ignores every later time),
+// and a reset takes the
 // fight's start time (startTime: no jump bound). Queries that take a time read it the same way,
 // against the latest time without moving it.
 

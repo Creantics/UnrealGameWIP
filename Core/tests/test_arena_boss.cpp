@@ -1269,6 +1269,7 @@ TEST_CASE("locked weak point: a long quiet stretch before the first offer leaves
     const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
     ArenaBossRun run;
     run.begin(def, 0.0);
+    // 700 s: past kMaxTimeJump, so a lock that did not follow its owner would ignore the offer.
     for (double t = 1.0; t <= 700.0; t += 1.0) run.update(t, 1.0f);
     UnlockResult u = UnlockResult::BadKey;
     const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, 700.0, 0, &u);

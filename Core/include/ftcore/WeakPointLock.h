@@ -95,16 +95,13 @@ public:
         open_ = false;
     }
 
+    // The per-frame tick for a host that drives this lock directly: moves the clock to t (CombatInputs.h
+    // rules) and closes a window that has run out. LockedPoint's owners need not call it.
+    void update(double t) { advance(t); }
+
     // Open at t (t read as CombatInputs.h against the latest time seen, without moving it).
     bool open(double t) const { return open_ && inputTime(now_, t) < until_; }
 
-    // For an owner with its own checked clock (LockedPoint): moves the clock to t with no jump bound
-    // (an earlier or non-finite t does nothing), so the lock never falls behind its owner.
-    void follow(double t) {
-        if (std::isfinite(t) && t > now_) advance(t, std::numeric_limits<double>::infinity());
-    }
-    // Open at the owner's time t, with no jump bound.
-    bool openAt(double t) const { return open_ && (std::isfinite(t) && t > now_ ? t : now_) < until_; }
     // The end of the open time (+inf while open with openSeconds 0; meaningless while locked).
     double until() const { return until_; }
     int opens() const { return opens_; }
@@ -112,6 +109,15 @@ public:
     const LockTuning& tuning() const { return tuning_; }
 
 private:
+    friend class LockedPoint;
+    // For LockedPoint, whose owner keeps its own clock: moves the clock to t with no jump bound (an
+    // earlier or non-finite t does nothing), so the lock never falls behind its owner.
+    void follow(double t) {
+        if (std::isfinite(t) && t > now_) advance(t, std::numeric_limits<double>::infinity());
+    }
+    // Open at the owner's time t, with no jump bound.
+    bool openAt(double t) const { return open_ && (std::isfinite(t) && t > now_ ? t : now_) < until_; }
+
     static constexpr double kInf = std::numeric_limits<double>::infinity();
     static constexpr int kIntMax = std::numeric_limits<int>::max(); // counters saturate
     double advance(double t, double maxJump = kMaxTimeJump) {
@@ -130,8 +136,10 @@ private:
 
 // The one adapter every boss machine uses over a WeakPointLock (ArenaBossRun, BossScript): a boss whose
 // weak point is not locked is always open, and offers to it are BadKey. Every call takes the owner's
-// clock, which the owner has already checked: the lock follows it with no jump bound, so a long quiet
-// stretch before the first offer cannot leave the lock behind.
+// clock: the lock follows it with no jump bound, so a long quiet stretch before the first offer cannot
+// leave the lock behind. BossScript bounds its clock by kMaxTimeJump; ArenaBossRun only refuses earlier
+// and non-finite times. Ask the owner whether the point is open (weakPointOpen, unlocked), not
+// lock().open, which reads against the lock's own clock and lags between offers.
 class LockedPoint {
 public:
     // Starts shut at t (or, not locked, always open).

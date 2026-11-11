@@ -394,6 +394,8 @@ public:
     double exposedUntil() const { return exposedUntil_; }
     bool unlocked() const { return valid_ && lock_.open(now_); }
     const WeakPointLock& lock() const { return lock_.lock(); }
+    // The step position. It can lag the latest time seen when one update hits the step cap (the lock
+    // and the queries judge at this time too); the next updates catch it up.
     double now() const { return now_; }
     // When the current step ends (the tell, the window, the recovery or the rest).
     double stepEnds() const { return stepAt_; }

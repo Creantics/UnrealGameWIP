@@ -697,6 +697,7 @@ TEST_CASE("boss script: a long quiet stretch before the shared blow leaves the l
     const BossScriptDef d = smallDef();
     BossScript s;
     REQUIRE(s.reset(d, 0.0));
+    // 700 s: past kMaxTimeJump, so a lock that did not follow its owner would ignore the offer.
     for (double t = 0.5; t <= 700.0; t += 0.5) s.update(t);
     // Bring up an exposing counter at the next tell, as the first locked-point test does.
     double t = 700.0;

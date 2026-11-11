@@ -326,6 +326,21 @@ TEST_CASE("gifts: tuning is validated; NaN and earlier times read as the latest"
 
 // ---- Places ----------------------------------------------------------------------------------------
 
+TEST_CASE("gifts: update keeps the clock moving through a long stretch without presses") {
+    GiftSlot g;
+    REQUIRE(g.press(kLeadA, 0.0).given);
+    for (double t = 1.0; t <= 700.0; t += 1.0) g.update(t); // a frame each second, no presses
+    CHECK(g.now() == 700.0);
+    CHECK(g.ready(Gift::Heal, 701.0));
+    const GiftResult r = g.press(kLeadA, 701.0);
+    CHECK(r.given);
+    CHECK(g.readyAt(Gift::Heal) == doctest::Approx(701.0 + g.tuning().cooldown[0]));
+    g.update(702.0);
+    CHECK(g.now() == 702.0);
+    g.update(1e12); // junk is still ignored
+    CHECK(g.now() == 702.0);
+}
+
 TEST_CASE("places: each named place raises the carry cap, to kMaxLoad at most") {
     PlaceTable p;
     REQUIRE(p.reset(5));
@@ -891,7 +906,7 @@ TEST_CASE("refusal: releasing early repeats the prompt, with no limit") {
     CHECK(r.repeats() == 50);
 }
 
-TEST_CASE("refusal: not yet is a yes") {
+TEST_CASE("refusal: an end with no hold accepts") {
     HeldRefusal unheld;
     unheld.offer();
     CHECK(unheld.offerEnded() == RefusalInput::Resolved);
@@ -1065,6 +1080,23 @@ TEST_CASE("lock: a boss can take two keys; bad keys and tuning are refused") {
     CHECK_FALSE(validLockTuning(shortOpen));
     CHECK_FALSE(l.reset(shortOpen));
     CHECK(l.tuning().keys == kUnlockSharedBlow);
+}
+
+TEST_CASE("lock: update closes a run-out window and keeps the clock moving between offers") {
+    WeakPointLock l;
+    LockTuning tune;
+    tune.keys = kUnlockRefusal;
+    tune.openSeconds = 3.0;
+    REQUIRE(l.reset(tune));
+    for (double t = 1.0; t <= 700.0; t += 1.0) l.update(t);
+    CHECK(l.offer(kUnlockRefusal, 701.0) == UnlockResult::Unlocked);
+    CHECK(l.until() == doctest::Approx(704.0));
+    l.update(703.5);
+    CHECK(l.open(703.5));
+    l.update(704.0);
+    CHECK_FALSE(l.open(704.0));
+    l.update(1e12); // junk is still ignored
+    CHECK(l.offer(kUnlockRefusal, 705.0) == UnlockResult::Unlocked);
 }
 
 TEST_CASE("lock: earlier and NaN times read as the latest") {

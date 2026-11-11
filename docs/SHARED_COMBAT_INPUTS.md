@@ -20,12 +20,15 @@ construction, deterministic for a given input order. One header per piece:
   time that is earlier than `now` or not finite is read as `now` (a bad clock stalls, never hangs),
   and a time more than `kMaxTimeJump` (600 s, above the longest cooldown of 300 s) past `now` is junk:
   that call reads it as `now` and stores nothing, so the next real time works as if the junk call never
-  happened. Because of that the host must advance every object at least once per `kMaxTimeJump` of
-  fight time (each frame does); an object left alone longer would ignore every later time. Every
+  happened. Because of that the host must call `update(t)` on every object each frame (`StrikeCount`,
+  `TableSet`, `GiftSlot`, a `WeakPointLock` it drives directly, `BossScript`); an object left alone
+  for more than `kMaxTimeJump` would ignore every later time. Every
   `reset` (and `GiftSlot::resetFight`) takes the fight's start time with no jump bound (`startTime`),
   so a fight may begin late on the clock; a host that starts a fight away from 0 must pass it (the
   constructors start at 0). `GiftSlot::load` keeps the clock. A lock inside a boss machine
-  (`LockedPoint`) follows its owner's clock instead, with no bound. Queries
+  (`LockedPoint`) follows its owner's clock instead, with no bound (`BossScript` bounds its own clock;
+  `ArenaBossRun` only refuses earlier and non-finite times). Ask the owner whether its point is open
+  (`weakPointOpen`, `unlocked`), not `lock().open`, which lags between offers. Queries
   (`open(t)`, `guarded(lead, t)`, `guardScaleFor(lead, t)`, `ready(gift, t)`) read their time the
   same way without moving `now`. `inputTime(now, t, maxJump)` is the one rule.
 * **Fighters.** `FighterId` is a `uint8_t` index, 0..`kMaxFighters`-1 (4): `kLeadA` 0, `kLeadB` 1,

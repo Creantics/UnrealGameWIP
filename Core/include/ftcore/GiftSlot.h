@@ -155,6 +155,10 @@ public:
         guardUntil_.fill(-std::numeric_limits<double>::infinity());
     }
 
+    // The per-frame tick: moves the clock to t (CombatInputs.h rules). Call it every frame, so a
+    // long stretch without presses never leaves the clock more than kMaxTimeJump behind.
+    void update(double t) { advance(t); }
+
     void setState(SlotState s) { state_ = s; }
     SlotState state() const { return state_; }
 
