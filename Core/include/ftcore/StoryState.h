@@ -375,6 +375,12 @@ FTCORE_API std::uint32_t storyValidate(const StoryState& s, const FactRegistry& 
 FTCORE_API bool storyEncode(StoryState& s, const FactRegistry& reg, std::span<std::uint8_t, kStoryStateBlockSize> out);
 FTCORE_API StoryLoad storyDecode(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
                                  StoryStateLoadReport* report = nullptr);
+// A saved block, or a new game's state: out is the decoded state when storyDecode says Ok, else (an empty
+// block from a save made before it, or a refused one) storyReset's. Out is never left half decoded.
+FTCORE_API StoryLoad storyLoadOrNew(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
+                                    StoryStateLoadReport* report = nullptr);
+// The result's name, for logs ("ok", "empty", "bad magic", ...).
+FTCORE_API const char* storyLoadName(StoryLoad r);
 
 static_assert(sizeof(StoryState) <= 4096, "the story state stays a small value");
 

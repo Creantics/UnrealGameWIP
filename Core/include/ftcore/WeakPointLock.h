@@ -30,7 +30,8 @@ enum UnlockKey : std::uint8_t {
 };
 inline constexpr std::uint8_t kUnlockAll = kUnlockSharedBlow | kUnlockReadClause | kUnlockRefusal;
 
-enum class UnlockResult : std::uint8_t { Unlocked, Refreshed, WrongKey, WrongClause, BadKey }; // append only
+// NotExposed: a boss script's point takes its key only while a counter has it exposed (BossScript.h).
+enum class UnlockResult : std::uint8_t { Unlocked, Refreshed, WrongKey, WrongClause, BadKey, NotExposed }; // append only
 
 struct LockTuning {
     std::uint8_t keys = kUnlockSharedBlow; // which keys open it: 1..kUnlockAll

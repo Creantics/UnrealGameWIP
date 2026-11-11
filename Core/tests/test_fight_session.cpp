@@ -105,8 +105,21 @@ TEST_CASE("fight session: one clock that starts anywhere and only moves by a cla
     CHECK(s.now() == doctest::Approx(5000.1 + kMaxFightStep));
     CHECK(s.strikeCount().now() == s.now());
     CHECK(s.giftSlot().now() == s.now());
-    CHECK(s.begin(FightSessionDef{}, std::numeric_limits<double>::quiet_NaN()).ok());
+    const FightSessionCheck nan = s.begin(FightSessionDef{}, std::numeric_limits<double>::quiet_NaN());
+    CHECK(!nan.start);
+    CHECK(!nan.ok());
     CHECK(s.now() == 0.0);
+    // A start past kMaxFightStart is clamped and reported; there a frame's step still moves the clock.
+    CHECK(s.begin(FightSessionDef{}, kMaxFightStart).ok());
+    const FightSessionCheck far = s.begin(FightSessionDef{}, 1.0e17);
+    CHECK(!far.start);
+    CHECK(far.count);
+    CHECK(s.now() == kMaxFightStart);
+    s.tick(1.0 / 60.0);
+    CHECK(s.now() > kMaxFightStart);
+    CHECK(s.now() == doctest::Approx(kMaxFightStart + 1.0 / 60.0).epsilon(1e-15));
+    CHECK(!s.begin(FightSessionDef{}, -1.0e17).start);
+    CHECK(s.now() == -kMaxFightStart);
 }
 
 TEST_CASE("fight session: begin reports a refused tuning and keeps the defaults") {
@@ -240,6 +253,117 @@ TEST_CASE("fight session: a refusal held to the end of the prompt offers the ref
     CHECK(!s.weakPointOpen());
 }
 
+namespace {
+
+// A held refusal to the end of a prompt (the refusal key), as the host plays it.
+void holdRefusal(FightSession& s) {
+    s.offerRefusal();
+    REQUIRE(s.press(SharedAction::RefuseDown, kLeadA).refusal == RefusalInput::Holding);
+    s.tick(kFrame);
+    REQUIRE(s.endRefusal() == RefusalInput::Resolved);
+    REQUIRE(s.refusal().refused());
+}
+
+// Two leads' blows on one count: a shared blow (the session offers it to the boss script).
+void sharedCountBlow(FightSession& s) {
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    REQUIRE(tickUntil(s, [&] { return s.strikeCount().open(s.now()); }));
+    REQUIRE(s.judgeBlow(kLeadA).outcome == CountOutcome::Held);
+    REQUIRE(s.judgeBlow(kLeadB).outcome == CountOutcome::OnCount);
+}
+
+// Begins a fight on oneMoveBoss with that key kind (its lock lists every key) and counters the jab: exposed.
+void beginExposed(FightSession& s, BossKey key) {
+    FightSessionDef d;
+    d.hasBoss = true;
+    d.boss = oneMoveBoss();
+    d.boss.key = key;
+    d.boss.lock.keys = kUnlockAll;
+    d.boss.lock.clause = 7;
+    d.locked = true; // the session's own lock is not used while a boss script runs
+    d.lock.keys = kUnlockAll;
+    d.lock.clause = 7;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.hasBoss());
+    REQUIRE(tickUntil(s, [&] { return s.boss().state() == BossState::Window; }));
+    REQUIRE(s.counter(BossCounter::Guard, kLeadA) == BossInput::Countered);
+    REQUIRE(s.boss().exposed());
+}
+
+} // namespace
+
+TEST_CASE("fight session: a boss point of the shared kind opens on the shared blow, not a refusal or a read") {
+    FightSession s;
+    beginExposed(s, BossKey::Shared);
+    holdRefusal(s);
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::WrongKey);
+    CHECK(s.offerKey(kUnlockReadClause, 7) == UnlockResult::WrongKey);
+    CHECK(s.boss().lock().opens() == 0);
+    sharedCountBlow(s);
+    CHECK(s.weakPointOpen());
+}
+
+TEST_CASE("fight session: a boss point of the refusal kind opens on a held refusal, only while exposed") {
+    FightSession s;
+    FightSessionDef d;
+    d.hasBoss = true;
+    d.boss = oneMoveBoss();
+    d.boss.key = BossKey::Refusal;
+    d.boss.lock.keys = kUnlockRefusal;
+    REQUIRE(s.begin(d, 0.0).ok());
+    holdRefusal(s); // not exposed yet
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::NotExposed);
+    beginExposed(s, BossKey::Refusal);
+    sharedCountBlow(s); // the wrong key
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockReadClause, 7) == UnlockResult::WrongKey);
+    CHECK(s.boss().lock().opens() == 0);
+    holdRefusal(s);
+    CHECK(s.weakPointOpen());
+    CHECK(s.boss().lock().opens() == 1);
+    CHECK(s.bossHit(10, true).crit);
+    // Ending the ended prompt again offers nothing: the open time does not restart.
+    const double until = s.boss().lock().until();
+    s.tick(kFrame);
+    CHECK(s.endRefusal() == RefusalInput::Ignored);
+    CHECK(s.boss().lock().until() == until);
+    // After the exposure runs out its own key is NotExposed.
+    REQUIRE(tickUntil(s, [&] { return !s.boss().exposed(); }));
+    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::NotExposed);
+    // A refusal kind needs the refusal key in its lock.
+    d.boss.lock.keys = kUnlockSharedBlow;
+    CHECK(!s.begin(d, 0.0).boss);
+}
+
+TEST_CASE("fight session: a boss point of the read kind opens on its clause, not a refusal or the shared blow") {
+    FightSession s;
+    beginExposed(s, BossKey::Read);
+    holdRefusal(s);
+    sharedCountBlow(s);
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockReadClause, 8) == UnlockResult::WrongClause);
+    CHECK(s.boss().lock().opens() == 0);
+    CHECK(s.offerKey(kUnlockReadClause, 7) == UnlockResult::Unlocked);
+    CHECK(s.weakPointOpen());
+    CHECK(s.boss().lock().opens() == 1);
+}
+
+TEST_CASE("fight session: a tick always points at event buffers, the same ones every tick") {
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    const CountEvents* count = s.tick(kFrame).count;
+    const TableEvents* table = s.tick(kFrame).table;
+    const FightTick& t = s.tick(kFrame);
+    REQUIRE(t.count != nullptr);
+    REQUIRE(t.table != nullptr);
+    REQUIRE(t.boss != nullptr);
+    CHECK(t.count == count);
+    CHECK(t.table == table);
+    CHECK(t.boss->count == 0);
+}
+
 TEST_CASE("fight session: events made between ticks arrive with the next tick") {
     FightSession s;
     FightSessionDef d;
@@ -282,7 +406,7 @@ TEST_CASE("fight session: a boss script countered then hit on the count unlocks 
     const ScriptHit h = s.bossHit(10, true);
     CHECK(h.crit);
     CHECK(h.damage == 20);
-    CHECK(s.offerKey(kUnlockSharedBlow) == UnlockResult::BadKey); // the script takes its own keys
+    CHECK(s.offerKey(kUnlockSharedBlow) == UnlockResult::Refreshed); // routed to the script's point
     // A shared counter kind needs the shared input from the host: an open window alone is not it.
     FightSessionDef shared = d;
     shared.boss.moves[0].counter = BossCounter::StrikeOnCount;
@@ -303,7 +427,7 @@ TEST_CASE("fight session: a boss script countered then hit on the count unlocks 
     CHECK(s.boss().stepEnds() == stepEnds);
 }
 
-TEST_CASE("fight session: given gifts are presses in the story state") {
+TEST_CASE("fight session: gift presses at a lead are presses in the story state") {
     FactRegistry reg;
     std::string err;
     REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
@@ -348,7 +472,7 @@ TEST_CASE("fight session: given gifts are presses in the story state") {
     CHECK(s.giveGift(kLeadB).given);
     CHECK(s.lastStoryWrite() == SetResult::Ok);
     CHECK(wide("w_b1") == 1);
-    // A refused gift writes nothing; a capped counter answers Unchanged.
+    // A press at a non-lead has no side and writes nothing; a capped counter answers Unchanged.
     CHECK(!s.giveGift(kThirdSlot).given);
     CHECK(s.lastStoryWrite() == SetResult::Unchanged);
     REQUIRE(s.selectGift(Gift::Heal));
@@ -368,6 +492,79 @@ TEST_CASE("fight session: given gifts are presses in the story state") {
     s.bindStory(nullptr, &reg);
     CHECK(s.giveGift(kLeadB).given);
     CHECK(wide("w_b0") == 0);
+}
+
+TEST_CASE("fight session: refused gift presses at a lead count in the story state too") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    const auto wide = [&](const char* id) {
+        for (std::uint8_t w = 0; w < kWideSlots; ++w)
+            if (reg.wide[w].id() == id) return storyWide(story, w);
+        return 0xFFFFFFFFu;
+    };
+
+    FightSession s;
+    FightSessionDef d;
+    d.gift.cooldown = {5.0, 5.0, 5.0};
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.bindStory(&story, &reg);
+    const auto& slot = s.giftSlot();
+
+    // Cooling: the second press is refused but is still a press of its kind on its side.
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(wide("w_a1") == 1);
+    const GiftResult cool = s.giveGift(kLeadA);
+    CHECK(!cool.given);
+    CHECK(cool.error == GiftError::Cooling);
+    CHECK(s.lastStoryWrite() == SetResult::Ok);
+    CHECK(wide("w_a1") == 2);
+    CHECK(slot.tally().givenOf(Gift::Guard) == 1);
+    CHECK(slot.threads(kLeadA) == 1);
+
+    // A refused count is a Count press.
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    REQUIRE(s.selectGift(Gift::Count));
+    const GiftResult cr = s.giveGift(kLeadA);
+    CHECK(cr.error == GiftError::CountRefused);
+    CHECK(wide("w_a2") == 1);
+
+    // Hostile and vacant slots refuse before any tally, and the press still counts.
+    s.giftSlot().setState(SlotState::Hostile);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).error == GiftError::Hostile);
+    CHECK(wide("w_a0") == 1);
+    s.giftSlot().setState(SlotState::Vacant);
+    CHECK(s.giveGift(kLeadA).error == GiftError::Vacant);
+    CHECK(wide("w_a0") == 2);
+
+    // A refused press on a closed side is gated like a given one.
+    CHECK(!s.giveGift(kLeadB).given);
+    CHECK(s.lastStoryWrite() == SetResult::RejectedGate);
+    CHECK(wide("w_b0") == 0);
+    // At a non-lead there is no side.
+    CHECK(s.giveGift(kThirdSlot).error == GiftError::Vacant);
+    CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+
+    CHECK(slot.threads(kLeadA) == 1);
+    CHECK(slot.tally().givenOf(Gift::Heal) == 0);
+    CHECK(slot.tally().givenOf(Gift::Count) == 0);
+}
+
+TEST_CASE("fight session: the active lead is a lead, kept across begin") {
+    FightSession s;
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.setActiveLead(kLeadB));
+    CHECK(s.activeLead() == kLeadB);
+    CHECK(!s.setActiveLead(kThirdSlot));
+    CHECK(!s.setActiveLead(kNoFighter));
+    CHECK(s.activeLead() == kLeadB);
+    REQUIRE(s.begin(FightSessionDef{}, 10.0).ok());
+    CHECK(s.activeLead() == kLeadB);
 }
 
 TEST_CASE("fight session: a fight's frames allocate nothing") {

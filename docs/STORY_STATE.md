@@ -98,6 +98,10 @@ scene or a stamp that is neither a scene nor 255. A mid-scene save with no room 
 for tag 1 is still written, without it, and counts in `StoryState::lostStampRecords`: that save
 restarts the open scene with the stamps as saved.
 
+Decode may fill part of its output before a late refusal, so a loader decodes into a temporary.
+`storyLoadOrNew` does that: the decoded state on Ok, a new game's state (`storyReset`) on any other
+result, never half of one. `storyLoadName` names a result for logs.
+
 ## Tests
 
 `Core/tests/test_story_state.cpp`. Every public test runs on a small registry built in the test and
@@ -109,5 +113,15 @@ restarts and replays, round-trips the block, and is itself checked to fail on wr
 
 When `Data/Story` is present, its registry must import cleanly and its walk file
 (`story_walk.txt`, same format, documented in the test) is walked too; a csv without the json fails.
+A clean clone has no `Data/Story`, so it runs fewer story tests: those cases show as skipped, not failed.
 
-Nothing in `Source/` imports the registry yet; until it does, the game runs without story state.
+## In Unreal
+
+`UFTStoryStateSubsystem` (a game-instance subsystem) owns one state and the registry. At start it imports
+the registry from the story folder (`StoryDir`, default `Data/Story`); with both files absent it runs on an empty registry, and with one file
+missing or a refused import it warns and does the same. It begins, commits and restarts scenes, starts a
+new game, and hands the state and registry to the fight session (`BindFightSession`, after every Begin).
+The story save game keeps the block beside the story text (`StoryBlock`): captured with each save,
+loaded after the text with `storyLoadOrNew`, so a save from before the block loads as a new game's state.
+`-StoryStateCheck` runs headless: a block round trip and a new game, one `StoryState check:` log line,
+then the game exits; it never writes the save slot.

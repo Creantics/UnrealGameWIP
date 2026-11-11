@@ -1799,3 +1799,42 @@ TEST_CASE("story state: every branch of the game's walk" * doctest::skip(walkAbs
     REQUIRE(ftcore_test::readProjectData("Story/story_walk.txt", walk));
     runWalk(p.reg, walk, "game walk");
 }
+
+TEST_CASE("story state: load or new") {
+    const FactRegistry& r = reg();
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 6) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncode(s, r, block));
+
+    StoryState played; // a state with progress in it, overwritten by every load
+    REQUIRE(storyBeginScene(played, r, sc("s3")));
+    REQUIRE(storySet(played, r, fs("a_num"), 9) == SetResult::Ok);
+    const StoryState fresh;
+
+    StoryState out = played;
+    CHECK(storyLoadOrNew(block, r, out) == StoryLoad::Ok);
+    CHECK(out.facts == s.facts);
+    CHECK(out.lastCommitted == sc("s2"));
+    CHECK(out.openScene == kNoScene);
+
+    out = played;
+    CHECK(storyLoadOrNew({}, r, out) == StoryLoad::Empty); // a save from before the block
+    CHECK(out.facts == fresh.facts);
+    CHECK(out.stamp == fresh.stamp);
+    CHECK(out.openScene == fresh.openScene);
+    CHECK(out.lastCommitted == fresh.lastCommitted);
+
+    auto bad = block;
+    bad[600] ^= 1;
+    out = played;
+    CHECK(storyLoadOrNew(bad, r, out) == StoryLoad::BadChecksum);
+    CHECK(out.facts == fresh.facts);
+    CHECK(out.openScene == fresh.openScene);
+
+    CHECK(std::string(storyLoadName(StoryLoad::Ok)) == "ok");
+    CHECK(std::string(storyLoadName(StoryLoad::BadChecksum)) == "bad checksum");
+    CHECK(std::string(storyLoadName(StoryLoad::BadVersion)) == "bad version");
+}

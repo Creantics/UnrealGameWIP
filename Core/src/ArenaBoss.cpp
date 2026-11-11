@@ -1066,7 +1066,7 @@ bool importBossScript(std::string_view json, BossScriptDef& out, std::string* er
             errors.push_back("version: expected 1");
         abUnknownKeys(root, "",
                       {"version", "id", "hp", "gauge", "resourceMax", "resourceStart", "wardLimit", "critMultiplier",
-                       "restSeconds", "lock", "moves", "offer", "phases"},
+                       "restSeconds", "lock", "key", "moves", "offer", "phases"},
                       {}, warnings);
         const JsonValue id = root["id"];
         if (!id.isString() || !abId(id.string(), kBossIdCapacity - 1))
@@ -1093,6 +1093,14 @@ bool importBossScript(std::string_view json, BossScriptDef& out, std::string* er
         abNum(root, "restSeconds", out.restSeconds, 0.0, 10.0, false, "", errors);
         if (const JsonValue lock = root["lock"]; abObject(lock, "lock", true, errors))
             abLock(lock, "lock", out.lock, errors, warnings);
+        if (const JsonValue key = root["key"]; key.isAbsent() || (key.isString() && key.string() == "shared"))
+            out.key = BossKey::Shared;
+        else if (key.isString() && key.string() == "read")
+            out.key = BossKey::Read;
+        else if (key.isString() && key.string() == "refusal")
+            out.key = BossKey::Refusal;
+        else
+            errors.push_back("key: expected \"shared\", \"read\" or \"refusal\"");
 
         const JsonValue moves = root["moves"];
         if (!moves.isArray() || moves.size() < 1 || moves.size() > kMaxScriptMoves) {
@@ -1153,14 +1161,22 @@ bool importBossScript(std::string_view json, BossScriptDef& out, std::string* er
         }
         // The rules across fields, each with its path; validBossScript stays the backstop.
         if (errors.empty()) {
-            bool needsShared = out.offer.exposeSeconds > 0.0f || out.offer.unlocksOnCounter;
+            bool needsKey = out.offer.exposeSeconds > 0.0f || out.offer.unlocksOnCounter;
             bool harms = false;
             for (std::uint8_t i = 0; i < out.moveCount; ++i) {
-                needsShared = needsShared || out.moves[i].exposeSeconds > 0.0f || out.moves[i].unlocksOnCounter;
+                needsKey = needsKey || out.moves[i].exposeSeconds > 0.0f || out.moves[i].unlocksOnCounter;
                 harms = harms || out.moves[i].harmsWard;
             }
-            if (needsShared && (out.lock.keys & kUnlockSharedBlow) == 0)
-                errors.push_back("lock.keys: a move exposes or unlocks the weak point, so expected \"shared_blow\"");
+            const char* lockName = out.key == BossKey::Read      ? "read_clause"
+                                   : out.key == BossKey::Refusal ? "refusal"
+                                                                 : "shared_blow";
+            if ((out.lock.keys & bossUnlockKey(out.key)) == 0) {
+                if (needsKey)
+                    errors.push_back(std::string("lock.keys: a move exposes or unlocks the weak point, so expected \"") +
+                                     lockName + "\"");
+                else if (out.key != BossKey::Shared)
+                    errors.push_back(std::string("lock.keys: the point's key needs \"") + lockName + "\"");
+            }
             if (out.wardLimit > 0 && !harms) errors.push_back("wardLimit: no move has harmsWard");
             if (out.offer.harmsWard) errors.push_back("offer.harmsWard: the offer cannot harm the ward");
         }

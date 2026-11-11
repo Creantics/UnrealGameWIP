@@ -14,11 +14,13 @@
 //   boss script, or an offer of the shared-blow key to the session's own lock when there is no boss script. A settle
 //   the count's full event buffer lost (droppedSettles) is not a shared blow. A change to
 //   the table setter's places re-checks the table's seats.
-// * Story: with a story state bound, every given gift is one press in it (storyCountPress): the side is the lead it
-//   went to (kLeadA 0, kLeadB 1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused press writes nothing.
+// * Story: with a story state bound, every press of the gift button aimed at a lead is one press in it
+//   (storyCountPress), given or refused (cooling, a refused count, a hostile or vacant slot): the side is the
+//   target lead (kLeadA 0, kLeadB 1), the kind is the selected gift (Heal 0, Guard 1, Count 2). A press at a
+//   non-lead has no side and writes nothing.
 //   The per-kind press counters (counter wides) roll back with a scene restart, so a retried fight counts afresh.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
-// * No allocation after construction.
+// * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
 #include "ftcore/BossScript.h"
 #include "ftcore/CombatInputs.h"
@@ -39,6 +41,9 @@ namespace ftcore {
 
 // One tick's fight time at most (seconds). A host frame longer than this loses the rest, as a paused game would.
 inline constexpr double kMaxFightStep = 0.25;
+// The furthest a fight may start from 0 on the fight clock (about 31 years in seconds). Further out a double's
+// spacing grows past a frame's step, so `now += step` would stop moving the clock; begin clamps to it.
+inline constexpr double kMaxFightStart = 1.0e9;
 
 // The shared inputs a press can make, for a host's binding table to map its actions onto. Append only.
 enum class SharedAction : std::uint8_t {
@@ -71,10 +76,13 @@ struct FightSessionCheck {
     bool table = true;
     bool lock = true;
     bool boss = true;
-    bool ok() const { return count && gift && places && table && lock && boss; }
+    bool start = true; // false: the start was past kMaxFightStart (clamped) or not finite (0)
+    bool ok() const { return count && gift && places && table && lock && boss && start; }
 };
 
 // What one tick emitted. The pointers stay valid until the next tick or begin.
+// One tick's results. The event buffers are the pieces' own (no copy): read them before the next session call,
+// which may refill them.
 struct FightTick {
     double now = 0.0;
     double step = 0.0; // the fight time this tick added (0 during hit-stop)
@@ -99,10 +107,12 @@ public:
     FightSession(const FightSession&) = delete;
     FightSession& operator=(const FightSession&) = delete;
 
-    // Starts a fight at `start` on the fight clock (any finite time; not bound by kMaxTimeJump).
+    // Starts a fight at `start` on the fight clock (not bound by kMaxTimeJump; clamped to +-kMaxFightStart, a
+    // start that is not finite is 0).
     FightSessionCheck begin(const FightSessionDef& def, double start) {
         FightSessionCheck c;
-        now_ = startTime(start);
+        c.start = std::isfinite(start) && start >= -kMaxFightStart && start <= kMaxFightStart;
+        now_ = startTime(start < -kMaxFightStart ? -kMaxFightStart : (start > kMaxFightStart ? kMaxFightStart : start));
         def_ = def;
         c.count = count_.reset(def_.count, now_);
         if (!c.count) count_.reset(CountTuning{}, now_);
@@ -125,12 +135,9 @@ public:
         lastStory_ = SetResult::Unchanged;
         tick_ = FightTick{};
         tick_.now = now_;
-        tick_.count = &countOut_;
-        tick_.table = &tableOut_;
-        tick_.boss = &bossOut_;
-        countOut_.clear();
-        tableOut_.clear();
-        bossOut_.clear();
+        tick_.count = &kNoCount;
+        tick_.table = &kNoTable;
+        tick_.boss = &kNoBoss;
         return c;
     }
 
@@ -149,17 +156,27 @@ public:
         tick_.now = now_;
         tick_.step = step;
         tick_.sharedBlows = 0;
-        countOut_ = count_.update(now_);
-        for (const CountEvent& e : countOut_)
+        tick_.count = &count_.update(now_);
+        for (const CountEvent& e : *tick_.count)
             if (sharedBlow(e) && shareBlow()) ++tick_.sharedBlows;
         gift_.update(now_);
-        tableOut_ = table_.update(now_);
+        tick_.table = &table_.update(now_);
         lock_.update(now_);
-        if (hasBoss_) bossOut_ = boss_.update(now_);
+        tick_.boss = hasBoss_ ? &boss_.update(now_) : &kNoBoss;
         return tick_;
     }
 
     double now() const { return now_; }
+
+    // The lead the player's figure fills (kLeadA until set): the host aims its gift presses at it and reports its
+    // blows and calls for it. The host sets it when the fight begins and whenever the player switches lead; it
+    // stays across begin (a party fact, not a fight's). False (unchanged) for a non-lead.
+    bool setActiveLead(FighterId lead) {
+        if (!isLead(lead)) return false;
+        activeLead_ = lead;
+        return true;
+    }
+    FighterId activeLead() const { return activeLead_; }
 
     // ---- Presses (stamped with now()) ----
 
@@ -201,7 +218,7 @@ public:
     GiftResult giveGift(FighterId target) {
         const GiftResult r = gift_.press(target, now_, &count_);
         lastStory_ = SetResult::Unchanged;
-        if (r.given && story_ && isLead(r.target) && r.gift != Gift::None)
+        if (story_ && isLead(r.target) && r.gift != Gift::None) // the slot never selects None
             lastStory_ = storyCountPress(*story_, *reg_, r.target, static_cast<std::uint8_t>(r.gift));
         return r;
     }
@@ -228,10 +245,15 @@ public:
     void offerRefusal() { refusal_.offer(); }
     RefusalInput acceptRefusal() { return refusal_.accept(); }
     RefusalInput deferRefusal() { return refusal_.defer(); }
-    // Ends the host's prompt; a refusal kept to the end offers the refusal key to the session's own lock.
+    // Ends the host's prompt; a refusal kept to the end offers the refusal key: to the boss script when there is one
+    // (it opens the point only when refusal is its key kind and a counter has the point exposed), else to the
+    // session's own lock. Only the call that resolves the refusal offers it: ending an ended prompt again offers nothing.
     RefusalInput endRefusal() {
         const RefusalInput r = refusal_.offerEnded();
-        if (refusal_.refused() && !hasBoss_ && def_.locked) lock_.offer(kUnlockRefusal, now_);
+        if (r == RefusalInput::Resolved && refusal_.refused()) {
+            if (hasBoss_) boss_.offerKey(kUnlockRefusal, now_);
+            else if (def_.locked) lock_.offer(kUnlockRefusal, now_);
+        }
         return r;
     }
 
@@ -241,9 +263,12 @@ public:
         if (sharedBlow(h)) shareBlow();
         return h;
     }
-    // An unlock key offered to the session's own lock (no boss script; a boss script takes its keys itself).
+    // An unlock key (a read clause with its id, a refusal, a shared blow) offered to the boss script's point when
+    // there is one (BossScript::offerKey: only its key kind, only while exposed), else to the session's own lock. A shared
+    // blow offered here is the host's own: it skips the count (tick().sharedBlows does not see it).
     UnlockResult offerKey(UnlockKey key, std::uint16_t clause = 0) {
-        if (hasBoss_ || !def_.locked) return UnlockResult::BadKey;
+        if (hasBoss_) return boss_.offerKey(key, now_, clause);
+        if (!def_.locked) return UnlockResult::BadKey;
         return lock_.offer(key, now_, clause);
     }
     // The weak point is open: always without a lock, else while the lock or the boss script says so.
@@ -310,13 +335,15 @@ private:
     WeakPointLock lock_{};
     bool hasBoss_ = false;
     BossScript boss_{};
+    FighterId activeLead_ = kLeadA;
     StoryState* story_ = nullptr;
     const FactRegistry* reg_ = nullptr;
     SetResult lastStory_ = SetResult::Unchanged;
     FightTick tick_{};
-    CountEvents countOut_{};
-    TableEvents tableOut_{};
-    BossEvents bossOut_{};
+    // The empty buffers a tick points at before the first tick and when there is no boss script.
+    static inline const CountEvents kNoCount{};
+    static inline const TableEvents kNoTable{};
+    static inline const BossEvents kNoBoss{};
 };
 
 } // namespace ftcore

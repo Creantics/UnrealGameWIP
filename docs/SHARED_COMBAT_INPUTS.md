@@ -255,7 +255,9 @@ fighter, the table, the held refusal, its own `WeakPointLock`, and an optional `
 own copy of the boss def) and moves them all on one fight clock. It is what a host holds instead of
 the pieces.
 
-* **One clock.** `begin(def, start)` resets every piece at `start` (any finite time). `tick(fightDt)`
+* **One clock.** `begin(def, start)` resets every piece at `start`, clamped to +-`kMaxFightStart`
+  (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
+  `FightSessionCheck::start` reports a clamp). `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
@@ -269,11 +271,17 @@ the pieces.
     schedules cues ahead on the audio clock.
 * **Events.** `tick` returns a `FightTick`: the count's, the table's and the boss script's events
   since the last tick (a call between ticks buffers its events into the next one), the step taken,
-  and how many settled count blows were shared blows.
+  and how many settled count blows were shared blows. The buffers are the pieces' own, not copies:
+  read them before the next session call.
 * **Glue.** A blow judged a shared outcome (at once in `judgeBlow`, or when a held blow settles) is a
   shared blow (a settle lost to a full count event buffer is not): `BossScript::sharedBlow` with a boss script, else the shared-blow key offered to the session's
-  lock (`def.locked`). A refusal held to the end of its prompt (`endRefusal`) offers the refusal key to
-  the session's lock. Every change to a fighter's places through the session re-checks the table when
+  lock (`def.locked`). A refusal held to the end of its prompt (`endRefusal`) offers the refusal key, and
+  `offerKey` any key (a read clause with its id, say): to the boss script with one, else to the session's
+  lock. A boss script's weak point has one key kind in its data (`key`: shared, read or refusal; default
+  shared). Its own kind opens the point while a counter has it exposed, and `unlocksOnCounter` still
+  unlocks it on the counter; any other key opens nothing (`WrongKey`), and its own kind with no exposure
+  (or after the end) is `NotExposed`. Only the `endRefusal` that resolves a held refusal offers the key. A
+  shared blow passed to `offerKey` is the host's own and skips the count. A deferred refusal relocks nothing, in either lock. Every change to a fighter's places through the session re-checks the table when
   that fighter is its setter; after changing places directly (`places(who)` or a load), call
   `recheckTable`. Without a lock and without a boss script the weak point is always open. A boss def
   that `begin` refuses leaves no boss script (`hasBoss` false), so the session's lock rules instead.
@@ -283,12 +291,18 @@ the pieces.
   the count action makes `Count`, the gift action `Gift` with the chosen lead, and the guard button
   held while a refusal prompt is up makes `RefuseDown`/`RefuseUp`. The typed calls (`callCount`,
   `giveGift`, `layPlace`, `setTable`, `counter`, `bossHit`, ...) return each piece's own result.
-* **Story.** With a story state bound (`bindStory(state, registry)`, both or neither), every given
-  gift is one press in it (`storyCountPress`): the side is the lead it went to (`kLeadA` 0, `kLeadB`
-  1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused gift writes nothing; a closed side,
+* **Story.** With a story state bound (`bindStory(state, registry)`, both or neither), every press
+  of the gift button aimed at a lead is one press in it (`storyCountPress`), given or refused (a
+  cooldown, a refused count, a hostile or vacant slot): the side is the target lead (`kLeadA` 0,
+  `kLeadB` 1), the kind is the selected gift (Heal 0, Guard 1, Count 2; the slot never selects none).
+  A press at a non-lead has no side and writes nothing. Hostile and vacant presses sit outside the
+  tally's refused slots but still count here. A closed side,
   a counter at its cap or an unbound counter is a normal answer (`lastStoryWrite`). The per-kind press
   counters (counter wides) roll back with a scene restart, so a retried fight counts afresh; a raw
   total does not.
+* **Active lead.** `setActiveLead(lead)` names the lead the player's figure fills (`kLeadA` until
+  set; it stays across `begin`). The host sets it at fight start and on every lead switch, and aims
+  its gift presses, count calls and blow reports for the player at `activeLead()`.
 * **Boss counters.** `counter(kind, who, shared)`: `shared` is the host's word that the counter carries
   the shared input (a blow judged a shared outcome, or a hit the lead took half of). An open count
   window alone is not it; a shared counter kind without it is refused (`NeedsShared`).
@@ -299,7 +313,8 @@ the pieces.
 
 * `UFTFightSession` (`Source/ForgottenThird/FTFightSession.h`) holds a `FightSession` for a host:
   `Begin`, `Tick(FightDeltaSeconds)` (0 during hit-stop), `Press(EFTSharedAction, ...)`, and the story
-  binding. A host makes one per fight and ticks it every frame.
+  binding, which `Begin` drops (bind again after each `Begin`). A host makes one per fight, keeps it in
+  a `UPROPERTY`, ticks it every frame, and reads `Get()` and a tick's result within the frame.
 * Input actions: `Count` (call), the gift button and a gift select, `LayPlace` (with a person id from
   data), `SetTable`, `Refuse` (a hold). Blows report `(striker, time)` to `StrikeCount::judgeBlow`
   before damage, and their damage through `TableSet::split`.
@@ -340,7 +355,7 @@ when a place empties; the refusal released early (repeats), held to the end, nev
 held before the offer, a lost button; each lock key, wrong clause, key not in the mask, relock after
 time and on deferral; the fight session's clock (a late start, bad and oversized steps, a hundred
 thousand hit-stop ticks that expire nothing, 2000 s of ticks after which every piece still answers),
-a shared blow opening its lock or a boss script's point, events made between ticks, the table
+a shared blow opening its lock or a boss script's point, each boss key kind opening only its own point (the wrong kinds and the wrong clause open nothing), events made between ticks, the table
 re-checked when a place empties, gifts written to the story state (unbound, closed side, cap); zero
 allocations in every tick and judge call (the test fails if the
 allocation hook is missing).

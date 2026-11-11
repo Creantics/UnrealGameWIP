@@ -1,11 +1,13 @@
 #include "FTStorySaveGame.h"
 
+#include "FTStoryStateSubsystem.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
 #include "ftcore/Seen.h"
 #include "ftcore/StorySave.h"
 
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "FTWorldClockSubsystem.h"
 
@@ -17,6 +19,12 @@ UFTWorldClockSubsystem* ClockOf(const UFTStorySubsystem* Story)
 	UWorld* World = Story ? Story->GetWorld() : nullptr;
 	UFTWorldClockSubsystem* Clock = World ? World->GetSubsystem<UFTWorldClockSubsystem>() : nullptr;
 	return Clock && Clock->IsRunning() ? Clock : nullptr;
+}
+// The story state beside the story (same game instance), or null.
+UFTStoryStateSubsystem* StateOf(const UFTStorySubsystem* Story)
+{
+	UGameInstance* GI = Story ? Story->GetGameInstance() : nullptr;
+	return GI ? GI->GetSubsystem<UFTStoryStateSubsystem>() : nullptr;
 }
 } // namespace
 
@@ -53,6 +61,10 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 		Save.hasClock = true;
 	}
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
+	if (UFTStoryStateSubsystem* State = StateOf(Story))
+	{
+		State->EncodeBlock(StoryBlock);
+	}
 	return true;
 }
 
@@ -100,6 +112,10 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 			SavedClock.paused = true; // a capture run's fixed clock stays fixed
 		}
 		Clock->SetClock(SavedClock); // a save from before the clock: the world keeps its own time
+	}
+	if (UFTStoryStateSubsystem* State = StateOf(Story))
+	{
+		State->DecodeBlock(StoryBlock); // a save from before the block: a new game's state
 	}
 	return true;
 }
