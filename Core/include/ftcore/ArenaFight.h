@@ -123,12 +123,13 @@
 // * Hit pause. A blow that lands (a Hit on either side, not one the host vetoes) with hitStop > 0 pauses the
 //   body it lands on for hitStop seconds and its attacker for hitStop * hitStopSelf (0 for a shot: the
 //   shooter goes on); a parry pauses the player and the parried enemy for the fighter's parryStop. A paused
-//   body's own time stands still: its action or brain time, its move, its velocity (0) and, for the player,
-//   the age of a buffered press, so a press made in a pause still starts when it ends. Pauses that overlap
+//   body's own time stands still: its action or brain time, its move, its stance and token asking (an
+//   enemy), its velocity (0) and, for the player, the age of a buffered press and the parry window, so a
+//   press made in a pause still starts, and a guard still parries, when it ends. Pauses that overlap
 //   end at the latest, never added up. A tick that a pause ends inside advances that body by the part of
 //   the tick after it, so the result doesn't hang on the step. Everything else runs on fight time: the
 //   fight's clock (time(), stats.time, every event's time), stamina and poise refill, cooldowns, attack
-//   tokens and attackDelay, the parry window, the pair window and the Read deal. Beside it runs the held
+//   tokens and attackDelay, the pair window and the Read deal. Beside it runs the held
 //   clock (heldTime()): the fight clock less the player's hit pauses, so it stands still while the player
 //   is paused and, in a tick a pause ends inside, advances by the part after it. The shared combat inputs
 //   the host ticks beside the fight are ticked every frame with the held clock, never with time(); the host

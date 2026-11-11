@@ -353,7 +353,7 @@ struct ArenaFightImpl {
 
     void endTick() {
         maintainLock();
-        pl.parryLeft = std::max(0.f, pl.parryLeft - dt);
+        pl.parryLeft = std::max(0.f, pl.parryLeft - playerOwn); // a hit pause holds it, as the buffer
         if (pl.buffered != Press::None) pl.bufferAge += playerOwn; // a hit pause holds it
         // Every velocity is cut so the body stays inside the ring.
         pl.velocity = pl.hp > 0 ? arenaCutVelocity(fight.ring_, pl.pos, pl.velocity, dt, fi.bodyRadius) : Vec2{};
@@ -1167,9 +1167,9 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (k.breakAt == 0 || foe.breakHits < k.breakAt) return false;
+        foe.breakHits = 0; // spent, even when the move is barred
         if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u)
             return false;
-        foe.breakHits = 0;
         const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
         interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back (and a read move brings its counter)
         if (!alive(i) || foe.brain != ArenaBrain::Approach) return true;
@@ -1240,6 +1240,7 @@ struct ArenaFightImpl {
     void enemyStance(std::size_t i) {
         Enemy& foe = foes[i];
         if (foe.token || (foe.brain != ArenaBrain::Approach && foe.brain != ArenaBrain::Strafe)) return;
+        if (!(ownTime(foe.stopUntil) > 0.f)) return; // paused the whole tick: its brain stands still
         const ArenaEnemyKind& k = def.enemies[i];
         const float distance = arenaDistance(pl.pos, foe.pos);
         if (foe.brain == ArenaBrain::Approach && distance <= k.preferredRange + kArenaEps) { // approach() settles within kArenaEps of it
@@ -1263,7 +1264,7 @@ struct ArenaFightImpl {
                 continue;
             }
             asking[i] = !def.enemies[i].passive && foe.brain == ArenaBrain::Strafe
-                        && t0 - foe.stringEnd >= def.enemies[i].attackDelay;
+                        && t0 - foe.stringEnd >= def.enemies[i].attackDelay && ownTime(foe.stopUntil) > 0.f;
             foe.asked = asking[i] ? foe.asked + dt : 0.f;
         }
         while (held < def.attackers) {
@@ -2611,6 +2612,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     }
     if (k.breakMove >= static_cast<int>(k.moveCount))
         errors.push_back(path + ".breakMove: expected -1 or one of its " + std::to_string(k.moveCount) + " moves");
+    if (k.breakAt > 0 && k.breakMove < 0) errors.push_back(path + ".breakMove: breakAt needs a move to break out with");
     // A string may not loop: following the chain from any move must end within moveCount steps.
     for (std::uint32_t m = 0; m < k.moveCount; ++m) {
         const std::uint32_t most = k.moveCount;

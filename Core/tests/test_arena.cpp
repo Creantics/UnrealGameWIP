@@ -5670,6 +5670,41 @@ TEST_CASE("arena hit pause: the attacker and the target stand still for hitStop;
     CHECK(lightEndsAt(0.1f, kDt, 2) == doctest::Approx(slow));
 }
 
+TEST_CASE("arena hit pause: a paused enemy's move stands still and lands hitStop later") {
+    // The light lands at 0.2-0.3 s, inside the enemy's 0.8 s startup (full armour: no flinch, no stagger).
+    ArenaAttack slow = swing(0.8f, 0.1f, 0.3f, 3.f, 5);
+    slow.armor = 1.f;
+    const auto hitAt = [&](float hitStop) {
+        ArenaFighter f = ruleFighter();
+        f.light[0].hitStop = hitStop;
+        f.light[0].hitStopSelf = 0.f;
+        Rig rig(f, {hitterKind(slow)});
+        rig.put(0, 1.5f, 0.f);
+        for (int i = 0; i < 30 && !rig.find(ArenaEventType::AttackStarted); ++i) rig.tick();
+        rig.in.light = true;
+        float frozen = -1.f;
+        bool held = true, seen = false;
+        for (int i = 0; i < 120 && rig.count(ArenaEventType::Hit) < 2; ++i) {
+            const ArenaOutput& out = rig.tick();
+            if (out.enemies[0].stopLeft > kDt) { // a whole tick of pause ahead: the next tick stands still
+                if (seen) held = held && out.enemies[0].stateTime == frozen;
+                frozen = out.enemies[0].stateTime;
+                seen = true;
+                CHECK(out.enemies[0].velocity.x == 0.f);
+                CHECK(out.enemies[0].velocity.y == 0.f);
+            } else {
+                seen = false;
+            }
+        }
+        CHECK(held);
+        const Logged* second = rig.find(ArenaEventType::Hit, 1); // the enemy's blow on the player
+        REQUIRE(second);
+        CHECK(second->event.target == kArenaPlayer);
+        return second->tick * kDt;
+    };
+    CHECK(hitAt(0.2f) - hitAt(0.f) == doctest::Approx(0.2f).epsilon(0.1));
+}
+
 TEST_CASE("arena hit pause: the held clock stands still while the player is paused, for the shared inputs") {
     ArenaFighter f = ruleFighter();
     f.light[0].hitStop = 0.1f;
@@ -6001,5 +6036,7 @@ TEST_CASE("arena table: the pause, cancel, flinch and break-out keys load and ar
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakMove": 3, "moves": [ {} ] } ])")),
                    "breakMove"));
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakAt": 300 } ])")), "breakAt"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakAt": 3, "moves": [ {} ] } ])")),
+                   "breakAt needs a move"));
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": -1 } ])")), "flinchTime"));
 }
