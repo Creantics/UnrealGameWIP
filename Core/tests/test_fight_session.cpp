@@ -720,6 +720,26 @@ TEST_CASE("fight session: held blows past the buffer are dropped, and begin forg
     REQUIRE(s.judgeHeldBlow(kLeadB, 0, 10, 0).outcome == CountOutcome::Held);
     REQUIRE(s.judgeHeldBlow(kLeadA, 0, 10, 0).outcome == CountOutcome::OnCount);
     CHECK(s.tick(kFrame).bonuses.size() == 1);
+    // A held blow waited on, then a new fight whose count settles with no held blow of its own: nothing of the
+    // last fight is reported in the new one, neither paid nor expired.
+    openCountWindow(s);
+    REQUIRE(s.judgeHeldBlow(kLeadA, 0, 10, 0).outcome == CountOutcome::Held);
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    int expired = 0;
+    std::size_t paid = 0;
+    auto step = [&] {
+        const FightTick& st = s.tick(kFrame);
+        expired += st.heldExpired;
+        paid += st.bonuses.size();
+    };
+    for (int i = 0; i < 2000 && !s.strikeCount().open(s.now()); ++i) step();
+    REQUIRE(s.strikeCount().open(s.now()));
+    REQUIRE(s.judgeBlow(kLeadB).outcome == CountOutcome::Held);
+    REQUIRE(s.judgeBlow(kLeadA).outcome == CountOutcome::OnCount);
+    for (int i = 0; i < 4; ++i) step();
+    CHECK(paid == 0);
+    CHECK(expired == 0);
     // A zero or negative base waits on nothing.
     openCountWindow(s);
     REQUIRE(s.judgeHeldBlow(kLeadA, 0, 0, 0).outcome == CountOutcome::Held);

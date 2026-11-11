@@ -1,5 +1,7 @@
 #include "ftcore/StoryRunner.h"
 
+#include <algorithm>
+
 namespace ftcore {
 
 namespace {
@@ -13,6 +15,7 @@ bool anySelectable(const StoryDatabase& db, const Beat& b) {
 void StoryRunner::setDatabase(const StoryDatabase* db) {
     db_ = db;
     flags_.assign(db ? db->flagCount() : 0, FlagValue{});
+    entryFlags_.assign(flags_.size(), FlagValue{});
     resetFlags();
     stop();
 }
@@ -40,7 +43,7 @@ bool StoryRunner::start(std::string_view sceneId) {
         return false;
     }
     resetFlags();
-    enterScene(s);
+    enterScene(s, SceneEntry::Start);
     settle();
     return true;
 }
@@ -49,7 +52,7 @@ bool StoryRunner::restore(const StoryPosition& pos) {
     if (!db_ || !db_->loaded()) return false;
     const std::uint32_t s = db_->findScene(pos.scene);
     if (s == kNone) return false;
-    enterScene(s);
+    enterScene(s, SceneEntry::Restore);
     beat_ = pos.beat;
     settle();
     return true;
@@ -72,10 +75,13 @@ const Beat* StoryRunner::beat() const {
 
 // ---- moving -----------------------------------------------------------------------------------
 
-void StoryRunner::enterScene(std::uint32_t s) {
+void StoryRunner::enterScene(std::uint32_t s, SceneEntry how) {
     scene_ = s;
     beat_ = 0;
     ++sceneEpoch_;
+    notifyScene(how);
+    // After the handler, so what it set is part of the scene's starting point.
+    std::copy(flags_.begin(), flags_.end(), entryFlags_.begin());
 }
 
 void StoryRunner::endScene(std::uint32_t next) {
@@ -83,9 +89,25 @@ void StoryRunner::endScene(std::uint32_t next) {
     if (target == kNone) {
         state_ = State::Finished;
         ++beatEpoch_;
+        notifyScene(SceneEntry::End);
         return;
     }
-    enterScene(target);
+    enterScene(target, SceneEntry::Next);
+}
+
+void StoryRunner::notifyScene(SceneEntry how) {
+    if (onScene_) onScene_(sceneUser_, *this, how);
+}
+
+bool StoryRunner::restartScene() {
+    if (!db_ || scene_ == kNone || state_ == State::Idle || state_ == State::Finished) return false;
+    std::copy(entryFlags_.begin(), entryFlags_.end(), flags_.begin());
+    beat_ = 0;
+    hold_ = 0.f;
+    ++sceneEpoch_;
+    notifyScene(SceneEntry::Restart);
+    settle();
+    return true;
 }
 
 void StoryRunner::rest(State s) {
@@ -101,7 +123,10 @@ void StoryRunner::applyFlagOp(const FlagOpDef& op) {
         // Clearing a counter or enum flag returns it to its default; a boolean becomes false.
         const FlagValue init = db_->flag(op.flag).initial;
         flags_[op.flag] = init.kind == FlagValue::Kind::Bool ? FlagValue::boolean(false) : init;
+    } else {
+        return;
     }
+    if (onFlag_) onFlag_(flagUser_, *this, op.flag);
 }
 
 void StoryRunner::skipRequireBlock() {
@@ -222,6 +247,23 @@ void StoryRunner::skipHold() {
 
 bool StoryRunner::resume() {
     if (state_ != State::Gameplay) return false;
+    const Beat& b = *beat();
+    if (b.hasStub && b.setsFlag != kNone && resume(FlagValue::integer(b.stub))) return true;
+    ++beat_; // no stub, or one its flag cannot take: carry on without a result
+    settle();
+    return true;
+}
+
+bool StoryRunner::resume(FlagValue value) {
+    if (state_ != State::Gameplay) return false;
+    const Beat& b = *beat();
+    if (b.setsFlag == kNone || b.setsFlag >= flags_.size() || value.kind == FlagValue::Kind::String) return false;
+    const FlagValue::Kind kind = db_->flag(b.setsFlag).initial.kind;
+    if (kind == FlagValue::Kind::String) return false;
+    FlagOpDef op;
+    op.flag = b.setsFlag;
+    op.value = kind == FlagValue::Kind::Bool ? FlagValue::boolean(value.value != 0) : FlagValue::integer(value.value);
+    applyFlagOp(op);
     ++beat_;
     settle();
     return true;

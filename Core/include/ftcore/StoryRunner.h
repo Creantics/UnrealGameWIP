@@ -27,6 +27,16 @@
 // Text comes back as views into the database: the script's text, plus textKey() / optionTextKey()
 // for the owner to look up a localised string.
 //
+// Hooks (optional, one each): the scene handler runs when a scene is entered, before any of its beats
+// is processed (so a handler that sets flags is seen by the scene's first `require`), and when the story
+// ends; the flag handler runs after the story itself changed a flag (a flag beat, an option effect, a
+// resume with a value), never after setFlag. Handlers may read the runner and call setFlag; they must not
+// move it (start, restore, advance, choose, resume, restartScene).
+//
+// A gameplay beat may name a flag in its `sets` param: resume(value) sets it before going on, and a plain
+// resume() sets the beat's `stub` param (an integer) when it has one (a stand-in for a screen not built yet);
+// when the flag cannot take it, or the beat has a `stub` but no `sets`, it carries on without a result.
+//
 // Zero allocation: after setDatabase() (which sizes the flag array), start/advance/choose/update/
 // resume, scene changes, cue callbacks and restore() allocate nothing.
 
@@ -54,10 +64,21 @@ struct StoryPosition {
     std::uint32_t beat = 0;
 };
 
+// How the scene handler's scene was reached.
+enum class SceneEntry : std::uint8_t {
+    Start,   // start(): the flags were reset
+    Next,    // play moved on (an `end` or the scene's last beat)
+    Restore, // restore(): a load or a jump
+    Restart, // restartScene(): the flags are back to their values at the scene's entry
+    End,     // the story finished (sceneIndex() is the last scene)
+};
+
 class StoryRunner {
 public:
     enum class State : std::uint8_t { Idle, Line, Direction, Choice, Hold, Gameplay, Finished };
     using CueHandler = void (*)(void* user, const CueEvent& e);
+    using SceneHandler = void (*)(void* user, StoryRunner& runner, SceneEntry how);
+    using FlagHandler = void (*)(void* user, StoryRunner& runner, std::uint32_t flag);
 
     explicit StoryRunner(const StoryDatabase* db = nullptr) { setDatabase(db); }
     StoryRunner(const StoryRunner&) = delete;
@@ -70,6 +91,14 @@ public:
         onCue_ = h;
         cueUser_ = user;
     }
+    void setSceneHandler(SceneHandler h, void* user) {
+        onScene_ = h;
+        sceneUser_ = user;
+    }
+    void setFlagHandler(FlagHandler h, void* user) {
+        onFlag_ = h;
+        flagUser_ = user;
+    }
 
     // Resets the flags to their defaults and starts at `sceneId` (empty: the story's start scene).
     // False (and Finished) when the scene is unknown or there is no database.
@@ -79,6 +108,9 @@ public:
     // again). A beat past the end of the scene ends the scene. False when the scene is unknown.
     FTCORE_API bool restore(const StoryPosition& pos);
     FTCORE_API void stop(); // back to Idle
+    // Back to the current scene's first beat with the flags as they were when it was entered (a retry).
+    // False when no scene is under way (idle or finished).
+    FTCORE_API bool restartScene();
 
     State state() const { return state_; }
     bool finished() const { return state_ == State::Finished; }
@@ -128,6 +160,10 @@ public:
     FTCORE_API bool choose(std::uint32_t i); // Choice: runs option i's effects and jumps. False when refused.
     FTCORE_API void update(float dt);        // counts down a hold; continues when it ends
     FTCORE_API bool resume();                // Gameplay: the gameplay is done; continue. False otherwise.
+    // Gameplay: done with a result. Sets the beat's `sets` flag to `value` (in the flag's own kind: a bool
+    // flag takes value != 0), then continues. False, and the beat stays, when the beat names no flag, the
+    // value does not fit the flag (a string flag, or a bool or int flag given a string), or not on gameplay.
+    FTCORE_API bool resume(FlagValue value);
     FTCORE_API void skipHold();              // ends the current hold now (debug / autoplay)
 
     // ---- flags ----
@@ -142,17 +178,23 @@ public:
     static constexpr std::uint32_t kMaxStepsPerMove = 100000;
 
 private:
-    void enterScene(std::uint32_t scene);
+    void enterScene(std::uint32_t scene, SceneEntry how);
     void endScene(std::uint32_t next);
     void settle(); // processes pass-through beats until the cursor rests or the story ends
     void applyFlagOp(const FlagOpDef& op);
+    void notifyScene(SceneEntry how);
     void skipRequireBlock();
     void rest(State s);
 
     const StoryDatabase* db_ = nullptr;
     std::vector<FlagValue> flags_;
+    std::vector<FlagValue> entryFlags_; // the flags when the current scene was entered (restartScene)
     CueHandler onCue_ = nullptr;
     void* cueUser_ = nullptr;
+    SceneHandler onScene_ = nullptr;
+    void* sceneUser_ = nullptr;
+    FlagHandler onFlag_ = nullptr;
+    void* flagUser_ = nullptr;
     State state_ = State::Idle;
     std::uint32_t scene_ = kNone, beat_ = 0;
     std::uint32_t sceneEpoch_ = 0, beatEpoch_ = 0;

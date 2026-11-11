@@ -113,6 +113,7 @@ add_library(ftcore STATIC
     src/StylePack.cpp
     src/StorySave.cpp
     src/StoryState.cpp
+    src/StoryBridge.cpp
     src/TurnQueue.cpp
     src/Version.cpp
     src/Vfx.cpp
@@ -279,6 +280,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story.cpp
         tests/test_story_chain.cpp
         tests/test_story_state.cpp
+        tests/test_story_bridge.cpp
         tests/test_fight_session.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp

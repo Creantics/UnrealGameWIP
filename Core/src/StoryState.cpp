@@ -1486,6 +1486,19 @@ std::string_view trimField(std::string_view v) {
 }
 } // namespace
 
+namespace {
+// ASCII only: ids are ASCII.
+bool sameIgnoringCase(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const char x = a[i] >= 'A' && a[i] <= 'Z' ? static_cast<char>(a[i] - 'A' + 'a') : a[i];
+        const char y = b[i] >= 'A' && b[i] <= 'Z' ? static_cast<char>(b[i] - 'A' + 'a') : b[i];
+        if (x != y) return false;
+    }
+    return true;
+}
+} // namespace
+
 bool importStorySceneMap(std::string_view csv, const FactRegistry& reg, std::vector<StorySceneLink>& out,
                          std::string* error) {
     out.clear();
@@ -1517,9 +1530,16 @@ bool importStorySceneMap(std::string_view csv, const FactRegistry& reg, std::vec
         }
         if (scene.empty() || code.empty()) return fail(line, "empty field");
         const std::uint8_t ordinal = storySceneOrdinal(reg, code);
-        if (ordinal == kNoScene) return fail(line, "the registry lists no such scene code");
-        for (const StorySceneLink& l : out)
+        if (ordinal == kNoScene) {
+            for (std::uint8_t i = 0; i < reg.sceneCount; ++i)
+                if (sameIgnoringCase(code, std::string_view(reg.sceneCodes[i].data())))
+                    return fail(line, "the scene code differs from the registry's only by case (codes are case-sensitive)");
+            return fail(line, "the registry lists no such scene code");
+        }
+        for (const StorySceneLink& l : out) {
             if (l.scene == scene) return fail(line, "scene id given twice");
+            if (sameIgnoringCase(l.scene, scene)) return fail(line, "scene ids that differ only by case");
+        }
         out.push_back(StorySceneLink{std::string(scene), ordinal});
     }
     if (!header) return fail(line, "expected the header scene,code");

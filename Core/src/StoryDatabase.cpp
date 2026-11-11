@@ -311,6 +311,18 @@ void StoryBuilder::gameplay(std::string_view kindName, std::string_view text, st
 void StoryBuilder::param(std::string_view key, std::string_view value) {
     if (db_.scenes_.empty() || db_.scenes_.back().beatCount == 0 || db_.beats_.back().type != BeatType::Gameplay)
         return fail("param '" + std::string(key) + "' does not follow a gameplay beat");
+    if (key == "sets") {
+        if (value.empty()) return fail("param 'sets' without a flag id");
+        db_.beats_.back().setsFlag = internFlag(value);
+    } else if (key == "stub") {
+        std::int64_t v = 0;
+        const char* end = value.data() + value.size();
+        const auto [ptr, ec] = std::from_chars(value.data(), end, v);
+        if (value.empty() || ec != std::errc{} || ptr != end)
+            return fail("param 'stub' is not an integer: '" + std::string(value) + "'");
+        db_.beats_.back().hasStub = true;
+        db_.beats_.back().stub = v;
+    }
     db_.params_.emplace_back(store(key), store(value));
     ++db_.beats_.back().paramCount;
 }

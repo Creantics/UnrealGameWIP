@@ -146,6 +146,10 @@ bool UFTStorySubsystem::LoadStory(const FString& Dir, FString& OutError, TArray<
 	bLoaded = true;
 	UE_LOG(LogFTStory, Log, TEXT("Loaded story '%s': %d scenes"), *FT::ToFString(Database->title()),
 		static_cast<int32>(Database->sceneCount()));
+	if (UFTStoryStateSubsystem* StoryState = GetGameInstance()->GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->RebindBridge(); // the bridge's tables belong to the database
+	}
 	return true;
 }
 
@@ -202,6 +206,20 @@ bool UFTStorySubsystem::Choose(int32 Option)
 bool UFTStorySubsystem::ResumeAfterGameplay()
 {
 	const bool bOk = Runner->resume();
+	Flush();
+	return bOk;
+}
+
+bool UFTStorySubsystem::ResumeAfterGameplayWithValue(int32 Value)
+{
+	const bool bOk = Runner->resume(ftcore::FlagValue::integer(Value));
+	Flush();
+	return bOk;
+}
+
+bool UFTStorySubsystem::RestartCurrentScene()
+{
+	const bool bOk = Runner->restartScene();
 	Flush();
 	return bOk;
 }

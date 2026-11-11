@@ -1886,6 +1886,12 @@ TEST_CASE("story state: scene map import") {
     fails("scene,code\nr-one, \n");
     fails("scene,code\nr-one,s99\n");
     fails("scene,code\nr-one,s1\nr-one,s2\n");
+    // Ids and codes are case-sensitive on both sides; ones that differ only by case are refused.
+    fails("scene,code\nr-one,S1\n");
+    fails("scene,code\nr-one,s1\nR-One,s2\n");
+    err.clear();
+    CHECK_FALSE(importStorySceneMap("scene,code\nr-one,S1\n", reg(), links, &err));
+    CHECK(err.find("case") != std::string::npos);
 }
 
 TEST_CASE("story state: entering scenes") {

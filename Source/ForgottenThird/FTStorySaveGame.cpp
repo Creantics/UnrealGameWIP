@@ -116,7 +116,7 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 	if (UFTStoryStateSubsystem* State = StateOf(Story))
 	{
 		State->DecodeBlock(StoryBlock); // a save from before the block: a new game's state
-		State->SyncToRunnerScene(Story->GetSceneId()); // a reload inside a scene restarts it (saves are taken at scene start)
+		State->SyncAfterLoad(); // the runner stays where it was restored; the state follows it (StoryBridge::sync)
 	}
 	return true;
 }
