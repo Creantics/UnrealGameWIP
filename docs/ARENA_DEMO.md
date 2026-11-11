@@ -413,7 +413,9 @@ The hit pause shows on screen: the lead's body and strike clips (`GetDrawnTime` 
 enemy's clips stand still for its pause, and the camera holds where it is (it never pulls out). A flinching enemy leans
 back a little (a placeholder pose until flinch clips exist) and plays its light hit reaction when it has a skin. The
 runner hands the clocks to the fight session through `GetHeldTime`, `GetHeldDelta` (0 through the player's pause),
-`GetHitStopLeft`, `GetPlayerStopLeft` and `GetEnemyStopLeft`.
+`GetHitStopLeft`, `GetPlayerStopLeft` and `GetEnemyStopLeft`. After every session Begin (the fight's begin and each restart) the runner binds the session to the game
+instance's story state (`UFTStoryStateSubsystem::BindFightSession`). `ArenaFight::hostBlow` takes extra damage from
+outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed` on a kill) with the next tick.
 
 ## Flow
 

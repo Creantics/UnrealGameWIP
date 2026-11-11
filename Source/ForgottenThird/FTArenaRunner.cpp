@@ -17,6 +17,7 @@
 #include "FTGameInstance.h"
 #include "FTInputBindings.h"
 #include "FTPauseSubsystem.h"
+#include "FTStoryStateSubsystem.h"
 #include "FTText.h"
 #include "FTVfxComponent.h"
 #include "ForgottenThird.h"
@@ -1371,6 +1372,15 @@ void UFTArenaRunner::BeginSession()
 	if (Session)
 	{
 		Session->Begin(ftcore::FightSessionDef{}, static_cast<double>(SessionHeld));
+		// The game instance's story state takes the session's story writes (bound again after every Begin).
+		const UWorld* World = GetWorld();
+		if (UGameInstance* Instance = World ? World->GetGameInstance() : nullptr)
+		{
+			if (UFTStoryStateSubsystem* Story = Instance->GetSubsystem<UFTStoryStateSubsystem>())
+			{
+				Story->BindFightSession(Session);
+			}
+		}
 	}
 }
 

@@ -344,6 +344,7 @@ struct ArenaFightImpl {
             pl.giftLoad = 0;
             pl.giftFilled = false;
         }
+        reportHostBlows(); // the host's hostBlow since the last tick
         if (!(step > 0.f)) { // only refresh
             fillOutput();
             return;
@@ -1013,7 +1014,7 @@ struct ArenaFightImpl {
 
     // ---- the player's attacks on the enemies ----
 
-    void killEnemy(std::size_t i) {
+    void killEnemy(std::size_t i, bool report = true) {
         Enemy& foe = foes[i];
         foe.hp = 0;
         foe.brain = ArenaBrain::Dead;
@@ -1022,7 +1023,38 @@ struct ArenaFightImpl {
         foe.readRight = false;
         foe.holdFor = -1.f;
         releaseToken(i);
-        emit(ArenaEventType::Downed, kArenaPlayer, id(i), 0, 0, foe.pos);
+        if (report) emit(ArenaEventType::Downed, kArenaPlayer, id(i), 0, 0, foe.pos);
+    }
+
+    bool hostBlow(std::size_t i, int damage, std::uint8_t move) {
+        if (i >= n || !alive(i) || damage <= 0) return false;
+        Enemy& foe = foes[i];
+        const int amount = lose(i, damage);
+        stats.damageDealt += amount;
+        const bool killed = foe.hp <= 0;
+        if (fight.inHook_.on) {
+            emit(ArenaEventType::HostHit, kArenaPlayer, id(i), move, amount, foe.pos);
+            if (killed) killEnemy(i);
+        } else {
+            foe.hostOwed += amount;
+            foe.hostMove = move;
+            if (killed) {
+                foe.hostKilled = true;
+                killEnemy(i, false);
+            }
+        }
+        return true;
+    }
+
+    void reportHostBlows() {
+        for (std::size_t i = 0; i < n; ++i) {
+            Enemy& foe = foes[i];
+            if (foe.hostOwed <= 0 && !foe.hostKilled) continue;
+            emit(ArenaEventType::HostHit, kArenaPlayer, id(i), foe.hostMove, foe.hostOwed, foe.pos);
+            if (foe.hostKilled) emit(ArenaEventType::Downed, kArenaPlayer, id(i), 0, 0, foe.pos);
+            foe.hostOwed = 0;
+            foe.hostKilled = false;
+        }
     }
 
     void staggerEnemy(std::size_t i) {
@@ -2026,6 +2058,10 @@ void ArenaFight::setEnemyFacing(std::size_t i, Vec2 facing) {
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;
+}
+bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
+    if (phase_ != ArenaPhase::Fighting) return false;
+    return ArenaFightImpl(*this).hostBlow(enemy, damage, move);
 }
 int ArenaFight::giveLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting) return 0;

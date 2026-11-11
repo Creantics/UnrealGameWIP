@@ -638,6 +638,7 @@ enum class ArenaEventType : std::uint8_t { // append only
     ReadCounter,    // the partner's Read counter hit target for `amount` hp; move = the stacks (appended)
     Flinched,       // the player's blow made target flinch (appended)
     BrokeOut,       // source broke out of the player's blows with its move `move` (appended)
+    HostHit,        // the host's hostBlow took `amount` hp from target (a held blow's bonus); move = the blow's (appended)
 };
 
 struct ArenaEvent {
@@ -885,6 +886,12 @@ public:
     // a fill already counted stays in the stats until begin() clears them. 0, and nothing stored, when the fight is
     // not running (before begin(), after Victory or Defeat), or for a kit with no attacks. kMaxLoad (Load.h) is the gauge's cap.
     FTCORE_API int giveLoad(int amount);
+    // Extra damage from outside a blow (a held blow's settle, the fight session's bonuses): honours the hp floor,
+    // counts in damageDealt, kills at 0 like a landed blow, and reports a HostHit (amount, move) for the enemy, then
+    // its Downed when it died. No poise, no flinch, no hit pause, no hook call. The hp changes at once (enemyHp,
+    // enemyAlive); the events come in the next tick's output (at once when called from a blow hook), and a kill's
+    // Victory with that tick. False (nothing) on a dead or out-of-range enemy, damage <= 0, or outside Fighting.
+    FTCORE_API bool hostBlow(std::size_t enemy, int damage, std::uint8_t move);
 
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
@@ -969,6 +976,9 @@ private:
         std::uint8_t flinchChain = 0;       // flinches in a row (see Flinch)
         float lastFlinch = -1.0e9f;         // fight time of the last blow that could flinch it
         float lastBreakHit = -1.0e9f;       // fight time of the last of them
+        int hostOwed = 0;                   // hostBlow damage since the last tick, not yet reported
+        std::uint8_t hostMove = 0;          // the last of those blows' move
+        bool hostKilled = false;            // one of them took the last hp (its Downed not yet reported)
     };
 
     ArenaDef def_;

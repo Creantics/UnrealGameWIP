@@ -6243,3 +6243,72 @@ TEST_CASE("arena autopilot: duelist and skirmisher show a flinch and a break-out
             CHECK(r.stats.breakOuts > 0);
         }
 }
+
+// ---- the host's blows (hostBlow) ----
+
+namespace {
+int countEvents(const ArenaOutput& out, ArenaEventType type, int* amount = nullptr, std::uint8_t* move = nullptr) {
+    int c = 0;
+    for (std::size_t e = 0; e < out.events.count; ++e)
+        if (out.events.items[e].type == type) {
+            ++c;
+            if (amount) *amount = out.events.items[e].amount;
+            if (move) *move = out.events.items[e].move;
+        }
+    return c;
+}
+} // namespace
+
+TEST_CASE("arena hostBlow: damage from outside a blow, reported with the next tick") {
+    ArenaDef def = defaultArenaDef();
+    def.enemyCount = 2;
+    def.enemies[1] = def.enemies[0];
+    const ArenaRing ring{Vec2{0.f, 0.f}, 12.f};
+    ArenaFight fight;
+    CHECK_FALSE(fight.hostBlow(0, 10, 1)); // not begun
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < 2; ++i) bodies.enemies[i] = fight.enemyStart(i);
+    const ArenaInput idle;
+    fight.tick(kDt, idle, bodies);
+    const int hp0 = fight.enemyHp(0);
+    const float poise0 = fight.enemyPoise(0);
+    CHECK_FALSE(fight.hostBlow(0, 0, 1));
+    CHECK_FALSE(fight.hostBlow(0, -5, 1));
+    CHECK_FALSE(fight.hostBlow(7, 5, 1));
+    REQUIRE(fight.hostBlow(0, 9, 2));
+    CHECK(fight.enemyHp(0) == hp0 - 9);        // at once
+    CHECK(fight.stats().damageDealt == 9);
+    CHECK(fight.enemyPoise(0) == poise0);      // no poise
+    const ArenaOutput& out = fight.tick(kDt, idle, bodies);
+    int amount = 0;
+    std::uint8_t move = 0;
+    CHECK(countEvents(out, ArenaEventType::HostHit, &amount, &move) == 1);
+    CHECK(amount == 9);
+    CHECK(move == 2);
+    CHECK(countEvents(out, ArenaEventType::Flinched) == 0);
+    CHECK(out.enemies[0].stopLeft <= 0.f);     // no hit pause
+    CHECK(countEvents(fight.tick(kDt, idle, bodies), ArenaEventType::HostHit) == 0); // reported once
+
+    // The hp floor holds.
+    fight.setEnemyHpFloor(1, fight.enemyHp(1) - 4);
+    REQUIRE(fight.hostBlow(1, 50, 0));
+    CHECK(fight.enemyHp(1) == fight.enemyHpFloor(1));
+    fight.tick(kDt, idle, bodies);
+    fight.setEnemyHpFloor(1, 0);
+
+    // A kill: dead at once, HostHit then Downed with the next tick; the last one ends the fight.
+    REQUIRE(fight.hostBlow(0, 100000, 3));
+    CHECK_FALSE(fight.enemyAlive(0));
+    CHECK_FALSE(fight.hostBlow(0, 5, 3)); // dead
+    const ArenaOutput& k = fight.tick(kDt, idle, bodies);
+    CHECK(countEvents(k, ArenaEventType::HostHit) == 1);
+    CHECK(countEvents(k, ArenaEventType::Downed) == 1);
+    CHECK(fight.phase() == ArenaPhase::Fighting);
+    REQUIRE(fight.hostBlow(1, 100000, 3));
+    const ArenaOutput& v = fight.tick(kDt, idle, bodies);
+    CHECK(countEvents(v, ArenaEventType::Victory) == 1);
+    CHECK(fight.phase() == ArenaPhase::Victory);
+    CHECK_FALSE(fight.hostBlow(1, 5, 3)); // outside Fighting
+}
