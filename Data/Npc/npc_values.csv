@@ -1,4 +1,4 @@
 npc_id,base_T,base_F,base_R,district_id,weights
-npc_shop_01,30,0,10,1,reckless_driving:-5/2/-2;collateral:-3/1/-1;theft:-6/2/-3;commerce:2/0/1;help:2/0/1;violence:-1/1/0
-npc_fixer_01,0,0,10,1,violence:1/0/3;mercy:-1/0/-1;promise:2/0/3;reckless_driving:0/0/1
-npc_kid_01,10,0,0,1,violence:-2/4/0;reckless_driving:-3/3/0;collateral:-2/2/0;help:2/0/1;mercy:1/-1/1
+npc_shop_01,30,0,10,1,reckless_driving:-5/2/-2;collateral:-3/1/-1;theft:-6/2/-3;commerce:2/0/1;help:2/0/1;violence:-1/1/0;delivery:2/0/2;damage:-4/1/-2;repair:3/0/2;gift:1/0/1
+npc_fixer_01,0,0,10,1,violence:1/0/3;mercy:-1/0/-1;promise:2/0/3;reckless_driving:0/0/1;damage:0/0/1;repair:1/0/1
+npc_kid_01,10,0,0,1,violence:-2/4/0;reckless_driving:-3/3/0;collateral:-2/2/0;help:2/0/1;mercy:1/-1/1;gift:3/0/1;delivery:1/0/1;damage:-1/2/0;repair:1/0/1

@@ -149,7 +149,8 @@ struct NpcMemoryEntry {
     std::int16_t s0 = 0;
     std::uint8_t hops = 0;  // NpcLearn
     std::uint8_t count = 0;
-    std::uint8_t lead = kNoLead;
+    std::uint8_t lead = kNoLead;  // the latest lead known to have done it
+    std::uint8_t leads = 0;       // bit per lead known to have done it (reinforcement keeps them all)
     bool pinned = false;
 };
 
@@ -265,7 +266,10 @@ struct NpcCond {
     std::int16_t tag = -1;   // tag bit
     std::int16_t other = -1; // NotSince: the redeeming deed type; Exp: exp index; EventLe: event; Dead: npc
     std::int32_t value = 0;  // salience bar, minutes, stance rank or exp state
+    std::int8_t by = -1;     // Mem only, who did the deed: -1 anyone, 0..2 that lead, kBySelf, kByOther
 };
+// `by` against the lead being spoken to: the one listening did it, or another lead did.
+constexpr std::int8_t kBySelf = 3, kByOther = 4;
 struct NpcLine {
     std::string id;
     std::uint16_t npc = 0;
@@ -292,7 +296,9 @@ FTCORE_API NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const 
 // The deed types the hooks record, resolved once at load from deeds.csv.
 struct NpcGameDeeds {
     std::uint16_t vanKnockdown = kNoType, vanKnockdownTied = kNoType, fightWon = kNoType, enemySpared = kNoType,
-                  shopTheft = kNoType, shopBought = kNoType, helpedPedestrian = kNoType, meet = kNoType;
+                  shopTheft = kNoType, shopBought = kNoType, helpedPedestrian = kNoType, meet = kNoType,
+                  delivery = kNoType, giftAccepted = kNoType, giftReturned = kNoType, gateBroken = kNoType,
+                  gateMended = kNoType;
 };
 // False, naming the first missing deed id, when deeds.csv lacks one (out is left unchanged).
 FTCORE_API bool npcResolveGameDeeds(const NpcTables& t, NpcGameDeeds& out, std::string* error = nullptr);
@@ -323,6 +329,16 @@ FTCORE_API std::uint32_t npcOnHelpedPedestrian(NpcMemoryWorld& w, const NpcTable
 // The lead turned up to meet an NPC (who witnesses it): keeps an expectation whose kept_by is the meet deed.
 FTCORE_API std::uint32_t npcOnMeet(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
                                    std::uint16_t npc);
+// Neighbourly deeds, each with the neighbour as the one dealt with (they learn it first hand, the lead in `at` is
+// remembered as the doer). A delivery handed over; a gift from the neighbour accepted or handed back (both pinned in
+// the shipped tables, so a line can ask about it at every later meeting); their gate broken, or mended later
+// (`place` should be the gate, so a second break reinforces the first). Return the seq, 0 when nothing was recorded.
+FTCORE_API std::uint32_t npcOnDelivery(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                                       std::uint16_t recipient);
+FTCORE_API std::uint32_t npcOnGift(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                                   std::uint16_t giver, bool accepted);
+FTCORE_API std::uint32_t npcOnGate(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                                   std::uint16_t owner, bool mended);
 // Day and night: moves the memory clock to the world clock's minute and runs a checkpoint with the crowd density of
 // that hour (busier by day, so street hearsay spreads by day and seldom at night).
 FTCORE_API void npcOnClock(NpcMemoryWorld& w, const NpcTables& t, const WorldClock& clock, const TimeCurves& curves);
@@ -336,7 +352,10 @@ struct NpcTableSources {
 FTCORE_API bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* error = nullptr);
 // npc_lines.csv: line_id,npc_id,kind,lead,priority,cooldown_min,once,cond. Clauses in cond are
 // separated by ';' (quote the field when a clause holds a comma). `mem:deed=X` with no `>=S`
-// uses the tuning's recall bar.
+// uses the tuning's recall bar. `mem:deed=X,by=W` (W: self, other or 0..2) asks who did it: the lead
+// being spoken to, another lead, or one lead (hearsay keeps the doer only at closeness 70 and up,
+// so author a line without `by` beside it). `not_since:deed=X,deed=Y` holds while no Y came after
+// the latest X (and when there is no X, so pair it with mem:deed=X).
 FTCORE_API bool importNpcLines(std::string_view csv, const NpcTables& t, NpcLineTable& out, std::string* error = nullptr);
 
 // ---- Save (string ids, never indices) ----
@@ -347,6 +366,7 @@ struct NpcMemorySaveEntry {
     std::int16_t s0 = 0;
     std::uint8_t hops = 0, count = 0, lead = kNoLead;
     bool pinned = false;
+    std::uint8_t leads = 0;  // 0 in older saves: rebuilt from lead
 };
 struct NpcMemorySaveNpc {
     std::string id;

@@ -138,7 +138,7 @@ std::string dump(const NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable
         for (const auto& e : n.mem)
             o += std::to_string(e.seq) + "," + std::to_string(e.deedMinute) + "," + std::to_string(e.ts) + "," + std::to_string(e.learned) +
                  "," + e.type + "," + std::to_string(e.place) + "," + std::to_string(e.s0) + "," + std::to_string(e.hops) + "," +
-                 std::to_string(e.count) + "," + std::to_string(e.lead) + "," + std::to_string(e.pinned) + ";";
+                 std::to_string(e.count) + "," + std::to_string(e.lead) + "," + std::to_string(e.pinned) + "," + std::to_string(e.leads) + ";";
         o += "]{";
         for (const auto& ag : n.aggregates) o += ag.first + "=" + std::to_string(ag.second.count) + "@" + std::to_string(ag.second.lastMinute) + ";";
         o += "}<";
@@ -1037,6 +1037,13 @@ constexpr const char* kSliceLines = R"(line_id,npc_id,kind,lead,priority,cooldow
 greet_plain,npc_shop_01,greet,any,1,0,0,
 greet_knockdown,npc_shop_01,greet,any,5,240,0,mem:deed=van_knockdown
 remind_meet,npc_fixer_01,remind,any,3,0,0,exp:exp_meet_dusk=reminding
+greet_delivery_self,npc_shop_01,greet,any,4,0,0,"mem:deed=delivery_made,by=self"
+greet_delivery_other,npc_shop_01,greet,any,3,0,0,"mem:deed=delivery_made,by=other"
+greet_gate_broken,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken;not_since:deed=gate_broken,deed=gate_mended"
+greet_gate_mended,npc_shop_01,greet,any,6,720,0,mem:deed=gate_mended
+greet_kid_plain,npc_kid_01,greet,any,1,0,0,
+greet_gift_kept,npc_kid_01,greet,any,6,0,0,mem:deed=gift_accepted
+greet_gift_back,npc_kid_01,greet,any,6,0,0,mem:deed=gift_returned
 )";
 
 struct Slice {
@@ -1084,7 +1091,8 @@ struct Slice {
         return a;
     }
     bool remembers(const char* who, std::uint16_t type) const { return npcRemembers(*w, t, npc(who), type, -1); }
-    int pick(const char* who, NpcLineKind k) { return npcPickLine(*w, t, lines, npc(who), 0, k).line; }
+    int pick(const char* who, NpcLineKind k, std::uint8_t lead = 0) { return npcPickLine(*w, t, lines, npc(who), lead, k).line; }
+    int line(const char* id) const { return lines.lineIndex(id); }
 };
 
 }  // namespace
@@ -1213,4 +1221,142 @@ TEST_CASE("npc slice: each hook records its own deed; a tied victim learns it as
     CHECK(npcDeedAt(*s.w, helped)->type == s.g.helpedPedestrian);
     // The fixer respects violence: the wins it saw raise its respect.
     CHECK(npcAxis(*s.w, s.t, s.npc("npc_fixer_01"), kAxisR) > respect0);
+}
+
+// ---- Neighbourly deeds: deliveries by one lead or another, gifts kept or handed back, a gate broken then mended ----
+
+TEST_CASE("npc slice: a delivery is remembered with who made it; reinforcement keeps both leads") {
+    Slice s;
+    const std::uint16_t shop = s.npc("npc_shop_01");
+    const std::uint32_t seq = npcOnDelivery(*s.w, s.t, s.g, s.where({}, 0), shop);
+    REQUIRE(seq != 0u);
+    CHECK(npcDeedAt(*s.w, seq)->victim == shop);
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 0) == s.line("greet_delivery_self"));
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 1) == s.line("greet_delivery_other"));
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 2) == s.line("greet_delivery_other"));
+    // The other lead delivers to the same door: one memory, both doers kept.
+    s.setTime(1, 11.0);
+    REQUIRE(npcOnDelivery(*s.w, s.t, s.g, s.where({}, 1), shop) != 0u);
+    const NpcMemoryEntry* m = npcRecall(*s.w, s.t, shop, s.g.delivery, -1);
+    REQUIRE(m != nullptr);
+    CHECK(m->count == 2u);
+    CHECK(m->leads == 0b011u);
+    CHECK(m->lead == 1u);
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 0) == s.line("greet_delivery_self"));
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 1) == s.line("greet_delivery_self"));
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 2) == s.line("greet_delivery_other"));
+    // Nobody to hand it to: nothing recorded.
+    CHECK(npcOnDelivery(*s.w, s.t, s.g, s.where({}, 0), kNoNpc) == 0u);
+}
+
+TEST_CASE("npc slice: a gift handed back is asked about at every later meeting; one kept is too, warmer") {
+    std::int32_t trust[2] = {0, 0};
+    for (const bool accepted : {false, true}) {
+        Slice s;
+        const std::uint16_t kid = s.npc("npc_kid_01");
+        const std::int32_t t0 = npcAxis(*s.w, s.t, kid, kAxisT);
+        CHECK(s.pick("npc_kid_01", NpcLineKind::Greet) == s.line("greet_kid_plain"));
+        const std::uint32_t seq = npcOnGift(*s.w, s.t, s.g, s.where({}, 1), kid, accepted);
+        REQUIRE(seq != 0u);
+        const int want = s.line(accepted ? "greet_gift_kept" : "greet_gift_back");
+        const NpcMemoryEntry* m = npcFindMemory(*s.w, kid, seq);
+        REQUIRE(m != nullptr);
+        CHECK(m->pinned);
+        trust[accepted ? 1 : 0] = npcAxis(*s.w, s.t, kid, kAxisT) - t0;
+        INFO("accepted " << accepted);
+        for (int i = 0; i < 3; ++i) CHECK(s.pick("npc_kid_01", NpcLineKind::Greet, static_cast<std::uint8_t>(i)) == want);
+        // Days on, after other deeds it saw, the next meeting still asks.
+        npcOnFightEnd(*s.w, s.t, s.g, s.where({"npc_kid_01"}), true, false);
+        npcOnHelpedPedestrian(*s.w, s.t, s.g, s.where({"npc_kid_01"}));
+        s.setTime(12, 18.0);
+        CHECK(s.pick("npc_kid_01", NpcLineKind::Greet) == want);
+        CHECK(s.pick("npc_kid_01", NpcLineKind::Greet) == want);
+    }
+    CHECK(trust[0] < 0);
+    CHECK(trust[1] > 0);
+}
+
+TEST_CASE("npc slice: the shopkeeper hears of a gift handed back, but hearsay of a pinned deed is not pinned") {
+    Slice s;
+    const std::uint32_t seq = npcOnGift(*s.w, s.t, s.g, s.where({}, 0), s.npc("npc_kid_01"), false);
+    REQUIRE(seq != 0u);
+    s.setTime(1, 10.5);
+    const NpcMemoryEntry* m = npcFindMemory(*s.w, s.npc("npc_shop_01"), seq);
+    REQUIRE(m != nullptr);
+    CHECK(m->hops == static_cast<std::uint8_t>(NpcLearn::Hop1));
+    CHECK_FALSE(m->pinned);
+    CHECK(m->leads == 0b001u);  // closeness 80: the doer travels with the story
+}
+
+TEST_CASE("npc slice: a broken gate is raised at every meeting until it is mended, then thanked once; breaking it again reopens it") {
+    Slice s;
+    const std::uint16_t shop = s.npc("npc_shop_01");
+    NpcWhere gate = s.where({}, 1);
+    gate.place = 9;
+    CHECK(npcStance(*s.w, s.t, shop, 1) == NpcStance::Warm);
+    const std::uint32_t price0 = static_cast<std::uint32_t>(npcConsequence(*s.w, s.t, shop, 1).pricePct);
+    REQUIRE(npcOnGate(*s.w, s.t, s.g, gate, shop, false) != 0u);
+    CHECK(npcStance(*s.w, s.t, shop, 1) == NpcStance::Neutral);
+    CHECK(static_cast<std::uint32_t>(npcConsequence(*s.w, s.t, shop, 1).pricePct) > price0);
+    for (int i = 0; i < 3; ++i) CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 0) == s.line("greet_gate_broken"));
+    s.setTime(7, 9.0);  // pinned: a week on it still comes up
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 1) == s.line("greet_gate_broken"));
+
+    gate.lead = 0;
+    REQUIRE(npcOnGate(*s.w, s.t, s.g, gate, shop, true) != 0u);
+    CHECK(npcStance(*s.w, s.t, shop, 0) == NpcStance::Warm);
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 0) == s.line("greet_gate_mended"));
+    // Thanked; the cooldown passes to the plain greet (the break is no longer raised).
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 0) == s.line("greet_plain"));
+
+    s.setTime(8, 9.0);
+    gate.lead = 1;
+    REQUIRE(npcOnGate(*s.w, s.t, s.g, gate, shop, false) != 0u);
+    const NpcMemoryEntry* m = npcRecall(*s.w, s.t, shop, s.g.gateBroken, -1);
+    REQUIRE(m != nullptr);
+    CHECK(m->count == 2u);  // the same gate: one memory, reinforced
+    CHECK(s.pick("npc_shop_01", NpcLineKind::Greet, 0) == s.line("greet_gate_broken"));
+}
+
+TEST_CASE("npc memory: by= clauses parse self, other and a lead; anything else is refused") {
+    Fx f;
+    NpcLineTable out;
+    std::string err;
+    const char* head = "line_id,npc_id,kind,lead,priority,cooldown_min,once,cond\n";
+    CHECK(importNpcLines(std::string(head) + "l0,npc_a,greet,any,1,0,0,\"mem:deed=deed_a,by=self>=100\"\n"
+                         "l1,npc_a,greet,any,1,0,0,\"mem:deed=deed_a,by=other\"\n"
+                         "l2,npc_a,greet,any,1,0,0,\"mem:tag=tag_a,by=2\"\n",
+                         f.t, out, &err));
+    REQUIRE(out.lines.size() == 3u);
+    CHECK(out.lines[0].cond[0].by == kBySelf);
+    CHECK(out.lines[0].cond[0].value == 100);
+    CHECK(out.lines[1].cond[0].by == kByOther);
+    CHECK(out.lines[1].cond[0].value == -1);
+    CHECK(out.lines[2].cond[0].by == 2);
+    for (const char* bad : {"\"mem:deed=deed_a,by=3\"", "\"mem:deed=deed_a,by=x\"", "\"mem:deed=deed_a,by=\"",
+                            "\"mem:deed=deed_a,lead=0\"", "\"mem:deed=deed_a,by=-1\""}) {
+        INFO(bad);
+        CHECK_FALSE(importNpcLines(std::string(head) + "l0,npc_a,greet,any,1,0,0," + bad + "\n", f.t, out, &err));
+    }
+}
+
+TEST_CASE("npc memory: who did it survives a save; an older save without the doer set rebuilds it from the lead") {
+    Fx f;
+    f.at(npcMinute(1, 9.0));
+    f.record("deed_c", {"npc_a"}, nullptr, 0);
+    f.record("deed_c", {"npc_a"}, nullptr, 2);
+    const NpcMemoryEntry* m = npcRecall(*f.w, f.t, f.npc("npc_a"), f.deed("deed_c"), -1);
+    REQUIRE(m != nullptr);
+    CHECK(m->leads == 0b101u);
+    NpcMemorySave save = npcCaptureSave(*f.w, f.t, f.lines);
+    Fx g;
+    npcApplySave(*g.w, g.t, g.lines, save);
+    CHECK(dump(*g.w, g.t, g.lines) == dump(*f.w, f.t, f.lines));
+    for (auto& n : save.npcs)
+        for (auto& e : n.mem) e.leads = 0;
+    Fx h;
+    npcApplySave(*h.w, h.t, h.lines, save);
+    const NpcMemoryEntry* r = npcRecall(*h.w, h.t, h.npc("npc_a"), h.deed("deed_c"), -1);
+    REQUIRE(r != nullptr);
+    CHECK(r->leads == 0b100u);
 }

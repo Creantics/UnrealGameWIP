@@ -264,7 +264,10 @@ bool learn(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed
         e->seq = d.seq;
         e->deedMinute = d.minute;
         e->hops = std::min(e->hops, static_cast<std::uint8_t>(how));
-        if (memLead != kNoLead) e->lead = memLead;
+        if (memLead < kLeadCount) {
+            e->lead = memLead;
+            e->leads = static_cast<std::uint8_t>(e->leads | (1u << memLead));
+        }
     } else {
         if (s.memCount >= kMemPerNpc) evictOne(s, t, w.now);
         e = &s.mem[s.memCount++];
@@ -279,8 +282,10 @@ bool learn(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, const NpcDeed
         e->hops = static_cast<std::uint8_t>(how);
         e->count = 1;
         e->lead = memLead;
+        e->leads = memLead < kLeadCount ? static_cast<std::uint8_t>(1u << memLead) : 0;
     }
-    if (dt.pin) pin(s, *e, w.now);
+    // Pins are for what the NPC lived through or was told outright; hearsay of a pinned deed fades like any other.
+    if (dt.pin && (how == NpcLearn::Victim || how == NpcLearn::Witness)) pin(s, *e, w.now);
     updateStances(w, t, n);
     return true;
 }
@@ -376,8 +381,17 @@ std::uint32_t recordDeed(NpcMemoryWorld& w, const NpcTables& t, NpcDeed d, bool 
     return d.seq;
 }
 
+// Who did it, against the lead being spoken to (NpcCond::by).
+bool byMatches(std::uint8_t leads, std::int8_t by, std::uint8_t lead) {
+    if (by < 0) return true;
+    const std::uint32_t self = lead < kLeadCount ? (1u << lead) : 0u;
+    if (by == kBySelf) return (leads & self) != 0;
+    if (by == kByOther) return (leads & ~self & ((1u << kLeadCount) - 1u)) != 0;
+    return by < static_cast<std::int8_t>(kLeadCount) && (leads & (1u << by)) != 0;
+}
+
 const NpcMemoryEntry* recallAt(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n, int type, int tag,
-                               std::int32_t* sOut) {
+                               std::int32_t* sOut, std::int8_t by = -1, std::uint8_t lead = kNoLead) {
     if (!validNpc(w, n) || tag >= static_cast<int>(kNpcTagMax)) return nullptr;
     const NpcState& s = w.npcs[n];
     const std::uint32_t at = readTime(w, n);
@@ -386,7 +400,7 @@ const NpcMemoryEntry* recallAt(const NpcMemoryWorld& w, const NpcTables& t, std:
     for (std::uint32_t i = 0; i < s.memCount; ++i) {
         const NpcMemoryEntry& e = s.mem[i];
         const bool match = tag >= 0 ? (typeMask(t, e.type) & (1u << tag)) != 0 : e.type == type;
-        if (!match) continue;
+        if (!match || !byMatches(e.leads, by, lead)) continue;
         const std::int32_t S = salienceAt(t.tuning, e, at);
         if (S > bestS) {
             bestS = S;
@@ -648,7 +662,7 @@ NpcLinePick npcPickLine(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTabl
             case NpcCondKind::None: break;
             case NpcCondKind::Mem: {
                 std::int32_t S = -1;
-                ok = recallAt(w, t, npc, c.type, c.tag, &S) != nullptr && S >= (c.value < 0 ? t.tuning.recallBar : c.value);
+                ok = recallAt(w, t, npc, c.type, c.tag, &S, c.by, lead) != nullptr && S >= (c.value < 0 ? t.tuning.recallBar : c.value);
                 if (ok) sal = std::max(sal, S);
                 break;
             }
@@ -1119,13 +1133,23 @@ bool parseCond(const NpcTables& t, std::string_view s, NpcCond& c) {
     if (s.substr(0, 4) == "mem:") {
         const auto ge = s.find(">=");
         c.kind = NpcCondKind::Mem;
-        if (ge == std::string_view::npos) {
-            c.value = -1;  // the tuning's recall bar
-            return memRef(s.substr(4), c);
+        c.value = -1;  // the tuning's recall bar
+        if (ge != std::string_view::npos) {
+            if (!toInt(s.substr(ge + 2), v) || v < 0 || v > 1000) return false;
+            c.value = static_cast<std::int32_t>(v);
         }
-        if (!toInt(s.substr(ge + 2), v) || v < 0 || v > 1000) return false;
-        c.value = static_cast<std::int32_t>(v);
-        return memRef(s.substr(4, ge - 4), c);
+        std::string_view ref = s.substr(4, ge == std::string_view::npos ? std::string_view::npos : ge - 4);
+        const auto comma = ref.find(',');
+        if (comma != std::string_view::npos) {
+            const std::string_view by = ref.substr(comma + 1);
+            ref = ref.substr(0, comma);
+            if (by == "by=self") c.by = kBySelf;
+            else if (by == "by=other") c.by = kByOther;
+            else if (by.substr(0, 3) == "by=" && toInt(by.substr(3), v) && v >= 0 && v < kLeadCount)
+                c.by = static_cast<std::int8_t>(v);
+            else return false;
+        }
+        return memRef(ref, c);
     }
     if (s.substr(0, 6) == "stance") {
         std::string_view rest = s.substr(6);
@@ -1253,7 +1277,7 @@ NpcMemorySave npcCaptureSave(const NpcMemoryWorld& w, const NpcTables& t, const 
         o.deadAt = st.deadAt;
         for (std::uint32_t i = 0; i < st.memCount; ++i) {
             const NpcMemoryEntry& e = st.mem[i];
-            o.mem.push_back({e.seq, e.deedMinute, e.ts, e.learned, typeId(e.type), e.place, e.s0, e.hops, e.count, e.lead, e.pinned});
+            o.mem.push_back({e.seq, e.deedMinute, e.ts, e.learned, typeId(e.type), e.place, e.s0, e.hops, e.count, e.lead, e.pinned, e.leads});
         }
         for (std::size_t b = 0; b < kNpcTagMax && b < t.tags.size(); ++b)
             if (st.aggregates[b].count) o.aggregates.emplace_back(t.tags[b], st.aggregates[b]);
@@ -1351,6 +1375,8 @@ NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const Np
             m.hops = static_cast<std::uint8_t>(clampCount(e.hops, 0, 3));
             m.count = std::max<std::uint8_t>(1, e.count);
             m.lead = e.lead < kLeadCount ? e.lead : kNoLead;
+            m.leads = static_cast<std::uint8_t>(e.leads & ((1u << kLeadCount) - 1u));
+            if (m.lead < kLeadCount) m.leads = static_cast<std::uint8_t>(m.leads | (1u << m.lead));
             m.pinned = e.pinned;
         }
         std::uint32_t pins = 0;
@@ -1462,6 +1488,9 @@ bool npcResolveGameDeeds(const NpcTables& t, NpcGameDeeds& out, std::string* err
         {"street_fight_won", &g.fightWon},    {"enemy_spared", &g.enemySpared},
         {"shop_theft", &g.shopTheft},         {"shop_bought", &g.shopBought},
         {"helped_pedestrian", &g.helpedPedestrian}, {"promise_meet_dusk", &g.meet},
+        {"delivery_made", &g.delivery},       {"gift_accepted", &g.giftAccepted},
+        {"gift_returned", &g.giftReturned},   {"gate_broken", &g.gateBroken},
+        {"gate_mended", &g.gateMended},
     };
     for (const auto& [id, slot] : want) {
         const int i = t.deedIndex(id);
@@ -1535,6 +1564,24 @@ std::uint32_t npcOnHelpedPedestrian(NpcMemoryWorld& w, const NpcTables& t, const
 std::uint32_t npcOnMeet(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
                         std::uint16_t npc) {
     return recordAt(w, t, g.meet, at, kNoNpc, npc < w.npcCount ? npc : kNoNpc);
+}
+
+std::uint32_t npcOnDelivery(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                            std::uint16_t recipient) {
+    if (recipient >= w.npcCount) return 0;
+    return recordAt(w, t, g.delivery, at, recipient, kNoNpc);
+}
+
+std::uint32_t npcOnGift(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                        std::uint16_t giver, bool accepted) {
+    if (giver >= w.npcCount) return 0;
+    return recordAt(w, t, accepted ? g.giftAccepted : g.giftReturned, at, giver, kNoNpc);
+}
+
+std::uint32_t npcOnGate(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
+                        std::uint16_t owner, bool mended) {
+    if (owner >= w.npcCount) return 0;
+    return recordAt(w, t, mended ? g.gateMended : g.gateBroken, at, owner, kNoNpc);
 }
 
 void npcOnClock(NpcMemoryWorld& w, const NpcTables& t, const WorldClock& clock, const TimeCurves& curves) {
