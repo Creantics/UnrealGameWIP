@@ -702,6 +702,18 @@ Vec2 mapImageUv(const MapImage& img, Vec2 world) {
     return {w > 0.f ? (world.x - img.x0) / w : 0.f, h > 0.f ? (world.y - img.y0) / h : 0.f};
 }
 
+MapCorner mapCorner(float screenW, float scale) {
+    MapCorner c;
+    c.radius = kMapCornerRadius * scale;
+    c.x1 = screenW - kMapSafeMargin * scale;
+    c.y0 = kMapSafeMargin * scale;
+    const float outer = c.radius + kMapCornerRim * scale;
+    c.centre = {c.x1 - outer, c.y0 + outer};
+    c.x0 = c.centre.x - outer;
+    c.y1 = c.centre.y + c.radius + (kMapRoadLineGap + kMapRoadLineHeight) * scale;
+    return c;
+}
+
 int mapRoadAt(const MiniMapModel& m, Vec2 world) {
     if (m.gridCell <= 0.f || m.grid.empty()) return -1;
     const float fi = (world.x - m.minX) / m.gridCell, fj = (world.y - m.minY) / m.gridCell;
