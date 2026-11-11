@@ -12,6 +12,7 @@
 #include "FTExploreHUD.generated.h"
 
 class AFTExploreDirector;
+class UFTMiniMap;
 class UFont;
 
 UCLASS()
@@ -21,6 +22,8 @@ class FORGOTTENTHIRD_API AFTExploreHUD : public AHUD
 
 public:
 	virtual void DrawHUD() override;
+	// M: the minimap's whole-map overlay on a world map (nothing elsewhere).
+	void ToggleMapOverlay();
 
 private:
 	AFTExploreDirector* FindDirector();
@@ -36,4 +39,9 @@ private:
 
 	TWeakObjectPtr<AFTExploreDirector> CachedDirector;
 	float UiScale = 1.f;
+
+	// The corner minimap of a world map, made the first time one is drawn (null when the level has none).
+	UPROPERTY(Transient)
+	TObjectPtr<UFTMiniMap> MiniMap;
+	bool bMiniMapTried = false;
 };

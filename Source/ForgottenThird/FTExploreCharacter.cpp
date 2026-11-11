@@ -31,6 +31,7 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
+#include "FTExploreHUD.h"
 #include "FTFieldDummy.h"
 #include "FTGameInstance.h"
 #include "FTMeshFacing.h"
@@ -685,6 +686,9 @@ void AFTExploreCharacter::CreateInputObjects()
 	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
 	Context->MapKey(PartyAction, EKeys::P);
 	Context->MapKey(PartyAction, EKeys::Gamepad_LeftShoulder);
+	MapAction = MakeAction(TEXT("IA_ExploreMap"), false);
+	Context->MapKey(MapAction, EKeys::M);
+	Context->MapKey(MapAction, EKeys::Gamepad_Special_Left);
 
 	LightAction = MakeAction(TEXT("IA_ExploreLight"), false);
 	Context->MapKey(LightAction, EKeys::LeftMouseButton);
@@ -738,6 +742,7 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(InteractAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleInteractRelease);
 	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
 	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
+	Input->BindAction(MapAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleMap);
 	Input->BindAction(LightAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleLight);
 	Input->BindAction(HeavyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleHeavy);
 }
@@ -1587,6 +1592,15 @@ void AFTExploreCharacter::HandleSwitchLead()
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		D->OnLeadChanged(Look.Name);
+	}
+}
+
+void AFTExploreCharacter::HandleToggleMap()
+{
+	const APlayerController* Player = Cast<APlayerController>(GetController());
+	if (AFTExploreHUD* Hud = Player ? Cast<AFTExploreHUD>(Player->GetHUD()) : nullptr)
+	{
+		Hud->ToggleMapOverlay();
 	}
 }
 

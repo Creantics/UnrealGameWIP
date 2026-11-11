@@ -141,6 +141,9 @@ public:
 	// the lines give engine metres.
 	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
 	float PlanSide = 0.f;
+	// The HUD minimap's model (ftcore::saveMiniMap), baked by FTBuildMiniMap; empty: no minimap on this level.
+	UPROPERTY()
+	TArray<uint8> MiniMapBlob;
 
 	virtual void Tick(float DeltaSeconds) override;
 

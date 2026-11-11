@@ -377,6 +377,43 @@ TEST_CASE("vehicle rules: the shipped provisional file loads, and bad rows are r
     CHECK(keep.repair.garageCount == 0); // unchanged on failure
 }
 
+TEST_CASE("lamps: a van parked empty at night stands dark") {
+    const LampState empty = lampState(true, 0.f, true, false);
+    CHECK_FALSE(empty.head);
+    CHECK_FALSE(empty.tail);
+    CHECK_FALSE(empty.brake);
+    CHECK_FALSE(lampState(true, 0.f, false, false).tail);
+}
+
+TEST_CASE("lamps: the night band switches on at 0.55 and off at 0.45") {
+    CHECK_FALSE(nightBand(0.f, false));
+    CHECK_FALSE(nightBand(0.54f, false));
+    CHECK(nightBand(kNightOn, false));
+    CHECK(nightBand(0.9f, false));
+    CHECK(nightBand(0.5f, true));      // inside the band: stays on
+    CHECK_FALSE(nightBand(0.5f, false)); // inside the band: stays off
+    CHECK(nightBand(0.46f, true));
+    CHECK_FALSE(nightBand(kNightOff, true));
+    CHECK_FALSE(nightBand(0.1f, true));
+    CHECK(nightBand(NAN, true));
+    CHECK_FALSE(nightBand(NAN, false));
+}
+
+TEST_CASE("lamps: head and tail at night, brake under brake input or a held handbrake") {
+    const LampState day = lampState(false, 0.f, false, true);
+    CHECK_FALSE(day.head);
+    CHECK_FALSE(day.tail);
+    CHECK_FALSE(day.brake);
+    const LampState night = lampState(true, 0.f, false, true);
+    CHECK(night.head);
+    CHECK(night.tail);
+    CHECK_FALSE(night.brake);
+    CHECK_FALSE(lampState(true, kBrakeLampInput, false, true).brake);
+    CHECK(lampState(false, 0.5f, false, false).brake);
+    CHECK(lampState(false, 0.f, true, true).brake);
+    CHECK_FALSE(lampState(false, 0.f, true, false).brake);
+}
+
 TEST_CASE("vehicle rules allocate nothing at run time") {
     const VehicleRules r;
     const bool hooked = ftcore_test::allocHookInstalled();

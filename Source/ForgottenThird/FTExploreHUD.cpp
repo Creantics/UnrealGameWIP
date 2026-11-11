@@ -1,5 +1,7 @@
 #include "FTExploreHUD.h"
 
+#include "FTMiniMap.h"
+
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
@@ -63,6 +65,14 @@ AFTExploreDirector* AFTExploreHUD::FindDirector()
 	return CachedDirector.Get();
 }
 
+void AFTExploreHUD::ToggleMapOverlay()
+{
+	if (MiniMap)
+	{
+		MiniMap->ToggleOverlay();
+	}
+}
+
 void AFTExploreHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -91,6 +101,19 @@ void AFTExploreHUD::DrawHUD()
 	}
 	else if (Found->IsWorldMode() || Found->IsOverworld())
 	{
+		if (!bMiniMapTried)
+		{
+			bMiniMapTried = true;
+			MiniMap = NewObject<UFTMiniMap>(this);
+			if (!MiniMap->Init(*Found))
+			{
+				MiniMap = nullptr;
+			}
+		}
+		if (MiniMap)
+		{
+			MiniMap->Draw(*this, *Canvas, UiScale);
+		}
 		DrawWorld(*Found);
 	}
 	else
