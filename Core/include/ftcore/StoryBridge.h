@@ -12,7 +12,7 @@
 // - Scenes. A runner scene plays the registry scene its link names; with no links, the registry scene
 //   whose code is the runner scene's id (identity). Entering a mapped scene commits the open one and
 //   begins it (storyEnterScene); several runner scenes in a row may play one registry scene, which stays
-//   open across them. An unmapped runner scene leaves the state as it is. start() resets the state first;
+//   open across them. An unmapped runner scene leaves the state and the flags as they are. start() resets the state first;
 //   the story's end commits the open scene.
 // - Restart. restartScene() restarts the registry scene (storyRestartScene) back to the facts as the
 //   runner scene began, the runner's own starting point: a second runner scene of one registry scene keeps

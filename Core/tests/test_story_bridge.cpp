@@ -565,3 +565,68 @@ TEST_CASE("story bridge: a stub its flag cannot take carries on") {
     REQUIRE(r.resume());
     CHECK(r.text() == "after");
 }
+
+// Mapped, unmapped, then mapped to the same registry scene: the registry scene stays open across the gap.
+TEST_CASE("story bridge: a continuation across an unmapped scene") {
+    StoryDatabase db;
+    build(db, "r-");
+    StoryRunner r(&db);
+    StoryState s;
+    StoryBridge br;
+    const std::vector<StorySceneLink> links{{"r-s1", 0}, {"r-s3", 0}};
+    REQUIRE(br.bind(r, s, reg(), links));
+    REQUIRE(r.start());
+    REQUIRE(r.advance());
+    REQUIRE(r.resume(FlagValue::integer(3)));
+    REQUIRE(r.advance());
+    REQUIRE(r.resume());
+    REQUIRE(r.advance()); // r-s2: unmapped
+    REQUIRE(r.position().scene == "r-s2");
+    CHECK(s.openScene == 0);
+    CHECK(r.flag("sf.f_pick") == FlagValue::integer(3)); // unmapped: the flags stay as they were too
+    REQUIRE(r.advance());
+    REQUIRE(r.advance()); // r-s3: the same registry scene again
+    REQUIRE(r.position().scene == "r-s3");
+    CHECK(s.openScene == 0);
+    CHECK(s.lastCommitted == kNoScene);
+    CHECK(fact(s, "f_pick") == 3);
+    CHECK(r.flag("sf.f_pick") == FlagValue::integer(3));
+    REQUIRE(r.resume());
+    REQUIRE(r.advance());
+    CHECK(r.finished());
+    CHECK(s.lastCommitted == 0);
+}
+
+// A restore that settles past the story's last beat: the end is not forwarded while restoring; sync commits.
+TEST_CASE("story bridge: the end reached through a restore") {
+    StoryDatabase db;
+    build(db);
+    StoryRunner r(&db);
+    StoryState s;
+    StoryBridge br;
+    std::vector<StoryBridgeReport> reports;
+    reports.reserve(8);
+    br.setReportHandler([](void* u, const StoryBridgeReport& rep) {
+        static_cast<std::vector<StoryBridgeReport>*>(u)->push_back(rep);
+    }, &reports);
+    REQUIRE(br.bind(r, s, reg(), {}));
+    REQUIRE(r.start());
+    // The block: s3 open after s1 and s2.
+    REQUIRE(storyEnterScene(s, reg(), 1).began);
+    REQUIRE(storyEnterScene(s, reg(), 2).began);
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncode(s, reg(), block));
+    REQUIRE(r.start());
+    StoryPosition pos;
+    pos.scene = "s3";
+    pos.beat = 2; // past its last beat
+    REQUIRE(r.restore(pos));
+    REQUIRE(r.finished());
+    CHECK(s.openScene == 0); // not forwarded: still the new game's state
+    REQUIRE(storyDecode(block, reg(), s) == StoryLoad::Ok);
+    REQUIRE(s.openScene == 2);
+    br.sync();
+    CHECK(reports.empty());
+    CHECK(s.openScene == kNoScene);
+    CHECK(s.lastCommitted == 2);
+}

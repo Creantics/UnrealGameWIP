@@ -148,7 +148,7 @@ runner to the state. The state is the truth; the runner's flags named `sf.<fact 
   Blank lines and `#` lines are skipped; a missing header, a line without two fields, an empty field, a code
   the registry does not list or an id given twice refuses the whole file (the bridge then uses identity).
   Entering a mapped scene commits the open one and begins its own (`storyEnterScene`); runner scenes in a
-  row that play one registry scene keep it open; an unmapped scene leaves the state as it is; `start()`
+  row that play one registry scene keep it open; an unmapped scene leaves the state and the fact flags as they are (a mapped scene after it carries on in the open registry scene); `start()`
   resets the state; the story's end commits.
 - **Facts into flags.** When a scene is entered or restarted, each `sf.` flag whose fact the scene reads or
   sets takes the fact's value (a bool flag: the fact is set; an int flag: its value, 255 when never
