@@ -109,13 +109,45 @@ struct StreetSurfaceSpec {
     float parallaxNdVFull = 0.25f;       // ... and full where the view's cosine to the face is over this, gone under
     float parallaxNdVNone = 0.12f;       // parallaxNdVNone
     float parallaxSlopeClamp = 0.2f;     // the view's cosine floor in the relief solve's slope
-    float jointCavityAO = 0.45f;         // AO on a joint's floor
+    float jointCavityAO = 0.6f;          // AO on a joint's floor (a narrow, deep joint) ...
+    float jointOpenAO = 0.75f;           // ... and on the widest, shallowest (light reaches in)
+    float jointWidthMin = 0.7f, jointWidthMax = 1.4f;  // each joint's width factor (its own cell's hash, a noise along it)
+    float jointDepthMin = 0.7f, jointDepthMax = 1.3f;  // and its depth factor
+    float jointNoiseM = 0.35f;           // the noise along a joint, its lattice step: tiles, pavers, kerbs (about a
+    float paverNoiseM = 0.08f;           // segment's length, so none is even end to end)
+    float kerbNoiseM = 0.12f;
+    float jointNoiseShare = 0.3f;        // the noise's share of each factor (the rest the joint's hash)
+    float jointBevelScale = 1.5f;        // the relief's arrises this much wider than the plain layer's
+    float jointFloorToneHi = 0.6f;       // a joint floor's tone against its unit's, by its grit (never black) ...
+    float jointFloorToneLo = 0.45f;
+    float jointDirtTone = 0.8f;          // ... dirt patches on the floor darker by this, wet by jointWetTone
+    float jointWetTone = 0.9f;
+    float jointRoughDry = 0.6f;          // a joint floor's roughness at least this dry, jointRoughWet wet, plus
+    float jointRoughWet = 0.45f;         // jointRoughGrit by the grit noise
+    float jointRoughGrit = 0.15f;
+    float jointSlopeMax = 1.7320508f;    // the relief's normal tips at most 60 degrees from the face's
+    float jointNormalFrom = 0.5f;        // the joint normal full until the footprint across the joint is this share
+    float jointNormalTo = 1.0f;          // of the groove (joint and both arrises), gone at this
+    float paverFlawScale = 0.25f;        // lane pavers' sunk, tilt and chip shares against the tiles'
+    float unitToneExtra = 0.04f;         // per-unit tone swing the relief adds (plus and minus)
+    float unitRoughSwing = 0.08f;        // per-unit roughness swing (plus and minus)
 };
 
 // A jointed grid's numbers for the relief: cells cellX by cellY (m), every other row offset by bond cells, joints
-// halfJointM half wide, arrises bevelM round, the floor depthM under the face.
+// halfJointM half wide, arrises bevelM round, the floor depthM under the face, flaw shares scaled by flawScale, the
+// noise along a joint noiseM a step.
 struct StreetJointGrid {
     float cellX = 0.4f, cellY = 0.4f, bond = 0.f, halfJointM = 0.005f, bevelM = 0.008f, depthM = 0.0065f;
+    float flawScale = 1.f, noiseM = 0.35f;
+};
+// The factors on the joints nearest a point: the one across x (widthX, depthX) and the one across y.
+struct StreetJointFactors {
+    float widthX = 1.f, widthY = 1.f, depthX = 1.f, depthY = 1.f;
+};
+// The relief at a point: height z (m), its gradient (gx, gy; slope-clamped, joint part faded by the footprint), the
+// floor share (1 in a joint or chip) and how open its joint is (0 narrow and deep .. 1 wide and shallow).
+struct StreetJointSample {
+    float z = 0.f, gx = 0.f, gy = 0.f, floorShare = 0.f, open = 0.5f;
 };
 // A tile's flaws from its key (its cell id plus the box's offset, as the HLSL's): sinkM down, a tilt (rad, x and y),
 // a chipped corner (chipX, chipY its signs, chipR its size in m; 0 none).
@@ -141,12 +173,29 @@ FTCORE_API float streetTileHeight(float dM, const StreetSurfaceSpec& spec);
 // The jointDepth grids: StreetKind::Pavement (tiles), Lane (pavers, running bond) or Kerb (stones along x; the grid
 // is 10 km across y, so pass y = 5000 and there are no corners). Any other kind gives the pavement's.
 FTCORE_API StreetJointGrid streetJointGrid(StreetKind kind, const StreetSurfaceSpec& spec);
-// The HLSL's FTRelief.Hs flaws for a tile key (cell id + box offset).
-FTCORE_API StreetTileFlaw streetTileFlaw(float keyX, float keyY, const StreetSurfaceSpec& spec);
-// The HLSL's FTRelief.Z: height (m; 0 the nominal face, -depthM a joint's floor) at (x, y) m in the grid's frame, the
-// box's key offset (keyX, keyY) added to the cell id for the flaws. Sunk, tilted and chipped tiles included.
+// The HLSL's FTRelief.Hs flaws for a tile key (cell id + box offset), the shares scaled by shareScale.
+FTCORE_API StreetTileFlaw streetTileFlaw(float keyX, float keyY, const StreetSurfaceSpec& spec, float shareScale = 1.f);
+// The HLSL's FTRelief.Fac: the width and depth factors of the joints nearest (x, y) (each joint keyed by its own cell,
+// so both sides of it agree), with the noise along it.
+FTCORE_API StreetJointFactors streetJointFactors(float x, float y, float keyX, float keyY, const StreetJointGrid& grid,
+                                                 const StreetSurfaceSpec& spec);
+// The HLSL's FTRelief.Z: the relief at (x, y) m in the grid's frame with the factors f and the footprint (m) across
+// the x joints (footX) and the y joints (footY); 0 for none.
+FTCORE_API StreetJointSample streetJointSample(float x, float y, float keyX, float keyY, const StreetJointFactors& f,
+                                               float footX, float footY, const StreetJointGrid& grid,
+                                               const StreetSurfaceSpec& spec);
+// Its height (m; 0 the nominal face, -depthM times the depth factor a joint's floor), the factors at (x, y), no
+// footprint. Sunk, tilted and chipped tiles included.
 FTCORE_API float streetJointZ(float x, float y, float keyX, float keyY, const StreetJointGrid& grid,
                               const StreetSurfaceSpec& spec);
+// The footprint across a joint (m): the pixel's footprint foot (its long axis or more), nDotV the view's cosine to the
+// face, viewAcross the view's unit vector's component across the joint. foot for a joint across the view, foot *
+// nDotV for one along it.
+FTCORE_API float streetJointFootprint(float foot, float nDotV, float viewAcross);
+// A joint floor's tone against its unit's: grit, dirt and wet 0..1.
+FTCORE_API float streetJointFloorTone(float grit, float dirt, float wet, const StreetSurfaceSpec& spec);
+// A joint floor's roughness from rough: at least jointRoughDry (dry) to jointRoughWet (wet), plus the grit's share.
+FTCORE_API float streetJointFloorRough(float rough, float grit, float wet, const StreetSurfaceSpec& spec);
 // The HLSL's parallax weight RlW on a top face (the HLSL also multiplies by TopF): switch 0..1, distM to the camera,
 // nDotV the view's cosine to the face, fine the detail fade (1 near).
 FTCORE_API float streetParallaxWeight(float distM, float nDotV, float jointDepth, float fine, const StreetSurfaceSpec& spec);
@@ -195,10 +244,13 @@ FTCORE_API float weatherAlbedoScale(int channel, float soak, float puddle, float
 // stays as it was; at JointDepth 0 every output is what the node gives without jointDepth.
 //
 // jointDepth: pavement tiles, lane pavers and kerb stones get joints paveJointDepthM, paverJointDepthM and
-// kerbJointDepthM deep with round arrises; by a per-tile hash sunkShare of tiles sit sunk, tiltShare tilt slightly and
-// chipShare (not kerbs) lose a corner to the joint floor. The normal is the height's true slope (faded with the fine
-// detail). The joint is darker and rougher (a noisy dirt), its AO falls to jointCavityAO on the floor, and with the
-// wetness it darkens further and holds water (smooth). Near by (parallaxNearM..parallaxFarM, and not glancing) the
+// kerbJointDepthM deep (each joint's width and depth varied by its hash and a noise along it) with wide, convex
+// arrises; by a per-tile hash sunkShare of tiles sit sunk, tiltShare tilt slightly and chipShare (not kerbs) lose a
+// corner to the joint floor (pavers a paverFlawScale of those). The normal is the height's true slope, at most
+// jointSlopeMax, faded per joint by the footprint across it (and the arris widened to that footprint), so joints along
+// the view hold further than joints across it. The joint floor is a gritty grey (jointFloorToneLo..Hi of its unit,
+// dirt patches darker), rough (jointRoughDry, jointRoughWet wet, except under a puddle), its AO jointCavityAO to
+// jointOpenAO. Units get extra tone and roughness swings. Near by (parallaxNearM..parallaxFarM, and not glancing) the
 // tile coordinate is shifted by an analytic relief solve on the top face (a kerb's side faces get no parallax). No new
 // screen derivatives: the only one is the street layer's footprint, as before.
 FTCORE_API std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeatherOptions& options,

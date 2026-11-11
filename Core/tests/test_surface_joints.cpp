@@ -85,12 +85,122 @@ TEST_CASE("joints: the mip level from the camera distance, and the shade's fade 
     CHECK(surfaceJointLod(spec, 0.f, tileCm) == doctest::Approx(0.f));
     CHECK(surfaceJointLod(spec, 10.f, tileCm) == doctest::Approx(0.f));
     CHECK(surfaceJointShadeFade(spec, 0.f) == doctest::Approx(1.f));
-    CHECK(surfaceJointShadeFade(spec, 3.f) == doctest::Approx(1.f));
-    CHECK(surfaceJointShadeFade(spec, 5.f) == doctest::Approx(0.f));
+    CHECK(surfaceJointShadeFade(spec, 4.f) == doctest::Approx(1.f));
+    CHECK(surfaceJointShadeFade(spec, 5.f) == doctest::Approx(0.5f));
+    CHECK(surfaceJointShadeFade(spec, 6.f) == doctest::Approx(0.f));
     CHECK(surfaceJointShadeFade(spec, 9.f) == doctest::Approx(0.f));
-    // Brick on a 1 m tile shades fully at 6 m and is fading by 15 m (a joint is under a pixel there).
-    CHECK(surfaceJointShadeFade(spec, surfaceJointLod(spec, 600.f, tileCm)) == doctest::Approx(1.f));
-    CHECK(surfaceJointShadeFade(spec, surfaceJointLod(spec, 1500.f, tileCm)) < 0.5f);
+    // A 90 cm tile: full shading to about 11.7 m (lod 4), half at 23.4 m, none from 46.9 m (lod 6). So the joints
+    // still read at 15 m, where the parallax has gone.
+    const float tile90 = 90.f;
+    CHECK(surfaceJointLod(spec, 1172.f, tile90) == doctest::Approx(4.f).epsilon(1e-3));
+    CHECK(surfaceJointLod(spec, 4687.f, tile90) == doctest::Approx(6.f).epsilon(1e-3));
+    CHECK(surfaceJointShadeFade(spec, surfaceJointLod(spec, 1100.f, tile90)) == doctest::Approx(1.f));
+    CHECK(surfaceJointShadeFade(spec, surfaceJointLod(spec, 1500.f, tile90)) > 0.9f);
+    CHECK(surfaceJointShadeFade(spec, surfaceJointLod(spec, 5000.f, tile90)) == doctest::Approx(0.f));
+}
+
+TEST_CASE("joints: parallax on a wall seen along a lane: full at 20 to 60 degrees within 12 m") {
+    const SurfaceJointSpec spec;
+    // A wall at an angle a to the view has dot(N, V) = sin(a).
+    for (float deg : {20.f, 30.f, 45.f, 60.f, 90.f}) {
+        const float n = std::sin(deg * 3.14159265f / 180.f);
+        CHECK(surfaceJointParallaxWeight(spec, 10.f, n, 1.f) == doctest::Approx(1.f));
+    }
+    // 14.5 degrees (dot 0.25) is the last full one; under 7 degrees (dot 0.12) none.
+    CHECK(surfaceJointParallaxWeight(spec, 10.f, std::sin(14.5f * 3.14159265f / 180.f), 1.f) > 0.99f);
+    CHECK(surfaceJointParallaxWeight(spec, 10.f, std::sin(6.8f * 3.14159265f / 180.f), 1.f) == doctest::Approx(0.f));
+    // At 20 degrees the run per unit depth (tan of the angle from the normal, 2.75) is under maxSlope: not capped.
+    CHECK(std::tan(70.f * 3.14159265f / 180.f) < spec.maxSlope);
+}
+
+TEST_CASE("joints: uneven depth: a 1.5 m world noise between 1 - uneven and 1, smooth, varied") {
+    const SurfaceJointSpec spec;
+    float lo = 1.f, hi = 0.f;
+    for (int i = 0; i < 400; ++i) {
+        const float x = static_cast<float>(i) * 37.f, z = static_cast<float>(i % 23) * 29.f;
+        const float d = surfaceJointUneven(spec, x, -250.f, z);
+        CHECK(d >= 1.f - spec.uneven - 1e-5f);
+        CHECK(d <= 1.f + 1e-5f);
+        lo = std::min(lo, d);
+        hi = std::max(hi, d);
+        // Smooth: a brick's length further on, little change.
+        CHECK(std::fabs(surfaceJointUneven(spec, x + 2.f, -250.f, z) - d) < 0.02f);
+    }
+    CHECK(hi - lo > 0.5f * spec.uneven);
+}
+
+TEST_CASE("joints: directional cavity: upper wall darkest, lower edge lighter, soft core, deeper and glancing darker") {
+    const SurfaceJointSpec spec;
+    const float d = 1.2f;
+    // The face: no cavity.
+    CHECK(surfaceJointCavity(spec, 1.f, 1.f, 1.f, 1.f, d, 1.f) == doctest::Approx(0.f));
+    // A joint's floor, square on: upper wall (brick above, joint below) > middle > lower edge (brick below).
+    const float upper = surfaceJointCavity(spec, 0.f, 1.f, 0.f, 0.5f, d, 1.f);
+    const float middle = surfaceJointCavity(spec, 0.f, 0.f, 0.f, 0.f, d, 1.f);
+    const float lower = surfaceJointCavity(spec, 0.f, 0.f, 1.f, 0.5f, d, 1.f);
+    CHECK(upper > lower);
+    CHECK(upper == doctest::Approx(1.f));
+    CHECK(lower < 0.85f);
+    CHECK(lower > 0.4f);
+    // Half way up the joint's side, the ring standing higher still darkens it (the soft core).
+    CHECK(surfaceJointCavity(spec, 0.5f, 0.5f, 0.5f, 0.9f, d, 1.f) > surfaceJointCavity(spec, 0.5f, 0.5f, 0.5f, 0.5f, d, 1.f));
+    CHECK(middle == doctest::Approx(spec.cavityBase));
+    CHECK(upper > middle);
+    CHECK(middle > lower);
+    // 8 mm reads fully, shallower less; a glancing view darkens a partly lit joint more.
+    const float half = surfaceJointCavity(spec, 0.5f, 0.5f, 0.5f, 0.5f, 0.8f, 1.f);
+    CHECK(half == doctest::Approx(0.5f * spec.cavityBase));
+    CHECK(surfaceJointCavity(spec, 0.5f, 0.5f, 0.5f, 0.5f, 0.4f, 1.f) == doctest::Approx(0.25f * spec.cavityBase));
+    CHECK(surfaceJointCavity(spec, 0.5f, 0.5f, 0.5f, 0.5f, 0.8f, 0.3f) > half);
+    CHECK(surfaceJointCavity(spec, 0.f, 0.f, 0.f, 0.f, 0.f, 1.f) == doctest::Approx(0.f));
+}
+
+TEST_CASE("joints: mortar grey scaled by the tint's luminance") {
+    const SurfaceJointSpec spec;
+    const SurfaceJointRgb white = surfaceJointMortar(spec, 1.f, 1.f, 1.f);
+    CHECK(white.r == doctest::Approx(0.42f));
+    CHECK(white.g == doctest::Approx(0.40f));
+    CHECK(white.b == doctest::Approx(0.37f));
+    const SurfaceJointRgb dark = surfaceJointMortar(spec, 0.3f, 0.3f, 0.3f);
+    CHECK(dark.r == doctest::Approx(0.3f * 0.42f));
+    CHECK(dark.b < white.b);
+    CHECK(spec.mortarRough > 0.85f);
+    CHECK(spec.mortarBlend == doctest::Approx(0.5f));
+}
+
+TEST_CASE("joints: per-unit tone: flat inside a unit, soft at its edges, half a unit offset per course") {
+    const SurfaceJointSpec spec;
+    const float uu = 4.f, vv = 13.f;
+    // Off without units.
+    CHECK(surfaceJointUnitTone(spec, 0.3f, 0.3f, 0.f, 13.f, true) == doctest::Approx(0.5f));
+    // Flat over the middle of a unit (outside the edge band).
+    const float c = surfaceJointUnitTone(spec, 1.5f / uu, 2.5f / vv, uu, vv, false);
+    for (float du : {-0.4f, -0.2f, 0.f, 0.2f, 0.4f})
+        for (float dv : {-0.4f, 0.f, 0.4f})
+            CHECK(surfaceJointUnitTone(spec, (1.5f + du) / uu, (2.5f + dv) / vv, uu, vv, false) == doctest::Approx(c));
+    // Soft: one hundredth of a unit never jumps more than a fifth of the range.
+    int differ = 0;
+    for (int i = 0; i < 2000; ++i) {
+        const float u = static_cast<float>(i) / 2000.f, v = 0.37f;
+        const float a = surfaceJointUnitTone(spec, u, v, uu, vv, true);
+        const float b = surfaceJointUnitTone(spec, u + 0.01f / uu, v, uu, vv, true);
+        CHECK(std::fabs(a - b) < 0.2f);
+        CHECK(a >= 0.f);
+        CHECK(a <= 1.f);
+        if (std::fabs(a - c) > 0.05f) ++differ;
+    }
+    CHECK(differ > 0);
+    // Running bond: an odd course's unit is the even course's grid moved by half a unit.
+    const float odd = surfaceJointUnitTone(spec, 2.0f / uu, 3.5f / vv, uu, vv, true);   // course 3, mid of a unit
+    const float oddFlat = surfaceJointUnitTone(spec, 2.4f / uu, 3.5f / vv, uu, vv, true);
+    CHECK(odd == doctest::Approx(oddFlat));  // the unit's middle is at 2.0 cells, not at an edge
+    const float evenEdge0 = surfaceJointUnitTone(spec, 1.95f / uu, 2.5f / vv, uu, vv, true);
+    const float evenEdge1 = surfaceJointUnitTone(spec, 2.05f / uu, 2.5f / vv, uu, vv, true);
+    const float evenFlat0 = surfaceJointUnitTone(spec, 1.7f / uu, 2.5f / vv, uu, vv, true);
+    const float evenFlat1 = surfaceJointUnitTone(spec, 2.3f / uu, 2.5f / vv, uu, vv, true);
+    // On an even course 2.0 cells is an edge: the tone moves there between the two units' values.
+    CHECK(std::min(evenFlat0, evenFlat1) <= std::min(evenEdge0, evenEdge1) + 1e-5f);
+    CHECK(std::max(evenEdge0, evenEdge1) <= std::max(evenFlat0, evenFlat1) + 1e-5f);
 }
 
 TEST_CASE("joints: the march: square on no shift, into a groove onto its floor, nothing at weight 0") {
@@ -152,7 +262,7 @@ TEST_CASE("joints: the march never runs further than depth times the held slope"
 }
 
 TEST_CASE("joints: per-surface depths by id substring") {
-    CHECK(surfaceJointFor("solhaven_soot_brick").depthCm == doctest::Approx(1.0f));
+    CHECK(surfaceJointFor("solhaven_soot_brick").depthCm == doctest::Approx(1.2f));
     CHECK(surfaceJointFor("solhaven_breeze_block_grey").depthCm == doctest::Approx(0.8f));
     CHECK(surfaceJointFor("solhaven_ceramic_tile").depthCm == doctest::Approx(0.3f));
     CHECK(surfaceJointFor("solhaven_paving_slab").depthCm == doctest::Approx(0.65f));
@@ -167,6 +277,21 @@ TEST_CASE("joints: per-surface depths by id substring") {
     const SurfaceJointSurface brick = surfaceJointFor("soot_brick");
     CHECK(brick.aoLo == doctest::Approx(0.6f));
     CHECK(brick.aoHi == doctest::Approx(0.92f));
+    // Units per tile, and the running bond on brick only.
+    CHECK(brick.unitsU == doctest::Approx(4.f));
+    CHECK(brick.unitsV == doctest::Approx(13.f));
+    CHECK(brick.bond);
+    const SurfaceJointSurface block = surfaceJointFor("solhaven_breeze_block");
+    CHECK(block.unitsU == doctest::Approx(3.f));
+    CHECK(block.unitsV == doctest::Approx(5.f));
+    CHECK_FALSE(block.bond);
+    CHECK(surfaceJointFor("solhaven_ceramic_tile").unitsU == doctest::Approx(8.f));
+    CHECK(surfaceJointFor("solhaven_ceramic_tile").unitsV == doctest::Approx(8.f));
+    CHECK(surfaceJointFor("solhaven_paving_slab").unitsV == doctest::Approx(4.f));
+    CHECK(surfaceJointFor("solhaven_tactile_paving").unitsU == doctest::Approx(4.f));
+    CHECK(surfaceJointFor("solhaven_board_concrete").unitsU == doctest::Approx(0.f));
+    CHECK(surfaceJointFor("solhaven_asphalt").unitsU == doctest::Approx(0.f));
+    CHECK_FALSE(surfaceJointFor("solhaven_paving_slab").bond);
 }
 
 TEST_CASE("joints: the HLSL: no derivatives, the march behind the switch, every input named") {
@@ -183,6 +308,13 @@ TEST_CASE("joints: the HLSL: no derivatives, the march behind the switch, every 
     const size_t gate = par.find("if (JointPar > 0.0)");
     REQUIRE(gate != std::string::npos);
     CHECK(par.find("[loop] for (int JtI = 0; JtI <= 8;") > gate);
+    // The uneven noise sits behind the switch too, before the march, and scales the floor's shift.
+    const size_t deep = par.find("if (JointDepth > 0.0 && JointDepthCm > 0.0)");
+    REQUIRE(deep != std::string::npos);
+    CHECK(deep < gate);
+    CHECK(par.find("JtDeep = lerp(0.649999976, 1.0, JtNoise);") > deep);
+    CHECK(contains(par, "WorldPos / 150.0"));
+    CHECK(contains(par, "JointDepthCm / max(TileCm, 1.0) * JtDeep * JointPar"));
     CHECK(par.find("Texture2DSampleLevel(ArmTex, ArmTexSampler, JtAt, JtLod)") > gate);
     CHECK_FALSE(contains(par, "Texture2DSample(ArmTex"));
     CHECK(contains(par, "break;"));
@@ -197,10 +329,29 @@ TEST_CASE("joints: the HLSL: no derivatives, the march behind the switch, every 
     // The shade: behind its own switch, plain samples outside any loop, every input it reads.
     CHECK(contains(shade, "if (JtShade > 0.0)"));
     CHECK_FALSE(contains(shade, "for ("));
+    CHECK_FALSE(contains(shade, "Mottle[2]"));  // the parallax snippet's JtDeep instead
+    CHECK_FALSE(contains(shade, "Texture2DSampleLevel"));
+    // Six taps: the pixel, 1.5 texels on u and v, 3 up and down the image, 6 back along u; all inside the branch.
+    const size_t branch = shade.find("if (JtShade > 0.0)");
+    CHECK(shade.find("Texture2DSample(ArmTex") > branch);
     CHECK(contains(shade, "Texture2DSample(ArmTex, ArmTexSampler, JtUv)"));
+    CHECK(contains(shade, "JtUv + float2(0.00146484375, 0.0))"));
+    CHECK(contains(shade, "JtUv - float2(0.0, 0.0029296875))"));
+    CHECK(contains(shade, "JtUv + float2(0.0, 0.0029296875))"));
+    CHECK(contains(shade, "JtUv - float2(0.005859375, 0.0))"));
+    size_t taps = 0;
+    for (size_t at = shade.find("Texture2DSample("); at != std::string::npos; at = shade.find("Texture2DSample(", at + 1))
+        ++taps;
+    CHECK(taps == 6);
     for (const char* in : {"JointDepth)", "JointDepthCm", "JointLo", "JointHi", "TileCm", "JtUv", "JtTu", "JtTv",
-                           "JtLod", "Mottle[0]", "Mottle[2]", "NormalOut =", "AOOut *=", "RoughOut =", "Color *="})
+                           "JtLod", "JtDeep", "JtNdotV", "Mottle[0]", "Tint.rgb", "JointUnitsU", "JointUnitsV",
+                           "JointBond", "NormalOut =", "AOOut *=", "RoughOut =", "Color *=", "Color = lerp(Color, float3(0.419999987, 0.400000006, 0.370000005)"})
         CHECK_MESSAGE(contains(shade, in), in);
+    // The order: unit tone on the faces, then mortar, then the cavity darkening.
+    CHECK(shade.find("JtToneK") < shade.find("JtMortarK"));
+    CHECK(shade.find("JtMortarK") < shade.find("float JtCav"));
+    CHECK(contains(shade, "RoughOut = lerp(RoughOut, 0.899999976, JtMortarK);"));
+    CHECK(contains(shade, "if (JointUnitsU > 0.0 && JointUnitsV > 0.0)"));
     // A spec's numbers reach the text.
     SurfaceJointSpec other;
     other.maxSteps = 12;

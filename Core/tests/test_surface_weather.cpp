@@ -233,8 +233,13 @@ TEST_CASE("HLSL: joint depth is its own option; off, the node is as it was") {
     on.jointDepth = true;
     const std::string relief = surfaceWeatherHlsl(spec, on);
     for (const char* name : {"ViewVec / 100.0", "saturate(JointDepth)", "struct FTRelief", "if (RlW > 0.001)",
-                             "A *= 1.0 - ", "R = min(R, lerp(R, 0.3, RlWet));", "RlP = lerp(RlO, RlP, RlW);"})
+                             "A *= 1.0 - RlCav;", "R = lerp(R, max(R, RlRw), RlWet * (1.0 - Pud));",
+                             "Rgh = lerp(Rgh, max(Rgh, RlRw), RlC);", "RlP = lerp(RlO, RlP, RlW);",
+                             "max(length(G), 1e-6)", "lerp(0.45, 1.0, RlD)", "lerp(0.5, 1.0, RlD)", "lerp(0.6, 1.0, RlD)"})
         CHECK(relief.find(name) != std::string::npos);
+    // The old mirror-glint wet line is gone, and the plain bevel's Fine no longer gates the relief's slope.
+    CHECK(relief.find("lerp(R, 0.3, RlWet)") == std::string::npos);
+    CHECK(relief.find("RlG * Fine") == std::string::npos);
     // The solve runs in each jointed kind (pavers, pavement, kerbs), behind the near-only branch.
     CHECK(countOf(relief, "if (RlW > 0.001)") == 3);
     // A ray-tracing hit shader has no screen derivatives: the footprint's one fwidth stays the only one.
@@ -293,7 +298,34 @@ TEST_CASE("joint depth: depths, an imperfect grid and its shares") {
     CHECK(sunk / n == doctest::Approx(st.sunkShare).epsilon(0.3));
     CHECK(chipped / n == doctest::Approx(st.chipShare).epsilon(0.3));
 
-    // A sunk tile's face sits under its plain neighbour's; a joint's floor is the full depth either way.
+    // Lane pavers: a quarter of the tiles' shares.
+    {
+        const StreetJointGrid lane = streetJointGrid(StreetKind::Lane, st);
+        CHECK(lane.flawScale == doctest::Approx(st.paverFlawScale));
+        CHECK(st.paverFlawScale == doctest::Approx(0.25f));
+        int ps = 0, pt = 0, pc = 0, ts = 0, tt = 0, tc = 0;
+        for (int i = 0; i < 160; ++i)
+            for (int j = 0; j < 160; ++j) {
+                const float kx = static_cast<float>(i - 50), ky = static_cast<float>(j + 3);
+                const StreetTileFlaw p = streetTileFlaw(kx, ky, st, lane.flawScale);
+                const StreetTileFlaw t = streetTileFlaw(kx, ky, st);
+                ps += p.sinkM > 0.f;
+                pt += p.tiltX != 0.f || p.tiltY != 0.f;
+                pc += p.chipR > 0.f;
+                ts += t.sinkM > 0.f;
+                tt += t.tiltX != 0.f || t.tiltY != 0.f;
+                tc += t.chipR > 0.f;
+                if (p.chipR > 0.f) {
+                    CHECK(p.chipR >= st.chipMinM - 1e-6f);
+                    CHECK(p.chipR <= st.chipMaxM + 1e-6f);
+                }
+            }
+        CHECK(static_cast<float>(ps + pt + pc) / static_cast<float>(ts + tt + tc) == doctest::Approx(0.25f).epsilon(0.25));
+        CHECK(ps > 0);
+        CHECK(pc > 0);
+    }
+
+    // A sunk tile's face sits under its plain neighbour's; a joint's floor is its own depth (0.7..1.3 of the grid's).
     bool found = false;
     for (int i = 0; i < 400 && !found; ++i) {
         const float kx = static_cast<float>(i), ky = 3.f;
@@ -309,29 +341,31 @@ TEST_CASE("joint depth: depths, an imperfect grid and its shares") {
         CHECK(std::fabs(zNb) < 1e-6f);
         CHECK(std::fabs(zSunk + f.sinkM) < 1e-6f);
         CHECK(zSunk < zNb - 0.0009f);
-        CHECK(std::fabs(streetJointZ((kx + 1.f) * pave.cellX, cy, 0.f, 0.f, pave, st) + pave.depthM) < 1e-6f);
+        const float ex = (kx + 1.f) * pave.cellX;
+        const StreetJointFactors jf = streetJointFactors(ex, cy, 0.f, 0.f, pave, st);
+        const float zFloor = streetJointZ(ex, cy, 0.f, 0.f, pave, st);
+        CHECK(std::fabs(zFloor + pave.depthM * jf.depthX) < 0.002f * pave.depthM);
     }
     CHECK(found);
 
     // A chipped corner falls to the joint floor at the corner and is whole on the far side of the tile.
     found = false;
-    for (int i = 0; i < 2000 && !found; ++i) {
+    for (int i = 0; i < 4000 && !found; ++i) {
         const float kx = static_cast<float>(i), ky = 11.f;
         const StreetTileFlaw f = streetTileFlaw(kx, ky, st);
-        if (f.chipR <= 0.f || f.sinkM > 0.f || f.tiltX != 0.f || f.tiltY != 0.f) continue;
+        if (f.chipR < 0.025f || f.sinkM > 0.f || f.tiltX != 0.f || f.tiltY != 0.f) continue;
         found = true;
         const float cx = (kx + 0.5f) * pave.cellX, cy = (ky + 0.5f) * pave.cellY;
-        // 7 mm in from the chipped corner both ways (1 cm along the diagonal): on the joint floor, where a plain
-        // corner is already up on its arris.
         const auto at = [&](float in, float sx, float sy) {
-            return streetJointZ(cx + sx * (0.5f * pave.cellX - in), cy + sy * (0.5f * pave.cellY - in), 0.f, 0.f, pave, st);
+            const float x = cx + sx * (0.5f * pave.cellX - in), y = cy + sy * (0.5f * pave.cellY - in);
+            return streetJointSample(x, y, 0.f, 0.f, streetJointFactors(x, y, 0.f, 0.f, pave, st), 0.f, 0.f, pave, st);
         };
-        CHECK(std::fabs(at(0.007f, f.chipX, f.chipY) + pave.depthM) < 1e-6f);
-        CHECK(at(0.007f, -f.chipX, -f.chipY) > -pave.depthM + 0.0002f);
-        // 12 mm in both ways: a plain corner is nearly up, the chip still at least a millimetre lower.
-        const float plain = -pave.depthM + pave.depthM * streetTileHeight(0.012f, st);
-        CHECK(std::fabs(at(0.012f, -f.chipX, -f.chipY) - plain) < 1e-6f);
-        CHECK(at(0.012f, f.chipX, f.chipY) < plain - 0.001f);
+        // 7 mm in both ways (1 cm along the diagonal): wholly on the joint floor.
+        CHECK(at(0.007f, f.chipX, f.chipY).floorShare == doctest::Approx(1.f));
+        // 15 mm in both ways: a plain corner is up on its face, the chip still well down.
+        const float plain = at(0.015f, -f.chipX, -f.chipY).floorShare;
+        CHECK(plain < 0.1f);
+        CHECK(at(0.015f, f.chipX, f.chipY).floorShare > plain + 0.15f);
     }
     CHECK(found);
 }
@@ -365,7 +399,10 @@ TEST_CASE("joint depth: parallax fades and the relief solve") {
     // viewer by depth * slope (it stays on the floor, so the solve lands exactly there).
     const float nv = 0.95f, vx = std::sqrt(1.f - nv * nv);
     const StreetPoint p = streetReliefShift(0.4f, 0.2f, vx, 0.f, nv, 0.f, 0.f, pave, st);
-    CHECK(p.x == doctest::Approx(0.4f - pave.depthM * vx / nv).epsilon(1e-4));
+    const float floorZ = streetJointZ(0.4f, 0.2f, 0.f, 0.f, pave, st);
+    CHECK(floorZ <= -st.jointDepthMin * pave.depthM + 1e-6f);
+    CHECK(floorZ >= -st.jointDepthMax * pave.depthM - 1e-6f);
+    CHECK(p.x == doctest::Approx(0.4f + floorZ * vx / nv).epsilon(1e-4));
     CHECK(p.y == doctest::Approx(0.2f));
     // On a face: shifted only by that face's own height (none on a plain tile; tile key (0, 0) hashes to sunk).
     const StreetPoint face = streetReliefShift(0.2f, 0.2f, vx, 0.f, nv, 0.f, 0.f, pave, st);
@@ -373,20 +410,162 @@ TEST_CASE("joint depth: parallax fades and the relief solve") {
     CHECK(std::fabs(face.x - (0.2f + faceZ * vx / nv)) < 1e-6f);
     const StreetPoint plainFace = streetReliefShift(0.2f, 0.2f, vx, 0.f, nv, 37.f, 5.f, pave, st);
     if (std::fabs(streetJointZ(0.2f, 0.2f, 37.f, 5.f, pave, st)) < 1e-7f) CHECK(std::fabs(plainFace.x - 0.2f) < 1e-6f);
-    // Never more than depth * the clamped slope, any view; and with the walls' fold-back under a third of a mm
-    // even at the full-weight glancing limit (monotone from face-on to 60 degrees).
+    // Never more than the deepest joint * the clamped slope, any view; and with the walls' fold-back under a third of a
+    // mm even at the full-weight glancing limit (under 0.05 mm from face-on to 60 degrees), over 24 joints (their own
+    // widths and depths, the narrowest and deepest among them).
+    const float deepest = st.jointDepthMax * pave.depthM;
     for (const float n : {1.f, 0.9f, 0.7f, 0.5f, 0.35f, 0.25f, 0.15f, 0.05f}) {
         const float t = std::sqrt(1.f - n * n);
-        const float limit = pave.depthM * t / std::max(n, st.parallaxSlopeClamp) + 1e-6f;
-        float last = -1.f, back = 0.f;
-        for (int i = 0; i <= 600; ++i) {
-            const float x = 0.37f + i * 0.0001f;
-            const StreetPoint q = streetReliefShift(x, 0.2f, t, 0.f, n, 0.f, 0.f, pave, st);
-            CHECK(std::fabs(q.x - x) <= limit);
-            if (i > 0) back = std::max(back, last - q.x);
-            last = q.x;
+        const float limit = deepest * t / std::max(n, st.parallaxSlopeClamp) + 1e-6f;
+        float worst = 0.f;
+        for (int k = 0; k < 24; ++k) {
+            const float jx = 0.4f * static_cast<float>(1 + k % 6), y = 0.2f + 0.4f * static_cast<float>(k / 6);
+            float last = -1.f, back = 0.f;
+            for (int i = 0; i <= 600; ++i) {
+                const float x = jx - 0.03f + i * 0.0001f;
+                const StreetPoint q = streetReliefShift(x, y, t, 0.f, n, 0.f, 0.f, pave, st);
+                CHECK(std::fabs(q.x - x) <= limit);
+                if (i > 0) back = std::max(back, last - q.x);
+                last = q.x;
+            }
+            worst = std::max(worst, back);
         }
-        if (n >= 0.5f) CHECK(back <= 1e-6f);
-        if (n >= st.parallaxNdVFull) CHECK(back < 0.0003f);
+        if (n >= 0.5f) CHECK(worst < 0.00005f);
+        if (n >= st.parallaxNdVFull) CHECK(worst < 0.0003f);
+    }
+}
+
+TEST_CASE("joint depth: varied joints, a grey gritty floor, no glints") {
+    const StreetSurfaceSpec st;
+    CHECK(st.jointWidthMin == doctest::Approx(0.7f));
+    CHECK(st.jointWidthMax == doctest::Approx(1.4f));
+    CHECK(st.jointDepthMin == doctest::Approx(0.7f));
+    CHECK(st.jointDepthMax == doctest::Approx(1.3f));
+    CHECK(st.jointCavityAO == doctest::Approx(0.6f));
+    CHECK(st.jointOpenAO > st.jointCavityAO);
+
+    // Width and depth factors stay in their ranges, vary from joint to joint and along a joint, and agree from both
+    // sides of a joint's centreline (tiles, and pavers in running bond).
+    for (const StreetKind kind : {StreetKind::Pavement, StreetKind::Lane}) {
+        const StreetJointGrid g = streetJointGrid(kind, st);
+        float wLo = 9.f, wHi = 0.f, dLo = 9.f, dHi = 0.f;
+        int along = 0;
+        for (int r = 0; r < 40; ++r)
+            for (int k = 0; k < 40; ++k) {
+                // The x joint k of row r, at the row's middle, and the y joint under row r at column k.
+                const float rowShift = g.bond * static_cast<float>(r % 2);
+                const float xj = (static_cast<float>(k) - rowShift) * g.cellX, ym = (static_cast<float>(r) + 0.5f) * g.cellY;
+                const StreetJointFactors a = streetJointFactors(xj - 1e-4f, ym, 3.f, 5.f, g, st);
+                const StreetJointFactors b = streetJointFactors(xj + 1e-4f, ym, 3.f, 5.f, g, st);
+                CHECK(a.widthX == doctest::Approx(b.widthX).epsilon(1e-3));
+                CHECK(a.depthX == doctest::Approx(b.depthX).epsilon(1e-3));
+                // Continuous across the centreline in height too.
+                CHECK(std::fabs(streetJointZ(xj - 1e-4f, ym, 3.f, 5.f, g, st) - streetJointZ(xj + 1e-4f, ym, 3.f, 5.f, g, st)) <
+                      2e-5f);
+                const float yj = static_cast<float>(r) * g.cellY, xm = (static_cast<float>(k) + 0.3f) * g.cellX;
+                const StreetJointFactors c = streetJointFactors(xm, yj - 1e-4f, 3.f, 5.f, g, st);
+                const StreetJointFactors d = streetJointFactors(xm, yj + 1e-4f, 3.f, 5.f, g, st);
+                CHECK(c.widthY == doctest::Approx(d.widthY).epsilon(1e-3));
+                CHECK(c.depthY == doctest::Approx(d.depthY).epsilon(1e-3));
+                for (const float w : {a.widthX, c.widthY}) {
+                    CHECK(w >= st.jointWidthMin - 1e-5f);
+                    CHECK(w <= st.jointWidthMax + 1e-5f);
+                    wLo = std::min(wLo, w);
+                    wHi = std::max(wHi, w);
+                }
+                for (const float v : {a.depthX, c.depthY}) {
+                    CHECK(v >= st.jointDepthMin - 1e-5f);
+                    CHECK(v <= st.jointDepthMax + 1e-5f);
+                    dLo = std::min(dLo, v);
+                    dHi = std::max(dHi, v);
+                }
+                // Along the joint (a quarter cell on): the same joint, a different noise.
+                const StreetJointFactors e = streetJointFactors(xj + 1e-4f, ym + 0.25f * g.cellY, 3.f, 5.f, g, st);
+                along += std::fabs(e.widthX - b.widthX) > 0.005f;
+            }
+        CHECK(wHi - wLo > 0.4f);
+        CHECK(dHi - dLo > 0.35f);
+        CHECK(along > 600);
+    }
+
+    // The floor's tone: jointFloorToneLo..Hi of the unit clean and dry, never under Lo * dirt * wet.
+    const float floorMin = st.jointFloorToneLo * st.jointDirtTone * st.jointWetTone;
+    CHECK(floorMin >= 0.3f);
+    for (int i = 0; i <= 10; ++i)
+        for (int j = 0; j <= 10; ++j)
+            for (int k = 0; k <= 10; ++k) {
+                const float tone = streetJointFloorTone(i * 0.1f, j * 0.1f, k * 0.1f, st);
+                CHECK(tone >= floorMin - 1e-6f);
+                CHECK(tone <= st.jointFloorToneHi + 1e-6f);
+                if (j == 0 && k == 0) CHECK(tone >= st.jointFloorToneLo - 1e-6f);
+            }
+    CHECK(st.jointFloorToneLo >= 0.45f - 1e-6f);
+    CHECK(st.jointFloorToneHi <= 0.6f + 1e-6f);
+
+    // The floor's roughness: at least 0.6 dry and 0.45 wet whatever it was, with the grit on top; a rougher one stays.
+    for (int i = 0; i <= 10; ++i) {
+        const float grit = i * 0.1f;
+        CHECK(streetJointFloorRough(0.02f, grit, 0.f, st) >= 0.6f - 1e-6f);
+        CHECK(streetJointFloorRough(0.02f, grit, 1.f, st) >= 0.45f - 1e-6f);
+        CHECK(streetJointFloorRough(0.02f, grit, 0.5f, st) >= 0.45f - 1e-6f);
+        CHECK(streetJointFloorRough(0.95f, grit, 1.f, st) == doctest::Approx(0.95f));
+    }
+    CHECK(streetJointFloorRough(0.f, 1.f, 0.f, st) > streetJointFloorRough(0.f, 0.f, 0.f, st));
+
+    // The slope never tips past 60 degrees (kerbs, the deepest, reach the clamp), and is 0 off the joints.
+    {
+        const StreetJointGrid kerb = streetJointGrid(StreetKind::Kerb, st);
+        const StreetJointGrid pave = streetJointGrid(StreetKind::Pavement, st);
+        float most = 0.f;
+        for (int gi = 0; gi < 2; ++gi)
+            for (int k = 0; k < 40; ++k)
+                for (int i = 0; i <= 400; ++i) {
+                    const StreetJointGrid& g = gi == 0 ? kerb : pave;
+                    const float x = g.cellX * static_cast<float>(k + 1) - 0.02f + i * 0.0001f;
+                    const float y = gi == 0 ? 0.5f * g.cellY : 0.37f;
+                    const StreetJointFactors f = streetJointFactors(x, y, 1.f, 2.f, g, st);
+                    const StreetJointSample s = streetJointSample(x, y, 1.f, 2.f, f, 0.f, 0.f, g, st);
+                    const float m = std::sqrt(s.gx * s.gx + s.gy * s.gy);
+                    CHECK(m <= st.jointSlopeMax + 1e-4f);
+                    most = std::max(most, m);
+                }
+        CHECK(st.jointSlopeMax == doctest::Approx(std::tan(3.14159265f / 3.f)));
+        CHECK(most > 0.99f * st.jointSlopeMax);
+    }
+
+    // The joint's slope fades with the footprint across it: full near, gone once the groove is under a pixel; the
+    // footprint across a joint is the pixel's for one across the view, less by nDotV for one along it.
+    CHECK(streetJointFootprint(0.02f, 1.f, 0.f) == doctest::Approx(0.02f));
+    CHECK(streetJointFootprint(0.02f, 0.3f, std::sqrt(1.f - 0.09f)) == doctest::Approx(0.02f));
+    CHECK(streetJointFootprint(0.02f, 0.3f, 0.f) == doctest::Approx(0.006f));
+    {
+        const StreetJointGrid pave = streetJointGrid(StreetKind::Pavement, st);
+        int checked = 0;
+        for (int k = 0; k < 200 && checked < 20; ++k) {
+            const float kx = static_cast<float>(k);
+            const StreetTileFlaw fl = streetTileFlaw(kx, 0.f, st);
+            if (fl.tiltX != 0.f || fl.tiltY != 0.f || fl.chipR > 0.f) continue;
+            ++checked;
+            const float x = (kx + 1.f) * pave.cellX - 0.012f, y = 0.2f;  // on the arris of tile kx's +x edge
+            const StreetJointFactors f = streetJointFactors(x, y, 0.f, 0.f, pave, st);
+            const float groove = 2.f * (pave.halfJointM * f.widthX + pave.bevelM);
+            const StreetJointSample nearS = streetJointSample(x, y, 0.f, 0.f, f, 0.f, 0.f, pave, st);
+            const StreetJointSample gone = streetJointSample(x, y, 0.f, 0.f, f, st.jointNormalTo * groove, 0.f, pave, st);
+            CHECK(std::fabs(nearS.gx) > 0.05f);
+            CHECK(std::fabs(gone.gx) < 1e-6f);
+        }
+        CHECK(checked == 20);
+    }
+
+    // AO: the open joints' floor lighter than the narrow, deep ones'.
+    {
+        const StreetJointGrid pave = streetJointGrid(StreetKind::Pavement, st);
+        StreetJointFactors open, tight;
+        open.widthX = st.jointWidthMax;
+        open.depthX = st.jointDepthMin;
+        tight.widthX = st.jointWidthMin;
+        tight.depthX = st.jointDepthMax;
+        CHECK(streetJointSample(0.4f, 0.2f, 0.f, 0.f, open, 0.f, 0.f, pave, st).open > 0.95f);
+        CHECK(streetJointSample(0.4f, 0.2f, 0.f, 0.f, tight, 0.f, 0.f, pave, st).open < 0.05f);
     }
 }

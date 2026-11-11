@@ -408,6 +408,10 @@ FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Def
 	AddInput(Custom, TEXT("JointDepthCm"), JointDepthCm);
 	AddInput(Custom, TEXT("JointLo"), JointLo);
 	AddInput(Custom, TEXT("JointHi"), JointHi);
+	// The surface's units a tile (a per-unit tone; 0 none) and whether its courses run in bond.
+	AddInput(Custom, TEXT("JointUnitsU"), AddScalar(Material, TEXT("JointUnitsU"), 0.f, 1550));
+	AddInput(Custom, TEXT("JointUnitsV"), AddScalar(Material, TEXT("JointUnitsV"), 0.f, 1650));
+	AddInput(Custom, TEXT("JointBond"), AddScalar(Material, TEXT("JointBond"), 0.f, 1750));
 	AddOutput(Custom, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Custom, TEXT("MetalOut"), CMOT_Float1);
@@ -546,6 +550,18 @@ bool SetDefaults(UMaterial* Master, TArrayView<UTexture* const> Defaults, bool& 
 		Master->PostEditChange();
 	}
 	return Found == kMapCount;
+}
+
+// A surface instance's joints (ftcore::surfaceJointFor): depth, the AO levels of a joint's floor and a unit's face, the
+// units a tile and the bond.
+void SetJoint(UMaterialInstanceConstant* Mic, const ftcore::SurfaceJointSurface& Joint)
+{
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointDepthCm")), Joint.depthCm);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointLo")), Joint.aoLo);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointHi")), Joint.aoHi);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointUnitsU")), Joint.unitsU);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointUnitsV")), Joint.unitsV);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointBond")), Joint.bond ? 1.f : 0.f);
 }
 
 UMaterialInstanceConstant* BuildInstance(const FString& Path, UMaterial* Master, TArrayView<UTexture* const> Maps, float TileCm,
@@ -1043,9 +1059,7 @@ UMaterialInstanceConstant* BuildWindowInstance(const FString& Path, UMaterial* M
 	}
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WindowWidth")), WindowWidth);
 	// The wall's joints (ftcore::surfaceJointFor): their depth and the AO levels of a joint's floor and a unit's face.
-	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointDepthCm")), Joint.depthCm);
-	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointLo")), Joint.aoLo);
-	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointHi")), Joint.aoHi);
+	FTSurfaceBuild::SetJoint(Mic, Joint);
 	Mic->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Mic);
 	return Mic;
@@ -1528,9 +1542,7 @@ int32 BuildMasterOnly(const FString& Params)
 		{
 			continue;
 		}
-		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointDepthCm")), Joint.depthCm);
-		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointLo")), Joint.aoLo);
-		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointHi")), Joint.aoHi);
+		FTSurfaceBuild::SetJoint(Mic, Joint);
 		Mic->PostEditChange();
 		if (!SaveAsset(Mic, Bytes))
 		{
