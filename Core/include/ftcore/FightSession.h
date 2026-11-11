@@ -247,10 +247,10 @@ public:
     RefusalInput deferRefusal() { return refusal_.defer(); }
     // Ends the host's prompt; a refusal kept to the end offers the refusal key: to the boss script when there is one
     // (it opens the point only when refusal is its key kind and a counter has the point exposed), else to the
-    // session's own lock.
+    // session's own lock. Only the call that resolves the refusal offers it: ending an ended prompt again offers nothing.
     RefusalInput endRefusal() {
         const RefusalInput r = refusal_.offerEnded();
-        if (refusal_.refused()) {
+        if (r == RefusalInput::Resolved && refusal_.refused()) {
             if (hasBoss_) boss_.offerKey(kUnlockRefusal, now_);
             else if (def_.locked) lock_.offer(kUnlockRefusal, now_);
         }
@@ -264,7 +264,8 @@ public:
         return h;
     }
     // An unlock key (a read clause with its id, a refusal, a shared blow) offered to the boss script's point when
-    // there is one (BossScript::offerKey: only its key kind, only while exposed), else to the session's own lock.
+    // there is one (BossScript::offerKey: only its key kind, only while exposed), else to the session's own lock. A shared
+    // blow offered here is the host's own: it skips the count (tick().sharedBlows does not see it).
     UnlockResult offerKey(UnlockKey key, std::uint16_t clause = 0) {
         if (hasBoss_) return boss_.offerKey(key, now_, clause);
         if (!def_.locked) return UnlockResult::BadKey;

@@ -303,6 +303,8 @@ TEST_CASE("boss script: each key kind opens the exposed point, and only that kin
         CHECK(s.offerKey(k.right, 2.4, 7) == UnlockResult::Refreshed);
         CHECK(countOf(s.update(2.5), BossEventType::Unlocked) == 2);
         CHECK(s.hit(10, true, 2.5).crit);
+        s.update(4.2); // the exposure ran out at 4.1
+        CHECK(s.offerKey(k.right, 4.2, 7) == UnlockResult::NotExposed);
     }
 }
 
@@ -362,6 +364,7 @@ TEST_CASE("boss script: the end is the answered offer") {
     CHECK(s.answer(t));
     CHECK(s.counter(BossCounter::Answer, 1, t + 0.1, false) == BossInput::Countered);
     CHECK(s.ended());
+    CHECK(s.offerKey(kUnlockSharedBlow, t + 0.1) == UnlockResult::NotExposed); // after the end
     const BossEvents& ev = s.update(t + 0.2);
     CHECK(countOf(ev, BossEventType::Ended) == 1);
     CHECK(s.counter(BossCounter::Guard, 0, t + 0.3, false) == BossInput::Over);

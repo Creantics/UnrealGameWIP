@@ -24,7 +24,7 @@ The weak point goes through `LockedPoint` (`WeakPointLock.h`), the one adapter b
     * a resource count (`Resource`): something in the arena the boss consumes, which the host can also add back with `addResource`.
   * Phases never go back.
 * **Locked weak point (`WeakPointLock`):**
-  * A move with `exposeSeconds` exposes the point when it is countered. The point's key kind (`key`: a shared blow, a read clause or a refusal) offered while exposed (`sharedBlow`, `offerKey`) unlocks it. Any other key opens nothing (`WrongKey`), and a key with no exposure is `NotExposed`.
+  * A move with `exposeSeconds` exposes the point when it is countered. The point's key kind (`key`: a shared blow, a read clause or a refusal) offered while exposed (`sharedBlow`, `offerKey`) unlocks it. Any other key opens nothing (`WrongKey`), and the point's own kind with no exposure (or after the end) is `NotExposed`.
   * A move with `unlocksOnCounter` unlocks the point on its counter, with its own key kind (a read kind uses the lock's `clause`).
   * A `needsWatch` move does either only while the host says the point is watched (`setWatched`).
   * Blows on the point crit only while it is unlocked.

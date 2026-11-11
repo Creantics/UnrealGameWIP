@@ -13,9 +13,9 @@
 //   phase starts when the boss's gauge falls to its `enterAt`: the hp share (Hp gauge) or a resource
 //   count (Resource gauge, e.g. something in the arena the boss consumes). Phases never go back.
 // * The locked weak point (WeakPointLock.h). Countering a move with exposeSeconds exposes the point
-//   for that long; the point's key kind (`key`: a shared blow, a read clause or a refusal) offered while
-//   exposed (sharedBlow, offerKey) unlocks it, and any other key opens nothing. A move with
-//   unlocksOnCounter unlocks it on its counter. Blows on the weak point crit (critMultiplier) only while it is unlocked.
+//   for that long; the point's key kind (`key`: a shared blow, a read clause or a
+//   refusal) offered while exposed (sharedBlow, offerKey) unlocks it, and any other key
+//   opens nothing. A move with unlocksOnCounter unlocks it on its counter. Blows on the weak point crit (critMultiplier) only while it is unlocked.
 //   A move with needsWatch does either only while the host says the point is watched (setWatched).
 // * The end is an answered offer, never zero health: hp never falls below 1. The last phase plays the
 //   def's `offer` first and between its moves; countering the offer ends the fight (Ended). An offer

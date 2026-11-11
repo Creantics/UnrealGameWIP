@@ -324,6 +324,14 @@ TEST_CASE("fight session: a boss point of the refusal kind opens on a held refus
     CHECK(s.weakPointOpen());
     CHECK(s.boss().lock().opens() == 1);
     CHECK(s.bossHit(10, true).crit);
+    // Ending the ended prompt again offers nothing: the open time does not restart.
+    const double until = s.boss().lock().until();
+    s.tick(kFrame);
+    CHECK(s.endRefusal() == RefusalInput::Ignored);
+    CHECK(s.boss().lock().until() == until);
+    // After the exposure runs out its own key is NotExposed.
+    REQUIRE(tickUntil(s, [&] { return !s.boss().exposed(); }));
+    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::NotExposed);
     // A refusal kind needs the refusal key in its lock.
     d.boss.lock.keys = kUnlockSharedBlow;
     CHECK(!s.begin(d, 0.0).boss);
