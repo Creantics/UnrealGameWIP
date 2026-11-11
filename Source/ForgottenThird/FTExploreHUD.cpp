@@ -5,6 +5,7 @@
 #include "Engine/Font.h"
 #include "EngineUtils.h"
 
+#include "FTAimReticle.h"
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneHUD.h"
 #include "FTExploreCharacter.h"
@@ -72,6 +73,11 @@ void AFTExploreHUD::DrawHUD()
 		return;
 	}
 	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
+	if (bReticleOnly)
+	{
+		DrawAimReticle(); // a review capture: the scene and the reticle, no text
+		return;
+	}
 	const AFTExploreDirector* Found = FindDirector();
 	if (!Found)
 	{
@@ -110,22 +116,7 @@ void AFTExploreHUD::DrawHUD()
 void AFTExploreHUD::DrawAimReticle()
 {
 	const AFTExploreCharacter* Lead = Cast<AFTExploreCharacter>(GetOwningPawn());
-	const float A = Lead ? Lead->GetAimAlpha() : 0.f;
-	if (A <= 0.f)
-	{
-		return;
-	}
-	// A dot and four short ticks round the screen's centre, where the camera's line (the shot's aim) points.
-	const float CX = Canvas->ClipX * 0.5f;
-	const float CY = Canvas->ClipY * 0.5f;
-	const float S = UiScale;
-	const FLinearColor Col(1.f, 1.f, 1.f, 0.85f * A);
-	const float Gap = 7.f * S, Len = 9.f * S, W = 2.f * S;
-	DrawRect(Col, CX - W, CY - W, 2.f * W, 2.f * W);
-	DrawRect(Col, CX - Gap - Len, CY - W * 0.5f, Len, W);
-	DrawRect(Col, CX + Gap, CY - W * 0.5f, Len, W);
-	DrawRect(Col, CX - W * 0.5f, CY - Gap - Len, W, Len);
-	DrawRect(Col, CX - W * 0.5f, CY + Gap, W, Len);
+	FT::DrawAimReticle(*this, Canvas, Lead ? Lead->GetAimAlpha() : 0.f);
 }
 
 void AFTExploreHUD::DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale)

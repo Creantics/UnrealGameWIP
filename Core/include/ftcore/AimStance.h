@@ -102,18 +102,25 @@ public:
         bool heavy = false;
     };
     // One frame: down = the button is down now. A press shorter than `hold` gives a light on its release; reaching
-    // `hold` gives a heavy at once.
-    Out tick(float dt, bool down, float hold);
+    // `hold` gives a heavy at once, or, while busy (an attack under way the host can't queue a heavy into), on the
+    // first frame it isn't, unless a new press has begun by then.
+    Out tick(float dt, bool down, float hold, bool busy = false);
     // Forgets a press under way (the button's input was taken away: a menu, the vehicle).
     void reset() {
         downFor_ = -1.f;
         heavyDone_ = false;
+        heavyPending_ = false;
     }
+    bool heavyPending() const { return heavyPending_; }
     bool pressing() const { return downFor_ >= 0.f; }
 
 private:
     float downFor_ = -1.f; // s the press has lasted; below 0: up
     bool heavyDone_ = false;
+    bool heavyPending_ = false;
 };
+
+// How far (radians, signed) the body turns this frame toward the aim, `gap` radians away, at the aim's turnRate.
+FTCORE_API float aimTurnStep(const AimRules& rules, float gap, float dt);
 
 } // namespace ftcore

@@ -143,6 +143,11 @@ private:
 	FVector AimTarget = FVector::ZeroVector;
 	FVector AimAxis = FVector::ForwardVector;
 	float AimReach = 0.f;
+	// The other hand's support of the aimed one (SetSupportHand): by SupportWeight its wrist beside and under the
+	// aimed wrist, its fingers wrapped, for a two-handed hold.
+	float SupportWeight = 0.f;
+	// A hand in the pistol grip shape (SetHandGrip): the index along the trigger guard, the rest wrapped round.
+	bool bGrip[2] = {false, false};
 	// The hands' fist curl (SetHandCurl; below 0 the clip's own fingers), and per finger bone the curl's axis in its
 	// parent's space and its ref-pose rotation (bound with the bones; bFingers when a hand has them all).
 	float Curl[2] = {-1.f, -1.f};
@@ -298,6 +303,16 @@ public:
 		PushedCurl[0] = Left;
 		PushedCurl[1] = Right;
 	}
+	// A hand shaped round a pistol's grip in place of the fist (the index finger nearly straight along the trigger
+	// guard, the other fingers wrapped, the thumb over): wins over SetHandCurl for that hand.
+	void SetHandGrip(bool bLeft, bool bRight)
+	{
+		bPushedGrip[0] = bLeft;
+		bPushedGrip[1] = bRight;
+	}
+	// While the right arm is aimed (SetArmAim, side 1): the left hand joins it by Weight (0..1), wrist under and beside
+	// the right one, for a two-handed hold.
+	void SetSupportHand(float Weight) { PushedSupport = Weight; }
 	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
 	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
 	// A roll asked for and still kept (Locomotion's roll input): touching down with it, a moving body rolls out of
@@ -441,6 +456,8 @@ private:
 	FVector PushedAimAxis = FVector::ForwardVector;
 	float PushedAimReach = 0.f;
 	float PushedCurl[2] = {-1.f, -1.f};
+	bool bPushedGrip[2] = {false, false};
+	float PushedSupport = 0.f;
 	bool bPushedFace = false;
 	bool bPushedAir = false;
 	bool bPushedCrouch = false;

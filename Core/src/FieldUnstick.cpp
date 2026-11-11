@@ -26,6 +26,7 @@ bool importUnstickRules(std::string_view json, UnstickRules& out, std::string* e
         {"stuckTime", &r.stuckTime, 0.1, 30.0},  {"stuckMove", &r.stuckMove, 0.01, 10.0},
         {"fallTime", &r.fallTime, 0.5, 60.0},    {"ringSpacing", &r.ringSpacing, 0.1, 20.0},
         {"backoff", &r.backoff, 0.0, 50.0},      {"fadeTime", &r.fadeTime, 0.0, 3.0},
+        {"slideAccel", &r.slideAccel, 0.1, 100.0}, {"teleportJump", &r.teleportJump, 0.5, 1000.0},
     };
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);
@@ -55,6 +56,7 @@ void FieldUnstick::reset() {
     sliding_ = false;
     slideDir_ = Vec2{};
     fadeLeft_ = 0.f;
+    hasLast_ = false;
 }
 
 void FieldUnstick::push(Vec2 at, float z) {
@@ -81,6 +83,8 @@ bool FieldUnstick::rescue(Vec2 at) {
         }
     }
     rescueTo_ = ring_[pick];
+    lastAt_ = rescueTo_.at; // the host puts the feet there: not a teleport
+    lastZ_ = rescueTo_.z;
     stuckFor_ = 0.f;
     fallFor_ = 0.f;
     anchored_ = false;
@@ -89,13 +93,25 @@ bool FieldUnstick::rescue(Vec2 at) {
     return true;
 }
 
-bool FieldUnstick::tick(float dt, Vec2 at, float z, bool onGround, Vec2 floorNormalXY, float floorNormalZ, bool inAir) {
-    if (!(dt > 0.f) || !std::isfinite(dt)) dt = 0.f;
+bool FieldUnstick::tick(float dt, Vec2 at, float z, bool onGround, Vec2 floorNormalXY, float floorNormalZ, bool inAir,
+                        int floorWalkable) {
+    if (!(dt > 0.f) || !std::isfinite(dt)) return false; // a paused or zero frame: nothing moves, nothing counts
+    if (hasLast_) {
+        const float jx = at.x - lastAt_.x, jy = at.y - lastAt_.y, jz = z - lastZ_;
+        if (jx * jx + jy * jy + jz * jz > rules_.teleportJump * rules_.teleportJump) {
+            const float fade = fadeLeft_;
+            reset(); // a teleport (a scene, a map's spawn, a swap): the old safe points are somewhere else
+            fadeLeft_ = fade;
+        }
+    }
+    lastAt_ = at;
+    lastZ_ = z;
+    hasLast_ = true;
     fadeLeft_ = fadeLeft_ > dt ? fadeLeft_ - dt : 0.f;
-    const bool walkable = onGround && floorNormalZ >= rules_.walkableZ;
+    const bool walkable = onGround && (floorWalkable >= 0 ? floorWalkable > 0 : floorNormalZ >= rules_.walkableZ);
     // Too steep to stand: down the slope's fall line (the normal's ground part points downhill).
     const float nl = std::sqrt(floorNormalXY.x * floorNormalXY.x + floorNormalXY.y * floorNormalXY.y);
-    sliding_ = onGround && !walkable && nl > 1e-4f;
+    sliding_ = onGround && !walkable && nl > 1e-4f && floorNormalZ < 0.999f;
     slideDir_ = sliding_ ? Vec2{floorNormalXY.x / nl, floorNormalXY.y / nl} : Vec2{};
 
     if (walkable) {
@@ -122,6 +138,15 @@ bool FieldUnstick::tick(float dt, Vec2 at, float z, bool onGround, Vec2 floorNor
     }
     if (stuckFor_ >= rules_.stuckTime || fallFor_ > rules_.fallTime) return rescue(at);
     return false;
+}
+
+Vec2 FieldUnstick::slideVelocity(Vec2 vel, float dt) const {
+    if (!sliding_ || !(dt > 0.f)) return vel;
+    const float along = vel.x * slideDir_.x + vel.y * slideDir_.y;
+    if (along >= rules_.slideSpeed) return vel;
+    const float k = dt * rules_.slideAccel < 1.f ? dt * rules_.slideAccel : 1.f;
+    const float add = (rules_.slideSpeed - along) * k;
+    return Vec2{vel.x + slideDir_.x * add, vel.y + slideDir_.y * add};
 }
 
 } // namespace ftcore

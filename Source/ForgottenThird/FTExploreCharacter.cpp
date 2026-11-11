@@ -20,6 +20,7 @@
 #include "Engine/World.h"
 #include "CollisionQueryParams.h"
 #include "Engine/GameViewportClient.h"
+#include "UnrealClient.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
@@ -33,6 +34,8 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
+#include "FTExploreHUD.h"
+#include "FTCutsceneDirector.h"
 #include "FTFieldDummy.h"
 #include "FTGameInstance.h"
 #include "FTPauseSubsystem.h"
@@ -202,6 +205,13 @@ void AFTExploreCharacter::BeginPlay()
 	{
 		FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShots="), WeaponShotsLeft);
 		FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShotDelay="), WeaponShotDelay);
+		// -ExploreWeaponStrip=<n> [-ExploreWeaponStripStep=<s>, default 0.1]: one walking light attack filmed n times,
+		// s seconds apart from its start (the proof the feet keep walking), speed and upper share logged each frame.
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponStrip="), StripShots) && StripShots > 0)
+		{
+			FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponStripStep="), StripStep);
+			WeaponShotsLeft = StripShots;
+		}
 	}
 	// -LocoCrouch holds a crouch; -LocoCrouchEvery=<s> gets down or up every s seconds (sprinting, as with -LocoRun,
 	// down is a slide).
@@ -357,6 +367,8 @@ void AFTExploreCharacter::AddPortraitLights()
 
 void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 {
+	// A new look is a swap: the safe points the last lead walked stay with it.
+	Unstick.reset();
 	// Grooms first: they may be bound to a piece.
 	for (USceneComponent* Groom : GroomComponents)
 	{
@@ -471,6 +483,12 @@ void AFTExploreCharacter::SpawnFieldDummy()
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	const AFTFieldDummy* Dummy = GetWorld()->SpawnActor<AFTFieldDummy>(At, FRotator::ZeroRotator, Params);
+	// A forced aim (-ExploreAim) looks at the post, as a player holding aim would: the camera's line on it for every
+	// lead, the body turning to that line.
+	if (APlayerController* PC = Cast<APlayerController>(Controller); PC && Dummy && AimFrom >= 0.f)
+	{
+		PC->SetControlRotation(FRotator(-5.0, Forward.Rotation().Yaw, 0.0));
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Field: dummy %s at %s."), Dummy ? TEXT("stood") : TEXT("not spawned"), *At.ToCompactString());
 }
 
@@ -635,12 +653,12 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 		AttackMoveTable = Moves;
 	}
 	const ftcore::AimRules& Rules = Aim.rules();
-	// The mouse buttons count only on foot, with the game taking input: not in the van, a menu or a pause.
+	// The mouse buttons count only on foot, with the game taking input: not in the van, a menu, a pause or a scene.
 	const APlayerController* PC = Cast<APlayerController>(Controller);
-	const bool bInput = PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this);
-	const bool bForced = AimFrom >= 0.f && GetWorld()->GetTimeSeconds() >= AimFrom && !Van.IsValid();
+	const bool bInput = PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this) && !ScenePlaying();
+	const bool bForced = AimFrom >= 0.f && GetWorld()->GetTimeSeconds() >= AimFrom && !Van.IsValid() && !ScenePlaying();
 	const bool bHeld = (bInput && PC->IsInputKeyDown(EKeys::RightMouseButton)) || bForced;
-	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, bInput && PC->IsInputKeyDown(EKeys::LeftMouseButton), Rules.heavyHold);
+	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, bInput && PC->IsInputKeyDown(EKeys::LeftMouseButton), Rules.heavyHold, Strike.attacking());
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
 	if (!bInput)
@@ -678,10 +696,28 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 	if (bAiming && Controller && !Strike.attacking() && DeltaSeconds > 0.f)
 	{
 		const float Want = static_cast<float>(Controller->GetControlRotation().Yaw);
-		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), Want);
-		const float Step = FMath::RadiansToDegrees(Rules.turnRate) * DeltaSeconds;
-		AddActorWorldRotation(FRotator(0.0, FMath::Clamp(Gap, -Step, Step), 0.0));
+		const float Gap = FMath::DegreesToRadians(FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), Want));
+		AddActorWorldRotation(FRotator(0.0, FMath::RadiansToDegrees(ftcore::aimTurnStep(Rules, Gap, DeltaSeconds)), 0.0));
 	}
+}
+
+float AFTExploreCharacter::BaseWalkSpeed() const
+{
+	// The walk speed before the aim's and the attack's scaling (TickAim): what the ledge catch, the slide and the gait read.
+	const float Max = GetCharacterMovement()->MaxWalkSpeed;
+	return Max == AimSpeedSet ? AimSpeedBase : Max;
+}
+
+bool AFTExploreCharacter::ScenePlaying()
+{
+	// An in-place cutscene or a scene holding the party: the mouse's attack and aim are off too.
+	const AFTExploreDirector* D = GetDirector();
+	if (!D)
+	{
+		return false;
+	}
+	const AFTCutsceneDirector* Cut = D->GetCutsceneDirector();
+	return (Cut && Cut->IsPlayingInPlace()) || D->IsPartyHeld();
 }
 
 ftcore::AttackMoveOut AFTExploreCharacter::AttackMoveNow() const
@@ -708,7 +744,11 @@ void AFTExploreCharacter::TickUnstick(float DeltaSeconds)
 	}
 	UCharacterMovementComponent* Move = GetCharacterMovement();
 	// Only on foot, walking or in the air: the van, a traversal, a hang or a swim carry the body their own way.
-	if (Van.IsValid() || bTraversing || !(Move->IsMovingOnGround() || Move->IsFalling()) || DeltaSeconds <= 0.f)
+	if (DeltaSeconds <= 0.f)
+	{
+		return; // a paused frame: nothing moved
+	}
+	if (Van.IsValid() || bTraversing || !(Move->IsMovingOnGround() || Move->IsFalling()))
 	{
 		Unstick.reset();
 		return;
@@ -724,7 +764,7 @@ void AFTExploreCharacter::TickUnstick(float DeltaSeconds)
 	const double HalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	const FVector At = GetActorLocation();
 	const bool bRescue = Unstick.tick(DeltaSeconds, ftcore::Vec2{float(At.X / 100.0), float(At.Y / 100.0)}, float((At.Z - HalfHeight) / 100.0),
-		bOnGround, ftcore::Vec2{float(N.X), float(N.Y)}, Floor.bWalkableFloor ? 1.f : float(N.Z), Move->IsFalling());
+		bOnGround, ftcore::Vec2{float(N.X), float(N.Y)}, float(N.Z), Move->IsFalling(), bOnGround ? (Floor.bWalkableFloor ? 1 : 0) : -1);
 	if (bRescue)
 	{
 		const ftcore::UnstickPoint& To = Unstick.rescueTo();
@@ -745,13 +785,9 @@ void AFTExploreCharacter::TickUnstick(float DeltaSeconds)
 	// Too steep to stand on: down the slope at slideSpeed at least (jump stays open, HandleJump).
 	if (Unstick.sliding() && Move->IsFalling())
 	{
-		const FVector Dir(Unstick.slideDir().x, Unstick.slideDir().y, 0.0);
-		const double Want = Unstick.rules().slideSpeed * 100.0;
-		const double Along = FVector::DotProduct(Move->Velocity, Dir);
-		if (Along < Want)
-		{
-			Move->Velocity += Dir * (Want - Along) * FMath::Min(1.0, DeltaSeconds * 8.0);
-		}
+		const ftcore::Vec2 V = Unstick.slideVelocity(ftcore::Vec2{float(Move->Velocity.X / 100.0), float(Move->Velocity.Y / 100.0)}, DeltaSeconds);
+		Move->Velocity.X = V.x * 100.0;
+		Move->Velocity.Y = V.y * 100.0;
 	}
 }
 
@@ -793,8 +829,23 @@ void AFTExploreCharacter::TickWeaponShots()
 		}
 		return;
 	}
+	const float Speed = static_cast<float>(GetVelocity().Size2D() / 100.0);
+	if (StripShots > 0)
+	{
+		// The strip: the first light attack begun while walking, filmed from its start every StripStep seconds.
+		if (StripAt < 0.0 && bNew && GetWorld()->GetTimeSeconds() >= WeaponShotDelay && !Strike.heavyNow() && Speed > 0.5f)
+		{
+			StripAt = Strike.time();
+			WeaponShotDue = StripAt;
+		}
+		if (StripAt >= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Field: strip frame t=%.3f speed=%.2f m/s upper=%.2f attacking=%d"),
+				Strike.time() - StripAt, Speed, ftcore::attackUpperShare(AttackMoveTable, Speed), Strike.attacking() ? 1 : 0);
+		}
+	}
 	// Each new attack is filmed at its impact, or (every second one) a shot's or cast's mid-flight.
-	if (bNew && GetWorld()->GetTimeSeconds() >= WeaponShotDelay)
+	else if (bNew && GetWorld()->GetTimeSeconds() >= WeaponShotDelay)
 	{
 		WeaponShotDue = Weapons.GetViewTime(WeaponShotIndex % 2 == 0);
 	}
@@ -802,19 +853,19 @@ void AFTExploreCharacter::TickWeaponShots()
 	{
 		return;
 	}
-	WeaponShotDue = -1.0;
+	WeaponShotDue = StripShots > 0 ? WeaponShotDue + StripStep : -1.0;
 	const APlayerController* Player = Cast<APlayerController>(GetController());
-	if (AHUD* Hud = Player ? Player->GetHUD() : nullptr)
+	if (AFTExploreHUD* Hud = Player ? Cast<AFTExploreHUD>(Player->GetHUD()) : nullptr)
 	{
-		Hud->bShowHUD = false;
+		Hud->bReticleOnly = true;
 	}
 	++WeaponShotIndex;
 	const FString File = FString::Printf(TEXT("%s_%d_%s.png"), *WeaponShotPrefix, WeaponShotIndex, Weapons.GetLastStrikeName());
-	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
-	{
-		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
-	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon shot %s at %.2f s."), *File, Strike.time());
+	// The viewport's own frame with the UI drawn (HighResShot leaves the HUD out, and with it the aim reticle); the
+	// size is the window's (-ResX/-ResY).
+	FScreenshotRequest::RequestScreenshot(File, true, false);
+	UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon shot %s at %.2f s, speed %.2f m/s, upper %.2f."), *File, Strike.time(), Speed,
+		ftcore::attackUpperShare(AttackMoveTable, Speed));
 	if (--WeaponShotsLeft <= 0)
 	{
 		WeaponQuitIn = 2.f; // the last shot is written before the exit
@@ -1152,7 +1203,7 @@ bool AFTExploreCharacter::TryCatch(bool bLog)
 	// at is the one the stick asks for.
 	const ftcore::TravPoint Velocity{VIn, static_cast<float>(V.X * In.Y - V.Y * In.X), static_cast<float>(V.Z)};
 	const float Gravity = -Move->GetGravityZ();
-	const float Speed = Move->MaxWalkSpeed * FMath::Min(static_cast<float>(Stick.Size2D()) / FMath::Max(Move->GetMaxAcceleration(), 1.f), 1.f);
+	const float Speed = BaseWalkSpeed() * FMath::Min(static_cast<float>(Stick.Size2D()) / FMath::Max(Move->GetMaxAcceleration(), 1.f), 1.f);
 	const ftcore::TraversalPlan Plan = Set.planCatch(Obstacle, Velocity, Gravity, Speed);
 	if (!Plan.ok())
 	{
@@ -1482,7 +1533,7 @@ bool AFTExploreCharacter::TrySlide()
 {
 	UCharacterMovementComponent* Move = GetCharacterMovement();
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
-	if (bTraversing || !Anim || !Move->IsMovingOnGround() || bIsCrouched || Move->MaxWalkSpeed < RunSpeed)
+	if (bTraversing || !Anim || !Move->IsMovingOnGround() || bIsCrouched || BaseWalkSpeed() < RunSpeed)
 	{
 		return false;
 	}
@@ -1537,9 +1588,9 @@ void AFTExploreCharacter::TickSlide(float DeltaSeconds)
 	const bool bStick = Stick.SizeSquared2D() > 1.0;
 	ftcore::SlideInput In;
 	In.slope = static_cast<float>(Rise / FMath::Sqrt(1.0 + Rise * Rise));
-	In.wantSpeed = bStick ? Move->MaxWalkSpeed * Move->GetAnalogInputModifier() : 0.f;
+	In.wantSpeed = bStick ? BaseWalkSpeed() * Move->GetAnalogInputModifier() : 0.f;
 	In.turn = bStick ? FMath::FindDeltaAngleDegrees(SlideHeading, static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Stick.Y, Stick.X)))) : 0.f;
-	In.sprint = Move->MaxWalkSpeed >= RunSpeed;
+	In.sprint = BaseWalkSpeed() >= RunSpeed;
 	In.crouch = Move->bWantsToCrouch;
 	In.blocked = bSlideBlocked;
 	In.jump = SlideJumpAsked > 0.f;

@@ -1,3 +1,4 @@
+#include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/FieldUnstick.h"
@@ -301,4 +302,81 @@ TEST_CASE("attack move: a field strike with nothing to face turns with the body,
     CHECK(turned <= 6.f * 12.f * kDt + 1e-3f); // never faster than the cap
     const Vec2 aimed = run(6.f, true);
     CHECK(aimed.x == doctest::Approx(1.f).epsilon(0.01));
+}
+
+TEST_CASE("unstick: the ring keeps the newest 8 safe points and a rescue goes to the newest one past the backoff") {
+    FieldUnstick u;
+    for (int i = 0; i <= 120; ++i) u.tick(kDt, Vec2{i * 0.1f, 0.f}, 0.f, true, Vec2{}, 1.f, false); // 0..12 m
+    CHECK(u.safeCount() == FieldUnstick::kRing);
+    bool fired = false;
+    for (int i = 0; i < 200 && !fired; ++i) fired = u.tick(kDt, Vec2{12.2f, 0.f}, -0.5f, true, Vec2{0.9f, 0.f}, 0.3f, false);
+    REQUIRE(fired);
+    CHECK(u.rescueTo().at.x == doctest::Approx(10.f)); // 12, 11 too near; the older ones (4 m and back) never matter
+}
+
+TEST_CASE("unstick: reset and a teleport forget the safe points; a zero frame counts nothing") {
+    FieldUnstick u;
+    for (int i = 0; i <= 30; ++i) u.tick(kDt, Vec2{i * 0.1f, 0.f}, 0.f, true, Vec2{}, 1.f, false);
+    REQUIRE(u.safeCount() > 0);
+    u.reset();
+    CHECK(u.safeCount() == 0);
+    for (int i = 0; i <= 30; ++i) u.tick(kDt, Vec2{i * 0.1f, 0.f}, 0.f, true, Vec2{}, 1.f, false);
+    REQUIRE(u.safeCount() == 4);
+    u.tick(kDt, Vec2{80.f, 40.f}, 5.f, false, Vec2{}, 1.f, true); // a scene put the lead elsewhere
+    CHECK(u.safeCount() == 0);
+    const float stuck = u.stuckFor();
+    for (int i = 0; i < 100; ++i) CHECK_FALSE(u.tick(0.f, Vec2{80.f, 40.f}, 5.f, true, Vec2{0.9f, 0.f}, 0.3f, false));
+    CHECK(u.stuckFor() == stuck);
+}
+
+TEST_CASE("unstick: a short jump is never a rescue, and the host's unwalkable verdict wins over an upward normal") {
+    FieldUnstick u;
+    for (int i = 0; i <= 30; ++i) u.tick(kDt, Vec2{i * 0.1f, 0.f}, 0.f, true, Vec2{}, 1.f, false);
+    for (int i = 0; i < 40; ++i) CHECK_FALSE(u.tick(kDt, Vec2{3.f + i * 0.05f, 0.f}, 0.5f * std::sin(i / 40.f * 3.14159f), false, Vec2{}, 1.f, true));
+    u.tick(kDt, Vec2{5.f, 0.f}, 0.f, true, Vec2{}, 1.f, false);
+    CHECK(u.fallingFor() == 0.f);
+    CHECK(u.stuckFor() == 0.f);
+    // A lip the host calls unwalkable, normal straight up: counted as stuck, not as safe ground.
+    const int before = u.safeCount();
+    bool fired = false;
+    for (int i = 0; i < 120 && !fired; ++i) fired = u.tick(kDt, Vec2{5.f, 0.f}, 0.f, true, Vec2{}, 1.f, false, 0);
+    CHECK(u.safeCount() == before);
+    CHECK(fired);
+}
+
+TEST_CASE("unstick: the slide pushes the ground velocity downhill up to slideSpeed, and leaves it be when not sliding") {
+    FieldUnstick u;
+    u.tick(kDt, Vec2{}, 0.f, true, Vec2{0.8f, 0.f}, 0.6f, false);
+    REQUIRE(u.sliding());
+    Vec2 v{};
+    for (int i = 0; i < 120; ++i) v = u.slideVelocity(v, kDt);
+    CHECK(v.x == doctest::Approx(u.rules().slideSpeed).epsilon(0.02));
+    CHECK(v.y == doctest::Approx(0.f));
+    const Vec2 fast = u.slideVelocity(Vec2{9.f, 1.f}, kDt);
+    CHECK(fast.x == doctest::Approx(9.f));
+    u.tick(kDt, Vec2{}, 0.f, true, Vec2{}, 1.f, false);
+    CHECK(u.slideVelocity(Vec2{1.f, 2.f}, kDt).y == doctest::Approx(2.f));
+}
+
+TEST_CASE("aim: a heavy reached while busy waits for the attack to end; a new press drops it") {
+    PressHold p;
+    bool heavy = false;
+    for (int i = 0; i < 30; ++i) heavy |= p.tick(kDt, true, 0.25f, true).heavy;
+    CHECK_FALSE(heavy);
+    CHECK(p.heavyPending());
+    CHECK_FALSE(p.tick(kDt, false, 0.25f, true).light); // the release of a heavy is no light
+    CHECK(p.tick(kDt, false, 0.25f, false).heavy);       // the attack ended: the heavy goes out
+    CHECK_FALSE(p.heavyPending());
+    for (int i = 0; i < 30; ++i) p.tick(kDt, true, 0.25f, true);
+    p.tick(kDt, false, 0.25f, true);
+    p.tick(kDt, true, 0.25f, true); // pressed again before the attack ended
+    CHECK_FALSE(p.heavyPending());
+}
+
+TEST_CASE("aim: the body's turn toward the aim is capped at turnRate and never overshoots") {
+    AimRules r;
+    CHECK(aimTurnStep(r, 2.f, kDt) == doctest::Approx(r.turnRate * kDt));
+    CHECK(aimTurnStep(r, -2.f, kDt) == doctest::Approx(-r.turnRate * kDt));
+    CHECK(aimTurnStep(r, 0.01f, kDt) == doctest::Approx(0.01f));
+    CHECK(aimTurnStep(r, 1.f, 0.f) == 0.f);
 }

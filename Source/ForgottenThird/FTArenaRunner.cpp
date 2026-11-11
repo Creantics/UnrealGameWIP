@@ -1089,7 +1089,8 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressLight |= ArenaAnyJustPressed(*PC, Key(AttackB, 0), Key(AttackB, 1), EKeys::Gamepad_RightShoulder);
 	bPressHeavy |= ArenaAnyJustPressed(*PC, Key(HeavyB, 0), Key(HeavyB, 1), EKeys::Gamepad_RightTrigger);
 	// Left mouse: a tap is the light, held ftcore::AimRules::heavyHold the heavy. Right mouse held aims.
-	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, PC->IsInputKeyDown(EKeys::LeftMouseButton), ArenaAim.rules().heavyHold);
+	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, PC->IsInputKeyDown(EKeys::LeftMouseButton), ArenaAim.rules().heavyHold,
+		Fight.output().player.action == ftcore::ArenaAction::Light || Fight.output().player.action == ftcore::ArenaAction::Heavy);
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
 	bAimHeld = PC->IsInputKeyDown(EKeys::RightMouseButton);
@@ -1195,7 +1196,30 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.read = PressRead;
 	// Aimed: the lead faces the camera's way and strafes (ArenaFight's aim input).
 	In.aim = ArenaAim.aiming();
+	// The shot's way: at the locked enemy when locked, else from the lead's body to the reticle's point (the camera's
+	// yaw alone runs the lane parallel to the reticle's ray, off it by the shoulder offset).
 	In.aimDir = In.view;
+	{
+		const std::uint8_t Locked = Fight.lock();
+		ftcore::Vec2 To{};
+		bool bTo = false;
+		if (Locked != ftcore::kArenaNobody && Locked < Fight.enemyCount())
+		{
+			To = Bodies.enemies[Locked];
+			bTo = true;
+		}
+		else if (ArenaAim.alpha() > 0.f)
+		{
+			To = ftcore::Vec2{float(ReticlePoint.X / 100.0), float(ReticlePoint.Y / 100.0)};
+			bTo = true;
+		}
+		const ftcore::Vec2 D{To.x - Bodies.player.x, To.y - Bodies.player.y};
+		if (bTo && D.x * D.x + D.y * D.y > 0.01f)
+		{
+			const float L = FMath::Sqrt(D.x * D.x + D.y * D.y);
+			In.aimDir = ftcore::Vec2{D.x / L, D.y / L};
+		}
+	}
 	In.aimTurn = ArenaAim.rules().turnRate;
 	In.aimSpeed = ArenaAim.speedScale();
 	// Attacking on the move: a light or a heavy under way (as the last step left it) walks and turns by its rules; a

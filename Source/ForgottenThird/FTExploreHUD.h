@@ -21,6 +21,8 @@ class FORGOTTENTHIRD_API AFTExploreHUD : public AHUD
 
 public:
 	virtual void DrawHUD() override;
+	// A review capture's HUD: the aim reticle alone (no objectives, prompts or controls line).
+	bool bReticleOnly = false;
 
 private:
 	AFTExploreDirector* FindDirector();

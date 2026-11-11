@@ -28,6 +28,8 @@ struct UnstickRules {
     float ringSpacing = 1.f;
     float backoff = 1.5f;
     float fadeTime = 0.35f;
+    float slideAccel = 8.f;    // 1/s, how fast the slide's pace is reached (share of the shortfall per second)
+    float teleportJump = 3.f;  // m moved in one frame that counts as a teleport: the ring starts over
 };
 
 // Reads Data/Movement/unstick.json (the tunables above by name). Absent keys keep `out`'s values; false and `out`
@@ -51,7 +53,13 @@ public:
     // One frame. onGround: the body touches some floor (walking or resting on a slope); floorNormal: that floor's
     // normal (x, y on the ground, z up; unit); inAir: the body is falling or jumping. Returns true on the frame a
     // rescue fires; rescueTo() is then where to put the feet.
-    bool tick(float dt, Vec2 at, float z, bool onGround, Vec2 floorNormalXY, float floorNormalZ, bool inAir);
+    // floorWalkable: the host's own verdict on the floor (1 walkable, 0 not, -1 none: the normal decides). A floor the
+    // host calls unwalkable stays so whatever its normal (a ledge's lip can show an upward normal). dt <= 0 changes
+    // nothing. A move over teleportJump in one frame starts the ring over.
+    bool tick(float dt, Vec2 at, float z, bool onGround, Vec2 floorNormalXY, float floorNormalZ, bool inAir,
+              int floorWalkable = -1);
+    // While sliding: the ground velocity (m/s) pushed downhill toward slideSpeed by slideAccel; otherwise `vel`.
+    Vec2 slideVelocity(Vec2 vel, float dt) const;
 
     // Sliding down a too-steep floor this frame, and the downhill way (unit on the ground).
     bool sliding() const { return sliding_; }
@@ -81,6 +89,9 @@ private:
     Vec2 slideDir_{};
     UnstickPoint rescueTo_{};
     float fadeLeft_ = 0.f;
+    Vec2 lastAt_{};
+    float lastZ_ = 0.f;
+    bool hasLast_ = false;
 };
 
 } // namespace ftcore

@@ -83,12 +83,32 @@ struct FArmBones
 	FName Shoulder;
 	FName Hand;
 	FName Knuckle;
+	FName KnuckleMid; // the middle finger's second joint: with Knuckle, the closed fist's striking pad between them
 };
 const FArmBones& ArmBones(int32 Side)
 {
-	static const FArmBones Bones[2] = {{FName(TEXT("upperarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l"))},
-		{FName(TEXT("upperarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r"))}};
+	static const FArmBones Bones[2] = {
+		{FName(TEXT("upperarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l")), FName(TEXT("middle_02_l"))},
+		{FName(TEXT("upperarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r")), FName(TEXT("middle_02_r"))}};
 	return Bones[Side == 0 ? 0 : 1];
+}
+// The closed fist's striking pad: halfway along the middle finger's first bone, out from the wrist by kPadOut (the
+// knuckle bone alone when the second joint is missing). False with no knuckle bone.
+constexpr double kPadOut = 2.0;
+bool KnucklePad(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
+{
+	const FArmBones& Bones = ArmBones(Side);
+	if (!Body.DoesSocketExist(Bones.Knuckle))
+	{
+		return false;
+	}
+	const FVector Knuckle = Body.GetSocketLocation(Bones.Knuckle);
+	Out = Body.DoesSocketExist(Bones.KnuckleMid) ? (Knuckle + Body.GetSocketLocation(Bones.KnuckleMid)) * 0.5 : Knuckle;
+	if (Body.DoesSocketExist(Bones.Hand))
+	{
+		Out += (Knuckle - Body.GetSocketLocation(Bones.Hand)).GetSafeNormal() * kPadOut;
+	}
+	return true;
 }
 // A view of a strike's impact, this long after it.
 constexpr double kViewLag = 0.03;
@@ -548,6 +568,8 @@ void FFTLeadWeapons::End()
 	{
 		Instance->ClearActions();
 		Instance->SetHandCurl(-1.f, -1.f);
+		Instance->SetHandGrip(false, false);
+		Instance->SetSupportHand(0.f);
 		if (AimSide >= 0)
 		{
 			Instance->SetArmAim(AimSide, AimPoint, 0.f, FVector::ForwardVector, 0.f);
@@ -746,13 +768,8 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			{
 				FName Limb;
 				bool bLeft = false;
-				const FName Knuckle = ArmBones(StrikesLeft() ? 0 : 1).Knuckle;
 				const USkeletalMeshComponent* Body = Skin.Get();
-				if (Body && Strike != FightClip::KickLeft && Strike != FightClip::KickRight && Body->DoesSocketExist(Knuckle))
-				{
-					ImpactAt = Body->GetSocketLocation(Knuckle);
-				}
-				else
+				if (!(Body && Strike != FightClip::KickLeft && Strike != FightClip::KickRight && KnucklePad(*Body, StrikesLeft() ? 0 : 1, ImpactAt)))
 				{
 					GetStrikeLimb(Limb, ImpactAt, bLeft);
 				}
@@ -872,6 +889,8 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 		Curl[Side == 0 ? 0 : 1] += (1.f - kGuardCurl) * W;
 		Instance->SetHandCurl(Curl[0], Curl[1]);
 	}
+	// The pistol: the right hand shaped round its grip while it is in the hand.
+	Instance->SetHandGrip(false, Kit.weapon == ftcore::ArenaWeapon::Guns && Pistol.IsValid() && !bHolstered);
 	// Only at a point in front of the body: a target behind waits for the body to turn.
 	if (W > 0.f)
 	{
@@ -884,6 +903,8 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			W *= FMath::SmoothStep(kAimSideCos, kAimFrontCos, Cos);
 		}
 	}
+	// Aim held with the pistol: the left hand joins the right on the grip (a two-handed hold).
+	Instance->SetSupportHand(Kit.weapon == ftcore::ArenaWeapon::Guns && Side == 1 ? FMath::Min(AimHold, W) : 0.f);
 	if (W <= 0.f || Side < 0)
 	{
 		if (AimSide >= 0)

@@ -7,5 +7,7 @@
   "fallTime": 4,
   "ringSpacing": 1,
   "backoff": 1.5,
-  "fadeTime": 0.35
+  "fadeTime": 0.35,
+  "slideAccel": 8,
+  "teleportJump": 3
 }

@@ -1,5 +1,7 @@
 #include "FTArenaHUD.h"
 
+#include "FTAimReticle.h"
+
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -1072,19 +1074,8 @@ void AFTArenaHUD::DrawHUD()
 	{
 		DrawResult(*Mode);
 	}
-	// The aim's centre reticle (right mouse held), faded in with the stance: a dot and four short ticks.
-	if (const float Aim = Mode->GetAimAlpha(); Aim > 0.f)
-	{
-		const float CX = Canvas->ClipX * 0.5f;
-		const float CY = Canvas->ClipY * 0.5f;
-		const FLinearColor Col(1.f, 1.f, 1.f, 0.85f * Aim);
-		const float Gap = 7.f * S, Len = 9.f * S, W = 2.f * S;
-		DrawRect(Col, CX - W, CY - W, 2.f * W, 2.f * W);
-		DrawRect(Col, CX - Gap - Len, CY - W * 0.5f, Len, W);
-		DrawRect(Col, CX + Gap, CY - W * 0.5f, Len, W);
-		DrawRect(Col, CX - W * 0.5f, CY - Gap - Len, W, Len);
-		DrawRect(Col, CX - W * 0.5f, CY + Gap, W, Len);
-	}
+	// The aim's centre reticle (right mouse held), faded in with the stance.
+	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha());
 	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
 	DrawStrCentered(kHintArena, kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
 	FT::DrawPauseOverlay(*this, Canvas);

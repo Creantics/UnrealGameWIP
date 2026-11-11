@@ -69,26 +69,37 @@ float AimStance::alpha() const {
     return a * a * (3.f - 2.f * a);
 }
 
-PressHold::Out PressHold::tick(float dt, bool down, float hold) {
+PressHold::Out PressHold::tick(float dt, bool down, float hold, bool busy) {
     Out o;
     if (!(dt > 0.f) || !std::isfinite(dt)) dt = 0.f;
     if (down) {
         if (downFor_ < 0.f) {
             downFor_ = 0.f;
             heavyDone_ = false;
+            heavyPending_ = false; // a new press replaces a heavy still waiting
         } else {
             downFor_ += dt;
         }
         if (!heavyDone_ && downFor_ >= hold) {
             heavyDone_ = true;
-            o.heavy = true;
+            heavyPending_ = true;
         }
     } else if (downFor_ >= 0.f) {
         o.light = !heavyDone_;
         downFor_ = -1.f;
         heavyDone_ = false;
     }
+    if (heavyPending_ && !busy) {
+        heavyPending_ = false;
+        o.heavy = true;
+    }
     return o;
+}
+
+float aimTurnStep(const AimRules& rules, float gap, float dt) {
+    if (!(dt > 0.f) || !std::isfinite(gap)) return 0.f;
+    const float step = rules.turnRate * dt;
+    return gap > step ? step : (gap < -step ? -step : gap);
 }
 
 } // namespace ftcore

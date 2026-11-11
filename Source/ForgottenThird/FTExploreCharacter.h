@@ -224,6 +224,8 @@ private:
 	// What the attack under way allows (Data/Battle/attack_move.json): walking pace share and turn rate; off attack
 	// full pace and no limit.
 	ftcore::AttackMoveOut AttackMoveNow() const;
+	float BaseWalkSpeed() const;
+	bool ScenePlaying();
 	// The way out of a too-steep slope or a wedge (ftcore::FieldUnstick, Data/Movement/unstick.json): the slide
 	// downhill, and the step back to safe ground with a short fade.
 	void TickUnstick(float DeltaSeconds);
@@ -443,4 +445,11 @@ private:
 	int32 WeaponShotSeen = 0;
 	double WeaponShotDue = -1.0; // Strike time of the next shot; below 0: none
 	float WeaponQuitIn = 0.f;
+	// -ExploreWeaponStrip=<n>: in place of one shot per attack, n shots StripStep seconds apart from the first walking
+	// light attack after the delay (StripAt: its Strike time; below 0: not begun), each frame's speed and upper share
+	// logged while it runs.
+	int32 StripShots = 0;
+	float StripStep = 0.1f;
+	double StripAt = -1.0;
+
 };
