@@ -330,6 +330,21 @@ if(FTCORE_BUILD_TESTS)
         --summary ${CMAKE_CURRENT_BINARY_DIR}/place_example_summary.txt)
     set_tests_properties(place_example PROPERTIES PASS_REGULAR_EXPRESSION "PLACE OK")
 
+    # The auto-rig core's self-check (tools/blender/autorig_core.py, plain numpy) on a synthetic figure. Needs a
+    # real CPython with numpy (not the Windows Store alias); skipped when there is none.
+    find_program(FT_PYTHON NAMES python python3
+        HINTS "$ENV{LOCALAPPDATA}/Programs/Python/Python312" "$ENV{LOCALAPPDATA}/Programs/Python/Python313"
+        NO_CACHE)
+    if(FT_PYTHON AND NOT FT_PYTHON MATCHES "WindowsApps")
+        execute_process(COMMAND "${FT_PYTHON}" -I -c "import numpy" RESULT_VARIABLE FT_PY_NUMPY
+            OUTPUT_QUIET ERROR_QUIET)
+        if(FT_PY_NUMPY EQUAL 0)
+            add_test(NAME autorig_core COMMAND "${FT_PYTHON}" -I
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tools/blender/autorig_core.py)
+            set_tests_properties(autorig_core PROPERTIES PASS_REGULAR_EXPRESSION "autorig_core self-check OK")
+        endif()
+    endif()
+
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
         -DWRAPPER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenCore/Private/Core

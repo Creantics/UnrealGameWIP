@@ -107,7 +107,8 @@ def mesh_arrays(ob):
     return V.reshape(-1, 3), F.reshape(-1, 3)
 
 
-def build_armature(J, name="Armature"):
+def build_armature(J, name="Armature", along=None):
+    """along: {name: direction} builds plain Blender bones (tail along the limb) instead, for heat weighting."""
     arm = bpy.data.armatures.new(name)
     ob = bpy.data.objects.new(name, arm)
     bpy.context.scene.collection.objects.link(ob)
@@ -119,8 +120,11 @@ def build_armature(J, name="Armature"):
         length = float(np.linalg.norm(t - h))
         eb = arm.edit_bones.new(n)
         eb.head = Vector(h)
-        eb.tail = Vector(h + y * length)  # Blender's bone Y carries the mannequin's Y
-        eb.align_roll(Vector(np.cross(x, y)))  # then Blender's X is the mannequin's X
+        if along is not None:
+            eb.tail = Vector(h + along[n] * length)
+        else:
+            eb.tail = Vector(h + y * length)  # Blender's bone Y carries the mannequin's Y
+            eb.align_roll(Vector(np.cross(x, y)))  # then Blender's X is the mannequin's X
         eb.use_deform = ac.DEFORM[n]
     for n in ac.NAMES:
         p = ac.PARENT[n]
@@ -174,20 +178,19 @@ def main():
     L, info = ac.find_landmarks(V, F, voxels=o["voxels"], guides=guides, log=say)
     t1 = time.time()
     J, dirs = ac.build_skeleton(L, info)
-    arm_ob = build_armature(J)
-    aerr = axis_error(arm_ob, J)
+    arm_ob = build_armature(J, along=dirs if o["heat"] else None)
+    aerr = 0.0 if o["heat"] else axis_error(arm_ob, J)
     if aerr > 0.5:
         raise SystemExit("bone axes off by %.2f degrees" % aerr)
     ob.name = os.path.splitext(os.path.basename(o["out"]))[0]
     ob.data.name = ob.name
     if o["heat"]:
-        bpy.ops.object.select_all(action="DESELECT")
-        ob.select_set(True)
-        arm_ob.select_set(True)
-        bpy.context.view_layer.objects.active = arm_ob
-        bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+        # the repo's current method for comparison: Blender heat weights, a voxel proxy where heat fails
+        import rig_common as rc
+        rc.auto_weights(ob, arm_ob)
         names = [g.name for g in ob.vertex_groups]
-        say("heat weights: %d groups" % len(names))
+        say("heat weights (rig_common.auto_weights): %d groups; bones are plain Blender bones, not mannequin axes"
+            % len(names))
         infl = np.array([sum(1 for g in v.groups if g.weight > 1e-4) for v in ob.data.vertices])
     else:
         names, W = ac.bind(V, F, J, dirs, info, max_infl=o["max_infl"], twist=o["twist"], hem=o["hem"], log=say)
