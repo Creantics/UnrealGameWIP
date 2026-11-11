@@ -208,12 +208,13 @@ std::uint32_t storySaturatingAdd(std::uint32_t c, std::uint32_t n, std::uint32_t
     return sum >= cap ? cap : static_cast<std::uint32_t>(sum);
 }
 
-std::uint32_t storyHelpShown(const StoryState& s, const FactRegistry& reg) {
-    return storySaturatingAdd(std::max<std::uint32_t>(1, sideTotal(s.wide, reg, 0)),
-                              std::max<std::uint32_t>(1, sideTotal(s.wide, reg, 1)), 0xFFFFFFFFu);
+std::uint32_t storyPressTotal(const StoryState& s, const FactRegistry& reg) {
+    const std::uint32_t floor = reg.tuning.pressFloor;
+    return storySaturatingAdd(std::max(floor, sideTotal(s.wide, reg, 0)), std::max(floor, sideTotal(s.wide, reg, 1)),
+                              0xFFFFFFFFu);
 }
 
-std::uint8_t storyLeadKind(const StoryState& s, const FactRegistry& reg) {
+std::uint8_t storyTopKind(const StoryState& s, const FactRegistry& reg) {
     const std::array<std::uint8_t, 3>& c = reg.roles.pressCounters[0];
     auto count = [&](std::uint8_t k) { return bound(c[k], reg) == kNoWide ? 0u : s.wide[c[k]]; };
     std::uint32_t best = 0;
@@ -316,7 +317,7 @@ SetResult storyAdd(StoryState& s, const FactRegistry& reg, std::uint8_t w, std::
     return addWide(s, w, n, row.cap) ? SetResult::Ok : SetResult::Unchanged;
 }
 
-SetResult storyCountHelp(StoryState& s, const FactRegistry& reg, std::uint8_t side, std::uint8_t kind) {
+SetResult storyCountPress(StoryState& s, const FactRegistry& reg, std::uint8_t side, std::uint8_t kind) {
     if (side > 1 || kind > 2)
         return reject(s, static_cast<std::uint16_t>(kStoryWideEventBit | kNoWide), SetResult::RejectedRange, kind);
     const StoryRoles& ro = reg.roles;
@@ -385,13 +386,13 @@ SceneReads storySceneReads(const StoryState& s, const FactRegistry& reg, std::ui
                 : a.value == row.from && row.cond.fact != 0 && condHolds(s, row.cond) ? row.to
                                                                                     : a.value;
             break;
-        case DeriveKind::LeadKind:
+        case DeriveKind::TopKind:
             valid = true;
-            v = storyLeadKind(s, reg);
+            v = storyTopKind(s, reg);
             break;
-        case DeriveKind::PressShown:
+        case DeriveKind::PressTotal:
             valid = true;
-            v = storyHelpShown(s, reg);
+            v = storyPressTotal(s, reg);
             break;
         }
         if (!valid) continue;
@@ -538,9 +539,9 @@ std::uint32_t storyValidate(const StoryState& s, const FactRegistry& reg, std::s
             if (isSet && !gate) sink.add(1, slot, row.gate.fact);
             if (v == kNotOffered && gate && committed(s, row.firstSet)) sink.add(2, slot, row.gate.fact);
         }
-        // V06 / V07: an option offered only under a condition.
+        // V06: an option offered only under a condition was taken while it did not hold.
         if (isSet && choiceCount(row.kind) != 0 && !condHolds(s, row.optionGates[v - 1u]))
-            sink.add(v == 4 ? 6 : 7, slot, row.optionGates[v - 1u].fact);
+            sink.add(6, slot, row.optionGates[v - 1u].fact);
         // V03 / V04: a past scene left a choice, an optional act or an event at 0.
         if (!row.setAny && v == 0 && committed(s, row.firstSet)) {
             if (canBeNotOffered(row.kind)) sink.add(3, slot);
@@ -1208,6 +1209,24 @@ void readRoles(const JsonValue& root, FactRegistry& reg, JsonErrors& je) {
             }
         }
     }
+    // No slot serves two roles: each role's writes would land on the other's.
+    std::array<std::uint8_t, kWideSlots> wideUses{};
+    auto wideOnce = [&](std::uint8_t w) {
+        if (w != kNoWide && wideUses[w]++ == 1) je.add("roles", "wide " + std::string(reg.wide[w].id()) + " bound to two roles");
+    };
+    for (const auto& side : ro.pressCounters)
+        for (const std::uint8_t w : side) wideOnce(w);
+    for (const std::uint8_t w : {ro.pressScene, ro.pressTotal, ro.retries, ro.milestone, ro.trackMark}) wideOnce(w);
+    std::array<std::uint8_t, kFactSlots> factUses{};
+    for (const std::uint16_t f : {ro.lastKind[0], ro.lastKind[1], ro.firstPress, ro.sideOpen[0], ro.sideOpen[1]})
+        if (f != 0 && factUses[f]++ == 1) je.add("roles", "fact " + std::string(reg.facts[f].id()) + " bound to two roles");
+}
+
+void readPressFloor(const JsonValue& root, FactRegistry& reg, JsonErrors& je) {
+    const JsonValue f = root["pressFloor"];
+    if (f.isAbsent()) return;
+    if (!f.isInteger() || f.integer() < 0 || f.integer() > kMaxPressCap) je.add("pressFloor", "expected 0..65535");
+    else reg.tuning.pressFloor = static_cast<std::uint32_t>(f.integer());
 }
 
 void readTrack(const JsonValue& root, FactRegistry& reg, JsonErrors& je) {
@@ -1299,7 +1318,7 @@ void readDerived(const JsonValue& root, FactRegistry& reg, JsonErrors& je) {
     }
     static constexpr std::array<std::pair<std::string_view, DeriveKind>, 6> kKinds{{
         {"value", DeriveKind::Value}, {"read", DeriveKind::Read}, {"in", DeriveKind::In},
-        {"upgrade", DeriveKind::Upgrade}, {"leadKind", DeriveKind::LeadKind}, {"pressShown", DeriveKind::PressShown},
+        {"upgrade", DeriveKind::Upgrade}, {"topKind", DeriveKind::TopKind}, {"pressTotal", DeriveKind::PressTotal},
     }};
     for (std::uint32_t i = 0; i < ds.size(); ++i) {
         const std::string at = "derived[" + std::to_string(i) + "]";
@@ -1309,10 +1328,10 @@ void readDerived(const JsonValue& root, FactRegistry& reg, JsonErrors& je) {
         for (const auto& [name, k] : kKinds)
             if (kind == name) row.kind = k;
         if (row.kind == DeriveKind::None) {
-            je.add(at + ".kind", "expected value, read, in, upgrade, leadKind or pressShown");
+            je.add(at + ".kind", "expected value, read, in, upgrade, topKind or pressTotal");
             continue;
         }
-        if (row.kind != DeriveKind::LeadKind && row.kind != DeriveKind::PressShown) {
+        if (row.kind != DeriveKind::TopKind && row.kind != DeriveKind::PressTotal) {
             factRole(d["fact"], reg, row.fact, at + ".fact", je);
             if (row.fact == 0) je.add(at + ".fact", "required");
         }
@@ -1409,6 +1428,7 @@ bool importStoryRegistry(std::string_view csv, std::string_view json, FactRegist
     if (errors.empty()) {
         const JsonValue root = doc.root();
         readRoles(root, reg, je);
+        readPressFloor(root, reg, je);
         readTrack(root, reg, je);
         readMilestones(root, reg, je);
         readDerived(root, reg, je);

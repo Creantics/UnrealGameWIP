@@ -254,6 +254,21 @@ TEST_CASE("called blow: the clock starts at reset; a junk far-future time is ign
     CHECK(fresh.now() == 0.0);
     CHECK(fresh.update(1e300).empty());
     CHECK(fresh.now() == 0.0);
+
+    // Used without a reset on a clock past kMaxTimeJump, a strike stalls: the owner must reset it first.
+    const CalledImpact late = impactAt(705.0, CalledZone::Left);
+    CalledStrike stale;
+    stale.start(&late, 1);
+    CHECK(stale.update(710.0).empty());
+    CHECK(stale.now() == 0.0);
+    CHECK_FALSE(stale.complete());
+    stale.reset(700.0);
+    stale.start(&late, 1);
+    CHECK(stale.update(710.0).size() == 1);
+    // ArenaBossRun::begin resets its strike to the fight's start, however late.
+    ArenaBossRun run;
+    run.begin(ArenaBossDef{}, 5000.0);
+    CHECK(run.strike().now() == 5000.0);
 }
 
 TEST_CASE("called blow: one hold at a time, and the Intercept rearms") {

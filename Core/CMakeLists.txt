@@ -279,6 +279,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story.cpp
         tests/test_story_chain.cpp
         tests/test_story_state.cpp
+        tests/test_fight_session.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp
         tests/test_look_grade.cpp

@@ -41,10 +41,11 @@ Required with the csv: one without the other is an import error. Every field but
 |---|---|
 | `version` | 2 |
 | `scenes` | the scene codes in play order (`[a-z0-9_]{1,7}`, at most 128); a scene's index is its ordinal |
-| `roles` | ids bound to built-in jobs: `pressCounters` (2 sides x 3 kinds, CTR with max at most 65535), `pressScene`, `pressTotal`, `retries`, `milestone`, `trackMark` (wide ids); `lastKind` (2 NUM facts, max at least 3), `firstPress`, `sideOpen` (2 facts, `""` for none) |
+| `roles` | ids bound to built-in jobs: `pressCounters` (2 sides x 3 kinds, CTR with max at most 65535), `pressScene`, `pressTotal`, `retries`, `milestone`, `trackMark` (wide ids); `lastKind` (2 NUM facts, max at least 3), `firstPress`, `sideOpen` (2 facts, `""` for none); no slot may serve two roles |
+| `pressFloor` | 0..65535 (default 0): `storyPressTotal` counts each side as at least this |
 | `track` | `length`, `scene`, `side`: the presses on that side in that scene, capped at the length, go to `trackMark` |
 | `milestones` | `scene`, `value`, optional `needs` (a fact): at the scene's commit the milestone counter rises to the value; scenes and values must rise |
-| `derived` | up to 16 values computed for a scene's reads: `value` (a fact's value), `read` (its stored byte), `in` (1 when the fact's value is in `values`), `upgrade` (`from` becomes `to` while `if` holds), `leadKind`, `pressShown` |
+| `derived` | up to 16 values computed for a scene's reads: `value` (a fact's value), `read` (its stored byte), `in` (1 when the fact's value is in `values`), `upgrade` (`from` becomes `to` while `if` holds), `topKind`, `pressTotal` |
 | `rules` | data-bound checks with their own issue number: `needs` (`when` holds → `then` holds; `settled` checks only after the when-fact's first set scene is committed), `bitsInOrder` (a BITS fact's bits set from bit 0 up) |
 
 A condition is `id` (set), `id=V`, `id.fN=V` (a packed field) or `id&M` (any of the bits).
@@ -58,7 +59,7 @@ A condition is `id` (set), `id=V`, `id.fN=V` (a packed field) or `id&M` (any of 
 - `storySet` checks in order: unknown, no scene, wrong scene, range, gate, unchanged, once, mono.
   Every refusal is a `Rejected` event (`id` with bit 15 for wide slots).
 - `storyGet` reads Unset (the default), Set, NotOffered, Stale (out of range: the default) or Unknown.
-- `storyCountHelp(side, kind)` counts one press (per side and kind, per scene, raw total), records
+- `storyCountPress(side, kind)` counts one press (per side and kind, per scene, raw total), records
   the last kind and latches the first press; a side with an unset `sideOpen` fact refuses it.
 - `storySceneReads(scene)`: every fact and wide value the scene reads plus the derived values.
   Call at scene start; it does not allocate.
