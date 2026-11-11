@@ -79,6 +79,9 @@ def load_mesh(path, keep=False):
         bpy.ops.wm.obj_import(filepath=path)
     else:
         raise SystemExit("unsupported input " + ext)
+    shapes = {pb.custom_shape for o in bpy.data.objects if o.type == "ARMATURE" for pb in o.pose.bones}
+    for o in [o for o in bpy.data.objects if o in shapes]:  # bone display shapes are not the character
+        bpy.data.objects.remove(o, do_unlink=True)
     meshes = [o for o in bpy.data.objects if o.type == "MESH"]
     if not meshes:
         raise SystemExit("no mesh in " + path)
