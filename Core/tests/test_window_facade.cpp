@@ -663,13 +663,17 @@ TEST_CASE("r12 shop display case: a box fixed behind the glass, the true ray; fl
     hit = windowShopCaseHit(d, w, hgt, 0.7f, 1.1f, 1.0f, 0.0f, 1.0f, 1.0f);
     CHECK(hit.face == 0);
     CHECK(hit.x == doctest::Approx(0.7f + d));
-    // Near the far jamb the same ray meets the side wall first, part of the way in.
+    // No side walls: near a jamb the same ray still ends on the back wall, on shelves that run on behind the pier,
+    // so a pane seen along a lane is never one flat side wall; a grazing ray's slope along is capped.
     hit = windowShopCaseHit(d, w, hgt, w - 0.1f, 1.1f, 1.0f, 0.0f, 1.0f, 1.0f);
-    CHECK(hit.face == 4);
-    CHECK(hit.in == doctest::Approx(0.1f));
-    CHECK(hit.x == doctest::Approx(w));
+    CHECK(hit.face == 0);
+    CHECK(hit.x == doctest::Approx(w - 0.1f + d));
     hit = windowShopCaseHit(d, w, hgt, 0.1f, 1.1f, -1.0f, 0.0f, 1.0f, 1.0f);
-    CHECK(hit.face == 3);
+    CHECK(hit.face == 0);
+    CHECK(hit.x == doctest::Approx(0.1f - d));
+    hit = windowShopCaseHit(d, w, hgt, 1.0f, 1.1f, 50.0f, 0.0f, 1.0f, 1.0f);
+    CHECK(hit.face == 0);
+    CHECK(hit.x <= 1.0f + 3.0f * d + 1e-4f);
     // Looking down from eye height near the foot: the floor; up near the head: the soffit.
     hit = windowShopCaseHit(d, w, hgt, 1.0f, 0.1f, 0.0f, -1.0f, 1.0f, 1.0f);
     CHECK(hit.face == 1);

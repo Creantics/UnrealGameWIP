@@ -300,6 +300,7 @@ constexpr WindowTint kShopColours[kWindowShopColourCount] = {
     {0.25f, 0.50f, 0.30f, 1.0f, false},  // green packets
 };
 constexpr std::uint32_t kCaseSalt = 0x1f83d9abu;  // round 12: a display case's goods
+constexpr float kCaseSlope = 3.0f;                // a display case's ray: its slope along the wall is capped
 
 // Round 12: a shop's glass shows a display case drawn in the shader, not a photo: a box shopCaseDepth deep behind the
 // glass, fixed in the wall's own frame and hit by the true view ray times the collection's Parallax (so it moves on
@@ -318,13 +319,12 @@ std::string shopCaseHlsl(const WindowFacadeSpec& spec) {
     h += "float dcX = clamp((gu - u0) * bw, 0.0, dcW);\n";
     h += "float dcY = clamp((gv - v0) * sh, 0.0, dcH);\n";
     h += "float dcPar = saturate(Parallax);\n";
-    h += "float dcSx = dcPar * ViewT.x / dzv;\n";
+    // No side walls: the shelves run on along the shop behind the piers (windowShopCaseHit), the slope along capped.
+    h += "float dcSx = clamp(dcPar * ViewT.x / dzv, -" + num(kCaseSlope) + ", " + num(kCaseSlope) + ");\n";
     h += "float dcSy = dcPar * ViewT.y / dzv;\n";
-    h += "float dcTx = dcSx > 0.0 ? (dcW - dcX) / dcSx : (dcSx < 0.0 ? -dcX / dcSx : 1e30);\n";
     h += "float dcTy = dcSy > 0.0 ? (dcH - dcY) / dcSy : (dcSy < 0.0 ? -dcY / dcSy : 1e30);\n";
-    h += "float dcT = min(" + d + ", min(dcTx, dcTy));\n";
+    h += "float dcT = min(" + d + ", dcTy);\n";
     h += "bool dcBack = dcT >= " + d + " - 1e-4;\n";
-    h += "bool dcSide = !dcBack && dcTx <= dcTy;\n";
     h += "float dcBx = dcX + dcT * dcSx;\n";
     h += "float dcBy = dcY + dcT * dcSy;\n";
     // The back wall: a cabinet, shelf rows of goods, a plain head.
@@ -335,13 +335,15 @@ std::string shopCaseHlsl(const WindowFacadeSpec& spec) {
     h += "float dcFy = dcRy - dcRow;\n";
     h += "float dcIx = floor(dcBx / dcItem);\n";
     h += "float dcFx = dcBx / dcItem - dcIx;\n";
-    h += "uint dcHh = W.H(W.H(hh ^ " + unum(kCaseSalt) + ") + W.H((uint)(dcRow + 8.0) * 131u + (uint)(dcIx + 4.0)));\n";
+    h += "uint dcHh = W.H(W.H(hh ^ " + unum(kCaseSalt) + ") + W.H((uint)(dcRow + 8.0) * 131u + (uint)(dcIx + 64.0)));\n";
     h += "float dcR0 = float(dcHh & 0xFFu) / 256.0;\n";
     h += "float dcR1 = float((dcHh >> 8) & 0xFFu) / 256.0;\n";
     h += "float3 kGoods[8] = {float3(0.52, 0.17, 0.11), float3(0.15, 0.30, 0.44), float3(0.58, 0.48, 0.20), "
          "float3(0.18, 0.36, 0.22), float3(0.50, 0.46, 0.40), float3(0.40, 0.24, 0.13), float3(0.56, 0.34, 0.14), "
          "float3(0.30, 0.31, 0.34)};\n";
-    h += "float3 dcWall = float3(0.21, 0.20, 0.185);\n";
+    // Each shop has its own wall tone and an accent its goods lean to, so a row of shops is not one shop repeated.
+    h += "float3 dcWall = float3(0.21, 0.20, 0.185) * (0.75 + 0.25 * float((pick >> 3) % 3u));\n";
+    h += "float3 dcAccent = kGoods[(pick >> 5) % 8u];\n";
     h += "float3 dcMean = float3(0.24, 0.215, 0.18);\n";
     h += "bool dcCab = dcBy < " + num(spec.shopCaseCabinet) + ";\n";
     h += "bool dcHead = dcBy > dcH - " + num(spec.shopCaseHead) + ";\n";
@@ -349,14 +351,14 @@ std::string shopCaseHlsl(const WindowFacadeSpec& spec) {
     h += "bool dcGood = !dcBoard && dcR0 > 0.14 && dcFx > 0.07 && dcFx < 0.93 && dcFy < 0.07 + 0.88 * (0.4 + 0.6 * dcR1);\n";
     h += "float3 dcCol = dcCab ? float3(0.27, 0.18, 0.11) * (dcBy > " + num(spec.shopCaseCabinet) +
          " - 0.04 ? 1.35 : 1.0) : (dcHead ? dcWall * 1.15 : (dcBoard ? float3(0.11, 0.10, 0.09) : (dcGood ? "
-         "kGoods[(dcHh >> 16) % 8u] * (0.8 + 0.4 * dcR0) : dcWall)));\n";
+         "lerp(kGoods[(dcHh >> 16) % 8u], dcAccent, 0.4) * (0.8 + 0.4 * dcR0) : dcWall)));\n";
     h += "float dcFw = abs(ddx(Along)) + abs(ddy(Along)) + abs(ddx(Up)) + abs(ddy(Up));\n";
     h += "dcCol = lerp(dcMean, dcCol, saturate(1.6 - dcFw / (0.3 * dcItem)));\n";
     // The floor (tiles), the soffit and the sides.
     h += "float2 dcTile = floor(float2(dcBx, dcT) / 0.3);\n";
     h += "float3 dcFloor = float3(0.17, 0.16, 0.15) * (frac(0.5 * (dcTile.x + dcTile.y)) < 0.25 ? 1.0 : 0.82);\n";
     h += "dcFloor = lerp(float3(0.155, 0.145, 0.137), dcFloor, saturate(1.6 - dcFw / 0.09));\n";
-    h += "dcCol = dcBack ? dcCol : (dcSide ? dcWall * 0.85 : (dcSy < 0.0 ? dcFloor : float3(0.26, 0.25, 0.235)));\n";
+    h += "dcCol = dcBack ? dcCol : (dcSy < 0.0 ? dcFloor : float3(0.26, 0.25, 0.235));\n";
     // Depth: darker the deeper the ray ends (daylight falls off behind the glass) and toward the head (the soffit's shade).
     h += "float dcYn = saturate(dcBy / dcH);\n";
     h += "float dcShade = lerp(1.0, " + num(spec.shopCaseBack) + ", dcT / " + d + ") * (1.0 - " +
@@ -397,13 +399,13 @@ WindowCaseHit windowShopCaseHit(float depth, float width, float height, float x,
     const float din = std::max(dIn, 1e-4f);
     const float w = std::max(width, 0.1f), hgt = std::max(height, 0.1f);
     const float x0 = std::clamp(x, 0.0f, w), y0 = std::clamp(y, 0.0f, hgt);
-    const float sx = parallax * dAlong / din, sy = parallax * dUp / din;
-    const float tx = sx > 0.0f ? (w - x0) / sx : (sx < 0.0f ? -x0 / sx : 1e30f);
+    // The case has no side walls: its shelves run on along the shop behind the piers, so a pane seen along a lane
+    // still shows goods (a side wall there filled the whole pane with one flat colour). The slope along is capped.
+    const float sx = std::clamp(parallax * dAlong / din, -kCaseSlope, kCaseSlope), sy = parallax * dUp / din;
     const float ty = sy > 0.0f ? (hgt - y0) / sy : (sy < 0.0f ? -y0 / sy : 1e30f);
     WindowCaseHit r;
-    r.in = std::min(depth, std::min(tx, ty));
+    r.in = std::min(depth, ty);
     if (r.in >= depth - 1e-4f) r.face = 0;
-    else if (tx <= ty) r.face = sx < 0.0f ? 3 : 4;
     else r.face = sy < 0.0f ? 1 : 2;
     r.x = x0 + r.in * sx;
     r.y = y0 + r.in * sy;
@@ -865,7 +867,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
          ")) : 1.0;\n";
     h += "float3 day = seen * hs * (shop ? ShopDay : RoomDay) * (1.0 - Night);\n";
     h += "float3 night = on * (seen + cc.rgb * ca * (cover == 1u ? ScreenGlow : CurtainGlow)) * lightTint * (shop ? "
-         "ShopGlow : GlowScale);\n";
+         "ShopGlow * " + num(spec.shopCaseNight) + " : GlowScale);\n";
     h += "night = night / (1.0 + dot(night, kLum) / capG);\n";
     // A lit shop's sign panel glows at night (SignGlow, strong enough to show in a wet road); a lantern glows by day
     // and much more by night.

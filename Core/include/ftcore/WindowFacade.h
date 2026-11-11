@@ -91,8 +91,9 @@ struct WindowFacadeSpec {
     float shopGlowCap = 0.3f;      // the master's ShopGlowCap: no shop glass's light passes this
     float signGlowCap = 0.35f;     // the master's SignGlowCap: no lit sign's
     float lanternNight = 1.1f;     // a lantern's glow by night over its 0.4 by day
-    float shopDay = 0.6f;          // the master's ShopDay: a shop's display case by day (its own light: about a third
-                                   // of a sunlit wall's, so the glass's reflection of the street still shows over it)
+    float shopDay = 0.15f;         // the master's ShopDay: a shop's display case by day (its own light: under a sunlit
+                                   // wall's and readable in a shaded lane, where the exposure rises; 0.6 was a white pane)
+    float shopCaseNight = 0.4f;    // a display case by night: this share of ShopGlow (lit shelves, not a white pane)
     // Round 12: a shop's glass shows a display case drawn in the shader (no photo, no modelled cubes): a box this deep
     // behind the glass in the wall's own frame, seen by the true view ray times the collection's Parallax.
     float shopCaseDepth = 0.45f;     // m
