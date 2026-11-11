@@ -22,6 +22,7 @@
 //   NPC's memory of that type at the same place when it is learned first hand and is the later deed.
 //   The released memory stays and fades from then on; same_place not_since still reads it as
 //   redeemed while the releasing memory is held. A later deed of the released type pins it again.
+//   Only a first-hand mend releases: a mend the NPC only hears about leaves its witnessed break pinned.
 // - Full: a new pin over kPinnedMax unpins one other (it fades from then on): first the oldest
 //   pinned memory whose type releases another (a mend: its break is already settled), else the
 //   oldest pin of any type (by ts, then seq). A load first applies the release rule to pinned
@@ -391,7 +392,8 @@ FTCORE_API std::uint32_t npcOnMeet(NpcMemoryWorld& w, const NpcTables& t, const 
 // Neighbourly deeds, each with the neighbour as the one dealt with (they learn it first hand, the lead in `at` is
 // remembered as the doer). A delivery handed over; a gift from the neighbour accepted or handed back (both pinned in
 // the shipped tables, so a line can ask about it at every later meeting); their gate broken, or mended later
-// (`place` should be the gate, so a second break reinforces the first; a mend releases the break's pin at that
+// (`place` must be the gate, never 0: a gate deed without one is refused, or a mend would release every break at
+// place 0; a second break at the gate reinforces the first; a mend releases the break's pin at that
 // place, so handled gates do not crowd out other pins). Return the seq, 0 when nothing was recorded.
 FTCORE_API std::uint32_t npcOnDelivery(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
                                        std::uint16_t recipient);

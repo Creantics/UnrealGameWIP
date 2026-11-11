@@ -212,6 +212,7 @@ TEST_CASE("npc slice: one day and night for the three neighbours on the shipped 
 
     // 22:00 lead 1 breaks the shop's gate: raised at the next meeting, over everything else.
     s.at(1, 22.0);
+    CHECK(npcOnGate(*s.w, s.t, s.g, s.where(1, 0), shop, false) == 0u);  // no gate place: refused
     npcOnGate(*s.w, s.t, s.g, s.where(1, 9), shop, false);
     CHECK(s.greet("npc_shop_01", 0) == "shop_greet_gate_broken");
 

@@ -1743,28 +1743,30 @@ mended_self,npc_shop_01,greet,any,5,0,0,"mem:deed=gate_mended,by=self>=0;since_d
     CHECK(pickIn(s, lines, 0) == plain);
 }
 
-TEST_CASE("npc slice: same_place works at place 0; a mend at another place does not mend the break") {
+TEST_CASE("npc slice: a gate deed needs its place; a mend at another place does not mend the break") {
     Slice s;
     const NpcLineTable lines = linesFor(s, kGateLines);
     const NpcLineTable anyPlace = linesFor(s, R"(line_id,npc_id,kind,lead,priority,cooldown_min,once,cond
 plain,npc_shop_01,greet,any,1,0,0,
 gate_open_any,npc_shop_01,greet,any,7,0,0,"mem:deed=gate_broken>=0;not_since:deed=gate_broken,deed=gate_mended"
 )");
-    REQUIRE(gate(s, 0, false) != 0u);
-    CHECK(pinnedAt(s, s.g.gateBroken, 0));
+    CHECK(gate(s, 0, false) == 0u);  // no place: refused (a mend at 0 would release every break there)
+    CHECK(gate(s, 0, true) == 0u);
+    REQUIRE(gate(s, 3, false) != 0u);
+    CHECK(pinnedAt(s, s.g.gateBroken, 3));
     CHECK(pickIn(s, lines) == lines.lineIndex("gate_open"));
 
     s.setTime(1, 10.0);
-    REQUIRE(gate(s, 9, true) != 0u);  // another gate mended: the break at 0 keeps its pin and stays open
-    CHECK(pinnedAt(s, s.g.gateBroken, 0));
+    REQUIRE(gate(s, 9, true) != 0u);  // another gate mended: the break at 3 keeps its pin and stays open
+    CHECK(pinnedAt(s, s.g.gateBroken, 3));
     CHECK(pinnedAt(s, s.g.gateMended, 9));
     CHECK(pickIn(s, lines) == lines.lineIndex("gate_open"));
     CHECK(pickIn(s, anyPlace) == anyPlace.lineIndex("plain"));  // without same_place any later mend counts
 
     s.setTime(1, 11.0);
-    REQUIRE(gate(s, 0, true) != 0u);
-    CHECK_FALSE(pinnedAt(s, s.g.gateBroken, 0));
-    CHECK(pinnedAt(s, s.g.gateMended, 0));
+    REQUIRE(gate(s, 3, true) != 0u);
+    CHECK_FALSE(pinnedAt(s, s.g.gateBroken, 3));
+    CHECK(pinnedAt(s, s.g.gateMended, 3));
     CHECK(pinnedAt(s, s.g.gateMended, 9));
     CHECK(pickIn(s, lines) == lines.lineIndex("plain"));
 }

@@ -1770,7 +1770,7 @@ std::uint32_t npcOnGift(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeed
 
 std::uint32_t npcOnGate(NpcMemoryWorld& w, const NpcTables& t, const NpcGameDeeds& g, const NpcWhere& at,
                         std::uint16_t owner, bool mended) {
-    if (owner >= w.npcCount) return 0;
+    if (owner >= w.npcCount || at.place == 0) return 0;  // a gate deed needs its gate's place
     return recordAt(w, t, mended ? g.gateMended : g.gateBroken, at, owner, kNoNpc);
 }
 
