@@ -211,6 +211,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_load.cpp
         tests/test_strike_count.cpp
         tests/test_combat_inputs.cpp
+        tests/test_boss_script.cpp
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
         tests/test_conductor.cpp
