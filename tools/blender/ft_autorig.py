@@ -4,11 +4,14 @@ mesh with voxel-geodesic weights and exports an FBX that FTImportCharacter takes
 
   blender -b --factory-startup --python-exit-code 1 --python tools/blender/ft_autorig.py -- \
       in.glb out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--voxels 160] \
-      [--report report.json] [--blend out.blend] [--no-hem] [--no-twist] [--heat]
+      [--report report.json] [--blend out.blend] [--no-hem] [--no-twist] [--heat] [--keep-weights]
 
 --height 0 keeps the mesh's own size. --guides is a json {joint name: [x, y, z]} in the output frame (metres,
 Z up, facing -Y, soles on z = 0, after --height scaling) that overrides detected landmarks. --heat binds with
-Blender's heat weights instead (for comparisons). Bone axes: each Blender bone's Y (head to tail) is the
+Blender's heat weights instead (for comparisons). --keep-weights takes the joints and skin weights from a
+rig the source file already carries (a Tripo export with mannequin bone names): it rebuilds the skeleton with
+the mannequin's axes, twist and ik bones, then repairs the weights (hem rule, smoothing, twist bands, influence
+limit, normalise) instead of binding from scratch. Bone axes: each Blender bone's Y (head to tail) is the
 mannequin bone's Y and its X the mannequin's X, so the FBX exporter's default axis mapping writes the
 mannequin's frames.
 """
@@ -28,7 +31,7 @@ import autorig_core as ac  # noqa: E402
 def args():
     a = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     o = dict(height=1.80, guides=None, max_infl=8, voxels=160, report=None, blend=None, hem=True, twist=True,
-             heat=False)
+             heat=False, keep=False)
     pos = []
     i = 0
     while i < len(a):
@@ -51,6 +54,8 @@ def args():
             o["twist"] = False
         elif k == "--heat":
             o["heat"] = True
+        elif k == "--keep-weights":
+            o["keep"] = True
         else:
             pos.append(k)
         i += 1
@@ -60,7 +65,10 @@ def args():
     return o
 
 
-def load_mesh(path):
+def load_mesh(path, keep=False):
+    """-> mesh object (joined, transforms applied, rig removed). keep: also -> the source rig as
+    ({bone: (head, tail)} in world space, [group names], weights array) from the one skinned mesh; other meshes
+    (bone display shapes) are dropped."""
     bpy.ops.wm.read_factory_settings(use_empty=True)
     ext = os.path.splitext(path)[1].lower()
     if ext in (".glb", ".gltf"):
@@ -74,6 +82,25 @@ def load_mesh(path):
     meshes = [o for o in bpy.data.objects if o.type == "MESH"]
     if not meshes:
         raise SystemExit("no mesh in " + path)
+    src_rig = None
+    if keep:
+        skinned = [o for o in meshes if any(m.type == "ARMATURE" and m.object for m in o.modifiers)]
+        if len(skinned) != 1:
+            raise SystemExit("--keep-weights needs exactly one skinned mesh, found %d" % len(skinned))
+        ob = skinned[0]
+        arm = [m.object for m in ob.modifiers if m.type == "ARMATURE"][0]
+        AW = arm.matrix_world
+        bones = {b.name: (np.array(AW @ b.head_local), np.array(AW @ b.tail_local)) for b in arm.data.bones}
+        gnames = [g.name for g in ob.vertex_groups]
+        Wk = np.zeros((len(ob.data.vertices), len(gnames)))
+        for v in ob.data.vertices:
+            for g in v.groups:
+                Wk[v.index, g.group] = g.weight
+        src_rig = (bones, gnames, Wk)
+        for o in meshes:
+            if o is not ob:
+                bpy.data.objects.remove(o, do_unlink=True)
+        meshes = [ob]
     for o in meshes:  # bake parents and transforms, drop any rig the file came with
         mw = o.matrix_world.copy()
         for m in [m for m in o.modifiers if m.type == "ARMATURE"]:
@@ -94,7 +121,7 @@ def load_mesh(path):
     if len(meshes) > 1:
         bpy.ops.object.join()
     ob = bpy.context.view_layer.objects.active
-    return ob
+    return (ob, src_rig) if keep else ob
 
 
 def mesh_arrays(ob):
@@ -156,7 +183,10 @@ def main():
     def say(m):
         log.append(m)
         print("ft_autorig:", m)
-    ob = load_mesh(o["src"])
+    if o["keep"]:
+        ob, src_rig = load_mesh(o["src"], keep=True)
+    else:
+        ob, src_rig = load_mesh(o["src"]), None
     V, F = mesh_arrays(ob)
     off, turn = ac.normalize(V)
     M = Matrix.Translation(Vector(off))
@@ -176,6 +206,32 @@ def main():
     if o["guides"]:
         guides = {k: np.asarray(v, float) for k, v in json.load(open(o["guides"])).items()}
     L, info = ac.find_landmarks(V, F, voxels=o["voxels"], guides=guides, log=say)
+    if src_rig is not None:
+        # the source rig's joints replace the detected ones; detection still supplies the crotch, legs and arm
+        # vertices the hem rule needs
+        bones, gnames, Wk = src_rig
+        Mn = np.array(Matrix.Scale(scale, 4) @ M)
+
+        def tr(p):
+            return Mn[:3, :3] @ p + Mn[:3, 3]
+        missing = [n for n in L if n not in bones]
+        if missing:
+            raise SystemExit("source rig lacks mannequin bones: " + ", ".join(sorted(missing)[:12]))
+        for n in L:
+            L[n] = tr(bones[n][0])
+        for s in "lr":
+            info["toe_" + s] = tr(bones["ball_" + s][1])
+            for f in ("index", "middle", "ring", "pinky"):
+                info["hand"][s]["tip_" + f] = tr(bones[f + "_03_" + s][1])
+            info["hand"][s]["thumb_tip"] = tr(bones["thumb_03_" + s][1])
+        info["src"] = {n: "source rig" for n in L}
+        # a skirt or loincloth can hide the leg gap, so the crotch may be detected too high; the source rig's
+        # hips bound it (the crotch sits below the hip joints)
+        hip_z = 0.5 * (L["thigh_l"][2] + L["thigh_r"][2])
+        if info["crotch"] > hip_z - 0.03 * info["H"]:
+            say("crotch %.3f is above the source hips, set to %.3f" % (info["crotch"], hip_z - 0.03 * info["H"]))
+            info["crotch"] = hip_z - 0.03 * info["H"]
+        say("--keep-weights: joints and %d weight groups from the source rig" % len(gnames))
     t1 = time.time()
     J, dirs = ac.build_skeleton(L, info)
     arm_ob = build_armature(J, along=dirs if o["heat"] else None)
@@ -193,7 +249,21 @@ def main():
             % len(names))
         infl = np.array([sum(1 for g in v.groups if g.weight > 1e-4) for v in ob.data.vertices])
     else:
-        names, W = ac.bind(V, F, J, dirs, info, max_infl=o["max_infl"], twist=o["twist"], hem=o["hem"], log=say)
+        if src_rig is not None:
+            use = [i for i, n in enumerate(gnames) if n in ac.DEFORM and ac.DEFORM[n]]
+            dropped = [n for n in gnames if not (n in ac.DEFORM and ac.DEFORM[n])]
+            if dropped:
+                say("source groups with no mannequin deform bone, dropped: " + ", ".join(dropped[:10]))
+            Wk = Wk[:, use]
+            s_ = Wk.sum(1, keepdims=True)
+            say("source weights: %d vertices unweighted, row sums %.3f..%.3f, up to %d influences"
+                % (int((s_[:, 0] < 1e-6).sum()), float(s_.min()), float(s_.max()), int((Wk > 1e-4).sum(1).max())))
+            Wk = Wk / np.maximum(s_, 1e-12)
+            names, W = ac.finish_weights(V, F, J, info, [gnames[i] for i in use], Wk, max_infl=o["max_infl"],
+                                         twist=o["twist"], hem=o["hem"], log=say)
+        else:
+            names, W = ac.bind(V, F, J, dirs, info, max_infl=o["max_infl"], twist=o["twist"], hem=o["hem"],
+                               log=say)
         for b, n in enumerate(names):
             vg = ob.vertex_groups.new(name=n)
             nz = np.nonzero(W[:, b])[0]

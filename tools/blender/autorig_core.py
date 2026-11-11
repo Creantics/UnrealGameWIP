@@ -862,6 +862,27 @@ def bind(V, F, J, dirs, info, max_infl=8, smooth_iters=3, twist=True, hem=True, 
     # fingers and metacarpals only blend inside their own hand; the hand bone blends with the forearm
     W[W < 1e-3] = 0.0
     W /= W.sum(1, keepdims=True)
+    return finish_weights(V, F, J, info, names, W, max_infl=max_infl, smooth_iters=smooth_iters, twist=twist,
+                          hem=hem, log=log)
+
+
+def finish_weights(V, F, J, info, names, W, max_infl=8, smooth_iters=3, twist=True, hem=True, log=None):
+    """The shared clean-up of a weight matrix W (vertices x names, rows summing to 1), whatever bound it: the
+    hem rule, Laplacian smoothing on the welded surface, twist bands (any weight already on a twist bone is
+    folded back into its segment first, then re-spread along the segment), prune under 0.01, keep the
+    max_infl largest, normalise. J gives the joint heads ({name: (head, ...)}). -> (names, W)."""
+    say = log or (lambda m: None)
+    nv = len(V)
+    H = info["H"]
+    names = list(names)
+    W = np.asarray(W, float).copy()
+    if twist:
+        for tn in [n for n in names if n in TWIST_NAMES]:
+            base = tn.split("_twist")[0] + "_" + tn[-1]
+            if base in names:
+                W[:, names.index(base)] += W[:, names.index(tn)]
+            keep = [i for i, n in enumerate(names) if n != tn]
+            W, names = W[:, keep], [names[i] for i in keep]
     col = {n: i for i, n in enumerate(names)}
     if hem:
         W = hem_rule(V, W, col, info, say)
