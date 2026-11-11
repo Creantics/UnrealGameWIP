@@ -6178,3 +6178,68 @@ TEST_CASE("arena feature checks: each verdict reads its own counter") {
     const ArenaFeatureChecks c = arenaFeatureChecks(s);
     CHECK((c.cancels && c.flinch && c.breakOut && c.softTarget));
 }
+
+// ---- the autopilot's shots (opt in) ----
+
+namespace {
+struct ShotRun {
+    ArenaStats stats;
+    ArenaPhase phase = ArenaPhase::NotStarted;
+    bool aimedOff = false; // an input aimed with the option off
+};
+ShotRun runShots(const ArenaDef& def, bool shoots, std::uint32_t seed) {
+    const ArenaRing ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+    ArenaFight fight;
+    fight.setAutopilotShoots(shoots);
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, seed);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < def.enemyCount; ++i) bodies.enemies[i] = fight.enemyStart(i);
+    ShotRun r;
+    for (int i = 0; i < 20000 && !fight.over(); ++i) {
+        const ArenaInput in = fight.autopilot();
+        if (in.aim && !shoots) r.aimedOff = true;
+        fight.tick(kDt, in, bodies);
+        arenaStep(fight, bodies, kDt);
+    }
+    r.stats = fight.stats();
+    r.phase = fight.phase();
+    return r;
+}
+} // namespace
+
+TEST_CASE("arena autopilot: a guns kit shoots on the way in only when opted in") {
+    const ArenaTable table = loadShipped();
+    const ArenaDef def = shippedFight(table, {"duelist", "skirmisher"}, 2, "duy");
+    REQUIRE(def.fighter.weapon == ArenaWeapon::Guns);
+    for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+        const ShotRun off = runShots(def, false, seed);
+        CHECK_FALSE(off.aimedOff);
+        CHECK(off.stats.shots == 0);
+        CHECK_FALSE(arenaFeatureChecks(off.stats).shots);
+        const ShotRun on = runShots(def, true, seed);
+        CHECK(on.phase == ArenaPhase::Victory);
+        CHECK(on.stats.shots > 0);
+        CHECK(on.stats.shotHits > 0);
+        CHECK(on.stats.shotHits <= on.stats.hits);
+        CHECK(arenaFeatureChecks(on.stats).shots);
+    }
+    // A kit with no gun never aims, opted in or not.
+    const ArenaDef fists = shippedFight(table, {"duelist", "skirmisher"}, 2, "devin");
+    const ShotRun devin = runShots(fists, true, 1);
+    CHECK(devin.stats.shots == 0);
+}
+
+TEST_CASE("arena autopilot: duelist and skirmisher show a flinch and a break-out with either melee lead") {
+    // The demo line-up for the flinch and break-out checks: every seed shows both, with Devin's kit and Duy's.
+    const ArenaTable table = loadShipped();
+    for (const char* kit : {"devin", "duy"})
+        for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+            const ShotRun r = runShots(shippedFight(table, {"duelist", "skirmisher"}, 2, kit), false, seed);
+            CAPTURE(kit);
+            CAPTURE(seed);
+            CHECK(r.phase == ArenaPhase::Victory);
+            CHECK(r.stats.flinches > 0);
+            CHECK(r.stats.breakOuts > 0);
+        }
+}

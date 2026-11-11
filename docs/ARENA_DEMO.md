@@ -392,14 +392,21 @@ over the fight's stats), each PASS, FAIL, or n/a where nothing in the line-up ca
 - `flinch`: an enemy flinched (n/a when no kind in the line-up has a `flinchTime`; bosses don't);
 - `break-out`: an enemy broke out of a run of blows (n/a when no kind has a `breakAt`);
 - `soft target`: an attack started on a soft target (the nearest living enemy in `softRange` and `softArcCos` of
-  the stick, or of the facing, with nothing locked) and homed up to `homingReach`.
+  the stick, or of the facing, with nothing locked) and homed up to `homingReach`;
+- `shots`: a guns kit fired a shot that hit (n/a for any other kit, and for a guns kit under the autopilot without
+  `-ArenaAutoShoot`, which never aims).
 
-`-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. Two runs cover every line, Devin
-against the stone bearer, then against a skirmisher and a hulk:
+`-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. `-ArenaAutoShoot` has it aim and
+shoot with a guns kit on the way in (the target in the shot's range and outside the light chain's reach, a dodge's
+stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit: a skirmisher's
+poise breaks under every blow of Duy's that would flinch it, so it staggers instead, and a hulk breaks out only now
+and then. A duelist and a skirmisher show both on every seed with Devin's kit and Duy's (a Core test holds it). Three
+runs cover every line, Devin against the stone bearer, then Devin and Duy against a duelist and a skirmisher:
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaStage=stone_ring -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
-UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=skirmisher,hulk -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Duy -ArenaAutoPlay -ArenaNoLock -ArenaAutoShoot -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
 ```
 
 The hit pause shows on screen: the lead's body and strike clips (`GetDrawnTime` is on Core's held clock) and a hit
@@ -509,6 +516,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 |---|---|
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
+| `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |

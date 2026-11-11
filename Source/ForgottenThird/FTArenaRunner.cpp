@@ -277,6 +277,12 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot never locks (-ArenaNoLock): its attacks take soft targets."));
 	}
+	bAutoShoot = Setup.bAutoShoot && bAutoPlay;
+	Fight.setAutopilotShoots(bAutoShoot);
+	if (bAutoShoot)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot aims and shoots on the way in with a guns kit (-ArenaAutoShoot)."));
+	}
 
 	bBegun = true;
 	BeginNow = Now;
@@ -2396,6 +2402,10 @@ void UFTArenaRunner::LogFeatureChecks() const
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d)."), Verdict(C.breakOut, bCanBreak), S.breakOuts);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: soft target %s (%d)."), Verdict(C.softTarget, Fight.def().fighter.softRange > 0.f),
 		S.softTargets);
+	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).
+	const bool bGuns = Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shots %s (%d fired, %d hit)."), Verdict(C.shots, bGuns && (bAutoShoot || S.shots > 0)),
+		S.shots, S.shotHits);
 }
 
 void UFTArenaRunner::Restart()

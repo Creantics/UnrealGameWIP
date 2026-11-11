@@ -685,6 +685,8 @@ struct ArenaStats {
     int lights = 0;           // light attacks started (not ripostes or shots)
     float lightStamina = 0.f; // stamina those lights cost
     int softTargets = 0;      // attacks started on a soft target
+    int shots = 0;            // a guns kit's shots started
+    int shotHits = 0;         // of them, the ones that connected (per target; also in hits)
     int guardBreaks = 0;
     int restarts = 0;
     int loadStored = 0;      // Load stored by parries
@@ -706,6 +708,7 @@ struct ArenaFeatureChecks {
     bool flinch = false;     // an enemy flinched
     bool breakOut = false;   // an enemy broke out
     bool softTarget = false; // an attack started on a soft target
+    bool shots = false;      // a guns kit fired a shot that connected
 };
 
 FTCORE_API ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats);
@@ -777,6 +780,11 @@ public:
     // arena.json within 120 s of fight time, and with no input every fight must be lost within 120 s
     // (the tests tick at a fixed 1/60 s and move the bodies with arenaStep).
     FTCORE_API ArenaInput autopilot() const;
+    // Opt in (off by default; begin and restart keep it): with a guns kit the autopilot also aims and shoots while it
+    // closes in on its target, when the target stands within the shot's range and outside the light chain's reach and
+    // the shot leaves a dodge's stamina in reserve. Off, the autopilot never aims.
+    FTCORE_API void setAutopilotShoots(bool on);
+    FTCORE_API bool autopilotShoots() const;
 
     FTCORE_API ArenaPhase phase() const;
     bool over() const {
@@ -980,6 +988,7 @@ private:
     ArenaOutput out_;
     ArenaStats stats_;
     std::uint32_t dropped_ = 0;
+    bool autoShoot_ = false; // setAutopilotShoots
     ReadCards read_;                        // the open Read deal
     std::array<ReadCard, kMaxArenaEnemies * kMaxArenaMoves> readPool_{}; // the deal's pool (tells are literals)
     std::uint8_t readFoe_ = kArenaNobody;

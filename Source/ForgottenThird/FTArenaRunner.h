@@ -102,6 +102,7 @@ struct FFTArenaRunSetup
 	bool bHoldLoad = false;
 	float ParryHold = 0.f; // -ArenaParryHold=<s>
 	bool bNoLock = false;  // -ArenaNoLock: the autopilot never presses lock, so its attacks take soft targets
+	bool bAutoShoot = false; // -ArenaAutoShoot: with a guns kit the autopilot aims and shoots on the way in
 	FString BossLoop;      // -ArenaBossLoop=<clip> (review only; empty: off)
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
@@ -510,6 +511,7 @@ private:
 	bool bHoldLoad = false;
 	float ParryHold = 0.f;
 	bool bNoLock = false;
+	bool bAutoShoot = false;
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;

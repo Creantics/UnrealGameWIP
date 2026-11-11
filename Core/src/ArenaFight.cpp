@@ -597,6 +597,7 @@ struct ArenaFightImpl {
     bool startShot(const ArenaInput& in) {
         if (!affords(fi.shot)) return false;
         pl.chainLive = false;
+        ++stats.shots;
         faceAtStart(in, fi.shot);
         beginAttack(ArenaAction::Light, kArenaShotMove, fi.shot);
         return true;
@@ -1178,6 +1179,7 @@ struct ArenaFightImpl {
                 continue;
             const int amount = lose(i, scaledDamage(a.damage, r.damage));
             ++stats.hits;
+            if (pl.move == kArenaShotMove) ++stats.shotHits;
             stats.damageDealt += amount;
             emit(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, amount, foe.pos);
             // The pause: the player has moved this tick, the enemies not yet.
@@ -1871,9 +1873,17 @@ struct ArenaFightImpl {
             return in;
         }
         const float reach = range + self.def_.enemies[target].bodyRadius;
-        if (d > reach * kArenaAutoStand) {
-            in.move = arenaUnit(to, p.facing);
-        } else {
+        const bool farOff = d > reach * kArenaAutoStand;
+        if (farOff) in.move = arenaUnit(to, p.facing);
+        // Opted in, a guns kit shoots on the way in: aimed at the target, in the shot's range, a dodge kept in reserve.
+        if (farOff && self.autoShoot_ && f.weapon == ArenaWeapon::Guns && f.attacks &&
+            d <= f.shot.range + self.def_.enemies[target].bodyRadius && p.action != ArenaAction::Light &&
+            (f.shot.stamina <= 0.f || p.stamina >= f.shot.stamina + f.dodgeStamina)) {
+            in.aim = true;
+            in.aimDir = arenaUnit(to, p.facing);
+            in.light = true;
+        }
+        if (!farOff) {
             bool danger = false; // an enemy that can still act: keep a dodge in reserve
             for (std::size_t i = 0; i < count; ++i)
                 if (living(i) && !down(i)) danger = true;
@@ -1935,6 +1945,8 @@ const ArenaOutput& ArenaFight::tick(float dt, const ArenaInput& input, const Are
 }
 
 ArenaInput ArenaFight::autopilot() const { return ArenaFightImpl::autopilot(*this); }
+void ArenaFight::setAutopilotShoots(bool on) { autoShoot_ = on; }
+bool ArenaFight::autopilotShoots() const { return autoShoot_; }
 
 ArenaPhase ArenaFight::phase() const { return phase_; }
 float ArenaFight::time() const { return time_; }
@@ -2225,6 +2237,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.flinch = stats.flinches > 0;
     c.breakOut = stats.breakOuts > 0;
     c.softTarget = stats.softTargets > 0;
+    c.shots = stats.shotHits > 0;
     return c;
 }
 

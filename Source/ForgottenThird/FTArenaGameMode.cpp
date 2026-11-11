@@ -120,6 +120,7 @@ void AFTArenaGameMode::StartPlay()
 	bWorldView = !bOverview && FParse::Param(Cmd, TEXT("ArenaWorldView"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	bNoLock = FParse::Param(Cmd, TEXT("ArenaNoLock"));
+	bAutoShoot = FParse::Param(Cmd, TEXT("ArenaAutoShoot"));
 	FParse::Value(Cmd, TEXT("ArenaParryHold="), ParryHold);
 	ParryHold = FMath::Clamp(ParryHold, 0.f, 10.f);
 	FParse::Value(Cmd, TEXT("ArenaBossLoop="), BossLoop);
@@ -568,6 +569,7 @@ void AFTArenaGameMode::Begin()
 	Setup.bIdle = bIdle;
 	Setup.bHoldLoad = bHoldLoad;
 	Setup.bNoLock = bNoLock;
+	Setup.bAutoShoot = bAutoShoot;
 	Setup.ParryHold = ParryHold;
 	Setup.BossLoop = BossLoop;
 	Setup.bBossSplitAtStart = bBossSplit;

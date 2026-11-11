@@ -210,6 +210,7 @@ private:
 	bool bQuitOnFinish = false;
 	bool bHoldLoad = false;
 	bool bNoLock = false; // -ArenaNoLock
+	bool bAutoShoot = false; // -ArenaAutoShoot
 	float ParryHold = 0.f;
 	FString BossLoop; // -ArenaBossLoop=<clip>
 	bool bBossSplit = false;
