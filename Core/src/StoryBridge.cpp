@@ -221,7 +221,7 @@ void StoryBridge::onFlag(void* user, StoryRunner& r, std::uint32_t flag) {
     const std::int64_t want = v.kind == FlagValue::Kind::Bool ? (v.value != 0 ? 1 : 0) : v.value;
     if (want == 0) {
         // A clear: the state has none (a stored 0 means never set), so it is not sent to storySet.
-        if (b.state_->facts[rep.fact] != 0) {
+        if (storyGet(*b.state_, *b.reg_, rep.fact).status == FactStatus::Set) {
             rep.kind = StoryBridgeReport::Kind::ClearIgnored;
             b.report(rep);
         }

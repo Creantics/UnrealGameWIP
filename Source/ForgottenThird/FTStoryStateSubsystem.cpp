@@ -312,11 +312,12 @@ bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
 		}
 		const uint8 GoodOpen = LastGoodBlock[16], GoodLast = LastGoodBlock[17]; // the block's open and last committed scene
 		const FString GoodScene = RegistrySceneName(*Registry, GoodOpen != ftcore::kNoScene ? GoodOpen : GoodLast);
-		if (Now > StoryBlockProgress(GoodOpen, GoodLast))
+		if (Now != StoryBlockProgress(GoodOpen, GoodLast))
 		{
-			// The story has moved past the block: writing it would roll the facts back under a later position.
+			// The story has moved past the block (or it is from another run): writing it would put other facts
+			// under this position.
 			UE_LOG(LogFTStoryState, Warning,
-				   TEXT("Story state not saved: the state refused to encode; the last good block is from scene %s, which the story has moved past (now at %s); the save is skipped."),
+				   TEXT("Story state not saved: the state refused to encode; the last good block is from scene %s, and the story is now at %s; the save is skipped."),
 				   *GoodScene, *RegistrySceneName(*Registry, State->openScene != ftcore::kNoScene ? State->openScene : State->lastCommitted));
 			if (bOutSkip)
 			{

@@ -100,7 +100,7 @@ public:
 
 	// Writes the block into Out and keeps a copy as the last good block. When Core refuses, it returns false with a
 	// warning naming the last good block's scene and writes that block instead, unless there is none or the story
-	// has moved past its scene: then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot
+	// is no longer at its scene: then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot
 	// keeps what it has). False with Out untouched before Initialize.
 	bool EncodeBlock(TArray<uint8>& Out, bool* bOutSkip = nullptr);
 	// Loads the block, or a new game's state when it is empty or Core refuses it. Returns Core's result. A loaded

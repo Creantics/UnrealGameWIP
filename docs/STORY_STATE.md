@@ -190,6 +190,6 @@ runner to the state. The state is the truth; the runner's flags named `sf.<fact 
 a warning. A registry import that fails keeps the current registry, state and scene map; one that succeeds
 while a story runs syncs the bridge, so the runner's registry scene is open in the new game's state. The save
 keeps the last good block: when the state refuses to encode, that block is written instead, with a warning
-naming its scene, unless the story has moved past that scene (its facts would roll back under a later
-position) or there is no good block (never an empty block over real progress): then the save is skipped
+naming its scene, unless the story is no longer at that scene (its facts would not match the position)
+or there is no good block (never an empty block over real progress): then the save is skipped
 and the slot keeps what it has. A fight retry resets the fight, not the scene, so it calls nothing here.

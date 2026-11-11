@@ -73,7 +73,7 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 		}
 	}
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
-	if (State)
+	if (Block.Num() > 0)
 	{
 		StoryBlock = MoveTemp(Block);
 	}

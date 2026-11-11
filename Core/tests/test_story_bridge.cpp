@@ -682,6 +682,29 @@ TEST_CASE("story bridge: clears") {
     CHECK(reports.list[2].value == 0);
 }
 
+TEST_CASE("story bridge: sync on an idle or finished runner") {
+    StoryDatabase db;
+    build(db);
+    StoryRunner r(&db);
+    StoryState s;
+    StoryBridge br;
+    REQUIRE(br.bind(r, s, reg(), {}));
+    br.sync(); // idle: nothing opens
+    CHECK(s.openScene == kNoScene);
+    CHECK(s.lastCommitted == kNoScene);
+    REQUIRE(r.start());
+    REQUIRE(r.advance());
+    REQUIRE(r.resume(FlagValue::integer(2)));
+    while (!r.finished()) {
+        if (r.waitingForGameplay()) REQUIRE(r.resume());
+        else REQUIRE(r.advance());
+    }
+    CHECK(s.lastCommitted == 2);
+    br.sync(); // finished: nothing reopens
+    CHECK(s.openScene == kNoScene);
+    CHECK(s.lastCommitted == 2);
+}
+
 TEST_CASE("story bridge: a restore with no sync") {
     StoryDatabase db;
     build(db);
@@ -714,6 +737,15 @@ TEST_CASE("story bridge: a restore with no sync") {
         REQUIRE(r.advance());
         REQUIRE(r.resume());
         CHECK(reports.list.size() == 2);
+    }
+    SUBCASE("a new game instead of the sync") {
+        REQUIRE(r.restore(pos));
+        REQUIRE(r.start()); // the bridge follows the new game: no report, the state reset and forwarded
+        REQUIRE(r.advance());
+        REQUIRE(r.resume(FlagValue::integer(2)));
+        CHECK(reports.list.size() == 1 + 1); // the earlier SyncMissing, then the once-only refusal of beat 2
+        CHECK(reports.list[1].kind == StoryBridgeReport::Kind::FactRefused);
+        CHECK(fact(s, "f_pick") == 2);
     }
     SUBCASE("a late sync resumes forwarding") {
         br.sync();
