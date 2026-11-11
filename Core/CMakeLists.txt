@@ -355,6 +355,8 @@ if(FTCORE_BUILD_TESTS)
         "refused sf.f_pick 7 .*WALK FAILED: the bridge reported a refusal")
     add_test(NAME storywalk_bad_steps COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --steps 5x)
     set_tests_properties(storywalk_bad_steps PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --steps: expected a positive number")
+    add_test(NAME storywalk_bad_scene_id COMMAND ftcore_storywalk ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk_badid ${FTCORE_WALK_DATA})
+    set_tests_properties(storywalk_bad_scene_id PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: scene id [.][.]/s1 is not a plain file name")
     add_test(NAME storywalk_unused_result COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_seen=true)
     set_tests_properties(storywalk_unused_result PROPERTIES PASS_REGULAR_EXPRESSION
         "WALK FAILED: --result sf.f_seen: no gameplay beat set it")
