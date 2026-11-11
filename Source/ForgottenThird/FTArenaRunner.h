@@ -103,6 +103,9 @@ struct FFTArenaRunSetup
 	float ParryHold = 0.f; // -ArenaParryHold=<s>
 	bool bNoLock = false;  // -ArenaNoLock: the autopilot never presses lock, so its attacks take soft targets
 	bool bAutoShoot = false; // -ArenaAutoShoot: with a guns kit the autopilot aims and shoots on the way in
+	// -ArenaSharedCount: the autopilot's lead calls the count whenever it can, and a scripted partner (the other lead,
+	// with no body or blow of its own in the fight) joins a window the step a lead's blow is held.
+	bool bSharedCount = false;
 	FString BossLoop;      // -ArenaBossLoop=<clip> (review only; empty: off)
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
@@ -279,6 +282,10 @@ private:
 	void EndKindCrits();
 	void FeedKindCrits(const ftcore::ArenaEvents& Events);
 	static ftcore::ArenaBlowRuling RuleKindCritBlow(void* User, const ftcore::ArenaBlow& Blow);
+	// The session's ruling, chained after the hook the sub-hosts set (kind crits, kite, stone bearer): installed after
+	// they begin, at the fight's begin and each restart.
+	static ftcore::ArenaBlowRuling RuleSessionBlow(void* User, const ftcore::ArenaBlow& Blow);
+	void InstallSessionHook();
 	// The entry's effects (ArenaKindCritEffects) on each crit slot's figure, made once after the figures: the tell plays
 	// from the opening move's start until the window opens, the open effect while it is open, the crit and hit effects
 	// on the lead's blows on the slot. Hung from the entry's socket on a skinned figure (else its root).
@@ -314,7 +321,7 @@ private:
 	// The shared combat inputs beside the fight (docs/SHARED_COMBAT_INPUTS.md section 7): presses before the step,
 	// then the session ticked by the held clock's advance and the player's landed blows judged on the count.
 	void PressSession(const ftcore::ArenaInput& In);
-	void FeedSession(const ftcore::ArenaEvents& Events);
+	void FeedSession();
 	void BeginSession();
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
@@ -446,6 +453,13 @@ private:
 	float SessionHeld = 0.f;         // Fight.heldTime() at the last session tick
 	bool bSessionGuard = false;      // the guard as last sent to the session (refusal hold edges)
 	uint8 SessionLead = ftcore::kLeadA; // the lead slot the player's figure fills
+	ftcore::ArenaBlowHook SessionInnerHook = nullptr; // the sub-hosts' hook the session's ruling chains after
+	void* SessionInnerUser = nullptr;
+	bool bSessionPartnerDue = false; // -ArenaSharedCount: a lead's blow is held, the scripted partner joins after the step
+	int32 SessionHeldBlows = 0;      // this fight's lead blows judged Held
+	int32 SessionJoins = 0;          // the scripted partner's blows that joined a window
+	int32 SessionBonuses = 0;        // held-blow bonuses the fight took (hostBlow)
+	int32 SessionBonusDamage = 0;    // their extra damage
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
 	uint32 Seed = 1;
@@ -512,6 +526,7 @@ private:
 	float ParryHold = 0.f;
 	bool bNoLock = false;
 	bool bAutoShoot = false;
+	bool bSharedCount = false;
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;

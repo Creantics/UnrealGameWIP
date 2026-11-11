@@ -1252,6 +1252,11 @@ struct ArenaFightImpl {
         if (t1 - foe.lastBreakHit > k.breakDecay) foe.breakHits = 0;
         if (foe.breakHits < 255) ++foe.breakHits;
         foe.lastBreakHit = t1;
+        // The best run so far, compared as a share of each kind's breakAt.
+        if (stats.breakRunNeed == 0 || foe.breakHits * stats.breakRunNeed > stats.breakRunBest * k.breakAt) {
+            stats.breakRunBest = foe.breakHits;
+            stats.breakRunNeed = k.breakAt;
+        }
     }
 
     // The count reached breakAt: the break move starts at once, whatever the tokens and its cooldown.
@@ -1259,6 +1264,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (k.breakAt == 0 || !foe.flinchAllowed || foe.breakHits < k.breakAt) return false;
+        ++stats.breakDue;
         foe.breakHits = 0; // spent, even when the move is barred
         if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u)
             return false;
@@ -2059,6 +2065,8 @@ void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
     blowUser_ = hook ? user : nullptr;
 }
+ArenaBlowHook ArenaFight::blowHook() const { return blowHook_; }
+void* ArenaFight::blowHookUser() const { return blowUser_; }
 bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
     if (phase_ != ArenaPhase::Fighting) return false;
     return ArenaFightImpl(*this).hostBlow(enemy, damage, move);
@@ -2272,6 +2280,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.cancels = stats.cancels > 0;
     c.flinch = stats.flinches > 0;
     c.breakOut = stats.breakOuts > 0;
+    c.breakOutDue = stats.breakDue > 0;
     c.softTarget = stats.softTargets > 0;
     c.shots = stats.shotHits > 0;
     return c;

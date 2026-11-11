@@ -211,6 +211,7 @@ private:
 	bool bHoldLoad = false;
 	bool bNoLock = false; // -ArenaNoLock
 	bool bAutoShoot = false; // -ArenaAutoShoot
+	bool bSharedCount = false; // -ArenaSharedCount
 	float ParryHold = 0.f;
 	FString BossLoop; // -ArenaBossLoop=<clip>
 	bool bBossSplit = false;

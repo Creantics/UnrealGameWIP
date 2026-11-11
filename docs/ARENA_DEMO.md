@@ -390,23 +390,48 @@ over the fight's stats), each PASS, FAIL, or n/a where nothing in the line-up ca
 - `lights free`: lights were started and cost no stamina;
 - `cancels`: an action (a buffered attack, a roll, the guard) cut into an attack;
 - `flinch`: an enemy flinched (n/a when no kind in the line-up has a `flinchTime`; bosses don't);
-- `break-out`: an enemy broke out of a run of blows (n/a when no kind has a `breakAt`);
+- `break-out`: an enemy broke out of a run of blows, with the fight's best run toward one (`best run 4 of 5`: four
+  blows of a kind's five, counted as each lands). n/a when no kind has a `breakAt`, and when no blow brought an
+  upright enemy's count to its `breakAt` without staggering it (the poise broke first, so a break-out couldn't show);
+  FAIL only when such a blow came and no break-out followed;
 - `soft target`: an attack started on a soft target (the nearest living enemy in `softRange` and `softArcCos` of
   the stick, or of the facing, with nothing locked) and homed up to `homingReach`;
 - `shots`: a guns kit fired a shot that hit (n/a for any other kit, and for a guns kit under the autopilot without
-  `-ArenaAutoShoot`, which never aims).
+  `-ArenaAutoShoot`, which never aims);
+- `shared count bonus`: two leads on one count, a held blow's bonus landed: `(<held> held, <joined> joined, <n>
+  bonuses, +<damage> damage)`. n/a without `-ArenaSharedCount`.
 
 `-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. `-ArenaAutoShoot` has it aim and
 shoot with a guns kit on the way in (the target in the shot's range and outside the light chain's reach, a dodge's
 stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit: a skirmisher's
 poise breaks under every blow of Duy's that would flinch it, so it staggers instead, and a hulk breaks out only now
-and then. A duelist and a skirmisher show both on every seed with Devin's kit and Duy's (a Core test holds it). Three
-runs cover every line, Devin against the stone bearer, then Devin and Duy against a duelist and a skirmisher:
+and then. Core's host-mirror tests play the host's own fight (the fallback fight with one attacker, fitted to
+`sand_ring`, the lock never pressed, the partner's press on the step after a parry); seed 1 of a skirmisher and a
+hulk with Devin gives the host's result line to the letter. In that line-up Devin's fourth blow in a row breaks the
+hulk's poise (110) before the fifth its `breakAt` needs, and a counter-stagger or the 2 s decay resets the rest: no
+seed from 1 to 12 shows a break-out, though every fight runs past 15 s, so its line reads n/a with best run 4 of 5.
+A duelist and a skirmisher show a flinch and a break-out on every seed from 1 to 12 with Devin's kit and Duy's
+(shooting or not). Four runs cover every line, Devin against the stone bearer, Devin against a skirmisher and a
+hulk, then Devin and Duy against a duelist and a skirmisher:
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaStage=stone_ring -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=skirmisher,hulk -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
 UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
 UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Duy -ArenaAutoPlay -ArenaNoLock -ArenaAutoShoot -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+```
+
+The fight session judges every blow the player lands on an enemy in the fight's blow hook, after whatever ruling
+the sub-hosts set (kind crits, the kite, the stone bearer): `judgeHeldBlow` on the damage they leave. A final outcome
+scales the blow (x1 when alone); a blow inside a count's window is Held, lands at base, and when its window is joined
+it settles at x2.5: after the session's tick the runner deals the extra through `ArenaFight::hostBlow` and logs
+`Arena: a held blow on the count adds <n> damage to <kind> (move <m>).` The arena has no partner body yet, so
+`-ArenaSharedCount` scripts one for the check line: the lead calls the count whenever it can, and the other lead
+joins the window the step a lead's blow is held. Core's host-mirror test plays the same run (seed 1: Devin 2 bonuses,
++42 damage; Duy shooting 2 bonuses, +32):
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaSharedCount -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
 ```
 
 The hit pause shows on screen: the lead's body and strike clips (`GetDrawnTime` is on Core's held clock) and a hit
@@ -519,6 +544,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
+| `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |

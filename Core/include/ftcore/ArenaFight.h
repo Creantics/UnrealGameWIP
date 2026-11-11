@@ -682,6 +682,9 @@ struct ArenaStats {
     int staggers = 0;  // enemy poise breaks
     int flinches = 0;  // enemy flinches
     int breakOuts = 0; // enemy break-outs
+    int breakDue = 0;      // blows that brought an upright enemy's count to its breakAt without staggering it
+    int breakRunBest = 0;  // the longest run toward a break-out (relative to its breakAt), counted as each blow lands
+    int breakRunNeed = 0;  // that run's breakAt (0: no blow counted)
     int cancels = 0;          // actions the player started inside an attack (its recovery or cancel window)
     int lights = 0;           // light attacks started (not ripostes or shots)
     float lightStamina = 0.f; // stamina those lights cost
@@ -708,6 +711,7 @@ struct ArenaFeatureChecks {
     bool cancels = false;    // an action cut into an attack
     bool flinch = false;     // an enemy flinched
     bool breakOut = false;   // an enemy broke out
+    bool breakOutDue = false; // a blow reached an enemy's breakAt without staggering it (else break-out can't show)
     bool softTarget = false; // an attack started on a soft target
     bool shots = false;      // a guns kit fired a shot that connected
 };
@@ -877,6 +881,9 @@ public:
     FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
+    // The hook set now and its user pointer (nullptr, nullptr: none), for a host that chains its own ruling after it.
+    FTCORE_API ArenaBlowHook blowHook() const;
+    FTCORE_API void* blowHookUser() const;
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
     // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
     // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they

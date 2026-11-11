@@ -1,6 +1,9 @@
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaZone.h" // the host mirror fits the demo's zone
 #include "ftcore/BeatChoreo.h" // the skinned boss's clip table
 #include "ftcore/ComboSequence.h" // comboSequencesBuilt: the fence test
+#include "ftcore/FightSession.h" // the host mirror's shared count
+#include "ftcore/WorldLayout.h" // the zone table names its worlds
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -6123,45 +6126,189 @@ TEST_CASE("arena table: a break-out count above 1 needs a decay") {
               .empty());
 }
 
-// The headless demo's check lines read arenaFeatureChecks: Devin's shipped kit, played by the autopilot with the
-// lock pressed never (so attacks pick soft targets), against two shipped standard kinds that flinch and break out.
-TEST_CASE("arena feature checks: Devin unlocked on the autopilot shows every feature") {
-    const ArenaTable t = loadShipped();
-    const auto kind = [&](std::string_view id) {
-        for (std::size_t i = 0; i < t.enemyIds.size(); ++i)
-            if (t.enemyIds[i] == id) return t.enemies[i];
-        FAIL("no enemy kind ", id);
-        return ArenaEnemyKind{};
-    };
-    ArenaDef def = defaultArenaDef();
-    def.fighter = t.fighter("devin");
-    def.enemyCount = 2;
-    def.enemies[0] = kind("skirmisher");
-    def.enemies[1] = kind("hulk");
-    def.attackers = 2;
+// ---- the headless demo's own fight (the host mirror) ----
+
+namespace {
+// The Unreal host's -ArenaLineup run, step for step: the shipped fallback fight with one attacker, fitted to the
+// sand_ring zone, the autopilot with the lock never pressed, the partner's press on the step after a parry, and
+// the zone's walls in the step. Its result line matches the host's log line.
+struct HostRun {
+    ArenaStats stats;
+    ArenaPhase phase = ArenaPhase::NotStarted;
+    int hitsOn[kMaxArenaEnemies] = {}; // the player's hits per enemy
+    std::string line;                  // the result line
+    // With the shared count (the host's -ArenaSharedCount):
+    int held = 0;         // the lead's blows judged Held
+    int joins = 0;        // the scripted partner's blows that joined a window (OnCount)
+    int bonuses = 0;      // held-blow bonuses the fight took through hostBlow
+    int bonusDamage = 0;  // their extra damage
+    int hostHits = 0;     // HostHit events reported
+};
+
+// The host's session wiring: the lead's Hits judged in the blow hook (judgeHeldBlow, final outcomes scaled), a
+// scripted partner joining a window the step a blow is held, the bonuses dealt through hostBlow after the tick.
+struct SharedRig {
+    FightSession session;
+    FighterId lead = kLeadA;
+    FighterId partner = kLeadB;
+    bool joinDue = false;
+    int held = 0;
+    static ArenaBlowRuling rule(void* user, const ArenaBlow& blow) {
+        SharedRig& rig = *static_cast<SharedRig*>(user);
+        ArenaBlowRuling r;
+        if (blow.type != ArenaEventType::Hit || blow.source != kArenaPlayer || blow.target == kArenaPlayer) return r;
+        const CountHit h = rig.session.judgeHeldBlow(rig.lead, blow.target, blow.damage, blow.move);
+        if (h.outcome == CountOutcome::Held) {
+            rig.joinDue = true;
+            ++rig.held;
+        } else {
+            r.damage = h.multiplier;
+        }
+        return r;
+    }
+};
+
+HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std::uint32_t seed, bool shoots = false,
+                bool sharedCount = false) {
+    const ArenaTable table = loadShipped();
+    std::string text;
+    std::string err;
+    if (!ftcore_test::readProjectData("Field/worlds.json", text)) FAIL("Data/Field/worlds.json not found");
+    WorldTable worlds;
+    REQUIRE_MESSAGE(importWorldTable(text, worlds, &err), err);
+    if (!ftcore_test::readProjectData("Battle/arenas.json", text)) FAIL("Data/Battle/arenas.json not found");
+    ArenaZoneTable zones;
+    REQUIRE_MESSAGE(importArenaZoneTable(text, table, worlds, zones, &err), err);
+    ArenaDef def = table.fallback;
+    def.fighter = table.fighter(kit);
+    def.enemyCount = 0;
+    for (const char* id : lineup)
+        for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
+            if (table.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = table.enemies[e];
+            }
+    REQUIRE(def.enemyCount == lineup.size());
+    def.attackers = 1;
+    const ArenaZoneSpec* spec = zones.find("sand_ring");
+    REQUIRE(spec != nullptr);
+    ArenaZoneFit fit;
+    REQUIRE_MESSAGE(fitArenaZone(*spec, nullptr, def, fit, &err), err);
+    fit.apply(def);
     ArenaFight fight;
-    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 12.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    fight.setAutopilotShoots(shoots);
+    fight.begin(def, fit.ring, fit.playerStart, fit.playerFacing, seed);
     ArenaBodies bodies;
     bodies.player = fight.playerStart();
-    int softShown = 0; // ticks the output named the attack's soft target
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
-    for (int i = 0; i < 6000 && !fight.over(); ++i) {
+    HostRun r;
+    SharedRig rig;
+    rig.lead = std::string_view(kit) == "duy" ? kLeadB : kLeadA;
+    rig.partner = rig.lead == kLeadA ? kLeadB : kLeadA;
+    rig.session.begin(FightSessionDef{}, fight.heldTime());
+    if (sharedCount) fight.setBlowHook(&SharedRig::rule, &rig);
+    float sessionHeld = fight.heldTime();
+    bool partnerDue = false;
+    for (int i = 0; i < 20000 && !fight.over(); ++i) {
         ArenaInput in = fight.autopilot();
         in.lock = false;
-        if (fight.tick(kDt, in, bodies).player.soft != kArenaNobody) ++softShown;
-        arenaStep(fight, bodies, kDt);
+        in.pair = partnerDue;
+        partnerDue = false;
+        if (sharedCount) rig.session.press(SharedAction::Count, rig.lead); // refused while a count is live or cooling
+        const ArenaOutput& out = fight.tick(kDt, in, bodies);
+        arenaStep(fight, bodies, kDt, fit.zone);
+        for (std::size_t e = 0; e < out.events.count; ++e) {
+            const ArenaEvent& ev = out.events.items[e];
+            if (ev.type == ArenaEventType::Parried) partnerDue = true;
+            if (ev.type == ArenaEventType::Hit && ev.source == kArenaPlayer && ev.target < kMaxArenaEnemies) ++r.hitsOn[ev.target];
+            if (ev.type == ArenaEventType::HostHit) ++r.hostHits;
+        }
+        if (!sharedCount) continue;
+        if (rig.joinDue) {
+            rig.joinDue = false;
+            if (rig.session.judgeBlow(rig.partner).outcome == CountOutcome::OnCount) ++r.joins;
+        }
+        const FightTick& st = rig.session.tick(std::max(0.f, fight.heldTime() - sessionHeld));
+        sessionHeld = fight.heldTime();
+        for (const HeldBonus& b : st.bonuses)
+            if (fight.hostBlow(b.enemy, b.extraDamage, b.move)) {
+                ++r.bonuses;
+                r.bonusDamage += b.extraDamage;
+            }
     }
-    const ArenaStats& s = fight.stats();
-    INFO("lights ", s.lights, " cancels ", s.cancels, " flinches ", s.flinches, " breakOuts ", s.breakOuts,
-         " soft ", s.softTargets, " phase ", static_cast<int>(fight.phase()));
-    const ArenaFeatureChecks c = arenaFeatureChecks(s);
-    CHECK(c.lightsFree);
-    CHECK(c.cancels);
-    CHECK(c.flinch);
-    CHECK(c.breakOut);
-    CHECK(c.softTarget);
-    CHECK(softShown > 0);
-    CHECK(fight.lock() == kArenaNobody);
+    r.held = rig.held;
+    r.stats = fight.stats();
+    r.phase = fight.phase();
+    ArenaLogIds ids;
+    ids.zone = "sand_ring";
+    ids.kit = kit;
+    ids.pilot = "autoplay";
+    ids.seed = seed;
+    char buf[kArenaResultLineMax];
+    arenaResultLine(buf, sizeof buf, fight, table, ids);
+    r.line = buf;
+    return r;
+}
+} // namespace
+
+TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the host's own fight") {
+    // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1.
+    const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
+    CHECK(r.line ==
+          "Arena: VICTORY at standalone beat 0 step 0 after 19.3 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 82/150, 24 hits, 2 taken, 0 blocks, 3 parries, 0 ripostes, 2 evades, 0 guard breaks, "
+          "4 staggers, 0 heals, 0 releases, 0 overloads, 5/7 reads right, dealt 520, took 68, 0 restarts.");
+    CHECK(r.hitsOn[0] == 5);
+    CHECK(r.hitsOn[1] == 19);
+    // The hulk's best run is 4 of its 5: the 4th blow breaks its poise, and a stagger resets the count.
+    CHECK(r.stats.breakRunBest == 4);
+    CHECK(r.stats.breakRunNeed == 5);
+    CHECK(r.stats.breakDue == 0);
+    CHECK(r.stats.breakOuts == 0);
+}
+
+TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-out (poise breaks first)") {
+    // Not a short fight: every seed runs past 15 s, yet no upright run reaches breakAt, so the check line is n/a.
+    for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+        const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
+        CAPTURE(seed);
+        CHECK(r.phase == ArenaPhase::Victory);
+        CHECK(r.stats.time > 15.f);
+        CHECK(r.stats.flinches > 0);
+        CHECK(r.stats.breakOuts == 0);
+        CHECK_FALSE(arenaFeatureChecks(r.stats).breakOutDue);
+        CHECK(r.stats.breakRunBest < r.stats.breakRunNeed);
+    }
+}
+
+TEST_CASE("arena host mirror: Devin unlocked against duelist and skirmisher shows every feature") {
+    // The demo's feature check lines read arenaFeatureChecks over this fight.
+    for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+        const HostRun r = hostRun({"duelist", "skirmisher"}, "devin", seed);
+        CAPTURE(seed);
+        CHECK(r.phase == ArenaPhase::Victory);
+        const ArenaFeatureChecks c = arenaFeatureChecks(r.stats);
+        CHECK(c.lightsFree);
+        CHECK(c.cancels);
+        CHECK(c.flinch);
+        CHECK(c.breakOutDue);
+        CHECK(c.breakOut);
+        CHECK(c.softTarget);
+    }
+}
+
+TEST_CASE("arena host mirror: duelist and skirmisher show a flinch and a break-out with either melee lead") {
+    for (const char* kit : {"devin", "duy"})
+        for (const bool shoots : {false, true})
+            for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+                const HostRun r = hostRun({"duelist", "skirmisher"}, kit, seed, shoots);
+                CAPTURE(kit);
+                CAPTURE(shoots);
+                CAPTURE(seed);
+                CHECK(r.phase == ArenaPhase::Victory);
+                CHECK(r.stats.flinches > 0);
+                CHECK(r.stats.breakOuts > 0);
+            }
 }
 
 TEST_CASE("arena feature checks: each verdict reads its own counter") {
@@ -6177,6 +6324,9 @@ TEST_CASE("arena feature checks: each verdict reads its own counter") {
     s.softTargets = 1;
     const ArenaFeatureChecks c = arenaFeatureChecks(s);
     CHECK((c.cancels && c.flinch && c.breakOut && c.softTarget));
+    CHECK_FALSE(c.breakOutDue);
+    s.breakDue = 1;
+    CHECK(arenaFeatureChecks(s).breakOutDue);
 }
 
 // ---- the autopilot's shots (opt in) ----
@@ -6228,20 +6378,6 @@ TEST_CASE("arena autopilot: a guns kit shoots on the way in only when opted in")
     const ArenaDef fists = shippedFight(table, {"duelist", "skirmisher"}, 2, "devin");
     const ShotRun devin = runShots(fists, true, 1);
     CHECK(devin.stats.shots == 0);
-}
-
-TEST_CASE("arena autopilot: duelist and skirmisher show a flinch and a break-out with either melee lead") {
-    // The demo line-up for the flinch and break-out checks: every seed shows both, with Devin's kit and Duy's.
-    const ArenaTable table = loadShipped();
-    for (const char* kit : {"devin", "duy"})
-        for (std::uint32_t seed = 1; seed <= 8; ++seed) {
-            const ShotRun r = runShots(shippedFight(table, {"duelist", "skirmisher"}, 2, kit), false, seed);
-            CAPTURE(kit);
-            CAPTURE(seed);
-            CHECK(r.phase == ArenaPhase::Victory);
-            CHECK(r.stats.flinches > 0);
-            CHECK(r.stats.breakOuts > 0);
-        }
 }
 
 // ---- the host's blows (hostBlow) ----
@@ -6307,8 +6443,54 @@ TEST_CASE("arena hostBlow: damage from outside a blow, reported with the next ti
     CHECK(countEvents(k, ArenaEventType::Downed) == 1);
     CHECK(fight.phase() == ArenaPhase::Fighting);
     REQUIRE(fight.hostBlow(1, 100000, 3));
+    CHECK_FALSE(fight.over()); // the host steps once more and reads the kill
     const ArenaOutput& v = fight.tick(kDt, idle, bodies);
     CHECK(countEvents(v, ArenaEventType::Victory) == 1);
     CHECK(fight.phase() == ArenaPhase::Victory);
     CHECK_FALSE(fight.hostBlow(1, 5, 3)); // outside Fighting
+}
+
+TEST_CASE("arena host mirror: a shared count's held blows get their bonus through hostBlow") {
+    // The host's -ArenaSharedCount run: the lead calls the count whenever it can, a scripted partner joins a window
+    // the step a lead's blow is held, and each held blow's settle (x2.5 on the count) adds its extra damage outside a
+    // blow. Seed 1 is the headless check line's expected run.
+    const HostRun devin = hostRun({"duelist", "skirmisher"}, "devin", 1, false, true);
+    CHECK(devin.phase == ArenaPhase::Victory);
+    CHECK(devin.held == 2);
+    CHECK(devin.joins == 1);
+    CHECK(devin.bonuses == 2);
+    CHECK(devin.bonusDamage == 42);
+    CHECK(devin.hostHits >= 1);
+    const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
+    CHECK(duy.phase == ArenaPhase::Victory);
+    CHECK(duy.joins == 2);
+    CHECK(duy.bonuses == 2);
+    CHECK(duy.bonusDamage == 32);
+    for (std::uint32_t seed = 1; seed <= 6; ++seed) {
+        const HostRun shared = hostRun({"duelist", "skirmisher"}, "devin", seed, false, true);
+        const HostRun alone = hostRun({"duelist", "skirmisher"}, "devin", seed, false, false);
+        CAPTURE(seed);
+        CHECK(shared.bonuses > 0);
+        CHECK(shared.bonusDamage > 0);
+        CHECK(shared.stats.time <= alone.stats.time); // the bonus ends the fight no later
+        CHECK(alone.bonuses == 0);
+        CHECK(alone.hostHits == 0);
+    }
+}
+
+namespace {
+ArenaBlowRuling noRuling(void*, const ArenaBlow&) { return ArenaBlowRuling{}; }
+} // namespace
+
+TEST_CASE("arena blow hook: the getters read back what setBlowHook set") {
+    ArenaFight fight;
+    CHECK(fight.blowHook() == nullptr);
+    CHECK(fight.blowHookUser() == nullptr);
+    int user = 0;
+    fight.setBlowHook(&noRuling, &user);
+    CHECK(fight.blowHook() == &noRuling);
+    CHECK(fight.blowHookUser() == &user);
+    fight.setBlowHook(nullptr, &user); // no hook keeps no user
+    CHECK(fight.blowHook() == nullptr);
+    CHECK(fight.blowHookUser() == nullptr);
 }

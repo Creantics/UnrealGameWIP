@@ -284,6 +284,11 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot aims and shoots on the way in with a guns kit (-ArenaAutoShoot)."));
 	}
+	bSharedCount = Setup.bSharedCount && bAutoPlay;
+	if (bSharedCount)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the lead calls the count whenever it can and a scripted partner joins a held blow's window (-ArenaSharedCount)."));
+	}
 
 	bBegun = true;
 	BeginNow = Now;
@@ -296,6 +301,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	BeginStoneBearer();
 	BeginKite();
 	BeginKindCrits();
+	InstallSessionHook();
 	SpawnFigures(Setup.Lead);
 	PrepareBossCarried();
 	if (bBossSplitAtStart)
@@ -1369,6 +1375,11 @@ void UFTArenaRunner::BeginSession()
 {
 	SessionHeld = Fight.heldTime();
 	bSessionGuard = false;
+	bSessionPartnerDue = false;
+	SessionHeldBlows = 0;
+	SessionJoins = 0;
+	SessionBonuses = 0;
+	SessionBonusDamage = 0;
 	if (Session)
 	{
 		Session->Begin(ftcore::FightSessionDef{}, static_cast<double>(SessionHeld));
@@ -1397,7 +1408,7 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	{
 		Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
 	}
-	if (In.pair)
+	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
 	{
 		Session->Press(EFTSharedAction::Count, SessionLead);
 	}
@@ -1408,23 +1419,82 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	}
 }
 
-// After the step: the session moves by what the held clock moved (0 through a hit pause, so hit-stop is never
-// subtracted twice), then each blow the player landed (Hit from the player; the partner's counters are other event types) is judged on the count at the session's time.
-void UFTArenaRunner::FeedSession(const ftcore::ArenaEvents& Events)
+// The session judges each blow the player lands on an enemy (a Hit from the player; the partner's counters are other
+// blow types) inside the fight's blow hook, after the sub-hosts' ruling: judgeHeldBlow on the damage they leave. A
+// final outcome scales the blow (x1 alone); a Held one lands at base and its settle's bonus comes after a later tick.
+ftcore::ArenaBlowRuling UFTArenaRunner::RuleSessionBlow(void* User, const ftcore::ArenaBlow& Blow)
+{
+	UFTArenaRunner* Self = static_cast<UFTArenaRunner*>(User);
+	ftcore::ArenaBlowRuling Ruling;
+	if (Self->SessionInnerHook)
+	{
+		Ruling = Self->SessionInnerHook(Self->SessionInnerUser, Blow);
+	}
+	if (Ruling.veto || !Self->Session || Blow.type != ftcore::ArenaEventType::Hit || Blow.source != ftcore::kArenaPlayer ||
+		Blow.target == ftcore::kArenaPlayer)
+	{
+		return Ruling;
+	}
+	const float Scale = Ruling.damage > 0.f ? FMath::Min(Ruling.damage, 1.0e6f) : 0.f; // NaN counts as 0, as the fight reads it
+	const int Base = static_cast<int>(FMath::RoundToFloat(static_cast<float>(Blow.damage) * Scale));
+	const ftcore::CountHit Hit = Self->Session->Get().judgeHeldBlow(Self->SessionLead, Blow.target, Base, Blow.move);
+	if (Hit.outcome == ftcore::CountOutcome::Held)
+	{
+		++Self->SessionHeldBlows;
+		Self->bSessionPartnerDue = Self->bSharedCount;
+	}
+	else
+	{
+		Ruling.damage = Scale * Hit.multiplier;
+	}
+	return Ruling;
+}
+
+// Chains the session's ruling after whatever hook the sub-hosts set at this begin (none, kind crits, the kite or the
+// stone bearer). On a restart where none of them set one, the hook is still the session's: its inner hook stays.
+void UFTArenaRunner::InstallSessionHook()
 {
 	if (!Session)
 	{
 		return;
 	}
-	const float Held = Fight.heldTime();
-	Session->Tick(FMath::Max(0.f, Held - SessionHeld));
-	SessionHeld = Held;
-	for (size_t I = 0; I < Events.count; ++I)
+	if (Fight.blowHook() != &UFTArenaRunner::RuleSessionBlow)
 	{
-		const ftcore::ArenaEvent& E = Events.items[I];
-		if (E.type == ftcore::ArenaEventType::Hit && E.source == ftcore::kArenaPlayer && E.target != ftcore::kArenaPlayer)
+		SessionInnerHook = Fight.blowHook();
+		SessionInnerUser = Fight.blowHookUser();
+	}
+	Fight.setBlowHook(&UFTArenaRunner::RuleSessionBlow, this);
+}
+
+// After the step: under -ArenaSharedCount the scripted partner joins the window a lead's blow waits in; then the
+// session moves by what the held clock moved (0 through a hit pause, so hit-stop is never subtracted twice), and each
+// held blow that settled above x1 adds its extra damage through hostBlow (reported with the next step).
+void UFTArenaRunner::FeedSession()
+{
+	if (!Session)
+	{
+		return;
+	}
+	if (bSessionPartnerDue)
+	{
+		bSessionPartnerDue = false;
+		const uint8 Partner = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+		if (Session->Get().judgeBlow(Partner).outcome == ftcore::CountOutcome::OnCount)
 		{
-			Session->Get().judgeBlow(SessionLead);
+			++SessionJoins;
+		}
+	}
+	const float Held = Fight.heldTime();
+	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
+	SessionHeld = Held;
+	for (const ftcore::HeldBonus& Bonus : Tick.bonuses)
+	{
+		if (Fight.hostBlow(Bonus.enemy, Bonus.extraDamage, Bonus.move))
+		{
+			++SessionBonuses;
+			SessionBonusDamage += Bonus.extraDamage;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: a held blow on the count adds %d damage to %s (move %d)."), Bonus.extraDamage,
+				UTF8_TO_TCHAR(SlotKindId(Bonus.enemy)), Bonus.move);
 		}
 	}
 }
@@ -1526,7 +1596,7 @@ void UFTArenaRunner::StepFight()
 	}
 	// The lead's strike clips run on the held clock, so they stand still through its hit pauses as its action does.
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
-	FeedSession(Out.events);
+	FeedSession();
 	HandleEvents(Out.events);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
@@ -2409,13 +2479,19 @@ void UFTArenaRunner::LogFeatureChecks() const
 		S.lightStamina);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: cancels %s (%d)."), Verdict(C.cancels, true), S.cancels);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d)."), Verdict(C.flinch, bCanFlinch), S.flinches);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d)."), Verdict(C.breakOut, bCanBreak), S.breakOuts);
+	// A break-out can show only once a blow brings an upright enemy's count to its breakAt without staggering it:
+	// a fight where poise always breaks first is n/a, with its best run as the evidence.
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d; best run %d of %d)."),
+		Verdict(C.breakOut, bCanBreak && (C.breakOut || C.breakOutDue)), S.breakOuts, S.breakRunBest, S.breakRunNeed);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: soft target %s (%d)."), Verdict(C.softTarget, Fight.def().fighter.softRange > 0.f),
 		S.softTargets);
 	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).
 	const bool bGuns = Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shots %s (%d fired, %d hit)."), Verdict(C.shots, bGuns && (bAutoShoot || S.shots > 0)),
 		S.shots, S.shotHits);
+	// Two leads on one count (the partner scripted under -ArenaSharedCount): a held blow's bonus landed.
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shared count bonus %s (%d held, %d joined, %d bonuses, +%d damage)."),
+		Verdict(SessionBonuses > 0, bSharedCount && Session != nullptr), SessionHeldBlows, SessionJoins, SessionBonuses, SessionBonusDamage);
 }
 
 void UFTArenaRunner::Restart()
@@ -2435,6 +2511,7 @@ void UFTArenaRunner::Restart()
 	}
 	BeginKite();
 	BeginKindCrits();
+	InstallSessionHook();
 	bResultLogged = false;
 	PutBodiesAtStart();
 	BeginNow = Now;
