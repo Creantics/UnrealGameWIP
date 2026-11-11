@@ -491,11 +491,11 @@ def find_landmarks(V, F, voxels=160, guides=None, log=None):
         # upper-arm radius from the free arm just below the armpit
         ua = (sproj > np.percentile(sproj, 2)) & (AV[:, 2] < armpit) & (AV[:, 2] > armpit - 0.08 * H)
         r_ua = float(np.median(perp[ua])) if ua.sum() > 10 else 0.04 * H
-        # shoulder joint: on the arm's centreline, one upper-arm radius in from the shoulder's outer surface
-        # at the armpit's height plus one upper-arm diameter (the humeral head sits above the armpit fold)
-        # shoulder joint: the humeral head sits where the arm's own centreline crosses the torso's side wall
-        # (the torso's lateral edge just under the armpit); in an A-pose that is about one arm radius above it
+        # shoulder joint: the arm's own centreline where it crosses the torso's side wall (the torso's lateral
+        # edge just under the armpit), then half an upper-arm radius further in along that line: the humeral head
+        # sits inside the deltoid cap, and a pivot on the wall leaves the cap behind when the arm is raised
         t = (sg * edge - c0[0]) / d[0] if abs(d[0]) > 1e-6 else 0.0
+        t -= 0.5 * r_ua * np.sign(d[0] * sg)
         put("upperarm_" + s, c0 + d * t, "detected")
         # elbow: the forearm and upper arm in their textbook ratio (0.186 : 0.146 of height) along the
         # shoulder-wrist line, pulled onto the arm's centre there
