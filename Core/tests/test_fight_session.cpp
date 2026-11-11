@@ -283,6 +283,18 @@ TEST_CASE("fight session: a boss script countered then hit on the count unlocks 
     CHECK(h.crit);
     CHECK(h.damage == 20);
     CHECK(s.offerKey(kUnlockSharedBlow) == UnlockResult::BadKey); // the script takes its own keys
+    // A shared counter kind needs the shared input from the host: an open window alone is not it.
+    FightSessionDef shared = d;
+    shared.boss.moves[0].counter = BossCounter::StrikeOnCount;
+    REQUIRE(s.begin(shared, 0.0).ok());
+    REQUIRE(tickUntil(s, [&] { return s.now() >= 0.8; }));
+    REQUIRE(s.callCount(kLeadA) == CountError::None); // its window opens inside the boss's (2.0 to 2.5)
+    REQUIRE(tickUntil(s, [&] { return s.boss().state() == BossState::Window && s.strikeCount().open(s.now()); }));
+    CHECK(s.counter(BossCounter::StrikeOnCount, kLeadA) == BossInput::NeedsShared);
+    CHECK(s.counter(BossCounter::StrikeOnCount, kLeadA, sharedBlow(CountHit{CountOutcome::OnCount})) == BossInput::Countered);
+    REQUIRE(s.begin(d, 300.0).ok());
+    REQUIRE(tickUntil(s, [&] { return s.boss().state() == BossState::Window; }));
+    REQUIRE(s.counter(BossCounter::Guard, kLeadA) == BossInput::Countered);
     // Hit-stop holds the boss too.
     const double stepEnds = s.boss().stepEnds();
     const BossState st = s.boss().state();

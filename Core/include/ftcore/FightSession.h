@@ -16,7 +16,7 @@
 //   the table setter's places re-checks the table's seats.
 // * Story: with a story state bound, every given gift is one press in it (storyCountPress): the side is the lead it
 //   went to (kLeadA 0, kLeadB 1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused press writes nothing.
-//   The press counters roll back with a scene restart, so a retried fight counts afresh.
+//   The per-kind press counters (counter wides) roll back with a scene restart, so a retried fight counts afresh.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction.
 
@@ -252,10 +252,12 @@ public:
         return !def_.locked || lock_.open(now_);
     }
 
-    // The boss script's inputs (Ignored, or nothing, without one). A counter is on the count while its window is open.
-    BossInput counter(BossCounter kind, FighterId who) {
+    // The boss script's inputs (Ignored, or nothing, without one). `shared`: the counter carries the shared input, a
+    // blow judged a shared outcome (sharedBlow(judgeBlow(...))) or a hit the lead took half of; a shared counter
+    // kind without it is refused (NeedsShared).
+    BossInput counter(BossCounter kind, FighterId who, bool shared = false) {
         if (!hasBoss_) return BossInput::Ignored;
-        return boss_.counter(kind, who, now_, count_.open(now_));
+        return boss_.counter(kind, who, now_, shared);
     }
     ScriptHit bossHit(int amount, bool onWeakPoint) { return hasBoss_ ? boss_.hit(amount, onWeakPoint, now_) : ScriptHit{}; }
     bool answer() { return hasBoss_ && boss_.answer(now_); }

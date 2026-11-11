@@ -286,8 +286,12 @@ the pieces.
 * **Story.** With a story state bound (`bindStory(state, registry)`, both or neither), every given
   gift is one press in it (`storyCountPress`): the side is the lead it went to (`kLeadA` 0, `kLeadB`
   1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused gift writes nothing; a closed side,
-  a counter at its cap or an unbound counter is a normal answer (`lastStoryWrite`). Press counters are
-  rolled back by a scene restart, so a retried fight counts afresh.
+  a counter at its cap or an unbound counter is a normal answer (`lastStoryWrite`). The per-kind press
+  counters (counter wides) roll back with a scene restart, so a retried fight counts afresh; a raw
+  total does not.
+* **Boss counters.** `counter(kind, who, shared)`: `shared` is the host's word that the counter carries
+  the shared input (a blow judged a shared outcome, or a hit the lead took half of). An open count
+  window alone is not it; a shared counter kind without it is refused (`NeedsShared`).
 * The session cannot be copied or moved (its boss script points into its def), and allocates nothing
   after construction.
 
