@@ -600,6 +600,8 @@ constexpr const TCHAR* kWindowNightGlow = TEXT("NightGlow");
 // Round 10: the rooms' parallax, 1 (the true view ray) or 0 (the room's picture flat at its back wall); a look or a
 // console may set it at run time, -WindowParallax=<0|1> sets its default.
 constexpr const TCHAR* kWindowParallax = TEXT("Parallax");
+constexpr const TCHAR* kWindowShopDayLevel = TEXT("ShopDayLevel");
+constexpr const TCHAR* kWindowShopNightLevel = TEXT("ShopNightLevel");
 // The window widths a building finish may take (metres): each finish keeps one, so a building never mixes sizes.
 constexpr float kWindowWidths[] = {1.2f, 1.35f, 1.5f};
 
@@ -656,8 +658,8 @@ UMaterialParameterCollection* BuildWindowCollection(float Parallax)
 	UPackage* Package = CreatePackage(FTScene::WindowCollection);
 	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
 		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
-	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax};
-	const float Defaults[] = {0.f, 1.f, Parallax};
+	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel};
+	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f};
 	for (int32 P = 0; P < static_cast<int32>(UE_ARRAY_COUNT(Names)); ++P)
 	{
 		FCollectionScalarParameter& Scalar = Collection->ScalarParameters.AddDefaulted_GetRef();
@@ -803,6 +805,25 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionMultiply* ShopNightGlow = AddExpression<UMaterialExpressionMultiply>(Material, -600, 2400);
 	ShopNightGlow->A.Connect(0, ShopGlow);
 	ShopNightGlow->B.Connect(0, NightGlow);
+	// Round 12: a shop's own light by day and by night times the collection's ShopDayLevel and ShopNightLevel (1), so
+	// a look sets them at run time (-ShopDayLevel=, -ShopNightLevel=).
+	UMaterialExpression* ShopDayIn = ShopDay;
+	UMaterialExpression* ShopNightIn = ShopNightGlow;
+	{
+		const TCHAR* const LevelNames[] = {kWindowShopDayLevel, kWindowShopNightLevel};
+		UMaterialExpression** const Ins[] = {&ShopDayIn, &ShopNightIn};
+		for (int32 L = 0; L < 2; ++L)
+		{
+			UMaterialExpressionCollectionParameter* Level = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 2850 + 50 * L);
+			Level->Collection = Collection;
+			Level->ParameterName = LevelNames[L];
+			Level->ParameterId = Collection->GetParameterId(LevelNames[L]);
+			UMaterialExpressionMultiply* Mul = AddExpression<UMaterialExpressionMultiply>(Material, -600, 2850 + 50 * L);
+			Mul->A.Connect(0, *Ins[L]);
+			Mul->B.Connect(0, Level);
+			*Ins[L] = Mul;
+		}
+	}
 	UMaterialExpressionTextureObjectParameter* RoomsTex = AddTexture(Material, TEXT("Rooms"), Rooms, SAMPLERTYPE_Color, 2600);
 	UMaterialExpressionTextureObjectParameter* CurtainsTex = AddTexture(Material, TEXT("Curtains"), Curtains, SAMPLERTYPE_Color, 2750);
 	RoomsTex->Group = TEXT("Window");
@@ -827,9 +848,9 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	AddInput(Win, TEXT("ShopLit"), ShopLit);
 	AddInput(Win, TEXT("Night"), Night);
 	AddInput(Win, TEXT("RoomDay"), RoomDay);
-	AddInput(Win, TEXT("ShopDay"), ShopDay);
+	AddInput(Win, TEXT("ShopDay"), ShopDayIn);
 	AddInput(Win, TEXT("GlowScale"), RoomGlow);
-	AddInput(Win, TEXT("ShopGlow"), ShopNightGlow);
+	AddInput(Win, TEXT("ShopGlow"), ShopNightIn);
 	AddInput(Win, TEXT("CurtainAlpha"), CurtainAlpha);
 	AddInput(Win, TEXT("CurtainGlow"), CurtainGlow);
 	AddInput(Win, TEXT("Rooms"), RoomsTex);

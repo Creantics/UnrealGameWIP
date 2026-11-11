@@ -392,6 +392,22 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 		{
 			WindowParams->SetScalarParameterValue(TEXT("Parallax"), FMath::Clamp(Parallax, 0.f, 1.f));
 		}
+		// -ShopDayLevel=<scale>  -ShopNightLevel=<scale>: a shop's own light by day and by night, times the built one.
+		static const FVector2f ShopLevels = []
+		{
+			FVector2f Value(-1.f, -1.f);
+			FParse::Value(FCommandLine::Get(), TEXT("ShopDayLevel="), Value.X);
+			FParse::Value(FCommandLine::Get(), TEXT("ShopNightLevel="), Value.Y);
+			return Value;
+		}();
+		if (ShopLevels.X >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("ShopDayLevel"), ShopLevels.X);
+		}
+		if (ShopLevels.Y >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("ShopNightLevel"), ShopLevels.Y);
+		}
 	}
 	WetShare = Frame.wetShare;
 	WriteWetness();
