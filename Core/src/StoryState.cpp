@@ -692,6 +692,29 @@ bool storyEncode(StoryState& s, const FactRegistry& reg, std::span<std::uint8_t,
     return true;
 }
 
+StoryLoad storyLoadOrNew(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
+                         StoryStateLoadReport* report) {
+    StoryState loaded;
+    const StoryLoad r = storyDecode(in, reg, loaded, report);
+    if (r == StoryLoad::Ok) out = loaded;
+    else storyReset(out);
+    return r;
+}
+
+const char* storyLoadName(StoryLoad r) {
+    switch (r) {
+    case StoryLoad::Ok: return "ok";
+    case StoryLoad::Empty: return "empty";
+    case StoryLoad::BadMagic: return "bad magic";
+    case StoryLoad::BadSize: return "bad size";
+    case StoryLoad::BadChecksum: return "bad checksum";
+    case StoryLoad::NewerLayout: return "newer layout";
+    case StoryLoad::BadScene: return "bad scene";
+    case StoryLoad::BadVersion: return "bad version";
+    }
+    return "unknown";
+}
+
 StoryLoad storyDecode(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
                       StoryStateLoadReport* report) {
     StoryStateLoadReport rep;

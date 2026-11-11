@@ -192,7 +192,7 @@ public:
 
 	static const TCHAR* GetSlotName() { return TEXT("Slot0"); }
 	// True when a command-line flag asks for an unattended run: -StoryAutoPlay, -StoryAutoPlayFast,
-	// -StoryAutoPlayHandoff, -AlphaAutoPlay or -StoryScene=.
+	// -StoryAutoPlayHandoff, -AlphaAutoPlay, -StoryScene= or -StoryStateCheck.
 	static bool IsHeadlessRun();
 
 	// Writes the story's current progress to the slot. False when the story isn't on a scene or
