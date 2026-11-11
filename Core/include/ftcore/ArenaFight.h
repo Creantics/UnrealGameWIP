@@ -141,11 +141,11 @@
 //   A flinch cuts the move short and gives the token back, as a stagger does; it is pushed flinchPush
 //   metres straight away from the player over the flinch, then walks again. A broken poise staggers
 //   instead. The host may forbid it for one enemy (setEnemyFlinch: a boss whose script allows it only in
-//   some phases); bosses leave flinchTime at 0.
+//   some phases; a restart allows it again, so the host sets it after restart()); bosses leave flinchTime at 0.
 // * Break-out. An enemy kind with breakAt > 0 counts the player's blows that land on it while it is
-//   upright (Approach, Strafe, Attack, Flinch), the count going back to 0 after breakDecay with none, and
-//   on a stagger or a break-out. The blow that reaches breakAt, if it doesn't stagger it, starts its
-//   breakMove at once (BrokeOut, then AttackStarted): whatever the token count, its cooldown and the
+//   upright (Approach, Strafe, Attack, Flinch), the count going back to 0 after breakDecay with none, when
+//   it goes down (Staggered, Open, Down) and on a break-out. The blow that reaches breakAt, if it
+//   doesn't stagger it, starts its breakMove at once (BrokeOut, then AttackStarted): whatever the token count, its cooldown and the
 //   flinch, though never a move the host's move mask clears. That move should carry `armor`. A stagger,
 //   Open or Down never counts and never breaks out.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to

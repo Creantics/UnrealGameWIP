@@ -298,7 +298,9 @@ struct ArenaFightImpl {
         po.backstep = pl.backstep;
         po.load = pl.gauge.value;
         po.overloaded = pl.gauge.overloaded();
-        po.stopLeft = std::max(0.f, pl.stopUntil - fight.time_);
+        // A fight that is over pauses nobody (its clock stands still), nor does a dead enemy.
+        const bool fighting = fight.phase_ == ArenaPhase::Fighting;
+        po.stopLeft = fighting ? std::max(0.f, pl.stopUntil - fight.time_) : 0.f;
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             ArenaEnemyOut& eo = out.enemies[i];
             const Enemy& foe = foes[i];
@@ -310,7 +312,9 @@ struct ArenaFightImpl {
             eo.stateTime = foe.stateTime;
             eo.stateLength = i < n ? recoverLength(i) : 0.f;
             eo.token = foe.token;
-            eo.stopLeft = i < n ? std::max(0.f, foe.stopUntil - fight.time_) : 0.f;
+            eo.stopLeft = fighting && i < n && foe.brain != ArenaBrain::Dead
+                              ? std::max(0.f, foe.stopUntil - fight.time_)
+                              : 0.f;
             if (i < n && foe.brain == ArenaBrain::Attack) {
                 eo.part = arenaPartOf(def.enemies[i].moves[foe.move].attack, foe.stateTime);
                 eo.move = foe.move;
@@ -1208,6 +1212,7 @@ struct ArenaFightImpl {
     void interrupt(std::size_t i, ArenaBrain brain) {
         Enemy& foe = foes[i];
         foe.brain = brain;
+        if (!upright(foe)) foe.breakHits = 0; // Open, Down, Staggered: the count starts again once it is up
         foe.stateTime = 0.f;
         foe.stringEnd = t1;
         foe.holdFor = -1.f;
@@ -2613,6 +2618,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     if (k.breakMove >= static_cast<int>(k.moveCount))
         errors.push_back(path + ".breakMove: expected -1 or one of its " + std::to_string(k.moveCount) + " moves");
     if (k.breakAt > 0 && k.breakMove < 0) errors.push_back(path + ".breakMove: breakAt needs a move to break out with");
+    if (k.breakAt > 1 && !(k.breakDecay > 0.f))
+        errors.push_back(path + ".breakDecay: breakAt above 1 needs a decay above 0 (the count would never grow)");
     // A string may not loop: following the chain from any move must end within moveCount steps.
     for (std::uint32_t m = 0; m < k.moveCount; ++m) {
         const std::uint32_t most = k.moveCount;

@@ -6040,3 +6040,30 @@ TEST_CASE("arena table: the pause, cancel, flinch and break-out keys load and ar
                    "breakAt needs a move"));
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": -1 } ])")), "flinchTime"));
 }
+
+TEST_CASE("arena hit pause: a killing blow leaves no pause on the dead or once the fight is over") {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = 0.2f;
+    ArenaEnemyKind k = dummyKind();
+    k.hp = 1;
+    Rig rig(f, {k});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    for (int i = 0; i < 60 && rig.fight.phase() == ArenaPhase::Fighting; ++i) rig.tick();
+    REQUIRE(rig.fight.phase() == ArenaPhase::Victory);
+    for (int i = 0; i < 3; ++i) {
+        const ArenaOutput& out = rig.tick();
+        CHECK(out.player.stopLeft == 0.f);
+        CHECK(out.enemies[0].stopLeft == 0.f);
+        CHECK(rig.fight.hitStopLeft() == 0.f);
+    }
+}
+
+TEST_CASE("arena table: a break-out count above 1 needs a decay") {
+    CHECK(contains(loadError(tableJson(kFightersOk,
+                                       R"([ { "id": "dummy", "breakAt": 3, "breakDecay": 0, "breakMove": 0, "moves": [ {} ] } ])")),
+                   "breakDecay"));
+    CHECK(loadError(tableJson(kFightersOk,
+                              R"([ { "id": "dummy", "breakAt": 1, "breakDecay": 0, "breakMove": 0, "moves": [ {} ] } ])"))
+              .empty());
+}
