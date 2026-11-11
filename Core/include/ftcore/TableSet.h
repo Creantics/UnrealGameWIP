@@ -9,17 +9,19 @@
 //
 // * begin(setter, load, places, seated, t): needs places.full(load) and places.tableSeats() >=
 //   minSeats. `seated` is the mask of fighters at the table (fighterBit; the enemy bit is ignored, the
-//   setter is always seated). On success the host spends the setter's Load (load.release()).
+//   setter is always seated). On success begin spends the setter's Load itself (load.release()).
 // * interrupt(t) while Setting (the setter staggered or downed): the table fails. The Load stays spent.
-// * checkSeats(places, t) while Setting or Set (call it whenever a place changes): with fewer than
-//   minSeats named or left open, the table gutters out for want of a seat: Guttered, failed(), and
-//   failCooldown. An open chair is a seat; an emptied one is not.
+// * checkSeats(places, t) while Setting or Set: with fewer than minSeats named or left open, the table
+//   gutters out: Guttered, failed(), and failCooldown. An open chair is a seat; an emptied one is not.
+//   TableSet keeps no reference to the PlaceTable, so the host must call checkSeats after every change
+//   to the setter's places while the table is Setting or Set.
 // * seatEnemy(t) while Set: the enemy sits until the table clears.
 // * split(target, amount, t) while Set: a blow on a seated fighter is shared evenly by everyone at the
 //   table, the seated enemy included (its share, times enemyShare, is real damage to it: this is how
 //   it is hurt). A blow on the enemy itself is not shared back: it takes it all. Outside Set, or on a
 //   fighter not seated, the target takes it all.
 // * update(now): the timed changes since the last update, and the ones the calls made, in order.
+//   Past kMaxTableEvents waiting, later events are turned away and counted in the returned `dropped`.
 //
 // Times as CombatInputs.h. No allocation.
 
@@ -101,13 +103,15 @@ public:
         return ok;
     }
 
-    TableError begin(FighterId setter, const Load& load, const PlaceTable& places, std::uint8_t seated, double t) {
+    // Begins setting the table and spends `load` (the setter's) on success; on an error `load` is untouched.
+    TableError begin(FighterId setter, Load& load, const PlaceTable& places, std::uint8_t seated, double t) {
         t = advance(t);
         if (!(setter == kLeadA || setter == kLeadB || setter == kThirdSlot)) return TableError::BadSetter;
         if (state_ == TableState::Setting || state_ == TableState::Set) return TableError::Busy;
         if (state_ == TableState::Cooling) return TableError::Cooling;
         if (!places.full(load)) return TableError::NotFull;
         if (places.tableSeats() < tuning_.minSeats) return TableError::TooFewSeats;
+        load.release();
         setter_ = setter;
         seated_ = static_cast<std::uint8_t>((seated | fighterBit(setter)) & ~fighterBit(kEnemyFighter) & 0x0F);
         enemySeated_ = false;

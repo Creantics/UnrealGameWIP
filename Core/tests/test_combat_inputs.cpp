@@ -41,10 +41,15 @@ TEST_CASE("gifts: each gift is given to a lead, counted, and leaves a thread") {
     CHECK(r.gift == Gift::Heal);
     CHECK(r.target == kLeadA);
     CHECK(r.error == GiftError::None);
+    CHECK(r.healShare == doctest::Approx(0.15f)); // what the host applies
+    CHECK(r.healLoad == 20);
 
     REQUIRE(g.select(Gift::Guard));
     r = g.press(kLeadB, 1.0);
     CHECK(r.given);
+    CHECK(r.guardScale == doctest::Approx(0.0f));
+    CHECK(r.guardUntil == doctest::Approx(2.2));
+    CHECK(r.healLoad == 0);
     CHECK(g.guarded(kLeadB, 1.5));
     CHECK(g.guardScaleFor(kLeadB, 1.5) == doctest::Approx(0.0f));
     CHECK(g.guardScaleFor(kLeadA, 1.5) == doctest::Approx(1.0f));
@@ -63,30 +68,37 @@ TEST_CASE("gifts: each gift is given to a lead, counted, and leaves a thread") {
     CHECK(g.tally().count(Gift::Heal) == 1);
     CHECK(g.tally().count(Gift::Guard) == 1);
     CHECK(g.tally().count(Gift::Count) == 1);
+    CHECK(g.tally().givenOf(Gift::Count) == 1);
     CHECK(g.tally().total() == 3);
     CHECK(g.threads(kLeadA) == 2);
     CHECK(g.threads(kLeadB) == 1);
     CHECK(g.threads(kThirdSlot) == 0);
 }
 
-TEST_CASE("gifts: cooldowns per gift, refused presses are not counted") {
+TEST_CASE("gifts: cooldowns per gift; a press refused for its cooldown is tallied as refused") {
     GiftSlot g;
     CHECK(g.press(kLeadA, 0.0).given);
     const GiftResult cooling = g.press(kLeadA, 7.9);
     CHECK_FALSE(cooling.given);
     CHECK(cooling.error == GiftError::Cooling);
+    CHECK(cooling.healLoad == 0); // nothing to apply
     CHECK_FALSE(g.ready(Gift::Heal, 7.9));
-    CHECK(g.readyAt(Gift::Heal) == doctest::Approx(8.0));
+    CHECK(g.readyAt(Gift::Heal) == doctest::Approx(8.0)); // the refused press did not restart it
+    CHECK(g.threads(kLeadA) == 1);
     // Another gift is not held up by the heal's cooldown.
     REQUIRE(g.select(Gift::Guard));
     CHECK(g.press(kLeadA, 7.9).given);
     REQUIRE(g.select(Gift::Heal));
     CHECK(g.press(kLeadA, 8.0).given);
-    CHECK(g.tally().count(Gift::Heal) == 2);
+    CHECK(g.tally().givenOf(Gift::Heal) == 2);
+    CHECK(g.tally().refusedOf(Gift::Heal) == 1);
+    CHECK(g.tally().count(Gift::Heal) == 3);
+    CHECK(g.tally().total() == 4);
+    CHECK(g.allPresses() == 4);
     CHECK(g.threads(kLeadA) == 3);
 }
 
-TEST_CASE("gifts: bad targets and selections") {
+TEST_CASE("gifts: bad targets and selections; a bad target is tallied as refused") {
     GiftSlot g;
     CHECK(g.press(kThirdSlot, 0.0).error == GiftError::BadTarget);
     CHECK(g.press(kEnemyFighter, 0.0).error == GiftError::BadTarget);
@@ -94,43 +106,73 @@ TEST_CASE("gifts: bad targets and selections") {
     CHECK_FALSE(g.select(Gift::None));
     CHECK_FALSE(g.select(static_cast<Gift>(9)));
     CHECK(g.selected() == Gift::Heal);
-    CHECK(g.tally().total() == 0);
-    CHECK(g.tally().mostUsed() == Gift::None);
+    CHECK(g.tally().givenOf(Gift::Heal) == 0);
+    CHECK(g.tally().refusedOf(Gift::Heal) == 3);
+    CHECK(g.tally().total() == 3);
+    CHECK(g.tally().mostUsed() == Gift::Heal);
+    CHECK(g.ready(Gift::Heal, 0.0)); // no cooldown started
+    CHECK(g.threads(kLeadA) == 0);
+    CHECK(g.tally().refusedOf(static_cast<Gift>(9)) == 0);
 }
 
-TEST_CASE("gifts: a count gift the count refuses is not given and not counted") {
+TEST_CASE("gifts: a count gift with no count, or one the count refuses, is not given but is tallied") {
     GiftSlot g;
     REQUIRE(g.select(Gift::Count));
-    CHECK(g.press(kLeadA, 0.0, nullptr).error == GiftError::CountRefused);
+    const GiftResult none = g.press(kLeadA, 0.0, nullptr);
+    CHECK_FALSE(none.given);
+    CHECK(none.error == GiftError::CountRefused);
+    CHECK(g.tally().refusedOf(Gift::Count) == 1);
+    CHECK(g.ready(Gift::Count, 0.0));
     StrikeCount count;
     REQUIRE(count.reset(tempo60()));
     REQUIRE(count.call(kLeadB, 0.0) == CountError::None);
     const GiftResult r = g.press(kLeadA, 0.5, &count);
     CHECK_FALSE(r.given);
     CHECK(r.error == GiftError::CountRefused);
-    CHECK(g.tally().total() == 0);
+    CHECK(g.tally().givenOf(Gift::Count) == 0);
+    CHECK(g.tally().refusedOf(Gift::Count) == 2);
+    CHECK(g.tally().total() == 2);
     CHECK(g.threads(kLeadA) == 0);
     CHECK(g.ready(Gift::Count, 0.5)); // no cooldown started
     CHECK(count.caller() == kLeadB);  // the lead's count stands
 }
 
-TEST_CASE("gifts: the empty chair and a hostile slot do nothing, but every press is remembered") {
+TEST_CASE("gifts: the count gift at its cooldown boundary") {
     GiftSlot g;
     StrikeCount count;
-    g.setState(SlotState::EmptyChair);
+    REQUIRE(count.reset(tempo60()));
+    REQUIRE(g.select(Gift::Count));
+    REQUIRE(g.press(kLeadA, 0.0, &count).given);
+    CHECK(g.readyAt(Gift::Count) == doctest::Approx(4.0));
+    count.update(3.9);
+    const GiftResult early = g.press(kLeadA, std::nextafter(4.0, 0.0), &count);
+    CHECK(early.error == GiftError::Cooling);
+    CHECK(count.readyAt() < 4.0); // the count itself would have taken it
+    const GiftResult onTime = g.press(kLeadB, 4.0, &count);
+    CHECK(onTime.given);
+    CHECK(count.caller() == kThirdSlot);
+    CHECK(count.nowAt() == doctest::Approx(6.0));
+    CHECK(g.tally().givenOf(Gift::Count) == 2);
+    CHECK(g.tally().refusedOf(Gift::Count) == 1);
+}
+
+TEST_CASE("gifts: a vacant slot and a hostile slot do nothing, but every press is remembered") {
+    GiftSlot g;
+    StrikeCount count;
+    g.setState(SlotState::Vacant);
     REQUIRE(g.select(Gift::Count));
     const GiftResult r = g.press(kLeadA, 0.0, &count);
     CHECK_FALSE(r.given);
-    CHECK(r.error == GiftError::EmptyChair);
+    CHECK(r.error == GiftError::Vacant);
     CHECK_FALSE(count.live());
-    CHECK(g.press(kLeadB, 0.1).error == GiftError::EmptyChair);
-    CHECK(g.emptyPresses() == 2);
+    CHECK(g.press(kLeadB, 0.1).error == GiftError::Vacant);
+    CHECK(g.vacantPresses() == 2);
     CHECK(g.tally().total() == 0);
     CHECK(g.threads(kLeadA) == 0);
 
     g.setState(SlotState::Hostile);
     CHECK(g.press(kLeadA, 0.2, &count).error == GiftError::Hostile);
-    CHECK(g.emptyPresses() == 2);
+    CHECK(g.vacantPresses() == 2);
     CHECK(g.hostilePresses() == 1);
     CHECK(g.tally().total() == 0);
     CHECK(g.allPresses() == 3);
@@ -139,36 +181,48 @@ TEST_CASE("gifts: the empty chair and a hostile slot do nothing, but every press
     g.setState(SlotState::Companion);
     CHECK(g.press(kLeadA, 0.3, &count).given);
     CHECK(g.allPresses() == 4);
+    CHECK(g.press(kLeadA, 0.4, &count).error == GiftError::Cooling);
+    CHECK(g.allPresses() == 5);
 }
 
-TEST_CASE("gifts: most used, with ties going to the earliest gift") {
+TEST_CASE("gifts: most used counts every press of a gift, with ties going to the earliest gift") {
     GiftTally t;
     CHECK(t.mostUsed() == Gift::None);
-    t.presses = {0, 3, 3};
+    t.given = {0, 3, 3};
     CHECK(t.mostUsed() == Gift::Guard);
-    t.presses = {2, 1, 5};
+    t.given = {2, 1, 5};
     CHECK(t.mostUsed() == Gift::Count);
-    t.presses = {4, 4, 4};
+    t.given = {4, 4, 4};
     CHECK(t.mostUsed() == Gift::Heal);
-    t.presses = {0, 0, 1};
+    t.given = {0, 0, 1};
     CHECK(t.mostUsed() == Gift::Count);
-    CHECK(t.count(Gift::None) == 0);
+    t.refused = {2, 0, 0, 0}; // two refused heals outweigh one given count
+    CHECK(t.mostUsed() == Gift::Heal);
+    t.given = {0, 0, 0};
+    t.refused = {0, 0, 0, 5}; // presses with no gift are no gift's
+    CHECK(t.mostUsed() == Gift::None);
+    CHECK(t.total() == 5);
+    CHECK(t.count(Gift::None) == 5);
+    CHECK(t.givenOf(Gift::None) == 0);
 }
 
 TEST_CASE("gifts: counters saturate instead of wrapping") {
     GiftSlot g;
     GiftSave s;
-    s.presses = {std::numeric_limits<std::uint32_t>::max(), 0, 0};
+    s.given = {std::numeric_limits<std::uint32_t>::max(), 0, 0};
+    s.refused = {std::numeric_limits<std::uint32_t>::max(), 0, 0, 0};
     s.threads = {std::numeric_limits<std::uint32_t>::max(), 0};
-    s.emptyPresses = std::numeric_limits<std::uint32_t>::max();
+    s.vacantPresses = std::numeric_limits<std::uint32_t>::max();
     REQUIRE(g.load(s));
     CHECK(g.press(kLeadA, 0.0).given);
-    CHECK(g.tally().count(Gift::Heal) == std::numeric_limits<std::uint32_t>::max());
+    CHECK(g.tally().givenOf(Gift::Heal) == std::numeric_limits<std::uint32_t>::max());
     CHECK(g.threads(kLeadA) == std::numeric_limits<std::uint32_t>::max());
-    CHECK(g.tally().total() == std::numeric_limits<std::uint32_t>::max());
-    g.setState(SlotState::EmptyChair);
+    CHECK_FALSE(g.press(kLeadA, 0.5).given);
+    CHECK(g.tally().refusedOf(Gift::Heal) == std::numeric_limits<std::uint32_t>::max());
+    CHECK(g.tally().total() == 2ull * std::numeric_limits<std::uint32_t>::max());
+    g.setState(SlotState::Vacant);
     g.press(kLeadA, 1.0);
-    CHECK(g.emptyPresses() == std::numeric_limits<std::uint32_t>::max());
+    CHECK(g.vacantPresses() == std::numeric_limits<std::uint32_t>::max());
 }
 
 TEST_CASE("gifts: the tally, threads, choice and state survive save and load; the fight state does not") {
@@ -181,7 +235,8 @@ TEST_CASE("gifts: the tally, threads, choice and state survive save and load; th
     a.press(kLeadB, 10.0);
     REQUIRE(a.select(Gift::Count));
     a.press(kLeadA, 10.0, &count);
-    a.setState(SlotState::EmptyChair);
+    a.press(kLeadA, 10.5, &count); // refused: cooling
+    a.setState(SlotState::Vacant);
     a.press(kLeadA, 11.0);
     a.setState(SlotState::Hostile);
     a.press(kLeadA, 11.5);
@@ -195,11 +250,12 @@ TEST_CASE("gifts: the tally, threads, choice and state survive save and load; th
     REQUIRE(b.load(s));
     CHECK(b.tally().count(Gift::Heal) == 1);
     CHECK(b.tally().count(Gift::Guard) == 2);
-    CHECK(b.tally().count(Gift::Count) == 1);
-    CHECK(b.tally().mostUsed() == Gift::Guard);
-    CHECK(b.emptyPresses() == 1);
+    CHECK(b.tally().givenOf(Gift::Count) == 1);
+    CHECK(b.tally().refusedOf(Gift::Count) == 1);
+    CHECK(b.tally().mostUsed() == Gift::Guard); // a tie with Count goes to the earlier gift
+    CHECK(b.vacantPresses() == 1);
     CHECK(b.hostilePresses() == 2);
-    CHECK(b.allPresses() == 7);
+    CHECK(b.allPresses() == 8);
     CHECK(b.threads(kLeadA) == 2);
     CHECK(b.threads(kLeadB) == 2);
     CHECK(b.selected() == Gift::Guard);
@@ -209,7 +265,26 @@ TEST_CASE("gifts: the tally, threads, choice and state survive save and load; th
     // A second round trip is stable.
     GiftSlot c;
     REQUIRE(c.load(b.save()));
-    CHECK(c.save().presses == b.save().presses);
+    CHECK(c.save().given == b.save().given);
+    CHECK(c.save().refused == b.save().refused);
+}
+
+TEST_CASE("gifts: a version 1 save loads, with no refused presses") {
+    GiftSave v1;
+    v1.version = 1;
+    v1.given = {3, 1, 0};
+    v1.refused = {9, 9, 9, 9}; // not in version 1: ignored
+    v1.vacantPresses = 2;
+    v1.state = static_cast<std::uint8_t>(SlotState::Vacant);
+    GiftSlot g;
+    REQUIRE(g.load(v1));
+    CHECK(g.tally().givenOf(Gift::Heal) == 3);
+    CHECK(g.tally().refusedOf(Gift::Heal) == 0);
+    CHECK(g.tally().total() == 4);
+    CHECK(g.vacantPresses() == 2);
+    CHECK(g.state() == SlotState::Vacant);
+    CHECK(static_cast<int>(SlotState::Vacant) == 1); // the stored integer is unchanged
+    CHECK(g.save().version == kGiftSaveVersion);
 }
 
 TEST_CASE("gifts: bad saves are refused and change nothing") {
@@ -338,6 +413,31 @@ TEST_CASE("places: an emptied place drops the cap and its weight falls on the fi
     CHECK(r2.emptied);
     CHECK(r2.fell == 0);
     CHECK(r2.capAfter == 40);
+}
+
+TEST_CASE("places: one chair per person; an emptied chair holds its person until cleared") {
+    PlaceTable p;
+    REQUIRE(p.reset(4));
+    REQUIRE(p.layPlace(1) == PlaceError::None);
+    CHECK(p.layPlace(1) == PlaceError::AlreadySeated);
+    REQUIRE(p.emptyPlace(1).emptied);
+    CHECK(p.holding(1));
+    CHECK(p.find(1) == -1); // emptied: not named
+    CHECK(p.layPlace(1) == PlaceError::AlreadySeated);
+    CHECK(p.named() == 0);
+    REQUIRE(p.clearPlace(0) == PlaceError::None);
+    CHECK_FALSE(p.holding(1));
+    CHECK(p.layPlace(1) == PlaceError::None);
+    CHECK(p.find(1) == 0);
+    CHECK_FALSE(p.holding(kNoPerson));
+
+    // A save with one person named in one chair and emptied in another does not load.
+    PlaceSave twice = p.save();
+    twice.states[2] = static_cast<std::uint8_t>(PlaceState::Emptied);
+    twice.persons[2] = 1;
+    PlaceTable q;
+    CHECK_FALSE(q.load(twice));
+    CHECK(q.named() == 0);
 }
 
 TEST_CASE("places: an emptied place below the new cap leaves no excess") {
@@ -476,7 +576,61 @@ TEST_CASE("table: set at full Load with three seats, shared, then cleared and co
     const TableEvents& e4 = t.update(36.9);
     REQUIRE(e4.size() == 1);
     CHECK(e4[0].type == TableEventType::Ready);
+    CHECK(t.begin(kLeadA, s.load, s.places, kParty, 37.0) == TableError::NotFull); // the first begin spent it
+    s.load.store(100);
     CHECK(t.begin(kLeadA, s.load, s.places, kParty, 37.0) == TableError::None);
+}
+
+TEST_CASE("table: begin spends the setter's Load on success and leaves it on an error") {
+    Setter s;
+    TableSet t;
+    REQUIRE(s.load.value == 100);
+    REQUIRE(t.begin(kLeadA, s.load, s.places, kParty, 0.0) == TableError::None);
+    CHECK(s.load.value == 0);
+    Load other;
+    other.store(100);
+    CHECK(t.begin(kLeadB, other, s.places, kParty, 0.1) == TableError::Busy);
+    CHECK(other.value == 100);
+    TableSet u;
+    CHECK(u.begin(kEnemyFighter, other, s.places, kParty, 0.0) == TableError::BadSetter);
+    CHECK(other.value == 100);
+    PlaceTable two;
+    two.reset(3);
+    two.layPlace(1);
+    two.layPlace(2);
+    CHECK(u.begin(kLeadA, other, two, kParty, 0.0) == TableError::TooFewSeats);
+    CHECK(other.value == 100);
+}
+
+TEST_CASE("table: a junk far-future time moves its clock at most kMaxTimeStep") {
+    Setter s;
+    TableSet t;
+    REQUIRE(t.begin(kLeadA, s.load, s.places, kParty, 1e9) == TableError::None);
+    CHECK(t.until() == doctest::Approx(kMaxTimeStep + 0.8));
+    const TableEvents& ev = t.update(1e300);
+    REQUIRE(ev.size() == 4); // setting, set, cleared, ready: all inside one capped step
+    CHECK(ev[3].at == doctest::Approx(kMaxTimeStep + 26.8));
+}
+
+TEST_CASE("table: events past the buffer are counted as dropped and reach the host") {
+    TableTuning tune;
+    tune.setTime = 0.0;
+    tune.cooldown = 0.0;
+    TableSet t;
+    REQUIRE(t.reset(tune));
+    Setter s;
+    // Each begin and cancel makes Setting, Set, Cleared and Ready: five rounds make 20 events.
+    for (int i = 0; i < 5; ++i) {
+        s.load.store(100);
+        REQUIRE(t.begin(kLeadA, s.load, s.places, kParty, 1.0) == TableError::None);
+        REQUIRE(t.cancel(1.0));
+    }
+    const TableEvents& ev = t.update(1.0);
+    CHECK(ev.size() == kMaxTableEvents);
+    CHECK(ev.dropped == 5 * 4 - kMaxTableEvents);
+    const TableEvents& next = t.update(2.0);
+    CHECK(next.empty());
+    CHECK(next.dropped == 0);
 }
 
 TEST_CASE("table: needs full Load and three seats named or left open") {
@@ -520,6 +674,8 @@ TEST_CASE("table: interrupted while setting, it fails and cools down longer than
     CHECK(ev[0].type == TableEventType::Setting);
     CHECK(ev[1].type == TableEventType::Failed);
     CHECK(t.begin(kLeadA, s.load, s.places, kParty, 8.0) == TableError::Cooling);
+    CHECK(s.load.value == 0); // the Load stays spent
+    s.load.store(100);
     CHECK(t.begin(kLeadA, s.load, s.places, kParty, 8.5) == TableError::None);
     CHECK_FALSE(t.failed());
 }
@@ -895,13 +1051,39 @@ TEST_CASE("lock: earlier and NaN times read as the latest") {
     CHECK_FALSE(l.open(10.0));
 }
 
+TEST_CASE("lock: a junk far-future time moves its clock at most kMaxTimeStep, queries included") {
+    WeakPointLock l;
+    REQUIRE(l.reset());
+    CHECK(l.offer(kUnlockSharedBlow, 1e9) == UnlockResult::Unlocked);
+    CHECK(l.until() == doctest::Approx(kMaxTimeStep + 3.0));
+    CHECK(l.open(kMaxTimeStep + 1.0));
+    // A junk query reads as one capped step past the clock, not as itself.
+    CHECK_FALSE(l.open(1e9));
+    CHECK(l.offer(kUnlockSharedBlow, 1e300) == UnlockResult::Unlocked); // the old window ran out
+    CHECK(l.until() == doctest::Approx(2.0 * kMaxTimeStep + 3.0));
+}
+
+TEST_CASE("gifts: a junk far-future time moves the slot's clock at most kMaxTimeStep, queries included") {
+    GiftSlot g;
+    REQUIRE(g.press(kLeadA, 1e9).given);
+    CHECK(g.now() == doctest::Approx(kMaxTimeStep));
+    CHECK(g.readyAt(Gift::Heal) == doctest::Approx(kMaxTimeStep + 8.0));
+    CHECK(g.press(kLeadA, kMaxTimeStep + 7.0).error == GiftError::Cooling);
+    CHECK(g.press(kLeadA, kMaxTimeStep + 8.0).given);
+    REQUIRE(g.select(Gift::Guard));
+    REQUIRE(g.press(kLeadB, 1e9).given);
+    const double at = g.now();
+    CHECK(at == doctest::Approx(2.0 * kMaxTimeStep + 8.0));
+    CHECK(g.guardScaleFor(kLeadB, at + 0.5) == doctest::Approx(0.0f));
+    // A junk query reads as one capped step past the clock: the guard has run out by then.
+    CHECK(g.guardScaleFor(kLeadB, 1e9) == doctest::Approx(1.0f));
+    CHECK(g.ready(Gift::Heal, 1e9));
+}
+
 // ---- All of it together ----------------------------------------------------------------------------
 
 TEST_CASE("combat inputs: a scripted fight of every input allocates nothing") {
-    if (!ftcore_test::allocHookInstalled()) {
-        MESSAGE("alloc hook not linked; skipping");
-        return;
-    }
+    REQUIRE(ftcore_test::allocHookInstalled()); // a missing hook fails the test, it never skips it
     StrikeCount count;
     REQUIRE(count.reset(tempo60()));
     GiftSlot gifts;
@@ -927,7 +1109,7 @@ TEST_CASE("combat inputs: a scripted fight of every input allocates nothing") {
         }
         if (frame % 1800 == 10) {
             s.load.store(100);
-            if (table.begin(kLeadA, s.load, s.places, kParty, now) == TableError::None) s.load.release();
+            sink += table.begin(kLeadA, s.load, s.places, kParty, now) == TableError::None;
         }
         if (frame % 1800 == 200) sink += table.seatEnemy(now);
         if (frame % 600 == 0) refusal.offer();
