@@ -24,8 +24,8 @@ The weak point goes through `LockedPoint` (`WeakPointLock.h`), the one adapter b
     * a resource count (`Resource`): something in the arena the boss consumes, which the host can also add back with `addResource`.
   * Phases never go back.
 * **Locked weak point (`WeakPointLock`):**
-  * A move with `exposeSeconds` exposes the point when it is countered. A shared blow while exposed (`sharedBlow`) unlocks it.
-  * A move with `unlocksOnCounter` unlocks the point on its counter.
+  * A move with `exposeSeconds` exposes the point when it is countered. The point's key kind (`key`: a shared blow, a read clause or a refusal) offered while exposed (`sharedBlow`, `offerKey`) unlocks it. Any other key opens nothing (`WrongKey`), and a key with no exposure is `NotExposed`.
+  * A move with `unlocksOnCounter` unlocks the point on its counter, with its own key kind (a read kind uses the lock's `clause`).
   * A `needsWatch` move does either only while the host says the point is watched (`setWatched`).
   * Blows on the point crit only while it is unlocked.
 * **The end is an answered offer.** Hp never falls below 1.
@@ -45,14 +45,15 @@ The weak point goes through `LockedPoint` (`WeakPointLock.h`), the one adapter b
 ```
 
 * `gauge`: `"hp"` (default) or `"resource"` with `resourceMax` and `resourceStart` (1..32).
-* `wardLimit` 0..10, `critMultiplier` 1..4, `restSeconds` 0..10. `lock` is required: the arena boss lock format.
+* `wardLimit` 0..10, `critMultiplier` 1..4, `restSeconds` 0..10. `lock` is required: the arena boss lock format. `key`: `"shared"` (default), `"read"` or `"refusal"`, the one
+  kind that opens the point; its lock key (`shared_blow`, `read_clause`, `refusal`) must be in `lock.keys`.
 * A move: `id`, `counter` (`guard`, `dodge`, `strike`, `strike_on_count`, `take_half`, `listen`, `get_clear`,
   `recover`, `carry_together`, `answer`), `tell` 0.2..5, `window` 0.1..10 (the offer: ..30), `recover` 0..5;
   optional `exposeSeconds`, `unlocksOnCounter`, `harmsWard`, `needsAnswer`, `needsWatch`, `resourceOnLand`,
   `resourceOnCounter` (-8..8).
 * `phases`: 1..3; the first has no `enterAt`; `moves` lists move ids.
 * Across fields: each phase starts below the one before (hp: a share above 0; resource: a whole count), a move
-  is listed once per phase, only the last phase may be empty, exposing or unlocking needs the `shared_blow` key,
+  is listed once per phase, only the last phase may be empty, exposing or unlocking (or a `key` other than shared) needs the key's lock key in `lock.keys`,
   `wardLimit` needs a `harmsWard` move, and the offer never harms the ward. Each error names its path.
 
 ## The test tables

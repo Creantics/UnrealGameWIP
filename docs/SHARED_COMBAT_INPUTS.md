@@ -275,9 +275,12 @@ the pieces.
   read them before the next session call.
 * **Glue.** A blow judged a shared outcome (at once in `judgeBlow`, or when a held blow settles) is a
   shared blow (a settle lost to a full count event buffer is not): `BossScript::sharedBlow` with a boss script, else the shared-blow key offered to the session's
-  lock (`def.locked`). A refusal held to the end of its prompt (`endRefusal`) offers the refusal key to
-  the session's lock; a boss script's weak point opens only through its counters and the shared
-  blow, so with a boss script a refusal opens nothing. Every change to a fighter's places through the session re-checks the table when
+  lock (`def.locked`). A refusal held to the end of its prompt (`endRefusal`) offers the refusal key, and
+  `offerKey` any key (a read clause with its id, say): to the boss script with one, else to the session's
+  lock. A boss script's weak point has one key kind in its data (`key`: shared, read or refusal; default
+  shared). Its own kind opens the point while a counter has it exposed, and `unlocksOnCounter` still
+  unlocks it on the counter; any other key opens nothing (`WrongKey`), and a key before the exposure or
+  after the end is `NotExposed`. A deferred refusal relocks nothing, in either lock. Every change to a fighter's places through the session re-checks the table when
   that fighter is its setter; after changing places directly (`places(who)` or a load), call
   `recheckTable`. Without a lock and without a boss script the weak point is always open. A boss def
   that `begin` refuses leaves no boss script (`hasBoss` false), so the session's lock rules instead.
@@ -351,7 +354,7 @@ when a place empties; the refusal released early (repeats), held to the end, nev
 held before the offer, a lost button; each lock key, wrong clause, key not in the mask, relock after
 time and on deferral; the fight session's clock (a late start, bad and oversized steps, a hundred
 thousand hit-stop ticks that expire nothing, 2000 s of ticks after which every piece still answers),
-a shared blow opening its lock or a boss script's point, events made between ticks, the table
+a shared blow opening its lock or a boss script's point, each boss key kind opening only its own point (the wrong kinds and the wrong clause open nothing), events made between ticks, the table
 re-checked when a place empties, gifts written to the story state (unbound, closed side, cap); zero
 allocations in every tick and judge call (the test fails if the
 allocation hook is missing).

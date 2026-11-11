@@ -123,6 +123,26 @@ TEST_CASE("boss script: validation rejects bad defs and the script stays inert")
     CHECK(bad([](BossScriptDef& d) { d.hp = 0; }));
     CHECK(bad([](BossScriptDef& d) { d.critMultiplier = static_cast<float>(kNaN); }));
     CHECK(bad([](BossScriptDef& d) { d.moveCount = 0; }));
+    // The point's key kind must be in its lock's keys (always, for a kind other than Shared).
+    CHECK(bad([](BossScriptDef& d) { d.key = static_cast<BossKey>(kBossKeyKinds); }));
+    CHECK(bad([](BossScriptDef& d) { d.key = BossKey::Refusal; }));
+    CHECK(bad([](BossScriptDef& d) {
+        d.key = BossKey::Read;
+        d.lock.keys = kUnlockSharedBlow | kUnlockRefusal;
+    }));
+    CHECK(bad([](BossScriptDef& d) {
+        d.key = BossKey::Refusal;
+        d.lock.keys = kUnlockSharedBlow;
+        for (std::size_t i = 0; i < d.moveCount; ++i) {
+            d.moves[i].exposeSeconds = 0.0f;
+            d.moves[i].unlocksOnCounter = false;
+        }
+    }));
+    CHECK(!bad([](BossScriptDef& d) {
+        d.key = BossKey::Read;
+        d.lock.keys = kUnlockReadClause;
+        d.lock.clause = 9;
+    }));
     CHECK(bad([](BossScriptDef& d) { d.moveCount = 6; }));
     CHECK(bad([](BossScriptDef& d) { d.moves[1].setId("jab"); }));          // duplicate id
     CHECK(bad([](BossScriptDef& d) { d.offer.setId("jab"); }));             // offer shares an id
@@ -245,6 +265,62 @@ TEST_CASE("boss script: the locked weak point: exposed by a counter, opened by a
     CHECK(!s.unlocked());
     CHECK(!s.hit(10, true, 4.5).crit);
     CHECK(!s.sharedBlow(4.6)); // no longer exposed
+}
+
+TEST_CASE("boss script: each key kind opens the exposed point, and only that kind") {
+    struct Kind {
+        BossKey key;
+        UnlockKey right;
+        UnlockKey wrong1;
+        UnlockKey wrong2;
+    };
+    const Kind kinds[] = {{BossKey::Shared, kUnlockSharedBlow, kUnlockReadClause, kUnlockRefusal},
+                          {BossKey::Read, kUnlockReadClause, kUnlockSharedBlow, kUnlockRefusal},
+                          {BossKey::Refusal, kUnlockRefusal, kUnlockSharedBlow, kUnlockReadClause}};
+    for (const Kind& k : kinds) {
+        CAPTURE(static_cast<int>(k.key));
+        BossScriptDef d = smallDef();
+        d.key = k.key;
+        d.lock.keys = kUnlockAll; // the lock lists every key; the script still takes only its own kind
+        d.lock.clause = 7;
+        BossScript s;
+        REQUIRE(s.reset(d, 0.0));
+        CHECK(s.offerKey(k.right, 0.5, 7) == UnlockResult::NotExposed);
+        s.update(2.1);
+        REQUIRE(s.counter(BossCounter::Guard, 0, 2.1, false) == BossInput::Countered);
+        REQUIRE(s.exposed());
+        CHECK(s.offerKey(k.wrong1, 2.2, 7) == UnlockResult::WrongKey);
+        CHECK(s.offerKey(k.wrong2, 2.2, 7) == UnlockResult::WrongKey);
+        CHECK(s.sharedBlow(2.2) == (k.key == BossKey::Shared));
+        if (k.key == BossKey::Shared) continue; // the shared blow opened it
+        CHECK(!s.unlocked());
+        CHECK(s.offerKey(static_cast<UnlockKey>(8), 2.2) == UnlockResult::BadKey);
+        if (k.key == BossKey::Read) CHECK(s.offerKey(k.right, 2.25, 8) == UnlockResult::WrongClause);
+        CHECK(!s.unlocked());
+        CHECK(s.lock().opens() == 0);
+        CHECK(s.offerKey(k.right, 2.3, 7) == UnlockResult::Unlocked);
+        CHECK(s.unlocked());
+        CHECK(s.offerKey(k.right, 2.4, 7) == UnlockResult::Refreshed);
+        CHECK(countOf(s.update(2.5), BossEventType::Unlocked) == 2);
+        CHECK(s.hit(10, true, 2.5).crit);
+    }
+}
+
+TEST_CASE("boss script: a counter with unlocksOnCounter unlocks the point with its own key kind") {
+    const BossKey keys[] = {BossKey::Shared, BossKey::Read, BossKey::Refusal};
+    for (const BossKey key : keys) {
+        CAPTURE(static_cast<int>(key));
+        BossScriptDef d = smallDef();
+        d.key = key;
+        d.lock.keys = bossUnlockKey(key);
+        d.lock.clause = key == BossKey::Read ? 3 : 0;
+        d.moves[0].unlocksOnCounter = true;
+        BossScript s;
+        REQUIRE(s.reset(d, 0.0));
+        s.update(2.1);
+        REQUIRE(s.counter(BossCounter::Guard, 0, 2.1, false) == BossInput::Countered);
+        CHECK(s.unlocked());
+    }
 }
 
 TEST_CASE("boss script: hp never falls below 1; phases follow the gauge and never go back") {
@@ -496,7 +572,7 @@ bool sameMove(const BossMoveDef& a, const BossMoveDef& b) {
 bool sameDef(const BossScriptDef& a, const BossScriptDef& b) {
     if (a.id() != b.id() || a.hp != b.hp || a.gauge != b.gauge || a.resourceMax != b.resourceMax ||
         a.resourceStart != b.resourceStart || a.wardLimit != b.wardLimit || a.critMultiplier != b.critMultiplier ||
-        a.restSeconds != b.restSeconds || a.lock.keys != b.lock.keys || a.lock.clause != b.lock.clause ||
+        a.restSeconds != b.restSeconds || a.key != b.key || a.lock.keys != b.lock.keys || a.lock.clause != b.lock.clause ||
         a.lock.openSeconds != b.lock.openSeconds || a.lock.relockOnDefer != b.lock.relockOnDefer ||
         a.moveCount != b.moveCount || a.phaseCount != b.phaseCount || !sameMove(a.offer, b.offer))
         return false;
@@ -562,6 +638,14 @@ TEST_CASE("boss script data: the loader reports each problem with its path") {
     CHECK(warnings.empty());
     CHECK(std::string(d.id()) == "small");
     CHECK(d.phaseCount == 2);
+    CHECK(d.key == BossKey::Shared); // no "key": the shared blow
+    BossScriptDef read;
+    REQUIRE(importBossScript(patchedBoss("\"lock\": { \"keys\": [\"shared_blow\"]",
+                                         "\"key\": \"read\", \"lock\": { \"keys\": [\"read_clause\"], \"clause\": 3"),
+                             read, nullptr, &warnings));
+    CHECK(warnings.empty());
+    CHECK(read.key == BossKey::Read);
+    CHECK(read.lock.clause == 3);
     CHECK(d.phases[1].moveCount == 0);
     CHECK(d.moves[0].exposeSeconds == doctest::Approx(2.0f));
 
@@ -620,6 +704,18 @@ TEST_CASE("boss script data: the loader reports each problem with its path") {
           "phases[0].moves: only the last phase may be empty");
     CHECK(loadError(patchedBoss("\"keys\": [\"shared_blow\"]", "\"keys\": [\"refusal\"]")) ==
           "lock.keys: a move exposes or unlocks the weak point, so expected \"shared_blow\"");
+    CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"key\": \"refusal\",")) ==
+          "lock.keys: a move exposes or unlocks the weak point, so expected \"refusal\"");
+    CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"key\": \"wish\",")) ==
+          "key: expected \"shared\", \"read\" or \"refusal\"");
+    {
+        std::string s = patchedBoss("\"hp\": 100,", "\"hp\": 100, \"key\": \"read\",");
+        const std::string from = ", \"exposeSeconds\": 2 }";
+        const std::size_t at = s.find(from);
+        REQUIRE(at != std::string::npos);
+        s.replace(at, from.size(), " }");
+        CHECK(loadError(s) == "lock.keys: the point's key needs \"read_clause\"");
+    }
     CHECK(loadError(patchedBoss("\"hp\": 100,", "\"hp\": 100, \"wardLimit\": 2,")) ==
           "wardLimit: no move has harmsWard");
     CHECK(loadError(patchedBoss("\"needsAnswer\": true", "\"needsAnswer\": true, \"harmsWard\": true")) ==

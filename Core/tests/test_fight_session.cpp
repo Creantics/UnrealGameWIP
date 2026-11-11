@@ -253,26 +253,93 @@ TEST_CASE("fight session: a refusal held to the end of the prompt offers the ref
     CHECK(!s.weakPointOpen());
 }
 
-TEST_CASE("fight session: with a boss script a held refusal opens nothing") {
-    // The boss script's weak point opens only through its counters and the shared blow, even when its lock lists the
-    // refusal key; the session's own lock is not used while a boss script runs.
+namespace {
+
+// A held refusal to the end of a prompt (the refusal key), as the host plays it.
+void holdRefusal(FightSession& s) {
+    s.offerRefusal();
+    REQUIRE(s.press(SharedAction::RefuseDown, kLeadA).refusal == RefusalInput::Holding);
+    s.tick(kFrame);
+    REQUIRE(s.endRefusal() == RefusalInput::Resolved);
+    REQUIRE(s.refusal().refused());
+}
+
+// Two leads' blows on one count: a shared blow (the session offers it to the boss script).
+void sharedCountBlow(FightSession& s) {
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    REQUIRE(tickUntil(s, [&] { return s.strikeCount().open(s.now()); }));
+    REQUIRE(s.judgeBlow(kLeadA).outcome == CountOutcome::Held);
+    REQUIRE(s.judgeBlow(kLeadB).outcome == CountOutcome::OnCount);
+}
+
+// Begins a fight on oneMoveBoss with that key kind (its lock lists every key) and counters the jab: exposed.
+void beginExposed(FightSession& s, BossKey key) {
+    FightSessionDef d;
+    d.hasBoss = true;
+    d.boss = oneMoveBoss();
+    d.boss.key = key;
+    d.boss.lock.keys = kUnlockAll;
+    d.boss.lock.clause = 7;
+    d.locked = true; // the session's own lock is not used while a boss script runs
+    d.lock.keys = kUnlockAll;
+    d.lock.clause = 7;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.hasBoss());
+    REQUIRE(tickUntil(s, [&] { return s.boss().state() == BossState::Window; }));
+    REQUIRE(s.counter(BossCounter::Guard, kLeadA) == BossInput::Countered);
+    REQUIRE(s.boss().exposed());
+}
+
+} // namespace
+
+TEST_CASE("fight session: a boss point of the shared kind opens on the shared blow, not a refusal or a read") {
+    FightSession s;
+    beginExposed(s, BossKey::Shared);
+    holdRefusal(s);
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::WrongKey);
+    CHECK(s.offerKey(kUnlockReadClause, 7) == UnlockResult::WrongKey);
+    CHECK(s.boss().lock().opens() == 0);
+    sharedCountBlow(s);
+    CHECK(s.weakPointOpen());
+}
+
+TEST_CASE("fight session: a boss point of the refusal kind opens on a held refusal, only while exposed") {
     FightSession s;
     FightSessionDef d;
     d.hasBoss = true;
     d.boss = oneMoveBoss();
-    d.boss.lock.keys = kUnlockSharedBlow | kUnlockRefusal;
-    d.locked = true;
-    d.lock.keys = kUnlockRefusal;
+    d.boss.key = BossKey::Refusal;
+    d.boss.lock.keys = kUnlockRefusal;
     REQUIRE(s.begin(d, 0.0).ok());
-    REQUIRE(s.hasBoss());
-    s.offerRefusal();
-    CHECK(s.press(SharedAction::RefuseDown, kLeadA).refusal == RefusalInput::Holding);
-    s.tick(kFrame);
-    CHECK(s.endRefusal() == RefusalInput::Resolved);
-    CHECK(s.refusal().refused());
+    holdRefusal(s); // not exposed yet
     CHECK(!s.weakPointOpen());
-    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::BadKey);
+    CHECK(s.offerKey(kUnlockRefusal) == UnlockResult::NotExposed);
+    beginExposed(s, BossKey::Refusal);
+    sharedCountBlow(s); // the wrong key
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockReadClause, 7) == UnlockResult::WrongKey);
     CHECK(s.boss().lock().opens() == 0);
+    holdRefusal(s);
+    CHECK(s.weakPointOpen());
+    CHECK(s.boss().lock().opens() == 1);
+    CHECK(s.bossHit(10, true).crit);
+    // A refusal kind needs the refusal key in its lock.
+    d.boss.lock.keys = kUnlockSharedBlow;
+    CHECK(!s.begin(d, 0.0).boss);
+}
+
+TEST_CASE("fight session: a boss point of the read kind opens on its clause, not a refusal or the shared blow") {
+    FightSession s;
+    beginExposed(s, BossKey::Read);
+    holdRefusal(s);
+    sharedCountBlow(s);
+    CHECK(!s.weakPointOpen());
+    CHECK(s.offerKey(kUnlockReadClause, 8) == UnlockResult::WrongClause);
+    CHECK(s.boss().lock().opens() == 0);
+    CHECK(s.offerKey(kUnlockReadClause, 7) == UnlockResult::Unlocked);
+    CHECK(s.weakPointOpen());
+    CHECK(s.boss().lock().opens() == 1);
 }
 
 TEST_CASE("fight session: a tick always points at event buffers, the same ones every tick") {
@@ -331,7 +398,7 @@ TEST_CASE("fight session: a boss script countered then hit on the count unlocks 
     const ScriptHit h = s.bossHit(10, true);
     CHECK(h.crit);
     CHECK(h.damage == 20);
-    CHECK(s.offerKey(kUnlockSharedBlow) == UnlockResult::BadKey); // the script takes its own keys
+    CHECK(s.offerKey(kUnlockSharedBlow) == UnlockResult::Refreshed); // routed to the script's point
     // A shared counter kind needs the shared input from the host: an open window alone is not it.
     FightSessionDef shared = d;
     shared.boss.moves[0].counter = BossCounter::StrikeOnCount;

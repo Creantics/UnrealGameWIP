@@ -13,8 +13,9 @@
 //   phase starts when the boss's gauge falls to its `enterAt`: the hp share (Hp gauge) or a resource
 //   count (Resource gauge, e.g. something in the arena the boss consumes). Phases never go back.
 // * The locked weak point (WeakPointLock.h). Countering a move with exposeSeconds exposes the point
-//   for that long; a shared blow while exposed (sharedBlow) unlocks it. A move with unlocksOnCounter
-//   unlocks it on its counter. Blows on the weak point crit (critMultiplier) only while it is unlocked.
+//   for that long; the point's key kind (`key`: a shared blow, a read clause or a refusal) offered while
+//   exposed (sharedBlow, offerKey) unlocks it, and any other key opens nothing. A move with
+//   unlocksOnCounter unlocks it on its counter. Blows on the weak point crit (critMultiplier) only while it is unlocked.
 //   A move with needsWatch does either only while the host says the point is watched (setWatched).
 // * The end is an answered offer, never zero health: hp never falls below 1. The last phase plays the
 //   def's `offer` first and between its moves; countering the offer ends the fight (Ended). An offer
@@ -58,6 +59,13 @@ enum class BossCounter : std::uint8_t { // append only
     Answer,
 };
 inline constexpr std::uint8_t kBossCounterKinds = 10;
+
+// The one key kind that opens a script's weak point (each a WeakPointLock key).
+enum class BossKey : std::uint8_t { Shared, Read, Refusal }; // append only
+inline constexpr std::uint8_t kBossKeyKinds = 3;
+inline UnlockKey bossUnlockKey(BossKey k) {
+    return k == BossKey::Read ? kUnlockReadClause : (k == BossKey::Refusal ? kUnlockRefusal : kUnlockSharedBlow);
+}
 inline bool sharedCounter(BossCounter c) {
     return c == BossCounter::StrikeOnCount || c == BossCounter::TakeHalf || c == BossCounter::CarryTogether;
 }
@@ -102,6 +110,7 @@ struct BossScriptDef {
     float critMultiplier = 2.0f; // 1..4
     float restSeconds = 1.0f;   // between moves, 0..10
     LockTuning lock{};
+    BossKey key = BossKey::Shared; // the one key kind that opens the point; its bit must be in lock.keys
     std::array<BossMoveDef, kMaxScriptMoves> moves{};
     std::uint8_t moveCount = 0;
     BossMoveDef offer{};
@@ -141,7 +150,8 @@ inline bool bossMoveOk(const BossMoveDef& m, float maxWindow) {
 // Every range above, plus: unique move ids (the offer's too); each phase's moves known and not
 // repeated, 1..kMaxScriptMoves of them (the last phase may have none: it plays the offer alone); later
 // phases' enterAt strictly falling (Hp: in (0, 1); Resource: whole numbers in [0, resourceStart)); a
-// lock that takes the shared blow when any move exposes or unlocks it; a ward only with a move that
+// lock that takes the point's key kind when any move exposes or unlocks it (always, for a kind other
+// than Shared); a ward only with a move that
 // harms it.
 inline bool validBossScript(const BossScriptDef& d) {
     using detail::bossIn;
@@ -155,19 +165,20 @@ inline bool validBossScript(const BossScriptDef& d) {
     if (d.wardLimit < 0 || d.wardLimit > 10 || !validLockTuning(d.lock)) return false;
     if (d.moveCount < 1 || d.moveCount > kMaxScriptMoves || d.phaseCount < 1 || d.phaseCount > kMaxScriptPhases)
         return false;
-    bool needsShared = false;
+    if (static_cast<std::uint8_t>(d.key) >= kBossKeyKinds) return false;
+    bool needsKey = d.key != BossKey::Shared;
     bool harms = false;
     for (std::size_t i = 0; i < d.moveCount; ++i) {
         const BossMoveDef& m = d.moves[i];
         if (!detail::bossMoveOk(m, 10.0f) || m.id() == d.offer.id()) return false;
         for (std::size_t j = 0; j < i; ++j)
             if (d.moves[j].id() == m.id()) return false;
-        needsShared = needsShared || m.exposeSeconds > 0.0f || m.unlocksOnCounter;
+        needsKey = needsKey || m.exposeSeconds > 0.0f || m.unlocksOnCounter;
         harms = harms || m.harmsWard;
     }
     if (!detail::bossMoveOk(d.offer, 30.0f) || d.offer.harmsWard) return false;
-    needsShared = needsShared || d.offer.exposeSeconds > 0.0f || d.offer.unlocksOnCounter;
-    if (needsShared && (d.lock.keys & kUnlockSharedBlow) == 0) return false;
+    needsKey = needsKey || d.offer.exposeSeconds > 0.0f || d.offer.unlocksOnCounter;
+    if (needsKey && (d.lock.keys & bossUnlockKey(d.key)) == 0) return false;
     if (d.wardLimit > 0 && !harms) return false;
     for (std::size_t p = 0; p < d.phaseCount; ++p) {
         const BossPhaseDef& ph = d.phases[p];
@@ -304,7 +315,7 @@ public:
             exposedUntil_ = now_ + m.exposeSeconds;
             pending_.push({BossEventType::Exposed, current_, 0, 0, now_, exposedUntil_});
         }
-        if (m.unlocksOnCounter && seen) unlock();
+        if (m.unlocksOnCounter && seen) unlock(def_->lock.clause);
         if (current_ == kBossOffer) {
             state_ = BossState::Ended;
             push(BossEventType::Ended, kBossOffer, 0, 0, now_);
@@ -317,12 +328,21 @@ public:
     }
 
     // A shared blow landed on the boss (StrikeCount's OnCount, or a hit a lead took half of). True when
-    // it unlocked the weak point (or restarted its open time): only while the point is exposed.
-    bool sharedBlow(double t) {
-        if (!valid_) return false;
+    // it unlocked the weak point (or restarted its open time): only with the Shared key kind, while the
+    // point is exposed.
+    bool sharedBlow(double t) { return LockedPoint::opened(offerKey(kUnlockSharedBlow, t)); }
+
+    // A key offered to the weak point: a read clause (with its id), a refusal, or a shared blow. It opens
+    // the point (Unlocked, or Refreshed while open) only when it is the point's key kind (else WrongKey)
+    // and a counter has the point exposed (else NotExposed: also after the end); a read clause needs the
+    // lock's clause (WrongClause). BadKey: an invalid script, or not one of the three keys.
+    UnlockResult offerKey(UnlockKey key, double t, std::uint16_t clause = 0) {
+        if (!valid_) return UnlockResult::BadKey;
         advance(t);
-        if (over() || !exposedOpen_) return false;
-        return unlock();
+        if (key != kUnlockSharedBlow && key != kUnlockReadClause && key != kUnlockRefusal) return UnlockResult::BadKey;
+        if (key != bossUnlockKey(def_->key)) return UnlockResult::WrongKey;
+        if (over() || !exposedOpen_) return UnlockResult::NotExposed;
+        return unlock(clause);
     }
 
     // A blow of `amount` (0 or more) on the boss; on the weak point it crits while the point is unlocked.
@@ -418,10 +438,11 @@ private:
         pending_.push({type, mv, value, amount, at, 0.0});
     }
 
-    bool unlock() {
-        if (!LockedPoint::opened(lock_.offer(kUnlockSharedBlow, now_))) return false;
-        pending_.push({BossEventType::Unlocked, current_, 0, 0, now_, lock_.until()});
-        return true;
+    // Offers the point's own key (a counter with unlocksOnCounter passes the lock's clause).
+    UnlockResult unlock(std::uint16_t clause) {
+        const UnlockResult u = lock_.offer(bossUnlockKey(def_->key), now_, clause);
+        if (LockedPoint::opened(u)) pending_.push({BossEventType::Unlocked, current_, 0, 0, now_, lock_.until()});
+        return u;
     }
 
     int changeResource(int n) {

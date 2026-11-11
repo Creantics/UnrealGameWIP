@@ -245,11 +245,15 @@ public:
     void offerRefusal() { refusal_.offer(); }
     RefusalInput acceptRefusal() { return refusal_.accept(); }
     RefusalInput deferRefusal() { return refusal_.defer(); }
-    // Ends the host's prompt; a refusal kept to the end offers the refusal key to the session's own lock. A boss
-    // script's weak point opens only through its counters and the shared blow, so with one the refusal opens nothing.
+    // Ends the host's prompt; a refusal kept to the end offers the refusal key: to the boss script when there is one
+    // (it opens the point only when refusal is its key kind and a counter has the point exposed), else to the
+    // session's own lock.
     RefusalInput endRefusal() {
         const RefusalInput r = refusal_.offerEnded();
-        if (refusal_.refused() && !hasBoss_ && def_.locked) lock_.offer(kUnlockRefusal, now_);
+        if (refusal_.refused()) {
+            if (hasBoss_) boss_.offerKey(kUnlockRefusal, now_);
+            else if (def_.locked) lock_.offer(kUnlockRefusal, now_);
+        }
         return r;
     }
 
@@ -259,9 +263,11 @@ public:
         if (sharedBlow(h)) shareBlow();
         return h;
     }
-    // An unlock key offered to the session's own lock (no boss script; a boss script takes its keys itself).
+    // An unlock key (a read clause with its id, a refusal, a shared blow) offered to the boss script's point when
+    // there is one (BossScript::offerKey: only its key kind, only while exposed), else to the session's own lock.
     UnlockResult offerKey(UnlockKey key, std::uint16_t clause = 0) {
-        if (hasBoss_ || !def_.locked) return UnlockResult::BadKey;
+        if (hasBoss_) return boss_.offerKey(key, now_, clause);
+        if (!def_.locked) return UnlockResult::BadKey;
         return lock_.offer(key, now_, clause);
     }
     // The weak point is open: always without a lock, else while the lock or the boss script says so.
