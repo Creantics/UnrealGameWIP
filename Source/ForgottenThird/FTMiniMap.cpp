@@ -192,7 +192,8 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 		MapTexture = nullptr;
 		return false;
 	}
-	const TArray<FCanvasUVTri> None;
+	// The item asserts on an empty list; each draw resets it.
+	const TArray<FCanvasUVTri> None{Tri(FVector2D::ZeroVector, FVector2D::ZeroVector, FVector2D::ZeroVector, FLinearColor::Transparent)};
 	DiscItem = new FCanvasTriangleItem(None, MapTexture->GetResource());
 	RimItem = new FCanvasTriangleItem(None, WhiteTexture->GetResource());
 	MarkItem = new FCanvasTriangleItem(None, WhiteTexture->GetResource());
