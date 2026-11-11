@@ -81,7 +81,7 @@ void updateStances(NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n) {
     for (std::uint32_t l = 0; l <= kLeadCount; ++l) {
         const std::uint8_t lead = l == kLeadCount ? kNoLead : static_cast<std::uint8_t>(l);
         const auto e = npcEffective(w, t, n, lead);
-        s.stance[l] = npcStanceStep(s.stance[l], e[0], e[1], e[2], t.tuning.stayGap);
+        s.stance[l] = npcStanceStep(s.stance[l], e[0], e[1], e[2], t.npcs[n].lines, t.tuning.stayGap);
     }
 }
 
@@ -665,25 +665,33 @@ std::int32_t npcOffset(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_
 
 std::array<std::int32_t, 3> npcEffective(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, std::uint8_t lead) {
     std::array<std::int32_t, 3> e{};
-    for (int a = 0; a < 3; ++a)
-        e[static_cast<std::size_t>(a)] = clampi(npcAxis(w, t, npc, static_cast<NpcAxis>(a)) +
-                                                    npcOffset(w, t, npc, lead, static_cast<NpcAxis>(a)),
-                                                axisLo(a), 100);
+    const bool start = lead < kLeadCount && npc < t.npcs.size();
+    for (int a = 0; a < 3; ++a) {
+        const auto ai = static_cast<std::size_t>(a);
+        e[ai] = clampi(npcAxis(w, t, npc, static_cast<NpcAxis>(a)) + npcOffset(w, t, npc, lead, static_cast<NpcAxis>(a)) +
+                           (start ? t.npcs[npc].leadBase[lead][ai] : 0),
+                       axisLo(a), 100);
+    }
     return e;
 }
 
 NpcStance npcStanceStep(NpcStance current, std::int32_t T, std::int32_t F, std::int32_t R, std::int32_t g) {
+    return npcStanceStep(current, T, F, R, NpcStanceLines{}, g);
+}
+
+NpcStance npcStanceStep(NpcStance current, std::int32_t T, std::int32_t F, std::int32_t R, const NpcStanceLines& L,
+                        std::int32_t g) {
     NpcStance cand = NpcStance::Neutral;
-    if (T <= -50 && F < 60) cand = NpcStance::Hostile;
-    else if (F >= 50 || T <= -20) cand = NpcStance::Wary;
-    else if (T >= 60 && R >= 50 && F < 30) cand = NpcStance::Loyal;
-    else if (T >= 25 && F < 40) cand = NpcStance::Warm;
+    if (T <= L.hostileT && F < L.hostileF) cand = NpcStance::Hostile;
+    else if (F >= L.waryF || T <= L.waryT) cand = NpcStance::Wary;
+    else if (T >= L.loyalT && R >= L.loyalR && F < L.loyalF) cand = NpcStance::Loyal;
+    else if (T >= L.warmT && F < L.warmF) cand = NpcStance::Warm;
     bool stay = false;
     switch (current) {
-    case NpcStance::Hostile: stay = T <= -50 + g && F < 60 + g; break;
-    case NpcStance::Wary: stay = F >= 50 - g || T <= -20 + g; break;
-    case NpcStance::Loyal: stay = T >= 60 - g && R >= 50 - g && F < 30 + g; break;
-    case NpcStance::Warm: stay = T >= 25 - g && F < 40 + g; break;
+    case NpcStance::Hostile: stay = T <= L.hostileT + g && F < L.hostileF + g; break;
+    case NpcStance::Wary: stay = F >= L.waryF - g || T <= L.waryT + g; break;
+    case NpcStance::Loyal: stay = T >= L.loyalT - g && R >= L.loyalR - g && F < L.loyalF + g; break;
+    case NpcStance::Warm: stay = T >= L.warmT - g && F < L.warmF + g; break;
     case NpcStance::Neutral: stay = true; break;
     }
     const int cur = static_cast<int>(current), c = static_cast<int>(cand);
@@ -695,7 +703,8 @@ NpcStance npcStance(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t n
     if (!validNpc(w, npc)) return NpcStance::Neutral;
     const std::size_t slot = lead < kLeadCount ? lead : kLeadCount;
     const auto e = npcEffective(w, t, npc, lead);
-    return npcStanceStep(w.npcs[npc].stance[slot], e[0], e[1], e[2], t.tuning.stayGap);
+    const NpcStanceLines lines = npc < t.npcs.size() ? t.npcs[npc].lines : NpcStanceLines{};
+    return npcStanceStep(w.npcs[npc].stance[slot], e[0], e[1], e[2], lines, t.tuning.stayGap);
 }
 
 NpcConsequence npcConsequence(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, std::uint8_t lead) {
@@ -1001,6 +1010,61 @@ std::vector<std::string_view> splitOn(std::string_view s, char sep) {
     return out;
 }
 
+// npc_values.csv lead_base: `L:T/F/R;...`, each lead once, values -50..50.
+bool readLeadBase(Sheet& s, std::size_t i, const Row& r, NpcDef& n) {
+    std::uint32_t seen = 0;
+    for (std::string_view part : splitOn(s.get(r, "lead_base"), ';')) {
+        std::int64_t lead = -1;
+        const auto colon = part.find(':');
+        if (colon == std::string_view::npos || !toInt(part.substr(0, colon), lead) || lead < 0 || lead >= kLeadCount)
+            return s.fail(i + 1, "lead_base needs L:T/F/R with L 0..2");
+        const std::uint32_t bit = 1u << static_cast<std::uint32_t>(lead);
+        if (seen & bit) return s.fail(i + 1, "lead_base repeats a lead");
+        seen |= bit;
+        const auto parts = splitOn(part.substr(colon + 1), '/');
+        if (parts.size() != 3) return s.fail(i + 1, "lead_base needs three values");
+        for (std::size_t a = 0; a < 3; ++a) {
+            std::int64_t v = 0;
+            if (!toInt(parts[a], v) || v < -50 || v > 50) return s.fail(i + 1, "lead_base value out of -50..50");
+            n.leadBase[static_cast<std::size_t>(lead)][a] = static_cast<std::int8_t>(v);
+        }
+    }
+    return true;
+}
+
+// npc_values.csv stance_lines: `key:offset;...`, each key once, offsets -30..30, the shifted lines kept in order.
+bool readStanceLines(Sheet& s, std::size_t i, const Row& r, NpcDef& n) {
+    struct Key {
+        const char* name;
+        std::int16_t NpcStanceLines::*field;
+    };
+    static constexpr Key kKeys[] = {{"hostile_t", &NpcStanceLines::hostileT}, {"hostile_f", &NpcStanceLines::hostileF},
+                                    {"wary_t", &NpcStanceLines::waryT},       {"wary_f", &NpcStanceLines::waryF},
+                                    {"loyal_t", &NpcStanceLines::loyalT},     {"loyal_r", &NpcStanceLines::loyalR},
+                                    {"loyal_f", &NpcStanceLines::loyalF},     {"warm_t", &NpcStanceLines::warmT},
+                                    {"warm_f", &NpcStanceLines::warmF}};
+    constexpr std::size_t kKeyCount = sizeof(kKeys) / sizeof(kKeys[0]);
+    std::uint32_t seen = 0;
+    for (std::string_view part : splitOn(s.get(r, "stance_lines"), ';')) {
+        const auto colon = part.find(':');
+        if (colon == std::string_view::npos) return s.fail(i + 1, "stance_lines needs key:offset");
+        std::size_t k = 0;
+        while (k < kKeyCount && part.substr(0, colon) != kKeys[k].name) ++k;
+        if (k == kKeyCount) return s.fail(i + 1, "unknown stance_lines key " + std::string(part.substr(0, colon)));
+        const std::uint32_t bit = 1u << k;
+        if (seen & bit) return s.fail(i + 1, "stance_lines repeats a key");
+        seen |= bit;
+        std::int64_t v = 0;
+        if (!toInt(part.substr(colon + 1), v) || v < -30 || v > 30) return s.fail(i + 1, "stance_lines offset out of -30..30");
+        n.lines.*kKeys[k].field = static_cast<std::int16_t>(n.lines.*kKeys[k].field + v);
+    }
+    const NpcStanceLines& L = n.lines;
+    if (!(L.hostileT < L.waryT && L.waryT < L.warmT && L.warmT <= L.loyalT && L.loyalF >= 1 && L.loyalF <= L.warmF &&
+          L.warmF <= L.waryF && L.waryF <= L.hostileF))
+        return s.fail(i + 1, "stance_lines out of order");
+    return true;
+}
+
 int stanceOf(std::string_view s) {
     static constexpr const char* kNames[] = {"hostile", "wary", "neutral", "warm", "loyal"};
     for (int i = 0; i < 5; ++i)
@@ -1141,6 +1205,7 @@ bool importNpcTables(const NpcTableSources& src, NpcTables& out, std::string* er
                     n.weights[static_cast<std::size_t>(b)][a] = static_cast<std::int8_t>(v);
                 }
             }
+            if (!readLeadBase(s, i, r, n) || !readStanceLines(s, i, r, n)) return false;
             if (n.id.empty() || t.npcIndex(n.id) >= 0) return s.fail(i + 1, "empty or repeated npc_id");
             t.npcs.push_back(n);
         }

@@ -85,11 +85,23 @@ struct NpcDeedType {
     std::uint16_t releases = kNoType;
 };
 
+// The F4 stance lines. Shared values below; an NPC may shift each one (npc_values.csv stance_lines).
+struct NpcStanceLines {
+    std::int16_t hostileT = -50, hostileF = 60;          // Hostile: T <= hostileT and F < hostileF
+    std::int16_t waryT = -20, waryF = 50;                // Wary: F >= waryF or T <= waryT
+    std::int16_t loyalT = 60, loyalR = 50, loyalF = 30;  // Loyal: T >= loyalT, R >= loyalR, F < loyalF
+    std::int16_t warmT = 25, warmF = 40;                 // Warm: T >= warmT and F < warmF
+};
+
 struct NpcDef {
     std::string id;
     std::array<std::int16_t, 3> base{0, 0, 0};
     std::uint16_t district = 0;
     std::array<std::array<std::int8_t, 3>, kNpcTagMax> weights{};
+    // A fixed start per lead (T/F/R), added to E for that lead only: a lead's own family and friends start warmer to
+    // that lead. Never decays and is never saved (it is table data). The party (kNoLead) does not get it.
+    std::array<std::array<std::int8_t, 3>, kLeadCount> leadBase{};
+    NpcStanceLines lines;
 };
 
 enum class NpcTieKind : std::uint8_t { Npc = 0, Faction = 1, Lead = 2 };
@@ -256,11 +268,13 @@ FTCORE_API void npcSetDead(NpcMemoryWorld& w, std::uint16_t npc);
 // Reads (lazy decay at w.now; a dead NPC is frozen at its death minute).
 FTCORE_API std::int32_t npcAxis(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, NpcAxis a);
 FTCORE_API std::int32_t npcOffset(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, std::uint8_t lead, NpcAxis a);
-// E = clamp(party + offset[lead]); lead kNoLead = party only.
+// E = clamp(party + offset[lead] + leadBase[lead]); lead kNoLead = party only.
 FTCORE_API std::array<std::int32_t, 3> npcEffective(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, std::uint8_t lead);
 FTCORE_API NpcStance npcStance(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, std::uint8_t lead);
-// The F4 rule alone: the next stance from the current one and E.
+// The F4 rule alone: the next stance from the current one and E, on the shared lines or an NPC's own.
 FTCORE_API NpcStance npcStanceStep(NpcStance current, std::int32_t T, std::int32_t F, std::int32_t R, std::int32_t stayGap = 10);
+FTCORE_API NpcStance npcStanceStep(NpcStance current, std::int32_t T, std::int32_t F, std::int32_t R,
+                                   const NpcStanceLines& lines, std::int32_t stayGap = 10);
 FTCORE_API NpcConsequence npcConsequence(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, std::uint8_t lead);
 // S(now) of one of the NPC's memories (frozen at death like the axes).
 FTCORE_API std::int32_t npcSalience(const NpcMemoryWorld& w, const NpcTables& t, std::uint16_t npc, const NpcMemoryEntry& e);
@@ -408,7 +422,13 @@ FTCORE_API void npcOnClock(NpcMemoryWorld& w, const NpcTables& t, const WorldClo
 // ---- Loading (allocates; once at load) ----
 // tags.csv, deeds.csv, npc_values.csv, ties.csv, consequences.csv, expectations.csv, schedule.csv,
 // memory_tuning.json. Any empty view is skipped. Header rows are required. deeds.csv may carry an
-// optional `releases` column: another deed id (or empty / -), never the row's own.
+// optional `releases` column: another deed id (or empty / -), never the row's own. npc_values.csv may carry two
+// optional columns (empty = none): `lead_base`, `L:T/F/R;...` with L a lead 0..2 and each value -50..50 (each lead
+// once), and `stance_lines`, `key:offset;...` shifting the NPC's own lines by -30..30 from the shared ones (keys
+// hostile_t, hostile_f, wary_t, wary_f, loyal_t, loyal_r, loyal_f, warm_t, warm_f, each once). The shifted lines must
+// keep their order: hostile_t < wary_t < warm_t <= loyal_t and 1 <= loyal_f <= warm_f <= wary_f <= hostile_f (F is
+// never below 0, so loyal_f 0 would make Loyal unreachable). Lines closer than the stay gap let a held stance linger
+// past the next line; that is allowed, it is the gap doing its job.
 struct NpcTableSources {
     std::string_view tags, deeds, npcValues, ties, consequences, expectations, schedule, tuningJson;
 };

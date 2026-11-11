@@ -270,6 +270,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_crowd_views.cpp
         tests/test_npc_memory.cpp
         tests/test_npc_slice.cpp
+        tests/test_npc_columns.cpp
         tests/test_npc_profiles.cpp
         tests/test_guard.cpp
         tests/test_path_follow.cpp
