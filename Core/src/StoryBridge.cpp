@@ -89,6 +89,7 @@ void StoryBridge::unbind() {
     lastScene_ = kNone;
     restartScene_ = kNone;
     restoring_ = false;
+    syncMissed_ = false;
     boundFlags_ = mappedScenes_ = 0;
 }
 
@@ -100,9 +101,10 @@ void StoryBridge::onScene(void* user, StoryRunner& r, SceneEntry how) {
         b.restoring_ = false; // a new game instead of the load
     } else if (how == SceneEntry::Restore) {
         b.restoring_ = true; // the state is not decoded yet: sync() takes over
+        b.syncMissed_ = false;
         return;
     }
-    if (b.restoring_) return;
+    if (b.pausedForLoad(r)) return;
     switch (how) {
     case SceneEntry::Start:
         storyReset(*b.state_);
@@ -206,8 +208,8 @@ void StoryBridge::pushOne(std::uint32_t flag, std::uint8_t ord) {
 
 void StoryBridge::onFlag(void* user, StoryRunner& r, std::uint32_t flag) {
     StoryBridge& b = *static_cast<StoryBridge*>(user);
-    if (&r != b.runner_ || r.database() != b.db_ || b.restoring_ || flag >= b.flagFact_.size() ||
-        b.flagFact_[flag] == 0)
+    if (&r != b.runner_ || r.database() != b.db_ || flag >= b.flagFact_.size() || b.flagFact_[flag] == 0 ||
+        b.pausedForLoad(r))
         return;
     const FlagValue v = r.flag(flag);
     StoryBridgeReport rep;
@@ -217,6 +219,15 @@ void StoryBridge::onFlag(void* user, StoryRunner& r, std::uint32_t flag) {
     rep.scene = r.sceneIndex();
     rep.ordinal = b.state_->openScene;
     const std::int64_t want = v.kind == FlagValue::Kind::Bool ? (v.value != 0 ? 1 : 0) : v.value;
+    if (want == 0) {
+        // A clear: the state has none (a stored 0 means never set), so it is not sent to storySet.
+        if (b.state_->facts[rep.fact] != 0) {
+            rep.kind = StoryBridgeReport::Kind::ClearIgnored;
+            b.report(rep);
+        }
+        b.pushOne(flag, b.ordinalOf(r.sceneIndex()));
+        return;
+    }
     if (want < 0 || want > 255) {
         rep.result = SetResult::RejectedRange;
     } else {
@@ -226,9 +237,25 @@ void StoryBridge::onFlag(void* user, StoryRunner& r, std::uint32_t flag) {
     b.pushOne(flag, b.ordinalOf(r.sceneIndex()));
 }
 
+// True while the bridge waits for sync() after a restore. A move after restore() returned means sync()
+// was missed: reported once, and the bridge stays paused (it cannot know the state was decoded).
+bool StoryBridge::pausedForLoad(const StoryRunner& r) {
+    if (!restoring_) return false;
+    if (!r.restoring() && !syncMissed_) {
+        syncMissed_ = true;
+        StoryBridgeReport rep;
+        rep.kind = StoryBridgeReport::Kind::SyncMissing;
+        rep.scene = r.sceneIndex();
+        rep.ordinal = ordinalOf(rep.scene);
+        report(rep);
+    }
+    return true;
+}
+
 void StoryBridge::sync() {
     if (!runner_ || runner_->database() != db_) return;
     restoring_ = false;
+    syncMissed_ = false;
     const std::uint32_t scene = runner_->sceneIndex();
     lastScene_ = scene;
     restartScene_ = kNone;

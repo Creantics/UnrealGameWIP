@@ -114,6 +114,8 @@ public:
 
     State state() const { return state_; }
     bool finished() const { return state_ == State::Finished; }
+    // True only inside restore(), while the restored scene settles.
+    bool restoring() const { return restoring_; }
     bool waitingForGameplay() const { return state_ == State::Gameplay; }
     // True when the last move processed kMaxStepsPerMove beats without resting (a loop of empty
     // scenes) and gave up: the runner is then Finished.
@@ -200,6 +202,7 @@ private:
     std::uint32_t sceneEpoch_ = 0, beatEpoch_ = 0;
     float hold_ = 0.f;
     bool stalled_ = false;
+    bool restoring_ = false;
 };
 
 } // namespace ftcore

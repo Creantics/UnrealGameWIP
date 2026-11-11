@@ -57,7 +57,7 @@ void build(StoryDatabase& db, std::string_view prefix = {}) {
     b.line("l4", "A", "picked two");                   // 1
     b.flag(FlagOp::End);                               // 2
     b.line("l5", "A", "after");                        // 3
-    b.flag(FlagOp::Set, "sf.f_seen", FlagValue::boolean(false)); // 4: refused (once-only, and only in s1)
+    b.flag(FlagOp::Set, "sf.f_seen", FlagValue::boolean(false)); // 4: a clear of a once-only fact: ignored
     b.line("l6", "A", "end of two");                   // 5
     b.beginScene(p + "s3", "Three");
     b.gameplay("CMB", "[fight]");                      // 0: no `sets`
@@ -184,9 +184,11 @@ TEST_CASE("story bridge: a playthrough records the facts") {
         CHECK(r.text() == "picked two");
         REQUIRE(r.advance());
         CHECK(r.text() == "after");
-        REQUIRE(r.advance()); // the refused set
+        REQUIRE(r.advance()); // the ignored clear: a note, not a refusal
         REQUIRE(reports.list.size() == 2);
-        CHECK(reports.list[1].result == SetResult::RejectedWrongScene);
+        CHECK(reports.list[1].kind == StoryBridgeReport::Kind::ClearIgnored);
+        CHECK(reports.list[1].fact == storyFactSlot(reg(), "f_seen"));
+        CHECK(status(s, "f_seen") == FactStatus::Set);
         CHECK(r.flag("sf.f_seen") == FlagValue::boolean(true));
         CHECK(r.text() == "end of two");
         REQUIRE(r.advance()); // -> s3: f_pick and f_seen are not its business
@@ -629,4 +631,94 @@ TEST_CASE("story bridge: the end reached through a restore") {
     CHECK(reports.empty());
     CHECK(s.openScene == kNoScene);
     CHECK(s.lastCommitted == 2);
+}
+
+TEST_CASE("story bridge: clears") {
+    StoryDatabase db;
+    {
+        StoryBuilder b;
+        b.addFlag("sf.f_pick", FlagValue::integer(0));
+        b.addFlag("sf.f_seen", FlagValue::boolean(false));
+        b.addFlag("sf.f_count", FlagValue::integer(0));
+        b.beginChapter("c1", "C");
+        b.beginScene("s1", "One");
+        b.flag(FlagOp::Set, "sf.f_seen", FlagValue::boolean(false)); // 0: a clear of an unset once fact
+        b.line("l1", "A", "one");                                    // 1
+        b.flag(FlagOp::Set, "sf.f_count", FlagValue::integer(5));    // 2
+        b.flag(FlagOp::Set, "sf.f_seen");                            // 3
+        b.flag(FlagOp::Set, "sf.f_pick", FlagValue::integer(2));     // 4
+        b.line("l2", "A", "two");                                    // 5
+        b.flag(FlagOp::Set, "sf.f_count", FlagValue::integer(0));    // 6: not even a free fact clears
+        b.flag(FlagOp::Clear, "sf.f_seen");                          // 7: a once fact does not
+        b.flag(FlagOp::Set, "sf.f_pick", FlagValue::integer(0));     // 8: nor does an int once fact
+        b.line("l3", "A", "three");                                  // 9
+        std::string error;
+        REQUIRE_MESSAGE(b.finish(db, &error), error);
+    }
+    StoryRunner r(&db);
+    StoryState s;
+    StoryBridge br;
+    Reports reports;
+    reports.list.reserve(8);
+    br.setReportHandler(&Reports::on, &reports);
+    REQUIRE(br.bind(r, s, reg(), {}));
+    REQUIRE(r.start());
+    CHECK(reports.list.empty()); // clearing what is not set says nothing
+    CHECK(status(s, "f_seen") == FactStatus::Unset);
+    REQUIRE(r.advance());
+    CHECK(fact(s, "f_count") == 5);
+    REQUIRE(r.advance());
+    CHECK(fact(s, "f_count") == 5);
+    CHECK(r.flag("sf.f_count") == FlagValue::integer(5)); // the fact's value back
+    CHECK(status(s, "f_seen") == FactStatus::Set);
+    CHECK(r.flag("sf.f_seen") == FlagValue::boolean(true)); // the fact's value back
+    CHECK(fact(s, "f_pick") == 2);
+    CHECK(r.flag("sf.f_pick") == FlagValue::integer(2));
+    REQUIRE(reports.list.size() == 3);
+    for (const StoryBridgeReport& rep : reports.list) CHECK(rep.kind == StoryBridgeReport::Kind::ClearIgnored);
+    CHECK(reports.list[0].fact == storyFactSlot(reg(), "f_count"));
+    CHECK(reports.list[1].fact == storyFactSlot(reg(), "f_seen"));
+    CHECK(reports.list[2].fact == storyFactSlot(reg(), "f_pick"));
+    CHECK(reports.list[2].value == 0);
+}
+
+TEST_CASE("story bridge: a restore with no sync") {
+    StoryDatabase db;
+    build(db);
+    StoryRunner r(&db);
+    StoryState s;
+    StoryBridge br;
+    Reports reports;
+    reports.list.reserve(8);
+    br.setReportHandler(&Reports::on, &reports);
+    REQUIRE(br.bind(r, s, reg(), {}));
+    REQUIRE(r.start());
+    StoryPosition pos;
+    pos.scene = "s1";
+    pos.beat = 2;
+    REQUIRE(r.restore(pos)); // the flag beats it settles through are the restore's own: no report
+    CHECK_FALSE(r.restoring());
+    CHECK(reports.list.empty());
+    REQUIRE(r.advance());
+    REQUIRE(r.waitingForGameplay());
+    REQUIRE(r.resume()); // the stub's write with no sync: reported, the state untouched
+    REQUIRE(reports.list.size() == 1);
+    CHECK(reports.list[0].kind == StoryBridgeReport::Kind::SyncMissing);
+    CHECK(reports.list[0].ordinal == 0);
+    CHECK(status(s, "f_count") == FactStatus::Unset);
+    SUBCASE("reported once per restore") {
+        REQUIRE(r.advance()); // -> s2, still paused
+        CHECK(reports.list.size() == 1);
+        CHECK(s.openScene == 0);
+        REQUIRE(r.restore(pos));
+        REQUIRE(r.advance());
+        REQUIRE(r.resume());
+        CHECK(reports.list.size() == 2);
+    }
+    SUBCASE("a late sync resumes forwarding") {
+        br.sync();
+        REQUIRE(r.advance()); // -> s2
+        CHECK(s.openScene == 1);
+        CHECK(reports.list.size() == 1);
+    }
 }

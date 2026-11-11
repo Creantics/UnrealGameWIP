@@ -16,9 +16,12 @@
 //   gameplay KIND [FLAG=VALUE]
 //   choice INDEX
 //   flag ID VALUE         at the end: every flag that is not a fact flag (sf.)
+//   kept ID SLOT          the story cleared a set fact: kept as it is (facts are never cleared; a note, not a failure)
 //   WALK OK | WALK FAILED: reason
-// Exit code 0 only with WALK OK. Fails on a refused import or bind, any bridge report (a refused fact write or scene),
-// a gameplay value it cannot give, a stuck runner, or the step cap.
+// Exit code 0 only with WALK OK, 2 for bad arguments, 1 for any other failure: a refused import or bind, a scene id
+// that is not a plain file name, any bridge refusal (a fact write or a scene), a --result no gameplay beat used, a
+// gameplay value it cannot give, a stuck runner, or the step cap. Each move commits at most one registry scene, so the
+// wide lines after a scene line belong to it.
 
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
@@ -54,9 +57,16 @@ bool readFile(const std::string& path, std::string& out) {
     return true;
 }
 
-int fail(const std::string& why) {
+int fail(const std::string& why, int code = 1) {
     std::printf("WALK FAILED: %s\n", why.c_str());
-    return 1;
+    return code;
+}
+
+int usage(const std::string& why) { return fail(why, 2); }
+
+// A scene id names a file in scenes/: no separators, drive colons or parent steps.
+bool plainName(std::string_view id) {
+    return !id.empty() && id.find_first_of("/\\:") == std::string_view::npos && id.find("..") == std::string_view::npos;
 }
 
 bool parseValue(std::string_view text, FlagValue& out) {
@@ -79,6 +89,7 @@ bool parseValue(std::string_view text, FlagValue& out) {
 struct Result {
     std::string flag;
     FlagValue value;
+    bool used = false;
 };
 
 struct Reports {
@@ -89,14 +100,19 @@ struct Reports {
 
 void onReport(void* user, const StoryBridgeReport& r) {
     Reports& rep = *static_cast<Reports*>(user);
-    ++rep.count;
-    if (r.kind == StoryBridgeReport::Kind::FactRefused) {
-        const std::string_view flag = r.flag < rep.db->flagCount() ? rep.db->view(rep.db->flag(r.flag).id) : "?";
+    const std::string_view flag = r.flag < rep.db->flagCount() ? rep.db->view(rep.db->flag(r.flag).id) : "?";
+    switch (r.kind) {
+    case StoryBridgeReport::Kind::ClearIgnored: // by design: a note, not a failure
+        std::printf("kept %.*s %u\n", static_cast<int>(flag.size()), flag.data(), static_cast<unsigned>(r.fact));
+        return;
+    case StoryBridgeReport::Kind::FactRefused:
         std::printf("refused %.*s %lld (result %d)\n", static_cast<int>(flag.size()), flag.data(),
                     static_cast<long long>(r.value), static_cast<int>(r.result));
-    } else {
-        std::printf("refused scene %u\n", static_cast<unsigned>(r.ordinal));
+        break;
+    case StoryBridgeReport::Kind::SceneRefused: std::printf("refused scene %u\n", static_cast<unsigned>(r.ordinal)); break;
+    case StoryBridgeReport::Kind::SyncMissing: std::printf("sync missing\n"); break;
     }
+    ++rep.count;
 }
 
 } // namespace
@@ -116,14 +132,18 @@ int main(int argc, char** argv) {
             const std::size_t eq = kv.find('=');
             Result r;
             if (eq == std::string_view::npos || eq == 0 || !parseValue(kv.substr(eq + 1), r.value))
-                return fail("--result: expected FLAG=VALUE (true, false or an integer)");
+                return usage("--result: expected FLAG=VALUE (true, false or an integer)");
             r.flag = std::string(kv.substr(0, eq));
+            for (const Result& o : results)
+                if (o.flag == r.flag) return usage("--result: " + r.flag + " given twice");
             results.push_back(r);
         } else if (a == "--steps" && i + 1 < argc) {
-            steps = std::strtol(argv[++i], nullptr, 10);
-            if (steps <= 0) return fail("--steps: expected a positive number");
+            const char* text = argv[++i];
+            char* end = nullptr;
+            steps = std::strtol(text, &end, 10);
+            if (end == text || *end != 0 || steps <= 0) return usage("--steps: expected a positive number");
         } else {
-            return fail("unknown argument: " + std::string(a));
+            return usage("unknown argument: " + std::string(a));
         }
     }
 
@@ -145,6 +165,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> sceneTexts(ids.size());
     std::vector<std::string_view> sceneViews;
     for (std::size_t i = 0; i < ids.size(); ++i) {
+        if (!plainName(ids[i])) return fail("scene id " + ids[i] + " is not a plain file name");
         if (!readFile(storyDir + "/scenes/" + ids[i] + ".json", sceneTexts[i]))
             return fail("no scenes/" + ids[i] + ".json");
         sceneViews.push_back(sceneTexts[i]);
@@ -166,10 +187,12 @@ int main(int argc, char** argv) {
 
     std::uint8_t committed = kNoScene;
     std::array<std::uint32_t, kWideSlots> wideBefore{};
-    // Prints the scenes committed since the last call, each with the facts it was the last to write.
-    auto printCommits = [&] {
+    // Prints the scenes committed since the last call, each with the facts it was the last to write. False when the
+    // last committed scene went backwards (the state only moves forward while the story plays).
+    auto printCommits = [&]() -> bool {
         const StoryState& s = *state;
-        if (s.lastCommitted == committed || s.lastCommitted == kNoScene) return;
+        if (s.lastCommitted == committed) return true;
+        if (s.lastCommitted == kNoScene || (committed != kNoScene && s.lastCommitted < committed)) return false;
         const unsigned from = committed == kNoScene ? 0u : committed + 1u;
         for (unsigned o = from; o <= s.lastCommitted; ++o) {
             bool any = o == s.lastCommitted;
@@ -189,6 +212,7 @@ int main(int argc, char** argv) {
             wideBefore[w] = s.wide[w];
         }
         committed = s.lastCommitted;
+        return true;
     };
 
     long step = 0;
@@ -204,8 +228,8 @@ int main(int argc, char** argv) {
         case StoryRunner::State::Choice:
             for (std::uint32_t i = 0; i < runner.optionCount() && !moved; ++i) {
                 if (!runner.optionSelectable(i)) continue;
-                std::printf("choice %u\n", static_cast<unsigned>(i));
                 moved = runner.choose(i);
+                if (moved) std::printf("choice %u\n", static_cast<unsigned>(i));
             }
             break;
         case StoryRunner::State::Gameplay: {
@@ -216,9 +240,12 @@ int main(int argc, char** argv) {
                 moved = runner.resume();
                 break;
             }
-            const Result* given = nullptr;
-            for (const Result& r : results)
-                if (r.flag == sets) given = &r;
+            Result* given = nullptr;
+            for (Result& r : results)
+                if (r.flag == sets) {
+                    r.used = true;
+                    given = &r;
+                }
             if (given) {
                 std::printf("gameplay %s %s=%s\n", kind.c_str(), sets.c_str(), db.formatFlagValue(given->value).c_str());
                 moved = runner.resume(given->value);
@@ -234,17 +261,19 @@ int main(int argc, char** argv) {
         case StoryRunner::State::Finished: break;
         }
         if (!moved) return fail("the runner refused to move on in state " + std::to_string(static_cast<int>(runner.state())));
-        printCommits();
+        if (!printCommits()) return fail("the last committed scene went backwards");
         if (reports.count) return fail("the bridge reported a refusal");
     }
     if (runner.state() != StoryRunner::State::Finished) return fail("step cap reached (" + std::to_string(steps) + ")");
-    printCommits();
+    if (!printCommits()) return fail("the last committed scene went backwards");
     for (std::uint32_t i = 0; i < db.flagCount(); ++i) {
         const std::string_view id = db.view(db.flag(i).id);
         if (id.substr(0, 3) == "sf.") continue;
         std::printf("flag %.*s %s\n", static_cast<int>(id.size()), id.data(), db.formatFlagValue(runner.flag(i)).c_str());
     }
     if (reports.count) return fail("the bridge reported a refusal");
+    for (const Result& r : results)
+        if (!r.used) return fail("--result " + r.flag + ": no gameplay beat set it");
     std::printf("WALK OK\n");
     return 0;
 }

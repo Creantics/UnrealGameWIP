@@ -26,11 +26,15 @@
 //   a byte) and writes the fact's value back to the flag (as above), so a refused set leaves the flag as
 //   the fact is.
 //   A refusal is passed to the report handler. setFlag() is not forwarded.
+// - Clears. A fact is never cleared (a stored 0 means never set; storySet refuses it, `free` facts too):
+//   writing false or 0 to a fact flag is not sent to storySet; the flag takes the fact's value back and,
+//   when the fact was set, a ClearIgnored report says so (a note, not a refusal).
 // - A load. restore() pauses the bridge (the runner's moves while it settles are not forwarded) until
 //   sync(), called once the state is decoded. The runner stays where it was restored and the state as
 //   decoded (a save takes both at one moment). When the decoded state has another registry scene open, or
 //   none, the runner's scene is entered; at the story's end the open scene commits. The flags are pushed,
-//   and a restart after the load goes back to the load point (as the runner's does).
+//   and a restart after the load goes back to the load point (as the runner's does). When the runner moves
+//   on after restore() with no sync(), the bridge stays paused and reports SyncMissing (once per restore).
 //
 // Rebind after the runner's database or the registry changes: the bridge checks the database's address
 // only, so a database rebuilt in place needs a rebind too. No allocation after bind().
@@ -49,11 +53,15 @@
 namespace ftcore {
 
 struct StoryBridgeReport {
-    enum class Kind : std::uint8_t { FactRefused, SceneRefused };
+    // FactRefused: storySet refused a write. SceneRefused: a scene could not open or commit.
+    // ClearIgnored: the story cleared a fact flag whose fact is set (by design facts are never cleared; the
+    // flag gets the fact's value back): a quiet note, not a fault. SyncMissing: the runner moved after restore()
+    // with no sync(): the bridge stays paused (the state is not known to be decoded); once per restore.
+    enum class Kind : std::uint8_t { FactRefused, SceneRefused, ClearIgnored, SyncMissing };
     Kind kind = Kind::FactRefused;
-    std::uint32_t flag = kNone;          // FactRefused: the runner flag
-    std::uint16_t fact = 0;              // FactRefused: the fact slot
-    std::int64_t value = 0;              // FactRefused: the flag's value
+    std::uint32_t flag = kNone;          // FactRefused, ClearIgnored: the runner flag
+    std::uint16_t fact = 0;              // FactRefused, ClearIgnored: the fact slot
+    std::int64_t value = 0;              // FactRefused, ClearIgnored: the flag's value
     SetResult result = SetResult::Ok;    // FactRefused
     std::uint32_t scene = kNone;         // the runner scene
     std::uint8_t ordinal = kNoScene;     // the registry scene
@@ -101,6 +109,7 @@ private:
     bool restartState(std::uint32_t runnerScene);
     void push(std::uint8_t ordinal);
     void pushOne(std::uint32_t flag, std::uint8_t ordinal);
+    bool pausedForLoad(const StoryRunner& r);
     void report(const StoryBridgeReport& r) const {
         if (onReport_) onReport_(reportUser_, r);
     }
@@ -118,6 +127,7 @@ private:
     std::array<std::uint32_t, kWideSlots> restartWide_{};
     std::uint32_t restartScene_ = kNone;
     bool restoring_ = false; // between restore() and sync()
+    bool syncMissed_ = false; // SyncMissing reported for this restore
     std::uint32_t boundFlags_ = 0, mappedScenes_ = 0;
     ReportHandler onReport_ = nullptr;
     void* reportUser_ = nullptr;

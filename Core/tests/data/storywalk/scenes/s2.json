@@ -5,6 +5,7 @@
     {"type": "flag", "op": "require", "id": "sf.f_pick", "value": 2},
     {"type": "flag", "op": "set", "id": "branch", "value": 2},
     {"type": "flag", "op": "end"},
+    {"type": "flag", "op": "clear", "id": "sf.f_seen"},
     {"type": "gameplay", "kind": "CMB", "text": "[fight]"},
     {"type": "line", "id": "s2_l1", "speaker": "A", "text": "two"}
   ]

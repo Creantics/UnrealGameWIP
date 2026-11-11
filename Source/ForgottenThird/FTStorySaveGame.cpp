@@ -60,10 +60,22 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 		}
 		Save.hasClock = true;
 	}
-	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
-	if (UFTStoryStateSubsystem* State = StateOf(Story))
+	// The block first: when the state cannot give one that matches this position, nothing is captured.
+	UFTStoryStateSubsystem* State = StateOf(Story);
+	TArray<uint8> Block;
+	bool bSkip = false;
+	if (State)
 	{
-		State->EncodeBlock(StoryBlock);
+		State->EncodeBlock(Block, &bSkip);
+		if (bSkip)
+		{
+			return false;
+		}
+	}
+	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
+	if (State)
+	{
+		StoryBlock = MoveTemp(Block);
 	}
 	return true;
 }

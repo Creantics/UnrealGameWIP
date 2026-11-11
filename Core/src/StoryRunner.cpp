@@ -52,9 +52,11 @@ bool StoryRunner::restore(const StoryPosition& pos) {
     if (!db_ || !db_->loaded()) return false;
     const std::uint32_t s = db_->findScene(pos.scene);
     if (s == kNone) return false;
+    restoring_ = true;
     enterScene(s, SceneEntry::Restore);
     beat_ = pos.beat;
     settle();
+    restoring_ = false;
     return true;
 }
 

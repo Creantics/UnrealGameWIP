@@ -98,10 +98,11 @@ public:
 
 	// ---- the save block (UFTStorySaveGame) ----
 
-	// Writes the block into Out and keeps a copy as the last good block. When Core refuses, writes the last good
-	// block instead (empty when there is none: it loads as a new game) and returns false with a warning. False with
-	// Out untouched before Initialize.
-	bool EncodeBlock(TArray<uint8>& Out);
+	// Writes the block into Out and keeps a copy as the last good block. When Core refuses, it returns false with a
+	// warning naming the last good block's scene and writes that block instead, unless there is none or the story
+	// has moved past its scene: then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot
+	// keeps what it has). False with Out untouched before Initialize.
+	bool EncodeBlock(TArray<uint8>& Out, bool* bOutSkip = nullptr);
 	// Loads the block, or a new game's state when it is empty or Core refuses it. Returns Core's result. A loaded
 	// block becomes the last good block; a new game's state clears it.
 	ftcore::StoryLoad DecodeBlock(const TArray<uint8>& In);

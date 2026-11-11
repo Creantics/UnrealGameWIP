@@ -156,6 +156,11 @@ runner to the state. The state is the truth; the runner's flags named `sf.<fact 
 - **Flags into facts.** When the story sets an `sf.` flag (a flag beat, an option effect, a gameplay
   result), the bridge calls `storySet` and writes the fact's value back to the flag, so a refused set
   (once-only, wrong scene, out of range, gate) leaves the flag as the fact is; the refusal is logged.
+- **Clears.** Facts are never cleared: a stored 0 means never set, and `storySet` refuses 0 for every fact,
+  `free` ones too. So a clear of an `sf.` flag (a Clear beat, or false or 0 written to it) is not sent to
+  `storySet`: the flag takes the fact's value back and, when the fact was set, the bridge reports
+  `ClearIgnored`, logged at Log level (a note, not a warning), and `ftcore_storywalk` prints a `kept` line
+  and carries on.
 - **Gameplay results.** A gameplay beat's `sets` param names the flag its result goes to:
   `StoryRunner::resume(value)` (Unreal: `ResumeAfterGameplayWithValue`) sets it, then continues. A plain
   `resume()` sets the beat's `stub` param (an integer) when it has one, a stand-in for a screen not built
@@ -171,12 +176,20 @@ runner to the state. The state is the truth; the runner's flags named `sf.<fact 
   reaches the state), decodes the block, then calls `SyncAfterLoad`. The runner stays where it was
   restored and the state as decoded. When the block has another registry scene open, or none, the
   runner's scene begins; at the story's end the open scene commits. The flags are pushed, and a restart
-  after the load goes back to the load point for the runner and the state alike.
+  after the load goes back to the load point for the runner and the state alike. If the runner moves on
+  after a restore with no `SyncAfterLoad`, the bridge stays paused (it cannot know the block was decoded) and
+  reports `SyncMissing` once per restore, logged as a warning. Between the restore and the sync the story
+  subsystem flushes its events (`OnCue`, `OnSceneChanged`, `OnBeatChanged`, `OnFinished`); none of their
+  listeners moves the runner: the audio subsystem plays cues and reads the line id, the scene-change autosave
+  is held off while a save applies, and the game mode's end card only raises a flag.
 - **Binding.** A story with fact flags none of whose scenes plays a registry scene is refused: every write
   would be.
 
 `UFTStoryStateSubsystem` binds the bridge again after every story load and registry import. A story with an
 `sf.` flag the registry lacks, a string `sf.` flag, or fact flags with no mapped scene leave it unbound with
-a warning. A registry import that fails keeps the current registry, state and scene map. The save keeps the
-last good block: when the state refuses to encode, that block is written instead. A fight retry resets
-the fight, not the scene, so it calls nothing here.
+a warning. A registry import that fails keeps the current registry, state and scene map; one that succeeds
+while a story runs syncs the bridge, so the runner's registry scene is open in the new game's state. The save
+keeps the last good block: when the state refuses to encode, that block is written instead, with a warning
+naming its scene, unless the story has moved past that scene (its facts would roll back under a later
+position) or there is no good block (never an empty block over real progress): then the save is skipped
+and the slot keeps what it has. A fight retry resets the fight, not the scene, so it calls nothing here.

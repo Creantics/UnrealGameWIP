@@ -346,13 +346,18 @@ if(FTCORE_BUILD_TESTS)
     set(FTCORE_WALK_DATA ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk)
     add_test(NAME storywalk_result COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_pick=2)
     set_tests_properties(storywalk_result PROPERTIES PASS_REGULAR_EXPRESSION
-        "gameplay PLAY sf.f_pick=2\r?\nscene s1\r?\nset f_pick 2\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 2\r?\nWALK OK")
+        "gameplay PLAY sf.f_pick=2\r?\nkept sf.f_seen 2\r?\nscene s1\r?\nset f_pick 2\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 2\r?\nWALK OK")
     add_test(NAME storywalk_stub COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA})
     set_tests_properties(storywalk_stub PROPERTIES PASS_REGULAR_EXPRESSION
-        "gameplay PLAY sf.f_pick=1 [(]stub[)]\r?\nscene s1\r?\nset f_pick 1\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 0\r?\nWALK OK")
+        "gameplay PLAY sf.f_pick=1 [(]stub[)]\r?\nkept sf.f_seen 2\r?\nscene s1\r?\nset f_pick 1\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 0\r?\nWALK OK")
     add_test(NAME storywalk_refused COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_pick=7)
     set_tests_properties(storywalk_refused PROPERTIES PASS_REGULAR_EXPRESSION
         "refused sf.f_pick 7 .*WALK FAILED: the bridge reported a refusal")
+    add_test(NAME storywalk_bad_steps COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --steps 5x)
+    set_tests_properties(storywalk_bad_steps PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --steps: expected a positive number")
+    add_test(NAME storywalk_unused_result COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_seen=true)
+    set_tests_properties(storywalk_unused_result PROPERTIES PASS_REGULAR_EXPRESSION
+        "WALK FAILED: --result sf.f_seen: no gameplay beat set it")
 
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}

@@ -128,6 +128,10 @@ bool UFTStoryStateSubsystem::LoadRegistry(const FString& Dir)
 	LastGoodBlock.Reset();
 	LoadSceneMap(Base);
 	RebindBridge();
+	if (Bridge && Bridge->bound())
+	{
+		Bridge->sync(); // a story under way: its registry scene opens in the new game's state (idle: nothing)
+	}
 	return true;
 }
 
@@ -194,7 +198,17 @@ int32 UFTStoryStateSubsystem::GetMappedSceneCount() const
 void UFTStoryStateSubsystem::HandleBridgeReport(void* User, const ftcore::StoryBridgeReport& Report)
 {
 	(void)User;
-	if (Report.kind == ftcore::StoryBridgeReport::Kind::SceneRefused)
+	if (Report.kind == ftcore::StoryBridgeReport::Kind::ClearIgnored)
+	{
+		// By design (docs/STORY_STATE.md): facts are never cleared; a note, not a fault.
+		UE_LOG(LogFTStoryState, Log, TEXT("StoryState: fact slot %u kept (facts are never cleared) at runner scene %u."),
+			   static_cast<uint32>(Report.fact), Report.scene);
+	}
+	else if (Report.kind == ftcore::StoryBridgeReport::Kind::SyncMissing)
+	{
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: the story moved after a restore with no SyncAfterLoad; facts are not followed until it is called."));
+	}
+	else if (Report.kind == ftcore::StoryBridgeReport::Kind::SceneRefused)
 	{
 		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: runner scene %u could not open registry scene %u."), Report.scene,
 			   static_cast<uint32>(Report.ordinal));
@@ -253,8 +267,30 @@ void UFTStoryStateSubsystem::Unbind()
 	BoundSession.Reset();
 }
 
-bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out)
+namespace
 {
+// How far a state has got: 0 nothing, 2n+1 with scene n open, 2n+2 with n the last committed and none open.
+int32 StoryBlockProgress(uint8 Open, uint8 LastCommitted)
+{
+	return Open != ftcore::kNoScene ? 2 * Open + 1 : LastCommitted != ftcore::kNoScene ? 2 * LastCommitted + 2 : 0;
+}
+
+FString RegistrySceneName(const ftcore::FactRegistry& Reg, uint8 Ordinal)
+{
+	if (Ordinal == ftcore::kNoScene || Ordinal >= Reg.sceneCount)
+	{
+		return TEXT("none");
+	}
+	return FT::ToFString(std::string_view(Reg.sceneCodes[Ordinal].data()));
+}
+} // namespace
+
+bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
+{
+	if (bOutSkip)
+	{
+		*bOutSkip = false;
+	}
 	if (!State)
 	{
 		return false;
@@ -263,8 +299,33 @@ bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out)
 	Block.SetNumZeroed(ftcore::kStoryStateBlockSize);
 	if (!ftcore::storyEncode(*State, *Registry, std::span<std::uint8_t, ftcore::kStoryStateBlockSize>(Block.GetData(), ftcore::kStoryStateBlockSize)))
 	{
-		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the last good block (%d bytes) is written"),
-			   LastGoodBlock.Num());
+		const int32 Now = StoryBlockProgress(State->openScene, State->lastCommitted);
+		if (LastGoodBlock.Num() != ftcore::kStoryStateBlockSize)
+		{
+			// Never an empty block over real progress: the save is skipped and the slot keeps what it has.
+			UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode and there is no last good block; the save is skipped."));
+			if (bOutSkip)
+			{
+				*bOutSkip = true;
+			}
+			return false;
+		}
+		const uint8 GoodOpen = LastGoodBlock[16], GoodLast = LastGoodBlock[17]; // the block's open and last committed scene
+		const FString GoodScene = RegistrySceneName(*Registry, GoodOpen != ftcore::kNoScene ? GoodOpen : GoodLast);
+		if (Now > StoryBlockProgress(GoodOpen, GoodLast))
+		{
+			// The story has moved past the block: writing it would roll the facts back under a later position.
+			UE_LOG(LogFTStoryState, Warning,
+				   TEXT("Story state not saved: the state refused to encode; the last good block is from scene %s, which the story has moved past (now at %s); the save is skipped."),
+				   *GoodScene, *RegistrySceneName(*Registry, State->openScene != ftcore::kNoScene ? State->openScene : State->lastCommitted));
+			if (bOutSkip)
+			{
+				*bOutSkip = true;
+			}
+			return false;
+		}
+		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the last good block (scene %s) is written."),
+			   *GoodScene);
 		Out = LastGoodBlock;
 		return false;
 	}
