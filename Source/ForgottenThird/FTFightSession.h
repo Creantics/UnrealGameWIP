@@ -42,7 +42,7 @@ public:
 	const ftcore::FightTick& Tick(float FightDeltaSeconds);
 	// One shared-input press by Who (an ftcore::FighterId), aimed at Target where the action has one (a gift's lead).
 	ftcore::SharedReply Press(EFTSharedAction Action, uint8 Who, uint8 Target = ftcore::kNoFighter);
-	// The story state given gifts are written to (both or neither; they must outlive the binding).
+	// The story state gift presses at a lead are written to, given or refused (both or neither; they must outlive the binding).
 	void BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry);
 
 	ftcore::FightSession& Get() { return *Session; }

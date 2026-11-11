@@ -303,7 +303,7 @@ TEST_CASE("fight session: a boss script countered then hit on the count unlocks 
     CHECK(s.boss().stepEnds() == stepEnds);
 }
 
-TEST_CASE("fight session: given gifts are presses in the story state") {
+TEST_CASE("fight session: gift presses at a lead are presses in the story state") {
     FactRegistry reg;
     std::string err;
     REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
@@ -348,7 +348,7 @@ TEST_CASE("fight session: given gifts are presses in the story state") {
     CHECK(s.giveGift(kLeadB).given);
     CHECK(s.lastStoryWrite() == SetResult::Ok);
     CHECK(wide("w_b1") == 1);
-    // A refused gift writes nothing; a capped counter answers Unchanged.
+    // A press at a non-lead has no side and writes nothing; a capped counter answers Unchanged.
     CHECK(!s.giveGift(kThirdSlot).given);
     CHECK(s.lastStoryWrite() == SetResult::Unchanged);
     REQUIRE(s.selectGift(Gift::Heal));
@@ -368,6 +368,67 @@ TEST_CASE("fight session: given gifts are presses in the story state") {
     s.bindStory(nullptr, &reg);
     CHECK(s.giveGift(kLeadB).given);
     CHECK(wide("w_b0") == 0);
+}
+
+TEST_CASE("fight session: refused gift presses at a lead count in the story state too") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    const auto wide = [&](const char* id) {
+        for (std::uint8_t w = 0; w < kWideSlots; ++w)
+            if (reg.wide[w].id() == id) return storyWide(story, w);
+        return 0xFFFFFFFFu;
+    };
+
+    FightSession s;
+    FightSessionDef d;
+    d.gift.cooldown = {5.0, 5.0, 5.0};
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.bindStory(&story, &reg);
+    const auto& slot = s.giftSlot();
+
+    // Cooling: the second press is refused but is still a press of its kind on its side.
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(wide("w_a1") == 1);
+    const GiftResult cool = s.giveGift(kLeadA);
+    CHECK(!cool.given);
+    CHECK(cool.error == GiftError::Cooling);
+    CHECK(s.lastStoryWrite() == SetResult::Ok);
+    CHECK(wide("w_a1") == 2);
+    CHECK(slot.tally().givenOf(Gift::Guard) == 1);
+    CHECK(slot.threads(kLeadA) == 1);
+
+    // A refused count is a Count press.
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    REQUIRE(s.selectGift(Gift::Count));
+    const GiftResult cr = s.giveGift(kLeadA);
+    CHECK(cr.error == GiftError::CountRefused);
+    CHECK(wide("w_a2") == 1);
+
+    // Hostile and vacant slots refuse before any tally, and the press still counts.
+    s.giftSlot().setState(SlotState::Hostile);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).error == GiftError::Hostile);
+    CHECK(wide("w_a0") == 1);
+    s.giftSlot().setState(SlotState::Vacant);
+    CHECK(s.giveGift(kLeadA).error == GiftError::Vacant);
+    CHECK(wide("w_a0") == 2);
+
+    // A refused press on a closed side is gated like a given one.
+    CHECK(!s.giveGift(kLeadB).given);
+    CHECK(s.lastStoryWrite() == SetResult::RejectedGate);
+    CHECK(wide("w_b0") == 0);
+    // At a non-lead there is no side.
+    CHECK(s.giveGift(kThirdSlot).error == GiftError::Vacant);
+    CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+
+    CHECK(slot.threads(kLeadA) == 1);
+    CHECK(slot.tally().givenOf(Gift::Heal) == 0);
+    CHECK(slot.tally().givenOf(Gift::Count) == 0);
 }
 
 TEST_CASE("fight session: a fight's frames allocate nothing") {

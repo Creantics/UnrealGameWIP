@@ -14,8 +14,10 @@
 //   boss script, or an offer of the shared-blow key to the session's own lock when there is no boss script. A settle
 //   the count's full event buffer lost (droppedSettles) is not a shared blow. A change to
 //   the table setter's places re-checks the table's seats.
-// * Story: with a story state bound, every given gift is one press in it (storyCountPress): the side is the lead it
-//   went to (kLeadA 0, kLeadB 1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused press writes nothing.
+// * Story: with a story state bound, every press of the gift button aimed at a lead is one press in it
+//   (storyCountPress), given or refused (cooling, a refused count, a hostile or vacant slot): the side is the
+//   target lead (kLeadA 0, kLeadB 1), the kind is the selected gift (Heal 0, Guard 1, Count 2). A press at a
+//   non-lead has no side and writes nothing.
 //   The per-kind press counters (counter wides) roll back with a scene restart, so a retried fight counts afresh.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction.
@@ -201,7 +203,7 @@ public:
     GiftResult giveGift(FighterId target) {
         const GiftResult r = gift_.press(target, now_, &count_);
         lastStory_ = SetResult::Unchanged;
-        if (r.given && story_ && isLead(r.target) && r.gift != Gift::None)
+        if (story_ && isLead(r.target) && r.gift != Gift::None) // the slot never selects None
             lastStory_ = storyCountPress(*story_, *reg_, r.target, static_cast<std::uint8_t>(r.gift));
         return r;
     }

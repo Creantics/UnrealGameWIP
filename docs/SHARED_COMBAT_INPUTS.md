@@ -283,9 +283,12 @@ the pieces.
   the count action makes `Count`, the gift action `Gift` with the chosen lead, and the guard button
   held while a refusal prompt is up makes `RefuseDown`/`RefuseUp`. The typed calls (`callCount`,
   `giveGift`, `layPlace`, `setTable`, `counter`, `bossHit`, ...) return each piece's own result.
-* **Story.** With a story state bound (`bindStory(state, registry)`, both or neither), every given
-  gift is one press in it (`storyCountPress`): the side is the lead it went to (`kLeadA` 0, `kLeadB`
-  1), the kind is the gift (Heal 0, Guard 1, Count 2). A refused gift writes nothing; a closed side,
+* **Story.** With a story state bound (`bindStory(state, registry)`, both or neither), every press
+  of the gift button aimed at a lead is one press in it (`storyCountPress`), given or refused (a
+  cooldown, a refused count, a hostile or vacant slot): the side is the target lead (`kLeadA` 0,
+  `kLeadB` 1), the kind is the selected gift (Heal 0, Guard 1, Count 2; the slot never selects none).
+  A press at a non-lead has no side and writes nothing. Hostile and vacant presses sit outside the
+  tally's refused slots but still count here. A closed side,
   a counter at its cap or an unbound counter is a normal answer (`lastStoryWrite`). The per-kind press
   counters (counter wides) roll back with a scene restart, so a retried fight counts afresh; a raw
   total does not.
