@@ -512,6 +512,31 @@ void FFTLeadWeapons::Freeze(double T)
 	}
 }
 
+void FFTLeadWeapons::HitPause(bool bOn)
+{
+	if (bOn == bHitPaused)
+	{
+		return;
+	}
+	bHitPaused = bOn;
+	AActor* Body = Figure.Get();
+	if (!Body)
+	{
+		return;
+	}
+	// While a view frame holds the figure, its clock is Thaw's to give back: the pause changes what Thaw restores.
+	float& Dilation = bFrozen ? FrozenDilation : Body->CustomTimeDilation;
+	if (bOn)
+	{
+		HitPauseDilation = Dilation;
+		Dilation = 0.f;
+	}
+	else
+	{
+		Dilation = HitPauseDilation;
+	}
+}
+
 void FFTLeadWeapons::Thaw()
 {
 	if (!bFrozen)
@@ -1029,6 +1054,7 @@ void FFTLeadWeapons::Paint(double T)
 
 void FFTLeadWeapons::Restart()
 {
+	HitPause(false);
 	Thaw();
 	for (double& At : StartAt)
 	{
@@ -1067,6 +1093,7 @@ void FFTLeadWeapons::Restart()
 
 void FFTLeadWeapons::Reset()
 {
+	HitPause(false);
 	Thaw();
 	for (double& At : StartAt)
 	{

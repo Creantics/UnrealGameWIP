@@ -382,6 +382,32 @@ The same with `-ArenaIdle` instead of `-ArenaAutoPlay` plays a player who presse
 defeat. The default wave is long enough for the Load to fill and the autopilot to release; to fight one
 enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before the Load fills). From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leading `/Game` into a path).
 
+### Feature checks
+
+After the result line the runner prints one `Arena check:` line per combat feature (Core's `arenaFeatureChecks`
+over the fight's stats), each PASS, FAIL, or n/a where nothing in the line-up can show it:
+
+- `lights free`: lights were started and cost no stamina;
+- `cancels`: an action (a buffered attack, a roll, the guard) cut into an attack;
+- `flinch`: an enemy flinched (n/a when no kind in the line-up has a `flinchTime`; bosses don't);
+- `break-out`: an enemy broke out of a run of blows (n/a when no kind has a `breakAt`);
+- `soft target`: an attack started on a soft target (the nearest living enemy in `softRange` and `softArcCos` of
+  the stick, or of the facing, with nothing locked) and homed up to `homingReach`.
+
+`-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. Two runs cover every line, Devin
+against the stone bearer, then against a skirmisher and a hulk:
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaStage=stone_ring -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=skirmisher,hulk -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+```
+
+The hit pause shows on screen: the lead's body and strike clips (`GetDrawnTime` is on Core's held clock) and a hit
+enemy's clips stand still for its pause, and the camera holds where it is (it never pulls out). A flinching enemy leans
+back a little (a placeholder pose until flinch clips exist) and plays its light hit reaction when it has a skin. The
+runner hands the clocks to the fight session through `GetHeldTime`, `GetHeldDelta` (0 through the player's pause),
+`GetHitStopLeft`, `GetPlayerStopLeft` and `GetEnemyStopLeft`.
+
 ## Flow
 
 1. The fight starts at once: the lead stands on the ring's west side facing the centre, the enemies
@@ -482,6 +508,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | Flag | Effect |
 |---|---|
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
+| `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |

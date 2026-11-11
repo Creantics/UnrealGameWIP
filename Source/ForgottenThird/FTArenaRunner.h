@@ -100,6 +100,7 @@ struct FFTArenaRunSetup
 	bool bIdle = false;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f; // -ArenaParryHold=<s>
+	bool bNoLock = false;  // -ArenaNoLock: the autopilot never presses lock, so its attacks take soft targets
 	FString BossLoop;      // -ArenaBossLoop=<clip> (review only; empty: off)
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
@@ -211,9 +212,22 @@ public:
 	// The aim stance (right mouse held): its blend 0..1, for the HUD's reticle.
 	float GetAimAlpha() const { return ArenaAim.alpha(); }
 	FFTLeadWeapons& GetLeadWeapons() { return LeadWeapons; }
-	// The fight time the figures were last drawn at: a step behind Fight.time(), Alpha of the way to it. It moves by
-	// exactly the delta TickFight is given while the fight runs.
+	// The time the figures were last drawn at, on the held fight clock (Fight.heldTime(), the lead's strike clips' clock):
+	// Alpha of the way from its value before the last step to its value after. It stands still through the player's hit
+	// pauses and otherwise moves by the delta TickFight is given.
 	double GetDrawnTime() const { return DrawnTime; }
+	// The clocks for the fight session (the shared combat inputs): the held fight clock (the fight clock less the player's
+	// hit pauses), how far it moved over the last TickFight (what the session's Tick takes: 0 through a hit pause), the
+	// player's pause left, and each figure's own pause left (0 once the fight is over, and on a dead enemy). All 0 before
+	// the fight begins; Begin and Restart start them again.
+	float GetHeldTime() const { return bBegun ? Fight.heldTime() : 0.f; }
+	float GetHeldDelta() const { return HeldDelta; }
+	float GetHitStopLeft() const { return bBegun ? Fight.hitStopLeft() : 0.f; }
+	float GetPlayerStopLeft() const { return bBegun ? Fight.output().player.stopLeft : 0.f; }
+	float GetEnemyStopLeft(int32 Index) const
+	{
+		return (bBegun && Index >= 0 && Index < static_cast<int32>(Fight.enemyCount())) ? Fight.output().enemies[static_cast<size_t>(Index)].stopLeft : 0.f;
+	}
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -303,6 +317,9 @@ private:
 	void Finish();
 	// The one result line per fight (VICTORY, DEFEAT, or TIMEOUT as a warning while it still runs).
 	void LogResult() const;
+	// One "Arena check:" line per combat feature (Core's arenaFeatureChecks over the fight's stats), for the headless
+	// demo: PASS, FAIL, or n/a where nothing in the line-up can show it.
+	void LogFeatureChecks() const;
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 
@@ -470,6 +487,10 @@ private:
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f;
+	bool bNoLock = false;
+	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
+	double PrevHeldTime = 0.0;
+	float HeldDelta = 0.f;
 	// -ArenaBossLoop: the clip's name, the boss's slot and the clip's table index (-1: off, or not found), whether it was
 	// looked for, and the wraps logged this fight.
 	FString BossLoopName;

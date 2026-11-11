@@ -209,6 +209,7 @@ private:
 	bool bIdle = false;
 	bool bQuitOnFinish = false;
 	bool bHoldLoad = false;
+	bool bNoLock = false; // -ArenaNoLock
 	float ParryHold = 0.f;
 	FString BossLoop; // -ArenaBossLoop=<clip>
 	bool bBossSplit = false;

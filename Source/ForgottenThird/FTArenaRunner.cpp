@@ -271,6 +271,11 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bShots = Setup.bShots;
 	bFightAgain = Setup.bFightAgain;
 	bReplacePawn = Setup.bReplacePawn;
+	bNoLock = Setup.bNoLock;
+	if (bNoLock && bAutoPlay)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot never locks (-ArenaNoLock): its attacks take soft targets."));
+	}
 
 	bBegun = true;
 	BeginNow = Now;
@@ -311,6 +316,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	PollInput(DeltaSeconds);
 	TickAim(DeltaSeconds);
 
+	const float HeldBefore = Fight.heldTime();
 	if (!Fight.over() && !bHold)
 	{
 		Accumulator = FMath::Min(Accumulator + static_cast<double>(DeltaSeconds), static_cast<double>(StepSeconds * MaxStepsPerFrame));
@@ -320,6 +326,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 			Accumulator -= StepSeconds;
 		}
 	}
+	HeldDelta = FMath::Max(0.f, Fight.heldTime() - HeldBefore);
 	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
 	SteerCamera(DeltaSeconds);
 	ApplyAimCamera();
@@ -669,6 +676,23 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		return;
 	}
+	// A hit pause holds the figure: the stamps its clips are timed from move on with the screen's clock, the walk's phase
+	// and the crossfade wait. (A move's clip runs on Core's state time, which a pause already holds.)
+	const double Held = Out.brain != ftcore::ArenaBrain::Dead && Out.stopLeft > 0.f
+		? FMath::Min(static_cast<double>(FrameDelta), static_cast<double>(Out.stopLeft)) : 0.0;
+	if (Held > 0.0)
+	{
+		SkinSince[I] += Held;
+		HitSince[I] += Held;
+		RecoilSince[I] += Held;
+		KneelSince[I] += Held;
+		UpOwedUntil[I] += Held;
+		if (I == StoneBearerSlot)
+		{
+			StoneWalkSince += Held;
+		}
+	}
+	const float ClipDelta = FrameDelta - static_cast<float>(Held);
 	int32 Clip = Skin.Idle;
 	bool bTimed = false;  // the time is Core's, not the time since the clip began
 	bool bPhased = false; // the time is the walk's own phase (it still loops)
@@ -696,7 +720,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
 			const float Rate = FMath::Clamp(WalkSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate);
-			WalkPhase[I] = bWas ? WalkPhase[I] + static_cast<double>(FrameDelta * Rate) : 0.0;
+			WalkPhase[I] = bWas ? WalkPhase[I] + static_cast<double>(ClipDelta * Rate) : 0.0;
 			if (!bWas)
 			{
 				// Logged for the walk checks in -nullrhi runs.
@@ -900,6 +924,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		break;
 	}
+	case ftcore::ArenaBrain::Flinch: // the light hit reaction StartFlinch began on the blow, else the idle (placeholder)
 	default:
 	{
 		// Between moves: the rest of a get-up still owed, else a hit reaction while it lasts, else the stepping turn while
@@ -1007,7 +1032,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	const bool bLoop = (Row.loop || bBossLoop) && !bTimed;
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
 	const double Blend = Row.blend > 0.0 ? Row.blend : Skin.Clips->blend;
-	Figure->PlayClip(Sequence, At, bLoop, FrameDelta, bHoldRoot, static_cast<float>(Blend), Row.additiveIn);
+	Figure->PlayClip(Sequence, At, bLoop, ClipDelta, bHoldRoot, static_cast<float>(Blend), Row.additiveIn);
 }
 
 void UFTArenaRunner::PutBodiesAtStart()
@@ -1021,6 +1046,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	PrevBodies = Bodies;
 	Accumulator = 0.0;
 	Fight.tick(0.f, ftcore::ArenaInput(), Bodies);
+	PrevHeldTime = static_cast<double>(Fight.heldTime());
+	HeldDelta = 0.f;
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
 		ActiveSince[I] = -1e9;
@@ -1302,6 +1329,10 @@ void UFTArenaRunner::StepFight()
 	if (bAutoPlay)
 	{
 		In = Fight.autopilot();
+		if (bNoLock)
+		{
+			In.lock = false; // never pressed: nothing is ever locked, so attacks take soft targets
+		}
 		// The partner's press, one step after the parry (well inside the pair window).
 		In.pair = bPartnerDue;
 		bPartnerDue = false;
@@ -1360,6 +1391,7 @@ void UFTArenaRunner::StepFight()
 		StoneBearerTurnBeforeTick();
 	}
 	PrevBodies = Bodies;
+	PrevHeldTime = static_cast<double>(Fight.heldTime());
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
 	if (bBoss && StoneBearer.AfterTick(Out.events, Bodies))
@@ -1383,11 +1415,12 @@ void UFTArenaRunner::StepFight()
 	{
 		FeedKindCrits(Out.events);
 	}
-	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.time()));
+	// The lead's strike clips run on the held clock, so they stand still through its hit pauses as its action does.
+	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
 	HandleEvents(Out.events);
 	TrackParts(Out);
-	// The lead's aim: the locked enemy, else the nearest one standing, on the near side of its body at its chest; with
-	// nobody, a metre ahead at the lead's chest.
+	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
+	// side of its body at its chest; with nobody, a metre ahead at the lead's chest.
 	{
 		const FVector LeadChest = PlayerFigure ? PlayerFigure->GetChest() : ToWorld(Bodies.player) + FVector(0.0, 0.0, 130.0);
 		int32 Target = -1;
@@ -1396,6 +1429,10 @@ void UFTArenaRunner::StepFight()
 		if (Lock != ftcore::kArenaNobody && Lock < Count && Fight.enemyHp(Lock) > 0)
 		{
 			Target = Lock;
+		}
+		else if (Out.player.soft != ftcore::kArenaNobody && Out.player.soft < Count && Fight.enemyHp(Out.player.soft) > 0)
+		{
+			Target = Out.player.soft;
 		}
 		float Best = TNumericLimits<float>::Max();
 		for (int32 I = 0; Target < 0 && I < Count; ++I)
@@ -1443,7 +1480,8 @@ void UFTArenaRunner::StepFight()
 		LeadWeapons.SetActionUpper(ftcore::attackUpperShare(AttackMoveTable,
 			FMath::Sqrt(Out.player.velocity.x * Out.player.velocity.x + Out.player.velocity.y * Out.player.velocity.y)));
 	}
-	LeadWeapons.Track(Out.player, static_cast<double>(Fight.time()));
+	LeadWeapons.Track(Out.player, static_cast<double>(Fight.heldTime()));
+	LeadWeapons.HitPause(Out.player.stopLeft > 0.f);
 	if (bBoss)
 	{
 		LogStoneBearerNotes();
@@ -1867,7 +1905,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 	const ftcore::ArenaOutput& Out = Fight.output();
 	const ftcore::ArenaDef& D = Fight.def();
 	Alpha = FMath::Clamp(Alpha, 0.f, 1.f);
-	DrawnTime = FMath::Max(0.0, static_cast<double>(Fight.time()) - static_cast<double>(StepSeconds) * (1.0 - static_cast<double>(Alpha)));
+	DrawnTime = FMath::Max(0.0, FMath::Lerp(PrevHeldTime, static_cast<double>(Fight.heldTime()), static_cast<double>(Alpha)));
 
 	if (PlayerFigure)
 	{
@@ -2016,6 +2054,10 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				}
 			}
 			break;
+		case ftcore::ArenaBrain::Flinch:
+			// A placeholder until flinch clips exist: a small lean back, easing out over the flinch (it is pushed, not walking).
+			Pose.LeanBack = 7.f * FMath::Clamp(1.f - E.stateTime / FMath::Max(Kind.flinchTime, 1e-3f), 0.f, 1.f);
+			break;
 		case ftcore::ArenaBrain::Staggered:
 			Pose.LeanBack = 12.f;
 			Pose.Wobble = 9.f * FMath::Sin(static_cast<float>(Now) * 18.f);
@@ -2106,6 +2148,11 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 {
 	APlayerController* PC = GetPC();
 	if (!PC || !bBegun)
+	{
+		return;
+	}
+	// The player's hit pause holds the camera where it is (no turn, and never a pull-out: the arm is not touched).
+	if (Fight.hitStopLeft() > 0.f)
 	{
 		return;
 	}
@@ -2232,6 +2279,29 @@ void UFTArenaRunner::LogResult() const
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), UTF8_TO_TCHAR(Line));
 	}
+	LogFeatureChecks();
+}
+
+void UFTArenaRunner::LogFeatureChecks() const
+{
+	const ftcore::ArenaStats& S = Fight.stats();
+	const ftcore::ArenaFeatureChecks C = ftcore::arenaFeatureChecks(S);
+	// Only kinds that can flinch or break out can show it (a boss leaves flinchTime and breakAt at 0).
+	bool bCanFlinch = false;
+	bool bCanBreak = false;
+	for (size_t I = 0; I < Fight.enemyCount(); ++I)
+	{
+		bCanFlinch |= Fight.def().enemies[I].flinchTime > 0.f;
+		bCanBreak |= Fight.def().enemies[I].breakAt > 0;
+	}
+	const auto Verdict = [](bool bShown, bool bCan) { return !bCan ? TEXT("n/a") : (bShown ? TEXT("PASS") : TEXT("FAIL")); };
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lights free %s (%d lights, %.1f stamina)."), Verdict(C.lightsFree, true), S.lights,
+		S.lightStamina);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: cancels %s (%d)."), Verdict(C.cancels, true), S.cancels);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d)."), Verdict(C.flinch, bCanFlinch), S.flinches);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d)."), Verdict(C.breakOut, bCanBreak), S.breakOuts);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: soft target %s (%d)."), Verdict(C.softTarget, Fight.def().fighter.softRange > 0.f),
+		S.softTargets);
 }
 
 void UFTArenaRunner::Restart()

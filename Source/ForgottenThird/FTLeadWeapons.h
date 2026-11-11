@@ -168,6 +168,9 @@ struct FFTLeadWeapons
 	static constexpr float kFreezeTick = 1.f / 240.f;
 	void Freeze(double T);
 	void Thaw();
+	// The lead's hit pause: its body's clock stands still while on (Core's hitStopLeft), and is given back after. Works
+	// with Freeze/Thaw in either order.
+	void HitPause(bool bOn);
 	bool IsFrozen() const { return bFrozen; }
 
 private:
@@ -216,6 +219,8 @@ private:
 	bool bPaused[EffectCount] = {};
 	bool bFrozen = false;
 	float FrozenDilation = 1.f;
+	bool bHitPaused = false;
+	float HitPauseDilation = 1.f;
 
 	// The strike playing (Stance: none), when the clips began fading (-1: not fading), the player's last state.
 	ftcore::FightClip Strike = ftcore::FightClip::Stance;
