@@ -11,6 +11,7 @@
 #include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
 #include "FTPauseOverlay.h"
+#include "FTInputBindings.h"
 #include "FTUiText.h"
 
 #include "ftcore/Explore.h"
@@ -27,7 +28,6 @@ const FLinearColor kPanelField(0.02f, 0.02f, 0.05f, 0.6f);
 const FTUiText kTitleField(TEXT("explore.objectives"));
 const FString kTickField(TEXT("v"));
 const FString kArrowField(TEXT(">"));
-const FTUiText kHintField(TEXT("explore.hint"));
 const FTUiText kCompleteField(TEXT("explore.complete"));
 const FTUiText kWorldField(TEXT("explore.world"));
 const FTUiText kOverworldField(TEXT("explore.overworld"));
@@ -83,7 +83,7 @@ void AFTExploreHUD::DrawHUD()
 	{
 		// A map with no director (a bare world map) still shows the reticle and the controls line.
 		DrawAimReticle();
-		DrawStrCentered(kHintField, kDimField, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * UiScale, GEngine->GetSmallFont(), 1.f);
+		DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * UiScale, GEngine->GetSmallFont(), 1.f);
 		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
@@ -195,7 +195,7 @@ void AFTExploreHUD::DrawPrompt(const AFTExploreDirector& D)
 		DrawRect(kPanelField, CX - W * 0.5f - 16.f * S, Y - 8.f * S, W + 32.f * S, H + 16.f * S);
 		DrawStrCentered(Prompt, kWhiteField, CX, Y, Font, 1.2f);
 	}
-	DrawStrCentered(kHintField, kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
+	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
 }
 
 void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D)

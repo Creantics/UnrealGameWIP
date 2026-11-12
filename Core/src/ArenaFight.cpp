@@ -556,6 +556,7 @@ struct ArenaFightImpl {
         pl.move = move;
         pl.actionTime = 0.f;
         pl.hitMask = 0;
+        pl.cancelChance = false;
         emit(ArenaEventType::AttackStarted, kArenaPlayer, kArenaNobody, move, 0, pl.pos);
     }
 
@@ -836,6 +837,10 @@ struct ArenaFightImpl {
         }
         bool began = false;
         const bool inAttack = earlyCut(); // starting anything now cuts the attack before its plain cancel point
+        if (inAttack && !pl.cancelChance && (pl.buffered != Press::None || in.guard)) {
+            pl.cancelChance = true;
+            ++stats.cancelChances;
+        }
         if (pl.buffered != Press::None && canStart(pl, fi, cutOf(pl.buffered)) && startAction(pl.buffered, in)) {
             pl.buffered = Press::None;
             began = true;
@@ -1247,8 +1252,13 @@ struct ArenaFightImpl {
     void countBlow(std::size_t i) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        if (k.breakAt == 0 || !foe.flinchAllowed || !upright(foe)) return; // the host's veto bars it as it bars a flinch
+        if (k.breakAt == 0 || !upright(foe)) return;
         if (foe.brain == ArenaBrain::Attack && static_cast<int>(foe.move) == k.breakMove) return;
+        ++stats.breakUpright;
+        if (!foe.flinchAllowed) { // the host's veto bars it as it bars a flinch
+            ++stats.breakVetoed;
+            return;
+        }
         if (t1 - foe.lastBreakHit > k.breakDecay) foe.breakHits = 0;
         if (foe.breakHits < 255) ++foe.breakHits;
         foe.lastBreakHit = t1;
@@ -1266,8 +1276,10 @@ struct ArenaFightImpl {
         if (k.breakAt == 0 || !foe.flinchAllowed || foe.breakHits < k.breakAt) return false;
         ++stats.breakDue;
         foe.breakHits = 0; // spent, even when the move is barred
-        if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u)
+        if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u) {
+            ++stats.breakBarred;
             return false;
+        }
         const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
         interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back (and a read move brings its counter)
         if (!alive(i) || foe.brain != ArenaBrain::Approach) return true;
@@ -2071,6 +2083,29 @@ bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
     if (phase_ != ArenaPhase::Fighting) return false;
     return ArenaFightImpl(*this).hostBlow(enemy, damage, move);
 }
+bool ArenaFight::ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move, ArenaBlowHook hook, void* user) {
+    if (phase_ != ArenaPhase::Fighting) return false;
+    ArenaFightImpl impl(*this);
+    if (!hook || !impl.alive(enemy) || damage <= 0) return impl.hostBlow(enemy, damage, move);
+    ArenaBlow b;
+    b.type = ArenaEventType::HostHit;
+    b.source = kArenaPlayer;
+    b.target = static_cast<std::uint8_t>(enemy);
+    b.move = move;
+    b.damage = damage;
+    b.poise = 0.f;
+    b.from = player_.pos;
+    b.facing = player_.facing;
+    b.at = enemy_[enemy].pos;
+    b.time = time_;
+    const bool wasIn = inHook_.on;
+    inHook_.on = true;
+    const ArenaBlowRuling r = hook(user, b);
+    inHook_.on = wasIn;
+    if (r.veto || phase_ != ArenaPhase::Fighting) return false;
+    const int scaled = ArenaFightImpl::scaledDamage(damage, r.damage);
+    return scaled > 0 && impl.hostBlow(enemy, scaled, move);
+}
 int ArenaFight::giveLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting) return 0;
     return ArenaFightImpl(*this).giveLoad(amount);
@@ -2283,7 +2318,30 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.breakOutDue = stats.breakDue > 0;
     c.softTarget = stats.softTargets > 0;
     c.shots = stats.shotHits > 0;
+    const auto verdict = [](bool can, bool shown) {
+        return !can ? ArenaCheck::NotShown : (shown ? ArenaCheck::Pass : ArenaCheck::Fail);
+    };
+    c.lightsFreeCheck = verdict(stats.lights > 0, c.lightsFree);
+    c.cancelsCheck = verdict(stats.cancelChances > 0 || stats.cancels > 0, c.cancels);
+    if (stats.breakOuts > 0)
+        c.breakOutCheck = ArenaCheck::Pass;
+    else if (stats.breakDue > stats.breakBarred)
+        c.breakOutCheck = ArenaCheck::Fail; // due, the move free, and still none
+    else if (stats.breakBarred > 0 || (stats.breakUpright > 0 && stats.breakVetoed == stats.breakUpright))
+        c.breakOutCheck = ArenaCheck::Barred;
+    else if (stats.breakUpright > 0 && stats.breakRunBest == 0)
+        c.breakOutCheck = ArenaCheck::Fail; // blows landed upright and the run never moved
     return c;
+}
+
+const char* arenaCheckText(ArenaCheck c) {
+    switch (c) {
+    case ArenaCheck::Pass: return "PASS";
+    case ArenaCheck::Fail: return "FAIL";
+    case ArenaCheck::Barred: return "barred";
+    case ArenaCheck::NotShown: break;
+    }
+    return "n/a";
 }
 
 ArenaRing arenaRingAt(Vec2 playerPos, Vec2 facing, float radius, const ArenaRing& bounds) {

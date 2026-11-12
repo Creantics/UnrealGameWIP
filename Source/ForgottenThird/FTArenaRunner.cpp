@@ -1308,19 +1308,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.aimSpeed = ArenaAim.speedScale();
 	// Attacking on the move: every attack under way (as the last step left it) walks and turns by its rules, none
 	// roots: a light by the light's numbers, a heavy, a riposte and a Release by the heavy's.
-	const ftcore::ArenaPlayerOut& Last = Fight.output().player;
-	const bool bLightNow = Last.action == ftcore::ArenaAction::Light;
-	if (bLightNow || Last.action == ftcore::ArenaAction::Heavy || Last.action == ftcore::ArenaAction::Riposte
-		|| Last.action == ftcore::ArenaAction::Release)
-	{
-		if (const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Def.fighter, Last.move))
-		{
-			const ftcore::AttackMoveOut Move = ftcore::attackMove(AttackMoveTable, ftcore::aimKindOfMove(Def.fighter, Last.move),
-				!bLightNow, *Attack, Last.actionTime);
-			In.attackSpeed = Move.speedScale;
-			In.attackTurn = Move.turnRate;
-		}
-	}
+	ftcore::attackMoveInput(AttackMoveTable, Fight, In);
 	// Each press goes to one step.
 	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = false;
 	PressSwitch = 0;
@@ -1357,7 +1345,7 @@ void UFTArenaRunner::HoldPausedEnemies()
 }
 
 // The fight session's lead slot for the look the player's figure wears: Devin fills kLeadA and Duy kLeadB (the
-// story's two sides); any other look, or none (the test human), stands in as kLeadA.
+// session's two lead slots); any other look, or none (the test human), stands in as kLeadA.
 uint8 UFTArenaRunner::SessionLeadOf(const FFTLeadLook* Look)
 {
 	return Look && Look->Name.Equals(TEXT("Duy"), ESearchCase::IgnoreCase) ? ftcore::kLeadB : ftcore::kLeadA;
@@ -1383,15 +1371,28 @@ void UFTArenaRunner::BeginSession()
 	if (Session)
 	{
 		Session->Begin(ftcore::FightSessionDef{}, static_cast<double>(SessionHeld));
-		// The game instance's story state takes the session's story writes (bound again after every Begin).
+		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
+		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
 		const UWorld* World = GetWorld();
-		if (UGameInstance* Instance = World ? World->GetGameInstance() : nullptr)
+		UFTGameInstance* Instance = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+		ftcore::FightHandOff HandOff;
+		if (Instance)
 		{
-			if (UFTStoryStateSubsystem* Story = Instance->GetSubsystem<UFTStoryStateSubsystem>())
-			{
-				Story->BindFightSession(Session);
-			}
+			HandOff.fromStory = Instance->StoryCarry.bValid;
+			HandOff.settled = Instance->StoryCarry.bDone;
+			HandOff.kind = Instance->StoryCarry.Combat;
 		}
+		const bool bStory = ftcore::fightTakesStory(HandOff, ftcore::CombatKind::Arena);
+		UFTStoryStateSubsystem* Story = Instance ? Instance->GetSubsystem<UFTStoryStateSubsystem>() : nullptr;
+		if (Story && bStory)
+		{
+			Story->BindFightSession(Session);
+		}
+		else
+		{
+			Session->BindStory(nullptr, nullptr);
+		}
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: fight session story %s"), bStory && Story ? TEXT("bound") : TEXT("unbound"));
 	}
 }
 
@@ -1468,7 +1469,7 @@ void UFTArenaRunner::InstallSessionHook()
 
 // After the step: under -ArenaSharedCount the scripted partner joins the window a lead's blow waits in; then the
 // session moves by what the held clock moved (0 through a hit pause, so hit-stop is never subtracted twice), and each
-// held blow that settled above x1 adds its extra damage through hostBlow (reported with the next step).
+// held blow that settled above x1 adds its extra damage through ruledHostBlow (reported with the next step).
 void UFTArenaRunner::FeedSession()
 {
 	if (!Session)
@@ -1489,7 +1490,9 @@ void UFTArenaRunner::FeedSession()
 	SessionHeld = Held;
 	for (const ftcore::HeldBonus& Bonus : Tick.bonuses)
 	{
-		if (Fight.hostBlow(Bonus.enemy, Bonus.extraDamage, Bonus.move))
+		// Ruled as a blow by the sub-hosts' hook (a boss gone invulnerable or a vetoing phase takes none), not by the
+		// session's own judge, which already judged it.
+		if (Fight.ruledHostBlow(Bonus.enemy, Bonus.extraDamage, Bonus.move, SessionInnerHook, SessionInnerUser))
 		{
 			++SessionBonuses;
 			SessionBonusDamage += Bonus.extraDamage;
@@ -1506,6 +1509,8 @@ void UFTArenaRunner::StepFight()
 	if (bAutoPlay)
 	{
 		In = Fight.autopilot();
+		// Attacks walk and turn by the same rules as the player's, so an unattended check runs what a player gets.
+		ftcore::attackMoveInput(AttackMoveTable, Fight, In);
 		if (bNoLock)
 		{
 			In.lock = false; // never pressed: nothing is ever locked, so attacks take soft targets
@@ -2466,23 +2471,23 @@ void UFTArenaRunner::LogFeatureChecks() const
 {
 	const ftcore::ArenaStats& S = Fight.stats();
 	const ftcore::ArenaFeatureChecks C = ftcore::arenaFeatureChecks(S);
-	// Only kinds that can flinch or break out can show it (a boss leaves flinchTime and breakAt at 0).
+	// Only kinds that can flinch can show it (a boss leaves flinchTime at 0).
 	bool bCanFlinch = false;
-	bool bCanBreak = false;
 	for (size_t I = 0; I < Fight.enemyCount(); ++I)
 	{
 		bCanFlinch |= Fight.def().enemies[I].flinchTime > 0.f;
-		bCanBreak |= Fight.def().enemies[I].breakAt > 0;
 	}
+	const auto Text = [](ftcore::ArenaCheck Check) { return FT::ToFString(ftcore::arenaCheckText(Check)); };
 	const auto Verdict = [](bool bShown, bool bCan) { return !bCan ? TEXT("n/a") : (bShown ? TEXT("PASS") : TEXT("FAIL")); };
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lights free %s (%d lights, %.1f stamina)."), Verdict(C.lightsFree, true), S.lights,
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lights free %s (%d lights, %.1f stamina)."), *Text(C.lightsFreeCheck), S.lights,
 		S.lightStamina);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: cancels %s (%d)."), Verdict(C.cancels, true), S.cancels);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: cancels %s (%d of %d chances)."), *Text(C.cancelsCheck), S.cancels,
+		S.cancelChances);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d)."), Verdict(C.flinch, bCanFlinch), S.flinches);
-	// A break-out can show only once a blow brings an upright enemy's count to its breakAt without staggering it:
-	// a fight where poise always breaks first is n/a, with its best run as the evidence.
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d; best run %d of %d)."),
-		Verdict(C.breakOut, bCanBreak && (C.breakOut || C.breakOutDue)), S.breakOuts, S.breakRunBest, S.breakRunNeed);
+	// Break-out (ftcore::arenaFeatureChecks): FAIL when upright blows landed and the run never moved or it was due
+	// and free; barred when a mask or the host barred it; n/a when poise always broke first.
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d; due %d, barred %d; %d upright blows; best run %d of %d)."),
+		*Text(C.breakOutCheck), S.breakOuts, S.breakDue, S.breakBarred, S.breakUpright, S.breakRunBest, S.breakRunNeed);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: soft target %s (%d)."), Verdict(C.softTarget, Fight.def().fighter.softRange > 0.f),
 		S.softTargets);
 	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).

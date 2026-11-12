@@ -592,7 +592,7 @@ FString AFTArenaGameMode::WantedLead() const
 	Want = Want.TrimStartAndEnd();
 	if (!Want.IsEmpty() && !IsPlayable(Want))
 	{
-		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s has no attacks and can't be the lead; using the first who has."), *Want);
+		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a support slot with no attack kit and can't be the lead; using the first who has attacks."), *Want);
 		bLeadWarned = true;
 		Want.Reset();
 	}

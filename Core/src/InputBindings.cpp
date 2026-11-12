@@ -2,6 +2,9 @@
 
 #include "ftcore/Json.h"
 
+#include <algorithm>
+#include <iterator>
+
 namespace ftcore {
 
 namespace {
@@ -261,6 +264,10 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
     }
     std::string why;
     if (!validateInputBindings(b, &why)) return fail("bindings: " + why);
+    // An override may unbind a key, not an action: every action keeps a key or a route on both devices.
+    InputAction missing{};
+    if (!inputAllReachable(b, &missing))
+        return fail(std::string("bindings: ") + inputActionKey(missing) + " has no key or route on one device");
     out = b;
     return true;
 }
@@ -295,6 +302,133 @@ std::string encodeInputBindings(const InputBindings& b) {
     }
     s += "}}";
     return s;
+}
+
+// ---- controls lines ----
+
+namespace {
+
+using A = InputAction;
+constexpr InputHintEntry kArenaHint[] = {
+    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move"},
+    {{A::Light}, 1, "input.light"},
+    {{A::Aim}, 1, "input.aim"},
+    {{A::Guard}, 1, "input.guard"},
+    {{A::Roll}, 1, "input.dodge"},
+    {{A::Gift}, 1, "input.heal"},
+    {{A::Release}, 1, "input.release"},
+    {{A::Count}, 1, "input.count"},
+    {{A::Read}, 1, "input.read"},
+    {{A::LockOn}, 1, "input.lock"},
+    {{A::TargetPrev, A::TargetNext}, 2, "input.switch"},
+    {{A::Intercept}, 1, "input.intercept"},
+};
+constexpr InputHintEntry kFieldHint[] = {
+    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move"},
+    {{A::Run}, 1, "input.run"},
+    {{A::Jump}, 1, "input.jump"},
+    {{A::Light}, 1, "input.light"},
+    {{A::Aim}, 1, "input.aim"},
+    {{A::Interact}, 1, "input.use"},
+    {{A::SwitchLead}, 1, "input.lead"},
+    {{A::Party}, 1, "input.party"},
+    {{A::Map}, 1, "input.map"},
+};
+
+struct KeyLabel {
+    const char* key;
+    const char* label;
+};
+constexpr KeyLabel kKeyLabels[] = {
+    {"LeftMouseButton", "LMB"}, {"RightMouseButton", "RMB"}, {"MiddleMouseButton", "MMB"},
+    {"ThumbMouseButton", "Mouse 4"}, {"ThumbMouseButton2", "Mouse 5"}, {"MouseScrollUp", "Wheel up"},
+    {"MouseScrollDown", "Wheel down"}, {"LeftControl", "Ctrl"}, {"RightControl", "Right Ctrl"}, {"LeftShift", "Shift"},
+    {"RightShift", "Right Shift"}, {"LeftAlt", "Alt"}, {"RightAlt", "Right Alt"}, {"SpaceBar", "Space"},
+    {"Escape", "Esc"}, {"Enter", "Enter"}, {"BackSpace", "Backspace"}, {"CapsLock", "Caps"},
+    {"Zero", "0"}, {"One", "1"}, {"Two", "2"}, {"Three", "3"}, {"Four", "4"}, {"Five", "5"}, {"Six", "6"},
+    {"Seven", "7"}, {"Eight", "8"}, {"Nine", "9"}, {"Up", "Up"}, {"Down", "Down"}, {"Left", "Left"}, {"Right", "Right"},
+    {"Gamepad_RightTrigger", "RT"}, {"Gamepad_LeftTrigger", "LT"}, {"Gamepad_RightShoulder", "RB"},
+    {"Gamepad_LeftShoulder", "LB"}, {"Gamepad_FaceButton_Bottom", "A"}, {"Gamepad_FaceButton_Right", "B"},
+    {"Gamepad_FaceButton_Left", "X"}, {"Gamepad_FaceButton_Top", "Y"}, {"Gamepad_DPad_Up", "D-pad up"},
+    {"Gamepad_DPad_Down", "D-pad down"}, {"Gamepad_DPad_Left", "D-pad left"}, {"Gamepad_DPad_Right", "D-pad right"},
+    {"Gamepad_LeftThumbstick", "LS click"}, {"Gamepad_RightThumbstick", "RS click"}, {"Gamepad_Special_Left", "View"},
+    {"Gamepad_Special_Right", "Menu"}, {"Gamepad_LeftStick_Up", "LS up"}, {"Gamepad_LeftStick_Down", "LS down"},
+    {"Gamepad_LeftStick_Left", "LS left"}, {"Gamepad_LeftStick_Right", "LS right"}, {"Gamepad_RightStick_Up", "RS up"},
+    {"Gamepad_RightStick_Down", "RS down"}, {"Gamepad_RightStick_Left", "RS left"}, {"Gamepad_RightStick_Right", "RS right"},
+};
+
+void addPiece(std::string& keys, std::string_view piece) {
+    if (piece.empty()) return;
+    // Each piece once ("RS flick" for both target switches).
+    std::size_t at = 0;
+    while (at <= keys.size()) {
+        const std::size_t end = std::min(keys.find('/', at), keys.size());
+        if (std::string_view(keys).substr(at, end - at) == piece) return;
+        at = end + 1;
+    }
+    if (!keys.empty()) keys += '/';
+    keys += piece;
+}
+
+} // namespace
+
+std::size_t inputHintEntries(InputHintScreen screen, const InputHintEntry*& out) {
+    if (screen == InputHintScreen::Field) {
+        out = kFieldHint;
+        return std::size(kFieldHint);
+    }
+    out = kArenaHint;
+    return std::size(kArenaHint);
+}
+
+std::string_view inputKeyLabel(std::string_view key) {
+    for (const KeyLabel& k : kKeyLabels)
+        if (key == k.key) return k.label;
+    return key; // letters and anything unlisted show as the engine names them
+}
+
+std::string_view inputRouteLabel(std::string_view route) {
+    if (route == "left_stick") return "LS";
+    if (route == "left_stick_full") return "LS full";
+    if (route == "mouse_flick") return "Mouse flick";
+    if (route == "right_stick_flick") return "RS flick";
+    return std::string_view();
+}
+
+std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d) {
+    std::string keys;
+    for (std::uint8_t i = 0; i < e.count && i < e.actions.size(); ++i) {
+        const InputAction a = e.actions[i];
+        const InputKeyName& n = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(a) % kInputActionCount];
+        if (!n.empty()) {
+            addPiece(keys, inputKeyLabel(n.view()));
+            continue;
+        }
+        const char* route = inputActionRoute(a, d);
+        if (!route) continue;
+        if (std::string_view(route) == "map_hold") {
+            const InputKeyName& map = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(InputAction::Map)];
+            if (!map.empty()) addPiece(keys, std::string(kInputHoldPrefix) + std::string(inputKeyLabel(map.view())));
+            continue;
+        }
+        addPiece(keys, inputRouteLabel(route));
+    }
+    return keys;
+}
+
+std::string inputHintLine(const InputBindings& b, InputHintScreen screen, InputDevice d, InputHintText text, void* user) {
+    const InputHintEntry* entries = nullptr;
+    const std::size_t count = inputHintEntries(screen, entries);
+    std::string line;
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::string keys = inputHintKeys(b, entries[i], d);
+        if (keys.empty()) continue; // nothing reaches it on this device: the line names no key for it
+        if (!line.empty()) line += "  ";
+        line += keys;
+        line += ' ';
+        line += text ? text(entries[i].label, user) : std::string(entries[i].label);
+    }
+    return line;
 }
 
 } // namespace ftcore

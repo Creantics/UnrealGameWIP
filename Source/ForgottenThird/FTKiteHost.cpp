@@ -104,7 +104,8 @@ FFTKiteNote& FFTKiteHost::Note(FFTKiteNote::EKind Kind, double At)
 ftcore::ArenaBlowRuling FFTKiteHost::RuleBlow(void* User, const ftcore::ArenaBlow& Blow)
 {
 	FFTKiteHost* Host = static_cast<FFTKiteHost*>(User);
-	if (Host && Host->IsActive() && Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer)
+	// A held blow's bonus (HostHit) is not a hit: no crit judged, none noted.
+	if (Host && Host->IsActive() && Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer && Blow.type != ftcore::ArenaEventType::HostHit)
 	{
 		return Host->RuleLeadBlow(Blow);
 	}

@@ -3,6 +3,8 @@
 #include <doctest/doctest.h>
 
 #include <ostream>
+#include <algorithm>
+#include <cstdint>
 #include <string>
 
 using namespace ftcore;
@@ -88,13 +90,29 @@ TEST_CASE("input bindings: a bad file is refused whole and changes nothing") {
     }
 }
 
-TEST_CASE("input bindings: a key may be shared across contexts, and unbinding is allowed") {
+TEST_CASE("input bindings: a key may be shared across contexts, and unbinding is allowed where a route remains") {
     InputBindings b = defaultInputBindings();
     // W moves on foot and steps the lines while Read is held: two contexts, no clash.
     CHECK(std::string(inputKey(b, InputAction::LinePrev, InputDevice::Keys)) == "W");
     std::string error;
-    CHECK(importInputBindings(R"({"version": 1, "keys": {"read_pick_1": "E"}, "pad": {"guard": ""}})", b, &error));
-    CHECK(b.keys[1][static_cast<std::size_t>(InputAction::Guard)].empty());
+    // Party keeps its map-hold route on the keyboard.
+    CHECK(importInputBindings(R"({"version": 1, "keys": {"read_pick_1": "E", "party": ""}})", b, &error));
+    CHECK(b.keys[0][static_cast<std::size_t>(InputAction::Party)].empty());
+}
+
+TEST_CASE("input bindings: an override that leaves an action unreachable is refused whole") {
+    for (const char* text : {R"({"version": 1, "keys": {"read_pick_1": "E"}, "pad": {"guard": ""}})",
+                             R"({"version": 1, "keys": {"pause": ""}})", R"({"version": 1, "pad": {"pause": ""}})",
+                             R"({"version": 1, "keys": {"move_forward": ""}})", R"({"version": 1, "keys": {"light": ""}})",
+                             R"({"version": 1, "pad": {"light": ""}})", R"({"version": 1, "pad": {"map": ""}})"}) {
+        CAPTURE(text);
+        InputBindings b = defaultInputBindings();
+        const std::string before = encodeInputBindings(b);
+        std::string error;
+        CHECK_FALSE(importInputBindings(text, b, &error));
+        CHECK(error.find("no key or route") != std::string::npos);
+        CHECK(encodeInputBindings(b) == before); // nothing of it taken, read_pick_1 included
+    }
 }
 
 TEST_CASE("input bindings: rebinding onto a used key swaps the two") {
@@ -183,4 +201,104 @@ TEST_CASE("input bindings: a Read-held key may not sit on Read's or Guard's key"
     std::string error;
     CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"read_pick_2": "Q"}})", b, &error));
     CHECK(error.find("read") != std::string::npos);
+}
+
+namespace {
+// True when every '/'-separated piece of an entry's keys is a key the table holds on that device for one of the
+// entry's actions (its short label), or the route an unbound one of them has.
+bool piecesFromTable(const InputBindings& b, const InputHintEntry& e, InputDevice d, const std::string& keys) {
+    if (keys.empty()) return true;
+    std::size_t at = 0;
+    while (at <= keys.size()) {
+        const std::size_t end = std::min(keys.find('/', at), keys.size());
+        const std::string piece = keys.substr(at, end - at);
+        bool found = false;
+        for (std::uint8_t i = 0; i < e.count; ++i) {
+            const InputAction a = e.actions[i];
+            const InputKeyName& n = b.keys[static_cast<std::size_t>(d)][static_cast<std::size_t>(a)];
+            if (!n.empty()) {
+                found = found || piece == inputKeyLabel(n.view());
+                continue;
+            }
+            const char* route = inputActionRoute(a, d);
+            if (!route) continue;
+            const InputKeyName& map = b.keys[static_cast<std::size_t>(d)][static_cast<std::size_t>(InputAction::Map)];
+            found = found || piece == inputRouteLabel(route) ||
+                    (std::string(route) == "map_hold" && !map.empty() &&
+                     piece == std::string(kInputHoldPrefix) + std::string(inputKeyLabel(map.view())));
+        }
+        if (!found) return false;
+        at = end + 1;
+    }
+    return true;
+}
+
+void checkLines(const InputBindings& b) {
+    for (const InputHintScreen screen : {InputHintScreen::Arena, InputHintScreen::Field})
+        for (const InputDevice d : {InputDevice::Keys, InputDevice::Pad}) {
+            CAPTURE(static_cast<int>(screen));
+            CAPTURE(static_cast<int>(d));
+            const InputHintEntry* entries = nullptr;
+            const std::size_t n = inputHintEntries(screen, entries);
+            REQUIRE(n > 0);
+            std::string expected;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::string keys = inputHintKeys(b, entries[i], d);
+                CAPTURE(entries[i].label);
+                CAPTURE(keys);
+                CHECK(piecesFromTable(b, entries[i], d, keys));
+                if (keys.empty()) continue;
+                if (!expected.empty()) expected += "  ";
+                expected += keys + " " + entries[i].label;
+            }
+            // The line is exactly those entries: nothing else in it can name a key.
+            CHECK(inputHintLine(b, screen, d, nullptr) == expected);
+        }
+}
+} // namespace
+
+TEST_CASE("input hints: the arena's and the field's lines name only keys the table holds, on each device") {
+    const InputBindings b = defaultInputBindings();
+    checkLines(b);
+    CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) ==
+          "W/A/S/D input.move  LMB input.light  RMB input.aim  Ctrl input.guard  Alt input.dodge  G input.heal  "
+          "R input.release  F input.count  Q input.read  MMB input.lock  Mouse flick input.switch  V input.intercept");
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
+          "LS input.move  LS full input.run  A input.jump  RT input.light  LT input.aim  X input.use  D-pad right input.lead  "
+          "Hold View input.party  View input.map");
+    // None of the retired keys shows on the keyboard lines.
+    const std::string keys = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) + "  " +
+                             inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr);
+    for (const char* old : {"J ", "K ", "I/", "L/", "H ", "U ", "Q/E", "LMB/J"}) {
+        CAPTURE(old);
+        CHECK(keys.find(old) == std::string::npos);
+    }
+}
+
+TEST_CASE("input hints: the lines follow a rebind and leave out what nothing reaches") {
+    InputBindings b = defaultInputBindings();
+    REQUIRE(rebindInput(b, InputAction::Guard, InputDevice::Keys, "K"));
+    REQUIRE(rebindInput(b, InputAction::TargetNext, InputDevice::Keys, "X"));
+    REQUIRE(rebindInput(b, InputAction::Gift, InputDevice::Keys, ""));
+    REQUIRE(rebindInput(b, InputAction::Jump, InputDevice::Pad, "Gamepad_FaceButton_Top")); // swaps with Count
+    checkLines(b);
+    const std::string arena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr);
+    CHECK(arena.find("K input.guard") != std::string::npos);
+    CHECK(arena.find("Ctrl") == std::string::npos);
+    CHECK(arena.find("Mouse flick/X input.switch") != std::string::npos);
+    CHECK(arena.find("input.heal") == std::string::npos); // unbound, no route: left out
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr).find("Y input.jump") != std::string::npos);
+    CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr).find("A input.count") != std::string::npos);
+    // The host's words come through the callback.
+    const auto word = [](const char* key, void*) { return std::string("<") + key + ">"; };
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, +word).find("Space <input.jump>") != std::string::npos);
+}
+
+TEST_CASE("input hints: key labels") {
+    CHECK(inputKeyLabel("LeftMouseButton") == "LMB");
+    CHECK(inputKeyLabel("Gamepad_FaceButton_Bottom") == "A");
+    CHECK(inputKeyLabel("SpaceBar") == "Space");
+    CHECK(inputKeyLabel("Z") == "Z");
+    CHECK(inputRouteLabel("right_stick_flick") == "RS flick");
+    CHECK(inputRouteLabel("map_hold").empty());
 }

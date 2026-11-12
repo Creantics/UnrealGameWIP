@@ -1,5 +1,6 @@
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaZone.h" // the host mirror fits the demo's zone
+#include "ftcore/AttackMove.h" // the host mirror walks and turns through attacks
 #include "ftcore/BeatChoreo.h" // the skinned boss's clip table
 #include "ftcore/ComboSequence.h" // comboSequencesBuilt: the fence test
 #include "ftcore/FightSession.h" // the host mirror's shared count
@@ -6270,6 +6271,9 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
     ArenaZoneFit fit;
     REQUIRE_MESSAGE(fitArenaZone(*spec, nullptr, def, fit, &err), err);
     fit.apply(def);
+    if (!ftcore_test::readProjectData("Battle/attack_move.json", text)) FAIL("Data/Battle/attack_move.json not found");
+    AttackMoveRules moves;
+    REQUIRE_MESSAGE(importAttackMoveRules(text, moves, &err), err);
     ArenaFight fight;
     fight.setAutopilotShoots(shoots);
     fight.begin(def, fit.ring, fit.playerStart, fit.playerFacing, seed);
@@ -6286,6 +6290,7 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
     bool partnerDue = false;
     for (int i = 0; i < 20000 && !fight.over(); ++i) {
         ArenaInput in = fight.autopilot();
+        attackMoveInput(moves, fight, in); // as the host does for the autopilot and the player alike
         in.lock = false;
         in.pair = partnerDue;
         partnerDue = false;
@@ -6306,7 +6311,7 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
         const FightTick& st = rig.session.tick(std::max(0.f, fight.heldTime() - sessionHeld));
         sessionHeld = fight.heldTime();
         for (const HeldBonus& b : st.bonuses)
-            if (fight.hostBlow(b.enemy, b.extraDamage, b.move)) {
+            if (fight.ruledHostBlow(b.enemy, b.extraDamage, b.move, nullptr, nullptr)) { // the host passes its sub-hosts' rulings
                 ++r.bonuses;
                 r.bonusDamage += b.extraDamage;
             }
@@ -6330,11 +6335,11 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
     // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 19.3 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 82/150, 24 hits, 2 taken, 0 blocks, 3 parries, 0 ripostes, 2 evades, 0 guard breaks, "
-          "4 staggers, 0 heals, 0 releases, 0 overloads, 5/7 reads right, dealt 520, took 68, 0 restarts.");
+          "Arena: VICTORY at standalone beat 0 step 0 after 22.6 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 93/150, 26 hits, 3 taken, 0 blocks, 2 parries, 0 ripostes, 3 evades, 0 guard breaks, "
+          "4 staggers, 1 heals, 0 releases, 0 overloads, 5/6 reads right, dealt 520, took 102, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
-    CHECK(r.hitsOn[1] == 19);
+    CHECK(r.hitsOn[1] == 21);
     // The best run is the skirmisher's 2 of 2: Devin's 2nd blow reaches its breakAt and breaks its poise with it.
     CHECK(r.stats.breakRunBest == 2);
     CHECK(r.stats.breakRunNeed == 2);
@@ -6354,26 +6359,33 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-
         CHECK(r.stats.breakOuts == 0);
         CHECK(r.stats.breakDue == 0);
         CHECK_FALSE(arenaFeatureChecks(r.stats).breakOutDue);
+        CHECK(r.stats.breakUpright > 0); // the run moved (2 of 2), so n/a, not FAIL
+        CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::NotShown);
     }
 }
 
 TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
     // The headless -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoShoot line: his shots and light string leave
-    // an enemy upright at its breakAt, so it breaks out. Unaimed, the autopilot's parries cut his runs short (n/a).
+    // an enemy upright at its breakAt, so it breaks out (once a fight, with his attacks unrooted). Unaimed, the
+    // autopilot's parries cut his runs short (n/a).
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true);
         CAPTURE(seed);
         CHECK(r.phase == ArenaPhase::Victory);
-        CHECK(r.stats.breakOuts >= 3);
+        CHECK(r.stats.breakOuts >= 1);
         const ArenaFeatureChecks c = arenaFeatureChecks(r.stats);
         CHECK(c.breakOutDue);
         CHECK(c.breakOut);
+        CHECK(c.breakOutCheck == ArenaCheck::Pass);
+        const HostRun plain = hostRun({"skirmisher", "hulk"}, "duy", seed);
+        CHECK(arenaFeatureChecks(plain.stats).breakOutCheck == ArenaCheck::NotShown);
     }
 }
 
-TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out on Duy only") {
-    // The demo's feature check lines read arenaFeatureChecks over this fight. Devin staggers both kinds before their
-    // breakAt (break-out n/a); Duy leaves them upright, so they break out on him.
+TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out always on Duy") {
+    // The demo's feature check lines read arenaFeatureChecks over this fight. Duy leaves both kinds upright, so they
+    // break out on him every seed; Devin's string, unrooted, staggers first on some seeds (n/a) and not on others.
+    int devinBreaks = 0;
     for (const char* kit : {"devin", "duy"})
         for (std::uint32_t seed = 1; seed <= 12; ++seed) {
             const HostRun r = hostRun({"duelist", "skirmisher"}, kit, seed);
@@ -6385,12 +6397,16 @@ TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the bre
             CHECK(c.lightsFree);
             CHECK(c.cancels);
             CHECK(c.softTarget);
-            CHECK(c.breakOutDue == !devin);
-            CHECK(c.breakOut == !devin);
+            CHECK(c.lightsFreeCheck == ArenaCheck::Pass);
+            CHECK(c.cancelsCheck == ArenaCheck::Pass);
+            CHECK(c.breakOutCheck != ArenaCheck::Fail);
+            if (!devin) CHECK(c.breakOutCheck == ArenaCheck::Pass);
+            devinBreaks += devin && c.breakOut ? 1 : 0;
         }
+    CHECK(devinBreaks == 8); // seeds 1, 2, 5, 7-11
 }
 
-TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and break out on Duy only") {
+TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and always break out on Duy") {
     for (const char* kit : {"devin", "duy"})
         for (const bool shoots : {false, true})
             for (std::uint32_t seed = 1; seed <= 8; ++seed) {
@@ -6400,7 +6416,7 @@ TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and b
                 CAPTURE(seed);
                 CHECK(r.phase == ArenaPhase::Victory);
                 CHECK(r.stats.flinches > 0);
-                CHECK((r.stats.breakOuts > 0) == (std::string_view(kit) == "duy"));
+                if (std::string_view(kit) == "duy") CHECK(r.stats.breakOuts > 0);
             }
 }
 
@@ -6420,6 +6436,44 @@ TEST_CASE("arena feature checks: each verdict reads its own counter") {
     CHECK_FALSE(c.breakOutDue);
     s.breakDue = 1;
     CHECK(arenaFeatureChecks(s).breakOutDue);
+}
+
+TEST_CASE("arena feature checks: verdicts read n/a without a chance, FAIL or barred with one") {
+    ArenaStats s; // an idle run, or a kit with no attacks
+    ArenaFeatureChecks c = arenaFeatureChecks(s);
+    CHECK(c.lightsFreeCheck == ArenaCheck::NotShown);
+    CHECK(c.cancelsCheck == ArenaCheck::NotShown);
+    CHECK(c.breakOutCheck == ArenaCheck::NotShown);
+    CHECK(std::string(arenaCheckText(c.breakOutCheck)) == "n/a");
+    s.lights = 2;
+    s.lightStamina = 1.f;
+    s.cancelChances = 3;
+    c = arenaFeatureChecks(s);
+    CHECK(c.lightsFreeCheck == ArenaCheck::Fail);
+    CHECK(c.cancelsCheck == ArenaCheck::Fail);
+    s.cancels = 1;
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::Pass);
+    // Upright blows landed and the run never moved: FAIL, not n/a.
+    s.breakUpright = 4;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Fail);
+    // Every one vetoed by the host: barred.
+    s.breakVetoed = 4;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Barred);
+    // The run moved, poise always broke first: n/a.
+    s.breakVetoed = 0;
+    s.breakRunBest = 2;
+    s.breakRunNeed = 4;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::NotShown);
+    // Due, the move barred by a mask: barred, not FAIL.
+    s.breakDue = 1;
+    s.breakBarred = 1;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Barred);
+    CHECK(std::string(arenaCheckText(ArenaCheck::Barred)) == "barred");
+    // Due and free, none: FAIL.
+    s.breakDue = 2;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Fail);
+    s.breakOuts = 1;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Pass);
 }
 
 // ---- the autopilot's shots (opt in) ----
@@ -6543,22 +6597,96 @@ TEST_CASE("arena hostBlow: damage from outside a blow, reported with the next ti
     CHECK_FALSE(fight.hostBlow(1, 5, 3)); // outside Fighting
 }
 
+namespace {
+// A boss phase as a sub-host rules it: every blow on the boss vetoed while it is invulnerable, else scaled.
+struct PhaseRule {
+    bool invulnerable = false;
+    float scale = 1.f;
+    int calls = 0;
+    ArenaBlow last;
+    static ArenaBlowRuling rule(void* user, const ArenaBlow& blow) {
+        PhaseRule& p = *static_cast<PhaseRule*>(user);
+        ++p.calls;
+        p.last = blow;
+        ArenaBlowRuling r;
+        r.veto = p.invulnerable;
+        r.damage = p.scale;
+        return r;
+    }
+};
+} // namespace
+
+TEST_CASE("arena ruledHostBlow: a held blow's bonus is ruled like a blow, so a boss gone invulnerable before the settle takes none") {
+    ArenaDef def = defaultArenaDef();
+    const ArenaRing ring{Vec2{0.f, 0.f}, 12.f};
+    ArenaFight fight;
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    bodies.enemies[0] = fight.enemyStart(0);
+    const ArenaInput idle;
+    fight.tick(kDt, idle, bodies);
+
+    // The session holds a blow on the count; the partner joins, and the settle pays a bonus on a later tick.
+    FightSession session;
+    REQUIRE(session.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(session.callCount(kLeadA) == CountError::None);
+    for (int i = 0; i < 2000 && !session.strikeCount().open(session.now()); ++i) session.tick(kDt);
+    REQUIRE(session.strikeCount().open(session.now()));
+    REQUIRE(session.judgeHeldBlow(kLeadA, 0, 10, 2).outcome == CountOutcome::Held);
+    // The boss turns invulnerable between the landing and the settle.
+    PhaseRule phase;
+    phase.invulnerable = true;
+    REQUIRE(session.judgeBlow(kLeadB).outcome == CountOutcome::OnCount);
+    const FightTick& t = session.tick(kDt);
+    REQUIRE(t.bonuses.size() == 1);
+    const HeldBonus bonus = t.bonuses[0];
+    REQUIRE(bonus.extraDamage > 0);
+    const int hp0 = fight.enemyHp(0);
+    CHECK_FALSE(fight.ruledHostBlow(bonus.enemy, bonus.extraDamage, bonus.move, &PhaseRule::rule, &phase));
+    CHECK(phase.calls == 1); // asked once, as a blow
+    CHECK(phase.last.type == ArenaEventType::HostHit); // a bonus, not a hit: sub-hosts count nothing for it
+    CHECK(phase.last.source == kArenaPlayer);
+    CHECK(phase.last.target == 0);
+    CHECK(phase.last.damage == bonus.extraDamage);
+    CHECK(phase.last.poise == 0.f);
+    CHECK(fight.enemyHp(0) == hp0);
+    CHECK(fight.stats().damageDealt == 0);
+    CHECK(countEvents(fight.tick(kDt, idle, bodies), ArenaEventType::HostHit) == 0);
+    // Out of the phase the same bonus lands, scaled as the phase scales a blow; with no ruling, as it is.
+    phase.invulnerable = false;
+    phase.scale = 0.5f;
+    REQUIRE(fight.ruledHostBlow(0, 10, 2, &PhaseRule::rule, &phase));
+    CHECK(fight.enemyHp(0) == hp0 - 5);
+    phase.scale = 0.f;
+    CHECK_FALSE(fight.ruledHostBlow(0, 10, 2, &PhaseRule::rule, &phase)); // scaled to nothing
+    REQUIRE(fight.ruledHostBlow(0, 3, 2, nullptr, nullptr));
+    CHECK(fight.enemyHp(0) == hp0 - 8);
+    // The fight's own hook (the session's judge in the host) is never asked for a bonus.
+    PhaseRule own;
+    fight.setBlowHook(&PhaseRule::rule, &own);
+    phase.scale = 1.f;
+    REQUIRE(fight.ruledHostBlow(0, 2, 2, &PhaseRule::rule, &phase));
+    CHECK(own.calls == 0);
+    fight.setBlowHook(nullptr, nullptr);
+}
+
 TEST_CASE("arena host mirror: a shared count's held blows get their bonus through hostBlow") {
     // The host's -ArenaSharedCount run: the lead calls the count whenever it can, a scripted partner joins a window
     // the step a lead's blow is held, and each held blow's settle (x2.5 on the count) adds its extra damage outside a
     // blow. Seed 1 is the headless check line's expected run.
     const HostRun devin = hostRun({"duelist", "skirmisher"}, "devin", 1, false, true);
     CHECK(devin.phase == ArenaPhase::Victory);
-    CHECK(devin.held == 2);
-    CHECK(devin.joins == 1);
-    CHECK(devin.bonuses == 2);
-    CHECK(devin.bonusDamage == 42);
+    CHECK(devin.held == 3);
+    CHECK(devin.joins == 2);
+    CHECK(devin.bonuses == 3);
+    CHECK(devin.bonusDamage == 78);
     CHECK(devin.hostHits >= 1);
     const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
     CHECK(duy.phase == ArenaPhase::Victory);
-    CHECK(duy.joins == 3);
-    CHECK(duy.bonuses == 3);
-    CHECK(duy.bonusDamage == 49);
+    CHECK(duy.joins == 2);
+    CHECK(duy.bonuses == 1);
+    CHECK(duy.bonusDamage == 17);
     for (std::uint32_t seed = 1; seed <= 6; ++seed) {
         const HostRun shared = hostRun({"duelist", "skirmisher"}, "devin", seed, false, true);
         const HostRun alone = hostRun({"duelist", "skirmisher"}, "devin", seed, false, false);

@@ -745,6 +745,7 @@ TEST_CASE("stone bearer: a frozen boss keeps its carried piece through a stagger
         CHECK(firstOf(e, ArenaBossEventType::Broke)->at == doctest::Approx(3.7));
     }
     CHECK(b.poiseFrozen());
+    CHECK(b.bonusScale() == doctest::Approx(b.takenScale())); // off the pedestal: as a blow is taken
     CHECK(b.run().broken());
     CHECK(b.run().liveMove() == move("marked_throw"));
     CHECK(b.run().pending());
@@ -756,6 +757,7 @@ TEST_CASE("stone bearer: a frozen boss keeps its carried piece through a stagger
     CHECK(firstOf(e, ArenaBossEventType::Invulnerable)->value == 1);
     CHECK(countOf(e, ArenaBossEventType::Broke) == 0); // once
     CHECK(b.invulnerable());
+    CHECK(b.bonusScale() == 0.0f); // a held blow's bonus settling now deals nothing
     CHECK(b.run().liveMove() == kArenaBossNoMove); // the pedestal cancelled the throw
     CHECK(b.onStagger(4.5).empty());
 

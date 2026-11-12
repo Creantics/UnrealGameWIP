@@ -54,6 +54,11 @@ struct AttackMoveOut {
 FTCORE_API AttackMoveOut attackMove(const AttackMoveRules& rules, AimKind kind, bool heavy, const ArenaAttack& attack,
                                     float t);
 
+// Sets in.attackSpeed and in.attackTurn for the attack the fight's last output shows under way, as the arena host
+// does for every step, the player's and the autopilot's alike: a light by the light's numbers; a heavy, a riposte and
+// a Release by the heavy's. Off attack (or a move the kit has no attack for) leaves both as they are.
+FTCORE_API void attackMoveInput(const AttackMoveRules& rules, const ArenaFight& fight, ArenaInput& in);
+
 // The share (0..1) of the strike that plays on the upper body only, for a body moving at `speed` m/s on the ground.
 FTCORE_API float attackUpperShare(const AttackMoveRules& rules, float speed);
 

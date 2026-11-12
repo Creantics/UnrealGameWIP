@@ -685,7 +685,11 @@ struct ArenaStats {
     int breakDue = 0;      // blows that brought an upright enemy's count to its breakAt without staggering it
     int breakRunBest = 0;  // the longest run toward a break-out (relative to its breakAt), counted as each blow lands
     int breakRunNeed = 0;  // that run's breakAt (0: no blow counted)
+    int breakUpright = 0;  // the player's blows landed on an upright enemy whose kind has a breakAt
+    int breakVetoed = 0;   // ... of them the host barred (as it bars a flinch), so none counted
+    int breakBarred = 0;   // breakDue whose break move the enemy's move mask barred
     int cancels = 0;          // actions the player started inside an attack (its recovery or cancel window)
+    int cancelChances = 0;    // attacks in whose cut window a press or a guard waited (a cancel could show)
     int lights = 0;           // light attacks started (not ripostes or shots)
     float lightStamina = 0.f; // stamina those lights cost
     int softTargets = 0;      // attacks started on a soft target
@@ -706,6 +710,10 @@ struct ArenaStats {
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
 // showed the feature at least once.
+// A check's verdict: n/a (the run gave it no chance), PASS, FAIL, or barred (it was due and a mask barred it).
+enum class ArenaCheck : std::uint8_t { NotShown, Pass, Fail, Barred };
+FTCORE_API const char* arenaCheckText(ArenaCheck c); // "n/a", "PASS", "FAIL", "barred"
+
 struct ArenaFeatureChecks {
     bool lightsFree = false; // lights were started and cost no stamina
     bool cancels = false;    // an action cut into an attack
@@ -714,6 +722,12 @@ struct ArenaFeatureChecks {
     bool breakOutDue = false; // a blow reached an enemy's breakAt without staggering it (else break-out can't show)
     bool softTarget = false; // an attack started on a soft target
     bool shots = false;      // a guns kit fired a shot that connected
+    // Verdicts with their own can-show rule (the host adds its own for flinch, soft target and shots):
+    ArenaCheck lightsFreeCheck = ArenaCheck::NotShown; // n/a with no light started
+    ArenaCheck cancelsCheck = ArenaCheck::NotShown;    // n/a with no cancelChances
+    // PASS on a break-out; barred when it was due (or every upright blow vetoed) and barred; FAIL when it was due and
+    // unbarred, or upright blows landed and the run never moved; n/a with no upright blow, or poise always first.
+    ArenaCheck breakOutCheck = ArenaCheck::NotShown;
 };
 
 FTCORE_API ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats);
@@ -724,7 +738,8 @@ enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
 // partner's counters on an enemy, or an enemy's attack on the player.
 struct ArenaBlow {
     ArenaEventType type = ArenaEventType::Hit; // the event it reports with: Hit (an attack, either way),
-                                               // CounterStagger or ReadCounter (the partner's, on an enemy)
+                                               // CounterStagger or ReadCounter (the partner's, on an enemy), or
+                                               // HostHit (a bonus, ArenaFight::ruledHostBlow; never from tick)
     std::uint8_t source = kArenaNobody;        // kArenaPlayer (the partner's counters too) or the enemy
     std::uint8_t target = kArenaNobody;        // the enemy, or kArenaPlayer
     std::uint8_t move = 0;                     // as the event's
@@ -899,6 +914,14 @@ public:
     // enemyAlive); the events come in the next tick's output (at once when called from a blow hook), and a kill's
     // Victory with that tick. False (nothing) on a dead or out-of-range enemy, damage <= 0, or outside Fighting.
     FTCORE_API bool hostBlow(std::size_t enemy, int damage, std::uint8_t move);
+    // hostBlow, ruled first as a blow would be: `hook` (with `user`) sees an ArenaBlow (type HostHit, from kArenaPlayer
+    // on the enemy, `damage`, no poise, the player's position and facing, the enemy's position, time()) and its veto
+    // deals nothing, its damage scale scales the bonus. A HostHit blow is a bonus on a blow already ruled: a hook rules
+    // it without counting a hit (no crit judged, no hit noted), vetoing it where the target takes no damage now. Pass the rulings that bar blows (a boss's invulnerable phase, a
+    // weak point) and not the caller's own judge, so the bonus is not judged twice; nullptr: hostBlow as it is. The
+    // fight's own hook is not called. Inside the call, tick, begin and restart do nothing, as inside the blow hook.
+    // False (nothing) when vetoed, scaled to 0, or as hostBlow.
+    FTCORE_API bool ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move, ArenaBlowHook hook, void* user);
 
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
@@ -922,6 +945,7 @@ private:
         float actionTime = 0.f;             // seconds since the action started
         std::uint8_t move = 0;              // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove
         std::uint8_t hitMask = 0;           // enemies the current attack has hit (one bit each)
+        bool cancelChance = false;          // the current attack's cut window has had a press or guard waiting
         std::uint8_t target = kArenaNobody; // the enemy a riposte is aimed at
         std::uint8_t soft = kArenaNobody;   // the current attack's soft target ...
         float homeClose = 0.f;              // ... and the metres it closes in on it over startup and active

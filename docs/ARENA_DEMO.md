@@ -315,8 +315,10 @@ log's "face bones" line is a warning for a boss, which has no human head).
 
 Pick the lead with `-ArenaLead=Devin` or `-ArenaLead=Duy` (the name of a `PartyLooks` entry in the local
 `Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets; Duy kicks, and fires his pistol only
-while aiming). The Third has no attacks: he is a party slot, never the lead, so `-ArenaLead=Third` is refused with a
-warning and the first lead with attacks plays. Without the flag the lead is the first such look (Devin in the main checkout).
+while aiming). The third party slot is a support slot with no attack kit (`"weapon": "none", "attacks": false` in
+`arena.json`): it is never the lead, so `-ArenaLead=Third` is refused with a warning and the first lead with attacks
+plays. The magic kit (`"weapon": "magic"`: a cast clip, `spell_bolt`, `spell_impact`, `spell_ward`) stays in the code
+and its Core tests for a future fighter kind; no shipped fighter uses it. Without the flag the lead is the first such look (Devin in the main checkout).
 
 ```
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
@@ -385,15 +387,19 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
 ### Feature checks
 
 After the result line the runner prints one `Arena check:` line per combat feature (Core's `arenaFeatureChecks`
-over the fight's stats), each PASS, FAIL, or n/a where nothing in the line-up can show it:
+over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it no chance to show:
 
-- `lights free`: lights were started and cost no stamina;
-- `cancels`: an action (a buffered attack, a roll, the guard) cut into an attack;
+- `lights free`: lights were started and cost no stamina (n/a with no light started: an idle run, an early death, a
+  kit without attacks);
+- `cancels`: an action (a buffered attack, a roll, the guard) cut into an attack, `(<cancels> of <chances>
+  chances)`; a chance is an attack in whose cut window a press or the guard waited. n/a with no chance;
 - `flinch`: an enemy flinched (n/a when no kind in the line-up has a `flinchTime`; bosses don't);
-- `break-out`: an enemy broke out of a run of blows, with the fight's best run toward one (`best run 4 of 5`: four
-  blows of a kind's five, counted as each lands). n/a when no kind has a `breakAt`, and when no blow brought an
-  upright enemy's count to its `breakAt` without staggering it (the poise broke first, so a break-out couldn't show);
-  FAIL only when such a blow came and no break-out followed;
+- `break-out`: an enemy broke out of a run of blows: `(<n>; due <d>, barred <b>; <u> upright blows; best run 4 of
+  5)`, the best run being four blows of a kind's five, counted as each lands. FAIL when a blow brought an upright
+  enemy's count to its `breakAt` without staggering it and the move was free yet none followed, and when upright
+  blows landed on a kind with a `breakAt` but the run never moved; barred when the move was due and the enemy's move
+  mask (or the host's veto on every upright blow) barred it; n/a with no upright blow on such a kind, or when the
+  poise always broke first;
 - `soft target`: an attack started on a soft target (the nearest living enemy in `softRange` and `softArcCos` of
   the stick, or of the facing, with nothing locked) and homed up to `homingReach`;
 - `shots`: a guns kit fired a shot that hit (n/a for any other kit, and for a guns kit under the autopilot without
@@ -406,9 +412,10 @@ shoot with a guns kit on the way in (the target in the shot's range and outside 
 stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit: a skirmisher's
 poise breaks under every blow of Duy's that would flinch it, so it staggers instead.
 
-The break-out is tuned by lead (provisional, for the playtest). Devin's light string (poise 15, 15, 18, 32) staggers
-every kind with a `breakAt` by the blow that reaches it, so nothing breaks out on him outside an enemy's armoured
-move. Duy's (10, 10, 20, and 6 a shot) leaves it upright, so he has to hit and move. Each kind's `breakDecay` equals
+The break-out is tuned by lead (provisional, for the playtest). On paper Devin's light string (poise 15, 15, 18, 32)
+staggers every kind with a `breakAt` by the blow that reaches it; in a fight his attacks don't root him (the autopilot
+steers and turns them as a player does), so a count can build across strings and some seeds still break out on him.
+Duy's (10, 10, 20, and 6 a shot) leaves it upright, so he has to hit and move. Each kind's `breakDecay` equals
 its `poiseDelay`, so a count reset always comes with a poise refill. Core pins this per kind and lead
 (`arena break-out tuning`):
 
@@ -422,10 +429,12 @@ its `poiseDelay`, so a count reset always comes with a poise refill. Core pins t
 
 Core's host-mirror tests play the host's own fight (the fallback fight with one attacker, fitted to `sand_ring`, the
 lock never pressed, the partner's press on the step after a parry); seed 1 of a skirmisher and a hulk with Devin
-gives the host's result line to the letter. With Devin no seed from 1 to 12 of that line-up or of a duelist and a
-skirmisher shows a break-out (n/a; the best run reaches `breakAt` only with the blow that staggers). Duy shooting
-against a skirmisher and a hulk shows three or more on every seed, and against a duelist and a skirmisher two
-(shooting or not); unaimed against the hulk the autopilot's parries cut his runs short. Five runs cover every line:
+gives the host's result line to the letter. The autopilot fills each attack's steer and turn from the attack-move
+table, as the player's input does. With Devin no seed from 1 to 12 of a skirmisher and a hulk shows a break-out (n/a;
+the best run reaches `breakAt` only with the blow that staggers); against a duelist and a skirmisher 8 of the 12
+break out once (seed 1 among them), the rest read n/a. Duy shooting against a skirmisher and a hulk shows one on every
+seed, and against a duelist and a skirmisher two or three (shooting or not); unaimed against the hulk the
+autopilot's parries cut his runs short (n/a). Five runs cover every line:
 Devin against the stone bearer, each lead against a skirmisher and a hulk, then each against a duelist and a
 skirmisher:
 
@@ -443,8 +452,8 @@ scales the blow (x1 when alone); a blow inside a count's window is Held, lands a
 it settles at x2.5: after the session's tick the runner deals the extra through `ArenaFight::hostBlow` and logs
 `Arena: a held blow on the count adds <n> damage to <kind> (move <m>).` The arena has no partner body yet, so
 `-ArenaSharedCount` scripts one for the check line: the lead calls the count whenever it can, and the other lead
-joins the window the step a lead's blow is held. Core's host-mirror test plays the same run (seed 1: Devin 2 bonuses,
-+42 damage; Duy shooting 3 bonuses, +49):
+joins the window the step a lead's blow is held. Core's host-mirror test plays the same run (seed 1: Devin 3 bonuses,
++78 damage; Duy shooting 1 bonus, +17):
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaSharedCount -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout

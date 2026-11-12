@@ -491,6 +491,44 @@ TEST_CASE("fight session: a boss script countered then hit on the count unlocks 
     CHECK(s.boss().stepEnds() == stepEnds);
 }
 
+TEST_CASE("fight session: only a fight the story handed off takes story writes; a standalone or practice one writes none") {
+    // The rule the host binds by.
+    CHECK_FALSE(fightTakesStory(FightHandOff{}, CombatKind::Arena)); // standalone, demo, practice
+    CHECK(fightTakesStory(FightHandOff{true, false, CombatKind::Arena}, CombatKind::Arena));
+    CHECK_FALSE(fightTakesStory(FightHandOff{true, true, CombatKind::Arena}, CombatKind::Arena));  // settled: replays are practice
+    CHECK_FALSE(fightTakesStory(FightHandOff{true, false, CombatKind::Beat}, CombatKind::Arena)); // another kind's hand-off
+
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    const auto wideA0 = [&] {
+        for (std::uint8_t w = 0; w < kWideSlots; ++w)
+            if (reg.wide[w].id() == std::string_view("w_a0")) return storyWide(story, w);
+        return 0xFFFFFFFFu;
+    };
+    FightSessionDef d;
+    d.gift = freeGifts();
+    // The same fight, begun and restarted, as the host does: bound only when the hand-off says so.
+    const auto run = [&](const FightHandOff& h) {
+        FightSession s;
+        for (int begin = 0; begin < 2; ++begin) { // a begin and a restart
+            REQUIRE(s.begin(d, 0.0).ok());
+            if (fightTakesStory(h, CombatKind::Arena)) s.bindStory(&story, &reg);
+            REQUIRE(s.selectGift(Gift::Heal));
+            CHECK(s.giveGift(kLeadA).given);
+        }
+    };
+    run(FightHandOff{});
+    CHECK(wideA0() == 0); // a standalone fight's presses never reach the playthrough
+    run(FightHandOff{true, true, CombatKind::Arena});
+    CHECK(wideA0() == 0);
+    run(FightHandOff{true, false, CombatKind::Arena});
+    CHECK(wideA0() == 2); // the story's fight counts each press
+}
+
 TEST_CASE("fight session: gift presses at a lead are presses in the story state") {
     FactRegistry reg;
     std::string err;

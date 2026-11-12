@@ -38,6 +38,9 @@
 //     spell_impact at the hit point;
 //   - gauntlet_spark at the striking fist's knuckles (the foot for a kick) on the lead's hit;
 //   - spell_ward at the feet while a magic lead guards.
+// The magic kit (ftcore::ArenaWeapon::Magic, "weapon": "magic" in arena.json: its cast, spell effects and ward) is kept
+// for a future fighter kind: no shipped fighter uses it (the third party slot is a support slot with no attack kit), and
+// Core's arena tests pin what it plays.
 // Each start logs one line, "<Arena|Field>: weapon fx <effect> at <fight time>". Run checks, one line each:
 // "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment, only on capture runs
 // (-ArenaShot= or -ExploreWeaponShot=) (the angle between the

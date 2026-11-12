@@ -103,6 +103,18 @@ bool importAttackMoveRules(std::string_view json, AttackMoveRules& out, std::str
     return true;
 }
 
+void attackMoveInput(const AttackMoveRules& rules, const ArenaFight& fight, ArenaInput& in) {
+    const ArenaPlayerOut& last = fight.output().player;
+    const bool light = last.action == ArenaAction::Light;
+    if (!light && last.action != ArenaAction::Heavy && last.action != ArenaAction::Riposte && last.action != ArenaAction::Release)
+        return;
+    const ArenaAttack* attack = arenaPlayerAttack(fight.def().fighter, last.move);
+    if (!attack) return;
+    const AttackMoveOut m = attackMove(rules, aimKindOfMove(fight.def().fighter, last.move), !light, *attack, last.actionTime);
+    in.attackSpeed = m.speedScale;
+    in.attackTurn = m.turnRate;
+}
+
 AttackMoveOut attackMove(const AttackMoveRules& rules, AimKind kind, bool heavy, const ArenaAttack& attack, float t) {
     AttackMoveOut o;
     const int k = static_cast<int>(kind) < 3 ? static_cast<int>(kind) : 0;

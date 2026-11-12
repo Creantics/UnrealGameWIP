@@ -122,6 +122,40 @@ FTCORE_API bool importInputBindings(std::string_view text, InputBindings& out, s
 // Every binding and every held action's mode; importInputBindings reads it back.
 FTCORE_API std::string encodeInputBindings(const InputBindings& b);
 
+// ---- controls lines ----
+// The arena's and the field's controls line, built from the table for one device, so it names only keys the player
+// has (and follows the overrides). An entry is a group of actions under one word: the four moves are one entry
+// ("W/A/S/D"), the two target switches another. Each action shows its key's short label ("LMB", "Ctrl", "RT", "A"),
+// or, unbound, its route ("LS", "RS flick", "Hold M"); an entry nothing reaches on that device is left out.
+
+enum class InputHintScreen : std::uint8_t { Arena, Field };
+
+struct InputHintEntry {
+    std::array<InputAction, 4> actions{};
+    std::uint8_t count = 0;
+    const char* label = ""; // the word's key in Data/Loc/<culture>/ui.json ("input.light")
+};
+
+// The map-hold route's prefix before the map key's label ("Hold M").
+inline constexpr const char* kInputHoldPrefix = "Hold ";
+
+// The screen's entries, in the line's order.
+FTCORE_API std::size_t inputHintEntries(InputHintScreen screen, const InputHintEntry*& out);
+// A short label for an engine key name ("LeftMouseButton" -> "LMB", "Gamepad_FaceButton_Bottom" -> "A"); a name
+// with no label (a letter) shows as it is.
+FTCORE_API std::string_view inputKeyLabel(std::string_view key);
+// A route's label ("left_stick" -> "LS", "right_stick_flick" -> "RS flick"); empty for map_hold, which shows as
+// kInputHoldPrefix and the map key.
+FTCORE_API std::string_view inputRouteLabel(std::string_view route);
+// The keys one entry shows on a device, '/' between them, each once; empty when none of its actions is reachable.
+FTCORE_API std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d);
+// The word for a label key (the host's localised text); null shows the key itself.
+using InputHintText = std::string (*)(const char* labelKey, void* user);
+// The whole line: "<keys> <word>" per entry, two spaces apart. Allocates: build it when the device or the
+// bindings change, not every frame.
+FTCORE_API std::string inputHintLine(const InputBindings& b, InputHintScreen screen, InputDevice d, InputHintText text,
+                                     void* user = nullptr);
+
 // A held input with the toggle option: held, it is down while the key is; toggled, each press flips it.
 class HeldInput {
 public:

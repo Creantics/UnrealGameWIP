@@ -353,5 +353,6 @@ if(FTCORE_BUILD_TESTS)
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
+        -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
 endif()

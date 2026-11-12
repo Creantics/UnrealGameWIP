@@ -332,6 +332,14 @@ TEST_CASE("arena kind crit: a Deal opens the seam at the end of its active part,
     CHECK(crit.lastCritAt() == doctest::Approx(12.5));
     CHECK(crit.points().points[crit.lastPoint()].id() == "fingertip_seam");
 
+    // A held blow's bonus (HostHit) inside it is no second crit: plain, nothing counted.
+    ArenaBlow bonus = leadBlow(front, 12.6f);
+    bonus.type = ArenaEventType::HostHit;
+    r = crit.rule(bonus, kSlot, kBoss, kFacing);
+    CHECK(r.damage == 1.0f);
+    CHECK_FALSE(r.veto);
+    CHECK(crit.crits() == 1);
+
     // Every blow inside it crits, not only the first.
     r = crit.rule(leadBlow(front, 13.0f), kSlot, kBoss, kFacing);
     CHECK(r.damage == doctest::Approx(2.0));

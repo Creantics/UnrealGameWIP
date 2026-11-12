@@ -12,6 +12,7 @@
 #include "Engine/World.h"
 #include "FTSettingsSubsystem.h"
 #include "FTText.h"
+#include "FTUiText.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
@@ -88,6 +89,58 @@ inline bool WasJustPressed(const APlayerController& PC, ftcore::InputAction Acti
 	const FKey& Keys = Key(Action, ftcore::InputDevice::Keys);
 	const FKey& Pad = Key(Action, ftcore::InputDevice::Pad);
 	return (Keys.IsValid() && PC.WasInputKeyJustPressed(Keys)) || (Pad.IsValid() && PC.WasInputKeyJustPressed(Pad));
+}
+
+// The device the player used last: a bound pad button or a pushed stick picks the pad; a bound key, a mouse button or
+// a mouse move picks the keyboard. Starts on the keyboard. Call it each frame the controls line is drawn.
+inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
+{
+	static ftcore::InputDevice Last = ftcore::InputDevice::Keys;
+	if (!PC)
+	{
+		return Last;
+	}
+	const auto AnyDown = [PC](ftcore::InputDevice Device)
+	{
+		for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
+		{
+			const FKey& K = Key(static_cast<ftcore::InputAction>(A), Device);
+			if (K.IsValid() && PC->IsInputKeyDown(K))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	const float Stick = FMath::Max(FMath::Max(FMath::Abs(PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftX)), FMath::Abs(PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY))),
+		FMath::Max(FMath::Abs(PC->GetInputAnalogKeyState(EKeys::Gamepad_RightX)), FMath::Abs(PC->GetInputAnalogKeyState(EKeys::Gamepad_RightY))));
+	float MouseX = 0.f;
+	float MouseY = 0.f;
+	PC->GetInputMouseDelta(MouseX, MouseY);
+	if (Stick > 0.3f || AnyDown(ftcore::InputDevice::Pad))
+	{
+		Last = ftcore::InputDevice::Pad;
+	}
+	else if (FMath::Abs(MouseX) + FMath::Abs(MouseY) > 0.5f || AnyDown(ftcore::InputDevice::Keys))
+	{
+		Last = ftcore::InputDevice::Keys;
+	}
+	return Last;
+}
+
+// A screen's controls line on a device, built from the table (ftcore::inputHintLine) with the words from ui.json
+// ("input.light"), so it names only keys the player has. Built once per screen and device, then kept.
+inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevice Device)
+{
+	static TOptional<FString> Lines[2][ftcore::kInputDeviceCount];
+	TOptional<FString>& Line = Lines[static_cast<size_t>(Screen) % 2][static_cast<size_t>(Device) % ftcore::kInputDeviceCount];
+	if (!Line.IsSet())
+	{
+		const std::string Text = ftcore::inputHintLine(Get(), Screen, Device,
+			[](const char* LabelKey, void*) { return FT::ToUtf8(FTUiText::Lookup(*FT::ToFString(LabelKey))); });
+		Line = FT::ToFString(Text);
+	}
+	return Line.GetValue();
 }
 
 // Whether a held action is pressed once to toggle: its own mode, else the game-wide hold-toggle setting.
