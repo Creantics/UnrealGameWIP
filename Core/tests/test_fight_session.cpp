@@ -512,21 +512,72 @@ TEST_CASE("fight session: only a fight the story handed off takes story writes; 
     FightSessionDef d;
     d.gift = freeGifts();
     // The same fight, begun and restarted, as the host does: bound only when the hand-off says so.
-    const auto run = [&](const FightHandOff& h) {
+    StoryStepMark mark;
+    CHECK_FALSE(storyStepOpen(story, mark)); // nothing marked yet
+    REQUIRE(storyMarkStep(story, mark));
+    CHECK(storyStepOpen(story, mark));
+    const auto run = [&](const FightHandOff& h, bool rollBack) {
         FightSession s;
         for (int begin = 0; begin < 2; ++begin) { // a begin and a restart
             REQUIRE(s.begin(d, 0.0).ok());
-            if (fightTakesStory(h, CombatKind::Arena)) s.bindStory(&story, &reg);
+            CHECK_FALSE(s.storyBound()); // a binding never outlives its fight
+            if (begin > 0 && rollBack) {
+                REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+                REQUIRE(storyMarkStep(story, mark));
+            }
+            if (fightTakesStory(h, CombatKind::Arena)) CHECK(s.bindStory(story, reg, mark) == (begin == 0 || rollBack));
             REQUIRE(s.selectGift(Gift::Heal));
             CHECK(s.giveGift(kLeadA).given);
         }
     };
-    run(FightHandOff{});
+    run(FightHandOff{}, false);
     CHECK(wideA0() == 0); // a standalone fight's presses never reach the playthrough
-    run(FightHandOff{true, true, CombatKind::Arena});
+    run(FightHandOff{true, true, CombatKind::Arena}, false);
     CHECK(wideA0() == 0);
-    run(FightHandOff{true, false, CombatKind::Arena});
-    CHECK(wideA0() == 2); // the story's fight counts each press
+    run(FightHandOff{true, false, CombatKind::Arena}, true);
+    CHECK(wideA0() == 1); // a retry rolled back: the attempt that stands counts once
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    REQUIRE(storyMarkStep(story, mark));
+    // A screen that retries without the rollback (forgotten) is refused: the second attempt writes nothing.
+    run(FightHandOff{true, false, CombatKind::Arena}, false);
+    CHECK(wideA0() == 1);
+}
+
+TEST_CASE("fight session: a mark lost between attempts is refused, never re-based") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    REQUIRE(a0 != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    StoryStepMark mark; // no step open: a reload into the fight
+
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(storyReadyBind(story, reg, mark, true) == StepBind::MarkedAtStart);
+    REQUIRE(s.bindStory(story, reg, mark));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(storyWide(story, a0) == 1);
+
+    mark = StoryStepMark{}; // the mark is lost mid-fight; the screen restarts
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(storyReadyBind(story, reg, mark, false) == StepBind::NoStep); // never marked at the dirty state
+    CHECK_FALSE(s.bindStory(story, reg, mark));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(storyWide(story, a0) == 1); // the second attempt writes nothing on top
+
+    REQUIRE(storyMarkStep(story, mark)); // a mark that has moved is refused too
+    CHECK(storyReadyBind(story, reg, mark, false) == StepBind::Ready);
+    REQUIRE(storyAdd(story, reg, a0, 1) == SetResult::Ok);
+    CHECK(storyReadyBind(story, reg, mark, false) == StepBind::Moved);
 }
 
 TEST_CASE("fight session: gift presses at a lead are presses in the story state") {
@@ -551,11 +602,13 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     CHECK(s.lastStoryWrite() == SetResult::Unchanged);
     CHECK(wide("w_a0") == 0);
 
-    s.bindStory(&story, nullptr); // both or neither
+    StoryStepMark mark;
+    CHECK_FALSE(s.bindStory(story, reg, mark)); // no mark: refused
     CHECK(s.giveGift(kLeadA).given);
     CHECK(wide("w_a0") == 0);
 
-    s.bindStory(&story, &reg);
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
     CHECK(s.press(SharedAction::Gift, kThirdSlot, kLeadA).accepted);
     CHECK(s.lastStoryWrite() == SetResult::Ok);
     CHECK(wide("w_a0") == 1);
@@ -587,11 +640,13 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     CHECK(wide("w_a1") == 0);
     REQUIRE(s.begin(d, 0.0).ok());
     CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+    REQUIRE(storyMarkStep(story, mark)); // the new fight's step
+    REQUIRE(s.bindStory(story, reg, mark));
     REQUIRE(s.selectGift(Gift::Heal));
     CHECK(s.giveGift(kLeadA).given);
     CHECK(s.lastStoryWrite() == SetResult::Ok);
     CHECK(wide("w_a0") == 1);
-    s.bindStory(nullptr, &reg);
+    s.unbindStory();
     CHECK(s.giveGift(kLeadB).given);
     CHECK(wide("w_b0") == 0);
 }
@@ -613,7 +668,9 @@ TEST_CASE("fight session: refused gift presses at a lead count in the story stat
     FightSessionDef d;
     d.gift.cooldown = {5.0, 5.0, 5.0};
     REQUIRE(s.begin(d, 0.0).ok());
-    s.bindStory(&story, &reg);
+    StoryStepMark mark;
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
     const auto& slot = s.giftSlot();
 
     // Cooling: the second press is refused but is still a press of its kind on its side.

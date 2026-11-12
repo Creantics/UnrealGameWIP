@@ -101,14 +101,22 @@ public:
 	// The step is over: Keep its writes (a win, a loss branch), Retry (back to the mark, one retry counted) or Drop
 	// (back to the mark, uncounted: given up on or quit). Clears the mark. False when there was no usable mark.
 	bool EndStep(ftcore::StepEnd End);
+	// A retry inside a screen (the arena's Restart): back to the mark with one retry counted, then marked again so
+	// the new attempt can bind (BindFightSession). False when no step was open. The retry counts on purpose: each
+	// attempt thrown away is one retry, so a screen's "fight again" adds 1 and a lost fight the story then retries
+	// (the director's Retry verdict) adds 1 more.
+	bool RestartStep();
 
 	// ---- native access (null before Initialize and after Deinitialize) ----
 
 	ftcore::StoryState* GetState() { return State.Get(); }
 	const ftcore::StoryState* GetState() const { return State.Get(); }
 	const ftcore::FactRegistry* GetRegistry() const { return Registry.Get(); }
-	// Binds the session's story writes to this state (FightSession::bindStory). Call after every Begin.
-	void BindFightSession(UFTFightSession* Session);
+	// Binds the session's story writes to this state (FightSession::bindStory). Call after every Begin. With no step
+	// open (a reload into the fight, a direct open) it marks the fight's start first. Refused (an Error outside
+	// shipping, unbound) unless the state is at the step's mark: a screen's own retry calls RestartStep first.
+	// bFirstAttempt: the fight's first Begin (only it may mark a missing step); a screen's restart passes false.
+	void BindFightSession(UFTFightSession* Session, bool bFirstAttempt = true);
 
 	// ---- the save block (UFTStorySaveGame) ----
 

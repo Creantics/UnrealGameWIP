@@ -19,9 +19,12 @@
 //   target lead (kLeadA 0, kLeadB 1), the kind is the selected gift (Heal 0, Guard 1, Count 2). A press at a
 //   non-lead has no side and writes nothing.
 //   The per-kind press counters (counter wides) roll back with the fight step (storyEndStep: the story marks the
-//   step as it opens and goes back to the mark on a retry or a quit), so a fight the story retries counts
-//   afresh. A retry inside the screen (BeatScreen::restartFight, the battle demo's next round) does not
-//   go back to the mark yet: no screen counts presses today.
+//   step as it opens and goes back to the mark on a retry or a quit), so a retried fight counts afresh. The
+//   binding enforces it: it lasts one fight (begin unbinds) and is refused unless the state is still at the
+//   step's mark, so a screen that retries a fight itself must roll the last attempt back (storyEndStep with
+//   Retry), mark the step again and bind anew, or the new attempt writes nothing. Each attempt thrown away counts
+//   one story retry, whoever retries it: a screen's own "fight again" adds 1 (its Retry), and a lost fight the
+//   story retries adds 1 more (the director's Retry verdict).
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
@@ -165,6 +168,8 @@ public:
         c.boss = !def_.hasBoss || boss_.reset(def_.boss, now_);
         hasBoss_ = def_.hasBoss && c.boss;
         lastStory_ = SetResult::Unchanged;
+        story_ = nullptr; // a binding lasts one fight: a restart binds again, at a fresh mark
+        reg_ = nullptr;
         tick_ = FightTick{};
         heldCount_ = 0; // a held blow from the last fight never pays out
         heldDropped_ = 0;
@@ -175,12 +180,21 @@ public:
         return c;
     }
 
-    // The story state presses are written to (both or neither; null unbinds). Bind only a fight the story handed off
-    // (fightTakesStory); a standalone, demo or practice fight stays unbound and writes nothing.
-    void bindStory(StoryState* story, const FactRegistry* reg) {
-        story_ = story && reg ? story : nullptr;
-        reg_ = story && reg ? reg : nullptr;
+    // The story state presses are written to, from now until the next begin. Bind only a fight the story handed off
+    // (fightTakesStory); a standalone, demo or practice fight stays unbound and writes nothing. False (and unbound)
+    // unless the state is at the step's mark (storyAtMark): an attempt whose writes were not rolled back never
+    // lets the next one count on top of it.
+    bool bindStory(StoryState& story, const FactRegistry& reg, const StoryStepMark& mark) {
+        const bool ok = storyAtMark(story, reg, mark);
+        story_ = ok ? &story : nullptr;
+        reg_ = ok ? &reg : nullptr;
+        return ok;
     }
+    void unbindStory() {
+        story_ = nullptr;
+        reg_ = nullptr;
+    }
+    bool storyBound() const { return story_ != nullptr; }
     // What the last gift's story write returned (Unchanged when none was made).
     SetResult lastStoryWrite() const { return lastStory_; }
 

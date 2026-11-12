@@ -16,7 +16,7 @@ UFTFightSession::UFTFightSession()
 
 bool UFTFightSession::Begin(const ftcore::FightSessionDef& Def, double StartSeconds)
 {
-	Session->bindStory(nullptr, nullptr); // a binding lasts one fight
+	Session->unbindStory(); // a binding lasts one fight (begin unbinds too)
 	const ftcore::FightSessionCheck Check = Session->begin(Def, StartSeconds);
 	if (!Check.ok())
 	{
@@ -43,7 +43,7 @@ ftcore::SharedReply UFTFightSession::Press(EFTSharedAction Action, uint8 Who, ui
 	return Session->press(static_cast<ftcore::SharedAction>(Action), Who, Target);
 }
 
-void UFTFightSession::BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry)
+bool UFTFightSession::BindStory(ftcore::StoryState& Story, const ftcore::FactRegistry& Registry, const ftcore::StoryStepMark& Mark)
 {
-	Session->bindStory(Story, Registry);
+	return Session->bindStory(Story, Registry, Mark);
 }
