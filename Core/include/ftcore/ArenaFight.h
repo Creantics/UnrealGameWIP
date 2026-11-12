@@ -106,9 +106,10 @@
 //     Hitstun (cancelling the current action) and poise refills. Poise also refills after poiseDelay
 //     with no poise damage. hp 0: Downed, then Defeat.
 //   - Facing: locked, the player faces the lock target (and strafes); otherwise it turns toward the
-//     stick at turnRate. An attack starts facing, in this order: a riposte's enemy, the aim, the lock
-//     target, the soft target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed;
-//     then turns only at its `tracking` toward the same. On a soft target the attack also closes in by
+//     stick at turnRate. An attack starts facing, in this order: the aim, the lock target, the soft
+//     target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed; then turns only
+//     at its `tracking` toward the same. A riposte turns onto its enemy over its startup instead, at
+//     its tracking or faster, so it faces the enemy as the blow lands (at once with no startup). On a soft target the attack also closes in by
 //     up to homingReach on top of its lunge, never past touching.
 // * Enemies. Each enemy's brain is Approach (run when farther than runRange, else walk, toward its
 //   preferred range), Strafe (circle the player at preferredRange, changing direction now and then
@@ -619,6 +620,10 @@ struct ArenaPlayerOut {
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
     bool overloaded = false;          // Load at kMaxLoad: light, heavy and heal are refused until a Release
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
+    float wantSpeed = -1.f;           // m/s the stick asks of a walk that ramps (Idle, Move, Guard, Heal) this frame, the
+                                      // pace the velocity heads for; -1 otherwise (an attack, a dodge, a pause, a stun)
+    float stopDistance = -1.f;        // m the body would slide at moveBrake from this velocity to a stand, while wantSpeed
+                                      // is known; -1 otherwise
 };
 
 struct ArenaEnemyOut {
@@ -1003,6 +1008,7 @@ private:
         bool shotPitched = false;           // the shot under way is a pitched round (ArenaInput::aimPitched at its start) ...
         float shotPitch = 0.f;              // ... climbing at this (rad)
         Vec2 attackWalk{};                  // the walking part of the velocity during an attack (the lunge apart)
+        float wantSpeed = -1.f;             // ArenaPlayerOut::wantSpeed, this step
         bool guardHeld = false;             // last tick's guard flag
         float lastGuardPress = -1.0e9f;     // fight time of the last guard press (every press counts)
         float parryLeft = 0.f;              // seconds left in the parry window

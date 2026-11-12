@@ -36,6 +36,12 @@ void FootHold::update(const FootPoint ball[2], const bool lifted[2], bool lock, 
         Foot& f = feet_[i];
         if (f.stepping) continue;
         if (lifted[i]) {
+            // Lifted by the clip off a held place away from its own: eased there over a step, not snapped.
+            if (f.held && flatDist(f.anchor, ball[i]) > tuning_.letGoWithin) {
+                f.stepping = true;
+                f.from = f.anchor;
+                f.t = 0.f;
+            }
             f.held = false;
         } else if (!f.held) {
             f.held = lock;

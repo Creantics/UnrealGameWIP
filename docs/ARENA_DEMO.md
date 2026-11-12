@@ -565,6 +565,8 @@ host), so each frame's pose is drawn where the body stands that frame, not a fra
 frame-to-frame speed and the net slip per plant (as the field's `-LocoSlide`). `-ArenaGlide=toward` and `=across` make
 the autopilot walk at the target or strafe it. `-ArenaNoFootLock` leaves the feet to the clips, for comparison.
 Each line ends with its pops: frames in which a foot moved more than 20 cm, a pose snap (still counted in the slip).
+Moving is split four ways: steady, speeding up and braking (the legs' speed changing faster than 2 m/s²) and turning
+(the facing turning faster than 1.5 rad/s, whatever the speed does).
 
 Every key here comes from the binding table (`ftcore/InputBindings.h`, one set for the field and the arena; the
 defaults are provisional). Override any of them in `Saved/InputBindings.json`, read once at start, e.g.

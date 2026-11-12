@@ -300,14 +300,18 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera shake %.2f for this run (-ArenaCameraShake)."), ShakeOverride);
 	}
 	GlideStick = -1;
+#if !UE_BUILD_SHIPPING
+	// A measuring probe: never in a shipping build (it would steer the autopilot's stick).
 	FString GlideWord;
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaGlide="), GlideWord))
 	{
-		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2 : 3;
+		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2
+			: GlideWord == TEXT("pulse") ? 4 : 3;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: glide probe on, the stick %s (-ArenaGlide)."),
 			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
-			: TEXT("the autopilot's"));
+			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : TEXT("the autopilot's"));
 	}
+#endif
 	Glide.Begin(GlideStick >= 0);
 	AimCheckPhase = 0;
 	AimCheckSlot = -1;
@@ -519,6 +523,8 @@ void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)
 	PrevBodies.player = P;
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
+	LeadWantSpeed = -1.f;
+	LeadStopDistance = -1.f;
 	LeadLegYaw = 0.f;
 	LeadUpperShare = 0.f;
 	if (PlayerFigure)
@@ -1143,6 +1149,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	PrevBodies = Bodies;
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
+	LeadWantSpeed = -1.f;
+	LeadStopDistance = -1.f;
 	LeadUpperShare = 0.f;
 	LeadLegYaw = 0.f;
 	Accumulator = 0.0;
@@ -1616,7 +1624,16 @@ void UFTArenaRunner::StepFight()
 		{
 			In.lock = false; // never pressed: nothing is ever locked, so attacks take soft targets
 		}
-		if (GlideStick >= 0 && GlideStick < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
+		// -ArenaGlide=pulse: starts, stops and reversals over and over, for the speeding-up and braking buckets.
+		int32 GlideNow = GlideStick;
+		if (GlideStick == 4 && !In.dodge)
+		{
+			constexpr double kPulseGo = 0.8, kPulseRest = 0.6;
+			const double Phase = FMath::Fmod(Now, 2.0 * (kPulseGo + kPulseRest));
+			GlideNow = Phase < kPulseGo ? 0 : Phase < kPulseGo + kPulseRest ? -1 : Phase < 2.0 * kPulseGo + kPulseRest ? 2 : -1;
+			In.move = ftcore::Vec2{0.f, 0.f};
+		}
+		if (GlideNow >= 0 && GlideNow < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
 		{
 			// -ArenaGlide: the stick held toward, across or away from the target (the lock, else the nearest standing).
 			const std::uint8_t Lock = Fight.lock();
@@ -1639,7 +1656,7 @@ void UFTArenaRunner::StepFight()
 				if (L > 1e-3f)
 				{
 					const ftcore::Vec2 U{D.x / L, D.y / L};
-					In.move = GlideStick == 0 ? U : GlideStick == 1 ? ftcore::Vec2{-U.y, U.x} : ftcore::Vec2{-U.x, -U.y};
+					In.move = GlideNow == 0 ? U : GlideNow == 1 ? ftcore::Vec2{-U.y, U.x} : ftcore::Vec2{-U.x, -U.y};
 				}
 			}
 		}
@@ -2303,6 +2320,16 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
 		Pose.Speed = PlayerStepSpeed;
 		Pose.LegYaw = LeadLegYaw;
+		// Where the walk heads (the stick's share of the pace; unknown in an attack or a roll) and how far the body
+		// would slide at the brake (Core's). A hit pause keeps the last (Core has none there), so a start or a stop under
+		// way isn't sent back to the gaits by the pause.
+		if (P.stopLeft <= 0.f)
+		{
+			LeadWantSpeed = P.wantSpeed;
+			LeadStopDistance = P.stopDistance;
+		}
+		Pose.WantSpeed = LeadWantSpeed;
+		Pose.StopDistance = LeadStopDistance;
 		// The feet held while a strike's clip has the legs (its walk share under half) and through a hit pause: the
 		// body's lunge goes over planted feet, which step when it has gone too far.
 		{

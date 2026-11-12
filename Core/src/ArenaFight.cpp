@@ -356,6 +356,11 @@ struct ArenaFightImpl {
         // pause, if the host wants one, is its own to play from that Hit event's attack.
         const bool fighting = fight.phase_ == ArenaPhase::Fighting;
         po.stopLeft = fighting ? std::max(0.f, pl.stopUntil - fight.time_) : 0.f;
+        po.wantSpeed = fighting && po.stopLeft <= 0.f ? pl.wantSpeed : -1.f;
+        {
+            const float v = arenaLength(pl.velocity);
+            po.stopDistance = po.wantSpeed >= 0.f && fi.moveBrake > 0.f ? v * v / (2.f * fi.moveBrake) : -1.f;
+        }
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             ArenaEnemyOut& eo = out.enemies[i];
             const Enemy& foe = foes[i];
@@ -641,7 +646,9 @@ struct ArenaFightImpl {
             pl.soft = kArenaNobody;
             pl.homeClose = 0.f;
             pl.target = id(static_cast<std::size_t>(riposteAt));
-            pl.facing = arenaUnit(arenaSub(foes[static_cast<std::size_t>(riposteAt)].pos, pl.pos), pl.facing);
+            // Turned onto its enemy over startup (advanceAttack), not in one frame; with no startup, at once.
+            if (fi.riposte.startup <= kArenaEps)
+                pl.facing = arenaUnit(arenaSub(foes[static_cast<std::size_t>(riposteAt)].pos, pl.pos), pl.facing);
             beginAttack(ArenaAction::Riposte, kArenaRiposteMove, fi.riposte);
             return true;
         }
@@ -903,6 +910,7 @@ struct ArenaFightImpl {
         // Paused for the whole tick, nothing starts (a press waits in the buffer, which doesn't age) and the
         // player stands still.
         playerOwn = ownTime(pl.stopUntil);
+        pl.wantSpeed = -1.f;
         if (!(playerOwn > 0.f)) {
             pl.velocity = Vec2{};
             return;
@@ -955,8 +963,9 @@ struct ArenaFightImpl {
 
     // The velocity of a state that ramps (Idle, Move, Guard, Heal): from where it is now toward `want`, by moveAccel
     // while the wanted speed is above the current one and by moveBrake otherwise.
-    Vec2 ramped(Vec2 want) const {
-        const float rate = arenaLength(want) > arenaLength(pl.velocity) ? fi.moveAccel : fi.moveBrake;
+    Vec2 ramped(Vec2 want) {
+        pl.wantSpeed = arenaLength(want);
+        const float rate = pl.wantSpeed > arenaLength(pl.velocity) ? fi.moveAccel : fi.moveBrake;
         return arenaRamp(pl.velocity, want, rate, dt);
     }
 
@@ -1047,18 +1056,27 @@ struct ArenaFightImpl {
                 want = arenaUnit(stick, pl.facing);
                 have = true;
             }
-            const float tracked = a0 < a.startup ? a.tracking * (std::min(a1, a.startup) - a0) : 0.f;
+            float tracked = a0 < a.startup ? a.tracking * (std::min(a1, a.startup) - a0) : 0.f;
+            if (pl.action == ArenaAction::Riposte && have && a0 < a.startup) {
+                // A riposte faces its enemy when startup ends whatever its tracking: at least this tick's share of the
+                // startup left, of the angle left.
+                const float left = std::abs(std::atan2(arenaCross(pl.facing, want), arenaDot(pl.facing, want)));
+                tracked = std::max(tracked, left * std::min(1.f, (std::min(a1, a.startup) - a0) / (a.startup - a0)));
+            }
             if (have) pl.facing = arenaTurn(pl.facing, want, std::max(tracked, attackTurn * dt));
         }
         pl.invulnerable = pl.action == ArenaAction::Riposte || pl.action == ArenaAction::Release;
         // Only the active part connects; a tick whose interval overlaps it tests, so a long frame can't skip it.
         if (a1 > a.startup && a0 < a.startup + a.active) playerStrike(a);
-        // The lunge: `lunge` metres forward, spread over startup and active.
+        // The lunge: `lunge` metres forward, spread over startup and active. A riposte's goes at its enemy, not along
+        // the facing still turning onto it, so it reaches where a riposte snapped onto its enemy would.
         Vec2 vel{};
         const float span = a.startup + a.active;
         if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
-            vel = arenaScaled(pl.facing, a.lunge / span * moving / dt);
+            const Vec2 way = pl.action == ArenaAction::Riposte && pl.target < n
+                ? arenaUnit(arenaSub(foes[pl.target].pos, pl.pos), pl.facing) : pl.facing;
+            vel = arenaScaled(way, a.lunge / span * moving / dt);
         }
         // Homing on a soft target: its share this tick, toward it, never past touching (it may have moved).
         if (pl.homeClose > 0.f && alive(pl.soft) && span > kArenaEps) {

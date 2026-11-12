@@ -1875,6 +1875,55 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         rig.runFor(1.0f);
         CHECK(rig.out().enemies[0].brain != ArenaBrain::Down);
     }
+    {   // off to one side: turned onto the enemy over startup (0.1 s), with no tracking, not in the first frame
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        parry(rig, 1.5f, 0.f);
+        rig.put(0, 1.f, 1.1f); // 48 degrees off the facing
+        rig.in.light = true;
+        const float start = std::atan2(rig.out().player.facing.y, rig.out().player.facing.x);
+        REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
+        const float want = std::atan2(1.1f, 1.f);
+        float last = std::atan2(rig.out().player.facing.y, rig.out().player.facing.x);
+        CHECK(last - start < 0.3f * want); // a share of it, no snap
+        bool steady = true;
+        for (int i = 0; i < 5; ++i) {
+            const Vec2 f = rig.tick().player.facing;
+            const float now = std::atan2(f.y, f.x);
+            steady = steady && now >= last - 1e-4f && now - last < 0.3f * want;
+            last = now;
+        }
+        CHECK(steady);
+        CHECK(last == doctest::Approx(want).epsilon(0.01)); // on the enemy as the blow lands
+        rig.run(20);
+        CHECK(rig.fight.stats().ripostes == 1);
+    }
+    {   // off to one side with a lunge: it goes at the enemy, so the body is where a riposte snapped onto it would be
+        ArenaFighter f = ruleFighter();
+        f.riposte.lunge = 0.5f;
+        Rig rig(f, {hitterKind(bite)});
+        parry(rig, 1.5f, 0.f);
+        rig.put(0, 1.f, 1.1f); // 48 degrees off the facing
+        const Vec2 from = rig.bodies.player;
+        const Vec2 to{rig.bodies.enemies[0].x - from.x, rig.bodies.enemies[0].y - from.y};
+        const float toLen = std::sqrt(to.x * to.x + to.y * to.y);
+        REQUIRE(toLen > 0.f);
+        const Vec2 way{to.x / toLen, to.y / toLen};
+        rig.in.light = true;
+        // the host moves the body by the fight's velocity, as the runner does
+        const auto step = [&rig] {
+            const ArenaOutput& o = rig.tick();
+            rig.bodies.player.x += o.player.velocity.x * kDt;
+            rig.bodies.player.y += o.player.velocity.y * kDt;
+        };
+        step();
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        while (rig.out().player.action == ArenaAction::Riposte && rig.out().player.actionTime < f.riposte.startup) step();
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        const float span = f.riposte.startup + f.riposte.active;
+        const float gone = f.riposte.lunge * std::min(rig.out().player.actionTime, span) / span;
+        CHECK(rig.bodies.player.x == doctest::Approx(from.x + way.x * gone).epsilon(0.001));
+        CHECK(rig.bodies.player.y == doctest::Approx(from.y + way.y * gone).epsilon(0.001));
+    }
     {   // out of reach: an ordinary light, and the enemy stays open
         Rig rig(ruleFighter(), {hitterKind(bite)});
         parry(rig, 1.5f, 0.f);
@@ -7096,4 +7145,36 @@ TEST_CASE("arena checks: soft target is n/a when no attack could take one") {
     free.runFor(0.1f);
     CHECK(free.fight.stats().softChances >= 1);
     CHECK(free.fight.stats().softTargets >= 1);
+}
+
+TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk, 0 let go, unknown outside a walk") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 6.f};
+    ArenaFighter fighter = ruleFighter();
+    fighter.moveAccel = 20.f; // eased, so letting go leaves a slide
+    fighter.moveBrake = 40.f;
+    Rig rig(fighter, {dummyKind()}, 1, ring);
+    rig.put(0, -20.f, 0.f);
+    rig.in.move = Vec2{0.5f, 0.f};
+    CHECK(rig.tick().player.wantSpeed == doctest::Approx(0.5f * fighter.moveSpeed));
+    rig.run(10);
+    rig.in.move = Vec2{};
+    {
+        const ArenaOutput& o = rig.tick();
+        CHECK(o.player.wantSpeed == 0.f); // let go: braking toward a stand
+        const float v = std::sqrt(o.player.velocity.x * o.player.velocity.x + o.player.velocity.y * o.player.velocity.y);
+        REQUIRE(v > 0.f);
+        CHECK(o.player.stopDistance == doctest::Approx(v * v / (2.f * fighter.moveBrake))); // the slide left at the brake
+    }
+    rig.in.move = Vec2{0.f, 1.f};
+    rig.in.dodge = true;
+    CHECK(rig.tick().player.wantSpeed == -1.f); // a roll moves by its own rule
+    rig.in.dodge = false;
+    rig.run(60);
+    REQUIRE(rig.out().player.action == ArenaAction::Move);
+    CHECK(rig.out().player.wantSpeed == doctest::Approx(fighter.moveSpeed));
+    rig.in.light = true;
+    const ArenaOutput& hit = rig.tick();
+    REQUIRE(hit.player.action == ArenaAction::Light);
+    CHECK(hit.player.wantSpeed == -1.f); // an attack's walk is its own (AttackMove)
+    CHECK(hit.player.stopDistance == -1.f);
 }

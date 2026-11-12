@@ -503,6 +503,8 @@ private:
 	// it sets the strikes' upper share. A median, not one step: a body pushed in and out against another swings step to
 	// step, and the gait and the foot lock would flip with it each frame.
 	float PlayerStepSpeed = 0.f;
+	float LeadWantSpeed = -1.f; // the walk's wanted pace handed to the lead's legs (m/s; -1 unknown), held through a hit pause
+	float LeadStopDistance = -1.f; // and how far the body would slide at the brake (m; -1 unknown), held with it
 	float PlayerSteps[3] = {0.f, 0.f, 0.f};
 	int32 PlayerStepAt = -1; // the next slot in PlayerSteps; -1 after a start, a teleport or a facing snap
 	float PlayerStepFacing = 0.f; // rad, at the last step
@@ -625,7 +627,8 @@ private:
 	// stinger (Now), and the counts for the check line.
 	ftcore::ArenaJolt Jolt;
 	float ShakeOverride = -1.f;
-	// -ArenaGlide=<toward|across|away|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// -ArenaGlide=<toward|across|away|pulse|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// (pulse: 0.8 s toward, 0.6 s let go, 0.8 s away, 0.6 s let go, over and over)
 	// to its target (toward, across to the right, away) whenever the autopilot itself leaves the stick at rest, so its
 	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
 	int32 GlideStick = -1;

@@ -52,6 +52,8 @@ struct FFTArenaPose
 	float Speed = 0.f;                  // m/s on the ground: idle or walk
 	float LegYaw = 0.f;                 // degrees the legs turn from Yaw toward the way the body moves (+ right)
 	bool bFootLock = false;             // the feet held where they stand (a strike whose clip has the legs)
+	float WantSpeed = -1.f;             // m/s the walk heads for (0: braking to a stand; below 0 unknown: no starts or stops)
+	float StopDistance = -1.f;          // m left to slide while braking to a stand (below 0 unknown)
 
 	// The attack under way: its part, how far through that part (0..1) and how the arm moves.
 	bool bAttacking = false;

@@ -41,6 +41,8 @@ constexpr FightClip kStrikeClips[] = {FightClip::StrikeLeft, FightClip::StrikeRi
 constexpr const TCHAR* kBeatClipsFile = TEXT("Data/Anim/beat_clips.json");
 // A clip with no impact in the table meets its beat this far through.
 constexpr float kDefaultKeyShare = 0.4f;
+// The fastest a riposte's counter or finisher plays to reach its impact (a strike's: FightTuning::maxRate).
+constexpr float kQuickClipRate = 3.f;
 bool IsAttack(ftcore::ArenaAction A)
 {
 	return A == ftcore::ArenaAction::Light || A == ftcore::ArenaAction::Heavy || A == ftcore::ArenaAction::Riposte
@@ -715,7 +717,8 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 			FightClip Played = FightClip::Stance;
 			if (Want == FightClip::Counter || Want == FightClip::Finisher)
 			{
-				Played = Animator.play(Want, T, KeyAt) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
+				// Long clips (a second of wind-up) on a riposte's short startup: faster, so less of the wind-up is skipped.
+				Played = Animator.play(Want, T, KeyAt, kQuickClipRate) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
 			}
 			else
 			{
