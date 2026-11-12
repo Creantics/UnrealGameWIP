@@ -307,8 +307,36 @@ TEST_CASE("settings menu: stick flicks are off by default and the row toggles th
     out.stickFlicks = true;
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK_FALSE(out.stickFlicks);
-    // The row sits just above Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 2u == kSettingsRowCount);
+    // The row sits above Camera shake and Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 3u == kSettingsRowCount);
+}
+
+TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down to 0, and saves") {
+    Settings s;
+    CHECK(s.cameraShake == 1.f);
+    SettingsMenu m;
+    char value[32];
+    CHECK(std::string(settingsRowLabel(SettingsRow::CameraShake)) == "Camera shake");
+    settingsRowValue(s, SettingsRow::CameraShake, value, sizeof value);
+    CHECK(std::string(value) == "100%");
+    CHECK(m.click(s, SettingsRow::CameraShake, 1) == SettingsAction::None); // already full
+    for (int i = 0; i < 10; ++i) CHECK(m.click(s, SettingsRow::CameraShake, -1) == SettingsAction::Changed);
+    CHECK(s.cameraShake == 0.f);
+    CHECK(m.click(s, SettingsRow::CameraShake, -1) == SettingsAction::None);
+    settingsRowValue(s, SettingsRow::CameraShake, value, sizeof value);
+    CHECK(std::string(value) == "0%");
+    // Off survives a save; an old file without the field reads full; out of range clamps.
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK(out.cameraShake == 0.f);
+    CHECK(out == s);
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.cameraShake == 1.f);
+    REQUIRE(decodeSettings(R"({"version":1,"cameraShake":7})", out, nullptr));
+    CHECK(out.cameraShake == 1.f);
+    REQUIRE(decodeSettings(R"({"version":1,"cameraShake":-2})", out, nullptr));
+    CHECK(out.cameraShake == 0.f);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 2u == kSettingsRowCount);
 }
 
 TEST_CASE("settings: option flags mirror the assist switches") {

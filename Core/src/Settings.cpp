@@ -69,6 +69,7 @@ void clampSettings(Settings& s) {
     s.music = clampFloat(s.music, 0.f, 1.f, d.music);
     s.voice = clampFloat(s.voice, 0.f, 1.f, d.voice);
     s.sfx = clampFloat(s.sfx, 0.f, 1.f, d.sfx);
+    s.cameraShake = clampFloat(s.cameraShake, 0.f, 1.f, d.cameraShake);
 }
 
 std::string encodeSettings(const Settings& in) {
@@ -79,14 +80,14 @@ std::string encodeSettings(const Settings& in) {
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
-                  "\"skipChoices\":%s,\"stickFlicks\":%s}",
+                  "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
                   static_cast<int>(s.defenceAssist), static_cast<int>(s.subtitleSize),
                   s.reduceFlashes ? "true" : "false", s.qteAutoComplete ? "true" : "false",
                   s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
-                  s.stickFlicks ? "true" : "false");
+                  s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake));
     return buf;
 }
 
@@ -137,6 +138,7 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.holdToggle = boolField("holdToggle", s.holdToggle);
     s.skipChoices = boolField("skipChoices", s.skipChoices);
     s.stickFlicks = boolField("stickFlicks", s.stickFlicks);
+    s.cameraShake = floatField("cameraShake", s.cameraShake);
     clampSettings(s);
     out = s;
     return true;
@@ -159,6 +161,7 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::HoldToggle: return "Hold inputs";
     case SettingsRow::SkipChoices: return "Skip choices";
     case SettingsRow::StickFlicks: return "Stick flicks";
+    case SettingsRow::CameraShake: return "Camera shake";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -194,10 +197,11 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
     } else if (row == SettingsRow::AutoDelay) {
         n = std::snprintf(buf, cap, "%.2f s", static_cast<double>(s.autoDelay));
     } else {
-        const float v = row == SettingsRow::Master  ? s.master
-                        : row == SettingsRow::Music ? s.music
-                        : row == SettingsRow::Voice ? s.voice
-                                                    : s.sfx;
+        const float v = row == SettingsRow::Master        ? s.master
+                        : row == SettingsRow::Music       ? s.music
+                        : row == SettingsRow::Voice       ? s.voice
+                        : row == SettingsRow::CameraShake ? s.cameraShake
+                                                          : s.sfx;
         n = std::snprintf(buf, cap, "%d%%", static_cast<int>(std::lround(v * 100.f)));
     }
     if (n < 0) {
@@ -225,6 +229,7 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     case SettingsRow::HoldToggle: return setBool(s.holdToggle, dir, wrap);
     case SettingsRow::SkipChoices: return setBool(s.skipChoices, dir, wrap);
     case SettingsRow::StickFlicks: return setBool(s.stickFlicks, dir, wrap);
+    case SettingsRow::CameraShake: return stepFloat(s.cameraShake, stepTenth(s.cameraShake, step));
     case SettingsRow::Back: break;
     }
     return false;
