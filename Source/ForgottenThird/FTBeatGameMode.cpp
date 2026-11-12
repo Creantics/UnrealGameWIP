@@ -610,6 +610,10 @@ void AFTBeatGameMode::Finish()
 		{
 			FTRequestExit(bWon ? 0 : 1, TEXT("Beat"));
 		}
+		else if (Screen.quitChosen())
+		{
+			FTStep::QuitToTitle(this, TEXT("Demo"), TEXT("the beat screen")); // the default title map (AFTGameMode::TitleMap)
+		}
 		return;
 	}
 	if (Screen.quitChosen())

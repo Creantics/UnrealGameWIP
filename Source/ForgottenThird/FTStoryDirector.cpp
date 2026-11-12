@@ -863,7 +863,10 @@ void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
 			}
 		}
 	}
-	Story->FaceTally.add(Route, !Track.IsEmpty(), bPlayed);
+	if (Story->FaceTally.firstTime(FT::ToUtf8(LineId)))
+	{
+		Story->FaceTally.add(Route, !Track.IsEmpty(), bPlayed);
+	}
 	if (Route == ftcore::FaceRoute::NoFace && !bLoggedNoFace)
 	{
 		bLoggedNoFace = true;

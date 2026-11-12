@@ -19,7 +19,9 @@
 //   target lead (kLeadA 0, kLeadB 1), the kind is the selected gift (Heal 0, Guard 1, Count 2). A press at a
 //   non-lead has no side and writes nothing.
 //   The per-kind press counters (counter wides) roll back with the fight step (storyEndStep: the story marks the
-//   step as it opens and goes back to the mark on a retry or a quit), so a retried fight counts afresh.
+//   step as it opens and goes back to the mark on a retry or a quit), so a fight the story retries counts
+//   afresh. A retry inside the screen (BeatScreen::restartFight, the battle demo's next round) does not
+//   go back to the mark yet: no screen counts presses today.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 

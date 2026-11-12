@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include <cstring>
+#include <string>
 #include <string_view>
 
 using namespace ftcore;
@@ -41,6 +42,28 @@ TEST_CASE("FaceLineTally counts each voiced line once and plays only with a trac
     CHECK(t.format(small, sizeof small) == 7);
     CHECK(std::strlen(small) == 7);
     CHECK(t.format(nullptr, 4) == 0);
+}
+
+TEST_CASE("FaceLineTally counts a line shown again in a row once") {
+    FaceLineTally t;
+    auto voice = [&t](std::string_view id) {
+        if (t.firstTime(id)) t.add(FaceRoute::Own, true, true);
+    };
+    voice("VO-A-001");
+    voice("VO-A-001"); // re-presented after a resume or a reload
+    voice("VO-A-002");
+    voice("VO-A-002");
+    voice("VO-A-001"); // shown again after another line: counts again
+    voice("");         // no id: always counted
+    voice("");
+    CHECK(t.voiced == 5);
+    CHECK(t.played == 5);
+    CHECK(t.repeats == 2);
+    const std::string longId(64, 'x'); // past the kept length: never a repeat
+    voice(longId);
+    voice(longId);
+    CHECK(t.voiced == 7);
+    CHECK(t.repeats == 2);
 }
 
 TEST_CASE("storyShotNameOk takes plain names only") {

@@ -8,7 +8,8 @@
 // stand-in faces (a face that speaks for any cast speaker, such as the dialogue map's preview).
 //
 //   switch (ftcore::pickFaceRoute(cast, ownFaces, standIns)) { ... }
-//   tally.add(route, played);          // played: a track started on a face with bound shapes
+//   if (tally.firstTime(lineId))       // a line shown again (a resume, a reload) counts once
+//       tally.add(route, track, played); // played: a track started on a face with bound shapes
 //   tally.format(buffer, sizeof buffer); // "Story: FACES ..." (counts only)
 
 #include <cstddef>
@@ -38,6 +39,24 @@ struct FaceLineTally {
     std::uint32_t played = 0;  // lines whose track played on at least one face with bound shapes
     std::uint32_t noTrack = 0; // cast lines with a face but no track file
     std::uint32_t unseen = 0;  // a track file, but it played on no face with bound shapes (bad file, no shapes)
+    std::uint32_t repeats = 0; // voice events for the line tallied last (not counted again)
+
+    // False (and one more repeat) when lineId is the line tallied last, else remembers it. An empty or
+    // over-long id (past 63 characters) is never a repeat. Only the last line is kept: a line shown again
+    // after others (a back step past it) counts again.
+    bool firstTime(std::string_view lineId) {
+        if (lineId.empty() || lineId.size() >= sizeof last_) {
+            last_[0] = '\0';
+            return true;
+        }
+        if (lineId == std::string_view(last_)) {
+            ++repeats;
+            return false;
+        }
+        for (std::size_t i = 0; i < lineId.size(); ++i) last_[i] = lineId[i];
+        last_[lineId.size()] = '\0';
+        return true;
+    }
 
     // played: the track started on a face with at least one shape bound to its mesh.
     // track: the line has a track file (only counted for routes with a face).
@@ -69,6 +88,9 @@ struct FaceLineTally {
         }
         return static_cast<std::size_t>(n) < capacity ? static_cast<std::size_t>(n) : capacity - 1;
     }
+
+private:
+    char last_[64] = {};
 };
 
 // -StoryShot: a name part (the prefix or a line id) is safe when it is 1..64 characters of letters,
