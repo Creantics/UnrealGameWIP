@@ -1904,7 +1904,10 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         parry(rig, 1.5f, 0.f);
         rig.put(0, 1.f, 1.1f); // 48 degrees off the facing
         const Vec2 from = rig.bodies.player;
-        const Vec2 way = arenaUnit(arenaSub(rig.bodies.enemies[0], from), Vec2{1.f, 0.f});
+        const Vec2 to{rig.bodies.enemies[0].x - from.x, rig.bodies.enemies[0].y - from.y};
+        const float toLen = std::sqrt(to.x * to.x + to.y * to.y);
+        REQUIRE(toLen > 0.f);
+        const Vec2 way{to.x / toLen, to.y / toLen};
         rig.in.light = true;
         REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
         while (rig.out().player.action == ArenaAction::Riposte && rig.out().player.actionTime < f.riposte.startup) rig.tick();
@@ -7148,7 +7151,7 @@ TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk
     {
         const ArenaOutput& o = rig.tick();
         CHECK(o.player.wantSpeed == 0.f); // let go: braking toward a stand
-        const float v = arenaLength(o.player.velocity);
+        const float v = std::sqrt(o.player.velocity.x * o.player.velocity.x + o.player.velocity.y * o.player.velocity.y);
         REQUIRE(v > 0.f);
         CHECK(o.player.stopDistance == doctest::Approx(v * v / (2.f * fighter.moveBrake))); // the slide left at the brake
     }
