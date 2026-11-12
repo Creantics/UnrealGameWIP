@@ -1,10 +1,29 @@
 #include "ftcore/LookBody.h"
 
+#include <cstddef>
+
 namespace ftcore::look {
 
 namespace {
+char Lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+// True when `word` (non-empty) is found in `text`, in any case.
 bool Holds(std::string_view text, std::string_view word) {
-    return !word.empty() && text.find(word) != std::string_view::npos;
+    if (word.empty() || word.size() > text.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i + word.size() <= text.size(); ++i) {
+        std::size_t j = 0;
+        while (j < word.size() && Lower(text[i + j]) == Lower(word[j])) {
+            ++j;
+        }
+        if (j == word.size()) {
+            return true;
+        }
+    }
+    return false;
 }
 } // namespace
 

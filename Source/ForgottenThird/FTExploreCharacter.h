@@ -281,6 +281,7 @@ private:
 	void EnterLookDev();
 	void FixExposure(float Bias);
 	void GreyGround();
+	void Nightfall();
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 

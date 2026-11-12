@@ -5,7 +5,9 @@
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/DirectionalLightComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/RectLightComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -306,6 +308,28 @@ void AFTExploreCharacter::BeginPlay()
 				FixExposure(Bias);
 			}
 		}
+		// Exposure-range check: -ExploreNight dims the sun to moonlight and the sky to a night sky (the gate lamps stay
+		// lit); -ExploreExposureRange=<min>,<max> meters auto-exposure within that EV100 range instead of the map's.
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreNight")))
+		{
+			Nightfall();
+		}
+		FString Range;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
+		{
+			FString Lo, Hi;
+			if (Range.Split(TEXT(","), &Lo, &Hi) && Camera)
+			{
+				FPostProcessSettings& Post = Camera->PostProcessSettings;
+				Post.bOverride_AutoExposureMinBrightness = true;
+				Post.AutoExposureMinBrightness = FCString::Atof(*Lo);
+				Post.bOverride_AutoExposureMaxBrightness = true;
+				Post.AutoExposureMaxBrightness = FCString::Atof(*Hi);
+				Camera->PostProcessBlendWeight = 1.f;
+				UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: auto-exposure range %.2f..%.2f EV100."),
+					Post.AutoExposureMinBrightness, Post.AutoExposureMaxBrightness);
+			}
+		}
 		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
@@ -490,6 +514,28 @@ void AFTExploreCharacter::FixExposure(float Bias)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: fixed exposure, bias %.2f."), Bias);
 }
 
+void AFTExploreCharacter::Nightfall()
+{
+	int32 Dimmed = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UDirectionalLightComponent*> Suns(*It);
+		for (UDirectionalLightComponent* Sun : Suns)
+		{
+			Sun->SetIntensity(Sun->Intensity * 0.002f); // about 0.2 lux of moonlight from a 100 lux sun
+			Sun->SetLightColor(FLinearColor(0.6f, 0.7f, 1.f));
+			++Dimmed;
+		}
+		TInlineComponentArray<USkyLightComponent*> Skies(*It);
+		for (USkyLightComponent* Sky : Skies)
+		{
+			Sky->SetIntensity(Sky->Intensity * 0.01f);
+			++Dimmed;
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: night (%d sun and sky lights dimmed)."), Dimmed);
+}
+
 void AFTExploreCharacter::GreyGround()
 {
 	// The Explore map's surfaces are tints of one material (MI_Explore_<name>); the green and earth ones go grey.
@@ -606,8 +652,70 @@ void AFTExploreCharacter::EnterLookDev()
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s)."), Hidden, LookDevSpin);
 }
 
-void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
+#if !UE_BUILD_SHIPPING
+namespace
 {
+// -LookFrontProbe=<closed>+<open> (look-dev, headless): the look worn with one garment pair (in place of its own) made of two existing
+// meshes, so the runtime open/closed switch (FTLook::SetFront) can be exercised before a real open mesh exists. The
+// closed half is added to the pieces unless either half is listed. False without the flag or when it doesn't parse.
+bool FrontProbeLook(const FFTLeadLook& Look, FFTLeadLook& Out)
+{
+	FString Arg;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("LookFrontProbe="), Arg))
+	{
+		return false;
+	}
+	FString Closed, Open;
+	if (!Arg.Split(TEXT("+"), &Closed, &Open) || Closed.IsEmpty() || Open.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: -LookFrontProbe=%s isn't <closed>+<open>; ignored."), *Arg);
+		return false;
+	}
+	Out = Look;
+	FFTGarmentFronts Pair;
+	Pair.Closed = FSoftObjectPath(Closed);
+	Pair.Open = FSoftObjectPath(Open);
+	Pair.bOpen = false;
+	Out.Fronts = {Pair};  // alone: a configured pair naming the same mesh would match first
+	if (!Out.PiecePaths.Contains(Pair.Closed) && !Out.PiecePaths.Contains(Pair.Open))
+	{
+		Out.PiecePaths.Add(Pair.Closed);
+	}
+	return true;
+}
+
+// One line per piece: its mesh, whether the body leads its pose, and what each slot shows.
+void LogPieces(const TCHAR* Step, const USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces)
+{
+	for (const USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (!Piece)
+		{
+			continue;
+		}
+		FString Slots;
+		for (int32 I = 0; I < Piece->GetNumMaterials(); ++I)
+		{
+			const UMaterialInterface* Material = Piece->GetMaterial(I);
+			Slots += FString::Printf(TEXT(" [%d]%s"), I, Material ? *Material->GetName() : TEXT("none"));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FRONT_PROBE %s: %s leader=%s slots:%s"), Step,
+			Piece->GetSkeletalMeshAsset() ? *Piece->GetSkeletalMeshAsset()->GetName() : TEXT("none"),
+			Piece->LeaderPoseComponent.Get() == &Body ? TEXT("body") : TEXT("OTHER"), *Slots);
+	}
+}
+}
+#endif
+
+void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
+{
+#if !UE_BUILD_SHIPPING
+	FFTLeadLook ProbeLook;
+	const bool bFrontProbe = FrontProbeLook(InLook, ProbeLook);
+	const FFTLeadLook& Look = bFrontProbe ? ProbeLook : InLook;
+#else
+	const FFTLeadLook& Look = InLook;
+#endif
 	// A new look is a swap: the safe points the last lead walked stay with it.
 	Unstick.reset();
 	// Grooms first: they may be bound to a piece.
@@ -651,6 +759,17 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, Body ? *Body->GetName() : TEXT("none"), BodyComponent->GetRelativeRotation().Yaw, Pieces.Num(), Cloth,
 		GroomComponents.Num(), *Loaded.ClipFolder);
+#if !UE_BUILD_SHIPPING
+	if (bFrontProbe)
+	{
+		LogPieces(TEXT("setup"), *BodyComponent, Pieces);
+		const int32 Opened = FTLook::SetFront(Look, WornFronts, *BodyComponent, Pieces, FString(), true, TEXT("FTExploreCharacter"));
+		LogPieces(TEXT("open"), *BodyComponent, Pieces);
+		const int32 Closed = FTLook::SetFront(Look, WornFronts, *BodyComponent, Pieces, FString(), false, TEXT("FTExploreCharacter"));
+		LogPieces(TEXT("closed"), *BodyComponent, Pieces);
+		UE_LOG(LogForgottenThird, Display, TEXT("FRONT_PROBE done: %d piece(s) opened, %d closed."), Opened, Closed);
+	}
+#endif
 	// A body that didn't load keeps the clips worn with it.
 	if (Loaded.Body)
 	{

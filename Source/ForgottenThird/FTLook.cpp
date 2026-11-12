@@ -84,6 +84,8 @@ const FPieceFilter& PieceFilter()
 	static const FPieceFilter Filter = []
 	{
 		FPieceFilter F;
+#if !UE_BUILD_SHIPPING
+		// Look-dev only: a shipping build always wears every piece.
 		F.bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
 		FString NoPiece;
 		if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
@@ -95,6 +97,7 @@ const FPieceFilter& PieceFilter()
 				F.Words.push_back(FT::ToUtf8(Word));
 			}
 		}
+#endif
 		return F;
 	}();
 	return Filter;
@@ -212,6 +215,17 @@ FFTWornFronts FTLook::PrepareFronts(const FFTLeadLook& Look, const TCHAR* Who)
 	}
 	if (!Look.Fronts.IsEmpty())
 	{
+		// SwapMaterials warns at setup about a swap that doesn't load; here it is only left out.
+		for (const FFTMaterialSwap& Swap : Look.MaterialSwaps)
+		{
+			UMaterialInterface* From = Cast<UMaterialInterface>(Swap.From.TryLoad());
+			UMaterialInterface* To = Cast<UMaterialInterface>(Swap.To.TryLoad());
+			if (From && To)
+			{
+				Fronts.SwapFrom.Add(From);
+				Fronts.SwapTo.Add(To);
+			}
+		}
 		WarnUnmatched(FrontPairs(Look, Fronts), FrontAsks(), Who);
 	}
 	return Fronts;
@@ -284,7 +298,10 @@ int32 FTLook::SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USk
 		Piece->EmptyOverrideMaterials();
 		Piece->SetLeaderPoseComponent(&Body, /*bForceUpdate=*/true);
 		Piece->RecreateClothingActors();
-		SwapMaterials(Body, {Piece}, Look.MaterialSwaps, Who);
+		for (int32 S = 0; S < Fronts.SwapFrom.Num() && S < Fronts.SwapTo.Num(); ++S)
+		{
+			SwapSlots(*Piece, Fronts.SwapFrom[S], Fronts.SwapTo[S]);
+		}
 		++Changed;
 	}
 	return Changed;
@@ -443,6 +460,38 @@ int32 FTLook::AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 	return Added;
 }
 
+int32 FTLook::SwapSlots(USkeletalMeshComponent& Component, const UMaterialInterface* From, UMaterialInterface* To)
+{
+	if (!From || !To)
+	{
+		return 0;
+	}
+	// A slot shows From when its material is From or an instance made from it (a runtime or per-LOD copy).
+	auto Shows = [From](const UMaterialInterface* Material)
+	{
+		for (int32 Depth = 0; Material && Depth < 8; ++Depth)
+		{
+			if (Material == From || Material->GetPathName() == From->GetPathName())
+			{
+				return true;
+			}
+			const UMaterialInstance* Instance = Cast<UMaterialInstance>(Material);
+			Material = Instance ? Instance->Parent.Get() : nullptr;
+		}
+		return false;
+	};
+	int32 Slots = 0;
+	for (int32 I = 0; I < Component.GetNumMaterials(); ++I)
+	{
+		if (Shows(Component.GetMaterial(I)))
+		{
+			Component.SetMaterial(I, To);
+			++Slots;
+		}
+	}
+	return Slots;
+}
+
 int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
 	const TArray<FFTMaterialSwap>& Swaps, const TCHAR* Who)
 {
@@ -457,36 +506,10 @@ int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPt
 				*Swap.To.ToString(), From ? *Swap.To.ToString() : *Swap.From.ToString());
 			continue;
 		}
-		int32 Slots = 0;
-		// A slot shows From when its material is From or an instance made from it (a runtime or per-LOD copy).
-		auto Shows = [From](const UMaterialInterface* Material)
-		{
-			for (int32 Depth = 0; Material && Depth < 8; ++Depth)
-			{
-				if (Material == From || Material->GetPathName() == From->GetPathName())
-				{
-					return true;
-				}
-				const UMaterialInstance* Instance = Cast<UMaterialInstance>(Material);
-				Material = Instance ? Instance->Parent.Get() : nullptr;
-			}
-			return false;
-		};
-		auto SwapOn = [&Shows, To, &Slots](USkeletalMeshComponent* Component)
-		{
-			for (int32 I = 0; Component && I < Component->GetNumMaterials(); ++I)
-			{
-				if (Shows(Component->GetMaterial(I)))
-				{
-					Component->SetMaterial(I, To);
-					++Slots;
-				}
-			}
-		};
-		SwapOn(&Body);
+		int32 Slots = SwapSlots(Body, From, To);
 		for (USkeletalMeshComponent* Piece : Pieces)
 		{
-			SwapOn(Piece);
+			Slots += Piece ? SwapSlots(*Piece, From, To) : 0;
 		}
 		if (Slots == 0)
 		{

@@ -13,10 +13,10 @@
 
 namespace ftcore::look {
 
-// True when the piece is left off: every piece is (noPieces) or its name holds one of the words.
+// True when the piece is left off: every piece is (noPieces) or its name holds one of the words (any case).
 FTCORE_API bool PieceLeftOff(std::string_view piece, bool noPieces, const std::vector<std::string>& noWords);
 
-// True when the cut body won't do: some cover word names none of the worn pieces. No cover words: never.
+// True when the cut body won't do: some cover word names (any case) none of the worn pieces. No cover words: never.
 FTCORE_API bool NeedsFullBody(const std::vector<std::string>& coverWords, const std::vector<std::string>& wornPieces);
 
 } // namespace ftcore::look

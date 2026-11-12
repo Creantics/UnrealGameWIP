@@ -27,3 +27,10 @@ TEST_CASE("look body: pieces left off by the command-line words") {
     CHECK_FALSE(PieceLeftOff("duy_r4_jacket_k3b_g7c", false, {"hair"}));
     CHECK_FALSE(PieceLeftOff("duy_r4_jacket_k3b_g7c", false, {""}));
 }
+
+TEST_CASE("look body: words match pieces in any case") {
+    CHECK(PieceLeftOff("SKM_Face", false, {"face"}));
+    CHECK(PieceLeftOff("skm_face", false, {"FACE"}));
+    CHECK_FALSE(NeedsFullBody({"Jacket"}, {"SK_Duy_jacket_r5"}));
+    CHECK(NeedsFullBody({"JACKET"}, {"SK_Duy_Tee_r3"}));
+}

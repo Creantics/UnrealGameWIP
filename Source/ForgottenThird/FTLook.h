@@ -21,6 +21,7 @@
 
 class AActor;
 class UAnimSequence;
+class UMaterialInterface;
 class USceneComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
@@ -79,6 +80,12 @@ struct FFTWornFronts
 	TArray<TObjectPtr<USkeletalMesh>> Closed;
 	UPROPERTY()
 	TArray<TObjectPtr<USkeletalMesh>> Open;
+	// The look's MaterialSwaps, resolved once when the look has pairs (one entry per swap that loads, From and To at
+	// the same index), so a switch re-applies them without loading.
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInterface>> SwapFrom;
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInterface>> SwapTo;
 };
 
 // One party member's look. An empty body path (or one that doesn't load) uses the member's own body under
@@ -160,7 +167,8 @@ FORGOTTENTHIRD_API bool SetSceneFronts(const FString& Asks);
 
 // Switches the worn pieces of the look's pairs that `Word` names (any case, in the asset name; every pair when empty)
 // to `bOpen`, using the meshes PrepareFronts held. Each such piece component gets the other fitted mesh: its material
-// overrides are dropped (the new mesh's own slots show) and the look's MaterialSwaps applied again, the leader pose map
+// overrides are dropped (the new mesh's own slots show) and the look's swaps (held in Fronts) applied again on it, quietly
+// where its slots show none of their Froms; the leader pose map
 // is rebuilt on `Body` and the cloth actors are made again. A word naming no pair is warned about. Returns how many
 // pieces changed.
 FORGOTTENTHIRD_API int32 SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
@@ -175,6 +183,10 @@ FORGOTTENTHIRD_API int32 AddPieces(AActor& Owner, USkeletalMeshComponent& Body, 
 // when no piece is). Returns how many were added.
 FORGOTTENTHIRD_API int32 AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
 	const TArray<FFTGroomLook>& Grooms, TArray<TObjectPtr<USceneComponent>>& OutGrooms, const TCHAR* Who);
+
+// Puts To in every slot of the component that shows From (From itself or an instance made from it), quietly. Returns
+// how many slots changed.
+FORGOTTENTHIRD_API int32 SwapSlots(USkeletalMeshComponent& Component, const UMaterialInterface* From, UMaterialInterface* To);
 
 // Puts each swap's To in every slot of the body and the pieces that shows its From. A swap that doesn't load or whose
 // From no slot shows is warned about, naming `Who`. Returns how many slots changed.

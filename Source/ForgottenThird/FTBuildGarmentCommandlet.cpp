@@ -216,6 +216,57 @@ FString PackageFile(const FString& Package)
 	return FPackageName::LongPackageNameToFilename(Package, FPackageName::GetAssetPackageExtension());
 }
 
+// The old asset files, moved aside (to <file>.ftold, which the asset registry ignores) while the new ones are built.
+// Unless Commit() is called, the destructor deletes whatever was written in their place and moves them back.
+class FSetAside
+{
+public:
+	~FSetAside()
+	{
+		IFileManager& Files = IFileManager::Get();
+		for (const FString& File : Moved)
+		{
+			if (bCommitted)
+			{
+				Files.Delete(*(File + TEXT(".ftold")), false, true, true);
+				continue;
+			}
+			Files.Delete(*File, false, true, true);
+			if (!Files.Move(*File, *(File + TEXT(".ftold"))))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: couldn't put back %s (left as %s.ftold)."), *File, *File);
+			}
+		}
+		if (!bCommitted && !Moved.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildGarment: build failed; %d old assets put back."), Moved.Num());
+		}
+	}
+
+	// Moves the file aside when it exists; false (logged) when it can't be.
+	bool Add(const FString& File)
+	{
+		IFileManager& Files = IFileManager::Get();
+		if (!Files.FileExists(*File))
+		{
+			return true;
+		}
+		if (!Files.Move(*(File + TEXT(".ftold")), *File))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: couldn't set aside %s."), *File);
+			return false;
+		}
+		Moved.Add(File);
+		return true;
+	}
+
+	void Commit() { bCommitted = true; }
+
+private:
+	TArray<FString> Moved;
+	bool bCommitted = false;
+};
+
 template <typename T>
 T* AddExpression(UMaterial* Material, int32 X, int32 Y)
 {
@@ -541,7 +592,8 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 	const ftcore::GarmentTile Tiles[] = {ftcore::GarmentTile::Leather, ftcore::GarmentTile::Twill, ftcore::GarmentTile::Knit};
 	const TArray<FSubstance> All = Substances();
 
-	// Start the shared assets from nothing, before anything loads the old ones.
+	// Start the shared assets from nothing, before anything loads the old ones. The old files are set aside, not
+	// deleted, and come back unless every new asset compiles and saves (a failed build keeps the shared materials).
 	FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().WaitForCompletion();
 	TArray<FString> Packages = {Folder + TEXT("M_FTGarment"), Folder + TEXT("M_FTGarmentCloth"), Folder + TEXT("T_FTGarmentFlatNormal"),
 		Folder + TEXT("T_FTGarmentORM"), Folder + TEXT("T_FTGarmentWear"), Folder + TEXT("T_FTGarmentWhite")};
@@ -554,12 +606,11 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 	{
 		Packages.Add(Folder + TEXT("MI_FTGarment_") + S.Name);
 	}
+	FSetAside Old;
 	for (const FString& Package : Packages)
 	{
-		const FString File = PackageFile(Package);
-		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+		if (!Old.Add(PackageFile(Package)))
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: couldn't replace %s."), *File);
 			return 1;
 		}
 	}
@@ -633,6 +684,7 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
+	Old.Commit();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildGarment: built 2 masters (%d expressions each), %d substances, %d detail tiles."),
 		Lit->GetExpressionCollection().Expressions.Num(), All.Num(), static_cast<int32>(UE_ARRAY_COUNT(Tiles)));
 	return 0;

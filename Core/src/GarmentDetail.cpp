@@ -79,12 +79,12 @@ float leatherAt(const GarmentTileSettings& s, float u, float v) {
     cellDistances(s.seed, 1, n, wu * static_cast<float>(n), wv * static_cast<float>(n), a1, a2);
     cellDistances(s.seed, 3, n2, wu * static_cast<float>(n2), wv * static_cast<float>(n2), b1, b2);
     const float big = smoothstep01(0.f, 0.25f, a2 - a1);    // grooves between the large pebbles
-    const float small = smoothstep01(0.f, 0.2f, b2 - b1);   // and the finer ones
+    const float fine = smoothstep01(0.f, 0.2f, b2 - b1);   // and the finer ones
     const float dome = 1.f - std::min(a1 * a1, 1.f);        // rounded tops
     const float crinkle = tileNoise(s.seed, 5, n * 4, u, v);
     const float creaseField = tileNoise(s.seed, 8, std::max(n / 5, 2u), wu, wv);
     const float crease = 1.f - smoothstep01(0.f, 0.025f, std::fabs(creaseField - 0.5f));
-    return 0.45f * big + 0.25f * small + 0.15f * dome + 0.15f * crinkle - 0.3f * crease;
+    return 0.45f * big + 0.25f * fine + 0.15f * dome + 0.15f * crinkle - 0.3f * crease;
 }
 
 // 2/1 twill: on a repeats x repeats yarn grid the warp floats over two picks and under one, stepping one
