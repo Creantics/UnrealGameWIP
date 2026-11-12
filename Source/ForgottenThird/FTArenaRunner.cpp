@@ -14,6 +14,12 @@
 #include "Engine/World.h"
 #include "FTActionButtons.h"
 #include "FTArenaFighter.h"
+#include "FTArenaJoltModifier.h"
+#include "FTBeatBossMetronome.h"
+#include "FTSettingsSubsystem.h"
+#include "Components/AudioComponent.h"
+#include "Engine/GameInstance.h"
+#include "Kismet/GameplayStatics.h"
 #include "FTGameInstance.h"
 #include "FTInputBindings.h"
 #include "FTPauseSubsystem.h"
@@ -285,6 +291,26 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot aims and shoots on the way in with a guns kit (-ArenaAutoShoot)."));
 	}
+	// -ArenaCameraShake=<0..1>: the jolt's scale for this run, over the player's setting (headless runs read no settings).
+	ShakeOverride = -1.f;
+	float Shake = 1.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaCameraShake="), Shake))
+	{
+		ShakeOverride = FMath::IsFinite(Shake) ? FMath::Clamp(Shake, 0.f, 1.f) : 0.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera shake %.2f for this run (-ArenaCameraShake)."), ShakeOverride);
+	}
+	Jolt = ftcore::ArenaJolt();
+	JoltAsks = 0;
+	JoltApplied = 0.f;
+	OffFrameWindups = 0;
+	Stingers = 0;
+	LastStinger = -1e9;
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		bOffFrame[I] = false;
+		bWindupTold[I] = false;
+		OffFrameSince[I] = -1e9;
+	}
 	bSharedCount = Setup.bSharedCount && bAutoPlay;
 	if (bSharedCount)
 	{
@@ -351,6 +377,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
 	SteerCamera(DeltaSeconds);
 	ApplyAimCamera();
+	TickImpact(bHold ? 0.f : DeltaSeconds);
 
 	if (Fight.over())
 	{
@@ -385,6 +412,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 
 void UFTArenaRunner::End()
 {
+	EndImpact();
 	EndStoneBearer();
 	EndKite();
 	EndKindCrits();
@@ -1696,6 +1724,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 	}
 	for (const ftcore::ArenaEvent& E : Events)
 	{
+		KickJolt(E);
 		switch (E.type)
 		{
 		case ftcore::ArenaEventType::Hit:
@@ -2497,6 +2526,163 @@ void UFTArenaRunner::LogFeatureChecks() const
 	// Two leads on one count (the partner scripted under -ArenaSharedCount): a held blow's bonus landed.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shared count bonus %s (%d held, %d joined, %d bonuses, +%d damage)."),
 		Verdict(SessionBonuses > 0, bSharedCount && Session != nullptr), SessionHeldBlows, SessionJoins, SessionBonuses, SessionBonusDamage);
+	// Impact (ftcore/ArenaImpact.h): numbers only, no verdict. The jolt is rotation only (the arm and the field of view
+	// are never touched); the marker is the off-frame tell and the stinger only doubles it.
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: jolt (%d blows asked; peak %.2f deg handed to the camera; camera shake %.2f)."),
+		JoltAsks, JoltApplied, ShakeScale());
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: off-frame tells (%d windups off frame; %d stingers%s)."), OffFrameWindups, Stingers,
+		(Stingers > 0 && !StingerAudio) ? TEXT(", no audio device: the marker alone") : TEXT(""));
+	// Pace: time-to-kill per slot and the punish windows used, waiting for a play report (no pass mark).
+	char Pace[256];
+	ftcore::arenaPaceText(S, Fight.enemyCount(), Pace, sizeof Pace);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: %s."), UTF8_TO_TCHAR(Pace));
+}
+
+const ftcore::Settings* UFTArenaRunner::GetSettings() const
+{
+	const UWorld* World = GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	const UFTSettingsSubsystem* Sub = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	return Sub ? &Sub->Get() : nullptr;
+}
+
+float UFTArenaRunner::ShakeScale() const
+{
+	if (ShakeOverride >= 0.f)
+	{
+		return ShakeOverride;
+	}
+	const ftcore::Settings* Settings = GetSettings();
+	return Settings ? Settings->cameraShake : 1.f;
+}
+
+void UFTArenaRunner::KickJolt(const ftcore::ArenaEvent& E)
+{
+	const float Degrees = ftcore::arenaJoltOf(Fight.def(), E);
+	if (Degrees <= 0.f)
+	{
+		return;
+	}
+	++JoltAsks;
+	// The yaw swings first toward the enemy in the exchange (the one hit, or the one hitting).
+	const uint8 Other = E.source == ftcore::kArenaPlayer ? E.target : E.source;
+	float Side = 1.f;
+	if (Other < Fight.enemyCount())
+	{
+		Side = ftcore::arenaBearing(CameraView.eye, CameraView.forward, Bodies.enemies[Other]) < 0.f ? -1.f : 1.f;
+	}
+	Jolt.kick(Degrees, ShakeScale(), Side);
+}
+
+void UFTArenaRunner::TickImpact(float DeltaSeconds)
+{
+	APlayerController* PC = GetPC();
+	APlayerCameraManager* Camera = PC ? PC->PlayerCameraManager.Get() : nullptr;
+
+	// The jolt, on the frame's clock.
+	Jolt.step(DeltaSeconds);
+	const float Pitch = Jolt.pitch();
+	const float Yaw = Jolt.yaw();
+	JoltApplied = FMath::Max(JoltApplied, FMath::Max(FMath::Abs(Pitch), FMath::Abs(Yaw)));
+	if (Camera && !JoltModifier)
+	{
+		JoltModifier = Cast<UFTArenaJoltModifier>(Camera->AddNewCameraModifier(UFTArenaJoltModifier::StaticClass()));
+	}
+	if (JoltModifier)
+	{
+		JoltModifier->SetOffsets(Pitch, Yaw);
+	}
+
+	// The off-frame tells, against the view the camera last rendered (its place, facing and horizontal field of view).
+	if (Camera)
+	{
+		const FVector Eye = Camera->GetCameraLocation();
+		const FVector Forward = Camera->GetCameraRotation().Vector();
+		CameraView.eye = ftcore::Vec2{static_cast<float>(Eye.X / 100.0), static_cast<float>(Eye.Y / 100.0)};
+		const FVector2D Flat = FVector2D(Forward.X, Forward.Y).GetSafeNormal();
+		if (!Flat.IsNearlyZero())
+		{
+			CameraView.forward = ftcore::Vec2{static_cast<float>(Flat.X), static_cast<float>(Flat.Y)};
+		}
+		CameraView.halfAngle = FMath::Clamp(Camera->GetFOVAngle() * 0.5f, 5.f, 85.f);
+	}
+	ftcore::ArenaTellBody TellBodies[ftcore::kMaxArenaEnemies];
+	const size_t Count = FMath::Min(static_cast<size_t>(Fight.enemyCount()), ftcore::kMaxArenaEnemies);
+	for (size_t I = 0; I < Count; ++I)
+	{
+		TellBodies[I] = ftcore::arenaTellBody(Fight, I, Bodies.enemies[I]);
+	}
+	const ftcore::ArenaOffFrameTells Tells =
+		(Camera && !Fight.over()) ? ftcore::arenaOffFrameTells(CameraView, TellBodies, Count) : ftcore::ArenaOffFrameTells();
+	bool bNow[ftcore::kMaxArenaEnemies] = {};
+	float BearingOf[ftcore::kMaxArenaEnemies] = {};
+	for (size_t K = 0; K < Tells.count; ++K)
+	{
+		bNow[Tells.items[K].enemy] = true;
+		BearingOf[Tells.items[K].enemy] = Tells.items[K].bearing;
+	}
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		const size_t Slot = static_cast<size_t>(I);
+		if (Slot >= Count || !TellBodies[Slot].winding)
+		{
+			bWindupTold[I] = false; // the next windup is told afresh
+		}
+		bOffFrame[I] = bNow[Slot];
+		if (!bNow[Slot] || bWindupTold[I])
+		{
+			continue;
+		}
+		// Once per windup: the marker's onset pulse starts with it (OffFrameSince), and the stinger doubles it, no closer
+		// than kStingerGap to the last one so two windups at once sound once.
+		bWindupTold[I] = true;
+		OffFrameSince[I] = Now; // once per windup: a body hovering at the view's edge doesn't ring again
+		++OffFrameWindups;
+		constexpr double kStingerGap = 0.25;
+		const bool bSting = Now - LastStinger >= kStingerGap;
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d winds up off frame (bearing %.0f deg)%s."), Fight.time(), I,
+			BearingOf[Slot], bSting ? TEXT(": stinger") : TEXT(""));
+		if (!bSting)
+		{
+			continue;
+		}
+		LastStinger = Now;
+		++Stingers;
+		// Made on the first stinger; the sound is asked for again while there is none (no audio device yet, or -nosound).
+		if (!Stinger)
+		{
+			Stinger = NewObject<UFTBeatBossMetronome>(this);
+		}
+		if (!StingerAudio)
+		{
+			StingerAudio = UGameplayStatics::SpawnSound2D(this, Stinger, 1.f, 1.f, 0.f, nullptr, false, false);
+		}
+		if (StingerAudio && Stinger)
+		{
+			const ftcore::Settings* Settings = GetSettings();
+			StingerAudio->SetVolumeMultiplier(Settings ? Settings->master * Settings->sfx : 1.f);
+			Stinger->Trigger(UFTBeatBossMetronome::EVoice::Chime);
+		}
+	}
+}
+
+void UFTArenaRunner::EndImpact()
+{
+	if (JoltModifier)
+	{
+		if (APlayerController* PC = GetPC(); PC && PC->PlayerCameraManager)
+		{
+			PC->PlayerCameraManager->RemoveCameraModifier(JoltModifier);
+		}
+		JoltModifier = nullptr;
+	}
+	if (StingerAudio)
+	{
+		StingerAudio->Stop();
+		StingerAudio = nullptr;
+	}
+	Stinger = nullptr;
+	Jolt = ftcore::ArenaJolt();
 }
 
 void UFTArenaRunner::Restart()

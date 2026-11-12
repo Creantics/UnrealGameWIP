@@ -128,6 +128,14 @@ warning when above 0) is the share of the zone's edge where a player standing on
 taller than the camera, so a bad spot is known before it is played: a giant at a tower plaza is 67% (`lat_plaza_a` with
 `-ArenaLineup=titan`), a giant's climax zone 0 to 15%, the human-sized facades 27%.
 
+**Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:
+the player's blows by their move's `jolt`, an enemy's blow on the lead by its move's `jolt` (the kit's `hurtJolt` when it
+names none), a blocked blow by half. A kick replaces the one running only when it is stronger, so a blow on three enemies
+kicks once. It is rotation only, added by a camera modifier after the camera has placed itself
+(`UFTArenaJoltModifier`): the control rotation, the arm and the field of view are never touched, so it never pulls the
+camera out, and it plays through the hit pause. The **Camera shake** setting (0 to 100%, in tenths) scales it; 0 turns it
+off. `-ArenaCameraShake=<0..1>` sets the scale for a run (headless runs read no settings).
+
 ### The shipped zones
 
 District-frame offsets from the level layout notes (ids and numbers only). Each runs with any boss; the default line-up is
@@ -410,6 +418,15 @@ over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it n
 - `shared count bonus`: two leads on one count, a held blow's bonus landed: `(<held> held, <joined> joined, <n>
   bonuses, +<damage> damage)`. n/a without `-ArenaSharedCount`.
 
+Three more lines carry numbers only, no verdict:
+
+- `jolt (<n> blows asked; peak <deg> deg handed to the camera; camera shake <scale>)`: 0.00 peak at camera shake 0;
+- `off-frame tells (<n> windups off frame; <m> stingers)`, with "no audio device: the marker alone" when a stinger fired with no sound to play it (`-nosound`);
+- `pace: kills <n>, ttk 0 <s> s, 1 n/a; punish <used>/<windows> windows used`: per enemy slot, the mean seconds from
+  the lead's first blow on it to its death (n/a for a slot never killed), and the punish windows (a run of an enemy
+  staggered, open or down, counted once) the lead's side landed a blow in, summed over fights again. They wait for a
+  play report.
+
 `-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. `-ArenaAutoShoot` has it aim and
 shoot with a guns kit on the way in (the target in the shot's range and outside the light chain's reach, a dodge's
 stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit. On a skirmisher
@@ -552,8 +569,13 @@ Presses are read each frame and handed to the fight on its next step, so no pres
   floor shows the move's reach. A shot (a move with a `width`, a straight lane) shows two dashed rails
   instead, the lane's edges for the player's centre, running out from the shooter to its reach; step
   outside them before it fires and it misses. The moment the move goes active the bar turns white, NOW shows and a
-  burst flashes. An enemy winding up off the screen shows as an arrow at the screen's edge in the
-  tell's colour.
+  burst flashes.
+- **Off-frame tells:** an enemy winding up off the screen, or out of the camera's view less a 6 degree margin
+  (`arenaOffFrameTells`, from the camera's place, facing and field of view), shows as an arrow at the screen's edge
+  in the tell's colour, with the answer beside it and a bar filling toward the hit. It swells and rings once at the
+  windup's onset (a steady arrow with Reduce flashes on). A stinger (a chime, at master times effects volume) doubles
+  the onset once per windup, no closer than 0.25 s to the last; the arrow is the tell, so it reads with the sound off.
+  At impact the arrow turns white.
 - **Read cards:** while a deal is open, three cards sit on the tell bar (the answer moves above them), each
   with its key number and the shape it names. The picked card turns green when right and red when wrong,
   the others dim. If the enemy is off the screen the cards show at the bottom centre instead.
@@ -575,6 +597,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
+| `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |

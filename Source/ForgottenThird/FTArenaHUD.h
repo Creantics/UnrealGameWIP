@@ -66,7 +66,11 @@ private:
 	void DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen);
 	// The open Read deal's cards, centred on X with their bottom at Bottom.
 	void DrawReadCards(const UFTArenaRunner& Mode, float X, float Bottom);
-	void DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color);
+	// An arrow at the screen's edge toward Toward (screen space, + right and down). For an off-frame windup: Pulse 1..0
+	// swells it and rings it at the windup's onset, Fill (0..1; below 0: none) fills a bar beside it toward the hit, and
+	// Word (the answer) is written beside it, so the tell reads with the sound off.
+	void DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color, float Pulse = 0.f, float Fill = -1.f,
+		const FString* Word = nullptr);
 	void DrawLock(const UFTArenaRunner& Mode);
 	void DrawPopups(const UFTArenaRunner& Mode);
 	void DrawFlashes(const UFTArenaRunner& Mode);

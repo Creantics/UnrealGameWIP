@@ -148,6 +148,7 @@ TEST_CASE("arena jolt: a hit by the player takes its move's jolt; a hit on the p
     CHECK(arenaJoltOf(def, event(ArenaEventType::Hit, kArenaPlayer, 0, kArenaShotMove)) == 0.f); // not a guns kit
     CHECK(arenaJoltOf(def, event(ArenaEventType::Hit, 0, kArenaPlayer, 7)) == 0.f);
     CHECK(arenaJoltOf(def, event(ArenaEventType::Hit, 4, kArenaPlayer, 0)) == 0.f);
+    CHECK(arenaJoltOf(def, event(ArenaEventType::HostHit, kArenaPlayer, 0, kArenaHeavyMove)) == 0.f); // a bonus, no blow
 }
 
 TEST_CASE("arena jolt: scale 0 is no jolt at all, and the kick is bounded, settles to 0, and never grows") {
@@ -264,6 +265,14 @@ TEST_CASE("arena off-frame tells: bearings from the camera, + right, and only th
         wide.halfAngle = 60.f;
         CHECK(arenaOffFrameTells(wide, bodies.data(), bodies.size()).count == 1); // only the one beside the camera
     }
+    SUBCASE("a margin as wide as the view, or a NaN view: only a body dead ahead stays in frame") {
+        ArenaView v = view;
+        v.margin = 50.f;
+        CHECK(arenaOffFrameTells(v, bodies.data(), bodies.size()).count == 3);
+        v.margin = 0.f;
+        v.halfAngle = std::numeric_limits<float>::quiet_NaN();
+        CHECK(arenaOffFrameTells(v, bodies.data(), bodies.size()).count == 3);
+    }
     SUBCASE("no bodies, a null list, more than kMaxArenaEnemies") {
         CHECK(arenaOffFrameTells(view, nullptr, 3).count == 0);
         std::array<ArenaTellBody, kMaxArenaEnemies + 2> many{};
@@ -379,9 +388,8 @@ TEST_CASE("arena pace: a stagger opens one punish window, a blow in it uses it, 
     CHECK(rig.fight.stats().punishUsed == 1);
     rig.light(); // a second blow in the same window counts once
     CHECK(rig.fight.stats().punishUsed == 1);
-    rig.run(90); // it gets up: the window closes unused-again
+    rig.run(90); // it gets up: the window closes
     REQUIRE(rig.brain() != ArenaBrain::Staggered);
-    const float firstBlowTo = rig.fight.time();
     CHECK(rig.fight.stats().kills == 0);
     CHECK(rig.fight.stats().killCount[0] == 0);
     for (int i = 0; i < 20 && rig.fight.enemyAlive(0); ++i) rig.light();
@@ -389,9 +397,9 @@ TEST_CASE("arena pace: a stagger opens one punish window, a blow in it uses it, 
     const ArenaStats& s = rig.fight.stats();
     CHECK(s.kills == 1);
     CHECK(s.killCount[0] == 1);
-    // From the first light's hit (0.1 + 0.1 s in) to the death, within the fight's time.
-    CHECK(s.killSeconds[0] > firstBlowTo - 0.25f);
-    CHECK(s.killSeconds[0] < rig.fight.time());
+    // Timed from the first light's hit, about 0.1 s into the fight: within a step of the fight's time less that.
+    CHECK(s.killSeconds[0] > rig.fight.time() - 0.6f - 0.15f);
+    CHECK(s.killSeconds[0] < rig.fight.time() - 0.05f);
     CHECK(s.punishUsed <= s.punishWindows);
     char line[160];
     const std::size_t n = arenaPaceText(s, 1, line, sizeof line);
@@ -419,10 +427,12 @@ TEST_CASE("arena pace: a parry's Open turning Down by the riposte is one window,
 
 TEST_CASE("arena pace: the counters sum over a restart, and a kill with no blow of the player's adds no time") {
     Rig rig(kit(), dummy(10, 1000.f));
+    rig.run(60); // a second before the first blow is not counted
     rig.light(); // 10 hp: one light kills
     REQUIRE_FALSE(rig.fight.enemyAlive(0));
     const float first = rig.fight.stats().killSeconds[0];
     CHECK(rig.fight.stats().killCount[0] == 1);
+    CHECK(first < 0.1f); // the light's blow is its first and its last: not timed from the fight's start (1.1 s)
     rig.fight.restart();
     rig.run(30); // a pause before the first blow of the second fight is not counted
     rig.light();
@@ -436,6 +446,30 @@ TEST_CASE("arena pace: the counters sum over a restart, and a kill with no blow 
     char line[96];
     arenaPaceText(s, 2, line, sizeof line);
     CHECK(std::string(line) == "pace: kills 1, ttk 0 n/a, 1 n/a; punish 0/0 windows used");
+}
+
+TEST_CASE("arena pace: a host's blow is a blow of the player's side: it times the kill and uses a window") {
+    Rig rig(kit(), dummy(40, 15.f));
+    rig.run(30);
+    REQUIRE(rig.fight.hostBlow(0, 10, 0)); // outside a tick: the fight's clock, 0.5 s
+    rig.run(30);
+    rig.light(); // 10 hp and 10 poise: still standing
+    rig.light(); // 20 poise of 15: it staggers
+    REQUIRE(rig.brain() == ArenaBrain::Staggered);
+    CHECK(rig.fight.stats().punishWindows == 1);
+    CHECK(rig.fight.stats().punishUsed == 0);
+    REQUIRE(rig.fight.hostBlow(0, 5, 0)); // lands in the window; 5 hp left (40 - 10 - 20 - 5)
+    CHECK(rig.fight.stats().punishUsed == 1);
+    CHECK(rig.fight.enemyAlive(0));
+    rig.run(1);
+    const float at = rig.fight.time();
+    REQUIRE(rig.fight.hostBlow(0, 50, 0)); // the kill
+    rig.run(1);
+    REQUIRE_FALSE(rig.fight.enemyAlive(0));
+    const ArenaStats& s = rig.fight.stats();
+    CHECK(s.kills == 1);
+    CHECK(s.killCount[0] == 1);
+    CHECK(s.killSeconds[0] == doctest::Approx(at - 0.5f).epsilon(0.02)); // from the first host blow, not the first light
 }
 
 TEST_CASE("arena pace: the line reads n/a with nothing to time, and always fits its buffer") {

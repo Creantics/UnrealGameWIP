@@ -20,6 +20,7 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
@@ -37,6 +38,13 @@
 #include <string_view>
 
 class UFTVfxComponent;
+class UFTArenaJoltModifier;
+class UFTBeatBossMetronome;
+class UAudioComponent;
+namespace ftcore
+{
+struct Settings;
+}
 
 #include "FTArenaRunner.generated.h"
 
@@ -189,6 +197,13 @@ public:
 	const ftcore::ArenaEnemyMove* GetEnemyMove(int32 Index) const;
 	// When enemy Index's current attack went active (far in the past when it hasn't this attack).
 	double GetEnemyActiveSince(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? ActiveSince[Index] : -1e9; }
+	// Off-frame tells (ftcore::arenaOffFrameTells, from the camera's place, facing and field of view): whether enemy Index
+	// is winding up out of the view now, and when this windup first went off frame (GetNow()'s clock). The HUD's edge marker and the
+	// stinger both read this one answer.
+	bool IsOffFrame(int32 Index) const { return Index >= 0 && Index < MaxEnemies && bOffFrame[Index]; }
+	double GetOffFrameSince(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? OffFrameSince[Index] : -1e9; }
+	// The player's settings (null outside a game instance).
+	const ftcore::Settings* GetSettings() const;
 	// When enemy Index was last hit (far in the past when never).
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
@@ -326,6 +341,12 @@ private:
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
+	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
+	void KickJolt(const ftcore::ArenaEvent& E);
+	void TickImpact(float DeltaSeconds);
+	void EndImpact();
+	float ShakeScale() const;
 	// The aim stance this frame (right mouse held) and its reticle point; the camera pulled in by it.
 	void TickAim(float DeltaSeconds);
 	void ApplyAimCamera();
@@ -362,6 +383,14 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// The impact jolt's camera modifier (added to the player's camera manager on the first frame it is there) and the
+	// off-frame stinger's procedural voice and its sound (null with no audio device: the marker carries the tell alone).
+	UPROPERTY()
+	TObjectPtr<UFTArenaJoltModifier> JoltModifier;
+	UPROPERTY()
+	TObjectPtr<UFTBeatBossMetronome> Stinger;
+	UPROPERTY()
+	TObjectPtr<UAudioComponent> StingerAudio;
 	// The stone_bearer's effects: telegraph, impact, hit chips, crit burst and the open weak point's glow.
 	UPROPERTY()
 	FFTArenaBossVfx BossVfx;
@@ -513,6 +542,22 @@ private:
 
 	float CameraYaw = 0.f;
 	float CameraPitch = -16.f;
+
+	// Impact feedback. The jolt, the camera shake the run forces (-ArenaCameraShake=<0..1>; below 0: the setting), the
+	// blows that asked for a kick and the largest offset handed to the camera (degrees). The view the off-frame test
+	// last used; per enemy, whether it is off frame, since when, and whether this windup has been told; the last
+	// stinger (Now), and the counts for the check line.
+	ftcore::ArenaJolt Jolt;
+	float ShakeOverride = -1.f;
+	int32 JoltAsks = 0;
+	float JoltApplied = 0.f;
+	ftcore::ArenaView CameraView;
+	bool bOffFrame[ftcore::kMaxArenaEnemies] = {};
+	double OffFrameSince[ftcore::kMaxArenaEnemies] = {};
+	bool bWindupTold[ftcore::kMaxArenaEnemies] = {};
+	double LastStinger = -1e9;
+	int32 OffFrameWindups = 0;
+	int32 Stingers = 0;
 
 	bool bBegun = false;
 	bool bFiguresSpawned = false;
