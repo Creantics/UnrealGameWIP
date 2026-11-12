@@ -1,6 +1,8 @@
 #include "FTArenaGlide.h"
 
+#include "AnimationRuntime.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkinnedAsset.h"
 #include "FTLocomotionAnimInstance.h"
 #include "ForgottenThird.h"
 
@@ -222,15 +224,22 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 			}
 		}
 	}
-	// The floor is where the balls rest standing still (idle, the legs told under 10 cm/s): a dodge's or a fall's low
-	// pose would put it under the feet of every step after.
-	const bool bStands = Key == Idle && CycleSpeed < 10.f;
+	// The floor is the balls' height in the mesh's reference pose (standing on its ground), read once: the lowest ball
+	// seen would sink under the feet of every step after a dodge's or a foot hold's low frame.
+	if (Floor >= 1e8f && Skin->GetSkinnedAsset())
+	{
+		const FReferenceSkeleton& Ref = Skin->GetSkinnedAsset()->GetRefSkeleton();
+		for (int32 I = 0; I < 2; ++I)
+		{
+			const int32 Bone = Ref.FindBoneIndex(Balls[I]);
+			if (Bone != INDEX_NONE)
+			{
+				Floor = FMath::Min(Floor, static_cast<float>(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, Bone).GetLocation().Z));
+			}
+		}
+	}
 	for (int32 I = 0; I < 2; ++I)
 	{
-		if (bStands)
-		{
-			Floor = FMath::Min(Floor, static_cast<float>(Local[I].Z));
-		}
 		LastBall[I] = Ball[I];
 		LastLocal[I] = Local[I];
 	}
@@ -245,7 +254,7 @@ void FFTArenaGlideProbe::Log() const
 	{
 		return;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: the floor (the lowest ball standing still, in the mesh's space) is at %.1f cm."), Floor < 1e8f ? Floor : 0.f);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: the floor (the balls in the reference pose, in the mesh's space) is at %.1f cm."), Floor < 1e8f ? Floor : 0.f);
 	for (int32 B = 0; B < NumBuckets; ++B)
 	{
 		const FRow& R = Rows[B];

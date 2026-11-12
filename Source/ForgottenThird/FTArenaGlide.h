@@ -2,8 +2,8 @@
 
 // -ArenaGlide: how far the lead's planted foot slides over the ground against how fast its root moves, by what the lead is
 // doing (the action and its part; a light by its chain index). A planted foot that slides while the root travels is the
-// glide a player sees. The planted foot is the slower ball bone within 3 cm of the lowest ball height seen standing still
-// (in the mesh's space). Sample at the start of a frame, before the figures are placed: the bones then are the pose drawn last frame at
+// glide a player sees. The planted foot is the slower ball bone within 3 cm of the balls' height in the mesh's reference
+// pose (in the mesh's space). Sample at the start of a frame, before the figures are placed: the bones then are the pose drawn last frame at
 // last frame's placement, and Drawn names what that pose showed. Body speed is the root's drawn displacement over the
 // frame, not Core's velocity (the figures are drawn between steps). The hit pause and the frames a pose did not move are
 // their own rows. Nothing here allocates per frame.
