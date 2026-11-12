@@ -27,26 +27,75 @@ import sys
 # set_scene_prefix() before parsing (story_import passes its tables' scene_id_prefix).
 SCENE_PREFIX = None
 SCENE_HDR = None
+# The script's heading grammar and act names: the story's tables ('grammar'), set by set_grammar.
+CHAPTER_HDR = PCHAP_HDR = EPI_HDR = PROLOGUE_HDR = ACT_HDR = FILE_ACT = None
+FINALE_MARK = ''
+FINALE_FROM = None
+LABELS = {}
+GRAMMAR_KEYS = {
+    'chapter_heading': 'regex: a numbered chapter heading; groups (number, title)',
+    'part_heading': 'regex: a lettered opening chapter heading; groups (id, title)',
+    'epilogue_heading': 'regex: the closing chapter heading; group (title)',
+    'prologue_heading': 'regex: the opening part heading; group (title)',
+    'act_heading': 'regex: an act heading; groups (heading, numeral, title)',
+    'file_act_heading': "regex: a file's first heading naming its act; groups (heading, numeral, title)",
+    'finale_marker': "text: a file's first heading holding it starts the finale",
+    'finale_from_chapter': 'integer or null: chapters from this number on are the finale',
+    'labels': 'object: the act names, keys act (with one %s for the numeral), prologue, epilogue, finale',
+}
 
 
 def set_scene_prefix(prefix):
     global SCENE_PREFIX, SCENE_HDR
     SCENE_PREFIX = prefix
     SCENE_HDR = re.compile(r'^### (' + re.escape(prefix) + r'[A-Za-z0-9\-]+) · (.*)$')
+
+
+def set_grammar(g):
+    """Set the heading grammar from the tables' 'grammar' object (GRAMMAR_KEYS). Raises ValueError when it does
+    not fit."""
+    global CHAPTER_HDR, PCHAP_HDR, EPI_HDR, PROLOGUE_HDR, ACT_HDR, FILE_ACT, FINALE_MARK, FINALE_FROM, LABELS
+    if not isinstance(g, dict):
+        raise ValueError('grammar is not an object')
+    missing = [k for k in GRAMMAR_KEYS if k not in g]
+    if missing:
+        raise ValueError('grammar lacks: %s' % ', '.join(missing))
+    rx = {}
+    for k in ('chapter_heading', 'part_heading', 'epilogue_heading', 'prologue_heading', 'act_heading',
+              'file_act_heading'):
+        if not isinstance(g[k], str):
+            raise ValueError('grammar.%s is not text' % k)
+        try:
+            rx[k] = re.compile(g[k])
+        except re.error as e:
+            raise ValueError('grammar.%s is not a valid regex: %s' % (k, e))
+    if not isinstance(g['finale_marker'], str) or not g['finale_marker']:
+        raise ValueError('grammar.finale_marker is not non-empty text')
+    ff = g['finale_from_chapter']
+    if ff is not None and (isinstance(ff, bool) or not isinstance(ff, int)):
+        raise ValueError('grammar.finale_from_chapter is not an integer or null')
+    lab = g['labels']
+    if not isinstance(lab, dict) or any(not isinstance(lab.get(k), str) for k in ('act', 'prologue', 'epilogue',
+                                                                                 'finale')):
+        raise ValueError('grammar.labels needs text for act, prologue, epilogue and finale')
+    if lab['act'].count('%s') != 1:
+        raise ValueError("grammar.labels.act needs exactly one %s")
+    CHAPTER_HDR, PCHAP_HDR, EPI_HDR = rx['chapter_heading'], rx['part_heading'], rx['epilogue_heading']
+    PROLOGUE_HDR, ACT_HDR, FILE_ACT = rx['prologue_heading'], rx['act_heading'], rx['file_act_heading']
+    FINALE_MARK, FINALE_FROM, LABELS = g['finale_marker'], ff, dict(lab)
+
+
 LABEL_LINE = re.compile(r'^\*\*([A-Za-z][A-Za-z ]*):\*\*(.*)$')
 MODE_LINE = re.compile(r'^\*\*Mode:\*\* (.*?) · \*\*Gameplay:\*\*(?: (.*))?$')
-CHAPTER_HDR = re.compile(r'^## CHAPTER (\d+) · (.*)$')
-PCHAP_HDR = re.compile(r'^## (P\d) · (.*)$')
-EPI_HDR = re.compile(r'^## EPILOGUE · (.*)$')
-PROLOGUE_HDR = re.compile(r'^## PROLOGUE · (.*)$')
-ACT_HDR = re.compile(r'^# (ACT ([IVX]+)) — (.*)$')
-FILE_ACT = re.compile(r'^# .*PART \d+: (ACT ([IVX]+)) — (.*)$')
 END_MARK = re.compile(r'^\*\*END( OF [A-Z ]+)?\*\*$')
 ITALIC_NOTE = re.compile(r'\s*\((?:[^()]|\([^()]*\))*\)\s*$')
 
 # SPEAKER (delivery): text   |   A and B (delivery): text   |   SPEAKER *(delivery)*: text
+# A speaker is upper case: any upper case letter (the class is built from Unicode, BMP), digits and . ' ’ - / &.
+_UPPER = ''.join(re.escape(chr(c)) for c in range(0x10000) if chr(c).isupper())
+_WHO = '[' + _UPPER + '][' + _UPPER + "0-9 .'’\\-/&]*?"
 SPEAKER = re.compile(
-    r"^(?P<who>[A-Z][A-Z0-9 .'’\-/É&]*?(?: and [A-Z][A-Z0-9 .'’\-/É&]*?)?)"
+    r"^(?P<who>" + _WHO + r"(?: and " + _WHO + r")?)"
     r"(?: \*?\((?P<how>[^)]*)\)\*?)?: (?P<text>.*)$")
 INLINE_DIR = re.compile(r'\*\([^)]*\)\*')
 # in-text player-input notes in the script, e.g. '***CHOICE (flavor only).** ...'
@@ -198,20 +247,20 @@ def _build_scene(lines, start, end, ctx, path):
 
 def file_segments(path):
     """Cover the whole file with ('gap', lines) / ('scene', scene) segments, in order."""
-    if SCENE_HDR is None:
-        raise ValueError('scriptparse: no scene id prefix (call set_scene_prefix first)')
+    if SCENE_HDR is None or CHAPTER_HDR is None:
+        raise ValueError('scriptparse: no scene id prefix or grammar (call set_scene_prefix and set_grammar first)')
     lines = read_lines(path)
     segs, gap = [], []
     act = chap = None
     ctx = {'chapter_id': '', 'chapter_title': '', 'chapter_note': '', 'chapter_heading': '',
            'act': '', 'act_title': '', 'act_heading': ''}
-    # the act named in the file's own H1 ('PART 2: ACT II — ...'); Part 1 and 5 are set by later headings
+    # the act named in the file's own H1 (grammar file_act_heading); other files get theirs from later headings
     if lines and lines[0].startswith('# '):
         fm = FILE_ACT.match(lines[0])
         if fm:
-            ctx.update(act='Act '+fm.group(2), act_title=fm.group(3), act_heading=lines[0])
-        elif 'FINALE' in lines[0]:
-            ctx.update(act='Finale', act_title='FINALE', act_heading=lines[0])
+            ctx.update(act=LABELS['act'] % fm.group(2), act_title=fm.group(3), act_heading=lines[0])
+        elif FINALE_MARK in lines[0]:
+            ctx.update(act=LABELS['finale'], act_title=FINALE_MARK, act_heading=lines[0])
     i, n = 0, len(lines)
     while i < n:
         ln = lines[i]
@@ -227,18 +276,18 @@ def file_segments(path):
             continue
         am = ACT_HDR.match(ln)
         if am:
-            ctx.update(act='Act '+am.group(2), act_title=am.group(3), act_heading=ln)
+            ctx.update(act=LABELS['act'] % am.group(2), act_title=am.group(3), act_heading=ln)
         elif PROLOGUE_HDR.match(ln):
-            ctx.update(act='Prologue', act_title=PROLOGUE_HDR.match(ln).group(1), act_heading=ln,
+            ctx.update(act=LABELS['prologue'], act_title=PROLOGUE_HDR.match(ln).group(1), act_heading=ln,
                        chapter_id='', chapter_title='', chapter_note='', chapter_heading='')
         else:
             ch = _short_chapter(ln)
             if ch:
                 ctx.update(chapter_id=ch[0], chapter_title=ch[1], chapter_note=ch[2], chapter_heading=ln)
                 if ch[0] == 'EP':
-                    ctx.update(act='Epilogue', act_title=ch[1], act_heading=ln)
-                elif ch[0].isdigit() and int(ch[0]) >= 23:
-                    ctx.update(act='Finale', act_title='FINALE')
+                    ctx.update(act=LABELS['epilogue'], act_title=ch[1], act_heading=ln)
+                elif FINALE_FROM is not None and ch[0].isdigit() and int(ch[0]) >= FINALE_FROM:
+                    ctx.update(act=LABELS['finale'], act_title=FINALE_MARK)
         gap.append(ln)
         i += 1
     if gap:
@@ -328,21 +377,42 @@ def self_test(d=None, verbose=True, expect=None):
     return ok
 
 
+def load_grammar(path):
+    """Set the scene id prefix and the grammar from a tables JSON file. Raises ValueError when it does not fit."""
+    import json
+    try:
+        with open(path, encoding='utf-8-sig') as fh:
+            t = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise ValueError('cannot read the tables: %s' % e)
+    if not isinstance(t, dict):
+        raise ValueError('the tables are not a JSON object')
+    prefix = t.get('scene_id_prefix')
+    if not isinstance(prefix, str) or not prefix:
+        raise ValueError('scene_id_prefix is not non-empty text')
+    set_grammar(t.get('grammar'))
+    set_scene_prefix(prefix)
+
+
 if __name__ == '__main__':
-    # scriptparse.py --prefix P DIR [EXPECTED_SCENES]
+    # scriptparse.py --tables TABLES DIR [EXPECTED_SCENES]
     argv = sys.argv[1:]
-    prefix = None
-    if '--prefix' in argv and argv.index('--prefix') + 1 < len(argv):
-        i = argv.index('--prefix')
-        prefix = argv[i + 1]
+    tables = None
+    if '--tables' in argv and argv.index('--tables') + 1 < len(argv):
+        i = argv.index('--tables')
+        tables = argv[i + 1]
         argv = argv[:i] + argv[i + 2:]
     args = [a for a in argv if not a.startswith('-')]
-    if not prefix or (not args and not default_dir()):
-        print('usage: scriptparse.py --prefix SCENE_ID_PREFIX DIR [EXPECTED_SCENES] (or set SCRIPT_DIR)',
+    if not tables or (not args and not default_dir()):
+        print('usage: scriptparse.py --tables TABLES.json DIR [EXPECTED_SCENES] (or set SCRIPT_DIR)',
               file=sys.stderr)
         sys.exit(2)
     if args and not os.path.isdir(args[0]):
         print('scriptparse: no such folder: %s' % args[0], file=sys.stderr)
         sys.exit(2)
-    set_scene_prefix(prefix)
+    try:
+        load_grammar(tables)
+    except ValueError as e:
+        print('scriptparse: %s' % e, file=sys.stderr)
+        sys.exit(2)
     sys.exit(0 if self_test(args[0] if args else None, expect=int(args[1]) if len(args) > 1 else None) else 1)

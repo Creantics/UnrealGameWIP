@@ -410,4 +410,18 @@ if(FTCORE_BUILD_TESTS)
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
+
+    # The story tools' Python tests (made-up data; a private fixture only when VO_TEST_FIXTURE names one). Run
+    # isolated (-I). Skipped when no Python 3.10+ is found; the registry is searched first so the Windows Store
+    # alias is not picked.
+    set(Python3_FIND_REGISTRY FIRST)
+    find_package(Python3 3.10 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME py_story_import COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools/story_import/test_story_import.py)
+        add_test(NAME py_vo_direction COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vo_direction/test_vo_direction.py)
+    else()
+        message(STATUS "ftcore: no Python 3.10+ found; the story tools' Python tests are not registered")
+    endif()
 endif()

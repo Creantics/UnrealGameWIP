@@ -58,6 +58,8 @@ TELL_RX = re.compile(r'\btap(?:s|ping)?\b[^.]{0,80}?\bhold(?:s|ing)?\b', re.I)
 #   choices                    {scene: [[label, scripted, [option, ...]], ...]} for the [CHOICE: ...] inserts, in
 #                              order; option = {text, effects: [[op, flag, value]], next, selectable, miss};
 #                              next 'self' means back to this prompt
+#   grammar                    the script's heading grammar and act names (scriptparse.GRAMMAR_KEYS)
+#   chapter_labels             {prologue, epilogue, chapter}: a scene's chapter heading; chapter holds one %d
 #   mini                       {scene: [[anchor, items], ...]}: the exchange that replaces a MINI insert.
 #                              anchor null: right after the insert's hidden MINI direction; else a unique
 #                              substring of a body line, the items go just before that line. items:
@@ -78,27 +80,132 @@ LADDER_ANCHOR = {}
 GAMEPLAY_KEYWORDS = []
 CHOICES = {}
 MINI = {}
+CHAPTER_LABELS = {}
+MISSING_CHOICE = '[missing choice]'   # the placeholder for a CHOICE insert with no entry in the tables
+
+
+def _text(v):
+    return isinstance(v, str)
+
+
+def _int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _regex(where, v):
+    if not _text(v):
+        return '%s is not text' % where
+    try:
+        re.compile(v)
+    except re.error as e:
+        return '%s is not a valid regex: %s' % (where, e)
+    return None
+
+
+def _check_options(where, opts):
+    if not isinstance(opts, list):
+        return '%s: the options are not a list' % where
+    for i, o in enumerate(opts):
+        if not isinstance(o, dict) or not _text(o.get('text')):
+            return '%s: option %d is not an object with text' % (where, i)
+        if not isinstance(o.get('effects'), list):
+            return '%s: option %d effects are not a list' % (where, i)
+        if not isinstance(o.get('selectable'), bool) or not isinstance(o.get('miss'), bool):
+            return '%s: option %d needs selectable and miss (true or false)' % (where, i)
+        nx = o.get('next', 0)
+        if 'next' not in o or not (nx is None or _text(nx) or _int(nx)):
+            return '%s: option %d next is not null, text or a beat index' % (where, i)
+    return None
+
+
+def check_tables(t):
+    """The tables' shape; returns an error string, or None."""
+    if not isinstance(t, dict):
+        return 'the tables are not a JSON object'
+    need = ('title', 'worlds', 'scene_count', 'script_dir', 'scene_id_prefix', 'hold_ladder', 'ladder_anchor',
+            'gameplay_keywords', 'choices', 'mini', 'grammar', 'chapter_labels')
+    missing = [k for k in need if k not in t]
+    if missing:
+        return 'the tables lack: %s' % ', '.join(missing)
+    for k in ('title', 'script_dir', 'scene_id_prefix'):
+        if not _text(t[k]) or not t[k]:
+            return '%s is not non-empty text' % k
+    if not isinstance(t['worlds'], list) or not all(_text(w) for w in t['worlds']):
+        return 'worlds is not a list of text'
+    if not _int(t['scene_count']) or t['scene_count'] < 0:
+        return 'scene_count is not a whole number'
+    if not isinstance(t['hold_ladder'], dict) or not all(_num(v) for v in t['hold_ladder'].values()):
+        return 'hold_ladder is not an object of seconds'
+    if not isinstance(t['ladder_anchor'], dict):
+        return 'ladder_anchor is not an object'
+    for k, v in t['ladder_anchor'].items():
+        why = _regex('ladder_anchor[%s]' % k, v)
+        if why:
+            return why
+    if not isinstance(t['gameplay_keywords'], list):
+        return 'gameplay_keywords is not a list'
+    for i, e in enumerate(t['gameplay_keywords']):
+        if not isinstance(e, list) or len(e) != 2 or not _text(e[0]):
+            return 'gameplay_keywords[%d] is not a [kind, regex] pair' % i
+        why = _regex('gameplay_keywords[%d]' % i, e[1])
+        if why:
+            return why
+    if not isinstance(t['choices'], dict):
+        return 'choices is not an object'
+    for sid, rows in t['choices'].items():
+        if not isinstance(rows, list):
+            return 'choices[%s] is not a list' % sid
+        for i, r in enumerate(rows):
+            if not isinstance(r, list) or len(r) != 3 or not _text(r[0]) or not isinstance(r[1], bool):
+                return 'choices[%s][%d] is not a [label, scripted, options] row' % (sid, i)
+            why = _check_options('choices[%s][%d]' % (sid, i), r[2])
+            if why:
+                return why
+    if not isinstance(t['mini'], dict):
+        return 'mini is not an object'
+    for sid, rows in t['mini'].items():
+        if not isinstance(rows, list):
+            return 'mini[%s] is not a list' % sid
+        for i, r in enumerate(rows):
+            if (not isinstance(r, list) or len(r) != 2 or not (r[0] is None or _text(r[0]))
+                    or not isinstance(r[1], list)):
+                return 'mini[%s][%d] is not an [anchor, items] pair' % (sid, i)
+            for j, it in enumerate(r[1]):
+                if not isinstance(it, list) or not it or not _text(it[0]):
+                    return 'mini[%s][%d] item %d is not a [kind, ...] list' % (sid, i, j)
+    cl = t['chapter_labels']
+    if not isinstance(cl, dict) or not all(_text(cl.get(k)) for k in ('prologue', 'epilogue', 'chapter')):
+        return 'chapter_labels needs text for prologue, epilogue and chapter'
+    if cl['chapter'].count('%d') != 1:
+        return 'chapter_labels.chapter needs exactly one %d'
+    try:
+        sp.set_grammar(t['grammar'])
+    except ValueError as e:
+        return str(e)
+    return None
 
 
 def load_tables(path):
     """Read the story's tables; returns an error string, or None."""
     global TITLE, WORLDS, SCENE_COUNT, SCRIPT_DIR, SCENE_ID_PREFIX, HOLD_LADDER, LADDER_ANCHOR
-    global GAMEPLAY_KEYWORDS, CHOICES, MINI
+    global GAMEPLAY_KEYWORDS, CHOICES, MINI, CHAPTER_LABELS
     try:
-        with open(path, encoding='utf-8') as fh:
+        with open(path, encoding='utf-8-sig') as fh:
             t = json.load(fh)
     except (OSError, ValueError) as e:
         return 'cannot read the tables: %s' % e
-    need = ('title', 'worlds', 'scene_count', 'script_dir', 'scene_id_prefix', 'hold_ladder', 'ladder_anchor',
-            'gameplay_keywords', 'choices', 'mini')
-    missing = [k for k in need if k not in t]
-    if missing:
-        return 'the tables lack: %s' % ', '.join(missing)
-    TITLE, WORLDS, SCENE_COUNT = t['title'], t['worlds'], int(t['scene_count'])
+    why = check_tables(t)
+    if why:
+        return why
+    TITLE, WORLDS, SCENE_COUNT = t['title'], t['worlds'], t['scene_count']
     SCRIPT_DIR, SCENE_ID_PREFIX, HOLD_LADDER = t['script_dir'], t['scene_id_prefix'], t['hold_ladder']
     LADDER_ANCHOR = {k: re.compile(v) for k, v in t['ladder_anchor'].items()}
     GAMEPLAY_KEYWORDS = [(k, re.compile(rx)) for k, rx in t['gameplay_keywords']]
-    CHOICES, MINI = t['choices'], t['mini']
+    CHOICES, MINI, CHAPTER_LABELS = t['choices'], t['mini'], dict(t['chapter_labels'])
     sp.set_scene_prefix(SCENE_ID_PREFIX)
     return None
 
@@ -149,12 +256,12 @@ def chapter_id(cid):
 def chapter_title(sc):
     cid = sc['chapter_id']
     base = titlecase(sc['chapter_title'])
-    if cid.startswith('P') and cid[1:].isdigit():
-        head = 'Prologue'
-    elif cid == 'EP':
-        head = 'Epilogue'
-    else:
-        head = 'Chapter %d' % int(cid)
+    if cid == 'EP':
+        head = CHAPTER_LABELS['epilogue']
+    elif cid.isdigit():
+        head = CHAPTER_LABELS['chapter'] % int(cid)
+    else:   # the grammar's part_heading ids
+        head = CHAPTER_LABELS['prologue']
     note = re.sub(r'^\*|\*$', '', sc['chapter_note']).strip()
     return '%s · %s%s' % (head, base, (' ' + note) if note else '')
 
@@ -492,9 +599,10 @@ def build(build_dir):
             elif kind == 'CHOICE':
                 spec = CHOICES.get(sid)
                 if spec is None:
+                    # the run fails; the placeholder keeps the scene's shape and copies no note text
                     problems.append('%s: CHOICE insert has no entry in the tables (choices)' % sid)
-                    spec = [(nt[9:60], True, [{'text': nt[9:60], 'effects': [], 'next': None, 'selectable': True,
-                                                   'miss': False}])]
+                    spec = [(MISSING_CHOICE, True, [{'text': MISSING_CHOICE, 'effects': [], 'next': None,
+                                                     'selectable': True, 'miss': False}])]
                 for label, scripted, opts in spec:
                     emit_choice(label, scripted, opts, 'c')
             elif kind == 'HOLD':
