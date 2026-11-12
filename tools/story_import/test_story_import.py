@@ -268,7 +268,7 @@ class TestGoodTables(TablesBase):
         self.assertEqual(ids, ['flag-c'])
 
     def test_bad_flag_pattern(self):
-        for bad in ('', '(F_)[A-Z]+', '[a-z]*', '(', 5, '(?i)F_\\w+'):
+        for bad in ('', '(F_)[A-Z]+', '[a-z]*', '(', 5, '(?i)F_\\w+', 'F_(?i:[a-z]+)', 'F_(?x) A'):
             rc, text = self.run_tool(dict(TABLES, flag_id_pattern=bad))
             self.assertEqual(rc, 2, bad)
             self.assertIn('flag_id_pattern', text, bad)

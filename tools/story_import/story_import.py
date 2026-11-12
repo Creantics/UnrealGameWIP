@@ -197,8 +197,9 @@ def check_tables(t):
                 hold_sets_rx(fp)   # the form hold_sets compiles; inline flags such as (?i) fail here
         except re.error:
             rx = None
-        if rx is None or rx.groups or rx.fullmatch(''):
-            return 'flag_id_pattern is not a regex of flag ids (no groups, never empty)'
+        if (rx is None or rx.groups or rx.fullmatch('') or rx.flags & ~re.UNICODE
+                or re.search(r'\(\?[aiLmsux\-]', fp)):
+            return 'flag_id_pattern is not a regex of flag ids (no groups or inline flags, never empty)'
     if not _int(t['scene_count']) or t['scene_count'] < 0:
         return 'scene_count is not a whole number'
     if not isinstance(t['hold_ladder'], dict) or not all(_num(v) for v in t['hold_ladder'].values()):

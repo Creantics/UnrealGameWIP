@@ -25,7 +25,10 @@ How it maps: dialogue lines become `line` beats (id from the VO list when scene 
 else `TX-...`); italic lines and bold cards become `direction`; `inserts_*.csv` rows are placed before the first body
 line starting with their anchor (curly quotes, `…` and whitespace folded; `@END` = end of scene): GAMEPLAY ->
 `gameplay`, CHOICE -> `choice` (structure in the tables' `choices`), HOLD -> `hold`, OPTIONAL/TIMED/VARIANT -> hidden
-`direction`. Header `Mode`/`Gameplay` and the slate row fill the scene fields. See "Optional fields and importer
+`direction`. A HOLD note sets each flag id listed right after "Sets" (`Sets F_A and F_B`; `Sets F_A (not F_B)` sets
+F_A only; "No flag set" sets nothing); ids match the tables' optional `flag_id_pattern` (default `F_[A-Z0-9_]+`, no
+groups or inline flags), an id running on into a letter, digit, `_` or `-` does not count, and an id missing from
+`flags.csv` is skipped with a warning. Header `Mode`/`Gameplay` and the slate row fill the scene fields. See "Optional fields and importer
 conventions" in the spec for the details and the extra optional fields.
 
 `--check` rebuilds in memory and verifies the files on disk against the spec's rules (the tables' scene count,
