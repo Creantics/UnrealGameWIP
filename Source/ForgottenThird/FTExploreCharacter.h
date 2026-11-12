@@ -215,6 +215,8 @@ private:
 	FVector FeetLocation() const;
 	void SpawnTraversalCourse();
 	void AddPortraitLights();
+	// -ExploreLookDev: a neutral set for judging materials (see the .cpp).
+	void EnterLookDev();
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 
@@ -261,6 +263,10 @@ private:
 	FTimerHandle ShotTimer;
 	// -ExplorePortraitShotEvery=<s>: the step between aiming and shooting (a shot every two steps).
 	float ShotEvery = 2.5f;
+	// -ExploreLookDevSpin=<deg/s>: the look-dev key circles the pawn at this rate (0 holds it still).
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> LookDevPivot;
+	float LookDevSpin = 0.f;
 	// -ExplorePortraitFaceClip=<anim> with -ExplorePortraitFaceTimes=<s,s,..>: each shot holds the face piece on that
 	// clip at its time (one shot per time, yaws repeat), to check expressions in the game.
 	UPROPERTY(Transient)

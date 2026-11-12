@@ -2,8 +2,11 @@
 
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/LightComponent.h"
 #include "Components/RectLightComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EngineUtils.h"
 #include "EnhancedInputComponent.h"
@@ -218,7 +221,11 @@ void AFTExploreCharacter::BeginPlay()
 		}
 		bPortraitJump = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitJump"));
 		bPortraitWalk = bPortraitWalk || bPortraitJump;
-		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDev")))
+		{
+			EnterLookDev();
+		}
+		else if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
 		{
 			AddPortraitLights();
 		}
@@ -313,9 +320,10 @@ void AFTExploreCharacter::StepPortraitShots()
 		bShotAimed = true;
 		return;
 	}
-	const FString File = FaceClip
-		? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
-		: FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
+	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
+	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
@@ -386,6 +394,90 @@ void AFTExploreCharacter::AddPortraitLights()
 		PortraitLights.Add(Light);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait lights on (key, fill, rim)."));
+}
+
+void AFTExploreCharacter::EnterLookDev()
+{
+	// A neutral look-development set, so a material is judged without the map's coloured bounce: every other actor
+	// and every light, sky and fog in the level is hidden (the floor still collides), leaving a black surround; a
+	// mid-grey (0.18) disc goes under the feet; one warm-neutral key high on the camera's left and one soft dim fill
+	// on its right light the pawn. The key hangs off a pivot at the pawn, which -ExploreLookDevSpin=<deg/s> turns.
+	int32 Hidden = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (Actor == this || Actor->IsA<AController>() || Actor->IsA<AHUD>() || Actor->IsA<APlayerCameraManager>())
+		{
+			continue;
+		}
+		Actor->SetActorHiddenInGame(true);
+		TInlineComponentArray<USceneComponent*> Components(Actor);
+		for (USceneComponent* Component : Components)
+		{
+			Component->SetVisibility(false, false);
+			if (ULightComponent* Light = Cast<ULightComponent>(Component))
+			{
+				Light->SetIntensity(0.f);
+			}
+		}
+		++Hidden;
+	}
+	if (UStaticMesh* Disc = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder")))
+	{
+		UStaticMeshComponent* Ground = NewObject<UStaticMeshComponent>(this);
+		Ground->SetStaticMesh(Disc);
+		Ground->SetUsingAbsoluteRotation(true);
+		Ground->SetUsingAbsoluteScale(true);
+		Ground->SetWorldScale3D(FVector(8.0, 8.0, 0.01));
+		Ground->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Ground->SetupAttachment(GetRootComponent());
+		Ground->RegisterComponent();
+		Ground->SetWorldLocation(FeetLocation() + FVector(0.0, 0.0, 0.2));
+		if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
+		{
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, this);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+			Ground->SetMaterial(0, Grey);
+		}
+	}
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevSpin="), LookDevSpin);
+	LookDevPivot = NewObject<USceneComponent>(this);
+	LookDevPivot->SetupAttachment(GetRootComponent());
+	LookDevPivot->SetUsingAbsoluteRotation(true);
+	LookDevPivot->RegisterComponent();
+	// Pivot space at yaw 0: the light sits at -X, so it starts on the side the default (yaw 180) camera looks from.
+	struct FLightSpec
+	{
+		USceneComponent* Parent;
+		FVector Location;
+		float Candelas;
+		float Width;
+		FLinearColor Color;
+	};
+	const FLightSpec Specs[] = {
+		{LookDevPivot, FVector(-250.0, -170.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key
+		{Boom, FVector(-260.0, 240.0, 30.0), 6.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},        // fill
+	};
+	const FVector Target(0.0, 0.0, 20.0);
+	for (const FLightSpec& Spec : Specs)
+	{
+		URectLightComponent* Light = NewObject<URectLightComponent>(this);
+		Light->SetupAttachment(Spec.Parent);
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetRelativeLocation(Spec.Location);
+		Light->SetRelativeRotation((Target - Spec.Location).Rotation());
+		Light->SetIntensityUnits(ELightUnits::Candelas);
+		Light->SetIntensity(Spec.Candelas);
+		Light->SetSourceWidth(Spec.Width);
+		Light->SetSourceHeight(Spec.Width);
+		Light->SetLightColor(Spec.Color);
+		Light->SetAttenuationRadius(1500.f);
+		Light->RegisterComponent();
+		PortraitLights.Add(Light);
+	}
+	// The default camera looks from yaw 180; turn the key round to its side.
+	LookDevPivot->SetWorldRotation(FRotator(0.0, 180.0, 0.0));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s)."), Hidden, LookDevSpin);
 }
 
 void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
@@ -1382,6 +1474,10 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		const FFindFloorResult& Floor = GetCharacterMovement()->CurrentFloor;
 		UE_LOG(LogForgottenThird, Display, TEXT("Hand-back: on CharacterMovement's first frame the mesh moved %+.2f cm, the capsule %+.2f (crouched %d; floor dist %.2f cm, walkable %d)."),
 			GetMesh()->GetComponentLocation().Z - HandBackMeshZ, GetActorLocation().Z - HandBackZ, bIsCrouched ? 1 : 0, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0);
+	}
+	if (LookDevPivot && LookDevSpin != 0.f)
+	{
+		LookDevPivot->AddWorldRotation(FRotator(0.0, LookDevSpin * DeltaSeconds, 0.0));
 	}
 	if (bPortraitWalk)
 	{

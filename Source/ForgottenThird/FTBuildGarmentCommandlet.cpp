@@ -104,18 +104,19 @@ TArray<FSubstance> Substances()
 	TArray<FSubstance> Out;
 	// Leather jacket: semi-matte, pebbled grain, lighter and smoother on worn edges, rougher in creases.
 	Out.Add({TEXT("Leather"), false, GarmentTile::Leather,
-		{{TEXT("Specular"), 0.35f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.3f}, {TEXT("RoughnessOffset"), 0.32f},
+		{{TEXT("Specular"), 0.28f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.3f}, {TEXT("RoughnessOffset"), 0.4f},
 			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.18f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.12f},
 			{TEXT("EdgeLighten"), 0.5f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 2.6f}, {TEXT("DetailSizeB"), 9.f},
-			{TEXT("DetailStrengthA"), 0.45f}, {TEXT("DetailStrengthB"), 0.25f}},
+			{TEXT("DetailStrengthA"), 0.25f}, {TEXT("DetailStrengthB"), 0.12f}},
 		FLinearColor::White, FLinearColor::White});
-	// Woven trousers: cloth shading, twill, matte, no tight highlight.
+	// Woven trousers: cloth shading, matte; the twill only shows within about a metre.
 	Out.Add({TEXT("Woven"), true, GarmentTile::Twill,
-		{{TEXT("Specular"), 0.3f}, {TEXT("RoughnessScale"), 0.f}, {TEXT("RoughnessOffset"), 0.86f}, {TEXT("MicroRoughness"), 0.06f},
-			{TEXT("CavityRoughness"), 0.06f}, {TEXT("CreaseRoughness"), 0.f}, {TEXT("EdgeSmooth"), 0.05f}, {TEXT("EdgeLighten"), 0.25f},
-			{TEXT("CavityDarken"), 0.4f}, {TEXT("DetailSizeA"), 3.f}, {TEXT("DetailSizeB"), 13.f}, {TEXT("DetailStrengthA"), 0.5f},
-			{TEXT("DetailStrengthB"), 0.12f}, {TEXT("FadeNearA"), 40.f}, {TEXT("FadeFarA"), 180.f}, {TEXT("Cloth"), 0.5f}},
-		FLinearColor::White, FLinearColor(1.4f, 1.4f, 1.4f)});
+		{{TEXT("Specular"), 0.3f}, {TEXT("RoughnessScale"), 0.f}, {TEXT("RoughnessOffset"), 0.9f}, {TEXT("MicroRoughness"), 0.04f},
+			{TEXT("CavityRoughness"), 0.04f}, {TEXT("CreaseRoughness"), 0.f}, {TEXT("EdgeSmooth"), 0.05f}, {TEXT("EdgeLighten"), 0.25f},
+			{TEXT("CavityDarken"), 0.2f}, {TEXT("DetailSizeA"), 3.f}, {TEXT("DetailSizeB"), 13.f}, {TEXT("DetailStrengthA"), 0.15f},
+			{TEXT("DetailStrengthB"), 0.04f}, {TEXT("FadeNearA"), 40.f}, {TEXT("FadeFarA"), 100.f}, {TEXT("FadeNearB"), 60.f},
+			{TEXT("FadeFarB"), 150.f}, {TEXT("Cloth"), 0.4f}},
+		FLinearColor::White, FLinearColor(0.6f, 0.6f, 0.6f)});
 	// Jersey tee: cloth shading, soft fuzz, fine knit.
 	Out.Add({TEXT("Knit"), true, GarmentTile::Knit,
 		{{TEXT("Specular"), 0.3f}, {TEXT("RoughnessScale"), 0.f}, {TEXT("RoughnessOffset"), 0.9f}, {TEXT("MicroRoughness"), 0.04f},

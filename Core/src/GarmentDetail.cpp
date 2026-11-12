@@ -43,19 +43,19 @@ float smoothstep01(float edge0, float edge1, float x) {
 
 bool isPowerOfTwo(uint32_t n) { return n != 0 && (n & (n - 1)) == 0; }
 
-// Pebbled grain: distance to the nearest and second-nearest jittered cell point (cell units, wrapping).
-float leatherAt(const GarmentTileSettings& s, float u, float v) {
-    const uint32_t n = s.repeats;
-    const float x = u * static_cast<float>(n), y = v * static_cast<float>(n);
+// Jittered cell distances F1 / F2 (cell units) on an n x n cell grid that wraps; x, y in cell units.
+void cellDistances(uint32_t seed, uint32_t layer, uint32_t n, float x, float y, float& f1, float& f2) {
     const int cx = static_cast<int>(std::floor(x)), cy = static_cast<int>(std::floor(y));
-    float f1 = 9.f, f2 = 9.f;
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
+    const int ni = static_cast<int>(n);
+    f1 = 9.f;
+    f2 = 9.f;
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
             const int gx = cx + dx, gy = cy + dy;
-            const uint32_t wx = static_cast<uint32_t>((gx % static_cast<int>(n) + static_cast<int>(n)) % static_cast<int>(n));
-            const uint32_t wy = static_cast<uint32_t>((gy % static_cast<int>(n) + static_cast<int>(n)) % static_cast<int>(n));
-            const float px = static_cast<float>(gx) + 0.15f + 0.7f * hash01(s.seed, 1, wx, wy);
-            const float py = static_cast<float>(gy) + 0.15f + 0.7f * hash01(s.seed, 2, wx, wy);
+            const uint32_t wx = static_cast<uint32_t>((gx % ni + ni) % ni);
+            const uint32_t wy = static_cast<uint32_t>((gy % ni + ni) % ni);
+            const float px = static_cast<float>(gx) + hash01(seed, layer, wx, wy);
+            const float py = static_cast<float>(gy) + hash01(seed, layer + 1, wx, wy);
             const float d = std::sqrt((px - x) * (px - x) + (py - y) * (py - y));
             if (d < f1) {
                 f2 = f1;
@@ -65,10 +65,26 @@ float leatherAt(const GarmentTileSettings& s, float u, float v) {
             }
         }
     }
-    const float plateau = smoothstep01(0.f, 0.32f, f2 - f1);  // narrow grooves along the cell borders
-    const float dome = 1.f - std::min(f1 * f1, 1.f);          // rounded pebble tops
-    const float crinkle = tileNoise(s.seed, 3, n * 3, u, v);  // fine break-up inside each pebble
-    return 0.62f * plateau + 0.28f * dome + 0.1f * crinkle;
+}
+
+// Pebbled grain: two octaves of fully jittered cells (so pebbles vary in size and shape), warped so the grooves
+// wander, shallow rounded tops, a fine crinkle, and a few long thin creases.
+float leatherAt(const GarmentTileSettings& s, float u, float v) {
+    const uint32_t n = s.repeats;
+    const uint32_t n2 = n * 2 + n / 3;  // second octave, not a multiple of the first
+    const uint32_t warpPeriod = std::max(n / 3, 1u);
+    const float wu = u + (tileNoise(s.seed, 6, warpPeriod, u, v) - 0.5f) * 0.9f / static_cast<float>(n);
+    const float wv = v + (tileNoise(s.seed, 7, warpPeriod, u, v) - 0.5f) * 0.9f / static_cast<float>(n);
+    float a1 = 0.f, a2 = 0.f, b1 = 0.f, b2 = 0.f;
+    cellDistances(s.seed, 1, n, wu * static_cast<float>(n), wv * static_cast<float>(n), a1, a2);
+    cellDistances(s.seed, 3, n2, wu * static_cast<float>(n2), wv * static_cast<float>(n2), b1, b2);
+    const float big = smoothstep01(0.f, 0.25f, a2 - a1);    // grooves between the large pebbles
+    const float small = smoothstep01(0.f, 0.2f, b2 - b1);   // and the finer ones
+    const float dome = 1.f - std::min(a1 * a1, 1.f);        // rounded tops
+    const float crinkle = tileNoise(s.seed, 5, n * 4, u, v);
+    const float creaseField = tileNoise(s.seed, 8, std::max(n / 5, 2u), wu, wv);
+    const float crease = 1.f - smoothstep01(0.f, 0.025f, std::fabs(creaseField - 0.5f));
+    return 0.45f * big + 0.25f * small + 0.15f * dome + 0.15f * crinkle - 0.3f * crease;
 }
 
 // 2/1 twill: on a repeats x repeats yarn grid the warp floats over two picks and under one, stepping one
