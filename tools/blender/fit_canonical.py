@@ -9,7 +9,7 @@
 MESH is .glb / .gltf / .obj / .fbx / .blend; every mesh in it is skinned (armatures and old skinning in it
 are dropped: a service skeleton is never shipped). Landmarks are canonical joint heads in Blender axes
 (metres, facing -Y, soles on z = 0): the 14 in rig_fit.REQUIRED, from 14 clicks or from a service rig
-(AccuRIG for humanoids, UniRig for creatures) through a map {canonical_joint: source_bone}. Extra landmarks
+(an external auto-rigger for humanoids, UniRig for creatures) through a map {canonical_joint: source_bone}. Extra landmarks
 pin their joints exactly.
 
 Steps: fit (rig_fit.fit_joints; left/right averaged unless --no-symmetrize) -> canonical armature with
