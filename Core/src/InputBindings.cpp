@@ -313,29 +313,38 @@ using A = InputAction;
 // Only actions the host reads (ctest hints_read scans Source/ for each); Read and a short-press Map have no host
 // logic yet, so they stay out.
 constexpr InputHintEntry kArenaHint[] = {
-    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move"},
-    {{A::Light}, 1, "input.light"},
-    {{A::Aim}, 1, "input.aim"},
-    {{A::Guard}, 1, "input.guard"},
-    {{A::Roll}, 1, "input.dodge"},
-    {{A::Gift}, 1, "input.heal"},
-    {{A::Release}, 1, "input.release"},
-    {{A::Count}, 1, "input.count"},
-    {{A::ReadPick1, A::ReadPick2, A::ReadPick3}, 3, "input.pick"},
-    {{A::LockOn}, 1, "input.lock"},
-    {{A::TargetPrev, A::TargetNext}, 2, "input.switch"},
-    {{A::Intercept}, 1, "input.intercept"},
+    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move", false},
+    {{A::Light}, 1, "input.light", false},
+    {{A::Light}, 1, "input.heavy", true},
+    {{A::Aim}, 1, "input.aim", false},
+    {{A::Guard}, 1, "input.guard", false},
+    {{A::Roll}, 1, "input.dodge", false},
+    {{A::Gift}, 1, "input.heal", false},
+    {{A::Release}, 1, "input.release", false},
+    {{A::Count}, 1, "input.count", false},
+    {{A::ReadPick1, A::ReadPick2, A::ReadPick3}, 3, "input.pick", false},
+    {{A::LockOn}, 1, "input.lock", false},
+    {{A::TargetPrev, A::TargetNext}, 2, "input.switch", false},
+    {{A::Intercept}, 1, "input.intercept", false},
 };
 constexpr InputHintEntry kFieldHint[] = {
-    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move"},
-    {{A::Run}, 1, "input.run"},
-    {{A::Jump}, 1, "input.jump"},
-    {{A::Light}, 1, "input.light"},
-    {{A::Aim}, 1, "input.aim"},
-    {{A::Interact}, 1, "input.use"},
-    {{A::SwitchLead}, 1, "input.lead"},
-    {{A::Party}, 1, "input.party"},
+    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move", false},
+    {{A::Run}, 1, "input.run", false},
+    {{A::Jump}, 1, "input.jump", false},
+    {{A::Light}, 1, "input.light", false},
+    {{A::Light}, 1, "input.heavy", true},
+    {{A::Aim}, 1, "input.aim", false},
+    {{A::Crouch}, 1, "input.crouch", false},
+    {{A::Roll}, 1, "input.dodge", false},
+    {{A::Interact}, 1, "input.use", false},
+    {{A::SwitchLead}, 1, "input.lead", false},
+    {{A::Party}, 1, "input.party", false},
 };
+
+// What the host reads but no controls line names, each on purpose (ctest hints_read checks both ways): the map key
+// shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause};
+static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {
     const char* key;
@@ -403,7 +412,7 @@ std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, Input
         const InputAction a = e.actions[i];
         const InputKeyName& n = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(a) % kInputActionCount];
         if (!n.empty()) {
-            addPiece(keys, inputKeyLabel(n.view()));
+            addPiece(keys, e.held ? std::string(kInputHoldPrefix) + std::string(inputKeyLabel(n.view())) : std::string(inputKeyLabel(n.view())));
             continue;
         }
         const char* route = inputActionRoute(a, d);

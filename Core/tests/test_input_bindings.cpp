@@ -227,7 +227,8 @@ bool piecesFromTable(const InputBindings& b, const InputHintEntry& e, InputDevic
             const InputAction a = e.actions[i];
             const InputKeyName& n = b.keys[static_cast<std::size_t>(d)][static_cast<std::size_t>(a)];
             if (!n.empty()) {
-                found = found || piece == inputKeyLabel(n.view());
+                const std::string label(inputKeyLabel(n.view()));
+                found = found || piece == (e.held ? std::string(kInputHoldPrefix) + label : label);
                 continue;
             }
             const char* route = inputActionRoute(a, d);
@@ -271,10 +272,11 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
     const InputBindings b = defaultInputBindings();
     checkLines(b);
     CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) ==
-          "W/A/S/D input.move  LMB input.light  RMB input.aim  Ctrl input.guard  Alt input.dodge  G input.heal  "
+          "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  G input.heal  "
           "R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  V input.intercept");
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
-          "LS input.move  LS full input.run  A input.jump  RT input.light  LT input.aim  X input.use  D-pad right input.lead  "
+          "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  D-pad left input.crouch  "
+          "B input.dodge  X input.use  D-pad right input.lead  "
           "Hold View input.party");
     // None of the retired keys shows on the keyboard lines.
     const std::string keys = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) + "  " +

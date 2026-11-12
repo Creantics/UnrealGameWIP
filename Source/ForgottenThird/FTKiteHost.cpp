@@ -133,8 +133,6 @@ ftcore::ArenaBlowRuling FFTKiteHost::RuleLeadBlow(const ftcore::ArenaBlow& Blow)
 		OnCritLanded(Result, T);
 	}
 	OnHitTaken(Result.crit, T);
-	// A veto belongs in Bars, where the held blow's bonus is ruled too; one here would let the bonus through.
-	ensureMsgf(!Ruling.veto, TEXT("Kite-Mother: a lead blow vetoed outside Bars; move the bar into Bars so the held-blow bonus follows it."));
 	return Ruling;
 }
 

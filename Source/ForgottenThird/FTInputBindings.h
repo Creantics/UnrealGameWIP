@@ -17,6 +17,8 @@
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
@@ -144,11 +146,29 @@ inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevi
 	return Line.GetValue();
 }
 
-// Whether the game window has lost focus: the engine lets go of every key then, so a hold read as a release would fire
-// a press nobody made. Hosts treat it as a pause and clear their press state. Never true on an unattended (headless) run.
+// Whether the focus gate is off for this run: unattended, rendering off-screen or with no RHI (the demo and capture
+// runs, which start unfocused), or a build that never renders. The autopilot reads no keys, so it needs no gate.
+inline bool FocusGateOff()
+{
+	static const bool bOff = FApp::IsUnattended() || !FApp::CanEverRender() ||
+		FParse::Param(FCommandLine::Get(), TEXT("RenderOffscreen")) || FParse::Param(FCommandLine::Get(), TEXT("nullrhi"));
+	return bOff;
+}
+
+// Whether the game window has lost focus: the engine lets go of every key then, so a held press read as a release
+// would fire a light nobody made. Hosts clear their held presses (PressHold) on it; toggled latches (run, aim, crouch)
+// stay as they are, and movement is not stopped. Never true while the gate is off (FocusGateOff).
 inline bool LostFocus()
 {
-	return !FApp::IsUnattended() && !FApp::HasFocus();
+	return !FocusGateOff() && !FApp::HasFocus();
+}
+
+// One line for the log: whether the gate is on and what the app's focus reads now.
+inline void LogFocusGate(const TCHAR* Who)
+{
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: input focus gate %s; app focus now %s."), Who,
+		FocusGateOff() ? TEXT("off (unattended, off-screen, no RHI or no rendering)") : TEXT("on"),
+		FApp::HasFocus() ? TEXT("yes") : TEXT("no"));
 }
 
 // Whether a held action is pressed once to toggle: its own mode, else the game-wide hold-toggle setting.

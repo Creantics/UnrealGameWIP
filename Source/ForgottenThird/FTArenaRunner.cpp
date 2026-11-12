@@ -278,6 +278,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot never locks (-ArenaNoLock): its attacks take soft targets."));
 	}
+	FTInputBindings::LogFocusGate(TEXT("Arena"));
 	bAutoShoot = Setup.bAutoShoot && bAutoPlay;
 	Fight.setAutopilotShoots(bAutoShoot);
 	if (bAutoShoot)
@@ -1109,8 +1110,9 @@ void UFTArenaRunner::PutBodiesAtStart()
 void UFTArenaRunner::PollInput(float DeltaSeconds)
 {
 	APlayerController* PC = GetPC();
-	// Paused, just resumed or out of focus: every press state clears, so a key let go meanwhile fires nothing later.
-	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this) || FTInputBindings::LostFocus())
+	// Paused or just resumed: every press state clears, so a key let go meanwhile fires nothing later. The autopilot
+	// reads no keys. Out of focus only the held attack clears (below); the toggled latches stay.
+	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
 	{
 		bGuardHeld = false;
 		GuardInput.reset();
@@ -1129,7 +1131,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	// Light: a tap is the light, held ftcore::AimRules::heavyHold the heavy. Aim held aims; a gun kit aiming fires
 	// one round per press, at the press, and never a heavy.
 	bAimHeld = AimInput.tick(FTInputBindings::IsDown(*PC, InputAction::Aim), FTInputBindings::Toggles(World, InputAction::Aim));
-	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, FTInputBindings::IsDown(*PC, InputAction::Light), ArenaAim.rules().heavyHold,
+	const ftcore::PressHold::Out Press = AttackHold.tickIf(!FTInputBindings::LostFocus(), DeltaSeconds, FTInputBindings::IsDown(*PC, InputAction::Light), ArenaAim.rules().heavyHold,
 		Fight.output().player.action == ftcore::ArenaAction::Light || Fight.output().player.action == ftcore::ArenaAction::Heavy,
 		bAimHeld && Def.fighter.weapon == ftcore::ArenaWeapon::Guns);
 	bPressLight |= Press.light;

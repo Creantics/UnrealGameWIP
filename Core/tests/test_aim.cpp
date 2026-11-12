@@ -207,6 +207,29 @@ TEST_CASE("aim: a press cleared while held (pause, focus lost) fires nothing whe
     CHECK(h.tickIf(true, kDt, false, hold).light); // a fresh tap after it is a light again
 }
 
+TEST_CASE("aim: a hitch frame while the button is down counts as at most a share of the hold") {
+    const float hold = 0.25f;
+    PressHold p;
+    p.tick(kDt, true, hold);
+    PressHold::Out o = p.tick(1.0f, true, hold); // a one-second hitch inside a tap
+    CHECK_FALSE(o.heavy);
+    CHECK_FALSE(p.heavyPending());
+    o = p.tick(kDt, false, hold);
+    CHECK(o.light);
+    CHECK_FALSE(o.heavy);
+    // A real hold still reaches the heavy, hitches or not: no fewer frames than 1 / kPressHoldMaxStep.
+    PressHold q;
+    q.tick(kDt, true, hold);
+    int heavies = 0;
+    int frames = 0;
+    while (heavies == 0 && frames < 20) {
+        heavies += q.tick(1.0f, true, hold).heavy;
+        ++frames;
+    }
+    CHECK(heavies == 1);
+    CHECK(frames == static_cast<int>(1.f / kPressHoldMaxStep));
+}
+
 TEST_CASE("aim: the attack button is light on a tap and heavy on a hold, once") {
     PressHold p;
     const float hold = 0.25f;

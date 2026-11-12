@@ -1391,4 +1391,12 @@ TEST_CASE("stone bearer: a held blow's bonus under defence is scaled once (by th
     // The bonus lands whole: base + bonus is the settled multiple of the scaled blow, not of a twice-scaled one.
     CHECK(hp0 - fight.enemyHp(0) == extra);
     CHECK(base + extra == static_cast<int>(std::lround(static_cast<float>(base) * 2.5f)));
+
+    // On the pedestal the same bonus through the same path is vetoed: nothing lands.
+    b.update(3.0, 0.2f);
+    REQUIRE(b.invulnerable());
+    CHECK(b.bonusScale() == 0.0f);
+    const int hp1 = fight.enemyHp(0);
+    CHECK_FALSE(fight.ruledHostBlow(0, extra, 2, &BearerRule::rule, &host));
+    CHECK(fight.enemyHp(0) == hp1);
 }

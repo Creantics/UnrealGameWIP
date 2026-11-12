@@ -2,6 +2,7 @@
 
 #include "ftcore/Json.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace ftcore {
@@ -72,6 +73,8 @@ float AimStance::alpha() const {
 PressHold::Out PressHold::tick(float dt, bool down, float hold, bool busy, bool single) {
     Out o;
     if (!(dt > 0.f) || !std::isfinite(dt)) dt = 0.f;
+    // A hitch frame counts as at most a quarter of the hold: a tap through one stays a light.
+    if (hold > 0.f) dt = std::min(dt, hold * kPressHoldMaxStep);
     if (single) heavyPending_ = false; // aiming a gun: no heavy, not even one already waiting
     if (down) {
         if (downFor_ < 0.f) {

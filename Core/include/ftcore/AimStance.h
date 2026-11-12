@@ -102,6 +102,10 @@ inline constexpr AimKind aimKindOfMove(const ArenaFighter& kit, std::uint8_t mov
     return kit.weapon == ArenaWeapon::Guns ? (move == kArenaShotMove ? AimKind::Fire : AimKind::Focus) : aimKindOf(kit);
 }
 
+// The most of the hold one frame can count (a share of it): a hitch frame while the button is down never turns a tap
+// into a heavy on its own.
+inline constexpr float kPressHoldMaxStep = 0.25f;
+
 // The attack button as tap = light, hold = heavy.
 class FTCORE_API PressHold {
 public:

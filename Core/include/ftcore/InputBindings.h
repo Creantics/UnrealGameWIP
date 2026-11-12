@@ -135,6 +135,7 @@ struct InputHintEntry {
     std::array<InputAction, 4> actions{};
     std::uint8_t count = 0;
     const char* label = ""; // the word's key in Data/Loc/<culture>/ui.json ("input.light")
+    bool held = false;      // the action's key held, not tapped: each key shows after kInputHoldPrefix ("Hold LMB")
 };
 
 // The map-hold route's prefix before the map key's label ("Hold M").

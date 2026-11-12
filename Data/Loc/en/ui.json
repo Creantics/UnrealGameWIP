@@ -142,7 +142,9 @@
     "cutscene.skip": "Space / Enter / pad A: skip",
 
     "input.move": "move",
-    "input.light": "light (hold: heavy)",
+    "input.light": "light",
+    "input.heavy": "heavy",
+    "input.crouch": "crouch",
     "input.aim": "aim",
     "input.guard": "guard",
     "input.dodge": "dodge",
