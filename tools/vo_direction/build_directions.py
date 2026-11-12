@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Build a directions CSV from compact pipe-format annotations plus the skeleton.
 
-    python3 build_directions.py --skeleton design/forgotten_third/voice/directions/draft56_skeleton.csv \
-        --files 04b --ann my_notes/ann_*.txt \
-        -o design/forgotten_third/voice/directions/draft56_04b.csv
+    python3 build_directions.py --skeleton SKELETON.csv --voice-prompts voice_prompts.md --names NAMES.json \
+        --files 04b --ann my_notes/ann_*.txt -o DIRECTIONS.csv
+
+--names is the story's own voice table (JSON, kept outside the repo): overrides {SPEAKER: [stability, style,
+speed, similarity, temp]}, aliases {SCRIPT SPEAKER: HEADING}, refs {"<name> voice" phrase: HEADING}.
 
 This is an authoring aid. The CSV it writes is the source of truth; carry_forward.py and
 validate_directions.py work on the CSV only.
@@ -32,6 +34,7 @@ Derived columns:
 """
 import argparse
 import glob
+import json
 import os
 import re
 import sys
@@ -39,15 +42,27 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vo_common as vc  # noqa: E402
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
-VOICE_PROMPTS = os.path.join(REPO, 'design', 'forgotten_third', 'voice', 'voice_prompts.md')
 DAY = (0.50, 0.10, 1.0, 0.75, False)          # stability, style, speed, similarity, temp
-# Values chosen by ear in the Act I pilot where voice_prompts.md gives v4 numbers only.
-OVERRIDES = {'UNBENDING': (0.70, 0.05, 0.90, 0.85, False)}
-# Speaker names in the script that voice_prompts.md files under another heading.
-ALIASES = {'DEVIN AND DUY': 'DEVIN', 'DUY AND DEVIN': 'DUY'}
-_REF = {'third core': 'THE THIRD', 'nil voice': 'NIL', 'granite voice': 'GRANITE',
-        'pop voice': 'POP', 'maren voice': 'MAREN'}
+# The story's names, set by load_names() (--names): values chosen by ear where voice_prompts.md gives v4
+# numbers only; script speakers that voice_prompts.md files under another heading; phrases in a TTS line that
+# make a role reuse another heading's voice.
+OVERRIDES = {}
+ALIASES = {}
+_REF = {}
+
+
+def load_names(path):
+    """Read the story's voice names (JSON); returns an error string, or None."""
+    global OVERRIDES, ALIASES, _REF
+    try:
+        with open(path, encoding='utf-8') as fh:
+            t = json.load(fh)
+    except (OSError, ValueError) as e:
+        return 'cannot read the names: %s' % e
+    OVERRIDES = {k: tuple(v) for k, v in t.get('overrides', {}).items()}
+    ALIASES = dict(t.get('aliases', {}))
+    _REF = dict(t.get('refs', {}))
+    return None
 
 
 def _num(pat, s):
@@ -55,7 +70,7 @@ def _num(pat, s):
     return float(m.group(1)) if m else None
 
 
-def load_bases(path=VOICE_PROMPTS):
+def load_bases(path):
     """{HEADING KEY: (stability, style, speed, similarity, temp)} from the '- TTS:' lines."""
     if not os.path.exists(path):
         return {}
@@ -212,9 +227,14 @@ def main(argv=None):
     ap.add_argument('--files', nargs='*', help='skeleton file prefixes, e.g. 04b')
     ap.add_argument('--ann', nargs='+', required=True, help='annotation files (globs allowed)')
     ap.add_argument('--speakers', help='optional CSV line_id,speaker for UNKNOWN rows')
-    ap.add_argument('--voice-prompts', default=VOICE_PROMPTS)
+    ap.add_argument('--voice-prompts', required=True)
+    ap.add_argument('--names', required=True, help="the story's voice names (JSON, kept outside the repo)")
     ap.add_argument('-o', '--out', required=True)
     a = ap.parse_args(argv)
+    why = load_names(a.names)
+    if why:
+        sys.stderr.write('build_directions: %s\n' % why)
+        return 2
     bases = load_bases(a.voice_prompts)
     _, skel = vc.read_csv(a.skeleton)
     if a.files:

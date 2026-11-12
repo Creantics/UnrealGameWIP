@@ -19,8 +19,11 @@ plan's F1/F2/F4 gate asks for. `eval` says which reference it used in every repo
 
 Only the Python standard library is needed, plus `espeakng_loader` (pip) for the espeak backend.
 
-  python3 tools/lipsync/bake_face_tracks.py gold  --csv design/.../draft56_04a.csv --out tools/lipsync/gold_set.json
-  python3 tools/lipsync/bake_face_tracks.py synth --gold tools/lipsync/gold_set.json --work W
+  python3 tools/lipsync/bake_face_tracks.py gold  --csv DIRECTIONS.csv --out GOLD.json [--require LINE_ID ...]
+  python3 tools/lipsync/bake_face_tracks.py synth --gold GOLD.json --work W
+
+The gold set holds script lines, so it lives outside the repo: pass --gold, or set LIPSYNC_GOLD.
+tools/lipsync/gold_sample.json is a made-up three-line set for trying the pipeline.
   python3 tools/lipsync/bake_face_tracks.py align-mfa --work W --mfa-cmd "micromamba run -p ENV mfa" \
           --dict english_us_arpa.dict --model english_us_arpa.zip
   python3 tools/lipsync/bake_face_tracks.py align-rhubarb --work W --rhubarb /path/to/rhubarb
@@ -301,14 +304,19 @@ def phone_features(text):
     }
 
 
-GOLD_REQUIRED = ["SC-P0-01#001", "SC-P0-01#002"]
-
-
 def cmd_gold(a):
-    rows = list(csv.DictReader(open(a.csv, encoding="utf-8")))
+    try:
+        rows = list(csv.DictReader(open(a.csv, encoding="utf-8")))
+    except OSError as e:
+        print("gold: cannot read the CSV: %s" % e, file=sys.stderr)
+        return 2
     by_id = {r["line_id"]: r for r in rows}
-    pick = [by_id[i] for i in GOLD_REQUIRED]
-    pool = [r for r in rows if r["kind"] == "line" and r["line_id"] not in GOLD_REQUIRED
+    missing = [i for i in a.require if i not in by_id]
+    if missing:
+        print("gold: --require ids not in the CSV: %s" % ", ".join(missing), file=sys.stderr)
+        return 2
+    pick = [by_id[i] for i in a.require]
+    pool = [r for r in rows if r["kind"] == "line" and r["line_id"] not in a.require
             and 3 <= len(lab_text(r["spoken_text"]).split()) <= 14]
     # greedy: cover phone classes, volumes and speakers; deterministic (rows are in script order)
     need = {"bilabial": 8, "labiodental": 6, "rounded": 8, "th": 5, "ch": 4}
@@ -332,10 +340,10 @@ def cmd_gold(a):
         volumes.add(best["volume"])
     keep = ["line_id", "vo_id", "text_hash", "speaker", "spoken_text", "emotion_primary", "emotion_secondary",
             "intensity", "pace", "pace_wpm", "volume", "pitch_contour", "pauses", "emphasis"]
-    out = {"source": os.path.relpath(a.csv, os.path.join(HERE, "..", "..")),
-           "note": "20-line lip-sync gold set (rigging plan §6, §13.2). The first two lines are required by the plan "
-                   "(a minor's human line and an UNKNOWN speaker). Hand-marked TextGrids do not exist yet; eval uses "
-                   "espeak's phone timings for its own synthetic audio as a machine reference.",
+    out = {"source": os.path.basename(a.csv),
+           "note": "%d-line lip-sync gold set; the first %d lines were required (--require). Hand-marked TextGrids "
+                   "do not exist yet; eval uses espeak's phone timings for its own synthetic audio as a machine "
+                   "reference." % (len(pick), len(a.require)),
            "lines": [{k: r.get(k, "") for k in keep} | {"key": line_key(r)} for r in pick]}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
@@ -343,8 +351,15 @@ def cmd_gold(a):
     print(f"wrote {a.out}: {len(pick)} lines, {len(speakers)} speakers, volumes {sorted(volumes)}")
 
 
+class GoldError(Exception):
+    pass
+
+
 def load_gold(path):
-    return json.load(open(path, encoding="utf-8"))["lines"]
+    try:
+        return json.load(open(path, encoding="utf-8"))["lines"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise GoldError("cannot read the gold set %s: %s" % (path, e))
 
 
 def voice_for(line):
@@ -1171,11 +1186,12 @@ def print_table(report):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    default_gold = os.path.join(HERE, "gold_set.json")
+    default_gold = os.environ.get("LIPSYNC_GOLD")  # the gold set holds script lines: kept outside the repo
     g = sub.add_parser("gold", help="pick the 20-line gold set from a direction CSV")
     g.add_argument("--csv", required=True)
-    g.add_argument("--out", default=default_gold)
+    g.add_argument("--out", required=True)
     g.add_argument("--count", type=int, default=20)
+    g.add_argument("--require", nargs="*", default=[], help="line ids the set must start with")
     s = sub.add_parser("synth", help="synthesise gold-set audio with espeak-ng + reference phones")
     s.add_argument("--gold", default=default_gold)
     s.add_argument("--work", required=True)
@@ -1199,8 +1215,15 @@ def main(argv=None):
     e.add_argument("--backends", nargs="+", default=["espeak", "mfa", "rhubarb", "elevenlabs", "textgrid"])
     e.add_argument("--report", required=True)
     a = ap.parse_args(argv)
-    return {"gold": cmd_gold, "synth": cmd_synth, "align-mfa": cmd_align_mfa, "align-rhubarb": cmd_align_rhubarb,
-            "bake": cmd_bake, "eval": cmd_eval}[a.cmd](a) or 0
+    if a.cmd in ("synth", "bake", "eval") and not a.gold:
+        print("%s: no gold set: pass --gold or set LIPSYNC_GOLD" % a.cmd, file=sys.stderr)
+        return 2
+    try:
+        return {"gold": cmd_gold, "synth": cmd_synth, "align-mfa": cmd_align_mfa, "align-rhubarb": cmd_align_rhubarb,
+                "bake": cmd_bake, "eval": cmd_eval}[a.cmd](a) or 0
+    except GoldError as e:
+        print("%s: %s" % (a.cmd, e), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

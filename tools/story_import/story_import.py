@@ -7,7 +7,7 @@
 count, the script folder and scene id prefix, the hold ladder and its anchors, the gameplay keywords, and the
 hand-authored choices and exchanges. The tool itself holds no story data.
 
-Reads (all under --build-dir, default design/forgotten_third/build):
+Reads (all under --build-dir):
     <script_dir>/04a..04e_*.md     the script, parsed with scriptparse.py
     <script_dir>/VO_Master_List.csv VO ids
     meta/meta_*.csv                one slate row per scene
@@ -99,6 +99,7 @@ def load_tables(path):
     LADDER_ANCHOR = {k: re.compile(v) for k, v in t['ladder_anchor'].items()}
     GAMEPLAY_KEYWORDS = [(k, re.compile(rx)) for k, rx in t['gameplay_keywords']]
     CHOICES, MINI = t['choices'], t['mini']
+    sp.set_scene_prefix(SCENE_ID_PREFIX)
     return None
 
 
@@ -871,7 +872,7 @@ def summary(stats, info, out):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--tables', required=True, help="the story's tables (JSON, kept outside the repo)")
-    ap.add_argument('--build-dir', default=os.path.join(REPO, 'design', 'forgotten_third', 'build'))
+    ap.add_argument('--build-dir', required=True, help="the story's design package build folder")
     ap.add_argument('--out-dir', default=os.path.join(REPO, 'assets', 'story'))
     ap.add_argument('--check', action='store_true', help='validate the files in --out-dir instead of writing them')
     a = ap.parse_args(argv)

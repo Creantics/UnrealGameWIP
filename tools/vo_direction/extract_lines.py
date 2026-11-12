@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""extract_lines.py - parse a Forgotten Third draft folder into a VO line skeleton CSV.
+"""extract_lines.py - parse a story script folder into a VO line skeleton CSV.
 
-    python3 -I tools/vo_direction/extract_lines.py design/forgotten_third/build/draft56 \
-        -o design/forgotten_third/voice/directions/draft56_skeleton.csv [--files 04a] [--summary]
+    python3 -I tools/vo_direction/extract_lines.py SCRIPT_DIR --scene-prefix PREFIX \
+        -o SKELETON.csv [--files 04a] [--summary]
 
 Reads every 04*.md in the folder (or only those whose name starts with a --files prefix) and writes
 one row per recordable line: plain dialogue, ROAST/REASSURE barks (one row each), choice-option
@@ -26,7 +26,7 @@ followed by a blank line covers everything up to `*(Returns to the choice.)*`, t
 `*When ...:*`, a CHOICE marker, `---` or a header. Nested labels are joined with '; '
 (`if ASK MINA; if first pick`). A label saying the answer "continues" covers its paragraph only.
 
-Columns: see vo_common.SKELETON_COLUMNS and design/forgotten_third/voice/line_direction_schema.md.
+Columns: see vo_common.SKELETON_COLUMNS and the design package's voice/line_direction_schema.md.
 Rows the parser had to guess about carry a non-empty `parse_note` beginning with "CHECK".
 Read-only on the script. Standard library only.
 """
@@ -41,7 +41,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vo_common import (SKELETON_COLUMNS, fold, inline_directions, spoken, text_hash,  # noqa: E402
                        words_key, write_csv)
 
-SCENE_HDR = re.compile(r'^### (SC-[A-Za-z0-9\-]+) · (.*)$')
+# The scene heading is '### <prefix><id> · <title>'; the prefix belongs to the story and is set with
+# set_scene_prefix() before parsing (story_import passes its tables' scene_id_prefix).
+SCENE_PREFIX = None
+SCENE_HDR = None
+
+
+def set_scene_prefix(prefix):
+    global SCENE_PREFIX, SCENE_HDR
+    SCENE_PREFIX = prefix
+    SCENE_HDR = re.compile(r'^### (' + re.escape(prefix) + r'[A-Za-z0-9\-]+) · (.*)$')
 CAMP_HDR = re.compile(r'^#{2,3} (CP-[A-Za-z0-9\-]+) · (.*)$')
 ACT_HDR = re.compile(r'^# ACT ([IVX]+)\b')
 FILE_ACT = re.compile(r'^# .*PART \d+: ACT ([IVX]+)\b')
@@ -66,7 +75,7 @@ CHOICE_IF = re.compile(r'^\*\*\*CHOICE\.\*\* If "([^"]+)"')
 VARIANT_BLOCK = re.compile(r'^\*\*\[VARIANT: ([^\]]*)\]\*\*\s*(?:\*\(([^)]*)\)\*)?\s*$')
 OPTION_HINT = re.compile(r"\((\w+)'s options\)")
 BREATH_BARK = re.compile(r'/\s*\((breath[^)]*)\)')
-IF_LABEL = re.compile(r'^\*(?P<cond>(?:If|Concede)\b[^*]*?):\*\s*$')          # *If "X":*  *If ASK MINA:*
+IF_LABEL = re.compile(r'^\*(?P<cond>(?:If|Concede)\b[^*]*?):\*\s*$')          # *If "X":*  *If ASK X:*
 WHEN_LABEL = re.compile(r'^\*(?:When|Both variants)\b[^*]*:\*\s*$')
 CHOICE_CONCEDE = re.compile(r'^\*\*\*CHOICE\.\*\* (Concede[^:]*):')
 OPEN_END = re.compile(r'^(?:>\s?)?(?:\[CHOICE|\*\*\[CHOICE|\*\*\*CHOICE|\*\*\*VARIANT|\*\*Pick\b|\*\*Tag\b)')
@@ -116,7 +125,7 @@ def is_speaker(who):
 
 class Extractor:
     def __init__(self, known_names, speakers=()):
-        self.known = known_names          # {'Devin': 'DEVIN', ...}
+        self.known = known_names          # {'Name': 'NAME', ...}
         self.speakers = set(speakers)     # every full speaker label seen at a line start
         self.rows = []
         alt = '|'.join(re.escape(w) for w in sorted(self.speakers, key=len, reverse=True))
@@ -455,7 +464,7 @@ class Extractor:
 
 
 def lane_of(scene):
-    m = re.match(r'SC-[A-Z0-9]+-([A-Z]+)', scene)
+    m = re.match(re.escape(SCENE_PREFIX) + r'[A-Z0-9]+-([A-Z]+)', scene)
     if m:
         return m.group(1)[0]
     return ''
@@ -491,7 +500,11 @@ def collect_speakers(paths):
     return out
 
 
-def extract(folder, prefixes=None):
+def extract(folder, prefixes=None, scene_prefix=None):
+    if scene_prefix is not None:
+        set_scene_prefix(scene_prefix)
+    if SCENE_HDR is None:
+        raise ValueError('extract_lines: no scene id prefix (--scene-prefix)')
     paths = sorted(glob.glob(os.path.join(folder, '04*.md')))
     if prefixes:
         paths = [p for p in paths if any(os.path.basename(p).startswith(x) for x in prefixes)]
@@ -528,11 +541,15 @@ def summary(rows, out=sys.stdout):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('folder', help='draft folder with 04*.md')
+    ap.add_argument('--scene-prefix', required=True, help="the story's scene id prefix (scene headings are '### <prefix>...')")
     ap.add_argument('-o', '--out', help='CSV to write (default: stdout summary only)')
     ap.add_argument('--files', nargs='*', help='only files starting with these prefixes, e.g. 04a')
     ap.add_argument('--summary', action='store_true', help='print counts per act / speaker')
     a = ap.parse_args(argv)
-    rows = extract(a.folder, a.files)
+    if not os.path.isdir(a.folder):
+        sys.stderr.write('extract_lines: no such folder: %s\n' % a.folder)
+        return 2
+    rows = extract(a.folder, a.files, a.scene_prefix)
     if a.out:
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
         write_csv(a.out, SKELETON_COLUMNS, rows)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Carry VO directions from an old draft's directions CSV onto a new draft's skeleton.
 
-    python3 carry_forward.py voice/directions/draft56_04a.csv voice/directions/draft57_skeleton.csv \
-        -o voice/directions/draft57_04a.csv [--files 04a] [--threshold 0.85] [--dropped dropped.csv]
+    python3 carry_forward.py OLD_DIRECTIONS.csv NEW_SKELETON.csv \
+        -o NEW_DIRECTIONS.csv [--files 04a] [--threshold 0.85] [--dropped dropped.csv]
 
 Matching, in order (each old row is used at most once):
   0. vo_id      both rows carry the same authored VO id (camp lines)            -> EXACT / REVIEW

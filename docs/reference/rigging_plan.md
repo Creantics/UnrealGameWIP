@@ -3,7 +3,7 @@
 Status: plan (research, decision, phases). Nothing in the engine has changed yet.
 Owner: engine + art pipeline. Readers: engine and tools programmers, the art owner, design.
 
-The brief: rig every model "perfectly", and, at higher priority, "mouth movement and facial expressions. If our characters lack these, the emotion is lost throughout everything." The 2,328 directed VO lines already carry emotion, intensity, pace and volume (`design/forgotten_third/voice/line_direction_schema.md`); the face system turns those columns into a performance.
+The brief: rig every model "perfectly", and, at higher priority, "mouth movement and facial expressions. If our characters lack these, the emotion is lost throughout everything." The 2,328 directed VO lines already carry emotion, intensity, pace and volume (the design package's line direction schema); the face system turns those columns into a performance.
 
 "Perfect" means measurable criteria: R1–R16 for the body (§2), F1–F16 for the face (§3). A headless validator checks them (§10); no asset enters `assets/` without a PASS.
 
@@ -408,7 +408,7 @@ glTF carries no constraints, drivers or IK: each feature becomes keys/morphs at 
 - `fit_canonical.py`, `bake_to_canonical.py`, the `rig` export profile in `ne_blender.py`.
 - **Engine-caps audit** (§1) pinned by doctests on E1/E2 behaviour.
 - **Loader + anim side of morphs (no renderer):** read `targets`/`weights` into `MeshData`/`AnimationClip`; `anim::FacePlayer` with the CPU reference morph. **Proof:** a doctest morphs the proof head on the CPU and matches Blender's evaluated shapes from `proof_head.expected.json` within 0.1 mm (the `test_blender_assets.cpp` pattern).
-- **Viseme pipeline proven:** `bake_face_tracks.py` on a **20-line gold set** (from `draft56_04a.csv`, incl. a minor's human line and an `UNKNOWN` speaker) meets F1–F4 against hand-marked TextGrids, F3 on every line with audio, with MFA, Rhubarb and ElevenLabs alignment reported side by side.
+- **Viseme pipeline proven:** `bake_face_tracks.py` on a **20-line gold set** (from the VO direction table, kept outside the repo, incl. a minor's human line and an `UNKNOWN` speaker) meets F1–F4 against hand-marked TextGrids, F3 on every line with audio, with MFA, Rhubarb and ElevenLabs alignment reported side by side.
 - `ne_rig_check` (§10.4).
 - Docs: `docs/rigging.md` (artist how-to), `docs/blender.md` update.
 

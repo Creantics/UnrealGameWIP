@@ -9,10 +9,10 @@ file_segments(path) -> [('gap', [lines]) | ('scene', scene)] covering the file e
 
 Model of a file (lines = text.split('\\n'), so a trailing newline is the last, empty element):
   gap lines     preamble, '---' separators, chapter/act headings and their intro lines, END markers
-  scene block   '### SC-... · Title' line through the line before the next boundary, where a
+  scene block   '### <prefix>... · Title' line through the line before the next boundary, where a
                 boundary is the next scene heading, any '# ' or '## ' heading, or a '---' line.
 Inside a scene block:
-  heading       the '### SC-' line
+  heading       the '### <prefix>' line
   header_lines  the contiguous '**Label:** ...' lines directly after the heading
   body          every following line, byte for byte (blank lines included), up to the last
                 non-blank line that is not an '**END...**' marker
@@ -23,7 +23,16 @@ import os
 import re
 import sys
 
-SCENE_HDR = re.compile(r'^### (SC-[A-Za-z0-9\-]+) · (.*)$')
+# The scene heading is '### <prefix><id> · <title>'; the prefix belongs to the story and is set with
+# set_scene_prefix() before parsing (story_import passes its tables' scene_id_prefix).
+SCENE_PREFIX = None
+SCENE_HDR = None
+
+
+def set_scene_prefix(prefix):
+    global SCENE_PREFIX, SCENE_HDR
+    SCENE_PREFIX = prefix
+    SCENE_HDR = re.compile(r'^### (' + re.escape(prefix) + r'[A-Za-z0-9\-]+) · (.*)$')
 LABEL_LINE = re.compile(r'^\*\*([A-Za-z][A-Za-z ]*):\*\*(.*)$')
 MODE_LINE = re.compile(r'^\*\*Mode:\*\* (.*?) · \*\*Gameplay:\*\*(?: (.*))?$')
 CHAPTER_HDR = re.compile(r'^## CHAPTER (\d+) · (.*)$')
@@ -189,6 +198,8 @@ def _build_scene(lines, start, end, ctx, path):
 
 def file_segments(path):
     """Cover the whole file with ('gap', lines) / ('scene', scene) segments, in order."""
+    if SCENE_HDR is None:
+        raise ValueError('scriptparse: no scene id prefix (call set_scene_prefix first)')
     lines = read_lines(path)
     segs, gap = [], []
     act = chap = None
@@ -249,6 +260,8 @@ def script_files(d=None):
 
 
 def parse_all(d=None):
+    if SCENE_HDR is None:
+        raise ValueError('scriptparse: set_scene_prefix() first')
     out = []
     for f in script_files(d):
         out.extend(parse(f))
@@ -292,7 +305,7 @@ def self_test(d=None, verbose=True, expect=None):
                     pos = p + len(blk)
                 scenes.append(x)
         n = sum(1 for k, _ in segs if k == 'scene')
-        raw_n = sum(1 for l in orig.split('\n') if l.startswith('### SC-'))
+        raw_n = sum(1 for l in orig.split('\n') if l.startswith('### ' + SCENE_PREFIX))
         if verbose:
             print('%-34s scenes=%2d headings=%2d file reassembly byte-identical: %s' % (os.path.basename(f), n, raw_n, same))
         ok &= same and n == raw_n
@@ -316,9 +329,20 @@ def self_test(d=None, verbose=True, expect=None):
 
 
 if __name__ == '__main__':
-    # scriptparse.py DIR [EXPECTED_SCENES]
-    args = [a for a in sys.argv[1:] if not a.startswith('-')]
-    if not args and not default_dir():
-        print('usage: scriptparse.py DIR [EXPECTED_SCENES] (or set SCRIPT_DIR)', file=sys.stderr)
+    # scriptparse.py --prefix P DIR [EXPECTED_SCENES]
+    argv = sys.argv[1:]
+    prefix = None
+    if '--prefix' in argv and argv.index('--prefix') + 1 < len(argv):
+        i = argv.index('--prefix')
+        prefix = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
+    args = [a for a in argv if not a.startswith('-')]
+    if not prefix or (not args and not default_dir()):
+        print('usage: scriptparse.py --prefix SCENE_ID_PREFIX DIR [EXPECTED_SCENES] (or set SCRIPT_DIR)',
+              file=sys.stderr)
         sys.exit(2)
+    if args and not os.path.isdir(args[0]):
+        print('scriptparse: no such folder: %s' % args[0], file=sys.stderr)
+        sys.exit(2)
+    set_scene_prefix(prefix)
     sys.exit(0 if self_test(args[0] if args else None, expect=int(args[1]) if len(args) > 1 else None) else 1)

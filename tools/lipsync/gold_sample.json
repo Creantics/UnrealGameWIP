@@ -1,0 +1,57 @@
+{
+ "source": "made-up sample",
+ "note": "A made-up three-line gold set for trying the lip-sync pipeline. The real set holds script lines and lives outside the repo (--gold or LIPSYNC_GOLD).",
+ "lines": [
+  {
+   "line_id": "XA-01#001",
+   "vo_id": "",
+   "text_hash": "c7b97e84e5bb",
+   "speaker": "CHILD",
+   "spoken_text": "Is the boat back yet?",
+   "emotion_primary": "hopeful",
+   "emotion_secondary": "",
+   "intensity": "2",
+   "pace": "normal",
+   "pace_wpm": "140",
+   "volume": "soft",
+   "pitch_contour": "rising",
+   "pauses": "Is the boat / back yet?",
+   "emphasis": "",
+   "key": "c7b97e84e5bb_child"
+  },
+  {
+   "line_id": "XA-01#002",
+   "vo_id": "",
+   "text_hash": "ec86b1419e08",
+   "speaker": "UNKNOWN VOICE",
+   "spoken_text": "Not yet. Wait with me.",
+   "emotion_primary": "tender",
+   "emotion_secondary": "",
+   "intensity": "2",
+   "pace": "normal",
+   "pace_wpm": "140",
+   "volume": "soft",
+   "pitch_contour": "falling",
+   "pauses": "Not yet. // Wait with me.",
+   "emphasis": "",
+   "key": "ec86b1419e08_unknown_voice"
+  },
+  {
+   "line_id": "XA-02#001",
+   "vo_id": "",
+   "text_hash": "998995bed91a",
+   "speaker": "KEEPER",
+   "spoken_text": "Fetch the blue map and fold it twice, then bring the thread.",
+   "emotion_primary": "brisk",
+   "emotion_secondary": "",
+   "intensity": "2",
+   "pace": "normal",
+   "pace_wpm": "140",
+   "volume": "conversational",
+   "pitch_contour": "falling",
+   "pauses": "",
+   "emphasis": "",
+   "key": "998995bed91a_keeper"
+  }
+ ]
+}

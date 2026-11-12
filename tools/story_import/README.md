@@ -10,10 +10,10 @@ scene count, the script folder and scene id prefix, the hold ladder and its anch
 hand-authored choices and exchanges. Its keys are listed in the comment above `load_tables()`. The tool holds no
 story data.
 
-Options: `--build-dir` (default `design/forgotten_third/build`), `--out-dir` (default `assets/story`).
+Options: `--build-dir` (required: the design package build folder), `--out-dir` (default `assets/story`).
 
 Inputs: the script (`<script_dir>/04*.md`, parsed by `scriptparse.py`; `python3 -I tools/story_import/scriptparse.py
-<dir> [expected scenes]` is its self-test), `<script_dir>/VO_Master_List.csv`, `meta/meta_*.csv`, `meta/inserts_*.csv`,
+--prefix <scene id prefix> <dir> [expected scenes]` is its self-test), `<script_dir>/VO_Master_List.csv`, `meta/meta_*.csv`, `meta/inserts_*.csv`,
 `flags.csv`, `cues_final.csv`. Outputs: `story.json`, `scenes/<scene id>.json`, `loc/en.json`. Output is
 byte-deterministic.
 

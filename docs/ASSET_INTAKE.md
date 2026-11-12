@@ -239,7 +239,7 @@ python -I tools/lipsync/bake_face_tracks.py eval --work <W> --backends <backend>
 
 - `bake` reads `<W>/wav/<key>.wav` and writes `<key>.nface` and `<key>.events.json`. `eval` measures the tracks against the lip-sync metrics (F1 to F4). Alignment backends: `align-mfa` and `align-rhubarb` subcommands produce the phone data first (see the tool's `--help`).
 - `FTImportAudio -Voice` parses each line's `.nface` (an error when it doesn't parse) and warns (`nface-length`) when it is more than 0.25 s longer or shorter than the audio. Other checks: `parseFaceTrack` (the face tests in `ctest --test-dir Core/build -C Debug`) and the load at run time, which logs the path and the parse error on failure.
-- The reference voice-direction pipeline (directions CSV, ElevenLabs settings) is `tools/vo_direction/` and newengine `design/forgotten_third/voice/`. It is private design data and is not summarised here.
+- The reference voice-direction pipeline (directions CSV, ElevenLabs settings) is `tools/vo_direction/` and the design package's voice folder. It is private design data and is not summarised here.
 
 ## 4. Music
 
