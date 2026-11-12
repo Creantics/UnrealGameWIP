@@ -274,10 +274,13 @@ def main():
             bare = np.nonzero(s_[:, 0] < 1e-6)[0]
             if len(bare):  # give an unweighted vertex its nearest weighted vertex's weights (it would skin to nothing)
                 held = np.nonzero(s_[:, 0] >= 1e-6)[0]
+                if not len(held):
+                    raise SystemExit("source rig carries no skin weights")
                 for c in range(0, len(bare), 16):
                     b = bare[c:c + 16]
                     d = ((V[b, None, :] - V[None, held, :]) ** 2).sum(-1)
                     Wk[b] = Wk[held[d.argmin(1)]]
+                say("%d unweighted vertices took the weights of their nearest weighted vertex" % len(bare))
             # the hem rule works from the source rig, not from detection (which fails on the cloth this rule is
             # for): leg axes from the thigh and calf bones, leg radius from the inner vertices the source thighs own (skirts are thigh-weighted too),
             # and only vertices the source gives mostly to the pelvis and thighs count as hanging cloth
