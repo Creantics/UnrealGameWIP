@@ -13,7 +13,7 @@ down -y) weighted wholly to the joint. The eyeball sits `inset` inside the old s
 round it, still cover its rim, and it is in every face shape with no delta. The front of the old ball bulges like a cornea; the cut follows it there and the
 new ball copies the bulge.
 
-A generated mesh's winding is mixed (on Devin, 40k skin faces faced in and would be holes in the engine), so every
+A generated mesh's winding is mixed (on one lead, 40k skin faces faced in and would be holes in the engine), so every
 skin face is turned to face out (outward_normals). The generic eyeBlinkLeft/Right from face_transfer drop the brow and
 socket instead of closing the lids, so they are rewritten: the lids turn over the new ball about its hinge until they
 meet (blink). --lids procedural rebuilds all the lid shapes (blink, squint, wide, look) with rig_head.procedural_lids

@@ -1,7 +1,11 @@
-"""Builds the three lead characters into Data/Models/{devin,duy,third}.glb (stylised, not realistic).
+"""Builds the three lead characters into Data/Models/<name>.glb (stylised, not realistic).
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/make_leads.py -- \\
-        [--outdir Data/Models] [--only devin,duy,third] [--blend-dir <dir>]
+        [--outdir Data/Models] [--only lead_a,lead_b,...] [--blend-dir <dir>] [--names FILE]
+
+The characters are keyed lead_a, lead_b and lead_c. --names FILE (JSON, kept outside the repo) gives each its
+output name (file, object and rig names) and material prefix: {"leads": {"lead_a": {"name": ..., "code": ...}}}.
+Without it the key is the name and la/lb/lc the prefix. --only takes keys or names.
 
 Each character is one skinned mesh on the canonical 87-joint skeleton (rig_spec.py), so everything that works for
 proof_head and test_human (import, IK Rig, retargeting, the face code) works for them:
@@ -24,6 +28,7 @@ curated weights (its lip-line vertices are doubled, which the mirror pass would 
 """
 import math
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,14 +62,14 @@ def lin(hexstr):
 # ------------------------------------------------------------------------------------------------------------
 # Outfits: material name from where a face sits. z / p are canonical (pre-scale) metres.
 # ------------------------------------------------------------------------------------------------------------
-def devin_torso(z, p, hw, hd, cy):
+def lead_a_torso(z, p, hw, hd, cy):
     if 0.985 <= z <= 1.075:
         return "sash"
     # blue stripes from the shoulders to the hem, inset from the sides, front and back
     return "panel" if 0.50 * hw < abs(p[0]) < 0.80 * hw and abs(p[1] - cy) > 0.45 * hd else "tunic"
 
 
-def devin_arm(s, S):
+def lead_a_arm(s, S):
     if s < S[1] + 0.15:
         return "tunic"
     if S[2] + 0.03 < s < S[3] - 0.004:
@@ -72,7 +77,7 @@ def devin_arm(s, S):
     return "skin"
 
 
-def devin_boot(s, S):
+def lead_a_boot(s, S):
     """Baggy trousers tucked into tall boots that stop just under the knee, with two straps."""
     top = S[2] + 0.035
     if s < top:
@@ -82,7 +87,7 @@ def devin_boot(s, S):
     return "boot"
 
 
-def duy_torso(z, p, hw, hd, cy):
+def lead_b_torso(z, p, hw, hd, cy):
     if z < 0.885:
         return "pants"
     if z < 0.91:
@@ -92,7 +97,7 @@ def duy_torso(z, p, hw, hd, cy):
     return "jacket"
 
 
-def duy_arm(s, S):
+def lead_b_arm(s, S):
     if s < S[3] - 0.05:
         return "jacket"
     if s < S[3] - 0.038:
@@ -100,11 +105,11 @@ def duy_arm(s, S):
     return "skin"
 
 
-def third_torso(z, p, hw, hd, cy):
+def lead_c_torso(z, p, hw, hd, cy):
     return "pants" if z < 0.94 else "coat"
 
 
-def third_arm(s, S):
+def lead_c_arm(s, S):
     return "coat" if s < S[3] - 0.022 else "skin"
 
 
@@ -113,38 +118,38 @@ def third_arm(s, S):
 # of the extra depth that goes to the front (belly / chest) rather than the back.
 # ------------------------------------------------------------------------------------------------------------
 CHARS = {
-    "devin": dict(
-        code="dv", height=1.88, expression="amused",
+    "lead_a": dict(
+        name="lead_a", code="la", height=1.88, expression="amused",
         tw=[1.2, 1.2, 1.2, 1.2, 1.24, 1.28, 1.34, 1.42, 1.48, 1.5, 1.55, 1.75, 2.05, 2.3],
         td=[1.15, 1.2, 1.2, 1.25, 1.42, 1.45, 1.42, 1.38, 1.42, 1.45, 1.42, 1.45, 1.5, 1.55],
         tf=[0.55] * 14,
         band=(0.985, 1.075, 0.012), neck=1.72, arm=(1.95, 1.9, 1.75, 1.4), hand=1.22,
         leg=(1.35, 1.45, 1.55, 1.6, 1.62, 1.6, 1.55, 1.55, 1.5), foot=1.32, idle_arm=-10.0, walk_arm=-14.0,
-        face_wide=0.17, face_chin=0.05, skirt=(1.03, 0.60, 0.07), slit=(0.10, 0.03), torso_mat=devin_torso,
-        arm_mat=devin_arm, leg_mat=lambda s, S: devin_boot(s, S), foot_mat="boot", ankle_mat="boot",
-        neck_mat=lambda z: "panel" if z < 1.468 else "skin", hair=None, beard="devin",
+        face_wide=0.17, face_chin=0.05, skirt=(1.03, 0.60, 0.07), slit=(0.10, 0.03), torso_mat=lead_a_torso,
+        arm_mat=lead_a_arm, leg_mat=lambda s, S: lead_a_boot(s, S), foot_mat="boot", ankle_mat="boot",
+        neck_mat=lambda z: "panel" if z < 1.468 else "skin", hair=None, beard="lead_a",
         colors={"skin": "#E2B08A", "lips": "#B9735E", "brow": "#1C1512", "iris": "#3A2417", "beard": "#1A1310",
                 "tunic": "#FF8A1F", "panel": "#1F5BFF", "gold": "#FFC93C", "sash": "#E2620F", "wrap": "#E9DFC9",
                 "wrap2": "#CDBFA3", "pants": "#23262F", "boot": "#6B3420", "strap": "#4A2216"},
         metal=(), emissive=()),
-    "duy": dict(
-        code="dy", height=1.70, expression="neutral",
+    "lead_b": dict(
+        name="lead_b", code="lb", height=1.70, expression="neutral",
         tw=[1.0, 1.06, 1.06, 1.06, 1.0, 0.86, 0.86, 0.86, 0.86, 0.86, 0.86, 0.86, 0.9, 0.95],
         td=[0.86] * 14, tf=[0.5] * 14, band=None, neck=0.88, arm=(0.86, 0.85, 0.85, 0.9), hand=0.92,
         leg=(0.88,) * 9, foot=0.95, idle_arm=-30.0, walk_arm=-32.0, face_wide=-0.01, face_chin=-0.07, skirt=None,
-        torso_mat=duy_torso, arm_mat=duy_arm, leg_mat=lambda s, S: "pants", foot_mat="shoe", ankle_mat="pants",
-        neck_mat=lambda z: "jacket" if z < 1.468 else "skin", hair="duy", beard=None,
+        torso_mat=lead_b_torso, arm_mat=lead_b_arm, leg_mat=lambda s, S: "pants", foot_mat="shoe", ankle_mat="pants",
+        neck_mat=lambda z: "jacket" if z < 1.468 else "skin", hair="lead_b", beard=None,
         colors={"skin": "#EEC7A2", "lips": "#C98F7A", "brow": "#121012", "iris": "#2B1C12", "hair": "#0F0E12",
                 "jacket": "#1B1F5E", "trim": "#7B2FF7", "gold": "#FFC93C", "glow": "#9B5CFF", "pants": "#1C1C24",
                 "shoe": "#131316", "glasses": "#0B0B0D"},
         metal=("gold",), emissive=("glow",)),
-    "third": dict(
-        code="tr", height=1.80, expression="neutral",
+    "lead_c": dict(
+        name="lead_c", code="lc", height=1.80, expression="neutral",
         tw=[1.0] * 14, td=[1.0] * 14, tf=[0.5] * 14, band=None, neck=1.0, arm=(0.88, 0.97, 1.0, 1.0), hand=1.0,
         leg=(1.0,) * 9, foot=1.0, idle_arm=-26.0, walk_arm=-28.0, face_wide=0.01, face_chin=-0.02,
-        skirt=(1.03, 0.42, 0.07), torso_mat=third_torso, arm_mat=third_arm, leg_mat=lambda s, S: "pants",
-        foot_mat="shoe", ankle_mat="pants", neck_mat=lambda z: "coat" if z < 1.466 else "skin", hair="third",
-        beard="third",
+        skirt=(1.03, 0.42, 0.07), torso_mat=lead_c_torso, arm_mat=lead_c_arm, leg_mat=lambda s, S: "pants",
+        foot_mat="shoe", ankle_mat="pants", neck_mat=lambda z: "coat" if z < 1.466 else "skin", hair="lead_c",
+        beard="lead_c",
         colors={"skin": "#F3D9C8", "lips": "#C9877A", "brow": "#2A1E18", "iris": "#6B4426", "hair": "#EAE4D2",
                 "hair2": "#4B3B2D", "beard": "#2B201A", "coat": "#EEEADF", "pants": "#26262C", "shoe": "#1D1D20"},
         metal=(), emissive=()),
@@ -443,7 +448,7 @@ def hairline(p, front, side, back):
     return float(np.interp(abs(p), [0.0, 0.8, 1.45, 2.2, math.pi], [front, front, side, side, back]))
 
 
-def hair_duy(X, M):
+def hair_lead_b(X, M):
     def keep(t, p, S):
         jag = 0.006 * math.sin(11 * p) if abs(p) < 0.9 else 0.0
         return S[2] > hairline(p, EZ + 0.030 + jag, 1.722, 1.615)
@@ -457,7 +462,7 @@ def hair_duy(X, M):
     shell(X, M["hair"], off, keep)
 
 
-def hair_third(X, M):
+def hair_lead_c(X, M):
     # short, dark sides and back (the roots show below the bleached top)
     shell(X, M["hair2"], lambda t, p, S: 0.0035 + 0.0008 * math.sin(13 * p) * math.sin(9 * t),
           lambda t, p, S: S[2] > hairline(p, 1.766, 1.722, 1.63))
@@ -478,7 +483,7 @@ def hair_third(X, M):
     shell(X, M["hair"], off, keep, shift=shift)
 
 
-def glasses_duy(X, M):
+def glasses_lead_b(X, M):
     """Rectangular black frames, rigid on the head bone."""
     G = th.Builder()
     ly, cx, cz, a, b = -0.1185, 0.033, EZ, 0.0235, 0.0145
@@ -563,7 +568,7 @@ def tail_weights(p):
     return clean_weights({"pelvis": 1.0 - a, "thigh_l": a * f, "thigh_r": a * (1.0 - f)})
 
 
-def devin_extras(X, ch, M, col, arm_info):
+def lead_a_extras(X, ch, M, col, arm_info):
     sun_emblem(X, col, 1.315, M["gold"])
 
     # a stand-up mandarin collar around the base of the neck, open a little at the front
@@ -609,13 +614,13 @@ def devin_extras(X, ch, M, col, arm_info):
     X.append_mirrored(G)
 
 
-def extras(ch, name, M, col, arm_info):
+def extras(ch, key, M, col, arm_info):
     X = th.Builder()
-    if name == "devin":
-        devin_extras(X, ch, M, col, arm_info)
-    if name == "duy":
-        hair_duy(X, M)
-        glasses_duy(X, M)
+    if key == "lead_a":
+        lead_a_extras(X, ch, M, col, arm_info)
+    if key == "lead_b":
+        hair_lead_b(X, M)
+        glasses_lead_b(X, M)
         path, S, prof_s, prof_r = arm_info["path"], arm_info["S"], arm_info["prof_s"], arm_info["prof_r"]
         sh, el = np.array(path[1]), np.array(path[2])
         d1 = unit(el - sh)
@@ -629,8 +634,8 @@ def extras(ch, name, M, col, arm_info):
         X.loft([wr - d2 * 0.032, wr - d2 * 0.016], lambda s, t: (r + 0.004, r * 0.86 + 0.004), arm_info["arm_x"],
                n=20, weights=lambda s, p: {"lowerarm_twist_02_l": 1.0}, mat=M["glow"], cap0=False, cap1=False,
                rings_per_m=600)
-    if name == "third":
-        hair_third(X, M)
+    if key == "lead_c":
+        hair_lead_c(X, M)
     return X
 
 
@@ -643,14 +648,14 @@ def beard_region(kind, c):
     ax = abs(x)
     if y > C[1] + 0.03 or z < 1.556:
         return False
-    if kind == "third":
+    if kind == "lead_c":
         if MZ + 0.003 < z < MZ + 0.021 and ax < 0.034:  # moustache
             return True
         if ax < 0.021 and MZ - 0.009 < z < MZ + 0.003:  # keep the lower lip readable
             return False
         line = float(np.interp(ax, [0.0, 0.03, 0.05, 0.072, 0.1], [MZ + 0.014, MZ + 0.016, 1.668, 1.697, 1.705]))
         return z < line
-    if kind == "devin":
+    if kind == "lead_a":
         if MZ + 0.0045 < z < MZ + 0.0115 and ax < 0.027:  # thin moustache
             return True
         if 0.024 < ax < 0.030 and MZ - 0.022 < z < MZ + 0.008:  # down past the mouth corners
@@ -684,7 +689,7 @@ def build_head(ch, M):
     fmat = [M[ph.MATERIALS[m]] for _, m in HB.faces]
     if ch["beard"]:
         push = np.zeros(len(P))
-        t = 0.0025 if ch["beard"] == "third" else 0.0016
+        t = 0.0025 if ch["beard"] == "lead_c" else 0.0016
         for i, (f, m) in enumerate(HB.faces):
             if ph.MATERIALS[m] != "skin":
                 continue
@@ -807,13 +812,53 @@ def check_glb(path, face=True):
     return {"joints": len(joints), "shapes": len(names), "animations": anims, "primitives": len(m["primitives"])}
 
 
+def load_names(path):
+    """Sets each lead's output name and material prefix from a names JSON (see the module doc); returns an error
+    string, or None. A refused file changes nothing."""
+    import json
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            t = json.load(fh)
+    except (OSError, ValueError) as e:
+        return "cannot read the names: %s" % e
+    leads = t.get("leads") if isinstance(t, dict) else None
+    ok = re.compile(r"[A-Za-z0-9_]+")
+    if not isinstance(leads, dict) or not all(
+            k in CHARS and isinstance(v, dict) and set(v) <= {"name", "code"}
+            and all(isinstance(x, str) and ok.fullmatch(x) for x in v.values()) for k, v in leads.items()):
+        return '"leads" must map lead_a / lead_b / lead_c to {"name": word, "code": word}'
+    merged = {k: dict(name=ch["name"], code=ch["code"]) | leads.get(k, {}) for k, ch in CHARS.items()}
+    if len({m["name"] for m in merged.values()}) != len(merged):
+        return "two leads share a name"
+    if len({m["code"] for m in merged.values()}) != len(merged):
+        return "two leads share a code"
+    if any(m["name"] in CHARS and m["name"] != k for k, m in merged.items()):
+        return "a lead's name is another lead's key"
+    for k, m in merged.items():
+        CHARS[k].update(m)
+    return None
+
+
+def key_for(name):
+    """The CHARS key for a key or an output name."""
+    if name in CHARS:
+        return name
+    for k, ch in CHARS.items():
+        if ch["name"] == name:
+            return k
+    raise KeyError("no lead named %r (have %s)" % (name, ", ".join(ch["name"] for ch in CHARS.values())))
+
+
 def build_character(name, outdir, blend_dir=None):
-    ch = CHARS[name]
+    """Builds the lead with this key or output name."""
+    key = key_for(name)
+    ch = CHARS[key]
+    name = ch["name"]
     nb.reset_scene()
     mats, M = make_materials(ch)
     B, col, arm_info = build_body(ch, M)
     P, hfaces, hmat, hweights, shapes = build_head(ch, M)
-    X = extras(ch, name, M, col, arm_info)
+    X = extras(ch, key, M, col, arm_info)
 
     s = ch["height"] / SKULL_TOP
     rows = [(r[0], r[1], tuple(s * c for c in r[2]), tuple(s * c for c in r[3])) + tuple(r[4:]) for r in rs.JOINTS]
@@ -874,7 +919,11 @@ def build_character(name, outdir, blend_dir=None):
 
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    outdir, only, blend_dir = "Data/Models", list(CHARS), None
+    outdir, only, blend_dir, names = "Data/Models", list(CHARS), None, None
+    for flag in ("--outdir", "--only", "--blend-dir", "--names"):
+        if flag in argv[:-1] and argv[argv.index(flag) + 1].startswith("--") or argv[-1:] == [flag]:
+            print("make_leads: %s needs a value" % flag, file=sys.stderr)
+            sys.exit(2)
     for i, a in enumerate(argv):
         if a == "--outdir":
             outdir = argv[i + 1]
@@ -882,6 +931,18 @@ def main():
             only = argv[i + 1].split(",")
         if a == "--blend-dir":
             blend_dir = argv[i + 1]
+        if a == "--names":
+            names = argv[i + 1]
+    if names:
+        err = load_names(names)
+        if err:
+            print("make_leads: %s" % err, file=sys.stderr)
+            sys.exit(2)
+    try:
+        only = [key_for(n) for n in only]
+    except KeyError as e:
+        print("make_leads: %s" % e.args[0], file=sys.stderr)
+        sys.exit(2)
     for name in only:
         build_character(name, outdir, blend_dir)
 

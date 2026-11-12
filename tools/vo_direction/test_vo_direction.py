@@ -566,6 +566,31 @@ class TestBuild(unittest.TestCase):
         finally:
             self.b.OVERRIDES, self.b.ALIASES, self.b._REF = saved
 
+    def test_bad_names_exit_2(self):
+        # main stops with exit 2 on a names file load_names refuses, before it reads or writes anything else
+        from contextlib import redirect_stderr
+        import shutil
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        names, out = os.path.join(d, 'names.json'), os.path.join(d, 'out.csv')
+        missing = os.path.join(d, 'missing.csv')   # never read: the names check comes first
+        saved = (self.b.OVERRIDES, self.b.ALIASES, self.b._REF)
+        try:
+            for text, needle in (('[]', 'JSON object'), ('{"overrides": []}', 'overrides'), ('{', 'cannot read')):
+                with open(names, 'w', encoding='utf-8') as fh:
+                    fh.write(text)
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    rc = self.b.main(['--skeleton', missing, '--ann', missing, '--voice-prompts', self.vp,
+                                      '--names', names, '-o', out])
+                self.assertEqual(rc, 2, text)
+                self.assertIn('build_directions: ', err.getvalue())
+                self.assertIn(needle, err.getvalue())
+                self.assertFalse(os.path.exists(out))
+            self.assertEqual((self.b.OVERRIDES, self.b.ALIASES, self.b._REF), saved)   # nothing half-set
+        finally:
+            self.b.OVERRIDES, self.b.ALIASES, self.b._REF = saved
+
     def test_bases(self):
         bf = lambda s: self.b.base_for(s, self.bases)  # noqa: E731
         self.assertEqual(bf(T('ARLO')), (0.40, 0.15, 1.0, 0.80, False))

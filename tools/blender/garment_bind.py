@@ -5,7 +5,7 @@ armature and writes one FBX per piece for UE, headless.
 
 BIND.json:
     {"body": "mh_body.fbx", "garments": "md_out/garments.blend",
-     "pieces": {"NAME": {"export": "SK_Third_UnderRobe", "drop": ["arm"], "side": "l", "smooth": 12,
+     "pieces": {"NAME": {"export": "SK_Lead_UnderRobe", "drop": ["arm"], "side": "l", "smooth": 12,
                          "smooth_gap": 0.01, "smooth_full": 0.05, "rigid": "foot_l", "limit": 8,
                          "legs": {"below": 0.92, "fade": 0.1, "blend": 0.04, "mid": 0.0, "k": 12, "yscale": 0.3,
                                   "fold": 0.5, "hold": 1}, "keep_below": 0.84,
