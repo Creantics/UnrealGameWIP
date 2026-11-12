@@ -43,15 +43,15 @@ list unless the scene's `end` beat names one.
 ```json
 {
   "id": "XA-07-Q1",
-  "title": "Strangers",
+  "title": "Example scene",
   "chapter": "07",
   "world": "Solhaven",
   "location": "a back alley",
   "time": "dusk",
   "mode": "PLAY",
   "cast": ["LEAD_A", "LEAD_B"],
-  "props": ["wheelbarrow"],
-  "cues": ["SFX-KNOCK"],
+  "props": ["stool"],
+  "cues": ["SFX-EXAMPLE"],
   "beats": [ ... ]
 }
 ```

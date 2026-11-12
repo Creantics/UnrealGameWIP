@@ -327,7 +327,7 @@ These are not in v1. They are listed roughly in the order the NDD leans on them:
 - **Object-ID buffer** and a real **normal buffer** (MRT) for edges (8.15.2). Normals are implicit in
   the depth curvature, so a crease between two faces at the same depth slope is missed, and
   coplanar touching objects get no line between them.
-- **The Third's own line** as a separate, jitter-exempt layer (8.15.2).
+- **A non-human lead's own line** as a separate, jitter-exempt layer (8.15.2).
 - **Ink bleed** (blur-and-threshold on an edge buffer).
 - **The full colour-authority buffer** (8.15.5):
   - RGBA mask channels for gold, violet, overlap rose and blank;

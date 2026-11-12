@@ -88,7 +88,7 @@ ARLO (low): The kettle sings at noon and the hall fills up.
 
 *Choice:* **[CHOICE: ROAST / REASSURE]** sets `F_MOOD`.
 
-DOV: Line Three went up the hill.
+DOV: Tram Five went up the hill.
 <sub>VO-CP-E1-001</sub>
 
 **[VARIANT: if ROAST]**
@@ -274,7 +274,7 @@ class TestExtract(unittest.TestCase):
         self.assertIn('ROAST', r['variant'])
         r = find(self.rows, T('BEX'), 'wake me before the market')
         self.assertIn('REASSURE', r['variant'])
-        self.assertEqual(find(self.rows, T('DOV'), 'line three went up the hill')['variant'], '')
+        self.assertEqual(find(self.rows, T('DOV'), 'tram five went up the hill')['variant'], '')
 
     def test_barks_each_variant_its_own_row(self):
         barks = [r for r in self.rows if r['scene'] == T('QZ-05-D1') and r['kind'] == 'bark']

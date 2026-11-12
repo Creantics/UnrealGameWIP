@@ -12,7 +12,7 @@ and camp lines (which keep their authored <sub>VO-...</sub> id as line_id).
 Lines embedded inside other blocks are rows too:
   * `SPEAKER (how): text` runs written mid-paragraph in `*[direction.hidden · VARIANT/OPTIONAL]*`
     notes and in OPTIONAL bullets (`- **The window.** ... ARLO (to himself): ...`), one row per run;
-  * quotes in a stage direction that the prose attributes to a voice ("the board says: "...",
+  * quotes in a stage direction that the prose attributes to a voice ("the kettle says: "...",
     "Gus begins to answer, "..."", "Another: "Dov."", ""It always was," he says"). Written
     text (notes, margins, signs, title cards) is not a row. Speaker = a known name in the clause,
     or the quoted word itself when it is a known name (a roll call), else UNKNOWN; parse_note CHECK.
@@ -509,7 +509,7 @@ def collect_names(paths):
 
 
 def collect_speakers(paths):
-    """Every full speaker label that opens a dialogue line, e.g. {'ARLO', 'THE BOARD', ...}."""
+    """Every full speaker label that opens a dialogue line, e.g. {'ARLO', 'THE KETTLE', ...}."""
     out = set()
     for path in paths:
         with open(path, encoding='utf-8') as fh:
