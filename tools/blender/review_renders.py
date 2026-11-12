@@ -4,7 +4,7 @@
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/review_renders.py -- \
         BODY.fbx FACE.fbx OUT_DIR PIECE.fbx [PIECE.fbx ...] [shots=rest,walk,turn,reach,close]
         [close=hem,seam,neck,face,ears,feet,wrists,chest] [res=900] [samples=96] [gpu=1] [skin=r,g,b]
-        [prefix=set_b] [exposure=0] [hide=FACES.npy hide_faces=N] [colour=NAME:r,g,b[:rough][+NAME:...]]
+        [prefix=set_b] [exposure=0] [view=AgX] [hide=FACES.npy hide_faces=N] [colour=NAME:r,g,b[:rough][+NAME:...]]
 
 hide: the body LOD0 faces to delete before rendering (an .npy of face indices, e.g. the strip a body-hide variant
 removes in the game, so the renders show the body the game draws); hide_faces must equal the body's LOD0 face count,
@@ -366,7 +366,7 @@ sc.render.engine = "CYCLES"
 sc.cycles.samples = int(opt.get("samples", 96))
 sc.cycles.use_denoising = True
 sc.render.film_transparent = False
-sc.view_settings.view_transform = "AgX"
+sc.view_settings.view_transform = opt.get("view", "AgX")  # view=Standard: no tone curve, so a dark cloth is compared with its sheet as painted
 sc.view_settings.exposure = float(opt.get("exposure", 0.0))  # stops; the stage's lights read dark cloth a stop light
 if opt.get("gpu", "0") == "1":
     try:
