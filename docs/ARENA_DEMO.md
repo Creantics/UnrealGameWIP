@@ -653,8 +653,12 @@ warning and quits with exit code 2, so an unattended run never hangs.
   meets the enemies' bodies (`ftcore::arenaRayEntersBody`: an upright cylinder from the figure's hover to its scaled
   height, its radius scaled too; a lens inside a body sees through it), and reads the view without the impact jolt, so
   a kick never wobbles the heading. On a body, the heading takes the point where the line passes nearest its axis,
-  so the lane goes through the body rather than grazing its edge. The shot's heading is that line's yaw only: whether a shot meets a body high up is
-  the sim's own rule (a shot is a lane on the ground plane), not the line's height. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  so the round goes through the body rather than grazing its edge. A gun's round is a line in space: it leaves the lead
+  1.4 m up (`ftcore::kArenaShotHeight`) along that heading, climbing to the point (`ArenaInput::aimPitched`; locked on,
+  to the locked body's middle), and meets the first body it enters within the shot's range (Duy: 30 m, most of
+  kite_ring's 40 by 14 m), each body the same cylinder widened by half the shot's width. So a round passes over a short
+  enemy's head to a hovering boss behind it. A crosshair on a body the round would not reach is drawn faint, without
+  its dot (`ArenaFight::shotMeets`; not while locked on, when the round goes at the lock). The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
   about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).

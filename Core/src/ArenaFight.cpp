@@ -1,6 +1,7 @@
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaSoftTarget.h"
 #include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaLook.h"
 
 #include "SeedMix.h"
 #include "ftcore/Json.h"
@@ -90,6 +91,44 @@ bool arenaReaches(Vec2 from, Vec2 facing, const ArenaAttack& a, Vec2 to, float r
     return dot >= a.arcCos;
 }
 
+// The first of `count` bodies (kinds[i] standing at at[i], skipped where `skip` has its bit) that a round from `from` at
+// kArenaShotHeight along `dir` (unit) climbing at `pitch` enters within the shot's range: its index, and `distance`
+// along the round's line; kArenaNobody for none. Each body is its arenaBodyCylinder on a floor at 0 with the radius
+// widened by half the shot's width; the line runs range + that radius in space (so a steep round reaches less far over
+// the ground, and the body's near side, not its middle, must be in reach, unlike the flat lane). A lead standing inside
+// a body meets it at 0 (point-blank), where arenaRayEntersBody, a lens's rule, would see through it.
+std::uint8_t arenaShotFirst(const ArenaAttack& a, Vec2 from, Vec2 dir, float pitch, const ArenaEnemyKind* kinds,
+                            const Vec2* at, const bool* standing, std::size_t count, std::uint32_t skip,
+                            float& distance) {
+    std::uint8_t best = kArenaNobody;
+    float nearest = 0.f;
+    const float climb = std::isfinite(pitch) ? std::clamp(pitch, -1.5f, 1.5f) : 0.f; // about 86 degrees either way
+    const float c = std::cos(climb), s = std::sin(climb);
+    const ArenaPoint3 o{from.x, from.y, kArenaShotHeight};
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!standing[i] || (skip & (1u << i)) != 0u) continue;
+        ArenaBodyCylinder b = arenaBodyCylinder(kinds[i], at[i], 0.f);
+        b.radius += std::max(0.f, a.width) * 0.5f;
+        const float length = std::max(0.f, a.range) + b.radius;
+        float d = 0.f;
+        const float ox = o.x - b.at.x, oy = o.y - b.at.y;
+        if (ox * ox + oy * oy <= b.radius * b.radius && o.z >= b.base && o.z <= b.top) {
+            d = 0.f;
+        } else {
+            const ArenaPoint3 end{o.x + dir.x * c * length, o.y + dir.y * c * length, o.z + s * length};
+            float t = 0.f;
+            if (!arenaRayEntersBody(o, end, b, t)) continue;
+            d = t * length;
+        }
+        if (best == kArenaNobody || d < nearest) {
+            best = static_cast<std::uint8_t>(i);
+            nearest = d;
+        }
+    }
+    distance = nearest;
+    return best;
+}
+
 // The velocity (m/s, for dt seconds) that keeps a body of `radius` at `pos` inside the ring: what the body wanted,
 // cut where it would cross the edge (the radial overshoot goes, so a move along the edge slides). A body already
 // out of the ring may not go further out. With dt <= 0 nothing moves and the velocity is left as it was.
@@ -155,6 +194,8 @@ struct ArenaFightImpl {
     float t0 = 0.f; // the tick's start, in fight time
     // The aim this tick (ArenaInput::aim): the way the camera aims, the turn rate toward it and the move scale.
     bool aimOn = false;
+    bool aimPitched = false; // ArenaInput::aimPitched / aimPitch this tick
+    float aimPitch = 0.f;
     Vec2 aimWay{1.f, 0.f};
     float aimTurn = 0.f;
     float aimSpeed = 1.f;
@@ -800,6 +841,8 @@ struct ArenaFightImpl {
 
     void stepPlayer(const ArenaInput& in) {
         aimOn = in.aim;
+        aimPitched = in.aimPitched;
+        aimPitch = in.aimPitch;
         aimWay = arenaUnit(in.aimDir, pl.facing);
         aimTurn = std::isfinite(in.aimTurn) ? in.aimTurn : 0.f;
         aimSpeed = std::isfinite(in.aimSpeed) ? std::clamp(in.aimSpeed, 0.f, 1.f) : 1.f;
@@ -1210,9 +1253,23 @@ struct ArenaFightImpl {
         // The enemies this tick reaches that the attack hasn't hit yet.
         std::array<std::size_t, kMaxArenaEnemies> reached{};
         std::size_t count = 0;
-        for (std::size_t i = 0; i < n; ++i) {
-            if (foes[i].brain == ArenaBrain::Dead || (pl.hitMask & (1u << i)) != 0u) continue;
-            if (arenaReaches(pl.pos, pl.facing, a, foes[i].pos, def.enemies[i].bodyRadius)) reached[count++] = i;
+        if (pl.move == kArenaShotMove && aimPitched) {
+            // A pitched round: the first body its line enters, the ones it passes over or under not counted.
+            std::array<Vec2, kMaxArenaEnemies> at{};
+            std::array<bool, kMaxArenaEnemies> standing{};
+            for (std::size_t i = 0; i < n; ++i) {
+                at[i] = foes[i].pos;
+                standing[i] = foes[i].brain != ArenaBrain::Dead;
+            }
+            float distance = 0.f;
+            const std::uint8_t first = arenaShotFirst(a, pl.pos, pl.facing, aimPitch, def.enemies.data(), at.data(),
+                                                      standing.data(), n, pl.hitMask, distance);
+            if (first != kArenaNobody) reached[count++] = first;
+        } else {
+            for (std::size_t i = 0; i < n; ++i) {
+                if (foes[i].brain == ArenaBrain::Dead || (pl.hitMask & (1u << i)) != 0u) continue;
+                if (arenaReaches(pl.pos, pl.facing, a, foes[i].pos, def.enemies[i].bodyRadius)) reached[count++] = i;
+            }
         }
         // maxTargets: at most that many distinct targets over the whole active part; with more than the slots left on
         // one tick, the nearest win (ties by lower index). A riposte is aimed at its enemy, so that one comes first.
@@ -2065,6 +2122,22 @@ std::uint8_t ArenaFight::lock() const { return player_.lock; }
 int ArenaFight::enemyHp(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hp : 0; }
 float ArenaFight::enemyPoise(std::size_t i) const { return i < enemyCount_ ? enemy_[i].poise : 0.f; }
 bool ArenaFight::enemyAlive(std::size_t i) const { return i < enemyCount_ && enemy_[i].brain != ArenaBrain::Dead; }
+std::uint8_t ArenaFight::shotMeets(Vec2 dir, float pitch, float* distance) const {
+    float d = 0.f;
+    std::uint8_t first = kArenaNobody;
+    if (def_.fighter.weapon == ArenaWeapon::Guns && def_.fighter.attacks) {
+        std::array<Vec2, kMaxArenaEnemies> at{};
+        std::array<bool, kMaxArenaEnemies> standing{};
+        for (std::size_t i = 0; i < enemyCount_; ++i) {
+            at[i] = enemy_[i].pos;
+            standing[i] = enemy_[i].brain != ArenaBrain::Dead;
+        }
+        first = arenaShotFirst(def_.fighter.shot, player_.pos, arenaUnit(dir, player_.facing), pitch,
+                               def_.enemies.data(), at.data(), standing.data(), enemyCount_, 0u, d);
+    }
+    if (distance) *distance = d;
+    return first;
+}
 const ReadCards& ArenaFight::readCards() const { return read_; }
 std::uint8_t ArenaFight::readFoe() const { return readFoe_; }
 std::uint8_t ArenaFight::readMove() const { return readMove_; }

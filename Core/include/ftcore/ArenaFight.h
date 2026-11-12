@@ -427,7 +427,8 @@ struct ArenaEnemyMove {
 };
 
 // How the host draws an enemy kind as a skinned mesh instead of its placeholder shapes (arena.json's `look`). All
-// host-side: the fight's rules never read it. An empty `clipsText` is no look (the shapes).
+// host-side, except that a pitched shot (ArenaInput::aimPitched) meets the body where `hover` and `scale` put it. An
+// empty `clipsText` is no look (the shapes).
 struct ArenaEnemyLook {
     std::array<char, kMaxArenaLookPath + 1> clipsText{}; // project-relative path of the clip table (Data/Anim/*.json)
     float hover = 0.f;     // m: the mesh is lifted this far above the enemy's position on the ground
@@ -535,6 +536,16 @@ FTCORE_API ArenaRing arenaRingAt(Vec2 playerPos, Vec2 facing, float radius, cons
 FTCORE_API Vec2 arenaParkSpot(const ArenaRing& ring, Vec2 playerStart, std::size_t i);
 
 // What the player pressed this frame. Edges (true on the frame of the press) except `guard`.
+// A point in metres: x, y on the floor plane, z up.
+struct ArenaPoint3 {
+    float x = 0.f;
+    float y = 0.f;
+    float z = 0.f;
+};
+
+// A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
+inline constexpr float kArenaShotHeight = 1.4f;
+
 struct ArenaInput {
     Vec2 move;                  // the stick on the ground, already turned by the camera; length 0..1
     Vec2 view{1.f, 0.f};        // the camera's forward on the ground (unit): lock-on picks from it
@@ -555,6 +566,12 @@ struct ArenaInput {
     Vec2 aimDir{1.f, 0.f};
     float aimTurn = 0.f;
     float aimSpeed = 1.f;
+    // The round's climb (rad, + up) from kArenaShotHeight toward the crosshair. Pitched, a guns kit's shot is a line in
+    // space along the lead's facing: it meets the first standing body (ArenaLook's arenaBodyCylinder, its radius
+    // widened by half the shot's width) it enters within the shot's range, so a round over a short enemy's head goes
+    // on to the body behind it. Unpitched (the autopilot, a host without a camera), it is the flat lane.
+    bool aimPitched = false;
+    float aimPitch = 0.f;
     // Attacking on the move (AttackMove, the host's attackMove for the attack under way): walking during an attack at
     // attackSpeed (0..1) of the pace, and turning at up to attackTurn rad/s all through it toward the aim, the lock or
     // the stick (during startup the attack's own tracking if faster). Both 0 (the defaults, for a host that moves
@@ -812,6 +829,12 @@ public:
     // arena.json within 120 s of fight time, and with no input every fight must be lost within 120 s
     // (the tests tick at a fixed 1/60 s and move the bodies with arenaStep).
     FTCORE_API ArenaInput autopilot() const;
+
+    // The standing enemy a pitched shot from the player's place (as of the last tick) along `dir` (unit, on the ground)
+    // at `pitch` would meet first, by the rule ArenaInput::aimPitched gives; kArenaNobody for none or a kit without a
+    // shot. `distance`, when given, gets how far along the round's line it enters (0 for a lead inside the body). A
+    // host shows the crosshair as out of reach when this is not the enemy under it.
+    FTCORE_API std::uint8_t shotMeets(Vec2 dir, float pitch, float* distance = nullptr) const;
     // Opt in (off by default; begin and restart keep it): with a guns kit the autopilot also aims and shoots while it
     // closes in on its target, when the target stands within the shot's range and outside the light chain's reach and
     // the shot leaves a dodge's stamina in reserve. Off, the autopilot never aims.

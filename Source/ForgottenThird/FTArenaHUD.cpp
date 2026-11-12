@@ -1117,7 +1117,7 @@ void AFTArenaHUD::DrawHUD()
 		DrawResult(*Mode);
 	}
 	// The aim's centre reticle (right mouse held), faded in with the stance.
-	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha());
+	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach());
 	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
 	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
 	FT::DrawPauseOverlay(*this, Canvas);

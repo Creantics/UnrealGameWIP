@@ -553,6 +553,8 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     // round the body's centre.
     CHECK(duy.shot.width > 0.f);
     CHECK(duy.shot.width <= 0.5f);
+    // ... and reaches across most of an arena (kite_ring is about 40 by 14 m), so a crosshair on a far body still lands.
+    CHECK(duy.shot.range >= 25.f);
     CHECK(duy.shot.maxTargets == 1);
     CHECK(duy.shot.lunge == 0.f);
     CHECK(duy.heavy.range > base.light[0].range);
@@ -650,7 +652,7 @@ TEST_CASE("arena attack: Duy's aimed light is one pistol round that connects far
     }
     {   // well past its range: nothing
         Rig rig(duy, {dummyKind()});
-        rig.put(0, 12.f, 0.f);
+        rig.put(0, duy.shot.range + 2.f, 0.f);
         aimed(rig);
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
@@ -6757,4 +6759,91 @@ TEST_CASE("arena blow hook: the getters read back what setBlowHook set") {
     fight.setBlowHook(nullptr, &user); // no hook keeps no user
     CHECK(fight.blowHook() == nullptr);
     CHECK(fight.blowHookUser() == nullptr);
+}
+
+namespace {
+// A body hanging `hover` m over the floor, `height` m tall, 1 m round (a look with clips, so the hover counts).
+ArenaEnemyKind hoveringKind(float hover, float height) {
+    ArenaEnemyKind k = dummyKind();
+    k.look.clipsText[0] = 'x';
+    k.look.hover = hover;
+    k.look.scale = 1.f;
+    k.height = height;
+    k.bodyRadius = 1.f;
+    return k;
+}
+} // namespace
+
+TEST_CASE("arena attack: Duy's pitched round meets the first body its line enters, over a short enemy's head and far off") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    // A ground enemy 3 m out and a body hanging 3.5 to 6.5 m up 9 m out, both on the line ahead.
+    const float up = std::atan2(5.f - kArenaShotHeight, 9.f); // to the hanging body's middle
+    const auto aimed = [](Rig& rig, bool pitched, float pitch) {
+        rig.in.aim = true;
+        rig.in.aimDir = Vec2{1.f, 0.f};
+        rig.in.aimPitched = pitched;
+        rig.in.aimPitch = pitch;
+        rig.in.light = true;
+    };
+    {   // pitched up at it: the round passes over the ground enemy's head and hits the hanging body
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 3.f, 0.f);
+        rig.put(1, 9.f, 0.f);
+        rig.tick();
+        float along = 0.f;
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, up, &along) == 1);
+        CHECK(along == doctest::Approx(8.f / std::cos(up)).epsilon(0.02)); // in at its near side (1 m round), up the line
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, 0.f) == 0);              // level: the ground enemy is in the way
+        aimed(rig, true, up);
+        rig.runFor(0.45f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.find(ArenaEventType::Hit)->event.target == 1);
+        CHECK(rig.fight.enemyHp(0) == 100);
+    }
+    {   // the flat lane (no pitch given) still takes the nearest body on the ground
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 3.f, 0.f);
+        rig.put(1, 9.f, 0.f);
+        aimed(rig, false, 0.f);
+        rig.runFor(0.45f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.find(ArenaEventType::Hit)->event.target == 0);
+    }
+    {   // pitched level under a hanging body: the round passes under it
+        Rig rig(duy, {hoveringKind(3.5f, 3.f)});
+        rig.put(0, 9.f, 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // 20 m out, past the old 9 m: a crosshair on it lands, pitched or flat
+        for (const bool pitched : {true, false}) {
+            Rig rig(duy, {dummyKind()});
+            rig.put(0, 20.f, 0.f);
+            aimed(rig, pitched, 0.f);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+        }
+    }
+    {   // past the range: shotMeets says nobody (the host shows the crosshair as out of reach) and the round misses
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, duy.shot.range + 2.f, 0.f);
+        rig.tick();
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, 0.f) == kArenaNobody);
+        aimed(rig, true, 0.f);
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // point-blank: a body the round starts inside is hit, at 0
+        Rig rig(duy, {hoveringKind(0.f, 3.f)});
+        rig.put(0, 0.5f, 0.f);
+        rig.tick();
+        float along = 1.f;
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, 0.f, &along) == 0);
+        CHECK(along == 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
 }

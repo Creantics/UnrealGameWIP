@@ -1355,10 +1355,13 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 				const float L = FMath::Sqrt(D.x * D.x + D.y * D.y);
 				In.aimDir = ftcore::Vec2{D.x / L, D.y / L};
 			}
+			// The round climbs to the locked body's middle (the sim's 3D shot test; see ArenaInput::aimPitched).
+			In.aimPitched = BodyPitch(static_cast<int32>(Locked), In.aimPitch);
 		}
 		else if (ArenaAim.alpha() > 0.f)
 		{
 			In.aimDir = ReticleAimDir(In.view);
+			In.aimPitched = ReticlePitch(In.aimPitch);
 		}
 	}
 	In.aimTurn = ArenaAim.rules().turnRate;
@@ -2418,6 +2421,16 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 			const FVector Flat = View.Vector().GetSafeNormal2D();
 			ReticleHeadingPoint = From + Flat * (double(ArenaAim.rules().reticleRange) * 100.0);
 		}
+		// A guns kit's round from the lead along the same heading and climb would reach no body: the crosshair is on
+		// one past the shot's range (another body in the way still takes the round, so that is not out of reach).
+		bReticleOutOfReach = false;
+		float Pitch = 0.f;
+		// Locked on, the round goes at the lock, not the crosshair, so the crosshair says nothing about its reach.
+		if (ReticleEnemy >= 0 && Fight.lock() == ftcore::kArenaNobody && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns && ReticlePitch(Pitch))
+		{
+			const float Yaw = FMath::DegreesToRadians(CameraYaw);
+			bReticleOutOfReach = Fight.shotMeets(ReticleAimDir(ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)}), Pitch) == ftcore::kArenaNobody;
+		}
 		if (AimCheckPhase == 2 && Now - AimCheckSince >= 1.0)
 		{
 			// The view has settled on the top: what the crosshair meets, then one aimed shot.
@@ -2426,11 +2439,15 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 			const double Floor = Lead ? Lead->GetActorLocation().Z : 0.0;
 			const ftcore::ArenaPitchSplit Split = ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch);
 			const bool bOnBoss = Boss && ReticleEnemy == AimCheckSlot;
-			AimCheckLine = FString::Printf(TEXT("view pitch %.1f deg (limit %.0f; boom %.1f, lens %.1f), lens %.2f m over the floor and %.2f m from the lead's middle, crosshair on %s at %.1f m up"),
+			float ShotPitch = 0.f;
+			const bool bPitched = ReticlePitch(ShotPitch);
+			AimCheckLine = FString::Printf(TEXT("view pitch %.1f deg (limit %.0f; boom %.1f, lens %.1f), lens %.2f m over the floor and %.2f m from the lead's middle, crosshair on %s at %.1f m up, %.1f m from the lead; round %s"),
 				CameraPitch, ftcore::kArenaLook.viewMax, Split.boom, Split.tilt, (From.Z - Floor) / 100.0,
 				Lead ? FVector::Dist(From, Lead->GetActorLocation() + FVector(0.0, 0.0, 90.0)) / 100.0 : 0.0,
 				bOnBoss ? TEXT("the boss") : (ReticleEnemy >= 0 ? TEXT("another enemy") : (bReticleHit && Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("nothing"))),
-				(ReticlePoint.Z - Floor) / 100.0);
+				(ReticlePoint.Z - Floor) / 100.0,
+				Lead ? FVector::Dist2D(ReticlePoint, Lead->GetActorLocation()) / 100.0 : 0.0,
+				*(bPitched ? FString::Printf(TEXT("pitched %.1f deg%s"), FMath::RadiansToDegrees(ShotPitch), bReticleOutOfReach ? TEXT(", out of reach") : TEXT("")) : FString(TEXT("flat"))));
 			bAimCheckOnBoss = bOnBoss;
 			// The pitch the camera rendered (boom lag and lens tilt included, the jolt not), not the one asked for.
 			AimCheckRendered = static_cast<float>(FRotator::NormalizeAxis(View.Pitch));
@@ -2489,6 +2506,33 @@ ftcore::Vec2 UFTArenaRunner::ReticleAimDir(const ftcore::Vec2& Fallback) const
 	return ftcore::Vec2{D.x / L, D.y / L};
 }
 
+bool UFTArenaRunner::ReticlePitch(float& OutPitch) const
+{
+	OutPitch = 0.f;
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	if (!Lead || ArenaAim.alpha() <= 0.f)
+	{
+		return false;
+	}
+	const FVector Muzzle = Lead->GetActorLocation() + FVector(0.0, 0.0, double(ftcore::kArenaShotHeight) * 100.0);
+	const double Flat = FVector::Dist2D(ReticleHeadingPoint, Muzzle);
+	OutPitch = static_cast<float>(FMath::Atan2(ReticleHeadingPoint.Z - Muzzle.Z, FMath::Max(Flat, 1.0)));
+	return true;
+}
+
+bool UFTArenaRunner::BodyPitch(int32 Slot, float& OutPitch) const
+{
+	OutPitch = 0.f;
+	if (Slot < 0 || Slot >= static_cast<int32>(Fight.enemyCount()) || Slot >= static_cast<int32>(MaxEnemies) || !Fight.enemyAlive(static_cast<size_t>(Slot)))
+	{
+		return false;
+	}
+	const ftcore::ArenaBodyCylinder Body = ftcore::arenaBodyCylinder(Fight.def().enemies[static_cast<size_t>(Slot)], Bodies.enemies[static_cast<size_t>(Slot)], 0.f);
+	const float DX = Body.at.x - Bodies.player.x, DY = Body.at.y - Bodies.player.y;
+	OutPitch = FMath::Atan2((Body.base + Body.top) * 0.5f - ftcore::kArenaShotHeight, FMath::Max(FMath::Sqrt(DX * DX + DY * DY), 0.01f));
+	return true;
+}
+
 int32 UFTArenaRunner::TallestStanding(float& OutTop) const
 {
 	int32 Best = -1;
@@ -2543,6 +2587,7 @@ void UFTArenaRunner::StepAimCheck(ftcore::ArenaInput& In)
 	In.view = To;
 	In.aim = true;
 	In.aimDir = ReticleAimDir(To);
+	In.aimPitched = ReticlePitch(In.aimPitch);
 	In.aimTurn = ArenaAim.rules().turnRate;
 	In.aimSpeed = ArenaAim.speedScale();
 	if (AimCheckPhase == 2 && Now - AimCheckSince > 4.0)

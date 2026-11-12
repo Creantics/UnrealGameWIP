@@ -55,13 +55,6 @@ FTCORE_API float arenaLookUpPitch(const ArenaLookLimits& limits, float pivot, fl
 FTCORE_API float arenaSightHeightAt(const ArenaLookLimits& limits, float pivot, float arm, float up, float away,
                                     float viewPitch);
 
-// A point in metres: x, y on the floor plane, z up.
-struct ArenaPoint3 {
-    float x = 0.f;
-    float y = 0.f;
-    float z = 0.f;
-};
-
 // An enemy's body as the crosshair meets it: an upright cylinder round `at`, from `base` to `top` m over the floor.
 struct ArenaBodyCylinder {
     Vec2 at{};

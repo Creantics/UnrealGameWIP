@@ -233,6 +233,8 @@ public:
 	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
 	// The aim stance (right mouse held): its blend 0..1, for the HUD's reticle.
 	float GetAimAlpha() const { return ArenaAim.alpha(); }
+	// A guns kit's crosshair is on an enemy its round would not reach (past the shot's range): the HUD dims it.
+	bool IsReticleOutOfReach() const { return bReticleOutOfReach; }
 	FFTLeadWeapons& GetLeadWeapons() { return LeadWeapons; }
 	// The time the figures were last drawn at, on the held fight clock (Fight.heldTime(), the lead's strike clips' clock):
 	// Alpha of the way from its value before the last step to its value after. It stands still through the player's hit
@@ -530,6 +532,7 @@ private:
 	FVector ReticleHeadingPoint = FVector::ZeroVector;
 	bool bReticleHit = false;
 	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
+	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
 	// The first standing enemy body (Core's radius, the figure's height and hover, as an upright cylinder) along the
 	// line From -> To (cm) nearer than T on entry (0..1 of the line): its slot, and T then the share along the line. The
 	// figures carry no collision, so the reticle's trace meets them by this.
@@ -556,6 +559,11 @@ private:
 	int32 TallestStanding(float& OutTop) const;
 	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
 	ftcore::Vec2 ReticleAimDir(const ftcore::Vec2& Fallback) const;
+	// The round's climb (rad) from the lead's muzzle (ftcore::kArenaShotHeight over its floor) to the reticle's heading
+	// point; false (and 0) with no reticle traced.
+	bool ReticlePitch(float& OutPitch) const;
+	// The same toward the middle of enemy Slot's body (its hover and height); false for no such standing enemy.
+	bool BodyPitch(int32 Slot, float& OutPitch) const;
 	// The rendered view's rotation without the impact jolt (the camera's own, as the reticle and the tells read it).
 	FRotator ViewRotation(const APlayerCameraManager& Camera) const;
 	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
