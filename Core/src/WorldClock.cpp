@@ -163,4 +163,16 @@ bool parseTimeCurves(std::string_view csv, TimeCurves& out, std::string* error) 
     return true;
 }
 
+ClockHands clockHands(double hours) {
+    ClockHands hands;
+    if (!std::isfinite(hours)) return hands;
+    double h = std::fmod(hours, 12.0);
+    if (h < 0.0) h += 12.0;
+    double m = std::fmod(hours, 1.0);
+    if (m < 0.0) m += 1.0;
+    hands.hourDeg = std::min(h * 30.0, 360.0 - 1e-9);
+    hands.minuteDeg = std::min(m * 360.0, 360.0 - 1e-9);
+    return hands;
+}
+
 }  // namespace ftcore

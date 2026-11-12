@@ -34,6 +34,7 @@ struct FFTRoadsHost
 	const FActorSpawnParameters* Spawn = nullptr;
 	UPackage* Package = nullptr;
 	UMaterialInterface* Base = nullptr; // the world surface master (its Color and Roughness parameters)
+	UMaterialInterface* Lawn = nullptr; // a planted median's top (kind median_lawn); null keeps its tint
 	UStaticMesh* Cube = nullptr;
 	double Side = 0.0;
 	std::vector<ftcore::MassingFoot>* Taken = nullptr; // the props' room: the roads add theirs

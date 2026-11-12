@@ -3169,7 +3169,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                               RoadTint::Kerb, true);
                     const double v0 = start ? a + kw : a, v1 = end ? b - kw : b;
                     if (v1 - v0 > 1e-3)
-                        x.add(x.box(pc.fr, v0, v1, -(hm - kw), hm - kw, top, kRoadSlabDepth + 0.15, 0.0, 0.0, "verge"),
+                        x.add(x.box(pc.fr, v0, v1, -(hm - kw), hm - kw, top, kRoadSlabDepth + 0.15, 0.0, 0.0, "median_lawn"),
                               RoadTint::Verge, true);
                 }
             }

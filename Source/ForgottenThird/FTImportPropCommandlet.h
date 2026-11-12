@@ -12,7 +12,8 @@
 // collision. When a mesh comes out with Nanite, its project materials get the Nanite usage
 // (FT::AllowNanite). Returns 1 when a rule fails, no static mesh comes out, a skinned mesh comes out (use
 // FTImportCharacter), or a material can't be moved. A mesh without simple collision is a warning:
-// Interchange adds a box when the file has none of its own UCX_ shapes.
+// Interchange adds a box when the file has none of its own UCX_ shapes. -NoCollision strips every collision shape from the
+// imported meshes and saves them again (a piece that must never collide, such as a clock hand).
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

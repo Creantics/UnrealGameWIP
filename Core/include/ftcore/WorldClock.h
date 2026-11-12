@@ -94,4 +94,13 @@ struct TimeCurves {
 // False with "line N: ..." on anything else. Allocates: load time only.
 FTCORE_API bool parseTimeCurves(std::string_view csv, TimeCurves& out, std::string* error = nullptr);
 
+// A dial's two hands at an hour of the clock: degrees clockwise from twelve as seen from the front of the dial, each
+// in 0..360. The hour hand turns once in 12 h and moves on with the minutes; the minute hand turns once an hour.
+// Non-finite hours give twelve o'clock. No allocation.
+struct ClockHands {
+    double hourDeg = 0.0;
+    double minuteDeg = 0.0;
+};
+FTCORE_API ClockHands clockHands(double hours);
+
 }  // namespace ftcore

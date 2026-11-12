@@ -6,12 +6,15 @@
 #if WITH_EDITOR
 #include "AssetImportTask.h"
 #include "AssetToolsModule.h"
+#include "Engine/CollisionProfile.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "IAssetTools.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
 #endif
 
 UFTImportPropCommandlet::UFTImportPropCommandlet()
@@ -48,6 +51,7 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	const ftcore::AssetPack PackKind = ftcore::assetPackFromName(TCHAR_TO_UTF8(*Pack));
+	const bool bNoCollision = FParse::Param(*Params, TEXT("NoCollision"));
 	const ftcore::AssetRules Rules = FParse::Param(*Params, TEXT("Kit")) ? ftcore::kitRules(PackKind) : ftcore::propRules(PackKind);
 	if (!FT::CheckGlbFile(TEXT("FTImportProp"), Source, Rules))
 	{
@@ -98,6 +102,32 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		if (Shapes == 0)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTImportProp: %s has no simple collision."), *Mesh->GetName());
+		}
+		if (bNoCollision)
+		{
+			// -NoCollision: a piece that never collides (a clock hand): no simple shapes, no complex either.
+			if (UBodySetup* Setup = Mesh->GetBodySetup())
+			{
+				Setup->RemoveSimpleCollision();
+				Setup->CollisionTraceFlag = CTF_UseSimpleAsComplex;
+				Setup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+				Setup->InvalidatePhysicsData();
+				Setup->CreatePhysicsMeshes();
+			}
+			UPackage* Package = Mesh->GetPackage();
+			Package->MarkPackageDirty();
+			FSavePackageArgs Args;
+			Args.TopLevelFlags = RF_Public | RF_Standalone;
+			Args.SaveFlags = SAVE_NoError;
+			const FString File = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+			if (!UPackage::SavePackage(Package, Mesh, *File, Args))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: couldn't save %s without collision."), *File);
+				bOk = false;
+			}
+			const UBodySetup* After = Mesh->GetBodySetup();
+			UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %s: -NoCollision: %d collision shapes left."), *Mesh->GetName(),
+				After ? After->AggGeom.GetElementCount() : 0);
 		}
 		bNanite |= Mesh->IsNaniteEnabled();
 		for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())

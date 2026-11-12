@@ -438,6 +438,44 @@ TEST_CASE("stand-ins: the corridor rule: nothing stands in a street's or an alle
     CHECK(standInCorridorCheck(pts.data(), nullptr, pts.size(), cor.data(), cor.size(), spec, nullptr, 0) == 2);
     CHECK(standInCorridorCheck(nullptr, nullptr, 0, cor.data(), cor.size(), spec, hits, 8) == 0);
 
+    // Median islands (median_m): a tree on a 4 m island is clear; on a 1 m one, or in a lane, it is not.
+    {
+        std::vector<StandInCorridor> mc;
+        REQUIRE(importStandInCorridors("id,kind,width_m,pts,pavement_m,lanes,median_m\n"
+                                       "BV,street,25,0:0;300:0,3.5,4,4\n"
+                                       "NM,street,25,0:100;300:100,3.5,4,1\n"
+                                       "PL,street,14,0:200;300:200,2.8,,\n",
+                                       mc, nullptr, {}, &error));
+        REQUIRE(mc.size() == 3);
+        CHECK(mc[0].median == doctest::Approx(4.0));
+        CHECK(mc[0].half == doctest::Approx(9.0));
+        CHECK(mc[1].median == doctest::Approx(1.0));
+        CHECK(mc[2].median == 0.0);
+        std::vector<StandInCorridor> bad;
+        CHECK_FALSE(importStandInCorridors("width_m,pts,median_m\n20,0:0;9:0,-1\n", bad, nullptr, {}, &error));
+        std::vector<StandInPoint> mp;
+        mp.push_back(at(StandInKind::StreetTree, 150.0, 0.0)); // on the 4 m island
+        mp.push_back(at(StandInKind::ParkTree, 150.0, 1.0));   // off its centre, still on it
+        mp.push_back(at(StandInKind::StreetTree, 150.0, 5.0)); // in a lane beside it
+        mp.push_back(at(StandInKind::StreetTree, 150.0, 100.0)); // on the 1 m median
+        for (StandInPoint& p : mp) p.canopy = 6.0;
+        REQUIRE(standInCorridorCheck(mp.data(), nullptr, mp.size(), mc.data(), mc.size(), spec, hits, 8) == 2);
+        CHECK(hits[0].point == 2);
+        CHECK(hits[0].corridor == 0);
+        CHECK(hits[1].point == 3);
+        CHECK(hits[1].corridor == 1);
+        // Not a tree: the island lets only trees stand.
+        const StandInPoint mast = at(StandInKind::LampMast, 150.0, 0.0);
+        CHECK(standInCorridorCheck(&mast, nullptr, 1, mc.data(), mc.size(), spec, hits, 8) >= 1);
+        // A wider minimum takes the 4 m island's leave away.
+        StandInCorridorSpec strict;
+        strict.medianMin = 5.0;
+        CHECK(standInCorridorCheck(mp.data(), nullptr, 2, mc.data(), mc.size(), strict, hits, 8) == 2);
+        // Past the street's end the island is not under it.
+        mp[0].x = -0.1;
+        CHECK(standInCorridorCheck(mp.data(), nullptr, 1, mc.data(), mc.size(), spec, hits, 8) == 1);
+    }
+
     // A glass tower whose corner crosses the street's diagonal leg, and one whose footprint holds an alley's end.
     pts.clear();
     StandInPoint tower = at(StandInKind::GlassTower, 795.0, 410.0);

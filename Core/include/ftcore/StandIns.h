@@ -174,11 +174,13 @@ struct StandInCorridor {
     double ax = 0.0, ay = 0.0, bx = 0.0, by = 0.0;
     double half = 0.0;
     std::uint32_t street = 0; // which street of its table (the data rows this read kept, from 0)
+    double median = 0.0;      // m: the planted median island along its centre line (0 none)
 };
 // Reads the clear ways from a street or a road table (CSV, '#' comment lines, a header row naming the columns):
 //   width_m     the street's width, wall to wall; a row without one is left out (a canal's row in a road table)
 //   pts         "x:y[:z];x:y[:z];..." in the plan frame, its centre line (z dropped; a one-point street gives none)
 //   pavement_m  optional: each pavement's width; over 0 and under half the width, only the carriageway is kept clear
+//   median_m    optional: the planted median island's width (empty or 0: none)
 //   id, kind    optional
 // Other columns are ignored, and a row may be shorter than the header as long as it reaches width_m and pts. Rows of
 // skipKind (not empty) are left out. Appends a corridor a segment to out and, when ids is given, its street's id a
@@ -190,6 +192,7 @@ FTCORE_API bool importStandInCorridors(std::string_view csv, std::vector<StandIn
 struct StandInCorridorSpec {
     double clearance = 2.4; // m: a part whose underside is this far over the ground hangs clear (eaves, a bridge's deck)
     double slack = 0.05;    // m: a part may reach into a corridor's edge by this much
+    double medianMin = 1.5; // m: a tree's trunk may stand on a corridor's median island at least this wide
 };
 
 // A part's bounds: a rectangle round it in the plan frame, turned by yaw (a rolled or pitched part's is the one round
@@ -212,7 +215,9 @@ struct StandInCorridorHit {
 // Checks every point's parts against every corridor. footOverGround: per point, its foot (StandInPoint::z, or the
 // ground's where it has none) less the ground's height under it; null takes 0 for all. A part is left out when it is a
 // tree's canopy (a crown may spread over a street; its trunk may not stand in one) or when its underside is
-// spec.clearance over the ground. Each part counts once, at the corridor it reaches deepest into, when that is over
+// spec.clearance over the ground. A tree's trunk (StreetTree, ParkTree) whose whole bounds stand on a corridor's median
+// island (StandInCorridor::median, at least spec.medianMin wide: within median / 2 of its centre line, between its ends)
+// is clear of that corridor; the island's gaps at the zebras are not known here. Each part counts once, at the corridor it reaches deepest into, when that is over
 // spec.slack. Writes the first hitCap hits (hits may be null with hitCap 0) and returns how many there are in all: the
 // build fails on any. No allocation.
 FTCORE_API std::size_t standInCorridorCheck(const StandInPoint* points, const double* footOverGround, std::size_t count,

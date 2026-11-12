@@ -1292,16 +1292,31 @@ TEST_CASE("road net: a four-lane boulevard with a median: halves, lane lines, an
 
     // The island: kerbs and a Verge top from 17.7 to 282.3, kRoadKerbRise over the road beside it.
     double vergeLen = 0.0;
+    const double road = kRoadSurfaceLift + kRoadCrossfall * (hc - hm); // the carriageway's top beside the island
     for (const RoadSolid& sd : b.solids) {
-        if (sd.box.kind != "verge") continue;
+        if (sd.box.kind != "median_lawn") continue;
         CHECK(sd.tint == RoadTint::Verge);
         CHECK(sd.collide);
         CHECK(sd.box.sy == doctest::Approx(2.0 * hm - 2.0 * kRoadKerbWide));
         vergeLen += sd.box.sx;
-        const double road = kRoadSurfaceLift + kRoadCrossfall * (hc - hm);
         CHECK(sd.box.z1 == doctest::Approx(road + kRoadKerbRise));
     }
     CHECK(vergeLen == doctest::Approx(282.3 - 17.7 - 2.0 * kRoadKerbWide));
+    // Its kerbs: along both long edges, a 0.15 m upstand over the road beside them, level with the planted top.
+    CHECK(kRoadKerbRise == doctest::Approx(0.15));
+    int edgeL = 0, edgeR = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.kind != "kerb" || sd.box.row.rfind("BV", 0) != 0 || sd.box.sx < 10.0) continue;
+        if (std::fabs(sd.box.cy - (hm - kRoadKerbWide * 0.5)) > 1e-6 && std::fabs(sd.box.cy + (hm - kRoadKerbWide * 0.5)) > 1e-6)
+            continue;
+        (sd.box.cy > 0.0 ? edgeL : edgeR) += 1;
+        CHECK(sd.tint == RoadTint::Kerb);
+        CHECK(sd.collide);
+        CHECK(sd.box.sy == doctest::Approx(kRoadKerbWide));
+        CHECK(sd.box.z1 - road == doctest::Approx(0.15));
+    }
+    CHECK(edgeL >= 1);
+    CHECK(edgeR >= 1);
     CHECK(roadTintStreet(RoadTint::Verge) == 0);
     CHECK(std::string(roadTintName(RoadTint::Verge)) == "Verge");
 
@@ -1330,7 +1345,7 @@ TEST_CASE("road net: a four-lane boulevard with a median: halves, lane lines, an
         const MassingFoot half = rectFoot(10.3, std::min(sg * (hm + 0.05), sg * (hc - 0.05)), 289.7,
                                           std::max(sg * (hm + 0.05), sg * (hc - 0.05)));
         for (const RoadSolid& sd : b.solids)
-            if (sd.box.kind == "kerb" || sd.box.kind == "pavement" || sd.box.kind == "verge") {
+            if (sd.box.kind == "kerb" || sd.box.kind == "pavement" || sd.box.kind == "median_lawn") {
                 INFO(sd.box.id);
                 CHECK_FALSE(feetOverlap(shrunk(solidFoot(sd), 0.01), half));
             }
@@ -1386,7 +1401,7 @@ TEST_CASE("road net: four lanes and no median: a double solid centre line, no is
     CHECK(roadCrossingOverlaps(b).empty());
     int doubles = 0, lane = 0, verge = 0;
     for (const RoadSolid& sd : b.solids) {
-        verge += sd.box.kind == "verge" ? 1 : 0;
+        verge += sd.box.kind == "median_lawn" || sd.tint == RoadTint::Verge ? 1 : 0;
         if (sd.tint != RoadTint::LineWhite || sd.box.row.rfind("BV", 0) != 0 || sd.box.sx < 1.0 || sd.box.sy > 0.2)
             continue;
         if (std::fabs(std::fabs(sd.box.cy) - 0.125) < 1e-6) {

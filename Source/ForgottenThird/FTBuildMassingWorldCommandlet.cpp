@@ -2,6 +2,7 @@
 #include "FTBuildRoads.h"
 #include "FTBuildBackdrop.h"
 #include "FTBuildStandIns.h"
+#include "FTClockTower.h"
 #include "FTMaterialCheck.h"
 #include "FTBuildPlinths.h"
 #include "FTBuildShopInteriors.h"
@@ -335,7 +336,10 @@ bool PrepareLook(const FString& StreetsFile, const ftcore::MassingStreetSections
 	for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
 	{
 		const std::string Id(ftcore::massingLookSurfaceId(static_cast<ftcore::MassingLookSurface>(S)));
-		Look.Box[S] = LoadLookMaterial(FTScene::SurfaceInstancePackage(kLookWorldPrefix + Utf8(Id)));
+		// The lawn wears the project's grass surface (no world prefix), given its own macro variation in the map (LawnLook).
+		Look.Box[S] = static_cast<ftcore::MassingLookSurface>(S) == ftcore::MassingLookSurface::Lawn
+			? LoadLookMaterial(FTScene::SurfaceInstancePackage(TEXT("leafy_grass")))
+			: LoadLookMaterial(FTScene::SurfaceInstancePackage(kLookWorldPrefix + Utf8(Id)));
 		if (!Look.Box[S])
 		{
 			return false;
@@ -1359,6 +1363,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Walls="), WallsFile);
 	FParse::Value(*Params, TEXT("Goals="), GoalsFile);
 	FParse::Value(*Params, TEXT("Kit="), KitFile);
+	// -ClockTower=<box id>: an AFTClockTower stands on that box's centre and bottom (hide its boxes with kit "none"
+	// rows), turned -ClockTowerTurn degrees (engine yaw; 0: its door faces the engine's +Y), wearing -ClockMeshes=<tower
+	// path>;<hour hand path>;<minute hand path>, its dials -ClockDial=<height m>,<out m> from its centre.
+	// -Pieces=<csv>: finished meshes placed as they are (asset, x, y, z (empty: the ground), turn (engine yaw), kind
+	// solid|walk|none).
+	FString ClockBox, ClockMeshes, ClockDialText, PiecesFile;
+	double ClockTurn = 0.0;
+	FParse::Value(*Params, TEXT("ClockTower="), ClockBox);
+	FParse::Value(*Params, TEXT("ClockTowerTurn="), ClockTurn);
+	FParse::Value(*Params, TEXT("ClockMeshes="), ClockMeshes, false);
+	FParse::Value(*Params, TEXT("ClockDial="), ClockDialText, false);
+	FParse::Value(*Params, TEXT("Pieces="), PiecesFile);
 	FParse::Value(*Params, TEXT("Dump="), DumpFile);
 	FParse::Value(*Params, TEXT("Tour="), TourFile);
 	FParse::Value(*Params, TEXT("Coverage="), CoverageFile);
@@ -2163,6 +2179,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	const ftcore::HeightField Hill{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY), Field.Spacing,
 		Field.OriginX, Field.OriginY};
 	Land->LandscapeMaterial = bSurfaces ? FTBackdrop::HillGround(Package, LookGround(Package, LookSet), Hill, Side) : GroundTint;
+	if (bSurfaces)
+	{
+		// The lawn: the grass surface with a broad, strong mottle so a green of 80 m doesn't read as one tile repeated.
+		const int32 LawnAt = static_cast<int32>(ftcore::MassingLookSurface::Lawn);
+		UMaterialInstanceConstant* LawnMic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Massing_Lawn"), RF_Public);
+		LawnMic->SetParentEditorOnly(LookSet.Box[LawnAt]);
+		LawnMic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MacroVariation")), 0.32f);
+		LawnMic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MacroScale")), 1400.f);
+		LawnMic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Tint")), FLinearColor(0.86f, 0.95f, 0.78f));
+		LawnMic->PostEditChange();
+		LookSet.Box[LawnAt] = LawnMic;
+	}
 	Land->SetActorRelativeScale3D(FVector(Field.Spacing * 100.0, Field.Spacing * 100.0, 100.0));
 	{
 		TMap<FGuid, TArray<uint16>> HeightLayers;
@@ -2437,6 +2465,130 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	const ftcore::MassingGround Ground{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY), Field.Spacing,
 		Field.OriginX, Field.OriginY};
 	Cells.SetGround(Ground, Side); // walked pieces lying on the ground cast no shadow (FTCellInstancer.h)
+	// The slots that glow at night wear the street lamps' head master (the window collection's Night).
+	UMaterialInterface* const NightGlow = LoadObject<UMaterialInterface>(nullptr,
+		*(FString(FTScene::NightLampMaterial) + TEXT(".") + FPackageName::GetShortName(FTScene::NightLampMaterial)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	const TArray<FName> GlowSlots = {FName(TEXT("clock_face")), FName(TEXT("tower_lamp_glass")), FName(TEXT("lamp_glass"))};
+	const auto LoadMesh = [](const FString& Path) -> UStaticMesh*
+	{
+		const FString Object = Path.Contains(TEXT(".")) ? Path : Path + TEXT(".") + FPackageName::GetShortName(Path);
+		return LoadObject<UStaticMesh>(nullptr, *Object, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	};
+	if (!ClockBox.IsEmpty())
+	{
+		TArray<FString> Paths;
+		ClockMeshes.ParseIntoArray(Paths, TEXT(";"));
+		double DialHeight = 25.4, DialOut = 4.085;
+		if (!ClockDialText.IsEmpty())
+		{
+			FString H, O;
+			if (!ClockDialText.Split(TEXT(","), &H, &O) || !LexTryParseString(DialHeight, *H) || !LexTryParseString(DialOut, *O))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -ClockDial wants <height m>,<out m>: '%s'."), *ClockDialText);
+				World->DestroyWorld(false);
+				return 1;
+			}
+		}
+		const ftcore::MassingBox* On = nullptr;
+		for (const ftcore::MassingBox& Box : Boxes)
+		{
+			On = Box.id == TCHAR_TO_UTF8(*ClockBox) ? &Box : On;
+		}
+		UStaticMesh* const TowerMesh = Paths.Num() == 3 ? LoadMesh(Paths[0]) : nullptr;
+		UStaticMesh* const HourMesh = Paths.Num() == 3 ? LoadMesh(Paths[1]) : nullptr;
+		UStaticMesh* const MinuteMesh = Paths.Num() == 3 ? LoadMesh(Paths[2]) : nullptr;
+		if (!On || !TowerMesh || !HourMesh || !MinuteMesh)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -ClockTower=%s: %s."), *ClockBox,
+				!On ? TEXT("no such box") : TEXT("-ClockMeshes needs three static meshes that load: tower;hour hand;minute hand"));
+			World->DestroyWorld(false);
+			return 1;
+		}
+		const FVector At = Cm(ftcore::massingEnginePoint(Side, On->cx, On->cy, On->z0));
+		AFTClockTower* Clock = World->SpawnActor<AFTClockTower>(At, FRotator(0.0, ClockTurn, 0.0), Spawn);
+		if (!Clock)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -ClockTower: couldn't spawn the clock tower."));
+			World->DestroyWorld(false);
+			return 1;
+		}
+		Clock->SetActorLabel(TEXT("ClockTower"));
+		Clock->Setup(TowerMesh, HourMesh, MinuteMesh, DialHeight * 100.0, DialOut * 100.0, NightGlow, GlowSlots);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: clock tower on %s at plan %.1f, %.1f, bottom %.2f m, yaw %.1f; dials at %.2f m, %.3f m out; "
+			"night glow %s."), *ClockBox, On->cx, On->cy, On->z0, ClockTurn, DialHeight, DialOut, NightGlow ? TEXT("on") : TEXT("MISSING"));
+	}
+	if (!PiecesFile.IsEmpty())
+	{
+		FString Text;
+		if (!FFileHelper::LoadFileToString(Text, *PiecesFile))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't read '%s'."), *PiecesFile);
+			World->DestroyWorld(false);
+			return 1;
+		}
+		TArray<FString> Lines;
+		Text.ParseIntoArrayLines(Lines);
+		int32 Placed = 0;
+		TArray<int32> Col;
+		for (const FString& Raw : Lines)
+		{
+			const FString Line = Raw.TrimStartAndEnd();
+			if (Line.IsEmpty() || Line.StartsWith(TEXT("#")))
+			{
+				continue;
+			}
+			TArray<FString> F;
+			Line.ParseIntoArray(F, TEXT(","), false);
+			for (FString& Cell : F)
+			{
+				Cell.TrimStartAndEndInline();
+			}
+			if (Col.IsEmpty())
+			{
+				for (const TCHAR* Name : {TEXT("asset"), TEXT("x"), TEXT("y"), TEXT("z"), TEXT("turn"), TEXT("kind")})
+				{
+					Col.Add(F.IndexOfByKey(Name));
+				}
+				if (Col.Contains(INDEX_NONE))
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s needs the columns asset, x, y, z, turn, kind."), *PiecesFile);
+					World->DestroyWorld(false);
+					return 1;
+				}
+				continue;
+			}
+			const auto Get = [&](int32 C) { return F.IsValidIndex(Col[C]) ? F[Col[C]] : FString(); };
+			double X = 0.0, Y = 0.0, Z = 0.0, Turn = 0.0;
+			const FString ZText = Get(3), Kind = Get(5);
+			UStaticMesh* const Mesh = LoadMesh(Get(0));
+			const bool bNumbers = LexTryParseString(X, *Get(1)) && LexTryParseString(Y, *Get(2)) && (ZText.IsEmpty() || LexTryParseString(Z, *ZText)) &&
+				(Get(4).IsEmpty() || LexTryParseString(Turn, *Get(4)));
+			if (!Mesh || !bNumbers || !(Kind == TEXT("solid") || Kind == TEXT("walk") || Kind == TEXT("none")))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a piece needs a mesh that loads, numbers and kind solid, walk or none: '%s'."),
+					*PiecesFile, *Line);
+				World->DestroyWorld(false);
+				return 1;
+			}
+			if (ZText.IsEmpty())
+			{
+				Z = ftcore::massingGroundAt(Ground.grid, Ground.samplesX, Ground.samplesY, Ground.spacing, Ground.originX, Ground.originY, X, Y);
+			}
+			TArray<UMaterialInterface*, TInlineAllocator<16>> Mats;
+			const TArray<FStaticMaterial>& Slots = Mesh->GetStaticMaterials();
+			for (const FStaticMaterial& Slot : Slots)
+			{
+				Mats.Add(NightGlow && GlowSlots.Contains(Slot.MaterialSlotName) ? NightGlow : nullptr);
+			}
+			FFTCellOptions PieceOpts;
+			PieceOpts.Cull = EFTCellCull::Prop;
+			PieceOpts.Label = FString::Printf(TEXT("PIECE-%d"), Placed + 1);
+			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, Turn, 0.0), Cm(ftcore::massingEnginePoint(Side, X, Y, Z))), {},
+				Kind == TEXT("solid") ? EFTCellKind::Solid : Kind == TEXT("walk") ? EFTCellKind::Walk : EFTCellKind::NoCollide, PieceOpts);
+			++Placed;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: pieces: %d placed from %s."), Placed, *FPaths::GetCleanFilename(PiecesFile));
+	}
 	// The room the dressing takes: the frontage and the props keep out of it.
 	std::vector<ftcore::MassingFoot> Taken;
 	// A box of dressing as the engine's cube, wearing its surface and colliding as the boxes do, tilted to its grade when it
@@ -2558,6 +2710,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	RoadHost.Spawn = &Spawn;
 	RoadHost.Package = Package;
 	RoadHost.Base = Base;
+	RoadHost.Lawn = bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::Lawn)] : nullptr;
 	RoadHost.Cube = Cube;
 	RoadHost.Side = Side;
 	RoadHost.Taken = &Taken;

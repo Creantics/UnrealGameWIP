@@ -796,8 +796,8 @@ void standInGableMesh(StandInCanopyMesh& out) {
 bool importStandInCorridors(std::string_view csv, std::vector<StandInCorridor>& out, std::vector<std::string>* ids, std::string_view skipKind,
                             std::string* error) {
     constexpr std::size_t kNone = static_cast<std::size_t>(-1);
-    enum Col { Id, Kind, Width, Pts, Pavement, Count };
-    const char* const names[Count] = {"id", "kind", "width_m", "pts", "pavement_m"};
+    enum Col { Id, Kind, Width, Pts, Pavement, Median, Count };
+    const char* const names[Count] = {"id", "kind", "width_m", "pts", "pavement_m", "median_m"};
     std::size_t col[Count];
     std::fill(col, col + Count, kNone);
     bool haveHeader = false;
@@ -827,9 +827,11 @@ bool importStandInCorridors(std::string_view csv, std::vector<StandInCorridor>& 
         const auto field = [&f, &col](Col k) { return col[k] != kNone && col[k] < f.size() ? f[col[k]] : std::string_view(); };
         if (!skipKind.empty() && equalsNoCase(field(Kind), skipKind)) continue;
         if (field(Width).empty()) continue;
-        double width = 0.0, pavement = 0.0;
+        double width = 0.0, pavement = 0.0, median = 0.0;
         if (!parseNum(field(Width), width) || width <= 0.0) return fail(error, lineNo, "bad width_m");
         if (!field(Pavement).empty() && !parseNum(field(Pavement), pavement)) return fail(error, lineNo, "bad pavement_m");
+        if (!field(Median).empty() && (!parseNum(field(Median), median) || !(median >= 0.0)))
+            return fail(error, lineNo, "bad median_m");
         const double clear = pavement > 0.0 && 2.0 * pavement < width ? width - 2.0 * pavement : width;
         // The points: x:y[:z] joined by ';'.
         const std::string_view pts = field(Pts);
@@ -855,6 +857,7 @@ bool importStandInCorridors(std::string_view csv, std::vector<StandInCorridor>& 
                 cor.by = y;
                 cor.half = 0.5 * clear;
                 cor.street = street;
+                cor.median = median;
                 out.push_back(cor);
                 if (ids) ids->emplace_back(field(Id));
             }
@@ -920,6 +923,22 @@ bool segmentInRect(double ax, double ay, double bx, double by, double hx, double
     return true;
 }
 
+// True when every corner of the bounds lies on the corridor's median island: within median / 2 of its centre line and
+// between its ends.
+bool onMedian(const StandInBounds& b, const StandInCorridor& c) {
+    const double ux = c.bx - c.ax, uy = c.by - c.ay, len = std::sqrt(ux * ux + uy * uy);
+    if (len < 1e-9) return false;
+    const double dx = ux / len, dy = uy / len, hm = 0.5 * c.median;
+    const double co = std::cos(b.yaw * kDeg), si = std::sin(b.yaw * kDeg);
+    for (int k = 0; k < 4; ++k) {
+        const double lx = (k & 1) ? b.hx : -b.hx, ly = (k & 2) ? b.hy : -b.hy;
+        const double px = b.cx + lx * co - ly * si - c.ax, py = b.cy + lx * si + ly * co - c.ay;
+        const double along = px * dx + py * dy, across = -px * dy + py * dx;
+        if (along < 0.0 || along > len || std::abs(across) > hm) return false;
+    }
+    return true;
+}
+
 } // namespace
 
 double standInCorridorDepth(const StandInBounds& b, const StandInCorridor& c) {
@@ -949,6 +968,7 @@ std::size_t standInCorridorCheck(const StandInPoint* points, const double* footO
     for (std::size_t i = 0; i < count; ++i) {
         const std::size_t n = standInParts(points[i], parts);
         const double foot = footOverGround ? footOverGround[i] : 0.0;
+        const bool isTree = points[i].kind == StandInKind::StreetTree || points[i].kind == StandInKind::ParkTree;
         for (std::size_t k = 0; k < n; ++k) {
             if (parts[k].shape == StandInShape::Canopy) continue;
             const StandInBounds b = standInBounds(points[i], parts[k]);
@@ -965,6 +985,8 @@ std::size_t standInCorridorCheck(const StandInPoint* points, const double* footO
                     b.cy > std::max(cor.ay, cor.by) + pad) {
                     continue;
                 }
+                // A tree on a median island wide enough for it is clear of this corridor (not of one crossing it).
+                if (isTree && cor.median >= spec.medianMin - 1e-9 && onMedian(b, cor)) continue;
                 const double depth = standInCorridorDepth(b, cor);
                 if (depth > hit.depth) {
                     hit.depth = depth;

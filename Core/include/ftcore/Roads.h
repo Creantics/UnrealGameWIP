@@ -152,7 +152,7 @@ enum class RoadTint : std::uint8_t {
     Water,      // a canal's water (a stand-in plane)
     Gutter,     // the dark gutter strip at a lane kerb's foot
     Drain,      // a gutter's drain grate
-    Verge,      // a median island's planted top (green-brown ground)
+    Verge,      // a median island's planted top (green-brown ground; its piece's kind median_lawn)
     Count
 };
 struct RoadColor {
@@ -465,7 +465,7 @@ struct RoadNetReport {
 // Kerbs as any junction's.
 // A four-lane street: two lanes each half, a dashed lane line inside each half (roadNetLaneOffset) and, with no median,
 // a double solid centre line; with a median, a raised island between the halves (kerbs all round kRoadKerbRise over the
-// road beside it, its top tinted Verge, kind verge) that stops kRoadZebraOff + kRoadZebraWide + kRoadNetIslandGap past
+// road beside it, kind kerb; its planted top level with the kerbs' tops, tinted Verge, kind median_lawn) that stops kRoadZebraOff + kRoadZebraWide + kRoadNetIslandGap past
 // each end's corners, so the zebras cross the gap; the carriageway rectangles leave the island out. Its stop lines
 // cover the inbound half from the island's kerb.
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two

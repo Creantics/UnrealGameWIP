@@ -153,3 +153,19 @@ TEST_CASE("world clock: save round trip and sanitising") {
     CHECK(back.clock.hours == doctest::Approx(6.0));
     CHECK(back.clock.dayMinutes == kWorldClockMinDayMinutes);
 }
+
+TEST_CASE("clock hands: hour and minute angles clockwise from twelve") {
+    using ftcore::clockHands;
+    CHECK(clockHands(0.0).hourDeg == doctest::Approx(0.0));
+    CHECK(clockHands(0.0).minuteDeg == doctest::Approx(0.0));
+    CHECK(clockHands(3.0).hourDeg == doctest::Approx(90.0));
+    CHECK(clockHands(15.0).hourDeg == doctest::Approx(90.0));
+    CHECK(clockHands(15.0).minuteDeg == doctest::Approx(0.0));
+    CHECK(clockHands(10.5).hourDeg == doctest::Approx(315.0));
+    CHECK(clockHands(10.5).minuteDeg == doctest::Approx(180.0));
+    CHECK(clockHands(21.25).hourDeg == doctest::Approx(277.5));
+    CHECK(clockHands(21.25).minuteDeg == doctest::Approx(90.0));
+    CHECK(clockHands(-1.0).hourDeg == doctest::Approx(330.0));
+    CHECK(clockHands(std::nan("")).hourDeg == doctest::Approx(0.0));
+    CHECK(clockHands(std::nan("")).minuteDeg == doctest::Approx(0.0));
+}

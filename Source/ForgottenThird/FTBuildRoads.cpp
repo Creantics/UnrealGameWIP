@@ -102,7 +102,7 @@ struct FRoadPainter
 		const bool bFlat = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::LensRed ||
 			Which == ftcore::RoadTint::LensAmber || Which == ftcore::RoadTint::LensGreen || Which == ftcore::RoadTint::Wire ||
 			Which == ftcore::RoadTint::Tactile || Which == ftcore::RoadTint::Water || Which == ftcore::RoadTint::Gutter ||
-			Which == ftcore::RoadTint::Drain || Which == ftcore::RoadTint::Verge;
+			Which == ftcore::RoadTint::Drain || (Which == ftcore::RoadTint::Verge && !(Host.Lawn && Box.kind == "median_lawn"));
 		// A canal's walls and floor are walked on and drawn at any distance, as the road's ground is.
 		const bool bCanal = Box.kind.rfind("canal_", 0) == 0;
 		const bool bGround = Which == ftcore::RoadTint::Asphalt || Which == ftcore::RoadTint::AsphaltPatch || Which == ftcore::RoadTint::Pavement ||
@@ -149,7 +149,7 @@ struct FRoadPainter
 		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));
 		Options.Label = RoadsUtf8(Box.id);
 		const EFTCellKind Kind = !Solid.collide ? EFTCellKind::NoCollide : (bGround ? EFTCellKind::Walk : EFTCellKind::Solid);
-		UMaterialInterface* const Materials[1] = {Tint(Which)};
+		UMaterialInterface* const Materials[1] = {Box.kind == "median_lawn" && Host.Lawn ? Host.Lawn : Tint(Which)};
 		if (!Host.Cells->Add(bCyl ? Cylinder : Host.Cube, Materials, FTransform(Rotation, Location, Scale), {}, Kind, Options).IsValid())
 		{
 			return false;
