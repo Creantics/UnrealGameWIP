@@ -67,7 +67,6 @@ void AFTStoryDirector::BeginPlay()
 		return;
 	}
 
-	StartTime = GetWorld()->GetTimeSeconds();
 	SceneEpoch = MAX_uint32;
 	ResumeFromCarry();
 
@@ -407,7 +406,7 @@ bool AFTStoryDirector::Apply(const DialogueCommand& Input)
 	}
 	if (bOk)
 	{
-		++Moves;
+		Story->NoteMove();
 	}
 	Refresh();
 	return bOk;
@@ -420,7 +419,7 @@ void AFTStoryDirector::Refresh()
 	if (Runner.sceneEpoch() != SceneEpoch && Runner.scene())
 	{
 		SceneEpoch = Runner.sceneEpoch();
-		++Scenes;
+		Story->NoteScene();
 		if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
 		{
 			++GI->Alpha.scenes;
@@ -552,8 +551,8 @@ void AFTStoryDirector::ReportFinished()
 		return;
 	}
 	bReported = true;
-	const double Seconds = GetWorld()->GetTimeSeconds() - StartTime;
-	UE_LOG(LogForgottenThird, Log, TEXT("Story: FINISHED after %d moves, %d scenes, %.1f s.%s"), Moves, Scenes, Seconds,
+	UE_LOG(LogForgottenThird, Log, TEXT("Story: FINISHED after %d moves, %d scenes, %.1f s.%s"), Story->GetRunMoves(), Story->GetRunScenes(),
+		Story->GetRunSeconds(),
 		Story->GetRunner().stalled() ? TEXT(" (stalled)") : TEXT(""));
 	int32 ExitCode = 0;
 	if (bAlpha)
@@ -602,21 +601,40 @@ void AFTStoryDirector::ResumeFromCarry()
 	const StoryRunner& Runner = Story->GetRunner();
 	// No title card or scene line for the scene we came back to; a new scene still gets both.
 	SceneEpoch = Runner.sceneEpoch();
-	switch (FTStep::FinishCarried(*GI, Runner, Carry))
+	const FTStep::EFinish Finish = FTStep::FinishCarried(*GI, Runner, Carry);
+	switch (Finish)
 	{
 	case FTStep::EFinish::Failed:
 		return;
 	case FTStep::EFinish::Next:
+	case FTStep::EFinish::Retry: // the chain is still on the lost fight: it opens again
 		StartStep();
 		return;
 	case FTStep::EFinish::Resume:
+	case FTStep::EFinish::ResumeWon:
+	case FTStep::EFinish::ResumeLost:
 		break;
 	}
 	const uint32 Epoch = Runner.sceneEpoch();
-	UE_LOG(LogForgottenThird, Log, TEXT("Story: resumed after %s at %s beat %d."), *Carry.Kind, *Carry.Scene, Carry.Beat);
-	if (Story->ResumeAfterGameplay())
+	UE_LOG(LogForgottenThird, Log, TEXT("Story: resumed after %s at %s beat %d%s."), *Carry.Kind, *Carry.Scene, Carry.Beat,
+		Finish == FTStep::EFinish::ResumeLost ? TEXT(", lost") : Finish == FTStep::EFinish::ResumeWon ? TEXT(", won") : TEXT(""));
+	bool bResumed = false;
+	if (Finish == FTStep::EFinish::Resume)
 	{
-		++Moves;
+		bResumed = Story->ResumeAfterGameplay();
+	}
+	else if (!(bResumed = Story->ResumeAfterGameplayWithValue(Finish == FTStep::EFinish::ResumeWon ? 1 : 0)))
+	{
+		// The beat's `sets` flag could not take the value (a string flag): never resume a loss as a win.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the result of %s beat %d did not fit its flag; the beat waits in the box."), *Carry.Scene,
+			Carry.Beat);
+		++GI->Alpha.warnings;
+		GI->FailedScene = Carry.Scene;
+		GI->FailedBeat = Carry.Beat;
+	}
+	if (bResumed)
+	{
+		Story->NoteMove();
 	}
 	SceneEpoch = Epoch;
 	if (bQuitOnReturn)
@@ -636,7 +654,9 @@ bool AFTStoryDirector::BeginChain()
 	const StoryRunner& Runner = Story->GetRunner();
 	const FString Scene = FT::ToFString(Runner.position().scene);
 	const int32 Beat = static_cast<int32>(Runner.position().beat);
-	if (bAlpha && GI->FailedBeat == Beat && GI->FailedScene == Scene)
+	// A beat a screen or the autopilot gave up on is skipped in a headless run (a counted warning), so the
+	// run can't loop on it; a player never reaches this (a player's lost fight retries without a cap).
+	if ((bAlpha || bAutoPlay) && GI->FailedBeat == Beat && GI->FailedScene == Scene)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: skipping %s beat %d, a screen gave up on it."), *Scene, Beat);
 		GI->FailedScene.Reset();
@@ -655,6 +675,7 @@ bool AFTStoryDirector::BeginChain()
 		GI->Alpha.warnings += Plan.warnings();
 	}
 	GI->Chain.begin(Plan);
+	GI->StepRetries = 0;
 	StartStep();
 	return true;
 }

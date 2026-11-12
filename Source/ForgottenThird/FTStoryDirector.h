@@ -21,7 +21,8 @@
 // hands off too (the screens play themselves); fast autoplay skips the hand-off unless
 // -StoryAutoPlayHandoff.
 //
-// Moves, scenes and time in the FINISHED line count from this map visit only.
+// Moves, scenes and wall-clock time in the FINISHED line count the whole story run (UFTStorySubsystem:
+// from StartStory or a loaded save), across the hand-off map changes.
 //
 // Command line: -StoryAutoPlay plays by itself (each text typed out, then a short pause);
 // -StoryAutoPlayFast shows each text whole and makes many moves a frame; -StoryQuitOnFinish exits
@@ -212,9 +213,6 @@ private:
 	bool bFast = false;
 	bool bReported = false;
 	float WaitTime = 0.f; // autoplay: seconds with nothing to do
-	int32 Moves = 0;
-	int32 Scenes = 0;
-	double StartTime = 0.0;
 
 	bool bAlpha = false; // -AlphaAutoPlay
 	bool bHandoffAuto = false; // -StoryAutoPlayHandoff

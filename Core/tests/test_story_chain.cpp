@@ -146,3 +146,62 @@ TEST_CASE("alpha counters and the closing line") {
     CHECK(tiny[7] == '\0');
     CHECK(c.formatFinished(nullptr, 0) == 0);
 }
+
+TEST_CASE("lossRuleFromName reads the lose param") {
+    LossRule r = LossRule::Never;
+    CHECK(lossRuleFromName("", r));
+    CHECK(r == LossRule::Retry);
+    CHECK(lossRuleFromName("branch", r));
+    CHECK(r == LossRule::Branch);
+    CHECK(lossRuleFromName("never", r));
+    CHECK(r == LossRule::Never);
+    CHECK(lossRuleFromName("retry", r));
+    CHECK(r == LossRule::Retry);
+    r = LossRule::Branch;
+    CHECK_FALSE(lossRuleFromName("Retry", r));
+    CHECK_FALSE(lossRuleFromName("win", r));
+    CHECK(r == LossRule::Branch);
+}
+
+TEST_CASE("judgeStep: only a lost fight is anything but Advance") {
+    for (const LossRule rule : {LossRule::Retry, LossRule::Branch, LossRule::Never}) {
+        for (const bool sets : {false, true}) {
+            CHECK(judgeStep(false, false, rule, sets, 0, 0) == StepVerdict::Advance); // not a fight: never lost
+            CHECK(judgeStep(false, true, rule, sets, 9, 1) == StepVerdict::Advance);
+            CHECK(judgeStep(true, true, rule, sets, 0, 0) == StepVerdict::Advance); // a won fight
+            CHECK(judgeStep(true, true, rule, sets, 5, 2) == StepVerdict::Advance);
+        }
+    }
+}
+
+TEST_CASE("judgeStep: a lost fight retries, branches, or counts as won when it cannot be lost") {
+    CHECK(judgeStep(true, false, LossRule::Retry, false, 0, 0) == StepVerdict::Retry);
+    CHECK(judgeStep(true, false, LossRule::Retry, true, 0, 0) == StepVerdict::Retry); // sets alone is no branch
+    CHECK(judgeStep(true, false, LossRule::Retry, false, 1000, 0) == StepVerdict::Retry); // no cap: a player retries for ever
+    CHECK(judgeStep(true, false, LossRule::Branch, true, 0, 0) == StepVerdict::LossBranch);
+    CHECK(judgeStep(true, false, LossRule::Branch, true, 7, 2) == StepVerdict::LossBranch); // the branch ignores the cap
+    CHECK(judgeStep(true, false, LossRule::Branch, false, 0, 0) == StepVerdict::Retry); // nothing to set: retry
+    CHECK(judgeStep(true, false, LossRule::Never, false, 0, 1) == StepVerdict::Advance);
+    CHECK(judgeStep(true, false, LossRule::Never, true, 3, 1) == StepVerdict::Advance);
+}
+
+TEST_CASE("judgeStep: the retry cap gives up, never resumes") {
+    CHECK(judgeStep(true, false, LossRule::Retry, false, 0, 2) == StepVerdict::Retry);
+    CHECK(judgeStep(true, false, LossRule::Retry, false, 1, 2) == StepVerdict::Retry);
+    CHECK(judgeStep(true, false, LossRule::Retry, false, 2, 2) == StepVerdict::GiveUp);
+    CHECK(judgeStep(true, false, LossRule::Branch, false, 2, 2) == StepVerdict::GiveUp);
+}
+
+TEST_CASE("a retried step leaves the chain on that step") {
+    GameplayPlan plan;
+    REQUIRE(plan.lower("CMB → CHC"));
+    StoryChain chain;
+    chain.begin(plan);
+    // Retry: the owner does not call finishStep, so the chain stays on the fight.
+    REQUIRE(judgeStep(true, false, LossRule::Retry, false, 0, 0) == StepVerdict::Retry);
+    CHECK(chain.active());
+    CHECK(chain.step() == 0u);
+    REQUIRE(judgeStep(true, true, LossRule::Retry, false, 1, 0) == StepVerdict::Advance);
+    CHECK(chain.finishStep(true) == StoryChain::Next::Open);
+    CHECK(chain.step() == 1u);
+}

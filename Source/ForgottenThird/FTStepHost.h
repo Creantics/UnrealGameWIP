@@ -91,10 +91,18 @@ enum class EFinish : uint8
 {
 	Next, // counted, and GI.Chain is on the beat's next step
 	Resume, // counted, and that was the beat's last step: the story resumes
-	Failed, // not done, or the story moved since the hand-off: logged and counted as a warning, chain reset
+	ResumeWon, // as Resume, on a beat whose `lose` is "branch": resume(1) sets its `sets` flag
+	ResumeLost, // a lost fight on a "branch" beat: the beat ends now and resume(0) sets its `sets` flag
+	Retry, // a lost fight: not counted, GI.Chain stays on the step and it opens again
+	Failed, // not done, a lost fight past the autopilot's retries, or the story moved since the hand-off:
+	        // logged and counted as a warning, chain reset
 };
 
-// Counts the carried step (GI.Alpha) and moves GI.Chain on. The one place a step is counted.
+// The autopilot's story-level retries of a lost fight before the step fails (a player retries freely).
+inline constexpr uint32 kAutoFightRetries = 2;
+
+// Judges the carried step (ftcore::judgeStep: a fight's bWon against the beat's `lose` param), counts
+// it (GI.Alpha) when it advances and moves GI.Chain on. The one place a step is counted.
 FORGOTTENTHIRD_API EFinish FinishCarried(UFTGameInstance& GI, const ftcore::StoryRunner& Runner, const FFTStoryCarry& Carry);
 
 // For a screen whose step is done (StoryCarry.bDone), before it opens StoryCarry.ReturnMap: true when

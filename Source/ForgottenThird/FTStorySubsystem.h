@@ -229,6 +229,13 @@ public:
 	// StartStory, ApplySave and StopStory.
 	void SetPaused(bool bPause) { bPaused = bPause; }
 	bool IsPaused() const { return bPaused; }
+	// The story run's moves, scenes and wall-clock seconds for the director's FINISHED line. StartStory and
+	// ApplySave start them over; map changes (a hand-off and back) keep them.
+	void NoteMove() { ++RunMoves; }
+	void NoteScene() { ++RunScenes; }
+	int32 GetRunMoves() const { return RunMoves; }
+	int32 GetRunScenes() const { return RunScenes; }
+	double GetRunSeconds() const { return FPlatformTime::Seconds() - RunStartWall; }
 	// New Game keeps the read-state of the run before it: with nothing seen in memory, reads the slot's.
 	void AdoptSeenFromSlot();
 	// The party's xp and gold (ftcore/Progression.h). StartStory starts them over; the story slot
@@ -284,6 +291,9 @@ private:
 	ftcore::SeenLines Seen;
 	ftcore::PartyProgress Party;
 	bool bPaused = false;
+	int32 RunMoves = 0;
+	int32 RunScenes = 0;
+	double RunStartWall = 0.0;
 	uint32 SeenSceneEpoch = 0;
 	uint32 SeenBeatEpoch = 0;
 	bool bLoaded = false;

@@ -16,6 +16,13 @@
 // The chain holds a copy of the plan, so it outlives the string the plan was lowered from and the
 // map changes between steps (the owner keeps it on the game instance).
 //
+// A fight step can be lost. judgeStep says what a carried step that came back done leads to; the
+// beat's `lose` param picks the rule for a lost fight:
+//   "retry" (or no param): the same step opens again; never a resume as a win
+//   "branch": the beat ends at once and resume(0) sets its `sets` flag, so the scene can branch on it
+//             (a won fight on such a beat resumes with 1); without a `sets` flag it plays as "retry"
+//   "never":  the fight cannot be lost (a spar): a loss counts as a win
+//
 // AlphaCounters keeps the tallies of an alpha run (the whole script played by autoplay) across map
 // changes and formats the closing line, and the line of its fights by combat system. The lines
 // carry counts only.
@@ -27,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <string_view>
 
 namespace ftcore {
 
@@ -73,6 +81,36 @@ private:
     std::uint32_t step_ = 0;
     bool active_ = false;
 };
+
+// A gameplay beat's `lose` param.
+enum class LossRule : std::uint8_t { Retry, Branch, Never };
+
+// "" or "retry", "branch", "never". False (out unchanged) for any other text.
+inline bool lossRuleFromName(std::string_view name, LossRule& out) {
+    if (name.empty() || name == "retry") out = LossRule::Retry;
+    else if (name == "branch") out = LossRule::Branch;
+    else if (name == "never") out = LossRule::Never;
+    else return false;
+    return true;
+}
+
+// What a step that came back done leads to.
+enum class StepVerdict : std::uint8_t {
+    Advance,    // counted; the chain moves on (or the beat resumes after its last step)
+    Retry,      // a lost fight: the same step opens again, not counted
+    LossBranch, // a lost fight on a "branch" beat: the beat ends with resume(0)
+    GiveUp,     // a lost fight past the retry cap (the autopilot): not counted, the beat stays
+};
+
+// fight: the step routes to a battle (only fights can be lost). won: the screen's result.
+// hasSets: the beat names a `sets` flag. retries: losses of this step already retried.
+// retryCap: the most retries before GiveUp; 0 means no cap (a player retries as often as they like).
+inline StepVerdict judgeStep(bool fight, bool won, LossRule rule, bool hasSets, std::uint32_t retries, std::uint32_t retryCap) {
+    if (!fight || won || rule == LossRule::Never) return StepVerdict::Advance;
+    if (rule == LossRule::Branch && hasSets) return StepVerdict::LossBranch;
+    if (retryCap != 0 && retries >= retryCap) return StepVerdict::GiveUp;
+    return StepVerdict::Retry;
+}
 
 struct AlphaCounters {
     std::uint32_t scenes = 0;

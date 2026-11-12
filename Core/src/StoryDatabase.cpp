@@ -1,4 +1,5 @@
 #include "ftcore/StoryDatabase.h"
+#include "ftcore/StoryChain.h"
 
 #include <algorithm>
 #include <charconv>
@@ -322,6 +323,10 @@ void StoryBuilder::param(std::string_view key, std::string_view value) {
             return fail("param 'stub' is not an integer: '" + std::string(value) + "'");
         db_.beats_.back().hasStub = true;
         db_.beats_.back().stub = v;
+    } else if (key == "lose") {
+        LossRule rule = LossRule::Retry;
+        if (!lossRuleFromName(value, rule))
+            return fail("param 'lose' is not retry, branch or never: '" + std::string(value) + "'");
     }
     db_.params_.emplace_back(store(key), store(value));
     ++db_.beats_.back().paramCount;
