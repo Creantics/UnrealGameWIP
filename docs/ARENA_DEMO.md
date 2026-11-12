@@ -395,7 +395,8 @@ over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it n
   chances)`; a chance is an attack in whose cut window a press or the guard waited. n/a with no chance;
 - `flinch`: an enemy flinched: `(<flinches> of <chances> chances)`. A chance is a blow of the kind's `flinchPoise`
   or more that left a kind with a `flinchTime` upright and the host's veto off; n/a with none (bosses have no
-  `flinchTime`), FAIL with chances and no flinch;
+  `flinchTime`), FAIL with chances and no flinch (also when the flinch run's cap or an active or armoured attack
+  stopped every one: a chance is counted before those rules);
 - `break-out`: an enemy broke out of a run of blows: `(<n>; due <d>, barred <b>; <u> upright blows; best run 4 of
   5)`, the best run being four blows of a kind's five, counted as each lands. FAIL when a blow brought an upright
   enemy's count to its `breakAt` without staggering it and the move was free yet none followed, and when upright

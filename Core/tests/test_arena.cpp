@@ -6389,7 +6389,9 @@ TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
         CHECK(c.flinchCheck == ArenaCheck::NotShown);
         const HostRun plain = hostRun({"skirmisher", "hulk"}, "duy", seed);
         CHECK(arenaFeatureChecks(plain.stats).breakOutCheck == ArenaCheck::NotShown);
-        CHECK(arenaFeatureChecks(plain.stats).flinchCheck != ArenaCheck::Fail);
+        CHECK(plain.stats.flinches == 0); // unaimed: the same lights, no shots, so no chance either
+        CHECK(plain.stats.flinchChances == 0);
+        CHECK(arenaFeatureChecks(plain.stats).flinchCheck == ArenaCheck::NotShown);
     }
 }
 
