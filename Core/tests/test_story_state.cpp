@@ -1937,3 +1937,187 @@ TEST_CASE("story state: entering scenes") {
         CHECK_FALSE(st.refused);
     }
 }
+
+// ---- A refused encode: the save fallback ----
+
+namespace {
+
+StoryState fallbackState() {
+    const FactRegistry& r = reg();
+    StoryState s;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 6) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyBeginScene(s, r, sc("s3")));
+    REQUIRE(storySet(s, r, fs("a_num"), 8) == SetResult::Ok);
+    s.extension[0] = 0x34;
+    s.extension[1] = 0x12;
+    s.extensionLength = 4;
+    return s;
+}
+
+std::array<std::uint8_t, kStoryStateBlockSize> encoded(StoryState s) {
+    std::array<std::uint8_t, kStoryStateBlockSize> b{};
+    REQUIRE(storyEncode(s, reg(), b));
+    return b;
+}
+
+struct Flip {
+    const char* name;
+    void (*apply)(StoryState&);
+};
+
+} // namespace
+
+TEST_CASE("story state: the saved image compares every field the block holds") {
+    const StoryState base = fallbackState();
+    CHECK(storySameSavedImage(base, base));
+    // Each flip changes one saved field: the images differ (both ways), and so do the encoded blocks.
+    const Flip saved[] = {
+        {"facts", [](StoryState& s) { s.facts[3] ^= 1; }},
+        {"factsEntry", [](StoryState& s) { s.factsEntry[3] ^= 1; }},
+        {"stamp", [](StoryState& s) { s.stamp[3] = 0; }},
+        {"stampEntry (scene open)", [](StoryState& s) { s.stampEntry[3] = 0; }},
+        {"wide", [](StoryState& s) { s.wide[1] += 1; }},
+        {"wideEntry", [](StoryState& s) { s.wideEntry[1] += 1; }},
+        {"openScene", [](StoryState& s) { s.openScene = kNoScene; }},
+        {"lastCommitted", [](StoryState& s) { s.lastCommitted = kNoScene; }},
+        {"saveSerial", [](StoryState& s) { s.saveSerial += 1; }},
+        {"factsKnown", [](StoryState& s) { s.factsKnown = static_cast<std::uint16_t>(s.factsKnown + 300); }},
+        {"wideKnown", [](StoryState& s) { s.wideKnown = static_cast<std::uint16_t>(s.wideKnown + 300); }},
+        {"extension bytes", [](StoryState& s) { s.extension[1] ^= 0xff; }},
+        {"extensionLength", [](StoryState& s) { s.extensionLength = 2; }},
+        {"extensionRaw", [](StoryState& s) { s.extensionRaw = true; }},
+    };
+    for (const Flip& f : saved) {
+        CAPTURE(f.name);
+        StoryState other = base;
+        f.apply(other);
+        CHECK_FALSE(storySameSavedImage(base, other));
+        CHECK_FALSE(storySameSavedImage(other, base));
+        CHECK(encoded(base) != encoded(other));
+    }
+    // The registry hash: a different image (the state's own), though storyEncode writes the registry's hash over it
+    // when the registry has one; the stricter compare only skips a save.
+    StoryState hashed = base;
+    hashed.registryHash ^= 0x5a5a5a5au;
+    CHECK_FALSE(storySameSavedImage(base, hashed));
+    // Fields a block does not hold: the same image and the same block.
+    const Flip unsaved[] = {
+        {"events", [](StoryState& s) { s.events[0].scene = 9; }},
+        {"eventCount", [](StoryState& s) { s.eventCount = 3; }},
+        {"lostEvents", [](StoryState& s) { s.lostEvents = 5; }},
+        {"lostStampRecords", [](StoryState& s) { s.lostStampRecords = 5; }},
+        {"extension past its length", [](StoryState& s) { s.extension[100] = 7; }},
+        {"flags mid-scene bit", [](StoryState& s) { s.flags = static_cast<std::uint16_t>(s.flags ^ kStoryMidScene); }},
+    };
+    for (const Flip& f : unsaved) {
+        CAPTURE(f.name);
+        StoryState other = base;
+        f.apply(other);
+        CHECK(storySameSavedImage(base, other));
+        CHECK(encoded(base) == encoded(other));
+    }
+    // The sandbox bit: the same image (it is why the encode is refused, never part of a block).
+    StoryState box = base;
+    box.flags = static_cast<std::uint16_t>(box.flags | kStorySandbox);
+    CHECK(storySameSavedImage(base, box));
+    // No scene open: the stamps-at-entry record is not written, so it does not count.
+    StoryState closed = base;
+    REQUIRE(storyCommitScene(closed, reg()));
+    StoryState closedOther = closed;
+    closedOther.stampEntry[3] = 0;
+    CHECK(storySameSavedImage(closed, closedOther));
+    CHECK(encoded(closed) == encoded(closedOther));
+    // A scene open but no room for the record (a raw area, or one too full): not written, so it does not count.
+    StoryState raw = base;
+    raw.extensionRaw = true;
+    StoryState rawOther = raw;
+    rawOther.stampEntry[3] = 0;
+    CHECK(storySameSavedImage(raw, rawOther));
+    CHECK(encoded(raw) == encoded(rawOther));
+    StoryState full = base;
+    full.extensionLength = static_cast<std::uint16_t>(kStoryExtensionBytes - 4);
+    StoryState fullOther = full;
+    fullOther.stampEntry[3] = 0;
+    CHECK(storySameSavedImage(full, fullOther));
+    CHECK(encoded(full) == encoded(fullOther));
+}
+
+TEST_CASE("story state: the save fallback writes the last good block only while nothing moved") {
+    const FactRegistry& r = reg();
+    StoryState live = fallbackState();
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncode(live, r, block));
+    const StoryState good = live;
+    const std::span<const std::uint8_t> view(block);
+    StoryState now = live;
+    now.flags = static_cast<std::uint16_t>(now.flags | kStorySandbox);
+
+    CHECK(storySaveFallback(now, &good, view) == StorySaveFallback::WriteLastGood);
+    CHECK(storySaveFallback(now, nullptr, view) == StorySaveFallback::SkipNoGoodBlock);
+    CHECK(storySaveFallback(now, &good, view.first(16)) == StorySaveFallback::SkipNoGoodBlock);
+    CHECK(storySaveFallback(now, &good, {}) == StorySaveFallback::SkipNoGoodBlock);
+
+    // Each saved field that moves skips the save, flags-only and extension-only changes included.
+    StoryState f = now;
+    REQUIRE(storySet(f, r, fs("a_num"), 9) == SetResult::Ok);
+    CHECK(storySaveFallback(f, &good, view) == StorySaveFallback::SkipMoved);
+    StoryState e = now;
+    e.extension[0] ^= 1;
+    CHECK(storySaveFallback(e, &good, view) == StorySaveFallback::SkipMoved);
+    StoryState w = now;
+    w.wideEntry[0] += 1;
+    CHECK(storySaveFallback(w, &good, view) == StorySaveFallback::SkipMoved);
+    StoryState c = now;
+    REQUIRE(storyCommitScene(c, r));
+    CHECK(storySaveFallback(c, &good, view) == StorySaveFallback::SkipMoved);
+
+    // A block whose header names another position (kept from another state) is never written.
+    auto other = block;
+    other[16] = kNoScene;
+    CHECK(storySaveFallback(now, &good, std::span<const std::uint8_t>(other)) == StorySaveFallback::SkipMoved);
+    // The same open scene but another last committed scene: the same progress, still another block.
+    REQUIRE(now.openScene != kNoScene);
+    auto lastOther = block;
+    lastOther[17] = static_cast<std::uint8_t>(lastOther[17] == 0 ? 1 : 0);
+    CHECK(storyProgress(lastOther[16], lastOther[17]) == storyProgress(now.openScene, now.lastCommitted));
+    CHECK(storySaveFallback(now, &good, std::span<const std::uint8_t>(lastOther)) == StorySaveFallback::SkipMoved);
+}
+
+TEST_CASE("story state: progress and position") {
+    CHECK(storyProgress(kNoScene, kNoScene) == 0);
+    CHECK(storyProgress(4, kNoScene) == 9);
+    CHECK(storyProgress(kNoScene, 4) == 10);
+    CHECK(storyProgress(5, 4) == 11);
+    StoryState s;
+    CHECK(storyScenePosition(s) == kNoScene);
+    s.lastCommitted = 2;
+    CHECK(storyScenePosition(s) == 2);
+    s.openScene = 3;
+    CHECK(storyScenePosition(s) == 3);
+}
+
+TEST_CASE("story state: the save-skip run") {
+    StorySaveSkip k;
+    CHECK_FALSE(storyNoteSave(k, false, 1)); // written: no run, no change
+    CHECK_FALSE(k.skipping);
+    CHECK(storyNoteSave(k, true, 4)); // the first skip starts a run
+    CHECK(k.skipping);
+    CHECK(k.sinceScene == 4);
+    CHECK(k.skipped == 1);
+    CHECK_FALSE(storyNoteSave(k, true, 6)); // counts on; the run keeps its first scene
+    CHECK(k.sinceScene == 4);
+    CHECK(k.skipped == 2);
+    CHECK(storyNoteSave(k, false, 6)); // a written block ends it
+    CHECK_FALSE(k.skipping);
+    CHECK(k.sinceScene == kNoScene);
+    CHECK(k.skipped == 0);
+    CHECK(storyNoteSave(k, true, 7));
+    CHECK(storyClearSaveSkip(k)); // a new game
+    CHECK_FALSE(storyClearSaveSkip(k));
+    k.skipping = true;
+    k.skipped = UINT32_MAX;
+    storyNoteSave(k, true, 1);
+    CHECK(k.skipped == UINT32_MAX); // saturates
+}

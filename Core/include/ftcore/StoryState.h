@@ -383,6 +383,43 @@ FTCORE_API StoryLoad storyLoadOrNew(std::span<const std::uint8_t> in, const Fact
 // The result's name, for logs ("ok", "empty", "bad magic", ...).
 FTCORE_API const char* storyLoadName(StoryLoad r);
 
+// ---- A refused encode: the save fallback ----
+// storyEncode refuses only a sandbox. The owner keeps the last good block (the last one encoded or loaded) and
+// the state as it was taken; on a refusal it writes that block only while nothing it saves has moved since.
+
+// True when storyEncode would write the same block for both: the header counts and hash, the scene position, the
+// save serial, the facts, stamps and wide values with their entry copies, and the extension area (with the
+// stamps-at-entry record, written while a scene is open and the record fits). The fields a block does not hold are ignored: the event
+// ring, the lost counts and the flags word (the sandbox bit is why an encode is refused; the block's own flag
+// word follows the scene position).
+FTCORE_API bool storySameSavedImage(const StoryState& a, const StoryState& b);
+// How far a state has got: 0 nothing, 2n+1 with scene n open, 2n+2 with n the last committed and none open.
+FTCORE_API std::uint32_t storyProgress(std::uint8_t openScene, std::uint8_t lastCommitted);
+// The scene a state is at: the open scene, else the last committed, else kNoScene.
+FTCORE_API std::uint8_t storyScenePosition(const StoryState& s);
+
+enum class StorySaveFallback : std::uint8_t {
+    WriteLastGood,   // nothing saved has moved: the last good block is written
+    SkipNoGoodBlock, // there is no last good block: the save is skipped (never an empty block over progress)
+    SkipMoved,       // the story moved since the block (or it is from another state): the save is skipped
+};
+// The rule for a refused encode of `now`. good: the state as goodBlock was taken (nullptr: none). The block's
+// own open and last committed scene (its header) must match exactly too, so a block kept from another state is never written.
+FTCORE_API StorySaveFallback storySaveFallback(const StoryState& now, const StoryState* good,
+                                               std::span<const std::uint8_t> goodBlock);
+
+// Saves being skipped, for the UI: since which scene and how many. Plain data, no allocation.
+struct StorySaveSkip {
+    bool skipping = false;
+    std::uint8_t sinceScene = kNoScene; // the scene position at the first skipped save
+    std::uint32_t skipped = 0;          // saves skipped since then
+};
+// Notes one save: skipped, or a block written (encoded, or the last good block). The first skip starts a run at
+// `scene`; a written block ends it. Returns true when `skipping` changed.
+FTCORE_API bool storyNoteSave(StorySaveSkip& k, bool skipped, std::uint8_t scene);
+// A new game, a registry import or a refused load: no run. Returns true when `skipping` changed.
+FTCORE_API bool storyClearSaveSkip(StorySaveSkip& k);
+
 // ---- The scene flow ----
 
 // One story-runner scene id and the registry scene it plays.

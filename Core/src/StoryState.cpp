@@ -715,6 +715,59 @@ const char* storyLoadName(StoryLoad r) {
     return "unknown";
 }
 
+bool storySameSavedImage(const StoryState& a, const StoryState& b) {
+    if (a.factsKnown != b.factsKnown || a.wideKnown != b.wideKnown || a.registryHash != b.registryHash ||
+        a.openScene != b.openScene || a.lastCommitted != b.lastCommitted || a.saveSerial != b.saveSerial)
+        return false;
+    if (a.facts != b.facts || a.factsEntry != b.factsEntry || a.stamp != b.stamp || a.wide != b.wide ||
+        a.wideEntry != b.wideEntry)
+        return false;
+    if (a.extensionRaw != b.extensionRaw) return false;
+    if (a.extensionRaw) return a.extension == b.extension; // no stamps-at-entry record is written
+    const std::uint32_t na = std::min<std::uint32_t>(a.extensionLength, kStoryExtensionBytes);
+    const std::uint32_t nb = std::min<std::uint32_t>(b.extensionLength, kStoryExtensionBytes);
+    if (na != nb || !std::equal(a.extension.begin(), a.extension.begin() + na, b.extension.begin())) return false;
+    // The stamps-at-entry record is written only while a scene is open and it fits after the area (storyEncode).
+    if (a.openScene != kNoScene && na + 4 + kFactSlots + 2 <= kStoryExtensionBytes && a.stampEntry != b.stampEntry)
+        return false;
+    return true;
+}
+
+std::uint32_t storyProgress(std::uint8_t openScene, std::uint8_t lastCommitted) {
+    if (openScene != kNoScene) return 2u * openScene + 1u;
+    return lastCommitted != kNoScene ? 2u * lastCommitted + 2u : 0u;
+}
+
+std::uint8_t storyScenePosition(const StoryState& s) {
+    return s.openScene != kNoScene ? s.openScene : s.lastCommitted;
+}
+
+StorySaveFallback storySaveFallback(const StoryState& now, const StoryState* good,
+                                    std::span<const std::uint8_t> goodBlock) {
+    if (!good || goodBlock.size() != kStoryStateBlockSize) return StorySaveFallback::SkipNoGoodBlock;
+    // b[16], b[17]: the block's open and last committed scene (storyEncode); both must match exactly.
+    if (goodBlock[16] != now.openScene || goodBlock[17] != now.lastCommitted) return StorySaveFallback::SkipMoved;
+    return storySameSavedImage(now, *good) ? StorySaveFallback::WriteLastGood : StorySaveFallback::SkipMoved;
+}
+
+bool storyNoteSave(StorySaveSkip& k, bool skipped, std::uint8_t scene) {
+    if (!skipped) return storyClearSaveSkip(k);
+    const bool started = !k.skipping;
+    if (started) {
+        k.skipping = true;
+        k.sinceScene = scene;
+        k.skipped = 0;
+    }
+    if (k.skipped != UINT32_MAX) ++k.skipped;
+    return started;
+}
+
+bool storyClearSaveSkip(StorySaveSkip& k) {
+    const bool was = k.skipping;
+    k = StorySaveSkip{};
+    return was;
+}
+
 StoryLoad storyDecode(std::span<const std::uint8_t> in, const FactRegistry& reg, StoryState& out,
                       StoryStateLoadReport* report) {
     StoryStateLoadReport rep;

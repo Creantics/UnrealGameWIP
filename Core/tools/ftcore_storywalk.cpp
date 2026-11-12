@@ -22,8 +22,9 @@
 //   scene CODE            a registry scene committed
 //   set ID VALUE          a fact that scene was the last to write, as it stands
 //   wide ID VALUE         a wide value that changed since the last commit
-//   derived INDEX VALUE   after a commit: each registry derived value that is valid and changed (read after the move
-//                         that committed, so flag beats the same move ran at the start of the next scene count)
+//   derived INDEX VALUE   after a commit: each registry derived value that is valid and changed, read at the committed
+//                         scene (read after the move that committed, so flag beats the same move ran at the start
+//                         of the next scene count)
 //   gameplay KIND [FLAG=VALUE]
 //   choice INDEX
 //   flag ID VALUE         at the end: every flag that is not a fact flag (sf.)
@@ -45,6 +46,7 @@
 #include "ftcore/StoryState.h"
 
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -215,8 +217,9 @@ int main(int argc, char** argv) {
         } else if (a == "--steps" && i + 1 < argc) {
             const char* text = argv[++i];
             char* end = nullptr;
+            errno = 0;
             steps = std::strtol(text, &end, 10);
-            if (end == text || *end != 0 || steps <= 0) return usage("--steps: expected a positive number");
+            if (end == text || *end != 0 || errno == ERANGE || steps <= 0) return usage("--steps: expected a positive number");
         } else {
             return usage("unknown argument: " + std::string(a));
         }
@@ -297,7 +300,7 @@ int main(int argc, char** argv) {
             std::printf("wide %.*s %u\n", static_cast<int>(id.size()), id.data(), static_cast<unsigned>(s.wide[w]));
             wideBefore[w] = s.wide[w];
         }
-        const DerivedValues d = storySceneReads(s, *reg, 0).derived;
+        const DerivedValues d = storySceneReads(s, *reg, s.lastCommitted).derived; // as read at the committed scene
         for (std::uint8_t i = 0; i < reg->derivedCount; ++i) {
             const bool valid = ((d.valid >> i) & 1u) != 0;
             if (!valid || (((derivedBefore.valid >> i) & 1u) != 0 && derivedBefore.value[i] == d.value[i])) continue;

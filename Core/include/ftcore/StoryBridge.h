@@ -99,6 +99,8 @@ public:
     // After a load: the runner restored and the state decoded. See the header comment.
     FTCORE_API void sync();
 
+    // Between restore() and sync(): a load whose state is not yet decoded.
+    bool awaitingSync() const { return restoring_; }
     std::uint32_t boundFlags() const { return boundFlags_; }
     std::uint32_t mappedScenes() const { return mappedScenes_; }
     // The registry scene a runner scene plays (kNoScene when unmapped or unbound).
