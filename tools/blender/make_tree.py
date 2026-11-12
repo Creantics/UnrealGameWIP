@@ -22,9 +22,11 @@ crown-shading trick: the cards light as one canopy, never as flat rectangles).
 Writes into <out>, for TREE-<species>-<variant>:
   <name>.glb            nodes <name>_LOD0..LOD2 (bark + leaf), <name>_LOD3 (three crossed billboard cards) and
                         UCX_<name>_LOD0_00 (a trunk-only convex hull); materials Bark, Leaf, Billboard (no images)
-  <name>_bark.png, <name>_bark_n.png, <name>_leaf.png (RGBA), <name>_leaf_n.png, <name>_bb.png (RGBA): square, 1024 px
-                        at most; normal maps in the engine's convention (green down)
-  <name>_leaf_m.png     masks: R leaf, G twig (also under the leaves: what winter keeps), B per-leaf id
+  <name>_bark.png (RGBA: alpha is the bark's roughness), <name>_bark_n.png, <name>_leaf.png (RGBA), <name>_leaf_n.png,
+                        <name>_bb.png (RGBA): square, --tex px (2048; the billboard 1024); normal maps in the engine's
+                        convention (green down); the bark tiles once per bark["tile"] metres, square on every limb
+  <name>_leaf_m.png     masks: R leaf coverage (its upper half the blade's thinness: 0.5 vein or stalk .. 1 thin blade, for
+                        translucency), G twig (also under the leaves: what winter keeps), B per-leaf random id
   <name>_bloom.png      (cherries) blossom cards in the leaf atlas' cells: flower clusters, a few young leaves
   <name>_bb.png         the billboard: a 2 x 2 atlas of the tree leafy (top left), bare (top right), in blossom (bottom
                         left; leafy for the others)
@@ -50,7 +52,7 @@ SPECIES = {
         attractors=1400, step=0.26, influence=1.9, kill=0.44, tropism=0.12, trunk_r=0.14, lean=0.04,
         leaf_r=0.020, cards=1300, card_size=(0.95, 1.25), fold=0.22, droop=0.10,
         leaf=dict(color=(84, 104, 54), length=(0.11, 0.15), width=0.50, veins=7, tip=1.0, side_twigs=4),
-        bark=dict(color=(98, 90, 80), fissure=0.55, stretch=5.0),
+        bark=dict(color=(112, 102, 90), style="fissured", tile=0.7, fissures=14.0, elong=0.12, depth=1.2, lichen=0.45, moss=0.35),
         lod_r=(0.012, 0.035, 0.08), lod_cards=(1.0, 0.42, 0.2),
         season=dict(autumn=((196, 142, 44), (172, 84, 30)), twig=(84, 76, 66), spring=(1.12, 1.18, 0.78)),
     ),
@@ -59,7 +61,7 @@ SPECIES = {
         attractors=1000, step=0.20, influence=1.5, kill=0.34, tropism=0.06, trunk_r=0.10, lean=0.06,
         leaf_r=0.016, cards=800, card_size=(0.6, 0.8), fold=0.25, droop=0.12,
         leaf=dict(color=(104, 116, 60), length=(0.085, 0.115), width=0.56, veins=5, tip=0.7, side_twigs=5),
-        bark=dict(color=(112, 104, 96), fissure=0.25, stretch=2.5),
+        bark=dict(color=(128, 122, 112), style="smooth", tile=0.6, depth=0.35, lichen=0.4, moss=0.25),
         lod_r=(0.010, 0.028, 0.06), lod_cards=(1.0, 0.42, 0.2),
         season=dict(autumn=((204, 92, 40), (150, 40, 38)), twig=(96, 86, 78), spring=(1.10, 1.16, 0.82)),
     ),
@@ -68,7 +70,7 @@ SPECIES = {
         attractors=2400, step=0.32, influence=2.4, kill=0.54, tropism=-0.02, trunk_r=0.28, lean=0.03,
         leaf_r=0.026, cards=2100, card_size=(1.1, 1.45), fold=0.20, droop=0.12,
         leaf=dict(color=(72, 92, 50), length=(0.12, 0.16), width=0.48, veins=8, tip=1.0, side_twigs=4),
-        bark=dict(color=(82, 74, 66), fissure=0.75, stretch=4.0),
+        bark=dict(color=(96, 86, 76), style="ridged", tile=0.9, fissures=11.0, elong=0.16, depth=2.0, fissure_w=0.45, lichen=0.55, moss=0.5),
         lod_r=(0.015, 0.045, 0.11), lod_cards=(1.0, 0.40, 0.2),
         season=dict(autumn=((182, 128, 46), (128, 72, 32)), twig=(70, 62, 56), spring=(1.14, 1.20, 0.76)),
     ),
@@ -76,7 +78,7 @@ SPECIES = {
         height=(11.0, 13.6), crown_base=(3.2, 4.2), crown_rx=(2.6, 3.4), crown_shape="cone",
         trunk_r=0.22, lean=0.05, leaf_r=0.02, cards=1000, card_size=(0.70, 0.95), fold=0.10, droop=0.05,
         leaf=dict(color=(54, 72, 50), needles=True, length=(0.10, 0.15), count=4),
-        bark=dict(color=(108, 82, 64), fissure=0.85, stretch=1.6, plates=True),
+        bark=dict(color=(118, 84, 64), style="scaly", tile=0.8, plates_xy=(9, 4), depth=1.6, lichen=0.15, moss=0.2),
         lod_r=(0.012, 0.035, 0.08), lod_cards=(1.0, 0.42, 0.2),
         season=dict(autumn=((60, 74, 50), (66, 76, 52)), twig=(92, 72, 58), spring=(1.04, 1.08, 0.94), evergreen=True),
     ),
@@ -86,9 +88,9 @@ SPECIES["cherry"] = dict(
     attractors=1100, step=0.22, influence=1.6, kill=0.36, tropism=0.24, trunk_r=0.11, lean=0.03,
     leaf_r=0.016, cards=950, card_size=(0.62, 0.82), fold=0.22, droop=0.08,
     leaf=dict(color=(86, 108, 56), length=(0.09, 0.12), width=0.46, veins=8, tip=1.0, side_twigs=4, twig=(70, 52, 48)),
-    bark=dict(color=(84, 60, 54), fissure=0.12, stretch=1.2, bands=0.6),
+    bark=dict(color=(96, 64, 56), style="lenticel", tile=0.5, lenticels=300, depth=0.4, old=0.0, lichen=0.15, moss=0.1),
     lod_r=(0.010, 0.028, 0.06), lod_cards=(1.0, 0.42, 0.2),
-    bloom=dict(petal=(246, 214, 222), leaf_share=0.10, flowers=(3, 5), size=0.20),
+    bloom=dict(petal=(246, 212, 224), leaf_share=0.10, flowers=(4, 6), size=0.21, umbel_share=1.0, buds=0.15),
     season=dict(autumn=((214, 106, 44), (176, 52, 40)), twig=(70, 54, 50), spring=(1.08, 1.14, 0.82)),
 )
 SPECIES["cherry_old"] = dict(
@@ -96,9 +98,9 @@ SPECIES["cherry_old"] = dict(
     attractors=2600, step=0.34, influence=2.6, kill=0.58, tropism=-0.10, trunk_r=0.36, lean=0.08,
     leaf_r=0.024, cards=2300, card_size=(1.0, 1.3), fold=0.20, droop=0.14,
     leaf=dict(color=(80, 102, 54), length=(0.10, 0.13), width=0.46, veins=8, tip=1.0, side_twigs=4, twig=(62, 46, 44)),
-    bark=dict(color=(60, 44, 42), fissure=0.35, stretch=1.4, bands=1.0),
+    bark=dict(color=(70, 50, 46), style="lenticel", tile=0.7, lenticels=260, depth=0.9, old=1.0, lichen=0.3, moss=0.35),
     lod_r=(0.015, 0.045, 0.10), lod_cards=(1.0, 0.40, 0.2),
-    bloom=dict(petal=(244, 208, 218), leaf_share=0.06, flowers=(4, 6), size=0.20),
+    bloom=dict(petal=(244, 206, 220), leaf_share=0.06, flowers=(4, 7), size=0.21, umbel_share=1.0, buds=0.12),
     season=dict(autumn=((206, 96, 42), (160, 44, 38)), twig=(62, 48, 46), spring=(1.08, 1.14, 0.82)),
 )
 LOD_SCREEN = (1.0, 0.45, 0.20, 0.06)  # what the importer sets; the sheet's far shot uses the LOD2 they imply at 80 m
@@ -106,7 +108,7 @@ LOD_SCREEN = (1.0, 0.45, 0.20, 0.06)  # what the importer sets; the sheet's far 
 
 def args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    o = dict(species="broadleaf", variant="a", out=None, seed=None, sheet=False, billboard=True, grate=False, tex=1024)
+    o = dict(species="broadleaf", variant="a", out=None, seed=None, sheet=False, billboard=True, grate=False, tex=2048)
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -162,6 +164,33 @@ def fft_noise(n, rng, beta=2.0, sx=1.0, sy=1.0):
     return out / (out.std() + 1e-9)
 
 
+def band_noise(n, rng, f0, bw=0.55, ay=1.0):
+    """Periodic band-limited noise, unit deviation: its energy round f0 cycles per tile across; ay < 1 makes the
+    features long vertically (the vertical frequency is f0 * ay), ay > 1 long across."""
+    white = rng.standard_normal((n, n)).astype(np.float32)
+    fy = np.fft.fftfreq(n)[:, None] * n / ay
+    fx = np.fft.rfftfreq(n)[None, :] * n
+    f = np.sqrt(fx * fx + fy * fy)
+    f[0, 0] = 1e-3
+    filt = np.exp(-np.log(f / f0) ** 2 / (2 * bw * bw)).astype(np.float32)
+    out = np.fft.irfft2(np.fft.rfft2(white) * filt, s=(n, n)).astype(np.float32)
+    out -= out.mean()
+    return out / (out.std() + 1e-9)
+
+
+def blur(a, passes=1):
+    """A periodic [1 2 1] / 4 blur, separable, on the last two image axes (rows, columns)."""
+    for _ in range(passes):
+        a = 0.5 * a + 0.25 * (np.roll(a, 1, 0) + np.roll(a, -1, 0))
+        a = 0.5 * a + 0.25 * (np.roll(a, 1, 1) + np.roll(a, -1, 1))
+    return a
+
+
+def smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0), 0, 1)
+    return t * t * (3 - 2 * t)
+
+
 def normal_from_height(h, strength):
     """Engine-convention normal map (x right, green down) from a periodic height field (rows down)."""
     dx = (np.roll(h, -1, 1) - np.roll(h, 1, 1)) * 0.5 * strength
@@ -171,144 +200,399 @@ def normal_from_height(h, strength):
     return n * 0.5 + 0.5
 
 
+def voronoi(n, rng, cx, cy, warp=0.0):
+    """Periodic jittered-grid cells, cx across, cy down, their edges wobbled by warp (cell units): (F1, F2 - F1 in
+    cell units, cell id 0..1) per pixel."""
+    pts = (np.stack(np.meshgrid(np.arange(cx), np.arange(cy)), -1) + rng.uniform(0.1, 0.9, (cy, cx, 2))).astype(np.float32)
+    ids = rng.random((cy, cx)).astype(np.float32)
+    ys, xs = np.mgrid[0:n, 0:n].astype(np.float32)
+    gx, gy = xs * cx / n, ys * cy / n
+    if warp:
+        gx = gx + warp * band_noise(n, rng, cx * 0.6, 0.4)
+        gy = gy + warp * band_noise(n, rng, cx * 0.6, 0.4)
+    ix, iy = np.floor(gx).astype(int), np.floor(gy).astype(int)
+    f1 = np.full((n, n), 9.0, np.float32)
+    f2 = np.full((n, n), 9.0, np.float32)
+    cid = np.zeros((n, n), np.float32)
+    for oy in (-1, 0, 1):
+        for ox in (-1, 0, 1):
+            jx, jy = ix + ox, iy + oy
+            p = pts[jy % cy, jx % cx]
+            px = p[..., 0] + (jx - jx % cx)
+            py = p[..., 1] + (jy - jy % cy)
+            d = np.sqrt((gx - px) ** 2 + ((gy - py) * 1.0) ** 2)
+            closer = d < f1
+            f2 = np.where(closer, f1, np.minimum(f2, d))
+            cid = np.where(closer, ids[jy % cy, jx % cx], cid)
+            f1 = np.where(closer, d, f1)
+    return f1, f2 - f1, cid
+
+
+def stamp_ellipses(n, rng, count, a_px, b_px):
+    """Periodic field of soft horizontal dashes (the lenticels): count of them, half-length a_px, half-height b_px
+    ranges; 1 in a dash, 0 outside, soft-edged."""
+    out = np.zeros((n, n), np.float32)
+    for _ in range(count):
+        a = rng.uniform(*a_px)
+        b = rng.uniform(*b_px)
+        x, y = rng.uniform(0, n), rng.uniform(0, n)
+        xs = np.arange(int(x - a - 2), int(x + a + 3))
+        ys = np.arange(int(y - b - 2), int(y + b + 3))
+        dx = (xs + 0.5 - x)[None, :] / a
+        dy = (ys + 0.5 - y)[:, None] / b
+        r = np.sqrt(dx * dx + dy * dy)
+        v = np.clip((1 - r) * b * 1.2, 0, 1)
+        sub = np.ix_(ys % n, xs % n)
+        out[sub] = np.maximum(out[sub], v)
+    return out
+
+
 def bark_maps(spec, n, seed):
+    """Tiling bark, one tile = spec['tile'] metres square (the tubes' UVs keep it square): sRGB colour, roughness (the
+    colour PNG's alpha), engine-convention normal. Height h is 0 at the bottom of a fissure, 1 on a plate's top."""
     rng = np.random.default_rng(seed)
-    st = spec["stretch"]
-    base = fft_noise(n, rng, 2.2, 1.0, st)            # long vertical ridges
-    fine = fft_noise(n, rng, 1.4, 1.0, 1.5)
-    if spec.get("plates"):
-        plates = fft_noise(n, rng, 2.6, 1.2, 1.2)
-        ridge = 1.0 - np.abs(np.tanh(plates * 1.6))      # dark cracks between flaky plates
-        h = 0.65 * (1.0 - ridge) + 0.25 * np.tanh(base) + 0.1 * fine
-    else:
-        ridge = 1.0 - np.abs(np.tanh(base * 1.3))         # 1 in a fissure
-        h = (1.0 - spec["fissure"] * ridge) + 0.12 * fine
-    bands = spec.get("bands", 0.0)
+    style = spec.get("style", "fissured")
+    T = spec.get("tile", 0.7)
+    cm = n / (T * 100.0)                      # pixels per centimetre
+    fine = band_noise(n, rng, 60 * T / 0.7, 0.8, 0.6)
+    grain = band_noise(n, rng, 160 * T / 0.7, 0.7, 0.25)
+    patch = band_noise(n, rng, 3.0, 0.6, 1.0)
+    lich_n = band_noise(n, rng, 9.0, 0.6, 0.8)
+    col = srgb_to_lin(np.array(spec["color"]) / 255.0).astype(np.float32)
+    dark = col * 0.42
+    rough_top, rough_deep = 0.82, 0.95
     lent = None
-    if bands:
-        # horizontal banding and lenticel dashes (stretched across the trunk), the vertical fissures kept faint
-        band = np.tanh(1.6 * fft_noise(n, rng, 2.4, 14.0, 1.0))
-        lent = np.clip((fft_noise(n, rng, 1.1, 9.0, 0.9) - 1.5) * 1.6, 0, 1)
-        h = h + bands * (0.20 * band + 0.35 * lent)
-    h = (h - h.min()) / (h.max() - h.min() + 1e-9)
-    col = srgb_to_lin(np.array(spec["color"]) / 255.0)
-    tone = 0.55 + 0.75 * h + 0.10 * fft_noise(n, rng, 2.0, 1, 1)
-    lichen = np.clip(fft_noise(n, rng, 2.4, 1, 1) - 1.3, 0, 1) * 0.5     # a few grey-green patches
-    rgb = col[None, None, :] * tone[..., None]
-    rgb = rgb * (1 - lichen[..., None]) + srgb_to_lin(np.array([118, 122, 104]) / 255.0) * tone[..., None] * lichen[..., None]
+    if style in ("fissured", "ridged"):
+        f0 = spec.get("fissures", 9.0)
+        el = spec.get("elong", 0.12)
+        a = band_noise(n, rng, f0, 0.5, el)                    # long ridges and furrows, side by side, merging
+        if style == "ridged":                                  # interlacing: a second, coarser system breaks them up
+            a = a + 0.55 * band_noise(n, rng, f0 * 0.6, 0.5, el * 1.8)
+            a = a / a.std()
+        wid = spec.get("fissure_w", 0.55)
+        h = np.power(smoothstep(-0.9, wid + 0.25, a), 0.6)        # rounded plates (a > wid), sloping furrows between
+        cross = band_noise(n, rng, f0 * 2.4, 0.4, 2.6)        # short horizontal breaks across the plates
+        h = h * (1 - 0.55 * np.exp(-(cross / 0.16) ** 2) * smoothstep(0.3, 0.8, h))
+        h = h * (0.95 + 0.05 * fine) + 0.012 * grain
+        depth = spec.get("depth", 1.2)                        # centimetres
+    elif style == "smooth":
+        wr = band_noise(n, rng, 40 * T / 0.7, 0.4, 3.5)       # fine horizontal wrinkles
+        cr = band_noise(n, rng, 7.0, 0.45, 0.25)
+        h = 0.8 + 0.08 * wr - 0.45 * np.exp(-(cr / 0.10) ** 2) + 0.05 * fine + 0.03 * grain
+        depth = spec.get("depth", 0.35)
+        rough_top = 0.72
+    elif style == "scaly":
+        cx, cy = spec.get("plates_xy", (9, 4))
+        f1, edge, cid = voronoi(n, rng, cx, cy, warp=0.12)
+        crack = smoothstep(0.0, 0.16, edge) * (0.75 + 0.25 * smoothstep(0.1, 0.5, edge))
+        wobble = band_noise(n, rng, 14.0, 0.5, 1.0)
+        layers = np.abs(np.sin((f1 * 2.6 + 0.25 * wobble + cid * 3.0) * math.pi))   # flaky layer steps in a plate
+        h = crack * (0.62 + 0.28 * cid + 0.10 * smoothstep(0.2, 0.9, layers)) + 0.04 * fine
+        depth = spec.get("depth", 1.6)
+    else:  # "lenticel": smooth satin with horizontal bands and raised dashes
+        bands = band_noise(n, rng, 4.0, 0.5, 4.0)              # long horizontal bands (peeling rings)
+        lent = stamp_ellipses(n, rng, int(spec.get("lenticels", 340) * (T / 0.7) ** 2), (1.0 * cm, 3.0 * cm),
+                              (0.16 * cm, 0.32 * cm))
+        cr = band_noise(n, rng, 6.0, 0.45, 0.3)
+        rough_v = spec.get("old", 0.0)
+        h = 0.75 + 0.03 * bands + 0.22 * lent - rough_v * 0.5 * np.exp(-(cr / 0.24) ** 2) + 0.02 * fine
+        depth = spec.get("depth", 0.4)
+        rough_top = 0.42 + 0.2 * rough_v
+    h = blur(np.clip(h, 0, 1.2).astype(np.float32))
+    hn = (h - h.min()) / (h.max() - h.min() + 1e-9)
+    # colour: the plate's face, darker and warmer deep in a fissure, patchy, lichen on the tops and moss in the cracks
+    cav = smoothstep(0.0, 0.7, hn)
+    tone = (0.78 + 0.22 * patch * 0.6 + 0.10 * fine) * (0.92 + 0.12 * hn)
+    rgb = (dark[None, None, :] * (1 - cav[..., None]) + col[None, None, :] * cav[..., None]) * tone[..., None]
+    if style == "scaly":
+        warm = srgb_to_lin(np.array([136, 88, 64]) / 255.0).astype(np.float32)
+        grey = srgb_to_lin(np.array([96, 86, 80]) / 255.0).astype(np.float32)
+        pc = (warm * cid[..., None] + grey * (1 - cid[..., None])) * (0.85 + 0.25 * hn[..., None])
+        rgb = rgb * (1 - 0.7 * cav[..., None]) + pc * 0.7 * cav[..., None]
     if lent is not None:
-        dark = 1.0 - 0.45 * bands * np.clip(band, 0, 1) + 0.12 * bands * np.clip(-band, 0, 1)   # dark and pale bands
-        rgb = rgb * dark[..., None]
-        pale = srgb_to_lin(np.array([150, 120, 98]) / 255.0)               # pale tan lenticels
-        rgb = rgb * (1 - 0.8 * lent[..., None]) + pale * 0.8 * lent[..., None]
-    return lin_to_srgb(rgb), normal_from_height(h, 6.0)
+        band_t = np.clip(0.5 + 0.35 * bands, 0, 1)
+        rgb = rgb * (0.9 + 0.16 * band_t[..., None])
+        grey = srgb_to_lin(np.array([112, 104, 102]) / 255.0).astype(np.float32)
+        silver = smoothstep(0.8, 1.8, patch + 0.3 * fine) * (0.25 + 0.45 * spec.get("old", 0.0))
+        rgb = rgb * (1 - silver[..., None]) + grey * tone[..., None] * silver[..., None]
+        ltc = srgb_to_lin(np.array([150, 128, 108]) / 255.0).astype(np.float32)   # pale corky lenticels, dark rims
+        rim = np.clip(blur(lent, 3) * 1.6 - lent, 0, 1)
+        rgb = rgb * (1 - 0.45 * rim[..., None])
+        rgb = rgb * (1 - 0.85 * lent[..., None]) + ltc * (0.8 + 0.2 * fine[..., None]) * 0.85 * lent[..., None]
+    lichen = smoothstep(0.9, 1.9, lich_n + 0.5 * patch) * smoothstep(0.45, 0.8, hn) * spec.get("lichen", 0.5)
+    lich_c = srgb_to_lin(np.array([150, 158, 128]) / 255.0).astype(np.float32)
+    rgb = rgb * (1 - lichen[..., None]) + lich_c * (0.8 + 0.3 * fine[..., None] * 0.3) * lichen[..., None]
+    moss = smoothstep(0.4, 1.4, patch * 0.7 + lich_n * 0.5) * (1 - smoothstep(0.15, 0.5, hn)) * spec.get("moss", 0.4)
+    moss_c = srgb_to_lin(np.array([62, 78, 40]) / 255.0).astype(np.float32)
+    rgb = rgb * (1 - moss[..., None]) + moss_c * (0.7 + 0.3 * cav[..., None]) * moss[..., None]
+    rough = rough_deep * (1 - cav) + rough_top * cav + 0.04 * fine + 0.08 * lichen
+    if lent is not None:
+        rough = rough + 0.3 * lent
+    rough = np.clip(rough, 0.3, 1.0)
+    strength = depth * cm * spec.get("normal", 0.8)            # height 1 = depth cm; per-pixel slope
+    return lin_to_srgb(rgb), rough, normal_from_height(hn, strength)
 
 
-def leaf_profile(u, spec):
-    """Half-width (fraction of length) along a leaf, u 0 at the stalk, 1 at the tip."""
-    w = spec["width"] * 0.5
-    tip = spec.get("tip", 1.0)
-    return w * np.power(np.clip(4 * u * (1 - u), 0, 1), 0.55) * (1.0 - 0.25 * u * tip) * (1 + 0.15 * (1 - tip) * u)
+# leaf shapes: w width / length, a where the widest point sits (< 1 toward the tip), b bluntness, acu an acuminate tip,
+# serr / nserr toothed margin, lobes / lobe_d lobed margin, asym a lopsided base
+LEAF_SHAPES = {
+    "broadleaf": [dict(w=0.52, a=1.15, b=0.75, acu=0.35, serr=0.05, nserr=16),
+                  dict(w=0.62, a=1.45, b=0.65, acu=0.30, serr=0.06, nserr=18, asym=0.12),
+                  dict(w=0.40, a=1.0, b=0.85, acu=0.45, serr=0.04, nserr=20),
+                  dict(w=0.48, a=0.9, b=0.8, acu=0.25, serr=0.03, nserr=14)],
+    "ornamental": [dict(w=0.62, a=0.8, b=0.7, acu=0.1, serr=0.03, nserr=12),
+                   dict(w=0.55, a=1.0, b=0.6, acu=0.15),
+                   dict(w=0.70, a=0.7, b=0.55, acu=0.05, serr=0.02, nserr=10)],
+    "park": [dict(w=0.58, a=1.1, b=0.6, acu=0.15, lobes=4, lobe_d=0.32),
+             dict(w=0.52, a=1.0, b=0.7, acu=0.2, lobes=5, lobe_d=0.24),
+             dict(w=0.50, a=1.2, b=0.75, acu=0.3, serr=0.05, nserr=14),
+             dict(w=0.62, a=0.95, b=0.6, acu=0.1, lobes=3, lobe_d=0.36)],
+    "cherry": [dict(w=0.44, a=1.0, b=0.7, acu=0.55, serr=0.045, nserr=30),
+               dict(w=0.50, a=0.85, b=0.7, acu=0.5, serr=0.04, nserr=28),
+               dict(w=0.38, a=1.1, b=0.8, acu=0.6, serr=0.05, nserr=32)],
+}
+
+
+def leaf_halfwidth(u, sh, sign):
+    """Half-width (fraction of length) along a leaf, u 0 at the stalk, 1 at the tip, for one shape; sign the side."""
+    uu = np.clip(u, 1e-4, 1 - 1e-4)
+    hw = 0.5 * sh["w"] * np.power(np.sin(math.pi * np.power(uu, sh["a"])), sh["b"])
+    acu = sh.get("acu", 0.0)
+    if acu:
+        hw = hw * (1 - acu * smoothstep(0.55, 1.0, uu) * (1 - np.power(1 - uu, 0.5)) * 1.6).clip(0.05, 1)
+    if sh.get("lobes"):
+        lob = 0.5 - 0.5 * np.cos(2 * math.pi * sh["lobes"] * (uu - 0.1) / 0.8)
+        hw = hw * (1 - sh["lobe_d"] * lob * ((uu > 0.12) & (uu < 0.9)))
+    if sh.get("serr"):
+        hw = hw * (1 - sh["serr"] * np.mod(uu * sh["nserr"], 1.0) * (uu > 0.08))
+    hw = hw * (1 + sh.get("asym", 0.0) * sign * (1 - uu) ** 2)
+    return hw
 
 
 class Canvas:
-    """The supersampled atlas being drawn (rows down): colour (linear), coverage, height, and the masks the material
-    reads: leaf coverage, twig coverage (also under leaves: what stays in winter), and a per-leaf random id."""
+    """The supersampled atlas being drawn (rows down), premultiplied: colour (linear), coverage, height; the masks the
+    material reads: leaf coverage and blade thinness (translucency), twig coverage (also under leaves: what stays in
+    winter), and a per-leaf random id; a slow mottling field for in-leaf colour variation."""
 
-    def __init__(self, n):
-        self.rgb = np.zeros((n, n, 3))
-        self.alpha = np.zeros((n, n))
-        self.height = np.zeros((n, n))
-        self.leaf = np.zeros((n, n))
-        self.twig = np.zeros((n, n))
-        self.lid = np.zeros((n, n))
+    def __init__(self, n, rng):
+        self.rgb = np.zeros((n, n, 3), np.float32)
+        self.alpha = np.zeros((n, n), np.float32)
+        self.height = np.zeros((n, n), np.float32)
+        self.leaf = np.zeros((n, n), np.float32)
+        self.thin = np.zeros((n, n), np.float32)
+        self.twig = np.zeros((n, n), np.float32)
+        self.lid = np.zeros((n, n), np.float32)
+        m = band_noise(n // 4, rng, 60.0, 0.8)
+        self.mottle = np.repeat(np.repeat(m, 4, 0), 4, 1)
+
+    def over(self, sub, cov, c, hgt, leafy, thin=0.0, twig=False, lid=None):
+        a = cov[..., None]
+        self.rgb[sub] = self.rgb[sub] * (1 - a) + c * a
+        self.alpha[sub] = self.alpha[sub] * (1 - cov) + cov
+        self.height[sub] = self.height[sub] * (1 - cov) + hgt * cov
+        self.leaf[sub] = self.leaf[sub] * (1 - cov) + leafy * cov
+        self.thin[sub] = self.thin[sub] * (1 - cov) + thin * cov
+        if twig:
+            self.twig[sub] = np.maximum(self.twig[sub], cov)
+        if lid is not None:
+            self.lid[sub] = np.where(cov > 0.5, lid, self.lid[sub])
+
+    def shade(self, sub, cov, k):
+        """Darken what is already drawn under cov (a leaf's contact shadow on the leaves below)."""
+        f = 1 - k * cov
+        self.rgb[sub] *= f[..., None]
 
 
-def draw_leaf(cv, base, axis, length, spec, color, rng):
-    """Paint one leaf into the supersampled canvas (rows down, pixels)."""
+def box(cv, pts, pad):
     H, W = cv.alpha.shape
-    perp = np.array([-axis[1], axis[0]])
-    needles = spec.get("needles", False)
-    half = length * (0.03 if needles else spec["width"] * 0.6)
-    pts = np.array([base, base + axis * length, base + perp * half, base - perp * half, base + axis * length + perp * half,
-                    base + axis * length - perp * half])
-    x0, y0 = np.floor(pts.min(0)).astype(int) - 2
-    x1, y1 = np.ceil(pts.max(0)).astype(int) + 2
+    x0, y0 = np.floor(pts.min(0)).astype(int) - pad
+    x1, y1 = np.ceil(pts.max(0)).astype(int) + pad
     x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)
     if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def draw_leaf(cv, base, axis, length, spec, color, rng, shape=None, depth=1.0):
+    """Paint one leaf (anti-aliased, its contact shadow first) into the supersampled canvas (rows down, pixels)."""
+    perp = np.array([-axis[1], axis[0]])
+    needles = spec.get("needles", False)
+    half = length * (0.03 if needles else 0.45)
+    pts = np.array([base, base + axis * length, base + perp * half, base - perp * half, base + axis * length + perp * half,
+                    base + axis * length - perp * half])
+    bb = box(cv, pts, 6)
+    if bb is None:
         return
-    ys, xs = np.mgrid[y0:y1, x0:x1]
+    x0, y0, x1, y1 = bb
+    ys, xs = np.mgrid[y0:y1, x0:x1].astype(np.float32)
     d = np.stack([xs + 0.5 - base[0], ys + 0.5 - base[1]], -1)
     u = (d @ axis) / length
     v = (d @ perp) / length
+    sub = (slice(y0, y1), slice(x0, x1))
     if needles:
-        hw = 0.012 * np.power(np.clip(1 - u, 0, 1), 0.25)
-        inside = (u >= 0) & (u <= 1) & (np.abs(v) <= hw)
-        shade = 0.85 + 0.25 * (1 - np.abs(v) / 0.012).clip(0, 1)
-        hgt = 0.6 * (1 - np.abs(v) / 0.012).clip(0, 1)
-    else:
-        hw = leaf_profile(u, spec)
-        inside = (u >= 0) & (u <= 1) & (np.abs(v) <= hw)
-        rel = np.abs(v) / np.maximum(hw, 1e-4)
-        midrib = np.exp(-(np.abs(v) / 0.010) ** 2)
-        s = u - 1.1 * np.abs(v) / max(spec["width"], 0.1)
-        veins = np.exp(-((np.mod(s * spec["veins"], 1.0) - 0.5) / 0.06) ** 2) * (rel < 0.92) * (u > 0.06)
-        side = np.where(v > 0, 1.04, 0.93)
-        shade = side * (1.0 - 0.18 * rel ** 3) * (0.86 + 0.18 * u) + 0.20 * midrib + 0.06 * veins
-        hgt = (1 - rel ** 2) * 0.7 - 0.25 * veins - 0.35 * midrib
-    if not inside.any():
+        hw = 0.014 * np.power(np.clip(1 - u, 0, 1), 0.3)
+        dist = np.minimum((hw - np.abs(v)) * length, np.minimum(u, 1 - u) * length)
+        cov = np.clip(dist / 1.2 + 0.5, 0, 1).astype(np.float32)
+        if cov.max() <= 0:
+            return
+        rel = np.clip(np.abs(v) / 0.014, 0, 1)
+        shade = (0.8 + 0.3 * (1 - rel)) * (0.85 + 0.25 * u)
+        c = np.clip(color[None, None, :] * shade[..., None], 0, 1)
+        cv.over(sub, cov, c, (0.6 * (1 - rel)).astype(np.float32), 1.0, 0.6, lid=rng.random())
         return
-    c = np.clip(color[None, None, :] * shade[..., None], 0, 1)
-    sub = (slice(y0, y1), slice(x0, x1))
-    cv.rgb[sub][inside] = c[inside]
-    cv.alpha[sub][inside] = 1.0
-    cv.height[sub][inside] = hgt[inside]
-    cv.leaf[sub][inside] = 1.0
-    cv.lid[sub][inside] = rng.random()
+    sign = np.where(v > 0, 1.0, -1.0)
+    hw = leaf_halfwidth(u, shape, sign)
+    # the petiole: a short stalk under the blade
+    pet = (u < 0) & (u > -0.12) & (np.abs(v) < 0.012)
+    dist = np.minimum((hw - np.abs(v)) * length, np.minimum(u, 1 - u) * length)
+    cov = np.clip(dist / 1.4 + 0.5, 0, 1).astype(np.float32)
+    pcov = np.clip(((0.012 - np.abs(v)) * length) / 1.2 + 0.5, 0, 1) * pet
+    if cov.max() <= 0:
+        return
+    # contact shadow on what is below: the same shape, offset down-right, soft
+    sh = np.roll(np.roll(cov, int(0.03 * length) + 1, 0), int(0.02 * length) + 1, 1)
+    cv.shade(sub, blur(sh, 2) * 0.9, 0.38)
+    rel = np.clip(np.abs(v) / np.maximum(hw, 1e-4), 0, 1)
+    midrib = np.exp(-(np.abs(v) / 0.008) ** 2) * (u < 0.96)
+    s = u - 0.9 * np.abs(v) / max(shape["w"], 0.1)
+    nv = spec.get("veins", 7)
+    veins = np.exp(-((np.mod(s * nv, 1.0) - 0.5) / 0.05) ** 2) * (rel < 0.9) * (u > 0.06) * (1 - midrib)
+    tert = np.exp(-((np.mod((u + 1.3 * v) * nv * 4.0, 1.0) - 0.5) / 0.12) ** 2) * 0.5
+    side = np.where(v > 0, 1.05, 0.92)                                    # the fold: one half catches more light
+    mott = 1 + 0.07 * cv.mottle[sub]
+    shade = side * (1.0 - 0.16 * rel ** 3) * (0.84 + 0.2 * u) * mott * depth
+    vein_c = np.array([1.18, 1.22, 0.88])
+    c = color[None, None, :] * shade[..., None]
+    c = c * (1 + (vein_c - 1) * (1.0 + 0.0 * u)[..., None] * (1.1 * midrib + 0.65 * veins)[..., None]) * (1 - 0.06 * tert[..., None])
+    # an occasional dry rim
+    if rng.random() < 0.15:
+        rim = smoothstep(0.82, 1.0, rel)
+        c = c * (1 - rim[..., None]) + np.array([0.20, 0.13, 0.05]) * depth * rim[..., None]
+    hgt = (1 - rel ** 2) * 0.6 + 0.25 * midrib - 0.18 * veins - 0.04 * tert
+    thin = np.clip(1.0 - 0.75 * midrib - 0.35 * veins, 0, 1)
+    c = np.clip(c, 0, 1).astype(np.float32)
+    lid = rng.random()
+    if pcov.any():
+        cv.over(sub, pcov.astype(np.float32), (color * np.array([1.2, 1.15, 0.7]) * 0.8).astype(np.float32), 0.3, 1.0,
+                0.2, lid=lid)
+    cv.over(sub, cov, c, hgt.astype(np.float32), 1.0, thin.astype(np.float32), lid=lid)
 
 
-def draw_flower(cv, c, R, petal_lin, rng):
-    """One five-petalled blossom, centre c, radius R (pixels), into the supersampled canvas."""
-    H, W = cv.alpha.shape
-    x0, y0 = int(c[0] - R - 2), int(c[1] - R - 2)
-    x1, y1 = int(c[0] + R + 3), int(c[1] + R + 3)
-    x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)
-    if x1 <= x0 or y1 <= y0 or R < 1.0:
+def draw_stroke(cv, a_, b_, r, color, twig=True):
+    """An anti-aliased round-capped stroke (a twig or a stalk), lit a little from above."""
+    pts = np.array([a_, b_])
+    bb = box(cv, pts, int(r) + 3)
+    if bb is None:
         return
-    ys, xs = np.mgrid[y0:y1, x0:x1]
+    x0, y0, x1, y1 = bb
+    ys, xs = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    ab = b_ - a_
+    L2 = max(float(ab @ ab), 1e-6)
+    px, py = xs + 0.5 - a_[0], ys + 0.5 - a_[1]
+    t = np.clip((px * ab[0] + py * ab[1]) / L2, 0, 1)
+    dx, dy = px - t * ab[0], py - t * ab[1]
+    dist = np.sqrt(dx * dx + dy * dy)
+    rr = max(r, 0.7)
+    cov = np.clip(rr - dist + 0.5, 0, 1).astype(np.float32)
+    if cov.max() <= 0:
+        return
+    nrm = np.array([-ab[1], ab[0]]) / math.sqrt(L2)
+    lit = 1.0 + 0.25 * np.clip((dx * nrm[0] + dy * nrm[1]) / rr, -1, 1) * (1 if nrm[1] < 0 else -1)
+    c = np.clip(color[None, None, :] * lit[..., None], 0, 1).astype(np.float32)
+    hgt = (0.5 * np.sqrt(np.clip(1 - (dist / rr) ** 2, 0, 1))).astype(np.float32)
+    cv.over((slice(y0, y1), slice(x0, x1)), cov, c, hgt, 0.0, 0.0, twig=twig)
+
+
+def draw_flower(cv, c, R, petal_lin, rng, squash=1.0, tilt=0.0):
+    """One five-petalled blossom (separate notched petals, pink eye, stamens with anthers), centre c, radius R
+    (pixels), seen at an angle (squash < 1 along tilt)."""
+    bb = box(cv, np.array([c - R, c + R]), 3)
+    if bb is None or R < 2.0:
+        return
+    x0, y0, x1, y1 = bb
+    ys, xs = np.mgrid[y0:y1, x0:x1].astype(np.float32)
     dx, dy = xs + 0.5 - c[0], ys + 0.5 - c[1]
-    r = np.sqrt(dx * dx + dy * dy) / R
-    th = np.arctan2(dy, dx) - rng.uniform(0, 2 * math.pi / 5)
-    lobe = 0.5 + 0.5 * np.cos(5 * th)                                   # 1 mid-petal, 0 between petals
-    notch = 0.10 * np.exp(-((np.mod(th * 5 / (2 * math.pi) + 0.5, 1.0) - 0.5) / 0.06) ** 2)
-    edge = (0.42 + 0.58 * lobe ** 0.45) * (1 - notch)
-    inside = r <= edge
-    if not inside.any():
-        return
-    centre = np.clip(1 - r / 0.32, 0, 1)
-    deep = srgb_to_lin(np.array([206, 112, 136]) / 255.0)
-    stamen = srgb_to_lin(np.array([228, 196, 120]) / 255.0)
-    col = petal_lin[None, None, :] * (0.94 + 0.10 * r[..., None].clip(0, 1))
-    col = col * (1 - 0.7 * centre[..., None]) + deep * 0.7 * centre[..., None]
-    dots = (r > 0.14) & (r < 0.30) & (np.cos(17 * th) > 0.6)
-    col[dots] = stamen
-    # the petals' veins, faint
-    col = col * (1 - 0.05 * (np.cos(th * 40) > 0.7)[..., None])
+    ca, sa = math.cos(tilt), math.sin(tilt)
+    lx = (dx * ca + dy * sa) / squash
+    ly = -dx * sa + dy * ca
     sub = (slice(y0, y1), slice(x0, x1))
-    cv.rgb[sub][inside] = np.clip(col[inside], 0, 1)
-    cv.alpha[sub][inside] = 1.0
-    cv.height[sub][inside] = (0.55 * (1 - r) + 0.2 * lobe)[inside]
-    cv.leaf[sub][inside] = 1.0
-    cv.lid[sub][inside] = rng.random()
+    rot = rng.uniform(0, 2 * math.pi)
+    deep = srgb_to_lin(np.array([214, 120, 148]) / 255.0)
+    white = srgb_to_lin(np.array([252, 246, 246]) / 255.0)
+    px = 1.0 / squash
+    for j in range(5):
+        th = rot + j * 2 * math.pi / 5 + rng.uniform(-0.12, 0.12)
+        pl, pw = R * rng.uniform(0.50, 0.58), R * rng.uniform(0.36, 0.42)
+        cxp, cyp = math.cos(th) * R * 0.46, math.sin(th) * R * 0.46
+        qx, qy = lx - cxp, ly - cyp
+        a_ = (qx * math.cos(th) + qy * math.sin(th)) / pl          # along the petal, -1 at the centre end
+        b_ = (-qx * math.sin(th) + qy * math.cos(th)) / pw
+        r = np.sqrt(a_ * a_ + b_ * b_)
+        notch = np.exp(-((b_) / 0.16) ** 2) * smoothstep(0.7, 1.0, a_) * 0.28
+        edge = 1.0 - notch
+        dist = (edge - r) * pw / px
+        cov = np.clip(dist / 1.2 + 0.5, 0, 1).astype(np.float32)
+        if cov.max() <= 0:
+            continue
+        base_t = smoothstep(0.2, -0.9, a_)                           # pinker toward the flower's centre
+        tint = petal_lin * rng.uniform(0.96, 1.04)
+        col = tint[None, None, :] * (1 - 0.5 * base_t[..., None]) + deep * 0.5 * base_t[..., None]
+        col = col * (1 - 0.6 * smoothstep(0.75, 1.0, r)[..., None] * 0.12)        # each petal's own rim
+        col = col * (1 - 0.04 * (np.cos(b_ * 14) > 0.6)[..., None])                # faint veins
+        col = col * (1 - 0.18 * (1 - squash) * (b_ > 0)[..., None])                  # the cup: one half in shade
+        tipw = (0.55 * smoothstep(-0.2, 1.0, a_))[..., None]
+        col = col * (1 - tipw) + white * tipw                                         # paler toward the tip
+        cv.shade(sub, blur(np.roll(cov, 1, 0), 1), 0.22)
+        cv.over(sub, cov, np.clip(col, 0, 1).astype(np.float32), (0.45 * (1 - r) + 0.2).clip(0, 1).astype(np.float32),
+                1.0, 1.0)
+    rr = np.sqrt((lx / R) ** 2 + (ly / R) ** 2)
+    eye = np.clip((0.2 - rr) * R / px / 1.2 + 0.5, 0, 1).astype(np.float32)
+    cv.over(sub, eye, (deep * 0.8).astype(np.float32), 0.3, 1.0, 0.5)
+    stamen = srgb_to_lin(np.array([246, 226, 150]) / 255.0)
+    fil = srgb_to_lin(np.array([246, 228, 232]) / 255.0)
+    for _ in range(rng.integers(14, 22)):
+        th = rng.uniform(0, 2 * math.pi)
+        ln = R * rng.uniform(0.26, 0.42)
+        tip = np.array([math.cos(th) * ln, math.sin(th) * ln])
+        tip_s = np.array([tip[0] * ca * squash - tip[1] * sa, tip[0] * sa * squash + tip[1] * ca])
+        e = c + tip_s
+        draw_stroke(cv, c + tip_s * 0.25, e, max(0.45, R * 0.018), fil, twig=False)
+        d2 = (xs + 0.5 - e[0]) ** 2 + (ys + 0.5 - e[1]) ** 2
+        ar = max(0.9, R * 0.045)
+        cov = np.clip(ar - np.sqrt(d2) + 0.5, 0, 1).astype(np.float32)
+        cv.over(sub, cov, (stamen * rng.uniform(0.85, 1.05)).astype(np.float32), 0.6, 1.0, 0.5)
+
+
+def draw_bud(cv, c, R, axis, rng):
+    """A closed bud: a deep-pink oval on its sepals."""
+    perp = np.array([-axis[1], axis[0]])
+    bb = box(cv, np.array([c - R * 1.2, c + R * 1.2]), 2)
+    if bb is None:
+        return
+    x0, y0, x1, y1 = bb
+    ys, xs = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    d = np.stack([xs + 0.5 - c[0], ys + 0.5 - c[1]], -1)
+    a_ = (d @ axis) / R
+    b_ = (d @ perp) / (R * 0.62)
+    r = np.sqrt(a_ * a_ + b_ * b_)
+    cov = np.clip((1 - r) * R * 0.62 / 1.2 + 0.5, 0, 1).astype(np.float32)
+    col = srgb_to_lin(np.array([218, 118, 146]) / 255.0) * rng.uniform(0.85, 1.05)
+    c_ = col[None, None, :] * (0.8 + 0.3 * smoothstep(-1, 1, a_))[..., None] * (1 + 0.15 * (b_ < 0))[..., None]
+    sep = smoothstep(-0.3, -0.8, a_)[..., None]
+    c_ = c_ * (1 - sep) + srgb_to_lin(np.array([96, 88, 52]) / 255.0) * sep
+    cv.over((slice(y0, y1), slice(x0, x1)), cov, np.clip(c_, 0, 1).astype(np.float32), 0.5, 1.0, 0.8)
 
 
 def leaf_color(base_lin, rng, spec):
-    c = base_lin * rng.uniform(0.72, 1.18)
-    c = c * np.array([rng.uniform(0.93, 1.07), 1.0, rng.uniform(0.9, 1.08)])
-    if rng.random() < 0.06:                              # a few yellowing or tired leaves
-        c = c * np.array([1.45, 1.15, 0.7])
-    if rng.random() < 0.05:
+    c = base_lin * rng.uniform(0.80, 1.14)
+    c = c * np.array([rng.uniform(0.94, 1.06), 1.0, rng.uniform(0.9, 1.08)])
+    x = rng.random()
+    if x < 0.05:                                         # a few yellowing or tired leaves
+        c = c * np.array([1.5, 1.2, 0.62])
+    elif x < 0.10:
         c = c * 0.62
+    elif x < 0.13:
+        c = c * np.array([1.15, 0.95, 0.7])              # bronzed
     return c
 
 
@@ -322,8 +606,9 @@ def twig_path(foot, direction, length, bend, n=16):
     return [foot + d * length * k + perp * bend * length * math.sin(math.pi * k * 0.8) for k in np.linspace(0, 1, n)]
 
 
-def spray(rng, spec, foot, direction, length, base_lin, leaves, twigs, width):
-    """A twig with alternate side twigs, leaves (or needle tufts) along all of them."""
+def spray(rng, spec, foot, direction, length, base_lin, leaves, twigs, width, sid=0):
+    """A twig with alternate side twigs, leaves (or needle tufts) along all of them. Each leaf: (foot, direction,
+    length, colour, age 0 old .. 1 young at a tip, the side twig's index)."""
     main = twig_path(foot, direction, length, rng.uniform(-0.12, 0.12))
     paths = [(main, width)]
     if not spec.get("needles"):
@@ -336,9 +621,10 @@ def spray(rng, spec, foot, direction, length, base_lin, leaves, twigs, width):
             paths.append((twig_path(main[i], rot2(fwd, a), length * rng.uniform(0.38, 0.55) * (1 - 0.4 * t),
                                     rng.uniform(-0.15, 0.15), 10), width * 0.7))
     twigs.extend(paths)
-    for path, _ in paths:
+    for pi_, (path, _) in enumerate(paths):
         n = len(path) - 1
         plen = sum(np.linalg.norm(b - a) for a, b in zip(path[:-1], path[1:]))
+        branch = sid * 16 + pi_
         if spec.get("needles"):
             for k in range(max(4, int(plen / 0.05))):
                 t_on = 0.1 + 0.9 * (k + rng.random() * 0.5) / max(4, int(plen / 0.05))
@@ -348,7 +634,7 @@ def spray(rng, spec, foot, direction, length, base_lin, leaves, twigs, width):
                 for _ in range(spec["count"] * 3):
                     dv = rot2(fwd, math.radians(rng.uniform(-65, 65)))
                     leaves.append((path[i].copy(), dv, rng.uniform(*spec["length"]) * (0.7 + 0.4 * t_on),
-                                   leaf_color(base_lin, rng, spec)))
+                                   leaf_color(base_lin, rng, spec), t_on ** 3, branch))
             continue
         cnt = max(3, int(plen / (spec["length"][0] * spec.get("spacing", 0.45))))
         for k in range(cnt):
@@ -359,40 +645,27 @@ def spray(rng, spec, foot, direction, length, base_lin, leaves, twigs, width):
             a = math.radians((1 if k % 2 == 0 else -1) * rng.uniform(35, 70))
             dv = rot2(fwd, a)
             leaves.append((path[i] + dv * 0.008, dv, rng.uniform(*spec["length"]) * (0.8 + 0.3 * math.sin(math.pi * t_on)),
-                           leaf_color(base_lin, rng, spec)))
+                           leaf_color(base_lin, rng, spec), t_on ** 2, branch))
         fwd = path[-1] - path[-3]
         fwd /= np.linalg.norm(fwd) + 1e-9
-        leaves.append((path[-1].copy(), fwd, spec["length"][1], leaf_color(base_lin, rng, spec)))
+        leaves.append((path[-1].copy(), fwd, spec["length"][1] * 0.8, leaf_color(base_lin, rng, spec), 1.0, branch))
 
 
-def draw_disc_stroke(cv, a_, b_, r, color):
-    for s in np.linspace(0, 1, max(2, int(np.linalg.norm(b_ - a_) / max(r, 0.5)) + 1)):
-        q = a_ + (b_ - a_) * s
-        rr = max(r, 0.8)
-        ys, xs = np.mgrid[int(q[1] - rr - 1):int(q[1] + rr + 2), int(q[0] - rr - 1):int(q[0] + rr + 2)]
-        m = (xs + 0.5 - q[0]) ** 2 + (ys + 0.5 - q[1]) ** 2 <= rr * rr
-        ys, xs = ys[m], xs[m]
-        ok = (ys >= 0) & (ys < cv.alpha.shape[0]) & (xs >= 0) & (xs < cv.alpha.shape[1])
-        cv.rgb[ys[ok], xs[ok]] = color
-        cv.alpha[ys[ok], xs[ok]] = 1.0
-        cv.height[ys[ok], xs[ok]] = 0.5
-        cv.twig[ys[ok], xs[ok]] = 1.0
-
-
-def draw_cluster(cv, cell, spec, rng, dense, twig_only=False, bloom=None):
+def draw_cluster(cv, cell, spec, lay, rng, dense, twig_only=False, bloom=None, shapes=None):
     """A leafy spray in the cell (x0, y0, size) of the supersampled canvas, its foot at the cell's bottom middle; dense:
-    three sprays (the far LOD's bigger cards); twig_only: the same twigs bare (winter)."""
+    three sprays (the far LOD's bigger cards); twig_only: the same twigs bare (winter). lay drives the layout (the
+    same for the leaf and the blossom pass, so their twigs match), rng the drawing."""
     x0, y0, size = cell
     base_lin = srgb_to_lin(np.array(spec["color"]) / 255.0)
     leaves, twigs = [], []
     n = 3 if dense else 1
     for t in range(n):
-        ang = math.radians(rng.uniform(-10, 10) + (t - (n - 1) / 2) * 32)
-        spray(rng, spec, np.array([0.0, 0.0]), np.array([math.sin(ang), -math.cos(ang)]), rng.uniform(0.8, 0.9),
-              base_lin, leaves, twigs, 0.011)
+        ang = math.radians(lay.uniform(-10, 10) + (t - (n - 1) / 2) * 32)
+        spray(lay, spec, np.array([0.0, 0.0]), np.array([math.sin(ang), -math.cos(ang)]), lay.uniform(0.8, 0.9),
+              base_lin, leaves, twigs, 0.011, sid=t)
     # fit everything inside the cell with a margin: nothing touches the card's edge (no straight cut in the alpha)
     pts = [p for path, _ in twigs for p in path]
-    for p, dv, ln, _ in leaves:
+    for p, dv, ln, *_ in leaves:
         pts += [p, p + dv * ln, p + rot2(dv, 0.5) * ln * 0.3, p + rot2(dv, -0.5) * ln * 0.3]
     pts = np.array(pts)
     lo, hi = pts.min(0), pts.max(0)
@@ -403,29 +676,59 @@ def draw_cluster(cv, cell, spec, rng, dense, twig_only=False, bloom=None):
         return np.array([x0 + (0.5 + (p[0] - (lo[0] + hi[0]) / 2) * scale) * size, y0 + (0.99 - (0 - p[1]) * scale) * size])
     bark = srgb_to_lin(np.array(spec.get("twig", (78, 64, 52))) / 255.0)
     for path, w in twigs:
+        tw = bark * rng.uniform(0.85, 1.15)
         for i, (a_, b_) in enumerate(zip(path[:-1], path[1:])):
-            r = w * scale * size * (1.0 - 0.55 * i / len(path))
-            draw_disc_stroke(cv, to_px(a_), to_px(b_), r, bark * rng.uniform(0.85, 1.15))
+            r = w * scale * size * (1.0 - 0.55 * i / len(path)) * 0.75
+            draw_stroke(cv, to_px(a_), to_px(b_), r, tw * rng.uniform(0.92, 1.08))
     if twig_only:
         return
-    rng.shuffle(leaves)
+    order = list(range(len(leaves)))
+    lay.shuffle(order)
+    # a tint per side twig (branches differ), young leaves lighter and yellower at the tips
+    tints = {}
+    young = np.array([1.28, 1.30, 0.78])
     if bloom is None:
-        for p, dv, ln, col in leaves:
-            draw_leaf(cv, to_px(p), dv, ln * size * scale, spec, col, rng)
+        N = max(len(order), 1)
+        for k, j in enumerate(order):
+            p, dv, ln, col, age, br = leaves[j]
+            if br not in tints:
+                tints[br] = np.array([rng.uniform(0.9, 1.1), rng.uniform(0.92, 1.08), rng.uniform(0.85, 1.12)]) * rng.uniform(0.85, 1.12)
+            c = col * tints[br]
+            c = c * (1 - 0.6 * age) + c * young * 0.6 * age
+            depth = 0.80 + 0.20 * k / N                  # drawn first = underneath = in the spray's own shade
+            sh = shapes[rng.integers(len(shapes))] if shapes else None
+            draw_leaf(cv, to_px(p), dv, ln * size * scale * 1.12 * (1 - 0.12 * age), spec, np.clip(c, 0, 1), rng, sh, depth)
         return
-    # blossom: a few small young leaves, then dense flower clusters along the same twigs
+    # blossom: a few small bronze-green young leaves, then umbels of flowers and buds on stalks along the same twigs
     petal = srgb_to_lin(np.array(bloom["petal"]) / 255.0)
-    young = srgb_to_lin(np.array([128, 150, 70]) / 255.0)
-    for p, dv, ln, col in leaves:
+    yl = srgb_to_lin(np.array([132, 140, 70]) / 255.0)
+    stalk = srgb_to_lin(np.array([112, 116, 62]) / 255.0)
+    for j in order:
+        p, dv, ln, col, age, br = leaves[j]
         if rng.random() < bloom["leaf_share"]:
-            draw_leaf(cv, to_px(p), dv, ln * 0.6 * size * scale, spec, young * rng.uniform(0.8, 1.1), rng)
-    for p, dv, ln, col in leaves:
-        for _ in range(rng.integers(bloom["flowers"][0], bloom["flowers"][1] + 1)):
-            q = p + dv * ln * rng.uniform(0.15, 0.85) + rot2(dv, math.pi / 2) * ln * rng.uniform(-0.3, 0.3)
-            tint = petal * rng.uniform(0.94, 1.04) * np.array([1.0, rng.uniform(0.94, 1.06), rng.uniform(0.96, 1.04)])
-            if rng.random() < 0.15:
-                tint = np.clip(tint * np.array([1.0, 1.08, 1.06]), 0, 1)   # a few near-white
-            draw_flower(cv, to_px(q), bloom["size"] * ln * size * scale * rng.uniform(0.8, 1.15), tint, rng)
+            draw_leaf(cv, to_px(p), dv, ln * 0.55 * size * scale, spec, yl * rng.uniform(0.8, 1.1), rng,
+                      shapes[0] if shapes else None, 0.9)
+    R0 = bloom["size"] * size * scale * 0.125
+    for j in order:
+        p, dv, ln, col, age, br = leaves[j]
+        if rng.random() > bloom.get("umbel_share", 0.7):
+            continue
+        q = to_px(p)
+        nfl = rng.integers(bloom["flowers"][0], bloom["flowers"][1] + 1)
+        spread = rng.uniform(0, 2 * math.pi)
+        for f in range(nfl):
+            dirn = rot2(dv, spread + (f - (nfl - 1) / 2) * rng.uniform(0.5, 0.9))
+            L = R0 * rng.uniform(1.0, 2.0)
+            e = q + dirn * L
+            draw_stroke(cv, q, e, max(0.6, R0 * 0.05), stalk * rng.uniform(0.85, 1.1), twig=False)
+            if rng.random() < bloom.get("buds", 0.15):
+                draw_bud(cv, e + dirn * R0 * 0.25, R0 * 0.32, dirn, rng)
+                continue
+            tint = petal * np.array([1.0, rng.uniform(0.95, 1.05), rng.uniform(0.97, 1.03)])
+            if rng.random() < 0.25:
+                tint = np.clip(tint * np.array([1.0, 1.07, 1.05]), 0, 1)       # some near-white
+            draw_flower(cv, e, R0 * rng.uniform(0.85, 1.15), tint, rng, squash=rng.uniform(0.45, 1.0),
+                        tilt=rng.uniform(0, math.pi))
 
 
 def downsample(a, f):
@@ -437,12 +740,11 @@ def dilate_under_alpha(rgb, alpha, passes=24):
     """Spread the leaf colour into the transparent texels (no dark halo when mips or filtering mix them in)."""
     filled = alpha > 0.5
     out = rgb.copy()
-    acc = filled.astype(np.float64)
     for _ in range(passes):
         if filled.all():
             break
         s = np.zeros_like(out)
-        c = np.zeros(acc.shape)
+        c = np.zeros(alpha.shape, np.float32)
         for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
             s += np.roll(np.roll(out * filled[..., None], dy, 0), dx, 1)
             c += np.roll(np.roll(filled, dy, 0), dx, 1)
@@ -454,24 +756,32 @@ def dilate_under_alpha(rgb, alpha, passes=24):
     return out
 
 
-def leaf_atlas(spec, n, seed, bloom=None):
+def leaf_atlas(spec, n, seed, bloom=None, shapes=None):
     """2 x 2 atlas: cells 0-2 single sprays, cell 3 a dense three-spray clump (the far LOD's cards). Rows down.
-    Returns colour (sRGB), alpha, normal and the mask (R leaf coverage, G twig coverage, B per-leaf random id)."""
-    rng = np.random.default_rng(seed)
+    Returns colour (sRGB), alpha, normal and the mask (R leaf coverage, its upper half the blade's thinness: 0.5 a vein
+    or stalk, 1 the thin blade; G twig coverage; B per-leaf random id)."""
     ss = 2
     N = n * ss
-    cv = Canvas(N)
+    cv = Canvas(N, np.random.default_rng(seed + 5))
     cs = N // 2
     for k, (cx, cy) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
-        draw_cluster(cv, (cx * cs, cy * cs, cs), spec, rng, dense=(k == 3), bloom=bloom)
-    rgb, alpha, height = downsample(cv.rgb, ss), downsample(cv.alpha, ss), downsample(cv.height, ss)
+        lay = np.random.default_rng(seed * 16 + k)
+        rng = np.random.default_rng(seed * 16 + k + 7919 + (101 if bloom else 0))
+        draw_cluster(cv, (cx * cs, cy * cs, cs), spec, lay, rng, dense=(k == 3), bloom=bloom, shapes=shapes)
+    alpha = downsample(cv.alpha, ss)
+    rgb = downsample(cv.rgb, ss) / np.maximum(alpha, 1e-4)[..., None]          # un-premultiply: no dark fringe
+    height = downsample(cv.height, ss)
     leaf, twig = downsample(cv.leaf, ss), downsample(cv.twig, ss)
-    lid = downsample(cv.lid, ss) / np.maximum(leaf, 1e-3)
-    rgb = dilate_under_alpha(rgb, alpha)
-    lid = dilate_under_alpha(np.repeat(lid[..., None], 3, -1), leaf)[..., 0]
-    nrm = normal_from_height(height * (alpha > 0.1), 3.0)
-    mask = np.stack([leaf, twig, np.clip(lid, 0, 1)], -1)
-    return lin_to_srgb(rgb), alpha, nrm, mask
+    thin = downsample(cv.thin, ss) / np.maximum(leaf, 1e-4)
+    lid = cv.lid[::ss, ::ss]
+    del cv
+    alpha = blur(alpha)                                                        # a 2-3 texel ramp through the clip
+    twig = blur(twig)
+    rgb = dilate_under_alpha(rgb, alpha, passes=48 if n > 1024 else 24)
+    lid = dilate_under_alpha(np.repeat(lid[..., None], 3, -1), leaf, passes=8)[..., 0]
+    nrm = normal_from_height(blur(height) * np.clip(alpha * 1.5, 0, 1), 3.0 * n / 1024 * spec.get("normal", 1.0))
+    mask = np.stack([np.clip(leaf, 0, 1) * (0.5 + 0.5 * np.clip(thin, 0, 1)), np.clip(twig, 0, 1), np.clip(lid, 0, 1)], -1)
+    return lin_to_srgb(rgb), np.clip(alpha, 0, 1), nrm, mask
 
 
 # ----------------------------------------------------------------------------------------------- Blender helpers
@@ -739,15 +1049,25 @@ class Geo:
 
 
 def add_tube(g, pts, rads, sides, flare, uv_scale=0.7):
+    """A tube with bark UVs: a whole number of texture repeats round it (no seam), V advancing by length over the
+    local circumference per repeat, so a texel stays square as the limb tapers or the root flare widens (no stretch;
+    the bark's features shrink a little up a tapering limb, as a young limb's bark is finer)."""
     n0 = len(g.v)
     fr = frames(pts)
-    circ0 = 2 * math.pi * max(rads[0], 0.01)
-    urep = max(1, round(circ0 / uv_scale))
-    vacc = 0.0
     lobes_phase = 0.7
+
+    def circ(i):
+        rr = rads[i]
+        if flare:
+            rr = rr * (1 + 0.65 * math.exp(-(pts[i][2] + 0.15) / 0.28))
+        return 2 * math.pi * max(rr, 0.004)
+    ref = rads[min(len(rads) - 1, 3)] if flare else rads[0]
+    urep = max(1, round(2 * math.pi * max(ref, 0.01) / uv_scale))
+    vacc = 0.0
     for i, (c, r) in enumerate(zip(pts, rads)):
         if i > 0:
-            vacc += np.linalg.norm(pts[i] - pts[i - 1]) / uv_scale
+            per = 0.5 * (circ(i) + circ(i - 1)) / urep
+            vacc += np.linalg.norm(pts[i] - pts[i - 1]) / per
         t, nn, b = fr[i]
         for k in range(sides + 1):
             th = 2 * math.pi * k / sides
@@ -822,7 +1142,7 @@ def bark_geo(P, par, children, R, sp, lod):
             sides = 9 if rr > 0.15 else 6 if rr > 0.06 else 4
         else:
             sides = 6 if rr > 0.12 else 4
-        add_tube(g, pts, rads, sides, flare=(par[nodes[0]] < 0))
+        add_tube(g, pts, rads, sides, flare=(par[nodes[0]] < 0), uv_scale=sp["bark"].get("tile", 0.7))
     return g
 
 
@@ -944,6 +1264,8 @@ def render_material(name, img, nimg=None, leaf=False):
     b = nt.nodes["Principled BSDF"]
     t = nt.nodes.new("ShaderNodeTexImage")
     t.image = img
+    if not leaf:
+        img.alpha_mode = "CHANNEL_PACKED"     # bark alpha is roughness, not coverage: don't premultiply the colour
     nt.links.new(t.outputs["Color"], b.inputs["Base Color"])
     b.inputs["Roughness"].default_value = 0.75
     if leaf:
@@ -1178,15 +1500,16 @@ def main():
     # textures
     n = o["tex"]
     tdir = o["out"]
-    bark_rgb, bark_n = bark_maps(sp["bark"], n, o["seed"] + 11)
-    leaf_rgb, leaf_a, leaf_n, leaf_m = leaf_atlas(sp["leaf"], n, o["seed"] + 23)
+    bark_rgb, bark_rough, bark_n = bark_maps(sp["bark"], n, o["seed"] + 11)
+    shapes = LEAF_SHAPES.get(o["species"].split("_")[0])
+    leaf_rgb, leaf_a, leaf_n, leaf_m = leaf_atlas(sp["leaf"], n, o["seed"] + 23, shapes=shapes)
     img_bloom = None
     if sp.get("bloom"):
-        bloom_rgb, bloom_a, _, _ = leaf_atlas(sp["leaf"], n, o["seed"] + 23, bloom=sp["bloom"])
+        bloom_rgb, bloom_a, _, _ = leaf_atlas(sp["leaf"], n, o["seed"] + 23, bloom=sp["bloom"], shapes=shapes)
         img_bloom = np_image(name + "_bloom", bloom_rgb, bloom_a, path=os.path.join(tdir, name + "_bloom.png"))
     f_bark = os.path.join(tdir, name + "_bark.png")
     f_leaf = os.path.join(tdir, name + "_leaf.png")
-    img_bark = np_image(name + "_bark", bark_rgb, None, path=f_bark)
+    img_bark = np_image(name + "_bark", bark_rgb, bark_rough, path=f_bark)   # alpha: roughness
     np_image(name + "_bark_n", bark_n, None, noncolor=True, path=os.path.join(tdir, name + "_bark_n.png"))
     img_leaf = np_image(name + "_leaf", leaf_rgb, leaf_a, path=f_leaf)
     np_image(name + "_leaf_n", leaf_n, None, noncolor=True, path=os.path.join(tdir, name + "_leaf_n.png"))
