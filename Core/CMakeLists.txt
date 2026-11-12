@@ -71,6 +71,8 @@ add_library(ftcore STATIC
     src/StandIns.cpp
     src/TreeMeshes.cpp
     src/LawnSheet.cpp
+    src/BuildingLots.cpp
+    src/FacadeGrammar.cpp
     src/BlockGen.cpp
     src/BlockCheck.cpp
     src/TerrainPocket.cpp
@@ -239,6 +241,16 @@ else()
     target_compile_options(ftcore_baycount PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_lotplan: kit buildings on street frontage runs and the street-rule check (an offline planning aid).
+add_executable(ftcore_lotplan tools/ftcore_lotplan.cpp)
+target_link_libraries(ftcore_lotplan PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_lotplan PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_lotplan PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_lotplan PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 if(FTCORE_BUILD_TESTS)
     include(FetchContent)
     # CMake 4 rejects cmake_minimum_required(< 3.5), which doctest 2.4.11 still declares.
@@ -301,6 +313,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_stand_ins.cpp
         tests/test_tree_meshes.cpp
         tests/test_lawn_sheet.cpp
+        tests/test_building_lots.cpp
         tests/test_block_gen.cpp
         tests/test_block_check.cpp
         tests/test_terrain_pocket.cpp

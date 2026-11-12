@@ -8,6 +8,13 @@
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "ImageUtils.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionTextureObjectParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionVertexNormalWS.h"
+#include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "MeshDescription.h"
 #include "Misc/FileHelper.h"
@@ -164,12 +171,146 @@ FVector PivotOf(const ftcore::LawnMesh& M, double Side)
 	}
 	return FVector(Box.GetCenter().X, Box.GetCenter().Y, Box.Min.Z);
 }
+
+// The scanned lawn's own master: two samples of the scan (one at TileCm, one 2.7 times larger and turned 0.6 rad) blended
+// by a low noise about 35 m across, a finer brightness mottle and a macro shift between a drier and a lusher green, so no
+// tile repeats where a lead can see 80 m of green. World-planar; the normal is world space (the sheet is near level).
+const TCHAR* const kLawnCode = TEXT(R"(
+float2 w = WorldPos.xy;
+float nz[3];
+float sc[3] = {3500.0, VariationScale, MacroScale};
+for (int k = 0; k < 3; ++k)
+{
+	float2 g = w / sc[k] + float2(k * 17.3, k * 5.1);
+	float2 i = floor(g);
+	float2 f = frac(g);
+	f = f * f * (3.0 - 2.0 * f);
+	float h00 = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);
+	float h10 = frac(sin(dot(i + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);
+	float h01 = frac(sin(dot(i + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
+	float h11 = frac(sin(dot(i + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
+	nz[k] = lerp(lerp(h00, h10, f.x), lerp(h01, h11, f.x), f.y);
+}
+float ca = cos(0.6), sa = sin(0.6);
+float2 uvA = w / TileCm;
+float2 uvB = float2(ca * w.x - sa * w.y, sa * w.x + ca * w.y) / (TileCm * 2.7) + float2(0.37, 0.61);
+float t = smoothstep(0.3, 0.7, nz[0]);
+float3 a = Texture2DSample(Albedo, AlbedoSampler, uvA).rgb;
+float3 b = Texture2DSample(Albedo, AlbedoSampler, uvB).rgb;
+float3 ra = Texture2DSample(Arm, ArmSampler, uvA).rgb;
+float3 rb = Texture2DSample(Arm, ArmSampler, uvB).rgb;
+float3 na = UnpackNormalMap(Texture2DSample(Nrm, NrmSampler, uvA)).xyz;
+float3 nb = UnpackNormalMap(Texture2DSample(Nrm, NrmSampler, uvB)).xyz;
+nb.xy = float2(ca * nb.x + sa * nb.y, -sa * nb.x + ca * nb.y);
+float3 arm = lerp(ra, rb, t);
+float2 nxy = lerp(na.xy, nb.xy, t) * NormalStrength;
+float3 col = lerp(a, b, t) * Color.rgb;
+col *= 1.0 + Variation * (nz[1] - 0.5) * 2.0;
+col *= 1.0 + MacroVariation * (nz[2] - 0.5);
+col *= lerp(float3(1.07, 1.0, 0.82), float3(0.92, 1.03, 1.02), nz[2]);
+RoughOut = saturate(arm.g);
+AoOut = arm.r;
+NormalOut = normalize(normalize(VNormal) + float3(nxy.x, -nxy.y, 0.0));
+return saturate(col);
+)");
+
+UMaterialInterface* LawnMaster(UPackage* Package, UTexture* const Maps[3])
+{
+	UMaterial* Material = NewObject<UMaterial>(Package, TEXT("M_Massing_Lawn"), RF_Public);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Material->bTangentSpaceNormal = false;
+	int32 Y = 0;
+	auto Add = [Material, &Y](UMaterialExpression* E)
+	{
+		Material->GetExpressionCollection().AddExpression(E);
+		E->Material = Material;
+		E->MaterialExpressionEditorX = -700;
+		E->MaterialExpressionEditorY = (Y += 100);
+		E->UpdateMaterialExpressionGuid(true, false);
+		return E;
+	};
+	UMaterialExpressionCustom* Code = NewObject<UMaterialExpressionCustom>(Material);
+	Add(Code);
+	Code->Description = TEXT("FTLawn");
+	Code->OutputType = CMOT_Float3;
+	Code->Code = kLawnCode;
+	Code->Inputs.Reset();
+	auto In = [Code](FName Name, UMaterialExpression* From)
+	{
+		FCustomInput& Input = Code->Inputs.AddDefaulted_GetRef();
+		Input.InputName = Name;
+		Input.Input.Connect(0, From);
+	};
+	static const TCHAR* const TexNames[3] = {TEXT("Albedo"), TEXT("Nrm"), TEXT("Arm")};
+	static const EMaterialSamplerType Types[3] = {SAMPLERTYPE_Color, SAMPLERTYPE_Normal, SAMPLERTYPE_Masks};
+	for (int32 K = 0; K < 3; ++K)
+	{
+		UMaterialExpressionTextureObjectParameter* P = NewObject<UMaterialExpressionTextureObjectParameter>(Material);
+		Add(P);
+		P->ParameterName = TexNames[K];
+		P->Texture = Maps[K];
+		P->SamplerType = Types[K];
+		P->UpdateParameterGuid(true, false);
+		In(TexNames[K], P);
+	}
+	In(TEXT("WorldPos"), Add(NewObject<UMaterialExpressionWorldPosition>(Material)));
+	In(TEXT("VNormal"), Add(NewObject<UMaterialExpressionVertexNormalWS>(Material)));
+	UMaterialExpressionVectorParameter* Color = NewObject<UMaterialExpressionVectorParameter>(Material);
+	Add(Color);
+	Color->ParameterName = TEXT("Color");
+	Color->DefaultValue = FLinearColor(0.74f, 1.45f, 0.78f);
+	Color->UpdateParameterGuid(true, false);
+	In(TEXT("Color"), Color);
+	const TPair<const TCHAR*, float> Scalars[] = {{TEXT("TileCm"), 200.f}, {TEXT("NormalStrength"), 1.f}, {TEXT("Variation"), 0.14f},
+		{TEXT("VariationScale"), 420.f}, {TEXT("MacroVariation"), 0.22f}, {TEXT("MacroScale"), 1700.f}};
+	for (const TPair<const TCHAR*, float>& S : Scalars)
+	{
+		UMaterialExpressionScalarParameter* P = NewObject<UMaterialExpressionScalarParameter>(Material);
+		Add(P);
+		P->ParameterName = S.Key;
+		P->DefaultValue = S.Value;
+		P->UpdateParameterGuid(true, false);
+		In(S.Key, P);
+	}
+	static const TCHAR* const Outs[3] = {TEXT("RoughOut"), TEXT("AoOut"), TEXT("NormalOut")};
+	static const ECustomMaterialOutputType OutTypes[3] = {CMOT_Float1, CMOT_Float1, CMOT_Float3};
+	for (int32 K = 0; K < 3; ++K)
+	{
+		FCustomOutput& Output = Code->AdditionalOutputs.AddDefaulted_GetRef();
+		Output.OutputName = Outs[K];
+		Output.OutputType = OutTypes[K];
+	}
+	Code->RebuildOutputs();
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Code);
+	Inputs->Roughness.Connect(1, Code);
+	Inputs->AmbientOcclusion.Connect(2, Code);
+	Inputs->Normal.Connect(3, Code);
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	return Material;
+}
 } // namespace FTLawn::Impl
 
 UMaterialInterface* FTLawn::LawnMaterial(UPackage* Package, UMaterialInterface* Parent)
 {
 	using namespace FTLawn::Impl;
 	FString Dir;
+	if (FParse::Value(FCommandLine::Get(), TEXT("LawnTex="), Dir, false) && !Dir.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("LawnOneScale")))
+	{
+		// The scan on its own master: two scales blended by noise, a turned second sample and a macro colour shift.
+		UTexture* Maps[3] = {nullptr, nullptr, nullptr};
+		for (int32 M = 0; M < UE_ARRAY_COUNT(kMaps); ++M)
+		{
+			Maps[M] = ImportMap(Dir, kMaps[M]);
+			if (!Maps[M])
+			{
+				return nullptr;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: the lawn wears the scanned set from -LawnTex at two blended scales (%s)."), TextureFolder);
+		return LawnMaster(Package, Maps);
+	}
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Massing_Lawn"), RF_Public);
 	Mic->SetParentEditorOnly(Parent);
 	if (FParse::Value(FCommandLine::Get(), TEXT("LawnTex="), Dir, false) && !Dir.IsEmpty())

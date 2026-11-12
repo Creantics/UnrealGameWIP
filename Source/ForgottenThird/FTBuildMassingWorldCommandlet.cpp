@@ -3,6 +3,7 @@
 #include "FTBuildBackdrop.h"
 #include "FTBuildStandIns.h"
 #include "FTBuildLawn.h"
+#include "FTBuildLots.h"
 #include "FTClockTower.h"
 #include "FTMaterialCheck.h"
 #include "FTBuildPlinths.h"
@@ -2285,6 +2286,17 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		Replaced[static_cast<size_t>(Row.BoxAt)] = true;
 	}
+	// -Lots: the boxes on the frontage runs give way to kit buildings (FTBuildLots.h); they take no box, collider,
+	// windows or frontage (the lots' own bodies and pieces collide).
+	FTLots::FBuild LotBuild;
+	if (!FTLots::Plan(*Params, Boxes, LotBuild))
+	{
+		return 1;
+	}
+	for (size_t I = 0; I < LotBuild.Replaced.size(); ++I)
+	{
+		Replaced[I] = Replaced[I] || LotBuild.Replaced[I];
+	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
 	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its cell
@@ -2309,6 +2321,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		(Role == ftcore::MassingRole::Named ? Named : Kit) += 1;
 		BoxesLeft += Replaced[I] ? 0 : 1;
+		if (LotBuild.bOn && LotBuild.Replaced[I])
+		{
+			continue;
+		}
 		UMaterialInterface* Material = bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))];
 		UMaterialInterface* const Rock = bSurfaces ? FTBackdrop::RockFace(Package, Material, Box, Land->LandscapeMaterial) : nullptr;
 		UMaterialInterface* const WindowMaterial = bWindows ? WindowLook[static_cast<int32>(ftcore::massingLookSurface(Box))] : nullptr;
@@ -2400,6 +2416,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const FString GlowPath = FTScene::NightLampMaterial;
 		LampParts.Glow = LoadObject<UMaterialInterface>(nullptr, *(GlowPath + TEXT(".") + FPackageName::GetShortName(GlowPath)), nullptr,
 			LOAD_NoWarn | LOAD_Quiet);
+	}
+	if (!FTLots::Place(LotBuild, Cells, Package, Cube, Side))
+	{
+		return 1;
 	}
 	TMap<int32, int32> KitOnBox;
 	TMap<FString, int32> KitPerAsset;
