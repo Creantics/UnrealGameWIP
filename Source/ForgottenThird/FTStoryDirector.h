@@ -219,6 +219,15 @@ private:
 	bool bAlpha = false; // -AlphaAutoPlay
 	bool bHandoffAuto = false; // -StoryAutoPlayHandoff
 	bool bQuitOnReturn = false;
+	// -StoryShot=<path prefix>: autoplay (not fast) saves the screen with the HUD for each of the first
+	// -StoryShotMax=N lines (default 4), once the line is revealed and 1 s in, then quits.
+	FString ShotPrefix;
+	int32 ShotsLeft = 0;
+	float ShotQuitIn = -1.f;
+	bool bShotThisBeat = false;
+	float BeatAge = 0.f;          // seconds since the beat began (autoplay)
+	FString VoiceLineId;          // the line whose voice last started, and its length
+	float VoiceSeconds = 0.f;
 	bool bPrevRouteInput = false;
 	bool bHandingOff = false;
 	FString Banner;
