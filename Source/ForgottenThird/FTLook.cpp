@@ -4,10 +4,16 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
+#include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
 
 #include "ForgottenThird.h"
+#include "FTText.h"
+#include "ftcore/GarmentFront.h"
+#include "ftcore/LookBody.h"
 
 namespace
 {
@@ -65,10 +71,254 @@ T* LoadOrOwn(const FSoftObjectPath& Path, const FString& Name, const TCHAR* Suff
 }
 }
 
+namespace
+{
+struct FPieceFilter
+{
+	bool bNoPieces = false;
+	std::vector<std::string> Words;
+};
+
+const FPieceFilter& PieceFilter()
+{
+	static const FPieceFilter Filter = []
+	{
+		FPieceFilter F;
+#if !UE_BUILD_SHIPPING
+		// Look-dev only: a shipping build always wears every piece.
+		F.bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
+		FString NoPiece;
+		if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
+		{
+			TArray<FString> Words;
+			NoPiece.ParseIntoArray(Words, TEXT("+"));
+			for (const FString& Word : Words)
+			{
+				F.Words.push_back(FT::ToUtf8(Word));
+			}
+		}
+#endif
+		return F;
+	}();
+	return Filter;
+}
+
+// The body path to wear: the full body while some covering garment is left off.
+FSoftObjectPath WornBodyPath(const FFTLeadLook& Look, const TArray<FSoftObjectPath>& WornPieces, const TCHAR* Who)
+{
+	if (Look.FullBodyMeshPath.IsNull() || Look.CoverWords.IsEmpty())
+	{
+		return Look.BodyMeshPath;
+	}
+	std::vector<std::string> Cover;
+	for (const FString& Word : Look.CoverWords)
+	{
+		Cover.push_back(FT::ToUtf8(Word));
+	}
+	std::vector<std::string> Worn;
+	for (const FSoftObjectPath& Piece : WornPieces)
+	{
+		if (!FTLook::PieceLeftOff(Piece))
+		{
+			Worn.push_back(FT::ToUtf8(Piece.GetAssetName()));
+		}
+	}
+	if (!ftcore::look::NeedsFullBody(Cover, Worn))
+	{
+		return Look.BodyMeshPath;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: a covering piece is off; wearing the full body %s."), Who, *Look.FullBodyMeshPath.ToString());
+	return Look.FullBodyMeshPath;
+}
+}
+
+namespace
+{
+FString FromUtf8(const std::string& Text)
+{
+	return FString(UTF8_TO_TCHAR(Text.c_str()));
+}
+
+// The scene's asks (FTLook::SetSceneFronts) and then -LookFront's, so the command line wins for captures.
+std::vector<ftcore::look::FrontAsk>& SceneFronts()
+{
+	static std::vector<ftcore::look::FrontAsk> Asks;
+	return Asks;
+}
+
+std::vector<ftcore::look::FrontAsk> FrontAsks()
+{
+	std::vector<ftcore::look::FrontAsk> Asks = SceneFronts();
+#if !UE_BUILD_SHIPPING
+	static const std::vector<ftcore::look::FrontAsk> Line = []
+	{
+		std::vector<ftcore::look::FrontAsk> Parsed;
+		FString Text;
+		if (FParse::Value(FCommandLine::Get(), TEXT("LookFront="), Text) && !ftcore::look::ParseFrontAsks(FT::ToUtf8(Text), Parsed))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTLook: -LookFront=%s doesn't parse (open, closed, or word:state joined by +); ignored."), *Text);
+		}
+		return Parsed;
+	}();
+	Asks.insert(Asks.end(), Line.begin(), Line.end());
+#endif
+	return Asks;
+}
+
+// The look's pairs for Core: paths as configured, openMade from what PrepareFronts loaded.
+std::vector<ftcore::look::FrontPair> FrontPairs(const FFTLeadLook& Look, const FFTWornFronts& Fronts)
+{
+	std::vector<ftcore::look::FrontPair> Pairs;
+	Pairs.reserve(Look.Fronts.Num());
+	for (int32 I = 0; I < Look.Fronts.Num(); ++I)
+	{
+		const FFTGarmentFronts& Pair = Look.Fronts[I];
+		const bool bOpenMade = Fronts.Open.IsValidIndex(I) && Fronts.Open[I] != nullptr;
+		Pairs.push_back({FT::ToUtf8(Pair.Closed.ToString()), FT::ToUtf8(Pair.Open.ToString()),
+			Pair.bOpen ? ftcore::look::Front::Open : ftcore::look::Front::Closed, bOpenMade});
+	}
+	return Pairs;
+}
+
+void WarnUnmatched(const std::vector<ftcore::look::FrontPair>& Pairs, const std::vector<ftcore::look::FrontAsk>& Asks, const TCHAR* Who)
+{
+	for (const std::string& Word : ftcore::look::UnmatchedAskWords(Pairs, Asks))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: front word \"%s\" names none of the look's garment pairs; ignored."), Who, *FromUtf8(Word));
+	}
+}
+}
+
+FFTWornFronts FTLook::PrepareFronts(const FFTLeadLook& Look, const TCHAR* Who)
+{
+	FFTWornFronts Fronts;
+	for (const FFTGarmentFronts& Pair : Look.Fronts)
+	{
+		USkeletalMesh* Closed = Cast<USkeletalMesh>(Pair.Closed.TryLoad());
+		if (!Closed)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: closed garment %s doesn't load."), Who, *Pair.Closed.ToString());
+		}
+		// An open mesh not made yet (no package) keeps the garment closed rather than leaving it off.
+		USkeletalMesh* Open = nullptr;
+		if (!Pair.Open.IsNull() && FPackageName::DoesPackageExist(Pair.Open.GetLongPackageName()))
+		{
+			Open = Cast<USkeletalMesh>(Pair.Open.TryLoad());
+		}
+		if (!Open && !Pair.Open.IsNull())
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: open garment %s isn't made; %s is worn closed."), Who, *Pair.Open.ToString(),
+				*Pair.Closed.GetAssetName());
+		}
+		Fronts.Closed.Add(Closed);
+		Fronts.Open.Add(Open);
+	}
+	if (!Look.Fronts.IsEmpty())
+	{
+		// SwapMaterials warns at setup about a swap that doesn't load; here it is only left out.
+		for (const FFTMaterialSwap& Swap : Look.MaterialSwaps)
+		{
+			UMaterialInterface* From = Cast<UMaterialInterface>(Swap.From.TryLoad());
+			UMaterialInterface* To = Cast<UMaterialInterface>(Swap.To.TryLoad());
+			if (From && To)
+			{
+				Fronts.SwapFrom.Add(From);
+				Fronts.SwapTo.Add(To);
+			}
+		}
+		WarnUnmatched(FrontPairs(Look, Fronts), FrontAsks(), Who);
+	}
+	return Fronts;
+}
+
+TArray<FSoftObjectPath> FTLook::WornPiecePaths(const FFTLeadLook& Look, const FFTWornFronts& Fronts)
+{
+	if (Look.Fronts.IsEmpty())
+	{
+		return Look.PiecePaths;
+	}
+	const std::vector<ftcore::look::FrontPair> Pairs = FrontPairs(Look, Fronts);
+	const std::vector<ftcore::look::FrontAsk> Asks = FrontAsks();
+	TArray<FSoftObjectPath> Worn;
+	Worn.Reserve(Look.PiecePaths.Num());
+	for (const FSoftObjectPath& Piece : Look.PiecePaths)
+	{
+		const ftcore::look::FrontChoice Choice = ftcore::look::WornChoice(FT::ToUtf8(Piece.ToString()), Pairs, Asks);
+		if (Choice.pair < 0)
+		{
+			Worn.Add(Piece);
+			continue;
+		}
+		const FFTGarmentFronts& Pair = Look.Fronts[Choice.pair];
+		Worn.Add(Choice.half == ftcore::look::Front::Open ? Pair.Open : Pair.Closed);
+	}
+	return Worn;
+}
+
+bool FTLook::SetSceneFronts(const FString& Asks)
+{
+	std::vector<ftcore::look::FrontAsk> Parsed;
+	if (!Asks.IsEmpty() && !ftcore::look::ParseFrontAsks(FT::ToUtf8(Asks), Parsed))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTLook: scene fronts \"%s\" don't parse; kept as they were."), *Asks);
+		return false;
+	}
+	SceneFronts() = std::move(Parsed);
+	return true;
+}
+
+int32 FTLook::SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
+	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, const FString& Word, bool bOpen, const TCHAR* Who)
+{
+	const std::vector<ftcore::look::FrontPair> Pairs = FrontPairs(Look, Fronts);
+	const std::vector<ftcore::look::FrontAsk> Ask = {{FT::ToUtf8(Word), bOpen ? ftcore::look::Front::Open : ftcore::look::Front::Closed}};
+	WarnUnmatched(Pairs, Ask, Who);
+	int32 Changed = 0;
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		const USkeletalMesh* Mesh = Piece ? Piece->GetSkeletalMeshAsset() : nullptr;
+		if (!Mesh)
+		{
+			continue;
+		}
+		const ftcore::look::FrontChoice Choice = ftcore::look::WornChoice(FT::ToUtf8(FSoftObjectPath(Mesh).ToString()), Pairs, Ask);
+		if (Choice.pair < 0)
+		{
+			continue;
+		}
+		const TArray<TObjectPtr<USkeletalMesh>>& Half = Choice.half == ftcore::look::Front::Open ? Fronts.Open : Fronts.Closed;
+		USkeletalMesh* Other = Half.IsValidIndex(Choice.pair) ? Half[Choice.pair].Get() : nullptr;
+		if (!Other || Other == Mesh)
+		{
+			continue;
+		}
+		// The two halves may have different slot counts: per-slot overrides set for the old mesh would land on the
+		// wrong slots, so they go, and the look's swaps are made again on the new slots.
+		Piece->SetSkeletalMeshAsset(Other);
+		Piece->EmptyOverrideMaterials();
+		Piece->SetLeaderPoseComponent(&Body, /*bForceUpdate=*/true);
+		Piece->RecreateClothingActors();
+		for (int32 S = 0; S < Fronts.SwapFrom.Num() && S < Fronts.SwapTo.Num(); ++S)
+		{
+			SwapSlots(*Piece, Fronts.SwapFrom[S], Fronts.SwapTo[S]);
+		}
+		++Changed;
+	}
+	return Changed;
+}
+
+bool FTLook::PieceLeftOff(const FSoftObjectPath& Piece)
+{
+	const FPieceFilter& Filter = PieceFilter();
+	return ftcore::look::PieceLeftOff(FT::ToUtf8(Piece.GetAssetName()), Filter.bNoPieces, Filter.Words);
+}
+
 FFTLoadedLook FTLook::LoadLook(const FFTLeadLook& Look, const TCHAR* Who)
 {
 	FFTLoadedLook Loaded;
-	Loaded.Body = LoadOrOwn<USkeletalMesh>(Look.BodyMeshPath, Look.Name, TEXT(""), Who);
+	Loaded.Fronts = PrepareFronts(Look, Who);
+	Loaded.Pieces = WornPiecePaths(Look, Loaded.Fronts);
+	Loaded.Body = LoadOrOwn<USkeletalMesh>(WornBodyPath(Look, Loaded.Pieces, Who), Look.Name, TEXT(""), Who);
 	Loaded.ClipFolder = !Look.ClipFolder.IsEmpty() || Look.Name.IsEmpty() ? Look.ClipFolder
 		: FString::Printf(TEXT("/Game/Characters/%s/Rig/Retargeted"), *Look.Name);
 	if (!Loaded.Body)
@@ -106,6 +356,18 @@ FFTLoadedLook FTLook::LoadLook(const FFTLeadLook& Look, const TCHAR* Who)
 		Loaded.Clips[I] = Clip;
 		Missing += Clip == nullptr;
 	}
+	{
+		// One line per look at setup: each base state and the clip it plays (the clip set shows the body alias at work).
+		static const TCHAR* const States[UFTLocomotionAnimInstance::NumBaseClips] = {
+			TEXT("idle"), TEXT("walk"), TEXT("run"), TEXT("sprint"), TEXT("jump"), TEXT("fall"), TEXT("land"), TEXT("runjump"), TEXT("runland")};
+		FString List;
+		for (int32 I = 0; I < UFTLocomotionAnimInstance::NumBaseClips; ++I)
+		{
+			List += FString::Printf(TEXT("%s%s=%s"), I ? TEXT(", ") : TEXT(""), States[I], Loaded.Clips[I] ? *Loaded.Clips[I]->GetName() : TEXT("(none)"));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: base clips for %s (clip set %s): %s"), Who, *Body.GetName(),
+			*UFTLocomotionAnimInstance::ClipSetBody(Body), *List);
+	}
 	if (Missing > 0)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s: %d of the %d base clips weren't found for %s (retargeted ones in %s)."), Who,
@@ -117,18 +379,11 @@ FFTLoadedLook FTLook::LoadLook(const FFTLeadLook& Look, const TCHAR* Who)
 int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArray<FSoftObjectPath>& Paths,
 	TArray<TObjectPtr<USkeletalMeshComponent>>& OutPieces, const TCHAR* Who)
 {
-	const bool bNoPieces = FParse::Param(FCommandLine::Get(), TEXT("LocoNoPieces"));
-	FString NoPiece;
-	TArray<FString> NoPieceWords;
-	if (FParse::Value(FCommandLine::Get(), TEXT("LocoNoPiece="), NoPiece))
-	{
-		NoPiece.ParseIntoArray(NoPieceWords, TEXT("+"));
-	}
 	int32 Cloth = 0;
 	for (const FSoftObjectPath& Path : Paths)
 	{
 		const FString Name = Path.GetAssetName();
-		if (bNoPieces || NoPieceWords.ContainsByPredicate([&Name](const FString& Word) { return Name.Contains(Word); }))
+		if (PieceLeftOff(Path))
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: piece %s left off."), Who, *Name);
 			continue;
@@ -203,4 +458,85 @@ int32 FTLook::AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 		++Added;
 	}
 	return Added;
+}
+
+int32 FTLook::SwapSlots(USkeletalMeshComponent& Component, const UMaterialInterface* From, UMaterialInterface* To)
+{
+	if (!From || !To)
+	{
+		return 0;
+	}
+	// A slot shows From when its material is From or an instance made from it (a runtime or per-LOD copy).
+	auto Shows = [From](const UMaterialInterface* Material)
+	{
+		for (int32 Depth = 0; Material && Depth < 8; ++Depth)
+		{
+			if (Material == From || Material->GetPathName() == From->GetPathName())
+			{
+				return true;
+			}
+			const UMaterialInstance* Instance = Cast<UMaterialInstance>(Material);
+			Material = Instance ? Instance->Parent.Get() : nullptr;
+		}
+		return false;
+	};
+	int32 Slots = 0;
+	for (int32 I = 0; I < Component.GetNumMaterials(); ++I)
+	{
+		if (Shows(Component.GetMaterial(I)))
+		{
+			Component.SetMaterial(I, To);
+			++Slots;
+		}
+	}
+	return Slots;
+}
+
+int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
+	const TArray<FFTMaterialSwap>& Swaps, const TCHAR* Who)
+{
+	int32 Total = 0;
+	for (const FFTMaterialSwap& Swap : Swaps)
+	{
+		const UMaterialInterface* From = Cast<UMaterialInterface>(Swap.From.TryLoad());
+		UMaterialInterface* To = Cast<UMaterialInterface>(Swap.To.TryLoad());
+		if (!From || !To)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: material swap %s -> %s skipped; %s doesn't load."), Who, *Swap.From.ToString(),
+				*Swap.To.ToString(), From ? *Swap.To.ToString() : *Swap.From.ToString());
+			continue;
+		}
+		int32 Slots = SwapSlots(Body, From, To);
+		for (USkeletalMeshComponent* Piece : Pieces)
+		{
+			Slots += Piece ? SwapSlots(*Piece, From, To) : 0;
+		}
+		if (Slots == 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: material swap: no slot shows %s."), Who, *From->GetPathName());
+			// What the slots do show, once per component that has slots, so the swap's From can be put right.
+			auto List = [Who](const USkeletalMeshComponent* Component)
+			{
+				FString Names;
+				for (int32 I = 0; Component && I < Component->GetNumMaterials(); ++I)
+				{
+					const UMaterialInterface* Material = Component->GetMaterial(I);
+					Names += FString::Printf(TEXT(" [%d]%s"), I, Material ? *Material->GetPathName() : TEXT("none"));
+				}
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s:   %s slots:%s"), Who,
+					Component && Component->GetSkeletalMeshAsset() ? *Component->GetSkeletalMeshAsset()->GetName() : TEXT("none"), *Names);
+			};
+			List(&Body);
+			for (const USkeletalMeshComponent* Piece : Pieces)
+			{
+				List(Piece);
+			}
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: material swap: %s -> %s in %d slots."), Who, *From->GetName(), *To->GetName(), Slots);
+		}
+		Total += Slots;
+	}
+	return Total;
 }

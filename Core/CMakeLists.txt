@@ -30,6 +30,7 @@ endif()
 
 add_library(ftcore STATIC
     src/AssetManifest.cpp
+    src/StoryCast.cpp
     src/AudioCues.cpp
     src/Backlog.cpp
     src/Banter.cpp
@@ -101,14 +102,18 @@ add_library(ftcore STATIC
     src/Seen.cpp
     src/Settings.cpp
     src/SkinDetail.cpp
+    src/GarmentDetail.cpp
     src/Skip.cpp
     src/StoryDatabase.cpp
     src/StoryImport.cpp
     src/StoryRunner.cpp
     src/StubScreen.cpp
     src/SceneLook.cpp
+    src/LookBody.cpp
+    src/GarmentFront.cpp
     src/LookGrade.cpp
     src/LookTable.cpp
+    src/ClipBodyAlias.cpp
     src/SeaWaves.cpp
     src/StylePack.cpp
     src/StorySave.cpp
@@ -222,6 +227,8 @@ if(FTCORE_BUILD_TESTS)
         tests/AllocHook.cpp
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
+        tests/test_look_body.cpp
+        tests/test_garment_front.cpp
         tests/test_backlog.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
@@ -295,6 +302,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_qte.cpp
         tests/test_settings.cpp
         tests/test_skin_detail.cpp
+        tests/test_garment_detail.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
@@ -302,11 +310,13 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story_faces.cpp
         tests/test_story_state.cpp
         tests/test_story_bridge.cpp
+        tests/test_story_cast.cpp
         tests/test_fight_session.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp
         tests/test_look_grade.cpp
         tests/test_look_table.cpp
+        tests/test_clip_body_alias.cpp
         tests/test_sea_waves.cpp
         tests/test_style.cpp
         tests/test_stub_screen.cpp

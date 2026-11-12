@@ -63,9 +63,11 @@
 #include "ftcore/Backlog.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/Skip.h"
+#include "ftcore/StoryCast.h"
 
 #include "FTStoryDirector.generated.h"
 
+class AFTCastMember;
 class AFTPlayerController;
 class UFTAudioSubsystem;
 class UFTFaceComponent;
@@ -159,8 +161,20 @@ private:
 	UFUNCTION()
 	void HandleVoiceStopped();
 
-	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads).
+	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads) and the
+	// local Data/Story/cast_marks.json into CastMarks.
 	void LoadCast();
+	// At a scene's start, in a map with a stand-in face: puts the scene's cast speakers on screen, each a lead look
+	// (the explore character's PartyLooks) whose ModelId is the speaker's model, on its cast mark (else the default
+	// arc) around the stand-in. One actor per model, made once and reused. The stand-in hides when every cast
+	// speaker of the scene has its own; otherwise it stays on the anchor and the cast stands around it. A checkout
+	// without looks for the cast puts no one on screen and changes nothing.
+	void PlaceSceneCast();
+	// Destroys the cast pool and shows the stand-in again (the director ends, the story finishes, a step takes
+	// over the screen): no cast is left standing and a later director starts from none.
+	void ClearSceneCast(const TCHAR* Why);
+	// The frame-cost buckets below, by what the cast is doing this frame.
+	void NoteCastFrame();
 	// The path of the next -StoryShot still of LineId; empty when the name is unsafe or 99 are saved.
 	FString StoryShotFile(const FString& LineId) const;
 	// The current line's voice is still playing.
@@ -228,6 +242,13 @@ private:
 	int32 ShotsLeft = 0;
 	float ShotQuitIn = -1.f;
 	bool bShotThisBeat = false;
+	// -StoryShotSpeaking=<model id> (non-shipping, with -StoryShot): instead of one still per line, three stills
+	// across the first fully voiced line that model speaks on its own face: mouth closed, open, closed again.
+	FString ShotSpeakingModel;
+	int32 ShotSpeakingPhase = 0;
+	float ShotSpeakingAt = 0.f;
+	int32 ShotSpeakingBeat = -1;
+	void TickSpeakingShots();
 	float BeatAge = 0.f;          // seconds since the beat began (autoplay)
 	FString VoiceLineId;          // the line whose voice last started, and its length
 	float VoiceSeconds = 0.f;
@@ -253,4 +274,20 @@ private:
 	ftcore::SpeakerCast Speakers;
 	TArray<TWeakObjectPtr<UFTFaceComponent>> SpeakingFaces;
 	bool bLoggedNoFace = false;
+	ftcore::CastMarks CastMarks;
+	UPROPERTY(Transient)
+	TMap<FString, TObjectPtr<AFTCastMember>> CastActors; // by model id; null: the look didn't load
+	TWeakObjectPtr<AActor> CastAnchor;
+	// Non-shipping diagnostics: -FaceDiag logs each cast face's peaks when the cast is cleared; -CastCost times
+	// frames by cast state (below) and logs them at EndPlay. Both off by default and compiled out of shipping.
+	bool bCastDiag = false;
+	bool bCastCost = false;
+	// The face curve mapping asset, loaded with the map (not at a face's first bind mid-scene).
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> CurveMapPoseHold;
+	// Frame cost (wall ms per frame) by cast state: none in the pool, pool all hidden, some on screen idle, one
+	// speaking. Logged at EndPlay.
+	double LastFrameAt = -1.0;
+	double CastFrameMs[4] = {};
+	int32 CastFrames[4] = {};
 };

@@ -1,6 +1,7 @@
 #include "FTFaceComponent.h"
 
 #include "Animation/MorphTarget.h"
+#include "Animation/PoseAsset.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "FTText.h"
@@ -31,10 +32,33 @@ UFTFaceComponent::UFTFaceComponent()
 
 UFTFaceComponent::~UFTFaceComponent() = default;
 
+float UFTFaceComponent::GetShapeWeight(const char* Shape) const
+{
+	if (!Shapes || !Player || !Shape)
+	{
+		return 0.f;
+	}
+	const std::string_view Want(Shape);
+	for (size_t I = 0; I < Shapes->shapes.size() && I < Player->weights().size(); ++I)
+	{
+		if (Shapes->shapes[I] == Want)
+		{
+			return Player->weights()[I];
+		}
+	}
+	return 0.f;
+}
+
 void UFTFaceComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	Rebind();
+#if !UE_BUILD_SHIPPING
+	bDiagnostics = FParse::Param(FCommandLine::Get(), TEXT("FaceDiag"));
+#endif
+	if (bBindOnBeginPlay)
+	{
+		Rebind();
+	}
 }
 
 void UFTFaceComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -42,6 +66,7 @@ void UFTFaceComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Player.Reset();
 	Track.Reset();
 	Shapes.Reset();
+	CurveMap.Reset();
 	FaceMesh = nullptr;
 	Super::EndPlay(EndPlayReason);
 }
@@ -73,6 +98,19 @@ bool UFTFaceComponent::Rebind()
 	MorphMap.clear();
 	MorphWeights.Reset();
 	BoundShapes = 0;
+	CurveMap.Reset();
+	CurveNames.Reset();
+	CurveValues.Reset();
+	bCurveMode = false;
+	PeakRigMorphs = 0;
+	PeakCurvesArrived = 0;
+	PeakRigJawDeg = 0.f;
+	PeakMorphCurves = 0;
+	RigJawBone = INDEX_NONE;
+	PeakLipsTogether = 0.f;
+	LipsCurve = INDEX_NONE;
+	bCurvesWritten = false;
+	++CurveSerial;
 
 	const FString Path = ProjectPath(PresetsFile);
 	TArray<uint8> Bytes;
@@ -117,8 +155,88 @@ bool UFTFaceComponent::Rebind()
 		Bound += S >= 0 ? 1 : 0;
 	}
 	BoundShapes = Bound;
+	if (Bound == 0 && BindCurves())
+	{
+		return true;
+	}
 	UE_LOG(LogFTFace, Log, TEXT("%s: %d of %d face shapes bound to %s"), *GetPathName(), Bound,
 		static_cast<int32>(Shapes->size()), *FaceMesh->GetName());
+	return true;
+}
+
+bool UFTFaceComponent::HasRigInstance() const
+{
+	return FaceMesh && FaceMesh->GetPostProcessInstance() != nullptr;
+}
+
+bool UFTFaceComponent::BindCurves()
+{
+	// A rig that reads curves: the mesh's post-process anim blueprint (a MetaHuman face's rig logic).
+	if (!FaceMesh->GetPostProcessAnimBPClassToBeUsed())
+	{
+		return false;
+	}
+	if (CurveMapPose.IsNull())
+	{
+		UE_LOG(LogFTFace, Warning, TEXT("%s: %s has a rig but no CurveMapPose is configured ([/Script/ForgottenThird.FTFaceComponent] in DefaultGame.ini); the face stays still."),
+			*GetPathName(), *FaceMesh->GetName());
+		return false;
+	}
+	const UPoseAsset* Pose = Cast<UPoseAsset>(CurveMapPose.TryLoad());
+	if (!Pose)
+	{
+		UE_LOG(LogFTFace, Warning, TEXT("%s: %s has a rig but no curve map pose asset loads (%s); the face stays still."),
+			*GetPathName(), *FaceMesh->GetName(), *CurveMapPose.ToString());
+		return false;
+	}
+	const TArray<FName>& PoseNames = Pose->GetPoseFNames();
+	const TArray<FName> Curves = Pose->GetCurveFNames();
+	std::vector<std::string> PoseText, CurveText;
+	PoseText.reserve(static_cast<size_t>(PoseNames.Num()));
+	CurveText.reserve(static_cast<size_t>(Curves.Num()));
+	for (const FName& N : PoseNames)
+	{
+		PoseText.push_back(FT::ToUtf8(N.ToString()));
+	}
+	for (const FName& N : Curves)
+	{
+		CurveText.push_back(FT::ToUtf8(N.ToString()));
+	}
+	std::vector<float> Values(PoseText.size() * CurveText.size(), 0.f);
+	for (int32 P = 0; P < PoseNames.Num(); ++P)
+	{
+		const TArray<float>& V = Pose->GetCurveValues(P);
+		for (int32 C = 0; C < V.Num() && C < Curves.Num(); ++C)
+		{
+			Values[static_cast<size_t>(P) * CurveText.size() + static_cast<size_t>(C)] = V[C];
+		}
+	}
+	std::vector<std::string_view> PoseViews(PoseText.begin(), PoseText.end());
+	std::vector<std::string_view> CurveViews(CurveText.begin(), CurveText.end());
+	TUniquePtr<ftcore::FaceCurveMap> Map = MakeUnique<ftcore::FaceCurveMap>();
+	std::vector<std::string> Unmatched;
+	if (!ftcore::buildFaceCurveMap(*Shapes, PoseViews, CurveViews, Values, *Map, &Unmatched, ftcore::faceCurveHandMap()) || Map->empty())
+	{
+		UE_LOG(LogFTFace, Warning, TEXT("%s: the curve map pose asset maps no face shape (%d poses, %d curves); the face stays still."),
+			*GetPathName(), PoseNames.Num(), Curves.Num());
+		return false;
+	}
+	CurveNames = Curves;
+	CurveValues.SetNumZeroed(Curves.Num());
+	BoundShapes = static_cast<int32>(Map->mappedShapes);
+	CurveMap = MoveTemp(Map);
+	bCurveMode = true;
+	RigJawBone = FaceMesh->GetBoneIndex(TEXT("FACIAL_C_Jaw"));
+	LipsCurve = CurveNames.IndexOfByKey(FName(TEXT("CTRL_expressions_mouthLipsTogetherUL")));
+	FString Missing;
+	for (const std::string& U : Unmatched)
+	{
+		Missing += (Missing.IsEmpty() ? TEXT("") : TEXT(", ")) + FT::ToFString(U);
+	}
+	UE_LOG(LogFTFace, Log, TEXT("%s: curve mode on %s: %d of %d face shapes mapped (%u by hand) to %d rig curves (%d poses, %d terms, additive %d)%s%s"),
+		*GetPathName(), *FaceMesh->GetName(), BoundShapes, static_cast<int32>(Shapes->size()), CurveMap->handShapes, Curves.Num(), PoseNames.Num(),
+		static_cast<int32>(CurveMap->terms.size()), Pose->IsValidAdditive() ? 1 : 0,
+		Missing.IsEmpty() ? TEXT("") : TEXT("; no pose for: "), *Missing);
 	return true;
 }
 
@@ -238,6 +356,51 @@ void UFTFaceComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 		return;
 	}
 	Player->update(DeltaTime);
+	if (bCurveMode)
+	{
+		// Only when the weights moved (a track, a blink, a fade): a still face costs a compare.
+		const ftcore::FaceWeights& Weights = Player->weights();
+		if (!bCurvesWritten || Weights != LastWeights)
+		{
+			ftcore::writeFaceCurves(*CurveMap, Weights, std::span<float>(CurveValues.GetData(), static_cast<size_t>(CurveValues.Num())));
+			LastWeights = Weights;
+			bCurvesWritten = true;
+			++CurveSerial;
+		}
+#if !UE_BUILD_SHIPPING
+		if (Player->playing() && CurveValues.IsValidIndex(LipsCurve))
+		{
+			PeakLipsTogether = FMath::Max(PeakLipsTogether, CurveValues[LipsCurve]);
+		}
+		if (bDiagnostics && FaceMesh && Player->playing())
+		{
+			int32 Moving = 0;
+			for (const TPair<FName, float>& M : FaceMesh->GetMorphTargetCurves())
+			{
+				Moving += M.Value > 0.01f ? 1 : 0;
+			}
+			PeakRigMorphs = FMath::Max(PeakRigMorphs, Moving);
+			PeakMorphCurves = FMath::Max(PeakMorphCurves, FaceMesh->GetMorphTargetCurves().Num());
+			const TArray<FTransform>& Local = FaceMesh->GetBoneSpaceTransforms();
+			const USkeletalMesh* Asset = FaceMesh->GetSkeletalMeshAsset();
+			if (RigJawBone != INDEX_NONE && Asset && Local.IsValidIndex(RigJawBone) && Asset->GetRefSkeleton().GetRefBonePose().IsValidIndex(RigJawBone))
+			{
+				const FQuat Rest = Asset->GetRefSkeleton().GetRefBonePose()[RigJawBone].GetRotation();
+				PeakRigJawDeg = FMath::Max(PeakRigJawDeg, FMath::RadiansToDegrees(Rest.AngularDistance(Local[RigJawBone].GetRotation())));
+			}
+			if (const UAnimInstance* Anim = FaceMesh->GetAnimInstance())
+			{
+				int32 Arrived = 0;
+				for (int32 I = 0; I < CurveValues.Num(); ++I)
+				{
+					Arrived += CurveValues[I] > 0.05f && Anim->GetCurveValue(CurveNames[I]) > 0.05f ? 1 : 0;
+				}
+				PeakCurvesArrived = FMath::Max(PeakCurvesArrived, Arrived);
+			}
+		}
+#endif
+		return;
+	}
 	if (!FaceMesh || MorphNames.Num() == 0)
 	{
 		return;
