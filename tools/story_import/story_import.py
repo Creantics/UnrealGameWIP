@@ -159,14 +159,20 @@ def hold_sets(note):
     "No flag set" anywhere sets nothing."""
     if 'No flag set' in note:
         return []
-    one = r'`?(?:%s)`?' % FLAG_ID_PATTERN
+    one, rx = hold_sets_rx(FLAG_ID_PATTERN)
     ids = []
-    for m in re.finditer(r'(?<!No flag )\b[Ss]ets (%s(?:(?:,? and |, )%s)*)(?![A-Za-z0-9_])' % (one, one), note):
-        for g in re.findall(one, m.group(1)):
+    for m in rx.finditer(note):
+        for g in one.findall(m.group(1)):
             g = g.strip('`')
             if g not in ids:
                 ids.append(g)
     return ids
+
+
+def hold_sets_rx(pattern):
+    """(one id, the "Sets <list>" run) for a flag id pattern; an id must not run on into a word or a dash."""
+    one = r'`?(?:%s)`?(?![A-Za-z0-9_\-])' % pattern
+    return re.compile(one), re.compile(r'(?<!No flag )\b[Ss]ets (%s(?:(?:,? and |, )%s)*)' % (one, one))
 
 
 def check_tables(t):
@@ -187,6 +193,8 @@ def check_tables(t):
         fp = t['flag_id_pattern']
         try:
             rx = re.compile(fp) if _text(fp) and fp else None
+            if rx is not None:
+                hold_sets_rx(fp)   # the form hold_sets compiles; inline flags such as (?i) fail here
         except re.error:
             rx = None
         if rx is None or rx.groups or rx.fullmatch(''):
@@ -670,12 +678,17 @@ def build(build_dir):
                 seconds = HOLD_LADDER.get(sid, INPUT_HOLD_SECONDS)
                 hold_beat(seconds, nt)
                 ladder_done[0] = True
-                for fid in hold_sets(nt):   # every id after "Sets" that the flag table knows
+                got = hold_sets(nt)
+                for fid in got:   # every id after "Sets" that the flag table knows
                     if fid in flag_ids:
                         emit({'type': 'flag', 'op': 'set', 'id': fid, 'value': True})
                     else:
                         print('story_import: warning: %s: a HOLD note sets %s, which is not in the flag table'
                               % (sid, fid), file=sys.stderr)
+                for w in re.findall(r'\b[Ss]ets `?([A-Za-z0-9_\-]+)', nt):
+                    if w in flag_ids and w not in got and 'No flag set' not in nt:
+                        print('story_import: warning: %s: a HOLD note names flag %s, which flag_id_pattern does '
+                              'not match; it is not set' % (sid, w), file=sys.stderr)
             else:   # OPTIONAL / TIMED / VARIANT: designer notation, never shown
                 b = {'type': 'direction', 'text': nt, 'note': kind, 'hidden': True}
                 emit(b)

@@ -441,6 +441,7 @@ if(FTCORE_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/../tools/lipsync/test_bake_face_tracks.py)
         add_test(NAME py_make_leads COMMAND ${Python3_EXECUTABLE} -I
             ${CMAKE_CURRENT_SOURCE_DIR}/../tools/blender/test_make_leads.py)
+        set_tests_properties(py_make_leads PROPERTIES SKIP_RETURN_CODE 77)
     else()
         message(STATUS "ftcore: no Python 3.10+ found; the story tools' Python tests are not registered")
     endif()

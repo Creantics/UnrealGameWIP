@@ -94,4 +94,7 @@ class TestNames(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    if not HAVE_NUMPY:
+        print('test_make_leads: numpy is not installed; skipped')
+        sys.exit(77)   # ctest SKIP_RETURN_CODE
     unittest.main()

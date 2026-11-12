@@ -257,8 +257,18 @@ class TestGoodTables(TablesBase):
         ids, text = self.hold_flags('Sets `nets_dry`. Sets F_SAILS_UP.', tables=t, flags=('nets_dry', 'F_SAILS_UP'))
         self.assertEqual(ids, ['nets_dry'])
 
+    def test_pattern_miss_warns(self):
+        ids, text = self.hold_flags('Sets `nets_dry`.', flags=('nets_dry',))
+        self.assertEqual(ids, [])
+        self.assertIn('names flag nets_dry, which flag_id_pattern does not match', text)
+
+    def test_id_does_not_stop_at_a_dash(self):
+        t = dict(TABLES, flag_id_pattern='flag-[a-z]+')
+        ids, _text = self.hold_flags('Sets flag-a-b. Sets flag-c.', tables=t, flags=('flag-a', 'flag-c'))
+        self.assertEqual(ids, ['flag-c'])
+
     def test_bad_flag_pattern(self):
-        for bad in ('', '(F_)[A-Z]+', '[a-z]*', '(', 5):
+        for bad in ('', '(F_)[A-Z]+', '[a-z]*', '(', 5, '(?i)F_\\w+'):
             rc, text = self.run_tool(dict(TABLES, flag_id_pattern=bad))
             self.assertEqual(rc, 2, bad)
             self.assertIn('flag_id_pattern', text, bad)

@@ -404,8 +404,6 @@ def load_gold(path):
         with open(path, encoding="utf-8") as fh:
             d = json.load(fh)
         lines = d["lines"]
-        if "voices" not in d:
-            print("lipsync: warning: %s has no \"voices\" table; using the built-in voices" % path, file=sys.stderr)
         voices = d.get("voices", {})
         if not isinstance(lines, list) or not all(isinstance(ln, dict) for ln in lines):
             raise TypeError('"lines" must be a list of objects')
@@ -414,6 +412,8 @@ def load_gold(path):
             raise TypeError(err)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         raise GoldError("cannot read the gold set %s: %s" % (path, e))
+    if "voices" not in d:
+        print("lipsync: warning: %s has no \"voices\" table; using the built-in voices" % path, file=sys.stderr)
     table = dict(DEFAULT_VOICES) | {str(k).upper(): (v[0], v[1]) for k, v in voices.items()}
     for ln in lines:
         v = table.get(str(ln.get("speaker", "")).upper())
