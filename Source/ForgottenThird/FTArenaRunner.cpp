@@ -1734,7 +1734,7 @@ void UFTArenaRunner::StepFight()
 		float StepNow = FMath::Sqrt(DX * DX + DY * DY) / StepSeconds;
 		// A step faster than any the body makes is a teleport: the legs start over from a stand. A facing turned
 		// further than a running turn in one step (a snap) starts the history over too.
-		const float Facing = FMath::Atan2(Out.player.facing.y, Out.player.facing.x);
+		const float Facing = FMath::Atan2(Out.player.drawFacing.y, Out.player.drawFacing.x);
 		const bool bSnapped = PlayerStepAt >= 0 && FMath::Abs(FMath::FindDeltaAngleRadians(PlayerStepFacing, Facing)) > kStepSnapTurn;
 		PlayerStepFacing = Facing;
 		if (!(StepNow <= kMaxStepSpeed))
@@ -1876,7 +1876,7 @@ void UFTArenaRunner::StepFight()
 			if (Legs > 0.f && PlayerStepSpeed > 0.3f)
 			{
 				const ftcore::Vec2 Dir{DX, DY};
-				LegTarget = Legs * FMath::Clamp(FMath::FindDeltaAngleDegrees(ArenaYaw(Out.player.facing), ArenaYaw(Dir)), -kLegYawMax, kLegYawMax);
+				LegTarget = Legs * FMath::Clamp(FMath::FindDeltaAngleDegrees(ArenaYaw(Out.player.drawFacing), ArenaYaw(Dir)), -kLegYawMax, kLegYawMax);
 			}
 			const float Step = kLegYawRate * StepSeconds;
 			LeadLegYaw = FMath::Clamp(LegTarget, LeadLegYaw - Step, LeadLegYaw + Step);
@@ -2315,7 +2315,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		const ftcore::ArenaPlayerOut& P = Out.player;
 		FFTArenaPose Pose;
 		Pose.Feet = ToWorld(ArenaLerp(PrevBodies.player, Bodies.player, Alpha));
-		Pose.Yaw = ArenaYaw(P.facing);
+		Pose.Yaw = ArenaYaw(P.drawFacing); // the drawn facing: a lock's snap is drawn as a turn
 		// The legs at the pace the body is drawn moving (the last steps' median), not the sim's wish (which the
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
 		Pose.Speed = PlayerStepSpeed;

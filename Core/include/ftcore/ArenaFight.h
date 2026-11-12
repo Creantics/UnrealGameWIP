@@ -105,9 +105,9 @@
 //   - Being hit: hp loses the damage; poise loses the poise damage, and at 0 the player goes into
 //     Hitstun (cancelling the current action) and poise refills. Poise also refills after poiseDelay
 //     with no poise damage. hp 0: Downed, then Defeat.
-//   - Facing: locked, the player turns toward the lock target at turnRate (and strafes), so a lock that
-//     comes back after a dodge turns the body round, never snaps it (turnRate 0: it faces at once);
-//     otherwise it turns toward the stick at turnRate. An attack starts facing, in this order: the aim, the lock target, the soft
+//   - Facing: locked, the player faces the lock target (and strafes); otherwise it turns toward the
+//     stick at turnRate. The drawn facing (drawFacing) follows at turnRate outside attacks and dodges,
+//     so the body is drawn turning where the rules snap. An attack starts facing, in this order: the aim, the lock target, the soft
 //     target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed; then turns only
 //     at its `tracking` toward the same. A riposte turns onto its enemy over its startup instead, at
 //     its tracking or faster, so it faces the enemy as the blow lands (at once with no startup). On a soft target the attack also closes in by
@@ -606,7 +606,10 @@ FTCORE_API const char* arenaBrainName(ArenaBrain b);
 
 struct ArenaPlayerOut {
     Vec2 velocity;                    // m/s this frame
-    Vec2 facing{1.f, 0.f};            // unit
+    Vec2 facing{1.f, 0.f};            // unit: the facing the rules use (guard, parry, backstep, riposte, attacks)
+    Vec2 drawFacing{1.f, 0.f};        // unit: the facing to draw the body at. Outside attacks and dodges it turns toward
+                                      // `facing` at turnRate, so a lock that snaps the facing back after a dodge turns
+                                      // the drawn body round over a few frames (turnRate 0: the same as `facing`)
     ArenaAction action = ArenaAction::Idle;
     ArenaPart part = ArenaPart::None; // Light, Heavy, Riposte, Release
     std::uint8_t move = 0;            // Light: the chain index or kArenaShotMove; kArenaHeavyMove; kArenaRiposteMove; kArenaReleaseMove
@@ -982,6 +985,7 @@ private:
     struct PlayerState {
         Vec2 pos;
         Vec2 facing{1.f, 0.f};
+        Vec2 drawFacing{1.f, 0.f};          // ArenaPlayerOut::drawFacing
         Vec2 velocity;                      // last output, after the ring cut
         int hp = 0;
         float stamina = 0.f;

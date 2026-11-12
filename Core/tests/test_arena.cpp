@@ -1953,6 +1953,27 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         }
         CHECK(moved > 0);
     }
+    {   // locked, rolled 150 degrees away from the open enemy and still in reach: a light on the first free frame ripostes
+        ArenaFighter f = ruleFighter();
+        f.turnRate = 14.f;
+        f.dodgeDistance = 0.3f;
+        f.dodgeStamina = 0.f;
+        Rig rig(f, {hitterKind(bite)});
+        parry(rig, 1.2f, 0.f);
+        rig.in.view = Vec2{1.f, 0.f};
+        rig.in.lock = true;
+        rig.tick();
+        REQUIRE(rig.fight.lock() == 0);
+        rig.in.move = Vec2{-0.866f, 0.5f};
+        rig.in.dodge = true;
+        rig.tick();
+        rig.in.move = Vec2{};
+        REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+        while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Open);
+        rig.in.light = true;
+        CHECK(rig.tick().player.action == ArenaAction::Riposte);
+    }
     {   // out of reach: an ordinary light, and the enemy stays open
         Rig rig(ruleFighter(), {hitterKind(bite)});
         parry(rig, 1.5f, 0.f);
@@ -2498,37 +2519,103 @@ TEST_CASE("arena armor: a share of the poise damage is ignored during an attack'
     }
 }
 
-TEST_CASE("arena lock-on: after a dodge away the body turns back to the target at turnRate, never in one frame") {
-    const ArenaFighter fighter = ruleFighter();
-    Rig rig(fighter, {dummyKind()});
-    rig.put(0, 5.f, 0.f);
+namespace {
+float angleBetween(Vec2 a, Vec2 b) { return std::abs(std::atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y)); }
+
+// A fighter locked on enemy 0 at (1.5, 0), rolled 150 degrees away with a short roll (still in reach): the rig stands on
+// the first free frame after the roll.
+void rollAwayLocked(Rig& rig) {
     rig.in.view = Vec2{1.f, 0.f};
     rig.in.lock = true;
     rig.run(3);
     REQUIRE(rig.fight.lock() == 0);
-    rig.in.move = Vec2{-0.6f, 0.8f}; // a roll back and to the side faces away from the target
+    rig.in.move = Vec2{-0.866f, 0.5f};
     rig.in.dodge = true;
     rig.tick();
     rig.in.move = Vec2{};
     REQUIRE(rig.out().player.action == ArenaAction::Dodge);
     while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
-    const auto off = [&rig] {
-        const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y - rig.bodies.player.y};
-        const Vec2 f = rig.out().player.facing;
-        return std::atan2(f.x * to.y - f.y * to.x, f.x * to.x + f.y * to.y);
-    };
-    Vec2 last = rig.out().player.facing;
+}
+
+Vec2 toEnemy(const Rig& rig) {
+    const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y - rig.bodies.player.y};
+    const float l = std::sqrt(to.x * to.x + to.y * to.y);
+    return Vec2{to.x / l, to.y / l};
+}
+
+ArenaFighter shortRoller(float turnRate = 14.f) {
+    ArenaFighter f = ruleFighter();
+    f.turnRate = turnRate;
+    f.dodgeDistance = 0.3f;
+    f.dodgeStamina = 0.f;
+    return f;
+}
+} // namespace
+
+TEST_CASE("arena lock-on: after a roll away the rules face the target at once, the drawn body turns back at turnRate") {
+    const ArenaFighter fighter = shortRoller();
+    Rig rig(fighter, {dummyKind()});
+    rollAwayLocked(rig);
+    // the rules: on the target on the first free frame (guard, parry, backstep and riposte use this)
+    CHECK(angleBetween(rig.out().player.facing, toEnemy(rig)) < 0.01f);
+    // the drawn body: still turned away, then turning back over several frames at no more than turnRate
+    CHECK(angleBetween(rig.out().player.drawFacing, toEnemy(rig)) > 1.f);
+    Vec2 last = rig.out().player.drawFacing;
     float worst = 0.f;
     int ticks = 0;
-    while (std::abs(off()) > 0.001f && ticks < 120) {
-        const Vec2 f = rig.tick().player.facing;
-        worst = std::max(worst, std::abs(std::atan2(last.x * f.y - last.y * f.x, last.x * f.x + last.y * f.y)));
+    while (angleBetween(rig.out().player.drawFacing, rig.out().player.facing) > 0.f && ticks < 120) {
+        const Vec2 f = rig.tick().player.drawFacing;
+        worst = std::max(worst, angleBetween(last, f));
         last = f;
         ++ticks;
     }
-    CHECK(ticks > 1);   // more than one frame: it turned, it did not snap
-    CHECK(ticks < 120); // and it gets there
+    CHECK(ticks > 1);
     CHECK(worst <= fighter.turnRate * kDt + 0.001f);
+    // it arrives: the drawn facing is the rules' facing, exactly
+    CHECK(rig.out().player.drawFacing.x == rig.out().player.facing.x);
+    CHECK(rig.out().player.drawFacing.y == rig.out().player.facing.y);
+    {   // turnRate 0: the drawn body snaps with the rules
+        Rig snap(shortRoller(0.f), {dummyKind()});
+        rollAwayLocked(snap);
+        snap.tick();
+        CHECK(snap.out().player.drawFacing.x == snap.out().player.facing.x);
+        CHECK(snap.out().player.drawFacing.y == snap.out().player.facing.y);
+    }
+}
+
+TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll away faces the target") {
+    {   // a parry pressed on the first free frame after a 150 degree roll away catches the blow
+        const float startup = 1.2f;
+        Rig rig(shortRoller(), {hitterKind(swing(startup, 0.15f, 0.5f, 3.f, 20))});
+        rig.in.view = Vec2{1.f, 0.f};
+        rig.in.lock = true;
+        rig.tick();
+        for (int i = 0; i < 120 && rig.count(ArenaEventType::AttackStarted) == 0; ++i) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::AttackStarted) == 1);
+        // roll so it ends three frames before the blow
+        const float rollAt = startup - rig.fight.def().fighter.dodgeTime - 3.f * kDt;
+        while (rig.out().enemies[0].stateTime < rollAt) rig.tick();
+        rig.in.move = Vec2{-0.866f, 0.5f};
+        rig.in.dodge = true;
+        rig.tick();
+        rig.in.move = Vec2{};
+        while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::Hit) == 0);
+        rig.in.guard = true;
+        for (int i = 0; i < 60 && rig.count(ArenaEventType::Parried) + rig.count(ArenaEventType::Hit) == 0; ++i) rig.tick();
+        CHECK(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // a backstep right after the roll goes straight away from the target
+        Rig rig(shortRoller(), {dummyKind()});
+        rollAwayLocked(rig);
+        const Vec2 to = toEnemy(rig);
+        rig.in.dodge = true; // no stick: a backstep
+        rig.tick();
+        REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+        CHECK(rig.out().player.dodgeDir.x == doctest::Approx(-to.x).epsilon(0.01));
+        CHECK(rig.out().player.dodgeDir.y == doctest::Approx(-to.y).epsilon(0.01));
+    }
 }
 
 TEST_CASE("arena lock-on: the pick, nearest wins ties, switch left and right") {

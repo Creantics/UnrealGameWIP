@@ -252,7 +252,10 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 			{
 				++R.Off;
 			}
-			R.Low += FMath::Min(Local[0].Z, Local[1].Z) - (Floor < 1e8f ? Floor : 0.f);
+			else
+			{
+				R.Low += FMath::Min(Local[0].Z, Local[1].Z) - (Floor < 1e8f ? Floor : 0.f);
+			}
 			for (int32 I = 0; I < 2; ++I)
 			{
 				const float Height = static_cast<float>(Local[I].Z);
@@ -331,6 +334,6 @@ void FFTArenaGlideProbe::Log() const
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("Arena glide: %s: %d frames (%d stale, %d off the floor check, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot on %.0f%% of the frames checked, over %d slips %.0f cm/s (%.0f forward, %.0f across); %s; %d pops (old rule: %d); the lower ball %.1f cm over the floor; entered %d starts, %d stops, %d turns."),
 			kGlideNames[B], R.Frames, R.Still, R.Off, 1000.0 * R.Dt / F, R.Body / F, R.BodyAlong / F, R.BodySide / F, R.Cycle / F, R.Yaw / F, 100.0 * Share, R.Planted, R.Slip / P,
-			R.SlipAlong / P, R.SlipSide / P, *Net, R.Pops, R.PopsAny, R.Low / F, R.Enter[0], R.Enter[1], R.Enter[2]);
+			R.SlipAlong / P, R.SlipSide / P, *Net, R.Pops, R.PopsAny, R.Low / FMath::Max(1, R.Frames - R.Off), R.Enter[0], R.Enter[1], R.Enter[2]);
 	}
 }

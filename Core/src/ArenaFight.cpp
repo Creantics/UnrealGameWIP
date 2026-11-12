@@ -304,6 +304,7 @@ struct ArenaFightImpl {
         pl = Player{};
         pl.pos = fight.playerStart_;
         pl.facing = fight.playerStartFacing_;
+        pl.drawFacing = pl.facing;
         pl.hp = std::max(fi.hp, 1);
         pl.stamina = fi.stamina;
         pl.poise = fi.poise;
@@ -334,6 +335,7 @@ struct ArenaFightImpl {
         ArenaPlayerOut& po = out.player;
         po.velocity = pl.velocity;
         po.facing = pl.facing;
+        po.drawFacing = pl.drawFacing;
         po.action = pl.action;
         po.part = ArenaPart::None;
         po.move = 0;
@@ -954,13 +956,11 @@ struct ArenaFightImpl {
         if (seconds > 0.f) until = std::max(until, from + seconds);
     }
 
-    // Outside attacks the player turns toward the lock target, else toward the stick, at turnRate: a lock that comes
-    // back after a dodge or a swing away turns the body round over a few frames, never in one.
+    // Outside attacks the player faces the lock target, else turns toward the stick at turnRate. (Locked, the facing
+    // the rules use snaps; the drawn one turns: drawFacing.)
     void faceFree(Vec2 stick, bool pushed) {
         if (aimOn) pl.facing = arenaTurn(pl.facing, aimWay, (aimTurn > 0.f ? aimTurn : fi.turnRate) * dt);
-        else if (pl.lock != kArenaNobody)
-            pl.facing = fi.turnRate > 0.f ? arenaTurn(pl.facing, arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing), fi.turnRate * dt)
-                                          : arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
+        else if (pl.lock != kArenaNobody) pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
         else if (pushed) pl.facing = arenaTurn(pl.facing, arenaUnit(stick, pl.facing), fi.turnRate * dt);
     }
 
@@ -1004,7 +1004,12 @@ struct ArenaFightImpl {
             const float moving = std::max(0.f, std::min(a1, length) - a0);
             vel = arenaScaled(pl.dodgeDir, fi.dodgeDistance / length * moving / dt);
             pl.actionTime = a1;
-            if (a1 >= length) endAction();
+            if (a1 >= length) {
+                endAction();
+                // Locked, the rules face the target again as the roll ends, so a guard, a backstep or a riposte on the
+                // first free frame faces it (the drawn body turns round: drawFacing).
+                if (!aimOn && pl.lock != kArenaNobody) pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
+            }
             break;
         }
         case ArenaAction::Heal:
@@ -1034,6 +1039,11 @@ struct ArenaFightImpl {
             break;
         }
         pl.velocity = vel;
+        // The drawn facing: an attack or a dodge is drawn as the rules face it (its own turn already eased or meant);
+        // anything else turns toward the rules' facing at turnRate, so a snap of theirs is drawn as a turn.
+        const bool own = pl.action == ArenaAction::Light || pl.action == ArenaAction::Heavy || pl.action == ArenaAction::Riposte ||
+                         pl.action == ArenaAction::Release || pl.action == ArenaAction::Dodge;
+        pl.drawFacing = own || !(fi.turnRate > 0.f) ? pl.facing : arenaTurn(pl.drawFacing, pl.facing, fi.turnRate * dt);
     }
 
     Vec2 advanceAttack(Vec2 stick, bool pushed, float a0, float a1) {
