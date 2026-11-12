@@ -1238,6 +1238,8 @@ struct ArenaFightImpl {
             poiseHit(i, dealt);
             if (!alive(i) || !upright(foe)) continue; // staggered (or the read counter it brought ended it)
             if (breakOut(i)) continue;
+            // Counted here, not inside flinch(): a flinch path that never fires then reads FAIL, not n/a.
+            if (couldFlinch(i, dealt)) ++stats.flinchChances;
             flinch(i, dealt);
         }
     }
@@ -1290,11 +1292,17 @@ struct ArenaFightImpl {
         return true;
     }
 
+    // A blow that could flinch enemy i: a kind that flinches, the host allows it, and the blow carries flinchPoise.
+    bool couldFlinch(std::size_t i, float poise) const {
+        const ArenaEnemyKind& k = def.enemies[i];
+        return k.flinchTime > 0.f && foes[i].flinchAllowed && poise >= k.flinchPoise;
+    }
+
     // A landed blow of at least flinchPoise flinches enemy i, unless its attack is active or armoured.
     void flinch(std::size_t i, float poise) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        if (!(k.flinchTime > 0.f) || !foe.flinchAllowed || poise < k.flinchPoise) return;
+        if (!couldFlinch(i, poise)) return;
         // No stunlock: the run of flinches starts again only after a gap with no blow that could flinch it.
         if (t1 - foe.lastFlinch > kArenaFlinchChainGap) foe.flinchChain = 0;
         foe.lastFlinch = t1;
@@ -2323,6 +2331,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     };
     c.lightsFreeCheck = verdict(stats.lights > 0, c.lightsFree);
     c.cancelsCheck = verdict(stats.cancelChances > 0 || stats.cancels > 0, c.cancels);
+    c.flinchCheck = verdict(stats.flinchChances > 0 || stats.flinches > 0, c.flinch);
     if (stats.breakOuts > 0)
         c.breakOutCheck = ArenaCheck::Pass;
     else if (stats.breakDue > stats.breakBarred)
