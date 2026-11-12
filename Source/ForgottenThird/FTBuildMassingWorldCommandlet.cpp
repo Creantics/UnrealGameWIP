@@ -2,6 +2,7 @@
 #include "FTBuildRoads.h"
 #include "FTBuildBackdrop.h"
 #include "FTBuildStandIns.h"
+#include "FTBuildLawn.h"
 #include "FTClockTower.h"
 #include "FTMaterialCheck.h"
 #include "FTBuildPlinths.h"
@@ -2181,15 +2182,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	Land->LandscapeMaterial = bSurfaces ? FTBackdrop::HillGround(Package, LookGround(Package, LookSet), Hill, Side) : GroundTint;
 	if (bSurfaces)
 	{
-		// The lawn: the grass surface with a broad, strong mottle so a green of 80 m doesn't read as one tile repeated.
+		// The lawn: the grass surface (or -LawnTex's scanned set) with a broad mottle so a green of 80 m doesn't read as
+		// one tile repeated (FTLawn::LawnMaterial).
 		const int32 LawnAt = static_cast<int32>(ftcore::MassingLookSurface::Lawn);
-		UMaterialInstanceConstant* LawnMic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Massing_Lawn"), RF_Public);
-		LawnMic->SetParentEditorOnly(LookSet.Box[LawnAt]);
-		LawnMic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MacroVariation")), 0.32f);
-		LawnMic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MacroScale")), 1400.f);
-		LawnMic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Tint")), FLinearColor(0.86f, 0.95f, 0.78f));
-		LawnMic->PostEditChange();
-		LookSet.Box[LawnAt] = LawnMic;
+		LookSet.Box[LawnAt] = FTLawn::LawnMaterial(Package, LookSet.Box[LawnAt]);
+		if (!LookSet.Box[LawnAt])
+		{
+			World->DestroyWorld(false);
+			return 1;
+		}
 	}
 	Land->SetActorRelativeScale3D(FVector(Field.Spacing * 100.0, Field.Spacing * 100.0, 100.0));
 	{
@@ -3048,10 +3049,17 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		LogLook(LookSet, bSea);
 	}
 
+	// -Lawn: the greens' lawn sheets and their paths, following the ground.
+	if (!FTLawn::Build(World, Spawn, Package, Hill, Side, bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::Lawn)] : nullptr,
+			bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PavingSlab)] : nullptr))
+	{
+		World->DestroyWorld(false);
+		return 1;
+	}
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);
 	FTBackdrop::Haze(World);
 	FTBackdrop::Dress(Package, Cells, Base, Hill, Side, Boxes, WindowLook[static_cast<int32>(ftcore::MassingLookSurface::BuildingC)]);
-	if (!FTStandIns::Place(Package, Cells, Base, Hill, Side))
+	if (!FTStandIns::Place(Package, Cells, Base, Hill, Side) || !FTStandIns::PlacePlants(Cells, Hill, Side))
 	{
 		return 1;
 	}

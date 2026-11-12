@@ -36,4 +36,8 @@ namespace FTStandIns
 // material (its instances are saved in Package); Field the ground the rows without z stand on; Side the world's side (m).
 // False (logged) when a table doesn't load; true, with nothing to do, without the switches.
 FORGOTTENTHIRD_API bool Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInterface* Base, const ftcore::HeightField& Field, double Side);
+// -PlantPoints=<csv> (ftcore::parsePlantPoints): the scanned plants of the greens and streets, instanced: shrubs drawn to
+// the props' distance with shadows, ground cover (kind cover) to FTCells::CoverCull without. True with nothing placed
+// without the switch; false (logged) on a table that doesn't read or a plant that doesn't load (import it with FTImportPlant).
+FORGOTTENTHIRD_API bool PlacePlants(FFTCellInstancer& Cells, const ftcore::HeightField& Field, double Side);
 } // namespace FTStandIns

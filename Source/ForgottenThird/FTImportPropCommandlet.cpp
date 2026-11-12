@@ -52,6 +52,7 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 	}
 	const ftcore::AssetPack PackKind = ftcore::assetPackFromName(TCHAR_TO_UTF8(*Pack));
 	const bool bNoCollision = FParse::Param(*Params, TEXT("NoCollision"));
+	const bool bNoNanite = FParse::Param(*Params, TEXT("NoNanite"));
 	const ftcore::AssetRules Rules = FParse::Param(*Params, TEXT("Kit")) ? ftcore::kitRules(PackKind) : ftcore::propRules(PackKind);
 	if (!FT::CheckGlbFile(TEXT("FTImportProp"), Source, Rules))
 	{
@@ -103,10 +104,22 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTImportProp: %s has no simple collision."), *Mesh->GetName());
 		}
-		if (bNoCollision)
+		if (bNoNanite && Mesh->IsNaniteEnabled())
+		{
+			// -NoNanite: a prop with thin parts (sills, hoods, lanterns) that Nanite's reduced fallback shreds; drawn at full detail.
+			FMeshNaniteSettings Nanite = Mesh->GetNaniteSettings();
+			Nanite.bEnabled = false;
+			Mesh->SetNaniteSettings(Nanite);
+			Mesh->Build(true);
+			Mesh->PostEditChange();
+			UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %s: -NoNanite: Nanite off, %d triangles at LOD0."), *Mesh->GetName(),
+				Mesh->GetNumLODs() > 0 ? Mesh->GetNumTriangles(0) : 0);
+		}
+		if (bNoCollision || bNoNanite)
 		{
 			// -NoCollision: a piece that never collides (a clock hand): no simple shapes, no complex either.
-			if (UBodySetup* Setup = Mesh->GetBodySetup())
+			UBodySetup* Setup = bNoCollision ? Mesh->GetBodySetup() : nullptr;
+			if (Setup)
 			{
 				Setup->RemoveSimpleCollision();
 				Setup->CollisionTraceFlag = CTF_UseSimpleAsComplex;
@@ -122,7 +135,7 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 			const FString File = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
 			if (!UPackage::SavePackage(Package, Mesh, *File, Args))
 			{
-				UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: couldn't save %s without collision."), *File);
+				UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: couldn't save %s after -NoCollision/-NoNanite."), *File);
 				bOk = false;
 			}
 			const UBodySetup* After = Mesh->GetBodySetup();

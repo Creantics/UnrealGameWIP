@@ -70,6 +70,7 @@ add_library(ftcore STATIC
     src/Backdrop.cpp
     src/StandIns.cpp
     src/TreeMeshes.cpp
+    src/LawnSheet.cpp
     src/BlockGen.cpp
     src/BlockCheck.cpp
     src/TerrainPocket.cpp
@@ -299,6 +300,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_road_decals.cpp
         tests/test_stand_ins.cpp
         tests/test_tree_meshes.cpp
+        tests/test_lawn_sheet.cpp
         tests/test_block_gen.cpp
         tests/test_block_check.cpp
         tests/test_terrain_pocket.cpp

@@ -2,6 +2,8 @@
 
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "CineCameraActor.h"
+#include "CineCameraComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/LocalLightComponent.h"
 #include "Components/SkyLightComponent.h"
@@ -110,7 +112,26 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	const FRotator Facing = (To - From).Rotation();
 	FActorSpawnParameters Spawn;
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	Eye = InWorld.SpawnActor<ACameraActor>(From, Facing, Spawn);
+	// The vista camera standard: a cine camera on a full-frame (36 x 24 mm) filmback when any of -WorldEyeFocal,
+	// -WorldEyeFocus or -WorldEyeAperture is given; else the plain camera as before.
+	double Focal = 0.0, Aperture = 0.0, Blur = 0.5;
+	FString Focus;
+	const bool bFocal = FParse::Value(FCommandLine::Get(), TEXT("WorldEyeFocal="), Focal);
+	const bool bFocus = FParse::Value(FCommandLine::Get(), TEXT("WorldEyeFocus="), Focus) && !Focus.IsEmpty();
+	const bool bAperture = FParse::Value(FCommandLine::Get(), TEXT("WorldEyeAperture="), Aperture);
+	FParse::Value(FCommandLine::Get(), TEXT("WorldEyeBlur="), Blur);
+	const bool bCine = bFocal || bFocus || bAperture;
+	if (bCine)
+	{
+		Lens = bFocal ? Focal : 50.0;
+		if (Lens < 35.0 || Lens > 135.0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeFocal=%.1f is outside the standard's 35 to 135 mm; clamped."), Lens);
+			Lens = FMath::Clamp(Lens, 35.0, 135.0);
+		}
+		Aperture = bAperture ? FMath::Clamp(Aperture, 1.2, 22.0) : 4.8;
+	}
+	Eye = bCine ? InWorld.SpawnActor<ACineCameraActor>(From, Facing, Spawn) : InWorld.SpawnActor<ACameraActor>(From, Facing, Spawn);
 	if (!Eye)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("WorldEyeShot: the eye's camera could not be spawned."));
@@ -120,7 +141,38 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	// Horizontal field of view for the lens on a 36 mm-wide frame.
 	const double Fov = FMath::RadiansToDegrees(2.0 * FMath::Atan(18.0 / Lens));
 	UCameraComponent* Camera = Eye->GetCameraComponent();
-	Camera->SetFieldOfView(static_cast<float>(Fov));
+	if (UCineCameraComponent* Cine = Cast<UCineCameraComponent>(Camera))
+	{
+		// Focus: a plan point (x,y,z) measured from the eye, or a distance in metres; default the point looked at.
+		double FocusM = FVector::Dist(From, To) / 100.0;
+		double FX = 0.0, FY = 0.0, FZ = 0.0;
+		if (bFocus && ParseTriple(TEXT("WorldEyeFocus="), FX, FY, FZ))
+		{
+			const ftcore::MassingVec F = ftcore::massingEnginePoint(Side, FX, FY, FZ);
+			FocusM = FVector::Dist(From, FVector(F.x, F.y, F.z) * 100.0) / 100.0;
+		}
+		else if (bFocus && Focus.IsNumeric())
+		{
+			FocusM = FCString::Atod(*Focus);
+		}
+		Cine->Filmback.SensorWidth = 36.f;
+		Cine->Filmback.SensorHeight = 24.f;
+		Cine->LensSettings.MinFStop = 1.2f;
+		Cine->LensSettings.MaxFStop = 22.f;
+		Cine->SetCurrentFocalLength(static_cast<float>(Lens));
+		Cine->CurrentAperture = static_cast<float>(Aperture);
+		Cine->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
+		Cine->FocusSettings.ManualFocusDistance = static_cast<float>(FMath::Max(FocusM, 0.2) * 100.0);
+		Cine->PostProcessSettings.bOverride_MotionBlurAmount = true;
+		Cine->PostProcessSettings.MotionBlurAmount = static_cast<float>(FMath::Clamp(Blur, 0.0, 1.0));
+		Cine->PostProcessBlendWeight = 1.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: cine camera, full frame 36 x 24 mm, %.1f mm at f/%.1f, focus %.1f m, motion blur %.2f."),
+			Lens, Aperture, FMath::Max(FocusM, 0.2), FMath::Clamp(Blur, 0.0, 1.0));
+	}
+	else
+	{
+		Camera->SetFieldOfView(static_cast<float>(Fov));
+	}
 	Camera->SetConstraintAspectRatio(false);
 	double WalkX = 0.0, WalkY = 0.0, WalkZ = 0.0;
 	if (ParseTriple(TEXT("WorldEyeWalkTo="), WalkX, WalkY, WalkZ))

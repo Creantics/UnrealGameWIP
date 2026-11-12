@@ -13,6 +13,7 @@
 #include "ftcore/MassingPlan.h"
 #include "ftcore/StandIns.h"
 #include "ftcore/TreeMeshes.h"
+#include "ftcore/LawnSheet.h"
 #include "Misc/Paths.h"
 
 #include <string>
@@ -590,5 +591,71 @@ bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("StandIns: Cell_%d_%d: %s."), Cell.X, Cell.Y, *Line(PerCell[Cell]));
 	}
+	return true;
+}
+
+bool FTStandIns::PlacePlants(FFTCellInstancer& Cells, const ftcore::HeightField& Field, double Side)
+{
+	using namespace FTStandIns::Impl;
+	FString File;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("PlantPoints="), File, false) || File.IsEmpty())
+	{
+		return true;
+	}
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *File))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("StandIns: -PlantPoints couldn't read '%s'."), *File);
+		return false;
+	}
+	std::vector<ftcore::PlantPoint> Points;
+	std::string Error;
+	if (!ftcore::parsePlantPoints(std::string_view(reinterpret_cast<const char*>(Bytes.GetData()), static_cast<size_t>(Bytes.Num())), Points, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("StandIns: -PlantPoints %s: %s"), *File, UTF8_TO_TCHAR(Error.c_str()));
+		return false;
+	}
+	FFTCellOptions Shrub;
+	Shrub.Cull = EFTCellCull::Prop;
+	Shrub.Tag = TEXT("Shrub");
+	FFTCellOptions Cover;
+	Cover.Cull = EFTCellCull::Cover;
+	Cover.bCastShadow = false;
+	Cover.Tag = TEXT("GroundCover");
+	TMap<FString, UStaticMesh*> Meshes;
+	TMap<FString, int32> Count;
+	int64 Triangles = 0;
+	const TArrayView<const float> NoData;
+	for (const ftcore::PlantPoint& Point : Points)
+	{
+		const FString Asset = UTF8_TO_TCHAR(Point.asset.c_str());
+		UStaticMesh** Found = Meshes.Find(Asset);
+		if (!Found)
+		{
+			UStaticMesh* Loaded = LoadPlant(Asset);
+			if (!Loaded)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("StandIns: -PlantPoints: couldn't load %s (import it with FTImportPlant)."), *Asset);
+				return false;
+			}
+			Found = &Meshes.Add(Asset, Loaded);
+		}
+		const double Foot = Point.hasZ ? Point.z : (Field.grid ? Field.at(Point.x, Point.y) : 0.0);
+		const ftcore::MassingVec At = ftcore::massingEnginePoint(Side, Point.x, Point.y, Foot);
+		const FRotator Yaw(0.0, ftcore::massingEngineYaw(Point.yaw), 0.0);
+		const bool bCover = Point.kind == ftcore::PlantPointKind::Cover;
+		Cells.Add(*Found, TArrayView<UMaterialInterface* const>(), FTransform(Yaw, FVector(At.x, At.y, At.z) * 100.0, FVector(Point.scale)), NoData,
+			bCover ? EFTCellKind::NoCollide : EFTCellKind::Solid, bCover ? Cover : Shrub);
+		++Count.FindOrAdd(Asset);
+		Triangles += (*Found)->GetNumTriangles(0);
+	}
+	FString Census;
+	Count.KeySort([](const FString& A, const FString& B) { return A < B; });
+	for (const TPair<FString, int32>& Pair : Count)
+	{
+		Census += FString::Printf(TEXT("%s%s %d (%d tris)"), Census.IsEmpty() ? TEXT("") : TEXT(", "), *Pair.Key, Pair.Value, Meshes[Pair.Key]->GetNumTriangles(0));
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("StandIns: -PlantPoints: %d plants of %d models, %lld triangles at LOD0 in all: %s."), static_cast<int32>(Points.size()),
+		Meshes.Num(), Triangles, *Census);
 	return true;
 }

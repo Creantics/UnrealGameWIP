@@ -152,11 +152,12 @@ return Texture2DSample(BarkTex, BarkTexSampler, UV).rgb * v;)HLSL");
 
 // The wind, the same for bark and leaves (so the twigs stay on their limbs): nothing below BendStart (metres), the sway
 // growing with the square of the height over BendSpan and with the reach from the trunk; a phase per instance; the
-// leaves flutter on top (Flutter 1). Centimetres, world space; WindDeg is a yaw (0 = toward +X).
+// leaves flutter on top (Flutter 1). The flutter's onset and the reach's scale shrink with a plant under about 2 m, so a
+// fern or a grass clump sways and flutters gently over its own height. Centimetres, world space; WindDeg is a yaw (0 = toward +X).
 const TCHAR* const kWindCode = TEXT(R"HLSL(float h = max(Local.z, 0.0) * 0.01;
 float rad = length(Local.xy) * 0.01;
-float bend = saturate((h - BendStart) / max(BendSpan, 0.5));
-bend *= bend * (0.35 + 0.65 * saturate(rad / 2.5));
+float bend = saturate((h - BendStart) / max(BendSpan, 0.05));
+bend *= bend * (0.35 + 0.65 * saturate(rad / min(2.5, max(0.6 * BendSpan, 0.2))));
 float sp = max(WindMps, 1.5);
 float a = WindDeg * 0.0174533;
 float2 d = float2(cos(a), sin(a));
@@ -164,7 +165,7 @@ float ph = Rand * 6.2832;
 float gust = 0.55 + 0.30 * sin(Time * 0.63 + ph) + 0.15 * sin(Time * 1.71 + ph * 1.3);
 float2 o = d * (sp * 1.1 * bend * gust) + float2(-d.y, d.x) * (sp * 0.25 * bend * sin(Time * 1.13 + ph * 2.1));
 float3 off = float3(o, -0.004 * dot(o, o));
-float fl = Flutter * saturate(h - 1.0) * sp * 0.12 * sin(Time * (6.0 + 2.0 * frac(Rand * 13.1)) + dot(Local, float3(0.031, 0.027, 0.043)));
+float fl = Flutter * saturate((h - min(1.0, BendStart + 0.25 * BendSpan)) / min(1.0, max(0.5 * BendSpan, 0.05))) * sp * 0.12 * sin(Time * (6.0 + 2.0 * frac(Rand * 13.1)) + dot(Local, float3(0.031, 0.027, 0.043)));
 return off + float3(0.3, 0.3, 1.0) * fl;)HLSL");
 
 FString PackageFile(const FString& Package)
@@ -612,7 +613,7 @@ int32 Run(const FString& Params)
 	if (Height > 0.0)
 	{
 		Look.BendStart = static_cast<float>(FMath::Max(0.0, CrownBase * 0.7));
-		Look.BendSpan = static_cast<float>(FMath::Max(1.0, Height - Look.BendStart));
+		Look.BendSpan = static_cast<float>(FMath::Max(0.1, Height - Look.BendStart));
 	}
 	const FLinearColor Mean = JsonColor(Json, TEXT("leaf_mean_srgb"), FLinearColor(0.08f, 0.11f, 0.03f));
 	Look.MeanLum = 0.30f * Mean.R + 0.59f * Mean.G + 0.11f * Mean.B;
