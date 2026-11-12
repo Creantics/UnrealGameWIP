@@ -6974,3 +6974,118 @@ TEST_CASE("arena attack: Duy's pitched round, the edges (point-blank by directio
         }
     }
 }
+
+TEST_CASE("arena attack: Duy's pitched round, point-blank against the climb, a body on the lead, the climb kept from the fire") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    const Vec2 ahead{1.f, 0.f};
+    const auto aimed = [](Rig& rig, bool pitched, float pitch) {
+        rig.in.aim = true;
+        rig.in.aimDir = Vec2{1.f, 0.f};
+        rig.in.aimPitched = pitched;
+        rig.in.aimPitch = pitch;
+        rig.in.light = true;
+    };
+    const auto hitOn = [](const Rig& rig) {
+        const auto* h = rig.find(ArenaEventType::Hit);
+        return h ? static_cast<int>(h->event.target) : -1;
+    };
+    const float steep = 60.f * 3.14159265f / 180.f;
+    {   // the lead inside a body 0.3 m ahead (0 to 2 m up), a hovering boss over it: a steep round up leaves through the
+        // body's top within half a metre and goes on to the boss; a shallow one leaves through the side, point-blank
+        for (const float pitch : {steep, 1.1f}) {
+            Rig rig(duy, {hoveringKind(0.f, 2.f), hoveringKind(3.5f, 3.f)});
+            rig.put(0, 0.3f, 0.f);
+            rig.put(1, 3.f, 0.f);
+            rig.tick();
+            CHECK(rig.fight.shotMeets(ahead, pitch) == 1);
+            aimed(rig, true, pitch);
+            rig.runFor(0.45f);
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == 1);
+        }
+        Rig rig(duy, {hoveringKind(0.f, 2.f), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 0.3f, 0.f);
+        rig.put(1, 3.f, 0.f);
+        rig.tick();
+        float along = 1.f;
+        CHECK(rig.fight.shotMeets(ahead, 0.26f, &along) == 0); // about 15 degrees: out through the side
+        CHECK(along == 0.f);
+    }
+    {   // the same body, steep down (out through its base, into the floor): not met, nor anything else
+        for (const float pitch : {-steep, -1.3f}) {
+            Rig rig(duy, {hoveringKind(0.f, 2.f)});
+            rig.put(0, 0.3f, 0.f);
+            rig.tick();
+            CHECK(rig.fight.shotMeets(ahead, pitch) == kArenaNobody);
+            aimed(rig, true, pitch);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 0);
+        }
+    }
+    {   // a body exactly on the lead (no offset) counts as ahead: met at 0 whichever way the round goes level
+        for (const Vec2 dir : {Vec2{1.f, 0.f}, Vec2{-1.f, 0.f}, Vec2{0.f, 1.f}}) {
+            Rig rig(duy, {hoveringKind(0.f, 3.f)});
+            rig.put(0, 0.f, 0.f);
+            rig.tick();
+            float along = 1.f;
+            CHECK(rig.fight.shotMeets(dir, 0.f, &along) == 0);
+            CHECK(along == 0.f);
+        }
+        Rig rig(duy, {hoveringKind(0.f, 3.f)});
+        rig.put(0, 0.f, 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // skip leaves a body out: the one behind it is asked
+        Rig rig(duy, {dummyKind(), dummyKind()});
+        rig.put(0, 4.f, 0.f);
+        rig.put(1, 8.f, 0.f);
+        rig.tick();
+        float along = 0.f;
+        CHECK(rig.fight.shotMeets(ahead, 0.f, &along, 1u) == 1);
+        CHECK(along > 6.f);
+    }
+    const float upToHanging = std::atan2(5.f - kArenaShotHeight, 12.f);
+    {   // the climb follows the crosshair through the startup: changed mid-startup, the round takes the new one
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 6.f, 0.f);
+        rig.put(1, 12.f, 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(0.1f);
+        rig.in.aimPitch = upToHanging;
+        rig.runFor(0.4f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(hitOn(rig) == 1);
+    }
+    {   // ... and stays from the fire on: a miss over everything, the crosshair brought down mid-active, still a miss
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 6.f, 0.f);
+        rig.put(1, 12.f, 0.f);
+        aimed(rig, true, 1.2f);
+        rig.runFor(duy.shot.startup + 0.01f);
+        rig.in.aimPitch = 0.f;
+        rig.runFor(0.4f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
+TEST_CASE("arena checks: soft target is n/a when no attack could take one") {
+    ArenaStats s;
+    CHECK(arenaFeatureChecks(s).softTargetCheck == ArenaCheck::NotShown);
+    s.softChances = 3;
+    CHECK(arenaFeatureChecks(s).softTargetCheck == ArenaCheck::Fail);
+    s.softTargets = 1;
+    CHECK(arenaFeatureChecks(s).softTargetCheck == ArenaCheck::Pass);
+    // an aimed shot takes the aim: no chance counted
+    const ArenaTable t = loadShipped();
+    Rig rig(t.fighter("duy"), {dummyKind()});
+    rig.put(0, 5.f, 0.f);
+    rig.in.aim = true;
+    rig.in.aimDir = Vec2{1.f, 0.f};
+    rig.in.light = true;
+    rig.runFor(0.45f);
+    CHECK(rig.count(ArenaEventType::Hit) == 1);
+    CHECK(rig.fight.stats().softChances == 0);
+}

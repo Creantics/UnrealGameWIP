@@ -412,7 +412,8 @@ over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it n
   mask (or the host's veto on every upright blow) barred it; n/a with no upright blow on such a kind, or when the
   poise always broke first;
 - `soft target`: an attack started on a soft target (the nearest living enemy in `softRange` and `softArcCos` of
-  the stick, or of the facing, with nothing locked) and homed up to `homingReach`;
+  the stick, or of the facing, with nothing locked) and homed up to `homingReach` (`<n> of <m> chances`: n/a when no
+  attack started unlocked and unaimed, as under the autopilot, which locks unless `-ArenaNoLock`);
 - `shots`: a guns kit fired a shot that hit (n/a for any other kit, and for a guns kit under the autopilot without
   `-ArenaAutoShoot`, which never aims);
 - `shared count bonus`: two leads on one count, a held blow's bonus landed: `(<held> held, <joined> joined, <n>
@@ -653,15 +654,19 @@ warning and quits with exit code 2, so an unattended run never hangs.
   meets the enemies' bodies (`ftcore::arenaRayEntersBody`: an upright cylinder from the figure's hover to its scaled
   height, its radius scaled too; a lens inside a body sees through it), and reads the view without the impact jolt, so
   a kick never wobbles the heading. On a body, the heading takes the middle of the stretch of the line inside it,
-  so the round goes into the body rather than grazing its edge or passing under a hanging one. A gun's round is a line in space: it leaves the lead
+  so the round goes into the body rather than grazing its edge or passing under a hanging one (with the line's far end
+  inside the body, its centre line at the entry's height). A gun's round is a line in space: it leaves the lead
   1.4 m up (`ftcore::kArenaShotHeight`) along that heading, climbing to the point (`ArenaInput::aimPitched`; locked on,
   to the locked body's middle), and meets the first body it enters within the shot's range (Duy: 30 m, most of
   kite_ring's 40 by 14 m), each body the same cylinder widened by half the shot's width. So a round passes over a short
-  enemy's head to a hovering boss behind it. A body the lead stands in counts only when its centre is ahead. A shot
-  keeps its start's choice (pitched or the flat lane), so letting the aim go in the startup does not change it. A
+  enemy's head to a hovering boss behind it. A body the lead stands in counts (point-blank) only when its centre is
+  ahead or right on the lead, and the round leaves it through its side: a steep round that climbs out through its top,
+  or dives out through its base, passes it. A shot keeps its start's choice (pitched or the flat lane), so letting the
+  aim go in the startup does not change it, and its climb follows the crosshair only until it fires. A
   crosshair on a body the round would not reach is drawn faint, without its dot; one where another body on the
   muzzle's line would take the round is dimmed, with a small cross for the dot (`ArenaFight::shotMeets`; neither while
-  locked on, when the round goes at the lock). The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  locked on, when the round goes at the lock). Blocked needs the crosshair's own body 0.25 m or more further along the
+  round than the other, and the dimming changes only once the new state has held 4 frames, so an edge does not flicker. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
   about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).

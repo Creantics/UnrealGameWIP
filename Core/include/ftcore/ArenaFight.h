@@ -715,6 +715,7 @@ struct ArenaStats {
     int lights = 0;           // light attacks started (not ripostes or shots)
     float lightStamina = 0.f; // stamina those lights cost
     int softTargets = 0;      // attacks started on a soft target
+    int softChances = 0;      // attacks started with nothing locked, no aim and a kit with a softRange (one could)
     int shots = 0;            // a guns kit's shots started
     int shotHits = 0;         // of them, the ones that connected (per target; also in hits)
     int guardBreaks = 0;
@@ -751,10 +752,13 @@ struct ArenaFeatureChecks {
     bool breakOutDue = false; // a blow reached an enemy's breakAt without staggering it (else break-out can't show)
     bool softTarget = false; // an attack started on a soft target
     bool shots = false;      // a guns kit fired a shot that connected
-    // Verdicts with their own can-show rule (the host adds its own for soft target and shots):
+    // Verdicts with their own can-show rule (the host adds its own for shots):
     ArenaCheck lightsFreeCheck = ArenaCheck::NotShown; // n/a with no light started
     ArenaCheck cancelsCheck = ArenaCheck::NotShown;    // n/a with no cancelChances
     ArenaCheck flinchCheck = ArenaCheck::NotShown;     // n/a with no flinchChances (a kit too light, or poise first)
+    // n/a with no softChances: every attack started locked on or aimed (the autopilot locks unless -ArenaNoLock; a
+    // guns kit's aimed shot always takes the aim), or the kit has no softRange.
+    ArenaCheck softTargetCheck = ArenaCheck::NotShown;
     // PASS on a break-out; barred when it was due (or every upright blow vetoed) and barred; FAIL when it was due and
     // unbarred, or upright blows landed and the run never moved; n/a with no upright blow, or poise always first.
     ArenaCheck breakOutCheck = ArenaCheck::NotShown;
@@ -834,8 +838,9 @@ public:
     // The standing enemy a pitched shot from the player's place (as of the last tick) along `dir` (unit, on the ground)
     // at `pitch` would meet first, by the rule ArenaInput::aimPitched gives; kArenaNobody for none or a kit without a
     // shot. `distance`, when given, gets how far along the round's line it enters (0 for a lead inside the body). A
-    // host shows the crosshair as out of reach when this is not the enemy under it.
-    FTCORE_API std::uint8_t shotMeets(Vec2 dir, float pitch, float* distance = nullptr) const;
+    // host shows the crosshair as out of reach when this is not the enemy under it. Enemies with their bit in `skip`
+    // are left out (to ask how far along the round the one under the crosshair would be, the others aside).
+    FTCORE_API std::uint8_t shotMeets(Vec2 dir, float pitch, float* distance = nullptr, std::uint32_t skip = 0u) const;
     // Opt in (off by default; begin and restart keep it): with a guns kit the autopilot also aims and shoots while it
     // closes in on its target, when the target stands within the shot's range and outside the light chain's reach and
     // the shot leaves a dodge's stamina in reserve. Off, the autopilot never aims.

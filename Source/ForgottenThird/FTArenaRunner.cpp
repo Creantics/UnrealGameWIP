@@ -2417,8 +2417,17 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 			const ftcore::ArenaPoint3 A{static_cast<float>(From.X / 100.0), static_cast<float>(From.Y / 100.0), static_cast<float>(From.Z / 100.0)};
 			const ftcore::ArenaPoint3 B{static_cast<float>(To.X / 100.0), static_cast<float>(To.Y / 100.0), static_cast<float>(To.Z / 100.0)};
 			float Back = 0.f;
-			const double Leave = ftcore::arenaRayEntersBody(B, A, Cyl, Back) ? 1.0 - static_cast<double>(Back) : BodyT;
-			ReticleHeadingPoint = FMath::Lerp(From, To, 0.5 * (BodyT + FMath::Clamp(Leave, BodyT, 1.0)));
+			if (ftcore::arenaRayEntersBody(B, A, Cyl, Back))
+			{
+				ReticleHeadingPoint = FMath::Lerp(From, To, 0.5 * (BodyT + FMath::Clamp(1.0 - static_cast<double>(Back), BodyT, 1.0)));
+			}
+			else
+			{
+				// The line's far end lies inside the body (or the line only grazes it, where the way back in is float
+				// error): the body's centre line at the entry's height, a point inside it whatever the edge does.
+				const FVector Entry = FMath::Lerp(From, To, BodyT);
+				ReticleHeadingPoint = FVector(At.X, At.Y, FMath::Clamp(Entry.Z / 100.0, double(Cyl.base), double(Cyl.top)) * 100.0);
+			}
 		}
 		if (!bReticleHit)
 		{
@@ -2430,15 +2439,40 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		// Another body on the muzzle's line before the one under the crosshair (off the camera's line) takes the round:
 		// the crosshair shows it blocked.
 		bReticleOutOfReach = false;
-		bReticleBlocked = false;
 		float Pitch = 0.f;
+		if (Fight.lock() != ftcore::kArenaNobody || Fight.def().fighter.weapon != ftcore::ArenaWeapon::Guns)
+		{
+			bReticleBlocked = false;
+		}
 		// Locked on, the round goes at the lock, not the crosshair, so the crosshair says nothing about its reach.
 		if (Fight.lock() == ftcore::kArenaNobody && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns && ReticlePitch(Pitch))
 		{
 			const float Yaw = FMath::DegreesToRadians(CameraYaw);
-			const uint8 Meets = Fight.shotMeets(ReticleAimDir(ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)}), Pitch);
+			const ftcore::Vec2 Dir = ReticleAimDir(ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)});
+			float MeetsAt = 0.f;
+			const uint8 Meets = Fight.shotMeets(Dir, Pitch, &MeetsAt);
 			bReticleOutOfReach = ReticleEnemy >= 0 && Meets == ftcore::kArenaNobody;
-			bReticleBlocked = ReticleEnemy >= 0 && Meets != ftcore::kArenaNobody && static_cast<int32>(Meets) != ReticleEnemy;
+			bool bBlockedNow = ReticleEnemy >= 0 && Meets != ftcore::kArenaNobody && static_cast<int32>(Meets) != ReticleEnemy;
+			if (bBlockedNow)
+			{
+				// Not blocked while the crosshair's body would be met within kBlockMargin of the other (a graze where
+				// the two bodies' edges cross on the muzzle's line).
+				float OwnAt = 0.f;
+				const uint32 OnlyIt = ~(1u << static_cast<uint32>(ReticleEnemy));
+				bBlockedNow = Fight.shotMeets(Dir, Pitch, &OwnAt, OnlyIt) == ftcore::kArenaNobody || OwnAt - MeetsAt > kBlockMargin;
+			}
+			// Shown blocked or clear only once the new state has held kBlockHoldFrames frames, so a crosshair on the
+			// edge does not flicker.
+			BlockedRun = bBlockedNow != bReticleBlocked ? BlockedRun + 1 : 0;
+			if (BlockedRun >= kBlockHoldFrames)
+			{
+				bReticleBlocked = bBlockedNow;
+				BlockedRun = 0;
+			}
+		}
+		else
+		{
+			BlockedRun = 0;
 		}
 		if (AimCheckPhase == 2 && Now - AimCheckSince >= 1.0)
 		{
@@ -2468,6 +2502,11 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 			AimCheckSince = Now;
 			bAimCheckFire = true;
 		}
+	}
+	else
+	{
+		bReticleBlocked = false; // the aim let go: a new aim starts clear
+		BlockedRun = 0;
 	}
 }
 
@@ -2833,8 +2872,10 @@ void UFTArenaRunner::LogFeatureChecks() const
 	// and free; barred when a mask or the host barred it; n/a when poise always broke first.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d; due %d, barred %d; %d upright blows; best run %d of %d)."),
 		*Text(C.breakOutCheck), S.breakOuts, S.breakDue, S.breakBarred, S.breakUpright, S.breakRunBest, S.breakRunNeed);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: soft target %s (%d)."), Verdict(C.softTarget, Fight.def().fighter.softRange > 0.f),
-		S.softTargets);
+	// Soft target: n/a when no attack could take one (every one started locked on or aimed: the autopilot locks unless
+	// -ArenaNoLock, and an aimed shot takes the aim), or the kit has no softRange.
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: soft target %s (%d of %d chances)."),
+		Fight.def().fighter.softRange > 0.f ? *Text(C.softTargetCheck) : TEXT("n/a"), S.softTargets, S.softChances);
 	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).
 	const bool bGuns = Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns;
 	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaAimCheck")))

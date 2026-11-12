@@ -536,6 +536,11 @@ private:
 	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
 	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
 	bool bReticleBlocked = false;    // see IsReticleBlocked
+	// The blocked crosshair's hysteresis: another body blocks only when the crosshair's own is met more than
+	// kBlockMargin (m) further along the round, and the shown state changes once the new one has held kBlockHoldFrames.
+	static constexpr float kBlockMargin = 0.25f;
+	static constexpr int32 kBlockHoldFrames = 4;
+	int32 BlockedRun = 0; // frames the unshown state has held
 	// The first standing enemy body (Core's radius, the figure's height and hover, as an upright cylinder) along the
 	// line From -> To (cm) nearer than T on entry (0..1 of the line): its slot, and T then the share along the line. The
 	// figures carry no collision, so the reticle's trace meets them by this.

@@ -96,8 +96,10 @@ bool arenaReaches(Vec2 from, Vec2 facing, const ArenaAttack& a, Vec2 to, float r
 // along the round's line; kArenaNobody for none. Each body is its arenaBodyCylinder on a floor at 0 with the radius
 // widened by half the shot's width; the line runs range + that radius in space (so a steep round reaches less far over
 // the ground, and the body's near side, not its middle, must be in reach, unlike the flat lane). A lead standing inside
-// a body whose centre is ahead of it (along `dir`) meets it at 0 (point-blank), where arenaRayEntersBody, a lens's rule,
-// would see through it; one beside or behind the lead is not met (the round leaves it).
+// a body whose centre is ahead of it (along `dir`, or exactly on the lead) meets it at 0 (point-blank), where
+// arenaRayEntersBody, a lens's rule, would see through it, but only when the round leaves the body through its side:
+// one that climbs out through its top (or dives out through its base) first, as a steep round at a hovering boss over
+// an enemy the lead stands in, passes it. A body beside or behind the lead is not met (the round leaves it).
 std::uint8_t arenaShotFirst(const ArenaAttack& a, Vec2 from, Vec2 dir, float pitch, const ArenaEnemyKind* kinds,
                             const Vec2* at, const bool* standing, std::size_t count, std::uint32_t skip,
                             float& distance) {
@@ -113,7 +115,16 @@ std::uint8_t arenaShotFirst(const ArenaAttack& a, Vec2 from, Vec2 dir, float pit
         const float length = std::max(0.f, a.range) + b.radius;
         float d = 0.f;
         const float ox = o.x - b.at.x, oy = o.y - b.at.y;
-        if (ox * ox + oy * oy <= b.radius * b.radius && o.z >= b.base && o.z <= b.top && -(ox * dir.x + oy * dir.y) > 0.f) {
+        const float off2 = ox * ox + oy * oy;
+        if (off2 <= b.radius * b.radius && o.z >= b.base && o.z <= b.top) {
+            // Inside: the centre ahead (or on the lead), and the line out through the side before the top or base.
+            const float along = -(ox * dir.x + oy * dir.y);
+            if (!(along > 0.f || off2 <= kArenaEps * kArenaEps)) continue;
+            const float p = ox * dir.x + oy * dir.y;
+            const float flat = -p + std::sqrt(std::max(0.f, p * p - (off2 - b.radius * b.radius))); // over the ground
+            const float side = flat / c; // along the line (c > 0: the climb is clamped short of straight up)
+            const float cap = s > 0.f ? (b.top - o.z) / s : (s < 0.f ? (b.base - o.z) / s : side + 1.f);
+            if (cap < side) continue;
             d = 0.f;
         } else {
             const ArenaPoint3 end{o.x + dir.x * c * length, o.y + dir.y * c * length, o.z + s * length};
@@ -562,6 +573,7 @@ struct ArenaFightImpl {
         std::uint8_t pick = kArenaNobody;
         std::array<ArenaSoftBody, kMaxArenaEnemies> bodies{};
         if (!aimOn && pl.lock == kArenaNobody && softAim.range > 0.f) {
+            ++stats.softChances;
             for (std::size_t i = 0; i < n; ++i)
                 bodies[i] = ArenaSoftBody{foes[i].pos, def.enemies[i].bodyRadius, alive(i)};
             pick = arenaSoftTarget(pl.pos, arenaSoftDir(stick, pl.facing), bodies.data(), n, softAim);
@@ -843,9 +855,10 @@ struct ArenaFightImpl {
     void stepPlayer(const ArenaInput& in) {
         aimOn = in.aim;
         // A shot keeps the pitch it started with (pitched or the flat lane) and follows the crosshair's climb until it
-        // fires, while the aim still gives one, as its facing tracks the aim.
+        // fires (the tick its startup ends takes that tick's climb), while the aim still gives one; from then on the
+        // climb stays, hit or miss, through the active part.
         if (pl.action == ArenaAction::Light && pl.move == kArenaShotMove && pl.shotPitched && in.aimPitched &&
-            pl.hitMask == 0u)
+            pl.actionTime < fi.shot.startup)
             pl.shotPitch = in.aimPitch;
         aimWay = arenaUnit(in.aimDir, pl.facing);
         aimTurn = std::isfinite(in.aimTurn) ? in.aimTurn : 0.f;
@@ -2131,7 +2144,7 @@ std::uint8_t ArenaFight::lock() const { return player_.lock; }
 int ArenaFight::enemyHp(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hp : 0; }
 float ArenaFight::enemyPoise(std::size_t i) const { return i < enemyCount_ ? enemy_[i].poise : 0.f; }
 bool ArenaFight::enemyAlive(std::size_t i) const { return i < enemyCount_ && enemy_[i].brain != ArenaBrain::Dead; }
-std::uint8_t ArenaFight::shotMeets(Vec2 dir, float pitch, float* distance) const {
+std::uint8_t ArenaFight::shotMeets(Vec2 dir, float pitch, float* distance, std::uint32_t skip) const {
     float d = 0.f;
     std::uint8_t first = kArenaNobody;
     if (def_.fighter.weapon == ArenaWeapon::Guns && def_.fighter.attacks) {
@@ -2142,7 +2155,7 @@ std::uint8_t ArenaFight::shotMeets(Vec2 dir, float pitch, float* distance) const
             standing[i] = enemy_[i].brain != ArenaBrain::Dead;
         }
         first = arenaShotFirst(def_.fighter.shot, player_.pos, arenaUnit(dir, player_.facing), pitch,
-                               def_.enemies.data(), at.data(), standing.data(), enemyCount_, 0u, d);
+                               def_.enemies.data(), at.data(), standing.data(), enemyCount_, skip, d);
     }
     if (distance) *distance = d;
     return first;
@@ -2445,6 +2458,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
         return !can ? ArenaCheck::NotShown : (shown ? ArenaCheck::Pass : ArenaCheck::Fail);
     };
     c.lightsFreeCheck = verdict(stats.lights > 0, c.lightsFree);
+    c.softTargetCheck = verdict(stats.softChances > 0 || stats.softTargets > 0, c.softTarget);
     c.cancelsCheck = verdict(stats.cancelChances > 0 || stats.cancels > 0, c.cancels);
     c.flinchCheck = verdict(stats.flinchChances > 0 || stats.flinches > 0, c.flinch);
     if (stats.breakOuts > 0)
