@@ -22,10 +22,11 @@ bool readTune(const JsonValue& v, AttackMoveTune& t, std::string& why, std::stri
         double lo, hi;
     };
     const Field fields[] = {{"startupScale", &t.startupScale, 0.0, 1.0}, {"activeScale", &t.activeScale, 0.0, 1.0},
-                            {"recoveryScale", &t.recoveryScale, 0.0, 1.0}, {"turnRate", &t.turnRate, 0.5, 60.0}};
+                            {"recoveryScale", &t.recoveryScale, 0.0, 1.0}, {"turnRate", &t.turnRate, 0.5, 60.0},
+                            {"commit", &t.commit, 0.0, 2.0}};
     for (std::uint32_t i = 0; i < v.size(); ++i) {
         const std::string_view k = v.key(i);
-        bool known = false;
+        bool known = k == "recoveryRamp";
         for (const Field& f : fields) known = known || k == f.name;
         if (!known) {
             where = std::string(k);
@@ -47,6 +48,15 @@ bool readTune(const JsonValue& v, AttackMoveTune& t, std::string& why, std::stri
             return false;
         }
         *f.value = static_cast<float>(d);
+    }
+    const JsonValue ramp = v["recoveryRamp"];
+    if (!ramp.isAbsent()) {
+        where = "recoveryRamp";
+        if (!ramp.isBool()) {
+            why = "not a bool";
+            return false;
+        }
+        t.recoveryRamp = ramp.boolean();
     }
     return true;
 }
@@ -124,9 +134,11 @@ AttackMoveOut attackMove(const AttackMoveRules& rules, AimKind kind, bool heavy,
     // The cancel point: when another action may start (the `cancel` share of the recovery); the walk is free from it.
     const float cancelAt = activeEnd + std::clamp(attack.cancel, 0.f, 1.f) * attack.recovery;
     o.turnRate = std::max(tune.turnRate, 0.5f);
-    if (t >= cancelAt) o.speedScale = 1.f;
+    if (tune.recoveryRamp && t >= activeEnd)
+        o.speedScale = attack.recovery > 0.f ? tune.recoveryScale + (1.f - tune.recoveryScale) * (t - activeEnd) / attack.recovery : 1.f;
+    else if (t >= cancelAt) o.speedScale = 1.f;
     else if (t >= activeEnd) o.speedScale = tune.recoveryScale;
-    else if (t >= attack.startup) o.speedScale = tune.activeScale;
+    else if (t >= attack.startup - tune.commit) o.speedScale = tune.activeScale;
     else o.speedScale = tune.startupScale;
     o.speedScale = std::clamp(o.speedScale, 0.f, 1.f);
     return o;

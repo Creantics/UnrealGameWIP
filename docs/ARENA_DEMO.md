@@ -437,8 +437,9 @@ hulk has no `flinchTime`. So `skirmisher,hulk` on Duy gives no flinch chance and
 (`flinchPoise` 10).
 
 The break-out is tuned by lead (provisional, for the playtest). On paper Devin's light string (poise 15, 15, 18, 32)
-staggers every kind with a `breakAt` by the blow that reaches it; in a fight his strikes commit (he stands from the
-startup to the cancel point, so his blows land close together) and no seed breaks out on him.
+staggers every kind with a `breakAt` by the blow that reaches it; in a fight his strikes slow him but don't stop him
+(the autopilot steers them as a player does), so a count can build across strings and some seeds still break out on
+him.
 Duy's (10, 10, 20, and 6 a shot) leaves it upright, so he has to hit and move. Each kind's `breakDecay` equals
 its `poiseDelay`, so a count reset always comes with a poise refill. Core pins this per kind and lead
 (`arena break-out tuning`):
@@ -542,9 +543,11 @@ outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed
 
 A strike commits the body (`ftcore::attackMove`, `Data/Battle/attack_move.json`): each part of a move has its own
 share of the stick's walk (`startupScale`, `activeScale`, `recoveryScale`), and the full walk comes back at the cancel
-point. A fist's or a spell's strike has 0 in every part: the lead slides to a stop at its brake rate
-(`ArenaInput::attackSpeed`), the attack's lunge carries it, and it walks again in the cancel window. A gun's shot walks
-at 65%. Every strike still turns at its capped rate (`attackTurn`).
+point. A fist's or a spell's heavy commits: 30% in startup, 0 through active (the lead slides to a stop at its brake
+rate, `ArenaInput::attackSpeed`, and the lunge carries it), 40% in recovery. Its light slows the walk: 40% in startup,
+55% through active, 70% in recovery. A gun's shot walks as it did before: a light at 65%, a heavy at 45% then 30% from
+0.25 s before contact (`commit`), each easing back to full pace over its recovery (`recoveryRamp`). Every strike still
+turns at its capped rate (`attackTurn`).
 
 The lead's legs follow its body as drawn. Their gait plays at the speed the body moved over the last step, not the
 sim's wish. They turn toward the way it moves (up to 95 degrees from the facing, with the chest turned back), so a

@@ -26,7 +26,7 @@ ArenaAttack swing(float startup, float active, float recovery, float cancel = 0.
 
 } // namespace
 
-TEST_CASE("attack move: the shipped table commits a fist's strike and lets a gun's shot walk") {
+TEST_CASE("attack move: the shipped table commits a fist's heavy, slows a fist's light and lets a gun's shot walk") {
     std::string text;
     REQUIRE(ftcore_test::readProjectData("Battle/attack_move.json", text));
     AttackMoveRules r;
@@ -35,29 +35,45 @@ TEST_CASE("attack move: the shipped table commits a fist's strike and lets a gun
     for (int k = 0; k < 3; ++k) {
         CHECK(r.light[k].turnRate > 0.f); // the facing is never held
         CHECK(r.heavy[k].turnRate > 0.f);
-        // A heavy commits on every weapon: no walk from startup to its cancel point.
-        CHECK(r.heavy[k].startupScale == 0.f);
-        CHECK(r.heavy[k].activeScale == 0.f);
-        CHECK(r.heavy[k].recoveryScale == 0.f);
     }
-    const AttackMoveTune& fist = r.light[static_cast<int>(AimKind::Focus)];
-    CHECK(fist.startupScale <= 0.2f);
-    CHECK(fist.activeScale == 0.f);
-    CHECK(fist.recoveryScale == 0.f);
+    for (const AimKind k : {AimKind::Focus, AimKind::Cast}) {
+        // A fist's or a spell's heavy commits: a short step in startup, none through active, a slow one in recovery.
+        const AttackMoveTune& heavy = r.heavy[static_cast<int>(k)];
+        CHECK(heavy.startupScale <= 0.3f);
+        CHECK(heavy.activeScale == 0.f);
+        CHECK(heavy.recoveryScale <= 0.4f);
+        CHECK_FALSE(heavy.recoveryRamp);
+        // Its light slows the walk to a little over half or less from startup to the cancel point.
+        const AttackMoveTune& light = r.light[static_cast<int>(k)];
+        CHECK(light.startupScale <= 0.4f);
+        CHECK(light.activeScale <= 0.55f);
+        CHECK(light.recoveryScale <= 0.7f);
+    }
+    // A gun's shot walks (hit and move), as before the fists committed: a light at 0.65 easing back to full pace
+    // over its recovery; a heavy at 0.45, then 0.3 from 0.25 s before contact, easing back the same way.
     const AttackMoveTune& gun = r.light[static_cast<int>(AimKind::Fire)];
-    CHECK(gun.startupScale >= 0.5f); // hit and move: the shot walks
-    CHECK(gun.activeScale >= 0.5f);
-    CHECK(gun.recoveryScale >= 0.5f);
+    CHECK(gun.startupScale == doctest::Approx(0.65f));
+    CHECK(gun.activeScale == doctest::Approx(0.65f));
+    CHECK(gun.recoveryScale == doctest::Approx(0.65f));
+    CHECK(gun.recoveryRamp);
+    const AttackMoveTune& gunHeavy = r.heavy[static_cast<int>(AimKind::Fire)];
+    CHECK(gunHeavy.startupScale == doctest::Approx(0.45f));
+    CHECK(gunHeavy.commit == doctest::Approx(0.25f));
+    CHECK(gunHeavy.activeScale == doctest::Approx(0.3f));
+    CHECK(gunHeavy.recoveryScale == doctest::Approx(0.3f));
+    CHECK(gunHeavy.recoveryRamp);
     CHECK(r.upperNone < r.upperFull);
 }
 
-TEST_CASE("attack move: the import rejects unknown keys, the old commit keys and values out of range") {
+TEST_CASE("attack move: the import rejects unknown keys, the old v1 keys and values out of range") {
     AttackMoveRules r;
     const AttackMoveRules before = r;
     std::string err;
     CHECK_FALSE(importAttackMoveRules(R"({"lite": {}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"light": {"sword": {}}})", r, &err));
-    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"focus": {"commit": 0.2}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"focus": {"commitScale": 0.2}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"focus": {"commit": 2.5}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"light": {"fire": {"recoveryRamp": 1}}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"speedScale": 0.6}}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"fire": {"activeScale": 1.5}}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"light": {"cast": {"recoveryScale": -0.1}}})", r, &err));
@@ -71,6 +87,26 @@ TEST_CASE("attack move: the import rejects unknown keys, the old commit keys and
     // A 0 scale is a commit, not an error.
     REQUIRE(importAttackMoveRules(R"({"light": {"fire": {"activeScale": 0}}})", r, &err));
     CHECK(r.light[1].activeScale == 0.f);
+    REQUIRE(importAttackMoveRules(R"({"heavy": {"focus": {"commit": 0.2, "recoveryRamp": true}}})", r, &err));
+    CHECK(r.heavy[0].commit == doctest::Approx(0.2f));
+    CHECK(r.heavy[0].recoveryRamp);
+}
+
+TEST_CASE("attack move: the active scale from `commit` before contact; a ramped recovery eases to full pace") {
+    AttackMoveRules r;
+    AttackMoveTune& t = r.heavy[0];
+    t = AttackMoveTune{0.5f, 0.2f, 0.4f, 4.f, 0.1f, false};
+    const ArenaAttack a = swing(0.4f, 0.1f, 0.6f, 0.5f); // contact 0.4, active to 0.5, cancel at 0.8, over at 1.1
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.25f).speedScale == doctest::Approx(0.5f));
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.35f).speedScale == doctest::Approx(0.2f)); // inside the commit
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.45f).speedScale == doctest::Approx(0.2f));
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.6f).speedScale == doctest::Approx(0.4f));
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.9f).speedScale == 1.f); // past the cancel point
+    t.recoveryRamp = true;
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.5f).speedScale == doctest::Approx(0.4f));
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.8f).speedScale == doctest::Approx(0.7f)); // half way: no jump
+    CHECK(attackMove(r, AimKind::Focus, true, a, 1.05f).speedScale == doctest::Approx(0.95f));
+    CHECK(attackMove(r, AimKind::Focus, true, a, 1.2f).speedScale == 1.f); // over
 }
 
 TEST_CASE("attack move: each phase gets its own share of the walk, and the cancel point frees it") {
@@ -308,7 +344,7 @@ TEST_CASE("attack move: in the arena a fist's light slides to a stop, holds thro
     CHECK(commit.facingY > 0.9f);                         // and turned on toward the stick through the swing
 }
 
-TEST_CASE("attack move: in the arena every attack turns, a fist's commits and a gun's shot walks") {
+TEST_CASE("attack move: in the arena every attack turns, a fist's heavy commits and a gun's shot walks") {
     // The arena host feeds attackMove's numbers for the light, and the heavy's for the heavy, the riposte and the
     // Release: the turn is never 0, so no lead's facing is held.
     std::string text;
@@ -335,9 +371,12 @@ TEST_CASE("attack move: in the arena every attack turns, a fist's commits and a 
                 const AttackMoveOut o = attackMove(r, aimKindOfMove(kit, move), heavy, *a, s);
                 CHECK(o.turnRate > 0.f);
                 if (std::fabs(s - cancelAt) < 1e-3f || std::fabs(s - a->startup) < 1e-3f) continue; // on a phase's edge
-                if (s > cancelAt) CHECK(o.speedScale == 1.f);
+                const AimKind kind = aimKindOfMove(kit, move);
+                const AttackMoveTune& tune = heavy ? r.heavy[static_cast<int>(kind)] : r.light[static_cast<int>(kind)];
+                if (s > cancelAt) CHECK(o.speedScale >= (tune.recoveryRamp ? tune.recoveryScale : 1.f));
                 else if (move == kArenaShotMove) CHECK(o.speedScale >= 0.5f);
-                else if (s > a->startup) CHECK(o.speedScale == 0.f);
+                else if (heavy && kind != AimKind::Fire && s > a->startup && s < activeEnd) CHECK(o.speedScale == 0.f);
+                else CHECK(o.speedScale < 1.f);
             }
         }
     }

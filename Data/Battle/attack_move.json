@@ -1,14 +1,47 @@
 {
   "version": 2,
   "light": {
-    "focus": { "startupScale": 0, "activeScale": 0, "recoveryScale": 0, "turnRate": 6 },
-    "fire": { "startupScale": 0.65, "activeScale": 0.65, "recoveryScale": 0.65, "turnRate": 7 },
-    "cast": { "startupScale": 0, "activeScale": 0, "recoveryScale": 0, "turnRate": 6 }
+    "focus": {
+      "startupScale": 0.4,
+      "activeScale": 0.55,
+      "recoveryScale": 0.7,
+      "turnRate": 6
+    },
+    "fire": {
+      "startupScale": 0.65,
+      "activeScale": 0.65,
+      "recoveryScale": 0.65,
+      "turnRate": 7,
+      "recoveryRamp": true
+    },
+    "cast": {
+      "startupScale": 0.4,
+      "activeScale": 0.55,
+      "recoveryScale": 0.7,
+      "turnRate": 6
+    }
   },
   "heavy": {
-    "focus": { "startupScale": 0, "activeScale": 0, "recoveryScale": 0, "turnRate": 4 },
-    "fire": { "startupScale": 0, "activeScale": 0, "recoveryScale": 0, "turnRate": 5 },
-    "cast": { "startupScale": 0, "activeScale": 0, "recoveryScale": 0, "turnRate": 4 }
+    "focus": {
+      "startupScale": 0.3,
+      "activeScale": 0.0,
+      "recoveryScale": 0.4,
+      "turnRate": 4
+    },
+    "fire": {
+      "startupScale": 0.45,
+      "activeScale": 0.3,
+      "recoveryScale": 0.3,
+      "turnRate": 5,
+      "commit": 0.25,
+      "recoveryRamp": true
+    },
+    "cast": {
+      "startupScale": 0.3,
+      "activeScale": 0.0,
+      "recoveryScale": 0.4,
+      "turnRate": 4
+    }
   },
   "upperNone": 0.15,
   "upperFull": 0.6
