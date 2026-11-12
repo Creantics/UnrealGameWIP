@@ -624,7 +624,8 @@ private:
 	// stinger (Now), and the counts for the check line.
 	ftcore::ArenaJolt Jolt;
 	float ShakeOverride = -1.f;
-	// -ArenaGlide=<toward|across|away|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// -ArenaGlide=<toward|across|away|pulse|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// (pulse: 0.8 s toward, 0.6 s let go, 0.8 s away, 0.6 s let go, over and over)
 	// to its target (toward, across to the right, away) whenever the autopilot itself leaves the stick at rest, so its
 	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
 	int32 GlideStick = -1;
