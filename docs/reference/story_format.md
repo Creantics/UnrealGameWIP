@@ -56,7 +56,7 @@ list unless the scene's `end` beat names one.
 }
 ```
 
-`world` is one of: Solhaven, Lattice, Unwritten, Ink-Solhaven, Cleft pocket, House, Restored, Interstice.
+`world` is one of: Solhaven, Lattice, Unwritten, or one of the story's other settings, named in its private tables (here `variant_a`, `pocket_a`, `place_a`, `place_b`, `place_c`).
 
 ## Beats
 
