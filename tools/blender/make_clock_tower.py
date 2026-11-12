@@ -455,6 +455,37 @@ def arch_poly(w, z0, zs, seg=16):
     return out
 
 
+def arch_frame_poly(ri, ro, z0, zs, seg=12):
+    """U-shaped outline in XZ of a round-headed surround: inner half width ri, outer ro, feet at z0, springing zs."""
+    pts = [(ri, z0), (ro, z0)]
+    pts += [(ro * math.cos(math.pi * k / seg), zs + ro * math.sin(math.pi * k / seg)) for k in range(seg + 1)]
+    pts += [(-ro, z0), (-ri, z0)]
+    pts += [(ri * math.cos(math.pi * k / seg), zs + ri * math.sin(math.pi * k / seg)) for k in range(seg, -1, -1)]
+    return pts
+
+
+def wall_lantern(acc, L):
+    """A wall lantern in the frame L (origin on the wall face, -Y outward, +Z up): back plate, bracket arm and strut,
+    a square glazed lantern with corner posts, a pyramid cap and a finial. Boxes only, no bevels, so a mesh
+    simplifier keeps the silhouette."""
+    acc.box(-0.09, -0.04, -0.30, 0.09, 0.0, 0.18, "tower_iron", M=L)           # back plate
+    acc.box(-0.035, -0.46, 0.06, 0.035, -0.04, 0.13, "tower_iron", M=L)        # arm
+    S = L @ Matrix.Translation((0, -0.04, -0.24)) @ Matrix.Rotation(math.radians(50), 4, "X")
+    acc.box(-0.025, -0.025, 0.0, 0.025, 0.025, 0.50, "tower_iron", M=S)        # strut up to the arm
+    C = L @ Matrix.Translation((0, -0.46, 0.13))                               # lantern hangs from the arm end
+    acc.box(-0.03, -0.03, -0.06, 0.03, 0.03, 0.0, "tower_iron", M=C)           # hanger
+    acc.box(-0.17, -0.17, -0.12, 0.17, 0.17, -0.06, "tower_iron", M=C)         # top frame
+    acc.lathe([(0, -0.06), (0.24, -0.06), (0.0, 0.10)], 4, "tower_iron", M=C, smooth=False, phase=math.pi / 4)
+    acc.box(-0.13, -0.13, -0.50, 0.13, 0.13, -0.12, "tower_lamp_glass", M=C)  # glass body
+    for qx in (-1, 1):
+        for qy in (-1, 1):
+            acc.box(qx * 0.15 - 0.025, qy * 0.15 - 0.025, -0.52, qx * 0.15 + 0.025, qy * 0.15 + 0.025, -0.10,
+                    "tower_iron", M=C)
+    acc.box(-0.17, -0.17, -0.56, 0.17, 0.17, -0.50, "tower_iron", M=C)         # bottom tray
+    acc.lathe([(0, -0.66), (0.05, -0.62), (0.10, -0.56), (0, -0.56)], 4, "tower_iron", M=C, smooth=False,
+              phase=math.pi / 4)
+
+
 def apply_boolean(obj, cutters, op="DIFFERENCE"):
     for c in cutters:
         mod = obj.modifiers.new("cut", "BOOLEAN")
@@ -629,55 +660,61 @@ def build_tower(M):
         y_face = -HALF_BASE
         w = 2.2 if side == "south" else 2.0
         r_in = w / 2
-        # voussoirs: 13 wedges and a proud keystone
-        nv = 13
+        # Arch surround, built square on the wall with real depth and no small bevels (a mesh simplifier drops
+        # thin bevelled slivers first): an inner order of 11 voussoirs 14 cm proud with a 22 cm keystone, an outer
+        # stepped roll 8 cm proud, impost blocks at the springing, and jamb blocks 14 cm proud.
+        nv = 11
         for k in range(nv):
-            a0 = math.pi * k / nv + 0.012
-            a1 = math.pi * (k + 1) / nv - 0.012
+            a0 = math.pi * k / nv + 0.01
+            a1 = math.pi * (k + 1) / nv - 0.01
             key = k == nv // 2
-            r_out = r_in + (0.62 if key else 0.42)
+            r_out = r_in + (0.58 if key else 0.40)
             poly = [(r_in * math.cos(a0), 3.1 + r_in * math.sin(a0)), (r_out * math.cos(a0), 3.1 + r_out * math.sin(a0)),
                     (r_out * math.cos(a1), 3.1 + r_out * math.sin(a1)), (r_in * math.cos(a1), 3.1 + r_in * math.sin(a1))]
-            poly = poly[::-1]
-            A.prism_xz(poly, y_face - (0.12 if key else 0.06), y_face + 0.05, "tower_stone", M=R, bevel=0.01)
-        # jambs: alternating long and short blocks
+            A.prism_xz(poly[::-1], y_face - (0.22 if key else 0.14), y_face + 0.04, "tower_stone", M=R)
+        A.prism_xz(arch_frame_poly(r_in + 0.40, r_in + 0.54, 3.1, 3.1, 16), y_face - 0.08, y_face + 0.04,
+                   "tower_stone", M=R)
+        for sgn in (-1, 1):
+            A.box(min(sgn * (r_in - 0.02), sgn * (r_in + 0.58)), y_face - 0.18, 2.92,
+                  max(sgn * (r_in - 0.02), sgn * (r_in + 0.58)), y_face + 0.04, 3.1, "tower_stone", M=R)
+        # jambs: alternating long and short blocks, with the outer roll carried down as a pilaster strip
         for i in range(4):
             z0 = Z_PLINTH + i * 0.625
-            wj = 0.42 if i % 2 == 0 else 0.30
+            wj = 0.40 if i % 2 == 0 else 0.30
+            top = 2.92 if i == 3 else z0 + 0.615
             for sgn in (-1, 1):
                 x0 = sgn * r_in
                 x1 = sgn * (r_in + wj)
-                A.box(min(x0, x1), y_face - 0.05, z0 + 0.008, max(x0, x1), y_face + 0.05, z0 + 0.617, "tower_stone",
-                      M=R, bevel=0.012)
+                A.box(min(x0, x1), y_face - 0.14, z0 + 0.01, max(x0, x1), y_face + 0.04, top, "tower_stone", M=R)
+        for sgn in (-1, 1):
+            A.box(min(sgn * (r_in + 0.40), sgn * (r_in + 0.54)), y_face - 0.08, Z_PLINTH,
+                  max(sgn * (r_in + 0.40), sgn * (r_in + 0.54)), y_face + 0.04, 2.92, "tower_stone", M=R)
         if side == "south":
-            # door leaves, panel frames, fanlight with radial bars
+            # recessed panelled double door: leaf slab, proud stiles and rails, sunk panels between, iron meeting
+            # strip and transom, dark fanlight with five radial bars
             back = -HALF_BASE + 0.75
-            A.box(-r_in, back - 0.12, Z_PLINTH, r_in, back + 0.02, 3.1, "tower_timber", M=R)
-            for sx in (-1, 1):
-                for zz in (1.0, 2.0):
-                    A.box(sx * 0.12 if sx > 0 else -0.98, back - 0.16, zz, sx * 0.98 if sx > 0 else -0.12, back - 0.12,
-                          zz + 0.8, "tower_timber", M=R, bevel=0.01)
-            A.box(-0.03, back - 0.17, Z_PLINTH, 0.03, back - 0.11, 3.1, "tower_iron", M=R)
-            A.box(-r_in, back - 0.16, 3.04, r_in, back - 0.08, 3.14, "tower_iron", M=R)
+            A.box(-r_in, back - 0.10, Z_PLINTH, r_in, back + 0.02, 3.1, "tower_timber", M=R)
+            fy0, fy1 = back - 0.17, back - 0.10
+            for lx0, lx1 in ((-r_in, -0.02), (0.02, r_in)):
+                for sx0, sx1 in ((lx0, lx0 + 0.16), (lx1 - 0.16, lx1)):          # stiles
+                    A.box(sx0, fy0, Z_PLINTH, sx1, fy1, 3.04, "tower_timber", M=R)
+                for rz0, rz1 in ((Z_PLINTH, Z_PLINTH + 0.30), (1.80, 1.96), (2.86, 3.04)):  # rails
+                    A.box(lx0 + 0.16, fy0, rz0, lx1 - 0.16, fy1, rz1, "tower_timber", M=R)
+                for pz0, pz1 in ((Z_PLINTH + 0.30, 1.80), (1.96, 2.86)):          # raised fields in the sunk panels
+                    A.box(lx0 + 0.24, back - 0.13, pz0 + 0.08, lx1 - 0.24, back - 0.10, pz1 - 0.08, "tower_timber", M=R)
+            A.box(-0.04, back - 0.20, Z_PLINTH, 0.04, back - 0.10, 3.04, "tower_iron", M=R)
+            A.box(-r_in, back - 0.18, 3.04, r_in, back - 0.06, 3.16, "tower_iron", M=R)
             fan = [(r_in * math.cos(math.pi * k / 20), 3.1 + r_in * math.sin(math.pi * k / 20)) for k in range(21)]
-            A.prism_xz(fan[::-1] if False else fan, back - 0.04, back + 0.02, "tower_dark", M=R)
-            for k in range(1, 8):
-                a = math.pi * k / 8
+            A.prism_xz(fan, back - 0.04, back + 0.02, "tower_dark", M=R)
+            for k in range(1, 6):
+                a = math.pi * k / 6
                 c, s = math.cos(a), math.sin(a)
-                poly = [(0.05 * c - 0.02 * s, 3.1 + 0.05 * s + 0.02 * c), (r_in * c - 0.02 * s, 3.1 + r_in * s + 0.02 * c),
-                        (r_in * c + 0.02 * s, 3.1 + r_in * s - 0.02 * c), (0.05 * c + 0.02 * s, 3.1 + 0.05 * s - 0.02 * c)]
-                A.prism_xz(poly, back - 0.09, back - 0.04, "tower_iron", M=R)
+                poly = [(0.05 * c - 0.03 * s, 3.1 + 0.05 * s + 0.03 * c), (r_in * c - 0.03 * s, 3.1 + r_in * s + 0.03 * c),
+                        (r_in * c + 0.03 * s, 3.1 + r_in * s - 0.03 * c), (0.05 * c + 0.03 * s, 3.1 + 0.05 * s - 0.03 * c)]
+                A.prism_xz(poly, back - 0.11, back - 0.04, "tower_iron", M=R)
             # wall lanterns either side of the door
-            for sx in (-1.9, 1.9):
-                L = R @ Matrix.Translation((sx, y_face, 3.3))
-                A.box(-0.04, -0.45, -0.04, 0.04, 0.0, 0.04, "tower_iron", M=L)
-                A.box(-0.12, -0.05, -0.35, 0.12, 0.0, 0.25, "tower_iron", M=L)
-                A.lathe([(0, -0.30), (0.12, -0.30), (0.17, 0.05), (0.0, 0.05)], 6, "tower_lamp_glass",
-                        M=L @ Matrix.Translation((0, -0.45, -0.1)), smooth=False, phase=math.pi / 6)
-                A.lathe([(0, 0.05), (0.21, 0.05), (0.04, 0.24), (0.0, 0.28)], 6, "tower_iron",
-                        M=L @ Matrix.Translation((0, -0.45, -0.1)), smooth=False, phase=math.pi / 6)
-                A.lathe([(0, -0.40), (0.08, -0.36), (0.12, -0.30), (0, -0.30)], 6, "tower_iron",
-                        M=L @ Matrix.Translation((0, -0.45, -0.1)), smooth=False, phase=math.pi / 6)
+            for sx in (-1.95, 1.95):
+                wall_lantern(A, R @ Matrix.Translation((sx, y_face, 3.3)))
         else:
             # tile infill in the blind arch
             A.prism_xz(arch_poly(w - 0.02, Z_PLINTH + 0.6, 3.1, 20), y_face + 0.18, y_face + 0.23, "tower_tile", M=R)
@@ -738,11 +775,14 @@ def build_tower(M):
         R = wall_matrix(yaw)
         y = -HALF_SHAFT
         for x, z0, zs, w in windows:
+            # dark glazing 28 cm back in the reveal; a stone surround square on the wall: arched jamb-and-head
+            # frame 10 cm proud, a keystone 15 cm proud, a projecting sill 15 cm proud
             A.box(x - w / 2 - 0.02, y + 0.28, z0, x + w / 2 + 0.02, y + 0.36, zs + w / 2 + 0.02, "tower_dark", M=R)
-            A.box(x - w / 2 - 0.12, y - 0.10, z0 - 0.16, x + w / 2 + 0.12, y + 0.10, z0 + 0.0, "tower_stone", M=R,
-                  bevel=0.015)
-            A.box(x - 0.11, y - 0.06, zs + w / 2 - 0.02, x + 0.11, y + 0.05, zs + w / 2 + 0.34, "tower_stone", M=R,
-                  bevel=0.012)
+            ri, ro = w / 2, w / 2 + 0.13
+            frame = [(px + x, pz) for px, pz in arch_frame_poly(ri, ro, z0, zs, 8)]
+            A.prism_xz(frame, y - 0.10, y + 0.03, "tower_stone", M=R)
+            A.box(x - 0.09, y - 0.15, zs + ro - 0.10, x + 0.09, y + 0.03, zs + ro + 0.10, "tower_stone", M=R)
+            A.box(x - ro - 0.06, y - 0.15, z0 - 0.14, x + ro + 0.06, y + 0.03, z0, "tower_stone", M=R)
         # stone panel frame around the paired windows
         A.box(-1.0, y - 0.05, 12.7, 1.0, y + 0.05, 12.86, "tower_stone", M=R, bevel=0.01)
     # pilasters at the corners: a lower block and an upper block with a weathered set-off
@@ -761,12 +801,13 @@ def build_tower(M):
     for side, yaw in YAWS.items():
         R = wall_matrix(yaw)
         A.box(-2.45, -HALF_SHAFT - 0.05, Z_FRIEZE0, 2.45, -HALF_SHAFT + 0.05, Z_FRIEZE1, "tower_tile", M=R)
-        # three stone roundels in the frieze
+        # three oculi in the frieze: a stone ring 12 cm proud of the tiles around a dark sunk centre
         for x in (-1.45, 0.0, 1.45):
-            Lm = R @ Matrix.Translation((x, -HALF_SHAFT - 0.05, (Z_FRIEZE0 + Z_FRIEZE1) / 2)) @ \
+            Lm = R @ Matrix.Translation((x, -HALF_SHAFT - 0.03, (Z_FRIEZE0 + Z_FRIEZE1) / 2)) @ \
                 Matrix.Rotation(math.radians(90), 4, "X")
-            A.lathe([(0.0, 0.0), (0.42, 0.0), (0.46, 0.04), (0.42, 0.08), (0.0, 0.08)], 20, "tower_stone", M=Lm,
-                    sharp_deg=30)
+            A.lathe([(0.30, 0.0), (0.48, 0.0), (0.48, 0.10), (0.44, 0.14), (0.30, 0.14), (0.30, 0.0)], 16,
+                    "tower_stone", M=Lm, smooth=False)
+            A.lathe([(0.0, 0.0), (0.31, 0.0), (0.31, 0.03), (0.0, 0.03)], 16, "tower_dark", M=Lm, smooth=False)
     # corbel table under the clock stage
     A.boxc(0, 0, Z_FRIEZE1, 2 * HALF_SHAFT + 0.34, 2 * HALF_SHAFT + 0.34, 0.2, "tower_stone", bevel=0.03)
     for side, yaw in YAWS.items():
