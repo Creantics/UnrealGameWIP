@@ -2440,9 +2440,11 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		// the crosshair shows it blocked.
 		bReticleOutOfReach = false;
 		float Pitch = 0.f;
-		if (Fight.lock() != ftcore::kArenaNobody || Fight.def().fighter.weapon != ftcore::ArenaWeapon::Guns)
+		if (ReticleEnemy != BlockedFor)
 		{
-			bReticleBlocked = false;
+			bReticleBlocked = false; // a new body under the crosshair starts clear
+			BlockedRun = 0;
+			BlockedFor = ReticleEnemy;
 		}
 		// Locked on, the round goes at the lock, not the crosshair, so the crosshair says nothing about its reach.
 		if (Fight.lock() == ftcore::kArenaNobody && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns && ReticlePitch(Pitch))
@@ -2472,6 +2474,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		}
 		else
 		{
+			bReticleBlocked = false;
 			BlockedRun = 0;
 		}
 		if (AimCheckPhase == 2 && Now - AimCheckSince >= 1.0)
@@ -2507,6 +2510,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 	{
 		bReticleBlocked = false; // the aim let go: a new aim starts clear
 		BlockedRun = 0;
+		BlockedFor = -1;
 	}
 }
 

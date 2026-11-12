@@ -6991,8 +6991,9 @@ TEST_CASE("arena attack: Duy's pitched round, point-blank against the climb, a b
         return h ? static_cast<int>(h->event.target) : -1;
     };
     const float steep = 60.f * 3.14159265f / 180.f;
-    {   // the lead inside a body 0.3 m ahead (0 to 2 m up), a hovering boss over it: a steep round up leaves through the
-        // body's top within half a metre and goes on to the boss; a shallow one leaves through the side, point-blank
+    {   // the lead inside a body 0.3 m ahead (0 to 2 m up), a hovering boss over it: a steep round up (60 and 63
+        // degrees) leaves through the body's top within a metre and goes on to the boss; a shallow one (15 degrees)
+        // leaves through the side, point-blank
         for (const float pitch : {steep, 1.1f}) {
             Rig rig(duy, {hoveringKind(0.f, 2.f), hoveringKind(3.5f, 3.f)});
             rig.put(0, 0.3f, 0.f);
@@ -7088,4 +7089,11 @@ TEST_CASE("arena checks: soft target is n/a when no attack could take one") {
     rig.runFor(0.45f);
     CHECK(rig.count(ArenaEventType::Hit) == 1);
     CHECK(rig.fight.stats().softChances == 0);
+    // unaimed and unlocked, a light is a chance, and takes the soft target ahead
+    Rig free(t.fighter("devin"), {dummyKind()});
+    free.put(0, 1.5f, 0.f);
+    free.in.light = true;
+    free.runFor(0.1f);
+    CHECK(free.fight.stats().softChances >= 1);
+    CHECK(free.fight.stats().softTargets >= 1);
 }
