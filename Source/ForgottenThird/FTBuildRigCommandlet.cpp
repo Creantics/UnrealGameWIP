@@ -415,7 +415,7 @@ bool LogClip(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 // Bakes the twist bones of a retargeted clip (ftcore/TwistBake.h): for each limb segment and side, every
 // bone parented to the segment and named <segment>_twist_*_<side> (not the twistCor correctives) gets, at each
 // key, its own bind translation and scale and its bind rotation turned about the segment's axis by
-// f * the child's twist - (1 - f) * the segment's own twist, each twist faded out near a 180 degree swing (twistFade).
+// f * the child's twist - (1 - f) * the segment's own twist, each twist faded out between 100 and 160 degrees of swing (twistFade).
 // The child term is the forearm's and the shin's only (the upper arm and thigh take the segment's own twist alone).
 // The axis and f come from the bind pose (the child's and the twist bone's offsets), so a rerun writes the same
 // keys; a twist track the retarget already wrote is replaced (logged). Logs each segment's peak twists and its
@@ -495,16 +495,17 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 			{
 				const ftcore::TwistQuat C = ToCoreQ(ChildRot[K] * Ref[Child].GetRotation().Inverse());
 				const ftcore::TwistQuat O = ToCoreQ(Ref[Segment].GetRotation().Inverse() * SegmentRot[K]);
-				ChildTwist[K] = Pair.bChildTerm ? ftcore::unwrapAngle(ftcore::twistAngle(C, CoreAxis), K > 0 ? ChildTwist[K - 1] : 0.0) : 0.0;
-				OwnTwist[K] = ftcore::unwrapAngle(ftcore::twistAngle(O, CoreAxis), K > 0 ? OwnTwist[K - 1] : 0.0);
 				ChildFade[K] = ftcore::twistFade(ftcore::swingAngle(C, CoreAxis));
 				OwnFade[K] = ftcore::twistFade(ftcore::swingAngle(O, CoreAxis));
+				ChildTwist[K] = Pair.bChildTerm ? ftcore::unwrapFadedTwist(ftcore::twistAngle(C, CoreAxis), K > 0 ? ChildTwist[K - 1] : 0.0, ChildFade[K]) : 0.0;
+				OwnTwist[K] = ftcore::unwrapFadedTwist(ftcore::twistAngle(O, CoreAxis), K > 0 ? OwnTwist[K - 1] : 0.0, OwnFade[K]);
 				ChildPeak = FMath::Max(ChildPeak, FMath::Abs(ChildTwist[K] * ChildFade[K]));
 				OwnPeak = FMath::Max(OwnPeak, FMath::Abs(OwnTwist[K] * OwnFade[K]));
 			}
-			// A clip that ends in its first pose (a loop) but whose unwrapped twist ends a turn away pops at the loop.
+			// A clip that ends in its first pose (a loop) but whose faded twist ends a turn away pops at the loop.
 			const bool bLoops = Keys > 1 && SegmentRot[0].AngularDistance(SegmentRot[Keys - 1]) < 0.02 && ChildRot[0].AngularDistance(ChildRot[Keys - 1]) < 0.02;
-			if (bLoops && (FMath::Abs(ChildTwist[Keys - 1] - ChildTwist[0]) > UE_PI || FMath::Abs(OwnTwist[Keys - 1] - OwnTwist[0]) > UE_PI))
+			const int32 Last = Keys - 1;
+			if (bLoops && (FMath::Abs(ChildTwist[Last] * ChildFade[Last] - ChildTwist[0] * ChildFade[0]) > UE_PI || FMath::Abs(OwnTwist[Last] * OwnFade[Last] - OwnTwist[0] * OwnFade[0]) > UE_PI))
 			{
 				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildRig: %s ends where it starts but its %s twist ends a turn away; the twist bones pop at the loop."),
 					*Clip.GetName(), *SegmentName);

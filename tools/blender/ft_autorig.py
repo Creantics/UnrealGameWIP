@@ -12,11 +12,12 @@ bakes them after the retarget by default; a clip built with -NoBakeTwist leaves 
 (--keep-weights) depends on that bake as much as the bound route does. --no-twist adds no twist bands: on the
 bound route the twist bones get no weight; with --keep-weights the source rig's own twist weights stay as they are.
 
-The output is written to a temporary file next to it and moved over the old one only once the export and the
-report have succeeded, so a failed run never leaves a broken file in place of a good one.
+The output, --report and --blend are written to temporary files next to them and moved over the old ones only
+once all of them have been written, so a failed run never leaves a broken file in place of a good one.
 
 --height 0 keeps the mesh's own size. --guides is a json {joint name: [x, y, z]} in the output frame (metres,
-Z up, facing -Y, soles on z = 0, after --height scaling) that overrides detected landmarks. --heat binds with
+Z up, facing -Y, soles on z = 0, after --height scaling) that overrides detected landmarks; a crotch guide
+sets only the hem rule's height (the pelvis, spine and thighs come from the detected crotch). --heat binds with
 Blender's heat weights instead (for comparisons). --keep-weights takes the joints and skin weights from a
 rig the source file already carries (a Tripo export with mannequin bone names): it rebuilds the skeleton with
 the mannequin's axes, twist and ik bones, then repairs the weights (hem rule, smoothing, twist bands, influence
@@ -97,8 +98,19 @@ def args():
         raise SystemExit("no such input file: " + o["src"])
     if os.path.splitext(o["out"])[1].lower() not in (".glb", ".fbx"):
         raise SystemExit("the output must be a .glb or an .fbx: " + o["out"])
-    if o["guides"] and not os.path.isfile(o["guides"]):
-        raise SystemExit("no such guides file: " + o["guides"])
+    if o["heat"] and o["keep"]:
+        raise SystemExit("--heat and --keep-weights are two different bindings; pick one")
+    if o["guides"]:
+        if o["keep"]:
+            raise SystemExit("--guides has no effect with --keep-weights (the joints come from the source rig)")
+        try:
+            with open(o["guides"]) as fh:
+                o["guides"] = ac.check_guides(json.load(fh))
+        except (ValueError, OSError) as e:  # json.JSONDecodeError is a ValueError
+            raise SystemExit("guides %s: %s" % (o["guides"], e))
+    for k in ("out", "report", "blend"):
+        if o[k]:
+            os.makedirs(os.path.dirname(os.path.abspath(o[k])), exist_ok=True)
     return o
 
 
@@ -254,14 +266,7 @@ def main():
     ob.data.update()
     say("%d vertices, %d triangles, height %.3f -> %.3f m%s" % (len(V), len(F), H0, H0 * scale,
                                                              ", turned to face -Y" if turn else ""))
-    guides = None
-    if o["guides"]:
-        if src_rig is not None:
-            raise SystemExit("--guides has no effect with --keep-weights (the joints come from the source rig)")
-        try:
-            guides = ac.check_guides(json.load(open(o["guides"])))
-        except (ValueError, OSError) as e:  # json.JSONDecodeError is a ValueError
-            raise SystemExit("guides %s: %s" % (o["guides"], e))
+    guides = o["guides"]  # checked in args()
     if src_rig is not None:
         # the source rig's joints replace detection entirely (detection fails on rigs posed with the arms at the
         # body); the crotch comes from the source hips and the hem rule's legs from the source weights
@@ -341,8 +346,6 @@ def main():
         ob.parent = arm_ob
         infl = (W > 0).sum(1)
     t2 = time.time()
-    if o["blend"]:
-        bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(o["blend"]))
     rep = dict(src=o["src"], out=o["out"], height=H0 * scale, scale=scale, turned=turn, vertices=len(V),
                bones=len(ac.NAMES), weighted_groups=len(names), axis_error_deg=aerr,
                influences=np.bincount(infl).tolist(), landmarks={k: [round(float(c), 4) for c in v] for k, v in L.items()},
@@ -350,17 +353,31 @@ def main():
     out = os.path.abspath(o["out"])
     stem, ext = os.path.splitext(out)
     tmp = stem + ".tmp" + ext  # the exporters keep the extension they are given
+    temps = [tmp]
+    rtmp = btmp = None
+    if o["report"]:
+        rtmp = os.path.abspath(o["report"]) + ".tmp"
+        temps.append(rtmp)
+    if o["blend"]:
+        bstem, bext = os.path.splitext(os.path.abspath(o["blend"]))
+        btmp = bstem + ".tmp" + bext
+        temps.append(btmp)
     try:
         export(o, ob, arm_ob, tmp, say)
         rep["seconds"] = dict(landmarks=round(t1 - t0, 1), bind=round(t2 - t1, 1), total=round(time.time() - t0, 1))
-        if o["report"]:
-            rtmp = o["report"] + ".tmp"
+        if rtmp:
             with open(rtmp, "w") as fh:
                 json.dump(rep, fh, indent=1)
-            os.replace(rtmp, o["report"])
+        if btmp:
+            bpy.ops.wm.save_as_mainfile(filepath=btmp, copy=True)
+        # every file is written; the output goes in first, then what describes it
         os.replace(tmp, out)
+        if btmp:
+            os.replace(btmp, os.path.abspath(o["blend"]))
+        if rtmp:
+            os.replace(rtmp, os.path.abspath(o["report"]))
     except BaseException:
-        for f in (tmp, (o["report"] or "") + ".tmp"):
+        for f in temps:
             if os.path.isfile(f):
                 os.remove(f)
         raise

@@ -52,13 +52,17 @@ double swingAngle(const TwistQuat& q, const TwistVec& axis) {
 }
 
 double twistFade(double swing) {
-    const double lo = 120.0 * kPi / 180.0, hi = 175.0 * kPi / 180.0;
+    const double lo = 100.0 * kPi / 180.0, hi = 160.0 * kPi / 180.0;
     const double t = std::clamp((hi - swing) / (hi - lo), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
 }
 
 double unwrapAngle(double angle, double previous) {
     return previous + wrap(angle - previous);
+}
+
+double unwrapFadedTwist(double angle, double previous, double fade) {
+    return fade < 0.05 ? wrap(angle) : unwrapAngle(angle, previous);
 }
 
 double segmentFraction(const TwistVec& boneOffset, const TwistVec& childOffset) {

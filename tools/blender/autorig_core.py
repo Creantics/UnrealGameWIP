@@ -690,10 +690,11 @@ def loose_islands(V, F, say=None):
     say = say or (lambda m: None)
     V = np.asarray(V, float)
     lab = mesh_islands(V, F)
-    # the body: the widest-spread piece among those with at least a quarter of the largest one's vertices
+    # the body: the tallest piece among those with at least a quarter of the largest one's vertices (a dense
+    # ground disc is wide but flat)
     cnt = np.bincount(lab)
     big = [k for k in range(len(cnt)) if cnt[k] >= 0.25 * cnt[0]]
-    body = max(big, key=lambda k: float(np.linalg.norm(np.ptp(V[lab == k], axis=0))))
+    body = max(big, key=lambda k: float(np.ptp(V[lab == k, 2])))
     main = V[lab == body]
     Ht = float(np.ptp(V[:, 2])) or 1.0
     out = []
@@ -1054,8 +1055,10 @@ def finish_weights(V, F, J, info, names, W, max_infl=8, smooth_iters=3, twist=Tr
     if twist:
         for tn in [n for n in names if n in TWIST_NAMES]:
             base = tn.split("_twist")[0] + "_" + tn[-1]
-            if base in names:
-                W[:, names.index(base)] += W[:, names.index(tn)]
+            if base not in names:  # nowhere to fold it: keep the source's twist column as it is
+                say("%s kept: no %s column to fold it into" % (tn, base))
+                continue
+            W[:, names.index(base)] += W[:, names.index(tn)]
             keep = [i for i, n in enumerate(names) if n != tn]
             W, names = W[:, keep], [names[i] for i in keep]
     col = {n: i for i, n in enumerate(names)}
@@ -1377,6 +1380,15 @@ def _check_finish_weights():
     # twist=False keeps the source twist column as given and adds none
     out2, W2 = finish_weights(V, F, J, info, names, W, max_infl=4, smooth_iters=0, twist=False, hem=False)
     assert out2 == names and np.allclose(W2[2, [4, 6]], [0.5, 0.5]) and np.allclose(W2[0, 4], 1.0)
+    # a twist column with no segment column to fold into is kept, so its vertices keep their weight
+    names3 = [n for n in names if n != "lowerarm_l"]
+    W3 = np.delete(W, 4, axis=1)
+    W3[0, 5] = W3[1, 5] = 1.0  # vertices 0 and 1 now on lowerarm_twist_01_l only
+    msgs3 = []
+    out3, Wo3 = finish_weights(V, F, J, info, names3, W3, max_infl=4, smooth_iters=0, hem=False, log=msgs3.append)
+    assert "lowerarm_twist_01_l" in out3 and np.allclose(Wo3.sum(1), 1.0), Wo3
+    assert Wo3[0, out3.index("lowerarm_twist_01_l")] == 1.0, Wo3[0]
+    assert any("lowerarm_twist_01_l kept" in m for m in msgs3), msgs3
 
 
 def _check_hem_rule():

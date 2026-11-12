@@ -92,15 +92,27 @@ TEST_CASE("twist: negative and oblique axes") {
     CHECK(twistAngle(axisAngle({3.0, 0.0, -1.0}, 80 * kDeg), oblique) == doctest::Approx(0.0));
 }
 
-TEST_CASE("twist: the order of swing and twist matters") {
+TEST_CASE("twist: a perpendicular swing reads the same before or after the twist") {
     const TwistVec axis{1.0, 0.0, 0.0};
     const TwistQuat twistFirst = mul(axisAngle({0.0, 0.0, 1.0}, 60 * kDeg), axisAngle(axis, 30 * kDeg));
     const TwistQuat twistLast = mul(axisAngle(axis, 30 * kDeg), axisAngle({0.0, 0.0, 1.0}, 60 * kDeg));
-    // swing * twist splits back exactly; twist * swing about the same axis is a different rotation.
+    // swing * twist splits back exactly; twist * swing is a different rotation, but with the swing axis
+    // perpendicular to the twist axis its twist and swing angles read the same.
     CHECK(twistAngle(twistFirst, axis) == doctest::Approx(30 * kDeg));
     CHECK(twistAngle(twistLast, axis) == doctest::Approx(30 * kDeg));
     CHECK(swingAngle(twistFirst, axis) == doctest::Approx(60 * kDeg));
     CHECK(swingAngle(twistLast, axis) == doctest::Approx(60 * kDeg));
+    // A rotation about an axis between the twist axis and a perpendicular one is not a plain swing:
+    // its twist is neither 0 nor the whole angle.
+    const TwistQuat mixed = axisAngle({1.0, 0.0, 1.0}, 90 * kDeg);
+    CHECK(std::abs(twistAngle(mixed, axis)) > 30 * kDeg);
+    CHECK(std::abs(twistAngle(mixed, axis)) < 80 * kDeg);
+    CHECK(swingAngle(mixed, axis) > 30 * kDeg);
+    // swingAngle and twistAngle take a non-unit quaternion as its unit one.
+    const TwistQuat unit = mul(axisAngle({0.0, 1.0, 0.0}, 70 * kDeg), axisAngle(axis, 20 * kDeg));
+    const TwistQuat scaled{3.0 * unit.x, 3.0 * unit.y, 3.0 * unit.z, 3.0 * unit.w};
+    CHECK(swingAngle(scaled, axis) == doctest::Approx(70 * kDeg));
+    CHECK(twistAngle(scaled, axis) == doctest::Approx(20 * kDeg));
 }
 
 TEST_CASE("twist: swing angle and the fade near 180 degrees") {
@@ -109,21 +121,30 @@ TEST_CASE("twist: swing angle and the fade near 180 degrees") {
     CHECK(swingAngle(axisAngle({0.0, 1.0, 0.0}, 100 * kDeg), axis) == doctest::Approx(100 * kDeg));
     CHECK(swingAngle(TwistQuat{}, TwistVec{}) == 0.0);
     CHECK(twistFade(0.0) == 1.0);
-    CHECK(twistFade(120 * kDeg) == doctest::Approx(1.0));
-    CHECK(twistFade(175 * kDeg) == doctest::Approx(0.0));
+    CHECK(twistFade(100 * kDeg) == doctest::Approx(1.0));
+    CHECK(twistFade(160 * kDeg) == doctest::Approx(0.0));
     CHECK(twistFade(kPi) == 0.0);
-    CHECK(twistFade(147.5 * kDeg) == doctest::Approx(0.5));
+    CHECK(twistFade(130 * kDeg) == doctest::Approx(0.5));
+    // An arm raised 90 degrees from its bind, then rolled 40, keeps all its twist.
+    const TwistQuat raised = mul(axisAngle({0.0, 1.0, 0.0}, 90 * kDeg), axisAngle(axis, 40 * kDeg));
+    CHECK(twistAngle(raised, axis) * twistFade(swingAngle(raised, axis)) == doctest::Approx(40 * kDeg));
     // A hinge bent 150 degrees about an axis 5 degrees off the perpendicular reads about 36 degrees of
-    // twist; the fade takes most of it back out.
+    // twist; the fade keeps under a tenth of it.
     const TwistQuat hinge = axisAngle({std::sin(5 * kDeg), 0.0, std::cos(5 * kDeg)}, 150 * kDeg);
     const double raw = twistAngle(hinge, axis);
     CHECK(raw == doctest::Approx(36.0 * kDeg).epsilon(0.03));
-    CHECK(std::abs(raw * twistFade(swingAngle(hinge, axis))) < 0.5 * std::abs(raw));
+    CHECK(std::abs(raw * twistFade(swingAngle(hinge, axis))) < 0.1 * std::abs(raw));
     // A swing of 180 degrees after a roll: the swing is 180, the fade 0, the result finite.
     const TwistQuat over = mul(axisAngle({0.0, 1.0, 0.0}, kPi), axisAngle(axis, 30 * kDeg));
     CHECK(swingAngle(over, axis) == doctest::Approx(kPi));
     CHECK(twistFade(swingAngle(over, axis)) == 0.0);
     CHECK(std::isfinite(twistAngle(over, axis)));
+}
+
+TEST_CASE("twist: the unwrap restarts where the fade is near zero") {
+    // Faded keys come back wrapped, so a turn picked up there is dropped.
+    CHECK(unwrapFadedTwist(170 * kDeg, -170 * kDeg + 2 * kPi * 3, 0.01) == doctest::Approx(170 * kDeg));
+    CHECK(unwrapFadedTwist(-170 * kDeg, 170 * kDeg, 0.5) == doctest::Approx(190 * kDeg));
 }
 
 TEST_CASE("twist: unwrap across more than a turn, and axisAngle edge cases") {
