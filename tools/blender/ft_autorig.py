@@ -3,7 +3,7 @@ mesh, builds an Unreal-mannequin skeleton (names, hierarchy, axes, twist bones, 
 mesh with voxel-geodesic weights and exports an FBX that FTImportCharacter takes. The work is in autorig_core.py.
 
   blender -b --factory-startup --python-exit-code 1 --python tools/blender/ft_autorig.py -- \
-      in.glb out.glb|out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--voxels 160] \
+      in.glb out.glb|out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--max-tex 1024] [--voxels 160] \
       [--report report.json] [--blend out.blend] [--no-hem] [--no-twist] [--heat] [--keep-weights [--hem]]
 
 --height 0 keeps the mesh's own size. --guides is a json {joint name: [x, y, z]} in the output frame (metres,
@@ -33,7 +33,7 @@ import autorig_core as ac  # noqa: E402
 def args():
     a = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     o = dict(height=1.80, guides=None, max_infl=8, voxels=160, report=None, blend=None, hem=True, twist=True,
-             heat=False, keep=False)
+             heat=False, keep=False, max_tex=0)
     pos = []
     i = 0
     while i < len(a):
@@ -60,6 +60,8 @@ def args():
             o["keep"] = True
         elif k == "--hem":
             o["hem_on"] = True
+        elif k == "--max-tex":
+            o["max_tex"] = int(a[i + 1]); i += 1
         else:
             pos.append(k)
         i += 1
@@ -327,6 +329,11 @@ def main():
     arm_ob.select_set(True)
     bpy.context.view_layer.objects.active = arm_ob
     os.makedirs(os.path.dirname(os.path.abspath(o["out"])), exist_ok=True)
+    for img in bpy.data.images:  # the import asset rules cap texture size per role (docs/ASSET_INTAKE.md)
+        if o["max_tex"] and max(img.size) > o["max_tex"]:
+            f = o["max_tex"] / max(img.size)
+            say("texture %s %dx%d -> %dx%d" % (img.name, img.size[0], img.size[1], round(img.size[0] * f), round(img.size[1] * f)))
+            img.scale(round(img.size[0] * f), round(img.size[1] * f))
     if o["out"].lower().endswith(".glb"):  # the format FTImportCharacter takes (docs/ASSET_INTAKE.md)
         import ne_blender as nb
         nb.export_rig(os.path.abspath(o["out"]), dict(use_selection=True, export_animations=False,
