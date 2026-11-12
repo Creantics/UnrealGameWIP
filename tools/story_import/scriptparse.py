@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scriptparse.py - robust, read-only parser for the locked Draft 54 script (04a..04e).
+"""scriptparse.py - robust, read-only parser for a story script in the design package format (04a..04e).
 
 parse(path) -> list of scene dicts in file order.
 reassemble(scene) -> the exact original text of the scene block (heading + header + body + tail).
@@ -35,12 +35,12 @@ FILE_ACT = re.compile(r'^# .*PART \d+: (ACT ([IVX]+)) — (.*)$')
 END_MARK = re.compile(r'^\*\*END( OF [A-Z ]+)?\*\*$')
 ITALIC_NOTE = re.compile(r'\s*\((?:[^()]|\([^()]*\))*\)\s*$')
 
-# SPEAKER (delivery): text   |   A and B (delivery): text   |   MAREN *(delivery)*: text
+# SPEAKER (delivery): text   |   A and B (delivery): text   |   SPEAKER *(delivery)*: text
 SPEAKER = re.compile(
     r"^(?P<who>[A-Z][A-Z0-9 .'’\-/É&]*?(?: and [A-Z][A-Z0-9 .'’\-/É&]*?)?)"
     r"(?: \*?\((?P<how>[^)]*)\)\*?)?: (?P<text>.*)$")
 INLINE_DIR = re.compile(r'\*\([^)]*\)\*')
-# in-text player-input notes in the locked script, e.g. '***CHOICE (flavor only).** ...'
+# in-text player-input notes in the script, e.g. '***CHOICE (flavor only).** ...'
 INTEXT_NOTE = re.compile(r'^\*\*\*(CHOICE|VARIANT|OPTIONAL|HOLD|TIMED)\b')
 
 
@@ -174,7 +174,7 @@ def _build_scene(lines, start, end, ctx, path):
                          if k not in ('mode', 'gameplay', 'cinematic', 'scene', 'setting')},
         'body': body,
         'tail': tail,
-        'speakers': speakers,                  # as written, first-appearance order ('DUY and DEVIN' stays whole)
+        'speakers': speakers,                  # as written, first-appearance order ('A and B' stays whole)
         'speaker_lines': [(w, counts[w]) for w in speakers],
         'speakers_individual': indiv,          # 'A and B' split into A, B
         'n_body_lines': len(body),
@@ -240,7 +240,8 @@ def parse(path):
 
 
 def default_dir():
-    return os.environ.get('SCRIPT_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'design', 'forgotten_third', 'build', 'draft55'))
+    # The script's folder: the argument, else SCRIPT_DIR (no default: the folder belongs to the story).
+    return os.environ.get('SCRIPT_DIR', '')
 
 
 def script_files(d=None):
@@ -266,7 +267,7 @@ def reassemble_file(path):
     return '\n'.join(parts)
 
 
-def self_test(d=None, verbose=True):
+def self_test(d=None, verbose=True, expect=None):
     ok = True
     files = script_files(d)
     scenes = []
@@ -298,8 +299,9 @@ def self_test(d=None, verbose=True):
     ids = [s['id'] for s in scenes]
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if verbose:
-        print('total scenes: %d (expected 97); unique ids: %d; duplicates: %s' % (len(ids), len(set(ids)), dup or 'none'))
-    ok &= len(ids) == 97 and not dup
+        print('total scenes: %d (expected %s); unique ids: %d; duplicates: %s' %
+              (len(ids), expect if expect is not None else 'any', len(set(ids)), dup or 'none'))
+    ok &= (expect is None or len(ids) == expect) and bool(ids) and not dup
     missing = [s['id'] for s in scenes if not (s['mode'] and s['cinematic'] and s['scene'] and s['setting'])]
     if verbose:
         print('scenes missing a Mode/Cinematic/Scene/Setting header field: %s' % (missing or 'none'))
@@ -314,5 +316,9 @@ def self_test(d=None, verbose=True):
 
 
 if __name__ == '__main__':
+    # scriptparse.py DIR [EXPECTED_SCENES]
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
-    sys.exit(0 if self_test(args[0] if args else None) else 1)
+    if not args and not default_dir():
+        print('usage: scriptparse.py DIR [EXPECTED_SCENES] (or set SCRIPT_DIR)', file=sys.stderr)
+        sys.exit(2)
+    sys.exit(0 if self_test(args[0] if args else None, expect=int(args[1]) if len(args) > 1 else None) else 1)

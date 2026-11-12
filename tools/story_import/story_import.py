@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""story_import.py - turn the Forgotten Third design package into the runtime story JSON.
+"""story_import.py - turn a story design package into the runtime story JSON.
 
-    python3 -I tools/story_import/story_import.py [--build-dir DIR] [--out-dir DIR] [--check]
+    python3 -I tools/story_import/story_import.py --tables FILE [--build-dir DIR] [--out-dir DIR] [--check]
+
+--tables names the story's own tables (a JSON file kept outside the repo): the title, the worlds, the scene
+count, the script folder and scene id prefix, the hold ladder and its anchors, the gameplay keywords, and the
+hand-authored choices and exchanges. The tool itself holds no story data.
 
 Reads (all under --build-dir, default design/forgotten_third/build):
-    draft55/04a..04e_Script_*.md   the script, parsed with scriptparse.py
-    draft55/VO_Master_List.csv     VO ids
+    <script_dir>/04a..04e_*.md     the script, parsed with scriptparse.py
+    <script_dir>/VO_Master_List.csv VO ids
     meta/meta_*.csv                one slate row per scene
     meta/inserts_*.csv             GAMEPLAY / CHOICE / HOLD / OPTIONAL / TIMED / VARIANT rows
     flags.csv, cues_final.csv
 
 Writes (under --out-dir, default assets/story):
-    story.json, scenes/SC-*.json, loc/en.json
+    story.json, scenes/<scene id>.json, loc/en.json
 
 The schema is docs/story_format.md. --check rebuilds in memory, validates the spec's rules on the files
 that are on disk, and fails if the files differ from a fresh build (stale or hand-edited output).
@@ -32,318 +36,70 @@ sys.path.insert(0, HERE)   # python3 -I drops the script dir from sys.path
 import scriptparse as sp   # noqa: E402
 
 FORMAT = 1
-TITLE = 'The Forgotten Third'
-WORLDS = ['Solhaven', 'Lattice', 'Unwritten', 'Ink-Solhaven', 'Cleft pocket', 'House', 'Restored', 'Interstice']
 GAMEPLAY_KINDS = ['CMB', 'ENG', 'PLAY', 'MINI']
 BEAT_TYPES = ['line', 'direction', 'choice', 'gameplay', 'cue', 'flag', 'hold', 'end']
 
-# Hold ladder (docs/story_format.md, rulings_advisor_draft55.md section D), seconds.
-HOLD_LADDER = {'SC-06-U2': 4.0, 'SC-11-Q3': 3.0, 'SC-14-Q3': 5.0, 'SC-15-Q1': 5.0, 'SC-22-Q1': 8.0, 'SC-EP-03': 12.0}
-# Where a ladder hold with no [HOLD] insert goes: after the first direction matching this (default: TELL_RX).
-LADDER_ANCHOR = {'SC-EP-03': re.compile(r'^\*They hold\.\*$')}
-TELL_SECONDS = 1.75       # ordinary Tell: "two taps and a hold" (ladder says 1.5 to 2.0 s)
+TELL_SECONDS = 1.75       # ordinary Tell: a tap and a hold
 INPUT_HOLD_SECONDS = 2.0  # [HOLD: ...] input holds that the ladder does not name
 # a Tell: a tap and a hold in the same sentence ("taps twice, and holds")
 TELL_RX = re.compile(r'\btap(?:s|ping)?\b[^.]{0,80}?\bhold(?:s|ing)?\b', re.I)
 
 # --------------------------------------------------------------------------------------------------
-# Hand-authored choice structure for the 16 [CHOICE: ...] rows (the notation is free text).
-# effects: [op, flag, value]. 'self' as next means "back to this prompt".
-# --------------------------------------------------------------------------------------------------
-def _o(text, effects=(), nxt=None, selectable=True, miss=False):
-    return {'text': text, 'effects': [list(e) for e in effects], 'next': nxt, 'selectable': selectable,
-            'miss': miss}
-
-CHOICES = {
-    'SC-05-D1': [('Offer Torrin the stool', True, [_o('Pull out the third stool', [('set', 'F_CH_TORRIN_STOOL', True)])])],
-    'SC-06-U1': [('Name the third term', True, [_o('Name the third term', [('set', 'F_CH_APEX_NAMED_THIRD', True)])])],
-    'SC-06-U2': [("Refuse Nil's offer", True, [_o('...No.', [('set', 'F_CH_NIL_OFFER_REFUSED', True)])])],
-    'SC-10-Q2': [("The tone of Duy's refusal", False, [
-        _o('Thank you. I mean that. I decline.', [('set', 'F_CH_YSMERE_TONE', 'GENTLE')]),
-        _o("No. I decline, and I'd ask you not to ask again.", [('set', 'F_CH_YSMERE_TONE', 'FIRM')]),
-        _o("I'd love to. Unfortunately, I've read the terms.", [('set', 'F_CH_YSMERE_TONE', 'DRY')])])],
-    'SC-11-Q1': [('Declare a door for one', True, [_o('Declare a door for one')])],
-    'SC-11-Q2': [('Break the Hush with a line you mean', True, [_o('Stand and say it')])],
-    'SC-12-Q2': [('Who does Devin turn to?', False, [_o('Ask Mina', selectable=False), _o('Ask Duy', selectable=False)])],
-    'SC-13-Q2': [('Sit with Granite a while, or leave him', False, [
-        _o('Sit with Granite', [('set', 'F_CH_GRANITE_SIT', 'SAT')]),
-        _o('Walk on', [('set', 'F_CH_GRANITE_SIT', 'WALKED_ON')])])],
-    'SC-15-HE1': [('Which friend do you support first?', False, [
-        _o('Toby', [('set', 'F_CH_HE1_FIRST_SUPPORT', 'TOBY')]),
-        _o('Tamsin Ode and Aurelio', [('set', 'F_CH_HE1_FIRST_SUPPORT', 'QUIET_HANDS')])])],
-    'SC-15-HE2': [('Which friend do you support first?', False, [
-        _o('Basil', [('set', 'F_CH_HE2_FIRST_SUPPORT', 'BASIL')]),
-        _o('Ward', [('set', 'F_CH_HE2_FIRST_SUPPORT', 'WARD')])])],
-    'SC-19-Q4': [('Both heroes speak', True, [_o('Duy speaks, then Devin')])],
-    'SC-20-Q4': [('Which hero speaks first?', False, [_o('Devin speaks first'), _o('Duy speaks first')])],
-    'SC-21-Q2': [('The vote', True, [_o('Raise your hands')])],
-    'SC-21-Q3': [
-        ("Devin's Pledge: what he leaves in his Door", False, [
-            _o("Odette's cloth", [('set', 'F_PL_DEVIN_TOKEN', 'ODETTES_CLOTH')]),
-            _o('The ladle', [('set', 'F_PL_DEVIN_TOKEN', 'LADLE')]),
-            _o('The lentils', [('set', 'F_PL_DEVIN_TOKEN', 'LENTILS')])]),
-        ("Duy's Pledge: what he leaves beside his torn pages", False, [
-            _o('The torn pages only', [('set', 'F_PL_DUY_TOKEN', 'PAGES_ONLY')]),
-            _o('The pages and the tin of tea', [('set', 'F_PL_DUY_TOKEN', 'PAGES_AND_TEA')]),
-            _o('The pages and the last token candy', [('set', 'F_PL_DUY_TOKEN', 'PAGES_AND_CANDY')])])],
-    'SC-22-Q2': [('Make the offer', True, [_o('Make the offer')])],
-    'SC-25-Q4': [("Will you still want me there?", False, [
-        _o('Yes.', nxt='self'),
-        _o('No.', nxt='self'),
-        _o("I don't know.", [('set', 'F_CH_HONEST_ANSWER', 'I_DONT_KNOW')])])],
-}
-
-
-# --------------------------------------------------------------------------------------------------
-# Hand-authored dialogue exchanges for the 7 MINI [GAMEPLAY -> ...] rows (docs/story_mini_dialogue.md).
-# The story never leaves the scene: a companion talks the player through the old mini-game as choices.
+# the story's tables (--tables FILE, JSON), set by load_tables()
 #
-#   MINI[scene] = [(anchor, items), ...]
-#   anchor  None: right after the insert's hidden MINI direction (the insert's own anchor); else a unique
-#           substring of a body line: the items go just before that line (the notation stays at its anchor).
-#   items   _L(speaker, text, delivery?)  invented line, id PH-<scene>-<nnn>
-#           _D(text)                      shown direction (filmable action only)
-#           _H(seconds, note)             hold
-#           _F(op, flag, value)           flag beat (set / clear / require / end)
-#           _LB(name)                     a jump target for option `next` (no beat)
-#           _C(label, options, scripted)  choice; an option's `next` may name a label
-#
-# A wrong pick is a `miss` option. The exchange is a linear ladder, so it can never loop:
-#   ask (miss -> audit A) -> ask again (miss -> audit B) -> ask a third time (miss -> the companion supplies
-#   the answer) -> the right pick (or the supplied answer) joins the concede lines.
+#   title, worlds              story.json's title; the worlds a scene's slate may name
+#   scene_count                scenes the story must have
+#   script_dir                 the script's folder under --build-dir
+#   scene_id_prefix            the prefix every scene id starts with (beat ids use the rest)
+#   hold_ladder                {scene: seconds}: the scene's Tell or input hold
+#   ladder_anchor              {scene: regex}: where a ladder hold with no [HOLD] insert goes (default: TELL_RX)
+#   gameplay_keywords          [[kind, regex], ...]: a gameplay insert's kind from its text, first match wins
+#                              (after the leading kind word; no match: ENG)
+#   choices                    {scene: [[label, scripted, [option, ...]], ...]} for the [CHOICE: ...] inserts, in
+#                              order; option = {text, effects: [[op, flag, value]], next, selectable, miss};
+#                              next 'self' means back to this prompt
+#   mini                       {scene: [[anchor, items], ...]}: the exchange that replaces a MINI insert.
+#                              anchor null: right after the insert's hidden MINI direction; else a unique
+#                              substring of a body line, the items go just before that line. items:
+#                                ['line', speaker, text, delivery|null]  invented line, id PH-<scene>-<nnn>
+#                                ['dir', text]                            shown direction
+#                                ['hold', seconds, note]
+#                                ['flag', op, flag, value|null]           set / clear / require / end
+#                                ['label', name]                          a jump target for option `next`
+#                                ['choice', label, scripted, [option, ...]]; an option's next may name a label
 # --------------------------------------------------------------------------------------------------
-def _L(who, text, how=None):
-    return ('line', who, text, how)
+TITLE = ''
+WORLDS = []
+SCENE_COUNT = 0
+SCRIPT_DIR = ''
+SCENE_ID_PREFIX = ''
+HOLD_LADDER = {}
+LADDER_ANCHOR = {}
+GAMEPLAY_KEYWORDS = []
+CHOICES = {}
+MINI = {}
 
 
-def _D(text):
-    return ('dir', text)
-
-
-def _H(seconds, note):
-    return ('hold', seconds, note)
-
-
-def _F(op, flag, value=None):
-    return ('flag', op, flag, value)
-
-
-def _LB(name):
-    return ('label', name)
-
-
-def _C(label, opts, scripted=False):
-    return ('choice', label, scripted, opts)
-
-
-def _ladder(name, ask, opts, audit_a, audit_b, supply, concede=(), first=None, accept=None, bonus=()):
-    """opts: [(text, right)]. `first`: where the right pick on the first try goes (default: the concede
-    lines). `bonus` beats sit between the supplied answer and the concede lines, reached only through `first`;
-    they need `accept` (a scripted pick after the supplied answer that jumps over them)."""
-    ok = name + '.ok'
-    assert not bonus or accept, name
-
-    def prompt(right_next):
-        return _C(ask, [_o(t, nxt=right_next) if right else _o(t, miss=True) for t, right in opts])
-    out = [prompt(first or ok)] + list(audit_a) + [prompt(ok)] + list(audit_b) + [prompt(ok)] + list(supply)
-    if accept:
-        out.append(_C(ask, [_o(accept, nxt=ok)], scripted=True))
-    return out + list(bonus) + [_LB(ok)] + list(concede)
-
-
-_SCORE = 'F_HE_LANTERN_GUARD_SCORE'
-# one more gold smudge (0..3): a descending require chain, since a flag beat can only set a value
-_SCORE_UP = [_F('require', _SCORE, 2), _F('set', _SCORE, 3), _F('end', _SCORE),
-             _F('require', _SCORE, 1), _F('set', _SCORE, 2), _F('end', _SCORE),
-             _F('require', _SCORE, 0), _F('set', _SCORE, 1), _F('end', _SCORE)]
-
-
-def _guard(name, ask, opts, audit_a, audit_b, supply, accept, concede):
-    """SC-13-HE1: a right pick on the first try adds a gold smudge."""
-    return _ladder(name, ask, opts, audit_a, audit_b, supply, concede, first=name + '.score', accept=accept,
-                   bonus=[_LB(name + '.score')] + _SCORE_UP)
-
-
-def _react(flag, value, *items):
-    return [_F('require', flag, value)] + list(items) + [_F('end', flag)]
-
-
-_PINS = 'F_CH_DIAGRAM_PINS'
-
-MINI = {
-    # Lumi decodes Duy's fragments into the grammar; Zee and Basil correct. Lumi reads the result aloud next.
-    'SC-09-HE1': [(None, [
-        _D('Lumi lays the torn fragments in a row on the floorboards and pushes them around with one finger.'),
-        _L('ZEE', 'Start with the seat. What did he call it?'),
-    ] + _ladder('seat', '"Seat III is not a seat. It\'s a…"', [
-        ('"…a throne."', False), ('"…a place."', True), ('"…Ward\'s."', False)],
-        [_L('BASIL', "He'd have underlined a person. Or furniture. It isn't underlined.")],
-        [_L('ZEE', 'Somewhere, not someone. Read the next fragment.')],
-        [_L('ZEE', 'A place. Somewhere you go, not something you sit on.')],
-        [_L('BASIL', "…That's worse, somehow.")]) + _ladder('play', '"Two may…"', [
-            ('"…sit."', False), ('"…rule."', False), ('"…play."', True)],
-        [_L('ZEE', "It's a board, Lumi. Duy only writes about boards one way.")],
-        [_L('BASIL', "What do two people do at a board? I'm asking. I don't know.")],
-        [_L('ZEE', "Play. Two may play. It's always a game with him.")],
-        [_L('ZEE', '…Of course it is.')]) + _ladder('watch', '"The third…"', [
-            ('"…plays."', False), ('"…watches."', True), ('"…waits."', False)],
-        [_L('ZEE', 'Look at the third chair.', 'not looking at it')],
-        [_L('BASIL', "It never touches anything. It just looks.", 'quietly')],
-        [_L('ZEE', 'Watches. The third watches.')],
-        [_D('Nil turns the untouched cup a quarter-turn on its saucer.')]) + [
-        _F('set', 'F_HE_MARGINALIA_DONE', True)])],
-
-    # Rennie cuts the clip; no wrong answers, Pop reacts to each cut (one choice per F_CH_RECUT_* flag).
-    'SC-10-HE1': [(None, [
-        _L('RENNIE', 'Okay. Where does it start?', 'to the screen'),
-        _C('Where does the clip begin?', [
-            _o('"Cold open. Start on the freeze."', [('set', 'F_CH_RECUT_START', 'FROM_THE_FREEZE')]),
-            _o('"Start on the match. Let them see the board first."', [('set', 'F_CH_RECUT_START', 'FROM_THE_MATCH')])]),
-    ] + _react('F_CH_RECUT_START', 'FROM_THE_FREEZE', _L('POP', 'Starting on a stopped tram. Bold.'))
-      + _react('F_CH_RECUT_START', 'FROM_THE_MATCH', _L('POP', 'Copper Ring. Start where it starts.')) + [
-        _C("Duy's semifinal speech?", [
-            _o('"Cut in the speech. \'I don\'t have a plan.\'"', [('set', 'F_CH_RECUT_SPEECH', True)]),
-            _o('"No speech. Let the face do it."', [('set', 'F_CH_RECUT_SPEECH', False)])]),
-    ] + _react('F_CH_RECUT_SPEECH', True, _L('POP', 'He said that to a full house. Good for him.'))
-      + _react('F_CH_RECUT_SPEECH', False, _L('POP', 'Fewer words. He would approve.')) + [
-        _C('How long on the frozen face?', [
-            _o('"Short. In and out."', [('set', 'F_CH_RECUT_HOLD', 'SHORT')]),
-            _o('"Hold on the face. Let them laugh."', [('set', 'F_CH_RECUT_HOLD', 'LONG_ON_FACE')]),
-            _o('"Hold on the hand."', [('set', 'F_CH_RECUT_HOLD', 'LONG_ON_HAND')])]),
-    ] + _react('F_CH_RECUT_HOLD', 'SHORT', _L('POP', 'Quick stop. Nobody gets off.'))
-      + _react('F_CH_RECUT_HOLD', 'LONG_ON_FACE', _L('POP', 'Harrow Gate.', 'not looking up'))
-      + _react('F_CH_RECUT_HOLD', 'LONG_ON_HAND', _L('POP', "…What's he doing with his hand?", 'leaning in')) + [
-        _C('What goes under it?', [
-            _o('"Cold hum."', [('set', 'F_CH_RECUT_SOUNDBED', 'COLD_HUM')]),
-            _o('"Warm hum."', [('set', 'F_CH_RECUT_SOUNDBED', 'WARM_HUM')]),
-            _o('"Silence."', [('set', 'F_CH_RECUT_SOUNDBED', 'SILENCE')])]),
-    ] + _react('F_CH_RECUT_SOUNDBED', 'COLD_HUM', _L('POP', 'Sounds like the depot at night.'))
-      + _react('F_CH_RECUT_SOUNDBED', 'WARM_HUM', _L('POP', 'Sounds like the tram with the heater on.'))
-      + _react('F_CH_RECUT_SOUNDBED', 'SILENCE', _L('POP', 'A conductor would announce it. (a beat) Silence is better.')) + [
-        _F('set', 'F_HE_RECUT_DONE', True)])],
-
-    # Mina sends the threes; Toby corrects. A right first pick adds a gold smudge (F_HE_LANTERN_GUARD_SCORE).
-    'SC-13-HE1': [(None, [
-        _F('clear', _SCORE),
-        _D('At the table, a big man in a baker\'s apron bends his knees to sit.'),
-    ] + _guard('heavy', 'The big one is sitting down. Who goes?', [
-        ('"Spotter. Eyes on him."', False), ('"Anchors. Hold him up."', True), ('"Medic. Check him."', False)],
-        [_L('TOBY', "He's still going down!")],
-        [_L('TOBY', "He's heavy, Mina. You said: carry someone else's weight.")],
-        [_L('TOBY', 'Anchors! He needs weight on him, not eyes!')],
-        '"…Anchors. Go."',
-        [_D('Two volunteers get under his arms. He stands.')]) + [
-        _D('A woman at the end of the row drifts sideways, toward an empty chair.'),
-    ] + _guard('drift', "She's drifting off the row.", [
-        ('"Toby. Anchor."', False), ('"Medic."', False), ('"Toby. Spotter."', True)],
-        [_L('TOBY', 'Anchor? I weigh about as much as the chair.')],
-        [_L('TOBY', "She's not falling. She's wandering. Somebody just has to see where.")],
-        [_L('TOBY', "Spotter. I'll watch her. I'm good at watching.")],
-        '"…Spotter. Bait with eyes."',
-        [_D('Toby runs alongside the woman, waving both arms. She turns her head to follow him.')]) + [
-        _D('In the second row an old man sways, eyes open. His knees start to go.'),
-    ] + _guard('faint', "He's going down.", [
-        ('"Anchors."', False), ('"Medic. Now."', True), ('"Spotter."', False)],
-        [_L('TOBY', "Too slow! He's not walking anymore!")],
-        [_L('TOBY', "He doesn't need holding, Mina. He needs catching.")],
-        [_L('TOBY', 'Medic! Somebody catch him!')],
-        '"…Medic. Go."',
-        [_D('A volunteer with a satchel catches the old man and lowers him to the cobbles, away from the table.')]) + [
-        _D('Along the road, small gold smudges spread across the grey paving.'),
-        _F('set', 'F_HE_LANTERN_GUARD_DONE', True)])],
-
-    # Mina links the Order and the Guard; Fenn and Toby correct.
-    'SC-15-HE1': [(None, [
-        _L('FENN', 'The Order is yours tonight, Takeda. Where do you want us?'),
-    ] + _ladder('front', 'Who holds the front?', [
-        ('"The Order. Shields up front."', False), ('"The Quiet Hands. They know these streets."', True),
-        ('"Me. I\'ll hold it."', False)],
-        [_L('FENN', 'Think, Takeda. Who knows these streets in the dark?')],
-        [_L('TOBY', "The people nobody counted, Mina. They've been here the whole time.")],
-        [_L('FENN', "The Quiet Hands. They've done it in the dark for years. Let them do it in the light.")],
-        [_D('The Quiet Hands step out of the doorways and form a line across the street.')]) + _ladder(
-        'cape', 'Who carries the cape?', [
-            ('"One knight. The fastest."', False), ('"Fenn. It\'s her order."', False),
-            ('"Tamsin Ode and Aurelio. Together."', True)],
-        [_L('FENN', 'Count the hands on that cape.')],
-        [_L('TOBY', "It's a big cape. It's a two-people cape.")],
-        [_L('FENN', "Two. Tamsin Ode and Aurelio. Don't make me say it twice.")],
-        [_D('Tamsin Ode and Aurelio lift the cape between them and walk it down the steps.')]) + [
-        _F('set', 'F_HE_CARRY_DONE', True)])],
-
-    # Lumi fits the clause (stated, symmetric, testable, on the first page); Ward corrects.
-    'SC-15-HE2': [(None, [
-        _L('WARD', 'Then write it. I will sign what holds.', 'holding out the quill'),
-    ] + _ladder('stated', '"Let it be…"', [
-        ('"…presumed that any rule may change."', False), ('"…hoped that the rules may be kinder."', False),
-        ('"…written that any rule may be amended…"', True)],
-        [_L('WARD', 'No. If it is not stated, someone presumes. Page ninety-one presumed.')],
-        [_L('WARD', 'Plainly, Miss Amato. A sentence anyone can point to.')],
-        [_L('WARD', 'Written. Stated plainly, where anyone can point to it.')],
-        [_L('WARD', 'Stated.', 'writing')]) + _ladder('binds', '"…amended by…"', [
-            ('"…the Arbiters."', False), ('"…those it binds."', True), ('"…the champion."', False)],
-        [_L('WARD', 'That binds somebody else. A rule that binds others and not its writer is a decree.', 'a rueful breath')],
-        [_L('WARD', 'Symmetric. Whoever it binds must hold the pen.')],
-        [_L('WARD', 'By those it binds. Ysmere wrote that in a margin forty years ago.')],
-        [_L('WARD', 'Symmetric. Testable.', 'writing')]) + _ladder('page', 'Where does it go?', [
-            ('"Page ninety-one. Under the footnote."', False), ('"The last page. After everything."', False),
-            ('"The first page."', True)],
-        [_L('WARD', 'Then it is a correction. Corrections get skipped. I skipped one.')],
-        [_L('BASIL', 'Where does anybody start reading?')],
-        [_L('WARD', 'The first page. Before the first rule.')],
-        [_L('LUMI', 'On the first page. Not the footnotes.'), _L('WARD', '…Not the footnotes.')]) + [
-        _F('set', 'F_HE_AMENDMENT_DONE', True)])],
-
-    # Devin and Duy fill Duy's board (R11's worked example). The tapping is pre-pinned when the player pinned
-    # clues in SC-14-Q3 (a help, not a branch: a scripted pick instead of the ladder); the existing VO lines are
-    # the concede beats.
-    'SC-18-Q1': [
-        ('And he laughed late', [
-            _L('DUY', 'What did yours do when he lied?', 'pen ready'),
-        ] + _ladder('laugh', 'What did Torrin do when he lied?', [
-            ('"He went quiet."', False), ('"He drank his tea."', False), ('"He laughed."', True)],
-            [_L('DUY', "Everyone does that. I've got a column for things only he does.")],
-            [_L('DUY', 'Devin. Friday. Your mother\'s table.')],
-            [_L('DUY', "The laugh. You told me at your mother's table. I'm just reading it back.", 'writing it in himself')])),
-        ('A long silence', [
-            _L('DUY', "One more column. The hands. Torrin's hands, before the freeze."),
-            _F('require', _PINS, True),
-            _D("The card is already pinned to the board, in Devin's handwriting: TWO TAPS. A HOLD."),
-            _C("Torrin's hands, before the freeze.", [_o('"Two taps. Then he holds."', nxt='taps.ok')], scripted=True),
-            _F('end', _PINS),
-        ] + _ladder('taps', "Torrin's hands, before the freeze.", [
-            ('"He drums all five fingers."', False), ('"Two taps. Then he holds."', True),
-            ('"He grips the sabre."', False)],
-            [_L('DUY', 'Smaller than that. I nearly missed it with Nil.')],
-            [_L('DUY', 'Count them. I counted Nil\'s. It was a number.')],
-            [_L('DUY', 'Two taps and a hold. Nil does it on the cup. Torrin does it on the table.')],
-            [_L('DUY', 'Two taps and a hold. Both columns.', 'pinning it')])),
-    ],
-
-    # Two segments, each placed inside its own half of the scene: Mina breaks the column's rhythm (Pia
-    # corrects, timed by a hold), then Rennie calls Pop awake (Pop answers in his sleep).
-    'SC-21-HE1': [
-        ('Odette is in the column', [
-            _D('The column steps past the bakery: left, right, left, right. Every foot lands on the same beat.'),
-            _H(1.5, 'MINI: the column\'s rhythm before the call'),
-        ] + _ladder('rhythm', 'When do you call it?', [
-            ('"On the beat! LEFT! RIGHT!"', False), ('"Off the beat. Left… right-right. Left."', True),
-            ('"Don\'t call. Wait for a gap."', False)],
-            [_L('PIA', "They're marching to you, Mina!")],
-            [_L('PIA', "Give them a step that isn't theirs!")],
-            [_L('PIA', 'Off the beat! Make them trip on it!')],
-            [_D('Three walkers at the back of the column stumble out of step. They stop.')]) + [
-            _F('set', 'F_HE_HOME_RESISTS_MINA_DONE', True)]),
-        ('Copper Ring! Ropewalk!', [
-            _H(1.0, 'MINI: Pop in the row before the call'),
-        ] + _ladder('stops', 'What do you call?', [
-            ('"Home! Pop, we\'re home!"', False), ('"Pop! Wake up!"', False), ('"Copper Ring!"', True)],
-            [_L('POP', '…Next stop.', 'eyes open, not seeing her')],
-            [_L('POP', '…Start at the start.', 'murmuring')],
-            [_L('POP', '…Copper Ring.', 'murmuring')]) + [
-            _F('set', 'F_HE_HOME_RESISTS_LATTICE_DONE', True)]),
-    ],
-}
+def load_tables(path):
+    """Read the story's tables; returns an error string, or None."""
+    global TITLE, WORLDS, SCENE_COUNT, SCRIPT_DIR, SCENE_ID_PREFIX, HOLD_LADDER, LADDER_ANCHOR
+    global GAMEPLAY_KEYWORDS, CHOICES, MINI
+    try:
+        with open(path, encoding='utf-8') as fh:
+            t = json.load(fh)
+    except (OSError, ValueError) as e:
+        return 'cannot read the tables: %s' % e
+    need = ('title', 'worlds', 'scene_count', 'script_dir', 'scene_id_prefix', 'hold_ladder', 'ladder_anchor',
+            'gameplay_keywords', 'choices', 'mini')
+    missing = [k for k in need if k not in t]
+    if missing:
+        return 'the tables lack: %s' % ', '.join(missing)
+    TITLE, WORLDS, SCENE_COUNT = t['title'], t['worlds'], int(t['scene_count'])
+    SCRIPT_DIR, SCENE_ID_PREFIX, HOLD_LADDER = t['script_dir'], t['scene_id_prefix'], t['hold_ladder']
+    LADDER_ANCHOR = {k: re.compile(v) for k, v in t['ladder_anchor'].items()}
+    GAMEPLAY_KEYWORDS = [(k, re.compile(rx)) for k, rx in t['gameplay_keywords']]
+    CHOICES, MINI = t['choices'], t['mini']
+    return None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -454,12 +210,9 @@ def gameplay_kind(rest):
     if m and m.group(1).upper() in _HEAD_KIND and (rest[m.end():m.end() + 1] in (':', ' ', ',', '')):
         return _HEAD_KIND[m.group(1).upper()]
     low = rest[:200].lower()
-    if re.search(r'home echo|mini-game|minigame', low):
-        return 'MINI'
-    if re.search(r'boss|skirmish|\bphase\b|usher|needle|duel|combat|battle|\bspar\b|fight|defense|tutorial: (guard|load|read)', low):
-        return 'CMB'
-    if re.search(r'free look|walk|explor|roam|free ', low):
-        return 'PLAY'
+    for kind, rx in GAMEPLAY_KEYWORDS:
+        if rx.search(low):
+            return kind
     return 'ENG'
 
 
@@ -472,9 +225,9 @@ class Model:
 
 def load_inputs(build_dir):
     m = Model()
-    d55 = os.path.join(build_dir, 'draft55')
-    m.scenes = sp.parse_all(d55)
-    m.vo = csv_rows(os.path.join(d55, 'VO_Master_List.csv'))
+    script = os.path.join(build_dir, SCRIPT_DIR)
+    m.scenes = sp.parse_all(script)
+    m.vo = csv_rows(os.path.join(script, 'VO_Master_List.csv'))
     m.meta = {r['scene_id']: r for r in csv_glob(os.path.join(build_dir, 'meta', 'meta_*.csv'))}
     m.inserts = csv_glob(os.path.join(build_dir, 'meta', 'inserts_*.csv'))
     m.flags = csv_rows(os.path.join(build_dir, 'flags.csv'))
@@ -539,7 +292,7 @@ def build(build_dir):
         body = s['body']
         beats = []
         cnt = collections.Counter()
-        short = sid[3:]
+        short = sid[len(SCENE_ID_PREFIX):] if sid.startswith(SCENE_ID_PREFIX) else sid
 
         def key_for(kind):
             cnt[kind] += 1
@@ -935,8 +688,8 @@ def validate(out_dir, fresh_files, vo_ids, info):
         err('story.json format != %d' % FORMAT)
     chapters = story.get('chapters', [])
     in_story = [sid for ch in chapters for sid in ch['scenes']]
-    if len(in_story) != 97:
-        err('story.json lists %d scenes, expected 97' % len(in_story))
+    if len(in_story) != SCENE_COUNT:
+        err('story.json lists %d scenes, expected %d' % (len(in_story), SCENE_COUNT))
     if len(set(in_story)) != len(in_story):
         err('a scene appears in more than one chapter slot')
     if story.get('start') not in in_story:
@@ -948,8 +701,8 @@ def validate(out_dir, fresh_files, vo_ids, info):
     if len(cue_ids) != len(story.get('cues', [])):
         err('duplicate cue ids')
     scene_files = sorted(r for r in on_disk if r.startswith('scenes/'))
-    if len(scene_files) != 97:
-        err('%d scene files, expected 97' % len(scene_files))
+    if len(scene_files) != SCENE_COUNT:
+        err('%d scene files, expected %d' % (len(scene_files), SCENE_COUNT))
     ch_of = {sid: ch['id'] for ch in chapters for sid in ch['scenes']}
     used_loc = set()
     line_ids = collections.Counter()
@@ -1116,13 +869,18 @@ def summary(stats, info, out):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--tables', required=True, help="the story's tables (JSON, kept outside the repo)")
     ap.add_argument('--build-dir', default=os.path.join(REPO, 'design', 'forgotten_third', 'build'))
     ap.add_argument('--out-dir', default=os.path.join(REPO, 'assets', 'story'))
     ap.add_argument('--check', action='store_true', help='validate the files in --out-dir instead of writing them')
     a = ap.parse_args(argv)
+    why = load_tables(a.tables)
+    if why:
+        print('story_import: %s' % why, file=sys.stderr)
+        return 2
     files, stats, problems, info = build(a.build_dir)
     if a.check:
-        vo_ids = {r['VO ID'] for r in csv_rows(os.path.join(a.build_dir, 'draft55', 'VO_Master_List.csv'))}
+        vo_ids = {r['VO ID'] for r in csv_rows(os.path.join(a.build_dir, SCRIPT_DIR, 'VO_Master_List.csv'))}
         errs = problems + validate(a.out_dir, files, vo_ids, info)
         summary(stats, info, sys.stdout)
         if errs:
