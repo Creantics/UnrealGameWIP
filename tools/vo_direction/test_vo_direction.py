@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vo_common as vc  # noqa: E402
@@ -84,33 +84,33 @@ ARLO (low): The kettle sings at noon and the hall fills up.
 
 ## Camps
 
-## CAMP-E1 · "Test Camp"
+## CP-E1 · "Test Camp"
 
-*Choice:* **[CHOICE: TEASE / CHEER]** sets `F_MOOD`.
+*Choice:* **[CHOICE: ROAST / REASSURE]** sets `F_MOOD`.
 
 DOV: Tram Five went up the hill.
-<sub>VO-CAMP-E1-001</sub>
+<sub>VO-CP-E1-001</sub>
 
-**[VARIANT: if TEASE]**
+**[VARIANT: if ROAST]**
 
 BEX: You would have dropped it.
-<sub>VO-CAMP-E1-002</sub>
+<sub>VO-CP-E1-002</sub>
 
-**[VARIANT: if CHEER]**
+**[VARIANT: if REASSURE]**
 
 BEX: Wake me before the market.
-<sub>VO-CAMP-E1-003</sub>
+<sub>VO-CP-E1-003</sub>
 ''')
 
 SAMPLE_B = T('''# TEST SCRIPT, PART 2
 # ACT II — TEST
 ### QZ-05-D1 · The Yard
 
-> **[VARIANT: F_MOOD = TEASE]** ARLO (bark): You count like a clock. Keep ticking.
-> **[VARIANT: F_MOOD = CHEER]** ARLO (bark): Good count. Once more.
+> **[VARIANT: F_MOOD = ROAST]** ARLO (bark): You count like a clock. Keep ticking.
+> **[VARIANT: F_MOOD = REASSURE]** ARLO (bark): Good count. Once more.
 
-- ARLO (TEASE): You dodge like a door on a hinge.
-- BEX (CHEER): Steady. You are fine.
+- ARLO (ROAST): You dodge like a door on a hinge.
+- BEX (REASSURE): Steady. You are fine.
 
 ARLO and BEX (together): What if the boat leaves?
 ''')
@@ -186,7 +186,7 @@ GUS: Neither do I.
 
 ### QZ-15-Q1 · The Stall
 
-***VARIANT (pair barks).** Reads `F_MOOD`. TEASE: BEX: "Wet floor." / ARLO: "My fault." CHEER: BEX: "Next round." / ARLO: "I'm ready."*
+***VARIANT (pair barks).** Reads `F_MOOD`. ROAST: BEX: "Wet floor." / ARLO: "My fault." REASSURE: BEX: "Next round." / ARLO: "I'm ready."*
 
 ### QZ-16-Q1 · The Table
 
@@ -270,17 +270,17 @@ class TestExtract(unittest.TestCase):
 
     def test_camp_vo_ids_and_tone_variants(self):
         r = find(self.rows, T('BEX'), 'you would have dropped it')
-        self.assertEqual(r['line_id'], 'VO-CAMP-E1-002')
-        self.assertIn('TEASE', r['variant'])
+        self.assertEqual(r['line_id'], 'VO-CP-E1-002')
+        self.assertIn('ROAST', r['variant'])
         r = find(self.rows, T('BEX'), 'wake me before the market')
-        self.assertIn('CHEER', r['variant'])
+        self.assertIn('REASSURE', r['variant'])
         self.assertEqual(find(self.rows, T('DOV'), 'tram five went up the hill')['variant'], '')
 
     def test_barks_each_variant_its_own_row(self):
         barks = [r for r in self.rows if r['scene'] == T('QZ-05-D1') and r['kind'] == 'bark']
         self.assertEqual(len(barks), 4)
-        self.assertEqual(sum('TEASE' in r['variant'] for r in barks), 2)
-        self.assertEqual(sum('CHEER' in r['variant'] for r in barks), 2)
+        self.assertEqual(sum('ROAST' in r['variant'] for r in barks), 2)
+        self.assertEqual(sum('REASSURE' in r['variant'] for r in barks), 2)
         self.assertEqual(barks[0]['act'], 'II')
 
     def test_joint_speaker(self):
@@ -341,7 +341,7 @@ DOV: Tram Five went up the hill.
         return extract_lines.extract(d, scene_prefix=SCENE_PREFIX)
 
     def test_grammar_from_names(self):
-        # generic grammar: ZZ- is no camp heading and JEER / PRAISE are no bark labels
+        # default grammar: ZZ- is no camp heading and JEER / PRAISE are no bark labels
         rows = self.grammar_rows()
         self.assertNotIn('VO-ZZ-E1-001', [r['line_id'] for r in rows])
         self.assertEqual([r['variant'] for r in rows if r['speaker'] in ('ARLO', 'BEX')][-2:], ['', ''])
@@ -355,12 +355,12 @@ DOV: Tram Five went up the hill.
     def test_bad_grammar(self):
         for text, needle in (('{"grammar": []}', 'grammar'), ('{"grammar": {"barks": []}}', 'barks'),
                              ('{"grammar": {"barks": ["low"]}}', 'barks'),
-                             ('{"grammar": {"barks": ["TEASE\\n"]}}', 'barks'),
+                             ('{"grammar": {"barks": ["ROAST\\n"]}}', 'barks'),
                              ('{"grammar": {"camp_prefix": "("}}', 'camp_prefix')):
             self.assertIn(needle, extract_lines.load_names(self.names(text)), text)
         # a refused file changes nothing
-        self.assertEqual(extract_lines.BARKS, extract_lines.BARKS_GENERIC)
-        self.assertIn(extract_lines.re.escape('CAMP-'), extract_lines.CAMP_HDR.pattern)
+        self.assertEqual(extract_lines.BARKS, extract_lines.BARKS_DEFAULT)
+        self.assertIn(extract_lines.re.escape('CP-'), extract_lines.CAMP_HDR.pattern)
         self.assertEqual(extract_lines.LANE_DEFAULT, extract_lines.LANE_GENERIC)
 
     def test_bad_lanes_exit_2(self):
@@ -368,6 +368,24 @@ DOV: Tram Five went up the hill.
         self.assertIn('cannot read', extract_lines.load_names(self.names('{')))
         d = tempfile.mkdtemp()
         self.assertEqual(extract_lines.main([d, '--scene-prefix', SCENE_PREFIX, '--names', self.names('[1]')]), 2)
+
+    def test_missing_names_or_tables_warn(self):
+        d = tempfile.mkdtemp()
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            extract_lines.main([d, '--scene-prefix', SCENE_PREFIX])
+        self.assertIn('warning: no --names', err.getvalue())
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertIsNone(extract_lines.load_names(self.names('{"lanes": {"A": "ARLO"}}')))
+        self.assertIn('no "grammar"', err.getvalue())
+        self.assertNotIn('no "lanes"', err.getvalue())
+        self.assertEqual(extract_lines.BARKS, ('ROAST', 'REASSURE'))
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertIsNone(extract_lines.load_names(self.names('{"grammar": {"barks": ["JEER"]}}')))
+        self.assertIn('no "lanes"', err.getvalue())
+        self.assertNotIn('no "grammar"', err.getvalue())
 
 
 class TestExtractEmbedded(unittest.TestCase):
@@ -427,7 +445,7 @@ class TestExtractEmbedded(unittest.TestCase):
     def test_tone_variant_note_second_speaker(self):
         rows = self.scene(T('QZ-15-Q1'))
         self.assertEqual([(r['speaker'], r['variant']) for r in rows],
-                         [(T('BEX'), 'TEASE'), (T('ARLO'), 'TEASE'), (T('BEX'), 'CHEER'), (T('ARLO'), 'CHEER')])
+                         [(T('BEX'), 'ROAST'), (T('ARLO'), 'ROAST'), (T('BEX'), 'REASSURE'), (T('ARLO'), 'REASSURE')])
 
     def test_choice_concede_variant(self):
         r = find(self.rows, T('BEX'), 'it was the dog')

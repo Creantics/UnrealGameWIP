@@ -32,9 +32,10 @@ A choice option with no speaker of its own takes its lane's default speaker: the
 letter of the scene id's last part (`<prefix>02-D1` is lane D). --names reads the "lanes" table
 ({LETTER: SPEAKER}) from the story's voice names JSON (build_directions --names); without it the
 generic lanes A, B and C stand for themselves.
-The story's own notation comes from the same file's "grammar" object: "barks", the bark labels
-(upper-case words; default TEASE and CHEER), and "camp_prefix", the camp id prefix in `## <prefix>E1 · Title`
-headings (default CAMP-).
+The story's own notation can be overridden by the same file's "grammar" object: "barks", the bark labels
+(upper-case words; default ROAST and REASSURE), and "camp_prefix", the camp id prefix in `## <prefix>E1 · Title`
+headings (default CP-). Without --names, or with a names file lacking "lanes" or "grammar", a warning says
+which defaults are in use.
 Read-only on the script. Standard library only.
 """
 import argparse
@@ -75,16 +76,16 @@ QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”')
 GAP_SPEAKER = re.compile(
     r"(?:(?P<label>[A-Za-z_][A-Za-z_ ]{0,30}): )?(?P<who>[A-Z][A-Z'’\-]+(?: [A-Z][A-Z'’\-]+)*)"
     r"(?: \((?P<how>(?:[^()]|\([^()]*\))*)\))?: \*?$")
-BARKS_GENERIC = ('TEASE', 'CHEER')
-CAMP_GENERIC = 'CAMP-'
+BARKS_DEFAULT = ('ROAST', 'REASSURE')
+CAMP_DEFAULT = 'CP-'
 BARK_WORD = re.compile(r'^[A-Z][A-Z0-9_]*$')
-BARKS = BARKS_GENERIC
+BARKS = BARKS_DEFAULT
 BARK_RX = GAP_LABEL = CAMP_HDR = None
 NOT_SPEAKERS = set(NOT_SPEAKERS_BASE)
 
 
-def set_grammar(barks=BARKS_GENERIC, camp_prefix=CAMP_GENERIC):
-    """Set the bark labels and the camp id prefix (the names file's "grammar"); defaults are generic."""
+def set_grammar(barks=BARKS_DEFAULT, camp_prefix=CAMP_DEFAULT):
+    """Set the bark labels and the camp id prefix (the names file's "grammar"); defaults are the story's."""
     global BARKS, BARK_RX, GAP_LABEL, CAMP_HDR, NOT_SPEAKERS
     BARKS = tuple(barks)
     alt = '|'.join(re.escape(b) for b in BARKS)
@@ -492,7 +493,7 @@ class Extractor:
 
 def load_names(path):
     """Set LANE_DEFAULT and the grammar from a voice names JSON ("lanes", "grammar"); returns an error
-    string, or None. Missing tables keep the generic defaults."""
+    string, or None. A missing table keeps its default, with a warning on stderr."""
     global LANE_DEFAULT
     try:
         with open(path, encoding='utf-8-sig') as fh:
@@ -506,14 +507,17 @@ def load_names(path):
     g = t.get('grammar', {})
     if not isinstance(g, dict):
         return 'the names file\'s "grammar" must be an object'
-    barks = g.get('barks', list(BARKS_GENERIC))
-    camp = g.get('camp_prefix', CAMP_GENERIC)
+    barks = g.get('barks', list(BARKS_DEFAULT))
+    camp = g.get('camp_prefix', CAMP_DEFAULT)
     if not isinstance(barks, list) or not barks or not all(isinstance(b, str) and BARK_WORD.fullmatch(b) for b in barks):
         return '"grammar.barks" must be a non-empty list of upper-case words'
     if not isinstance(camp, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9\-]*', camp):
         return '"grammar.camp_prefix" must be a word such as CAMP-'
     LANE_DEFAULT = dict(lanes) if lanes else dict(LANE_GENERIC)
     set_grammar(barks, camp)
+    for key, what in (('lanes', 'the generic lanes A, B and C'), ('grammar', 'the built-in bark labels and camp prefix')):
+        if key not in t:
+            sys.stderr.write('extract_lines: warning: %s has no "%s"; using %s\n' % (path, key, what))
     return None
 
 
@@ -601,8 +605,10 @@ def main(argv=None):
     ap.add_argument('--summary', action='store_true', help='print counts per act / speaker')
     ap.add_argument('--names', help='the story\'s voice names JSON; its "lanes" table gives each lane\'s '
                                     'default speaker and its "grammar" the bark labels and camp prefix '
-                                    '(default: generic)')
+                                    '(default: generic lanes, built-in grammar)')
     a = ap.parse_args(argv)
+    if not a.names:
+        sys.stderr.write('extract_lines: warning: no --names; choice options get the generic lanes A, B and C\n')
     if a.names:
         err = load_names(a.names)
         if err:

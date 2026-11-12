@@ -149,6 +149,26 @@ def _check_mini_item(where, it):
     return None
 
 
+FLAG_ID_DEFAULT = r'F_[A-Z0-9_]+'   # the tables' optional "flag_id_pattern" replaces it
+FLAG_ID_PATTERN = FLAG_ID_DEFAULT
+
+
+def hold_sets(note):
+    """The flag ids a HOLD note sets: each id in a list right after "Sets" ("Sets F_A", "Sets `F_A` and
+    `F_B`", "sets F_A, F_B"). An id elsewhere does not count, so "Sets F_A (not F_B)" sets F_A alone;
+    "No flag set" anywhere sets nothing."""
+    if 'No flag set' in note:
+        return []
+    one = r'`?(?:%s)`?' % FLAG_ID_PATTERN
+    ids = []
+    for m in re.finditer(r'(?<!No flag )\b[Ss]ets (%s(?:(?:,? and |, )%s)*)(?![A-Za-z0-9_])' % (one, one), note):
+        for g in re.findall(one, m.group(1)):
+            g = g.strip('`')
+            if g not in ids:
+                ids.append(g)
+    return ids
+
+
 def check_tables(t):
     """The tables' shape; returns an error string, or None."""
     if not isinstance(t, dict):
@@ -163,6 +183,14 @@ def check_tables(t):
             return '%s is not non-empty text' % k
     if not isinstance(t['worlds'], list) or not all(_text(w) for w in t['worlds']):
         return 'worlds is not a list of text'
+    if 'flag_id_pattern' in t:
+        fp = t['flag_id_pattern']
+        try:
+            rx = re.compile(fp) if _text(fp) and fp else None
+        except re.error:
+            rx = None
+        if rx is None or rx.groups or rx.fullmatch(''):
+            return 'flag_id_pattern is not a regex of flag ids (no groups, never empty)'
     if not _int(t['scene_count']) or t['scene_count'] < 0:
         return 'scene_count is not a whole number'
     if not isinstance(t['hold_ladder'], dict) or not all(_num(v) for v in t['hold_ladder'].values()):
@@ -224,7 +252,7 @@ def check_tables(t):
 def load_tables(path):
     """Read the story's tables; returns an error string, or None."""
     global TITLE, WORLDS, SCENE_COUNT, SCRIPT_DIR, SCENE_ID_PREFIX, HOLD_LADDER, LADDER_ANCHOR
-    global GAMEPLAY_KEYWORDS, CHOICES, MINI, CHAPTER_LABELS
+    global GAMEPLAY_KEYWORDS, CHOICES, MINI, CHAPTER_LABELS, FLAG_ID_PATTERN
     try:
         with open(path, encoding='utf-8-sig') as fh:
             t = json.load(fh)
@@ -238,6 +266,7 @@ def load_tables(path):
     LADDER_ANCHOR = {k: re.compile(v) for k, v in t['ladder_anchor'].items()}
     GAMEPLAY_KEYWORDS = [(k, re.compile(rx)) for k, rx in t['gameplay_keywords']]
     CHOICES, MINI, CHAPTER_LABELS = t['choices'], t['mini'], dict(t['chapter_labels'])
+    FLAG_ID_PATTERN = t.get('flag_id_pattern', FLAG_ID_DEFAULT)
     sp.set_scene_prefix(SCENE_ID_PREFIX)
     return None
 
@@ -641,11 +670,12 @@ def build(build_dir):
                 seconds = HOLD_LADDER.get(sid, INPUT_HOLD_SECONDS)
                 hold_beat(seconds, nt)
                 ladder_done[0] = True
-                # "Sets <flag id>" in the HOLD note: the first id the flag table knows counts
-                sm = next((g for g in re.findall(r'(?<!No flag )\b[Ss]ets `?([A-Za-z][A-Za-z0-9_]*)', nt)
-                           if g in flag_ids), None)
-                if sm and 'No flag set' not in nt:
-                    emit({'type': 'flag', 'op': 'set', 'id': sm, 'value': True})
+                for fid in hold_sets(nt):   # every id after "Sets" that the flag table knows
+                    if fid in flag_ids:
+                        emit({'type': 'flag', 'op': 'set', 'id': fid, 'value': True})
+                    else:
+                        print('story_import: warning: %s: a HOLD note sets %s, which is not in the flag table'
+                              % (sid, fid), file=sys.stderr)
             else:   # OPTIONAL / TIMED / VARIANT: designer notation, never shown
                 b = {'type': 'direction', 'text': nt, 'note': kind, 'hidden': True}
                 emit(b)

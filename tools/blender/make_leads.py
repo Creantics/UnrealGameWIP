@@ -1,11 +1,11 @@
-"""Builds the three lead characters into Data/Models/<name>.glb (stylised, not realistic).
+"""Builds the three lead characters into Data/Models/{devin,duy,third}.glb (stylised, not realistic).
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/make_leads.py -- \\
-        [--outdir Data/Models] [--only lead_a,lead_b,...] [--blend-dir <dir>] [--names FILE]
+        [--outdir Data/Models] [--only devin,duy,third] [--blend-dir <dir>] [--names FILE]
 
-The characters are keyed lead_a, lead_b and lead_c. --names FILE (JSON, kept outside the repo) gives each its
-output name (file, object and rig names) and material prefix: {"leads": {"lead_a": {"name": ..., "code": ...}}}.
-Without it the key is the name and la/lb/lc the prefix. --only takes keys or names.
+The characters are keyed lead_a, lead_b and lead_c; by default they are named devin, duy and third (file, object
+and rig names) with the material prefixes dv, dy and tr. --names FILE (optional JSON) overrides any of these:
+{"leads": {"lead_a": {"name": ..., "code": ...}}}. --only takes keys or names.
 
 Each character is one skinned mesh on the canonical 87-joint skeleton (rig_spec.py), so everything that works for
 proof_head and test_human (import, IK Rig, retargeting, the face code) works for them:
@@ -119,7 +119,7 @@ def lead_c_arm(s, S):
 # ------------------------------------------------------------------------------------------------------------
 CHARS = {
     "lead_a": dict(
-        name="lead_a", code="la", height=1.88, expression="amused",
+        name="devin", code="dv", height=1.88, expression="amused",
         tw=[1.2, 1.2, 1.2, 1.2, 1.24, 1.28, 1.34, 1.42, 1.48, 1.5, 1.55, 1.75, 2.05, 2.3],
         td=[1.15, 1.2, 1.2, 1.25, 1.42, 1.45, 1.42, 1.38, 1.42, 1.45, 1.42, 1.45, 1.5, 1.55],
         tf=[0.55] * 14,
@@ -133,7 +133,7 @@ CHARS = {
                 "wrap2": "#CDBFA3", "pants": "#23262F", "boot": "#6B3420", "strap": "#4A2216"},
         metal=(), emissive=()),
     "lead_b": dict(
-        name="lead_b", code="lb", height=1.70, expression="neutral",
+        name="duy", code="dy", height=1.70, expression="neutral",
         tw=[1.0, 1.06, 1.06, 1.06, 1.0, 0.86, 0.86, 0.86, 0.86, 0.86, 0.86, 0.86, 0.9, 0.95],
         td=[0.86] * 14, tf=[0.5] * 14, band=None, neck=0.88, arm=(0.86, 0.85, 0.85, 0.9), hand=0.92,
         leg=(0.88,) * 9, foot=0.95, idle_arm=-30.0, walk_arm=-32.0, face_wide=-0.01, face_chin=-0.07, skirt=None,
@@ -144,7 +144,7 @@ CHARS = {
                 "shoe": "#131316", "glasses": "#0B0B0D"},
         metal=("gold",), emissive=("glow",)),
     "lead_c": dict(
-        name="lead_c", code="lc", height=1.80, expression="neutral",
+        name="third", code="tr", height=1.80, expression="neutral",
         tw=[1.0] * 14, td=[1.0] * 14, tf=[0.5] * 14, band=None, neck=1.0, arm=(0.88, 0.97, 1.0, 1.0), hand=1.0,
         leg=(1.0,) * 9, foot=1.0, idle_arm=-26.0, walk_arm=-28.0, face_wide=0.01, face_chin=-0.02,
         skirt=(1.03, 0.42, 0.07), torso_mat=lead_c_torso, arm_mat=lead_c_arm, leg_mat=lambda s, S: "pants",
@@ -917,34 +917,46 @@ def build_character(name, outdir, blend_dir=None):
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(os.path.join(blend_dir, name + ".blend")))
 
 
+FLAGS = {"--outdir": "outdir", "--only": "only", "--blend-dir": "blend_dir", "--names": "names"}
+
+
+def parse_args(argv):
+    """The options after "--" as a dict (outdir, only, blend_dir, names), or an error string. Every flag needs a
+    value that is not itself a flag; an unknown argument is an error."""
+    opts = dict(outdir="Data/Models", only=None, blend_dir=None, names=None)
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a not in FLAGS:
+            return "unknown argument %r" % a
+        if i + 1 >= len(argv) or argv[i + 1].startswith("--") or not argv[i + 1]:
+            return "%s needs a value" % a
+        opts[FLAGS[a]] = argv[i + 1]
+        i += 2
+    return opts
+
+
+def resolve(opts):
+    """Applies --names and turns --only into CHARS keys; returns the key list or an error string."""
+    if opts["names"]:
+        err = load_names(opts["names"])
+        if err:
+            return err
+    try:
+        return [key_for(n) for n in (opts["only"].split(",") if opts["only"] else CHARS)]
+    except KeyError as e:
+        return e.args[0]
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    outdir, only, blend_dir, names = "Data/Models", list(CHARS), None, None
-    for flag in ("--outdir", "--only", "--blend-dir", "--names"):
-        if flag in argv[:-1] and argv[argv.index(flag) + 1].startswith("--") or argv[-1:] == [flag]:
-            print("make_leads: %s needs a value" % flag, file=sys.stderr)
-            sys.exit(2)
-    for i, a in enumerate(argv):
-        if a == "--outdir":
-            outdir = argv[i + 1]
-        if a == "--only":
-            only = argv[i + 1].split(",")
-        if a == "--blend-dir":
-            blend_dir = argv[i + 1]
-        if a == "--names":
-            names = argv[i + 1]
-    if names:
-        err = load_names(names)
-        if err:
-            print("make_leads: %s" % err, file=sys.stderr)
-            sys.exit(2)
-    try:
-        only = [key_for(n) for n in only]
-    except KeyError as e:
-        print("make_leads: %s" % e.args[0], file=sys.stderr)
+    opts = parse_args(argv)
+    keys = resolve(opts) if isinstance(opts, dict) else opts
+    if isinstance(keys, str):
+        print("make_leads: %s" % keys, file=sys.stderr)
         sys.exit(2)
-    for name in only:
-        build_character(name, outdir, blend_dir)
+    for key in keys:
+        build_character(key, opts["outdir"], opts["blend_dir"])
 
 
 if __name__ == "__main__":

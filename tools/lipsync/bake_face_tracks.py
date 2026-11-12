@@ -24,8 +24,8 @@ Only the Python standard library is needed, plus `espeakng_loader` (pip) for the
 
 The gold set holds script lines, so it lives outside the repo: pass --gold, or set LIPSYNC_GOLD.
 tools/lipsync/gold_sample.json is a made-up three-line set for trying the pipeline. A gold set's optional
-"voices" table, {SPEAKER: [espeak_voice, pitch 0-99]}, picks the synth voice per speaker; `gold` carries over
-the table of the file it overwrites.
+"voices" table, {SPEAKER: [espeak_voice, pitch 0-99]}, picks the synth voice per speaker on top of the built-in
+DEFAULT_VOICES (a gold set without one gets a warning); `gold` carries over the table of the file it overwrites.
   python3 tools/lipsync/bake_face_tracks.py align-mfa --work W --mfa-cmd "micromamba run -p ENV mfa" \
           --dict english_us_arpa.dict --model english_us_arpa.zip
   python3 tools/lipsync/bake_face_tracks.py align-rhubarb --work W --rhubarb /path/to/rhubarb
@@ -384,6 +384,9 @@ class GoldError(Exception):
     pass
 
 
+DEFAULT_VOICES = {"CHILD": ("en-us+f4", 80)}   # a gold set's "voices" table adds to or overrides these
+
+
 def check_voices(voices):
     """An error string when a "voices" table is not {SPEAKER: [espeak_voice, pitch 0-99]}, else None."""
     if not isinstance(voices, dict) or not all(
@@ -396,11 +399,13 @@ def check_voices(voices):
 
 def load_gold(path):
     """The gold set's lines. Its optional "voices" table, {SPEAKER: [espeak_voice, pitch 0-99]}, sets the
-    espeak voice per speaker; each line of such a speaker gets it as "voice"."""
+    espeak voice per speaker on top of DEFAULT_VOICES; each line of such a speaker gets it as "voice"."""
     try:
         with open(path, encoding="utf-8") as fh:
             d = json.load(fh)
         lines = d["lines"]
+        if "voices" not in d:
+            print("lipsync: warning: %s has no \"voices\" table; using the built-in voices" % path, file=sys.stderr)
         voices = d.get("voices", {})
         if not isinstance(lines, list) or not all(isinstance(ln, dict) for ln in lines):
             raise TypeError('"lines" must be a list of objects')
@@ -409,7 +414,7 @@ def load_gold(path):
             raise TypeError(err)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         raise GoldError("cannot read the gold set %s: %s" % (path, e))
-    table = {str(k).upper(): (v[0], v[1]) for k, v in voices.items()}
+    table = dict(DEFAULT_VOICES) | {str(k).upper(): (v[0], v[1]) for k, v in voices.items()}
     for ln in lines:
         v = table.get(str(ln.get("speaker", "")).upper())
         if v:
@@ -418,8 +423,8 @@ def load_gold(path):
 
 
 def voice_for(line):
-    """(espeak voice, pitch) for a gold line: the gold set's "voices" table, else a lower voice for the
-    parser's UNKNOWN speakers, else the default."""
+    """(espeak voice, pitch) for a gold line: its "voice" (the gold set's table or DEFAULT_VOICES, set by
+    load_gold), else a lower voice for the parser's UNKNOWN speakers, else the default."""
     if line.get("voice"):
         return tuple(line["voice"])
     if line["speaker"].upper().startswith("UNKNOWN"):

@@ -212,21 +212,56 @@ class TestGoodTables(TablesBase):
             self.assertEqual(fh.read(), '{"good": true}')
         self.assertFalse(os.path.exists(os.path.join(self.out, 'loc', 'en.json')))
 
-    def hold_flags(self, note):
+    def hold_flags(self, note, tables=TABLES, flags=('F_NETS_DRY', 'F_SAILS_UP')):
+        """The flag ids a HOLD note's beats set, in order, and the run's output."""
         write(os.path.join(self.build, 'meta', 'inserts_01.csv'),
               '"scene_id","before_line_prefix","notation"\n"XA-01-A1","BEX: Then we sail.","[HOLD: %s]"\n' % note)
-        write(os.path.join(self.build, 'flags.csv'), FLAGS + 'nets_dry,bool,made up,XA-01-A1,,false,\n')
-        rc, text = self.run_tool(TABLES)
+        write(os.path.join(self.build, 'flags.csv'),
+              FLAGS + ''.join('%s,bool,made up,XA-01-A1,,false,\n' % f for f in flags))
+        rc, text = self.run_tool(tables)
         self.assertNotEqual(rc, 2, text)
         with open(os.path.join(self.out, 'scenes', 'XA-01-A1.json'), encoding='utf-8') as fh:
-            beats = json.load(fh)
-        return [b for b in json.dumps(beats).split('{') if '"flag"' in b]
+            scene = json.load(fh)
+        found = []
 
-    def test_hold_sets_known_flag_only(self):
-        self.assertEqual(len(self.hold_flags('Hold the rope. Sets `nets_dry`.')), 1)
-        self.assertEqual(self.hold_flags('Hold the rope. Sets the pace.'), [])
-        self.assertEqual(len(self.hold_flags('Sets the pace. Sets `nets_dry`.')), 1)
-        self.assertEqual(self.hold_flags('Hold the rope. No flag set.'), [])
+        def walk(x):
+            if isinstance(x, dict):
+                if x.get('type') == 'flag' and x.get('op') == 'set':
+                    found.append(x['id'])
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+        walk(scene)
+        return found, text
+
+    def test_hold_sets_known_flags(self):
+        self.assertEqual(self.hold_flags('Hold the rope. Sets `F_NETS_DRY`.')[0], ['F_NETS_DRY'])
+        self.assertEqual(self.hold_flags('Hold the rope. Sets the pace.')[0], [])
+        self.assertEqual(self.hold_flags('Hold the rope. No flag set.')[0], [])
+        # every known id after "Sets", in order, each once
+        self.assertEqual(self.hold_flags('Sets `F_NETS_DRY` and `F_SAILS_UP`.')[0], ['F_NETS_DRY', 'F_SAILS_UP'])
+        self.assertEqual(self.hold_flags('Sets F_SAILS_UP. Later sets F_NETS_DRY, F_SAILS_UP.')[0],
+                         ['F_SAILS_UP', 'F_NETS_DRY'])
+        # an id that is not right after "Sets" does not count
+        self.assertEqual(self.hold_flags('Sets F_NETS_DRY (not F_SAILS_UP).')[0], ['F_NETS_DRY'])
+
+    def test_hold_unknown_flag_warns(self):
+        ids, text = self.hold_flags('Sets F_GULLS_FED, then sets F_NETS_DRY.')
+        self.assertEqual(ids, ['F_NETS_DRY'])
+        self.assertIn('warning: XA-01-A1: a HOLD note sets F_GULLS_FED, which is not in the flag table', text)
+
+    def test_hold_flag_pattern_from_tables(self):
+        t = dict(TABLES, flag_id_pattern='[a-z]+_[a-z]+')
+        ids, text = self.hold_flags('Sets `nets_dry`. Sets F_SAILS_UP.', tables=t, flags=('nets_dry', 'F_SAILS_UP'))
+        self.assertEqual(ids, ['nets_dry'])
+
+    def test_bad_flag_pattern(self):
+        for bad in ('', '(F_)[A-Z]+', '[a-z]*', '(', 5):
+            rc, text = self.run_tool(dict(TABLES, flag_id_pattern=bad))
+            self.assertEqual(rc, 2, bad)
+            self.assertIn('flag_id_pattern', text, bad)
 
     def test_missing_choice_fails_with_placeholder(self):
         rc, text = self.run_tool(TABLES, extra=['--allow-problems'])

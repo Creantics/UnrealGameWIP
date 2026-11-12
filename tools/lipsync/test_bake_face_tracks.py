@@ -37,6 +37,20 @@ class TestVoices(unittest.TestCase):
                                        'lines': [{'speaker': 'Piper'}, {'speaker': 'Unknown Man'}]}))
         self.assertEqual([b.voice_for(ln) for ln in lines], [('en-us+f2', 70), ('en-us+m3', 40)])
 
+    def test_built_in_child_voice(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            lines = b.load_gold(self.gold({'lines': [{'speaker': 'Child'}, {'speaker': 'Arlo'}]}))
+        self.assertIn('no "voices" table', err.getvalue())
+        self.assertEqual([b.voice_for(ln) for ln in lines], [('en-us+f4', 80), ('en-us', 50)])
+
+    def test_table_overrides_built_in(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            lines = b.load_gold(self.gold({'voices': {'CHILD': ['en-us+f2', 60]}, 'lines': [{'speaker': 'CHILD'}]}))
+        self.assertEqual(err.getvalue(), '')
+        self.assertEqual(b.voice_for(lines[0]), ('en-us+f2', 60))
+
     def test_bad_tables(self):
         for bad in ({'voices': [], 'lines': []}, {'voices': {'A': ['x', 120]}, 'lines': []},
                     {'voices': {'A': ['x', True]}, 'lines': []}, {'voices': {'A': ['', 5]}, 'lines': []},
