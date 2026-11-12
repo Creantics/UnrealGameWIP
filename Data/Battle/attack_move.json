@@ -1,14 +1,47 @@
 {
-  "version": 1,
+  "version": 2,
   "light": {
-    "focus": { "speedScale": 0.6, "turnRate": 6 },
-    "fire": { "speedScale": 0.65, "turnRate": 7 },
-    "cast": { "speedScale": 0.6, "turnRate": 6 }
+    "focus": {
+      "startupScale": 0.4,
+      "activeScale": 0.55,
+      "recoveryScale": 0.7,
+      "turnRate": 6
+    },
+    "fire": {
+      "startupScale": 0.65,
+      "activeScale": 0.65,
+      "recoveryScale": 0.65,
+      "turnRate": 7,
+      "recoveryRamp": true
+    },
+    "cast": {
+      "startupScale": 0.4,
+      "activeScale": 0.55,
+      "recoveryScale": 0.7,
+      "turnRate": 6
+    }
   },
   "heavy": {
-    "focus": { "speedScale": 0.4, "turnRate": 4, "commit": 0.3, "commitScale": 0.25 },
-    "fire": { "speedScale": 0.45, "turnRate": 5, "commit": 0.25, "commitScale": 0.3 },
-    "cast": { "speedScale": 0.4, "turnRate": 4, "commit": 0.3, "commitScale": 0.25 }
+    "focus": {
+      "startupScale": 0.3,
+      "activeScale": 0.0,
+      "recoveryScale": 0.4,
+      "turnRate": 4
+    },
+    "fire": {
+      "startupScale": 0.45,
+      "activeScale": 0.3,
+      "recoveryScale": 0.3,
+      "turnRate": 5,
+      "commit": 0.25,
+      "recoveryRamp": true
+    },
+    "cast": {
+      "startupScale": 0.3,
+      "activeScale": 0.0,
+      "recoveryScale": 0.4,
+      "turnRate": 4
+    }
   },
   "upperNone": 0.15,
   "upperFull": 0.6

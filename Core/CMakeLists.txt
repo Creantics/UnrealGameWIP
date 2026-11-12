@@ -125,6 +125,7 @@ add_library(ftcore STATIC
     src/AimStance.cpp
     src/InputBindings.cpp
     src/AttackMove.cpp
+    src/FootHold.cpp
     src/FieldUnstick.cpp
     src/ArenaZone.cpp
     src/ArrowLane.cpp
@@ -322,6 +323,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_aim.cpp
         tests/test_input_bindings.cpp
         tests/test_attack_move.cpp
+        tests/test_foot_hold.cpp
         tests/test_arena_zone.cpp
         tests/test_arrow_lane.cpp
         tests/test_stick_flick.cpp

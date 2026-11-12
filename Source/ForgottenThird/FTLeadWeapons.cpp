@@ -112,6 +112,25 @@ bool KnucklePad(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
 }
 // A view of a strike's impact, this long after it.
 constexpr double kViewLag = 0.03;
+// A bone's place in the clip's component space at Time (up its parent chain); zero for no such bone.
+FVector ClipBoneAt(const UAnimSequence& Clip, int32 Bone, double Time)
+{
+	const USkeleton* Skeleton = Clip.GetSkeleton();
+	if (!Skeleton || Bone == INDEX_NONE)
+	{
+		return FVector::ZeroVector;
+	}
+	const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+	FTransform CS = FTransform::Identity;
+	const FAnimExtractContext Context(Time, false);
+	for (int32 B = Bone; B != INDEX_NONE; B = Ref.GetParentIndex(B))
+	{
+		FTransform Local;
+		Clip.GetBoneTransform(Local, FSkeletonPoseBoneIndex(B), Context, false);
+		CS = CS * Local;
+	}
+	return CS.GetTranslation();
+}
 } // namespace
 
 FString FTWeaponProps::FindMeshPath(const FPiece& Piece)
@@ -250,6 +269,18 @@ void FFTLeadWeapons::LoadClips(const FFTLeadLook& Look)
 		++Loaded;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: %s plays %s (%.2f s, impact %.2f s)."),
 			*FT::ToFString(ftcore::fightClipName(StrikeClip)), *Name, Length, Key);
+		// The clip's own travel (its root, the balls of its feet in its space) to its impact and to its end (cm).
+		if (const USkeleton* Skeleton = Clip->GetSkeleton())
+		{
+			const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+			const int32 BallL = Ref.FindBoneIndex(TEXT("ball_l")), BallR = Ref.FindBoneIndex(TEXT("ball_r"));
+			const FVector R0 = ClipBoneAt(*Clip, 0, 0.0), RK = ClipBoneAt(*Clip, 0, Key), RE = ClipBoneAt(*Clip, 0, Length);
+			const FVector L0 = ClipBoneAt(*Clip, BallL, 0.0), LK = ClipBoneAt(*Clip, BallL, Key), LE = ClipBoneAt(*Clip, BallL, Length);
+			const FVector F0 = ClipBoneAt(*Clip, BallR, 0.0), FK = ClipBoneAt(*Clip, BallR, Key), FE = ClipBoneAt(*Clip, BallR, Length);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: %s travel: root to impact %s end %s; ball_l %s / %s; ball_r %s / %s; root motion %s."),
+				*Name, *(RK - R0).ToCompactString(), *(RE - R0).ToCompactString(), *(LK - L0).ToCompactString(), *(LE - L0).ToCompactString(),
+				*(FK - F0).ToCompactString(), *(FE - F0).ToCompactString(), Clip->HasRootMotion() ? TEXT("on") : TEXT("off"));
+		}
 	}
 	bClips = Loaded > 0;
 	if (!Missing.IsEmpty())

@@ -76,10 +76,11 @@ onto it), the tracer or bolt flies to it and the impact effect plays on it. Each
 deg` (arm or barrel against the direction to the hit point) and `Field: impact <effect> <cm> cm from the hit point`.
 Each hit logs `Field: dummy hit for <n>`. There is nothing to fight in the field yet but dummies.
 
-Attacks on the move (`ftcore::attackMove`, `Data/Battle/attack_move.json`, per weapon kind): a light keeps the legs
-walking at about 60% pace and steers the strike at a capped turn rate; the clip plays on the upper body only
-(`spine_01` up, `attackUpperShare` by speed), on the whole body when standing. A heavy walks, then roots for its
-commit (about 0.3 s) up to the hit frame, still steering until then. `-ExploreWalk` walks the lead in a slow circle
+Attacks on the move (`ftcore::attackMove`, `Data/Battle/attack_move.json`, per weapon kind): each part of a move
+(startup, active, recovery) has its own share of the walk, and the full walk comes back at the cancel point. A fist's
+or a spell's heavy commits the body: a short step in startup, a stop through active, a slow step in recovery.
+Its light slows the walk to about half. A gun's shot keeps walking at 65%, its clip on the upper body only (`spine_01` up, `attackUpperShare` by speed). Every strike steers at
+a capped turn rate. `-ExploreWalk` walks the lead in a slow circle
 (for moving-attack captures, with `-LocoCamYaw=90` for a side view).
 
 Unstick (`ftcore::FieldUnstick`, `Data/Movement/unstick.json`): on a slope steeper than 45 degrees the lead slides

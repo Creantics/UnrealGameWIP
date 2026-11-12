@@ -437,8 +437,9 @@ hulk has no `flinchTime`. So `skirmisher,hulk` on Duy gives no flinch chance and
 (`flinchPoise` 10).
 
 The break-out is tuned by lead (provisional, for the playtest). On paper Devin's light string (poise 15, 15, 18, 32)
-staggers every kind with a `breakAt` by the blow that reaches it; in a fight his attacks don't root him (the autopilot
-steers and turns them as a player does), so a count can build across strings and some seeds still break out on him.
+staggers every kind with a `breakAt` by the blow that reaches it; in a fight his strikes slow him but don't stop him
+(the autopilot steers them as a player does), so a count can build across strings and some seeds still break out on
+him.
 Duy's (10, 10, 20, and 6 a shot) leaves it upright, so he has to hit and move. Each kind's `breakDecay` equals
 its `poiseDelay`, so a count reset always comes with a poise refill. Core pins this per kind and lead
 (`arena break-out tuning`):
@@ -540,8 +541,30 @@ outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed
 | Fight again (after the outcome) | Enter or Space | A |
 | Pause menu | Esc | Start |
 
-The player's light attacks don't root the lead: it keeps walking at the move table's pace (`Data/Battle/attack_move.json`)
-and turns at a capped rate (`ArenaInput::attackSpeed`, `attackTurn`); heavies root only for their commit.
+A strike commits the body (`ftcore::attackMove`, `Data/Battle/attack_move.json`): each part of a move has its own
+share of the stick's walk (`startupScale`, `activeScale`, `recoveryScale`), and the full walk comes back at the cancel
+point. A fist's or a spell's heavy commits: 30% in startup, 0 through active (the lead slides to a stop at its brake
+rate, `ArenaInput::attackSpeed`, and the lunge carries it), 40% in recovery. Its light slows the walk: 40% in startup,
+55% through active, 70% in recovery. A gun's shot walks as it did before: a light at 65%, a heavy at 45% then 30% from
+0.25 s before contact (`commit`), each easing back to full pace over its recovery (`recoveryRamp`). Every strike still
+turns at its capped rate (`attackTurn`).
+
+The lead's legs follow its body as drawn. Their gait plays at the speed the body moved over the last step, not the
+sim's wish. They turn toward the way it moves (up to 95 degrees from the facing, with the chest turned back), so a
+strafe walks forward gaits sideways. While a strike's clip has the legs, and through a hit pause, the feet stay where
+they stand. A foot the body has gone 26 cm past steps to the clip's place, one foot at a time on a short lifted arc.
+The clips stand on nearly straight legs, so the hips sink (eased, up to 9 cm) as far as the held feet need to stay
+in reach. The legs step at the median of the last three steps' body speed, not the last step's alone: a body pushed
+in and out against an enemy swings step to step, and the walk/run blend and the foot hold would flip with it.
+Through a hit pause that speed, the legs' turn and the upper-body share hold too, as the clips do. Under an
+upper-body strike the legs are rebuilt from the locomotion layers' own weights (`LocoWeight`), so a strike clip at
+full weight never takes the legs. The figures' meshes tick after the actor that runs the fight (the game mode or the
+host), so each frame's pose is drawn where the body stands that frame, not a frame behind it.
+
+`-ArenaGlide` logs foot slip per move part on quit (`Arena glide: <part>: ...`). It gives the planted foot's
+frame-to-frame speed and the net slip per plant (as the field's `-LocoSlide`). `-ArenaGlide=toward` and `=across` make
+the autopilot walk at the target or strafe it. `-ArenaNoFootLock` leaves the feet to the clips, for comparison.
+Each line ends with its pops: frames in which a foot moved more than 20 cm, a pose snap (still counted in the slip).
 
 Every key here comes from the binding table (`ftcore/InputBindings.h`, one set for the field and the arena; the
 defaults are provisional). Override any of them in `Saved/InputBindings.json`, read once at start, e.g.
@@ -617,6 +640,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |
 | `-ArenaShotAt=S,S,...` | With `-ArenaShot`, an extra view `_t_<S>` at each of those fight times (after `_1_ring`; the six views and the quit are unchanged), so two runs of the same fight are shot at the same moments. |
+| `-ArenaShotSide` | With `-ArenaShotAt`, those views from the lead's right side: 3.4 m off it and 0.9 m above its hips, aimed a frame before each view, so the feet show. |
 | `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` at each of the lead's first N attacks (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none): odd views just after the impact (a strike's landing, a shot's or cast's arrival at the hit point), even views a shot's or cast's mid-flight (`FFTLeadWeapons::GetViewTime`). The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
 | `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 65 cm from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle, then `_front` from 55 cm ahead of it (off to its side, a little above). A lead with a pistol adds `_1_holstered` and `_1_drawn` after the ring view, 60 cm off its right side. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
 | `-ArenaNoWeaponProps` | The lead's weapon props (gauntlets, pistol) stay off; the fight runs the same. |

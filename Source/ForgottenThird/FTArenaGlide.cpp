@@ -18,7 +18,7 @@ void FFTArenaGlideProbe::Begin(bool bInOn)
 	bOn = bInOn;
 }
 
-void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now)
+void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now, float LegSpeed)
 {
 	if (!bOn)
 	{
@@ -31,7 +31,7 @@ void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now)
 		AfterHitUntil = Now + kGlideAfterHit;
 	}
 	LastAction = P.action;
-	CycleSpeed = 100.f * FMath::Sqrt(P.velocity.x * P.velocity.x + P.velocity.y * P.velocity.y);
+	CycleSpeed = 100.f * LegSpeed;
 	if (P.stopLeft > 0.f)
 	{
 		Key = HitPause;
@@ -128,6 +128,12 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 			Split(BodyV, R.BodyAlong, R.BodySide);
 			int32 Foot = INDEX_NONE;
 			double Slowest = 0.0;
+			// A foot that moved more than this in one fresh frame snapped: a pose pop, not a slide.
+			constexpr double kPopCm = 20.0;
+			if (FVector::Dist2D(Ball[0], LastBall[0]) > kPopCm || FVector::Dist2D(Ball[1], LastBall[1]) > kPopCm)
+			{
+				++R.Pops;
+			}
 			for (int32 I = 0; I < 2; ++I)
 			{
 				const float Height = static_cast<float>(Local[I].Z);
@@ -143,6 +149,29 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 				++R.Planted;
 				R.Slip += Slowest;
 				Split((Ball[Foot] - LastBall[Foot]) / Dt, R.SlipAlong, R.SlipSide);
+			}
+			// A plant ends when the slowest foot on the floor changes: its net slip, start to end, leaves the frame to
+			// frame jitter out (as the field's -LocoSlide). Under 0.08 s it is a flip between the feet, not a plant.
+			if (Foot != PlantFoot)
+			{
+				if (PlantFoot != INDEX_NONE && PlantTime >= 0.08f)
+				{
+					FRow& PR = Rows[PlantKey];
+					++PR.Plants;
+					PR.PlantSlip += FVector::Dist2D(LastBall[PlantFoot], PlantStart);
+					PR.PlantTime += PlantTime;
+				}
+				PlantFoot = Foot;
+				PlantTime = 0.f;
+				PlantKey = Key;
+				if (Foot != INDEX_NONE)
+				{
+					PlantStart = LastBall[Foot];
+				}
+			}
+			if (Foot != INDEX_NONE)
+			{
+				PlantTime += Dt;
 			}
 		}
 	}
@@ -173,8 +202,8 @@ void FFTArenaGlideProbe::Log() const
 		const double F = FMath::Max(1, R.Frames);
 		const double P = FMath::Max(1, R.Planted);
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("Arena glide: %s: %d frames (%d stale, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot over %d slips %.0f cm/s (%.0f forward, %.0f across)."),
+			TEXT("Arena glide: %s: %d frames (%d stale, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot over %d slips %.0f cm/s (%.0f forward, %.0f across); net over %d plants %.0f cm/s; %d pops (a foot over 20 cm in a frame)."),
 			kGlideNames[B], R.Frames, R.Still, 1000.0 * R.Dt / F, R.Body / F, R.BodyAlong / F, R.BodySide / F, R.Cycle / F, R.Yaw / F, R.Planted, R.Slip / P, R.SlipAlong / P,
-			R.SlipSide / P);
+			R.SlipSide / P, R.Plants, R.PlantTime > 0.0 ? R.PlantSlip / R.PlantTime : 0.0, R.Pops);
 	}
 }

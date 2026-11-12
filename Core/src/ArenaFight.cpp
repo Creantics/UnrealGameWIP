@@ -1073,9 +1073,11 @@ struct ArenaFightImpl {
             }
         }
         // Walking on through the attack (attackSpeed of the pace, ramped like a walk), on top of the lunge.
-        // The walk ramps on its own (from the pace the attack began at), so the lunge doesn't feed it.
+        // The walk ramps on its own (from the pace the attack began at), so the lunge doesn't feed it. A host that
+        // moves the attack (attackTurn above 0) gets the ramp even at attackSpeed 0: the pace slides to a stop at the
+        // brake rather than stopping dead; one that moves nothing (both 0) roots at once.
         if (a0 <= 0.f) pl.attackWalk = pl.velocity;
-        if (attackSpeed > 0.f) {
+        if (attackSpeed > 0.f || attackTurn > 0.f) {
             const Vec2 want = arenaScaled(stick, fi.moveSpeed * aimSpeed * attackSpeed);
             const float rate = arenaLength(want) > arenaLength(pl.attackWalk) ? fi.moveAccel : fi.moveBrake;
             pl.attackWalk = arenaRamp(pl.attackWalk, want, rate, dt);

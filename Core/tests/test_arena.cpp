@@ -6421,7 +6421,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
 
 TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out always on Duy") {
     // The demo's feature check lines read arenaFeatureChecks over this fight. Duy leaves both kinds upright, so they
-    // break out on him every seed; Devin's string, unrooted, staggers first on some seeds (n/a) and not on others.
+    // break out on him every seed; Devin's string, slowed (AttackMove), staggers first on some seeds (n/a) and not on others.
     int devinBreaks = 0;
     for (const char* kit : {"devin", "duy"})
         for (std::uint32_t seed = 1; seed <= 12; ++seed) {
@@ -6440,7 +6440,7 @@ TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the bre
             if (!devin) CHECK(c.breakOutCheck == ArenaCheck::Pass);
             devinBreaks += devin && c.breakOut ? 1 : 0;
         }
-    CHECK(devinBreaks == 8); // seeds 1, 2, 5, 7-11
+    CHECK(devinBreaks == 8); // of 12 seeds
 }
 
 TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and always break out on Duy") {

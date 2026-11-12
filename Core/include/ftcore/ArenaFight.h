@@ -574,10 +574,11 @@ struct ArenaInput {
     bool aimPitched = false;
     float aimPitch = 0.f;
     // Attacking on the move (AttackMove, the host's attackMove for the attack under way): walking during an attack at
-    // attackSpeed (0..1) of the pace, and turning at up to attackTurn rad/s all through it toward the aim, the lock or
-    // the stick (during startup the attack's own tracking if faster). Both 0 (the defaults, for a host that moves
-    // nothing): the attack roots and holds its facing after startup. The game's hosts always fill both from
-    // attackMove, which never gives 0, so no lead's attack roots.
+    // attackSpeed (0..1) of the pace (ramped from the pace the attack began at, at the brake or the accel, so a 0
+    // slides to a stop), and turning at up to attackTurn rad/s all through it toward the aim, the lock or the stick
+    // (during startup the attack's own tracking if faster). Both 0 (the defaults, for a host that moves nothing): the
+    // attack roots at once and holds its facing after startup. The game's hosts always fill both from attackMove,
+    // whose turn is never 0, so a lead's facing is never held.
     float attackSpeed = 0.f;
     float attackTurn = 0.f;
 };
