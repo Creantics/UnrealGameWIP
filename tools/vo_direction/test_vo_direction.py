@@ -52,17 +52,17 @@ SAMPLE_A = T('''# TEST SCRIPT, PART 1
 ## PROLOGUE
 ### QZ-P0-01 · The Kitchen
 
-CAZ (on a sack, picking at her sleeve): What was the rope for?
+CAZ (on a crate, tapping a spoon): Where did the ladder go?
 
 ARLO: …
 
-CAZ: I tied six knots. *(beat)* What was it for?
+CAZ: I painted three rungs. *(beat)* Where did it go?
 
 # ACT I — TEST
 
 ### QZ-02-D1 · The Wall
 
-***ACTING.** Patrol barks are Arlo alone, getting shorter: "Mine." / "Got it." / (breath only). Nobody answers.*
+***ACTING.** Patrol barks are Arlo alone, clipped: "Mine." / "Have it." / (breath only). The yard stays quiet.*
 
 ### QZ-02-U1 · The Map
 
@@ -70,17 +70,17 @@ DOV: Tin Stairs.
 
 BEX: *[pick]* "East Dock." / "Reed Lane."
 
-DOV *(if "Reed Lane")*: Reed Lane's the Four. *(beat)* I drove the Two.
+DOV *(if "Reed Lane")*: Reed Lane's the Nine. *(beat)* I swept the Six.
 
 DOV *(if "East Dock")*: East Dock. *(He nods.)*
 
 ### QZ-02-D2 · The Audit
 
 > **Audit** (Arlo's options):
-> 1. "Into me. All of it."
-> 2. "Nowhere. I block it."
+> 1. "Left, then left."
+> 2. "Right. Then home."
 
-ARLO (low): The bell rings at nine and nobody comes in late.
+ARLO (low): The kettle sings at noon and the hall fills up.
 
 ## Camps
 
@@ -88,17 +88,17 @@ ARLO (low): The bell rings at nine and nobody comes in late.
 
 *Choice:* **[CHOICE: ROAST / REASSURE]** sets `F_MOOD`.
 
-DOV: Line Three went to the sea.
+DOV: Line Three went up the hill.
 <sub>VO-CP-E1-001</sub>
 
 **[VARIANT: if ROAST]**
 
-BEX: You would have missed it.
+BEX: You would have dropped it.
 <sub>VO-CP-E1-002</sub>
 
 **[VARIANT: if REASSURE]**
 
-BEX: Take me after the final.
+BEX: Wake me before the market.
 <sub>VO-CP-E1-003</sub>
 ''')
 
@@ -106,13 +106,13 @@ SAMPLE_B = T('''# TEST SCRIPT, PART 2
 # ACT II — TEST
 ### QZ-05-D1 · The Yard
 
-> **[VARIANT: F_MOOD = ROAST]** ARLO (bark): You count like a bell. Keep ringing.
-> **[VARIANT: F_MOOD = REASSURE]** ARLO (bark): Good count. Again.
+> **[VARIANT: F_MOOD = ROAST]** ARLO (bark): You count like a clock. Keep ticking.
+> **[VARIANT: F_MOOD = REASSURE]** ARLO (bark): Good count. Once more.
 
-- ARLO (ROAST): You dodge like you are filing a form.
-- BEX (REASSURE): Breathe. You are fine.
+- ARLO (ROAST): You dodge like a door on a hinge.
+- BEX (REASSURE): Steady. You are fine.
 
-ARLO and BEX (together): What if we are late?
+ARLO and BEX (together): What if the boat leaves?
 ''')
 
 
@@ -126,28 +126,28 @@ FAYE: Hello.
 ARLO: Go on.
 THE EASEL: Begin.
 
-*[direction.hidden · VARIANT]* Concede (third miss): EMRYS (very small): Ask her the one she never answers. Then play "Ask her the last one."
+*[direction.hidden · VARIANT]* Concede (third miss): EMRYS (very small): Ask him about the blue boat. Then play "Ask about the boat."
 
 *[direction.hidden · VARIANT]* Concede (second miss): FAYE (hoarse): Mill Lane. Then play "Mill Lane?". If F_ROUNDS = COMPLETE, Lark's first pick plays "Mill Lane?".
 
-*[direction.hidden · VARIANT]* Reads F_TALLY. If ≥ 2: ARLO (low): Two filled. BEX: The chair. If < 2: ARLO (low): One empty.
+*[direction.hidden · VARIANT]* Reads F_TALLY. If ≥ 2: ARLO (low): Two lit. BEX: The stool. If < 2: ARLO (low): One dark.
 
 ### QZ-11-Q3 · The Kitchen
 
-*[direction.hidden · OPTIONAL]* The last walk (each plays once, on interaction):
-- **The pot.** Arlo scrapes the soup into the bowl. No line.
-- **The window.** The drawn dawn. ARLO (to himself): That's nearly a real colour.
-- **The beans.** The beans on the table. BEX (from the door, not turning): Contraband. ARLO: It's a bean.
+*[direction.hidden · OPTIONAL]* The last round (each plays once, on interaction):
+- **The tap.** Arlo rinses the cup. No line.
+- **The window.** Rain on the glass. ARLO (to himself): That's almost a proper storm.
+- **The bread.** Bread on the shelf. BEX (from the stairs, not looking): Stale. ARLO: It's a loaf.
 
 ### QZ-12-Q3 · The Easel
 
-*She sets the easel down. And the easel says, sweet and sad:* "Your brush is still wet."
+*She props the easel up. And the easel says, dry and slow:* "Your paint has dried."
 
-*Emrys asks Gus about the work. Gus tries to answer, "A Tinker's day is mainly—" and goes quiet.*
+*Emrys asks Gus about the shop. Gus begins to answer, "A Tinker's week is mostly—" and stops.*
 
-*In the margin, in Arlo's hand:* "Ask Dov."
+*On the back, in Arlo's hand:* "See Dov."
 
-*"Not here," he says, and walks on.*
+*"Not now," he says, and leaves.*
 
 ### QZ-13-Q2 · The Roll
 
@@ -158,27 +158,27 @@ IVO: Here.
 
 ### QZ-14-Q2 · The Supper
 
-***CHOICE (flavor only).** Two lines appear: "I lost a game." / "I'm between houses."*
+***CHOICE (flavor only).** Two lines appear: "I missed the tram." / "I'm off shift."*
 
-*If "I lost a game.":*
-BEX: I lost a game.
-JUNO: Then eat.
+*If "I missed the tram.":*
+BEX: I missed the tram.
+JUNO: Then sit.
 
-*If "I'm between houses.":*
-BEX: I'm between houses.
+*If "I'm off shift.":*
+BEX: I'm off shift.
 CAZ: See.
 
-JUNO: It's a bed.
+JUNO: It's a chair.
 
 *If "No.":*
 
 BEX: No.
 
-GUS: Then go.
+GUS: Then leave.
 
 *(Returns to the choice.)*
 
-*If "Not sure" (the only answer that continues):*
+*If "Not sure" (the one answer that continues):*
 
 BEX: Not sure.
 
@@ -186,13 +186,13 @@ GUS: Neither do I.
 
 ### QZ-15-Q1 · The Stall
 
-***VARIANT (pair barks).** Reads `F_MOOD`. ROAST: BEX: "Floor's fault." / ARLO: "I'm the hole." REASSURE: BEX: "Next one." / ARLO: "I've got it."*
+***VARIANT (pair barks).** Reads `F_MOOD`. ROAST: BEX: "Wet floor." / ARLO: "My fault." REASSURE: BEX: "Next round." / ARLO: "I'm ready."*
 
 ### QZ-16-Q1 · The Table
 
 ***CHOICE.** Concede (third miss of the loop): Bex supplies it.*
 
-> BEX (quietly): It was his.
+> BEX (quietly): It was the dog.
 ''')
 
 
@@ -221,14 +221,14 @@ def find(rows, speaker, words):
 
 class TestCommon(unittest.TestCase):
     def test_hash_ignores_typography_tags_and_pauses(self):
-        h = vc.text_hash('I drove the Two.')
-        self.assertEqual(h, vc.text_hash('[sighs] I drove... the TWO.'))
-        self.assertEqual(h, vc.text_hash('I drove / the Two. //'))
-        self.assertEqual(h, vc.text_hash('I drove the *Two.* *(beat)*'))
-        self.assertNotEqual(h, vc.text_hash('I drove the Three.'))
+        h = vc.text_hash('I swept the Six.')
+        self.assertEqual(h, vc.text_hash('[sighs] I swept... the SIX.'))
+        self.assertEqual(h, vc.text_hash('I swept / the Six. //'))
+        self.assertEqual(h, vc.text_hash('I swept the *Six.* *(beat)*'))
+        self.assertNotEqual(h, vc.text_hash('I swept the Seven.'))
 
     def test_curly_apostrophe(self):
-        self.assertEqual(vc.text_hash(T('Reed Lane’s the Four.')), vc.text_hash(T("Reed Lane's the Four.")))
+        self.assertEqual(vc.text_hash(T('Reed Lane’s the Nine.')), vc.text_hash(T("Reed Lane's the Nine.")))
 
 
 class TestExtract(unittest.TestCase):
@@ -237,12 +237,12 @@ class TestExtract(unittest.TestCase):
         cls.rows = extract_sample()
 
     def test_standard_line_and_delivery(self):
-        r = find(self.rows, T('CAZ'), 'i tied six knots what was it for')
+        r = find(self.rows, T('CAZ'), 'i painted three rungs where did it go')
         self.assertEqual(r['scene'], T('QZ-P0-01'))
         self.assertEqual(r['act'], 'Prologue')
         self.assertIn('beat', r['delivery_original'])
-        r = find(self.rows, T('CAZ'), 'what was the rope for')
-        self.assertIn('picking at her sleeve', r['delivery_original'])
+        r = find(self.rows, T('CAZ'), 'where did the ladder go')
+        self.assertIn('tapping a spoon', r['delivery_original'])
 
     def test_silence_line(self):
         r = [x for x in self.rows if x['speaker'] == T('ARLO') and x['scene'] == T('QZ-P0-01')][0]
@@ -258,23 +258,23 @@ class TestExtract(unittest.TestCase):
         opts = [r for r in self.rows if r['scene'] == T('QZ-02-U1') and r['kind'] == 'choice_option']
         self.assertEqual(sorted(vc.words_key(r['spoken_text']) for r in opts), sorted([T('reed lane'), T('east dock')]))
         self.assertTrue(all(r['speaker'] == T('BEX') for r in opts))
-        r = find(self.rows, T('DOV'), T("reed lane's the four i drove the two"))
+        r = find(self.rows, T('DOV'), T("reed lane's the nine i swept the six"))
         self.assertIn(T('Reed Lane'), r['variant'])
 
     def test_audit_options(self):
         opts = [r for r in self.rows if r['scene'] == T('QZ-02-D2') and r['kind'] == 'choice_option']
         self.assertEqual(len(opts), 2)
         self.assertTrue(all(r['speaker'] == T('ARLO') for r in opts))
-        r = find(self.rows, T('ARLO'), 'the bell rings at nine and nobody comes in late')
+        r = find(self.rows, T('ARLO'), 'the kettle sings at noon and the hall fills up')
         self.assertEqual(r['variant'], '')
 
     def test_camp_vo_ids_and_tone_variants(self):
-        r = find(self.rows, T('BEX'), 'you would have missed it')
+        r = find(self.rows, T('BEX'), 'you would have dropped it')
         self.assertEqual(r['line_id'], 'VO-CP-E1-002')
         self.assertIn('ROAST', r['variant'])
-        r = find(self.rows, T('BEX'), 'take me after the final')
+        r = find(self.rows, T('BEX'), 'wake me before the market')
         self.assertIn('REASSURE', r['variant'])
-        self.assertEqual(find(self.rows, T('DOV'), 'line three went to the sea')['variant'], '')
+        self.assertEqual(find(self.rows, T('DOV'), 'line three went up the hill')['variant'], '')
 
     def test_barks_each_variant_its_own_row(self):
         barks = [r for r in self.rows if r['scene'] == T('QZ-05-D1') and r['kind'] == 'bark']
@@ -284,11 +284,47 @@ class TestExtract(unittest.TestCase):
         self.assertEqual(barks[0]['act'], 'II')
 
     def test_joint_speaker(self):
-        find(self.rows, T('ARLO and BEX'), 'what if we are late')
+        find(self.rows, T('ARLO and BEX'), 'what if the boat leaves')
 
     def test_line_ids_unique(self):
         ids = [r['line_id'] for r in self.rows]
         self.assertEqual(len(ids), len(set(ids)))
+
+
+class TestLanes(unittest.TestCase):
+    BODY = '''### %s03-A1 · The Gate
+
+> 1. "Left."
+> 2. "Right."
+'''
+
+    def tearDown(self):
+        extract_lines.LANE_DEFAULT = dict(extract_lines.LANE_GENERIC)
+
+    def rows(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, '04a_Test.md'), 'w', encoding='utf-8') as fh:
+            fh.write(self.BODY % SCENE_PREFIX)
+        return [r for r in extract_lines.extract(d, scene_prefix=SCENE_PREFIX) if r['kind'] == 'choice_option']
+
+    def names(self, text):
+        p = os.path.join(tempfile.mkdtemp(), 'names.json')
+        with open(p, 'w', encoding='utf-8-sig') as fh:
+            fh.write(text)
+        return p
+
+    def test_generic_lane_by_default(self):
+        self.assertEqual([r['speaker'] for r in self.rows()], ['A', 'A'])
+
+    def test_lanes_from_names(self):
+        self.assertIsNone(extract_lines.load_lanes(self.names('{"lanes": {"A": "ARLO"}}')))
+        self.assertEqual([r['speaker'] for r in self.rows()], ['ARLO', 'ARLO'])
+
+    def test_bad_lanes_exit_2(self):
+        self.assertIn('lanes', extract_lines.load_lanes(self.names('{"lanes": ["ARLO"]}')))
+        self.assertIn('cannot read', extract_lines.load_lanes(self.names('{')))
+        d = tempfile.mkdtemp()
+        self.assertEqual(extract_lines.main([d, '--scene-prefix', SCENE_PREFIX, '--names', self.names('[1]')]), 2)
 
 
 class TestExtractEmbedded(unittest.TestCase):
@@ -301,32 +337,32 @@ class TestExtractEmbedded(unittest.TestCase):
         return [r for r in self.rows if r['scene'] == sc]
 
     def test_hidden_variant_concede_lines(self):
-        r = find(self.rows, T('EMRYS'), 'ask her the one she never answers')
+        r = find(self.rows, T('EMRYS'), 'ask him about the blue boat')
         self.assertEqual((r['kind'], r['variant']), ('embedded', 'concede (third miss)'))
         self.assertEqual(r['delivery_original'], 'very small')
         r = find(self.rows, T('FAYE'), T('mill lane'))
         self.assertEqual(r['variant'], 'concede (second miss)')
         # "Then play ..." and the trailing If-clause are not part of the line
-        self.assertFalse(any('ask her the last one' == vc.words_key(x['spoken_text']) for x in self.rows))
+        self.assertFalse(any('ask about the boat' == vc.words_key(x['spoken_text']) for x in self.rows))
 
     def test_hidden_variant_reads_flag_conditions(self):
-        self.assertEqual(find(self.rows, T('ARLO'), 'two filled')['variant'], T('if F_TALLY ≥ 2'))
-        self.assertEqual(find(self.rows, T('BEX'), 'the chair')['variant'], T('if F_TALLY ≥ 2'))
-        self.assertEqual(find(self.rows, T('ARLO'), 'one empty')['variant'], T('if F_TALLY < 2'))
+        self.assertEqual(find(self.rows, T('ARLO'), 'two lit')['variant'], T('if F_TALLY ≥ 2'))
+        self.assertEqual(find(self.rows, T('BEX'), 'the stool')['variant'], T('if F_TALLY ≥ 2'))
+        self.assertEqual(find(self.rows, T('ARLO'), 'one dark')['variant'], T('if F_TALLY < 2'))
 
     def test_optional_bullets_several_speakers(self):
         rows = self.scene(T('QZ-11-Q3'))
         self.assertEqual([(r['speaker'], vc.words_key(r['spoken_text'])) for r in rows],
-                         [(T('ARLO'), "that's nearly a real colour"), (T('BEX'), 'contraband'),
-                          (T('ARLO'), T("it's a bean"))])
-        self.assertEqual(rows[1]['variant'], T('optional: the beans'))
-        self.assertEqual(rows[1]['delivery_original'], 'from the door, not turning')
+                         [(T('ARLO'), "that's almost a proper storm"), (T('BEX'), 'stale'),
+                          (T('ARLO'), T("it's a loaf"))])
+        self.assertEqual(rows[1]['variant'], T('optional: the bread'))
+        self.assertEqual(rows[1]['delivery_original'], 'from the stairs, not looking')
 
     def test_stage_direction_quotes(self):
         rows = self.scene(T('QZ-12-Q3'))
-        self.assertEqual(find(rows, T('THE EASEL'), T('your brush is still wet'))['kind'], 'embedded')
-        find(rows, T('GUS'), T("a tinker's day is mainly"))
-        r = find(rows, 'UNKNOWN', 'not here')
+        self.assertEqual(find(rows, T('THE EASEL'), T('your paint has dried'))['kind'], 'embedded')
+        find(rows, T('GUS'), T("a tinker's week is mostly"))
+        r = find(rows, 'UNKNOWN', 'not now')
         self.assertIn('CHECK speaker', r['parse_note'])
         # written text (a margin note) is not a VO line
         self.assertEqual(len(rows), 3)
@@ -338,11 +374,11 @@ class TestExtractEmbedded(unittest.TestCase):
     def test_if_block_scoping(self):
         v = {vc.words_key(r['spoken_text']) + '/' + r['speaker']: r['variant']
              for r in self.scene(T('QZ-14-Q2')) if r['kind'] == 'line'}
-        self.assertEqual(v[T('then eat/JUNO')], 'if "I lost a game."')
-        self.assertEqual(v[T('see/CAZ')], 'if "I\'m between houses."')
-        self.assertEqual(v[T("it's a bed/JUNO")], '')          # compact block ends at blank line
-        self.assertEqual(v[T('then go/GUS')], 'if "No."')      # open block runs to "Returns to the choice"
-        self.assertEqual(v[T("not sure/BEX")], T('if "Not sure" (the only answer that continues)'))
+        self.assertEqual(v[T('then sit/JUNO')], 'if "I missed the tram."')
+        self.assertEqual(v[T('see/CAZ')], 'if "I\'m off shift."')
+        self.assertEqual(v[T("it's a chair/JUNO")], '')          # compact block ends at blank line
+        self.assertEqual(v[T('then leave/GUS')], 'if "No."')      # open block runs to "Returns to the choice"
+        self.assertEqual(v[T("not sure/BEX")], T('if "Not sure" (the one answer that continues)'))
         self.assertEqual(v[T('neither do i/GUS')], '')         # the continuing answer rejoins the main path
 
     def test_tone_variant_note_second_speaker(self):
@@ -351,7 +387,7 @@ class TestExtractEmbedded(unittest.TestCase):
                          [(T('BEX'), 'ROAST'), (T('ARLO'), 'ROAST'), (T('BEX'), 'REASSURE'), (T('ARLO'), 'REASSURE')])
 
     def test_choice_concede_variant(self):
-        r = find(self.rows, T('BEX'), 'it was his')
+        r = find(self.rows, T('BEX'), 'it was the dog')
         self.assertEqual(r['variant'], 'concede (third miss of the loop)')
 
     def test_line_ids_unique(self):
@@ -381,7 +417,7 @@ class TestCarryAndValidate(unittest.TestCase):
         errs, _ = validate_directions.validate(self.old, extract_sample())
         self.assertEqual(errs, [])
         bad = [dict(r) for r in self.old]
-        bad[0]['elevenlabs_text'] = 'What was the ROPE for... today?'   # added a word
+        bad[0]['elevenlabs_text'] = 'Where did the LADDER go... today?'   # added a word
         bad[1]['emotion_primary'] = 'grumpy'
         bad[2]['elevenlabs_settings'] = 'stability=0.4 speed=1.5'
         errs, _ = validate_directions.validate(bad[:-1], extract_sample())
@@ -393,9 +429,9 @@ class TestCarryAndValidate(unittest.TestCase):
 
     def test_carry_exact_review_new(self):
         new_a = (SAMPLE_A
-                 .replace('I drove the Two.', 'I drove the Two, mind.')              # fuzzy edit
-                 .replace(T('ARLO (low): The bell'), T('ARLO (very low): The bell'))     # note changed
-                 .replace(T('DOV: Tin Stairs.'), T('DOV: Tin Stairs.\n\nDUY: A line nobody wrote before today.')))
+                 .replace('I swept the Six.', 'I swept the Six, mind.')              # fuzzy edit
+                 .replace(T('ARLO (low): The kettle'), T('ARLO (very low): The kettle'))     # note changed
+                 .replace(T('DOV: Tin Stairs.'), T('DOV: Tin Stairs.\n\nKIP: A line nobody wrote before today.')))
         d = tempfile.mkdtemp()
         with open(os.path.join(d, '04a_Test.md'), 'w', encoding='utf-8') as fh:
             fh.write(new_a)
@@ -406,15 +442,15 @@ class TestCarryAndValidate(unittest.TestCase):
         st = {vc.words_key(r['spoken_text']): r for r in out}
         self.assertEqual(st[T('tin stairs')]['carry_status'], 'EXACT')
         self.assertEqual(st[T('tin stairs')]['emotion_primary'], 'warm')
-        self.assertEqual(st[T("reed lane's the four i drove the two mind")]['carry_status'], 'REVIEW')
-        self.assertIn('ratio', st[T("reed lane's the four i drove the two mind")]['carry_note'])
-        self.assertEqual(st['the bell rings at nine and nobody comes in late']['carry_status'], 'REVIEW')
-        self.assertIn('delivery note', st['the bell rings at nine and nobody comes in late']['carry_note'])
+        self.assertEqual(st[T("reed lane's the nine i swept the six mind")]['carry_status'], 'REVIEW')
+        self.assertIn('ratio', st[T("reed lane's the nine i swept the six mind")]['carry_note'])
+        self.assertEqual(st['the kettle sings at noon and the hall fills up']['carry_status'], 'REVIEW')
+        self.assertIn('delivery note', st['the kettle sings at noon and the hall fills up']['carry_note'])
         self.assertEqual(st['a line nobody wrote before today']['carry_status'], 'NEW')
         self.assertEqual(st['a line nobody wrote before today']['emotion_primary'], '')
-        self.assertEqual(st['good count again']['carry_status'], 'REVIEW')
-        self.assertIn('renumbered', st['good count again']['carry_note'])
-        self.assertEqual(st['you would have missed it']['carry_status'], 'EXACT')
+        self.assertEqual(st['good count once more']['carry_status'], 'REVIEW')
+        self.assertIn('renumbered', st['good count once more']['carry_note'])
+        self.assertEqual(st['you would have dropped it']['carry_status'], 'EXACT')
         self.assertEqual(dropped, [])
 
     def test_short_line_not_matched_globally(self):
@@ -469,6 +505,24 @@ class TestBuild(unittest.TestCase):
         self.b._REF = {T('moss voice'): T('MOSS')}
         self.bases = self.b.load_bases(self.vp)
 
+    def test_load_names_shapes(self):
+        def load(text):
+            p = os.path.join(tempfile.mkdtemp(), 'names.json')
+            with open(p, 'w', encoding='utf-8-sig') as fh:   # a BOM is fine
+                fh.write(text)
+            return self.b.load_names(p)
+        saved = (self.b.OVERRIDES, self.b.ALIASES, self.b._REF)
+        try:
+            self.assertIsNone(load('{"overrides": {"MOSS": [0.5, 0.1, 1.0, 0.8, false]}, "aliases": {}, "refs": {}}'))
+            self.assertEqual(self.b.OVERRIDES['MOSS'], (0.5, 0.1, 1.0, 0.8, False))
+            self.assertIn('JSON object', load('[]'))
+            self.assertIn('overrides', load('{"overrides": {"MOSS": [0.5]}}'))
+            self.assertIn('overrides', load('{"overrides": []}'))
+            self.assertIn('aliases', load('{"aliases": {"A": 1}}'))
+            self.assertIn('cannot read', load('{'))
+        finally:
+            self.b.OVERRIDES, self.b.ALIASES, self.b._REF = saved
+
     def test_bases(self):
         bf = lambda s: self.b.base_for(s, self.bases)  # noqa: E731
         self.assertEqual(bf(T('ARLO')), (0.40, 0.15, 1.0, 0.80, False))
@@ -482,19 +536,19 @@ class TestBuild(unittest.TestCase):
 
     def test_pause_mapping(self):
         self.assertEqual(self.b.el_from_pauses(T('Emrys. // Stay.')), T('Emrys. [short pause] Stay.'))
-        self.assertEqual(self.b.el_from_pauses('Is anyone / there?'), 'Is anyone… there?')
-        self.assertEqual(self.b.el_from_pauses('Burned. / Sorry.'), 'Burned. Sorry.')
+        self.assertEqual(self.b.el_from_pauses('Is the shop / open?'), 'Is the shop… open?')
+        self.assertEqual(self.b.el_from_pauses('Late. / Sorry.'), 'Late. Sorry.')
 
     def test_row_caps_only_when_not_soft(self):
         skel = {r['line_id']: r for r in extract_sample()}
-        r = [x for x in skel.values() if vc.words_key(x['spoken_text']) == 'you would have missed it'][0]
+        r = [x for x in skel.values() if vc.words_key(x['spoken_text']) == 'you would have dropped it'][0]
         f = [r['line_id'], 'ctx', 'teasing', '2', 'normal 140', 'conversational,near', 'falling',
-             '=', 'missed', 'sub', 'none', '', '', '', 'n']
+             '=', 'dropped', 'sub', 'none', '', '', '', 'n']
         loud = self.b.build_row(r, f, self.bases)
-        self.assertIn('MISSED', loud['elevenlabs_text'])
+        self.assertIn('DROPPED', loud['elevenlabs_text'])
         f[5] = 'soft,near'
         soft = self.b.build_row(r, f, self.bases)
-        self.assertNotIn('MISSED', soft['elevenlabs_text'])
+        self.assertNotIn('DROPPED', soft['elevenlabs_text'])
         self.assertEqual(soft['elevenlabs_settings'], 'stability=0.50 style=0.10 speed=1.00 similarity=0.75')
         errs, _ = validate_directions.validate([soft])
         self.assertEqual(errs, [])

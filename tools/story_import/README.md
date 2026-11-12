@@ -2,8 +2,8 @@
 
 Builds the runtime story JSON (`docs/story_format.md`) from a story design package.
 
-    python3 -I tools/story_import/story_import.py --tables FILE            # regenerate assets/story/
-    python3 -I tools/story_import/story_import.py --tables FILE --check    # validate what is on disk, exit 1 on any problem
+    python3 -I tools/story_import/story_import.py --tables FILE --build-dir DIR           # regenerate assets/story/
+    python3 -I tools/story_import/story_import.py --tables FILE --build-dir DIR --check   # validate what is on disk, exit 1 on any problem
 
 `--tables` (required) names the story's own tables, a JSON file kept outside the repo: the title, the worlds, the
 scene count, the script folder and scene id prefix, the hold ladder and its anchors, the gameplay keywords, and the
@@ -12,7 +12,9 @@ listed in the comment above `load_tables()`; `check_tables()` checks their shape
 exits 2 with a plain message. The tool holds no story data. `test_story_import.py` tests the tables and the
 missing-choice fallback on a made-up story (ctest runs it as `py_story_import` when Python 3.10+ is found).
 
-Options: `--build-dir` (required: the design package build folder), `--out-dir` (default `assets/story`).
+Options: `--build-dir` (required: the design package build folder), `--out-dir` (default `assets/story`),
+`--allow-problems`. An import that finds problems prints them, exits 1 and writes nothing, so the good output on
+disk stays; `--allow-problems` writes the files anyway (still exit 1).
 
 Inputs: the script (`<script_dir>/04*.md`, parsed by `scriptparse.py`; `python3 -I tools/story_import/scriptparse.py
 --tables <tables JSON> <dir> [expected scenes]` is its self-test; the scene id prefix and the heading grammar come from the tables), `<script_dir>/VO_Master_List.csv`, `meta/meta_*.csv`, `meta/inserts_*.csv`,

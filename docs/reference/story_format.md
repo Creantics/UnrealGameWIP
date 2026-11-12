@@ -46,10 +46,10 @@ list unless the scene's `end` beat names one.
   "title": "Strangers",
   "chapter": "07",
   "world": "Solhaven",
-  "location": "Lanternfall alley (the seam)",
+  "location": "a back alley",
   "time": "dusk",
   "mode": "PLAY",
-  "cast": ["DEVIN", "DUY"],
+  "cast": ["LEAD_A", "LEAD_B"],
   "props": ["wheelbarrow"],
   "cues": ["SFX-KNOCK"],
   "beats": [ ... ]
@@ -64,7 +64,7 @@ Every beat has `"type"`. Beats play in order.
 
 | type | fields | meaning |
 |---|---|---|
-| `line` | `id`, `speaker`, `direction`?, `text`, `loc` | A spoken line. `speaker` is the script's label (`DUY`, `CHORUS`); `direction` is the delivery tag without parentheses. |
+| `line` | `id`, `speaker`, `direction`?, `text`, `loc` | A spoken line. `speaker` is the script's label (`LEAD_B`, `CHORUS`); `direction` is the delivery tag without parentheses. |
 | `direction` | `text`, `loc` | A stage direction (shown as narration in the dialogue box, italic). |
 | `choice` | `label`, `loc`, `scripted`, `options[]` | A player choice. `options[]`: `{ "text", "loc", "effects": [flag ops], "next": beat index or null, "miss"? }`. `scripted: true` means a single outcome (the CHC rows): show the prompt, one option. |
 | `gameplay` | `kind`, `text`, `loc`, `params` | Hands control to gameplay. `kind`: `CMB` (battle), `ENG` (explore / talk / puzzle), `PLAY` (free exploration), `MINI` (legacy: the importer no longer emits it, see below). `text` is the `[GAMEPLAY → …]` notation; `params` is free-form (`{"enemies": "...", "minutes": 6}`). The story resumes at the next beat when the gameplay reports done. A kind the game has no screen for (a leftover `MINI`, anything unknown) waits in the dialogue box and continues on confirm. |

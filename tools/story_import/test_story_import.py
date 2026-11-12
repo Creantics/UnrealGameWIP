@@ -94,12 +94,12 @@ class TablesBase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def run_tool(self, tables, raw=None, bom=False):
+    def run_tool(self, tables, raw=None, bom=False, extra=()):
         path = os.path.join(self.dir, 'tables.json')
         write(path, raw if raw is not None else json.dumps(tables), bom=bom)
         err, out = io.StringIO(), io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
-            rc = story_import.main(['--tables', path, '--build-dir', self.build, '--out-dir', self.out])
+            rc = story_import.main(['--tables', path, '--build-dir', self.build, '--out-dir', self.out] + list(extra))
         return rc, err.getvalue() + out.getvalue()
 
 
@@ -202,8 +202,18 @@ class TestGoodTables(TablesBase):
         self.assertNotIn('cannot read the tables', text)
         self.assertNotIn('no entry in the tables', text)
 
-    def test_missing_choice_fails_with_placeholder(self):
+    def test_failed_import_keeps_good_output(self):
+        good = os.path.join(self.out, 'scenes', 'XA-01-A1.json')
+        write(good, '{"good": true}')
         rc, text = self.run_tool(TABLES)
+        self.assertEqual(rc, 1, text)
+        self.assertIn('wrote nothing', text)
+        with open(good, encoding='utf-8') as fh:
+            self.assertEqual(fh.read(), '{"good": true}')
+        self.assertFalse(os.path.exists(os.path.join(self.out, 'loc', 'en.json')))
+
+    def test_missing_choice_fails_with_placeholder(self):
+        rc, text = self.run_tool(TABLES, extra=['--allow-problems'])
         self.assertEqual(rc, 1, text)
         self.assertIn('XA-01-A1: CHOICE insert has no entry in the tables (choices)', text)
         with open(os.path.join(self.out, 'scenes', 'XA-01-A1.json'), encoding='utf-8') as fh:

@@ -6,14 +6,14 @@
 
 Reads every 04*.md in the folder (or only those whose name starts with a --files prefix) and writes
 one row per recordable line: plain dialogue, ROAST/REASSURE barks (one row each), choice-option
-lines, lines embedded in hidden VARIANT/ACTING/GAMEPLAY notes, held-silence lines ("DEVIN: ...")
+lines, lines embedded in hidden VARIANT/ACTING/GAMEPLAY notes, held-silence lines ("ARLO: ...")
 and camp lines (which keep their authored <sub>VO-...</sub> id as line_id).
 
 Lines embedded inside other blocks are rows too:
   * `SPEAKER (how): text` runs written mid-paragraph in `*[direction.hidden · VARIANT/OPTIONAL]*`
-    notes and in OPTIONAL bullets (`- **The window.** ... DEVIN (to himself): ...`), one row per run;
+    notes and in OPTIONAL bullets (`- **The window.** ... ARLO (to himself): ...`), one row per run;
   * quotes in a stage direction that the prose attributes to a voice ("the board says: "...",
-    "Torrin begins to answer, "..."", "Another: "Marek."", ""It always was," he says"). Written
+    "Gus begins to answer, "..."", "Another: "Dov."", ""It always was," he says"). Written
     text (notes, margins, signs, title cards) is not a row. Speaker = a known name in the clause,
     or the quoted word itself when it is a known name (a roll call), else UNKNOWN; parse_note CHECK.
 
@@ -24,15 +24,20 @@ that note), and the enclosing condition block: `**[VARIANT: ...]**`, `**▸ "...
 A plain label followed directly by text covers that paragraph (up to the next blank line); one
 followed by a blank line covers everything up to `*(Returns to the choice.)*`, the next label,
 `*When ...:*`, a CHOICE marker, `---` or a header. Nested labels are joined with '; '
-(`if ASK MINA; if first pick`). A label saying the answer "continues" covers its paragraph only.
+(`if ASK BEX; if first pick`). A label saying the answer "continues" covers its paragraph only.
 
 Columns: see vo_common.SKELETON_COLUMNS and the design package's voice/line_direction_schema.md.
 Rows the parser had to guess about carry a non-empty `parse_note` beginning with "CHECK".
+A choice option with no speaker of its own takes its lane's default speaker: the lane is the first
+letter of the scene id's last part (`<prefix>02-D1` is lane D). --names reads the "lanes" table
+({LETTER: SPEAKER}) from the story's voice names JSON (build_directions --names); without it the
+generic lanes A, B and C stand for themselves.
 Read-only on the script. Standard library only.
 """
 import argparse
 import collections
 import glob
+import json
 import os
 import re
 import sys
@@ -86,7 +91,8 @@ WRITTEN = re.compile(r"\b(?:writes?|wrote|written|reads|lettered|chalk|margin|ti
                      r"graphic|print|notebook|page|note|credits|screen)\b", re.I)
 POST_ATTR = re.compile(r"^\s*,?\*?\s*(?:he|she|they|it|[A-Z][a-z]+)\s+(?:says|said|asks|answers|whispers|calls)\b")
 
-LANE_DEFAULT = {'D': 'DEVIN', 'F': 'DEVIN', 'U': 'DUY'}
+LANE_GENERIC = {'A': 'A', 'B': 'B', 'C': 'C'}
+LANE_DEFAULT = dict(LANE_GENERIC)  # set by load_lanes() (--names)
 
 
 def act_for_file(path):
@@ -463,6 +469,22 @@ class Extractor:
         return self.rows
 
 
+def load_lanes(path):
+    """Set LANE_DEFAULT from the "lanes" table of a voice names JSON; returns an error string, or None."""
+    global LANE_DEFAULT
+    try:
+        with open(path, encoding='utf-8-sig') as fh:
+            t = json.load(fh)
+    except (OSError, ValueError) as e:
+        return 'cannot read the names: %s' % e
+    lanes = t.get('lanes', {}) if isinstance(t, dict) else None
+    if not isinstance(lanes, dict) or not all(isinstance(k, str) and len(k) == 1 and k.isupper()
+                                              and isinstance(v, str) and v for k, v in lanes.items()):
+        return 'the names file\'s "lanes" must be an object of {LETTER: SPEAKER}'
+    LANE_DEFAULT = dict(lanes) if lanes else dict(LANE_GENERIC)
+    return None
+
+
 def lane_of(scene):
     m = re.match(re.escape(SCENE_PREFIX) + r'[A-Z0-9]+-([A-Z]+)', scene)
     if m:
@@ -487,7 +509,7 @@ def collect_names(paths):
 
 
 def collect_speakers(paths):
-    """Every full speaker label that opens a dialogue line, e.g. {'DEVIN', 'THE BOARD', ...}."""
+    """Every full speaker label that opens a dialogue line, e.g. {'ARLO', 'THE BOARD', ...}."""
     out = set()
     for path in paths:
         with open(path, encoding='utf-8') as fh:
@@ -545,7 +567,14 @@ def main(argv=None):
     ap.add_argument('-o', '--out', help='CSV to write (default: stdout summary only)')
     ap.add_argument('--files', nargs='*', help='only files starting with these prefixes, e.g. 04a')
     ap.add_argument('--summary', action='store_true', help='print counts per act / speaker')
+    ap.add_argument('--names', help='the story\'s voice names JSON; its "lanes" table gives each lane\'s '
+                                    'default speaker (default: generic lanes A, B, C)')
     a = ap.parse_args(argv)
+    if a.names:
+        err = load_lanes(a.names)
+        if err:
+            sys.stderr.write('extract_lines: %s\n' % err)
+            return 2
     if not os.path.isdir(a.folder):
         sys.stderr.write('extract_lines: no such folder: %s\n' % a.folder)
         return 2

@@ -39,7 +39,7 @@ class UFTFightSession;
 
 // Saves started or stopped being skipped (a refused encode with no block it may write). bSkipping false: a block
 // was written again, or a new game, registry import or load cleared the run.
-DECLARE_MULTICAST_DELEGATE_OneParam(FFTOnStorySaveSkipChanged, bool /*bSkipping*/);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FFTOnStorySaveSkipChanged, bool, bSkipping);
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTStoryStateSubsystem : public UGameInstanceSubsystem
@@ -121,9 +121,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Story")
 	bool IsSkippingSaves() const { return SaveSkip.skipping; }
 	// The scene code (or the runner's scene id) the first skipped save was at; empty while none are skipped.
+	UFUNCTION(BlueprintPure, Category = "Story")
 	FString GetSavesSkippedSince() const;
+	UFUNCTION(BlueprintPure, Category = "Story")
 	int32 GetSkippedSaveCount() const { return static_cast<int32>(FMath::Min<uint32>(SaveSkip.skipped, MAX_int32)); }
 	// Broadcast when IsSkippingSaves changes.
+	UPROPERTY(BlueprintAssignable, Category = "Story")
 	FFTOnStorySaveSkipChanged OnSaveSkipChanged;
 
 private:

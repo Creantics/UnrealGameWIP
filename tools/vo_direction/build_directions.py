@@ -5,7 +5,7 @@
         --files 04b --ann my_notes/ann_*.txt -o DIRECTIONS.csv
 
 --names is the story's own voice table (JSON, kept outside the repo): overrides {SPEAKER: [stability, style,
-speed, similarity, temp]}, aliases {SCRIPT SPEAKER: HEADING}, refs {"<name> voice" phrase: HEADING}.
+speed, similarity, temp]}, aliases {SCRIPT SPEAKER: HEADING}, refs {"<name> voice" phrase: HEADING}, and lanes {LETTER: SPEAKER} (read by extract_lines --names).
 
 This is an authoring aid. The CSV it writes is the source of truth; carry_forward.py and
 validate_directions.py work on the CSV only.
@@ -55,13 +55,26 @@ def load_names(path):
     """Read the story's voice names (JSON); returns an error string, or None."""
     global OVERRIDES, ALIASES, _REF
     try:
-        with open(path, encoding='utf-8') as fh:
+        with open(path, encoding='utf-8-sig') as fh:
             t = json.load(fh)
     except (OSError, ValueError) as e:
         return 'cannot read the names: %s' % e
-    OVERRIDES = {k: tuple(v) for k, v in t.get('overrides', {}).items()}
-    ALIASES = dict(t.get('aliases', {}))
-    _REF = dict(t.get('refs', {}))
+    if not isinstance(t, dict):
+        return 'the names file must be a JSON object'
+    ov, al, rf = t.get('overrides', {}), t.get('aliases', {}), t.get('refs', {})
+
+    def num(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool)
+    if not isinstance(ov, dict) or not all(
+            isinstance(v, list) and len(v) == 5 and all(num(x) for x in v[:4]) and isinstance(v[4], bool)
+            for v in ov.values()):
+        return '"overrides" must map each speaker to [stability, style, speed, similarity, temp (true/false)]'
+    for key, table in (('aliases', al), ('refs', rf)):
+        if not isinstance(table, dict) or not all(isinstance(v, str) for v in table.values()):
+            return '"%s" must map each name to a speaker heading (a string)' % key
+    OVERRIDES = {k: tuple(v) for k, v in ov.items()}
+    ALIASES = dict(al)
+    _REF = dict(rf)
     return None
 
 

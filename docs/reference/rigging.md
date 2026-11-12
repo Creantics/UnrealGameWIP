@@ -266,7 +266,7 @@ deadpan line with a stressed word near its end).
 
 ### Faces in every world style (P1c)
 
-The ruling (plan §5.4, §14 Q5): every speaking character keeps a full 3D morph face in every world. A drawn
+The rule (plan §5.4): every speaking character keeps a full 3D morph face in every world. A drawn
 look comes only from StylePack shading, never from flattening the face. P1c makes that hold for the hatching
 packs.
 

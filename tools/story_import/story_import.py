@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """story_import.py - turn a story design package into the runtime story JSON.
 
-    python3 -I tools/story_import/story_import.py --tables FILE [--build-dir DIR] [--out-dir DIR] [--check]
+    python3 -I tools/story_import/story_import.py --tables FILE --build-dir DIR [--out-dir DIR] [--check | --allow-problems]
 
 --tables names the story's own tables (a JSON file kept outside the repo): the title, the worlds, the scene
 count, the script folder and scene id prefix, the hold ladder and its anchors, the gameplay keywords, and the
@@ -1015,6 +1015,9 @@ def main(argv=None):
     ap.add_argument('--build-dir', required=True, help="the story's design package build folder")
     ap.add_argument('--out-dir', default=os.path.join(REPO, 'assets', 'story'))
     ap.add_argument('--check', action='store_true', help='validate the files in --out-dir instead of writing them')
+    ap.add_argument('--allow-problems', action='store_true',
+                    help='write the files even when the import found problems (still exits 1); by default an import '
+                         'with problems writes nothing, so it cannot overwrite good output')
     a = ap.parse_args(argv)
     why = load_tables(a.tables)
     if why:
@@ -1032,10 +1035,14 @@ def main(argv=None):
             return 1
         print('CHECK OK')
         return 0
-    write_files(a.out_dir, files)
     summary(stats, info, sys.stdout)
     for e in problems:
         print('PROBLEM: ' + e, file=sys.stderr)
+    if problems and not a.allow_problems:
+        print('wrote nothing: %d problem(s); %s is unchanged (--allow-problems writes anyway)' % (
+            len(problems), a.out_dir), file=sys.stderr)
+        return 1
+    write_files(a.out_dir, files)
     print('wrote %d files to %s' % (len(files), a.out_dir))
     return 1 if problems else 0
 
