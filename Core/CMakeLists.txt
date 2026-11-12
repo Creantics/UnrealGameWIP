@@ -377,6 +377,23 @@ if(FTCORE_BUILD_TESTS)
         "WALK FAILED: inputs line 2: the hand-off sets nothing, the input gives sf.f_pick")
     add_test(NAME storywalk_inputs_bad_press COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_badpress.txt)
     set_tests_properties(storywalk_inputs_bad_press PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: inputs line 2: press: expected SIDE:KIND")
+    # A byte order mark and CRLF line ends: the same trace as inputs_ok.txt (the file is kept byte for byte, -text).
+    add_test(NAME storywalk_inputs_bom_crlf COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_bom_crlf.txt)
+    set_tests_properties(storywalk_inputs_bom_crlf PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=2\r?\nwrite f_pick 2 s1\r?\ngameplay PLAY\r?\npress 0 1 s1\r?\nwrite f_first 1 s1\r?\nwrite f_after 1 s1\r?\nscene s1\r?\nset f_pick 2\r?\nset f_first 1\r?\nset f_after 1\r?\nwide w_p01 1\r?\nderived 0 1\r?\ngameplay CMB\r?\nscene s2\r?\nWALK OK")
+    # A press on a side whose opening fact is not yet set: refused by the gate (result 5), the walk fails.
+    add_test(NAME storywalk_inputs_gate COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_gate.txt)
+    set_tests_properties(storywalk_inputs_gate PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: inputs line 2: press refused [(]result 5[)]")
+    add_test(NAME storywalk_inputs_twice COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_ok.txt --inputs ${FTCORE_WALK_IN}/inputs_ok.txt)
+    set_tests_properties(storywalk_inputs_twice PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --inputs given twice")
+    add_test(NAME storywalk_inputs_result COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_ok.txt --result sf.f_pick=2)
+    set_tests_properties(storywalk_inputs_result PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --inputs scripts every gameplay value: no --result")
+    add_test(NAME storywalk_steps_overflow COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --steps 99999999999999999999)
+    set_tests_properties(storywalk_steps_overflow PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --steps: expected a positive number")
+    # A scene map that plays the registry's scenes backwards: the state refuses the earlier scene, the bridge
+    # reports it and the walk fails (the walker's own backwards-commit check is the guard behind it).
+    add_test(NAME storywalk_backwards COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk_backwards --inputs ${FTCORE_WALK_IN}/inputs_ok.txt)
+    set_tests_properties(storywalk_backwards PROPERTIES PASS_REGULAR_EXPRESSION "refused scene 0.*WALK FAILED: the bridge reported a refusal")
 
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}

@@ -3,7 +3,8 @@
   "scenes": ["s1", "s2"],
   "roles": {
     "pressCounters": [["w_p00", "w_p01", "w_p02"], ["w_p10", "w_p11", "w_p12"]],
-    "firstPress": "f_first"
+    "firstPress": "f_first",
+    "sideOpen": ["", "f_after"]
   },
   "derived": [{ "kind": "in", "fact": "f_pick", "values": [2, 3] }]
 }

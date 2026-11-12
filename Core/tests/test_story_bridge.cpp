@@ -721,6 +721,7 @@ TEST_CASE("story bridge: a restore with no sync") {
     pos.beat = 2;
     REQUIRE(r.restore(pos)); // the flag beats it settles through are the restore's own: no report
     CHECK_FALSE(r.restoring());
+    CHECK(br.awaitingSync());
     CHECK(reports.list.empty());
     REQUIRE(r.advance());
     REQUIRE(r.waitingForGameplay());
@@ -741,14 +742,18 @@ TEST_CASE("story bridge: a restore with no sync") {
     SUBCASE("a new game instead of the sync") {
         REQUIRE(r.restore(pos));
         REQUIRE(r.start()); // the bridge follows the new game: no report, the state reset and forwarded
+        CHECK_FALSE(br.awaitingSync());
         REQUIRE(r.advance());
         REQUIRE(r.resume(FlagValue::integer(2)));
-        CHECK(reports.list.size() == 1 + 1); // the earlier SyncMissing, then the once-only refusal of beat 2
+        // The earlier SyncMissing, then beat 2 of s1 (build() above): its set of f_pick after the act's write of 2
+        // is a second set of a once-only fact, refused once.
+        CHECK(reports.list.size() == 1 + 1);
         CHECK(reports.list[1].kind == StoryBridgeReport::Kind::FactRefused);
         CHECK(fact(s, "f_pick") == 2);
     }
     SUBCASE("a late sync resumes forwarding") {
         br.sync();
+        CHECK_FALSE(br.awaitingSync());
         REQUIRE(r.advance()); // -> s2
         CHECK(s.openScene == 1);
         CHECK(reports.list.size() == 1);

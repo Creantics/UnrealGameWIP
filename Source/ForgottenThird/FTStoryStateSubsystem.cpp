@@ -58,6 +58,7 @@ void UFTStoryStateSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Collection.InitializeDependency<UFTStorySubsystem>(); // the runner outlives the bridge (deinitialized after this)
 	Registry = MakeUnique<ftcore::FactRegistry>();
 	State = MakeUnique<ftcore::StoryState>();
+	GoodState = MakeUnique<ftcore::StoryState>(); // large: off the stack
 	Bridge = MakeUnique<ftcore::StoryBridge>();
 	Bridge->setReportHandler(&UFTStoryStateSubsystem::HandleBridgeReport, this);
 	ftcore::storyReset(*State);
@@ -112,6 +113,13 @@ bool UFTStoryStateSubsystem::LoadRegistry(const FString& Dir)
 		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: registry in %s refused (%s); %s."), *Dir,
 			   !bCsv || !bJson ? TEXT("one of its two files is missing") : *FT::ToFString(Error), Keeps);
 		return false;
+	}
+	if (Bridge && Bridge->awaitingSync())
+	{
+		// A load restored the runner and has not called SyncAfterLoad: its block belongs to the old registry and is
+		// dropped with the state below; the unbind ends the load's pause and the sync at the end opens the
+		// restored scene in a new game's state. Import a registry before a load, not during one.
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: registry imported while a load awaited SyncAfterLoad; the loaded state is dropped and the story goes on in a new game's state."));
 	}
 	Unbind(); // the registry changes under it
 	if (Bridge)
@@ -285,6 +293,25 @@ FString RegistrySceneName(const ftcore::FactRegistry& Reg, uint8 Ordinal)
 }
 } // namespace
 
+void UFTStoryStateSubsystem::KeepGood(const TArray<uint8>& Block)
+{
+	LastGoodBlock = Block;
+	if (GoodState && State)
+	{
+		*GoodState = *State;
+	}
+}
+
+bool UFTStoryStateSubsystem::MovedSinceGood() const
+{
+	if (!GoodState || !State)
+	{
+		return true;
+	}
+	return State->facts != GoodState->facts || State->stamp != GoodState->stamp || State->wide != GoodState->wide ||
+		   State->openScene != GoodState->openScene || State->lastCommitted != GoodState->lastCommitted;
+}
+
 bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
 {
 	if (bOutSkip)
@@ -312,25 +339,27 @@ bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
 		}
 		const uint8 GoodOpen = LastGoodBlock[16], GoodLast = LastGoodBlock[17]; // the block's open and last committed scene
 		const FString GoodScene = RegistrySceneName(*Registry, GoodOpen != ftcore::kNoScene ? GoodOpen : GoodLast);
-		if (Now != StoryBlockProgress(GoodOpen, GoodLast))
+		if (Now != StoryBlockProgress(GoodOpen, GoodLast) || MovedSinceGood())
 		{
-			// The story has moved past the block (or it is from another run): writing it would put other facts
+			// The story has moved since the block (another scene, or a later beat of the same scene that wrote a
+			// fact, a stamp or a wide value), or the block is from another run: writing it would put other facts
 			// under this position.
 			UE_LOG(LogFTStoryState, Warning,
-				   TEXT("Story state not saved: the state refused to encode; the last good block is from scene %s, and the story is now at %s; the save is skipped."),
-				   *GoodScene, *RegistrySceneName(*Registry, State->openScene != ftcore::kNoScene ? State->openScene : State->lastCommitted));
+				   TEXT("Story state not saved: the state refused to encode; the last good block is from scene %s, and the story is now at %s with its facts, stamps and wide values %s since that block; the save is skipped."),
+				   *GoodScene, *RegistrySceneName(*Registry, State->openScene != ftcore::kNoScene ? State->openScene : State->lastCommitted),
+				   MovedSinceGood() ? TEXT("changed") : TEXT("unchanged"));
 			if (bOutSkip)
 			{
 				*bOutSkip = true;
 			}
 			return false;
 		}
-		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the last good block (scene %s) is written."),
+		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the last good block (scene %s; same scene position, facts, stamps and wide values) is written."),
 			   *GoodScene);
 		Out = LastGoodBlock;
 		return false;
 	}
-	LastGoodBlock = Block;
+	KeepGood(Block);
 	Out = MoveTemp(Block);
 	return true;
 }
@@ -346,7 +375,7 @@ ftcore::StoryLoad UFTStoryStateSubsystem::DecodeBlock(const TArray<uint8>& In)
 		std::span<const std::uint8_t>(In.GetData(), static_cast<std::size_t>(In.Num())), *Registry, *State, &Report);
 	if (Result == ftcore::StoryLoad::Ok)
 	{
-		LastGoodBlock = In;
+		KeepGood(In);
 	}
 	else
 	{

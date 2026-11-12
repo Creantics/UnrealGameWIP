@@ -100,7 +100,8 @@ public:
 
 	// Writes the block into Out and keeps a copy as the last good block. When Core refuses, it returns false with a
 	// warning naming the last good block's scene and writes that block instead, unless there is none or the story
-	// is no longer at its scene: then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot
+	// has moved since it (its scene position, or any fact, stamp or wide value: a later beat of the same scene that
+	// wrote something counts; a beat that wrote nothing gives the same block): then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot
 	// keeps what it has). False with Out untouched before Initialize.
 	bool EncodeBlock(TArray<uint8>& Out, bool* bOutSkip = nullptr);
 	// Loads the block, or a new game's state when it is empty or Core refuses it. Returns Core's result. A loaded
@@ -124,4 +125,8 @@ private:
 	TUniquePtr<ftcore::StoryBridge> Bridge;
 	// The last block that encoded or loaded (EncodeBlock writes it when Core refuses).
 	TArray<uint8> LastGoodBlock;
+	// The state as LastGoodBlock was taken (EncodeBlock writes that block only while nothing moved since).
+	TUniquePtr<ftcore::StoryState> GoodState;
+	void KeepGood(const TArray<uint8>& Block);
+	bool MovedSinceGood() const;
 };
