@@ -1,6 +1,6 @@
 """Headless auto-rig for a single-mesh A-pose humanoid (a Tripo glb, an fbx or an obj): finds the joints on the
 mesh, builds an Unreal-mannequin skeleton (names, hierarchy, axes, twist bones, finger metacarpals), binds the
-mesh with voxel-geodesic weights and exports an FBX that FTImportCharacter takes. The work is in autorig_core.py.
+mesh with voxel-geodesic weights and exports a .glb (the format FTImportCharacter takes) or an FBX. The work is in autorig_core.py.
 
   blender -b --factory-startup --python-exit-code 1 --python tools/blender/ft_autorig.py -- \
       in.glb out.glb|out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--max-tex 1024] [--voxels 160] \
@@ -192,6 +192,8 @@ def main():
     def say(m):
         log.append(m)
         print("ft_autorig:", m)
+    if o.get("hem_on") and not o["keep"]:
+        say("--hem only applies with --keep-weights (the detected hem rule is on by default; --no-hem turns it off)")
     if o["keep"]:
         ob, src_rig = load_mesh(o["src"], keep=True)
     else:
@@ -223,7 +225,8 @@ def main():
 
         def tr(p):
             return Mn[:3, :3] @ p + Mn[:3, 3]
-        missing = [n for n in L if n not in bones]
+        tips = ["ball_" + s for s in "lr"] + [f + "_03_" + s for s in "lr" for f in ("index", "middle", "ring", "pinky", "thumb")]
+        missing = [n for n in list(L) + tips if n not in bones]
         if missing:
             raise SystemExit("source rig lacks mannequin bones: " + ", ".join(sorted(missing)[:12]))
         for n in L:
@@ -268,6 +271,13 @@ def main():
             say("source weights: %d vertices unweighted, row sums %.3f..%.3f, up to %d influences"
                 % (int((s_[:, 0] < 1e-6).sum()), float(s_.min()), float(s_.max()), int((Wk > 1e-4).sum(1).max())))
             Wk = Wk / np.maximum(s_, 1e-12)
+            bare = np.nonzero(s_[:, 0] < 1e-6)[0]
+            if len(bare):  # give an unweighted vertex its nearest weighted vertex's weights (it would skin to nothing)
+                held = np.nonzero(s_[:, 0] >= 1e-6)[0]
+                for c in range(0, len(bare), 16):
+                    b = bare[c:c + 16]
+                    d = ((V[b, None, :] - V[None, held, :]) ** 2).sum(-1)
+                    Wk[b] = Wk[held[d.argmin(1)]]
             # the hem rule works from the source rig, not from detection (which fails on the cloth this rule is
             # for): leg axes from the thigh and calf bones, leg radius from the inner vertices the source thighs own (skirts are thigh-weighted too),
             # and only vertices the source gives mostly to the pelvis and thighs count as hanging cloth
