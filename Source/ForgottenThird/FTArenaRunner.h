@@ -367,9 +367,6 @@ private:
 	UFTFightSession* GetSession() const { return Session; }
 	uint8 GetSessionLead() const { return SessionLead; }
 	static uint8 SessionLeadOf(const FFTLeadLook* Look);
-	// The story state the session writes given gifts to (both or neither; they must outlive the binding). Bind it
-	// before Begin; Begin and Restart keep it.
-	void BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 

@@ -262,6 +262,16 @@ bool UFTStoryStateSubsystem::EndStep(ftcore::StepEnd End)
 	return State && StepMark && ftcore::storyEndStep(*State, *Registry, *StepMark, End);
 }
 
+bool UFTStoryStateSubsystem::RestartStep()
+{
+	if (!EndStep(ftcore::StepEnd::Retry))
+	{
+		return false;
+	}
+	MarkStep();
+	return true;
+}
+
 void UFTStoryStateSubsystem::NewGame()
 {
 	if (State)
@@ -283,7 +293,13 @@ void UFTStoryStateSubsystem::BindFightSession(UFTFightSession* Session)
 		{
 			Unbind(); // one session holds the state at a time
 		}
-		Session->BindStory(State.Get(), Registry.Get());
+		if (!State || !Registry || !StepMark || !Session->BindStory(*State, *Registry, *StepMark))
+		{
+			// The step's writes since its mark were not rolled back (a retry inside the screen without RestartStep),
+			// or no step is open: the fight plays but its presses never count on top of the last attempt.
+			UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: the fight session was not bound: the story state is not at the step's mark."));
+			return;
+		}
 		BoundSession = Session;
 	}
 }
@@ -292,7 +308,7 @@ void UFTStoryStateSubsystem::Unbind()
 {
 	if (UFTFightSession* Session = BoundSession.Get())
 	{
-		Session->BindStory(nullptr, nullptr);
+		Session->UnbindStory();
 	}
 	BoundSession.Reset();
 }

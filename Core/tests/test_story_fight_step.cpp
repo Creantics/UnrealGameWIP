@@ -4,6 +4,8 @@
 #include "ftcore/StoryChain.h"
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryRunner.h"
+#include "ftcore/StoryState.h"
+#include "ftcore/StoryFactReader.h"
 
 #include <ostream>
 #include <doctest/doctest.h>
@@ -84,6 +86,98 @@ TEST_CASE("fight step: every lose=never beat is listed at load") {
     CHECK(warnings[0].find("scene 'SC-F' beat 1") != std::string::npos);
     REQUIRE(build(db, error, "CMB", "retry", "", &warnings));
     CHECK(warnings.empty());
+}
+
+TEST_CASE("fight step: the load lists every lose=never beat, and only those") {
+    StoryBuilder b;
+    b.setStart("SC-N");
+    b.beginChapter("01", "One");
+    b.beginScene("SC-N", "Never");
+    b.gameplay("CMB", "[GAMEPLAY]"); // beat 0
+    b.param("lose", "never");
+    b.line("VO-N-001", "SPK1", "Between.");
+    b.gameplay("CMB", "[GAMEPLAY]"); // beat 2
+    b.param("lose", "never");
+    b.gameplay("CMB", "[GAMEPLAY]"); // beat 3: a retry beat, not listed
+    b.param("lose", "retry");
+    b.end();
+    StoryDatabase db;
+    std::string error;
+    REQUIRE(b.finish(db, &error));
+    REQUIRE(b.warnings().size() == 1);
+    const std::string& w = b.warnings()[0];
+    CHECK(w.find("2 fight beat(s) marked lose=never") != std::string::npos);
+    CHECK(w.find("scene 'SC-N' beat 0") != std::string::npos);
+    CHECK(w.find("scene 'SC-N' beat 2") != std::string::npos);
+    CHECK(w.find("beat 3") == std::string::npos);
+}
+
+namespace {
+// The story state's half of a fight: the press counters the fight writes (side 0 kind 0 is w_a0).
+const char* kFlowCsv = "slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive\n"
+                       "0,w_a0,CTR,65535,0,-,any,-,-,-,-\n"
+                       "1,w_a1,CTR,65535,0,-,any,-,-,-,-\n"
+                       "2,w_a2,CTR,65535,0,-,any,-,-,-,-\n"
+                       "3,w_b0,CTR,65535,0,-,any,-,-,-,-\n"
+                       "4,w_b1,CTR,65535,0,-,any,-,-,-,-\n"
+                       "5,w_b2,CTR,65535,0,-,any,-,-,-,-\n";
+const char* kFlowJson = R"({"version": 2, "scenes": ["s1"],
+  "roles": {"pressCounters": [["w_a0", "w_a1", "w_a2"], ["w_b0", "w_b1", "w_b2"]]}})";
+
+// One attempt at the fight beat as the director plays it: mark the step, the fight presses once, judge it,
+// end the step by the verdict, then resume the runner by it.
+StepResume attempt(StoryRunner& r, StoryState& st, const FactRegistry& reg, bool won, std::uint32_t retries) {
+    StoryStepMark mark;
+    REQUIRE(storyMarkStep(st, mark));
+    REQUIRE(storyCountPress(st, reg, 0, 0) == SetResult::Ok);
+    LossRule rule = LossRule::Retry;
+    lossRuleFromName(r.param("lose"), rule);
+    const bool sets = !r.param("sets").empty();
+    const StepVerdict v = judgeStep(true, won, rule, sets, retries, 0);
+    REQUIRE(storyEndStep(st, reg, mark, stepEndFor(v)));
+    const StepResume how = stepResumeFor(v, true, rule, sets);
+    if (how == StepResume::Won) REQUIRE(r.resume(FlagValue::integer(1)));
+    if (how == StepResume::Lost) REQUIRE(r.resume(FlagValue::integer(0)));
+    if (how == StepResume::Plain) REQUIRE(r.resume());
+    return how;
+}
+} // namespace
+
+TEST_CASE("fight step: verdict, story state and runner resume together") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kFlowCsv, kFlowJson, reg, &err), err);
+    const std::uint8_t presses = reg.roles.pressCounters[0][0];
+    StoryDatabase db;
+    std::string error;
+
+    SUBCASE("retry: two losses roll back, the win counts once and goes on") {
+        REQUIRE(build(db, error, "CMB", "retry", ""));
+        StoryRunner r(&db);
+        StoryState st;
+        storyReset(st);
+        REQUIRE(storyBeginScene(st, reg, storySceneOrdinal(reg, "s1")));
+        toFight(r);
+        CHECK(attempt(r, st, reg, false, 0) == StepResume::Retry);
+        CHECK(r.waitingForGameplay());
+        CHECK(attempt(r, st, reg, false, 1) == StepResume::Retry);
+        CHECK(storyWide(st, presses) == 0);
+        CHECK(attempt(r, st, reg, true, 2) == StepResume::Plain);
+        CHECK(storyWide(st, presses) == 1);
+        CHECK(r.state() == StoryRunner::State::Line);
+    }
+    SUBCASE("branch: the loss keeps its writes and resumes with 0") {
+        REQUIRE(build(db, error, "CMB", "branch", "F_WON"));
+        StoryRunner r(&db);
+        StoryState st;
+        storyReset(st);
+        REQUIRE(storyBeginScene(st, reg, storySceneOrdinal(reg, "s1")));
+        toFight(r);
+        CHECK(attempt(r, st, reg, false, 0) == StepResume::Lost);
+        CHECK(storyWide(st, presses) == 1);
+        CHECK(r.flag("F_WON").value == 0);
+        CHECK(r.state() == StoryRunner::State::Line);
+    }
 }
 
 TEST_CASE("fight step: on a branch beat a win resumes with 1 and a loss with 0") {

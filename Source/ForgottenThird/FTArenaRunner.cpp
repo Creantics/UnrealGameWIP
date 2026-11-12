@@ -1411,14 +1411,6 @@ uint8 UFTArenaRunner::SessionLeadOf(const FFTLeadLook* Look)
 	return Look && Look->Name.Equals(TEXT("Duy"), ESearchCase::IgnoreCase) ? ftcore::kLeadB : ftcore::kLeadA;
 }
 
-void UFTArenaRunner::BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry)
-{
-	if (Session)
-	{
-		Session->BindStory(Story, Registry);
-	}
-}
-
 void UFTArenaRunner::BeginSession()
 {
 	SessionHeld = Fight.heldTime();
@@ -1450,7 +1442,7 @@ void UFTArenaRunner::BeginSession()
 		}
 		else
 		{
-			Session->BindStory(nullptr, nullptr);
+			Session->UnbindStory();
 		}
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: fight session story %s"), bStory && Story ? TEXT("bound") : TEXT("unbound"));
 	}
@@ -3078,6 +3070,17 @@ void UFTArenaRunner::EndImpact()
 void UFTArenaRunner::Restart()
 {
 	Fight.restart();
+	if (Session && Session->IsStoryBound())
+	{
+		// The story's fight again from its start: the last attempt's story writes roll back first, or the new
+		// attempt is refused its binding (BeginSession) and counts nothing.
+		const UWorld* World = GetWorld();
+		UFTGameInstance* Instance = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+		if (UFTStoryStateSubsystem* Story = Instance ? Instance->GetSubsystem<UFTStoryStateSubsystem>() : nullptr)
+		{
+			Story->RestartStep();
+		}
+	}
 	BeginSession();
 	LeadWeapons.Restart();
 	BeginStoneBearer();
