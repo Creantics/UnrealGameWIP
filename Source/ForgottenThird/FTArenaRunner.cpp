@@ -520,6 +520,7 @@ void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
 	LeadLegYaw = 0.f;
+	LeadUpperShare = 0.f;
 }
 
 APlayerController* UFTArenaRunner::GetPC() const
