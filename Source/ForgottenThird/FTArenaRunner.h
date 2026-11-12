@@ -503,7 +503,10 @@ private:
 	// step, and the gait and the foot lock would flip with it each frame.
 	float PlayerStepSpeed = 0.f;
 	float PlayerSteps[3] = {0.f, 0.f, 0.f};
-	int32 PlayerStepAt = -1; // the next slot in PlayerSteps; -1 after a start or a teleport
+	int32 PlayerStepAt = -1; // the next slot in PlayerSteps; -1 after a start, a teleport or a facing snap
+	float PlayerStepFacing = 0.f; // rad, at the last step
+	static constexpr float kMaxStepSpeed = 12.f; // m/s: a faster step is a teleport (the dodge is under 6)
+	static constexpr float kStepSnapTurn = 1.f;  // rad in one step: a snap, not a running turn
 	// The strike clips' upper-body share this step, eased toward attackUpperShare of the walk (the lunge left out).
 	float LeadUpperShare = 0.f;
 	// The share moves by at most this much a second, so a strike's legs don't flip between the clip and the walk.

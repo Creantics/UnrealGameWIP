@@ -39,15 +39,18 @@ TEST_CASE("attack move: the shipped table commits a fist's heavy, slows a fist's
     for (const AimKind k : {AimKind::Focus, AimKind::Cast}) {
         // A fist's or a spell's heavy commits: a short step in startup, none through active, a slow one in recovery.
         const AttackMoveTune& heavy = r.heavy[static_cast<int>(k)];
-        CHECK(heavy.startupScale <= 0.3f);
+        CHECK(heavy.startupScale == doctest::Approx(0.3f));
         CHECK(heavy.activeScale == 0.f);
-        CHECK(heavy.recoveryScale <= 0.4f);
+        CHECK(heavy.recoveryScale == doctest::Approx(0.4f));
+        CHECK(heavy.commit == 0.f);
         CHECK_FALSE(heavy.recoveryRamp);
         // Its light slows the walk to a little over half or less from startup to the cancel point.
         const AttackMoveTune& light = r.light[static_cast<int>(k)];
-        CHECK(light.startupScale <= 0.4f);
-        CHECK(light.activeScale <= 0.55f);
-        CHECK(light.recoveryScale <= 0.7f);
+        CHECK(light.startupScale == doctest::Approx(0.4f));
+        CHECK(light.activeScale == doctest::Approx(0.55f));
+        CHECK(light.recoveryScale == doctest::Approx(0.7f));
+        CHECK(light.commit == 0.f);
+        CHECK_FALSE(light.recoveryRamp);
     }
     // A gun's shot walks (hit and move), as before the fists committed: a light at 0.65 easing back to full pace
     // over its recovery; a heavy at 0.45, then 0.3 from 0.25 s before contact, easing back the same way.
@@ -376,6 +379,7 @@ TEST_CASE("attack move: in the arena every attack turns, a fist's heavy commits 
                 if (s > cancelAt) CHECK(o.speedScale >= (tune.recoveryRamp ? tune.recoveryScale : 1.f));
                 else if (move == kArenaShotMove) CHECK(o.speedScale >= 0.5f);
                 else if (heavy && kind != AimKind::Fire && s > a->startup && s < activeEnd) CHECK(o.speedScale == 0.f);
+                else if (!tune.recoveryRamp || s < activeEnd) CHECK(o.speedScale <= 0.7f); // slowed before the cancel point
                 else CHECK(o.speedScale < 1.f);
             }
         }

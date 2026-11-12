@@ -1572,6 +1572,15 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	{
 		ToWorld = Skel->GetComponentTransform();
 	}
+	if (FeetResetSeen != Instance->PushedFeetReset)
+	{
+		FeetResetSeen = Instance->PushedFeetReset;
+		Feet.reset();
+		bHaveLastRoot = false;
+	}
+	RootMoved = bHaveLastRoot ? static_cast<float>(FVector::Dist(ToWorld.GetTranslation(), LastRoot)) : 0.f;
+	LastRoot = ToWorld.GetTranslation();
+	bHaveLastRoot = true;
 }
 
 void FFTLocomotionAnimProxy::HoldFeet(FCSPose<FCompactPose>& CS, const FBoneContainer& Container)
@@ -1585,76 +1594,21 @@ void FFTLocomotionAnimProxy::HoldFeet(FCSPose<FCompactPose>& CS, const FBoneCont
 		Foot[I] = CS.GetComponentSpaceTransform(Limb[NumArmBones + I * 3 + 2].GetCompactPoseIndex(Container)).GetTranslation();
 		bLifted[I] = BallCS.Z > BallRest[I] + kLiftedAbove;
 	}
-	auto Off = [&Ball](const FFootHold& H, int32 I) { return FVector::Dist2D(H.Anchor, Ball[I]); };
-	// Held, let go or lifted by the clip.
+	// Held, let go, stepping or lifted by the clip (ftcore::FootHold); By, world: each foot moved from the clip's place.
+	ftcore::FootPoint BallAt[2], Moved[2];
 	for (int32 I = 0; I < 2; ++I)
 	{
-		FFootHold& H = Hold[I];
-		if (H.bStepping)
-		{
-			continue;
-		}
-		if (bLifted[I])
-		{
-			H.bHeld = false;
-		}
-		else if (!H.bHeld)
-		{
-			H.bHeld = bFootLock;
-			H.Anchor = Ball[I];
-		}
-		else if (!bFootLock && Off(H, I) <= kLetGoWithin)
-		{
-			H.bHeld = false;
-		}
+		BallAt[I] = ftcore::FootPoint{static_cast<float>(Ball[I].X), static_cast<float>(Ball[I].Y), static_cast<float>(Ball[I].Z)};
 	}
-	// One step at a time: the held foot farthest from its clip place, past the reach (let go, past kLetGoWithin).
-	if (!Hold[0].bStepping && !Hold[1].bStepping)
-	{
-		const float Reach = bFootLock ? kHoldReach : kLetGoWithin;
-		int32 Far = INDEX_NONE;
-		for (int32 I = 0; I < 2; ++I)
-		{
-			if (Hold[I].bHeld && Off(Hold[I], I) > Reach && (Far == INDEX_NONE || Off(Hold[I], I) > Off(Hold[Far], Far)))
-			{
-				Far = I;
-			}
-		}
-		if (Far != INDEX_NONE)
-		{
-			Hold[Far].bHeld = false;
-			Hold[Far].bStepping = true;
-			Hold[Far].From = Hold[Far].Anchor;
-			Hold[Far].T = 0.f;
-		}
-	}
-	bFeetHeld = false;
-	FVector By[2] = {FVector::ZeroVector, FVector::ZeroVector}; // world: each foot moved from the clip's place
+	Feet.update(BallAt, bLifted, bFootLock, HoldDt, RootMoved, Moved);
+	RootMoved = 0.f;
+	FVector By[2];
 	for (int32 I = 0; I < 2; ++I)
 	{
-		FFootHold& H = Hold[I];
-		if (H.bStepping)
-		{
-			H.T = FMath::Min(1.f, H.T + HoldDt / kStepTime);
-			const float S = FMath::SmoothStep(0.f, 1.f, H.T);
-			By[I] = (H.From - Ball[I]) * (1.f - S);
-			By[I].Z = kStepLift * FMath::Sin(PI * H.T);
-			if (H.T >= 1.f)
-			{
-				H.bStepping = false;
-				H.bHeld = bFootLock && !bLifted[I];
-				H.Anchor = Ball[I];
-			}
-		}
-		else if (H.bHeld)
-		{
-			By[I] = H.Anchor - Ball[I];
-			By[I].Z = 0.0;
-		}
-		bFeetHeld |= H.bHeld || H.bStepping;
+		By[I] = FVector(Moved[I].x, Moved[I].y, Moved[I].z);
 	}
 	// The clips stand on nearly straight legs, so a foot held behind or ahead of its clip place is out of the leg's
-	// reach: the pelvis sinks (eased, at most kMaxPelvisDrop) until every moved foot is within kLegReach of the leg's
+	// reach: the pelvis sinks (eased, at most FootHoldTuning::maxPelvisDrop) until every moved foot is within kLegReach of the leg's
 	// length, a knee bend under the weight, and both legs are solved onto their feet from there.
 	const FCompactPoseBoneIndex PelvisI = PelvisBone.IsValidToEvaluate(Container) ? PelvisBone.GetCompactPoseIndex(Container) : FCompactPoseBoneIndex(INDEX_NONE);
 	FVector Effector[2];
@@ -1678,12 +1632,7 @@ void FFTLocomotionAnimProxy::HoldFeet(FCSPose<FCompactPose>& CS, const FBoneCont
 			Need = FMath::Max(Need, Up - FMath::Sqrt(Reach * Reach - Flat * Flat));
 		}
 	}
-	const float Want = PelvisI.IsValid() ? FMath::Clamp(static_cast<float>(Need), 0.f, kMaxPelvisDrop) : 0.f;
-	PelvisDrop = FMath::FInterpTo(PelvisDrop, Want, HoldDt, Want > PelvisDrop ? kPelvisDropIn : kPelvisDropOut);
-	if (Want <= 0.f && PelvisDrop < 0.05f)
-	{
-		PelvisDrop = 0.f;
-	}
+	const float PelvisDrop = Feet.easePelvis(PelvisI.IsValid() ? static_cast<float>(Need) : 0.f, HoldDt);
 	if (PelvisDrop > 0.f && PelvisI.IsValid())
 	{
 		FTransform Pelvis = CS.GetComponentSpaceTransform(PelvisI);
@@ -1916,12 +1865,10 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			BallBone[Side].Initialize(Container);
 			BallRest[Side] = BallBone[Side].IsValidToEvaluate(Container)
 				? static_cast<float>(RefCS(BallBone[Side].GetCompactPoseIndex(Container)).GetTranslation().Z) : 0.f;
-			Hold[Side] = FFootHold();
 		}
 		PelvisBone.BoneName = TEXT("pelvis");
 		PelvisBone.Initialize(Container);
-		PelvisDrop = 0.f;
-		bFeetHeld = false;
+		Feet.reset();
 		BoundSerial = Container.GetSerialNumber();
 		bBound = true;
 	}
@@ -1981,7 +1928,7 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	const bool bElbows = ElbowHold > 0.002f && ElbowBend > 0.f;
 	const bool bAim = AimWeight > 0.001f;
 	// Held through a hit pause too (the anim's time stopped, HoldDt 0): the steps wait, the feet stay put.
-	bool bLegs = bFootLock || bFeetHeld;
+	bool bLegs = Feet.legsNeeded(bFootLock); // a sunk pelvis too: dropping it at once would pop the body up
 	for (int32 I = 0; bLegs && I < 2; ++I)
 	{
 		bLegs = BallBone[I].IsValidToEvaluate(Container) && Limb[NumArmBones + I * 3].IsValidToEvaluate(Container)

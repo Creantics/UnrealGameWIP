@@ -771,7 +771,7 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 	}
 	if (!Van.IsValid())
 	{
-		// An attack under way slows the walk too (a heavy's commit more); a fist's or spell's strike stops it (speed 0:
+		// An attack under way slows the walk too; a fist's or spell's heavy stops it through its active part (speed 0:
 		// the movement brakes the body to a stop at its own braking rate).
 		Move->MaxWalkSpeed = AimSpeedBase * Aim.speedScale() * AttackMoveNow().speedScale;
 		AimSpeedSet = Move->MaxWalkSpeed;

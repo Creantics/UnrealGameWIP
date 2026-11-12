@@ -4,15 +4,17 @@
 // attack, and how much of the strike plays on the upper body only (the legs keep the walk) rather than on the whole
 // body.
 //
-// A strike commits the body: the stick's share of the walking pace is set per phase (startupScale through startup,
-// activeScale through active, recoveryScale through recovery up to the move's cancel point, the `cancel` share of its
-// recovery, when another action may start), and from the cancel point on the walk is free again (full pace). The
+// The stick's share of the walking pace is set per phase: startupScale through startup, activeScale through active
+// (and from `commit` s before contact), recoveryScale through recovery up to the move's cancel point (the `cancel`
+// share of its recovery, when another action may start), and from the cancel point on the walk is free again (full
+// pace); with recoveryRamp the recovery instead eases from its scale back to full pace over its whole length. The
 // arena ramps the walk toward that share at the fighter's brake (slowing) and accel (speeding up), so the pace the
 // attack began at slides to the phase's share rather than stopping dead; the attack's own lunge comes on top. The body
 // turns at up to turnRate rad/s the whole time (never held). A light goes by the light's numbers; a heavy, a riposte
 // and a Release (which the arena host moves by the heavy's) by the heavy's. The numbers come per weapon (AimKind:
 // gauntlets and bare hands Focus, guns Fire, the unused magic kit Cast), from Data/Battle/attack_move.json; a gun's
-// shot keeps walking (its legs stay on the walk under the upper-body share), a fist's strike stands.
+// shot keeps walking (its legs stay on the walk under the upper-body share), a fist's heavy stops through its active
+// part and its light slows.
 //
 // The upper-body share (attackUpperShare): 0 while the body stands (the full-body strike plays) up to 1 once it moves
 // at upperFull m/s (the strike from the spine up, the legs on the walk cycle).
@@ -32,12 +34,13 @@ struct AttackMoveTune {
     float recoveryScale = 0.f; // ... through recovery up to the cancel point (full pace from there)
     float turnRate = 6.f;      // rad/s the body may turn while the attack plays (above 0: the facing is never held)
     float commit = 0.f;        // s before contact from which activeScale holds (0: from contact)
-    bool recoveryRamp = false; // the recovery eases from recoveryScale to full pace over its whole length instead
+    bool recoveryRamp = false; // the recovery eases from recoveryScale to full pace over its whole length
 };
 
 struct AttackMoveRules {
-    AttackMoveTune light[3] = {{0.f, 0.f, 0.f, 6.f}, {0.65f, 0.65f, 0.65f, 7.f, 0.f, true}, {0.f, 0.f, 0.f, 6.f}}; // by AimKind
-    AttackMoveTune heavy[3] = {{0.f, 0.f, 0.f, 4.f}, {0.45f, 0.3f, 0.3f, 5.f, 0.25f, true}, {0.f, 0.f, 0.f, 4.f}}; // by AimKind
+    // By AimKind.
+    AttackMoveTune light[3] = {{0.f, 0.f, 0.f, 6.f}, {0.65f, 0.65f, 0.65f, 7.f, 0.f, true}, {0.f, 0.f, 0.f, 6.f}};
+    AttackMoveTune heavy[3] = {{0.f, 0.f, 0.f, 4.f}, {0.45f, 0.3f, 0.3f, 5.f, 0.25f, true}, {0.f, 0.f, 0.f, 4.f}};
     float upperNone = 0.15f; // m/s at or under which the strike plays on the whole body
     float upperFull = 0.6f;  // m/s at or over which it plays on the upper body only
 };

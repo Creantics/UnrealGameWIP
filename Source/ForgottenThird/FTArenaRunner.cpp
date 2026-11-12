@@ -521,6 +521,10 @@ void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)
 	PlayerStepAt = -1;
 	LeadLegYaw = 0.f;
 	LeadUpperShare = 0.f;
+	if (PlayerFigure)
+	{
+		PlayerFigure->ResetFeet();
+	}
 }
 
 APlayerController* UFTArenaRunner::GetPC() const
@@ -597,24 +601,20 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 	// shows each body's pose for where it stands that frame. Ticking first, a mesh posed for the last frame's placement and
 	// was then moved and turned under it: a frame late, which slid the planted feet at every start, stop and turn, and
 	// swung the old pose round with a sharp turn (the riposte's finisher snaps the facing at contact).
+	// The figure keeps the tie for meshes it makes later (AFTArenaFighter::PoseAfter); pieces follow the body's pose
+	// and grooms its mesh, each ticking after the mesh it follows, so they come along.
 	if (AActor* Ticker = Cast<AActor>(GetOuter()))
 	{
-		auto After = [Ticker](AActor* Figure)
+		if (PlayerFigure)
 		{
-			if (!Figure)
-			{
-				return;
-			}
-			TInlineComponentArray<USkeletalMeshComponent*> Meshes(Figure);
-			for (USkeletalMeshComponent* Mesh : Meshes)
-			{
-				Mesh->AddTickPrerequisiteActor(Ticker);
-			}
-		};
-		After(PlayerFigure);
+			PlayerFigure->PoseAfter(Ticker);
+		}
 		for (int32 I = 0; I < MaxEnemies; ++I)
 		{
-			After(EnemyFigures[I]);
+			if (EnemyFigures[I])
+			{
+				EnemyFigures[I]->PoseAfter(Ticker);
+			}
 		}
 	}
 	// The stone_bearer's picks: only the moves its figure has a clip for (a clipless one would stand in the idle while
@@ -1146,6 +1146,17 @@ void UFTArenaRunner::PutBodiesAtStart()
 	LeadUpperShare = 0.f;
 	LeadLegYaw = 0.f;
 	Accumulator = 0.0;
+	if (PlayerFigure)
+	{
+		PlayerFigure->ResetFeet();
+	}
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		if (EnemyFigures[I])
+		{
+			EnemyFigures[I]->ResetFeet();
+		}
+	}
 	Fight.tick(0.f, ftcore::ArenaInput(), Bodies);
 	PrevHeldTime = static_cast<double>(Fight.heldTime());
 	HeldDelta = 0.f;
@@ -1709,8 +1720,22 @@ void UFTArenaRunner::StepFight()
 	if (!bLeadPaused)
 	{
 		const float DX = Bodies.player.x - PrevBodies.player.x, DY = Bodies.player.y - PrevBodies.player.y;
-		const float StepNow = FMath::Sqrt(DX * DX + DY * DY) / StepSeconds;
-		// After a start or a teleport the history is filled with this step.
+		float StepNow = FMath::Sqrt(DX * DX + DY * DY) / StepSeconds;
+		// A step faster than any the body makes is a teleport: the legs start over from a stand. A facing turned
+		// further than a running turn in one step (a snap) starts the history over too.
+		const float Facing = FMath::Atan2(Out.player.facing.y, Out.player.facing.x);
+		const bool bSnapped = PlayerStepAt >= 0 && FMath::Abs(FMath::FindDeltaAngleRadians(PlayerStepFacing, Facing)) > kStepSnapTurn;
+		PlayerStepFacing = Facing;
+		if (!(StepNow <= kMaxStepSpeed))
+		{
+			StepNow = 0.f;
+			PlayerStepAt = -1;
+		}
+		if (bSnapped)
+		{
+			PlayerStepAt = -1;
+		}
+		// After a start, a teleport or a snap the history is filled with this step.
 		if (PlayerStepAt < 0)
 		{
 			PlayerSteps[0] = PlayerSteps[1] = PlayerSteps[2] = StepNow;
@@ -2894,6 +2919,10 @@ void UFTArenaRunner::Finish()
 {
 	bResultLogged = true;
 	ResultTime = Now;
+	if (PlayerFigure)
+	{
+		PlayerFigure->ResetFeet(); // handed back (the story, the explore pawn, a result screen): nothing held carries over
+	}
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
 	LogStoneWalkCounts();
 	LogResult();

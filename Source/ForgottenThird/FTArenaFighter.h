@@ -126,6 +126,12 @@ public:
 	// the boom may swing.
 	void SetCameraTilt(float Degrees);
 	void ApplyPose(const FFTArenaPose& Pose);
+	// Drops the lead's held feet and sunk pelvis (UFTLocomotionAnimInstance::ResetFeet): the body was put somewhere
+	// else. ApplyPose does it itself when the body goes down.
+	void ResetFeet();
+	// Every skeletal mesh on the figure poses after Host ticks (it places the figure), now and for any mesh the figure
+	// makes later (a look worn or a skin set again). Followers and grooms tick after the mesh they follow already.
+	void PoseAfter(AActor* Host);
 
 	// Where the HUD hangs this figure's markers: above its head, and its chest.
 	FVector GetAnchor() const;
@@ -231,6 +237,9 @@ private:
 	bool bWalking = false;
 	bool bTellShown = true;
 	bool bShieldShown = true;
+	bool bWasLying = false;
+	TWeakObjectPtr<AActor> PoseHost;
+	void TieMeshTicks();
 	bool bPlayerFigure = false; // the player's figure never shows the guard plate
 	FLinearColor LastTint = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastShield = FLinearColor(-1.f, -1.f, -1.f);

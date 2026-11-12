@@ -134,8 +134,10 @@ AttackMoveOut attackMove(const AttackMoveRules& rules, AimKind kind, bool heavy,
     // The cancel point: when another action may start (the `cancel` share of the recovery); the walk is free from it.
     const float cancelAt = activeEnd + std::clamp(attack.cancel, 0.f, 1.f) * attack.recovery;
     o.turnRate = std::max(tune.turnRate, 0.5f);
-    if (tune.recoveryRamp && t >= activeEnd)
-        o.speedScale = attack.recovery > 0.f ? tune.recoveryScale + (1.f - tune.recoveryScale) * (t - activeEnd) / attack.recovery : 1.f;
+    if (tune.recoveryRamp && t >= activeEnd) {
+        const float s = attack.recovery > 0.f ? (t - activeEnd) / attack.recovery : 1.f;
+        o.speedScale = tune.recoveryScale + (1.f - tune.recoveryScale) * s;
+    }
     else if (t >= cancelAt) o.speedScale = 1.f;
     else if (t >= activeEnd) o.speedScale = tune.recoveryScale;
     else if (t >= attack.startup - tune.commit) o.speedScale = tune.activeScale;
