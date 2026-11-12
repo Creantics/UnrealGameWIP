@@ -3,7 +3,7 @@ mesh, builds an Unreal-mannequin skeleton (names, hierarchy, axes, twist bones, 
 mesh with voxel-geodesic weights and exports an FBX that FTImportCharacter takes. The work is in autorig_core.py.
 
   blender -b --factory-startup --python-exit-code 1 --python tools/blender/ft_autorig.py -- \
-      in.glb out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--voxels 160] \
+      in.glb out.glb|out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--voxels 160] \
       [--report report.json] [--blend out.blend] [--no-hem] [--no-twist] [--heat] [--keep-weights [--hem]]
 
 --height 0 keeps the mesh's own size. --guides is a json {joint name: [x, y, z]} in the output frame (metres,
@@ -327,11 +327,15 @@ def main():
     arm_ob.select_set(True)
     bpy.context.view_layer.objects.active = arm_ob
     os.makedirs(os.path.dirname(os.path.abspath(o["out"])), exist_ok=True)
-    bpy.ops.export_scene.fbx(filepath=os.path.abspath(o["out"]), use_selection=True,
-                             object_types={"ARMATURE", "MESH"}, add_leaf_bones=False, bake_anim=False,
-                             apply_scale_options="FBX_SCALE_ALL", mesh_smooth_type="FACE",
-                             primary_bone_axis="Y", secondary_bone_axis="X", path_mode="COPY",
-                             embed_textures=True, use_armature_deform_only=False)
+    if o["out"].lower().endswith(".glb"):  # the format FTImportCharacter takes (docs/ASSET_INTAKE.md)
+        import ne_blender as nb
+        nb.export_rig(os.path.abspath(o["out"]), dict(use_selection=True, export_animations=False,
+                                                      export_def_bones=False, export_influence_nb=o["max_infl"]))
+    else:
+        bpy.ops.export_scene.fbx(filepath=os.path.abspath(o["out"]), use_selection=True,
+                                 object_types={"ARMATURE", "MESH"}, add_leaf_bones=False, bake_anim=False,
+                                 mesh_smooth_type="FACE", primary_bone_axis="Y", secondary_bone_axis="X",
+                                 path_mode="COPY", embed_textures=True, use_armature_deform_only=False)
     rep = dict(src=o["src"], out=o["out"], height=H0 * scale, scale=scale, turned=turn, vertices=len(V),
                bones=len(ac.NAMES), weighted_groups=len([n for n in names]), axis_error_deg=aerr,
                influences=np.bincount(infl).tolist(), landmarks={k: [round(float(c), 4) for c in v] for k, v in L.items()},
