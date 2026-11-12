@@ -250,10 +250,10 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 	}
 
 	// Light.
-	// The default look, with auto-exposure held to -1..3.5 EV100 (the map's sun lights a mid grey near EV 1): a
+	// The default look, with auto-exposure held to -3..3.5 EV100 (the map's sun lights a mid grey near EV 1): a
 	// close-up filled by a dark garment can't be lifted to grey, and a frame of white tee or sky can still come down.
 	ftcore::SceneLook Look;
-	Look.exposureMinEV100 = -1.f;
+	Look.exposureMinEV100 = -3.f; // -1 left a moonlit frame 99% black (m11 night check); -3 keeps night dark, not crushed
 	Look.exposureMaxEV100 = 3.5f; // a white tee or sky filling the frame meters about EV 3 under this sun
 	FTScene::SpawnLook(World, Spawn, Look, FRotator(-38, 35, 0));
 
