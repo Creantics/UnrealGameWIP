@@ -96,6 +96,7 @@ add_library(ftcore STATIC
     src/StubScreen.cpp
     src/SceneLook.cpp
     src/LookBody.cpp
+    src/GarmentFront.cpp
     src/LookGrade.cpp
     src/LookTable.cpp
     src/ClipBodyAlias.cpp
@@ -161,6 +162,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
         tests/test_look_body.cpp
+        tests/test_garment_front.cpp
         tests/test_backlog.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp

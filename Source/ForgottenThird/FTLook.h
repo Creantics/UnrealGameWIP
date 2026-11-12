@@ -8,6 +8,10 @@
 // Gate captures: -LocoNoPieces leaves every piece off, -LocoNoPiece=hair+collar those whose asset name holds any of
 // the words, to find which one breaks up as the body turns. Collar pieces draw by default (-LocoNoPiece=collar
 // leaves them off).
+//
+// Open and closed garments (ftcore/GarmentFront.h): a jacket or coat is two fitted meshes, closed and open, and the
+// look says which it wears by default. -LookFront=open|closed, or word:state items joined by + (jacket:open+coat:closed),
+// picks the state at setup; a scene can do the same (FTLook::SetSceneFronts) or switch a worn piece (FTLook::SetFront).
 
 #include "CoreMinimal.h"
 
@@ -47,6 +51,22 @@ struct FFTMaterialSwap
 	FSoftObjectPath To;
 };
 
+// A garment's two fitted meshes, worn closed or open (the lining shows). PiecePaths lists either one; the look wears
+// Open when bOpen, else Closed, unless a scene or -LookFront asks otherwise. An Open that is empty or not made yet
+// (no such package) keeps the garment closed, so a look can name an open mesh before it is imported.
+USTRUCT()
+struct FFTGarmentFronts
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath Closed;
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath Open;
+	UPROPERTY(EditAnywhere, Category = "Look")
+	bool bOpen = false;
+};
+
 // One party member's look. An empty body path (or one that doesn't load) uses the member's own body under
 // /Game/Characters/<Name>/<name>/SkeletalMeshes/, as the Tripo leads were imported. Each locomotion clip is the
 // look's own (the idle and walk paths), else the one retargeted onto the body in ClipFolder, else (the idle and
@@ -76,6 +96,9 @@ struct FFTLeadLook
 	FString ClipFolder;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	TArray<FSoftObjectPath> PiecePaths;
+	// Garments worn open or closed (FFTGarmentFronts); PiecePaths' entry for one stands for the pair.
+	UPROPERTY(EditAnywhere, Category = "Look")
+	TArray<FFTGarmentFronts> Fronts;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	TArray<FFTGroomLook> Grooms;
 	UPROPERTY(EditAnywhere, Category = "Look")
@@ -98,6 +121,19 @@ FORGOTTENTHIRD_API FFTLoadedLook LoadLook(const FFTLeadLook& Look, const TCHAR* 
 
 // True when the piece is left off by the command line (-LocoNoPieces, or -LocoNoPiece=a+b naming it).
 FORGOTTENTHIRD_API bool PieceLeftOff(const FSoftObjectPath& Piece);
+
+// The look's pieces as worn: each garment pair's half for its state (its default, then the scene's asks, then
+// -LookFront's). Without Fronts this is PiecePaths.
+FORGOTTENTHIRD_API TArray<FSoftObjectPath> WornPiecePaths(const FFTLeadLook& Look);
+
+// The scene's front asks ("open", "closed" or word:state items joined by +), used by every look set up after this
+// call; empty clears them. False (and nothing changed) when the text doesn't parse.
+FORGOTTENTHIRD_API bool SetSceneFronts(const FString& Asks);
+
+// Switches the worn pieces of the look's pairs that `Word` names (every pair when empty) to `bOpen`: each such piece
+// component gets the other fitted mesh, keeping its leader pose and materials as imported. Returns how many changed.
+FORGOTTENTHIRD_API int32 SetFront(const FFTLeadLook& Look, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
+	const FString& Word, bool bOpen, const TCHAR* Who);
 
 // Adds a component per piece mesh, attached to the body and posed by it (leader pose). Missing meshes are skipped
 // with a warning that names `Who`. Returns how many of the added pieces have cloth.

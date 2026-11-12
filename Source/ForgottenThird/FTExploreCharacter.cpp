@@ -581,7 +581,7 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 		// Turn the body to face the capsule's forward (+X).
 		BodyComponent->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
 	}
-	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Look.PiecePaths, Pieces, TEXT("FTExploreCharacter"));
+	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, FTLook::WornPiecePaths(Look), Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
 	FTLook::SwapMaterials(*BodyComponent, Pieces, Look.MaterialSwaps, TEXT("FTExploreCharacter"));
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),

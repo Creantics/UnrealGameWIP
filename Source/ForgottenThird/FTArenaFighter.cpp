@@ -278,7 +278,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	// Turn the body to face the figure's forward (+X).
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
 	Skin->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
-	const int32 Cloth = FTLook::AddPieces(*this, *Skin, Look.PiecePaths, Pieces, TEXT("FTArenaFighter"));
+	const int32 Cloth = FTLook::AddPieces(*this, *Skin, FTLook::WornPiecePaths(Look), Pieces, TEXT("FTArenaFighter"));
 	FTLook::AddGrooms(*this, *Skin, Pieces, Look.Grooms, Grooms, TEXT("FTArenaFighter"));
 	FTLook::SwapMaterials(*Skin, Pieces, Look.MaterialSwaps, TEXT("FTArenaFighter"));
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))

@@ -85,7 +85,7 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	// Turn the body to face the actor's forward (+X).
 	Body->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
 	Body->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
-	const int32 Cloth = FTLook::AddPieces(*this, *Body, Look.PiecePaths, Pieces, *LogName);
+	const int32 Cloth = FTLook::AddPieces(*this, *Body, FTLook::WornPiecePaths(Look), Pieces, *LogName);
 	FTLook::AddGrooms(*this, *Body, Pieces, Look.Grooms, GroomComponents, *LogName);
 	FTLook::SwapMaterials(*Body, Pieces, Look.MaterialSwaps, *LogName);
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."), *LogName,
