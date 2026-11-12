@@ -39,6 +39,8 @@ int32 CullEnd(EFTCellCull Cull)
 		return TreeCull;
 	case EFTCellCull::Cover:
 		return CoverCull;
+	case EFTCellCull::Blades:
+		return BladesCull;
 	default:
 		return 0;
 	}

@@ -10,6 +10,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "IAssetTools.h"
+#include "MeshDescription.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -53,7 +54,9 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 	const ftcore::AssetPack PackKind = ftcore::assetPackFromName(TCHAR_TO_UTF8(*Pack));
 	const bool bNoCollision = FParse::Param(*Params, TEXT("NoCollision"));
 	const bool bNoNanite = FParse::Param(*Params, TEXT("NoNanite"));
-	const ftcore::AssetRules Rules = FParse::Param(*Params, TEXT("Kit")) ? ftcore::kitRules(PackKind) : ftcore::propRules(PackKind);
+	const bool bKit = FParse::Param(*Params, TEXT("Kit"));
+	const bool bForceNanite = FParse::Param(*Params, TEXT("Nanite")) && !bNoNanite;
+	const ftcore::AssetRules Rules = bKit ? ftcore::kitRules(PackKind) : ftcore::propRules(PackKind);
 	if (!FT::CheckGlbFile(TEXT("FTImportProp"), Source, Rules))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: %s breaks the asset rules (docs/ASSET_INTAKE.md); nothing imported."), *Source);
@@ -115,7 +118,52 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %s: -NoNanite: Nanite off, %d triangles at LOD0."), *Mesh->GetName(),
 				Mesh->GetNumLODs() > 0 ? Mesh->GetNumTriangles(0) : 0);
 		}
-		if (bNoCollision || bNoNanite)
+		bool bFullFallback = false;
+		if (bForceNanite && !Mesh->IsNaniteEnabled())
+		{
+			// -Nanite: a large prop (a tower) drawn through Nanite whatever the importer's default.
+			FMeshNaniteSettings Nanite = Mesh->GetNaniteSettings();
+			Nanite.bEnabled = true;
+			Mesh->SetNaniteSettings(Nanite);
+			Mesh->Build(true);
+			Mesh->PostEditChange();
+			bFullFallback = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %s: -Nanite: Nanite on."), *Mesh->GetName());
+		}
+		if ((bKit || bForceNanite) && Mesh->IsNaniteEnabled())
+		{
+			// -Kit: a kit piece keeps its raster fallback and ray-tracing proxy at full detail (a reduced one shreds thin
+			// sills and rails), and fails when the fallback keeps under 90% of the source's triangles.
+			FMeshNaniteSettings Nanite = Mesh->GetNaniteSettings();
+			FMeshRayTracingProxySettings Proxy = Mesh->GetRayTracingProxySettings();
+			if (Nanite.FallbackTarget != ENaniteFallbackTarget::PercentTriangles || Nanite.FallbackPercentTriangles < 1.f ||
+				Proxy.FallbackTarget != ENaniteFallbackTarget::PercentTriangles || Proxy.FallbackPercentTriangles < 1.f)
+			{
+				Nanite.FallbackTarget = ENaniteFallbackTarget::PercentTriangles;
+				Nanite.FallbackPercentTriangles = 1.f;
+				Nanite.FallbackRelativeError = 0.f;
+				Mesh->SetNaniteSettings(Nanite);
+				Proxy.FallbackTarget = ENaniteFallbackTarget::PercentTriangles;
+				Proxy.FallbackPercentTriangles = 1.f;
+				Proxy.FallbackRelativeError = 0.f;
+				Mesh->SetRayTracingProxySettings(Proxy);
+				Mesh->Build(true);
+				Mesh->PostEditChange();
+				bFullFallback = true;
+			}
+			const FMeshDescription* Description = Mesh->GetMeshDescription(0);
+			const int32 SourceTriangles = Description ? Description->Triangles().Num() : 0;
+			const int32 Fallback = Mesh->GetNumLODs() > 0 ? Mesh->GetNumTriangles(0) : 0;
+			const double Share = SourceTriangles > 0 ? static_cast<double>(Fallback) / SourceTriangles : 1.0;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %s: -Kit: fallback %d of %d source triangles (%.0f%%)%s."), *Mesh->GetName(),
+				Fallback, SourceTriangles, 100.0 * Share, bFullFallback ? TEXT(", fallback and ray-tracing proxy set to every triangle") : TEXT(""));
+			if (Share < 0.9)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: %s's fallback keeps under 90%% of its triangles."), *Mesh->GetName());
+				bOk = false;
+			}
+		}
+		if (bNoCollision || bNoNanite || bFullFallback)
 		{
 			// -NoCollision: a piece that never collides (a clock hand): no simple shapes, no complex either.
 			UBodySetup* Setup = bNoCollision ? Mesh->GetBodySetup() : nullptr;

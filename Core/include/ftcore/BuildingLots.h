@@ -150,8 +150,8 @@ struct KitPlacement {
 FTCORE_API bool facadePlacements(const KitTable& kit, const FrontageRun& run, const BuildingLot& lot, int lotIndex,
                                  std::vector<KitPlacement>& out, std::string* error = nullptr);
 
-// Restrained wall colours, trims, timbers, roof tiles; saturated accents only for signs and awnings. Linear-ish
-// base colour factors, 0..1.
+// Restrained wall colours, trims, timbers, roof tiles; saturated accents only for signs and awnings. Display (sRGB)
+// colours, 0..1: the material decodes them to linear and uses them as the surface's colour (its map gives the pattern).
 struct KitRgb {
     float r = 0.0f, g = 0.0f, b = 0.0f;
 };

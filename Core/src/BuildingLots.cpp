@@ -105,27 +105,28 @@ bool readCsv(std::string_view csv, const std::array<std::string_view, N>& names,
 }
 
 constexpr KitRgb kWall[] = {
-    {0.86f, 0.84f, 0.79f}, // off-white
-    {0.66f, 0.63f, 0.58f}, // warm grey
-    {0.30f, 0.30f, 0.31f}, // charcoal tile
-    {0.52f, 0.62f, 0.55f}, // tile green
-    {0.55f, 0.62f, 0.70f}, // tile blue
-    {0.80f, 0.72f, 0.60f}, // beige
-    {0.62f, 0.50f, 0.42f}, // weathered brown
-    {0.90f, 0.86f, 0.74f}, // cream
-    {0.48f, 0.50f, 0.52f}, // slate
+    {0.84f, 0.82f, 0.76f}, // off-white stucco
+    {0.62f, 0.60f, 0.56f}, // warm grey
+    {0.24f, 0.25f, 0.26f}, // charcoal tile
+    {0.44f, 0.52f, 0.46f}, // green-grey tile
+    {0.42f, 0.50f, 0.58f}, // blue-grey tile
+    {0.76f, 0.69f, 0.58f}, // beige
+    {0.50f, 0.37f, 0.27f}, // weathered timber brown
+    {0.88f, 0.84f, 0.72f}, // cream
+    {0.40f, 0.42f, 0.45f}, // slate
 };
 constexpr KitRgb kTrim[] = {{0.86f, 0.85f, 0.82f}, {0.75f, 0.76f, 0.76f}, {0.30f, 0.30f, 0.31f}, {0.62f, 0.60f, 0.56f}};
 constexpr KitRgb kTimber[] = {{0.42f, 0.30f, 0.22f}, {0.60f, 0.52f, 0.44f}, {0.22f, 0.19f, 0.17f}};
 constexpr KitRgb kRoof[] = {{0.42f, 0.45f, 0.52f}, {0.36f, 0.38f, 0.44f}, {0.30f, 0.31f, 0.33f}};
 constexpr KitRgb kAccent[] = {{0.72f, 0.12f, 0.10f}, {0.92f, 0.72f, 0.12f}, {0.12f, 0.28f, 0.62f},
-                              {0.15f, 0.48f, 0.30f}, {0.92f, 0.92f, 0.90f}, {0.88f, 0.42f, 0.12f}};
+                              {0.15f, 0.48f, 0.30f}, {0.08f, 0.52f, 0.54f}, {0.88f, 0.42f, 0.12f}};
 constexpr KitRgb kSignFg[] = {{0.95f, 0.95f, 0.92f}, {0.98f, 0.85f, 0.25f}, {0.85f, 0.15f, 0.10f}, {0.08f, 0.08f, 0.09f}};
 
 // Wall colours each surface may wear (indices into kWall).
-constexpr std::uint8_t kTileWalls[] = {0, 3, 4, 5, 2};
+// Tile: mostly the charcoal, green-grey and blue-grey tiles; stucco: off-white, cream and the timber brown.
+constexpr std::uint8_t kTileWalls[] = {2, 3, 4, 3, 0};
 constexpr std::uint8_t kConcreteWalls[] = {0, 1, 8, 2, 7};
-constexpr std::uint8_t kStuccoWalls[] = {7, 5, 0, 6};
+constexpr std::uint8_t kStuccoWalls[] = {0, 7, 0, 6};
 
 struct Parcel {
     double s0 = 0.0, s1 = 0.0, depth = 0.0;

@@ -6,7 +6,8 @@
 // Wet: the look's Wetness (its parameter collection, 0 when no look is applied) soaks up-facing pixels only: the albedo
 // darkens toward soakDarken, the roughness falls toward soakRough (along a curve, so a half-wet street keeps out of the
 // reflection-traced range) and the normal flattens. A drying-patch noise leaves part of the ground damp (dampShare of
-// the soak). Puddles are a world-noise mask (roughness puddleRough, darker, flat) whose cover grows with Wetness; they
+// the soak). Puddles are a world-noise mask whose cover grows with Wetness: a soft darker edge, then a core with roughness
+// puddleRough and a flat normal (no ring where all three would change at once); they
 // favour gutters: a box tilted across its own Y axis (a carriageway slab falling from the crown to the kerb) has its low
 // long edge as its gutter, and the noise is lifted within gutterM of it. Flat boxes get the noise alone.
 //
@@ -41,7 +42,8 @@ struct SurfaceWeatherSpec {
     float patchScaleM = 6.0f;            // drying-patch noise cell
     float puddleScaleM = 3.5f;           // puddle noise cell
     float puddleCover = 0.65f;            // the puddle threshold falls from 1 by this at Wetness 1
-    float puddleEdge = 0.06f;            // noise span of a puddle's rim
+    float puddleEdge = 0.2f;             // noise span of a puddle's soft wet-to-dry edge (darkens first)
+    float puddleCoreFrom = 0.4f;         // the mirror (puddleRough, flat normal) starts this far into the edge ramp
     float puddleRough = 0.02f;
     float puddleDarken = 0.75f;          // albedo multiplier in a puddle, over the soak's
     float tiltMin = 0.005f;              // |world z of the box's Y axis| over which a box counts as cambered

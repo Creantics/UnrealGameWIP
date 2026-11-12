@@ -15,6 +15,8 @@
 // Interchange adds a box when the file has none of its own UCX_ shapes. -NoCollision strips every collision shape from the
 // imported meshes and saves them again (a piece that must never collide, such as a clock hand). -NoNanite turns Nanite
 // off on the imported meshes and saves them again, so a prop with thin parts draws at full detail, not a reduced fallback.
+// -Nanite turns it on whatever the importer's default. With -Kit (or -Nanite) a Nanite mesh keeps its raster fallback and
+// ray-tracing proxy at every triangle, and the import fails when the fallback keeps under 90% of the source's triangles.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

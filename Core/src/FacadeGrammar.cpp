@@ -152,7 +152,8 @@ bool facadePlacements(const KitTable& kit, const FrontageRun& run, const Buildin
         } else {
             e.piece(id, x, y0, z0);
             const bool shop = id != "SHOP_KOSHI_54";
-            const bool awning = lot.signSet >= 2;
+            // Three shop lots in four wear awnings (their sign hangs as a vertical stack above); the rest a fascia sign.
+            const bool awning = lot.signSet != 0;
             if (shop && !awning) {
                 const double fx = id == "SHOP_GLAZED_81" ? 2.25 : id == "SHOP_SHUTTER_63" ? 1.35 : id == "SHOP_CORNER_63" ? 1.2 : 0.0;
                 const double fy = id == "SHOP_SHUTTER_63" ? -0.32 : -0.08;
@@ -188,7 +189,7 @@ bool facadePlacements(const KitTable& kit, const FrontageRun& run, const Buildin
             x += c.units * kLotGrid;
         }
     }
-    if ((lot.signSet & 1u) && lot.type != LotType::Pencil && lot.floors >= 2 && bladeX >= 0.0)
+    if (lot.signSet != 0 && lot.type != LotType::Pencil && lot.floors >= 2 && bladeX >= 0.0)
         e.piece(lot.floors >= 3 ? "SIGN_VERT_M" : "SIGN_VERT_S", bladeX, y0, z0 + g + 0.3);
 
     // Body: the building's mass behind the facade bays.

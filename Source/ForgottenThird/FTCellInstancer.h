@@ -48,6 +48,7 @@ enum class EFTCellCull : uint8
 	Interior, // what stands behind a shopfront's glass (the window's own backdrop carries the shop further off)
 	Tree,     // modelled trees: far, as their last LOD is a crossed-card billboard
 	Cover,    // scanned ground cover: grass clumps, weeds, ferns (near; a small plant is gone by then)
+	Blades,   // dense grass tufts that give a lawn body near a view (nearest; the lawn's own texture carries on)
 	Count
 };
 
@@ -60,6 +61,7 @@ inline constexpr int32 CarCull = 20000;       // cm
 inline constexpr int32 InteriorCull = 6000;   // cm
 inline constexpr int32 TreeCull = 150000;     // cm
 inline constexpr int32 CoverCull = 6000;      // cm
+inline constexpr int32 BladesCull = 3000;     // cm
 inline constexpr double FlushRise = 50.0;     // cm: a Walk piece's top this near the ground under it casts no shadow
 inline constexpr double FlushThick = 120.0;   // cm: ... when the piece is no thicker than this
 inline constexpr double FlushUpright = 0.9;   // ... and its up axis' z is at least this

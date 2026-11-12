@@ -622,6 +622,10 @@ bool FTStandIns::PlacePlants(FFTCellInstancer& Cells, const ftcore::HeightField&
 	Cover.Cull = EFTCellCull::Cover;
 	Cover.bCastShadow = false;
 	Cover.Tag = TEXT("GroundCover");
+	FFTCellOptions Blades;
+	Blades.Cull = EFTCellCull::Blades;
+	Blades.bCastShadow = false;
+	Blades.Tag = TEXT("LawnBlades");
 	TMap<FString, UStaticMesh*> Meshes;
 	TMap<FString, int32> Count;
 	int64 Triangles = 0;
@@ -643,9 +647,10 @@ bool FTStandIns::PlacePlants(FFTCellInstancer& Cells, const ftcore::HeightField&
 		const double Foot = Point.hasZ ? Point.z : (Field.grid ? Field.at(Point.x, Point.y) : 0.0);
 		const ftcore::MassingVec At = ftcore::massingEnginePoint(Side, Point.x, Point.y, Foot);
 		const FRotator Yaw(0.0, ftcore::massingEngineYaw(Point.yaw), 0.0);
-		const bool bCover = Point.kind == ftcore::PlantPointKind::Cover;
+		const bool bCover = Point.kind != ftcore::PlantPointKind::Shrub;
 		Cells.Add(*Found, TArrayView<UMaterialInterface* const>(), FTransform(Yaw, FVector(At.x, At.y, At.z) * 100.0, FVector(Point.scale)), NoData,
-			bCover ? EFTCellKind::NoCollide : EFTCellKind::Solid, bCover ? Cover : Shrub);
+			bCover ? EFTCellKind::NoCollide : EFTCellKind::Solid,
+			Point.kind == ftcore::PlantPointKind::Blades ? Blades : (bCover ? Cover : Shrub));
 		++Count.FindOrAdd(Asset);
 		Triangles += (*Found)->GetNumTriangles(0);
 	}

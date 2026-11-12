@@ -10,6 +10,7 @@
 #include "ImageUtils.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
@@ -38,6 +39,10 @@ constexpr double kLawnLiftM = 0.05;   // the sheet over the ground: clear of the
 constexpr double kPathLiftM = 0.09;   // a path over the ground (4 cm proud of the lawn)
 constexpr double kPathStaggerM = 0.004; // each later path this much higher, so crossing paths never fight
 constexpr double kSkirtM = 0.10;      // a path's skirt reaches this far under the ground
+constexpr double kEdgeM = 0.10;       // the edging strip's width beside a path
+constexpr double kEdgeLiftM = 0.125;  // the edging over the ground: a centimetre or two proud of the paving
+constexpr int32 kMaxShaderPaths = 6;  // paths the lawn master takes (P0..P5)
+constexpr float kPathWeather = 0.6f;  // the green's paths' share of the weather (puddles only in the noise's low spots)
 const FName kSlot(TEXT("Lawn"));
 
 struct FMap
@@ -55,7 +60,7 @@ constexpr FMap kMaps[] = {
 
 UTexture2D* ImportMap(const FString& Dir, const FMap& Map)
 {
-	const FString Path = FString::Printf(TEXT("%s/T_Lawn_%s"), TextureFolder, Map.Suffix);
+	const FString Path = FString::Printf(TEXT("%s/T_LawnF_%s"), TextureFolder, Map.Suffix);
 	if (UTexture2D* Have = LoadObject<UTexture2D>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet))
 	{
 		return Have;
@@ -172,28 +177,44 @@ FVector PivotOf(const ftcore::LawnMesh& M, double Side)
 	return FVector(Box.GetCenter().X, Box.GetCenter().Y, Box.Min.Z);
 }
 
-// The scanned lawn's own master: two samples of the scan (one at TileCm, one 2.7 times larger and turned 0.6 rad) blended
-// by a low noise about 35 m across, a finer brightness mottle and a macro shift between a drier and a lusher green, so no
-// tile repeats where a lead can see 80 m of green. World-planar; the normal is world space (the sheet is near level).
+// The scanned lawn's own master. The scan's maps are flattened before import (their low-frequency blotches divided out:
+// those, repeating every TileCm, were the grid read from above), so the large-scale colour comes from here: two samples
+// of the scan (one at TileCm turned 0.21 rad, one 2.7 times larger turned 0.81 rad, so no repeat lines up with the
+// paths) blended by a low noise, a brightness mottle and a macro shift between a drier and a lusher green, each noise
+// three rotated octaves at non-integer ratios. Far off (FarFrom..FarTo cm of depth) the scan fades towards its own mean
+// colour, keeping FarDetail of its detail, so nothing tiles at any distance. With the paths given (P0..P5, engine cm,
+// half widths in W0/W1), a worn, thinner band along each path's edge with a ragged line and a little soil, and rougher
+// unmown patches away from the paths. World-planar; the normal is world space (the sheet is near level).
 const TCHAR* const kLawnCode = TEXT(R"(
 float2 w = WorldPos.xy;
-float nz[3];
-float sc[3] = {3500.0, VariationScale, MacroScale};
-for (int k = 0; k < 3; ++k)
+float nz[4];
+float sc[4] = {3100.0, VariationScale, MacroScale, 47.0};
+for (int k = 0; k < 4; ++k)
 {
-	float2 g = w / sc[k] + float2(k * 17.3, k * 5.1);
-	float2 i = floor(g);
-	float2 f = frac(g);
-	f = f * f * (3.0 - 2.0 * f);
-	float h00 = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);
-	float h10 = frac(sin(dot(i + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);
-	float h01 = frac(sin(dot(i + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
-	float h11 = frac(sin(dot(i + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
-	nz[k] = lerp(lerp(h00, h10, f.x), lerp(h01, h11, f.x), f.y);
+	float acc = 0.0, amp = 0.5, tot = 0.0;
+	float2 g = w / sc[k];
+	for (int o = 0; o < 3; ++o)
+	{
+		float an = 0.5 + 1.13 * o + 0.71 * k;
+		float2 r = float2(cos(an) * g.x - sin(an) * g.y, sin(an) * g.x + cos(an) * g.y) + float2(k * 17.3 + o * 3.7, k * 5.1 + o * 9.2);
+		float2 i = floor(r);
+		float2 f = frac(r);
+		f = f * f * (3.0 - 2.0 * f);
+		float h00 = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);
+		float h10 = frac(sin(dot(i + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);
+		float h01 = frac(sin(dot(i + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
+		float h11 = frac(sin(dot(i + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);
+		acc += amp * lerp(lerp(h00, h10, f.x), lerp(h01, h11, f.x), f.y);
+		tot += amp;
+		amp *= 0.5;
+		g *= 2.13;
+	}
+	nz[k] = saturate((acc / tot - 0.5) * 1.7 + 0.5);
 }
-float ca = cos(0.6), sa = sin(0.6);
-float2 uvA = w / TileCm;
-float2 uvB = float2(ca * w.x - sa * w.y, sa * w.x + ca * w.y) / (TileCm * 2.7) + float2(0.37, 0.61);
+float ca = cos(0.21), sa = sin(0.21);
+float cb = cos(0.81), sb = sin(0.81);
+float2 uvA = float2(ca * w.x - sa * w.y, sa * w.x + ca * w.y) / TileCm;
+float2 uvB = float2(cb * w.x - sb * w.y, sb * w.x + cb * w.y) / (TileCm * 2.7) + float2(0.37, 0.61);
 float t = smoothstep(0.3, 0.7, nz[0]);
 float3 a = Texture2DSample(Albedo, AlbedoSampler, uvA).rgb;
 float3 b = Texture2DSample(Albedo, AlbedoSampler, uvB).rgb;
@@ -201,19 +222,51 @@ float3 ra = Texture2DSample(Arm, ArmSampler, uvA).rgb;
 float3 rb = Texture2DSample(Arm, ArmSampler, uvB).rgb;
 float3 na = UnpackNormalMap(Texture2DSample(Nrm, NrmSampler, uvA)).xyz;
 float3 nb = UnpackNormalMap(Texture2DSample(Nrm, NrmSampler, uvB)).xyz;
-nb.xy = float2(ca * nb.x + sa * nb.y, -sa * nb.x + ca * nb.y);
+na.xy = float2(ca * na.x + sa * na.y, -sa * na.x + ca * na.y);
+nb.xy = float2(cb * nb.x + sb * nb.y, -sb * nb.x + cb * nb.y);
 float3 arm = lerp(ra, rb, t);
-float2 nxy = lerp(na.xy, nb.xy, t) * NormalStrength;
-float3 col = lerp(a, b, t) * Color.rgb;
+float far = smoothstep(FarFrom, FarTo, Depth);
+float3 mean = Texture2DSampleLevel(Albedo, AlbedoSampler, float2(0.5, 0.5), 12.0).rgb;
+float3 col = lerp(a, b, t);
+col = lerp(col, lerp(mean, col, FarDetail), far) * Color.rgb;
+float2 nxy = lerp(na.xy, nb.xy, t) * NormalStrength * (1.0 - 0.6 * far);
 col *= 1.0 + Variation * (nz[1] - 0.5) * 2.0;
 col *= 1.0 + MacroVariation * (nz[2] - 0.5);
 col *= lerp(float3(1.07, 1.0, 0.82), float3(0.92, 1.03, 1.02), nz[2]);
-RoughOut = saturate(arm.g);
-AoOut = arm.r;
+float rough = max(saturate(arm.g), RoughFloor);
+float ao = arm.r;
+float4 P[6] = {P0, P1, P2, P3, P4, P5};
+float Hw[6] = {W0.x, W0.y, W0.z, W0.w, W1.x, W1.y};
+float dp = 1e9;
+for (int s = 0; s < 6; ++s)
+{
+	if (Hw[s] > 0.0)
+	{
+		float2 pa = P[s].xy;
+		float2 ab = P[s].zw - pa;
+		float u = saturate(dot(w - pa, ab) / max(dot(ab, ab), 1.0));
+		dp = min(dp, length(w - pa - ab * u) - Hw[s]);
+	}
+}
+if (dp < 1e8)
+{
+	// Worn: a band WornCm wide (ragged by the fine noise) of thinner, yellower grass with soil showing through.
+	float worn = 1.0 - smoothstep(0.0, WornCm * (0.55 + 0.9 * nz[3]), max(dp, 0.0));
+	col *= lerp(float3(1.0, 1.0, 1.0), float3(1.06, 0.93, 0.74), worn);
+	col = lerp(col, Soil.rgb, saturate(worn * worn * (0.25 + 0.5 * nz[3])));
+	rough = lerp(rough, max(rough, 0.86), worn);
+	nxy *= 1.0 - 0.5 * worn;
+	// Unmown: patches more than 3 to 6 m from any path, darker and deeper with more relief.
+	float unm = smoothstep(300.0 + 300.0 * nz[2], 650.0 + 300.0 * nz[2], dp) * smoothstep(0.42, 0.62, nz[1]);
+	col *= lerp(float3(1.0, 1.0, 1.0), float3(0.84, 0.93, 0.78), unm * Unmown);
+	ao *= 1.0 - 0.22 * unm * Unmown;
+	nxy *= 1.0 + 0.6 * unm * Unmown;
+}
+RoughOut = rough;
+AoOut = ao;
 NormalOut = normalize(normalize(VNormal) + float3(nxy.x, -nxy.y, 0.0));
 return saturate(col);
 )");
-
 UMaterialInterface* LawnMaster(UPackage* Package, UTexture* const Maps[3])
 {
 	UMaterial* Material = NewObject<UMaterial>(Package, TEXT("M_Massing_Lawn"), RF_Public);
@@ -261,8 +314,26 @@ UMaterialInterface* LawnMaster(UPackage* Package, UTexture* const Maps[3])
 	Color->DefaultValue = FLinearColor(0.74f, 1.45f, 0.78f);
 	Color->UpdateParameterGuid(true, false);
 	In(TEXT("Color"), Color);
+	In(TEXT("Depth"), Add(NewObject<UMaterialExpressionPixelDepth>(Material)));
+	// The paths' segments (engine cm) and half widths; all zero (no paths) leaves no worn band and no unmown patches.
+	const TPair<const TCHAR*, FLinearColor> Vectors[] = {{TEXT("P0"), FLinearColor::Transparent}, {TEXT("P1"), FLinearColor::Transparent},
+		{TEXT("P2"), FLinearColor::Transparent}, {TEXT("P3"), FLinearColor::Transparent}, {TEXT("P4"), FLinearColor::Transparent},
+		{TEXT("P5"), FLinearColor::Transparent}, {TEXT("W0"), FLinearColor::Transparent}, {TEXT("W1"), FLinearColor::Transparent},
+		{TEXT("Soil"), FLinearColor(0.16f, 0.115f, 0.075f)}};
+	for (const TPair<const TCHAR*, FLinearColor>& V : Vectors)
+	{
+		UMaterialExpressionVectorParameter* P = NewObject<UMaterialExpressionVectorParameter>(Material);
+		Add(P);
+		P->ParameterName = V.Key;
+		P->DefaultValue = V.Value;
+		P->UpdateParameterGuid(true, false);
+		FCustomInput& Input = Code->Inputs.AddDefaulted_GetRef();
+		Input.InputName = V.Key;
+		Input.Input.Connect(5, P); // RGBA
+	}
 	const TPair<const TCHAR*, float> Scalars[] = {{TEXT("TileCm"), 200.f}, {TEXT("NormalStrength"), 1.f}, {TEXT("Variation"), 0.14f},
-		{TEXT("VariationScale"), 420.f}, {TEXT("MacroVariation"), 0.22f}, {TEXT("MacroScale"), 1700.f}};
+		{TEXT("VariationScale"), 420.f}, {TEXT("MacroVariation"), 0.22f}, {TEXT("MacroScale"), 1700.f}, {TEXT("FarFrom"), 2500.f},
+		{TEXT("FarTo"), 9000.f}, {TEXT("FarDetail"), 0.4f}, {TEXT("RoughFloor"), 0.72f}, {TEXT("WornCm"), 45.f}, {TEXT("Unmown"), 1.f}};
 	for (const TPair<const TCHAR*, float>& S : Scalars)
 	{
 		UMaterialExpressionScalarParameter* P = NewObject<UMaterialExpressionScalarParameter>(Material);
@@ -286,9 +357,53 @@ UMaterialInterface* LawnMaster(UPackage* Package, UTexture* const Maps[3])
 	Inputs->Roughness.Connect(1, Code);
 	Inputs->AmbientOcclusion.Connect(2, Code);
 	Inputs->Normal.Connect(3, Code);
+	// Grass is a poor mirror: a low specular keeps the shade side green rather than the sky's grey-blue.
+	UMaterialExpressionScalarParameter* Spec = NewObject<UMaterialExpressionScalarParameter>(Material);
+	Add(Spec);
+	Spec->ParameterName = TEXT("Specular");
+	Spec->DefaultValue = 0.3f;
+	Spec->UpdateParameterGuid(true, false);
+	Inputs->Specular.Connect(0, Spec);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	return Material;
+}
+
+// The green's own lawn: the lawn surface with its paths given (the master's worn band and unmown patches), up to six.
+UMaterialInterface* GreenMaterial(UPackage* Package, UMaterialInterface* Lawn, const ftcore::LawnTable& Table, double Side)
+{
+	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Massing_LawnGreen"), RF_Public);
+	Mic->SetParentEditorOnly(Lawn);
+	float Half[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+	const int32 Count = FMath::Min(static_cast<int32>(Table.paths.size()), kMaxShaderPaths);
+	for (int32 P = 0; P < Count; ++P)
+	{
+		const ftcore::LawnPath& Path = Table.paths[static_cast<size_t>(P)];
+		const ftcore::MassingVec A = ftcore::massingEnginePoint(Side, Path.x0, Path.y0, 0.0);
+		const ftcore::MassingVec B = ftcore::massingEnginePoint(Side, Path.x1, Path.y1, 0.0);
+		Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(*FString::Printf(TEXT("P%d"), P)),
+			FLinearColor(static_cast<float>(A.x * 100.0), static_cast<float>(A.y * 100.0), static_cast<float>(B.x * 100.0), static_cast<float>(B.y * 100.0)));
+		Half[P] = static_cast<float>(Path.width * 50.0);
+	}
+	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("W0")), FLinearColor(Half[0], Half[1], Half[2], Half[3]));
+	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("W1")), FLinearColor(Half[4], Half[5], Half[6], Half[7]));
+	if (static_cast<int32>(Table.paths.size()) > kMaxShaderPaths)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -Lawn: %d paths; the lawn wears the first %d's worn edges only."),
+			static_cast<int32>(Table.paths.size()), kMaxShaderPaths);
+	}
+	Mic->PostEditChange();
+	return Mic;
+}
+
+// The green's paths: the paving with less of the weather, so water stands only in the low spots of the noise.
+UMaterialInterface* PathMaterial(UPackage* Package, UMaterialInterface* Path)
+{
+	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Massing_LawnPath"), RF_Public);
+	Mic->SetParentEditorOnly(Path);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Weather")), kPathWeather);
+	Mic->PostEditChange();
+	return Mic;
 }
 } // namespace FTLawn::Impl
 
@@ -350,7 +465,7 @@ UMaterialInterface* FTLawn::LawnMaterial(UPackage* Package, UMaterialInterface* 
 }
 
 bool FTLawn::Build(UWorld* World, const FActorSpawnParameters& Spawn, UPackage* Package, const ftcore::HeightField& Ground, double Side,
-	UMaterialInterface* Lawn, UMaterialInterface* Path)
+	UMaterialInterface* Lawn, UMaterialInterface* Path, UMaterialInterface* Edge)
 {
 	using namespace FTLawn::Impl;
 	FString File;
@@ -377,12 +492,13 @@ bool FTLawn::Build(UWorld* World, const FActorSpawnParameters& Spawn, UPackage* 
 		return false;
 	}
 	int64 Triangles = 0;
+	UMaterialInterface* Green = GreenMaterial(Package, Lawn, Table, Side);
 	for (int32 R = 0; R < static_cast<int32>(Table.regions.size()); ++R)
 	{
 		ftcore::LawnMesh M;
 		ftcore::lawnSheetMesh(Ground, Table.regions[static_cast<size_t>(R)], kStepM, kLawnLiftM, M);
 		const FVector Pivot = PivotOf(M, Side);
-		SpawnSheet(World, Spawn, SheetMesh(Package, FString::Printf(TEXT("SM_Lawn_%d"), R), M, Side, Pivot, Lawn), Pivot, FString::Printf(TEXT("Lawn_%d"), R));
+		SpawnSheet(World, Spawn, SheetMesh(Package, FString::Printf(TEXT("SM_Lawn_%d"), R), M, Side, Pivot, Green), Pivot, FString::Printf(TEXT("Lawn_%d"), R));
 		Triangles += static_cast<int64>(M.tris.size());
 	}
 	if (!Table.paths.empty())
@@ -393,8 +509,23 @@ bool FTLawn::Build(UWorld* World, const FActorSpawnParameters& Spawn, UPackage* 
 			ftcore::lawnPathMesh(Ground, Table.paths[P], kStepM, kPathLiftM + kPathStaggerM * static_cast<double>(P), kSkirtM, M);
 		}
 		const FVector Pivot = PivotOf(M, Side);
-		SpawnSheet(World, Spawn, SheetMesh(Package, TEXT("SM_LawnPaths"), M, Side, Pivot, Path), Pivot, TEXT("LawnPaths"));
+		SpawnSheet(World, Spawn, SheetMesh(Package, TEXT("SM_LawnPaths"), M, Side, Pivot, PathMaterial(Package, Path)), Pivot, TEXT("LawnPaths"));
 		Triangles += static_cast<int64>(M.tris.size());
+		// The edging: a narrow strip of the edge surface on each side of every path, a little proud of the paving.
+		std::vector<ftcore::LawnPath> Edges;
+		ftcore::lawnPathEdges(Table, kEdgeM, Edges);
+		if (Edge && !Edges.empty())
+		{
+			ftcore::LawnMesh E;
+			for (const ftcore::LawnPath& Strip : Edges)
+			{
+				ftcore::lawnPathMesh(Ground, Strip, kStepM, kEdgeLiftM, kSkirtM, E);
+			}
+			const FVector EdgePivot = PivotOf(E, Side);
+			SpawnSheet(World, Spawn, SheetMesh(Package, TEXT("SM_LawnEdging"), E, Side, EdgePivot, Edge), EdgePivot, TEXT("LawnEdging"));
+			Triangles += static_cast<int64>(E.tris.size());
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Lawn: %d edging strips %.0f cm wide."), static_cast<int32>(Edges.size()), kEdgeM * 100.0);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Lawn: %d lawn sheets and %d paths, %lld triangles, from %s."),
 		static_cast<int32>(Table.regions.size()), static_cast<int32>(Table.paths.size()), Triangles, *File);

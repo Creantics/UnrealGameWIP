@@ -25,6 +25,7 @@
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "MeshDescription.h"
@@ -47,6 +48,10 @@ const TCHAR* const kBarkPath = TEXT("/Game/Rendering/Foliage/M_FTBark");
 const TCHAR* const kScratch = TEXT("/Game/Props/_PlantImport");
 constexpr float kLodScreenSize[] = {1.f, 0.45f, 0.20f, 0.06f};
 constexpr int32 kMaxLods = UE_ARRAY_COUNT(kLodScreenSize);
+static_assert(kMaxLods == 4, "the LOD chain is four steps");
+constexpr double kLod0Cm = 2500.0;          // a tree draws its full model to this distance from the game camera
+constexpr double kGameScreenMultiple = 0.889; // half the projection's larger scale at 90 degrees across, 16:9
+constexpr float kLodStepDown = 0.45f;        // each further switch at most this share of the one before
 constexpr float kClip = 0.5f;
 
 // The maps: the file's suffix, the texture's, how it is stored and sampled; Optional ones may be missing.
@@ -124,6 +129,11 @@ col *= lerp(tint, 1.0 + 0.4 * (tint - 1.0), k);
 col = lerp(col, col * SpringTint.rgb, saturate(1.0 - s) * (1.0 - k));
 float3 au = lerp(AutumnA.rgb, AutumnB.rgb, frac(idv * 5.3 + r * 0.61)) * (lum / max(MeanLum, 0.02)) * v;
 float leafy = saturate(m.r * 2.0);
+float thin = saturate(m.r * 2.0 - 1.0);
+// LeafDetail (the generated trees; 0 keeps the scanned plants as they were): per-leaf brightness from the leaf id, a
+// warmer cast on some leaves, light through the thin blade more than the midrib.
+col *= lerp(1.0, 0.86 + 0.28 * m.b, leafy * (1.0 - k) * LeafDetail);
+col = lerp(col, col * float3(1.07, 1.05, 0.84), saturate((m.b - 0.8) * 4.0) * leafy * (1.0 - k) * LeafDetail);
 col = lerp(col, au, t * leafy);
 float op = c.a;
 if (BbMode < 0.5)
@@ -141,14 +151,25 @@ else
 	op = lerp(c.a, bare.a, drop);
 }
 OpacityOut = op;
+nt = normalize(lerp(nt, float3(0.0, 0.0, 1.0), k));
 nt.z *= Sign;
 NormalOut = nt;
-SubsurfaceOut = col * Subsurface;
+SubsurfaceOut = col * Subsurface * lerp(1.0, lerp(0.35, 1.25, thin), LeafDetail);
+RoughOut = lerp(Roughness, lerp(0.48, 0.7, thin), LeafDetail);
 return col;)HLSL");
 
+// The bark: with BarkAlphaRough (the generated trees) the map's alpha is its roughness; MossAmount greens the low,
+// MossDir-facing side of the trunk. Both 0 by default, so the scanned plants keep the old bark.
 const TCHAR* const kBarkCode = TEXT(R"HLSL(float v = 0.90 + 0.20 * frac(Rand * 7.13);
 NormalOut = UnpackNormalMap(Texture2DSample(BarkNormalTex, BarkNormalTexSampler, UV)).xyz;
-return Texture2DSample(BarkTex, BarkTexSampler, UV).rgb * v;)HLSL");
+float4 bt = Texture2DSample(BarkTex, BarkTexSampler, UV);
+RoughOut = saturate(lerp(Roughness, bt.a * RoughScale, BarkAlphaRough));
+float3 col = bt.rgb * v;
+float low = saturate(1.0 - (Local.z * 0.01) / 1.4);
+float side = saturate(dot(normalize(WorldNormal), MossDir.xyz) * 0.8 + 0.2);
+float mm = low * low * side * MossAmount;
+col = lerp(col, MossColor.rgb * (0.6 + 0.6 * dot(col, float3(0.3, 0.59, 0.11)) / 0.12), mm);
+return col;)HLSL");
 
 // The wind, the same for bark and leaves (so the twigs stay on their limbs): nothing below BendStart (metres), the sway
 // growing with the square of the height over BendSpan and with the reach from the trunk; a phase per instance; the
@@ -279,6 +300,10 @@ UTexture2D* ImportMap(const FString& File, const FString& Path, const FMapSpec& 
 		// The cut-out keeps its coverage in the small mips: far crowns stay as dense as near ones.
 		Texture->bDoScaleMipsForAlphaCoverage = true;
 		Texture->AlphaCoverageThresholds = FVector4(0.0, 0.0, 0.0, kClip);
+	}
+	if (FCString::Strcmp(Map.Suffix, TEXT("leaf_n")) == 0 || FCString::Strcmp(Map.Suffix, TEXT("leaf_m")) == 0)
+	{
+		Texture->MaxTextureSize = 1024; // the cards' detail maps: half the colour's size is plenty
 	}
 	Texture->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Texture);
@@ -451,9 +476,12 @@ UMaterial* BuildFoliage(UTexture2D* const* Maps, UMaterialParameterCollection* L
 	AddInput(Leaf, TEXT("Season"), AddCollectionScalar(Material, Look, FTSeason::Name, FTSeason::Default, 300));
 	AddInput(Leaf, TEXT("Rand"), Rand);
 	AddInput(Leaf, TEXT("Sign"), Sign);
+	AddInput(Leaf, TEXT("LeafDetail"), AddScalar(Material, TEXT("LeafDetail"), 0.f, 350));
+	AddInput(Leaf, TEXT("Roughness"), AddScalar(Material, TEXT("Roughness"), 0.62f, 400));
 	AddOutput(Leaf, TEXT("OpacityOut"), CMOT_Float1);
 	AddOutput(Leaf, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Leaf, TEXT("SubsurfaceOut"), CMOT_Float3);
+	AddOutput(Leaf, TEXT("RoughOut"), CMOT_Float1);
 	Leaf->RebuildOutputs();
 	UMaterialExpressionCustom* Wind = AddWind(Material, Env, Rand, 1.f);
 	if (!Wind)
@@ -465,7 +493,7 @@ UMaterial* BuildFoliage(UTexture2D* const* Maps, UMaterialParameterCollection* L
 	Inputs->OpacityMask.Connect(1, Leaf);
 	Inputs->Normal.Connect(2, Leaf);
 	Inputs->SubsurfaceColor.Connect(3, Leaf);
-	Inputs->Roughness.Connect(0, AddScalar(Material, TEXT("Roughness"), 0.62f, 400));
+	Inputs->Roughness.Connect(4, Leaf);
 	Inputs->Specular.Connect(0, AddScalar(Material, TEXT("Specular"), 0.35f, 500));
 	Inputs->WorldPositionOffset.Connect(0, Wind);
 	Material->PreEditChange(nullptr);
@@ -491,7 +519,16 @@ UMaterial* BuildBark(UTexture2D* Color, UTexture2D* Normal, UMaterialParameterCo
 	AddInput(Bark, TEXT("BarkTex"), AddTexture(Material, TEXT("BarkTex"), Color, SAMPLERTYPE_Color, -900));
 	AddInput(Bark, TEXT("BarkNormalTex"), AddTexture(Material, TEXT("BarkNormalTex"), Normal, SAMPLERTYPE_Normal, -800));
 	AddInput(Bark, TEXT("Rand"), Rand);
+	AddInput(Bark, TEXT("Local"), AddExpression<UMaterialExpressionLocalPosition>(Material, -1100, 1000));
+	AddInput(Bark, TEXT("WorldNormal"), AddExpression<UMaterialExpressionVertexNormalWS>(Material, -1100, 1100));
+	AddInput(Bark, TEXT("Roughness"), AddScalar(Material, TEXT("Roughness"), 0.86f, 400));
+	AddInput(Bark, TEXT("RoughScale"), AddScalar(Material, TEXT("RoughScale"), 1.f, 450));
+	AddInput(Bark, TEXT("BarkAlphaRough"), AddScalar(Material, TEXT("BarkAlphaRough"), 0.f, 500));
+	AddInput(Bark, TEXT("MossAmount"), AddScalar(Material, TEXT("MossAmount"), 0.f, 550));
+	AddInput(Bark, TEXT("MossDir"), AddVector(Material, TEXT("MossDir"), FLinearColor(0.f, 1.f, 0.f), 600));
+	AddInput(Bark, TEXT("MossColor"), AddVector(Material, TEXT("MossColor"), FLinearColor::FromSRGBColor(FColor(62, 78, 40)), 650));
 	AddOutput(Bark, TEXT("NormalOut"), CMOT_Float3);
+	AddOutput(Bark, TEXT("RoughOut"), CMOT_Float1);
 	Bark->RebuildOutputs();
 	UMaterialExpressionCustom* Wind = AddWind(Material, Env, Rand, 0.f);
 	if (!Wind)
@@ -501,7 +538,7 @@ UMaterial* BuildBark(UTexture2D* Color, UTexture2D* Normal, UMaterialParameterCo
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Bark);
 	Inputs->Normal.Connect(1, Bark);
-	Inputs->Roughness.Connect(0, AddScalar(Material, TEXT("Roughness"), 0.86f, 400));
+	Inputs->Roughness.Connect(2, Bark);
 	Inputs->WorldPositionOffset.Connect(0, Wind);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
@@ -721,6 +758,13 @@ int32 Run(const FString& Params)
 	UMaterialInstanceConstant* BarkInstance = BuildInstance(BarkMi, BarkMaster, Look);
 	SetTexture(BarkInstance, TEXT("BarkTex"), Maps[MapBark]);
 	SetTexture(BarkInstance, TEXT("BarkNormalTex"), Maps[MapBarkNormal]);
+	// This importer's trees carry the detailed maps (leaf id and thickness in the mask, roughness in the bark's alpha).
+	LeafInstance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LeafDetail")), 1.f);
+	if (Maps[MapBark])
+	{
+		BarkInstance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("BarkAlphaRough")), 1.f);
+		BarkInstance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("MossAmount")), 0.5f);
+	}
 	UMaterialInstanceConstant* const Instances[3] = {LeafInstance, BarkInstance, BbInstance};
 	for (UMaterialInstanceConstant* Mic : Instances)
 	{
@@ -791,6 +835,20 @@ int32 Run(const FString& Params)
 			Slots.AddUnique(Attributes.GetPolygonGroupMaterialSlotNames()[Group]);
 		}
 	}
+	// The LOD switches: LOD0 to kLod0Cm from the game camera (kGameScreenMultiple, 90 degrees across at 16:9) for this
+	// plant's bounds, never later than the fixed chain; each further switch at most the fixed one and under the last.
+	float Sizes[kMaxLods];
+	{
+		const double Radius = Lods[0]->GetBounds().SphereRadius;
+		Sizes[0] = kLodScreenSize[0];
+		for (int32 L = 1; L < kMaxLods; ++L)
+		{
+			const float Want = L == 1 ? static_cast<float>(2.0 * kGameScreenMultiple * Radius / kLod0Cm) : Sizes[L - 1] * kLodStepDown;
+			Sizes[L] = FMath::Min(kLodScreenSize[L], Want);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s bounds radius %.0f cm; LOD screen sizes %.3f %.3f %.3f (LOD0 to %.0f m at 90 degrees)."), kTag,
+			*Name, Radius, Sizes[1], Sizes[2], Sizes[3], Radius > 0.0 ? 2.0 * kGameScreenMultiple * Radius / Sizes[1] / 100.0 : 0.0);
+	}
 	bool bOk = true;
 	for (const FName Slot : Slots)
 	{
@@ -812,7 +870,7 @@ int32 Run(const FString& Params)
 		Model.BuildSettings.bGenerateLightmapUVs = false;
 		Model.BuildSettings.bRemoveDegenerates = false;
 		Model.BuildSettings.bUseFullPrecisionUVs = false;
-		Model.ScreenSize = FPerPlatformFloat(kLodScreenSize[L]);
+		Model.ScreenSize = FPerPlatformFloat(Sizes[L]);
 		Mesh->CreateMeshDescription(L, MoveTemp(Copy));
 		Mesh->CommitMeshDescription(L);
 		// each section's material by its group's slot name (the section info map otherwise keeps the group index)
@@ -879,7 +937,7 @@ int32 Run(const FString& Params)
 			Sections += FString::Printf(TEXT(" %s %d;"), *Slot.MaterialSlotName.ToString(), Section.NumTriangles);
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("%s: LOD%d: %d triangles, screen size %.2f:%s"), kTag, L, Mesh->GetNumTriangles(L),
-			kLodScreenSize[L], *Sections);
+			Sizes[L], *Sections);
 	}
 	const FBox Bounds = Mesh->GetBoundingBox();
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: bounds x %.0f..%.0f, y %.0f..%.0f, z %.0f..%.0f cm; the json's height %.1f m."), kTag,

@@ -3071,7 +3071,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 
 	// -Lawn: the greens' lawn sheets and their paths, following the ground.
 	if (!FTLawn::Build(World, Spawn, Package, Hill, Side, bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::Lawn)] : nullptr,
-			bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PavingSlab)] : nullptr))
+			bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PavingSlab)] : nullptr,
+			bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PoleConcrete)] : nullptr))
 	{
 		World->DestroyWorld(false);
 		return 1;

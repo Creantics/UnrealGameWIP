@@ -271,6 +271,36 @@ TEST_CASE("facade grammar: every type and width fills its ground storey exactly 
     CHECK(cases == 20 * 12);
 }
 
+TEST_CASE("facade grammar: three shop lots in four wear awnings and a sign stack, the rest a fascia sign") {
+    const KitTable kit = kitTable();
+    const FrontageRun run = westRun(747.0, 864.0);
+    int awningLots = 0, fasciaLots = 0;
+    for (int sign = 0; sign < 4; ++sign) {
+        BuildingLot lot = lotAt(0.0, LotType::WalkUp, 9, 0);
+        lot.depth = 14.0;
+        lot.floorZ = 8.0;
+        lot.footZ = 7.5;
+        lot.floors = 4;
+        lot.signSet = static_cast<std::uint8_t>(sign);
+        std::vector<KitPlacement> out;
+        REQUIRE(facadePlacements(kit, run, lot, 0, out));
+        int awnings = 0, fascias = 0;
+        for (const KitPlacement& p : out) {
+            if (p.piece == kit.find("AWNING_27") || p.piece == kit.find("AWNING_36")) ++awnings;
+            if (p.piece == kit.find("SIGN_FASCIA_36")) ++fascias;
+        }
+        if (sign == 0) {
+            CHECK(awnings == 0);
+        } else {
+            CHECK(fascias == 0);
+        }
+        awningLots += awnings > 0 ? 1 : 0;
+        fasciaLots += fascias > 0 ? 1 : 0;
+    }
+    CHECK(awningLots + fasciaLots >= 3);
+    CHECK(awningLots >= 2 * fasciaLots);
+}
+
 TEST_CASE("facade grammar: on a run heading west balconies reach north and the pencil sign hangs west") {
     const KitTable kit = kitTable();
     const FrontageRun run = westRun(747.0, 864.0);

@@ -622,7 +622,7 @@ float weatherTopDirt(float edgeM, float noise, float slab, const SurfaceWeatherS
 
 float weatherRough(float rough, float soak, float puddle, const SurfaceWeatherSpec& spec) {
     const float r = std::min(rough, lerp(rough, spec.soakRough, std::pow(saturate(soak), spec.roughCurve)));
-    return saturate(lerp(r, spec.puddleRough, puddle));
+    return saturate(lerp(r, spec.puddleRough, smoothstep(spec.puddleCoreFrom, 1.f, puddle)));
 }
 
 float weatherAlbedoScale(int channel, float soak, float puddle, float dirt, const SurfaceWeatherSpec& spec) {
@@ -814,7 +814,8 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
     h += "float3 C = Alb * (lerp(1.0, " + num(spec.soakDarken) + ", Soak) * lerp(1.0, " + num(spec.puddleDarken) +
          ", Pud));\n";
     h += "float R = min(Rgh, lerp(Rgh, " + num(spec.soakRough) + ", pow(saturate(Soak), " + num(spec.roughCurve) + ")));\n";
-    h += "R = lerp(R, " + num(spec.puddleRough) + ", Pud);\n";
+    h += "float PudCore = smoothstep(" + num(spec.puddleCoreFrom) + ", 1.0, Pud);\n";
+    h += "R = lerp(R, " + num(spec.puddleRough) + ", PudCore);\n";
     // The joint floor's roughness floor again after the soak (no glints off a wet joint), but not under a puddle.
     if (relief) h += "R = lerp(R, max(R, RlRw), RlWet * (1.0 - Pud));\n";
     h += "float A = AO;\n";
@@ -850,7 +851,7 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
         h += "C *= lerp(float3(1.0, 1.0, 1.0), " + tint + ", TopDirt);\n";
         h += "A *= 1.0 - " + num(kTopOcclusion) + " * TopDirt;\n";
     }
-    h += "NormalOut = normalize(lerp(Nrm, VN, saturate(" + num(spec.soakFlatten) + " * Soak + Pud)));\n";
+    h += "NormalOut = normalize(lerp(Nrm, VN, saturate(" + num(spec.soakFlatten) + " * Soak + PudCore)));\n";
     h += "RoughOut = saturate(R);\n";
     h += "AOOut = A;\n";
     h += "return max(C, 0.02);\n";
@@ -867,7 +868,7 @@ std::string surfaceWetHlsl(const SurfaceWeatherSpec& spec) {
          num(spec.gutterBias) + " * GutIn - (1.0 - " + num(spec.puddleCover) + " * WetIn));\n";
     h += "C *= lerp(1.0, " + num(spec.soakDarken) + ", WSoak) * lerp(1.0, " + num(spec.puddleDarken) + ", WPud);\n";
     h += "R = min(R, lerp(R, " + num(spec.soakRough) + ", pow(saturate(WSoak), " + num(spec.roughCurve) + ")));\n";
-    h += "R = lerp(R, " + num(spec.puddleRough) + ", WPud);\n";
+    h += "R = lerp(R, " + num(spec.puddleRough) + ", smoothstep(" + num(spec.puddleCoreFrom) + ", 1.0, WPud));\n";
     return h;
 }
 

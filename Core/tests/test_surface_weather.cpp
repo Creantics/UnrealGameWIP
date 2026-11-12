@@ -33,6 +33,11 @@ TEST_CASE("wet: full soak's numbers; a night street (0.6) mirrors in its wet pat
     CHECK(weatherAlbedoScale(0, 1.f, 0.f, 0.f, spec) == doctest::Approx(0.5f));
     CHECK(weatherRough(0.8f, 1.f, 0.f, spec) == doctest::Approx(0.05f));
     CHECK(weatherRough(0.8f, 0.f, 1.f, spec) == doctest::Approx(0.02f));
+    // A puddle's edge darkens before it mirrors: no ring where colour, gloss and normal all change at once.
+    CHECK(weatherRough(0.8f, 0.f, spec.puddleCoreFrom * 0.9f, spec) == doctest::Approx(0.8f));
+    CHECK(weatherAlbedoScale(0, 0.f, spec.puddleCoreFrom * 0.9f, 0.f, spec) < 1.f);
+    // The edge spans a real stretch of noise, not a hairline.
+    CHECK(spec.puddleEdge >= 0.15f);
     // Lumen traces reflections under roughness 0.4. Asphalt (0.85) soaked to the night's 0.6 lands under it, so lamps
     // and signs streak on the wet carriageway; its drying patches (dampShare of the soak) and the day's 0.35 stay over.
     CHECK(weatherRough(0.85f, 0.6f, 0.f, spec) < 0.35f);

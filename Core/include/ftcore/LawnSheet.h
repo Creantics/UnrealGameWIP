@@ -53,14 +53,23 @@ FTCORE_API void lawnSheetMesh(const HeightField& ground, const LawnRegion& regio
 // them, and a skirt from each edge down to `skirt` m under the ground. Appends to out.
 FTCORE_API void lawnPathMesh(const HeightField& ground, const LawnPath& path, double step, double lift, double skirt, LawnMesh& out);
 
+// Pieces shorter than this (m) are dropped from the edging.
+inline constexpr double kLawnEdgeMinM = 0.2;
+
+// The edging strips along the table's paths: for each path, one strip `edge` m wide on each side, flush against it,
+// cut where it would run onto another path or that path's own edging, pieces shorter than kLawnEdgeMinM dropped.
+// Each comes back as a LawnPath (its centre line and width) for lawnPathMesh. Replaces out.
+FTCORE_API void lawnPathEdges(const LawnTable& table, double edge, std::vector<LawnPath>& out);
+
 // The greens' planting: -PlantPoints=<file> names a table (CSV, '#' comment lines, a header row naming the columns):
 //   asset    the plant model (the engine's asset path or name; the build resolves it)
 //   x, y     plan metres
 //   z        optional: the foot's height (m); empty stands it on the ground
 //   yaw      degrees, plan frame
 //   scale    a uniform scale (0 < scale <= 10)
-//   kind     "shrub" (drawn to the shrubs' distance) or "cover" (ground cover: grass, weeds, ferns, drawn nearer)
-enum class PlantPointKind : std::uint8_t { Shrub, Cover };
+//   kind     "shrub" (drawn to the shrubs' distance), "cover" (ground cover: grass, weeds, ferns, drawn nearer) or
+//            "blades" (dense grass tufts that give the lawn body near a view; drawn nearest, no shadow)
+enum class PlantPointKind : std::uint8_t { Shrub, Cover, Blades };
 struct PlantPoint {
     std::string asset;
     double x = 0.0, y = 0.0, z = 0.0;

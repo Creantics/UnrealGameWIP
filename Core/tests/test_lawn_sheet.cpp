@@ -52,6 +52,9 @@ TEST_CASE("plant points: kinds, optional z, and errors") {
     CHECK_FALSE(p[0].hasZ);
     CHECK(p[1].hasZ);
     CHECK(p[1].z == 5.25);
+    CHECK(parsePlantPoints("asset,x,y,z,yaw,scale,kind\nPLANT-grass-b,1,1,,0,0.6,blades\n", p, &e));
+    REQUIRE(p.size() == 1);
+    CHECK(p[0].kind == PlantPointKind::Blades);
     CHECK_FALSE(parsePlantPoints("asset,x,y,z,yaw,scale\n", p, &e));
     CHECK_FALSE(parsePlantPoints("asset,x,y,z,yaw,scale,kind\nA,1,1,,0,0,shrub\n", p, &e));
     CHECK_FALSE(parsePlantPoints("asset,x,y,z,yaw,scale,kind\nA,1,1,,0,1,tree\n", p, &e));
@@ -89,4 +92,35 @@ TEST_CASE("path ribbon: over the lawn, skirts under the ground, wound counter-cl
             CHECK(cross(m, (s * 4 + k) * 2) > 0.0);
             CHECK(cross(m, (s * 4 + k) * 2 + 1) > 0.0);
         }
+}
+
+TEST_CASE("path edging: a strip each side, flush, cut where another path crosses") {
+    LawnTable t;
+    // An eastward path along y = 10 and a northward one across it at x = 20, both 2 m wide.
+    t.paths.push_back({0.0, 10.0, 40.0, 10.0, 2.0});
+    t.paths.push_back({20.0, 0.0, 20.0, 30.0, 2.0});
+    std::vector<LawnPath> e;
+    lawnPathEdges(t, 0.1, e);
+    // The east path: two sides, each cut in two by the crossing; the north path: two sides, each cut in two.
+    REQUIRE(e.size() == 8u);
+    for (const LawnPath& p : e) CHECK(p.width == doctest::Approx(0.1));
+    // The first east piece on the north side: centre line at y = 11.05, from x = 0 to the crossing's edging line.
+    CHECK(e[0].y0 == doctest::Approx(11.05));
+    CHECK(e[0].x0 == doctest::Approx(0.0));
+    CHECK(e[0].x1 == doctest::Approx(20.0 - 1.0 - 0.1));
+    // No piece of edging lies on paving: every piece's ends sit outside every other path's rectangle.
+    for (const LawnPath& p : e)
+        for (const double x : {p.x0, p.x1})
+            for (const double y : {p.y0, p.y1}) {
+                CHECK_FALSE((std::abs(y - 10.0) < 1.0 - 1e-6 && x > 0.0 && x < 40.0));
+                CHECK_FALSE((std::abs(x - 20.0) < 1.0 - 1e-6 && y > 0.0 && y < 30.0));
+            }
+    // A path ending into another leaves no stub shorter than the minimum.
+    LawnTable s;
+    s.paths.push_back({0.0, 0.0, 10.0, 0.0, 2.0});
+    s.paths.push_back({10.05, -5.0, 10.05, 5.0, 2.0});
+    lawnPathEdges(s, 0.1, e);
+    for (const LawnPath& p : e) CHECK(std::hypot(p.x1 - p.x0, p.y1 - p.y0) >= kLawnEdgeMinM);
+    lawnPathEdges(s, 0.0, e);
+    CHECK(e.empty());
 }

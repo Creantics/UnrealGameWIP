@@ -1102,6 +1102,10 @@ UMaterial* BuildNightLamp(UMaterialParameterCollection* Collection)
 	Inputs->BaseColor.Connect(0, Base);
 	Inputs->Roughness.Connect(0, Rough);
 	Inputs->EmissiveColor.Connect(0, Glow);
+	// The heads go on Nanite lamp meshes and instanced lenses: without these usages a Nanite mesh wearing it falls back
+	// to the default material (the same usages FT::AllowNanite gives an imported prop's master).
+	Material->SetUsageByFlag(MATUSAGE_Nanite, true);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	return Material;

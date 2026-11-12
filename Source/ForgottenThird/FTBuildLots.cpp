@@ -85,14 +85,22 @@ if (WorldUV > 0.5)
 float3 bc = Texture2DSample(BC, BCSampler, uv).rgb;
 float3 mr = Texture2DSample(MR, MRSampler, uv).rgb;
 float3 tn = WorldUV > 0.5 ? float3(0.0, 0.0, 1.0) : UnpackNormalMap(Texture2DSample(NM, NMSampler, uv)).xyz;
+tn = normalize(float3(tn.xy * Relief, max(tn.z, 0.05)));
 int s = (int)round(Slot);
 float v = s == 0 ? CD0 : s == 1 ? CD1 : s == 2 ? CD2 : s == 3 ? CD3 : s == 4 ? CD4 : 0.0;
 float3 tint = Tint.rgb;
 if (s <= 4 && v > 0.5)
 	tint = float3(floor(v / 65536.0), floor(fmod(v, 65536.0) / 256.0), fmod(v, 256.0)) / 255.0;
+// The palette and the slots' tints are display (sRGB) colours: decoded to linear here, so a charcoal stays charcoal.
+tint = pow(max(tint, 0.0), 2.2);
+// A palette slot's map carries only its pattern: divided by its own mean (its smallest mip), so the tint alone sets
+// the wall's colour and a pale map doesn't wash it out.
+if (s <= 4)
+	bc = bc / max(Texture2DSampleLevel(BC, BCSampler, float2(0.5, 0.5), 14.0).rgb, 0.04);
 float dirt = HasMR > 0.5 ? mr.r : 0.0;
-float3 base = bc * tint * lerp(1.0, 0.62, saturate(dirt * (0.35 + CD7)));
-float rough = HasMR > 0.5 ? mr.g : Rough0;
+float grime = saturate(dirt * (0.5 + CD7) * DirtAmount);
+float3 base = bc * tint * lerp(float3(1.0, 1.0, 1.0), float3(0.50, 0.46, 0.40), grime);
+float rough = HasMR > 0.5 ? lerp(mr.g, 0.95, grime * 0.5) : Rough0;
 float metal = HasMR > 0.5 ? mr.b : 0.0;
 float3 glow = float3(0.0, 0.0, 0.0);
 float night = Night * NightGlow;
@@ -101,6 +109,8 @@ if (s == 5)
 	float m = saturate(dot(bc, float3(0.333, 0.333, 0.334)));
 	float3 fg = CD5 > 0.5 ? float3(floor(CD5 / 65536.0), floor(fmod(CD5, 65536.0) / 256.0), fmod(CD5, 256.0)) / 255.0 : float3(0.95, 0.95, 0.92);
 	float3 bg = CD2 > 0.5 ? float3(floor(CD2 / 65536.0), floor(fmod(CD2, 65536.0) / 256.0), fmod(CD2, 256.0)) / 255.0 : float3(0.72, 0.12, 0.1);
+	fg = pow(fg, 2.2);
+	bg = pow(bg, 2.2);
 	base = lerp(bg, fg, m);
 	rough = 0.45;
 	metal = 0.0;
@@ -228,6 +238,8 @@ UMaterial* BuildMaster(UPackage* Package, UTexture* White, UTexture* Masks, UTex
 	In(Code, TEXT("GlassGlow"), Scalar(Material, TEXT("GlassGlow"), 0.8f, 1200));
 	In(Code, TEXT("LitShare"), Scalar(Material, TEXT("LitShare"), 0.35f, 1300));
 	In(Code, TEXT("GlowCap"), Scalar(Material, TEXT("GlowCap"), 6.f, 1400));
+	In(Code, TEXT("Relief"), Scalar(Material, TEXT("Relief"), 1.f, 1450));
+	In(Code, TEXT("DirtAmount"), Scalar(Material, TEXT("DirtAmount"), 1.f, 1475));
 	In(Code, TEXT("Night"), Night(Material, Collection, TEXT("Night"), 0.f, 1500));
 	In(Code, TEXT("NightGlow"), Night(Material, Collection, TEXT("NightGlow"), 1.f, 1600));
 	UClass* const DataClass = FindObject<UClass>(FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("MaterialExpressionPerInstanceCustomData")));
@@ -518,6 +530,12 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), Look.Rough);
 		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HasMR")), Maps[1] ? 1.f : 0.f);
 		Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Tint")), Look.Tint);
+		// The tiles' grout and the roof tiles' laps read deeper than the map's own normals give.
+		const FString SlotName(Look.Name);
+		if (SlotName == TEXT("jpk_wall_tile") || SlotName == TEXT("jpk_rooftile"))
+		{
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Relief")), 1.8f);
+		}
 		static const TCHAR* const Params[3] = {TEXT("BaseColorTexture"), TEXT("MetallicRoughnessTexture"), TEXT("NormalTexture")};
 		for (int32 K = 0; K < 3; ++K)
 		{

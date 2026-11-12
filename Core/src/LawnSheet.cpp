@@ -132,6 +132,7 @@ bool parsePlantPoints(std::string_view csv, std::vector<PlantPoint>& out, std::s
         }
         if (cell(6) == "shrub") p.kind = PlantPointKind::Shrub;
         else if (cell(6) == "cover") p.kind = PlantPointKind::Cover;
+        else if (cell(6) == "blades") p.kind = PlantPointKind::Blades;
         else return fail(error, where + ": unknown kind '" + std::string(cell(6)) + "'");
         out.push_back(std::move(p));
     }
@@ -189,6 +190,67 @@ void lawnPathMesh(const HeightField& ground, const LawnPath& path, double step, 
             out.tris.push_back({at(s, k), at(s, k + 1), at(s + 1, k + 1)});
             out.tris.push_back({at(s, k), at(s + 1, k + 1), at(s + 1, k)});
         }
+}
+
+namespace {
+// The part [t0, t1] of the segment a + t*(b - a), t in [0, 1], inside the rectangle around path p grown by `grow` m
+// on every side; false when the segment misses it.
+bool insideRect(double ax, double ay, double bx, double by, const LawnPath& p, double grow, double& t0, double& t1) {
+    const double dx = p.x1 - p.x0, dy = p.y1 - p.y0;
+    const double len = std::hypot(dx, dy);
+    if (len < 1e-9) return false;
+    const double ux = dx / len, uy = dy / len;
+    // The segment in the path's frame: u along it from its start, v across it.
+    const double au = (ax - p.x0) * ux + (ay - p.y0) * uy, av = -(ax - p.x0) * uy + (ay - p.y0) * ux;
+    const double du = (bx - ax) * ux + (by - ay) * uy, dv = -(bx - ax) * uy + (by - ay) * ux;
+    t0 = 0.0;
+    t1 = 1.0;
+    const auto slab = [&](double a, double d, double lo, double hi) {
+        if (std::abs(d) < 1e-12) return a >= lo && a <= hi;
+        double s0 = (lo - a) / d, s1 = (hi - a) / d;
+        if (s0 > s1) std::swap(s0, s1);
+        t0 = std::max(t0, s0);
+        t1 = std::min(t1, s1);
+        return t0 < t1;
+    };
+    const double hw = p.width * 0.5 + grow;
+    return slab(au, du, -grow, len + grow) && slab(av, dv, -hw, hw);
+}
+} // namespace
+
+void lawnPathEdges(const LawnTable& table, double edge, std::vector<LawnPath>& out) {
+    out.clear();
+    if (!(edge > 0.0)) return;
+    std::vector<std::pair<double, double>> cut;
+    for (std::size_t i = 0; i < table.paths.size(); ++i) {
+        const LawnPath& p = table.paths[i];
+        const double dx = p.x1 - p.x0, dy = p.y1 - p.y0;
+        const double len = std::hypot(dx, dy);
+        if (len < 1e-9) continue;
+        const double lx = -dy / len, ly = dx / len;
+        const double off = p.width * 0.5 + edge * 0.5;
+        for (const double side : {1.0, -1.0}) {
+            const double ax = p.x0 + lx * off * side, ay = p.y0 + ly * off * side;
+            const double bx = p.x1 + lx * off * side, by = p.y1 + ly * off * side;
+            // Off where another path or its own edging runs: the strip stops at the other path's edging line.
+            cut.clear();
+            for (std::size_t j = 0; j < table.paths.size(); ++j) {
+                double t0 = 0.0, t1 = 0.0;
+                if (j != i && insideRect(ax, ay, bx, by, table.paths[j], edge, t0, t1)) cut.emplace_back(t0, t1);
+            }
+            std::sort(cut.begin(), cut.end());
+            double from = 0.0;
+            const auto keep = [&](double t0, double t1) {
+                if ((t1 - t0) * len < kLawnEdgeMinM) return;
+                out.push_back({ax + (bx - ax) * t0, ay + (by - ay) * t0, ax + (bx - ax) * t1, ay + (by - ay) * t1, edge});
+            };
+            for (const auto& [c0, c1] : cut) {
+                if (c0 > from) keep(from, c0);
+                from = std::max(from, c1);
+            }
+            if (from < 1.0) keep(from, 1.0);
+        }
+    }
 }
 
 } // namespace ftcore
