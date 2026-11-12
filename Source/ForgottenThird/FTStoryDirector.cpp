@@ -8,6 +8,7 @@
 #include "Misc/Paths.h"
 #include "UObject/UObjectIterator.h"
 #include "Misc/Parse.h"
+#include "UnrealClient.h"
 
 #include "ForgottenThird.h"
 #include "FTAudioSubsystem.h"
@@ -51,6 +52,11 @@ void AFTStoryDirector::BeginPlay()
 	bHandoffAuto = FParse::Param(Cmd, TEXT("StoryAutoPlayHandoff")) || bAlpha;
 	bAutoPlay = bAutoPlay || bHandoffAuto;
 	bQuitOnReturn = FParse::Param(Cmd, TEXT("StoryQuitOnReturn"));
+	if (FParse::Value(Cmd, TEXT("StoryShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
+	{
+		ShotsLeft = 4;
+		FParse::Value(Cmd, TEXT("StoryShotMax="), ShotsLeft);
+	}
 
 	const UGameInstance* GameInstance = GetGameInstance();
 	Story = GameInstance ? GameInstance->GetSubsystem<UFTStorySubsystem>() : nullptr;
@@ -454,6 +460,8 @@ void AFTStoryDirector::CacheBeat()
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: a choice has %d options; only %d can be picked."), Count, MaxOptions);
 	}
 	WaitTime = 0.f;
+	BeatAge = 0.f;
+	bShotThisBeat = false;
 	++BeatSerial;
 }
 
@@ -462,6 +470,29 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 	if (Presenter.state() == StoryRunner::State::Finished)
 	{
 		return;
+	}
+	BeatAge += DeltaSeconds;
+	if (ShotQuitIn >= 0.f)
+	{
+		ShotQuitIn -= DeltaSeconds;
+		if (ShotQuitIn < 0.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Story: shots done; quitting."));
+			FPlatformMisc::RequestExit(false, TEXT("StoryDirector"));
+		}
+		return;
+	}
+	const bool bLine = Story->GetRunner().state() == StoryRunner::State::Line;
+	if (!bFast && ShotsLeft > 0 && bLine && !bShotThisBeat && Presenter.revealed() && BeatAge >= 1.f)
+	{
+		bShotThisBeat = true;
+		const FString File = FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, *Story->GetLineId());
+		FScreenshotRequest::RequestScreenshot(File, true, false); // the viewport's frame with the HUD
+		UE_LOG(LogForgottenThird, Display, TEXT("Story: shot %s (%s: %s)."), *File, *Speaker, *Text.Left(60));
+		if (--ShotsLeft == 0)
+		{
+			ShotQuitIn = 2.f; // the last shot is written before the exit
+		}
 	}
 	if (!bFast && IsVoiceBusy())
 	{
@@ -488,6 +519,12 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 		const float Pause = Command.kind == DialogueCommand::Kind::SkipHold ? 0.f : AutoPlayPause;
 		if (!Command.none() && WaitTime >= Pause)
 		{
+			if (bLine)
+			{
+				const FString LineId = Story->GetLineId();
+				UE_LOG(LogForgottenThird, Log, TEXT("Story: line %s held %.2f s (voice %.2f s)."), *LineId, BeatAge,
+					LineId == VoiceLineId ? VoiceSeconds : 0.f);
+			}
 			Apply(Command);
 		}
 	}
@@ -720,6 +757,8 @@ bool AFTStoryDirector::IsVoiceBusy() const
 void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
 {
 	HandleVoiceStopped();
+	VoiceLineId = LineId;
+	VoiceSeconds = Seconds;
 	const std::string_view Model = Speakers.modelFor(Story ? Story->GetRunner().speaker() : std::string_view());
 	if (Model.empty())
 	{
