@@ -513,7 +513,9 @@ TEST_CASE("fight session: only a fight the story handed off takes story writes; 
     d.gift = freeGifts();
     // The same fight, begun and restarted, as the host does: bound only when the hand-off says so.
     StoryStepMark mark;
+    CHECK_FALSE(storyStepOpen(story, mark)); // nothing marked yet
     REQUIRE(storyMarkStep(story, mark));
+    CHECK(storyStepOpen(story, mark));
     const auto run = [&](const FightHandOff& h, bool rollBack) {
         FightSession s;
         for (int begin = 0; begin < 2; ++begin) { // a begin and a restart

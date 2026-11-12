@@ -459,6 +459,8 @@ bool storyRollbackStep(StoryState& s, const FactRegistry& reg, const StoryStepMa
     return true;
 }
 
+bool storyStepOpen(const StoryState& s, const StoryStepMark& mark) { return markUsable(s, mark); }
+
 bool storyAtMark(const StoryState& s, const FactRegistry& reg, const StoryStepMark& mark) {
     if (!markUsable(s, mark) || s.facts != mark.facts || s.stamp != mark.stamp) return false;
     for (std::uint8_t w = 0; w < kWideSlots; ++w)

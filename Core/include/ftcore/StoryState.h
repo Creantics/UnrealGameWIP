@@ -378,6 +378,9 @@ FTCORE_API bool storyRollbackStep(StoryState& s, const FactRegistry& reg, const 
 // True when the mark is usable and nothing a rollback restores (facts, stamps, counters other than the Raw
 // ones) has moved since it was taken: the step has written nothing yet.
 FTCORE_API bool storyAtMark(const StoryState& s, const FactRegistry& reg, const StoryStepMark& mark);
+// True when a step is open: the mark is set and belongs to the open scene (a load, a new game or a step's end
+// leaves none). A screen entered with no step open (a reload into it, a direct open) marks at its own start.
+FTCORE_API bool storyStepOpen(const StoryState& s, const StoryStepMark& mark);
 // What a step's end does with its writes (the verdict from judgeStep, or a quit to the title).
 enum class StepEnd : std::uint8_t { Keep, Retry, Drop };
 // Keep: a win or a loss branch keeps them. Retry: rolled back, one retry counted. Drop: rolled back, not

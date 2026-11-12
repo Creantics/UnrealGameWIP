@@ -254,6 +254,12 @@ public:
 	{
 		return (bBegun && Index >= 0 && Index < static_cast<int32>(Fight.enemyCount())) ? Fight.output().enemies[static_cast<size_t>(Index)].stopLeft : 0.f;
 	}
+	// The fight session (the shared combat inputs) the runner owns and ticks on the held clock, and its lead slot (the
+	// one the player's figure fills: SessionLeadOf the lead's look, set at Begin).
+	UFTFightSession* GetSession() const { return Session; }
+	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
+	bool IsStoryFight() const { return bStoryFight; }
+	uint8 GetSessionLead() const { return SessionLead; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -362,10 +368,6 @@ private:
 	// One "Arena check:" line per combat feature (Core's arenaFeatureChecks over the fight's stats), for the headless
 	// demo: PASS, FAIL, or n/a where nothing in the line-up can show it.
 	void LogFeatureChecks() const;
-	// The fight session (the shared combat inputs) the runner owns and ticks on the held clock, and its lead slot (the
-	// one the player's figure fills: SessionLeadOf the lead's look, set at Begin).
-	UFTFightSession* GetSession() const { return Session; }
-	uint8 GetSessionLead() const { return SessionLead; }
 	static uint8 SessionLeadOf(const FFTLeadLook* Look);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
@@ -374,6 +376,7 @@ private:
 	// first among the members: UHT keeps a property's offset in 16 bits, and the fight state below is large.
 	UPROPERTY()
 	TObjectPtr<UFTFightSession> Session;
+	bool bStoryFight = false; // BeginSession: the story handed this fight off
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
 	UPROPERTY()

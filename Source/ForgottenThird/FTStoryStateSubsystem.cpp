@@ -293,11 +293,28 @@ void UFTStoryStateSubsystem::BindFightSession(UFTFightSession* Session)
 		{
 			Unbind(); // one session holds the state at a time
 		}
-		if (!State || !Registry || !StepMark || !Session->BindStory(*State, *Registry, *StepMark))
+		if (!State || !Registry || !StepMark)
 		{
-			// The step's writes since its mark were not rolled back (a retry inside the screen without RestartStep),
-			// or no step is open: the fight plays but its presses never count on top of the last attempt.
-			UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: the fight session was not bound: the story state is not at the step's mark."));
+			return;
+		}
+		if (!ftcore::storyStepOpen(*State, *StepMark))
+		{
+			// No step open: a reload into the story's fight (a load drops the mark; the block was saved as of the
+			// step's start, so the loaded state is that start) or a direct open. The fight's start is the step's.
+			MarkStep();
+			UE_LOG(LogFTStoryState, Display, TEXT("StoryState: no step was open when the fight began (a reload or a direct open); marked at the fight's start."));
+		}
+		if (!Session->BindStory(*State, *Registry, *StepMark))
+		{
+			// The fight plays unbound: a win keeps none of its presses, so a gate on them takes the wrong branch.
+			const TCHAR* Why = ftcore::storyStepOpen(*State, *StepMark)
+				? TEXT("the story state has moved since the step's mark (a retry inside the screen without RestartStep).")
+				: TEXT("no step is open and none could be marked (no scene is open).");
+#if UE_BUILD_SHIPPING
+			UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: the fight session was not bound: %s"), Why);
+#else
+			UE_LOG(LogFTStoryState, Error, TEXT("StoryState: the fight session was not bound: %s"), Why);
+#endif
 			return;
 		}
 		BoundSession = Session;

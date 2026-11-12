@@ -1491,7 +1491,9 @@ void UFTArenaRunner::BeginSession()
 		{
 			Session->UnbindStory();
 		}
-		UE_LOG(LogForgottenThird, Log, TEXT("Arena: fight session story %s"), bStory && Story ? TEXT("bound") : TEXT("unbound"));
+		bStoryFight = bStory && Story;
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: fight session story %s"),
+			Session->IsStoryBound() ? TEXT("bound") : (bStoryFight ? TEXT("REFUSED (plays unbound)") : TEXT("unbound")));
 	}
 }
 
@@ -3205,10 +3207,11 @@ void UFTArenaRunner::EndImpact()
 void UFTArenaRunner::Restart()
 {
 	Fight.restart();
-	if (Session && Session->IsStoryBound())
+	if (bStoryFight)
 	{
-		// The story's fight again from its start: the last attempt's story writes roll back first, or the new
-		// attempt is refused its binding (BeginSession) and counts nothing.
+		// The story's fight again from its start, bound or not: the last attempt's story writes roll back to the
+		// step's mark and it is marked again (one retry counted), or the new attempt is refused its binding
+		// (BeginSession) and counts nothing.
 		const UWorld* World = GetWorld();
 		UFTGameInstance* Instance = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
 		if (UFTStoryStateSubsystem* Story = Instance ? Instance->GetSubsystem<UFTStoryStateSubsystem>() : nullptr)

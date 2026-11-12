@@ -30,8 +30,12 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "FTFightSession.h"
+#include "FTGameInstance.h"
+#include "FTStoryStateSubsystem.h"
 
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -39,6 +43,74 @@ static_assert(AFTArenaFighter::TellSegments == 14, "Tell[14] in FTArenaFighter.h
 
 namespace
 {
+// -ArenaStoryProbe: the arena's story wiring, headless. The fight is handed off as the story's (a carry, the
+// registry's first scene open, no step marked: as a reload into the fight), one gift press is counted, the arena
+// restarts the fight (UFTArenaRunner::Restart), and one more press is counted; each stage logs the press counters
+// and the retries count, then the game quits. Expected: presses 0 -> 1 -> 0 (rolled back) -> 1; retries +1.
+UFTStoryStateSubsystem* StoryProbeState(const UObject* Context)
+{
+	const UWorld* World = Context ? Context->GetWorld() : nullptr;
+	UFTGameInstance* GI = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+	return GI ? GI->GetSubsystem<UFTStoryStateSubsystem>() : nullptr;
+}
+
+void PrepareStoryProbe(const UObject* Context)
+{
+	const UWorld* World = Context ? Context->GetWorld() : nullptr;
+	UFTGameInstance* GI = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+	UFTStoryStateSubsystem* Story = StoryProbeState(Context);
+	const ftcore::FactRegistry* Reg = Story ? Story->GetRegistry() : nullptr;
+	if (!GI || !Reg || Reg->sceneCount == 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: story probe: no story registry with a scene; the probe can't run."));
+		return;
+	}
+	Story->NewGame();
+	const auto& Code = Reg->sceneCodes[0];
+	const FString Scene(static_cast<int32>(strnlen(Code.data(), Code.size())), Code.data());
+	const bool bOpen = Story->BeginScene(Scene);
+	GI->StoryCarry = FFTStoryCarry();
+	GI->StoryCarry.bValid = true;
+	GI->StoryCarry.bDone = false;
+	GI->StoryCarry.Combat = ftcore::CombatKind::Arena;
+	GI->StoryCarry.WantedCombat = ftcore::CombatKind::Arena;
+	GI->StoryCarry.Scene = Scene;
+	GI->StoryCarry.Beat = 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: story probe: scene %s %s, no step marked (as a reload into the fight)."), *Scene,
+		bOpen ? TEXT("open") : TEXT("NOT OPEN"));
+}
+
+void LogStoryProbe(const UObject* Context, const UFTArenaRunner* Runner, const TCHAR* Stage)
+{
+	UFTStoryStateSubsystem* Story = StoryProbeState(Context);
+	const ftcore::StoryState* State = Story ? Story->GetState() : nullptr;
+	const ftcore::FactRegistry* Reg = Story ? Story->GetRegistry() : nullptr;
+	if (!State || !Reg)
+	{
+		return;
+	}
+	uint32 Presses = 0;
+	for (const auto& Side : Reg->roles.pressCounters)
+	{
+		for (const std::uint8_t Slot : Side)
+		{
+			Presses += ftcore::storyWide(*State, Slot);
+		}
+	}
+	const UFTFightSession* Session = Runner ? Runner->GetSession() : nullptr;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: story probe %s: bound %d, presses %u, retries %u."), Stage,
+		Session && Session->IsStoryBound() ? 1 : 0, Presses, ftcore::storyWide(*State, Reg->roles.retries));
+}
+
+void PressStoryProbe(UFTArenaRunner* Runner)
+{
+	if (UFTFightSession* Session = Runner ? Runner->GetSession() : nullptr)
+	{
+		Session->Get().selectGift(ftcore::Gift::Heal);
+		Session->Get().giveGift(Runner->GetSessionLead()); // counted given or refused
+	}
+}
+
 // The shortest tell the arena allows (s): an enemy's startup is its telegraph.
 constexpr float kArenaMinTell = 0.4f;
 // After a view is taken, the fight holds this long (wall seconds) so the frame it renders is that moment.
@@ -578,7 +650,27 @@ void AFTArenaGameMode::Begin()
 	Setup.bBossSplitAtStart = bBossSplit;
 	Setup.bQuitOnFinish = bQuitOnFinish;
 	Setup.bShots = !ShotPrefix.IsEmpty();
+	const bool bStoryProbe = FParse::Param(FCommandLine::Get(), TEXT("ArenaStoryProbe"));
+	if (bStoryProbe)
+	{
+		PrepareStoryProbe(this);
+	}
 	Runner->Begin(Setup);
+	if (bStoryProbe)
+	{
+		LogStoryProbe(this, Runner, TEXT("begun"));
+		PressStoryProbe(Runner);
+		LogStoryProbe(this, Runner, TEXT("pressed"));
+		Runner->Restart();
+		LogStoryProbe(this, Runner, TEXT("restarted"));
+		PressStoryProbe(Runner);
+		LogStoryProbe(this, Runner, TEXT("pressed again"));
+		if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
+		{
+			GI->StoryCarry = FFTStoryCarry(); // nothing goes back to a story that never ran
+		}
+		FPlatformMisc::RequestExitWithStatus(false, 0, TEXT("ArenaStoryProbe"));
+	}
 }
 
 bool AFTArenaGameMode::IsPlayable(const FString& Name) const

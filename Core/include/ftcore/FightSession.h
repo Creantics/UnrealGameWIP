@@ -22,7 +22,9 @@
 //   step as it opens and goes back to the mark on a retry or a quit), so a retried fight counts afresh. The
 //   binding enforces it: it lasts one fight (begin unbinds) and is refused unless the state is still at the
 //   step's mark, so a screen that retries a fight itself must roll the last attempt back (storyEndStep with
-//   Retry), mark the step again and bind anew, or the new attempt writes nothing.
+//   Retry), mark the step again and bind anew, or the new attempt writes nothing. Each attempt thrown away counts
+//   one story retry, whoever retries it: a screen's own "fight again" adds 1 (its Retry), and a lost fight the
+//   story retries adds 1 more (the director's Retry verdict).
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
