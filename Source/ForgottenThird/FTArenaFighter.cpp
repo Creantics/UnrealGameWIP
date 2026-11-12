@@ -162,6 +162,14 @@ AFTArenaFighter::AFTArenaFighter()
 	Camera->SetFieldOfView(70.f);
 }
 
+void AFTArenaFighter::SetCameraTilt(float Degrees)
+{
+	if (Camera)
+	{
+		Camera->SetRelativeRotation(FRotator(static_cast<double>(Degrees), 0.0, 0.0));
+	}
+}
+
 void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
 {
 	Boom->TargetArmLength = ArmMeters * 100.f;

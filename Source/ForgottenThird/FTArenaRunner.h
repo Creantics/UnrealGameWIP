@@ -21,6 +21,8 @@
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaLook.h"
+#include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
@@ -522,6 +524,39 @@ private:
 	bool bAimHeld = false;
 	bool bAimCamera = false;
 	FVector ReticlePoint = FVector::ZeroVector;
+	// The point the aim's heading on the ground is taken toward: the reticle's point, or with the trace meeting nothing
+	// the camera's line carried out to reticleRange along the ground (a steep look's far point lies nearly over the
+	// lead, off the line by the shoulder offset).
+	FVector ReticleHeadingPoint = FVector::ZeroVector;
+	bool bReticleHit = false;
+	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
+	// The first standing enemy body (Core's radius, the figure's height and hover, as an upright cylinder) along the
+	// line From -> To (cm) nearer than T on entry (0..1 of the line): its slot, and T then the share along the line. The
+	// figures carry no collision, so the reticle's trace meets them by this.
+	int32 ReticleBody(const FVector& From, const FVector& To, double& T) const;
+	// -ArenaAimCheck (autopilot, a guns kit): once in the fight, the camera aims at the tallest standing enemy's top
+	// (its height and hover) by ftcore::arenaLookUpPitch, the reticle is traced and one aimed shot is pressed; the
+	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done.
+	int32 AimCheckPhase = 0;
+	int32 AimCheckSlot = -1;
+	int32 AimCheckPresses = 0;
+	double AimCheckSince = 0.0;
+	int32 AimCheckShotsBefore = 0;
+	int32 AimCheckHitsBefore = 0;
+	float AimCheckPitch = 0.f;
+	FString AimCheckLine;
+	bool bAimCheckPass = false;
+	bool bAimCheckNa = false;      // the check could not be judged (the target fell first, no camera)
+	bool bAimCheckOnBoss = false;  // the crosshair's line met the target as the shot was pressed
+	bool bAimCheckPitchOk = false; // the view had reached the solved pitch (within 1.5 degrees)
+	float AimCheckHpBefore = 0.f;
+	bool bAimCheckFire = false;
+	// The tallest standing enemy's slot (-1: none) and its top over the floor (m).
+	int32 TallestStanding(float& OutTop) const;
+	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
+	ftcore::Vec2 ReticleAimDir(const ftcore::Vec2& Fallback) const;
+	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
+	void StepAimCheck(ftcore::ArenaInput& In);
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 	bool bMouseFlicked = false;
@@ -549,6 +584,11 @@ private:
 	// stinger (Now), and the counts for the check line.
 	ftcore::ArenaJolt Jolt;
 	float ShakeOverride = -1.f;
+	// -ArenaGlide=<toward|across|away|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// to its target (toward, across to the right, away) whenever the autopilot itself leaves the stick at rest, so its
+	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
+	int32 GlideStick = -1;
+	FFTArenaGlideProbe Glide;
 	int32 JoltAsks = 0;
 	float JoltApplied = 0.f;
 	ftcore::ArenaView CameraView;

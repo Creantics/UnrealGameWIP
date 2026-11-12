@@ -206,7 +206,7 @@ again through `face_down_in` (or stands it out when too little is left); it dies
 (down, going down, or its get-up under 40% in), else on `defeat`; and a playing hit reaction holds 0.4 s before any blow
 restarts it, and after that only a heavy one does. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
-of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
+of its height (`ftcore::arenaLookUpPitch`, up to the view's 85 degree limit); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
 A row marked `"additive_in": true` (the white glove's `hit_light` and `hit_heavy`) also fades in additively: while its crossfade
 runs, its own motion since its first frame goes on top of the blend by what is left of the fade, so a blow taken mid-swing jolts
 the held swing pose at the reaction's full size at once instead of easing into the reaction's rest start; cut off mid-fade (a
@@ -597,6 +597,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
+| `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit). Run it on `kite_ring` with `-ArenaLead=Duy`. |
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
@@ -646,7 +647,12 @@ warning and quits with exit code 2, so an unattended run never hangs.
   crouch and lean; enemy figures also show a guard plate, the player's never). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking
-  on or looking up, from -50 to +15 degrees). The arm probes the world (it may leave the zone's walls but never passes through a building or the
+  on or looking up, from -50 to +85 degrees, free, aimed and locked alike: `ftcore::kArenaLook` in `ArenaLook.h`). The
+  boom itself swings up only to 15 degrees, which keeps the lens over the floor and behind the lead at the fight's arm
+  and the aim's; a steeper look tilts the lens on the boom's end, so the arm never shortens. The aim's reticle line
+  meets the enemies' bodies (Core's radius, the figure's height and hover), so the shot, its tracer and the raised arm
+  go where the crosshair is at any pitch. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).
 - Nothing in the host allocates per frame: the HUD's words are static, and its numbers are rebuilt only

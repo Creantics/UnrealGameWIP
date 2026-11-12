@@ -29,6 +29,7 @@
 #include "ForgottenThird.h"
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/SpringArmComponent.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "InputCoreTypes.h"
@@ -64,7 +65,7 @@ constexpr double kArenaHitTint = 0.16;
 // The floor tell's flash after a move goes active (s).
 constexpr double kArenaTellFlash = 0.3;
 // A boss at least this tall (m) is looked up at: the camera's pitch rises toward its face, at this share of its height
-// (hover included), to at most kArenaPitchMax (above that the boom swings into the ground).
+// (hover included), by ftcore::arenaLookUpPitch (the boom held at its limit, the lens tilting the rest).
 constexpr float kArenaTallBoss = 4.f;
 constexpr float kArenaFaceHeight = 0.7f;
 // A skinned enemy's hit reactions and playing rates: the rate that lands a clip's impact at the end of its startup is held
@@ -116,9 +117,8 @@ constexpr double kStoneTurnPivot = 0.35;
 constexpr double kStoneTurnCycle = 0.8;
 constexpr float kStoneTurnStart = 20.f;
 constexpr float kStoneTurnResidual = 15.f;
-// Camera: pitch limits, the pitch while locked, how fast it turns to a lock, stick and mouse rates.
-constexpr float kArenaPitchMin = -50.f;
-constexpr float kArenaPitchMax = 15.f;
+// Camera: the pitch limits are ftcore::kArenaLook's (near straight up; the boom stops at its boomMax and the lens
+// tilts the rest); how fast it turns to a lock, stick and mouse rates.
 constexpr float kArenaLockTurn = 7.f;
 constexpr float kArenaStickTurn = 140.f; // degrees a second at full stick
 constexpr float kArenaMouseTurn = 2.5f; // degrees per unit of mouse axis (as the engine's yaw scale)
@@ -299,6 +299,33 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		ShakeOverride = FMath::IsFinite(Shake) ? FMath::Clamp(Shake, 0.f, 1.f) : 0.f;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera shake %.2f for this run (-ArenaCameraShake)."), ShakeOverride);
 	}
+	GlideStick = -1;
+	FString GlideWord;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaGlide="), GlideWord))
+	{
+		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2 : 3;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: glide probe on, the stick %s (-ArenaGlide)."),
+			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
+			: TEXT("the autopilot's"));
+	}
+	Glide.Begin(GlideStick >= 0);
+	AimCheckPhase = 0;
+	AimCheckSlot = -1;
+	AimCheckPresses = 0;
+	AimCheckLine.Reset();
+	bAimCheckPass = false;
+	bAimCheckNa = false;
+	bAimCheckOnBoss = false;
+	bAimCheckPitchOk = false;
+	bAimCheckFire = false;
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaAimCheck")))
+	{
+		const bool bGunKit = Def.fighter.weapon == ftcore::ArenaWeapon::Guns;
+		AimCheckPhase = bAutoPlay && bGunKit ? 1 : 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: aim check %s (-ArenaAimCheck)."),
+			AimCheckPhase ? TEXT("on: the camera aims at the tallest enemy's top and fires one aimed shot")
+						  : TEXT("off: it needs -ArenaAutoPlay and a guns kit"));
+	}
 	Jolt = ftcore::ArenaJolt();
 	JoltAsks = 0;
 	JoltApplied = 0.f;
@@ -356,6 +383,8 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	{
 		Now += DeltaSeconds;
 	}
+	// The pose drawn last frame at last frame's placement, before anything moves.
+	Glide.Sample(PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr, DeltaSeconds);
 	PollInput(DeltaSeconds);
 	TickAim(DeltaSeconds);
 
@@ -375,6 +404,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	HeldDelta = FMath::Max(0.f, Fight.heldTime() - HeldBefore);
 	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
+	Glide.Drawn(Fight.output().player, Now);
 	SteerCamera(DeltaSeconds);
 	ApplyAimCamera();
 	TickImpact(bHold ? 0.f : DeltaSeconds);
@@ -1287,7 +1317,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		PC->GetInputMouseDelta(MouseX, MouseY);
 		CameraYaw += MouseX * kArenaMouseTurn + LookX * kArenaStickTurn * DeltaSeconds;
 		CameraPitch = FMath::Clamp(CameraPitch + MouseY * kArenaMouseTurn + LookY * kArenaStickTurn * 0.6f * DeltaSeconds,
-			kArenaPitchMin, kArenaPitchMax);
+			ftcore::kArenaLook.viewMin, ftcore::kArenaLook.viewMax);
 		bStickFlicked = false;
 		bMouseFlicked = false;
 	}
@@ -1316,23 +1346,19 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.aimDir = In.view;
 	{
 		const std::uint8_t Locked = Fight.lock();
-		ftcore::Vec2 To{};
-		bool bTo = false;
 		if (Locked != ftcore::kArenaNobody && Locked < Fight.enemyCount())
 		{
-			To = Bodies.enemies[Locked];
-			bTo = true;
+			const ftcore::Vec2 To = Bodies.enemies[Locked];
+			const ftcore::Vec2 D{To.x - Bodies.player.x, To.y - Bodies.player.y};
+			if (D.x * D.x + D.y * D.y > 0.01f)
+			{
+				const float L = FMath::Sqrt(D.x * D.x + D.y * D.y);
+				In.aimDir = ftcore::Vec2{D.x / L, D.y / L};
+			}
 		}
 		else if (ArenaAim.alpha() > 0.f)
 		{
-			To = ftcore::Vec2{float(ReticlePoint.X / 100.0), float(ReticlePoint.Y / 100.0)};
-			bTo = true;
-		}
-		const ftcore::Vec2 D{To.x - Bodies.player.x, To.y - Bodies.player.y};
-		if (bTo && D.x * D.x + D.y * D.y > 0.01f)
-		{
-			const float L = FMath::Sqrt(D.x * D.x + D.y * D.y);
-			In.aimDir = ftcore::Vec2{D.x / L, D.y / L};
+			In.aimDir = ReticleAimDir(In.view);
 		}
 	}
 	In.aimTurn = ArenaAim.rules().turnRate;
@@ -1546,6 +1572,33 @@ void UFTArenaRunner::StepFight()
 		{
 			In.lock = false; // never pressed: nothing is ever locked, so attacks take soft targets
 		}
+		if (GlideStick >= 0 && GlideStick < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
+		{
+			// -ArenaGlide: the stick held toward, across or away from the target (the lock, else the nearest standing).
+			const std::uint8_t Lock = Fight.lock();
+			const int32 Count = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
+			int32 Target = Lock != ftcore::kArenaNobody && Lock < Count && Fight.enemyHp(Lock) > 0 ? static_cast<int32>(Lock) : -1;
+			float Best = TNumericLimits<float>::Max();
+			for (int32 I = 0; Target < 0 && I < Count; ++I)
+			{
+				const ftcore::Vec2 D{Bodies.enemies[I].x - Bodies.player.x, Bodies.enemies[I].y - Bodies.player.y};
+				if (Fight.enemyHp(static_cast<std::size_t>(I)) > 0 && ArenaLength(D) < Best)
+				{
+					Best = ArenaLength(D);
+					Target = I;
+				}
+			}
+			if (Target >= 0)
+			{
+				const ftcore::Vec2 D{Bodies.enemies[Target].x - Bodies.player.x, Bodies.enemies[Target].y - Bodies.player.y};
+				const float L = ArenaLength(D);
+				if (L > 1e-3f)
+				{
+					const ftcore::Vec2 U{D.x / L, D.y / L};
+					In.move = GlideStick == 0 ? U : GlideStick == 1 ? ftcore::Vec2{-U.y, U.x} : ftcore::Vec2{-U.x, -U.y};
+				}
+			}
+		}
 		// The partner's press, one step after the parry (well inside the pair window).
 		In.pair = bPartnerDue;
 		bPartnerDue = false;
@@ -1583,6 +1636,7 @@ void UFTArenaRunner::StepFight()
 		}
 		// The boss's own buttons, which the autopilot knows nothing of.
 		StoneBearer.Assist(In, bIntercept, Bodies);
+		StepAimCheck(In);
 		if (bPilotHeavy && In.heavy)
 		{
 			StonePilotHeavyAt = Fight.time();
@@ -2332,7 +2386,8 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		}
 		AttackMoveTable = Moves;
 	}
-	ArenaAim.tick(DeltaSeconds, bAimHeld && !bAutoPlay && !bIdle && !Fight.over(), ftcore::FieldBody::Free);
+	ArenaAim.tick(DeltaSeconds, ((bAimHeld && !bAutoPlay && !bIdle) || AimCheckPhase == 2 || AimCheckPhase == 3) && !Fight.over(),
+		ftcore::FieldBody::Free);
 	// The reticle: the camera's line to the first thing it meets within reticleRange, the lead's figure not counted.
 	const APlayerController* PC = GetPC();
 	if (ArenaAim.alpha() > 0.f && PC && PC->PlayerCameraManager)
@@ -2341,7 +2396,231 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		const FVector To = From + PC->PlayerCameraManager->GetCameraRotation().Vector() * (double(ArenaAim.rules().reticleRange) * 100.0);
 		const FCollisionQueryParams Params(SCENE_QUERY_STAT(FTArenaAimReticle), false, PlayerFigure.Get());
 		FHitResult Hit;
-		ReticlePoint = GetWorld()->LineTraceSingleByChannel(Hit, From, To, ECC_Visibility, Params) ? FVector(Hit.ImpactPoint) : To;
+		bReticleHit = GetWorld()->LineTraceSingleByChannel(Hit, From, To, ECC_Visibility, Params);
+		double BodyT = bReticleHit ? Hit.Time : 1.0;
+		ReticleEnemy = ReticleBody(From, To, BodyT);
+		ReticlePoint = ReticleEnemy >= 0 ? FMath::Lerp(From, To, BodyT) : (bReticleHit ? FVector(Hit.ImpactPoint) : To);
+		bReticleHit = bReticleHit || ReticleEnemy >= 0;
+		ReticleHeadingPoint = ReticlePoint;
+		if (!bReticleHit)
+		{
+			const FVector Flat = PC->PlayerCameraManager->GetCameraRotation().Vector().GetSafeNormal2D();
+			ReticleHeadingPoint = From + Flat * (double(ArenaAim.rules().reticleRange) * 100.0);
+		}
+		if (AimCheckPhase == 2 && Now - AimCheckSince >= 1.0)
+		{
+			// The view has settled on the top: what the crosshair meets, then one aimed shot.
+			const AFTArenaFighter* Boss = GetEnemyFigure(AimCheckSlot);
+			const AFTArenaFighter* Lead = PlayerFigure.Get();
+			const double Floor = Lead ? Lead->GetActorLocation().Z : 0.0;
+			const ftcore::ArenaPitchSplit Split = ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch);
+			const bool bOnBoss = Boss && ReticleEnemy == AimCheckSlot;
+			AimCheckLine = FString::Printf(TEXT("view pitch %.1f deg (limit %.0f; boom %.1f, lens %.1f), lens %.2f m over the floor and %.2f m from the lead's middle, crosshair on %s at %.1f m up"),
+				CameraPitch, ftcore::kArenaLook.viewMax, Split.boom, Split.tilt, (From.Z - Floor) / 100.0,
+				Lead ? FVector::Dist(From, Lead->GetActorLocation() + FVector(0.0, 0.0, 90.0)) / 100.0 : 0.0,
+				bOnBoss ? TEXT("the boss") : (ReticleEnemy >= 0 ? TEXT("another enemy") : (bReticleHit && Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("nothing"))),
+				(ReticlePoint.Z - Floor) / 100.0);
+			bAimCheckOnBoss = bOnBoss;
+			bAimCheckPitchOk = FMath::Abs(CameraPitch - AimCheckPitch) < 1.5f;
+			AimCheckHpBefore = static_cast<float>(Fight.enemyHp(static_cast<size_t>(AimCheckSlot)));
+			AimCheckShotsBefore = Fight.stats().shots;
+			AimCheckHitsBefore = Fight.stats().shotHits;
+			AimCheckPhase = 3;
+			AimCheckSince = Now;
+			bAimCheckFire = true;
+		}
+	}
+}
+
+int32 UFTArenaRunner::ReticleBody(const FVector& From, const FVector& To, double& T) const
+{
+	int32 Found = -1;
+	const FVector Line = To - From;
+	const double A = Line.X * Line.X + Line.Y * Line.Y;
+	const int32 Count = FMath::Min(static_cast<int32>(Fight.enemyCount()), static_cast<int32>(MaxEnemies));
+	for (int32 I = 0; I < Count; ++I)
+	{
+		const AFTArenaFighter* Body = GetEnemyFigure(I);
+		if (!Body || !Fight.enemyAlive(static_cast<size_t>(I)))
+		{
+			continue;
+		}
+		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(I)];
+		const double Radius = static_cast<double>(Foe.bodyRadius) * 100.0;
+		const double Top = (static_cast<double>(ftcore::arenaEnemyHeight(Foe)) * (Foe.look.skinned() ? Foe.look.scale : 1.f)
+			+ (Foe.look.skinned() ? Foe.look.hover : 0.f)) * 100.0;
+		const FVector At = Body->GetActorLocation();
+		const double Ox = From.X - At.X, Oy = From.Y - At.Y;
+		double Enter = 0.0;
+		if (A > 1e-6)
+		{
+			// Where the line crosses into the upright cylinder round the body.
+			const double B = 2.0 * (Ox * Line.X + Oy * Line.Y);
+			const double C = Ox * Ox + Oy * Oy - Radius * Radius;
+			const double Disc = B * B - 4.0 * A * C;
+			if (Disc < 0.0)
+			{
+				continue;
+			}
+			const double Root = FMath::Sqrt(Disc);
+			const double T0 = (-B - Root) / (2.0 * A), T1 = (-B + Root) / (2.0 * A);
+			if (T1 < 0.0)
+			{
+				continue;
+			}
+			// The first point inside both the cylinder and its height, if any, from where the line enters.
+			const double Lo = FMath::Max(T0, 0.0);
+			double ZLo = 0.0, ZHi = 1.0;
+			if (FMath::Abs(Line.Z) > 1e-6)
+			{
+				const double Ta = (At.Z - From.Z) / Line.Z, Tb = (At.Z + Top - From.Z) / Line.Z;
+				ZLo = FMath::Min(Ta, Tb);
+				ZHi = FMath::Max(Ta, Tb);
+			}
+			else if (From.Z < At.Z || From.Z > At.Z + Top)
+			{
+				continue;
+			}
+			else
+			{
+				ZLo = -1e30;
+				ZHi = 1e30;
+			}
+			Enter = FMath::Max(Lo, ZLo);
+			if (Enter > FMath::Min(T1, ZHi))
+			{
+				continue;
+			}
+		}
+		else if (Ox * Ox + Oy * Oy > Radius * Radius)
+		{
+			continue; // a line straight up or down, outside the body
+		}
+		else
+		{
+			Enter = FMath::Abs(Line.Z) > 1e-6 ? FMath::Max(0.0, (Line.Z > 0.0 ? At.Z - From.Z : At.Z + Top - From.Z) / Line.Z) : 0.0;
+		}
+		if (Enter < T)
+		{
+			T = Enter;
+			Found = I;
+		}
+	}
+	return Found;
+}
+
+ftcore::Vec2 UFTArenaRunner::ReticleAimDir(const ftcore::Vec2& Fallback) const
+{
+	const ftcore::Vec2 D{float(ReticleHeadingPoint.X / 100.0) - Bodies.player.x, float(ReticleHeadingPoint.Y / 100.0) - Bodies.player.y};
+	// No reticle traced yet (the aim not blended in): the caller's own way.
+	if (ArenaAim.alpha() <= 0.f || D.x * D.x + D.y * D.y <= 0.01f)
+	{
+		return Fallback;
+	}
+	const float L = FMath::Sqrt(D.x * D.x + D.y * D.y);
+	return ftcore::Vec2{D.x / L, D.y / L};
+}
+
+int32 UFTArenaRunner::TallestStanding(float& OutTop) const
+{
+	int32 Best = -1;
+	OutTop = 0.f;
+	const int32 Count = FMath::Min(static_cast<int32>(Fight.enemyCount()), static_cast<int32>(MaxEnemies));
+	for (int32 I = 0; I < Count; ++I)
+	{
+		if (!Fight.enemyAlive(static_cast<size_t>(I)))
+		{
+			continue;
+		}
+		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(I)];
+		const float Top = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + (Foe.look.skinned() ? Foe.look.hover : 0.f);
+		if (Top > OutTop)
+		{
+			OutTop = Top;
+			Best = I;
+		}
+	}
+	return Best;
+}
+
+void UFTArenaRunner::StepAimCheck(ftcore::ArenaInput& In)
+{
+	if (AimCheckPhase == 1 && Fight.time() >= 3.f)
+	{
+		float Top = 0.f;
+		AimCheckSlot = TallestStanding(Top);
+		if (AimCheckSlot >= 0)
+		{
+			AimCheckPhase = 2;
+			AimCheckSince = Now;
+		}
+	}
+	if (AimCheckPhase != 2 && AimCheckPhase != 3)
+	{
+		return;
+	}
+	if (AimCheckSlot < 0 || !Fight.enemyAlive(static_cast<size_t>(AimCheckSlot)))
+	{
+		AimCheckLine += TEXT(", the target fell before the shot");
+		bAimCheckNa = true;
+		AimCheckPhase = 4;
+		return;
+	}
+	// Stand still and aim at it; nothing else is pressed.
+	const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(AimCheckSlot)];
+	const ftcore::Vec2 D{E.x - Bodies.player.x, E.y - Bodies.player.y};
+	const float L = FMath::Max(ArenaLength(D), 1e-3f);
+	const ftcore::Vec2 To{D.x / L, D.y / L};
+	In = ftcore::ArenaInput();
+	In.view = To;
+	In.aim = true;
+	In.aimDir = ReticleAimDir(To);
+	In.aimTurn = ArenaAim.rules().turnRate;
+	In.aimSpeed = ArenaAim.speedScale();
+	if (AimCheckPhase == 2 && Now - AimCheckSince > 4.0)
+	{
+		AimCheckLine = TEXT("the view never settled (no camera manager)");
+		bAimCheckNa = true;
+		AimCheckPhase = 4;
+		return;
+	}
+	if (AimCheckPhase != 3)
+	{
+		return;
+	}
+	const ftcore::ArenaStats& S = Fight.stats();
+	if (bAimCheckFire)
+	{
+		In.light = true;
+		bAimCheckFire = false;
+		++AimCheckPresses;
+		AimCheckSince = Now;
+		return;
+	}
+	if (Now - AimCheckSince < 1.2)
+	{
+		return;
+	}
+	if (S.shots > AimCheckShotsBefore)
+	{
+		// PASS only with all three: the view reached the solved pitch, the crosshair's line met this target, and the
+		// shot took hp off this target (a nearer enemy's hit does not count).
+		const bool bTargetHit = S.shotHits > AimCheckHitsBefore
+			&& static_cast<float>(Fight.enemyHp(static_cast<size_t>(AimCheckSlot))) < AimCheckHpBefore;
+		bAimCheckPass = bAimCheckPitchOk && bAimCheckOnBoss && bTargetHit;
+		const float Off = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(In.aimDir.x * To.x + In.aimDir.y * To.y, -1.f, 1.f)));
+		AimCheckLine += FString::Printf(TEXT(", the shot's heading %.1f deg off the boss's middle; pitch reached %s, crosshair on the boss %s, the boss hit %s"),
+			Off, bAimCheckPitchOk ? TEXT("yes") : TEXT("no"), bAimCheckOnBoss ? TEXT("yes") : TEXT("no"), bTargetHit ? TEXT("yes") : TEXT("no"));
+		AimCheckPhase = 4;
+	}
+	else if (AimCheckPresses < 4)
+	{
+		bAimCheckFire = true; // the press did not start a shot (stunned, busy): again
+	}
+	else
+	{
+		AimCheckLine += TEXT(", no shot started in 4 presses");
+		AimCheckPhase = 4;
 	}
 }
 
@@ -2393,6 +2672,14 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			}
 		}
 	}
+	const AFTArenaFighter* Figure = PlayerFigure.Get();
+	// The boom's length now (the aim pulls it in), for the look-up solve.
+	const float ArmNow = Figure && Figure->GetBoom() ? Figure->GetBoom()->TargetArmLength / 100.f : Fit.camera.arm;
+	if (AimCheckPhase == 2 || AimCheckPhase == 3)
+	{
+		// -ArenaAimCheck: straight at the tallest standing enemy's top, from where the boom puts the lens.
+		Target = AimCheckSlot;
+	}
 	if (Target >= 0 && Target < static_cast<int32>(Fight.enemyCount()))
 	{
 		const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
@@ -2410,24 +2697,30 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(Target)];
 		const float Hover = Foe.look.skinned() ? Foe.look.hover : 0.f;
 		const float Tall = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + Hover;
-		if (Tall >= kArenaTallBoss)
+		const ftcore::ZoneCamera& Rig = Fit.camera;
+		if (AimCheckPhase == 2 || AimCheckPhase == 3)
 		{
-			const ftcore::ZoneCamera& Rig = Fit.camera;
-			const float Away = ArenaLength(To);
-			float Pitch = Rig.lockPitch;
-			for (int32 Pass = 0; Pass < 3; ++Pass)
-			{
-				const float Rad = FMath::DegreesToRadians(Pitch);
-				const float CameraHeight = Rig.pivot + Rig.up - Rig.arm * FMath::Sin(Rad);
-				const float Along = Rig.arm * FMath::Cos(Rad) + Away;
-				Pitch = FMath::RadiansToDegrees(FMath::Atan2(Tall * kArenaFaceHeight - CameraHeight, Along));
-			}
-			WantPitch = FMath::Clamp(Pitch, Rig.lockPitch, kArenaPitchMax);
+			// The top itself, less a little so the line meets the body rather than grazing over it.
+			AimCheckPitch = ftcore::arenaLookUpPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall * 0.95f, Rig.lockPitch);
+			WantPitch = AimCheckPitch;
 		}
-		CameraPitch = FMath::FInterpTo(CameraPitch, WantPitch, DeltaSeconds, 4.f);
+		else if (Tall >= kArenaTallBoss)
+		{
+			WantPitch = ftcore::arenaLookUpPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall * kArenaFaceHeight,
+				Rig.lockPitch);
+		}
+		CameraPitch = FMath::FInterpTo(CameraPitch, WantPitch, DeltaSeconds, AimCheckPhase == 2 ? 12.f : 4.f);
 	}
 	CameraYaw = FMath::UnwindDegrees(CameraYaw);
-	PC->SetControlRotation(FRotator(CameraPitch, CameraYaw, 0.0));
+	// The boom swings up to its limit, the lens tilts the rest: a steep look keeps the lens over the floor and the arm
+	// its length.
+	CameraPitch = ftcore::arenaClampViewPitch(ftcore::kArenaLook, CameraPitch);
+	const ftcore::ArenaPitchSplit Split = ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch);
+	PC->SetControlRotation(FRotator(Split.boom, CameraYaw, 0.0));
+	if (AFTArenaFighter* Lead = PlayerFigure.Get())
+	{
+		Lead->SetCameraTilt(Split.tilt);
+	}
 }
 
 void UFTArenaRunner::Finish()
@@ -2501,6 +2794,7 @@ void UFTArenaRunner::LogResult() const
 
 void UFTArenaRunner::LogFeatureChecks() const
 {
+	Glide.Log();
 	const ftcore::ArenaStats& S = Fight.stats();
 	const ftcore::ArenaFeatureChecks C = ftcore::arenaFeatureChecks(S);
 	const auto Text = [](ftcore::ArenaCheck Check) { return FT::ToFString(ftcore::arenaCheckText(Check)); };
@@ -2521,6 +2815,19 @@ void UFTArenaRunner::LogFeatureChecks() const
 		S.softTargets);
 	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).
 	const bool bGuns = Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns;
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaAimCheck")))
+	{
+		float Top = 0.f;
+		const int32 Tallest = AimCheckSlot >= 0 ? AimCheckSlot : TallestStanding(Top);
+		if (AimCheckSlot >= 0)
+		{
+			const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(AimCheckSlot)];
+			Top = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + (Foe.look.skinned() ? Foe.look.hover : 0.f);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: aim up %s (enemy %d, top %.1f m up, aimed at %.1f deg: %s)."),
+			AimCheckPhase == 4 && !bAimCheckNa ? (bAimCheckPass ? TEXT("PASS") : TEXT("FAIL")) : TEXT("n/a"), Tallest, Top, AimCheckPitch,
+			AimCheckLine.IsEmpty() ? TEXT("not run") : *AimCheckLine);
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shots %s (%d fired, %d hit)."), Verdict(C.shots, bGuns && (bAutoShoot || S.shots > 0)),
 		S.shots, S.shotHits);
 	// Two leads on one count (the partner scripted under -ArenaSharedCount): a held blow's bonus landed.
