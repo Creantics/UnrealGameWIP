@@ -2029,6 +2029,19 @@ TEST_CASE("story state: the saved image compares every field the block holds") {
     closedOther.stampEntry[3] = 0;
     CHECK(storySameSavedImage(closed, closedOther));
     CHECK(encoded(closed) == encoded(closedOther));
+    // A scene open but no room for the record (a raw area, or one too full): not written, so it does not count.
+    StoryState raw = base;
+    raw.extensionRaw = true;
+    StoryState rawOther = raw;
+    rawOther.stampEntry[3] = 0;
+    CHECK(storySameSavedImage(raw, rawOther));
+    CHECK(encoded(raw) == encoded(rawOther));
+    StoryState full = base;
+    full.extensionLength = static_cast<std::uint16_t>(kStoryExtensionBytes - 4);
+    StoryState fullOther = full;
+    fullOther.stampEntry[3] = 0;
+    CHECK(storySameSavedImage(full, fullOther));
+    CHECK(encoded(full) == encoded(fullOther));
 }
 
 TEST_CASE("story state: the save fallback writes the last good block only while nothing moved") {
@@ -2064,6 +2077,12 @@ TEST_CASE("story state: the save fallback writes the last good block only while 
     auto other = block;
     other[16] = kNoScene;
     CHECK(storySaveFallback(now, &good, std::span<const std::uint8_t>(other)) == StorySaveFallback::SkipMoved);
+    // The same open scene but another last committed scene: the same progress, still another block.
+    REQUIRE(now.openScene != kNoScene);
+    auto lastOther = block;
+    lastOther[17] = static_cast<std::uint8_t>(lastOther[17] == 0 ? 1 : 0);
+    CHECK(storyProgress(lastOther[16], lastOther[17]) == storyProgress(now.openScene, now.lastCommitted));
+    CHECK(storySaveFallback(now, &good, std::span<const std::uint8_t>(lastOther)) == StorySaveFallback::SkipMoved);
 }
 
 TEST_CASE("story state: progress and position") {

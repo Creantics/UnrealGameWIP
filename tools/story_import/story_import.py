@@ -114,11 +114,38 @@ def _check_options(where, opts):
             return '%s: option %d is not an object with text' % (where, i)
         if not isinstance(o.get('effects'), list):
             return '%s: option %d effects are not a list' % (where, i)
+        for j, e in enumerate(o['effects']):
+            if not isinstance(e, list) or len(e) != 3 or not _text(e[0]) or not _text(e[1]):
+                return '%s: option %d effect %d is not an [op, flag, value] list' % (where, i, j)
         if not isinstance(o.get('selectable'), bool) or not isinstance(o.get('miss'), bool):
             return '%s: option %d needs selectable and miss (true or false)' % (where, i)
         nx = o.get('next', 0)
         if 'next' not in o or not (nx is None or _text(nx) or _int(nx)):
             return '%s: option %d next is not null, text or a beat index' % (where, i)
+    return None
+
+
+# A MINI item's kind and its fields after the kind: 't' text, 'o' text or null, 'b' true or false, 'O' options,
+# 'n' seconds, 'a' anything.
+_MINI_ITEMS = {'line': 'tto', 'dir': 't', 'hold': 'no', 'flag': 'tta', 'label': 't', 'choice': 'tbO'}
+
+
+def _check_mini_item(where, it):
+    if not isinstance(it, list) or not it or not _text(it[0]):
+        return '%s is not a [kind, ...] list' % where
+    shape = _MINI_ITEMS.get(it[0])
+    if shape is None:
+        return None  # an unknown kind is reported as a problem when the scene is built
+    if len(it) != 1 + len(shape):
+        return '%s (%s) needs %d fields after the kind' % (where, it[0], len(shape))
+    for f, v in zip(shape, it[1:]):
+        if f == 'O':
+            why = _check_options(where, v)
+            if why:
+                return why
+        elif not {'t': _text(v), 'o': v is None or _text(v), 'b': isinstance(v, bool), 'n': _num(v),
+                  'a': True}[f]:
+            return '%s (%s) has a field of the wrong type' % (where, it[0])
     return None
 
 
@@ -175,13 +202,18 @@ def check_tables(t):
                     or not isinstance(r[1], list)):
                 return 'mini[%s][%d] is not an [anchor, items] pair' % (sid, i)
             for j, it in enumerate(r[1]):
-                if not isinstance(it, list) or not it or not _text(it[0]):
-                    return 'mini[%s][%d] item %d is not a [kind, ...] list' % (sid, i, j)
+                why = _check_mini_item('mini[%s][%d] item %d' % (sid, i, j), it)
+                if why:
+                    return why
     cl = t['chapter_labels']
     if not isinstance(cl, dict) or not all(_text(cl.get(k)) for k in ('prologue', 'epilogue', 'chapter')):
         return 'chapter_labels needs text for prologue, epilogue and chapter'
-    if cl['chapter'].count('%d') != 1:
-        return 'chapter_labels.chapter needs exactly one %d'
+    try:
+        ok = cl['chapter'].count('%d') == 1 and isinstance(cl['chapter'] % 1, str)
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        return 'chapter_labels.chapter needs exactly one %d and no other % (write %% for a percent sign)'
     try:
         sp.set_grammar(t['grammar'])
     except ValueError as e:

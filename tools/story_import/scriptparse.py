@@ -61,14 +61,17 @@ def set_grammar(g):
     if missing:
         raise ValueError('grammar lacks: %s' % ', '.join(missing))
     rx = {}
-    for k in ('chapter_heading', 'part_heading', 'epilogue_heading', 'prologue_heading', 'act_heading',
-              'file_act_heading'):
+    # Each heading regex and the groups the parser reads from it.
+    for k, groups in (('chapter_heading', 2), ('part_heading', 2), ('epilogue_heading', 1), ('prologue_heading', 1),
+                      ('act_heading', 3), ('file_act_heading', 3)):
         if not isinstance(g[k], str):
             raise ValueError('grammar.%s is not text' % k)
         try:
             rx[k] = re.compile(g[k])
         except re.error as e:
             raise ValueError('grammar.%s is not a valid regex: %s' % (k, e))
+        if rx[k].groups < groups:
+            raise ValueError('grammar.%s needs at least %d groups' % (k, groups))
     if not isinstance(g['finale_marker'], str) or not g['finale_marker']:
         raise ValueError('grammar.finale_marker is not non-empty text')
     ff = g['finale_from_chapter']
@@ -78,8 +81,12 @@ def set_grammar(g):
     if not isinstance(lab, dict) or any(not isinstance(lab.get(k), str) for k in ('act', 'prologue', 'epilogue',
                                                                                  'finale')):
         raise ValueError('grammar.labels needs text for act, prologue, epilogue and finale')
-    if lab['act'].count('%s') != 1:
-        raise ValueError("grammar.labels.act needs exactly one %s")
+    try:
+        ok = lab['act'].count('%s') == 1 and isinstance(lab['act'] % 'I', str)
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise ValueError("grammar.labels.act needs exactly one %s and no other % (write %% for a percent sign)")
     CHAPTER_HDR, PCHAP_HDR, EPI_HDR = rx['chapter_heading'], rx['part_heading'], rx['epilogue_heading']
     PROLOGUE_HDR, ACT_HDR, FILE_ACT = rx['prologue_heading'], rx['act_heading'], rx['file_act_heading']
     FINALE_MARK, FINALE_FROM, LABELS = g['finale_marker'], ff, dict(lab)

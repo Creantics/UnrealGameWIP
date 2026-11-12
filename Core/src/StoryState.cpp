@@ -722,13 +722,15 @@ bool storySameSavedImage(const StoryState& a, const StoryState& b) {
     if (a.facts != b.facts || a.factsEntry != b.factsEntry || a.stamp != b.stamp || a.wide != b.wide ||
         a.wideEntry != b.wideEntry)
         return false;
-    // The stamps-at-entry record is written only while a scene is open.
-    if (a.openScene != kNoScene && a.stampEntry != b.stampEntry) return false;
     if (a.extensionRaw != b.extensionRaw) return false;
-    if (a.extensionRaw) return a.extension == b.extension;
+    if (a.extensionRaw) return a.extension == b.extension; // no stamps-at-entry record is written
     const std::uint32_t na = std::min<std::uint32_t>(a.extensionLength, kStoryExtensionBytes);
     const std::uint32_t nb = std::min<std::uint32_t>(b.extensionLength, kStoryExtensionBytes);
-    return na == nb && std::equal(a.extension.begin(), a.extension.begin() + na, b.extension.begin());
+    if (na != nb || !std::equal(a.extension.begin(), a.extension.begin() + na, b.extension.begin())) return false;
+    // The stamps-at-entry record is written only while a scene is open and it fits after the area (storyEncode).
+    if (a.openScene != kNoScene && na + 4 + kFactSlots + 2 <= kStoryExtensionBytes && a.stampEntry != b.stampEntry)
+        return false;
+    return true;
 }
 
 std::uint32_t storyProgress(std::uint8_t openScene, std::uint8_t lastCommitted) {
@@ -743,9 +745,8 @@ std::uint8_t storyScenePosition(const StoryState& s) {
 StorySaveFallback storySaveFallback(const StoryState& now, const StoryState* good,
                                     std::span<const std::uint8_t> goodBlock) {
     if (!good || goodBlock.size() != kStoryStateBlockSize) return StorySaveFallback::SkipNoGoodBlock;
-    // b[16], b[17]: the block's open and last committed scene (storyEncode).
-    if (storyProgress(goodBlock[16], goodBlock[17]) != storyProgress(now.openScene, now.lastCommitted))
-        return StorySaveFallback::SkipMoved;
+    // b[16], b[17]: the block's open and last committed scene (storyEncode); both must match exactly.
+    if (goodBlock[16] != now.openScene || goodBlock[17] != now.lastCommitted) return StorySaveFallback::SkipMoved;
     return storySameSavedImage(now, *good) ? StorySaveFallback::WriteLastGood : StorySaveFallback::SkipMoved;
 }
 

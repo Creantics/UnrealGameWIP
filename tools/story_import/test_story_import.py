@@ -155,6 +155,14 @@ class TestBadTables(TablesBase):
 
     def test_mini_wrong_type(self):
         self.refused(self.changed('mini', {'XA-01-A1': [[None]]}), needle='mini[XA-01-A1][0]')
+        self.refused(self.changed('mini', {'XA-01-A1': [[None, [['line', 'ARLO']]]]}), needle='fields after the kind')
+        self.refused(self.changed('mini', {'XA-01-A1': [[None, [['hold', 'long', None]]]]}), needle='wrong type')
+        self.refused(self.changed('mini', {'XA-01-A1': [[None, [['choice', 'Go?', True, [{'text': 'Yes'}]]]]]}),
+                     needle='option 0')
+
+    def test_effect_not_triple(self):
+        opt = {'text': 'Yes', 'effects': [[5]], 'next': None, 'selectable': True, 'miss': False}
+        self.refused(self.changed('choices', {'XA-01-A1': [['label', True, [opt]]]}), needle='effect 0')
 
     def test_worlds_and_text(self):
         self.refused(self.changed('worlds', 'Harbour'), needle='worlds')
@@ -170,9 +178,17 @@ class TestBadTables(TablesBase):
         g = copy.deepcopy(TABLES['grammar'])
         g['finale_from_chapter'] = '23'
         self.refused(self.changed('grammar', g), needle='finale_from_chapter')
+        g = copy.deepcopy(TABLES['grammar'])
+        g['chapter_heading'] = r'^## SECTION (\d+)$'
+        self.refused(self.changed('grammar', g), needle='needs at least 2 groups')
+        g = copy.deepcopy(TABLES['grammar'])
+        g['labels']['act'] = '100% %s'
+        self.refused(self.changed('grammar', g), needle='grammar.labels.act')
 
     def test_chapter_labels(self):
         self.refused(self.changed('chapter_labels', {'prologue': 'A', 'epilogue': 'B', 'chapter': 'C'}),
+                     needle='chapter_labels.chapter')
+        self.refused(self.changed('chapter_labels', {'prologue': 'A', 'epilogue': 'B', 'chapter': '100% %d'}),
                      needle='chapter_labels.chapter')
 
 

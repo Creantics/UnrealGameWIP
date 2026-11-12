@@ -306,9 +306,18 @@ def phone_features(text):
 
 def cmd_gold(a):
     try:
-        rows = list(csv.DictReader(open(a.csv, encoding="utf-8")))
-    except OSError as e:
+        with open(a.csv, encoding="utf-8-sig", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+    except (OSError, UnicodeDecodeError, csv.Error) as e:
         print("gold: cannot read the CSV: %s" % e, file=sys.stderr)
+        return 2
+    cols = ("line_id", "kind", "spoken_text", "speaker", "volume")
+    lacking = [c for c in cols if not rows or c not in rows[0]]
+    if lacking:
+        print("gold: the CSV has no rows or lacks the columns: %s" % ", ".join(lacking), file=sys.stderr)
+        return 2
+    if any(r.get(c) is None for r in rows for c in cols):
+        print("gold: the CSV has rows with too few fields", file=sys.stderr)
         return 2
     by_id = {r["line_id"]: r for r in rows}
     missing = [i for i in a.require if i not in by_id]
@@ -335,6 +344,10 @@ def cmd_gold(a):
             score += 0.8 * (r["speaker"] not in speakers) + 0.8 * (r["volume"] not in volumes)
             if score > best_score:
                 best, best_score = r, score
+        if best is None:
+            print("gold: only %d lines fit (3 to 14 words); --count asks for %d" % (len(pick), a.count),
+                  file=sys.stderr)
+            return 2
         pick.append(best)
         speakers.add(best["speaker"])
         volumes.add(best["volume"])

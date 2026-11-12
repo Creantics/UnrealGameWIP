@@ -389,7 +389,7 @@ FTCORE_API const char* storyLoadName(StoryLoad r);
 
 // True when storyEncode would write the same block for both: the header counts and hash, the scene position, the
 // save serial, the facts, stamps and wide values with their entry copies, and the extension area (with the
-// stamps-at-entry record, written while a scene is open). The fields a block does not hold are ignored: the event
+// stamps-at-entry record, written while a scene is open and the record fits). The fields a block does not hold are ignored: the event
 // ring, the lost counts and the flags word (the sandbox bit is why an encode is refused; the block's own flag
 // word follows the scene position).
 FTCORE_API bool storySameSavedImage(const StoryState& a, const StoryState& b);
@@ -404,7 +404,7 @@ enum class StorySaveFallback : std::uint8_t {
     SkipMoved,       // the story moved since the block (or it is from another state): the save is skipped
 };
 // The rule for a refused encode of `now`. good: the state as goodBlock was taken (nullptr: none). The block's
-// own scene position (its header) must match too, so a block kept from another state is never written.
+// own open and last committed scene (its header) must match exactly too, so a block kept from another state is never written.
 FTCORE_API StorySaveFallback storySaveFallback(const StoryState& now, const StoryState* good,
                                                std::span<const std::uint8_t> goodBlock);
 
