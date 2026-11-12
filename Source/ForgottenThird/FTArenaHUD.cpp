@@ -12,6 +12,7 @@
 #include "FTArenaGameMode.h"
 #include "FTArenaHost.h"
 #include "FTArenaRunner.h"
+#include "ftcore/Settings.h"
 #include "FTPauseOverlay.h"
 #include "FTInputBindings.h"
 #include "FTUiText.h"
@@ -104,6 +105,7 @@ const FTUiText kAgainArena(TEXT("battle.again"));
 
 constexpr double kArenaPopupLife = 0.9;
 constexpr double kArenaImpactLife = 0.3;  // the tell's flash once the move is active
+constexpr double kArenaOnsetLife = 0.35;  // an off-frame windup marker's onset swell
 constexpr double kArenaHitEdgeLife = 0.45; // the red edge when the player is hit
 constexpr double kArenaParryEdgeLife = 0.4;
 constexpr double kArenaResultFade = 0.3;
@@ -428,21 +430,35 @@ void AFTArenaHUD::DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVecto
 
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
 	const bool bCards = bStartup && Fight.readFoe() == static_cast<uint8>(Enemy) && Fight.readCards().dealt();
-	if (!bOnScreen)
+	// Out of the camera's view (the runner's off-frame test, the one the stinger answers to), or off the screen.
+	const bool bOffFrame = bStartup && Mode.IsOffFrame(Enemy);
+	if (!bOnScreen || bOffFrame)
 	{
 		if (bCards)
 		{
 			// The cards still want a pick: bottom centre, over the key hint.
 			DrawReadCards(Mode, Canvas->ClipX * 0.5f, Canvas->ClipY - 70.f * S);
 		}
-		// Off the screen: an arrow at the edge, toward the enemy, in the tell's colour (white at impact).
+		// Off the screen: an arrow at the edge, toward the enemy, in the tell's colour (white at impact). Through a
+		// windup it also swells at the onset (a steady ring with reduce flashes on), fills toward the hit and names the
+		// answer: the marker is the tell, the stinger only doubles it.
 		const AFTArenaFighter* Figure = Mode.GetEnemyFigure(Enemy);
 		const APlayerController* PC = GetOwningPlayerController();
 		if (Figure && PC && PC->PlayerCameraManager)
 		{
 			const FVector Local = PC->PlayerCameraManager->GetCameraRotation().UnrotateVector(
 				Figure->GetChest() - PC->PlayerCameraManager->GetCameraLocation());
-			DrawEdgeArrow(FVector2D(Local.Y, -Local.Z), bStartup ? Color : kArenaWhite);
+			if (bStartup)
+			{
+				const ftcore::Settings* Settings = Mode.GetSettings();
+				const bool bCalm = Settings && Settings->reduceFlashes;
+				const float Onset = bOffFrame ? ArenaPulse(Now, Mode.GetOffFrameSince(Enemy), kArenaOnsetLife) : 0.f;
+				DrawEdgeArrow(FVector2D(Local.Y, -Local.Z), Color, bCalm ? 0.f : Onset, Fill, Word);
+			}
+			else
+			{
+				DrawEdgeArrow(FVector2D(Local.Y, -Local.Z), kArenaWhite);
+			}
 		}
 		return;
 	}
@@ -519,7 +535,7 @@ void AFTArenaHUD::DrawReadCards(const UFTArenaRunner& Mode, float X, float Botto
 	}
 }
 
-void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color)
+void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color, float Pulse, float Fill, const FString* Word)
 {
 	const float S = UiScale;
 	FVector2D Dir = Toward;
@@ -537,7 +553,8 @@ void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Col
 		Dir.Y != 0.0 ? HalfH / FMath::Abs(static_cast<float>(Dir.Y)) : 1e9f);
 	const float TipX = CX + static_cast<float>(Dir.X) * T;
 	const float TipY = CY + static_cast<float>(Dir.Y) * T;
-	const float Len = 44.f * S;
+	Pulse = FMath::Clamp(Pulse, 0.f, 1.f);
+	const float Len = 44.f * S * (1.f + 0.35f * Pulse);
 	const float BackX = TipX - static_cast<float>(Dir.X) * Len;
 	const float BackY = TipY - static_cast<float>(Dir.Y) * Len;
 	const float SideX = -static_cast<float>(Dir.Y) * Len * 0.55f;
@@ -545,7 +562,32 @@ void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Col
 	DrawLine(TipX, TipY, BackX + SideX, BackY + SideY, Color, 6.f * S);
 	DrawLine(TipX, TipY, BackX - SideX, BackY - SideY, Color, 6.f * S);
 	DrawLine(BackX + SideX, BackY + SideY, BackX - SideX, BackY - SideY, Color, 4.f * S);
-	DrawRing(TipX - static_cast<float>(Dir.X) * Len * 0.45f, TipY - static_cast<float>(Dir.Y) * Len * 0.45f, Len * 0.9f, ArenaAlpha(Color, 0.5f), 3.f * S);
+	const float RingX = TipX - static_cast<float>(Dir.X) * Len * 0.45f;
+	const float RingY = TipY - static_cast<float>(Dir.Y) * Len * 0.45f;
+	DrawRing(RingX, RingY, Len * 0.9f, ArenaAlpha(Color, 0.5f), 3.f * S);
+	if (Pulse > 0.f)
+	{
+		// The onset: a ring spreading out from the marker as it fades.
+		DrawRing(RingX, RingY, Len * (0.9f + 1.4f * (1.f - Pulse)), ArenaAlpha(Color, Pulse), 6.f * S * Pulse + 2.f * S);
+	}
+	if (Fill < 0.f && !Word)
+	{
+		return;
+	}
+	// Beside the marker, toward the screen's centre: the answer, and under it the windup filling toward the hit.
+	const float InX = RingX - static_cast<float>(Dir.X) * (Len * 0.9f + 64.f * S);
+	const float InY = RingY - static_cast<float>(Dir.Y) * (Len * 0.9f + 40.f * S);
+	if (Word)
+	{
+		DrawStrCentered(*Word, Color, InX, InY - 26.f * S, GEngine->GetLargeFont(), 0.9f);
+	}
+	if (Fill >= 0.f)
+	{
+		const float BW = 96.f * S;
+		const float BH = 9.f * S;
+		DrawBar(InX - BW * 0.5f, InY + 4.f * S, BW, BH, FMath::Clamp(Fill, 0.f, 1.f), Color, kArenaBack);
+		DrawRect(kArenaWhite, InX + BW * 0.5f - 2.f * S, InY + 1.f * S, 2.f * S, BH + 6.f * S);
+	}
 }
 
 void AFTArenaHUD::DrawTargetBar(const UFTArenaRunner& Mode)

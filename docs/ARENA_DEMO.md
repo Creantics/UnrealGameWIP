@@ -128,6 +128,14 @@ warning when above 0) is the share of the zone's edge where a player standing on
 taller than the camera, so a bad spot is known before it is played: a giant at a tower plaza is 67% (`lat_plaza_a` with
 `-ArenaLineup=titan`), a giant's climax zone 0 to 15%, the human-sized facades 27%.
 
+**Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:
+the player's blows by their move's `jolt`, an enemy's blow on the lead by its move's `jolt` (the kit's `hurtJolt` when it
+names none), a blocked blow by half. A kick replaces the one running only when it is stronger, so a blow on three enemies
+kicks once. It is rotation only, added by a camera modifier after the camera has placed itself
+(`UFTArenaJoltModifier`): the control rotation, the arm and the field of view are never touched, so it never pulls the
+camera out, and it plays through the hit pause. The **Camera shake** setting (0 to 100%, in tenths) scales it; 0 turns it
+off. `-ArenaCameraShake=<0..1>` sets the scale for a run (headless runs read no settings).
+
 ### The shipped zones
 
 District-frame offsets from the level layout notes (ids and numbers only). Each runs with any boss; the default line-up is
@@ -198,7 +206,7 @@ again through `face_down_in` (or stands it out when too little is left); it dies
 (down, going down, or its get-up under 40% in), else on `defeat`; and a playing hit reaction holds 0.4 s before any blow
 restarts it, and after that only a heavy one does. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
-of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
+of its height (`ftcore::arenaLookUpPitch`, up to the view's 85 degree limit); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
 A row marked `"additive_in": true` (the white glove's `hit_light` and `hit_heavy`) also fades in additively: while its crossfade
 runs, its own motion since its first frame goes on top of the blend by what is left of the fade, so a blow taken mid-swing jolts
 the held swing pose at the reaction's full size at once instead of easing into the reaction's rest start; cut off mid-fade (a
@@ -410,6 +418,15 @@ over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it n
 - `shared count bonus`: two leads on one count, a held blow's bonus landed: `(<held> held, <joined> joined, <n>
   bonuses, +<damage> damage)`. n/a without `-ArenaSharedCount`.
 
+Three more lines carry numbers only, no verdict:
+
+- `jolt (<n> blows asked; peak <deg> deg handed to the camera; camera shake <scale>)`: 0.00 peak at camera shake 0;
+- `off-frame tells (<n> windups off frame; <m> stingers)`, with "no audio device: the marker alone" when a stinger fired with no sound to play it (`-nosound`);
+- `pace: kills <n>, ttk 0 <s> s, 1 n/a; punish <used>/<windows> windows used`: per enemy slot, the mean seconds from
+  the lead's first blow on it to its death (n/a for a slot never killed), and the punish windows (a run of an enemy
+  staggered, open or down, counted once) the lead's side landed a blow in, summed over fights again. They wait for a
+  play report.
+
 `-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. `-ArenaAutoShoot` has it aim and
 shoot with a guns kit on the way in (the target in the shot's range and outside the light chain's reach, a dodge's
 stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit. On a skirmisher
@@ -552,8 +569,13 @@ Presses are read each frame and handed to the fight on its next step, so no pres
   floor shows the move's reach. A shot (a move with a `width`, a straight lane) shows two dashed rails
   instead, the lane's edges for the player's centre, running out from the shooter to its reach; step
   outside them before it fires and it misses. The moment the move goes active the bar turns white, NOW shows and a
-  burst flashes. An enemy winding up off the screen shows as an arrow at the screen's edge in the
-  tell's colour.
+  burst flashes.
+- **Off-frame tells:** an enemy winding up off the screen, or out of the camera's view less a 6 degree margin
+  (`arenaOffFrameTells`, from the camera's place, facing, pitch and field of view: a ground enemy under the frame while aiming high counts), shows as an arrow at the screen's edge
+  in the tell's colour, with the answer beside it and a bar filling toward the hit. It swells and rings once at the
+  windup's onset (a steady arrow with Reduce flashes on). A stinger (a chime, at master times effects volume) doubles
+  the onset once per windup, no closer than 0.25 s to the last; the arrow is the tell, so it reads with the sound off.
+  At impact the arrow turns white.
 - **Read cards:** while a deal is open, three cards sit on the tell bar (the answer moves above them), each
   with its key number and the shape it names. The picked card turns green when right and red when wrong,
   the others dim. If the enemy is off the screen the cards show at the bottom centre instead.
@@ -575,6 +597,8 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
+| `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. |
+| `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
@@ -623,7 +647,15 @@ warning and quits with exit code 2, so an unattended run never hangs.
   crouch and lean; enemy figures also show a guard plate, the player's never). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking
-  on or looking up, from -50 to +15 degrees). The arm probes the world (it may leave the zone's walls but never passes through a building or the
+  on or looking up, from -50 to +85 degrees, free, aimed and locked alike: `ftcore::kArenaLook` in `ArenaLook.h`). The
+  boom itself swings up only to 15 degrees, which keeps the lens over the floor and behind the lead at the fight's arm
+  and the aim's; a steeper look tilts the lens on the boom's end, so the arm never shortens. The aim's reticle line
+  meets the enemies' bodies (`ftcore::arenaRayEntersBody`: an upright cylinder from the figure's hover to its scaled
+  height, its radius scaled too; a lens inside a body sees through it), and reads the view without the impact jolt, so
+  a kick never wobbles the heading. On a body, the heading takes the point where the line passes nearest its axis,
+  so the lane goes through the body rather than grazing its edge. The shot's heading is that line's yaw only: whether a shot meets a body high up is
+  the sim's own rule (a shot is a lane on the ground plane), not the line's height. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).
 - Nothing in the host allocates per frame: the HUD's words are static, and its numbers are rebuilt only

@@ -120,6 +120,9 @@ public:
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's
 	// height over the feet, the shoulder offset sideways and up, and the field of view in degrees.
 	void SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees);
+	// The lens tilted up on the boom's end by this much (degrees; ftcore::arenaSplitPitch's tilt): a look steeper than
+	// the boom may swing.
+	void SetCameraTilt(float Degrees);
 	void ApplyPose(const FFTArenaPose& Pose);
 
 	// Where the HUD hangs this figure's markers: above its head, and its chest.

@@ -1,5 +1,6 @@
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaSoftTarget.h"
+#include "ftcore/ArenaImpact.h"
 
 #include "SeedMix.h"
 #include "ftcore/Json.h"
@@ -371,6 +372,16 @@ struct ArenaFightImpl {
                                ? Vec2{}
                                : arenaCutVelocity(fight.ring_, foe.pos, foe.velocity, dt, def.enemies[i].bodyRadius);
         }
+        // Punish windows: a run of Staggered, Open and Down counts once, from the tick it starts in.
+        for (std::size_t i = 0; i < n; ++i) {
+            Enemy& foe = foes[i];
+            const bool down = alive(i) && !upright(foe);
+            if (down && !foe.punishOpen) {
+                foe.punishHit = false;
+                ++stats.punishWindows;
+            }
+            foe.punishOpen = down;
+        }
         fight.time_ = t1;
         fight.heldTime_ += playerOwn;
         stats.time += dt;
@@ -701,6 +712,7 @@ struct ArenaFightImpl {
         const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
         ++stats.counterStaggers;
+        notePlayerBlow(i, t1);
         emit(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, amount, foe.pos);
         if (foe.hp <= 0) killEnemy(i);
         else if (r.poise >= 1.f) staggerEnemy(i); // it breaks the whole poise or nothing (NaN: nothing)
@@ -1019,8 +1031,26 @@ struct ArenaFightImpl {
 
     // ---- the player's attacks on the enemies ----
 
-    void killEnemy(std::size_t i, bool report = true) {
+    // A blow of the player's side (an attack, a partner's counter, a host's bonus) landed on enemy i at fight time
+    // `at`: the pace counters.
+    void notePlayerBlow(std::size_t i, float at) {
         Enemy& foe = foes[i];
+        if (foe.firstBlow < 0.f) foe.firstBlow = at;
+        if (foe.punishOpen && !foe.punishHit) {
+            foe.punishHit = true;
+            ++stats.punishUsed;
+        }
+    }
+
+    // `at`: the fight time it dies at (< 0: this tick's end).
+    void killEnemy(std::size_t i, bool report = true, float at = -1.f) {
+        Enemy& foe = foes[i];
+        if (at < 0.f) at = t1;
+        ++stats.kills;
+        if (foe.firstBlow >= 0.f) {
+            stats.killSeconds[i] += std::max(0.f, at - foe.firstBlow);
+            ++stats.killCount[i];
+        }
         foe.hp = 0;
         foe.brain = ArenaBrain::Dead;
         foe.stateTime = 0.f;
@@ -1037,15 +1067,16 @@ struct ArenaFightImpl {
         const int amount = lose(i, damage);
         stats.damageDealt += amount;
         const bool killed = foe.hp <= 0;
+        notePlayerBlow(i, fight.time_); // its own Impl, outside the tick's: the fight's clock
         if (fight.inHook_.on) {
             emit(ArenaEventType::HostHit, kArenaPlayer, id(i), move, amount, foe.pos);
-            if (killed) killEnemy(i);
+            if (killed) killEnemy(i, true, fight.time_);
         } else {
             foe.hostOwed += amount;
             foe.hostMove = move;
             if (killed) {
                 foe.hostKilled = true;
-                killEnemy(i, false);
+                killEnemy(i, false, fight.time_);
             }
         }
         return true;
@@ -1152,6 +1183,7 @@ struct ArenaFightImpl {
         poise = scaledPoise(poise, r.poise);
         const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
+        notePlayerBlow(i, t1);
         emit(type, kArenaPlayer, id(i), move, amount, foe.pos);
         if (foe.hp <= 0) killEnemy(i);
         else poiseHit(i, poise);
@@ -1217,6 +1249,7 @@ struct ArenaFightImpl {
             const int amount = lose(i, scaledDamage(a.damage, r.damage));
             ++stats.hits;
             if (pl.move == kArenaShotMove) ++stats.shotHits;
+            notePlayerBlow(i, t1);
             stats.damageDealt += amount;
             emit(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, amount, foe.pos);
             // The pause: the player has moved this tick, the enemies not yet.
@@ -2447,7 +2480,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             guardArcCos -1..1; riposteReach (0, 100]; healCharges 0..99; healAmount 0..100000;
 //             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000;
 //             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; parryStop 0..0.3;
-//             softRange 0..100; softArcCos -1..1; homingReach 0..20;
+//             softRange 0..100; softArcCos -1..1; homingReach 0..20; hurtJolt 0..kArenaMaxJolt;
 //             attacks a bool; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000
 //   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
@@ -2456,7 +2489,8 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //   attack    startup, recovery 0..10; active (0, 10]; range (0, 100]; arcCos -1..1; damage, poiseDamage,
 //             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6; width 0..20;
 //             cancelGuard, cancelRoll, cancelLight -1..1 (below 0: `cancel`; the player's, an enemy's move ignores
-//             them, as it does stamina and cancel; none before the active part); hitStop 0..0.3, hitStopSelf 0..1
+//             them, as it does stamina and cancel; none before the active part); hitStop 0..0.3, hitStopSelf 0..1;
+//             jolt 0..kArenaMaxJolt degrees (ArenaImpact.h)
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
@@ -2483,7 +2517,8 @@ using ArenaStrings = std::vector<std::string>;
 constexpr std::string_view kArenaAttackKeys[] = {"startup", "active",      "recovery",    "range",  "arcCos",
                                                  "damage",  "poiseDamage", "guardDamage", "lunge",  "tracking",
                                                  "armor",   "stamina",     "cancel",      "maxTargets", "width",
-                                                 "cancelGuard", "cancelRoll", "cancelLight", "hitStop", "hitStopSelf"};
+                                                 "cancelGuard", "cancelRoll", "cancelLight", "hitStop", "hitStopSelf",
+                                                 "jolt"};
 
 std::string arenaFormat(double v) {
     char buffer[32];
@@ -2569,6 +2604,7 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaNum(j, "cancelLight", a.cancelLight, -1, 1, false, path, errors);
     arenaNum(j, "hitStop", a.hitStop, 0, kArenaMaxStop, false, path, errors);
     arenaNum(j, "hitStopSelf", a.hitStopSelf, 0, 1, false, path, errors);
+    arenaNum(j, "jolt", a.jolt, 0, kArenaMaxJolt, false, path, errors);
     // A cancel window opens no sooner than the active part: an earlier one would let the attack be cut before it
     // could hit (a feint), which no attack offers.
     const float whole = a.startup + a.active + a.recovery;
@@ -2603,7 +2639,8 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "parryRearm", "riposteReach", "healCharges", "healAmount", "healTime", "healRecovery",
                       "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
-                      "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach"},
+                      "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
+                      "hurtJolt"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -2654,6 +2691,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "pairWindow", f.pairWindow, 0, 1, false, path, errors);
     arenaByte(j, "pairHits", f.pairHits, 0, 10, path, errors);
     arenaNum(j, "parryStop", f.parryStop, 0, kArenaMaxStop, false, path, errors);
+    arenaNum(j, "hurtJolt", f.hurtJolt, 0, kArenaMaxJolt, false, path, errors);
     arenaNum(j, "softRange", f.softRange, 0, 100, false, path, errors);
     arenaNum(j, "softArcCos", f.softArcCos, -1, 1, false, path, errors);
     arenaNum(j, "homingReach", f.homingReach, 0, 20, false, path, errors);

@@ -287,6 +287,7 @@ struct ArenaAttack {
     float cancelLight = -1.f; // ... the next light (a riposte, a shot); < 0: `cancel`
     float hitStop = 0.f;      // s the body it lands on pauses (see Hit pause); 0: none
     float hitStopSelf = 1.f;  // share of hitStop the attacker pauses too (0: a shot, the shooter goes on)
+    float jolt = 0.f;         // degrees the host's camera kicks when it lands (ArenaImpact.h); 0: none
     std::uint8_t maxTargets = 0; // 0: connects with every target in range and arc; N: with at most N distinct
                                  // targets over its whole active part, the nearest first (the player's matter)
 
@@ -344,6 +345,7 @@ struct ArenaFighter {
     float parryWindow = 0.15f;
     float parryRearm = 0.5f;
     float parryStop = 0.f;      // s a parry pauses the player and the parried enemy (see Hit pause)
+    float hurtJolt = 0.f;       // degrees the camera kicks when an enemy move with no jolt of its own hits the player
     float riposteReach = 2.2f;
 
     std::uint8_t healCharges = 3;
@@ -708,6 +710,13 @@ struct ArenaStats {
     int correctReads = 0;
     int readCounters = 0;    // Read counters that landed
     int readDamage = 0;      // their damage (also in damageDealt)
+    // Pace (ArenaImpact.h's arenaPaceText), summed over restarts:
+    int kills = 0;                                      // enemies killed
+    std::array<float, kMaxArenaEnemies> killSeconds{};  // per slot: seconds from the player's first blow on it to its
+                                                        // death, summed over its kills (a kill with no blow adds none)
+    std::array<int, kMaxArenaEnemies> killCount{};      // per slot: the kills those seconds cover
+    int punishWindows = 0; // times an enemy went Staggered, Open or Down (Open turning Down is the same window)
+    int punishUsed = 0;    // ... of them, the windows the player's side landed a blow in
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -1013,6 +1022,9 @@ private:
         int hostOwed = 0;                   // hostBlow damage since the last tick, not yet reported
         std::uint8_t hostMove = 0;          // the last of those blows' move
         bool hostKilled = false;            // one of them took the last hp (its Downed not yet reported)
+        float firstBlow = -1.f;             // fight time of the player's side's first blow on it (< 0: none yet)
+        bool punishOpen = false;            // in a punish window (Staggered, Open or Down) ...
+        bool punishHit = false;             // ... that a blow of the player's side has landed in
     };
 
     ArenaDef def_;
