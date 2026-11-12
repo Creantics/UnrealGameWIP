@@ -245,7 +245,7 @@ TEST_CASE("arena table: Data/Battle/arena.json loads without warnings") {
     CHECK(t.fighters.size() == t.fighterIds.size());
     CHECK(t.enemies.size() == t.enemyIds.size());
     CHECK(t.enemies.size() >= 2);
-    CHECK(t.enemies.size() <= 11); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan), the three skinned bosses, the ranged spitter and the target dummy
+    CHECK(t.enemies.size() <= 12); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan), the three skinned bosses, the ranged spitter, the pack's maw-pup and the target dummy
     {
         // The target dummy (-ArenaLineup=dummy): passive, rooted, all but unkillable.
         std::size_t d = 0;

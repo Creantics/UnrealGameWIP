@@ -182,6 +182,8 @@ public:
 	// Seconds since the fight ended (0 while it runs).
 	double GetResultAge() const { return bResultLogged ? Now - ResultTime : 0.0; }
 	bool IsAutoPlay() const { return bAutoPlay; }
+	// How long after the result the autopilot fights again: covers the longest defeat clip (s).
+	double GetAutoAgainWait() const { return AutoAgainWait; }
 	bool IsIdle() const { return bIdle; }
 	// The result offers to fight again.
 	bool CanFightAgain() const { return bFightAgain; }

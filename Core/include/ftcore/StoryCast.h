@@ -149,4 +149,20 @@ struct CastStandPlan {
 FTCORE_API CastStandPlan planCastStands(std::span<const CastMark* const> marks, bool standInStays,
                                         const CastSpotTest* test = nullptr);
 
+// True when p is not null and already among held[0..count): two cast speakers on one model share one actor,
+// which then stands and counts once, at the first speaker's place. No allocation.
+template <class T>
+constexpr bool heldEarlier(std::span<T* const> held, std::size_t count, const T* p) noexcept
+{
+    if (p == nullptr) {
+        return false;
+    }
+    for (std::size_t i = 0; i < count && i < held.size(); ++i) {
+        if (held[i] == p) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace ftcore

@@ -67,6 +67,10 @@ struct FFTStoryCarry
 	// Set when the last field step was in another world: the step opens the overworld first, the
 	// player walks from this world's gate to World's, and entering it opens World's map.
 	FString FromWorld;
+	// An arena fight on a stage (its encounter's `stage`): the arenas.json zone id, and the line-up's
+	// enemy ids, comma-separated, as arena enemy kinds. Empty for every other step.
+	FString Stage;
+	FString Lineup;
 	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
 	// The beat's `lose` param is "never" (a spar): a lost fight counts as won (ftcore::judgeStep). A
 	// screen may keep the lead standing instead; either way the story never retries it.
@@ -104,6 +108,7 @@ public:
 	// fight plays (ftcore::EncounterTable::combatFor). Empty when missing or refused, so every fight
 	// is a Turns fight. The battle screens load their own copy for the line-ups.
 	const ftcore::EncounterTable& GetEncounters() const { return Encounters; }
+	const ftcore::EnemyRoster& GetRoster() const { return Roster; }
 
 	FFTExploreCarry ExploreCarry;
 	FFTStoryCarry StoryCarry;
