@@ -625,12 +625,12 @@ void AFTStoryDirector::ResumeFromCarry()
 	}
 	else if (!(bResumed = Story->ResumeAfterGameplayWithValue(Finish == FTStep::EFinish::ResumeWon ? 1 : 0)))
 	{
-		// The beat's `sets` flag could not take the value (a string flag): never resume a loss as a win.
-		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the result of %s beat %d did not fit its flag; the beat waits in the box."), *Carry.Scene,
-			Carry.Beat);
+		// The beat's `sets` flag could not take the value (the load refuses such a beat, so this is a bug). Never a
+		// loop on the fight: the story goes on past the beat with its flag untouched (no win written for a loss).
+		UE_LOG(LogForgottenThird, Error, TEXT("Story: the result of %s beat %d did not fit its flag; going on past the beat with the flag unset."),
+			*Carry.Scene, Carry.Beat);
 		++GI->Alpha.warnings;
-		GI->FailedScene = Carry.Scene;
-		GI->FailedBeat = Carry.Beat;
+		bResumed = Story->ResumeAfterGameplay();
 	}
 	if (bResumed)
 	{

@@ -20,7 +20,8 @@
 // beat's `lose` param picks the rule for a lost fight:
 //   "retry" (or no param): the same step opens again; never a resume as a win
 //   "branch": the beat ends at once and resume(0) sets its `sets` flag, so the scene can branch on it
-//             (a won fight on such a beat resumes with 1); without a `sets` flag it plays as "retry"
+//             (a won fight on such a beat resumes with 1). The load refuses a "branch" beat without a fight
+//             step or with a `sets` flag that cannot take 0 and 1; judgeStep still plays one without `sets` as "retry"
 //   "never":  the fight cannot be lost (a spar): a loss counts as a win
 //
 // AlphaCounters keeps the tallies of an alpha run (the whole script played by autoplay) across map
@@ -30,6 +31,7 @@
 #include "ftcore/CombatKind.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/GameplayPlan.h"
+#include "ftcore/StoryState.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -110,6 +112,34 @@ inline StepVerdict judgeStep(bool fight, bool won, LossRule rule, bool hasSets, 
     if (rule == LossRule::Branch && hasSets) return StepVerdict::LossBranch;
     if (retryCap != 0 && retries >= retryCap) return StepVerdict::GiveUp;
     return StepVerdict::Retry;
+}
+
+// What the step's story writes do (StoryState.h storyEndStep): a win and a loss branch keep them, a retry
+// goes back to the step's start and counts a retry, a give-up drops them uncounted.
+inline StepEnd stepEndFor(StepVerdict v) {
+    switch (v) {
+    case StepVerdict::Retry: return StepEnd::Retry;
+    case StepVerdict::GiveUp: return StepEnd::Drop;
+    case StepVerdict::Advance:
+    case StepVerdict::LossBranch: break;
+    }
+    return StepEnd::Keep;
+}
+
+// How the beat goes on after a judged step. Plain: resume(). Won / Lost: resume(1) / resume(0) into the
+// beat's `sets` flag (a "branch" beat only). Next: the chain's next step. Retry: the same step again.
+// GiveUp: the beat stays (the autopilot skips it).
+enum class StepResume : std::uint8_t { Next, Retry, GiveUp, Plain, Won, Lost };
+// lastStep: the judged step was the chain's last (or there is no chain).
+inline StepResume stepResumeFor(StepVerdict v, bool lastStep, LossRule rule, bool hasSets) {
+    switch (v) {
+    case StepVerdict::Retry: return StepResume::Retry;
+    case StepVerdict::GiveUp: return StepResume::GiveUp;
+    case StepVerdict::LossBranch: return StepResume::Lost;
+    case StepVerdict::Advance: break;
+    }
+    if (!lastStep) return StepResume::Next;
+    return rule == LossRule::Branch && hasSets ? StepResume::Won : StepResume::Plain;
 }
 
 struct AlphaCounters {

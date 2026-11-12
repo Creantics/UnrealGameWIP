@@ -92,6 +92,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	void NewGame();
 
+	// ---- one gameplay step (ftcore::StoryStepMark) ----
+
+	// The step's start: what a retry or a quit goes back to (FTStep::Prepare). The mark lives here, on the game
+	// instance, so it outlives the map change to the screen. Never saved: EncodeBlock writes as of the mark while it
+	// is set, and a load or a new game drops it.
+	void MarkStep();
+	// The step is over: Keep its writes (a win, a loss branch), Retry (back to the mark, one retry counted) or Drop
+	// (back to the mark, uncounted: given up on or quit). Clears the mark. False when there was no usable mark.
+	bool EndStep(ftcore::StepEnd End);
+
 	// ---- native access (null before Initialize and after Deinitialize) ----
 
 	ftcore::StoryState* GetState() { return State.Get(); }
@@ -151,4 +161,5 @@ private:
 	void ForgetGood();
 	void NoteSave(bool bSkipped);
 	ftcore::StorySaveSkip SaveSkip;
+	TUniquePtr<ftcore::StoryStepMark> StepMark;
 };

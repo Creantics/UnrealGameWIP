@@ -7,6 +7,7 @@
 
 #include "ForgottenThird.h"
 #include "FTGameInstance.h"
+#include "FTStoryStateSubsystem.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
@@ -297,7 +298,46 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 		UE_LOG(LogForgottenThird, Log, TEXT("Story: the CG at %s beat %d step %d plays on %s, in district %d."), *Carry.Scene, Carry.Beat, Carry.Step,
 			*Route.Map, Route.District);
 	}
+	// The step's start: a lost fight's retry, a give-up and a quit go back here (FTStep::EndStoryStep).
+	if (UFTStoryStateSubsystem* StoryState = GI.GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->MarkStep();
+	}
 	return Route.Map;
+}
+
+void FTStep::EndStoryStep(UFTGameInstance& GI, ftcore::StepEnd End)
+{
+	if (UFTStoryStateSubsystem* StoryState = GI.GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->EndStep(End);
+	}
+}
+
+void FTStep::QuitToTitle(const UObject* WorldContext, const FString& FallbackMap, const TCHAR* Who)
+{
+	UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
+	UFTGameInstance* GI = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+	FString Map = FallbackMap;
+	if (GI)
+	{
+		FFTStoryCarry& Carry = GI->StoryCarry;
+		if (Carry.bValid)
+		{
+			if (!Carry.ReturnMap.IsEmpty())
+			{
+				Map = Carry.ReturnMap;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Story: %s left the step at %s beat %d step %d for the title; its story writes roll back."), Who,
+				*Carry.Scene, Carry.Beat, Carry.Step + 1);
+		}
+		EndStoryStep(*GI, ftcore::StepEnd::Drop); // any open step mark, carried or not, rolls back
+		GI->StoryCarry = FFTStoryCarry(); // nothing for the story map to resume: never a retry, never a result
+		GI->ExploreCarry = FFTExploreCarry(); // a field fight left half way is over, so the next run starts clean
+		GI->Chain.reset();
+		GI->StepRetries = 0;
+	}
+	OpenMap(WorldContext, Map, TEXT("Title"));
 }
 
 FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Runner, const FFTStoryCarry& Carry)
@@ -305,6 +345,7 @@ FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Ru
 	ftcore::StoryChain& Chain = GI.Chain;
 	if (!Carry.bDone)
 	{
+		EndStoryStep(GI, ftcore::StepEnd::Drop);
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: back from the %s screen before it was done (step %d/%d at %s beat %d); the beat waits in the box."),
 			*FT::ToFString(ftcore::gameplayScreenName(Carry.Screen)), Carry.Step + 1, Carry.StepCount, *Carry.Scene, Carry.Beat);
 		++GI.Alpha.warnings;
@@ -318,11 +359,14 @@ FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Ru
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the story moved since the hand-off at %s beat %d; not resuming."), *Carry.Scene, Carry.Beat);
 		GI.Alpha.addScreen(Carry.Screen); // played to the end, as before; its result has nowhere to go
 		++GI.Alpha.warnings;
+		EndStoryStep(GI, ftcore::StepEnd::Keep); // the mark is spent; the writes stay where the story went
 		GI.StepRetries = 0;
 		Chain.reset();
 		return EFinish::Failed;
 	}
 	const FStepJudgement J = Judge(GI, Runner, Carry);
+	// A retry counts afresh from the step's start; a win or a loss branch keeps what the fight wrote.
+	EndStoryStep(GI, ftcore::stepEndFor(J.Verdict));
 	switch (J.Verdict)
 	{
 	case ftcore::StepVerdict::Retry:
@@ -362,12 +406,15 @@ FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Ru
 		UE_LOG(LogForgottenThird, Display, TEXT("Story: the fight at %s beat %d step %d was lost and cannot be; it counts as won."), *Carry.Scene,
 			Carry.Beat, Carry.Step + 1);
 	}
-	if (Chain.active() && Chain.finishStep(true) == ftcore::StoryChain::Next::Open)
-	{
-		return EFinish::Next;
-	}
+	const bool bLast = !(Chain.active() && Chain.finishStep(true) == ftcore::StoryChain::Next::Open);
 	// Every fight of a "branch" beat was won (a loss would have ended it above).
-	return J.Rule == ftcore::LossRule::Branch && J.bHasSets ? EFinish::ResumeWon : EFinish::Resume;
+	switch (ftcore::stepResumeFor(J.Verdict, bLast, J.Rule, J.bHasSets))
+	{
+	case ftcore::StepResume::Next: return EFinish::Next;
+	case ftcore::StepResume::Won: return EFinish::ResumeWon;
+	case ftcore::StepResume::Lost: return EFinish::ResumeLost;
+	default: return EFinish::Resume;
+	}
 }
 
 bool FTStep::ContinueHere(const UObject* WorldContext)

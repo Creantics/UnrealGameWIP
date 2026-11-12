@@ -1,5 +1,6 @@
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryChain.h"
+#include "ftcore/GameplayPlan.h"
 
 #include <algorithm>
 #include <charconv>
@@ -400,6 +401,42 @@ bool StoryBuilder::finish(StoryDatabase& out, std::string* error) {
                     o.next = sc.beatCount; // ends the scene
                 }
             }
+
+        // A fight's loss rule. "branch" resumes with 1 (won) or 0 (lost) into `sets`: it needs a fight step and
+        // a flag that can take both (a string flag can't). "never" is legal but listed, so it is never a surprise.
+        std::string never;
+        std::uint32_t neverCount = 0;
+        for (const Scene& sc : db.scenes_)
+            for (std::uint32_t i = 0; i < sc.beatCount && error_.empty(); ++i) {
+                const Beat& b = db.beats_[sc.firstBeat + i];
+                if (b.type != BeatType::Gameplay) continue;
+                LossRule rule = LossRule::Retry;
+                const std::string_view lose = db.param(b, "lose");
+                if (lose.empty() || !lossRuleFromName(lose, rule)) continue;
+                const std::string where = "scene '" + std::string(db.view(sc.id)) + "' beat " + std::to_string(i);
+                if (rule == LossRule::Never) {
+                    never += (neverCount++ ? ", " : "") + where;
+                    continue;
+                }
+                if (rule != LossRule::Branch) continue;
+                GameplayPlan plan;
+                plan.lower(db, b);
+                if (gameplayPlanFights(plan) == 0) {
+                    fail(where + ": lose=branch without a fight step");
+                    break;
+                }
+                if (b.setsFlag == kNone) {
+                    fail(where + ": lose=branch without a sets flag");
+                    break;
+                }
+                if (db.flags_[b.setsFlag].initial.kind == FlagValue::Kind::String) {
+                    fail(where + ": lose=branch sets '" + std::string(db.view(db.flags_[b.setsFlag].id)) +
+                         "', a string flag (it must take 0 or 1)");
+                    break;
+                }
+            }
+        if (neverCount > 0)
+            warn(std::to_string(neverCount) + " fight beat(s) marked lose=never (a loss counts as a win): " + never);
     }
 
     const bool ok = error_.empty();

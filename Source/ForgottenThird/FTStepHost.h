@@ -44,6 +44,7 @@ struct FFTStoryCarry;
 namespace ftcore
 {
 class StoryRunner;
+enum class StepEnd : std::uint8_t;
 }
 
 // Who can play a step in place (None: the step always opens its own map).
@@ -103,7 +104,17 @@ inline constexpr uint32 kAutoFightRetries = 2;
 
 // Judges the carried step (ftcore::judgeStep: a fight's bWon against the beat's `lose` param), counts
 // it (GI.Alpha) when it advances and moves GI.Chain on. The one place a step is counted.
+// It also ends the step's story writes (ftcore::stepEndFor): a retry rolls them back to Prepare's mark.
 FORGOTTENTHIRD_API EFinish FinishCarried(UFTGameInstance& GI, const ftcore::StoryRunner& Runner, const FFTStoryCarry& Carry);
+
+// Ends the step's story writes (UFTStoryStateSubsystem::EndStep). Prepare marks the step's start.
+FORGOTTENTHIRD_API void EndStoryStep(UFTGameInstance& GI, ftcore::StepEnd End);
+
+// A player leaves a step for the title (a screen's Quit, the pause menu's Quit to Title): the step's story writes
+// roll back, the carry, the explore carry and the chain clear, and the story map (the carry's return map, else
+// FallbackMap) opens with ?Title. Never a retry and never a result: Continue on the title loads the autosave of the
+// last scene start. Who: the screen, for the log.
+FORGOTTENTHIRD_API void QuitToTitle(const UObject* WorldContext, const FString& FallbackMap, const TCHAR* Who);
 
 // For a screen whose step is done (StoryCarry.bDone), before it opens StoryCarry.ReturnMap: true when
 // the beat's next step starts in place on this map (StoryCarry now holds that step); false when the
