@@ -72,6 +72,7 @@ bool UFTFaceComponent::Rebind()
 	MorphNames.Reset();
 	MorphMap.clear();
 	MorphWeights.Reset();
+	BoundShapes = 0;
 
 	const FString Path = ProjectPath(PresetsFile);
 	TArray<uint8> Bytes;
@@ -115,6 +116,7 @@ bool UFTFaceComponent::Rebind()
 	{
 		Bound += S >= 0 ? 1 : 0;
 	}
+	BoundShapes = Bound;
 	UE_LOG(LogFTFace, Log, TEXT("%s: %d of %d face shapes bound to %s"), *GetPathName(), Bound,
 		static_cast<int32>(Shapes->size()), *FaceMesh->GetName());
 	return true;

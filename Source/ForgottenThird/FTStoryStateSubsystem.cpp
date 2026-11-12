@@ -59,6 +59,7 @@ void UFTStoryStateSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Registry = MakeUnique<ftcore::FactRegistry>();
 	State = MakeUnique<ftcore::StoryState>();
 	GoodState = MakeUnique<ftcore::StoryState>(); // large: off the stack
+	StepMark = MakeUnique<ftcore::StoryStepMark>();
 	Bridge = MakeUnique<ftcore::StoryBridge>();
 	Bridge->setReportHandler(&UFTStoryStateSubsystem::HandleBridgeReport, this);
 	ftcore::storyReset(*State);
@@ -132,6 +133,10 @@ bool UFTStoryStateSubsystem::LoadRegistry(const FString& Dir)
 	if (State)
 	{
 		ftcore::storyReset(*State); // the state's slots and scenes belong to the registry too: a new game's state
+	}
+	if (StepMark)
+	{
+		*StepMark = ftcore::StoryStepMark();
 	}
 	ForgetGood();
 	LoadSceneMap(Base);
@@ -244,11 +249,28 @@ bool UFTStoryStateSubsystem::RestartScene()
 	return State && ftcore::storyRestartScene(*State, *Registry);
 }
 
+void UFTStoryStateSubsystem::MarkStep()
+{
+	if (State && StepMark)
+	{
+		ftcore::storyMarkStep(*State, *StepMark);
+	}
+}
+
+bool UFTStoryStateSubsystem::EndStep(ftcore::StepEnd End)
+{
+	return State && StepMark && ftcore::storyEndStep(*State, *Registry, *StepMark, End);
+}
+
 void UFTStoryStateSubsystem::NewGame()
 {
 	if (State)
 	{
 		ftcore::storyReset(*State);
+	}
+	if (StepMark)
+	{
+		*StepMark = ftcore::StoryStepMark();
 	}
 	ForgetGood();
 }
@@ -343,7 +365,9 @@ bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
 	}
 	TArray<uint8> Block;
 	Block.SetNumZeroed(ftcore::kStoryStateBlockSize);
-	if (!ftcore::storyEncode(*State, *Registry, std::span<std::uint8_t, ftcore::kStoryStateBlockSize>(Block.GetData(), ftcore::kStoryStateBlockSize)))
+	// In the middle of a step the block is as of the step's start: a reload replays the step, so its writes count once.
+	const std::span<std::uint8_t, ftcore::kStoryStateBlockSize> BlockSpan(Block.GetData(), ftcore::kStoryStateBlockSize);
+	if (!(StepMark ? ftcore::storyEncodeAtStep(*State, *Registry, *StepMark, BlockSpan) : ftcore::storyEncode(*State, *Registry, BlockSpan)))
 	{
 		const ftcore::StorySaveFallback Fallback = ftcore::storySaveFallback(
 			*State, LastGoodBlock.Num() > 0 ? GoodState.Get() : nullptr,
@@ -383,6 +407,10 @@ ftcore::StoryLoad UFTStoryStateSubsystem::DecodeBlock(const TArray<uint8>& In)
 		return ftcore::StoryLoad::Empty;
 	}
 	ftcore::StoryStateLoadReport Report;
+	if (StepMark)
+	{
+		*StepMark = ftcore::StoryStepMark(); // a loaded state has no step open
+	}
 	const ftcore::StoryLoad Result = ftcore::storyLoadOrNew(
 		std::span<const std::uint8_t>(In.GetData(), static_cast<std::size_t>(In.Num())), *Registry, *State, &Report);
 	if (Result == ftcore::StoryLoad::Ok)

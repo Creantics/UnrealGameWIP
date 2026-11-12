@@ -1,4 +1,5 @@
 #include "ftcore/StoryFactReader.h"
+#include "ftcore/StoryChain.h"
 #include "ftcore/StoryState.h"
 
 #include "AllocCounter.h"
@@ -625,6 +626,129 @@ TEST_CASE("story state: restart and the scene order") {
     CHECK_FALSE(storyBeginScene(s, r, kMaxStoryScenes));
     CHECK(storyBeginScene(s, r, sc("s3"))); // the next one
     CHECK(issues(s, r) == 0);
+}
+
+TEST_CASE("story state: a fight step's retry goes back to the step, not the scene") {
+    const FactRegistry& r = reg();
+    const StoryRoles& ro = r.roles;
+    StoryState s;
+    StoryStepMark mark;
+    CHECK_FALSE(storyMarkStep(s, mark)); // no scene open
+    CHECK_FALSE(mark.valid);
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 5) == SetResult::Ok); // a beat before the fight
+    REQUIRE(storyMarkStep(s, mark));
+
+    // The fight: two presses and a fact, then lost and retried.
+    REQUIRE(storyCountPress(s, r, 0, 1) == SetResult::Ok);
+    REQUIRE(storyCountPress(s, r, 0, 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 2);
+    REQUIRE(storyEndStep(s, r, mark, StepEnd::Retry));
+    CHECK_FALSE(mark.valid);
+    CHECK(storyGet(s, r, fs("a_num")).value == 5); // the earlier beat keeps its write
+    CHECK(storyGet(s, r, fs("a_ev")).status == FactStatus::Unset);
+    CHECK(storyGet(s, r, ro.firstPress).status == FactStatus::Unset); // the latch came from the fight
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 0);              // counts afresh
+    CHECK(storyWide(s, ro.pressTotal) == 2);                       // raw: kept
+    CHECK(storyWide(s, ro.retries) == 1);
+    CHECK(s.stamp[fs("a_ev")] == kNoScene);
+
+    // The retry is won: its presses count once.
+    REQUIRE(storyMarkStep(s, mark));
+    REQUIRE(storyCountPress(s, r, 0, 1) == SetResult::Ok);
+    REQUIRE(storyEndStep(s, r, mark, StepEnd::Keep));
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 1);
+    CHECK(storyGet(s, r, ro.firstPress).value == 1);
+    CHECK(storyWide(s, ro.retries) == 1);
+    CHECK_FALSE(storyRollbackStep(s, r, mark, true)); // the mark is spent
+
+    // Given up on (or quit): rolled back, no retry counted.
+    REQUIRE(storyMarkStep(s, mark));
+    REQUIRE(storyCountPress(s, r, 0, 1) == SetResult::Ok);
+    REQUIRE(storyEndStep(s, r, mark, StepEnd::Drop));
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 1);
+    CHECK(storyWide(s, ro.retries) == 1);
+
+    // A mark from another scene is never applied.
+    REQUIRE(storyMarkStep(s, mark));
+    REQUIRE(storySet(s, r, fs("a_ev"), 1) == SetResult::Ok);
+    REQUIRE(storySet(s, r, fs("a_ch"), 2) == SetResult::Ok);
+    REQUIRE(storyCommitScene(s, r));
+    REQUIRE(storyBeginScene(s, r, sc("s3")));
+    const StoryState before = s;
+    CHECK_FALSE(storyEndStep(s, r, mark, StepEnd::Retry));
+    CHECK(s.facts == before.facts);
+    CHECK(s.wide == before.wide);
+    CHECK(issues(s, r) == 0);
+}
+
+// The runner's verdict drives the state: what the director does after each fight.
+TEST_CASE("story state: a judged fight's verdict decides what its writes do") {
+    const FactRegistry& r = reg();
+    const StoryRoles& ro = r.roles;
+    auto fight = [&](StoryState& s, StoryStepMark& mark, bool won, LossRule rule, bool sets, std::uint32_t retries,
+                     std::uint32_t cap) {
+        REQUIRE(storyMarkStep(s, mark));
+        REQUIRE(storyCountPress(s, r, 0, 1) == SetResult::Ok);
+        const StepVerdict v = judgeStep(true, won, rule, sets, retries, cap);
+        REQUIRE(storyEndStep(s, r, mark, stepEndFor(v)));
+        return v;
+    };
+    StoryState s;
+    StoryStepMark mark;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 5) == SetResult::Ok);
+    CHECK(fight(s, mark, false, LossRule::Retry, false, 0, 0) == StepVerdict::Retry);
+    CHECK(storyGet(s, r, fs("a_num")).value == 5); // the earlier write survives
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 0);
+    CHECK(storyWide(s, ro.retries) == 1);
+    CHECK(fight(s, mark, true, LossRule::Retry, false, 1, 0) == StepVerdict::Advance);
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 1); // the win after a retry counts once
+    CHECK(storyWide(s, ro.retries) == 1);
+    CHECK(fight(s, mark, false, LossRule::Branch, true, 0, 0) == StepVerdict::LossBranch);
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 2); // a branch loss keeps
+    CHECK(fight(s, mark, false, LossRule::Retry, false, 2, 2) == StepVerdict::GiveUp);
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 2); // given up: dropped
+    CHECK(storyWide(s, ro.retries) == 1);             // and not counted
+    CHECK(fight(s, mark, false, LossRule::Never, false, 0, 0) == StepVerdict::Advance);
+    CHECK(storyWide(s, ro.pressCounters[0][1]) == 3); // never: a loss counts as a win
+}
+
+TEST_CASE("story state: a save in the middle of a fight is written as of the step's start") {
+    const FactRegistry& r = reg();
+    const StoryRoles& ro = r.roles;
+    StoryState s;
+    StoryStepMark mark;
+    REQUIRE(storyBeginScene(s, r, sc("s2")));
+    REQUIRE(storySet(s, r, fs("a_num"), 5) == SetResult::Ok);
+    REQUIRE(storyMarkStep(s, mark));
+    REQUIRE(storyCountPress(s, r, 0, 2) == SetResult::Ok);
+    const std::uint32_t serial = s.saveSerial;
+    std::array<std::uint8_t, kStoryStateBlockSize> block{};
+    REQUIRE(storyEncodeAtStep(s, r, mark, block));
+    CHECK(s.saveSerial == serial + 1);
+    CHECK(storyWide(s, ro.pressCounters[0][2]) == 1); // the live fight goes on
+    StoryState back;
+    REQUIRE(storyDecode(block, r, back) == StoryLoad::Ok);
+    CHECK(back.openScene == sc("s2"));
+    CHECK(storyGet(back, r, fs("a_num")).value == 5);
+    CHECK(storyWide(back, ro.pressCounters[0][2]) == 0); // the reload replays the fight: counted once
+    CHECK(storyGet(back, r, ro.firstPress).status == FactStatus::Unset);
+
+    // Played again after the reload and won: one press counted.
+    StoryStepMark again;
+    REQUIRE(storyMarkStep(back, again));
+    REQUIRE(storyCountPress(back, r, 0, 2) == SetResult::Ok);
+    REQUIRE(storyEndStep(back, r, again, StepEnd::Keep));
+    CHECK(storyWide(back, ro.pressCounters[0][2]) == 1);
+
+    // No usable mark: the block is the state as is.
+    StoryStepMark none;
+    std::array<std::uint8_t, kStoryStateBlockSize> plain{};
+    REQUIRE(storyEncodeAtStep(s, r, none, plain));
+    REQUIRE(storyDecode(plain, r, back) == StoryLoad::Ok);
+    CHECK(storyWide(back, ro.pressCounters[0][2]) == 1);
 }
 
 TEST_CASE("story state: the sandbox leaves the real state byte for byte") {

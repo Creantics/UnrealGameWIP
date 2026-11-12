@@ -1,4 +1,5 @@
 #include "ftcore/StoryBridge.h"
+#include "ftcore/StoryChain.h"
 
 #include "AllocCounter.h"
 
@@ -372,6 +373,35 @@ TEST_CASE("story bridge: gameplay params") {
     CHECK(r.param("sets") == "undeclared"); // the params stay readable
     REQUIRE(r.resume());                    // an undeclared flag is a bool: the stub -2 sets it true
     CHECK(r.flag("undeclared") == FlagValue::boolean(true));
+    CHECK(r.finished());
+}
+
+TEST_CASE("story bridge: the lose param is checked, and a lost branch fight resumes with 0") {
+    StoryBuilder b;
+    b.beginChapter("c1", "C");
+    b.beginScene("s1", "One");
+    b.gameplay("CMB", "[fight]");
+    b.param("lose", "maybe");
+    StoryDatabase db;
+    std::string error;
+    CHECK_FALSE(b.finish(db, &error));
+    CHECK(error.find("lose") != std::string::npos);
+
+    StoryBuilder b2;
+    b2.beginChapter("c1", "C");
+    b2.beginScene("s1", "One");
+    b2.gameplay("CMB", "[fight]");
+    b2.param("lose", "branch");
+    b2.param("sets", "won_fight");
+    REQUIRE_MESSAGE(b2.finish(db, &error), error);
+    StoryRunner r(&db);
+    REQUIRE(r.start());
+    REQUIRE(r.waitingForGameplay());
+    LossRule rule = LossRule::Retry;
+    REQUIRE(lossRuleFromName(r.param("lose"), rule));
+    CHECK(rule == LossRule::Branch);
+    REQUIRE(r.resume(FlagValue::integer(0))); // the lost fight's branch value
+    CHECK(r.flag("won_fight") == FlagValue::boolean(false));
     CHECK(r.finished());
 }
 

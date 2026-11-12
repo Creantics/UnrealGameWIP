@@ -238,7 +238,7 @@ struct StoryEvent {
     };
     Kind kind = Kind::FactSet;
     std::uint16_t id = 0;       // fact slot, wide slot, or (Rejected on a wide slot) kStoryWideEventBit | slot
-    std::uint32_t before = 0;   // Rejected: the SetResult
+    std::uint32_t before = 0;   // Rejected: the SetResult; SceneRolledBack: 1 for a step (storyRollbackStep)
     std::uint32_t after = 0;    // Rejected: the value tried
     std::uint8_t scene = kNoScene;
 };
@@ -358,6 +358,32 @@ FTCORE_API SceneReads storySceneReads(const StoryState& s, const FactRegistry& r
 FTCORE_API bool storyBeginScene(StoryState& s, const FactRegistry& reg, std::uint8_t scene);
 // Back to the scene's start: facts, stamps and counters (not the Raw ones); retries + 1 when bound.
 FTCORE_API bool storyRestartScene(StoryState& s, const FactRegistry& reg);
+
+// ---- One gameplay step inside a scene (a fight) ----
+// The values a step can write, as the step opened. The unit a lost fight's retry goes back to: the step,
+// not the scene, so the beats before it in the scene keep what they wrote. Plain data, never saved: a save
+// taken while a step is open is written as of the mark (storyEncodeAtStep), so a reload replays the step.
+struct StoryStepMark {
+    std::array<std::uint8_t, kFactSlots> facts{};
+    std::array<std::uint8_t, kFactSlots> stamp{};
+    std::array<std::uint32_t, kWideSlots> wide{};
+    std::uint8_t scene = kNoScene;
+    bool valid = false;
+};
+// Marks the step's start. False (the mark cleared) when no scene is open.
+FTCORE_API bool storyMarkStep(const StoryState& s, StoryStepMark& mark);
+// Back to the mark: facts, stamps and counters (not the Raw ones), like a scene restart; retries + 1 when
+// bound and countRetry. False and nothing changes without a mark or when another scene is open now.
+FTCORE_API bool storyRollbackStep(StoryState& s, const FactRegistry& reg, const StoryStepMark& mark, bool countRetry);
+// What a step's end does with its writes (the verdict from judgeStep, or a quit to the title).
+enum class StepEnd : std::uint8_t { Keep, Retry, Drop };
+// Keep: a win or a loss branch keeps them. Retry: rolled back, one retry counted. Drop: rolled back, not
+// counted (the step was given up on or quit). Clears the mark. False when there was no usable mark.
+FTCORE_API bool storyEndStep(StoryState& s, const FactRegistry& reg, StoryStepMark& mark, StepEnd end);
+// storyEncode as of the mark when it is usable (the live state keeps its values; only the save serial moves),
+// else storyEncode as is.
+FTCORE_API bool storyEncodeAtStep(StoryState& s, const FactRegistry& reg, const StoryStepMark& mark,
+                                  std::span<std::uint8_t, kStoryStateBlockSize> out);
 // Closes the scene: unanswered gated choices and optional acts become 255 / 1, milestones and the
 // track mark apply.
 FTCORE_API bool storyCommitScene(StoryState& s, const FactRegistry& reg);

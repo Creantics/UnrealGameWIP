@@ -290,15 +290,9 @@ void UFTPauseSubsystem::QuitToTitle()
 	{
 		Map = Mode->TitleMap;
 	}
-	if (UFTGameInstance* GI = Cast<UFTGameInstance>(GetGameInstance()))
-	{
-		GI->ExploreCarry = FFTExploreCarry(); // a field fight left half way is over, so the next run starts clean
-		if (GI->StoryCarry.bValid && !GI->StoryCarry.ReturnMap.IsEmpty())
-		{
-			Map = GI->StoryCarry.ReturnMap;
-		}
-	}
-	FTStep::OpenMap(World, Map, TEXT("Title"));
+	// A step left half way (an arena, field or any screen's fight) rolls back its story writes, and the carry, the
+	// explore carry and the chain clear: never a retry, never a result (FTStep::QuitToTitle).
+	FTStep::QuitToTitle(World, Map, TEXT("the pause menu"));
 }
 
 void UFTPauseSubsystem::QuitGame()

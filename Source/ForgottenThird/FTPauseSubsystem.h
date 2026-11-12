@@ -25,7 +25,9 @@
 // returns here). Quit to Title and Quit Game ask first (No is the default).
 //
 // Quit to Title closes the menu (unpauses) and opens the title the way the battle's own "Quit to title"
-// does: the carry's return map (else the game mode's TitleMap) with the URL option ?Title. Quit Game calls
+// does (FTStep::QuitToTitle): the carry's return map (else the game mode's TitleMap) with the URL option ?Title;
+// a step left half way rolls back its story writes and the carries clear. It is every screen's way out of a
+// fight a player cannot win (the arena retries a lost fight with no prompt of its own). Quit Game calls
 // UKismetSystemLibrary::QuitGame. Headless runs (-StoryAutoPlay*, -AlphaAutoPlay, -ExploreAutoPlay,
 // -BattleAutoPlay, -WorldAutoPlay, -OverworldAutoPlay, a carry on autoplay) never open it. A map load
 // closes it and puts every item back on. Logs carry no text: "Pause: opened.", "Pause: resumed.",

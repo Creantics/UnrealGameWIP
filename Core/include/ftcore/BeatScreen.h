@@ -105,6 +105,8 @@ public:
     bool won() const { return outcome_ == BeatOutcome::Won; }
     // Autoplay lost the fight and every retry: the host logs a counted warning.
     bool gaveUp() const { return gaveUp_; }
+    // The player chose Quit at the prompt: the host leaves the fight for the title, never a retry or a result.
+    bool quitChosen() const { return quit_; }
     // Restarts autoplay has made.
     int autoRetries() const { return autoRetries_; }
 
@@ -144,6 +146,7 @@ private:
     bool autoPlay_ = false;
     bool autoComplete_ = false;
     bool gaveUp_ = false;
+    bool quit_ = false;
     int autoRetries_ = 0;
     double now_ = 0.0;
     double playSeconds_ = 0.0;

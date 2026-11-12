@@ -72,6 +72,7 @@ UFTStorySubsystem::~UFTStorySubsystem() = default;
 void UFTStorySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	RunStartWall = FPlatformTime::Seconds();
 	Runner->setCueHandler(&UFTStorySubsystem::HandleCue, this);
 	PendingCues.Reserve(16);
 	bAutosave = !IsHeadlessRun();
@@ -160,6 +161,9 @@ bool UFTStorySubsystem::StartStory(const FString& SceneId)
 		return false;
 	}
 	bReportedFinished = false;
+	RunMoves = 0;
+	RunScenes = 0;
+	RunStartWall = FPlatformTime::Seconds();
 	Backlog.clear(); // a new game (or a headless start): nothing shown yet
 	bPaused = false;
 	Party = ftcore::PartyProgress();
@@ -321,6 +325,9 @@ bool UFTStorySubsystem::ApplySave(const FFTStorySave& InSave, TArray<FString>& O
 	{
 		return false;
 	}
+	RunMoves = 0;
+	RunScenes = 0;
+	RunStartWall = FPlatformTime::Seconds();
 	ftcore::StorySave Save;
 	Save.scene = FT::ToUtf8(InSave.Scene);
 	Save.beat = InSave.Beat < 0 ? 0u : static_cast<uint32>(InSave.Beat);
