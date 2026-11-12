@@ -74,6 +74,9 @@ private:
 	FVector LastRoot = FVector::ZeroVector;
 	float Floor = 1e9f; // unset (1e9) when the reference floor could not be read or does not hold: every row INVALID
 	bool bFloorRead = false;
+	float RefFloor = 1e9f; // the balls' lowest height in the reference pose (1e9: unread)
+	float RootRef = 0.f; // the root bone's height in the reference pose
+	bool bFloorBad = false; // an evaluated pose broke the floor's check: every row INVALID from then on
 	uint8 LastLoco = 255; // the lead locomotion's state last fresh frame
 	int32 PopLines = 0;
 	float CycleSpeed = 0.f; // the ground speed the locomotion is handed, cm/s

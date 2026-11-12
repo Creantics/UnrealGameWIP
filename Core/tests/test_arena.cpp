@@ -1924,6 +1924,35 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         CHECK(rig.bodies.player.x == doctest::Approx(from.x + way.x * gone).epsilon(0.001));
         CHECK(rig.bodies.player.y == doctest::Approx(from.y + way.y * gone).epsilon(0.001));
     }
+    {   // its enemy on the very spot, then dead under it: the lunge goes along the facing, never after the body
+        ArenaFighter f = ruleFighter();
+        f.riposte.lunge = 0.5f;
+        f.riposte.damage = 1000;
+        Rig rig(f, {hitterKind(bite), dummyKind()});
+        rig.put(1, -20.f, 0.f); // a second enemy far off keeps the fight going
+        parry(rig, 1.f, 1.1f);
+        rig.in.light = true;
+        REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
+        const auto along = [](const ArenaOutput& o) {
+            const Vec2 v = o.player.velocity, d = o.player.facing;
+            return std::isfinite(v.x) && std::isfinite(v.y) && std::abs(v.x * d.y - v.y * d.x) < 0.001f && v.x * d.x + v.y * d.y >= 0.f;
+        };
+        rig.put(0, rig.bodies.player.x, rig.bodies.player.y); // on the same spot: no way to it, so the facing
+        CHECK(along(rig.tick()));
+        rig.put(0, 1.f, 1.1f);
+        while (rig.out().player.action == ArenaAction::Riposte && rig.fight.enemyAlive(0)) rig.tick();
+        REQUIRE_FALSE(rig.fight.enemyAlive(0));
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        rig.put(0, 0.f, -3.f); // the dead body elsewhere: nothing follows it
+        int moved = 0;
+        for (int i = 0; i < 6 && rig.out().player.action == ArenaAction::Riposte; ++i) {
+            const ArenaOutput& o = rig.tick();
+            CHECK(along(o));
+            CHECK(o.player.velocity.y >= -0.001f);
+            if (o.player.velocity.x != 0.f || o.player.velocity.y != 0.f) ++moved;
+        }
+        CHECK(moved > 0);
+    }
     {   // out of reach: an ordinary light, and the enemy stays open
         Rig rig(ruleFighter(), {hitterKind(bite)});
         parry(rig, 1.5f, 0.f);
@@ -2467,6 +2496,39 @@ TEST_CASE("arena armor: a share of the poise damage is ignored during an attack'
         duel.run(20);
         CHECK((duel.out().player.action == ArenaAction::Hitstun) == (armor == 0.f));
     }
+}
+
+TEST_CASE("arena lock-on: after a dodge away the body turns back to the target at turnRate, never in one frame") {
+    const ArenaFighter fighter = ruleFighter();
+    Rig rig(fighter, {dummyKind()});
+    rig.put(0, 5.f, 0.f);
+    rig.in.view = Vec2{1.f, 0.f};
+    rig.in.lock = true;
+    rig.run(3);
+    REQUIRE(rig.fight.lock() == 0);
+    rig.in.move = Vec2{-0.6f, 0.8f}; // a roll back and to the side faces away from the target
+    rig.in.dodge = true;
+    rig.tick();
+    rig.in.move = Vec2{};
+    REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+    while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+    const auto off = [&rig] {
+        const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y - rig.bodies.player.y};
+        const Vec2 f = rig.out().player.facing;
+        return std::atan2(f.x * to.y - f.y * to.x, f.x * to.x + f.y * to.y);
+    };
+    Vec2 last = rig.out().player.facing;
+    float worst = 0.f;
+    int ticks = 0;
+    while (std::abs(off()) > 0.001f && ticks < 120) {
+        const Vec2 f = rig.tick().player.facing;
+        worst = std::max(worst, std::abs(std::atan2(last.x * f.y - last.y * f.x, last.x * f.x + last.y * f.y)));
+        last = f;
+        ++ticks;
+    }
+    CHECK(ticks > 1);   // more than one frame: it turned, it did not snap
+    CHECK(ticks < 120); // and it gets there
+    CHECK(worst <= fighter.turnRate * kDt + 0.001f);
 }
 
 TEST_CASE("arena lock-on: the pick, nearest wins ties, switch left and right") {

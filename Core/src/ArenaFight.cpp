@@ -954,10 +954,13 @@ struct ArenaFightImpl {
         if (seconds > 0.f) until = std::max(until, from + seconds);
     }
 
-    // Outside attacks the player faces the lock target, else turns toward the stick at turnRate.
+    // Outside attacks the player turns toward the lock target, else toward the stick, at turnRate: a lock that comes
+    // back after a dodge or a swing away turns the body round over a few frames, never in one.
     void faceFree(Vec2 stick, bool pushed) {
         if (aimOn) pl.facing = arenaTurn(pl.facing, aimWay, (aimTurn > 0.f ? aimTurn : fi.turnRate) * dt);
-        else if (pl.lock != kArenaNobody) pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
+        else if (pl.lock != kArenaNobody)
+            pl.facing = fi.turnRate > 0.f ? arenaTurn(pl.facing, arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing), fi.turnRate * dt)
+                                          : arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing);
         else if (pushed) pl.facing = arenaTurn(pl.facing, arenaUnit(stick, pl.facing), fi.turnRate * dt);
     }
 
@@ -1040,7 +1043,7 @@ struct ArenaFightImpl {
         if (a0 < a.startup || attackTurn > 0.f) {
             Vec2 want = pl.facing;
             bool have = false;
-            if (pl.action == ArenaAction::Riposte && pl.target < n) {
+            if (pl.action == ArenaAction::Riposte && alive(pl.target)) {
                 want = arenaUnit(arenaSub(foes[pl.target].pos, pl.pos), pl.facing);
                 have = true;
             } else if (aimOn) {
@@ -1074,7 +1077,7 @@ struct ArenaFightImpl {
         const float span = a.startup + a.active;
         if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
-            const Vec2 way = pl.action == ArenaAction::Riposte && pl.target < n
+            const Vec2 way = pl.action == ArenaAction::Riposte && alive(pl.target)
                 ? arenaUnit(arenaSub(foes[pl.target].pos, pl.pos), pl.facing) : pl.facing;
             vel = arenaScaled(way, a.lunge / span * moving / dt);
         }
