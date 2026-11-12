@@ -42,6 +42,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face")
 	FString ModelId;
 
+	// A stand-in face speaks a voiced line of any cast speaker when no face of the speaker's own model
+	// is in the map (the dialogue map's preview stands in for the whole cast).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face")
+	bool bStandIn = false;
+
 	// Seed for the blink timing (same seed, same blinks).
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Face")
 	int32 BlinkSeed = 0x5eed;
@@ -74,6 +79,9 @@ public:
 	// The composed weight of a face shape (0 when unknown).
 	UFUNCTION(BlueprintPure, Category = "Face")
 	float GetShapeWeight(FName Shape) const;
+	// The face shapes bound to the mesh's morph targets by the last Rebind (0: a track plays unseen).
+	UFUNCTION(BlueprintPure, Category = "Face")
+	int32 GetBoundShapes() const { return BoundShapes; }
 	// 0 = mouth closed .. 1 = speaking.
 	UFUNCTION(BlueprintPure, Category = "Face")
 	float GetSpeech() const;
@@ -103,5 +111,6 @@ private:
 	// Per morph target of FaceMesh: its name, the shape index driving it (-1: none) and its weight.
 	TArray<FName> MorphNames;
 	std::vector<int> MorphMap;
+	int32 BoundShapes = 0;
 	TArray<float> MorphWeights;
 };

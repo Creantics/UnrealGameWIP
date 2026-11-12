@@ -298,6 +298,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story.cpp
         tests/test_story_chain.cpp
         tests/test_story_fight_step.cpp
+        tests/test_story_faces.cpp
         tests/test_story_state.cpp
         tests/test_story_bridge.cpp
         tests/test_fight_session.cpp

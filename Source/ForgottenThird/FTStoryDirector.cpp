@@ -4,6 +4,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "Misc/CommandLine.h"
+#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "UObject/UObjectIterator.h"
@@ -23,6 +24,7 @@
 
 #include "ftcore/GameplayPlan.h"
 #include "ftcore/StoryChain.h"
+#include "ftcore/StoryFaces.h"
 
 using ftcore::DialogueCommand;
 using ftcore::StoryRunner;
@@ -52,12 +54,6 @@ void AFTStoryDirector::BeginPlay()
 	bHandoffAuto = FParse::Param(Cmd, TEXT("StoryAutoPlayHandoff")) || bAlpha;
 	bAutoPlay = bAutoPlay || bHandoffAuto;
 	bQuitOnReturn = FParse::Param(Cmd, TEXT("StoryQuitOnReturn"));
-	if (FParse::Value(Cmd, TEXT("StoryShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
-	{
-		ShotsLeft = 4;
-		FParse::Value(Cmd, TEXT("StoryShotMax="), ShotsLeft);
-	}
-
 	const UGameInstance* GameInstance = GetGameInstance();
 	Story = GameInstance ? GameInstance->GetSubsystem<UFTStorySubsystem>() : nullptr;
 	if (!Story || !Story->IsLoaded())
@@ -67,6 +63,37 @@ void AFTStoryDirector::BeginPlay()
 		return;
 	}
 
+	FString Prefix;
+	if (FParse::Value(Cmd, TEXT("StoryShot="), Prefix) && !Prefix.IsEmpty())
+	{
+		if (!ftcore::storyShotNameOk(FT::ToUtf8(Prefix)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Story: -StoryShot takes a plain name (letters, digits, - and _, up to 64); no stills."));
+		}
+		else
+		{
+			int32 Max = ftcore::kStoryShotDefault;
+			FString MaxText;
+			if (FParse::Value(Cmd, TEXT("StoryShotMax="), MaxText))
+			{
+				if (MaxText.Len() <= 6 && MaxText.IsNumeric() && !MaxText.Contains(TEXT(".")))
+				{
+					Max = FCString::Atoi(*MaxText);
+				}
+				else
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("Story: -StoryShotMax takes a whole number 0..%d; %d stills."),
+						ftcore::kStoryShotCap, ftcore::kStoryShotDefault);
+				}
+			}
+			ShotPrefix = Prefix;
+			ShotsLeft = ftcore::remainingStoryShots(Max, Story->StoryShotsTaken); // the count is per run, not per map
+			if (ShotsLeft == 0)
+			{
+				ShotQuitIn = 0.5f; // nothing (left) to take: quit cleanly
+			}
+		}
+	}
 	SceneEpoch = MAX_uint32;
 	ResumeFromCarry();
 
@@ -144,12 +171,28 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 		Story->SetPaused(false);
 		bStoryPaused = false;
 	}
+	if (Story && Story->FaceTally.voiced > 0)
+	{
+		char Line[200];
+		const std::size_t N = Story->FaceTally.format(Line, sizeof Line); // the run's totals so far
+		UE_LOG(LogForgottenThird, Display, TEXT("%s"), *FT::ToFString(std::string_view(Line, N)));
+	}
 	Super::EndPlay(Reason);
 }
 
 void AFTStoryDirector::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (ShotQuitIn >= 0.f) // -StoryShot: done (or nothing to take); runs with or without autoplay
+	{
+		ShotQuitIn -= DeltaSeconds;
+		if (ShotQuitIn < 0.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Story: shots done; quitting."));
+			FPlatformMisc::RequestExit(false, TEXT("StoryDirector"));
+		}
+		return;
+	}
 	if (!Story || bHandingOff)
 	{
 		return;
@@ -471,26 +514,21 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 		return;
 	}
 	BeatAge += DeltaSeconds;
-	if (ShotQuitIn >= 0.f)
-	{
-		ShotQuitIn -= DeltaSeconds;
-		if (ShotQuitIn < 0.f)
-		{
-			UE_LOG(LogForgottenThird, Display, TEXT("Story: shots done; quitting."));
-			FPlatformMisc::RequestExit(false, TEXT("StoryDirector"));
-		}
-		return;
-	}
 	const bool bLine = Story->GetRunner().state() == StoryRunner::State::Line;
 	if (!bFast && ShotsLeft > 0 && bLine && !bShotThisBeat && Presenter.revealed() && BeatAge >= 1.f)
 	{
 		bShotThisBeat = true;
-		const FString File = FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, *Story->GetLineId());
-		FScreenshotRequest::RequestScreenshot(File, true, false); // the viewport's frame with the HUD
-		UE_LOG(LogForgottenThird, Display, TEXT("Story: shot %s (%s: %s)."), *File, *Speaker, *Text.Left(60));
-		if (--ShotsLeft == 0)
+		const FString File = StoryShotFile(Story->GetLineId());
+		if (!File.IsEmpty())
 		{
-			ShotQuitIn = 2.f; // the last shot is written before the exit
+			FScreenshotRequest::RequestScreenshot(File, true, false); // the viewport's frame with the HUD
+			UE_LOG(LogForgottenThird, Display, TEXT("Story: shot %s."), *FPaths::GetCleanFilename(File));
+			++Story->StoryShotsTaken;
+			Story->StoryShotFiles.Add(File);
+			if (--ShotsLeft == 0)
+			{
+				ShotQuitIn = 2.f; // the last shot is written before the exit
+			}
 		}
 	}
 	if (!bFast && IsVoiceBusy())
@@ -780,31 +818,79 @@ void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
 	HandleVoiceStopped();
 	VoiceLineId = LineId;
 	VoiceSeconds = Seconds;
-	const std::string_view Model = Speakers.modelFor(Story ? Story->GetRunner().speaker() : std::string_view());
-	if (Model.empty())
+	if (!Story)
 	{
 		return;
 	}
-	const FString Track = UFTAudioSubsystem::VoiceTrackFile(LineId);
-	if (Track.IsEmpty())
-	{
-		return; // FTValidateAssets reports lines without a track
-	}
+	const std::string_view Model = Speakers.modelFor(Story->GetRunner().speaker());
 	const FString ModelId = FT::ToFString(Model);
+	// The faces of the speaker's model in this map, else its stand-ins (ftcore::pickFaceRoute).
+	TArray<UFTFaceComponent*, TInlineAllocator<4>> Own;
+	TArray<UFTFaceComponent*, TInlineAllocator<4>> StandIns;
 	const UWorld* World = GetWorld();
-	for (TObjectIterator<UFTFaceComponent> It; It; ++It)
+	if (!Model.empty())
 	{
-		UFTFaceComponent* Face = *It;
-		if (Face->GetWorld() == World && Face->ModelId == ModelId && Face->PlayTrack(Track))
+		for (TObjectIterator<UFTFaceComponent> It; It; ++It)
 		{
-			SpeakingFaces.Add(Face);
+			UFTFaceComponent* Face = *It;
+			if (Face->GetWorld() != World)
+			{
+				continue;
+			}
+			if (Face->ModelId == ModelId)
+			{
+				Own.Add(Face);
+			}
+			else if (Face->bStandIn)
+			{
+				StandIns.Add(Face);
+			}
 		}
 	}
-	if (SpeakingFaces.IsEmpty() && !bLoggedNoFace)
+	const ftcore::FaceRoute Route = ftcore::pickFaceRoute(!Model.empty(), static_cast<uint32>(Own.Num()), static_cast<uint32>(StandIns.Num()));
+	const bool bFace = Route == ftcore::FaceRoute::Own || Route == ftcore::FaceRoute::StandIn;
+	// FTValidateAssets reports lines without a track.
+	const FString Track = bFace ? UFTAudioSubsystem::VoiceTrackFile(LineId) : FString();
+	bool bPlayed = false;
+	if (!Track.IsEmpty())
+	{
+		for (UFTFaceComponent* Face : Route == ftcore::FaceRoute::Own ? Own : StandIns)
+		{
+			if (Face->PlayTrack(Track))
+			{
+				SpeakingFaces.Add(Face);
+				bPlayed = bPlayed || Face->GetBoundShapes() > 0;
+			}
+		}
+	}
+	Story->FaceTally.add(Route, !Track.IsEmpty(), bPlayed);
+	if (Route == ftcore::FaceRoute::NoFace && !bLoggedNoFace)
 	{
 		bLoggedNoFace = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("Story: no face here for model %s (line %s); voiced lines play without a face."), *ModelId, *LineId);
 	}
+}
+
+FString AFTStoryDirector::StoryShotFile(const FString& LineId) const
+{
+	if (!ftcore::storyShotNameOk(FT::ToUtf8(LineId)))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the line id is not a plain name; no still."));
+		return FString();
+	}
+	// Always under the game's screenshot folder; an existing still is never overwritten.
+	const FString Base = FPaths::ScreenShotDir() / FString::Printf(TEXT("%s_%s"), *ShotPrefix, *LineId);
+	for (int32 N = 1; N <= 99; ++N)
+	{
+		const FString File = N == 1 ? Base + TEXT(".png") : FString::Printf(TEXT("%s_%d.png"), *Base, N);
+		// A still requested this run may not be on disk yet (the capture writes later).
+		if (!Story->StoryShotFiles.Contains(File) && !IFileManager::Get().FileExists(*File))
+		{
+			return File;
+		}
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("Story: 99 stills of line %s are saved already; no still."), *LineId);
+	return FString();
 }
 
 void AFTStoryDirector::HandleVoiceStopped()
