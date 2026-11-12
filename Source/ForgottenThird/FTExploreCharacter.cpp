@@ -477,6 +477,22 @@ void AFTExploreCharacter::EnterLookDev()
 	}
 	// The default camera looks from yaw 180; turn the key round to its side.
 	LookDevPivot->SetWorldRotation(FRotator(0.0, 180.0, 0.0));
+	// Fixed exposure: auto-exposure in a black surround brightens everything, so albedo could not be judged between
+	// shots. Manual exposure at EV100 0: the 40 cd key at about 3.3 m lights a 0.18 grey to about 0.18 on screen.
+	// -ExploreLookDevBias=<stops> shifts it.
+	if (Camera)
+	{
+		float Bias = 0.f;
+		FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevBias="), Bias);
+		FPostProcessSettings& Post = Camera->PostProcessSettings;
+		Post.bOverride_AutoExposureMethod = true;
+		Post.AutoExposureMethod = AEM_Manual;
+		Post.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+		Post.AutoExposureApplyPhysicalCameraExposure = false;
+		Post.bOverride_AutoExposureBias = true;
+		Post.AutoExposureBias = Bias;
+		Camera->PostProcessBlendWeight = 1.f;
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s)."), Hidden, LookDevSpin);
 }
 
