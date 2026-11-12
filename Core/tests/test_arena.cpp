@@ -1875,6 +1875,28 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         rig.runFor(1.0f);
         CHECK(rig.out().enemies[0].brain != ArenaBrain::Down);
     }
+    {   // off to one side: turned onto the enemy over startup (0.1 s), with no tracking, not in the first frame
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        parry(rig, 1.5f, 0.f);
+        rig.put(0, 1.f, 1.1f); // 48 degrees off the facing
+        rig.in.light = true;
+        const float start = std::atan2(rig.out().player.facing.y, rig.out().player.facing.x);
+        REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
+        const float want = std::atan2(1.1f, 1.f);
+        float last = std::atan2(rig.out().player.facing.y, rig.out().player.facing.x);
+        CHECK(last - start < 0.3f * want); // a share of it, no snap
+        bool steady = true;
+        for (int i = 0; i < 5; ++i) {
+            const Vec2 f = rig.tick().player.facing;
+            const float now = std::atan2(f.y, f.x);
+            steady = steady && now >= last - 1e-4f && now - last < 0.3f * want;
+            last = now;
+        }
+        CHECK(steady);
+        CHECK(last == doctest::Approx(want).epsilon(0.01)); // on the enemy as the blow lands
+        rig.run(20);
+        CHECK(rig.fight.stats().ripostes == 1);
+    }
     {   // out of reach: an ordinary light, and the enemy stays open
         Rig rig(ruleFighter(), {hitterKind(bite)});
         parry(rig, 1.5f, 0.f);

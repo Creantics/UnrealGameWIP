@@ -641,7 +641,9 @@ struct ArenaFightImpl {
             pl.soft = kArenaNobody;
             pl.homeClose = 0.f;
             pl.target = id(static_cast<std::size_t>(riposteAt));
-            pl.facing = arenaUnit(arenaSub(foes[static_cast<std::size_t>(riposteAt)].pos, pl.pos), pl.facing);
+            // Turned onto its enemy over startup (advanceAttack), not in one frame; with no startup, at once.
+            if (fi.riposte.startup <= kArenaEps)
+                pl.facing = arenaUnit(arenaSub(foes[static_cast<std::size_t>(riposteAt)].pos, pl.pos), pl.facing);
             beginAttack(ArenaAction::Riposte, kArenaRiposteMove, fi.riposte);
             return true;
         }
@@ -1047,7 +1049,13 @@ struct ArenaFightImpl {
                 want = arenaUnit(stick, pl.facing);
                 have = true;
             }
-            const float tracked = a0 < a.startup ? a.tracking * (std::min(a1, a.startup) - a0) : 0.f;
+            float tracked = a0 < a.startup ? a.tracking * (std::min(a1, a.startup) - a0) : 0.f;
+            if (pl.action == ArenaAction::Riposte && have && a0 < a.startup) {
+                // A riposte faces its enemy when startup ends whatever its tracking: at least this tick's share of the
+                // startup left, of the angle left.
+                const float left = std::abs(std::atan2(arenaCross(pl.facing, want), arenaDot(pl.facing, want)));
+                tracked = std::max(tracked, left * std::min(1.f, (std::min(a1, a.startup) - a0) / (a.startup - a0)));
+            }
             if (have) pl.facing = arenaTurn(pl.facing, want, std::max(tracked, attackTurn * dt));
         }
         pl.invulnerable = pl.action == ArenaAction::Riposte || pl.action == ArenaAction::Release;

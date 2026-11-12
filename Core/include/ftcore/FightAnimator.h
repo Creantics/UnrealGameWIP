@@ -12,9 +12,11 @@
 // Every clip has a key time: the frame that must meet the beat (a strike's impact, a dodge's
 // furthest point, a hit reaction's contact). play() with a key time starts the clip early enough to
 // reach that frame at its own pace, later if there is time to spare; with too little time it plays
-// faster (up to maxRate), and past that it joins the clip part way through, so the key frame still
-// falls on the beat. A chained clip never starts before the key frame of the one queued before it,
-// so a run of quick strikes each lands before the next winds up.
+// faster (up to maxRate, or the rate play() is given), and past that it joins the clip part way
+// through, so the key frame still falls on the beat; a clip joined part way fades in over at most
+// half the time to its key, so the key frame shows at full weight. A chained clip never starts
+// before the key frame of the one queued before it, so a run of quick strikes each lands before
+// the next winds up.
 //
 // Actions blend newest over oldest: each fades in over fadeIn and a one-shot fades out over fadeOut
 // at its end; what they leave goes to the Stance loop. Downed and Victory hold their last frame;
@@ -110,7 +112,9 @@ public:
 
     // Plays `clip` from `now`, or so that its key frame plays at `keyAt` when keyAt >= 0 (see the top
     // of this file). Returns false, playing nothing, when the body has no such clip.
-    FTCORE_API bool play(FightClip c, double now, double keyAt = -1.0);
+    // maxRate > 0 is the fastest this one may play to reach its key (a quick move on a long clip: a
+    // riposte), in place of the tuning's.
+    FTCORE_API bool play(FightClip c, double now, double keyAt = -1.0, float maxRate = 0.f);
     // Plays strike `c` as play() does, else the punch on its side (a kick, swing or cast the body has
     // no clip for), else StrikeLeft. Returns the clip it played; Stance when the body has none of them.
     FTCORE_API FightClip playStrike(FightClip c, double now, double keyAt = -1.0);
@@ -133,6 +137,7 @@ private:
         double start = 0.0; // when the clip starts playing at `offset`
         float rate = 1.f;
         float offset = 0.f;
+        float fadeIn = 0.f; // its own: the tuning's, shorter for a clip joined part way
     };
 
     static std::size_t index(FightClip c) { return static_cast<std::size_t>(c); }
