@@ -69,6 +69,10 @@ const FScalarSpec kScalars[] = {
 	{TEXT("FadeNearB"), 200.f},
 	{TEXT("FadeFarB"), 1200.f},
 	{TEXT("Cloth"), 0.6f},            // cloth master only: fuzz amount
+	{TEXT("SoleHeight"), -1000.f},    // pre-skinned height (cm) below which a shoe is rubber sole; off by default
+	{TEXT("SoleBlend"), 0.6f},        // cm over which the sole fades into the upper
+	{TEXT("SoleSpecular"), 0.45f},
+	{TEXT("SoleRoughness"), 0.85f},
 };
 
 struct FVectorSpec
@@ -80,6 +84,7 @@ const FVectorSpec kVectors[] = {
 	{TEXT("Tint"), FLinearColor::White},
 	{TEXT("MetalColor"), FLinearColor(0.56f, 0.57f, 0.58f)},
 	{TEXT("FuzzTint"), FLinearColor::White}, // cloth master only: fuzz colour = albedo x FuzzTint
+	{TEXT("SoleTint"), FLinearColor::White},  // albedo x SoleTint on the sole
 };
 
 struct FValue
@@ -169,6 +174,9 @@ return float4(tilt, saturate(1.0 + cavity), micro);
 
 const TCHAR* const kNormalCode = TEXT("return normalize(float3(Base.xy + D.xy, Base.z));");
 
+// A shoe's rubber sole, split from the upper by pre-skinned height (the rigid foot pieces stand on z = 0).
+const TCHAR* const kSoleCode = TEXT("return saturate((SoleHeight - P.z) / max(SoleBlend, 0.01) + 0.5);");
+
 const TCHAR* const kMetalCode = TEXT("return saturate(max(ORM.b * MetalScale, ForceMetal));");
 
 // Gain lifts dark albedo (x Gain near black) but rolls off towards white, so a map whose cloth is crushed to 0.004
@@ -178,6 +186,7 @@ float3 c = b * Gain / (1.0 + b * (Gain - 1.0));
 float edge = saturate((Wear.r - 0.5) * 2.0);
 c *= 1.0 + EdgeLighten * edge;
 c *= lerp(1.0, D.z, CavityDarken);
+c *= lerp(1.0, SoleTint.rgb, Sole);
 return lerp(c, MetalColor.rgb, Metal);
 )HLSL");
 
@@ -186,10 +195,11 @@ float crease = saturate((0.5 - Wear.r) * 2.0);
 float r = ORM.g * RoughScale + RoughOffset;
 r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
 r += crease * CreaseRough - edge * EdgeSmooth;
+r = lerp(r, SoleRough + D.w * MicroRough, Sole);
 return saturate(lerp(r, MetalRough, Metal));
 )HLSL");
 
-const TCHAR* const kSpecularCode = TEXT("return Spec * lerp(CavitySpec, 1.0, D.z);");
+const TCHAR* const kSpecularCode = TEXT("return lerp(Spec, SoleSpec, Sole) * lerp(CavitySpec, 1.0, D.z);");
 
 const TCHAR* const kOcclusionCode = TEXT("return lerp(1.0, ORM.r, AOStrength);");
 
@@ -371,11 +381,13 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 		600);
 	UMaterialExpressionCustom* Metal = Custom(Material, TEXT("GarmentMetal"), CMOT_Float1, kMetalCode,
 		{{TEXT("ORM"), Orm, 0}, {TEXT("MetalScale"), G.Scalar(TEXT("MetalScale")), 0}, {TEXT("ForceMetal"), G.Scalar(TEXT("ForceMetal")), 0}}, -500);
+	UMaterialExpressionCustom* Sole = Custom(Material, TEXT("GarmentSole"), CMOT_Float1, kSoleCode,
+		{{TEXT("P"), Position, 0}, {TEXT("SoleHeight"), G.Scalar(TEXT("SoleHeight")), 0}, {TEXT("SoleBlend"), G.Scalar(TEXT("SoleBlend")), 0}}, -700);
 	UMaterialExpressionCustom* Color = Custom(Material, TEXT("GarmentColor"), CMOT_Float3, kColorCode,
 		{{TEXT("Base"), Base, 0}, {TEXT("Tint"), G.Vector(TEXT("Tint")), 0}, {TEXT("Gain"), G.Scalar(TEXT("Gain")), 0}, {TEXT("Wear"), Wear, 0},
 			{TEXT("D"), Detail, 0}, {TEXT("EdgeLighten"), G.Scalar(TEXT("EdgeLighten")), 0},
 			{TEXT("CavityDarken"), G.Scalar(TEXT("CavityDarken")), 0}, {TEXT("MetalColor"), G.Vector(TEXT("MetalColor")), 0},
-			{TEXT("Metal"), Metal, 0}},
+			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0}},
 		-900);
 	UMaterialExpressionCustom* NormalOut = Custom(Material, TEXT("GarmentNormal"), CMOT_Float3, kNormalCode,
 		{{TEXT("Base"), Normal, 0}, {TEXT("D"), Detail, 0}}, -300);
@@ -384,10 +396,11 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("RoughOffset"), G.Scalar(TEXT("RoughnessOffset")), 0}, {TEXT("MicroRough"), G.Scalar(TEXT("MicroRoughness")), 0},
 			{TEXT("CavityRough"), G.Scalar(TEXT("CavityRoughness")), 0}, {TEXT("CreaseRough"), G.Scalar(TEXT("CreaseRoughness")), 0},
 			{TEXT("EdgeSmooth"), G.Scalar(TEXT("EdgeSmooth")), 0}, {TEXT("MetalRough"), G.Scalar(TEXT("MetalRoughness")), 0},
-			{TEXT("Metal"), Metal, 0}},
+			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0}},
 		0);
 	UMaterialExpressionCustom* Specular = Custom(Material, TEXT("GarmentSpecular"), CMOT_Float1, kSpecularCode,
-		{{TEXT("Spec"), G.Scalar(TEXT("Specular")), 0}, {TEXT("CavitySpec"), G.Scalar(TEXT("CavitySpecular")), 0}, {TEXT("D"), Detail, 0}}, 200);
+		{{TEXT("Spec"), G.Scalar(TEXT("Specular")), 0}, {TEXT("CavitySpec"), G.Scalar(TEXT("CavitySpecular")), 0}, {TEXT("D"), Detail, 0},
+			{TEXT("Sole"), Sole, 0}, {TEXT("SoleSpec"), G.Scalar(TEXT("SoleSpecular")), 0}}, 200);
 	UMaterialExpressionCustom* Occlusion = Custom(Material, TEXT("GarmentOcclusion"), CMOT_Float1, kOcclusionCode,
 		{{TEXT("ORM"), Orm, 0}, {TEXT("AOStrength"), G.Scalar(TEXT("AOStrength")), 0}}, 400);
 
