@@ -620,6 +620,8 @@ struct ArenaPlayerOut {
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
     bool overloaded = false;          // Load at kMaxLoad: light, heavy and heal are refused until a Release
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
+    float wantSpeed = -1.f;           // m/s the stick asks of a walk that ramps (Idle, Move, Guard, Heal) this frame, the
+                                      // pace the velocity heads for; -1 otherwise (an attack, a dodge, a pause, a stun)
 };
 
 struct ArenaEnemyOut {
@@ -1004,6 +1006,7 @@ private:
         bool shotPitched = false;           // the shot under way is a pitched round (ArenaInput::aimPitched at its start) ...
         float shotPitch = 0.f;              // ... climbing at this (rad)
         Vec2 attackWalk{};                  // the walking part of the velocity during an attack (the lunge apart)
+        float wantSpeed = -1.f;             // ArenaPlayerOut::wantSpeed, this step
         bool guardHeld = false;             // last tick's guard flag
         float lastGuardPress = -1.0e9f;     // fight time of the last guard press (every press counts)
         float parryLeft = 0.f;              // seconds left in the parry window

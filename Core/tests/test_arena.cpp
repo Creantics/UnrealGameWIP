@@ -7119,3 +7119,25 @@ TEST_CASE("arena checks: soft target is n/a when no attack could take one") {
     CHECK(free.fight.stats().softChances >= 1);
     CHECK(free.fight.stats().softTargets >= 1);
 }
+
+TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk, 0 let go, unknown outside a walk") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 6.f};
+    const ArenaFighter fighter = ruleFighter();
+    Rig rig(fighter, {dummyKind()}, 1, ring);
+    rig.put(0, -20.f, 0.f);
+    rig.in.move = Vec2{0.5f, 0.f};
+    CHECK(rig.tick().player.wantSpeed == doctest::Approx(0.5f * fighter.moveSpeed));
+    rig.in.move = Vec2{};
+    CHECK(rig.tick().player.wantSpeed == 0.f); // let go: braking toward a stand
+    rig.in.move = Vec2{0.f, 1.f};
+    rig.in.dodge = true;
+    CHECK(rig.tick().player.wantSpeed == -1.f); // a roll moves by its own rule
+    rig.in.dodge = false;
+    rig.run(60);
+    REQUIRE(rig.out().player.action == ArenaAction::Move);
+    CHECK(rig.out().player.wantSpeed == doctest::Approx(fighter.moveSpeed));
+    rig.in.light = true;
+    const ArenaOutput& hit = rig.tick();
+    REQUIRE(hit.player.action == ArenaAction::Light);
+    CHECK(hit.player.wantSpeed == -1.f); // an attack's walk is its own (AttackMove)
+}

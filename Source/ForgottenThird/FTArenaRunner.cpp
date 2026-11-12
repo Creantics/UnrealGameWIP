@@ -2313,6 +2313,13 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
 		Pose.Speed = PlayerStepSpeed;
 		Pose.LegYaw = LeadLegYaw;
+		// Where the walk heads (the stick's share of the pace; unknown in an attack, a roll or a pause) and, braking,
+		// how far the body slides at the brake from the pace the legs show.
+		Pose.WantSpeed = P.wantSpeed;
+		{
+			const float Brake = Fight.def().fighter.moveBrake;
+			Pose.StopDistance = P.wantSpeed >= 0.f && Brake > 0.f ? PlayerStepSpeed * PlayerStepSpeed / (2.f * Brake) : -1.f;
+		}
 		// The feet held while a strike's clip has the legs (its walk share under half) and through a hit pause: the
 		// body's lunge goes over planted feet, which step when it has gone too far.
 		{

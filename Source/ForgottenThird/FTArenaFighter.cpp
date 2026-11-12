@@ -607,7 +607,9 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
 			}
 			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
-			Anim->SetIntent(-1.f, -1.f);
+			// Where the walk heads, so the legs start and stop with the clips made for it (in cm).
+			const bool bWalks = !Pose.bLying && !Pose.bDodging && Pose.WantSpeed >= 0.f;
+			Anim->SetIntent(bWalks ? Pose.WantSpeed * 100.f : -1.f, bWalks && Pose.StopDistance >= 0.f ? Pose.StopDistance * 100.f : -1.f);
 		}
 	}
 	bWasLying = Pose.bLying;

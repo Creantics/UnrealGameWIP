@@ -356,6 +356,7 @@ struct ArenaFightImpl {
         // pause, if the host wants one, is its own to play from that Hit event's attack.
         const bool fighting = fight.phase_ == ArenaPhase::Fighting;
         po.stopLeft = fighting ? std::max(0.f, pl.stopUntil - fight.time_) : 0.f;
+        po.wantSpeed = fighting && po.stopLeft <= 0.f ? pl.wantSpeed : -1.f;
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             ArenaEnemyOut& eo = out.enemies[i];
             const Enemy& foe = foes[i];
@@ -905,6 +906,7 @@ struct ArenaFightImpl {
         // Paused for the whole tick, nothing starts (a press waits in the buffer, which doesn't age) and the
         // player stands still.
         playerOwn = ownTime(pl.stopUntil);
+        pl.wantSpeed = -1.f;
         if (!(playerOwn > 0.f)) {
             pl.velocity = Vec2{};
             return;
@@ -957,8 +959,9 @@ struct ArenaFightImpl {
 
     // The velocity of a state that ramps (Idle, Move, Guard, Heal): from where it is now toward `want`, by moveAccel
     // while the wanted speed is above the current one and by moveBrake otherwise.
-    Vec2 ramped(Vec2 want) const {
-        const float rate = arenaLength(want) > arenaLength(pl.velocity) ? fi.moveAccel : fi.moveBrake;
+    Vec2 ramped(Vec2 want) {
+        pl.wantSpeed = arenaLength(want);
+        const float rate = pl.wantSpeed > arenaLength(pl.velocity) ? fi.moveAccel : fi.moveBrake;
         return arenaRamp(pl.velocity, want, rate, dt);
     }
 
