@@ -62,6 +62,10 @@ FTCORE_API bool importRoadGraph(std::string_view csv, RoadGraph& out, std::strin
 // the left of each way (left-hand traffic), mitred at bends. One way: all lanes along its points. Appends.
 FTCORE_API void roadGraphStreetLanes(const MassingStreet& street, double speedKmh, bool oneWay, double pavementShare,
                                      RoadGraph& out);
+// A road network street's lanes: a two-lane street's as roadGraphStreetLanes (no pavement share); a four-lane street's
+// two each way (ids -F1, -F2, -B1, -B2; 1 next to the median), each (carriageway - median) / 4 wide, centred
+// roadNetLaneOffset to the left of its way. Appends.
+FTCORE_API void roadGraphNetLanes(const RoadNetStreet& street, RoadGraph& out);
 // A kerbed street's lanes (roadFootClass Vehicle): along its carriageway as roadFootSection lays it (a 4 m lane's off
 // centre), one way up to 6 m wide (a lane's 3 m), two ways wider. Nothing for a stair or a pedestrian way. Appends.
 FTCORE_API void roadGraphFootLanes(const MassingStreet& street, double speedKmh, RoadGraph& out);
@@ -88,7 +92,7 @@ struct RoadNetTopo {
 };
 FTCORE_API RoadNetTopo roadGraphNet(const std::vector<MassingStreet>& streets, double snap);
 
-// A road network's lanes (roadGraphStreetLanes at each street's speed and way), its junctions and phases
+// A road network's lanes (roadGraphNetLanes), its junctions and phases
 // (roadGraphJunctions, which numbers them as roadNetBuild does), and the build's zebras and bays. Appends.
 FTCORE_API void roadGraphFromNet(const std::vector<RoadNetStreet>& streets, const RoadBuild& build, RoadGraph& out);
 

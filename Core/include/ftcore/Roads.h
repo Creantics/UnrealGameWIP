@@ -152,6 +152,7 @@ enum class RoadTint : std::uint8_t {
     Water,      // a canal's water (a stand-in plane)
     Gutter,     // the dark gutter strip at a lane kerb's foot
     Drain,      // a gutter's drain grate
+    Verge,      // a median island's planted top (green-brown ground)
     Count
 };
 struct RoadColor {
@@ -160,7 +161,7 @@ struct RoadColor {
 FTCORE_API RoadColor roadTint(RoadTint tint);
 FTCORE_API const char* roadTintName(RoadTint tint);
 // The world surface master's "Street" value for a tint (its street layer): asphalt and patches 1, pavement 2, kerb 3,
-// lines 4, footway 5, tactile kRoadStreetTactile; the rest 0 (none).
+// lines 4, footway 5, tactile kRoadStreetTactile; the rest (Verge among them) 0 (none).
 inline constexpr int kRoadStreetTactile = 6;
 FTCORE_API int roadTintStreet(RoadTint tint);
 
@@ -387,7 +388,18 @@ struct RoadNetStreet {
     bool poleLeft = false, poleRight = false; // utility poles and wires along that side (left: of its points' way)
     std::vector<RoadPoint> scramble; // its junctions run as scrambles: an all-walk phase W and diagonal zebras (a point
                                      // within kRoadGraphSnap of the junction's centre names it)
+    int lanes = 2;               // 2 (one each way, or one way) or 4 (two each way)
+    double median = 0.0;         // m: a four-lane street's planted median island between its halves (0 none)
 };
+// A four-lane street's lanes and median (RoadNetStreet): each half (carriageway - median) / 2 holds two lanes of at
+// least kRoadNetLaneMin; a median, when there is one, is at least kRoadNetMedianMin wide.
+inline constexpr double kRoadNetLaneMin = 2.75;    // m
+inline constexpr double kRoadNetMedianMin = 1.5;   // m
+inline constexpr double kRoadNetIslandGap = 1.5;   // m: a median island stops this far past its zebra (see roadNetBuild)
+// The centre of a four-lane street's lane k (0: next to the median, 1: by the kerb) to the left of its way's centre
+// line: median / 2 + lane width * (k + 0.5), the lane width (carriageway - median) / 4. The markings and the road
+// graph's lanes (roadGraphNetLanes) both use it.
+FTCORE_API double roadNetLaneOffset(const RoadNetStreet& street, int k);
 // Whether a roads table is a network table: its header names pts but no ground_z (the ground is the world's).
 FTCORE_API bool roadNetTable(std::string_view csv);
 // Reads a network table (CSV, a header row; '#' comment rows). A row of kind canal is a canal (RoadCanal), not a
@@ -405,6 +417,8 @@ FTCORE_API bool roadNetTable(std::string_view csv);
 //   mouth_back_m, mouth_z  optional, as importRoads
 //   poles         optional: L, R or LR, utility poles with wires along that side (left of the way its points run)
 //   scramble      optional: "x:y;..." the junctions on it that run as scrambles (roadNetBuild)
+//   lanes         optional: 2 or 4 (empty: 2); a four-lane street is two way, each lane at least kRoadNetLaneMin
+//   median_m      optional: >= 0 (empty: 0); four lanes only, kRoadNetMedianMin at least when not 0
 // `out` is cleared first. False, with the reason naming the line, on any error.
 struct RoadCanal;
 FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr,
@@ -449,6 +463,11 @@ struct RoadNetReport {
 // lane or stop line or zebra bar; the rows on the fill must be one unbroken run covering kScrambleRun (80%) of the diagonal's rows
 // (the marking test trims its ends only), else none of it is laid; its crossing quad spans exactly the bars laid.
 // Kerbs as any junction's.
+// A four-lane street: two lanes each half, a dashed lane line inside each half (roadNetLaneOffset) and, with no median,
+// a double solid centre line; with a median, a raised island between the halves (kerbs all round kRoadKerbRise over the
+// road beside it, its top tinted Verge, kind verge) that stops kRoadZebraOff + kRoadZebraWide + kRoadNetIslandGap past
+// each end's corners, so the zebras cross the gap; the carriageway rectangles leave the island out. Its stop lines
+// cover the inbound half from the island's kerb.
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
 // junctions close together) are left out (report: pruned).
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,

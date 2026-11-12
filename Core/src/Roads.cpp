@@ -16,6 +16,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kMarkLift = 0.006;  // m: a marking's top over its surface
+constexpr double kCentreGap = 0.1;  // m: between a four-lane street's double centre lines
 constexpr double kStopEdge = 0.4;   // m: a stop line stops this far short of the kerb, inside the edge line (0.25 m off the kerb, 0.15 wide)
 constexpr double kMarkDeep = 0.008;  // m: a marking's thickness (its underside 2 mm under the surface)
 constexpr double kStubPavement = 2.0; // m: a stub arm's pavements
@@ -479,6 +480,7 @@ RoadColor roadTint(RoadTint tint) {
     case RoadTint::Water: return {0.02f, 0.05f, 0.05f, 0.03f};
     case RoadTint::Gutter: return {0.035f, 0.035f, 0.037f, 0.9f};
     case RoadTint::Drain: return {0.045f, 0.045f, 0.05f, 0.6f};
+    case RoadTint::Verge: return {0.09f, 0.10f, 0.045f, 0.9f};
     case RoadTint::Count: break;
     }
     return {0.5f, 0.5f, 0.5f, -1.f};
@@ -491,7 +493,7 @@ const char* roadTintName(RoadTint tint) {
                                         "Glass",     "Wood",         "BarrierRed", "Wire",     "Tyre",
                                         "CarWhite",  "CarSilver",    "CarBlack",  "CarRed",    "CarBlue",
                                         "CarGreen",  "CarCream",     "TaxiYellow", "BusGreen",  "Tactile",
-                                        "Footway",   "Water",        "Gutter",    "Drain"};
+                                        "Footway",   "Water",        "Gutter",    "Drain",     "Verge"};
     const auto i = static_cast<std::size_t>(tint);
     return i < sizeof names / sizeof names[0] ? names[i] : "Unknown";
 }
@@ -2433,15 +2435,35 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
         for (std::size_t i = 1; i < r.pts.size(); ++i)
             if (netLen(netSub(r.pts[i], r.pts[i - 1])) < 1.0)
                 return fail(error, rec.line, r.id + ": two of its points are less than 1 m apart");
+        {
+            double lanes = 2.0;
+            if (!num("lanes", lanes, false) || (lanes != 2.0 && lanes != 4.0))
+                return fail(error, rec.line, r.id + ": lanes is 2 or 4");
+            r.lanes = static_cast<int>(lanes);
+            if (!num("median_m", r.median, false) || !(r.median >= 0.0))
+                return fail(error, rec.line, r.id + ": median_m is a number, 0 or more");
+            if (r.median > 0.0 && r.lanes != 4)
+                return fail(error, rec.line, r.id + ": a median needs four lanes");
+            if (r.median > 0.0 && r.median < kRoadNetMedianMin - 1e-9)
+                return fail(error, rec.line, r.id + ": a median is 1.5 m wide at least");
+            if (r.lanes == 4 && r.oneWay) return fail(error, rec.line, r.id + ": a four-lane street is two way");
+        }
         const double carriage = r.width - 2.0 * r.pavement;
         if (r.pavement <= 0.0 || carriage < (r.oneWay ? 1.0 : 2.0) * 3.0 - 1e-6)
             return fail(error, rec.line, r.id + ": it needs pavements and a carriageway holding its lanes (3.0 m each)");
+        if (r.lanes == 4 && (carriage - r.median) * 0.25 < kRoadNetLaneMin - 1e-9)
+            return fail(error, rec.line, r.id + ": its four lanes need 2.75 m each beside the median");
         for (const RoadNetStreet& o : out)
             if (o.id == r.id) return fail(error, rec.line, r.id + ": the id is used twice");
         out.push_back(std::move(r));
     }
     if (head.empty()) return fail(error, 1, "the table has no header row");
     return true;
+}
+
+double roadNetLaneOffset(const RoadNetStreet& street, int k) {
+    const double lw = (street.width - 2.0 * street.pavement - street.median) * 0.25;
+    return street.median * 0.5 + lw * (k + 0.5);
 }
 
 MassingStreet roadNetStreet(const RoadNetStreet& s) {
@@ -2742,6 +2764,24 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                     wd -= sag;
                     const double pn = netDot(v, ux);
                     const double u0 = std::min(0.0, pn), u1 = std::max(lc, pn);
+                    // Arms of unlike widths: the far corners can reach past the narrow arm's far kerb (out of every
+                    // arm's fill), where the prune would take that kerb. Pull the far side in until both lie in the
+                    // fill; the pocket by the chord needs far less.
+                    const auto inFill = [&](RoadPoint q) {
+                        const RoadPoint r = netSub(q, nd.p);
+                        if (netLen(r) <= disc + 1e-6) return true;
+                        for (const NetArm& arm : nd.arms) {
+                            const double along = netDot(r, arm.d);
+                            const double across = std::fabs(netDot(r, netLeft(arm.d)));
+                            if (along >= -1e-6 && along <= arm.sc + 1e-6 && across <= arm.hc + 1e-6) return true;
+                        }
+                        return false;
+                    };
+                    const auto farIn = [&](double w) {
+                        const RoadPoint fe = netAdd(c.t1, netMul(pp, sag + w));
+                        return inFill(netAdd(fe, netMul(ux, u0))) && inFill(netAdd(fe, netMul(ux, u1)));
+                    };
+                    while (wd > 0.05 && !farIn(wd)) wd -= 0.1;
                     const RoadPoint mid =
                         netAdd(c.t1, netAdd(netMul(ux, (u0 + u1) * 0.5), netMul(pp, sag + wd * 0.5)));
                     if (wd > 0.05) {
@@ -3067,6 +3107,28 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
             x.deep = pc.deep;
             x.f = pc.fr;
         };
+        // A four-lane street's median island: between the halves, stopping short of each end's corners so the zebras
+        // cross the gap.
+        const bool four = st.lanes == 4;
+        const double hm = four ? st.median * 0.5 : 0.0;
+        const double islandOff = kRoadZebraOff + kRoadZebraWide + kRoadNetIslandGap;
+        const double i0 = sA + islandOff, i1 = sB - islandOff;
+        const bool island = hm > 0.0 && i1 - i0 > 2.0 * kRoadKerbWide + 1.0;
+        // The carriageway rectangles of a piece from c0 to c1 (piece frame): the halves alone beside the island.
+        auto carriageRects = [&](const Piece& pc, double c0, double c1) {
+            auto rect = [&](double a, double b, double t0, double t1) {
+                if (b - a > 1e-3) out.carriageway.push_back(footOf(x.box(pc.fr, a, b, t0, t1, 0, 0, 0, 0, "foot")));
+            };
+            if (!island) {
+                rect(c0, c1, -hc, hc);
+                return;
+            }
+            const double m0 = std::clamp(i0 - pc.p0, c0, c1), m1 = std::clamp(i1 - pc.p0, c0, c1);
+            rect(c0, m0, -hc, hc);
+            rect(m0, m1, hm, hc);
+            rect(m0, m1, -hc, -hm);
+            rect(m1, c1, -hc, hc);
+        };
         // A marking from s0 to s1 (edge frame), across t0..t1, split over the pieces.
         auto markAlong = [&](double s0, double s1, double t0, double t1) {
             for (const Piece& pc : pieces) {
@@ -3086,9 +3148,31 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                       RoadTint::Asphalt, true);
                 x.add(x.box(pc.fr, c0, c1, -hc, 0.0, mid, kRoadSlabDepth, 0.0, kRoadCrossfall, "asphalt"),
                       RoadTint::Asphalt, true);
-                out.carriageway.push_back(footOf(x.box(pc.fr, c0, c1, -hc, hc, 0, 0, 0, 0, "foot")));
+                carriageRects(pc, c0, c1);
             }
             out.band.push_back(footOf(x.box(pc.fr, 0.0, lp, -w2, w2, 0, 0, 0, 0, "foot")));
+            if (island) {
+                const double a = std::max(i0, pc.p0) - pc.p0, b = std::min(i1, pc.p1) - pc.p0;
+                if (b - a > 1e-3) {
+                    // Level across, its kerbs kRoadKerbRise over the road beside it (the crown falls from under it).
+                    const double top = x.crown - kRoadCrossfall * hm + kRoadKerbRise, kw = kRoadKerbWide;
+                    const bool start = i0 >= pc.p0 - 1e-9, end = i1 <= pc.p1 + 1e-9;
+                    for (const double sg : {1.0, -1.0})
+                        x.add(x.box(pc.fr, a, b, std::min(sg * hm, sg * (hm - kw)), std::max(sg * hm, sg * (hm - kw)), top,
+                                    kRoadSlabDepth + 0.15, 0.0, 0.0, "kerb"),
+                              RoadTint::Kerb, true);
+                    if (start)
+                        x.add(x.box(pc.fr, a, a + kw, -(hm - kw), hm - kw, top, kRoadSlabDepth + 0.15, 0.0, 0.0, "kerb"),
+                              RoadTint::Kerb, true);
+                    if (end)
+                        x.add(x.box(pc.fr, b - kw, b, -(hm - kw), hm - kw, top, kRoadSlabDepth + 0.15, 0.0, 0.0, "kerb"),
+                              RoadTint::Kerb, true);
+                    const double v0 = start ? a + kw : a, v1 = end ? b - kw : b;
+                    if (v1 - v0 > 1e-3)
+                        x.add(x.box(pc.fr, v0, v1, -(hm - kw), hm - kw, top, kRoadSlabDepth + 0.15, 0.0, 0.0, "verge"),
+                              RoadTint::Verge, true);
+                }
+            }
             for (int side = 0; side < 2; ++side) {
                 std::vector<SideSpan> clip;
                 for (const SideSpan& sp : side == 0 ? spansL : spansR) {
@@ -3134,9 +3218,38 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                         if (sp.type == Span::Mouth && a < sp.s1 && b > sp.s0) return true;
                 return false;
             };
-            for (double s = c0; s < c1 - 1.0; s += 2.0 * kRoadCentreDash) {
-                const double de = std::min(s + kRoadCentreDash, c1);
-                if (!atMouth(s, de)) markAlong(s, de, -kRoadLine * 0.5, kRoadLine * 0.5);
+            if (!four) {
+                for (double s = c0; s < c1 - 1.0; s += 2.0 * kRoadCentreDash) {
+                    const double de = std::min(s + kRoadCentreDash, c1);
+                    if (!atMouth(s, de)) markAlong(s, de, -kRoadLine * 0.5, kRoadLine * 0.5);
+                }
+            } else {
+                // A dashed lane line inside each half, between its two lanes.
+                const double tl = (roadNetLaneOffset(st, 0) + roadNetLaneOffset(st, 1)) * 0.5;
+                for (const double sg : {1.0, -1.0})
+                    for (double s = c0; s < c1 - 1.0; s += 2.0 * kRoadCentreDash)
+                        markAlong(s, std::min(s + kRoadCentreDash, c1), sg * tl - kRoadLine * 0.5,
+                                  sg * tl + kRoadLine * 0.5);
+                // No median: a double solid centre line, broken across each lane mouth.
+                if (hm <= 0.0) {
+                    std::vector<std::pair<double, double>> gaps;
+                    for (const std::vector<SideSpan>* side : {&spansL, &spansR})
+                        for (const SideSpan& sp : *side)
+                            if (sp.type == Span::Mouth) gaps.push_back({sp.s0, sp.s1});
+                    std::sort(gaps.begin(), gaps.end());
+                    double from = c0;
+                    auto solid = [&](double s0, double s1) {
+                        if (s1 - s0 < 1.0) return;
+                        for (const double sg : {1.0, -1.0})
+                            markAlong(s0, s1, sg * kCentreGap * 0.5, sg * (kCentreGap * 0.5 + kRoadLine));
+                    };
+                    for (const auto& [g0, g1] : gaps) {
+                        if (g1 <= from || g0 >= c1) continue;
+                        solid(from, std::min(g0, c1));
+                        from = std::max(from, g1);
+                    }
+                    solid(from, c1);
+                }
             }
         }
         // Zebras, stop lines and signals at each signalised end.
@@ -3167,8 +3280,10 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 ++out.counts.zebras;
                 const double nearS = end == 0 ? z1 : z0;
                 const double l0 = nearS + away * kRoadStopBack, l1 = l0 + away * kRoadStopLine;
-                markAlong(std::min(l0, l1), std::max(l0, l1), std::min(0.0, ti * (hc - kStopEdge)),
-                         std::max(0.0, ti * (hc - kStopEdge)));
+                // Across the inbound half; beside a median island, from its kerb.
+                const double tin = island ? hm + kStopEdge : 0.0;
+                markAlong(std::min(l0, l1), std::max(l0, l1), std::min(ti * tin, ti * (hc - kStopEdge)),
+                          std::max(ti * tin, ti * (hc - kStopEdge)));
                 out.keepOut.push_back(footOf(x.box(f, std::min(nearS, l1), std::max(nearS, l1), std::min(0.0, ti * hc),
                                                    std::max(0.0, ti * hc), 0, 0, 0, 0, "foot")));
                 poleS = l1 + away * 0.5;
@@ -3249,8 +3364,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
     // the carriageway or the other junction's fill is there.
     {
         RoadGraph lanes;
-        for (std::size_t i = 0; i < streets.size(); ++i)
-            roadGraphStreetLanes(ms[i], streets[i].speedKmh, streets[i].oneWay, 0.0, lanes);
+        for (const RoadNetStreet& st : streets) roadGraphNetLanes(st, lanes);
         const std::vector<const RoadSolid*> slabs = slabsOf(out);
         std::vector<char> drop(out.solids.size(), 0);
         for (std::size_t i = solids0; i < out.solids.size(); ++i) {

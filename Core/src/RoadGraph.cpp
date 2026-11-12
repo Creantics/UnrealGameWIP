@@ -310,6 +310,32 @@ void roadGraphStreetLanes(const MassingStreet& street, double speedKmh, bool one
     }
 }
 
+void roadGraphNetLanes(const RoadNetStreet& street, RoadGraph& out) {
+    const MassingStreet m = roadNetStreet(street);
+    if (street.lanes != 4) {
+        roadGraphStreetLanes(m, street.speedKmh, street.oneWay, 0.0, out);
+        return;
+    }
+    const std::vector<RoadPoint> p = pointsOf(m);
+    if (p.size() < 2) return;
+    const double lw = (street.width - 2.0 * street.pavement - street.median) * 0.25;
+    const std::vector<RoadPoint> back(p.rbegin(), p.rend());
+    for (const int dir : {1, -1})
+        for (int k = 0; k < 2; ++k) {
+            RoadGraphLane l;
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "-%c%d", dir > 0 ? 'F' : 'B', k + 1);
+            l.id = street.id + buf;
+            l.street = street.id;
+            l.dir = dir;
+            l.width = lw;
+            l.speedKmh = street.speedKmh;
+            l.oneWay = false;
+            l.pts = offsetLine(dir > 0 ? p : back, roadNetLaneOffset(street, k));
+            out.lanes.push_back(std::move(l));
+        }
+}
+
 void roadGraphFootLanes(const MassingStreet& street, double speedKmh, RoadGraph& out) {
     if (roadFootClass(street) != RoadFootClass::Vehicle) return;
     const RoadFootSection sc = roadFootSection(street);
@@ -464,7 +490,7 @@ void roadGraphFromNet(const std::vector<RoadNetStreet>& streets, const RoadBuild
     std::vector<MassingStreet> ms;
     for (const RoadNetStreet& s : streets) {
         ms.push_back(roadNetStreet(s));
-        roadGraphStreetLanes(ms.back(), s.speedKmh, s.oneWay, 0.0, out);
+        roadGraphNetLanes(s, out);
     }
     // The junctions and their phases; the zebras are the build's.
     RoadGraph jg;

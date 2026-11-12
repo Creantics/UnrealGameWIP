@@ -2,6 +2,7 @@
   "version": 1,
   "render": {
     "r.Lumen.HardwareRayTracing": 1,
+    "r.RayTracing.Shadows": 1,
     "r.Lumen.TranslucencyReflections.FrontLayer.Enable": 1
   },
   "worlds": {

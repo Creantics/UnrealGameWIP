@@ -1190,3 +1190,239 @@ TEST_CASE("road net: a built network's markings never lie over each other") {
     roadNetBuild(s, MassingGround{}, b);
     CHECK(roadCrossingOverlaps(b).empty());
 }
+
+namespace {
+
+// A 300 m boulevard (25 m: 3.5 m pavements, a 4 m median, four 3.5 m lanes) between two 14 m streets.
+const char* const kBoulevard = "id,kind,width_m,pts,pavement_m,lanes,median_m\n"
+                               "BV,street,25,0:0;300:0,3.5,4,4\n"
+                               "ST-W,street,14,0:-100;0:100,2.8,,\n"
+                               "ST-E,street,14,300:-100;300:100,2.8,,\n";
+
+bool feetOverlap(const MassingFoot& a, const MassingFoot& b) { return massingFeetOverlap(a, b, 0.0); }
+
+MassingFoot rectFoot(double x0, double y0, double x1, double y1) {
+    MassingFoot f;
+    f.x = (x0 + x1) * 0.5;
+    f.y = (y0 + y1) * 0.5;
+    f.hx = (x1 - x0) * 0.5;
+    f.hy = (y1 - y0) * 0.5;
+    return f;
+}
+
+} // namespace
+
+TEST_CASE("road net: the lanes and median_m columns read, default and refuse bad values") {
+    for (const RoadNetStreet& st : net(kTee)) {
+        CHECK(st.lanes == 2);
+        CHECK(st.median == 0.0);
+    }
+    const std::vector<RoadNetStreet> s = net(kBoulevard);
+    REQUIRE(s.size() == 3);
+    CHECK(s[0].lanes == 4);
+    CHECK(s[0].median == doctest::Approx(4.0));
+    CHECK(s[1].lanes == 2);
+    CHECK(s[1].median == 0.0);
+    CHECK(roadNetLaneOffset(s[0], 0) == doctest::Approx(3.75));
+    CHECK(roadNetLaneOffset(s[0], 1) == doctest::Approx(7.25));
+
+    std::vector<RoadNetStreet> out;
+    std::string err;
+    const std::string head = "id,kind,width_m,pts,pavement_m,one_way,lanes,median_m\n";
+    REQUIRE(importRoadNet(head + "A,street,20,0:0;50:0,3,,4,\n", out, &err));
+    CHECK(out[0].lanes == 4);
+    CHECK(out[0].median == 0.0);
+    REQUIRE(importRoadNet(head + "A,street,20,0:0;50:0,2.5,,4,1.5\n", out, &err)); // 15 - 1.5: 3.375 m lanes
+    CHECK(out[0].median == doctest::Approx(1.5));
+    REQUIRE(importRoadNet(head + "A,street,14,0:0;50:0,2.8,,2,0\n", out, &err));
+    CHECK(out[0].lanes == 2);
+    const char* bad[] = {
+        "A,street,20,0:0;50:0,3,,3,\n",   // three lanes
+        "A,street,20,0:0;50:0,3,,x,\n",   // not a number
+        "A,street,20,0:0;50:0,3,,4.5,\n", // not 2 or 4
+        "A,street,20,0:0;50:0,3,,2,2\n",  // a median on two lanes
+        "A,street,20,0:0;50:0,3,,,2\n",   // ... the default two
+        "A,street,20,0:0;50:0,3,,4,1\n",  // a median under 1.5 m
+        "A,street,20,0:0;50:0,3,,4,-1\n", // a negative median
+        "A,street,20,0:0;50:0,3,,4,x\n",  // not a number
+        "A,street,16,0:0;50:0,3,,4,\n",   // 10 m: 2.5 m lanes
+        "A,street,20,0:0;50:0,3,,4,4\n",  // 14 - 4: 2.5 m lanes
+        "A,street,20,0:0;50:0,3,1,4,\n",  // one way
+    };
+    for (const char* row : bad) {
+        INFO(row);
+        err.clear();
+        CHECK_FALSE(importRoadNet(head + "# a comment\n" + row, out, &err));
+        CHECK(err.find("line 3") != std::string::npos);
+    }
+}
+
+TEST_CASE("road net: a four-lane boulevard with a median: halves, lane lines, an island the zebras cross, four lanes") {
+    const std::vector<RoadNetStreet> s = net(kBoulevard);
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(s, MassingGround{}, b, &rep);
+    CHECK(rep.junctions == 2);
+    CHECK(rep.tight == 0);
+    CHECK(rep.pruned == 0); // the wide arm's corner fills stop short of the 14 m streets' far kerbs
+    int farKerbs = 0;       // ST-W's far kerb runs on through the T (x -4.2, |y| under 15)
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.kind == "kerb" && sd.box.id.rfind("ST-W-", 0) == 0 && sd.box.cx < -4.0 && std::fabs(sd.box.cy) < 15.0)
+            ++farKerbs;
+    CHECK(farKerbs == 2);
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    for (const RoadFace& f : roadKerbFaces(b, &g)) {
+        INFO(f.piece << " at " << f.x << ", " << f.y << ": " << f.fault);
+        CHECK(false);
+    }
+    CHECK(roadCrossingOverlaps(b).empty());
+
+    // hc 9, the median's half 2, lanes 3.5; the corners 4.2 + 6 m in from each end (sA 10.2, sB 289.8), the zebras
+    // 2 m past them and 4 m wide, the island 1.5 m past the zebras (17.7 to 282.3).
+    const double hc = 9.0, hm = 2.0;
+    // The carriageway beside the island: two half rectangles (one piece on flat ground), none over the island.
+    int halves = 0;
+    const MassingFoot isle = rectFoot(20.0, -hm + 0.05, 280.0, hm - 0.05);
+    for (const MassingFoot& f : b.carriageway) {
+        if (std::fabs(f.hy - (hc - hm) * 0.5) < 1e-6 && std::fabs(std::fabs(f.y) - (hc + hm) * 0.5) < 1e-6) ++halves;
+        CHECK_FALSE(feetOverlap(f, isle));
+    }
+    CHECK(halves == 2);
+
+    // The island: kerbs and a Verge top from 17.7 to 282.3, kRoadKerbRise over the road beside it.
+    double vergeLen = 0.0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.kind != "verge") continue;
+        CHECK(sd.tint == RoadTint::Verge);
+        CHECK(sd.collide);
+        CHECK(sd.box.sy == doctest::Approx(2.0 * hm - 2.0 * kRoadKerbWide));
+        vergeLen += sd.box.sx;
+        const double road = kRoadSurfaceLift + kRoadCrossfall * (hc - hm);
+        CHECK(sd.box.z1 == doctest::Approx(road + kRoadKerbRise));
+    }
+    CHECK(vergeLen == doctest::Approx(282.3 - 17.7 - 2.0 * kRoadKerbWide));
+    CHECK(roadTintStreet(RoadTint::Verge) == 0);
+    CHECK(std::string(roadTintName(RoadTint::Verge)) == "Verge");
+
+    // The boulevard's two zebras span its whole carriageway and nothing solid of its own (but the asphalt) stands on
+    // them; no kerb, pavement or island inside either half.
+    int zebras = 0;
+    for (const RoadQuad& q : b.crossings) {
+        if (q.street != "BV") continue;
+        ++zebras;
+        double x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+        for (const RoadPoint& p : q.pts) {
+            x0 = std::min(x0, p.x);
+            x1 = std::max(x1, p.x);
+            y0 = std::min(y0, p.y);
+            y1 = std::max(y1, p.y);
+        }
+        CHECK(y1 - y0 == doctest::Approx(2.0 * hc));
+        for (const RoadSolid& sd : b.solids)
+            if (sd.collide && sd.box.row.rfind("BV", 0) == 0 && sd.box.kind != "asphalt") {
+                INFO(sd.box.id);
+                CHECK_FALSE(feetOverlap(shrunk(solidFoot(sd), 0.01), rectFoot(x0, y0, x1, y1)));
+            }
+    }
+    CHECK(zebras == 2);
+    for (const double sg : {1.0, -1.0}) { // along the edge (sA 10.2 to sB 289.8; a corner chord leans 4 cm past)
+        const MassingFoot half = rectFoot(10.3, std::min(sg * (hm + 0.05), sg * (hc - 0.05)), 289.7,
+                                          std::max(sg * (hm + 0.05), sg * (hc - 0.05)));
+        for (const RoadSolid& sd : b.solids)
+            if (sd.box.kind == "kerb" || sd.box.kind == "pavement" || sd.box.kind == "verge") {
+                INFO(sd.box.id);
+                CHECK_FALSE(feetOverlap(shrunk(solidFoot(sd), 0.01), half));
+            }
+    }
+
+    // Markings: a dashed lane line 5.5 m each side of the centre, 26 dashes each (stop line to stop line), no centre
+    // line.
+    int lineL = 0, lineR = 0, centre = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.tint != RoadTint::LineWhite || sd.box.row.rfind("BV", 0) != 0) continue;
+        if (sd.box.sy > 0.2 || sd.box.sx < 1.0) continue; // along the street: lines, not bars
+        if (std::fabs(sd.box.cy - 5.5) < 1e-6) ++lineL;
+        if (std::fabs(sd.box.cy + 5.5) < 1e-6) ++lineR;
+        if (std::fabs(sd.box.cy) < 0.5) ++centre;
+    }
+    CHECK(lineL == 26);
+    CHECK(lineR == 26);
+    CHECK(centre == 0);
+
+    // The road graph: four lanes on the boulevard, two each way, centred on the marked lanes.
+    std::vector<const RoadGraphLane*> bv;
+    for (const RoadGraphLane& l : g.lanes)
+        if (l.street == "BV") bv.push_back(&l);
+    REQUIRE(bv.size() == 4);
+    const char* ids[] = {"BV-F1", "BV-F2", "BV-B1", "BV-B2"};
+    const double ys[] = {3.75, 7.25, -3.75, -7.25};
+    for (std::size_t i = 0; i < 4; ++i) {
+        CHECK(bv[i]->id == ids[i]);
+        CHECK(bv[i]->dir == (i < 2 ? 1 : -1));
+        CHECK(bv[i]->width == doctest::Approx(3.5));
+        CHECK(bv[i]->pts.front().y == doctest::Approx(ys[i]));
+        CHECK(bv[i]->pts.back().y == doctest::Approx(ys[i]));
+    }
+    CHECK(bv[0]->pts.front().x == doctest::Approx(0.0));
+    CHECK(bv[2]->pts.front().x == doctest::Approx(300.0));
+    int cross = 0;
+    for (const RoadGraphLane& l : g.lanes) cross += l.street == "ST-W" ? 1 : 0;
+    CHECK(cross == 2);
+}
+
+TEST_CASE("road net: four lanes and no median: a double solid centre line, no island; two-lane nets unchanged") {
+    const std::vector<RoadNetStreet> s = net("id,kind,width_m,pts,pavement_m,lanes\n"
+                                             "BV,street,20,0:0;300:0,3,4\n"
+                                             "ST-W,street,14,0:-100;0:100,2.8,\n"
+                                             "ST-E,street,14,300:-100;300:100,2.8,\n");
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(s, MassingGround{}, b, &rep);
+    CHECK(rep.pruned == 0);
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    CHECK(roadKerbFaces(b, &g).empty());
+    CHECK(roadCrossingOverlaps(b).empty());
+    int doubles = 0, lane = 0, verge = 0;
+    for (const RoadSolid& sd : b.solids) {
+        verge += sd.box.kind == "verge" ? 1 : 0;
+        if (sd.tint != RoadTint::LineWhite || sd.box.row.rfind("BV", 0) != 0 || sd.box.sx < 1.0 || sd.box.sy > 0.2)
+            continue;
+        if (std::fabs(std::fabs(sd.box.cy) - 0.125) < 1e-6) {
+            ++doubles;
+            CHECK(sd.box.sx > 200.0);
+        }
+        if (std::fabs(std::fabs(sd.box.cy) - 3.5) < 1e-6) ++lane;
+    }
+    CHECK(doubles == 2);
+    CHECK(lane == 52);
+    CHECK(verge == 0);
+    int lanes = 0;
+    for (const RoadGraphLane& l : g.lanes)
+        if (l.street == "BV") {
+            ++lanes;
+            CHECK(std::fabs(l.pts.front().y) == doctest::Approx(l.id.back() == '1' ? 1.75 : 5.25));
+        }
+    CHECK(lanes == 4);
+
+    // Two-lane networks build as before: the T's and the cross's solids, markings and graph lanes.
+    RoadBuild tb;
+    roadNetBuild(net(kTee), MassingGround{}, tb);
+    CHECK(tb.solids.size() == 211);
+    CHECK(tb.counts.markings == 70);
+    RoadGraph tg;
+    roadGraphFromNet(net(kTee), tb, tg);
+    CHECK(tg.lanes.size() == 4);
+    const std::vector<RoadNetStreet> cs = net("id,kind,width_m,pts,pavement_m,parking\n"
+                                              "ST-H,street,18,0:0;240:0,3.6,1\n"
+                                              "ST-V,street,14,120:-150;120:150,2.8,0\n"
+                                              "ST-B,street,14,0:0;-60:60;-60:200,2.8,0\n");
+    RoadBuild cb;
+    roadNetBuild(cs, MassingGround{}, cb);
+    CHECK(cb.solids.size() == 648);
+    CHECK(cb.counts.markings == 199);
+    RoadGraph cg;
+    roadGraphFromNet(cs, cb, cg);
+    CHECK(cg.lanes.size() == 6);
+}

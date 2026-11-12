@@ -102,11 +102,12 @@ struct FRoadPainter
 		const bool bFlat = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::LensRed ||
 			Which == ftcore::RoadTint::LensAmber || Which == ftcore::RoadTint::LensGreen || Which == ftcore::RoadTint::Wire ||
 			Which == ftcore::RoadTint::Tactile || Which == ftcore::RoadTint::Water || Which == ftcore::RoadTint::Gutter ||
-			Which == ftcore::RoadTint::Drain;
+			Which == ftcore::RoadTint::Drain || Which == ftcore::RoadTint::Verge;
 		// A canal's walls and floor are walked on and drawn at any distance, as the road's ground is.
 		const bool bCanal = Box.kind.rfind("canal_", 0) == 0;
 		const bool bGround = Which == ftcore::RoadTint::Asphalt || Which == ftcore::RoadTint::AsphaltPatch || Which == ftcore::RoadTint::Pavement ||
-			Which == ftcore::RoadTint::Kerb || Which == ftcore::RoadTint::Footway || Which == ftcore::RoadTint::Gutter || (bCanal && Solid.collide);
+			Which == ftcore::RoadTint::Kerb || Which == ftcore::RoadTint::Footway || Which == ftcore::RoadTint::Gutter ||
+			Which == ftcore::RoadTint::Verge || (bCanal && Solid.collide);
 		const bool bCyl = Solid.shape == ftcore::RoadShape::Cylinder && Cylinder;
 		FVector Location, Scale;
 		FRotator Rotation;

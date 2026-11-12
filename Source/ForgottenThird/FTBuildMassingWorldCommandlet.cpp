@@ -85,7 +85,12 @@ namespace
 constexpr int32 kLandSubsections = 2;
 constexpr int32 kLandSubsectionQuads = 63;
 // The sea's plane reaches this far (m) east of its west edge, and as far each way along the square.
-constexpr double kSeaReach = 60000.0;
+// The water's own plane stays at 20 km: at 60 km the water surface rendered pure white from low eyes (rounds 11 and
+// 12). A plain dark plate under the sea bed carries the sea on to the horizon and gives the water a floor past the
+// height field's edge.
+constexpr double kSeaReach = 20000.0;
+constexpr double kSeaFarReach = 60000.0;
+constexpr double kSeaFarDrop = 40.0; // m under the datum (the bed lies at -33 m at its deepest)
 // How far (cm) the entry and a goal may lie from the navmesh and still count as on it.
 const FVector kNavProjectExtent(300.0, 300.0, 600.0);
 // The material slot of a sloped box's mesh.
@@ -2879,6 +2884,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			Cm(ftcore::massingEnginePoint(Side, SeaWest + kSeaReach * 0.5, Side * 0.5, 0.0)), FVector(kSeaReach, 2.0 * kSeaReach, 1.0), 0.0);
 		Sea->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 		Sea->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
+		AStaticMeshActor* Far = Block(World, Spawn, Plane, SeaTint, TEXT("SeaFar"),
+			Cm(ftcore::massingEnginePoint(Side, SeaWest + kSeaFarReach * 0.5, Side * 0.5, -kSeaFarDrop)), FVector(kSeaFarReach, 2.0 * kSeaFarReach, 1.0), 0.0);
+		Far->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+		Far->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
+		Far->GetStaticMeshComponent()->SetCastShadow(false);
 	}
 	if (bSurfaces)
 	{

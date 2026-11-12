@@ -41,11 +41,14 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     CHECK(*t.find("solhaven") != *t.find("lattice"));
     CHECK(*t.find("lattice") != *t.find("unwritten"));
     // The engine's ray-traced reflections are on for every world.
-    REQUIRE(t.render.size() == 2);
+    // Ray-traced sun and moon shadows are the default where the card traces rays (shadow maps otherwise).
+    REQUIRE(t.render.size() == 3);
     CHECK(t.render[0].name == "r.Lumen.HardwareRayTracing");
     CHECK(t.render[0].value == 1.f);
-    CHECK(t.render[1].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
+    CHECK(t.render[1].name == "r.RayTracing.Shadows");
     CHECK(t.render[1].value == 1.f);
+    CHECK(t.render[2].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
+    CHECK(t.render[2].value == 1.f);
     // Water, wetness, fog albedo, practical lights and glow are set per world.
     CHECK(t.find("solhaven")->wetness > 0.f);
     CHECK(t.find("lattice")->glowStrength > 0.f);
