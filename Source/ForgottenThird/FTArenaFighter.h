@@ -226,6 +226,7 @@ private:
 	bool bWalking = false;
 	bool bTellShown = true;
 	bool bShieldShown = true;
+	bool bPlayerFigure = false; // the player's figure never shows the guard plate
 	FLinearColor LastTint = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastShield = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastTell = FLinearColor(-1.f, -1.f, -1.f);

@@ -21,6 +21,7 @@
 #include "NiagaraSystem.h"
 #include "NiagaraSystemInstanceController.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/SoftObjectPath.h"
 
 #include "ftcore/BeatChoreo.h"
 
@@ -57,6 +58,8 @@ FRotator ConeTo(const FVector& Dir)
 	return FRotationMatrix::MakeFromZ(Dir.GetSafeNormal(UE_SMALL_NUMBER, FVector::ForwardVector)).Rotator();
 }
 
+// The gauntlet hands' fist curl in guard (UFTLocomotionAnimInstance::SetHandCurl); a punch closes its hand fully.
+constexpr float kGuardCurl = 0.5f;
 // The arm aim comes in over the startup's last share and goes out over this share of the recovery.
 constexpr float kAimInShare = 0.7f;
 constexpr float kAimOutShare = 0.6f;
@@ -80,12 +83,32 @@ struct FArmBones
 	FName Shoulder;
 	FName Hand;
 	FName Knuckle;
+	FName KnuckleMid; // the middle finger's second joint: with Knuckle, the closed fist's striking pad between them
 };
 const FArmBones& ArmBones(int32 Side)
 {
-	static const FArmBones Bones[2] = {{FName(TEXT("upperarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l"))},
-		{FName(TEXT("upperarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r"))}};
+	static const FArmBones Bones[2] = {
+		{FName(TEXT("upperarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l")), FName(TEXT("middle_02_l"))},
+		{FName(TEXT("upperarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r")), FName(TEXT("middle_02_r"))}};
 	return Bones[Side == 0 ? 0 : 1];
+}
+// The closed fist's striking pad: halfway along the middle finger's first bone, out from the wrist by kPadOut (the
+// knuckle bone alone when the second joint is missing). False with no knuckle bone.
+constexpr double kPadOut = 2.0;
+bool KnucklePad(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
+{
+	const FArmBones& Bones = ArmBones(Side);
+	if (!Body.DoesSocketExist(Bones.Knuckle))
+	{
+		return false;
+	}
+	const FVector Knuckle = Body.GetSocketLocation(Bones.Knuckle);
+	Out = Body.DoesSocketExist(Bones.KnuckleMid) ? (Knuckle + Body.GetSocketLocation(Bones.KnuckleMid)) * 0.5 : Knuckle;
+	if (Body.DoesSocketExist(Bones.Hand))
+	{
+		Out += (Knuckle - Body.GetSocketLocation(Bones.Hand)).GetSafeNormal() * kPadOut;
+	}
+	return true;
 }
 // A view of a strike's impact, this long after it.
 constexpr double kViewLag = 0.03;
@@ -249,10 +272,20 @@ void FFTLeadWeapons::AttachProps()
 	}
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 	{
-		for (int32 I = 0; I < FTWeaponProps::NumGauntletPieces; ++I)
+		// Skinned to the body's skeleton, posed by it.
+		TArray<FSoftObjectPath> Paths;
+		for (const TCHAR* Name : FTWeaponProps::GauntletPieces)
 		{
-			Gauntlet[I] = AttachProp(FTWeaponProps::GauntletPieces[I]);
+			Paths.Emplace(FString::Printf(TEXT("%s/%s.%s"), FTWeaponProps::GauntletFolder, Name, Name));
 		}
+		TArray<TObjectPtr<USkeletalMeshComponent>> Added;
+		FTLook::AddPieces(*Figure.Get(), *Skin.Get(), Paths, Added, Prefix());
+		for (int32 I = 0; I < Added.Num() && I < FTWeaponProps::NumGauntletPieces; ++I)
+		{
+			Gauntlet[I] = Added[I];
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d of %d gauntlet pieces on %s."), Prefix(), Added.Num(),
+			FTWeaponProps::NumGauntletPieces, *Skin->GetSkeletalMeshAsset()->GetName());
 	}
 	else
 	{
@@ -479,6 +512,31 @@ void FFTLeadWeapons::Freeze(double T)
 	}
 }
 
+void FFTLeadWeapons::HitPause(bool bOn)
+{
+	if (bOn == bHitPaused)
+	{
+		return;
+	}
+	bHitPaused = bOn;
+	AActor* Body = Figure.Get();
+	if (!Body)
+	{
+		return;
+	}
+	// While a view frame holds the figure, its clock is Thaw's to give back: the pause changes what Thaw restores.
+	float& Dilation = bFrozen ? FrozenDilation : Body->CustomTimeDilation;
+	if (bOn)
+	{
+		HitPauseDilation = Dilation;
+		Dilation = 0.f;
+	}
+	else
+	{
+		Dilation = HitPauseDilation;
+	}
+}
+
 void FFTLeadWeapons::Thaw()
 {
 	if (!bFrozen)
@@ -534,6 +592,9 @@ void FFTLeadWeapons::End()
 	if (UFTLocomotionAnimInstance* Instance = Anim.Get())
 	{
 		Instance->ClearActions();
+		Instance->SetHandCurl(-1.f, -1.f);
+		Instance->SetHandGrip(false, false);
+		Instance->SetSupportHand(0.f);
 		if (AimSide >= 0)
 		{
 			Instance->SetArmAim(AimSide, AimPoint, 0.f, FVector::ForwardVector, 0.f);
@@ -543,7 +604,7 @@ void FFTLeadWeapons::End()
 			Instance->SetActionClip(static_cast<int32>(StrikeClip), nullptr);
 		}
 	}
-	for (TWeakObjectPtr<UStaticMeshComponent>& Piece : Gauntlet)
+	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{
 		if (Piece.IsValid())
 		{
@@ -727,6 +788,17 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		ImpactDue = -1.0;
 		if (UFTVfxComponent* Vfx = Fx[Impact].Get())
 		{
+			// The fist's spark at its knuckles (a kick's at the foot), where it lands.
+			if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+			{
+				FName Limb;
+				bool bLeft = false;
+				const USkeletalMeshComponent* Body = Skin.Get();
+				if (!(Body && Strike != FightClip::KickLeft && Strike != FightClip::KickRight && KnucklePad(*Body, StrikesLeft() ? 0 : 1, ImpactAt)))
+				{
+					GetStrikeLimb(Limb, ImpactAt, bLeft);
+				}
+			}
 			Vfx->SetWorldLocationAndRotation(ImpactAt, FRotator::ZeroRotator);
 			Play(Impact, T);
 			LastImpactTime = T;
@@ -826,6 +898,24 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			W = 1.f - FMath::SmoothStep(0.f, 1.f, (Time - S - A) / Out);
 		}
 	}
+	// Held aim: the pistol arm (the right) or the casting hand stays raised at the aim point between attacks.
+	if (AimHold > 0.f && !bKick && Kit.weapon != ftcore::ArenaWeapon::Gauntlets && Kit.weapon != ftcore::ArenaWeapon::None)
+	{
+		if (Side < 0)
+		{
+			Side = 1;
+		}
+		W = FMath::Max(W, AimHold);
+	}
+	// Gauntlets: both hands half closed in guard, the striking one closing into a full fist as the arm comes in.
+	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+	{
+		float Curl[2] = {kGuardCurl, kGuardCurl};
+		Curl[Side == 0 ? 0 : 1] += (1.f - kGuardCurl) * W;
+		Instance->SetHandCurl(Curl[0], Curl[1]);
+	}
+	// The pistol: the right hand shaped round its grip while it is in the hand.
+	Instance->SetHandGrip(false, Kit.weapon == ftcore::ArenaWeapon::Guns && Pistol.IsValid() && !bHolstered);
 	// Only at a point in front of the body: a target behind waits for the body to turn.
 	if (W > 0.f)
 	{
@@ -838,6 +928,8 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			W *= FMath::SmoothStep(kAimSideCos, kAimFrontCos, Cos);
 		}
 	}
+	// Aim held with the pistol: the left hand joins the right on the grip (a two-handed hold).
+	Instance->SetSupportHand(Kit.weapon == ftcore::ArenaWeapon::Guns && Side == 1 ? FMath::Min(AimHold, W) : 0.f);
 	if (W <= 0.f || Side < 0)
 	{
 		if (AimSide >= 0)
@@ -936,6 +1028,7 @@ void FFTLeadWeapons::Paint(double T)
 		return;
 	}
 	Instance->ClearActions();
+	Instance->SetActionUpper(ActionUpper);
 	float Fade = 1.f;
 	if (FadeSince >= 0.0)
 	{
@@ -961,6 +1054,7 @@ void FFTLeadWeapons::Paint(double T)
 
 void FFTLeadWeapons::Restart()
 {
+	HitPause(false);
 	Thaw();
 	for (double& At : StartAt)
 	{
@@ -999,6 +1093,7 @@ void FFTLeadWeapons::Restart()
 
 void FFTLeadWeapons::Reset()
 {
+	HitPause(false);
 	Thaw();
 	for (double& At : StartAt)
 	{
@@ -1009,7 +1104,7 @@ void FFTLeadWeapons::Reset()
 	Skin.Reset();
 	Anim.Reset();
 	bClips = false;
-	for (TWeakObjectPtr<UStaticMeshComponent>& Piece : Gauntlet)
+	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{
 		Piece.Reset();
 	}
@@ -1030,6 +1125,7 @@ void FFTLeadWeapons::Reset()
 	LastImpactTime = -1e9;
 	AimSide = -1;
 	bAimed = false;
+	AimHold = 0.f;
 }
 
 const TCHAR* FFTLeadWeapons::GetLastStrikeName() const

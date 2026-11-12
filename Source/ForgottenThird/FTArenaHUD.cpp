@@ -1,5 +1,7 @@
 #include "FTArenaHUD.h"
 
+#include "FTAimReticle.h"
+
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -11,6 +13,7 @@
 #include "FTArenaHost.h"
 #include "FTArenaRunner.h"
 #include "FTPauseOverlay.h"
+#include "FTInputBindings.h"
 #include "FTUiText.h"
 #include "GameFramework/PlayerController.h"
 
@@ -52,7 +55,6 @@ const FTUiText kNoStaminaArena(TEXT("arena.no_stamina"));
 const FTUiText kAutoPlayArena(TEXT("arena.autoplay"));
 const FTUiText kIdleArena(TEXT("arena.idle"));
 const FTUiText kStatsArena(TEXT("arena.stats"));
-const FTUiText kHintArena(TEXT("arena.hint"));
 const FTUiText kLoadArena(TEXT("arena.load"));
 const FTUiText kLoadPlusArena(TEXT("arena.load_plus"));
 const FTUiText kReleaseReadyArena(TEXT("arena.release_ready"));
@@ -1072,7 +1074,9 @@ void AFTArenaHUD::DrawHUD()
 	{
 		DrawResult(*Mode);
 	}
+	// The aim's centre reticle (right mouse held), faded in with the stance.
+	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha());
 	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
-	DrawStrCentered(kHintArena, kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
 	FT::DrawPauseOverlay(*this, Canvas);
 }

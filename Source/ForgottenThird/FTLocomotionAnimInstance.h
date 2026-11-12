@@ -103,6 +103,8 @@ struct FFTLocomotionAnimProxy : public FAnimInstanceProxy
 	// The air pose's bones: clavicle to hand on each side, then thigh to foot on each side.
 	static constexpr int32 NumArmBones = 8;
 	static constexpr int32 NumLimbs = 14;
+	// The fist's bones on each hand: index, middle, ring and pinky _01.._03, then thumb_01.._03.
+	static constexpr int32 NumFingerBones = 15;
 
 	virtual void PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds) override;
 	virtual bool Evaluate(FPoseContext& Output) override;
@@ -117,6 +119,12 @@ private:
 	};
 	FLayer Layers[MaxLayers];
 	int32 NumLayers = 0;
+	// The layers before the actions (the locomotion's), and the actions' upper-body share (SetActionUpper): the bones
+	// off UpperMask (the pelvis, the legs) blend back to those layers alone by it. UpperMask is per compact bone, made
+	// with the bones.
+	int32 NumLoco = 0;
+	float UpperShare = 0.f;
+	TArray<bool> UpperMask;
 	// The spine's bend this frame, in component space: one rotation shared over the spine bones.
 	FQuat SpineBend = FQuat::Identity;
 	// The head's on top of it (Locomotion's headPitch, headRoll, headYaw), shared over the neck bones.
@@ -135,6 +143,18 @@ private:
 	FVector AimTarget = FVector::ZeroVector;
 	FVector AimAxis = FVector::ForwardVector;
 	float AimReach = 0.f;
+	// The other hand's support of the aimed one (SetSupportHand): by SupportWeight its wrist beside and under the
+	// aimed wrist, its fingers wrapped, for a two-handed hold.
+	float SupportWeight = 0.f;
+	// A hand in the pistol grip shape (SetHandGrip): the index along the trigger guard, the rest wrapped round.
+	bool bGrip[2] = {false, false};
+	// The hands' fist curl (SetHandCurl; below 0 the clip's own fingers), and per finger bone the curl's axis in its
+	// parent's space and its ref-pose rotation (bound with the bones; bFingers when a hand has them all).
+	float Curl[2] = {-1.f, -1.f};
+	FBoneReference Finger[2][NumFingerBones];
+	FVector FingerAxis[2][NumFingerBones];
+	FQuat FingerRef[2][NumFingerBones];
+	bool bFingers[2] = {false, false};
 
 	FBoneReference Spine[NumSpine];
 	FBoneReference Neck[NumNeck];
@@ -275,6 +295,24 @@ public:
 		PushedAimAxis = Axis;
 		PushedAimReach = Reach;
 	}
+	// The hands closed into fists by Left and Right (0..1; 1 a full fist, 0.5 half closed, below 0 the clip's own
+	// fingers): each finger bone at its ref pose turned toward the palm (the thumb's side) by its share of the fist
+	// (index to pinky 75-80, 90, 50 degrees from the knuckle out; thumb 25, 35, 45), after the clips and the air pose.
+	void SetHandCurl(float Left, float Right)
+	{
+		PushedCurl[0] = Left;
+		PushedCurl[1] = Right;
+	}
+	// A hand shaped round a pistol's grip in place of the fist (the index finger nearly straight along the trigger
+	// guard, the other fingers wrapped, the thumb over): wins over SetHandCurl for that hand.
+	void SetHandGrip(bool bLeft, bool bRight)
+	{
+		bPushedGrip[0] = bLeft;
+		bPushedGrip[1] = bRight;
+	}
+	// While the right arm is aimed (SetArmAim, side 1): the left hand joins it by Weight (0..1), wrist under and beside
+	// the right one, for a two-handed hold.
+	void SetSupportHand(float Weight) { PushedSupport = Weight; }
 	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
 	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
 	// A roll asked for and still kept (Locomotion's roll input): touching down with it, a moving body rolls out of
@@ -320,6 +358,9 @@ public:
 	bool SetActionClip(int32 Slot, UAnimSequence* Clip);
 	UAnimSequence* GetActionClip(int32 Slot) const { return Slot >= 0 && Slot < MaxActionClips ? ActionClips[Slot].Get() : nullptr; }
 	void ClearActions() { NumActions = 0; }
+	// The share (0..1) of the actions that plays on the upper body only (ftcore::attackUpperShare): spine_01 and the
+	// bones under it take the action, the pelvis and the legs keep the locomotion by that share (0: the whole body).
+	void SetActionUpper(float Share) { ActionUpper = FMath::Clamp(Share, 0.f, 1.f); }
 	void AddAction(int32 Slot, float Time, float Weight)
 	{
 		if (NumActions < MaxActions && Slot >= 0 && Slot < MaxActionClips && Weight > 0.f)
@@ -367,6 +408,7 @@ private:
 	};
 	FAction Actions[MaxActions];
 	int32 NumActions = 0;
+	float ActionUpper = 0.f;
 	ftcore::TraversalSet Traversal;
 	ftcore::SlideSet Slide;
 	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and
@@ -413,6 +455,9 @@ private:
 	float PushedAimWeight = 0.f;
 	FVector PushedAimAxis = FVector::ForwardVector;
 	float PushedAimReach = 0.f;
+	float PushedCurl[2] = {-1.f, -1.f};
+	bool bPushedGrip[2] = {false, false};
+	float PushedSupport = 0.f;
 	bool bPushedFace = false;
 	bool bPushedAir = false;
 	bool bPushedCrouch = false;

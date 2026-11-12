@@ -1,4 +1,5 @@
 # Run as: cmake -DSOURCE_DIR=<Source/ForgottenThird> -DTABLE=<Data/Loc/en/ui.json> [-DITEMS=<Data/Battle/items.json>]
+#         [-DHINTS=<Core/src/InputBindings.cpp>]
 #         -P CheckUiTextKeys.cmake
 # Every interface-text key the game uses (FTUiText k...(TEXT("key")) or FTUiText::Lookup(TEXT("key")))
 # must be in the English table, and every key in the table must be used somewhere.
@@ -40,6 +41,16 @@ if(DEFINED ITEMS AND EXISTS "${ITEMS}")
             list(APPEND used "item.${item_id}.name" "item.${item_id}.desc")
         endforeach()
     endif()
+endif()
+# The controls lines are built in Core from the binding table (ftcore::inputHintLine): with HINTS, every
+# "input.<word>" that file names counts as used.
+if(DEFINED HINTS AND EXISTS "${HINTS}")
+    file(READ "${HINTS}" hints_text)
+    string(REGEX MATCHALL "\"input\.[a-z_]+\"" hint_hits "${hints_text}")
+    foreach(hit IN LISTS hint_hits)
+        string(REPLACE "\"" "" key "${hit}")
+        list(APPEND used "${key}")
+    endforeach()
 endif()
 list(REMOVE_DUPLICATES used)
 

@@ -14,10 +14,14 @@
 // (UFTLocomotionAnimInstance's actions), and fade out over kFadeOut once the attack is over or cut short. While they
 // are on, the figure's shapes blade is hidden.
 //
-// Props (FTImportProp into /Game/Props/Weapons; the sockets made by -run=FTWeaponSockets, see FTWeaponSocketsCommandlet.h):
-//   - gauntlets: four pieces, each on its mesh-only socket on the body (ft_gauntlet_vambrace_r/l on the forearms,
-//     ft_gauntlet_plate_r/l on the hands);
-//   - guns: the pistol in ft_pistol_grip_r (on hand_r), moved to ft_pistol_holster_r (on thigh_r) once the fight is over.
+// Props:
+//   - gauntlets: six skinned pieces per FTWeaponProps::GauntletPieces (glove, wrist strap and bracer for each hand), fitted
+//     to the gauntlet lead's body at rest and skinned to its skeleton, so they ride it by leader pose (FTLook::AddPieces)
+//     and the fingers bend with the hand; they are on whenever the kit's weapon is gauntlets, both hands half closed in
+//     guard and the striking one closing into a full fist through its punch (SetHandCurl);
+//   - guns: the pistol (FTImportProp into /Game/Props/Weapons; sockets by -run=FTWeaponSockets, see
+//     FTWeaponSocketsCommandlet.h) in ft_pistol_grip_r (on hand_r), moved to ft_pistol_holster_r (on thigh_r) once the
+//     fight is over.
 // A missing mesh or socket leaves that piece off, with one warning.
 //
 // Aim (SetAim, each step before Track): the hit point the host gives (the target's chest on the near side of its body,
@@ -32,8 +36,11 @@
 //     point at its lifetime, kTracerTime), then gun_impact at the hit point;
 //   - spell_bolt from the casting hand to the hit point as any magic attack goes active (the same way, kBoltTime), then
 //     spell_impact at the hit point;
-//   - gauntlet_spark at the hit point on the lead's hit;
+//   - gauntlet_spark at the striking fist's knuckles (the foot for a kick) on the lead's hit;
 //   - spell_ward at the feet while a magic lead guards.
+// The magic kit (ftcore::ArenaWeapon::Magic, "weapon": "magic" in arena.json: its cast, spell effects and ward) is kept
+// for a future fighter kind: no shipped fighter uses it (the third party slot is a support slot with no attack kit), and
+// Core's arena tests pin what it plays.
 // Each start logs one line, "<Arena|Field>: weapon fx <effect> at <fight time>". Run checks, one line each:
 // "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment, only on capture runs
 // (-ArenaShot= or -ExploreWeaponShot=) (the angle between the
@@ -65,19 +72,20 @@ namespace FTWeaponProps
 // Where FTImportProp puts them.
 inline constexpr const TCHAR* Folder = TEXT("/Game/Props/Weapons");
 
+// The gauntlets: skeletal meshes on the gauntlet lead's skeleton, each <GauntletFolder>/<name>.<name>.
+inline constexpr const TCHAR* GauntletFolder = TEXT("/Game/Props/Weapons/Devin_Gauntlet");
+inline constexpr int32 NumGauntletPieces = 6;
+inline constexpr const TCHAR* GauntletPieces[NumGauntletPieces] = {
+	TEXT("SKM_DevinGauntlet_R_Glove"), TEXT("SKM_DevinGauntlet_R_Strap"), TEXT("SKM_DevinGauntlet_R_Bracer"),
+	TEXT("SKM_DevinGauntlet_L_Glove"), TEXT("SKM_DevinGauntlet_L_Strap"), TEXT("SKM_DevinGauntlet_L_Bracer"),
+};
+
 struct FPiece
 {
 	const TCHAR* Mesh;   // the mesh's name in the source file
 	const TCHAR* Socket; // the body's mesh-only socket it rides
 	const TCHAR* Bone;   // the bone that socket is on
 	const TCHAR* File;   // the source file's name (Data's .glb stem), which the importer names the mesh's folder after
-};
-inline constexpr int32 NumGauntletPieces = 4;
-inline constexpr FPiece GauntletPieces[NumGauntletPieces] = {
-	{TEXT("SM_DevinGauntlet_R_Vambrace"), TEXT("ft_gauntlet_vambrace_r"), TEXT("lowerarm_r"), TEXT("Devin_Gauntlet_R")},
-	{TEXT("SM_DevinGauntlet_R_HandPlate"), TEXT("ft_gauntlet_plate_r"), TEXT("hand_r"), TEXT("Devin_Gauntlet_R")},
-	{TEXT("SM_DevinGauntlet_L_Vambrace"), TEXT("ft_gauntlet_vambrace_l"), TEXT("lowerarm_l"), TEXT("Devin_Gauntlet_L")},
-	{TEXT("SM_DevinGauntlet_L_HandPlate"), TEXT("ft_gauntlet_plate_l"), TEXT("hand_l"), TEXT("Devin_Gauntlet_L")},
 };
 inline constexpr FPiece PistolGrip = {TEXT("SM_DuyPistol"), TEXT("ft_pistol_grip_r"), TEXT("hand_r"), TEXT("Duy_Pistol")};
 inline constexpr FPiece PistolHolster = {TEXT("SM_DuyPistol"), TEXT("ft_pistol_holster_r"), TEXT("thigh_r"), TEXT("Duy_Pistol")};
@@ -110,6 +118,11 @@ struct FFTLeadWeapons
 		AimPoint = HitPoint;
 		bAimed = bAtTarget;
 	}
+	// The aim stance's weight (0..1, ftcore::AimStance::alpha): the pistol arm and the casting hand are raised at the aim
+	// point by it between attacks (the gauntlets keep their guard; kicks are not aimed).
+	void SetAimHold(float Weight) { AimHold = FMath::Clamp(Weight, 0.f, 1.f); }
+	// The share of the strike clips played on the upper body only (ftcore::attackUpperShare), for Paint.
+	void SetActionUpper(float Share) { ActionUpper = Share; }
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
@@ -145,6 +158,8 @@ struct FFTLeadWeapons
 	bool GetForearms(FVector& OutMid) const;
 	bool GetMuzzle(FVector& OutAt) const;
 	bool HasGauntlets() const { return IsOn() && Kit.weapon == ftcore::ArenaWeapon::Gauntlets; }
+	// The pistol into its holster (true) or back in the hand, as a fight's end puts it; for the close views.
+	void SetHolstered(bool bPut) { Holster(bPut); }
 
 	// -ArenaShotStrikes: holds the lead at fight time T (the time the figures are drawn at) for a view, whatever the
 	// world's clock does while the fight is held. Each effect still running is started again and run to its age at T
@@ -156,6 +171,9 @@ struct FFTLeadWeapons
 	static constexpr float kFreezeTick = 1.f / 240.f;
 	void Freeze(double T);
 	void Thaw();
+	// The lead's hit pause: its body's clock stands still while on (Core's hitStopLeft), and is given back after. Works
+	// with Freeze/Thaw in either order.
+	void HitPause(bool bOn);
 	bool IsFrozen() const { return bFrozen; }
 
 private:
@@ -193,7 +211,7 @@ private:
 	ftcore::FightAnimator Animator;
 	bool bClips = false;
 
-	TWeakObjectPtr<UStaticMeshComponent> Gauntlet[FTWeaponProps::NumGauntletPieces];
+	TWeakObjectPtr<USkeletalMeshComponent> Gauntlet[FTWeaponProps::NumGauntletPieces];
 	TWeakObjectPtr<UStaticMeshComponent> Pistol;
 	bool bHolstered = false;
 	TWeakObjectPtr<UFTVfxComponent> Fx[EffectCount];
@@ -204,6 +222,8 @@ private:
 	bool bPaused[EffectCount] = {};
 	bool bFrozen = false;
 	float FrozenDilation = 1.f;
+	bool bHitPaused = false;
+	float HitPauseDilation = 1.f;
 
 	// The strike playing (Stance: none), when the clips began fading (-1: not fading), the player's last state.
 	ftcore::FightClip Strike = ftcore::FightClip::Stance;
@@ -220,6 +240,8 @@ private:
 	// none) and when the last strike's aim is checked (below 0: done).
 	FVector AimPoint = FVector::ZeroVector;
 	bool bAimed = false;
+	float AimHold = 0.f;
+	float ActionUpper = 0.f;
 	int32 AimSide = -1;
 	double ImpactDue = -1.0;
 	FVector ImpactAt = FVector::ZeroVector;

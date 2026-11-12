@@ -122,6 +122,10 @@ add_library(ftcore STATIC
     src/Shop.cpp
     src/ArenaFight.cpp
     src/FieldStrike.cpp
+    src/AimStance.cpp
+    src/InputBindings.cpp
+    src/AttackMove.cpp
+    src/FieldUnstick.cpp
     src/ArenaZone.cpp
     src/ArrowLane.cpp
     src/StickFlick.cpp
@@ -130,6 +134,7 @@ add_library(ftcore STATIC
     src/BeatBoss.cpp
     src/ArenaBoss.cpp
     src/ArenaKindCrit.cpp
+    src/ArenaSoftTarget.cpp
     src/StoneBearer.cpp
     src/BeatChoreo.cpp
     src/BeatMusic.cpp
@@ -309,6 +314,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_pause.cpp
         tests/test_arena.cpp
         tests/test_field_strike.cpp
+        tests/test_aim.cpp
+        tests/test_input_bindings.cpp
+        tests/test_attack_move.cpp
         tests/test_arena_zone.cpp
         tests/test_arrow_lane.cpp
         tests/test_stick_flick.cpp
@@ -318,6 +326,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_boss.cpp
         tests/test_arena_boss.cpp
         tests/test_arena_kind_crit.cpp
+        tests/test_arena_soft.cpp
         tests/test_stone_bearer.cpp
         tests/test_beat_choreo.cpp
         tests/test_beat_cine.cpp
@@ -409,7 +418,12 @@ if(FTCORE_BUILD_TESTS)
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
+        -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
+    add_test(NAME hints_read COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
+        -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckHintsRead.cmake)
 
     # The story tools' Python tests (made-up data; a private fixture only when VO_TEST_FIXTURE names one). Run
     # isolated (-I). Skipped when no Python 3.10+ is found; the registry is searched first so the Windows Store

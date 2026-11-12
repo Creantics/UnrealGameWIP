@@ -1,4 +1,5 @@
 #include "FTPlayerController.h"
+#include "FTInputBindings.h"
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -292,8 +293,15 @@ void AFTPlayerController::CreatePauseInput()
 	PauseAction = MakeAction(TEXT("IA_Pause"));
 	PauseAction->bTriggerWhenPaused = true;
 	PauseContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Pause"));
-	PauseContext->MapKey(PauseAction, EKeys::Escape);
-	PauseContext->MapKey(PauseAction, EKeys::Gamepad_Special_Right);
+	// Pause's keys from the binding table (FTInputBindings: Esc and Start by default).
+	for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+	{
+		const FKey& Key = FTInputBindings::Key(ftcore::InputAction::Pause, Device);
+		if (Key.IsValid())
+		{
+			PauseContext->MapKey(PauseAction, Key);
+		}
+	}
 
 	// Added only while the pause menu is open, above every screen's own context: the keys it and the
 	// settings overlay need, on the same actions the menu context and the story context use. Esc and

@@ -23,6 +23,7 @@
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
 #include "ftcore/BossScript.h"
+#include "ftcore/CombatKind.h"
 #include "ftcore/CombatInputs.h"
 #include "ftcore/GiftSlot.h"
 #include "ftcore/HeldRefusal.h"
@@ -115,6 +116,20 @@ struct SharedReply {
     PlaceError place = PlaceError::None;
 };
 
+// The story's hand-off to a fight, as the host sees it when the fight begins or restarts: whether the story handed
+// this fight over (a valid carry), whether that carry is already settled (won or lost), and the combat kind it named.
+struct FightHandOff {
+    bool fromStory = false;
+    bool settled = false;
+    CombatKind kind = CombatKind::Arena;
+};
+
+// Whether a fight's session takes the story's writes: only when the story handed off this kind of fight and it is not
+// settled yet. A fight with no hand-off (standalone, demo, a practice run) or a stale one for another kind is unbound.
+constexpr bool fightTakesStory(const FightHandOff& h, CombatKind fight) {
+    return h.fromStory && !h.settled && h.kind == fight;
+}
+
 class FightSession {
 public:
     FightSession() { begin(FightSessionDef{}, 0.0); }
@@ -157,7 +172,8 @@ public:
         return c;
     }
 
-    // The story state presses are written to (both or neither; null unbinds).
+    // The story state presses are written to (both or neither; null unbinds). Bind only a fight the story handed off
+    // (fightTakesStory); a standalone, demo or practice fight stays unbound and writes nothing.
     void bindStory(StoryState* story, const FactRegistry* reg) {
         story_ = story && reg ? story : nullptr;
         reg_ = story && reg ? reg : nullptr;

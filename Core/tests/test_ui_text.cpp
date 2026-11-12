@@ -1,4 +1,5 @@
 #include "ftcore/UiText.h"
+#include "ftcore/InputBindings.h"
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -112,4 +113,16 @@ TEST_CASE("ui text: the project's English table loads and holds no story") {
     CHECK(en.entries.size() >= 40);
     for (const UiTextEntry& e : en.entries) CHECK_MESSAGE(e.text.size() < 160, e.key);
     CHECK(checkUiTranslation(en, pseudoLocalise(en)).empty());
+}
+
+TEST_CASE("ui text: every word the controls lines use is in the English table") {
+    std::string json;
+    REQUIRE(ftcore_test::readProjectData("Loc/en/ui.json", json));
+    UiTextTable en;
+    REQUIRE(importUiText(json, en));
+    for (const InputHintScreen screen : {InputHintScreen::Arena, InputHintScreen::Field}) {
+        const InputHintEntry* entries = nullptr;
+        const std::size_t n = inputHintEntries(screen, entries);
+        for (std::size_t i = 0; i < n; ++i) CHECK_MESSAGE(en.find(entries[i].label) != nullptr, entries[i].label);
+    }
 }

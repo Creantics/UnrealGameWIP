@@ -17,12 +17,16 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 
+#include "ftcore/AimStance.h"
+#include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
+#include "ftcore/InputBindings.h"
 
 #include "FTArenaBossVfx.h"
+#include "FTFightSession.h"
 #include "FTKiteHost.h"
 #include "FTKiteVfx.h"
 #include "FTLeadWeapons.h"
@@ -97,6 +101,11 @@ struct FFTArenaRunSetup
 	bool bIdle = false;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f; // -ArenaParryHold=<s>
+	bool bNoLock = false;  // -ArenaNoLock: the autopilot never presses lock, so its attacks take soft targets
+	bool bAutoShoot = false; // -ArenaAutoShoot: with a guns kit the autopilot aims and shoots on the way in
+	// -ArenaSharedCount: the autopilot's lead calls the count whenever it can, and a scripted partner (the other lead,
+	// with no body or blow of its own in the fight) joins a window the step a lead's blow is held.
+	bool bSharedCount = false;
 	FString BossLoop;      // -ArenaBossLoop=<clip> (review only; empty: off)
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
@@ -205,10 +214,25 @@ public:
 	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
 	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h); the mode's strike views freeze and thaw it.
 	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
+	// The aim stance (right mouse held): its blend 0..1, for the HUD's reticle.
+	float GetAimAlpha() const { return ArenaAim.alpha(); }
 	FFTLeadWeapons& GetLeadWeapons() { return LeadWeapons; }
-	// The fight time the figures were last drawn at: a step behind Fight.time(), Alpha of the way to it. It moves by
-	// exactly the delta TickFight is given while the fight runs.
+	// The time the figures were last drawn at, on the held fight clock (Fight.heldTime(), the lead's strike clips' clock):
+	// Alpha of the way from its value before the last step to its value after. It stands still through the player's hit
+	// pauses and otherwise moves by the delta TickFight is given.
 	double GetDrawnTime() const { return DrawnTime; }
+	// The clocks for the fight session (the shared combat inputs): the held fight clock (the fight clock less the player's
+	// hit pauses), how far it moved over the last TickFight (what the session's Tick takes: 0 through a hit pause), the
+	// player's pause left, and each figure's own pause left (0 once the fight is over, and on a dead enemy). All 0 before
+	// the fight begins; Begin and Restart start them again.
+	float GetHeldTime() const { return bBegun ? Fight.heldTime() : 0.f; }
+	float GetHeldDelta() const { return HeldDelta; }
+	float GetHitStopLeft() const { return bBegun ? Fight.hitStopLeft() : 0.f; }
+	float GetPlayerStopLeft() const { return bBegun ? Fight.output().player.stopLeft : 0.f; }
+	float GetEnemyStopLeft(int32 Index) const
+	{
+		return (bBegun && Index >= 0 && Index < static_cast<int32>(Fight.enemyCount())) ? Fight.output().enemies[static_cast<size_t>(Index)].stopLeft : 0.f;
+	}
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -258,6 +282,10 @@ private:
 	void EndKindCrits();
 	void FeedKindCrits(const ftcore::ArenaEvents& Events);
 	static ftcore::ArenaBlowRuling RuleKindCritBlow(void* User, const ftcore::ArenaBlow& Blow);
+	// The session's ruling, chained after the hook the sub-hosts set (kind crits, kite, stone bearer): installed after
+	// they begin, at the fight's begin and each restart.
+	static ftcore::ArenaBlowRuling RuleSessionBlow(void* User, const ftcore::ArenaBlow& Blow);
+	void InstallSessionHook();
 	// The entry's effects (ArenaKindCritEffects) on each crit slot's figure, made once after the figures: the tell plays
 	// from the opening move's start until the window opens, the open effect while it is open, the crit and hit effects
 	// on the lead's blows on the slot. Hung from the entry's socket on a skinned figure (else its root).
@@ -287,17 +315,41 @@ private:
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
 	ftcore::ArenaInput TakeInput();
+	void HoldPausedEnemies();
 	void StepFight();
 	void HandleEvents(const ftcore::ArenaEvents& Events);
+	// The shared combat inputs beside the fight (docs/SHARED_COMBAT_INPUTS.md section 7): presses before the step,
+	// then the session ticked by the held clock's advance and the player's landed blows judged on the count.
+	void PressSession(const ftcore::ArenaInput& In);
+	void FeedSession();
+	void BeginSession();
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// The aim stance this frame (right mouse held) and its reticle point; the camera pulled in by it.
+	void TickAim(float DeltaSeconds);
+	void ApplyAimCamera();
 	void Finish();
 	// The one result line per fight (VICTORY, DEFEAT, or TIMEOUT as a warning while it still runs).
 	void LogResult() const;
+	// One "Arena check:" line per combat feature (Core's arenaFeatureChecks over the fight's stats), for the headless
+	// demo: PASS, FAIL, or n/a where nothing in the line-up can show it.
+	void LogFeatureChecks() const;
+	// The fight session (the shared combat inputs) the runner owns and ticks on the held clock, and its lead slot (the
+	// one the player's figure fills: SessionLeadOf the lead's look, set at Begin).
+	UFTFightSession* GetSession() const { return Session; }
+	uint8 GetSessionLead() const { return SessionLead; }
+	static uint8 SessionLeadOf(const FFTLeadLook* Look);
+	// The story state the session writes given gifts to (both or neither; they must outlive the binding). Bind it
+	// before Begin; Begin and Restart keep it.
+	void BindStory(ftcore::StoryState* Story, const ftcore::FactRegistry* Registry);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 
+	// The shared combat inputs, ticked on Fight.heldTime() (it stands still in the player's hit pauses). Declared
+	// first among the members: UHT keeps a property's offset in 16 bits, and the fight state below is large.
+	UPROPERTY()
+	TObjectPtr<UFTFightSession> Session;
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
 	UPROPERTY()
@@ -398,6 +450,16 @@ private:
 	int32 ZoneStyle = 0;
 	ftcore::ArenaDef Def;
 	ftcore::ArenaFight Fight;
+	float SessionHeld = 0.f;         // Fight.heldTime() at the last session tick
+	bool bSessionGuard = false;      // the guard as last sent to the session (refusal hold edges)
+	uint8 SessionLead = ftcore::kLeadA; // the lead slot the player's figure fills
+	ftcore::ArenaBlowHook SessionInnerHook = nullptr; // the sub-hosts' hook the session's ruling chains after
+	void* SessionInnerUser = nullptr;
+	bool bSessionPartnerDue = false; // -ArenaSharedCount: a lead's blow is held, the scripted partner joins after the step
+	int32 SessionHeldBlows = 0;      // this fight's lead blows judged Held
+	int32 SessionJoins = 0;          // the scripted partner's blows that joined a window
+	int32 SessionBonuses = 0;        // held-blow bonuses the fight took (hostBlow)
+	int32 SessionBonusDamage = 0;    // their extra damage
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
 	uint32 Seed = 1;
@@ -417,8 +479,23 @@ private:
 	int8 PressRead = -1;
 	bool bGuardHeld = false;
 	bool bInterceptHeld = false;
+	// The aim (right mouse held) and the attack button's tap and hold (left mouse; ftcore::AimStance, Data/Battle/aim.json,
+	// loaded once), the reticle point (world, cm) and whether the camera was last left pulled in.
+	ftcore::AimStance ArenaAim;
+	// Attacking on the move (Data/Battle/attack_move.json, loaded with aim.json).
+	ftcore::AttackMoveRules AttackMoveTable;
+	ftcore::PressHold AttackHold;
+	// Guard's hold or toggle latch (FTInputBindings).
+	ftcore::HeldInput GuardInput;
+	ftcore::HeldInput AimInput;
+	ftcore::HeldInput InterceptInput;
+	bool bAimRulesTried = false;
+	bool bAimHeld = false;
+	bool bAimCamera = false;
+	FVector ReticlePoint = FVector::ZeroVector;
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
+	bool bMouseFlicked = false;
 
 	double Now = 0.0;
 	double Accumulator = 0.0;
@@ -447,6 +524,14 @@ private:
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f;
+	bool bNoLock = false;
+	bool bAutoShoot = false;
+	bool bSharedCount = false;
+	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
+	double PrevHeldTime = 0.0;
+	float HeldDelta = 0.f;
+	// Seconds of each enemy's hit pause the steps of this frame covered (its clips leave them out).
+	float PausedThisFrame[ftcore::kMaxArenaEnemies] = {};
 	// -ArenaBossLoop: the clip's name, the boss's slot and the clip's table index (-1: off, or not found), whether it was
 	// looked for, and the wraps logged this fight.
 	FString BossLoopName;
