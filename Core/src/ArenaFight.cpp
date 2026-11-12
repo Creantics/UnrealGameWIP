@@ -1295,6 +1295,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (!(k.flinchTime > 0.f) || !foe.flinchAllowed || poise < k.flinchPoise) return;
+        ++stats.flinchChances;
         // No stunlock: the run of flinches starts again only after a gap with no blow that could flinch it.
         if (t1 - foe.lastFlinch > kArenaFlinchChainGap) foe.flinchChain = 0;
         foe.lastFlinch = t1;
@@ -2323,6 +2324,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     };
     c.lightsFreeCheck = verdict(stats.lights > 0, c.lightsFree);
     c.cancelsCheck = verdict(stats.cancelChances > 0 || stats.cancels > 0, c.cancels);
+    c.flinchCheck = verdict(stats.flinchChances > 0 || stats.flinches > 0, c.flinch);
     if (stats.breakOuts > 0)
         c.breakOutCheck = ArenaCheck::Pass;
     else if (stats.breakDue > stats.breakBarred)

@@ -393,7 +393,9 @@ over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it n
   kit without attacks);
 - `cancels`: an action (a buffered attack, a roll, the guard) cut into an attack, `(<cancels> of <chances>
   chances)`; a chance is an attack in whose cut window a press or the guard waited. n/a with no chance;
-- `flinch`: an enemy flinched (n/a when no kind in the line-up has a `flinchTime`; bosses don't);
+- `flinch`: an enemy flinched: `(<flinches> of <chances> chances)`. A chance is a blow of the kind's `flinchPoise`
+  or more that left a kind with a `flinchTime` upright and the host's veto off; n/a with none (bosses have no
+  `flinchTime`), FAIL with chances and no flinch;
 - `break-out`: an enemy broke out of a run of blows: `(<n>; due <d>, barred <b>; <u> upright blows; best run 4 of
   5)`, the best run being four blows of a kind's five, counted as each lands. FAIL when a blow brought an upright
   enemy's count to its `breakAt` without staggering it and the move was free yet none followed, and when upright
@@ -409,8 +411,11 @@ over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it n
 
 `-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. `-ArenaAutoShoot` has it aim and
 shoot with a guns kit on the way in (the target in the shot's range and outside the light chain's reach, a dodge's
-stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit: a skirmisher's
-poise breaks under every blow of Duy's that would flinch it, so it staggers instead.
+stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit. On a skirmisher
+(poise 22, `flinchPoise` 12, `breakAt` 2) Duy's lights (10, 10) are under its `flinchPoise` and the second breaks it
+out; his third (20) then meets 2 poise and staggers it, a shot (6) is too light and his heavy (45) staggers it. The
+hulk has no `flinchTime`. So `skirmisher,hulk` on Duy gives no flinch chance and reads n/a; Duy flinches a duelist
+(`flinchPoise` 10).
 
 The break-out is tuned by lead (provisional, for the playtest). On paper Devin's light string (poise 15, 15, 18, 32)
 staggers every kind with a `breakAt` by the blow that reaches it; in a fight his attacks don't root him (the autopilot

@@ -681,6 +681,8 @@ struct ArenaStats {
     int heals = 0;
     int staggers = 0;  // enemy poise breaks
     int flinches = 0;  // enemy flinches
+    int flinchChances = 0; // blows of flinchPoise or more on an upright kind that flinches, host-allowed (a flinch
+                           // could show; the chain cap and an active or armoured attack may still stop it)
     int breakOuts = 0; // enemy break-outs
     int breakDue = 0;      // blows that brought an upright enemy's count to its breakAt without staggering it
     int breakRunBest = 0;  // the longest run toward a break-out (relative to its breakAt), counted as each blow lands
@@ -722,9 +724,10 @@ struct ArenaFeatureChecks {
     bool breakOutDue = false; // a blow reached an enemy's breakAt without staggering it (else break-out can't show)
     bool softTarget = false; // an attack started on a soft target
     bool shots = false;      // a guns kit fired a shot that connected
-    // Verdicts with their own can-show rule (the host adds its own for flinch, soft target and shots):
+    // Verdicts with their own can-show rule (the host adds its own for soft target and shots):
     ArenaCheck lightsFreeCheck = ArenaCheck::NotShown; // n/a with no light started
     ArenaCheck cancelsCheck = ArenaCheck::NotShown;    // n/a with no cancelChances
+    ArenaCheck flinchCheck = ArenaCheck::NotShown;     // n/a with no flinchChances (a kit too light, or poise first)
     // PASS on a break-out; barred when it was due (or every upright blow vetoed) and barred; FAIL when it was due and
     // unbarred, or upright blows landed and the run never moved; n/a with no upright blow, or poise always first.
     ArenaCheck breakOutCheck = ArenaCheck::NotShown;

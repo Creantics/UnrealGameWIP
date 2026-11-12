@@ -2474,19 +2474,16 @@ void UFTArenaRunner::LogFeatureChecks() const
 {
 	const ftcore::ArenaStats& S = Fight.stats();
 	const ftcore::ArenaFeatureChecks C = ftcore::arenaFeatureChecks(S);
-	// Only kinds that can flinch can show it (a boss leaves flinchTime at 0).
-	bool bCanFlinch = false;
-	for (size_t I = 0; I < Fight.enemyCount(); ++I)
-	{
-		bCanFlinch |= Fight.def().enemies[I].flinchTime > 0.f;
-	}
 	const auto Text = [](ftcore::ArenaCheck Check) { return FT::ToFString(ftcore::arenaCheckText(Check)); };
 	const auto Verdict = [](bool bShown, bool bCan) { return !bCan ? TEXT("n/a") : (bShown ? TEXT("PASS") : TEXT("FAIL")); };
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lights free %s (%d lights, %.1f stamina)."), *Text(C.lightsFreeCheck), S.lights,
 		S.lightStamina);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: cancels %s (%d of %d chances)."), *Text(C.cancelsCheck), S.cancels,
 		S.cancelChances);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d)."), Verdict(C.flinch, bCanFlinch), S.flinches);
+	// Flinch (ftcore::arenaFeatureChecks): n/a when no blow could flinch an upright enemy (a kit too light for the
+	// kinds' flinchPoise, poise breaking first, or no kind that flinches, as a boss).
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d of %d chances)."), *Text(C.flinchCheck), S.flinches,
+		S.flinchChances);
 	// Break-out (ftcore::arenaFeatureChecks): FAIL when upright blows landed and the run never moved or it was due
 	// and free; barred when a mask or the host barred it; n/a when poise always broke first.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d; due %d, barred %d; %d upright blows; best run %d of %d)."),

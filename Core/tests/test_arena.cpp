@@ -6360,6 +6360,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-
         CHECK(r.phase == ArenaPhase::Victory);
         CHECK(r.stats.time > 15.f);
         CHECK(r.stats.flinches > 0);
+        CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
         CHECK(r.stats.breakOuts == 0);
         CHECK(r.stats.breakDue == 0);
         CHECK_FALSE(arenaFeatureChecks(r.stats).breakOutDue);
@@ -6381,8 +6382,14 @@ TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
         CHECK(c.breakOutDue);
         CHECK(c.breakOut);
         CHECK(c.breakOutCheck == ArenaCheck::Pass);
+        // No flinch chance: his lights (10) are under the skirmisher's flinchPoise (12), its second breaks it out,
+        // the third (20) meets 2 poise and staggers it, a shot (6) is too light; the hulk never flinches. n/a.
+        CHECK(r.stats.flinches == 0);
+        CHECK(r.stats.flinchChances == 0);
+        CHECK(c.flinchCheck == ArenaCheck::NotShown);
         const HostRun plain = hostRun({"skirmisher", "hulk"}, "duy", seed);
         CHECK(arenaFeatureChecks(plain.stats).breakOutCheck == ArenaCheck::NotShown);
+        CHECK(arenaFeatureChecks(plain.stats).flinchCheck != ArenaCheck::Fail);
     }
 }
 
@@ -6420,6 +6427,8 @@ TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and a
                 CAPTURE(seed);
                 CHECK(r.phase == ArenaPhase::Victory);
                 CHECK(r.stats.flinches > 0);
+                CHECK(r.stats.flinchChances >= r.stats.flinches);
+                CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
                 if (std::string_view(kit) == "duy") CHECK(r.stats.breakOuts > 0);
             }
 }
@@ -6447,8 +6456,15 @@ TEST_CASE("arena feature checks: verdicts read n/a without a chance, FAIL or bar
     ArenaFeatureChecks c = arenaFeatureChecks(s);
     CHECK(c.lightsFreeCheck == ArenaCheck::NotShown);
     CHECK(c.cancelsCheck == ArenaCheck::NotShown);
+    CHECK(c.flinchCheck == ArenaCheck::NotShown);
     CHECK(c.breakOutCheck == ArenaCheck::NotShown);
     CHECK(std::string(arenaCheckText(c.breakOutCheck)) == "n/a");
+    s.flinchChances = 2; // blows that could flinch, and none did: FAIL
+    CHECK(arenaFeatureChecks(s).flinchCheck == ArenaCheck::Fail);
+    s.flinches = 1;
+    CHECK(arenaFeatureChecks(s).flinchCheck == ArenaCheck::Pass);
+    s.flinchChances = 0;
+    s.flinches = 0;
     s.lights = 2;
     s.lightStamina = 1.f;
     s.cancelChances = 3;
