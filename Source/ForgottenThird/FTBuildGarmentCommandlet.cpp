@@ -45,7 +45,7 @@ struct FScalarSpec
 	float Default;
 };
 const FScalarSpec kScalars[] = {
-	{TEXT("Gain"), 1.f},              // albedo scale; a piece sets it to bring its map into the physical range
+	{TEXT("Gain"), 1.f},              // dark-albedo lift (rolls off to white); a piece sets it to bring its map into the physical range
 	{TEXT("Specular"), 0.5f},         // F0 = 0.08 x Specular
 	{TEXT("CavitySpecular"), 0.7f},   // specular left at the bottom of the detail
 	{TEXT("RoughnessScale"), 1.f},    // roughness = map G x RoughnessScale + RoughnessOffset, before the detail
@@ -170,7 +170,10 @@ const TCHAR* const kNormalCode = TEXT("return normalize(float3(Base.xy + D.xy, B
 
 const TCHAR* const kMetalCode = TEXT("return saturate(max(ORM.b * MetalScale, ForceMetal));");
 
-const TCHAR* const kColorCode = TEXT(R"HLSL(float3 c = Base * Tint.rgb * Gain;
+// Gain lifts dark albedo (x Gain near black) but rolls off towards white, so a map whose cloth is crushed to 0.004
+// comes up to about 0.03 while its bright zips and stitching stay below 1: x Gain / (1 + x (Gain - 1)).
+const TCHAR* const kColorCode = TEXT(R"HLSL(float3 b = Base * Tint.rgb;
+float3 c = b * Gain / (1.0 + b * (Gain - 1.0));
 float edge = saturate((Wear.r - 0.5) * 2.0);
 c *= 1.0 + EdgeLighten * edge;
 c *= lerp(1.0, D.z, CavityDarken);
@@ -189,7 +192,9 @@ const TCHAR* const kSpecularCode = TEXT("return Spec * lerp(CavitySpec, 1.0, D.z
 
 const TCHAR* const kOcclusionCode = TEXT("return lerp(1.0, ORM.r, AOStrength);");
 
-const TCHAR* const kFuzzCode = TEXT("return Base * Tint.rgb * Gain * FuzzTint.rgb;");
+const TCHAR* const kFuzzCode = TEXT(R"HLSL(float3 b = Base * Tint.rgb;
+return b * Gain / (1.0 + b * (Gain - 1.0)) * FuzzTint.rgb;
+)HLSL");
 
 FString PackageFile(const FString& Package)
 {
