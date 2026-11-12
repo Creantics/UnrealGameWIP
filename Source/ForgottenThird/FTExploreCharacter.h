@@ -134,6 +134,10 @@ public:
 	// the look above (as the first of ftcore::demo::kPartyNames) and the default followers.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
 	TArray<FFTLeadLook> PartyLooks;
+	// Looks the story's cast wears that are not party members' (a lead's other outfit, keyed by ModelId).
+	// Dialogue scenes search PartyLooks first, then these. Not part of the party.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	TArray<FFTLeadLook> CastLooks;
 	// The member to start as, by name; empty or unknown starts as the first.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
 	FString StartLead;

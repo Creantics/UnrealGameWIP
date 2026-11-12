@@ -153,10 +153,10 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 		if (const AFTCastMember* Member = Pair.Value.Get())
 		{
 			const UFTFaceComponent* F = Member->GetFace();
-			UE_LOG(LogForgottenThird, Display, TEXT("Story: cast %s: rig face %d (rig running %d), curve mode %d, %d shapes bound, peak %d curves in the anim output, peak %d rig morphs moving (%d morph curves), jaw joint peak %.1f deg."),
+			UE_LOG(LogForgottenThird, Display, TEXT("Story: cast %s: rig face %d (rig running %d), curve mode %d, %d shapes bound, peak %d curves in the anim output, peak %d rig morphs moving (%d morph curves), jaw joint peak %.1f deg, lips-together peak %.2f."),
 				*Pair.Key, Member->HasRigFace() ? 1 : 0, F && F->HasRigInstance() ? 1 : 0, F && F->IsCurveMode() ? 1 : 0,
 				F ? F->GetBoundShapes() : 0, F ? F->GetPeakCurvesArrived() : 0, F ? F->GetPeakRigMorphs() : 0,
-				F ? F->GetPeakMorphCurves() : 0, F ? F->GetPeakRigJawDeg() : 0.f);
+				F ? F->GetPeakMorphCurves() : 0, F ? F->GetPeakRigJawDeg() : 0.f, F ? F->GetPeakLipsTogether() : 0.f);
 		}
 	}
 	if (AFTPlayerController* PC = Controller.Get())
@@ -867,20 +867,23 @@ void AFTStoryDirector::PlaceSceneCast()
 		return;
 	}
 	const ftcore::StoryDatabase& Db = Story->GetDatabase();
+	const std::string_view SceneView = Db.view(Runner.scene()->id);
 	std::array<std::string_view, ftcore::kMaxSceneCast> Cast{};
 	uint32 Dropped = 0;
 	const size_t Count = ftcore::sceneCastSpeakers(Db, Runner.sceneIndex(), Speakers, Cast, &Dropped);
-	const TArray<FFTLeadLook>& Looks = GetDefault<AFTExploreCharacter>()->PartyLooks;
+	const AFTExploreCharacter* LookSource = GetDefault<AFTExploreCharacter>();
 
 	AFTCastMember* OnScreen[ftcore::kMaxSceneCast] = {};
 	int32 Own = 0, NoLook = 0;
 	for (size_t I = 0; I < Count; ++I)
 	{
-		const FString Model = FT::ToFString(Speakers.modelFor(Cast[I]));
+		const FString Model = FT::ToFString(Speakers.modelFor(Cast[I], SceneView)); // the look this scene puts them in
 		TObjectPtr<AFTCastMember>* Found = CastActors.Find(Model);
 		if (!Found)
 		{
-			const FFTLeadLook* Look = Looks.FindByPredicate([&Model](const FFTLeadLook& L) { return L.ModelId == Model; });
+			const auto ByModel = [&Model](const FFTLeadLook& L) { return L.ModelId == Model; };
+			const FFTLeadLook* Look = LookSource->PartyLooks.FindByPredicate(ByModel);
+			Look = Look ? Look : LookSource->CastLooks.FindByPredicate(ByModel);
 			AFTCastMember* Made = nullptr;
 			if (Look)
 			{
@@ -919,8 +922,8 @@ void AFTStoryDirector::PlaceSceneCast()
 		Slots += Slots % 2 == 0 ? 1 : 0;
 	}
 	const int32 Middle = Slots / 2;
-	const FString SceneId = FT::ToFString(Db.view(Runner.scene()->id));
-	const std::string SceneUtf8 = FT::ToUtf8(SceneId);
+	const FString SceneId = FT::ToFString(SceneView);
+	const std::string SceneUtf8(SceneView);
 	int32 Slot = 0, Marked = 0;
 	const FTransform AnchorXf = Anchor->GetActorTransform();
 	for (size_t I = 0; I < Count; ++I)
@@ -970,7 +973,9 @@ void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
 	{
 		return;
 	}
-	const std::string_view Model = Speakers.modelFor(Story->GetRunner().speaker());
+	const ftcore::StoryRunner& Runner = Story->GetRunner();
+	const std::string_view Model = Speakers.modelFor(Runner.speaker(),
+		Runner.scene() ? Story->GetDatabase().view(Runner.scene()->id) : std::string_view{}); // the scene's look
 	const FString ModelId = FT::ToFString(Model);
 	// The faces of the speaker's model in this map, else its stand-ins (ftcore::pickFaceRoute).
 	TArray<UFTFaceComponent*, TInlineAllocator<4>> Own;

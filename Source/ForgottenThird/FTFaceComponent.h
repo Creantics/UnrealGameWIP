@@ -123,6 +123,8 @@ public:
 	// degrees (the rig logic's joint output), and the most morph curves the mesh held at once.
 	float GetPeakRigJawDeg() const { return PeakRigJawDeg; }
 	int32 GetPeakMorphCurves() const { return PeakMorphCurves; }
+	// Curve mode: the most the lips-together control was driven (mouthClose's hand mapping), 0..1.
+	float GetPeakLipsTogether() const { return PeakLipsTogether; }
 	bool HasRigInstance() const;
 
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
@@ -157,4 +159,6 @@ private:
 	float PeakRigJawDeg = 0.f;
 	int32 PeakMorphCurves = 0;
 	int32 RigJawBone = INDEX_NONE;
+	float PeakLipsTogether = 0.f;
+	int32 LipsCurve = INDEX_NONE;
 };

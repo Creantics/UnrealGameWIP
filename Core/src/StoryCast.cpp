@@ -19,11 +19,22 @@ bool sameNoCase(std::string_view a, std::string_view b) {
     return true;
 }
 
+constexpr FaceCurveHand kHand[] = {
+    // mouthClose (closed-lip sounds: m, b, p): the four lip corners pressed together, the jaw pulled shut.
+    {"mouthClose", "CTRL_expressions_mouthLipsTogetherUL", 1.f},
+    {"mouthClose", "CTRL_expressions_mouthLipsTogetherUR", 1.f},
+    {"mouthClose", "CTRL_expressions_mouthLipsTogetherDL", 1.f},
+    {"mouthClose", "CTRL_expressions_mouthLipsTogetherDR", 1.f},
+    {"mouthClose", "CTRL_expressions_jawOpen", -1.f},
+};
+
 } // namespace
+
+std::span<const FaceCurveHand> faceCurveHandMap() { return kHand; }
 
 bool buildFaceCurveMap(const FaceShapeSet& set, std::span<const std::string_view> poseNames,
                        std::span<const std::string_view> curveNames, std::span<const float> values, FaceCurveMap& out,
-                       std::vector<std::string>* unmatched) {
+                       std::vector<std::string>* unmatched, std::span<const FaceCurveHand> hand) {
     out = FaceCurveMap{};
     const std::size_t curves = curveNames.size();
     if (values.size() != poseNames.size() * curves || set.size() > 0xFFFF || curves > 0xFFFF) return false;
@@ -37,7 +48,22 @@ bool buildFaceCurveMap(const FaceShapeSet& set, std::span<const std::string_view
                 break;
             }
         if (pose == poseNames.size()) {
-            if (unmatched) unmatched->push_back(set.shapes[s]);
+            bool handMoves = false;
+            for (const FaceCurveHand& h : hand) {
+                if (!sameNoCase(h.shape, set.shapes[s]) || h.weight == 0.f || !std::isfinite(h.weight)) continue;
+                for (std::size_t c = 0; c < curves; ++c)
+                    if (sameNoCase(curveNames[c], h.curve)) {
+                        out.terms.push_back({static_cast<std::uint16_t>(s), static_cast<std::uint16_t>(c), h.weight});
+                        handMoves = true;
+                        break;
+                    }
+            }
+            if (handMoves) {
+                ++out.mappedShapes;
+                ++out.handShapes;
+            } else if (unmatched) {
+                unmatched->push_back(set.shapes[s]);
+            }
             continue;
         }
         bool moves = false;

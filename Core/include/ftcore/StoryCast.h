@@ -4,8 +4,9 @@
 // shape weights drive a rig that takes named control curves instead of shape morphs (a MetaHuman face).
 //
 // Face curves: the rig's own mapping asset (a pose per face shape, each pose a value per control curve) is
-// read at bind time into a FaceCurveMap. Nothing is authored by hand; shapes the asset has no pose for are
-// reported and stay unmapped. Each tick, writeFaceCurves turns the player's weights into curve values:
+// read at bind time into a FaceCurveMap. The one exception is faceCurveHandMap: a short hand list for shapes
+// speech needs that the asset has no pose for (mouthClose: lips together, jaw pulled shut). Other shapes with
+// no pose are reported and stay unmapped. Each tick, writeFaceCurves turns the player's weights into curves:
 //   out[c] = clamp(sum over shapes s of weights[s] * pose[s][c], 0, 1)   (no allocation)
 //
 // Cast marks: where each cast speaker stands in a scene, in metres and degrees relative to the dialogue map's
@@ -39,18 +40,30 @@ struct FaceCurveMap {
     };
     std::vector<std::string> curves; // the rig's curve names, in the asset's order
     std::vector<Term> terms;         // non-zero pose values, sorted by curve
-    std::uint32_t mappedShapes = 0;  // shapes with a pose that moves at least one curve
+    std::uint32_t mappedShapes = 0;  // shapes with a pose (or a hand entry) that moves at least one curve
+    std::uint32_t handShapes = 0;    // of those, shapes mapped from the hand list
 
     bool empty() const { return terms.empty(); }
 };
 
+// A hand entry: shape `shape` moves curve `curve` by `weight` per unit of weight (negative pulls it back).
+struct FaceCurveHand {
+    std::string_view shape, curve;
+    float weight = 0.f;
+};
+
+// The hand list (mouthClose only), used by buildFaceCurveMap for shapes the pose asset has no pose for.
+FTCORE_API std::span<const FaceCurveHand> faceCurveHandMap();
+
 // Builds the map from a pose table: values[p * curveNames.size() + c] is pose p's value for curve c. A shape
 // takes the pose whose name matches it ignoring case (ARKit "jawOpen" = pose "JawOpen"). Shapes with no pose
-// are appended to *unmatched (may be null). False, and `out` empty, when the table's sizes don't agree or
+// take the `hand` entries for them (each entry whose curve the table has; names match ignoring case); shapes
+// with neither are appended to *unmatched (may be null). False, and `out` empty, when the table's sizes don't agree or
 // there are more than 65535 shapes or curves. Allocates; call at bind time.
 FTCORE_API bool buildFaceCurveMap(const FaceShapeSet& set, std::span<const std::string_view> poseNames,
                                   std::span<const std::string_view> curveNames, std::span<const float> values,
-                                  FaceCurveMap& out, std::vector<std::string>* unmatched = nullptr);
+                                  FaceCurveMap& out, std::vector<std::string>* unmatched = nullptr,
+                                  std::span<const FaceCurveHand> hand = {});
 
 // out[c] for each of map.curves (out.size() must be at least map.curves.size(); extra entries are zeroed).
 // Allocation-free.

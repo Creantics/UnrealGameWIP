@@ -87,6 +87,8 @@ bool UFTFaceComponent::Rebind()
 	PeakRigJawDeg = 0.f;
 	PeakMorphCurves = 0;
 	RigJawBone = INDEX_NONE;
+	PeakLipsTogether = 0.f;
+	LipsCurve = INDEX_NONE;
 
 	const FString Path = ProjectPath(PresetsFile);
 	TArray<uint8> Bytes;
@@ -185,7 +187,7 @@ bool UFTFaceComponent::BindCurves()
 	std::vector<std::string_view> CurveViews(CurveText.begin(), CurveText.end());
 	TUniquePtr<ftcore::FaceCurveMap> Map = MakeUnique<ftcore::FaceCurveMap>();
 	std::vector<std::string> Unmatched;
-	if (!ftcore::buildFaceCurveMap(*Shapes, PoseViews, CurveViews, Values, *Map, &Unmatched) || Map->empty())
+	if (!ftcore::buildFaceCurveMap(*Shapes, PoseViews, CurveViews, Values, *Map, &Unmatched, ftcore::faceCurveHandMap()) || Map->empty())
 	{
 		UE_LOG(LogFTFace, Warning, TEXT("%s: the curve map pose asset maps no face shape (%d poses, %d curves); the face stays still."),
 			*GetPathName(), PoseNames.Num(), Curves.Num());
@@ -197,13 +199,14 @@ bool UFTFaceComponent::BindCurves()
 	CurveMap = MoveTemp(Map);
 	bCurveMode = true;
 	RigJawBone = FaceMesh->GetBoneIndex(TEXT("FACIAL_C_Jaw"));
+	LipsCurve = CurveNames.IndexOfByKey(FName(TEXT("CTRL_expressions_mouthLipsTogetherUL")));
 	FString Missing;
 	for (const std::string& U : Unmatched)
 	{
 		Missing += (Missing.IsEmpty() ? TEXT("") : TEXT(", ")) + FT::ToFString(U);
 	}
-	UE_LOG(LogFTFace, Log, TEXT("%s: curve mode on %s: %d of %d face shapes mapped to %d rig curves (%d poses, %d terms, additive %d)%s%s"),
-		*GetPathName(), *FaceMesh->GetName(), BoundShapes, static_cast<int32>(Shapes->size()), Curves.Num(), PoseNames.Num(),
+	UE_LOG(LogFTFace, Log, TEXT("%s: curve mode on %s: %d of %d face shapes mapped (%u by hand) to %d rig curves (%d poses, %d terms, additive %d)%s%s"),
+		*GetPathName(), *FaceMesh->GetName(), BoundShapes, static_cast<int32>(Shapes->size()), CurveMap->handShapes, Curves.Num(), PoseNames.Num(),
 		static_cast<int32>(CurveMap->terms.size()), Pose->IsValidAdditive() ? 1 : 0,
 		Missing.IsEmpty() ? TEXT("") : TEXT("; no pose for: "), *Missing);
 	return true;
@@ -337,6 +340,10 @@ void UFTFaceComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 			}
 			PeakRigMorphs = FMath::Max(PeakRigMorphs, Moving);
 			PeakMorphCurves = FMath::Max(PeakMorphCurves, FaceMesh->GetMorphTargetCurves().Num());
+			if (CurveValues.IsValidIndex(LipsCurve))
+			{
+				PeakLipsTogether = FMath::Max(PeakLipsTogether, CurveValues[LipsCurve]);
+			}
 			const TArray<FTransform>& Local = FaceMesh->GetBoneSpaceTransforms();
 			const USkeletalMesh* Asset = FaceMesh->GetSkeletalMeshAsset();
 			if (RigJawBone != INDEX_NONE && Asset && Local.IsValidIndex(RigJawBone) && Asset->GetRefSkeleton().GetRefBonePose().IsValidIndex(RigJawBone))

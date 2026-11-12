@@ -185,3 +185,39 @@ TEST_CASE("cast marks: the default arc") {
     CHECK(l.yawDeg == doctest::Approx(-r.yawDeg));
     CHECK(castArcMark(5, 3).y == 0.f);
 }
+
+TEST_CASE("face curve map: the hand list maps mouthClose only where the asset has no pose") {
+    FaceShapeSet set;
+    REQUIRE(set.addShape("jawOpen", FaceLayer::MouthArticulation));
+    REQUIRE(set.addShape("mouthClose", FaceLayer::MouthArticulation));
+    REQUIRE(set.addShape("cheekPuff", FaceLayer::MouthTone));
+    REQUIRE(set.finish());
+    const std::array<std::string_view, 1> poses{"JawOpen"};
+    const std::array<std::string_view, 3> curves{"CTRL_expressions_jawOpen", "CTRL_expressions_mouthLipsTogetherUL",
+                                                 "CTRL_expressions_mouthLipsTogetherDR"};
+    const std::array<float, 3> values{1.f, 0.f, 0.f};
+    FaceCurveMap map;
+    std::vector<std::string> unmatched;
+    REQUIRE(buildFaceCurveMap(set, poses, curves, values, map, &unmatched, faceCurveHandMap()));
+    CHECK(map.mappedShapes == 2);
+    CHECK(map.handShapes == 1);
+    CHECK(unmatched == std::vector<std::string>{"cheekPuff"}); // hand curves the asset lacks are skipped
+
+    FaceWeights w{};
+    w[0] = 0.6f; // jaw open on a vowel
+    std::array<float, 3> out{};
+    writeFaceCurves(map, w, out);
+    CHECK(out[0] == doctest::Approx(0.6f));
+    CHECK(out[1] == 0.f);
+    w[1] = 0.4f; // closing for an m
+    writeFaceCurves(map, w, out);
+    CHECK(out[0] == doctest::Approx(0.2f)); // the jaw pulled toward shut
+    CHECK(out[1] == doctest::Approx(0.4f)); // lips pressed together
+    CHECK(out[2] == doctest::Approx(0.4f));
+
+    // Without the hand list the shape stays unmatched.
+    unmatched.clear();
+    REQUIRE(buildFaceCurveMap(set, poses, curves, values, map, &unmatched));
+    CHECK(map.handShapes == 0);
+    CHECK(unmatched == std::vector<std::string>{"mouthClose", "cheekPuff"});
+}
