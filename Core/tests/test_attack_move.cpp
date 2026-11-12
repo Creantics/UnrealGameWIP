@@ -68,6 +68,29 @@ TEST_CASE("attack move: the shipped table commits a fist's heavy, slows a fist's
     CHECK(r.upperNone < r.upperFull);
 }
 
+TEST_CASE("attack move: the defaults are the shipped table, so a missing data file changes nothing") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/attack_move.json", text));
+    AttackMoveRules shipped;
+    REQUIRE(importAttackMoveRules(text, shipped));
+    const AttackMoveRules defaults;
+    auto same = [](const AttackMoveTune& a, const AttackMoveTune& b) {
+        CHECK(a.startupScale == doctest::Approx(b.startupScale));
+        CHECK(a.activeScale == doctest::Approx(b.activeScale));
+        CHECK(a.recoveryScale == doctest::Approx(b.recoveryScale));
+        CHECK(a.turnRate == doctest::Approx(b.turnRate));
+        CHECK(a.commit == doctest::Approx(b.commit));
+        CHECK(a.recoveryRamp == b.recoveryRamp);
+    };
+    for (int k = 0; k < 3; ++k) {
+        CAPTURE(k);
+        same(defaults.light[k], shipped.light[k]);
+        same(defaults.heavy[k], shipped.heavy[k]);
+    }
+    CHECK(defaults.upperNone == doctest::Approx(shipped.upperNone));
+    CHECK(defaults.upperFull == doctest::Approx(shipped.upperFull));
+}
+
 TEST_CASE("attack move: the import rejects unknown keys, the old v1 keys and values out of range") {
     AttackMoveRules r;
     const AttackMoveRules before = r;

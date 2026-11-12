@@ -38,9 +38,9 @@ struct AttackMoveTune {
 };
 
 struct AttackMoveRules {
-    // By AimKind.
-    AttackMoveTune light[3] = {{0.f, 0.f, 0.f, 6.f}, {0.65f, 0.65f, 0.65f, 7.f, 0.f, true}, {0.f, 0.f, 0.f, 6.f}};
-    AttackMoveTune heavy[3] = {{0.f, 0.f, 0.f, 4.f}, {0.45f, 0.3f, 0.3f, 5.f, 0.25f, true}, {0.f, 0.f, 0.f, 4.f}};
+    // By AimKind; the shipped table's values, so a lead with no data file moves as with it.
+    AttackMoveTune light[3] = {{0.4f, 0.55f, 0.7f, 6.f}, {0.65f, 0.65f, 0.65f, 7.f, 0.f, true}, {0.4f, 0.55f, 0.7f, 6.f}};
+    AttackMoveTune heavy[3] = {{0.3f, 0.f, 0.4f, 4.f}, {0.45f, 0.3f, 0.3f, 5.f, 0.25f, true}, {0.3f, 0.f, 0.4f, 4.f}};
     float upperNone = 0.15f; // m/s at or under which the strike plays on the whole body
     float upperFull = 0.6f;  // m/s at or over which it plays on the upper body only
 };

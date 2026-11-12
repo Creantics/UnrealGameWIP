@@ -510,8 +510,28 @@ void AFTArenaFighter::ResetFeet()
 
 void AFTArenaFighter::PoseAfter(AActor* Host)
 {
+	UntieMeshTicks();
 	PoseHost = Host;
 	TieMeshTicks();
+}
+
+void AFTArenaFighter::UntieMeshTicks()
+{
+	if (AActor* Host = PoseHost.Get())
+	{
+		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+		for (USkeletalMeshComponent* Mesh : Meshes)
+		{
+			Mesh->RemoveTickPrerequisiteActor(Host);
+		}
+	}
+	PoseHost.Reset();
+}
+
+void AFTArenaFighter::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UntieMeshTicks();
+	Super::EndPlay(Reason);
 }
 
 void AFTArenaFighter::TieMeshTicks()

@@ -1730,6 +1730,10 @@ void UFTArenaRunner::StepFight()
 		{
 			StepNow = 0.f;
 			PlayerStepAt = -1;
+			if (PlayerFigure)
+			{
+				PlayerFigure->ResetFeet(); // pushed or put elsewhere: nothing held stays behind
+			}
 		}
 		if (bSnapped)
 		{
