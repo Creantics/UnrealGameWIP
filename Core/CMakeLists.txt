@@ -30,6 +30,7 @@ endif()
 
 add_library(ftcore STATIC
     src/AssetManifest.cpp
+    src/StoryCast.cpp
     src/AudioCues.cpp
     src/Backlog.cpp
     src/Banter.cpp
@@ -302,6 +303,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_story_faces.cpp
         tests/test_story_state.cpp
         tests/test_story_bridge.cpp
+        tests/test_story_cast.cpp
         tests/test_fight_session.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp

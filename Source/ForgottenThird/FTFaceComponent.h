@@ -6,11 +6,23 @@
 //
 // The jaw and tongue are bones: UFTFaceAnimInstance (set as the mesh's anim class) applies
 // GetJawRotation() / GetTongueRotation(i) in local space, added to the rest pose.
+//
+// Curve mode (a MetaHuman face): a face mesh with none of the shapes as morph targets but a post-process
+// anim blueprint (its rig logic) is driven by control curves instead. The rig's own mapping pose asset
+// (CurveMapPose: a pose per ARKit shape, each a value per CTRL_expressions curve) is read at bind time into
+// an ftcore::FaceCurveMap; each tick the weights become curve values (GetCurveValues), which
+// UFTFaceCurveAnimInstance (the face mesh's anim class) hands to the rig logic. Jaw and tongue come from the
+// rig, not from bones. The curves are written only when the weights change (a track, a blink, a fade), and
+// CurveSerial counts the writes so the anim proxy copies only new values.
+//
+// -FaceDiag (non-shipping): each tick a track plays, also read the rig's output back (morph curves moving,
+// curves arriving in the anim output, the jaw joint) for the peaks the story log reports; off, those read 0.
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 
 #include "ftcore/Face.h"
+#include "ftcore/StoryCast.h"
 
 #include <string>
 #include <vector>
@@ -19,7 +31,7 @@
 
 class USkeletalMeshComponent;
 
-UCLASS(ClassGroup = (ForgottenThird), meta = (BlueprintSpawnableComponent))
+UCLASS(Config = Game, ClassGroup = (ForgottenThird), meta = (BlueprintSpawnableComponent))
 class FORGOTTENTHIRD_API UFTFaceComponent : public UActorComponent
 {
 	GENERATED_BODY()
@@ -46,6 +58,15 @@ public:
 	// is in the map (the dialogue map's preview stands in for the whole cast).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face")
 	bool bStandIn = false;
+
+	// Curve mode's mapping pose asset (see the top of this file), from config ([/Script/ForgottenThird.FTFaceComponent]
+	// in DefaultGame.ini), read when the face binds: no asset reference in code. Empty: curve mode is off.
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Face")
+	FSoftObjectPath CurveMapPose;
+
+	// BeginPlay calls Rebind (off for an owner that binds once its meshes are on).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face")
+	bool bBindOnBeginPlay = true;
 
 	// Seed for the blink timing (same seed, same blinks).
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Face")
@@ -79,7 +100,8 @@ public:
 	// The composed weight of a face shape (0 when unknown).
 	UFUNCTION(BlueprintPure, Category = "Face")
 	float GetShapeWeight(FName Shape) const;
-	// The face shapes bound to the mesh's morph targets by the last Rebind (0: a track plays unseen).
+	// The face shapes bound by the last Rebind, to the mesh's morph targets or (curve mode) to rig curves with a
+	// post-process rig to read them (0: a track plays unseen).
 	UFUNCTION(BlueprintPure, Category = "Face")
 	int32 GetBoundShapes() const { return BoundShapes; }
 	// 0 = mouth closed .. 1 = speaking.
@@ -92,6 +114,28 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Face")
 	FRotator GetTongueRotation(int32 Index) const;
 
+	// Curve mode: the rig's curve names and this tick's values (same order). Empty otherwise.
+	bool IsCurveMode() const { return bCurveMode; }
+	const TArray<FName>& GetCurveNames() const { return CurveNames; }
+	const TArray<float>& GetCurveValues() const { return CurveValues; }
+	// Counts the writes of GetCurveValues (a rebind also changes it).
+	uint32 GetCurveSerial() const { return CurveSerial; }
+	// Curve mode: the most rig morph targets seen moving at once on the face mesh while a track played (the
+	// rig logic's output: proof the curves reach the mesh, not just the anim graph).
+	int32 GetPeakRigMorphs() const { return PeakRigMorphs; }
+	// Curve mode: the most of this face's driven curves (value > 0.05) seen at once in the mesh's anim output
+	// while a track played (the curves reach the anim graph), and whether the mesh runs its rig.
+	int32 GetPeakCurvesArrived() const { return PeakCurvesArrived; }
+	// Curve mode: the most the rig turned the face's jaw joint from its rest pose while a track played, in
+	// degrees (the rig logic's joint output), and the most morph curves the mesh held at once.
+	float GetPeakRigJawDeg() const { return PeakRigJawDeg; }
+	int32 GetPeakMorphCurves() const { return PeakMorphCurves; }
+	// Curve mode: the most the lips-together control was driven (mouthClose's hand mapping), 0..1.
+	float GetPeakLipsTogether() const { return PeakLipsTogether; }
+	// The current weight of a face shape by name (e.g. "jawOpen"), 0 when unbound or unknown. No allocation.
+	float GetShapeWeight(const char* Shape) const;
+	bool HasRigInstance() const;
+
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 protected:
@@ -100,6 +144,7 @@ protected:
 
 private:
 	USkeletalMeshComponent* FindFaceMesh() const;
+	bool BindCurves();
 
 	TUniquePtr<ftcore::FaceShapeSet> Shapes;
 	TUniquePtr<ftcore::FacePlayer> Player;
@@ -113,4 +158,20 @@ private:
 	std::vector<int> MorphMap;
 	int32 BoundShapes = 0;
 	TArray<float> MorphWeights;
+
+	TUniquePtr<ftcore::FaceCurveMap> CurveMap;
+	TArray<FName> CurveNames;
+	TArray<float> CurveValues;
+	bool bCurveMode = false;
+	int32 PeakRigMorphs = 0;
+	int32 PeakCurvesArrived = 0;
+	float PeakRigJawDeg = 0.f;
+	int32 PeakMorphCurves = 0;
+	int32 RigJawBone = INDEX_NONE;
+	float PeakLipsTogether = 0.f;
+	int32 LipsCurve = INDEX_NONE;
+	ftcore::FaceWeights LastWeights{}; // the weights the curves were last written from
+	uint32 CurveSerial = 0;
+	bool bCurvesWritten = false;
+	bool bDiagnostics = false;
 };

@@ -97,9 +97,14 @@ bool importModelManifest(std::string_view json, ModelTable& out, std::string* er
     return false;
 }
 
-std::string_view SpeakerCast::modelFor(std::string_view speaker) const {
-    for (const Entry& e : entries)
-        if (e.speaker == speaker) return e.model;
+std::string_view SpeakerCast::modelFor(std::string_view speaker, std::string_view scene) const {
+    for (const Entry& e : entries) {
+        if (e.speaker != speaker) continue;
+        if (!scene.empty())
+            for (const SceneModel& s : e.scenes)
+                if (s.scene == scene) return s.model;
+        return e.model;
+    }
     return {};
 }
 
@@ -121,15 +126,29 @@ bool importSpeakerCast(std::string_view json, SpeakerCast& out, const ModelTable
         for (std::uint32_t i = 0; i < list.size() && list.isArray(); ++i) {
             const JsonValue j = list[i];
             const std::string path = "speakers[" + std::to_string(i) + "]";
-            SpeakerCast::Entry entry{amfStr(j["speaker"].string()), amfStr(j["model"].string())};
+            SpeakerCast::Entry entry{amfStr(j["speaker"].string()), amfStr(j["model"].string()), {}};
             if (entry.speaker.empty()) errors.push_back(path + ".speaker: expected a script label");
             else if (!cast.modelFor(entry.speaker).empty()) errors.push_back(path + ".speaker: cast twice");
-            if (entry.model.empty()) {
-                errors.push_back(path + ".model: expected a model id");
-            } else if (models) {
-                const ModelEntry* model = models->find(entry.model);
-                if (!model || model->kind != ModelKind::Character)
-                    errors.push_back(path + ".model: " + entry.model + " is not a character in models.json");
+            const auto checkModel = [&](const std::string& id, const std::string& at) {
+                if (id.empty()) {
+                    errors.push_back(at + ": expected a model id");
+                } else if (models) {
+                    const ModelEntry* model = models->find(id);
+                    if (!model || model->kind != ModelKind::Character)
+                        errors.push_back(at + ": " + id + " is not a character in models.json");
+                }
+            };
+            checkModel(entry.model, path + ".model");
+            const JsonValue scenes = j["scenes"];
+            if (!scenes.isAbsent() && !scenes.isArray()) errors.push_back(path + ".scenes: expected an array");
+            for (std::uint32_t k = 0; k < scenes.size() && scenes.isArray(); ++k) {
+                const std::string at = path + ".scenes[" + std::to_string(k) + "]";
+                SpeakerCast::SceneModel s{amfStr(scenes[k]["scene"].string()), amfStr(scenes[k]["model"].string())};
+                if (s.scene.empty()) errors.push_back(at + ".scene: expected a scene id");
+                for (const SpeakerCast::SceneModel& o : entry.scenes)
+                    if (!s.scene.empty() && o.scene == s.scene) errors.push_back(at + ".scene: listed twice");
+                checkModel(s.model, at + ".model");
+                entry.scenes.push_back(std::move(s));
             }
             cast.entries.push_back(std::move(entry));
         }
