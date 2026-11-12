@@ -15,6 +15,7 @@
 #include "ftcore/Seen.h"
 #include "ftcore/Settings.h"
 #include "ftcore/StoryDatabase.h"
+#include "ftcore/StoryFaces.h"
 #include "ftcore/StoryRunner.h"
 #include "ftcore/StorySave.h"
 
@@ -128,6 +129,12 @@ public:
 	void SkipHold();
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	void StopStory();
+
+	// Run-wide debug tallies (the game instance's life, across map visits): the faces of voiced lines
+	// (the story director logs the "Story: FACES" line) and the -StoryShot stills taken.
+	ftcore::FaceLineTally FaceTally;
+	int32 StoryShotsTaken = 0;
+	TSet<FString> StoryShotFiles;
 
 	// ---- current beat ----
 
