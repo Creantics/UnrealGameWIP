@@ -1,6 +1,7 @@
 #include "FTArenaGlide.h"
 
 #include "Components/SkeletalMeshComponent.h"
+#include "FTLocomotionAnimInstance.h"
 #include "ForgottenThird.h"
 
 namespace
@@ -151,10 +152,35 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 			double Slowest = 0.0;
 			// A foot that moved more than this in one fresh frame snapped: a pose pop, not a slide.
 			constexpr double kPopCm = 20.0;
-			if (FVector::Dist2D(Ball[0], LastBall[0]) > kPopCm || FVector::Dist2D(Ball[1], LastBall[1]) > kPopCm)
+			const UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance());
+			const uint8 Loco = Anim ? static_cast<uint8>(Anim->GetLocomotion().state()) : 255;
+			if (Loco != LastLoco)
+			{
+				using ftcore::LocoState;
+				const int32 E = Loco == static_cast<uint8>(LocoState::Starting) ? 0
+					: (Loco == static_cast<uint8>(LocoState::Stopping) ? 1 : (Loco == static_cast<uint8>(LocoState::Turning) ? 2 : -1));
+				if (E >= 0)
+				{
+					++R.Enter[E];
+				}
+			}
+			const double Jump0 = FVector::Dist2D(Ball[0], LastBall[0]), Jump1 = FVector::Dist2D(Ball[1], LastBall[1]);
+			// A run's swinging foot goes about twice the root's way: only what is past that snapped.
+			const double Swing = 2.0 * FVector::Dist2D(Root, LastRoot);
+			if (Jump0 - Swing > kPopCm || Jump1 - Swing > kPopCm)
 			{
 				++R.Pops;
+				if (PopLines < 40)
+				{
+					++PopLines;
+					UE_LOG(LogForgottenThird, Display,
+						TEXT("Arena glide pop: %s, locomotion state %d (was %d), feet moved %.0f and %.0f cm in %.1f ms, mesh local %.0f,%.0f and %.0f,%.0f (was %.0f,%.0f and %.0f,%.0f), root moved %.0f cm, yaw %.0f deg, legs told %.0f cm/s."),
+						kGlideNames[Key], Loco, LastLoco, Jump0, Jump1, 1000.f * Dt, Local[0].X, Local[0].Y, Local[1].X, Local[1].Y, LastLocal[0].X,
+						LastLocal[0].Y, LastLocal[1].X, LastLocal[1].Y, FVector::Dist2D(Root, LastRoot), FMath::FindDeltaAngleDegrees(LastYaw, Yaw), CycleSpeed);
+				}
 			}
+			LastLoco = Loco;
+			R.Low += FMath::Min(Local[0].Z, Local[1].Z) - (Floor < 1e8f ? Floor : 0.f);
 			for (int32 I = 0; I < 2; ++I)
 			{
 				const float Height = static_cast<float>(Local[I].Z);
@@ -196,9 +222,15 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 			}
 		}
 	}
+	// The floor is where the balls rest standing still (idle, the legs told under 10 cm/s): a dodge's or a fall's low
+	// pose would put it under the feet of every step after.
+	const bool bStands = Key == Idle && CycleSpeed < 10.f;
 	for (int32 I = 0; I < 2; ++I)
 	{
-		Floor = FMath::Min(Floor, static_cast<float>(Local[I].Z));
+		if (bStands)
+		{
+			Floor = FMath::Min(Floor, static_cast<float>(Local[I].Z));
+		}
 		LastBall[I] = Ball[I];
 		LastLocal[I] = Local[I];
 	}
@@ -213,6 +245,7 @@ void FFTArenaGlideProbe::Log() const
 	{
 		return;
 	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: the floor (the lowest ball standing still, in the mesh's space) is at %.1f cm."), Floor < 1e8f ? Floor : 0.f);
 	for (int32 B = 0; B < NumBuckets; ++B)
 	{
 		const FRow& R = Rows[B];
@@ -223,8 +256,8 @@ void FFTArenaGlideProbe::Log() const
 		const double F = FMath::Max(1, R.Frames);
 		const double P = FMath::Max(1, R.Planted);
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("Arena glide: %s: %d frames (%d stale, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot over %d slips %.0f cm/s (%.0f forward, %.0f across); net over %d plants %.0f cm/s; %d pops (a foot over 20 cm in a frame)."),
+			TEXT("Arena glide: %s: %d frames (%d stale, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot over %d slips %.0f cm/s (%.0f forward, %.0f across); net over %d plants %.0f cm/s; %d pops (a foot 20 cm past its swing in a frame); the lower ball %.1f cm over the floor; entered %d starts, %d stops, %d turns."),
 			kGlideNames[B], R.Frames, R.Still, 1000.0 * R.Dt / F, R.Body / F, R.BodyAlong / F, R.BodySide / F, R.Cycle / F, R.Yaw / F, R.Planted, R.Slip / P, R.SlipAlong / P,
-			R.SlipSide / P, R.Plants, R.PlantTime > 0.0 ? R.PlantSlip / R.PlantTime : 0.0, R.Pops);
+			R.SlipSide / P, R.Plants, R.PlantTime > 0.0 ? R.PlantSlip / R.PlantTime : 0.0, R.Pops, R.Low / F, R.Enter[0], R.Enter[1], R.Enter[2]);
 	}
 }

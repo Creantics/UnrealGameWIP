@@ -520,6 +520,7 @@ void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)
 	PrevBodies.player = P;
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
+	LeadWantSpeed = -1.f;
 	LeadLegYaw = 0.f;
 	LeadUpperShare = 0.f;
 	if (PlayerFigure)
@@ -1144,6 +1145,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	PrevBodies = Bodies;
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
+	LeadWantSpeed = -1.f;
 	LeadUpperShare = 0.f;
 	LeadLegYaw = 0.f;
 	Accumulator = 0.0;
@@ -2313,12 +2315,17 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
 		Pose.Speed = PlayerStepSpeed;
 		Pose.LegYaw = LeadLegYaw;
-		// Where the walk heads (the stick's share of the pace; unknown in an attack, a roll or a pause) and, braking,
-		// how far the body slides at the brake from the pace the legs show.
-		Pose.WantSpeed = P.wantSpeed;
+		// Where the walk heads (the stick's share of the pace; unknown in an attack or a roll) and, braking, how far the
+		// body slides at the brake from the pace the legs show. A hit pause keeps the last (Core has none there), so a
+		// start or a stop under way isn't sent back to the gaits by the pause.
+		if (P.stopLeft <= 0.f)
+		{
+			LeadWantSpeed = P.wantSpeed;
+		}
+		Pose.WantSpeed = LeadWantSpeed;
 		{
 			const float Brake = Fight.def().fighter.moveBrake;
-			Pose.StopDistance = P.wantSpeed >= 0.f && Brake > 0.f ? PlayerStepSpeed * PlayerStepSpeed / (2.f * Brake) : -1.f;
+			Pose.StopDistance = LeadWantSpeed >= 0.f && Brake > 0.f ? PlayerStepSpeed * PlayerStepSpeed / (2.f * Brake) : -1.f;
 		}
 		// The feet held while a strike's clip has the legs (its walk share under half) and through a hit pause: the
 		// body's lunge goes over planted feet, which step when it has gone too far.
