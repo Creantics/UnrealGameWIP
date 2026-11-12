@@ -127,9 +127,18 @@ TEST_CASE("input bindings: rebinding onto a used key swaps the two") {
     const std::string before = encodeInputBindings(b);
     CHECK_FALSE(rebindInput(b, InputAction::Guard, InputDevice::Keys, "Left Ctrl"));
     CHECK(encodeInputBindings(b) == before);
-    REQUIRE(rebindInput(b, InputAction::Guard, InputDevice::Keys, ""));
-    CHECK(b.keys[0][static_cast<std::size_t>(InputAction::Guard)].empty());
+    // Unbinding Guard leaves it with no key or route on the keyboard: refused, as an imported file would be.
+    CHECK_FALSE(rebindInput(b, InputAction::Guard, InputDevice::Keys, ""));
+    CHECK(encodeInputBindings(b) == before);
+    // An action with a route may go unbound.
+    REQUIRE(rebindInput(b, InputAction::Party, InputDevice::Keys, ""));
+    CHECK(b.keys[0][static_cast<std::size_t>(InputAction::Party)].empty());
     CHECK(validateInputBindings(b));
+    CHECK(inputAllReachable(b));
+    // A swap that leaves the other action unbound with no route is refused too: Party (unbound) takes Gift's key.
+    const std::string unbound = encodeInputBindings(b);
+    CHECK_FALSE(rebindInput(b, InputAction::Party, InputDevice::Keys, "G"));
+    CHECK(encodeInputBindings(b) == unbound);
 }
 
 TEST_CASE("held input: held follows the key, toggled flips on each press, reset lets go") {
@@ -187,7 +196,8 @@ TEST_CASE("input bindings: in every mode no key does two things, and every actio
     // Guard keeps a button that can be held (a shoulder, a modifier key) with its toggle option.
     CHECK(inputActionHeld(InputAction::Guard));
     InputBindings unbound = b;
-    REQUIRE(rebindInput(unbound, InputAction::Map, InputDevice::Pad, ""));
+    CHECK_FALSE(rebindInput(unbound, InputAction::Map, InputDevice::Pad, "")); // refused: it would strand Party
+    unbound.keys[1][static_cast<std::size_t>(InputAction::Map)] = InputKeyName{};
     CHECK_FALSE(inputAllReachable(unbound, &missing));
     CHECK(missing == InputAction::Party); // its pad route rides the map button
 }
@@ -262,10 +272,10 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
     checkLines(b);
     CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) ==
           "W/A/S/D input.move  LMB input.light  RMB input.aim  Ctrl input.guard  Alt input.dodge  G input.heal  "
-          "R input.release  F input.count  Q input.read  MMB input.lock  Mouse flick input.switch  V input.intercept");
+          "R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  V input.intercept");
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
           "LS input.move  LS full input.run  A input.jump  RT input.light  LT input.aim  X input.use  D-pad right input.lead  "
-          "Hold View input.party  View input.map");
+          "Hold View input.party");
     // None of the retired keys shows on the keyboard lines.
     const std::string keys = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) + "  " +
                              inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr);
@@ -279,14 +289,20 @@ TEST_CASE("input hints: the lines follow a rebind and leave out what nothing rea
     InputBindings b = defaultInputBindings();
     REQUIRE(rebindInput(b, InputAction::Guard, InputDevice::Keys, "K"));
     REQUIRE(rebindInput(b, InputAction::TargetNext, InputDevice::Keys, "X"));
-    REQUIRE(rebindInput(b, InputAction::Gift, InputDevice::Keys, ""));
+    CHECK_FALSE(rebindInput(b, InputAction::Gift, InputDevice::Keys, "")); // no route: refused
+    REQUIRE(rebindInput(b, InputAction::Party, InputDevice::Keys, ""));     // its route stays
     REQUIRE(rebindInput(b, InputAction::Jump, InputDevice::Pad, "Gamepad_FaceButton_Top")); // swaps with Count
     checkLines(b);
     const std::string arena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr);
     CHECK(arena.find("K input.guard") != std::string::npos);
     CHECK(arena.find("Ctrl") == std::string::npos);
     CHECK(arena.find("Mouse flick/X input.switch") != std::string::npos);
-    CHECK(arena.find("input.heal") == std::string::npos); // unbound, no route: left out
+    CHECK(arena.find("G input.heal") != std::string::npos);
+    // A table with an action nothing reaches (only a hand-built one now) leaves its entry out.
+    InputBindings stranded = b;
+    stranded.keys[0][static_cast<std::size_t>(InputAction::Gift)] = InputKeyName{};
+    CHECK(inputHintLine(stranded, InputHintScreen::Arena, InputDevice::Keys, nullptr).find("input.heal") == std::string::npos);
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr).find("Hold M input.party") != std::string::npos);
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr).find("Y input.jump") != std::string::npos);
     CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr).find("A input.count") != std::string::npos);
     // The host's words come through the callback.

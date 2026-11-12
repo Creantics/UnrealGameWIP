@@ -146,6 +146,7 @@ bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std::string_vie
     if (clash) keys[static_cast<std::size_t>(other)] = mine; // the two swap
     setName(mine, key);
     if (!validateInputBindings(next)) return false; // e.g. a Read-held key onto Read's or Guard's
+    if (!inputAllReachable(next)) return false;     // as importInputBindings: no action left with no key or route
     b = next;
     if (clash && swapped) *swapped = other;
     return true;
@@ -309,6 +310,8 @@ std::string encodeInputBindings(const InputBindings& b) {
 namespace {
 
 using A = InputAction;
+// Only actions the host reads (ctest hints_read scans Source/ for each); Read and a short-press Map have no host
+// logic yet, so they stay out.
 constexpr InputHintEntry kArenaHint[] = {
     {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move"},
     {{A::Light}, 1, "input.light"},
@@ -318,7 +321,7 @@ constexpr InputHintEntry kArenaHint[] = {
     {{A::Gift}, 1, "input.heal"},
     {{A::Release}, 1, "input.release"},
     {{A::Count}, 1, "input.count"},
-    {{A::Read}, 1, "input.read"},
+    {{A::ReadPick1, A::ReadPick2, A::ReadPick3}, 3, "input.pick"},
     {{A::LockOn}, 1, "input.lock"},
     {{A::TargetPrev, A::TargetNext}, 2, "input.switch"},
     {{A::Intercept}, 1, "input.intercept"},
@@ -332,7 +335,6 @@ constexpr InputHintEntry kFieldHint[] = {
     {{A::Interact}, 1, "input.use"},
     {{A::SwitchLead}, 1, "input.lead"},
     {{A::Party}, 1, "input.party"},
-    {{A::Map}, 1, "input.map"},
 };
 
 struct KeyLabel {

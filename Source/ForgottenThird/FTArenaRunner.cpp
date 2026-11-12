@@ -1109,7 +1109,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 void UFTArenaRunner::PollInput(float DeltaSeconds)
 {
 	APlayerController* PC = GetPC();
-	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
+	// Paused, just resumed or out of focus: every press state clears, so a key let go meanwhile fires nothing later.
+	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this) || FTInputBindings::LostFocus())
 	{
 		bGuardHeld = false;
 		GuardInput.reset();

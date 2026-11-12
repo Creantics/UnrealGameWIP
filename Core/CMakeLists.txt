@@ -355,4 +355,8 @@ if(FTCORE_BUILD_TESTS)
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
         -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
+    add_test(NAME hints_read COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
+        -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckHintsRead.cmake)
 endif()

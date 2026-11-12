@@ -254,8 +254,9 @@ public:
         return move < def_->boss.moveCount && def_->boss.moves[move].floor && weight_.shockRing();
     }
     bool invulnerable() const { return pedestal_.holding(); }
-    // A bonus's damage scale (ArenaFight::ruledHostBlow): 0 while invulnerable, else takenScale(); no hit counted.
-    float bonusScale() const { return invulnerable() ? 0.0f : weight_.takenScale(); }
+    // A held blow's bonus's damage scale (ArenaFight::ruledHostBlow): 0 while invulnerable, else 1, since the bonus is
+    // worked out from the blow's damage as onHit already scaled it (crit x takenScale); no hit counted.
+    float bonusScale() const { return invulnerable() ? 0.0f : 1.0f; }
     bool down() const { return pedestal_.down(run_.now()); }
     const ArenaBossMoveTable& table() const { return run_.table(); }
     const ArenaBossRun& run() const { return run_; }

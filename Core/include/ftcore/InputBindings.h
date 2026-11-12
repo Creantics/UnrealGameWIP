@@ -100,8 +100,9 @@ FTCORE_API bool validInputKeyName(std::string_view key);
 // The action in `a`'s context already on `key` for that device, other than `a`; false when none.
 FTCORE_API bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction& clash);
 // Puts `key` (empty: unbind) on `a` for that device. A key another action in the same context has moves to it from
-// `a` (the two swap), and `swapped` names it. False (nothing changed) for a bad key name or a result
-// validateInputBindings refuses.
+// `a` (the two swap), and `swapped` names it. False (nothing changed) for a bad key name, a result
+// validateInputBindings refuses, or one that leaves an action with no key or route (inputAllReachable), as an
+// imported file is refused.
 FTCORE_API bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction* swapped = nullptr);
 // How an action with no key on that device is still reached: "left_stick" (moving), "left_stick_full" (the stick
 // pushed all the way runs), "mouse_flick" / "right_stick_flick" (locked on, a flick switches the target),

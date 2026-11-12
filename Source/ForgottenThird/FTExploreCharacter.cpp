@@ -488,7 +488,8 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 bool AFTExploreCharacter::TakesInput()
 {
 	const APlayerController* PC = Cast<APlayerController>(Controller);
-	return PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this) && !ScenePlaying();
+	return PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this) &&
+		!UFTPauseSubsystem::IsJustResumed(this) && !ScenePlaying() && !FTInputBindings::LostFocus();
 }
 
 void AFTExploreCharacter::TickHeldKeys(float DeltaSeconds)
@@ -746,6 +747,8 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 	const APlayerController* PC = Cast<APlayerController>(Controller);
 	const bool bInput = TakesInput();
 	const bool bForced = AimFrom >= 0.f && GetWorld()->GetTimeSeconds() >= AimFrom && !Van.IsValid() && !ScenePlaying();
+	// No input (paused or just resumed, a scene, out of focus): the press states clear before they tick, so a held key
+	// let go meanwhile reads as no press rather than a light (PressHold::tickIf).
 	if (!bInput)
 	{
 		AimInput.reset();
@@ -753,14 +756,10 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 	const bool bHeld = (bInput && AimInput.tick(FTInputBindings::IsDown(*PC, ftcore::InputAction::Aim),
 		FTInputBindings::Toggles(GetWorld(), ftcore::InputAction::Aim))) || bForced;
 	// A gun kit aiming fires one round per press, at the press, and never a heavy.
-	const ftcore::PressHold::Out Press = AttackHold.tick(DeltaSeconds, bInput && FTInputBindings::IsDown(*PC, ftcore::InputAction::Light),
+	const ftcore::PressHold::Out Press = AttackHold.tickIf(bInput, DeltaSeconds, bInput && FTInputBindings::IsDown(*PC, ftcore::InputAction::Light),
 		Rules.heavyHold, Strike.attacking(), bHeld && Strike.kit().weapon == ftcore::ArenaWeapon::Guns);
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
-	if (!bInput)
-	{
-		AttackHold.reset();
-	}
 	Aim.tick(DeltaSeconds, bHeld, Body);
 	ApplyAimCamera();
 	// The walk speed: whatever the movement handlers last set, scaled while aiming.

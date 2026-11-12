@@ -173,6 +173,40 @@ TEST_CASE("aim: aiming a gun, the attack button is one light at the press howeve
     CHECK_FALSE(p.heavyPending());
 }
 
+TEST_CASE("aim: a press cleared while held (pause, focus lost) fires nothing when the key comes up") {
+    PressHold p;
+    const float hold = 0.25f;
+    CHECK_FALSE(p.tick(kDt, true, hold).light);
+    p.reset(); // the host pauses with the key down; it is let go while paused
+    PressHold::Out o = p.tick(kDt, false, hold);
+    CHECK_FALSE(o.light);
+    CHECK_FALSE(o.heavy);
+    // Without the clear the same release is a light: the host must clear before it ticks.
+    PressHold q;
+    q.tick(kDt, true, hold);
+    CHECK(q.tick(kDt, false, hold).light);
+    // A heavy already waiting is dropped too.
+    PressHold r;
+    for (int i = 0; i < 30; ++i) r.tick(kDt, true, hold, true);
+    REQUIRE(r.heavyPending());
+    r.reset();
+    CHECK_FALSE(r.heavyPending());
+    o = r.tick(kDt, false, hold);
+    CHECK_FALSE(o.light);
+    CHECK_FALSE(o.heavy);
+    // The hosts' entry: with input taken away (the key reads up then) it fires nothing, not even on that first frame.
+    PressHold h;
+    REQUIRE_FALSE(h.tickIf(true, kDt, true, hold).light);
+    o = h.tickIf(false, kDt, false, hold);
+    CHECK_FALSE(o.light);
+    CHECK_FALSE(o.heavy);
+    CHECK_FALSE(h.pressing());
+    o = h.tickIf(true, kDt, false, hold); // input back, key up: still nothing
+    CHECK_FALSE(o.light);
+    CHECK(h.tickIf(true, kDt, true, hold).light == false);
+    CHECK(h.tickIf(true, kDt, false, hold).light); // a fresh tap after it is a light again
+}
+
 TEST_CASE("aim: the attack button is light on a tap and heavy on a hold, once") {
     PressHold p;
     const float hold = 0.25f;

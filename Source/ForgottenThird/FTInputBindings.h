@@ -16,6 +16,7 @@
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
+#include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
@@ -141,6 +142,13 @@ inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevi
 		Line = FT::ToFString(Text);
 	}
 	return Line.GetValue();
+}
+
+// Whether the game window has lost focus: the engine lets go of every key then, so a hold read as a release would fire
+// a press nobody made. Hosts treat it as a pause and clear their press state. Never true on an unattended (headless) run.
+inline bool LostFocus()
+{
+	return !FApp::IsUnattended() && !FApp::HasFocus();
 }
 
 // Whether a held action is pressed once to toggle: its own mode, else the game-wide hold-toggle setting.

@@ -115,6 +115,15 @@ public:
     // frame and nothing after; a press already under way gives no heavy while `single` holds (its release is a light
     // unless it already gave one), and a heavy still waiting is dropped.
     Out tick(float dt, bool down, float hold, bool busy = false, bool single = false);
+    // tick for a host whose input can be taken away (paused, just resumed, out of focus, a scene): with no input the
+    // press under way is forgotten before anything is read, so a key let go meanwhile is no light; else tick.
+    Out tickIf(bool input, float dt, bool down, float hold, bool busy = false, bool single = false) {
+        if (!input) {
+            reset();
+            return Out{};
+        }
+        return tick(dt, down, hold, busy, single);
+    }
     // Forgets a press under way (the button's input was taken away: a menu, the vehicle).
     void reset() {
         downFor_ = -1.f;

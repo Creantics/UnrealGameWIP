@@ -5467,6 +5467,10 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     CHECK(arenaPlayable(t.fighter("devin")));
     CHECK(arenaPlayable(t.fighter("duy")));
     CHECK_FALSE(arenaPlayable(t.fighter("third"))); // a party slot only
+    // -ArenaLead=Third is refused on this: the host lower-cases the name and asks arenaPlayable (the kit stays pinned).
+    // The ids are exact, so the lower-casing matters: "Third" as typed is unknown and reads the first kit, which fights.
+    CHECK(&t.fighter("Third") == &t.fighter(t.fighterIds[0]));
+    CHECK(arenaPlayable(t.fighter("Third")));
     CHECK(arenaPlayable(t.fighter("default")));
     CHECK(t.fighter("default").weapon == ArenaWeapon::None);
     CHECK(t.fighter("devin").weapon == ArenaWeapon::Gauntlets);
@@ -6033,7 +6037,7 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
 
 // The tuning (provisional, for the playtest): Devin's heavier light string staggers every kind with a break-out
 // before its breakAt-th blow; Duy's lighter one leaves it upright, so it breaks out on him. A count reset always comes
-// with a poise refill (breakDecay at least poiseDelay), so every run starts from full poise.
+// with a poise refill (breakDecay equal to poiseDelay), so every run starts from full poise.
 struct BreakCase {
     const char* kind;
     bool devinStaggersFirst;
@@ -6068,7 +6072,7 @@ TEST_CASE("arena break-out tuning: per kind, Devin's string staggers first and D
         CAPTURE(c.kind);
         const ArenaEnemyKind& k = shippedKind(t, c.kind);
         REQUIRE(k.breakAt > 0);
-        CHECK(k.breakDecay >= k.poiseDelay); // no poise carried across a count reset
+        CHECK(k.breakDecay == doctest::Approx(k.poiseDelay)); // the count resets with the poise refill: none carried across
         // The breakAt-th blow breaks out only on an enemy it leaves upright (poise above 0).
         CHECK((stringPoise(devin, k.breakAt) >= k.poise) == c.devinStaggersFirst);
         CHECK((stringPoise(duy, k.breakAt) < k.poise) == c.duyBrokenOut);

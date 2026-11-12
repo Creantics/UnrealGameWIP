@@ -149,7 +149,7 @@
     "input.heal": "heal",
     "input.release": "release",
     "input.count": "partner",
-    "input.read": "read",
+    "input.pick": "pick (cards up)",
     "input.lock": "lock",
     "input.switch": "switch",
     "input.intercept": "intercept",
@@ -158,7 +158,6 @@
     "input.use": "use",
     "input.lead": "lead",
     "input.party": "party",
-    "input.map": "map",
 
     "explore.objectives": "OBJECTIVES",
     "explore.complete": "Demo complete",
