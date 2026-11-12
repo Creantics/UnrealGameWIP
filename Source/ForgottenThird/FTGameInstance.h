@@ -68,8 +68,14 @@ struct FFTStoryCarry
 	// player walks from this world's gate to World's, and entering it opens World's map.
 	FString FromWorld;
 	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
+	// The beat's `lose` param is "never" (a spar): a lost fight counts as won (ftcore::judgeStep). A
+	// screen may keep the lead standing instead; either way the story never retries it.
+	bool bCannotLose = false;
+	// The beat's `lose` param is "branch" and it names a `sets` flag: a lost fight ends the beat with
+	// resume(0), so a screen may hand a loss back instead of offering only a retry.
+	bool bLossBranch = false;
 	bool bDone = false;
-	bool bWon = false;
+	bool bWon = false; // a fight's result; a fight that comes back done but not won is lost
 };
 
 UCLASS(Config = Game)
@@ -105,6 +111,8 @@ public:
 	// The lowered plan of the gameplay beat in progress and the step it is on; the director on the
 	// story map reads it when a screen comes back.
 	ftcore::StoryChain Chain;
+	// Losses of the chain's current fight step that opened it again (FTStep::FinishCarried); 0 on a new step.
+	int32 StepRetries = 0;
 	// The tallies of an -AlphaAutoPlay run, kept across map changes.
 	ftcore::AlphaCounters Alpha;
 	// The beat a screen gave up on (alpha runs skip it instead of retrying it forever).

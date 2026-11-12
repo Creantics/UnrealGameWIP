@@ -427,6 +427,60 @@ bool storyRestartScene(StoryState& s, const FactRegistry& reg) {
     return true;
 }
 
+bool storyMarkStep(const StoryState& s, StoryStepMark& mark) {
+    mark.valid = s.openScene != kNoScene;
+    mark.scene = s.openScene;
+    if (!mark.valid) return false;
+    mark.facts = s.facts;
+    mark.stamp = s.stamp;
+    mark.wide = s.wide;
+    return true;
+}
+
+namespace {
+bool markUsable(const StoryState& s, const StoryStepMark& mark) {
+    return mark.valid && mark.scene != kNoScene && mark.scene == s.openScene;
+}
+
+void restoreMark(StoryState& s, const FactRegistry& reg, const StoryStepMark& mark) {
+    s.facts = mark.facts;
+    s.stamp = mark.stamp;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].kind != WideKind::Raw) s.wide[w] = mark.wide[w];
+}
+} // namespace
+
+bool storyRollbackStep(StoryState& s, const FactRegistry& reg, const StoryStepMark& mark, bool countRetry) {
+    if (!markUsable(s, mark)) return false;
+    restoreMark(s, reg, mark);
+    if (countRetry)
+        if (const std::uint8_t w = bound(reg.roles.retries, reg); w != kNoWide) addWide(s, w, 1, reg.wide[w].cap);
+    pushEvent(s, StoryEvent::Kind::SceneRolledBack, s.openScene, 1, 0);
+    return true;
+}
+
+bool storyEndStep(StoryState& s, const FactRegistry& reg, StoryStepMark& mark, StepEnd end) {
+    const bool usable = markUsable(s, mark);
+    if (usable && end != StepEnd::Keep) storyRollbackStep(s, reg, mark, end == StepEnd::Retry);
+    mark.valid = false;
+    mark.scene = kNoScene;
+    return usable;
+}
+
+bool storyEncodeAtStep(StoryState& s, const FactRegistry& reg, const StoryStepMark& mark,
+                       std::span<std::uint8_t, kStoryStateBlockSize> out) {
+    if (!markUsable(s, mark)) return storyEncode(s, reg, out);
+    const auto facts = s.facts;
+    const auto stamp = s.stamp;
+    const auto wide = s.wide;
+    restoreMark(s, reg, mark);
+    const bool ok = storyEncode(s, reg, out);
+    s.facts = facts;
+    s.stamp = stamp;
+    s.wide = wide;
+    return ok;
+}
+
 bool storyCommitScene(StoryState& s, const FactRegistry& reg) {
     const std::uint8_t sc = s.openScene;
     if (sc == kNoScene) return false;

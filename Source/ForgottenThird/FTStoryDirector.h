@@ -21,7 +21,8 @@
 // hands off too (the screens play themselves); fast autoplay skips the hand-off unless
 // -StoryAutoPlayHandoff.
 //
-// Moves, scenes and time in the FINISHED line count from this map visit only.
+// Moves, scenes and wall-clock time in the FINISHED line count the whole story run (UFTStorySubsystem:
+// from StartStory or a loaded save), across the hand-off map changes.
 //
 // Command line: -StoryAutoPlay plays by itself (each text typed out, then a short pause);
 // -StoryAutoPlayFast shows each text whole and makes many moves a frame; -StoryQuitOnFinish exits
@@ -42,8 +43,9 @@
 //
 // Voice: a voiced line (UFTAudioSubsystem::OnVoiceLine) plays its lip-sync track (Data/Voice/<LineId>.nface)
 // on every UFTFaceComponent in this map whose ModelId is the speaker's model in the local cast file,
-// Data/Voice/speakers.json (ftcore::SpeakerCast; gitignored, since the keys are script labels). The track
-// stops when the voice does. Auto-advance and paced autoplay wait for the voice to finish before their
+// Data/Voice/speakers.json (ftcore::SpeakerCast; gitignored, since the keys are script labels), or, when
+// the map has none, on its stand-in faces (UFTFaceComponent::bStandIn; ftcore::pickFaceRoute). The track
+// stops when the voice does. The run's tally goes to the log as "Story: FACES ..." when a map ends. Auto-advance and paced autoplay wait for the voice to finish before their
 // pause starts (auto-advance then waits only its short voice tail); a press still moves on at once and
 // cuts the voice. Fast autoplay and skip never wait. With no cast file, no faces or no voice, nothing
 // changes.
@@ -159,6 +161,8 @@ private:
 
 	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads).
 	void LoadCast();
+	// The path of the next -StoryShot still of LineId; empty when the name is unsafe or 99 are saved.
+	FString StoryShotFile(const FString& LineId) const;
 	// The current line's voice is still playing.
 	bool IsVoiceBusy() const;
 
@@ -212,15 +216,14 @@ private:
 	bool bFast = false;
 	bool bReported = false;
 	float WaitTime = 0.f; // autoplay: seconds with nothing to do
-	int32 Moves = 0;
-	int32 Scenes = 0;
-	double StartTime = 0.0;
 
 	bool bAlpha = false; // -AlphaAutoPlay
 	bool bHandoffAuto = false; // -StoryAutoPlayHandoff
 	bool bQuitOnReturn = false;
-	// -StoryShot=<path prefix>: autoplay (not fast) saves the screen with the HUD for each of the first
-	// -StoryShotMax=N lines (default 4), once the line is revealed and 1 s in, then quits.
+	// -StoryShot=<name>: autoplay (not fast) saves the screen with the HUD for each of the run's first
+	// -StoryShotMax=N lines (default 4, 0..64; 0 quits at once), once the line is revealed and 1 s in,
+	// then quits. The stills go to the screenshot folder as <name>_<line id>.png, never over an
+	// existing one (ftcore::storyShotNameOk, clampStoryShotMax).
 	FString ShotPrefix;
 	int32 ShotsLeft = 0;
 	float ShotQuitIn = -1.f;

@@ -551,7 +551,9 @@ void AFTBeatGameMode::Tick(float DeltaSeconds)
 	SoundBeat();
 	AddPopups(Screen.takeFresh());
 	RefreshStandIns();
-	if (Screen.finished())
+	// On a beat with a loss branch a defeat is the story's result: no retry prompt, the loss goes back.
+	const UFTGameInstance* BranchGI = Screen.askingRetry() && !bStandalone ? GetGameInstance<UFTGameInstance>() : nullptr;
+	if (Screen.finished() || (BranchGI && BranchGI->StoryCarry.bValid && BranchGI->StoryCarry.bLossBranch))
 	{
 		Finish();
 	}
@@ -608,6 +610,16 @@ void AFTBeatGameMode::Finish()
 		{
 			FTRequestExit(bWon ? 0 : 1, TEXT("Beat"));
 		}
+		else if (Screen.quitChosen())
+		{
+			FTStep::QuitToTitle(this, TEXT("Demo"), TEXT("the beat screen")); // the default title map (AFTGameMode::TitleMap)
+		}
+		return;
+	}
+	if (Screen.quitChosen())
+	{
+		// Quit at the prompt leaves for the title: never the same fight again, never a result.
+		FTStep::QuitToTitle(this, GI->StoryCarry.ReturnMap, TEXT("the beat screen"));
 		return;
 	}
 	// The step is done, won or lost; the dispatcher counts it (FTStep::FinishCarried), never this screen.
