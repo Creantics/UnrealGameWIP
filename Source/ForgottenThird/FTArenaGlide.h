@@ -18,7 +18,10 @@ struct FFTArenaGlideProbe
 	enum EBucket : int32
 	{
 		Idle,
-		Move,
+		Move, // steady: the legs' speed changing slower than kGlideAccel and the facing turning slower than kGlideTurn
+		MoveFaster, // speeding up
+		MoveSlower, // braking
+		MoveTurning, // turning, whatever the speed does
 		MoveAfterHit, // Idle or Move within 0.6 s of a hitstun's end
 		LightStrike0, // a light's startup and active, by chain index (a shot is LightStrike3's row too)
 		LightStrike1,
@@ -73,5 +76,9 @@ private:
 	EBucket Key = Other;
 	ftcore::ArenaAction LastAction = ftcore::ArenaAction::Idle;
 	double AfterHitUntil = -1.0;
+	// The last Drawn's clock, leg speed (m/s) and facing (radians), for the move's split.
+	double LastNow = -1.0;
+	float LastLeg = 0.f;
+	float LastFacing = 0.f;
 	FRow Rows[NumBuckets];
 };

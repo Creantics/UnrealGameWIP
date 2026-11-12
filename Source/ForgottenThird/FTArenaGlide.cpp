@@ -5,11 +5,14 @@
 
 namespace
 {
-const TCHAR* const kGlideNames[FFTArenaGlideProbe::NumBuckets] = {TEXT("idle"), TEXT("move"), TEXT("move after a hit"),
+const TCHAR* const kGlideNames[FFTArenaGlideProbe::NumBuckets] = {TEXT("idle"), TEXT("move steady"), TEXT("move speeding up"),
+	TEXT("move braking"), TEXT("move turning"), TEXT("move after a hit"),
 	TEXT("light 0 strike"), TEXT("light 1 strike"), TEXT("light 2 strike"), TEXT("light 3 strike"), TEXT("light recovery"),
 	TEXT("heavy startup"), TEXT("heavy active"), TEXT("heavy recovery"), TEXT("riposte or release"), TEXT("dodge"),
 	TEXT("hitstun"), TEXT("guard or heal"), TEXT("hit pause"), TEXT("other")};
 constexpr double kGlideAfterHit = 0.6;
+constexpr float kGlideAccel = 2.f; // m/s^2: a move whose legs' speed changes faster is speeding up or braking
+constexpr float kGlideTurn = 1.5f; // rad/s: a move whose facing turns faster is turning
 } // namespace
 
 void FFTArenaGlideProbe::Begin(bool bInOn)
@@ -32,6 +35,13 @@ void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now, floa
 	}
 	LastAction = P.action;
 	CycleSpeed = 100.f * LegSpeed;
+	const float Facing = FMath::Atan2(P.facing.y, P.facing.x);
+	const double Since = LastNow >= 0.0 ? Now - LastNow : 0.0;
+	const float Accel = Since > 0.0 ? static_cast<float>((LegSpeed - LastLeg) / Since) : 0.f;
+	const float Turn = Since > 0.0 ? static_cast<float>(FMath::Abs(FMath::FindDeltaAngleRadians(LastFacing, Facing)) / Since) : 0.f;
+	LastNow = Now;
+	LastLeg = LegSpeed;
+	LastFacing = Facing;
 	if (P.stopLeft > 0.f)
 	{
 		Key = HitPause;
@@ -41,7 +51,18 @@ void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now, floa
 	{
 	case ArenaAction::Idle:
 	case ArenaAction::Move:
-		Key = Now < AfterHitUntil ? MoveAfterHit : (P.action == ArenaAction::Idle ? Idle : Move);
+		if (Now < AfterHitUntil)
+		{
+			Key = MoveAfterHit;
+		}
+		else if (P.action == ArenaAction::Idle)
+		{
+			Key = Idle;
+		}
+		else
+		{
+			Key = Turn > kGlideTurn ? MoveTurning : (Accel > kGlideAccel ? MoveFaster : (Accel < -kGlideAccel ? MoveSlower : Move));
+		}
 		break;
 	case ArenaAction::Light:
 		if (P.part == ArenaPart::Recovery)
