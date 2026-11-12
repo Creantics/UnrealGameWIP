@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 
 using namespace ftcore;
 
@@ -141,12 +142,6 @@ TEST_CASE("twist: swing angle and the fade near 180 degrees") {
     CHECK(std::isfinite(twistAngle(over, axis)));
 }
 
-TEST_CASE("twist: the unwrap restarts where the fade is near zero") {
-    // Faded keys come back wrapped, so a turn picked up there is dropped.
-    CHECK(unwrapFadedTwist(170 * kDeg, -170 * kDeg + 2 * kPi * 3, 0.01) == doctest::Approx(170 * kDeg));
-    CHECK(unwrapFadedTwist(-170 * kDeg, 170 * kDeg, 0.5) == doctest::Approx(190 * kDeg));
-}
-
 TEST_CASE("twist: unwrap across more than a turn, and axisAngle edge cases") {
     // A raw angle 3 turns away comes back to the nearest branch.
     CHECK(unwrapAngle(10 * kDeg + 6 * kPi, 0.0) == doctest::Approx(10 * kDeg));
@@ -222,6 +217,101 @@ TEST_CASE("twist bake: a loop that rolls a whole turn ends a turn away and says 
     CHECK(back.loops);
     CHECK_FALSE(back.loopPops);
     CHECK(back.ownPeak == doctest::Approx(180 * kDeg));
+}
+
+TEST_CASE("twist bake: a swing past 160 degrees and back mid-clip leaves no step at the fade band") {
+    // The segment rolls 2 degrees a key (680 in all, past 180 well before the swing peaks) while it swings 0 to 170
+    // degrees and back, 1 degree a key. The output is twist * fade; each step must be what the twist's and the fade's
+    // own change give, so no turn (2 pi * fade) appears or drops where the fade crosses its band.
+    const TwistVec axis{0.0, 30.0, 0.0};
+    const TwistVec across{1.0, 0.0, 0.0};
+    constexpr int kKeys = 341;
+    std::array<TwistQuat, kKeys> own{};
+    std::array<double, kKeys> twist{};
+    std::array<double, kKeys> fade{};
+    for (int k = 0; k < kKeys; ++k) {
+        const double swing = (k <= 170 ? k : 340 - k) * kDeg;
+        twist[k] = 2.0 * k * kDeg;
+        fade[k] = twistFade(swing);
+        own[k] = mul(axisAngle(across, swing), axisAngle(axis, twist[k]));
+    }
+    std::array<double, kKeys> ownOut{};
+    std::array<double, kKeys> childOut{};
+    const TwistSegmentSummary s = bakeSegmentTwist(own.data(), nullptr, kKeys, axis, ownOut.data(), childOut.data());
+    double worst = 0.0;
+    for (int k = 1; k < kKeys; ++k) {
+        CAPTURE(k);
+        const double allowed = std::abs(twist[k] - twist[k - 1]) * fade[k] +
+                               std::max(std::abs(twist[k]), std::abs(twist[k - 1])) * std::abs(fade[k] - fade[k - 1]);
+        const double step = std::abs(ownOut[k] - ownOut[k - 1]);
+        CHECK(step <= allowed + 1e-9);
+        worst = std::max(worst, step - allowed);
+    }
+    CHECK(worst <= 1e-9);
+    // Back at full weight the whole roll is there: 680 degrees, not the wrapped -40.
+    CHECK(ownOut[kKeys - 1] == doctest::Approx(680 * kDeg));
+    CHECK(ownOut[30] == doctest::Approx(60 * kDeg));
+    CHECK(ownOut[170] == doctest::Approx(0.0)); // faded out at the peak
+    CHECK(s.ownBadKeys == 0);
+}
+
+TEST_CASE("twist bake: a NaN or zero key holds the last good value and poisons nothing after it") {
+    const TwistVec axis{1.0, 0.0, 0.0};
+    constexpr int kKeys = 8;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::array<TwistQuat, kKeys> own{};
+    std::array<TwistQuat, kKeys> child{};
+    for (int k = 0; k < kKeys; ++k) {
+        own[k] = axisAngle(axis, 30.0 * k * kDeg);
+        child[k] = axisAngle(axis, -20.0 * k * kDeg);
+    }
+    own[3] = TwistQuat{nan, 0.0, 0.0, 1.0};
+    own[4] = TwistQuat{0.0, 0.0, 0.0, 0.0};
+    child[0] = TwistQuat{0.0, std::numeric_limits<double>::infinity(), 0.0, 1.0};
+    std::array<double, kKeys> ownOut{};
+    std::array<double, kKeys> childOut{};
+    const TwistSegmentSummary s = bakeSegmentTwist(own.data(), child.data(), kKeys, axis, ownOut.data(), childOut.data());
+    CHECK(s.ownBadKeys == 2);
+    CHECK(s.childBadKeys == 1);
+    for (int k = 0; k < kKeys; ++k) {
+        CAPTURE(k);
+        CHECK(std::isfinite(ownOut[k]));
+        CHECK(std::isfinite(childOut[k]));
+    }
+    CHECK(ownOut[3] == doctest::Approx(60 * kDeg)); // held from key 2
+    CHECK(ownOut[4] == doctest::Approx(60 * kDeg));
+    CHECK(ownOut[5] == doctest::Approx(150 * kDeg)); // unwrapped on from key 2
+    CHECK(ownOut[7] == doctest::Approx(210 * kDeg)); // past 180, no flip
+    CHECK(childOut[0] == 0.0);                       // nothing good yet: 0
+    CHECK(childOut[7] == doctest::Approx(-140 * kDeg));
+    CHECK(s.ownPeak == doctest::Approx(210 * kDeg));
+    // A first or last key that is unusable is no loop.
+    own[kKeys - 1] = TwistQuat{nan, nan, nan, nan};
+    own[0] = own[kKeys - 1];
+    CHECK_FALSE(bakeSegmentTwist(own.data(), nullptr, kKeys, axis, ownOut.data(), childOut.data()).loops);
+}
+
+TEST_CASE("twist bake: a clip of non-unit rotations bakes the same as the unit one") {
+    const TwistVec axis{0.0, 0.0, 12.0};
+    constexpr int kKeys = 20;
+    std::array<TwistQuat, kKeys> unit{};
+    std::array<TwistQuat, kKeys> scaled{};
+    for (int k = 0; k < kKeys; ++k) {
+        unit[k] = mul(axisAngle({1.0, 0.0, 0.0}, 8.0 * k * kDeg), axisAngle(axis, 15.0 * k * kDeg));
+        const double sc = 0.3 + 0.25 * k;
+        scaled[k] = TwistQuat{unit[k].x * sc, unit[k].y * sc, unit[k].z * sc, unit[k].w * sc};
+    }
+    std::array<double, kKeys> a{};
+    std::array<double, kKeys> b{};
+    std::array<double, kKeys> c{};
+    const TwistSegmentSummary su = bakeSegmentTwist(unit.data(), unit.data(), kKeys, axis, a.data(), c.data());
+    const TwistSegmentSummary ss = bakeSegmentTwist(scaled.data(), scaled.data(), kKeys, axis, b.data(), c.data());
+    for (int k = 0; k < kKeys; ++k) {
+        CAPTURE(k);
+        CHECK(b[k] == doctest::Approx(a[k]));
+    }
+    CHECK(ss.ownPeak == doctest::Approx(su.ownPeak));
+    CHECK(ss.ownBadKeys == 0);
 }
 
 TEST_CASE("twist bake: an empty clip or a missing array writes nothing") {

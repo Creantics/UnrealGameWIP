@@ -419,7 +419,8 @@ bool LogClip(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 // The child term is the forearm's and the shin's only (the upper arm and thigh take the segment's own twist alone).
 // The axis and f come from the bind pose (the child's and the twist bone's offsets), so a rerun writes the same
 // keys; a twist track the retarget already wrote is replaced (logged). Logs each segment's peak twists and its
-// bones' peak rolls, and warns when a clip that ends where it starts ends its twist a turn away.
+// bones' peak rolls, and warns when a clip that ends where it starts ends its twist a turn away, when a key's
+// rotation is not finite (skipped: the twist holds its last good value) and when the skeleton has no twist bones.
 // Returns the number of twist tracks written.
 int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 {
@@ -441,7 +442,11 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 	auto Rotations = [&](int32 Bone, TArray<FQuat>& Out)
 	{
 		TArray<FTransform> Track;
-		Model->GetBoneTrackTransforms(Skeleton.GetBoneName(Bone), Track);
+		const FName BoneName = Skeleton.GetBoneName(Bone);
+		if (Model->IsValidBoneTrackName(BoneName))
+		{
+			Model->GetBoneTrackTransforms(BoneName, Track);
+		}
 		Out.SetNum(Keys);
 		for (int32 K = 0; K < Keys; ++K)
 		{
@@ -454,7 +459,7 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 
 	IAnimationDataController& Controller = Clip.GetController();
 	IAnimationDataController::FScopedBracket Bracket(Controller, FText::FromString(TEXT("Bake twist bones")), false);
-	int32 Written = 0, Replaced = 0;
+	int32 Written = 0, Replaced = 0, SegmentsBaked = 0;
 	TArray<FQuat> SegmentRot, ChildRot;
 	TArray<double> ChildTwist, OwnTwist;
 	for (const FSegment& Pair : Segments)
@@ -481,6 +486,7 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 			{
 				continue;
 			}
+			++SegmentsBaked;
 			// The axis in the segment's frame; the child's twist from its rotation away from bind in that frame, the
 			// segment's own from its rotation away from bind in its own bind frame (the same frame).
 			const FVector Axis = Ref[Child].GetTranslation();
@@ -502,6 +508,11 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 			{
 				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildRig: %s ends where it starts but its %s twist ends a turn away; the twist bones pop at the loop."),
 					*Clip.GetName(), *SegmentName);
+			}
+			if (Summary.ownBadKeys > 0 || Summary.childBadKeys > 0)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildRig: %s %s: %d own and %d child keys are not finite rotations; their twist holds the last good key."),
+					*Clip.GetName(), *SegmentName, Summary.ownBadKeys, Summary.childBadKeys);
 			}
 			const double ChildPeak = Summary.childPeak, OwnPeak = Summary.ownPeak;
 			FString Rolls;
@@ -525,7 +536,11 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 				const FName Name = Skeleton.GetBoneName(Twist);
 				if (!Model->IsValidBoneTrackName(Name))
 				{
-					Controller.AddBoneCurve(Name, false);
+					if (!Controller.AddBoneCurve(Name, false))
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildRig: couldn't add the twist track %s in %s."), *Name.ToString(), *Clip.GetName());
+						continue;
+					}
 				}
 				else
 				{
@@ -544,6 +559,11 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: %s twist bake %s: child twist up to %.1f deg, own twist up to %.1f deg;%s"),
 				*Clip.GetName(), *SegmentName, FMath::RadiansToDegrees(ChildPeak), FMath::RadiansToDegrees(OwnPeak), *Rolls);
 		}
+	}
+	if (SegmentsBaked == 0)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildRig: %s: the skeleton has no <upperarm|lowerarm|thigh|calf>_twist_* bones under their segment; nothing to bake."),
+			*Clip.GetName());
 	}
 	if (Replaced > 0)
 	{
@@ -743,8 +763,7 @@ bool TwistProbe(USkeletalMesh& Mesh, const FString& Dest)
 				Positions.Init(Ref[Pose.Bone].GetTranslation(), Keys);
 				Rotations.Init(Pose.Rotation, Keys);
 				Scales.Init(Ref[Pose.Bone].GetScale3D(), Keys);
-				Controller.AddBoneCurve(Name, false);
-				if (!Controller.SetBoneTrackKeys(Name, Positions, Rotations, Scales, false))
+				if (!Controller.AddBoneCurve(Name, false) || !Controller.SetBoneTrackKeys(Name, Positions, Rotations, Scales, false))
 				{
 					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: couldn't key %s in %s."), *Name.ToString(), *Path);
 					bOk = false;
@@ -1217,9 +1236,21 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: %d -Names for %d -Clips."), Names.Num(), Clips.Num());
 		return 1;
 	}
-	// -NoBakeTwist leaves the twist bones at the bind pose, as the retarget writes them.
+	// The twist bake: on by default, off for a MetaHuman body (clavicle_pec_l: it has its own twist and corrective
+	// setup driven at runtime, which a baked track would replace or fight). -BakeTwist turns it on, -NoBakeTwist off.
+	const bool bForceBake = FParse::Param(*Params, TEXT("BakeTwist")), bNoBake = FParse::Param(*Params, TEXT("NoBakeTwist"));
+	if (bForceBake && bNoBake)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: -BakeTwist and -NoBakeTwist together."));
+		return 1;
+	}
+	const bool bMetaHumanBody = Mesh->GetRefSkeleton().FindBoneIndex(TEXT("clavicle_pec_l")) != INDEX_NONE;
+	const bool bBakeTwist = bForceBake || (!bNoBake && !bMetaHumanBody);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: twist bake %s for %s (%s)."), bBakeTwist ? TEXT("on") : TEXT("SKIPPED"),
+		*Mesh->GetName(), bForceBake ? TEXT("-BakeTwist") : bNoBake ? TEXT("-NoBakeTwist") : bMetaHumanBody
+			? TEXT("MetaHuman body: its own twist setup; -BakeTwist to opt in") : TEXT("default"));
 	return RetargetClips(*FromRig, *RigAsset, *Mesh, Dest, Clips, FParse::Param(*Params, TEXT("AlignPose")),
-		FParse::Param(*Params, TEXT("NoAlign")), KeepChains, Names, OutFolder, !FParse::Param(*Params, TEXT("NoBakeTwist"))) ? 0 : 1;
+		FParse::Param(*Params, TEXT("NoAlign")), KeepChains, Names, OutFolder, bBakeTwist) ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig needs an editor build."));
 	return 1;

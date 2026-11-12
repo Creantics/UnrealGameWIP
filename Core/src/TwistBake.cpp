@@ -61,10 +61,6 @@ double unwrapAngle(double angle, double previous) {
     return previous + wrap(angle - previous);
 }
 
-double unwrapFadedTwist(double angle, double previous, double fade) {
-    return fade < 0.05 ? wrap(angle) : unwrapAngle(angle, previous);
-}
-
 double segmentFraction(const TwistVec& boneOffset, const TwistVec& childOffset) {
     const double length2 = dot(childOffset, childOffset);
     if (length2 <= 0.0) {
@@ -89,16 +85,37 @@ double rotationGap(const TwistQuat& a, const TwistQuat& b) {
     return 2.0 * std::acos(std::clamp(d, 0.0, 1.0));
 }
 
-// The faded, unwrapped twist of each key of one rotation track.
-double fadedTwists(const TwistQuat* delta, int keys, const TwistVec& axis, double* out) {
-    double unwrapped = 0.0, peak = 0.0;
-    for (int k = 0; k < keys; ++k) {
-        const double fade = twistFade(swingAngle(delta[k], axis));
-        unwrapped = unwrapFadedTwist(twistAngle(delta[k], axis), k > 0 ? unwrapped : 0.0, fade);
-        out[k] = unwrapped * fade;
-        peak = std::max(peak, std::abs(out[k]));
+// A rotation the twist can be read from: every part finite and not all zero.
+bool usable(const TwistQuat& q) {
+    if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w)) {
+        return false;
     }
-    return peak;
+    const double n2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    return std::isfinite(n2) && n2 > 1e-24;
+}
+
+// The faded, unwrapped twist of each key of one rotation track; the unwrap is carried through faded keys and
+// unusable keys hold the last good output. Returns the number of unusable keys.
+int fadedTwists(const TwistQuat* delta, int keys, const TwistVec& axis, double* out, double& peak) {
+    double unwrapped = 0.0, held = 0.0;
+    bool started = false;
+    int bad = 0;
+    peak = 0.0;
+    for (int k = 0; k < keys; ++k) {
+        if (!usable(delta[k])) {
+            ++bad;
+            out[k] = held;
+            continue;
+        }
+        const double fade = twistFade(swingAngle(delta[k], axis));
+        const double angle = twistAngle(delta[k], axis);
+        unwrapped = started ? unwrapAngle(angle, unwrapped) : angle;
+        started = true;
+        held = unwrapped * fade;
+        out[k] = held;
+        peak = std::max(peak, std::abs(held));
+    }
+    return bad;
 }
 } // namespace
 
@@ -108,9 +125,9 @@ TwistSegmentSummary bakeSegmentTwist(const TwistQuat* ownDelta, const TwistQuat*
     if (keys < 1 || ownDelta == nullptr || ownOut == nullptr || childOut == nullptr) {
         return s;
     }
-    s.ownPeak = fadedTwists(ownDelta, keys, axis, ownOut);
+    s.ownBadKeys = fadedTwists(ownDelta, keys, axis, ownOut, s.ownPeak);
     if (childDelta != nullptr) {
-        s.childPeak = fadedTwists(childDelta, keys, axis, childOut);
+        s.childBadKeys = fadedTwists(childDelta, keys, axis, childOut, s.childPeak);
     } else {
         for (int k = 0; k < keys; ++k) {
             childOut[k] = 0.0;
@@ -118,8 +135,10 @@ TwistSegmentSummary bakeSegmentTwist(const TwistQuat* ownDelta, const TwistQuat*
     }
     const int last = keys - 1;
     constexpr double kSamePose = 0.02;
-    s.loops = keys > 1 && rotationGap(ownDelta[0], ownDelta[last]) < kSamePose &&
-              (childDelta == nullptr || rotationGap(childDelta[0], childDelta[last]) < kSamePose);
+    const auto same = [&](const TwistQuat* d) {
+        return usable(d[0]) && usable(d[last]) && rotationGap(d[0], d[last]) < kSamePose;
+    };
+    s.loops = keys > 1 && same(ownDelta) && (childDelta == nullptr || same(childDelta));
     s.loopPops = s.loops && (std::abs(ownOut[last] - ownOut[0]) > kPi || std::abs(childOut[last] - childOut[0]) > kPi);
     return s;
 }

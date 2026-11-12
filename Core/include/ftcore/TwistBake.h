@@ -19,11 +19,15 @@
 // 100 and 160 degrees of swing (twistFade; a 150 degree hinge tilted 5 degrees keeps under a tenth
 // of its 36 degrees of false twist). The price: a segment swung past 100 degrees from its bind pose
 // (an arm raised overhead from an A-pose bind) keeps only part of its real twist. Angles are
-// radians; a clip's twist is unwrapped key to key (unwrapFadedTwist) before it is faded and scaled,
-// so a roll through 180 degrees does not flip the twist bones by 360 * f; where the fade is near 0
-// the unwrap starts afresh, so noise there carries no turn into the rest of the clip. The first key
+// radians; a clip's twist is unwrapped key to key (unwrapAngle) before it is faded and scaled, so a
+// roll through 180 degrees does not flip the twist bones by 360 * f. The unwrap runs on through the
+// faded keys and only the output is scaled, so crossing the fade band leaves no step beyond the
+// twist's and the fade's own change (a turn the noise near 180 degrees of swing adds is carried on:
+// those keys show none of it, and per-key changes under half a turn are tracked). The first key
 // picks its turn on its own, so a looping clip whose twist passes 180 degrees can end a turn away
-// from its start (the caller compares the faded twist at both ends and warns).
+// from its start (the caller compares the faded twist at both ends and warns). A key whose rotation
+// is not finite or is zero is skipped: it holds the last good output and the unwrap goes on from the
+// last good key (the summary counts them, so the caller can warn).
 //
 // The child term belongs to the forearm and the shin only (lowerarm -> hand, calf -> foot): the
 // forearm's own pronation, carried at the elbow, is not the upper arm's to follow (it would wrap the
@@ -58,10 +62,6 @@ FTCORE_API double twistFade(double swing);
 // The angle plus the whole turns that bring it nearest previous (for a run of keys).
 FTCORE_API double unwrapAngle(double angle, double previous);
 
-// unwrapAngle for a key whose twist will be scaled by fade: below a fade of 0.05 the angle comes back
-// wrapped to (-pi, pi] instead (the key shows next to none of it, and the unwrap restarts there).
-FTCORE_API double unwrapFadedTwist(double angle, double previous, double fade);
-
 // How far along the segment a twist bone sits: its offset from the segment's head projected on the
 // child's offset, as a share of the child's offset, clamped to [0, 1]. 0 when the child's offset is zero.
 FTCORE_API double segmentFraction(const TwistVec& boneOffset, const TwistVec& childOffset);
@@ -78,6 +78,8 @@ struct TwistSegmentSummary {
     double childPeak = 0.0; // the largest faded child twist of any key (0 without a child term)
     bool loops = false;     // the clip ends where it starts (segment and child within 0.02 rad of their first key)
     bool loopPops = false;  // ... and a faded twist ends more than half a turn from where it starts
+    int ownBadKeys = 0;     // keys of ownDelta skipped as not finite or zero (each holds the last good output)
+    int childBadKeys = 0;   // the same for childDelta
 };
 
 // One segment's twists over a clip of `keys` keys, in the segment's bind frame:
