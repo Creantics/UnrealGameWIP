@@ -35,3 +35,6 @@ __pycache__/
 
 # Local config overrides (e.g. which private character the explore pawn wears)
 Config/User*.ini
+
+# Marketplace content claimed by the user: local only, never committed
+Content/Fab/
