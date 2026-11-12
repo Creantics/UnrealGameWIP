@@ -142,7 +142,7 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 		Settings->DefaultGameMode = AFTExploreGameMode::StaticClass();
 	}
 
-	UMaterialInterface* Ground = MakeTint(Package, Base, TEXT("MI_Explore_Ground"), FLinearColor(0.23f, 0.33f, 0.17f));
+	UMaterialInterface* Ground = MakeTint(Package, Base, TEXT("MI_Explore_Ground"), FLinearColor(0.2f, 0.22f, 0.17f));
 	UMaterialInterface* Path = MakeTint(Package, Base, TEXT("MI_Explore_Path"), FLinearColor(0.45f, 0.38f, 0.28f));
 	UMaterialInterface* Wall = MakeTint(Package, Base, TEXT("MI_Explore_Wall"), FLinearColor(0.42f, 0.4f, 0.37f));
 	UMaterialInterface* House = MakeTint(Package, Base, TEXT("MI_Explore_House"), FLinearColor(0.75f, 0.68f, 0.55f));
@@ -250,7 +250,12 @@ int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 	}
 
 	// Light.
-	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-38, 35, 0));
+	// The default look, with auto-exposure held to about -1..2 EV100 (the map's sun lights a mid grey near EV 0): a
+	// close-up filled by a dark garment can't be lifted to grey, nor a frame of white tee or sky pushed dark.
+	ftcore::SceneLook Look;
+	Look.exposureMinEV100 = -1.f;
+	Look.exposureMaxEV100 = 2.f;
+	FTScene::SpawnLook(World, Spawn, Look, FRotator(-38, 35, 0));
 
 	// The spots and their director.
 	AFTExploreDirector* Director = World->SpawnActor<AFTExploreDirector>(FVector(0, 0, 200), FRotator::ZeroRotator, Spawn);
