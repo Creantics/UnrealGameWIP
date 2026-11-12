@@ -15,89 +15,88 @@ namespace {
 
 constexpr float kDt = 1.f / 60.f;
 
-ArenaAttack swing(float startup, float active, float recovery) {
+ArenaAttack swing(float startup, float active, float recovery, float cancel = 0.5f) {
     ArenaAttack a;
     a.startup = startup;
     a.active = active;
     a.recovery = recovery;
+    a.cancel = cancel;
     return a;
 }
 
 } // namespace
 
-TEST_CASE("attack move: the shipped table loads and every weapon keeps the lead moving on a light") {
+TEST_CASE("attack move: the shipped table commits a fist's strike and lets a gun's shot walk") {
     std::string text;
     REQUIRE(ftcore_test::readProjectData("Battle/attack_move.json", text));
     AttackMoveRules r;
     std::string err;
     REQUIRE_MESSAGE(importAttackMoveRules(text, r, &err), err);
     for (int k = 0; k < 3; ++k) {
-        CHECK(r.light[k].speedScale >= 0.5f);
-        CHECK(r.light[k].speedScale <= 0.7f);
-        CHECK(r.light[k].turnRate > 0.f);
-        CHECK(r.heavy[k].commit > 0.f);
-        CHECK(r.heavy[k].commit <= 0.4f);
-        CHECK(r.heavy[k].speedScale > 0.f); // no attack roots the lead
+        CHECK(r.light[k].turnRate > 0.f); // the facing is never held
         CHECK(r.heavy[k].turnRate > 0.f);
-        CHECK(r.heavy[k].commitScale >= 0.2f);
+        // A heavy commits on every weapon: no walk from startup to its cancel point.
+        CHECK(r.heavy[k].startupScale == 0.f);
+        CHECK(r.heavy[k].activeScale == 0.f);
+        CHECK(r.heavy[k].recoveryScale == 0.f);
     }
+    const AttackMoveTune& fist = r.light[static_cast<int>(AimKind::Focus)];
+    CHECK(fist.startupScale <= 0.2f);
+    CHECK(fist.activeScale == 0.f);
+    CHECK(fist.recoveryScale == 0.f);
+    const AttackMoveTune& gun = r.light[static_cast<int>(AimKind::Fire)];
+    CHECK(gun.startupScale >= 0.5f); // hit and move: the shot walks
+    CHECK(gun.activeScale >= 0.5f);
+    CHECK(gun.recoveryScale >= 0.5f);
     CHECK(r.upperNone < r.upperFull);
 }
 
-TEST_CASE("attack move: the import rejects unknown keys, a light commit and values out of range") {
+TEST_CASE("attack move: the import rejects unknown keys, the old commit keys and values out of range") {
     AttackMoveRules r;
     const AttackMoveRules before = r;
     std::string err;
     CHECK_FALSE(importAttackMoveRules(R"({"lite": {}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"light": {"sword": {}}})", r, &err));
-    CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"commit": 0.2}}})", r, &err));
-    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"fire": {"speedScale": 1.5}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"focus": {"commit": 0.2}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"speedScale": 0.6}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"fire": {"activeScale": 1.5}}})", r, &err));
+    CHECK_FALSE(importAttackMoveRules(R"({"light": {"cast": {"recoveryScale": -0.1}}})", r, &err));
     CHECK_FALSE(importAttackMoveRules(R"({"upperNone": 0.8, "upperFull": 0.6})", r, &err));
-    // Nothing may root the lead or hold its facing.
-    CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"speedScale": 0}}})", r, &err));
+    // Nothing may hold the lead's facing.
     CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"fire": {"turnRate": 0}}})", r, &err));
-    CHECK_FALSE(importAttackMoveRules(R"({"heavy": {"focus": {"commitScale": 0}}})", r, &err));
-    CHECK_FALSE(importAttackMoveRules(R"({"light": {"focus": {"commitScale": 0.5}}})", r, &err));
-    CHECK(r.light[0].speedScale == before.light[0].speedScale);
-    REQUIRE(importAttackMoveRules(R"({"heavy": {"cast": {"commit": 0.2}}})", r, &err));
-    CHECK(r.heavy[2].commit == doctest::Approx(0.2f));
-    CHECK(r.heavy[0].commit == doctest::Approx(before.heavy[0].commit));
+    CHECK(r.light[0].turnRate == before.light[0].turnRate);
+    REQUIRE(importAttackMoveRules(R"({"heavy": {"cast": {"startupScale": 0.2}}})", r, &err));
+    CHECK(r.heavy[2].startupScale == doctest::Approx(0.2f));
+    CHECK(r.heavy[0].startupScale == doctest::Approx(before.heavy[0].startupScale));
+    // A 0 scale is a commit, not an error.
+    REQUIRE(importAttackMoveRules(R"({"light": {"fire": {"activeScale": 0}}})", r, &err));
+    CHECK(r.light[1].activeScale == 0.f);
 }
 
-TEST_CASE("attack move: a light never roots, walks at its scale through active and ramps back in recovery") {
-    const AttackMoveRules r;
-    const ArenaAttack a = swing(0.2f, 0.1f, 0.4f);
-    for (float t = 0.f; t < a.total(); t += kDt) {
-        const AttackMoveOut o = attackMove(r, AimKind::Focus, false, a, t);
-        CHECK(o.speedScale > 0.f);
-        CHECK(o.turnRate == doctest::Approx(r.light[0].turnRate)); // capped, never locked
-        if (t < 0.3f) CHECK(o.speedScale == doctest::Approx(0.6f));
-        else CHECK(o.speedScale >= 0.6f - 1e-5f);
-    }
-    CHECK(attackMove(r, AimKind::Focus, false, a, 0.5f).speedScale == doctest::Approx(0.8f));
+TEST_CASE("attack move: each phase gets its own share of the walk, and the cancel point frees it") {
+    AttackMoveRules r;
+    r.light[0] = {0.3f, 0.1f, 0.2f, 6.f};
+    const ArenaAttack a = swing(0.2f, 0.1f, 0.4f, 0.5f); // cancel point at 0.3 + 0.2 = 0.5 s
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.f).speedScale == doctest::Approx(0.3f));
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.19f).speedScale == doctest::Approx(0.3f));
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.21f).speedScale == doctest::Approx(0.1f));
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.29f).speedScale == doctest::Approx(0.1f));
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.31f).speedScale == doctest::Approx(0.2f));
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.49f).speedScale == doctest::Approx(0.2f));
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.51f).speedScale == 1.f);
+    CHECK(attackMove(r, AimKind::Focus, false, a, 0.69f).speedScale == 1.f);
+    for (float t = 0.f; t < a.total(); t += kDt) CHECK(attackMove(r, AimKind::Focus, false, a, t).turnRate == doctest::Approx(6.f));
     const AttackMoveOut after = attackMove(r, AimKind::Focus, false, a, a.total() + 0.01f);
     CHECK(after.speedScale == 1.f);
     CHECK(after.turnRate == 0.f);
-}
-
-TEST_CASE("attack move: a heavy walks, slows into its hit and back out, and never roots or stops turning") {
-    const AttackMoveRules r; // focus heavy: 0.4 speed, 4 rad/s, commit 0.3, commitScale 0.25
-    const ArenaAttack a = swing(0.5f, 0.15f, 0.5f);
-    const AttackMoveOut walk = attackMove(r, AimKind::Focus, true, a, 0.1f);
-    CHECK(walk.speedScale == doctest::Approx(0.4f));
-    const AttackMoveOut commit = attackMove(r, AimKind::Focus, true, a, 0.3f); // 0.2 s..0.65 s is the commit
-    CHECK(commit.speedScale == doctest::Approx(0.25f));
-    const AttackMoveOut hit = attackMove(r, AimKind::Focus, true, a, 0.55f);
-    CHECK(hit.speedScale == doctest::Approx(0.25f));
-    const AttackMoveOut rec = attackMove(r, AimKind::Focus, true, a, 0.65f + 0.25f);
-    CHECK(rec.speedScale == doctest::Approx(0.625f)); // halfway from 0.25 back to 1
-    // Every moment of every heavy walks and turns.
-    for (int k = 0; k < 3; ++k)
-        for (float t = 0.f; t < a.total(); t += 0.001f) {
-            const AttackMoveOut o = attackMove(r, static_cast<AimKind>(k), true, a, t);
-            CHECK(o.speedScale >= 0.25f - 1e-5f);
-            CHECK(o.turnRate == doctest::Approx(r.heavy[k].turnRate));
-        }
+    // The heavy goes by the heavy's numbers.
+    r.heavy[0] = {0.f, 0.f, 0.f, 4.f};
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.1f).speedScale == 0.f);
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.1f).turnRate == doctest::Approx(4.f));
+    CHECK(attackMove(r, AimKind::Focus, true, a, 0.55f).speedScale == 1.f);
+    // A cancel of 1 keeps the whole recovery committed; 0 frees it at the end of active.
+    CHECK(attackMove(r, AimKind::Focus, false, swing(0.2f, 0.1f, 0.4f, 1.f), 0.69f).speedScale == doctest::Approx(0.2f));
+    CHECK(attackMove(r, AimKind::Focus, false, swing(0.2f, 0.1f, 0.4f, 0.f), 0.31f).speedScale == 1.f);
 }
 
 TEST_CASE("attack move: the strike plays on the whole body standing and on the upper body walking") {
@@ -235,14 +234,17 @@ ArenaTable shippedArenaTable() {
 }
 
 struct MovingLight {
-    float speedY = 0.f;   // the velocity across (+y) halfway into the light
-    float facingY = 0.f;  // the facing's y at the light's end
+    float entrySpeed = 0.f;   // the velocity along (+x) on the light's first tick
+    float stopAt = -1.f;      // the light's time its walk (the lunge taken off) first fell under 0.05 m/s (-1: never)
+    float speedYCommit = 0.f; // the velocity across (+y) just before the cancel point
+    float speedYEnd = 0.f;    // ... on the light's last tick (the cancel window)
+    float facingY = 0.f;      // the facing's y at the light's end
     bool wasLight = false;
 };
 
-// A lead standing facing +x throws a light (no lock); once its startup is over the stick goes +y. Measured on the
-// light's last tick (the lunge over).
-MovingLight arenaMovingLight(float attackSpeed, float attackTurn) {
+// A lead walking +x at full pace throws a light (no lock); once its startup is over the stick goes +y. With
+// freeInCancel the host gives full pace from the cancel point on, as attackMove does.
+MovingLight arenaMovingLight(float attackSpeed, float attackTurn, bool freeInCancel) {
     const ArenaTable t = shippedArenaTable();
     ArenaDef def = t.fallback;
     def.fighter = t.fighter("devin");
@@ -252,18 +254,32 @@ MovingLight arenaMovingLight(float attackSpeed, float attackTurn) {
     ArenaBodies bodies;
     bodies.enemies[0] = Vec2{30.f, 30.f}; // far off, out of reach
     ArenaInput in;
+    in.move = Vec2{1.f, 0.f};
+    const ArenaOutput* out = &fight.tick(kDt, in, bodies);
+    for (int i = 0; i < 60; ++i) out = &fight.tick(kDt, in, bodies); // up to pace
     in.attackSpeed = attackSpeed;
     in.attackTurn = attackTurn;
     in.light = true;
-    const ArenaOutput* out = &fight.tick(kDt, in, bodies);
+    out = &fight.tick(kDt, in, bodies);
     in.light = false;
     const ArenaAttack& a = *arenaPlayerAttack(def.fighter, 0);
-    while (out->player.action == ArenaAction::Light && out->player.actionTime < a.startup) out = &fight.tick(kDt, in, bodies);
-    in.move = Vec2{0.f, 1.f};
     MovingLight m;
     m.wasLight = out->player.action == ArenaAction::Light;
+    m.entrySpeed = out->player.velocity.x;
+    const float span = a.startup + a.active;
+    const float lungeSpeed = a.lunge / span;
+    const float cancelAt = span + a.cancel * a.recovery;
     while (out->player.action == ArenaAction::Light && out->player.actionTime + kDt < a.total()) {
-        m.speedY = out->player.velocity.y;
+        if (out->player.actionTime >= a.startup) in.move = Vec2{0.f, 1.f};
+        const bool inCancel = out->player.actionTime >= cancelAt;
+        if (freeInCancel) in.attackSpeed = inCancel ? 1.f : attackSpeed;
+        // The walk alone: the lunge (along the facing through startup and active) taken off.
+        const float lunging = out->player.actionTime < span ? lungeSpeed : 0.f;
+        const float walkX = out->player.velocity.x - lunging * out->player.facing.x;
+        const float walkY = out->player.velocity.y - lunging * out->player.facing.y;
+        if (m.stopAt < 0.f && std::fabs(walkX) < 0.05f && std::fabs(walkY) < 0.05f) m.stopAt = out->player.actionTime;
+        if (!inCancel) m.speedYCommit = out->player.velocity.y;
+        m.speedYEnd = out->player.velocity.y;
         m.facingY = out->player.facing.y;
         out = &fight.tick(kDt, in, bodies);
     }
@@ -272,22 +288,29 @@ MovingLight arenaMovingLight(float attackSpeed, float attackTurn) {
 
 } // namespace
 
-TEST_CASE("attack move: in the arena a light on the move keeps walking and turning; without it the lead roots") {
+TEST_CASE("attack move: in the arena a fist's light slides to a stop, holds through its commit and walks again in the cancel window") {
     const ArenaTable t = shippedArenaTable();
     const float pace = t.fighter("devin").moveSpeed;
-    const MovingLight rooted = arenaMovingLight(0.f, 0.f);
-    const MovingLight moving = arenaMovingLight(0.6f, 6.f);
+    const MovingLight rooted = arenaMovingLight(0.f, 0.f, false);
+    const MovingLight commit = arenaMovingLight(0.f, 6.f, true);
     REQUIRE(rooted.wasLight);
-    REQUIRE(moving.wasLight);
-    CHECK(std::fabs(rooted.speedY) < 0.05f * pace);           // the old root: no walking across
-    CHECK(moving.speedY == doctest::Approx(0.6f * pace).epsilon(0.1)); // walking on at 60 percent
-    CHECK(std::fabs(rooted.facingY) < 0.05f);                 // the old hold after startup
-    CHECK(moving.facingY > 0.9f);                             // turned on toward the stick through the swing
+    REQUIRE(commit.wasLight);
+    // The host that moves nothing roots at once and holds its facing.
+    CHECK(rooted.stopAt >= 0.f);
+    CHECK(rooted.stopAt < 0.02f);
+    CHECK(std::fabs(rooted.facingY) < 0.05f);
+    // The committed light: the entry pace slides to a stop at the brake, not at once and not slowly.
+    CHECK(commit.entrySpeed > 0.5f * pace);
+    CHECK(commit.stopAt > 0.f);
+    CHECK(commit.stopAt < 0.2f);
+    CHECK(std::fabs(commit.speedYCommit) < 0.05f * pace); // no walking across before the cancel point
+    CHECK(commit.speedYEnd > 0.3f * pace);                // free again in the cancel window
+    CHECK(commit.facingY > 0.9f);                         // and turned on toward the stick through the swing
 }
 
-TEST_CASE("attack move: in the arena every attack the host moves by the shipped rules walks and turns") {
+TEST_CASE("attack move: in the arena every attack turns, a fist's commits and a gun's shot walks") {
     // The arena host feeds attackMove's numbers for the light, and the heavy's for the heavy, the riposte and the
-    // Release: none of them is ever 0, so the arena's own root (attackSpeed 0) never happens.
+    // Release: the turn is never 0, so no lead's facing is held.
     std::string text;
     REQUIRE(ftcore_test::readProjectData("Battle/attack_move.json", text));
     AttackMoveRules r;
@@ -303,11 +326,18 @@ TEST_CASE("attack move: in the arena every attack the host moves by the shipped 
                 continue;
             }
             REQUIRE(a != nullptr);
+            CAPTURE(int(move));
             const bool heavy = move != 0 && move != kArenaShotMove;
-            for (float s = 0.f; s < a->total(); s += kDt) {
+            const float activeEnd = a->startup + a->active;
+            const float cancelAt = activeEnd + a->cancel * a->recovery;
+            for (int i = 0; i * kDt < a->total(); ++i) {
+                const float s = i * kDt;
                 const AttackMoveOut o = attackMove(r, aimKindOfMove(kit, move), heavy, *a, s);
-                CHECK(o.speedScale > 0.f);
                 CHECK(o.turnRate > 0.f);
+                if (std::fabs(s - cancelAt) < 1e-3f || std::fabs(s - a->startup) < 1e-3f) continue; // on a phase's edge
+                if (s > cancelAt) CHECK(o.speedScale == 1.f);
+                else if (move == kArenaShotMove) CHECK(o.speedScale >= 0.5f);
+                else if (s > a->startup) CHECK(o.speedScale == 0.f);
             }
         }
     }

@@ -11,7 +11,7 @@ namespace {
 
 const char* const kKindNames[3] = {"focus", "fire", "cast"};
 
-bool readTune(const JsonValue& v, AttackMoveTune& t, bool heavy, std::string& why, std::string& where) {
+bool readTune(const JsonValue& v, AttackMoveTune& t, std::string& why, std::string& where) {
     if (!v.isObject()) {
         why = "not an object";
         return false;
@@ -21,13 +21,12 @@ bool readTune(const JsonValue& v, AttackMoveTune& t, bool heavy, std::string& wh
         float* value;
         double lo, hi;
     };
-    const Field fields[] = {{"speedScale", &t.speedScale, 0.05, 1.0}, {"turnRate", &t.turnRate, 0.5, 60.0},
-                            {"commit", &t.commit, 0.0, 2.0}, {"commitScale", &t.commitScale, AttackMoveTune::kMinCommitScale, 1.0}};
+    const Field fields[] = {{"startupScale", &t.startupScale, 0.0, 1.0}, {"activeScale", &t.activeScale, 0.0, 1.0},
+                            {"recoveryScale", &t.recoveryScale, 0.0, 1.0}, {"turnRate", &t.turnRate, 0.5, 60.0}};
     for (std::uint32_t i = 0; i < v.size(); ++i) {
         const std::string_view k = v.key(i);
         bool known = false;
-        for (const Field& f : fields)
-            known = known || (k == f.name && (heavy || (k != "commit" && k != "commitScale")));
+        for (const Field& f : fields) known = known || k == f.name;
         if (!known) {
             where = std::string(k);
             why = "not a known tunable";
@@ -84,7 +83,7 @@ bool importAttackMoveRules(std::string_view json, AttackMoveRules& out, std::str
             if (v.isAbsent()) continue;
             std::string why, where;
             AttackMoveTune& t = h ? r.heavy[kind] : r.light[kind];
-            if (!readTune(v, t, h != 0, why, where))
+            if (!readTune(v, t, why, where))
                 return fail(std::string(group) + "." + kKindNames[kind] + (where.empty() ? "" : "." + where), why);
         }
     }
@@ -119,32 +118,17 @@ AttackMoveOut attackMove(const AttackMoveRules& rules, AimKind kind, bool heavy,
     AttackMoveOut o;
     const int k = static_cast<int>(kind) < 3 ? static_cast<int>(kind) : 0;
     const AttackMoveTune& tune = heavy ? rules.heavy[k] : rules.light[k];
-    const float hitAt = attack.startup;
     const float activeEnd = attack.startup + attack.active;
     const float total = attack.total();
     if (!(t >= 0.f) || t >= total) return o;
-    if (!heavy) {
-        o.turnRate = tune.turnRate;
-        if (t < activeEnd || attack.recovery <= 0.f) {
-            o.speedScale = tune.speedScale;
-        } else {
-            const float s = (t - activeEnd) / attack.recovery;
-            o.speedScale = tune.speedScale + (1.f - tune.speedScale) * s;
-        }
-        return o;
-    }
-    // A heavy: walk, then commit (a slower, heavier step, still turning) from `commit` before the hit frame through
-    // active, then the recovery ramps from there back to full pace. It never roots and never holds its facing.
-    const float commitFrom = hitAt - tune.commit;
-    const float slow = std::max(tune.commitScale, AttackMoveTune::kMinCommitScale);
-    o.turnRate = tune.turnRate;
-    if (t < commitFrom) {
-        o.speedScale = tune.speedScale;
-    } else if (t < activeEnd) {
-        o.speedScale = slow;
-    } else {
-        o.speedScale = attack.recovery > 0.f ? slow + (1.f - slow) * (t - activeEnd) / attack.recovery : 1.f;
-    }
+    // The cancel point: when another action may start (the `cancel` share of the recovery); the walk is free from it.
+    const float cancelAt = activeEnd + std::clamp(attack.cancel, 0.f, 1.f) * attack.recovery;
+    o.turnRate = std::max(tune.turnRate, 0.5f);
+    if (t >= cancelAt) o.speedScale = 1.f;
+    else if (t >= activeEnd) o.speedScale = tune.recoveryScale;
+    else if (t >= attack.startup) o.speedScale = tune.activeScale;
+    else o.speedScale = tune.startupScale;
+    o.speedScale = std::clamp(o.speedScale, 0.f, 1.f);
     return o;
 }
 

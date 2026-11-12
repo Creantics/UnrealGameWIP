@@ -110,6 +110,8 @@ struct FFTLocomotionAnimProxy : public FAnimInstanceProxy
 	virtual bool Evaluate(FPoseContext& Output) override;
 
 private:
+	// The feet held (FFootHold), on the pose in component space.
+	void HoldFeet(FCSPose<FCompactPose>& CS, const FBoneContainer& Container);
 	struct FLayer
 	{
 		const UAnimSequence* Seq = nullptr;
@@ -122,11 +124,49 @@ private:
 	// The layers before the actions (the locomotion's), and the actions' upper-body share (SetActionUpper): the bones
 	// off UpperMask (the pelvis, the legs) blend back to those layers alone by it. UpperMask is per compact bone, made
 	// with the bones.
+	// LocoWeight keeps the locomotion layers' own weights (summing to 1), before the actions scale them down: an action
+	// at full weight leaves them nothing in the blend, and the legs would drop to the action's clip.
 	int32 NumLoco = 0;
+	float LocoWeight[MaxLayers] = {};
 	float UpperShare = 0.f;
 	TArray<bool> UpperMask;
 	// The spine's bend this frame, in component space: one rotation shared over the spine bones.
 	FQuat SpineBend = FQuat::Identity;
+	// The legs turned from the body's facing by this (degrees, + right) about the root (SetLegYaw).
+	float LegYaw = 0.f;
+	// The feet held (SetFootLock): each foot on the floor stays where it stood in the world while the body moves over
+	// it, by two-bone IK on the leg; one held more than kHoldReach from where the clip has it steps there (one foot at a
+	// time, the farther first, lifted on an arc over kStepTime). Let go, a held foot steps back to the clip's place. A
+	// foot the clip lifts goes where the clip takes it and is held again where it comes down.
+	struct FFootHold
+	{
+		bool bHeld = false;
+		bool bStepping = false;
+		FVector Anchor = FVector::ZeroVector; // the ball's place, world
+		FVector From = FVector::ZeroVector;   // a step's start, world
+		float T = 0.f;                        // through the step, 0..1
+	};
+	static constexpr float kHoldReach = 26.f;   // cm
+	static constexpr float kStepTime = 0.16f;   // s
+	static constexpr float kStepLift = 6.f;     // cm at the arc's top
+	static constexpr float kLiftedAbove = 4.f;  // cm over the ball's rest height: the clip lifts the foot
+	static constexpr float kLetGoWithin = 2.f;  // cm: a held foot this near its clip place is let go at once
+	// The pelvis sinks so a moved foot is within kLegReach of its leg's length (the clips' legs stand nearly straight),
+	// by at most kMaxPelvisDrop, eased in and out at these rates (1/s).
+	static constexpr float kLegReach = 0.96f;
+	static constexpr float kMaxPelvisDrop = 9.f; // cm
+	static constexpr float kPelvisDropIn = 18.f;
+	static constexpr float kPelvisDropOut = 8.f;
+	FBoneReference PelvisBone;
+	float PelvisDrop = 0.f; // cm, this frame
+	bool bFootLock = false;
+	bool bFeetHeld = false; // a foot held or stepping after the last evaluation
+	FFootHold Hold[2];
+	FTransform ToWorld = FTransform::Identity; // the component's, at PreUpdate
+	float HoldDt = 0.f;
+	FVector LegForward = FVector::ForwardVector;
+	FBoneReference BallBone[2];
+	float BallRest[2] = {0.f, 0.f}; // the balls' heights in the ref pose, component space
 	// The head's on top of it (Locomotion's headPitch, headRoll, headYaw), shared over the neck bones.
 	FQuat HeadBend = FQuat::Identity;
 	// The air pose (Locomotion::limbs), and its weight on the arms and on the legs.
@@ -313,6 +353,12 @@ public:
 	// While the right arm is aimed (SetArmAim, side 1): the left hand joins it by Weight (0..1), wrist under and beside
 	// the right one, for a two-handed hold.
 	void SetSupportHand(float Weight) { PushedSupport = Weight; }
+	// The legs turned from the facing by Yaw degrees (+ right), the chest turned back by as much over the spine: a
+	// body with forward gaits only walks along the way it moves while it faces elsewhere (a strafe). Any owner.
+	void SetLegYaw(float Yaw) { PushedLegYaw = Yaw; }
+	// The feet held where they stand while bLock holds (a strike whose clip has the legs; FFTLocomotionAnimProxy::
+	// FFootHold), stepping when the body has gone too far over one. Any owner.
+	void SetFootLock(bool bLock) { bPushedFootLock = bLock; }
 	// A non-character owner crouches while bCrouch holds (a character's own crouch is read from it).
 	void SetCrouch(bool bCrouch) { bPushedCrouch = bCrouch; }
 	// A roll asked for and still kept (Locomotion's roll input): touching down with it, a moving body rolls out of
@@ -458,6 +504,8 @@ private:
 	float PushedCurl[2] = {-1.f, -1.f};
 	bool bPushedGrip[2] = {false, false};
 	float PushedSupport = 0.f;
+	float PushedLegYaw = 0.f;
+	bool bPushedFootLock = false;
 	bool bPushedFace = false;
 	bool bPushedAir = false;
 	bool bPushedCrouch = false;

@@ -252,6 +252,10 @@ private:
 	FString StrikeName;
 	// -ArenaShotClose and its camera.
 	bool bShotClose = false;
+	// -ArenaShotSide: -ArenaShotAt's views from the lead's side, the whole body in frame (the feet on the ground), HUD
+	// off; the camera placed a frame before each view.
+	bool bShotSide = false;
+	bool bSideAimed = false;
 	UPROPERTY()
 	TObjectPtr<AActor> StrikeCamera;
 	// The fight clock's next advance at most (s; 0: no limit), so a strike view's frame falls on its mark.

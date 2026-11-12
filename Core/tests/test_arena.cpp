@@ -6363,11 +6363,11 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
     // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 22.6 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 93/150, 26 hits, 3 taken, 0 blocks, 2 parries, 0 ripostes, 3 evades, 0 guard breaks, "
+          "Arena: VICTORY at standalone beat 0 step 0 after 21.8 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 93/150, 24 hits, 3 taken, 0 blocks, 2 parries, 0 ripostes, 3 evades, 0 guard breaks, "
           "4 staggers, 1 heals, 0 releases, 0 overloads, 5/6 reads right, dealt 520, took 102, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
-    CHECK(r.hitsOn[1] == 21);
+    CHECK(r.hitsOn[1] == 19);
     // The best run is the skirmisher's 2 of 2: Devin's 2nd blow reaches its breakAt and breaks its poise with it.
     CHECK(r.stats.breakRunBest == 2);
     CHECK(r.stats.breakRunNeed == 2);
@@ -6421,7 +6421,8 @@ TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
 
 TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out always on Duy") {
     // The demo's feature check lines read arenaFeatureChecks over this fight. Duy leaves both kinds upright, so they
-    // break out on him every seed; Devin's string, unrooted, staggers first on some seeds (n/a) and not on others.
+    // break out on him every seed. Devin's string commits (it stands from startup to the cancel point, AttackMove), so
+    // his blows land close together and stagger both first on every seed (n/a).
     int devinBreaks = 0;
     for (const char* kit : {"devin", "duy"})
         for (std::uint32_t seed = 1; seed <= 12; ++seed) {
@@ -6440,7 +6441,7 @@ TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the bre
             if (!devin) CHECK(c.breakOutCheck == ArenaCheck::Pass);
             devinBreaks += devin && c.breakOut ? 1 : 0;
         }
-    CHECK(devinBreaks == 8); // seeds 1, 2, 5, 7-11
+    CHECK(devinBreaks == 0);
 }
 
 TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and always break out on Duy") {
@@ -6726,11 +6727,11 @@ TEST_CASE("arena host mirror: a shared count's held blows get their bonus throug
     CHECK(devin.held == 3);
     CHECK(devin.joins == 2);
     CHECK(devin.bonuses == 3);
-    CHECK(devin.bonusDamage == 78);
+    CHECK(devin.bonusDamage == 66);
     CHECK(devin.hostHits >= 1);
     const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
     CHECK(duy.phase == ArenaPhase::Victory);
-    CHECK(duy.joins == 2);
+    CHECK(duy.joins == 1);
     CHECK(duy.bonuses == 1);
     CHECK(duy.bonusDamage == 17);
     for (std::uint32_t seed = 1; seed <= 6; ++seed) {

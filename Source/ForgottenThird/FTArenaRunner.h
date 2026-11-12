@@ -497,6 +497,23 @@ private:
 	int32 SessionBonusDamage = 0;    // their extra damage
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
+	// The lead's speed as its body moved (m/s; the sim's velocity less what the bodies' push took off), the median of
+	// the last three steps' speeds: the legs' cycle runs at it, so they step at the pace the feet are drawn moving, and
+	// it sets the strikes' upper share. A median, not one step: a body pushed in and out against another swings step to
+	// step, and the gait and the foot lock would flip with it each frame.
+	float PlayerStepSpeed = 0.f;
+	float PlayerSteps[3] = {0.f, 0.f, 0.f};
+	int32 PlayerStepAt = -1; // the next slot in PlayerSteps; -1 after a start or a teleport
+	// The strike clips' upper-body share this step, eased toward attackUpperShare of the walk (the lunge left out).
+	float LeadUpperShare = 0.f;
+	// The share moves by at most this much a second, so a strike's legs don't flip between the clip and the walk.
+	static constexpr float kUpperShareRate = 6.f;
+	// The lead's legs turned from its facing toward the way it moved over the last step (degrees, + right; 0 standing
+	// or while a strike's clip has the legs), eased at kLegYawRate: its gaits only go forward, so a strafe walks them
+	// sideways under a chest that keeps facing.
+	float LeadLegYaw = 0.f;
+	static constexpr float kLegYawRate = 420.f;
+	static constexpr float kLegYawMax = 95.f;
 	uint32 Seed = 1;
 
 	// Presses waiting for a step, the held guard, the stick on the ground and the switch.

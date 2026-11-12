@@ -404,7 +404,11 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	HeldDelta = FMath::Max(0.f, Fight.heldTime() - HeldBefore);
 	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
-	Glide.Drawn(Fight.output().player, Now);
+	// The legs' speed as the figure hands it to the locomotion (none while dodging or down).
+	{
+		const ftcore::ArenaAction Act = Fight.output().player.action;
+		Glide.Drawn(Fight.output().player, Now, Act == ftcore::ArenaAction::Dodge || Act == ftcore::ArenaAction::Downed ? 0.f : PlayerStepSpeed);
+	}
 	SteerCamera(DeltaSeconds);
 	ApplyAimCamera();
 	TickImpact(bHold ? 0.f : DeltaSeconds);
@@ -513,6 +517,9 @@ void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)
 {
 	Bodies.player = P;
 	PrevBodies.player = P;
+	PlayerStepSpeed = 0.f;
+	PlayerStepAt = -1;
+	LeadLegYaw = 0.f;
 }
 
 APlayerController* UFTArenaRunner::GetPC() const
@@ -584,6 +591,30 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		Enemy->Setup(false, EnemyKind.bodyRadius, Color, ftcore::arenaEnemyHeight(EnemyKind));
 		EnemyFigures[I] = Enemy;
 		LoadSkin(I);
+	}
+	// The figures are placed in the fight's tick (the game mode's or the host's): their meshes pose after it, so a frame
+	// shows each body's pose for where it stands that frame. Ticking first, a mesh posed for the last frame's placement and
+	// was then moved and turned under it: a frame late, which slid the planted feet at every start, stop and turn, and
+	// swung the old pose round with a sharp turn (the riposte's finisher snaps the facing at contact).
+	if (AActor* Ticker = Cast<AActor>(GetOuter()))
+	{
+		auto After = [Ticker](AActor* Figure)
+		{
+			if (!Figure)
+			{
+				return;
+			}
+			TInlineComponentArray<USkeletalMeshComponent*> Meshes(Figure);
+			for (USkeletalMeshComponent* Mesh : Meshes)
+			{
+				Mesh->AddTickPrerequisiteActor(Ticker);
+			}
+		};
+		After(PlayerFigure);
+		for (int32 I = 0; I < MaxEnemies; ++I)
+		{
+			After(EnemyFigures[I]);
+		}
 	}
 	// The stone_bearer's picks: only the moves its figure has a clip for (a clipless one would stand in the idle while
 	// its tell plays).
@@ -1109,6 +1140,10 @@ void UFTArenaRunner::PutBodiesAtStart()
 		Bodies.enemies[I] = Fight.enemyStart(I);
 	}
 	PrevBodies = Bodies;
+	PlayerStepSpeed = 0.f;
+	PlayerStepAt = -1;
+	LeadUpperShare = 0.f;
+	LeadLegYaw = 0.f;
 	Accumulator = 0.0;
 	Fight.tick(0.f, ftcore::ArenaInput(), Bodies);
 	PrevHeldTime = static_cast<double>(Fight.heldTime());
@@ -1666,6 +1701,25 @@ void UFTArenaRunner::StepFight()
 	PressSession(In);
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	// In a hit pause the figure's clips stand still (its clock stopped), so what drives its legs holds too: the body
+	// standing for the pause is not a stop, and easing the gait, the strike's walk share or the legs' turn under a
+	// frozen clip would move the feet with nothing else moving.
+	const bool bLeadPaused = Out.player.stopLeft > 0.f && PlayerStepAt >= 0;
+	if (!bLeadPaused)
+	{
+		const float DX = Bodies.player.x - PrevBodies.player.x, DY = Bodies.player.y - PrevBodies.player.y;
+		const float StepNow = FMath::Sqrt(DX * DX + DY * DY) / StepSeconds;
+		// After a start or a teleport the history is filled with this step.
+		if (PlayerStepAt < 0)
+		{
+			PlayerSteps[0] = PlayerSteps[1] = PlayerSteps[2] = StepNow;
+			PlayerStepAt = 0;
+		}
+		PlayerSteps[PlayerStepAt] = StepNow;
+		PlayerStepAt = (PlayerStepAt + 1) % 3;
+		const float A = PlayerSteps[0], B = PlayerSteps[1], C = PlayerSteps[2];
+		PlayerStepSpeed = FMath::Max(FMath::Min(A, B), FMath::Min(FMath::Max(A, B), C));
+	}
 	if (bBoss && StoneBearer.AfterTick(Out.events, Bodies))
 	{
 		// Onto its plinth: put there, not walked there.
@@ -1750,8 +1804,42 @@ void UFTArenaRunner::StepFight()
 			LeadWeapons.SetAim(ReticlePoint, true);
 		}
 		LeadWeapons.SetAimHold(ArenaAim.alpha());
-		LeadWeapons.SetActionUpper(ftcore::attackUpperShare(AttackMoveTable,
-			FMath::Sqrt(Out.player.velocity.x * Out.player.velocity.x + Out.player.velocity.y * Out.player.velocity.y)));
+		// The share from the walk the body makes: its measured speed less the attack's lunge while it lunges (startup
+		// and active), so a strike's own lunge keeps the whole-body clip rather than putting the legs on the walk.
+		float Walk = PlayerStepSpeed;
+		const bool bAttacking = Out.player.action == ftcore::ArenaAction::Light || Out.player.action == ftcore::ArenaAction::Heavy
+			|| Out.player.action == ftcore::ArenaAction::Riposte || Out.player.action == ftcore::ArenaAction::Release;
+		if (const ftcore::ArenaAttack* Swing = bAttacking ? ftcore::arenaPlayerAttack(Fight.def().fighter, Out.player.move) : nullptr)
+		{
+			const float Span = Swing->startup + Swing->active;
+			if (Span > 0.f && Out.player.actionTime <= Span)
+			{
+				Walk = FMath::Max(0.f, Walk - FMath::Abs(Swing->lunge) / Span);
+			}
+		}
+		const float Want = ftcore::attackUpperShare(AttackMoveTable, Walk);
+		if (!bLeadPaused)
+		{
+			LeadUpperShare = FMath::Clamp(Want, LeadUpperShare - kUpperShareRate * StepSeconds, LeadUpperShare + kUpperShareRate * StepSeconds);
+		}
+		LeadWeapons.SetActionUpper(LeadUpperShare);
+		// The legs toward the way the body went, where they walk: on the locomotion (no strike, or by the strike's
+		// upper share). Standing, dodging or under a whole-body clip they ease back under the facing.
+		if (!bLeadPaused)
+		{
+			const float DX = Bodies.player.x - PrevBodies.player.x, DY = Bodies.player.y - PrevBodies.player.y;
+			const ftcore::ArenaAction Act = Out.player.action;
+			const float Legs = (Act == ftcore::ArenaAction::Idle || Act == ftcore::ArenaAction::Move || Act == ftcore::ArenaAction::Guard
+				|| Act == ftcore::ArenaAction::Heal) ? 1.f : (bAttacking ? LeadUpperShare : 0.f);
+			float LegTarget = 0.f;
+			if (Legs > 0.f && PlayerStepSpeed > 0.3f)
+			{
+				const ftcore::Vec2 Dir{DX, DY};
+				LegTarget = Legs * FMath::Clamp(FMath::FindDeltaAngleDegrees(ArenaYaw(Out.player.facing), ArenaYaw(Dir)), -kLegYawMax, kLegYawMax);
+			}
+			const float Step = kLegYawRate * StepSeconds;
+			LeadLegYaw = FMath::Clamp(LegTarget, LeadLegYaw - Step, LeadLegYaw + Step);
+		}
 	}
 	LeadWeapons.Track(Out.player, static_cast<double>(Fight.heldTime()));
 	LeadWeapons.HitPause(Out.player.stopLeft > 0.f);
@@ -2187,7 +2275,18 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		FFTArenaPose Pose;
 		Pose.Feet = ToWorld(ArenaLerp(PrevBodies.player, Bodies.player, Alpha));
 		Pose.Yaw = ArenaYaw(P.facing);
-		Pose.Speed = ArenaLength(P.velocity);
+		// The legs at the pace the body is drawn moving (the last steps' median), not the sim's wish (which the
+		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
+		Pose.Speed = PlayerStepSpeed;
+		Pose.LegYaw = LeadLegYaw;
+		// The feet held while a strike's clip has the legs (its walk share under half) and through a hit pause: the
+		// body's lunge goes over planted feet, which step when it has gone too far.
+		{
+			const ftcore::ArenaAction Act = P.action;
+			const bool bStrike = Act == ftcore::ArenaAction::Light || Act == ftcore::ArenaAction::Heavy || Act == ftcore::ArenaAction::Riposte
+				|| Act == ftcore::ArenaAction::Release;
+			Pose.bFootLock = (bStrike && LeadUpperShare < 0.5f) || (P.stopLeft > 0.f && Act != ftcore::ArenaAction::Dodge);
+		}
 		Pose.Tint = PlayerFigure->GetBaseColor();
 		const ftcore::ArenaAttack* Attack = nullptr;
 		switch (P.action)
@@ -2264,6 +2363,8 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				}
 				const float Delta = FMath::FindDeltaAngleDegrees(Pose.Yaw, ArenaYaw(LeadAimDir));
 				Pose.Yaw += W * Delta;
+				// The legs keep the way they went: what the body turns, they turn back.
+				Pose.LegYaw = FMath::Clamp(Pose.LegYaw - W * Delta, -kLegYawMax, kLegYawMax);
 			}
 		}
 		if (P.invulnerable)

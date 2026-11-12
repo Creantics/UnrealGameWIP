@@ -551,6 +551,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 		{
 			Anim->SetGroundSpeed(Pose.bLying || Pose.bDodging ? 0.f : Pose.Speed * 100.f);
+			Anim->SetLegYaw(Pose.bLying || Pose.bDodging ? 0.f : Pose.LegYaw);
+			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
 			Anim->SetIntent(-1.f, -1.f);
 		}
 	}

@@ -112,6 +112,7 @@ void AFTArenaGameMode::StartPlay()
 			ShotStrikes = FMath::Clamp(Strikes, 0, 32);
 		}
 		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
+		bShotSide = FParse::Param(Cmd, TEXT("ArenaShotSide"));
 	}
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
@@ -743,9 +744,25 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	// unchanged).
 	if (NextShotAt < ShotAt.Num() && ShotsTaken > 0 && static_cast<double>(Runner->GetFight().time()) >= ShotAt[NextShotAt])
 	{
+		// -ArenaShotSide: 3.4 m off the lead's right and 0.9 m above its hips, a frame before the view.
+		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+		if (bShotSide && !bSideAimed && Lead)
+		{
+			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0);
+			bSideAimed = AimStrikeCamera(At + Lead->GetActorRightVector().GetSafeNormal2D() * 340.0 + FVector(0.0, 0.0, 90.0), At);
+			if (bSideAimed)
+			{
+				return true;
+			}
+		}
+		bSideAimed = false;
 		TakeShot(*FString::Printf(TEXT("t_%05.2f"), ShotAt[NextShotAt]), false);
 		++NextShotAt;
 		return true;
+	}
+	if (bShotSide && NextShotAt > 0 && NextShotAt == ShotAt.Num() && StrikeCamera)
+	{
+		EndCloseCamera(); // the side views over
 	}
 	// -ArenaShotStrikes's views: the player's attacks at their impact (a strike's just after it lands, a shot's or cast's
 	// as it reaches the hit point) and, every second one, a shot's or cast's mid-flight (FFTLeadWeapons::GetViewTime;

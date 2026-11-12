@@ -41,24 +41,33 @@ struct FFTArenaGlideProbe
 	bool IsOn() const { return bOn; }
 	void Sample(const USkeletalMeshComponent* Skin, float DeltaSeconds);
 	// What the pose placed this frame shows (the runner's last output), on its clock.
-	void Drawn(const ftcore::ArenaPlayerOut& P, double Now);
+	// LegSpeed: the ground speed the legs were handed (m/s).
+	void Drawn(const ftcore::ArenaPlayerOut& P, double Now, float LegSpeed);
 	void Log() const;
 
 private:
 	struct FRow
 	{
 		int32 Frames = 0, Planted = 0, Still = 0;
+		int32 Pops = 0; // fresh frames in which a foot moved more than kPopCm (a pose snap; still counted in the slip)
 		double Body = 0.0, BodyAlong = 0.0, BodySide = 0.0; // cm/s; along and side of the facing
 		double Dt = 0.0, Cycle = 0.0, Yaw = 0.0;
 		double Slip = 0.0, SlipAlong = 0.0, SlipSide = 0.0; // planted foot, cm/s
+		int32 Plants = 0;
+		double PlantSlip = 0.0, PlantTime = 0.0; // each plant's net slip (start to end, cm) and time, by its first bucket
 	};
+	// The plant under way: its foot (INDEX_NONE none), where it started, its time and bucket.
+	int32 PlantFoot = INDEX_NONE;
+	FVector PlantStart = FVector::ZeroVector;
+	float PlantTime = 0.f;
+	EBucket PlantKey = Other;
 	bool bOn = false;
 	bool bHas = false;
 	FVector LastBall[2] = {FVector::ZeroVector, FVector::ZeroVector};
 	FVector LastLocal[2] = {FVector::ZeroVector, FVector::ZeroVector};
 	FVector LastRoot = FVector::ZeroVector;
 	float Floor = 1e9f;
-	float CycleSpeed = 0.f; // the ground speed the locomotion is handed (Core's velocity), cm/s
+	float CycleSpeed = 0.f; // the ground speed the locomotion is handed, cm/s
 	float LastYaw = 0.f;
 	float PendingDt = 0.f; // stale frames' time since the last fresh pose
 	EBucket Key = Other;
