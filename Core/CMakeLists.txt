@@ -60,6 +60,7 @@ add_library(ftcore STATIC
     src/MassingLayout.cpp
     src/WindowInterior.cpp
     src/WindowFacade.cpp
+    src/BayCount.cpp
     src/SurfaceWeather.cpp
     src/SurfaceJoints.cpp
     src/FrameStats.cpp
@@ -226,6 +227,16 @@ else()
     target_compile_options(ftcore_frontcount PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_baycount: ground-floor shop bays per street (an offline planning aid).
+add_executable(ftcore_baycount tools/ftcore_baycount.cpp)
+target_link_libraries(ftcore_baycount PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_baycount PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_baycount PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_baycount PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 if(FTCORE_BUILD_TESTS)
     include(FetchContent)
     # CMake 4 rejects cmake_minimum_required(< 3.5), which doctest 2.4.11 still declares.
@@ -272,6 +283,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_massing_layout.cpp
         tests/test_window_interior.cpp
         tests/test_window_facade.cpp
+        tests/test_bay_count.cpp
         tests/test_surface_weather.cpp
         tests/test_surface_joints.cpp
         tests/test_frame_stats.cpp
