@@ -207,4 +207,74 @@ bool castMarkFree(std::span<const CastMark> taken, const CastMark& at, float min
     return true;
 }
 
+const CastMark* findCastMark(const CastMarks& marks, const SpeakerCast& cast, std::string_view scene,
+                             std::string_view speaker) {
+    if (const CastMark* own = marks.find(scene, speaker)) return own;
+    const std::string_view model = cast.modelFor(speaker, scene);
+    if (model.empty()) return nullptr;
+    for (const SpeakerCast::Entry& e : cast.entries) {
+        if (e.speaker == speaker || cast.modelFor(e.speaker, scene) != model) continue;
+        if (const CastMark* other = marks.find(scene, e.speaker)) return other;
+    }
+    return nullptr;
+}
+
+namespace {
+
+CastStandPlan planOnce(std::span<const CastMark* const> marks, bool standIn, const CastSpotTest* test) {
+    CastStandPlan plan;
+    plan.standInShown = standIn;
+    const std::size_t count = std::min(marks.size(), kMaxSceneCast);
+    std::array<CastMark, kMaxSceneCast + 1> taken{};
+    std::size_t takenCount = 0;
+    if (standIn) taken[takenCount++] = CastMark{};
+    const auto isFree = [&](const CastMark& at) {
+        return castMarkFree(std::span<const CastMark>(taken.data(), takenCount), at, kCastGap) &&
+               !(test && test->blocked(at));
+    };
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!marks[i]) continue;
+        if (isFree(*marks[i])) {
+            plan.at[i] = *marks[i];
+            plan.stand[i] = CastStand::OnMark;
+            taken[takenCount++] = *marks[i];
+            ++plan.onMark;
+        } else {
+            ++plan.marksRefused;
+        }
+    }
+    std::size_t slots = count;
+    if (standIn && count > 0) {
+        slots = count + 1;
+        if (slots % 2 == 0) ++slots;
+    }
+    std::size_t next = 0; // candidate over rows of slots
+    for (std::size_t i = 0; i < count; ++i) {
+        if (plan.stand[i] != CastStand::Hidden) continue;
+        bool found = false;
+        CastMark at;
+        while (!found && next < kCastRows * slots) {
+            at = castArcMark(next % slots, slots, next / slots);
+            ++next;
+            found = isFree(at);
+        }
+        if (!found) {
+            ++plan.hidden;
+            continue;
+        }
+        plan.at[i] = at;
+        plan.stand[i] = CastStand::OnArc;
+        taken[takenCount++] = at;
+    }
+    return plan;
+}
+
+} // namespace
+
+CastStandPlan planCastStands(std::span<const CastMark* const> marks, bool standInStays, const CastSpotTest* test) {
+    CastStandPlan plan = planOnce(marks, standInStays, test);
+    if (plan.hidden > 0 && !standInStays) plan = planOnce(marks, true, test); // a hidden speaker's face: the stand-in
+    return plan;
+}
+
 } // namespace ftcore

@@ -58,6 +58,14 @@ void AFTStoryDirector::BeginPlay()
 	bAutoPlay = bAutoPlay || bFast || FParse::Param(Cmd, TEXT("StoryAutoPlay"));
 	bQuitOnFinish = bQuitOnFinish || FParse::Param(Cmd, TEXT("StoryQuitOnFinish"));
 	bHandoffAuto = FParse::Param(Cmd, TEXT("StoryAutoPlayHandoff")) || bAlpha;
+#if !UE_BUILD_SHIPPING
+	bCastDiag = FParse::Param(Cmd, TEXT("FaceDiag"));
+	bCastCost = FParse::Param(Cmd, TEXT("CastCost"));
+#endif
+	CurveMapPoseHold = GetDefault<UFTFaceComponent>()->CurveMapPose.TryLoad();
+#if !UE_BUILD_SHIPPING
+	FParse::Value(Cmd, TEXT("StoryShotSpeaking="), ShotSpeakingModel);
+#endif
 	bAutoPlay = bAutoPlay || bHandoffAuto;
 	bQuitOnReturn = FParse::Param(Cmd, TEXT("StoryQuitOnReturn"));
 	const UGameInstance* GameInstance = GetGameInstance();
@@ -149,15 +157,20 @@ void AFTStoryDirector::BeginPlay()
 
 void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 {
-	static const TCHAR* const kBucket[4] = {TEXT("no cast"), TEXT("pool hidden"), TEXT("cast on screen, idle"), TEXT("cast speaking")};
-	FString Cost;
-	for (int32 B = 0; B < 4; ++B)
+#if !UE_BUILD_SHIPPING
+	if (bCastCost)
 	{
-		Cost += FString::Printf(TEXT("%s%s %.2f ms over %d"), B ? TEXT("; ") : TEXT(""), kBucket[B],
-			CastFrames[B] > 0 ? CastFrameMs[B] / CastFrames[B] : 0.0, CastFrames[B]);
+		static const TCHAR* const kBucket[4] = {TEXT("no cast"), TEXT("pool hidden"), TEXT("cast on screen, idle"), TEXT("cast speaking")};
+		FString Cost;
+		for (int32 B = 0; B < 4; ++B)
+		{
+			Cost += FString::Printf(TEXT("%s%s %.2f ms over %d"), B ? TEXT("; ") : TEXT(""), kBucket[B],
+				CastFrames[B] > 0 ? CastFrameMs[B] / CastFrames[B] : 0.0, CastFrames[B]);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Story: frame cost by cast state (%s, wall ms per frame): %s."),
+			FApp::CanEverRender() ? TEXT("rendering") : TEXT("NullRHI"), *Cost);
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Story: frame cost by cast state (%s, wall ms per frame): %s."),
-		FApp::CanEverRender() ? TEXT("rendering") : TEXT("NullRHI"), *Cost);
+#endif
 	if (AFTPlayerController* PC = Controller.Get())
 	{
 		PC->OnAdvance.RemoveDynamic(this, &AFTStoryDirector::HandlePress);
@@ -199,7 +212,12 @@ void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 void AFTStoryDirector::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	NoteCastFrame();
+#if !UE_BUILD_SHIPPING
+	if (bCastCost)
+	{
+		NoteCastFrame();
+	}
+#endif
 	if (ShotQuitIn >= 0.f) // -StoryShot: done (or nothing to take); runs with or without autoplay
 	{
 		ShotQuitIn -= DeltaSeconds;
@@ -533,7 +551,13 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 	}
 	BeatAge += DeltaSeconds;
 	const bool bLine = Story->GetRunner().state() == StoryRunner::State::Line;
-	if (!bFast && ShotsLeft > 0 && bLine && !bShotThisBeat && Presenter.revealed() && BeatAge >= 1.f)
+#if !UE_BUILD_SHIPPING
+	if (!bFast && ShotsLeft > 0 && !ShotSpeakingModel.IsEmpty())
+	{
+		TickSpeakingShots();
+	}
+#endif
+	if (!bFast && ShotsLeft > 0 && ShotSpeakingModel.IsEmpty() && bLine && !bShotThisBeat && Presenter.revealed() && BeatAge >= 1.f)
 	{
 		bShotThisBeat = true;
 		const FString File = StoryShotFile(Story->GetLineId());
@@ -850,11 +874,16 @@ void AFTStoryDirector::ClearSceneCast(const TCHAR* Why)
 	{
 		if (AFTCastMember* Member = Pair.Value.Get())
 		{
+#if !UE_BUILD_SHIPPING
+			if (bCastDiag)
+			{
 			const UFTFaceComponent* F = Member->GetFace();
 			UE_LOG(LogForgottenThird, Display, TEXT("Story: cast %s: rig face %d (rig running %d), curve mode %d, %d shapes bound, peak %d curves in the anim output, peak %d rig morphs moving (%d morph curves), jaw joint peak %.1f deg, lips-together peak %.2f."),
 				*Pair.Key, Member->HasRigFace() ? 1 : 0, F && F->HasRigInstance() ? 1 : 0, F && F->IsCurveMode() ? 1 : 0,
 				F ? F->GetBoundShapes() : 0, F ? F->GetPeakCurvesArrived() : 0, F ? F->GetPeakRigMorphs() : 0,
 				F ? F->GetPeakMorphCurves() : 0, F ? F->GetPeakRigJawDeg() : 0.f, F ? F->GetPeakLipsTogether() : 0.f);
+			}
+#endif
 			Member->SetOnScreen(false);
 			if (World && !World->bIsTearingDown && !Member->IsActorBeingDestroyed())
 			{
@@ -905,9 +934,8 @@ void AFTStoryDirector::PlaceSceneCast()
 		}
 	}
 	UWorld* World = GetWorld();
-	if (!bCastAnchorLooked && World)
+	if (!CastAnchor.IsValid() && World) // looked for again each scene until the map has one
 	{
-		bCastAnchorLooked = true;
 		for (TActorIterator<AFTCharacterPreview> It(World); It; ++It)
 		{
 			if (It->GetFace() && It->GetFace()->bStandIn)
@@ -970,104 +998,74 @@ void AFTStoryDirector::PlaceSceneCast()
 		}
 	}
 	// The stand-in keeps the anchor while any cast speaker has no look of its own or is past the cap (it speaks
-	// their lines); the cast then stands on the arc's other slots (an odd number of slots, the middle one the
-	// anchor's).
-	const bool bStandInStays = NoLook > 0 || Dropped > 0 || Own == 0;
-	int32 Slots = Own;
-	if (bStandInStays && Own > 0)
-	{
-		Slots = Own + 1;
-		Slots += Slots % 2 == 0 ? 1 : 0;
-	}
+	// their lines). Where each member stands is planned in Core (ftcore::planCastStands); the engine supplies the
+	// spot test (geometry in a standing body, nothing to stand on).
 	const FString SceneId = FT::ToFString(SceneView);
 	const std::string SceneUtf8(SceneView);
-	const FTransform AnchorXf = Anchor->GetActorTransform();
+	// Marks are relative to the anchor's place and facing, in metres: its scale is not applied.
+	const FTransform AnchorXf(Anchor->GetActorQuat(), Anchor->GetActorLocation());
 	const FVector Up = AnchorXf.GetUnitAxis(EAxis::Z);
-
-	// A spot a speaker can stand on: clear of every spot taken (and of the stand-in while it stays) and, where
-	// the anchor stands on something, with no blocking geometry in a standing body's capsule.
-	constexpr float kGap = 0.7f; // m between two speakers
-	constexpr float kRadius = 35.f, kHalfHeight = 88.f;
 	FCollisionQueryParams Query(SCENE_QUERY_STAT(FTCastMark), false, Anchor);
 	for (const TPair<FString, TObjectPtr<AFTCastMember>>& Pair : CastActors)
 	{
 		Query.AddIgnoredActor(Pair.Value.Get());
 	}
-	const bool bAnchorGrounded = World->LineTraceTestByChannel(AnchorXf.GetLocation() + Up * 50.f, AnchorXf.GetLocation() - Up * 150.f, ECC_Visibility, Query);
-	ftcore::CastMark Taken[ftcore::kMaxSceneCast + 1];
-	size_t TakenCount = 0;
-	if (bStandInStays)
+	struct FSpotTest final : ftcore::CastSpotTest
 	{
-		Taken[TakenCount++] = ftcore::CastMark{};
-	}
-	const auto Blocked = [&](const ftcore::CastMark& Mark)
-	{
-		if (!bAnchorGrounded)
+		const UWorld* World;
+		const FTransform& Xf;
+		FVector Up;
+		const FCollisionQueryParams& Query;
+		bool bOn;
+		FSpotTest(const UWorld* InWorld, const FTransform& InXf, const FVector& InUp, const FCollisionQueryParams& InQuery)
+			: World(InWorld), Xf(InXf), Up(InUp), Query(InQuery)
 		{
-			return false; // nothing under the anchor to judge against (a bare stage)
+			bOn = World->LineTraceTestByChannel(Xf.GetLocation() + Up * 50.f, Xf.GetLocation() - Up * 150.f, ECC_Visibility, Query);
 		}
-		const FVector Foot = AnchorXf.TransformPosition(FVector(Mark.x * 100.f, Mark.y * 100.f, 0.f));
-		const FVector Centre = Foot + Up * (kHalfHeight + 5.f);
-		return World->OverlapBlockingTestByChannel(Centre, AnchorXf.GetRotation(), ECC_Pawn, FCollisionShape::MakeCapsule(kRadius, kHalfHeight), Query)
-			|| !World->LineTraceTestByChannel(Foot + Up * 50.f, Foot - Up * 150.f, ECC_Visibility, Query);
+		bool blocked(const ftcore::CastMark& At) const override
+		{
+			if (!bOn)
+			{
+				return false; // nothing under the anchor to judge against (a bare stage)
+			}
+			constexpr float kRadius = 35.f, kHalfHeight = 88.f;
+			const FVector Foot = Xf.TransformPosition(FVector(At.x * 100.f, At.y * 100.f, 0.f));
+			return World->OverlapBlockingTestByChannel(Foot + Up * (kHalfHeight + 5.f), Xf.GetRotation(), ECC_Pawn, FCollisionShape::MakeCapsule(kRadius, kHalfHeight), Query)
+				|| !World->LineTraceTestByChannel(Foot + Up * 50.f, Foot - Up * 150.f, ECC_Visibility, Query);
+		}
 	};
-	const auto Free = [&](const ftcore::CastMark& Mark)
-	{
-		return ftcore::castMarkFree(std::span<const ftcore::CastMark>(Taken, TakenCount), Mark, kGap) && !Blocked(Mark);
-	};
-	const auto Stand = [&](AFTCastMember* Member, const ftcore::CastMark& Mark)
-	{
-		Taken[TakenCount++] = Mark;
-		const FVector Where = AnchorXf.TransformPosition(FVector(Mark.x * 100.f, Mark.y * 100.f, 0.f));
-		const FRotator Facing = Anchor->GetActorRotation() + FRotator(0.f, Mark.yawDeg, 0.f);
-		Member->SetActorLocationAndRotation(Where, Facing);
-		Member->SetOnScreen(true);
-	};
-	// Marked speakers first, on their marks when those are free; then the rest on the arc's free slots, front
-	// row first, then the spare rows behind.
-	int32 Marked = 0, MarkRefused = 0, Fallback = 0;
-	bool bPlaced[ftcore::kMaxSceneCast] = {};
+	const FSpotTest SpotTest(World, AnchorXf, Up, Query);
+
+	AFTCastMember* Members[ftcore::kMaxSceneCast] = {};
+	const ftcore::CastMark* MemberMarks[ftcore::kMaxSceneCast] = {};
+	size_t MemberCount = 0;
 	for (size_t I = 0; I < Count; ++I)
 	{
-		const ftcore::CastMark* M = OnScreen[I] ? CastMarks.find(SceneUtf8, Cast[I]) : nullptr;
-		if (!M)
+		if (OnScreen[I])
 		{
-			continue;
-		}
-		if (Free(*M))
-		{
-			Stand(OnScreen[I], *M);
-			bPlaced[I] = true;
-			++Marked;
-		}
-		else
-		{
-			++MarkRefused;
+			Members[MemberCount] = OnScreen[I];
+			MemberMarks[MemberCount] = ftcore::findCastMark(CastMarks, Speakers, SceneUtf8, Cast[I]);
+			++MemberCount;
 		}
 	}
-	size_t Next = 0; // candidate index over rows of Slots
-	constexpr size_t kRows = 3;
-	for (size_t I = 0; I < Count; ++I)
+	const ftcore::CastStandPlan Plan = ftcore::planCastStands(
+		std::span<const ftcore::CastMark* const>(MemberMarks, MemberCount), NoLook > 0 || Dropped > 0 || Own == 0, &SpotTest);
+	for (size_t K = 0; K < MemberCount; ++K)
 	{
-		if (!OnScreen[I] || bPlaced[I])
+		if (Plan.stand[K] == ftcore::CastStand::Hidden)
 		{
-			continue;
+			continue; // no free spot: stays hidden; the stand-in speaks its lines
 		}
-		bool bFound = false;
-		ftcore::CastMark Mark;
-		for (; Next < kRows * static_cast<size_t>(Slots) && !bFound; ++Next)
-		{
-			Mark = ftcore::castArcMark(Next % static_cast<size_t>(Slots), static_cast<size_t>(Slots), Next / static_cast<size_t>(Slots));
-			bFound = Free(Mark);
-		}
-		if (!bFound)
-		{
-			// Nowhere free: the arc slot this speaker would have had, logged.
-			Mark = ftcore::castArcMark(I % static_cast<size_t>(FMath::Max(Slots, 1)), static_cast<size_t>(FMath::Max(Slots, 1)));
-			++Fallback;
-		}
-		Stand(OnScreen[I], Mark);
+		const ftcore::CastMark& Mark = Plan.at[K];
+		Members[K]->SetActorLocationAndRotation(AnchorXf.TransformPosition(FVector(Mark.x * 100.f, Mark.y * 100.f, 0.f)),
+			Anchor->GetActorRotation() + FRotator(0.f, Mark.yawDeg, 0.f));
+		Members[K]->SetOnScreen(true);
 	}
+	const bool bStandInStays = Plan.standInShown;
+	const bool bAnchorGrounded = SpotTest.bOn;
+	const int32 Marked = static_cast<int32>(Plan.onMark);
+	const int32 MarkRefused = static_cast<int32>(Plan.marksRefused);
+	const int32 Fallback = static_cast<int32>(Plan.hidden);
 	Anchor->SetActorHiddenInGame(!bStandInStays);
 	int32 InWorld = 0, Pooled = 0;
 	for (TActorIterator<AFTCastMember> It(World); It; ++It)
@@ -1087,7 +1085,7 @@ void AFTStoryDirector::PlaceSceneCast()
 	}
 	if (MarkRefused > 0 || Fallback > 0)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Story: scene %s: %d marks blocked or taken (moved to the arc), %d speakers with no free spot (placed on the arc unchecked)."),
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: scene %s: %d marks blocked or taken (moved to the arc), %d speakers with no free spot (kept hidden; the stand-in speaks for them)."),
 			*SceneId, MarkRefused, Fallback);
 	}
 }
@@ -1121,9 +1119,15 @@ void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
 		{
 			UFTFaceComponent* Face = *It;
 			const AActor* FaceOwner = Face->GetOwner();
-			if (Face->GetWorld() != World || !FaceOwner || FaceOwner->IsHidden())
+			if (Face->GetWorld() != World || !FaceOwner)
 			{
-				continue; // a hidden pooled cast member or a hidden stand-in never speaks; the visible stand-in does
+				continue;
+			}
+			// An off-screen pooled cast member, or the dialogue stand-in while the cast has hidden it, never speaks.
+			const AFTCastMember* Member = Cast<AFTCastMember>(FaceOwner);
+			if ((Member && !Member->IsOnScreen()) || (FaceOwner == CastAnchor.Get() && FaceOwner->IsHidden()))
+			{
+				continue;
 			}
 			if (Face->ModelId == ModelId)
 			{
@@ -1159,6 +1163,65 @@ void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
 	{
 		bLoggedNoFace = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("Story: no face here for model %s (line %s); voiced lines play without a face."), *ModelId, *LineId);
+	}
+}
+
+void AFTStoryDirector::TickSpeakingShots()
+{
+	const TObjectPtr<AFTCastMember>* Found = CastActors.Find(ShotSpeakingModel);
+	const AFTCastMember* Member = Found ? Found->Get() : nullptr;
+	UFTFaceComponent* Face = Member && Member->IsOnScreen() ? Member->GetFace() : nullptr;
+	const bool bSpeaking = Face && Face->IsTrackPlaying() && Story->GetRunner().state() == StoryRunner::State::Line;
+	if (static_cast<int32>(BeatSerial) != ShotSpeakingBeat)
+	{
+		// A new line: a sequence left half-done starts over on this one.
+		ShotSpeakingBeat = static_cast<int32>(BeatSerial);
+		ShotSpeakingPhase = 0;
+		ShotSpeakingAt = 0.f;
+	}
+	if (!bSpeaking && ShotSpeakingPhase < 2)
+	{
+		return;
+	}
+	ShotSpeakingAt += GetWorld()->GetDeltaSeconds();
+	const float Jaw = Face ? Face->GetShapeWeight("jawOpen") : 0.f;
+	const float Lips = Face ? Face->GetShapeWeight("mouthClose") : 0.f;
+	static const TCHAR* const kPhase[3] = {TEXT("a_closed"), TEXT("b_open"), TEXT("c_closed")};
+	bool bTake = false;
+	if (ShotSpeakingPhase == 0)
+	{
+		bTake = ShotSpeakingAt > 0.15f && Jaw < 0.08f;
+	}
+	else if (ShotSpeakingPhase == 1)
+	{
+		bTake = bSpeaking && Jaw > 0.35f;
+	}
+	else if (ShotSpeakingPhase == 2)
+	{
+		bTake = ShotSpeakingAt > 0.25f && Jaw < 0.08f;
+	}
+	if (!bTake)
+	{
+		return;
+	}
+	const FString File = StoryShotFile(Story->GetLineId() + TEXT("_") + kPhase[ShotSpeakingPhase]);
+	if (File.IsEmpty())
+	{
+		ShotsLeft = 0;
+		ShotQuitIn = 2.f;
+		return;
+	}
+	FScreenshotRequest::RequestScreenshot(File, true, false);
+	UE_LOG(LogForgottenThird, Display, TEXT("Story: speaking shot %s (jawOpen %.2f, mouthClose %.2f, %.2f s into the phase)."),
+		*FPaths::GetCleanFilename(File), Jaw, Lips, ShotSpeakingAt);
+	++Story->StoryShotsTaken;
+	Story->StoryShotFiles.Add(File);
+	++ShotSpeakingPhase;
+	ShotSpeakingAt = 0.f;
+	if (--ShotsLeft == 0 || ShotSpeakingPhase == 3)
+	{
+		ShotsLeft = 0;
+		ShotQuitIn = 2.f;
 	}
 }
 

@@ -6,6 +6,7 @@
 #include "ftcore/StoryDatabase.h"
 
 #include <array>
+#include <cmath>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -292,4 +293,109 @@ TEST_CASE("face curve map: the hand list maps mouthClose only where the asset ha
     REQUIRE(buildFaceCurveMap(set, poses, curves, values, map, &unmatched));
     CHECK(map.handShapes == 0);
     CHECK(unmatched == std::vector<std::string>{"mouthClose", "cheekPuff"});
+}
+
+namespace {
+// Blocks every spot but those listed.
+struct OnlySpots final : CastSpotTest {
+    std::array<CastMark, 4> open{};
+    std::size_t openCount = 0;
+    bool blocked(const CastMark& at) const override {
+        for (std::size_t i = 0; i < openCount; ++i)
+            if (std::abs(open[i].x - at.x) < 1e-4f && std::abs(open[i].y - at.y) < 1e-4f) return false;
+        return true;
+    }
+};
+bool near(const CastMark& a, const CastMark& b) { return std::abs(a.x - b.x) < 1e-4f && std::abs(a.y - b.y) < 1e-4f; }
+} // namespace
+
+TEST_CASE("cast stands: no stand-in, the arc's slots in order, the middle on the anchor") {
+    const std::array<const CastMark*, 3> marks{};
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const CastStandPlan p = planCastStands(marks, false);
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK_FALSE(p.standInShown);
+    CHECK(p.hidden == 0);
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(p.stand[i] == CastStand::OnArc);
+        CHECK(near(p.at[i], castArcMark(i, 3)));
+    }
+}
+
+TEST_CASE("cast stands: the stand-in's middle slot is never given out") {
+    const std::array<const CastMark*, 2> marks{};
+    const CastStandPlan p = planCastStands(marks, true);
+    CHECK(p.standInShown);
+    CHECK(p.hidden == 0);
+    CHECK(near(p.at[0], castArcMark(0, 3)));
+    CHECK(near(p.at[1], castArcMark(2, 3)));
+    for (std::size_t i = 0; i < 2; ++i) CHECK_FALSE(near(p.at[i], CastMark{}));
+}
+
+TEST_CASE("cast stands: marks first; a taken mark goes to the arc") {
+    const CastMark mine{0.5f, 2.0f, 10.f}, onStandIn{0.1f, 0.1f, 0.f};
+    const std::array<const CastMark*, 3> marks{nullptr, &mine, &onStandIn};
+    const CastStandPlan p = planCastStands(marks, true);
+    CHECK(p.onMark == 1);
+    CHECK(p.marksRefused == 1);
+    CHECK(p.stand[1] == CastStand::OnMark);
+    CHECK(p.at[1].yawDeg == 10.f);
+    CHECK(p.stand[0] == CastStand::OnArc);
+    CHECK(p.stand[2] == CastStand::OnArc);
+    const std::array<CastMark, 3> placed{p.at[0], p.at[1], p.at[2]};
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK_FALSE(near(placed[i], CastMark{}));
+        for (std::size_t j = i + 1; j < 3; ++j) {
+            const float dx = placed[i].x - placed[j].x, dy = placed[i].y - placed[j].y;
+            CHECK(dx * dx + dy * dy >= kCastGap * kCastGap);
+        }
+    }
+}
+
+TEST_CASE("cast stands: a blocked front row moves speakers to a spare row") {
+    OnlySpots test;
+    test.open[0] = castArcMark(0, 3, 1);
+    test.open[1] = castArcMark(2, 3, 2);
+    test.openCount = 2;
+    const std::array<const CastMark*, 2> marks{};
+    const CastStandPlan p = planCastStands(marks, true, &test);
+    CHECK(p.hidden == 0);
+    CHECK(near(p.at[0], test.open[0]));
+    CHECK(near(p.at[1], test.open[1]));
+}
+
+TEST_CASE("cast stands: no free spot anywhere keeps the speaker hidden and shows the stand-in") {
+    OnlySpots none;
+    const std::array<const CastMark*, 2> marks{};
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    CastStandPlan p = planCastStands(marks, false, &none);
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(p.hidden == 2);
+    CHECK(p.standInShown);
+    CHECK(p.stand[0] == CastStand::Hidden);
+    CHECK(p.stand[1] == CastStand::Hidden);
+
+    // One free spot, two speakers, no stand-in asked: the second is hidden, so the plan is made again with the
+    // stand-in on the anchor (three slots), and nobody is put on a taken or blocked spot.
+    OnlySpots one;
+    one.open[0] = castArcMark(0, 3);
+    one.openCount = 1;
+    p = planCastStands(marks, false, &one);
+    CHECK(p.standInShown);
+    CHECK(p.hidden == 1);
+    CHECK(p.stand[0] == CastStand::OnArc);
+    CHECK(near(p.at[0], one.open[0]));
+    CHECK(p.stand[1] == CastStand::Hidden);
+}
+
+TEST_CASE("cast marks: a model's mark is found under any label the scene casts as it") {
+    CastMarks marks;
+    marks.entries = {{"SC-A", "SPK-A2", CastMark{1.f, 2.f, 0.f}}};
+    SpeakerCast cast;
+    cast.entries = {{"SPK-A", "MDL-1", {}}, {"SPK-A2", "MDL-1", {}}, {"SPK-B", "MDL-2", {}}};
+    const CastMark* m = findCastMark(marks, cast, "SC-A", "SPK-A");
+    REQUIRE(m != nullptr);
+    CHECK(m->y == 2.f);
+    CHECK(findCastMark(marks, cast, "SC-A", "SPK-B") == nullptr);
+    CHECK(findCastMark(marks, cast, "SC-B", "SPK-A") == nullptr);
 }

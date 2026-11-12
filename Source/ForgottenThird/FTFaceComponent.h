@@ -132,6 +132,8 @@ public:
 	int32 GetPeakMorphCurves() const { return PeakMorphCurves; }
 	// Curve mode: the most the lips-together control was driven (mouthClose's hand mapping), 0..1.
 	float GetPeakLipsTogether() const { return PeakLipsTogether; }
+	// The current weight of a face shape by name (e.g. "jawOpen"), 0 when unbound or unknown. No allocation.
+	float GetShapeWeight(const char* Shape) const;
 	bool HasRigInstance() const;
 
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;

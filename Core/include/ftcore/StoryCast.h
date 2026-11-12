@@ -110,4 +110,43 @@ FTCORE_API CastMark castArcMark(std::size_t index, std::size_t count, std::size_
 // Whether `at` is at least minGap metres (on the ground plane) from every mark in `taken`. No allocation.
 FTCORE_API bool castMarkFree(std::span<const CastMark> taken, const CastMark& at, float minGap);
 
+// The scene's mark for a speaker: its own label's mark, else the mark of any other label the scene casts as the
+// same model (one actor wears the model, so a mark under either label is its mark). Null when none has one.
+FTCORE_API const CastMark* findCastMark(const CastMarks& marks, const SpeakerCast& cast, std::string_view scene,
+                                        std::string_view speaker);
+
+// ---- Where the scene's cast stands ----
+inline constexpr float kCastGap = 0.7f;      // m kept between two speakers (and from the stand-in's spot)
+inline constexpr std::size_t kCastRows = 3;  // arc rows tried: the front row, then two spare rows behind
+
+// The engine's test for a spot (geometry in a standing body, nothing to stand on). Core has no world.
+struct CastSpotTest {
+    virtual bool blocked(const CastMark& at) const = 0;
+
+protected:
+    ~CastSpotTest() = default;
+};
+
+enum class CastStand : std::uint8_t { Hidden, OnMark, OnArc };
+
+struct CastStandPlan {
+    std::array<CastMark, kMaxSceneCast> at{};   // per speaker, where it stands (meaningless when Hidden)
+    std::array<CastStand, kMaxSceneCast> stand{}; // per speaker
+    std::uint32_t onMark = 0;       // speakers on their own mark
+    std::uint32_t marksRefused = 0; // marks taken or blocked (those speakers tried the arc)
+    std::uint32_t hidden = 0;       // speakers with no free spot anywhere: they stay hidden, the stand-in speaks
+    bool standInShown = false;      // the stand-in keeps the anchor's spot (0, 0)
+};
+
+// Plans where the scene's speakers stand. marks[i] is speaker i's mark or null (at most kMaxSceneCast; more are
+// ignored). standInStays: the stand-in keeps the anchor (some speaker has no look of its own or is past the cap).
+// Marked speakers go first, each on its mark when that is free (kCastGap from every spot taken, the stand-in's
+// included, and not blocked by `test`); the rest take the arc's free slots, castArcMark(slot, slots, row) for row
+// 0 to kCastRows - 1. With the stand-in there, slots = count + 1 rounded up to odd, so the middle slot is the
+// stand-in's and is never free. A taken or blocked slot is never used: a speaker with no free spot stays Hidden,
+// and the stand-in is then shown (planned again with it when it was not staying) so their lines still have a
+// face. No allocation.
+FTCORE_API CastStandPlan planCastStands(std::span<const CastMark* const> marks, bool standInStays,
+                                        const CastSpotTest* test = nullptr);
+
 } // namespace ftcore

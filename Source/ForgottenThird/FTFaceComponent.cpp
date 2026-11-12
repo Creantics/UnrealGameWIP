@@ -32,6 +32,23 @@ UFTFaceComponent::UFTFaceComponent()
 
 UFTFaceComponent::~UFTFaceComponent() = default;
 
+float UFTFaceComponent::GetShapeWeight(const char* Shape) const
+{
+	if (!Shapes || !Player || !Shape)
+	{
+		return 0.f;
+	}
+	const std::string_view Want(Shape);
+	for (size_t I = 0; I < Shapes->shapes.size() && I < Player->weights().size(); ++I)
+	{
+		if (Shapes->shapes[I] == Want)
+		{
+			return Player->weights()[I];
+		}
+	}
+	return 0.f;
+}
+
 void UFTFaceComponent::BeginPlay()
 {
 	Super::BeginPlay();
@@ -350,6 +367,7 @@ void UFTFaceComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 			bCurvesWritten = true;
 			++CurveSerial;
 		}
+#if !UE_BUILD_SHIPPING
 		if (Player->playing() && CurveValues.IsValidIndex(LipsCurve))
 		{
 			PeakLipsTogether = FMath::Max(PeakLipsTogether, CurveValues[LipsCurve]);
@@ -380,6 +398,7 @@ void UFTFaceComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 				PeakCurvesArrived = FMath::Max(PeakCurvesArrived, Arrived);
 			}
 		}
+#endif
 		return;
 	}
 	if (!FaceMesh || MorphNames.Num() == 0)

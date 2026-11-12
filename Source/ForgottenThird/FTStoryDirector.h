@@ -242,6 +242,13 @@ private:
 	int32 ShotsLeft = 0;
 	float ShotQuitIn = -1.f;
 	bool bShotThisBeat = false;
+	// -StoryShotSpeaking=<model id> (non-shipping, with -StoryShot): instead of one still per line, three stills
+	// across the first fully voiced line that model speaks on its own face: mouth closed, open, closed again.
+	FString ShotSpeakingModel;
+	int32 ShotSpeakingPhase = 0;
+	float ShotSpeakingAt = 0.f;
+	int32 ShotSpeakingBeat = -1;
+	void TickSpeakingShots();
 	float BeatAge = 0.f;          // seconds since the beat began (autoplay)
 	FString VoiceLineId;          // the line whose voice last started, and its length
 	float VoiceSeconds = 0.f;
@@ -271,7 +278,13 @@ private:
 	UPROPERTY(Transient)
 	TMap<FString, TObjectPtr<AFTCastMember>> CastActors; // by model id; null: the look didn't load
 	TWeakObjectPtr<AActor> CastAnchor;
-	bool bCastAnchorLooked = false;
+	// Non-shipping diagnostics: -FaceDiag logs each cast face's peaks when the cast is cleared; -CastCost times
+	// frames by cast state (below) and logs them at EndPlay. Both off by default and compiled out of shipping.
+	bool bCastDiag = false;
+	bool bCastCost = false;
+	// The face curve mapping asset, loaded with the map (not at a face's first bind mid-scene).
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> CurveMapPoseHold;
 	// Frame cost (wall ms per frame) by cast state: none in the pool, pool all hidden, some on screen idle, one
 	// speaking. Logged at EndPlay.
 	double LastFrameAt = -1.0;
