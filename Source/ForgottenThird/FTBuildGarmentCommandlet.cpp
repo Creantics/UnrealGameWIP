@@ -237,18 +237,39 @@ public:
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: couldn't put back %s (left as %s.ftold)."), *File, *File);
 			}
 		}
-		if (!bCommitted && !Moved.IsEmpty())
+		if (!bCommitted)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildGarment: build failed; %d old assets put back."), Moved.Num());
+			for (const FString& File : Created)
+			{
+				Files.Delete(*File, false, true, true); // saved by this run with nothing before it
+			}
+			if (!Moved.IsEmpty() || !Created.IsEmpty())
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildGarment: build failed; %d old assets put back, %d new ones removed."),
+					Moved.Num(), Created.Num());
+			}
 		}
 	}
 
-	// Moves the file aside when it exists; false (logged) when it can't be.
+	// Moves the file aside when it exists, else notes it as new (removed if the build fails); false (logged) when it
+	// can't be. A .ftold left by a run that was killed is the last good copy: it is put back first.
 	bool Add(const FString& File)
 	{
 		IFileManager& Files = IFileManager::Get();
+		const FString Old = File + TEXT(".ftold");
+		if (Files.FileExists(*Old))
+		{
+			Files.Delete(*File, false, true, true);
+			if (Files.FileExists(*File) || !Files.Move(*File, *Old))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: %s.ftold from an earlier run couldn't be put back; restore it by hand."), *File);
+				return false;
+			}
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildGarment: put back %s from an earlier run's .ftold."), *File);
+		}
 		if (!Files.FileExists(*File))
 		{
+			Created.Add(File);
 			return true;
 		}
 		if (!Files.Move(*(File + TEXT(".ftold")), *File))
@@ -264,6 +285,7 @@ public:
 
 private:
 	TArray<FString> Moved;
+	TArray<FString> Created;
 	bool bCommitted = false;
 };
 

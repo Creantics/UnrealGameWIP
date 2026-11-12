@@ -281,7 +281,9 @@ private:
 	void EnterLookDev();
 	void FixExposure(float Bias);
 	void GreyGround();
-	void Nightfall();
+#if !UE_BUILD_SHIPPING
+	void Nightfall(); // -ExploreNight
+#endif
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 

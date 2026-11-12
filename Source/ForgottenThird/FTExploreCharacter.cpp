@@ -308,6 +308,7 @@ void AFTExploreCharacter::BeginPlay()
 				FixExposure(Bias);
 			}
 		}
+#if !UE_BUILD_SHIPPING // review checks only, never in a shipped game
 		// Exposure-range check: -ExploreNight dims the sun to moonlight and the sky to a night sky (the gate lamps stay
 		// lit); -ExploreExposureRange=<min>,<max> meters auto-exposure within that EV100 range instead of the map's.
 		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreNight")))
@@ -330,6 +331,7 @@ void AFTExploreCharacter::BeginPlay()
 					Post.AutoExposureMinBrightness, Post.AutoExposureMaxBrightness);
 			}
 		}
+#endif
 		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
@@ -514,6 +516,7 @@ void AFTExploreCharacter::FixExposure(float Bias)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: fixed exposure, bias %.2f."), Bias);
 }
 
+#if !UE_BUILD_SHIPPING
 void AFTExploreCharacter::Nightfall()
 {
 	int32 Dimmed = 0;
@@ -535,6 +538,7 @@ void AFTExploreCharacter::Nightfall()
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: night (%d sun and sky lights dimmed)."), Dimmed);
 }
+#endif
 
 void AFTExploreCharacter::GreyGround()
 {
