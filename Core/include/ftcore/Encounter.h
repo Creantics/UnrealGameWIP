@@ -57,6 +57,9 @@
 //   every enemy in it (see
 //   makeEnemies). An unknown enemy id, a duplicate (scene, beat, step), an empty line-up or one of
 //   more than kMaxLineupEnemies is an error; unknown keys are warnings.
+//   `stage` (optional, only with "combat": "arena") names an arena stage in Data/Battle/arenas.json
+//   (lower-case letters, digits and _): the fight plays on that stage (the Demo_Arena map) with the
+//   line-up's enemy ids as arena enemy kinds, instead of in the scene's district of its world.
 //   `demos` (optional) are line-ups no story step plays, for the demo maps, each with an `id` (lower-case
 //   letters, digits and _, unique), `enemies` and `tier`:
 //     "demos": [ { "id": "turns", "enemies": ["brute", "shade"] } ]
@@ -111,6 +114,7 @@ struct EncounterEntry {
     std::uint32_t beat = 0, step = 0;
     EncounterLineup lineup;
     CombatKind combat = CombatKind::Rhythm; // the system it plays; Turns unless tagged
+    std::string stage;                      // an arena fight's stage (arenas.json zone id); empty: in-world
 };
 
 // A line-up no story step plays (a demo map's fight), by id.

@@ -51,6 +51,9 @@ struct FStepRoute
 	// Rhythm then).
 	CombatKind Wanted = CombatKind::Rhythm;
 	const TCHAR* FallbackWhy = nullptr;
+	// An arena fight on a stage: the zone id and the line-up's enemy ids (FFTStoryCarry::Stage, Lineup).
+	FString Stage;
+	FString Lineup;
 };
 
 enum class EPlaced : uint8
@@ -103,6 +106,7 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, uint32 B
 	else if (Route.Screen == GameplayScreen::Battle)
 	{
 		const CombatKind Want = GI.GetEncounters().combatFor(Scene, Beat, StepIndex);
+		const ftcore::EncounterEntry* Entry = GI.GetEncounters().findEntry(Scene, Beat, StepIndex);
 		Route.Wanted = Want;
 		const CombatKind Play = ftcore::playableCombat(Want, FTStep::kPlayableCombat);
 		if (Play != Want)
@@ -119,6 +123,28 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, uint32 B
 			else
 			{
 				Route.FallbackWhy = TEXT("the Beat map isn't built (FTBuildBeatWorld)");
+			}
+		}
+		else if (Play == CombatKind::Arena && Entry && !Entry->stage.empty())
+		{
+			// An arena fight on a stage plays on the arena map, wherever its scene is.
+			if (MapExists(FTStep::ArenaMap()))
+			{
+				Route.Map = FTStep::ArenaMap();
+				Route.Combat = CombatKind::Arena;
+				Route.Stage = FT::ToFString(Entry->stage);
+				const ftcore::EnemyRoster& Roster = GI.GetRoster();
+				for (const uint32 Index : Entry->lineup.enemies)
+				{
+					if (Index < Roster.enemies.size())
+					{
+						Route.Lineup += (Route.Lineup.IsEmpty() ? TEXT("") : TEXT(",")) + FT::ToFString(Roster.enemies[Index].id);
+					}
+				}
+			}
+			else
+			{
+				Route.FallbackWhy = TEXT("the arena map isn't built (FTBuildArenaWorld)");
 			}
 		}
 		else if (Play == CombatKind::Arena)
@@ -251,6 +277,8 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	Carry.District = Route.District;
 	Carry.Style = Route.Style;
 	Carry.FromWorld = Route.FromWorld;
+	Carry.Stage = Route.Stage;
+	Carry.Lineup = Route.Lineup;
 	Carry.bAutoPlay = bAutoPlay;
 	ftcore::LossRule Rule = ftcore::LossRule::Retry;
 	const bool bRule = ftcore::lossRuleFromName(Runner.param("lose"), Rule);
@@ -290,8 +318,9 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	}
 	if (Route.Combat != CombatKind::Rhythm)
 	{
-		UE_LOG(LogForgottenThird, Log, TEXT("Story: the fight at %s beat %d step %d plays the %s system on %s."), *Carry.Scene, Carry.Beat,
-			Carry.Step, *FT::ToFString(ftcore::combatKindName(Route.Combat)), *Route.Map);
+		UE_LOG(LogForgottenThird, Log, TEXT("Story: the fight at %s beat %d step %d plays the %s system on %s%s%s."), *Carry.Scene, Carry.Beat,
+			Carry.Step, *FT::ToFString(ftcore::combatKindName(Route.Combat)), *Route.Map, Route.Stage.IsEmpty() ? TEXT("") : TEXT(", stage "),
+			*Route.Stage);
 	}
 	if (Route.Screen == GameplayScreen::Cutscene && !Route.World.IsEmpty())
 	{

@@ -109,6 +109,8 @@
 
 #include "FTArenaGameMode.generated.h"
 
+struct FFTStoryCarry;
+
 class APlayerController;
 class UFTArenaRunner;
 struct FFTLeadLook;
@@ -137,6 +139,11 @@ public:
 
 private:
 	// Reads Data/Battle/arena.json into Table; false (logged, ids only) when missing or refused.
+	// The story's carry when it is an arena fight on a stage (FFTStoryCarry::Stage), else nullptr; its stage and
+	// line-up (empty without one). Command-line -ArenaStage / -ArenaLineup still win.
+	const FFTStoryCarry* StagedCarry() const;
+	FString StoryStage() const;
+	FString StoryLineup() const;
 	bool LoadTable();
 	// Reads Data/Battle/arenas.json (and Data/Field/worlds.json for the worlds) and picks the zone (-ArenaStage, else
 	// the file's default) into Spec; a built-in plain zone when the files or the table are missing or refused.
@@ -208,6 +215,14 @@ private:
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bQuitOnFinish = false;
+	// A staged story fight (StagedCarry at StartPlay): it never fights again or ends the process; once its result
+	// has shown, the result goes back to the story's map (HandBackStory), as the in-world arena host's does.
+	bool bStoryStaged = false;
+	bool bStoryHandedBack = false;
+	void HandBackStory();
+	// -ArenaStoryQuitAt=<s> (non-shipping, headless, staged story fights only): at that fight time the screen quits
+	// to the title the way the pause menu's Quit to Title does (FTStep::QuitToTitle). Off (< 0) by default.
+	float StoryQuitAt = -1.f;
 	bool bHoldLoad = false;
 	bool bNoLock = false; // -ArenaNoLock
 	bool bAutoShoot = false; // -ArenaAutoShoot
