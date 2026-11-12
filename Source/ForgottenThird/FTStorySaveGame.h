@@ -28,7 +28,8 @@ public:
 	TArray<uint8> StoryBlock;
 
 	// Stores the subsystem's current story progress, and the story state's block when its subsystem is
-	// there. False (SaveJson and StoryBlock untouched) when the story isn't on a scene.
+	// there. False (SaveJson and StoryBlock untouched) when the story isn't on a scene, or when the state
+	// refused to encode and has no block for this position (UFTStoryStateSubsystem::EncodeBlock).
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool CaptureFrom(const UFTStorySubsystem* Story);
 

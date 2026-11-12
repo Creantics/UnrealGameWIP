@@ -8,25 +8,30 @@
 // * The registry comes from the story folder (UFTGameInstance::StoryDir, default Data/Story:
 //   story_facts.csv + story_tuning.json, beside the story) at start.
 //   With neither file it runs on an empty registry: every write is refused, nothing breaks. One file
-//   without the other, or a refused import, also leaves it empty, with a warning.
+//   without the other, or a refused import, also leaves it empty at start, with a warning; a later import
+//   (a reload) that fails keeps the registry and state it had.
 // * The save block rides in UFTStorySaveGame beside the story JSON (StoryBlock, written by CaptureFrom,
 //   read back by ApplyTo). A save from before it, or a block Core refuses, loads as a new game's state
 //   (ftcore::storyLoadOrNew), with a warning for a refused one.
-// * A new game resets the state (NewGame). A block autosaved at a scene start holds whatever scene the
-//   state has open then: the host calls BeginScene when its scene starts, so the order of the two
-//   decides it; both load back as saved.
-// * The scene flow: with a scene map (story_scene_map.csv in the same folder: `scene,code`, a story-runner scene
-//   id and the registry scene it plays; private, beside the registry) it follows UFTStorySubsystem. A new scene
-//   commits the open one and begins its own (ftcore::storyEnterScene); a scene with no code, or the story's end,
-//   only commits; consecutive runner scenes that share a code continue the one registry scene; a load
-//   (SyncToRunnerScene) restarts the open scene when the runner is still in it. Without a map it calls nothing.
+// * A new game resets the state (NewGame). With the bridge bound, the state enters a runner scene inside the
+//   runner, before the story subsystem reports the scene change, so the autosave on a scene change holds the
+//   new scene open; runner and block are taken at one moment and load back together.
+// * The scene flow and the facts: an ftcore::StoryBridge ties the runner (UFTStorySubsystem) to the state. It
+//   follows the runner's scenes (a new scene commits the open one and begins its own; a restart restarts it; the
+//   story's end commits), shows the facts as the runner's `sf.<fact id>` flags and forwards the story's writes
+//   to them (StoryBridge.h). The runner's scene ids are the registry's scene codes, unless a scene map
+//   (story_scene_map.csv in the same folder: `scene,code`; private, beside the registry) links them. It is bound
+//   again after every story load and registry import; a load calls SyncAfterLoad once the block is decoded.
 // * -StoryStateCheck: a headless check. It round-trips the block in memory, logs one
 //   "StoryState check:" line and asks the engine to quit. It never writes a save slot.
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 
+#include "ftcore/StoryBridge.h"
 #include "ftcore/StoryState.h"
+
+#include <vector>
 
 #include "FTStoryStateSubsystem.generated.h"
 
@@ -42,9 +47,10 @@ public:
 	virtual void Deinitialize() override;
 
 	// Imports the registry from Dir (relative: to the project folder). Called by Initialize with the story folder
-	// and by UFTGameInstance::ReloadStory, with the scene map beside it. The registry is assigned in place and the state reset to a new
-	// game's (its slots and scenes belong to the registry); a bound fight session is unbound first (bind it again
-	// after its next Begin).
+	// and by UFTGameInstance::ReloadStory, with the scene map beside it. The files are imported into a new registry
+	// first; only when that succeeds is it assigned in place and the state reset to a new game's (its slots and
+	// scenes belong to the registry), with a bound fight session unbound first (bind it again after its next Begin).
+	// A missing or refused registry keeps the current registry, state and scene map, with a warning.
 	bool LoadRegistry(const FString& Dir);
 	// True when the registry was imported (false: the empty registry).
 	UFUNCTION(BlueprintPure, Category = "Story")
@@ -52,13 +58,21 @@ public:
 
 	// ---- the scene ----
 
-	// The scene flow (the scene map): the runner's scene SceneId began; empty: the story ended. Nothing without a map.
-	void EnterRunnerScene(const FString& SceneId);
-	// After a load: brings the state to the runner's current scene (restart when it is the open one). Nothing without a map.
-	void SyncToRunnerScene(const FString& SceneId);
-	// The number of runner scenes the map links (0: no map, the flow calls nothing).
+	// Binds the bridge to the story runner and this state (UFTStorySubsystem::LoadStory and LoadRegistry call it).
+	// Unbound, with a warning, when the story has a fact flag the registry lacks or fact flags but no mapped scene;
+	// unbound when either is not loaded.
+	void RebindBridge();
+	// After a load: the runner restored and the block decoded (StoryBridge::sync: the runner stays where it was
+	// restored, the state follows it, a later restart goes back to the load point).
+	void SyncAfterLoad();
 	UFUNCTION(BlueprintPure, Category = "Story")
-	int32 GetSceneMapSize() const { return SceneMap.Num(); }
+	bool IsBridgeBound() const;
+	// The runner scenes that play a registry scene (identity, or the map's links).
+	UFUNCTION(BlueprintPure, Category = "Story")
+	int32 GetMappedSceneCount() const;
+	// The links in the scene map (0: no map, identity).
+	UFUNCTION(BlueprintPure, Category = "Story")
+	int32 GetSceneMapSize() const { return static_cast<int32>(SceneLinks.size()); }
 
 	// Opens the scene with that code (the registry's scene list). False for an unknown code, a scene
 	// already open, or one not after the last committed scene.
@@ -84,26 +98,30 @@ public:
 
 	// ---- the save block (UFTStorySaveGame) ----
 
-	// Writes the block into Out. False (Out kept as it was, with a warning) before Initialize or when Core refuses.
-	bool EncodeBlock(TArray<uint8>& Out);
-	// Loads the block, or a new game's state when it is empty or Core refuses it. Returns Core's result.
+	// Writes the block into Out and keeps a copy as the last good block. When Core refuses, it returns false with a
+	// warning naming the last good block's scene and writes that block instead, unless there is none or the story
+	// is no longer at its scene: then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot
+	// keeps what it has). False with Out untouched before Initialize.
+	bool EncodeBlock(TArray<uint8>& Out, bool* bOutSkip = nullptr);
+	// Loads the block, or a new game's state when it is empty or Core refuses it. Returns Core's result. A loaded
+	// block becomes the last good block; a new game's state clears it.
 	ftcore::StoryLoad DecodeBlock(const TArray<uint8>& In);
+	// The last block encoded or loaded for this state (empty after a new game or a registry import).
+	const TArray<uint8>& GetLastGoodBlock() const { return LastGoodBlock; }
 
 private:
 	void Unbind();
 	void LoadSceneMap(const FString& Base);
-	UFUNCTION()
-	void HandleRunnerScene(const FString& SceneId);
-	UFUNCTION()
-	void HandleRunnerFinished();
+	static void HandleBridgeReport(void* User, const ftcore::StoryBridgeReport& Report);
 
 	TUniquePtr<ftcore::FactRegistry> Registry;
 	TUniquePtr<ftcore::StoryState> State;
 	bool bRegistryLoaded = false;
 	// The fight session last bound (weak: the runner owns it); unbound on a registry import and on Deinitialize.
 	TWeakObjectPtr<UFTFightSession> BoundSession;
-	// Runner scene id to registry scene ordinal (empty: no map). The runner scene last entered, so a scene that
-	// shares its code with the one before continues it and only the same id again restarts.
-	TMap<FString, uint8> SceneMap;
-	FString LastRunnerScene;
+	// The scene map's links (empty: no map, identity) and the bridge (allocated once in Initialize).
+	std::vector<ftcore::StorySceneLink> SceneLinks;
+	TUniquePtr<ftcore::StoryBridge> Bridge;
+	// The last block that encoded or loaded (EncodeBlock writes it when Core refuses).
+	TArray<uint8> LastGoodBlock;
 };

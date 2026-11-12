@@ -119,7 +119,8 @@ A clean clone has no `Data/Story`, so it runs fewer story tests: those cases sho
 
 `UFTStoryStateSubsystem` (a game-instance subsystem) owns one state and the registry. At start it imports
 the registry from the story folder (`StoryDir`, default `Data/Story`); with both files absent it runs on an empty registry, and with one file
-missing or a refused import it warns and does the same. It begins, commits and restarts scenes, starts a
+missing or a refused import it warns and does the same. A later import (a story reload) that finds no registry
+or is refused keeps the registry and state it had. It begins, commits and restarts scenes, starts a
 new game, and hands the state and registry to the fight session (`BindFightSession`, after every Begin).
 The story save game keeps the block beside the story text (`StoryBlock`): captured with each save,
 loaded after the text with `storyLoadOrNew`, so a save from before the block loads as a new game's state.
@@ -130,30 +131,65 @@ then the game exits; it never writes the save slot.
 both), so the two never part. A registry import resets the state to a new game's: its slots and scenes
 belong to the registry it was written against.
 
-### The scene flow
+### The scene flow and the facts (`ftcore::StoryBridge`)
 
-A private `story_scene_map.csv` beside the registry links the story runner's scene ids to registry scene
-codes (`importStorySceneMap`):
+The bridge (`Core/include/ftcore/StoryBridge.h`, tests in `Core/tests/test_story_bridge.cpp`) ties the story
+runner to the state. The state is the truth; the runner's flags named `sf.<fact id>` are a view of it.
 
-```
-scene,code
-r-one,s1
-r-two,s2
-```
+- **Scenes.** A runner scene plays the registry scene whose code is its id (identity). A private
+  `story_scene_map.csv` beside the registry links other ids instead (`importStorySceneMap`):
 
-Blank lines and `#` lines are skipped; a missing header, a line without two fields, an empty field, a code
-the registry does not list or an id given twice refuses the whole file. With no map (or a refused one) the
-subsystem never touches the scene: hosts may call `BeginScene` and the rest themselves.
+  ```
+  scene,code
+  r-one,s1
+  r-two,s2
+  ```
 
-With a map it follows `UFTStorySubsystem` through `storyEnterScene`:
+  Blank lines and `#` lines are skipped; a missing header, a line without two fields, an empty field, a code
+  the registry does not list or an id given twice refuses the whole file (the bridge then uses identity).
+  Entering a mapped scene commits the open one and begins its own (`storyEnterScene`); runner scenes in a
+  row that play one registry scene keep it open; an unmapped scene leaves the state and the fact flags as they are (a mapped scene after it carries on in the open registry scene); `start()`
+  resets the state; the story's end commits.
+- **Facts into flags.** When a scene is entered or restarted, each `sf.` flag whose fact the scene reads or
+  sets takes the fact's value (a bool flag: the fact is set; an int flag: its value, 255 when never
+  offered). Every other `sf.` flag goes back to its initial value, so a scene branches only on what it reads.
+- **Flags into facts.** When the story sets an `sf.` flag (a flag beat, an option effect, a gameplay
+  result), the bridge calls `storySet` and writes the fact's value back to the flag, so a refused set
+  (once-only, wrong scene, out of range, gate) leaves the flag as the fact is; the refusal is logged.
+- **Clears.** Facts are never cleared: a stored 0 means never set, and `storySet` refuses 0 for every fact,
+  `free` ones too. So a clear of an `sf.` flag (a Clear beat, or false or 0 written to it) is not sent to
+  `storySet`: the flag takes the fact's value back and, when the fact was set, the bridge reports
+  `ClearIgnored`, logged at Log level (a note, not a warning), and `ftcore_storywalk` prints a `kept` line
+  and carries on.
+- **Gameplay results.** A gameplay beat's `sets` param names the flag its result goes to:
+  `StoryRunner::resume(value)` (Unreal: `ResumeAfterGameplayWithValue`) sets it, then continues. A plain
+  `resume()` sets the beat's `stub` param (an integer) when it has one, a stand-in for a screen not built
+  yet, so autoplay walks through. A bool flag takes a non-zero value as true.
+- **Restart.** `StoryRunner::restartScene()` (Unreal: `RestartCurrentScene`) goes back to the scene's first
+  beat with the runner's flags as they were when it was entered, and restarts the registry scene
+  (`storyRestartScene`) back to the facts as that runner scene began: a second runner scene of one registry
+  scene keeps what the first one set.
+- **Saves.** The bridge enters the state's scene inside the runner, before the subsystem reports the scene
+  change, so the autosave on a scene change holds the new scene open, with its first beats up to the first
+  stop played: runner and block are taken at one moment.
+- **A load.** The save game restores the runner (the bridge pauses: nothing the runner does while it settles
+  reaches the state), decodes the block, then calls `SyncAfterLoad`. The runner stays where it was
+  restored and the state as decoded. When the block has another registry scene open, or none, the
+  runner's scene begins; at the story's end the open scene commits. The flags are pushed, and a restart
+  after the load goes back to the load point for the runner and the state alike. If the runner moves on
+  after a restore with no `SyncAfterLoad`, the bridge stays paused (it cannot know the block was decoded) and
+  reports `SyncMissing` once per restore, logged as a warning. Between the restore and the sync the story
+  subsystem flushes its events (`OnCue`, `OnSceneChanged`, `OnBeatChanged`, `OnFinished`); none of their
+  listeners moves the runner: the audio subsystem plays cues and reads the line id, the scene-change autosave
+  is held off while a save applies, and the game mode's end card only raises a flag.
+- **Binding.** A story with fact flags none of whose scenes plays a registry scene is refused: every write
+  would be.
 
-- a scene change commits the open scene and begins the new scene's code; a scene with no code, or the story's
-  end, only commits, so map every runner scene that plays inside a registry scene (an unmapped one between
-  two scenes of one code closes it, and the second is refused);
-- runner scenes in a row that share one code continue that registry scene; the same runner id entered again
-  restarts it;
-- a new story (`StartStory`) starts a new game's state;
-- a load decodes the block, then brings the state to the runner's scene: the open scene restarts when the
-  runner is in it (saves are taken at scene start), else it is committed and the runner's scene begins.
-
-A fight retry resets the fight, not the scene, so it calls nothing here.
+`UFTStoryStateSubsystem` binds the bridge again after every story load and registry import. A story with an
+`sf.` flag the registry lacks, a string `sf.` flag, or fact flags with no mapped scene leave it unbound with
+a warning. A registry import that fails keeps the current registry, state and scene map; one that succeeds
+while a story runs syncs the bridge, so the runner's registry scene is open in the new game's state. The save
+keeps the last good block: when the state refuses to encode, that block is written instead, with a warning
+naming its scene, unless the story is no longer at that scene (its facts would not match the position)
+or there is no good block (never an empty block over real progress): then the save is skipped
+and the slot keeps what it has. A fight retry resets the fight, not the scene, so it calls nothing here.

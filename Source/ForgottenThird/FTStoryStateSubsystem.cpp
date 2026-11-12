@@ -55,18 +55,15 @@ bool RoundTrips(UFTStoryStateSubsystem& Sub, FString& OutWhy)
 void UFTStoryStateSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	UFTStorySubsystem* Story = Collection.InitializeDependency<UFTStorySubsystem>();
+	Collection.InitializeDependency<UFTStorySubsystem>(); // the runner outlives the bridge (deinitialized after this)
 	Registry = MakeUnique<ftcore::FactRegistry>();
 	State = MakeUnique<ftcore::StoryState>();
+	Bridge = MakeUnique<ftcore::StoryBridge>();
+	Bridge->setReportHandler(&UFTStoryStateSubsystem::HandleBridgeReport, this);
 	ftcore::storyReset(*State);
 	// The story's own folder (UFTGameInstance::StoryDir), so the registry and the story never part.
 	const UFTGameInstance* GI = Cast<UFTGameInstance>(GetGameInstance());
-	LoadRegistry(GI ? GI->StoryDir : FString(TEXT("Data/Story")));
-	if (Story)
-	{
-		Story->OnSceneChanged.AddDynamic(this, &UFTStoryStateSubsystem::HandleRunnerScene);
-		Story->OnFinished.AddDynamic(this, &UFTStoryStateSubsystem::HandleRunnerFinished);
-	}
+	LoadRegistry(GI ? GI->StoryDir : FString(TEXT("Data/Story"))); // binds the bridge when the story is already loaded
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("StoryStateCheck")))
 	{
@@ -82,13 +79,8 @@ void UFTStoryStateSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UFTStoryStateSubsystem::Deinitialize()
 {
 	Unbind();
-	if (UFTStorySubsystem* Story = GetGameInstance()->GetSubsystem<UFTStorySubsystem>())
-	{
-		Story->OnSceneChanged.RemoveAll(this);
-		Story->OnFinished.RemoveAll(this);
-	}
-	SceneMap.Reset();
-	LastRunnerScene.Reset();
+	Bridge.Reset(); // gives the runner's handlers back before the state goes
+	SceneLinks.clear();
 	State.Reset();
 	Registry.Reset();
 	bRegistryLoaded = false;
@@ -106,30 +98,40 @@ bool UFTStoryStateSubsystem::LoadRegistry(const FString& Dir)
 	FString Json;
 	const bool bCsv = FFileHelper::LoadFileToString(Csv, *(Base / TEXT("story_facts.csv")));
 	const bool bJson = FFileHelper::LoadFileToString(Json, *(Base / TEXT("story_tuning.json")));
+	const TCHAR* Keeps = bRegistryLoaded ? TEXT("the current registry and state are kept") : TEXT("running on an empty one");
+	if (!bCsv && !bJson)
+	{
+		UE_LOG(LogFTStoryState, Display, TEXT("StoryState: no registry in %s; %s."), *Dir, Keeps);
+		return false;
+	}
+	// Imported aside first: a refused import changes nothing.
+	TUniquePtr<ftcore::FactRegistry> Fresh = MakeUnique<ftcore::FactRegistry>(); // large: off the stack
+	std::string Error;
+	if (!bCsv || !bJson || !ftcore::importStoryRegistry(FT::ToUtf8(Csv), FT::ToUtf8(Json), *Fresh, &Error))
+	{
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: registry in %s refused (%s); %s."), *Dir,
+			   !bCsv || !bJson ? TEXT("one of its two files is missing") : *FT::ToFString(Error), Keeps);
+		return false;
+	}
 	Unbind(); // the registry changes under it
-	*Registry = ftcore::FactRegistry{};
-	bRegistryLoaded = false;
-	SceneMap.Reset(); // its ordinals belong to the registry
-	LastRunnerScene.Reset();
+	if (Bridge)
+	{
+		Bridge->unbind();
+	}
+	*Registry = MoveTemp(*Fresh); // in place: the state and the fight session keep its address
+	bRegistryLoaded = true;
+	SceneLinks.clear(); // its ordinals belong to the old registry
 	if (State)
 	{
 		ftcore::storyReset(*State); // the state's slots and scenes belong to the registry too: a new game's state
 	}
-	if (!bCsv && !bJson)
-	{
-		UE_LOG(LogFTStoryState, Display, TEXT("StoryState: no registry in %s; running on an empty one."), *Dir);
-		return false;
-	}
-	std::string Error;
-	if (!bCsv || !bJson || !ftcore::importStoryRegistry(FT::ToUtf8(Csv), FT::ToUtf8(Json), *Registry, &Error))
-	{
-		*Registry = ftcore::FactRegistry{};
-		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: registry in %s refused (%s); running on an empty one."), *Dir,
-			   !bCsv || !bJson ? TEXT("one of its two files is missing") : *FT::ToFString(Error));
-		return false;
-	}
-	bRegistryLoaded = true;
+	LastGoodBlock.Reset();
 	LoadSceneMap(Base);
+	RebindBridge();
+	if (Bridge && Bridge->bound())
+	{
+		Bridge->sync(); // a story under way: its registry scene opens in the new game's state (idle: nothing)
+	}
 	return true;
 }
 
@@ -138,82 +140,85 @@ void UFTStoryStateSubsystem::LoadSceneMap(const FString& Base)
 	FString Csv;
 	if (!FFileHelper::LoadFileToString(Csv, *(Base / TEXT("story_scene_map.csv"))))
 	{
-		UE_LOG(LogFTStoryState, Display, TEXT("StoryState: no scene map; the scene flow is not followed."));
+		UE_LOG(LogFTStoryState, Display, TEXT("StoryState: no scene map; runner scene ids are registry codes."));
 		return;
 	}
-	std::vector<ftcore::StorySceneLink> Links;
 	std::string Error;
-	if (!ftcore::importStorySceneMap(FT::ToUtf8(Csv), *Registry, Links, &Error))
+	if (!ftcore::importStorySceneMap(FT::ToUtf8(Csv), *Registry, SceneLinks, &Error))
 	{
-		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: scene map refused (%s); the scene flow is not followed."),
+		SceneLinks.clear();
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: scene map refused (%s); runner scene ids are registry codes."),
 			   *FT::ToFString(Error));
 		return;
 	}
-	for (const ftcore::StorySceneLink& Link : Links)
-	{
-		SceneMap.Add(FT::ToFString(Link.scene), Link.ordinal);
-	}
-	UE_LOG(LogFTStoryState, Log, TEXT("StoryState: scene map links %d runner scenes."), SceneMap.Num());
+	UE_LOG(LogFTStoryState, Log, TEXT("StoryState: scene map links %d runner scenes."), static_cast<int32>(SceneLinks.size()));
 }
 
-namespace
+void UFTStoryStateSubsystem::RebindBridge()
 {
-void LogStep(const ftcore::StorySceneStep& Step, const FString& SceneId, const TCHAR* What)
-{
-	if (Step.refused)
-	{
-		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: %s at runner scene '%s' refused (committed %d, began %d, restarted %d)."),
-			   What, *SceneId, Step.committed ? 1 : 0, Step.began ? 1 : 0, Step.restarted ? 1 : 0);
-	}
-}
-} // namespace
-
-void UFTStoryStateSubsystem::EnterRunnerScene(const FString& SceneId)
-{
-	if (!State || SceneMap.Num() == 0)
+	if (!Bridge)
 	{
 		return;
 	}
-	const uint8* Found = SceneId.IsEmpty() ? nullptr : SceneMap.Find(SceneId);
-	const uint8 Scene = Found ? *Found : ftcore::kNoScene;
-	const bool bSameRunnerScene = !SceneId.IsEmpty() && SceneId == LastRunnerScene;
-	LastRunnerScene = SceneId;
-	if (Scene != ftcore::kNoScene && Scene == State->openScene && !bSameRunnerScene)
-	{
-		return; // the next runner scene of the same registry scene: it goes on
-	}
-	LogStep(ftcore::storyEnterScene(*State, *Registry, Scene), SceneId, TEXT("scene entry"));
-}
-
-void UFTStoryStateSubsystem::SyncToRunnerScene(const FString& SceneId)
-{
-	if (!State || SceneMap.Num() == 0)
+	Bridge->unbind();
+	UFTStorySubsystem* Story = GetGameInstance()->GetSubsystem<UFTStorySubsystem>();
+	if (!bRegistryLoaded || !Story || !Story->IsLoaded())
 	{
 		return;
 	}
-	const uint8* Found = SceneId.IsEmpty() ? nullptr : SceneMap.Find(SceneId);
-	LastRunnerScene = SceneId;
-	LogStep(ftcore::storyEnterScene(*State, *Registry, Found ? *Found : ftcore::kNoScene), SceneId, TEXT("load"));
+	std::string Error;
+	if (!Bridge->bind(Story->GetRunnerForBridge(), *State, *Registry, SceneLinks, &Error))
+	{
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: the story and the registry do not match; facts not followed: %s"),
+			   *FT::ToFString(Error));
+		return;
+	}
+	UE_LOG(LogFTStoryState, Log, TEXT("StoryState: bridge bound (%d fact flags, %d runner scenes play registry scenes)."),
+		   static_cast<int32>(Bridge->boundFlags()), static_cast<int32>(Bridge->mappedScenes()));
 }
 
-void UFTStoryStateSubsystem::HandleRunnerScene(const FString& SceneId)
+void UFTStoryStateSubsystem::SyncAfterLoad()
 {
-	const UFTStorySubsystem* Story = GetGameInstance()->GetSubsystem<UFTStorySubsystem>();
-	if (Story && Story->IsApplyingSave())
+	if (Bridge)
 	{
-		return; // a load: the block decodes next and SyncToRunnerScene follows it
+		Bridge->sync();
 	}
-	EnterRunnerScene(SceneId);
 }
 
-void UFTStoryStateSubsystem::HandleRunnerFinished()
+bool UFTStoryStateSubsystem::IsBridgeBound() const
 {
-	const UFTStorySubsystem* Story = GetGameInstance()->GetSubsystem<UFTStorySubsystem>();
-	if (Story && Story->IsApplyingSave())
+	return Bridge && Bridge->bound();
+}
+
+int32 UFTStoryStateSubsystem::GetMappedSceneCount() const
+{
+	return Bridge ? static_cast<int32>(Bridge->mappedScenes()) : 0;
+}
+
+void UFTStoryStateSubsystem::HandleBridgeReport(void* User, const ftcore::StoryBridgeReport& Report)
+{
+	(void)User;
+	if (Report.kind == ftcore::StoryBridgeReport::Kind::ClearIgnored)
 	{
-		return; // as HandleRunnerScene
+		// By design (docs/STORY_STATE.md): facts are never cleared; a note, not a fault.
+		UE_LOG(LogFTStoryState, Log, TEXT("StoryState: fact slot %u kept (facts are never cleared) at runner scene %u."),
+			   static_cast<uint32>(Report.fact), Report.scene);
 	}
-	EnterRunnerScene(FString());
+	else if (Report.kind == ftcore::StoryBridgeReport::Kind::SyncMissing)
+	{
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: the story moved after a restore with no SyncAfterLoad; facts are not followed until it is called."));
+	}
+	else if (Report.kind == ftcore::StoryBridgeReport::Kind::SceneRefused)
+	{
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: runner scene %u could not open registry scene %u."), Report.scene,
+			   static_cast<uint32>(Report.ordinal));
+	}
+	else
+	{
+		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: fact slot %u refused value %lld (result %u) at runner scene %u."),
+			   static_cast<uint32>(Report.fact), static_cast<long long>(Report.value), static_cast<uint32>(Report.result),
+			   Report.scene);
+	}
 }
 
 bool UFTStoryStateSubsystem::BeginScene(const FString& SceneCode)
@@ -237,7 +242,7 @@ void UFTStoryStateSubsystem::NewGame()
 	{
 		ftcore::storyReset(*State);
 	}
-	LastRunnerScene.Reset();
+	LastGoodBlock.Reset();
 }
 
 void UFTStoryStateSubsystem::BindFightSession(UFTFightSession* Session)
@@ -262,8 +267,30 @@ void UFTStoryStateSubsystem::Unbind()
 	BoundSession.Reset();
 }
 
-bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out)
+namespace
 {
+// How far a state has got: 0 nothing, 2n+1 with scene n open, 2n+2 with n the last committed and none open.
+int32 StoryBlockProgress(uint8 Open, uint8 LastCommitted)
+{
+	return Open != ftcore::kNoScene ? 2 * Open + 1 : LastCommitted != ftcore::kNoScene ? 2 * LastCommitted + 2 : 0;
+}
+
+FString RegistrySceneName(const ftcore::FactRegistry& Reg, uint8 Ordinal)
+{
+	if (Ordinal == ftcore::kNoScene || Ordinal >= Reg.sceneCount)
+	{
+		return TEXT("none");
+	}
+	return FT::ToFString(std::string_view(Reg.sceneCodes[Ordinal].data()));
+}
+} // namespace
+
+bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
+{
+	if (bOutSkip)
+	{
+		*bOutSkip = false;
+	}
 	if (!State)
 	{
 		return false;
@@ -272,9 +299,38 @@ bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out)
 	Block.SetNumZeroed(ftcore::kStoryStateBlockSize);
 	if (!ftcore::storyEncode(*State, *Registry, std::span<std::uint8_t, ftcore::kStoryStateBlockSize>(Block.GetData(), ftcore::kStoryStateBlockSize)))
 	{
-		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the previous block is kept"));
+		const int32 Now = StoryBlockProgress(State->openScene, State->lastCommitted);
+		if (LastGoodBlock.Num() != ftcore::kStoryStateBlockSize)
+		{
+			// Never an empty block over real progress: the save is skipped and the slot keeps what it has.
+			UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode and there is no last good block; the save is skipped."));
+			if (bOutSkip)
+			{
+				*bOutSkip = true;
+			}
+			return false;
+		}
+		const uint8 GoodOpen = LastGoodBlock[16], GoodLast = LastGoodBlock[17]; // the block's open and last committed scene
+		const FString GoodScene = RegistrySceneName(*Registry, GoodOpen != ftcore::kNoScene ? GoodOpen : GoodLast);
+		if (Now != StoryBlockProgress(GoodOpen, GoodLast))
+		{
+			// The story has moved past the block (or it is from another run): writing it would put other facts
+			// under this position.
+			UE_LOG(LogFTStoryState, Warning,
+				   TEXT("Story state not saved: the state refused to encode; the last good block is from scene %s, and the story is now at %s; the save is skipped."),
+				   *GoodScene, *RegistrySceneName(*Registry, State->openScene != ftcore::kNoScene ? State->openScene : State->lastCommitted));
+			if (bOutSkip)
+			{
+				*bOutSkip = true;
+			}
+			return false;
+		}
+		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the last good block (scene %s) is written."),
+			   *GoodScene);
+		Out = LastGoodBlock;
 		return false;
 	}
+	LastGoodBlock = Block;
 	Out = MoveTemp(Block);
 	return true;
 }
@@ -288,6 +344,14 @@ ftcore::StoryLoad UFTStoryStateSubsystem::DecodeBlock(const TArray<uint8>& In)
 	ftcore::StoryStateLoadReport Report;
 	const ftcore::StoryLoad Result = ftcore::storyLoadOrNew(
 		std::span<const std::uint8_t>(In.GetData(), static_cast<std::size_t>(In.Num())), *Registry, *State, &Report);
+	if (Result == ftcore::StoryLoad::Ok)
+	{
+		LastGoodBlock = In;
+	}
+	else
+	{
+		LastGoodBlock.Reset(); // a new game's state
+	}
 	if (Result != ftcore::StoryLoad::Ok && Result != ftcore::StoryLoad::Empty)
 	{
 		UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: saved block refused (%hs); a new game's state instead."),

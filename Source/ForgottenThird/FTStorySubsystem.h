@@ -117,6 +117,13 @@ public:
 	// Gameplay beat done: continue the story.
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ResumeAfterGameplay();
+	// Gameplay beat done with a result: the beat's `sets` flag takes Value, then the story continues. False (the
+	// beat stays) when the beat names no flag or not on a gameplay beat (StoryRunner::resume(FlagValue)).
+	UFUNCTION(BlueprintCallable, Category = "Story")
+	bool ResumeAfterGameplayWithValue(int32 Value);
+	// Back to the current scene's first beat, its flags and the story state as the scene began (a retry).
+	UFUNCTION(BlueprintCallable, Category = "Story")
+	bool RestartCurrentScene();
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	void SkipHold();
 	UFUNCTION(BlueprintCallable, Category = "Story")
@@ -246,6 +253,8 @@ public:
 
 	// Native access for C++ gameplay code.
 	const ftcore::StoryRunner& GetRunner() const { return *Runner; }
+	// For UFTStoryStateSubsystem's bridge only (it installs the runner's scene and flag handlers).
+	ftcore::StoryRunner& GetRunnerForBridge() { return *Runner; }
 	const ftcore::StoryDatabase& GetDatabase() const { return *Database; }
 
 	// FTickableGameObject

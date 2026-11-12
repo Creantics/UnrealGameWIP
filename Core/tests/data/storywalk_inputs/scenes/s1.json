@@ -1,0 +1,11 @@
+{
+  "id": "s1",
+  "title": "One",
+  "beats": [
+    {"type": "line", "id": "s1_l1", "speaker": "A", "text": "one"},
+    {"type": "gameplay", "kind": "PLAY", "text": "[pick]", "params": {"sets": "sf.f_pick", "stub": 1}},
+    {"type": "gameplay", "kind": "PLAY", "text": "[press]"},
+    {"type": "flag", "op": "set", "id": "sf.f_after"},
+    {"type": "direction", "text": "after"}
+  ]
+}
