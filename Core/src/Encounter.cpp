@@ -487,4 +487,17 @@ void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::
     }
 }
 
+bool lineupIds(const EnemyRoster& roster, const EncounterLineup& lineup, std::string& out) {
+    out.clear();
+    for (const std::uint32_t index : lineup.enemies) {
+        if (index >= roster.enemies.size()) {
+            out.clear();
+            return false;
+        }
+        if (!out.empty()) out += ',';
+        out += roster.enemies[index].id;
+    }
+    return !out.empty();
+}
+
 } // namespace ftcore

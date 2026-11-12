@@ -77,6 +77,8 @@ inline const TCHAR* ArenaMap() { return TEXT("Demo_Arena"); }
 // the screens and GetCurrentLevelName use, which the engine would resolve to the first package of that
 // name anywhere under /Game, a stray local copy included. Every map the game opens goes through here.
 FORGOTTENTHIRD_API void OpenMap(const UObject* WorldContext, const FString& Map, const FString& Options = FString());
+// True when Map names a map package under /Game/Maps that exists (OpenMap would open it).
+FORGOTTENTHIRD_API bool MapOpenable(const FString& Map);
 
 // The host that plays a routed screen in place: Field, Cutscene, or Arena for a battle that plays the
 // arena system.

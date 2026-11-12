@@ -128,19 +128,20 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, uint32 B
 		else if (Play == CombatKind::Arena && Entry && !Entry->stage.empty())
 		{
 			// An arena fight on a stage plays on the arena map, wherever its scene is.
-			if (MapExists(FTStep::ArenaMap()))
+			std::string Ids;
+			if (!ftcore::lineupIds(GI.GetRoster(), Entry->lineup, Ids))
+			{
+				// Never a staged fight with part of its line-up: the step falls back, loudly.
+				UE_LOG(LogForgottenThird, Error, TEXT("Story: the staged fight at %s beat %d has a line-up outside the enemy roster (%d enemies); it does not play on its stage."),
+					*FT::ToFString(Entry->scene), static_cast<int32>(Entry->beat), static_cast<int32>(Entry->lineup.enemies.size()));
+				Route.FallbackWhy = TEXT("its staged line-up is not in the enemy roster");
+			}
+			else if (MapExists(FTStep::ArenaMap()))
 			{
 				Route.Map = FTStep::ArenaMap();
 				Route.Combat = CombatKind::Arena;
 				Route.Stage = FT::ToFString(Entry->stage);
-				const ftcore::EnemyRoster& Roster = GI.GetRoster();
-				for (const uint32 Index : Entry->lineup.enemies)
-				{
-					if (Index < Roster.enemies.size())
-					{
-						Route.Lineup += (Route.Lineup.IsEmpty() ? TEXT("") : TEXT(",")) + FT::ToFString(Roster.enemies[Index].id);
-					}
-				}
+				Route.Lineup = FT::ToFString(Ids);
 			}
 			else
 			{
@@ -206,6 +207,11 @@ bool OnCarriedBeat(const UFTGameInstance& GI, const StoryRunner& Runner, const F
 		&& (!GI.Chain.active() || static_cast<int32>(GI.Chain.step()) == Carry.Step);
 }
 } // namespace
+
+bool FTStep::MapOpenable(const FString& Map)
+{
+	return MapExists(Map);
+}
 
 void FTStep::OpenMap(const UObject* WorldContext, const FString& Map, const FString& Options)
 {

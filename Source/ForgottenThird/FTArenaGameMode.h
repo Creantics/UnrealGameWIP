@@ -220,6 +220,10 @@ private:
 	bool bStoryStaged = false;
 	bool bStoryHandedBack = false;
 	void HandBackStory();
+	// Why a staged story fight can't play as the story asked (its stage or a line-up kind missing from the data):
+	// set while loading; the fight never starts and the step leaves for the title, loudly (RefuseStory).
+	FString StoryRefusal;
+	void RefuseStory();
 	// -ArenaStoryQuitAt=<s> (non-shipping, headless, staged story fights only): at that fight time the screen quits
 	// to the title the way the pause menu's Quit to Title does (FTStep::QuitToTitle). Off (< 0) by default.
 	float StoryQuitAt = -1.f;

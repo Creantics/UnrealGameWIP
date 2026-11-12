@@ -151,4 +151,9 @@ FTCORE_API bool importEncounterTable(std::string_view json, const EnemyRoster& r
 // attack). Replaces `out`. Allocates.
 FTCORE_API void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::vector<Combatant>& out);
 
+// A staged arena fight's line-up as the roster's enemy ids, comma-separated, in line-up order (what the arena
+// screen reads). False, with out empty, when the line-up is empty or any index is outside the roster: such a
+// fight must not play. Allocates: at routing.
+FTCORE_API bool lineupIds(const EnemyRoster& roster, const EncounterLineup& lineup, std::string& out);
+
 } // namespace ftcore
