@@ -13,6 +13,8 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "Rendering/SkeletalMeshModel.h"
 #include "ftcore/Face.h"
 #include "ftcore/FaceImport.h"
 
@@ -21,6 +23,53 @@ namespace
 const TCHAR* const kFaceBones[] = {
 	TEXT("head"), TEXT("jaw"), TEXT("tongue_01"), TEXT("tongue_02"), TEXT("tongue_03"), TEXT("eye_l"), TEXT("eye_r"),
 };
+
+// Logs LOD 0's skin influences as imported: the most bones any vertex is weighted to, the sections' own
+// limit, how many vertices have more than four (the most the default GPU skin path keeps), and a count of
+// vertices by influences. The import splits vertices at UV and normal seams, so the counts run higher than
+// the source file's; compare the shares.
+void LogInfluences(const USkeletalMesh& Mesh)
+{
+	const FSkeletalMeshModel* Model = Mesh.GetImportedModel();
+	if (!Model || Model->LODModels.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTImportCharacter: %s has no imported LOD model to count influences in."), *Mesh.GetPathName());
+		return;
+	}
+	const FSkeletalMeshLODModel& Lod = Model->LODModels[0];
+	int32 ByCount[MAX_TOTAL_INFLUENCES + 1] = {};
+	int32 Vertices = 0, OverFour = 0, Most = 0, SectionLimit = 0;
+	for (const FSkelMeshSection& Section : Lod.Sections)
+	{
+		SectionLimit = FMath::Max(SectionLimit, Section.MaxBoneInfluences);
+		for (const FSoftSkinVertex& Vertex : Section.SoftVertices)
+		{
+			int32 Count = 0;
+			for (int32 I = 0; I < MAX_TOTAL_INFLUENCES; ++I)
+			{
+				Count += Vertex.InfluenceWeights[I] > 0 ? 1 : 0;
+			}
+			++ByCount[Count];
+			++Vertices;
+			OverFour += Count > 4 ? 1 : 0;
+			Most = FMath::Max(Most, Count);
+		}
+	}
+	if (Vertices == 0)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTImportCharacter: LOD 0 of %s holds no soft vertices; influences not counted (sections' limit %d)."),
+			*Mesh.GetPathName(), SectionLimit);
+		return;
+	}
+	FString Counts;
+	for (int32 N = 1; N <= Most; ++N)
+	{
+		Counts += FString::Printf(TEXT(" %d:%d"), N, ByCount[N]);
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTImportCharacter: LOD 0 skin: %d vertices, at most %d influences per vertex (sections' limit %d), %d (%.1f%%) with more than 4; by influences:%s"),
+		Vertices, Most, SectionLimit, OverFour, 100.0 * OverFour / Vertices, *Counts);
+}
 
 // Logs the rig check; with bCheckFace, false when a face bone or a face shape's morph is missing.
 bool CheckRig(const USkeletalMesh& Mesh, bool bCheckFace)
@@ -174,6 +223,7 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 	}
 	const bool bMaterialsOk = FT::UseProjectMasters(TEXT("FTImportCharacter"), Materials);
 	const bool bRigOk = CheckRig(*Mesh, bCheckFace);
+	LogInfluences(*Mesh);
 	return bMaterialsOk && bRigOk ? 0 : 1;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter needs an editor build."));

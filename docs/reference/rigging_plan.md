@@ -23,7 +23,7 @@ Evidence labels: **[verified]** read in this repo or run in this session; **[doc
 | Sync | Face time = the voice's **audio playback cursor**, not frame time (a new `SoundHandle` cursor) | §8.3 |
 | Body skinning | **Stay LBS.** Fix candy-wrapper twist with twist bones and elbow/knee volume with helper bones. No DQS | §4, §11 |
 | Skeleton | One canonical humanoid of about 90 joints (128 max), with snake_case `_l`/`_r` names, an A-pose bind, and Rigify used only as a control rig that is baked onto it | §4 |
-| Tools per path | Unrigged mesh → **AccuRIG for landmarks, then fit the canonical template** (UniRig for creatures). Foreign rig → **Auto-Rig Pro Full retarget** plus a rename table. Own rig → **Rigify + bake script** | §9 |
+| Tools per path | Unrigged mesh → **an external auto-rigger for landmarks, then fit the canonical template** (an open-source auto-rig model for creatures). Foreign rig → **a paid Blender rigging add-on's retarget** plus a rename table. Own rig → **Rigify + bake script** | §9 |
 | Gate | `tools/blender/rig_validate.py` (headless bpy) + `ne_rig_check` (engine round-trip, no GL) → `*.rigreport.json`, pass/fail | §10 |
 
 ---
@@ -297,16 +297,16 @@ The rpg `StoryState`, on entering a `Line` beat (`StoryRunner::State::Line`):
 | Tool | Licence / cost | Scriptable / headless | Quality (for us) | LBS-friendliness |
 |---|---|---|---|---|
 | **Rigify** (bundled; Blender 5.x) | GPL, free [documented] | Yes: present in headless bpy 5.0.1 [verified]; generate is a bpy operator | Best humanoid control rig; DEF bones are parented under ORG/MCH, not game-friendly [documented] | Fine **after baking** onto our skeleton |
-| **Auto-Rig Pro** 3.7x | Paid: Lite $25, **Full $50** (needed for export and retarget) [secondary]; Blender 2.93–5.1 [secondary] | bpy operators (add-on) | Good auto-placement; **best remap/retarget in Blender** | Deform-only game export |
-| **AccuRIG 2** (Reallusion) | Free; commercial use allowed for your own content per a vendor forum reply [secondary]; Windows only, account needed | **No** (GUI) | Good joint placement incl. fingers [documented] | Landmarks only |
-| **Mixamo** | Free with an Adobe ID; **maintenance mode, outages since 2025-06** [secondary] | No (web) | Adequate; big clip library | Clip source only |
-| **UniRig** (VAST-AI) | **MIT** [documented: LICENSE read]; local, needs ≥ 8 GB VRAM (`art_pipeline.md` §3.4) | Yes (Python CLI) | Only option for creatures; weights need cleanup | Fitted to creature templates |
-| **Meshy / Tripo auto-rig** | Per-call credits (`art_pipeline.md` §3.4) | API | Humanoid only | Landmarks only |
+| **Paid Blender rigging add-on** | Paid: about $25, **about $50 for the edition with export and retarget** [secondary]; Blender 2.93–5.1 [secondary] | bpy operators (add-on) | Good auto-placement; **best remap/retarget in Blender** | Deform-only game export |
+| **Free desktop auto-rigger** | Free; commercial use allowed for your own content per a vendor forum reply [secondary]; Windows only, account needed | **No** (GUI) | Good joint placement incl. fingers [documented] | Landmarks only |
+| **Free web auto-rig and clip service** | Free with an account; **maintenance mode, outages since 2025-06** [secondary] | No (web) | Adequate; big clip library | Clip source only |
+| **Open-source auto-rig model** | **MIT** [documented: LICENSE read]; local, needs ≥ 8 GB VRAM (`art_pipeline.md` §3.4) | Yes (Python CLI) | Only option for creatures; weights need cleanup | Fitted to creature templates |
+| **Mesh-generation services' auto-rig** | Per-call credits (`art_pipeline.md` §3.4) | API | Humanoid only | Landmarks only |
 
 ### 9.2 Recommendation per path
 
-1. **Unrigged mesh (AI-generated or artist-made) → `fit_canonical.py`.** Run **AccuRIG** (humanoids) or **UniRig** (creatures) only to obtain joint **landmarks**. `fit_canonical.py` snaps our template to them (or to 14 manual clicks), sets rolls (§4.2), heat-map weights, then the **weight post-pass** (prune < 0.01, limit 4, normalise, mirror, smooth twist bands) and the validator. This revises `art_pipeline.md` §3.4: service skeletons are never shipped.
-2. **Foreign rig (Mixamo-style, service rigs, library characters) → Auto-Rig Pro Full remap** to the canonical skeleton, driven by a checked-in bone map (`retarget_maps/<source>.json`). Vertex groups are renamed/split through the same map, then post-pass and validator. Without ARP: a homemade Copy-Rotation retarget + bake (slower, free).
+1. **Unrigged mesh (AI-generated or artist-made) → `fit_canonical.py`.** Run **the external auto-rigger** (humanoids) or **the open-source auto-rig model** (creatures) only to obtain joint **landmarks**. `fit_canonical.py` snaps our template to them (or to 14 manual clicks), sets rolls (§4.2), heat-map weights, then the **weight post-pass** (prune < 0.01, limit 4, normalise, mirror, smooth twist bands) and the validator. This revises `art_pipeline.md` §3.4: service skeletons are never shipped.
+2. **Foreign rig (web-service rigs, library characters) → the paid add-on's remap** to the canonical skeleton, driven by a checked-in bone map (`retarget_maps/<source>.json`). Vertex groups are renamed/split through the same map, then post-pass and validator. Without the add-on: a homemade Copy-Rotation retarget + bake (slower, free).
 3. **Our own authored rig → Rigify as the control rig + `bake_to_canonical.py`.** The canonical armature follows Rigify DEF bones via Copy Transforms (a name table; no `DEF-` names). Export bakes actions onto it (visual keying, every frame), strips constraints and exports only canonical armature + mesh. The Rigify file stays the source.
 
 ---
@@ -383,7 +383,7 @@ glTF carries no constraints, drivers or IK: each feature becomes keys/morphs at 
 
 ## 12. Animation side (brief)
 
-- **Retargeting:** every clip enters through ARP remap (or the constraint retarget) in Blender, then is baked. Identical joint order (E9, R12) lets every canonical clip play on every humanoid; P3 adds a **name-bound clip table** built at load, for skeletons with extra bones.
+- **Retargeting:** every clip enters through the add-on's remap (or the constraint retarget) in Blender, then is baked. Identical joint order (E9, R12) lets every canonical clip play on every humanoid; P3 adds a **name-bound clip table** built at load, for skeletons with extra bones.
 - **Foot IK and look-at:** two-bone analytic IK on thigh/calf/foot with physics ground probes (P3). Look-at chains `spine_03 → neck_01 → neck_02 → head` at 0.1/0.2/0.3/0.4 with clamps (P2, needed by listeners).
 - **Ragdoll mapping** (`physics_plan.md` §3.8): one profile for every humanoid, 15 bodies: `pelvis`, `spine_02`, `spine_03`, `head`, `upperarm`, `lowerarm`, `hand`, `thigh`, `calf`, `foot` (sided ×2). Twist, helper, finger and face joints stay animated. `ne_minor` selects the tighter profile.
 
@@ -442,7 +442,7 @@ Extra P2 gates:
 
 - `retarget_batch.py`: library/mocap FBX → canonical clips with a per-clip report (foot slide ≤ 2 cm, joints within limits).
 - Engine joint rules (§11), the name-bound clip table (§12), foot IK with physics ground probes, root motion.
-- Creature templates and UniRig fitting for the 28 enemy rows.
+- Creature templates and open-source auto-rig model fitting for the 28 enemy rows.
 - Optional: a phone face-capture import (the 52 names already match).
 
 Extra P3 gates:
@@ -454,8 +454,8 @@ Extra P3 gates:
 
 ## 14. Open questions
 
-1. **Auto-Rig Pro Full ($50)**: buy it for the retarget path, or accept the slower free constraint-retarget fallback?
-2. **AccuRIG is Windows-only and GUI-only.** Is the art owner on Windows (the 3080 Ti box)? If not, use manual landmarks or UniRig for humanoids too.
+1. **The paid rigging add-on (about $50)**: buy it for the retarget path, or accept the slower free constraint-retarget fallback?
+2. **The external auto-rigger is Windows-only and GUI-only.** Is the art owner on Windows (the 3080 Ti box)? If not, use manual landmarks or the open-source auto-rig model for humanoids too.
 3. **ElevenLabs v3 timestamps:** should someone run one test call to confirm `with-timestamps` works with `eleven_v3`? It is a cross-check only, not on the critical path.
 4. **Face capture:** is a phone face-capture pass for hero lines wanted later? It would replace the procedural layer for marquee scenes; the shape names already allow it.
 5. **Decal vs morph boundary: RESOLVED (owner + advisor).** Devin, the party and every speaking named character use full 3D morph faces in every world, including Solhaven. A drawn look comes from StylePack shading (hatch, ink, rim, optionally snapped morph weights), never from flattening the face. 2D decal faces stay limited to the Gathered, the Staff, crowds and the Third's true form.

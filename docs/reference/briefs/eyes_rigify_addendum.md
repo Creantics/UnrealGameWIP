@@ -1,7 +1,7 @@
 ## Addendum to the eyes-agent brief: the owner chose Rigify (2026-10-18)
 
 Besides F7–F9, update docs/rigging_plan.md §4 and §9 (no engine code changes needed for this part):
-- Rigify is the ONE control rig for every humanoid (our own, generated and external meshes). AccuRIG and Auto-Rig Pro are dropped:
+- Rigify is the ONE control rig for every humanoid (our own, generated and external meshes). The external auto-rigger and the paid rigging add-on are dropped:
   neither runs headless. Rigify is verified present in headless bpy 5.0.1
   (`uv run --offline --python 3.11 --with bpy==5.0.1 python -I`, enable with
   `addon_utils.enable("rigify", default_set=True, persistent=True)`).
@@ -20,6 +20,6 @@ Besides F7–F9, update docs/rigging_plan.md §4 and §9 (no engine code changes
 - Add one line to docs/art_pipeline.md and the concept-art brief: all humanoid characters share ONE base-body topology,
   so skin weights are authored once and transferred. This must be said before any meshes are commissioned.
 - Weights remain the quality lever: automatic weights, then scripted cleanup, then the R6/R7/stretch/volume gate.
-- Creatures and the Third's extra hands keep their own path (UniRig / declared chains).
+- Creatures and the Third's extra hands keep their own path (the open-source auto-rig model / declared chains).
 - Optional, if time allows: a headless `tools/blender/rigify_bake.py` (metarig -> generate -> flatten bbones -> bake to canonical -> export),
   with a test on the 21-bone hero fixture.

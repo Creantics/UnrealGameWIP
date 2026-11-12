@@ -14,7 +14,7 @@ chains follow the forearm, the face follows neck -> head). The joint's tail and 
 through the same transform, so hinge axes (§4.2) are carried, not re-guessed. `root` goes to the origin on
 the floor (R16): the mesh is expected to stand over the origin.
 
-The 14 landmarks a person clicks (or an external auto-rigger / UniRig gives us) are REQUIRED below; more are welcome (head,
+The 14 landmarks a person clicks (or an external auto-rigger or an open-source auto-rig model gives us) are REQUIRED below; more are welcome (head,
 ball, finger tips via the next joint, eyes): each extra landmark pins its joint exactly.
 """
 import math

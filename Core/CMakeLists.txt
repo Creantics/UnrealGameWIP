@@ -134,6 +134,7 @@ add_library(ftcore STATIC
     src/BeatMusic.cpp
     src/BeatMusicSynth.cpp
     src/BeatScreen.cpp
+    src/TwistBake.cpp
 )
 target_include_directories(ftcore PUBLIC include)
 target_link_libraries(ftcore PRIVATE ftcore_warnings)
@@ -310,6 +311,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_choreo.cpp
         tests/test_beat_cine.cpp
         tests/test_beat_music.cpp
+        tests/test_twist_bake.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).
