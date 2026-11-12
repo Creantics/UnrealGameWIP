@@ -16,6 +16,7 @@
 // moves with the boom). The lock looks up at a tall or hovering boss by it, and the headless aim check aims by it.
 
 #include "ftcore/Api.h"
+#include "ftcore/ArenaFight.h"
 
 namespace ftcore {
 
@@ -53,5 +54,29 @@ FTCORE_API float arenaLookUpPitch(const ArenaLookLimits& limits, float pivot, fl
 // crosshair's height over a body standing there.
 FTCORE_API float arenaSightHeightAt(const ArenaLookLimits& limits, float pivot, float arm, float up, float away,
                                     float viewPitch);
+
+// A point in metres: x, y on the floor plane, z up.
+struct ArenaPoint3 {
+    float x = 0.f;
+    float y = 0.f;
+    float z = 0.f;
+};
+
+// An enemy's body as the crosshair meets it: an upright cylinder round `at`, from `base` to `top` m over the floor.
+struct ArenaBodyCylinder {
+    Vec2 at{};
+    float base = 0.f;
+    float top = 0.f;
+    float radius = 0.f;
+};
+
+// The body of a kind standing at `at` on a floor `floorZ` m up: a skinned figure hangs `look.hover` m over the floor
+// and is `look.scale` times its height and its bodyRadius; a plain figure stands on the floor at scale 1. The empty
+// gap under a hovering body is not body.
+FTCORE_API ArenaBodyCylinder arenaBodyCylinder(const ArenaEnemyKind& kind, Vec2 at, float floorZ);
+
+// Where the segment from -> to first enters `body`, as the share t (0..1) along it. False when it never enters,
+// enters past `to`, or starts inside the body (a lens inside a flanker's body sees through it, not into it).
+FTCORE_API bool arenaRayEntersBody(ArenaPoint3 from, ArenaPoint3 to, const ArenaBodyCylinder& body, float& t);
 
 } // namespace ftcore

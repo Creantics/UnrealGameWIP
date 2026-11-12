@@ -571,7 +571,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
   outside them before it fires and it misses. The moment the move goes active the bar turns white, NOW shows and a
   burst flashes.
 - **Off-frame tells:** an enemy winding up off the screen, or out of the camera's view less a 6 degree margin
-  (`arenaOffFrameTells`, from the camera's place, facing and field of view), shows as an arrow at the screen's edge
+  (`arenaOffFrameTells`, from the camera's place, facing, pitch and field of view: a ground enemy under the frame while aiming high counts), shows as an arrow at the screen's edge
   in the tell's colour, with the answer beside it and a bar filling toward the hit. It swells and rings once at the
   windup's onset (a steady arrow with Reduce flashes on). A stinger (a chime, at master times effects volume) doubles
   the onset once per windup, no closer than 0.25 s to the last; the arrow is the tell, so it reads with the sound off.
@@ -597,7 +597,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
-| `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit). Run it on `kite_ring` with `-ArenaLead=Duy`. |
+| `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. |
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
@@ -650,8 +650,10 @@ warning and quits with exit code 2, so an unattended run never hangs.
   on or looking up, from -50 to +85 degrees, free, aimed and locked alike: `ftcore::kArenaLook` in `ArenaLook.h`). The
   boom itself swings up only to 15 degrees, which keeps the lens over the floor and behind the lead at the fight's arm
   and the aim's; a steeper look tilts the lens on the boom's end, so the arm never shortens. The aim's reticle line
-  meets the enemies' bodies (Core's radius, the figure's height and hover), so the shot, its tracer and the raised arm
-  go where the crosshair is at any pitch. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  meets the enemies' bodies (`ftcore::arenaRayEntersBody`: an upright cylinder from the figure's hover to its scaled
+  height, its radius scaled too; a lens inside a body sees through it), and reads the view without the impact jolt, so
+  a kick never wobbles the heading. The shot's heading is that line's yaw only: whether a shot meets a body high up is
+  the sim's own rule (a shot is a lane on the ground plane), not the line's height. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
   about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).

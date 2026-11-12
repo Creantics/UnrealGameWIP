@@ -2393,7 +2393,8 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 	if (ArenaAim.alpha() > 0.f && PC && PC->PlayerCameraManager)
 	{
 		const FVector From = PC->PlayerCameraManager->GetCameraLocation();
-		const FVector To = From + PC->PlayerCameraManager->GetCameraRotation().Vector() * (double(ArenaAim.rules().reticleRange) * 100.0);
+		const FRotator View = ViewRotation(*PC->PlayerCameraManager);
+		const FVector To = From + View.Vector() * (double(ArenaAim.rules().reticleRange) * 100.0);
 		const FCollisionQueryParams Params(SCENE_QUERY_STAT(FTArenaAimReticle), false, PlayerFigure.Get());
 		FHitResult Hit;
 		bReticleHit = GetWorld()->LineTraceSingleByChannel(Hit, From, To, ECC_Visibility, Params);
@@ -2404,7 +2405,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		ReticleHeadingPoint = ReticlePoint;
 		if (!bReticleHit)
 		{
-			const FVector Flat = PC->PlayerCameraManager->GetCameraRotation().Vector().GetSafeNormal2D();
+			const FVector Flat = View.Vector().GetSafeNormal2D();
 			ReticleHeadingPoint = From + Flat * (double(ArenaAim.rules().reticleRange) * 100.0);
 		}
 		if (AimCheckPhase == 2 && Now - AimCheckSince >= 1.0)
@@ -2421,7 +2422,9 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 				bOnBoss ? TEXT("the boss") : (ReticleEnemy >= 0 ? TEXT("another enemy") : (bReticleHit && Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("nothing"))),
 				(ReticlePoint.Z - Floor) / 100.0);
 			bAimCheckOnBoss = bOnBoss;
-			bAimCheckPitchOk = FMath::Abs(CameraPitch - AimCheckPitch) < 1.5f;
+			// The pitch the camera rendered (boom lag and lens tilt included, the jolt not), not the one asked for.
+			AimCheckRendered = static_cast<float>(FRotator::NormalizeAxis(View.Pitch));
+			bAimCheckPitchOk = FMath::Abs(AimCheckRendered - AimCheckPitch) < 1.5f;
 			AimCheckHpBefore = static_cast<float>(Fight.enemyHp(static_cast<size_t>(AimCheckSlot)));
 			AimCheckShotsBefore = Fight.stats().shots;
 			AimCheckHitsBefore = Fight.stats().shotHits;
@@ -2435,8 +2438,8 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 int32 UFTArenaRunner::ReticleBody(const FVector& From, const FVector& To, double& T) const
 {
 	int32 Found = -1;
-	const FVector Line = To - From;
-	const double A = Line.X * Line.X + Line.Y * Line.Y;
+	const ftcore::ArenaPoint3 A{static_cast<float>(From.X / 100.0), static_cast<float>(From.Y / 100.0), static_cast<float>(From.Z / 100.0)};
+	const ftcore::ArenaPoint3 B{static_cast<float>(To.X / 100.0), static_cast<float>(To.Y / 100.0), static_cast<float>(To.Z / 100.0)};
 	const int32 Count = FMath::Min(static_cast<int32>(Fight.enemyCount()), static_cast<int32>(MaxEnemies));
 	for (int32 I = 0; I < Count; ++I)
 	{
@@ -2445,68 +2448,23 @@ int32 UFTArenaRunner::ReticleBody(const FVector& From, const FVector& To, double
 		{
 			continue;
 		}
-		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(I)];
-		const double Radius = static_cast<double>(Foe.bodyRadius) * 100.0;
-		const double Top = (static_cast<double>(ftcore::arenaEnemyHeight(Foe)) * (Foe.look.skinned() ? Foe.look.scale : 1.f)
-			+ (Foe.look.skinned() ? Foe.look.hover : 0.f)) * 100.0;
 		const FVector At = Body->GetActorLocation();
-		const double Ox = From.X - At.X, Oy = From.Y - At.Y;
-		double Enter = 0.0;
-		if (A > 1e-6)
+		const ftcore::ArenaBodyCylinder Cyl = ftcore::arenaBodyCylinder(Fight.def().enemies[static_cast<size_t>(I)],
+			ftcore::Vec2{static_cast<float>(At.X / 100.0), static_cast<float>(At.Y / 100.0)}, static_cast<float>(At.Z / 100.0));
+		float Enter = 0.f;
+		if (ftcore::arenaRayEntersBody(A, B, Cyl, Enter) && static_cast<double>(Enter) < T)
 		{
-			// Where the line crosses into the upright cylinder round the body.
-			const double B = 2.0 * (Ox * Line.X + Oy * Line.Y);
-			const double C = Ox * Ox + Oy * Oy - Radius * Radius;
-			const double Disc = B * B - 4.0 * A * C;
-			if (Disc < 0.0)
-			{
-				continue;
-			}
-			const double Root = FMath::Sqrt(Disc);
-			const double T0 = (-B - Root) / (2.0 * A), T1 = (-B + Root) / (2.0 * A);
-			if (T1 < 0.0)
-			{
-				continue;
-			}
-			// The first point inside both the cylinder and its height, if any, from where the line enters.
-			const double Lo = FMath::Max(T0, 0.0);
-			double ZLo = 0.0, ZHi = 1.0;
-			if (FMath::Abs(Line.Z) > 1e-6)
-			{
-				const double Ta = (At.Z - From.Z) / Line.Z, Tb = (At.Z + Top - From.Z) / Line.Z;
-				ZLo = FMath::Min(Ta, Tb);
-				ZHi = FMath::Max(Ta, Tb);
-			}
-			else if (From.Z < At.Z || From.Z > At.Z + Top)
-			{
-				continue;
-			}
-			else
-			{
-				ZLo = -1e30;
-				ZHi = 1e30;
-			}
-			Enter = FMath::Max(Lo, ZLo);
-			if (Enter > FMath::Min(T1, ZHi))
-			{
-				continue;
-			}
-		}
-		else if (Ox * Ox + Oy * Oy > Radius * Radius)
-		{
-			continue; // a line straight up or down, outside the body
-		}
-		else
-		{
-			Enter = FMath::Abs(Line.Z) > 1e-6 ? FMath::Max(0.0, (Line.Z > 0.0 ? At.Z - From.Z : At.Z + Top - From.Z) / Line.Z) : 0.0;
-		}
-		if (Enter < T)
-		{
-			T = Enter;
+			T = static_cast<double>(Enter);
 			Found = I;
 		}
 	}
 	return Found;
+}
+
+FRotator UFTArenaRunner::ViewRotation(const APlayerCameraManager& Camera) const
+{
+	const FRotator Rendered = Camera.GetCameraRotation();
+	return JoltModifier ? JoltModifier->Unjolted(Rendered) : Rendered;
 }
 
 ftcore::Vec2 UFTArenaRunner::ReticleAimDir(const ftcore::Vec2& Fallback) const
@@ -2609,8 +2567,8 @@ void UFTArenaRunner::StepAimCheck(ftcore::ArenaInput& In)
 			&& static_cast<float>(Fight.enemyHp(static_cast<size_t>(AimCheckSlot))) < AimCheckHpBefore;
 		bAimCheckPass = bAimCheckPitchOk && bAimCheckOnBoss && bTargetHit;
 		const float Off = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(In.aimDir.x * To.x + In.aimDir.y * To.y, -1.f, 1.f)));
-		AimCheckLine += FString::Printf(TEXT(", the shot's heading %.1f deg off the boss's middle; pitch reached %s, crosshair on the boss %s, the boss hit %s"),
-			Off, bAimCheckPitchOk ? TEXT("yes") : TEXT("no"), bAimCheckOnBoss ? TEXT("yes") : TEXT("no"), bTargetHit ? TEXT("yes") : TEXT("no"));
+		AimCheckLine += FString::Printf(TEXT(", the shot's heading %.1f deg off the boss's middle; pitch reached %s (rendered %.1f), crosshair on the boss %s, the boss hit %s"),
+			Off, bAimCheckPitchOk ? TEXT("yes") : TEXT("no"), AimCheckRendered, bAimCheckOnBoss ? TEXT("yes") : TEXT("no"), bTargetHit ? TEXT("yes") : TEXT("no"));
 		AimCheckPhase = 4;
 	}
 	else if (AimCheckPresses < 4)
@@ -2904,7 +2862,8 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 	if (Camera)
 	{
 		const FVector Eye = Camera->GetCameraLocation();
-		const FVector Forward = Camera->GetCameraRotation().Vector();
+		const FRotator View = ViewRotation(*Camera);
+		const FVector Forward = View.Vector();
 		CameraView.eye = ftcore::Vec2{static_cast<float>(Eye.X / 100.0), static_cast<float>(Eye.Y / 100.0)};
 		const FVector2D Flat = FVector2D(Forward.X, Forward.Y).GetSafeNormal();
 		if (!Flat.IsNearlyZero())
@@ -2912,12 +2871,27 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 			CameraView.forward = ftcore::Vec2{static_cast<float>(Flat.X), static_cast<float>(Flat.Y)};
 		}
 		CameraView.halfAngle = FMath::Clamp(Camera->GetFOVAngle() * 0.5f, 5.f, 85.f);
+		// The vertical half-angle from the horizontal one and the screen's shape, so a body wholly under or over the
+		// frame (a ground enemy while aiming high) is told too.
+		int32 SizeX = 0, SizeY = 0;
+		PC->GetViewportSize(SizeX, SizeY);
+		const float Aspect = SizeX > 0 && SizeY > 0 ? static_cast<float>(SizeX) / static_cast<float>(SizeY) : 16.f / 9.f;
+		CameraView.vHalfAngle = FMath::RadiansToDegrees(FMath::Atan(FMath::Tan(FMath::DegreesToRadians(CameraView.halfAngle)) / Aspect));
+		CameraView.eyeZ = static_cast<float>(Eye.Z / 100.0);
+		CameraView.pitch = static_cast<float>(FRotator::NormalizeAxis(View.Pitch));
 	}
 	ftcore::ArenaTellBody TellBodies[ftcore::kMaxArenaEnemies];
 	const size_t Count = FMath::Min(static_cast<size_t>(Fight.enemyCount()), ftcore::kMaxArenaEnemies);
 	for (size_t I = 0; I < Count; ++I)
 	{
 		TellBodies[I] = ftcore::arenaTellBody(Fight, I, Bodies.enemies[I]);
+		if (const AFTArenaFighter* Figure = GetEnemyFigure(static_cast<int32>(I)))
+		{
+			const ftcore::ArenaBodyCylinder Cyl = ftcore::arenaBodyCylinder(Fight.def().enemies[I], Bodies.enemies[I],
+				static_cast<float>(Figure->GetActorLocation().Z / 100.0));
+			TellBodies[I].low = Cyl.base;
+			TellBodies[I].high = Cyl.top;
+		}
 	}
 	const ftcore::ArenaOffFrameTells Tells =
 		(Camera && !Fight.over()) ? ftcore::arenaOffFrameTells(CameraView, TellBodies, Count) : ftcore::ArenaOffFrameTells();

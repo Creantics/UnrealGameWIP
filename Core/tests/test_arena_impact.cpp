@@ -494,3 +494,42 @@ TEST_CASE("arena pace: the line reads n/a with nothing to time, and always fits 
     CHECK(arenaPaceText(s, 2, nullptr, 10) == 0);
     CHECK(arenaPaceText(s, 2, big, 0) == 0);
 }
+
+TEST_CASE("arena off-frame tells: aiming high, a ground enemy winding up under the frame is told") {
+    ArenaView view;
+    view.eye = {0.f, 0.f};
+    view.forward = {1.f, 0.f};
+    view.halfAngle = 45.f;
+    view.eyeZ = 1.8f;
+    view.vHalfAngle = 28.f;
+    ArenaTellBody ground;
+    ground.pos = {6.f, 0.f};
+    ground.winding = true;
+    ground.fill = 0.3f;
+    ground.low = 0.f;
+    ground.high = 1.8f;
+    // Level: in frame.
+    view.pitch = 0.f;
+    CHECK(arenaOffFrameTells(view, &ground, 1).count == 0);
+    // Looking 70 degrees up at a hovering boss: the ground enemy straight ahead is under the frame.
+    view.pitch = 70.f;
+    const ArenaOffFrameTells up = arenaOffFrameTells(view, &ground, 1);
+    REQUIRE(up.count == 1);
+    CHECK(up.items[0].bearing == doctest::Approx(0.f));
+    // A hovering body high up, looked at: in frame. The same body with the view held level: over the frame.
+    ArenaTellBody high = ground;
+    high.pos = {6.f, 0.f};
+    high.low = 12.f;
+    high.high = 18.f;
+    CHECK(arenaOffFrameTells(view, &high, 1).count == 0);
+    view.pitch = 0.f;
+    CHECK(arenaOffFrameTells(view, &high, 1).count == 1);
+    // A body spanning the frame (its base under, its top over) is in it.
+    ArenaTellBody tall = ground;
+    tall.high = 30.f;
+    view.pitch = 70.f;
+    CHECK(arenaOffFrameTells(view, &tall, 1).count == 0);
+    // No vertical half-angle: the horizontal test alone, as before.
+    view.vHalfAngle = 0.f;
+    CHECK(arenaOffFrameTells(view, &ground, 1).count == 0);
+}

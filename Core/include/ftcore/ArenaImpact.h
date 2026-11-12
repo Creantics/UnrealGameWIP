@@ -11,7 +11,9 @@
 //   the one running only when it is stronger than what is left of it, so a blow that lands on three enemies
 //   kicks once, not three times.
 // * Off-frame tells (arenaOffFrameTells). An enemy in an attack's startup whose direction from the camera, on
-//   the ground plane, lies outside the view's horizontal half-angle less a margin. Each comes with its bearing
+//   the ground plane, lies outside the view's horizontal half-angle less a margin, or (when the view gives its
+//   pitch and vertical half-angle) whose whole body is above or below the view, as when aiming high at a hovering
+//   boss while a ground enemy winds up under the frame. Each comes with its bearing
 //   (degrees from the view's forward, + to the right: Unreal's ground plane has x forward and y right) and how
 //   far its startup has run (0..1), so the host can draw a marker at the screen's edge and sound a stinger
 //   once per windup. The marker is the tell; the stinger only doubles it, so the tell reads with sound off.
@@ -63,6 +65,11 @@ struct ArenaView {
     Vec2 forward{1.f, 0.f};
     float halfAngle = 45.f;
     float margin = 6.f; // degrees inside the edge that already count as out of frame (the body's half-width)
+    // The vertical part, read only when vHalfAngle > 0: the lens's height (m), the view's pitch (degrees, + up) and its
+    // vertical half-angle. 0 leaves the test horizontal only.
+    float eyeZ = 0.f;
+    float pitch = 0.f;
+    float vHalfAngle = 0.f;
 };
 
 // An enemy as the off-frame test sees it.
@@ -70,6 +77,8 @@ struct ArenaTellBody {
     Vec2 pos{};
     bool winding = false; // in an attack's startup
     float fill = 0.f;     // how far the startup has run, 0..1
+    float low = 0.f;      // m, its body's base and top in the view's heights (read when high > low and the view
+    float high = 0.f;     //    has a vHalfAngle)
 };
 
 struct ArenaOffFrameTell {

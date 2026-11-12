@@ -86,16 +86,44 @@ float arenaBearing(Vec2 eye, Vec2 forward, Vec2 to) {
     return std::atan2(cross, dot) * (180.f / kPi);
 }
 
+namespace {
+
+// -1: the point (bearing degrees off the view's heading, `ahead` m away on the ground, `up` m over the lens) is under
+// the view's vertical edge (or behind the lens and under it), +1 over it, 0 inside. `tanEdge` is tan of the edge.
+int verticalSide(float pitchDeg, float bearingDeg, float ahead, float up, float tanEdge) {
+    const float p = pitchDeg * (kPi / 180.f);
+    const float f = ahead * std::cos(bearingDeg * (kPi / 180.f)); // along the view's heading, on the ground
+    const float x = f * std::cos(p) + up * std::sin(p);         // along the view
+    const float z = -f * std::sin(p) + up * std::cos(p);        // the view's up
+    if (!(x > 1e-4f)) return z < 0.f ? -1 : 1;
+    const float slope = z / x;
+    return slope < -tanEdge ? -1 : (slope > tanEdge ? 1 : 0);
+}
+
+} // namespace
+
 ArenaOffFrameTells arenaOffFrameTells(const ArenaView& view, const ArenaTellBody* bodies, std::size_t count) {
     ArenaOffFrameTells out;
     if (!bodies) return out;
     const float edge = std::max(0.f, clampOr0(view.halfAngle, 0.f, 180.f) - clampOr0(view.margin, 0.f, 180.f));
+    const bool vertical = view.vHalfAngle > 0.f && view.pitch == view.pitch && view.eyeZ == view.eyeZ;
+    const float vEdge = std::max(0.f, clampOr0(view.vHalfAngle, 0.f, 89.f) - clampOr0(view.margin, 0.f, 89.f));
+    const float tanVEdge = std::tan(vEdge * (kPi / 180.f));
     count = std::min(count, kMaxArenaEnemies);
     for (std::size_t i = 0; i < count; ++i) {
         const ArenaTellBody& b = bodies[i];
         if (!b.winding) continue;
         const float bearing = arenaBearing(view.eye, view.forward, b.pos);
-        if (!(std::fabs(bearing) > edge)) continue;
+        bool out_ = std::fabs(bearing) > edge;
+        if (!out_ && vertical && b.high > b.low) {
+            // Out when its base and top are both under the frame, or both over it.
+            const float dx = b.pos.x - view.eye.x, dy = b.pos.y - view.eye.y;
+            const float ahead = std::sqrt(dx * dx + dy * dy);
+            const int lo = verticalSide(view.pitch, bearing, ahead, b.low - view.eyeZ, tanVEdge);
+            const int hi = verticalSide(view.pitch, bearing, ahead, b.high - view.eyeZ, tanVEdge);
+            out_ = lo != 0 && lo == hi;
+        }
+        if (!out_) continue;
         ArenaOffFrameTell& t = out.items[out.count++];
         t.enemy = static_cast<std::uint8_t>(i);
         t.bearing = bearing;

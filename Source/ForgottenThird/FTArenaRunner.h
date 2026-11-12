@@ -550,11 +550,14 @@ private:
 	bool bAimCheckOnBoss = false;  // the crosshair's line met the target as the shot was pressed
 	bool bAimCheckPitchOk = false; // the view had reached the solved pitch (within 1.5 degrees)
 	float AimCheckHpBefore = 0.f;
+	float AimCheckRendered = 0.f;  // the view pitch the camera rendered as the shot was pressed
 	bool bAimCheckFire = false;
 	// The tallest standing enemy's slot (-1: none) and its top over the floor (m).
 	int32 TallestStanding(float& OutTop) const;
 	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
 	ftcore::Vec2 ReticleAimDir(const ftcore::Vec2& Fallback) const;
+	// The rendered view's rotation without the impact jolt (the camera's own, as the reticle and the tells read it).
+	FRotator ViewRotation(const APlayerCameraManager& Camera) const;
 	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
 	void StepAimCheck(ftcore::ArenaInput& In);
 	ftcore::Vec2 Stick;

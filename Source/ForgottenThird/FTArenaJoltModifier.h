@@ -25,7 +25,16 @@ public:
 
 	virtual bool ModifyCamera(float DeltaTime, FMinimalViewInfo& InOutPOV) override;
 
+	// The view rotation without the offsets this modifier added to the last view it modified: what the reticle's
+	// line and the off-frame test read, so a kick does not wobble the shot's heading.
+	FRotator Unjolted(const FRotator& Rendered) const
+	{
+		return FRotator(Rendered.Pitch - static_cast<double>(AppliedPitch), Rendered.Yaw - static_cast<double>(AppliedYaw), Rendered.Roll);
+	}
+
 private:
 	float Pitch = 0.f;
 	float Yaw = 0.f;
+	float AppliedPitch = 0.f; // what the last ModifyCamera added
+	float AppliedYaw = 0.f;
 };

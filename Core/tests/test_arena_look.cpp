@@ -119,3 +119,56 @@ TEST_CASE("arena look: a low target keeps the lock's own pitch, an unreachable o
         last = p;
     }
 }
+
+TEST_CASE("arenaRayEntersBody: the crosshair's ray meets a body only from outside, between its base and top") {
+    ArenaBodyCylinder body;
+    body.at = {10.f, 0.f};
+    body.base = 0.f;
+    body.top = 2.f;
+    body.radius = 0.5f;
+    float t = -1.f;
+    // Straight at its middle from 10 m away: enters at its near side, 9.5 m along a 20 m line.
+    REQUIRE(arenaRayEntersBody({0.f, 0.f, 1.f}, {20.f, 0.f, 1.f}, body, t));
+    CHECK(t == doctest::Approx(9.5f / 20.f));
+    // The lens inside a flanker's body: no hit (it would put the crosshair on the camera and the shot backward).
+    CHECK_FALSE(arenaRayEntersBody({10.2f, 0.f, 1.f}, {30.f, 0.f, 1.f}, body, t));
+    // A body behind the lens.
+    CHECK_FALSE(arenaRayEntersBody({20.f, 0.f, 1.f}, {40.f, 0.f, 1.f}, body, t));
+    // Just over its head, and just beside it.
+    CHECK_FALSE(arenaRayEntersBody({0.f, 0.f, 2.05f}, {20.f, 0.f, 2.05f}, body, t));
+    CHECK_FALSE(arenaRayEntersBody({0.f, 0.6f, 1.f}, {20.f, 0.6f, 1.f}, body, t));
+    // Short of it: the segment ends before the body.
+    CHECK_FALSE(arenaRayEntersBody({0.f, 0.f, 1.f}, {9.f, 0.f, 1.f}, body, t));
+    // Down through its top from above it.
+    REQUIRE(arenaRayEntersBody({10.f, 0.f, 5.f}, {10.f, 0.f, -1.f}, body, t));
+    CHECK(t == doctest::Approx(0.5f));
+    // A steep line up into it from under its base comes in through the base.
+    ArenaBodyCylinder high = body;
+    high.base = 3.f;
+    high.top = 6.f;
+    REQUIRE(arenaRayEntersBody({9.9f, 0.f, 1.f}, {10.1f, 0.f, 9.f}, high, t));
+    CHECK(t == doctest::Approx(0.25f));
+}
+
+TEST_CASE("arenaBodyCylinder: a hovering, scaled body; the gap under it is empty") {
+    const ArenaTable table = lookArena();
+    const ArenaEnemyKind* hovering = nullptr;
+    for (const ArenaEnemyKind& k : table.enemies)
+        if (k.look.skinned() && k.look.hover > 0.f) hovering = &k;
+    REQUIRE(hovering != nullptr);
+    ArenaEnemyKind scaled = *hovering; // the data's hovering kind, drawn twice its size
+    scaled.look.scale = 2.f;
+    const ArenaEnemyKind* kite = &scaled;
+    const ArenaBodyCylinder b = arenaBodyCylinder(*kite, {12.f, 0.f}, 0.f);
+    CHECK(b.base == doctest::Approx(kite->look.hover));
+    CHECK(b.top == doctest::Approx(kite->look.hover + arenaEnemyHeight(*kite) * kite->look.scale));
+    CHECK(b.radius == doctest::Approx(kite->bodyRadius * kite->look.scale));
+    float t = 0.f;
+    // A level line through the gap under it misses; one through its body hits.
+    CHECK_FALSE(arenaRayEntersBody({0.f, 0.f, kite->look.hover * 0.5f}, {40.f, 0.f, kite->look.hover * 0.5f}, b, t));
+    const float mid = (b.base + b.top) * 0.5f;
+    CHECK(arenaRayEntersBody({0.f, 0.f, mid}, {40.f, 0.f, mid}, b, t));
+    // The scaled radius: a line beside the unscaled radius, inside the scaled one, hits.
+    const float y = kite->bodyRadius * (1.f + kite->look.scale) * 0.5f;
+    CHECK(arenaRayEntersBody({0.f, y, mid}, {40.f, y, mid}, b, t));
+}
