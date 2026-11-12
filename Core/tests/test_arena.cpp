@@ -1909,8 +1909,15 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         REQUIRE(toLen > 0.f);
         const Vec2 way{to.x / toLen, to.y / toLen};
         rig.in.light = true;
-        REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
-        while (rig.out().player.action == ArenaAction::Riposte && rig.out().player.actionTime < f.riposte.startup) rig.tick();
+        // the host moves the body by the fight's velocity, as the runner does
+        const auto step = [&rig] {
+            const ArenaOutput& o = rig.tick();
+            rig.bodies.player.x += o.player.velocity.x * kDt;
+            rig.bodies.player.y += o.player.velocity.y * kDt;
+        };
+        step();
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        while (rig.out().player.action == ArenaAction::Riposte && rig.out().player.actionTime < f.riposte.startup) step();
         REQUIRE(rig.out().player.action == ArenaAction::Riposte);
         const float span = f.riposte.startup + f.riposte.active;
         const float gone = f.riposte.lunge * std::min(rig.out().player.actionTime, span) / span;
@@ -7142,11 +7149,14 @@ TEST_CASE("arena checks: soft target is n/a when no attack could take one") {
 
 TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk, 0 let go, unknown outside a walk") {
     const ArenaRing ring{Vec2{0.f, 0.f}, 6.f};
-    const ArenaFighter fighter = ruleFighter();
+    ArenaFighter fighter = ruleFighter();
+    fighter.moveAccel = 20.f; // eased, so letting go leaves a slide
+    fighter.moveBrake = 40.f;
     Rig rig(fighter, {dummyKind()}, 1, ring);
     rig.put(0, -20.f, 0.f);
     rig.in.move = Vec2{0.5f, 0.f};
     CHECK(rig.tick().player.wantSpeed == doctest::Approx(0.5f * fighter.moveSpeed));
+    rig.run(10);
     rig.in.move = Vec2{};
     {
         const ArenaOutput& o = rig.tick();
