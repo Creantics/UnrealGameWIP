@@ -328,6 +328,7 @@ void Locomotion::reset() {
     state_ = LocoState::Ground;
     target_ = gait_ = LocoClip::Idle;
     share_.fill(0.f);
+    shown_.fill(0.f);
     stride_.fill(0);
     fade_ = phase_ = airTime_ = drop_ = groundTime_ = 0.f;
     landTime_ = -1.f;
@@ -404,6 +405,31 @@ LocoClip Locomotion::groundTarget(float speed) {
     }
     gait_ = heaviestGait();
     return gait_;
+}
+
+void Locomotion::easeShares(float dt) {
+    float gaits = 0.f;
+    for (const LocoClip c : kGaits) gaits += weight_[index(c)];
+    if (gaits <= 0.f) {
+        shown_ = share_;
+        return;
+    }
+    const float a = follow(dt, tuning_.gaitShareFade);
+    float sum = 0.f, want = 0.f;
+    for (const LocoClip c : kGaits) {
+        float& s = shown_[index(c)];
+        const float to = share_[index(c)];
+        s += (to - s) * a;
+        // Easing out, a gait drops at the dead band (as the split's own), not a long tail of a few percent.
+        if (to <= 0.f && s < tuning_.gaitDeadBand) s = 0.f;
+        sum += s;
+        want += to;
+    }
+    if (sum <= 0.f) {
+        shown_ = share_;
+        return;
+    }
+    for (const LocoClip c : kGaits) shown_[index(c)] *= want / sum;
 }
 
 LocoClip Locomotion::heaviestGait() const {
@@ -754,7 +780,7 @@ void Locomotion::advance(float dt, float speed, float leadPhase, float leadStrid
     for (std::size_t i = 0; i < kLocoClipCount; ++i) {
         const LocoClip c = static_cast<LocoClip>(i);
         float& w = weight_[i];
-        w = isLocoGait(c) ? gaits * share_[i] : w * (1.f - a) + (c == target_ ? a : 0.f);
+        w = isLocoGait(c) ? gaits * shown_[i] : w * (1.f - a) + (c == target_ ? a : 0.f);
         if (w < kMinWeight) w = 0.f;
         sum += w;
     }
@@ -769,7 +795,7 @@ void Locomotion::advance(float dt, float speed, float leadPhase, float leadStrid
     for (const LocoClip c : kGaits) gaits += weight_[index(c)];
     float stride = 0.f, natural = 0.f;
     for (const LocoClip c : kGaits) {
-        const float s = gaits > 0.f ? weight_[index(c)] / gaits : share_[index(c)];
+        const float s = gaits > 0.f ? weight_[index(c)] / gaits : shown_[index(c)];
         const LocoClipInfo& i = clip(c);
         if (s <= 0.f || i.length <= 0.f) continue;
         stride += s * i.groundSpeed * i.length / static_cast<float>(i.cycles);
@@ -887,6 +913,7 @@ void Locomotion::update(const LocoInput& in) {
     crouch_ += (crouchTo - crouch_) * follow(dt, tuning_.crouchFade);
     if (std::fabs(crouchTo - crouch_) < 0.01f) crouch_ = crouchTo;
     splitGaits(speed);
+    easeShares(dt);
     // A clip over the layers handing the body back (handBack): one moving on on the ground goes straight to its gaits,
     // at the phase that continues the clip's feet. The rest of the frame finds it on them, as if it had run all along.
     if (handBack_) {
@@ -899,6 +926,7 @@ void Locomotion::update(const LocoInput& in) {
             state_ = LocoState::Ground;
             gait_ = target_ = g;
             groundTime_ = 0.f;
+            shown_ = share_;
             for (std::size_t i = 0; i < kLocoClipCount; ++i) weight_[i] = isLocoGait(static_cast<LocoClip>(i)) ? share_[i] : 0.f;
             matchGaits(g, handFeet_, handVelocity_, speed);
         }

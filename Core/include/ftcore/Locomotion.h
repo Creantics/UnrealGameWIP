@@ -237,6 +237,9 @@ struct LocoTuning {
                                 // to the last one: trimming down adds to the forward slip of the plants, trimming up takes from it
     float gaitDeadBand = 0.03f; // a gait with less of the mix than this drops out, the nearer gait playing alone (the
                                 // blend steps by this much in a frame where it crosses)
+    float gaitShareFade = 0.08f; // the gaits' split eases toward its speed's at this time constant (95% in three): a
+                                 // speed that drops in a frame (a body checked at a strike's contact) swapped run
+                                 // for walk at once, the planted foot jumping between the two poses
     float gaitBand = 0.12f;     // the faster of two gaits plays alone from this share short of its own ground speed (a
                                 // little slowed: the stride rate follows the speed); the MetaHuman bodies' run (483-489)
                                 // would hold 13% walk at the 450 jog, which takes from its arm pump and knee lift
@@ -477,6 +480,8 @@ private:
     void matchGaits(LocoClip g, const LocoFeet& feet, const LocoFeet& velocity, float speed);
     void retarget(LocoClip next);
     void advance(float dt, float speed, float leadPhase, float leadStride);
+    // Eases shown_ toward share_; from no gaits playing it takes share_ as it is.
+    void easeShares(float dt);
     // Takes up the stance asked for: getting down or up when standing still.
     void changeStance(bool crouch, float speed);
     LocoClip idleClip() const { return crouched_ ? LocoClip::CrouchIdle : LocoClip::Idle; }
@@ -486,6 +491,7 @@ private:
     std::array<float, kLocoClipCount> time_{};
     std::array<float, kLocoClipCount> rate_{};
     std::array<float, kLocoClipCount> share_{}; // each gait's part of the ground blend at this speed
+    std::array<float, kLocoClipCount> shown_{}; // and the part it plays: share_ eased (gaitShareFade)
     std::array<int, kLocoClipCount> stride_{};  // which of its loop's strides each gait is in
     std::array<LocoLayer, kLocoClipCount> layers_{};
     std::size_t layerCount_ = 1;
