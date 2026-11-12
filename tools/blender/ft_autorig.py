@@ -6,6 +6,15 @@ mesh with voxel-geodesic weights and exports a .glb (the format FTImportCharacte
       in.glb out.glb|out.fbx [--height 1.80] [--guides guides.json] [--max-infl 8] [--max-tex 1024] [--voxels 160] \
       [--report report.json] [--blend out.blend] [--no-hem] [--no-twist] [--heat] [--keep-weights [--hem]]
 
+Twist bones: past a segment's first twist bone the segment bone holds no skin weight (the twist bones hold it,
+see autorig_core.finish_weights), so in game that skin rolls only when the twist tracks are driven. FTBuildRig
+bakes them after the retarget by default; a clip built with -NoBakeTwist leaves them at the bind pose. Route B
+(--keep-weights) depends on that bake as much as the bound route does. --no-twist adds no twist bands: on the
+bound route the twist bones get no weight; with --keep-weights the source rig's own twist weights stay as they are.
+
+The output is written to a temporary file next to it and moved over the old one only once the export and the
+report have succeeded, so a failed run never leaves a broken file in place of a good one.
+
 --height 0 keeps the mesh's own size. --guides is a json {joint name: [x, y, z]} in the output frame (metres,
 Z up, facing -Y, soles on z = 0, after --height scaling) that overrides detected landmarks. --heat binds with
 Blender's heat weights instead (for comparisons). --keep-weights takes the joints and skin weights from a
@@ -30,26 +39,40 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import autorig_core as ac  # noqa: E402
 
 
+USAGE = "usage: ft_autorig.py -- in.(glb|gltf|fbx|obj) out.(glb|fbx) [options] (see the docstring)"
+
+
 def args():
     a = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     o = dict(height=1.80, guides=None, max_infl=8, voxels=160, report=None, blend=None, hem=True, twist=True,
              heat=False, keep=False, max_tex=0)
     pos = []
     i = 0
+
+    def value(k, kind, lo, hi=None):
+        if i + 1 >= len(a) or a[i + 1].startswith("--"):
+            raise SystemExit("%s needs a value. %s" % (k, USAGE))
+        try:
+            v = kind(a[i + 1])
+        except ValueError:
+            raise SystemExit("%s takes a %s, got %r" % (k, kind.__name__, a[i + 1]))
+        if lo is not None and (v < lo or (hi is not None and v > hi)):
+            raise SystemExit("%s must be %s, got %r" % (k, "%s..%s" % (lo, hi) if hi is not None else ">= %s" % lo, v))
+        return v
     while i < len(a):
         k = a[i]
         if k == "--height":
-            o["height"] = float(a[i + 1]); i += 1
+            o["height"] = value(k, float, 0.0, 100.0); i += 1
         elif k == "--guides":
-            o["guides"] = a[i + 1]; i += 1
+            o["guides"] = value(k, str, None); i += 1
         elif k == "--max-infl":
-            o["max_infl"] = int(a[i + 1]); i += 1
+            o["max_infl"] = value(k, int, 1, 12); i += 1
         elif k == "--voxels":
-            o["voxels"] = int(a[i + 1]); i += 1
+            o["voxels"] = value(k, int, 40, 1000); i += 1
         elif k == "--report":
-            o["report"] = a[i + 1]; i += 1
+            o["report"] = value(k, str, None); i += 1
         elif k == "--blend":
-            o["blend"] = a[i + 1]; i += 1
+            o["blend"] = value(k, str, None); i += 1
         elif k == "--no-hem":
             o["hem"] = False
         elif k == "--no-twist":
@@ -61,13 +84,21 @@ def args():
         elif k == "--hem":
             o["hem_on"] = True
         elif k == "--max-tex":
-            o["max_tex"] = int(a[i + 1]); i += 1
+            o["max_tex"] = value(k, int, 0); i += 1
+        elif k.startswith("--"):
+            raise SystemExit("unknown option %s. %s" % (k, USAGE))
         else:
             pos.append(k)
         i += 1
     if len(pos) != 2:
-        raise SystemExit("usage: ft_autorig.py -- in.(glb|gltf|fbx|obj) out.fbx [options]")
+        raise SystemExit(USAGE)
     o["src"], o["out"] = pos
+    if not os.path.isfile(o["src"]):
+        raise SystemExit("no such input file: " + o["src"])
+    if os.path.splitext(o["out"])[1].lower() not in (".glb", ".fbx"):
+        raise SystemExit("the output must be a .glb or an .fbx: " + o["out"])
+    if o["guides"] and not os.path.isfile(o["guides"]):
+        raise SystemExit("no such guides file: " + o["guides"])
     return o
 
 
@@ -111,13 +142,20 @@ def load_mesh(path, keep=False):
                 bpy.data.objects.remove(o, do_unlink=True)
         meshes = [ob]
     for o in meshes:  # bake parents and transforms, drop any rig the file came with
+        if o.data.users > 1:  # instanced mesh data: each object gets its own copy before transforms are applied
+            print("ft_autorig: mesh data %s is shared by %d objects; %s takes its own copy"
+                  % (o.data.name, o.data.users, o.name))
+            o.data = o.data.copy()
         mw = o.matrix_world.copy()
         for m in [m for m in o.modifiers if m.type == "ARMATURE"]:
             o.modifiers.remove(m)
         o.parent = None
         o.matrix_world = mw
         o.vertex_groups.clear()
-        if o.data.shape_keys:
+        if o.data.shape_keys:  # the rig is built on the basis shape; the output carries no morphs
+            keys = [k.name for k in o.data.shape_keys.key_blocks]
+            print("ft_autorig: WARNING %s: %d shape keys dropped, the basis shape kept (%s)"
+                  % (o.name, len(keys), ", ".join(keys[:8])))
             o.shape_key_clear()
     for o in list(bpy.data.objects):
         if o.type != "MESH":
@@ -199,6 +237,9 @@ def main():
     else:
         ob, src_rig = load_mesh(o["src"]), None
     V, F = mesh_arrays(ob)
+    if not len(F):
+        raise SystemExit("the mesh in %s has no faces" % o["src"])
+    islands = ac.loose_islands(V, F, say)
     off, turn = ac.normalize(V)
     M = Matrix.Translation(Vector(off))
     if turn:
@@ -215,35 +256,31 @@ def main():
                                                              ", turned to face -Y" if turn else ""))
     guides = None
     if o["guides"]:
-        guides = {k: np.asarray(v, float) for k, v in json.load(open(o["guides"])).items()}
-    L, info = ac.find_landmarks(V, F, voxels=o["voxels"], guides=guides, log=say)
+        if src_rig is not None:
+            raise SystemExit("--guides has no effect with --keep-weights (the joints come from the source rig)")
+        try:
+            guides = ac.check_guides(json.load(open(o["guides"])))
+        except (ValueError, OSError) as e:  # json.JSONDecodeError is a ValueError
+            raise SystemExit("guides %s: %s" % (o["guides"], e))
     if src_rig is not None:
-        # the source rig's joints replace the detected ones; detection still supplies the crotch, legs and arm
-        # vertices the hem rule needs
+        # the source rig's joints replace detection entirely (detection fails on rigs posed with the arms at the
+        # body); the crotch comes from the source hips and the hem rule's legs from the source weights
         bones, gnames, Wk = src_rig
         Mn = np.array(Matrix.Scale(scale, 4) @ M)
 
         def tr(p):
             return Mn[:3, :3] @ p + Mn[:3, 3]
-        tips = ["ball_" + s for s in "lr"] + [f + "_03_" + s for s in "lr" for f in ("index", "middle", "ring", "pinky", "thumb")]
-        missing = [n for n in list(L) + tips if n not in bones]
-        if missing:
-            raise SystemExit("source rig lacks mannequin bones: " + ", ".join(sorted(missing)[:12]))
-        for n in L:
-            L[n] = tr(bones[n][0])
-        for s in "lr":
-            info["toe_" + s] = tr(bones["ball_" + s][1])
-            for f in ("index", "middle", "ring", "pinky"):
-                info["hand"][s]["tip_" + f] = tr(bones[f + "_03_" + s][1])
-            info["hand"][s]["thumb_tip"] = tr(bones["thumb_03_" + s][1])
-        info["src"] = {n: "source rig" for n in L}
-        # a skirt or loincloth can hide the leg gap, so the crotch may be detected too high; the source rig's
-        # hips bound it (the crotch sits below the hip joints)
-        hip_z = 0.5 * (L["thigh_l"][2] + L["thigh_r"][2])
-        if info["crotch"] > hip_z - 0.03 * info["H"]:
-            say("crotch %.3f is above the source hips, set to %.3f" % (info["crotch"], hip_z - 0.03 * info["H"]))
-            info["crotch"] = hip_z - 0.03 * info["H"]
+        try:
+            L, info = ac.source_landmarks({n: (tr(h), tr(t)) for n, (h, t) in bones.items()}, float(V[:, 2].max()), say)
+        except ValueError as e:
+            raise SystemExit(str(e))
         say("--keep-weights: joints and %d weight groups from the source rig" % len(gnames))
+    else:
+        try:
+            L, info = ac.find_landmarks(V, F, voxels=o["voxels"], guides=guides, log=say)
+        except (ValueError, IndexError) as e:
+            raise SystemExit("landmark detection failed: %s. Fix the pose, pass --guides for the joints it misses, or "
+                             "for a mesh that carries a mannequin rig use --keep-weights" % e)
     t1 = time.time()
     J, dirs = ac.build_skeleton(L, info)
     arm_ob = build_armature(J, along=dirs if o["heat"] else None)
@@ -262,47 +299,16 @@ def main():
         infl = np.array([sum(1 for g in v.groups if g.weight > 1e-4) for v in ob.data.vertices])
     else:
         if src_rig is not None:
-            use = [i for i, n in enumerate(gnames) if n in ac.DEFORM and ac.DEFORM[n]]
-            dropped = [n for n in gnames if not (n in ac.DEFORM and ac.DEFORM[n])]
-            if dropped:
-                say("source groups with no mannequin deform bone, dropped: " + ", ".join(dropped[:10]))
-            Wk = Wk[:, use]
-            s_ = Wk.sum(1, keepdims=True)
-            say("source weights: %d vertices unweighted, row sums %.3f..%.3f, up to %d influences"
-                % (int((s_[:, 0] < 1e-6).sum()), float(s_.min()), float(s_.max()), int((Wk > 1e-4).sum(1).max())))
-            Wk = Wk / np.maximum(s_, 1e-12)
-            bare = np.nonzero(s_[:, 0] < 1e-6)[0]
-            if len(bare):  # give an unweighted vertex its nearest weighted vertex's weights (it would skin to nothing)
-                held = np.nonzero(s_[:, 0] >= 1e-6)[0]
-                if not len(held):
-                    raise SystemExit("source rig carries no skin weights")
-                for c in range(0, len(bare), 16):
-                    b = bare[c:c + 16]
-                    d = ((V[b, None, :] - V[None, held, :]) ** 2).sum(-1)
-                    Wk[b] = Wk[held[d.argmin(1)]]
-                say("%d unweighted vertices took the weights of their nearest weighted vertex" % len(bare))
             # the hem rule works from the source rig, not from detection (which fails on the cloth this rule is
-            # for): leg axes from the thigh and calf bones, leg radius from the inner vertices the source thighs own (skirts are thigh-weighted too),
-            # and only vertices the source gives mostly to the pelvis and thighs count as hanging cloth
-            def part(*bases):  # a segment's weight with its twist bones folded in
-                return sum(Wk[:, k] for k, n in enumerate(gnames[i] for i in use)
-                           if n in bases or any(n.startswith(b_[:-2] + "_twist") and n.endswith(b_[-2:])
-                                                for b_ in bases if b_[-2:] in ("_l", "_r")))
-            hips = part("pelvis", "thigh_l", "thigh_r", "spine_01")
-            info["hem_gate"] = hips > 0.5
-            for s in "lr":
-                c, d = L["thigh_" + s], ac.unit(L["calf_" + s] - L["thigh_" + s])
-                own = (part("thigh_" + s) > 0.5) & (V[:, 2] < c[2]) & (V[:, 2] > L["calf_" + s][2])
-                rel = V[own] - c
-                dist = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
-                r = float(np.percentile(dist, 15)) if len(dist) > 50 else 0.06 * info["H"]
-                info["leg"][s] = dict(c=c, d=d, r=r, pts=np.zeros((0, 4)))
-            info.pop("arm", None)  # the gate already leaves the arms out
+            # for): see autorig_core.source_weights
+            try:
+                srcn, Wk = ac.source_weights(V, gnames, Wk, L, info, say)
+            except ValueError as e:
+                raise SystemExit(str(e))
             if o.get("hem_on"):
                 say("hem rule from the source rig: %d candidate vertices, leg radius %.3f / %.3f m"
                 % (int((info["hem_gate"] & (V[:, 2] < info["crotch"])).sum()), info["leg"]["l"]["r"],
                    info["leg"]["r"]["r"]))
-            srcn = [gnames[i] for i in use]
             names, W = ac.finish_weights(V, F, J, info, srcn, Wk, max_infl=o["max_infl"],
                                          twist=o["twist"], hem=o["hem"] and o.get("hem_on", False), log=say)
             # what the repair changed, by the bone that owned each vertex in the source (twists folded into
@@ -337,33 +343,54 @@ def main():
     t2 = time.time()
     if o["blend"]:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(o["blend"]))
+    rep = dict(src=o["src"], out=o["out"], height=H0 * scale, scale=scale, turned=turn, vertices=len(V),
+               bones=len(ac.NAMES), weighted_groups=len(names), axis_error_deg=aerr,
+               influences=np.bincount(infl).tolist(), landmarks={k: [round(float(c), 4) for c in v] for k, v in L.items()},
+               source=info["src"], crotch=info["crotch"], hem=info.get("hem"), loose_pieces=islands, log=log)
+    out = os.path.abspath(o["out"])
+    stem, ext = os.path.splitext(out)
+    tmp = stem + ".tmp" + ext  # the exporters keep the extension they are given
+    try:
+        export(o, ob, arm_ob, tmp, say)
+        rep["seconds"] = dict(landmarks=round(t1 - t0, 1), bind=round(t2 - t1, 1), total=round(time.time() - t0, 1))
+        if o["report"]:
+            rtmp = o["report"] + ".tmp"
+            with open(rtmp, "w") as fh:
+                json.dump(rep, fh, indent=1)
+            os.replace(rtmp, o["report"])
+        os.replace(tmp, out)
+    except BaseException:
+        for f in (tmp, (o["report"] or "") + ".tmp"):
+            if os.path.isfile(f):
+                os.remove(f)
+        raise
+    say("done in %.1f s (landmarks %.1f, bind %.1f): %s" % (time.time() - t0, t1 - t0, t2 - t1, o["out"]))
+
+
+def export(o, ob, arm_ob, path, say):
+    """Exports the rig and mesh to path (.glb through the repo's rig profile, else FBX); textures over --max-tex
+    are scaled down first."""
     bpy.ops.object.select_all(action="DESELECT")
     ob.select_set(True)
     arm_ob.select_set(True)
     bpy.context.view_layer.objects.active = arm_ob
-    os.makedirs(os.path.dirname(os.path.abspath(o["out"])), exist_ok=True)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     for img in bpy.data.images:  # the import asset rules cap texture size per role (docs/ASSET_INTAKE.md)
         if o["max_tex"] and max(img.size) > o["max_tex"]:
             f = o["max_tex"] / max(img.size)
             say("texture %s %dx%d -> %dx%d" % (img.name, img.size[0], img.size[1], round(img.size[0] * f), round(img.size[1] * f)))
             img.scale(round(img.size[0] * f), round(img.size[1] * f))
-    if o["out"].lower().endswith(".glb"):  # the format FTImportCharacter takes (docs/ASSET_INTAKE.md)
+    if path.lower().endswith(".glb"):  # the format FTImportCharacter takes (docs/ASSET_INTAKE.md)
         import ne_blender as nb
-        nb.export_rig(os.path.abspath(o["out"]), dict(use_selection=True, export_animations=False,
+        nb.export_rig(path, dict(use_selection=True, export_animations=False,
                                                       export_def_bones=False, export_influence_nb=o["max_infl"]))
     else:
-        bpy.ops.export_scene.fbx(filepath=os.path.abspath(o["out"]), use_selection=True,
+        bpy.ops.export_scene.fbx(filepath=path, use_selection=True,
                                  object_types={"ARMATURE", "MESH"}, add_leaf_bones=False, bake_anim=False,
                                  mesh_smooth_type="FACE", primary_bone_axis="Y", secondary_bone_axis="X",
                                  path_mode="COPY", embed_textures=True, use_armature_deform_only=False)
-    rep = dict(src=o["src"], out=o["out"], height=H0 * scale, scale=scale, turned=turn, vertices=len(V),
-               bones=len(ac.NAMES), weighted_groups=len([n for n in names]), axis_error_deg=aerr,
-               influences=np.bincount(infl).tolist(), landmarks={k: [round(float(c), 4) for c in v] for k, v in L.items()},
-               source=info["src"], crotch=info["crotch"], hem=info.get("hem"), log=log,
-               seconds=dict(landmarks=round(t1 - t0, 1), bind=round(t2 - t1, 1), total=round(time.time() - t0, 1)))
-    if o["report"]:
-        json.dump(rep, open(o["report"], "w"), indent=1)
-    say("done in %.1f s (landmarks %.1f, bind %.1f): %s" % (time.time() - t0, t1 - t0, t2 - t1, o["out"]))
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise RuntimeError("the exporter wrote nothing to " + path)
 
 
 main()

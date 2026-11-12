@@ -343,8 +343,13 @@ if(FTCORE_BUILD_TESTS)
         if(FT_PY_NUMPY EQUAL 0)
             add_test(NAME autorig_core COMMAND "${FT_PYTHON}" -I
                 ${CMAKE_CURRENT_SOURCE_DIR}/../tools/blender/autorig_core.py)
-            set_tests_properties(autorig_core PROPERTIES PASS_REGULAR_EXPRESSION "autorig_core self-check OK")
+            # The OK line is the script's last output; the self-check takes about 15 s.
+            set_tests_properties(autorig_core PROPERTIES PASS_REGULAR_EXPRESSION "autorig_core self-check OK" TIMEOUT 300)
+        else()
+            message(STATUS "autorig_core test skipped: ${FT_PYTHON} has no numpy")
         endif()
+    else()
+        message(STATUS "autorig_core test skipped: no CPython found (the Windows Store alias does not count)")
     endif()
 
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}

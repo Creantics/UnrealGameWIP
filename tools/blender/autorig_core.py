@@ -75,6 +75,30 @@ TWISTS = [("upperarm", "lowerarm", [("upperarm_twist_01", 0.30), ("upperarm_twis
           ("thigh", "calf", [("thigh_twist_01", 0.30), ("thigh_twist_02", 0.62)]),
           ("calf", "foot", [("calf_twist_02", 0.45), ("calf_twist_01", 0.80)])]
 TWIST_NAMES = {t + "_" + s for _a, _b, ts in TWISTS for t, _p in ts for s in "lr"}
+# Keys a guides json may set: the landmark joints (not root, ik or twist bones, which are built from them), the
+# crotch (its height sets the hem rule) and the toe tips (they aim the ball bones).
+GUIDE_KEYS = ({n for n in NAMES if n != "root" and not n.startswith("ik_")} - TWIST_NAMES) | {"crotch", "toe_l", "toe_r"}
+FINGER_GUIDE = ("index", "middle", "ring", "pinky", "thumb")
+
+
+def check_guides(guides):
+    """A guides mapping {key: [x, y, z]} -> {key: array}; ValueError naming every unknown key or bad value."""
+    if not isinstance(guides, dict):
+        raise ValueError("guides must be a json object {joint: [x, y, z]}")
+    bad = sorted(k for k in guides if k not in GUIDE_KEYS)
+    if bad:
+        raise ValueError("unknown guide keys: %s (allowed: landmark joints such as hand_l, plus crotch, toe_l, toe_r)"
+                         % ", ".join(bad))
+    out = {}
+    for k, v in guides.items():
+        try:
+            a = np.asarray(v, float)
+        except (TypeError, ValueError):
+            a = None
+        if a is None or a.shape != (3,) or not np.isfinite(a).all():
+            raise ValueError("guide %s must be three finite numbers [x, y, z], got %r" % (k, v))
+        out[k] = a
+    return out
 
 
 def mirror_name(n):
@@ -544,14 +568,151 @@ def find_landmarks(V, F, voxels=160, guides=None, log=None):
         # neck's and the shoulder joint's depth
         put("clavicle_" + s, (sg * 0.2 * abs(sh[0]), 0.5 * (L["neck_01"][1] + sh[1]),
                               sh[2] + 0.35 * (n1z - sh[2])), "ratio")
+    # --- guides override (before the fingers, so a guided hand or wrist moves the finger chains) ------------
+    guides = check_guides(guides or {})
+    fingers_g = {}
+    for n, p in guides.items():
+        if n == "crotch" or n.startswith("toe_"):
+            info[n] = float(p[2]) if n == "crotch" else p
+            src[n] = "guide"
+        elif n.startswith(FINGER_GUIDE):
+            fingers_g[n] = p
+        else:
+            put(n, p, "guide")
     # --- hands --------------------------------------------------------------------------------------------
     for s in "lr":
         hand_fingers(V, L, src, info, s, say)
-    # --- guides override -------------------------------------------------------------------------------
-    for n, p in (guides or {}).items():
-        if n in PARENT or n in ("crotch",):
-            put(n, p, "guide")
+    for n, p in fingers_g.items():  # a finger joint's own guide wins over the detected chain
+        put(n, p, "guide")
+    if guides:
+        say("guides: " + ", ".join(sorted(guides)))
     return L, info
+
+
+def source_landmarks(bones, H, say=None):
+    """--keep-weights: the landmarks and the info build_skeleton and finish_weights need, from a source rig's bones
+    {name: (head, tail)} already in the output frame, with no detection (it fails on rigs posed with the arms at the
+    body). The crotch is estimated under the hip joints. ValueError names missing mannequin bones."""
+    say = say or (lambda m: None)
+    names = [n for n in NAMES if n != "root" and not n.startswith("ik_") and n not in TWIST_NAMES]
+    tips = ["ball_" + s for s in "lr"] + [f + "_03_" + s for s in "lr" for f in FINGER_GUIDE]
+    missing = sorted({n for n in names + tips if n not in bones})
+    if missing:
+        raise ValueError("source rig lacks mannequin bones: " + ", ".join(missing[:12])
+                         + (" and %d more" % (len(missing) - 12) if len(missing) > 12 else ""))
+    L = {n: np.asarray(bones[n][0], float) for n in names}
+    info = {"H": float(H), "src": {n: "source rig" for n in L}, "hand": {}, "leg": {}}
+    for s in "lr":
+        info["toe_" + s] = np.asarray(bones["ball_" + s][1], float)
+        info["hand"][s] = {"tip_" + f: np.asarray(bones[f + "_03_" + s][1], float) for f in FINGERS}
+        info["hand"][s]["thumb_tip"] = np.asarray(bones["thumb_03_" + s][1], float)
+    hip_z = 0.5 * (L["thigh_l"][2] + L["thigh_r"][2])
+    info["crotch"] = hip_z - 0.03 * H
+    info["src"]["crotch"] = "source hips"
+    say("crotch %.3f from the source hips (0.03 H under them)" % info["crotch"])
+    return L, info
+
+
+def source_weights(V, gnames, Wk, L, info, say=None):
+    """--keep-weights: the source rig's weight matrix (vertices x gnames) -> (names, W) over the mannequin's deform
+    bones: other groups dropped, rows normalised, an unweighted vertex given its nearest weighted vertex's weights.
+    Also fills what the hem rule needs from the rig (no detection): info["hem_gate"] (vertices the source gives
+    mostly to the pelvis, spine_01 and thighs) and info["leg"] (thigh-to-calf axis, radius from the inner thigh
+    vertices). ValueError when the rig carries no weights."""
+    say = say or (lambda m: None)
+    V = np.asarray(V, float)
+    use = [i for i, n in enumerate(gnames) if DEFORM.get(n)]
+    dropped = [n for n in gnames if not DEFORM.get(n)]
+    if dropped:
+        say("source groups with no mannequin deform bone, dropped: " + ", ".join(dropped[:10]))
+    names = [gnames[i] for i in use]
+    W = np.asarray(Wk, float)[:, use]
+    s_ = W.sum(1, keepdims=True)
+    if not len(names) or not (s_[:, 0] >= 1e-6).any():
+        raise ValueError("source rig carries no skin weights on mannequin deform bones")
+    say("source weights: %d vertices unweighted, row sums %.3f..%.3f, up to %d influences"
+        % (int((s_[:, 0] < 1e-6).sum()), float(s_.min()), float(s_.max()), int((W > 1e-4).sum(1).max())))
+    W = W / np.maximum(s_, 1e-12)
+    bare = np.nonzero(s_[:, 0] < 1e-6)[0]
+    if len(bare):  # an unweighted vertex would skin to nothing: it takes its nearest weighted vertex's weights
+        held = np.nonzero(s_[:, 0] >= 1e-6)[0]
+        for c in range(0, len(bare), 16):
+            b = bare[c:c + 16]
+            d = ((V[b, None, :] - V[None, held, :]) ** 2).sum(-1)
+            W[b] = W[held[d.argmin(1)]]
+        say("%d unweighted vertices took the weights of their nearest weighted vertex" % len(bare))
+
+    def part(*bases):  # a segment's weight with its twist bones folded in
+        cols = [k for k, n in enumerate(names) if n in bases or any(
+            n.startswith(b_[:-2] + "_twist") and n.endswith(b_[-2:]) for b_ in bases if b_[-2:] in ("_l", "_r"))]
+        return W[:, cols].sum(1) if cols else np.zeros(len(V))
+    info["hem_gate"] = part("pelvis", "thigh_l", "thigh_r", "spine_01") > 0.5
+    for s in "lr":
+        c, d = L["thigh_" + s], unit(L["calf_" + s] - L["thigh_" + s])
+        own = (part("thigh_" + s) > 0.5) & (V[:, 2] < c[2]) & (V[:, 2] > L["calf_" + s][2])
+        rel = V[own] - c
+        dist = np.linalg.norm(rel - np.outer(rel @ d, d), axis=1)
+        r = float(np.percentile(dist, 15)) if len(dist) > 50 else 0.06 * info["H"]
+        info["leg"][s] = dict(c=c, d=d, r=r, pts=np.zeros((0, 4)))
+    info.pop("arm", None)  # the gate already leaves the arms out
+    return names, W
+
+
+def mesh_islands(V, F, eps=1e-5):
+    """Connected pieces of the mesh (positions within eps * size welded) -> label per vertex, 0 the one with the
+    most vertices."""
+    V = np.asarray(V, float)
+    F = np.asarray(F, int)
+    size = float(np.ptp(V, axis=0).max()) if len(V) else 1.0
+    rep_ = weld(V, max(eps * size, 1e-12))
+    lab = np.arange(rep_.max() + 1)
+    E = rep_[np.concatenate([F[:, [0, 1]], F[:, [1, 2]]])] if len(F) else np.zeros((0, 2), int)
+    while True:
+        m = lab.copy()
+        np.minimum.at(m, E[:, 0], m[E[:, 1]])
+        np.minimum.at(m, E[:, 1], m[E[:, 0]])
+        m = m[m]  # pointer jumping
+        if np.array_equal(m, lab):
+            break
+        lab = m
+    _u, inv, cnt = np.unique(lab[rep_], return_inverse=True, return_counts=True)
+    order = np.argsort(-cnt)
+    rank = np.empty_like(order)
+    rank[order] = np.arange(len(order))
+    return rank[inv.reshape(-1)]
+
+
+def loose_islands(V, F, say=None):
+    """Warn about a separate piece that sets the soles or the height the frame and --height use: a flat, wide piece
+    holding the lowest point (a ground disc or a base), or a piece holding the highest point clear of the largest
+    piece's footprint (a weapon held up beside the body). Separate garment, head or hair pieces over the body pass.
+    -> list of (why, vertex count, z min, z max)."""
+    say = say or (lambda m: None)
+    V = np.asarray(V, float)
+    lab = mesh_islands(V, F)
+    # the body: the widest-spread piece among those with at least a quarter of the largest one's vertices
+    cnt = np.bincount(lab)
+    big = [k for k in range(len(cnt)) if cnt[k] >= 0.25 * cnt[0]]
+    body = max(big, key=lambda k: float(np.linalg.norm(np.ptp(V[lab == k], axis=0))))
+    main = V[lab == body]
+    Ht = float(np.ptp(V[:, 2])) or 1.0
+    out = []
+    lo_k, hi_k = int(lab[np.argmin(V[:, 2])]), int(lab[np.argmax(V[:, 2])])
+    if lo_k != body:
+        P = V[lab == lo_k]
+        if np.ptp(P[:, 2]) < 0.03 * Ht and np.ptp(P[:, :2], axis=0).max() > 0.2 * Ht:
+            out.append(("a flat piece under the body (a ground disc or base?)", len(P), float(P[:, 2].min()),
+                        float(P[:, 2].max())))
+    if hi_k != body:
+        P = V[lab == hi_k]
+        m0, m1 = main[:, :2].min(0), main[:, :2].max(0)
+        if (P[:, :2].max(0) < m0).any() or (P[:, :2].min(0) > m1).any():
+            out.append(("a piece above the body beside it (a held weapon?)", len(P), float(P[:, 2].min()),
+                        float(P[:, 2].max())))
+    for why, n, z0, z1 in out:
+        say("WARNING: %s, %d vertices, z %.3f..%.3f, sets the %s; remove it from the source or check the result"
+            % (why, n, z0, z1, "soles" if "under" in why else "height"))
+    return out
 
 
 def hand_fingers(V, L, src, info, s, say):
@@ -688,7 +849,13 @@ def build_skeleton(L, info):
             d, length = np.array([0, 0, 1.0]), 0.10 * H
         elif n.startswith("ball"):
             d = unit(info["toe_" + n[-1]] - h)
-            d = unit(np.array([d[0], d[1], 0.0]))
+            d = np.array([d[0], d[1], 0.0])
+            if np.linalg.norm(d) < 1e-3:  # a toe straight above or below the ball: the foot's own forward
+                fw = h - heads["foot_" + n[-1]]
+                d = np.array([fw[0], fw[1], 0.0])
+                if np.linalg.norm(d) < 1e-3 * H:
+                    d = np.array([0.0, -1.0, 0.0])
+            d = unit(d)
             length = 0.04 * H
         elif n.startswith("ik_") or n == "root":
             d, length = np.array([0, 1.0, 0]) if n == "root" else np.array([0, 0, 1.0]), 0.05 * H
@@ -870,7 +1037,15 @@ def finish_weights(V, F, J, info, names, W, max_infl=8, smooth_iters=3, twist=Tr
     """The shared clean-up of a weight matrix W (vertices x names, rows summing to 1), whatever bound it: the
     hem rule, Laplacian smoothing on the welded surface, twist bands (any weight already on a twist bone is
     folded back into its segment first, then re-spread along the segment), prune under 0.01, keep the
-    max_infl largest, normalise. J gives the joint heads ({name: (head, ...)}). -> (names, W)."""
+    max_infl largest, normalise. J gives the joint heads ({name: (head, ...)}). -> (names, W).
+
+    The twist bands are tents along each segment: the segment bone at 0, its twist bones at their TWISTS
+    fractions. Past its first twist bone the segment bone holds no weight, and past the last one the last twist
+    bone holds it all (a forearm vertex at 0.9 of the way to the wrist is all lowerarm_twist_01). That skin rolls
+    with the limb only when the twist bones are driven: in Unreal FTBuildRig bakes their tracks after the retarget
+    (its default; -NoBakeTwist leaves them at the bind pose, and the skin then follows the segment without rolling).
+    twist=False leaves twist columns as W has them (a source rig's own twist weights kept, none added) and adds no
+    bands. A segment with no column in W (a source rig without that group) gets no band, with a log line."""
     say = log or (lambda m: None)
     nv = len(V)
     H = info["H"]
@@ -911,6 +1086,9 @@ def finish_weights(V, F, J, info, names, W, max_infl=8, smooth_iters=3, twist=Tr
         col = {n: i for i, n in enumerate(allnames)}
         for s in "lr":
             for seg, nxt, ts in TWISTS:
+                if seg + "_" + s not in col:
+                    say("no %s_%s weights to spread: no twist band there" % (seg, s))
+                    continue
                 a, e = J[seg + "_" + s][0], J[nxt + "_" + s][0]
                 d = e - a
                 t = np.clip(((V - a) @ d) / max(d @ d, 1e-12), 0.0, 1.0)
@@ -953,7 +1131,9 @@ def hem_rule(V, W, col, info, say):
     H = info["H"]
     crotch = info["crotch"]
     leg = info["leg"]
-    if "pelvis" not in col:
+    lacking = [n for n in ("pelvis", "thigh_l", "thigh_r") if n not in col]
+    if lacking:
+        say("hem rule skipped: no %s weights" % ", ".join(lacking))
         return W
     zc = V[:, 2]
     cand = (zc < crotch + 0.02 * H) & (zc > 0.08 * H)
@@ -1116,8 +1296,187 @@ def _selfcheck():
     rleg = (V[:, 0] < -0.05) & (V[:, 2] < 0.4)
     lw = sum(W[rleg, col[n]].sum() for n in names if n.endswith("_l"))
     assert lw < 1e-6 * rleg.sum() + 1e-9, lw
+    _check_right_axes(Jt, L)
+    _check_turned(J)
+    _check_finish_weights()
+    _check_hem_rule()
+    _check_keep_weights(V, F, Jt, names, W, H)
+    _check_guides(V, F, L)
+    _check_ball_and_islands(L, info, V, F)
     print("autorig_core self-check OK (%d vertices, %d bones, joint errors cm: %s)" % (
         len(V), len(names), ", ".join("%s %.1f" % (n, 100 * e) for n, e in errs.items())))
+
+
+def _check_right_axes(Jt, L):
+    """The right side's bone X signs beyond the forearm: against the bone on the arm and hand, along it on the leg,
+    against it on the ball; the left leg's thigh X runs against the bone (up)."""
+    def x_of(n):
+        return unit(Jt[n][1] - Jt[n][0])
+    assert np.dot(x_of("upperarm_r"), unit(L["lowerarm_r"] - L["upperarm_r"])) < -0.99
+    assert np.dot(x_of("hand_r"), unit(L["hand_r"] - L["lowerarm_r"])) < -0.5
+    assert x_of("thigh_r")[2] < -0.95 and x_of("calf_r")[2] < -0.95, (x_of("thigh_r"), x_of("calf_r"))
+    assert x_of("calf_l")[2] > 0.95
+    assert x_of("ball_r")[1] > 0.9 and x_of("ball_l")[1] < -0.9, (x_of("ball_r"), x_of("ball_l"))  # toes toward -Y
+    assert x_of("clavicle_r")[0] > 0.9 and x_of("clavicle_l")[0] > 0.9
+
+
+def _check_turned(J):
+    """A figure turned 180 degrees about Z (facing +Y) is detected as turned and lands where the unturned one does."""
+    V, _F, _J = synthetic_figure()
+    off0, turn0 = normalize(V)
+    Vt = V * np.array([-1.0, -1.0, 1.0]) + np.array([0.3, -0.2, 0.5])
+    off1, turn1 = normalize(Vt)
+    assert not turn0 and turn1, (turn0, turn1)
+    back = Vt * np.array([-1.0, -1.0, 1.0]) + off1
+    err = np.abs(back - (V + off0)).max()
+    assert err < 0.01, err
+
+
+def _limb_fixture():
+    """A left forearm along +X from (0.3, 0, 1.3) to (0.6, 0, 1.3), joints for every segment pair (the twist loop
+    visits them all), and four vertices: t = 0.9 and t = 0.6 on the forearm, t = 0.6 split with an old twist
+    column, and one spread over six bones."""
+    J = {}
+    for s, sg in (("l", 1.0), ("r", -1.0)):
+        J["upperarm_" + s] = (np.array([sg * 0.1, 0, 1.3]),)
+        J["lowerarm_" + s] = (np.array([sg * 0.3, 0, 1.3]),)
+        J["hand_" + s] = (np.array([sg * 0.6, 0, 1.3]),)
+        J["thigh_" + s] = (np.array([sg * 0.1, 0, 0.9]),)
+        J["calf_" + s] = (np.array([sg * 0.1, 0, 0.5]),)
+        J["foot_" + s] = (np.array([sg * 0.1, 0, 0.1]),)
+    V = np.array([[0.57, 0.0, 1.33], [0.48, 0.0, 1.33], [0.48, 0.02, 1.27], [0.0, 0.0, 1.5]])
+    F = np.array([[0, 1, 2]])
+    names = ["pelvis", "spine_01", "spine_02", "spine_03", "lowerarm_l", "hand_l", "lowerarm_twist_01_l"]
+    W = np.zeros((4, len(names)))
+    W[0, 4] = W[1, 4] = 1.0
+    W[2, 4], W[2, 6] = 0.5, 0.5
+    W[3, :6] = [0.30, 0.25, 0.20, 0.13, 0.08, 0.04]
+    info = {"H": 1.8, "crotch": 0.8}
+    return V, F, J, info, names, W
+
+
+def _check_finish_weights():
+    V, F, J, info, names, W = _limb_fixture()
+    msgs = []
+    out, Wo = finish_weights(V, F, J, info, names, W, max_infl=4, smooth_iters=0, hem=False, log=msgs.append)
+    c = {n: i for i, n in enumerate(out)}
+    assert np.allclose(Wo.sum(1), 1.0) and ((Wo > 0).sum(1) <= 4).all()
+    # t = 0.9, past the last twist bone (0.80): all lowerarm_twist_01, none on the forearm bone
+    assert abs(Wo[0, c["lowerarm_twist_01_l"]] - 1.0) < 1e-9 and Wo[0, c["lowerarm_l"]] == 0.0, Wo[0]
+    # t = 0.6, between twist_02 (0.45) and twist_01 (0.80): the tent shares 4/7 and 3/7
+    assert abs(Wo[1, c["lowerarm_twist_02_l"]] - 4 / 7) < 1e-9 and abs(Wo[1, c["lowerarm_twist_01_l"]] - 3 / 7) < 1e-9
+    # an old twist column folds back into the segment first, so a split vertex lands where a plain one does
+    assert np.allclose(Wo[2], Wo[1]), (Wo[2], Wo[1])
+    # the influence cap keeps the four largest (0.30, 0.25, 0.20, 0.13), renormalised
+    keep = np.array([0.30, 0.25, 0.20, 0.13])
+    got = np.array([Wo[3, c[n]] for n in ("pelvis", "spine_01", "spine_02", "spine_03")])
+    assert np.allclose(got, keep / keep.sum()), got
+    assert Wo[3, c["lowerarm_l"]] == 0.0 and Wo[3, c["hand_l"]] == 0.0
+    # every segment without a column in W says so (no KeyError)
+    assert sum("no twist band there" in m for m in msgs) == 7, msgs
+    # twist=False keeps the source twist column as given and adds none
+    out2, W2 = finish_weights(V, F, J, info, names, W, max_infl=4, smooth_iters=0, twist=False, hem=False)
+    assert out2 == names and np.allclose(W2[2, [4, 6]], [0.5, 0.5]) and np.allclose(W2[0, 4], 1.0)
+
+
+def _check_hem_rule():
+    """A coat-front column hanging from the crotch blends toward the pelvis (thighs split evenly at x = 0); a vertex
+    on a leg keeps its weights; a mesh without thigh columns is left alone with a log line."""
+    H, crotch = 1.8, 0.8
+    leg = {s: dict(c=np.array([sg * 0.1, 0, 0.9]), d=np.array([0, 0, -1.0]), r=0.06, pts=np.zeros((0, 4)))
+           for s, sg in (("l", 1), ("r", -1))}
+    zs = np.arange(0.79, 0.45, -0.01)
+    cloth = np.c_[np.zeros(len(zs)), np.full(len(zs), -0.30), zs]
+    onleg = np.array([[0.1, -0.04, 0.6]])
+    V = np.r_[cloth, onleg]
+    col = {"pelvis": 0, "thigh_l": 1, "thigh_r": 2}
+    W = np.zeros((len(V), 3))
+    W[:-1, 1] = 0.5
+    W[:-1, 2] = 0.5
+    W[-1, 1] = 1.0
+    info = dict(H=H, crotch=crotch, leg=leg)
+    msgs = []
+    Wh = hem_rule(V, W.copy(), col, info, msgs.append)
+    assert info["hem"]["count"] == len(zs), info["hem"]
+    low = len(zs) - 1  # the hem's lowest vertex: a = 0.55 t toward the thighs (t by height between crotch and hem)
+    top = crotch + 0.02 * H
+    a = 0.55 * (top - zs[-1]) / (top - info["hem"]["hem_z"])
+    assert 0.5 < a <= 0.55 and abs(Wh[low, 0] - (1 - a)) < 1e-6 and abs(Wh[low, 1] - Wh[low, 2]) < 1e-9, (Wh[low], a)
+    assert Wh[0, 0] > 0.9, Wh[0]  # just under the crotch: nearly all pelvis
+    assert np.allclose(Wh[-1], W[-1]), Wh[-1]
+    msgs = []
+    assert np.array_equal(hem_rule(V, W, {"pelvis": 0}, dict(info), msgs.append), W) and "hem rule skipped" in msgs[0]
+
+
+def _check_keep_weights(V, F, Jt, names, W, H):
+    """--keep-weights on a synthetic rig: the bound figure's own skeleton and weights as the source, plus a group
+    no mannequin bone has and an unweighted vertex. The joints come back without detection, the extra group is
+    dropped, the bare vertex takes its neighbour's weights, and the repaired matrix is clean."""
+    bones = {n: (Jt[n][0], Jt[n][1]) for n in Jt}
+    msgs = []
+    L2, info2 = source_landmarks(bones, H, msgs.append)
+    assert "grid" not in info2 and "arm" not in info2
+    J2, _d2 = build_skeleton(L2, info2)
+    for n in ("hand_l", "calf_r", "index_02_l", "ball_r"):
+        assert np.allclose(J2[n][0], Jt[n][0]), n
+    gn = list(names) + ["weapon_grip"]
+    Wk = np.c_[W, np.zeros(len(W))]
+    Wk[0] = 0.0
+    Wk[1, -1] = 0.7  # weight on the extra group only counts toward the row before it is dropped
+    srcn, Ws = source_weights(V, gn, Wk, L2, info2, msgs.append)
+    assert "weapon_grip" not in srcn and any("dropped: weapon_grip" in m for m in msgs)
+    near = np.argsort(np.linalg.norm(V - V[0], axis=1))[1:]
+    assert np.allclose(Ws[0], Ws[near[(Wk[near, :-1].sum(1) > 1e-6)][0]])
+    assert set(info2["leg"]) == {"l", "r"} and info2["hem_gate"].dtype == bool
+    out, Wo = finish_weights(V, F, J2, info2, srcn, Ws, max_infl=6, smooth_iters=1, hem=True, log=msgs.append)
+    assert np.allclose(Wo.sum(1), 1.0) and ((Wo > 0).sum(1) <= 6).all()
+    try:
+        source_landmarks({k: v for k, v in bones.items() if k != "ball_l"}, H)
+        raise AssertionError("a rig without ball_l passed")
+    except ValueError as e:
+        assert "ball_l" in str(e)
+    try:
+        source_weights(V, gn, np.zeros_like(Wk), L2, dict(info2))
+        raise AssertionError("an unweighted rig passed")
+    except ValueError as e:
+        assert "no skin weights" in str(e)
+
+
+def _check_guides(V, F, L):
+    for bad, word in (({"root": [0, 0, 0]}, "root"), ({"upperarm_twist_01_l": [0, 0, 1]}, "twist"),
+                      ({"hand_l": [1, 2]}, "three"), ({"hand_l": [0, "x", 1]}, "three"), ({"crotch": [0, 0, float("nan")]}, "finite")):
+        try:
+            check_guides(bad)
+            raise AssertionError("guide passed: %r" % bad)
+        except ValueError as e:
+            assert word in str(e) or "unknown" in str(e), (bad, e)
+    moved = L["hand_l"] + np.array([0.03, 0.0, -0.02])
+    g = {"crotch": [0.0, 0.0, 0.70], "hand_l": moved.tolist(), "ring_02_r": (L["ring_02_r"] + 0.01).tolist()}
+    Lg, ig = find_landmarks(V, F, voxels=100, guides=g)
+    assert abs(ig["crotch"] - 0.70) < 1e-9 and ig["src"]["crotch"] == "guide"
+    assert np.allclose(Lg["hand_l"], moved) and np.allclose(Lg["ring_02_r"], L["ring_02_r"] + 0.01)
+    # the finger chains are built from the guided hand: they move with it
+    assert np.linalg.norm(Lg["middle_01_l"] - L["middle_01_l"]) > 0.01, (Lg["middle_01_l"], L["middle_01_l"])
+    assert "crotch" not in Lg
+
+
+def _check_ball_and_islands(L, info, V, F):
+    """A toe straight under the ball still gives the ball bone a forward direction; a ground disc under the feet
+    is reported as a loose piece, a body alone is not."""
+    i2 = dict(info)
+    i2["toe_l"] = L["ball_l"] - np.array([0, 0, 0.02])
+    Jb, _d = build_skeleton(L, i2)
+    x = unit(Jb["ball_l"][1] - Jb["ball_l"][0])
+    assert np.isfinite(x).all() and abs(np.linalg.norm(x) - 1) < 1e-6 and x[1] < -0.9, x
+    assert loose_islands(V, F) == []
+    an = np.linspace(0, 2 * math.pi, 24, endpoint=False)
+    disc = np.c_[0.4 * np.cos(an), 0.4 * np.sin(an), np.full(24, -0.05)]
+    Vd = np.r_[V, disc, [[0.0, 0.0, -0.05]]]
+    c0 = len(V)
+    Fd = np.r_[F, [[c0 + 24, c0 + i, c0 + (i + 1) % 24] for i in range(24)]]
+    msgs = []
+    got = loose_islands(Vd, Fd, msgs.append)
+    assert len(got) == 1 and got[0][1] == 25 and "WARNING" in msgs[0], (got, msgs)
 
 
 if __name__ == "__main__":

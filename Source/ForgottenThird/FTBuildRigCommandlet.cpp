@@ -4,6 +4,7 @@
 #include "FTLocomotionAnimInstance.h"
 
 #if WITH_EDITOR
+#include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimSequence.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -414,8 +415,11 @@ bool LogClip(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 // Bakes the twist bones of a retargeted clip (ftcore/TwistBake.h): for each limb segment and side, every
 // bone parented to the segment and named <segment>_twist_*_<side> (not the twistCor correctives) gets, at each
 // key, its own bind translation and scale and its bind rotation turned about the segment's axis by
-// f * the child's twist - (1 - f) * the segment's own twist. The axis and f come from the bind pose (the child's and the twist bone's
-// offsets), so a rerun writes the same keys. Logs each segment's peak twists and its bones' peak rolls.
+// f * the child's twist - (1 - f) * the segment's own twist, each twist faded out near a 180 degree swing (twistFade).
+// The child term is the forearm's and the shin's only (the upper arm and thigh take the segment's own twist alone).
+// The axis and f come from the bind pose (the child's and the twist bone's offsets), so a rerun writes the same
+// keys; a twist track the retarget already wrote is replaced (logged). Logs each segment's peak twists and its
+// bones' peak rolls, and warns when a clip that ends where it starts ends its twist a turn away.
 // Returns the number of twist tracks written.
 int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 {
@@ -425,8 +429,14 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 	{
 		return 0;
 	}
-	static const TCHAR* const Segments[][2] = {
-		{TEXT("upperarm"), TEXT("lowerarm")}, {TEXT("lowerarm"), TEXT("hand")}, {TEXT("thigh"), TEXT("calf")}, {TEXT("calf"), TEXT("foot")}};
+	struct FSegment
+	{
+		const TCHAR* Name;
+		const TCHAR* Child;
+		bool bChildTerm;
+	};
+	static const FSegment Segments[] = {{TEXT("upperarm"), TEXT("lowerarm"), false}, {TEXT("lowerarm"), TEXT("hand"), true},
+		{TEXT("thigh"), TEXT("calf"), false}, {TEXT("calf"), TEXT("foot"), true}};
 	const TArray<FTransform>& Ref = Skeleton.GetRefBonePose();
 	auto Rotations = [&](int32 Bone, TArray<FQuat>& Out)
 	{
@@ -443,16 +453,16 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 
 	IAnimationDataController& Controller = Clip.GetController();
 	IAnimationDataController::FScopedBracket Bracket(Controller, FText::FromString(TEXT("Bake twist bones")), false);
-	int32 Written = 0;
+	int32 Written = 0, Replaced = 0;
 	TArray<FQuat> SegmentRot, ChildRot;
-	TArray<double> ChildTwist, OwnTwist;
-	for (const auto& Pair : Segments)
+	TArray<double> ChildTwist, OwnTwist, ChildFade, OwnFade;
+	for (const FSegment& Pair : Segments)
 	{
 		for (const TCHAR* Side : {TEXT("_l"), TEXT("_r")})
 		{
-			const FString SegmentName = FString(Pair[0]) + Side;
+			const FString SegmentName = FString(Pair.Name) + Side;
 			const int32 Segment = Skeleton.FindBoneIndex(*SegmentName);
-			const int32 Child = Skeleton.FindBoneIndex(*(FString(Pair[1]) + Side));
+			const int32 Child = Skeleton.FindBoneIndex(*(FString(Pair.Child) + Side));
 			if (Segment == INDEX_NONE || Child == INDEX_NONE || Skeleton.GetParentIndex(Child) != Segment)
 			{
 				continue;
@@ -461,7 +471,7 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 			for (int32 Bone = 0; Bone < Skeleton.GetNum(); ++Bone)
 			{
 				const FString Name = Skeleton.GetBoneName(Bone).ToString();
-				if (Skeleton.GetParentIndex(Bone) == Segment && Name.StartsWith(FString(Pair[0]) + TEXT("_twist_")) && Name.EndsWith(Side))
+				if (Skeleton.GetParentIndex(Bone) == Segment && Name.StartsWith(FString(Pair.Name) + TEXT("_twist_")) && Name.EndsWith(Side))
 				{
 					Twists.Add(Bone);
 				}
@@ -478,15 +488,26 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 			Rotations(Child, ChildRot);
 			ChildTwist.SetNum(Keys);
 			OwnTwist.SetNum(Keys);
+			ChildFade.SetNum(Keys);
+			OwnFade.SetNum(Keys);
 			double ChildPeak = 0.0, OwnPeak = 0.0;
 			for (int32 K = 0; K < Keys; ++K)
 			{
-				const double C = ftcore::twistAngle(ToCoreQ(ChildRot[K] * Ref[Child].GetRotation().Inverse()), CoreAxis);
-				const double O = ftcore::twistAngle(ToCoreQ(Ref[Segment].GetRotation().Inverse() * SegmentRot[K]), CoreAxis);
-				ChildTwist[K] = ftcore::unwrapAngle(C, K > 0 ? ChildTwist[K - 1] : 0.0);
-				OwnTwist[K] = ftcore::unwrapAngle(O, K > 0 ? OwnTwist[K - 1] : 0.0);
-				ChildPeak = FMath::Max(ChildPeak, FMath::Abs(ChildTwist[K]));
-				OwnPeak = FMath::Max(OwnPeak, FMath::Abs(OwnTwist[K]));
+				const ftcore::TwistQuat C = ToCoreQ(ChildRot[K] * Ref[Child].GetRotation().Inverse());
+				const ftcore::TwistQuat O = ToCoreQ(Ref[Segment].GetRotation().Inverse() * SegmentRot[K]);
+				ChildTwist[K] = Pair.bChildTerm ? ftcore::unwrapAngle(ftcore::twistAngle(C, CoreAxis), K > 0 ? ChildTwist[K - 1] : 0.0) : 0.0;
+				OwnTwist[K] = ftcore::unwrapAngle(ftcore::twistAngle(O, CoreAxis), K > 0 ? OwnTwist[K - 1] : 0.0);
+				ChildFade[K] = ftcore::twistFade(ftcore::swingAngle(C, CoreAxis));
+				OwnFade[K] = ftcore::twistFade(ftcore::swingAngle(O, CoreAxis));
+				ChildPeak = FMath::Max(ChildPeak, FMath::Abs(ChildTwist[K] * ChildFade[K]));
+				OwnPeak = FMath::Max(OwnPeak, FMath::Abs(OwnTwist[K] * OwnFade[K]));
+			}
+			// A clip that ends in its first pose (a loop) but whose unwrapped twist ends a turn away pops at the loop.
+			const bool bLoops = Keys > 1 && SegmentRot[0].AngularDistance(SegmentRot[Keys - 1]) < 0.02 && ChildRot[0].AngularDistance(ChildRot[Keys - 1]) < 0.02;
+			if (bLoops && (FMath::Abs(ChildTwist[Keys - 1] - ChildTwist[0]) > UE_PI || FMath::Abs(OwnTwist[Keys - 1] - OwnTwist[0]) > UE_PI))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildRig: %s ends where it starts but its %s twist ends a turn away; the twist bones pop at the loop."),
+					*Clip.GetName(), *SegmentName);
 			}
 			FString Rolls;
 			for (const int32 Twist : Twists)
@@ -501,7 +522,7 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 				double Peak = 0.0;
 				for (int32 K = 0; K < Keys; ++K)
 				{
-					const double Roll = ftcore::twistBoneRoll(Fraction, ChildTwist[K], OwnTwist[K]);
+					const double Roll = ftcore::twistBoneRoll(Fraction, ChildTwist[K] * ChildFade[K], OwnTwist[K] * OwnFade[K]);
 					const ftcore::TwistQuat Q = ftcore::axisAngle(CoreAxis, Roll);
 					Rotation[K] = FQuat(Q.x, Q.y, Q.z, Q.w) * Ref[Twist].GetRotation();
 					Peak = FMath::Max(Peak, FMath::Abs(Roll));
@@ -510,6 +531,10 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 				if (!Model->IsValidBoneTrackName(Name))
 				{
 					Controller.AddBoneCurve(Name, false);
+				}
+				else
+				{
+					++Replaced;
 				}
 				if (Controller.SetBoneTrackKeys(Name, Positions, Rotation, Scales, false))
 				{
@@ -524,6 +549,10 @@ int32 BakeTwist(UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: %s twist bake %s: child twist up to %.1f deg, own twist up to %.1f deg;%s"),
 				*Clip.GetName(), *SegmentName, FMath::RadiansToDegrees(ChildPeak), FMath::RadiansToDegrees(OwnPeak), *Rolls);
 		}
+	}
+	if (Replaced > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: %s: the bake replaced %d twist tracks the retarget had written."), *Clip.GetName(), Replaced);
 	}
 	return Written;
 }

@@ -81,3 +81,60 @@ TEST_CASE("twist: a bone's roll follows the child toward it and holds the segmen
     CHECK(twistBoneRoll(1.0, 0.0, 60 * kDeg) == 0.0);
     CHECK(twistBoneRoll(0.0, 90 * kDeg, 0.0) == 0.0);
 }
+
+TEST_CASE("twist: negative and oblique axes") {
+    const TwistVec neg{-1.0, 0.0, 0.0};
+    // A roll of +40 about +x is a roll of -40 about -x.
+    CHECK(twistAngle(axisAngle({1.0, 0.0, 0.0}, 40 * kDeg), neg) == doctest::Approx(-40 * kDeg));
+    const TwistVec oblique{1.0, 2.0, 3.0};
+    CHECK(twistAngle(axisAngle(oblique, 25 * kDeg), oblique) == doctest::Approx(25 * kDeg));
+    // A bend about an axis across the oblique one (perpendicular to it) has no twist.
+    CHECK(twistAngle(axisAngle({3.0, 0.0, -1.0}, 80 * kDeg), oblique) == doctest::Approx(0.0));
+}
+
+TEST_CASE("twist: the order of swing and twist matters") {
+    const TwistVec axis{1.0, 0.0, 0.0};
+    const TwistQuat twistFirst = mul(axisAngle({0.0, 0.0, 1.0}, 60 * kDeg), axisAngle(axis, 30 * kDeg));
+    const TwistQuat twistLast = mul(axisAngle(axis, 30 * kDeg), axisAngle({0.0, 0.0, 1.0}, 60 * kDeg));
+    // swing * twist splits back exactly; twist * swing about the same axis is a different rotation.
+    CHECK(twistAngle(twistFirst, axis) == doctest::Approx(30 * kDeg));
+    CHECK(twistAngle(twistLast, axis) == doctest::Approx(30 * kDeg));
+    CHECK(swingAngle(twistFirst, axis) == doctest::Approx(60 * kDeg));
+    CHECK(swingAngle(twistLast, axis) == doctest::Approx(60 * kDeg));
+}
+
+TEST_CASE("twist: swing angle and the fade near 180 degrees") {
+    const TwistVec axis{1.0, 0.0, 0.0};
+    CHECK(swingAngle(axisAngle(axis, 90 * kDeg), axis) == doctest::Approx(0.0));
+    CHECK(swingAngle(axisAngle({0.0, 1.0, 0.0}, 100 * kDeg), axis) == doctest::Approx(100 * kDeg));
+    CHECK(swingAngle(TwistQuat{}, TwistVec{}) == 0.0);
+    CHECK(twistFade(0.0) == 1.0);
+    CHECK(twistFade(120 * kDeg) == doctest::Approx(1.0));
+    CHECK(twistFade(175 * kDeg) == doctest::Approx(0.0));
+    CHECK(twistFade(kPi) == 0.0);
+    CHECK(twistFade(147.5 * kDeg) == doctest::Approx(0.5));
+    // A hinge bent 150 degrees about an axis 5 degrees off the perpendicular reads about 36 degrees of
+    // twist; the fade takes most of it back out.
+    const TwistQuat hinge = axisAngle({std::sin(5 * kDeg), 0.0, std::cos(5 * kDeg)}, 150 * kDeg);
+    const double raw = twistAngle(hinge, axis);
+    CHECK(raw == doctest::Approx(36.0 * kDeg).epsilon(0.03));
+    CHECK(std::abs(raw * twistFade(swingAngle(hinge, axis))) < 0.5 * std::abs(raw));
+    // A swing of 180 degrees after a roll: the swing is 180, the fade 0, the result finite.
+    const TwistQuat over = mul(axisAngle({0.0, 1.0, 0.0}, kPi), axisAngle(axis, 30 * kDeg));
+    CHECK(swingAngle(over, axis) == doctest::Approx(kPi));
+    CHECK(twistFade(swingAngle(over, axis)) == 0.0);
+    CHECK(std::isfinite(twistAngle(over, axis)));
+}
+
+TEST_CASE("twist: unwrap across more than a turn, and axisAngle edge cases") {
+    // A raw angle 3 turns away comes back to the nearest branch.
+    CHECK(unwrapAngle(10 * kDeg + 6 * kPi, 0.0) == doctest::Approx(10 * kDeg));
+    CHECK(unwrapAngle(-170 * kDeg, 7 * kPi) == doctest::Approx(7 * kPi + 10 * kDeg));
+    const TwistQuat id = axisAngle(TwistVec{}, 1.0);
+    CHECK(id.w == 1.0);
+    CHECK(id.x == 0.0);
+    // A non-unit axis gives a unit quaternion.
+    const TwistQuat q = axisAngle({0.0, 0.0, 5.0}, 90 * kDeg);
+    CHECK(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w == doctest::Approx(1.0));
+    CHECK(q.z == doctest::Approx(std::sin(45 * kDeg)));
+}
