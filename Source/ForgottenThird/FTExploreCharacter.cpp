@@ -229,6 +229,22 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			AddPortraitLights();
 		}
+		// Map-light diagnosis (the look-dev set has both built in): -ExploreGreyGround paints the map's green ground,
+		// path and leaves a neutral 0.18 grey; -ExploreFixedExposure turns auto-exposure off (EV100 0, shifted by
+		// -ExploreExposureBias=<stops>).
+		if (!FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDev")))
+		{
+			if (FParse::Param(FCommandLine::Get(), TEXT("ExploreGreyGround")))
+			{
+				GreyGround();
+			}
+			if (FParse::Param(FCommandLine::Get(), TEXT("ExploreFixedExposure")))
+			{
+				float Bias = 0.f;
+				FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureBias="), Bias);
+				FixExposure(Bias);
+			}
+		}
 		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
@@ -396,6 +412,49 @@ void AFTExploreCharacter::AddPortraitLights()
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait lights on (key, fill, rim)."));
 }
 
+void AFTExploreCharacter::FixExposure(float Bias)
+{
+	if (!Camera)
+	{
+		return;
+	}
+	FPostProcessSettings& Post = Camera->PostProcessSettings;
+	Post.bOverride_AutoExposureMethod = true;
+	Post.AutoExposureMethod = AEM_Manual;
+	Post.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+	Post.AutoExposureApplyPhysicalCameraExposure = false;
+	Post.bOverride_AutoExposureBias = true;
+	Post.AutoExposureBias = Bias;
+	Camera->PostProcessBlendWeight = 1.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: fixed exposure, bias %.2f."), Bias);
+}
+
+void AFTExploreCharacter::GreyGround()
+{
+	// The Explore map's surfaces are tints of one material (MI_Explore_<name>); the green and earth ones go grey.
+	int32 Painted = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UMeshComponent*> Meshes(*It);
+		for (UMeshComponent* Surface : Meshes)
+		{
+			for (int32 Slot = 0; Slot < Surface->GetNumMaterials(); ++Slot)
+			{
+				UMaterialInterface* Material = Surface->GetMaterial(Slot);
+				const FString Name = Material ? Material->GetName() : FString();
+				if (Name == TEXT("MI_Explore_Ground") || Name == TEXT("MI_Explore_Path") || Name == TEXT("MI_Explore_Leaves"))
+				{
+					UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Material, this);
+					Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+					Surface->SetMaterial(Slot, Grey);
+					++Painted;
+				}
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: grey ground on %d slots."), Painted);
+}
+
 void AFTExploreCharacter::EnterLookDev()
 {
 	// A neutral look-development set, so a material is judged without the map's coloured bounce: every other actor
@@ -480,19 +539,9 @@ void AFTExploreCharacter::EnterLookDev()
 	// Fixed exposure: auto-exposure in a black surround brightens everything, so albedo could not be judged between
 	// shots. Manual exposure at EV100 0: the 40 cd key at about 3.3 m lights a 0.18 grey to about 0.18 on screen.
 	// -ExploreLookDevBias=<stops> shifts it.
-	if (Camera)
-	{
-		float Bias = 0.f;
-		FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevBias="), Bias);
-		FPostProcessSettings& Post = Camera->PostProcessSettings;
-		Post.bOverride_AutoExposureMethod = true;
-		Post.AutoExposureMethod = AEM_Manual;
-		Post.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
-		Post.AutoExposureApplyPhysicalCameraExposure = false;
-		Post.bOverride_AutoExposureBias = true;
-		Post.AutoExposureBias = Bias;
-		Camera->PostProcessBlendWeight = 1.f;
-	}
+	float Bias = 0.f;
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevBias="), Bias);
+	FixExposure(Bias);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s)."), Hidden, LookDevSpin);
 }
 

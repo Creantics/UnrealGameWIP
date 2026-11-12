@@ -217,6 +217,8 @@ private:
 	void AddPortraitLights();
 	// -ExploreLookDev: a neutral set for judging materials (see the .cpp).
 	void EnterLookDev();
+	void FixExposure(float Bias);
+	void GreyGround();
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 

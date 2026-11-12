@@ -59,7 +59,7 @@ const FScalarSpec kScalars[] = {
 	{TEXT("AOStrength"), 1.f},
 	{TEXT("MetalScale"), 1.f},        // metal = max(map B x MetalScale, ForceMetal)
 	{TEXT("ForceMetal"), 0.f},
-	{TEXT("MetalRoughness"), 0.3f},
+	{TEXT("MetalRoughness"), 0.42f},
 	{TEXT("DetailSizeA"), 3.f},       // centimetres per repeat of the fine tile
 	{TEXT("DetailSizeB"), 11.f},      // and of the coarse one
 	{TEXT("DetailStrengthA"), 0.3f},  // normal tilt added by each scale
@@ -82,7 +82,7 @@ struct FVectorSpec
 };
 const FVectorSpec kVectors[] = {
 	{TEXT("Tint"), FLinearColor::White},
-	{TEXT("MetalColor"), FLinearColor(0.56f, 0.57f, 0.58f)},
+	{TEXT("MetalColor"), FLinearColor(0.42f, 0.42f, 0.43f)}, // worn steel, not chrome
 	{TEXT("FuzzTint"), FLinearColor::White}, // cloth master only: fuzz colour = albedo x FuzzTint
 	{TEXT("SoleTint"), FLinearColor::White},  // albedo x SoleTint on the sole
 };
@@ -110,8 +110,8 @@ TArray<FSubstance> Substances()
 	// Leather jacket: semi-matte, pebbled grain, lighter and smoother on worn edges, rougher in creases.
 	Out.Add({TEXT("Leather"), false, GarmentTile::Leather,
 		{{TEXT("Specular"), 0.28f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.3f}, {TEXT("RoughnessOffset"), 0.4f},
-			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.18f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.12f},
-			{TEXT("EdgeLighten"), 0.5f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 2.6f}, {TEXT("DetailSizeB"), 9.f},
+			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.18f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.1f},
+			{TEXT("EdgeLighten"), 0.25f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 2.6f}, {TEXT("DetailSizeB"), 9.f},
 			{TEXT("DetailStrengthA"), 0.25f}, {TEXT("DetailStrengthB"), 0.12f}},
 		FLinearColor::White, FLinearColor::White});
 	// Woven trousers: cloth shading, matte; the twill only shows within about a metre.
@@ -136,7 +136,7 @@ TArray<FSubstance> Substances()
 		FLinearColor(0.9f, 0.88f, 0.85f), FLinearColor::White});
 	// Zips, snaps and badges.
 	Out.Add({TEXT("Metal"), false, GarmentTile::Leather,
-		{{TEXT("ForceMetal"), 1.f}, {TEXT("MetalRoughness"), 0.32f}, {TEXT("DetailStrengthA"), 0.05f}, {TEXT("DetailStrengthB"), 0.f},
+		{{TEXT("ForceMetal"), 1.f}, {TEXT("MetalRoughness"), 0.42f}, {TEXT("DetailStrengthA"), 0.05f}, {TEXT("DetailStrengthB"), 0.f},
 			{TEXT("EdgeLighten"), 0.f}, {TEXT("CavityDarken"), 0.f}},
 		FLinearColor::White, FLinearColor::White});
 	return Out;
@@ -184,10 +184,14 @@ const TCHAR* const kMetalCode = TEXT("return saturate(max(ORM.b * MetalScale, Fo
 const TCHAR* const kColorCode = TEXT(R"HLSL(float3 b = Base * Tint.rgb;
 float3 c = b * Gain / (1.0 + b * (Gain - 1.0));
 float edge = saturate((Wear.r - 0.5) * 2.0);
+// Rubbed, not outlined: the edge wear comes and goes along an edge (a smooth noise of about 8 cm in pre-skinned space).
+float3 q = P * 0.8;
+float rub = sin(q.x + 1.7 * sin(q.y * 0.6)) * sin(q.y * 0.9 + 1.3 * sin(q.z * 0.7)) * sin(q.z * 0.8 + 1.1 * sin(q.x * 0.5));
+edge *= saturate(0.35 + 1.6 * rub);
 c *= 1.0 + EdgeLighten * edge;
 c *= lerp(1.0, D.z, CavityDarken);
 c *= lerp(1.0, SoleTint.rgb, Sole);
-return lerp(c, MetalColor.rgb, Metal);
+return lerp(c, MetalColor.rgb * lerp(0.55, 1.0, D.z), Metal); // grime in the metal's recesses
 )HLSL");
 
 const TCHAR* const kRoughnessCode = TEXT(R"HLSL(float edge = saturate((Wear.r - 0.5) * 2.0);
@@ -196,7 +200,7 @@ float r = ORM.g * RoughScale + RoughOffset;
 r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
 r += crease * CreaseRough - edge * EdgeSmooth;
 r = lerp(r, SoleRough + D.w * MicroRough, Sole);
-return saturate(lerp(r, MetalRough, Metal));
+return saturate(lerp(r, MetalRough + D.w * 0.15, Metal)); // scratched, not polished
 )HLSL");
 
 const TCHAR* const kSpecularCode = TEXT("return lerp(Spec, SoleSpec, Sole) * lerp(CavitySpec, 1.0, D.z);");
@@ -387,7 +391,8 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 		{{TEXT("Base"), Base, 0}, {TEXT("Tint"), G.Vector(TEXT("Tint")), 0}, {TEXT("Gain"), G.Scalar(TEXT("Gain")), 0}, {TEXT("Wear"), Wear, 0},
 			{TEXT("D"), Detail, 0}, {TEXT("EdgeLighten"), G.Scalar(TEXT("EdgeLighten")), 0},
 			{TEXT("CavityDarken"), G.Scalar(TEXT("CavityDarken")), 0}, {TEXT("MetalColor"), G.Vector(TEXT("MetalColor")), 0},
-			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0}},
+			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0},
+			{TEXT("P"), Position, 0}},
 		-900);
 	UMaterialExpressionCustom* NormalOut = Custom(Material, TEXT("GarmentNormal"), CMOT_Float3, kNormalCode,
 		{{TEXT("Base"), Normal, 0}, {TEXT("D"), Detail, 0}}, -300);
