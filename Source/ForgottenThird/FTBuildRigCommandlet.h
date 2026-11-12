@@ -27,7 +27,13 @@
 // named pose). -NoAlign skips the alignment and retargets from the target's rest pose;
 // -KeepChains=Pelvis,Spine,Neck,Head aligns all but those chains (an aligned MetaHuman spine tips its chin
 // 6 degrees down). That's the default for a MetaHuman body (one with clavicle_pec_l); -KeepChains=None
-// aligns them all. Example (proof_head's rom onto test_human):
+// aligns them all. Each retargeted clip then gets its twist bones baked (<upperarm|lowerarm|thigh|calf>_twist_*
+// under their segment): each key rolls them about the segment by the share of its own and its child's twist
+// the bone's place along the segment gives (ftcore/TwistBake.h). A MetaHuman body is skipped (it has its own
+// runtime twist and corrective setup) unless -BakeTwist is given; -NoBakeTwist leaves any rig's twist bones at
+// bind, as the retarget writes them. The log names the skeleton and whether it was baked or skipped. -TwistProbe instead writes two held right-arm poses (a forearm roll, an arm raised
+// overhead) on the mesh's skeleton, each raw and baked, in Dest/TwistProbe, for before and after stills.
+// Example (proof_head's rom onto test_human):
 //
 //   -run=FTBuildRig -Mesh=/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human
 //       -Dest=/Game/Characters/TestHuman/Rig

@@ -22,13 +22,21 @@ public:
 	UPROPERTY(SaveGame, BlueprintReadOnly, Category = "Story")
 	FString SaveJson;
 
-	// Stores the subsystem's current story progress. False (SaveJson untouched) when the story
-	// isn't on a scene.
+	// The story state's block (UFTStoryStateSubsystem, ftcore::storyEncode; the block carries its own layout
+	// version and checksum). Empty: a save from before it, which loads as a new game's state.
+	UPROPERTY(SaveGame)
+	TArray<uint8> StoryBlock;
+
+	// Stores the subsystem's current story progress, and the story state's block when its subsystem is
+	// there. False (SaveJson and StoryBlock untouched) when the story isn't on a scene, or when the state
+	// refused to encode and has no block for this position (UFTStoryStateSubsystem::EncodeBlock).
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool CaptureFrom(const UFTStorySubsystem* Story);
 
-	// Loads SaveJson into the subsystem. False when the text is empty or invalid (OutError says
-	// why; the story is untouched) or the saved scene no longer exists (the story is then stopped).
+	// Loads SaveJson into the subsystem, then StoryBlock into the story state (a refused or empty block: a
+	// new game's state, with a warning for a refused one; it never fails the load). False when the text is
+	// empty or invalid (OutError says why; the story and its state are untouched) or the saved scene no
+	// longer exists (the story is then stopped, the state untouched).
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArray<FString>& OutSkippedFlags) const;
 };

@@ -104,4 +104,12 @@ private:
     std::uint8_t pendingLength_ = 0;
 };
 
+// Steps that route to the battle screen (the fights a `lose` rule judges).
+inline std::uint32_t gameplayPlanFights(const GameplayPlan& plan) {
+    std::uint32_t n = 0;
+    for (std::uint32_t i = 0; i < plan.size(); ++i)
+        if (screenRoutesTo(plan.step(i).screen) == GameplayScreen::Battle) ++n;
+    return n;
+}
+
 } // namespace ftcore

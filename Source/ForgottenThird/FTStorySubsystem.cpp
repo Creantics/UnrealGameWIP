@@ -2,6 +2,7 @@
 
 #include "FTSettingsSubsystem.h"
 #include "FTStorySaveGame.h"
+#include "FTStoryStateSubsystem.h"
 #include "FTText.h"
 #include "Engine/GameInstance.h"
 #include "HAL/FileManager.h"
@@ -71,6 +72,7 @@ UFTStorySubsystem::~UFTStorySubsystem() = default;
 void UFTStorySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	RunStartWall = FPlatformTime::Seconds();
 	Runner->setCueHandler(&UFTStorySubsystem::HandleCue, this);
 	PendingCues.Reserve(16);
 	bAutosave = !IsHeadlessRun();
@@ -145,6 +147,10 @@ bool UFTStorySubsystem::LoadStory(const FString& Dir, FString& OutError, TArray<
 	bLoaded = true;
 	UE_LOG(LogFTStory, Log, TEXT("Loaded story '%s': %d scenes"), *FT::ToFString(Database->title()),
 		static_cast<int32>(Database->sceneCount()));
+	if (UFTStoryStateSubsystem* StoryState = GetGameInstance()->GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->RebindBridge(); // the bridge's tables belong to the database
+	}
 	return true;
 }
 
@@ -155,9 +161,16 @@ bool UFTStorySubsystem::StartStory(const FString& SceneId)
 		return false;
 	}
 	bReportedFinished = false;
+	RunMoves = 0;
+	RunScenes = 0;
+	RunStartWall = FPlatformTime::Seconds();
 	Backlog.clear(); // a new game (or a headless start): nothing shown yet
 	bPaused = false;
 	Party = ftcore::PartyProgress();
+	if (UFTStoryStateSubsystem* StoryState = GetGameInstance()->GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->NewGame(); // the story state starts over with the story
+	}
 	const bool bOk = Runner->start(FT::ToUtf8(SceneId));
 	if (const UFTSettingsSubsystem* SettingsSub = GetGameInstance()->GetSubsystem<UFTSettingsSubsystem>())
 	{
@@ -197,6 +210,20 @@ bool UFTStorySubsystem::Choose(int32 Option)
 bool UFTStorySubsystem::ResumeAfterGameplay()
 {
 	const bool bOk = Runner->resume();
+	Flush();
+	return bOk;
+}
+
+bool UFTStorySubsystem::ResumeAfterGameplayWithValue(int32 Value)
+{
+	const bool bOk = Runner->resume(ftcore::FlagValue::integer(Value));
+	Flush();
+	return bOk;
+}
+
+bool UFTStorySubsystem::RestartCurrentScene()
+{
+	const bool bOk = Runner->restartScene();
 	Flush();
 	return bOk;
 }
@@ -298,6 +325,9 @@ bool UFTStorySubsystem::ApplySave(const FFTStorySave& InSave, TArray<FString>& O
 	{
 		return false;
 	}
+	RunMoves = 0;
+	RunScenes = 0;
+	RunStartWall = FPlatformTime::Seconds();
 	ftcore::StorySave Save;
 	Save.scene = FT::ToUtf8(InSave.Scene);
 	Save.beat = InSave.Beat < 0 ? 0u : static_cast<uint32>(InSave.Beat);
@@ -336,7 +366,8 @@ bool UFTStorySubsystem::IsHeadlessRun()
 	FString Scene;
 	return FParse::Param(Cmd, TEXT("StoryAutoPlay")) || FParse::Param(Cmd, TEXT("StoryAutoPlayFast")) ||
 		FParse::Param(Cmd, TEXT("StoryAutoPlayHandoff")) || FParse::Param(Cmd, TEXT("AlphaAutoPlay")) ||
-		FParse::Value(Cmd, TEXT("StoryScene="), Scene);
+		FParse::Value(Cmd, TEXT("StoryScene="), Scene) || FParse::Param(Cmd, TEXT("StoryStateCheck")) ||
+		FParse::Param(Cmd, TEXT("ArenaStoryProbe"));
 }
 
 bool UFTStorySubsystem::Autosave()

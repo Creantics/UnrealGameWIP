@@ -15,6 +15,7 @@
 #include "ftcore/Seen.h"
 #include "ftcore/Settings.h"
 #include "ftcore/StoryDatabase.h"
+#include "ftcore/StoryFaces.h"
 #include "ftcore/StoryRunner.h"
 #include "ftcore/StorySave.h"
 
@@ -117,10 +118,23 @@ public:
 	// Gameplay beat done: continue the story.
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ResumeAfterGameplay();
+	// Gameplay beat done with a result: the beat's `sets` flag takes Value, then the story continues. False (the
+	// beat stays) when the beat names no flag or not on a gameplay beat (StoryRunner::resume(FlagValue)).
+	UFUNCTION(BlueprintCallable, Category = "Story")
+	bool ResumeAfterGameplayWithValue(int32 Value);
+	// Back to the current scene's first beat, its flags and the story state as the scene began (a retry).
+	UFUNCTION(BlueprintCallable, Category = "Story")
+	bool RestartCurrentScene();
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	void SkipHold();
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	void StopStory();
+
+	// Run-wide debug tallies (the game instance's life, across map visits): the faces of voiced lines
+	// (the story director logs the "Story: FACES" line) and the -StoryShot stills taken.
+	ftcore::FaceLineTally FaceTally;
+	int32 StoryShotsTaken = 0;
+	TSet<FString> StoryShotFiles;
 
 	// ---- current beat ----
 
@@ -128,6 +142,8 @@ public:
 	EFTStoryState GetState() const;
 	UFUNCTION(BlueprintPure, Category = "Story")
 	FString GetSceneId() const;
+	// True while ApplySave reports the loaded scene (its scene event is a load, not a move).
+	bool IsApplyingSave() const { return bApplyingSave; }
 	UFUNCTION(BlueprintPure, Category = "Story")
 	int32 GetBeatIndex() const;
 	UFUNCTION(BlueprintPure, Category = "Story")
@@ -192,7 +208,7 @@ public:
 
 	static const TCHAR* GetSlotName() { return TEXT("Slot0"); }
 	// True when a command-line flag asks for an unattended run: -StoryAutoPlay, -StoryAutoPlayFast,
-	// -StoryAutoPlayHandoff, -AlphaAutoPlay or -StoryScene=.
+	// -StoryAutoPlayHandoff, -AlphaAutoPlay, -StoryScene=, -StoryStateCheck or -ArenaStoryProbe.
 	static bool IsHeadlessRun();
 
 	// Writes the story's current progress to the slot. False when the story isn't on a scene or
@@ -220,6 +236,13 @@ public:
 	// StartStory, ApplySave and StopStory.
 	void SetPaused(bool bPause) { bPaused = bPause; }
 	bool IsPaused() const { return bPaused; }
+	// The story run's moves, scenes and wall-clock seconds for the director's FINISHED line. StartStory and
+	// ApplySave start them over; map changes (a hand-off and back) keep them.
+	void NoteMove() { ++RunMoves; }
+	void NoteScene() { ++RunScenes; }
+	int32 GetRunMoves() const { return RunMoves; }
+	int32 GetRunScenes() const { return RunScenes; }
+	double GetRunSeconds() const { return FPlatformTime::Seconds() - RunStartWall; }
 	// New Game keeps the read-state of the run before it: with nothing seen in memory, reads the slot's.
 	void AdoptSeenFromSlot();
 	// The party's xp and gold (ftcore/Progression.h). StartStory starts them over; the story slot
@@ -244,6 +267,8 @@ public:
 
 	// Native access for C++ gameplay code.
 	const ftcore::StoryRunner& GetRunner() const { return *Runner; }
+	// For UFTStoryStateSubsystem's bridge only (it installs the runner's scene and flag handlers).
+	ftcore::StoryRunner& GetRunnerForBridge() { return *Runner; }
 	const ftcore::StoryDatabase& GetDatabase() const { return *Database; }
 
 	// FTickableGameObject
@@ -273,6 +298,9 @@ private:
 	ftcore::SeenLines Seen;
 	ftcore::PartyProgress Party;
 	bool bPaused = false;
+	int32 RunMoves = 0;
+	int32 RunScenes = 0;
+	double RunStartWall = 0.0;
 	uint32 SeenSceneEpoch = 0;
 	uint32 SeenBeatEpoch = 0;
 	bool bLoaded = false;

@@ -128,6 +128,14 @@ warning when above 0) is the share of the zone's edge where a player standing on
 taller than the camera, so a bad spot is known before it is played: a giant at a tower plaza is 67% (`lat_plaza_a` with
 `-ArenaLineup=titan`), a giant's climax zone 0 to 15%, the human-sized facades 27%.
 
+**Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:
+the player's blows by their move's `jolt`, an enemy's blow on the lead by its move's `jolt` (the kit's `hurtJolt` when it
+names none), a blocked blow by half. A kick replaces the one running only when it is stronger, so a blow on three enemies
+kicks once. It is rotation only, added by a camera modifier after the camera has placed itself
+(`UFTArenaJoltModifier`): the control rotation, the arm and the field of view are never touched, so it never pulls the
+camera out, and it plays through the hit pause. The **Camera shake** setting (0 to 100%, in tenths) scales it; 0 turns it
+off. `-ArenaCameraShake=<0..1>` sets the scale for a run (headless runs read no settings).
+
 ### The shipped zones
 
 District-frame offsets from the level layout notes (ids and numbers only). Each runs with any boss; the default line-up is
@@ -198,7 +206,7 @@ again through `face_down_in` (or stands it out when too little is left); it dies
 (down, going down, or its get-up under 40% in), else on `defeat`; and a playing hit reaction holds 0.4 s before any blow
 restarts it, and after that only a heavy one does. A clip the table lacks is left out (that state plays the idle). If the clip table, the mesh or the idle clip doesn't load, the
 kind keeps its shapes and the log has one warning. The camera looks up at a boss at least 4 m tall (hover included) toward 70%
-of its height, up to 15 degrees above level (the free camera's limit too); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
+of its height (`ftcore::arenaLookUpPitch`, up to the view's 85 degree limit); the camera never pulls out for a big boss. The assets are local; nothing here needs them to load.
 A row marked `"additive_in": true` (the white glove's `hit_light` and `hit_heavy`) also fades in additively: while its crossfade
 runs, its own motion since its first frame goes on top of the blend by what is left of the fade, so a blow taken mid-swing jolts
 the held swing pose at the reaction's full size at once instead of easing into the reaction's rest start; cut off mid-fade (a
@@ -313,14 +321,16 @@ The Unbending also needs its slab halves, which its Broke split hangs on the `sl
 An import replaces what is there, so rerunning it after a boss's model changes is safe. Exit code 0 is a clean import (the
 log's "face bones" line is a warning for a boss, which has no human head).
 
-Pick the lead with `-ArenaLead=Devin`, `-ArenaLead=Duy` or `-ArenaLead=Third` (the name of a `PartyLooks` entry in the local
-`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets, Duy guns, the Third magic).
-Without the flag the lead is the first look (Devin in the main checkout).
+Pick the lead with `-ArenaLead=Devin` or `-ArenaLead=Duy` (the name of a `PartyLooks` entry in the local
+`Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets; Duy kicks, and fires his pistol only
+while aiming). The third party slot is a support slot with no attack kit (`"weapon": "none", "attacks": false` in
+`arena.json`): it is never the lead, so `-ArenaLead=Third` is refused with a warning and the first lead with attacks
+plays. The magic kit (`"weapon": "magic"`: a cast clip, `spell_bolt`, `spell_impact`, `spell_ward`) stays in the code
+and its Core tests for a future fighter kind; no shipped fighter uses it. Without the flag the lead is the first such look (Devin in the main checkout).
 
 ```
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=kite_ring -ArenaLead=Duy
-UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLineup=white_glove -ArenaLead=Third
 ```
 
 `-ArenaStage=stone_ring` hosts `stone_bearer` and `-ArenaStage=kite_ring` hosts `kite_boss`; `-ArenaLineup=<kind>` fights a
@@ -331,26 +341,37 @@ For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaS
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips
-retargeted onto its body, Devin wears gauntlets, Duy holds a pistol, and each weapon has its effects. Nothing below is
+retargeted onto its body, Devin wears gauntlets, Duy holds a pistol (his light is a kick; with aim held, light fires one
+round), and each weapon has its effects. Nothing below is
 committed; a lead without it fights as before (one warning per missing piece). In order, from the checkout the game runs
 from:
 
-1. The props: `-run=FTImportProp -Source=<path>/Devin_Gauntlet_R.glb -Dest=/Game/Props/Weapons` (and
-   `Devin_Gauntlet_L.glb`, `Duy_Pistol.glb`), as for the slab halves above.
-2. Their sockets: `-run=FTWeaponSockets -Gauntlets=<gauntlet socket .json> -Pistol=<pistol socket .json>` puts the
-   gauntlets' four sockets on Devin's body, the pistol's grip and holster sockets on Duy's and the `muzzle` socket on the
-   pistol (`FTWeaponSocketsCommandlet.h` has the axes).
-3. The effects: `-run=FTBuildVfx -Only=<name>` for `muzzle_flash`, `gauntlet_spark`, `spell_bolt`, `spell_burst` and
-   `spell_ward` ([VFX_UE.md](VFX_UE.md)).
+1. The props: the pistol with `-run=FTImportProp -Source=<path>/Duy_Pistol.glb -Dest=/Game/Props/Weapons`, as for the
+   slab halves above (then LOD1 and LOD2 made on the mesh in the editor's import settings). The gauntlets are six
+   skeletal meshes skinned to Devin's body (glove, wrist strap and bracer per hand, `FTWeaponProps::GauntletPieces`),
+   imported as FBX onto that body's skeleton into `/Game/Props/Weapons/Devin_Gauntlet` under those names; they ride the
+   body by leader pose, so they need no sockets.
+2. The pistol's sockets: `-run=FTWeaponSockets -Pistol=<pistol socket .json>` puts the grip and holster sockets on
+   Duy's body and the `muzzle` socket on the pistol (`FTWeaponSocketsCommandlet.h` has the axes).
+3. The effects: `-run=FTBuildVfx -Only=<name>` for `muzzle_flash`, `gauntlet_spark`, `spell_bolt`, `spell_ward`,
+   `gun_tracer`, `gun_impact` and `spell_impact` ([VFX_UE.md](VFX_UE.md)).
 4. The strike clips: the test human's `lead_jab`, `lead_cross`, `lead_kick_r`, `lead_counter` and `lead_finisher`
    ([BEAT_ANIMS.md](BEAT_ANIMS.md)) retargeted onto each lead's body into its look's `ClipFolder`:
    `-run=FTBuildRig -Mesh=<the look's body> -Dest=/Game/Characters/<Lead>/RigReal3/LeadRig
    -RetargetFrom=/Game/Characters/TestHuman/Rig/IK_test_human.IK_test_human -Clips=<the five> -Names=<their names>
-   -Out=<the look's ClipFolder> -AlignPose`.
+   -Out=<the look's ClipFolder> -AlignPose`. Duy's aimed round plays `lead_fire` (one-hand aimed pistol, recoil) and
+   the unused magic kit's cast `lead_cast` (palm push); both are hand-keyed outside the repo and listed in `beat_clips.json` without an
+   asset, so they are first retargeted onto the test human locally, then onto the leads with the other five.
+
+To try a weapon without being hit back, fight the target dummy: `-ArenaLineup=dummy` is a passive enemy kind (it never
+takes an attack token, stands where it spawns and has 100000 hp).
 
 On each of the lead's attacks the clip of its move plays over the locomotion, keyed so its impact lands as the attack
 goes active (a kick, shot or cast with no clip of its own is thrown as the punch on its side), and fades out after.
-`-ArenaShotStrikes=N` shoots the first N of them (`_s<k>_<clip>`; `-ArenaShotClose` from close by), `-ArenaNoWeaponProps`
+The lead aims at the locked enemy, else the nearest one standing: the hit point is the near side of its body at its
+chest. The striking arm is aimed there (shots and casts too; kicks are not), the tracer or bolt flies there and the
+impact effect plays there; the run logs `Arena: aim <clip> <deg> deg` and `Arena: impact <effect> <cm> cm from the hit
+point`. `-ArenaShotStrikes=N` shoots the first N of them (`_s<k>_<clip>`; `-ArenaShotClose` from close by), `-ArenaNoWeaponProps`
 and `-ArenaNoWeaponFx` leave the props and the effects off for an OFF/ON pair.
 
 ## Launch
@@ -370,6 +391,106 @@ UnrealEditor-Cmd.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -NullRH
 The same with `-ArenaIdle` instead of `-ArenaAutoPlay` plays a player who presses nothing; it ends in
 defeat. The default wave is long enough for the Load to fill and the autopilot to release; to fight one
 enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before the Load fills). From Git Bash, write the map as `Demo_Arena` (Git Bash rewrites a leading `/Game` into a path).
+
+### Feature checks
+
+After the result line the runner prints one `Arena check:` line per combat feature (Core's `arenaFeatureChecks`
+over the fight's stats), each PASS, FAIL, barred, or n/a where the run gave it no chance to show:
+
+- `lights free`: lights were started and cost no stamina (n/a with no light started: an idle run, an early death, a
+  kit without attacks);
+- `cancels`: an action (a buffered attack, a roll, the guard) cut into an attack, `(<cancels> of <chances>
+  chances)`; a chance is an attack in whose cut window a press or the guard waited. n/a with no chance;
+- `flinch`: an enemy flinched: `(<flinches> of <chances> chances)`. A chance is a blow of the kind's `flinchPoise`
+  or more that left a kind with a `flinchTime` upright and the host's veto off; n/a with none (bosses have no
+  `flinchTime`), FAIL with chances and no flinch (also when the flinch run's cap or an active or armoured attack
+  stopped every one: a chance is counted before those rules);
+- `break-out`: an enemy broke out of a run of blows: `(<n>; due <d>, barred <b>; <u> upright blows; best run 4 of
+  5)`, the best run being four blows of a kind's five, counted as each lands. FAIL when a blow brought an upright
+  enemy's count to its `breakAt` without staggering it and the move was free yet none followed, and when upright
+  blows landed on a kind with a `breakAt` but the run never moved; barred when the move was due and the enemy's move
+  mask (or the host's veto on every upright blow) barred it; n/a with no upright blow on such a kind, or when the
+  poise always broke first;
+- `soft target`: an attack started on a soft target (the nearest living enemy in `softRange` and `softArcCos` of
+  the stick, or of the facing, with nothing locked) and homed up to `homingReach` (`<n> of <m> chances`: n/a when no
+  attack started unlocked and unaimed, as under the autopilot, which locks unless `-ArenaNoLock`);
+- `shots`: a guns kit fired a shot that hit (n/a for any other kit, and for a guns kit under the autopilot without
+  `-ArenaAutoShoot`, which never aims);
+- `shared count bonus`: two leads on one count, a held blow's bonus landed: `(<held> held, <joined> joined, <n>
+  bonuses, +<damage> damage)`. n/a without `-ArenaSharedCount`.
+
+Three more lines carry numbers only, no verdict:
+
+- `jolt (<n> blows asked; peak <deg> deg handed to the camera; camera shake <scale>)`: 0.00 peak at camera shake 0;
+- `off-frame tells (<n> windups off frame; <m> stingers)`, with "no audio device: the marker alone" when a stinger fired with no sound to play it (`-nosound`);
+- `pace: kills <n>, ttk 0 <s> s, 1 n/a; punish <used>/<windows> windows used`: per enemy slot, the mean seconds from
+  the lead's first blow on it to its death (n/a for a slot never killed), and the punish windows (a run of an enemy
+  staggered, open or down, counted once) the lead's side landed a blow in, summed over fights again. They wait for a
+  play report.
+
+`-ArenaNoLock` has the autopilot never press lock, so its attacks take soft targets. `-ArenaAutoShoot` has it aim and
+shoot with a guns kit on the way in (the target in the shot's range and outside the light chain's reach, a dodge's
+stamina kept). A flinch and a break-out need the line-up's kinds to allow them with the lead's kit. On a skirmisher
+(poise 22, `flinchPoise` 12, `breakAt` 2) Duy's lights (10, 10) are under its `flinchPoise` and the second breaks it
+out; his third (20) then meets 2 poise and staggers it, a shot (6) is too light and his heavy (45) staggers it. The
+hulk has no `flinchTime`. So `skirmisher,hulk` on Duy gives no flinch chance and reads n/a; Duy flinches a duelist
+(`flinchPoise` 10).
+
+The break-out is tuned by lead (provisional, for the playtest). On paper Devin's light string (poise 15, 15, 18, 32)
+staggers every kind with a `breakAt` by the blow that reaches it; in a fight his strikes slow him but don't stop him
+(the autopilot steers them as a player does), so a count can build across strings and some seeds still break out on
+him.
+Duy's (10, 10, 20, and 6 a shot) leaves it upright, so he has to hit and move. Each kind's `breakDecay` equals
+its `poiseDelay`, so a count reset always comes with a poise refill. Core pins this per kind and lead
+(`arena break-out tuning`):
+
+| kind | poise | `breakAt` | Devin's poise at `breakAt` | Duy's |
+|---|---|---|---|---|
+| skirmisher | 22 | 2 | 30, staggers | 20, breaks out |
+| breaker | 80 | 5 | 95, staggers | 60, breaks out |
+| duelist | 65 | 4 | 80, staggers | 50, breaks out |
+| hulk | 110 | 7 | 128, staggers | 90, breaks out |
+| spitter | 25 | 2 | 30, staggers | 20, breaks out |
+
+Core's host-mirror tests play the host's own fight (the fallback fight with one attacker, fitted to `sand_ring`, the
+lock never pressed, the partner's press on the step after a parry); seed 1 of a skirmisher and a hulk with Devin
+gives the host's result line to the letter. The autopilot fills each attack's steer and turn from the attack-move
+table, as the player's input does. With Devin no seed from 1 to 12 of a skirmisher and a hulk shows a break-out (n/a;
+the best run reaches `breakAt` only with the blow that staggers); against a duelist and a skirmisher 8 of the 12
+break out once (seed 1 among them), the rest read n/a. Duy shooting against a skirmisher and a hulk shows one on every
+seed, and against a duelist and a skirmisher two or three (shooting or not); unaimed against the hulk the
+autopilot's parries cut his runs short (n/a). Five runs cover every line:
+Devin against the stone bearer, each lead against a skirmisher and a hulk, then each against a duelist and a
+skirmisher:
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaStage=stone_ring -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=skirmisher,hulk -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoPlay -ArenaNoLock -ArenaAutoShoot -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Duy -ArenaAutoPlay -ArenaNoLock -ArenaAutoShoot -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+```
+
+The fight session judges every blow the player lands on an enemy in the fight's blow hook, after whatever ruling
+the sub-hosts set (kind crits, the kite, the stone bearer): `judgeHeldBlow` on the damage they leave. A final outcome
+scales the blow (x1 when alone); a blow inside a count's window is Held, lands at base, and when its window is joined
+it settles at x2.5: after the session's tick the runner deals the extra through `ArenaFight::hostBlow` and logs
+`Arena: a held blow on the count adds <n> damage to <kind> (move <m>).` The arena has no partner body yet, so
+`-ArenaSharedCount` scripts one for the check line: the lead calls the count whenever it can, and the other lead
+joins the window the step a lead's blow is held. Core's host-mirror test plays the same run (seed 1: Devin 3 bonuses,
++78 damage; Duy shooting 1 bonus, +17):
+
+```
+UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaSharedCount -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout
+```
+
+The hit pause shows on screen: the lead's body and strike clips (`GetDrawnTime` is on Core's held clock) and a hit
+enemy's clips stand still for its pause, and the camera holds where it is (it never pulls out). A flinching enemy leans
+back a little (a placeholder pose until flinch clips exist) and plays its light hit reaction when it has a skin. The
+runner hands the clocks to the fight session through `GetHeldTime`, `GetHeldDelta` (0 through the player's pause),
+`GetHitStopLeft`, `GetPlayerStopLeft` and `GetEnemyStopLeft`. After every session Begin (the fight's begin and each restart) the runner binds the session to the game
+instance's story state (`UFTStoryStateSubsystem::BindFightSession`). `ArenaFight::hostBlow` takes extra damage from
+outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed` on a kill) with the next tick.
 
 ## Flow
 
@@ -405,23 +526,53 @@ enemy instead, pass its id: `-ArenaLineup=brute` (a single brute falls before th
 |---|---|---|
 | Move (camera-relative) | W A S D | Left stick |
 | Look (when not locked) | Mouse | Right stick |
-| Light attack (a chain of hits; on an open enemy, a riposte) | J or left mouse | X or RB |
-| Heavy attack | K | A or RT |
-| Guard (hold); parry (tap just before a hit) | I or right mouse | Y or LB |
-| Roll (backstep with no direction) | L or Space | B |
-| Heal (uses a charge) | H | D-pad up (not while Read cards are up) |
-| Release (above a third of the Load) | R | LT |
-| Partner (the second lead's press, paired with a parry) | F | D-pad down |
-| Intercept a called blow (stone_bearer; hold) | U or mouse thumb button | L3 |
-| Read (the second lead's pick, while the cards are up) | 1 / 2 / 3 | D-pad left / up / right |
-| Lock on / off | Tab or middle mouse | R3 |
-| Switch lock target | Q / E | D-pad left / right (not while Read cards are up), or flick the right stick |
+| Light attack (a chain of hits; on an open enemy, a riposte) | Left mouse (tap) | RT (tap) |
+| Heavy attack | Left mouse held 0.25 s | RT held 0.25 s |
+| Aim (hold or toggle): camera over the shoulder, reticle, face the aim, strafe; a gun kit fires one round per press | Right mouse | LT |
+| Guard (hold or toggle); parry (tap just before a hit) | Left Ctrl | LB |
+| Roll (backstep with no direction) | Left Alt | B |
+| Heal (uses a charge; on Gift's key for now) | G | D-pad up |
+| Release (above a third of the Load) | R | D-pad down |
+| Partner (the second lead's press, paired with a parry; on Count's key for now) | F | Y |
+| Intercept a called blow (stone_bearer; hold or toggle) | V | L3 |
+| Read (the second lead's pick, while the cards are up; those keys are the picks only then) | 1 / 2 / 3 | D-pad left / up / right |
+| Lock on / off | Middle mouse | R3 |
+| Switch lock target (locked) | flick the mouse sideways | flick the right stick |
 | Fight again (after the outcome) | Enter or Space | A |
 | Pause menu | Esc | Start |
 
-The action keys are the four action buttons (`FTActionButtons.h`: Attack J / pad X, Guard I / pad Y,
-Dodge L / pad B, Jump K / pad A), with the mouse and the shoulders as second keys. Presses are read
-each frame and handed to the fight on its next step, so no press is lost between steps.
+A strike commits the body (`ftcore::attackMove`, `Data/Battle/attack_move.json`): each part of a move has its own
+share of the stick's walk (`startupScale`, `activeScale`, `recoveryScale`), and the full walk comes back at the cancel
+point. A fist's or a spell's heavy commits: 30% in startup, 0 through active (the lead slides to a stop at its brake
+rate, `ArenaInput::attackSpeed`, and the lunge carries it), 40% in recovery. Its light slows the walk: 40% in startup,
+55% through active, 70% in recovery. A gun's shot walks as it did before: a light at 65%, a heavy at 45% then 30% from
+0.25 s before contact (`commit`), each easing back to full pace over its recovery (`recoveryRamp`). Every strike still
+turns at its capped rate (`attackTurn`).
+
+The lead's legs follow its body as drawn. Their gait plays at the speed the body moved over the last step, not the
+sim's wish. They turn toward the way it moves (up to 95 degrees from the facing, with the chest turned back), so a
+strafe walks forward gaits sideways. While a strike's clip has the legs, and through a hit pause, the feet stay where
+they stand. A foot the body has gone 26 cm past steps to the clip's place, one foot at a time on a short lifted arc.
+The clips stand on nearly straight legs, so the hips sink (eased, up to 9 cm) as far as the held feet need to stay
+in reach. The legs step at the median of the last three steps' body speed, not the last step's alone: a body pushed
+in and out against an enemy swings step to step, and the walk/run blend and the foot hold would flip with it.
+Through a hit pause that speed, the legs' turn and the upper-body share hold too, as the clips do. Under an
+upper-body strike the legs are rebuilt from the locomotion layers' own weights (`LocoWeight`), so a strike clip at
+full weight never takes the legs. The figures' meshes tick after the actor that runs the fight (the game mode or the
+host), so each frame's pose is drawn where the body stands that frame, not a frame behind it.
+
+`-ArenaGlide` logs foot slip per move part on quit (`Arena glide: <part>: ...`). It gives the planted foot's
+frame-to-frame speed and the net slip per plant (as the field's `-LocoSlide`). `-ArenaGlide=toward` and `=across` make
+the autopilot walk at the target or strafe it. `-ArenaNoFootLock` leaves the feet to the clips, for comparison.
+Each line ends with its pops: frames in which a foot moved more than 20 cm, a pose snap (still counted in the slip).
+
+Every key here comes from the binding table (`ftcore/InputBindings.h`, one set for the field and the arena; the
+defaults are provisional). Override any of them in `Saved/InputBindings.json`, read once at start, e.g.
+`{"version": 1, "keys": {"guard": "Z"}, "pad": {"read": "Gamepad_RightShoulder"}, "hold": {"guard": "toggle"}}`
+(engine key names; `""` unbinds; a key twice in one context, or a Read-held key on Read's or Guard's, refuses the
+whole file). Each held action (Aim, Guard, Read, Run, Crouch, Intercept) is held, or pressed once to toggle when
+the game's hold-toggle setting is on or its own `"hold"` mode says `"toggle"`.
+Presses are read each frame and handed to the fight on its next step, so no press is lost between steps.
 
 ## HUD
 
@@ -442,8 +593,13 @@ each frame and handed to the fight on its next step, so no press is lost between
   floor shows the move's reach. A shot (a move with a `width`, a straight lane) shows two dashed rails
   instead, the lane's edges for the player's centre, running out from the shooter to its reach; step
   outside them before it fires and it misses. The moment the move goes active the bar turns white, NOW shows and a
-  burst flashes. An enemy winding up off the screen shows as an arrow at the screen's edge in the
-  tell's colour.
+  burst flashes.
+- **Off-frame tells:** an enemy winding up off the screen, or out of the camera's view less a 6 degree margin
+  (`arenaOffFrameTells`, from the camera's place, facing, pitch and field of view: a ground enemy under the frame while aiming high counts), shows as an arrow at the screen's edge
+  in the tell's colour, with the answer beside it and a bar filling toward the hit. It swells and rings once at the
+  windup's onset (a steady arrow with Reduce flashes on). A stinger (a chime, at master times effects volume) doubles
+  the onset once per windup, no closer than 0.25 s to the last; the arrow is the tell, so it reads with the sound off.
+  At impact the arrow turns white.
 - **Read cards:** while a deal is open, three cards sit on the tell bar (the answer moves above them), each
   with its key number and the shape it names. The picked card turns green when right and red when wrong,
   the others dim. If the enemy is off the screen the cards show at the bottom centre instead.
@@ -463,24 +619,31 @@ each frame and handed to the fight on its next step, so no press is lost between
 | Flag | Effect |
 |---|---|
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
+| `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
+| `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
+| `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. |
+| `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
+| `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
 | `-ArenaSeed=N` | The fight's seed (default 1). |
 | `-ArenaStage=<id>` | The zone, by id from `arenas.json` (see "Zones"); the default is `sand_ring`. A zone in a world opens that world's map. Its bosses are the line-up, and the walls, spawn, obstacles and camera are fitted to the enemies in it. An unknown id logs the ids and uses the default. |
 | `-ArenaLineup=a,b,...` | The enemies by id from `arena.json` (`brute`, `skirmisher`, `breaker`, `duelist`, `hulk`, `titan`, `spitter`), up to six, instead of the stage's own bosses (the sand ring's are `brute,skirmisher,breaker`); `-ArenaLineup=brute` fights one brute. The stage is scaled to whoever is in the fight. |
-| `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`, `third`), even when no look loads; without the flag it is the first look's name, and an id with no kit plays `default`. The start line names the kit (`kit devin`). |
+| `-ArenaLead=<name>` | The lead the player plays. Its look is the entry of that name in the explore character's `PartyLooks` (`Config/UserGame.ini`, local), else the first; with none, or none whose body loads (one warning), it is the test human. Its fighter kit is the `arena.json` fighter of that name in lower case (`devin`, `duy`), even when no look loads; without the flag it is the first playable look's name, and an id with no kit plays `default`. A kit without attacks (`third`) is refused with a warning. The start line names the kit (`kit devin`). |
 | `-ArenaAttackers=N` | How many enemies may attack at once (1 to the line-up's size). |
 | `-ArenaHoldLoad` | The autopilot keeps its Load until it is overloaded (to see the overload; not a way to play). |
 | `-ArenaParryHold=<s>` | No follow-up for s seconds after each parry: the autopilot's blows and Release and the partner's press are dropped, so the open boss's own clips (face down, the get-up) show. A check of the clips, not a way to play; the fight differs from plain autoplay. |
 | `-ArenaBossLoop=<clip>` | The boss's skin plays that clip of its table (by id, e.g. `idle`, `idle_p2`, `face_down`) looped from the fight's start, with the table's blend, whatever the fight does; the fight itself runs unchanged. A check of the clips' loops, not a way to play. One log line at each fight's start (`Arena: boss loop <clip> on enemy <n> from the fight's start (<len> s) (-ArenaBossLoop).`) and one at each wrap (`Arena: boss loop <clip> wraps (<n>) at <fight time> s (<len> s).`); the log's `[..][counter]` prefix (`GFrameCounter % 1000`) on a wrap line is the frame whose pose is the clip's first again, which is where a cutter finds the seam. An unknown clip (or no skinned boss) logs a warning and the flag does nothing. The boss is the Kite-Mother's slot, else the stone bearer's, else the first skinned enemy. |
 | `-ArenaNoKindFx` | No kind's crit effects (`arena_crit.json`: the tell, open, crit and hit) are made; the fight runs the same. The OFF half of an effects OFF/ON capture. |
 | `-ArenaBossCam` | Once the first enemy stands, the view moves to a camera fixed 9 m off that enemy's left side at half its height (field of view 40), so a capture shows the boss's own turns apart from the follow camera's. The log gets `ArenaBossCam: t <s> s yaw <deg>` each time the boss has turned 10 degrees. Review captures only; the fight runs the same. |
+| `-ArenaStoryProbe` | Headless check of the story wiring (`-NullRHI` is fine): the fight is handed off as the story's with no step marked (as a reload into it), one gift press is counted, the arena restarts the fight, one more is counted; each stage logs `Arena: story probe <stage>: bound, presses, retries` (expected presses 0, 1, 0, 1 and one retry), then the game quits. |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |
 | `-ArenaOverview` | With `-ArenaShot`, a first view `_0_overview` of the whole zone from a camera high over its south-west side (pulled in along the line if a building is in the way), HUD off, with the zone's walls (green), obstacles (red) and road mouths (yellow) drawn as debug lines for the picture only; then `_0b_edge`, the player 1.4 m from the wall on his left to show the edge cue. |
 | `-ArenaShotAt=S,S,...` | With `-ArenaShot`, an extra view `_t_<S>` at each of those fight times (after `_1_ring`; the six views and the quit are unchanged), so two runs of the same fight are shot at the same moments. |
-| `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` 0.04 s after each of the lead's first N attacks goes active (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none), with the weapon's effect just started. The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
-| `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 1 m from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
+| `-ArenaShotSide` | With `-ArenaShotAt`, those views from the lead's right side: 3.4 m off it and 0.9 m above its hips, aimed a frame before each view, so the feet show. |
+| `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` at each of the lead's first N attacks (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none): odd views just after the impact (a strike's landing, a shot's or cast's arrival at the hit point), even views a shot's or cast's mid-flight (`FFTLeadWeapons::GetViewTime`). The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
+| `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 65 cm from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle, then `_front` from 55 cm ahead of it (off to its side, a little above). A lead with a pistol adds `_1_holstered` and `_1_drawn` after the ring view, 60 cm off its right side. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
 | `-ArenaNoWeaponProps` | The lead's weapon props (gauntlets, pistol) stay off; the fight runs the same. |
 | `-ArenaNoWeaponFx` | The lead's weapon effects (muzzle flash, gauntlet sparks, the Third's bolt, burst and ward) stay off; the fight runs the same (the OFF half of an OFF/ON capture). |
 | `-ArenaNoBossFx` | The stone bearer's effects (tells, impacts, chips, the weak point's glow) stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
@@ -506,11 +669,30 @@ warning and quits with exit code 2, so an unattended run never hangs.
 - The lead is `AFTArenaFighter` wearing a look from `PartyLooks` (body, face, outfit and grooms; idle, walk and run by speed
   from the look's retargeted locomotion clips, `UFTLocomotionAnimInstance`), else the test human. Its attacks play the
   strike clips retargeted onto its body over that locomotion, and it carries its weapon (see "The leads' weapons"); without
-  the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a shield plate, a
-  crouch and lean). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
+  the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a
+  crouch and lean; enemy figures also show a guard plate, the player's never). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking
-  on or looking up, from -50 to +15 degrees). The arm probes the world (it may leave the zone's walls but never passes through a building or the
+  on or looking up, from -50 to +85 degrees, free, aimed and locked alike: `ftcore::kArenaLook` in `ArenaLook.h`). The
+  boom itself swings up only to 15 degrees, which keeps the lens over the floor and behind the lead at the fight's arm
+  and the aim's; a steeper look tilts the lens on the boom's end, so the arm never shortens. The aim's reticle line
+  meets the enemies' bodies (`ftcore::arenaRayEntersBody`: an upright cylinder from the figure's hover to its scaled
+  height, its radius scaled too; a lens inside a body sees through it), and reads the view without the impact jolt, so
+  a kick never wobbles the heading. On a body, the heading takes the middle of the stretch of the line inside it,
+  so the round goes into the body rather than grazing its edge or passing under a hanging one (with the line's far end
+  inside the body, its centre line at the entry's height). A gun's round is a line in space: it leaves the lead
+  1.4 m up (`ftcore::kArenaShotHeight`) along that heading, climbing to the point (`ArenaInput::aimPitched`; locked on,
+  to the locked body's middle), and meets the first body it enters within the shot's range (Duy: 30 m, most of
+  kite_ring's 40 by 14 m), each body the same cylinder widened by half the shot's width. So a round passes over a short
+  enemy's head to a hovering boss behind it. A body the lead stands in counts (point-blank) only when its centre is
+  ahead or right on the lead, and the round leaves it through its side: a steep round that climbs out through its top,
+  or dives out through its base, passes it. A shot keeps its start's choice (pitched or the flat lane), so letting the
+  aim go in the startup does not change it, and its climb follows the crosshair only until it fires. A
+  crosshair on a body the round would not reach is drawn faint, without its dot; one where another body on the
+  muzzle's line would take the round is dimmed, with a small cross for the dot (`ArenaFight::shotMeets`; neither while
+  locked on, when the round goes at the lock). Blocked needs the crosshair's own body 0.25 m or more further along the
+  round than the other, and the dimming changes only once the new state has held 4 frames, so an edge does not flicker. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).
 - Nothing in the host allocates per frame: the HUD's words are static, and its numbers are rebuilt only

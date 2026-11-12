@@ -9,9 +9,10 @@ public class ForgottenThird : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore", "Niagara", "PhysicsCore", "CinematicCamera", "NavigationSystem", "FTLook" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore", "Niagara", "AnimationCore", "AnimGraphRuntime", "PhysicsCore", "CinematicCamera", "NavigationSystem", "FTLook" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "AudioExtensions" });
+		// RHI: the world eye's GPU frame time.
+		PrivateDependencyModuleNames.AddRange(new string[] { "AudioExtensions", "RHI" });
 
 		// The game reads its JSON data (story, face presets, emotion map) from the project's Data/
 		// folder at run time. Stage it next to the packaged game at the same relative path.
@@ -28,6 +29,8 @@ public class ForgottenThird : ModuleRules
 
 			// FTBuildMassingWorld builds a sloped massing box's own static mesh from a mesh description.
 			PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription" });
+			// ImageCore: FTBuildSurfaces -Windows resizes the window atlases (FImage::ResizeTo).
+			PrivateDependencyModuleNames.Add("ImageCore");
 
 			// FTBuildCloth makes Chaos cloth from an imported mesh section.
 			PrivateDependencyModuleNames.AddRange(new string[] { "ClothingSystemEditor", "ClothingSystemEditorInterface", "ClothingSystemRuntimeCommon", "ClothingSystemRuntimeInterface", "SkeletalMeshEditor" });

@@ -1,9 +1,12 @@
 #include "ftcore/ArenaBoss.h"
+#include "ftcore/HeldRefusal.h"
 
 #include "AllocCounter.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
+
+#include <limits>
 
 #include <cmath>
 #include <string>
@@ -227,6 +230,45 @@ TEST_CASE("called blow: a Guard meets a side blow from either side, never a path
     w.start(&path, 1);
     w.interceptDown(CalledZone::Right, T + 5.0 - 0.1);
     CHECK(w.update(T + 5.0)[0].outcome == CalledOutcome::Missed);
+}
+
+TEST_CASE("called blow: the clock starts at reset; a junk far-future time is ignored, even first") {
+    const CalledImpact one = impactAt(20.0, CalledZone::Left);
+    CalledStrike s;
+    s.setWindows(CalledWindows{0.3, 0.5});
+    s.reset(13.0);
+    s.start(&one, 1);
+    CHECK(s.now() == 13.0);
+    CHECK(s.windows().window == 0.3); // kept
+    CHECK(s.update(1e300).empty()); // junk as the first time: not stored, the impact does not resolve
+    CHECK(s.now() == 13.0);
+    CHECK_FALSE(s.complete());
+    CHECK(s.update(20.0).size() == 1);
+
+    CalledStrike neg; // a fight clock may start below 0
+    neg.reset(-50.0);
+    CHECK(neg.now() == -50.0);
+    neg.reset(std::numeric_limits<double>::quiet_NaN());
+    CHECK(neg.now() == 0.0);
+    CalledStrike fresh;
+    CHECK(fresh.now() == 0.0);
+    CHECK(fresh.update(1e300).empty());
+    CHECK(fresh.now() == 0.0);
+
+    // Used without a reset on a clock past kMaxTimeJump, a strike stalls: the owner must reset it first.
+    const CalledImpact late = impactAt(705.0, CalledZone::Left);
+    CalledStrike stale;
+    stale.start(&late, 1);
+    CHECK(stale.update(710.0).empty());
+    CHECK(stale.now() == 0.0);
+    CHECK_FALSE(stale.complete());
+    stale.reset(700.0);
+    stale.start(&late, 1);
+    CHECK(stale.update(710.0).size() == 1);
+    // ArenaBossRun::begin resets its strike to the fight's start, however late.
+    ArenaBossRun run;
+    run.begin(ArenaBossDef{}, 5000.0);
+    CHECK(run.strike().now() == 5000.0);
 }
 
 TEST_CASE("called blow: one hold at a time, and the Intercept rearms") {
@@ -1043,8 +1085,9 @@ TEST_CASE("arena boss run: a fight clock that starts below 0 plays its blows on 
         CHECK(a->outcome == CalledOutcome::Intercepted);
     }
     {
-        // The strike on its own, never updated before its impacts.
+        // The strike on its own, reset to a start below 0 and never updated before its impacts.
         CalledStrike s;
+        s.reset(-10.0);
         const CalledImpact imp = impactAt(-5.0, CalledZone::Left);
         s.start(&imp, 1);
         CHECK(s.update(-6.0).empty());
@@ -1129,4 +1172,284 @@ TEST_CASE("arena boss run: a whole scripted fight allocates nothing") {
     CHECK(run.phase() == 1);
     CHECK(run.broken());
     CHECK(run.crit().openings() > 0);
+}
+
+// ---- The locked weak point -------------------------------------------------------------------------
+
+namespace {
+
+const char* const kGateEnd = "\"facing\": 180, \"arc\": 60 } ] }";
+
+std::string withLock(const std::string& lock) {
+    return patched(kGateEnd, "\"facing\": 180, \"arc\": 60 } ], \"lock\": " + lock + " }");
+}
+
+ArenaBossDef lockedBoss(const std::string& lock) {
+    ArenaBossDef def;
+    std::string error;
+    std::vector<std::string> warnings;
+    const bool ok = importArenaBoss(withLock(lock), def, &error, &warnings);
+    INFO(error);
+    REQUIRE(ok);
+    CHECK(warnings.empty());
+    return def;
+}
+
+std::string lockError(const std::string& lock) { return importError(withLock(lock)); }
+
+bool has(const ArenaBossEvents& ev, ArenaBossEventType type) {
+    for (const ArenaBossEvent& e : ev)
+        if (e.type == type) return true;
+    return false;
+}
+
+} // namespace
+
+TEST_CASE("locked weak point: the loader reads the lock; absent, the points are not locked") {
+    CHECK_FALSE(loadTestBoss().weakPoints.locked);
+    const ArenaBossDef a = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    CHECK(a.weakPoints.locked);
+    CHECK(a.weakPoints.lock.keys == kUnlockSharedBlow);
+    CHECK(a.weakPoints.lock.openSeconds == doctest::Approx(3.0));
+    CHECK(a.weakPoints.lock.relockOnDefer);
+    const ArenaBossDef b =
+        lockedBoss(R"({ "keys": ["read_clause", "refusal"], "clause": 7, "openSeconds": 0, "relockOnDefer": false })");
+    CHECK(b.weakPoints.lock.keys == (kUnlockReadClause | kUnlockRefusal));
+    CHECK(b.weakPoints.lock.clause == 7);
+    CHECK(b.weakPoints.lock.openSeconds == 0.0);
+    CHECK_FALSE(b.weakPoints.lock.relockOnDefer);
+    CHECK(validLockTuning(b.weakPoints.lock));
+
+    // The standalone weak-point file takes the lock too.
+    ArenaWeakPoints w;
+    REQUIRE(importArenaWeakPoints(
+        R"({ "version": 1, "weakPoints": { "points": [], "lock": { "keys": ["refusal"], "openSeconds": 5 } } })", w));
+    CHECK(w.locked);
+    CHECK(w.lock.keys == kUnlockRefusal);
+}
+
+TEST_CASE("locked weak point: bad locks are refused with their path") {
+    CHECK(lockError(R"({ "keys": [] })").find("weakPoints.lock.keys") != std::string::npos);
+    CHECK(lockError(R"({ "keys": ["kick"] })").find("weakPoints.lock.keys[0]") != std::string::npos);
+    CHECK(lockError(R"({ "keys": ["refusal", "refusal"] })").find("duplicate") != std::string::npos);
+    CHECK(lockError(R"({ "keys": ["read_clause"] })").find("weakPoints.lock.clause") != std::string::npos);
+    CHECK(lockError(R"({ "keys": ["refusal"], "clause": 3 })").find("weakPoints.lock.clause") != std::string::npos);
+    CHECK(lockError(R"({ "keys": ["refusal"], "openSeconds": 0.05 })").find("openSeconds") != std::string::npos);
+    CHECK(lockError(R"({ "keys": ["refusal"], "openSeconds": 31 })").find("openSeconds") != std::string::npos);
+    CHECK(lockError(R"({ "keys": ["refusal"], "relockOnDefer": 1 })").find("relockOnDefer") != std::string::npos);
+    CHECK(lockError(R"("refusal")").find("weakPoints.lock") != std::string::npos);
+    std::vector<std::string> warnings;
+    ArenaBossDef def;
+    REQUIRE(importArenaBoss(withLock(R"({ "keys": ["refusal"], "x": 1 })"), def, nullptr, &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0].find("weakPoints.lock") != std::string::npos);
+}
+
+TEST_CASE("locked weak point: no crit while locked, even through an intercept opening; a shared blow opens it") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    ArenaBossRun run;
+    run.begin(def, 0.0);
+    CHECK(run.weakPointLocked());
+    CHECK_FALSE(run.weakPointOpen());
+    CritResult r;
+    CHECK(run.onHit({-2, 0}, {0, 0}, {1, 0}, 1.0, nullptr, &r).empty());
+    CHECK_FALSE(r.crit);
+
+    // A full intercept opens the window, but the locked point takes no crit.
+    run.startMove(def.find("fist"), 10.0, CalledZone::Left);
+    run.interceptDown(CalledZone::Left, 11.4);
+    CHECK(has(run.update(11.6, 1.0f), ArenaBossEventType::CritOpened));
+    run.interceptUp(11.7);
+    CHECK(run.crit().isOpen(12.0));
+    CHECK(run.onHit({-2, 0}, {0, 0}, {1, 0}, 12.0, nullptr, &r).empty());
+    CHECK_FALSE(r.crit);
+
+    // The wrong key does nothing; the shared blow unlocks it for 3 s.
+    UnlockResult u = UnlockResult::Unlocked;
+    CHECK(run.offerUnlock(kUnlockRefusal, 12.1, 0, &u).empty());
+    CHECK(u == UnlockResult::WrongKey);
+    const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, 12.2, 0, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    REQUIRE(ev.size() == 2);
+    CHECK(ev[0].type == ArenaBossEventType::Unlocked);
+    CHECK(ev[0].value == kUnlockSharedBlow);
+    CHECK(ev[0].until == doctest::Approx(15.2));
+    CHECK(ev[1].type == ArenaBossEventType::CritOpened);
+    CHECK(ev[1].until == doctest::Approx(15.2)); // the lock outlasts the intercept's 14.5
+    CHECK(run.weakPointOpen());
+    const ArenaBossEvents& hit = run.onHit({-2, 0}, {0, 0}, {1, 0}, 12.5, nullptr, &r);
+    REQUIRE(hit.size() == 1);
+    CHECK(hit[0].type == ArenaBossEventType::Crit);
+    CHECK(hit[0].value == 1);
+
+    // It shuts on its own time: CritClosed at 15.2, then no crit.
+    const ArenaBossEvents& shut = run.update(16.0, 1.0f);
+    REQUIRE(shut.size() == 1);
+    CHECK(shut[0].type == ArenaBossEventType::CritClosed);
+    CHECK(shut[0].at == doctest::Approx(15.2));
+    CHECK_FALSE(run.weakPointOpen());
+    CHECK(run.onHit({-2, 0}, {0, 0}, {1, 0}, 16.0, nullptr, &r).empty());
+    CHECK(run.lock().opens() == 1);
+}
+
+TEST_CASE("locked weak point: a run that begins late on the clock opens for the full window") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    for (double start : {3601.0, 7200.0, 1e6}) {
+        ArenaBossRun run;
+        run.begin(def, start);
+        UnlockResult u = UnlockResult::BadKey;
+        const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, start + 1.0, 0, &u);
+        CHECK(u == UnlockResult::Unlocked);
+        REQUIRE_FALSE(ev.empty());
+        CHECK(ev[0].type == ArenaBossEventType::Unlocked);
+        CHECK(ev[0].until == doctest::Approx(start + 4.0));
+        CHECK(run.lock().open(start + 3.9));
+    }
+}
+
+TEST_CASE("locked weak point: a long quiet stretch before the first offer leaves the lock in step") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    ArenaBossRun run;
+    run.begin(def, 0.0);
+    // 700 s: past kMaxTimeJump, so a lock that did not follow its owner would ignore the offer.
+    for (double t = 1.0; t <= 700.0; t += 1.0) run.update(t, 1.0f);
+    UnlockResult u = UnlockResult::BadKey;
+    const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, 700.0, 0, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    REQUIRE_FALSE(ev.empty());
+    CHECK(ev[0].until == doctest::Approx(703.0));
+    CHECK(run.weakPointOpen());
+    run.update(703.5, 1.0f);
+    CHECK_FALSE(run.weakPointOpen());
+}
+
+TEST_CASE("locked weak point: a junk far-future time is ignored and not stored by the run") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    ArenaBossRun junk, clean;
+    junk.begin(def, 0.0);
+    clean.begin(def, 0.0);
+    UnlockResult u = UnlockResult::BadKey;
+    junk.offerUnlock(kUnlockSharedBlow, 1e300, 0, &u);
+    CHECK(junk.now() == 0.0);
+    junk.relock(1e12);
+    CHECK(junk.now() == 0.0);
+    for (const double t : {13.0, 14.0}) {
+        junk.update(t, 1.0f);
+        clean.update(t, 1.0f);
+    }
+    CHECK(junk.now() == clean.now());
+    junk.offerUnlock(kUnlockSharedBlow, 14.0, 0, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    CHECK(junk.weakPointOpen());
+}
+
+TEST_CASE("locked weak point: a longer intercept opening is kept; an offer while open restarts the lock") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"], "openSeconds": 1 })");
+    ArenaBossRun run;
+    run.begin(def, 0.0);
+    run.startMove(def.find("fist"), 10.0, CalledZone::Left);
+    run.interceptDown(CalledZone::Left, 11.4);
+    run.update(11.6, 1.0f);
+    run.interceptUp(11.7);
+    const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, 12.0);
+    REQUIRE(ev.size() == 2);
+    CHECK(ev[0].until == doctest::Approx(13.0));
+    CHECK(ev[1].until == doctest::Approx(14.5)); // the window keeps the intercept's end
+    const ArenaBossEvents& again = run.offerUnlock(kUnlockSharedBlow, 12.8);
+    REQUIRE(again.size() == 2);
+    CHECK(again[0].value == 0);
+    CHECK(again[0].amount == 1);
+    CHECK(again[0].until == doctest::Approx(13.8));
+    CritResult r;
+    run.onHit({-2, 0}, {0, 0}, {1, 0}, 13.5, nullptr, &r);
+    CHECK(r.crit);
+    run.onHit({-2, 0}, {0, 0}, {1, 0}, 14.0, nullptr, &r); // the window is open, the lock is not
+    CHECK_FALSE(r.crit);
+    CHECK(run.lock().opens() == 1);
+}
+
+TEST_CASE("locked weak point: a read clause must match; a refusal opens, a deferral shuts it") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["read_clause", "refusal"], "clause": 4, "openSeconds": 0 })");
+    ArenaBossRun run;
+    run.begin(def, 0.0);
+    UnlockResult u = UnlockResult::Unlocked;
+    CHECK(run.offerUnlock(kUnlockReadClause, 1.0, 3, &u).empty());
+    CHECK(u == UnlockResult::WrongClause);
+    CHECK(run.offerUnlock(kUnlockSharedBlow, 1.0, 0, &u).empty());
+    CHECK(u == UnlockResult::WrongKey);
+    const ArenaBossEvents& ev = run.offerUnlock(kUnlockReadClause, 1.0, 4, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    REQUIRE(ev.size() == 2);
+    CHECK(std::isinf(ev[0].until));
+    CHECK(run.update(500.0, 1.0f).empty()); // open until a relock
+    CHECK(run.weakPointOpen());
+    CritResult r;
+    run.onHit({-2, 0}, {0, 0}, {1, 0}, 500.0, nullptr, &r);
+    CHECK(r.crit);
+
+    const ArenaBossEvents& shut = run.onDeferred(501.0);
+    REQUIRE(shut.size() == 2);
+    CHECK(shut[0].type == ArenaBossEventType::Relocked);
+    CHECK(shut[1].type == ArenaBossEventType::CritClosed);
+    CHECK(shut[1].at == doctest::Approx(501.0));
+    CHECK_FALSE(run.weakPointOpen());
+    CHECK(run.onDeferred(502.0).empty()); // already shut
+    CHECK(run.lock().deferrals() == 2);
+
+    CHECK(run.offerUnlock(kUnlockRefusal, 503.0, 0, &u).size() == 2);
+    CHECK(u == UnlockResult::Unlocked);
+    CHECK(run.relock(504.0).size() == 2);
+    CHECK(run.relock(505.0).empty());
+    CHECK(run.lock().opens() == 2);
+}
+
+TEST_CASE("locked weak point: a deferral without relockOnDefer leaves it open; an unlocked boss ignores keys") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["refusal"], "relockOnDefer": false })");
+    ArenaBossRun run;
+    run.begin(def, 0.0);
+    run.offerUnlock(kUnlockRefusal, 1.0);
+    CHECK(run.onDeferred(1.5).empty());
+    CHECK(run.weakPointOpen());
+
+    const ArenaBossDef plain = loadTestBoss();
+    ArenaBossRun p;
+    p.begin(plain, 0.0);
+    CHECK(p.weakPointOpen());
+    UnlockResult u = UnlockResult::Unlocked;
+    CHECK(p.offerUnlock(kUnlockSharedBlow, 1.0, 0, &u).empty());
+    CHECK(u == UnlockResult::BadKey);
+    CHECK(p.onDeferred(1.0).empty());
+    CHECK(p.relock(1.0).empty());
+}
+
+TEST_CASE("locked weak point: a count-driven fight allocates nothing") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow", "refusal"], "openSeconds": 2 })");
+    ArenaBossRun run;
+    StrikeCount count;
+    HeldRefusal refusal;
+    int crits = 0;
+    CritResult r;
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    run.begin(def, 0.0);
+    for (int frame = 0; frame < 3600; ++frame) {
+        const double now = frame / 60.0;
+        if (frame % 300 == 0) count.call(kLeadA, now);
+        if (frame % 4 == 0) {
+            const CountHit h = count.judgeBlow(static_cast<FighterId>((frame / 4) % 2), now);
+            if (sharedBlow(h)) run.offerUnlock(kUnlockSharedBlow, now);
+        }
+        for (const CountEvent& e : count.update(now))
+            if (sharedBlow(e)) run.offerUnlock(kUnlockSharedBlow, now);
+        if (frame % 900 == 0) refusal.offer();
+        if (frame % 900 == 450 && refusal.offerEnded() == RefusalInput::Resolved) {
+            if (refusal.deferred()) run.onDeferred(now);
+            else run.offerUnlock(kUnlockRefusal, now);
+        }
+        crits += static_cast<int>(run.onHit({-2, 0}, {0, 0}, {1, 0}, now, nullptr, &r).size());
+        run.update(now, 1.0f);
+    }
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(crits > 0);
+    CHECK(run.lock().opens() > 0);
+    CHECK(run.lock().deferrals() > 0);
 }

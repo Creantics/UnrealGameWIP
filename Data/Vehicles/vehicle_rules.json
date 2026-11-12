@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "provisional": true,
+  "note": "Provisional numbers. Garage x/y/radius in metres. canal_rd is placed on Canal Road; south_wards and north_shore are placeholders on the coast road until they get a playable lot.",
+  "wear": { "minImpact": 150, "impactPerStage": 400, "dirtPerKm": 0.25 },
+  "repair": {
+    "pricePerStage": 50, "minutes": 30,
+    "garages": [
+      { "id": "canal_rd", "where": "core, Canal Road", "x": 885, "y": 530, "radius": 8 },
+      { "id": "south_wards", "where": "south wards, coast road (placeholder)", "x": 905, "y": -600, "radius": 8 },
+      { "id": "north_shore", "where": "north shore, coast road (placeholder)", "x": 905, "y": 1600, "radius": 8 }
+    ]
+  },
+  "seats": {
+    "enterReach": 200, "enterMaxSpeed": 50, "enterTime": 1.2, "exitTime": 0.9, "exitHold": 0.3,
+    "exitMaxSpeed": 100, "followerSpeed": 450, "boardFar": 1500, "boardWait": 3
+  },
+  "pedestrian": {
+    "nearDistance": 800, "nearCapKmh": 25, "coneAngle": 35, "reaction": 0.3, "sidestepSpeed": 350,
+    "halfWidth": 74, "clearance": 50, "stumbleBelowKmh": 10, "stumbleTime": 0.8, "downTime": 2.5,
+    "brakeDecel": 1100, "stopGap": 100, "brakeMargin": 150
+  }
+}

@@ -21,7 +21,8 @@
 // hands off too (the screens play themselves); fast autoplay skips the hand-off unless
 // -StoryAutoPlayHandoff.
 //
-// Moves, scenes and time in the FINISHED line count from this map visit only.
+// Moves, scenes and wall-clock time in the FINISHED line count the whole story run (UFTStorySubsystem:
+// from StartStory or a loaded save), across the hand-off map changes.
 //
 // Command line: -StoryAutoPlay plays by itself (each text typed out, then a short pause);
 // -StoryAutoPlayFast shows each text whole and makes many moves a frame; -StoryQuitOnFinish exits
@@ -42,8 +43,9 @@
 //
 // Voice: a voiced line (UFTAudioSubsystem::OnVoiceLine) plays its lip-sync track (Data/Voice/<LineId>.nface)
 // on every UFTFaceComponent in this map whose ModelId is the speaker's model in the local cast file,
-// Data/Voice/speakers.json (ftcore::SpeakerCast; gitignored, since the keys are script labels). The track
-// stops when the voice does. Auto-advance and paced autoplay wait for the voice to finish before their
+// Data/Voice/speakers.json (ftcore::SpeakerCast; gitignored, since the keys are script labels), or, when
+// the map has none, on its stand-in faces (UFTFaceComponent::bStandIn; ftcore::pickFaceRoute). The track
+// stops when the voice does. The run's tally goes to the log as "Story: FACES ..." when a map ends. Auto-advance and paced autoplay wait for the voice to finish before their
 // pause starts (auto-advance then waits only its short voice tail); a press still moves on at once and
 // cuts the voice. Fast autoplay and skip never wait. With no cast file, no faces or no voice, nothing
 // changes.
@@ -61,9 +63,11 @@
 #include "ftcore/Backlog.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/Skip.h"
+#include "ftcore/StoryCast.h"
 
 #include "FTStoryDirector.generated.h"
 
+class AFTCastMember;
 class AFTPlayerController;
 class UFTAudioSubsystem;
 class UFTFaceComponent;
@@ -157,8 +161,22 @@ private:
 	UFUNCTION()
 	void HandleVoiceStopped();
 
-	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads).
+	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads) and the
+	// local Data/Story/cast_marks.json into CastMarks.
 	void LoadCast();
+	// At a scene's start, in a map with a stand-in face: puts the scene's cast speakers on screen, each a lead look
+	// (the explore character's PartyLooks) whose ModelId is the speaker's model, on its cast mark (else the default
+	// arc) around the stand-in. One actor per model, made once and reused. The stand-in hides when every cast
+	// speaker of the scene has its own; otherwise it stays on the anchor and the cast stands around it. A checkout
+	// without looks for the cast puts no one on screen and changes nothing.
+	void PlaceSceneCast();
+	// Destroys the cast pool and shows the stand-in again (the director ends, the story finishes, a step takes
+	// over the screen): no cast is left standing and a later director starts from none.
+	void ClearSceneCast(const TCHAR* Why);
+	// The frame-cost buckets below, by what the cast is doing this frame.
+	void NoteCastFrame();
+	// The path of the next -StoryShot still of LineId; empty when the name is unsafe or 99 are saved.
+	FString StoryShotFile(const FString& LineId) const;
 	// The current line's voice is still playing.
 	bool IsVoiceBusy() const;
 
@@ -212,13 +230,28 @@ private:
 	bool bFast = false;
 	bool bReported = false;
 	float WaitTime = 0.f; // autoplay: seconds with nothing to do
-	int32 Moves = 0;
-	int32 Scenes = 0;
-	double StartTime = 0.0;
 
 	bool bAlpha = false; // -AlphaAutoPlay
 	bool bHandoffAuto = false; // -StoryAutoPlayHandoff
 	bool bQuitOnReturn = false;
+	// -StoryShot=<name>: autoplay (not fast) saves the screen with the HUD for each of the run's first
+	// -StoryShotMax=N lines (default 4, 0..64; 0 quits at once), once the line is revealed and 1 s in,
+	// then quits. The stills go to the screenshot folder as <name>_<line id>.png, never over an
+	// existing one (ftcore::storyShotNameOk, clampStoryShotMax).
+	FString ShotPrefix;
+	int32 ShotsLeft = 0;
+	float ShotQuitIn = -1.f;
+	bool bShotThisBeat = false;
+	// -StoryShotSpeaking=<model id> (non-shipping, with -StoryShot): instead of one still per line, three stills
+	// across the first fully voiced line that model speaks on its own face: mouth closed, open, closed again.
+	FString ShotSpeakingModel;
+	int32 ShotSpeakingPhase = 0;
+	float ShotSpeakingAt = 0.f;
+	int32 ShotSpeakingBeat = -1;
+	void TickSpeakingShots();
+	float BeatAge = 0.f;          // seconds since the beat began (autoplay)
+	FString VoiceLineId;          // the line whose voice last started, and its length
+	float VoiceSeconds = 0.f;
 	bool bPrevRouteInput = false;
 	bool bHandingOff = false;
 	FString Banner;
@@ -241,4 +274,20 @@ private:
 	ftcore::SpeakerCast Speakers;
 	TArray<TWeakObjectPtr<UFTFaceComponent>> SpeakingFaces;
 	bool bLoggedNoFace = false;
+	ftcore::CastMarks CastMarks;
+	UPROPERTY(Transient)
+	TMap<FString, TObjectPtr<AFTCastMember>> CastActors; // by model id; null: the look didn't load
+	TWeakObjectPtr<AActor> CastAnchor;
+	// Non-shipping diagnostics: -FaceDiag logs each cast face's peaks when the cast is cleared; -CastCost times
+	// frames by cast state (below) and logs them at EndPlay. Both off by default and compiled out of shipping.
+	bool bCastDiag = false;
+	bool bCastCost = false;
+	// The face curve mapping asset, loaded with the map (not at a face's first bind mid-scene).
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> CurveMapPoseHold;
+	// Frame cost (wall ms per frame) by cast state: none in the pool, pool all hidden, some on screen idle, one
+	// speaking. Logged at EndPlay.
+	double LastFrameAt = -1.0;
+	double CastFrameMs[4] = {};
+	int32 CastFrames[4] = {};
 };

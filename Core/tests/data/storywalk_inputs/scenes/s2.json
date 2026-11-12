@@ -1,0 +1,8 @@
+{
+  "id": "s2",
+  "title": "Two",
+  "beats": [
+    {"type": "gameplay", "kind": "CMB", "text": "[fight]"},
+    {"type": "line", "id": "s2_l1", "speaker": "A", "text": "two"}
+  ]
+}

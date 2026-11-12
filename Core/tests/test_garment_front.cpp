@@ -43,6 +43,42 @@ TEST_CASE("garment front: a pair without an open mesh stays closed") {
     CHECK(WornPiece("lead_jacket", pairs, {{"", Front::Open}}) == "lead_jacket");
 }
 
+TEST_CASE("garment front: an open mesh not made yet gives the closed one, whichever half is listed") {
+    const std::vector<FrontPair> pairs = {
+        {"/Game/Out/SK_Jacket.SK_Jacket", "/Game/Out/SK_Jacket_open.SK_Jacket_open", Front::Open, false}};
+    CHECK(WornPiece("/Game/Out/SK_Jacket.SK_Jacket", pairs, {}) == pairs[0].closed);
+    CHECK(WornPiece("/Game/Out/SK_Jacket_open.SK_Jacket_open", pairs, {}) == pairs[0].closed);
+    CHECK(WornPiece("/Game/Out/SK_Jacket_open", pairs, {{"", Front::Open}}) == pairs[0].closed);
+    CHECK(FrontFor(pairs[0], {{"jacket", Front::Open}}) == Front::Closed);
+}
+
+TEST_CASE("garment front: short and long object paths match, in any case") {
+    using ftcore::look::PiecePathKey;
+    using ftcore::look::WornChoice;
+    CHECK(PiecePathKey("/Game/A/SK_B.SK_B") == "/game/a/sk_b");
+    CHECK(PiecePathKey("/Game/A/SK_B") == "/game/a/sk_b");
+    CHECK(PiecePathKey("/Game/A/SK_B.Other") == "/game/a/sk_b.other");
+    const std::vector<FrontPair> shortForm = {{"/Game/A/SK_Coat", "/Game/A/SK_Coat_open", Front::Open}};
+    CHECK(WornPiece("/Game/A/SK_Coat.SK_Coat", shortForm, {}) == "/Game/A/SK_Coat_open");
+    CHECK(WornChoice("/game/a/sk_coat_open.SK_Coat_open", shortForm, {}).pair == 0);
+    const std::vector<FrontPair> longForm = {{"/Game/A/SK_Coat.SK_Coat", "/Game/A/SK_Coat_open.SK_Coat_open", Front::Closed}};
+    CHECK(WornPiece("/Game/A/SK_Coat_open", longForm, {}) == "/Game/A/SK_Coat.SK_Coat");
+    CHECK(WornChoice("/Game/B/SK_Coat", longForm, {}).pair == -1);
+}
+
+TEST_CASE("garment front: a word names asset names in any case, not folders; unmatched words are listed") {
+    using ftcore::look::AskNames;
+    using ftcore::look::UnmatchedAskWords;
+    const std::vector<FrontPair> pairs = {{"/Game/Jackets/SK_Duy_Coat", "/Game/Jackets/SK_Duy_Coat_open", Front::Closed}};
+    CHECK(AskNames(pairs[0], "COAT"));
+    CHECK_FALSE(AskNames(pairs[0], "jackets"));
+    CHECK(FrontFor(pairs[0], {{"Coat", Front::Open}}) == Front::Open);
+    const auto words = UnmatchedAskWords(pairs, {{"jackets", Front::Open}, {"coat", Front::Open}, {"", Front::Open},
+                                                 {"jackets", Front::Closed}});
+    REQUIRE(words.size() == 1);
+    CHECK(words[0] == "jackets");
+}
+
 TEST_CASE("garment front: parsing states and asks") {
     Front f = Front::Closed;
     CHECK(ParseFront("Open", f));

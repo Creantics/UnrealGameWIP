@@ -11,7 +11,7 @@
 //
 // Open and closed garments (ftcore/GarmentFront.h): a jacket or coat is two fitted meshes, closed and open, and the
 // look says which it wears by default. -LookFront=open|closed, or word:state items joined by + (jacket:open+coat:closed),
-// picks the state at setup; a scene can do the same (FTLook::SetSceneFronts) or switch a worn piece (FTLook::SetFront).
+// picks the state at setup (not in shipping); a scene can do the same (FTLook::SetSceneFronts) or switch a worn piece (FTLook::SetFront).
 
 #include "CoreMinimal.h"
 
@@ -67,6 +67,20 @@ struct FFTGarmentFronts
 	bool bOpen = false;
 };
 
+// A look's garment pairs as set up (FTLook::PrepareFronts): both halves loaded once and held here, so switching never
+// loads on the gameplay path; one entry per FFTLeadLook::Fronts entry, null where the mesh isn't made. The actor wearing
+// the look keeps this as a UPROPERTY so the meshes stay loaded.
+USTRUCT()
+struct FFTWornFronts
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<TObjectPtr<USkeletalMesh>> Closed;
+	UPROPERTY()
+	TArray<TObjectPtr<USkeletalMesh>> Open;
+};
+
 // One party member's look. An empty body path (or one that doesn't load) uses the member's own body under
 // /Game/Characters/<Name>/<name>/SkeletalMeshes/, as the Tripo leads were imported. Each locomotion clip is the
 // look's own (the idle and walk paths), else the one retargeted onto the body in ClipFolder, else (the idle and
@@ -103,6 +117,10 @@ struct FFTLeadLook
 	TArray<FFTGroomLook> Grooms;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	TArray<FFTMaterialSwap> MaterialSwaps;
+	// The character model the look is (an id from Data/Assets/models.json). The story director puts the look on
+	// screen for a scene whose cast speaker is cast as this model (Data/Voice/speakers.json). Empty: never cast.
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FString ModelId;
 };
 
 // A look's body and its base locomotion clips (UFTLocomotionAnimInstance::SetBaseClips' order), loaded; null where
@@ -112,6 +130,10 @@ struct FFTLoadedLook
 	USkeletalMesh* Body = nullptr;
 	UAnimSequence* Clips[UFTLocomotionAnimInstance::NumBaseClips] = {};
 	FString ClipFolder;
+	// The look's garment pairs, both halves loaded (FTLook::PrepareFronts), and the pieces as worn with them
+	// (FTLook::WornPiecePaths). The wearer copies Fronts into a UPROPERTY before the next garbage collection.
+	FFTWornFronts Fronts;
+	TArray<FSoftObjectPath> Pieces;
 };
 
 namespace FTLook
@@ -122,18 +144,27 @@ FORGOTTENTHIRD_API FFTLoadedLook LoadLook(const FFTLeadLook& Look, const TCHAR* 
 // True when the piece is left off by the command line (-LocoNoPieces, or -LocoNoPiece=a+b naming it).
 FORGOTTENTHIRD_API bool PieceLeftOff(const FSoftObjectPath& Piece);
 
+// Loads both halves of each of the look's garment pairs, once per look setup. Whether an open mesh exists is decided
+// here: its package is looked up (in a cooked build, a package that wasn't cooked doesn't exist, so an open mesh not
+// referenced by the cook stays closed) and loaded. Front asks whose word names no pair are warned about.
+FORGOTTENTHIRD_API FFTWornFronts PrepareFronts(const FFTLeadLook& Look, const TCHAR* Who);
+
 // The look's pieces as worn: each garment pair's half for its state (its default, then the scene's asks, then
-// -LookFront's). Without Fronts this is PiecePaths.
-FORGOTTENTHIRD_API TArray<FSoftObjectPath> WornPiecePaths(const FFTLeadLook& Look);
+// -LookFront's), the closed half when the open mesh isn't made, whichever half PiecePaths lists. Without Fronts this
+// is PiecePaths.
+FORGOTTENTHIRD_API TArray<FSoftObjectPath> WornPiecePaths(const FFTLeadLook& Look, const FFTWornFronts& Fronts);
 
 // The scene's front asks ("open", "closed" or word:state items joined by +), used by every look set up after this
 // call; empty clears them. False (and nothing changed) when the text doesn't parse.
 FORGOTTENTHIRD_API bool SetSceneFronts(const FString& Asks);
 
-// Switches the worn pieces of the look's pairs that `Word` names (every pair when empty) to `bOpen`: each such piece
-// component gets the other fitted mesh, keeping its leader pose and materials as imported. Returns how many changed.
-FORGOTTENTHIRD_API int32 SetFront(const FFTLeadLook& Look, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
-	const FString& Word, bool bOpen, const TCHAR* Who);
+// Switches the worn pieces of the look's pairs that `Word` names (any case, in the asset name; every pair when empty)
+// to `bOpen`, using the meshes PrepareFronts held. Each such piece component gets the other fitted mesh: its material
+// overrides are dropped (the new mesh's own slots show) and the look's MaterialSwaps applied again, the leader pose map
+// is rebuilt on `Body` and the cloth actors are made again. A word naming no pair is warned about. Returns how many
+// pieces changed.
+FORGOTTENTHIRD_API int32 SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
+	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, const FString& Word, bool bOpen, const TCHAR* Who);
 
 // Adds a component per piece mesh, attached to the body and posed by it (leader pose). Missing meshes are skipped
 // with a warning that names `Who`. Returns how many of the added pieces have cloth.

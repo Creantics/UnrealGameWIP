@@ -748,6 +748,15 @@ ftcore::ArenaBlowRuling FFTStoneBearerHost::RuleBlow(void* User, const ftcore::A
 	{
 		return ftcore::ArenaBlowRuling();
 	}
+	if (Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer && Blow.type == ftcore::ArenaEventType::HostHit)
+	{
+		// A held blow's bonus: vetoed on the pedestal, else whole (its base already carries onHit's takenScale);
+		// no hit counted.
+		ftcore::ArenaBlowRuling Ruling;
+		Ruling.damage = Host->Boss.bonusScale();
+		Ruling.veto = Host->Boss.invulnerable();
+		return Ruling;
+	}
 	if (Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer)
 	{
 		return Host->RuleLeadBlow(Blow);

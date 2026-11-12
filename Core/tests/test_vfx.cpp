@@ -150,11 +150,14 @@ TEST_CASE("vfx: the leads' weapon effects load without warnings and keep their p
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"spell_bolt", 5, 38, false},
+    const Expect files[] = {{"spell_bolt", 3, 24, false},
                             {"spell_burst", 5, 140, false},
                             {"spell_ward", 3, 150, true},
+                            {"spell_impact", 2, 16, false},
                             {"muzzle_flash", 4, 17, false},
-                            {"gauntlet_spark", 2, 34, false}};
+                            {"gun_tracer", 1, 2, false},
+                            {"gun_impact", 3, 19, false},
+                            {"gauntlet_spark", 2, 14, false}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -186,6 +189,12 @@ TEST_CASE("vfx: the weapon effects keep their timing and reach") {
     REQUIRE(loadEffect("muzzle_flash", e));
     CHECK(e.emitters[0].name == "flash");
     CHECK(e.emitters[0].lifetime.hi <= doctest::Approx(0.06f)); // the flash itself is about 60 ms
+    CHECK(e.emitters[0].startSize.hi <= 0.15f);                    // small enough to show the pistol behind it
+
+    // The tracer's head covers 3 m (the game scales its speed to the distance, User.SpeedScale, so it dies on the
+    // hit point at its lifetime).
+    REQUIRE(loadEffect("gun_tracer", e));
+    CHECK(e.emitters[0].speed.hi * e.emitters[0].lifetime.hi == doctest::Approx(3.f));
 
     // The bolt's head covers 3.2 m (speed x lifetime, no drag), and its streaks do not pass it.
     REQUIRE(loadEffect("spell_bolt", e));
@@ -197,7 +206,7 @@ TEST_CASE("vfx: the weapon effects keep their timing and reach") {
     REQUIRE(streaks >= 0);
     const VfxEmitter& s = e.emitters[static_cast<std::size_t>(streaks)];
     CHECK(s.speed.hi * s.lifetime.hi <= doctest::Approx(3.2f));
-    CHECK(h.subEmitters.size() == 2);
+    CHECK(h.subEmitters.empty()); // the pop at the end is spell_impact, played at the hit point by the game
 
     // The burst's ring travels about 3 m before it fades: v/drag * (1 - exp(-drag t)).
     REQUIRE(loadEffect("spell_burst", e));

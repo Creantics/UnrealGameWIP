@@ -5,10 +5,13 @@
 #include "Engine/Font.h"
 #include "EngineUtils.h"
 
+#include "FTAimReticle.h"
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneHUD.h"
+#include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
 #include "FTPauseOverlay.h"
+#include "FTInputBindings.h"
 #include "FTUiText.h"
 
 #include "ftcore/Explore.h"
@@ -25,7 +28,6 @@ const FLinearColor kPanelField(0.02f, 0.02f, 0.05f, 0.6f);
 const FTUiText kTitleField(TEXT("explore.objectives"));
 const FString kTickField(TEXT("v"));
 const FString kArrowField(TEXT(">"));
-const FTUiText kHintField(TEXT("explore.hint"));
 const FTUiText kCompleteField(TEXT("explore.complete"));
 const FTUiText kWorldField(TEXT("explore.world"));
 const FTUiText kOverworldField(TEXT("explore.overworld"));
@@ -70,13 +72,21 @@ void AFTExploreHUD::DrawHUD()
 	{
 		return;
 	}
+	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
+	if (bReticleOnly)
+	{
+		DrawAimReticle(); // a review capture: the scene and the reticle, no text
+		return;
+	}
 	const AFTExploreDirector* Found = FindDirector();
 	if (!Found)
 	{
+		// A map with no director (a bare world map) still shows the reticle and the controls line.
+		DrawAimReticle();
+		DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * UiScale, GEngine->GetSmallFont(), 1.f);
 		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
-	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
 	// A cutscene playing in place has the screen: its letterbox, and none of the field's own lines.
 	const AFTCutsceneDirector* Cutscene = Found->GetCutsceneDirector();
 	if (Cutscene && Cutscene->IsPlayingInPlace())
@@ -97,9 +107,16 @@ void AFTExploreHUD::DrawHUD()
 	{
 		DrawObjectives(*Found);
 	}
+	DrawAimReticle();
 	DrawPrompt(*Found);
 	DrawMessages(*Found);
 	FT::DrawPauseOverlay(*this, Canvas);
+}
+
+void AFTExploreHUD::DrawAimReticle()
+{
+	const AFTExploreCharacter* Lead = Cast<AFTExploreCharacter>(GetOwningPawn());
+	FT::DrawAimReticle(*this, Canvas, Lead ? Lead->GetAimAlpha() : 0.f);
 }
 
 void AFTExploreHUD::DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale)
@@ -178,7 +195,7 @@ void AFTExploreHUD::DrawPrompt(const AFTExploreDirector& D)
 		DrawRect(kPanelField, CX - W * 0.5f - 16.f * S, Y - 8.f * S, W + 32.f * S, H + 16.f * S);
 		DrawStrCentered(Prompt, kWhiteField, CX, Y, Font, 1.2f);
 	}
-	DrawStrCentered(kHintField, kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
+	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
 }
 
 void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D)

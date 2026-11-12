@@ -1,4 +1,6 @@
 #include "ftcore/StoryDatabase.h"
+#include "ftcore/StoryChain.h"
+#include "ftcore/GameplayPlan.h"
 
 #include <algorithm>
 #include <charconv>
@@ -311,6 +313,22 @@ void StoryBuilder::gameplay(std::string_view kindName, std::string_view text, st
 void StoryBuilder::param(std::string_view key, std::string_view value) {
     if (db_.scenes_.empty() || db_.scenes_.back().beatCount == 0 || db_.beats_.back().type != BeatType::Gameplay)
         return fail("param '" + std::string(key) + "' does not follow a gameplay beat");
+    if (key == "sets") {
+        if (value.empty()) return fail("param 'sets' without a flag id");
+        db_.beats_.back().setsFlag = internFlag(value);
+    } else if (key == "stub") {
+        std::int64_t v = 0;
+        const char* end = value.data() + value.size();
+        const auto [ptr, ec] = std::from_chars(value.data(), end, v);
+        if (value.empty() || ec != std::errc{} || ptr != end)
+            return fail("param 'stub' is not an integer: '" + std::string(value) + "'");
+        db_.beats_.back().hasStub = true;
+        db_.beats_.back().stub = v;
+    } else if (key == "lose") {
+        LossRule rule = LossRule::Retry;
+        if (!lossRuleFromName(value, rule))
+            return fail("param 'lose' is not retry, branch or never: '" + std::string(value) + "'");
+    }
     db_.params_.emplace_back(store(key), store(value));
     ++db_.beats_.back().paramCount;
 }
@@ -383,6 +401,42 @@ bool StoryBuilder::finish(StoryDatabase& out, std::string* error) {
                     o.next = sc.beatCount; // ends the scene
                 }
             }
+
+        // A fight's loss rule. "branch" resumes with 1 (won) or 0 (lost) into `sets`: it needs a fight step and
+        // a flag that can take both (a string flag can't). "never" is legal but listed, so it is never a surprise.
+        std::string never;
+        std::uint32_t neverCount = 0;
+        for (const Scene& sc : db.scenes_)
+            for (std::uint32_t i = 0; i < sc.beatCount && error_.empty(); ++i) {
+                const Beat& b = db.beats_[sc.firstBeat + i];
+                if (b.type != BeatType::Gameplay) continue;
+                LossRule rule = LossRule::Retry;
+                const std::string_view lose = db.param(b, "lose");
+                if (lose.empty() || !lossRuleFromName(lose, rule)) continue;
+                const std::string where = "scene '" + std::string(db.view(sc.id)) + "' beat " + std::to_string(i);
+                if (rule == LossRule::Never) {
+                    never += (neverCount++ ? ", " : "") + where;
+                    continue;
+                }
+                if (rule != LossRule::Branch) continue;
+                GameplayPlan plan;
+                plan.lower(db, b);
+                if (gameplayPlanFights(plan) == 0) {
+                    fail(where + ": lose=branch without a fight step");
+                    break;
+                }
+                if (b.setsFlag == kNone) {
+                    fail(where + ": lose=branch without a sets flag");
+                    break;
+                }
+                if (db.flags_[b.setsFlag].initial.kind == FlagValue::Kind::String) {
+                    fail(where + ": lose=branch sets '" + std::string(db.view(db.flags_[b.setsFlag].id)) +
+                         "', a string flag (it must take 0 or 1)");
+                    break;
+                }
+            }
+        if (neverCount > 0)
+            warn(std::to_string(neverCount) + " fight beat(s) marked lose=never (a loss counts as a win): " + never);
     }
 
     const bool ok = error_.empty();

@@ -146,7 +146,16 @@ TEST_CASE("beat choreo: the shipped clip catalogue has every clip the choreograp
         CHECK_MESSAGE(clip.asset().rfind("/Game/Combat/BeatAnims/", 0) == 0, id);
         CHECK(clip.asset().size() > std::string_view(id).size());
     }
-    CHECK(c.count == 25);
+    CHECK(c.count == 27);
+    // The leads' weapon clips (hand-keyed, no committed asset: they are retargeted locally per lead).
+    for (const char* id : {"lead_fire", "lead_cast"}) {
+        const int at = c.find(id);
+        REQUIRE_MESSAGE(at >= 0, id);
+        const BeatClip& clip = c[static_cast<std::size_t>(at)];
+        CHECK(clip.impact > 0.0);
+        CHECK(clip.impact < clip.length);
+        CHECK_FALSE(clip.loop);
+    }
     CHECK(c[static_cast<std::size_t>(c.find("lead_stance"))].loop);
     CHECK(c[static_cast<std::size_t>(c.find("boss_stance"))].loop);
     CHECK_FALSE(c[static_cast<std::size_t>(c.find("lead_jab"))].loop);

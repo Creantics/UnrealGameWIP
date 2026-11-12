@@ -46,7 +46,7 @@ assert len(SHAPES_52) == 52 and len(set(SHAPES_52)) == 52
 # House shapes (§5.2): added only where the facial-action set cannot hold a look. Combination correctives
 # are named a_x_b and are driven by the product of the two weights (§7.3), never keyed directly.
 HOUSE_SHAPES = [
-    "mouthSmileNoCheek",     # the Third's "smile that does not reach the eyes" (no cheek raise)
+    "mouthSmileNoCheek",     # a "smile that does not reach the eyes" (no cheek raise)
     "lipsTogetherSoft",      # nasal hum / relaxed closed lips (viseme nn)
     "eyeLidTension",         # tight lower lids without a squint (anxious, wary)
     "jawOpen_x_mouthSmile",  # corrective: keeps the smile corners on the teeth when the jaw opens

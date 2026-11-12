@@ -1,10 +1,32 @@
 #include "FTStorySaveGame.h"
 
+#include "FTStoryStateSubsystem.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
 #include "ftcore/Seen.h"
 #include "ftcore/StorySave.h"
+
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "FTWorldClockSubsystem.h"
+
+namespace
+{
+// The running world clock of the story's world, or null (no world, or the clock is off there).
+UFTWorldClockSubsystem* ClockOf(const UFTStorySubsystem* Story)
+{
+	UWorld* World = Story ? Story->GetWorld() : nullptr;
+	UFTWorldClockSubsystem* Clock = World ? World->GetSubsystem<UFTWorldClockSubsystem>() : nullptr;
+	return Clock && Clock->IsRunning() ? Clock : nullptr;
+}
+// The story state beside the story (same game instance), or null.
+UFTStoryStateSubsystem* StateOf(const UFTStorySubsystem* Story)
+{
+	UGameInstance* GI = Story ? Story->GetGameInstance() : nullptr;
+	return GI ? GI->GetSubsystem<UFTStoryStateSubsystem>() : nullptr;
+}
+} // namespace
 
 bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 {
@@ -29,7 +51,32 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 	}
 	ftcore::captureSeen(Story->GetSeen(), Save); // the read-state rides along (format 2)
 	Save.party = Story->GetParty();
+	if (const UFTWorldClockSubsystem* Clock = ClockOf(Story))
+	{
+		Save.clock = Clock->GetClock();
+		if (Clock->IsFixedByCommandLine())
+		{
+			Save.clock.paused = false; // the capture switch's pause is not part of the game
+		}
+		Save.hasClock = true;
+	}
+	// The block first: when the state cannot give one that matches this position, nothing is captured.
+	UFTStoryStateSubsystem* State = StateOf(Story);
+	TArray<uint8> Block;
+	bool bSkip = false;
+	if (State)
+	{
+		State->EncodeBlock(Block, &bSkip);
+		if (bSkip)
+		{
+			return false;
+		}
+	}
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
+	if (Block.Num() > 0)
+	{
+		StoryBlock = MoveTemp(Block);
+	}
 	return true;
 }
 
@@ -69,5 +116,19 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 	}
 	ftcore::applySeen(Save, Story->GetSeen()); // an old (format 1) save has none: nothing seen
 	Story->SetParty(Save.party);               // a save from before progression: xp and gold 0
+	if (UFTWorldClockSubsystem* Clock = ClockOf(Story); Clock && Save.hasClock)
+	{
+		ftcore::WorldClock SavedClock = Save.clock;
+		if (Clock->IsFixedByCommandLine())
+		{
+			SavedClock.paused = true; // a capture run's fixed clock stays fixed
+		}
+		Clock->SetClock(SavedClock); // a save from before the clock: the world keeps its own time
+	}
+	if (UFTStoryStateSubsystem* State = StateOf(Story))
+	{
+		State->DecodeBlock(StoryBlock); // a save from before the block: a new game's state
+		State->SyncAfterLoad(); // the runner stays where it was restored; the state follows it (StoryBridge::sync)
+	}
 	return true;
 }

@@ -1,4 +1,8 @@
 #include "FTBuildMassingWorldCommandlet.h"
+#include "FTBuildRoads.h"
+#include "FTCellInstancer.h"
+#include "FTNightLightData.h"
+#include "FTRoofDress.h"
 
 #include "ForgottenThird.h"
 
@@ -7,6 +11,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EditorWorldUtils.h"
 #include "Engine/CollisionProfile.h"
@@ -48,7 +53,11 @@
 #include "FTSceneLook.h"
 
 #include "ftcore/Json.h"
+#include "ftcore/MassingDress.h"
+#include "ftcore/MassingLayout.h"
 #include "ftcore/MassingPlan.h"
+#include "ftcore/MassingProps.h"
+#include "ftcore/RoadGraph.h"
 #include "ftcore/WorldChecks.h"
 #include "ftcore/WorldLayout.h"
 
@@ -83,6 +92,13 @@ constexpr double kLeadHeight = 1.8;
 const FName kHiddenWallTag(TEXT("FTHiddenWall"));
 // -Coverage logs a line for each of this many of the largest islands it leaves out as roofs and interiors of built boxes.
 constexpr size_t kCoverageInBoxLines = 12;
+// -Props sets street furniture only on a floor over this (m): lower is the sea or its foreshore. -Kerbs, -Quay and
+// -Frontage read the sea's side by it too.
+constexpr double kPropDryAbove = 0.5;
+// The ground's stuck groups (massingGroundRaises) each log at most this many of their boxes' ids, and the sea is near one
+// whose footprint reaches this far (m) west of -Sea's edge.
+constexpr int32 kStuckIdsShown = 8;
+constexpr double kStuckSeaReach = 30.0;
 
 FVector Cm(const ftcore::MassingVec& V)
 {
@@ -118,6 +134,57 @@ bool LoadBoxes(const FString& File, std::vector<ftcore::MassingBox>& Boxes)
 	}
 	std::string Error;
 	if (!ftcore::importMassingBoxes(View(Bytes), Boxes, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// -Props: the prop table (ftcore::importMassingProps).
+bool LoadProps(const FString& File, std::vector<ftcore::MassingPropRule>& Rules)
+{
+	TArray<uint8> Bytes;
+	std::string Error;
+	if (!LoadBytes(File, Bytes))
+	{
+		return false;
+	}
+	if (!ftcore::importMassingProps(View(Bytes), Rules, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// -Frontage: the frontage table (ftcore::importMassingFront).
+bool LoadFront(const FString& File, std::vector<ftcore::MassingFrontRule>& Rules)
+{
+	TArray<uint8> Bytes;
+	std::string Error;
+	if (!LoadBytes(File, Bytes))
+	{
+		return false;
+	}
+	if (!ftcore::importMassingFront(View(Bytes), Rules, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// A streets table (ftcore::importMassingStreets), left in the plan frame: the props', the frontage's or the kerbs'.
+bool LoadStreets(const FString& File, std::vector<ftcore::MassingStreet>& Streets)
+{
+	TArray<uint8> Bytes;
+	std::string Error;
+	if (!LoadBytes(File, Bytes))
+	{
+		return false;
+	}
+	if (!ftcore::importMassingStreets(View(Bytes), Streets, &Error))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
 		return false;
@@ -190,6 +257,14 @@ constexpr const TCHAR* kLookWorldPrefix = TEXT("solhaven_");
 constexpr const TCHAR* kLookGroundId = TEXT("paving_slab");
 constexpr const TCHAR* kLookRockId = TEXT("board_concrete");
 constexpr const TCHAR* kLookRoadIds[] = {TEXT("bitumen_roof"), TEXT("board_concrete")};
+// -LanePave=<m> (R5-LAYOUT): the carriageway and the lanes no wider wear worn asphalt (the shared clean_asphalt, no world
+// prefix), each lane widened kLookLanePaveMargin each side in the road mask (ftcore::massingLanePave) so its feathered
+// edge falls under the walls on the build-to line; the paving pads on those lanes are dropped (ftcore::massingDropLanePads).
+// -HillRock=<m>: the ground turns to worn rock from that height up (the hills behind the town), not paving.
+constexpr const TCHAR* kLookLaneRoadIds[] = {TEXT("clean_asphalt"), TEXT("bitumen_roof"), TEXT("board_concrete")};
+constexpr const TCHAR* kLookHillRockIds[] = {TEXT("worn_rock_natural_01"), TEXT("board_concrete")};
+constexpr double kLookLanePaveMargin = 0.5;
+constexpr double kLookLanePadReach = 0.5;
 // The road mask's size, in pixels a side. 8192 over the field's ~3.5 km is about 0.43 m a pixel.
 constexpr int32 kLookMaskSize = 8192;
 // The mask reaches this far (m) past the field's furthest edge, so its outermost ring (always empty) is off the ground.
@@ -211,6 +286,8 @@ struct FLook
 	double MaskSideM = 0.0;
 	float RockAltitudeM = 0.f;
 	int32 StreetCount = 0;
+	double LanePaveUpTo = 0.0; // -LanePave
+	double HillRockM = 0.0;    // -HillRock
 };
 
 UMaterialInterface* LoadLookMaterial(const FString& Package)
@@ -238,7 +315,7 @@ bool LoadLookMaps(const FString& Id, UTexture* (&Maps)[UE_ARRAY_COUNT(FTScene::S
 	return true;
 }
 
-bool PrepareLook(const FString& StreetsFile, const FHeightField& Field, double Side, FLook& Look)
+bool PrepareLook(const FString& StreetsFile, const ftcore::MassingStreetSections& Sections, const FHeightField& Field, double Side, FLook& Look)
 {
 	// The boxes' surfaces: the 15 photographed instances of the world surface master, Solhaven's.
 	for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
@@ -264,9 +341,10 @@ bool PrepareLook(const FString& StreetsFile, const FHeightField& Field, double S
 	}
 	const auto Layer = [&](int32 L, const TCHAR* const* Ids, int32 IdCount)
 	{
-		for (int32 I = 0; I < IdCount; ++I)
+		for (int32 I = 0; I < IdCount * 2; ++I)
 		{
-			const FString Id = kLookWorldPrefix + FString(Ids[I]);
+			// The world's own surface first, then a shared one of the same id (clean_asphalt has no world prefix).
+			const FString Id = (I % 2 == 0 ? FString(kLookWorldPrefix) : FString()) + FString(Ids[I / 2]);
 			const int32 At = Table.find(std::string(TCHAR_TO_UTF8(*Id)));
 			if (At >= 0 && LoadLookMaps(Id, Look.LayerMap[L]))
 			{
@@ -289,10 +367,11 @@ bool PrepareLook(const FString& StreetsFile, const FHeightField& Field, double S
 			bOk = Layer(L, &kLookGroundId, 1);
 			break;
 		case ftcore::SurfaceRole::Rock:
-			bOk = Layer(L, &kLookRockId, 1);
+			bOk = Look.HillRockM > 0.0 ? Layer(L, kLookHillRockIds, UE_ARRAY_COUNT(kLookHillRockIds)) : Layer(L, &kLookRockId, 1);
 			break;
 		default:
-			bOk = Layer(L, kLookRoadIds, UE_ARRAY_COUNT(kLookRoadIds));
+			bOk = Look.LanePaveUpTo > 0.0 ? Layer(L, kLookLaneRoadIds, UE_ARRAY_COUNT(kLookLaneRoadIds))
+										  : Layer(L, kLookRoadIds, UE_ARRAY_COUNT(kLookRoadIds));
 			break;
 		}
 		if (!bOk)
@@ -316,6 +395,23 @@ bool PrepareLook(const FString& StreetsFile, const FHeightField& Field, double S
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *StreetsFile, *Utf8(Error));
 		return false;
 	}
+	// -SharedUpTo leaves the shared surfaces out of the mask, so the ground's paving runs across them.
+	size_t Paved = 0;
+	ftcore::MassingStreetSections MaskSections = Sections;
+	if (Look.LanePaveUpTo > 0.0)
+	{
+		// -LanePave: the lanes stay in the mask, widened, so the road layer runs wall to wall across them.
+		const size_t Lanes = ftcore::massingLanePave(Streets, Look.LanePaveUpTo, kLookLanePaveMargin);
+		MaskSections.sharedUpTo = 0.0;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -LanePave: %d lanes (%.1f m wide and under) paved wall to wall in the road "
+			"mask, %.1f m past each wall line."), static_cast<int32>(Lanes), Look.LanePaveUpTo, kLookLanePaveMargin);
+	}
+	const size_t Shared = ftcore::massingStreetSections(Streets, MaskSections, &Paved);
+	if (Shared > 0 || Paved > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road mask: %d shared surfaces (%.1f m wide and under) left to the paving, %d streets "
+			"given pavements by -KerbBand."), static_cast<int32>(Shared), Sections.sharedUpTo, static_cast<int32>(Paved));
+	}
 	ftcore::massingStreetsToEngine(Streets, Side);
 	Look.StreetCount = static_cast<int32>(Streets.size());
 
@@ -335,6 +431,10 @@ bool PrepareLook(const FString& StreetsFile, const FHeightField& Field, double S
 		Highest = FMath::Max(Highest, H);
 	}
 	Look.RockAltitudeM = static_cast<float>(ftcore::massingHeightFromValue(Highest) + kLookRockClearance);
+	if (Look.HillRockM > 0.0)
+	{
+		Look.RockAltitudeM = static_cast<float>(Look.HillRockM);
+	}
 	return true;
 }
 
@@ -376,8 +476,9 @@ void LogLook(const FLook& Look, bool bSea)
 	FString Boxes;
 	for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
 	{
-		Boxes += FString::Printf(TEXT("%s%s %d"), S > 0 ? TEXT(", ") : TEXT(""),
-			*Utf8(std::string(ftcore::massingLookSurfaceId(static_cast<ftcore::MassingLookSurface>(S)))), Look.BoxCount[S]);
+		const ftcore::MassingLookSurface Surface = static_cast<ftcore::MassingLookSurface>(S);
+		Boxes += FString::Printf(TEXT("%s%s%s %d"), S > 0 ? TEXT(", ") : TEXT(""), ftcore::massingLookIsBuilding(Surface) ? TEXT("wall ") : TEXT(""),
+			*Utf8(std::string(ftcore::massingLookSurfaceId(Surface))), Look.BoxCount[S]);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: look: boxes by surface: %s; %d streets read; road mask %d x %d px over %.0f m "
 		"(%.3f m a pixel), centred on the engine origin; ground wears %s, rock %s, road %s, rock from %.1f m up; sea wears %s."),
@@ -513,6 +614,7 @@ struct FKitRow
 	FString Box;
 	FString Asset;
 	bool bFit = false;
+	bool bHide = false; // asset "none": the box is only hidden, another row's mesh standing in for it
 	double Turn = 0.0;
 	double Dz = 0.0;
 	int32 BoxAt = INDEX_NONE;
@@ -521,7 +623,8 @@ struct FKitRow
 
 // A CSV with the columns box (a massing id) and asset (a static mesh's object path) and optionally fit ("real", the
 // default, or "footprint"), turn and dz (ftcore::massingKitPlacement), in any order, others skipped; a row may leave
-// the optional fields empty; '#' lines are comments.
+// the optional fields empty; '#' lines are comments. The asset "none" places nothing and only hides the box, for a
+// box another row's mesh stands in for (masts on a crown's mesh).
 bool LoadKit(const FString& File, TArray<FKitRow>& Rows)
 {
 	FString Text;
@@ -569,6 +672,7 @@ bool LoadKit(const FString& File, TArray<FKitRow>& Rows)
 		const FString Turn = Fields.IsValidIndex(TurnCol) ? Fields[TurnCol] : FString();
 		const FString Dz = Fields.IsValidIndex(DzCol) ? Fields[DzCol] : FString();
 		Row.bFit = Fit == TEXT("footprint");
+		Row.bHide = Row.Asset == TEXT("none");
 		if (Row.Box.IsEmpty() || Row.Asset.IsEmpty() || !(Fit.IsEmpty() || Fit == TEXT("real") || Row.bFit) ||
 			!(Turn.IsEmpty() || LexTryParseString(Row.Turn, *Turn)) || !(Dz.IsEmpty() || LexTryParseString(Row.Dz, *Dz)))
 		{
@@ -651,9 +755,9 @@ UMaterialInterface* Tint(UPackage* Package, UMaterialInterface* Base, const TCHA
 }
 
 AStaticMeshActor* Block(UWorld* World, const FActorSpawnParameters& Spawn, UStaticMesh* Mesh, UMaterialInterface* Material, const FString& Label,
-	const FVector& Location, const FVector& Scale, double Yaw)
+	const FVector& Location, const FVector& Scale, double Yaw, double Pitch = 0.0, double Roll = 0.0)
 {
-	AStaticMeshActor* Prop = World->SpawnActor<AStaticMeshActor>(Location, FRotator(0.0, Yaw, 0.0), Spawn);
+	AStaticMeshActor* Prop = World->SpawnActor<AStaticMeshActor>(Location, FRotator(Pitch, Yaw, Roll), Spawn);
 	Prop->GetStaticMeshComponent()->SetStaticMesh(Mesh);
 	if (Material)
 	{
@@ -664,12 +768,86 @@ AStaticMeshActor* Block(UWorld* World, const FActorSpawnParameters& Spawn, UStat
 	return Prop;
 }
 
-// A cover plate (ftcore::massingNavObstacle) as a navmesh obstacle: a UFTPlateNavNull on the plate's actor holding
-// the box's null strips (ftcore::massingNullBand). It stands in the world frame on its own (absolute location, rotation
-// and scale), so the actor's transform, a sloped box's pivot or a flat box's scale, doesn't move it: at the box's
+// -NightLamps: a light point under the head of every placed mesh whose path names kNightLampMesh (the TQ-04 street
+// lamp: its arm out along +X from the pole at about 0.2 of its bounds, the cobra head over 0.5 to 1.0 of X, the lens'
+// bottom at 0.94 of Z), and a lens for its head. The point is at kNightLampHeadX, Y and Z of the mesh's bounds, just
+// under the lens. No light actor is built: the points, the shopfronts' spill points and the light values
+// (FTNightLight::) go in the map's one AFTNightLights (FTNightLightData.h), and at run time a small pool of spots
+// moves to the points nearest the camera at night.
+constexpr const TCHAR* kNightLampMesh = TEXT("TQ-04");
+constexpr double kNightLampHeadX = 0.75, kNightLampHeadY = 0.5, kNightLampHeadZ = 0.93;
+constexpr double kNightLampLensZ = 0.94;      // the lens' bottom, a share of the bounds' Z: the disc hangs from it
+constexpr double kNightLampLensLong = 0.45;   // m along the arm
+constexpr double kNightLampLensWide = 0.28;   // m across it
+constexpr double kNightLampLensThick = 0.02;  // m
+
+// The night lights being built: the holder, and the lamps' heads, the engine's cylinder as flat lenses wearing
+// FTScene::NightLampMaterial (null when FTBuildSurfaces -Windows hasn't built it; the night look puts it on by the
+// holder's FTScene::NightLampHeadTag). The TQ-04 mesh has one material, so the glow goes on the lens and not on the
+// whole post. The lenses are gathered and added at once (FinishNightLamps).
+struct FNightLampParts
+{
+	AFTNightLights* Lights = nullptr;
+	UStaticMesh* Lens = nullptr;
+	UMaterialInterface* Glow = nullptr;
+	TArray<FTransform> Heads;
+};
+
+// A lamp mesh placed at Placed (see kNightLampMesh): its light point, straight under the head, goes in the data, and
+// its lens (long along the arm, its top at the lens' bottom) in the heads to add.
+void NightLamp(FNightLampParts& Parts, const UStaticMesh& Mesh, const FTransform& Placed)
+{
+	if (!Parts.Lights)
+	{
+		return;
+	}
+	const FBox Bounds = Mesh.GetBoundingBox();
+	const FVector Head = Placed.TransformPosition(Bounds.Min + Bounds.GetSize() * FVector(kNightLampHeadX, kNightLampHeadY, kNightLampHeadZ));
+	Parts.Lights->Data->LampAt.Add(FVector3f(Head));
+	if (Parts.Lens)
+	{
+		const FVector Scale = Placed.GetScale3D();
+		const FVector LensAt = Placed.TransformPosition(Bounds.Min + Bounds.GetSize() * FVector(kNightLampHeadX, kNightLampHeadY, kNightLampLensZ)) -
+			FVector(0.0, 0.0, kNightLampLensThick * 50.0 * Scale.Z);
+		Parts.Heads.Add(FTransform(FRotator(0.0, Placed.Rotator().Yaw, 0.0), LensAt,
+			FVector(kNightLampLensLong, kNightLampLensWide, kNightLampLensThick) * Scale));
+	}
+}
+
+// Adds the gathered lenses to the holder's LampHeads (no collision, no shadow, no navigation). Returns how many.
+int32 FinishNightLamps(FNightLampParts& Parts)
+{
+	if (!Parts.Lights || !Parts.Lens || Parts.Heads.Num() == 0)
+	{
+		return 0;
+	}
+	UInstancedStaticMeshComponent* LampHeads = Parts.Lights->LampHeads;
+	LampHeads->SetStaticMesh(Parts.Lens);
+	if (Parts.Glow)
+	{
+		LampHeads->SetMaterial(0, Parts.Glow);
+	}
+	LampHeads->AddInstances(Parts.Heads, false, true);
+	const int32 Added = Parts.Heads.Num();
+	Parts.Heads.Reset();
+	return Added;
+}
+
+// A shopfront's spill point (ftcore::massingShopLights, plan frame) in the data: a spot there faces out of its face,
+// pitched FTNightLight::ShopPitch.
+void NightShop(UFTNightLightData& Data, double Side, const ftcore::MassingShopLight& At)
+{
+	Data.ShopAt.Add(FVector3f(Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z))));
+	Data.ShopYaw.Add(static_cast<float>(ftcore::massingEngineYaw(At.face)));
+}
+
+// A cover plate (ftcore::massingNavObstacle) as a navmesh obstacle: a UFTPlateNavNull on the plate's actor (a sloped
+// box's own, or the holder of the cell a flat box is an instance of) holding the box's null strips
+// (ftcore::massingNullBand). It stands in the world frame on its own (absolute location, rotation and scale), so the
+// actor's transform doesn't move it: at the box's
 // centre, the strips' middle height and the box's yaw, its X along the box's u and its Y along -w (the engine's Y runs
 // south). Registered at once, so the navmesh build that follows takes it. Returns how many strips it holds.
-int32 AddPlateNavNull(AStaticMeshActor& Built, const ftcore::MassingBox& Box, double Side)
+int32 AddPlateNavNull(AActor& Built, const ftcore::MassingBox& Box, double Side)
 {
 	const size_t Count = ftcore::massingNullBandCount(Box);
 	double Low = TNumericLimits<double>::Max();
@@ -681,7 +859,7 @@ int32 AddPlateNavNull(AStaticMeshActor& Built, const ftcore::MassingBox& Box, do
 		High = FMath::Max(High, Band.z1);
 	}
 	const double Mid = (Low + High) * 0.5;
-	UFTPlateNavNull* Null = NewObject<UFTPlateNavNull>(&Built, TEXT("PlateNavNull"));
+	UFTPlateNavNull* Null = NewObject<UFTPlateNavNull>(&Built, NAME_None); // a cell's holder carries many
 	Null->NullBoxes.Reserve(static_cast<int32>(Count));
 	FVector Extent = FVector::ZeroVector;
 	for (size_t I = 0; I < Count; ++I)
@@ -948,7 +1126,7 @@ bool LoadCoverage(const FString& File, std::vector<ftcore::CoveragePoint>& Point
 // -Coverage: the navmesh's islands against the coverage points. The islands are its ground polys (each tile's, with
 // their corners in the plan frame), joined where a poly's neighbours list another, or an off-mesh link whose own
 // neighbours do (ftcore::navIslands). District 0's island holds the poly its spawn (HomeAt, engine cm) projects to; an
-// island over ftcore::kNavIslandBig m² besides it must hold a pocket point, and each on-point must project into it
+// island over ftcore::kNavIslandBig mÂ² besides it must hold a pocket point, and each on-point must project into it
 // (ftcore::classifyNavIslands). With a sea (bSea: SeaLevel in m, SeaFrom saying where it came from), the polys under it
 // are left out first (ftcore::navPolysAboveSea): the sea plane has no collision, so the ground under it gets navmesh too.
 // A point on a poly left out is off the navmesh. An island over the size on a built box's roof or inside built boxes
@@ -1123,6 +1301,29 @@ bool ReadBack(const ALandscape& Land, ULandscapeInfo& LandInfo, const FHeightFie
 	return bExact && bSurface;
 }
 #endif
+// Round 5 (-FacadeR5): a windowed box's type, wall tint and roof finish (ftcore::massingFacadeData) in its instance's
+// custom data 6..8, which the r5 window master (FTBuildSurfaces -Windows -FacadeR5) reads; the r4 master ignores them.
+void SetFacadeR5Data(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const ftcore::MassingBox& Box, const ftcore::MassingWindowData& Data,
+	int32 (&Types)[ftcore::kWindowTypes])
+{
+	const ftcore::MassingFacadeData Facade = ftcore::massingFacadeData(Box, Data);
+	Cells.SetCustomData(Piece, FTScene::WindowDataType, static_cast<float>(Facade.type));
+	Cells.SetCustomData(Piece, FTScene::WindowDataTint, static_cast<float>(Facade.wallTint));
+	Cells.SetCustomData(Piece, FTScene::WindowDataRoof, static_cast<float>(Facade.roofFinish));
+	++Types[static_cast<int32>(Facade.type)];
+}
+
+// Round 5 (-RoofLayouts): how many roofs took each layout and what they carry.
+void LogRoofLayouts(const ftcore::MassingRoofCounts& Counts)
+{
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roof layouts (empty, tanks, unit farm, stair head, laundry, shed and masts, "
+		"dense): %d, %d, %d, %d, %d, %d, %d; %d stair-head huts (the BK-HUT kit swap's places), %d sheds, %d laundry frames, %d tank stands."),
+		static_cast<int32>(Counts.layouts[0]), static_cast<int32>(Counts.layouts[1]), static_cast<int32>(Counts.layouts[2]),
+		static_cast<int32>(Counts.layouts[3]), static_cast<int32>(Counts.layouts[4]), static_cast<int32>(Counts.layouts[5]),
+		static_cast<int32>(Counts.layouts[6]), static_cast<int32>(Counts.huts), static_cast<int32>(Counts.sheds),
+		static_cast<int32>(Counts.frames), static_cast<int32>(Counts.stands));
+}
+
 } // namespace
 
 UFTBuildMassingWorldCommandlet::UFTBuildMassingWorldCommandlet()
@@ -1165,6 +1366,71 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	const bool bSurfaces = FParse::Param(*Params, TEXT("Surfaces"));
 	FString StreetsFile;
 	FParse::Value(*Params, TEXT("Streets="), StreetsFile);
+	// -Props: street furniture along -PropStreets (or -Streets when it isn't given).
+	FString PropsFile, PropStreetsFile;
+	FParse::Value(*Params, TEXT("Props="), PropsFile);
+	FParse::Value(*Params, TEXT("PropStreets="), PropStreetsFile);
+	if (PropStreetsFile.IsEmpty())
+	{
+		PropStreetsFile = StreetsFile;
+	}
+	// -Frontage: pieces against the buildings' faces, by the kinds of the -PropStreets streets they front. -Kerbs: kerbs
+	// along the pavements of -Streets (or -PropStreets). -Quay: the quays' rail, posts and bollards, with -QuayLamp's prop
+	// rule as their lamps. -Roofs: rails and clutter on the buildings' flat tops. -PropLine: a prop standing further (m)
+	// from every kerb and frontage line is logged.
+	FString FrontFile, QuayLampId;
+	FParse::Value(*Params, TEXT("Frontage="), FrontFile);
+	FParse::Value(*Params, TEXT("QuayLamp="), QuayLampId);
+	const bool bKerbs = FParse::Param(*Params, TEXT("Kerbs"));
+	const bool bQuay = FParse::Param(*Params, TEXT("Quay"));
+	const bool bRoofs = FParse::Param(*Params, TEXT("Roofs"));
+	// -StandIns: a crane or boat box (a placeholder no kit mesh replaces yet) is built as a frame of steel boxes, legs,
+	// boom and ties or a hull and cabin (ftcore::massingStandIn), in place of one solid.
+	const bool bStandIns = FParse::Param(*Params, TEXT("StandIns"));
+	// -NightLamps: a light point under the head of every TQ-04 lamp placed (kit, props, quay) and a lens instance on the
+	// head (tagged FTScene::NightLampHeadTag); and with -Windows a spill point out of each shopfront: data in the map's
+	// AFTNightLights, which the runtime's lamp pool lights at night.
+	const bool bNightLamps = FParse::Param(*Params, TEXT("NightLamps"));
+	// Round 5 roads (FTBuildRoads.h): -Roads=<csv>, -Vehicles, -RoadDoors=<csv>, -LaneLamps=x0,y0,x1,y1, -RoadSeed=<n>.
+	const FTBuildRoads::FOptions RoadOptions = FTBuildRoads::ParseOptions(*Params);
+	std::vector<ftcore::RoadSpec> RoadSpecs;
+	std::vector<ftcore::RoadBuild> RoadBuilds;
+	// -Windows: the building boxes wear the window master's instances (FTBuildSurfaces -Windows), each box's seed, street
+	// faces and street floors in its custom primitive data. Needs -Surfaces.
+	const bool bWindows = FParse::Param(*Params, TEXT("Windows"));
+	// Round 5. -FacadeR5: with -Windows, each box's window type, wall tint and roof finish for the r5 master (SetFacadeR5Data).
+	// -RoofLayouts: with -Roofs, one of ftcore::MassingRoofLayout's seven layouts a roof (huts, sheds, laundry, unit farms).
+	const bool bFacadeR5 = FParse::Param(*Params, TEXT("FacadeR5"));
+	const bool bRoofLayouts = FParse::Param(*Params, TEXT("RoofLayouts"));
+	// Round 6 (FTRoofDress.h): -RoofScatter, -RoofHut=<mesh>, -RoofHutTurn=<deg>.
+	const FTRoofDress::FOptions RoofDressOptions = FTRoofDress::ParseOptions(*Params);
+	double PropLine = 3.0;
+	FParse::Value(*Params, TEXT("PropLine="), PropLine);
+	// -LanePave=<m> and -HillRock=<m>: see kLookLaneRoadIds. Both need -Surfaces.
+	double LanePaveUpTo = 0.0, HillRockM = 0.0;
+	FParse::Value(*Params, TEXT("LanePave="), LanePaveUpTo);
+	FParse::Value(*Params, TEXT("HillRock="), HillRockM);
+	const FString KerbStreetsFile = StreetsFile.IsEmpty() ? PropStreetsFile : StreetsFile;
+	// Street sections (ftcore::massingStreetSections) on the road mask's and the kerbs' streets; -PropStreets keeps its
+	// own. -SharedUpTo=<m>: a street no wider is a shared surface, paved wall to wall with no kerb (a kerbed street's kerb
+	// runs on past its mouth). -KerbBand=<from>,<to>,<share>: a street from..to m wide with no pavements takes share of
+	// its width as each pavement, so -Kerbs lines its carriageway.
+	ftcore::MassingStreetSections Sections;
+	FParse::Value(*Params, TEXT("SharedUpTo="), Sections.sharedUpTo);
+	FString KerbBandText;
+	if (FParse::Value(*Params, TEXT("KerbBand="), KerbBandText, false))
+	{
+		double Band[3] = {0.0, 0.0, 0.0};
+		if (!ParsePoint(KerbBandText, 3, Band) || !(Band[2] > 0.0 && Band[2] < 0.5) || Band[1] < Band[0])
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -KerbBand=<from>,<to>,<share> takes two widths (m) and a share over 0 and "
+				"under 0.5; got '%s'."), *KerbBandText);
+			return 1;
+		}
+		Sections.kerbFrom = Band[0];
+		Sections.kerbTo = Band[1];
+		Sections.pavementShare = Band[2];
+	}
 
 	double Entry[3] = {0.0, 0.0, 0.0};
 	double Look[2] = {0.0, 0.0};
@@ -1196,7 +1462,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
+	if (!FTBuildRoads::Prepare(RoadOptions, ftcore::MassingGround{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY}, Boxes, RoadSpecs, RoadBuilds))
+	{
+		return 1;
+	}
 	FLook LookSet;
+	LookSet.LanePaveUpTo = LanePaveUpTo;
+	LookSet.HillRockM = HillRockM;
 	if (bSurfaces && !bLoad)
 	{
 		if (StreetsFile.IsEmpty())
@@ -1204,9 +1477,32 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Surfaces needs -Streets=<csv> (the road mask's streets)."));
 			return 1;
 		}
-		if (!PrepareLook(StreetsFile, Field, Side, LookSet))
+		if (!PrepareLook(StreetsFile, Sections, Field, Side, LookSet))
 		{
 			return 1;
+		}
+	}
+	// The window instances by look surface, null for a surface that isn't a building's.
+	UMaterialInterface* WindowLook[ftcore::kMassingLookSurfaceCount] = {};
+	if (bWindows && !bLoad)
+	{
+		if (!bSurfaces)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Windows needs -Surfaces."));
+			return 1;
+		}
+		for (size_t S = 0; S < ftcore::kMassingLookSurfaceCount; ++S)
+		{
+			const ftcore::MassingLookSurface Surface = static_cast<ftcore::MassingLookSurface>(S);
+			if (ftcore::massingLookIsBuilding(Surface))
+			{
+				WindowLook[S] = LoadLookMaterial(FTScene::WindowInstancePackage(kLookWorldPrefix + Utf8(std::string(ftcore::massingLookSurfaceId(Surface)))));
+				if (!WindowLook[S])
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Windows: run FTBuildSurfaces -Windows first."));
+					return 1;
+				}
+			}
 		}
 	}
 	for (const ftcore::MassingBox& Wall : Walls)
@@ -1238,15 +1534,139 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s is not in the massing table."), *KitFile, *Row.Box);
 			return 1;
 		}
-		Row.Mesh = LoadObject<UStaticMesh>(nullptr, *Row.Asset);
-		if (!Row.Mesh)
+		Row.Mesh = Row.bHide ? nullptr : LoadObject<UStaticMesh>(nullptr, *Row.Asset);
+		if (!Row.Mesh && !Row.bHide)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s names %s, which isn't a static mesh in the project."), *KitFile, *Row.Box,
 				*Row.Asset);
 			return 1;
 		}
 	}
+	// So must each prop rule's mesh, and its streets.
+	std::vector<ftcore::MassingPropRule> PropRules;
+	std::vector<ftcore::MassingStreet> PropStreets;
+	TArray<UStaticMesh*> PropMeshes;
+	if (!PropsFile.IsEmpty() || !FrontFile.IsEmpty())
+	{
+		if (PropStreetsFile.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Props and -Frontage need -PropStreets=<csv> or -Streets=<csv>."));
+			return 1;
+		}
+		if (!LoadStreets(PropStreetsFile, PropStreets) || (!PropsFile.IsEmpty() && !LoadProps(PropsFile, PropRules)))
+		{
+			return 1;
+		}
+		for (const ftcore::MassingPropRule& Rule : PropRules)
+		{
+			UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *Utf8(Rule.asset));
+			if (!Mesh)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s names %s, which isn't a static mesh in the project."), *PropsFile,
+					*Utf8(Rule.id), *Utf8(Rule.asset));
+				return 1;
+			}
+			PropMeshes.Add(Mesh);
+		}
+	}
+	// And each frontage rule's.
+	std::vector<ftcore::MassingFrontRule> FrontRules;
+	TArray<UStaticMesh*> FrontMeshes;
+	if (!FrontFile.IsEmpty())
+	{
+		if (!LoadFront(FrontFile, FrontRules))
+		{
+			return 1;
+		}
+		for (const ftcore::MassingFrontRule& Rule : FrontRules)
+		{
+			UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *Utf8(Rule.asset));
+			if (!Mesh)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s names %s, which isn't a static mesh in the project."), *FrontFile,
+					*Utf8(Rule.id), *Utf8(Rule.asset));
+				return 1;
+			}
+			FrontMeshes.Add(Mesh);
+		}
+	}
+	// The quay's lamps are a prop rule's: its mesh and its dz, foot and turn (a rule of kinds no street has stands only there).
+	size_t QuayLampAt = PropRules.size();
+	if (!QuayLampId.IsEmpty())
+	{
+		for (size_t R = 0; R < PropRules.size() && QuayLampAt == PropRules.size(); ++R)
+		{
+			QuayLampAt = Utf8(PropRules[R].id) == QuayLampId ? R : PropRules.size();
+		}
+		if (!bQuay || QuayLampAt == PropRules.size())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -QuayLamp=%s needs -Quay and a -Props table with that rule."), *QuayLampId);
+			return 1;
+		}
+	}
+	// The kerbs' streets: the road mask's.
+	std::vector<ftcore::MassingStreet> KerbStreets;
+	if (bKerbs)
+	{
+		if (KerbStreetsFile.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Kerbs needs -Streets=<csv> or -PropStreets=<csv>."));
+			return 1;
+		}
+		if (!LoadStreets(KerbStreetsFile, KerbStreets))
+		{
+			return 1;
+		}
+		// -Roads lays its own kerbs: its rows leave the kerbs' streets.
+		FTBuildRoads::DropRoadStreets(RoadSpecs, KerbStreets);
+		size_t Paved = 0;
+		const size_t Shared = ftcore::massingStreetSections(KerbStreets, Sections, &Paved);
+		if (Shared > 0 || Paved > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kerbs: %d shared surfaces (%.1f m wide and under) take no kerb; %d streets %.1f to "
+				"%.1f m wide given pavements of %.2f of their width."), static_cast<int32>(Shared), Sections.sharedUpTo, static_cast<int32>(Paved),
+				Sections.kerbFrom, Sections.kerbTo, Sections.pavementShare);
+		}
+	}
 	FAssetCompilingManager::Get().FinishAllCompilation();
+	// A prop rule with no foot in its table takes its mesh's plan size (ftcore::massingPropFoot), so props never stand in
+	// one another.
+	for (size_t R = 0; R < PropRules.size(); ++R)
+	{
+		ftcore::MassingPropRule& Rule = PropRules[R];
+		if (Rule.footX == 0.0 && Rule.footY == 0.0)
+		{
+			const FVector Size = PropMeshes[static_cast<int32>(R)]->GetBoundingBox().GetSize() / 100.0;
+			Rule.footX = Size.X;
+			Rule.footY = Size.Y;
+		}
+	}
+	// A frontage rule's piece is its mesh's size, turned as it stands: depth out of the face, width along it. A piece the
+	// table sets wholly out of the face (out at or over its depth) stays wholly out; otherwise out keeps the table's,
+	// at most the mesh's depth.
+	for (size_t R = 0; R < FrontRules.size(); ++R)
+	{
+		ftcore::MassingFrontRule& Rule = FrontRules[R];
+		const FVector Size = FrontMeshes[static_cast<int32>(R)]->GetBoundingBox().GetSize() / 100.0 * Rule.scale;
+		const double Cos = FMath::Abs(FMath::Cos(FMath::DegreesToRadians(Rule.turn)));
+		const double Sin = FMath::Abs(FMath::Sin(FMath::DegreesToRadians(Rule.turn)));
+		const double Depth = Cos * Size.X + Sin * Size.Y;
+		const double Width = Sin * Size.X + Cos * Size.Y;
+		if (Depth <= 0.0 || Width <= 0.0 || Size.Z <= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s's mesh %s has no size (%.2f x %.2f x %.2f m)."), *FrontFile,
+				*Utf8(Rule.id), *Utf8(Rule.asset), Size.X, Size.Y, Size.Z);
+			return 1;
+		}
+		const double Out = Rule.out >= Rule.depth ? Depth : FMath::Min(Rule.out, Depth);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage %s: %s is %.2f wide, %.2f deep, %.2f high as it stands (the table "
+			"%.2f, %.2f, %.2f); out %.2f m; scale %.2f."), *Utf8(Rule.id), *Utf8(Rule.asset), Width, Depth, Size.Z, Rule.width, Rule.depth,
+			Rule.height, Out, Rule.scale);
+		Rule.width = Width;
+		Rule.depth = Depth;
+		Rule.height = Size.Z;
+		Rule.out = Out;
+	}
 
 	// The goals table's box ids name rows of the massing table. Each held goal and temporary placement is logged with its
 	// box (a temporary spawn with the districts, below).
@@ -1763,6 +2183,58 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	std::vector<double> Nudges;
 	ftcore::massingTopNudges(Boxes, Flat, Nudges);
+	// A top the ground was levelled to flickers against it as a shared top does: it goes up off the ground.
+	int32 Raised = 0;
+	std::vector<double> Raises;
+	{
+		std::vector<std::vector<size_t>> StuckGroups;
+		const size_t Stuck = ftcore::massingGroundRaises(Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Boxes, Flat, Nudges, Raises, &StuckGroups);
+		// Each group left on the ground: its boxes, its middle (the middle of their footprints' bounds) and whether the
+		// sea lies within kStuckSeaReach of it.
+		for (size_t G = 0; G < StuckGroups.size(); ++G)
+		{
+			double MinX = TNumericLimits<double>::Max(), MaxX = TNumericLimits<double>::Lowest();
+			double MinY = MinX, MaxY = MaxX;
+			FString Ids;
+			for (size_t K = 0; K < StuckGroups[G].size(); ++K)
+			{
+				const ftcore::MassingBox& Box = Boxes[StuckGroups[G][K]];
+				const double Cos = FMath::Abs(FMath::Cos(FMath::DegreesToRadians(Box.rot)));
+				const double Sin = FMath::Abs(FMath::Sin(FMath::DegreesToRadians(Box.rot)));
+				const double HalfX = 0.5 * (Cos * Box.sx + Sin * Box.sy);
+				const double HalfY = 0.5 * (Sin * Box.sx + Cos * Box.sy);
+				MinX = FMath::Min(MinX, Box.cx - HalfX);
+				MaxX = FMath::Max(MaxX, Box.cx + HalfX);
+				MinY = FMath::Min(MinY, Box.cy - HalfY);
+				MaxY = FMath::Max(MaxY, Box.cy + HalfY);
+				if (K < static_cast<size_t>(kStuckIdsShown))
+				{
+					Ids += (K > 0 ? TEXT(", ") : TEXT("")) + Utf8(Box.id);
+				}
+			}
+			if (StuckGroups[G].size() > static_cast<size_t>(kStuckIdsShown))
+			{
+				Ids += FString::Printf(TEXT(" and %d more"), static_cast<int32>(StuckGroups[G].size()) - kStuckIdsShown);
+			}
+			const bool bBySea = bSea && MaxX >= SeaWest - kStuckSeaReach;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: stuck group %d of %d boxes stays on the ground: %s; middle %.1f, %.1f; %s."),
+				static_cast<int32>(G + 1), static_cast<int32>(StuckGroups[G].size()), *Ids, 0.5 * (MinX + MaxX), 0.5 * (MinY + MaxY),
+				bBySea ? *FString::Printf(TEXT("within %.0f m of the sea"), kStuckSeaReach) : TEXT("away from the sea"));
+		}
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			if (Raises[I] > 0.0)
+			{
+				Nudges[I] += Raises[I];
+				++Raised;
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s's top goes up %.2f m off the ground, to %.2f m."), *Utf8(Boxes[I].id),
+					Raises[I], Boxes[I].z1 + Nudges[I]);
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %d tops go up off the ground; %d groups no raise of up to %.2f m clears stay on it."),
+			Raised, static_cast<int32>(Stuck), ftcore::kMassingNudgeStep * ftcore::kMassingGroundSteps);
+	}
 	std::vector<bool> Replaced(Boxes.size(), false);
 	for (const FKitRow& Row : KitRows)
 	{
@@ -1770,6 +2242,16 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
+	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its 250 m cell
+	// (FTCellInstancer.h), made at once before the navmesh; sloped boxes, the hidden walls and the sea stay actors.
+	FFTCellInstancer Cells(World, Spawn);
+	// The boxes wearing windows, by box (their instances): their data is set once the frontage has said which faces
+	// front a street.
+	std::vector<FFTCellHandle> Windowed(Boxes.size());
+	// -StandIns: the frames built in place of the crane and boat boxes, laid with the dressing below.
+	std::vector<ftcore::MassingBox> StandIns;
+	int32 StandInBoxes = 0;
+	int32 WindowSloped = 0, WindowReplaced = 0;
 	for (size_t I = 0; I < Boxes.size(); ++I)
 	{
 		const ftcore::MassingBox& Box = Boxes[I];
@@ -1783,6 +2265,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		(Role == ftcore::MassingRole::Named ? Named : Kit) += 1;
 		BoxesLeft += Replaced[I] ? 0 : 1;
 		UMaterialInterface* Material = bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))];
+		UMaterialInterface* const WindowMaterial = bWindows ? WindowLook[static_cast<int32>(ftcore::massingLookSurface(Box))] : nullptr;
+		if (WindowMaterial)
+		{
+			// A kit mesh's box is hidden, and a sloped box's faces aren't the cube's.
+			WindowReplaced += Replaced[I] ? 1 : 0;
+			WindowSloped += !Replaced[I] && Box.sloped ? 1 : 0;
+			Material = !Replaced[I] && !Box.sloped ? WindowMaterial : Material;
+		}
 		// A box a finished mesh stands in for stays as its hidden collider: an imported mesh may bring no simple
 		// collision, and the lead would fall through it.
 		const FString Id = Replaced[I] ? Utf8(Box.id) + TEXT("-COL") : Utf8(Box.id);
@@ -1811,19 +2301,31 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			++Sloped;
 			continue;
 		}
-		const double Height = FMath::Max(Box.z1 + Nudges[I] - Box.z0, ftcore::kMassingMinHeight);
-		Nudged += Nudges[I] < 0.0 ? 1 : 0;
-		AStaticMeshActor* Built = Block(World, Spawn, Cube, Material, Id, Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5)),
-			FVector(Box.sx, Box.sy, Height), ftcore::massingEngineYaw(Box.rot));
-		if (Replaced[I])
+		if (bStandIns && !Replaced[I] && ftcore::massingStandIn(Box, StandIns))
 		{
-			Built->GetStaticMeshComponent()->SetCastShadow(false);
-			Built->SetActorHiddenInGame(true);
+			++StandInBoxes;
+			continue;
+		}
+		const double Height = FMath::Max(Box.z1 + Nudges[I] - Box.z0, ftcore::kMassingMinHeight);
+		Nudged += Nudges[I] != 0.0 || Raises[I] > 0.0 ? 1 : 0;
+		// A box a kit mesh stands in for is a hidden collider casting no shadow (EFTCellKind::Hidden).
+		const FVector BoxMid = Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5));
+		FFTCellOptions CellOpts;
+		CellOpts.Label = Id;
+		UMaterialInterface* const BoxMats[1] = {Material};
+		const FFTCellHandle BoxHandle = Cells.Add(Cube, BoxMats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(Box.rot), 0.0), BoxMid,
+			FVector(Box.sx, Box.sy, Height)), {}, Replaced[I] ? EFTCellKind::Hidden : EFTCellKind::Solid, CellOpts);
+		if (WindowMaterial && Material == WindowMaterial)
+		{
+			Windowed[I] = BoxHandle;
 		}
 		if (ftcore::massingNavObstacle(Box))
 		{
 			++NavObstacles;
-			NullStrips += AddPlateNavNull(*Built, Box, Side);
+			if (AActor* Holder = Cells.CellAt(BoxMid))
+			{
+				NullStrips += AddPlateNavNull(*Holder, Box, Side);
+			}
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: cover plates: %d boxes are navmesh obstacles, %d null strips (each rising at most "
@@ -1831,12 +2333,39 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 
 	// The kit: each row's mesh in its box's stead. It collides with nothing, its box stopping the lead instead; a box the
 	// build doesn't make leaves its mesh without a collider, and says so.
-	int32 KitPlaced = 0, KitNoCollider = 0;
+	int32 KitPlaced = 0, KitNoCollider = 0, KitHidden = 0;
+	// -NightLamps: the lights under the lamps' heads and their lenses, on kit boxes and as placed pieces.
+	int32 NightLampsKit = 0, NightLampsPlaced = 0;
+	FNightLampParts LampParts;
+	// Every TQ-04 lamp placed (world cm), which -LaneLamps keeps clear of.
+	TArray<FVector> LampsAt;
+	if (bNightLamps)
+	{
+		LampParts.Lights = World->SpawnActor<AFTNightLights>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
+		if (!LampParts.Lights)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -NightLamps: couldn't spawn the night lights."));
+			World->DestroyWorld(false);
+			return 1;
+		}
+		LampParts.Lights->SetActorLabel(TEXT("NightLights"));
+		LampParts.Lens = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+		const FString GlowPath = FTScene::NightLampMaterial;
+		LampParts.Glow = LoadObject<UMaterialInterface>(nullptr, *(GlowPath + TEXT(".") + FPackageName::GetShortName(GlowPath)), nullptr,
+			LOAD_NoWarn | LOAD_Quiet);
+	}
 	TMap<int32, int32> KitOnBox;
 	TMap<FString, int32> KitPerAsset;
 	for (const FKitRow& Row : KitRows)
 	{
 		const ftcore::MassingBox& Box = Boxes[static_cast<size_t>(Row.BoxAt)];
+		if (Row.bHide)
+		{
+			++KitHidden;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kit %s: hidden, another row's mesh standing in for it (z %.1f to %.1f)."), *Row.Box,
+				Box.z0, Box.z1);
+			continue;
+		}
 		const FBox Bounds = Row.Mesh->GetBoundingBox();
 		const ftcore::MassingVec MeshMin{Bounds.Min.X / 100.0, Bounds.Min.Y / 100.0, Bounds.Min.Z / 100.0};
 		const ftcore::MassingVec MeshMax{Bounds.Max.X / 100.0, Bounds.Max.Y / 100.0, Bounds.Max.Z / 100.0};
@@ -1851,9 +2380,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		// A second mesh on one box takes a suffix, as an actor's label is its id.
 		const int32 OnBox = ++KitOnBox.FindOrAdd(Row.BoxAt);
 		const FString Label = OnBox == 1 ? Row.Box : FString::Printf(TEXT("%s-%d"), *Row.Box, OnBox);
-		AStaticMeshActor* Prop = Block(World, Spawn, Row.Mesh, nullptr, Label, Cm(Place.at), FVector(Place.scale.x, Place.scale.y, Place.scale.z), Place.yaw);
-		Prop->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-		Prop->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
+		const FTransform KitXf(FRotator(0.0, Place.yaw, 0.0), Cm(Place.at), FVector(Place.scale.x, Place.scale.y, Place.scale.z));
+		FFTCellOptions KitOpts;
+		KitOpts.Label = Label;
+		Cells.Add(Row.Mesh, {}, KitXf, {}, EFTCellKind::NoCollide, KitOpts);
+		if (Row.Mesh->GetPathName().Contains(kNightLampMesh))
+		{
+			LampsAt.Add(KitXf.GetLocation());
+			if (bNightLamps)
+			{
+				NightLamp(LampParts, *Row.Mesh, KitXf);
+				++NightLampsKit;
+			}
+		}
 		const bool bCollider = ftcore::massingVisible(ftcore::massingRole(Box));
 		KitNoCollider += bCollider ? 0 : 1;
 		++KitPlaced;
@@ -1868,6 +2407,425 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	for (const TPair<FString, int32>& Pair : KitPerAsset)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kit %s stands in for %d boxes."), *Pair.Key, Pair.Value);
+	}
+
+	// What the dressing and the street furniture stand on: the visible boxes, tops as built (nudged apart and up off the
+	// ground), and the ground.
+	std::vector<ftcore::MassingBox> Built = Boxes;
+	for (size_t I = 0; I < Built.size(); ++I)
+	{
+		Built[I].z1 += Nudges[I];
+	}
+	const ftcore::MassingGround Ground{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY), Field.Spacing,
+		Field.OriginX, Field.OriginY};
+	// The room the dressing takes: the frontage and the props keep out of it.
+	std::vector<ftcore::MassingFoot> Taken;
+	// A box of dressing as the engine's cube, wearing its surface and colliding as the boxes do, tilted to its grade when it
+	// has one (a kerb along a sloping street, a pad on sloping ground: ftcore::massingCubePose). It stays out of the boxes
+	// table.
+	// An instance of its cell: Kind says how it collides (Walk for what is walked on), Cull how far it is drawn.
+	const auto LayCube = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
+	{
+		UMaterialInterface* const CubeMats[1] = {bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))]};
+		const double Height = FMath::Max(Box.z1 - Box.z0, ftcore::kMassingMinHeight);
+		const ftcore::MassingCubePose Pose = ftcore::massingCubePose(Box, Height);
+		FFTCellOptions CubeOpts;
+		CubeOpts.Cull = Cull;
+		CubeOpts.Label = Utf8(Box.id);
+		Cells.Add(Cube, CubeMats,
+			FTransform(FRotator(Pose.pitch, Pose.yaw, Pose.roll), Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift)),
+				FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z)),
+			{}, Kind, CubeOpts);
+	};
+	// A dressing box that takes room from the props: a kerb, or a quay's rail, post or bollard.
+	const auto Dress = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
+	{
+		LayCube(Box, Kind, Cull);
+		Taken.push_back(ftcore::massingBoxFoot(Box));
+	};
+	// A box of dressing that takes no room from the props: a frontage piece's paving pad, a roof's rail or clutter.
+	const auto Lay = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
+	{
+		LayCube(Box, Kind, Cull);
+	};
+	if (bStandIns)
+	{
+		for (const ftcore::MassingBox& Piece : StandIns)
+		{
+			LayCube(Piece, EFTCellKind::Solid, EFTCellCull::None);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: stand-ins: %d crane and boat boxes built as %d frame pieces in place of solids."),
+			StandInBoxes, static_cast<int32>(StandIns.size()));
+	}
+	// Per box face (box * 4 + face), whether its middle fronts a street: the frontage reads it; the windows' shop fronts
+	// follow it.
+	std::vector<uint8_t> FrontFaces;
+	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
+	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance; a
+	// lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
+	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
+		double Scale = 1.0)
+	{
+		const FBox Bounds(Mesh->GetBoundingBox().Min * Scale, Mesh->GetBoundingBox().Max * Scale);
+		const ftcore::MassingVec MeshMin{Bounds.Min.X / 100.0, Bounds.Min.Y / 100.0, Bounds.Min.Z / 100.0};
+		const ftcore::MassingVec MeshMax{Bounds.Max.X / 100.0, Bounds.Max.Y / 100.0, Bounds.Max.Z / 100.0};
+		ftcore::MassingKitPlace Place;
+		if (!ftcore::massingPropPlacement(Placed, Side, MeshMin, MeshMax, Turn, Inset, Place))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s has inverted bounds."), *Label, *Mesh->GetPathName());
+			return false;
+		}
+		const FTransform PieceXf(FRotator(0.0, Place.yaw, 0.0), Cm(Place.at), FVector(Scale));
+		FFTCellOptions PieceOpts;
+		PieceOpts.Cull = EFTCellCull::Prop;
+		PieceOpts.Label = Label;
+		Cells.Add(Mesh, {}, PieceXf, {}, EFTCellKind::NoCollide, PieceOpts);
+		if (Mesh->GetPathName().Contains(kNightLampMesh))
+		{
+			LampsAt.Add(PieceXf.GetLocation());
+			if (bNightLamps)
+			{
+				NightLamp(LampParts, *Mesh, PieceXf);
+				++NightLampsPlaced;
+			}
+		}
+		return true;
+	};
+
+	// The kerbs: both edges of each carriageway with pavements, open where a carriageway crosses and where a box stands.
+	if (bKerbs)
+	{
+		std::vector<ftcore::MassingBox> Kerbs;
+		ftcore::MassingKerbCounts KerbCounts;
+		ftcore::massingKerbs(KerbStreets, Ground, Built, Visible, kPropDryAbove, Kerbs, KerbCounts);
+		// None across a -Roads carriageway or a lane of its graph (a mouth): those pieces go.
+		std::vector<char> KerbGone(Kerbs.size(), 0);
+		int32 KerbsInRoads = 0;
+		for (size_t R = 0; R < RoadBuilds.size(); ++R)
+		{
+			ftcore::RoadGraph Lanes;
+			if (R < RoadSpecs.size() && RoadSpecs[R].kind != "net")
+			{
+				ftcore::roadGraphFromRoad(RoadSpecs[R], RoadBuilds[R], Lanes);
+			}
+			for (const size_t I : ftcore::roadKerbsInCarriageway(RoadBuilds[R], Lanes.lanes.empty() ? nullptr : &Lanes, Kerbs))
+			{
+				KerbsInRoads += KerbGone[I] ? 0 : 1;
+				KerbGone[I] = 1;
+			}
+		}
+		for (size_t I = 0; I < Kerbs.size(); ++I)
+		{
+			if (!KerbGone[I])
+			{
+				Dress(Kerbs[I], EFTCellKind::Walk, EFTCellCull::None);
+			}
+		}
+		if (KerbsInRoads > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kerbs: %d pieces left out in a -Roads carriageway or across its lanes."),
+				KerbsInRoads);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kerbs: %d pieces in %d unbroken runs, %.0f m along %d streets with pavements of "
+			"%s; left out %.0f m at crossings and bends, %.0f m where a box stands, %.0f m on the sea's side and %.0f m in pieces under %.1f m."),
+			static_cast<int32>(KerbCounts.pieces), static_cast<int32>(KerbCounts.runs), KerbCounts.built, static_cast<int32>(KerbCounts.streets),
+			*FPaths::GetCleanFilename(KerbStreetsFile),
+			KerbCounts.crossing, KerbCounts.boxed, KerbCounts.wet, KerbCounts.shortPieces, ftcore::kMassingKerbShortest);
+	}
+
+	// -Roads: the carriageways, their furniture and lamps (TQ-04, as the props), and with -Vehicles the parked cars.
+	FFTRoadsHost RoadHost;
+	RoadHost.World = World;
+	RoadHost.Spawn = &Spawn;
+	RoadHost.Package = Package;
+	RoadHost.Base = Base;
+	RoadHost.Cube = Cube;
+	RoadHost.Side = Side;
+	RoadHost.Taken = &Taken;
+	RoadHost.Cells = &Cells;
+	RoadHost.LampsAt = &LampsAt;
+	RoadHost.PlaceLamp = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Lamp, const FString& Label)
+	{
+		return PlaceMesh(Mesh, Lamp, 0.0, 0.7, Label);
+	};
+	if (!FTBuildRoads::Lay(RoadHost, RoadOptions, RoadSpecs, RoadBuilds))
+	{
+		World->DestroyWorld(false);
+		return 1;
+	}
+
+	// The quays: a rail, posts and bollards along each deck's seaward edges, and -QuayLamp's lamps, set with the props.
+	std::vector<ftcore::MassingProp> QuayLamps;
+	if (bQuay)
+	{
+		const bool bLamps = QuayLampAt < PropRules.size();
+		const ftcore::MassingPropRule NoLamp{};
+		std::vector<ftcore::MassingBox> Furniture;
+		ftcore::MassingQuayCounts QuayCounts;
+		ftcore::massingQuay(Ground, Built, Visible, kPropDryAbove, bLamps ? PropRules[QuayLampAt] : NoLamp, QuayLampAt, &Taken, Furniture, QuayLamps,
+			QuayCounts);
+		if (!bLamps)
+		{
+			QuayLamps.clear();
+		}
+		for (const ftcore::MassingBox& Piece : Furniture)
+		{
+			Dress(Piece, EFTCellKind::Solid, EFTCellCull::Dressing);
+		}
+		for (const ftcore::MassingProp& Lamp : QuayLamps)
+		{
+			Taken.push_back(ftcore::massingPropFoot(Lamp, PropRules[QuayLampAt]));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: quay: %d decks, %d runs along %.0f m of seaward edge (%.0f m more a box stands "
+			"on); %.0f m of rail, %d posts, %d bollards; lamps %s: %d (%d where a box stands, %d crowded)."),
+			static_cast<int32>(QuayCounts.decks), static_cast<int32>(QuayCounts.runs), QuayCounts.seaward, QuayCounts.blocked, QuayCounts.railed,
+			static_cast<int32>(QuayCounts.posts), static_cast<int32>(QuayCounts.bollards), bLamps ? *QuayLampId : TEXT("none (no -QuayLamp)"),
+			static_cast<int32>(QuayLamps.size()), bLamps ? static_cast<int32>(QuayCounts.lampsBlocked) : 0,
+			bLamps ? static_cast<int32>(QuayCounts.lampsCrowded) : 0);
+	}
+
+	// The frontage: pieces against the faces of the buildings left as boxes (no kit mesh stands in for them, and none is
+	// sloped), by the kinds of the streets they front.
+	if (!FrontRules.empty())
+	{
+		std::vector<bool> Hosts(Boxes.size(), false);
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			Hosts[I] = Visible[I] && !Replaced[I] && !Boxes[I].sloped &&
+				ftcore::massingLookIsBuilding(ftcore::massingLookSurface(Boxes[I]));
+		}
+		std::vector<ftcore::MassingProp> Pieces;
+		std::vector<ftcore::MassingFrontCounts> FrontCounts;
+		ftcore::MassingFrontTotals FrontTotals;
+		std::vector<ftcore::MassingBox> Pads;
+		ftcore::massingFrontage(FrontRules, PropStreets, Ground, Built, Visible, Hosts, kPropDryAbove, &Taken, Pieces, FrontCounts, FrontTotals,
+			&Pads, &FrontFaces);
+		const size_t LanePads = ftcore::massingDropLanePads(Pads, PropStreets, LanePaveUpTo, kLookLanePadReach);
+		if (LanePads > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -LanePave: %d paving pads on the lanes left out."), static_cast<int32>(LanePads));
+		}
+		for (const ftcore::MassingBox& Pad : Pads)
+		{
+			Lay(Pad, EFTCellKind::Walk, EFTCellCull::None);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d paving pads under the ground pieces, laid to the ground's grade; %d "
+			"left out over a step."), static_cast<int32>(Pads.size()), static_cast<int32>(FrontTotals.padsUneven));
+		TArray<int32> PerFront;
+		PerFront.SetNumZeroed(static_cast<int32>(FrontRules.size()));
+		for (const ftcore::MassingProp& Piece : Pieces)
+		{
+			const ftcore::MassingFrontRule& Rule = FrontRules[Piece.rule];
+			const int32 N = ++PerFront[static_cast<int32>(Piece.rule)];
+			if (!PlaceMesh(FrontMeshes[static_cast<int32>(Piece.rule)], Piece, Rule.turn, Rule.out - Rule.depth,
+					FString::Printf(TEXT("%s-%d"), *Utf8(Rule.id), N), Rule.scale))
+			{
+				World->DestroyWorld(false);
+				return 1;
+			}
+			if (Rule.dz < ftcore::kMassingPropBody)
+			{
+				Taken.push_back(ftcore::massingFrontFoot(Piece, Rule));
+			}
+		}
+		for (size_t R = 0; R < FrontRules.size(); ++R)
+		{
+			const ftcore::MassingFrontCounts& Count = FrontCounts[R];
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage %s: %d placed on %d faces of %d tries (no wall %d, shallow %d, "
+				"blocked %d, in a road %d, steep %d, wet %d, crowded %d, over the cap %d)."),
+				*Utf8(FrontRules[R].id), static_cast<int32>(Count.placed), static_cast<int32>(Count.faces), static_cast<int32>(Count.tried),
+				static_cast<int32>(Count.noWall), static_cast<int32>(Count.shallow), static_cast<int32>(Count.blocked), static_cast<int32>(Count.inRoad),
+				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.crowded), static_cast<int32>(Count.capped));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d pieces by %d rules on %d buildings' %d faces; %d faces dressed at "
+			"the ground, %d of the %d that front a street; none collides."),
+			static_cast<int32>(Pieces.size()), static_cast<int32>(FrontRules.size()), static_cast<int32>(FrontTotals.hosts),
+			static_cast<int32>(FrontTotals.faces), static_cast<int32>(FrontTotals.dressed), static_cast<int32>(FrontTotals.streetDressed),
+			static_cast<int32>(FrontTotals.streetFaces));
+	}
+
+	// The street furniture: each rule's mesh along its streets, on the floor the lead walks, out of the dressing's room.
+	if (!PropRules.empty())
+	{
+		std::vector<ftcore::MassingProp> Props;
+		std::vector<ftcore::MassingPropCounts> PropCounts;
+		ftcore::massingPlaceProps(PropStreets, PropRules, Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
+			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY, Built, Visible, kPropDryAbove, Props, PropCounts, &Taken);
+		TArray<int32> PerRule;
+		PerRule.SetNumZeroed(static_cast<int32>(PropRules.size()));
+		int32 FarFromLine = 0;
+		for (const ftcore::MassingProp& Placed : Props)
+		{
+			const ftcore::MassingPropRule& Rule = PropRules[Placed.rule];
+			const FString Label = FString::Printf(TEXT("%s-%d"), *Utf8(Rule.id), ++PerRule[static_cast<int32>(Placed.rule)]);
+			if (!PlaceMesh(PropMeshes[static_cast<int32>(Placed.rule)], Placed, Rule.turn, Rule.inset, Label))
+			{
+				World->DestroyWorld(false);
+				return 1;
+			}
+			// A prop off every kerb and frontage line stands alone in the open.
+			const double Gap = ftcore::massingPropLineGap(PropStreets, Built, Visible, Placed.x, Placed.y, Placed.z - Rule.dz);
+			if (Gap > PropLine)
+			{
+				++FarFromLine;
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: props %s at %.1f, %.1f stands %.1f m from the nearest kerb or frontage."),
+					*Label, Placed.x, Placed.y, Gap);
+			}
+		}
+		// The quay's lamps go on under their rule's labels.
+		for (const ftcore::MassingProp& Lamp : QuayLamps)
+		{
+			const ftcore::MassingPropRule& Rule = PropRules[Lamp.rule];
+			if (!PlaceMesh(PropMeshes[static_cast<int32>(Lamp.rule)], Lamp, Rule.turn, Rule.inset,
+					FString::Printf(TEXT("%s-%d"), *Utf8(Rule.id), ++PerRule[static_cast<int32>(Lamp.rule)])))
+			{
+				World->DestroyWorld(false);
+				return 1;
+			}
+		}
+		int32 PropTotal = 0;
+		for (size_t R = 0; R < PropRules.size(); ++R)
+		{
+			const ftcore::MassingPropRule& Rule = PropRules[R];
+			const ftcore::MassingPropCounts& Count = PropCounts[R];
+			const FVector Size = PropMeshes[static_cast<int32>(R)]->GetBoundingBox().GetSize() / 100.0;
+			PropTotal += static_cast<int32>(Count.placed);
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("FTBuildMassingWorld: props %s: %s, %.2f x %.2f x %.2f m, foot %.2f x %.2f m; %d placed of %d spots (blocked %d, no wall %d, open "
+					 "%d, in a road %d, steep %d, wet %d, crowded %d, over the cap %d)%s."),
+				*Utf8(Rule.id), *Utf8(Rule.asset), Size.X, Size.Y, Size.Z, Rule.footX, Rule.footY, static_cast<int32>(Count.placed),
+				static_cast<int32>(Count.spots), static_cast<int32>(Count.blocked), static_cast<int32>(Count.noWall), static_cast<int32>(Count.open),
+				static_cast<int32>(Count.inRoad), static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.crowded),
+				static_cast<int32>(Count.capped),
+				R == QuayLampAt ? *FString::Printf(TEXT("; %d more on the quays"), static_cast<int32>(QuayLamps.size())) : TEXT(""));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: props: %d meshes by %d rules along %d streets of %s, and %d on the quays; none "
+			"collides."), PropTotal, static_cast<int32>(PropRules.size()), static_cast<int32>(PropStreets.size()), *FPaths::GetCleanFilename(PropStreetsFile),
+			static_cast<int32>(QuayLamps.size()));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: props: %d stand over %.1f m from every kerb and frontage line."), FarFromLine,
+			PropLine);
+	}
+	// -LaneLamps and the two-wheelers, after the props so they keep off them.
+	if (!FTBuildRoads::Finish(RoadHost, RoadOptions, RoadSpecs, RoadBuilds, KerbStreetsFile, Ground))
+	{
+		World->DestroyWorld(false);
+		return 1;
+	}
+	if (bNightLamps)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night lamps: %d light points under the %s lamps' heads (%d placed, %d on kit "
+			"boxes) in the night lights' data, no light actors: spots aimed down at run time, %.0f cd, %.0f K, reach %.0f m; %s."),
+			NightLampsPlaced + NightLampsKit, kNightLampMesh, NightLampsPlaced, NightLampsKit, FTNightLight::LampCandela, FTNightLight::LampKelvin,
+			FTNightLight::LampReach / 100.f,
+			!LampParts.Lens ? TEXT("no lenses (the engine's cylinder didn't load)")
+				: *FString::Printf(TEXT("a %.2f x %.2f m lens instance under each head, tagged %s%s"), kNightLampLensLong, kNightLampLensWide,
+					FTScene::NightLampHeadTag, LampParts.Glow ? TEXT(", wearing the lamp material") : TEXT(" (no lamp material built: the night look puts it on)")));
+	}
+
+	// The windows' data: each windowed box's seed, the faces the frontage found fronting a street (their ground storey is
+	// shops) and each face's street floor over the box's bottom.
+	// -NightLamps with -Windows: a spill point out of each shopfront (ftcore::massingShopLights) in the night lights' data.
+	int32 ShopLights = 0, ShopFaces = 0;
+	std::vector<ftcore::MassingShopLight> ShopAt;
+	if (bWindows)
+	{
+		int32 Windows = 0, StreetFaces = 0;
+		int32 FacadeTypes[ftcore::kWindowTypes] = {};
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			if (!Windowed[I].IsValid())
+			{
+				continue;
+			}
+			const ftcore::MassingWindowData Data =
+				ftcore::massingWindowData(Built[I], Ground, FrontFaces.size() >= (I + 1) * 4 ? &FrontFaces[I * 4] : nullptr);
+			const FFTCellHandle& Piece = Windowed[I];
+			Cells.SetCustomData(Piece, FTScene::WindowDataSeed, static_cast<float>(Data.seed));
+			Cells.SetCustomData(Piece, FTScene::WindowDataStreet, static_cast<float>(Data.streetBits));
+			for (int32 F = 0; F < 4; ++F)
+			{
+				Cells.SetCustomData(Piece, FTScene::WindowDataBase + F, static_cast<float>(Data.base[F]));
+				StreetFaces += (Data.streetBits >> F) & 1u;
+			}
+			if (bFacadeR5)
+			{
+				SetFacadeR5Data(Cells, Piece, Built[I], Data, FacadeTypes);
+			}
+			++Windows;
+			if (bNightLamps)
+			{
+				ShopAt.clear();
+				ftcore::massingShopLights(Built[I], Data, ftcore::kMassingShopLightSpacing, ShopAt);
+				int32 LastFace = -1;
+				for (size_t L = 0; L < ShopAt.size(); ++L)
+				{
+					NightShop(*LampParts.Lights->Data, Side, ShopAt[L]);
+					ShopFaces += ShopAt[L].faceIndex != LastFace ? 1 : 0;
+					LastFace = ShopAt[L].faceIndex;
+				}
+				ShopLights += static_cast<int32>(ShopAt.size());
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: windows: %d building boxes, %d faces fronting a street (shops at street level)%s; "
+			"none on %d sloped boxes or the %d boxes kit meshes stand in for."), Windows, StreetFaces,
+			FrontFaces.empty() ? TEXT(" (no -Frontage, so no street faces)") : TEXT(""), WindowSloped, WindowReplaced);
+		if (bFacadeR5)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: r5 facades: %d apartment, %d walkway, %d shophouse, %d office."),
+				FacadeTypes[1], FacadeTypes[2], FacadeTypes[3], FacadeTypes[4]);
+		}
+		if (bNightLamps)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night shops: %d spill points on %d shopfront faces (one per %.0f m of face at "
+				"most, %.1f m out, %.1f m over the street) in the night lights' data, no light actors: spots %.0f degrees down at run time, %.0f cd, "
+				"%.0f K, reach %.0f m%s."), ShopLights, ShopFaces, ftcore::kMassingShopLightSpacing, ftcore::kMassingShopLightOut,
+				ftcore::kMassingShopLightUp, -FTNightLight::ShopPitch, FTNightLight::ShopCandela, FTNightLight::ShopKelvin,
+				FTNightLight::ShopReach / 100.f, FrontFaces.empty() ? TEXT("; none without -Frontage") : TEXT(""));
+		}
+	}
+	else if (bNightLamps)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night shops: none without -Windows (the shopfronts are the windows')."));
+	}
+
+	// The roofs: rails along the edges that drop away, tanks, air-conditioning units and aerials on the flat tops of the
+	// buildings no kit mesh replaces.
+	if (bRoofs)
+	{
+		// The terraces (an academy's steps, their tops the ground) are courts: rails, racks and lamp standards.
+		std::vector<bool> RoofHosts(Boxes.size(), false), Courts(Boxes.size(), false);
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			const bool FlatTop = Visible[I] && !Replaced[I] && !Boxes[I].sloped;
+			Courts[I] = FlatTop && Boxes[I].kind == "terrace";
+			RoofHosts[I] = Courts[I] || (FlatTop && ftcore::massingLookIsBuilding(ftcore::massingLookSurface(Boxes[I])));
+		}
+		std::vector<ftcore::MassingBox> RoofPieces;
+		ftcore::MassingRoofCounts RoofCounts;
+		ftcore::MassingRoofStyle RoofStyle;
+		RoofStyle.layouts = bRoofLayouts;
+		FTRoofDress::ApplyStyle(RoofDressOptions, RoofStyle);
+		ftcore::massingRoofs(Ground, Built, Visible, RoofHosts, RoofPieces, RoofCounts, &Courts, &RoofStyle);
+		FTRoofDress::FHuts RoofHuts;
+		RoofHuts.Begin(RoofDressOptions);
+		for (const ftcore::MassingBox& Piece : RoofPieces)
+		{
+			if (!RoofHuts.Take(Piece, Side))
+			{
+				Lay(Piece, EFTCellKind::Solid, EFTCellCull::Dressing);
+			}
+		}
+		RoofHuts.Finish(Cells);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roofs: %d boxes on %d tops (%d left bare): %.0f m of rail on %d posts, %d tanks, "
+			"%d air-conditioning units, %d aerials."), static_cast<int32>(RoofPieces.size()), static_cast<int32>(RoofCounts.roofs),
+			static_cast<int32>(RoofCounts.bare), RoofCounts.railed, static_cast<int32>(RoofCounts.posts), static_cast<int32>(RoofCounts.tanks),
+			static_cast<int32>(RoofCounts.units), static_cast<int32>(RoofCounts.aerials));
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roofs: %d terrace courts dressed with %d racks and %d lamp standards (rails above)."),
+			static_cast<int32>(RoofCounts.courts), static_cast<int32>(RoofCounts.racks), static_cast<int32>(RoofCounts.standards));
+		if (bRoofLayouts)
+		{
+			LogRoofLayouts(RoofCounts);
+		}
 	}
 
 	// The hidden walls: they stop pawns but no traces on Visibility, and not the camera's arm.
@@ -1948,6 +2906,16 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Director->SeaLevel = 0.f; // the sea plane stands at the datum
 		Director->PlanSide = static_cast<float>(Side);
 		Director->SetActorLabel(TEXT("ExploreDirector"));
+	}
+
+	// The cells' instances, every component made at once (their collision is what the navmesh reads next), and the
+	// lamps' lenses.
+	Cells.Flush();
+	const int32 LampLenses = FinishNightLamps(LampParts);
+	if (bNightLamps)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: night lights: %d lamp points, %d shop points, %d lens instances."),
+			LampParts.Lights->Data->LampAt.Num(), LampParts.Lights->Data->ShopAt.Num(), LampLenses);
 	}
 
 	// Whatever is still building (the sloped meshes' collision, the ground's) finishes before the navmesh reads it.
@@ -2039,10 +3007,21 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		++Actors;
 	}
+	{
+		const FFTCellInstancer::FStats& CellStats = Cells.Stats();
+		const auto PerKind = [&CellStats](EFTCellKind Kind) { return CellStats.PerKind[static_cast<int32>(Kind)]; };
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: %d cells, %d components, %d instances (solid %d, walk %d, dressing %d); "
+			"actors %d"), CellStats.Cells, CellStats.Components, CellStats.Instances, PerKind(EFTCellKind::Solid) + PerKind(EFTCellKind::Hidden),
+			PerKind(EFTCellKind::Walk), PerKind(EFTCellKind::NoCollide), Actors);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: of the solid, %d hidden colliders under kit meshes; %d pieces fell back to "
+			"actors (their materials don't draw instanced); %d sloped boxes stay actors."), PerKind(EFTCellKind::Hidden), CellStats.FallbackActors,
+			Sloped);
+	}
 	if (!KitRows.IsEmpty())
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: kit: %d meshes placed on %d boxes, %d of the meshes with no collider; %d built boxes left as boxes."),
-			KitPlaced, KitOnBox.Num(), KitNoCollider, BoxesLeft);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("FTBuildMassingWorld: kit: %d meshes placed on %d boxes, %d of the meshes with no collider; %d boxes only hidden; %d built boxes left as boxes."),
+			KitPlaced, KitOnBox.Num(), KitNoCollider, KitHidden, BoxesLeft);
 	}
 	const FString ApartLine = Apart.IsEmpty() ? FString() : FString::Printf(TEXT(" (listed apart, not counted: %s)"), *Apart);
 	const FString SpawnLine =
@@ -2051,9 +3030,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		? FString()
 		: FString::Printf(TEXT("; temporary placements: %d goals, %d spawns"), GoalPlacements, Places.IsEmpty() ? 0 : SpawnPlacements);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("FTBuildMassingWorld: %d rows: %d named and %d kit built (%d sloped meshes, %d tops nudged), %d not built; %d hidden walls; "
-			 "ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s%s%s%s."),
-		static_cast<int32>(Boxes.size()), Named, Kit, Sloped, Nudged, Skipped, static_cast<int32>(Walls.size()), Samples, Samples,
+		TEXT("FTBuildMassingWorld: %d rows: %d named and %d kit built (%d sloped meshes, %d tops nudged, %d of them off the ground), %d not built; "
+			 "%d hidden walls; ground %d x %d samples (%.1f to %.1f m); %d actors; goals reached %d of %d%s%s%s%s."),
+		static_cast<int32>(Boxes.size()), Named, Kit, Sloped, Nudged, Raised, Skipped, static_cast<int32>(Walls.size()), Samples, Samples,
 		ftcore::massingHeightFromValue(Lowest), ftcore::massingHeightFromValue(Highest), Actors, Reached, Counted, *ApartLine, *SpawnLine,
 		*PlacedLine, bNav ? TEXT("") : TEXT(" (no navmesh)"));
 

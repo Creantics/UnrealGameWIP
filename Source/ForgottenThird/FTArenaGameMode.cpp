@@ -30,8 +30,12 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "FTFightSession.h"
+#include "FTGameInstance.h"
+#include "FTStoryStateSubsystem.h"
 
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -39,20 +43,91 @@ static_assert(AFTArenaFighter::TellSegments == 14, "Tell[14] in FTArenaFighter.h
 
 namespace
 {
+#if !UE_BUILD_SHIPPING
+// -ArenaStoryProbe: the arena's story wiring, headless. The fight is handed off as the story's (a carry, the
+// registry's first scene open, no step marked: as a reload into the fight), one gift press is counted, the arena
+// restarts the fight (UFTArenaRunner::Restart), and one more press is counted; each stage logs the press counters
+// and the retries count, then the game quits. Expected: presses 0 -> 1 -> 0 (rolled back) -> 1; retries +1.
+UFTStoryStateSubsystem* StoryProbeState(const UObject* Context)
+{
+	const UWorld* World = Context ? Context->GetWorld() : nullptr;
+	UFTGameInstance* GI = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+	return GI ? GI->GetSubsystem<UFTStoryStateSubsystem>() : nullptr;
+}
+
+void PrepareStoryProbe(const UObject* Context)
+{
+	const UWorld* World = Context ? Context->GetWorld() : nullptr;
+	UFTGameInstance* GI = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+	UFTStoryStateSubsystem* Story = StoryProbeState(Context);
+	const ftcore::FactRegistry* Reg = Story ? Story->GetRegistry() : nullptr;
+	if (!GI || !Reg || Reg->sceneCount == 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: story probe: no story registry with a scene; the probe can't run."));
+		return;
+	}
+	Story->NewGame();
+	const auto& Code = Reg->sceneCodes[0];
+	const FString Scene(static_cast<int32>(strnlen(Code.data(), Code.size())), Code.data());
+	const bool bOpen = Story->BeginScene(Scene);
+	GI->StoryCarry = FFTStoryCarry();
+	GI->StoryCarry.bValid = true;
+	GI->StoryCarry.bDone = false;
+	GI->StoryCarry.Combat = ftcore::CombatKind::Arena;
+	GI->StoryCarry.WantedCombat = ftcore::CombatKind::Arena;
+	GI->StoryCarry.Scene = Scene;
+	GI->StoryCarry.Beat = 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: story probe: scene %s %s, no step marked (as a reload into the fight)."), *Scene,
+		bOpen ? TEXT("open") : TEXT("NOT OPEN"));
+}
+
+void LogStoryProbe(const UObject* Context, const UFTArenaRunner* Runner, const TCHAR* Stage)
+{
+	UFTStoryStateSubsystem* Story = StoryProbeState(Context);
+	const ftcore::StoryState* State = Story ? Story->GetState() : nullptr;
+	const ftcore::FactRegistry* Reg = Story ? Story->GetRegistry() : nullptr;
+	if (!State || !Reg)
+	{
+		return;
+	}
+	uint32 Presses = 0;
+	for (const auto& Side : Reg->roles.pressCounters)
+	{
+		for (const std::uint8_t Slot : Side)
+		{
+			Presses += ftcore::storyWide(*State, Slot);
+		}
+	}
+	const UFTFightSession* Session = Runner ? Runner->GetSession() : nullptr;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: story probe %s: bound %d, presses %u, retries %u."), Stage,
+		Session && Session->IsStoryBound() ? 1 : 0, Presses, ftcore::storyWide(*State, Reg->roles.retries));
+}
+
+void PressStoryProbe(UFTArenaRunner* Runner)
+{
+	if (UFTFightSession* Session = Runner ? Runner->GetSession() : nullptr)
+	{
+		Session->Get().selectGift(ftcore::Gift::Heal);
+		Session->Get().giveGift(Runner->GetSessionLead()); // counted given or refused
+	}
+}
+#endif
+
 // The shortest tell the arena allows (s): an enemy's startup is its telegraph.
 constexpr float kArenaMinTell = 0.4f;
 // After a view is taken, the fight holds this long (wall seconds) so the frame it renders is that moment.
 constexpr double kArenaShotHold = 1.0;
-// -ArenaShotStrikes: how long after an attack goes active its view's frame is (fight seconds, on the clock the figures
-// are drawn by): the clip's impact keys to the active start, and the shortest effect (the muzzle flash's core, 0.06 s
-// each over 0.1 s) is still up. The fight's clock is brought to that mark exactly (within kArenaStrikeSlack) and held,
+// -ArenaShotStrikes: an attack's view frame is FFTLeadWeapons::GetViewTime (fight seconds, on the clock the figures
+// are drawn by). The fight's clock is brought to that mark exactly (within kArenaStrikeSlack) and held,
 // and the lead's effects are run to their age there and paused (FFTLeadWeapons::Freeze): Niagara keeps the world's
 // clock, which runs on while the fight holds and in the frames before the view.
-constexpr double kArenaStrikeShotLag = 0.04;
 constexpr double kArenaStrikeSlack = 1e-4;
 // -ArenaShotClose: the strike view's camera distance from the striking limb and the forearms view's from their middle
 // (cm), its field of view (degrees), and the settle after each cut (wall seconds, for the image's history and exposure).
-constexpr double kArenaCloseDistance = 100.0;
+constexpr double kArenaCloseDistance = 65.0;
+// The fist's front view (from ahead of it, off to its side and a little above) and the pistol's views, cm.
+constexpr double kArenaFrontDistance = 55.0;
+constexpr double kArenaGunDistance = 60.0;
 constexpr double kArenaArmsDistance = 140.0;
 constexpr float kArenaCloseFov = 55.f;
 constexpr double kArenaCloseSettle = 0.6;
@@ -111,6 +186,7 @@ void AFTArenaGameMode::StartPlay()
 			ShotStrikes = FMath::Clamp(Strikes, 0, 32);
 		}
 		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
+		bShotSide = FParse::Param(Cmd, TEXT("ArenaShotSide"));
 	}
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle"));
 	bAutoPlay = !bIdle && (FParse::Param(Cmd, TEXT("ArenaAutoPlay")) || !ShotPrefix.IsEmpty());
@@ -118,6 +194,9 @@ void AFTArenaGameMode::StartPlay()
 	bOverview = FParse::Param(Cmd, TEXT("ArenaOverview"));
 	bWorldView = !bOverview && FParse::Param(Cmd, TEXT("ArenaWorldView"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
+	bNoLock = FParse::Param(Cmd, TEXT("ArenaNoLock"));
+	bAutoShoot = FParse::Param(Cmd, TEXT("ArenaAutoShoot"));
+	bSharedCount = FParse::Param(Cmd, TEXT("ArenaSharedCount"));
 	FParse::Value(Cmd, TEXT("ArenaParryHold="), ParryHold);
 	ParryHold = FMath::Clamp(ParryHold, 0.f, 10.f);
 	FParse::Value(Cmd, TEXT("ArenaBossLoop="), BossLoop);
@@ -565,23 +644,75 @@ void AFTArenaGameMode::Begin()
 	Setup.bAutoPlay = bAutoPlay;
 	Setup.bIdle = bIdle;
 	Setup.bHoldLoad = bHoldLoad;
+	Setup.bNoLock = bNoLock;
+	Setup.bAutoShoot = bAutoShoot;
+	Setup.bSharedCount = bSharedCount;
 	Setup.ParryHold = ParryHold;
 	Setup.BossLoop = BossLoop;
 	Setup.bBossSplitAtStart = bBossSplit;
 	Setup.bQuitOnFinish = bQuitOnFinish;
 	Setup.bShots = !ShotPrefix.IsEmpty();
+#if !UE_BUILD_SHIPPING
+	// The probe resets the live story state (NewGame): headless only, where autosave is off (IsHeadlessRun).
+	bool bStoryProbe = FParse::Param(FCommandLine::Get(), TEXT("ArenaStoryProbe"));
+	if (bStoryProbe && !FParse::Param(FCommandLine::Get(), TEXT("NullRHI")))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaStoryProbe runs only headless (-NullRHI); ignored."));
+		bStoryProbe = false;
+	}
+	if (bStoryProbe)
+	{
+		PrepareStoryProbe(this);
+	}
+#endif
 	Runner->Begin(Setup);
+#if !UE_BUILD_SHIPPING
+	if (bStoryProbe)
+	{
+		LogStoryProbe(this, Runner, TEXT("begun"));
+		PressStoryProbe(Runner);
+		LogStoryProbe(this, Runner, TEXT("pressed"));
+		Runner->Restart();
+		LogStoryProbe(this, Runner, TEXT("restarted"));
+		PressStoryProbe(Runner);
+		LogStoryProbe(this, Runner, TEXT("pressed again"));
+		if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
+		{
+			GI->StoryCarry = FFTStoryCarry(); // nothing goes back to a story that never ran
+		}
+		FPlatformMisc::RequestExitWithStatus(false, 0, TEXT("ArenaStoryProbe"));
+	}
+#endif
 }
 
-FString AFTArenaGameMode::FindKitId() const
+bool AFTArenaGameMode::IsPlayable(const FString& Name) const
+{
+	return ftcore::arenaPlayable(Table.fighter(FT::ToUtf8(Name.ToLower())));
+}
+
+FString AFTArenaGameMode::WantedLead() const
 {
 	FString Want;
 	FParse::Value(FCommandLine::Get(), TEXT("ArenaLead="), Want, false);
 	Want = Want.TrimStartAndEnd();
+	if (!Want.IsEmpty() && !IsPlayable(Want))
+	{
+		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a support slot with no attack kit and can't be the lead; using the first who has attacks."), *Want);
+		bLeadWarned = true;
+		Want.Reset();
+	}
+	return Want;
+}
+
+FString AFTArenaGameMode::FindKitId() const
+{
+	FString Want = WantedLead();
 	if (Want.IsEmpty())
 	{
 		const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
-		Want = Party.IsEmpty() ? FString(TEXT("default")) : Party[0].Name;
+		const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
+		First = First ? First : (Party.IsEmpty() ? nullptr : &Party[0]);
+		Want = First ? First->Name : FString(TEXT("default"));
 	}
 	return Want.ToLower();
 }
@@ -594,9 +725,9 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: no PartyLooks in config; the lead is the test human."));
 		return nullptr;
 	}
-	FString Want;
-	FParse::Value(FCommandLine::Get(), TEXT("ArenaLead="), Want, false);
-	Want = Want.TrimStartAndEnd();
+	const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
+	First = First ? First : &Party[0];
+	const FString Want = WantedLead();
 	if (!Want.IsEmpty())
 	{
 		for (const FFTLeadLook& Member : Party)
@@ -606,9 +737,9 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 				return &Member;
 			}
 		}
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want, *Party[0].Name);
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want, *First->Name);
 	}
-	return &Party[0];
+	return First;
 }
 
 void AFTArenaGameMode::Tick(float DeltaSeconds)
@@ -701,6 +832,10 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	{
 		return StrikeShot();
 	}
+	if (bShotClose && ShotsTaken > 0 && GunPhase < 7 && GunShot())
+	{
+		return true;
+	}
 	if ((bOverview || bWorldView) && OverviewPhase < 3 && OverviewShot())
 	{
 		return true;
@@ -713,12 +848,29 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	// unchanged).
 	if (NextShotAt < ShotAt.Num() && ShotsTaken > 0 && static_cast<double>(Runner->GetFight().time()) >= ShotAt[NextShotAt])
 	{
+		// -ArenaShotSide: 3.4 m off the lead's right and 0.9 m above its hips, a frame before the view.
+		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+		if (bShotSide && !bSideAimed && Lead)
+		{
+			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0);
+			bSideAimed = AimStrikeCamera(At + Lead->GetActorRightVector().GetSafeNormal2D() * 340.0 + FVector(0.0, 0.0, 90.0), At);
+			if (bSideAimed)
+			{
+				return true;
+			}
+		}
+		bSideAimed = false;
 		TakeShot(*FString::Printf(TEXT("t_%05.2f"), ShotAt[NextShotAt]), false);
 		++NextShotAt;
 		return true;
 	}
-	// -ArenaShotStrikes's views: the player's attacks kArenaStrikeShotLag after each goes active (uncounted too). Attacks
-	// that went by while another view held the fight are skipped.
+	if (bShotSide && NextShotAt > 0 && NextShotAt == ShotAt.Num() && StrikeCamera)
+	{
+		EndCloseCamera(); // the side views over
+	}
+	// -ArenaShotStrikes's views: the player's attacks at their impact (a strike's just after it lands, a shot's or cast's
+	// as it reaches the hit point) and, every second one, a shot's or cast's mid-flight (FFTLeadWeapons::GetViewTime;
+	// uncounted too). Attacks that went by while another view held the fight are skipped.
 	if (StrikeShots < ShotStrikes && ShotsTaken > 0)
 	{
 		FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
@@ -727,7 +879,7 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		{
 			// The frame is on the clock the figures are drawn by; until it is reached, the fight's clock is kept from
 			// passing it (Tick), so it lands on the mark.
-			const double Due = Weapons.GetLastActiveTime() + kArenaStrikeShotLag;
+			const double Due = Weapons.GetViewTime(StrikeShots % 2 == 0);
 			const double Drawn = Runner->GetDrawnTime();
 			if (Drawn < Due - kArenaStrikeSlack)
 			{
@@ -859,7 +1011,42 @@ bool AFTArenaGameMode::StrikeShot()
 		{
 			LogFramed(*StrikeName, TEXT("the pistol's muzzle"), At);
 		}
-		StrikePhase = bShotClose && StrikeCamera && Weapons.HasGauntlets() && StrikeShots == 1 ? 2 : 4;
+		StrikePhase = bShotClose && StrikeCamera ? 5 : 4;
+		return true;
+	}
+	case 5:
+	{
+		// In front of the striking limb, off to its side and a little above, looking back at it.
+		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+		FName Bone;
+		FVector At;
+		bool bLeft = false;
+		StrikePhase = Weapons.HasGauntlets() && StrikeShots == 1 ? 2 : 4;
+		if (Lead && Weapons.GetStrikeLimb(Bone, At, bLeft))
+		{
+			const FVector Ahead = Lead->GetActorForwardVector().GetSafeNormal2D();
+			const FVector Side = Lead->GetActorRightVector().GetSafeNormal2D() * (bLeft ? -1.0 : 1.0);
+			const FVector From = At + (Ahead * 0.7 + Side * 0.55 + FVector(0.0, 0.0, 0.25)).GetSafeNormal() * kArenaFrontDistance;
+			if (AimStrikeCamera(From, At))
+			{
+				ShotHoldUntil = ShotWall + kArenaCloseSettle;
+				StrikePhase = 6;
+			}
+		}
+		return true;
+	}
+	case 6:
+	{
+		const FString Front = StrikeName + TEXT("_front");
+		TakeShot(*Front, false);
+		FName Bone;
+		FVector At;
+		bool bLeft = false;
+		if (Weapons.GetStrikeLimb(Bone, At, bLeft))
+		{
+			LogFramed(*Front, *Bone.ToString(), At);
+		}
+		StrikePhase = Weapons.HasGauntlets() && StrikeShots == 1 ? 2 : 4;
 		return true;
 	}
 	case 2:
@@ -898,20 +1085,78 @@ bool AFTArenaGameMode::StrikeShot()
 	default:
 		// Back to the fight.
 		Weapons.Thaw();
-		if (StrikeCamera)
-		{
-			if (APlayerController* PC = GetPC())
-			{
-				PC->SetViewTarget(Runner->GetPlayerFigure());
-				if (AHUD* Hud = PC->GetHUD())
-				{
-					Hud->bShowHUD = true;
-				}
-			}
-			StrikeCamera->Destroy();
-			StrikeCamera = nullptr;
-		}
+		EndCloseCamera();
 		StrikePhase = 0;
+		return true;
+	}
+}
+
+void AFTArenaGameMode::EndCloseCamera()
+{
+	if (!StrikeCamera)
+	{
+		return;
+	}
+	if (APlayerController* PC = GetPC())
+	{
+		PC->SetViewTarget(Runner->GetPlayerFigure());
+		if (AHUD* Hud = PC->GetHUD())
+		{
+			Hud->bShowHUD = true;
+		}
+	}
+	StrikeCamera->Destroy();
+	StrikeCamera = nullptr;
+}
+
+bool AFTArenaGameMode::GunShot()
+{
+	FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+	const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+	FVector At;
+	if (!Lead || !Weapons.GetMuzzle(At))
+	{
+		GunPhase = 7;
+		return false;
+	}
+	switch (GunPhase)
+	{
+	case 0:
+	case 3:
+		// Into the holster, then back in the hand; the camera goes on the next frame, with the pistol where it now is.
+		Weapons.SetHolstered(GunPhase == 0);
+		++GunPhase;
+		return true;
+	case 1:
+	case 4:
+	{
+		// Off the lead's right side and a little ahead and above, on the pistol.
+		const FVector Dir = Lead->GetActorRightVector().GetSafeNormal2D() * 0.85 + Lead->GetActorForwardVector().GetSafeNormal2D() * 0.45
+			+ FVector(0.0, 0.0, 0.2);
+		if (AimStrikeCamera(At + Dir.GetSafeNormal() * kArenaGunDistance, At))
+		{
+			ShotHoldUntil = ShotWall + kArenaCloseSettle;
+			++GunPhase;
+		}
+		else
+		{
+			Weapons.SetHolstered(false);
+			GunPhase = 7;
+		}
+		return true;
+	}
+	case 2:
+	case 5:
+	{
+		const TCHAR* Name = GunPhase == 2 ? TEXT("1_holstered") : TEXT("1_drawn");
+		TakeShot(Name, false);
+		LogFramed(Name, TEXT("the pistol's muzzle"), At);
+		++GunPhase;
+		return true;
+	}
+	default:
+		EndCloseCamera();
+		GunPhase = 7;
 		return true;
 	}
 }

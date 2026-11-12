@@ -90,6 +90,8 @@ struct AssetRules {
 
 FTCORE_API AssetRules characterRules(AssetPack pack, AssetRole role);
 FTCORE_API AssetRules propRules(AssetPack pack);
+// A building-kit piece: a prop whose maps may reach 2048 px (a 3-8 m wall section at 256 px per metre).
+FTCORE_API AssetRules kitRules(AssetPack pack);
 
 // A material name that asks for a glow: contains Glow, Eye, Skill or Rule (any case).
 FTCORE_API bool isGlowMaterialName(std::string_view name);

@@ -7,6 +7,7 @@
 
 #include "ForgottenThird.h"
 #include "FTGameInstance.h"
+#include "FTStoryStateSubsystem.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
@@ -150,6 +151,27 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, uint32 B
 	return Route;
 }
 
+struct FStepJudgement
+{
+	ftcore::StepVerdict Verdict = ftcore::StepVerdict::Advance;
+	ftcore::LossRule Rule = ftcore::LossRule::Retry;
+	bool bFight = false;
+	bool bHasSets = false;
+};
+
+// ftcore::judgeStep for a carried step that came back done, on the runner's current beat (the loader
+// already refused a `lose` param it can't read).
+FStepJudgement Judge(const UFTGameInstance& GI, const StoryRunner& Runner, const FFTStoryCarry& Carry)
+{
+	FStepJudgement J;
+	J.bFight = ftcore::screenRoutesTo(Carry.Screen) == GameplayScreen::Battle;
+	ftcore::lossRuleFromName(Runner.param("lose"), J.Rule);
+	J.bHasSets = !Runner.param("sets").empty();
+	const uint32 Cap = Carry.bAutoPlay ? FTStep::kAutoFightRetries : 0;
+	J.Verdict = ftcore::judgeStep(J.bFight, Carry.bWon, J.Rule, J.bHasSets, static_cast<uint32>(FMath::Max(GI.StepRetries, 0)), Cap);
+	return J;
+}
+
 // The runner is still on the carried beat, and the chain on the carried step.
 bool OnCarriedBeat(const UFTGameInstance& GI, const StoryRunner& Runner, const FFTStoryCarry& Carry)
 {
@@ -230,6 +252,10 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	Carry.Style = Route.Style;
 	Carry.FromWorld = Route.FromWorld;
 	Carry.bAutoPlay = bAutoPlay;
+	ftcore::LossRule Rule = ftcore::LossRule::Retry;
+	const bool bRule = ftcore::lossRuleFromName(Runner.param("lose"), Rule);
+	Carry.bCannotLose = bRule && Rule == ftcore::LossRule::Never;
+	Carry.bLossBranch = bRule && Rule == ftcore::LossRule::Branch && !Runner.param("sets").empty();
 
 	if (!Route.World.IsEmpty())
 	{
@@ -272,7 +298,46 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 		UE_LOG(LogForgottenThird, Log, TEXT("Story: the CG at %s beat %d step %d plays on %s, in district %d."), *Carry.Scene, Carry.Beat, Carry.Step,
 			*Route.Map, Route.District);
 	}
+	// The step's start: a lost fight's retry, a give-up and a quit go back here (FTStep::EndStoryStep).
+	if (UFTStoryStateSubsystem* StoryState = GI.GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->MarkStep();
+	}
 	return Route.Map;
+}
+
+void FTStep::EndStoryStep(UFTGameInstance& GI, ftcore::StepEnd End)
+{
+	if (UFTStoryStateSubsystem* StoryState = GI.GetSubsystem<UFTStoryStateSubsystem>())
+	{
+		StoryState->EndStep(End);
+	}
+}
+
+void FTStep::QuitToTitle(const UObject* WorldContext, const FString& FallbackMap, const TCHAR* Who)
+{
+	UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
+	UFTGameInstance* GI = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
+	FString Map = FallbackMap;
+	if (GI)
+	{
+		FFTStoryCarry& Carry = GI->StoryCarry;
+		if (Carry.bValid)
+		{
+			if (!Carry.ReturnMap.IsEmpty())
+			{
+				Map = Carry.ReturnMap;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Story: %s left the step at %s beat %d step %d for the title; its story writes roll back."), Who,
+				*Carry.Scene, Carry.Beat, Carry.Step + 1);
+		}
+		EndStoryStep(*GI, ftcore::StepEnd::Drop); // any open step mark, carried or not, rolls back
+		GI->StoryCarry = FFTStoryCarry(); // nothing for the story map to resume: never a retry, never a result
+		GI->ExploreCarry = FFTExploreCarry(); // a field fight left half way is over, so the next run starts clean
+		GI->Chain.reset();
+		GI->StepRetries = 0;
+	}
+	OpenMap(WorldContext, Map, TEXT("Title"));
 }
 
 FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Runner, const FFTStoryCarry& Carry)
@@ -280,6 +345,7 @@ FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Ru
 	ftcore::StoryChain& Chain = GI.Chain;
 	if (!Carry.bDone)
 	{
+		EndStoryStep(GI, ftcore::StepEnd::Drop);
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: back from the %s screen before it was done (step %d/%d at %s beat %d); the beat waits in the box."),
 			*FT::ToFString(ftcore::gameplayScreenName(Carry.Screen)), Carry.Step + 1, Carry.StepCount, *Carry.Scene, Carry.Beat);
 		++GI.Alpha.warnings;
@@ -288,23 +354,67 @@ FTStep::EFinish FTStep::FinishCarried(UFTGameInstance& GI, const StoryRunner& Ru
 		Chain.reset();
 		return EFinish::Failed;
 	}
-	GI.Alpha.addScreen(Carry.Screen);
-	if (ftcore::screenRoutesTo(Carry.Screen) == GameplayScreen::Battle)
-	{
-		GI.Alpha.addFight(Carry.WantedCombat, Carry.Combat);
-	}
 	if (!OnCarriedBeat(GI, Runner, Carry))
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the story moved since the hand-off at %s beat %d; not resuming."), *Carry.Scene, Carry.Beat);
+		GI.Alpha.addScreen(Carry.Screen); // played to the end, as before; its result has nowhere to go
 		++GI.Alpha.warnings;
+		EndStoryStep(GI, ftcore::StepEnd::Keep); // the mark is spent; the writes stay where the story went
+		GI.StepRetries = 0;
 		Chain.reset();
 		return EFinish::Failed;
 	}
-	if (Chain.active() && Chain.finishStep(true) == ftcore::StoryChain::Next::Open)
+	const FStepJudgement J = Judge(GI, Runner, Carry);
+	// A retry counts afresh from the step's start; a win or a loss branch keeps what the fight wrote.
+	EndStoryStep(GI, ftcore::stepEndFor(J.Verdict));
+	switch (J.Verdict)
 	{
-		return EFinish::Next;
+	case ftcore::StepVerdict::Retry:
+		++GI.StepRetries;
+		UE_LOG(LogForgottenThird, Display, TEXT("Story: the fight at %s beat %d step %d was lost; it opens again (retry %d)."), *Carry.Scene,
+			Carry.Beat, Carry.Step + 1, GI.StepRetries);
+		return EFinish::Retry;
+	case ftcore::StepVerdict::GiveUp:
+		UE_LOG(LogForgottenThird, Warning, TEXT("Story: the fight at %s beat %d step %d was lost %d times; the beat waits in the box."),
+			*Carry.Scene, Carry.Beat, Carry.Step + 1, GI.StepRetries + 1);
+		++GI.Alpha.warnings;
+		GI.FailedScene = Carry.Scene;
+		GI.FailedBeat = Carry.Beat;
+		GI.StepRetries = 0;
+		Chain.reset();
+		return EFinish::Failed;
+	case ftcore::StepVerdict::LossBranch:
+	case ftcore::StepVerdict::Advance:
+		break;
 	}
-	return EFinish::Resume;
+	// Played to the end and its result used: counted once.
+	GI.StepRetries = 0;
+	GI.Alpha.addScreen(Carry.Screen);
+	if (J.bFight)
+	{
+		GI.Alpha.addFight(Carry.WantedCombat, Carry.Combat);
+	}
+	if (J.Verdict == ftcore::StepVerdict::LossBranch)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Story: the fight at %s beat %d step %d was lost; the beat takes its loss branch."), *Carry.Scene,
+			Carry.Beat, Carry.Step + 1);
+		Chain.reset();
+		return EFinish::ResumeLost;
+	}
+	if (J.bFight && !Carry.bWon)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Story: the fight at %s beat %d step %d was lost and cannot be; it counts as won."), *Carry.Scene,
+			Carry.Beat, Carry.Step + 1);
+	}
+	const bool bLast = !(Chain.active() && Chain.finishStep(true) == ftcore::StoryChain::Next::Open);
+	// Every fight of a "branch" beat was won (a loss would have ended it above).
+	switch (ftcore::stepResumeFor(J.Verdict, bLast, J.Rule, J.bHasSets))
+	{
+	case ftcore::StepResume::Next: return EFinish::Next;
+	case ftcore::StepResume::Won: return EFinish::ResumeWon;
+	case ftcore::StepResume::Lost: return EFinish::ResumeLost;
+	default: return EFinish::Resume;
+	}
 }
 
 bool FTStep::ContinueHere(const UObject* WorldContext)
@@ -321,6 +431,10 @@ bool FTStep::ContinueHere(const UObject* WorldContext)
 	if (!OnCarriedBeat(*GI, Runner, GI->StoryCarry))
 	{
 		return false; // the director on the story map reports it
+	}
+	if (Judge(*GI, Runner, GI->StoryCarry).Verdict != ftcore::StepVerdict::Advance)
+	{
+		return false; // a lost fight: the director on the story map retries it or takes the loss branch
 	}
 	// Peek at the next step on a copy: the chain moves on only if the step plays here.
 	ftcore::StoryChain Peek = GI->Chain;

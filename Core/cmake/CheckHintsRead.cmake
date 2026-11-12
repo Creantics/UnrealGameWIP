@@ -1,0 +1,66 @@
+# Run as: cmake -DSOURCE_DIR=<Source/ForgottenThird> -DHINTS=<Core/src/InputBindings.cpp> -P CheckHintsRead.cmake
+# Both ways between the controls lines and the host:
+#  - every action a line hints (the kArenaHint and kFieldHint tables, "A::<Action>") is read by the host: named as
+#    InputAction::<Action> in code somewhere in the game module (comments and string literals stripped), so no hint
+#    sends the player to a dead key;
+#  - every action the host reads is hinted or listed on purpose in kUnhinted, so no key goes untold by accident.
+
+file(READ "${HINTS}" hints_text)
+string(REGEX MATCH "constexpr InputHintEntry kArenaHint[^;]*;" arena_table "${hints_text}")
+string(REGEX MATCH "constexpr InputHintEntry kFieldHint[^;]*;" field_table "${hints_text}")
+set(tables "${arena_table}${field_table}")
+if(arena_table STREQUAL "" OR field_table STREQUAL "")
+    message(FATAL_ERROR "hints_read: no kArenaHint/kFieldHint tables found in ${HINTS}")
+endif()
+string(REGEX MATCHALL "A::[A-Za-z0-9]+" hinted "${tables}")
+list(TRANSFORM hinted REPLACE "^A::" "")
+list(REMOVE_DUPLICATES hinted)
+
+string(REGEX MATCH "constexpr InputAction kUnhinted[^;]*;" unhinted_decl "${hints_text}")
+if(unhinted_decl STREQUAL "")
+    message(FATAL_ERROR "hints_read: no kUnhinted list found in ${HINTS}")
+endif()
+string(REGEX MATCHALL "A::[A-Za-z0-9]+" unhinted "${unhinted_decl}")
+list(TRANSFORM unhinted REPLACE "^A::" "")
+
+file(GLOB sources "${SOURCE_DIR}/*.cpp" "${SOURCE_DIR}/*.h")
+set(read "")
+foreach(path IN LISTS sources)
+    file(READ "${path}" code)
+    # Square brackets would split CMake list items; they never matter here.
+    string(REPLACE "[" "(" code "${code}")
+    string(REPLACE "]" ")" code "${code}")
+    # Block comments (non-greedy by hand: no '*' followed by '/'), then string literals, then line comments.
+    string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" " " code "${code}")
+    string(REGEX REPLACE "\"([^\"\\\\\n]|\\\\.)*\"" "\"\"" code "${code}")
+    string(REGEX REPLACE "//[^\n]*" "" code "${code}")
+    string(REGEX MATCHALL "InputAction::[A-Za-z0-9]+" hits "${code}")
+    foreach(hit IN LISTS hits)
+        string(REPLACE "InputAction::" "" name "${hit}")
+        list(APPEND read "${name}")
+    endforeach()
+endforeach()
+list(REMOVE_DUPLICATES read)
+
+set(problems "")
+foreach(action IN LISTS hinted)
+    if(NOT action IN_LIST read)
+        string(APPEND problems "  hinted but never read by the host: ${action}\n")
+    endif()
+endforeach()
+foreach(action IN LISTS read)
+    if(NOT action IN_LIST hinted AND NOT action IN_LIST unhinted)
+        string(APPEND problems "  read by the host but neither hinted nor in kUnhinted: ${action}\n")
+    endif()
+endforeach()
+foreach(action IN LISTS unhinted)
+    if(action IN_LIST hinted)
+        string(APPEND problems "  in kUnhinted but hinted too: ${action}\n")
+    endif()
+endforeach()
+if(problems)
+    message(FATAL_ERROR "hints_read:\n${problems}")
+endif()
+list(LENGTH hinted n)
+list(LENGTH read r)
+message(STATUS "hints_read: ${n} hinted actions, each read by the host; ${r} read, each hinted or unhinted on purpose")

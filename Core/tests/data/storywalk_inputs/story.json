@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "title": "Inputs fixture",
+  "start": "s1",
+  "flags": [
+    {"id": "sf.f_pick", "default": 0},
+    {"id": "sf.f_after", "default": false}
+  ],
+  "chapters": [{"id": "c1", "title": "C", "scenes": ["s1", "s2"]}]
+}

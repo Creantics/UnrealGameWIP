@@ -162,6 +162,14 @@ AFTArenaFighter::AFTArenaFighter()
 	Camera->SetFieldOfView(70.f);
 }
 
+void AFTArenaFighter::SetCameraTilt(float Degrees)
+{
+	if (Camera)
+	{
+		Camera->SetRelativeRotation(FRotator(static_cast<double>(Degrees), 0.0, 0.0));
+	}
+}
+
 void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
 {
 	Boom->TargetArmLength = ArmMeters * 100.f;
@@ -178,6 +186,7 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	Height = HeightMeters > 0.f ? FMath::Clamp(HeightMeters, 0.5f, 30.f) * 100.f : FMath::Clamp(Radius / 40.f, 0.8f, 1.6f) * 175.f;
 
 	SkinKind = ESkin::Shapes;
+	bPlayerFigure = bPlayer;
 	bool bLead = false;
 	if (bPlayer)
 	{
@@ -278,7 +287,8 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	// Turn the body to face the figure's forward (+X).
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
 	Skin->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
-	const int32 Cloth = FTLook::AddPieces(*this, *Skin, FTLook::WornPiecePaths(Look), Pieces, TEXT("FTArenaFighter"));
+	WornFronts = Loaded.Fronts;
+	const int32 Cloth = FTLook::AddPieces(*this, *Skin, Loaded.Pieces, Pieces, TEXT("FTArenaFighter"));
 	FTLook::AddGrooms(*this, *Skin, Pieces, Look.Grooms, Grooms, TEXT("FTArenaFighter"));
 	FTLook::SwapMaterials(*Skin, Pieces, Look.MaterialSwaps, TEXT("FTArenaFighter"));
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
@@ -290,6 +300,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTArenaFighter: no locomotion anim instance; %s stays in the ref pose."), *Look.Name);
 	}
 	SkinKind = ESkin::Lead;
+	TieMeshTicks();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTArenaFighter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, *Loaded.Body->GetName(), Skin->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, Grooms.Num(), *Loaded.ClipFolder);
 	return true;
@@ -315,6 +326,7 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));
 	Skin->SetRelativeScale3D(FVector(Scale));
 	Skin->SetVisibility(true);
+	TieMeshTicks();
 	return true;
 }
 
@@ -490,6 +502,54 @@ void AFTArenaFighter::MendCarried()
 	}
 }
 
+void AFTArenaFighter::ResetFeet()
+{
+	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
+	{
+		Anim->ResetFeet();
+	}
+}
+
+void AFTArenaFighter::PoseAfter(AActor* Host)
+{
+	UntieMeshTicks();
+	PoseHost = Host;
+	TieMeshTicks();
+}
+
+void AFTArenaFighter::UntieMeshTicks()
+{
+	if (AActor* Host = PoseHost.Get())
+	{
+		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+		for (USkeletalMeshComponent* Mesh : Meshes)
+		{
+			Mesh->RemoveTickPrerequisiteActor(Host);
+		}
+	}
+	PoseHost.Reset();
+}
+
+void AFTArenaFighter::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UntieMeshTicks();
+	Super::EndPlay(Reason);
+}
+
+void AFTArenaFighter::TieMeshTicks()
+{
+	AActor* Host = PoseHost.Get();
+	if (!Host)
+	{
+		return;
+	}
+	TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+	for (USkeletalMeshComponent* Mesh : Meshes)
+	{
+		Mesh->AddTickPrerequisiteActor(Host); // kept once: a tick's prerequisites are unique
+	}
+}
+
 void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 {
 	SetActorLocationAndRotation(Pose.Feet, FRotator(0.0, Pose.Yaw, 0.0));
@@ -543,9 +603,16 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 		{
 			Anim->SetGroundSpeed(Pose.bLying || Pose.bDodging ? 0.f : Pose.Speed * 100.f);
+			Anim->SetLegYaw(Pose.bLying || Pose.bDodging ? 0.f : Pose.LegYaw);
+			if (Pose.bLying && !bWasLying)
+			{
+				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
+			}
+			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
 			Anim->SetIntent(-1.f, -1.f);
 		}
 	}
+	bWasLying = Pose.bLying;
 
 	// The arm: rest, or the swing through the attack's parts.
 	FRotator ArmRotation = kArenaArmRest;
@@ -593,7 +660,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	Arm->SetRelativeLocation(FVector(ArmReach.X, Radius * 0.95f, Height * 0.68f));
 	Arm->SetRelativeRotation(ArmRotation);
 
-	const bool bShield = Pose.bGuard && !Pose.bLying;
+	// The guard plate is an enemy's: a lead guards with what the kit gives (gauntlets, a pistol, a stance), never a shield.
+	const bool bShield = !bPlayerFigure && Pose.bGuard && !Pose.bLying;
 	if (bShield != bShieldShown)
 	{
 		bShieldShown = bShield;

@@ -5,6 +5,7 @@
 #include "Animation/Skeleton.h"
 #include "AnimationRuntime.h"
 #include "BonePose.h"
+#include "TwoBoneIK.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Character.h"
@@ -29,6 +30,21 @@ const TCHAR* const LimbNames[FFTLocomotionAnimProxy::NumLimbs] = {
 	TEXT("clavicle_l"), TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l"),
 	TEXT("clavicle_r"), TEXT("upperarm_r"), TEXT("lowerarm_r"), TEXT("hand_r"),
 	TEXT("thigh_l"), TEXT("calf_l"), TEXT("foot_l"), TEXT("thigh_r"), TEXT("calf_r"), TEXT("foot_r")};
+// The fist's bones (without the side suffix) and each one's turn in a full fist, degrees.
+const TCHAR* const FingerNames[FFTLocomotionAnimProxy::NumFingerBones] = {
+	TEXT("index_01"), TEXT("index_02"), TEXT("index_03"), TEXT("middle_01"), TEXT("middle_02"), TEXT("middle_03"),
+	TEXT("ring_01"), TEXT("ring_02"), TEXT("ring_03"), TEXT("pinky_01"), TEXT("pinky_02"), TEXT("pinky_03"),
+	TEXT("thumb_01"), TEXT("thumb_02"), TEXT("thumb_03")};
+constexpr float FistDegrees[FFTLocomotionAnimProxy::NumFingerBones] = {75.f, 90.f, 50.f, 75.f, 90.f, 50.f, 77.f, 90.f, 50.f,
+	80.f, 90.f, 50.f, 25.f, 35.f, 45.f};
+// The pistol grip's turns: the index nearly straight along the trigger guard, the rest wrapped round the grip.
+constexpr float GripDegrees[FFTLocomotionAnimProxy::NumFingerBones] = {12.f, 30.f, 20.f, 80.f, 90.f, 55.f, 80.f, 90.f, 55.f,
+	80.f, 85.f, 50.f, 30.f, 30.f, 25.f};
+constexpr int32 FirstThumbBone = 12;
+// The support hand's wrist from the aimed one, cm: under it, toward the other shoulder, and a little back.
+constexpr double kSupportDown = 4.0;
+constexpr double kSupportAcross = 5.0;
+constexpr double kSupportBack = 2.0;
 
 // A turn clip's side ("L" or "R"), angle and, for a running turn, foot.
 struct FTurnParts
@@ -310,6 +326,63 @@ void DumpJumpClips(const UAnimSequence& RunLoop)
 			UE_LOG(LogForgottenThird, Display, TEXT("%s"), *Line);
 		}
 	}
+}
+// The left hand joining the aimed right one: its wrist by two-bone IK under and beside the right wrist (toward the
+// left shoulder, a little back along the aim), the hand's fingers pointing along the aim; blended in by Weight.
+void SolveSupportHand(FCSPose<FCompactPose>& CS, const FBoneContainer& Container, const FBoneReference* Limb,
+	const FCompactPose& Local, float Weight, const FVector& AimedWrist, const FVector& Dir)
+{
+	const FBoneReference& Upper = Limb[1];
+	const FBoneReference& Lower = Limb[2];
+	const FBoneReference& Hand = Limb[3];
+	const FBoneReference& OtherUpper = Limb[5];
+	if (!Upper.IsValidToEvaluate(Container) || !Lower.IsValidToEvaluate(Container) || !Hand.IsValidToEvaluate(Container)
+		|| !OtherUpper.IsValidToEvaluate(Container))
+	{
+		return;
+	}
+	const FCompactPoseBoneIndex UI = Upper.GetCompactPoseIndex(Container);
+	const FCompactPoseBoneIndex LI = Lower.GetCompactPoseIndex(Container);
+	const FCompactPoseBoneIndex HI = Hand.GetCompactPoseIndex(Container);
+	const FTransform U0 = CS.GetComponentSpaceTransform(UI);
+	const FTransform L0 = CS.GetComponentSpaceTransform(LI);
+	const FTransform H0 = CS.GetComponentSpaceTransform(HI);
+	const FVector Shoulder = U0.GetTranslation();
+	const FVector Across = (Shoulder - CS.GetComponentSpaceTransform(OtherUpper.GetCompactPoseIndex(Container)).GetTranslation()).GetSafeNormal();
+	if (Across.IsZero())
+	{
+		return;
+	}
+	const FVector Effector = AimedWrist + FVector(0.0, 0.0, -kSupportDown) + Across * kSupportAcross - Dir * kSupportBack;
+	const FVector Elbow = L0.GetTranslation();
+	const FVector Mid = Shoulder + (H0.GetTranslation() - Shoulder) * 0.5;
+	FVector Out = Elbow - Mid;
+	Out = Out.SizeSquared() > 1.0 ? Out.GetSafeNormal() : FVector(0.0, 0.0, -1.0);
+	FTransform U = U0;
+	FTransform L = L0;
+	FTransform H = H0;
+	AnimationCore::SolveTwoBoneIK(U, L, H, Elbow + Out * 30.0, Effector, false, 1.0, 1.0);
+	// The hand's own axis (the wrist toward its first finger joint, from the local pose) along the aim.
+	int32 Child = INDEX_NONE;
+	for (const FCompactPoseBoneIndex B : Local.ForEachBoneIndex())
+	{
+		if (Container.GetParentBoneIndex(B) == HI && Local[B].GetTranslation().SizeSquared() > 1.0)
+		{
+			Child = B.GetInt();
+			break;
+		}
+	}
+	if (Child != INDEX_NONE)
+	{
+		const FVector Now = H.GetRotation().RotateVector(Local[FCompactPoseBoneIndex(Child)].GetTranslation().GetSafeNormal());
+		H.SetRotation((FQuat::FindBetweenNormals(Now, Dir) * H.GetRotation()).GetNormalized());
+	}
+	FTransform Blended[3];
+	Blended[0].Blend(U0, U, Weight);
+	Blended[1].Blend(L0, L, Weight);
+	Blended[2].Blend(H0, H, Weight);
+	const FBoneTransform Set[3] = {{UI, Blended[0]}, {LI, Blended[1]}, {HI, Blended[2]}};
+	CS.SafeSetCSBoneTransforms(MakeArrayView(Set, 3));
 }
 } // namespace
 
@@ -1386,6 +1459,8 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	// layers make room. With nothing under them they take the whole body.
 	float ActWeight = 0.f;
 	int32 NumActs = 0;
+	NumLoco = NumLayers;
+	UpperShare = 0.f;
 	for (int32 I = 0; I < Instance->NumActions; ++I)
 	{
 		if (Instance->ActionClips[Instance->Actions[I].Slot])
@@ -1416,8 +1491,11 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		}
 		for (int32 I = 0; I < NumLayers; ++I)
 		{
-			Layers[I].Weight = Sum > 0.f ? Layers[I].Weight / Sum * (1.f - ActWeight) : 0.f;
+			LocoWeight[I] = Sum > 0.f ? Layers[I].Weight / Sum : 0.f;
+			Layers[I].Weight = LocoWeight[I] * (1.f - ActWeight);
 		}
+		NumLoco = Sum > 0.f ? NumLayers : 0;
+		UpperShare = NumLoco > 0 && UpperMask.Num() > 0 ? Instance->ActionUpper : 0.f;
 		// Nothing under them: the actions are the whole pose.
 		const float Scale = Sum > 0.f ? 1.f : 1.f / ActSum;
 		float Added = 0.f;
@@ -1476,6 +1554,24 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	// The head keeps level against the pitch and the lean, and looks into a turn ahead of the chest.
 	HeadBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(Loco.headYaw()))
 		* FQuat(Right, FMath::DegreesToRadians(Loco.headPitch())) * FQuat(F, FMath::DegreesToRadians(-Loco.headRoll()));
+	// The arm aim, its target into component space.
+	AimWeight = FMath::Clamp(Instance->PushedAimWeight, 0.f, 1.f);
+	AimSide = Instance->PushedAimSide == 0 ? 0 : 1;
+	AimAxis = Instance->PushedAimAxis.GetSafeNormal();
+	AimReach = Instance->PushedAimReach;
+	Curl[0] = FMath::Min(Instance->PushedCurl[0], 1.f);
+	Curl[1] = FMath::Min(Instance->PushedCurl[1], 1.f);
+	bGrip[0] = Instance->bPushedGrip[0];
+	bGrip[1] = Instance->bPushedGrip[1];
+	if (const USkeletalMeshComponent* Skel = Instance->GetSkelMeshComponent(); Skel && AimWeight > 0.f && !AimAxis.IsZero())
+	{
+		AimTarget = Skel->GetComponentTransform().InverseTransformPosition(Instance->PushedAimTarget);
+	}
+	else
+	{
+		AimWeight = 0.f;
+	}
+	SupportWeight = AimWeight > 0.f && AimSide == 1 ? FMath::Clamp(Instance->PushedSupport, 0.f, 1.f) : 0.f;
 	// -LocoNoBend leaves the clips' own trunk, head and elbows, for measuring what the bend adds.
 	static const bool bNoBend = FParse::Param(FCommandLine::Get(), TEXT("LocoNoBend"));
 	if (bNoBend)
@@ -1491,7 +1587,128 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		HeadBend = FQuat::Slerp(FQuat::Identity, HeadBend, Keep);
 		ElbowHold *= Keep;
 		LimbWeight[0] *= Keep;
-		LimbWeight[1] *= Keep;
+		// Under an upper-body strike the legs keep their locomotion, the air pose with it.
+		LimbWeight[1] *= (1.f - TravWeight) * (1.f - ActWeight * (1.f - UpperShare));
+	}
+	// The legs turned toward the way the body moves (the root, in Evaluate), the chest turned back over the spine.
+	LegYaw = TravWeight > 0.f ? 0.f : FMath::Clamp(Instance->PushedLegYaw, -100.f, 100.f);
+	if (LegYaw != 0.f)
+	{
+		SpineBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(-LegYaw)) * SpineBend;
+	}
+	// The feet held: -ArenaNoFootLock leaves them to the clips, for measuring what the hold takes off.
+	static const bool bNoFootLock = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoFootLock"));
+	bFootLock = Instance->bPushedFootLock && TravWeight <= 0.f && !bNoFootLock;
+	HoldDt = DeltaSeconds;
+	LegForward = Instance->ForwardCS;
+	if (const USkeletalMeshComponent* Skel = Instance->GetSkelMeshComponent())
+	{
+		ToWorld = Skel->GetComponentTransform();
+	}
+	if (FeetResetSeen != Instance->PushedFeetReset)
+	{
+		FeetResetSeen = Instance->PushedFeetReset;
+		Feet.reset();
+		bHaveLastRoot = false;
+	}
+	RootMoved = bHaveLastRoot ? static_cast<float>(FVector::Dist(ToWorld.GetTranslation(), LastRoot)) : 0.f;
+	LastRoot = ToWorld.GetTranslation();
+	bHaveLastRoot = true;
+}
+
+void FFTLocomotionAnimProxy::HoldFeet(FCSPose<FCompactPose>& CS, const FBoneContainer& Container)
+{
+	FVector Ball[2], Foot[2];
+	bool bLifted[2];
+	for (int32 I = 0; I < 2; ++I)
+	{
+		const FVector BallCS = CS.GetComponentSpaceTransform(BallBone[I].GetCompactPoseIndex(Container)).GetTranslation();
+		Ball[I] = ToWorld.TransformPosition(BallCS);
+		Foot[I] = CS.GetComponentSpaceTransform(Limb[NumArmBones + I * 3 + 2].GetCompactPoseIndex(Container)).GetTranslation();
+		bLifted[I] = BallCS.Z > BallRest[I] + kLiftedAbove;
+	}
+	// Held, let go, stepping or lifted by the clip (ftcore::FootHold); By, world: each foot moved from the clip's place.
+	ftcore::FootPoint BallAt[2], Moved[2];
+	for (int32 I = 0; I < 2; ++I)
+	{
+		BallAt[I] = ftcore::FootPoint{static_cast<float>(Ball[I].X), static_cast<float>(Ball[I].Y), static_cast<float>(Ball[I].Z)};
+	}
+	Feet.update(BallAt, bLifted, bFootLock, HoldDt, RootMoved, Moved);
+	RootMoved = 0.f;
+	FVector By[2];
+	for (int32 I = 0; I < 2; ++I)
+	{
+		By[I] = FVector(Moved[I].x, Moved[I].y, Moved[I].z);
+	}
+	// The clips stand on nearly straight legs, so a foot held behind or ahead of its clip place is out of the leg's
+	// reach: the pelvis sinks (eased, at most FootHoldTuning::maxPelvisDrop) until every moved foot is within kLegReach of the leg's
+	// length, a knee bend under the weight, and both legs are solved onto their feet from there.
+	const FCompactPoseBoneIndex PelvisI = PelvisBone.IsValidToEvaluate(Container) ? PelvisBone.GetCompactPoseIndex(Container) : FCompactPoseBoneIndex(INDEX_NONE);
+	FVector Effector[2];
+	double Need = 0.0;
+	for (int32 I = 0; I < 2; ++I)
+	{
+		Effector[I] = Foot[I] + ToWorld.InverseTransformVector(By[I]);
+		if (By[I].SizeSquared() < 0.01)
+		{
+			continue;
+		}
+		const FCompactPoseBoneIndex TI = Limb[NumArmBones + I * 3].GetCompactPoseIndex(Container);
+		const FCompactPoseBoneIndex CI = Limb[NumArmBones + I * 3 + 1].GetCompactPoseIndex(Container);
+		const FVector Hip = CS.GetComponentSpaceTransform(TI).GetTranslation();
+		const FVector Knee = CS.GetComponentSpaceTransform(CI).GetTranslation();
+		const double Reach = kLegReach * (FVector::Dist(Hip, Knee) + FVector::Dist(Knee, Foot[I]));
+		const double Flat = FVector::Dist2D(Hip, Effector[I]);
+		const double Up = Hip.Z - Effector[I].Z;
+		if (Flat < Reach && Up > 0.0)
+		{
+			Need = FMath::Max(Need, Up - FMath::Sqrt(Reach * Reach - Flat * Flat));
+		}
+	}
+	const float PelvisDrop = Feet.easePelvis(PelvisI.IsValid() ? static_cast<float>(Need) : 0.f, HoldDt);
+	if (PelvisDrop > 0.f && PelvisI.IsValid())
+	{
+		FTransform Pelvis = CS.GetComponentSpaceTransform(PelvisI);
+		Pelvis.AddToTranslation(FVector(0.0, 0.0, -PelvisDrop));
+		const FBoneTransform Sunk(PelvisI, Pelvis);
+		CS.SafeSetCSBoneTransforms(MakeArrayView(&Sunk, 1));
+	}
+	FBoneTransform Set[6];
+	int32 NumSet = 0;
+	for (int32 I = 0; I < 2; ++I)
+	{
+		if (By[I].SizeSquared() < 0.01 && PelvisDrop <= 0.f)
+		{
+			continue;
+		}
+		// The leg onto its foot (moved by By, or kept where the clip has it under a sunk pelvis): two-bone IK, the
+		// knee bending the way it bends (forward when straight), the foot's own turn kept.
+		const FCompactPoseBoneIndex TI = Limb[NumArmBones + I * 3].GetCompactPoseIndex(Container);
+		const FCompactPoseBoneIndex CI = Limb[NumArmBones + I * 3 + 1].GetCompactPoseIndex(Container);
+		const FCompactPoseBoneIndex FI = Limb[NumArmBones + I * 3 + 2].GetCompactPoseIndex(Container);
+		FTransform Thigh = CS.GetComponentSpaceTransform(TI);
+		FTransform Calf = CS.GetComponentSpaceTransform(CI);
+		FTransform FootT = CS.GetComponentSpaceTransform(FI);
+		const FVector Hip = Thigh.GetTranslation();
+		const FVector Knee = Calf.GetTranslation();
+		const FVector Ankle = FootT.GetTranslation();
+		const double Length = FVector::Dist(Hip, Knee) + FVector::Dist(Knee, Ankle);
+		FVector Target = Effector[I];
+		const FVector ToFoot = Target - Hip;
+		if (Length > 1.0 && ToFoot.Size() > 0.995 * Length)
+		{
+			Target = Hip + ToFoot.GetSafeNormal() * 0.995 * Length;
+		}
+		FVector Out = Knee - (Hip + (Ankle - Hip) * 0.5);
+		Out = Out.SizeSquared() > 4.0 ? Out.GetSafeNormal() : LegForward;
+		AnimationCore::SolveTwoBoneIK(Thigh, Calf, FootT, Knee + Out * 40.0, Target, false, 1.0, 1.0);
+		Set[NumSet++] = FBoneTransform(TI, Thigh);
+		Set[NumSet++] = FBoneTransform(CI, Calf);
+		Set[NumSet++] = FBoneTransform(FI, FootT);
+	}
+	if (NumSet > 0)
+	{
+		CS.SafeSetCSBoneTransforms(MakeArrayView(Set, NumSet));
 	}
 }
 
@@ -1530,13 +1747,47 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 		FAnimationPoseData Out(Output);
 		FAnimationRuntime::BlendPosesTogether(MakeArrayView(Poses, NumLayers), MakeArrayView(Curves, NumLayers),
 			MakeArrayView(Attributes, NumLayers), MakeArrayView(Weights, NumLayers), Out);
+		// An upper-body strike: the bones off the mask (the pelvis, the legs) go back toward the locomotion's layers
+		// alone, so the legs keep walking under it.
+		if (UpperShare > 0.f && NumLoco > 0 && NumLoco < NumLayers && UpperMask.Num() == Output.Pose.GetNumBones())
+		{
+			// By the locomotion layers' own weights (LocoWeight), not their share of the blend, which is nothing under
+			// an action at full weight.
+			float LocoSum = 0.f;
+			for (int32 I = 0; I < NumLoco; ++I)
+			{
+				LocoSum += LocoWeight[I];
+			}
+			if (LocoSum > 0.f)
+			{
+				// Per bone, the locomotion layers' running blend (no pose, curve or attribute containers made).
+				for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
+				{
+					if (B.GetInt() == 0 || UpperMask[B.GetInt()])
+					{
+						continue;
+					}
+					FTransform Loco = Poses[0][B];
+					float Seen = LocoWeight[0];
+					for (int32 I = 1; I < NumLoco; ++I)
+					{
+						if (LocoWeight[I] > 0.f)
+						{
+							Seen += LocoWeight[I];
+							Loco.BlendWith(Poses[I][B], LocoWeight[I] / Seen);
+						}
+					}
+					Output.Pose[B].BlendWith(Loco, UpperShare);
+				}
+			}
+		}
 	}
 
 	const FBoneContainer& Container = Output.Pose.GetBoneContainer();
 	// The capsule carries the body, turns included: hold the root where the ref pose has it.
 	const FCompactPoseBoneIndex Root(0);
 	Output.Pose[Root].SetTranslation(Output.Pose.GetRefPose(Root).GetTranslation());
-	Output.Pose[Root].SetRotation(Output.Pose.GetRefPose(Root).GetRotation());
+	Output.Pose[Root].SetRotation(FQuat(FVector::UpVector, FMath::DegreesToRadians(LegYaw)) * Output.Pose.GetRefPose(Root).GetRotation());
 
 	if (!bBound || BoundSerial != Container.GetSerialNumber())
 	{
@@ -1562,6 +1813,95 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			Limb[I].BoneName = LimbNames[I];
 			Limb[I].Initialize(Container);
 		}
+		// The fists: the palm's inward side is the thumb's (thumb_02 off the plane of the hand and the knuckles); a
+		// finger turns about (its direction x inward), which carries it toward the palm, the thumb about (its own
+		// direction x inward). Each bone's axis is kept in its parent's ref space, where the turns of the bones
+		// above it (about the same axis) leave it unchanged.
+		auto RefCS = [&Output, &Container](FCompactPoseBoneIndex I)
+		{
+			FTransform T = FTransform::Identity;
+			while (I.IsValid())
+			{
+				T = T * Output.Pose.GetRefPose(I);
+				I = Container.GetParentBoneIndex(I);
+			}
+			return T;
+		};
+		auto Find = [&Container](const FString& Name, FCompactPoseBoneIndex& Out)
+		{
+			FBoneReference R;
+			R.BoneName = FName(*Name);
+			R.Initialize(Container);
+			Out = R.IsValidToEvaluate(Container) ? R.GetCompactPoseIndex(Container) : FCompactPoseBoneIndex(INDEX_NONE);
+			return Out.IsValid();
+		};
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const TCHAR* Suffix = Side == 0 ? TEXT("_l") : TEXT("_r");
+			bFingers[Side] = false;
+			FCompactPoseBoneIndex HandI(INDEX_NONE), MiddleI(INDEX_NONE), IndexI(INDEX_NONE), PinkyI(INDEX_NONE), ThumbI(INDEX_NONE),
+				Thumb2I(INDEX_NONE);
+			if (!Find(FString(TEXT("hand")) + Suffix, HandI) || !Find(FString(TEXT("middle_01")) + Suffix, MiddleI)
+				|| !Find(FString(TEXT("index_01")) + Suffix, IndexI) || !Find(FString(TEXT("pinky_01")) + Suffix, PinkyI)
+				|| !Find(FString(TEXT("thumb_01")) + Suffix, ThumbI) || !Find(FString(TEXT("thumb_02")) + Suffix, Thumb2I))
+			{
+				continue;
+			}
+			const FVector Hand = RefCS(HandI).GetTranslation();
+			const FVector Along = (RefCS(MiddleI).GetTranslation() - Hand).GetSafeNormal();
+			FVector Across = RefCS(IndexI).GetTranslation() - RefCS(PinkyI).GetTranslation();
+			Across = (Across - Along * FVector::DotProduct(Across, Along)).GetSafeNormal();
+			const FVector Thumb2 = RefCS(Thumb2I).GetTranslation();
+			FVector In = Thumb2 - Hand;
+			In = In - Along * FVector::DotProduct(In, Along) - Across * FVector::DotProduct(In, Across);
+			const FVector FingerTurn = FVector::CrossProduct(Along, In.GetSafeNormal()).GetSafeNormal();
+			const FVector ThumbTurn = FVector::CrossProduct((Thumb2 - RefCS(ThumbI).GetTranslation()).GetSafeNormal(),
+				In.GetSafeNormal()).GetSafeNormal();
+			if (FingerTurn.IsZero() || ThumbTurn.IsZero())
+			{
+				continue;
+			}
+			int32 Found = 0;
+			for (int32 B = 0; B < NumFingerBones; ++B)
+			{
+				FBoneReference& R = Finger[Side][B];
+				R.BoneName = FName(FString(FingerNames[B]) + Suffix);
+				R.Initialize(Container);
+				if (!R.IsValidToEvaluate(Container))
+				{
+					continue;
+				}
+				const FCompactPoseBoneIndex I = R.GetCompactPoseIndex(Container);
+				const FVector Axis = B >= FirstThumbBone ? ThumbTurn : FingerTurn;
+				FingerAxis[Side][B] = RefCS(Container.GetParentBoneIndex(I)).GetRotation().Inverse().RotateVector(Axis);
+				FingerRef[Side][B] = Output.Pose.GetRefPose(I).GetRotation();
+				++Found;
+			}
+			bFingers[Side] = Found == NumFingerBones;
+		}
+		// The upper body: spine_01 and every bone under it (compact bones come parents first).
+		// With no spine_01 there is no mask (the strike plays on the whole body).
+		UpperMask.Reset();
+		if (Spine[0].IsValidToEvaluate(Container))
+		{
+			UpperMask.Init(false, Output.Pose.GetNumBones());
+			const int32 Spine01 = Spine[0].GetCompactPoseIndex(Container).GetInt();
+			for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
+			{
+				const FCompactPoseBoneIndex Parent = Container.GetParentBoneIndex(B);
+				UpperMask[B.GetInt()] = B.GetInt() == Spine01 || (Parent.IsValid() && UpperMask[Parent.GetInt()]);
+			}
+		}
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			BallBone[Side].BoneName = Side == 0 ? TEXT("ball_l") : TEXT("ball_r");
+			BallBone[Side].Initialize(Container);
+			BallRest[Side] = BallBone[Side].IsValidToEvaluate(Container)
+				? static_cast<float>(RefCS(BallBone[Side].GetCompactPoseIndex(Container)).GetTranslation().Z) : 0.f;
+		}
+		PelvisBone.BoneName = TEXT("pelvis");
+		PelvisBone.Initialize(Container);
+		Feet.reset();
 		BoundSerial = Container.GetSerialNumber();
 		bBound = true;
 	}
@@ -1587,6 +1927,22 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			Output.Pose[Index].SetRotation(FQuat::Slerp(Output.Pose[Index].GetRotation(), Pose[Index].GetRotation(), W).GetNormalized());
 		}
 	}
+	// The fists, in the bones' local space: each finger bone at its ref pose turned toward the palm by its share.
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		if ((Curl[Side] < 0.f && !bGrip[Side]) || !bFingers[Side])
+		{
+			continue;
+		}
+		const float* Degrees = bGrip[Side] ? GripDegrees : FistDegrees;
+		const float Share = bGrip[Side] ? 1.f : Curl[Side];
+		for (int32 B = 0; B < NumFingerBones; ++B)
+		{
+			const FCompactPoseBoneIndex I = Finger[Side][B].GetCompactPoseIndex(Container);
+			const FQuat Turn(FingerAxis[Side][B], FMath::DegreesToRadians(Degrees[B] * Share));
+			Output.Pose[I].SetRotation((Turn * FingerRef[Side][B]).GetNormalized());
+		}
+	}
 	// Each chain's bones turn by an equal share of its bend about their own origins, in component
 	// space; the bones above follow, so the head's bend comes on top of the spine's.
 	auto CountValid = [&Container](const FBoneReference* Bones, int32 Num)
@@ -1603,7 +1959,15 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	const bool bSpine = SpineValid > 0 && !SpineBend.Equals(FQuat::Identity, 1e-5);
 	const bool bNeck = NeckValid > 0 && !HeadBend.Equals(FQuat::Identity, 1e-5);
 	const bool bElbows = ElbowHold > 0.002f && ElbowBend > 0.f;
-	if (!bSpine && !bNeck && !bElbows)
+	const bool bAim = AimWeight > 0.001f;
+	// Held through a hit pause too (the anim's time stopped, HoldDt 0): the steps wait, the feet stay put.
+	bool bLegs = Feet.legsNeeded(bFootLock); // a sunk pelvis too: dropping it at once would pop the body up
+	for (int32 I = 0; bLegs && I < 2; ++I)
+	{
+		bLegs = BallBone[I].IsValidToEvaluate(Container) && Limb[NumArmBones + I * 3].IsValidToEvaluate(Container)
+			&& Limb[NumArmBones + I * 3 + 1].IsValidToEvaluate(Container) && Limb[NumArmBones + I * 3 + 2].IsValidToEvaluate(Container);
+	}
+	if (!bSpine && !bNeck && !bElbows && !bAim && !bLegs)
 	{
 		return true;
 	}
@@ -1632,6 +1996,10 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	if (bNeck)
 	{
 		Bend(Neck, NumNeck, NeckValid, HeadBend);
+	}
+	if (bLegs)
+	{
+		HoldFeet(CS, Container);
 	}
 	// The elbows: a forearm bent less than ElbowBend from its upper arm turns about the elbow toward
 	// it, by ElbowHold of the difference; one held straight bends toward the body's front.
@@ -1669,6 +2037,61 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 		FTransform T = LowerCS;
 		T.SetRotation((FQuat(Axis, FMath::DegreesToRadians((ElbowBend - BentBy) * ElbowHold)) * T.GetRotation()).GetNormalized());
 		CS.SetComponentSpaceTransform(LowerIndex, T);
+	}
+	// The arm aim: the wrist onto the shoulder's line to the target by two-bone IK (bending in the elbow's own plane),
+	// then the hand's axis at the target; blended in by AimWeight.
+	if (bAim)
+	{
+		const FBoneReference& Upper = Limb[AimSide * 4 + 1];
+		const FBoneReference& Lower = Limb[AimSide * 4 + 2];
+		const FBoneReference& Hand = Limb[AimSide * 4 + 3];
+		if (Upper.IsValidToEvaluate(Container) && Lower.IsValidToEvaluate(Container) && Hand.IsValidToEvaluate(Container))
+		{
+			const FCompactPoseBoneIndex UI = Upper.GetCompactPoseIndex(Container);
+			const FCompactPoseBoneIndex LI = Lower.GetCompactPoseIndex(Container);
+			const FCompactPoseBoneIndex HI = Hand.GetCompactPoseIndex(Container);
+			const FTransform U0 = CS.GetComponentSpaceTransform(UI);
+			const FTransform L0 = CS.GetComponentSpaceTransform(LI);
+			const FTransform H0 = CS.GetComponentSpaceTransform(HI);
+			const FVector Shoulder = U0.GetTranslation();
+			const FVector Elbow = L0.GetTranslation();
+			const FVector Wrist = H0.GetTranslation();
+			const double ArmLength = FVector::Dist(Shoulder, Elbow) + FVector::Dist(Elbow, Wrist);
+			const FVector ToTarget = AimTarget - Shoulder;
+			const double Dist = ToTarget.Size();
+			if (ArmLength > 1.0 && Dist > 1.0)
+			{
+				const FVector Dir = ToTarget / Dist;
+				const double WristDist = FMath::Clamp(Dist - static_cast<double>(AimReach), 0.3 * ArmLength, 0.97 * ArmLength);
+				const FVector Effector = Shoulder + Dir * WristDist;
+				// The elbow keeps bending the way it bends now (down when the arm is straight).
+				const FVector Mid = Shoulder + (Wrist - Shoulder) * 0.5;
+				FVector Out = Elbow - Mid;
+				Out = Out.SizeSquared() > 1.0 ? Out.GetSafeNormal() : FVector(0.0, 0.0, -1.0);
+				const FVector Pole = Elbow + Out * 30.0;
+				FTransform U = U0;
+				FTransform L = L0;
+				FTransform H = H0;
+				AnimationCore::SolveTwoBoneIK(U, L, H, Pole, Effector, false, 1.0, 1.0);
+				// The hand's axis at the target.
+				const FVector Now = H.GetRotation().RotateVector(AimAxis);
+				const FVector Want = (AimTarget - H.GetTranslation()).GetSafeNormal();
+				if (!Want.IsZero())
+				{
+					H.SetRotation((FQuat::FindBetweenNormals(Now, Want) * H.GetRotation()).GetNormalized());
+				}
+				FTransform Blended[3];
+				Blended[0].Blend(U0, U, AimWeight);
+				Blended[1].Blend(L0, L, AimWeight);
+				Blended[2].Blend(H0, H, AimWeight);
+				const FBoneTransform Set[3] = {{UI, Blended[0]}, {LI, Blended[1]}, {HI, Blended[2]}};
+				CS.SafeSetCSBoneTransforms(MakeArrayView(Set, 3));
+				if (SupportWeight > 0.001f)
+				{
+					SolveSupportHand(CS, Container, Limb, Output.Pose, SupportWeight, Blended[2].GetTranslation(), Dir);
+				}
+			}
+		}
 	}
 	FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(MoveTemp(CS), Output.Pose);
 	return true;
