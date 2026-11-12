@@ -12,5 +12,5 @@ class UCanvas;
 
 namespace FT
 {
-void DrawAimReticle(AHUD& Hud, UCanvas* Canvas, float Alpha, bool bOutOfReach = false);
+void DrawAimReticle(AHUD& Hud, UCanvas* Canvas, float Alpha, bool bOutOfReach = false, bool bBlocked = false);
 } // namespace FT

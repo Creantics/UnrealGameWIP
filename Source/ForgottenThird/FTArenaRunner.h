@@ -235,6 +235,8 @@ public:
 	float GetAimAlpha() const { return ArenaAim.alpha(); }
 	// A guns kit's crosshair is on an enemy its round would not reach (past the shot's range): the HUD dims it.
 	bool IsReticleOutOfReach() const { return bReticleOutOfReach; }
+	// A guns kit's round would meet another body before the one under the crosshair (one on the muzzle's line only).
+	bool IsReticleBlocked() const { return bReticleBlocked; }
 	FFTLeadWeapons& GetLeadWeapons() { return LeadWeapons; }
 	// The time the figures were last drawn at, on the held fight clock (Fight.heldTime(), the lead's strike clips' clock):
 	// Alpha of the way from its value before the last step to its value after. It stands still through the player's hit
@@ -533,6 +535,7 @@ private:
 	bool bReticleHit = false;
 	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
 	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
+	bool bReticleBlocked = false;    // see IsReticleBlocked
 	// The first standing enemy body (Core's radius, the figure's height and hover, as an upright cylinder) along the
 	// line From -> To (cm) nearer than T on entry (0..1 of the line): its slot, and T then the share along the line. The
 	// figures carry no collision, so the reticle's trace meets them by this.

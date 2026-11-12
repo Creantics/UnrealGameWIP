@@ -2408,13 +2408,17 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		ReticleHeadingPoint = ReticlePoint;
 		if (const AFTArenaFighter* OnBody = ReticleEnemy >= 0 ? GetEnemyFigure(ReticleEnemy) : nullptr)
 		{
-			// On a body: head for where the line passes nearest the body's axis (inside its round, past where it
-			// enters), not the edge it enters by, so the shot's lane on the ground goes through the body and not past it.
-			const FVector Line = To - From;
-			const double Flat = Line.X * Line.X + Line.Y * Line.Y;
-			const FVector Axis = OnBody->GetActorLocation();
-			const double Near = Flat > 1e-6 ? -((From.X - Axis.X) * Line.X + (From.Y - Axis.Y) * Line.Y) / Flat : BodyT;
-			ReticleHeadingPoint = From + Line * FMath::Clamp(Near, BodyT, 1.0);
+			// On a body: head for the middle of the stretch of the crosshair's line inside the body (from where it
+			// enters to where it leaves), a point inside it, so the round from the lead's muzzle goes into the body, not
+			// past its edge or under a hanging or wide one, as a point near its axis could at a steep look.
+			const FVector At = OnBody->GetActorLocation();
+			const ftcore::ArenaBodyCylinder Cyl = ftcore::arenaBodyCylinder(Fight.def().enemies[static_cast<size_t>(ReticleEnemy)],
+				ftcore::Vec2{static_cast<float>(At.X / 100.0), static_cast<float>(At.Y / 100.0)}, static_cast<float>(At.Z / 100.0));
+			const ftcore::ArenaPoint3 A{static_cast<float>(From.X / 100.0), static_cast<float>(From.Y / 100.0), static_cast<float>(From.Z / 100.0)};
+			const ftcore::ArenaPoint3 B{static_cast<float>(To.X / 100.0), static_cast<float>(To.Y / 100.0), static_cast<float>(To.Z / 100.0)};
+			float Back = 0.f;
+			const double Leave = ftcore::arenaRayEntersBody(B, A, Cyl, Back) ? 1.0 - static_cast<double>(Back) : BodyT;
+			ReticleHeadingPoint = FMath::Lerp(From, To, 0.5 * (BodyT + FMath::Clamp(Leave, BodyT, 1.0)));
 		}
 		if (!bReticleHit)
 		{
@@ -2423,13 +2427,18 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		}
 		// A guns kit's round from the lead along the same heading and climb would reach no body: the crosshair is on
 		// one past the shot's range (another body in the way still takes the round, so that is not out of reach).
+		// Another body on the muzzle's line before the one under the crosshair (off the camera's line) takes the round:
+		// the crosshair shows it blocked.
 		bReticleOutOfReach = false;
+		bReticleBlocked = false;
 		float Pitch = 0.f;
 		// Locked on, the round goes at the lock, not the crosshair, so the crosshair says nothing about its reach.
-		if (ReticleEnemy >= 0 && Fight.lock() == ftcore::kArenaNobody && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns && ReticlePitch(Pitch))
+		if (Fight.lock() == ftcore::kArenaNobody && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns && ReticlePitch(Pitch))
 		{
 			const float Yaw = FMath::DegreesToRadians(CameraYaw);
-			bReticleOutOfReach = Fight.shotMeets(ReticleAimDir(ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)}), Pitch) == ftcore::kArenaNobody;
+			const uint8 Meets = Fight.shotMeets(ReticleAimDir(ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)}), Pitch);
+			bReticleOutOfReach = ReticleEnemy >= 0 && Meets == ftcore::kArenaNobody;
+			bReticleBlocked = ReticleEnemy >= 0 && Meets != ftcore::kArenaNobody && static_cast<int32>(Meets) != ReticleEnemy;
 		}
 		if (AimCheckPhase == 2 && Now - AimCheckSince >= 1.0)
 		{
@@ -2447,7 +2456,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 				bOnBoss ? TEXT("the boss") : (ReticleEnemy >= 0 ? TEXT("another enemy") : (bReticleHit && Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("nothing"))),
 				(ReticlePoint.Z - Floor) / 100.0,
 				Lead ? FVector::Dist2D(ReticlePoint, Lead->GetActorLocation()) / 100.0 : 0.0,
-				*(bPitched ? FString::Printf(TEXT("pitched %.1f deg%s"), FMath::RadiansToDegrees(ShotPitch), bReticleOutOfReach ? TEXT(", out of reach") : TEXT("")) : FString(TEXT("flat"))));
+				*(bPitched ? FString::Printf(TEXT("pitched %.1f deg%s"), FMath::RadiansToDegrees(ShotPitch), bReticleOutOfReach ? TEXT(", out of reach") : (bReticleBlocked ? TEXT(", blocked") : TEXT(""))) : FString(TEXT("flat"))));
 			bAimCheckOnBoss = bOnBoss;
 			// The pitch the camera rendered (boom lag and lens tilt included, the jolt not), not the one asked for.
 			AimCheckRendered = static_cast<float>(FRotator::NormalizeAxis(View.Pitch));

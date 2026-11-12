@@ -5,7 +5,7 @@
 
 namespace FT
 {
-void DrawAimReticle(AHUD& Hud, UCanvas* Canvas, float Alpha, bool bOutOfReach)
+void DrawAimReticle(AHUD& Hud, UCanvas* Canvas, float Alpha, bool bOutOfReach, bool bBlocked)
 {
 	if (!Canvas || Alpha <= 0.f)
 	{
@@ -16,7 +16,8 @@ void DrawAimReticle(AHUD& Hud, UCanvas* Canvas, float Alpha, bool bOutOfReach)
 	const float R = FMath::Max(6.f, Canvas->ClipY * 0.0075f); // the ring's radius: 1.5% of the height across
 	const float Line = FMath::Max(1.5f, Canvas->ClipY * 0.0016f);
 	const float Dot = FMath::Max(1.5f, Canvas->ClipY * 0.0015f);
-	const float Faint = bOutOfReach ? 0.35f : 1.f;
+	// Out of reach: faint, no dot. Blocked (another body takes the round): dimmer, a small cross for the dot.
+	const float Faint = bOutOfReach ? 0.35f : (bBlocked ? 0.6f : 1.f);
 	const FLinearColor Dark(0.f, 0.f, 0.f, 0.6f * Alpha * Faint);
 	const FLinearColor Light(1.f, 1.f, 1.f, 0.95f * Alpha * Faint);
 	constexpr int32 Segments = 24;
@@ -27,7 +28,13 @@ void DrawAimReticle(AHUD& Hud, UCanvas* Canvas, float Alpha, bool bOutOfReach)
 		const FLinearColor& Col = bDark ? Dark : Light;
 		const float T = bDark ? Line + 2.f : Line;
 		const float D = bDark ? Dot + 1.f : Dot;
-		if (!bOutOfReach)
+		if (bBlocked && !bOutOfReach)
+		{
+			const float X = R * 0.55f;
+			Hud.DrawLine(CX - X, CY - X, CX + X, CY + X, Col, T);
+			Hud.DrawLine(CX - X, CY + X, CX + X, CY - X, Col, T);
+		}
+		else if (!bOutOfReach)
 		{
 			Hud.DrawRect(Col, CX - D, CY - D, 2.f * D, 2.f * D);
 		}

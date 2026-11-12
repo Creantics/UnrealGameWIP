@@ -535,7 +535,6 @@ FTCORE_API ArenaRing arenaRingAt(Vec2 playerPos, Vec2 facing, float radius, cons
 // spread around the edge (i = 0, 1, ...).
 FTCORE_API Vec2 arenaParkSpot(const ArenaRing& ring, Vec2 playerStart, std::size_t i);
 
-// What the player pressed this frame. Edges (true on the frame of the press) except `guard`.
 // A point in metres: x, y on the floor plane, z up.
 struct ArenaPoint3 {
     float x = 0.f;
@@ -546,6 +545,7 @@ struct ArenaPoint3 {
 // A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
 inline constexpr float kArenaShotHeight = 1.4f;
 
+// What the player pressed this frame. Edges (true on the frame of the press) except `guard`.
 struct ArenaInput {
     Vec2 move;                  // the stick on the ground, already turned by the camera; length 0..1
     Vec2 view{1.f, 0.f};        // the camera's forward on the ground (unit): lock-on picks from it
@@ -569,7 +569,8 @@ struct ArenaInput {
     // The round's climb (rad, + up) from kArenaShotHeight toward the crosshair. Pitched, a guns kit's shot is a line in
     // space along the lead's facing: it meets the first standing body (ArenaLook's arenaBodyCylinder, its radius
     // widened by half the shot's width) it enters within the shot's range, so a round over a short enemy's head goes
-    // on to the body behind it. Unpitched (the autopilot, a host without a camera), it is the flat lane.
+    // on to the body behind it. Unpitched (the autopilot, a host without a camera), it is the flat lane. A shot keeps
+    // the choice it started with; while pitched it follows aimPitch until it fires.
     bool aimPitched = false;
     float aimPitch = 0.f;
     // Attacking on the move (AttackMove, the host's attackMove for the attack under way): walking during an attack at
@@ -993,6 +994,8 @@ private:
         bool chainLive = false;             // the last action was a light: the chain may go on
         std::uint8_t chainNext = 0;         // the light a chained press starts
         float lightEnd = 0.f;               // fight time that light ended
+        bool shotPitched = false;           // the shot under way is a pitched round (ArenaInput::aimPitched at its start) ...
+        float shotPitch = 0.f;              // ... climbing at this (rad)
         Vec2 attackWalk{};                  // the walking part of the velocity during an attack (the lunge apart)
         bool guardHeld = false;             // last tick's guard flag
         float lastGuardPress = -1.0e9f;     // fight time of the last guard press (every press counts)

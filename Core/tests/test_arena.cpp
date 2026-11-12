@@ -6847,3 +6847,130 @@ TEST_CASE("arena attack: Duy's pitched round meets the first body its line enter
         CHECK(rig.count(ArenaEventType::Hit) == 1);
     }
 }
+
+TEST_CASE("arena attack: Duy's pitched round, the edges (point-blank by direction, bad pitches, the first of two, scale, lock)") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    const Vec2 ahead{1.f, 0.f};
+    const auto aimed = [](Rig& rig, Vec2 dir, bool pitched, float pitch) {
+        rig.in.aim = true;
+        rig.in.aimDir = dir;
+        rig.in.aimPitched = pitched;
+        rig.in.aimPitch = pitch;
+        rig.in.light = true;
+    };
+    const auto hitOn = [](const Rig& rig) {
+        const auto* h = rig.find(ArenaEventType::Hit);
+        return h ? static_cast<int>(h->event.target) : -1;
+    };
+    {   // a body the lead stands in, its centre behind or beside the lead, takes no round aimed away: the far one does
+        for (const Vec2 overlap : {Vec2{-0.5f, 0.f}, Vec2{0.f, 0.5f}, Vec2{0.f, -0.5f}}) {
+            Rig rig(duy, {hoveringKind(0.f, 3.f), dummyKind()});
+            rig.put(0, overlap.x, overlap.y);
+            rig.put(1, 8.f, 0.f);
+            rig.tick();
+            CHECK(rig.fight.shotMeets(ahead, 0.f) == 1);
+            aimed(rig, ahead, true, 0.f);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == 1);
+        }
+        // the same body behind and nothing ahead: nobody
+        Rig rig(duy, {hoveringKind(0.f, 3.f)});
+        rig.put(0, -0.5f, 0.f);
+        rig.tick();
+        CHECK(rig.fight.shotMeets(ahead, 0.f) == kArenaNobody);
+    }
+    {   // a body wholly behind the lead on the line backward is never met
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, -5.f, 0.f);
+        rig.tick();
+        CHECK(rig.fight.shotMeets(ahead, 0.f) == kArenaNobody);
+        CHECK(rig.fight.shotMeets(Vec2{-1.f, 0.f}, 0.f) == 0);
+    }
+    {   // NaN or infinite pitch counts as level; a pitch past the clamp goes nearly straight up or down
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 5.f, 0.f);
+        rig.tick();
+        const float inf = std::numeric_limits<float>::infinity();
+        CHECK(rig.fight.shotMeets(ahead, std::numeric_limits<float>::quiet_NaN()) == 0);
+        CHECK(rig.fight.shotMeets(ahead, inf) == 0);
+        CHECK(rig.fight.shotMeets(ahead, -inf) == 0);
+        CHECK(rig.fight.shotMeets(ahead, 10.f) == kArenaNobody);
+        CHECK(rig.fight.shotMeets(ahead, -10.f) == kArenaNobody);
+        aimed(rig, ahead, true, std::numeric_limits<float>::quiet_NaN());
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // two bodies on the line: the nearer takes the round, whichever slot it has
+        for (const bool nearFirst : {true, false}) {
+            Rig rig(duy, {dummyKind(), dummyKind()});
+            rig.put(0, nearFirst ? 4.f : 8.f, 0.f);
+            rig.put(1, nearFirst ? 8.f : 4.f, 0.f);
+            aimed(rig, ahead, true, 0.f);
+            rig.runFor(0.45f);
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == (nearFirst ? 0 : 1));
+        }
+    }
+    {   // a scaled body is met as drawn (radius * scale), pitched and on the flat lane alike
+        ArenaEnemyKind big = hoveringKind(0.f, 2.f);
+        big.look.scale = 2.f; // 2 m round
+        for (const bool pitched : {true, false}) {
+            Rig rig(duy, {big});
+            rig.put(0, 6.f, 1.8f); // 1.8 m off the line: inside 2 m (plus half the shot's width), outside 1 m
+            aimed(rig, ahead, pitched, 0.f);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+        }
+        Rig rig(duy, {hoveringKind(0.f, 2.f)}); // the same off the line at scale 1: missed
+        rig.put(0, 6.f, 1.8f);
+        aimed(rig, ahead, true, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // locked on: the round goes along the aim at the locked body's middle, past a nearer one off that line
+        Rig rig(duy, {dummyKind(), dummyKind()});
+        rig.put(0, 4.f, 0.f);
+        rig.put(1, 6.f, 4.f);
+        const Vec2 toLocked{6.f / std::sqrt(52.f), 4.f / std::sqrt(52.f)};
+        rig.in.view = toLocked;
+        rig.in.lock = true;
+        rig.tick();
+        REQUIRE(rig.fight.lock() == 1);
+        const float mid = std::atan2(arenaEnemyHeight(dummyKind()) * 0.5f - kArenaShotHeight, std::sqrt(52.f));
+        aimed(rig, toLocked, true, mid);
+        rig.runFor(0.45f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(hitOn(rig) == 1);
+    }
+    {   // pitched up at a hanging body well inside the range (25 m): hit
+        Rig rig(duy, {hoveringKind(3.5f, 3.f)});
+        rig.put(0, 25.f, 0.f);
+        aimed(rig, ahead, true, std::atan2(5.f - kArenaShotHeight, 25.f));
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // the flat lane (unpitched, the autopilot) takes a hanging body too: it knows no height
+        Rig rig(duy, {hoveringKind(3.5f, 3.f)});
+        rig.put(0, 9.f, 0.f);
+        aimed(rig, ahead, false, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // the pitch is the shot's from its start: letting the pitch go in the startup keeps the round pitched (over the
+        // ground enemy to the hanging body), and a pitch given after an unpitched start keeps the flat lane
+        const float up = std::atan2(5.f - kArenaShotHeight, 9.f);
+        for (const bool startPitched : {true, false}) {
+            Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+            rig.put(0, 3.f, 0.f);
+            rig.put(1, 9.f, 0.f);
+            aimed(rig, ahead, startPitched, up);
+            rig.tick();
+            rig.in.aimPitched = !startPitched;
+            rig.runFor(0.45f);
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == (startPitched ? 1 : 0));
+        }
+    }
+}
