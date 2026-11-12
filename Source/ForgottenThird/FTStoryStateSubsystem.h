@@ -115,7 +115,8 @@ public:
 	// Binds the session's story writes to this state (FightSession::bindStory). Call after every Begin. With no step
 	// open (a reload into the fight, a direct open) it marks the fight's start first. Refused (an Error outside
 	// shipping, unbound) unless the state is at the step's mark: a screen's own retry calls RestartStep first.
-	void BindFightSession(UFTFightSession* Session);
+	// bFirstAttempt: the fight's first Begin (only it may mark a missing step); a screen's restart passes false.
+	void BindFightSession(UFTFightSession* Session, bool bFirstAttempt = true);
 
 	// ---- the save block (UFTStorySaveGame) ----
 

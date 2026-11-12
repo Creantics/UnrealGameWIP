@@ -285,7 +285,7 @@ void UFTStoryStateSubsystem::NewGame()
 	ForgetGood();
 }
 
-void UFTStoryStateSubsystem::BindFightSession(UFTFightSession* Session)
+void UFTStoryStateSubsystem::BindFightSession(UFTFightSession* Session, bool bFirstAttempt)
 {
 	if (Session)
 	{
@@ -297,19 +297,21 @@ void UFTStoryStateSubsystem::BindFightSession(UFTFightSession* Session)
 		{
 			return;
 		}
-		if (!ftcore::storyStepOpen(*State, *StepMark))
+		// No step open on the fight's first attempt: a reload into it (a load drops the mark; the block was saved as
+		// of the step's start, so the loaded state is that start) or a direct open, marked at the fight's start. A
+		// later attempt never marks: the state holds the last attempt's writes (ftcore::storyReadyBind).
+		const ftcore::StepBind Ready = ftcore::storyReadyBind(*State, *Registry, *StepMark, bFirstAttempt);
+		if (Ready == ftcore::StepBind::MarkedAtStart)
 		{
-			// No step open: a reload into the story's fight (a load drops the mark; the block was saved as of the
-			// step's start, so the loaded state is that start) or a direct open. The fight's start is the step's.
-			MarkStep();
 			UE_LOG(LogFTStoryState, Display, TEXT("StoryState: no step was open when the fight began (a reload or a direct open); marked at the fight's start."));
 		}
-		if (!Session->BindStory(*State, *Registry, *StepMark))
+		if (Ready == ftcore::StepBind::Moved || Ready == ftcore::StepBind::NoStep || !Session->BindStory(*State, *Registry, *StepMark))
 		{
 			// The fight plays unbound: a win keeps none of its presses, so a gate on them takes the wrong branch.
-			const TCHAR* Why = ftcore::storyStepOpen(*State, *StepMark)
+			const TCHAR* Why = Ready == ftcore::StepBind::Moved
 				? TEXT("the story state has moved since the step's mark (a retry inside the screen without RestartStep).")
-				: TEXT("no step is open and none could be marked (no scene is open).");
+				: (bFirstAttempt ? TEXT("no step is open and none could be marked (no scene is open).")
+								 : TEXT("the step's mark was lost before a later attempt (never re-marked at the last attempt's writes)."));
 #if UE_BUILD_SHIPPING
 			UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: the fight session was not bound: %s"), Why);
 #else

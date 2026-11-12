@@ -543,6 +543,43 @@ TEST_CASE("fight session: only a fight the story handed off takes story writes; 
     CHECK(wideA0() == 1);
 }
 
+TEST_CASE("fight session: a mark lost between attempts is refused, never re-based") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    REQUIRE(a0 != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    StoryStepMark mark; // no step open: a reload into the fight
+
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(storyReadyBind(story, reg, mark, true) == StepBind::MarkedAtStart);
+    REQUIRE(s.bindStory(story, reg, mark));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(storyWide(story, a0) == 1);
+
+    mark = StoryStepMark{}; // the mark is lost mid-fight; the screen restarts
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(storyReadyBind(story, reg, mark, false) == StepBind::NoStep); // never marked at the dirty state
+    CHECK_FALSE(s.bindStory(story, reg, mark));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(storyWide(story, a0) == 1); // the second attempt writes nothing on top
+
+    REQUIRE(storyMarkStep(story, mark)); // a mark that has moved is refused too
+    CHECK(storyReadyBind(story, reg, mark, false) == StepBind::Ready);
+    REQUIRE(storyAdd(story, reg, a0, 1) == SetResult::Ok);
+    CHECK(storyReadyBind(story, reg, mark, false) == StepBind::Moved);
+}
+
 TEST_CASE("fight session: gift presses at a lead are presses in the story state") {
     FactRegistry reg;
     std::string err;

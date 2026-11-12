@@ -381,6 +381,16 @@ FTCORE_API bool storyAtMark(const StoryState& s, const FactRegistry& reg, const 
 // True when a step is open: the mark is set and belongs to the open scene (a load, a new game or a step's end
 // leaves none). A screen entered with no step open (a reload into it, a direct open) marks at its own start.
 FTCORE_API bool storyStepOpen(const StoryState& s, const StoryStepMark& mark);
+// Whether a story fight's attempt may bind its writes (FightSession::bindStory), and why not.
+enum class StepBind : std::uint8_t {
+    Ready,         // a step is open and nothing has moved since its mark
+    MarkedAtStart, // no step was open on the fight's first attempt (a reload into it, a direct open): marked now
+    Moved,         // the state moved since the mark (a retry without the rollback): refused
+    NoStep,        // no step open on a later attempt (the mark was lost mid-fight), or none could be marked: refused
+};
+// Readies one attempt. Only the fight's first attempt may mark a missing step: on a later one the state already
+// holds the last attempt's writes, so marking there would count them twice; it is refused instead.
+FTCORE_API StepBind storyReadyBind(StoryState& s, const FactRegistry& reg, StoryStepMark& mark, bool firstAttempt);
 // What a step's end does with its writes (the verdict from judgeStep, or a quit to the title).
 enum class StepEnd : std::uint8_t { Keep, Retry, Drop };
 // Keep: a win or a loss branch keeps them. Retry: rolled back, one retry counted. Drop: rolled back, not

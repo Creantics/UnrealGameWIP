@@ -461,6 +461,11 @@ bool storyRollbackStep(StoryState& s, const FactRegistry& reg, const StoryStepMa
 
 bool storyStepOpen(const StoryState& s, const StoryStepMark& mark) { return markUsable(s, mark); }
 
+StepBind storyReadyBind(StoryState& s, const FactRegistry& reg, StoryStepMark& mark, bool firstAttempt) {
+    if (!markUsable(s, mark)) return firstAttempt && storyMarkStep(s, mark) ? StepBind::MarkedAtStart : StepBind::NoStep;
+    return storyAtMark(s, reg, mark) ? StepBind::Ready : StepBind::Moved;
+}
+
 bool storyAtMark(const StoryState& s, const FactRegistry& reg, const StoryStepMark& mark) {
     if (!markUsable(s, mark) || s.facts != mark.facts || s.stamp != mark.stamp) return false;
     for (std::uint8_t w = 0; w < kWideSlots; ++w)

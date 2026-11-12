@@ -366,7 +366,8 @@ bool UFTStorySubsystem::IsHeadlessRun()
 	FString Scene;
 	return FParse::Param(Cmd, TEXT("StoryAutoPlay")) || FParse::Param(Cmd, TEXT("StoryAutoPlayFast")) ||
 		FParse::Param(Cmd, TEXT("StoryAutoPlayHandoff")) || FParse::Param(Cmd, TEXT("AlphaAutoPlay")) ||
-		FParse::Value(Cmd, TEXT("StoryScene="), Scene) || FParse::Param(Cmd, TEXT("StoryStateCheck"));
+		FParse::Value(Cmd, TEXT("StoryScene="), Scene) || FParse::Param(Cmd, TEXT("StoryStateCheck")) ||
+		FParse::Param(Cmd, TEXT("ArenaStoryProbe"));
 }
 
 bool UFTStorySubsystem::Autosave()

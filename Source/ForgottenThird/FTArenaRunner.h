@@ -377,6 +377,7 @@ private:
 	UPROPERTY()
 	TObjectPtr<UFTFightSession> Session;
 	bool bStoryFight = false; // BeginSession: the story handed this fight off
+	bool bRestarting = false; // Restart's BeginSession: not the fight's first attempt
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
 	UPROPERTY()

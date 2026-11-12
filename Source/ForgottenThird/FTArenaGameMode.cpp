@@ -43,6 +43,7 @@ static_assert(AFTArenaFighter::TellSegments == 14, "Tell[14] in FTArenaFighter.h
 
 namespace
 {
+#if !UE_BUILD_SHIPPING
 // -ArenaStoryProbe: the arena's story wiring, headless. The fight is handed off as the story's (a carry, the
 // registry's first scene open, no step marked: as a reload into the fight), one gift press is counted, the arena
 // restarts the fight (UFTArenaRunner::Restart), and one more press is counted; each stage logs the press counters
@@ -110,6 +111,7 @@ void PressStoryProbe(UFTArenaRunner* Runner)
 		Session->Get().giveGift(Runner->GetSessionLead()); // counted given or refused
 	}
 }
+#endif
 
 // The shortest tell the arena allows (s): an enemy's startup is its telegraph.
 constexpr float kArenaMinTell = 0.4f;
@@ -650,12 +652,21 @@ void AFTArenaGameMode::Begin()
 	Setup.bBossSplitAtStart = bBossSplit;
 	Setup.bQuitOnFinish = bQuitOnFinish;
 	Setup.bShots = !ShotPrefix.IsEmpty();
-	const bool bStoryProbe = FParse::Param(FCommandLine::Get(), TEXT("ArenaStoryProbe"));
+#if !UE_BUILD_SHIPPING
+	// The probe resets the live story state (NewGame): headless only, where autosave is off (IsHeadlessRun).
+	bool bStoryProbe = FParse::Param(FCommandLine::Get(), TEXT("ArenaStoryProbe"));
+	if (bStoryProbe && !FParse::Param(FCommandLine::Get(), TEXT("NullRHI")))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaStoryProbe runs only headless (-NullRHI); ignored."));
+		bStoryProbe = false;
+	}
 	if (bStoryProbe)
 	{
 		PrepareStoryProbe(this);
 	}
+#endif
 	Runner->Begin(Setup);
+#if !UE_BUILD_SHIPPING
 	if (bStoryProbe)
 	{
 		LogStoryProbe(this, Runner, TEXT("begun"));
@@ -671,6 +682,7 @@ void AFTArenaGameMode::Begin()
 		}
 		FPlatformMisc::RequestExitWithStatus(false, 0, TEXT("ArenaStoryProbe"));
 	}
+#endif
 }
 
 bool AFTArenaGameMode::IsPlayable(const FString& Name) const

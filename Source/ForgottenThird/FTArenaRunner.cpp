@@ -1485,7 +1485,7 @@ void UFTArenaRunner::BeginSession()
 		UFTStoryStateSubsystem* Story = Instance ? Instance->GetSubsystem<UFTStoryStateSubsystem>() : nullptr;
 		if (Story && bStory)
 		{
-			Story->BindFightSession(Session);
+			Story->BindFightSession(Session, !bRestarting);
 		}
 		else
 		{
@@ -3214,12 +3214,17 @@ void UFTArenaRunner::Restart()
 		// (BeginSession) and counts nothing.
 		const UWorld* World = GetWorld();
 		UFTGameInstance* Instance = World ? World->GetGameInstance<UFTGameInstance>() : nullptr;
-		if (UFTStoryStateSubsystem* Story = Instance ? Instance->GetSubsystem<UFTStoryStateSubsystem>() : nullptr)
+		UFTStoryStateSubsystem* Story = Instance ? Instance->GetSubsystem<UFTStoryStateSubsystem>() : nullptr;
+		if (!Story || !Story->RestartStep())
 		{
-			Story->RestartStep();
+			// The step's mark is gone (or the state is): the new attempt can't roll back, and BeginSession refuses
+			// its binding rather than count on top of the last attempt.
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena: Restart of the story's fight found no open step to roll back; the new attempt plays unbound."));
 		}
 	}
+	bRestarting = true; // BeginSession: a later attempt never marks a missing step
 	BeginSession();
+	bRestarting = false;
 	LeadWeapons.Restart();
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
