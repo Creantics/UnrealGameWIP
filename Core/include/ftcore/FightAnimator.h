@@ -113,7 +113,8 @@ public:
     // Plays `clip` from `now`, or so that its key frame plays at `keyAt` when keyAt >= 0 (see the top
     // of this file). Returns false, playing nothing, when the body has no such clip.
     // maxRate > 0 is the fastest this one may play to reach its key (a quick move on a long clip: a
-    // riposte), in place of the tuning's.
+    // riposte), in place of the tuning's; past its key it plays on at its own pace, so the follow-
+    // through is not cut short as well.
     FTCORE_API bool play(FightClip c, double now, double keyAt = -1.0, float maxRate = 0.f);
     // Plays strike `c` as play() does, else the punch on its side (a kick, swing or cast the body has
     // no clip for), else StrikeLeft. Returns the clip it played; Stance when the body has none of them.
@@ -138,7 +139,10 @@ private:
         float rate = 1.f;
         float offset = 0.f;
         float fadeIn = 0.f; // its own: the tuning's, shorter for a clip joined part way
+        bool ownPaceAfterKey = false;
     };
+    // Seconds into the clip `elapsed` after its start.
+    double clipTime(const Action& a, double elapsed) const;
 
     static std::size_t index(FightClip c) { return static_cast<std::size_t>(c); }
     bool holds(FightClip c) const { return c == FightClip::Downed || c == FightClip::Victory; }

@@ -106,9 +106,10 @@
 //     Hitstun (cancelling the current action) and poise refills. Poise also refills after poiseDelay
 //     with no poise damage. hp 0: Downed, then Defeat.
 //   - Facing: locked, the player faces the lock target (and strafes); otherwise it turns toward the
-//     stick at turnRate. An attack starts facing, in this order: a riposte's enemy, the aim, the lock
-//     target, the soft target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed;
-//     then turns only at its `tracking` toward the same. On a soft target the attack also closes in by
+//     stick at turnRate. An attack starts facing, in this order: the aim, the lock target, the soft
+//     target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed; then turns only
+//     at its `tracking` toward the same. A riposte turns onto its enemy over its startup instead, at
+//     its tracking or faster, so it faces the enemy as the blow lands (at once with no startup). On a soft target the attack also closes in by
 //     up to homingReach on top of its lunge, never past touching.
 // * Enemies. Each enemy's brain is Approach (run when farther than runRange, else walk, toward its
 //   preferred range), Strafe (circle the player at preferredRange, changing direction now and then

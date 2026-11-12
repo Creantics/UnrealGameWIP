@@ -140,6 +140,10 @@ TEST_CASE("fight animator: a clip joined part way is in by half way to its key; 
     b.update(0.1);
     CHECK(find(b, FightClip::StrikeLeft)->time == doctest::Approx(0.4f));
     CHECK(b.lastKeyTime() == doctest::Approx(0.1));
+    b.update(0.3); // past its key at its own pace, in full: the follow-through not hurried too
+    REQUIRE(find(b, FightClip::StrikeLeft) != nullptr);
+    CHECK(find(b, FightClip::StrikeLeft)->time == doctest::Approx(0.6f));
+    CHECK(find(b, FightClip::StrikeLeft)->weight == doctest::Approx(1.f));
 
     FightAnimator c = makeAnimator();
     c.play(FightClip::StrikeLeft, 0.0, 0.3); // only faster, from its start: the tuning's fade

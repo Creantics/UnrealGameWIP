@@ -76,8 +76,17 @@ double FightAnimator::keyTime(const Action& a) const {
 }
 
 double FightAnimator::endTime(const Action& a) const {
-    if (holds(a.clip) || clip(a.clip).loop) return std::numeric_limits<double>::infinity();
-    return a.start + static_cast<double>(clip(a.clip).length - a.offset) / a.rate;
+    const FightClipInfo& info = clip(a.clip);
+    if (holds(a.clip) || info.loop) return std::numeric_limits<double>::infinity();
+    if (a.ownPaceAfterKey && a.offset < info.key) return keyTime(a) + static_cast<double>(info.length - info.key);
+    return a.start + static_cast<double>(info.length - a.offset) / a.rate;
+}
+
+double FightAnimator::clipTime(const Action& a, double elapsed) const {
+    const double key = clip(a.clip).key;
+    const double t = a.offset + elapsed * a.rate;
+    if (a.ownPaceAfterKey && a.offset < key && t > key) return key + (elapsed - (key - a.offset) / a.rate);
+    return t;
 }
 
 double FightAnimator::lastKeyTime() const { return queuedLast_ < count_ ? keyTime(actions_[queuedLast_]) : -1.0; }
@@ -86,7 +95,7 @@ bool FightAnimator::play(FightClip c, double now, double keyAt, float maxRate) {
     if (!has(c)) return false;
     const FightClipInfo& info = clip(c);
     const float fastest = maxRate > 0.f ? maxRate : tuning_.maxRate;
-    Action a{c, now, 1.f, 0.f, tuning_.fadeIn};
+    Action a{c, now, 1.f, 0.f, tuning_.fadeIn, maxRate > 0.f};
     if (keyAt >= 0.0) {
         // A chained clip waits for the key frame of the one queued before it.
         if (queuedLast_ < count_ && info.key > 0.f) a.start = std::max(a.start, keyTime(actions_[queuedLast_]));
@@ -160,7 +169,7 @@ void FightAnimator::update(double now) {
         if (!started) current_ = a.clip;
         started = true;
         const double elapsed = now - a.start;
-        float t = a.offset + static_cast<float>(elapsed) * a.rate;
+        float t = static_cast<float>(clipTime(a, elapsed));
         if (info.loop) t = std::fmod(t, info.length);
         else t = std::min(t, info.length);
         float alpha = a.fadeIn > 0.f ? std::min(1.f, static_cast<float>(elapsed) / a.fadeIn) : 1.f;
