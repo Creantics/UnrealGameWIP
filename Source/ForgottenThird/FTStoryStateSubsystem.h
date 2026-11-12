@@ -37,6 +37,10 @@
 
 class UFTFightSession;
 
+// Saves started or stopped being skipped (a refused encode with no block it may write). bSkipping false: a block
+// was written again, or a new game, registry import or load cleared the run.
+DECLARE_MULTICAST_DELEGATE_OneParam(FFTOnStorySaveSkipChanged, bool /*bSkipping*/);
+
 UCLASS()
 class FORGOTTENTHIRD_API UFTStoryStateSubsystem : public UGameInstanceSubsystem
 {
@@ -99,16 +103,28 @@ public:
 	// ---- the save block (UFTStorySaveGame) ----
 
 	// Writes the block into Out and keeps a copy as the last good block. When Core refuses, it returns false with a
-	// warning naming the last good block's scene and writes that block instead, unless there is none or the story
-	// has moved since it (its scene position, or any fact, stamp or wide value: a later beat of the same scene that
-	// wrote something counts; a beat that wrote nothing gives the same block): then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot
-	// keeps what it has). False with Out untouched before Initialize.
+	// warning naming the last good block's scene and writes that block instead, unless there is none or anything
+	// the block saves has moved since it (ftcore::storySaveFallback: the scene position, the facts, stamps and wide
+	// values with their entry copies, the extension area, the header; a beat that wrote nothing gives the same
+	// block): then Out is untouched and *bOutSkip is set (the caller skips the save, so the slot keeps what it has).
+	// Each skip is counted in the skip run below; a written block ends it. False with Out untouched before Initialize.
 	bool EncodeBlock(TArray<uint8>& Out, bool* bOutSkip = nullptr);
 	// Loads the block, or a new game's state when it is empty or Core refuses it. Returns Core's result. A loaded
 	// block becomes the last good block; a new game's state clears it.
 	ftcore::StoryLoad DecodeBlock(const TArray<uint8>& In);
 	// The last block encoded or loaded for this state (empty after a new game or a registry import).
 	const TArray<uint8>& GetLastGoodBlock() const { return LastGoodBlock; }
+
+	// ---- saves being skipped (for the UI) ----
+
+	// True while saves are being skipped: since the scene GetSavesSkippedSince names, GetSkippedSaveCount times.
+	UFUNCTION(BlueprintPure, Category = "Story")
+	bool IsSkippingSaves() const { return SaveSkip.skipping; }
+	// The scene code (or the runner's scene id) the first skipped save was at; empty while none are skipped.
+	FString GetSavesSkippedSince() const;
+	int32 GetSkippedSaveCount() const { return static_cast<int32>(FMath::Min<uint32>(SaveSkip.skipped, MAX_int32)); }
+	// Broadcast when IsSkippingSaves changes.
+	FFTOnStorySaveSkipChanged OnSaveSkipChanged;
 
 private:
 	void Unbind();
@@ -128,5 +144,8 @@ private:
 	// The state as LastGoodBlock was taken (EncodeBlock writes that block only while nothing moved since).
 	TUniquePtr<ftcore::StoryState> GoodState;
 	void KeepGood(const TArray<uint8>& Block);
-	bool MovedSinceGood() const;
+	// Drops the last good block and ends a skip run (a new game, a registry import, a refused load).
+	void ForgetGood();
+	void NoteSave(bool bSkipped);
+	ftcore::StorySaveSkip SaveSkip;
 };

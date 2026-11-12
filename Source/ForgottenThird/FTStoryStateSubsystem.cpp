@@ -133,7 +133,7 @@ bool UFTStoryStateSubsystem::LoadRegistry(const FString& Dir)
 	{
 		ftcore::storyReset(*State); // the state's slots and scenes belong to the registry too: a new game's state
 	}
-	LastGoodBlock.Reset();
+	ForgetGood();
 	LoadSceneMap(Base);
 	RebindBridge();
 	if (Bridge && Bridge->bound())
@@ -250,7 +250,7 @@ void UFTStoryStateSubsystem::NewGame()
 	{
 		ftcore::storyReset(*State);
 	}
-	LastGoodBlock.Reset();
+	ForgetGood();
 }
 
 void UFTStoryStateSubsystem::BindFightSession(UFTFightSession* Session)
@@ -277,12 +277,6 @@ void UFTStoryStateSubsystem::Unbind()
 
 namespace
 {
-// How far a state has got: 0 nothing, 2n+1 with scene n open, 2n+2 with n the last committed and none open.
-int32 StoryBlockProgress(uint8 Open, uint8 LastCommitted)
-{
-	return Open != ftcore::kNoScene ? 2 * Open + 1 : LastCommitted != ftcore::kNoScene ? 2 * LastCommitted + 2 : 0;
-}
-
 FString RegistrySceneName(const ftcore::FactRegistry& Reg, uint8 Ordinal)
 {
 	if (Ordinal == ftcore::kNoScene || Ordinal >= Reg.sceneCount)
@@ -302,14 +296,39 @@ void UFTStoryStateSubsystem::KeepGood(const TArray<uint8>& Block)
 	}
 }
 
-bool UFTStoryStateSubsystem::MovedSinceGood() const
+void UFTStoryStateSubsystem::ForgetGood()
 {
-	if (!GoodState || !State)
+	LastGoodBlock.Reset();
+	if (ftcore::storyClearSaveSkip(SaveSkip))
 	{
-		return true;
+		OnSaveSkipChanged.Broadcast(false);
 	}
-	return State->facts != GoodState->facts || State->stamp != GoodState->stamp || State->wide != GoodState->wide ||
-		   State->openScene != GoodState->openScene || State->lastCommitted != GoodState->lastCommitted;
+}
+
+void UFTStoryStateSubsystem::NoteSave(bool bSkipped)
+{
+	const uint8 At = State ? ftcore::storyScenePosition(*State) : ftcore::kNoScene;
+	if (ftcore::storyNoteSave(SaveSkip, bSkipped, At))
+	{
+		if (SaveSkip.skipping)
+		{
+			UE_LOG(LogFTStoryState, Warning, TEXT("StoryState: saves are being skipped from scene %s on."), *GetSavesSkippedSince());
+		}
+		else
+		{
+			UE_LOG(LogFTStoryState, Log, TEXT("StoryState: saves are written again."));
+		}
+		OnSaveSkipChanged.Broadcast(SaveSkip.skipping);
+	}
+}
+
+FString UFTStoryStateSubsystem::GetSavesSkippedSince() const
+{
+	if (!SaveSkip.skipping || !Registry)
+	{
+		return FString();
+	}
+	return RegistrySceneName(*Registry, SaveSkip.sinceScene);
 }
 
 bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
@@ -326,41 +345,34 @@ bool UFTStoryStateSubsystem::EncodeBlock(TArray<uint8>& Out, bool* bOutSkip)
 	Block.SetNumZeroed(ftcore::kStoryStateBlockSize);
 	if (!ftcore::storyEncode(*State, *Registry, std::span<std::uint8_t, ftcore::kStoryStateBlockSize>(Block.GetData(), ftcore::kStoryStateBlockSize)))
 	{
-		const int32 Now = StoryBlockProgress(State->openScene, State->lastCommitted);
-		if (LastGoodBlock.Num() != ftcore::kStoryStateBlockSize)
+		const ftcore::StorySaveFallback Fallback = ftcore::storySaveFallback(
+			*State, LastGoodBlock.Num() > 0 ? GoodState.Get() : nullptr,
+			std::span<const std::uint8_t>(LastGoodBlock.GetData(), static_cast<std::size_t>(LastGoodBlock.Num())));
+		const FString NowScene = RegistrySceneName(*Registry, ftcore::storyScenePosition(*State));
+		if (Fallback == ftcore::StorySaveFallback::WriteLastGood)
 		{
-			// Never an empty block over real progress: the save is skipped and the slot keeps what it has.
-			UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode and there is no last good block; the save is skipped."));
-			if (bOutSkip)
-			{
-				*bOutSkip = true;
-			}
+			UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the last good block (scene %s; nothing it saves has moved) is written."),
+				   *NowScene);
+			Out = LastGoodBlock;
+			NoteSave(false);
 			return false;
 		}
-		const uint8 GoodOpen = LastGoodBlock[16], GoodLast = LastGoodBlock[17]; // the block's open and last committed scene
-		const FString GoodScene = RegistrySceneName(*Registry, GoodOpen != ftcore::kNoScene ? GoodOpen : GoodLast);
-		if (Now != StoryBlockProgress(GoodOpen, GoodLast) || MovedSinceGood())
+		// Never an empty block over real progress, nor a block that would put other values under this position:
+		// the save is skipped and the slot keeps what it has.
+		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode at scene %s and %s; the save is skipped."),
+			   *NowScene,
+			   Fallback == ftcore::StorySaveFallback::SkipNoGoodBlock ? TEXT("there is no last good block")
+																	  : TEXT("the story has moved since the last good block"));
+		if (bOutSkip)
 		{
-			// The story has moved since the block (another scene, or a later beat of the same scene that wrote a
-			// fact, a stamp or a wide value), or the block is from another run: writing it would put other facts
-			// under this position.
-			UE_LOG(LogFTStoryState, Warning,
-				   TEXT("Story state not saved: the state refused to encode; the last good block is from scene %s, and the story is now at %s with its facts, stamps and wide values %s since that block; the save is skipped."),
-				   *GoodScene, *RegistrySceneName(*Registry, State->openScene != ftcore::kNoScene ? State->openScene : State->lastCommitted),
-				   MovedSinceGood() ? TEXT("changed") : TEXT("unchanged"));
-			if (bOutSkip)
-			{
-				*bOutSkip = true;
-			}
-			return false;
+			*bOutSkip = true;
 		}
-		UE_LOG(LogFTStoryState, Warning, TEXT("Story state not saved: the state refused to encode; the last good block (scene %s; same scene position, facts, stamps and wide values) is written."),
-			   *GoodScene);
-		Out = LastGoodBlock;
+		NoteSave(true);
 		return false;
 	}
 	KeepGood(Block);
 	Out = MoveTemp(Block);
+	NoteSave(false);
 	return true;
 }
 
@@ -376,10 +388,14 @@ ftcore::StoryLoad UFTStoryStateSubsystem::DecodeBlock(const TArray<uint8>& In)
 	if (Result == ftcore::StoryLoad::Ok)
 	{
 		KeepGood(In);
+		if (ftcore::storyClearSaveSkip(SaveSkip)) // a loaded block: the old run is over
+		{
+			OnSaveSkipChanged.Broadcast(false);
+		}
 	}
 	else
 	{
-		LastGoodBlock.Reset(); // a new game's state
+		ForgetGood(); // a new game's state
 	}
 	if (Result != ftcore::StoryLoad::Ok && Result != ftcore::StoryLoad::Empty)
 	{
