@@ -95,8 +95,10 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	// Turn the body to face the actor's forward (+X).
 	Body->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
 	Body->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
-	const int32 Cloth = FTLook::AddPieces(*this, *Body, Look.PiecePaths, Pieces, *LogName);
+	WornFronts = Loaded.Fronts;
+	const int32 Cloth = FTLook::AddPieces(*this, *Body, Loaded.Pieces, Pieces, *LogName);
 	FTLook::AddGrooms(*this, *Body, Pieces, Look.Grooms, GroomComponents, *LogName);
+	FTLook::SwapMaterials(*Body, Pieces, Look.MaterialSwaps, *LogName);
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."), *LogName,
 		*Loaded.Body->GetName(), Body->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, GroomComponents.Num(), *Loaded.ClipFolder);
 	// The lead's jumps are replayed on the trail (ReplayJump), and its climbs, vaults and catches gone over again with the

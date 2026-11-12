@@ -206,6 +206,8 @@ public:
 	// sample's (M_Neutral_Run_Loop_F_to_x), else the template's (MF_Unarmed_Jog_Fwd_to_x). Null when there is none
 	// made for Body's skeleton.
 	static UAnimSequence* FindRetargeted(ftcore::LocoClip Which, const FString& Folder, const USkeletalMesh& Body, const TCHAR* Who);
+	// The body whose retargeted clip set Body uses: its alias in Data/Anim/clip_body_aliases.json, else its own name.
+	static FString ClipSetBody(const USkeletalMesh& Body);
 	// Whether Clip was made for Body's skeleton (a clip for another one can't pose it); if not, warns, naming Who.
 	static bool FitsBody(const UAnimSequence& Clip, const USkeletalMesh& Body, const TCHAR* Who);
 	// Sets a gait's start and stops from the clips named after its loop, where there are any: next to

@@ -60,7 +60,9 @@ bool AFTCastMember::Wear(const FFTLeadLook& Look, const FString& ModelId)
 	{
 		Body->PlayAnimation(Idle, true);
 	}
-	FTLook::AddPieces(*this, *Body, Look.PiecePaths, Pieces, *Who);
+	WornFronts = Loaded.Fronts;
+	FTLook::AddPieces(*this, *Body, Loaded.Pieces, Pieces, *Who);
+	FTLook::SwapMaterials(*Body, Pieces, Look.MaterialSwaps, *Who);
 	RigFace = nullptr;
 	for (USkeletalMeshComponent* Piece : Pieces)
 	{

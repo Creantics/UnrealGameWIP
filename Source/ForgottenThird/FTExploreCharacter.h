@@ -99,6 +99,7 @@
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class UAnimSequence;
 class AFTPartyVan;
 class UCameraComponent;
 class UInputAction;
@@ -276,7 +277,13 @@ private:
 	void SpawnWedge();
 	void TickWedge();
 	void AddPortraitLights();
+	// -ExploreLookDev: a neutral set for judging materials (see the .cpp).
+	void EnterLookDev();
+	void FixExposure(float Bias);
+	void GreyGround();
+	void Nightfall();
 	void StepPortraitShots();
+	void HoldFaceAt(float Time);
 
 	AFTExploreDirector* GetDirector();
 
@@ -304,6 +311,9 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USceneComponent>> GroomComponents;
 	UPROPERTY(Transient)
@@ -317,6 +327,15 @@ private:
 	FTimerHandle ShotTimer;
 	// -ExplorePortraitShotEvery=<s>: the step between aiming and shooting (a shot every two steps).
 	float ShotEvery = 2.5f;
+	// -ExploreLookDevSpin=<deg/s>: the look-dev key circles the pawn at this rate (0 holds it still).
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> LookDevPivot;
+	float LookDevSpin = 0.f;
+	// -ExplorePortraitFaceClip=<anim> with -ExplorePortraitFaceTimes=<s,s,..>: each shot holds the face piece on that
+	// clip at its time (one shot per time, yaws repeat), to check expressions in the game.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> FaceClip;
+	TArray<float> FaceTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	TWeakObjectPtr<AFTPartyVan> Van;
@@ -340,6 +359,9 @@ private:
 	float LookRest = 0.f; // seconds since the last look input
 	float FaceBy = 0.f;   // -LocoFace=<deg>
 	bool bPortraitWalk = false;   // -ExplorePortraitWalk
+	float PortraitMoveScale = 0.5f; // -ExplorePortraitMoveScale=<0..1> (1 runs)
+	bool bPortraitJump = false;   // -ExplorePortraitJump
+	double PortraitJumpAt = -10.0;
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
 	bool bFacing = false;
 	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.

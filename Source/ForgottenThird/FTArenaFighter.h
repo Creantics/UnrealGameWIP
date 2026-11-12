@@ -196,6 +196,9 @@ private:
 	// The lead's look: pieces worn on the body (clothes, a face) and the grooms bound to them.
 	UPROPERTY()
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
 	UPROPERTY()
 	TArray<TObjectPtr<USceneComponent>> Grooms;
 	// The carried piece's parts in the hands, after SplitCarried.

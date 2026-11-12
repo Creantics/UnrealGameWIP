@@ -9,6 +9,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
+#include "FTLook.h"
+
 #include "FTCastMember.generated.h"
 
 class USceneComponent;
@@ -43,6 +45,9 @@ private:
 	TObjectPtr<UFTFaceComponent> Face;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USceneComponent>> Grooms;
 	UPROPERTY(Transient)

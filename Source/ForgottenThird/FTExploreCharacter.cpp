@@ -3,8 +3,13 @@
 
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/LightComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/RectLightComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EngineUtils.h"
 #include "EnhancedInputComponent.h"
@@ -148,7 +153,13 @@ void AFTExploreCharacter::BeginPlay()
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
 	Ledge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().ledge);
 	DodgeNow = Dodge.fresh();
+	// The portrait and look-dev captures (-ExplorePortrait and every -ExplorePortrait*/-ExploreLookDev*/-ExploreFixedExposure/
+	// -ExploreGreyGround flag under it) are capture tools: compiled out of shipping.
+#if UE_BUILD_SHIPPING
+	const bool bPortrait = false;
+#else
 	const bool bPortrait = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait"));
+#endif
 	// The lead and the party toggle: the player's last choice this session, else the command line, else config. A
 	// portrait shows the lead alone.
 	FString Lead = StartLead;
@@ -264,9 +275,60 @@ void AFTExploreCharacter::BeginPlay()
 		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
 		// -ExplorePortraitWalk: the body walks a slow circle (about 5.7 m across) so shots catch it mid-stride.
 		bPortraitWalk = bPortraitWalk || FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitWalk"));
-		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
+		// -ExplorePortraitMoveScale=<0..1>: the circle's input scale (0.5 walks, 1 runs); it implies the walk circle.
+		// -ExplorePortraitJump: on the circle, the body jumps every 1.5 s, so shots catch the jump clips.
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitMoveScale="), PortraitMoveScale))
+		{
+			PortraitMoveScale = FMath::Clamp(PortraitMoveScale, 0.f, 1.f);
+			bPortraitWalk = true;
+		}
+		bPortraitJump = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitJump"));
+		bPortraitWalk = bPortraitWalk || bPortraitJump;
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDev")))
+		{
+			EnterLookDev();
+		}
+		else if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
 		{
 			AddPortraitLights();
+		}
+		// Map-light diagnosis (the look-dev set has both built in): -ExploreGreyGround paints the map's green ground,
+		// path and leaves a neutral 0.18 grey; -ExploreFixedExposure turns auto-exposure off (EV100 0, shifted by
+		// -ExploreExposureBias=<stops>).
+		if (!FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDev")))
+		{
+			if (FParse::Param(FCommandLine::Get(), TEXT("ExploreGreyGround")))
+			{
+				GreyGround();
+			}
+			if (FParse::Param(FCommandLine::Get(), TEXT("ExploreFixedExposure")))
+			{
+				float Bias = 0.f;
+				FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureBias="), Bias);
+				FixExposure(Bias);
+			}
+		}
+		// Exposure-range check: -ExploreNight dims the sun to moonlight and the sky to a night sky (the gate lamps stay
+		// lit); -ExploreExposureRange=<min>,<max> meters auto-exposure within that EV100 range instead of the map's.
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreNight")))
+		{
+			Nightfall();
+		}
+		FString Range;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
+		{
+			FString Lo, Hi;
+			if (Range.Split(TEXT(","), &Lo, &Hi) && Camera)
+			{
+				FPostProcessSettings& Post = Camera->PostProcessSettings;
+				Post.bOverride_AutoExposureMinBrightness = true;
+				Post.AutoExposureMinBrightness = FCString::Atof(*Lo);
+				Post.bOverride_AutoExposureMaxBrightness = true;
+				Post.AutoExposureMaxBrightness = FCString::Atof(*Hi);
+				Camera->PostProcessBlendWeight = 1.f;
+				UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: auto-exposure range %.2f..%.2f EV100."),
+					Post.AutoExposureMinBrightness, Post.AutoExposureMaxBrightness);
+			}
 		}
 		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
@@ -285,6 +347,35 @@ void AFTExploreCharacter::BeginPlay()
 			if (ShotYaws.IsEmpty())
 			{
 				ShotYaws.Add(Yaw);
+			}
+			FString ClipPath;
+			FString TimeList;
+			if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFaceClip="), ClipPath)
+				&& FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFaceTimes="), TimeList, false))
+			{
+				FaceClip = LoadObject<UAnimSequence>(nullptr, *ClipPath);
+				TArray<FString> Parts;
+				TimeList.ParseIntoArray(Parts, TEXT(","));
+				for (const FString& Part : Parts)
+				{
+					FaceTimes.Add(FCString::Atof(*Part));
+				}
+				if (!FaceClip || FaceTimes.IsEmpty())
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: face clip %s not loaded or no times; face shots off."), *ClipPath);
+					FaceClip = nullptr;
+					FaceTimes.Reset();
+				}
+				else
+				{
+					// One shot per time; the yaw list repeats round them.
+					const TArray<float> Yaws = ShotYaws;
+					ShotYaws.Reset();
+					for (int32 Index = 0; Index < FaceTimes.Num(); ++Index)
+					{
+						ShotYaws.Add(Yaws[Index % Yaws.Num()]);
+					}
+				}
 			}
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
@@ -323,10 +414,17 @@ void AFTExploreCharacter::StepPortraitShots()
 		{
 			Hud->bShowHUD = false;
 		}
+		if (FaceClip)
+		{
+			HoldFaceAt(FaceTimes[ShotIndex]);
+		}
 		bShotAimed = true;
 		return;
 	}
-	const FString File = FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
+	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
+	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
@@ -338,6 +436,28 @@ void AFTExploreCharacter::StepPortraitShots()
 		*File, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0, GetVelocity().Size2D());
 	bShotAimed = false;
 	++ShotIndex;
+}
+
+void AFTExploreCharacter::HoldFaceAt(float Time)
+{
+	// A leader-posed piece copies the body's bones and never runs its own animation, so the MetaHuman face rig
+	// (its post-process blueprint) would stay neutral. The face piece leaves the leader pose and holds the clip.
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		const USkeletalMesh* PieceMesh = Piece ? Piece->GetSkeletalMeshAsset() : nullptr;
+		if (!PieceMesh || !PieceMesh->GetName().Contains(TEXT("FaceMesh")))
+		{
+			continue;
+		}
+		Piece->SetLeaderPoseComponent(nullptr);
+		Piece->PlayAnimation(FaceClip, false);
+		Piece->SetPosition(FMath::Clamp(Time, 0.f, FaceClip->GetPlayLength()), false);
+		Piece->Stop();
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: face %s held on %s at %.2f s."), *PieceMesh->GetName(),
+			*FaceClip->GetName(), Time);
+		return;
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no FaceMesh piece to hold the face clip on."));
 }
 
 void AFTExploreCharacter::AddPortraitLights()
@@ -377,8 +497,225 @@ void AFTExploreCharacter::AddPortraitLights()
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait lights on (key, fill, rim)."));
 }
 
-void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
+void AFTExploreCharacter::FixExposure(float Bias)
 {
+	if (!Camera)
+	{
+		return;
+	}
+	FPostProcessSettings& Post = Camera->PostProcessSettings;
+	Post.bOverride_AutoExposureMethod = true;
+	Post.AutoExposureMethod = AEM_Manual;
+	Post.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+	Post.AutoExposureApplyPhysicalCameraExposure = false;
+	Post.bOverride_AutoExposureBias = true;
+	Post.AutoExposureBias = Bias;
+	Camera->PostProcessBlendWeight = 1.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: fixed exposure, bias %.2f."), Bias);
+}
+
+void AFTExploreCharacter::Nightfall()
+{
+	int32 Dimmed = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UDirectionalLightComponent*> Suns(*It);
+		for (UDirectionalLightComponent* Sun : Suns)
+		{
+			Sun->SetIntensity(Sun->Intensity * 0.002f); // about 0.2 lux of moonlight from a 100 lux sun
+			Sun->SetLightColor(FLinearColor(0.6f, 0.7f, 1.f));
+			++Dimmed;
+		}
+		TInlineComponentArray<USkyLightComponent*> Skies(*It);
+		for (USkyLightComponent* Sky : Skies)
+		{
+			Sky->SetIntensity(Sky->Intensity * 0.01f);
+			++Dimmed;
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: night (%d sun and sky lights dimmed)."), Dimmed);
+}
+
+void AFTExploreCharacter::GreyGround()
+{
+	// The Explore map's surfaces are tints of one material (MI_Explore_<name>); the green and earth ones go grey.
+	int32 Painted = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UMeshComponent*> Meshes(*It);
+		for (UMeshComponent* Surface : Meshes)
+		{
+			for (int32 Slot = 0; Slot < Surface->GetNumMaterials(); ++Slot)
+			{
+				UMaterialInterface* Material = Surface->GetMaterial(Slot);
+				const FString Name = Material ? Material->GetName() : FString();
+				if (Name == TEXT("MI_Explore_Ground") || Name == TEXT("MI_Explore_Path") || Name == TEXT("MI_Explore_Leaves"))
+				{
+					UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Material, this);
+					Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+					Surface->SetMaterial(Slot, Grey);
+					++Painted;
+				}
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: grey ground on %d slots."), Painted);
+}
+
+void AFTExploreCharacter::EnterLookDev()
+{
+	// A neutral look-development set, so a material is judged without the map's coloured bounce: every other actor
+	// and every light, sky and fog in the level is hidden (the floor still collides), leaving a black surround; a
+	// mid-grey (0.18) disc goes under the feet; one warm-neutral key high on the camera's left and one soft dim fill
+	// on its right light the pawn. The key hangs off a pivot at the pawn, which -ExploreLookDevSpin=<deg/s> turns.
+	int32 Hidden = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (Actor == this || Actor->IsA<AController>() || Actor->IsA<AHUD>() || Actor->IsA<APlayerCameraManager>())
+		{
+			continue;
+		}
+		Actor->SetActorHiddenInGame(true);
+		TInlineComponentArray<USceneComponent*> Components(Actor);
+		for (USceneComponent* Component : Components)
+		{
+			Component->SetVisibility(false, false);
+			if (ULightComponent* Light = Cast<ULightComponent>(Component))
+			{
+				Light->SetIntensity(0.f);
+			}
+		}
+		++Hidden;
+	}
+	if (UStaticMesh* Disc = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder")))
+	{
+		UStaticMeshComponent* Ground = NewObject<UStaticMeshComponent>(this);
+		Ground->SetStaticMesh(Disc);
+		Ground->SetUsingAbsoluteRotation(true);
+		Ground->SetUsingAbsoluteScale(true);
+		Ground->SetWorldScale3D(FVector(8.0, 8.0, 0.01));
+		Ground->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Ground->SetupAttachment(GetRootComponent());
+		Ground->RegisterComponent();
+		Ground->SetWorldLocation(FeetLocation() + FVector(0.0, 0.0, 0.2));
+		if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
+		{
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, this);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+			Ground->SetMaterial(0, Grey);
+		}
+	}
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevSpin="), LookDevSpin);
+	LookDevPivot = NewObject<USceneComponent>(this);
+	LookDevPivot->SetupAttachment(GetRootComponent());
+	LookDevPivot->SetUsingAbsoluteRotation(true);
+	LookDevPivot->RegisterComponent();
+	// Pivot space at yaw 0: the light sits at -X, so it starts on the side the default (yaw 180) camera looks from.
+	struct FLightSpec
+	{
+		USceneComponent* Parent;
+		FVector Location;
+		float Candelas;
+		float Width;
+		FLinearColor Color;
+	};
+	const FLightSpec Specs[] = {
+		{LookDevPivot, FVector(-250.0, -170.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key
+		{Boom, FVector(-260.0, 240.0, 30.0), 6.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},        // fill
+	};
+	const FVector Target(0.0, 0.0, 20.0);
+	for (const FLightSpec& Spec : Specs)
+	{
+		URectLightComponent* Light = NewObject<URectLightComponent>(this);
+		Light->SetupAttachment(Spec.Parent);
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetRelativeLocation(Spec.Location);
+		Light->SetRelativeRotation((Target - Spec.Location).Rotation());
+		Light->SetIntensityUnits(ELightUnits::Candelas);
+		Light->SetIntensity(Spec.Candelas);
+		Light->SetSourceWidth(Spec.Width);
+		Light->SetSourceHeight(Spec.Width);
+		Light->SetLightColor(Spec.Color);
+		Light->SetAttenuationRadius(1500.f);
+		Light->RegisterComponent();
+		PortraitLights.Add(Light);
+	}
+	// The default camera looks from yaw 180; turn the key round to its side.
+	LookDevPivot->SetWorldRotation(FRotator(0.0, 180.0, 0.0));
+	// Fixed exposure: auto-exposure in a black surround brightens everything, so albedo could not be judged between
+	// shots. Manual exposure at EV100 0: the 40 cd key at about 3.3 m lights a 0.18 grey to about 0.18 on screen.
+	// -ExploreLookDevBias=<stops> shifts it.
+	float Bias = 0.f;
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevBias="), Bias);
+	FixExposure(Bias);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s)."), Hidden, LookDevSpin);
+}
+
+#if !UE_BUILD_SHIPPING
+namespace
+{
+// -LookFrontProbe=<closed>+<open> (look-dev, headless): the look worn with one garment pair (in place of its own) made of two existing
+// meshes, so the runtime open/closed switch (FTLook::SetFront) can be exercised before a real open mesh exists. The
+// closed half is added to the pieces unless either half is listed. False without the flag or when it doesn't parse.
+bool FrontProbeLook(const FFTLeadLook& Look, FFTLeadLook& Out)
+{
+	FString Arg;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("LookFrontProbe="), Arg))
+	{
+		return false;
+	}
+	FString Closed, Open;
+	if (!Arg.Split(TEXT("+"), &Closed, &Open) || Closed.IsEmpty() || Open.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: -LookFrontProbe=%s isn't <closed>+<open>; ignored."), *Arg);
+		return false;
+	}
+	Out = Look;
+	FFTGarmentFronts Pair;
+	Pair.Closed = FSoftObjectPath(Closed);
+	Pair.Open = FSoftObjectPath(Open);
+	Pair.bOpen = false;
+	Out.Fronts = {Pair};  // alone: a configured pair naming the same mesh would match first
+	if (!Out.PiecePaths.Contains(Pair.Closed) && !Out.PiecePaths.Contains(Pair.Open))
+	{
+		Out.PiecePaths.Add(Pair.Closed);
+	}
+	return true;
+}
+
+// One line per piece: its mesh, whether the body leads its pose, and what each slot shows.
+void LogPieces(const TCHAR* Step, const USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces)
+{
+	for (const USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (!Piece)
+		{
+			continue;
+		}
+		FString Slots;
+		for (int32 I = 0; I < Piece->GetNumMaterials(); ++I)
+		{
+			const UMaterialInterface* Material = Piece->GetMaterial(I);
+			Slots += FString::Printf(TEXT(" [%d]%s"), I, Material ? *Material->GetName() : TEXT("none"));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FRONT_PROBE %s: %s leader=%s slots:%s"), Step,
+			Piece->GetSkeletalMeshAsset() ? *Piece->GetSkeletalMeshAsset()->GetName() : TEXT("none"),
+			Piece->LeaderPoseComponent.Get() == &Body ? TEXT("body") : TEXT("OTHER"), *Slots);
+	}
+}
+}
+#endif
+
+void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
+{
+#if !UE_BUILD_SHIPPING
+	FFTLeadLook ProbeLook;
+	const bool bFrontProbe = FrontProbeLook(InLook, ProbeLook);
+	const FFTLeadLook& Look = bFrontProbe ? ProbeLook : InLook;
+#else
+	const FFTLeadLook& Look = InLook;
+#endif
 	// A new look is a swap: the safe points the last lead walked stay with it.
 	Unstick.reset();
 	// Grooms first: they may be bound to a piece.
@@ -415,11 +752,24 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 		// Turn the body to face the capsule's forward (+X).
 		BodyComponent->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
 	}
-	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Look.PiecePaths, Pieces, TEXT("FTExploreCharacter"));
+	WornFronts = Loaded.Fronts;
+	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
+	FTLook::SwapMaterials(*BodyComponent, Pieces, Look.MaterialSwaps, TEXT("FTExploreCharacter"));
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, Body ? *Body->GetName() : TEXT("none"), BodyComponent->GetRelativeRotation().Yaw, Pieces.Num(), Cloth,
 		GroomComponents.Num(), *Loaded.ClipFolder);
+#if !UE_BUILD_SHIPPING
+	if (bFrontProbe)
+	{
+		LogPieces(TEXT("setup"), *BodyComponent, Pieces);
+		const int32 Opened = FTLook::SetFront(Look, WornFronts, *BodyComponent, Pieces, FString(), true, TEXT("FTExploreCharacter"));
+		LogPieces(TEXT("open"), *BodyComponent, Pieces);
+		const int32 Closed = FTLook::SetFront(Look, WornFronts, *BodyComponent, Pieces, FString(), false, TEXT("FTExploreCharacter"));
+		LogPieces(TEXT("closed"), *BodyComponent, Pieces);
+		UE_LOG(LogForgottenThird, Display, TEXT("FRONT_PROBE done: %d piece(s) opened, %d closed."), Opened, Closed);
+	}
+#endif
 	// A body that didn't load keeps the clips worn with it.
 	if (Loaded.Body)
 	{
@@ -2155,10 +2505,24 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		UE_LOG(LogForgottenThird, Display, TEXT("Hand-back: on CharacterMovement's first frame the mesh moved %+.2f cm, the capsule %+.2f (crouched %d; floor dist %.2f cm, walkable %d)."),
 			GetMesh()->GetComponentLocation().Z - HandBackMeshZ, GetActorLocation().Z - HandBackZ, bIsCrouched ? 1 : 0, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0);
 	}
+	if (LookDevPivot && LookDevSpin != 0.f)
+	{
+		LookDevPivot->AddWorldRotation(FRotator(0.0, LookDevSpin * DeltaSeconds, 0.0));
+	}
 	if (bPortraitWalk)
 	{
 		const double Turn = GetWorld()->GetTimeSeconds() * (2.0 * UE_DOUBLE_PI / 8.0);
-		AddMovementInput(FVector(FMath::Cos(Turn), FMath::Sin(Turn), 0.0), 0.5f);
+		AddMovementInput(FVector(FMath::Cos(Turn), FMath::Sin(Turn), 0.0), PortraitMoveScale);
+		const double Now = GetWorld()->GetTimeSeconds();
+		if (bPortraitJump && Now - PortraitJumpAt > 1.5 && GetCharacterMovement()->IsMovingOnGround())
+		{
+			PortraitJumpAt = Now;
+			Jump();
+		}
+		else if (bPortraitJump && Now - PortraitJumpAt > 0.3)
+		{
+			StopJumping();
+		}
 	}
 	const UFTLocomotionAnimInstance* LocoAnim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
 	// -LocoVaultWall (or -LocoCatch) builds the course once the body has settled where the map puts it, then runs along

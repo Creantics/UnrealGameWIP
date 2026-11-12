@@ -19,6 +19,8 @@
 #include "ForgottenThird.h"
 #include "FTText.h"
 
+#include "ftcore/ClipBodyAlias.h"
+
 namespace
 {
 const TCHAR* const SpineNames[FFTLocomotionAnimProxy::NumSpine] = {TEXT("spine_01"), TEXT("spine_02"), TEXT("spine_03")};
@@ -503,6 +505,31 @@ void UFTLocomotionAnimInstance::SetBaseClips(UAnimSequence* const (&Base)[NumBas
 	}
 }
 
+FString UFTLocomotionAnimInstance::ClipSetBody(const USkeletalMesh& Body)
+{
+	// Data/Anim/clip_body_aliases.json, read once: a body copy (a new face build, a hide variant) on the same
+	// skeleton uses the original body's retargeted clip set.
+	static const ftcore::ClipBodyAliases Aliases = []
+	{
+		ftcore::ClipBodyAliases Table;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Anim/clip_body_aliases.json");
+		TArray<uint8> Bytes;
+		std::string Error;
+		if (!IFileManager::Get().FileExists(*File) || !FFileHelper::LoadFileToArray(Bytes, *File)
+			|| !ftcore::importClipBodyAliases(FT::BytesAsText(Bytes), Table, &Error))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Clip body aliases: couldn't read %s (%s); each body uses its own clips only."),
+				*File, *FT::ToFString(Error));
+			Table.entries.clear();
+		}
+		return Table;
+	}();
+	const FString Name = Body.GetName();
+	const FTCHARToUTF8 Utf8(*Name);
+	const std::string_view Set = Aliases.resolve(std::string_view(Utf8.Get(), Utf8.Length()));
+	return FT::ToFString(Set);
+}
+
 UAnimSequence* UFTLocomotionAnimInstance::FindRetargeted(ftcore::LocoClip Which, const FString& Folder, const USkeletalMesh& Body, const TCHAR* Who)
 {
 	// Each base clip's sources: the mocap sample's, then the template's.
@@ -523,9 +550,15 @@ UAnimSequence* UFTLocomotionAnimInstance::FindRetargeted(ftcore::LocoClip Which,
 		return nullptr;
 	}
 	const FString Dir = Folder.EndsWith(TEXT("/")) ? Folder : Folder + TEXT("/");
-	for (const TCHAR* Source : Sources[Slot])
+	// The body's own clips first, then its alias's set (clip_body_aliases.json).
+	const FString Own = Body.GetName();
+	const FString Alias = ClipSetBody(Body);
+	const FString Names[2] = {Own, Alias != Own ? Alias : FString()};
+	for (int32 Pass = 0; Pass < 4; ++Pass)
 	{
-		const FString Asset = Source ? FString::Printf(TEXT("%s_to_%s"), Source, *Body.GetName()) : FString();
+		const TCHAR* Source = Sources[Slot][Pass % 2];
+		const FString& Target = Names[Pass / 2];
+		const FString Asset = Source && !Target.IsEmpty() ? FString::Printf(TEXT("%s_to_%s"), Source, *Target) : FString();
 		if (Asset.IsEmpty() || !FPackageName::DoesPackageExist(Dir + Asset))
 		{
 			continue;
