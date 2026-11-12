@@ -132,6 +132,7 @@ public:
 	// Every skeletal mesh on the figure poses after Host ticks (it places the figure), now and for any mesh the figure
 	// makes later (a look worn or a skin set again). Followers and grooms tick after the mesh they follow already.
 	void PoseAfter(AActor* Host);
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
 	// Where the HUD hangs this figure's markers: above its head, and its chest.
 	FVector GetAnchor() const;
@@ -240,6 +241,7 @@ private:
 	bool bWasLying = false;
 	TWeakObjectPtr<AActor> PoseHost;
 	void TieMeshTicks();
+	void UntieMeshTicks();
 	bool bPlayerFigure = false; // the player's figure never shows the guard plate
 	FLinearColor LastTint = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastShield = FLinearColor(-1.f, -1.f, -1.f);
