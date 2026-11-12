@@ -491,8 +491,9 @@ def build(build_dir):
             elif kind == 'CHOICE':
                 spec = CHOICES.get(sid)
                 if spec is None:
-                    problems.append('%s: CHOICE insert has no entry in CHOICES' % sid)
-                    spec = [(nt[9:60], True, [_o(nt[9:60])])]
+                    problems.append('%s: CHOICE insert has no entry in the tables (choices)' % sid)
+                    spec = [(nt[9:60], True, [{'text': nt[9:60], 'effects': [], 'next': None, 'selectable': True,
+                                                   'miss': False}])]
                 for label, scripted, opts in spec:
                     emit_choice(label, scripted, opts, 'c')
             elif kind == 'HOLD':
