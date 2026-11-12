@@ -2,7 +2,7 @@
 (garment_bind.py or head_prop.py FBXs on the same armature) at rest, in walk and turn poses, and close up.
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/review_renders.py -- \
-        BODY.fbx FACE.fbx OUT_DIR PIECE.fbx [PIECE.fbx ...] [shots=rest,walk,turn,close]
+        BODY.fbx FACE.fbx OUT_DIR PIECE.fbx [PIECE.fbx ...] [shots=rest,walk,turn,reach,close]
         [close=hem,seam,neck,face,ears,feet,wrists,chest] [res=900] [samples=96] [gpu=1] [skin=r,g,b]
         [prefix=set_b] [exposure=0] [hide=FACES.npy hide_faces=N] [colour=NAME:r,g,b[:rough][+NAME:...]]
 
@@ -22,6 +22,8 @@ by shape (face_roles), not by slot name.
 rest: front, side (the wearer's left), back and three-quarter (front left), the whole figure.
 walk: four frames of a stride (left contact, passing, right contact, passing), front three-quarter and side.
 turn: two frames of a turn in place to the wearer's left (hips 35 deg, shoulders 55), front and back three-quarter.
+reach: the left arm lifted above the shoulder to the side, the right arm forward at shoulder height (armpits, sleeve
+pull, hem lift); front, three-quarter and back.
 close: hem (the lowest rim of the lowest piece, front and side), seam (the waist at each side), neck (the collar, front
 and back), face (the head front and three-quarter: glasses, a mask), ears (each side of the head), feet (both
 feet front, side and back: shoes), wrists (each forearm: wraps, cuffs), chest (front, side and upper back: a harness).
@@ -338,6 +340,26 @@ def turn(step):
     rot("head", 10 * k, up)
 
 
+def lift(name, deg, child):
+    """Turn a limb bone about the forward axis so that its child rises for deg > 0."""
+    if name not in barm.pose.bones or child not in barm.pose.bones:
+        return
+    c0 = head(child).copy()
+    rot(name, 5, fwd)
+    s = 1.0 if (head(child) - c0).z > 0 else -1.0
+    rot(name, -5, fwd)
+    rot(name, s * deg, fwd)
+
+
+def reach():
+    reset()
+    rot("clavicle_l", 0, up)
+    lift("clavicle_l", 12, "upperarm_l")
+    lift("upperarm_l", 85, "lowerarm_l")
+    swing("upperarm_r", 75, "lowerarm_r")
+    swing("lowerarm_r", 20, "hand_r")
+
+
 # -- the stage ----------------------------------------------------------------------------------------------------------
 sc = bpy.context.scene
 sc.render.engine = "CYCLES"
@@ -436,6 +458,11 @@ if "turn" in SHOTS:
         turn(st)
         full("turn_%d_q34" % st, fwd + left, "turn frame %d, three-quarter front" % st)
         full("turn_%d_back" % st, -fwd + left * 0.6, "turn frame %d, three-quarter back" % st)
+if "reach" in SHOTS:
+    reach()
+    full("reach_front", fwd, "arms raised (left up to the side, right forward), from the front")
+    full("reach_q34", fwd - left * 0.8, "arms raised, three-quarter front right")
+    full("reach_back", -fwd, "arms raised, from the back")
 if "close" in SHOTS:
     reset()
     hd = head("head")
