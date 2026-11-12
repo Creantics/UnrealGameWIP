@@ -26,8 +26,8 @@
 namespace ftcore {
 
 enum class StandInKind : std::uint8_t {
-    StreetTree, // on a pavement: 5-7 m crown on a clear trunk
-    ParkTree,   // in a park, forecourt or precinct: bigger, fuller
+    StreetTree, // on a pavement: 5-7 m crown on a clear trunk (also a young cherry, kind "cherry")
+    ParkTree,   // in a park, forecourt or precinct: bigger, fuller (also an old cherry, kind "cherry_old")
     Shrub,      // park planting: a low clump
     Railing,    // a quay railing span, 1.1 m high, len long along rot
     LampMast,   // a quay lamp mast, 8 m, its head reaching along rot
@@ -91,6 +91,7 @@ struct StandInPoint {
     int floors = 0;          // a glass tower's floors (0: the kind's own)
     float scale = 1.f;       // a tree's or shrub's size, a share of its own (0.6 .. 1.6)
     std::string id;          // the row's id, when the table has one
+    std::string tag;         // the row's kind as written, lower case ("street", "cherry_old"); empty without a kind column
 };
 
 // One basic shape of a stand-in: its centre from the point (plan metres, already turned by the point's rot), its full

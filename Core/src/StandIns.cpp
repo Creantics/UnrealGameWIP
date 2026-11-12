@@ -363,6 +363,7 @@ bool parseStandInKind(std::string_view text, StandInKind& out) {
         {"glass_tower", StandInKind::GlassTower}, {"landmark", StandInKind::Landmark},
         {"street", StandInKind::StreetTree},     {"park", StandInKind::ParkTree},          {"forecourt", StandInKind::ParkTree}, {"plaza", StandInKind::ParkTree},
         {"precinct", StandInKind::ParkTree},     {"glass", StandInKind::GlassTower},       {"bridge_deck", StandInKind::BridgeDeck},
+        {"cherry", StandInKind::StreetTree},     {"cherry_old", StandInKind::ParkTree},
         {"bridge_landing", StandInKind::BridgeLanding}, {"bridge_stair", StandInKind::BridgeStair}, {"bridge_pier", StandInKind::BridgePier},
     };
     text = trimView(text);
@@ -455,6 +456,9 @@ bool importStandIns(std::string_view csv, StandInKind defaultKind, std::vector<S
                 if (end == csv.size()) break;
                 continue;
             }
+            const std::string_view written = trimView(f[col[Kind]]);
+            p.tag.reserve(written.size());
+            for (const char ch : written) p.tag.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
         } else {
             p.kind = defaultKind;
         }

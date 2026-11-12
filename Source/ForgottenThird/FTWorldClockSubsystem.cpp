@@ -1,6 +1,7 @@
 #include "FTWorldClockSubsystem.h"
 
 #include "FTJointCollection.h"
+#include "FTSeason.h"
 
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/LightComponent.h"
@@ -169,6 +170,8 @@ void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	Super::OnWorldBeginPlay(InWorld);
 	// -JointDepth=<0..1>: the surfaces' joint depth (parallax, joint normals and cavities), in any world, still or played.
 	FTJoint::ApplyCommandLine(InWorld);
+	// -Season=<0..3 or spring, summer, autumn, winter>: the plants' season (FTSeason.h).
+	FTSeason::ApplyCommandLine(InWorld);
 	const TCHAR* Cmd = FCommandLine::Get();
 	float Fixed = -1.f;
 	const bool bFixed = FParse::Value(Cmd, TEXT("TimeOfDay="), Fixed);

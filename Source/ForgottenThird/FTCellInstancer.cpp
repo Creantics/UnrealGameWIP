@@ -35,6 +35,8 @@ int32 CullEnd(EFTCellCull Cull)
 		return CarCull;
 	case EFTCellCull::Interior:
 		return InteriorCull;
+	case EFTCellCull::Tree:
+		return TreeCull;
 	default:
 		return 0;
 	}

@@ -1,6 +1,7 @@
 #include "FTBuildLookMaterialsCommandlet.h"
 
 #include "FTJointCollection.h"
+#include "FTSeason.h"
 
 #include "ForgottenThird.h"
 #include "FTSceneLook.h"
@@ -261,6 +262,8 @@ UMaterialParameterCollection* BuildCollection()
 	}
 	// The surfaces' joint depth switch lives here too (FTJointCollection.h).
 	FTJoint::AddScalarTo(*Collection);
+	// And the plants' season (FTSeason.h).
+	FTSeason::AddScalarTo(*Collection);
 	Collection->PostEditChange();
 	return Collection;
 }

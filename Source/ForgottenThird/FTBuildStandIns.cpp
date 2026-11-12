@@ -12,6 +12,8 @@
 
 #include "ftcore/MassingPlan.h"
 #include "ftcore/StandIns.h"
+#include "ftcore/TreeMeshes.h"
+#include "Misc/Paths.h"
 
 #include <string>
 #include <string_view>
@@ -293,6 +295,76 @@ bool CheckCorridors(const std::vector<ftcore::StandInPoint>& Points, const ftcor
 		static_cast<int32>(Points.size()), static_cast<int32>(Corridors.size()), Found, Found > 0 ? TEXT(" (warned, not failed)") : TEXT(""));
 	return true;
 }
+// A plant's mesh by asset path (/Game/...; the object name added when missing) or by name (FTImportPlant's
+// /Game/Props/<name>/<name>). Null, quietly, when it doesn't load.
+UStaticMesh* LoadPlant(const FString& Asset)
+{
+	FString Path = Asset;
+	if (!Path.StartsWith(TEXT("/")))
+	{
+		Path = FString::Printf(TEXT("/Game/Props/%s/%s"), *Asset, *Asset);
+	}
+	if (!Path.Contains(TEXT(".")))
+	{
+		Path += TEXT(".") + FPaths::GetBaseFilename(Path);
+	}
+	return LoadObject<UStaticMesh>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+}
+
+// The modelled trees of -TreeMeshes=<table> (ftcore/TreeMeshes.h), each model's height and crown filled from its
+// mesh's bounds, and the tree pit's grate (-TreeGrate=<asset>, default TREE-grate; none when it doesn't load). True
+// with no models without the switch; false (logged) on a table that doesn't read or a model that doesn't load.
+struct FTreeMeshes
+{
+	std::vector<ftcore::TreeModel> Models;
+	TArray<UStaticMesh*> Meshes;
+	UStaticMesh* Grate = nullptr;
+};
+bool LoadTreeMeshes(FTreeMeshes& Out)
+{
+	FString File;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("TreeMeshes="), File, false) || File.IsEmpty())
+	{
+		return true;
+	}
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *File))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("StandIns: -TreeMeshes couldn't read '%s'."), *File);
+		return false;
+	}
+	std::string Error;
+	const std::string_view Csv(reinterpret_cast<const char*>(Bytes.GetData()), static_cast<size_t>(Bytes.Num()));
+	if (!ftcore::parseTreeModels(Csv, Out.Models, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("StandIns: -TreeMeshes %s: %s"), *File, UTF8_TO_TCHAR(Error.c_str()));
+		return false;
+	}
+	for (ftcore::TreeModel& Model : Out.Models)
+	{
+		const FString Asset = UTF8_TO_TCHAR(Model.asset.c_str());
+		UStaticMesh* Mesh = LoadPlant(Asset);
+		if (!Mesh)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("StandIns: -TreeMeshes: couldn't load %s (import it with FTImportPlant)."), *Asset);
+			return false;
+		}
+		const FBox Bounds = Mesh->GetBoundingBox();
+		Model.height = FMath::Max(Bounds.Max.Z, 1.0) / 100.0;
+		Model.crown = FMath::Max(Bounds.GetSize().X, Bounds.GetSize().Y) / 100.0;
+		Out.Meshes.Add(Mesh);
+		UE_LOG(LogForgottenThird, Display, TEXT("StandIns: tree model %s for %s rows, weight %.2f: %.1f m tall, %.1f m crown, %d LODs, %d triangles at LOD0."),
+			*Asset, UTF8_TO_TCHAR(Model.kind.c_str()), Model.weight, Model.height, Model.crown, Mesh->GetNumLODs(), Mesh->GetNumTriangles(0));
+	}
+	FString GrateAsset = TEXT("TREE-grate");
+	FParse::Value(FCommandLine::Get(), TEXT("TreeGrate="), GrateAsset, false);
+	Out.Grate = GrateAsset.IsEmpty() ? nullptr : LoadPlant(GrateAsset);
+	if (!Out.Grate)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("StandIns: no tree grate (%s doesn't load): street trees stand without one."), *GrateAsset);
+	}
+	return true;
+}
 } // namespace FTStandIns::Impl
 
 bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInterface* Base, const ftcore::HeightField& Field, double Side)
@@ -400,14 +472,67 @@ bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	TMap<FIntPoint, FCount> PerCell;
 	const TArrayView<const float> NoData;
 	ftcore::StandInPart Parts[ftcore::kStandInPartsMax];
+
+	// The modelled trees, in place of the stand-in trees' parts when -TreeMeshes is given.
+	FTreeMeshes Trees;
+	if (!LoadTreeMeshes(Trees))
+	{
+		return false;
+	}
+	FFTCellOptions TreeOptions;
+	TreeOptions.Cull = EFTCellCull::Tree;
+	TreeOptions.Tag = TEXT("Tree");
+	FFTCellOptions GrateOptions;
+	GrateOptions.Cull = EFTCellCull::Prop;
+	GrateOptions.bCastShadow = false;
+	GrateOptions.bRayTraced = true;
+	GrateOptions.Tag = TEXT("TreeGrate");
+	constexpr double kGrateRise = 1.5; // cm over the footway, so the grate never flickers in it
+	TArray<int32> PerModel;
+	PerModel.SetNumZeroed(static_cast<int32>(Trees.Models.size()));
+	int32 Clamped = 0, Grates = 0, KeptStandIns = 0;
+	int64 TreeTriangles = 0;
+
 	for (const ftcore::StandInPoint& Point : Points)
 	{
 		const int32 K = static_cast<int32>(Point.kind);
 		const double Foot = Point.hasZ ? Point.z : (Field.grid ? Field.at(Point.x, Point.y) : 0.0);
-		const std::size_t N = ftcore::standInParts(Point, Parts);
 		const ftcore::MassingVec At = ftcore::massingEnginePoint(Side, Point.x, Point.y, Foot);
 		const FIntPoint Cell(FMath::FloorToInt32(At.x * 100.0 / FTCells::CellSize), FMath::FloorToInt32(At.y * 100.0 / FTCells::CellSize));
 		FCount& Here = PerCell.FindOrAdd(Cell);
+		const bool bTree = Point.kind == ftcore::StandInKind::StreetTree || Point.kind == ftcore::StandInKind::ParkTree;
+		if (bTree && !Trees.Models.empty())
+		{
+			const ftcore::TreePick Pick = ftcore::pickTreeModel(Point, Trees.Models.data(), Trees.Models.size());
+			if (Pick.model >= 0)
+			{
+				UStaticMesh* const Mesh = Trees.Meshes[Pick.model];
+				const FVector Foot3 = FVector(At.x, At.y, At.z) * 100.0;
+				const FRotator Yaw(0.0, ftcore::massingEngineYaw(static_cast<float>(Pick.yawDeg)), 0.0);
+				Cells.Add(Mesh, TArrayView<UMaterialInterface* const>(), FTransform(Yaw, Foot3, FVector(Pick.scaleXY, Pick.scaleXY, Pick.scaleZ)), NoData, EFTCellKind::Solid,
+					TreeOptions);
+				int32 Count = 1;
+				// A street row's tree stands in a pit, its grate flush with the footway, square to the row.
+				if (Point.kind == ftcore::StandInKind::StreetTree && Trees.Grate)
+				{
+					const FRotator Square(0.0, ftcore::massingEngineYaw(static_cast<float>(Point.rot)), 0.0);
+					Cells.Add(Trees.Grate, TArrayView<UMaterialInterface* const>(), FTransform(Square, Foot3 + FVector(0.0, 0.0, kGrateRise)), NoData, EFTCellKind::NoCollide,
+						GrateOptions);
+					++Grates;
+					++Count;
+				}
+				++PerModel[Pick.model];
+				Clamped += Pick.clamped ? 1 : 0;
+				TreeTriangles += Mesh->GetNumTriangles(0);
+				++All.Points[K];
+				++Here.Points[K];
+				All.Instances[K] += Count;
+				Here.Instances[K] += Count;
+				continue;
+			}
+			++KeptStandIns;
+		}
+		const std::size_t N = ftcore::standInParts(Point, Parts);
 		for (std::size_t I = 0; I < N; ++I)
 		{
 			const ftcore::StandInPart& Part = Parts[I];
@@ -445,6 +570,19 @@ bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 		return FString::Printf(TEXT("%s; %d instances"), Text.IsEmpty() ? TEXT("none") : *Text, Total);
 	};
 	UE_LOG(LogForgottenThird, Display, TEXT("StandIns: %d points from %d tables: %s."), static_cast<int32>(Points.size()), Tables, *Line(All));
+	if (!Trees.Models.empty())
+	{
+		FString Models;
+		int32 Placed = 0;
+		for (int32 M = 0; M < PerModel.Num(); ++M)
+		{
+			Models += FString::Printf(TEXT("%s%s %d"), Models.IsEmpty() ? TEXT("") : TEXT(", "), *Trees.Meshes[M]->GetName(), PerModel[M]);
+			Placed += PerModel[M];
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("StandIns: modelled trees: %d (%s); %d scaled past the limits (clamped); %d grates; %d rows "
+			"with no model of their kind left as stand-ins; %lld triangles at LOD0 in all."), Placed, *Models, Clamped, Grates, KeptStandIns,
+			TreeTriangles);
+	}
 	TArray<FIntPoint> CellIds;
 	PerCell.GetKeys(CellIds);
 	CellIds.Sort([](const FIntPoint& A, const FIntPoint& B) { return A.X != B.X ? A.X < B.X : A.Y < B.Y; });
