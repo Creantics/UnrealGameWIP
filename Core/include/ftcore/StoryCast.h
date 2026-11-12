@@ -73,8 +73,10 @@ FTCORE_API void writeFaceCurves(const FaceCurveMap& map, const FaceWeights& weig
 
 inline constexpr std::size_t kMaxSceneCast = 8; // speakers on screen at once in a dialogue scene
 
-// The scene's cast speakers (labels with a model in `cast`), in the order of their first line, at most
-// kMaxSceneCast (later ones are dropped and counted in *dropped). Views into the database. No allocation.
+// The scene's cast speakers (labels with a model in `cast`), in the order of their first line, one per model
+// (the scene's look, SpeakerCast::modelFor): a label cast as a model already on the list adds nothing, as one
+// actor wears it. At most kMaxSceneCast; later models are dropped and counted once each in *dropped. Views into
+// the database. No allocation.
 FTCORE_API std::size_t sceneCastSpeakers(const StoryDatabase& db, std::uint32_t scene, const SpeakerCast& cast,
                                          std::array<std::string_view, kMaxSceneCast>& out,
                                          std::uint32_t* dropped = nullptr);
@@ -99,7 +101,13 @@ struct CastMarks {
 FTCORE_API bool importCastMarks(std::string_view json, CastMarks& out, std::string* error = nullptr);
 
 // The default mark of speaker `index` of `count`: a shallow arc across the anchor, each turned toward its
-// centre, 1.1 m apart; one speaker stands on the anchor itself.
-FTCORE_API CastMark castArcMark(std::size_t index, std::size_t count);
+// centre, 1.1 m apart; one speaker stands on the anchor itself. Row r > 0 is the same arc kCastRowStep m
+// further from the camera, shifted half a spacing sideways on odd rows (spare spots when the front row is
+// taken or blocked).
+inline constexpr float kCastRowStep = 1.2f;
+FTCORE_API CastMark castArcMark(std::size_t index, std::size_t count, std::size_t row = 0);
+
+// Whether `at` is at least minGap metres (on the ground plane) from every mark in `taken`. No allocation.
+FTCORE_API bool castMarkFree(std::span<const CastMark> taken, const CastMark& at, float minGap);
 
 } // namespace ftcore

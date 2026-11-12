@@ -184,6 +184,78 @@ TEST_CASE("cast marks: the default arc") {
     CHECK(l.x < m.x);
     CHECK(l.yawDeg == doctest::Approx(-r.yawDeg));
     CHECK(castArcMark(5, 3).y == 0.f);
+    // Spare rows: further back, odd rows shifted half a spacing.
+    const CastMark back = castArcMark(1, 3, 1), back2 = castArcMark(1, 3, 2);
+    CHECK(back.x == doctest::Approx(m.x - kCastRowStep));
+    CHECK(back.y == doctest::Approx(0.55f));
+    CHECK(back2.x == doctest::Approx(m.x - 2.f * kCastRowStep));
+    CHECK(back2.y == doctest::Approx(0.f));
+    CHECK(castArcMark(0, 1, 1).x == doctest::Approx(-kCastRowStep));
+}
+
+TEST_CASE("cast marks: a spot is free only clear of every taken mark") {
+    const std::array<CastMark, 2> taken{CastMark{0.f, 0.f, 0.f}, CastMark{0.f, 1.1f, 0.f}};
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    CHECK_FALSE(castMarkFree(taken, CastMark{0.3f, 0.3f, 0.f}, 0.7f));
+    CHECK_FALSE(castMarkFree(taken, CastMark{0.f, 1.5f, 0.f}, 0.7f));
+    CHECK(castMarkFree(taken, CastMark{0.f, -1.1f, 0.f}, 0.7f));
+    CHECK(castMarkFree({}, CastMark{}, 0.7f));
+    CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("scene cast: one entry per model; two labels cast as one model share it") {
+    StoryBuilder b;
+    b.setStart("SC-A");
+    b.beginChapter("01", "One");
+    b.beginScene("SC-A", "A");
+    b.line("L-1", "SPK-A", "One.");
+    b.line("L-2", "SPK-A2", "Same model, other label.");
+    b.line("L-3", "SPK-B", "Two.");
+    b.line("L-4", "SPK-C", "Same as B only in this scene.");
+    b.end();
+    b.beginScene("SC-B", "B");
+    b.line("L-5", "SPK-B", "B.");
+    b.line("L-6", "SPK-C", "C.");
+    b.end();
+    StoryDatabase db;
+    std::string error;
+    REQUIRE_MESSAGE(b.finish(db, &error), error);
+    SpeakerCast cast;
+    cast.entries = {{"SPK-A", "MDL-1", {}}, {"SPK-A2", "MDL-1", {}}, {"SPK-B", "MDL-2", {}},
+                    {"SPK-C", "MDL-3", {{"SC-A", "MDL-2"}}}};
+    std::array<std::string_view, kMaxSceneCast> out{};
+    std::uint32_t dropped = 9;
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    CHECK(sceneCastSpeakers(db, 0, cast, out, &dropped) == 2);
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(out[0] == "SPK-A");
+    CHECK(out[1] == "SPK-B");
+    CHECK(dropped == 0);
+    CHECK(sceneCastSpeakers(db, 1, cast, out, &dropped) == 2); // C has its own look outside SC-A
+    CHECK(out[1] == "SPK-C");
+}
+
+TEST_CASE("scene cast: past the cap, a dropped model is counted once whatever its labels") {
+    StoryBuilder b;
+    b.setStart("SC-A");
+    b.beginChapter("01", "One");
+    b.beginScene("SC-A", "A");
+    SpeakerCast cast;
+    for (int i = 0; i < 9; ++i) {
+        const std::string s = "SPK-" + std::to_string(i);
+        cast.entries.push_back({s, "MDL-" + std::to_string(i), {}});
+        b.line("L-" + std::to_string(i), s, "Line.");
+    }
+    cast.entries.push_back({"SPK-8B", "MDL-8", {}});
+    b.line("L-y", "SPK-8B", "The ninth model again.");
+    b.end();
+    StoryDatabase db;
+    std::string error;
+    REQUIRE_MESSAGE(b.finish(db, &error), error);
+    std::array<std::string_view, kMaxSceneCast> out{};
+    std::uint32_t dropped = 0;
+    CHECK(sceneCastSpeakers(db, 0, cast, out, &dropped) == kMaxSceneCast);
+    CHECK(dropped == 1);
 }
 
 TEST_CASE("face curve map: the hand list maps mouthClose only where the asset has no pose") {

@@ -27,6 +27,11 @@ public:
 	// Puts on the look as model ModelId. False (and logged) when its body doesn't load.
 	bool Wear(const FFTLeadLook& Look, const FString& ModelId);
 
+	// On screen, or hidden with nothing ticking: no body or rig evaluation, no grooms, no face curves (a hidden
+	// pooled member costs nothing per frame). Hidden stops any track on its face.
+	void SetOnScreen(bool bOn);
+	bool IsOnScreen() const { return bOnScreen; }
+
 	UFTFaceComponent* GetFace() const { return Face; }
 	// Whether the face is driven through its rig's curves.
 	bool HasRigFace() const { return RigFace != nullptr; }
@@ -42,4 +47,5 @@ private:
 	TArray<TObjectPtr<USceneComponent>> Grooms;
 	UPROPERTY(Transient)
 	TObjectPtr<USkeletalMeshComponent> RigFace;
+	bool bOnScreen = true;
 };

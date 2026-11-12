@@ -36,26 +36,41 @@ void FFTFaceCurveAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delta
 {
 	FAnimInstanceProxy::PreUpdate(InAnimInstance, DeltaSeconds);
 	const UFTFaceComponent* Face = static_cast<UFTFaceCurveAnimInstance*>(InAnimInstance)->GetFace();
-	if (!Face || !Face->IsCurveMode())
+	bLive = Face && Face->IsCurveMode() && Face->GetCurveNames().Num() == Face->GetCurveValues().Num();
+	if (!bLive || Face->GetCurveSerial() == Serial)
 	{
-		Values.Reset();
 		return;
 	}
+	Serial = Face->GetCurveSerial();
 	const TArray<FName>& N = Face->GetCurveNames();
-	if (Names.Num() != N.Num() || (N.Num() > 0 && Names[0] != N[0]))
+	if (Names != N)
 	{
-		Names = N; // a rebind: sized once, not per frame
+		// A rebind: build the sorted curve once and keep each name's element.
+		Names = N;
+		Cached.Empty();
+		Cached.AppendNames(Names);
+		Slots.SetNumUninitialized(Names.Num());
+		for (int32 I = 0; I < Names.Num(); ++I)
+		{
+			Slots[I] = Cached.Find(Names[I]); // the first Find sorts; the rest are binary searches
+		}
 	}
-	Values = Face->GetCurveValues(); // same size as last frame: no allocation
+	const TArray<float>& V = Face->GetCurveValues();
+	for (int32 I = 0; I < Slots.Num(); ++I)
+	{
+		if (Slots[I])
+		{
+			Slots[I]->Value = V[I];
+		}
+	}
 }
 
 bool FFTFaceCurveAnimProxy::Evaluate(FPoseContext& Output)
 {
 	CopyPose.Evaluate_AnyThread(Output);
-	const int32 Count = FMath::Min(Names.Num(), Values.Num());
-	for (int32 I = 0; I < Count; ++I)
+	if (bLive && Cached.Num() > 0)
 	{
-		Output.Curve.Set(Names[I], Values[I]);
+		Output.Curve.Combine(Cached); // one sorted merge into the memstack-backed output
 	}
 	return true;
 }

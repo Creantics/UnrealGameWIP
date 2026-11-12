@@ -170,6 +170,11 @@ private:
 	// speaker of the scene has its own; otherwise it stays on the anchor and the cast stands around it. A checkout
 	// without looks for the cast puts no one on screen and changes nothing.
 	void PlaceSceneCast();
+	// Destroys the cast pool and shows the stand-in again (the director ends, the story finishes, a step takes
+	// over the screen): no cast is left standing and a later director starts from none.
+	void ClearSceneCast(const TCHAR* Why);
+	// The frame-cost buckets below, by what the cast is doing this frame.
+	void NoteCastFrame();
 	// The path of the next -StoryShot still of LineId; empty when the name is unsafe or 99 are saved.
 	FString StoryShotFile(const FString& LineId) const;
 	// The current line's voice is still playing.
@@ -267,4 +272,9 @@ private:
 	TMap<FString, TObjectPtr<AFTCastMember>> CastActors; // by model id; null: the look didn't load
 	TWeakObjectPtr<AActor> CastAnchor;
 	bool bCastAnchorLooked = false;
+	// Frame cost (wall ms per frame) by cast state: none in the pool, pool all hidden, some on screen idle, one
+	// speaking. Logged at EndPlay.
+	double LastFrameAt = -1.0;
+	double CastFrameMs[4] = {};
+	int32 CastFrames[4] = {};
 };

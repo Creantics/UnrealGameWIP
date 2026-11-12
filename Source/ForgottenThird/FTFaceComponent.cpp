@@ -35,6 +35,9 @@ UFTFaceComponent::~UFTFaceComponent() = default;
 void UFTFaceComponent::BeginPlay()
 {
 	Super::BeginPlay();
+#if !UE_BUILD_SHIPPING
+	bDiagnostics = FParse::Param(FCommandLine::Get(), TEXT("FaceDiag"));
+#endif
 	if (bBindOnBeginPlay)
 	{
 		Rebind();
@@ -89,6 +92,8 @@ bool UFTFaceComponent::Rebind()
 	RigJawBone = INDEX_NONE;
 	PeakLipsTogether = 0.f;
 	LipsCurve = INDEX_NONE;
+	bCurvesWritten = false;
+	++CurveSerial;
 
 	const FString Path = ProjectPath(PresetsFile);
 	TArray<uint8> Bytes;
@@ -152,6 +157,12 @@ bool UFTFaceComponent::BindCurves()
 	// A rig that reads curves: the mesh's post-process anim blueprint (a MetaHuman face's rig logic).
 	if (!FaceMesh->GetPostProcessAnimBPClassToBeUsed())
 	{
+		return false;
+	}
+	if (CurveMapPose.IsNull())
+	{
+		UE_LOG(LogFTFace, Warning, TEXT("%s: %s has a rig but no CurveMapPose is configured ([/Script/ForgottenThird.FTFaceComponent] in DefaultGame.ini); the face stays still."),
+			*GetPathName(), *FaceMesh->GetName());
 		return false;
 	}
 	const UPoseAsset* Pose = Cast<UPoseAsset>(CurveMapPose.TryLoad());
@@ -330,8 +341,20 @@ void UFTFaceComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 	Player->update(DeltaTime);
 	if (bCurveMode)
 	{
-		ftcore::writeFaceCurves(*CurveMap, Player->weights(), std::span<float>(CurveValues.GetData(), static_cast<size_t>(CurveValues.Num())));
-		if (FaceMesh && Player->playing())
+		// Only when the weights moved (a track, a blink, a fade): a still face costs a compare.
+		const ftcore::FaceWeights& Weights = Player->weights();
+		if (!bCurvesWritten || Weights != LastWeights)
+		{
+			ftcore::writeFaceCurves(*CurveMap, Weights, std::span<float>(CurveValues.GetData(), static_cast<size_t>(CurveValues.Num())));
+			LastWeights = Weights;
+			bCurvesWritten = true;
+			++CurveSerial;
+		}
+		if (Player->playing() && CurveValues.IsValidIndex(LipsCurve))
+		{
+			PeakLipsTogether = FMath::Max(PeakLipsTogether, CurveValues[LipsCurve]);
+		}
+		if (bDiagnostics && FaceMesh && Player->playing())
 		{
 			int32 Moving = 0;
 			for (const TPair<FName, float>& M : FaceMesh->GetMorphTargetCurves())
@@ -340,10 +363,6 @@ void UFTFaceComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 			}
 			PeakRigMorphs = FMath::Max(PeakRigMorphs, Moving);
 			PeakMorphCurves = FMath::Max(PeakMorphCurves, FaceMesh->GetMorphTargetCurves().Num());
-			if (CurveValues.IsValidIndex(LipsCurve))
-			{
-				PeakLipsTogether = FMath::Max(PeakLipsTogether, CurveValues[LipsCurve]);
-			}
 			const TArray<FTransform>& Local = FaceMesh->GetBoneSpaceTransforms();
 			const USkeletalMesh* Asset = FaceMesh->GetSkeletalMeshAsset();
 			if (RigJawBone != INDEX_NONE && Asset && Local.IsValidIndex(RigJawBone) && Asset->GetRefSkeleton().GetRefBonePose().IsValidIndex(RigJawBone))

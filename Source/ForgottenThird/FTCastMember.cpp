@@ -19,6 +19,32 @@ AFTCastMember::AFTCastMember()
 	Face->bBindOnBeginPlay = false; // Wear binds it once the look is on
 }
 
+void AFTCastMember::SetOnScreen(bool bOn)
+{
+	bOnScreen = bOn;
+	SetActorHiddenInGame(!bOn);
+	Body->SetComponentTickEnabled(bOn);
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (Piece)
+		{
+			Piece->SetComponentTickEnabled(bOn);
+		}
+	}
+	for (USceneComponent* Groom : Grooms)
+	{
+		if (Groom)
+		{
+			Groom->SetComponentTickEnabled(bOn);
+		}
+	}
+	if (!bOn)
+	{
+		Face->StopTrack();
+	}
+	Face->SetComponentTickEnabled(bOn);
+}
+
 bool AFTCastMember::Wear(const FFTLeadLook& Look, const FString& ModelId)
 {
 	const FString Who = FString::Printf(TEXT("Cast %s"), *ModelId);

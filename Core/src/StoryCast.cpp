@@ -94,21 +94,25 @@ std::size_t sceneCastSpeakers(const StoryDatabase& db, std::uint32_t sceneIndex,
     std::uint32_t over = 0;
     if (sceneIndex < db.sceneCount()) {
         const Scene& scene = db.scene(sceneIndex);
+        const std::string_view sceneId = db.view(scene.id);
         for (std::uint32_t b = 0; b < scene.beatCount; ++b) {
             const Beat& beat = db.beat(scene, b);
             if (beat.type != BeatType::Line) continue;
             const std::string_view speaker = db.view(beat.speaker);
-            if (speaker.empty() || cast.modelFor(speaker).empty()) continue;
-            if (std::find(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(n), speaker) !=
-                out.begin() + static_cast<std::ptrdiff_t>(n))
-                continue;
+            const std::string_view model = speaker.empty() ? std::string_view{} : cast.modelFor(speaker, sceneId);
+            if (model.empty()) continue;
+            bool listed = false;
+            for (std::size_t i = 0; i < n && !listed; ++i) listed = cast.modelFor(out[i], sceneId) == model;
+            if (listed) continue;
             if (n < kMaxSceneCast) {
                 out[n++] = speaker;
             } else {
+                // Dropped: counted at the model's first line only.
                 bool seen = false;
                 for (std::uint32_t e = 0; e < b && !seen; ++e) {
                     const Beat& earlier = db.beat(scene, e);
-                    seen = earlier.type == BeatType::Line && db.view(earlier.speaker) == speaker;
+                    const std::string_view other = earlier.type == BeatType::Line ? db.view(earlier.speaker) : std::string_view{};
+                    seen = !other.empty() && cast.modelFor(other, sceneId) == model;
                 }
                 if (!seen) ++over;
             }
@@ -183,15 +187,24 @@ bool importCastMarks(std::string_view json, CastMarks& out, std::string* error) 
     return false;
 }
 
-CastMark castArcMark(std::size_t index, std::size_t count) {
+CastMark castArcMark(std::size_t index, std::size_t count, std::size_t row) {
     CastMark m;
-    if (count <= 1 || index >= count) return m;
+    if (index >= count && count > 0) return m;
     const float spacing = 1.1f;
-    const float offset = (static_cast<float>(index) - 0.5f * static_cast<float>(count - 1)) * spacing;
-    m.y = offset;
-    m.x = -0.15f * offset * offset; // the ends a little further from the camera
-    m.yawDeg = -12.f * offset;      // each turned toward the middle
+    const float offset = count <= 1 ? 0.f : (static_cast<float>(index) - 0.5f * static_cast<float>(count - 1)) * spacing;
+    const float shifted = offset + (row % 2 == 1 ? 0.5f * spacing : 0.f);
+    m.y = shifted;
+    m.x = -0.15f * offset * offset - kCastRowStep * static_cast<float>(row); // the ends a little further back
+    m.yawDeg = -12.f * shifted;                                              // each turned toward the middle
     return m;
+}
+
+bool castMarkFree(std::span<const CastMark> taken, const CastMark& at, float minGap) {
+    for (const CastMark& t : taken) {
+        const float dx = t.x - at.x, dy = t.y - at.y;
+        if (dx * dx + dy * dy < minGap * minGap) return false;
+    }
+    return true;
 }
 
 } // namespace ftcore
