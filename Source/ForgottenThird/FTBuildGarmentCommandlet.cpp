@@ -59,7 +59,7 @@ const FScalarSpec kScalars[] = {
 	{TEXT("AOStrength"), 1.f},
 	{TEXT("MetalScale"), 1.f},        // metal = max(map B x MetalScale, ForceMetal)
 	{TEXT("ForceMetal"), 0.f},
-	{TEXT("MetalRoughness"), 0.42f},
+	{TEXT("MetalRoughness"), 0.55f},
 	{TEXT("DetailSizeA"), 3.f},       // centimetres per repeat of the fine tile
 	{TEXT("DetailSizeB"), 11.f},      // and of the coarse one
 	{TEXT("DetailStrengthA"), 0.3f},  // normal tilt added by each scale
@@ -82,7 +82,7 @@ struct FVectorSpec
 };
 const FVectorSpec kVectors[] = {
 	{TEXT("Tint"), FLinearColor::White},
-	{TEXT("MetalColor"), FLinearColor(0.42f, 0.42f, 0.43f)}, // worn steel, not chrome
+	{TEXT("MetalColor"), FLinearColor(0.3f, 0.3f, 0.31f)}, // worn steel, not chrome
 	{TEXT("FuzzTint"), FLinearColor::White}, // cloth master only: fuzz colour = albedo x FuzzTint
 	{TEXT("SoleTint"), FLinearColor::White},  // albedo x SoleTint on the sole
 };
@@ -136,7 +136,7 @@ TArray<FSubstance> Substances()
 		FLinearColor(0.9f, 0.88f, 0.85f), FLinearColor::White});
 	// Zips, snaps and badges.
 	Out.Add({TEXT("Metal"), false, GarmentTile::Leather,
-		{{TEXT("ForceMetal"), 1.f}, {TEXT("MetalRoughness"), 0.42f}, {TEXT("DetailStrengthA"), 0.05f}, {TEXT("DetailStrengthB"), 0.f},
+		{{TEXT("ForceMetal"), 1.f}, {TEXT("MetalRoughness"), 0.55f}, {TEXT("DetailStrengthA"), 0.05f}, {TEXT("DetailStrengthB"), 0.f},
 			{TEXT("EdgeLighten"), 0.f}, {TEXT("CavityDarken"), 0.f}},
 		FLinearColor::White, FLinearColor::White});
 	return Out;
