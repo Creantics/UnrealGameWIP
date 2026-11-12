@@ -504,6 +504,7 @@ private:
 	// step, and the gait and the foot lock would flip with it each frame.
 	float PlayerStepSpeed = 0.f;
 	float LeadWantSpeed = -1.f; // the walk's wanted pace handed to the lead's legs (m/s; -1 unknown), held through a hit pause
+	float LeadStopDistance = -1.f; // and how far the body would slide at the brake (m; -1 unknown), held with it
 	float PlayerSteps[3] = {0.f, 0.f, 0.f};
 	int32 PlayerStepAt = -1; // the next slot in PlayerSteps; -1 after a start, a teleport or a facing snap
 	float PlayerStepFacing = 0.f; // rad, at the last step

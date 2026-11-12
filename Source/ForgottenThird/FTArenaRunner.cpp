@@ -300,6 +300,8 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera shake %.2f for this run (-ArenaCameraShake)."), ShakeOverride);
 	}
 	GlideStick = -1;
+#if !UE_BUILD_SHIPPING
+	// A measuring probe: never in a shipping build (it would steer the autopilot's stick).
 	FString GlideWord;
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaGlide="), GlideWord))
 	{
@@ -309,6 +311,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
 			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : TEXT("the autopilot's"));
 	}
+#endif
 	Glide.Begin(GlideStick >= 0);
 	AimCheckPhase = 0;
 	AimCheckSlot = -1;
@@ -521,6 +524,7 @@ void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
 	LeadWantSpeed = -1.f;
+	LeadStopDistance = -1.f;
 	LeadLegYaw = 0.f;
 	LeadUpperShare = 0.f;
 	if (PlayerFigure)
@@ -1146,6 +1150,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
 	LeadWantSpeed = -1.f;
+	LeadStopDistance = -1.f;
 	LeadUpperShare = 0.f;
 	LeadLegYaw = 0.f;
 	Accumulator = 0.0;
@@ -2315,18 +2320,16 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
 		Pose.Speed = PlayerStepSpeed;
 		Pose.LegYaw = LeadLegYaw;
-		// Where the walk heads (the stick's share of the pace; unknown in an attack or a roll) and, braking, how far the
-		// body slides at the brake from the pace the legs show. A hit pause keeps the last (Core has none there), so a
-		// start or a stop under way isn't sent back to the gaits by the pause.
+		// Where the walk heads (the stick's share of the pace; unknown in an attack or a roll) and how far the body
+		// would slide at the brake (Core's). A hit pause keeps the last (Core has none there), so a start or a stop under
+		// way isn't sent back to the gaits by the pause.
 		if (P.stopLeft <= 0.f)
 		{
 			LeadWantSpeed = P.wantSpeed;
+			LeadStopDistance = P.stopDistance;
 		}
 		Pose.WantSpeed = LeadWantSpeed;
-		{
-			const float Brake = Fight.def().fighter.moveBrake;
-			Pose.StopDistance = LeadWantSpeed >= 0.f && Brake > 0.f ? PlayerStepSpeed * PlayerStepSpeed / (2.f * Brake) : -1.f;
-		}
+		Pose.StopDistance = LeadStopDistance;
 		// The feet held while a strike's clip has the legs (its walk share under half) and through a hit pause: the
 		// body's lunge goes over planted feet, which step when it has gone too far.
 		{

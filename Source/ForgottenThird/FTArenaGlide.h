@@ -52,7 +52,8 @@ private:
 	struct FRow
 	{
 		int32 Frames = 0, Planted = 0, Still = 0;
-		int32 Pops = 0; // fresh frames in which a foot moved kPopCm past twice the root's way (a pose snap; still counted in the slip)
+		int32 Pops = 0; // fresh frames in which a foot moved kPopCm past twice the root's way, or kPopCapCm against it (a pose snap; still counted in the slip)
+		int32 PopsAny = 0; // the old rule: fresh frames in which a foot moved over kPopCm
 		double Body = 0.0, BodyAlong = 0.0, BodySide = 0.0; // cm/s; along and side of the facing
 		double Dt = 0.0, Cycle = 0.0, Yaw = 0.0;
 		double Slip = 0.0, SlipAlong = 0.0, SlipSide = 0.0; // planted foot, cm/s
@@ -71,7 +72,8 @@ private:
 	FVector LastBall[2] = {FVector::ZeroVector, FVector::ZeroVector};
 	FVector LastLocal[2] = {FVector::ZeroVector, FVector::ZeroVector};
 	FVector LastRoot = FVector::ZeroVector;
-	float Floor = 1e9f;
+	float Floor = 1e9f; // unset (1e9) when the reference floor could not be read or does not hold: every row INVALID
+	bool bFloorRead = false;
 	uint8 LastLoco = 255; // the lead locomotion's state last fresh frame
 	int32 PopLines = 0;
 	float CycleSpeed = 0.f; // the ground speed the locomotion is handed, cm/s

@@ -622,6 +622,8 @@ struct ArenaPlayerOut {
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
     float wantSpeed = -1.f;           // m/s the stick asks of a walk that ramps (Idle, Move, Guard, Heal) this frame, the
                                       // pace the velocity heads for; -1 otherwise (an attack, a dodge, a pause, a stun)
+    float stopDistance = -1.f;        // m the body would slide at moveBrake from this velocity to a stand, while wantSpeed
+                                      // is known; -1 otherwise
 };
 
 struct ArenaEnemyOut {

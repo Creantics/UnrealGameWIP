@@ -1897,6 +1897,23 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         rig.run(20);
         CHECK(rig.fight.stats().ripostes == 1);
     }
+    {   // off to one side with a lunge: it goes at the enemy, so the body is where a riposte snapped onto it would be
+        ArenaFighter f = ruleFighter();
+        f.riposte.lunge = 0.5f;
+        Rig rig(f, {hitterKind(bite)});
+        parry(rig, 1.5f, 0.f);
+        rig.put(0, 1.f, 1.1f); // 48 degrees off the facing
+        const Vec2 from = rig.bodies.player;
+        const Vec2 way = arenaUnit(arenaSub(rig.bodies.enemies[0], from), Vec2{1.f, 0.f});
+        rig.in.light = true;
+        REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
+        while (rig.out().player.action == ArenaAction::Riposte && rig.out().player.actionTime < f.riposte.startup) rig.tick();
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        const float span = f.riposte.startup + f.riposte.active;
+        const float gone = f.riposte.lunge * std::min(rig.out().player.actionTime, span) / span;
+        CHECK(rig.bodies.player.x == doctest::Approx(from.x + way.x * gone).epsilon(0.001));
+        CHECK(rig.bodies.player.y == doctest::Approx(from.y + way.y * gone).epsilon(0.001));
+    }
     {   // out of reach: an ordinary light, and the enemy stays open
         Rig rig(ruleFighter(), {hitterKind(bite)});
         parry(rig, 1.5f, 0.f);
@@ -7128,7 +7145,13 @@ TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk
     rig.in.move = Vec2{0.5f, 0.f};
     CHECK(rig.tick().player.wantSpeed == doctest::Approx(0.5f * fighter.moveSpeed));
     rig.in.move = Vec2{};
-    CHECK(rig.tick().player.wantSpeed == 0.f); // let go: braking toward a stand
+    {
+        const ArenaOutput& o = rig.tick();
+        CHECK(o.player.wantSpeed == 0.f); // let go: braking toward a stand
+        const float v = arenaLength(o.player.velocity);
+        REQUIRE(v > 0.f);
+        CHECK(o.player.stopDistance == doctest::Approx(v * v / (2.f * fighter.moveBrake))); // the slide left at the brake
+    }
     rig.in.move = Vec2{0.f, 1.f};
     rig.in.dodge = true;
     CHECK(rig.tick().player.wantSpeed == -1.f); // a roll moves by its own rule
@@ -7140,4 +7163,5 @@ TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk
     const ArenaOutput& hit = rig.tick();
     REQUIRE(hit.player.action == ArenaAction::Light);
     CHECK(hit.player.wantSpeed == -1.f); // an attack's walk is its own (AttackMove)
+    CHECK(hit.player.stopDistance == -1.f);
 }

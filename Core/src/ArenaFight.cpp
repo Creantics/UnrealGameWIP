@@ -357,6 +357,10 @@ struct ArenaFightImpl {
         const bool fighting = fight.phase_ == ArenaPhase::Fighting;
         po.stopLeft = fighting ? std::max(0.f, pl.stopUntil - fight.time_) : 0.f;
         po.wantSpeed = fighting && po.stopLeft <= 0.f ? pl.wantSpeed : -1.f;
+        {
+            const float v = arenaLength(pl.velocity);
+            po.stopDistance = po.wantSpeed >= 0.f && fi.moveBrake > 0.f ? v * v / (2.f * fi.moveBrake) : -1.f;
+        }
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             ArenaEnemyOut& eo = out.enemies[i];
             const Enemy& foe = foes[i];
@@ -1064,12 +1068,15 @@ struct ArenaFightImpl {
         pl.invulnerable = pl.action == ArenaAction::Riposte || pl.action == ArenaAction::Release;
         // Only the active part connects; a tick whose interval overlaps it tests, so a long frame can't skip it.
         if (a1 > a.startup && a0 < a.startup + a.active) playerStrike(a);
-        // The lunge: `lunge` metres forward, spread over startup and active.
+        // The lunge: `lunge` metres forward, spread over startup and active. A riposte's goes at its enemy, not along
+        // the facing still turning onto it, so it reaches where a riposte snapped onto its enemy would.
         Vec2 vel{};
         const float span = a.startup + a.active;
         if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
-            vel = arenaScaled(pl.facing, a.lunge / span * moving / dt);
+            const Vec2 way = pl.action == ArenaAction::Riposte && pl.target < n
+                ? arenaUnit(arenaSub(foes[pl.target].pos, pl.pos), pl.facing) : pl.facing;
+            vel = arenaScaled(way, a.lunge / span * moving / dt);
         }
         // Homing on a soft target: its share this tick, toward it, never past touching (it may have moved).
         if (pl.homeClose > 0.f && alive(pl.soft) && span > kArenaEps) {

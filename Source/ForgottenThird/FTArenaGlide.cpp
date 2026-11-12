@@ -21,7 +21,11 @@ constexpr float kGlideTurn = 1.5f; // rad/s: a move whose facing turns faster is
 void FFTArenaGlideProbe::Begin(bool bInOn)
 {
 	*this = FFTArenaGlideProbe();
+#if UE_BUILD_SHIPPING
+	bOn = false; // a measuring probe: never in a shipping build
+#else
 	bOn = bInOn;
+#endif
 }
 
 void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now, float LegSpeed)
@@ -154,6 +158,8 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 			double Slowest = 0.0;
 			// A foot that moved more than this in one fresh frame snapped: a pose pop, not a slide.
 			constexpr double kPopCm = 20.0;
+			// Whatever the root did, a foot that jumps this far against it in one frame snapped.
+			constexpr double kPopCapCm = 30.0;
 			const UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance());
 			const uint8 Loco = Anim ? static_cast<uint8>(Anim->GetLocomotion().state()) : 255;
 			if (Loco != LastLoco)
@@ -167,9 +173,17 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 				}
 			}
 			const double Jump0 = FVector::Dist2D(Ball[0], LastBall[0]), Jump1 = FVector::Dist2D(Ball[1], LastBall[1]);
-			// A run's swinging foot goes about twice the root's way: only what is past that snapped.
-			const double Swing = 2.0 * FVector::Dist2D(Root, LastRoot);
-			if (Jump0 - Swing > kPopCm || Jump1 - Swing > kPopCm)
+			const FVector RootStep = Root - LastRoot;
+			const double Against0 = FVector::Dist2D(Ball[0] - LastBall[0], RootStep), Against1 = FVector::Dist2D(Ball[1] - LastBall[1], RootStep);
+			// The old rule: any foot over kPopCm in a frame (a run's swinging foot passes it at full pace).
+			if (Jump0 > kPopCm || Jump1 > kPopCm)
+			{
+				++R.PopsAny;
+			}
+			// A run's swinging foot goes about twice the root's way: what is past that snapped, and so does any jump of
+			// over kPopCapCm against the root, at whatever pace.
+			const double Swing = 2.0 * RootStep.Size2D();
+			if (Jump0 - Swing > kPopCm || Jump1 - Swing > kPopCm || Against0 > kPopCapCm || Against1 > kPopCapCm)
 			{
 				++R.Pops;
 				if (PopLines < 40)
@@ -226,15 +240,47 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 	}
 	// The floor is the balls' height in the mesh's reference pose (standing on its ground), read once: the lowest ball
 	// seen would sink under the feet of every step after a dodge's or a foot hold's low frame.
-	if (Floor >= 1e8f && Skin->GetSkinnedAsset())
+	// Checked once against the mesh it is drawn on: an uneven scale or a root bone the animation moves off its
+	// reference height would put the floor elsewhere, and every row is then INVALID, never a low slip. A failed
+	// lookup is an error, not tried again.
+	if (!bFloorRead)
 	{
-		const FReferenceSkeleton& Ref = Skin->GetSkinnedAsset()->GetRefSkeleton();
-		for (int32 I = 0; I < 2; ++I)
+		bFloorRead = true;
+		const USkinnedAsset* Asset = Skin->GetSkinnedAsset();
+		if (!Asset)
 		{
-			const int32 Bone = Ref.FindBoneIndex(Balls[I]);
-			if (Bone != INDEX_NONE)
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena glide: the lead's skin has no mesh: no floor, every row INVALID."));
+		}
+		else
+		{
+			const FReferenceSkeleton& Ref = Asset->GetRefSkeleton();
+			float RefFloor = 1e9f;
+			for (int32 I = 0; I < 2; ++I)
 			{
-				Floor = FMath::Min(Floor, static_cast<float>(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, Bone).GetLocation().Z));
+				const int32 Bone = Ref.FindBoneIndex(Balls[I]);
+				if (Bone == INDEX_NONE)
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("Arena glide: no bone %s on %s: no floor, every row INVALID."), *Balls[I].ToString(), *Asset->GetName());
+					RefFloor = 1e9f;
+					break;
+				}
+				RefFloor = FMath::Min(RefFloor, static_cast<float>(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, Bone).GetLocation().Z));
+			}
+			const FVector Scale = ToWorld.GetScale3D();
+			const float RootRef = Ref.GetNum() > 0 ? static_cast<float>(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, 0).GetLocation().Z) : 0.f;
+			const float RootLive = Skin->GetNumBones() > 0 ? static_cast<float>(Skin->GetBoneTransform(0, FTransform::Identity).GetLocation().Z) : RootRef;
+			const bool bEven = FMath::IsNearlyEqual(Scale.X, Scale.Z, 0.01 * FMath::Abs(Scale.X)) && FMath::IsNearlyEqual(Scale.Y, Scale.Z, 0.01 * FMath::Abs(Scale.Y));
+			const bool bRoot = FMath::Abs(RootLive - RootRef) <= 2.f;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: floor from %s's reference pose %.1f cm; the skin's scale %.3f,%.3f,%.3f; its root bone %.1f cm (reference %.1f)."),
+				*Asset->GetName(), RefFloor < 1e8f ? RefFloor : 0.f, Scale.X, Scale.Y, Scale.Z, RootLive, RootRef);
+			if (RefFloor < 1e8f && (!bEven || !bRoot))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("Arena glide: the reference floor does not hold on the drawn mesh (%s): every row INVALID."),
+					!bEven ? TEXT("its scale is uneven") : TEXT("its root bone is off its reference height"));
+			}
+			else
+			{
+				Floor = RefFloor;
 			}
 		}
 	}
@@ -254,7 +300,8 @@ void FFTArenaGlideProbe::Log() const
 	{
 		return;
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: the floor (the balls in the reference pose, in the mesh's space) is at %.1f cm."), Floor < 1e8f ? Floor : 0.f);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: the floor (the balls in the reference pose, in the mesh's space) is at %.1f cm%s."),
+		Floor < 1e8f ? Floor : 0.f, Floor < 1e8f ? TEXT("") : TEXT(" (none: every row INVALID)"));
 	for (int32 B = 0; B < NumBuckets; ++B)
 	{
 		const FRow& R = Rows[B];
@@ -264,9 +311,15 @@ void FFTArenaGlideProbe::Log() const
 		}
 		const double F = FMath::Max(1, R.Frames);
 		const double P = FMath::Max(1, R.Planted);
+		// Under 40% of its frames on a planted foot, a row measured too little of what it shows (or the floor is wrong):
+		// INVALID, never a low slip.
+		const double Share = static_cast<double>(R.Planted) / F;
+		const bool bValid = Floor < 1e8f && Share >= 0.4;
+		const FString Net = bValid ? FString::Printf(TEXT("net over %d plants %.0f cm/s"), R.Plants, R.PlantTime > 0.0 ? R.PlantSlip / R.PlantTime : 0.0)
+			: FString::Printf(TEXT("net over %d plants INVALID"), R.Plants);
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("Arena glide: %s: %d frames (%d stale, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot over %d slips %.0f cm/s (%.0f forward, %.0f across); net over %d plants %.0f cm/s; %d pops (a foot 20 cm past its swing in a frame); the lower ball %.1f cm over the floor; entered %d starts, %d stops, %d turns."),
-			kGlideNames[B], R.Frames, R.Still, 1000.0 * R.Dt / F, R.Body / F, R.BodyAlong / F, R.BodySide / F, R.Cycle / F, R.Yaw / F, R.Planted, R.Slip / P, R.SlipAlong / P,
-			R.SlipSide / P, R.Plants, R.PlantTime > 0.0 ? R.PlantSlip / R.PlantTime : 0.0, R.Pops, R.Low / F, R.Enter[0], R.Enter[1], R.Enter[2]);
+			TEXT("Arena glide: %s: %d frames (%d stale, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot on %.0f%% of frames, over %d slips %.0f cm/s (%.0f forward, %.0f across); %s; %d pops (old rule: %d); the lower ball %.1f cm over the floor; entered %d starts, %d stops, %d turns."),
+			kGlideNames[B], R.Frames, R.Still, 1000.0 * R.Dt / F, R.Body / F, R.BodyAlong / F, R.BodySide / F, R.Cycle / F, R.Yaw / F, 100.0 * Share, R.Planted, R.Slip / P,
+			R.SlipAlong / P, R.SlipSide / P, *Net, R.Pops, R.PopsAny, R.Low / F, R.Enter[0], R.Enter[1], R.Enter[2]);
 	}
 }
