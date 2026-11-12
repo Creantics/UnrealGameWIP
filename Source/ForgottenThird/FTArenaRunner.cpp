@@ -2403,6 +2403,16 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		ReticlePoint = ReticleEnemy >= 0 ? FMath::Lerp(From, To, BodyT) : (bReticleHit ? FVector(Hit.ImpactPoint) : To);
 		bReticleHit = bReticleHit || ReticleEnemy >= 0;
 		ReticleHeadingPoint = ReticlePoint;
+		if (const AFTArenaFighter* OnBody = ReticleEnemy >= 0 ? GetEnemyFigure(ReticleEnemy) : nullptr)
+		{
+			// On a body: head for where the line passes nearest the body's axis (inside its round, past where it
+			// enters), not the edge it enters by, so the shot's lane on the ground goes through the body and not past it.
+			const FVector Line = To - From;
+			const double Flat = Line.X * Line.X + Line.Y * Line.Y;
+			const FVector Axis = OnBody->GetActorLocation();
+			const double Near = Flat > 1e-6 ? -((From.X - Axis.X) * Line.X + (From.Y - Axis.Y) * Line.Y) / Flat : BodyT;
+			ReticleHeadingPoint = From + Line * FMath::Clamp(Near, BodyT, 1.0);
+		}
 		if (!bReticleHit)
 		{
 			const FVector Flat = View.Vector().GetSafeNormal2D();

@@ -549,7 +549,10 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
         CHECK(duy.light[i].lunge > 0.f);
     }
     CHECK(duy.shot.range >= 8.f);
-    CHECK(duy.shot.arcCos >= 0.95f);
+    // A round is a narrow lane, so it meets any body the line passes through (a big boss's flank too), not a cone
+    // round the body's centre.
+    CHECK(duy.shot.width > 0.f);
+    CHECK(duy.shot.width <= 0.5f);
     CHECK(duy.shot.maxTargets == 1);
     CHECK(duy.shot.lunge == 0.f);
     CHECK(duy.heavy.range > base.light[0].range);
@@ -648,6 +651,25 @@ TEST_CASE("arena attack: Duy's aimed light is one pistol round that connects far
     {   // well past its range: nothing
         Rig rig(duy, {dummyKind()});
         rig.put(0, 12.f, 0.f);
+        aimed(rig);
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // a big body (a boss's 2.5 m) whose middle is 1.2 m beside the line (about 15 degrees off) at 4.5 m: the round
+        // goes through its flank and hits; a cone round its middle would have missed
+        ArenaEnemyKind big = dummyKind();
+        big.bodyRadius = 2.5f;
+        Rig rig(duy, {big});
+        rig.put(0, 4.5f, 1.2f);
+        aimed(rig);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // the same big body with the line 3 m beside its middle (past its flank): missed
+        ArenaEnemyKind big = dummyKind();
+        big.bodyRadius = 2.5f;
+        Rig rig(duy, {big});
+        rig.put(0, 4.5f, 3.f);
         aimed(rig);
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);

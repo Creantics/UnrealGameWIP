@@ -652,7 +652,8 @@ warning and quits with exit code 2, so an unattended run never hangs.
   and the aim's; a steeper look tilts the lens on the boom's end, so the arm never shortens. The aim's reticle line
   meets the enemies' bodies (`ftcore::arenaRayEntersBody`: an upright cylinder from the figure's hover to its scaled
   height, its radius scaled too; a lens inside a body sees through it), and reads the view without the impact jolt, so
-  a kick never wobbles the heading. The shot's heading is that line's yaw only: whether a shot meets a body high up is
+  a kick never wobbles the heading. On a body, the heading takes the point where the line passes nearest its axis,
+  so the lane goes through the body rather than grazing its edge. The shot's heading is that line's yaw only: whether a shot meets a body high up is
   the sim's own rule (a shot is a lane on the ground plane), not the line's height. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
   about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
