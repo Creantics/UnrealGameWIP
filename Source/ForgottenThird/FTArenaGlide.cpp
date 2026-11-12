@@ -161,27 +161,28 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 			RootRef = Ref.GetNum() > 0 ? static_cast<float>(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, 0).GetLocation().Z) : 0.f;
 		}
 	}
-	// Checked against the drawn mesh on every evaluated pose (a fresh one after the first): an uneven scale or a root
-	// bone the animation moves off its reference height puts the floor elsewhere, and every row is then INVALID, never
-	// a low slip.
-	if (bHas && RefFloor < 1e8f && !bFloorBad)
+	// Checked against the drawn mesh on every evaluated pose: a frame whose scale is uneven (a dodge's squash) or whose
+	// root bone the animation moved off its reference height has its floor elsewhere, so it is left out of the plants
+	// and counted apart (a row with too few frames left is INVALID, never a low slip).
+	bool bFloorHolds = RefFloor < 1e8f;
+	if (bFloorHolds)
 	{
 		const FVector Scale = ToWorld.GetScale3D();
 		const float RootLive = Skin->GetNumBones() > 0 ? static_cast<float>(Skin->GetBoneTransform(0, FTransform::Identity).GetLocation().Z) : RootRef;
 		const bool bEven = FMath::IsNearlyEqual(Scale.X, Scale.Z, 0.01 * FMath::Abs(Scale.X)) && FMath::IsNearlyEqual(Scale.Y, Scale.Z, 0.01 * FMath::Abs(Scale.Y));
 		const bool bRoot = FMath::Abs(RootLive - RootRef) <= 2.f;
-		if (!bEven || !bRoot)
-		{
-			bFloorBad = true;
-			Floor = 1e9f;
-			UE_LOG(LogForgottenThird, Error, TEXT("Arena glide: the reference floor %.1f cm does not hold on %s's evaluated pose (%s: scale %.3f,%.3f,%.3f, root bone %.1f cm, reference %.1f): every row INVALID."),
-				RefFloor, *Skin->GetName(), !bEven ? TEXT("its scale is uneven") : TEXT("its root bone is off its reference height"), Scale.X, Scale.Y, Scale.Z, RootLive, RootRef);
-		}
-		else if (Floor >= 1e8f)
+		bFloorHolds = bEven && bRoot;
+		if (Floor >= 1e8f && bFloorHolds)
 		{
 			Floor = RefFloor;
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: floor from the reference pose %.1f cm, checked on the evaluated pose: the skin's scale %.3f,%.3f,%.3f; its root bone %.1f cm (reference %.1f)."),
 				RefFloor, Scale.X, Scale.Y, Scale.Z, RootLive, RootRef);
+		}
+		if (!bFloorHolds && OffLines < 5)
+		{
+			++OffLines;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena glide: %s: the reference floor does not hold on this pose (%s: scale %.3f,%.3f,%.3f, root bone %.1f cm, reference %.1f): frame left out."),
+				kGlideNames[Key], !bEven ? TEXT("uneven scale") : TEXT("root bone off its reference height"), Scale.X, Scale.Y, Scale.Z, RootLive, RootRef);
 		}
 	}
 	const float Yaw = static_cast<float>(ToWorld.Rotator().Yaw);
@@ -247,12 +248,16 @@ void FFTArenaGlideProbe::Sample(const USkeletalMeshComponent* Skin, float DeltaS
 				}
 			}
 			LastLoco = Loco;
+			if (!bFloorHolds)
+			{
+				++R.Off;
+			}
 			R.Low += FMath::Min(Local[0].Z, Local[1].Z) - (Floor < 1e8f ? Floor : 0.f);
 			for (int32 I = 0; I < 2; ++I)
 			{
 				const float Height = static_cast<float>(Local[I].Z);
 				const double Speed = FVector::Dist2D(Ball[I], LastBall[I]) / Dt;
-				if (Floor < 1e8f && Height < Floor + 3.f && (Foot == INDEX_NONE || Speed < Slowest))
+				if (bFloorHolds && Floor < 1e8f && Height < Floor + 3.f && (Foot == INDEX_NONE || Speed < Slowest))
 				{
 					Foot = I;
 					Slowest = Speed;
@@ -318,13 +323,14 @@ void FFTArenaGlideProbe::Log() const
 		const double P = FMath::Max(1, R.Planted);
 		// Under 40% of its frames on a planted foot, a row measured too little of what it shows (or the floor is wrong):
 		// INVALID, never a low slip.
-		const double Share = static_cast<double>(R.Planted) / F;
-		const bool bValid = Floor < 1e8f && Share >= 0.4;
+		const double Share = static_cast<double>(R.Planted) / FMath::Max(1, R.Frames - R.Off);
+		const bool bMostOff = R.Off * 2 > R.Frames;
+		const bool bValid = Floor < 1e8f && !bMostOff && Share >= 0.4;
 		const FString Net = bValid ? FString::Printf(TEXT("net over %d plants %.0f cm/s"), R.Plants, R.PlantTime > 0.0 ? R.PlantSlip / R.PlantTime : 0.0)
 			: FString::Printf(TEXT("net over %d plants INVALID"), R.Plants);
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("Arena glide: %s: %d frames (%d stale, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot on %.0f%% of frames, over %d slips %.0f cm/s (%.0f forward, %.0f across); %s; %d pops (old rule: %d); the lower ball %.1f cm over the floor; entered %d starts, %d stops, %d turns."),
-			kGlideNames[B], R.Frames, R.Still, 1000.0 * R.Dt / F, R.Body / F, R.BodyAlong / F, R.BodySide / F, R.Cycle / F, R.Yaw / F, 100.0 * Share, R.Planted, R.Slip / P,
+			TEXT("Arena glide: %s: %d frames (%d stale, %d off the floor check, %.1f ms apart): root %.0f cm/s (%.0f along the facing, %.0f across), legs told %.0f cm/s, turning %.0f deg/s; planted foot on %.0f%% of the frames checked, over %d slips %.0f cm/s (%.0f forward, %.0f across); %s; %d pops (old rule: %d); the lower ball %.1f cm over the floor; entered %d starts, %d stops, %d turns."),
+			kGlideNames[B], R.Frames, R.Still, R.Off, 1000.0 * R.Dt / F, R.Body / F, R.BodyAlong / F, R.BodySide / F, R.Cycle / F, R.Yaw / F, 100.0 * Share, R.Planted, R.Slip / P,
 			R.SlipAlong / P, R.SlipSide / P, *Net, R.Pops, R.PopsAny, R.Low / F, R.Enter[0], R.Enter[1], R.Enter[2]);
 	}
 }

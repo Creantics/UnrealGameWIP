@@ -53,6 +53,7 @@ private:
 	{
 		int32 Frames = 0, Planted = 0, Still = 0;
 		int32 Pops = 0; // fresh frames in which a foot moved kPopCm past twice the root's way, or kPopCapCm against it (a pose snap; still counted in the slip)
+		int32 Off = 0; // fresh frames on which the reference floor does not hold (a squash, a moved root): no plant counted
 		int32 PopsAny = 0; // the old rule: fresh frames in which a foot moved over kPopCm
 		double Body = 0.0, BodyAlong = 0.0, BodySide = 0.0; // cm/s; along and side of the facing
 		double Dt = 0.0, Cycle = 0.0, Yaw = 0.0;
@@ -76,7 +77,7 @@ private:
 	bool bFloorRead = false;
 	float RefFloor = 1e9f; // the balls' lowest height in the reference pose (1e9: unread)
 	float RootRef = 0.f; // the root bone's height in the reference pose
-	bool bFloorBad = false; // an evaluated pose broke the floor's check: every row INVALID from then on
+	int32 OffLines = 0; // frames off the floor's check logged so far
 	uint8 LastLoco = 255; // the lead locomotion's state last fresh frame
 	int32 PopLines = 0;
 	float CycleSpeed = 0.f; // the ground speed the locomotion is handed, cm/s
