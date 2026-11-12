@@ -63,9 +63,11 @@
 #include "ftcore/Backlog.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/Skip.h"
+#include "ftcore/StoryCast.h"
 
 #include "FTStoryDirector.generated.h"
 
+class AFTCastMember;
 class AFTPlayerController;
 class UFTAudioSubsystem;
 class UFTFaceComponent;
@@ -159,8 +161,15 @@ private:
 	UFUNCTION()
 	void HandleVoiceStopped();
 
-	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads).
+	// Reads Data/Voice/speakers.json into Speakers (checked against Data/Assets/models.json when it loads) and the
+	// local Data/Story/cast_marks.json into CastMarks.
 	void LoadCast();
+	// At a scene's start, in a map with a stand-in face: puts the scene's cast speakers on screen, each a lead look
+	// (the explore character's PartyLooks) whose ModelId is the speaker's model, on its cast mark (else the default
+	// arc) around the stand-in. One actor per model, made once and reused. The stand-in hides when every cast
+	// speaker of the scene has its own; otherwise it stays on the anchor and the cast stands around it. A checkout
+	// without looks for the cast puts no one on screen and changes nothing.
+	void PlaceSceneCast();
 	// The path of the next -StoryShot still of LineId; empty when the name is unsafe or 99 are saved.
 	FString StoryShotFile(const FString& LineId) const;
 	// The current line's voice is still playing.
@@ -253,4 +262,9 @@ private:
 	ftcore::SpeakerCast Speakers;
 	TArray<TWeakObjectPtr<UFTFaceComponent>> SpeakingFaces;
 	bool bLoggedNoFace = false;
+	ftcore::CastMarks CastMarks;
+	UPROPERTY(Transient)
+	TMap<FString, TObjectPtr<AFTCastMember>> CastActors; // by model id; null: the look didn't load
+	TWeakObjectPtr<AActor> CastAnchor;
+	bool bCastAnchorLooked = false;
 };

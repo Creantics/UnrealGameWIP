@@ -1,6 +1,7 @@
 #include "FTStoryDirector.h"
 
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "Misc/CommandLine.h"
@@ -13,6 +14,10 @@
 
 #include "ForgottenThird.h"
 #include "FTAudioSubsystem.h"
+#include "FTCastMember.h"
+#include "FTCharacterPreview.h"
+#include "FTExploreCharacter.h"
+#include "FTLook.h"
 #include "FTFaceComponent.h"
 #include "FTGameInstance.h"
 #include "FTPauseSubsystem.h"
@@ -143,6 +148,17 @@ void AFTStoryDirector::BeginPlay()
 
 void AFTStoryDirector::EndPlay(const EEndPlayReason::Type Reason)
 {
+	for (const TPair<FString, TObjectPtr<AFTCastMember>>& Pair : CastActors)
+	{
+		if (const AFTCastMember* Member = Pair.Value.Get())
+		{
+			const UFTFaceComponent* F = Member->GetFace();
+			UE_LOG(LogForgottenThird, Display, TEXT("Story: cast %s: rig face %d (rig running %d), curve mode %d, %d shapes bound, peak %d curves in the anim output, peak %d rig morphs moving (%d morph curves), jaw joint peak %.1f deg."),
+				*Pair.Key, Member->HasRigFace() ? 1 : 0, F && F->HasRigInstance() ? 1 : 0, F && F->IsCurveMode() ? 1 : 0,
+				F ? F->GetBoundShapes() : 0, F ? F->GetPeakCurvesArrived() : 0, F ? F->GetPeakRigMorphs() : 0,
+				F ? F->GetPeakMorphCurves() : 0, F ? F->GetPeakRigJawDeg() : 0.f);
+		}
+	}
 	if (AFTPlayerController* PC = Controller.Get())
 	{
 		PC->OnAdvance.RemoveDynamic(this, &AFTStoryDirector::HandlePress);
@@ -471,6 +487,7 @@ void AFTStoryDirector::Refresh()
 		SceneTitle = FT::ToFString(Db.view(Runner.scene()->title));
 		SceneStart = GetWorld()->GetTimeSeconds();
 		UE_LOG(LogForgottenThird, Log, TEXT("Story: scene %s"), *FT::ToFString(Db.view(Runner.scene()->id)));
+		PlaceSceneCast();
 		++BeatSerial;
 	}
 	if (bNewBeat)
@@ -805,6 +822,137 @@ void AFTStoryDirector::LoadCast()
 		return;
 	}
 	UE_LOG(LogForgottenThird, Log, TEXT("Story: %d speakers cast."), static_cast<int32>(Speakers.entries.size()));
+
+	TArray<uint8> MarkBytes;
+	if (FFileHelper::LoadFileToArray(MarkBytes, *(FPaths::ProjectDir() / TEXT("Data/Story/cast_marks.json")), FILEREAD_Silent))
+	{
+		if (!ftcore::importCastMarks(FT::BytesAsText(MarkBytes), CastMarks, &Error))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Story: Data/Story/cast_marks.json is bad; the cast stands on the default arc: %s"),
+				*FT::ToFString(Error).TrimEnd().Replace(TEXT("\n"), TEXT("; ")));
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("Story: %d cast marks."), static_cast<int32>(CastMarks.entries.size()));
+		}
+	}
+}
+
+void AFTStoryDirector::PlaceSceneCast()
+{
+	for (TPair<FString, TObjectPtr<AFTCastMember>>& Pair : CastActors)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->SetActorHiddenInGame(true);
+		}
+	}
+	UWorld* World = GetWorld();
+	if (!bCastAnchorLooked && World)
+	{
+		bCastAnchorLooked = true;
+		for (TActorIterator<AFTCharacterPreview> It(World); It; ++It)
+		{
+			if (It->GetFace() && It->GetFace()->bStandIn)
+			{
+				CastAnchor = *It;
+				break;
+			}
+		}
+	}
+	AActor* Anchor = CastAnchor.Get();
+	const ftcore::StoryRunner& Runner = Story->GetRunner();
+	if (!Anchor || !World || Speakers.entries.empty() || !Runner.scene())
+	{
+		return;
+	}
+	const ftcore::StoryDatabase& Db = Story->GetDatabase();
+	std::array<std::string_view, ftcore::kMaxSceneCast> Cast{};
+	uint32 Dropped = 0;
+	const size_t Count = ftcore::sceneCastSpeakers(Db, Runner.sceneIndex(), Speakers, Cast, &Dropped);
+	const TArray<FFTLeadLook>& Looks = GetDefault<AFTExploreCharacter>()->PartyLooks;
+
+	AFTCastMember* OnScreen[ftcore::kMaxSceneCast] = {};
+	int32 Own = 0, NoLook = 0;
+	for (size_t I = 0; I < Count; ++I)
+	{
+		const FString Model = FT::ToFString(Speakers.modelFor(Cast[I]));
+		TObjectPtr<AFTCastMember>* Found = CastActors.Find(Model);
+		if (!Found)
+		{
+			const FFTLeadLook* Look = Looks.FindByPredicate([&Model](const FFTLeadLook& L) { return L.ModelId == Model; });
+			AFTCastMember* Made = nullptr;
+			if (Look)
+			{
+				FActorSpawnParameters Params;
+				Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				Made = World->SpawnActor<AFTCastMember>(Anchor->GetActorLocation(), Anchor->GetActorRotation(), Params);
+				if (Made && !Made->Wear(*Look, Model))
+				{
+					Made->Destroy();
+					Made = nullptr;
+				}
+				if (Made)
+				{
+					Made->SetActorHiddenInGame(true);
+				}
+			}
+			Found = &CastActors.Add(Model, Made);
+		}
+		if (*Found)
+		{
+			OnScreen[I] = Found->Get();
+			++Own;
+		}
+		else
+		{
+			++NoLook;
+		}
+	}
+	// The stand-in keeps the anchor while any cast speaker has no look of its own; the cast then stands on the
+	// arc's other slots (an odd number of slots, the middle one the anchor's).
+	const bool bStandInStays = NoLook > 0 || Own == 0;
+	int32 Slots = Own;
+	if (bStandInStays && Own > 0)
+	{
+		Slots = Own + 1;
+		Slots += Slots % 2 == 0 ? 1 : 0;
+	}
+	const int32 Middle = Slots / 2;
+	const FString SceneId = FT::ToFString(Db.view(Runner.scene()->id));
+	const std::string SceneUtf8 = FT::ToUtf8(SceneId);
+	int32 Slot = 0, Marked = 0;
+	const FTransform AnchorXf = Anchor->GetActorTransform();
+	for (size_t I = 0; I < Count; ++I)
+	{
+		AFTCastMember* Member = OnScreen[I];
+		if (!Member)
+		{
+			continue;
+		}
+		if (bStandInStays && Slot == Middle)
+		{
+			++Slot;
+		}
+		ftcore::CastMark Mark;
+		if (const ftcore::CastMark* M = CastMarks.find(SceneUtf8, Cast[I]))
+		{
+			Mark = *M;
+			++Marked;
+		}
+		else
+		{
+			Mark = ftcore::castArcMark(static_cast<size_t>(Slot), static_cast<size_t>(Slots));
+		}
+		++Slot;
+		const FVector Where = AnchorXf.TransformPosition(FVector(Mark.x * 100.f, Mark.y * 100.f, 0.f));
+		const FRotator Facing = Anchor->GetActorRotation() + FRotator(0.f, Mark.yawDeg, 0.f);
+		Member->SetActorLocationAndRotation(Where, Facing);
+		Member->SetActorHiddenInGame(false);
+	}
+	Anchor->SetActorHiddenInGame(!bStandInStays);
+	UE_LOG(LogForgottenThird, Log, TEXT("Story: scene %s cast on screen: %d (%d on marks), %d without a look, %u past the cap; stand-in %s."),
+		*SceneId, Own, Marked, NoLook, Dropped, bStandInStays ? TEXT("shown") : TEXT("hidden"));
 }
 
 bool AFTStoryDirector::IsVoiceBusy() const

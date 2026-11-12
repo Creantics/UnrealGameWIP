@@ -59,6 +59,10 @@ struct FFTLeadLook
 	TArray<FSoftObjectPath> PiecePaths;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	TArray<FFTGroomLook> Grooms;
+	// The character model the look is (an id from Data/Assets/models.json). The story director puts the look on
+	// screen for a scene whose cast speaker is cast as this model (Data/Voice/speakers.json). Empty: never cast.
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FString ModelId;
 };
 
 // A look's body and its base locomotion clips (UFTLocomotionAnimInstance::SetBaseClips' order), loaded; null where
