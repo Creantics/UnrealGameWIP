@@ -69,7 +69,7 @@ the weights. The events are for audio or VFX hooks only.
 
 ### Example
 
-`assets/rig/lines/5dc7c14b9fad_duy.nface` is 60 Hz, 286 frames (4.77 s) and has 20 channels: the 16 shapes
+One lead's MFA bake (`assets/rig/lines/<text_hash>_<speaker>.nface`) is 60 Hz, 286 frames (4.77 s) and has 20 channels: the 16 shapes
 above, `@tongue_01..03` and `@speech`.
 
 ## The 15 visemes

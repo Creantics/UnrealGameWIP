@@ -5,7 +5,7 @@
         -o SKELETON.csv [--files 04a] [--summary]
 
 Reads every 04*.md in the folder (or only those whose name starts with a --files prefix) and writes
-one row per recordable line: plain dialogue, ROAST/REASSURE barks (one row each), choice-option
+one row per recordable line: plain dialogue, labelled barks (one row each), choice-option
 lines, lines embedded in hidden VARIANT/ACTING/GAMEPLAY notes, held-silence lines ("ARLO: ...")
 and camp lines (which keep their authored <sub>VO-...</sub> id as line_id).
 
@@ -17,8 +17,8 @@ Lines embedded inside other blocks are rows too:
     text (notes, margins, signs, title cards) is not a row. Speaker = a known name in the clause,
     or the quoted word itself when it is a known name (a roll call), else UNKNOWN; parse_note CHECK.
 
-`variant` comes from, in order: an inline label (`**[VARIANT: ...]**`, `(ROAST)`, `(if ...)`), a
-ROAST:/REASSURE:/`If X:` label earlier in the same note (it stays in force for later speakers in
+`variant` comes from, in order: an inline label (`**[VARIANT: ...]**`, `(TEASE)`, `(if ...)`), a
+TEASE:/CHEER:/`If X:` label earlier in the same note (it stays in force for later speakers in
 that note), and the enclosing condition block: `**[VARIANT: ...]**`, `**▸ "..."**` branches,
 `***CHOICE.** If "X":` / `***CHOICE.** Concede (...):` blockquotes and plain `*If X:*` labels.
 A plain label followed directly by text covers that paragraph (up to the next blank line); one
@@ -32,6 +32,9 @@ A choice option with no speaker of its own takes its lane's default speaker: the
 letter of the scene id's last part (`<prefix>02-D1` is lane D). --names reads the "lanes" table
 ({LETTER: SPEAKER}) from the story's voice names JSON (build_directions --names); without it the
 generic lanes A, B and C stand for themselves.
+The story's own notation comes from the same file's "grammar" object: "barks", the bark labels
+(upper-case words; default TEASE and CHEER), and "camp_prefix", the camp id prefix in `## <prefix>E1 · Title`
+headings (default CAMP-).
 Read-only on the script. Standard library only.
 """
 import argparse
@@ -56,12 +59,11 @@ def set_scene_prefix(prefix):
     global SCENE_PREFIX, SCENE_HDR
     SCENE_PREFIX = prefix
     SCENE_HDR = re.compile(r'^### (' + re.escape(prefix) + r'[A-Za-z0-9\-]+) · (.*)$')
-CAMP_HDR = re.compile(r'^#{2,3} (CP-[A-Za-z0-9\-]+) · (.*)$')
 ACT_HDR = re.compile(r'^# ACT ([IVX]+)\b')
 FILE_ACT = re.compile(r'^# .*PART \d+: ACT ([IVX]+)\b')
 VO_SUB = re.compile(r'^<sub>(VO-[A-Za-z0-9\-]+)</sub>\s*$')
 
-NOT_SPEAKERS = {'ROAST', 'REASSURE', 'CHOICE', 'VARIANT', 'ACTING', 'OPTIONAL', 'HOLD', 'TIMED',
+NOT_SPEAKERS_BASE = {'CHOICE', 'VARIANT', 'ACTING', 'OPTIONAL', 'HOLD', 'TIMED',
                 'LOOP', 'GAMEPLAY', 'NOTE', 'END', 'CMB', 'ENG', 'PLAY', 'CG', 'CHC', 'SQ', 'OR'}
 
 # Optional leading wrappers: blockquote, bullet, a bold VARIANT label.
@@ -73,7 +75,26 @@ QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”')
 GAP_SPEAKER = re.compile(
     r"(?:(?P<label>[A-Za-z_][A-Za-z_ ]{0,30}): )?(?P<who>[A-Z][A-Z'’\-]+(?: [A-Z][A-Z'’\-]+)*)"
     r"(?: \((?P<how>(?:[^()]|\([^()]*\))*)\))?: \*?$")
-GAP_LABEL = re.compile(r'(?P<label>ROAST|REASSURE)\s*(?:▸\s*)?:?\s*$')
+BARKS_GENERIC = ('TEASE', 'CHEER')
+CAMP_GENERIC = 'CAMP-'
+BARK_WORD = re.compile(r'^[A-Z][A-Z0-9_]*$')
+BARKS = BARKS_GENERIC
+BARK_RX = GAP_LABEL = CAMP_HDR = None
+NOT_SPEAKERS = set(NOT_SPEAKERS_BASE)
+
+
+def set_grammar(barks=BARKS_GENERIC, camp_prefix=CAMP_GENERIC):
+    """Set the bark labels and the camp id prefix (the names file's "grammar"); defaults are generic."""
+    global BARKS, BARK_RX, GAP_LABEL, CAMP_HDR, NOT_SPEAKERS
+    BARKS = tuple(barks)
+    alt = '|'.join(re.escape(b) for b in BARKS)
+    BARK_RX = re.compile(r'\b(%s)\b' % alt)
+    GAP_LABEL = re.compile(r'(?P<label>%s)\s*(?:▸\s*)?:?\s*$' % alt)
+    CAMP_HDR = re.compile(r'^#{2,3} (' + re.escape(camp_prefix) + r'[A-Za-z0-9\-]+) · (.*)$')
+    NOT_SPEAKERS = set(NOT_SPEAKERS_BASE) | set(BARKS)
+
+
+set_grammar()
 NOTE_START = re.compile(r'^(?:>\s?)?(?:\*\*\*|\*\*\[|\[|\*)')
 BRANCH = re.compile(r'^\*\*▸ "([^"]+)"\*\*')
 CHOICE_IF = re.compile(r'^\*\*\*CHOICE\.\*\* If "([^"]+)"')
@@ -92,7 +113,7 @@ WRITTEN = re.compile(r"\b(?:writes?|wrote|written|reads|lettered|chalk|margin|ti
 POST_ATTR = re.compile(r"^\s*,?\*?\s*(?:he|she|they|it|[A-Z][a-z]+)\s+(?:says|said|asks|answers|whispers|calls)\b")
 
 LANE_GENERIC = {'A': 'A', 'B': 'B', 'C': 'C'}
-LANE_DEFAULT = dict(LANE_GENERIC)  # set by load_lanes() (--names)
+LANE_DEFAULT = dict(LANE_GENERIC)  # set by load_names() (--names)
 
 
 def act_for_file(path):
@@ -106,7 +127,7 @@ def clean_how(how):
 
 def variant_from_how(how):
     h = how or ''
-    m = re.search(r'\b(ROAST|REASSURE)\b', h)
+    m = BARK_RX.search(h)
     if m:
         return m.group(1)
     m = re.match(r'\s*if\s+(.*)$', h, re.I)
@@ -160,7 +181,7 @@ class Extractor:
         out = []
         cur = None            # (speaker, how, label)
         last_end = 0
-        note_label = ''       # ROAST / REASSURE label still in force for later speakers in this note
+        note_label = ''       # bark label still in force for later speakers in this note
         note_cond = ''        # 'if X' from an "If X:" clause earlier in this note
         for m in QUOTE.finditer(line):
             q = m.group(1) or m.group(2)
@@ -173,7 +194,7 @@ class Extractor:
             g = GAP_SPEAKER.search(gap.rstrip()) if not g else g
             if g and is_speaker(g.group('who')):
                 lab = (g.group('label') or '').strip()
-                if lab.upper() in ('ROAST', 'REASSURE'):
+                if lab.upper() in BARKS:
                     note_label = lab.upper()
                 cur = (g.group('who'), g.group('how') or '', lab or note_label)
             elif gap.strip() in ('/', ''):
@@ -199,7 +220,7 @@ class Extractor:
                 continue
             who, how, label = cur
             v = label if label else (variant_from_how(how) or note_cond or variant)
-            if label and label.upper() in ('ROAST', 'REASSURE'):
+            if label and label.upper() in BARKS:
                 v = label.upper()
             kind = 'choice_option' if (is_choice_note and not who) else ('bark' if is_bark_note or 'bark' in how else 'embedded')
             out.append((who, kind, v, how, q, 'embedded in note' if who else 'CHECK speaker of choice option'))
@@ -406,7 +427,7 @@ class Extractor:
                 who, how, text = sm.group('who'), sm.group('how') or '', sm.group('text')
                 v = p.group('vl') or variant_from_how(how) or eff()
                 if p.group('vl'):
-                    vv = re.search(r'\b(ROAST|REASSURE)\b', p.group('vl'))
+                    vv = BARK_RX.search(p.group('vl'))
                     v = vv.group(1) if vv else p.group('vl')
                 pick = re.match(r'^\*\[pick\]\*\s*(.*)$', text)
                 if pick:
@@ -414,7 +435,7 @@ class Extractor:
                         self.add(ctx, i, who, 'choice_option', v, how, q.group(1) or q.group(2),
                                  'pick option')
                     continue
-                kind = 'bark' if ('bark' in how.lower() or p.group('bul') and v in ('ROAST', 'REASSURE')) else 'line'
+                kind = 'bark' if ('bark' in how.lower() or p.group('bul') and v in BARKS) else 'line'
                 last_row = self.add(ctx, i, who, kind, v, how, text)
                 continue
             # ---- notes / bracket lines that may carry quoted lines ----
@@ -469,8 +490,9 @@ class Extractor:
         return self.rows
 
 
-def load_lanes(path):
-    """Set LANE_DEFAULT from the "lanes" table of a voice names JSON; returns an error string, or None."""
+def load_names(path):
+    """Set LANE_DEFAULT and the grammar from a voice names JSON ("lanes", "grammar"); returns an error
+    string, or None. Missing tables keep the generic defaults."""
     global LANE_DEFAULT
     try:
         with open(path, encoding='utf-8-sig') as fh:
@@ -481,7 +503,17 @@ def load_lanes(path):
     if not isinstance(lanes, dict) or not all(isinstance(k, str) and len(k) == 1 and k.isupper()
                                               and isinstance(v, str) and v for k, v in lanes.items()):
         return 'the names file\'s "lanes" must be an object of {LETTER: SPEAKER}'
+    g = t.get('grammar', {})
+    if not isinstance(g, dict):
+        return 'the names file\'s "grammar" must be an object'
+    barks = g.get('barks', list(BARKS_GENERIC))
+    camp = g.get('camp_prefix', CAMP_GENERIC)
+    if not isinstance(barks, list) or not barks or not all(isinstance(b, str) and BARK_WORD.fullmatch(b) for b in barks):
+        return '"grammar.barks" must be a non-empty list of upper-case words'
+    if not isinstance(camp, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9\-]*', camp):
+        return '"grammar.camp_prefix" must be a word such as CAMP-'
     LANE_DEFAULT = dict(lanes) if lanes else dict(LANE_GENERIC)
+    set_grammar(barks, camp)
     return None
 
 
@@ -568,10 +600,11 @@ def main(argv=None):
     ap.add_argument('--files', nargs='*', help='only files starting with these prefixes, e.g. 04a')
     ap.add_argument('--summary', action='store_true', help='print counts per act / speaker')
     ap.add_argument('--names', help='the story\'s voice names JSON; its "lanes" table gives each lane\'s '
-                                    'default speaker (default: generic lanes A, B, C)')
+                                    'default speaker and its "grammar" the bark labels and camp prefix '
+                                    '(default: generic)')
     a = ap.parse_args(argv)
     if a.names:
-        err = load_lanes(a.names)
+        err = load_names(a.names)
         if err:
             sys.stderr.write('extract_lines: %s\n' % err)
             return 2

@@ -249,7 +249,7 @@ weights and NORMAL deltas. Morph-weight animation channels (glTF path `weights`)
 
 **Speaking head: `dialogue_demo --face`.** The proof head speaks one line of the private gold set (a
 deadpan line with a stressed word near its end).
-- **Lip-sync.** The track is the MFA bake `assets/rig/lines/5dc7c14b9fad_duy.nface`, played by `FacePlayer`.
+- **Lip-sync.** The track is the line's MFA bake, `assets/rig/lines/<text_hash>_<speaker>.nface`, played by `FacePlayer`.
 - **Expressions.** Cold at intensity 4 from the start of the line, turning wry (4.5) at 2.9 s.
 - **Blinks** are procedural.
 - **Gaze.** The eyes look away and down from 1.15 to 2.2 s, with lid follow through the `eyeLook*` shapes,
@@ -391,8 +391,8 @@ ne_rig_check model.glb [--expect model.rigexpect.json] [--json r.json] [--quiet]
 The subcommands are `gold`, `synth`, `align-mfa`, `align-rhubarb`, `bake` and `eval`; usage is in the script
 header.
 
-**Gold set.** 20 lines from the VO direction table, starting with the lines named by `--require` (a child's
-line and an `UNKNOWN VOICE` line). The set is kept outside the repo. No VO has been recorded, so the audio is **espeak-ng TTS**.
+**Gold set.** 20 lines from the VO direction table, starting with the lines named by `--require` (for example
+an `UNKNOWN VOICE` line); its "voices" table picks the espeak voice per speaker. The set is kept outside the repo. No VO has been recorded, so the audio is **espeak-ng TTS**.
 
 **The reference is a machine reference.** espeak's own phoneme events for the audio it synthesised. The plan's
 F1/F2/F4 gate asks for hand-marked TextGrids, which do not exist yet. The `textgrid` backend reads them once

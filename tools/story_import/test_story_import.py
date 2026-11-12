@@ -212,6 +212,22 @@ class TestGoodTables(TablesBase):
             self.assertEqual(fh.read(), '{"good": true}')
         self.assertFalse(os.path.exists(os.path.join(self.out, 'loc', 'en.json')))
 
+    def hold_flags(self, note):
+        write(os.path.join(self.build, 'meta', 'inserts_01.csv'),
+              '"scene_id","before_line_prefix","notation"\n"XA-01-A1","BEX: Then we sail.","[HOLD: %s]"\n' % note)
+        write(os.path.join(self.build, 'flags.csv'), FLAGS + 'nets_dry,bool,made up,XA-01-A1,,false,\n')
+        rc, text = self.run_tool(TABLES)
+        self.assertNotEqual(rc, 2, text)
+        with open(os.path.join(self.out, 'scenes', 'XA-01-A1.json'), encoding='utf-8') as fh:
+            beats = json.load(fh)
+        return [b for b in json.dumps(beats).split('{') if '"flag"' in b]
+
+    def test_hold_sets_known_flag_only(self):
+        self.assertEqual(len(self.hold_flags('Hold the rope. Sets `nets_dry`.')), 1)
+        self.assertEqual(self.hold_flags('Hold the rope. Sets the pace.'), [])
+        self.assertEqual(len(self.hold_flags('Sets the pace. Sets `nets_dry`.')), 1)
+        self.assertEqual(self.hold_flags('Hold the rope. No flag set.'), [])
+
     def test_missing_choice_fails_with_placeholder(self):
         rc, text = self.run_tool(TABLES, extra=['--allow-problems'])
         self.assertEqual(rc, 1, text)

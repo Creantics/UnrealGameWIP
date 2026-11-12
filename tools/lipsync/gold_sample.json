@@ -1,12 +1,13 @@
 {
  "source": "made-up sample",
  "note": "A made-up three-line gold set for trying the lip-sync pipeline. The real set holds script lines and lives outside the repo (--gold or LIPSYNC_GOLD).",
+ "voices": {"PIPER": ["en-us+f4", 80]},
  "lines": [
   {
    "line_id": "XA-01#001",
    "vo_id": "",
    "text_hash": "c7b97e84e5bb",
-   "speaker": "CHILD",
+   "speaker": "PIPER",
    "spoken_text": "Is the boat back yet?",
    "emotion_primary": "hopeful",
    "emotion_secondary": "",
@@ -17,7 +18,7 @@
    "pitch_contour": "rising",
    "pauses": "Is the boat / back yet?",
    "emphasis": "",
-   "key": "c7b97e84e5bb_child"
+   "key": "c7b97e84e5bb_piper"
   },
   {
    "line_id": "XA-01#002",

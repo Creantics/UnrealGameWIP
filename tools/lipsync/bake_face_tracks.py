@@ -23,7 +23,9 @@ Only the Python standard library is needed, plus `espeakng_loader` (pip) for the
   python3 tools/lipsync/bake_face_tracks.py synth --gold GOLD.json --work W
 
 The gold set holds script lines, so it lives outside the repo: pass --gold, or set LIPSYNC_GOLD.
-tools/lipsync/gold_sample.json is a made-up three-line set for trying the pipeline.
+tools/lipsync/gold_sample.json is a made-up three-line set for trying the pipeline. A gold set's optional
+"voices" table, {SPEAKER: [espeak_voice, pitch 0-99]}, picks the synth voice per speaker; `gold` carries over
+the table of the file it overwrites.
   python3 tools/lipsync/bake_face_tracks.py align-mfa --work W --mfa-cmd "micromamba run -p ENV mfa" \
           --dict english_us_arpa.dict --model english_us_arpa.zip
   python3 tools/lipsync/bake_face_tracks.py align-rhubarb --work W --rhubarb /path/to/rhubarb
@@ -358,6 +360,20 @@ def cmd_gold(a):
                    "do not exist yet; eval uses espeak's phone timings for its own synthetic audio as a machine "
                    "reference." % (len(pick), len(a.require)),
            "lines": [{k: r.get(k, "") for k in keep} | {"key": line_key(r)} for r in pick]}
+    if os.path.exists(a.out):  # hand-made per-speaker synth voices survive a regeneration
+        try:
+            with open(a.out, encoding="utf-8") as fh:
+                old = json.load(fh).get("voices", {})
+        except (OSError, ValueError, AttributeError) as e:
+            print("gold: cannot read the old %s (%s); stopping so its voices table is not lost" % (a.out, e),
+                  file=sys.stderr)
+            return 2
+        err = check_voices(old)
+        if err:
+            print("gold: the old %s: %s" % (a.out, err), file=sys.stderr)
+            return 2
+        if old:
+            out["voices"] = old
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
         f.write("\n")
@@ -368,18 +384,45 @@ class GoldError(Exception):
     pass
 
 
+def check_voices(voices):
+    """An error string when a "voices" table is not {SPEAKER: [espeak_voice, pitch 0-99]}, else None."""
+    if not isinstance(voices, dict) or not all(
+            isinstance(v, list) and len(v) == 2 and isinstance(v[0], str) and v[0]
+            and isinstance(v[1], int) and not isinstance(v[1], bool) and 0 <= v[1] <= 99
+            for v in voices.values()):
+        return '"voices" must be an object of {SPEAKER: [espeak_voice, pitch 0-99]}'
+    return None
+
+
 def load_gold(path):
+    """The gold set's lines. Its optional "voices" table, {SPEAKER: [espeak_voice, pitch 0-99]}, sets the
+    espeak voice per speaker; each line of such a speaker gets it as "voice"."""
     try:
-        return json.load(open(path, encoding="utf-8"))["lines"]
-    except (OSError, ValueError, KeyError, TypeError) as e:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        lines = d["lines"]
+        voices = d.get("voices", {})
+        if not isinstance(lines, list) or not all(isinstance(ln, dict) for ln in lines):
+            raise TypeError('"lines" must be a list of objects')
+        err = check_voices(voices)
+        if err:
+            raise TypeError(err)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         raise GoldError("cannot read the gold set %s: %s" % (path, e))
+    table = {str(k).upper(): (v[0], v[1]) for k, v in voices.items()}
+    for ln in lines:
+        v = table.get(str(ln.get("speaker", "")).upper())
+        if v:
+            ln["voice"] = v
+    return lines
 
 
 def voice_for(line):
-    spk = line["speaker"].upper()
-    if spk == "CHILD":
-        return "en-us+f4", 80
-    if spk.startswith("UNKNOWN"):
+    """(espeak voice, pitch) for a gold line: the gold set's "voices" table, else a lower voice for the
+    parser's UNKNOWN speakers, else the default."""
+    if line.get("voice"):
+        return tuple(line["voice"])
+    if line["speaker"].upper().startswith("UNKNOWN"):
         return "en-us+m3", 40
     return "en-us", 50
 

@@ -437,6 +437,8 @@ if(FTCORE_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/../tools/story_import/test_story_import.py)
         add_test(NAME py_vo_direction COMMAND ${Python3_EXECUTABLE} -I
             ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vo_direction/test_vo_direction.py)
+        add_test(NAME py_lipsync COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools/lipsync/test_bake_face_tracks.py)
     else()
         message(STATUS "ftcore: no Python 3.10+ found; the story tools' Python tests are not registered")
     endif()

@@ -641,9 +641,11 @@ def build(build_dir):
                 seconds = HOLD_LADDER.get(sid, INPUT_HOLD_SECONDS)
                 hold_beat(seconds, nt)
                 ladder_done[0] = True
-                sm = re.search(r'(?<!No flag )\b[Ss]ets (F_[A-Z0-9_]+)', nt)
+                # "Sets <flag id>" in the HOLD note: the first id the flag table knows counts
+                sm = next((g for g in re.findall(r'(?<!No flag )\b[Ss]ets `?([A-Za-z][A-Za-z0-9_]*)', nt)
+                           if g in flag_ids), None)
                 if sm and 'No flag set' not in nt:
-                    emit({'type': 'flag', 'op': 'set', 'id': sm.group(1), 'value': True})
+                    emit({'type': 'flag', 'op': 'set', 'id': sm, 'value': True})
             else:   # OPTIONAL / TIMED / VARIANT: designer notation, never shown
                 b = {'type': 'direction', 'text': nt, 'note': kind, 'hidden': True}
                 emit(b)
