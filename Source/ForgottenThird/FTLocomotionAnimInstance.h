@@ -353,6 +353,8 @@ public:
 	// The legs turned from the facing by Yaw degrees (+ right), the chest turned back by as much over the spine: a
 	// body with forward gaits only walks along the way it moves while it faces elsewhere (a strafe). Any owner.
 	void SetLegYaw(float Yaw) { PushedLegYaw = Yaw; }
+	// The trunk pitched by this (degrees, + forward) under a traversal clip, by its weight (0: the clip's own trunk).
+	void SetTraversalTrunkPitch(float Pitch) { PushedTrunkPitch = Pitch; }
 	// The feet held where they stand while bLock holds (a strike whose clip has the legs; FFTLocomotionAnimProxy::
 	// ftcore::FootHold), stepping when the body has gone too far over one. Any owner.
 	void SetFootLock(bool bLock) { bPushedFootLock = bLock; }
@@ -506,6 +508,7 @@ private:
 	bool bPushedGrip[2] = {false, false};
 	float PushedSupport = 0.f;
 	float PushedLegYaw = 0.f;
+	float PushedTrunkPitch = 0.f;
 	bool bPushedFootLock = false;
 	uint32 PushedFeetReset = 0;
 	bool bPushedFace = false;

@@ -1606,6 +1606,11 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		// Under an upper-body strike the legs keep their locomotion, the air pose with it.
 		LimbWeight[1] *= (1.f - TravWeight) * (1.f - ActWeight * (1.f - UpperShare));
 	}
+	// A traversal clip's trunk pitched on top of it (SetTraversalTrunkPitch), by the clip's weight.
+	if (TravWeight > 0.f && Instance->PushedTrunkPitch != 0.f)
+	{
+		SpineBend = FQuat(Right, FMath::DegreesToRadians(Instance->PushedTrunkPitch * TravWeight)) * SpineBend;
+	}
 	// The legs turned toward the way the body moves (the root, in Evaluate), the chest turned back over the spine.
 	LegYaw = TravWeight > 0.f ? 0.f : FMath::Clamp(Instance->PushedLegYaw, -100.f, 100.f);
 	if (LegYaw != 0.f)

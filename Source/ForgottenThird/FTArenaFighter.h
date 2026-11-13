@@ -258,6 +258,8 @@ private:
 	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
 	// -ArenaRollFloor: how long the clip's fade-out after a roll or dash is still logged.
 	float RollFadeLog = 0.f;
+	// -ArenaDashTight: the trunk pitched back under the dash clip, held through its fade.
+	bool bDashPitched = false;
 	float RollFloorBall = 1e9f;
 	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
 	bool RollWithClip(const FFTArenaPose& Pose);

@@ -579,6 +579,23 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	static const bool bNoDash = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash"));
 #endif
 	const bool bDash = Dash != INDEX_NONE && Anim && !bNoDash && Anim->HasTraversalClip(Dash);
+	// -ArenaDashTight: the dash's arc flattened (the body lowered by kDashFlatten of the lower ball's height over its
+	// standing height, nothing at take-off or landing, the feet never under) and its trunk pitched back toward upright by
+	// kDashUpright degrees, for choosing against the clip as it is. Not in shipping builds until it is chosen.
+#if UE_BUILD_SHIPPING
+	constexpr bool bDashTight = false;
+#else
+	static const bool bDashTight = FParse::Param(FCommandLine::Get(), TEXT("ArenaDashTight"));
+#endif
+	constexpr float kDashFlatten = 0.4f, kDashUpright = 15.f;
+	if (Anim)
+	{
+		// Held while the dash plays and while it fades (the pitch goes with the clip's weight), so it does not snap.
+		const bool bPlaying = bDash && Pose.bDodging && !Pose.bLying;
+		bDashPitched = bDashTight && (bPlaying || (bDashPitched && RollClip < 0 && RollFadeLog > 0.f) ||
+										 (bDashPitched && RollClip >= UFTLocomotionAnimInstance::FirstDashClip));
+		Anim->SetTraversalTrunkPitch(bDashPitched ? kDashUpright : 0.f); // + stands the hop's trunk up (checked on a capture: - bent it further)
+	}
 	if (!Anim || !Pose.bDodging || Pose.bLying || (Dash != INDEX_NONE && !bDash))
 	{
 		if (RollClip >= 0 && Anim)
@@ -589,13 +606,14 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		}
 		if (RollClip >= 0)
 		{
-			RollLiftFall = RollLift / kRollLiftOut;
+			RollLiftFall = FMath::Abs(RollLift) / kRollLiftOut;
 			RollFadeLog = kRollLiftOut;
 		}
 		RollFadeLog = FMath::Max(0.f, RollFadeLog - Dt);
-		RollLift = FMath::Max(0.f, RollLift - RollLiftFall * Dt);
+		// Back to none from either side (a tight dash lowers the body: its lift is under 0).
+		RollLift = RollLift > 0.f ? FMath::Max(0.f, RollLift - RollLiftFall * Dt) : FMath::Min(0.f, RollLift + RollLiftFall * Dt);
 #if !UE_BUILD_SHIPPING
-		if ((RollLift > 0.f || RollFadeLog > 0.f) && FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor")))
+		if ((RollLift != 0.f || RollFadeLog > 0.f) && FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor")))
 		{
 			auto Over = [this](const TCHAR* Bone)
 			{
@@ -696,12 +714,22 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		{
 			Need = FMath::Max(Need, kSkullCm * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
 		}
-		// Taken from the last pose, so eased toward: up at most kRollLiftRise, down at most kRollLiftFall (cm/s), no pop
-		// from one frame's bones.
-		constexpr float kRollLiftRise = 90.f, kRollLiftFall = 45.f;
-		const float Want = static_cast<float>(Need);
-		RollLift = Want > RollLift ? FMath::Min(Want, RollLift + kRollLiftRise * Scale * Dt)
-								   : FMath::Max(Want, RollLift - kRollLiftFall * Scale * Dt);
+		// A tight dash: lowered by part of the lower ball's height over its standing height (the bones are the clip's,
+		// over the skin, so the lowering itself is not in them). It follows the pose's own smooth curve, not eased.
+		if (bDash && bDashTight && Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		{
+			const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
+			RollLift = -kDashFlatten * static_cast<float>(FMath::Max(0.0, Ball - RollFloorBall * Scale));
+		}
+		else
+		{
+			// Taken from the last pose, so eased toward: up at most kRollLiftRise, down at most kRollLiftFall (cm/s), no
+			// pop from one frame's bones.
+			constexpr float kRollLiftRise = 90.f, kRollLiftFall = 45.f;
+			const float Want = static_cast<float>(Need);
+			RollLift = Want > RollLift ? FMath::Min(Want, RollLift + kRollLiftRise * Scale * Dt)
+									   : FMath::Max(Want, RollLift - kRollLiftFall * Scale * Dt);
+		}
 	}
 	Anim->SetTraversal(RollClip, FMath::Lerp(RollFrom, RollTo, Fraction));
 #if !UE_BUILD_SHIPPING
