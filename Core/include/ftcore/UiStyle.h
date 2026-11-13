@@ -13,7 +13,7 @@
 //     the solid backing the player can turn on;
 //   - the default look is a faint soft backing plus a hairline dark edge on every glyph: Ink, InkDim and Accent on
 //     the edge colour at least 4.5:1 over a white picture (import rejects less), and the edge is never thinner than
-//     1 px;
+//     1 px; a glyph takes the edge at 0.5..1 of its strength (edge.text), never fainter;
 //   - Danger, Ally and WeakPoint are never the only cue: the table carries a shape id for each (uiCueShape), and
 //     no two of them share a shape.
 //
@@ -110,6 +110,8 @@ struct UiStyle {
     float backingSoftDialogue = 0.42f; // peak alpha under subtitles
     UiColor edge{0.039f, 0.035f, 0.031f, 0.9f}; // the hairline edge round every glyph
     float edgePx = 1.f;                // its width at 1080p, at least 1 px at any height
+    float edgeText = 0.6f;             // the glyph edge's share of the edge colour's alpha (0.5..1): lighter than a
+                                       // stroke's edge, so a light word on bright ground does not read as doubled
     UiMeterShape meter = UiMeterShape::Line;
     UiFadeTimes fade;
     float minTextPx = 18.f;     // the floor at 1080p

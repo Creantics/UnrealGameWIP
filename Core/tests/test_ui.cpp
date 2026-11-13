@@ -141,6 +141,8 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK_FALSE(importUiStyle(R"({"edge": {"color": "#0A090840"}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"edge": {"px": 0.5}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"edge": {"width": 1}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"edge": {"text": 0.3}})", s, &err)); // a glyph edge that faint loses bright sky
+    CHECK(err.find("edge text") != std::string::npos);
     CHECK_FALSE(importUiStyle(R"({"backing_soft": {"hud": 1.5}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"meter": "dial"})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"fade": {"rest_alpha": 2}})", s, &err));
@@ -152,6 +154,7 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK(s.backingSoftHud == doctest::Approx(0.3f));
     CHECK(s.backingSoftDialogue == doctest::Approx(defaultUiStyle().backingSoftDialogue));
     CHECK(s.edgePx == doctest::Approx(2.f));
+    CHECK(defaultUiStyle().edgeText == doctest::Approx(0.6f));
     CHECK(s.fade.rest == doctest::Approx(4.f));
     CHECK(s.fade.in == doctest::Approx(defaultUiStyle().fade.in));
 }

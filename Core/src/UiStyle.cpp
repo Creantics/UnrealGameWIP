@@ -185,6 +185,7 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
     if (s.minTextPxAbsolute < 14.f) return fail(error, "min_text_px_absolute is below 14");
     if (s.backingDefault < 0.f || s.backingDefault > 1.f) return fail(error, "backing_default is outside 0..1");
     if (s.edgePx < 1.f) return fail(error, "edge px is below 1");
+    if (s.edgeText < 0.5f || s.edgeText > 1.f) return fail(error, "edge text is outside 0.5..1");
     if (s.backingSoftHud < 0.f || s.backingSoftHud > 1.f || s.backingSoftDialogue < 0.f || s.backingSoftDialogue > 1.f)
         return fail(error, "backing_soft is outside 0..1");
     if (s.edge.a < 0.5f) return fail(error, "the edge is fainter than 50%");
@@ -314,6 +315,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                     if (ev.type() != JsonType::String || !parseHex(ev.string(), s.edge)) return bad(key, ek);
                 } else if (ek == "px") {
                     if (!number(ev, 0.f, 8.f, s.edgePx)) return bad(key, ek);
+                } else if (ek == "text") {
+                    if (!number(ev, 0.f, 1.f, s.edgeText)) return bad(key, ek);
                 } else {
                     return bad(key, ek);
                 }

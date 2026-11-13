@@ -5,7 +5,7 @@
   "line_weight": 3,
   "backing_default": 0.75,
   "backing_soft": { "hud": 0.24, "dialogue": 0.42 },
-  "edge": { "color": "#0A0908E6", "px": 1 },
+  "edge": { "color": "#0A0908E6", "px": 1, "text": 0.6 },
   "meter": "line",
   "fade": { "in": 0.15, "rest": 2.5, "out": 0.6, "rest_alpha": 0.35 },
   "min_text_px": 18,

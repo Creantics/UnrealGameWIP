@@ -172,7 +172,7 @@ FSlateFontInfo FontFor(UiTextRole Role, float Height, float TextScale = 1.f)
 	}();
 	F.OutlineSettings.OutlineSize = EdgeScale <= 0.f ? 0 : FMath::Max(1, FMath::RoundToInt(ftcore::uiEdgePx(S, Height)));
 	F.OutlineSettings.OutlineColor = Table().Edge;
-	F.OutlineSettings.OutlineColor.A *= EdgeScale;
+	F.OutlineSettings.OutlineColor.A *= S.edgeText * EdgeScale; // lighter than the strokes' edge: words never read doubled
 	return F;
 }
 
