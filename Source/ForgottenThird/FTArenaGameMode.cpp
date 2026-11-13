@@ -1085,6 +1085,12 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 			}
 		}
 	}
+	// A fight that ends before its middle views came (an idle defeat) still gets its result view, not a give-up.
+	if (ShotsTaken >= 1 && ShotsTaken < 5 && Runner->IsFinished() && Runner->GetResultAge() >= 0.8)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the fight ended after %d of 6 views; taking the result view."), ShotsTaken);
+		ShotsTaken = 5;
+	}
 	switch (ShotsTaken)
 	{
 	case 0:

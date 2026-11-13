@@ -2186,9 +2186,8 @@ private:
 			}
 			else
 			{
-				// The hit: the line in the ink, a ring spreading from the body.
+				// The hit: a ring spreading from the body (the windup line goes with the windup).
 				const float I = M.Impact;
-				HLine(X0, X0 + W, Y, 0.f, 1.f, StrokeStyle(1.8f, 83, S, 0.f), Tok(UiToken::Ink, I));
 				const float Spread = 1.f - I;
 				Ring(M.Chest.X, M.Chest.Y, (38.f + 90.f * Spread) * S, 0.6f + 2.4f * I, 95, S, Tok(UiToken::Ink, I));
 				Ring(M.Chest.X, M.Chest.Y, (30.f + 50.f * Spread) * S, 1.3f, 97, S, Tok(AT, I));
@@ -2325,7 +2324,7 @@ private:
 		{
 			ftcore::UiMarkPose Rest;
 			Rest.span = ftcore::kUiLockSpan;
-			ReticleRing(At.X, At.Y, R0, Rest, S, 1.3f, Tok(UiToken::Ink, 0.9f * Base));
+			ReticleRing(At.X, At.Y, R0, Rest, S, 1.7f, Tok(UiToken::Ink, Base));
 			Mesh.Dot(At.X, At.Y, 2.6f * S, Tok(UiToken::Ink, 0.9f * Base));
 		}
 		// The Read pick: while a read is dealt on a windup, its keys' numerals on the ring's lower arc (one per card); once
@@ -2791,8 +2790,12 @@ public:
 		}
 		else if (DimFor != OptionsFor)
 		{
-			DimFor = OptionsFor;
-			OptionDim = MeasureOptionDim(Size);
+			const float Dim = MeasureOptionDim(Size);
+			if (Dim >= 0.f) // below 0: no picture yet; measure again next frame
+			{
+				DimFor = OptionsFor;
+				OptionDim = Dim;
+			}
 		}
 	}
 
@@ -2949,9 +2952,9 @@ private:
 	{
 		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
 		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
-		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f)
+		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f || !VP->GetRenderTargetTexture().IsValid())
 		{
-			return 0.f;
+			return -1.f;
 		}
 		const float S = FMath::Max(0.25f, Size.Y / 1080.f);
 		float MarkX;
