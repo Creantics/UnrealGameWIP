@@ -165,7 +165,7 @@ struct Rig {
             l.event = e;
             log.push_back(l);
         }
-        in.light = in.heavy = in.dodge = in.heal = in.lock = in.release = in.pair = false;
+        in.light = in.heavy = in.dodge = in.jump = in.heal = in.lock = in.release = in.pair = false;
         in.lockSwitch = 0;
         in.read = -1;
         return out;
@@ -7718,4 +7718,389 @@ TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk
     REQUIRE(hit.player.action == ArenaAction::Light);
     CHECK(hit.player.wantSpeed == -1.f); // an attack's walk is its own (AttackMove)
     CHECK(hit.player.stopDistance == -1.f);
+}
+
+// ---- the jump ----
+
+namespace {
+
+// ruleFighter with round jump numbers: take-off 0.1 s, air 0.6 s (down at 0.7), landing 0.3 s (free at 1.0), its
+// first 0.15 s locked (to 0.85), low moves clear from 0.2 to 0.5, 0.5 m at the top; an air light of 0.1 + 0.1 + 0.2 s.
+ArenaFighter jumpFighter() {
+    ArenaFighter f = ruleFighter();
+    f.jumpStartup = 0.1f;
+    f.jumpAir = 0.6f;
+    f.jumpLand = 0.3f;
+    f.jumpLandLock = 0.15f;
+    f.jumpHeight = 0.5f;
+    f.jumpClearStart = 0.2f;
+    f.jumpClearEnd = 0.5f;
+    f.jumpAirControl = 4.f;
+    f.jumpLight = swing(0.1f, 0.1f, 0.2f, 2.f, 8, 0.f);
+    return f;
+}
+
+// Ticks until the jump's air clock reaches `clock` (the tick that gets there included).
+void runToJumpClock(Rig& rig, float clock) {
+    for (int i = 0; i < 600 && rig.out().player.jumpTime >= 0.f && rig.out().player.jumpTime < clock - 1e-4f; ++i)
+        rig.tick();
+}
+
+// A jump pressed so that its air clock reads `at` as a sweep's active part (0.15 s) begins, and what came of it.
+struct SweepJump {
+    int evaded = 0, hit = 0, landings = 0, airEvades = 0, hp = 0;
+    bool knocked = false; // the tick the blow landed: Hitstun, on the floor, the clock stopped
+};
+SweepJump sweepJump(bool hitsAir, float at) {
+    ArenaEnemyKind k = hitterKind(swing(0.6f, 0.15f, 0.5f, 2.f, 20));
+    k.moves[0].tell = ArenaTell::Sweep;
+    k.moves[0].hitsAir = hitsAir;
+    Rig rig(jumpFighter(), {k});
+    for (int i = 0; i < 600 && rig.out().enemies[0].part != ArenaPart::Startup; ++i) rig.tick();
+    REQUIRE(rig.out().enemies[0].part == ArenaPart::Startup);
+    const int wait = static_cast<int>(std::lround((0.6f - rig.out().enemies[0].stateTime - at) / kDt));
+    rig.run(std::max(0, wait - 1));
+    rig.in.jump = true;
+    SweepJump r;
+    for (int i = 0; i < 70; ++i) {
+        const ArenaOutput& o = rig.tick();
+        for (const ArenaEvent& e : o.events) {
+            if (e.type == ArenaEventType::Evaded) ++r.evaded;
+            if (e.type == ArenaEventType::Hit && e.target == kArenaPlayer) {
+                ++r.hit;
+                r.knocked = o.player.action == ArenaAction::Hitstun && o.player.height == 0.f && o.player.jumpTime == -1.f;
+            }
+        }
+    }
+    r.landings = rig.fight.stats().landings;
+    r.airEvades = rig.fight.stats().airEvades;
+    r.hp = rig.fight.hp();
+    return r;
+}
+
+// The fight time (from the press) of the tick the jump came down at, with ticks of `dts` in turn; -1 if it never did.
+float jumpLandsAt(const std::vector<float>& dts) {
+    Rig rig(jumpFighter(), {dummyKind()});
+    rig.put(0, 10.f, 0.f);
+    rig.in.jump = true;
+    float t = 0.f;
+    for (std::size_t i = 0; i < 400; ++i) {
+        const float step = dts[i % dts.size()];
+        const ArenaOutput& o = rig.tick(step);
+        t += step;
+        if (o.player.action != ArenaAction::Jump) return -1.f;
+        if (o.player.jumpTime >= 0.7f - 1e-4f) return t;
+    }
+    return -1.f;
+}
+
+// The light's action time on the last tick before a jump pressed at 0.28 s of it took over, and the cancels.
+std::pair<float, int> jumpOutOfLight(float cancelRoll) {
+    ArenaFighter f = jumpFighter();
+    f.light[0].cancelRoll = cancelRoll;
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 10.f, 0.f);
+    rig.in.light = true;
+    rig.tick();
+    for (int i = 0; i < 60 && rig.out().player.actionTime < 0.28f; ++i) rig.tick();
+    rig.in.jump = true;
+    float last = rig.out().player.actionTime;
+    for (int i = 0; i < 60; ++i) {
+        const ArenaOutput& o = rig.tick();
+        if (o.player.action == ArenaAction::Jump) return {last, rig.fight.stats().cancels};
+        last = o.player.actionTime;
+    }
+    return {-1.f, 0};
+}
+
+} // namespace
+
+TEST_CASE("arena jump: take-off, air and landing run on the air clock; free; the arc tops at jumpHeight") {
+    Rig rig(jumpFighter(), {dummyKind()});
+    rig.put(0, 10.f, 0.f);
+    const float stamina = rig.fight.stamina();
+    rig.in.jump = true;
+    float t = 0.f, peak = 0.f, freeAt = -1.f;
+    for (int i = 0; i < 90; ++i) {
+        const ArenaOutput& o = rig.tick();
+        t += kDt;
+        if (o.player.action != ArenaAction::Jump) {
+            freeAt = t;
+            CHECK(o.player.jumpTime == -1.f);
+            CHECK(o.player.height == 0.f);
+            break;
+        }
+        CHECK(o.player.jumpTime == doctest::Approx(t).epsilon(1e-4));
+        CHECK(o.player.actionTime == doctest::Approx(t).epsilon(1e-4));
+        if (t < 0.1f - 1e-4f || t > 0.7f + 1e-4f) CHECK(o.player.height == 0.f); // take-off and landing: on the floor
+        else if (t > 0.1f + 1e-4f && t < 0.7f - 1e-4f) CHECK(o.player.height > 0.f);
+        peak = std::max(peak, o.player.height);
+    }
+    CHECK(peak == doctest::Approx(0.5f).epsilon(0.01));
+    CHECK(freeAt >= 1.f - 1e-4f); // free once the landing has run out ...
+    CHECK(freeAt <= 1.f + kDt + 1e-4f);
+    CHECK(rig.fight.stamina() == stamina); // ... and it cost nothing
+    CHECK(rig.fight.stats().jumps == 1);
+    CHECK(rig.fight.stats().landings == 1);
+    CHECK(arenaFeatureChecks(rig.fight.stats()).jumpCheck == ArenaCheck::Pass);
+
+    SUBCASE("jumpAir 0: the kit can't jump, the press is dropped") {
+        ArenaFighter f = jumpFighter();
+        f.jumpAir = 0.f;
+        Rig flat(f, {dummyKind()});
+        flat.in.jump = true;
+        CHECK(flat.tick().player.action == ArenaAction::Idle);
+        flat.run(20);
+        CHECK(flat.fight.stats().jumps == 0);
+        CHECK(arenaFeatureChecks(flat.fight.stats()).jumpCheck == ArenaCheck::NotShown);
+    }
+}
+
+TEST_CASE("arena jump: the landing's weight: no guard or dodge cuts in before jumpLandLock; in the air nothing but the air light") {
+    Rig rig(jumpFighter(), {dummyKind()});
+    rig.put(0, 10.f, 0.f);
+    rig.in.jump = true;
+    rig.tick();
+    runToJumpClock(rig, 0.3f);
+    const float stamina = rig.fight.stamina();
+    rig.in.dodge = true; // in the air: refused, and the buffer runs out before the landing
+    CHECK(rig.tick().player.action == ArenaAction::Jump);
+    rig.in.heavy = true;
+    CHECK(rig.tick().player.action == ArenaAction::Jump);
+    rig.in.heal = true;
+    CHECK(rig.tick().player.action == ArenaAction::Jump);
+    rig.in.jump = true; // no second jump
+    CHECK(rig.tick().player.action == ArenaAction::Jump);
+    runToJumpClock(rig, 0.72f);
+    REQUIRE(rig.out().player.action == ArenaAction::Jump);
+    CHECK(rig.fight.stamina() == stamina);
+    CHECK(rig.fight.stats().jumps == 1);
+    // Landed: a held guard waits for the lock to pass (0.85).
+    rig.in.guard = true;
+    float lastJump = rig.out().player.jumpTime;
+    for (int i = 0; i < 30; ++i) {
+        const ArenaOutput& o = rig.tick();
+        if (o.player.action != ArenaAction::Jump) break;
+        lastJump = o.player.jumpTime;
+    }
+    CHECK(rig.out().player.action == ArenaAction::Guard);
+    CHECK(lastJump == doctest::Approx(0.85f).epsilon(1e-3)); // the last jump tick ends as the lock does ...
+    // ... and the guard takes the next one
+    CHECK(rig.out().player.jumpTime == -1.f);
+    CHECK(rig.fight.stats().landings == 1);
+
+    SUBCASE("a dodge pressed in the landing lock waits in the buffer and goes as the lock ends") {
+        Rig r2(jumpFighter(), {dummyKind()});
+        r2.put(0, 10.f, 0.f);
+        r2.in.jump = true;
+        r2.tick();
+        runToJumpClock(r2, 0.75f);
+        r2.in.move = Vec2{0.f, 1.f};
+        r2.in.dodge = true;
+        float before = r2.out().player.jumpTime;
+        for (int i = 0; i < 30; ++i) {
+            const ArenaOutput& o = r2.tick();
+            if (o.player.action != ArenaAction::Jump) break;
+            before = o.player.jumpTime;
+        }
+        CHECK(r2.out().player.action == ArenaAction::Dodge);
+        CHECK(before == doctest::Approx(0.85f).epsilon(1e-3));
+    }
+}
+
+TEST_CASE("arena jump: it comes down at the same air time at 1/60, 1/30 and uneven ticks; a hit pause holds the clock") {
+    // The clock is the time since the press, whatever the ticks: the landing comes on the first tick at or past 0.7 s.
+    for (const std::vector<float>& dts : {std::vector<float>{1.f / 60.f}, std::vector<float>{1.f / 30.f},
+                                          std::vector<float>{1.f / 60.f, 1.f / 30.f, 1.f / 120.f, 0.05f}}) {
+        const float at = jumpLandsAt(dts);
+        float most = 0.f;
+        for (const float d : dts) most = std::max(most, d);
+        CHECK(at >= 0.7f - 1e-4f);
+        CHECK(at < 0.7f + most + 1e-4f);
+    }
+    {   // jumpTime is the summed dts, whatever they were
+        Rig rig(jumpFighter(), {dummyKind()});
+        rig.put(0, 10.f, 0.f);
+        rig.in.jump = true;
+        float t = 0.f;
+        for (const float step : {1.f / 60.f, 1.f / 30.f, 1.f / 120.f, 0.05f, 1.f / 60.f, 0.05f}) {
+            const ArenaOutput& o = rig.tick(step);
+            t += step;
+            CHECK(o.player.jumpTime == doctest::Approx(t).epsilon(1e-4));
+        }
+    }
+    {   // an air light that lands with a hit pause on the attacker holds the air clock for the pause
+        ArenaFighter f = jumpFighter();
+        f.jumpLight.hitStop = 0.1f;
+        f.jumpLight.hitStopSelf = 1.f;
+        Rig rig(f, {dummyKind()}); // the dummy stands 1.5 m ahead
+        rig.in.jump = true;
+        rig.tick();
+        runToJumpClock(rig, 0.2f);
+        rig.in.light = true;
+        float t = rig.out().player.jumpTime, freeAt = -1.f;
+        for (int i = 0; i < 120; ++i) {
+            const ArenaOutput& o = rig.tick();
+            t += kDt;
+            if (o.player.action != ArenaAction::Jump && o.player.action != ArenaAction::Light) {
+                freeAt = t;
+                break;
+            }
+        }
+        CHECK(rig.fight.stats().hits == 1);
+        CHECK(freeAt >= 1.1f - 1e-3f); // 1.0 plus the pause
+        CHECK(freeAt <= 1.1f + 2.f * kDt);
+        CHECK(rig.fight.stats().landings == 1);
+    }
+}
+
+TEST_CASE("arena jump: a low move passes under in the clear window; a hitsAir move lands and ends the jump; one on the take-off lands") {
+    SUBCASE("low (hitsAir false), in the window: it passes under, told once") {
+        const SweepJump r = sweepJump(false, 0.3f);
+        CHECK(r.evaded == 1);
+        CHECK(r.airEvades == 1);
+        CHECK(r.hit == 0);
+        CHECK(r.hp == 100);
+        CHECK(r.landings == 1);
+    }
+    SUBCASE("hitsAir true, the same timing: it lands and knocks the player out of the air") {
+        const SweepJump r = sweepJump(true, 0.3f);
+        CHECK(r.evaded == 0);
+        CHECK(r.hit == 1);
+        CHECK(r.knocked);
+        CHECK(r.hp == 80);
+        CHECK(r.landings == 0);
+    }
+    SUBCASE("low, but on the take-off (outside the window): it lands, and the jump goes on from the floor") {
+        const SweepJump r = sweepJump(false, 0.03f);
+        CHECK(r.evaded == 0);
+        CHECK(r.hit == 1);
+        CHECK_FALSE(r.knocked);
+        CHECK(r.landings == 1);
+    }
+}
+
+TEST_CASE("arena jump: one air light, cut short by the landing; a jump cuts an attack through cancelRoll") {
+    SUBCASE("one air light, struck in the air, then the jump goes on") {
+        Rig rig(jumpFighter(), {dummyKind()});
+        rig.in.jump = true;
+        rig.tick();
+        runToJumpClock(rig, 0.2f);
+        const float h = rig.out().player.height;
+        const float clock = rig.out().player.jumpTime;
+        rig.in.light = true;
+        const ArenaOutput& o = rig.tick();
+        CHECK(o.player.action == ArenaAction::Light);
+        CHECK(o.player.move == kArenaAirMove);
+        CHECK(o.player.jumpTime == doctest::Approx(clock + kDt).epsilon(1e-4));
+        CHECK(o.player.height > h); // still rising on the same arc
+        REQUIRE(rig.find(ArenaEventType::AttackStarted) != nullptr);
+        CHECK(rig.find(ArenaEventType::AttackStarted)->event.move == kArenaAirMove);
+        for (int i = 0; i < 60 && rig.out().player.action == ArenaAction::Light; ++i) rig.tick();
+        CHECK(rig.out().player.action == ArenaAction::Jump); // it ended in the air
+        CHECK(rig.out().player.height > 0.f);
+        rig.in.light = true; // a second is refused
+        CHECK(rig.tick().player.action == ArenaAction::Jump);
+        CHECK(rig.fight.stats().airLights == 1);
+        CHECK(rig.fight.stats().hits == 1);
+        CHECK(rig.fight.stats().lights == 0); // not a chain light
+        for (int i = 0; i < 60 && rig.out().player.action == ArenaAction::Jump; ++i) rig.tick();
+        CHECK(rig.out().player.action == ArenaAction::Idle);
+        CHECK(rig.fight.stats().landings == 1);
+    }
+    SUBCASE("an air light still running at the landing is cut short by it") {
+        ArenaFighter f = jumpFighter();
+        f.jumpLight = swing(0.1f, 0.1f, 0.8f, 2.f, 8, 0.f);
+        Rig rig(f, {dummyKind()});
+        rig.in.jump = true;
+        rig.tick();
+        runToJumpClock(rig, 0.3f);
+        rig.in.light = true;
+        rig.tick();
+        REQUIRE(rig.out().player.action == ArenaAction::Light);
+        bool sawLanding = false;
+        for (int i = 0; i < 40; ++i) {
+            const ArenaOutput& o = rig.tick();
+            if (o.player.jumpTime >= 0.7f - 1e-4f || o.player.action != ArenaAction::Light) {
+                CHECK(o.player.action == ArenaAction::Jump);
+                CHECK(o.player.height == 0.f);
+                sawLanding = true;
+                break;
+            }
+        }
+        CHECK(sawLanding);
+        CHECK(rig.fight.stats().landings == 1);
+    }
+    SUBCASE("from a light's recovery: at cancelRoll when it names one, else at its plain cancel point") {
+        const std::pair<float, int> early = jumpOutOfLight(0.5f); // 0.5 of the 0.6 s attack: 0.3 s
+        CHECK(early.first >= 0.3f - kDt - 1e-4f);
+        CHECK(early.first < 0.3f + 1e-4f);
+        CHECK(early.second == 1);
+        const std::pair<float, int> plain = jumpOutOfLight(-1.f); // startup + active + half the recovery: 0.45 s
+        CHECK(plain.first >= 0.45f - kDt - 1e-4f);
+        CHECK(plain.first < 0.45f + 1e-4f);
+    }
+}
+
+TEST_CASE("arena jump: restart, victory and defeat in the air put the player on the floor") {
+    SUBCASE("restart") {
+        Rig rig(jumpFighter(), {dummyKind()});
+        rig.in.jump = true;
+        rig.tick();
+        runToJumpClock(rig, 0.4f);
+        REQUIRE(rig.out().player.height > 0.f);
+        rig.fight.restart();
+        CHECK(rig.out().player.jumpTime == -1.f);
+        CHECK(rig.out().player.height == 0.f);
+        CHECK(rig.out().player.action == ArenaAction::Idle);
+    }
+    SUBCASE("victory: the air light kills the last enemy") {
+        ArenaEnemyKind k = dummyKind();
+        k.hp = 5;
+        Rig rig(jumpFighter(), {k});
+        rig.in.jump = true;
+        rig.tick();
+        runToJumpClock(rig, 0.2f);
+        rig.in.light = true;
+        for (int i = 0; i < 30 && rig.fight.phase() == ArenaPhase::Fighting; ++i) rig.tick();
+        REQUIRE(rig.fight.phase() == ArenaPhase::Victory);
+        CHECK(rig.out().player.height == 0.f);
+        CHECK(rig.out().player.jumpTime == -1.f);
+        CHECK(rig.tick().player.height == 0.f);
+    }
+    SUBCASE("defeat: a hitsAir blow too big to live through") {
+        ArenaEnemyKind k = hitterKind(swing(0.3f, 0.15f, 0.5f, 2.f, 500));
+        k.moves[0].hitsAir = true;
+        Rig rig(jumpFighter(), {k});
+        for (int i = 0; i < 600 && rig.out().enemies[0].part != ArenaPart::Startup; ++i) rig.tick();
+        rig.in.jump = true;
+        for (int i = 0; i < 60 && rig.fight.phase() == ArenaPhase::Fighting; ++i) rig.tick();
+        REQUIRE(rig.fight.phase() == ArenaPhase::Defeat);
+        CHECK(rig.out().player.height == 0.f);
+        CHECK(rig.out().player.jumpTime == -1.f);
+    }
+}
+
+TEST_CASE("arena table: the jump's keys load; hitsAir defaults from the tell; bad jump windows are refused") {
+    ArenaTable t;
+    REQUIRE(loadError(tableJson(R"([ { "id": "default", "jumpAir": 0.5, "jumpHeight": 0.7, "jumpLight": { "damage": 9 } } ])",
+                                R"([ { "id": "dummy", "moves": [ { "tell": "sweep" }, { "tell": "slam", "hitsAir": true },
+                                       { "tell": "strike" }, { "tell": "overhead", "hitsAir": false }, { } ] } ])"),
+                      &t)
+                .empty());
+    CHECK(t.fighters[0].jumpAir == 0.5f);
+    CHECK(t.fighters[0].jumpHeight == 0.7f);
+    CHECK(t.fighters[0].jumpLight.damage == 9);
+    const ArenaEnemyKind& k = t.enemies[0];
+    CHECK_FALSE(k.moves[0].hitsAir); // a sweep runs along the floor
+    CHECK(k.moves[1].hitsAir);       // the file says so
+    CHECK(k.moves[2].hitsAir);
+    CHECK_FALSE(k.moves[3].hitsAir);
+    CHECK(k.moves[4].hitsAir);       // no tell: a strike
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "jumpClearStart": 0.6, "jumpClearEnd": 0.5 } ])", kEnemiesOk)),
+                   "jumpClearStart"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "jumpClearEnd": 0.9 } ])", kEnemiesOk)), "jumpClearEnd"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "jumpLandLock": 0.5 } ])", kEnemiesOk)), "jumpLandLock"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "jumpAir": 9 } ])", kEnemiesOk)), "jumpAir"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "hitsAir": 1 } ] } ])")), "hitsAir"));
 }
