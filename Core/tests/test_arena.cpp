@@ -2630,6 +2630,50 @@ TEST_CASE("arena dodge: the drawn body turns into the roll over its first part i
     CHECK(prevStep < 0.75f * biggest);
 }
 
+TEST_CASE("arena dodge: a backstep is drawn as a roll the way it goes, then turns back to the lock; the rules keep facing it") {
+    const ArenaFighter fighter = shortRoller();
+    Rig rig(fighter, {dummyKind()});
+    rig.in.view = Vec2{1.f, 0.f};
+    rig.in.lock = true;
+    rig.run(3);
+    REQUIRE(rig.fight.lock() == 0);
+    rig.in.dodge = true; // no stick: a backstep
+    rig.tick();
+    rig.in.dodge = false;
+    REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+    REQUIRE(rig.out().player.backstep);
+    const Vec2 back = rig.out().player.dodgeDir;
+    while (rig.out().player.action == ArenaAction::Dodge) {
+        CHECK(angleBetween(rig.out().player.facing, toEnemy(rig)) < 0.05f); // the rules face the target throughout
+        rig.tick();
+    }
+    // the drawn body reached the backstep's way during the roll (the roll's turn: within half of it), so it was drawn rolling there
+    Rig again(fighter, {dummyKind()});
+    again.in.view = Vec2{1.f, 0.f};
+    again.in.lock = true;
+    again.run(3);
+    again.in.dodge = true;
+    again.tick();
+    again.in.dodge = false;
+    bool reached = false;
+    while (again.out().player.action == ArenaAction::Dodge) {
+        if (angleBetween(again.out().player.drawFacing, again.out().player.dodgeDir) < 0.01f &&
+            again.out().player.actionTime <= 0.5f * fighter.dodgeTime + kDt)
+            reached = true;
+        again.tick();
+    }
+    CHECK(reached);
+    // and back on the lock, turning, after it
+    int ticks = 0;
+    while (angleBetween(again.out().player.drawFacing, again.out().player.facing) > 0.f && ticks < 120) {
+        again.tick();
+        ++ticks;
+    }
+    CHECK(ticks > 3);
+    CHECK(ticks < 120);
+    CHECK(back.x == doctest::Approx(again.out().player.dodgeDir.x));
+}
+
 TEST_CASE("arena attack: a light right after a roll away turns the drawn body over startup, on the rules' facing by the blow") {
     for (const bool heavy : {false, true}) {
         CAPTURE(heavy);

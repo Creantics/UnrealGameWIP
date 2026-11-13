@@ -2399,10 +2399,11 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		case ftcore::ArenaAction::Dodge:
 		{
 			Pose.bDodging = true;
-			const ftcore::Vec2& F = P.facing;
+			const ftcore::Vec2 F = PlayerDrawFacing(P); // the way the body is drawn facing
 			const ftcore::Vec2& Dir = P.dodgeDir;
 			Pose.DodgeLocal = FVector2D(Dir.x * F.x + Dir.y * F.y, Dir.y * F.x - Dir.x * F.y);
 			Pose.DodgeFraction = D.fighter.dodgeTime > 0.f ? P.actionTime / D.fighter.dodgeTime : 1.f;
+			Pose.DodgeTime = D.fighter.dodgeTime;
 			break;
 		}
 		case ftcore::ArenaAction::Guard:

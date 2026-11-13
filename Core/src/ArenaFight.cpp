@@ -1052,8 +1052,8 @@ struct ArenaFightImpl {
         pl.velocity = vel;
         // The drawn facing. An attack's startup turns the body toward the rules' facing at half a turn per
         // kArenaAttackTurnShare of the startup (at least turnRate), easing out, and never slower than reaches it as
-        // startup ends; from its active part on (the blow) it is drawn as the rules face it. A roll turns the body
-        // into its way at half a turn per kArenaDodgeTurnShare of the roll (at least turnRate), easing out, so its
+        // startup ends; from its active part on (the blow) it is drawn as the rules face it. A roll (a backstep too: drawn as
+        // a forward roll) turns the body into its way (dodgeDir) at half a turn per kArenaDodgeTurnShare of the roll (at least turnRate), easing out, so its
         // start snap is drawn with the roll; anything else turns toward the rules' facing at turnRate, so a snap of
         // theirs is drawn as a turn.
         const ArenaAttack* const attack = attackOf(pl, fi);
@@ -1067,7 +1067,7 @@ struct ArenaFightImpl {
             const float took = std::fabs(std::atan2(arenaCross(pl.drawFacing, eased), arenaDot(pl.drawFacing, eased)));
             pl.drawFacing = took >= need ? eased : arenaTurn(pl.drawFacing, pl.facing, need);
         } else if (pl.action == ArenaAction::Dodge)
-            pl.drawFacing = arenaDrawTurn(pl.drawFacing, pl.facing,
+            pl.drawFacing = arenaDrawTurn(pl.drawFacing, pl.dodgeDir,
                                       std::max(fi.turnRate, kArenaPi / (kArenaDodgeTurnShare * std::max(fi.dodgeTime, dt))) * dt);
         else pl.drawFacing = arenaDrawTurn(pl.drawFacing, pl.facing, fi.turnRate * dt);
     }

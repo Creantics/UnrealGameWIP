@@ -66,6 +66,7 @@ struct FFTArenaPose
 	bool bDodging = false;
 	FVector2D DodgeLocal = FVector2D(-1.0, 0.0); // the roll's way in the figure's own frame (x forward)
 	float DodgeFraction = 0.f;
+	float DodgeTime = 0.f; // s: the whole roll (the land-roll clip is fitted to it)
 	float LeanBack = 0.f;  // degrees: hitstun, guard break, stagger, open
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
@@ -244,6 +245,13 @@ private:
 	bool bTellShown = true;
 	bool bShieldShown = true;
 	bool bWasLying = false;
+	// A lead's roll: the land-roll traversal clip playing for it (-1: none), from its touchdown to back up.
+	int32 RollClip = -1;
+	float RollFrom = 0.f;
+	float RollTo = 0.f;
+	float RollRate = 1.f;
+	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
+	bool RollWithClip(const FFTArenaPose& Pose);
 	TWeakObjectPtr<AActor> PoseHost;
 	void TieMeshTicks();
 	void UntieMeshTicks();
