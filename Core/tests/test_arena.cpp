@@ -6159,6 +6159,9 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(arenaPlayerStrike(duy, kArenaShotMove) == FightClip::WeaponRight);
     CHECK(arenaPlayerStrike(devin, kArenaShotMove) == FightClip::Stance);
     CHECK(arenaPlayerStrike(duy, kArenaHeavyMove) == FightClip::KickRight);
+    // The air light throws the heavy's strike: the gauntlets' right punch, the gun kit's right kick.
+    CHECK(arenaPlayerStrike(devin, kArenaAirMove) == FightClip::StrikeRight);
+    CHECK(arenaPlayerStrike(duy, kArenaAirMove) == FightClip::KickRight);
     CHECK(arenaPlayerStrike(third, 1) == FightClip::Cast);
     CHECK(arenaPlayerStrike(third, kArenaRiposteMove) == FightClip::Counter);
     CHECK(arenaPlayerStrike(third, kArenaReleaseMove) == FightClip::Finisher);

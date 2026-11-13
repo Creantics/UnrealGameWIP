@@ -617,6 +617,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		if (Lead)
 		{
 			LeadWeapons.Begin(PlayerFigure, *Lead, Def.fighter);
+			PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLand);
 		}
 	}
 	if (PC)
@@ -2009,7 +2010,13 @@ void UFTArenaRunner::StepFight()
 			}
 		}
 		const float Want = ftcore::attackUpperShare(AttackMoveTable, Walk);
-		if (!bLeadPaused)
+		// The air light has no clip of its own yet: the strike plays on the upper body only, over the jump's legs.
+		const bool bAirStrike = bAttacking && Out.player.move == ftcore::kArenaAirMove;
+		if (bAirStrike)
+		{
+			LeadUpperShare = 1.f;
+		}
+		else if (!bLeadPaused)
 		{
 			LeadUpperShare = FMath::Clamp(Want, LeadUpperShare - kUpperShareRate * StepSeconds, LeadUpperShare + kUpperShareRate * StepSeconds);
 		}
@@ -2629,6 +2636,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.bAir = AirT < Kit.jumpAir;
 			Pose.AirHeight = AirT > 0.f ? 100.f * Kit.jumpHeight * 4.f * U * (1.f - U) : 0.f;
 			Pose.AirRise = 100.f * Kit.jumpHeight * 4.f * (1.f - 2.f * U) / Air;
+			Pose.AirFraction = AirT > 0.f && Pose.bAir ? U : -1.f;
 			Pose.bFootLock = false;
 			Pose.JumpClock = P.jumpTime;
 		}

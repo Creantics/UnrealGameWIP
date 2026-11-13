@@ -2750,7 +2750,7 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     case kArenaRiposteMove: return FightClip::Counter;
     case kArenaReleaseMove: return FightClip::Finisher;
     case kArenaShotMove: return kit.weapon == ArenaWeapon::Guns ? FightClip::WeaponRight : FightClip::Stance;
-    case kArenaAirMove: move = 0; break; // the air light strikes as the chain's first
+    case kArenaAirMove: return arenaHeavyStrike(kit); // the air light: the kit's committed strike, downward from the air
     default: break;
     }
     if (move >= kit.lightCount || static_cast<std::size_t>(move) >= kMaxLightChain) return FightClip::Stance;

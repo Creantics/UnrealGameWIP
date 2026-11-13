@@ -723,6 +723,46 @@ TEST_CASE("locomotion: the lean leads a start and leans back into a stop by how 
     CHECK(peak < 0.01f);
 }
 
+TEST_CASE("locomotion: a host's own arc fits the take-off to its air time and cuts the standing landing short") {
+    Locomotion l = makeLoco();
+    LocoClipInfo jump{2.5f, 0.f, 1, 0.f};
+    jump.launch = 0.35f;
+    jump.contact = 1.29f;
+    LocoClipInfo land{2.77f, 0.f, 1, 0.f};
+    land.contact = 0.5f;
+    l.setClip(LocoClip::JumpStart, jump);
+    l.setClip(LocoClip::Land, land);
+    l.tuning().jumpAir = 0.6f;
+    l.tuning().jumpLead = 0.08f;
+    l.tuning().landPlay = 0.24f;
+    l.tuning().landRate = 1.5f;
+    l.reset();
+    run(l, 1.f, {});
+    // In from the push-off: 0.08 s before the launch at the rate that fits 0.94 s of clip air into 0.6 s.
+    l.update({kDt, 0.f, 0.f, true, 300.f});
+    REQUIRE(l.state() == LocoState::Rising);
+    const float r = 0.94f / 0.6f;
+    CHECK(l.rate(LocoClip::JumpStart) == doctest::Approx(r));
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(0.35f - 0.08f * r + kDt * r));
+    // At the host's touchdown, 0.68 s on, the clip is at its contact.
+    run(l, 0.68f - kDt, {0.f, 0.f, 0.f, true, -100.f});
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(1.29f).epsilon(0.02));
+    l.update({kDt, 0.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    CHECK(l.rate(LocoClip::Land) == doctest::Approx(1.5f));
+    run(l, 0.2f, {});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.05f, {});
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Idle);
+    // Unset, the take-off plays at its own rate from its launch again.
+    l.tuning().jumpAir = 0.f;
+    run(l, 1.f, {});
+    l.update({kDt, 0.f, 0.f, true, 300.f});
+    CHECK(l.rate(LocoClip::JumpStart) == doctest::Approx(1.f));
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(0.35f + kDt));
+}
+
 TEST_CASE("locomotion: the body tucks in the air and dips into the landing") {
     Locomotion l = makeLoco();
     run(l, 1.f, {});
