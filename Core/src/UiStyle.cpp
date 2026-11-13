@@ -172,6 +172,19 @@ float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale)
 
 float uiLinePx(const UiStyle& s, float height) { return std::max(1.f, s.lineWeight * std::max(height, 1.f) / 1080.f); }
 
+UiColor uiLumaFloor(UiColor c, float floor) {
+    const float f = std::clamp(floor, 0.f, 1.f);
+    if (luminance(c) >= f) return c;
+    // Luminance rises monotonically with the mix toward white: bisect the smallest mix that reaches the floor.
+    float lo = 0.f, hi = 1.f;
+    for (int i = 0; i < 20; ++i) {
+        const float m = 0.5f * (lo + hi);
+        const UiColor t{c.r + (1.f - c.r) * m, c.g + (1.f - c.g) * m, c.b + (1.f - c.b) * m, c.a};
+        (luminance(t) >= f ? hi : lo) = m;
+    }
+    return UiColor{c.r + (1.f - c.r) * hi, c.g + (1.f - c.g) * hi, c.b + (1.f - c.b) * hi, c.a};
+}
+
 float uiContrast(UiColor fg, UiColor bg, UiColor under) {
     const UiColor b = over(bg, under);
     const UiColor f = over(fg, b);
@@ -343,6 +356,28 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 float* dst = fk == "in" ? &s.fade.in : fk == "rest" ? &s.fade.rest : fk == "out" ? &s.fade.out
                     : fk == "rest_alpha" ? &s.fade.restAlpha : nullptr;
                 if (!dst || !number(fv, 0.f, fk == "rest_alpha" ? 1.f : 30.f, *dst)) return bad(key, fk);
+            }
+        } else if (key == "word_luma_floor") {
+            if (!number(v, 0.f, 1.f, s.wordLumaFloor)) return bad("style", key);
+        } else if (key == "budget") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view bk = v.key(j);
+                const JsonValue bv = v.value(j);
+                float n = 0.f;
+                if (bk == "rest") {
+                    if (!number(bv, 0.f, 30.f, s.budget.rest)) return bad(key, bk);
+                } else if (bk == "hint") {
+                    if (!number(bv, 0.f, 30.f, s.budget.hint)) return bad(key, bk);
+                } else if (bk == "marks") {
+                    if (!number(bv, 2.f, 40.f, n)) return bad(key, bk);
+                    s.budget.marks = static_cast<std::uint8_t>(n);
+                } else if (bk == "popups_per_body") {
+                    if (!number(bv, 1.f, 8.f, n)) return bad(key, bk);
+                    s.budget.popupsPerBody = static_cast<std::uint8_t>(n);
+                } else {
+                    return bad(key, bk);
+                }
             }
         } else if (key == "layers") {
             if (v.type() != JsonType::Object) return bad("style", key);

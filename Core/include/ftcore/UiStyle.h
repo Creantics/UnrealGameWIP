@@ -79,6 +79,14 @@ struct UiFadeTimes {
     float restAlpha = 0.35f;
 };
 
+// The arena HUD's element budget (Core UiBudget): how much may be on screen at once.
+struct UiBudgetRules {
+    float rest = 3.f;            // seconds with nothing changed before the HUD rests (only the lead and party show)
+    std::uint8_t marks = 10;     // at most this many marks in action
+    std::uint8_t popupsPerBody = 2; // at most this many popups on one body
+    float hint = 3.f;            // seconds the dialogue's key hints show after an input
+};
+
 // The visual direction's optional layers (any mix may be on).
 struct UiLayers {
     bool hairlines = true;      // thin-line meters and frames
@@ -120,6 +128,8 @@ struct UiStyle {
     UiMeterShape meter = UiMeterShape::Line;
     std::array<UiLeadMark, 3> leadMark{UiLeadMark::Knuckles, UiLeadMark::Cylinder, UiLeadMark::Mask}; // by party seat
     UiFadeTimes fade;
+    UiBudgetRules budget;
+    float wordLumaFloor = 0.45f; // a coloured word's relative luminance is lifted to at least this (uiLumaFloor)
     float minTextPx = 18.f;     // the floor at 1080p
     float minTextPxAbsolute = 14.f; // the floor at any height
 };
@@ -145,6 +155,9 @@ FTCORE_API float uiLinePx(const UiStyle& s, float height);
 
 // WCAG contrast ratio of `fg` over `bg`, each first composited over `under` (opaque) by its alpha.
 FTCORE_API float uiContrast(UiColor fg, UiColor bg, UiColor under);
+
+// `c` lifted toward white until its relative luminance is at least `floor` (alpha kept); unchanged when already there.
+FTCORE_API UiColor uiLumaFloor(UiColor c, float floor);
 
 FTCORE_API UiCueShape uiCueShape(const UiStyle& s, UiToken token);
 
