@@ -33,6 +33,9 @@ add_library(ftcore STATIC
     src/StoryCast.cpp
     src/AudioCues.cpp
     src/Backlog.cpp
+    src/UiGlyphs.cpp
+    src/UiStyle.cpp
+    src/UiViews.cpp
     src/Banter.cpp
     src/Battle.cpp
     src/BattleCamera.cpp
@@ -144,6 +147,9 @@ add_library(ftcore STATIC
     src/Inventory.cpp
     src/Shop.cpp
     src/ArenaFight.cpp
+    src/Chairs.cpp
+    src/Brief.cpp
+    src/ScarePacer.cpp
     src/FieldStrike.cpp
     src/AimStance.cpp
     src/InputBindings.cpp
@@ -298,6 +304,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_look_body.cpp
         tests/test_garment_front.cpp
         tests/test_backlog.cpp
+        tests/test_ui.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_battle_camera.cpp
@@ -414,6 +421,10 @@ if(FTCORE_BUILD_TESTS)
         tests/test_shop.cpp
         tests/test_pause.cpp
         tests/test_arena.cpp
+        tests/test_arena_load.cpp
+        tests/test_chairs.cpp
+        tests/test_brief.cpp
+        tests/test_scare_pacer.cpp
         tests/test_field_strike.cpp
         tests/test_aim.cpp
         tests/test_input_bindings.cpp

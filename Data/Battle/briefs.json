@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "common": { "rounds": 6, "reload": 1.2, "shot": { "stamina": 0 } },
+  "briefs": [
+    {
+      "id": "bailiff",
+      "base": [14, 7, 12, 9, 8],
+      "growth": [85, 30, 70, 35, 30],
+      "kit": {
+        "poise": 31.25, "guardAbsorb": 0.88,
+        "light": [
+          { "damage": 12, "poiseDamage": 12 },
+          { "damage": 12, "poiseDamage": 12 },
+          { "damage": 19, "poiseDamage": 24 }
+        ],
+        "heavy": { "damage": 40, "poiseDamage": 54 },
+        "riposte": { "damage": 48 },
+        "shot": { "startup": 0.26, "recovery": 0.38 }
+      }
+    },
+    {
+      "id": "notary",
+      "base": [7, 15, 9, 10, 9],
+      "growth": [25, 90, 45, 45, 45],
+      "kit": {
+        "light": [
+          { "damage": 10 },
+          { "damage": 10 },
+          { "damage": 15 }
+        ],
+        "heavy": { "damage": 32 },
+        "riposte": { "damage": 40 },
+        "shot": { "damage": 12, "range": 36, "poiseDamage": 7.5 }
+      }
+    }
+  ]
+}

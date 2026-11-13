@@ -136,6 +136,23 @@ std::string encodeStorySave(const StorySave& save) {
         const auto m = std::to_chars(buf, buf + sizeof buf, c.dayMinutes);
         out += ",\"dayMinutes\":" + std::string(buf, m.ptr) + ",\"day\":" + std::to_string(c.day) + '}';
     }
+    if (save.hasScares) {
+        const ScareSave& sc = save.scares;
+        char buf[40];
+        const auto num = [&](double v) {
+            const auto r = std::to_chars(buf, buf + sizeof buf, v); // the shortest text that reads back exactly
+            return std::string(buf, r.ptr);
+        };
+        out += ",\"scares\":{\"playSeconds\":" + num(sc.playSeconds) + ",\"ring\":[";
+        for (std::size_t i = 0; i < sc.count && i < kScareRing; ++i) {
+            if (i) out += ',';
+            out += "{\"t\":" + num(sc.times[i]) + ",\"kind\":\"" + scareKindName(sc.kinds[i]) + "\"}";
+        }
+        out += "],\"head\":" + std::to_string(sc.head) + ",\"lastKind\":\"" + scareKindName(sc.lastKind) +
+               "\",\"seen\":";
+        appendQuoted(out, sc.seenHex);
+        out += '}';
+    }
     out += '}';
     return out;
 }
@@ -213,6 +230,36 @@ bool decodeStorySave(std::string_view text, StorySave& out, std::string* error) 
         c.day = static_cast<std::uint32_t>(day.integer());
         result.clock = worldClockSanitized(c);
         result.hasClock = true;
+    }
+    // Optional (a save from before the scare pacer has none: the pacer starts fresh).
+    const JsonValue scares = root["scares"];
+    if (!scares.isAbsent()) {
+        if (!scares.isObject()) return fail(error, "save: \"scares\" is not an object");
+        const JsonValue play = scares["playSeconds"], ring = scares["ring"], head = scares["head"],
+                        last = scares["lastKind"], seenBits = scares["seen"];
+        if (!play.isNumber() || !ring.isArray() || !head.isInteger() || !last.isString() || !seenBits.isString())
+            return fail(error, "save: scares.playSeconds, .ring, .head, .lastKind or .seen is missing or the wrong type");
+        if (ring.size() > kScareRing) return fail(error, "save: scares.ring holds more than 8 entries");
+        ScareSave sc;
+        sc.playSeconds = play.number();
+        sc.count = static_cast<std::uint8_t>(ring.size());
+        for (std::uint32_t i = 0; i < ring.size(); ++i) {
+            const JsonValue e = ring[i];
+            const JsonValue t = e["t"], kind = e["kind"];
+            if (!e.isObject() || !t.isNumber() || !kind.isString() || !scareKindFromName(kind.string(), sc.kinds[i]))
+                return fail(error, "save: scares.ring[" + std::to_string(i) + "] needs a number t and a known kind");
+            sc.times[i] = t.number();
+        }
+        if (head.integer() < 0 || head.integer() >= static_cast<std::int64_t>(kScareRing))
+            return fail(error, "save: scares.head is out of range");
+        sc.head = static_cast<std::uint8_t>(head.integer());
+        if (last.string() == "none") sc.lastKind = ScareKind::Count;
+        else if (!scareKindFromName(last.string(), sc.lastKind)) return fail(error, "save: scares.lastKind is unknown");
+        sc.seenHex = std::string(seenBits.string());
+        ScarePacer check;
+        if (!check.load(sc)) return fail(error, "save: scares holds a negative or non-finite time, or bad seen bits");
+        result.scares = sc;
+        result.hasScares = true;
     }
     const JsonValue party = root["party"];
     if (!party.isAbsent()) {

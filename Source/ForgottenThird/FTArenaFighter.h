@@ -67,6 +67,8 @@ struct FFTArenaPose
 	FVector2D DodgeLocal = FVector2D(-1.0, 0.0); // the roll's way in the figure's own frame (x forward)
 	float DodgeFraction = 0.f;
 	float DodgeTime = 0.f; // s: the whole roll (the land-roll clip is fitted to it)
+	bool bDodgeBack = false; // a locked dodge back from the target: drawn facing it, a hop back on the dash clip
+	int8 DodgeSide = 0;      // a locked side dash across it (ftcore dodgeSide): +1 to the body's right, -1 to its left
 	float LeanBack = 0.f;  // degrees: hitstun, guard break, stagger, open
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
@@ -110,6 +112,9 @@ public:
 	// its locomotion clips); with none, or when its body doesn't load (one warning), the test human is.
 	void Setup(bool bPlayer, float BodyRadius, const FLinearColor& BaseColor, float HeightMeters = 0.f,
 		const FFTLeadLook* Look = nullptr);
+	// Whether the lead's body has both side-dash clips (left and right) to draw a locked side dash with, and the dashes
+	// are not swapped for the squash (-ArenaNoDash). Call after Setup.
+	bool CanSideDash() const;
 	// Draws an enemy as Mesh instead of the shapes: lifted HoverMeters off the ground, scaled, turned YawOffset degrees
 	// from the mesh's own facing. Its height (for the HUD's markers) is HeightMeters x Scale over the hover. Call after
 	// Setup. False when the mesh is null.
@@ -250,6 +255,16 @@ private:
 	float RollFrom = 0.f;
 	float RollTo = 0.f;
 	float RollRate = 1.f;
+	float RollFraction = 0.f;
+	bool bRollPlanFailed = false;
+	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
+	float RollLift = 0.f;
+	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
+	// -ArenaRollFloor: how long the clip's fade-out after a roll or dash is still logged.
+	float RollFadeLog = 0.f;
+	// The dashes tightened (not -ArenaDashTall): the trunk pitched back under the dash clip, held through its fade.
+	bool bDashPitched = false;
+	float RollFloorBall = 1e9f;
 	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
 	bool RollWithClip(const FFTArenaPose& Pose);
 	TWeakObjectPtr<AActor> PoseHost;

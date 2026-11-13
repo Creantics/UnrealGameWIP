@@ -250,6 +250,15 @@ public:
 	// The catches are traversal clips FirstCatchClip on, in the TraversalSet with the vaults and climbs.
 	static constexpr int32 FirstCatchClip = FirstSlideClip + static_cast<int32>(ftcore::kSlideClips);
 	static constexpr int32 NumCatchClips = 7;
+	// The arena's locked dodges (PROVISIONAL: engine example dash clips retargeted, to be replaced by our own) are
+	// traversal clips FirstDashClip on, a hop back then a leap to the left and to the right
+	// (MM_Dash_Backward_to_x, MM_Dash_Left_to_x, MM_Dash_Right_to_x in place of the run loop's whole name). Left
+	// unmeasured: the TraversalSet never plans them; the owner plays them by index (HasTraversalClip).
+	static constexpr int32 FirstDashClip = FirstCatchClip + NumCatchClips;
+	static constexpr int32 NumDashClips = 3;
+	bool HasTraversalClip(int32 Clip) const { return Clip >= 0 && Clip < NumTraversalClips && TraversalClips[Clip] != nullptr; }
+	// The clip's length in seconds (0 when it is not loaded).
+	float TraversalClipLength(int32 Clip) const { return HasTraversalClip(Clip) ? TraversalClips[Clip]->GetPlayLength() : 0.f; }
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
 	// then with Clip -1 (or LetGoTraversal) when it hands the body back: the clip plays on at its own pace while it
@@ -344,6 +353,8 @@ public:
 	// The legs turned from the facing by Yaw degrees (+ right), the chest turned back by as much over the spine: a
 	// body with forward gaits only walks along the way it moves while it faces elsewhere (a strafe). Any owner.
 	void SetLegYaw(float Yaw) { PushedLegYaw = Yaw; }
+	// The trunk pitched by this (degrees, + forward) under a traversal clip, by its weight (0: the clip's own trunk).
+	void SetTraversalTrunkPitch(float Pitch) { PushedTrunkPitch = Pitch; }
 	// The feet held where they stand while bLock holds (a strike whose clip has the legs; FFTLocomotionAnimProxy::
 	// ftcore::FootHold), stepping when the body has gone too far over one. Any owner.
 	void SetFootLock(bool bLock) { bPushedFootLock = bLock; }
@@ -430,8 +441,9 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> Clips[59];
 	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
-	// The traversal clips (the TraversalSet's), then the slide's, then the catches (the TraversalSet's again).
-	static constexpr int32 NumTraversalClips = FirstCatchClip + NumCatchClips;
+	// The traversal clips (the TraversalSet's), then the slide's, then the catches (the TraversalSet's again), then the
+	// arena's dashes.
+	static constexpr int32 NumTraversalClips = FirstDashClip + NumDashClips;
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
 	// The action clips by slot (SetActionClip) and this frame's actions (AddAction).
@@ -496,6 +508,7 @@ private:
 	bool bPushedGrip[2] = {false, false};
 	float PushedSupport = 0.f;
 	float PushedLegYaw = 0.f;
+	float PushedTrunkPitch = 0.f;
 	bool bPushedFootLock = false;
 	uint32 PushedFeetReset = 0;
 	bool bPushedFace = false;

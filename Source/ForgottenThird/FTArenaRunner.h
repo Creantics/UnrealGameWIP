@@ -106,6 +106,7 @@ struct FFTArenaRunSetup
 	int32 ZoneStyle = 0; // the world's look: 0 the plain zone, 1 Solhaven, 2 the Lattice, 3 the Unwritten
 	FString KitId;       // the fighter kit the player plays, as the table resolved it
 	const FFTLeadLook* Lead = nullptr; // the look the player's figure wears (null: the test human)
+	const FFTLeadLook* Ally = nullptr; // the partner lead's look, worn by the ally in a carrying run (null: the test human)
 	uint32 Seed = 1;
 	bool bAutoPlay = false;
 	bool bIdle = false;
@@ -370,6 +371,21 @@ private:
 	// One "Arena check:" line per combat feature (Core's arenaFeatureChecks over the fight's stats), for the headless
 	// demo: PASS, FAIL, or n/a where nothing in the line-up can show it.
 	void LogFeatureChecks() const;
+	// Carrying (Load by chairs), off unless -ArenaChairs, -ArenaCap or -ArenaAlly asks for it (never in a shipping
+	// build until promoted): the cap, block Load, the chairs and the ally go on the fight before it begins and stay
+	// across restarts (ArenaFight keeps them).
+	void BeginCarry(const FFTLeadLook* AllyLookIn);
+	void SpawnAlly(UWorld* World);
+	// Where the ally stands behind the player's left (m), facing `Facing`.
+	ftcore::Vec2 AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
+	void MoveAlly();
+	void PlaceAlly(float Alpha);
+	void LogCarry() const;
+	// Briefs (Lattice slice 1), off unless -ArenaBrief=<id> asks (never in a shipping build until promoted): the
+	// lead's kit takes that Brief's kit from Data/Battle/briefs.json (the cylinder and the kit changes) before the
+	// fight begins. Only the guns lead's own kit has Briefs; any other is left alone with a warning.
+	void BeginBrief();
+	void LogBrief() const;
 	static uint8 SessionLeadOf(const FFTLeadLook* Look);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
@@ -384,6 +400,8 @@ private:
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> EnemyFigures[6]; // ftcore::kMaxArenaEnemies (a literal for UHT; checked in the .cpp)
+	UPROPERTY()
+	TObjectPtr<AFTArenaFighter> AllyFigure;      // the ally in a carrying run (BeginCarry)
 	UPROPERTY()
 	FFTArenaSkin Skins[6];                       // ... likewise
 	// The stone_bearer's plinth and the guest's keep-out disc (markers). UPROPERTYs sit up here, ahead of the fight's
@@ -536,6 +554,7 @@ private:
 	bool bPressLock = false;
 	bool bPressRelease = false;
 	bool bPressPair = false;
+	bool bPressTakeHalf = false;
 	// Autoplay's partner: a parry came, so press the pair on the next step.
 	bool bPartnerDue = false;
 	int8 PressSwitch = 0;
@@ -639,6 +658,7 @@ private:
 	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
 	int32 GlideStick = -1;
 	bool GlideRolling = false; // the player was rolling at the last step (-ArenaGlide=rollstrike)
+	int32 GlideSideRolls = 0;  // rolls pressed so far under -ArenaGlide=sidestep (odd: to the target's left)
 	FFTArenaGlideProbe Glide;
 	int32 JoltAsks = 0;
 	float JoltApplied = 0.f;
@@ -663,6 +683,19 @@ private:
 	bool bNoLock = false;
 	bool bAutoShoot = false;
 	bool bSharedCount = false;
+	// Carrying (BeginCarry): on at all, the ally's body, the autopilot's take half, the chair keys named and their
+	// effects, the cap given, the partner's look, and when the ally was last hit (its tint).
+	bool bCarry = false;
+	bool bAllyOn = false;
+	bool bTakeHalfAuto = false;
+	bool bAutoBlock = false; // -ArenaAutoBlock (carrying runs): the autopilot guards through every wind-up
+	FString CarryChairKeys;
+	ftcore::ArenaChairs CarryChairs;
+	int32 CarryCap = ftcore::kMaxLoad;
+	const FFTLeadLook* AllyLook = nullptr;
+	double AllyHitTime = -1e9;
+	int32 CarrySharedOffers = 0;
+	FString BriefId; // -ArenaBrief: the Brief laid over the kit ("" none)
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;

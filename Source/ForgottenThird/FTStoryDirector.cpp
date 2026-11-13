@@ -1,6 +1,8 @@
 #include "FTStoryDirector.h"
 
 #include "Engine/World.h"
+#include "GameFramework/HUD.h"
+#include "GameFramework/PlayerController.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
@@ -21,6 +23,7 @@
 #include "FTLook.h"
 #include "FTFaceComponent.h"
 #include "FTGameInstance.h"
+#include "FTGameMode.h"
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
@@ -101,6 +104,7 @@ void AFTStoryDirector::BeginPlay()
 				}
 			}
 			ShotPrefix = Prefix;
+			bShotNoHud = FParse::Param(Cmd, TEXT("StoryShotNoHud"));
 			ShotsLeft = ftcore::remainingStoryShots(Max, Story->StoryShotsTaken); // the count is per run, not per map
 			if (ShotsLeft == 0)
 			{
@@ -552,6 +556,14 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 	BeatAge += DeltaSeconds;
 	const bool bLine = Story->GetRunner().state() == StoryRunner::State::Line;
 #if !UE_BUILD_SHIPPING
+	if (bShotNoHud && ShotsLeft > 0)
+	{
+		APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+		if (PC && PC->MyHUD)
+		{
+			PC->MyHUD->bShowHUD = false; // the clean plate: no HUD in the still
+		}
+	}
 	if (!bFast && ShotsLeft > 0 && !ShotSpeakingModel.IsEmpty())
 	{
 		TickSpeakingShots();
@@ -812,6 +824,12 @@ void AFTStoryDirector::OpenStep()
 	HandleVoiceStopped();
 	ClearSceneCast(TEXT("a step takes over"));
 	const FString Map = FTStep::Prepare(*GI, Story->GetRunner(), UGameplayStatics::GetCurrentLevelName(this, true), bAutoPlay);
+	if (Map.IsEmpty())
+	{
+		// The step can't play as written (Prepare logged why): it rolls back and the title opens on this story map.
+		FTStep::QuitToTitle(this, GetDefault<AFTGameMode>()->TitleMap, TEXT("the story"));
+		return;
+	}
 	FTStep::OpenMap(this, Map);
 }
 

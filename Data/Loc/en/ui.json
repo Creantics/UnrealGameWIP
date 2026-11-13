@@ -12,6 +12,7 @@
     "common.miss": "MISS",
 
     "arena.hp": "HP",
+    "arena.ally": "ALLY",
     "arena.stamina": "STAMINA",
     "arena.poise": "POISE",
     "arena.heals": "HEALS",

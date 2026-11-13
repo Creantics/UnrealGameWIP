@@ -16,6 +16,7 @@
 #include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
 #include "Engine/GameViewportClient.h"
+#include "UnrealClient.h"
 #include "Engine/World.h"
 #include "FTArenaFighter.h"
 #include "FTArenaHUD.h"
@@ -190,6 +191,9 @@ void AFTArenaGameMode::StartPlay()
 		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
 		bShotSide = FParse::Param(Cmd, TEXT("ArenaShotSide"));
 		bShotWorld = FParse::Param(Cmd, TEXT("ArenaShotWorld"));
+#if !UE_BUILD_SHIPPING
+		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
+#endif
 		bShotSide = bShotSide || bShotWorld;
 	}
 #if !UE_BUILD_SHIPPING
@@ -212,7 +216,9 @@ void AFTArenaGameMode::StartPlay()
 	bWorldView = !bOverview && FParse::Param(Cmd, TEXT("ArenaWorldView"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	bNoLock = FParse::Param(Cmd, TEXT("ArenaNoLock"));
-	bAutoShoot = FParse::Param(Cmd, TEXT("ArenaAutoShoot"));
+#if !UE_BUILD_SHIPPING
+	bAutoShoot = FParse::Param(Cmd, TEXT("ArenaAutoShoot")); // a test switch: never in a shipping build
+#endif
 	bSharedCount = FParse::Param(Cmd, TEXT("ArenaSharedCount"));
 	FParse::Value(Cmd, TEXT("ArenaParryHold="), ParryHold);
 	ParryHold = FMath::Clamp(ParryHold, 0.f, 10.f);
@@ -719,6 +725,15 @@ void AFTArenaGameMode::Begin()
 	Setup.ZoneStyle = ZoneStyle;
 	Setup.KitId = KitId;
 	Setup.Lead = FindLead();
+	// The ally a carrying run shows (the runner spawns it only under its switches): the first other look in the party.
+	for (const FFTLeadLook& Member : GetDefault<AFTExploreCharacter>()->PartyLooks)
+	{
+		if (&Member != Setup.Lead)
+		{
+			Setup.Ally = &Member;
+			break;
+		}
+	}
 	Setup.Seed = Seed;
 	Setup.bAutoPlay = bAutoPlay;
 	Setup.bIdle = bIdle;
@@ -768,6 +783,7 @@ void AFTArenaGameMode::Begin()
 void AFTArenaGameMode::HandBackStory()
 {
 	bStoryHandedBack = true;
+	UGameplayStatics::SetGlobalTimeDilation(this, 1.f); // whichever way the story goes on (or none), at normal speed
 	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (!GI || !GI->StoryCarry.bValid)
 	{
@@ -778,7 +794,6 @@ void AFTArenaGameMode::HandBackStory()
 	Carry.bWon = Runner && Runner->GetFight().phase() == ftcore::ArenaPhase::Victory;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: the story's fight on stage %s is %s; back to %s."), *Carry.Stage,
 		Carry.bWon ? TEXT("won") : TEXT("lost"), *Carry.ReturnMap);
-	UGameplayStatics::SetGlobalTimeDilation(this, 1.f); // whichever way the story goes on, at normal speed
 	if (FTStep::ContinueHere(this))
 	{
 		return; // the beat's next step plays on this map
@@ -1554,8 +1569,14 @@ bool AFTArenaGameMode::EdgeShot()
 void AFTArenaGameMode::TakeShot(const TCHAR* Name, bool bCounted)
 {
 	const FString File = FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, Name);
+	if (bShotUi)
+	{
+		// -ArenaShotUi: the viewport's own frame with the UI drawn, Slate widgets included (the new UI's captures); the
+		// size is the window's (-ResX/-ResY).
+		FScreenshotRequest::RequestScreenshot(File, true, false);
+	}
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
-	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+	else if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
 	{
 		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
 	}
