@@ -217,6 +217,7 @@
 // capacity, results by value or by reference to the fight's own storage).
 
 #include "ftcore/Api.h"
+#include "ftcore/Chairs.h"
 #include "ftcore/Explore.h" // Vec2
 #include "ftcore/FightAnimator.h" // FightClip
 #include "ftcore/Load.h"
@@ -242,6 +243,8 @@ inline constexpr std::size_t kMaxArenaEvents = 32; // per tick; more are dropped
 // Actor ids in events: enemies are 0..kMaxArenaEnemies-1.
 inline constexpr std::uint8_t kArenaPlayer = 0xFE;
 inline constexpr std::uint8_t kArenaNobody = 0xFF;
+// The ally body (ArenaFight::setAlly) as an event's or a blow's target.
+inline constexpr std::uint8_t kArenaAlly = 0xFD;
 // The player's move ids in events and ArenaPlayerOut::move: a light is its chain index.
 inline constexpr std::uint8_t kArenaHeavyMove = 8;
 inline constexpr std::uint8_t kArenaRiposteMove = 9;
@@ -376,6 +379,12 @@ struct ArenaFighter {
     float readStackPower = 0.2f; // ... plus this share for each stack past the first
     float readPoise = 5.f;      // poise a Read counter costs the attacker (upright only)
     float readWrongPoise = 10.f; // poise a misread gives the attacker back (up to its kind's poise)
+    // Carrying (ArenaFight::setCarry, setAlly): Load from blocks and from taking half a blow aimed at the ally.
+    float blockLoadShare = 0.25f;   // a block stores the blocked damage times this as Load (0..1)
+    float takeHalfWindow = 0.25f;   // s before a blow lands on the ally that a take half press still counts (0.05..0.6)
+    float takeHalfReach = 4.f;      // m, centre to centre, the player may stand from the ally (1..10)
+    float takeHalfLoadShare = 1.f;  // the hp the player takes, times this, is stored as Load (0..2)
+    float takeHalfRearm = 0.5f;     // s after a take half press before the next one opens a window (0..2)
 };
 
 // Whether the player may take this kit as the lead: only one with attacks of its own. A kit without is a party
@@ -584,12 +593,14 @@ struct ArenaInput {
     // whose turn is never 0, so a lead's facing is never held.
     float attackSpeed = 0.f;
     float attackTurn = 0.f;
+    bool takeHalf = false;      // take half (ArenaFight::setAlly): the next blow to land on the ally within the window
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
 struct ArenaBodies {
     Vec2 player;
     std::array<Vec2, kMaxArenaEnemies> enemies{};
+    Vec2 ally; // the ally body (ArenaFight::setAlly), moved by the host as it moves the player
 };
 
 // The player's action (append only: the Unreal side maps it to animations).
@@ -624,12 +635,13 @@ struct ArenaPlayerOut {
                                       // before any ring cut) and kept until the next dodge
     bool backstep = false;            // whether the current or last dodge is a backstep
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
-    bool overloaded = false;          // Load at kMaxLoad: light, heavy and heal are refused until a Release
+    bool overloaded = false;          // Load at the cap (loadCap): light, heavy and heal are refused until a Release
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
     float wantSpeed = -1.f;           // m/s the stick asks of a walk that ramps (Idle, Move, Guard, Heal) this frame, the
                                       // pace the velocity heads for; -1 otherwise (an attack, a dodge, a pause, a stun)
     float stopDistance = -1.f;        // m the body would slide at moveBrake from this velocity to a stand, while wantSpeed
                                       // is known; -1 otherwise
+    int loadCap = kMaxLoad;           // the most Load the gauge holds now (ArenaFight::setLoadCap)
 };
 
 struct ArenaEnemyOut {
@@ -671,6 +683,10 @@ enum class ArenaEventType : std::uint8_t { // append only
     Flinched,       // the player's blow made target flinch (appended)
     BrokeOut,       // source broke out of the player's blows with its move `move` (appended)
     HostHit,        // the host's hostBlow took `amount` hp from target (a held blow's bonus); move = the blow's (appended)
+    LoadSpent,      // the host's spendLoad removed `amount` Load (appended)
+    AllyHit,        // source's attack `move` hit the ally (target kArenaAlly) for `amount` hp (appended)
+    AllyDowned,     // the ally reached 0 hp: down for the rest of the fight, never a Defeat (appended)
+    TookHalf,       // the player took half of source's blow on the ally: `amount` hp (target kArenaPlayer) (appended)
 };
 
 struct ArenaEvent {
@@ -748,6 +764,9 @@ struct ArenaStats {
     std::array<int, kMaxArenaEnemies> killCount{};      // per slot: the kills those seconds cover
     int punishWindows = 0; // times an enemy went Staggered, Open or Down (Open turning Down is the same window)
     int punishUsed = 0;    // ... of them, the windows the player's side landed a blow in
+    int blockLoad = 0;     // Load stored by blocks (ArenaFight::setCarry)
+    int takeHalfLoad = 0;  // Load stored by take half
+    int takeHalves = 0;    // take halves that landed
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -886,7 +905,7 @@ public:
     FTCORE_API float poise() const;
     FTCORE_API std::uint8_t healCharges() const;
     FTCORE_API int load() const;          // 0..kMaxLoad
-    FTCORE_API bool overloaded() const;
+    FTCORE_API bool overloaded() const;   // load() >= loadCap()
     FTCORE_API std::uint8_t lock() const; // kArenaNobody when nothing is locked
     FTCORE_API int enemyHp(std::size_t i) const;
     FTCORE_API float enemyPoise(std::size_t i) const;
@@ -976,6 +995,48 @@ public:
     // False (nothing) when vetoed, scaled to 0, or as hostBlow.
     FTCORE_API bool ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move, ArenaBlowHook hook, void* user);
 
+    // ---- carrying (Load by chairs) ----
+    // Every setter here is kept across begin() and restart(), as the blow hook is; a fight that never calls them
+    // behaves exactly as one before them (cap kMaxLoad, no block Load, no ally, no chairs).
+    //
+    // The Load cap, clamped to 1..kMaxLoad (kMaxLoad by default; PlaceTable::carryCap gives it from the chairs). It
+    // never moves the Load. Every store stops at it (a parry, a block, take half, giveLoad), overloaded() is
+    // load() >= loadCap(), and the Release opens above releaseOpenLoad(). If the Load is at or over the new cap and
+    // was not overloaded before, it reports Overloaded (counted at once, reported as giveLoad's are).
+    FTCORE_API void setLoadCap(int cap);
+    FTCORE_API int loadCap() const;
+    FTCORE_API int releaseOpenLoad() const; // loadCap() / 3 (integer): the Release is open while load() > this
+    // Removes min(amount, load()) now and returns it; reports LoadSpent (amount = what was removed), at once inside
+    // the blow hook, else ahead of the next tick's events. 0, and nothing, for amount <= 0 or outside Fighting.
+    FTCORE_API int spendLoad(int amount);
+    // Blocks store Load: the fighter's blockLoadShare of the blocked damage (after the hook's scale, before
+    // guardAbsorb); a guard break still stores; a parry stores its own and no block Load. Off by default.
+    FTCORE_API void setCarry(bool blocksStore);
+    FTCORE_API bool carry() const;
+    // The Named chairs' effects (Chairs.h). The heal charges apply from the next begin() or restart(); the rest at
+    // once. A loadGain chair's gain counts on a store (not giveLoad's) while the ally is alive within its radius.
+    FTCORE_API void setChairs(const ArenaChairs& chairs);
+    FTCORE_API const ArenaChairs& chairs() const;
+    FTCORE_API std::uint8_t healChargesMax() const; // the kit's charges plus the chairs' at the last begin or restart
+    // One ally body (ArenaBodies::ally): maxHp > 0 turns it on with full hp, 0 or less turns it off (the default).
+    // restart() fills its hp again. Every enemy attack's active part tests it as it tests the player (the move's
+    // range and arc, `radius`); it never guards or rolls, and enemies still pick the player. A hit takes the move's
+    // damage after the blow hook (an ArenaBlow with target kArenaAlly) and reports AllyHit; at 0 hp it is down
+    // (AllyDowned) for the rest of the fight, never a Defeat. ArenaInput::takeHalf pressed within the fighter's
+    // takeHalfWindow (plus the chairs') before such a hit lands, with the player within takeHalfReach of the ally,
+    // not downed and not in a Release, and at least takeHalfRearm after the previous press, splits it: the player
+    // loses (D + 1) / 2 hp (no guard, poise, hitstun or pause), the ally the rest, and the player's half times
+    // takeHalfLoadShare is stored as Load (TookHalf, then LoadStored). A takeHalf chair heals the ally its share of
+    // maxHp each time. A press no hit takes stays unused until its window passes.
+    FTCORE_API void setAlly(int maxHp, float radius);
+    FTCORE_API int allyHp() const;
+    FTCORE_API int allyMaxHp() const;
+    FTCORE_API bool allyAlive() const;
+    FTCORE_API Vec2 allyPos() const; // as the last tick's bodies placed it
+    // An enemy is in its attack's startup with `lead` s of it left or less, the ally is alive and the player within
+    // takeHalfReach of it: when an autopilot would press take half.
+    FTCORE_API bool takeHalfDue(float lead) const;
+
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
@@ -1029,6 +1090,10 @@ private:
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
         int readStacks = 0;                 // correct Reads in a row, 0..kMaxReadStacks
         float stopUntil = -1.0e9f;          // fight time a hit pause ends
+        float takeHalfPress = -1.0e9f;      // fight time of the last unused take half press that opened a window
+        float lastTakeHalfPress = -1.0e9f;  // fight time of the last take half press (every press counts)
+        int spentLoad = 0;                  // Load spendLoad removed since the last tick, not yet reported
+        bool capFilled = false;             // setLoadCap overloaded the gauge since the last tick, not yet reported
     };
 
     struct EnemyState {
@@ -1070,6 +1135,7 @@ private:
         float firstBlow = -1.f;             // fight time of the player's side's first blow on it (< 0: none yet)
         bool punishOpen = false;            // in a punish window (Staggered, Open or Down) ...
         bool punishHit = false;             // ... that a blow of the player's side has landed in
+        bool hitAlly = false;               // this attack has connected with the ally
     };
 
     ArenaDef def_;
@@ -1106,6 +1172,15 @@ private:
     };
     HookFlag inHook_;
     void* blowUser_ = nullptr;
+    // Carrying (kept across begin and restart):
+    int loadCap_ = kMaxLoad;
+    bool carry_ = false;
+    ArenaChairs chairs_;
+    std::uint8_t healMax_ = 0;              // the charges the last begin or restart gave
+    int allyMaxHp_ = 0;                     // 0: no ally
+    float allyRadius_ = 0.4f;
+    int allyHp_ = 0;
+    Vec2 allyPos_;
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

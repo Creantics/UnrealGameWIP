@@ -126,6 +126,7 @@ add_library(ftcore STATIC
     src/Inventory.cpp
     src/Shop.cpp
     src/ArenaFight.cpp
+    src/Chairs.cpp
     src/FieldStrike.cpp
     src/AimStance.cpp
     src/InputBindings.cpp
@@ -329,6 +330,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_shop.cpp
         tests/test_pause.cpp
         tests/test_arena.cpp
+        tests/test_arena_load.cpp
+        tests/test_chairs.cpp
         tests/test_field_strike.cpp
         tests/test_aim.cpp
         tests/test_input_bindings.cpp

@@ -719,6 +719,15 @@ void AFTArenaGameMode::Begin()
 	Setup.ZoneStyle = ZoneStyle;
 	Setup.KitId = KitId;
 	Setup.Lead = FindLead();
+	// The ally a carrying run shows (the runner spawns it only under its switches): the first other look in the party.
+	for (const FFTLeadLook& Member : GetDefault<AFTExploreCharacter>()->PartyLooks)
+	{
+		if (&Member != Setup.Lead)
+		{
+			Setup.Ally = &Member;
+			break;
+		}
+	}
 	Setup.Seed = Seed;
 	Setup.bAutoPlay = bAutoPlay;
 	Setup.bIdle = bIdle;
