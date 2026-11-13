@@ -138,7 +138,7 @@ struct Rig {
         const ArenaOutput& out = fight.tick(kDt, in, bodies);
         ++ticks;
         for (const ArenaEvent& e : out.events) log.push_back(e);
-        in.light = in.heavy = in.dodge = in.heal = in.lock = in.release = in.pair = in.takeHalf = false;
+        in.light = in.heavy = in.dodge = in.jump = in.heal = in.lock = in.release = in.pair = in.takeHalf = false;
         in.lockSwitch = 0;
         in.read = -1;
     }
@@ -693,4 +693,47 @@ TEST_CASE("arena carry: with carrying off, the default fight and the kite boss f
     const FightTrace kiteNeutral = traceOf(def, table, true);
     CHECK(kitePlain.line == kiteNeutral.line);
     CHECK(kitePlain.hash == kiteNeutral.hash);
+}
+
+TEST_CASE("arena take half: refused from the air (no one takes a blow for someone mid-jump); on the ground again it takes") {
+    AllySetup s;
+    ArenaEnemyKind slow = biterKind(22, 10.f);
+    slow.moves[0].attack.startup = 0.8f;
+    int land = -1;
+    {
+        Rig probe({slow});
+        placeAlly(probe, s);
+        for (int k = 1; k <= 120 && land < 0; ++k) {
+            probe.tick();
+            if (probe.count(ArenaEventType::AllyHit) > 0) land = k;
+        }
+    }
+    REQUIRE(land > 46);
+    {   // the jump 20 ticks (0.33 s) before the land: in the air when the bite lands
+        Rig rig({slow});
+        placeAlly(rig, s);
+        float heightAtLand = 0.f;
+        for (int k = 1; k <= land + 2; ++k) {
+            if (k == land - 20) rig.in.jump = true;
+            if (k == land - 5) rig.in.takeHalf = true;
+            rig.tick();
+            if (k == land) heightAtLand = rig.fight.output().player.height;
+        }
+        CHECK(heightAtLand > 0.f);
+        CHECK(rig.count(ArenaEventType::TookHalf) == 0);
+        CHECK(rig.fight.allyHp() == 78);
+        CHECK(rig.fight.hp() == 100);
+    }
+    {   // the jump 45 ticks (0.75 s) before: landed (0.7 s), so the press takes half
+        Rig rig({slow});
+        placeAlly(rig, s);
+        for (int k = 1; k <= land + 2; ++k) {
+            if (k == land - 45) rig.in.jump = true;
+            if (k == land - 5) rig.in.takeHalf = true;
+            rig.tick();
+        }
+        CHECK(rig.fight.stats().jumps == 1);
+        CHECK(rig.count(ArenaEventType::TookHalf) == 1);
+        CHECK(rig.fight.allyHp() == 89);
+    }
 }

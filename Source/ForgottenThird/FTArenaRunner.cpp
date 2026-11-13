@@ -40,6 +40,9 @@
 #include "Misc/Parse.h"
 
 #include "ftcore/Brief.h"
+#include "ftcore/UiStyle.h"
+#include "ftcore/BriefKit.h"
+#include "ftcore/LicenceRating.h"
 #include "ftcore/Chairs.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
@@ -245,6 +248,16 @@ UFTArenaRunner::UFTArenaRunner()
 	}
 }
 
+bool UFTArenaRunner::JumpBound()
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	static const bool bOn = FParse::Param(FCommandLine::Get(), TEXT("ArenaJump"));
+	return bOn;
+#endif
+}
+
 const TCHAR* UFTArenaRunner::PilotName(bool bAutoPlayRun, bool bIdleRun)
 {
 	return ArenaPilotName(bAutoPlayRun, bIdleRun);
@@ -308,12 +321,18 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaGlide="), GlideWord))
 	{
 		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2
-			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : GlideWord == TEXT("backstep") ? 7 : 3;
+			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : GlideWord == TEXT("backstep") ? 7
+			: GlideWord == TEXT("sidestep") ? 8 : GlideWord == TEXT("jump") ? 9 : GlideWord == TEXT("jumpmove") ? 10
+			: GlideWord == TEXT("jumpstrike") ? 11 : 3;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: glide probe on, the stick %s (-ArenaGlide)."),
 			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
 			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : GlideStick == 5 ? TEXT("held across with the guard up")
 			: GlideStick == 6 ? TEXT("the autopilot's, a light attack on the first free frame after each roll")
-			: GlideStick == 7 ? TEXT("the autopilot's, let go for each roll (a backstep under the lock)") : TEXT("the autopilot's"));
+			: GlideStick == 7 ? TEXT("the autopilot's, let go for each roll (a backstep under the lock)")
+			: GlideStick == 8 ? TEXT("the autopilot's, across the lock for each roll, right then left (a side dash)")
+			: GlideStick == 9 ? TEXT("let go: standing jumps only")
+			: GlideStick == 10 ? TEXT("held across: moving jumps only")
+			: GlideStick == 11 ? TEXT("let go: standing jumps, each with an air light") : TEXT("the autopilot's"));
 	}
 #endif
 	Glide.Begin(GlideStick >= 0);
@@ -458,6 +477,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 
 void UFTArenaRunner::End()
 {
+	EndTable();
 	EndImpact();
 	EndStoneBearer();
 	EndKite();
@@ -589,6 +609,10 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 	if (PlayerFigure)
 	{
 		PlayerFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor, 0.f, Lead);
+		// Locked dodges across the target are side dashes (drawn side-on, leaping on the dash clips) when the body
+		// has both side clips; without them they stay rolls.
+		Fight.setSideDashes(PlayerFigure->CanSideDash());
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: side dashes %s"), Fight.sideDashes() ? TEXT("on") : TEXT("off"));
 		const ftcore::ZoneCamera& Rig = Fit.camera;
 		PlayerFigure->SetCameraRig(Rig.arm, Rig.pivot, Rig.side, Rig.up, Rig.fov);
 		// The kit's weapon on the lead's body: its strike clips, props and effects.
@@ -1235,7 +1259,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	ReleaseTime = -1e9;
 	ReleaseSpent = 0;
 	OverloadTime = -1e9;
-	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = bPartnerDue = false;
+	bPressLight = bPressHeavy = bPressDodge = bPressJump = bPressHeal = bPressLock = bPressRelease = bPressPair = bPartnerDue = false;
 	PressSwitch = 0;
 	PressRead = -1;
 	CameraYaw = ArenaYaw(Fight.playerStartFacing());
@@ -1272,6 +1296,11 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
 	bPressDodge |= FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
+	// The jump: its key does nothing in a fight unless the jump is bound (-ArenaJump, until the user has tried it).
+	if (JumpBound())
+	{
+		bPressJump |= FTInputBindings::WasJustPressed(*PC, InputAction::Jump);
+	}
 	// The partner's Read: the three pick keys (1 / 2 / 3, the d-pad's left, up and right) while the cards are up,
 	// picked or not, until the move goes active. Core refuses a second pick. While the cards are up those keys are
 	// the picks only, so the d-pad's up is not also the heal.
@@ -1320,6 +1349,15 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressHeal |= Pressed(InputAction::Gift);
 	bPressLock |= Pressed(InputAction::LockOn);
 	bPressRelease |= Pressed(InputAction::Release);
+	if (bTable)
+	{
+		bReleaseDown = false;
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& K = FTInputBindings::Key(InputAction::Release, Device);
+			bReleaseDown |= K.IsValid() && !Shadowed(InputAction::Release, Device) && PC->IsInputKeyDown(K);
+		}
+	}
 	bPressPair |= Pressed(InputAction::Count);
 	// Take half: its key, and on a pad with none bound, Interact pressed while the guard is down (route "guard_interact").
 	bPressTakeHalf |= Pressed(InputAction::TakeHalf);
@@ -1421,6 +1459,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.light = bPressLight;
 	In.heavy = bPressHeavy;
 	In.dodge = bPressDodge;
+	In.jump = bPressJump;
 	In.heal = bPressHeal;
 	In.guard = bGuardHeld;
 	In.lock = bPressLock;
@@ -1460,7 +1499,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	// roots: a light by the light's numbers, a heavy, a riposte and a Release by the heavy's.
 	ftcore::attackMoveInput(AttackMoveTable, Fight, In);
 	// Each press goes to one step.
-	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = bPressTakeHalf = false;
+	bPressLight = bPressHeavy = bPressDodge = bPressJump = bPressHeal = bPressLock = bPressRelease = bPressPair = bPressTakeHalf = false;
 	PressSwitch = 0;
 	PressRead = -1;
 	return In;
@@ -1690,6 +1729,44 @@ void UFTArenaRunner::StepFight()
 			// drawn body rolls the way it goes, then turns back to the lock).
 			In.move = ftcore::Vec2{0.f, 0.f};
 		}
+		if (GlideStick == 8 && In.dodge && !GlideRolling)
+		{
+			// -ArenaGlide=sidestep: every roll pressed with the stick straight across the lock, to the target's right
+			// then its left in turn (side dashes where the body has the clips, rolls where it has not).
+			const std::uint8_t Lock = Fight.lock();
+			if (Lock != ftcore::kArenaNobody && Lock < MaxEnemies)
+			{
+				const ftcore::Vec2 D{Bodies.enemies[Lock].x - Bodies.player.x, Bodies.enemies[Lock].y - Bodies.player.y};
+				const float L = ArenaLength(D);
+				if (L > 1e-3f)
+				{
+					const float S = (GlideSideRolls++ & 1) ? -1.f : 1.f; // +: the ground plane's right (y right of x)
+					In.move = ftcore::Vec2{-S * D.y / L, S * D.x / L};
+				}
+			}
+		}
+		if (GlideStick >= 9 && GlideStick <= 11)
+		{
+			// -ArenaGlide=jump / jumpmove / jumpstrike: jumps only (no attack, roll, guard or heal), one from the first
+			// free frame kGlideJumpEvery after the last frame on the jump's clock; let go (jump), held across the target
+			// (jumpmove), or let go with a light at kGlideAirLightAt on the air clock (jumpstrike: the air light).
+			constexpr double kGlideJumpEvery = 1.2;
+			constexpr float kGlideAirLightAt = 0.22f;
+			const ftcore::ArenaPlayerOut& P = Fight.output().player;
+			In.light = In.heavy = In.release = In.dodge = In.guard = In.heal = In.pair = In.takeHalf = false;
+			In.move = ftcore::Vec2{0.f, 0.f};
+			GlideNow = GlideStick == 10 ? 1 : -1;
+			if (P.jumpTime >= 0.f)
+			{
+				GlideJumpLast = Now;
+			}
+			const bool bFree = P.action == ftcore::ArenaAction::Idle || P.action == ftcore::ArenaAction::Move;
+			In.jump = bFree && Now - GlideJumpLast >= kGlideJumpEvery;
+			// Only in the air: once the air light hands back to the jump, a press in the landing would start a ground light.
+			const ftcore::ArenaFighter& Kit = Fight.def().fighter;
+			In.light = GlideStick == 11 && P.action == ftcore::ArenaAction::Jump && P.jumpTime >= kGlideAirLightAt
+				&& P.jumpTime < Kit.jumpStartup + Kit.jumpAir;
+		}
 		if (GlideNow >= 0 && GlideNow < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
 		{
 			// -ArenaGlide: the stick held toward, across or away from the target (the lock, else the nearest standing).
@@ -1730,6 +1807,14 @@ void UFTArenaRunner::StepFight()
 		{
 			In.release = false;
 		}
+		if (bTableKey)
+		{
+			const bool bStart = !TableKey.holding() && TableCanBegin();
+			TableKeyPresses += bStart ? 1 : 0;
+			bReleaseDown = (TableKeyPresses % 2) == 1;
+			In.release = In.release || bStart;
+			StepTableKey(In);
+		}
 		// The pilot's heavy (stone_bearer only), pressed before Assist so its holds (the weak point's gate, the plinth)
 		// can still take it back; the cooldown runs only from a press that stood.
 		bool bPilotHeavy = false;
@@ -1766,6 +1851,7 @@ void UFTArenaRunner::StepFight()
 	{
 		In = TakeInput();
 		bIntercept = bInterceptHeld;
+		StepTableKey(In);
 	}
 	const bool bBoss = StoneBearer.IsActive();
 	if (bBoss)
@@ -1868,6 +1954,7 @@ void UFTArenaRunner::StepFight()
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
 	FeedSession();
 	HandleEvents(Out.events);
+	TickTable(Out);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
 	// side of its body at its chest; with nobody, a metre ahead at the lead's chest.
@@ -2053,6 +2140,21 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			break;
 		case ftcore::ArenaEventType::AllyHit:
 			AllyHitTime = Now;
+			break;
+		case ftcore::ArenaEventType::TableShare:
+			// A set table passed part of a blow on: the body that took it flashes as hit, and it joins the popups.
+			if (E.target == ftcore::kArenaPlayer)
+			{
+				PlayerHitTime = Now;
+			}
+			else if (E.target == ftcore::kArenaAlly)
+			{
+				AllyHitTime = Now;
+			}
+			else if (E.target < MaxEnemies)
+			{
+				EnemyHitTime[E.target] = Now;
+			}
 			break;
 		case ftcore::ArenaEventType::AllyDowned:
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the ally is down at %.2f s."), Fight.time());
@@ -2424,6 +2526,19 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: roll starts at %.2f s"), Fight.time());
 		}
 		bWasDodging = bDodging;
+		// The jump's take-off and its end: the first frame drawn off the jump's clock, and the action then (free when
+		// Idle or Move; a blow in the air ends it in Hitstun).
+		if (P.jumpTime >= 0.f && JumpStartedAt < 0.0)
+		{
+			JumpStartedAt = Fight.time() - P.jumpTime;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: jump takes off at %.2f s"), JumpStartedAt);
+		}
+		else if (P.jumpTime < 0.f && JumpStartedAt >= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: jump ends at %.2f s, %.2f s after take-off, into %s"), Fight.time(),
+				Fight.time() - JumpStartedAt, UTF8_TO_TCHAR(ftcore::arenaActionName(P.action)));
+			JumpStartedAt = -1.0;
+		}
 #endif
 		// The legs at the pace the body is drawn moving (the last steps' median), not the sim's wish (which the
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
@@ -2459,6 +2574,13 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				Pose.Swing = EFTArenaSwing::Across;
 				break;
 			}
+			// The air light: its own move id and numbers (the kit's jumpLight), a downward swing.
+			if (P.move == ftcore::kArenaAirMove)
+			{
+				Attack = ftcore::arenaPlayerAttack(D.fighter, P.move);
+				Pose.Swing = EFTArenaSwing::Overhead;
+				break;
+			}
 			Attack = &D.fighter.light[FMath::Min<size_t>(P.move, ftcore::kMaxLightChain - 1)];
 			Pose.Swing = (P.move + 1 >= D.fighter.lightCount) ? EFTArenaSwing::Overhead : ((P.move % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 			break;
@@ -2484,6 +2606,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.DodgeFraction = D.fighter.dodgeTime > 0.f ? P.actionTime / D.fighter.dodgeTime : 1.f;
 			Pose.DodgeTime = D.fighter.dodgeTime;
 			Pose.bDodgeBack = P.dodgeBack;
+			Pose.DodgeSide = P.dodgeSide;
 			break;
 		}
 		case ftcore::ArenaAction::Guard:
@@ -2529,6 +2652,22 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				Pose.LegYaw = FMath::Clamp(Pose.LegYaw - W * Delta, -kLegYawMax, kLegYawMax);
 			}
 		}
+		// The jump, on Core's air clock (an air light's too): the body at the arc's height at the time drawn (a step
+		// behind, Alpha of the way to the last; a hit pause holds it), the clips told it is in the air from take-off to
+		// touch-down (rising while the arc climbs) and no foot held. The landing is on the ground: the land clip plays.
+		if (P.jumpTime >= 0.f)
+		{
+			const ftcore::ArenaFighter& Kit = D.fighter;
+			const float Behind = P.stopLeft > 0.f ? 0.f : (1.f - Alpha) * StepSeconds;
+			const float AirT = FMath::Max(0.f, P.jumpTime - Behind) - Kit.jumpStartup;
+			const float Air = FMath::Max(Kit.jumpAir, 1e-3f);
+			const float U = FMath::Clamp(AirT / Air, 0.f, 1.f);
+			Pose.bAir = AirT < Kit.jumpAir;
+			Pose.AirHeight = AirT > 0.f ? 100.f * Kit.jumpHeight * 4.f * U * (1.f - U) : 0.f;
+			Pose.AirRise = 100.f * Kit.jumpHeight * 4.f * (1.f - 2.f * U) / Air;
+			Pose.bFootLock = false;
+			Pose.JumpClock = P.jumpTime;
+		}
 		if (P.invulnerable)
 		{
 			Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(0.85f, 0.95f, 1.f), 0.45f);
@@ -2539,6 +2678,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		LeadWeapons.Paint(DrawnTime);
 	}
 	PlaceAlly(Alpha);
+	PaintTable(Alpha);
 
 	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
 	{
@@ -3124,6 +3264,7 @@ void UFTArenaRunner::LogResult() const
 	}
 	LogFeatureChecks();
 	LogCarry();
+	LogTable();
 	LogBrief();
 }
 
@@ -3138,6 +3279,11 @@ void UFTArenaRunner::LogFeatureChecks() const
 		S.lightStamina);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: cancels %s (%d of %d chances)."), *Text(C.cancelsCheck), S.cancels,
 		S.cancelChances);
+	// The jump: only in runs that can jump (-ArenaJump or a jump probe), so a default run's lines stay as they were.
+	if (JumpBound() || (GlideStick >= 9 && GlideStick <= 11))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: jump %s (%d started, %d landed)."), *Text(C.jumpCheck), S.jumps, S.landings);
+	}
 	// Flinch (ftcore::arenaFeatureChecks): n/a when no blow could flinch an upright enemy (a kit too light for the
 	// kinds' flinchPoise, poise breaking first, or no kind that flinches, as a boss).
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d of %d chances)."), *Text(C.flinchCheck), S.flinches,
@@ -3366,6 +3512,7 @@ void UFTArenaRunner::Restart()
 	bRestarting = true; // BeginSession: a later attempt never marks a missing step
 	BeginSession();
 	bRestarting = false;
+	ResetTable();
 	LeadWeapons.Restart();
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
@@ -4258,7 +4405,9 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	const bool bCapArg = FParse::Value(Cmd, TEXT("ArenaCap="), CapArg);
 	bTakeHalfAuto = FParse::Param(Cmd, TEXT("ArenaTakeHalfAuto"));
 	bAutoBlock = FParse::Param(Cmd, TEXT("ArenaAutoBlock"));
-	bCarry = bChairs || bCapArg || bTakeHalfAuto || FParse::Param(Cmd, TEXT("ArenaAlly"));
+	bCarry = bChairs || bCapArg || bTakeHalfAuto || FParse::Param(Cmd, TEXT("ArenaAlly")) || FParse::Param(Cmd, TEXT("ArenaTable"))
+		|| FParse::Param(Cmd, TEXT("ArenaTableAuto")) || FParse::Param(Cmd, TEXT("ArenaTableFill"))
+		|| FParse::Param(Cmd, TEXT("ArenaTableKey"));
 	if (!bCarry)
 	{
 		return;
@@ -4267,11 +4416,11 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 
 	// The named places: four seats, one Named per chair key (its row's person), the rest never laid. "none" names
 	// none, so the cap is the base carry alone.
+	ftcore::PlaceTable Places; // none named without -ArenaChairs: no table can be set
+	Places.reset(4);
 	if (bChairs)
 	{
 		CarryChairKeys = Keys;
-		ftcore::PlaceTable Places;
-		Places.reset(4);
 		if (Keys != TEXT("none"))
 		{
 			ftcore::ChairTable ChairRows;
@@ -4312,6 +4461,7 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	Fight.setChairs(CarryChairs);
 	Fight.setCarry(true);
 	Fight.setAlly(kArenaAllyHp, Def.fighter.bodyRadius);
+	BeginTable(Places, bCapArg);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: carrying: chairs %s (%d named), Load cap %d, blocks store Load, ally %d hp%s%s."),
 		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, static_cast<int32>(CarryChairs.count), CarryCap, kArenaAllyHp,
 		bTakeHalfAuto ? TEXT(", the autopilot takes half") : TEXT(""), bAutoBlock ? TEXT(", the autopilot blocks") : TEXT(""));
@@ -4389,22 +4539,58 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 void UFTArenaRunner::BeginBrief()
 {
 	BriefId.Reset();
+	BriefStats.Reset();
+	BriefRating = 0;
 #if !UE_BUILD_SHIPPING
+	FString RatingText;
+	const bool bRating = FParse::Value(FCommandLine::Get(), TEXT("ArenaRating="), RatingText, false);
 	FString Want;
 	if (!FParse::Value(FCommandLine::Get(), TEXT("ArenaBrief="), Want, false) || Want.TrimStartAndEnd().IsEmpty())
 	{
+		if (bRating)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaRating needs -ArenaBrief (a Rating is a Brief's); the run stops."));
+			FTRequestExit(1, TEXT("ArenaRating"));
+		}
 		return;
+	}
+	if (bRating)
+	{
+		RatingText.TrimStartAndEndInline();
+		// Digits only (IsNumeric takes signs, points and exponents): "1e3" or "+5" is refused, not read as 1 or 5.
+		int32 Rating = 0;
+		bool bDigits = RatingText.Len() >= 1 && RatingText.Len() <= 2;
+		for (const TCHAR C : RatingText)
+		{
+			bDigits = bDigits && C >= TEXT('0') && C <= TEXT('9');
+		}
+		if (bDigits)
+		{
+			for (const TCHAR C : RatingText)
+			{
+				Rating = Rating * 10 + (C - TEXT('0'));
+			}
+		}
+		if (Rating < 1 || Rating > ftcore::kMaxRating)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaRating=%s: a Rating is a whole number 1..%d; the run stops."), *RatingText, ftcore::kMaxRating);
+			FTRequestExit(1, TEXT("ArenaRating"));
+			return;
+		}
+		BriefRating = Rating;
 	}
 	Want = Want.TrimStartAndEnd().ToLower();
 	ftcore::BriefId Id = ftcore::BriefId::Count;
 	if (!ftcore::briefFromName(FT::ToUtf8(Want), Id))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: no Brief %s (counsel, bailiff, notary, proxy, escrow); the kit is left alone."), *Want);
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: no Brief %s (counsel, bailiff, notary, proxy, escrow); the run stops."), *Want);
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
 	if (KitId != TEXT("duy"))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: only the guns lead's own kit takes a Brief (this kit is %s); the kit is left alone."), *KitId);
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: only the guns lead's own kit takes a Brief (this kit is %s); the run stops."), *KitId);
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
 	FString Text;
@@ -4413,22 +4599,27 @@ void UFTArenaRunner::BeginBrief()
 	std::string Error;
 	if (!FFileHelper::LoadFileToString(Text, *File) || !ftcore::importBriefTable(FT::ToUtf8(Text), Def.fighter, Briefs, &Error))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/briefs.json; the kit is left alone. %s"), *FT::ToFString(Error));
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: no usable Data/Battle/briefs.json; the run stops. %s"), *FT::ToFString(Error));
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
 	const ftcore::BriefDef* Brief = Briefs.find(Id);
 	if (!Brief)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: %s is not in Data/Battle/briefs.json yet; the kit is left alone."), *Want);
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: %s is not in Data/Battle/briefs.json yet; the run stops."), *Want);
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
-	Def.fighter = Brief->kit;
+	// Without -ArenaRating every stat is 10: the Brief's kit changes on the lead's own kit (slice 1's kit).
+	const ftcore::LicenceStats Stats = BriefRating > 0 ? ftcore::LicenceRating{}.statsFor(*Brief, BriefRating) : ftcore::LicenceStats{};
+	Def.fighter = ftcore::buildBriefKit(*Brief, Stats).fighter;
 	BriefId = Want;
+	BriefStats = FString::Printf(TEXT("%d/%d/%d/%d/%d"), Stats.v[0], Stats.v[1], Stats.v[2], Stats.v[3], Stats.v[4]);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: Brief %s on the %s kit (-ArenaBrief): rounds %d, reload %.2f s, shot %d damage %.0f m startup %.2f s, kicks %d/%d/%d, heavy %d, poise %.2f, guard absorb %.2f."),
-		*BriefId, *KitId, static_cast<int32>(Def.fighter.rounds), Def.fighter.reload, Def.fighter.shot.damage, Def.fighter.shot.range,
-		Def.fighter.shot.startup, Def.fighter.light[0].damage, Def.fighter.light[1].damage, Def.fighter.light[2].damage,
-		Def.fighter.heavy.damage, Def.fighter.poise, Def.fighter.guardAbsorb);
+		TEXT("Arena: Brief %s on the %s kit (-ArenaBrief): Rating %d, stats %s, hp %d, rounds %d, reload %.2f s, shot %d damage %.0f m startup %.2f s, kicks %d/%d/%d, heavy %d, poise %.2f, guard absorb %.4f, parry %.4f."),
+		*BriefId, *KitId, BriefRating, *BriefStats, Def.fighter.hp, static_cast<int32>(Def.fighter.rounds), Def.fighter.reload, Def.fighter.shot.damage,
+		Def.fighter.shot.range, Def.fighter.shot.startup, Def.fighter.light[0].damage, Def.fighter.light[1].damage, Def.fighter.light[2].damage,
+		Def.fighter.heavy.damage, Def.fighter.poise, Def.fighter.guardAbsorb, Def.fighter.parryWindow);
 #endif
 }
 
@@ -4440,8 +4631,8 @@ void UFTArenaRunner::LogBrief() const
 	}
 	const ftcore::ArenaStats& S = Fight.stats();
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: BRIEF %s rounds %d/%d reload %.2f shots %d shotHits %d reloads %d dryPresses %d kicks %d."),
-		*BriefId, static_cast<int32>(Fight.rounds()), static_cast<int32>(Fight.roundsMax()), Def.fighter.reload, S.shots,
+		TEXT("Arena: BRIEF %s rating %d stats %s rounds %d/%d reload %.2f shots %d shotHits %d reloads %d dryPresses %d kicks %d."),
+		*BriefId, BriefRating, *BriefStats, static_cast<int32>(Fight.rounds()), static_cast<int32>(Fight.roundsMax()), Def.fighter.reload, S.shots,
 		S.shotHits, S.reloads, S.dryPresses, S.lights);
 }
 
@@ -4456,4 +4647,471 @@ void UFTArenaRunner::LogCarry() const
 		TEXT("Arena: CARRY chairs %s cap %d blockLoad %d takeHalfLoad %d takeHalves %d sharedOffers %d ally %d/%d."),
 		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, Fight.loadCap(), S.blockLoad, S.takeHalfLoad, S.takeHalves,
 		CarrySharedOffers, Fight.allyHp(), Fight.allyMaxHp());
+}
+
+// ---- Setting the table (-ArenaTable) ----
+
+namespace
+{
+constexpr double kArenaTableCooldown = 20.0; // s after a table clears, at cap 100 (tableCooldownForCap stretches it)
+constexpr int32 kArenaTableMinBodies = 3;    // a set table with fewer bodies gutters
+constexpr int32 kArenaTableRingParts = 96;   // segments of the ground ring
+constexpr int32 kArenaTableArcParts = 72;    // segments of the countdown arc
+constexpr float kArenaTableRingWidth = 0.1f;  // m
+constexpr float kArenaTableArcWidth = 0.05f;  // m, just inside the ring
+constexpr float kArenaTableArcInset = 0.16f;  // m
+constexpr float kArenaTableLineWidth = 0.025f; // m
+constexpr float kArenaTableThick = 0.012f;     // m: how tall every part stands off the ground
+
+// The world accent (Data/UI/style.json's Solhaven accent, the built-in style's when the file is missing or refused),
+// sRGB to linear as the UI does, so the palette carries over to the ring.
+FLinearColor TableAccent()
+{
+	ftcore::UiStyle Style = ftcore::defaultUiStyle();
+	FString Text;
+	if (FFileHelper::LoadFileToString(Text, *(FPaths::ProjectDir() / TEXT("Data/UI/style.json"))))
+	{
+		std::string Error;
+		if (!ftcore::importUiStyle(FT::ToUtf8(Text), Style, &Error))
+		{
+			Style = ftcore::defaultUiStyle();
+		}
+	}
+	const ftcore::UiColor C = ftcore::uiColor(Style, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, ftcore::UiToken::Accent);
+	const auto To8 = [](float V) { return static_cast<uint8>(FMath::RoundToInt(FMath::Clamp(V, 0.f, 1.f) * 255.f)); };
+	return FLinearColor(FColor(To8(C.r), To8(C.g), To8(C.b), 255));
+}
+
+const TCHAR* TableErrorName(ftcore::TableError E)
+{
+	switch (E)
+	{
+	case ftcore::TableError::None: return TEXT("none");
+	case ftcore::TableError::NotFull: return TEXT("notFull");
+	case ftcore::TableError::TooFewSeats: return TEXT("tooFewSeats");
+	case ftcore::TableError::Busy: return TEXT("busy");
+	case ftcore::TableError::Cooling: return TEXT("cooling");
+	case ftcore::TableError::BadSetter: return TEXT("badSetter");
+	case ftcore::TableError::Occupied: return TEXT("occupied");
+	}
+	return TEXT("?");
+}
+
+const TCHAR* TableStateName(ftcore::TableState S)
+{
+	switch (S)
+	{
+	case ftcore::TableState::Ready: return TEXT("ready");
+	case ftcore::TableState::Setting: return TEXT("setting");
+	case ftcore::TableState::Set: return TEXT("set");
+	case ftcore::TableState::Cooling: return TEXT("cooling");
+	}
+	return TEXT("?");
+}
+}
+
+void UFTArenaRunner::BeginTable(const ftcore::PlaceTable& Places, bool bCapArg)
+{
+	bTable = bTableAuto = bTableFill = bTableKey = false;
+	TablePlaces = Places;
+#if !UE_BUILD_SHIPPING
+	const TCHAR* Cmd = FCommandLine::Get();
+	bTableAuto = FParse::Param(Cmd, TEXT("ArenaTableAuto"));
+	bTableFill = FParse::Param(Cmd, TEXT("ArenaTableFill"));
+	bTableKey = FParse::Param(Cmd, TEXT("ArenaTableKey"));
+	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill || bTableKey;
+	if (!bTable)
+	{
+		return;
+	}
+	const int32 MinSeats = ftcore::TableTuning().minSeats;
+	if (bCapArg || Places.tableSeats() < MinSeats)
+	{
+		UE_LOG(LogForgottenThird, Error,
+			TEXT("Arena: -ArenaTable needs -ArenaChairs naming %d or more chairs (it names %d) and no -ArenaCap (the table counts the chairs' cap); the run stops."),
+			MinSeats, Places.tableSeats());
+		bTable = false;
+		FTRequestExit(1, TEXT("ArenaTable"));
+		return;
+	}
+	ResetTable();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table: %d seats, at least %d bodies, ring %.1f m, cooldown %.1f s%s%s."),
+		Places.tableSeats(), kArenaTableMinBodies, TableSeats.tuning().radius, TableClock.tuning().cooldown,
+		bTableAuto ? TEXT(", the autopilot sets it at full Load") : TEXT(""), bTableFill ? TEXT(", the Load filled while it is ready") : TEXT(""));
+#endif
+}
+
+void UFTArenaRunner::ResetTable()
+{
+	if (!bTable)
+	{
+		return;
+	}
+	ftcore::TableTuning Tuning;
+	Tuning.minBodies = kArenaTableMinBodies;
+	Tuning.cooldown = ftcore::tableCooldownForCap(kArenaTableCooldown, CarryCap);
+	TableClock.reset(Tuning, static_cast<double>(Fight.heldTime()));
+	TableSeats.reset(ftcore::TableRingTuning());
+	Fight.setTableSeats(ftcore::ArenaTableSeats());
+	TableLastRefusal = ftcore::TableError::None;
+	TableBegins = TableRefusals = TableSets = TableMostBodies = TableStands = TableLeaves = 0;
+	TableGutters = TableFails = TableClears = TableShares = TableShareHp = 0;
+	TableKey.reset();
+	TableKeyBegins = TableKeyTaps = TableKeyCancels = TableKeyPresses = 0;
+	TableSetSeconds = 0.0;
+	TableLastTick = -1.0;
+	TableKeyLastStep = -1.0;
+	if (TableActor)
+	{
+		TableActor->SetActorHiddenInGame(true);
+	}
+}
+
+bool UFTArenaRunner::BeginTableNow(double T)
+{
+	ftcore::Load Held;
+	Held.value = Fight.load();
+	const ftcore::Vec2 At = Bodies.player;
+	const ftcore::TableSpot Spot{At.x, At.y, TableSeats.tuning().radius};
+	const ftcore::TableError E = TableClock.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
+	if (E != ftcore::TableError::None)
+	{
+		++TableRefusals;
+		if (E != TableLastRefusal)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: table refused at %.2f s: %s."), T, TableErrorName(E));
+		}
+		TableLastRefusal = E;
+		return false;
+	}
+	TableLastRefusal = ftcore::TableError::None;
+	const int32 Spent = Fight.spendLoad(Fight.load());
+	TableSeats.place(At);
+	++TableBegins;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table setting at %.2f s at (%.2f, %.2f): %d Load spent, %d would sit."),
+		T, At.x, At.y, Spent, TableSeats.wouldSit(Fight, Bodies, At));
+	return true;
+}
+
+bool UFTArenaRunner::TableCanBegin() const
+{
+	ftcore::Load Held;
+	Held.value = Fight.load();
+	return TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
+		&& TablePlaces.full(Held) && TablePlaces.tableSeats() >= TableClock.tuning().minSeats
+		&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies;
+}
+
+void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
+{
+	if (!bTable)
+	{
+		return;
+	}
+	const double T = static_cast<double>(Fight.heldTime());
+	// Steps the key missed (idle, a scripted pilot): a hold from before them is dropped, not fired late.
+	if (TableKey.holding() && T - TableKeyLastStep > 0.1)
+	{
+		TableKey.reset();
+	}
+	TableKeyLastStep = T;
+	switch (TableKey.step(In.release, bReleaseDown, TableCanBegin(), T))
+	{
+	case ftcore::TableHoldResult::Holding:
+		In.release = false;
+		break;
+	case ftcore::TableHoldResult::Cancelled:
+		In.release = false;
+		++TableKeyCancels;
+		break;
+	case ftcore::TableHoldResult::Begin:
+		// A refusal the checks above missed: the press goes to the fight as the Release it was.
+		if (BeginTableNow(T))
+		{
+			In.release = false;
+			++TableKeyBegins;
+		}
+		else
+		{
+			In.release = true;
+			++TableKeyTaps;
+		}
+		break;
+	case ftcore::TableHoldResult::PassRelease:
+		In.release = true;
+		++TableKeyTaps;
+		break;
+	default:
+		break;
+	}
+}
+
+ftcore::ArenaTableView UFTArenaRunner::GetTableView() const
+{
+	if (!bTable)
+	{
+		return ftcore::ArenaTableView();
+	}
+	return ftcore::tableView(TableClock, TableSeats, TableKey, static_cast<double>(Fight.heldTime()));
+}
+
+void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
+{
+	if (!bTable)
+	{
+		return;
+	}
+	const double T = static_cast<double>(Fight.heldTime());
+	if (TableClock.state() == ftcore::TableState::Set && TableLastTick >= 0.0)
+	{
+		TableSetSeconds += FMath::Max(0.0, T - TableLastTick);
+	}
+	TableLastTick = T;
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		if (E.type == ftcore::ArenaEventType::TableShare)
+		{
+			++TableShares;
+			TableShareHp += E.amount;
+		}
+	}
+	// The setter staggered or downed while it sets: the table fails.
+	if (TableClock.state() == ftcore::TableState::Setting)
+	{
+		const ftcore::ArenaAction Act = Out.player.action;
+		if (Act == ftcore::ArenaAction::Hitstun || Act == ftcore::ArenaAction::GuardBreak || Act == ftcore::ArenaAction::Downed)
+		{
+			TableClock.interrupt(T);
+		}
+	}
+	// The autopilot: at full Load, with enough bodies in reach (the setter counted).
+	if (bAutoPlay && TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0)
+	{
+		if (bTableFill && Fight.load() < Fight.loadCap())
+		{
+			Fight.giveLoad(Fight.loadCap() - Fight.load());
+		}
+		if (bTableAuto && Fight.load() >= Fight.loadCap()
+			&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies)
+		{
+			BeginTableNow(T);
+		}
+	}
+	const auto Drain = [&]()
+	{
+		for (const ftcore::TableEvent& E : TableClock.update(T))
+		{
+			switch (E.type)
+			{
+			case ftcore::TableEventType::Set:
+			{
+				const int32 Sat = TableSeats.sit(Fight, Bodies);
+				++TableSets;
+				TableMostBodies = FMath::Max(TableMostBodies, Sat);
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table set at %.2f s: %d bodies (seats 0x%x, waiting 0x%x)."),
+					E.at, Sat, static_cast<uint32>(TableSeats.seated()), static_cast<uint32>(TableSeats.waiting()));
+				TableClock.checkBodies(Sat, T);
+				break;
+			}
+			case ftcore::TableEventType::Guttered:
+				++TableGutters;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table guttered at %.2f s: %d bodies."), E.at, TableSeats.bodies());
+				TableSeats.clear();
+				break;
+			case ftcore::TableEventType::Failed:
+				++TableFails;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table failed at %.2f s: the setter was struck."), E.at);
+				TableSeats.clear();
+				break;
+			case ftcore::TableEventType::Cleared:
+				++TableClears;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table cleared at %.2f s."), E.at);
+				TableSeats.clear();
+				break;
+			default:
+				break;
+			}
+		}
+	};
+	Drain();
+	if (TableClock.set())
+	{
+		const ftcore::TableRingChange Change = TableSeats.update(Fight, Bodies);
+		if (Change.any())
+		{
+			TableStands += Change.stood;
+			TableLeaves += Change.left;
+			TableMostBodies = FMath::Max(TableMostBodies, TableSeats.bodies());
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: table at %.2f s: %d stood, %d left, %d sat: %d bodies."),
+				T, Change.stood, Change.left, Change.sat, TableSeats.bodies());
+			TableClock.checkBodies(TableSeats.bodies(), T);
+			Drain();
+		}
+	}
+	Fight.setTableSeats(TableClock.set() && TableSeats.placed()
+		? TableSeats.seats(Fight, TableClock.tuning().enemyShare, TablePlaces.tableSeats())
+		: ftcore::ArenaTableSeats());
+	if (TableClock.state() == ftcore::TableState::Setting || TableClock.set())
+	{
+		SpawnTable();
+	}
+}
+
+void UFTArenaRunner::SpawnTable()
+{
+	UWorld* World = GetWorld();
+	if (TableActor || !World)
+	{
+		return;
+	}
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	if (!Cube || !Base)
+	{
+		return;
+	}
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	TableActor = World->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
+	if (!TableActor)
+	{
+		return;
+	}
+	UStaticMeshComponent* Root = TableActor->GetStaticMeshComponent();
+	Root->SetMobility(EComponentMobility::Movable);
+	Root->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Root->SetCanEverAffectNavigation(false);
+	const FLinearColor Accent = TableAccent();
+	UMaterialInstanceDynamic* Ring = UMaterialInstanceDynamic::Create(Base, TableActor);
+	Ring->SetVectorParameterValue(TEXT("Color"), Accent);
+	UMaterialInstanceDynamic* Line = UMaterialInstanceDynamic::Create(Base, TableActor);
+	Line->SetVectorParameterValue(TEXT("Color"), Accent);
+	const auto Part = [&](UMaterialInstanceDynamic* Paint) -> UStaticMeshComponent*
+	{
+		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(TableActor);
+		C->SetMobility(EComponentMobility::Movable);
+		C->SetStaticMesh(Cube);
+		C->SetMaterial(0, Paint);
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetCanEverAffectNavigation(false);
+		C->SetCastShadow(false);
+		C->SetupAttachment(Root);
+		C->RegisterComponent();
+		TableActor->AddInstanceComponent(C);
+		return C;
+	};
+	// A segment of a circle of radius R round the actor: the cube is 1 m on a side, centred.
+	const auto Circle = [&](TArray<TObjectPtr<UStaticMeshComponent>>& Parts, int32 Count, float Radius, float Width)
+	{
+		const float Chord = 2.f * Radius * FMath::Sin(PI / static_cast<float>(Count)) + Width * 0.5f;
+		for (int32 I = 0; I < Count; ++I)
+		{
+			const float A = (static_cast<float>(I) + 0.5f) / static_cast<float>(Count) * 2.f * PI;
+			UStaticMeshComponent* C = Part(Ring);
+			C->SetRelativeLocation(FVector(FMath::Cos(A) * Radius * 100.0, FMath::Sin(A) * Radius * 100.0, kArenaTableThick * 50.0 + 1.0));
+			C->SetRelativeRotation(FRotator(0.0, FMath::RadiansToDegrees(A) + 90.0, 0.0));
+			C->SetRelativeScale3D(FVector(Chord, Width, kArenaTableThick));
+			Parts.Add(C);
+		}
+	};
+	const float Radius = TableSeats.tuning().radius;
+	Circle(TableRingParts, kArenaTableRingParts, Radius, kArenaTableRingWidth);
+	Circle(TableArcParts, kArenaTableArcParts, Radius - kArenaTableArcInset, kArenaTableArcWidth);
+	for (int32 I = 0; I < 1 + MaxEnemies; ++I)
+	{
+		UStaticMeshComponent* C = Part(Line);
+		C->SetUsingAbsoluteLocation(true);
+		C->SetUsingAbsoluteRotation(true);
+		C->SetUsingAbsoluteScale(true);
+		C->SetVisibility(false);
+		TableLineParts.Add(C);
+	}
+	TableActor->SetActorHiddenInGame(true);
+}
+
+void UFTArenaRunner::PaintTable(float Alpha)
+{
+	if (!bTable || !TableActor)
+	{
+		return;
+	}
+	const ftcore::TableState State = TableClock.state();
+	const bool bShow = (State == ftcore::TableState::Setting || State == ftcore::TableState::Set) && TableSeats.placed();
+	TableActor->SetActorHiddenInGame(!bShow);
+	if (!bShow)
+	{
+		return;
+	}
+	TableActor->SetActorLocation(ToWorld(TableSeats.centre()));
+	// The arc: filling while it sets, then the time left while set (clockwise from the front).
+	const double T = static_cast<double>(Fight.heldTime());
+	const ftcore::TableTuning& Tuning = TableClock.tuning();
+	float Share = 0.f;
+	if (State == ftcore::TableState::Setting)
+	{
+		Share = Tuning.setTime > 0.0 ? 1.f - static_cast<float>(FMath::Clamp((TableClock.until() - T) / Tuning.setTime, 0.0, 1.0)) : 1.f;
+	}
+	else
+	{
+		Share = static_cast<float>(FMath::Clamp((TableClock.until() - T) / Tuning.setDuration, 0.0, 1.0));
+	}
+	const int32 Lit = FMath::CeilToInt32(Share * static_cast<float>(TableArcParts.Num()));
+	for (int32 I = 0; I < TableArcParts.Num(); ++I)
+	{
+		TableArcParts[I]->SetVisibility(I < Lit);
+	}
+	// A thin line from each seated body to the setter, on the ground.
+	const ftcore::Vec2 Setter = ArenaLerp(PrevBodies.player, Bodies.player, Alpha);
+	const auto Draw = [&](int32 Slot, bool bOn, const ftcore::Vec2& From)
+	{
+		if (!TableLineParts.IsValidIndex(Slot))
+		{
+			return;
+		}
+		UStaticMeshComponent* C = TableLineParts[Slot];
+		const ftcore::Vec2 Span{Setter.x - From.x, Setter.y - From.y};
+		const float Length = ArenaLength(Span);
+		C->SetVisibility(bOn && State == ftcore::TableState::Set && Length > 0.05f);
+		if (!C->IsVisible())
+		{
+			return;
+		}
+		const ftcore::Vec2 Mid{(Setter.x + From.x) * 0.5f, (Setter.y + From.y) * 0.5f};
+		C->SetWorldLocation(ToWorld(Mid) + FVector(0.0, 0.0, kArenaTableThick * 50.0 + 1.5));
+		C->SetWorldRotation(FRotator(0.0, FMath::RadiansToDegrees(FMath::Atan2(Span.y, Span.x)), 0.0));
+		C->SetWorldScale3D(FVector(Length, kArenaTableLineWidth, kArenaTableThick));
+	};
+	const uint16 Seated = TableSeats.seated();
+	Draw(0, (Seated & ftcore::kTableAllyBit) != 0, ArenaLerp(PrevBodies.ally, Bodies.ally, Alpha));
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		const size_t E = static_cast<size_t>(I);
+		const bool bOn = E < Fight.enemyCount() && (Seated & ftcore::tableEnemyBit(E)) != 0;
+		Draw(1 + I, bOn, ArenaLerp(PrevBodies.enemies[E], Bodies.enemies[E], Alpha));
+	}
+}
+
+void UFTArenaRunner::LogTable() const
+{
+	if (!bTable)
+	{
+		return;
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d keyBegins %d keyTaps %d keyCancels %d setSeconds %.1f of %.1f state %s."),
+		TableBegins, TableRefusals, TableSets, TableMostBodies, TableStands, TableLeaves, TableGutters, TableFails, TableClears,
+		TableShares, TableShareHp, TableKeyBegins, TableKeyTaps, TableKeyCancels, TableSetSeconds,
+		static_cast<double>(Fight.heldTime()), TableStateName(TableClock.state()));
+}
+
+void UFTArenaRunner::EndTable()
+{
+	TableRingParts.Reset();
+	TableArcParts.Reset();
+	TableLineParts.Reset();
+	if (TableActor)
+	{
+		TableActor->Destroy();
+		TableActor = nullptr;
+	}
 }

@@ -117,6 +117,7 @@ void attackMoveInput(const AttackMoveRules& rules, const ArenaFight& fight, Aren
     const bool light = last.action == ArenaAction::Light;
     if (!light && last.action != ArenaAction::Heavy && last.action != ArenaAction::Riposte && last.action != ArenaAction::Release)
         return;
+    if (light && last.move == kArenaAirMove) return; // an air light moves on the jump's air control, not a walk
     const ArenaAttack* attack = arenaPlayerAttack(fight.def().fighter, last.move);
     if (!attack) return;
     const AttackMoveOut m = attackMove(rules, aimKindOfMove(fight.def().fighter, last.move), !light, *attack, last.actionTime);

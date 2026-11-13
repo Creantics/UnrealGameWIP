@@ -563,6 +563,20 @@ struct FDashSpan
 constexpr FDashSpan kDashSpans[UFTLocomotionAnimInstance::NumDashClips] = {{0.20f, 0.73f}, {0.23f, 0.70f}, {0.27f, 0.77f}};
 }
 
+bool AFTArenaFighter::CanSideDash() const
+{
+#if !UE_BUILD_SHIPPING
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash")))
+	{
+		return false;
+	}
+#endif
+	const UFTLocomotionAnimInstance* Anim =
+		SkinKind == ESkin::Lead && Skin ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	return Anim && Anim->HasTraversalClip(UFTLocomotionAnimInstance::FirstDashClip + 1) &&
+		Anim->HasTraversalClip(UFTLocomotionAnimInstance::FirstDashClip + 2);
+}
+
 bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 {
 	UFTLocomotionAnimInstance* Anim = SkinKind == ESkin::Lead ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
@@ -570,8 +584,11 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	// The roll's floor lift comes down with the clip as it fades out (kRollLiftOut, the traversal's fade), not in one frame.
 	constexpr float kRollLiftOut = 0.25f;
 	// A locked dodge back from the target keeps facing it: a hop back on the dash clip (the squash without one), not a
-	// forward roll.
-	const int32 Dash = Pose.bDodgeBack ? UFTLocomotionAnimInstance::FirstDashClip : INDEX_NONE;
+	// forward roll. A side dash across it (drawn side-on) leaps to the body's right or left on those dash clips.
+	const int32 Dash = Pose.bDodgeBack ? UFTLocomotionAnimInstance::FirstDashClip
+		: Pose.DodgeSide > 0 ? UFTLocomotionAnimInstance::FirstDashClip + 2
+		: Pose.DodgeSide < 0 ? UFTLocomotionAnimInstance::FirstDashClip + 1
+		: INDEX_NONE;
 #if UE_BUILD_SHIPPING
 	constexpr bool bNoDash = false;
 #else
@@ -579,6 +596,23 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	static const bool bNoDash = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash"));
 #endif
 	const bool bDash = Dash != INDEX_NONE && Anim && !bNoDash && Anim->HasTraversalClip(Dash);
+	// The dashes tightened (chosen): the arc flattened (the body lowered by kDashFlatten of the lower ball's height over
+	// its standing height, nothing at take-off or landing, the feet never under) and the trunk pitched back toward
+	// upright by kDashUpright degrees. -ArenaDashTall plays the clips as they are, to compare by feel; not in shipping.
+#if UE_BUILD_SHIPPING
+	constexpr bool bDashTight = true;
+#else
+	static const bool bDashTight = !FParse::Param(FCommandLine::Get(), TEXT("ArenaDashTall"));
+#endif
+	constexpr float kDashFlatten = 0.4f, kDashUpright = 15.f;
+	if (Anim)
+	{
+		// Held while the dash plays and while it fades (the pitch goes with the clip's weight), so it does not snap.
+		const bool bPlaying = bDash && Pose.bDodging && !Pose.bLying;
+		bDashPitched = bDashTight && (bPlaying || (bDashPitched && RollClip < 0 && RollFadeLog > 0.f) ||
+										 (bDashPitched && RollClip >= UFTLocomotionAnimInstance::FirstDashClip));
+		Anim->SetTraversalTrunkPitch(bDashPitched ? kDashUpright : 0.f); // + stands the hop's trunk up (checked on a capture: - bent it further)
+	}
 	if (!Anim || !Pose.bDodging || Pose.bLying || (Dash != INDEX_NONE && !bDash))
 	{
 		if (RollClip >= 0 && Anim)
@@ -589,13 +623,14 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		}
 		if (RollClip >= 0)
 		{
-			RollLiftFall = RollLift / kRollLiftOut;
+			RollLiftFall = FMath::Abs(RollLift) / kRollLiftOut;
 			RollFadeLog = kRollLiftOut;
 		}
 		RollFadeLog = FMath::Max(0.f, RollFadeLog - Dt);
-		RollLift = FMath::Max(0.f, RollLift - RollLiftFall * Dt);
+		// Back to none from either side (a tight dash lowers the body: its lift is under 0).
+		RollLift = RollLift > 0.f ? FMath::Max(0.f, RollLift - RollLiftFall * Dt) : FMath::Min(0.f, RollLift + RollLiftFall * Dt);
 #if !UE_BUILD_SHIPPING
-		if ((RollLift > 0.f || RollFadeLog > 0.f) && FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor")))
+		if ((RollLift != 0.f || RollFadeLog > 0.f) && FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor")))
 		{
 			auto Over = [this](const TCHAR* Bone)
 			{
@@ -696,12 +731,25 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		{
 			Need = FMath::Max(Need, kSkullCm * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
 		}
-		// Taken from the last pose, so eased toward: up at most kRollLiftRise, down at most kRollLiftFall (cm/s), no pop
-		// from one frame's bones.
-		constexpr float kRollLiftRise = 90.f, kRollLiftFall = 45.f;
-		const float Want = static_cast<float>(Need);
-		RollLift = Want > RollLift ? FMath::Min(Want, RollLift + kRollLiftRise * Scale * Dt)
-								   : FMath::Max(Want, RollLift - kRollLiftFall * Scale * Dt);
+		// A tight dash: lowered by part of the lower ball's height over its standing height (the bones are the clip's,
+		// over the skin, so the lowering itself is not in them). It follows the pose's own smooth curve, except that a
+		// lift still fading from a roll just before (up to kRollLiftOut) comes down to it at kDashLiftIn, not in one frame.
+		if (bDash && bDashTight && Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		{
+			constexpr float kDashLiftIn = 240.f; // cm/s: faster than the clip's own lowering, so it is caught within ~0.15 s
+			const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
+			const float Want = -kDashFlatten * static_cast<float>(FMath::Max(0.0, Ball - RollFloorBall * Scale));
+			RollLift = RollLift > Want ? FMath::Max(Want, RollLift - kDashLiftIn * Scale * Dt) : Want;
+		}
+		else
+		{
+			// Taken from the last pose, so eased toward: up at most kRollLiftRise, down at most kRollLiftFall (cm/s), no
+			// pop from one frame's bones.
+			constexpr float kRollLiftRise = 90.f, kRollLiftFall = 45.f;
+			const float Want = static_cast<float>(Need);
+			RollLift = Want > RollLift ? FMath::Min(Want, RollLift + kRollLiftRise * Scale * Dt)
+									   : FMath::Max(Want, RollLift - kRollLiftFall * Scale * Dt);
+		}
 	}
 	Anim->SetTraversal(RollClip, FMath::Lerp(RollFrom, RollTo, Fraction));
 #if !UE_BUILD_SHIPPING
@@ -746,6 +794,29 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		Lean.Roll = Pose.Wobble;
 		// The roll's lift, and as its clip fades out, what is left of it coming down.
 		Lift.Z = RollLift;
+		// The jump's arc; cut short by a blow in the air (Core's height drops to 0), the body comes down at
+		// kAirLiftDrop rather than in one frame.
+		constexpr float kAirLiftDrop = 500.f; // cm/s; the arc's own fall is at most 4 * jumpHeight / jumpAir
+		const float AirDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+		AirLift = Pose.AirHeight >= AirLift ? Pose.AirHeight : FMath::Max(Pose.AirHeight, AirLift - kAirLiftDrop * AirDt);
+		Lift.Z += AirLift;
+#if !UE_BUILD_SHIPPING
+		// -ArenaJumpFloor: each frame on the jump's clock and 0.4 s after it, the last evaluated pose's pelvis, head and
+		// balls over the floor the figure stands on, and the arc's lift (the jump sheets' floor numbers).
+		static const bool bJumpFloor = FParse::Param(FCommandLine::Get(), TEXT("ArenaJumpFloor"));
+		if (bJumpFloor && Skin && (Pose.JumpClock >= 0.f || JumpFloorAfter > 0.f))
+		{
+			JumpFloorAfter = Pose.JumpClock >= 0.f ? 0.4f : FMath::Max(0.f, JumpFloorAfter - AirDt);
+			const double Base = GetActorLocation().Z;
+			auto Over = [this, Base](const TCHAR* Bone)
+			{
+				return Skin->GetBoneIndex(FName(Bone)) != INDEX_NONE ? Skin->GetBoneLocation(FName(Bone)).Z - Base : 0.0;
+			};
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena jump floor: clock %.3f, %s, pelvis %.1f head %.1f balls %.1f %.1f cm over the floor, lifted %.1f."),
+				Pose.JumpClock, Pose.bAir ? TEXT("air") : TEXT("ground"), Over(TEXT("pelvis")), Over(TEXT("head")), Over(TEXT("ball_l")),
+				Over(TEXT("ball_r")), AirLift);
+		}
+#endif
 		if (!bRollClip && Pose.bDodging)
 		{
 			const float Arc = FMath::Sin(PI * FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f));
@@ -784,6 +855,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
 			}
 			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
+			// The jump's clips: take-off, rise and fall while in the air, the land clip at touch-down.
+			Anim->SetAir(Pose.bAir && !Pose.bLying, Pose.AirRise);
 			// Where the walk heads, so the legs start and stop with the clips made for it (in cm).
 			const bool bWalks = !Pose.bLying && !Pose.bDodging && Pose.WantSpeed >= 0.f;
 			Anim->SetIntent(bWalks ? Pose.WantSpeed * 100.f : -1.f, bWalks && Pose.StopDistance >= 0.f ? Pose.StopDistance * 100.f : -1.f);

@@ -35,6 +35,7 @@ struct FFTArenaGlideProbe
 		Dodge,
 		Hitstun,
 		GuardHeal,
+		Jump, // on the jump's clock: take-off, air (an air light too) and landing
 		HitPause,
 		Other,
 		NumBuckets

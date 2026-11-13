@@ -2,6 +2,7 @@
 #include "ftcore/ArenaSoftTarget.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaLook.h"
+#include "ftcore/TableRing.h"
 
 #include "SeedMix.h"
 #include "ftcore/Json.h"
@@ -261,7 +262,9 @@ struct ArenaFightImpl {
     static const ArenaAttack* attackOf(const Player& p, const ArenaFighter& f) {
         switch (p.action) {
         case ArenaAction::Light:
-            return p.move == kArenaShotMove ? &f.shot : &f.light[std::min<std::size_t>(p.move, f.lightCount - 1u)];
+            return p.move == kArenaShotMove ? &f.shot
+                   : p.move == kArenaAirMove ? &f.jumpLight
+                                             : &f.light[std::min<std::size_t>(p.move, f.lightCount - 1u)];
         case ArenaAction::Heavy: return &f.heavy;
         case ArenaAction::Riposte: return &f.riposte;
         case ArenaAction::Release: return &f.release;
@@ -270,19 +273,21 @@ struct ArenaFightImpl {
     }
 
     // What wants to cut into the current action: an attack's own cancel window for it, if it names one.
-    enum class Cut : std::uint8_t { Other, Guard, Roll, Light };
+    enum class Cut : std::uint8_t { Other, Guard, Roll, Light, Jump };
     static Cut cutOf(Press what) {
         switch (what) {
         case Press::Light:
         case Press::Shot: return Cut::Light;
         case Press::Dodge: return Cut::Roll;
+        case Press::Jump: return Cut::Jump;
         default: return Cut::Other;
         }
     }
 
     // A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed (or its own
     // window for that action, a share of the whole attack), from a dodge once `dodgeCancel` of it has passed, and
-    // from Guard at any time.
+    // from Guard at any time. A jump cuts an attack through its roll window, never a Release, and a dodge only once
+    // its i-frames are over (no chaining them into the air's clear window). Nothing cuts an air light.
     static bool canStart(const Player& p, const ArenaFighter& f, Cut cut = Cut::Other) {
         switch (p.action) {
         case ArenaAction::Idle:
@@ -293,16 +298,27 @@ struct ArenaFightImpl {
         case ArenaAction::Heavy:
         case ArenaAction::Riposte:
         case ArenaAction::Release: {
+            if (p.action == ArenaAction::Light && p.move == kArenaAirMove) return false;
+            if (p.action == ArenaAction::Release && cut == Cut::Jump) return false;
             const ArenaAttack& a = *attackOf(p, f);
-            const float own = cut == Cut::Guard  ? a.cancelGuard
-                              : cut == Cut::Roll  ? a.cancelRoll
-                              : cut == Cut::Light ? a.cancelLight
-                                                  : -1.f;
+            const float own = cut == Cut::Guard                    ? a.cancelGuard
+                              : cut == Cut::Roll || cut == Cut::Jump ? a.cancelRoll
+                              : cut == Cut::Light                  ? a.cancelLight
+                                                                   : -1.f;
             if (own >= 0.f) return p.actionTime >= own * a.total();
             return p.actionTime >= a.startup + a.active + a.cancel * a.recovery;
         }
         case ArenaAction::Dodge:
+            if (cut == Cut::Jump && p.actionTime < f.dodgeInvulnEnd - kArenaEps) return false;
             return p.actionTime >= f.dodgeCancel * f.dodgeTime;
+        case ArenaAction::Jump: {
+            // Nothing in the take-off; in the air only the one air light; on the ground again once the landing's
+            // first jumpLandLock has passed (its weight).
+            const float down = f.jumpStartup + f.jumpAir - kArenaEps; // float clocks: within kArenaEps is there
+            if (p.actionTime < f.jumpStartup) return false;
+            if (p.actionTime < down) return cut == Cut::Light && !p.airLightUsed;
+            return p.actionTime >= down + f.jumpLandLock;
+        }
         default:
             return false;
         }
@@ -326,6 +342,7 @@ struct ArenaFightImpl {
         fight.healMax_ = pl.charges;
         pl.rounds = fi.rounds;
         fight.allyHp_ = fight.allyMaxHp_;
+        fight.tableSeats_ = ArenaTableSeats{};
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             Enemy& foe = foes[i];
             foe = Enemy{};
@@ -370,9 +387,13 @@ struct ArenaFightImpl {
         po.dodgeDir = pl.dodgeDir;
         po.backstep = pl.backstep;
         po.dodgeBack = pl.dodgeBack;
+        po.dodgeSide = pl.dodgeSide;
         po.load = pl.gauge.value;
         po.overloaded = overloadedNow();
         po.loadCap = fight.loadCap_;
+        po.jumpTime = pl.jumpTime;
+        po.height = fight.phase_ == ArenaPhase::Fighting ? jumpHeightAt(pl.jumpTime) : 0.f;
+        po.airClear = pl.airClear;
         // A fight that is over pauses nobody (its clock stands still), nor does a dead enemy: the last blow's
         // pause, if the host wants one, is its own to play from that Hit event's attack.
         const bool fighting = fight.phase_ == ArenaPhase::Fighting;
@@ -479,6 +500,12 @@ struct ArenaFightImpl {
             fight.phase_ = ArenaPhase::Victory;
             emit(ArenaEventType::Victory, kArenaNobody, kArenaNobody, 0, 0, pl.pos);
         }
+        // A jump ends with any action that isn't its own (a blow, a stagger, a defeat), or with the fight.
+        if ((pl.action != ArenaAction::Jump && !(pl.action == ArenaAction::Light && pl.move == kArenaAirMove)) ||
+            fight.phase_ != ArenaPhase::Fighting) {
+            pl.jumpTime = -1.f;
+            pl.airClear = false;
+        }
         fillOutput();
     }
 
@@ -582,7 +609,28 @@ struct ArenaFightImpl {
         if (t1 - pl.lastPoiseHit >= fi.poiseDelay) pl.poise = fi.poise;
     }
 
+    // The jump's height (m) at `t` on its air clock: an arc over jumpAir, jumpHeight at the top; 0 on the ground.
+    float jumpHeightAt(float t) const {
+        const float up = fi.jumpStartup;
+        if (!(t > up) || !(fi.jumpAir > kArenaEps) || t >= up + fi.jumpAir - kArenaEps) return 0.f;
+        const float u = (t - up) / fi.jumpAir;
+        return 4.f * std::max(0.f, fi.jumpHeight) * u * (1.f - u);
+    }
+
+    // Off the floor: the jump's air phase (past the take-off, short of the landing), whatever its height.
+    bool airborne() const {
+        return pl.jumpTime > fi.jumpStartup && pl.jumpTime < fi.jumpStartup + fi.jumpAir - kArenaEps;
+    }
+
     void endAction() {
+        if (pl.action == ArenaAction::Light && pl.move == kArenaAirMove && pl.jumpTime >= 0.f) {
+            // An air light that ends in the air: the jump goes on from its clock.
+            pl.action = ArenaAction::Jump;
+            pl.actionTime = pl.jumpTime;
+            pl.soft = kArenaNobody;
+            pl.homeClose = 0.f;
+            return;
+        }
         pl.action = ArenaAction::Idle;
         pl.actionTime = 0.f;
         pl.soft = kArenaNobody;
@@ -732,14 +780,45 @@ struct ArenaFightImpl {
             pl.backstep = true;
         }
         pl.dodgeBack = false;
+        pl.dodgeSide = 0;
         if (pl.lock != kArenaNobody) {
             const Vec2 to = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), Vec2{-pl.dodgeDir.x, -pl.dodgeDir.y});
-            pl.dodgeBack = arenaDot(pl.dodgeDir, to) <= -kArenaDodgeBackCos;
+            const float along = arenaDot(pl.dodgeDir, to);
+            pl.dodgeBack = along <= -kArenaDodgeBackCos;
+            pl.dodgeSide = 0;
+            if (fight.sideDashes_ && !pl.dodgeBack && along < kArenaDodgeBackCos)
+                pl.dodgeSide = arenaCross(to, pl.dodgeDir) >= 0.f ? std::int8_t{1} : std::int8_t{-1};
         }
         spend(fi.dodgeStamina);
         pl.chainLive = false;
         pl.action = ArenaAction::Dodge;
         pl.actionTime = 0.f;
+        return true;
+    }
+
+    // The jump, from the ground: kArenaJumpStaminaShare of a dodge's stamina, refused as a dodge is (with none left).
+    // The velocity carries the take-off's (no faster than a run).
+    bool startJump() {
+        if (fi.dodgeStamina > 0.f && pl.stamina <= 0.f) return false;
+        spend(kArenaJumpStaminaShare * fi.dodgeStamina);
+        pl.chainLive = false;
+        pl.action = ArenaAction::Jump;
+        pl.actionTime = 0.f;
+        pl.jumpTime = 0.f;
+        pl.jumpVel = arenaClampLength(pl.velocity, fi.moveSpeed);
+        pl.airLightUsed = false;
+        ++stats.jumps;
+        return true;
+    }
+
+    // The one light a jump may strike in the air (a shot press there is one too): no riposte, no chain.
+    bool startAirLight(const ArenaInput& in) {
+        if (!affords(fi.jumpLight)) return false;
+        pl.chainLive = false;
+        pl.airLightUsed = true;
+        ++stats.airLights;
+        faceAtStart(in, fi.jumpLight);
+        beginAttack(ArenaAction::Light, kArenaAirMove, fi.jumpLight);
         return true;
     }
 
@@ -782,11 +861,17 @@ struct ArenaFightImpl {
         // Overloaded: light (and so the riposte), heavy and heal are refused until a Release.
         // A kit with no attacks of its own (ArenaFighter::attacks) starts none: the press is dropped.
         const bool locked = overloadedNow();
+        if (pl.action == ArenaAction::Jump && pl.jumpTime >= 0.f &&
+            pl.actionTime < fi.jumpStartup + fi.jumpAir) { // in the air (canStart let only a light through)
+            if (what != Press::Light && what != Press::Shot) return false;
+            return fi.attacks ? !locked && startAirLight(in) : dropPress();
+        }
         switch (what) {
         case Press::Light: return fi.attacks ? !locked && startLight(in) : dropPress();
         case Press::Heavy: return fi.attacks ? !locked && startHeavy(in) : dropPress();
         case Press::Shot: return fi.attacks ? !locked && startShot(in) : dropPress();
         case Press::Dodge: return startDodge(in);
+        case Press::Jump: return fi.jumpAir > kArenaEps ? startJump() : dropPress();
         case Press::Heal: return !locked && startHeal();
         case Press::Release: return fi.attacks ? startRelease(in) : dropPress();
         default: return false;
@@ -944,6 +1029,7 @@ struct ArenaFightImpl {
         // Aiming a gun kit is the pistol only: a heavy press is a round too.
         if (in.heavy) press = in.aim && fi.weapon == ArenaWeapon::Guns ? Press::Shot : Press::Heavy;
         if (in.heal) press = Press::Heal;
+        if (in.jump) press = Press::Jump;
         if (in.dodge) press = Press::Dodge;
         if (in.release) press = Press::Release;
         if (press != Press::None) {
@@ -1036,13 +1122,36 @@ struct ArenaFightImpl {
         return arenaRamp(pl.velocity, want, rate, dt);
     }
 
+    // The air clock from j0 to j1 (the jump's own time): the clear window, the landing, and the velocity it gives.
+    Vec2 airStep(Vec2 stick, float j0, float j1) {
+        const float up = fi.jumpStartup, down = fi.jumpStartup + fi.jumpAir - kArenaEps;
+        pl.airClear = fi.jumpClearEnd > fi.jumpClearStart && j0 < fi.jumpClearEnd && j1 > fi.jumpClearStart;
+        if (j0 < down && j1 >= down) ++stats.landings;
+        pl.jumpTime = j1;
+        if (j0 < up) return pl.jumpVel; // the take-off carries the run
+        if (j0 < down) {                // in the air: the take-off's velocity, steered by the stick
+            pl.jumpVel = arenaRamp(pl.jumpVel, arenaScaled(stick, fi.moveSpeed * aimSpeed), fi.jumpAirControl, dt);
+            return pl.jumpVel;
+        }
+        return arenaRamp(pl.velocity, Vec2{}, fi.moveBrake, dt); // the landing brakes
+    }
+
     void advancePlayer(const ArenaInput& in) {
+        // The landing cuts an air light short: the rest is the jump's.
+        if (pl.action == ArenaAction::Light && pl.move == kArenaAirMove && pl.jumpTime >= 0.f &&
+            pl.jumpTime + dt >= fi.jumpStartup + fi.jumpAir - kArenaEps) {
+            pl.action = ArenaAction::Jump;
+            pl.actionTime = pl.jumpTime;
+            pl.soft = kArenaNobody;
+            pl.homeClose = 0.f;
+        }
         const float a0 = pl.actionTime;
         const float a1 = a0 + dt;
         const Vec2 stick = arenaClampLength(in.move, 1.f);
         const bool pushed = arenaLength(stick) > kArenaEps;
         Vec2 vel{};
         pl.invulnerable = false;
+        pl.airClear = false;
         switch (pl.action) {
         case ArenaAction::Idle:
         case ArenaAction::Move:
@@ -1059,7 +1168,22 @@ struct ArenaFightImpl {
         case ArenaAction::Heavy:
         case ArenaAction::Riposte:
         case ArenaAction::Release:
+            if (pl.action == ArenaAction::Light && pl.move == kArenaAirMove && pl.jumpTime >= 0.f) {
+                // An air light: the air clock runs on and moves the body; the attack only strikes.
+                vel = airStep(stick, pl.jumpTime, pl.jumpTime + dt);
+                advanceAttack(stick, pushed, a0, a1);
+                break;
+            }
             vel = advanceAttack(stick, pushed, a0, a1);
+            break;
+        case ArenaAction::Jump:
+            faceFree(stick, pushed);
+            vel = airStep(stick, a0, a1);
+            pl.actionTime = a1;
+            if (a1 >= fi.jumpStartup + fi.jumpAir + fi.jumpLand - kArenaEps) {
+                pl.jumpTime = -1.f;
+                endAction();
+            }
             break;
         case ArenaAction::Dodge: {
             // A roll of dodgeDistance over dodgeTime; invulnerable from dodgeInvulnStart to dodgeInvulnEnd.
@@ -1119,9 +1243,15 @@ struct ArenaFightImpl {
             const float need = left * dt / std::max(attack->startup - a0, dt);
             const float took = std::fabs(std::atan2(arenaCross(pl.drawFacing, eased), arenaDot(pl.drawFacing, eased)));
             pl.drawFacing = took >= need ? eased : arenaTurn(pl.drawFacing, pl.facing, need);
-        } else if (pl.action == ArenaAction::Dodge)
-            pl.drawFacing = arenaDrawTurn(pl.drawFacing, pl.dodgeBack ? Vec2{-pl.dodgeDir.x, -pl.dodgeDir.y} : pl.dodgeDir,
+        } else if (pl.action == ArenaAction::Dodge) {
+            // a side dash: side-on to its way, facing across it on the target's side (its way to the body's side)
+            const float s = static_cast<float>(pl.dodgeSide);
+            const Vec2 way = pl.dodgeBack ? Vec2{-pl.dodgeDir.x, -pl.dodgeDir.y}
+                             : pl.dodgeSide != 0 ? Vec2{s * pl.dodgeDir.y, -s * pl.dodgeDir.x}
+                                                 : pl.dodgeDir;
+            pl.drawFacing = arenaDrawTurn(pl.drawFacing, way,
                                       std::max(fi.turnRate, kArenaPi / (kArenaDodgeTurnShare * std::max(fi.dodgeTime, dt))) * dt);
+        }
         else pl.drawFacing = arenaDrawTurn(pl.drawFacing, pl.facing, fi.turnRate * dt);
     }
 
@@ -1725,6 +1855,16 @@ struct ArenaFightImpl {
             }
             return;
         }
+        // In the air's clear window a low move (hitsAir false) passes under: told once per attack, like a roll's.
+        if (pl.airClear && !mv.hitsAir) {
+            if (!foe.evaded) {
+                foe.evaded = true;
+                ++stats.evades;
+                ++stats.airEvades;
+                emit(ArenaEventType::Evaded, source, kArenaPlayer, foe.move, 0, pl.pos);
+            }
+            return;
+        }
         foe.hitPlayer = true; // connected: parried, blocked, landed or vetoed, it is spent
         ArenaBlowRuling r;
         if (!rule(ArenaEventType::Hit, source, kArenaPlayer, foe.move, a.damage, a.poiseDamage, foe.pos, foe.facing,
@@ -1772,8 +1912,19 @@ struct ArenaFightImpl {
         ++stats.hitsTaken;
         damagePlayer(source, damage, foe.move);
         pause(pl.stopUntil, t1, a.hitStop); // both have moved this tick
-        pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
+        // Its own blow's table share may have killed it: then nothing more touches it this tick.
+        if (alive(i)) pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
         if (pl.hp <= 0) return;
+        if (airborne()) {
+            // A blow that lands in the air ends the jump: knocked out of it, whatever the poise (or the height).
+            pl.chainLive = false;
+            pl.action = ArenaAction::Hitstun;
+            pl.actionTime = 0.f;
+            pl.velocity = Vec2{};
+            pl.jumpTime = -1.f;
+            pl.airClear = false;
+            return;
+        }
         // Poise: a player in hitstun or guard break is already down; `armor` ignores a share of it during the player's
         // own attack's startup and active parts.
         if (pl.action == ArenaAction::Hitstun || pl.action == ArenaAction::GuardBreak || poiseDamage <= 0.f) return;
@@ -1896,6 +2047,7 @@ struct ArenaFightImpl {
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
         int allyPart = damage;
+        bool tookHalf = false; // the chair's heal follows take half, never a table share
         // Take half: a press within the window before this blow, the player near enough and free to take it. Not
         // while invulnerable (a dodge's i-frames, a riposte, a Release: the blow would skip guard, poise and hurt),
         // nor while hurt (hitstun) or guard-broken.
@@ -1903,9 +2055,10 @@ struct ArenaFightImpl {
         const bool pressed = pl.takeHalfPress >= t1 - window - kArenaEps && pl.takeHalfPress <= t1;
         const bool canTake = pl.hp > 0 && !pl.invulnerable && pl.action != ArenaAction::Downed &&
                              pl.action != ArenaAction::Release && pl.action != ArenaAction::Hitstun &&
-                             pl.action != ArenaAction::GuardBreak;
+                             pl.action != ArenaAction::GuardBreak && !airborne(); // not from the air
         if (pressed && canTake && arenaDistance(pl.pos, fight.allyPos_) <= fi.takeHalfReach + kArenaEps) {
             pl.takeHalfPress = -1.0e9f; // used
+            tookHalf = true;
             const int lead = (damage + 1) / 2;
             allyPart = damage - lead;
             const int taken = std::min(lead, pl.hp);
@@ -1925,6 +2078,7 @@ struct ArenaFightImpl {
                 storeCapped(source, foe.move, static_cast<float>(lead) * fi.takeHalfLoadShare, stats.takeHalfLoad);
             }
         }
+        allyPart = tableShare(source, foe.move, kArenaAlly, allyPart); // after take half: what is left is shared
         const int lost = std::min(allyPart, fight.allyHp_);
         fight.allyHp_ -= lost;
         if (lost > 0) emit(ArenaEventType::AllyHit, source, kArenaAlly, foe.move, lost, fight.allyPos_);
@@ -1934,13 +2088,65 @@ struct ArenaFightImpl {
             return;
         }
         // A takeHalf chair heals the ally a share of its max hp each time the player takes half (never past it).
-        if (allyPart < damage) {
+        if (tookHalf) {
             const int heal = static_cast<int>(std::lround(fight.chairs_.takeHalfHeal() * static_cast<float>(fight.allyMaxHp_)));
             fight.allyHp_ = std::min(fight.allyMaxHp_, fight.allyHp_ + std::max(heal, 0));
         }
     }
 
+    // A set table (ArenaFight::setTableSeats): the even split of `damage` from source's blow on a seated lead
+    // (`struck`: kArenaPlayer or kArenaAlly). Passes the other parts on and returns the struck one's.
+    int tableShare(std::uint8_t source, std::uint8_t move, std::uint8_t struck, int damage) {
+        const ArenaTableSeats& s = fight.tableSeats_;
+        if (damage <= 0 || !s.any()) return damage;
+        if (!(struck == kArenaPlayer ? s.player : (struck == kArenaAlly && s.ally))) return damage;
+        const bool player = s.player && pl.hp > 0;
+        const bool ally = s.ally && allyUp();
+        int bodies = (player ? 1 : 0) + (ally ? 1 : 0);
+        for (std::size_t i = 0; i < n; ++i)
+            if (((s.enemies >> i) & 1u) && alive(i)) ++bodies;
+        const TableEvenSplit split = tableEvenSplit(damage, bodies);
+        if (split.each <= 0) return split.struck;
+        if (player && struck != kArenaPlayer) {
+            const int lost = std::min(split.each, pl.hp);
+            pl.hp -= lost;
+            stats.damageTaken += lost;
+            emit(ArenaEventType::TableShare, source, kArenaPlayer, move, lost, pl.pos);
+            if (pl.hp <= 0) downPlayer(source, move);
+        }
+        if (ally && struck != kArenaAlly) {
+            const int lost = std::min(split.each, fight.allyHp_);
+            fight.allyHp_ -= lost;
+            emit(ArenaEventType::TableShare, source, kArenaAlly, move, lost, fight.allyPos_);
+            if (fight.allyHp_ <= 0) {
+                fight.allyHp_ = 0;
+                emit(ArenaEventType::AllyDowned, source, kArenaAlly, move, 0, fight.allyPos_);
+            }
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!((s.enemies >> i) & 1u) || !alive(i)) continue;
+            const int part = tableEnemyPart(split.each, s.enemyShare[i]);
+            if (part <= 0) continue;
+            const int amount = lose(i, part);
+            if (amount <= 0) continue;
+            emit(ArenaEventType::TableShare, source, id(i), move, amount, foes[i].pos);
+            if (foes[i].hp <= 0) killEnemy(i);
+        }
+        return split.struck;
+    }
+
+    void downPlayer(std::uint8_t source, std::uint8_t move) {
+        pl.hp = 0;
+        pl.action = ArenaAction::Downed;
+        pl.actionTime = 0.f;
+        pl.velocity = Vec2{};
+        pl.buffered = Press::None;
+        pl.parryLeft = 0.f;
+        emit(ArenaEventType::Downed, source, kArenaPlayer, move, 0, pl.pos);
+    }
+
     void damagePlayer(std::uint8_t source, int damage, std::uint8_t move) {
+        damage = tableShare(source, move, kArenaPlayer, damage);
         const int amount = std::min(damage, pl.hp);
         pl.hp -= amount;
         stats.damageTaken += amount;
@@ -1970,8 +2176,10 @@ struct ArenaFightImpl {
         }
         // The ally, tested as the player is (it never guards or rolls).
         if (!foe.hitAlly && allyUp() && a1 > a.startup && a0 < a.startup + a.active &&
-            arenaReaches(foe.pos, foe.facing, a, fight.allyPos_, fight.allyRadius_))
+            arenaReaches(foe.pos, foe.facing, a, fight.allyPos_, fight.allyRadius_)) {
             enemyStrikeAlly(i);
+            if (!alive(i)) return Vec2{}; // its own blow's table share killed it
+        }
         Vec2 vel{};
         const float span = a.startup + a.active;
         if (span > kArenaEps && a.lunge != 0.f) {
@@ -2440,6 +2648,8 @@ void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowUser_ = hook ? user : nullptr;
 }
 ArenaBlowHook ArenaFight::blowHook() const { return blowHook_; }
+void ArenaFight::setSideDashes(bool on) { sideDashes_ = on; }
+bool ArenaFight::sideDashes() const { return sideDashes_; }
 void* ArenaFight::blowHookUser() const { return blowUser_; }
 bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
     if (phase_ != ArenaPhase::Fighting) return false;
@@ -2504,6 +2714,12 @@ int ArenaFight::allyHp() const { return allyHp_; }
 int ArenaFight::allyMaxHp() const { return allyMaxHp_; }
 bool ArenaFight::allyAlive() const { return allyMaxHp_ > 0 && allyHp_ > 0; }
 Vec2 ArenaFight::allyPos() const { return allyPos_; }
+float ArenaFight::allyRadius() const { return allyRadius_; }
+void ArenaFight::setTableSeats(const ArenaTableSeats& seats) {
+    tableSeats_ = seats;
+    for (float& v : tableSeats_.enemyShare) v = std::isfinite(v) ? std::clamp(v, 0.f, 4.f) : 0.f;
+}
+const ArenaTableSeats& ArenaFight::tableSeats() const { return tableSeats_; }
 bool ArenaFight::takeHalfDue(float lead) const {
     if (phase_ != ArenaPhase::Fighting || !allyAlive() || player_.hp <= 0) return false;
     if (arenaDistance(player_.pos, allyPos_) > def_.fighter.takeHalfReach) return false;
@@ -2532,6 +2748,7 @@ const char* arenaActionName(ArenaAction a) {
     case ArenaAction::GuardBreak: return "GuardBreak";
     case ArenaAction::Downed: return "Downed";
     case ArenaAction::Release: return "Release";
+    case ArenaAction::Jump: return "Jump";
     }
     return "";
 }
@@ -2586,6 +2803,7 @@ const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move)
     case kArenaRiposteMove: return &kit.riposte;
     case kArenaReleaseMove: return &kit.release;
     case kArenaShotMove: return kit.weapon == ArenaWeapon::Guns ? &kit.shot : nullptr;
+    case kArenaAirMove: return &kit.jumpLight;
     default: break;
     }
     if (move < kit.lightCount && static_cast<std::size_t>(move) < kMaxLightChain) return &kit.light[move];
@@ -2598,6 +2816,7 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     case kArenaRiposteMove: return FightClip::Counter;
     case kArenaReleaseMove: return FightClip::Finisher;
     case kArenaShotMove: return kit.weapon == ArenaWeapon::Guns ? FightClip::WeaponRight : FightClip::Stance;
+    case kArenaAirMove: move = 0; break; // the air light strikes as the chain's first
     default: break;
     }
     if (move >= kit.lightCount || static_cast<std::size_t>(move) >= kMaxLightChain) return FightClip::Stance;
@@ -2730,6 +2949,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.softTargetCheck = verdict(stats.softChances > 0 || stats.softTargets > 0, c.softTarget);
     c.cancelsCheck = verdict(stats.cancelChances > 0 || stats.cancels > 0, c.cancels);
     c.flinchCheck = verdict(stats.flinchChances > 0 || stats.flinches > 0, c.flinch);
+    c.jumpCheck = verdict(stats.jumps > 0, stats.landings > 0);
     if (stats.breakOuts > 0)
         c.breakOutCheck = ArenaCheck::Pass;
     else if (stats.breakDue > stats.breakBarred)
@@ -3008,7 +3228,8 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
                       "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
                       "hurtJolt", "blockLoadShare", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
-                      "takeHalfRearm", "rounds", "reload"},
+                      "takeHalfRearm", "rounds", "reload", "jumpStartup", "jumpAir", "jumpLand", "jumpLandLock",
+                      "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -3074,6 +3295,15 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "takeHalfRearm", f.takeHalfRearm, 0, 2, false, path, errors);
     arenaByte(j, "rounds", f.rounds, 0, 30, path, errors);
     arenaNum(j, "reload", f.reload, 0, 10, false, path, errors);
+    arenaNum(j, "jumpStartup", f.jumpStartup, 0, 2, false, path, errors);
+    arenaNum(j, "jumpAir", f.jumpAir, 0, 3, false, path, errors);
+    arenaNum(j, "jumpLand", f.jumpLand, 0, 2, false, path, errors);
+    arenaNum(j, "jumpLandLock", f.jumpLandLock, 0, 2, false, path, errors);
+    arenaNum(j, "jumpHeight", f.jumpHeight, 0, 5, false, path, errors);
+    arenaNum(j, "jumpClearStart", f.jumpClearStart, 0, 5, false, path, errors);
+    arenaNum(j, "jumpClearEnd", f.jumpClearEnd, 0, 5, false, path, errors);
+    arenaNum(j, "jumpAirControl", f.jumpAirControl, 0, 1000, false, path, errors);
+    if (j.has("jumpLight")) arenaParseAttackObject(j["jumpLight"], path + ".jumpLight", f.jumpLight, errors, warnings);
 
     const JsonValue light = j["light"];
     if (!light.isAbsent()) {
@@ -3099,6 +3329,10 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
         errors.push_back(path + ".dodgeInvulnStart: expected at most dodgeInvulnEnd");
     if (f.dodgeInvulnEnd > f.dodgeTime) errors.push_back(path + ".dodgeInvulnEnd: expected at most dodgeTime");
     if (f.lockBreak < f.lockRange) errors.push_back(path + ".lockBreak: expected at least lockRange");
+    if (f.jumpClearStart > f.jumpClearEnd) errors.push_back(path + ".jumpClearStart: expected at most jumpClearEnd");
+    if (f.jumpClearEnd > f.jumpStartup + f.jumpAir + 1e-4f)
+        errors.push_back(path + ".jumpClearEnd: expected at most jumpStartup + jumpAir");
+    if (f.jumpLandLock > f.jumpLand) errors.push_back(path + ".jumpLandLock: expected at most jumpLand");
     if (f.rounds > 0 && f.weapon != ArenaWeapon::Guns) errors.push_back(path + ".rounds: only a guns kit has a cylinder");
 }
 
@@ -3136,7 +3370,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
                       "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
-                      "breakDecay", "breakMove"},
+                      "breakDecay", "breakMove", "carry", "seatable"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
     arenaBool(j, "passive", k.passive, path, errors);
@@ -3162,6 +3396,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaByte(j, "breakAt", k.breakAt, 0, 255, path, errors);
     arenaNum(j, "breakDecay", k.breakDecay, 0, 60, false, path, errors);
     arenaInt(j, "breakMove", k.breakMove, -1, static_cast<int>(kMaxArenaMoves) - 1, path, errors);
+    arenaByte(j, "carry", k.carry, 0, 255, path, errors);
+    arenaBool(j, "seatable", k.seatable, path, errors);
     arenaParseLook(j["look"], path + ".look", k.look, errors, warnings);
     if (k.runRange < k.preferredRange) errors.push_back(path + ".runRange: expected at least preferredRange");
 
@@ -3183,7 +3419,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         }
         ArenaEnemyMove& mv = k.moves[m];
         arenaUnknownKeys(mj, mp,
-                         {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell", "clip"},
+                         {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell", "clip",
+                          "hitsAir"},
                          true, warnings);
         arenaParseAttack(mj, mp, mv.attack, errors);
         arenaNum(mj, "minRange", mv.minRange, 0, 100, false, mp, errors);
@@ -3205,6 +3442,9 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                 errors.push_back(mp + ".tell: expected one of strike, overhead, backhand, charge, thrust, slash, sweep, "
                                       "slam, shot");
         }
+        // A sweep or a slam runs along the floor: a jump clears it unless the file says otherwise.
+        mv.hitsAir = mv.tell != ArenaTell::Sweep && mv.tell != ArenaTell::Slam;
+        arenaBool(mj, "hitsAir", mv.hitsAir, mp, errors);
         if (const JsonValue cj = mj["clip"]; !cj.isAbsent()) {
             const std::string_view id = cj.string();
             if (!cj.isString() || id.empty() || id.size() > kMaxArenaClipId || !arenaIdText(id))

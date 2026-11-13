@@ -330,6 +330,24 @@ constexpr InputHintEntry kArenaHint[] = {
     {{A::TargetPrev, A::TargetNext}, 2, "input.switch", false},
     {{A::Intercept}, 1, "input.intercept", false},
 };
+// The arena's line with the jump after the dodge (InputHintScreen::ArenaJump); everything else as kArenaHint.
+constexpr InputHintEntry kArenaJumpHint[] = {
+    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move", false},
+    {{A::Light}, 1, "input.light", false},
+    {{A::Light}, 1, "input.heavy", true},
+    {{A::Aim}, 1, "input.aim", false},
+    {{A::Guard}, 1, "input.guard", false},
+    {{A::Roll}, 1, "input.dodge", false},
+    {{A::Jump}, 1, "input.jump", false},
+    {{A::Gift}, 1, "input.heal", false},
+    {{A::Release}, 1, "input.release", false},
+    {{A::Count}, 1, "input.count", false},
+    {{A::ReadPick1, A::ReadPick2, A::ReadPick3}, 3, "input.pick", false},
+    {{A::LockOn}, 1, "input.lock", false},
+    {{A::TargetPrev, A::TargetNext}, 2, "input.switch", false},
+    {{A::Intercept}, 1, "input.intercept", false},
+};
+static_assert(std::size(kArenaJumpHint) == std::size(kArenaHint) + 1);
 constexpr InputHintEntry kFieldHint[] = {
     {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move", false},
     {{A::Run}, 1, "input.run", false},
@@ -391,6 +409,10 @@ std::size_t inputHintEntries(InputHintScreen screen, const InputHintEntry*& out)
     if (screen == InputHintScreen::Field) {
         out = kFieldHint;
         return std::size(kFieldHint);
+    }
+    if (screen == InputHintScreen::ArenaJump) {
+        out = kArenaJumpHint;
+        return std::size(kArenaJumpHint);
     }
     out = kArenaHint;
     return std::size(kArenaHint);
