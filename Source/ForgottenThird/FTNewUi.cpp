@@ -2782,8 +2782,9 @@ public:
 			UE_LOG(LogForgottenThird, Log, TEXT("UI: choice anchor %s (%.2f, %.2f)."), bAnchor ? TEXT("beside the face") : TEXT("none, under the line"),
 				AnchorUV.X, AnchorUV.Y);
 		}
-		// The dim behind the options, measured once per choice where they will stand, before they are first drawn there
-		// (the viewport still holds the last frame, without them).
+		// The dim behind the options, measured once per choice where they will stand. The read happens at the end of the
+		// game viewport's draw, the only time its picture can be read (from a Slate tick there is none); that picture is
+		// the scene without the options, which Slate draws later.
 		if (OptionRows == 0)
 		{
 			DimFor = MAX_uint32;
@@ -2792,13 +2793,11 @@ public:
 		}
 		else if (DimFor != OptionsFor)
 		{
-			const float Dim = MeasureOptionDim(Size);
-			// Below 0: no picture yet; measure again next frame, ten tries at most (a truly black scene needs no dim).
-			if (Dim >= 0.f || ++DimTries >= 10)
+			DimSize = Size;
+			if (!bDimBound && GEngine && GEngine->GameViewport)
 			{
-				DimFor = OptionsFor;
-				OptionDim = FMath::Max(Dim, 0.f);
-				DimTries = 0;
+				GEngine->GameViewport->OnEndDraw().AddSP(this, &SFTDialogue::MeasureAtEndDraw);
+				bDimBound = true;
 			}
 		}
 	}
@@ -2952,12 +2951,27 @@ private:
 
 	// The picture where the options will stand, read back once per choice (never per frame): the dim the option ink
 	// needs over its brightest tenth (Core uiOptionDim), 0 when nothing could be read.
+	void MeasureAtEndDraw()
+	{
+		if (OptionRows == 0 || DimFor == OptionsFor)
+		{
+			return;
+		}
+		const float Dim = MeasureOptionDim(DimSize);
+		// Below 0: no picture yet; measure again next frame, ten tries at most (a truly black scene needs no dim).
+		if (Dim >= 0.f || ++DimTries >= 10)
+		{
+			DimFor = OptionsFor;
+			OptionDim = FMath::Max(Dim, 0.f);
+			DimTries = 0;
+		}
+	}
+
 	float MeasureOptionDim(const FVector2f& Size) const
 	{
 		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
 		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
-		// Not on a frame a screenshot is taken: that frame's back buffer is not there to read (an ensure, and a black read).
-		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f || FScreenshotRequest::IsScreenshotRequested())
+		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f)
 		{
 			return -1.f;
 		}
@@ -3177,6 +3191,8 @@ private:
 	float OptionDim = 0.f;     // the measured dim behind the options (0 over a dark picture)
 	uint32 DimFor = MAX_uint32; // the options it was measured for
 	int32 DimTries = 0;         // reads that found no picture yet for these options
+	FVector2f DimSize = FVector2f::ZeroVector; // the widget size the options are placed in, for the end-of-draw read
+	bool bDimBound = false;     // the end-of-draw read is bound to the game viewport
 	bool bHintUp = false;
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line;
