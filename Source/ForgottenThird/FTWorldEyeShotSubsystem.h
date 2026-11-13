@@ -44,6 +44,7 @@
 // lead walking at a plan point and the camera's pitch dipped and brought back over the frames (the .cpp's note).
 // -WorldEyeLeadGo=<x,y> -WorldEyeLeadGoEarly=<s> [-WorldEyeLeadGoJump] without -WorldEyeLeadCam: the lead walks at the
 // point from <s> seconds before the wait ends, so a still from the eye catches it moving.
+// -WorldEyeLeadRoute=<x,y>;<x,y>...: further points the lead walks at in turn after -WorldEyeLeadGo's.
 // -WorldEyeList=<file>: more eyes in the same run, each shot like the first (the .cpp's note has the line's form).
 
 #include "CoreMinimal.h"
@@ -102,6 +103,7 @@ private:
 	float DipFrom = 0.4f;
 	float DipTo = 0.9f;
 	FVector LeadGoTo = FVector::ZeroVector;
+	TArray<FVector> LeadRoute; // -WorldEyeLeadRoute: the walk's further points
 	// -WorldEyeLeadGo from the eye (-WorldEyeLeadGoEarly, -WorldEyeLeadGoJump) and -WorldEyeList's further eyes.
 	struct FNextEye
 	{

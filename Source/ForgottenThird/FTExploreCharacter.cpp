@@ -1545,8 +1545,8 @@ void AFTExploreCharacter::HandleJump()
 	{
 		return;
 	}
-	// In the water, at a wall: out onto it. A swimmer doesn't jump otherwise.
-	if (TryWaterClimb() || bSwimming)
+	// In the water, at a ladder: up it. At any other wall: out onto it (the fallback). A swimmer doesn't jump otherwise.
+	if (TryLadderClimb(true) || TryWaterClimb() || bSwimming)
 	{
 		return;
 	}
@@ -2768,6 +2768,7 @@ void AFTExploreCharacter::BeginLeadGo(const FVector& To, bool bJumpWhenHeld)
 	LeadGoAfter = -1.f;
 	LeadGoStuck = 0.f;
 	LeadGoRan = 0.f;
+	LeadGoNext.Reset();
 	UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: walking from (%.0f, %.0f, %.0f) at (%.0f, %.0f) cm%s."), GetActorLocation().X, GetActorLocation().Y,
 		GetActorLocation().Z, To.X, To.Y, bJumpWhenHeld ? TEXT(", jumping when held up") : TEXT(""));
 }
@@ -2784,6 +2785,15 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 	if (bLeadGo)
 	{
 		LeadGoRan += DeltaSeconds;
+		// A route: the next point once this one is reached.
+		if (LeadGoNext.Num() > 0 && FVector::Dist2D(LeadGoTo, GetActorLocation()) <= 55.0 && !bWaterClimbing)
+		{
+			LeadGoTo = LeadGoNext[0];
+			LeadGoNext.RemoveAt(0, EAllowShrinking::No);
+			LeadGoStuck = 0.f;
+			UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: on to (%.0f, %.0f) cm from (%.0f, %.0f, %.0f), water %s."), LeadGoTo.X, LeadGoTo.Y, GetActorLocation().X,
+				GetActorLocation().Y, GetActorLocation().Z, ANSI_TO_TCHAR(ftcore::waterModeName(WaterNow.mode)));
+		}
 		const FVector Way = (LeadGoTo - GetActorLocation()).GetSafeNormal2D();
 		if (FVector::Dist2D(LeadGoTo, GetActorLocation()) > 30.0 && !bWaterClimbing)
 		{
@@ -2810,7 +2820,7 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 	// A climb out of the water: up the wall's face, then onto its top.
 	if (bWaterClimbing)
 	{
-		WaterClimbTime += DeltaSeconds / 0.9f;
+		WaterClimbTime += DeltaSeconds / FMath::Max(WaterClimbSeconds, 0.3f);
 		const float T = FMath::Min(WaterClimbTime, 1.f);
 		const float Up = FMath::SmoothStep(0.f, 0.65f, T);
 		const float Over = FMath::SmoothStep(0.5f, 1.f, T);
@@ -2898,6 +2908,12 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			Move->SetMovementMode(MOVE_Falling);
 		}
 	}
+	// At a ladder, pushing at its wall: up it (the jump at any other wall is the fallback).
+	if (WaterNow.mode != ftcore::WaterMode::Dry && TryLadderClimb(false))
+	{
+		StirWater(DeltaSeconds);
+		return;
+	}
 	if (bSwimming)
 	{
 		if (Move->MovementMode != MOVE_Flying)
@@ -2906,7 +2922,10 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		}
 		// Held at the surface: the feet eased to the swimmer's draft, never thrown up out of the water.
 		const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-		const double Target = ftcore::waterSwimFeetZ(WaterNow.surface, System->WaterTime()) * 100.0 + Half;
+		// ... nor pressed into a bed that rises under it (a slip, a canal's slope): there the feet skim the bed, so the
+		// body comes up the slope with its stroke until the water is shallow enough to stand in.
+		const double Bed = (WaterNow.surface - WaterNow.column) * 100.0;
+		const double Target = FMath::Max(ftcore::waterSwimFeetZ(WaterNow.surface, System->WaterTime()) * 100.0, Bed + 8.0) + Half;
 		Move->Velocity.Z = FMath::Clamp((Target - GetActorLocation().Z) * 5.0, -250.0, 120.0);
 		const FVector Push(WaterNow.flow.x * 100.0 * DeltaSeconds, WaterNow.flow.y * 100.0 * DeltaSeconds, 0.0);
 		if (!Push.IsNearlyZero())
@@ -3007,6 +3026,55 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 	WetDripShown = bDrip ? Wet.drip : WetDripShown;
 }
 
+bool AFTExploreCharacter::TryLadderClimb(bool bPressed)
+{
+	UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (!System || bWaterClimbing || WaterNow.mode == ftcore::WaterMode::Dry)
+	{
+		return false;
+	}
+	const FVector At = GetActorLocation();
+	const ftcore::WaterBodies& Bodies = System->Bodies();
+	// Within reach of a ladder's foot (a little further for a pressed jump).
+	const int32 Index = Bodies.nearestExit(ftcore::Vec2{static_cast<float>(At.X * 0.01), static_cast<float>(At.Y * 0.01)},
+		ftcore::kWaterLadderReach * (bPressed ? 1.5f : 1.f));
+	if (Index < 0 || Bodies.exit(static_cast<std::size_t>(Index)).kind != ftcore::WaterExitKind::Ladder)
+	{
+		return false;
+	}
+	const ftcore::WaterExit& Exit = Bodies.exit(static_cast<std::size_t>(Index));
+	const FVector Out(Exit.out.x, Exit.out.y, 0.0);
+	// Pushing at the wall (the stick or a scripted walk), or facing it when jump is pressed.
+	const FVector Push = GetCharacterMovement()->GetLastInputVector().GetSafeNormal2D();
+	const bool bPushing = FVector::DotProduct(Push, Out) > 0.5;
+	const bool bToward = FVector::DotProduct(GetActorForwardVector().GetSafeNormal2D(), Out) > 0.3;
+	if (!(bPushing || (bPressed && bToward)))
+	{
+		return false;
+	}
+	const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const double Feet = At.Z - Half;
+	bWaterClimbing = true;
+	WaterClimbTime = 0.f;
+	WaterClimbFrom = At;
+	WaterClimbTo = FVector(Exit.top.x * 100.0, Exit.top.y * 100.0, Exit.topZ * 100.0 + Half + 2.0);
+	// A rung at a time: about a second and a half for a quay wall.
+	WaterClimbSeconds = FMath::Clamp(static_cast<float>((WaterClimbTo.Z - Half - Feet) * 0.01) * 0.5f, 0.9f, 2.4f);
+	if (bSwimming)
+	{
+		bSwimming = false;
+		GetCharacterMovement()->MaxFlySpeed = SwimSavedFly;
+		GetCharacterMovement()->BrakingDecelerationFlying = SwimSavedBrake;
+	}
+	SetActorRotation(FRotator(0.0, Out.Rotation().Yaw, 0.0));
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->SetMovementMode(MOVE_None);
+	UE_LOG(LogForgottenThird, Display, TEXT("Water: climbing the ladder at (%.0f, %.0f) cm, %.2f m up in %.1f s."), Exit.foot.x * 100.f, Exit.foot.y * 100.f,
+		(WaterClimbTo.Z - Half - Feet) * 0.01, WaterClimbSeconds);
+	return true;
+}
+
 bool AFTExploreCharacter::TryWaterClimb()
 {
 	// Facing a wall within arm's reach whose top is dry, walkable and no more than a reach over the feet: up and onto it.
@@ -3057,6 +3125,7 @@ bool AFTExploreCharacter::TryWaterClimb()
 	}
 	bWaterClimbing = true;
 	WaterClimbTime = 0.f;
+	WaterClimbSeconds = 0.9f;
 	WaterClimbFrom = At;
 	WaterClimbTo = FVector(Onto.X, Onto.Y, Top.ImpactPoint.Z + Half + 2.0);
 	if (bSwimming)
@@ -3067,7 +3136,7 @@ bool AFTExploreCharacter::TryWaterClimb()
 	}
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->SetMovementMode(MOVE_None);
-	UE_LOG(LogForgottenThird, Display, TEXT("Water: climbing out, %.2f m up the wall at (%.0f, %.0f) cm."), (Top.ImpactPoint.Z - Feet) * 0.01, Onto.X, Onto.Y);
+	UE_LOG(LogForgottenThird, Display, TEXT("Water: climbing out (the fallback: no ladder or steps here), %.2f m up the wall at (%.0f, %.0f) cm."), (Top.ImpactPoint.Z - Feet) * 0.01, Onto.X, Onto.Y);
 	return true;
 }
 

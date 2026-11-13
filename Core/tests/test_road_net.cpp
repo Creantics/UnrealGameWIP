@@ -785,7 +785,11 @@ TEST_CASE("road net: a canal row builds its channel: walls, copings at the bank 
     RoadBuild b;
     roadNetBuild(s, MassingGround{}, b);
     const std::size_t before = b.solids.size(), collide0 = b.counts.collide;
-    const std::size_t added = roadCanalBuild(c, MassingGround{}, b);
+    // The channel alone: a flat floor and no ways out (the section and the exits have their own cases).
+    RoadCanal plain = c;
+    plain.deep = 0.0;
+    plain.exitEvery = 0.0;
+    const std::size_t added = roadCanalBuild(plain, MassingGround{}, b);
     // 16 bank pieces a side (158 m in 10 m pieces) and two ends, each a wall and a coping; the floor and the water.
     CHECK(added == (2 * 16 + 2) * 2 + 2);
     CHECK(b.solids.size() == before + added);

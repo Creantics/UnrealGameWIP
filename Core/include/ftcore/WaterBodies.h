@@ -21,6 +21,11 @@
 //     then the first added.
 //   - A sea is a half-plane. Past its buoy line (metres out from its edge) a current runs back toward the shore,
 //     growing with the distance past the line until no swimmer makes way against it.
+//   - A canal's bed has a section (waterSectionDepth): a shallow shelf along each long wall, a slope down from it and
+//     a deep middle, so a step in at the wall is a wade and the middle is a swim. The channel's builder
+//     (roadCanalBuild) lays its floor by the same function.
+//   - The ways out of a canal (WaterExit: a ladder or a flight of steps on a wall, from the road net's canal rows) are
+//     kept with the bodies; nearestExit finds the one to make for or to climb.
 //
 // One frame throughout (the caller's: plan or engine), metres and seconds. waterBodyToEngine takes a body from the plan
 // frame to the engine's (y turned over). Nothing here allocates.
@@ -34,7 +39,8 @@
 
 namespace ftcore {
 
-struct RoadWater; // ftcore/Roads.h
+struct RoadWater;     // ftcore/Roads.h
+struct RoadWaterExit; // ftcore/Roads.h
 struct SeaWaves;  // ftcore/SeaWaves.h
 
 inline constexpr float kWaterWadeDepth = 0.7f;   // m: a column up to this is a wade
@@ -51,6 +57,8 @@ inline constexpr float kWaterBuoyLine = 60.f;    // m out from a sea's edge
 inline constexpr float kWaterBuoyPull = 0.6f;    // m/s of current back for each metre past the line...
 inline constexpr float kWaterBuoyPullMax = 4.f;  // ...up to this
 inline constexpr std::size_t kWaterMaxBodies = 16;
+inline constexpr std::size_t kWaterMaxExits = 64;
+inline constexpr float kWaterLadderReach = 0.9f; // m: a body this near a ladder's foot, pushing at the wall, climbs it
 inline constexpr std::size_t kWaterMaxPoints = 8;
 
 enum class WaterKind : std::uint8_t { Canal, Pool, Lake, Sea };
@@ -61,6 +69,15 @@ enum class WaterShape : std::uint8_t {
 };
 enum class WaterMode : std::uint8_t { Dry, Wade, DeepWade, Swim };
 
+// The water over a channel's bed `fromWall` m in from a long wall: `depth` on the shelf (the first `shelf` m), then
+// deeper in a straight line over the next `batter` m down to `deep`, which the middle holds. A flat bed (batter 0 or
+// deep no more than depth): `depth` everywhere.
+constexpr float waterSectionDepth(float fromWall, float depth, float shelf, float batter, float deep) {
+    if (!(batter > 0.f) || !(deep > depth) || fromWall <= shelf) return depth;
+    if (fromWall >= shelf + batter) return deep;
+    return depth + (deep - depth) * ((fromWall - shelf) / batter);
+}
+
 FTCORE_API const char* waterKindName(WaterKind kind);
 FTCORE_API const char* waterModeName(WaterMode mode);
 
@@ -69,7 +86,12 @@ struct WaterBody {
     WaterShape shape = WaterShape::Box;
     bool waves = false;  // a sea whose surface rides the set's sea waves (WaterBodies::setWaves); else flat at level
     float level = 0.f;   // m: the surface at rest
-    float bed = 0.f;     // m: the floor (a sea's: its deepest)
+    float bed = 0.f;     // m: the floor at its deepest (a canal's mid-channel, a sea's far out)
+    // A box's section across its shorter side (waterSectionDepth): the bed along each long wall is shelfBed for the
+    // first `shelf` m and falls to `bed` over the next `batter` m. batter 0: flat at `bed`.
+    float shelfBed = 0.f;
+    float shelf = 0.f;
+    float batter = 0.f;
     Vec2 flow{};         // m/s mid-channel
     Vec2 centre{};       // a box's centre; a half-plane's point on its edge
     Vec2 half{};         // a box's half sizes
@@ -82,7 +104,22 @@ struct WaterBody {
     FTCORE_API bool covers(Vec2 p) const;
     // How far p is out from a half-plane's edge (negative on the land side); 0 for the other shapes.
     FTCORE_API float out(Vec2 p) const;
+    // The bed under p (its section; `bed` for the other shapes and outside the footprint).
+    FTCORE_API float bedAt(Vec2 p) const;
 };
+
+enum class WaterExitKind : std::uint8_t { Ladder, Steps };
+// A way out of the water on a wall: a ladder is climbed (a body at its foot is set on `top`), steps are walked.
+struct WaterExit {
+    WaterExitKind kind = WaterExitKind::Ladder;
+    Vec2 foot{};      // in the water, at it
+    Vec2 top{};       // on the bank
+    float topZ = 0.f; // m: the bank's top there
+    Vec2 out{};       // unit: from the water to the bank
+};
+// A canal row's exit in the plan frame, and an exit taken to the engine's frame (as waterBodyToEngine).
+FTCORE_API WaterExit waterExitFromRoad(const RoadWaterExit& exit);
+FTCORE_API WaterExit waterExitToEngine(const WaterExit& planExit, float side);
 
 // A canal's water (the road net's row) as a body in the plan frame.
 FTCORE_API WaterBody waterBodyFromCanal(const RoadWater& canal);
@@ -135,8 +172,14 @@ public:
     FTCORE_API bool surfaceHeight(Vec2 p, float t, float& out) const;
     // Body i's surface over p at t (its level, or its waves').
     FTCORE_API float surfaceOf(std::size_t i, Vec2 p, float t) const;
-    // The column over the body's own bed at p (at rest), 0 where no body is.
+    // The column over the body's own bed at p (at rest; a canal's by its section), 0 where no body is.
     FTCORE_API float depth(Vec2 p) const;
+    // The ways out. addExit is false (and nothing added) when the set is full or the exit's way out is no direction.
+    FTCORE_API bool addExit(const WaterExit& exit);
+    std::size_t exitCount() const { return exitCount_; }
+    const WaterExit& exit(std::size_t i) const { return exits_[i]; }
+    // The exit whose foot is nearest p, no further than `within` m (any distance when within < 0); -1: none.
+    FTCORE_API int nearestExit(Vec2 p, float within = -1.f) const;
     // The push at p, m/s: the body's flow (slack toward a box's walls along the flow) and a sea's current back past
     // its buoy line. Zero where no body is.
     FTCORE_API Vec2 flowAt(Vec2 p) const;
@@ -148,7 +191,9 @@ public:
 
 private:
     std::size_t count_ = 0;
+    std::size_t exitCount_ = 0;
     std::array<WaterBody, kWaterMaxBodies> bodies_{};
+    std::array<WaterExit, kWaterMaxExits> exits_{};
     const SeaWaves* waves_ = nullptr;
 };
 
@@ -176,9 +221,10 @@ FTCORE_API float waterSwimFeetZ(float surface, float t);
 //     dead slot, else the slot whose ring is the faintest now, so a splash outlives the wake fed after it.
 //   - A body that comes down into the water splashes: a fall at kWaterSplashFall m/s or more is a full splash, a step
 //     in is kWaterSplashMin of one. Two rings leave the place, a fast strong one and a slower one behind it.
-//   - In the water it feeds a ring every kWaterWakeEvery s while it moves faster than kWaterWakeSpeed (each ring
-//     growing at a third of its speed, so the rings' edge is the V a hull draws), and a faint one every
-//     kWaterIdleEvery s while it stands, from its sway.
+//   - In the water it feeds a ring every kWaterWakeEvery s while it moves (each ring growing at a third of its
+//     speed, so the rings' edge is the V a hull draws), and a faint one every kWaterIdleEvery s while it stands, from
+//     its sway. It is moving from kWaterWakeSpeed up and stays so until it slows under kWaterWakeStop, so a speed
+//     that hovers at the line does not flicker between the two.
 //   - Wetness: what was under the surface is soaked (1) up to a line measured from the feet; out of the water it dries
 //     in kWaterDryTime s (times `dryScale`: over 1 in sun and wind, 0 in rain), and drips for kWaterDripTime s.
 
@@ -188,7 +234,8 @@ inline constexpr float kWaterSplashMin = 0.25f;   // a step in
 inline constexpr float kWaterSplashLife = 2.8f;   // s
 inline constexpr float kWaterSplashSpeed = 1.1f;  // m/s the splash's ring grows
 inline constexpr float kWaterWakeEvery = 0.15f;   // s between a mover's rings
-inline constexpr float kWaterWakeSpeed = 0.25f;   // m/s: slower than this is standing
+inline constexpr float kWaterWakeSpeed = 0.25f;   // m/s: faster than this is moving
+inline constexpr float kWaterWakeStop = 0.15f;    // m/s: a mover slower than this stands again
 inline constexpr float kWaterWakeLife = 0.9f;     // s: six of them and a splash's two fit the ring
 inline constexpr float kWaterIdleEvery = 1.1f;    // s between a stander's rings
 inline constexpr float kWaterIdleLife = 2.2f;     // s
@@ -231,7 +278,7 @@ struct WaterStirEvents {
     bool left = false;     // came out of it this step
     bool fed = false;      // a wake or idle ring was fed this step
     float splash = 0.f;    // an entry's strength, kWaterSplashMin..1 (0 when not entered)
-    bool moving = false;   // in the water and moving faster than kWaterWakeSpeed
+    bool moving = false;   // in the water and moving (kWaterWakeSpeed to start, kWaterWakeStop to stop)
     float speed = 0.f;     // m/s over the ground, in the water (0 out of it)
 };
 
@@ -244,6 +291,7 @@ public:
 
 private:
     bool in_ = false;
+    bool moving_ = false;
     float sinceRing_ = 0.f;
 };
 

@@ -243,10 +243,31 @@ struct RoadWater {
     double flowX = 0.0, flowY = 0.0; // plan unit vector
     double flow = 0.0;              // m/s mid-channel
     double halfWidth = 0.0;         // m: from the channel's middle line to a wall, across the flow
+    // The bed across the channel (waterSectionDepth): `depth` is the water at each long wall, on a shelf `shelf` m
+    // wide; from there the bed batters down over `batter` m to `deep` m of water, which the middle holds. deep <= depth
+    // or batter 0: a flat bed.
+    double shelf = 0.0, batter = 0.0, deep = 0.0;
+    bool alongY = false;            // the long walls run along y (else along x)
+};
+
+// A way out of a canal's water, built on a quay wall (roadCanalBuild): a ladder (rungs set in the wall, climbed) or a
+// flight of steps down the wall's face (walked). foot: the place in the water at it, on the surface; top: where a
+// body stands on the bank once out (topZ the bank's top); out: the unit way from the water to the bank. gap: the
+// stretch of that bank's edge (two plan points along the rail's line) the rail leaves open for it.
+enum class RoadExitKind : std::uint8_t { Ladder, Steps };
+struct RoadWaterExit {
+    std::string id;                 // <canal>-EXIT-<n>
+    std::string canal;
+    RoadExitKind kind = RoadExitKind::Ladder;
+    double footX = 0.0, footY = 0.0;
+    double topX = 0.0, topY = 0.0, topZ = 0.0;
+    double outX = 0.0, outY = 0.0;
+    double gapX0 = 0.0, gapY0 = 0.0, gapX1 = 0.0, gapY1 = 0.0;
 };
 
 struct RoadBuild {
     std::vector<RoadWater> waters;       // one per canal built (roadCanalBuild)
+    std::vector<RoadWaterExit> exits;    // the ways out of the canals' water (roadCanalBuild)
     std::vector<RoadSolid> solids;
     std::vector<MassingProp> lamps;      // a TQ-04 street lamp each (face: towards the road's centre line)
     std::vector<RoadBay> bays;
@@ -519,6 +540,12 @@ struct RoadCanal {
     double coping = 0.25;    // m: the coping slab on each wall's top
     double flow = kCanalFlow; // m/s: the water's speed mid-channel (0: still)
     double flowX = 0.0, flowY = 0.0; // plan unit vector the water runs along; (0, 0): the long side, toward +x or +y
+    double deep = 2.0;       // m of water mid-channel (the floor there is cut this far under the surface); the row's
+                             // floor is the shelf's along each long wall. No more than the row's own depth: a flat bed
+    double shelf = 0.6;      // m: the shelf's width along each long wall
+    double batter = 1.5;     // m: the run of the slope from the shelf down to the deep floor
+    double exitEvery = 40.0; // m between the ways out along each long wall, about (30 where the water is over 12 m wide,
+                             // which also gets a ladder on each end wall); 0: none
 };
 // The way a canal's water runs (plan unit vector): its own flowX, flowY when set, else along its long side toward +.
 FTCORE_API RoadPoint roadCanalFlowDir(const RoadCanal& canal);
@@ -552,11 +579,50 @@ FTCORE_API void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, c
 // and across each end, `wall` thick from the rectangle's edge in, from 0.3 m under the floor up to the bank top less
 // `coping`, in pieces of 10 m at most along the banks (each bank's top as roadQuayPoints reads it); a coping slab
 // (Kerb, walked on) over each wall piece up to the bank top; the floor (PoleConcrete, walked on) between the walls,
-// 0.3 m deep up to floorZ; the water (Water, no collision) a 5 cm plate up to waterZ between the walls, and its
-// surface and flow as a RoadWater in build.waters. The ground stays
-// as it is: under ground higher than waterZ the channel is buried until the height field is cut. Returns the solids
-// added (0 for a rectangle under 4 x (2 wall + 1) m).
+// 0.3 m deep; the water (Water, no collision) a 5 cm plate up to waterZ between the walls, and its surface and flow as
+// a RoadWater in build.waters. The floor's section (roadCanalSection): where the water between the walls is at least
+// 2 (shelf + batter) + 1 m wide and `deep` is more than the row's own depth, the floor lies `deep` under the surface,
+// a shelf (canal_floor, its top floorZ) runs along each long wall and a slope (canal_floor, tilted, walked on) joins
+// the two; else the floor is flat at floorZ. The ways out (exitEvery): on each long wall one every exitEvery m at
+// most, evenly spaced, a ladder and a flight of steps in turn (the low wall begins with a ladder, the high wall with
+// steps), moved 3.5 m clear of the footbridge; a ladder stands in a flight's place where something built before the
+// channel (a road's deck) stands over the flight, and none is set where that stands over the ladder's own foot or the
+// bank's top is no higher than 0.3 m over the water; water over 12 m wide gets a ladder on each end wall too. A
+// ladder (canal_ladder, Steel, no collision): two stringers off the wall's face from the shelf to a metre over the
+// bank, a rung every 0.3 m, ties into the wall and a hoop back onto the coping. Steps (canal_steps, walked on): a
+// flight 0.9 m wide down the wall's face from the bank's top to the shelf, risers of 0.18 m at most, treads of 0.28 m,
+// its top toward -u. Each is a RoadWaterExit in build.exits. The ground stays as it is: under ground higher than the
+// floor the channel is buried until the height field is cut. Returns the solids added (0 for a rectangle under
+// 4 x (2 wall + 1) m).
 FTCORE_API std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build);
+// The section roadCanalBuild gives a canal's floor: the water at the long walls (the row's own), the shelf, the
+// batter and the water mid-channel, as RoadWater carries them (shelf and batter 0 and deep = depth for a flat bed).
+struct RoadCanalSection {
+    double depth = 0.0, shelf = 0.0, batter = 0.0, deep = 0.0;
+};
+FTCORE_API RoadCanalSection roadCanalSection(const RoadCanal& canal);
+// The exits as CSV: '#' comment rows, then id,canal,kind,foot_x,foot_y,top_x,top_y,top_z,out_x,out_y,gap_x0,gap_y0,gap_x1,gap_y1.
+FTCORE_API std::string roadExitCsv(const std::vector<RoadWaterExit>& exits);
+
+// ---- A way into the sea from a quay: a slip, and the roped swimming water off it ----
+
+// A slip from a quay's edge down into the sea, and the buoy lines round the water off it. The quay's edge runs along
+// y at edgeX with the sea toward +x. The slip is `width` m wide about y, its top at topZ on the edge, falling `fall`
+// m per m out to endZ (under the sea's level). The pen: a line of buoys along x = buoyX from penY0 to penY1 and one
+// along each of those two sides from the slip's reach out to it.
+struct RoadSeaSlip {
+    std::string id = "SLIP-01";
+    double edgeX = 0.0, y = 0.0, width = 5.0;
+    double topZ = 4.0, endZ = -1.8, fall = 0.5;
+    double seaZ = 0.0;
+    double buoyX = 0.0, penY0 = 0.0, penY1 = 0.0; // penY1 <= penY0: no buoys
+};
+// The slip and its buoys as road solids appended to `build` (ids <id>-<part>-<n>): the ramp (sea_slip, tilted, walked
+// on) 0.5 m thick; under it a pier of fill every metre out (sea_slip_fill, solid) up to its underside; a kerb along
+// each side (sea_slip_kerb); the buoys (sea_buoy: a float 0.55 m across standing 0.3 m out of the water, a mast and a
+// top mark, every 10 m, no collision) and between them the line's small floats (sea_float, every 2 m). Returns the
+// solids added.
+FTCORE_API std::size_t roadSeaSlipBuild(const RoadSeaSlip& slip, RoadBuild& build);
 // The point table as CSV: '#' comment rows, then kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck.
 FTCORE_API std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points);
 

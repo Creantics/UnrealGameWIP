@@ -502,6 +502,9 @@ private:
 	float SwimSavedBrake = 0.f;
 	bool bWaterClimbing = false;
 	float WaterClimbTime = 0.f;
+	float WaterClimbSeconds = 0.9f; // the placed move's length: longer up a ladder
+	// At a ladder (a way out of the map's water) within reach whose wall the body faces or pushes at: up it.
+	bool TryLadderClimb(bool bPressed);
 	FVector WaterClimbFrom = FVector::ZeroVector;
 	FVector WaterClimbTo = FVector::ZeroVector;
 	// What the lead does to the water and the water to it (UFTWaterSubsystem::LeadWater, each tick): splash, rings,
@@ -526,11 +529,14 @@ private:
 	float LeadGoQuit = 0.f;
 	float LeadGoStuck = 0.f;
 	float LeadGoRan = 0.f;
+	TArray<FVector> LeadGoNext; // the scripted walk's further points, taken in turn as each is reached
 
 public:
 	// The lead walks at a point (cm) from now on.
 	void BeginLeadGo(const FVector& To, bool bJumpWhenHeld);
 	void EndLeadGo() { bLeadGo = false; }
+	// One more point (cm) for the scripted walk, taken once the points before it are reached.
+	void AddLeadGo(const FVector& To) { LeadGoNext.Add(To); }
 	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
 	bool IsSwimming() const { return bSwimming; }
 };

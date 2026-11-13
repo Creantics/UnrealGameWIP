@@ -142,6 +142,9 @@ public:
 	// metres. Filled by the builder.
 	UPROPERTY()
 	TArray<FFTWaterBodyRow> WaterBodies;
+	// The ways out of the canals' water (ladders and steps on their walls), in the engine's frame. Filled by the builder.
+	UPROPERTY()
+	TArray<FFTWaterExitRow> WaterExits;
 	// The plan's square (m, FTBuildMassingWorld -Side=), for the tour's lines in the plan frame; 0 when not known, and
 	// the lines give engine metres.
 	UPROPERTY(EditAnywhere, Category = "Explore|Tour")

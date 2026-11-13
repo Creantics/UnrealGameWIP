@@ -3,28 +3,29 @@
   "emitters": [
     {
       "name": "drops",
-      "rate": 30,
+      "rate": 34,
       "loop": true,
-      "maxParticles": 48,
-      "lifetime": [0.38, 0.52],
+      "maxParticles": 56,
+      "lifetime": [0.4, 0.6],
       "shape": "ring",
-      "radius": 0.3,
-      "innerRadius": 0.16,
+      "radius": 0.28,
+      "innerRadius": 0.14,
       "speed": 0.0,
-      "velocityMin": [0.0, -0.5, 0.0],
-      "velocityMax": [0.0, -0.3, 0.0],
+      "velocityMin": [0.0, -1.3, 0.0],
+      "velocityMax": [0.0, -0.7, 0.0],
       "gravity": [0.0, -9.8, 0.0],
-      "startSize": [0.022, 0.042],
+      "startSize": [0.007, 0.012],
       "colorOverLife": [
-        {"t": 0.0, "color": [1.5, 1.65, 1.8, 0.0]},
-        {"t": 0.12, "color": [1.5, 1.65, 1.8, 1.0]},
-        {"t": 0.85, "color": [1.3, 1.45, 1.6, 0.9]},
-        {"t": 1.0, "color": [1.2, 1.35, 1.5, 0.0]}
+        {"t": 0.0, "color": [0.62, 0.68, 0.72, 0.0]},
+        {"t": 0.1, "color": [0.62, 0.68, 0.72, 0.55]},
+        {"t": 0.85, "color": [0.58, 0.64, 0.68, 0.45]},
+        {"t": 1.0, "color": [0.55, 0.6, 0.64, 0.0]}
       ],
-      "blend": "additive",
-      "sprite": "spark",
-      "stretch": 0.03,
-      "stretchMax": 5.0,
+      "blend": "alpha",
+      "lit": true,
+      "sprite": "soft",
+      "stretch": 0.05,
+      "stretchMax": 14.0,
       "softness": 0.0
     }
   ]

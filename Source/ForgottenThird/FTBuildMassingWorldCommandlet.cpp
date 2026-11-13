@@ -962,6 +962,90 @@ UStaticMesh* SlopedMesh(UPackage* Package, const FString& Id, const ftcore::Mass
 	return Mesh;
 }
 
+// The sea bed's skin: the ground's own cells in a plan rectangle (metres) whose four corners all lie more than Under m
+// below the datum, lifted Lift m, as one mesh in engine centimetres about the origin, its normals smooth and its UVs
+// in metres on the world. It wears the bed's material over the ground's own; nothing collides with it. Null when no
+// cell qualifies.
+UStaticMesh* SeaBedMesh(UPackage* Package, const ftcore::MassingGround& Ground, double Side, double X0, double Y0, double X1, double Y1, double Under,
+	double Lift, UMaterialInterface* Material, int32& Cells)
+{
+	Cells = 0;
+	if (!Ground.grid || Ground.samplesX < 2 || Ground.samplesY < 2 || !(Ground.spacing > 0.0))
+	{
+		return nullptr;
+	}
+	const int32 Ix0 = FMath::Clamp(FMath::FloorToInt32((X0 - Ground.originX) / Ground.spacing), 0, static_cast<int32>(Ground.samplesX) - 2);
+	const int32 Ix1 = FMath::Clamp(FMath::CeilToInt32((X1 - Ground.originX) / Ground.spacing), Ix0 + 1, static_cast<int32>(Ground.samplesX) - 1);
+	const int32 Iy0 = FMath::Clamp(FMath::FloorToInt32((Y0 - Ground.originY) / Ground.spacing), 0, static_cast<int32>(Ground.samplesY) - 2);
+	const int32 Iy1 = FMath::Clamp(FMath::CeilToInt32((Y1 - Ground.originY) / Ground.spacing), Iy0 + 1, static_cast<int32>(Ground.samplesY) - 1);
+	const auto HeightAt = [&Ground](int32 Ix, int32 Iy) {
+		return ftcore::massingHeightFromValue(Ground.grid[static_cast<size_t>(Iy) * Ground.samplesX + static_cast<size_t>(Ix)]);
+	};
+	FMeshDescription Desc;
+	FStaticMeshAttributes Attributes(Desc);
+	Attributes.Register();
+	const FPolygonGroupID Group = Desc.CreatePolygonGroup();
+	Attributes.GetPolygonGroupMaterialSlotNames()[Group] = kMassingSlot;
+	TVertexAttributesRef<FVector3f> Positions = Attributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> Normals = Attributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector2f> Uvs = Attributes.GetVertexInstanceUVs();
+	const int32 Wide = Ix1 - Ix0 + 1, High = Iy1 - Iy0 + 1;
+	TArray<FVertexID> Verts;
+	Verts.Init(FVertexID(INDEX_NONE), Wide * High);
+	const auto VertexAt = [&](int32 Ix, int32 Iy) {
+		FVertexID& Slot = Verts[(Iy - Iy0) * Wide + (Ix - Ix0)];
+		if (Slot == FVertexID(INDEX_NONE))
+		{
+			Slot = Desc.CreateVertex();
+			const ftcore::MassingVec At = ftcore::massingEnginePoint(Side, Ground.originX + Ix * Ground.spacing, Ground.originY + Iy * Ground.spacing,
+				HeightAt(Ix, Iy) + Lift);
+			Positions[Slot] = FVector3f(Cm(At));
+		}
+		return Slot;
+	};
+	for (int32 Iy = Iy0; Iy < Iy1; ++Iy)
+	{
+		for (int32 Ix = Ix0; Ix < Ix1; ++Ix)
+		{
+			if (FMath::Max(FMath::Max(HeightAt(Ix, Iy), HeightAt(Ix + 1, Iy)), FMath::Max(HeightAt(Ix, Iy + 1), HeightAt(Ix + 1, Iy + 1))) > -Under)
+			{
+				continue;
+			}
+			// The plan's +y is the engine's -y: this order looks up there (wound as SlopedMesh winds a face).
+			const int32 Corner[4][2] = {{Ix, Iy}, {Ix + 1, Iy}, {Ix + 1, Iy + 1}, {Ix, Iy + 1}};
+			FVertexInstanceID Corners[4];
+			for (int32 K = 0; K < 4; ++K)
+			{
+				const int32 Cx = Corner[K][0], Cy = Corner[K][1];
+				const FVertexInstanceID Inst = Desc.CreateVertexInstance(VertexAt(Cx, Cy));
+				// The ground's own slope there, by its neighbours.
+				const double Dx = (HeightAt(FMath::Min(Cx + 1, static_cast<int32>(Ground.samplesX) - 1), Cy) - HeightAt(FMath::Max(Cx - 1, 0), Cy)) / (2.0 * Ground.spacing);
+				const double Dy = (HeightAt(Cx, FMath::Min(Cy + 1, static_cast<int32>(Ground.samplesY) - 1)) - HeightAt(Cx, FMath::Max(Cy - 1, 0))) / (2.0 * Ground.spacing);
+				Normals[Inst] = FVector3f(FVector(-Dx, Dy, 1.0).GetSafeNormal());
+				Uvs[Inst] = FVector2f(static_cast<float>(Ground.originX + Cx * Ground.spacing), static_cast<float>(Ground.originY + Cy * Ground.spacing));
+				Corners[K] = Inst;
+			}
+			Desc.CreatePolygon(Group, TArrayView<const FVertexInstanceID>(Corners, 4));
+			++Cells;
+		}
+	}
+	if (Cells == 0)
+	{
+		return nullptr;
+	}
+	UStaticMesh* Mesh = NewObject<UStaticMesh>(Package, TEXT("SM_SeaBed"), RF_Public);
+	Mesh->GetStaticMaterials().Add(FStaticMaterial(Material, kMassingSlot, kMassingSlot));
+	FStaticMeshSourceModel& Source = Mesh->AddSourceModel();
+	Source.BuildSettings.bRecomputeNormals = false;
+	Source.BuildSettings.bRecomputeTangents = true;
+	Source.BuildSettings.bGenerateLightmapUVs = false;
+	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
+	Mesh->CommitMeshDescription(0);
+	Mesh->Build(true);
+	Mesh->PostEditChange();
+	return Mesh;
+}
+
 ANavMeshBoundsVolume* NavBounds(UWorld* World, const FActorSpawnParameters& Spawn, const FVector& Centre, const FVector& Size)
 {
 	ANavMeshBoundsVolume* Bounds = World->SpawnActor<ANavMeshBoundsVolume>(Centre, FRotator::ZeroRotator, Spawn);
@@ -2763,9 +2847,25 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			QuayLamps.clear();
 		}
+		// -SeaSlip: the quay's rail, posts and bollards stand clear of the slip's mouth.
+		const FTBuildRoads::FOptions SlipOptions = FTBuildRoads::ParseOptions(*Params);
+		int32 SlipCleared = 0;
 		for (const ftcore::MassingBox& Piece : Furniture)
 		{
+			if (SlipOptions.bSeaSlip)
+			{
+				const double Reach = 0.5 * FMath::Max(Piece.sx, Piece.sy);
+				if (FMath::Abs(Piece.cx - SlipOptions.SeaSlip[0]) < 3.0 + Reach && FMath::Abs(Piece.cy - SlipOptions.SeaSlip[1]) < 0.5 * SlipOptions.SeaSlip[2] + 0.2 + Reach)
+				{
+					++SlipCleared;
+					continue;
+				}
+			}
 			Dress(Piece, EFTCellKind::Solid, EFTCellCull::Dressing);
+		}
+		if (SlipOptions.bSeaSlip)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: quay: %d rail, post and bollard pieces left out at the slip's mouth."), SlipCleared);
 		}
 		for (const ftcore::MassingProp& Lamp : QuayLamps)
 		{
@@ -3065,6 +3165,28 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Far->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
 		Far->GetStaticMeshComponent()->SetCastShadow(false);
 	}
+	// -SeaSlip: the bed under the swimming water off the slip wears sand, stones and weed (FTBuildLookMaterials -Canal),
+	// on a skin 6 cm over the ground from the quay out past the buoy line.
+	if (bSea && RoadOptions.bSeaSlip)
+	{
+		UMaterialInterface* BedLook = LoadObject<UMaterialInterface>(nullptr,
+			*FString::Printf(TEXT("%s.%s"), FTScene::LookSeaBedMaterial, *FPackageName::GetShortName(FTScene::LookSeaBedMaterial)));
+		const bool bPen = RoadOptions.SeaSlip[5] > RoadOptions.SeaSlip[4];
+		const double BedY0 = (bPen ? RoadOptions.SeaSlip[4] : RoadOptions.SeaSlip[1] - 20.0) - 30.0;
+		const double BedY1 = (bPen ? RoadOptions.SeaSlip[5] : RoadOptions.SeaSlip[1] + 20.0) + 30.0;
+		const double BedX1 = (bPen ? RoadOptions.SeaSlip[6] : RoadOptions.SeaSlip[0] + 40.0) + 40.0;
+		int32 BedCells = 0;
+		UStaticMesh* Skin = BedLook ? SeaBedMesh(Package, Ground, Side, RoadOptions.SeaSlip[0] - 2.0, BedY0, BedX1, BedY1, 0.3, 0.06, BedLook, BedCells) : nullptr;
+		if (Skin)
+		{
+			AStaticMeshActor* Bed = Block(World, Spawn, Skin, BedLook, TEXT("SeaBed"), FVector::ZeroVector, FVector::OneVector, 0.0);
+			Bed->GetStaticMeshComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+			Bed->GetStaticMeshComponent()->SetCanEverAffectNavigation(false);
+			Bed->GetStaticMeshComponent()->SetCastShadow(false);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: sea bed: %d ground cells under the sea from x %.0f to %.0f, y %.0f to %.0f wear %s."), BedCells,
+			RoadOptions.SeaSlip[0] - 2.0, BedX1, BedY0, BedY1, BedLook ? FTScene::LookSeaBedMaterial : TEXT("nothing (FTBuildLookMaterials -Canal builds the bed's look)"));
+	}
 	if (bSurfaces)
 	{
 		LogLook(LookSet, bSea);
@@ -3136,11 +3258,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		// The water the lead wades and swims in and the view dips under (FTWaterSubsystem.h): each canal row's surface
 		// and the sea, taken to the engine's frame.
 		Director->WaterBodies.Reset();
+		Director->WaterExits.Reset();
 		for (const ftcore::RoadBuild& RoadBuilt : RoadBuilds)
 		{
 			for (const ftcore::RoadWater& Canal : RoadBuilt.waters)
 			{
 				Director->WaterBodies.Add(FFTWaterBodyRow::From(ftcore::waterBodyToEngine(ftcore::waterBodyFromCanal(Canal), static_cast<float>(Side))));
+			}
+			for (const ftcore::RoadWaterExit& Exit : RoadBuilt.exits)
+			{
+				if (Director->WaterExits.Num() < static_cast<int32>(ftcore::kWaterMaxExits))
+				{
+					Director->WaterExits.Add(FFTWaterExitRow::From(ftcore::waterExitToEngine(ftcore::waterExitFromRoad(Exit), static_cast<float>(Side))));
+				}
 			}
 		}
 		if (bSea)

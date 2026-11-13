@@ -21,7 +21,10 @@
 // OnLeadWaterExit when it comes out.
 //
 // -WaterTune=<Name>=<value>[,<Name>=<value>...] sets scalar parameters of the water collection or of the underwater
-// view by name at the start of play, for tuning from stills without a rebuild.
+// view by name at the start of play, for tuning from stills without a rebuild. It is compiled out of shipping builds.
+//
+// The ways out of the canals (ladders and steps, ftcore::WaterExit) are kept with the bodies: the lead climbs a ladder
+// it pushes at, and a jump at any other wall is only the fallback.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -65,11 +68,39 @@ struct FFTWaterBodyRow
 	float SinYaw = 0.f;
 	UPROPERTY()
 	float BuoyLine = 0.f;
+	// A canal's section (ftcore::WaterBody): the bed on the shelf at its long walls, the shelf's width and the slope's run.
+	UPROPERTY()
+	float ShelfBed = 0.f;
+	UPROPERTY()
+	float Shelf = 0.f;
+	UPROPERTY()
+	float Batter = 0.f;
 	UPROPERTY()
 	TArray<FVector2D> Points;
 
 	static FFTWaterBodyRow From(const ftcore::WaterBody& Body);
 	ftcore::WaterBody ToBody() const;
+};
+
+// One way out of the water as the map keeps it (the engine's frame, metres): ftcore::WaterExit's fields.
+USTRUCT()
+struct FFTWaterExitRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	uint8 Kind = 0;
+	UPROPERTY()
+	FVector2D Foot = FVector2D::ZeroVector;
+	UPROPERTY()
+	FVector2D Top = FVector2D::ZeroVector;
+	UPROPERTY()
+	float TopZ = 0.f;
+	UPROPERTY()
+	FVector2D Out = FVector2D::ZeroVector;
+
+	static FFTWaterExitRow From(const ftcore::WaterExit& Exit);
+	ftcore::WaterExit ToExit() const;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FFTCameraWaterEvent, bool, bUnder, float, DepthMetres, FName, Kind);

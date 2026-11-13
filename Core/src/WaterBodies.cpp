@@ -74,12 +74,25 @@ float WaterBody::out(Vec2 p) const {
     return (p.x - centre.x) * cosYaw + (p.y - centre.y) * sinYaw;
 }
 
+float WaterBody::bedAt(Vec2 p) const {
+    if (shape != WaterShape::Box || !(batter > 0.f) || !(shelfBed > bed)) return bed;
+    const Vec2 l = boxLocal(*this, p);
+    // Across the shorter side, in from the nearer long wall.
+    const float fromWall = half.y <= half.x ? half.y - std::fabs(l.y) : half.x - std::fabs(l.x);
+    if (!(fromWall >= 0.f)) return bed;
+    return level - waterSectionDepth(fromWall, level - shelfBed, shelf, batter, level - bed);
+}
+
 WaterBody waterBodyFromCanal(const RoadWater& canal) {
     WaterBody body;
     body.kind = WaterKind::Canal;
     body.shape = WaterShape::Box;
     body.level = static_cast<float>(canal.z);
-    body.bed = static_cast<float>(canal.z - canal.depth);
+    const bool cut = canal.batter > 0.0 && canal.deep > canal.depth;
+    body.bed = static_cast<float>(canal.z - (cut ? canal.deep : canal.depth));
+    body.shelfBed = static_cast<float>(canal.z - canal.depth);
+    body.shelf = cut ? static_cast<float>(canal.shelf) : 0.f;
+    body.batter = cut ? static_cast<float>(canal.batter) : 0.f;
     body.centre = {static_cast<float>(canal.cx), static_cast<float>(canal.cy)};
     body.half = {static_cast<float>(canal.sx * 0.5), static_cast<float>(canal.sy * 0.5)};
     body.flow = {static_cast<float>(canal.flowX * canal.flow), static_cast<float>(canal.flowY * canal.flow)};
@@ -97,6 +110,24 @@ WaterBody waterSea(float edgeX, float level, float bed, float buoyLine) {
     body.sinYaw = 0.f;
     body.buoyLine = std::max(buoyLine, 0.f);
     return body;
+}
+
+WaterExit waterExitFromRoad(const RoadWaterExit& exit) {
+    WaterExit e;
+    e.kind = exit.kind == RoadExitKind::Steps ? WaterExitKind::Steps : WaterExitKind::Ladder;
+    e.foot = {static_cast<float>(exit.footX), static_cast<float>(exit.footY)};
+    e.top = {static_cast<float>(exit.topX), static_cast<float>(exit.topY)};
+    e.topZ = static_cast<float>(exit.topZ);
+    e.out = {static_cast<float>(exit.outX), static_cast<float>(exit.outY)};
+    return e;
+}
+
+WaterExit waterExitToEngine(const WaterExit& planExit, float side) {
+    WaterExit e = planExit;
+    e.foot = {planExit.foot.x - side * 0.5f, side * 0.5f - planExit.foot.y};
+    e.top = {planExit.top.x - side * 0.5f, side * 0.5f - planExit.top.y};
+    e.out.y = -planExit.out.y;
+    return e;
 }
 
 WaterBody waterBodyToEngine(const WaterBody& planBody, float side) {
@@ -122,6 +153,9 @@ bool WaterBodies::add(const WaterBody& body) {
     case WaterShape::HalfPlane:
         break;
     }
+    if (!std::isfinite(body.shelfBed) || !std::isfinite(body.shelf) || !std::isfinite(body.batter) || body.shelf < 0.f ||
+        body.batter < 0.f)
+        return false;
     const float axis = std::hypot(body.cosYaw, body.sinYaw);
     if (!(axis > 0.f)) return false;
     bodies_[count_] = body;
@@ -163,7 +197,33 @@ float WaterBodies::depth(Vec2 p) const {
     const int i = bodyAt(p);
     if (i < 0) return 0.f;
     const WaterBody& b = bodies_[static_cast<std::size_t>(i)];
-    return b.level - b.bed;
+    return b.level - b.bedAt(p);
+}
+
+bool WaterBodies::addExit(const WaterExit& exit) {
+    if (exitCount_ >= kWaterMaxExits) return false;
+    const float len = std::hypot(exit.out.x, exit.out.y);
+    if (!(len > 0.f) || !std::isfinite(len) || !std::isfinite(exit.foot.x) || !std::isfinite(exit.foot.y) ||
+        !std::isfinite(exit.top.x) || !std::isfinite(exit.top.y) || !std::isfinite(exit.topZ))
+        return false;
+    exits_[exitCount_] = exit;
+    exits_[exitCount_].out = {exit.out.x / len, exit.out.y / len};
+    ++exitCount_;
+    return true;
+}
+
+int WaterBodies::nearestExit(Vec2 p, float within) const {
+    int best = -1;
+    float bestSq = within < 0.f ? 3.0e38f : within * within;
+    for (std::size_t i = 0; i < exitCount_; ++i) {
+        const float dx = exits_[i].foot.x - p.x, dy = exits_[i].foot.y - p.y;
+        const float sq = dx * dx + dy * dy;
+        if (sq <= bestSq) {
+            bestSq = sq;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
 }
 
 Vec2 WaterBodies::flowAt(Vec2 p) const {
@@ -237,7 +297,7 @@ WaterState waterState(const WaterBodies& water, const WaterCapsule& capsule, flo
     const float surface = water.surfaceOf(static_cast<std::size_t>(i), capsule.p, t);
     const float immersion = surface - capsule.feetZ;
     if (!(immersion > 0.f)) return s; // over the water: on a bridge, in the air
-    const float ground = capsule.hasGround && std::isfinite(capsule.groundZ) ? capsule.groundZ : b.bed;
+    const float ground = capsule.hasGround && std::isfinite(capsule.groundZ) ? capsule.groundZ : b.bedAt(capsule.p);
     const float column = std::max(surface - ground, 0.f);
     s.body = i;
     s.surface = surface;
@@ -338,10 +398,14 @@ WaterStirEvents WaterStir::step(WaterRipples& rings, const WaterState& state, Ve
     }
     e.left = !in && in_;
     in_ = in;
-    if (!in) return e;
+    if (!in) {
+        moving_ = false;
+        return e;
+    }
     const float speed = std::sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
     e.speed = std::isfinite(speed) ? speed : 0.f;
-    e.moving = e.speed > kWaterWakeSpeed;
+    moving_ = e.speed > (moving_ ? kWaterWakeStop : kWaterWakeSpeed);
+    e.moving = moving_;
     sinceRing_ += std::max(dt, 0.f);
     if (e.moving && sinceRing_ >= kWaterWakeEvery) {
         sinceRing_ = 0.f;

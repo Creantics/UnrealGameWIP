@@ -3449,6 +3449,47 @@ double canalBankTop(const RoadBuild& build, const MassingGround& ground, RoadPoi
 }
 } // namespace
 
+RoadCanalSection roadCanalSection(const RoadCanal& canal) {
+    RoadCanalSection s;
+    s.depth = canal.waterZ - canal.floorZ;
+    s.deep = s.depth;
+    const double across = std::min(std::fabs(canal.x1 - canal.x0), std::fabs(canal.y1 - canal.y0)) - 2.0 * canal.wall;
+    if (canal.deep > s.depth + 1e-9 && canal.shelf >= 0.0 && canal.batter > 0.0 &&
+        across >= 2.0 * (canal.shelf + canal.batter) + 1.0) {
+        s.shelf = canal.shelf;
+        s.batter = canal.batter;
+        s.deep = canal.deep;
+    }
+    return s;
+}
+
+namespace {
+// One more solid of a build: an axis-aligned box.
+RoadSolid& pushSolid(RoadBuild& build, const std::string& id, const std::string& row, const char* kind, double cx, double cy,
+                     double sx, double sy, double z0, double z1, RoadTint tint, bool collide) {
+    MassingBox b;
+    b.id = id;
+    b.row = row;
+    b.kind = kind;
+    b.source = MassingSource::Invented;
+    b.cx = cx;
+    b.cy = cy;
+    b.sx = sx;
+    b.sy = sy;
+    b.rot = 0.0;
+    b.z0 = z0;
+    b.z1 = z1;
+    RoadSolid s;
+    s.box = std::move(b);
+    s.tint = tint;
+    s.collide = collide;
+    build.solids.push_back(std::move(s));
+    ++build.counts.solids;
+    if (collide) ++build.counts.collide;
+    return build.solids.back();
+}
+} // namespace
+
 std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build) {
     const double x0 = std::min(canal.x0, canal.x1), x1 = std::max(canal.x0, canal.x1);
     const double y0 = std::min(canal.y0, canal.y1), y1 = std::max(canal.y0, canal.y1);
@@ -3459,29 +3500,14 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     std::size_t n = 0;
     char buf[64];
     auto put = [&](const char* part, const char* kind, double cx, double cy, double sx, double sy, double z0, double z1,
-                   RoadTint tint, bool collide) {
-        MassingBox b;
+                   RoadTint tint, bool collide) -> RoadSolid& {
         std::snprintf(buf, sizeof buf, "%s-%s-%03zu", canal.id.c_str(), part, ++n);
-        b.id = buf;
-        b.row = canal.id;
-        b.kind = kind;
-        b.source = MassingSource::Invented;
-        b.cx = cx;
-        b.cy = cy;
-        b.sx = sx;
-        b.sy = sy;
-        b.rot = 0.0;
-        b.z0 = z0;
-        b.z1 = z1;
-        RoadSolid s;
-        s.box = std::move(b);
-        s.tint = tint;
-        s.collide = collide;
-        build.solids.push_back(std::move(s));
-        ++build.counts.solids;
-        if (collide) ++build.counts.collide;
+        return pushSolid(build, buf, canal.id, kind, cx, cy, sx, sy, z0, z1, tint, collide);
     };
-    const double base = canal.floorZ - 0.3;
+    const RoadCanalSection section = roadCanalSection(canal);
+    const bool cut = section.deep > section.depth;
+    const double deepZ = canal.waterZ - section.deep;
+    const double base = deepZ - 0.3;
     // A wall piece (ua..ub along the banks, wa..wb across) and its coping, its top the bank's.
     auto wallPiece = [&](double pa, double pb, double wa, double wb, double top) {
         const double cu = 0.5 * (pa + pb), cw = 0.5 * (wa + wb), lu = pb - pa, lw = wb - wa;
@@ -3493,6 +3519,14 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     auto behind = [&](bool high, double u) {
         const double w = high ? hi + 0.3 : lo - 0.3;
         return canalBankTop(build, ground, alongY ? RoadPoint{w, u} : RoadPoint{u, w});
+    };
+    // What stands over the water before the channel is built (a road's deck): no way out is set under it.
+    auto roofed = [&](RoadPoint p) {
+        for (std::size_t i = 0; i < before; ++i) {
+            const RoadSolid& s = build.solids[i];
+            if (s.collide && s.shape == RoadShape::Cube && slabHas(s, p.x, p.y) && topAt(s.box, p.x, p.y) > canal.waterZ) return true;
+        }
+        return false;
     };
     // The banks, in equal pieces of 10 m at most between the end walls.
     const double sa = ua + t, sb = ub - t;
@@ -3512,7 +3546,25 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     }
     // The floor and the water between the walls.
     const double cx = 0.5 * (x0 + x1), cy = 0.5 * (y0 + y1), sx = x1 - x0 - 2.0 * t, sy = y1 - y0 - 2.0 * t;
-    put("FLOOR", "canal_floor", cx, cy, sx, sy, base, canal.floorZ, RoadTint::PoleConcrete, true);
+    put("FLOOR", "canal_floor", cx, cy, sx, sy, base, deepZ, RoadTint::PoleConcrete, true);
+    if (cut) {
+        // A shelf along each long wall and the slope from it down to the floor.
+        const double drop = (section.deep - section.depth) / section.batter;
+        for (int side = 0; side < 2; ++side) {
+            const bool high = side == 1;
+            const double wall = high ? hi - t : lo + t, in = high ? -1.0 : 1.0;
+            const double sc = wall + in * 0.5 * section.shelf, bc = wall + in * (section.shelf + 0.5 * section.batter);
+            const double cu = 0.5 * (sa + sb), lu = sb - sa;
+            if (section.shelf > 0.0)
+                put("SHELF", "canal_floor", alongY ? sc : cu, alongY ? cu : sc, alongY ? section.shelf : lu,
+                    alongY ? lu : section.shelf, base, canal.floorZ, RoadTint::PoleConcrete, true);
+            RoadSolid& slope = put("BATTER", "canal_floor", alongY ? bc : cu, alongY ? cu : bc, alongY ? section.batter : lu,
+                                   alongY ? lu : section.batter, 0.5 * (canal.floorZ + deepZ) - 0.3, 0.5 * (canal.floorZ + deepZ),
+                                   RoadTint::PoleConcrete, true);
+            // Falling toward the middle: the box's u is the plan's x, its w the plan's y.
+            (alongY ? slope.box.riseU : slope.box.riseW) = -in * drop;
+        }
+    }
     put("WATER", "canal_water", cx, cy, sx, sy, canal.waterZ - 0.05, canal.waterZ, RoadTint::Water, false);
     RoadWater w;
     w.id = canal.id;
@@ -3521,7 +3573,11 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     w.sx = sx;
     w.sy = sy;
     w.z = canal.waterZ;
-    w.depth = canal.waterZ - canal.floorZ;
+    w.depth = section.depth;
+    w.shelf = section.shelf;
+    w.batter = section.batter;
+    w.deep = section.deep;
+    w.alongY = alongY;
     const RoadPoint dir = roadCanalFlowDir(canal);
     w.flowX = dir.x;
     w.flowY = dir.y;
@@ -3529,6 +3585,182 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     // Across the flow: the rectangle's half extent along the flow's normal.
     w.halfWidth = 0.5 * (std::fabs(dir.y) * sx + std::fabs(dir.x) * sy);
     build.waters.push_back(std::move(w));
+
+    // The ways out. A piece is set by its place along the wall (da) and out of the water (dout, 0 on the wall's face)
+    // from the exit's point on the face.
+    std::size_t exits = 0;
+    auto exitAt = [&](RoadPoint face, RoadPoint along, RoadPoint out, double top, RoadExitKind kind) {
+        // A bank no higher than the water needs no way out.
+        if (!(top > canal.waterZ + 0.3)) return;
+        auto at = [&](double da, double dout) {
+            return RoadPoint{face.x + along.x * da + out.x * dout, face.y + along.y * da + out.y * dout};
+        };
+        auto piece = [&](const char* part, const char* pkind, double da, double dout, double la, double lout, double z0, double z1,
+                         RoadTint tint, bool collide) {
+            const RoadPoint c = at(da, dout);
+            put(part, pkind, c.x, c.y, std::fabs(along.x) * la + std::fabs(out.x) * lout,
+                std::fabs(along.y) * la + std::fabs(out.y) * lout, z0, z1, tint, collide);
+        };
+        RoadWaterExit e;
+        e.canal = canal.id;
+        e.outX = out.x;
+        e.outY = out.y;
+        e.topZ = top;
+        RoadPoint foot, stand, g0, g1;
+        // A flight's run: risers of 0.18 m at most, treads of 0.28 m, centred on the exit's place.
+        const double fall = top - canal.floorZ;
+        const int count = std::max(2, static_cast<int>(std::ceil(fall / 0.18 - 1e-9)));
+        const double rise = fall / count, tread = 0.28, length = tread * count, s0 = -0.5 * length;
+        // Where something is built over a flight (a road's deck), a ladder stands in its place.
+        if (kind == RoadExitKind::Steps && (roofed(at(0.5 * length + 0.4, -0.3)) || roofed(at(s0, -0.45)))) kind = RoadExitKind::Ladder;
+        e.kind = kind;
+        if (kind == RoadExitKind::Ladder) {
+            foot = at(0.0, -0.35);
+            stand = at(0.0, 1.2);
+            g0 = at(-0.6, 0.0);
+            g1 = at(0.6, 0.0);
+            if (roofed(foot)) return;
+            for (const double da : {-0.225, 0.225}) {
+                piece("LADDER", "canal_ladder", da, -0.12, 0.05, 0.05, canal.floorZ, top + 1.0, RoadTint::Steel, false);
+                piece("LADDER", "canal_ladder", da, 0.19, 0.05, 0.67, top + 0.95, top + 1.0, RoadTint::Steel, false);
+                piece("LADDER", "canal_ladder", da, 0.5, 0.05, 0.05, top, top + 0.95, RoadTint::Steel, false);
+                for (const double z : {canal.waterZ + 0.35, top - 0.35})
+                    piece("LADDER", "canal_ladder", da, -0.06, 0.04, 0.12, z, z + 0.04, RoadTint::Steel, false);
+            }
+            for (double z = canal.floorZ + 0.3; z < top - 0.02; z += 0.3)
+                piece("LADDER", "canal_ladder", 0.0, -0.12, 0.45, 0.03, z, z + 0.03, RoadTint::Steel, false);
+        } else {
+            foot = at(0.5 * length + 0.4, -0.3);
+            stand = at(s0 + 0.45, 1.0);
+            g0 = at(s0 - 0.2, 0.0);
+            g1 = at(s0 + 1.3, 0.0);
+            // The last step would be the shelf's own top.
+            for (int i = 0; i + 1 < count; ++i)
+                piece("STEP", "canal_steps", s0 + tread * (i + 0.5), -0.45, tread, 0.9, base, top - rise * (i + 1),
+                      RoadTint::PoleConcrete, true);
+        }
+        std::snprintf(buf, sizeof buf, "%s-EXIT-%02zu", canal.id.c_str(), ++exits);
+        e.id = buf;
+        e.footX = foot.x;
+        e.footY = foot.y;
+        e.topX = stand.x;
+        e.topY = stand.y;
+        e.gapX0 = g0.x;
+        e.gapY0 = g0.y;
+        e.gapX1 = g1.x;
+        e.gapY1 = g1.y;
+        build.exits.push_back(std::move(e));
+    };
+    const double width = hi - lo - 2.0 * t;
+    const double every = canal.exitEvery > 0.0 ? (width > 12.0 ? std::min(canal.exitEvery, 30.0) : canal.exitEvery) : 0.0;
+    if (every > 0.0) {
+        const std::size_t count = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil((sb - sa) / every - 1e-9)));
+        const double gap = (sb - sa) / static_cast<double>(count);
+        const RoadPoint along = alongY ? RoadPoint{0.0, 1.0} : RoadPoint{1.0, 0.0};
+        for (int side = 0; side < 2; ++side) {
+            const bool high = side == 1;
+            const double wall = high ? hi - t : lo + t, o = high ? 1.0 : -1.0;
+            const RoadPoint out = alongY ? RoadPoint{o, 0.0} : RoadPoint{0.0, o};
+            for (std::size_t i = 0; i < count; ++i) {
+                double u = sa + gap * (static_cast<double>(i) + 0.5);
+                // Clear of the footbridge.
+                if (canal.bridgeAt > 0.0 && std::fabs(u - canal.bridgeAt) < 3.5)
+                    u = canal.bridgeAt + (u >= canal.bridgeAt ? 3.5 : -3.5);
+                const RoadExitKind kind =
+                    ((i + static_cast<std::size_t>(side)) % 2u == 0u) ? RoadExitKind::Ladder : RoadExitKind::Steps;
+                exitAt(alongY ? RoadPoint{wall, u} : RoadPoint{u, wall}, along, out, behind(high, u), kind);
+            }
+        }
+        if (width > 12.0) {
+            // Wide water: a ladder in the middle of each end wall too.
+            const double mid = 0.5 * (lo + hi);
+            for (int end = 0; end < 2; ++end) {
+                const double u = end == 0 ? sa : sb, o = end == 0 ? -1.0 : 1.0;
+                const double edge = end == 0 ? ua + 0.5 * t : ub - 0.5 * t;
+                exitAt(alongY ? RoadPoint{mid, u} : RoadPoint{u, mid}, alongY ? RoadPoint{1.0, 0.0} : RoadPoint{0.0, 1.0},
+                       alongY ? RoadPoint{0.0, o} : RoadPoint{o, 0.0}, std::max(behind(false, edge), behind(true, edge)),
+                       RoadExitKind::Ladder);
+            }
+        }
+    }
+    return build.solids.size() - before;
+}
+
+std::string roadExitCsv(const std::vector<RoadWaterExit>& exits) {
+    std::string s = "# ways out of the canals' water (roadCanalBuild): plan metres, +y north; gap: the rail's open stretch\n";
+    s += "id,canal,kind,foot_x,foot_y,top_x,top_y,top_z,out_x,out_y,gap_x0,gap_y0,gap_x1,gap_y1\n";
+    char buf[256];
+    for (const RoadWaterExit& e : exits) {
+        std::snprintf(buf, sizeof buf, ",%.3f,%.3f,%.3f,%.3f,%.3f,%.0f,%.0f,%.3f,%.3f,%.3f,%.3f\n", e.footX, e.footY, e.topX, e.topY,
+                      e.topZ, e.outX, e.outY, e.gapX0, e.gapY0, e.gapX1, e.gapY1);
+        s += e.id + "," + e.canal + "," + (e.kind == RoadExitKind::Ladder ? "ladder" : "steps") + buf;
+    }
+    return s;
+}
+
+std::size_t roadSeaSlipBuild(const RoadSeaSlip& slip, RoadBuild& build) {
+    if (!(slip.fall > 0.0) || !(slip.topZ > slip.endZ) || !(slip.width > 0.5)) return 0;
+    const std::size_t before = build.solids.size();
+    std::size_t n = 0;
+    char buf[64];
+    auto put = [&](const char* part, const char* kind, double cx, double cy, double sx, double sy, double z0, double z1,
+                   RoadTint tint, bool collide) -> RoadSolid& {
+        std::snprintf(buf, sizeof buf, "%s-%s-%03zu", slip.id.c_str(), part, ++n);
+        return pushSolid(build, buf, slip.id, kind, cx, cy, sx, sy, z0, z1, tint, collide);
+    };
+    const double run = (slip.topZ - slip.endZ) / slip.fall;
+    const double mid = 0.5 * (slip.topZ + slip.endZ);
+    {
+        RoadSolid& ramp = put("RAMP", "sea_slip", slip.edgeX + 0.5 * run, slip.y, run, slip.width, mid - 0.5, mid, RoadTint::PoleConcrete, true);
+        ramp.box.riseU = -slip.fall;
+    }
+    for (const double side : {-1.0, 1.0}) {
+        RoadSolid& kerb = put("KERB", "sea_slip_kerb", slip.edgeX + 0.5 * run, slip.y + side * (0.5 * slip.width - 0.09), run, 0.18,
+                              mid - 0.2, mid + 0.14, RoadTint::Kerb, true);
+        kerb.box.riseU = -slip.fall;
+    }
+    // The mass under it: a slice every half metre, its top inside the ramp's own thickness.
+    const double bottom = slip.endZ - 4.5;
+    for (double a = 0.0; a < run - 1e-6; a += 0.5) {
+        const double b = std::min(a + 0.5, run);
+        const double top = slip.topZ - slip.fall * b - 0.3;
+        if (top > bottom + 0.1)
+            put("FILL", "sea_slip_fill", slip.edgeX + 0.5 * (a + b), slip.y, b - a, slip.width, bottom, top, RoadTint::PoleConcrete, true);
+    }
+    if (slip.penY1 > slip.penY0 && slip.buoyX > slip.edgeX + 5.0) {
+        // The buoy lines: along the outer line and back along each side to a little off the quay.
+        struct Line {
+            double ax, ay, bx, by, rot;
+        };
+        const double inX = slip.edgeX + 4.0;
+        const Line lines[] = {{slip.buoyX, slip.penY0, slip.buoyX, slip.penY1, 90.0},
+                              {inX, slip.penY0, slip.buoyX, slip.penY0, 0.0},
+                              {inX, slip.penY1, slip.buoyX, slip.penY1, 0.0}};
+        for (std::size_t li = 0; li < 3; ++li) {
+            const Line& l = lines[li];
+            const double len = std::hypot(l.bx - l.ax, l.by - l.ay);
+            const int marks = std::max(1, static_cast<int>(std::lround(len / 2.0)));
+            for (int i = 0; i <= marks; ++i) {
+                // The side lines' far ends are the outer line's own corner buoys.
+                if (li > 0 && i == marks) continue;
+                const double f = static_cast<double>(i) / marks, x = l.ax + (l.bx - l.ax) * f, y = l.ay + (l.by - l.ay) * f;
+                if (i % 5 == 0) {
+                    put("BUOY", "sea_buoy", x, y, 0.55, 0.55, slip.seaZ - 0.25, slip.seaZ + 0.3, RoadTint::BarrierRed, false).shape =
+                        RoadShape::Cylinder;
+                    put("BUOY", "sea_buoy", x, y, 0.05, 0.05, slip.seaZ + 0.3, slip.seaZ + 0.9, RoadTint::Steel, false).shape =
+                        RoadShape::Cylinder;
+                    put("BUOY", "sea_buoy", x, y, 0.22, 0.22, slip.seaZ + 0.9, slip.seaZ + 1.05, RoadTint::TaxiYellow, false).shape =
+                        RoadShape::Cylinder;
+                } else {
+                    RoadSolid& fl = put("FLOAT", "sea_float", x, y, 0.3, 0.16, slip.seaZ - 0.06, slip.seaZ + 0.1,
+                                        (i % 2 == 0) ? RoadTint::BarrierRed : RoadTint::SignWhite, false);
+                    fl.shape = RoadShape::Cylinder;
+                    fl.axis = RoadAxis::AlongU;
+                    fl.box.rot = l.rot;
+                }
+            }
+        }
+    }
     return build.solids.size() - before;
 }
 

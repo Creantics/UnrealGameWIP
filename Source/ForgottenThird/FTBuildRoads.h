@@ -57,6 +57,10 @@ struct FOptions
 	FString RoadsFile;  // -Roads=
 	FString DoorsFile;  // -RoadDoors=
 	bool bVehicles = false; // -Vehicles
+	// -SeaSlip=<edge x>,<y>,<width>,<top z>[,<pen y0>,<pen y1>,<buoy x>]: a slip from the quay's edge into the sea and
+	// the buoy lines round the water off it (ftcore::roadSeaSlipBuild; plan metres).
+	bool bSeaSlip = false;
+	double SeaSlip[7] = {0, 0, 0, 0, 0, 0, 0};
 	bool bLaneLamps = false; // -LaneLamps=x0,y0,x1,y1
 	bool bFootways = false;  // -Footways
 	FString StreetsFile;     // -Streets= (read for -Footways; -PropStreets= without it)

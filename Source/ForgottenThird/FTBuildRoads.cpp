@@ -157,7 +157,8 @@ struct FRoadPainter
 			Which == ftcore::RoadTint::Tactile || Which == ftcore::RoadTint::Water || Which == ftcore::RoadTint::Gutter ||
 			Which == ftcore::RoadTint::Drain || (Which == ftcore::RoadTint::Verge && !(Host.Lawn && Box.kind == "median_lawn"));
 		// A canal's walls and floor are walked on and drawn at any distance, as the road's ground is.
-		const bool bCanal = Box.kind.rfind("canal_", 0) == 0;
+		const bool bCanal = Box.kind.rfind("canal_", 0) == 0 || Box.kind.rfind("sea_slip", 0) == 0;
+		const bool bAfloat = Box.kind == "sea_buoy" || Box.kind == "sea_float";
 		const bool bGround = Which == ftcore::RoadTint::Asphalt || Which == ftcore::RoadTint::AsphaltPatch || Which == ftcore::RoadTint::Pavement ||
 			Which == ftcore::RoadTint::Kerb || Which == ftcore::RoadTint::Footway || Which == ftcore::RoadTint::Gutter ||
 			Which == ftcore::RoadTint::Verge || (bCanal && Solid.collide);
@@ -195,7 +196,7 @@ struct FRoadPainter
 		FFTCellOptions Options;
 		// Lines and water are drawn at any distance; drain grates and tactile strips (small) to the props'.
 		const bool bMarking = Which == ftcore::RoadTint::LineWhite || Which == ftcore::RoadTint::LineYellow || Which == ftcore::RoadTint::Water;
-		Options.Cull = bVehicle ? EFTCellCull::Car : ((bGround || bMarking) ? EFTCellCull::None : EFTCellCull::Prop);
+		Options.Cull = bVehicle ? EFTCellCull::Car : ((bGround || bMarking || bAfloat) ? EFTCellCull::None : EFTCellCull::Prop);
 		Options.bCastShadow = !bFlat;
 		// Gutters, grates and markings stay in the ray-traced scene: a reflected or bounced road shows them.
 		Options.bRayTraced = !bVehicle;
@@ -217,9 +218,25 @@ struct FRoadPainter
 			Options.bRayTraced = false;
 			++WaterPlanes;
 		}
-		else if (Water && (Box.kind == "canal_wall" || Box.kind == "canal_floor") && CanalBed)
+		else if (Water && (Box.kind == "canal_wall" || Box.kind == "canal_floor" || Box.kind == "canal_steps") && CanalBed)
 		{
 			Worn = CanalInstance(*Water, false);
+			++BedPieces;
+		}
+		else if ((Box.kind == "sea_slip" || Box.kind == "sea_slip_fill") && CanalBed)
+		{
+			// The slip wears the channel's concrete, its wet band at the sea's level.
+			static const FString Name(TEXT("MI_Canal_Bed_Sea"));
+			UMaterialInterface** Known = CanalWorn.Find(Name);
+			if (!Known)
+			{
+				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Host.Package, *Name, RF_Public);
+				Mic->SetParentEditorOnly(CanalBed);
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WaterZ")), 0.f);
+				Mic->PostEditChange();
+				Known = &CanalWorn.Add(Name, Mic);
+			}
+			Worn = *Known;
 			++BedPieces;
 		}
 		UMaterialInterface* const Materials[1] = {Worn};
@@ -308,6 +325,21 @@ FOptions ParseOptions(const TCHAR* Params)
 	FParse::Value(Params, TEXT("Roads="), Options.RoadsFile);
 	FParse::Value(Params, TEXT("RoadDoors="), Options.DoorsFile);
 	Options.bVehicles = FParse::Param(Params, TEXT("Vehicles"));
+	FString Slip;
+	if (FParse::Value(Params, TEXT("SeaSlip="), Slip, false)) // false: the commas are part of the value
+	{
+		TArray<FString> Parts;
+		Slip.ParseIntoArray(Parts, TEXT(","));
+		Options.bSeaSlip = Parts.Num() == 4 || Parts.Num() == 7;
+		for (int32 I = 0; Options.bSeaSlip && I < Parts.Num(); ++I)
+		{
+			Options.SeaSlip[I] = FCString::Atod(*Parts[I]);
+		}
+		if (!Options.bSeaSlip)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -SeaSlip=%s is not <edge x>,<y>,<width>,<top z>[,<pen y0>,<pen y1>,<buoy x>]."), *Slip);
+		}
+	}
 	FString Box;
 	if (FParse::Value(Params, TEXT("LaneLamps="), Box, false)) // false: the commas are part of the value
 	{
@@ -476,8 +508,34 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 		{
 			// The channel's walls, copings, floor and water (canal rows; the quay's rails and masts are -QuayPoints').
 			const size_t Added = ftcore::roadCanalBuild(Canal, Ground, Builds[0]);
-			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canal %s: %d solids, floor %.2f m, water %.2f m."),
-				*RoadsUtf8(Canal.id), static_cast<int32>(Added), Canal.floorZ, Canal.waterZ);
+			const ftcore::RoadCanalSection Section = ftcore::roadCanalSection(Canal);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canal %s: %d solids, floor %.2f m, water %.2f m; %.2f m of water on a %.1f m shelf at "
+				"the walls, %.2f m mid-channel past a %.1f m slope."), *RoadsUtf8(Canal.id), static_cast<int32>(Added), Canal.floorZ, Canal.waterZ, Section.depth,
+				Section.shelf, Section.deep, Section.batter);
+		}
+		int32 Ladders = 0;
+		for (const ftcore::RoadWaterExit& Exit : Builds[0].exits)
+		{
+			Ladders += Exit.kind == ftcore::RoadExitKind::Ladder ? 1 : 0;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: way out %s: %s, foot (%.2f, %.2f), top (%.2f, %.2f, %.2f)."), *RoadsUtf8(Exit.id),
+				Exit.kind == ftcore::RoadExitKind::Ladder ? TEXT("a ladder") : TEXT("steps"), Exit.footX, Exit.footY, Exit.topX, Exit.topY, Exit.topZ);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: ways out of the canals: %d ladders and %d flights of steps."), Ladders,
+			static_cast<int32>(Builds[0].exits.size()) - Ladders);
+		if (Options.bSeaSlip)
+		{
+			ftcore::RoadSeaSlip Slip;
+			Slip.edgeX = Options.SeaSlip[0];
+			Slip.y = Options.SeaSlip[1];
+			Slip.width = Options.SeaSlip[2];
+			Slip.topZ = Options.SeaSlip[3];
+			Slip.penY0 = Options.SeaSlip[4];
+			Slip.penY1 = Options.SeaSlip[5];
+			Slip.buoyX = Options.SeaSlip[6];
+			const size_t Added = ftcore::roadSeaSlipBuild(Slip, Builds[0]);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: sea slip at x %.1f, y %.1f: %.1f m wide from %.2f m down to %.2f m, %d solids "
+				"(buoy line at x %.1f, y %.1f to %.1f)."), Slip.edgeX, Slip.y, Slip.width, Slip.topZ, Slip.endZ, static_cast<int32>(Added), Slip.buoyX,
+				Slip.penY0, Slip.penY1);
 		}
 		for (const ftcore::RoadNetStreet& Street : Net)
 		{
@@ -593,7 +651,7 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: roads: the engine's cylinder didn't load; cylinders are built as cubes."));
 	}
 	// The canals: a water plane and the channel's bed and walls (FTBuildLookMaterials -Canal).
-	if (!Builds.empty() && !Builds[0].waters.empty())
+	if (!Builds.empty() && (!Builds[0].waters.empty() || Options.bSeaSlip))
 	{
 		Paint.Waters = &Builds[0].waters;
 		Paint.Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));

@@ -208,6 +208,21 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 			LeadGoTo = FVector(GoM.x * 100.0, GoM.y * 100.0, 0.0);
 			bLeadGo = true;
 		}
+		// -WorldEyeLeadRoute=<x,y>;<x,y>...: the walk goes on to each of these in turn.
+		FString Route;
+		TArray<FString> Stops;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadRoute="), Route, false) && Route.ParseIntoArray(Stops, TEXT(";")) > 0)
+		{
+			for (const FString& Stop : Stops)
+			{
+				FString StopX, StopY;
+				if (Stop.Split(TEXT(","), &StopX, &StopY))
+				{
+					const ftcore::MassingVec StopM = ftcore::massingEnginePoint(Side, FCString::Atod(*StopX), FCString::Atod(*StopY), 0.0);
+					LeadRoute.Add(FVector(StopM.x * 100.0, StopM.y * 100.0, 0.0));
+				}
+			}
+		}
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadGoEarly="), GoEarly);
 		bGoJump = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadGoJump"));
 	}
@@ -381,6 +396,10 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		if (AFTExploreCharacter* LeadBody = Cast<AFTExploreCharacter>(Player->GetPawn()))
 		{
 			LeadBody->BeginLeadGo(LeadGoTo, bGoJump);
+			for (const FVector& Stop : LeadRoute)
+			{
+				LeadBody->AddLeadGo(Stop);
+			}
 		}
 	}
 	if (Waited < Delay || !Player)
@@ -414,6 +433,10 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 			if (AFTExploreCharacter* LeadBody = Cast<AFTExploreCharacter>(Player->GetPawn()))
 			{
 				LeadBody->BeginLeadGo(LeadGoTo, bGoJump);
+			for (const FVector& Stop : LeadRoute)
+			{
+				LeadBody->AddLeadGo(Stop);
+			}
 			}
 		}
 		Eye->SetActorLocation(FMath::Lerp(WalkFrom, WalkTo, static_cast<double>(WalkFrame) / WalkFrames));

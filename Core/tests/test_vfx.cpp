@@ -491,6 +491,32 @@ TEST_CASE("vfx: Niagara plan stretches and lays flat") {
     CHECK(anyGap(m, "octaves"));
 }
 
+TEST_CASE("vfx: the water's drips are lit streaks, not glowing beads") {
+    VfxEffect e;
+    REQUIRE(loadEffect("water_drips", e));
+    REQUIRE(e.emitters.size() == 1);
+    const VfxEmitter& drops = e.emitters[0];
+    // Lit by the scene and laid over it, so they do not glow at night; drawn out along their fall.
+    CHECK(drops.lit);
+    CHECK(drops.blend == VfxBlend::Alpha);
+    CHECK(drops.stretch > 0.03f);
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, plan);
+    REQUIRE(plan.emitters.size() == 1);
+    CHECK(plan.emitters[0].lit);
+    CHECK_FALSE(plan.emitters[0].additive);
+    CHECK(plan.emitters[0].facing == VfxNiagaraFacing::VelocityAligned);
+    // An additive emitter is never lit, whatever its spec says; the splash keeps its own colour.
+    VfxEffect glow;
+    REQUIRE(importVfxEffect(R"({"name":"g","emitters":[{"name":"a","rate":1,"lifetime":1,"blend":"additive","lit":true}]})", glow));
+    planVfxNiagara(glow, plan);
+    CHECK_FALSE(plan.emitters[0].lit);
+    VfxEffect splash;
+    REQUIRE(loadEffect("water_splash", splash));
+    planVfxNiagara(splash, plan);
+    for (const VfxNiagaraEmitter& p : plan.emitters) CHECK_FALSE(p.lit);
+}
+
 TEST_CASE("vfx: one-shot plans report their duration") {
     VfxEffect e;
     std::string err;

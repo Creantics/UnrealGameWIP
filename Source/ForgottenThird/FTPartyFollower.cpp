@@ -642,6 +642,22 @@ FVector2D AFTPartyFollower::KeepAshore(const FVector2D& Spot, const FVector& Was
 		}
 		return ftcore::shoreFooting(true, Hit.ImpactPoint.Z, Hit.ImpactNormal.Z, ShoreLevel, kShoreMargin, ShoreWalkableZ);
 	};
+	// The bank beside a spot that is in a canal: the point level with it on the line along the wall through the top of
+	// the nearest way out (a ladder's or a flight's), or that top itself where the line has no footing there.
+	auto BankBeside = [&Footing, Bodies, &Spot](FVector2D& Beside)
+	{
+		const int32 Exit = Bodies ? Bodies->nearestExit(ftcore::Vec2{static_cast<float>(Spot.X * 0.01), static_cast<float>(Spot.Y * 0.01)}, 40.f) : -1;
+		if (Exit < 0)
+		{
+			return false;
+		}
+		const ftcore::WaterExit& Out = Bodies->exit(static_cast<std::size_t>(Exit));
+		const FVector2D Top(Out.top.x * 100.0, Out.top.y * 100.0);
+		const FVector2D Along(-Out.out.y, Out.out.x);
+		const FVector2D Level = Top + Along * FVector2D::DotProduct(Spot - Top, Along);
+		Beside = Footing(Level, false) ? Level : Top;
+		return true;
+	};
 	if (Footing(Spot, true))
 	{
 		if (bShoreHeld)
@@ -699,12 +715,27 @@ FVector2D AFTPartyFollower::KeepAshore(const FVector2D& Spot, const FVector& Was
 		At = Best;
 		LastDry = Best;
 		How = TEXT("keeps to the bank beside the lead");
+		// The lead was set down in a canal far from where this one last stood: the bank beside it.
+		if (FVector2D Beside; !bNear && BankBeside(Beside))
+		{
+			At = Beside;
+			LastDry = At;
+			How = TEXT("stands on the bank beside the lead, by the nearest way out");
+		}
 	}
 	else if (bHasLastDry && FVector2D::Distance(LastDry, Spot) <= kShoreLeash)
 	{
 		// Nowhere dry on the way (the lead itself is off the land): it waits where it last stood on it.
 		At = LastDry;
 		How = TEXT("waits where it last had footing");
+	}
+	else if (FVector2D Beside; BankBeside(Beside))
+	{
+		// It has stood nowhere yet and the lead was set down in a canal: the bank beside it.
+		At = Beside;
+		LastDry = At;
+		bHasLastDry = true;
+		How = TEXT("stands on the bank beside the lead, by the nearest way out");
 	}
 	else
 	{

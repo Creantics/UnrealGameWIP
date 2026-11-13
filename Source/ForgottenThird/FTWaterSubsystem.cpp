@@ -58,6 +58,9 @@ FFTWaterBodyRow FFTWaterBodyRow::From(const ftcore::WaterBody& Body)
 	Row.CosYaw = Body.cosYaw;
 	Row.SinYaw = Body.sinYaw;
 	Row.BuoyLine = Body.buoyLine;
+	Row.ShelfBed = Body.shelfBed;
+	Row.Shelf = Body.shelf;
+	Row.Batter = Body.batter;
 	for (std::size_t I = 0; I < Body.pointCount; ++I)
 	{
 		Row.Points.Add(FVector2D(Body.points[I].x, Body.points[I].y));
@@ -79,6 +82,9 @@ ftcore::WaterBody FFTWaterBodyRow::ToBody() const
 	Body.cosYaw = CosYaw;
 	Body.sinYaw = SinYaw;
 	Body.buoyLine = BuoyLine;
+	Body.shelfBed = ShelfBed;
+	Body.shelf = Shelf;
+	Body.batter = Batter;
 	const int32 Count = FMath::Min(Points.Num(), static_cast<int32>(ftcore::kWaterMaxPoints));
 	Body.pointCount = static_cast<std::uint8_t>(Count);
 	for (int32 I = 0; I < Count; ++I)
@@ -86,6 +92,28 @@ ftcore::WaterBody FFTWaterBodyRow::ToBody() const
 		Body.points[static_cast<std::size_t>(I)] = {static_cast<float>(Points[I].X), static_cast<float>(Points[I].Y)};
 	}
 	return Body;
+}
+
+FFTWaterExitRow FFTWaterExitRow::From(const ftcore::WaterExit& Exit)
+{
+	FFTWaterExitRow Row;
+	Row.Kind = static_cast<uint8>(Exit.kind);
+	Row.Foot = FVector2D(Exit.foot.x, Exit.foot.y);
+	Row.Top = FVector2D(Exit.top.x, Exit.top.y);
+	Row.TopZ = Exit.topZ;
+	Row.Out = FVector2D(Exit.out.x, Exit.out.y);
+	return Row;
+}
+
+ftcore::WaterExit FFTWaterExitRow::ToExit() const
+{
+	ftcore::WaterExit Exit;
+	Exit.kind = Kind == static_cast<uint8>(ftcore::WaterExitKind::Steps) ? ftcore::WaterExitKind::Steps : ftcore::WaterExitKind::Ladder;
+	Exit.foot = {static_cast<float>(Foot.X), static_cast<float>(Foot.Y)};
+	Exit.top = {static_cast<float>(Top.X), static_cast<float>(Top.Y)};
+	Exit.topZ = TopZ;
+	Exit.out = {static_cast<float>(Out.X), static_cast<float>(Out.Y)};
+	return Exit;
 }
 
 bool UFTWaterSubsystem::ShouldCreateSubsystem(UObject* Outer) const
@@ -97,9 +125,13 @@ bool UFTWaterSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 void UFTWaterSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
-	Water.clear();
+	Water = ftcore::WaterBodies{};
 	for (TActorIterator<AFTExploreDirector> It(&InWorld); It; ++It)
 	{
+		for (const FFTWaterExitRow& Row : It->WaterExits)
+		{
+			Water.addExit(Row.ToExit());
+		}
 		for (const FFTWaterBodyRow& Row : It->WaterBodies)
 		{
 			if (!Water.add(Row.ToBody()))
@@ -119,6 +151,22 @@ void UFTWaterSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Water: %d bodies (%d sea): wade to %.1f m, deep wade to %.1f m, swim over it."),
 			static_cast<int32>(Water.count()), Seas, ftcore::kWaterWadeDepth, ftcore::kWaterSwimDepth);
+		int32 Ladders = 0;
+		for (std::size_t I = 0; I < Water.exitCount(); ++I)
+		{
+			Ladders += Water.exit(I).kind == ftcore::WaterExitKind::Ladder ? 1 : 0;
+		}
+		for (std::size_t I = 0; I < Water.count(); ++I)
+		{
+			const ftcore::WaterBody& Body = Water.body(I);
+			if (Body.batter > 0.f)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Water: body %d (%s): %.2f m at its walls on a %.1f m shelf, %.2f m in the middle."), static_cast<int32>(I),
+					ANSI_TO_TCHAR(ftcore::waterKindName(Body.kind)), Body.level - Body.shelfBed, Body.shelf, Body.level - Body.bed);
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: %d ways out (%d ladders, %d flights of steps); a jump at any other wall is the fallback."),
+			static_cast<int32>(Water.exitCount()), Ladders, static_cast<int32>(Water.exitCount()) - Ladders);
 		// What the surfaces read (rings, the lead, the sun under water) and the two effects; each is done without if missing.
 		const FString Path = FTScene::LookWaterCollection;
 		SurfaceParams = LoadObject<UMaterialParameterCollection>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -149,6 +197,10 @@ TStatId UFTWaterSubsystem::GetStatId() const
 
 void UFTWaterSubsystem::ApplyTune()
 {
+#if UE_BUILD_SHIPPING
+	// A tuning switch for stills: not in a shipping build.
+	return;
+#else
 	// -WaterTune=<Name>=<value>,...: each name is tried on the water collection, then on the underwater view.
 	FString Tune;
 	if (!FParse::Value(FCommandLine::Get(), TEXT("WaterTune="), Tune, false) || Tune.IsEmpty())
@@ -176,6 +228,7 @@ void UFTWaterSubsystem::ApplyTune()
 		UE_LOG(LogForgottenThird, Display, TEXT("Water: tune %s = %g (%s)."), *Name, Number,
 			bSurface ? TEXT("the water collection") : Underwater ? TEXT("the underwater view") : TEXT("kept for the underwater view"));
 	}
+#endif
 }
 
 void UFTWaterSubsystem::Tick(float DeltaTime)

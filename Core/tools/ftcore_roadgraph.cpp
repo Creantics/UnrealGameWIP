@@ -437,6 +437,9 @@ int runYards(const YardArgs& a) {
     return 0;
 }
 
+// --exits-out <csv>: the canals' ways out (roadExitCsv), for the rail's gaps.
+std::string gExitsOut;
+
 int runNet(const std::string& netPath, const std::string& r16Path, double samples, const double origin[2], double spacing,
            const std::string& boxesPath, const std::string& outPath, bool listAll, const double* dump,
            const RoadCanal* canal, const std::string& quayOut) {
@@ -457,6 +460,14 @@ int runNet(const std::string& netPath, const std::string& r16Path, double sample
     for (const RoadCanal& c : canals)
         std::printf("canal %s: %zu solids (floor %.2f, water %.2f)\n", c.id.c_str(), roadCanalBuild(c, ground, b),
                     c.floorZ, c.waterZ);
+    if (!gExitsOut.empty()) {
+        const std::string csv = roadExitCsv(b.exits);
+        std::FILE* f = std::fopen(gExitsOut.c_str(), "wb");
+        if (!f) return die("can't write " + gExitsOut);
+        std::fwrite(csv.data(), 1, csv.size(), f);
+        std::fclose(f);
+        std::printf("exits: %zu ways out of %zu canals\n", b.exits.size(), canals.size());
+    }
     std::printf("net: streets %zu, nodes %zu, edges %zu, junctions %zu, bends %zu, ends %zu, pieces %zu, piers %zu\n",
                 streets.size(), rep.nodes, rep.edges, rep.junctions, rep.bends, rep.ends, rep.pieces, rep.piers);
     std::printf("net: steep %zu (max grade %.1f%%), pokes %zu, floats %zu, tight %zu, max step %.3f m, pruned %zu\n",
@@ -593,6 +604,7 @@ int main(int argc, char** argv) {
             haveCanal = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &canal.x0, &canal.y0, &canal.x1, &canal.y1) == 4;
         else if (k == "--bridge") canal.bridgeAt = std::atof(v.c_str());
         else if (k == "--quay-out") quayOut = v;
+        else if (k == "--exits-out") gExitsOut = v;
         else if (k == "--area") haveArea = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &area[0], &area[1], &area[2], &area[3]) == 4;
         else return die("unknown option " + k);
     }
