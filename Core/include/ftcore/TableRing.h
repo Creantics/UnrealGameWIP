@@ -256,8 +256,8 @@ private:
 // The player's key for the table: hold Release while the table could begin (TableSet Ready, the Load full, enough
 // bodies in reach). The press is then held back from the fight; held holdTime it sets the table (Begin); let go
 // sooner, it is passed on as the Release it was (PassRelease, at the let-go). If the table stops being possible during
-// the hold, the hold ends and nothing is passed on (Cancelled). A press while the table could not begin is the
-// fight's (None).
+// the hold, the hold ends (Cancelled); TableKeyPath says what becomes of the press. A press while the table could not
+// begin is the fight's (None).
 enum class TableHoldResult : std::uint8_t { None, Holding, Begin, PassRelease, Cancelled }; // append only
 
 class TableHold {
@@ -311,6 +311,69 @@ private:
     double start_ = 0.0;
     float share_ = 0.f;
     bool holding_ = false;
+};
+
+// The setter is free to begin a table: standing, walking or guarding. Never in hitstun, a guard break, downed, a dodge,
+// the air or an attack, so a begin is never interrupted at once with its Load spent.
+inline bool tableSetterFree(ArenaAction a) {
+    return a == ArenaAction::Idle || a == ArenaAction::Move || a == ArenaAction::Guard;
+}
+
+// Why a hold ended without a table (TableKeyStep::why). Append only.
+enum class TableKeyDrop : std::uint8_t { None, Stale, Busy, Lost };
+
+// One step of the player's key, as the runner sends it to the fight.
+struct TableKeyStep {
+    TableHoldResult result = TableHoldResult::None;
+    bool release = false;                // send the fight a Release this step (on Begin: only if the table then refuses)
+    TableKeyDrop why = TableKeyDrop::None; // a hold dropped this step, and why
+};
+
+// The runner's key path (engine-free, so tests reach it). A press held back is never lost in silence: a hold that ends
+// without a table gives the fight its Release, unless the setter can't act then (a Release buffered through hitstun
+// would fire after it). Every drop says why:
+//   Stale  steps were missed mid-hold (idle, a scripted pilot): the hold is dropped, not fired late.
+//   Busy   the setter stopped being free (hit, guard broken, downed...): the press is swallowed.
+//   Lost   the table stopped being possible (Load, bodies, its state): the press is the Release it was.
+class TableKeyPath {
+public:
+    static constexpr double kStaleGap = 0.1; // s between steps that still continue a hold
+
+    explicit TableKeyPath(double holdTime = TableHold::kDefaultHoldTime) { reset(holdTime); }
+
+    void reset(double holdTime = TableHold::kDefaultHoldTime) {
+        hold_.reset(holdTime);
+        last_ = -1.0;
+    }
+
+    // `pressed`, `down` as TableHold; `free` the setter can act (tableSetterFree); `possible` the table could begin.
+    TableKeyStep step(bool pressed, bool down, bool free, bool possible, double t) {
+        TableKeyStep s;
+        if (hold_.holding() && !(t - last_ <= kStaleGap)) {
+            hold_.reset(hold_.holdTime());
+            s.why = TableKeyDrop::Stale;
+        }
+        last_ = t;
+        s.result = hold_.step(pressed, down, free && possible, t);
+        switch (s.result) {
+        case TableHoldResult::None: s.release = pressed || (s.why == TableKeyDrop::Stale && free); break;
+        case TableHoldResult::Holding: s.release = false; break; // a new press the same step folds the stale one in
+        case TableHoldResult::Begin: s.release = false; break;
+        case TableHoldResult::PassRelease: s.release = true; break;
+        case TableHoldResult::Cancelled:
+            s.why = free ? TableKeyDrop::Lost : TableKeyDrop::Busy;
+            s.release = free;
+            break;
+        }
+        return s;
+    }
+
+    const TableHold& hold() const { return hold_; }
+    bool holding() const { return hold_.holding(); }
+
+private:
+    TableHold hold_;
+    double last_ = -1.0;
 };
 
 // The table as the HUD and effects read it: plain data, filled by tableView.

@@ -418,6 +418,76 @@ TEST_CASE("table: the Release hold sets the table, a tap stays a Release") {
     CHECK(now.step(true, true, true, 1.0) == TableHoldResult::Begin);
 }
 
+TEST_CASE("table: the setter is free only standing, walking or guarding") {
+    CHECK(tableSetterFree(ArenaAction::Idle));
+    CHECK(tableSetterFree(ArenaAction::Move));
+    CHECK(tableSetterFree(ArenaAction::Guard));
+    for (ArenaAction a : {ArenaAction::Light, ArenaAction::Heavy, ArenaAction::Riposte, ArenaAction::Dodge, ArenaAction::Heal,
+                          ArenaAction::Hitstun, ArenaAction::GuardBreak, ArenaAction::Downed, ArenaAction::Release,
+                          ArenaAction::Jump}) {
+        CAPTURE(arenaActionName(a));
+        CHECK_FALSE(tableSetterFree(a));
+    }
+}
+
+TEST_CASE("table: the key path never swallows a press in silence") {
+    SUBCASE("a press while the setter is busy is the fight's and never starts a hold") {
+        TableKeyPath k;
+        const TableKeyStep s = k.step(true, true, false, true, 1.0);
+        CHECK(s.result == TableHoldResult::None);
+        CHECK(s.release);
+        CHECK_FALSE(k.holding());
+    }
+    SUBCASE("held to Begin while free: no Release") {
+        TableKeyPath k;
+        CHECK(k.step(true, true, true, true, 1.0).result == TableHoldResult::Holding);
+        for (int i = 1; i < 10; ++i) CHECK_FALSE(k.step(false, true, true, true, 1.0 + 0.05 * i).release); // tick pace
+        const TableKeyStep s = k.step(false, true, true, true, 1.5);
+        CHECK(s.result == TableHoldResult::Begin);
+        CHECK_FALSE(s.release);
+        CHECK(s.why == TableKeyDrop::None);
+    }
+    SUBCASE("hit mid-hold: the hold ends before any Load is spent, the press swallowed and said") {
+        TableKeyPath k;
+        CHECK(k.step(true, true, true, true, 1.0).result == TableHoldResult::Holding);
+        const TableKeyStep s = k.step(false, true, false, false, 1.05); // hitstun: not free, so not possible either
+        CHECK(s.result == TableHoldResult::Cancelled);
+        CHECK_FALSE(s.release); // a Release buffered through hitstun would fire after it
+        CHECK(s.why == TableKeyDrop::Busy);
+        // Still down when the hitstun ends: no Begin from the old hold.
+        CHECK(k.step(false, true, true, true, 1.6).result == TableHoldResult::None);
+    }
+    SUBCASE("the table stops being possible mid-hold: the press is the Release it was") {
+        TableKeyPath k;
+        CHECK(k.step(true, true, true, true, 1.0).result == TableHoldResult::Holding);
+        const TableKeyStep s = k.step(false, true, true, false, 1.05); // a body walked off
+        CHECK(s.result == TableHoldResult::Cancelled);
+        CHECK(s.release);
+        CHECK(s.why == TableKeyDrop::Lost);
+    }
+    SUBCASE("steps missed mid-hold: dropped, not fired late, the press passed on") {
+        TableKeyPath k;
+        CHECK(k.step(true, true, true, true, 1.0).result == TableHoldResult::Holding);
+        const TableKeyStep s = k.step(false, true, true, true, 3.0);
+        CHECK(s.result == TableHoldResult::None);
+        CHECK(s.why == TableKeyDrop::Stale);
+        CHECK(s.release);
+        CHECK_FALSE(k.holding());
+        // Stale while busy: dropped and swallowed (said by why).
+        CHECK(k.step(true, true, true, true, 4.0).result == TableHoldResult::Holding);
+        const TableKeyStep b = k.step(false, true, false, false, 6.0);
+        CHECK(b.why == TableKeyDrop::Stale);
+        CHECK_FALSE(b.release);
+    }
+    SUBCASE("a tap passes at the let-go") {
+        TableKeyPath k;
+        CHECK_FALSE(k.step(true, true, true, true, 1.0).release);
+        const TableKeyStep s = k.step(false, false, true, true, 1.05);
+        CHECK(s.result == TableHoldResult::PassRelease);
+        CHECK(s.release);
+    }
+}
+
 TEST_CASE("table: the view the HUD reads") {
     TableTuning tt;
     tt.minSeats = 3;
