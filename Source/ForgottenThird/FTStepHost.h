@@ -88,7 +88,9 @@ FORGOTTENTHIRD_API const TCHAR* HostName(EFTStepHost Host);
 
 // Fills GI.StoryCarry for GI.Chain's current step (the chain must be active) of the runner's gameplay
 // beat, sets GI.LastWorld for a step in a big world, and returns the map that plays the step.
-// ReturnMap: the story map the screens go back to.
+// ReturnMap: the story map the screens go back to. Empty when the step can't play as written (a staged
+// fight's line-up outside the enemy roster): the caller leaves for the title (QuitToTitle), which rolls
+// the step back.
 FORGOTTENTHIRD_API FString Prepare(UFTGameInstance& GI, const ftcore::StoryRunner& Runner, const FString& ReturnMap, bool bAutoPlay);
 
 // What became of a step that came back.

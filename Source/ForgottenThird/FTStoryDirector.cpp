@@ -23,6 +23,7 @@
 #include "FTLook.h"
 #include "FTFaceComponent.h"
 #include "FTGameInstance.h"
+#include "FTGameMode.h"
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
@@ -823,6 +824,12 @@ void AFTStoryDirector::OpenStep()
 	HandleVoiceStopped();
 	ClearSceneCast(TEXT("a step takes over"));
 	const FString Map = FTStep::Prepare(*GI, Story->GetRunner(), UGameplayStatics::GetCurrentLevelName(this, true), bAutoPlay);
+	if (Map.IsEmpty())
+	{
+		// The step can't play as written (Prepare logged why): it rolls back and the title opens on this story map.
+		FTStep::QuitToTitle(this, GetDefault<AFTGameMode>()->TitleMap, TEXT("the story"));
+		return;
+	}
 	FTStep::OpenMap(this, Map);
 }
 

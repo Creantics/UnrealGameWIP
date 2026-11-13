@@ -51,6 +51,8 @@ struct FStepRoute
 	// Rhythm then).
 	CombatKind Wanted = CombatKind::Rhythm;
 	const TCHAR* FallbackWhy = nullptr;
+	// The step can't play as written and falls back to nothing: it rolls back to the title (Prepare returns empty).
+	bool bRefused = false;
 	// An arena fight on a stage: the zone id and the line-up's enemy ids (FFTStoryCarry::Stage, Lineup).
 	FString Stage;
 	FString Lineup;
@@ -131,10 +133,11 @@ FStepRoute RouteStep(const UFTGameInstance& GI, std::string_view Scene, uint32 B
 			std::string Ids;
 			if (!ftcore::lineupIds(GI.GetRoster(), Entry->lineup, Ids))
 			{
-				// Never a staged fight with part of its line-up: the step falls back, loudly.
-				UE_LOG(LogForgottenThird, Error, TEXT("Story: the staged fight at %s beat %d has a line-up outside the enemy roster (%d enemies); it does not play on its stage."),
+				// Never a staged fight with part of its line-up, nor another fight in its place: like the arena's own
+				// refusals, the step rolls back to the title, loudly.
+				UE_LOG(LogForgottenThird, Error, TEXT("Story: the staged fight at %s beat %d has a line-up outside the enemy roster (%d enemies); it does not play. The step rolls back to the title."),
 					*FT::ToFString(Entry->scene), static_cast<int32>(Entry->beat), static_cast<int32>(Entry->lineup.enemies.size()));
-				Route.FallbackWhy = TEXT("its staged line-up is not in the enemy roster");
+				Route.bRefused = true;
 			}
 			else if (MapExists(FTStep::ArenaMap()))
 			{
@@ -338,7 +341,7 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	{
 		StoryState->MarkStep();
 	}
-	return Route.Map;
+	return Route.bRefused ? FString() : Route.Map;
 }
 
 void FTStep::EndStoryStep(UFTGameInstance& GI, ftcore::StepEnd End)

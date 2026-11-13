@@ -623,6 +623,8 @@ struct ArenaPlayerOut {
     Vec2 dodgeDir{1.f, 0.f};          // unit: set once when a dodge starts (the stick, or the backstep's direction,
                                       // before any ring cut) and kept until the next dodge
     bool backstep = false;            // whether the current or last dodge is a backstep
+    bool dodgeBack = false;           // ... and whether it goes back from the locked target (within kArenaDodgeBackCos of
+                                      // straight away from it): drawn facing the target, not as a roll the way it goes
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
     bool overloaded = false;          // Load at kMaxLoad: light, heavy and heal are refused until a Release
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
@@ -1007,6 +1009,7 @@ private:
         bool invulnerable = false;          // this tick: dodge frames or a riposte
         Vec2 dodgeDir{1.f, 0.f};            // the current or last dodge's direction (unit)
         bool backstep = false;              // ... and whether it is a backstep
+        bool dodgeBack = false;             // ... and whether it goes back from the locked target (drawn facing it)
         Press buffered = Press::None;
         float bufferAge = 0.f;
         bool chainLive = false;             // the last action was a light: the chain may go on
