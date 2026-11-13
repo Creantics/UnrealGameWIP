@@ -1263,7 +1263,7 @@ private:
 		Mesh.Shade(CX + 4.f * S, CY - 70.f * S, 250.f * S, 290.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
 
 		Ring(CX, CY, Carry::RingR * S, W(2.1f, 3.4f), 11, S, Tok(UiToken::Ink, 0.9f * A));
-		LeadMark(CX, CY + 8.f * S, 1.f, L.lead, W(1.5f, 2.1f), S, Tok(UiToken::Ink, 0.9f * A));
+		LeadMark(CX, CY + 8.f * S, 1.5f, L.lead, W(1.5f, 2.1f), S, Tok(UiToken::Ink, 0.9f * A));
 
 		const float Hp = L.hpMax > 0 ? FMath::Clamp(static_cast<float>(L.hp) / L.hpMax, 0.f, 1.f) : 0.f;
 		const bool bLow = Hp <= Carry::LowHp;
@@ -1385,7 +1385,7 @@ private:
 		if (Pa.present)
 		{
 			Ring(PX, PY, 20.f * S, W(1.4f, 2.f), 61, S, Tok(UiToken::Ink, A));
-			LeadMark(PX, PY + 1.f * S, 0.62f, Pa.lead, W(1.6f, 2.2f), S, Tok(UiToken::Ink, 0.9f * A));
+			LeadMark(PX, PY + 1.f * S, 0.85f, Pa.lead, W(1.6f, 2.2f), S, Tok(UiToken::Ink, 0.9f * A));
 			const float F = Pa.hpMax > 0 ? FMath::Clamp(static_cast<float>(Pa.hp) / Pa.hpMax, 0.f, 1.f) : 0.f;
 			Arc(PX, PY, 27.f * S, 0.f, F, StrokeStyle(W(2.2f, 3.f), 62, S), Pa.down ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A));
 		}
@@ -1974,7 +1974,8 @@ private:
 			// The windup line over the body: it fills through the startup and the hit lands as it reaches the end mark.
 			const float W = 170.f * S;
 			const float X0 = M.Over.X - W * 0.5f;
-			const float Y = M.Over.Y - 30.f * S;
+			// Kept below the top line, with room above for the cards and the answer word.
+			const float Y = FMath::Max(M.Over.Y - 30.f * S, (Carry::TopLine + 80.f + (M.bCards ? 62.f : 0.f)) * S);
 			if (M.Tell == 1)
 			{
 				HLine(X0, X0 + W, Y, 0.f, 1.f, StrokeStyle(0.7f, 81, S, 0.f), Tok(UiToken::Track), false);
@@ -2083,7 +2084,12 @@ private:
 			return;
 		}
 		const float S = P.S;
-		const float CW = 116.f * S;
+		float Widest = 0.f;
+		for (int32 I = 0; I < CardCount; ++I)
+		{
+			Widest = FMath::Max(Widest, TellW[CardTell[I]]);
+		}
+		const float CW = FMath::Max(116.f * S, Widest + 22.f * S); // the longest word fits its card
 		const float CH = 52.f * S;
 		const float Gap = 10.f * S;
 		const float Total = CardCount * CW + (CardCount - 1) * Gap;
