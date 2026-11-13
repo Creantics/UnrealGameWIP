@@ -388,3 +388,98 @@ TEST_CASE("cylinder: a reload of 0 refills as the last shot ends") {
     for (int i = 0; i < 3; ++i) r.tick(true);
     CHECK(r.fight.stats().shots == shots + 1);
 }
+
+namespace {
+
+struct CylinderEvents {
+    int starts = 0, ends = 0, dry = 0;
+};
+
+// The last tick's cylinder events, counted into `c`.
+void countCylinder(const ArenaFight& fight, CylinderEvents& c) {
+    for (const ArenaEvent& e : fight.output().events) {
+        const bool cylinder = e.type == ArenaEventType::ReloadStarted || e.type == ArenaEventType::Reloaded
+            || e.type == ArenaEventType::DryPress;
+        if (!cylinder) continue;
+        CHECK(e.source == kArenaPlayer);
+        CHECK(e.target == kArenaPlayer);
+        CHECK(e.move == kArenaShotMove);
+        c.starts += e.type == ArenaEventType::ReloadStarted;
+        c.ends += e.type == ArenaEventType::Reloaded;
+        c.dry += e.type == ArenaEventType::DryPress;
+    }
+}
+
+} // namespace
+
+TEST_CASE("cylinder: events mark each reload's start and end and each dry press, for the host's clip and sound") {
+    const ArenaFighter kit = notaryKit();
+    REQUIRE(kit.rounds == 6);
+    Range r(kit);
+    CylinderEvents c;
+    float startAt = -1.f;
+    int dryBefore = 0;
+    while (c.ends < 2 && r.time() < 20.f) {
+        const CylinderEvents was = c;
+        r.tick(true);
+        countCylinder(r.fight, c);
+        for (const ArenaEvent& e : r.fight.output().events) {
+            if (e.type == ArenaEventType::ReloadStarted) {
+                CHECK(e.amount == 1200); // kit.reload, 1.2 s, in ms
+                CHECK(r.fight.rounds() == 0);
+                startAt = r.time();
+            } else if (e.type == ArenaEventType::Reloaded) {
+                CHECK(e.amount == kit.rounds);
+                REQUIRE(startAt >= 0.f);
+                CHECK(r.time() - startAt >= kit.reload - 1.5f * kDt);
+                CHECK(r.time() - startAt <= kit.reload + 1.5f * kDt);
+            } else if (e.type == ArenaEventType::DryPress) {
+                CHECK(e.amount == r.fight.stats().dryPresses);
+                CHECK(e.amount == dryBefore + 1);
+                dryBefore = e.amount;
+            }
+        }
+        // One start, then its end; never two starts before an end.
+        CHECK(c.starts - c.ends >= 0);
+        CHECK(c.starts - c.ends <= 1);
+        CHECK(c.dry - was.dry <= 1);
+    }
+    CHECK(c.ends == 2);
+    CHECK(c.starts == 2);
+    CHECK(r.fight.stats().reloads == 2);
+    CHECK(c.dry == r.fight.stats().dryPresses);
+    CHECK(c.dry > 0);
+
+    // A reload of 0: the start (0 ms) and the end come in the same tick.
+    ArenaFighter instant = kit;
+    instant.reload = 0.f;
+    Range q(instant);
+    CylinderEvents d;
+    int startMs = -1;
+    while (d.ends < 1 && q.time() < 20.f) {
+        const CylinderEvents was = d;
+        q.tick(true);
+        countCylinder(q.fight, d);
+        for (const ArenaEvent& e : q.fight.output().events)
+            if (e.type == ArenaEventType::ReloadStarted) startMs = e.amount;
+        if (d.starts > was.starts) CHECK(d.ends == was.ends + 1);
+    }
+    CHECK(d.starts == 1);
+    CHECK(d.ends == 1);
+    CHECK(startMs == 0);
+
+    // A kit with no cylinder sends none of them.
+    const ArenaTable arena = shippedArena();
+    ArenaFighter plain = arena.fighter("duy");
+    plain.shot.stamina = 0.f;
+    Range p(plain);
+    CylinderEvents none;
+    for (int i = 0; i < 600; ++i) {
+        p.tick(true);
+        countCylinder(p.fight, none);
+    }
+    CHECK(p.fight.stats().shots > 6);
+    CHECK(none.starts == 0);
+    CHECK(none.ends == 0);
+    CHECK(none.dry == 0);
+}

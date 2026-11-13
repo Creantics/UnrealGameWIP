@@ -346,6 +346,12 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bAimCheckOnBoss = false;
 	bAimCheckPitchOk = false;
 	bAimCheckFire = false;
+	bAssistCheck = false;
+	AssistLockPressAt = -1e9;
+	AssistSweep = 1.f;
+	AssistKeep = 1.f;
+	AssistEnters = AssistExits = 0;
+	AssistTime[0] = AssistTime[1] = AssistTurned[0] = AssistTurned[1] = 0.f;
 	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaAimCheck")))
 	{
 		const bool bGunKit = Def.fighter.weapon == ftcore::ArenaWeapon::Guns;
@@ -353,6 +359,11 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: aim check %s (-ArenaAimCheck)."),
 			AimCheckPhase ? TEXT("on: the camera aims at the tallest enemy's top and fires one aimed shot")
 						  : TEXT("off: it needs -ArenaAutoPlay and a guns kit"));
+		bAssistCheck = AimCheckPhase != 0 && FParse::Param(FCommandLine::Get(), TEXT("ArenaAssistCheck"));
+		if (bAssistCheck)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: aim assist check on (-ArenaAssistCheck): after the shot the stick sweeps the view off the body and back."));
+		}
 	}
 	Jolt = ftcore::ArenaJolt();
 	JoltAsks = 0;
@@ -1535,17 +1546,9 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		float MouseX = 0.f;
 		float MouseY = 0.f;
 		PC->GetInputMouseDelta(MouseX, MouseY);
-		// Aim assist: a guns kit's aimed crosshair over a body its round would take (last frame's readout) turns
-		// slower, the stick more than the mouse. Never under -ArenaAutoPlay; off, both shares are exactly 1.
+		// Aim assist: never under -ArenaAutoPlay (its -ArenaAssistCheck probe turns it on there); off, both shares are 1.
 		const ftcore::Settings* Prefs = GetSettings();
-		const bool bAssist = !bAutoPlay && (!Prefs || Prefs->aimAssist);
-		const bool bOverBody = ArenaAim.alpha() > 0.f && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns
-			&& ReticleEnemy >= 0 && !bReticleBlocked && !bReticleOutOfReach;
-		const float MouseKeep = ftcore::aimAssistTurn(bAssist, false, bOverBody);
-		const float StickKeep = ftcore::aimAssistTurn(bAssist, true, bOverBody);
-		CameraYaw += MouseX * kArenaMouseTurn * MouseKeep + LookX * kArenaStickTurn * DeltaSeconds * StickKeep;
-		CameraPitch = FMath::Clamp(CameraPitch + MouseY * kArenaMouseTurn * MouseKeep + LookY * kArenaStickTurn * 0.6f * DeltaSeconds * StickKeep,
-			ftcore::kArenaLook.viewMin, ftcore::kArenaLook.viewMax);
+		TurnLook(MouseX, MouseY, LookX, LookY, DeltaSeconds, !bAutoPlay && (!Prefs || Prefs->aimAssist));
 		bStickFlicked = false;
 		bMouseFlicked = false;
 	}
@@ -2589,6 +2592,13 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 					bClip ? TEXT("yes") : TEXT("no"), bStoneMoveLeft ? TEXT(", its left-hand clip") : TEXT(""));
 			}
 			continue; // no popup
+		case ftcore::ArenaEventType::ReloadStarted:
+		case ftcore::ArenaEventType::Reloaded:
+			OnLeadReload(E.type == ftcore::ArenaEventType::ReloadStarted, E.amount);
+			continue; // no popup
+		case ftcore::ArenaEventType::DryPress:
+			OnLeadDryPress(E.amount);
+			continue; // no popup
 		case ftcore::ArenaEventType::CardsDealt: // the cards themselves are the display
 		case ftcore::ArenaEventType::LockChanged:
 		case ftcore::ArenaEventType::Victory:
@@ -3186,7 +3196,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		}
 		AttackMoveTable = Moves;
 	}
-	ArenaAim.tick(DeltaSeconds, ((bAimHeld && !bAutoPlay && !bIdle) || AimCheckPhase == 2 || AimCheckPhase == 3) && !Fight.over(),
+	ArenaAim.tick(DeltaSeconds, ((bAimHeld && !bAutoPlay && !bIdle) || AimCheckPhase == 2 || AimCheckPhase == 3 || AimCheckPhase == 5) && !Fight.over(),
 		ftcore::FieldBody::Free);
 	// The reticle: the camera's line to the first thing it meets within reticleRange, the lead's figure not counted.
 	const APlayerController* PC = GetPC();
@@ -3402,8 +3412,90 @@ int32 UFTArenaRunner::TallestStanding(float& OutTop) const
 	return Best;
 }
 
+float UFTArenaRunner::TurnLook(float MouseX, float MouseY, float LookX, float LookY, float DeltaSeconds, bool bAssist)
+{
+	// A guns kit's aimed crosshair over a body its round would take (last frame's readout) turns slower, the stick more
+	// than the mouse; off, both shares are exactly 1.
+	const bool bOverBody = ArenaAim.alpha() > 0.f && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns
+		&& ReticleEnemy >= 0 && !bReticleBlocked && !bReticleOutOfReach;
+	const float MouseKeep = ftcore::aimAssistTurn(bAssist, false, bOverBody);
+	const float StickKeep = ftcore::aimAssistTurn(bAssist, true, bOverBody);
+	CameraYaw += MouseX * kArenaMouseTurn * MouseKeep + LookX * kArenaStickTurn * DeltaSeconds * StickKeep;
+	CameraPitch = FMath::Clamp(CameraPitch + MouseY * kArenaMouseTurn * MouseKeep + LookY * kArenaStickTurn * 0.6f * DeltaSeconds * StickKeep,
+		ftcore::kArenaLook.viewMin, ftcore::kArenaLook.viewMax);
+	return StickKeep;
+}
+
+void UFTArenaRunner::StepAssistCheck(float DeltaSeconds)
+{
+	if (Now - AssistStart > 8.0)
+	{
+		AimCheckPhase = 4; // the sweep never left a body and came back across one (or the lock never let go)
+		return;
+	}
+	if (Fight.lock() != ftcore::kArenaNobody)
+	{
+		return; // as in play: locked, the look does not turn the view (StepAimCheck lets go)
+	}
+	const ftcore::Settings* Prefs = GetSettings();
+	const float Push = 0.5f * AssistSweep;
+	const float Before = CameraYaw;
+	const float Keep = TurnLook(0.f, 0.f, Push, 0.f, DeltaSeconds, !Prefs || Prefs->aimAssist);
+	const float Turned = FMath::Abs(CameraYaw - Before);
+	const int32 Over = Keep < 1.f ? 1 : 0;
+	AssistTime[Over] += DeltaSeconds;
+	AssistTurned[Over] += Turned;
+	if (Keep != AssistKeep)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: aim assist look scale %.2f -> %.2f (stick %.2f, crosshair %s, blocked %d, out of reach %d, aim %.2f, lock %d, turning %.1f deg/s)."),
+			Fight.time(), AssistKeep, Keep, Push,
+			*(ReticleEnemy >= 0 ? FString::Printf(TEXT("on enemy %d"), ReticleEnemy) : FString(TEXT("off every body"))),
+			bReticleBlocked ? 1 : 0, bReticleOutOfReach ? 1 : 0, ArenaAim.alpha(), static_cast<int32>(Fight.lock()),
+			Turned / FMath::Max(DeltaSeconds, 1e-4f));
+		AssistEnters += Over;
+		AssistExits += 1 - Over;
+		AssistKeep = Keep;
+		AssistSince = Now;
+	}
+	// Out across the body until it has been off 0.5 s, then back across it until off the other side 0.5 s.
+	if (!Over && Now - AssistSince > 0.5)
+	{
+		if (AssistSweep > 0.f && AssistExits >= 1)
+		{
+			AssistSweep = -1.f;
+			AssistSince = Now;
+		}
+		else if (AssistSweep < 0.f && AssistExits >= 2)
+		{
+			AimCheckPhase = 4;
+		}
+	}
+}
+
 void UFTArenaRunner::StepAimCheck(ftcore::ArenaInput& In)
 {
+	if (AimCheckPhase == 5)
+	{
+		// The assist sweep: stand, keep aim held along the view, and let go of a lock (the assist turns only unlocked);
+		// the lock is a toggle, so it is pressed again, spaced, while it is still on.
+		const float Yaw = FMath::DegreesToRadians(CameraYaw);
+		const ftcore::Vec2 View{FMath::Cos(Yaw), FMath::Sin(Yaw)};
+		In = ftcore::ArenaInput();
+		In.view = View;
+		In.aim = true;
+		In.aimDir = ReticleAimDir(View);
+		In.aimPitched = ReticlePitch(In.aimPitch);
+		In.aimTurn = ArenaAim.rules().turnRate;
+		In.aimSpeed = ArenaAim.speedScale();
+		if (Fight.lock() != ftcore::kArenaNobody && Now - AssistLockPressAt > 0.3)
+		{
+			In.lock = true;
+			AssistLockPressAt = Now;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: aim assist check presses lock to let go of enemy %d."), Fight.time(),
+				static_cast<int32>(Fight.lock()));
+		}
+		return;
+	}
 	if (AimCheckPhase == 1 && Fight.time() >= 3.f)
 	{
 		float Top = 0.f;
@@ -3471,7 +3563,8 @@ void UFTArenaRunner::StepAimCheck(ftcore::ArenaInput& In)
 		const float Off = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(In.aimDir.x * To.x + In.aimDir.y * To.y, -1.f, 1.f)));
 		AimCheckLine += FString::Printf(TEXT(", the shot's heading %.1f deg off the boss's middle; pitch reached %s (rendered %.1f), crosshair on the boss %s, the boss hit %s"),
 			Off, bAimCheckPitchOk ? TEXT("yes") : TEXT("no"), AimCheckRendered, bAimCheckOnBoss ? TEXT("yes") : TEXT("no"), bTargetHit ? TEXT("yes") : TEXT("no"));
-		AimCheckPhase = 4;
+		AimCheckPhase = bAssistCheck ? 5 : 4;
+		AssistStart = AssistSince = Now;
 	}
 	else if (AimCheckPresses < 4)
 	{
@@ -3531,6 +3624,11 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 				}
 			}
 		}
+	}
+	if (AimCheckPhase == 5)
+	{
+		StepAssistCheck(DeltaSeconds); // the sweep turns the view itself: nothing is followed
+		Target = -1;
 	}
 	const AFTArenaFighter* Figure = PlayerFigure.Get();
 	// The boom's length now (the aim pulls it in), for the look-up solve.
@@ -3699,8 +3797,17 @@ void UFTArenaRunner::LogFeatureChecks() const
 			Top = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + (Foe.look.skinned() ? Foe.look.hover : 0.f);
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: aim up %s (enemy %d, top %.1f m up, aimed at %.1f deg: %s)."),
-			AimCheckPhase == 4 && !bAimCheckNa ? (bAimCheckPass ? TEXT("PASS") : TEXT("FAIL")) : TEXT("n/a"), Tallest, Top, AimCheckPitch,
+			(AimCheckPhase == 4 || AimCheckPhase == 5) && !bAimCheckNa ? (bAimCheckPass ? TEXT("PASS") : TEXT("FAIL")) : TEXT("n/a"), Tallest, Top, AimCheckPitch,
 			AimCheckLine.IsEmpty() ? TEXT("not run") : *AimCheckLine);
+	}
+	if (bAssistCheck)
+	{
+		const float OverRate = AssistTime[1] > 0.f ? AssistTurned[1] / AssistTime[1] : 0.f;
+		const float OffRate = AssistTime[0] > 0.f ? AssistTurned[0] / AssistTime[0] : 0.f;
+		const bool bRan = AssistEnters >= 1 && AssistExits >= 1 && OverRate > 0.f && OffRate > 0.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: aim assist %s (stick share over a body x%.2f, off it x1.00: turned %.1f deg/s over a body for %.2f s and %.1f deg/s off it for %.2f s, ratio %.2f; %d entries, %d exits)."),
+			!bRan ? TEXT("n/a") : (FMath::Abs(OverRate / OffRate - ftcore::kAimAssistPad) < 0.05f ? TEXT("PASS") : TEXT("FAIL")),
+			ftcore::kAimAssistPad, OverRate, AssistTime[1], OffRate, AssistTime[0], bRan ? OverRate / OffRate : 0.f, AssistEnters, AssistExits);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shots %s (%d fired, %d hit)."), Verdict(C.shots, bGuns && (bAutoShoot || S.shots > 0)),
 		S.shots, S.shotHits);
@@ -3762,6 +3869,25 @@ float UFTArenaRunner::ShakeScale() const
 	}
 	const ftcore::Settings* Settings = GetSettings();
 	return Settings ? Settings->cameraShake : 1.f;
+}
+
+void UFTArenaRunner::OnLeadReload(bool bStarted, int32 Amount)
+{
+	// The reload clip (cylinder out, eject, load, close) and its sounds start here and should span Amount ms.
+	if (bStarted)
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: reload begins (%d ms)."), Fight.time(), Amount);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: reloaded, %d rounds."), Fight.time(), Amount);
+	}
+}
+
+void UFTArenaRunner::OnLeadDryPress(int32 Presses)
+{
+	// The dry click and a small flinch on the gun arm go here.
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: dry press (%d so far)."), Fight.time(), Presses);
 }
 
 void UFTArenaRunner::KickJolt(const ftcore::ArenaEvent& E)

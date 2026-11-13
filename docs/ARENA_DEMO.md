@@ -347,7 +347,10 @@ damage as Load). Any of the first four turns carrying on; the result is one `Are
 Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBrief=bailiff` or `-ArenaBrief=notary` with
 `-ArenaLead=Duy` lays that Brief's kit from `Data/Battle/briefs.json` over the guns lead's own kit: a six-round cylinder
 with a 1.2 s reload (the shot spends a round instead of stamina; with none left a shot press is dropped and kicks still
-go), plus the Brief's kit changes. Any other lead is left alone with a warning. `-ArenaAutoShoot` has the autopilot use
+go), plus the Brief's kit changes. The cylinder sends three fight events for the host's clip and sound: `ReloadStarted`
+(the reload's length in ms), `Reloaded` (the rounds) and `DryPress` (a press dropped on the empty cylinder); the arena
+logs each one, and the reload clip, the dry click and a gun-arm flinch attach there once they exist. Any other lead is
+left alone with a warning. `-ArenaAutoShoot` has the autopilot use
 the pistol; `-ArenaLineup=dummy,maw_pup` is the test line-up. The result is one `Arena: BRIEF ...` line at the end.
 
 ### The leads' weapons
@@ -641,6 +644,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
 | `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. |
+| `-ArenaAssistCheck` | With `-ArenaAimCheck`: after its shot, aim stays held, a lock is let go, and a half-way right stick sweeps the view off the body and back across it with aim assist on. Each change of the stick's share is logged (`aim assist look scale 1.00 -> 0.60 ...`), and the `aim assist` check line compares the turn rate over a body with the rate off it (PASS at 0.60 within 0.05). |
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |

@@ -765,6 +765,7 @@ struct ArenaFightImpl {
     bool startShot(const ArenaInput& in) {
         if (fi.rounds > 0 && pl.rounds == 0) { // the cylinder is empty: the press is dropped
             ++stats.dryPresses;
+            emit(ArenaEventType::DryPress, kArenaPlayer, kArenaPlayer, kArenaShotMove, stats.dryPresses, pl.pos);
             return dropPress();
         }
         if (!affords(fi.shot)) return false;
@@ -1110,11 +1111,16 @@ struct ArenaFightImpl {
             return; // the last round's shot is still under way
         } else if (fi.reload > kArenaEps) {
             pl.reloadLeft = fi.reload;
+            emit(ArenaEventType::ReloadStarted, kArenaPlayer, kArenaPlayer, kArenaShotMove,
+                 static_cast<int>(fi.reload * 1000.f + 0.5f), pl.pos);
             return;
+        } else {
+            emit(ArenaEventType::ReloadStarted, kArenaPlayer, kArenaPlayer, kArenaShotMove, 0, pl.pos);
         }
         pl.reloadLeft = 0.f;
         pl.rounds = fi.rounds;
         ++stats.reloads;
+        emit(ArenaEventType::Reloaded, kArenaPlayer, kArenaPlayer, kArenaShotMove, static_cast<int>(pl.rounds), pl.pos);
     }
 
     // ---- the hit pause ----

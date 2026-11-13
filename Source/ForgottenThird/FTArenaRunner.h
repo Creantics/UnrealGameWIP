@@ -387,6 +387,10 @@ private:
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// The lead's cylinder (Core's ReloadStarted, Reloaded and DryPress events): where the reload clip, the dry-press flinch
+	// and their sounds attach once they exist. For now they only log.
+	void OnLeadReload(bool bStarted, int32 Amount);
+	void OnLeadDryPress(int32 Presses);
 	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
 	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
 	void KickJolt(const ftcore::ArenaEvent& E);
@@ -715,7 +719,8 @@ private:
 	int32 ReticleBody(const FVector& From, const FVector& To, double& T) const;
 	// -ArenaAimCheck (autopilot, a guns kit): once in the fight, the camera aims at the tallest standing enemy's top
 	// (its height and hover) by ftcore::arenaLookUpPitch, the reticle is traced and one aimed shot is pressed; the
-	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done.
+	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done,
+	// 5 the -ArenaAssistCheck sweep.
 	int32 AimCheckPhase = 0;
 	int32 AimCheckSlot = -1;
 	int32 AimCheckPresses = 0;
@@ -731,6 +736,24 @@ private:
 	float AimCheckHpBefore = 0.f;
 	float AimCheckRendered = 0.f;  // the view pitch the camera rendered as the shot was pressed
 	bool bAimCheckFire = false;
+	// -ArenaAssistCheck (with -ArenaAimCheck): after the aimed shot (phase 5) aim stays held, a lock is let go (the view
+	// does not turn while one is on), and a half-way right stick sweeps the view off the body and back across it through
+	// TurnLook with aim assist on. Each change of the stick's share is logged; the check line compares the turn rate
+	// over a body and off it.
+	bool bAssistCheck = false;
+	double AssistLockPressAt = -1e9;
+	float AssistSweep = 1.f;
+	float AssistKeep = 1.f;
+	double AssistStart = 0.0;
+	double AssistSince = 0.0;
+	int32 AssistEnters = 0;
+	int32 AssistExits = 0;
+	float AssistTime[2] = {0.f, 0.f};   // seconds turned off a body [0] and over one [1]
+	float AssistTurned[2] = {0.f, 0.f}; // degrees turned off a body [0] and over one [1]
+	void StepAssistCheck(float DeltaSeconds);
+	// The unlocked look: the mouse and the right stick turn the view, by aim assist's share (ftcore::aimAssistTurn) while
+	// a guns kit's aimed crosshair is over a body its round would take (last frame's readout). Returns the stick's share.
+	float TurnLook(float MouseX, float MouseY, float LookX, float LookY, float DeltaSeconds, bool bAssist);
 	// The tallest standing enemy's slot (-1: none) and its top over the floor (m).
 	int32 TallestStanding(float& OutTop) const;
 	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
