@@ -2,10 +2,13 @@
 
 // The new game UI (production/ui plan): Slate widgets built in code, painted from Core view-models (ftcore/UiViews.h)
 // in the style table (Data/UI/style.json, ftcore/UiStyle.h), added to the game viewport by the screen's HUD actor.
-// Off by default: -FTNewUi on the command line or the console variable ft.NewUi 1 turns it on. With it on, each HUD
-// skips only the Canvas parts these widgets replace; with it off every HUD draws exactly as before.
+// Off by default: -FTNewUi on the command line or the console variable ft.NewUi 1 turns it on. Each HUD reads it once,
+// at BeginPlay: with it on the HUD adds its widget and skips only the Canvas parts that widget replaces (it checks the
+// widget, not the flag, so a change mid-map does nothing until the next map); with it off every HUD draws as before.
+// The widgets honour the HUD's bShowHUD (clean-plate stills hide them too).
 //
-// The look is the style table plus its meter painter (UiStyle::meter): the direction's pick swaps those two and no code.
+// The placeholder look is the style table plus its meter painter (UiStyle::meter). A direction with curved gauges or new
+// marks needs new painters and view sections, not only a table swap.
 
 #include "CoreMinimal.h"
 
@@ -15,7 +18,7 @@ class AFTStoryDirector;
 
 namespace FT
 {
-// True when the new UI is on (-FTNewUi, or ft.NewUi 1).
+// True when the new UI is on (-FTNewUi, or ft.NewUi 1). Read by the HUDs at BeginPlay only.
 bool NewUiEnabled();
 
 // The arena HUD's Slate layer (the lead's block, the partner, the third place's reserved slot, the target and the boss

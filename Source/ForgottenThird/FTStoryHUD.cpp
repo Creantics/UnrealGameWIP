@@ -123,7 +123,7 @@ void AFTStoryHUD::BeginPlay()
 	if (FT::NewUiEnabled() && Viewport)
 	{
 		TWeakObjectPtr<AFTStoryHUD> Self(this);
-		NewUiWidget = FT::MakeDialogueWidget([Self]() -> const AFTStoryDirector* { return Self.IsValid() ? Self->FindDirector() : nullptr; });
+		NewUiWidget = FT::MakeDialogueWidget([Self]() -> const AFTStoryDirector* { return Self.IsValid() && Self->bShowHUD ? Self->FindDirector() : nullptr; });
 		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
 	}
 }
@@ -385,7 +385,7 @@ void AFTStoryHUD::DrawBox(const AFTStoryDirector& D)
 		return;
 	}
 	DrawStrCentered(kHintBox, kDimBox, CX, Canvas->ClipY - 32.f * S, Small, 1.f);
-	if (FT::NewUiEnabled() && State != StoryRunner::State::Gameplay)
+	if (NewUiWidget.IsValid() && State != StoryRunner::State::Gameplay)
 	{
 		return; // the Slate subtitle block draws lines, directions and choices
 	}

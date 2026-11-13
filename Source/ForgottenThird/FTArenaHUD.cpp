@@ -655,7 +655,7 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	DrawRect(kArenaPanel, X - 12.f * S, Y - 6.f * S, W + 24.f * S, 34.f * S);
 
 	// The stacks, as pips (the Slate layer draws them when the new UI is on).
-	if (!FT::NewUiEnabled())
+	if (!NewUiWidget.IsValid())
 	{
 		DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
 		const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
@@ -685,7 +685,7 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	}
 	else if (Run.crit().isOpen(Run.now()))
 	{
-		if (!FT::NewUiEnabled()) // the Slate layer shows the open weak point
+		if (!NewUiWidget.IsValid()) // the Slate layer shows the open weak point
 		DrawStrCentered(kBossWeakPointArena, ArenaAlpha(kArenaGold, 0.7f + 0.3f * FMath::Sin(static_cast<float>(Mode.GetNow()) * 10.f)), Mid, Y, Small, 1.2f);
 	}
 	else if (Boss.down())
@@ -1096,7 +1096,7 @@ void AFTArenaHUD::BeginPlay()
 	if (FT::NewUiEnabled() && Viewport)
 	{
 		TWeakObjectPtr<const AFTArenaHUD> Self(this);
-		NewUiWidget = FT::MakeArenaHudWidget([Self]() -> const UFTArenaRunner* { return Self.IsValid() ? Self->FindRunner() : nullptr; });
+		NewUiWidget = FT::MakeArenaHudWidget([Self]() -> const UFTArenaRunner* { return Self.IsValid() && Self->bShowHUD ? Self->FindRunner() : nullptr; });
 		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
 	}
 }
@@ -1137,12 +1137,12 @@ void AFTArenaHUD::DrawHUD()
 	DrawFlashes(*Mode);
 	DrawEnemies(*Mode);
 	DrawLock(*Mode);
-	if (!FT::NewUiEnabled()) // the Slate layer draws the lead's block and the target bar
+	if (!NewUiWidget.IsValid()) // the Slate layer draws the lead's block and the target bar
 	{
 		DrawTargetBar(*Mode);
 	}
 	DrawBossPanel(*Mode); // kept: the called zone and the answer words have no view fields yet
-	if (!FT::NewUiEnabled())
+	if (!NewUiWidget.IsValid())
 	{
 		DrawPlayerPanel(*Mode);
 	}

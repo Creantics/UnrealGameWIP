@@ -29,7 +29,7 @@ class DialoguePresenter;
 // ---- Arena HUD -------------------------------------------------------------------------------------------------
 
 struct ArenaHudLead {
-    std::uint8_t lead = 0;     // index into the party (0 Devin, 1 Duy, 2 the Third), for the name key and the portrait
+    std::uint8_t lead = 0;     // index into the party (the lead's place, 0 to 2), for the name key and the portrait
     int hp = 0, hpMax = 0;
     float stamina01 = 0.f;     // 0..1
     bool guarding = false;     // guard held (or a refusal held)
@@ -131,6 +131,8 @@ struct DialogueViewOption {
     bool returns = false;
 };
 
+// Lifetime: the string_views (here and in DialogueViewOption) point into the presenter's storage. They are valid only
+// until that presenter's next update or until it is destroyed; read them in the same frame, or copy what must be kept.
 struct DialogueView {
     DialogueViewKind kind = DialogueViewKind::Hidden;
     std::string_view speaker;  // shown on every line, in the subtitle block (never only on the body)

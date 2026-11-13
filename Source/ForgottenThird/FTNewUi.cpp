@@ -28,7 +28,7 @@ namespace
 {
 TAutoConsoleVariable<int32> CVarNewUi(TEXT("ft.NewUi"), 0,
 	TEXT("1: the new game UI (Slate, drawn from Core view-models) in place of the Canvas HUD's parts it replaces. ")
-	TEXT("-FTNewUi on the command line sets it."));
+	TEXT("-FTNewUi on the command line sets it. Read when a map's HUD begins: a change applies from the next map."));
 
 using ftcore::UiTextRole;
 using ftcore::UiToken;
@@ -151,7 +151,7 @@ struct FPainter
 	{
 		// Many thin, round-ended (anti-aliased) bands so no step or corner reads: the backing must never show as an object.
 		static const FSlateRoundedBoxBrush Round(FLinearColor::White, 256.f);
-		constexpr int32 Bands = 48;
+		constexpr int32 Bands = 24; // one brush on one layer, so Slate batches them into a single draw
 		const float P = FMath::Clamp(Peak * Alpha, 0.f, 0.99f);
 		const float Each = 1.f - FMath::Pow(1.f - P, 1.f / static_cast<float>(Bands));
 		if (Each <= 0.f || W <= 0.f || H <= 0.f)
@@ -642,7 +642,9 @@ public:
 	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
 		const FWidgetStyle&, bool) const override
 	{
-		const AFTStoryDirector* D = Shown;
+		// The director is re-checked here (weak pointer): it may be gone between Tick and Paint. View's string_views are
+		// not read in Paint; the text comes from the director's own FString.
+		const AFTStoryDirector* D = Shown.Get();
 		if (!D || Lines.Num() == 0)
 		{
 			return Layer;
@@ -781,7 +783,7 @@ private:
 	}
 
 	TFunction<const AFTStoryDirector*()> GetDirector;
-	const AFTStoryDirector* Shown = nullptr; // this frame's director when there is text to show
+	TWeakObjectPtr<const AFTStoryDirector> Shown; // this frame's director when there is text to show
 	ftcore::DialogueView View;
 	float Time = 0.f;
 	uint32 WrappedSerial = MAX_uint32;

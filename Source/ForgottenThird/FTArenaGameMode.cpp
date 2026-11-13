@@ -191,7 +191,9 @@ void AFTArenaGameMode::StartPlay()
 		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
 		bShotSide = FParse::Param(Cmd, TEXT("ArenaShotSide"));
 		bShotWorld = FParse::Param(Cmd, TEXT("ArenaShotWorld"));
-		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi"));
+#if !UE_BUILD_SHIPPING
+		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
+#endif
 		bShotSide = bShotSide || bShotWorld;
 	}
 #if !UE_BUILD_SHIPPING
