@@ -218,13 +218,17 @@ struct FPainter
 			return;
 		}
 		const FPaintGeometry Geo = Geometry.ToPaintGeometry(FVector2f(4096.f, 512.f), FSlateLayoutTransform(FVector2f(X, Y)));
+		// The hairline edge fades with the word: a faded word keeps its light face, never a dark hollow outline.
+		FSlateFontInfo Faded = Font;
+		Faded.OutlineSettings.OutlineColor.A *= C.A;
+		const FSlateFontInfo& Use = C.A < 0.999f ? Faded : Font;
 		if (End < 0)
 		{
-			FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, Font, ESlateDrawEffect::None, C);
+			FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, Use, ESlateDrawEffect::None, C);
 		}
 		else if (End > Start)
 		{
-			FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, Start, End, Font, ESlateDrawEffect::None, C);
+			FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, Start, End, Use, ESlateDrawEffect::None, C);
 		}
 	}
 
@@ -291,7 +295,7 @@ public:
 		}
 		if (bEdge)
 		{
-			Ribbon(Parts[Under], St, Table().Edge, 0.55f, 1.f * S, 1.6f, bClosed);
+			Ribbon(Parts[Under], St, Table().Edge, 0.55f * C.A, 1.f * S, 1.6f, bClosed);
 		}
 		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, bClosed);
 	}
@@ -305,7 +309,7 @@ public:
 		}
 		if (bEdge)
 		{
-			Convex(Parts[Under], Pts, N, Table().Edge, 0.5f, 1.f * S, 1.6f);
+			Convex(Parts[Under], Pts, N, Table().Edge, 0.5f * C.A, 1.f * S, 1.6f);
 		}
 		Convex(Parts[Core], Pts, N, C, 1.f, 0.f, 0.8f);
 	}
@@ -667,7 +671,6 @@ public:
 		const UFTArenaRunner* Runner = GetRunner ? GetRunner() : nullptr;
 		bLive = Runner && Runner->IsBegun();
 		const float H = Geometry.GetLocalSize().Y;
-		bool bRebuild = false;
 		if (H != BuiltHeight)
 		{
 			BuiltHeight = H;
@@ -695,12 +698,14 @@ public:
 			{
 				Word(FTUiText::Lookup(*FT::ToFString(V.Label)), V.Word, V.WordW, VerbFont);
 			}
-			bRebuild = true;
+			bRebuild = true; // kept until a live frame rebuilds the strings that need the fight
 		}
 		if (!bLive)
 		{
 			return;
 		}
+		const bool bRebuildNow = bRebuild;
+		bRebuild = false;
 		const ftcore::ArenaFight& Fight = Runner->GetFight();
 		ftcore::ArenaHudFrame Frame = View.now;
 		ftcore::fillArenaHudLead(Fight, Frame.lead);
@@ -710,7 +715,7 @@ public:
 		Frame.third = ftcore::ArenaHudThird{};
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
 		const ftcore::ArenaHudLead& L = View.now.lead;
-		if (bRebuild || (Changed & SectionBit(ftcore::ArenaHudSection::Lead)))
+		if (bRebuildNow || (Changed & SectionBit(ftcore::ArenaHudSection::Lead)))
 		{
 			HpText = FString::Printf(TEXT("%d"), L.hp);
 			HpTextW = TextWidth(HpText, ValueFont);
@@ -726,7 +731,7 @@ public:
 		// The verbs: their keys on the device in use (built when the device changes), which can be used now, which is lit.
 		const APlayerController* PC = Runner->GetWorld() ? Runner->GetWorld()->GetFirstPlayerController() : nullptr;
 		const ftcore::InputDevice Device = FTInputBindings::NoteDevice(PC);
-		if (bRebuild || Device != VerbDevice)
+		if (bRebuildNow || Device != VerbDevice)
 		{
 			VerbDevice = Device;
 			const ftcore::InputHintEntry* Entries = nullptr;
@@ -1077,7 +1082,7 @@ private:
 				continue;
 			}
 			const float Y = Y0 + I * Carry::VerbStep * S; // the word's baseline
-			const float VA = A * (Avail[I] ? 1.f : 0.42f);
+			const float VA = FMath::Max(A, 0.6f) * (Avail[I] ? 1.f : 0.5f); // a reference list: it steps back, never out
 			const FLinearColor C = I == Hot ? Tok(UiToken::Accent, VA) : Tok(UiToken::Ink, VA);
 			const float KX = RX - 44.f * S;
 			const float KY = Y - 7.f * S;
@@ -1104,6 +1109,7 @@ private:
 	FVerbSlot Verbs[4] = {{"input.guard"}, {"input.release"}, {"input.count"}, {"input.heal"}};
 	ftcore::InputDevice VerbDevice = ftcore::InputDevice::Keys;
 	uint32 LastVerbState = MAX_uint32;
+	bool bRebuild = true;
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line; // the stroke being drawn (Core fills it, the mesh takes it)
 	bool bLive = false;
