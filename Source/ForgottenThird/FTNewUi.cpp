@@ -163,8 +163,16 @@ FSlateFontInfo FontFor(UiTextRole Role, float Height, float TextScale = 1.f)
 	// Slate sizes are points at 96 dpi.
 	FSlateFontInfo F = Face.IsValid() ? FSlateFontInfo(Face, Px * 0.75f, FaceName) : FCoreStyle::GetDefaultFontStyle(Fallback, Px * 0.75f);
 	F.LetterSpacing = FMath::RoundToInt(T.tracking * 1000.f);
-	F.OutlineSettings.OutlineSize = FMath::Max(1, FMath::RoundToInt(ftcore::uiEdgePx(S, Height)));
+	// -FTUiEdge=<0..1> scales the glyph edge's strength (0 drops it): a capture switch for judging the edge, not a setting.
+	static const float EdgeScale = []
+	{
+		float V = 1.f;
+		FParse::Value(FCommandLine::Get(), TEXT("-FTUiEdge="), V);
+		return FMath::Clamp(V, 0.f, 1.f);
+	}();
+	F.OutlineSettings.OutlineSize = EdgeScale <= 0.f ? 0 : FMath::Max(1, FMath::RoundToInt(ftcore::uiEdgePx(S, Height)));
 	F.OutlineSettings.OutlineColor = Table().Edge;
+	F.OutlineSettings.OutlineColor.A *= EdgeScale;
 	return F;
 }
 
@@ -207,7 +215,9 @@ struct FPainter
 	{
 		// Many thin, round-ended (anti-aliased) bands so no step or corner reads: the backing must never show as an object.
 		static const FSlateRoundedBoxBrush Round(FLinearColor::White, 256.f);
-		constexpr int32 Bands = 24; // one brush on one layer, so Slate batches them into a single draw
+		// One brush on one layer, so Slate batches them into a single draw; 48 keeps each band under ~15 px on a wide pool
+		// of shade (24 showed as rings over a bright lamp).
+		constexpr int32 Bands = 48;
 		const float P = FMath::Clamp(Peak * Alpha, 0.f, 0.99f);
 		const float Each = 1.f - FMath::Pow(1.f - P, 1.f / static_cast<float>(Bands));
 		if (Each <= 0.f || W <= 0.f || H <= 0.f)
@@ -738,10 +748,11 @@ public:
 			ValueAsc = FontMeasure()->GetMaxCharacterHeight(ValueFont) + FontMeasure()->GetBaseline(ValueFont);
 			LabelAsc = LabelH + FontMeasure()->GetBaseline(LabelFont);
 			VerbAsc = FontMeasure()->GetMaxCharacterHeight(VerbFont) + FontMeasure()->GetBaseline(VerbFont);
-			// Each role says whether it shows in capitals; the small caps take mixed case (a capital, then small caps).
-			const auto Word = [this](const FString& In, FString& Out, float& W, const FSlateFontInfo& F, bool bUpper = false)
+			// Each role says whether it shows in capitals; the small caps take mixed case (a capital, then small caps). In the
+			// small-caps face "capitals" is all small caps (lowercase in, one even height out), as the sheet's verbs are.
+			const auto Word = [this](const FString& In, FString& Out, float& W, const FSlateFontInfo& F, bool bUpper = false, bool bScFace = false)
 			{
-				Out = bUpper ? In.ToUpper() : In;
+				Out = !bUpper ? In : bScFace ? In.ToLower() : In.ToUpper();
 				W = TextWidth(Out, F);
 			};
 			Word(kDownUi, DownWord, DownW, VerbFont);
@@ -754,8 +765,9 @@ public:
 			Word(kInvulnerableUi, InvulWord, InvulW, LabelFont);
 			for (FVerbSlot& V : Verbs)
 			{
-				Word(FTUiText::Lookup(*FT::ToFString(V.Label)), V.Word, V.WordW, VerbFont,
-					Table().Style.text[static_cast<size_t>(UiTextRole::Verb)].upper);
+				const ftcore::UiTextStyle& VS = Table().Style.text[static_cast<size_t>(UiTextRole::Verb)];
+				Word(FTUiText::Lookup(*FT::ToFString(V.Label)), V.Word, V.WordW, VerbFont, VS.upper,
+					VS.font == ftcore::UiFont::SerifSc || VS.font == ftcore::UiFont::SerifScBold);
 			}
 			bRebuild = true; // kept until a live frame rebuilds the strings that need the fight
 		}
@@ -1187,7 +1199,8 @@ private:
 				KeyCapStroke(Line, KX, KY, KW + 16.f * T * S, (30.f + 16.f * T) * S, 0.8f * S, (6.f + 8.f * T) * S);
 				Mesh.Stroke(Line, Tok(UiToken::Accent, (1.f - T) * FMath::Max(A, 0.6f)), true, true);
 			}
-			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.55f, V.Keys, LabelFont, WC);
+			// Centred on the cap height (the serif's capitals are 0.62 of its ascent), not on the line box.
+			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.69f, V.Keys, LabelFont, WC);
 			P.Text(KX - KW * 0.5f - 18.f * S - V.WordW, Y - VerbAsc, V.Word, VerbFont, WC);
 			if (I == Hot)
 			{

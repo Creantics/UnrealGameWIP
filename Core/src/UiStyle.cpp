@@ -144,7 +144,7 @@ UiStyle defaultUiStyle() {
     s.text[static_cast<std::size_t>(UiTextRole::Speaker)] = {UiFont::SerifScBold, 26.f, 0.08f, false};
     s.text[static_cast<std::size_t>(UiTextRole::Prompt)] = {UiFont::Serif, 22.f, 0.02f, false};
     s.text[static_cast<std::size_t>(UiTextRole::Popup)] = {UiFont::SerifScBold, 30.f, 0.04f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::SerifScBold, 27.f, 0.12f, true};
+    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::SerifScBold, 27.f, 0.22f, true};
 
     s.cueShape[static_cast<std::size_t>(UiToken::Danger)] = UiCueShape::Triangle;
     s.cueShape[static_cast<std::size_t>(UiToken::Ally)] = UiCueShape::Circle;

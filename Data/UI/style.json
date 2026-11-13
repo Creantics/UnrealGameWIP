@@ -30,7 +30,7 @@
     "speaker":  { "font": "serif_sc_bold", "px": 26, "tracking": 0.08, "upper": false },
     "prompt":   { "font": "serif",         "px": 22, "tracking": 0.02, "upper": false },
     "popup":    { "font": "serif_sc_bold", "px": 30, "tracking": 0.04, "upper": false },
-    "verb":     { "font": "serif_sc_bold", "px": 27, "tracking": 0.12, "upper": true }
+    "verb":     { "font": "serif_sc_bold", "px": 27, "tracking": 0.22, "upper": true }
   },
   "cues": { "danger": "triangle", "ally": "circle", "weak_point": "diamond" }
 }

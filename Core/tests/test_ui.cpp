@@ -116,6 +116,8 @@ TEST_CASE("ui style: the serif faces parse by name; the verbs and numbers defaul
     std::string err;
     UiStyle s = defaultUiStyle();
     CHECK(s.text[static_cast<std::size_t>(UiTextRole::Verb)].font == UiFont::SerifScBold);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Verb)].upper); // one even height, as on the sheet
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Verb)].tracking >= 0.2f); // wide tracked
     CHECK(s.text[static_cast<std::size_t>(UiTextRole::Value)].font == UiFont::SerifScBold);
     CHECK(s.text[static_cast<std::size_t>(UiTextRole::Subtitle)].font == UiFont::Serif);
     REQUIRE(importUiStyle(R"({"text": {"label": {"font": "serif_sc"}, "title": {"font": "serif_bold"},

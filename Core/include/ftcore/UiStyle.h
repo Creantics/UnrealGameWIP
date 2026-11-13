@@ -91,7 +91,7 @@ struct UiTextStyle {
     UiFont font = UiFont::Sans;
     float px = 18.f;       // at 1080p, before the player's text scale
     float tracking = 0.f;  // extra spacing, ems
-    bool upper = false;    // shown in capitals
+    bool upper = false;    // shown in capitals (in a small-caps face: all small caps, one even height)
 };
 
 struct UiStyle {
