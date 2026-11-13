@@ -149,14 +149,23 @@ struct FPainter
 	// Shade with no edge: stacked boxes growing outward, so the middle reaches Peak and the rim fades to nothing.
 	void Soft(float CX, float CY, float W, float H, float Peak, float Alpha = 1.f) const
 	{
-		constexpr int32 Bands = 16;
+		// Many thin, round-ended (anti-aliased) bands so no step or corner reads: the backing must never show as an object.
+		static const FSlateRoundedBoxBrush Round(FLinearColor::White, 256.f);
+		constexpr int32 Bands = 48;
 		const float P = FMath::Clamp(Peak * Alpha, 0.f, 0.99f);
 		const float Each = 1.f - FMath::Pow(1.f - P, 1.f / static_cast<float>(Bands));
+		if (Each <= 0.f || W <= 0.f || H <= 0.f)
+		{
+			return;
+		}
 		const FLinearColor C = Tok(UiToken::Backing, 0.f) + FLinearColor(0.f, 0.f, 0.f, Each);
 		for (int32 I = 0; I < Bands; ++I)
 		{
 			const float T = 0.3f + 0.7f * static_cast<float>(I + 1) / static_cast<float>(Bands);
-			Box(CX - W * T * 0.5f, CY - H * T * 0.5f, W * T, H * T, C, 0);
+			const float BW = W * T;
+			const float BH = H * T;
+			FSlateDrawElement::MakeBox(Out, Layer, Geometry.ToPaintGeometry(FVector2f(BW, BH), FSlateLayoutTransform(FVector2f(CX - BW * 0.5f, CY - BH * 0.5f))),
+				&Round, ESlateDrawEffect::None, C);
 		}
 	}
 
