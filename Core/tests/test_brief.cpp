@@ -1,6 +1,7 @@
 // Briefs (Data/Battle/briefs.json) laid over the guns lead's kit, and the pistol's cylinder (rounds, reload).
 #include "ftcore/ArenaFight.h"
 #include "ftcore/Brief.h"
+#include "ftcore/BriefKit.h"
 #include "ftcore/UiViews.h"
 
 #include "TestAssets.h"
@@ -111,33 +112,36 @@ TEST_CASE("briefs: the shipped table lays bailiff and notary over the guns lead'
         CHECK(d->kit.hp == duy.hp);
         CHECK(d->kit.lightCount == duy.lightCount);
     }
+    // The kits a fight gets at every stat 10 (BriefKit): the slice-1 kits exactly.
+    const ArenaFighter bk = buildBriefKit(*bailiff, LicenceStats{}).fighter;
+    const ArenaFighter nk = buildBriefKit(*notary, LicenceStats{}).fighter;
     // Bailiff: kicks x1.10, kick poise x1.20, poise x1.25, guard leak x0.80, the slower shot (D.C).
     CHECK(bailiff->base == std::array<int, 5>{14, 7, 12, 9, 8});
     CHECK(bailiff->growth == std::array<int, 5>{85, 30, 70, 35, 30});
-    CHECK(bailiff->kit.light[0].damage == 12);
-    CHECK(bailiff->kit.light[0].poiseDamage == doctest::Approx(12.f));
-    CHECK(bailiff->kit.light[0].startup == doctest::Approx(duy.light[0].startup)); // a partial row keeps the rest
-    CHECK(bailiff->kit.light[2].damage == 19);
-    CHECK(bailiff->kit.light[2].poiseDamage == doctest::Approx(24.f));
-    CHECK(bailiff->kit.heavy.damage == 40);
-    CHECK(bailiff->kit.heavy.poiseDamage == doctest::Approx(54.f));
-    CHECK(bailiff->kit.riposte.damage == 48);
-    CHECK(bailiff->kit.poise == doctest::Approx(duy.poise * 1.25f));
-    CHECK(1.f - bailiff->kit.guardAbsorb == doctest::Approx((1.f - duy.guardAbsorb) * 0.8f));
-    CHECK(bailiff->kit.shot.startup == doctest::Approx(duy.shot.startup + 0.06f));
-    CHECK(bailiff->kit.shot.recovery == doctest::Approx(duy.shot.recovery + 0.08f));
-    CHECK(bailiff->kit.shot.damage == duy.shot.damage);
+    CHECK(bk.light[0].damage == 12);
+    CHECK(bk.light[0].poiseDamage == doctest::Approx(12.f));
+    CHECK(bk.light[0].startup == doctest::Approx(duy.light[0].startup)); // a partial row keeps the rest
+    CHECK(bk.light[2].damage == 19);
+    CHECK(bk.light[2].poiseDamage == doctest::Approx(24.f));
+    CHECK(bk.heavy.damage == 40);
+    CHECK(bk.heavy.poiseDamage == doctest::Approx(54.f));
+    CHECK(bk.riposte.damage == 48);
+    CHECK(bk.poise == doctest::Approx(duy.poise * 1.25f));
+    CHECK(1.f - bk.guardAbsorb == doctest::Approx((1.f - duy.guardAbsorb) * 0.8f));
+    CHECK(bk.shot.startup == doctest::Approx(duy.shot.startup + 0.06f));
+    CHECK(bk.shot.recovery == doctest::Approx(duy.shot.recovery + 0.08f));
+    CHECK(bk.shot.damage == duy.shot.damage);
     // Notary: shot x1.15 (11.5 rounds up), range x1.20, shot poise x1.25, kicks x0.90.
     CHECK(notary->base == std::array<int, 5>{7, 15, 9, 10, 9});
-    CHECK(notary->kit.shot.damage == 12);
-    CHECK(notary->kit.shot.range == doctest::Approx(36.f));
-    CHECK(notary->kit.shot.poiseDamage == doctest::Approx(7.5f));
-    CHECK(notary->kit.shot.startup == doctest::Approx(duy.shot.startup));
-    CHECK(notary->kit.light[0].damage == 10);
-    CHECK(notary->kit.light[2].damage == 15);
-    CHECK(notary->kit.heavy.damage == 32);
-    CHECK(notary->kit.riposte.damage == 40);
-    CHECK(notary->kit.poise == doctest::Approx(duy.poise));
+    CHECK(nk.shot.damage == 12);
+    CHECK(nk.shot.range == doctest::Approx(36.f));
+    CHECK(nk.shot.poiseDamage == doctest::Approx(7.5f));
+    CHECK(nk.shot.startup == doctest::Approx(duy.shot.startup));
+    CHECK(nk.light[0].damage == 10);
+    CHECK(nk.light[2].damage == 15);
+    CHECK(nk.heavy.damage == 32);
+    CHECK(nk.riposte.damage == 40);
+    CHECK(nk.poise == doctest::Approx(duy.poise));
 }
 
 TEST_CASE("briefs: refused files leave the table empty and name the problem") {
@@ -188,7 +192,7 @@ TEST_CASE("cylinder: six rounds, then a reload that refuses only the shot; resta
     BriefTable t;
     std::string err;
     REQUIRE_MESSAGE(shippedBriefs(arena.fighter("duy"), t, err), err);
-    const ArenaFighter kit = t.find(BriefId::Notary)->kit;
+    const ArenaFighter kit = buildBriefKit(*t.find(BriefId::Notary), LicenceStats{}).fighter;
     Range r(kit);
     CHECK(r.fight.roundsMax() == 6);
     CHECK(r.fight.rounds() == 6);
@@ -285,7 +289,7 @@ ArenaFighter notaryKit() {
     BriefTable t;
     std::string err;
     if (!shippedBriefs(arena.fighter("duy"), t, err) || !t.find(BriefId::Notary)) return ArenaFighter{};
-    return t.find(BriefId::Notary)->kit;
+    return buildBriefKit(*t.find(BriefId::Notary), LicenceStats{}).fighter;
 }
 
 } // namespace
