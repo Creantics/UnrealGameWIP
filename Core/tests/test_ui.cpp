@@ -469,3 +469,41 @@ TEST_CASE("ui dialogue view: speaker on every line, text by reveal, prompt once 
     updateDialogueView(hidden, none, flags);
     CHECK(hidden.kind == DialogueViewKind::Hidden);
 }
+
+TEST_CASE("ui style: the dim behind dialogue options is measured: none on a dark picture, just enough on a bright one") {
+    const UiStyle s = defaultUiStyle();
+    const UiColor ink{0.953f, 0.933f, 0.902f, 1.f};
+    const UiColor back{0.039f, 0.031f, 0.024f, 1.f};
+    CHECK(uiOptionDim(s, ink, back, UiColor{0.1f, 0.1f, 0.1f, 1.f}) == 0.f);
+    const UiColor grey{0.6f, 0.6f, 0.6f, 1.f};
+    const float a = uiOptionDim(s, ink, back, grey);
+    CHECK(a > 0.05f);
+    CHECK(a < s.optionsDimMax);
+    CHECK(uiContrast(ink, UiColor{back.r, back.g, back.b, a}, grey) >= s.optionsDimContrast - 0.01f);
+    CHECK(uiContrast(ink, UiColor{back.r, back.g, back.b, a - 0.03f}, grey) < s.optionsDimContrast); // no stronger than needed
+    const float onWhite = uiOptionDim(s, ink, back, UiColor{1.f, 1.f, 1.f, 1.f});
+    CHECK(onWhite > a); // a brighter picture, a stronger dim
+    CHECK(onWhite <= s.optionsDimMax);
+    UiStyle strict = s;
+    strict.optionsDimContrast = 15.f;
+    CHECK(uiOptionDim(strict, ink, back, UiColor{1.f, 1.f, 1.f, 1.f}) == doctest::Approx(s.optionsDimMax)); // capped
+    UiStyle loose = s;
+    std::string err;
+    REQUIRE(importUiStyle(R"({"backing_soft": {"options_contrast": 2, "options_max": 0.4}})", loose, &err));
+    CHECK(loose.optionsDimContrast == doctest::Approx(2.f));
+    CHECK(loose.optionsDimMax == doctest::Approx(0.4f));
+    CHECK(uiOptionDim(loose, ink, back, grey) < a);
+    CHECK_FALSE(importUiStyle(R"({"backing_soft": {"options_max": 1.5}})", loose, &err));
+}
+
+TEST_CASE("ui style: the picture's brightest share, by luminance, with no allocation") {
+    UiLumaHistogram h;
+    CHECK(uiLumaBrightest(h, 0.1f).r == 0.f); // nothing measured: black, so no dim
+    for (int i = 0; i < 90; ++i) uiLumaAdd(h, UiColor{0.1f, 0.1f, 0.1f, 1.f});
+    for (int i = 0; i < 10; ++i) uiLumaAdd(h, UiColor{0.95f, 0.9f, 0.8f, 1.f});
+    CHECK(h.total == 100);
+    const UiColor top = uiLumaBrightest(h, 0.1f);
+    CHECK(top.r == doctest::Approx(0.95f));
+    CHECK(top.b == doctest::Approx(0.8f));
+    CHECK(uiLumaBrightest(h, 1.f).r == doctest::Approx(0.185f)); // the whole picture's mean
+}

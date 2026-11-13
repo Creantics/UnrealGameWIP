@@ -185,6 +185,44 @@ UiColor uiLumaFloor(UiColor c, float floor) {
     return UiColor{c.r + (1.f - c.r) * hi, c.g + (1.f - c.g) * hi, c.b + (1.f - c.b) * hi, c.a};
 }
 
+float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture) {
+    const UiColor pic{picture.r, picture.g, picture.b, 1.f};
+    const auto at = [&](float a) { return uiContrast(ink, UiColor{backing.r, backing.g, backing.b, a}, pic); };
+    const float top = std::clamp(s.optionsDimMax, 0.f, 1.f);
+    if (at(0.f) >= s.optionsDimContrast) return 0.f;
+    if (at(top) < s.optionsDimContrast) return top;
+    float lo = 0.f, hi = top; // contrast rises with the dim: bisect the least that reaches the target
+    for (int i = 0; i < 20; ++i) {
+        const float m = 0.5f * (lo + hi);
+        (at(m) >= s.optionsDimContrast ? hi : lo) = m;
+    }
+    return hi;
+}
+
+void uiLumaAdd(UiLumaHistogram& h, UiColor c) {
+    const float l = std::clamp(luminance(c), 0.f, 1.f);
+    const std::size_t i = std::min(UiLumaHistogram::kBins - 1, static_cast<std::size_t>(l * UiLumaHistogram::kBins));
+    ++h.n[i];
+    h.r[i] += c.r;
+    h.g[i] += c.g;
+    h.b[i] += c.b;
+    ++h.total;
+}
+
+UiColor uiLumaBrightest(const UiLumaHistogram& h, float share) {
+    if (h.total == 0) return UiColor{0.f, 0.f, 0.f, 1.f};
+    const std::uint32_t want = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(std::clamp(share, 0.f, 1.f) * h.total));
+    std::uint32_t got = 0;
+    float r = 0.f, g = 0.f, b = 0.f;
+    for (std::size_t i = UiLumaHistogram::kBins; i-- > 0 && got < want;) {
+        got += h.n[i];
+        r += h.r[i];
+        g += h.g[i];
+        b += h.b[i];
+    }
+    return UiColor{r / got, g / got, b / got, 1.f};
+}
+
 float uiContrast(UiColor fg, UiColor bg, UiColor under) {
     const UiColor b = over(bg, under);
     const UiColor f = over(fg, b);
@@ -317,6 +355,10 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                     if (!number(v.value(j), 0.f, 1.f, s.backingSoftHud)) return bad(key, bk);
                 } else if (bk == "dialogue") {
                     if (!number(v.value(j), 0.f, 1.f, s.backingSoftDialogue)) return bad(key, bk);
+                } else if (bk == "options_contrast") {
+                    if (!number(v.value(j), 1.f, 21.f, s.optionsDimContrast)) return bad(key, bk);
+                } else if (bk == "options_max") {
+                    if (!number(v.value(j), 0.f, 1.f, s.optionsDimMax)) return bad(key, bk);
                 } else {
                     return bad(key, bk);
                 }

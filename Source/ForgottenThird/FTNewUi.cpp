@@ -20,6 +20,8 @@
 #include "Algo/BinarySearch.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "Fonts/CompositeFont.h"
 #include "Fonts/FontMeasure.h"
@@ -2225,6 +2227,27 @@ private:
 		}
 	}
 
+	// The weak point open: four short cracks pointing in from the ring's four gaps (the stagger's mark, unlike the rest ring).
+	void StaggerCracks(float X, float Y, float R, float S, float A) const
+	{
+		if (A <= 0.005f)
+		{
+			return;
+		}
+		for (int32 K = 0; K < 4; ++K)
+		{
+			const float Deg = 90.f * K;
+			float X0 = 0.f;
+			float Y0 = 0.f;
+			float X1 = 0.f;
+			float Y1 = 0.f;
+			ftcore::uiArcPoint(X, Y, R * 0.96f, Deg, X0, Y0);
+			ftcore::uiArcPoint(X, Y, R * 0.7f, Deg, X1, Y1);
+			const FVector2f Pts[2] = {FVector2f(X0, Y0), FVector2f(X1, Y1)};
+			Poly(Pts, 2, 2.f * S, Tok(UiToken::WeakPoint, A));
+		}
+	}
+
 	// The reticle: the lock's ring round the locked body (the screen's centre without a lock), where a parry snaps it shut
 	// and rings once, an evade opens it and lets go, a stagger springs it open trembling (held while the weak point is open),
 	// and the Read stacks stand as small ticks in its top gap.
@@ -2249,7 +2272,7 @@ private:
 		});
 		EachMark(ftcore::UiEventMark::RingOpen, [&](const ftcore::UiLiveMark&, const ftcore::UiMarkPose& Po)
 		{
-			ReticleRing(At.X, At.Y, R0, Po, S, 1.3f, Tok(UiToken::InkDim, Po.alpha));
+			ReticleRing(At.X, At.Y, R0, Po, S, 1.8f, Tok(UiToken::Ink, Po.alpha));
 			Base = FMath::Min(Base, Po.base);
 		});
 		// A stagger: its live mark springs the ring open; the standing hold keeps it there (the mark's pose, settled, while
@@ -2263,12 +2286,14 @@ private:
 			}
 			bBroke = true;
 			const float A = bHold ? 1.f : Po.alpha;
-			ReticleRing(At.X, At.Y, R0, Po, S, 1.6f, Tok(UiToken::Accent, A * (1.f - SnapA)));
+			ReticleRing(At.X, At.Y, R0, Po, S, 2.4f, Tok(UiToken::Accent, A * (1.f - SnapA)));
+			StaggerCracks(At.X, At.Y, R0 * Po.radius, S, A * (1.f - SnapA));
 			Base = FMath::Min(Base, bHold ? 0.f : Po.base + (1.f - Po.alpha));
 		});
 		if (bHold && !bBroke)
 		{
-			ReticleRing(At.X, At.Y, R0, ftcore::uiStaggerHoldPose(), S, 1.6f, Tok(UiToken::Accent, 1.f - SnapA));
+			ReticleRing(At.X, At.Y, R0, ftcore::uiStaggerHoldPose(), S, 2.4f, Tok(UiToken::Accent, 1.f - SnapA));
+			StaggerCracks(At.X, At.Y, R0 * ftcore::uiStaggerHoldPose().radius, S, 1.f - SnapA);
 			Base = 0.f;
 		}
 		if (bLockOn && Base > 0.01f)
@@ -2622,6 +2647,11 @@ public:
 		HintQuiet = (!bWasShown || LastInput != HintInputSeen) ? 0.f : HintQuiet + DeltaTime;
 		HintInputSeen = LastInput;
 		HintA = FMath::Clamp(1.f - (HintQuiet - Table().Style.budget.hint) / 0.6f, 0.f, 1.f);
+		if ((HintA > 0.f) != bHintUp)
+		{
+			bHintUp = HintA > 0.f;
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: key hint %s after %.1f s quiet."), bHintUp ? TEXT("up") : TEXT("gone"), HintQuiet);
+		}
 		ftcore::DialogueViewFlags Flags;
 		Flags.autoOn = D->IsAutoAdvanceOn();
 		Flags.skipOn = D->IsSkipping();
@@ -2701,6 +2731,18 @@ public:
 			UE_LOG(LogForgottenThird, Log, TEXT("UI: choice anchor %s (%.2f, %.2f)."), bAnchor ? TEXT("beside the face") : TEXT("none, under the line"),
 				AnchorUV.X, AnchorUV.Y);
 		}
+		// The dim behind the options, measured once per choice where they will stand, before they are first drawn there
+		// (the viewport still holds the last frame, without them).
+		if (OptionRows == 0)
+		{
+			DimFor = MAX_uint32;
+			OptionDim = 0.f;
+		}
+		else if (DimFor != OptionsFor)
+		{
+			DimFor = OptionsFor;
+			OptionDim = MeasureOptionDim(Size);
+		}
 	}
 
 	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
@@ -2760,15 +2802,20 @@ public:
 			const float MarkGap = 22.f * S; // the mark's centre to the text
 			float MarkX;
 			float OptTop;
+			bool bRight;
+			FVector2f H;
+			OptionPlace(Size, S, MarkX, OptTop, bRight, H);
+			if (OptionDim > 0.f)
+			{
+				// The measured dim (Tick), only over a bright picture: a wide falloff with no edge, its middle sized so the
+				// block's ends still get the measured strength (the falloff gives 0.56 of its peak half way out).
+				const float HalfW = (MarkGap + OptionW) * 0.5f + 16.f * S;
+				const float HalfH = OptBlockH * 0.5f + 10.f * S;
+				Mesh.Vignette(MarkX + HalfW - 16.f * S, OptTop + OptBlockH * 0.5f, HalfW * 2.f, HalfH * 2.2f,
+					FMath::Min(OptionDim / 0.56f, 0.85f));
+			}
 			if (bAnchor)
 			{
-				// Beside the person: to their right when it fits, else to their left; never down into the line.
-				const FVector2f H(AnchorUV.X * Size.X, AnchorUV.Y * Size.Y);
-				const float Gap = 150.f * S;
-				const bool bRight = H.X + Gap + MarkGap + OptionW < Size.X - 80.f * S;
-				MarkX = bRight ? H.X + Gap : H.X - Gap - MarkGap - OptionW;
-				OptTop = FMath::Clamp(H.Y - 30.f * S - OptBlockH * 0.5f, 60.f * S, Top - OptBlockH - 40.f * S);
-				// No shade behind the choices (an oval read as an object): the glyph edge carries them.
 				// The leader: a fine line from beside the face to the middle row's mark, eased flat at both ends.
 				const float MidY = OptTop + RowH * (static_cast<float>(OptionRows - 1) * 0.5f) + OptionH * 0.5f;
 				const FVector2f P0(H.X + (bRight ? 40.f : -40.f) * S, H.Y);
@@ -2784,11 +2831,6 @@ public:
 				PolyStroke(Line, Pts, N, 0.6f * S, 0.85f);
 				Mesh.Stroke(Line, Tok(UiToken::Ink));
 				Mesh.Dot(P0.X, P0.Y, 2.4f * S, Tok(UiToken::Ink));
-			}
-			else
-			{
-				MarkX = CX - MaxW * 0.35f - MarkGap;
-				OptTop = Top + LineH * (Lines.Num() + 0.4f);
 			}
 			for (int32 I = 0; I < OptionRows; ++I)
 			{
@@ -2824,6 +2866,75 @@ public:
 	}
 
 private:
+	// Where the options stand this frame: their marks' x and their top; anchored, the face and the side they hang on
+	// (beside the person, to their right when it fits, else their left, never down into the line), else under the line.
+	void OptionPlace(const FVector2f& Size, float S, float& MarkX, float& OptTop, bool& bRight, FVector2f& H) const
+	{
+		const int32 BelowRows = bAnchor ? 0 : OptionRows;
+		const float BlockH = LineH * (Lines.Num() + BelowRows + (BelowRows > 0 ? 0.4f : 0.f));
+		const float Top = Size.Y - 96.f * S - BlockH;
+		const float OptBlockH = LineH * 1.05f * OptionRows;
+		const float MarkGap = 22.f * S;
+		bRight = true;
+		H = FVector2f::ZeroVector;
+		if (bAnchor)
+		{
+			H = FVector2f(AnchorUV.X * Size.X, AnchorUV.Y * Size.Y);
+			const float Gap = 150.f * S;
+			bRight = H.X + Gap + MarkGap + OptionW < Size.X - 80.f * S;
+			MarkX = bRight ? H.X + Gap : H.X - Gap - MarkGap - OptionW;
+			OptTop = FMath::Clamp(H.Y - 30.f * S - OptBlockH * 0.5f, 60.f * S, Top - OptBlockH - 40.f * S);
+		}
+		else
+		{
+			MarkX = Size.X * 0.5f - MaxW * 0.35f - MarkGap;
+			OptTop = Top + LineH * (Lines.Num() + 0.4f);
+		}
+	}
+
+	// The picture where the options will stand, read back once per choice (never per frame): the dim the option ink
+	// needs over its brightest tenth (Core uiOptionDim), 0 when nothing could be read.
+	float MeasureOptionDim(const FVector2f& Size) const
+	{
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f)
+		{
+			return 0.f;
+		}
+		const float S = FMath::Max(0.25f, Size.Y / 1080.f);
+		float MarkX;
+		float OptTop;
+		bool bRight;
+		FVector2f H;
+		OptionPlace(Size, S, MarkX, OptTop, bRight, H);
+		const float KX = VS.X / Size.X;
+		const float KY = VS.Y / Size.Y;
+		const FIntRect Rc(FMath::Clamp(FMath::FloorToInt((MarkX - 20.f * S) * KX), 0, VS.X - 1),
+			FMath::Clamp(FMath::FloorToInt((OptTop - 8.f * S) * KY), 0, VS.Y - 1),
+			FMath::Clamp(FMath::CeilToInt((MarkX + 42.f * S + OptionW) * KX), 1, VS.X),
+			FMath::Clamp(FMath::CeilToInt((OptTop + LineH * 1.05f * OptionRows) * KY), 1, VS.Y));
+		TArray<FColor> Px;
+		if (Rc.Width() <= 0 || Rc.Height() <= 0 || !VP->ReadPixels(Px, FReadSurfaceDataFlags(), Rc) || Px.Num() == 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: options dim not measured (no picture read)."));
+			return 0.f;
+		}
+		ftcore::UiLumaHistogram Hist;
+		for (const FColor& C : Px)
+		{
+			ftcore::uiLumaAdd(Hist, ftcore::UiColor{C.R / 255.f, C.G / 255.f, C.B / 255.f, 1.f});
+		}
+		const ftcore::UiColor Pic = ftcore::uiLumaBrightest(Hist, 0.1f);
+		const ftcore::UiStyle& St = Table().Style;
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Ink);
+		const ftcore::UiColor Back = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Backing);
+		const float Dim = ftcore::uiOptionDim(St, Ink, Back, Pic);
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: options dim %.2f over the picture's brightest tenth (%.2f, %.2f, %.2f), %dx%d px read."), Dim,
+			Pic.r, Pic.g, Pic.b, Rc.Width(), Rc.Height());
+		return Dim;
+	}
+
 	const FString& OptionText(const AFTStoryDirector& D, int32 I) const
 	{
 #if !UE_BUILD_SHIPPING
@@ -3000,6 +3111,9 @@ private:
 	float OptionW = 0.f;
 	bool bAnchor = false;
 	FVector2f AnchorUV = FVector2f::ZeroVector; // the answered person's head, as a fraction of the view
+	float OptionDim = 0.f;     // the measured dim behind the options (0 over a dark picture)
+	uint32 DimFor = MAX_uint32; // the options it was measured for
+	bool bHintUp = false;
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line;
 };

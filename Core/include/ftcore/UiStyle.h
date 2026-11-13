@@ -120,6 +120,10 @@ struct UiStyle {
     // The soft backing drawn by default: a wide falloff with no edge, so it reads as shade, not as an object.
     float backingSoftHud = 0.24f;      // peak alpha behind HUD blocks
     float backingSoftDialogue = 0.42f; // peak alpha under subtitles
+    // The local dim behind dialogue options, measured once per choice from the picture behind them (uiOptionDim): just
+    // strong enough for the option ink to stand at this contrast over the picture's brightest tenth, never above max.
+    float optionsDimContrast = 3.f;
+    float optionsDimMax = 0.65f;
     UiColor edge{0.039f, 0.035f, 0.031f, 0.9f}; // the hairline edge round every glyph
     float edgePx = 1.f;                // its width at 1080p, at least 1 px at any height
     float edgeText = 0.6f;             // the glyph edge's share of the edge colour's alpha (0.5..1): lighter than a
@@ -157,6 +161,21 @@ FTCORE_API float uiContrast(UiColor fg, UiColor bg, UiColor under);
 
 // `c` lifted toward white until its relative luminance is at least `floor` (alpha kept); unchanged when already there.
 FTCORE_API UiColor uiLumaFloor(UiColor c, float floor);
+
+// The dim behind the dialogue options: the least alpha of `backing` (0..s.optionsDimMax) under which `ink` reaches
+// s.optionsDimContrast over `picture`; 0 when it already does, the max when even that falls short.
+FTCORE_API float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture);
+
+// The picture behind a block, by luminance: add each pixel (sRGB, 0..1), then brightest() gives the mean colour of its
+// brightest `share` of pixels. Fixed size, no allocation.
+struct UiLumaHistogram {
+    static constexpr std::size_t kBins = 64;
+    std::array<std::uint32_t, kBins> n{};
+    std::array<float, kBins> r{}, g{}, b{};
+    std::uint32_t total = 0;
+};
+FTCORE_API void uiLumaAdd(UiLumaHistogram& h, UiColor c);
+FTCORE_API UiColor uiLumaBrightest(const UiLumaHistogram& h, float share);
 
 FTCORE_API UiCueShape uiCueShape(const UiStyle& s, UiToken token);
 
