@@ -2358,6 +2358,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			break;
 		case ftcore::ArenaEventType::AllyDowned:
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the ally is down at %.2f s."), Fight.time());
+			// The partner down: its kept gauge stores and spends nothing for the rest of the fight.
+			if (Session && Session->Get().keepsLoad(Session->Get().keptLead()))
+			{
+				Session->Get().setKeptDown(true);
+			}
 			break;
 		case ftcore::ArenaEventType::TookHalf:
 			// Taking half is a shared input: offered to the boss script's point (or the session's lock) as a shared blow.

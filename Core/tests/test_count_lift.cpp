@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
+#include <cstdlib>
 #include <string>
 
 using namespace ftcore;
@@ -488,13 +490,22 @@ TEST_CASE("count lift: the blow cap keeps the worst stack (seam crit x Lift x ma
     CHECK(t.bonuses[0].extraDamage == 56);
 }
 
-TEST_CASE("count lift: a held settle's bonus is from the base before the crit") {
-    // Uncapped: base x (mult - 1) whatever it landed at.
-    CHECK(heldSettleBonus(14, 2.0f, 2.5f, 0.f) == 21);
-    // Capped with room: the same.
-    CHECK(heldSettleBonus(14, 2.0f, 2.5f, 6.f) == 21);
-    // Capped with less room than the boost: base x (cap - landed).
+TEST_CASE("count lift: a held settle reaches the same total as an immediate blow") {
+    // One rule, the product: base x capBlowScale(landed x mult, cap) in all; the bonus is what is past the landing.
+    // Uncapped: 14 x 2 x 2.5 = 70 in all, 28 landed, 42 more.
+    CHECK(heldSettleBonus(14, 2.0f, 2.5f, 0.f) == 42);
+    // Capped with room (x5 under x6): the same.
+    CHECK(heldSettleBonus(14, 2.0f, 2.5f, 6.f) == 42);
+    // Capped: x11.25 kept to x6, 84 in all: 56 more.
     CHECK(heldSettleBonus(14, 2.0f, 5.625f, 6.f) == 56);
+    // Held and immediate agree, for a sweep of crits and boosts under the cap.
+    for (const float crit : {1.0f, 1.5f, 2.0f}) {
+        for (const float mult : {1.25f, 2.5f, 3.75f, 5.625f}) {
+            const int immediate = static_cast<int>(std::lround(14.0 * capBlowScale(crit * mult, kDefaultBlowCap)));
+            const int held = static_cast<int>(std::lround(14.0 * crit)) + heldSettleBonus(14, crit, mult, kDefaultBlowCap);
+            CHECK(std::abs(immediate - held) <= 1); // rounding only
+        }
+    }
     // A crit already at the cap: nothing more.
     CHECK(heldSettleBonus(14, 6.0f, 2.5f, 6.f) == 0);
     CHECK(heldSettleBonus(14, 1.0f, 1.0f, 6.f) == 0);
@@ -591,4 +602,42 @@ TEST_CASE("count lift: count_lift.json reads, keeps defaults for missing fields 
     CHECK_FALSE(importCountLift(R"({ "version": 1, "liftCost": 101 })", d, &err));
     CHECK_FALSE(importCountLift(R"({ "version": 1, "extra": 1 })", d, &err));
     CHECK_FALSE(importCountLift("[]", d, &err));
+}
+
+TEST_CASE("count lift: a down partner stores, spends and counts nothing") {
+    FightSession s;
+    REQUIRE(s.begin(keptDef(3), 0.0).ok());
+    CHECK(s.keptParried(50) == 50);
+    s.setKeptDown(true);
+    CHECK(s.keptDown());
+    CHECK(s.keptParried(20) == 0);
+    CHECK(s.keptBlocked(40) == 0);
+    s.setLoad(kLeadA, 100); // 100 + its 50 would lift; down, it counts 0
+    toNow(s);
+    const CountHit h = joinBoth(s);
+    CHECK(h.outcome == CountOutcome::OnCount);
+    const FightTick t = s.tick(0.0);
+    for (const CountLoadChange& c : t.loads) CHECK_FALSE(c.kept); // no store, no spend
+    CHECK(s.keptLoad() == 50);
+    // The next begin has it up again.
+    REQUIRE(s.begin(keptDef(3), 0.0).ok());
+    CHECK_FALSE(s.keptDown());
+}
+
+TEST_CASE("count lift: a kept joiner holding under the cost pays what it holds") {
+    FightSession s;
+    REQUIRE(s.begin(keptDef(3), 0.0).ok());
+    CHECK(s.keptParried(20) == 20);
+    s.setLoad(kLeadA, 100);
+    toNow(s);
+    CHECK(joinBoth(s).outcome == CountOutcome::Lift); // 100 + 20 = 120
+    const FightTick t = s.tick(0.0);
+    int keptSpent = 0, leadSpent = 0;
+    for (const CountLoadChange& c : t.loads) {
+        if (c.kind != CountLoadKind::LiftSpend) continue;
+        (c.kept ? keptSpent : leadSpent) += c.amount;
+    }
+    CHECK(keptSpent == 20);
+    CHECK(leadSpent == 30);
+    CHECK(s.keptLoad() == 0);
 }

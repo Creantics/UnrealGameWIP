@@ -102,16 +102,13 @@ inline constexpr float kMaxBlowCap = 20.0f;
 inline bool validBlowCap(float cap) { return cap == 0.f || (cap >= 1.f && cap <= kMaxBlowCap); }
 inline float capBlowScale(float scale, float cap) { return cap > 0.f && scale > cap ? cap : scale; }
 
-// A held blow's settle bonus: base x (mult - 1), rounded, where base is what the blow deals before any crit and it
-// landed at base x landed. With a cap the whole blow stays at base x cap (the bonus at most base x (cap - landed)).
-// 0 at x1 or below, or with nothing left under the cap.
+// A held blow's settle bonus: base is what the blow deals before any crit and it landed at base x landed. It settles
+// to the same total an immediate blow would deal, base x capBlowScale(landed x mult, cap): the bonus is base x
+// (that - landed), rounded. 0 at x1 or below, or with nothing left under the cap.
 inline int heldSettleBonus(int base, float landed, float mult, float cap) {
-    if (base <= 0 || !(mult > 1.0f) || !std::isfinite(mult)) return 0;
-    double add = static_cast<double>(mult) - 1.0;
-    if (cap > 0.f) {
-        const double room = static_cast<double>(cap) - static_cast<double>(landed);
-        if (room < add) add = room;
-    }
+    if (base <= 0 || !(mult > 1.0f) || !std::isfinite(mult) || !std::isfinite(landed)) return 0;
+    const double total = static_cast<double>(capBlowScale(landed * mult, cap));
+    const double add = total - static_cast<double>(landed);
     if (!(add > 0.0)) return 0;
     const double extra = std::round(static_cast<double>(base) * add);
     if (extra < 1.0) return 0;

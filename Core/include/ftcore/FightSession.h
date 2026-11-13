@@ -21,9 +21,11 @@
 //   to its gauges (its own capped store and spend). A kThirdSlot caller joins without a gauge (StrikeCount.h).
 // * The kept gauge (def.lift with def.keptLead a lead): the session keeps that lead's Load itself (the partner lead,
 //   whose gauge no host keeps). Its cap is the chairs' formula, baseCarry + perPlace x keptNamed (at most kMaxLoad).
-//   It fills by the same rules as the host's: keptParried (parried damage x keptParryShare), keptBlocked (blocked
-//   damage x keptBlockShare) and its joined counts, each capped at the cap (no chair gain), and a Lift spends from
-//   it. The session feeds it to the count itself; its changes still come in `loads`, marked kept (already applied).
+//   It fills from its joined counts, capped at the cap (no chair gain), and a Lift spends from it. keptParried and
+//   keptBlocked (parried damage x keptParryShare, blocked damage x keptBlockShare) store as the host's do, for a
+//   partner that defends: the arena's scripted partner does not yet, so no host calls them. setKeptDown(true) (the
+//   partner is down): it stores and spends nothing and counts 0 toward a Lift, until the next begin. The session
+//   feeds it to the count itself; its changes still come in `loads`, marked kept (already applied).
 // * Marks: markEnemy(enemy, bonus, seconds) marks an enemy slot (a Release's chair effect). The joined blows of the
 //   next joined window judged on that enemy (judgeHeldBlow, held ones at their settle) take x (1 + bonus); the mark
 //   is used up once that window is over, or ends unused at its time. begin clears every mark.
@@ -217,6 +219,7 @@ public:
         blowCap_ = c.cap ? def_.blowCap : 0.f;
         keptOn_ = count_.liftOn() && c.kept && def_.keptLead != kNoFighter;
         kept_ = 0;
+        keptDown_ = false;
         {
             const PlaceTuning pt = validPlaceTuning(def_.places) ? def_.places : PlaceTuning{};
             const int cap = pt.baseCarry + pt.perPlace * (c.kept ? def_.keptNamed : 0);
@@ -410,7 +413,7 @@ public:
 
     // A blow by `striker`, judged on the count before its damage; an OnCount (or Lift) blow is a shared blow at once.
     CountHit judgeBlow(FighterId striker) {
-        if (keptOn_) count_.setLoad(def_.keptLead, kept_);
+        if (keptOn_) count_.setLoad(def_.keptLead, keptDown_ ? 0 : kept_);
         const CountHit h = count_.judgeBlow(striker, now_);
         takeJoin();
         if (sharedBlow(h)) shareBlow();
@@ -421,7 +424,7 @@ public:
     void setLoad(FighterId f, int load) {
         if (keptOn_ && f == def_.keptLead) {
             kept_ = load < 0 ? 0 : (load > keptCap_ ? keptCap_ : load);
-            count_.setLoad(f, kept_);
+            count_.setLoad(f, keptDown_ ? 0 : kept_);
             return;
         }
         count_.setLoad(f, load);
@@ -436,6 +439,13 @@ public:
     int keptCap() const { return keptOn_ ? keptCap_ : 0; }
     // The kept lead parried (blocked) a blow of `damage`: it stores damage x keptParryShare (keptBlockShare), rounded,
     // up to its cap. Returns what it stored (0 with no kept gauge).
+    // The kept lead is down (true) or up again: down, its Load stays where it was but is neither stored, spent nor
+    // counted toward a Lift.
+    void setKeptDown(bool down) {
+        keptDown_ = down;
+        if (keptOn_) count_.setLoad(def_.keptLead, down ? 0 : kept_);
+    }
+    bool keptDown() const { return keptDown_; }
     int keptParried(int damage) { return keptStore(damage, def_.keptParryShare, CountLoadKind::ParryStore); }
     int keptBlocked(int damage) { return keptStore(damage, def_.keptBlockShare, CountLoadKind::BlockStore); }
     // Marks enemy slot `enemy`: its next joined window's blows take x (1 + bonus), bonus clamped to
@@ -573,6 +583,7 @@ private:
         for (const FighterId f : {j.first, j.second}) {
             if (!isLead(f) || !count_.hasGauge(f)) continue;
             const bool kept = keepsLoad(f);
+            if (kept && keptDown_) continue;
             if (j.lift) {
                 const int held = count_.loadOf(f);
                 const int spend = l.liftCost < held ? l.liftCost : held;
@@ -596,7 +607,7 @@ private:
         }
     }
     int keptStore(int damage, float share, CountLoadKind kind) {
-        if (!keptOn_ || damage <= 0) return 0;
+        if (!keptOn_ || keptDown_ || damage <= 0) return 0;
         const double raw = std::round(static_cast<double>(damage) * static_cast<double>(share));
         const int room = keptCap_ - kept_;
         if (room <= 0 || !(raw > 0.0)) return 0;
@@ -639,6 +650,7 @@ private:
     std::array<EnemyMark, kMaxMarkedEnemies> marks_{};
     bool keptOn_ = false;
     int kept_ = 0;
+    bool keptDown_ = false;
     int keptCap_ = 0;
     float blowCap_ = 0.f;
     // The empty buffers a tick points at before the first tick and when there is no boss script.
