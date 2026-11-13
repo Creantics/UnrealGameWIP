@@ -504,6 +504,18 @@ private:
 	float WaterClimbTime = 0.f;
 	FVector WaterClimbFrom = FVector::ZeroVector;
 	FVector WaterClimbTo = FVector::ZeroVector;
+	// What the lead does to the water and the water to it (UFTWaterSubsystem::LeadWater, each tick): splash, rings,
+	// wake, drips, and its wetness on its materials. The four scalar parameters Wetness (0..1), WetLineZ (world cm),
+	// WetLineSoft (cm) and WetDrip (0..1) are set on dynamic instances of the materials of its skeletal meshes, made
+	// once the first time it is wet; a material that has no such parameter ignores them.
+	void StirWater(float DeltaSeconds);
+	void ShowWetness(const ftcore::WaterWetness& Wet);
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetMaterials;
+	bool bWetMaterialsMade = false;
+	float WetShown = 0.f;
+	float WetLineShown = 0.f;
+	float WetDripShown = 0.f;
 	// A scripted walk for captures and checks (BeginLeadGo, or -LeadGo=<x,y> in the plan frame of -WorldEyeSide after
 	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it presses jump (with -LeadGoJump); the run
 	// quits -LeadGoQuit=<s> after it began.
@@ -518,6 +530,7 @@ private:
 public:
 	// The lead walks at a point (cm) from now on.
 	void BeginLeadGo(const FVector& To, bool bJumpWhenHeld);
+	void EndLeadGo() { bLeadGo = false; }
 	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
 	bool IsSwimming() const { return bSwimming; }
 };

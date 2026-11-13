@@ -27,11 +27,17 @@
 //   band and a line of growth at the waterline on the others.
 // Every file is replaced, and nothing is saved if a material doesn't compile. See docs/PHOTOREAL_LOOK.md.
 // - M_Look_Underwater: the view from under a water surface, a post-process the water subsystem switches on while the
-//   view's eye is in a body of water: it cuts at the waterline per pixel, fogs and tints what is seen through the water
-//   by the look's absorption and scattering, dims with the eye's depth, wobbles a little, and shows the surface from
-//   below as a bright window overhead with a mirror beyond the critical angle.
-// -Canal builds the two canal materials alone on the collection as it stands, and saves nothing else; -Underwater
-// likewise the underwater view.
+//   view's eye is in a body of water: it cuts at the waterline per pixel with a meniscus, takes what is seen through
+//   the water toward the water's own colour by its kind (darker and bluer with depth and distance), dims with the
+//   eye's depth, wobbles a little, lays the sun's caustics on what is under water, stands shafts of light and drifting
+//   specks in it, and shows the surface from below as a bright window overhead and, beyond the critical angle, a
+//   mirror of what is under water.
+// - MPC_Water (FTScene::LookWaterCollection): what stirs the water, written each frame by the water subsystem: eight
+//   rings, the lead's place and wake, the sun's way under water; and the strengths of the rings, the wake and the
+//   waterline. M_Look_Water, M_Look_CanalWater and M_Look_Underwater read it, so every water plane shows the lead's
+//   rings, wake and waterline with nothing set per plane.
+// -Canal builds the two canal materials alone on the collections as they stand, and saves nothing else; -Underwater
+// likewise the underwater view; -Water the water collection and the three materials that read it.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

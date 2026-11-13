@@ -2823,6 +2823,7 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			Move->SetMovementMode(MOVE_Walking);
 			UE_LOG(LogForgottenThird, Display, TEXT("Water: climbed out onto (%.0f, %.0f, %.0f) cm."), At.X, At.Y, At.Z);
 		}
+		StirWater(DeltaSeconds);
 		return;
 	}
 	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
@@ -2913,6 +2914,97 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			AddActorWorldOffset(Push, true);
 		}
 	}
+	StirWater(DeltaSeconds);
+}
+
+void AFTExploreCharacter::StirWater(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (!System || !System->HasBodies())
+	{
+		return;
+	}
+	// As the surfaces see it now: during the climb out the state is the one it began with, the feet rising out of it.
+	const FVector At = GetActorLocation();
+	const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	ftcore::WaterState State = WaterNow;
+	if (State.mode != ftcore::WaterMode::Dry)
+	{
+		State.immersion = FMath::Max(State.surface - static_cast<float>((At.Z - Half) * 0.01), 0.f);
+		if (State.immersion <= 0.f)
+		{
+			State.mode = ftcore::WaterMode::Dry;
+		}
+	}
+	System->LeadWater(*this, State, At, GetVelocity(), 2.f * Half, DeltaSeconds);
+	ShowWetness(System->LeadWetness());
+}
+
+void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
+{
+	if (!(Wet.wetness > 0.f) && !(WetShown > 0.f))
+	{
+		return;
+	}
+	if (!bWetMaterialsMade)
+	{
+		// Once: a dynamic instance of every material on the lead's skeletal meshes (body, head, clothes).
+		bWetMaterialsMade = true;
+		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+		for (USkeletalMeshComponent* Part : Meshes)
+		{
+			const int32 Count = Part ? Part->GetNumMaterials() : 0;
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				if (!Part->GetMaterial(Index))
+				{
+					continue;
+				}
+				if (UMaterialInstanceDynamic* Dynamic = Part->CreateAndSetMaterialInstanceDynamic(Index))
+				{
+					Dynamic->SetScalarParameterValue(TEXT("WetLineSoft"), 8.f);
+					WetMaterials.Add(Dynamic);
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: wetness goes to %d dynamic materials on %d skeletal meshes (Wetness, WetLineZ, WetLineSoft, WetDrip)."),
+			WetMaterials.Num(), Meshes.Num());
+	}
+	// The line is kept over the feet, so it travels with the body; it is written when it has moved a centimetre.
+	const float LineZ = static_cast<float>(GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight()) + Wet.line * 100.f;
+	const bool bWet = FMath::Abs(Wet.wetness - WetShown) > 0.004f || (Wet.wetness <= 0.f && WetShown > 0.f);
+	const bool bLine = FMath::Abs(LineZ - WetLineShown) > 1.f;
+	const bool bDrip = FMath::Abs(Wet.drip - WetDripShown) > 0.02f || (Wet.drip <= 0.f && WetDripShown > 0.f);
+	if (!bWet && !bLine && !bDrip)
+	{
+		return;
+	}
+	static const FName WetnessName(TEXT("Wetness"));
+	static const FName LineName(TEXT("WetLineZ"));
+	static const FName DripName(TEXT("WetDrip"));
+	for (UMaterialInstanceDynamic* Dynamic : WetMaterials)
+	{
+		if (!Dynamic)
+		{
+			continue;
+		}
+		if (bWet)
+		{
+			Dynamic->SetScalarParameterValue(WetnessName, Wet.wetness);
+		}
+		if (bLine)
+		{
+			Dynamic->SetScalarParameterValue(LineName, LineZ);
+		}
+		if (bDrip)
+		{
+			Dynamic->SetScalarParameterValue(DripName, Wet.drip);
+		}
+	}
+	WetShown = bWet ? Wet.wetness : WetShown;
+	WetLineShown = bLine ? LineZ : WetLineShown;
+	WetDripShown = bDrip ? Wet.drip : WetDripShown;
 }
 
 bool AFTExploreCharacter::TryWaterClimb()

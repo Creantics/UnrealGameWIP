@@ -96,8 +96,89 @@ float2 G = Waves.Slope(Q + T * float2(-0.035, 0.083));
 float2 GradB = 0.035 * float2(CosB * G.x - SinB * G.y, SinB * G.x + CosB * G.y);
 float Deep = saturate(max(BehindDepth - EyeDepth, 0.0) / 40.0);
 float2 Grad = (GradA + GradB) * max(WaveStrength, 0.0) * lerp(0.35, 1.0, Deep);
-RoughOut = saturate(lerp(max(Rough, 0.18), Rough, Deep));
+FLookWaves W;
+//REACT
+Grad += ReactGrad;
+float Foam = saturate(ReactFoam);
+RoughOut = saturate(lerp(lerp(max(Rough, 0.18), Rough, Deep), 0.55, Foam));
+FoamOut = saturate(Foam + ReactDark * (1.0 - Foam));
+TopOut = lerp(FoamColor.rgb, float3(0.012, 0.016, 0.018), saturate(ReactDark * (1.0 - Foam) / max(FoamOut, 1e-3)));
 return normalize(float3(-Grad.x, -Grad.y, 1.0));
+)HLSL");
+
+// What the lead does to a water surface, put into a surface's code where it says //REACT (P the world place in cm, W
+// the noise, Time, EyeDepth and BehindDepth as the surface has them). Out of it: ReactGrad, a slope to add; ReactFoam,
+// foam to add; ReactDark, how much the water is darkened. Its inputs are the water collection's (BuildWaterCollection):
+//  - Ring0..Ring7: a ring each (place xy in cm, radius in cm, amplitude; ftcore::WaterRipples). A ring is a short train
+//    of ripples on its front, the front widening as it travels, a fainter train behind it, and flecks of foam on it.
+//  - Lead: where the lead stands in the water (xy in cm; z its half width at the surface in cm, 0 out of the water).
+//    The waterline on the body: foam where the surface meets what stands in it (the depth behind it less than a
+//    hand's width along the view), a churned ring close around it, and the water darker just beyond.
+//  - Wake: the way the lead moves (xy), its speed (z, cm a second) and how much wake it draws (w, 0..1): two arms
+//    behind it at the angle a hull's make (about 20 degrees each side), each a crest and a fainter one inside it,
+//    short waves across between them, and a trail of foam down the middle, for as far as 2.8 s of travel.
+const TCHAR* const kWaterReactCode = TEXT(R"HLSL(float2 ReactGrad = 0.0;
+float ReactFoam = 0.0;
+float ReactDark = 0.0;
+{
+	float4 ReactRings[8] = {Ring0, Ring1, Ring2, Ring3, Ring4, Ring5, Ring6, Ring7};
+	for (int RingI = 0; RingI < 8; ++RingI)
+	{
+		if (ReactRings[RingI].w <= 0.0)
+		{
+			continue;
+		}
+		float2 RingRel = P - ReactRings[RingI].xy;
+		float RingDst = max(length(RingRel), 1.0);
+		float RingWide = 7.0 + 0.045 * ReactRings[RingI].z;
+		float RingX = RingDst - ReactRings[RingI].z;
+		float RingLag = RingX + 2.6 * RingWide;
+		float RingEnv = exp(-RingX * RingX / (RingWide * RingWide)) + 0.4 * step(RingX, 0.0) * exp(-RingLag * RingLag / (5.0 * RingWide * RingWide));
+		float RingAmp = ReactRings[RingI].w / (1.0 + ReactRings[RingI].z / 180.0);
+		ReactGrad += (RingRel / RingDst) * (RingAmp * RingEnv * sin(RingX * 2.4 / RingWide));
+		float RingFront = RingX - 0.3 * RingWide;
+		ReactFoam += RingAmp * exp(-RingFront * RingFront / (0.4 * RingWide * RingWide));
+	}
+	ReactGrad *= RingSlope;
+	float Fleck = W.Noise(P / 2.6 + Time * float2(0.6, -0.4));
+	float Clump = W.Noise(P / 9.0 - Time * float2(0.2, 0.3));
+	ReactFoam *= RingFoam * smoothstep(0.25, 0.75, Fleck);
+	float Wading = step(1.0, Lead.z);
+	float2 LeadRel = P - Lead.xy;
+	float LeadDst = length(LeadRel);
+	float LeadClose = Wading * (1.0 - smoothstep(Lead.z * 2.0, Lead.z * 4.5, LeadDst));
+	float LeadGap = max(BehindDepth - EyeDepth, 0.0);
+	float LeadTouch = LeadClose * (1.0 - smoothstep(2.0, 11.0, LeadGap));
+	float LeadOff = LeadDst - Lead.z;
+	float LeadRing = Wading * exp(-LeadOff * LeadOff / max(0.18 * Lead.z * Lead.z, 1.0));
+	ReactFoam += ContactFoam * (LeadTouch * lerp(0.5, 1.0, Fleck) + 0.55 * LeadRing * smoothstep(0.35, 0.8, Clump));
+	ReactDark = ContactDark * Wading * (1.0 - smoothstep(Lead.z * 1.1, Lead.z * 2.6, LeadDst));
+	if (Wake.w > 0.002 && Wading > 0.0)
+	{
+		float2 WakeDir = normalize(Wake.xy + float2(1e-5, 0.0));
+		float2 WakeSide = float2(-WakeDir.y, WakeDir.x);
+		float WakeBack = -dot(LeadRel, WakeDir);
+		float WakeOff = dot(LeadRel, WakeSide);
+		float WakeLen = max(2.8 * Wake.z, 90.0);
+		float WakeTail = saturate(1.0 - WakeBack / WakeLen) * smoothstep(-30.0, 10.0, WakeBack);
+		const float TanK = 0.36;
+		float Arm = abs(WakeOff) - (WakeBack + 25.0) * TanK;
+		float ArmW = 6.0 + 0.045 * max(WakeBack, 0.0);
+		float ArmEnv = exp(-Arm * Arm / (ArmW * ArmW));
+		float2 ArmN = normalize((WakeOff >= 0.0 ? WakeSide : -WakeSide) + TanK * WakeDir);
+		float Feather = lerp(0.55, 1.0, W.Noise(float2(WakeBack / 14.0, WakeOff / 30.0) + Time * 0.3));
+		float Push = WakeSlope * Wake.w * WakeTail;
+		ReactGrad += ArmN * (Push * Feather * ArmEnv * sin(Arm * 2.6 / ArmW));
+		float Arm2 = Arm + 3.2 * ArmW;
+		ReactGrad += ArmN * (0.5 * Push * exp(-Arm2 * Arm2 / (ArmW * ArmW)) * sin(Arm2 * 2.6 / ArmW));
+		float Between = 1.0 - smoothstep(-ArmW, ArmW, Arm);
+		float Cross = max(0.42 * Wake.z, 16.0);
+		ReactGrad -= WakeDir * (0.4 * Push * Between * sin(WakeBack * 6.2832 / Cross) * smoothstep(0.0, 40.0, WakeBack));
+		float TrailW = 12.0 + 0.1 * max(WakeBack, 0.0);
+		float Trail = exp(-WakeOff * WakeOff / (TrailW * TrailW)) * WakeTail * smoothstep(0.0, 25.0, WakeBack);
+		ReactFoam += WakeFoam * Wake.w * (Trail * smoothstep(0.3, 0.75, Fleck) + 0.7 * ArmEnv * WakeTail * smoothstep(0.4, 0.8, Fleck));
+	}
+}
 )HLSL");
 
 // The water's medium: the look's coefficients are per metre, the engine's per centimetre.
@@ -189,8 +270,15 @@ Grad *= max(WaveStrength, 0.0) * RippleStrength * lerp(0.4, 1.0, Deep) * lerp(0.
 // A slow broad swell under the ripples, drifting: the surface is never a flat sheet.
 float2 SwellAt = P / 380.0 + Time * float2(0.05, -0.03);
 Grad += 0.02 * max(WaveStrength, 0.0) * float2(cos(SwellAt.x + 1.7 * sin(SwellAt.y)), 0.8 * cos(1.3 * SwellAt.y + 1.1 * sin(0.7 * SwellAt.x)));
+// What the lead does to it: rings, the waterline on the body, the wake (kWaterReactCode). Its foam is paler than the scum.
+//REACT
+Grad += ReactGrad;
+float Froth = saturate(ReactFoam);
+Foam = saturate(Foam + Froth);
 RoughOut = saturate(lerp(max(Rough, 0.02), 0.55, Foam));
-FoamOut = Foam;
+FoamOut = saturate(Foam + ReactDark * (1.0 - Foam));
+float3 Top = lerp(FoamColor.rgb, float3(0.62, 0.64, 0.6), saturate(Froth / max(Foam, 1e-3)));
+TopOut = lerp(Top, float3(0.012, 0.016, 0.012), saturate(ReactDark * (1.0 - Foam) / max(FoamOut, 1e-3)));
 return normalize(float3(-Grad.x, -Grad.y, 1.0));
 )HLSL");
 
@@ -259,6 +347,14 @@ void AddInput(UMaterialExpressionCustom* Custom, FName Name, UMaterialExpression
 	In.Input.Connect(0, From);
 }
 
+// The same from one of `From`'s further outputs (a custom node's additional outputs follow its return value).
+void AddInputAt(UMaterialExpressionCustom* Custom, FName Name, UMaterialExpression* From, int32 Output)
+{
+	FCustomInput& In = Custom->Inputs.AddDefaulted_GetRef();
+	In.InputName = Name;
+	In.Input.Connect(Output, From);
+}
+
 void AddOutput(UMaterialExpressionCustom* Custom, FName Name, ECustomMaterialOutputType Type)
 {
 	FCustomOutput& Out = Custom->AdditionalOutputs.AddDefaulted_GetRef();
@@ -310,52 +406,220 @@ UMaterialExpressionTextureObjectParameter* AddTexture(UMaterial* Material, FName
 // One of the look collection's parameters.
 
 // The view from under a water surface (BuildUnderwater), a post-process. Per pixel: the point where its ray crosses
-// the near plane is under the surface (WaterZ, world cm) or not, so a half-sunk view cuts at the waterline. Under it,
-// the scene is seen through the water the ray crosses (to what it meets, or to the surface): the look's absorption
-// and scattering per metre (times Clarity) take it toward the water's own colour, lit by what light the frame has
-// (four taps of it: their mean and their brightest, half each) less what the water above the eye has taken. A ray that leaves through the surface sees the world
-// above through a bright window (refracted, bent by the ripples) inside the critical angle, and a mirror of the
-// water's own colour past it.
+// the near plane is under the surface (WaterZ, world cm) or not, so a half-sunk view cuts at the waterline: there a
+// thin band of the view is smeared (the meniscus), with a bright lip over the line and a dark one under it. Under it,
+// the scene is seen through the water the ray crosses (to what it meets, or to the surface):
+//  - The water has its own colour by its kind (Tint near the surface, DeepTint far down) and takes Extinct of red,
+//    green and blue a metre, so what is far goes to the water's colour and what is deep goes darker and bluer. Its
+//    light is what the frame has (four taps: their mean and their brightest, half each).
+//  - What is under water carries the sun's net of bright lines (caustics), cast along the sun's way under water
+//    (the water collection's Sun), strongest a little under the surface and fading with depth.
+//  - Shafts of that light stand in the water along the same way, drifting slowly (twelve steps along the ray).
+//  - Specks drift in it: one in some cells of a 14 cm grid fixed in the world, so they slide past as the eye moves.
+//  - A ray that leaves through the surface sees the world above through a bright window (bent by the ripples and the
+//    lead's rings) inside the critical angle. Past it the surface is a mirror of what is under water: the ray is
+//    turned back down at the surface and followed in the frame's own depth until it meets the bed, a wall or a body
+//    (kUnderMirrorUvCode); where the frame has nothing for it, the water's own colour. What stands in the surface
+//    close behind it (a body, a wall) is not mirrored away: it is seen through, bent at the line (kUnderPierceUvCode).
 const TCHAR* const kUnderRippleCode = TEXT(R"HLSL(float3 V = WorldPos - CamPos;
 float Dist = max(length(V), 1.0);
 float3 D = V / Dist;
 float T = (D.z > 1e-4 && CamPos.z < WaterZ) ? (WaterZ - CamPos.z) / D.z : 0.0;
-float2 H = (CamPos + D * T).xy * 0.01;
+float2 Hc = (CamPos + D * T).xy;
+float2 H = Hc * 0.01;
 float2 G = float2(cos(H.x * 9.1 + H.y * 2.3 + Time * 1.6), cos(H.y * 7.7 - H.x * 1.9 - Time * 1.4)) * 0.35;
 G += float2(cos(H.x * 21.7 - H.y * 12.1 + Time * 2.6), cos(H.y * 24.3 + H.x * 9.7 + Time * 2.2)) * 0.35;
 G += float2(cos(H.x * 47.0 + H.y * 35.0 - Time * 3.6), cos(H.y * 53.0 - H.x * 29.0 + Time * 3.1)) * 0.3;
 G *= Strength / (1.0 + T * 0.0015);
+float4 Rings[8] = {Ring0, Ring1, Ring2, Ring3, Ring4, Ring5, Ring6, Ring7};
+float2 RingG = 0.0;
+for (int R = 0; R < 8; ++R)
+{
+	float2 Rel = Hc - Rings[R].xy;
+	float Dst = max(length(Rel), 1.0);
+	float Wide = 7.0 + 0.045 * Rings[R].z;
+	float X = Dst - Rings[R].z;
+	RingG += (Rel / Dst) * (Rings[R].w / (1.0 + Rings[R].z / 180.0) * exp(-X * X / (Wide * Wide)) * sin(X * 2.4 / Wide));
+}
+G += RingG * RingUnder * step(1e-3, T);
 return float3(G, T);)HLSL");
 
-const TCHAR* const kUnderRefractUvCode = TEXT(R"HLSL(return clamp(UV + Ripple.xy * 0.22, 0.002, 0.998);)HLSL");
+// Where the window's sample is taken (viewport UV), and PierceOut: how much what the ray meets stands in the surface:
+// close behind it along the ray (1 within PierceNear cm of the surface, 0 from PierceFar), or the lead's own body where
+// it stands in the water (the water collection's Lead), whole. Such a thing is not mirrored away; it is seen through
+// the surface with its first hand's breadths over the line drawn out (by Bend at the line, easing to nothing over
+// BendFade cm), so its outline breaks at the line as a straw's does in a glass.
+const TCHAR* const kUnderPierceUvCode = TEXT(R"HLSL(float3 V = WorldPos - CamPos;
+float Dist = max(length(V), 1.0);
+float T = Ripple.z;
+float2 Out = UV;
+PierceOut = 0.0;
+if (T > 0.0 && Dist > T)
+{
+	PierceOut = 1.0 - smoothstep(PierceNear, max(PierceFar, PierceNear + 1.0), Dist - T);
+	PierceOut = max(PierceOut, step(1.0, Lead.z) * (1.0 - smoothstep(60.0, 110.0, length(WorldPos.xy - Lead.xy))));
+	float Over = max(WorldPos.z - WaterZ, 0.0);
+	float3 S = WorldPos;
+	S.z = WaterZ + Over * (1.0 - PierceOut * (1.0 - 1.0 / max(Bend, 1.0)) * exp(-Over / max(BendFade, 1.0)));
+	float4 Clip = mul(float4(S - CamPos + ResolvedView.TranslatedWorldCameraOrigin, 1.0), ResolvedView.TranslatedWorldToClip);
+	// The ripples bend the window's view; a body that stands in the surface is kept whole, so they move it far less.
+	Out = Clip.xy / max(Clip.w, 1.0) * float2(0.5, -0.5) + 0.5 + Ripple.xy * (0.22 * lerp(1.0, PierceRipple, PierceOut));
+}
+return clamp(Out, 0.002, 0.998);)HLSL");
+
+// The mirror past the critical angle: the ray turned back down at the surface (its normal bent by the ripples) and
+// followed through the frame's own depth, fourteen steps to a little past the bed (BedZ, world cm; no further than
+// MirrorReach cm), then five halvings onto what it went behind. Out: the viewport UV of that point; HitOut, 1 where something
+// was met (fading at the frame's edge); PathOut, the metres of water from the surface to it.
+const TCHAR* const kUnderMirrorUvCode = TEXT(R"HLSL(float3 V = WorldPos - CamPos;
+float Dist = max(length(V), 1.0);
+float3 D = V / Dist;
+float T = Ripple.z;
+HitOut = 0.0;
+PathOut = 0.0;
+float2 Out = UV;
+if (T > 0.0 && Dist > T)
+{
+	float3 H = CamPos + D * T;
+	float3 N = normalize(float3(-Ripple.xy * 0.6, 1.0));
+	float3 R = D - 2.0 * dot(D, N) * N;
+	R.z = min(R.z, -0.03);
+	R = normalize(R);
+	float Reach = min(max(H.z - BedZ, 10.0) / (-R.z) * 1.08, MirrorReach);
+	float3 Org = ResolvedView.TranslatedWorldCameraOrigin - CamPos;
+	float Found = -1.0;
+	float Before = 0.0;
+	float Prev = 0.0;
+	for (int I = 1; I <= 14; ++I)
+	{
+		float S = Reach * I / 14.0;
+		float4 Clip = mul(float4(H + R * S + Org, 1.0), ResolvedView.TranslatedWorldToClip);
+		float2 Uv = Clip.xy / max(Clip.w, 1.0) * float2(0.5, -0.5) + 0.5;
+		float Scene = CalcSceneDepth(ViewportUVToBufferUV(saturate(Uv)));
+		bool On = Uv.x > 0.003 && Uv.x < 0.997 && Uv.y > 0.003 && Uv.y < 0.997 && Clip.w > 1.0;
+		if (Found < 0.0 && On && Scene < Clip.w - 3.0)
+		{
+			Found = S;
+			Before = Prev;
+		}
+		Prev = S;
+	}
+	if (Found > 0.0)
+	{
+		float A = Before;
+		float B = Found;
+		for (int J = 0; J < 5; ++J)
+		{
+			float M = 0.5 * (A + B);
+			float4 ClipM = mul(float4(H + R * M + Org, 1.0), ResolvedView.TranslatedWorldToClip);
+			float2 UvM = ClipM.xy / max(ClipM.w, 1.0) * float2(0.5, -0.5) + 0.5;
+			float SceneM = CalcSceneDepth(ViewportUVToBufferUV(saturate(UvM)));
+			if (SceneM < ClipM.w - 3.0)
+			{
+				B = M;
+			}
+			else
+			{
+				A = M;
+			}
+		}
+		float4 ClipB = mul(float4(H + R * B + Org, 1.0), ResolvedView.TranslatedWorldToClip);
+		Out = ClipB.xy / max(ClipB.w, 1.0) * float2(0.5, -0.5) + 0.5;
+		// Met, if the frame's depth there is the ray's own (within MirrorThick cm and 3% of it); else the ray only went
+		// behind something nearer, and the frame does not hold what it meets.
+		float Miss = abs(ClipB.w - CalcSceneDepth(ViewportUVToBufferUV(saturate(Out))));
+		float Slack = MirrorThick + 0.03 * ClipB.w;
+		float2 Edge = min(Out, 1.0 - Out);
+		HitOut = saturate(min(Edge.x, Edge.y) / 0.04) * (1.0 - smoothstep(Slack, 2.0 * Slack, Miss));
+		PathOut = B * 0.01;
+	}
+}
+return clamp(Out, 0.002, 0.998);)HLSL");
 
 const TCHAR* const kUnderWobbleUvCode = TEXT(R"HLSL(float2 W = float2(sin(UV.y * 38.0 + Time * 1.9), cos(UV.x * 31.0 + Time * 1.5));
 return clamp(UV + W * Wobble, 0.002, 0.998);)HLSL");
 
-const TCHAR* const kUnderwaterCode = TEXT(R"HLSL(float3 V = WorldPos - CamPos;
+const TCHAR* const kUnderwaterCode = TEXT(R"HLSL(struct FLookUnder
+{
+	float Hash(float3 P)
+	{
+		int3 I = int3(floor(P));
+		uint H = (uint(I.x) * 73856093u) ^ (uint(I.y) * 19349663u) ^ (uint(I.z) * 83492791u);
+		H ^= H >> 13;
+		H *= 1274126177u;
+		H ^= H >> 16;
+		return float(H & 0xFFFFu) / 65535.0;
+	}
+	// The sun's light gathered by the ripples into a net of bright lines: three sizes of a warped grid's lines, each
+	// drifting. About 0.3 on average, 1 and more on a line.
+	float Net(float2 P, float T)
+	{
+		float Sum = 0.0;
+		float Amp = 1.0;
+		float2 Q = P;
+		for (int K = 0; K < 3; ++K)
+		{
+			Q += 0.4 * float2(sin(Q.y * 1.7 + T * 0.9 + K * 1.3), cos(Q.x * 1.9 - T * 0.8 + K * 2.1));
+			float L = sin(Q.x * 2.3 + 1.1 * sin(Q.y * 1.3 + T * 0.6)) * sin(Q.y * 2.1 - 1.1 * sin(Q.x * 1.1 - T * 0.7));
+			float Ridge = 1.0 - abs(L);
+			Ridge *= Ridge;
+			Ridge *= Ridge;
+			Sum += Amp * Ridge * Ridge;
+			Q = float2(0.8 * Q.x - 0.6 * Q.y, 0.6 * Q.x + 0.8 * Q.y) * 1.73 + 3.1;
+			Amp *= 0.6;
+		}
+		return Sum;
+	}
+	// Where the surface lets more light down and where less: broad soft patches, drifting slowly.
+	float Beam(float2 P, float T)
+	{
+		float A = sin(P.x * 1.9 + 0.31 * T + 1.7 * sin(P.y * 1.1 - 0.23 * T));
+		float B = sin(P.y * 2.3 - 0.27 * T + 1.5 * sin(P.x * 1.3 + 0.19 * T));
+		float C = sin((P.x + P.y) * 4.3 + 0.4 * T + 1.2 * sin(P.x * 2.7 - P.y * 1.9));
+		float S = saturate(0.5 + 0.24 * (A + B) + 0.13 * C);
+		S *= S;
+		return S * S * 2.5;
+	}
+};
+FLookUnder U;
+float3 V = WorldPos - CamPos;
 float Dist = max(length(V), 1.0);
 float3 D = V / Dist;
 float CosF = max(dot(D, ResolvedView.ViewForward), 0.05);
 float3 P0 = CamPos + D * (ResolvedView.NearPlane / CosF);
 float Below = WaterZ - P0.z + 0.1 * sin(dot(P0.xy, float2(0.83, 0.61)) + Time * 2.3) + 0.05 * sin(dot(P0.xy, float2(-1.9, 2.3)) - Time * 3.1);
+float3 Smear = 0.2 * (Scene.rgb + Up1.rgb + Up2.rgb + Dn1.rgb + Dn2.rgb);
+float Band = (1.0 - smoothstep(0.0, max(MeniscusCm, 0.01), abs(Below))) * saturate(Meniscus);
 if (Below <= 0.0)
 {
-	return Scene.rgb;
+	float Lip = exp(-(Below + 0.045) * (Below + 0.045) / 0.0009);
+	return lerp(Scene.rgb, Smear, Band) * (1.0 + 0.35 * Lip * saturate(Meniscus));
 }
 float3 Col = lerp(Scene.rgb, Wobbled.rgb, saturate(Below / 1.5));
 float TExit = (D.z > 1e-4 && CamPos.z < WaterZ) ? (WaterZ - CamPos.z) / D.z : 1e12;
-float Len = min(Dist, TExit) * 0.01;
-float3 A = max(Absorb.rgb, 0.0);
-float3 S = max(Scatter.rgb, 0.0);
+float Far = min(Dist, TExit);
+float Len = Far * 0.01;
 float CamDepth = max(WaterZ - CamPos.z, 0.0) * 0.01;
 float3 Lw = float3(0.3, 0.59, 0.11);
 float4 Taps = float4(dot(Tap0.rgb, Lw), dot(Tap1.rgb, Lw), dot(Tap2.rgb, Lw), dot(Tap3.rgb, Lw));
 float Lum = 0.5 * dot(Taps, 0.25) + 0.5 * max(max(Taps.x, Taps.y), max(Taps.z, Taps.w));
-float3 Albedo = S / max(A + S, 1e-4);
-Albedo /= max(max(Albedo.r, Albedo.g), max(Albedo.b, 1e-4));
-Albedo = lerp(Albedo, dot(Albedo, float3(0.3, 0.59, 0.11)), 0.2);
-float3 Down = exp(-A * Clarity * 0.5 * CamDepth);
-float3 Fog = Albedo * Lum * FogGain * Down * lerp(0.7, 1.3, saturate(D.z * 0.5 + 0.5));
+float3 SunW = normalize(Sun.xyz + float3(0.0, 0.0, 1e-3));
+float SunOn = saturate(Sun.w);
+float SunZ = max(SunW.z, 0.3);
+float3 Ext = max(Extinct.rgb, 1e-3);
+if (Dist <= TExit)
+{
+	float Sunk = max(WaterZ - WorldPos.z, 0.0);
+	float2 Lit = (WorldPos.xy + SunW.xy * (Sunk / SunZ)) * 0.01;
+	float Focus = saturate(Sunk / 12.0) * exp(-CausticFade * Sunk * 0.01);
+	Col *= max(1.0 + CausticGain * SunOn * Focus * (U.Net(Lit * CausticScale, Time) - 0.3), 0.4);
+}
+float ExtMean = dot(Ext, 0.3333);
+// The water's own light comes from about as far along the ray as the water lets the eye see, at the depth it has there.
+float SeenFar = (1.0 - exp(-ExtMean * Len)) / ExtMean;
+float Mid = clamp(CamDepth - D.z * SeenFar * 0.6, 0.0, 60.0);
+float3 Water = lerp(Tint.rgb, DeepTint.rgb, 1.0 - exp(-Mid * DeepRate)) * exp(-Mid * DeepDark);
+float3 Fog = Water * Lum * FogGain * lerp(0.75, 1.25, saturate(D.z * 0.5 + 0.5));
 if (Dist > TExit)
 {
 	float3 N = normalize(float3(-Ripple.xy, 1.0));
@@ -367,17 +631,67 @@ if (Dist > TExit)
 		float CosT = sqrt(1.0 - Sin2T);
 		Fres = max(0.02 + 0.98 * pow(1.0 - CosT, 5.0), smoothstep(0.8, 1.0, Sin2T));
 	}
+	Fres *= 1.0 - saturate(Pierce);
 	float Glint = Ripple.x + Ripple.y;
-	float3 Mirror = Fog * (0.6 + 3.0 * abs(Ripple.x - Ripple.y) + 1.5 * max(Glint, 0.0));
+	float3 Shine = Fog * (0.6 + 3.0 * abs(Ripple.x - Ripple.y) + 1.5 * max(Glint, 0.0));
+	// Where the frame does not hold what the mirror shows, a bed is supposed at BedZ, lit by the same net and seen
+	// through the water the turned ray crosses, so the mirror is never one flat colour over a shallow bed.
+	float3 Turned = D - 2.0 * dot(D, N) * N;
+	float Down = max(WaterZ - BedZ, 20.0) / max(-Turned.z, 0.05);
+	float2 BedAt = ((CamPos + D * TExit).xy + Turned.xy * Down + SunW.xy * (max(WaterZ - BedZ, 0.0) / SunZ)) * 0.01;
+	Shine *= 1.0 + 1.6 * exp(-ExtMean * Down * 0.01) * (U.Net(BedAt * CausticScale, Time) - 0.3);
+	float3 Kept = exp(-Ext * MirrorPath);
+	float3 Image = (Mirrored.rgb * Kept + Fog * (1.0 - Kept)) * MirrorGain * (0.85 + 0.6 * max(Glint, -0.2));
+	float3 Mirror = lerp(Shine, Image, saturate(MirrorHit));
 	float3 Window = Refracted.rgb * WindowGain * max(1.0 + 1.4 * Glint, 0.45);
 	Col = lerp(Window, Mirror, Fres);
 }
-float3 Through = exp(-(A + S) * Clarity * Len);
-Col = Col * Through + Fog * (1.0 - Through);
-Col *= lerp(1.0, 0.5, saturate(CamDepth / 8.0));
+// The shafts: the light's patches on the surface are drawn out three times along the sun's own heading, as the swell
+// that makes them is, so they stand as curtains seen along it and as slanted beams seen across it.
+float Shaft = 0.0;
+float Reach = min(Len, ShaftReach);
+float2 Heading = normalize(SunW.xy + float2(1e-4, 0.0));
+for (int I = 0; I < 12; ++I)
+{
+	float S = (I + 0.5) / 12.0 * Reach;
+	float3 Ps = CamPos + D * (S * 100.0);
+	float Sunk = WaterZ - Ps.z;
+	float2 Lit = (Ps.xy + SunW.xy * (max(Sunk, 0.0) / SunZ)) * 0.01;
+	float2 Drawn = float2(dot(Lit, Heading) * 0.33, Lit.x * Heading.y - Lit.y * Heading.x);
+	Shaft += step(0.0, Sunk) * U.Beam(Drawn * ShaftScale, Time) * exp(-ShaftFade * Sunk * 0.01 - ExtMean * S);
+}
+Shaft *= Reach / 12.0;
+float Toward = saturate(dot(D, SunW) * 0.5 + 0.5);
+float3 Shafts = lerp(Water, 1.0, 0.5) * (Lum * ShaftGain * SunOn * Shaft * lerp(0.4, 1.7, Toward * Toward));
+float3 Through = exp(-Ext * Len);
+Col = Col * Through + Fog * (1.0 - Through) + Shafts;
+float Motes = 0.0;
+float3 Drift = Time * float3(1.3, 0.8, -0.5);
+float3 Last = -1e9;
+for (int M = 0; M < 16; ++M)
+{
+	float Tm = 16.0 + 12.5 * M;
+	float3 Id = floor((CamPos + D * Tm + Drift) / 14.0);
+	if (Tm < Far && any(Id != Last))
+	{
+		float3 Rnd = float3(U.Hash(Id), U.Hash(Id + 17.0), U.Hash(Id + 41.0));
+		float3 Q = (Id + 0.15 + 0.7 * Rnd) * 14.0 - Drift + 0.7 * sin(Time * (0.4 + Rnd.yzx) + 6.2832 * Rnd.zxy);
+		float3 Tq = Q - CamPos;
+		float Along = dot(Tq, D);
+		float Off = length(Tq - D * Along);
+		float Rad = 0.07 + 0.12 * U.Hash(Id + 7.0);
+		float Blur = Rad + 0.0011 * Along + 0.45 * saturate(1.0 - Along / 45.0);
+		float Seen = step(0.45, U.Hash(Id + 29.0)) * step(8.0, Along) * step(Along, Far);
+		Motes += Seen * (1.0 - smoothstep(0.0, Blur, Off)) * (Rad * Rad / (Blur * Blur)) * exp(-Along / 170.0);
+	}
+	Last = Id;
+}
+Col += lerp(Water, 1.0, 0.6) * (Lum * MoteGain * Motes);
+Col *= lerp(1.0, 0.55, saturate(CamDepth / 8.0));
 Col *= 1.0 - 0.45 * (1.0 - saturate(Below / 0.3));
+Col = lerp(Col, 0.7 * Smear, 0.7 * Band);
+Col *= 1.0 - 0.55 * saturate(Meniscus) * exp(-Below * Below / 0.0006);
 return Col;)HLSL");
-
 UMaterialExpressionCollectionParameter* AddLook(UMaterial* Material, UMaterialParameterCollection* Collection, FName Name, int32 Y)
 {
 	UMaterialExpressionCollectionParameter* P = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
@@ -433,7 +747,69 @@ UMaterialParameterCollection* BuildCollection()
 	return Collection;
 }
 
-UMaterial* BuildWater(UMaterialParameterCollection* Look)
+// The water collection (FTScene::LookWaterCollection): what the water subsystem writes each frame for every water
+// surface and the underwater view to read, and the surfaces' own strengths (set by name with -WaterTune in a game run).
+// Each parameter's id comes from its name, so a rebuild changes no id.
+UMaterialParameterCollection* BuildWaterCollection()
+{
+	UPackage* Package = CreatePackage(FTScene::LookWaterCollection);
+	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
+		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
+	auto PutVector = [Collection](const FString& Name, const FLinearColor& Value)
+	{
+		FCollectionVectorParameter& P = Collection->VectorParameters.AddDefaulted_GetRef();
+		P.ParameterName = FName(*Name);
+		P.DefaultValue = Value;
+		P.Id = FGuid::NewDeterministicGuid(FString(TEXT("FTWater.")) + Name);
+	};
+	auto PutScalar = [Collection](const TCHAR* Name, float Value)
+	{
+		FCollectionScalarParameter& P = Collection->ScalarParameters.AddDefaulted_GetRef();
+		P.ParameterName = Name;
+		P.DefaultValue = Value;
+		P.Id = FGuid::NewDeterministicGuid(FString(TEXT("FTWater.")) + Name);
+	};
+	// A ring: place (xy, cm), radius (cm), amplitude. Lead: place (xy, cm), half width at the surface (cm; 0 out of the
+	// water). Wake: the way (xy), speed (cm a second), amount. Sun: the way to it under water (xyz), how much of it (w).
+	for (int32 I = 0; I < 8; ++I)
+	{
+		PutVector(FString::Printf(TEXT("Ring%d"), I), FLinearColor(0.f, 0.f, 0.f, 0.f));
+	}
+	PutVector(TEXT("Lead"), FLinearColor(0.f, 0.f, 0.f, 0.f));
+	PutVector(TEXT("Wake"), FLinearColor(1.f, 0.f, 0.f, 0.f));
+	PutVector(TEXT("Sun"), FLinearColor(0.f, 0.f, 1.f, 0.f));
+	PutScalar(TEXT("RingSlope"), 0.5f);
+	PutScalar(TEXT("RingFoam"), 0.55f);
+	PutScalar(TEXT("ContactFoam"), 0.6f);
+	PutScalar(TEXT("ContactDark"), 0.35f);
+	PutScalar(TEXT("WakeSlope"), 0.45f);
+	PutScalar(TEXT("WakeFoam"), 0.45f);
+	Collection->PostEditChange();
+	return Collection;
+}
+
+// The inputs kWaterReactCode reads, from the water collection.
+void AddReactInputs(UMaterial* Material, UMaterialExpressionCustom* Custom, UMaterialParameterCollection* Water, int32 Y)
+{
+	for (int32 I = 0; I < 8; ++I)
+	{
+		const FName Name(*FString::Printf(TEXT("Ring%d"), I));
+		AddInput(Custom, Name, AddLook(Material, Water, Name, Y + 60 * I));
+	}
+	for (const TCHAR* Name : {TEXT("Lead"), TEXT("Wake"), TEXT("RingSlope"), TEXT("RingFoam"), TEXT("ContactFoam"), TEXT("ContactDark"), TEXT("WakeSlope"), TEXT("WakeFoam")})
+	{
+		Y += 60;
+		AddInput(Custom, Name, AddLook(Material, Water, Name, Y + 480));
+	}
+}
+
+// A surface's code with the lead's part put in.
+FString WithReact(const TCHAR* Code)
+{
+	return FString(Code).Replace(TEXT("//REACT"), kWaterReactCode, ESearchCase::CaseSensitive);
+}
+
+UMaterial* BuildWater(UMaterialParameterCollection* Look, UMaterialParameterCollection* WaterParams)
 {
 	UMaterial* Material = NewMaterial(FTScene::LookWaterMaterial);
 	Material->SetShadingModel(MSM_SingleLayerWater);
@@ -448,7 +824,7 @@ UMaterial* BuildWater(UMaterialParameterCollection* Look)
 		return nullptr;
 	}
 
-	UMaterialExpressionCustom* Waves = AddCustom(Material, TEXT("FTLookWaves"), FTLookMaterialsBuild::kWaterCode, CMOT_Float3, 0);
+	UMaterialExpressionCustom* Waves = AddCustom(Material, TEXT("FTLookWaves"), *WithReact(FTLookMaterialsBuild::kWaterCode), CMOT_Float3, 0);
 	AddInput(Waves, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, 0));
 	AddInput(Waves, TEXT("Time"), AddExpression<UMaterialExpressionTime>(Material, -900, 100));
 	AddInput(Waves, TEXT("WaveCm"), AddLook(Material, Look, TEXT("WaterWaveCm"), 200));
@@ -457,7 +833,11 @@ UMaterial* BuildWater(UMaterialParameterCollection* Look)
 	AddInput(Waves, TEXT("Rough"), AddLook(Material, Look, TEXT("WaterRoughness"), 500));
 	AddInput(Waves, TEXT("EyeDepth"), AddExpression<UMaterialExpressionPixelDepth>(Material, -900, 600));
 	AddInput(Waves, TEXT("BehindDepth"), AddExpressionOf(Material, BehindClass, -900, 700));
+	AddInput(Waves, TEXT("FoamColor"), AddVector(Material, TEXT("FoamColor"), FLinearColor(0.62f, 0.66f, 0.66f), 760));
+	AddReactInputs(Material, Waves, WaterParams, 1300);
 	AddOutput(Waves, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Waves, TEXT("FoamOut"), CMOT_Float1);
+	AddOutput(Waves, TEXT("TopOut"), CMOT_Float3);
 	Waves->RebuildOutputs();
 
 	UMaterialExpressionCustom* Medium = AddCustom(Material, TEXT("FTLookWaterMedium"), FTLookMaterialsBuild::kWaterMediumCode, CMOT_Float3, 900);
@@ -471,10 +851,11 @@ UMaterial* BuildWater(UMaterialParameterCollection* Look)
 	Water->ScatteringCoefficients.Connect(1, Medium);
 	Water->PhaseG.Connect(0, AddLook(Material, Look, TEXT("WaterPhaseG"), 1100));
 
-	// Clear water over whatever lies under it: no top layer, water's own reflectance (F0 0.02) and index.
+	// Clear water over whatever lies under it, water's own reflectance (F0 0.02) and index; the only top layer is what
+	// the lead stirs up (foam on its rings and wake, the line where it stands in the water).
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
-	Inputs->BaseColor.Connect(0, AddVector(Material, TEXT("TopColor"), FLinearColor(0.8f, 0.8f, 0.8f), -300));
-	Inputs->Opacity.Connect(0, AddScalar(Material, TEXT("TopOpacity"), 0.f, -200));
+	Inputs->BaseColor.Connect(3, Waves);
+	Inputs->Opacity.Connect(2, Waves);
 	Inputs->Specular.Connect(0, AddScalar(Material, TEXT("Specular"), 0.25f, -100));
 	Inputs->Refraction.Connect(0, AddScalar(Material, TEXT("IOR"), 1.33f, -400));
 	Inputs->Normal.Connect(0, Waves);
@@ -485,7 +866,7 @@ UMaterial* BuildWater(UMaterialParameterCollection* Look)
 
 // A canal's water (kCanalWaterCode): the look's water with a flow. Its Flow and Channel are set per canal on an
 // instance by the map's builder; the medium, roughness and wave strength are the look's.
-UMaterial* BuildCanalWater(UMaterialParameterCollection* Look)
+UMaterial* BuildCanalWater(UMaterialParameterCollection* Look, UMaterialParameterCollection* WaterParams)
 {
 	UMaterial* Material = NewMaterial(FTScene::LookCanalWaterMaterial);
 	Material->SetShadingModel(MSM_SingleLayerWater);
@@ -497,7 +878,7 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: the engine has no MaterialExpressionSceneDepthWithoutWater."));
 		return nullptr;
 	}
-	UMaterialExpressionCustom* Waves = AddCustom(Material, TEXT("FTLookCanalWater"), FTLookMaterialsBuild::kCanalWaterCode, CMOT_Float3, 0);
+	UMaterialExpressionCustom* Waves = AddCustom(Material, TEXT("FTLookCanalWater"), *WithReact(FTLookMaterialsBuild::kCanalWaterCode), CMOT_Float3, 0);
 	AddInput(Waves, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, 0));
 	AddInput(Waves, TEXT("Time"), AddExpression<UMaterialExpressionTime>(Material, -900, 100));
 	AddInput(Waves, TEXT("Flow"), AddVector(Material, TEXT("Flow"), FLinearColor(1.f, 0.f, 25.f, 0.f), 150));
@@ -510,8 +891,11 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look)
 	AddInput(Waves, TEXT("Rough"), AddLook(Material, Look, TEXT("WaterRoughness"), 500));
 	AddInput(Waves, TEXT("EyeDepth"), AddExpression<UMaterialExpressionPixelDepth>(Material, -900, 600));
 	AddInput(Waves, TEXT("BehindDepth"), AddExpressionOf(Material, BehindClass, -900, 700));
+	AddInput(Waves, TEXT("FoamColor"), AddVector(Material, TEXT("FoamColor"), FLinearColor(0.30f, 0.29f, 0.20f), 760));
+	AddReactInputs(Material, Waves, WaterParams, 1300);
 	AddOutput(Waves, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Waves, TEXT("FoamOut"), CMOT_Float1);
+	AddOutput(Waves, TEXT("TopOut"), CMOT_Float3);
 	Waves->RebuildOutputs();
 
 	UMaterialExpressionCustom* Medium = AddCustom(Material, TEXT("FTLookWaterMedium"), FTLookMaterialsBuild::kWaterMediumCode, CMOT_Float3, 900);
@@ -525,9 +909,10 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look)
 	Water->ScatteringCoefficients.Connect(1, Medium);
 	Water->PhaseG.Connect(0, AddLook(Material, Look, TEXT("WaterPhaseG"), 1100));
 
-	// The scum is the top layer: pale, as much of it as the code's foam.
+	// The top layer is the scum (pale, as much of it as the code's foam), the froth the lead stirs up and the dark
+	// line where it stands in the water.
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
-	Inputs->BaseColor.Connect(0, AddVector(Material, TEXT("FoamColor"), FLinearColor(0.30f, 0.29f, 0.20f), -300));
+	Inputs->BaseColor.Connect(3, Waves);
 	Inputs->Opacity.Connect(2, Waves);
 	Inputs->Specular.Connect(0, AddScalar(Material, TEXT("Specular"), 0.25f, -100));
 	Inputs->Refraction.Connect(0, AddScalar(Material, TEXT("IOR"), 1.33f, -400));
@@ -538,12 +923,13 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look)
 	return Material;
 }
 
-// The view from under a water surface (kUnderwaterCode): a post-process before the tone curve, on the look's water.
-// WaterZ (world cm) and Clarity (the share of the look's absorption and scattering the view keeps, by the body's kind:
-// open water is seen further through than a canal) are set each frame by the water subsystem on its instance.
+// The view from under a water surface (kUnderwaterCode): a post-process before the tone curve. WaterZ and BedZ (world
+// cm) and the water's colours by its kind (Tint, DeepTint, Extinct) are set each frame by the water subsystem on its
+// instance; the rings and the sun under water come from the water collection. The other scalars are its strengths
+// (-WaterTune sets them by name in a game run).
 // Its pixel shader is compiled on first use, so a mistake in the custom node's own code passes this build and shows in
 // a game run's log instead ("Failed to compile Material", and the engine's default post-process is drawn).
-UMaterial* BuildUnderwater(UMaterialParameterCollection* Look)
+UMaterial* BuildUnderwater(UMaterialParameterCollection* WaterParams)
 {
 	UMaterial* Material = NewMaterial(FTScene::LookUnderwaterMaterial);
 	Material->MaterialDomain = MD_PostProcess;
@@ -552,6 +938,7 @@ UMaterial* BuildUnderwater(UMaterialParameterCollection* Look)
 	UMaterialExpression* const CamPos = AddExpression<UMaterialExpressionCameraPositionWS>(Material, -1400, 100);
 	UMaterialExpression* const Time = AddExpression<UMaterialExpressionTime>(Material, -1400, 200);
 	UMaterialExpression* const WaterZ = AddScalar(Material, TEXT("WaterZ"), 0.f, 300);
+	UMaterialExpression* const BedZ = AddScalar(Material, TEXT("BedZ"), -300.f, 350);
 	UMaterialExpression* const Screen = AddExpression<UMaterialExpressionScreenPosition>(Material, -1400, 400);
 	auto SceneAt = [Material](UMaterialExpression* Uv, int32 Y)
 	{
@@ -570,6 +957,14 @@ UMaterial* BuildUnderwater(UMaterialParameterCollection* Look)
 		At->G = V;
 		return SceneAt(At, Y);
 	};
+	// The view shifted up or down a little, for the meniscus's smear.
+	auto ShiftAt = [Material, &SceneAt, Screen](float Shift, int32 Y)
+	{
+		UMaterialExpressionCustom* Uv = AddCustom(Material, TEXT("FTLookUnderShiftUv"),
+			*FString::Printf(TEXT("return clamp(UV + float2(0.0, %.4f), 0.002, 0.998);"), Shift), CMOT_Float2, Y);
+		AddInput(Uv, TEXT("UV"), Screen);
+		return SceneAt(Uv, Y);
+	};
 
 	UMaterialExpressionCustom* Ripple = AddCustom(Material, TEXT("FTLookUnderRipple"), FTLookMaterialsBuild::kUnderRippleCode, CMOT_Float3, 500);
 	AddInput(Ripple, TEXT("WorldPos"), WorldPos);
@@ -577,10 +972,40 @@ UMaterial* BuildUnderwater(UMaterialParameterCollection* Look)
 	AddInput(Ripple, TEXT("WaterZ"), WaterZ);
 	AddInput(Ripple, TEXT("Time"), Time);
 	AddInput(Ripple, TEXT("Strength"), AddScalar(Material, TEXT("RippleStrength"), 0.2f, 600));
+	AddInput(Ripple, TEXT("RingUnder"), AddScalar(Material, TEXT("RingUnder"), 1.2f, 650));
+	for (int32 I = 0; I < 8; ++I)
+	{
+		const FName Name(*FString::Printf(TEXT("Ring%d"), I));
+		AddInput(Ripple, Name, AddLook(Material, WaterParams, Name, 3000 + 60 * I));
+	}
 
-	UMaterialExpressionCustom* RefractUv = AddCustom(Material, TEXT("FTLookUnderRefractUv"), FTLookMaterialsBuild::kUnderRefractUvCode, CMOT_Float2, 700);
-	AddInput(RefractUv, TEXT("UV"), Screen);
-	AddInput(RefractUv, TEXT("Ripple"), Ripple);
+	UMaterialExpressionCustom* PierceUv = AddCustom(Material, TEXT("FTLookUnderPierceUv"), FTLookMaterialsBuild::kUnderPierceUvCode, CMOT_Float2, 700);
+	AddInput(PierceUv, TEXT("WorldPos"), WorldPos);
+	AddInput(PierceUv, TEXT("CamPos"), CamPos);
+	AddInput(PierceUv, TEXT("WaterZ"), WaterZ);
+	AddInput(PierceUv, TEXT("UV"), Screen);
+	AddInput(PierceUv, TEXT("Ripple"), Ripple);
+	AddInput(PierceUv, TEXT("PierceNear"), AddScalar(Material, TEXT("PierceNear"), 70.f, 720));
+	AddInput(PierceUv, TEXT("PierceFar"), AddScalar(Material, TEXT("PierceFar"), 240.f, 740));
+	AddInput(PierceUv, TEXT("Bend"), AddScalar(Material, TEXT("Bend"), 1.33f, 760));
+	AddInput(PierceUv, TEXT("BendFade"), AddScalar(Material, TEXT("BendFade"), 35.f, 765));
+	AddInput(PierceUv, TEXT("PierceRipple"), AddScalar(Material, TEXT("PierceRipple"), 0.2f, 767));
+	AddInput(PierceUv, TEXT("Lead"), AddLook(Material, WaterParams, TEXT("Lead"), 770));
+	AddOutput(PierceUv, TEXT("PierceOut"), CMOT_Float1);
+	PierceUv->RebuildOutputs();
+
+	UMaterialExpressionCustom* MirrorUv = AddCustom(Material, TEXT("FTLookUnderMirrorUv"), FTLookMaterialsBuild::kUnderMirrorUvCode, CMOT_Float2, 780);
+	AddInput(MirrorUv, TEXT("WorldPos"), WorldPos);
+	AddInput(MirrorUv, TEXT("CamPos"), CamPos);
+	AddInput(MirrorUv, TEXT("UV"), Screen);
+	AddInput(MirrorUv, TEXT("Ripple"), Ripple);
+	AddInput(MirrorUv, TEXT("BedZ"), BedZ);
+	AddInput(MirrorUv, TEXT("MirrorReach"), AddScalar(Material, TEXT("MirrorReach"), 3000.f, 790));
+	AddInput(MirrorUv, TEXT("MirrorThick"), AddScalar(Material, TEXT("MirrorThick"), 40.f, 795));
+	AddOutput(MirrorUv, TEXT("HitOut"), CMOT_Float1);
+	AddOutput(MirrorUv, TEXT("PathOut"), CMOT_Float1);
+	MirrorUv->RebuildOutputs();
+
 	UMaterialExpressionCustom* WobbleUv = AddCustom(Material, TEXT("FTLookUnderWobbleUv"), FTLookMaterialsBuild::kUnderWobbleUvCode, CMOT_Float2, 800);
 	AddInput(WobbleUv, TEXT("UV"), Screen);
 	AddInput(WobbleUv, TEXT("Time"), Time);
@@ -591,26 +1016,49 @@ UMaterial* BuildUnderwater(UMaterialParameterCollection* Look)
 	AddInput(Under, TEXT("WorldPos"), WorldPos);
 	AddInput(Under, TEXT("CamPos"), CamPos);
 	AddInput(Under, TEXT("WaterZ"), WaterZ);
+	AddInput(Under, TEXT("BedZ"), BedZ);
 	AddInput(Under, TEXT("Time"), Time);
+	AddInput(Under, TEXT("UV"), Screen);
 	AddInput(Under, TEXT("Scene"), SceneAt(nullptr, 1000));
 	AddInput(Under, TEXT("Wobbled"), SceneAt(WobbleUv, 1100));
-	AddInput(Under, TEXT("Refracted"), SceneAt(RefractUv, 1200));
+	AddInput(Under, TEXT("Refracted"), SceneAt(PierceUv, 1200));
+	AddInputAt(Under, TEXT("Pierce"), PierceUv, 1);
+	AddInput(Under, TEXT("Mirrored"), SceneAt(MirrorUv, 1250));
+	AddInputAt(Under, TEXT("MirrorHit"), MirrorUv, 1);
+	AddInputAt(Under, TEXT("MirrorPath"), MirrorUv, 2);
+	AddInput(Under, TEXT("Up1"), ShiftAt(-0.009f, 2400));
+	AddInput(Under, TEXT("Up2"), ShiftAt(-0.022f, 2460));
+	AddInput(Under, TEXT("Dn1"), ShiftAt(0.009f, 2520));
+	AddInput(Under, TEXT("Dn2"), ShiftAt(0.022f, 2580));
 	AddInput(Under, TEXT("Tap0"), TapAt(0.5f, 0.2f, 1300));
 	AddInput(Under, TEXT("Tap1"), TapAt(0.2f, 0.5f, 1400));
 	AddInput(Under, TEXT("Tap2"), TapAt(0.8f, 0.5f, 1500));
 	AddInput(Under, TEXT("Tap3"), TapAt(0.5f, 0.8f, 1600));
 	AddInput(Under, TEXT("Ripple"), Ripple);
-	AddInput(Under, TEXT("Absorb"), AddLook(Material, Look, TEXT("WaterAbsorb"), 1700));
-	AddInput(Under, TEXT("Scatter"), AddLook(Material, Look, TEXT("WaterScatter"), 1800));
-	AddInput(Under, TEXT("Clarity"), AddScalar(Material, TEXT("Clarity"), 0.3f, 1900));
-	AddInput(Under, TEXT("FogGain"), AddScalar(Material, TEXT("FogGain"), 0.36f, 2000));
-	AddInput(Under, TEXT("WindowGain"), AddScalar(Material, TEXT("WindowGain"), 1.1f, 2100));
+	AddInput(Under, TEXT("Sun"), AddLook(Material, WaterParams, TEXT("Sun"), 1650));
+	AddInput(Under, TEXT("Tint"), AddVector(Material, TEXT("Tint"), FLinearColor(0.24f, 0.38f, 0.27f), 1700));
+	AddInput(Under, TEXT("DeepTint"), AddVector(Material, TEXT("DeepTint"), FLinearColor(0.035f, 0.11f, 0.11f), 1750));
+	AddInput(Under, TEXT("Extinct"), AddVector(Material, TEXT("Extinct"), FLinearColor(0.30f, 0.13f, 0.17f), 1800));
+	struct FStrength
+	{
+		const TCHAR* Name;
+		float Value;
+	};
+	const FStrength Strengths[] = {{TEXT("DeepRate"), 0.35f}, {TEXT("DeepDark"), 0.1f}, {TEXT("FogGain"), 1.f}, {TEXT("WindowGain"), 1.1f},
+		{TEXT("MirrorGain"), 0.9f}, {TEXT("CausticGain"), 1.1f}, {TEXT("CausticScale"), 4.f}, {TEXT("CausticFade"), 0.3f}, {TEXT("ShaftGain"), 0.2f},
+		{TEXT("ShaftScale"), 2.5f}, {TEXT("ShaftFade"), 0.25f}, {TEXT("ShaftReach"), 12.f}, {TEXT("MoteGain"), 2.2f}, {TEXT("Meniscus"), 1.f},
+		{TEXT("MeniscusCm"), 0.22f}};
+	int32 Y = 1850;
+	for (const FStrength& Each : Strengths)
+	{
+		AddInput(Under, Each.Name, AddScalar(Material, Each.Name, Each.Value, Y));
+		Y += 50;
+	}
 	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Under);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	return Material;
 }
-
 // A canal's walls and bed (kCanalBedCode). WaterZ (world cm) is set per canal on an instance by the map's builder.
 UMaterial* BuildCanalBed()
 {
@@ -745,16 +1193,44 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
 	using namespace FTLookMaterialsBuild;
-	if (FParse::Param(*Params, TEXT("Canal")))
+	struct FBuilt
 	{
-		// -Canal: the canal's two materials alone, on the collection as it stands (nothing else is rebuilt or resaved).
+		UMaterial* Material;
+		const TCHAR* Package;
+	};
+	const bool bCanal = FParse::Param(*Params, TEXT("Canal"));
+	const bool bUnderwater = FParse::Param(*Params, TEXT("Underwater"));
+	const bool bWater = FParse::Param(*Params, TEXT("Water"));
+	if (bCanal || bUnderwater || bWater)
+	{
+		// A part alone, on the look collection as it stands (nothing else is rebuilt or resaved):
+		// -Water: the water collection and the three materials that read it (the sea, the canal's water, the underwater view).
+		// -Canal: the canal's water and its walls and bed. -Underwater: the underwater view.
 		UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, FTScene::LookCollection);
 		if (!Look)
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials -Canal: %s is missing; run without -Canal first."), FTScene::LookCollection);
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: %s is missing; run without -Water, -Canal or -Underwater first."), FTScene::LookCollection);
 			return 1;
 		}
-		for (const TCHAR* Package : {FTScene::LookCanalWaterMaterial, FTScene::LookCanalBedMaterial})
+		TArray<const TCHAR*, TInlineAllocator<8>> Parts;
+		if (bWater)
+		{
+			Parts.Add(FTScene::LookWaterCollection);
+			Parts.Add(FTScene::LookWaterMaterial);
+		}
+		if (bWater || bCanal)
+		{
+			Parts.Add(FTScene::LookCanalWaterMaterial);
+		}
+		if (bCanal)
+		{
+			Parts.Add(FTScene::LookCanalBedMaterial);
+		}
+		if (bWater || bUnderwater)
+		{
+			Parts.Add(FTScene::LookUnderwaterMaterial);
+		}
+		for (const TCHAR* Package : Parts)
 		{
 			const FString File = PackageFile(Package);
 			if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
@@ -763,39 +1239,52 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 				return 1;
 			}
 		}
-		UMaterial* const CanalWater = BuildCanalWater(Look);
-		UMaterial* const CanalBed = BuildCanalBed();
+		UMaterialParameterCollection* WaterParams = bWater ? BuildWaterCollection() : LoadObject<UMaterialParameterCollection>(nullptr, FTScene::LookWaterCollection);
+		if (!WaterParams || (bWater && !Save(WaterParams, FTScene::LookWaterCollection)))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: %s is missing; run with -Water first."), FTScene::LookWaterCollection);
+			return 1;
+		}
+		TArray<FBuilt, TInlineAllocator<8>> Built;
+		for (const TCHAR* Package : Parts)
+		{
+			if (Package == FTScene::LookWaterMaterial)
+			{
+				Built.Add(FBuilt{BuildWater(Look, WaterParams), Package});
+			}
+			else if (Package == FTScene::LookCanalWaterMaterial)
+			{
+				Built.Add(FBuilt{BuildCanalWater(Look, WaterParams), Package});
+			}
+			else if (Package == FTScene::LookCanalBedMaterial)
+			{
+				Built.Add(FBuilt{BuildCanalBed(), Package});
+			}
+			else if (Package == FTScene::LookUnderwaterMaterial)
+			{
+				Built.Add(FBuilt{BuildUnderwater(WaterParams), Package});
+			}
+		}
 		FAssetCompilingManager::Get().FinishAllCompilation();
-		if (!CanalWater || !CanalBed || FT::CompileErrors(TEXT("FTBuildLookMaterials"), CanalWater) + FT::CompileErrors(TEXT("FTBuildLookMaterials"), CanalBed) > 0)
+		int32 Errors = 0;
+		for (const FBuilt& Each : Built)
+		{
+			Errors += Each.Material ? FT::CompileErrors(TEXT("FTBuildLookMaterials"), Each.Material) : 1;
+		}
+		if (Errors > 0)
 		{
 			return 1;
 		}
-		return Save(CanalWater, FTScene::LookCanalWaterMaterial) && Save(CanalBed, FTScene::LookCanalBedMaterial) ? 0 : 1;
+		for (const FBuilt& Each : Built)
+		{
+			if (!Save(Each.Material, Each.Package))
+			{
+				return 1;
+			}
+		}
+		return 0;
 	}
-	if (FParse::Param(*Params, TEXT("Underwater")))
-	{
-		// -Underwater: the underwater view's post-process alone, on the collection as it stands.
-		UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, FTScene::LookCollection);
-		if (!Look)
-		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials -Underwater: %s is missing; run without -Underwater first."), FTScene::LookCollection);
-			return 1;
-		}
-		const FString File = PackageFile(FTScene::LookUnderwaterMaterial);
-		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
-		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: couldn't replace %s."), *File);
-			return 1;
-		}
-		UMaterial* const Underwater = BuildUnderwater(Look);
-		FAssetCompilingManager::Get().FinishAllCompilation();
-		if (!Underwater || FT::CompileErrors(TEXT("FTBuildLookMaterials"), Underwater) > 0)
-		{
-			return 1;
-		}
-		return Save(Underwater, FTScene::LookUnderwaterMaterial) ? 0 : 1;
-	}
-	const TCHAR* const Packages[] = {FTScene::LookUnderwaterMaterial, FTScene::LookCollection, FTScene::LookWaterMaterial, FTScene::LookGlassMaterial,
+	const TCHAR* const Packages[] = {FTScene::LookUnderwaterMaterial, FTScene::LookWaterCollection, FTScene::LookCollection, FTScene::LookWaterMaterial, FTScene::LookGlassMaterial,
 		FTScene::LookChromeMaterial, FTScene::LookWetStoneMaterial, FTScene::LookGlowMaterial, FTScene::LookCanalWaterMaterial,
 		FTScene::LookCanalBedMaterial};
 	// Start from nothing: replace the files up front, before anything loads the old assets.
@@ -827,20 +1316,20 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
-	struct FBuilt
+	UMaterialParameterCollection* WaterParams = BuildWaterCollection();
+	if (!Save(WaterParams, FTScene::LookWaterCollection))
 	{
-		UMaterial* Material;
-		const TCHAR* Package;
-	};
+		return 1;
+	}
 	const FBuilt Built[] = {
-		{BuildWater(Look), FTScene::LookWaterMaterial},
+		{BuildWater(Look, WaterParams), FTScene::LookWaterMaterial},
 		{BuildGlass(), FTScene::LookGlassMaterial},
 		{BuildChrome(), FTScene::LookChromeMaterial},
 		{BuildWetStone(Look, Stone), FTScene::LookWetStoneMaterial},
 		{BuildGlow(Look), FTScene::LookGlowMaterial},
-		{BuildCanalWater(Look), FTScene::LookCanalWaterMaterial},
+		{BuildCanalWater(Look, WaterParams), FTScene::LookCanalWaterMaterial},
 		{BuildCanalBed(), FTScene::LookCanalBedMaterial},
-		{BuildUnderwater(Look), FTScene::LookUnderwaterMaterial},
+		{BuildUnderwater(WaterParams), FTScene::LookUnderwaterMaterial},
 	};
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	int32 Errors = 0;

@@ -8,6 +8,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace ftcore;
@@ -409,6 +410,175 @@ TEST_CASE("water bodies: no query allocates") {
         sum += water.depth(p) + water.flowAt(p).y + (water.overWater(p, 1.f) ? 1.f : 0.f);
         sum += water.camera(p, 2.f, 1.f).depth;
         sum += waterState(water, c, 1.f).speedFactor;
+    }
+    const auto after = ftcore_test::allocStats();
+    CHECK(after.count == before.count);
+    CHECK(sum > 0.f);
+}
+
+TEST_CASE("water ripples: a ring grows, fades and ages out") {
+    WaterRipples rings;
+    CHECK(rings.live() == 0u);
+    rings.add({10.f, 20.f}, 0.8f, 2.f, 1.f, 0.1f);
+    CHECK(rings.live() == 1u);
+    rings.advance(0.5f);
+    WaterRing r{};
+    std::size_t found = 0;
+    for (std::size_t i = 0; i < kWaterRippleCount; ++i) {
+        if (rings.ring(i).amplitude > 0.f) {
+            r = rings.ring(i);
+            ++found;
+        }
+    }
+    REQUIRE(found == 1u);
+    CHECK(r.p.x == doctest::Approx(10.f));
+    CHECK(r.p.y == doctest::Approx(20.f));
+    CHECK(r.radius == doctest::Approx(0.6f));
+    CHECK(r.amplitude > 0.3f);
+    CHECK(r.amplitude < 0.8f);
+    const float early = r.amplitude;
+    rings.advance(1.f);
+    float late = 0.f;
+    for (std::size_t i = 0; i < kWaterRippleCount; ++i) late = std::max(late, rings.ring(i).amplitude);
+    CHECK(late > 0.f);
+    CHECK(late < early);
+    rings.advance(0.6f);
+    CHECK(rings.live() == 0u);
+    CHECK(rings.ring(99).amplitude == 0.f);
+}
+
+TEST_CASE("water ripples: bad input adds nothing; a full ring gives up its faintest") {
+    WaterRipples rings;
+    rings.add({0.f, 0.f}, 0.f, 1.f, 1.f);
+    rings.add({0.f, 0.f}, 1.f, 0.f, 1.f);
+    rings.add({std::nanf(""), 0.f}, 1.f, 1.f, 1.f);
+    CHECK(rings.live() == 0u);
+    // A splash, then more wake rings than the ring holds: the splash is still there.
+    rings.add({5.f, 5.f}, 1.f, kWaterSplashLife, kWaterSplashSpeed);
+    for (int i = 0; i < 20; ++i) {
+        rings.advance(0.05f);
+        rings.add({6.f + static_cast<float>(i), 5.f}, 0.5f, kWaterWakeLife, 0.5f);
+    }
+    CHECK(rings.live() == kWaterRippleCount);
+    bool splash = false;
+    bool newest = false;
+    for (std::size_t i = 0; i < kWaterRippleCount; ++i) {
+        const WaterRing r = rings.ring(i);
+        splash = splash || (r.amplitude > 0.f && r.p.x == doctest::Approx(5.f));
+        newest = newest || rings.ring(i).p.x == doctest::Approx(24.f);
+    }
+    CHECK(splash);
+    rings.advance(0.07f);
+    for (std::size_t i = 0; i < kWaterRippleCount; ++i) newest = newest || rings.ring(i).p.x == doctest::Approx(25.f);
+    CHECK(newest);
+}
+
+TEST_CASE("water stir: splash on entry by fall speed, wake while moving, idle rings, leaving") {
+    CHECK(waterSplashStrength(0.f) == doctest::Approx(kWaterSplashMin));
+    CHECK(waterSplashStrength(kWaterSplashFall) == doctest::Approx(1.f));
+    CHECK(waterSplashStrength(100.f) == doctest::Approx(1.f));
+    CHECK(waterSplashStrength(3.f) > waterSplashStrength(1.f));
+    WaterRipples rings;
+    WaterStir stir;
+    WaterState dry;
+    WaterState wade;
+    wade.mode = WaterMode::DeepWade;
+    wade.immersion = 1.f;
+    wade.surface = 2.5f;
+    WaterStirEvents e = stir.step(rings, dry, {0.f, 0.f}, {1.f, 0.f}, 0.f, 0.033f);
+    CHECK_FALSE(e.entered);
+    CHECK_FALSE(e.moving);
+    CHECK(rings.live() == 0u);
+    e = stir.step(rings, wade, {0.f, 0.f}, {0.f, 0.f}, 5.f, 0.033f);
+    CHECK(e.entered);
+    CHECK(e.splash == doctest::Approx(waterSplashStrength(5.f)));
+    CHECK(stir.inWater());
+    CHECK(rings.live() == 2u);
+    // Moving at 1.2 m/s for a second: a ring about every 0.15 s, none twice in a step.
+    int fed = 0;
+    for (int i = 0; i < 30; ++i) {
+        rings.advance(1.f / 30.f);
+        e = stir.step(rings, wade, {0.04f * static_cast<float>(i), 0.f}, {1.2f, 0.f}, 0.f, 1.f / 30.f);
+        CHECK_FALSE(e.entered);
+        CHECK(e.moving);
+        CHECK(e.speed == doctest::Approx(1.2f));
+        fed += e.fed ? 1 : 0;
+    }
+    CHECK(fed >= 5);
+    CHECK(fed <= 7);
+    // The wake's rings grow slower than the body moves, so their edge is a V.
+    CHECK(rings.live() <= kWaterRippleCount);
+    // Standing: a faint ring now and then.
+    fed = 0;
+    for (int i = 0; i < 90; ++i) {
+        rings.advance(1.f / 30.f);
+        e = stir.step(rings, wade, {1.2f, 0.f}, {0.05f, 0.f}, 0.f, 1.f / 30.f);
+        CHECK_FALSE(e.moving);
+        fed += e.fed ? 1 : 0;
+    }
+    CHECK(fed >= 2);
+    CHECK(fed <= 3);
+    e = stir.step(rings, dry, {1.2f, 0.f}, {0.f, 0.f}, 0.f, 1.f / 30.f);
+    CHECK(e.left);
+    CHECK_FALSE(stir.inWater());
+    e = stir.step(rings, dry, {1.2f, 0.f}, {0.f, 0.f}, 0.f, 1.f / 30.f);
+    CHECK_FALSE(e.left);
+}
+
+TEST_CASE("water wetness: soaked to the line, dries in about 90 s, drips a few seconds") {
+    WaterWetness wet;
+    wet.step(0.f, 1.8f, 1.f);
+    CHECK(wet.wetness == 0.f);
+    wet.step(1.1f, 1.8f, 0.1f);
+    CHECK(wet.wetness == doctest::Approx(1.f));
+    CHECK(wet.line == doctest::Approx(1.1f));
+    CHECK(wet.drip == doctest::Approx(1.f));
+    // Shallower water does not lower a line that is still wet.
+    wet.step(0.4f, 1.8f, 0.1f);
+    CHECK(wet.line == doctest::Approx(1.1f));
+    // A full dunk carries it over the head, no further.
+    wet.step(5.f, 1.8f, 0.1f);
+    CHECK(wet.line == doctest::Approx(2.0f));
+    // Out: drips end in kWaterDripTime, the wetness in kWaterDryTime.
+    for (int i = 0; i < 30; ++i) wet.step(0.f, 1.8f, 0.1f);
+    CHECK(wet.drip == doctest::Approx(0.5f).epsilon(0.02));
+    CHECK(wet.wetness == doctest::Approx(1.f - 3.f / kWaterDryTime).epsilon(0.001));
+    for (int i = 0; i < 40; ++i) wet.step(0.f, 1.8f, 0.1f);
+    CHECK(wet.drip == 0.f);
+    CHECK(wet.line == doctest::Approx(2.0f));
+    for (int i = 0; i < 430; ++i) wet.step(0.f, 1.8f, 0.1f);
+    CHECK(wet.wetness > 0.4f);
+    CHECK(wet.wetness < 0.5f);
+    // Mostly dry: stepping into the shallows wets to the new line only.
+    wet.step(0.3f, 1.8f, 0.1f);
+    CHECK(wet.wetness == doctest::Approx(1.f));
+    CHECK(wet.line == doctest::Approx(0.3f));
+    // Rain: no drying. Sun and wind: faster.
+    wet.step(0.f, 1.8f, 30.f, 0.f);
+    CHECK(wet.wetness == doctest::Approx(1.f));
+    wet.step(0.f, 1.8f, 30.f, 2.f);
+    CHECK(wet.wetness == doctest::Approx(1.f - 60.f / kWaterDryTime));
+    wet.step(0.f, 1.8f, 100.f);
+    CHECK(wet.wetness == 0.f);
+    CHECK(wet.line == 0.f);
+}
+
+TEST_CASE("water ripples, stir and wetness: no heap") {
+    WaterRipples rings;
+    WaterStir stir;
+    WaterWetness wet;
+    WaterState wade;
+    wade.mode = WaterMode::Wade;
+    wade.immersion = 0.5f;
+    const auto before = ftcore_test::allocStats();
+    float sum = 0.f;
+    for (int i = 0; i < 300; ++i) {
+        const float x = 0.03f * static_cast<float>(i);
+        sum += stir.step(rings, wade, {x, 0.f}, {0.9f, 0.f}, 2.f, 1.f / 30.f).speed;
+        rings.advance(1.f / 30.f);
+        wet.step(i < 200 ? 0.5f : 0.f, 1.8f, 1.f / 30.f);
+        for (std::size_t k = 0; k < kWaterRippleCount; ++k) sum += rings.ring(k).amplitude;
+        sum += static_cast<float>(rings.live()) + wet.wetness;
     }
     const auto after = ftcore_test::allocStats();
     CHECK(after.count == before.count);

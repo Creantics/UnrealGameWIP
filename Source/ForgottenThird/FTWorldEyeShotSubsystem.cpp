@@ -38,6 +38,7 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -196,6 +197,64 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	// (plan frame) and -WorldEyeLeadDip=<pitch>,<from>,<to> eases the pitch to <pitch> at the share <from> of the frames,
 	// holds it and eases back by the share <to>.
 	bLeadCam = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadCam"));
+	// -WorldEyeLeadGo=<x,y> without -WorldEyeLeadCam: the lead walks at the point from -WorldEyeLeadGoEarly=<s> seconds
+	// before the wait ends, so the still (and the frame time) catch it moving. -WorldEyeLeadGoJump: held up for a second,
+	// it presses jump (the way out of the water at a wall).
+	{
+		FString Go, GoX, GoY;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadGo="), Go, false) && Go.Split(TEXT(","), &GoX, &GoY))
+		{
+			const ftcore::MassingVec GoM = ftcore::massingEnginePoint(Side, FCString::Atod(*GoX), FCString::Atod(*GoY), 0.0);
+			LeadGoTo = FVector(GoM.x * 100.0, GoM.y * 100.0, 0.0);
+			bLeadGo = true;
+		}
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadGoEarly="), GoEarly);
+		bGoJump = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadGoJump"));
+	}
+	SideM = Side;
+	// -WorldEyeList=<file>: more eyes after this one in the same run, one a line as
+	// name|eye x,y,z|at x,y,z|lens mm|lead x,y,z or -|go x,y or -|early s  (plan frame; a line starting with # is skipped).
+	// Each is shot like the first (the wait, the frame time, the still as <name>.png beside the first), the lead set
+	// down where its line says or sent back to where it started.
+	{
+		FString List;
+		TArray<FString> Lines;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeList="), List) && !List.IsEmpty() && FFileHelper::LoadFileToStringArray(Lines, *List))
+		{
+			for (const FString& Line : Lines)
+			{
+				TArray<FString> Cells;
+				Line.TrimStartAndEnd().ParseIntoArray(Cells, TEXT("|"), false);
+				TArray<FString> E, A, L, G;
+				if (Line.TrimStart().StartsWith(TEXT("#")) || Cells.Num() < 4 || Cells[1].ParseIntoArray(E, TEXT(",")) != 3 || Cells[2].ParseIntoArray(A, TEXT(",")) != 3)
+				{
+					continue;
+				}
+				FNextEye Next;
+				Next.Name = Cells[0].TrimStartAndEnd();
+				const ftcore::MassingVec NextEyeM = ftcore::massingEnginePoint(Side, FCString::Atod(*E[0]), FCString::Atod(*E[1]), FCString::Atod(*E[2]));
+				const ftcore::MassingVec NextAtM = ftcore::massingEnginePoint(Side, FCString::Atod(*A[0]), FCString::Atod(*A[1]), FCString::Atod(*A[2]));
+				Next.From = FVector(NextEyeM.x, NextEyeM.y, NextEyeM.z) * 100.0;
+				Next.To = FVector(NextAtM.x, NextAtM.y, NextAtM.z) * 100.0;
+				Next.Lens = FMath::Max(FCString::Atod(*Cells[3]), 8.0);
+				if (Cells.Num() > 4 && Cells[4].ParseIntoArray(L, TEXT(",")) == 3)
+				{
+					const ftcore::MassingVec LeadM = ftcore::massingEnginePoint(Side, FCString::Atod(*L[0]), FCString::Atod(*L[1]), FCString::Atod(*L[2]));
+					Next.Lead = FVector(LeadM.x, LeadM.y, LeadM.z) * 100.0;
+					Next.bLead = true;
+				}
+				if (Cells.Num() > 5 && Cells[5].ParseIntoArray(G, TEXT(",")) == 2)
+				{
+					const ftcore::MassingVec GoM = ftcore::massingEnginePoint(Side, FCString::Atod(*G[0]), FCString::Atod(*G[1]), 0.0);
+					Next.GoTo = FVector(GoM.x * 100.0, GoM.y * 100.0, 0.0);
+					Next.bGo = true;
+				}
+				Next.GoEarly = Cells.Num() > 6 ? FCString::Atof(*Cells[6]) : 0.f;
+				NextEyes.Add(MoveTemp(Next));
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: %d more eyes from %s."), NextEyes.Num(), *List);
+		}
+	}
 	if (bLeadCam)
 	{
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadYaw="), LeadYaw);
@@ -215,13 +274,6 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 			DipFrom = FCString::Atof(*DipParts[1]);
 			DipTo = FCString::Atof(*DipParts[2]);
 			bDip = true;
-		}
-		FString Go, GoX, GoY;
-		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadGo="), Go, false) && Go.Split(TEXT(","), &GoX, &GoY))
-		{
-			const ftcore::MassingVec GoM = ftcore::massingEnginePoint(Side, FCString::Atod(*GoX), FCString::Atod(*GoY), 0.0);
-			LeadGoTo = FVector(GoM.x * 100.0, GoM.y * 100.0, 0.0);
-			bLeadGo = true;
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: the lead's own camera, yaw %.1f, pitch %.1f%s%s."), LeadYaw, LeadPitch,
 			bDip ? *FString::Printf(TEXT(", dipping to %.1f over %.2f to %.2f of %d frames"), DipPitch, DipFrom, DipTo, WalkFrames) : TEXT(""),
@@ -279,6 +331,10 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	{
 		if (IFileManager::Get().FileExists(*File))
 		{
+			if (StartNextEye())
+			{
+				return;
+			}
 			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: %s saved; quitting."), *File);
 			Finish(0);
 		}
@@ -301,28 +357,32 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		// -WorldEyeLead=<x,y,z>: the lead stands there (plan frame, metres, z its feet) for the still, to judge it in a
 		// reflection or against the scene; it is set down a little high and falls to the ground under it.
 		double LeadX = 0.0, LeadY = 0.0, LeadZ = 0.0;
+		if (APawn* Lead = Player ? Player->GetPawn() : nullptr)
+		{
+			LeadHome = Lead->GetActorLocation();
+			bLeadHome = true;
+		}
 		if (ParseTriple(TEXT("WorldEyeLead="), LeadX, LeadY, LeadZ))
 		{
-			APawn* Lead = Player ? Player->GetPawn() : nullptr;
-			if (Lead)
-			{
-				double LeadSide = 1000.0;
-				FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), LeadSide);
-				const ftcore::MassingVec At = ftcore::massingEnginePoint(LeadSide, LeadX, LeadY, LeadZ);
-				const bool bMoved = Lead->SetActorLocation(FVector(At.x, At.y, At.z) * 100.0 + FVector(0.0, 0.0, 110.0), false, nullptr, ETeleportType::TeleportPhysics);
-				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: lead %s %s at engine %s."), *Lead->GetName(), bMoved ? TEXT("set") : TEXT("NOT set"),
-					*Lead->GetActorLocation().ToString());
-			}
-			else
-			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeLead given but the player has no pawn yet."));
-			}
+			double LeadSide = 1000.0;
+			FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), LeadSide);
+			const ftcore::MassingVec At = ftcore::massingEnginePoint(LeadSide, LeadX, LeadY, LeadZ);
+			PlaceLead(FVector(At.x, At.y, At.z) * 100.0 + FVector(0.0, 0.0, 110.0));
 		}
 		bLookApplied = true;
 		Waited = 0.f;
 		return;
 	}
 	Waited += DeltaTime;
+	// The lead's walk for a still from the eye: begun a little before the wait ends.
+	if (bLeadGo && !bLeadCam && !bGoStarted && Player && Waited >= Delay - GoEarly)
+	{
+		bGoStarted = true;
+		if (AFTExploreCharacter* LeadBody = Cast<AFTExploreCharacter>(Player->GetPawn()))
+		{
+			LeadBody->BeginLeadGo(LeadGoTo, bGoJump);
+		}
+	}
 	if (Waited < Delay || !Player)
 	{
 		return;
@@ -342,8 +402,8 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 			return;
 		}
 		const FIntPoint ViewSize = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
-		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: GPU %.3f ms a frame on average over %d frames (%.3f to %.3f) at %d x %d."),
-			GpuSumMs / GpuFrames, GpuFrames, GpuMinMs, GpuMaxMs, ViewSize.X, ViewSize.Y);
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: GPU %.3f ms a frame on average over %d frames (%.3f to %.3f) at %d x %d for %s."),
+			GpuSumMs / GpuFrames, GpuFrames, GpuMinMs, GpuMaxMs, ViewSize.X, ViewSize.Y, *FPaths::GetBaseFilename(File));
 	}
 	// The walk: one step and one frame a tick, then the still from the far end.
 	if (bWalk && Eye && WalkFrame < WalkFrames)
@@ -353,7 +413,7 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		{
 			if (AFTExploreCharacter* LeadBody = Cast<AFTExploreCharacter>(Player->GetPawn()))
 			{
-				LeadBody->BeginLeadGo(LeadGoTo, false);
+				LeadBody->BeginLeadGo(LeadGoTo, bGoJump);
 			}
 		}
 		Eye->SetActorLocation(FMath::Lerp(WalkFrom, WalkTo, static_cast<double>(WalkFrame) / WalkFrames));
@@ -400,6 +460,67 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	Viewport->Exec(World, *FString::Printf(TEXT("HighResShot %s filename=\"%s\""), *Size, *File), *GLog);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: shooting after %.1f s settled."), Waited);
 	bShot = true;
+}
+
+void UFTWorldEyeShotSubsystem::PlaceLead(const FVector& At)
+{
+	UWorld* World = GetWorld();
+	APlayerController* Player = World ? World->GetFirstPlayerController() : nullptr;
+	APawn* Lead = Player ? Player->GetPawn() : nullptr;
+	if (!Lead)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: the lead was to be placed but the player has no pawn yet."));
+		return;
+	}
+	if (AFTExploreCharacter* LeadBody = Cast<AFTExploreCharacter>(Lead))
+	{
+		LeadBody->EndLeadGo();
+	}
+	const bool bMoved = Lead->SetActorLocation(At, false, nullptr, ETeleportType::TeleportPhysics);
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: lead %s %s at engine %s."), *Lead->GetName(), bMoved ? TEXT("set") : TEXT("NOT set"),
+		*Lead->GetActorLocation().ToString());
+}
+
+bool UFTWorldEyeShotSubsystem::StartNextEye()
+{
+	if (!NextEyes.IsValidIndex(NextEye) || !Eye)
+	{
+		return false;
+	}
+	const FNextEye& Next = NextEyes[NextEye++];
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: %s saved; next eye %s (%d of %d more)."), *File, *Next.Name, NextEye, NextEyes.Num());
+	File = FPaths::Combine(FPaths::GetPath(File), Next.Name + TEXT(".png"));
+	IFileManager::Get().Delete(*File, false, true, true);
+	Eye->SetActorLocationAndRotation(Next.From, (Next.To - Next.From).Rotation());
+	if (UCameraComponent* Camera = Eye->GetCameraComponent())
+	{
+		if (UCineCameraComponent* Cine = Cast<UCineCameraComponent>(Camera))
+		{
+			Cine->SetCurrentFocalLength(static_cast<float>(Next.Lens));
+		}
+		else
+		{
+			Camera->SetFieldOfView(static_cast<float>(FMath::RadiansToDegrees(2.0 * FMath::Atan(18.0 / Next.Lens))));
+		}
+	}
+	if (Next.bLead)
+	{
+		PlaceLead(Next.Lead + FVector(0.0, 0.0, 110.0));
+	}
+	else if (bLeadHome)
+	{
+		PlaceLead(LeadHome);
+	}
+	bLeadGo = Next.bGo;
+	LeadGoTo = Next.GoTo;
+	GoEarly = Next.GoEarly;
+	bGoStarted = false;
+	bShot = false;
+	Waited = 0.f;
+	PendingTicks = 0;
+	GpuSampled = 0;
+	GpuSumMs = 0.0;
+	return true;
 }
 
 TStatId UFTWorldEyeShotSubsystem::GetStatId() const

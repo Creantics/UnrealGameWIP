@@ -92,7 +92,8 @@ the one written during its start), and the subsystem's log line says how many pa
 | `M_Look_Glass` | Lit translucent glass, index of refraction 1.5, with Lumen front-layer reflections (the `render` block turns them on). |
 | `M_Look_Chrome` | A near-mirror metal, to read the reflections by. |
 | `M_Look_Glow` | The world's glow colour times its strength: the Lattice's game-light. |
-| `M_Look_Underwater` | The view from under a water surface, a post-process (`FTBuildLookMaterials -Underwater` builds it alone). Each pixel is cut at the waterline, then fogged and tinted by the same absorption and scattering over the water its ray crosses, dimmed with the eye's depth and wobbled a little; a ray that leaves through the surface sees a bright window overhead and a mirror past the critical angle. |
+| `M_Look_Underwater` | The view from under a water surface, a post-process (`FTBuildLookMaterials -Underwater` builds it alone). Each pixel is cut at the waterline, with a meniscus on the line. Under it the scene goes toward the water's own colour by its kind (a canal green, open water blue), darker and bluer with depth and distance; what is under water carries the sun's caustics, shafts of light and drifting specks stand in it, and a ray that leaves through the surface sees a bright window overhead and, past the critical angle, a mirror of what is under water (followed in the frame's own depth). What stands in the surface (the lead, a wall) is seen through it, not mirrored away. |
+| `MPC_Water` | What stirs the water, written each frame by the water subsystem: eight rings, the lead's place and wake, the sun's way under water, and their strengths. The sea, the canal's water and the underwater view read it (`FTBuildLookMaterials -Water` builds it and those three). |
 
 Water a body can be in is `ftcore::WaterBodies` (`Core/include/ftcore/WaterBodies.h`): a map's canals (the road net's
 canal rows) and its sea as footprints with a surface, a bed and a flow, saved on the map's director by the builder.
@@ -100,6 +101,15 @@ canal rows) and its sea as footprints with a surface, a bed and a flow, saved on
 surface over that, the followers keep to the bank, and while the view's eye is in a body the underwater material is on
 (through whichever camera is the view). Its `OnCameraWater` event (under or out, the depth, the body's kind) is the
 hook for sound.
+
+The water answers the lead (`ftcore::WaterRipples`, `WaterStir` and `WaterWetness` in the same header): coming in
+splashes by the fall's speed (the effect `water_splash` and two rings), standing sends a faint ring out now and then,
+moving feeds a ring every 0.15 s and draws a V wake, and where the body meets the surface there is a line of foam and
+darker water. Coming out, it drips for 6 s (`water_drips`) and is wet up to the highest waterline for about 90 s: the
+scalar parameters `Wetness`, `WetLineZ`, `WetLineSoft` and `WetDrip` are set on dynamic instances of its skeletal
+meshes' materials (a material without them ignores them). More hooks for sound: `OnLeadSplash`, `OnLeadWaterMove` and
+`OnLeadWaterExit`. In a game run `-WaterTune=<Name>=<value>,...` sets the collection's and the underwater view's
+strengths by name.
 
 ApplyLook also sets the fog's albedo and the practical lights: every light component tagged `FTPractical` takes the
 world's practical colour temperature, intensity and volumetric scattering.

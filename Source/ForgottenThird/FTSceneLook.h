@@ -78,6 +78,9 @@ inline constexpr const TCHAR* LookCanalWaterMaterial = TEXT("/Game/Look/M_Look_C
 inline constexpr const TCHAR* LookCanalBedMaterial = TEXT("/Game/Look/M_Look_CanalBed");
 // The view from under a water surface, a post-process (FTBuildLookMaterials, alone with -Underwater; FTWaterSubsystem.h).
 inline constexpr const TCHAR* LookUnderwaterMaterial = TEXT("/Game/Look/M_Look_Underwater");
+// What stirs the water and lights it from above: the rings, the lead's place and wake, the sun under water. Read by the
+// water surfaces and the underwater view, written each frame by the water subsystem (FTBuildLookMaterials, with -Water).
+inline constexpr const TCHAR* LookWaterCollection = TEXT("/Game/Look/MPC_Water");
 inline constexpr const TCHAR* LookGlassMaterial = TEXT("/Game/Look/M_Look_Glass");
 inline constexpr const TCHAR* LookChromeMaterial = TEXT("/Game/Look/M_Look_Chrome");
 inline constexpr const TCHAR* LookWetStoneMaterial = TEXT("/Game/Look/M_Look_WetStone");

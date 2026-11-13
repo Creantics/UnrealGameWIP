@@ -42,6 +42,9 @@
 // -WorldEyeLeadCam [-WorldEyeLeadYaw=<deg>] [-WorldEyeLeadPitch=<deg>] [-WorldEyeFrames=<n>] [-WorldEyeLeadGo=<x,y>]
 // [-WorldEyeLeadDip=<pitch>,<from>,<to>]: the still, or n frames, through the lead's own camera instead of the eye's, the
 // lead walking at a plan point and the camera's pitch dipped and brought back over the frames (the .cpp's note).
+// -WorldEyeLeadGo=<x,y> -WorldEyeLeadGoEarly=<s> [-WorldEyeLeadGoJump] without -WorldEyeLeadCam: the lead walks at the
+// point from <s> seconds before the wait ends, so a still from the eye catches it moving.
+// -WorldEyeList=<file>: more eyes in the same run, each shot like the first (the .cpp's note has the line's form).
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -99,4 +102,29 @@ private:
 	float DipFrom = 0.4f;
 	float DipTo = 0.9f;
 	FVector LeadGoTo = FVector::ZeroVector;
+	// -WorldEyeLeadGo from the eye (-WorldEyeLeadGoEarly, -WorldEyeLeadGoJump) and -WorldEyeList's further eyes.
+	struct FNextEye
+	{
+		FString Name;
+		FVector From = FVector::ZeroVector;
+		FVector To = FVector::ZeroVector;
+		double Lens = 35.0;
+		bool bLead = false;
+		FVector Lead = FVector::ZeroVector;
+		bool bGo = false;
+		FVector GoTo = FVector::ZeroVector;
+		float GoEarly = 0.f;
+	};
+	// The lead set at a place (engine cm), any scripted walk of it ended.
+	void PlaceLead(const FVector& At);
+	// The next eye of the list, if any: the still's name, the eye, the lead, the wait and the frame time begun again.
+	bool StartNextEye();
+	TArray<FNextEye> NextEyes;
+	int32 NextEye = 0;
+	double SideM = 1000.0;
+	float GoEarly = 0.f;
+	bool bGoStarted = false;
+	bool bGoJump = false;
+	bool bLeadHome = false;
+	FVector LeadHome = FVector::ZeroVector;
 };

@@ -262,4 +262,118 @@ float waterSwimFeetZ(float surface, float t) {
     return surface - kWaterSwimDraft + kWaterBobHeight * std::sin(kTwoPi * t / kWaterBobPeriod);
 }
 
+float WaterRipples::amplitudeOf(const Slot& s) {
+    if (!(s.life > 0.f) || s.age >= s.life) return 0.f;
+    const float t = s.age / s.life;
+    const float rise = std::min(s.age / 0.06f, 1.f);
+    const float fall = 1.f - t;
+    return s.strength * rise * fall * std::sqrt(fall);
+}
+
+void WaterRipples::add(Vec2 p, float strength, float life, float speed, float radius) {
+    if (!(strength > 0.f) || !(life > 0.f) || !std::isfinite(p.x) || !std::isfinite(p.y)) return;
+    std::size_t pick = 0;
+    float faintest = 2.f;
+    for (std::size_t i = 0; i < slots_.size(); ++i) {
+        // An empty or spent slot first; else the faintest ring now. A ring just added has not risen yet, so its
+        // full strength stands for it.
+        const Slot& s = slots_[i];
+        const bool dead = !(s.life > 0.f) || s.age >= s.life;
+        const float now = dead ? -1.f : (s.age < 0.06f ? s.strength : amplitudeOf(s));
+        if (now < faintest) {
+            faintest = now;
+            pick = i;
+        }
+    }
+    Slot& s = slots_[pick];
+    s.p = p;
+    s.age = 0.f;
+    s.life = life;
+    s.strength = std::min(strength, 1.f);
+    s.speed = std::max(speed, 0.f);
+    s.radius = std::max(radius, 0.f);
+}
+
+void WaterRipples::advance(float dt) {
+    if (!(dt > 0.f)) return;
+    for (Slot& s : slots_) {
+        if (!(s.life > 0.f)) continue;
+        s.age += dt;
+        if (s.age >= s.life) s = Slot{};
+    }
+}
+
+WaterRing WaterRipples::ring(std::size_t i) const {
+    WaterRing r;
+    if (i >= slots_.size()) return r;
+    const Slot& s = slots_[i];
+    r.amplitude = amplitudeOf(s);
+    if (r.amplitude > 0.f) {
+        r.p = s.p;
+        r.radius = s.radius + s.speed * s.age;
+    }
+    return r;
+}
+
+std::size_t WaterRipples::live() const {
+    std::size_t n = 0;
+    for (const Slot& s : slots_) n += (amplitudeOf(s) > 0.f || (s.life > 0.f && s.age < 0.06f)) ? 1u : 0u;
+    return n;
+}
+
+float waterSplashStrength(float fallSpeed) {
+    const float share = std::isfinite(fallSpeed) ? std::clamp(fallSpeed / kWaterSplashFall, 0.f, 1.f) : 0.f;
+    return kWaterSplashMin + (1.f - kWaterSplashMin) * share;
+}
+
+WaterStirEvents WaterStir::step(WaterRipples& rings, const WaterState& state, Vec2 p, Vec2 velocity, float fallSpeed, float dt) {
+    WaterStirEvents e;
+    const bool in = state.mode != WaterMode::Dry && state.immersion > 0.f;
+    if (in && !in_) {
+        e.entered = true;
+        e.splash = waterSplashStrength(fallSpeed);
+        rings.add(p, e.splash, kWaterSplashLife, kWaterSplashSpeed, 0.15f);
+        rings.add(p, 0.6f * e.splash, kWaterSplashLife, 0.55f * kWaterSplashSpeed, 0.05f);
+        sinceRing_ = 0.f;
+    }
+    e.left = !in && in_;
+    in_ = in;
+    if (!in) return e;
+    const float speed = std::sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
+    e.speed = std::isfinite(speed) ? speed : 0.f;
+    e.moving = e.speed > kWaterWakeSpeed;
+    sinceRing_ += std::max(dt, 0.f);
+    if (e.moving && sinceRing_ >= kWaterWakeEvery) {
+        sinceRing_ = 0.f;
+        // The deeper in, the more water it pushes; a swimmer's stroke as much as a deep wade.
+        const float push = std::clamp(0.35f + 0.5f * state.immersion, 0.35f, 0.85f);
+        rings.add(p, push * std::clamp(e.speed / 1.5f, 0.4f, 1.f), kWaterWakeLife, std::clamp(e.speed / 3.f, 0.3f, 0.9f), 0.2f);
+        e.fed = true;
+    } else if (!e.moving && sinceRing_ >= kWaterIdleEvery) {
+        sinceRing_ = 0.f;
+        rings.add(p, 0.22f, kWaterIdleLife, 0.45f, 0.22f);
+        e.fed = true;
+    }
+    return e;
+}
+
+void WaterWetness::step(float immersion, float height, float dt, float dryScale) {
+    const float passed = std::max(dt, 0.f);
+    if (immersion > 0.f && std::isfinite(immersion)) {
+        // A full dunk carries the line over the head.
+        const float reach = std::min(immersion, std::max(height, 0.f) + 0.2f);
+        // What was wet higher up stays in the line while it is still more wet than dry.
+        line = wetness >= 0.5f ? std::max(line, reach) : reach;
+        wetness = 1.f;
+        drip = 1.f;
+        return;
+    }
+    drip = std::max(drip - passed / kWaterDripTime, 0.f);
+    wetness = std::max(wetness - passed * std::max(dryScale, 0.f) / kWaterDryTime, 0.f);
+    if (!(wetness > 0.f)) {
+        line = 0.f;
+        drip = 0.f;
+    }
+}
+
 } // namespace ftcore
