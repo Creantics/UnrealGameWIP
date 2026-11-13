@@ -721,7 +721,7 @@ private:
 	bool bTableAuto = false;
 	bool bTableFill = false;
 	ftcore::PlaceTable TablePlaces;
-	ftcore::TableSet Table;
+	ftcore::TableSet TableClock;
 	ftcore::TableRing TableSeats;
 	int32 TableBegins = 0;
 	int32 TableRefusals = 0;

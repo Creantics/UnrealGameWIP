@@ -40,6 +40,7 @@
 #include "Misc/Parse.h"
 
 #include "ftcore/Brief.h"
+#include "ftcore/UiStyle.h"
 #include "ftcore/BriefKit.h"
 #include "ftcore/LicenceRating.h"
 #include "ftcore/Chairs.h"
@@ -4288,7 +4289,8 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	const bool bCapArg = FParse::Value(Cmd, TEXT("ArenaCap="), CapArg);
 	bTakeHalfAuto = FParse::Param(Cmd, TEXT("ArenaTakeHalfAuto"));
 	bAutoBlock = FParse::Param(Cmd, TEXT("ArenaAutoBlock"));
-	bCarry = bChairs || bCapArg || bTakeHalfAuto || FParse::Param(Cmd, TEXT("ArenaAlly"));
+	bCarry = bChairs || bCapArg || bTakeHalfAuto || FParse::Param(Cmd, TEXT("ArenaAlly")) || FParse::Param(Cmd, TEXT("ArenaTable"))
+		|| FParse::Param(Cmd, TEXT("ArenaTableAuto")) || FParse::Param(Cmd, TEXT("ArenaTableFill"));
 	if (!bCarry)
 	{
 		return;
@@ -4538,13 +4540,30 @@ constexpr double kArenaTableCooldown = 20.0; // s after a table clears, at cap 1
 constexpr int32 kArenaTableMinBodies = 3;    // a set table with fewer bodies gutters
 constexpr int32 kArenaTableRingParts = 96;   // segments of the ground ring
 constexpr int32 kArenaTableArcParts = 72;    // segments of the countdown arc
-constexpr float kArenaTableRingWidth = 0.07f; // m
-constexpr float kArenaTableArcWidth = 0.035f; // m, just inside the ring
+constexpr float kArenaTableRingWidth = 0.1f;  // m
+constexpr float kArenaTableArcWidth = 0.05f;  // m, just inside the ring
 constexpr float kArenaTableArcInset = 0.16f;  // m
 constexpr float kArenaTableLineWidth = 0.025f; // m
 constexpr float kArenaTableThick = 0.012f;     // m: how tall every part stands off the ground
-const FLinearColor kArenaTableRingColor(1.f, 0.62f, 0.12f); // amber, the world accent
-const FLinearColor kArenaTableLineColor(1.f, 0.8f, 0.3f);   // gold
+
+// The world accent (Data/UI/style.json's Solhaven accent, the built-in style's when the file is missing or refused),
+// sRGB to linear as the UI does, so the palette carries over to the ring.
+FLinearColor TableAccent()
+{
+	ftcore::UiStyle Style = ftcore::defaultUiStyle();
+	FString Text;
+	if (FFileHelper::LoadFileToString(Text, *(FPaths::ProjectDir() / TEXT("Data/UI/style.json"))))
+	{
+		std::string Error;
+		if (!ftcore::importUiStyle(FT::ToUtf8(Text), Style, &Error))
+		{
+			Style = ftcore::defaultUiStyle();
+		}
+	}
+	const ftcore::UiColor C = ftcore::uiColor(Style, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, ftcore::UiToken::Accent);
+	const auto To8 = [](float V) { return static_cast<uint8>(FMath::RoundToInt(FMath::Clamp(V, 0.f, 1.f) * 255.f)); };
+	return FLinearColor(FColor(To8(C.r), To8(C.g), To8(C.b), 255));
+}
 
 const TCHAR* TableErrorName(ftcore::TableError E)
 {
@@ -4599,7 +4618,7 @@ void UFTArenaRunner::BeginTable(const ftcore::PlaceTable& Places, bool bCapArg)
 	}
 	ResetTable();
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table: %d seats, at least %d bodies, ring %.1f m, cooldown %.1f s%s%s."),
-		Places.tableSeats(), kArenaTableMinBodies, TableSeats.tuning().radius, Table.tuning().cooldown,
+		Places.tableSeats(), kArenaTableMinBodies, TableSeats.tuning().radius, TableClock.tuning().cooldown,
 		bTableAuto ? TEXT(", the autopilot sets it at full Load") : TEXT(""), bTableFill ? TEXT(", the Load filled while it is ready") : TEXT(""));
 #endif
 }
@@ -4613,7 +4632,7 @@ void UFTArenaRunner::ResetTable()
 	ftcore::TableTuning Tuning;
 	Tuning.minBodies = kArenaTableMinBodies;
 	Tuning.cooldown = ftcore::tableCooldownForCap(kArenaTableCooldown, CarryCap);
-	Table.reset(Tuning, static_cast<double>(Fight.heldTime()));
+	TableClock.reset(Tuning, static_cast<double>(Fight.heldTime()));
 	TableSeats.reset(ftcore::TableRingTuning());
 	Fight.setTableSeats(ftcore::ArenaTableSeats());
 	TableLastRefusal = ftcore::TableError::None;
@@ -4631,7 +4650,7 @@ void UFTArenaRunner::BeginTableNow(double T)
 	Held.value = Fight.load();
 	const ftcore::Vec2 At = Bodies.player;
 	const ftcore::TableSpot Spot{At.x, At.y, TableSeats.tuning().radius};
-	const ftcore::TableError E = Table.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
+	const ftcore::TableError E = TableClock.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
 	if (E != ftcore::TableError::None)
 	{
 		++TableRefusals;
@@ -4666,16 +4685,16 @@ void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
 		}
 	}
 	// The setter staggered or downed while it sets: the table fails.
-	if (Table.state() == ftcore::TableState::Setting)
+	if (TableClock.state() == ftcore::TableState::Setting)
 	{
 		const ftcore::ArenaAction Act = Out.player.action;
 		if (Act == ftcore::ArenaAction::Hitstun || Act == ftcore::ArenaAction::GuardBreak || Act == ftcore::ArenaAction::Downed)
 		{
-			Table.interrupt(T);
+			TableClock.interrupt(T);
 		}
 	}
 	// The autopilot: at full Load, with enough bodies in reach (the setter counted).
-	if (bAutoPlay && Table.state() == ftcore::TableState::Ready && Fight.hp() > 0)
+	if (bAutoPlay && TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0)
 	{
 		if (bTableFill && Fight.load() < Fight.loadCap())
 		{
@@ -4689,7 +4708,7 @@ void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
 	}
 	const auto Drain = [&]()
 	{
-		for (const ftcore::TableEvent& E : Table.update(T))
+		for (const ftcore::TableEvent& E : TableClock.update(T))
 		{
 			switch (E.type)
 			{
@@ -4700,7 +4719,7 @@ void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
 				TableMostBodies = FMath::Max(TableMostBodies, Sat);
 				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table set at %.2f s: %d bodies (seats 0x%x, waiting 0x%x)."),
 					E.at, Sat, static_cast<uint32>(TableSeats.seated()), static_cast<uint32>(TableSeats.waiting()));
-				Table.checkBodies(Sat, T);
+				TableClock.checkBodies(Sat, T);
 				break;
 			}
 			case ftcore::TableEventType::Guttered:
@@ -4724,7 +4743,7 @@ void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
 		}
 	};
 	Drain();
-	if (Table.set())
+	if (TableClock.set())
 	{
 		const ftcore::TableRingChange Change = TableSeats.update(Fight, Bodies);
 		if (Change.any())
@@ -4734,14 +4753,14 @@ void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
 			TableMostBodies = FMath::Max(TableMostBodies, TableSeats.bodies());
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: table at %.2f s: %d stood, %d left, %d sat: %d bodies."),
 				T, Change.stood, Change.left, Change.sat, TableSeats.bodies());
-			Table.checkBodies(TableSeats.bodies(), T);
+			TableClock.checkBodies(TableSeats.bodies(), T);
 			Drain();
 		}
 	}
-	Fight.setTableSeats(Table.set() && TableSeats.placed()
-		? TableSeats.seats(Fight, Table.tuning().enemyShare, TablePlaces.tableSeats())
+	Fight.setTableSeats(TableClock.set() && TableSeats.placed()
+		? TableSeats.seats(Fight, TableClock.tuning().enemyShare, TablePlaces.tableSeats())
 		: ftcore::ArenaTableSeats());
-	if (Table.state() == ftcore::TableState::Setting || Table.set())
+	if (TableClock.state() == ftcore::TableState::Setting || TableClock.set())
 	{
 		SpawnTable();
 	}
@@ -4771,10 +4790,11 @@ void UFTArenaRunner::SpawnTable()
 	Root->SetMobility(EComponentMobility::Movable);
 	Root->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Root->SetCanEverAffectNavigation(false);
+	const FLinearColor Accent = TableAccent();
 	UMaterialInstanceDynamic* Ring = UMaterialInstanceDynamic::Create(Base, TableActor);
-	Ring->SetVectorParameterValue(TEXT("Color"), kArenaTableRingColor);
+	Ring->SetVectorParameterValue(TEXT("Color"), Accent);
 	UMaterialInstanceDynamic* Line = UMaterialInstanceDynamic::Create(Base, TableActor);
-	Line->SetVectorParameterValue(TEXT("Color"), kArenaTableLineColor);
+	Line->SetVectorParameterValue(TEXT("Color"), Accent);
 	const auto Part = [&](UMaterialInstanceDynamic* Paint) -> UStaticMeshComponent*
 	{
 		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(TableActor);
@@ -4824,7 +4844,7 @@ void UFTArenaRunner::PaintTable(float Alpha)
 	{
 		return;
 	}
-	const ftcore::TableState State = Table.state();
+	const ftcore::TableState State = TableClock.state();
 	const bool bShow = (State == ftcore::TableState::Setting || State == ftcore::TableState::Set) && TableSeats.placed();
 	TableActor->SetActorHiddenInGame(!bShow);
 	if (!bShow)
@@ -4834,15 +4854,15 @@ void UFTArenaRunner::PaintTable(float Alpha)
 	TableActor->SetActorLocation(ToWorld(TableSeats.centre()));
 	// The arc: filling while it sets, then the time left while set (clockwise from the front).
 	const double T = static_cast<double>(Fight.heldTime());
-	const ftcore::TableTuning& Tuning = Table.tuning();
+	const ftcore::TableTuning& Tuning = TableClock.tuning();
 	float Share = 0.f;
 	if (State == ftcore::TableState::Setting)
 	{
-		Share = Tuning.setTime > 0.0 ? 1.f - static_cast<float>(FMath::Clamp((Table.until() - T) / Tuning.setTime, 0.0, 1.0)) : 1.f;
+		Share = Tuning.setTime > 0.0 ? 1.f - static_cast<float>(FMath::Clamp((TableClock.until() - T) / Tuning.setTime, 0.0, 1.0)) : 1.f;
 	}
 	else
 	{
-		Share = static_cast<float>(FMath::Clamp((Table.until() - T) / Tuning.setDuration, 0.0, 1.0));
+		Share = static_cast<float>(FMath::Clamp((TableClock.until() - T) / Tuning.setDuration, 0.0, 1.0));
 	}
 	const int32 Lit = FMath::CeilToInt32(Share * static_cast<float>(TableArcParts.Num()));
 	for (int32 I = 0; I < TableArcParts.Num(); ++I)
@@ -4889,7 +4909,7 @@ void UFTArenaRunner::LogTable() const
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d state %s."),
 		TableBegins, TableRefusals, TableSets, TableMostBodies, TableStands, TableLeaves, TableGutters, TableFails, TableClears,
-		TableShares, TableShareHp, TableStateName(Table.state()));
+		TableShares, TableShareHp, TableStateName(TableClock.state()));
 }
 
 void UFTArenaRunner::EndTable()
