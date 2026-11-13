@@ -682,6 +682,7 @@ private:
 	bool bCarry = false;
 	bool bAllyOn = false;
 	bool bTakeHalfAuto = false;
+	bool bAutoBlock = false; // -ArenaAutoBlock (carrying runs): the autopilot guards through every wind-up
 	FString CarryChairKeys;
 	ftcore::ArenaChairs CarryChairs;
 	int32 CarryCap = ftcore::kMaxLoad;

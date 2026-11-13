@@ -1870,10 +1870,14 @@ struct ArenaFightImpl {
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
         int allyPart = damage;
-        // Take half: a press within the window before this blow, the player near enough and free to take it.
+        // Take half: a press within the window before this blow, the player near enough and free to take it. Not
+        // while invulnerable (a dodge's i-frames, a riposte, a Release: the blow would skip guard, poise and hurt),
+        // nor while hurt (hitstun) or guard-broken.
         const float window = fi.takeHalfWindow + fight.chairs_.takeHalfWindow();
         const bool pressed = pl.takeHalfPress >= t1 - window - kArenaEps && pl.takeHalfPress <= t1;
-        const bool canTake = pl.hp > 0 && pl.action != ArenaAction::Downed && pl.action != ArenaAction::Release;
+        const bool canTake = pl.hp > 0 && !pl.invulnerable && pl.action != ArenaAction::Downed &&
+                             pl.action != ArenaAction::Release && pl.action != ArenaAction::Hitstun &&
+                             pl.action != ArenaAction::GuardBreak;
         if (pressed && canTake && arenaDistance(pl.pos, fight.allyPos_) <= fi.takeHalfReach + kArenaEps) {
             pl.takeHalfPress = -1.0e9f; // used
             const int lead = (damage + 1) / 2;

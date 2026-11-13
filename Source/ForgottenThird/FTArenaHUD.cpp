@@ -40,6 +40,7 @@ const FLinearColor kArenaTellBlock(1.f, 0.55f, 0.15f);
 const FLinearColor kArenaTellDodge(1.f, 0.16f, 0.12f);
 
 const FTUiText kHpArena(TEXT("arena.hp"));
+const FTUiText kAllyArena(TEXT("arena.ally"));
 const FTUiText kStaminaArena(TEXT("arena.stamina"));
 const FTUiText kPoiseArena(TEXT("arena.poise"));
 const FTUiText kHealsArena(TEXT("arena.heals"));
@@ -308,11 +309,15 @@ void AFTArenaHUD::DrawPlayerPanel(const UFTArenaRunner& Mode)
 	DrawText(kStaminaArena, kArenaDim, X, Top + 50.f * S, Small, 1.1f * S);
 	DrawBar(X, Top + 70.f * S, W, 12.f * S, Stamina, Stamina < 0.05f ? kArenaDim : kArenaStamina, kArenaBack);
 
-	// The ally (carrying runs only): a thin bar under the hp, dark once it is down.
+	// The ally (carrying runs only): a thin bar under the hp, labelled ALLY with its hp after it, dark once it is down.
 	if (Fight.allyMaxHp() > 0)
 	{
 		const float Ally = static_cast<float>(Fight.allyHp()) / static_cast<float>(Fight.allyMaxHp());
-		DrawBar(X, Top + 44.f * S, W * 0.6f, 4.f * S, Ally, Fight.allyAlive() ? kArenaGreen : kArenaDim, kArenaBack);
+		const FLinearColor AllyColor = Fight.allyAlive() ? kArenaGreen : kArenaDim;
+		DrawBar(X, Top + 44.f * S, W * 0.6f, 5.f * S, Ally, AllyColor, kArenaBack);
+		DrawText(kAllyArena, kArenaDim, X + W * 0.6f + 10.f * S, Top + 40.f * S, Small, 0.9f * S);
+		DrawText(ArenaNumberOf(AllyText, Fight.allyHp(), Fight.allyMaxHp()), AllyColor, X + W * 0.6f + 50.f * S, Top + 40.f * S, Small,
+			0.9f * S);
 	}
 
 	// Load, beside stamina and never in its place: a mark at a third of the cap (the Release opens above it), RELEASE

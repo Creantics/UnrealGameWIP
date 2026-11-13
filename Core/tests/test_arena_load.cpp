@@ -430,6 +430,80 @@ TEST_CASE("arena take half: too early or out of reach, the ally takes it all (S1
     }
 }
 
+TEST_CASE("arena take half: refused inside a dodge's i-frames and while hurt; a dodge past its i-frames may take") {
+    // A slow bite (0.8 s startup), so a dodge can begin and end its i-frames before it lands.
+    AllySetup s;
+    ArenaEnemyKind slow = biterKind(22, 10.f);
+    slow.moves[0].attack.startup = 0.8f;
+    int land = -1;
+    {
+        Rig probe({slow});
+        placeAlly(probe, s);
+        for (int k = 1; k <= 120 && land < 0; ++k) {
+            probe.tick();
+            if (probe.count(ArenaEventType::AllyHit) > 0) land = k;
+        }
+    }
+    REQUIRE(land > 30);
+    {   // the dodge 10 ticks (0.17 s) before the land: the bite lands inside 0.1..0.4 s of it
+        Rig rig({slow});
+        placeAlly(rig, s);
+        bool invulnAtLand = false;
+        for (int k = 1; k <= land + 2; ++k) {
+            if (k == land - 10) rig.in.dodge = true;
+            if (k == land - 5) rig.in.takeHalf = true;
+            rig.tick();
+            if (k == land) invulnAtLand = rig.fight.output().player.invulnerable;
+        }
+        CHECK(invulnAtLand);
+        CHECK(rig.count(ArenaEventType::TookHalf) == 0);
+        CHECK(rig.fight.allyHp() == 78);
+        CHECK(rig.fight.hp() == 100);
+        CHECK(rig.fight.load() == 0);
+    }
+    {   // the dodge 28 ticks (0.47 s) before: still dodging, its i-frames over, so the press takes half
+        Rig rig({slow});
+        placeAlly(rig, s);
+        ArenaAction atLand = ArenaAction::Idle;
+        for (int k = 1; k <= land + 2; ++k) {
+            if (k == land - 28) rig.in.dodge = true;
+            if (k == land - 5) rig.in.takeHalf = true;
+            rig.tick();
+            if (k == land) atLand = rig.fight.output().player.action;
+        }
+        CHECK(atLand == ArenaAction::Dodge);
+        CHECK(rig.count(ArenaEventType::TookHalf) == 1);
+        CHECK(rig.fight.allyHp() == 89);
+        CHECK(rig.fight.hp() == 89);
+    }
+    {   // a second biter, close by the player, bites it first: the player is in hitstun when the ally's bite lands
+        ArenaEnemyKind quick = biterKind(5, 2.f);
+        quick.moves[0].attack.startup = 0.25f;
+        quick.moves[0].attack.poiseDamage = 40.f; // past the player's 30 poise: it hurts (hitstun)
+        Rig rig({biterKind(22, 10.f), quick});
+        rig.def.attackers = 2;
+        rig.fight.begin(rig.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+        placeAlly(rig, s);
+        rig.bodies.enemies[1] = Vec2{-1.5f, 0.f};
+        ArenaAction atLand = ArenaAction::Idle;
+        int allyLand = -1;
+        for (int k = 1; k <= 120 && allyLand < 0; ++k) {
+            if (rig.count(ArenaEventType::Hit) > 0 && rig.fight.output().player.action == ArenaAction::Hitstun)
+                rig.in.takeHalf = true; // pressed every tick while hurt
+            rig.tick();
+            if (rig.count(ArenaEventType::AllyHit) > 0) {
+                allyLand = k;
+                atLand = rig.fight.output().player.action;
+            }
+        }
+        REQUIRE(allyLand > 0);
+        REQUIRE(rig.count(ArenaEventType::Hit) >= 1);
+        CHECK(atLand == ArenaAction::Hitstun);
+        CHECK(rig.count(ArenaEventType::TookHalf) == 0);
+        CHECK(rig.fight.allyHp() == 78);
+    }
+}
+
 TEST_CASE("arena take half: a takeHalf chair widens the window and heals the ally (S13)") {
     AllySetup s;
     s.damage = 20;

@@ -1781,6 +1781,22 @@ void UFTArenaRunner::StepFight()
 		if (bAutoPlay)
 		{
 			In.takeHalf = bTakeHalfAuto && Fight.takeHalfDue(0.1f);
+			// -ArenaAutoBlock: the guard held from the start of any enemy wind-up (so it blocks, never parries) in place
+			// of the autopilot's parry, roll or swing, for a capture of block Load.
+			if (bAutoBlock)
+			{
+				const ftcore::ArenaOutput& Was = Fight.output();
+				for (size_t I = 0; I < Fight.enemyCount(); ++I)
+				{
+					if (Fight.enemyHp(I) > 0 && (Was.enemies[I].part == ftcore::ArenaPart::Startup
+						|| Was.enemies[I].part == ftcore::ArenaPart::Active))
+					{
+						In.guard = true;
+						In.dodge = In.light = In.heavy = In.release = false;
+						break;
+					}
+				}
+			}
 		}
 		MoveAlly(); // after PrevBodies: the ally is drawn from where it stood
 	}
@@ -4225,7 +4241,7 @@ constexpr float kArenaAllySettle = 0.15f;     // m: closer than this to its plac
 
 void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 {
-	bCarry = bAllyOn = bTakeHalfAuto = false;
+	bCarry = bAllyOn = bTakeHalfAuto = bAutoBlock = false;
 	CarryChairKeys.Reset();
 	CarryChairs = ftcore::ArenaChairs();
 	CarryCap = ftcore::kMaxLoad;
@@ -4238,6 +4254,7 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	int32 CapArg = 0;
 	const bool bCapArg = FParse::Value(Cmd, TEXT("ArenaCap="), CapArg);
 	bTakeHalfAuto = FParse::Param(Cmd, TEXT("ArenaTakeHalfAuto"));
+	bAutoBlock = FParse::Param(Cmd, TEXT("ArenaAutoBlock"));
 	bCarry = bChairs || bCapArg || bTakeHalfAuto || FParse::Param(Cmd, TEXT("ArenaAlly"));
 	if (!bCarry)
 	{
@@ -4292,9 +4309,9 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	Fight.setChairs(CarryChairs);
 	Fight.setCarry(true);
 	Fight.setAlly(kArenaAllyHp, Def.fighter.bodyRadius);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: carrying: chairs %s (%d named), Load cap %d, blocks store Load, ally %d hp%s."),
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: carrying: chairs %s (%d named), Load cap %d, blocks store Load, ally %d hp%s%s."),
 		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, static_cast<int32>(CarryChairs.count), CarryCap, kArenaAllyHp,
-		bTakeHalfAuto ? TEXT(", the autopilot takes half") : TEXT(""));
+		bTakeHalfAuto ? TEXT(", the autopilot takes half") : TEXT(""), bAutoBlock ? TEXT(", the autopilot blocks") : TEXT(""));
 #endif
 }
 
