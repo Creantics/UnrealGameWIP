@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "placements": [
+    { "id": "scare_001", "world": "lattice", "kind": "scene", "minute": 41.2 },
+    { "id": "scare_002", "world": "solhaven", "kind": "exploration", "minute": 133.8 },
+    { "id": "scare_003", "world": "solhaven", "kind": "fight", "minute": 176.8 },
+    { "id": "scare_004", "world": "lattice", "kind": "exploration", "minute": 209.8 },
+    { "id": "scare_005", "world": "solhaven", "kind": "fight", "minute": 262.8 }
+  ]
+}

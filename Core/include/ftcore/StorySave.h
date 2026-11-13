@@ -15,6 +15,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/Progression.h"
+#include "ftcore/ScarePacer.h"
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/WorldClock.h"
 
@@ -49,6 +50,8 @@ struct StorySave {
     PartyProgress party;               // xp, gold and items; the owner fills it (capture and apply leave it alone)
     WorldClock clock;                  // time of day; the owner fills it (capture and apply leave it alone)
     bool hasClock = false;             // the save holds a clock (false for a save from before the clock)
+    ScareSave scares;                  // the scare pacer (play clock, ring, last kind, seen moments); the owner fills it
+    bool hasScares = false;            // the save holds the pacer (false for a save from before it)
 };
 
 struct StoryLoadReport {
@@ -77,6 +80,9 @@ FTCORE_API bool applyStory(const StorySave& save, StoryRunner& runner, StoryLoad
 // may change between versions), so an id the game no longer knows loads as it is. The entries go
 // into the inventory in order; whatever does not fit (more than kMaxInventoryStacks different ids,
 // a stack past kMaxItemStack) is dropped.
+// "scares" is optional (hasScares): {"playSeconds":5400.5,"ring":[{"t":1200,"kind":"scene"}],"head":1,
+// "lastKind":"scene","seen":"02"}. ring lists the slots 0..count-1 in slot order; lastKind is "none" before any
+// scare. A malformed "scares" refuses the save (ScarePacer::load's checks).
 
 // UTF-8 JSON text for the save.
 FTCORE_API std::string encodeStorySave(const StorySave& save);
