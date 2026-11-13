@@ -462,6 +462,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 
 void UFTArenaRunner::End()
 {
+	EndTable();
 	EndImpact();
 	EndStoneBearer();
 	EndKite();
@@ -1892,6 +1893,7 @@ void UFTArenaRunner::StepFight()
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
 	FeedSession();
 	HandleEvents(Out.events);
+	TickTable(Out);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
 	// side of its body at its chest; with nobody, a metre ahead at the lead's chest.
@@ -2564,6 +2566,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		LeadWeapons.Paint(DrawnTime);
 	}
 	PlaceAlly(Alpha);
+	PaintTable(Alpha);
 
 	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
 	{
@@ -3149,6 +3152,7 @@ void UFTArenaRunner::LogResult() const
 	}
 	LogFeatureChecks();
 	LogCarry();
+	LogTable();
 	LogBrief();
 }
 
@@ -3391,6 +3395,7 @@ void UFTArenaRunner::Restart()
 	bRestarting = true; // BeginSession: a later attempt never marks a missing step
 	BeginSession();
 	bRestarting = false;
+	ResetTable();
 	LeadWeapons.Restart();
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
@@ -4292,11 +4297,11 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 
 	// The named places: four seats, one Named per chair key (its row's person), the rest never laid. "none" names
 	// none, so the cap is the base carry alone.
+	ftcore::PlaceTable Places; // none named without -ArenaChairs: no table can be set
+	Places.reset(4);
 	if (bChairs)
 	{
 		CarryChairKeys = Keys;
-		ftcore::PlaceTable Places;
-		Places.reset(4);
 		if (Keys != TEXT("none"))
 		{
 			ftcore::ChairTable ChairRows;
@@ -4337,6 +4342,7 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	Fight.setChairs(CarryChairs);
 	Fight.setCarry(true);
 	Fight.setAlly(kArenaAllyHp, Def.fighter.bodyRadius);
+	BeginTable(Places, bCapArg);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: carrying: chairs %s (%d named), Load cap %d, blocks store Load, ally %d hp%s%s."),
 		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, static_cast<int32>(CarryChairs.count), CarryCap, kArenaAllyHp,
 		bTakeHalfAuto ? TEXT(", the autopilot takes half") : TEXT(""), bAutoBlock ? TEXT(", the autopilot blocks") : TEXT(""));
@@ -4522,4 +4528,378 @@ void UFTArenaRunner::LogCarry() const
 		TEXT("Arena: CARRY chairs %s cap %d blockLoad %d takeHalfLoad %d takeHalves %d sharedOffers %d ally %d/%d."),
 		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, Fight.loadCap(), S.blockLoad, S.takeHalfLoad, S.takeHalves,
 		CarrySharedOffers, Fight.allyHp(), Fight.allyMaxHp());
+}
+
+// ---- Setting the table (-ArenaTable) ----
+
+namespace
+{
+constexpr double kArenaTableCooldown = 20.0; // s after a table clears, at cap 100 (tableCooldownForCap stretches it)
+constexpr int32 kArenaTableMinBodies = 3;    // a set table with fewer bodies gutters
+constexpr int32 kArenaTableRingParts = 96;   // segments of the ground ring
+constexpr int32 kArenaTableArcParts = 72;    // segments of the countdown arc
+constexpr float kArenaTableRingWidth = 0.07f; // m
+constexpr float kArenaTableArcWidth = 0.035f; // m, just inside the ring
+constexpr float kArenaTableArcInset = 0.16f;  // m
+constexpr float kArenaTableLineWidth = 0.025f; // m
+constexpr float kArenaTableThick = 0.012f;     // m: how tall every part stands off the ground
+const FLinearColor kArenaTableRingColor(1.f, 0.62f, 0.12f); // amber, the world accent
+const FLinearColor kArenaTableLineColor(1.f, 0.8f, 0.3f);   // gold
+
+const TCHAR* TableErrorName(ftcore::TableError E)
+{
+	switch (E)
+	{
+	case ftcore::TableError::None: return TEXT("none");
+	case ftcore::TableError::NotFull: return TEXT("notFull");
+	case ftcore::TableError::TooFewSeats: return TEXT("tooFewSeats");
+	case ftcore::TableError::Busy: return TEXT("busy");
+	case ftcore::TableError::Cooling: return TEXT("cooling");
+	case ftcore::TableError::BadSetter: return TEXT("badSetter");
+	case ftcore::TableError::Occupied: return TEXT("occupied");
+	}
+	return TEXT("?");
+}
+
+const TCHAR* TableStateName(ftcore::TableState S)
+{
+	switch (S)
+	{
+	case ftcore::TableState::Ready: return TEXT("ready");
+	case ftcore::TableState::Setting: return TEXT("setting");
+	case ftcore::TableState::Set: return TEXT("set");
+	case ftcore::TableState::Cooling: return TEXT("cooling");
+	}
+	return TEXT("?");
+}
+}
+
+void UFTArenaRunner::BeginTable(const ftcore::PlaceTable& Places, bool bCapArg)
+{
+	bTable = bTableAuto = bTableFill = false;
+	TablePlaces = Places;
+#if !UE_BUILD_SHIPPING
+	const TCHAR* Cmd = FCommandLine::Get();
+	bTableAuto = FParse::Param(Cmd, TEXT("ArenaTableAuto"));
+	bTableFill = FParse::Param(Cmd, TEXT("ArenaTableFill"));
+	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill;
+	if (!bTable)
+	{
+		return;
+	}
+	const int32 MinSeats = ftcore::TableTuning().minSeats;
+	if (bCapArg || Places.tableSeats() < MinSeats)
+	{
+		UE_LOG(LogForgottenThird, Error,
+			TEXT("Arena: -ArenaTable needs -ArenaChairs naming %d or more chairs (it names %d) and no -ArenaCap (the table counts the chairs' cap); the run stops."),
+			MinSeats, Places.tableSeats());
+		bTable = false;
+		FTRequestExit(1, TEXT("ArenaTable"));
+		return;
+	}
+	ResetTable();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table: %d seats, at least %d bodies, ring %.1f m, cooldown %.1f s%s%s."),
+		Places.tableSeats(), kArenaTableMinBodies, TableSeats.tuning().radius, Table.tuning().cooldown,
+		bTableAuto ? TEXT(", the autopilot sets it at full Load") : TEXT(""), bTableFill ? TEXT(", the Load filled while it is ready") : TEXT(""));
+#endif
+}
+
+void UFTArenaRunner::ResetTable()
+{
+	if (!bTable)
+	{
+		return;
+	}
+	ftcore::TableTuning Tuning;
+	Tuning.minBodies = kArenaTableMinBodies;
+	Tuning.cooldown = ftcore::tableCooldownForCap(kArenaTableCooldown, CarryCap);
+	Table.reset(Tuning, static_cast<double>(Fight.heldTime()));
+	TableSeats.reset(ftcore::TableRingTuning());
+	Fight.setTableSeats(ftcore::ArenaTableSeats());
+	TableLastRefusal = ftcore::TableError::None;
+	TableBegins = TableRefusals = TableSets = TableMostBodies = TableStands = TableLeaves = 0;
+	TableGutters = TableFails = TableClears = TableShares = TableShareHp = 0;
+	if (TableActor)
+	{
+		TableActor->SetActorHiddenInGame(true);
+	}
+}
+
+void UFTArenaRunner::BeginTableNow(double T)
+{
+	ftcore::Load Held;
+	Held.value = Fight.load();
+	const ftcore::Vec2 At = Bodies.player;
+	const ftcore::TableSpot Spot{At.x, At.y, TableSeats.tuning().radius};
+	const ftcore::TableError E = Table.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
+	if (E != ftcore::TableError::None)
+	{
+		++TableRefusals;
+		if (E != TableLastRefusal)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: table refused at %.2f s: %s."), T, TableErrorName(E));
+		}
+		TableLastRefusal = E;
+		return;
+	}
+	TableLastRefusal = ftcore::TableError::None;
+	const int32 Spent = Fight.spendLoad(Fight.load());
+	TableSeats.place(At);
+	++TableBegins;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table setting at %.2f s at (%.2f, %.2f): %d Load spent, %d would sit."),
+		T, At.x, At.y, Spent, TableSeats.wouldSit(Fight, Bodies, At));
+}
+
+void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
+{
+	if (!bTable)
+	{
+		return;
+	}
+	const double T = static_cast<double>(Fight.heldTime());
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		if (E.type == ftcore::ArenaEventType::TableShare)
+		{
+			++TableShares;
+			TableShareHp += E.amount;
+		}
+	}
+	// The setter staggered or downed while it sets: the table fails.
+	if (Table.state() == ftcore::TableState::Setting)
+	{
+		const ftcore::ArenaAction Act = Out.player.action;
+		if (Act == ftcore::ArenaAction::Hitstun || Act == ftcore::ArenaAction::GuardBreak || Act == ftcore::ArenaAction::Downed)
+		{
+			Table.interrupt(T);
+		}
+	}
+	// The autopilot: at full Load, with enough bodies in reach (the setter counted).
+	if (bAutoPlay && Table.state() == ftcore::TableState::Ready && Fight.hp() > 0)
+	{
+		if (bTableFill && Fight.load() < Fight.loadCap())
+		{
+			Fight.giveLoad(Fight.loadCap() - Fight.load());
+		}
+		if (bTableAuto && Fight.load() >= Fight.loadCap()
+			&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies)
+		{
+			BeginTableNow(T);
+		}
+	}
+	const auto Drain = [&]()
+	{
+		for (const ftcore::TableEvent& E : Table.update(T))
+		{
+			switch (E.type)
+			{
+			case ftcore::TableEventType::Set:
+			{
+				const int32 Sat = TableSeats.sit(Fight, Bodies);
+				++TableSets;
+				TableMostBodies = FMath::Max(TableMostBodies, Sat);
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table set at %.2f s: %d bodies (seats 0x%x, waiting 0x%x)."),
+					E.at, Sat, static_cast<uint32>(TableSeats.seated()), static_cast<uint32>(TableSeats.waiting()));
+				Table.checkBodies(Sat, T);
+				break;
+			}
+			case ftcore::TableEventType::Guttered:
+				++TableGutters;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table guttered at %.2f s: %d bodies."), E.at, TableSeats.bodies());
+				TableSeats.clear();
+				break;
+			case ftcore::TableEventType::Failed:
+				++TableFails;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table failed at %.2f s: the setter was struck."), E.at);
+				TableSeats.clear();
+				break;
+			case ftcore::TableEventType::Cleared:
+				++TableClears;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: table cleared at %.2f s."), E.at);
+				TableSeats.clear();
+				break;
+			default:
+				break;
+			}
+		}
+	};
+	Drain();
+	if (Table.set())
+	{
+		const ftcore::TableRingChange Change = TableSeats.update(Fight, Bodies);
+		if (Change.any())
+		{
+			TableStands += Change.stood;
+			TableLeaves += Change.left;
+			TableMostBodies = FMath::Max(TableMostBodies, TableSeats.bodies());
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: table at %.2f s: %d stood, %d left, %d sat: %d bodies."),
+				T, Change.stood, Change.left, Change.sat, TableSeats.bodies());
+			Table.checkBodies(TableSeats.bodies(), T);
+			Drain();
+		}
+	}
+	Fight.setTableSeats(Table.set() && TableSeats.placed()
+		? TableSeats.seats(Fight, Table.tuning().enemyShare, TablePlaces.tableSeats())
+		: ftcore::ArenaTableSeats());
+	if (Table.state() == ftcore::TableState::Setting || Table.set())
+	{
+		SpawnTable();
+	}
+}
+
+void UFTArenaRunner::SpawnTable()
+{
+	UWorld* World = GetWorld();
+	if (TableActor || !World)
+	{
+		return;
+	}
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	if (!Cube || !Base)
+	{
+		return;
+	}
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	TableActor = World->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
+	if (!TableActor)
+	{
+		return;
+	}
+	UStaticMeshComponent* Root = TableActor->GetStaticMeshComponent();
+	Root->SetMobility(EComponentMobility::Movable);
+	Root->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Root->SetCanEverAffectNavigation(false);
+	UMaterialInstanceDynamic* Ring = UMaterialInstanceDynamic::Create(Base, TableActor);
+	Ring->SetVectorParameterValue(TEXT("Color"), kArenaTableRingColor);
+	UMaterialInstanceDynamic* Line = UMaterialInstanceDynamic::Create(Base, TableActor);
+	Line->SetVectorParameterValue(TEXT("Color"), kArenaTableLineColor);
+	const auto Part = [&](UMaterialInstanceDynamic* Paint) -> UStaticMeshComponent*
+	{
+		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(TableActor);
+		C->SetMobility(EComponentMobility::Movable);
+		C->SetStaticMesh(Cube);
+		C->SetMaterial(0, Paint);
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetCanEverAffectNavigation(false);
+		C->SetCastShadow(false);
+		C->SetupAttachment(Root);
+		C->RegisterComponent();
+		TableActor->AddInstanceComponent(C);
+		return C;
+	};
+	// A segment of a circle of radius R round the actor: the cube is 1 m on a side, centred.
+	const auto Circle = [&](TArray<TObjectPtr<UStaticMeshComponent>>& Parts, int32 Count, float Radius, float Width)
+	{
+		const float Chord = 2.f * Radius * FMath::Sin(PI / static_cast<float>(Count)) + Width * 0.5f;
+		for (int32 I = 0; I < Count; ++I)
+		{
+			const float A = (static_cast<float>(I) + 0.5f) / static_cast<float>(Count) * 2.f * PI;
+			UStaticMeshComponent* C = Part(Ring);
+			C->SetRelativeLocation(FVector(FMath::Cos(A) * Radius * 100.0, FMath::Sin(A) * Radius * 100.0, kArenaTableThick * 50.0 + 1.0));
+			C->SetRelativeRotation(FRotator(0.0, FMath::RadiansToDegrees(A) + 90.0, 0.0));
+			C->SetRelativeScale3D(FVector(Chord, Width, kArenaTableThick));
+			Parts.Add(C);
+		}
+	};
+	const float Radius = TableSeats.tuning().radius;
+	Circle(TableRingParts, kArenaTableRingParts, Radius, kArenaTableRingWidth);
+	Circle(TableArcParts, kArenaTableArcParts, Radius - kArenaTableArcInset, kArenaTableArcWidth);
+	for (int32 I = 0; I < 1 + MaxEnemies; ++I)
+	{
+		UStaticMeshComponent* C = Part(Line);
+		C->SetUsingAbsoluteLocation(true);
+		C->SetUsingAbsoluteRotation(true);
+		C->SetUsingAbsoluteScale(true);
+		C->SetVisibility(false);
+		TableLineParts.Add(C);
+	}
+	TableActor->SetActorHiddenInGame(true);
+}
+
+void UFTArenaRunner::PaintTable(float Alpha)
+{
+	if (!bTable || !TableActor)
+	{
+		return;
+	}
+	const ftcore::TableState State = Table.state();
+	const bool bShow = (State == ftcore::TableState::Setting || State == ftcore::TableState::Set) && TableSeats.placed();
+	TableActor->SetActorHiddenInGame(!bShow);
+	if (!bShow)
+	{
+		return;
+	}
+	TableActor->SetActorLocation(ToWorld(TableSeats.centre()));
+	// The arc: filling while it sets, then the time left while set (clockwise from the front).
+	const double T = static_cast<double>(Fight.heldTime());
+	const ftcore::TableTuning& Tuning = Table.tuning();
+	float Share = 0.f;
+	if (State == ftcore::TableState::Setting)
+	{
+		Share = Tuning.setTime > 0.0 ? 1.f - static_cast<float>(FMath::Clamp((Table.until() - T) / Tuning.setTime, 0.0, 1.0)) : 1.f;
+	}
+	else
+	{
+		Share = static_cast<float>(FMath::Clamp((Table.until() - T) / Tuning.setDuration, 0.0, 1.0));
+	}
+	const int32 Lit = FMath::CeilToInt32(Share * static_cast<float>(TableArcParts.Num()));
+	for (int32 I = 0; I < TableArcParts.Num(); ++I)
+	{
+		TableArcParts[I]->SetVisibility(I < Lit);
+	}
+	// A thin line from each seated body to the setter, on the ground.
+	const ftcore::Vec2 Setter = ArenaLerp(PrevBodies.player, Bodies.player, Alpha);
+	const auto Draw = [&](int32 Slot, bool bOn, const ftcore::Vec2& From)
+	{
+		if (!TableLineParts.IsValidIndex(Slot))
+		{
+			return;
+		}
+		UStaticMeshComponent* C = TableLineParts[Slot];
+		const ftcore::Vec2 Span{Setter.x - From.x, Setter.y - From.y};
+		const float Length = ArenaLength(Span);
+		C->SetVisibility(bOn && State == ftcore::TableState::Set && Length > 0.05f);
+		if (!C->IsVisible())
+		{
+			return;
+		}
+		const ftcore::Vec2 Mid{(Setter.x + From.x) * 0.5f, (Setter.y + From.y) * 0.5f};
+		C->SetWorldLocation(ToWorld(Mid) + FVector(0.0, 0.0, kArenaTableThick * 50.0 + 1.5));
+		C->SetWorldRotation(FRotator(0.0, FMath::RadiansToDegrees(FMath::Atan2(Span.y, Span.x)), 0.0));
+		C->SetWorldScale3D(FVector(Length, kArenaTableLineWidth, kArenaTableThick));
+	};
+	const uint16 Seated = TableSeats.seated();
+	Draw(0, (Seated & ftcore::kTableAllyBit) != 0, ArenaLerp(PrevBodies.ally, Bodies.ally, Alpha));
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		const size_t E = static_cast<size_t>(I);
+		const bool bOn = E < Fight.enemyCount() && (Seated & ftcore::tableEnemyBit(E)) != 0;
+		Draw(1 + I, bOn, ArenaLerp(PrevBodies.enemies[E], Bodies.enemies[E], Alpha));
+	}
+}
+
+void UFTArenaRunner::LogTable() const
+{
+	if (!bTable)
+	{
+		return;
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d state %s."),
+		TableBegins, TableRefusals, TableSets, TableMostBodies, TableStands, TableLeaves, TableGutters, TableFails, TableClears,
+		TableShares, TableShareHp, TableStateName(Table.state()));
+}
+
+void UFTArenaRunner::EndTable()
+{
+	TableRingParts.Reset();
+	TableArcParts.Reset();
+	TableLineParts.Reset();
+	if (TableActor)
+	{
+		TableActor->Destroy();
+		TableActor = nullptr;
+	}
 }

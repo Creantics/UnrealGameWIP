@@ -25,6 +25,9 @@
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
+#include "ftcore/Places.h"
+#include "ftcore/TableRing.h"
+#include "ftcore/TableSet.h"
 #include "ftcore/BeatChoreo.h"
 #include "ftcore/InputBindings.h"
 
@@ -52,6 +55,7 @@ struct Settings;
 
 class AFTArenaFighter;
 class AStaticMeshActor;
+class UStaticMeshComponent;
 class APlayerController;
 class UWorld;
 class UAnimSequence;
@@ -381,6 +385,16 @@ private:
 	void MoveAlly();
 	void PlaceAlly(float Alpha);
 	void LogCarry() const;
+	// Setting the table (-ArenaTable, a carrying run's): its switches, its reset (each attempt), its step after the
+	// fight's, its ring drawn, its log line and its ring's removal.
+	void BeginTable(const ftcore::PlaceTable& Places, bool bCapArg);
+	void ResetTable();
+	void TickTable(const ftcore::ArenaOutput& Out);
+	void BeginTableNow(double T);
+	void SpawnTable();
+	void PaintTable(float Alpha);
+	void LogTable() const;
+	void EndTable();
 	// Briefs (Lattice slice 1), off unless -ArenaBrief=<id> asks (never in a shipping build until promoted): the
 	// lead's kit takes that Brief's kit from Data/Battle/briefs.json (the cylinder and the kit changes) before the
 	// fight begins. Only the guns lead's own kit has Briefs; any other is left alone with a warning.
@@ -412,6 +426,10 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// A set table's ring on the ground, its countdown arc and the lines to the setter (-ArenaTable; its parts are its
+	// components).
+	UPROPERTY()
+	TObjectPtr<AStaticMeshActor> TableActor;
 	// The impact jolt's camera modifier (added to the player's camera manager on the first frame it is there) and the
 	// off-frame stinger's procedural voice and its sound (null with no audio device: the marker carries the tell alone).
 	UPROPERTY()
@@ -697,6 +715,29 @@ private:
 	const FFTLeadLook* AllyLook = nullptr;
 	double AllyHitTime = -1e9;
 	int32 CarrySharedOffers = 0;
+	// Setting the table (BeginTable): on, the autopilot sets it at full Load, the Load filled for a capture; the
+	// places it counts, its clock and ring, and the counts for the TABLE line.
+	bool bTable = false;
+	bool bTableAuto = false;
+	bool bTableFill = false;
+	ftcore::PlaceTable TablePlaces;
+	ftcore::TableSet Table;
+	ftcore::TableRing TableSeats;
+	int32 TableBegins = 0;
+	int32 TableRefusals = 0;
+	int32 TableSets = 0;
+	int32 TableMostBodies = 0;
+	int32 TableStands = 0;
+	int32 TableLeaves = 0;
+	int32 TableGutters = 0;
+	int32 TableFails = 0;
+	int32 TableClears = 0;
+	int32 TableShares = 0;
+	int32 TableShareHp = 0;
+	ftcore::TableError TableLastRefusal = ftcore::TableError::None;
+	TArray<TObjectPtr<UStaticMeshComponent>> TableRingParts; // the ring's segments
+	TArray<TObjectPtr<UStaticMeshComponent>> TableArcParts;  // the countdown arc's
+	TArray<TObjectPtr<UStaticMeshComponent>> TableLineParts; // a line per seat but the setter's: the ally, each enemy
 	FString BriefId; // -ArenaBrief: the Brief laid over the kit ("" none)
 	FString BriefStats;    // the five stats the kit was built from, for the log
 	int32 BriefRating = 0; // -ArenaRating: the Brief's stats at this Rating (0: every stat 10, the plain kit)
