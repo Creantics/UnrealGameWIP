@@ -128,8 +128,9 @@ FLookWaves W;
 Grad += ReactGrad;
 float Foam = saturate(ReactFoam);
 RoughOut = saturate(lerp(lerp(max(Rough, 0.18), Rough, Deep), 0.55, Foam));
-FoamOut = saturate(Foam + ReactDark * (1.0 - Foam));
-TopOut = lerp(FoamColor.rgb, float3(0.012, 0.016, 0.018), saturate(ReactDark * (1.0 - Foam) / max(FoamOut, 1e-3)));
+FoamOut = Foam;
+TopOut = FoamColor.rgb;
+DarkOut = ReactDark * (1.0 - Foam);
 return normalize(float3(-Grad.x, -Grad.y, 1.0));
 )HLSL");
 
@@ -176,15 +177,19 @@ float ReactDark = 0.0;
 	float LeadDst = length(LeadRel);
 	float LeadClose = Wading * (1.0 - smoothstep(Lead.z * 2.0, Lead.z * 4.5, LeadDst));
 	float LeadGap = max(BehindDepth - EyeDepth, 0.0);
-	// The line where the surface meets the body: a thin line of foam, broken along its length and never still, and
-	// just outside it a dark band where the water is drawn up against the body.
-	float LeadBreak = smoothstep(0.42, 0.68, W.Noise(P / 4.5 + Time * float2(0.9, -0.7)));
-	float LeadTouch = LeadClose * (1.0 - smoothstep(1.0, 4.5, LeadGap)) * LeadBreak;
-	float LeadEdge = LeadClose * smoothstep(2.0, 6.0, LeadGap) * (1.0 - smoothstep(14.0, 45.0, LeadGap));
+	// The line where the surface meets the body: a thin line of foam (the water no more than a finger deep over the
+	// body along the view), in short lengths with gaps between them, thick and thin, never still; and just outside it
+	// a dark band a hand wide where the water is drawn up against the body.
+	float LeadBreak = smoothstep(0.4, 0.62, W.Noise(P / 3.1 + Time * float2(0.9, -0.7))) * lerp(0.55, 1.0, W.Noise(P / 11.0 - Time * float2(0.3, 0.2)));
+	float LeadTouch = LeadClose * (1.0 - smoothstep(0.6, 3.0, LeadGap)) * LeadBreak;
+	float LeadEdge = LeadClose * smoothstep(1.0, 4.0, LeadGap) * (1.0 - smoothstep(10.0, 24.0, LeadGap));
 	float LeadOff = LeadDst - Lead.z;
 	float LeadRing = Wading * exp(-LeadOff * LeadOff / max(0.18 * Lead.z * Lead.z, 1.0));
-	ReactFoam += ContactFoam * (LeadTouch + 0.3 * LeadRing * smoothstep(0.5, 0.85, Clump));
-	ReactDark = ContactDark * max(LeadEdge, 0.45 * Wading * (1.0 - smoothstep(Lead.z * 1.1, Lead.z * 2.2, LeadDst)));
+	ReactFoam += ContactFoam * (LeadTouch + 0.15 * LeadRing * smoothstep(0.5, 0.85, Clump));
+	// (The dark is the water's own there: the surface's code hands it on as more absorption (DarkOut), so what stands
+	// in the water goes dark just under the line. Laid on the water as a film it mirrored the sky and the walls, and
+	// lay on the body as a pale veil.)
+	ReactDark = ContactDark * LeadEdge;
 	if (Wake.w > 0.002 && Wading > 0.0)
 	{
 		float2 WakeDir = normalize(Wake.xy + float2(1e-5, 0.0));
@@ -213,9 +218,11 @@ float ReactDark = 0.0;
 }
 )HLSL");
 
-// The water's medium: the look's coefficients are per metre, the engine's per centimetre.
+// The water's medium: the look's coefficients are per metre, the engine's per centimetre. Dark (the surface's DarkOut,
+// 0..1) is the dark band where the water meets a body: up to 0.14 more absorption a centimetre, so what stands in the
+// water a hand's width behind the surface is seen darkened.
 const TCHAR* const kWaterMediumCode = TEXT(R"HLSL(ScatterOut = max(Scatter.rgb, 0.0) * 0.01 * max(Clear, 0.0);
-return max(Absorb.rgb, 0.0) * 0.01 * max(Clear, 0.0);
+return max(Absorb.rgb, 0.0) * 0.01 * max(Clear, 0.0) + 0.14 * saturate(Dark);
 )HLSL");
 
 // The wet stone: a photographed surface laid on the world position along each face's main axis (the floor's from above,
@@ -254,9 +261,9 @@ return max(lerp(Soaked, 0.35 * Soaked, Puddle), 0.02);
 // Channel is the channel's middle (xy, world cm) and its half width across the flow (z, cm). The speed falls from the
 // middle to an eighth at the walls. The ripples (two sizes, RippleCm and 0.37 of it) are carried along it by two
 // copies half a period apart, each fading out before it jumps back and coming in on a new patch, so the surface
-// travels without a visible reset however unevenly it is sheared. Long thin streaks of scum ride the same way, broken
-// into patches, and a ragged line of it lies along each wall. Where the water lies less than 25 cm deep over what's
-// behind it the ripples calm, as the look's water's do.
+// travels without a visible reset however unevenly it is sheared. A ragged line of scum lies along each wall; the open
+// water carries none. Where the water lies less than 25 cm deep over what's behind it the ripples calm, as the look's
+// water's do.
 const TCHAR* const kCanalWaterCode = FT_LOOK_NOISE_STRUCT(FLookCanal) TEXT(R"HLSL(FLookCanal W;
 float2 P = WorldPos.xy;
 float2 Dir = normalize(Flow.xy + float2(1e-5, 0.0));
@@ -286,11 +293,7 @@ for (int K = 0; K < 2; ++K)
 	float2 F = float2(W.Noise(QJ + float2(E, 0.0)) - W.Noise(QJ - float2(E, 0.0)), W.Noise(QJ + float2(0.0, E)) - W.Noise(QJ - float2(0.0, E))) / (2.0 * E);
 	G += 0.035 * float2(0.4535961 * F.x - 0.8912074 * F.y, 0.8912074 * F.x + 0.4535961 * F.y);
 	Grad += Weight * G;
-	// What floats on it: dust and seed specks a centimetre or two across, a few to a square metre, in loose drifts.
-	float2 S = float2(dot(U, Dir), dot(U, Perp));
-	float Streak = W.Noise(float2(S.x / 3.2, S.y / 2.4) + Jump);
-	float Patch = W.Noise(float2(S.x / 430.0, S.y / 120.0) - Jump);
-	Foam += Weight * smoothstep(0.93, 0.99, Streak) * smoothstep(0.55, 0.85, Patch);
+	// (Nothing is drawn floating on it: specks out of a noise read as pale dashes from above.)
 	Norm += Weight * Weight;
 }
 Grad /= sqrt(max(Norm, 1e-4));
@@ -318,9 +321,9 @@ Grad += ReactGrad;
 float Froth = saturate(ReactFoam);
 Foam = saturate(Foam + Froth);
 RoughOut = saturate(lerp(max(Rough, 0.02), 0.55, Foam));
-FoamOut = saturate(Foam + ReactDark * (1.0 - Foam));
-float3 Top = lerp(FoamColor.rgb, float3(0.62, 0.64, 0.6), saturate(Froth / max(Foam, 1e-3)));
-TopOut = lerp(Top, float3(0.012, 0.016, 0.012), saturate(ReactDark * (1.0 - Foam) / max(FoamOut, 1e-3)));
+FoamOut = Foam;
+TopOut = lerp(FoamColor.rgb, float3(0.5, 0.52, 0.5), saturate(Froth / max(Foam, 1e-3)));
+DarkOut = ReactDark * (1.0 - Foam);
 return normalize(float3(-Grad.x, -Grad.y, 1.0));
 )HLSL");
 
@@ -334,10 +337,10 @@ const TCHAR* const kCanalBedCode = FT_LOOK_NOISE_STRUCT(FLookBed) TEXT(R"HLSL(FL
 float3 Up = normalize(VertexNormal);
 float H = WorldPos.z - WaterZ;
 // Faces that look up are the bed where the water lies deep on them (a slope the lead walks too): silt settles from
-// some 40 cm under the surface and covers them from a metre down. Over the water and just under it they are the
+// some 50 cm under the surface and covers them from 1.2 m down. Over the water and just under it they are the
 // wall's concrete (a flight of steps, a slip), so a step or a ramp is seen going on down into the water.
 float Level = smoothstep(0.5, 0.75, Up.z);
-float Floor = Level * (1.0 - smoothstep(-100.0, -40.0, H));
+float Floor = Level * (1.0 - smoothstep(-120.0, -50.0, H));
 float2 P = WorldPos.xy;
 float Silt = B.Height(P / 170.0 + 2.3);
 float Grit = B.Height(P / 9.0 + 7.9);
@@ -345,21 +348,23 @@ float Fine = B.Noise(P / 1.9 + 3.3);
 float3 Bed = lerp(float3(0.11, 0.10, 0.075), float3(0.25, 0.225, 0.17), Silt) * lerp(0.85, 1.12, Grit) * lerp(0.9, 1.08, Fine);
 // Gravel: pebbles a few centimetres across, thick in drifts and thin between them, each its own grey.
 float Drift = smoothstep(0.3, 0.7, B.Height(P / 240.0 + 13.0));
-// (Their field is turned off the lattice's axes and pushed about by a second one, so no pebble shows a square side.)
-float2 Warp = float2(B.Noise(P / 3.3 + 5.0), B.Noise(P / 3.3 + 19.0)) - 0.5;
-float2 Pq = float2(0.799 * P.x - 0.602 * P.y, 0.602 * P.x + 0.799 * P.y) / 4.9 + 1.6 * Warp + 11.0;
+// (Their field is turned off the lattice's axes and pushed about a little by a second, broader one, so no pebble
+// shows a square side; pushed far by a fine one, every outline broke into dark squiggles seen from above.)
+float2 Warp = float2(B.Noise(P / 13.0 + 5.0), B.Noise(P / 13.0 + 19.0)) - 0.5;
+float2 Pq = float2(0.799 * P.x - 0.602 * P.y, 0.602 * P.x + 0.799 * P.y) / 4.9 + 0.7 * Warp + 11.0;
 float Pebble = smoothstep(0.56, 0.86, B.Height(Pq)) * lerp(0.05, 0.6, Drift);
 float3 PebbleColor = Bed * lerp(0.7, 1.45, B.Noise(Pq * 0.71 + 40.0));
 Bed = lerp(Bed, PebbleColor, Pebble);
 // A stone here and there, a hand or two across, half sunk in the silt, mottled as the silt is.
-float StoneField = B.Height(float2(0.799 * P.x + 0.602 * P.y, 0.799 * P.y - 0.602 * P.x) / 24.0 + 2.2 * Warp + 11.0);
-float Stone = smoothstep(0.70, 0.79, StoneField);
+float2 StoneAt = float2(0.799 * P.x + 0.602 * P.y, 0.799 * P.y - 0.602 * P.x) / 24.0 + 0.3 * Warp + 11.0;
+float StoneField = B.Height(StoneAt);
+float Stone = smoothstep(0.70, 0.80, StoneField);
 float3 StoneColor = lerp(float3(0.12, 0.12, 0.11), float3(0.25, 0.24, 0.21), B.Noise(P / 37.0 + 5.1)) * lerp(0.7, 1.15, Grit) * lerp(0.85, 1.1, Fine);
 Bed = lerp(Bed, StoneColor, Stone);
-// Weed: dark soft drifts.
-float Weed = smoothstep(0.5, 0.72, B.Height(P / 330.0 + 21.0)) * smoothstep(0.3, 0.75, B.Height(P / 7.0 + 2.0 * Warp + 1.7)) * (1.0 - Stone);
-Bed = lerp(Bed, float3(0.04, 0.075, 0.03), 0.7 * Weed);
-float2 TurnedSlope = B.Slope(float2(0.799 * P.x + 0.602 * P.y, 0.799 * P.y - 0.602 * P.x) / 24.0 + 2.2 * Warp + 11.0) * Stone * (1.0 - smoothstep(0.79, 0.88, StoneField)) * 0.5;
+// Weed: dark soft drifts a few metres across, thicker and thinner within over a hand's width or more; no fine marks.
+float Weed = smoothstep(0.5, 0.8, B.Height(P / 330.0 + 21.0)) * lerp(0.45, 1.0, B.Height(float2(0.602 * P.x + 0.799 * P.y, 0.799 * P.x - 0.602 * P.y) / 46.0 + 1.7)) * (1.0 - Stone);
+Bed = lerp(Bed, float3(0.05, 0.08, 0.035), 0.55 * Weed);
+float2 TurnedSlope = B.Slope(StoneAt) * Stone * (1.0 - smoothstep(0.80, 0.9, StoneField)) * 0.3;
 float2 BedSlope = float2(0.799 * TurnedSlope.x - 0.602 * TurnedSlope.y, 0.602 * TurnedSlope.x + 0.799 * TurnedSlope.y);
 float Along = WorldPos.x + WorldPos.y;
 float3 Wall = float3(0.36, 0.35, 0.33) * lerp(0.75, 1.1, B.Height(float2(Along, WorldPos.z) / 95.0));
@@ -367,9 +372,14 @@ Wall *= lerp(0.7, 1.0, smoothstep(0.25, 0.6, B.Noise(float2(Along / 17.0, WorldP
 float Ragged = B.Height(float2(Along / 41.0, 3.3));
 float Wet = 1.0 - smoothstep(4.0, 10.0 + 20.0 * Ragged, H);
 float Growth = (1.0 - smoothstep(2.0, 9.0 + 8.0 * Ragged, H)) * smoothstep(-6.0, 0.0, H);
-// (The slime under the line is thick on a wall's face and thin on a tread or a ramp, where feet and the wash keep it down.)
-float Under = (1.0 - smoothstep(-8.0, 0.0, H)) * lerp(1.0, 0.35, Level);
-Wall = lerp(Wall, 0.42 * Wall, Wet);
+// (The slime under the line is thick on a wall's face; on a tread or a ramp, where feet and the wash keep it down, it
+// is thin at the line and thickens over the first metre down.)
+float Under = (1.0 - smoothstep(-8.0, 0.0, H)) * lerp(1.0, 0.05 + 0.3 * saturate(-H / 100.0), Level);
+// A tread or a ramp under the water keeps most of its concrete's own lightness (the dark of a wet face in the air is
+// its sheen's doing), so from above it is seen going on down through the first metre, the water's own colour and the
+// silt taking it over with depth.
+float Sunken = Level * (1.0 - smoothstep(-6.0, 0.0, H));
+Wall = lerp(Wall, 0.42 * Wall, Wet * (1.0 - 0.9 * Sunken));
 Wall = lerp(Wall, float3(0.07, 0.11, 0.035), 0.7 * Growth);
 Wall = lerp(Wall, float3(0.05, 0.065, 0.035), 0.8 * Under);
 NormalOut = normalize(Up + Floor * float3(-BedSlope.x, -BedSlope.y, 0.0) * 0.9);
@@ -590,7 +600,9 @@ float2 Out = UV;
 if (T > 0.0 && Dist > T)
 {
 	float3 H = CamPos + D * T;
-	float3 N = normalize(float3(-Ripple.xy * 0.4, 1.0));
+	// (The mirror takes a small share of the ripples' slope, less the further off the surface is met: bent by more,
+	// what it shows broke into a busy net of blobs overhead.)
+	float3 N = normalize(float3(-Ripple.xy * (0.4 * MirrorRipple / (1.0 + T / 500.0)), 1.0));
 	float3 R = D - 2.0 * dot(D, N) * N;
 	R.z = min(R.z, -0.03);
 	R = normalize(R);
@@ -749,6 +761,8 @@ if (Dist > TExit)
 	}
 	Fres *= 1.0 - saturate(Pierce);
 	float Glint = Ripple.x + Ripple.y;
+	// (The mirror's own shading by the slope is a share of the window's and eases off with distance, as its bending does.)
+	float Sheen = Glint * MirrorRipple / (1.0 + TExit / 500.0);
 	// Where the frame does not hold what the mirror shows, a bed is supposed at BedZ: its own dull colour in the frame's
 	// light, seen through the water the turned ray crosses and shaded softly by the surface's slope, so the mirror is
 	// neither one flat colour nor a pattern of its own.
@@ -756,15 +770,18 @@ if (Dist > TExit)
 	float Down = max(WaterZ - BedZ, 20.0) / max(-Turned.z, 0.05);
 	float3 BedKept = exp(-Ext * Down * 0.01);
 	float3 BedCol = float3(0.20, 0.18, 0.13) * Lum * 1.6;
-	float3 Shine = (BedCol * BedKept + Fog * (1.0 - BedKept)) * clamp(1.0 + 0.5 * Glint, 0.75, 1.3);
+	float3 Shine = (BedCol * BedKept + Fog * (1.0 - BedKept)) * clamp(1.0 + 0.5 * Sheen, 0.75, 1.3);
 	float3 Kept = exp(-Ext * MirrorPath);
-	float3 Image = (Mirrored.rgb * Kept + Fog * (1.0 - Kept)) * MirrorGain * (0.85 + 0.6 * max(Glint, -0.2));
+	// What the mirror shows is the mean of five taps, spread wider the further off the surface is met (MirrorSoft).
+	float3 Seen = 0.36 * Mirrored.rgb + 0.16 * (Mir1.rgb + Mir2.rgb + Mir3.rgb + Mir4.rgb);
+	float3 Image = (Seen * Kept + Fog * (1.0 - Kept)) * MirrorGain * (0.88 + 0.6 * max(Sheen, -0.2));
 	float3 Mirror = lerp(Shine, Image, saturate(MirrorHit));
 	float3 Window = Refracted.rgb * WindowGain * max(1.0 + 1.4 * Glint, 0.45);
 	// What stands in the surface is the same lit body above it as below: no window's glare, a little dimmer.
 	Window = lerp(Window, Refracted.rgb * PierceGain * clamp(1.0 + 0.35 * Glint, 0.85, 1.15), saturate(Pierce));
 	Col = lerp(Window, Mirror, Fres);
 }
+)HLSL") TEXT(R"HLSL(// (The code is two literals: one would pass the compiler's length for a string.)
 // The shafts: the light's patches on the surface are drawn out three times along the sun's own heading, as the swell
 // that makes them is, so they stand as curtains seen along it and as slanted beams seen across it.
 float Shaft = 0.0;
@@ -899,8 +916,8 @@ UMaterialParameterCollection* BuildWaterCollection()
 	PutVector(TEXT("Sun"), FLinearColor(0.f, 0.f, 1.f, 0.f));
 	PutScalar(TEXT("RingSlope"), 0.5f);
 	PutScalar(TEXT("RingFoam"), 0.35f);
-	PutScalar(TEXT("ContactFoam"), 0.7f);
-	PutScalar(TEXT("ContactDark"), 0.6f);
+	PutScalar(TEXT("ContactFoam"), 0.75f);
+	PutScalar(TEXT("ContactDark"), 0.85f);
 	// A canal's own: how much of the look's absorption and scattering its water keeps (so its bed shows through a
 	// metre of it and the deep middle goes dark), its specks, its ripples and cat's paws; the sea's share likewise;
 	// the sun's net on a bed seen from above.
@@ -966,12 +983,14 @@ UMaterial* BuildWater(UMaterialParameterCollection* Look, UMaterialParameterColl
 	AddOutput(Waves, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Waves, TEXT("FoamOut"), CMOT_Float1);
 	AddOutput(Waves, TEXT("TopOut"), CMOT_Float3);
+	AddOutput(Waves, TEXT("DarkOut"), CMOT_Float1);
 	Waves->RebuildOutputs();
 
 	UMaterialExpressionCustom* Medium = AddCustom(Material, TEXT("FTLookWaterMedium"), FTLookMaterialsBuild::kWaterMediumCode, CMOT_Float3, 900);
 	AddInput(Medium, TEXT("Absorb"), AddLook(Material, Look, TEXT("WaterAbsorb"), 900));
 	AddInput(Medium, TEXT("Scatter"), AddLook(Material, Look, TEXT("WaterScatter"), 1000));
 	AddInput(Medium, TEXT("Clear"), AddLook(Material, WaterParams, TEXT("SeaClear"), 1050));
+	AddInputAt(Medium, TEXT("Dark"), Waves, 4);
 	AddOutput(Medium, TEXT("ScatterOut"), CMOT_Float3);
 	Medium->RebuildOutputs();
 
@@ -1026,12 +1045,14 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look, UMaterialParamete
 	AddOutput(Waves, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Waves, TEXT("FoamOut"), CMOT_Float1);
 	AddOutput(Waves, TEXT("TopOut"), CMOT_Float3);
+	AddOutput(Waves, TEXT("DarkOut"), CMOT_Float1);
 	Waves->RebuildOutputs();
 
 	UMaterialExpressionCustom* Medium = AddCustom(Material, TEXT("FTLookWaterMedium"), FTLookMaterialsBuild::kWaterMediumCode, CMOT_Float3, 900);
 	AddInput(Medium, TEXT("Absorb"), AddLook(Material, Look, TEXT("WaterAbsorb"), 900));
 	AddInput(Medium, TEXT("Scatter"), AddLook(Material, Look, TEXT("WaterScatter"), 1000));
 	AddInput(Medium, TEXT("Clear"), AddLook(Material, WaterParams, TEXT("CanalClear"), 1050));
+	AddInputAt(Medium, TEXT("Dark"), Waves, 4);
 	AddOutput(Medium, TEXT("ScatterOut"), CMOT_Float3);
 	Medium->RebuildOutputs();
 
@@ -1040,8 +1061,8 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look, UMaterialParamete
 	Water->ScatteringCoefficients.Connect(1, Medium);
 	Water->PhaseG.Connect(0, AddLook(Material, Look, TEXT("WaterPhaseG"), 1100));
 
-	// The top layer is the scum (pale, as much of it as the code's foam), the froth the lead stirs up and the dark
-	// line where it stands in the water.
+	// The top layer is the scum (pale, as much of it as the code's foam) and the froth the lead stirs up; the dark
+	// line where it stands in the water is the medium's (DarkOut).
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(3, Waves);
 	Inputs->Opacity.Connect(2, Waves);
@@ -1133,9 +1154,23 @@ UMaterial* BuildUnderwater(UMaterialParameterCollection* WaterParams)
 	AddInput(MirrorUv, TEXT("BedZ"), BedZ);
 	AddInput(MirrorUv, TEXT("MirrorReach"), AddScalar(Material, TEXT("MirrorReach"), 3000.f, 790));
 	AddInput(MirrorUv, TEXT("MirrorThick"), AddScalar(Material, TEXT("MirrorThick"), 40.f, 795));
+	UMaterialExpression* const MirrorRipple = AddScalar(Material, TEXT("MirrorRipple"), 0.3f, 797);
+	AddInput(MirrorUv, TEXT("MirrorRipple"), MirrorRipple);
 	AddOutput(MirrorUv, TEXT("HitOut"), CMOT_Float1);
 	AddOutput(MirrorUv, TEXT("PathOut"), CMOT_Float1);
 	MirrorUv->RebuildOutputs();
+	// The mirror's four taps about its own (kUnderwaterCode's Seen): out by MirrorSoft of the view at 9 m and beyond,
+	// by less nearer, so the mirror softens with distance.
+	UMaterialExpression* const MirrorSoft = AddScalar(Material, TEXT("MirrorSoft"), 0.006f, 799);
+	auto MirrorTap = [Material, &SceneAt, MirrorUv, Ripple, MirrorSoft](float U, float V, int32 Y)
+	{
+		UMaterialExpressionCustom* Uv = AddCustom(Material, TEXT("FTLookUnderMirrorTapUv"),
+			*FString::Printf(TEXT("return clamp(At + float2(%.3f, %.3f) * (Soft * saturate(Ripple.z / 900.0)), 0.002, 0.998);"), U, V), CMOT_Float2, Y);
+		AddInput(Uv, TEXT("At"), MirrorUv);
+		AddInput(Uv, TEXT("Ripple"), Ripple);
+		AddInput(Uv, TEXT("Soft"), MirrorSoft);
+		return SceneAt(Uv, Y);
+	};
 
 	UMaterialExpressionCustom* WobbleUv = AddCustom(Material, TEXT("FTLookUnderWobbleUv"), FTLookMaterialsBuild::kUnderWobbleUvCode, CMOT_Float2, 800);
 	AddInput(WobbleUv, TEXT("UV"), Screen);
@@ -1157,6 +1192,11 @@ UMaterial* BuildUnderwater(UMaterialParameterCollection* WaterParams)
 	AddInput(Under, TEXT("Mirrored"), SceneAt(MirrorUv, 1250));
 	AddInputAt(Under, TEXT("MirrorHit"), MirrorUv, 1);
 	AddInputAt(Under, TEXT("MirrorPath"), MirrorUv, 2);
+	AddInput(Under, TEXT("Mir1"), MirrorTap(1.f, 0.5f, 2640));
+	AddInput(Under, TEXT("Mir2"), MirrorTap(-0.5f, 1.f, 2700));
+	AddInput(Under, TEXT("Mir3"), MirrorTap(-1.f, -0.5f, 2760));
+	AddInput(Under, TEXT("Mir4"), MirrorTap(0.5f, -1.f, 2820));
+	AddInput(Under, TEXT("MirrorRipple"), MirrorRipple);
 	AddInput(Under, TEXT("Up1"), ShiftAt(-0.009f, 2400));
 	AddInput(Under, TEXT("Up2"), ShiftAt(-0.022f, 2460));
 	AddInput(Under, TEXT("Dn1"), ShiftAt(0.009f, 2520));

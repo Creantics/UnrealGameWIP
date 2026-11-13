@@ -635,8 +635,14 @@ FVector2D AFTPartyFollower::KeepAshore(const FVector2D& Spot, const FVector& Was
 		{
 			return bSolidIsFooting;
 		}
-		if (Bodies && Bodies->overWater(ftcore::Vec2{static_cast<float>(At.X * 0.01), static_cast<float>(At.Y * 0.01)},
-				static_cast<float>(Hit.ImpactPoint.Z * 0.01), static_cast<float>(kShoreMargin * 0.01)))
+		const ftcore::Vec2 Plan{static_cast<float>(At.X * 0.01), static_cast<float>(At.Y * 0.01)};
+		if (Bodies && Bodies->overWater(Plan, static_cast<float>(Hit.ImpactPoint.Z * 0.01), static_cast<float>(kShoreMargin * 0.01)))
+		{
+			return false;
+		}
+		// Nor is a flight of steps down a canal's wall, dry treads and all: it waits at the bank's top while the lead
+		// goes down to the water.
+		if (Bodies && Bodies->onSteps(Plan, static_cast<float>(Hit.ImpactPoint.Z * 0.01)))
 		{
 			return false;
 		}

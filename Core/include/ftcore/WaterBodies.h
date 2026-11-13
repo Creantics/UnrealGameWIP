@@ -59,6 +59,8 @@ inline constexpr float kWaterBuoyPullMax = 4.f;  // ...up to this
 inline constexpr std::size_t kWaterMaxBodies = 16;
 inline constexpr std::size_t kWaterMaxExits = 64;
 inline constexpr float kWaterLadderReach = 0.9f; // m: a body this near a ladder's foot, pushing at the wall, climbs it
+inline constexpr float kWaterStepsWidth = 0.9f;  // m: a flight of steps stands this far off its wall's face
+inline constexpr float kWaterStepsFootIn = 0.3f; // m: a flight's foot (WaterExit::foot) lies this far in from the wall's face
 inline constexpr std::size_t kWaterMaxPoints = 8;
 
 enum class WaterKind : std::uint8_t { Canal, Pool, Lake, Sea };
@@ -185,6 +187,11 @@ public:
     FTCORE_API Vec2 flowAt(Vec2 p) const;
     // Whether ground at groundZ under p is water's: a body covers p and stands over it by more than -margin.
     FTCORE_API bool overWater(Vec2 p, float groundZ, float margin = 0.f) const;
+    // Whether ground at groundZ under p is a tread of a flight of steps down a wall, wet or dry: p lies on a Steps
+    // exit's run along the wall (from its top's place to its foot's, `margin` m more at each end and to each side of
+    // the flight's kWaterStepsWidth) and the ground is more than `slack` m under the bank's top there. The bank's top
+    // at the flight's head is not, nor is a ladder.
+    FTCORE_API bool onSteps(Vec2 p, float groundZ, float slack = 0.1f, float margin = 0.3f) const;
     // An eye at (p, z): under when a body covers p, z is below its surface plus `margin` and not under its bed. Of
     // several, the one it is deepest in.
     FTCORE_API WaterCamera camera(Vec2 p, float z, float t, float margin = 0.f) const;

@@ -299,6 +299,43 @@ TEST_CASE("water exits: the nearest within reach, the frame turned over, a full 
     CHECK(sum != 12345);
 }
 
+TEST_CASE("on steps: a flight's treads are, wet or dry; its head, the bank, a ladder and the open water are not") {
+    WaterBodies water;
+    // A flight down a west wall whose face is at x 893.0: its head at y 718.7, its foot at y 723.1, the water east of it.
+    WaterExit steps;
+    steps.kind = WaterExitKind::Steps;
+    steps.foot = {893.3f, 723.14f};
+    steps.top = {892.f, 718.71f};
+    steps.topZ = 4.27f;
+    steps.out = {-1.f, 0.f};
+    WaterExit ladder = steps;
+    ladder.kind = WaterExitKind::Ladder;
+    ladder.foot = {893.35f, 757.5f};
+    ladder.top = {891.8f, 757.5f};
+    CHECK_FALSE(water.onSteps({893.45f, 720.f}, 3.6f));
+    REQUIRE(water.addExit(steps));
+    REQUIRE(water.addExit(ladder));
+    CHECK(water.onSteps({893.45f, 720.f}, 3.6f));        // a dry tread
+    CHECK(water.onSteps({893.45f, 722.8f}, 2.3f));       // a wet one
+    CHECK(water.onSteps({893.1f, 721.f}, 3.2f));         // by the wall
+    CHECK_FALSE(water.onSteps({893.45f, 718.8f}, 4.25f)); // the head, level with the bank
+    CHECK_FALSE(water.onSteps({892.5f, 720.f}, 3.6f));    // behind the wall's face
+    CHECK_FALSE(water.onSteps({895.5f, 720.f}, 1.2f));    // out in the channel
+    CHECK_FALSE(water.onSteps({893.45f, 725.f}, 1.6f));   // the shelf past the foot
+    CHECK_FALSE(water.onSteps({893.45f, 717.f}, 3.6f));   // before the head
+    CHECK_FALSE(water.onSteps({893.35f, 757.5f}, 1.6f));  // a ladder's foot
+    // The same flight on the far wall, its head to the north: the run is taken the other way.
+    WaterBodies east;
+    WaterExit far = steps;
+    far.foot = {899.7f, 760.f};
+    far.top = {901.f, 764.2f};
+    far.out = {1.f, 0.f};
+    REQUIRE(east.addExit(far));
+    CHECK(east.onSteps({899.5f, 762.f}, 3.4f));
+    CHECK_FALSE(east.onSteps({899.5f, 758.f}, 1.6f));
+    CHECK_FALSE(east.onSteps({898.f, 762.f}, 1.2f));
+}
+
 TEST_CASE("water stir: moving holds between the stop and the start speed") {
     WaterRipples rings;
     WaterStir stir;

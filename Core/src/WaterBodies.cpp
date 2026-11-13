@@ -263,6 +263,21 @@ bool WaterBodies::overWater(Vec2 p, float groundZ, float margin) const {
     return false;
 }
 
+bool WaterBodies::onSteps(Vec2 p, float groundZ, float slack, float margin) const {
+    for (std::size_t i = 0; i < exitCount_; ++i) {
+        const WaterExit& e = exits_[i];
+        if (e.kind != WaterExitKind::Steps || !(groundZ < e.topZ - slack)) continue;
+        // Across the wall: 0 at the wall's face, growing into the water. Along it: 0 at the head, `run` at the foot.
+        const float across = kWaterStepsFootIn - ((p.x - e.foot.x) * e.out.x + (p.y - e.foot.y) * e.out.y);
+        if (across < -margin || across > kWaterStepsWidth + margin) continue;
+        const Vec2 wall{-e.out.y, e.out.x};
+        const float run = (e.foot.x - e.top.x) * wall.x + (e.foot.y - e.top.y) * wall.y;
+        const float along = ((p.x - e.top.x) * wall.x + (p.y - e.top.y) * wall.y) * (run < 0.f ? -1.f : 1.f);
+        if (along >= -margin && along <= std::fabs(run) + margin) return true;
+    }
+    return false;
+}
+
 WaterCamera WaterBodies::camera(Vec2 p, float z, float t, float margin) const {
     WaterCamera cam;
     for (std::size_t i = 0; i < count_; ++i) {
