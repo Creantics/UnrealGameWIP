@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The pick swaps this table plus the meter painter.",
+  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The look is this table plus the stroke painters (Core UiStroke). The lattice and unwritten values are provisional until those worlds' UI passes.",
   "layers": { "hairlines": true, "plates": false, "world_anchored": false, "letterbox": true },
   "line_weight": 3,
   "backing_default": 0.75,
@@ -29,7 +29,8 @@
     "subtitle": { "font": "sans",      "px": 36, "tracking": 0,    "upper": false },
     "speaker":  { "font": "sans_bold", "px": 24, "tracking": 0.12, "upper": true },
     "prompt":   { "font": "sans",      "px": 20, "tracking": 0.04, "upper": false },
-    "popup":    { "font": "sans_bold", "px": 28, "tracking": 0.04, "upper": true }
+    "popup":    { "font": "sans_bold", "px": 28, "tracking": 0.04, "upper": true },
+    "verb":     { "font": "sans",      "px": 26, "tracking": 0.08, "upper": true }
   },
   "cues": { "danger": "triangle", "ally": "circle", "weak_point": "diamond" }
 }

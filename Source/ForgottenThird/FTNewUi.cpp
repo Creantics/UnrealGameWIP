@@ -1,17 +1,22 @@
 #include "FTNewUi.h"
 
 #include "FTArenaRunner.h"
+#include "FTInputBindings.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
 #include "FTUiText.h"
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/InputBindings.h"
+#include "ftcore/UiStroke.h"
 #include "ftcore/UiStyle.h"
 #include "ftcore/UiViews.h"
 
 #include "Brushes/SlateRoundedBoxBrush.h"
+#include "Engine/World.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
@@ -33,10 +38,6 @@ TAutoConsoleVariable<int32> CVarNewUi(TEXT("ft.NewUi"), 0,
 using ftcore::UiTextRole;
 using ftcore::UiToken;
 
-const FTUiText kHpUi(TEXT("arena.hp"));
-const FTUiText kLoadUi(TEXT("arena.load"));
-const FTUiText kHealsUi(TEXT("arena.heals"));
-const FTUiText kReadUi(TEXT("arena.read_stacks"));
 const FTUiText kTargetUi(TEXT("arena.target"));
 const FTUiText kReleaseReadyUi(TEXT("arena.release_ready"));
 const FTUiText kOverloadedUi(TEXT("arena.overloaded"));
@@ -254,6 +255,278 @@ float TextWidth(const FString& Str, const FSlateFontInfo& Font)
 	return Str.IsEmpty() ? 0.f : static_cast<float>(FontMeasure()->Measure(Str, Font).X);
 }
 
+// ---- the line mesh: every stroke, ring, mark and soft shade of a widget in one custom-verts element ------------------
+//
+// Core gives each line's points (UiStroke: place, half width, alpha); this turns them into triangles with a soft 1 px
+// edge, a dark under-edge beneath (the glyph edge's twin, so a line holds on the sky), and draws the lot in one
+// element: shades first, then every under-edge, then every line, so one line's dark edge never cuts another's core.
+// The arrays are kept between frames (Reset, not freed): no allocation once warm. The engine copies them per element.
+class FLineMesh
+{
+public:
+	void Begin(const FGeometry& Geometry, float InS)
+	{
+		Transform = Geometry.GetAccumulatedRenderTransform();
+		S = InS;
+		for (FPart& P : Parts)
+		{
+			P.Verts.Reset();
+			P.Idx.Reset();
+		}
+		if (!bHandle)
+		{
+			bHandle = true;
+			Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*FCoreStyle::Get().GetBrush(TEXT("WhiteBrush")));
+			const FSlateShaderResourceProxy* Proxy = Handle.GetResourceProxy();
+			UV = Proxy ? FVector2f(Proxy->StartUV + Proxy->SizeUV * 0.5f) : FVector2f(0.5f, 0.5f);
+		}
+	}
+
+	// A line from Core. Closed: the first and last points are the same place (a ring), joined without a seam.
+	void Stroke(const ftcore::UiStroke& St, const FLinearColor& C, bool bEdge = true, bool bClosed = false)
+	{
+		if (St.count < 2 || C.A <= 0.f)
+		{
+			return;
+		}
+		if (bEdge)
+		{
+			Ribbon(Parts[Under], St, Table().Edge, 0.55f, 1.f * S, 1.6f, bClosed);
+		}
+		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, bClosed);
+	}
+
+	// A filled convex shape (a dot, a lozenge, a small triangle), edged like the lines.
+	void Fill(const FVector2f* Pts, int32 N, const FLinearColor& C, bool bEdge = true)
+	{
+		if (N < 3 || C.A <= 0.f)
+		{
+			return;
+		}
+		if (bEdge)
+		{
+			Convex(Parts[Under], Pts, N, Table().Edge, 0.5f, 1.f * S, 1.6f);
+		}
+		Convex(Parts[Core], Pts, N, C, 1.f, 0.f, 0.8f);
+	}
+
+	void Dot(float CX, float CY, float R, const FLinearColor& C, bool bEdge = true)
+	{
+		FVector2f Pts[16];
+		for (int32 I = 0; I < 16; ++I)
+		{
+			const float A = I * (2.f * UE_PI / 16.f);
+			Pts[I] = FVector2f(CX + R * FMath::Cos(A), CY + R * FMath::Sin(A));
+		}
+		Fill(Pts, 16, C, bEdge);
+	}
+
+	// Shade with no edge at all: an ellipse whose alpha falls smoothly from Peak in the middle to nothing at the rim.
+	void Shade(float CX, float CY, float RX, float RY, float Peak)
+	{
+		if (Peak <= 0.f || RX <= 0.f || RY <= 0.f)
+		{
+			return;
+		}
+		constexpr int32 Rings = 12;
+		constexpr int32 Segs = 48;
+		FPart& P = Parts[ShadePart];
+		const SlateIndex Base = static_cast<SlateIndex>(P.Verts.Num());
+		const FLinearColor Back = Tok(UiToken::Backing, 1.f);
+		P.Verts.Add(Vert(CX, CY, Back, Peak));
+		for (int32 R = 1; R <= Rings; ++R)
+		{
+			const float T = static_cast<float>(R) / Rings;
+			const float A = Peak * FMath::Square(1.f - T * T); // zero slope at the rim: no edge reads
+			for (int32 K = 0; K < Segs; ++K)
+			{
+				const float Ang = K * (2.f * UE_PI / Segs);
+				P.Verts.Add(Vert(CX + RX * T * FMath::Cos(Ang), CY + RY * T * FMath::Sin(Ang), Back, A));
+			}
+		}
+		for (int32 K = 0; K < Segs; ++K)
+		{
+			const int32 K1 = (K + 1) % Segs;
+			Tri(P, Base, Base + 1 + K, Base + 1 + K1);
+			for (int32 R = 1; R < Rings; ++R)
+			{
+				const int32 I0 = Base + 1 + (R - 1) * Segs;
+				const int32 I1 = I0 + Segs;
+				Tri(P, I0 + K, I1 + K, I1 + K1);
+				Tri(P, I0 + K, I1 + K1, I0 + K1);
+			}
+		}
+	}
+
+	void Flush(FSlateWindowElementList& Out, int32 Layer)
+	{
+		All.Reset();
+		AllIdx.Reset();
+		for (const FPart& P : Parts)
+		{
+			const SlateIndex Off = static_cast<SlateIndex>(All.Num());
+			All.Append(P.Verts);
+			for (const SlateIndex I : P.Idx)
+			{
+				AllIdx.Add(I + Off);
+			}
+		}
+		if (AllIdx.Num() > 0)
+		{
+			FSlateDrawElement::MakeCustomVerts(Out, Layer, Handle, All, AllIdx, nullptr, 0, 0);
+		}
+	}
+
+private:
+	enum EPart { ShadePart, Under, Core, PartCount };
+	struct FPart
+	{
+		TArray<FSlateVertex> Verts;
+		TArray<SlateIndex> Idx;
+	};
+
+	FSlateVertex Vert(float X, float Y, const FLinearColor& C, float A) const
+	{
+		FLinearColor L = C;
+		L.A = FMath::Clamp(A, 0.f, 1.f);
+		return FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, FVector2f(X, Y), UV, L.ToFColor(true));
+	}
+
+	static void Tri(FPart& P, int32 A, int32 B, int32 C)
+	{
+		P.Idx.Add(static_cast<SlateIndex>(A));
+		P.Idx.Add(static_cast<SlateIndex>(B));
+		P.Idx.Add(static_cast<SlateIndex>(C));
+	}
+
+	// Four verts across each point (outer edge clear, two core, outer edge clear) and three quads between points.
+	void Ribbon(FPart& P, const ftcore::UiStroke& St, const FLinearColor& C, float AlphaK, float Grow, float Feather, bool bClosed)
+	{
+		const int32 N = static_cast<int32>(St.count);
+		const int32 Base = P.Verts.Num();
+		for (int32 I = 0; I < N; ++I)
+		{
+			const ftcore::UiStrokePoint& Pt = St.pt[I];
+			int32 Prev = I - 1;
+			int32 Next = I + 1;
+			if (bClosed)
+			{
+				Prev = I == 0 ? N - 2 : Prev;
+				Next = I == N - 1 ? 1 : Next;
+			}
+			const ftcore::UiStrokePoint& A = St.pt[FMath::Clamp(Prev, 0, N - 1)];
+			const ftcore::UiStrokePoint& B = St.pt[FMath::Clamp(Next, 0, N - 1)];
+			FVector2f T(B.x - A.x, B.y - A.y);
+			T = T.GetSafeNormal();
+			const FVector2f Nrm(-T.Y, T.X);
+			const float H = Pt.halfWidth + Grow;
+			const float Inner = FMath::Max(0.f, H - Feather * 0.5f);
+			const float Outer = H + Feather * 0.5f;
+			const float Alpha = C.A * AlphaK * Pt.alpha * FMath::Min(1.f, 2.f * H); // a line under 1 px thins in alpha
+			const FVector2f O(Pt.x, Pt.y);
+			const FVector2f V0 = O - Nrm * Outer;
+			const FVector2f V1 = O - Nrm * Inner;
+			const FVector2f V2 = O + Nrm * Inner;
+			const FVector2f V3 = O + Nrm * Outer;
+			P.Verts.Add(Vert(V0.X, V0.Y, C, 0.f));
+			P.Verts.Add(Vert(V1.X, V1.Y, C, Alpha));
+			P.Verts.Add(Vert(V2.X, V2.Y, C, Alpha));
+			P.Verts.Add(Vert(V3.X, V3.Y, C, 0.f));
+		}
+		for (int32 I = 0; I + 1 < N; ++I)
+		{
+			const int32 B0 = Base + I * 4;
+			const int32 B1 = B0 + 4;
+			for (int32 K = 0; K < 3; ++K)
+			{
+				Tri(P, B0 + K, B0 + K + 1, B1 + K + 1);
+				Tri(P, B0 + K, B1 + K + 1, B1 + K);
+			}
+		}
+	}
+
+	void Convex(FPart& P, const FVector2f* Pts, int32 N, const FLinearColor& C, float AlphaK, float Grow, float Feather)
+	{
+		FVector2f Mid(0.f, 0.f);
+		for (int32 I = 0; I < N; ++I)
+		{
+			Mid += Pts[I];
+		}
+		Mid /= static_cast<float>(N);
+		const float A = C.A * AlphaK;
+		const int32 Base = P.Verts.Num();
+		P.Verts.Add(Vert(Mid.X, Mid.Y, C, A));
+		for (int32 I = 0; I < N; ++I)
+		{
+			const FVector2f Out = (Pts[I] - Mid).GetSafeNormal();
+			const FVector2f In = Pts[I] + Out * (Grow - Feather * 0.5f);
+			const FVector2f Rim = Pts[I] + Out * (Grow + Feather * 0.5f);
+			P.Verts.Add(Vert(In.X, In.Y, C, A));
+			P.Verts.Add(Vert(Rim.X, Rim.Y, C, 0.f));
+		}
+		for (int32 I = 0; I < N; ++I)
+		{
+			const int32 J = (I + 1) % N;
+			const int32 In0 = Base + 1 + I * 2;
+			const int32 In1 = Base + 1 + J * 2;
+			Tri(P, Base, In0, In1);
+			Tri(P, In0, In0 + 1, In1 + 1);
+			Tri(P, In0, In1 + 1, In1);
+		}
+	}
+
+	FPart Parts[PartCount];
+	TArray<FSlateVertex> All;
+	TArray<SlateIndex> AllIdx;
+	FSlateRenderTransform Transform;
+	float S = 1.f;
+	FSlateResourceHandle Handle;
+	FVector2f UV = FVector2f(0.5f, 0.5f);
+	bool bHandle = false;
+};
+
+// A hand-placed polyline (a chevron, a key ring's stadium) as a stroke of even weight.
+void PolyStroke(ftcore::UiStroke& Out, const FVector2f* Pts, int32 N, float HalfWidth, float Alpha = 1.f)
+{
+	Out.count = 0;
+	for (int32 I = 0; I < N && Out.count < ftcore::kUiStrokeMaxPoints; ++I)
+	{
+		ftcore::UiStrokePoint& P = Out.pt[Out.count++];
+		P.x = Pts[I].X;
+		P.y = Pts[I].Y;
+		P.halfWidth = HalfWidth;
+		P.alpha = Alpha;
+	}
+}
+
+// A closed stadium (a key's ring) round (CX, CY): W wide, H high, round ends; the first point repeats at the end.
+void StadiumStroke(ftcore::UiStroke& Out, float CX, float CY, float W, float H, float HalfWidth)
+{
+	const float R = H * 0.5f;
+	const float Half = FMath::Max(0.f, W * 0.5f - R);
+	constexpr int32 Arc = 14;
+	Out.count = 0;
+	const auto Put = [&Out, HalfWidth](float X, float Y)
+	{
+		ftcore::UiStrokePoint& P = Out.pt[Out.count++];
+		P.x = X;
+		P.y = Y;
+		P.halfWidth = HalfWidth;
+		P.alpha = 1.f;
+	};
+	for (int32 I = 0; I <= Arc; ++I) // the right end, top to bottom
+	{
+		const float A = -0.5f * UE_PI + UE_PI * I / Arc;
+		Put(CX + Half + R * FMath::Cos(A), CY + R * FMath::Sin(A));
+	}
+	for (int32 I = 0; I <= Arc; ++I) // the left end, bottom to top
+	{
+		const float A = 0.5f * UE_PI + UE_PI * I / Arc;
+		Put(CX - Half + R * FMath::Cos(A), CY + R * FMath::Sin(A));
+	}
+	Put(Out.pt[0].x, Out.pt[0].y);
+}
+
 // ---- the arena HUD ----------------------------------------------------------------------------------------------------
 
 constexpr uint32 SectionBit(ftcore::ArenaHudSection Sec) { return 1u << static_cast<uint32>(Sec); }
@@ -300,6 +573,80 @@ void FillBoss(const UFTArenaRunner& Runner, ftcore::ArenaHudBoss& Out)
 	Out.invulnerable = bInvulnerable;
 }
 
+// The Carry layout's places in 1080p units: the lead's ring bottom left, the verbs bottom right, the boss at the top.
+namespace Carry
+{
+constexpr float LeadX = 190.f;  // the ring's centre, in from the left
+constexpr float LeadUp = 200.f; // and up from the bottom
+constexpr float RingR = 54.f;
+constexpr float StaminaR = 63.f;
+constexpr float HpR = 70.f;
+constexpr float LoadR = 84.f;
+constexpr float A0 = -135.f; // the arcs' sweep: open at the bottom, where the numbers sit (0 = up, clockwise)
+constexpr float A1 = 135.f;
+constexpr float VerbIn = 108.f;  // the verbs' rule, in from the right
+constexpr float VerbUp = 238.f;  // the first verb's baseline, up from the bottom
+constexpr float VerbStep = 46.f;
+constexpr float TopLine = 100.f; // the boss's line, down from the top
+constexpr float BossLen = 680.f;
+constexpr float TargetLen = 420.f;
+constexpr float LowHp = 0.3f;
+} // namespace Carry
+
+// What was just lost: held a moment, then rubbed away toward the value (a hit rubs the line, it does not snap).
+struct FLostTrace
+{
+	float Was = 0.f;
+	float Hold = 0.f;
+
+	void Step(float Now, float Dt)
+	{
+		if (Now >= Was)
+		{
+			Was = Now;
+			Hold = 0.f;
+			return;
+		}
+		Hold += Dt;
+		if (Hold > 0.8f)
+		{
+			Was = FMath::Max(Now, Was - 0.35f * Dt);
+		}
+	}
+};
+
+// The verbs bottom right, in the controls table's order; each shows only when its device has a key for it.
+struct FVerbSlot
+{
+	const char* Label; // the controls table's word key (Data/Loc/en/ui.json)
+	FString Word;
+	FString Keys;
+	float WordW = 0.f;
+	float KeysW = 0.f;
+};
+
+ftcore::UiStrokeStyle StrokeStyle(float Width, std::uint32_t Seed, float S, float Taper = 0.15f)
+{
+	ftcore::UiStrokeStyle St;
+	St.width = Width * S;
+	St.wobble = 0.8f * S;
+	St.step = 4.f * S;
+	St.taper = Taper;
+	St.seed = Seed;
+	if (Taper <= 0.f)
+	{
+		St.endWidth = 1.f;
+		St.endAlpha = 1.f;
+	}
+	return St;
+}
+
+FVector2f Rotated(float X, float Y, float Deg) // screen rotation, clockwise for a positive angle
+{
+	const float R = FMath::DegreesToRadians(Deg);
+	return FVector2f(X * FMath::Cos(R) - Y * FMath::Sin(R), X * FMath::Sin(R) + Y * FMath::Cos(R));
+}
+
 class SFTArenaHud : public SLeafWidget
 {
 public:
@@ -326,8 +673,28 @@ public:
 			BuiltHeight = H;
 			LabelFont = FontFor(UiTextRole::Label, H);
 			ValueFont = FontFor(UiTextRole::Value, H);
+			VerbFont = FontFor(UiTextRole::Verb, H);
 			LabelH = FontMeasure()->GetMaxCharacterHeight(LabelFont);
-			ValueH = FontMeasure()->GetMaxCharacterHeight(ValueFont);
+			ValueAsc = FontMeasure()->GetMaxCharacterHeight(ValueFont) + FontMeasure()->GetBaseline(ValueFont);
+			LabelAsc = LabelH + FontMeasure()->GetBaseline(LabelFont);
+			VerbAsc = FontMeasure()->GetMaxCharacterHeight(VerbFont) + FontMeasure()->GetBaseline(VerbFont);
+			const auto Word = [this](const FString& In, FString& Out, float& W, const FSlateFontInfo& F)
+			{
+				Out = In.ToUpper();
+				W = TextWidth(Out, F);
+			};
+			Word(kDownUi, DownWord, DownW, VerbFont);
+			Word(kOverloadedUi, OverWord, OverW, VerbFont);
+			Word(kGuardBrokenUi, BrokenWord, BrokenW, VerbFont);
+			Word(kReleaseReadyUi, ReadyWord, ReadyW, VerbFont);
+			Word(kTargetUi, TargetWord, TargetW, LabelFont);
+			Word(kWeightUi, WeightWord, WeightW, LabelFont);
+			Word(kWeakPointUi, WeakWord, WeakW, LabelFont);
+			Word(kInvulnerableUi, InvulWord, InvulW, LabelFont);
+			for (FVerbSlot& V : Verbs)
+			{
+				Word(FTUiText::Lookup(*FT::ToFString(V.Label)), V.Word, V.WordW, VerbFont);
+			}
 			bRebuild = true;
 		}
 		if (!bLive)
@@ -342,25 +709,55 @@ public:
 		Frame.partner = ftcore::ArenaHudPartner{}; // the arena runs one fighter; the session's partner arrives with the party
 		Frame.third = ftcore::ArenaHudThird{};
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
-		// Strings only on a change.
+		const ftcore::ArenaHudLead& L = View.now.lead;
 		if (bRebuild || (Changed & SectionBit(ftcore::ArenaHudSection::Lead)))
 		{
-			HpText = FString::Printf(TEXT("%d"), View.now.lead.hp);
+			HpText = FString::Printf(TEXT("%d"), L.hp);
 			HpTextW = TextWidth(HpText, ValueFont);
+			LoadText = FString::Printf(TEXT("%d"), L.load);
 		}
-		if (bRebuild || (Changed & (SectionBit(ftcore::ArenaHudSection::Target) | SectionBit(ftcore::ArenaHudSection::Boss))))
+		HpLost.Step(L.hpMax > 0 ? static_cast<float>(L.hp) / L.hpMax : 0.f, DeltaTime);
+		const ftcore::ArenaHudBoss& B = View.now.boss;
+		const ftcore::ArenaHudTarget& T = View.now.target;
+		const int32 TopHp = B.present ? B.hp : T.hp;
+		const int32 TopMax = B.present ? B.hpMax : T.hpMax;
+		TopLost.Step(TopMax > 0 ? static_cast<float>(TopHp) / TopMax : 0.f, DeltaTime);
+
+		// The verbs: their keys on the device in use (built when the device changes), which can be used now, which is lit.
+		const APlayerController* PC = Runner->GetWorld() ? Runner->GetWorld()->GetFirstPlayerController() : nullptr;
+		const ftcore::InputDevice Device = FTInputBindings::NoteDevice(PC);
+		if (bRebuild || Device != VerbDevice)
 		{
-			const bool bBoss = View.now.boss.present;
-			TargetText = FString::Printf(TEXT("%d"), bBoss ? View.now.boss.hp : View.now.target.hp);
-			TargetTextW = TextWidth(TargetText, ValueFont);
-			if (bBoss && View.now.target.present && View.now.target.enemy != View.now.boss.nameKey)
+			VerbDevice = Device;
+			const ftcore::InputHintEntry* Entries = nullptr;
+			const size_t Count = ftcore::inputHintEntries(ftcore::InputHintScreen::Arena, Entries);
+			for (FVerbSlot& V : Verbs)
 			{
-				OtherText = FString::Printf(TEXT("%d"), View.now.target.hp);
-				OtherTextW = TextWidth(OtherText, ValueFont);
+				V.Keys.Reset();
+				for (size_t I = 0; I < Count; ++I)
+				{
+					if (FCStringAnsi::Strcmp(Entries[I].label, V.Label) == 0)
+					{
+						V.Keys = FT::ToFString(ftcore::inputHintKeys(FTInputBindings::Get(), Entries[I], Device)).ToUpper();
+						break;
+					}
+				}
+				V.KeysW = TextWidth(V.Keys, LabelFont);
 			}
-			WordW = TextWidth(kWeakPointUi, LabelFont);
 		}
-		ftcore::uiFadeStep(LeadFade, (Changed & SectionBit(ftcore::ArenaHudSection::Lead)) != 0, DeltaTime, Table().Style.fade);
+		uint32 VerbState = static_cast<uint32>(Device) << 8;
+		VerbState |= (!L.guardBroken && !L.down) ? 1u : 0u;
+		VerbState |= L.releaseReady ? 2u : 0u;
+		VerbState |= View.now.partner.present ? 4u : 0u;
+		VerbState |= (L.heals > 0 && !L.down) ? 8u : 0u;
+		const bool bVerbChanged = VerbState != LastVerbState;
+		LastVerbState = VerbState;
+
+		const ftcore::UiFadeTimes& Fade = Table().Style.fade;
+		ftcore::uiFadeStep(LeadFade, (Changed & SectionBit(ftcore::ArenaHudSection::Lead)) != 0, DeltaTime, Fade);
+		ftcore::uiFadeStep(TopFade, (Changed & (SectionBit(ftcore::ArenaHudSection::Target) | SectionBit(ftcore::ArenaHudSection::Boss))) != 0,
+			DeltaTime, Fade);
+		ftcore::uiFadeStep(VerbFade, bVerbChanged, DeltaTime, Fade);
 	}
 
 	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
@@ -372,131 +769,195 @@ public:
 		}
 		const FVector2f Size = Geometry.GetLocalSize();
 		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f)};
+		Mesh.Begin(Geometry, P.S);
 		PaintLead(P, Size);
 		PaintTop(P, Size);
+		PaintVerbs(P, Size);
+		Mesh.Flush(Out, Layer + 1); // every line, mark and shade in one element under the words
 		return Layer + 3;
 	}
 
 private:
+	// One arc of a track round the lead's ring (from01..to01 of the A0..A1 sweep).
+	void Arc(float CX, float CY, float R, float From01, float To01, const ftcore::UiStrokeStyle& St, const FLinearColor& C, bool bEdge = true) const
+	{
+		ftcore::uiStrokeArc(Line, CX, CY, R, Carry::A0, Carry::A1, St, From01, To01);
+		Mesh.Stroke(Line, C, bEdge);
+	}
+
+	// A whole ring, joined without a seam.
+	void Ring(float CX, float CY, float R, float Width, std::uint32_t Seed, float S, const FLinearColor& C) const
+	{
+		ftcore::uiStrokeArc(Line, CX, CY, R, 0.f, 360.f, StrokeStyle(Width, Seed, S, 0.f));
+		if (Line.count > 1)
+		{
+			Line.pt[Line.count - 1].x = Line.pt[0].x;
+			Line.pt[Line.count - 1].y = Line.pt[0].y;
+		}
+		Mesh.Stroke(Line, C, true, true);
+	}
+
+	void HLine(float X0, float X1, float Y, float From01, float To01, const ftcore::UiStrokeStyle& St, const FLinearColor& C, bool bEdge = true) const
+	{
+		ftcore::uiStrokeLine(Line, X0, Y, X1, Y, St, From01, To01);
+		Mesh.Stroke(Line, C, bEdge);
+	}
+
+	void Poly(const FVector2f* Pts, int32 N, float HalfWidth, const FLinearColor& C, bool bClosed = false) const
+	{
+		PolyStroke(Line, Pts, N, HalfWidth);
+		Mesh.Stroke(Line, C, true, bClosed);
+	}
+
+	// A small V pointing down, turned clockwise by Deg (on an arc at angle Deg it points at the centre; -90 points right).
+	void Chevron(float X, float Y, float Size, float Deg, float S, const FLinearColor& C) const
+	{
+		const FVector2f Pts[3] = {FVector2f(X, Y) + Rotated(-Size * 0.55f, -Size * 0.45f, Deg), FVector2f(X, Y) + Rotated(0.f, Size * 0.2f, Deg),
+			FVector2f(X, Y) + Rotated(Size * 0.55f, -Size * 0.45f, Deg)};
+		Poly(Pts, 3, 0.8f * S, C);
+	}
+
+	void Danger(float CX, float CY, float Size, const FLinearColor& C) const
+	{
+		const FVector2f Pts[3] = {FVector2f(CX, CY - Size * 0.55f), FVector2f(CX + Size * 0.55f, CY + Size * 0.45f), FVector2f(CX - Size * 0.55f, CY + Size * 0.45f)};
+		Mesh.Fill(Pts, 3, C);
+	}
+
+	void Lozenge(float CX, float CY, float R, bool bFilled, float S, const FLinearColor& C) const
+	{
+		const FVector2f Pts[5] = {FVector2f(CX, CY - R), FVector2f(CX + R, CY), FVector2f(CX, CY + R), FVector2f(CX - R, CY), FVector2f(CX, CY - R)};
+		if (bFilled)
+		{
+			Mesh.Fill(Pts, 4, C);
+		}
+		else
+		{
+			Poly(Pts, 5, 0.6f * S, C, true);
+		}
+	}
+
+	// The lead, bottom left: the ring as a table, HP as the hand-drawn line round it (what was just lost rubbed out to a
+	// faint trace), stamina a hairline inside, Load the accent line outside with the Release mark at its place; the
+	// numbers and heals in the open bottom; one state word at the ring's shoulder.
 	void PaintLead(const FPainter& P, const FVector2f& Size) const
 	{
 		const ftcore::ArenaHudLead& L = View.now.lead;
 		const ftcore::UiStyle& St = Table().Style;
 		const float S = P.S;
 		const float A = LeadFade.alpha;
-		const float Lw = ftcore::uiLinePx(St, Size.Y);
-		const float X = 64.f * S;
-		const float W = 420.f * S;
-		const float Top = Size.Y - 250.f * S;
-		P.Soft(X + W * 0.5f, Top + 92.f * S, W + 320.f * S, 300.f * S, St.backingSoftHud, FMath::Max(A, 0.6f));
+		const float CX = Carry::LeadX * S;
+		const float CY = Size.Y - Carry::LeadUp * S;
+		Mesh.Shade(CX + 10.f * S, CY - 40.f * S, 230.f * S, 230.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
 
-		// HP: label, number (a triangle beside it when low), the line.
-		const float HpFrac = L.hpMax > 0 ? static_cast<float>(L.hp) / static_cast<float>(L.hpMax) : 0.f;
-		const bool bLow = HpFrac <= 0.3f;
-		P.Text(X, Top + (ValueH - LabelH), kHpUi, LabelFont, Tok(UiToken::InkDim, A));
-		P.Text(X + W - HpTextW, Top, HpText, ValueFont, Tok(UiToken::Ink, A));
-		if (bLow)
+		Ring(CX, CY, Carry::RingR * S, 1.5f, 11, S, Tok(UiToken::Ink, 0.9f * A));
+
+		const float Hp = L.hpMax > 0 ? FMath::Clamp(static_cast<float>(L.hp) / L.hpMax, 0.f, 1.f) : 0.f;
+		const bool bLow = Hp <= Carry::LowHp;
+		const FLinearColor HpC = bLow ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A);
+		Arc(CX, CY, Carry::HpR * S, 0.f, Hp, StrokeStyle(4.2f, 21, S), HpC);
+		if (HpLost.Was > Hp + 0.004f)
 		{
-			P.Triangle(X + W - HpTextW - 18.f * S, Top + ValueH * 0.55f, 14.f * S, Tok(UiToken::Danger, A));
+			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 21, S, 0.f);
+			Rub.broken = true;
+			Arc(CX, CY, Carry::HpR * S, Hp, HpLost.Was, Rub, Tok(UiToken::Ink, 0.22f * A), false);
 		}
-		float Y = Top + ValueH + 8.f * S;
-		P.Meter(X, Y, W, Lw * 1.5f, HpFrac, bLow ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A), A);
-		// Stamina: a thinner line under it.
-		Y += 12.f * S;
-		P.Meter(X, Y, W, FMath::Max(1.f, Lw * 0.67f), L.stamina01, Tok(UiToken::Ink, 0.85f * A), A);
+		Arc(CX, CY, Carry::StaminaR * S, 0.f, FMath::Clamp(L.stamina01, 0.f, 1.f), StrokeStyle(1.2f, 23, S), Tok(UiToken::InkDim, 0.7f * A), false);
 
-		// Load: ticks with the release mark taller; the state as a word with its own shape.
-		Y += 26.f * S;
 		if (L.loadMax > 0)
 		{
-			P.Text(X, Y - LabelH * 0.5f, kLoadUi, LabelFont, Tok(UiToken::InkDim, A));
-			const float TX = X + 90.f * S;
-			const float TW = W - 90.f * S;
-			constexpr int32 Ticks = 20;
-			const int32 Lit = FMath::RoundToInt(static_cast<float>(L.load) / static_cast<float>(L.loadMax) * Ticks);
-			const int32 Mark = FMath::RoundToInt(static_cast<float>(ftcore::kArenaReleaseOpenLoad) / static_cast<float>(L.loadMax) * Ticks);
-			const FLinearColor On = L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A);
-			for (int32 I = 0; I < Ticks; ++I)
-			{
-				const float H = (I == Mark ? 18.f : 10.f) * S;
-				P.Box(TX + I * (TW / Ticks), Y - H * 0.5f, FMath::Max(1.f, Lw), H, I < Lit ? On : Tok(UiToken::Track, A), 1);
-			}
+			const float Load = FMath::Clamp(static_cast<float>(L.load) / L.loadMax, 0.f, 1.f);
+			Arc(CX, CY, Carry::LoadR * S, 0.f, 1.f, StrokeStyle(1.f, 31, S, 0.f), Tok(UiToken::Ink, 0.28f * A), false);
+			Arc(CX, CY, Carry::LoadR * S, 0.f, Load, StrokeStyle(3.f, 33, S), L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
+			const float Mark = FMath::Clamp(static_cast<float>(ftcore::kArenaReleaseOpenLoad) / L.loadMax, 0.f, 1.f);
+			const float Deg = Carry::A0 + (Carry::A1 - Carry::A0) * Mark;
+			float MX = 0.f;
+			float MY = 0.f;
+			ftcore::uiArcPoint(CX, CY, (Carry::LoadR + 11.f) * S, Deg, MX, MY);
+			Chevron(MX, MY, 10.f * S, Deg, S, Tok(UiToken::Ink, A));
+			P.Text(CX + 30.f * S, CY + 84.f * S - ValueAsc, LoadText, ValueFont, L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
 		}
-		// One state word at a time, the most urgent first.
-		Y += 22.f * S;
-		const float Mid = Y + LabelH * 0.5f;
+
+		// The numbers in the open bottom: HP to the left of the middle (a danger mark beside it when low), Load to the right.
+		P.Text(CX - 30.f * S - HpTextW, CY + 84.f * S - ValueAsc, HpText, ValueFont, HpC);
+		if (bLow)
+		{
+			Danger(CX - 30.f * S - HpTextW - 14.f * S, CY + 84.f * S - ValueAsc * 0.45f, 13.f * S, Tok(UiToken::Danger, A));
+		}
+		// Heals: lozenges between the numbers, filled while held. Read: upright marks under them, full height while held.
+		for (int32 I = 0; I < L.healsMax; ++I)
+		{
+			const float X = CX + (static_cast<float>(I) - 0.5f * (L.healsMax - 1)) * 13.f * S;
+			Lozenge(X, CY + 76.f * S, 4.5f * S, I < L.heals, S, Tok(UiToken::Ink, (I < L.heals ? 1.f : 0.6f) * A));
+		}
+		for (int32 I = 0; I < L.readMax; ++I)
+		{
+			const float X = CX + (static_cast<float>(I) - 0.5f * (L.readMax - 1)) * 9.f * S;
+			const bool bHeld = I < L.read;
+			const float H = (bHeld ? 12.f : 5.f) * S;
+			const FVector2f Pts[2] = {FVector2f(X, CY + 104.f * S - H), FVector2f(X, CY + 104.f * S)};
+			Poly(Pts, 2, 1.4f * S, bHeld ? Tok(UiToken::Accent, A) : Tok(UiToken::InkDim, 0.6f * A));
+		}
+
+		// One state at a time at the ring's shoulder, the most urgent first, each with its shape.
+		const float WX = CX + 102.f * S;
+		const float WY = CY - 40.f * S; // the word's baseline
+		const FString* Word = nullptr;
+		bool bDanger = true;
 		if (L.down)
 		{
-			P.Triangle(X + 7.f * S, Mid, 14.f * S, Tok(UiToken::Danger, A));
-			P.Text(X + 24.f * S, Y, kDownUi, LabelFont, Tok(UiToken::Danger, A));
+			Word = &DownWord;
 		}
 		else if (L.overloaded)
 		{
-			P.Triangle(X + 7.f * S, Mid, 14.f * S, Tok(UiToken::Danger, A));
-			P.Text(X + 24.f * S, Y, kOverloadedUi, LabelFont, Tok(UiToken::Danger, A));
+			Word = &OverWord;
 		}
 		else if (L.guardBroken)
 		{
-			P.Triangle(X + 7.f * S, Mid, 14.f * S, Tok(UiToken::Danger, A));
-			P.Text(X + 24.f * S, Y, kGuardBrokenUi, LabelFont, Tok(UiToken::Danger, A));
+			Word = &BrokenWord;
 		}
 		else if (L.releaseReady)
 		{
-			P.Chevron(X + 7.f * S, Mid, 16.f * S, Tok(UiToken::Accent, A));
-			P.Text(X + 24.f * S, Y, kReleaseReadyUi, LabelFont, Tok(UiToken::Accent, A));
+			Word = &ReadyWord;
+			bDanger = false;
 		}
-
-		// Heals and Read: pips, filled while held.
-		Y += LabelH + 10.f * S;
-		const float Pip = 12.f * S;
-		P.Text(X, Y, kHealsUi, LabelFont, Tok(UiToken::InkDim, A));
-		float PX = X + 90.f * S;
-		for (int32 I = 0; I < L.healsMax; ++I, PX += Pip + 6.f * S)
+		if (Word)
 		{
-			if (I < L.heals)
+			const FLinearColor C = bDanger ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A);
+			if (bDanger)
 			{
-				P.Box(PX, Y + (LabelH - Pip) * 0.5f, Pip, Pip, Tok(UiToken::Ink, A), 1);
+				Danger(WX + 8.f * S, WY - VerbAsc * 0.38f, 14.f * S, C);
 			}
 			else
 			{
-				P.Hollow(PX, Y + (LabelH - Pip) * 0.5f, Pip, Pip, FMath::Max(1.f, Lw * 0.5f), Tok(UiToken::InkDim, A));
+				Chevron(WX + 8.f * S, WY - VerbAsc * 0.38f, 12.f * S, -90.f, S, C);
 			}
-		}
-		if (L.readMax > 0)
-		{
-			PX = X + 250.f * S;
-			P.Text(PX, Y, kReadUi, LabelFont, Tok(UiToken::InkDim, A));
-			PX += 70.f * S;
-			for (int32 I = 0; I < L.readMax; ++I, PX += Pip * 0.7f + 5.f * S)
-			{
-				if (I < L.read)
-				{
-					P.Box(PX, Y + (LabelH - Pip) * 0.5f, Pip * 0.7f, Pip, Tok(UiToken::Accent, A), 1);
-				}
-				else
-				{
-					P.Hollow(PX, Y + (LabelH - Pip) * 0.5f, Pip * 0.7f, Pip, FMath::Max(1.f, Lw * 0.5f), Tok(UiToken::InkDim, A));
-				}
-			}
+			P.Text(WX + 22.f * S, WY - VerbAsc, *Word, VerbFont, C);
 		}
 
-		// The partner (when the party has one) above the lead; the third place as its reserved slot, unlabelled.
+		// The party places stacked above the lead: the partner, then the third place, always empty (the only dashed ring).
 		const ftcore::ArenaHudPartner& Pa = View.now.partner;
 		if (Pa.present)
 		{
-			const float PY = Top - 40.f * S;
-			P.Circle(X + 7.f * S, PY, 12.f * S, Tok(UiToken::Ally));
-			P.Meter(X + 24.f * S, PY - Lw * 0.5f, 240.f * S, Lw, Pa.hpMax > 0 ? static_cast<float>(Pa.hp) / Pa.hpMax : 0.f, Tok(UiToken::Ally), 1.f);
+			const float PX = CX - 6.f * S;
+			const float PY = CY - 140.f * S;
+			Ring(PX, PY, 20.f * S, 1.4f, 61, S, Tok(UiToken::Ink, A));
+			const float F = Pa.hpMax > 0 ? FMath::Clamp(static_cast<float>(Pa.hp) / Pa.hpMax, 0.f, 1.f) : 0.f;
+			Arc(PX, PY, 27.f * S, 0.f, F, StrokeStyle(2.2f, 62, S), Pa.down ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A));
 		}
 		if (View.now.third.present)
 		{
-			const float D = 22.f * S;
-			P.Circle(X + W + 30.f * S, Top + ValueH * 0.5f, D, Tok(UiToken::InkDim, 0.5f));
-			P.Circle(X + W + 30.f * S, Top + ValueH * 0.5f, D - 4.f * S, Tok(UiToken::Backing, 0.9f));
+			const float TX = CX - 6.f * S;
+			const float TY = CY - 208.f * S;
+			for (float Deg = 0.f; Deg < 360.f; Deg += 30.f)
+			{
+				ftcore::uiStrokeArc(Line, TX, TY, 20.f * S, Deg, Deg + 14.f, StrokeStyle(1.3f, 71, S, 0.f));
+				Mesh.Stroke(Line, Tok(UiToken::Ink, 0.75f * A));
+			}
 		}
 	}
 
-	// One bar at the top centre: the boss when a boss fights, else the target; a second, smaller line for another target.
+	// The top: the boss as one fine line with its HP drawn over it and phase notches; a plain target as a shorter line
+	// under its word. A second target while a boss fights: a short line below.
 	void PaintTop(const FPainter& P, const FVector2f& Size) const
 	{
 		const ftcore::ArenaHudBoss& B = View.now.boss;
@@ -507,90 +968,159 @@ private:
 		}
 		const ftcore::UiStyle& St = Table().Style;
 		const float S = P.S;
-		const float Lw = ftcore::uiLinePx(St, Size.Y);
-		const float W = 640.f * S;
-		const float X = Size.X * 0.5f - W * 0.5f;
-		const float Y = 40.f * S;
-		P.Soft(Size.X * 0.5f, Y + 40.f * S, W + 420.f * S, 190.f * S, St.backingSoftHud);
-		const int32 Hp = B.present ? B.hp : T.hp;
-		const int32 HpMax = B.present ? B.hpMax : T.hpMax;
-		P.Text(X, Y + (ValueH - LabelH), kTargetUi, LabelFont, Tok(UiToken::InkDim));
-		P.Text(X + W - TargetTextW, Y, TargetText, ValueFont, Tok(UiToken::Ink));
-		float LY = Y + ValueH + 8.f * S;
-		P.Meter(X, LY, W, Lw * 1.5f, HpMax > 0 ? static_cast<float>(Hp) / HpMax : 0.f, Tok(UiToken::Ink), 1.f);
-		if (B.present)
+		const float A = TopFade.alpha;
+		const float CX = Size.X * 0.5f;
+		const float Y = Carry::TopLine * S;
+		const float Len = (B.present ? Carry::BossLen : Carry::TargetLen) * S;
+		const float X0 = CX - Len * 0.5f;
+		const float Hp = (B.present ? B.hpMax : T.hpMax) > 0
+			? FMath::Clamp(static_cast<float>(B.present ? B.hp : T.hp) / (B.present ? B.hpMax : T.hpMax), 0.f, 1.f)
+			: 0.f;
+		Mesh.Shade(CX, Y - 8.f * S, Len * 0.5f + 180.f * S, 150.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
+
+		// The track: a hairline past both ends, fading out over its last 80 px.
+		ftcore::UiStrokeStyle Hair = StrokeStyle(1.f, 99, S, 80.f / (Carry::BossLen + 80.f));
+		Hair.endAlpha = 0.f;
+		Hair.endWidth = 0.6f;
+		Hair.wobble = 0.3f * S;
+		HLine(X0 - 40.f * S, X0 + Len + 40.f * S, Y, 0.f, 1.f, Hair, Tok(UiToken::Ink, 0.5f * A));
+		ftcore::UiStrokeStyle HpSt = StrokeStyle(B.present ? 3.6f : 3.f, 101, S, 0.04f);
+		HLine(X0, X0 + Len, Y, 0.f, Hp, HpSt, Tok(UiToken::Ink, A));
+		if (TopLost.Was > Hp + 0.004f)
 		{
-			for (int32 I = 1; I < B.phaseCount; ++I) // phase marks
-			{
-				P.Box(X + W * I / B.phaseCount, LY - 5.f * S, FMath::Max(1.f, Lw * 0.67f), 10.f * S + Lw * 1.5f, Tok(UiToken::Ink));
-			}
+			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 101, S, 0.f);
+			Rub.broken = true;
+			HLine(X0, X0 + Len, Y, Hp, TopLost.Was, Rub, Tok(UiToken::Ink, 0.22f * A), false);
 		}
-		// The target's poise (the boss's own when the target is the boss).
+		if (!B.present)
+		{
+			P.Text(CX - TargetW * 0.5f, Y - 26.f * S - LabelAsc, TargetWord, LabelFont, Tok(UiToken::InkDim, A));
+		}
+		for (int32 I = 1; B.present && I < B.phaseCount; ++I)
+		{
+			const float X = X0 + Len * I / B.phaseCount;
+			const FVector2f Pts[2] = {FVector2f(X, Y - 8.f * S), FVector2f(X, Y + 8.f * S)};
+			Poly(Pts, 2, 0.7f * S, Tok(UiToken::Ink, A));
+		}
+		// The target's poise under the line (the boss's own when the target is the boss).
 		if (T.present && (!B.present || T.enemy == B.nameKey))
 		{
-			P.Meter(X, LY + 10.f * S, W, FMath::Max(1.f, Lw * 0.67f), T.poise01, Tok(UiToken::InkDim), 1.f);
+			HLine(X0, X0 + Len, Y + 12.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.4f, 103, S), Tok(UiToken::InkDim, A), false);
 		}
-		LY += 26.f * S;
+		float LY = Y + 28.f * S; // the next row's top
 		if (B.present && B.weightMax > 0)
 		{
-			P.Text(X, LY, kWeightUi, LabelFont, Tok(UiToken::InkDim));
-			const float Pip = 12.f * S;
+			P.Text(X0, LY, WeightWord, LabelFont, Tok(UiToken::InkDim, A));
 			for (int32 I = 0; I < B.weightMax; ++I)
 			{
-				const float PX = X + 100.f * S + I * (Pip + 6.f * S);
-				if (I < B.weight)
-				{
-					P.Box(PX, LY + (LabelH - Pip) * 0.5f, Pip, Pip, Tok(UiToken::Accent), 1);
-				}
-				else
-				{
-					P.Hollow(PX, LY + (LabelH - Pip) * 0.5f, Pip, Pip, FMath::Max(1.f, Lw * 0.5f), Tok(UiToken::InkDim));
-				}
+				const float X = X0 + WeightW + 14.f * S + I * 9.f * S;
+				const bool bHeld = I < B.weight;
+				const float H = (bHeld ? 14.f : 5.f) * S;
+				const FVector2f Pts[2] = {FVector2f(X, LY + LabelAsc - H), FVector2f(X, LY + LabelAsc)};
+				Poly(Pts, 2, 1.4f * S, bHeld ? Tok(UiToken::Accent, A) : Tok(UiToken::InkDim, 0.6f * A));
 			}
 		}
+		const float WY = Y + 54.f * S - LabelAsc * 0.5f; // the cue row, centred under the line
 		if (B.present && B.weakPoint == ftcore::UiWeakPoint::Open)
 		{
-			const float Pulse = 0.75f + 0.25f * FMath::Sin(Time * 8.f);
-			const float CX = Size.X * 0.5f;
-			P.Diamond(CX - WordW * 0.5f - 16.f * S, LY + LabelH * 0.5f, 16.f * S, Tok(UiToken::WeakPoint, Pulse));
-			P.Text(CX - WordW * 0.5f, LY, kWeakPointUi, LabelFont, Tok(UiToken::WeakPoint, Pulse));
+			const FLinearColor C = Tok(UiToken::WeakPoint, 0.85f + 0.15f * FMath::Sin(Time * 6.f));
+			Lozenge(CX - WeakW * 0.5f - 14.f * S, WY + LabelAsc * 0.55f, 6.f * S, true, S, C);
+			P.Text(CX - WeakW * 0.5f, WY, WeakWord, LabelFont, C);
 		}
 		else if (B.present && B.invulnerable)
 		{
-			const float CX = Size.X * 0.5f;
-			P.Hollow(CX - 80.f * S, LY + (LabelH - 12.f * S) * 0.5f, 12.f * S, 12.f * S, FMath::Max(1.f, Lw * 0.5f), Tok(UiToken::Ink));
-			P.Text(CX - 60.f * S, LY, kInvulnerableUi, LabelFont, Tok(UiToken::Ink));
+			const float BX = CX - InvulW * 0.5f - 14.f * S;
+			const float BY = WY + LabelAsc * 0.55f;
+			const float R = 5.f * S;
+			const FVector2f Pts[5] = {FVector2f(BX - R, BY - R), FVector2f(BX + R, BY - R), FVector2f(BX + R, BY + R), FVector2f(BX - R, BY + R),
+				FVector2f(BX - R, BY - R)};
+			Poly(Pts, 5, 0.7f * S, Tok(UiToken::Ink, A), true);
+			P.Text(CX - InvulW * 0.5f, WY, InvulWord, LabelFont, Tok(UiToken::Ink, A));
 		}
-		// Another enemy targeted while the boss fights: a short line under the boss bar.
 		if (B.present && T.present && T.enemy != B.nameKey)
 		{
-			const float OY = LY + LabelH + 14.f * S;
-			const float OW = W * 0.5f;
-			const float OX = Size.X * 0.5f - OW * 0.5f;
-			P.Text(OX, OY, kTargetUi, LabelFont, Tok(UiToken::InkDim));
-			P.Text(OX + OW - OtherTextW, OY, OtherText, ValueFont, Tok(UiToken::Ink));
-			P.Meter(OX, OY + ValueH + 4.f * S, OW, Lw, T.hpMax > 0 ? static_cast<float>(T.hp) / T.hpMax : 0.f, Tok(UiToken::Ink), 1.f);
-			P.Meter(OX, OY + ValueH + 12.f * S, OW, FMath::Max(1.f, Lw * 0.67f), T.poise01, Tok(UiToken::InkDim), 1.f);
+			const float OY = Y + 96.f * S;
+			const float OLen = 300.f * S;
+			const float OX = CX - OLen * 0.5f;
+			const float OHp = T.hpMax > 0 ? FMath::Clamp(static_cast<float>(T.hp) / T.hpMax, 0.f, 1.f) : 0.f;
+			P.Text(OX - TargetW - 16.f * S, OY - LabelAsc * 0.6f, TargetWord, LabelFont, Tok(UiToken::InkDim, A));
+			HLine(OX, OX + OLen, OY, 0.f, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A), false);
+			HLine(OX, OX + OLen, OY, 0.f, OHp, StrokeStyle(2.4f, 106, S, 0.04f), Tok(UiToken::Ink, A));
+			HLine(OX, OX + OLen, OY + 9.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.2f, 107, S), Tok(UiToken::InkDim, A), false);
+		}
+	}
+
+	// The verbs bottom right: an unboxed list on a hairline rule, each with its key in a thin ring; the one the fight
+	// asks for now lit in the accent with a mark at the rule. A verb that cannot be used now steps back.
+	void PaintVerbs(const FPainter& P, const FVector2f& Size) const
+	{
+		const ftcore::ArenaHudLead& L = View.now.lead;
+		const ftcore::UiStyle& St = Table().Style;
+		const float S = P.S;
+		const float A = VerbFade.alpha;
+		const float RX = Size.X - Carry::VerbIn * S;
+		const float Y0 = Size.Y - Carry::VerbUp * S;
+		Mesh.Shade(RX - 110.f * S, Y0 + 60.f * S, 250.f * S, 170.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
+		ftcore::UiStrokeStyle Rule = StrokeStyle(1.f, 121, S, 0.2f);
+		Rule.endAlpha = 0.f;
+		ftcore::uiStrokeLine(Line, RX, Y0 - 50.f * S, RX, Y0 + (3.f * Carry::VerbStep + 34.f) * S, Rule);
+		Mesh.Stroke(Line, Tok(UiToken::Ink, 0.75f * A));
+		Lozenge(RX, Y0 - 44.f * S, 3.5f * S, true, S, Tok(UiToken::Ink, 0.8f * A));
+
+		const bool Avail[4] = {!L.guardBroken && !L.down, L.releaseReady, View.now.partner.present, L.heals > 0 && !L.down};
+		const int32 Hot = L.releaseReady ? 1 : -1;
+		for (int32 I = 0; I < 4; ++I)
+		{
+			const FVerbSlot& V = Verbs[I];
+			if (V.Keys.IsEmpty())
+			{
+				continue;
+			}
+			const float Y = Y0 + I * Carry::VerbStep * S; // the word's baseline
+			const float VA = A * (Avail[I] ? 1.f : 0.42f);
+			const FLinearColor C = I == Hot ? Tok(UiToken::Accent, VA) : Tok(UiToken::Ink, VA);
+			const float KX = RX - 44.f * S;
+			const float KY = Y - 7.f * S;
+			const float KW = V.Keys.Len() <= 1 ? 30.f * S : FMath::Max(30.f * S, V.KeysW + 18.f * S);
+			StadiumStroke(Line, KX, KY, KW, 30.f * S, 0.65f * S);
+			Mesh.Stroke(Line, C, true, true);
+			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.55f, V.Keys, LabelFont, C);
+			P.Text(KX - KW * 0.5f - 18.f * S - V.WordW, Y - VerbAsc, V.Word, VerbFont, C);
+			if (I == Hot)
+			{
+				const FVector2f Pts[3] = {FVector2f(RX + 19.f * S, Y - 15.f * S), FVector2f(RX + 10.f * S, Y - 7.f * S), FVector2f(RX + 19.f * S, Y + 1.f * S)};
+				Poly(Pts, 3, 0.9f * S, Tok(UiToken::Accent, A));
+			}
 		}
 	}
 
 	TFunction<const UFTArenaRunner*()> GetRunner;
 	ftcore::ArenaHudView View;
 	ftcore::UiFade LeadFade;
+	ftcore::UiFade TopFade;
+	ftcore::UiFade VerbFade;
+	FLostTrace HpLost;
+	FLostTrace TopLost;
+	FVerbSlot Verbs[4] = {{"input.guard"}, {"input.release"}, {"input.count"}, {"input.heal"}};
+	ftcore::InputDevice VerbDevice = ftcore::InputDevice::Keys;
+	uint32 LastVerbState = MAX_uint32;
+	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line; // the stroke being drawn (Core fills it, the mesh takes it)
 	bool bLive = false;
 	float Time = 0.f;
 	float BuiltHeight = -1.f;
 	FSlateFontInfo LabelFont;
 	FSlateFontInfo ValueFont;
+	FSlateFontInfo VerbFont;
 	float LabelH = 0.f;
-	float ValueH = 0.f;
+	float LabelAsc = 0.f;
+	float ValueAsc = 0.f;
+	float VerbAsc = 0.f;
 	FString HpText;
 	float HpTextW = 0.f;
-	FString TargetText;
-	float TargetTextW = 0.f;
-	FString OtherText;
-	float OtherTextW = 0.f;
-	float WordW = 0.f;
+	FString LoadText;
+	FString DownWord, OverWord, BrokenWord, ReadyWord, TargetWord, WeightWord, WeakWord, InvulWord;
+	float DownW = 0.f, OverW = 0.f, BrokenW = 0.f, ReadyW = 0.f, TargetW = 0.f, WeightW = 0.f, WeakW = 0.f, InvulW = 0.f;
 };
 
 // ---- dialogue ---------------------------------------------------------------------------------------------------------

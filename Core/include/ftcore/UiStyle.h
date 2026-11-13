@@ -48,8 +48,8 @@ enum class UiToken : std::uint8_t {
 };
 inline constexpr std::size_t kUiTokenCount = 9;
 
-enum class UiTextRole : std::uint8_t { Title, Heading, Label, Value, Subtitle, Speaker, Prompt, Popup };
-inline constexpr std::size_t kUiTextRoleCount = 8;
+enum class UiTextRole : std::uint8_t { Title, Heading, Label, Value, Subtitle, Speaker, Prompt, Popup, Verb };
+inline constexpr std::size_t kUiTextRoleCount = 9;
 
 // Font families the style may name. Sans is the engine's Roboto until the final font is ruled; Hand is the
 // Third's handwriting (a marked placeholder italic until an owned font exists).

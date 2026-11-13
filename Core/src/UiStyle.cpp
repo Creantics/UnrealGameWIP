@@ -16,7 +16,7 @@ constexpr std::array<std::string_view, kUiPaletteCount> kPaletteNames{"default",
 constexpr std::array<std::string_view, kUiTokenCount> kTokenNames{"ink", "ink_dim", "backing", "track", "accent",
     "accent2", "danger", "ally", "weak_point"};
 constexpr std::array<std::string_view, kUiTextRoleCount> kRoleNames{"title", "heading", "label", "value", "subtitle",
-    "speaker", "prompt", "popup"};
+    "speaker", "prompt", "popup", "verb"};
 constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans", "sans_bold", "serif", "hand"};
 constexpr std::array<std::string_view, 7> kShapeNames{"none", "diamond", "chevron", "circle", "square", "triangle", "ring"};
 constexpr std::array<std::string_view, kUiMeterShapeCount> kMeterNames{"line", "ring", "teeth", "stroke"};
@@ -143,6 +143,7 @@ UiStyle defaultUiStyle() {
     s.text[static_cast<std::size_t>(UiTextRole::Speaker)] = {UiFont::SansBold, 24.f, 0.12f, true};
     s.text[static_cast<std::size_t>(UiTextRole::Prompt)] = {UiFont::Sans, 20.f, 0.04f, false};
     s.text[static_cast<std::size_t>(UiTextRole::Popup)] = {UiFont::SansBold, 28.f, 0.04f, true};
+    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::Sans, 26.f, 0.08f, true};
 
     s.cueShape[static_cast<std::size_t>(UiToken::Danger)] = UiCueShape::Triangle;
     s.cueShape[static_cast<std::size_t>(UiToken::Ally)] = UiCueShape::Circle;

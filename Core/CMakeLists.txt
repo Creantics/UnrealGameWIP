@@ -35,6 +35,7 @@ add_library(ftcore STATIC
     src/Backlog.cpp
     src/UiGlyphs.cpp
     src/UiStyle.cpp
+    src/UiStroke.cpp
     src/UiViews.cpp
     src/Banter.cpp
     src/Battle.cpp
@@ -234,6 +235,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_garment_front.cpp
         tests/test_backlog.cpp
         tests/test_ui.cpp
+        tests/test_ui_stroke.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_battle_camera.cpp

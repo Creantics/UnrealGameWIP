@@ -1158,7 +1158,10 @@ void AFTArenaHUD::DrawHUD()
 	}
 	// The aim's centre reticle (right mouse held), faded in with the stance.
 	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
-	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
-	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	if (!NewUiWidget.IsValid()) // the new UI shows the fight's verbs with their keys bottom right instead
+	{
+		DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
+		DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	}
 	FT::DrawPauseOverlay(*this, Canvas);
 }
