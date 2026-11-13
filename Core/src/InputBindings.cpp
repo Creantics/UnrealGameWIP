@@ -345,8 +345,9 @@ constexpr InputHintEntry kFieldHint[] = {
 };
 
 // What the host reads but no controls line names, each on purpose (ctest hints_read checks both ways): the map key
-// shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause};
+// shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares, and take half
+// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {

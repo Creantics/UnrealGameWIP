@@ -4246,21 +4246,21 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 		Places.reset(4);
 		if (Keys != TEXT("none"))
 		{
-			ftcore::ChairTable Table;
+			ftcore::ChairTable ChairRows;
 			TArray<uint8> Bytes;
 			std::string Error;
 			const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/chairs.json");
-			if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importChairTable(FT::BytesAsText(Bytes), Table, &Error)))
+			if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importChairTable(FT::BytesAsText(Bytes), ChairRows, &Error)))
 			{
 				UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/chairs.json; no chairs are named.\n%s"), *FT::ToFString(Error));
-				Table = ftcore::ChairTable();
+				ChairRows = ftcore::ChairTable();
 			}
 			TArray<FString> Parts;
 			Keys.ParseIntoArray(Parts, TEXT(","), true);
 			for (const FString& Part : Parts)
 			{
 				const std::string Key(TCHAR_TO_UTF8(*Part));
-				const ftcore::ChairRow* Row = Table.findKey(Key);
+				const ftcore::ChairRow* Row = ChairRows.findKey(Key);
 				if (!Row)
 				{
 					UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaChairs: no chair %s in Data/Battle/chairs.json."), *Part);
@@ -4271,7 +4271,7 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 					UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaChairs: chair %s could not be named (the seats are full or it is named already)."), *Part);
 				}
 			}
-			CarryChairs = ftcore::chairsFor(Places, Table);
+			CarryChairs = ftcore::chairsFor(Places, ChairRows);
 		}
 		CarryCap = Places.carryCap();
 	}

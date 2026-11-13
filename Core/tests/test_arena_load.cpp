@@ -99,6 +99,9 @@ ArenaEnemyKind dummyKind() {
 ArenaEnemyKind biterKind(int damage, float maxRange = 3.f) {
     ArenaEnemyKind k = dummyKind();
     k.attackDelay = 0.f;
+    // It strafes (and so asks for a token) from where it stands: the rig never moves the bodies.
+    k.preferredRange = maxRange;
+    k.runRange = maxRange + 5.f;
     k.moveCount = 1;
     ArenaEnemyMove& m = k.moves[0];
     m.attack = swing(0.4f, 0.15f, 0.5f, 2.f, damage);
@@ -167,13 +170,15 @@ struct Rig {
         }
         in.guard = false;
     }
-    // Presses Release on the next tick; true if it went.
+    // Presses Release; true if it went. Then lets a refused press age out of the buffer, so it can't go on a
+    // later store.
     bool release() {
-        tick();
         const int before = count(ArenaEventType::Released);
         in.release = true;
         tick();
-        return count(ArenaEventType::Released) > before;
+        const bool went = count(ArenaEventType::Released) > before;
+        run(20); // past bufferTime
+        return went;
     }
 };
 
@@ -230,7 +235,8 @@ TEST_CASE("arena carry: the Load cap follows the named places; the Release opens
         rig.fight.setLoadCap(namedPlaces(3).carryCap());
         CHECK(rig.fight.loadCap() == 100);
         CHECK(rig.fight.releaseOpenLoad() == 33);
-        rig.fight.giveLoad(33);
+        rig.tick(); // into the fight: giveLoad gives nothing before it
+        CHECK(rig.fight.giveLoad(33) == 33);
         CHECK_FALSE(rig.release());
         rig.fight.giveLoad(1);
         CHECK(rig.release());
@@ -241,7 +247,8 @@ TEST_CASE("arena carry: the Load cap follows the named places; the Release opens
         rig.fight.setLoadCap(namedPlaces(0).carryCap());
         CHECK(rig.fight.loadCap() == 40);
         CHECK(rig.fight.releaseOpenLoad() == 13);
-        rig.fight.giveLoad(13);
+        rig.tick(); // into the fight: giveLoad gives nothing before it
+        CHECK(rig.fight.giveLoad(13) == 13);
         CHECK_FALSE(rig.release());
         rig.fight.giveLoad(1);
         CHECK(rig.release());
