@@ -17,12 +17,19 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 
+#include "ftcore/AimStance.h"
+#include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaLook.h"
+#include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/BeatChoreo.h"
+#include "ftcore/InputBindings.h"
 
 #include "FTArenaBossVfx.h"
+#include "FTFightSession.h"
 #include "FTKiteHost.h"
 #include "FTKiteVfx.h"
 #include "FTLeadWeapons.h"
@@ -33,6 +40,13 @@
 #include <string_view>
 
 class UFTVfxComponent;
+class UFTArenaJoltModifier;
+class UFTBeatBossMetronome;
+class UAudioComponent;
+namespace ftcore
+{
+struct Settings;
+}
 
 #include "FTArenaRunner.generated.h"
 
@@ -97,6 +111,11 @@ struct FFTArenaRunSetup
 	bool bIdle = false;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f; // -ArenaParryHold=<s>
+	bool bNoLock = false;  // -ArenaNoLock: the autopilot never presses lock, so its attacks take soft targets
+	bool bAutoShoot = false; // -ArenaAutoShoot: with a guns kit the autopilot aims and shoots on the way in
+	// -ArenaSharedCount: the autopilot's lead calls the count whenever it can, and a scripted partner (the other lead,
+	// with no body or blow of its own in the fight) joins a window the step a lead's blow is held.
+	bool bSharedCount = false;
 	FString BossLoop;      // -ArenaBossLoop=<clip> (review only; empty: off)
 	bool bBossSplitAtStart = false; // -ArenaBossSplit
 	// Exit the process on the outcome (0 a victory, 1 a defeat), and end a fight that outlasts the watchdog.
@@ -163,6 +182,8 @@ public:
 	// Seconds since the fight ended (0 while it runs).
 	double GetResultAge() const { return bResultLogged ? Now - ResultTime : 0.0; }
 	bool IsAutoPlay() const { return bAutoPlay; }
+	// How long after the result the autopilot fights again: covers the longest defeat clip (s).
+	double GetAutoAgainWait() const { return AutoAgainWait; }
 	bool IsIdle() const { return bIdle; }
 	// The result offers to fight again.
 	bool CanFightAgain() const { return bFightAgain; }
@@ -180,6 +201,13 @@ public:
 	const ftcore::ArenaEnemyMove* GetEnemyMove(int32 Index) const;
 	// When enemy Index's current attack went active (far in the past when it hasn't this attack).
 	double GetEnemyActiveSince(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? ActiveSince[Index] : -1e9; }
+	// Off-frame tells (ftcore::arenaOffFrameTells, from the camera's place, facing and field of view): whether enemy Index
+	// is winding up out of the view now, and when this windup first went off frame (GetNow()'s clock). The HUD's edge marker and the
+	// stinger both read this one answer.
+	bool IsOffFrame(int32 Index) const { return Index >= 0 && Index < MaxEnemies && bOffFrame[Index]; }
+	double GetOffFrameSince(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? OffFrameSince[Index] : -1e9; }
+	// The player's settings (null outside a game instance).
+	const ftcore::Settings* GetSettings() const;
 	// When enemy Index was last hit (far in the past when never).
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
@@ -205,10 +233,35 @@ public:
 	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
 	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h); the mode's strike views freeze and thaw it.
 	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
+	// The aim stance (right mouse held): its blend 0..1, for the HUD's reticle.
+	float GetAimAlpha() const { return ArenaAim.alpha(); }
+	// A guns kit's crosshair is on an enemy its round would not reach (past the shot's range): the HUD dims it.
+	bool IsReticleOutOfReach() const { return bReticleOutOfReach; }
+	// A guns kit's round would meet another body before the one under the crosshair (one on the muzzle's line only).
+	bool IsReticleBlocked() const { return bReticleBlocked; }
 	FFTLeadWeapons& GetLeadWeapons() { return LeadWeapons; }
-	// The fight time the figures were last drawn at: a step behind Fight.time(), Alpha of the way to it. It moves by
-	// exactly the delta TickFight is given while the fight runs.
+	// The time the figures were last drawn at, on the held fight clock (Fight.heldTime(), the lead's strike clips' clock):
+	// Alpha of the way from its value before the last step to its value after. It stands still through the player's hit
+	// pauses and otherwise moves by the delta TickFight is given.
 	double GetDrawnTime() const { return DrawnTime; }
+	// The clocks for the fight session (the shared combat inputs): the held fight clock (the fight clock less the player's
+	// hit pauses), how far it moved over the last TickFight (what the session's Tick takes: 0 through a hit pause), the
+	// player's pause left, and each figure's own pause left (0 once the fight is over, and on a dead enemy). All 0 before
+	// the fight begins; Begin and Restart start them again.
+	float GetHeldTime() const { return bBegun ? Fight.heldTime() : 0.f; }
+	float GetHeldDelta() const { return HeldDelta; }
+	float GetHitStopLeft() const { return bBegun ? Fight.hitStopLeft() : 0.f; }
+	float GetPlayerStopLeft() const { return bBegun ? Fight.output().player.stopLeft : 0.f; }
+	float GetEnemyStopLeft(int32 Index) const
+	{
+		return (bBegun && Index >= 0 && Index < static_cast<int32>(Fight.enemyCount())) ? Fight.output().enemies[static_cast<size_t>(Index)].stopLeft : 0.f;
+	}
+	// The fight session (the shared combat inputs) the runner owns and ticks on the held clock, and its lead slot (the
+	// one the player's figure fills: SessionLeadOf the lead's look, set at Begin).
+	UFTFightSession* GetSession() const { return Session; }
+	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
+	bool IsStoryFight() const { return bStoryFight; }
+	uint8 GetSessionLead() const { return SessionLead; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -258,6 +311,10 @@ private:
 	void EndKindCrits();
 	void FeedKindCrits(const ftcore::ArenaEvents& Events);
 	static ftcore::ArenaBlowRuling RuleKindCritBlow(void* User, const ftcore::ArenaBlow& Blow);
+	// The session's ruling, chained after the hook the sub-hosts set (kind crits, kite, stone bearer): installed after
+	// they begin, at the fight's begin and each restart.
+	static ftcore::ArenaBlowRuling RuleSessionBlow(void* User, const ftcore::ArenaBlow& Blow);
+	void InstallSessionHook();
 	// The entry's effects (ArenaKindCritEffects) on each crit slot's figure, made once after the figures: the tell plays
 	// from the opening move's start until the window opens, the open effect while it is open, the crit and hit effects
 	// on the lead's blows on the slot. Hung from the entry's socket on a skinned figure (else its root).
@@ -287,17 +344,42 @@ private:
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
 	ftcore::ArenaInput TakeInput();
+	void HoldPausedEnemies();
 	void StepFight();
 	void HandleEvents(const ftcore::ArenaEvents& Events);
+	// The shared combat inputs beside the fight (docs/SHARED_COMBAT_INPUTS.md section 7): presses before the step,
+	// then the session ticked by the held clock's advance and the player's landed blows judged on the count.
+	void PressSession(const ftcore::ArenaInput& In);
+	void FeedSession();
+	void BeginSession();
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
+	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
+	void KickJolt(const ftcore::ArenaEvent& E);
+	void TickImpact(float DeltaSeconds);
+	void EndImpact();
+	float ShakeScale() const;
+	// The aim stance this frame (right mouse held) and its reticle point; the camera pulled in by it.
+	void TickAim(float DeltaSeconds);
+	void ApplyAimCamera();
 	void Finish();
 	// The one result line per fight (VICTORY, DEFEAT, or TIMEOUT as a warning while it still runs).
 	void LogResult() const;
+	// One "Arena check:" line per combat feature (Core's arenaFeatureChecks over the fight's stats), for the headless
+	// demo: PASS, FAIL, or n/a where nothing in the line-up can show it.
+	void LogFeatureChecks() const;
+	static uint8 SessionLeadOf(const FFTLeadLook* Look);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
 
+	// The shared combat inputs, ticked on Fight.heldTime() (it stands still in the player's hit pauses). Declared
+	// first among the members: UHT keeps a property's offset in 16 bits, and the fight state below is large.
+	UPROPERTY()
+	TObjectPtr<UFTFightSession> Session;
+	bool bStoryFight = false; // BeginSession: the story handed this fight off
+	bool bRestarting = false; // Restart's BeginSession: not the fight's first attempt
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> PlayerFigure;
 	UPROPERTY()
@@ -310,6 +392,14 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// The impact jolt's camera modifier (added to the player's camera manager on the first frame it is there) and the
+	// off-frame stinger's procedural voice and its sound (null with no audio device: the marker carries the tell alone).
+	UPROPERTY()
+	TObjectPtr<UFTArenaJoltModifier> JoltModifier;
+	UPROPERTY()
+	TObjectPtr<UFTBeatBossMetronome> Stinger;
+	UPROPERTY()
+	TObjectPtr<UAudioComponent> StingerAudio;
 	// The stone_bearer's effects: telegraph, impact, hit chips, crit burst and the open weak point's glow.
 	UPROPERTY()
 	FFTArenaBossVfx BossVfx;
@@ -398,8 +488,44 @@ private:
 	int32 ZoneStyle = 0;
 	ftcore::ArenaDef Def;
 	ftcore::ArenaFight Fight;
+	float SessionHeld = 0.f;         // Fight.heldTime() at the last session tick
+	bool bSessionGuard = false;      // the guard as last sent to the session (refusal hold edges)
+	uint8 SessionLead = ftcore::kLeadA; // the lead slot the player's figure fills
+	ftcore::ArenaBlowHook SessionInnerHook = nullptr; // the sub-hosts' hook the session's ruling chains after
+	void* SessionInnerUser = nullptr;
+	bool bSessionPartnerDue = false; // -ArenaSharedCount: a lead's blow is held, the scripted partner joins after the step
+	int32 SessionHeldBlows = 0;      // this fight's lead blows judged Held
+	int32 SessionJoins = 0;          // the scripted partner's blows that joined a window
+	int32 SessionBonuses = 0;        // held-blow bonuses the fight took (hostBlow)
+	int32 SessionBonusDamage = 0;    // their extra damage
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
+	// The lead's speed as its body moved (m/s; the sim's velocity less what the bodies' push took off), the median of
+	// the last three steps' speeds: the legs' cycle runs at it, so they step at the pace the feet are drawn moving, and
+	// it sets the strikes' upper share. A median, not one step: a body pushed in and out against another swings step to
+	// step, and the gait and the foot lock would flip with it each frame.
+	float PlayerStepSpeed = 0.f;
+	float LeadWantSpeed = -1.f; // the walk's wanted pace handed to the lead's legs (m/s; -1 unknown), held through a hit pause
+	float LeadStopDistance = -1.f; // and how far the body would slide at the brake (m; -1 unknown), held with it
+	float PlayerSteps[3] = {0.f, 0.f, 0.f};
+	int32 PlayerStepAt = -1; // the next slot in PlayerSteps; -1 after a start, a teleport or a facing snap
+	float PlayerStepFacing = 0.f; // rad, at the last step
+	bool bDrawSnap = false; // -ArenaDrawSnap: the mesh yaws by the rules' facing (the old snap), for before/after captures
+	bool bWasDodging = false; // the player's last drawn action was a roll (logs each roll's start)
+	// The facing the player's mesh is drawn with: the eased drawn facing, or the rules' one under -ArenaDrawSnap.
+	ftcore::Vec2 PlayerDrawFacing(const ftcore::ArenaPlayerOut& P) const { return bDrawSnap ? P.facing : P.drawFacing; }
+	static constexpr float kMaxStepSpeed = 12.f; // m/s: a faster step is a teleport (the dodge is under 6)
+	static constexpr float kStepSnapTurn = 1.f;  // rad in one step: a snap, not a running turn
+	// The strike clips' upper-body share this step, eased toward attackUpperShare of the walk (the lunge left out).
+	float LeadUpperShare = 0.f;
+	// The share moves by at most this much a second, so a strike's legs don't flip between the clip and the walk.
+	static constexpr float kUpperShareRate = 6.f;
+	// The lead's legs turned from its facing toward the way it moved over the last step (degrees, + right; 0 standing
+	// or while a strike's clip has the legs), eased at kLegYawRate: its gaits only go forward, so a strafe walks them
+	// sideways under a chest that keeps facing.
+	float LeadLegYaw = 0.f;
+	static constexpr float kLegYawRate = 420.f;
+	static constexpr float kLegYawMax = 95.f;
 	uint32 Seed = 1;
 
 	// Presses waiting for a step, the held guard, the stick on the ground and the switch.
@@ -417,8 +543,72 @@ private:
 	int8 PressRead = -1;
 	bool bGuardHeld = false;
 	bool bInterceptHeld = false;
+	// The aim (right mouse held) and the attack button's tap and hold (left mouse; ftcore::AimStance, Data/Battle/aim.json,
+	// loaded once), the reticle point (world, cm) and whether the camera was last left pulled in.
+	ftcore::AimStance ArenaAim;
+	// Attacking on the move (Data/Battle/attack_move.json, loaded with aim.json).
+	ftcore::AttackMoveRules AttackMoveTable;
+	ftcore::PressHold AttackHold;
+	// Guard's hold or toggle latch (FTInputBindings).
+	ftcore::HeldInput GuardInput;
+	ftcore::HeldInput AimInput;
+	ftcore::HeldInput InterceptInput;
+	bool bAimRulesTried = false;
+	bool bAimHeld = false;
+	bool bAimCamera = false;
+	FVector ReticlePoint = FVector::ZeroVector;
+	// The point the aim's heading on the ground is taken toward: the reticle's point, or with the trace meeting nothing
+	// the camera's line carried out to reticleRange along the ground (a steep look's far point lies nearly over the
+	// lead, off the line by the shoulder offset).
+	FVector ReticleHeadingPoint = FVector::ZeroVector;
+	bool bReticleHit = false;
+	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
+	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
+	bool bReticleBlocked = false;    // see IsReticleBlocked
+	// The blocked crosshair's hysteresis: another body blocks only when the crosshair's own is met more than
+	// kBlockMargin (m) further along the round, and the shown state changes once the new one has held kBlockHoldFrames.
+	static constexpr float kBlockMargin = 0.25f;
+	static constexpr int32 kBlockHoldFrames = 4;
+	int32 BlockedRun = 0;  // frames the unshown state has held
+	int32 BlockedFor = -1; // the crosshair's body that state is about (a new one starts clear)
+	// The first standing enemy body (Core's radius, the figure's height and hover, as an upright cylinder) along the
+	// line From -> To (cm) nearer than T on entry (0..1 of the line): its slot, and T then the share along the line. The
+	// figures carry no collision, so the reticle's trace meets them by this.
+	int32 ReticleBody(const FVector& From, const FVector& To, double& T) const;
+	// -ArenaAimCheck (autopilot, a guns kit): once in the fight, the camera aims at the tallest standing enemy's top
+	// (its height and hover) by ftcore::arenaLookUpPitch, the reticle is traced and one aimed shot is pressed; the
+	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done.
+	int32 AimCheckPhase = 0;
+	int32 AimCheckSlot = -1;
+	int32 AimCheckPresses = 0;
+	double AimCheckSince = 0.0;
+	int32 AimCheckShotsBefore = 0;
+	int32 AimCheckHitsBefore = 0;
+	float AimCheckPitch = 0.f;
+	FString AimCheckLine;
+	bool bAimCheckPass = false;
+	bool bAimCheckNa = false;      // the check could not be judged (the target fell first, no camera)
+	bool bAimCheckOnBoss = false;  // the crosshair's line met the target as the shot was pressed
+	bool bAimCheckPitchOk = false; // the view had reached the solved pitch (within 1.5 degrees)
+	float AimCheckHpBefore = 0.f;
+	float AimCheckRendered = 0.f;  // the view pitch the camera rendered as the shot was pressed
+	bool bAimCheckFire = false;
+	// The tallest standing enemy's slot (-1: none) and its top over the floor (m).
+	int32 TallestStanding(float& OutTop) const;
+	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
+	ftcore::Vec2 ReticleAimDir(const ftcore::Vec2& Fallback) const;
+	// The round's climb (rad) from the lead's muzzle (ftcore::kArenaShotHeight over its floor) to the reticle's heading
+	// point; false (and 0) with no reticle traced.
+	bool ReticlePitch(float& OutPitch) const;
+	// The same toward the middle of enemy Slot's body (its hover and height); false for no such standing enemy.
+	bool BodyPitch(int32 Slot, float& OutPitch) const;
+	// The rendered view's rotation without the impact jolt (the camera's own, as the reticle and the tells read it).
+	FRotator ViewRotation(const APlayerCameraManager& Camera) const;
+	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
+	void StepAimCheck(ftcore::ArenaInput& In);
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
+	bool bMouseFlicked = false;
 
 	double Now = 0.0;
 	double Accumulator = 0.0;
@@ -437,6 +627,29 @@ private:
 	float CameraYaw = 0.f;
 	float CameraPitch = -16.f;
 
+	// Impact feedback. The jolt, the camera shake the run forces (-ArenaCameraShake=<0..1>; below 0: the setting), the
+	// blows that asked for a kick and the largest offset handed to the camera (degrees). The view the off-frame test
+	// last used; per enemy, whether it is off frame, since when, and whether this windup has been told; the last
+	// stinger (Now), and the counts for the check line.
+	ftcore::ArenaJolt Jolt;
+	float ShakeOverride = -1.f;
+	// -ArenaGlide=<toward|across|away|pulse|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// (pulse: 0.8 s toward, 0.6 s let go, 0.8 s away, 0.6 s let go, over and over)
+	// to its target (toward, across to the right, away) whenever the autopilot itself leaves the stick at rest, so its
+	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
+	int32 GlideStick = -1;
+	bool GlideRolling = false; // the player was rolling at the last step (-ArenaGlide=rollstrike)
+	FFTArenaGlideProbe Glide;
+	int32 JoltAsks = 0;
+	float JoltApplied = 0.f;
+	ftcore::ArenaView CameraView;
+	bool bOffFrame[ftcore::kMaxArenaEnemies] = {};
+	double OffFrameSince[ftcore::kMaxArenaEnemies] = {};
+	bool bWindupTold[ftcore::kMaxArenaEnemies] = {};
+	double LastStinger = -1e9;
+	int32 OffFrameWindups = 0;
+	int32 Stingers = 0;
+
 	bool bBegun = false;
 	bool bFiguresSpawned = false;
 	bool bAutoPlay = false;
@@ -447,6 +660,14 @@ private:
 	bool bReplacePawn = true;
 	bool bHoldLoad = false;
 	float ParryHold = 0.f;
+	bool bNoLock = false;
+	bool bAutoShoot = false;
+	bool bSharedCount = false;
+	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
+	double PrevHeldTime = 0.0;
+	float HeldDelta = 0.f;
+	// Seconds of each enemy's hit pause the steps of this frame covered (its clips leave them out).
+	float PausedThisFrame[ftcore::kMaxArenaEnemies] = {};
 	// -ArenaBossLoop: the clip's name, the boss's slot and the clip's table index (-1: off, or not found), whether it was
 	// looked for, and the wraps logged this fight.
 	FString BossLoopName;

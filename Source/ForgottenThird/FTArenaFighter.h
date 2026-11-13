@@ -50,6 +50,10 @@ struct FFTArenaPose
 	FVector Feet = FVector::ZeroVector; // world, centimetres
 	float Yaw = 0.f;                    // degrees
 	float Speed = 0.f;                  // m/s on the ground: idle or walk
+	float LegYaw = 0.f;                 // degrees the legs turn from Yaw toward the way the body moves (+ right)
+	bool bFootLock = false;             // the feet held where they stand (a strike whose clip has the legs)
+	float WantSpeed = -1.f;             // m/s the walk heads for (0: braking to a stand; below 0 unknown: no starts or stops)
+	float StopDistance = -1.f;          // m left to slide while braking to a stand (below 0 unknown)
 
 	// The attack under way: its part, how far through that part (0..1) and how the arm moves.
 	bool bAttacking = false;
@@ -62,6 +66,7 @@ struct FFTArenaPose
 	bool bDodging = false;
 	FVector2D DodgeLocal = FVector2D(-1.0, 0.0); // the roll's way in the figure's own frame (x forward)
 	float DodgeFraction = 0.f;
+	float DodgeTime = 0.f; // s: the whole roll (the land-roll clip is fitted to it)
 	float LeanBack = 0.f;  // degrees: hitstun, guard break, stagger, open
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
@@ -120,7 +125,17 @@ public:
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's
 	// height over the feet, the shoulder offset sideways and up, and the field of view in degrees.
 	void SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees);
+	// The lens tilted up on the boom's end by this much (degrees; ftcore::arenaSplitPitch's tilt): a look steeper than
+	// the boom may swing.
+	void SetCameraTilt(float Degrees);
 	void ApplyPose(const FFTArenaPose& Pose);
+	// Drops the lead's held feet and sunk pelvis (UFTLocomotionAnimInstance::ResetFeet): the body was put somewhere
+	// else. ApplyPose does it itself when the body goes down.
+	void ResetFeet();
+	// Every skeletal mesh on the figure poses after Host ticks (it places the figure), now and for any mesh the figure
+	// makes later (a look worn or a skin set again). Followers and grooms tick after the mesh they follow already.
+	void PoseAfter(AActor* Host);
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
 	// Where the HUD hangs this figure's markers: above its head, and its chest.
 	FVector GetAnchor() const;
@@ -182,6 +197,9 @@ private:
 	// The lead's look: pieces worn on the body (clothes, a face) and the grooms bound to them.
 	UPROPERTY()
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
 	UPROPERTY()
 	TArray<TObjectPtr<USceneComponent>> Grooms;
 	// The carried piece's parts in the hands, after SplitCarried.
@@ -226,6 +244,18 @@ private:
 	bool bWalking = false;
 	bool bTellShown = true;
 	bool bShieldShown = true;
+	bool bWasLying = false;
+	// A lead's roll: the land-roll traversal clip playing for it (-1: none), from its touchdown to back up.
+	int32 RollClip = -1;
+	float RollFrom = 0.f;
+	float RollTo = 0.f;
+	float RollRate = 1.f;
+	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
+	bool RollWithClip(const FFTArenaPose& Pose);
+	TWeakObjectPtr<AActor> PoseHost;
+	void TieMeshTicks();
+	void UntieMeshTicks();
+	bool bPlayerFigure = false; // the player's figure never shows the guard plate
 	FLinearColor LastTint = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastShield = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastTell = FLinearColor(-1.f, -1.f, -1.f);

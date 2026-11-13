@@ -30,6 +30,7 @@ endif()
 
 add_library(ftcore STATIC
     src/AssetManifest.cpp
+    src/StoryCast.cpp
     src/AudioCues.cpp
     src/Backlog.cpp
     src/Banter.cpp
@@ -118,17 +119,23 @@ add_library(ftcore STATIC
     src/Seen.cpp
     src/Settings.cpp
     src/SkinDetail.cpp
+    src/GarmentDetail.cpp
     src/Skip.cpp
     src/StoryDatabase.cpp
     src/StoryImport.cpp
     src/StoryRunner.cpp
     src/StubScreen.cpp
     src/SceneLook.cpp
+    src/LookBody.cpp
+    src/GarmentFront.cpp
     src/LookGrade.cpp
     src/LookTable.cpp
+    src/ClipBodyAlias.cpp
     src/SeaWaves.cpp
     src/StylePack.cpp
     src/StorySave.cpp
+    src/StoryState.cpp
+    src/StoryBridge.cpp
     src/TurnQueue.cpp
     src/Version.cpp
     src/Vfx.cpp
@@ -137,6 +144,11 @@ add_library(ftcore STATIC
     src/Shop.cpp
     src/ArenaFight.cpp
     src/FieldStrike.cpp
+    src/AimStance.cpp
+    src/InputBindings.cpp
+    src/AttackMove.cpp
+    src/FootHold.cpp
+    src/FieldUnstick.cpp
     src/ArenaZone.cpp
     src/ArrowLane.cpp
     src/StickFlick.cpp
@@ -145,11 +157,15 @@ add_library(ftcore STATIC
     src/BeatBoss.cpp
     src/ArenaBoss.cpp
     src/ArenaKindCrit.cpp
+    src/ArenaSoftTarget.cpp
+    src/ArenaImpact.cpp
+    src/ArenaLook.cpp
     src/StoneBearer.cpp
     src/BeatChoreo.cpp
     src/BeatMusic.cpp
     src/BeatMusicSynth.cpp
     src/BeatScreen.cpp
+    src/TwistBake.cpp
 )
 target_include_directories(ftcore PUBLIC include)
 target_link_libraries(ftcore PRIVATE ftcore_warnings)
@@ -251,6 +267,16 @@ else()
     target_compile_options(ftcore_lotplan PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_storywalk: plays a story folder through the runner with the story state bound, headless (an offline check).
+add_executable(ftcore_storywalk tools/ftcore_storywalk.cpp)
+target_link_libraries(ftcore_storywalk PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_storywalk PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_storywalk PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_storywalk PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 if(FTCORE_BUILD_TESTS)
     include(FetchContent)
     # CMake 4 rejects cmake_minimum_required(< 3.5), which doctest 2.4.11 still declares.
@@ -268,6 +294,8 @@ if(FTCORE_BUILD_TESTS)
         tests/AllocHook.cpp
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
+        tests/test_look_body.cpp
+        tests/test_garment_front.cpp
         tests/test_backlog.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
@@ -276,6 +304,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_read_cards.cpp
         tests/test_turns_demo.cpp
         tests/test_load.cpp
+        tests/test_strike_count.cpp
+        tests/test_combat_inputs.cpp
+        tests/test_boss_script.cpp
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
         tests/test_conductor.cpp
@@ -354,13 +385,21 @@ if(FTCORE_BUILD_TESTS)
         tests/test_qte.cpp
         tests/test_settings.cpp
         tests/test_skin_detail.cpp
+        tests/test_garment_detail.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
+        tests/test_story_fight_step.cpp
+        tests/test_story_faces.cpp
+        tests/test_story_state.cpp
+        tests/test_story_bridge.cpp
+        tests/test_story_cast.cpp
+        tests/test_fight_session.cpp
         tests/test_story_import.cpp
         tests/test_scene_look.cpp
         tests/test_look_grade.cpp
         tests/test_look_table.cpp
+        tests/test_clip_body_alias.cpp
         tests/test_sea_waves.cpp
         tests/test_style.cpp
         tests/test_stub_screen.cpp
@@ -374,6 +413,10 @@ if(FTCORE_BUILD_TESTS)
         tests/test_pause.cpp
         tests/test_arena.cpp
         tests/test_field_strike.cpp
+        tests/test_aim.cpp
+        tests/test_input_bindings.cpp
+        tests/test_attack_move.cpp
+        tests/test_foot_hold.cpp
         tests/test_arena_zone.cpp
         tests/test_arrow_lane.cpp
         tests/test_stick_flick.cpp
@@ -383,10 +426,15 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_boss.cpp
         tests/test_arena_boss.cpp
         tests/test_arena_kind_crit.cpp
+        tests/test_arena_rollguard.cpp
+        tests/test_arena_soft.cpp
+        tests/test_arena_impact.cpp
+        tests/test_arena_look.cpp
         tests/test_stone_bearer.cpp
         tests/test_beat_choreo.cpp
         tests/test_beat_cine.cpp
         tests/test_beat_music.cpp
+        tests/test_twist_bake.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).
@@ -407,6 +455,59 @@ if(FTCORE_BUILD_TESTS)
         --summary ${CMAKE_CURRENT_BINARY_DIR}/place_example_summary.txt)
     set_tests_properties(place_example PROPERTIES PASS_REGULAR_EXPRESSION "PLACE OK")
 
+    # The story walker on a small story: a given result, a stub, and a refused write.
+    set(FTCORE_WALK_DATA ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk)
+    add_test(NAME storywalk_result COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_pick=2)
+    set_tests_properties(storywalk_result PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=2\r?\nkept sf.f_seen 2\r?\nscene s1\r?\nset f_pick 2\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 2\r?\nWALK OK")
+    add_test(NAME storywalk_stub COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA})
+    set_tests_properties(storywalk_stub PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=1 [(]stub[)]\r?\nkept sf.f_seen 2\r?\nscene s1\r?\nset f_pick 1\r?\nset f_seen 1\r?\ngameplay CMB\r?\nscene s2\r?\nflag branch 0\r?\nWALK OK")
+    add_test(NAME storywalk_refused COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_pick=7)
+    set_tests_properties(storywalk_refused PROPERTIES PASS_REGULAR_EXPRESSION
+        "refused sf.f_pick 7 .*WALK FAILED: the bridge reported a refusal")
+    add_test(NAME storywalk_bad_steps COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --steps 5x)
+    set_tests_properties(storywalk_bad_steps PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --steps: expected a positive number")
+    add_test(NAME storywalk_bad_scene_id COMMAND ftcore_storywalk ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk_badid ${FTCORE_WALK_DATA})
+    set_tests_properties(storywalk_bad_scene_id PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: scene id [.][.]/s1 is not a plain file name")
+    add_test(NAME storywalk_unused_result COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --result sf.f_seen=true)
+    set_tests_properties(storywalk_unused_result PROPERTIES PASS_REGULAR_EXPRESSION
+        "WALK FAILED: --result sf.f_seen: no gameplay beat set it")
+    # --inputs: scripted hand-offs and presses, the write order traced; a swapped, extra or missing entry fails.
+    set(FTCORE_WALK_IN ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk_inputs)
+    add_test(NAME storywalk_inputs COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_ok.txt)
+    set_tests_properties(storywalk_inputs PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=2\r?\nwrite f_pick 2 s1\r?\ngameplay PLAY\r?\npress 0 1 s1\r?\nwrite f_first 1 s1\r?\nwrite f_after 1 s1\r?\nscene s1\r?\nset f_pick 2\r?\nset f_first 1\r?\nset f_after 1\r?\nwide w_p01 1\r?\nderived 0 1\r?\ngameplay CMB\r?\nscene s2\r?\nWALK OK")
+    add_test(NAME storywalk_inputs_swapped COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_swapped.txt)
+    set_tests_properties(storywalk_inputs_swapped PROPERTIES PASS_REGULAR_EXPRESSION
+        "WALK FAILED: inputs line 2: expected gameplay CMB, the story hands off PLAY")
+    add_test(NAME storywalk_inputs_extra COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_extra.txt)
+    set_tests_properties(storywalk_inputs_extra PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: inputs line 4: no hand-off left for it")
+    add_test(NAME storywalk_inputs_short COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_short.txt)
+    set_tests_properties(storywalk_inputs_short PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: a CMB hand-off with no input left")
+    add_test(NAME storywalk_inputs_value COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_value.txt)
+    set_tests_properties(storywalk_inputs_value PROPERTIES PASS_REGULAR_EXPRESSION
+        "WALK FAILED: inputs line 2: the hand-off sets nothing, the input gives sf.f_pick")
+    add_test(NAME storywalk_inputs_bad_press COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_badpress.txt)
+    set_tests_properties(storywalk_inputs_bad_press PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: inputs line 2: press: expected SIDE:KIND")
+    # A byte order mark and CRLF line ends: the same trace as inputs_ok.txt (the file is kept byte for byte, -text).
+    add_test(NAME storywalk_inputs_bom_crlf COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_bom_crlf.txt)
+    set_tests_properties(storywalk_inputs_bom_crlf PROPERTIES PASS_REGULAR_EXPRESSION
+        "gameplay PLAY sf.f_pick=2\r?\nwrite f_pick 2 s1\r?\ngameplay PLAY\r?\npress 0 1 s1\r?\nwrite f_first 1 s1\r?\nwrite f_after 1 s1\r?\nscene s1\r?\nset f_pick 2\r?\nset f_first 1\r?\nset f_after 1\r?\nwide w_p01 1\r?\nderived 0 1\r?\ngameplay CMB\r?\nscene s2\r?\nWALK OK")
+    # A press on a side whose opening fact is not yet set: refused by the gate (result 5), the walk fails.
+    add_test(NAME storywalk_inputs_gate COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_gate.txt)
+    set_tests_properties(storywalk_inputs_gate PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: inputs line 2: press refused [(]result 5[)]")
+    add_test(NAME storywalk_inputs_twice COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_ok.txt --inputs ${FTCORE_WALK_IN}/inputs_ok.txt)
+    set_tests_properties(storywalk_inputs_twice PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --inputs given twice")
+    add_test(NAME storywalk_inputs_result COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${FTCORE_WALK_IN} --inputs ${FTCORE_WALK_IN}/inputs_ok.txt --result sf.f_pick=2)
+    set_tests_properties(storywalk_inputs_result PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --inputs scripts every gameplay value: no --result")
+    add_test(NAME storywalk_steps_overflow COMMAND ftcore_storywalk ${FTCORE_WALK_DATA} ${FTCORE_WALK_DATA} --steps 99999999999999999999)
+    set_tests_properties(storywalk_steps_overflow PROPERTIES PASS_REGULAR_EXPRESSION "WALK FAILED: --steps: expected a positive number")
+    # A scene map that plays the registry's scenes backwards: the state refuses the earlier scene, the bridge
+    # reports it and the walk fails (the walker's own backwards-commit check is the guard behind it).
+    add_test(NAME storywalk_backwards COMMAND ftcore_storywalk ${FTCORE_WALK_IN} ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/storywalk_backwards --inputs ${FTCORE_WALK_IN}/inputs_ok.txt)
+    set_tests_properties(storywalk_backwards PROPERTIES PASS_REGULAR_EXPRESSION "refused scene 0.*WALK FAILED: the bridge reported a refusal")
+
     add_test(NAME unreal_wrappers COMMAND ${CMAKE_COMMAND}
         -DCORE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
         -DWRAPPER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenCore/Private/Core
@@ -421,5 +522,29 @@ if(FTCORE_BUILD_TESTS)
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
+        -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
+    add_test(NAME hints_read COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird
+        -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckHintsRead.cmake)
+
+    # The story tools' Python tests (made-up data; a private fixture only when VO_TEST_FIXTURE names one). Run
+    # isolated (-I). Skipped when no Python 3.10+ is found; the registry is searched first so the Windows Store
+    # alias is not picked.
+    set(Python3_FIND_REGISTRY FIRST)
+    find_package(Python3 3.10 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME py_story_import COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools/story_import/test_story_import.py)
+        add_test(NAME py_vo_direction COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vo_direction/test_vo_direction.py)
+        add_test(NAME py_lipsync COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools/lipsync/test_bake_face_tracks.py)
+        add_test(NAME py_make_leads COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools/blender/test_make_leads.py)
+        set_tests_properties(py_make_leads PROPERTIES SKIP_RETURN_CODE 77)
+    else()
+        message(STATUS "ftcore: no Python 3.10+ found; the story tools' Python tests are not registered")
+    endif()
 endif()

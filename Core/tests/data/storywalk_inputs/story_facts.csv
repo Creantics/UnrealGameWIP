@@ -1,0 +1,10 @@
+slot,id,kind,max,default,mut,set_scenes,gate,read_scenes,fallback,derive
+1,f_pick,C3,3,0,once,s1,-,s2,all,-
+2,f_first,EV,1,0,once,any,-,all,-,-
+3,f_after,EV,1,0,once,s1,-,s2,-,-
+0,w_p00,CTR,65535,0,-,any,-,-,-,-
+1,w_p01,CTR,65535,0,-,any,-,-,-,-
+2,w_p02,CTR,65535,0,-,any,-,-,-,-
+3,w_p10,CTR,65535,0,-,any,-,-,-,-
+4,w_p11,CTR,65535,0,-,any,-,-,-,-
+5,w_p12,CTR,65535,0,-,any,-,-,-,-

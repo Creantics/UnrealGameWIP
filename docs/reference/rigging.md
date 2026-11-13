@@ -60,7 +60,7 @@ addon_utils.enable("rigify", default_set=True)
 | `tools/blender/rig_fit.py` | Landmark → joint fit. Pure Python, no bpy; `python3 rig_fit.py` runs its self-check. |
 | `tools/blender/retarget_maps/rigify.json` | Mapping from Rigify DEF/ORG bones to canonical joints. |
 | `tools/lipsync/bake_face_tracks.py` | VO line → `.nface` viseme track, plus F1–F4 scoring. |
-| `tools/lipsync/gold_set.json` | The 20-line gold set. |
+| `tools/lipsync/gold_sample.json` | A made-up three-line gold set; the real 20-line set holds script lines and is kept outside the repo (`--gold` or `LIPSYNC_GOLD`). |
 | `tools/ne_rig_check/` | Engine round-trip check (R10, R13) of a rigged `.glb` against Blender. |
 | `engine/include/ne/geometry/Morph.h` | CPU reference for morph and skinning: `applyMorphs`, `skinPositions`. |
 | `engine/include/ne/anim/FacePlayer.h` | Shape set, presets, `composeFace` (§7.3), `.nface` I/O, `FacePlayer`. |
@@ -247,14 +247,14 @@ weights and NORMAL deltas. Morph-weight animation channels (glTF path `weights`)
   - pass limits 0.01 mm and 0.1°; the poses move vertices by 1.7–14 mm.
   - Not measured on a hardware GPU driver or on macOS.
 
-**Speaking head: `dialogue_demo --face`.** The proof head speaks gold line SC-P2-01#005: Duy, "It's math. I'm
-calculating how much of your confidence is load-bearing.", deadpan, with the emphasis on "load-bearing".
-- **Lip-sync.** The track is the MFA bake `assets/rig/lines/5dc7c14b9fad_duy.nface`, played by `FacePlayer`.
-- **Expressions.** Cold at intensity 4 from the start of the line, turning wry (4.5) at 2.9 s, on "your confidence".
+**Speaking head: `dialogue_demo --face`.** The proof head speaks one line of the private gold set (a
+deadpan line with a stressed word near its end).
+- **Lip-sync.** The track is the line's MFA bake, `assets/rig/lines/<text_hash>_<speaker>.nface`, played by `FacePlayer`.
+- **Expressions.** Cold at intensity 4 from the start of the line, turning wry (4.5) at 2.9 s.
 - **Blinks** are procedural.
 - **Gaze.** The eyes look away and down from 1.15 to 2.2 s, with lid follow through the `eyeLook*` shapes,
   plus small saccades.
-- **Head.** It sways slightly, nods at the start of the line and on "load-bearing" (3.73 s), and rolls a
+- **Head.** It sways slightly, nods at the start of the line and on the stressed word (3.73 s), and rolls a
   little while the eyes look away.
 - **Subtitle.** It reveals whole words at their MFA word times. The line loops every 7.4 s.
 - **Flags.** `--style <pack>` applies a world style pack, for example `inksolhaven`. The usual `--hidden`,
@@ -266,7 +266,7 @@ calculating how much of your confidence is load-bearing.", deadpan, with the emp
 
 ### Faces in every world style (P1c)
 
-The ruling (plan §5.4, §14 Q5): every speaking character keeps a full 3D morph face in every world. A drawn
+The rule (plan §5.4): every speaking character keeps a full 3D morph face in every world. A drawn
 look comes only from StylePack shading, never from flattening the face. P1c makes that hold for the hatching
 packs.
 
@@ -391,8 +391,8 @@ ne_rig_check model.glb [--expect model.rigexpect.json] [--json r.json] [--quiet]
 The subcommands are `gold`, `synth`, `align-mfa`, `align-rhubarb`, `bake` and `eval`; usage is in the script
 header.
 
-**Gold set.** 20 lines from the Draft 56 VO table, including `CHILD SC-P0-01#001` and
-`UNKNOWN VOICE SC-P0-01#002`. No VO has been recorded, so the audio is **espeak-ng TTS**.
+**Gold set.** 20 lines from the VO direction table, starting with the lines named by `--require` (for example
+an `UNKNOWN VOICE` line); its "voices" table picks the espeak voice per speaker. The set is kept outside the repo. No VO has been recorded, so the audio is **espeak-ng TTS**.
 
 **The reference is a machine reference.** espeak's own phoneme events for the audio it synthesised. The plan's
 F1/F2/F4 gate asks for hand-marked TextGrids, which do not exist yet. The `textgrid` backend reads them once

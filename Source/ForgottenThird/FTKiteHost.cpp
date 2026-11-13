@@ -104,11 +104,19 @@ FFTKiteNote& FFTKiteHost::Note(FFTKiteNote::EKind Kind, double At)
 ftcore::ArenaBlowRuling FFTKiteHost::RuleBlow(void* User, const ftcore::ArenaBlow& Blow)
 {
 	FFTKiteHost* Host = static_cast<FFTKiteHost*>(User);
-	if (Host && Host->IsActive() && Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer)
+	if (!Host || !Host->IsActive() || Blow.target != Host->Slot || Blow.source != ftcore::kArenaPlayer)
 	{
-		return Host->RuleLeadBlow(Blow);
+		return ftcore::ArenaBlowRuling();
 	}
-	return ftcore::ArenaBlowRuling();
+	// A held blow's bonus (HostHit) is not a hit: no crit judged, none noted; only the bars rule it. The Kite-Mother has
+	// no invulnerable phase, so today Bars passes everything and the bonus lands whole. A phase that bars blows goes in
+	// Bars, which rules the lead's blows and the bonus alike, so the bonus can never slip past it.
+	const ftcore::ArenaBlowRuling Barred = Host->Bars(Blow);
+	if (Blow.type == ftcore::ArenaEventType::HostHit || Barred.veto)
+	{
+		return Barred;
+	}
+	return Host->RuleLeadBlow(Blow);
 }
 
 ftcore::ArenaBlowRuling FFTKiteHost::RuleLeadBlow(const ftcore::ArenaBlow& Blow)

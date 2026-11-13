@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "id": "snuffer",
+  "hp": 3200,
+  "gauge": "resource",
+  "resourceMax": 8,
+  "resourceStart": 8,
+  "wardLimit": 3,
+  "critMultiplier": 2.5,
+  "restSeconds": 1.0,
+  "lock": {
+    "keys": [
+      "shared_blow"
+    ],
+    "openSeconds": 2.5
+  },
+  "moves": [
+    {
+      "id": "snuff",
+      "counter": "strike",
+      "tell": 1.2,
+      "window": 0.5,
+      "recover": 1.0,
+      "resourceOnLand": -1
+    },
+    {
+      "id": "swallow",
+      "counter": "strike_on_count",
+      "tell": 1.4,
+      "window": 1.0,
+      "recover": 1.0,
+      "unlocksOnCounter": true,
+      "needsWatch": true
+    },
+    {
+      "id": "dark_step",
+      "counter": "listen",
+      "tell": 1.0,
+      "window": 0.8,
+      "recover": 0.8,
+      "resourceOnLand": -1,
+      "resourceOnCounter": -1
+    },
+    {
+      "id": "glass_breath",
+      "counter": "guard",
+      "tell": 1.0,
+      "window": 0.5,
+      "recover": 1.0
+    },
+    {
+      "id": "reach",
+      "counter": "take_half",
+      "tell": 1.2,
+      "window": 0.8,
+      "recover": 1.0,
+      "harmsWard": true
+    }
+  ],
+  "offer": {
+    "id": "offer",
+    "counter": "strike_on_count",
+    "tell": 2.0,
+    "window": 6.0,
+    "recover": 1.0,
+    "needsAnswer": true
+  },
+  "phases": [
+    {
+      "moves": [
+        "snuff",
+        "reach",
+        "glass_breath",
+        "dark_step"
+      ]
+    },
+    {
+      "enterAt": 3,
+      "moves": [
+        "dark_step",
+        "swallow",
+        "reach",
+        "glass_breath"
+      ]
+    },
+    {
+      "enterAt": 1,
+      "moves": [
+        "swallow",
+        "reach"
+      ]
+    }
+  ]
+}

@@ -70,8 +70,12 @@
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
 // -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
 //
-// The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse, J or pad RT throws the kit's light attack (its chain),
-// right mouse, K or pad Y its heavy; ftcore::FieldStrike runs the attack from Data/Battle/arena.json's kit for the lead
+// The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse (a tap), J or pad RT throws the kit's light attack (its
+// chain), left mouse held ftcore::AimRules::heavyHold, K or pad Y its heavy. Right mouse held aims (ftcore::AimStance,
+// Data/Battle/aim.json): the camera pulls in over the right shoulder, the HUD shows a centre reticle, the lead turns to
+// the camera's aim and slows to a strafe, and an attack goes at the reticle point (a traced line from the camera): the
+// pistol fires at it, the bolt flies at it, the gauntlets' light lunges toward it. Not in the van, a menu or a pause.
+// -ExploreAim=<s> holds aim from s seconds of play on (for captures); ftcore::FieldStrike runs the attack from Data/Battle/arena.json's kit for the lead
 // worn (its name, lower case; else the default) and hits any AFTFieldDummy in reach. The props, clips and effects are
 // the arena's. -ExploreDummy stands a dummy ahead, within the first light attack's reach (at most 3 m; -ExploreDummyAt=<cm> sets it); -ExploreAttackEvery=<s> presses light every s seconds (every
 // fourth press a heavy), for captures.
@@ -82,6 +86,10 @@
 
 #include "FTLeadWeapons.h"
 #include "FTLocomotionAnimInstance.h"
+#include "ftcore/AimStance.h"
+#include "ftcore/InputBindings.h"
+#include "ftcore/AttackMove.h"
+#include "ftcore/FieldUnstick.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
@@ -91,6 +99,7 @@
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class UAnimSequence;
 class AFTPartyVan;
 class UCameraComponent;
 class UInputAction;
@@ -126,6 +135,10 @@ public:
 	// the look above (as the first of ftcore::demo::kPartyNames) and the default followers.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
 	TArray<FFTLeadLook> PartyLooks;
+	// Looks the story's cast wears that are not party members' (a lead's other outfit, keyed by ModelId).
+	// Dialogue scenes search PartyLooks first, then these. Not part of the party.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	TArray<FFTLeadLook> CastLooks;
 	// The member to start as, by name; empty or unknown starts as the first.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
 	FString StartLead;
@@ -164,6 +177,9 @@ public:
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
+	// The aim stance (right mouse held): whether the lead aims now and the stance's blend (0..1), for the HUD's reticle.
+	bool IsAiming() const { return Aim.aiming(); }
+	float GetAimAlpha() const { return Aim.alpha(); }
 	// The dodge roll's state (stamina, cooldown, the one going on), and whether a hit now does nothing (its cover).
 	const ftcore::DodgeState& GetDodge() const { return DodgeNow; }
 	bool IsInvulnerable() const { return Dodge.invulnerable(DodgeNow); }
@@ -203,12 +219,32 @@ private:
 	void HandleInteractRelease();
 	void HandleSwitchLead();
 	void HandleToggleParty();
+	// Run, crouch, and the map button held for the party toggle: polled from the binding table each frame, so a held
+	// action can be held or toggled (FTInputBindings).
+	void TickHeldKeys(float DeltaSeconds);
+	// Whether the game takes the player's keys this frame: on foot, no menu, pause or scene.
+	bool TakesInput();
 	void HandleToggleMap();
-	void HandleLight();
-	void HandleHeavy();
 	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
 	void BeginWeapon(const FFTLeadLook& Look);
+	// Reads Data/Battle/arena.json into WeaponTable once (logged, built-in kits when missing or refused).
+	void LoadWeaponTable();
+	// Whether the player may play this look as the lead: its kit has attacks (ftcore::arenaPlayable).
+	bool IsPlayableLead(const FFTLeadLook& Look);
 	void TickWeapon(float DeltaSeconds);
+	// The aim and the attack button for this frame (TickWeapon, before the strike's step): the presses, the stance, the
+	// camera, the body's turn and speed, the reticle point.
+	void TickAim(float DeltaSeconds, ftcore::FieldBody Body);
+	// What the attack under way allows (Data/Battle/attack_move.json): walking pace share and turn rate; off attack
+	// full pace and no limit.
+	ftcore::AttackMoveOut AttackMoveNow() const;
+	float BaseWalkSpeed() const;
+	bool ScenePlaying();
+	// The way out of a too-steep slope or a wedge (ftcore::FieldUnstick, Data/Movement/unstick.json): the slide
+	// downhill, and the step back to safe ground with a short fade.
+	void TickUnstick(float DeltaSeconds);
+	// The camera at the aim stance's alpha (0: the usual follow camera).
+	void ApplyAimCamera();
 	void TickWeaponShots();
 	void SpawnFieldDummy();
 	// Puts on a look, replacing the body, clips, pieces and grooms worn (FTLook).
@@ -238,8 +274,17 @@ private:
 	// Where the soles are: the capsule's bottom less the floor hover, the frame traversals and slides are planned in.
 	FVector FeetLocation() const;
 	void SpawnTraversalCourse();
+	// -ExploreWedge: a V trench of two 60-degree slabs ahead, the lead dropped into it (the unstick's test).
+	void SpawnWedge();
+	void TickWedge();
 	void AddPortraitLights();
+	// -ExploreLookDev: a neutral set for judging materials (see the .cpp).
+	void EnterLookDev();
+	void FixExposure(float Bias);
+	void GreyGround();
+	void Nightfall();
 	void StepPortraitShots();
+	void HoldFaceAt(float Time);
 
 	AFTExploreDirector* GetDirector();
 
@@ -259,24 +304,17 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> RollAction;
 	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> RunAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> CrouchAction;
-	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> InteractAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> MapAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> LightAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> HeavyAction;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USceneComponent>> GroomComponents;
 	UPROPERTY(Transient)
@@ -290,6 +328,15 @@ private:
 	FTimerHandle ShotTimer;
 	// -ExplorePortraitShotEvery=<s>: the step between aiming and shooting (a shot every two steps).
 	float ShotEvery = 2.5f;
+	// -ExploreLookDevSpin=<deg/s>: the look-dev key circles the pawn at this rate (0 holds it still).
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> LookDevPivot;
+	float LookDevSpin = 0.f;
+	// -ExplorePortraitFaceClip=<anim> with -ExplorePortraitFaceTimes=<s,s,..>: each shot holds the face piece on that
+	// clip at its time (one shot per time, yaws repeat), to check expressions in the game.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> FaceClip;
+	TArray<float> FaceTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	TWeakObjectPtr<AFTPartyVan> Van;
@@ -313,6 +360,9 @@ private:
 	float LookRest = 0.f; // seconds since the last look input
 	float FaceBy = 0.f;   // -LocoFace=<deg>
 	bool bPortraitWalk = false;   // -ExplorePortraitWalk
+	float PortraitMoveScale = 0.5f; // -ExplorePortraitMoveScale=<0..1> (1 runs)
+	bool bPortraitJump = false;   // -ExplorePortraitJump
+	double PortraitJumpAt = -10.0;
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
 	bool bFacing = false;
 	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.
@@ -385,6 +435,34 @@ private:
 	FFTLeadWeapons Weapons;
 	bool bPressLight = false;
 	bool bPressHeavy = false;
+	// The aim (right mouse held) and the attack button's tap and hold (left mouse), their rules from Data/Battle/aim.json
+	// (loaded once), what an aimed attack does for the kit worn, the reticle point (world, cm), the walk speed the
+	// movement handlers last set (the aim scales it) and what the aim set it to, -ExploreAim's start (below 0: off).
+	ftcore::AimStance Aim;
+	ftcore::PressHold AttackHold;
+	// The held actions' hold or toggle latches, the crouch key's last state, whether the run is on, how long the map
+	// button has been held (the party toggle) and whether that hold already toggled.
+	ftcore::HeldInput AimInput;
+	ftcore::HeldInput RunInput;
+	bool bCrouchKeyWas = true;
+	bool bRunOn = false;
+	float MapHeld = 0.f;
+	bool bMapHoldUsed = false;
+	bool bAimRulesTried = false;
+	ftcore::AttackMoveRules AttackMoveTable;
+	ftcore::FieldUnstick Unstick;
+	bool bUnstickTried = false;
+	bool bWedgePending = false;  // -ExploreWedge
+	FString WedgeShotPrefix;     // -ExploreWedgeShot=<path prefix>
+	double WedgeDropAt = -1.0;
+	double WedgeRescueAt = -1.0;
+	int32 WedgeShotsTaken = 0;
+	ftcore::AimKind AimKindNow = ftcore::AimKind::Focus;
+	FVector ReticlePoint = FVector::ZeroVector;
+	float AimSpeedBase = 0.f;
+	float AimSpeedSet = -1.f;
+	bool bAimCamera = false;
+	float AimFrom = -1.f;
 	float AttackEvery = 0.f;
 	float AttackTimer = 0.f;
 	int32 AttackPresses = 0;
@@ -402,4 +480,11 @@ private:
 	int32 WeaponShotSeen = 0;
 	double WeaponShotDue = -1.0; // Strike time of the next shot; below 0: none
 	float WeaponQuitIn = 0.f;
+	// -ExploreWeaponStrip=<n>: in place of one shot per attack, n shots StripStep seconds apart from the first walking
+	// light attack after the delay (StripAt: its Strike time; below 0: not begun), each frame's speed and upper share
+	// logged while it runs.
+	int32 StripShots = 0;
+	float StripStep = 0.1f;
+	double StripAt = -1.0;
+
 };

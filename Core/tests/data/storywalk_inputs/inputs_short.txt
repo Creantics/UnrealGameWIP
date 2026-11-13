@@ -1,0 +1,2 @@
+gameplay PLAY sf.f_pick=2
+gameplay PLAY press 0:1

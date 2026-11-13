@@ -332,6 +332,14 @@ TEST_CASE("arena kind crit: a Deal opens the seam at the end of its active part,
     CHECK(crit.lastCritAt() == doctest::Approx(12.5));
     CHECK(crit.points().points[crit.lastPoint()].id() == "fingertip_seam");
 
+    // A held blow's bonus (HostHit) inside it is no second crit: plain, nothing counted.
+    ArenaBlow bonus = leadBlow(front, 12.6f);
+    bonus.type = ArenaEventType::HostHit;
+    r = crit.rule(bonus, kSlot, kBoss, kFacing);
+    CHECK(r.damage == 1.0f);
+    CHECK_FALSE(r.veto);
+    CHECK(crit.crits() == 1);
+
     // Every blow inside it crits, not only the first.
     r = crit.rule(leadBlow(front, 13.0f), kSlot, kBoss, kFacing);
     CHECK(r.damage == doctest::Approx(2.0));
@@ -537,7 +545,7 @@ DealerRun playDealer(const char* lead, std::uint32_t seed) {
 
 // Its poise breaks a few times a fight, whoever fights it: the demo's seed (1), each lead's kit.
 TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopilot") {
-    for (const std::string lead : {"devin", "duy", "third"}) {
+    for (const std::string lead : {"devin", "duy"}) { // the Third has no attack of his own
         const DealerRun run = playDealer(lead.c_str(), 1);
         MESSAGE(lead << ": " << std::string(run.phase == ArenaPhase::Victory ? "won" : "lost") << " in " << run.time << " s, hp " << run.hp
                      << ", staggers " << run.staggers << ", crits " << run.crits);

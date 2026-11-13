@@ -67,7 +67,7 @@ Everything is generated; nothing is made by hand.
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe" -b --factory-startup --python-exit-code 1 ^
-    --python tools/blender/make_leads.py -- [--only devin,duy,third] [--outdir Data/Models] [--blend-dir <dir>]
+    --python tools/blender/make_leads.py -- [--names FILE] [--only NAME,...] [--outdir Data/Models] [--blend-dir <dir>]
 ```
 
 - The script checks each glb and fails if any of these is wrong:

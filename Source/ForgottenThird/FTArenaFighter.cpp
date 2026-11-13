@@ -162,6 +162,14 @@ AFTArenaFighter::AFTArenaFighter()
 	Camera->SetFieldOfView(70.f);
 }
 
+void AFTArenaFighter::SetCameraTilt(float Degrees)
+{
+	if (Camera)
+	{
+		Camera->SetRelativeRotation(FRotator(static_cast<double>(Degrees), 0.0, 0.0));
+	}
+}
+
 void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
 {
 	Boom->TargetArmLength = ArmMeters * 100.f;
@@ -178,6 +186,7 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	Height = HeightMeters > 0.f ? FMath::Clamp(HeightMeters, 0.5f, 30.f) * 100.f : FMath::Clamp(Radius / 40.f, 0.8f, 1.6f) * 175.f;
 
 	SkinKind = ESkin::Shapes;
+	bPlayerFigure = bPlayer;
 	bool bLead = false;
 	if (bPlayer)
 	{
@@ -278,17 +287,20 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	// Turn the body to face the figure's forward (+X).
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
 	Skin->SetAnimInstanceClass(UFTLocomotionAnimInstance::StaticClass());
-	const int32 Cloth = FTLook::AddPieces(*this, *Skin, Look.PiecePaths, Pieces, TEXT("FTArenaFighter"));
+	WornFronts = Loaded.Fronts;
+	const int32 Cloth = FTLook::AddPieces(*this, *Skin, Loaded.Pieces, Pieces, TEXT("FTArenaFighter"));
 	FTLook::AddGrooms(*this, *Skin, Pieces, Look.Grooms, Grooms, TEXT("FTArenaFighter"));
+	FTLook::SwapMaterials(*Skin, Pieces, Look.MaterialSwaps, TEXT("FTArenaFighter"));
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 	{
-		Anim->SetBaseClips(Loaded.Clips, false);
+		Anim->SetBaseClips(Loaded.Clips, true); // with the traversals: the land roll plays the dodge (RollWithClip)
 	}
 	else
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTArenaFighter: no locomotion anim instance; %s stays in the ref pose."), *Look.Name);
 	}
 	SkinKind = ESkin::Lead;
+	TieMeshTicks();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTArenaFighter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, *Loaded.Body->GetName(), Skin->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, Grooms.Num(), *Loaded.ClipFolder);
 	return true;
@@ -314,6 +326,7 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));
 	Skin->SetRelativeScale3D(FVector(Scale));
 	Skin->SetVisibility(true);
+	TieMeshTicks();
 	return true;
 }
 
@@ -489,11 +502,104 @@ void AFTArenaFighter::MendCarried()
 	}
 }
 
+void AFTArenaFighter::ResetFeet()
+{
+	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
+	{
+		Anim->ResetFeet();
+	}
+}
+
+void AFTArenaFighter::PoseAfter(AActor* Host)
+{
+	UntieMeshTicks();
+	PoseHost = Host;
+	TieMeshTicks();
+}
+
+void AFTArenaFighter::UntieMeshTicks()
+{
+	if (AActor* Host = PoseHost.Get())
+	{
+		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+		for (USkeletalMeshComponent* Mesh : Meshes)
+		{
+			Mesh->RemoveTickPrerequisiteActor(Host);
+		}
+	}
+	PoseHost.Reset();
+}
+
+void AFTArenaFighter::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UntieMeshTicks();
+	Super::EndPlay(Reason);
+}
+
+void AFTArenaFighter::TieMeshTicks()
+{
+	AActor* Host = PoseHost.Get();
+	if (!Host)
+	{
+		return;
+	}
+	TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+	for (USkeletalMeshComponent* Mesh : Meshes)
+	{
+		Mesh->AddTickPrerequisiteActor(Host); // kept once: a tick's prerequisites are unique
+	}
+}
+
+bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
+{
+	UFTLocomotionAnimInstance* Anim = SkinKind == ESkin::Lead ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	if (!Anim || !Pose.bDodging || Pose.bLying)
+	{
+		if (RollClip >= 0 && Anim)
+		{
+			// Back up: the clip plays on at the roll's pace as it fades, and the walk may turn under it (the drawn body
+			// turning back to the lock).
+			Anim->LetGoTraversal(RollRate, true);
+		}
+		RollClip = -1;
+		return false;
+	}
+	if (RollClip < 0)
+	{
+		// A new roll: off the planted foot (the lower ball), the clip from where it is down on the floor to back up,
+		// fitted to the roll's time (the rules' time, distance and invulnerability stay); its root is held, so the
+		// figure moves only as the rules move it.
+		const FName BallL(TEXT("ball_l")), BallR(TEXT("ball_r"));
+		int Foot = -1;
+		if (Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		{
+			Foot = Skin->GetBoneLocation(BallL).Z <= Skin->GetBoneLocation(BallR).Z ? 0 : 1;
+		}
+		const ftcore::TraversalSet& Set = Anim->GetTraversal();
+		const ftcore::TraversalPlan Plan = Set.planRoll(0.f, Foot);
+		if (!Plan.ok())
+		{
+			return false;
+		}
+		const ftcore::TraversalClipInfo& Info = Set.clip(static_cast<std::size_t>(Plan.clip));
+		RollClip = Plan.clip;
+		RollFrom = Info.touchdown;
+		RollTo = FMath::Clamp(Info.land, RollFrom, Info.length);
+		RollRate = Pose.DodgeTime > 0.f ? (RollTo - RollFrom) / Pose.DodgeTime : 1.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s rolls on clip %d (foot %d), %.2f-%.2f s over %.2f s (x%.2f)."), *GetName(),
+			RollClip, Foot, RollFrom, RollTo, Pose.DodgeTime, RollRate);
+	}
+	Anim->SetTraversal(RollClip, FMath::Lerp(RollFrom, RollTo, FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f)));
+	return true;
+}
+
 void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 {
 	SetActorLocationAndRotation(Pose.Feet, FRotator(0.0, Pose.Yaw, 0.0));
 
-	// The whole body: lean back, crouch and lean along a roll, or lie flat. A skinned enemy's clips do all that.
+	// The whole body: lean back, crouch and lean along a roll, or lie flat. A skinned enemy's clips do all that, and a
+	// lead's land-roll clip its roll.
+	const bool bRollClip = RollWithClip(Pose);
 	FRotator Lean = FRotator::ZeroRotator;
 	FVector Lift = FVector::ZeroVector;
 	float Squash = 1.f;
@@ -510,7 +616,7 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	{
 		Lean.Pitch = Pose.LeanBack;
 		Lean.Roll = Pose.Wobble;
-		if (Pose.bDodging)
+		if (Pose.bDodging && !bRollClip)
 		{
 			const float Arc = FMath::Sin(PI * FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f));
 			Squash = 1.f - 0.42f * Arc;
@@ -542,9 +648,18 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 		{
 			Anim->SetGroundSpeed(Pose.bLying || Pose.bDodging ? 0.f : Pose.Speed * 100.f);
-			Anim->SetIntent(-1.f, -1.f);
+			Anim->SetLegYaw(Pose.bLying || Pose.bDodging ? 0.f : Pose.LegYaw);
+			if (Pose.bLying && !bWasLying)
+			{
+				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
+			}
+			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
+			// Where the walk heads, so the legs start and stop with the clips made for it (in cm).
+			const bool bWalks = !Pose.bLying && !Pose.bDodging && Pose.WantSpeed >= 0.f;
+			Anim->SetIntent(bWalks ? Pose.WantSpeed * 100.f : -1.f, bWalks && Pose.StopDistance >= 0.f ? Pose.StopDistance * 100.f : -1.f);
 		}
 	}
+	bWasLying = Pose.bLying;
 
 	// The arm: rest, or the swing through the attack's parts.
 	FRotator ArmRotation = kArenaArmRest;
@@ -592,7 +707,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	Arm->SetRelativeLocation(FVector(ArmReach.X, Radius * 0.95f, Height * 0.68f));
 	Arm->SetRelativeRotation(ArmRotation);
 
-	const bool bShield = Pose.bGuard && !Pose.bLying;
+	// The guard plate is an enemy's: a lead guards with what the kit gives (gauntlets, a pistol, a stance), never a shield.
+	const bool bShield = !bPlayerFigure && Pose.bGuard && !Pose.bLying;
 	if (bShield != bShieldShown)
 	{
 		bShieldShown = bShield;

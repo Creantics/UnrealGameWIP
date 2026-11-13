@@ -85,6 +85,9 @@ public:
 private:
 	static ftcore::ArenaBlowRuling RuleBlow(void* User, const ftcore::ArenaBlow& Blow);
 	ftcore::ArenaBlowRuling RuleLeadBlow(const ftcore::ArenaBlow& Blow);
+	// What bars a blow on the boss whatever it is (an invulnerable phase): none, the Kite-Mother has no such phase.
+	// The bonus of a held blow is ruled by this alone.
+	ftcore::ArenaBlowRuling Bars(const ftcore::ArenaBlow&) const { return ftcore::ArenaBlowRuling(); }
 	// Opens the window for Seconds from At.
 	void OpenWindow(double At, float Seconds);
 	FFTKiteNote& Note(FFTKiteNote::EKind Kind, double At);

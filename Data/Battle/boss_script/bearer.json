@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "id": "bearer",
+  "hp": 3600,
+  "critMultiplier": 2.0,
+  "restSeconds": 1.5,
+  "lock": {
+    "keys": [
+      "shared_blow"
+    ],
+    "openSeconds": 4.0
+  },
+  "moves": [
+    {
+      "id": "turn",
+      "counter": "strike",
+      "tell": 1.5,
+      "window": 0.6,
+      "recover": 1.0
+    },
+    {
+      "id": "shoulder_shift",
+      "counter": "strike",
+      "tell": 1.0,
+      "window": 0.5,
+      "recover": 0.8,
+      "exposeSeconds": 1.0
+    },
+    {
+      "id": "set_down",
+      "counter": "get_clear",
+      "tell": 1.6,
+      "window": 0.5,
+      "recover": 1.4
+    },
+    {
+      "id": "two_knocks",
+      "counter": "strike_on_count",
+      "tell": 1.8,
+      "window": 1.6,
+      "recover": 0.8
+    },
+    {
+      "id": "free_end",
+      "counter": "carry_together",
+      "tell": 1.5,
+      "window": 2.0,
+      "recover": 1.0,
+      "unlocksOnCounter": true
+    }
+  ],
+  "offer": {
+    "id": "offer_carry",
+    "counter": "carry_together",
+    "tell": 2.0,
+    "window": 8.0,
+    "recover": 1.0
+  },
+  "phases": [
+    {
+      "moves": [
+        "turn",
+        "shoulder_shift"
+      ]
+    },
+    {
+      "enterAt": 0.6,
+      "moves": [
+        "set_down",
+        "turn",
+        "two_knocks",
+        "shoulder_shift"
+      ]
+    },
+    {
+      "enterAt": 0.25,
+      "moves": [
+        "free_end",
+        "two_knocks"
+      ]
+    }
+  ]
+}

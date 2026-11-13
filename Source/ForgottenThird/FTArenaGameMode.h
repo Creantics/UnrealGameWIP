@@ -33,9 +33,10 @@
 // face buttons), each with a second home:
 //   move           W A S D / left stick (turned by the camera)
 //   look           mouse / right stick (when nothing is locked)
-//   light attack   J / left mouse / pad X / pad RB   (a riposte at an open enemy in reach)
-//   heavy attack   K / pad A / pad RT
-//   guard (hold)   I / right mouse / pad Y / pad LB  (a fresh press opens the parry window)
+//   light attack   J / left mouse (a tap) / pad X / pad RB   (a riposte at an open enemy in reach)
+//   heavy attack   K / left mouse held (ftcore::AimRules::heavyHold) / pad A / pad RT
+//   aim (hold)     right mouse (ftcore::AimStance: the camera over the shoulder, a reticle, the lead faces the aim and strafes)
+//   guard (hold)   I / Left Ctrl / pad Y / pad LB  (a fresh press opens the parry window)
 //   dodge          L / Space / pad B
 //   heal           H / pad d-pad up (not while Read cards are up)
 //   lock on / off  Tab / middle mouse / pad right stick press
@@ -82,10 +83,12 @@
 // (the lead's strike clip at its impact, the weapon's effect just started; FTLeadWeapons.h), uncounted as well. The view's
 // frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then
 // and paused, and the figure's own clock stops (FFTLeadWeapons::Freeze) until the view is taken.
-// -ArenaShotClose takes those views close, HUD off: a camera 1 m from the striking hand (the foot for a kick), square to
-// the lead's side on that hand's side, the hand at the frame's centre; for gauntlets, the first strike adds
-// <prefix>_s1_<clip>_arms.png, both forearms from 1.4 m ahead of the lead on the striking side. Each close view logs where
-// the hand (and the pistol's muzzle) fall in the frame.
+// -ArenaShotClose takes those views close, HUD off: a camera 65 cm from the striking hand (the foot for a kick), square to
+// the lead's side on that hand's side, the hand at the frame's centre, then <prefix>_s<k>_<clip>_front.png from 55 cm
+// ahead of it, off to its side and above; for gauntlets, the first strike adds <prefix>_s1_<clip>_arms.png, both forearms
+// from 1.4 m ahead of the lead on the striking side. A lead with a pistol also gets <prefix>_1_holstered.png and
+// <prefix>_1_drawn.png after the ring view, 60 cm off its right side (the pistol put in its holster for the first). Each
+// close view logs where the hand (and the pistol's muzzle) fall in the frame.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -105,6 +108,8 @@
 #include <memory>
 
 #include "FTArenaGameMode.generated.h"
+
+struct FFTStoryCarry;
 
 class APlayerController;
 class UFTArenaRunner;
@@ -134,6 +139,11 @@ public:
 
 private:
 	// Reads Data/Battle/arena.json into Table; false (logged, ids only) when missing or refused.
+	// The story's carry when it is an arena fight on a stage (FFTStoryCarry::Stage), else nullptr; its stage and
+	// line-up (empty without one). Command-line -ArenaStage / -ArenaLineup still win.
+	const FFTStoryCarry* StagedCarry() const;
+	FString StoryStage() const;
+	FString StoryLineup() const;
 	bool LoadTable();
 	// Reads Data/Battle/arenas.json (and Data/Field/worlds.json for the worlds) and picks the zone (-ArenaStage, else
 	// the file's default) into Spec; a built-in plain zone when the files or the table are missing or refused.
@@ -148,12 +158,17 @@ private:
 	void BuildZoneDressing();
 	// The ground, the zone's dressing, then the runner's fight.
 	void Begin();
-	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first;
-	// null (logged) when the config has none.
+	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first
+	// playable one; null (logged) when the config has none. A look whose kit has no attacks is never picked.
 	const FFTLeadLook* FindLead() const;
 	// The fighter kit's id in arena.json: -ArenaLead=<name> lower-cased (even when no look of that name loads), else
-	// the first PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it lacks.
+	// the first playable PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it
+	// lacks. A name whose kit has no attacks (a party slot, ftcore::arenaPlayable) is refused with a warning.
 	FString FindKitId() const;
+	// -ArenaLead=<name>, trimmed; empty when missing or when that kit has no attacks (warned).
+	FString WantedLead() const;
+	bool IsPlayable(const FString& Name) const;
+	mutable bool bLeadWarned = false; // WantedLead warns once
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);
 	void TakeShot(const TCHAR* Name, bool bCounted = true);
@@ -162,8 +177,13 @@ private:
 	// -ArenaOverview's second view, _0b_edge: the player moved to 1.4 m from the zone's wall on his left, to show the
 	// edge cue; then the fight is put back as it began.
 	bool EdgeShot();
-	// -ArenaShotStrikes's view once its frame is held (StrikePhase 1 to 4); true while the fight should hold still.
+	// -ArenaShotStrikes's view once its frame is held (StrikePhase 1 to 6); true while the fight should hold still.
 	bool StrikeShot();
+	// -ArenaShotClose, a lead with a pistol: once the ring view is in, the pistol put in its holster for a close view
+	// (1_holstered) and drawn again for another (1_drawn), the fight held; true while it holds.
+	bool GunShot();
+	// The close camera's views over: the view back on the lead, the HUD on, the camera gone.
+	void EndCloseCamera();
 	// -ArenaShotClose: the camera at From looking at At (spawned on first use), the view on it and the HUD off; false
 	// when it can't be placed.
 	bool AimStrikeCamera(const FVector& From, const FVector& At);
@@ -195,7 +215,22 @@ private:
 	bool bAutoPlay = false;
 	bool bIdle = false;
 	bool bQuitOnFinish = false;
+	// A staged story fight (StagedCarry at StartPlay): it never fights again or ends the process; once its result
+	// has shown, the result goes back to the story's map (HandBackStory), as the in-world arena host's does.
+	bool bStoryStaged = false;
+	bool bStoryHandedBack = false;
+	void HandBackStory();
+	// Why a staged story fight can't play as the story asked (its stage or a line-up kind missing from the data):
+	// set while loading; the fight never starts and the step leaves for the title, loudly (RefuseStory).
+	FString StoryRefusal;
+	void RefuseStory();
+	// -ArenaStoryQuitAt=<s> (non-shipping, headless, staged story fights only): at that fight time the screen quits
+	// to the title the way the pause menu's Quit to Title does (FTStep::QuitToTitle). Off (< 0) by default.
+	float StoryQuitAt = -1.f;
 	bool bHoldLoad = false;
+	bool bNoLock = false; // -ArenaNoLock
+	bool bAutoShoot = false; // -ArenaAutoShoot
+	bool bSharedCount = false; // -ArenaSharedCount
 	float ParryHold = 0.f;
 	FString BossLoop; // -ArenaBossLoop=<clip>
 	bool bBossSplit = false;
@@ -227,12 +262,20 @@ private:
 	int32 ShotStrikes = 0;
 	int32 StrikeShots = 0;
 	int32 StrikesSeen = 0;
-	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 2 the close camera
-	// to go to both forearms; 3 that view to be taken; 4 back to the fight. Its name (s<k>_<clip>).
+	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 5 (-ArenaShotClose)
+	// the camera to go in front of the striking limb; 6 that view (<name>_front) to be taken; 2 the close camera to go to
+	// both forearms; 3 that view to be taken; 4 back to the fight. Its name (s<k>_<clip>).
 	int32 StrikePhase = 0;
+	// -ArenaShotClose with a pistol: its holstered and drawn views after the ring view (GunShot's step, 7 done).
+	int32 GunPhase = 0;
 	FString StrikeName;
 	// -ArenaShotClose and its camera.
 	bool bShotClose = false;
+	// -ArenaShotSide: -ArenaShotAt's views from the lead's side, the whole body in frame (the feet on the ground), HUD
+	// off; the camera placed a frame before each view.
+	bool bShotSide = false;
+	bool bShotWorld = false; // -ArenaShotWorld: the side views from a fixed world side, not the lead's
+	bool bSideAimed = false;
 	UPROPERTY()
 	TObjectPtr<AActor> StrikeCamera;
 	// The fight clock's next advance at most (s; 0: no limit), so a strike view's frame falls on its mark.

@@ -142,6 +142,17 @@
       ]
     },
     {
+      "id": "kite_boss",
+      "stats": { "maxHp": 370, "attack": 17, "defense": 6, "speed": 11, "technique": 9 },
+      "reward": { "xp": 28, "gold": 16 },
+      "skills": [
+        { "id": "swoop", "name": "Swoop", "targeting": "all", "power": 1.2, "notes": 4, "difficulty": 2.5,
+          "hits": [ { "at": 1.6, "tell": 0.5, "telegraph": 1.0, "jumpable": true } ] },
+        { "id": "snag", "name": "Snag", "targeting": "single", "power": 1.4, "notes": 4, "difficulty": 2.5,
+          "hits": [ { "at": 1.0 }, { "at": 1.5, "tell": 0.5 } ] }
+      ]
+    },
+    {
       "id": "brass_regent",
       "name": "Brass Regent",
       "stats": { "maxHp": 480, "attack": 20, "defense": 8, "speed": 13, "technique": 10 },

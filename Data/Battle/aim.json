@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "blendIn": 0.15,
+  "blendOut": 0.25,
+  "speedScale": 0.45,
+  "turnRate": 14,
+  "armScale": 0.7,
+  "shoulderRight": 80,
+  "shoulderUp": 60,
+  "fov": 62,
+  "reticleRange": 50,
+  "lungeScale": 2,
+  "lungeStop": 0.6,
+  "heavyHold": 0.25
+}

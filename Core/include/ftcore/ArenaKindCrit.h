@@ -122,7 +122,8 @@ public:
     // from t + startup + active for `opens` seconds: true. Anything else changes nothing: false.
     FTCORE_API bool onAttackStarted(std::uint8_t move, double t, const ArenaEnemyKind& kind);
     // A blow about to land, the slot's body at `bossPos` facing `bossFacing` (unit). Only a lead's
-    // blow on `slot` (source kArenaPlayer, target slot) is judged; every other one gets {1, 1, false}.
+    // blow on `slot` (source kArenaPlayer, target slot) is judged; every other one, a bonus (HostHit) too, gets
+    // {1, 1, false} and counts nothing.
     FTCORE_API ArenaBlowRuling rule(const ArenaBlow& blow, std::uint8_t slot, Vec2 bossPos, Vec2 bossFacing);
     // Some move of `kind` plays the opensAfter clip (the host's check when it installs the entry).
     FTCORE_API bool opensOn(const ArenaEnemyKind& kind) const;

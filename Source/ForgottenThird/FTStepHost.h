@@ -44,6 +44,7 @@ struct FFTStoryCarry;
 namespace ftcore
 {
 class StoryRunner;
+enum class StepEnd : std::uint8_t;
 }
 
 // Who can play a step in place (None: the step always opens its own map).
@@ -69,11 +70,15 @@ inline constexpr uint32 kPlayableCombat = ftcore::combatBit(ftcore::CombatKind::
 // fight's map ("Beat").
 FORGOTTENTHIRD_API const TCHAR* ScreenMap(ftcore::GameplayScreen Routed);
 inline const TCHAR* BeatMap() { return TEXT("Beat"); }
+// The arena stage map (FTBuildArenaWorld): a staged arena fight's (an encounter with a `stage`).
+inline const TCHAR* ArenaMap() { return TEXT("Demo_Arena"); }
 
 // Opens a map by its long name under /Game/Maps (ftcore::mapPackage), never by the short name the data,
 // the screens and GetCurrentLevelName use, which the engine would resolve to the first package of that
 // name anywhere under /Game, a stray local copy included. Every map the game opens goes through here.
 FORGOTTENTHIRD_API void OpenMap(const UObject* WorldContext, const FString& Map, const FString& Options = FString());
+// True when Map names a map package under /Game/Maps that exists (OpenMap would open it).
+FORGOTTENTHIRD_API bool MapOpenable(const FString& Map);
 
 // The host that plays a routed screen in place: Field, Cutscene, or Arena for a battle that plays the
 // arena system.
@@ -91,11 +96,29 @@ enum class EFinish : uint8
 {
 	Next, // counted, and GI.Chain is on the beat's next step
 	Resume, // counted, and that was the beat's last step: the story resumes
-	Failed, // not done, or the story moved since the hand-off: logged and counted as a warning, chain reset
+	ResumeWon, // as Resume, on a beat whose `lose` is "branch": resume(1) sets its `sets` flag
+	ResumeLost, // a lost fight on a "branch" beat: the beat ends now and resume(0) sets its `sets` flag
+	Retry, // a lost fight: not counted, GI.Chain stays on the step and it opens again
+	Failed, // not done, a lost fight past the autopilot's retries, or the story moved since the hand-off:
+	        // logged and counted as a warning, chain reset
 };
 
-// Counts the carried step (GI.Alpha) and moves GI.Chain on. The one place a step is counted.
+// The autopilot's story-level retries of a lost fight before the step fails (a player retries freely).
+inline constexpr uint32 kAutoFightRetries = 2;
+
+// Judges the carried step (ftcore::judgeStep: a fight's bWon against the beat's `lose` param), counts
+// it (GI.Alpha) when it advances and moves GI.Chain on. The one place a step is counted.
+// It also ends the step's story writes (ftcore::stepEndFor): a retry rolls them back to Prepare's mark.
 FORGOTTENTHIRD_API EFinish FinishCarried(UFTGameInstance& GI, const ftcore::StoryRunner& Runner, const FFTStoryCarry& Carry);
+
+// Ends the step's story writes (UFTStoryStateSubsystem::EndStep). Prepare marks the step's start.
+FORGOTTENTHIRD_API void EndStoryStep(UFTGameInstance& GI, ftcore::StepEnd End);
+
+// A player leaves a step for the title (a screen's Quit, the pause menu's Quit to Title): the step's story writes
+// roll back, the carry, the explore carry and the chain clear, and the story map (the carry's return map, else
+// FallbackMap) opens with ?Title. Never a retry and never a result: Continue on the title loads the autosave of the
+// last scene start. Who: the screen, for the log.
+FORGOTTENTHIRD_API void QuitToTitle(const UObject* WorldContext, const FString& FallbackMap, const TCHAR* Who);
 
 // For a screen whose step is done (StoryCarry.bDone), before it opens StoryCarry.ReturnMap: true when
 // the beat's next step starts in place on this map (StoryCarry now holds that step); false when the

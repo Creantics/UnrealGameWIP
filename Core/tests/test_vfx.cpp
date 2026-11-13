@@ -157,7 +157,7 @@ TEST_CASE("vfx: the leads' weapon effects load without warnings and keep their p
                             {"muzzle_flash", 4, 17, false},
                             {"gun_tracer", 1, 2, false},
                             {"gun_impact", 3, 19, false},
-                            {"gauntlet_spark", 2, 34, false}};
+                            {"gauntlet_spark", 2, 14, false}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;

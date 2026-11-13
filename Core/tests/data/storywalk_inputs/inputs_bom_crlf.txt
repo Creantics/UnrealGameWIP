@@ -1,0 +1,4 @@
+﻿# one entry per hand-off, in order (byte order mark, CRLF)
+gameplay PLAY sf.f_pick=2
+gameplay PLAY press 0:1
+gameplay CMB

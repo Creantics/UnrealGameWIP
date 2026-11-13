@@ -147,17 +147,17 @@ TEST_CASE("locomotion: the faster gait plays alone a band short of its own speed
         CHECK(phaseGap(l) < 1e-3f);
         last = w;
     }
-    run(l, 0.1f, {0.f, 0.5f * (190.f + runAlone)});
+    run(l, 0.4f, {0.f, 0.5f * (190.f + runAlone)});
     CHECK(l.weight(LocoClip::Run) == doctest::Approx(0.5f).epsilon(0.01));
-    run(l, 0.1f, {0.f, runAlone + 1.f});
+    run(l, 0.4f, {0.f, runAlone + 1.f});
     CHECK(l.weight(LocoClip::Run) == doctest::Approx(1.f));
 
     // The run and the sprint the same way.
     const float sprintAlone = (1.f - t.gaitBand) * 680.f;
-    run(l, 0.1f, {0.f, 0.5f * (489.f + sprintAlone)});
+    run(l, 0.4f, {0.f, 0.5f * (489.f + sprintAlone)});
     CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(0.5f).epsilon(0.01));
     CHECK(l.weight(LocoClip::Run) == doctest::Approx(0.5f).epsilon(0.01));
-    run(l, 0.1f, {0.f, sprintAlone + 1.f});
+    run(l, 0.4f, {0.f, sprintAlone + 1.f});
     CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(1.f));
     CHECK(footSpeed(l) == doctest::Approx(sprintAlone + 1.f));
 
@@ -169,8 +169,43 @@ TEST_CASE("locomotion: the faster gait plays alone a band short of its own speed
     near.reset();
     run(near, 1.f, {0.f, 301.f});
     CHECK(near.weight(LocoClip::Run) == doctest::Approx(1.f));
-    run(near, 0.1f, {0.f, 300.f});
+    run(near, 0.4f, {0.f, 300.f});
     CHECK(near.weight(LocoClip::Walk) == doctest::Approx(1.f));
+}
+
+TEST_CASE("locomotion: a speed that drops in a frame eases the gaits' split, the feet keeping pace") {
+    // The MetaHuman walk and run; a body at a run checked to a walk's speed in one frame (a strike's contact).
+    Locomotion l;
+    l.setClip(LocoClip::Idle, {7.57f, 0.f, 1, 0.f});
+    l.setClip(LocoClip::Walk, {4.f, 190.f, 4, 0.1f});
+    l.setClip(LocoClip::Run, {2.5f, 489.f, 4, 0.01f});
+    l.reset();
+    const LocoTuning& t = l.tuning();
+    run(l, 1.f, {0.f, 300.f});
+    const float before = l.weight(LocoClip::Run);
+    REQUIRE(before > 0.3f);
+    // At 200 the split's own run share is a few percent: it eases there, never a step more than the fade allows.
+    const float a = 1.f - std::exp(-kDt / t.gaitShareFade);
+    float last = before;
+    for (int f = 0; f < 6; ++f) {
+        l.update({kDt, 200.f});
+        const float w = l.weight(LocoClip::Run);
+        CHECK(w < last + 1e-5f);
+        CHECK(last - w <= a * last + 1e-3f);
+        CHECK(footSpeed(l) == doctest::Approx(200.f));
+        CHECK(phaseGap(l) < 1e-3f);
+        last = w;
+    }
+    CHECK(last > 0.1f);
+    // Settled, it is the split's own.
+    run(l, 0.5f, {0.f, 200.f});
+    Locomotion fresh;
+    fresh.setClip(LocoClip::Idle, {7.57f, 0.f, 1, 0.f});
+    fresh.setClip(LocoClip::Walk, {4.f, 190.f, 4, 0.1f});
+    fresh.setClip(LocoClip::Run, {2.5f, 489.f, 4, 0.01f});
+    fresh.reset();
+    run(fresh, 1.f, {0.f, 200.f});
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(fresh.weight(LocoClip::Run)).epsilon(0.01));
 }
 
 TEST_CASE("locomotion: on a speed ramp the blend moves smoothly and the lead gait changes once") {

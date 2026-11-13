@@ -1,6 +1,10 @@
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaZone.h" // the host mirror fits the demo's zone
+#include "ftcore/AttackMove.h" // the host mirror walks and turns through attacks
 #include "ftcore/BeatChoreo.h" // the skinned boss's clip table
 #include "ftcore/ComboSequence.h" // comboSequencesBuilt: the fence test
+#include "ftcore/FightSession.h" // the host mirror's shared count
+#include "ftcore/WorldLayout.h" // the zone table names its worlds
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -12,8 +16,11 @@
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace ftcore;
@@ -238,7 +245,7 @@ TEST_CASE("arena table: Data/Battle/arena.json loads without warnings") {
     CHECK(t.fighters.size() == t.fighterIds.size());
     CHECK(t.enemies.size() == t.enemyIds.size());
     CHECK(t.enemies.size() >= 2);
-    CHECK(t.enemies.size() <= 11); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan), the three skinned bosses, the ranged spitter and the target dummy
+    CHECK(t.enemies.size() <= 12); // the wave's three, a human-sized duelist, the sized placeholders (hulk, titan), the three skinned bosses, the ranged spitter, the pack's maw-pup and the target dummy
     {
         // The target dummy (-ArenaLineup=dummy): passive, rooted, all but unkillable.
         std::size_t d = 0;
@@ -535,22 +542,30 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     CHECK(devin.parryWindow > base.parryWindow);
     CHECK(devin.parryWindow > duy.parryWindow);
     CHECK(devin.parryWindow > third.parryWindow);
-    // Duy: a chain of pistol shots (long, narrow, one target, no lunge) and a kick for the heavy that reaches
-    // further than the default's light and breaks poise.
+    // Duy: a chain of kicks (close in), one pistol round on the aimed light (long, narrow, one target, no lunge) and
+    // a kick for the heavy that reaches further than the default's light and breaks poise.
     for (std::size_t i = 0; i < duy.lightCount; ++i) {
-        CHECK(duy.light[i].range >= 8.f);
-        CHECK(duy.light[i].arcCos >= 0.95f);
-        CHECK(duy.light[i].maxTargets == 1);
-        CHECK(duy.light[i].lunge == 0.f);
+        CHECK(duy.light[i].range < kArenaShotRange);
+        CHECK(duy.light[i].lunge > 0.f);
     }
+    CHECK(duy.shot.range >= 8.f);
+    // A round is a narrow lane, so it meets any body the line passes through (a big boss's flank too), not a cone
+    // round the body's centre.
+    CHECK(duy.shot.width > 0.f);
+    CHECK(duy.shot.width <= 0.5f);
+    // ... and reaches across most of an arena (kite_ring is about 40 by 14 m), so a crosshair on a far body still lands.
+    CHECK(duy.shot.range >= 25.f);
+    CHECK(duy.shot.maxTargets == 1);
+    CHECK(duy.shot.lunge == 0.f);
     CHECK(duy.heavy.range > base.light[0].range);
     CHECK(duy.heavy.range < kArenaShotRange);
     CHECK(duy.heavy.lunge > 0.f);
     CHECK(duy.heavy.poiseDamage >= base.heavy.poiseDamage);
-    // The Third: spells at range with no lunge, a ward all round, and an even-handed parry.
-    CHECK(third.light[0].range > base.light[0].range);
-    CHECK(third.light[0].lunge == 0.f);
-    CHECK(third.heavy.arcCos <= -1.f);
+    // The Third: no weapon and no attack of his own, a guard all round. Devin and Duy attack.
+    CHECK(third.weapon == ArenaWeapon::None);
+    CHECK_FALSE(third.attacks);
+    CHECK(devin.attacks);
+    CHECK(duy.attacks);
     CHECK(third.guardArcCos <= -1.f);
     // Each lead blocks its own way.
     CHECK(devin.guardArcCos != duy.guardArcCos);
@@ -563,33 +578,171 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     CHECK(third.hp == base.hp);
 }
 
-TEST_CASE("arena attack: Duy's pistol shot connects far off, with the nearest body only, and not past its range") {
+TEST_CASE("arena data: a kit with no attacks of its own drops light, heavy and Release; guard and dodge still work") {
+    const ArenaTable t = loadShipped();
+    ArenaDef def = t.fallback;
+    def.fighter = t.fighter("third");
+    REQUIRE_FALSE(def.fighter.attacks);
+    def.enemyCount = 1;
+    ArenaFight fight;
+    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 40.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    ArenaBodies bodies;
+    bodies.enemies[0] = Vec2{30.f, 30.f}; // far off: nothing of its own gets in the way
+    const float dt = 1.f / 60.f;
+    int started = 0;
+    const auto step = [&](const ArenaInput& in) {
+        const ArenaOutput& out = fight.tick(dt, in, bodies);
+        for (const ArenaEvent& e : out.events)
+            started += e.type == ArenaEventType::AttackStarted && e.source == kArenaPlayer ? 1 : 0;
+        return out.player.action;
+    };
+    for (int press = 0; press < 3; ++press) {
+        ArenaInput in;
+        in.light = press == 0;
+        in.heavy = press == 1;
+        in.release = press == 2;
+        const ArenaAction a = step(in);
+        CHECK(a != ArenaAction::Light);
+        CHECK(a != ArenaAction::Heavy);
+        CHECK(a != ArenaAction::Release);
+    }
+    // The refused presses are not kept: idle ticks after them start nothing.
+    for (int i = 0; i < 30; ++i) CHECK(step(ArenaInput{}) != ArenaAction::Light);
+    // Load given to him is not stored, so a Release has nothing to spend and his heal never locks.
+    CHECK(fight.giveLoad(kMaxLoad) == 0);
+    CHECK_FALSE(fight.overloaded());
+    ArenaInput rel;
+    rel.release = true;
+    CHECK(step(rel) != ArenaAction::Release);
+    // Guard and dodge still work.
+    ArenaInput guard;
+    guard.guard = true;
+    CHECK(step(guard) == ArenaAction::Guard);
+    step(ArenaInput{});
+    ArenaInput dodge;
+    dodge.dodge = true;
+    dodge.move = Vec2{0.f, 1.f};
+    CHECK(step(dodge) == ArenaAction::Dodge);
+    CHECK(started == 0);
+    // A kit that doesn't say keeps the default: it attacks.
+    std::string error;
+    ArenaTable bad;
+    CHECK_FALSE(importArenaTable(R"({"version": 1, "fighters": [{"id": "default", "attacks": 1}]})", bad, &error));
+    CHECK(t.fighter("default").attacks);
+}
+
+TEST_CASE("arena attack: Duy's aimed light is one pistol round that connects far off, with the nearest body only, and not past its range") {
     const ArenaTable t = loadShipped();
     const ArenaFighter duy = t.fighter("duy");
-    {   // 8 m out, straight ahead, with another body behind it (one shot: the next is still winding up)
+    const auto aimed = [](Rig& rig) {
+        rig.in.aim = true;
+        rig.in.aimDir = Vec2{1.f, 0.f};
+        rig.in.light = true;
+    };
+    {   // 8 m out, straight ahead, with another body behind it (one round: the press fired once)
         Rig rig(duy, {dummyKind(), dummyKind()});
         rig.put(0, 8.f, 0.f);
         rig.put(1, 8.8f, 0.f);
-        rig.in.light = true;
+        aimed(rig);
         rig.runFor(0.45f);
         REQUIRE(rig.count(ArenaEventType::Hit) == 1);
         CHECK(rig.find(ArenaEventType::Hit)->event.target == 0);
+        CHECK(rig.find(ArenaEventType::Hit)->event.move == kArenaShotMove);
         CHECK(rig.fight.enemyHp(1) == 100);
     }
     {   // well past its range: nothing
         Rig rig(duy, {dummyKind()});
-        rig.put(0, 12.f, 0.f);
-        rig.in.light = true;
+        rig.put(0, duy.shot.range + 2.f, 0.f);
+        aimed(rig);
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // a big body (a boss's 2.5 m) whose middle is 1.2 m beside the line (about 15 degrees off) at 4.5 m: the round
+        // goes through its flank and hits; a cone round its middle would have missed
+        ArenaEnemyKind big = dummyKind();
+        big.bodyRadius = 2.5f;
+        Rig rig(duy, {big});
+        rig.put(0, 4.5f, 1.2f);
+        aimed(rig);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // the same big body with the line 3 m beside its middle (past its flank): missed
+        ArenaEnemyKind big = dummyKind();
+        big.bodyRadius = 2.5f;
+        Rig rig(duy, {big});
+        rig.put(0, 4.5f, 3.f);
+        aimed(rig);
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
     }
     {   // a body well off the line of the shot is missed, where a kick's wide arc would not care
         Rig rig(duy, {dummyKind()});
         rig.put(0, 6.f, 4.f);
-        rig.in.light = true;
+        aimed(rig);
         rig.runFor(1.5f);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
     }
+    {   // unaimed, the same press at 8 m is a kick: it starts as chain light 0 and reaches nothing
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 8.f, 0.f);
+        rig.in.light = true;
+        rig.tick();
+        CHECK(rig.out().player.action == ArenaAction::Light);
+        CHECK(rig.out().player.move == 0);
+        rig.runFor(0.6f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
+TEST_CASE("arena attack: Duy fires one round per aimed press, kicks again once the aim lets go, and a round ends the kick chain") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    Rig rig(duy, {dummyKind()});
+    rig.put(0, 30.f, 30.f); // out of the way
+    rig.in.aimDir = Vec2{1.f, 0.f};
+    const auto press = [&](bool aim) {
+        rig.in.aim = aim;
+        rig.in.light = true;
+        rig.tick();
+        return rig.out().player;
+    };
+    const auto settle = [&] { rig.in.aim = false; rig.run(90); }; // past any recovery and chainGap
+    // A kick opens the chain; an aimed press during its recovery is a round, not the chain's next kick.
+    ArenaPlayerOut p = press(false);
+    CHECK(p.action == ArenaAction::Light);
+    CHECK(p.move == 0);
+    rig.run(20);
+    p = press(true);
+    rig.run(15);
+    CHECK(rig.count(ArenaEventType::AttackStarted) == 2);
+    CHECK(rig.find(ArenaEventType::AttackStarted, 1)->event.move == kArenaShotMove);
+    settle();
+    // A second aimed press fires again (no chain of rounds).
+    p = press(true);
+    CHECK(p.move == kArenaShotMove);
+    settle();
+    // The aim let go: the light is a kick again, and the chain opens anew at 0.
+    p = press(false);
+    CHECK(p.move == 0);
+    settle();
+    // A press made while aimed stays a round though the aim lets go on the next tick.
+    p = press(true);
+    rig.in.aim = false;
+    rig.tick();
+    CHECK(rig.out().player.move == kArenaShotMove);
+    settle();
+    // Aiming is the pistol only: a heavy press (its own key, or the button held) is a round too, never the heavy kick.
+    rig.in.aim = true;
+    rig.in.heavy = true;
+    rig.tick();
+    CHECK(rig.out().player.action == ArenaAction::Light);
+    CHECK(rig.out().player.move == kArenaShotMove);
+    settle();
+    // Unaimed, the heavy is the kick again.
+    rig.in.heavy = true;
+    rig.tick();
+    CHECK(rig.out().player.action == ArenaAction::Heavy);
 }
 
 namespace {
@@ -1722,6 +1875,105 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         rig.runFor(1.0f);
         CHECK(rig.out().enemies[0].brain != ArenaBrain::Down);
     }
+    {   // off to one side: turned onto the enemy over startup (0.1 s), with no tracking, not in the first frame
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        parry(rig, 1.5f, 0.f);
+        rig.put(0, 1.f, 1.1f); // 48 degrees off the facing
+        rig.in.light = true;
+        const float start = std::atan2(rig.out().player.facing.y, rig.out().player.facing.x);
+        REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
+        const float want = std::atan2(1.1f, 1.f);
+        float last = std::atan2(rig.out().player.facing.y, rig.out().player.facing.x);
+        CHECK(last - start < 0.3f * want); // a share of it, no snap
+        bool steady = true;
+        for (int i = 0; i < 5; ++i) {
+            const Vec2 f = rig.tick().player.facing;
+            const float now = std::atan2(f.y, f.x);
+            steady = steady && now >= last - 1e-4f && now - last < 0.3f * want;
+            last = now;
+        }
+        CHECK(steady);
+        CHECK(last == doctest::Approx(want).epsilon(0.01)); // on the enemy as the blow lands
+        rig.run(20);
+        CHECK(rig.fight.stats().ripostes == 1);
+    }
+    {   // off to one side with a lunge: it goes at the enemy, so the body is where a riposte snapped onto it would be
+        ArenaFighter f = ruleFighter();
+        f.riposte.lunge = 0.5f;
+        Rig rig(f, {hitterKind(bite)});
+        parry(rig, 1.5f, 0.f);
+        rig.put(0, 1.f, 1.1f); // 48 degrees off the facing
+        const Vec2 from = rig.bodies.player;
+        const Vec2 to{rig.bodies.enemies[0].x - from.x, rig.bodies.enemies[0].y - from.y};
+        const float toLen = std::sqrt(to.x * to.x + to.y * to.y);
+        REQUIRE(toLen > 0.f);
+        const Vec2 way{to.x / toLen, to.y / toLen};
+        rig.in.light = true;
+        // the host moves the body by the fight's velocity, as the runner does
+        const auto step = [&rig] {
+            const ArenaOutput& o = rig.tick();
+            rig.bodies.player.x += o.player.velocity.x * kDt;
+            rig.bodies.player.y += o.player.velocity.y * kDt;
+        };
+        step();
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        while (rig.out().player.action == ArenaAction::Riposte && rig.out().player.actionTime < f.riposte.startup) step();
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        const float span = f.riposte.startup + f.riposte.active;
+        const float gone = f.riposte.lunge * std::min(rig.out().player.actionTime, span) / span;
+        CHECK(rig.bodies.player.x == doctest::Approx(from.x + way.x * gone).epsilon(0.001));
+        CHECK(rig.bodies.player.y == doctest::Approx(from.y + way.y * gone).epsilon(0.001));
+    }
+    {   // its enemy on the very spot, then dead under it: the lunge goes along the facing, never after the body
+        ArenaFighter f = ruleFighter();
+        f.riposte.lunge = 0.5f;
+        f.riposte.damage = 1000;
+        Rig rig(f, {hitterKind(bite), dummyKind()});
+        rig.put(1, -20.f, 0.f); // a second enemy far off keeps the fight going
+        parry(rig, 1.f, 1.1f);
+        rig.in.light = true;
+        REQUIRE(rig.tick().player.action == ArenaAction::Riposte);
+        const auto along = [](const ArenaOutput& o) {
+            const Vec2 v = o.player.velocity, d = o.player.facing;
+            return std::isfinite(v.x) && std::isfinite(v.y) && std::abs(v.x * d.y - v.y * d.x) < 0.001f && v.x * d.x + v.y * d.y >= 0.f;
+        };
+        rig.put(0, rig.bodies.player.x, rig.bodies.player.y); // on the same spot: no way to it, so the facing
+        CHECK(along(rig.tick()));
+        rig.put(0, 1.f, 1.1f);
+        while (rig.out().player.action == ArenaAction::Riposte && rig.fight.enemyAlive(0)) rig.tick();
+        REQUIRE_FALSE(rig.fight.enemyAlive(0));
+        REQUIRE(rig.out().player.action == ArenaAction::Riposte);
+        rig.put(0, 0.f, -3.f); // the dead body elsewhere: nothing follows it
+        int moved = 0;
+        for (int i = 0; i < 6 && rig.out().player.action == ArenaAction::Riposte; ++i) {
+            const ArenaOutput& o = rig.tick();
+            CHECK(along(o));
+            CHECK(o.player.velocity.y >= -0.001f);
+            if (o.player.velocity.x != 0.f || o.player.velocity.y != 0.f) ++moved;
+        }
+        CHECK(moved > 0);
+    }
+    {   // locked, rolled 150 degrees away from the open enemy and still in reach: a light on the first free frame ripostes
+        ArenaFighter f = ruleFighter();
+        f.turnRate = 14.f;
+        f.dodgeDistance = 0.3f;
+        f.dodgeStamina = 0.f;
+        Rig rig(f, {hitterKind(bite)});
+        parry(rig, 1.2f, 0.f);
+        rig.in.view = Vec2{1.f, 0.f};
+        rig.in.lock = true;
+        rig.tick();
+        REQUIRE(rig.fight.lock() == 0);
+        rig.in.move = Vec2{-0.866f, 0.5f};
+        rig.in.dodge = true;
+        rig.tick();
+        rig.in.move = Vec2{};
+        REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+        while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Open);
+        rig.in.light = true;
+        CHECK(rig.tick().player.action == ArenaAction::Riposte);
+    }
     {   // out of reach: an ordinary light, and the enemy stays open
         Rig rig(ruleFighter(), {hitterKind(bite)});
         parry(rig, 1.5f, 0.f);
@@ -2264,6 +2516,231 @@ TEST_CASE("arena armor: a share of the poise damage is ignored during an attack'
         duel.tick();
         duel.run(20);
         CHECK((duel.out().player.action == ArenaAction::Hitstun) == (armor == 0.f));
+    }
+}
+
+namespace {
+float angleBetween(Vec2 a, Vec2 b) { return std::abs(std::atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y)); }
+
+// A fighter locked on enemy 0 at (1.5, 0), rolled 150 degrees away with a short roll (still in reach): the rig stands on
+// the first free frame after the roll.
+void rollAwayLocked(Rig& rig) {
+    rig.in.view = Vec2{1.f, 0.f};
+    rig.in.lock = true;
+    rig.run(3);
+    REQUIRE(rig.fight.lock() == 0);
+    rig.in.move = Vec2{-0.866f, 0.5f};
+    rig.in.dodge = true;
+    rig.tick();
+    rig.in.move = Vec2{};
+    REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+    while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+}
+
+Vec2 toEnemy(const Rig& rig) {
+    const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y - rig.bodies.player.y};
+    const float l = std::sqrt(to.x * to.x + to.y * to.y);
+    return Vec2{to.x / l, to.y / l};
+}
+
+ArenaFighter shortRoller(float turnRate = 14.f) {
+    ArenaFighter f = ruleFighter();
+    f.turnRate = turnRate;
+    f.dodgeDistance = 0.3f;
+    f.dodgeStamina = 0.f;
+    return f;
+}
+} // namespace
+
+TEST_CASE("arena lock-on: after a roll away the rules face the target at once, the drawn body turns back at turnRate") {
+    const ArenaFighter fighter = shortRoller();
+    Rig rig(fighter, {dummyKind()});
+    rollAwayLocked(rig);
+    // the rules: on the target on the first free frame (guard, parry, backstep and riposte use this)
+    CHECK(angleBetween(rig.out().player.facing, toEnemy(rig)) < 0.01f);
+    // the drawn body: still turned away, then turning back over several frames at no more than turnRate
+    CHECK(angleBetween(rig.out().player.drawFacing, toEnemy(rig)) > 1.f);
+    Vec2 last = rig.out().player.drawFacing;
+    float worst = 0.f;
+    int ticks = 0;
+    float lastStep = 0.f, before = 0.f;
+    while (angleBetween(rig.out().player.drawFacing, rig.out().player.facing) > 0.f && ticks < 120) {
+        const Vec2 f = rig.tick().player.drawFacing;
+        before = lastStep;
+        lastStep = angleBetween(last, f);
+        worst = std::max(worst, lastStep);
+        last = f;
+        ++ticks;
+    }
+    // slow out: the last steps shrink, to well under the full pace
+    CHECK(lastStep <= before + 1e-5f);
+    CHECK(lastStep < 0.5f * worst);
+    CHECK(before < 0.75f * worst);
+    CHECK(ticks > 1);
+    CHECK(worst <= fighter.turnRate * kDt + 0.001f);
+    // it arrives: the drawn facing is the rules' facing, exactly
+    CHECK(rig.out().player.drawFacing.x == rig.out().player.facing.x);
+    CHECK(rig.out().player.drawFacing.y == rig.out().player.facing.y);
+    {   // turnRate 0: the drawn body snaps with the rules
+        Rig snap(shortRoller(0.f), {dummyKind()});
+        rollAwayLocked(snap);
+        snap.tick();
+        CHECK(snap.out().player.drawFacing.x == snap.out().player.facing.x);
+        CHECK(snap.out().player.drawFacing.y == snap.out().player.facing.y);
+    }
+}
+
+TEST_CASE("arena dodge: the drawn body turns into the roll over its first part instead of snapping") {
+    const ArenaFighter fighter = shortRoller();
+    Rig rig(fighter, {dummyKind()});
+    rig.in.view = Vec2{1.f, 0.f};
+    rig.in.lock = true;
+    rig.run(3);
+    REQUIRE(rig.fight.lock() == 0);
+    rig.in.lock = false;
+    const Vec2 before = rig.out().player.drawFacing;
+    rig.in.move = Vec2{-0.866f, 0.5f}; // 150 degrees off the target
+    rig.in.dodge = true;
+    rig.tick();
+    rig.in = ArenaInput{};
+    REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+    const Vec2 way = rig.out().player.facing; // the rules face the roll's way at once
+    CHECK(angleBetween(way, Vec2{-0.866f, 0.5f}) < 0.01f);
+    const float most = 3.14159265f / (0.3f * fighter.dodgeTime) * kDt + 0.001f;
+    CHECK(angleBetween(before, rig.out().player.drawFacing) <= most); // the first frame turns, it does not snap
+    CHECK(angleBetween(rig.out().player.drawFacing, way) > 1.f);
+    Vec2 last = rig.out().player.drawFacing;
+    int ticks = 1;
+    float biggest = 0.f, lastStep = 0.f, prevStep = 0.f;
+    while (angleBetween(rig.out().player.drawFacing, way) > 0.f && rig.out().player.action == ArenaAction::Dodge) {
+        const Vec2 f = rig.tick().player.drawFacing;
+        prevStep = lastStep;
+        lastStep = angleBetween(last, f);
+        CHECK(lastStep <= most);
+        biggest = std::max(biggest, lastStep);
+        last = f;
+        ++ticks;
+    }
+    // into the roll's way within its first half, before the roll ends, slowing out: the last steps shrink
+    CHECK(rig.out().player.action == ArenaAction::Dodge);
+    CHECK(angleBetween(rig.out().player.drawFacing, way) == 0.f);
+    CHECK(static_cast<float>(ticks) * kDt <= 0.5f * fighter.dodgeTime);
+    CHECK(lastStep <= prevStep + 1e-5f);
+    CHECK(lastStep < 0.5f * biggest);
+    CHECK(prevStep < 0.75f * biggest);
+}
+
+TEST_CASE("arena dodge: a backstep is drawn as a roll the way it goes, then turns back to the lock; the rules keep facing it") {
+    const ArenaFighter fighter = shortRoller();
+    Rig rig(fighter, {dummyKind()});
+    rig.in.view = Vec2{1.f, 0.f};
+    rig.in.lock = true;
+    rig.run(3);
+    REQUIRE(rig.fight.lock() == 0);
+    rig.in.dodge = true; // no stick: a backstep
+    rig.tick();
+    rig.in.dodge = false;
+    REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+    REQUIRE(rig.out().player.backstep);
+    const Vec2 back = rig.out().player.dodgeDir;
+    while (rig.out().player.action == ArenaAction::Dodge) {
+        CHECK(angleBetween(rig.out().player.facing, toEnemy(rig)) < 0.05f); // the rules face the target throughout
+        rig.tick();
+    }
+    // the drawn body reached the backstep's way during the roll (the roll's turn: within half of it), so it was drawn rolling there
+    Rig again(fighter, {dummyKind()});
+    again.in.view = Vec2{1.f, 0.f};
+    again.in.lock = true;
+    again.run(3);
+    again.in.dodge = true;
+    again.tick();
+    again.in.dodge = false;
+    bool reached = false;
+    while (again.out().player.action == ArenaAction::Dodge) {
+        if (angleBetween(again.out().player.drawFacing, again.out().player.dodgeDir) < 0.01f &&
+            again.out().player.actionTime <= 0.5f * fighter.dodgeTime + kDt)
+            reached = true;
+        again.tick();
+    }
+    CHECK(reached);
+    // and back on the lock, turning, after it
+    int ticks = 0;
+    while (angleBetween(again.out().player.drawFacing, again.out().player.facing) > 0.f && ticks < 120) {
+        again.tick();
+        ++ticks;
+    }
+    CHECK(ticks > 3);
+    CHECK(ticks < 120);
+    CHECK(back.x == doctest::Approx(again.out().player.dodgeDir.x));
+}
+
+TEST_CASE("arena attack: a light right after a roll away turns the drawn body over startup, on the rules' facing by the blow") {
+    for (const bool heavy : {false, true}) {
+        CAPTURE(heavy);
+        const ArenaFighter fighter = shortRoller();
+        const ArenaAttack& attack = heavy ? fighter.heavy : fighter.light[0];
+        REQUIRE(attack.startup > 4.f * kDt);
+        Rig rig(fighter, {dummyKind()});
+        rollAwayLocked(rig);
+        const Vec2 before = rig.out().player.drawFacing;
+        REQUIRE(angleBetween(before, rig.out().player.facing) > 1.f); // still turned away from the lock
+        (heavy ? rig.in.heavy : rig.in.light) = true;
+        rig.tick();
+        rig.in = ArenaInput{};
+        REQUIRE(rig.out().player.action == (heavy ? ArenaAction::Heavy : ArenaAction::Light));
+        REQUIRE(rig.out().player.part == ArenaPart::Startup);
+        // the first frame turns, it does not snap: at most half a turn per 0.6 of startup (or turnRate)
+        const float most = std::max(fighter.turnRate, 3.14159265f / (0.6f * attack.startup)) * kDt + 0.001f;
+        CHECK(angleBetween(before, rig.out().player.drawFacing) <= most);
+        CHECK(angleBetween(rig.out().player.drawFacing, rig.out().player.facing) > 0.5f);
+        Vec2 last = rig.out().player.drawFacing;
+        int frames = 0;
+        while (rig.out().player.part == ArenaPart::Startup && frames < 120) {
+            const Vec2 f = rig.tick().player.drawFacing;
+            CHECK(angleBetween(last, f) <= most); // every step, the one into the blow too: no pop
+            last = f;
+            ++frames;
+        }
+        // the first active frame: the drawn body is the rules' facing, exactly, so the blow lands from where it looks
+        REQUIRE(rig.out().player.part == ArenaPart::Active);
+        CHECK(rig.out().player.drawFacing.x == rig.out().player.facing.x);
+        CHECK(rig.out().player.drawFacing.y == rig.out().player.facing.y);
+        CHECK(frames > 2);
+    }
+}
+
+TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll away faces the target") {
+    {   // a parry pressed on the first free frame after a 150 degree roll away catches the blow
+        const float startup = 1.2f;
+        Rig rig(shortRoller(), {hitterKind(swing(startup, 0.15f, 0.5f, 3.f, 20))});
+        rig.in.view = Vec2{1.f, 0.f};
+        rig.in.lock = true;
+        rig.tick();
+        for (int i = 0; i < 120 && rig.count(ArenaEventType::AttackStarted) == 0; ++i) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::AttackStarted) == 1);
+        // roll so it ends three frames before the blow
+        const float rollAt = startup - rig.fight.def().fighter.dodgeTime - 3.f * kDt;
+        while (rig.out().enemies[0].stateTime < rollAt) rig.tick();
+        rig.in.move = Vec2{-0.866f, 0.5f};
+        rig.in.dodge = true;
+        rig.tick();
+        rig.in.move = Vec2{};
+        while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::Hit) == 0);
+        rig.in.guard = true;
+        for (int i = 0; i < 60 && rig.count(ArenaEventType::Parried) + rig.count(ArenaEventType::Hit) == 0; ++i) rig.tick();
+        CHECK(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // a backstep right after the roll goes straight away from the target
+        Rig rig(shortRoller(), {dummyKind()});
+        rollAwayLocked(rig);
+        const Vec2 to = toEnemy(rig);
+        rig.in.dodge = true; // no stick: a backstep
+        rig.tick();
+        REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+        CHECK(rig.out().player.dodgeDir.x == doctest::Approx(-to.x).epsilon(0.01));
+        CHECK(rig.out().player.dodgeDir.y == doctest::Approx(-to.y).epsilon(0.01));
     }
 }
 
@@ -3780,6 +4257,7 @@ TEST_CASE("arena balance: every lead's kit plays the default's fights") {
     REQUIRE(table.fighterIds.size() >= 4); // default, devin, duy, third
     for (std::size_t f = 1; f < table.fighterIds.size(); ++f) {
         const std::string& id = table.fighterIds[f];
+        if (!table.fighters[f].attacks) continue; // a lead with no attack of his own never fights alone
         ArenaDef fallback = table.fallback;
         fallback.fighter = table.fighters[f];
         checkBalance(id + ": shipped default fight", fallback);
@@ -3833,22 +4311,27 @@ TEST_CASE("arena: a whole autopilot fight that stores Load and releases it alloc
     ArenaFight fight;
     ArenaBodies bodies;
     const bool counting = ftcore_test::allocHookInstalled();
-    const auto before = ftcore_test::allocStats().count;
-    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
-    bodies.player = fight.playerStart();
-    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
     int fullDeals = 0, deals = 0;
-    while (!fight.over() && fight.time() < 120.f) {
-        const ArenaOutput& out = fight.tick(kDt, fight.autopilot(), bodies);
-        for (const ArenaEvent& e : out.events) {
-            if (e.type != ArenaEventType::CardsDealt) continue;
-            ++deals;
-            if (e.amount == static_cast<int>(kReadCards)) ++fullDeals;
+    // The first seed whose fight reaches a Release (the autopilot's path through the Load hangs on the seed).
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+        fullDeals = deals = 0;
+        const auto before = ftcore_test::allocStats().count;
+        fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, seed);
+        bodies.player = fight.playerStart();
+        for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+        while (!fight.over() && fight.time() < 120.f) {
+            const ArenaOutput& out = fight.tick(kDt, fight.autopilot(), bodies);
+            for (const ArenaEvent& e : out.events) {
+                if (e.type != ArenaEventType::CardsDealt) continue;
+                ++deals;
+                if (e.amount == static_cast<int>(kReadCards)) ++fullDeals;
+            }
+            arenaStep(fight, bodies, kDt);
         }
-        arenaStep(fight, bodies, kDt);
+        const auto allocs = ftcore_test::allocStats().count - before;
+        if (counting) CHECK(allocs == 0); // every Read deal and pick included
+        if (fight.stats().releases > 0) break;
     }
-    const auto allocs = ftcore_test::allocStats().count - before;
-    if (counting) CHECK(allocs == 0); // every Read deal and pick included
     INFO("load stored " << fight.stats().loadStored << ", load " << fight.load() << ", time " << fight.time());
     CHECK(fight.phase() == ArenaPhase::Victory);
     CHECK(fight.stats().loadStored > 0); // the fight went through the Load and the Release
@@ -5094,9 +5577,9 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 }
 
 // The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
-// 17824 bytes, ArenaFight 23600).
-static_assert(sizeof(ArenaDef) <= 20 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
-static_assert(sizeof(ArenaFight) <= 28 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
+// 21100 bytes, ArenaFight 27072).
+static_assert(sizeof(ArenaDef) <= 24 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
+static_assert(sizeof(ArenaFight) <= 32 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
 TEST_CASE("arena hooks: a Release's spent Load is in the poise the hook sees and scales; no hold after a Defeat") {
     {   // 34 Load spent: 34 poise damage on the upright enemy, halved by the ruling
@@ -5297,7 +5780,7 @@ TEST_CASE("arena table: the weapon key parses each value, inherits from the defa
     ArenaTable t;
     const std::string err = loadError(
         R"({ "version": 1,
-             "fighters": [ { "id": "a", "weapon": "gauntlets" }, { "id": "b", "weapon": "guns" },
+             "fighters": [ { "id": "a", "weapon": "gauntlets" }, { "id": "b", "weapon": "guns", "shot": {} },
                            { "id": "c", "weapon": "magic" }, { "id": "d" }, { "id": "e", "weapon": "none" },
                            { "id": "default" } ],
              "enemies": [ { "id": "dummy" } ],
@@ -5313,7 +5796,7 @@ TEST_CASE("arena table: the weapon key parses each value, inherits from the defa
 
     ArenaTable inherited;
     CHECK(loadError(R"({ "version": 1,
-             "fighters": [ { "id": "lead", "hp": 80 }, { "id": "default", "weapon": "guns" } ],
+             "fighters": [ { "id": "lead", "hp": 80 }, { "id": "default", "weapon": "guns", "shot": {} } ],
              "enemies": [ { "id": "dummy" } ], "default": { "enemies": ["dummy"] } })",
                     &inherited)
               .empty());
@@ -5329,10 +5812,21 @@ TEST_CASE("arena table: the weapon key parses each value, inherits from the defa
 
 TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's kit gives") {
     const ArenaTable t = loadShipped();
+    CHECK(arenaPlayable(t.fighter("devin")));
+    CHECK(arenaPlayable(t.fighter("duy")));
+    CHECK_FALSE(arenaPlayable(t.fighter("third"))); // a party slot only
+    // -ArenaLead=Third is refused on this: the host lower-cases the name and asks arenaPlayable (the kit stays pinned).
+    // The ids are exact, so the lower-casing matters: "Third" as typed is unknown and reads the first kit, which fights.
+    CHECK(&t.fighter("Third") == &t.fighter(t.fighterIds[0]));
+    CHECK(arenaPlayable(t.fighter("Third")));
+    CHECK(arenaPlayable(t.fighter("default")));
     CHECK(t.fighter("default").weapon == ArenaWeapon::None);
     CHECK(t.fighter("devin").weapon == ArenaWeapon::Gauntlets);
     CHECK(t.fighter("duy").weapon == ArenaWeapon::Guns);
-    CHECK(t.fighter("third").weapon == ArenaWeapon::Magic);
+    CHECK(t.fighter("third").weapon == ArenaWeapon::None);
+    for (const char* id : {"default", "devin", "duy", "third"}) CHECK(t.fighter(id).weapon != ArenaWeapon::Magic);
+    ArenaFighter magic = t.fighter("default"); // the magic kind: no lead uses it, its clips stay for old data
+    magic.weapon = ArenaWeapon::Magic;
 
     FightClip p[kMaxLightChain];
     // Devin punches, a side in turn, one per hit of his four-hit chain.
@@ -5342,27 +5836,25 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     CHECK(p[1] == FightClip::StrikeRight);
     CHECK(p[2] == FightClip::StrikeLeft);
     CHECK(p[3] == FightClip::StrikeRight);
-    // Duy: shots on the right-hand weapon, kicks on the legs, in chain order.
+    // Duy: the chain is kicks, a leg in turn; the round is the aimed light, never in the chain.
     const ArenaFighter& duy = t.fighter("duy");
     n = arenaStrikePattern(duy, p, kMaxLightChain);
     REQUIRE(n == duy.lightCount);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (duy.light[i].range >= kArenaShotRange) CHECK(p[i] == FightClip::WeaponRight);
-        else CHECK((p[i] == FightClip::KickLeft || p[i] == FightClip::KickRight));
-    }
     CHECK(duy.lightCount == 3);
-    for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::WeaponRight); // the chain is all shots
-    CHECK(arenaHeavyStrike(duy) == FightClip::KickRight);                    // the heavy is a kick
+    CHECK(p[0] == FightClip::KickLeft);
+    CHECK(p[1] == FightClip::KickRight);
+    CHECK(p[2] == FightClip::KickLeft);
+    CHECK(arenaHeavyStrike(duy) == FightClip::KickRight); // the heavy is a kick
     CHECK(arenaHeavyStrike(t.fighter("devin")) == FightClip::StrikeRight);
-    CHECK(arenaHeavyStrike(t.fighter("third")) == FightClip::Cast);
-    {   // a gun's heavy that reaches is a shot
+    CHECK(arenaHeavyStrike(magic) == FightClip::Cast);
+    {   // a gun's heavy is a kick however far it reaches: the only round is the aimed light
         ArenaFighter gun = duy;
         gun.heavy.range = 9.f;
-        CHECK(arenaHeavyStrike(gun) == FightClip::WeaponRight);
+        CHECK(arenaHeavyStrike(gun) == FightClip::KickRight);
     }
-    // The Third casts.
-    n = arenaStrikePattern(t.fighter("third"), p, kMaxLightChain);
-    REQUIRE(n == t.fighter("third").lightCount);
+    // A magic kit casts.
+    n = arenaStrikePattern(magic, p, kMaxLightChain);
+    REQUIRE(n == magic.lightCount);
     for (std::size_t i = 0; i < n; ++i) CHECK(p[i] == FightClip::Cast);
     // Every pattern is one an animator takes; a short buffer cuts it.
     for (const char* id : {"default", "devin", "duy", "third"}) {
@@ -5378,7 +5870,8 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     const ArenaTable t = loadShipped();
     const ArenaFighter& devin = t.fighter("devin");
     const ArenaFighter& duy = t.fighter("duy");
-    const ArenaFighter& third = t.fighter("third");
+    ArenaFighter third = t.fighter("default"); // the unused magic kind (the shipped Third has none)
+    third.weapon = ArenaWeapon::Magic;
 
     // The attack each move id names.
     CHECK(arenaPlayerAttack(devin, 0) == &devin.light[0]);
@@ -5386,6 +5879,8 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(arenaPlayerAttack(duy, kArenaHeavyMove) == &duy.heavy);
     CHECK(arenaPlayerAttack(duy, kArenaRiposteMove) == &duy.riposte);
     CHECK(arenaPlayerAttack(duy, kArenaReleaseMove) == &duy.release);
+    CHECK(arenaPlayerAttack(duy, kArenaShotMove) == &duy.shot);
+    CHECK(arenaPlayerAttack(devin, kArenaShotMove) == nullptr); // only a guns kit has a round
     CHECK(arenaPlayerAttack(duy, duy.lightCount) == nullptr); // past the chain
     CHECK(arenaPlayerAttack(duy, 7) == nullptr);
     CHECK(arenaPlayerAttack(duy, kArenaNobody) == nullptr);
@@ -5394,7 +5889,9 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(arenaPlayerStrike(devin, 0) == FightClip::StrikeLeft);
     CHECK(arenaPlayerStrike(devin, 1) == FightClip::StrikeRight);
     CHECK(arenaPlayerStrike(devin, kArenaHeavyMove) == FightClip::StrikeRight);
-    CHECK(arenaPlayerStrike(duy, 0) == FightClip::WeaponRight);
+    CHECK(arenaPlayerStrike(duy, 0) == FightClip::KickLeft);
+    CHECK(arenaPlayerStrike(duy, kArenaShotMove) == FightClip::WeaponRight);
+    CHECK(arenaPlayerStrike(devin, kArenaShotMove) == FightClip::Stance);
     CHECK(arenaPlayerStrike(duy, kArenaHeavyMove) == FightClip::KickRight);
     CHECK(arenaPlayerStrike(third, 1) == FightClip::Cast);
     CHECK(arenaPlayerStrike(third, kArenaRiposteMove) == FightClip::Counter);
@@ -5405,7 +5902,7 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     // Each move's clip has a lead clip id: Duy's shot is lead_fire, the Third's cast lead_cast.
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(devin, 0))) == "lead_jab");
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(devin, 1))) == "lead_cross");
-    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, 0))) == "lead_fire");
+    CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, kArenaShotMove))) == "lead_fire");
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(duy, kArenaHeavyMove))) == "lead_kick_r");
     CHECK(std::string(arenaLeadClipId(arenaPlayerStrike(third, 0))) == "lead_cast");
     CHECK(std::string(arenaLeadClipId(FightClip::Counter)) == "lead_counter");
@@ -5425,7 +5922,7 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     leadClips(a);
     CHECK(a.playStrike(arenaPlayerStrike(devin, 0), 0.0, 0.3) == FightClip::StrikeLeft);
     CHECK(a.playStrike(arenaPlayerStrike(devin, 1), 0.0, 0.3) == FightClip::StrikeRight);
-    CHECK(a.playStrike(arenaPlayerStrike(duy, 0), 0.0, 0.3) == FightClip::StrikeRight);
+    CHECK(a.playStrike(arenaPlayerStrike(duy, kArenaShotMove), 0.0, 0.3) == FightClip::StrikeRight);
     CHECK(a.playStrike(arenaPlayerStrike(duy, kArenaHeavyMove), 0.0, 0.3) == FightClip::KickRight);
     CHECK(a.playStrike(arenaPlayerStrike(third, 0), 0.0, 0.3) == FightClip::StrikeRight);
     CHECK(a.play(arenaPlayerStrike(third, kArenaRiposteMove), 0.0, 0.3));
@@ -5439,20 +5936,20 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(b.lastKeyTime() == doctest::Approx(1.0 + static_cast<double>(jab->startup)));
 }
 
-TEST_CASE("arena data: Duy's chain shoots from range, Devin's fists reach less than a blade did") {
+TEST_CASE("arena data: Duy's chain kicks and his round shoots from range, Devin's fists reach less than a blade did") {
     const ArenaTable t = loadShipped();
     const ArenaFighter& duy = t.fighter("duy");
-    std::size_t shots = 0;
-    for (std::size_t i = 0; i < duy.lightCount; ++i) {
-        if (duy.light[i].range < kArenaShotRange) continue;
-        ++shots;
-        CHECK(duy.light[i].arcCos >= 0.95f);
-        CHECK(duy.light[i].maxTargets == 1);
-        CHECK(duy.light[i].lunge == 0.f);
-    }
-    CHECK(shots == duy.lightCount); // all shots
-    CHECK(duy.light[duy.lightCount - 1].damage > duy.light[0].damage); // the last is a double-tap
+    for (std::size_t i = 0; i < duy.lightCount; ++i) CHECK(duy.light[i].range < kArenaShotRange); // all kicks
+    CHECK(duy.light[duy.lightCount - 1].damage > duy.light[0].damage); // the last kick lands hardest
+    CHECK(duy.shot.range >= kArenaShotRange);
     CHECK(duy.heavy.range < kArenaShotRange); // the heavy is the kick
+    // The round is refused on any kit but guns, and a guns kit must give one.
+    std::string error;
+    ArenaTable bad;
+    CHECK_FALSE(importArenaTable(R"({"version": 1, "fighters": [{"id": "default"}, {"id": "x", "weapon": "gauntlets", "shot": {}}]})", bad, &error));
+    CHECK(error.find("shot") != std::string::npos);
+    CHECK_FALSE(importArenaTable(R"({"version": 1, "fighters": [{"id": "default"}, {"id": "x", "weapon": "guns"}]})", bad, &error));
+    CHECK(error.find("shot") != std::string::npos);
     const ArenaFighter& devin = t.fighter("devin");
     CHECK(devin.lightCount == 4);
     for (std::size_t i = 0; i < devin.lightCount; ++i) {
@@ -5461,4 +5958,1498 @@ TEST_CASE("arena data: Duy's chain shoots from range, Devin's fists reach less t
         CHECK(devin.light[i].poiseDamage > t.fighter("default").light[0].poiseDamage);
     }
     CHECK(devin.heavy.range == doctest::Approx(2.2f));
+}
+
+// ---- the hit pause, flinch, cancel windows, free lights and the break-out ----
+
+namespace {
+
+// The fight time a player's light ends at, with the light's hitStop, ticked at `dt`.
+float lightEndsAt(float hitStop, float dt, int dummies = 1) {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = hitStop;
+    Rig rig(f, {dummyKind(), dummyKind()});
+    rig.def.enemyCount = static_cast<std::uint8_t>(dummies);
+    rig.fight.begin(rig.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    rig.put(0, 1.5f, 0.f);
+    rig.put(1, 1.5f, 0.3f);
+    rig.in.light = true;
+    rig.tick(dt);
+    for (int i = 0; i < 400; ++i) {
+        if (rig.tick(dt).player.action != ArenaAction::Light) return rig.fight.time();
+    }
+    return -1.f;
+}
+
+// Ticks while pressing light every tick, for `seconds`.
+void mash(Rig& rig, float seconds) {
+    const int n = static_cast<int>(std::lround(seconds / kDt));
+    for (int i = 0; i < n; ++i) {
+        rig.in.light = true;
+        rig.tick();
+    }
+}
+
+} // namespace
+
+TEST_CASE("arena hit pause: the attacker and the target stand still for hitStop; the fight's clock never stops") {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = 0.1f;
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    bool paused = false, enemyPaused = false, frozenHeld = true;
+    float frozenAt = -1.f;
+    for (int i = 0; i < 30; ++i) {
+        const float before = rig.fight.time();
+        const ArenaOutput& out = rig.tick();
+        CHECK(rig.fight.time() == doctest::Approx(before + kDt)); // fight time: every tick, a pause or not
+        if (out.player.stopLeft > 0.f) {
+            if (!paused) frozenAt = out.player.actionTime;
+            else frozenHeld = frozenHeld && out.player.actionTime == frozenAt;
+            paused = true;
+            CHECK(out.player.velocity.x == 0.f);
+            CHECK(out.player.velocity.y == 0.f);
+        }
+        enemyPaused = enemyPaused || out.enemies[0].stopLeft > 0.f;
+    }
+    CHECK(paused);
+    CHECK(enemyPaused);
+    CHECK(frozenHeld);
+    CHECK(rig.fight.stats().time == doctest::Approx(30.f * kDt));
+    // The light lasts 0.1 s longer, whatever the step.
+    const float plain = lightEndsAt(0.f, kDt);
+    const float slow = lightEndsAt(0.1f, kDt);
+    const float fine = lightEndsAt(0.1f, kDt / 2.f);
+    CHECK(plain > 0.f);
+    CHECK(slow - plain == doctest::Approx(0.1f).epsilon(0.2));
+    CHECK(std::fabs(slow - fine) <= kDt + 1e-4f);
+    // Two targets at once: the pauses overlap, they don't add up.
+    CHECK(lightEndsAt(0.1f, kDt, 2) == doctest::Approx(slow));
+}
+
+TEST_CASE("arena hit pause: a paused enemy's move stands still and lands hitStop later") {
+    // The light lands at 0.2-0.3 s, inside the enemy's 0.8 s startup (full armour: no flinch, no stagger).
+    ArenaAttack slow = swing(0.8f, 0.1f, 0.3f, 3.f, 5);
+    slow.armor = 1.f;
+    const auto hitAt = [&](float hitStop) {
+        ArenaFighter f = ruleFighter();
+        f.light[0].hitStop = hitStop;
+        f.light[0].hitStopSelf = 0.f;
+        Rig rig(f, {hitterKind(slow)});
+        rig.put(0, 1.5f, 0.f);
+        for (int i = 0; i < 30 && !rig.find(ArenaEventType::AttackStarted); ++i) rig.tick();
+        rig.in.light = true;
+        float frozen = -1.f;
+        bool held = true, seen = false;
+        for (int i = 0; i < 120 && rig.count(ArenaEventType::Hit) < 2; ++i) {
+            const ArenaOutput& out = rig.tick();
+            if (out.enemies[0].stopLeft > kDt) { // a whole tick of pause ahead: the next tick stands still
+                if (seen) held = held && out.enemies[0].stateTime == frozen;
+                frozen = out.enemies[0].stateTime;
+                seen = true;
+                CHECK(out.enemies[0].velocity.x == 0.f);
+                CHECK(out.enemies[0].velocity.y == 0.f);
+            } else {
+                seen = false;
+            }
+        }
+        CHECK(held);
+        const Logged* second = rig.find(ArenaEventType::Hit, 1); // the enemy's blow on the player
+        REQUIRE(second);
+        CHECK(second->event.target == kArenaPlayer);
+        return second->tick * kDt;
+    };
+    CHECK(hitAt(0.2f) - hitAt(0.f) == doctest::Approx(0.2f).epsilon(0.1));
+}
+
+TEST_CASE("arena hit pause: the held clock stands still while the player is paused, for the shared inputs") {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = 0.1f;
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    CHECK(rig.fight.heldTime() == 0.f);
+    CHECK(rig.fight.hitStopLeft() == 0.f);
+    rig.run(3);
+    CHECK(rig.fight.heldTime() == rig.fight.time()); // no pause: the same clock
+    rig.in.light = true;
+    bool paused = false;
+    for (int i = 0; i < 40; ++i) {
+        const float held = rig.fight.heldTime();
+        const ArenaOutput& out = rig.tick();
+        CHECK(rig.fight.hitStopLeft() == out.player.stopLeft);
+        if (out.player.stopLeft > 0.f && rig.fight.hitStopLeft() < 0.1f - kDt) { // a whole tick inside the pause
+            paused = true;
+            CHECK(rig.fight.heldTime() == held);
+        }
+        CHECK(rig.fight.heldTime() >= held);
+    }
+    CHECK(paused);
+    CHECK(rig.fight.time() - rig.fight.heldTime() == doctest::Approx(0.1f).epsilon(0.01));
+    rig.fight.restart();
+    CHECK(rig.fight.heldTime() == 0.f);
+}
+
+TEST_CASE("arena hit pause: hitStopSelf, an enemy's blow, a parry, and a press that waits out the pause") {
+    {   // hitStopSelf 0: the target pauses, the attacker goes on
+        ArenaFighter f = ruleFighter();
+        f.light[0].hitStop = 0.2f;
+        f.light[0].hitStopSelf = 0.f;
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        bool playerPaused = false, enemyPaused = false;
+        for (int i = 0; i < 30; ++i) {
+            const ArenaOutput& out = rig.tick();
+            playerPaused = playerPaused || out.player.stopLeft > 0.f;
+            enemyPaused = enemyPaused || out.enemies[0].stopLeft > 0.f;
+        }
+        CHECK_FALSE(playerPaused);
+        CHECK(enemyPaused);
+    }
+    {   // an enemy's blow that lands pauses both
+        ArenaAttack hit = swing(0.2f, 0.1f, 0.5f, 2.f, 5);
+        hit.hitStop = 0.1f;
+        Rig rig(ruleFighter(), {hitterKind(hit)});
+        rig.put(0, 1.5f, 0.f);
+        bool both = false;
+        for (int i = 0; i < 40 && !both; ++i) {
+            const ArenaOutput& out = rig.tick();
+            both = out.player.stopLeft > 0.f && out.enemies[0].stopLeft > 0.f;
+        }
+        CHECK(both);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // a parry pauses both for parryStop; none without it
+        const ArenaAttack hit = swing(0.3f, 0.1f, 0.5f, 2.f, 5);
+        for (const float stop : {0.f, 0.15f}) {
+            ArenaFighter f = ruleFighter();
+            f.parryStop = stop;
+            Rig rig(f, {hitterKind(hit)});
+            rig.put(0, 1.5f, 0.f);
+            bool paused = false;
+            for (int i = 0; i < 60; ++i) {
+                const Logged* started = rig.find(ArenaEventType::AttackStarted);
+                rig.in.guard = started && rig.ticks - started->tick >= 12; // pressed just before the active part
+                const ArenaOutput& out = rig.tick();
+                paused = paused || (out.player.stopLeft > 0.f && out.enemies[0].stopLeft > 0.f);
+            }
+            REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+            CHECK(paused == (stop > 0.f));
+        }
+    }
+    {   // a press made in a pause longer than bufferTime still starts when it ends: the buffer ages on own time
+        ArenaFighter f = ruleFighter();
+        f.light[0].hitStop = 0.5f; // bufferTime is 0.2 s
+        f.light[0].cancelRoll = 0.f; // a roll may cut in at once, so only the pause holds it
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        for (int i = 0; i < 25 && rig.out().player.stopLeft <= 0.f; ++i) rig.tick();
+        REQUIRE(rig.out().player.stopLeft > 0.f);
+        rig.in.dodge = true;
+        rig.tick();
+        rig.runFor(0.4f);
+        CHECK(rig.out().player.action == ArenaAction::Light); // still paused: nothing started
+        bool dodged = false;
+        for (int i = 0; i < 12; ++i) dodged = dodged || rig.tick().player.action == ArenaAction::Dodge;
+        CHECK(dodged);
+    }
+}
+
+TEST_CASE("arena flinch: a landed blow flinches a kind with flinchTime, pushes it back, and it walks again") {
+    ArenaEnemyKind k = dummyKind();
+    k.flinchTime = 0.3f;
+    k.flinchPush = 0.6f;
+    {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        for (int i = 0; i < 30 && rig.count(ArenaEventType::Flinched) == 0; ++i) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::Flinched) == 1);
+        CHECK(rig.find(ArenaEventType::Flinched)->event.target == 0);
+        CHECK(rig.fight.stats().flinches == 1);
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Flinch);
+        CHECK(rig.out().enemies[0].stateLength == doctest::Approx(0.3f));
+        rig.tick();
+        CHECK(rig.out().enemies[0].velocity.x > 0.f); // away from the player
+        CHECK(std::string(arenaBrainName(ArenaBrain::Flinch)) == "Flinch");
+        rig.runFor(0.35f);
+        CHECK(rig.out().enemies[0].brain != ArenaBrain::Flinch);
+    }
+    {   // below flinchPoise, a kind without flinchTime, or the host's veto: no flinch
+        ArenaEnemyKind hard = k;
+        hard.flinchPoise = 5.f; // the light deals 0 poise
+        ArenaEnemyKind none = k;
+        none.flinchTime = 0.f;
+        for (int c = 0; c < 3; ++c) {
+            Rig rig(ruleFighter(), {c == 0 ? hard : (c == 1 ? none : k)});
+            if (c == 2) rig.fight.setEnemyFlinch(0, false);
+            CHECK(rig.fight.enemyFlinch(0) == (c != 2));
+            rig.put(0, 1.5f, 0.f);
+            rig.in.light = true;
+            rig.run(30);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(rig.count(ArenaEventType::Flinched) == 0);
+        }
+        Rig rig(ruleFighter(), {k});
+        CHECK_FALSE(rig.fight.enemyFlinch(5));
+    }
+    {   // a broken poise staggers instead
+        ArenaFighter f = ruleFighter();
+        f.light[0].poiseDamage = 40.f;
+        Rig rig(f, {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        rig.run(30);
+        CHECK(rig.count(ArenaEventType::Staggered) == 1);
+        CHECK(rig.count(ArenaEventType::Flinched) == 0);
+    }
+}
+
+TEST_CASE("arena flinch: it cuts a move's startup short and frees the token; armour in startup holds it") {
+    for (const float armor : {0.f, 0.5f}) {
+        ArenaAttack slow = swing(0.8f, 0.1f, 0.3f, 3.f, 5);
+        slow.armor = armor;
+        ArenaEnemyKind k = hitterKind(slow);
+        k.flinchTime = 0.3f;
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        for (int i = 0; i < 30 && !rig.find(ArenaEventType::AttackStarted); ++i) rig.tick();
+        REQUIRE(rig.find(ArenaEventType::AttackStarted));
+        rig.in.light = true;
+        for (int i = 0; i < 25 && rig.count(ArenaEventType::Hit) == 0; ++i) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1); // the light lands inside the 0.8 s startup
+        if (armor > 0.f) {
+            CHECK(rig.count(ArenaEventType::Flinched) == 0);
+            CHECK(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        } else {
+            CHECK(rig.count(ArenaEventType::Flinched) == 1);
+            CHECK(rig.out().enemies[0].brain == ArenaBrain::Flinch);
+            CHECK_FALSE(rig.out().enemies[0].token);
+        }
+    }
+}
+
+namespace {
+
+enum class Cut { Roll, Guard, Light };
+
+// The fight time the action `cut` starts at, pressed every tick from 0.1 s into a light.
+float cutAt(const ArenaFighter& f, Cut cut) {
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    rig.tick();
+    rig.runFor(0.1f);
+    for (int i = 0; i < 60; ++i) {
+        rig.in.dodge = cut == Cut::Roll;
+        rig.in.guard = cut == Cut::Guard;
+        rig.in.light = cut == Cut::Light;
+        const ArenaOutput& out = rig.tick();
+        if (cut == Cut::Roll && out.player.action == ArenaAction::Dodge) return rig.fight.time();
+        if (cut == Cut::Guard && out.player.action == ArenaAction::Guard) return out.player.parrying ? rig.fight.time() : -2.f;
+        if (cut == Cut::Light && rig.count(ArenaEventType::AttackStarted) == 2) return rig.fight.time();
+    }
+    return -1.f;
+}
+
+} // namespace
+
+TEST_CASE("arena cancels: an attack's own windows for guard, roll and the next light; the rest keep `cancel`") {
+    // ruleFighter's light: 0.2 + 0.1 + 0.3 s, `cancel` 0.5 of the recovery, so from 0.45 s.
+    const ArenaFighter plain = ruleFighter();
+    const float plainRoll = cutAt(plain, Cut::Roll);
+    const float plainLight = cutAt(plain, Cut::Light);
+    CHECK(plainRoll == doctest::Approx(0.45f).epsilon(0.08));
+    CHECK(plainLight == doctest::Approx(0.45f).epsilon(0.08));
+    ArenaFighter own = ruleFighter();
+    own.light[0].cancelRoll = 0.f;   // a roll from the first frame
+    own.light[0].cancelGuard = 0.f;  // a guard too, and the press opens the parry window
+    own.light[0].cancelLight = 0.5f; // the next light from 0.3 s
+    CHECK(cutAt(own, Cut::Roll) < 0.14f);
+    const float guard = cutAt(own, Cut::Guard);
+    CHECK(guard > 0.f); // guarding and parrying
+    CHECK(guard < 0.14f);
+    const float light = cutAt(own, Cut::Light);
+    CHECK(light == doctest::Approx(0.3f).epsilon(0.1));
+    CHECK(light < plainLight);
+}
+
+TEST_CASE("arena stamina: a light that costs 0 starts with none and never holds the refill back") {
+    ArenaFighter f = ruleFighter();
+    for (ArenaAttack& a : f.light) a.stamina = 0.f;
+    f.stamina = 20.f;
+    f.staminaDelay = 1.f;
+    const auto from = [&](bool light, bool heavy) {
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.dodge = true; // 20: empty
+        rig.tick();
+        CHECK(rig.fight.stamina() == 0.f);
+        rig.runFor(0.5f); // past the dodge's cancel
+        rig.in.light = light;
+        rig.in.heavy = heavy;
+        rig.tick();
+        const ArenaAction action = rig.out().player.action;
+        rig.runFor(0.8f);
+        return std::make_pair(action, rig.fight.stamina());
+    };
+    const auto idle = from(false, false);
+    const auto light = from(true, false);
+    const auto heavy = from(false, true);
+    CHECK(light.first == ArenaAction::Light);
+    CHECK(idle.second > 0.f);
+    CHECK(light.second == doctest::Approx(idle.second)); // the free light spent nothing
+    CHECK(heavy.first != ArenaAction::Heavy);            // a heavy that costs still needs some
+}
+
+TEST_CASE("arena break-out: blows in a row make an upright enemy start its break move; decay, stagger and mask") {
+    ArenaAttack burst = swing(0.25f, 0.2f, 0.4f, 3.f, 5);
+    burst.armor = 1.f;
+    ArenaEnemyKind k = hitterKind(burst);
+    k.attackDelay = 1000.f; // never asks: only the break-out starts the move
+    k.breakAt = 3;
+    k.breakDecay = 1.5f;
+    k.breakMove = 0;
+    {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        mash(rig, 1.6f);
+        REQUIRE(rig.count(ArenaEventType::BrokeOut) == 1);
+        const Logged* out = rig.find(ArenaEventType::BrokeOut);
+        CHECK(out->event.source == 0);
+        CHECK(out->event.move == 0);
+        CHECK(rig.fight.stats().breakOuts == 1);
+        CHECK(rig.count(ArenaEventType::Hit) >= 3);
+        bool moveStarted = false;
+        for (const Logged& l : rig.log)
+            moveStarted = moveStarted || (l.event.type == ArenaEventType::AttackStarted && l.event.source == 0 &&
+                                          l.tick == out->tick);
+        CHECK(moveStarted);
+    }
+    {   // hits too far apart: the count decays
+        ArenaEnemyKind quick = k;
+        quick.breakDecay = 0.3f;
+        Rig rig(ruleFighter(), {quick});
+        rig.put(0, 1.5f, 0.f);
+        for (int hit = 0; hit < 4; ++hit) {
+            rig.in.light = true;
+            rig.runFor(1.f);
+        }
+        CHECK(rig.count(ArenaEventType::Hit) == 4);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+    }
+    {   // the host's move mask clears it: no break-out
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyMoveMask(0, 0u);
+        mash(rig, 1.6f);
+        CHECK(rig.count(ArenaEventType::Hit) >= 3);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+    }
+    {   // a stagger starts the count again: with breakAt 2 and a decay longer than the whole run, hit, the hit that
+        // staggers, the recovery, then one more hit, which would be the third in a row without the reset
+        ArenaFighter f = ruleFighter();
+        f.light[1].poiseDamage = 40.f; // the second hit staggers
+        ArenaEnemyKind two = k;
+        two.breakAt = 2;
+        two.breakDecay = 30.f;
+        Rig rig(f, {two});
+        rig.put(0, 1.5f, 0.f);
+        for (int i = 0; i < 200 && rig.count(ArenaEventType::Staggered) == 0; ++i) {
+            rig.in.light = true;
+            rig.tick();
+        }
+        REQUIRE(rig.count(ArenaEventType::Staggered) == 1);
+        CHECK(rig.count(ArenaEventType::Hit) == 2);
+        rig.runFor(two.staggerTime + two.openTime + 0.5f);
+        const ArenaBrain up = rig.out().enemies[0].brain;
+        REQUIRE((up == ArenaBrain::Approach || up == ArenaBrain::Strafe));
+        rig.put(0, 1.5f, 0.f);
+        rig.in.light = true;
+        rig.run(40);
+        CHECK(rig.count(ArenaEventType::Hit) == 3);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+    }
+    {   // the host's flinch veto bars the break-out too
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        rig.fight.setEnemyFlinch(0, false);
+        mash(rig, 1.6f);
+        CHECK(rig.count(ArenaEventType::Hit) >= 3);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+        CHECK(rig.fight.stats().breakOuts == 0);
+    }
+}
+
+// The tuning (provisional, for the playtest): Devin's heavier light string staggers every kind with a break-out
+// before its breakAt-th blow; Duy's lighter one leaves it upright, so it breaks out on him. A count reset always comes
+// with a poise refill (breakDecay equal to poiseDelay), so every run starts from full poise.
+struct BreakCase {
+    const char* kind;
+    bool devinStaggersFirst;
+    bool duyBrokenOut;
+};
+const BreakCase kBreakCases[] = {
+    {"skirmisher", true, true}, {"breaker", true, true}, {"duelist", true, true}, {"hulk", true, true}, {"spitter", true, true},
+};
+
+// The poise n light blows in a row deal from the string's start (the string loops after its last blow).
+float stringPoise(const ArenaFighter& f, int n) {
+    float sum = 0.f;
+    for (int i = 0; i < n; ++i) sum += f.light[static_cast<std::size_t>(i % f.lightCount)].poiseDamage;
+    return sum;
+}
+
+const ArenaEnemyKind& shippedKind(const ArenaTable& t, const char* id) {
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+        if (t.enemyIds[e] == id) return t.enemies[e];
+    FAIL("no such kind");
+    return t.enemies[0];
+}
+
+TEST_CASE("arena break-out tuning: per kind, Devin's string staggers first and Duy's gets broken out on (data)") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    int kinds = 0;
+    for (const ArenaEnemyKind& k : t.enemies) kinds += k.breakAt > 0 ? 1 : 0;
+    CHECK(kinds == static_cast<int>(std::size(kBreakCases))); // a new kind with a break-out gets its own row
+    for (const BreakCase& c : kBreakCases) {
+        CAPTURE(c.kind);
+        const ArenaEnemyKind& k = shippedKind(t, c.kind);
+        REQUIRE(k.breakAt > 0);
+        CHECK(k.breakDecay == doctest::Approx(k.poiseDelay)); // the count resets with the poise refill: none carried across
+        // The breakAt-th blow breaks out only on an enemy it leaves upright (poise above 0).
+        CHECK((stringPoise(devin, k.breakAt) >= k.poise) == c.devinStaggersFirst);
+        CHECK((stringPoise(duy, k.breakAt) < k.poise) == c.duyBrokenOut);
+    }
+}
+
+TEST_CASE("arena break-out tuning: per kind and lead, mashing lights on an upright enemy from full poise") {
+    const ArenaTable t = loadShipped();
+    for (const BreakCase& c : kBreakCases)
+        for (const char* lead : {"devin", "duy"}) {
+            CAPTURE(c.kind);
+            CAPTURE(lead);
+            ArenaEnemyKind k = shippedKind(t, c.kind);
+            k.attackDelay = 1000.f; // never asks: no armoured move, only the break-out starts one
+            Rig rig(t.fighter(lead), {k});
+            for (int i = 0; i < 600 && rig.count(ArenaEventType::Staggered) == 0 && rig.count(ArenaEventType::BrokeOut) == 0;
+                 ++i) {
+                rig.put(0, 1.5f, 0.f); // in reach through the flinch's push
+                rig.in.light = true;
+                rig.tick();
+            }
+            const bool devin = std::string_view(lead) == "devin";
+            const bool brokeOut = rig.count(ArenaEventType::BrokeOut) == 1;
+            const bool staggered = rig.count(ArenaEventType::Staggered) == 1;
+            CHECK(brokeOut != staggered); // one of them came first
+            if (devin) {
+                CHECK(staggered == c.devinStaggersFirst);
+                CHECK(rig.count(ArenaEventType::Hit) <= k.breakAt); // the stagger came by the breakAt-th blow
+            } else {
+                CHECK(brokeOut == c.duyBrokenOut);
+                CHECK(rig.count(ArenaEventType::Hit) == k.breakAt);
+            }
+        }
+}
+
+TEST_CASE("arena flinch: no stunlock; after a run of flinches the blows land without one until a gap") {
+    ArenaEnemyKind k = dummyKind();
+    k.flinchTime = 0.2f;
+    k.flinchPush = 0.f; // stays in reach
+    k.hp = 1000;        // lives through the run
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    mash(rig, 4.f);
+    CHECK(rig.count(ArenaEventType::Hit) > static_cast<int>(kArenaMaxFlinchChain));
+    CHECK(rig.count(ArenaEventType::Flinched) == static_cast<int>(kArenaMaxFlinchChain));
+    rig.runFor(kArenaFlinchChainGap + 0.5f); // a gap with no flinch: the run starts again
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    rig.run(30);
+    CHECK(rig.count(ArenaEventType::Flinched) == static_cast<int>(kArenaMaxFlinchChain) + 1);
+}
+
+TEST_CASE("arena table: the pause, cancel, flinch and break-out keys load and are checked") {
+    ArenaTable t;
+    const std::string ok = loadError(
+        tableJson(R"([ { "id": "default", "parryStop": 0.1,
+                         "light": [ { "hitStop": 0.05, "hitStopSelf": 0.5, "cancelGuard": 0.4, "cancelRoll": 0.4,
+                                      "cancelLight": 0.5, "stamina": 0 } ] } ])",
+                  R"([ { "id": "dummy", "flinchTime": 0.3, "flinchPoise": 4, "flinchPush": 0.5, "breakAt": 5,
+                         "breakDecay": 2, "breakMove": 0, "moves": [ {} ] } ])"),
+        &t);
+    CHECK(ok.empty());
+    const ArenaFighter& f = t.fighter("default");
+    CHECK(f.parryStop == doctest::Approx(0.1f));
+    CHECK(f.light[0].hitStop == doctest::Approx(0.05f));
+    CHECK(f.light[0].hitStopSelf == doctest::Approx(0.5f));
+    CHECK(f.light[0].cancelGuard == doctest::Approx(0.4f));
+    CHECK(f.light[0].cancelRoll == doctest::Approx(0.4f));
+    CHECK(f.light[0].cancelLight == doctest::Approx(0.5f));
+    CHECK(f.heavy.cancelGuard < 0.f); // absent: the `cancel` rule
+    REQUIRE(t.enemies.size() == 1);
+    CHECK(t.enemies[0].flinchTime == doctest::Approx(0.3f));
+    CHECK(t.enemies[0].flinchPoise == doctest::Approx(4.f));
+    CHECK(t.enemies[0].flinchPush == doctest::Approx(0.5f));
+    CHECK(t.enemies[0].breakAt == 5);
+    CHECK(t.enemies[0].breakDecay == doctest::Approx(2.f));
+    CHECK(t.enemies[0].breakMove == 0);
+    CHECK(ArenaEnemyKind{}.flinchTime == 0.f);
+    CHECK(ArenaEnemyKind{}.breakAt == 0);
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "light": [ { "hitStop": 2 } ] } ])", kEnemiesOk)),
+                   "fighters[0].light[0].hitStop"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "light": [ { "cancelRoll": 1.5 } ] } ])", kEnemiesOk)),
+                   "cancelRoll"));
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "parryStop": -1 } ])", kEnemiesOk)), "parryStop"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakMove": 3, "moves": [ {} ] } ])")),
+                   "breakMove"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakAt": 300 } ])")), "breakAt"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "breakAt": 3, "moves": [ {} ] } ])")),
+                   "breakAt needs a move"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": -1 } ])")), "flinchTime"));
+    // pauses at most kArenaMaxStop; no cancel window before the active part
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "light": [ { "hitStop": 0.31 } ] } ])", kEnemiesOk)),
+                   "fighters[0].light[0].hitStop"));
+    CHECK(loadError(tableJson(R"([ { "id": "default", "light": [ { "hitStop": 0.3 } ] } ])", kEnemiesOk)).empty());
+    CHECK(contains(loadError(tableJson(R"([ { "id": "default", "parryStop": 0.5 } ])", kEnemiesOk)), "parryStop"));
+    for (const char* key : {"cancelGuard", "cancelRoll", "cancelLight"}) {
+        const std::string one = std::string(R"([ { "id": "default", "light": [ { "startup": 0.3, "active": 0.1, )") +
+                                R"("recovery": 0.6, ")" + key + R"(": 0.2 } ] } ])";
+        const std::string err = loadError(tableJson(one.c_str(), kEnemiesOk));
+        CHECK(contains(err, (std::string("fighters[0].light[0].") + key).c_str()));
+        CHECK(contains(err, "before the active part"));
+    }
+    CHECK(loadError(tableJson(R"([ { "id": "default", "light": [ { "startup": 0.3, "active": 0.1, "recovery": 0.6,
+                                     "cancelRoll": 0.3 } ] } ])", kEnemiesOk)).empty()); // opens with the active part
+}
+
+TEST_CASE("arena hit pause: a killing blow leaves no pause on the dead or once the fight is over") {
+    ArenaFighter f = ruleFighter();
+    f.light[0].hitStop = 0.2f;
+    ArenaEnemyKind k = dummyKind();
+    k.hp = 1;
+    Rig rig(f, {k});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    for (int i = 0; i < 60 && rig.fight.phase() == ArenaPhase::Fighting; ++i) rig.tick();
+    REQUIRE(rig.fight.phase() == ArenaPhase::Victory);
+    for (int i = 0; i < 3; ++i) {
+        const ArenaOutput& out = rig.tick();
+        CHECK(out.player.stopLeft == 0.f);
+        CHECK(out.enemies[0].stopLeft == 0.f);
+        CHECK(rig.fight.hitStopLeft() == 0.f);
+    }
+}
+
+TEST_CASE("arena table: a break-out count above 1 needs a decay") {
+    CHECK(contains(loadError(tableJson(kFightersOk,
+                                       R"([ { "id": "dummy", "breakAt": 3, "breakDecay": 0, "breakMove": 0, "moves": [ {} ] } ])")),
+                   "breakDecay"));
+    CHECK(loadError(tableJson(kFightersOk,
+                              R"([ { "id": "dummy", "breakAt": 1, "breakDecay": 0, "breakMove": 0, "moves": [ {} ] } ])"))
+              .empty());
+}
+
+// ---- the headless demo's own fight (the host mirror) ----
+
+namespace {
+// The Unreal host's -ArenaLineup run, step for step: the shipped fallback fight with one attacker, fitted to the
+// sand_ring zone, the autopilot with the lock never pressed, the partner's press on the step after a parry, and
+// the zone's walls in the step. Its result line matches the host's log line.
+struct HostRun {
+    ArenaStats stats;
+    ArenaPhase phase = ArenaPhase::NotStarted;
+    int hitsOn[kMaxArenaEnemies] = {}; // the player's hits per enemy
+    std::string line;                  // the result line
+    // With the shared count (the host's -ArenaSharedCount):
+    int held = 0;         // the lead's blows judged Held
+    int joins = 0;        // the scripted partner's blows that joined a window (OnCount)
+    int bonuses = 0;      // held-blow bonuses the fight took through hostBlow
+    int bonusDamage = 0;  // their extra damage
+    int hostHits = 0;     // HostHit events reported
+};
+
+// The host's session wiring: the lead's Hits judged in the blow hook (judgeHeldBlow, final outcomes scaled), a
+// scripted partner joining a window the step a blow is held, the bonuses dealt through hostBlow after the tick.
+struct SharedRig {
+    FightSession session;
+    FighterId lead = kLeadA;
+    FighterId partner = kLeadB;
+    bool joinDue = false;
+    int held = 0;
+    static ArenaBlowRuling rule(void* user, const ArenaBlow& blow) {
+        SharedRig& rig = *static_cast<SharedRig*>(user);
+        ArenaBlowRuling r;
+        if (blow.type != ArenaEventType::Hit || blow.source != kArenaPlayer || blow.target == kArenaPlayer) return r;
+        const CountHit h = rig.session.judgeHeldBlow(rig.lead, blow.target, blow.damage, blow.move);
+        if (h.outcome == CountOutcome::Held) {
+            rig.joinDue = true;
+            ++rig.held;
+        } else {
+            r.damage = h.multiplier;
+        }
+        return r;
+    }
+};
+
+HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std::uint32_t seed, bool shoots = false,
+                bool sharedCount = false) {
+    const ArenaTable table = loadShipped();
+    std::string text;
+    std::string err;
+    if (!ftcore_test::readProjectData("Field/worlds.json", text)) FAIL("Data/Field/worlds.json not found");
+    WorldTable worlds;
+    REQUIRE_MESSAGE(importWorldTable(text, worlds, &err), err);
+    if (!ftcore_test::readProjectData("Battle/arenas.json", text)) FAIL("Data/Battle/arenas.json not found");
+    ArenaZoneTable zones;
+    REQUIRE_MESSAGE(importArenaZoneTable(text, table, worlds, zones, &err), err);
+    ArenaDef def = table.fallback;
+    def.fighter = table.fighter(kit);
+    def.enemyCount = 0;
+    for (const char* id : lineup)
+        for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
+            if (table.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = table.enemies[e];
+            }
+    REQUIRE(def.enemyCount == lineup.size());
+    def.attackers = 1;
+    const ArenaZoneSpec* spec = zones.find("sand_ring");
+    REQUIRE(spec != nullptr);
+    ArenaZoneFit fit;
+    REQUIRE_MESSAGE(fitArenaZone(*spec, nullptr, def, fit, &err), err);
+    fit.apply(def);
+    if (!ftcore_test::readProjectData("Battle/attack_move.json", text)) FAIL("Data/Battle/attack_move.json not found");
+    AttackMoveRules moves;
+    REQUIRE_MESSAGE(importAttackMoveRules(text, moves, &err), err);
+    ArenaFight fight;
+    fight.setAutopilotShoots(shoots);
+    fight.begin(def, fit.ring, fit.playerStart, fit.playerFacing, seed);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    HostRun r;
+    SharedRig rig;
+    rig.lead = std::string_view(kit) == "duy" ? kLeadB : kLeadA;
+    rig.partner = rig.lead == kLeadA ? kLeadB : kLeadA;
+    rig.session.begin(FightSessionDef{}, fight.heldTime());
+    if (sharedCount) fight.setBlowHook(&SharedRig::rule, &rig);
+    float sessionHeld = fight.heldTime();
+    bool partnerDue = false;
+    for (int i = 0; i < 20000 && !fight.over(); ++i) {
+        ArenaInput in = fight.autopilot();
+        attackMoveInput(moves, fight, in); // as the host does for the autopilot and the player alike
+        in.lock = false;
+        in.pair = partnerDue;
+        partnerDue = false;
+        if (sharedCount) rig.session.press(SharedAction::Count, rig.lead); // refused while a count is live or cooling
+        const ArenaOutput& out = fight.tick(kDt, in, bodies);
+        arenaStep(fight, bodies, kDt, fit.zone);
+        for (std::size_t e = 0; e < out.events.count; ++e) {
+            const ArenaEvent& ev = out.events.items[e];
+            if (ev.type == ArenaEventType::Parried) partnerDue = true;
+            if (ev.type == ArenaEventType::Hit && ev.source == kArenaPlayer && ev.target < kMaxArenaEnemies) ++r.hitsOn[ev.target];
+            if (ev.type == ArenaEventType::HostHit) ++r.hostHits;
+        }
+        if (!sharedCount) continue;
+        if (rig.joinDue) {
+            rig.joinDue = false;
+            if (rig.session.judgeBlow(rig.partner).outcome == CountOutcome::OnCount) ++r.joins;
+        }
+        const FightTick& st = rig.session.tick(std::max(0.f, fight.heldTime() - sessionHeld));
+        sessionHeld = fight.heldTime();
+        for (const HeldBonus& b : st.bonuses)
+            if (fight.ruledHostBlow(b.enemy, b.extraDamage, b.move, nullptr, nullptr)) { // the host passes its sub-hosts' rulings
+                ++r.bonuses;
+                r.bonusDamage += b.extraDamage;
+            }
+    }
+    r.held = rig.held;
+    r.stats = fight.stats();
+    r.phase = fight.phase();
+    ArenaLogIds ids;
+    ids.zone = "sand_ring";
+    ids.kit = kit;
+    ids.pilot = "autoplay";
+    ids.seed = seed;
+    char buf[kArenaResultLineMax];
+    arenaResultLine(buf, sizeof buf, fight, table, ids);
+    r.line = buf;
+    return r;
+}
+} // namespace
+
+TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the host's own fight") {
+    // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1.
+    const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
+    CHECK(r.line ==
+          "Arena: VICTORY at standalone beat 0 step 0 after 22.6 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 93/150, 26 hits, 3 taken, 0 blocks, 2 parries, 0 ripostes, 3 evades, 0 guard breaks, "
+          "4 staggers, 1 heals, 0 releases, 0 overloads, 5/6 reads right, dealt 520, took 102, 0 restarts.");
+    CHECK(r.hitsOn[0] == 5);
+    CHECK(r.hitsOn[1] == 21);
+    // The best run is the skirmisher's 2 of 2: Devin's 2nd blow reaches its breakAt and breaks its poise with it.
+    CHECK(r.stats.breakRunBest == 2);
+    CHECK(r.stats.breakRunNeed == 2);
+    CHECK(r.stats.breakDue == 0);
+    CHECK(r.stats.breakOuts == 0);
+}
+
+TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-out (poise breaks first)") {
+    // Not a short fight: every seed runs past 15 s, yet each blow that reaches breakAt also staggers, so the check
+    // line is n/a. By design: Devin's string staggers every kind before it can break out.
+    for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+        const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
+        CAPTURE(seed);
+        CHECK(r.phase == ArenaPhase::Victory);
+        CHECK(r.stats.time > 15.f);
+        CHECK(r.stats.flinches > 0);
+        CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
+        CHECK(r.stats.breakOuts == 0);
+        CHECK(r.stats.breakDue == 0);
+        CHECK_FALSE(arenaFeatureChecks(r.stats).breakOutDue);
+        CHECK(r.stats.breakUpright > 0); // the run moved (2 of 2), so n/a, not FAIL
+        CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::NotShown);
+    }
+}
+
+TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
+    // The headless -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoShoot line: his shots and light string leave
+    // an enemy upright at its breakAt, so it breaks out (once a fight, with his attacks unrooted). Unaimed, the
+    // autopilot's parries cut his runs short (n/a).
+    for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+        const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true);
+        CAPTURE(seed);
+        CHECK(r.phase == ArenaPhase::Victory);
+        CHECK(r.stats.breakOuts >= 1);
+        const ArenaFeatureChecks c = arenaFeatureChecks(r.stats);
+        CHECK(c.breakOutDue);
+        CHECK(c.breakOut);
+        CHECK(c.breakOutCheck == ArenaCheck::Pass);
+        // No flinch chance: his lights (10) are under the skirmisher's flinchPoise (12), its second breaks it out,
+        // the third (20) meets 2 poise and staggers it, a shot (6) is too light; the hulk never flinches. n/a.
+        CHECK(r.stats.flinches == 0);
+        CHECK(r.stats.flinchChances == 0);
+        CHECK(c.flinchCheck == ArenaCheck::NotShown);
+        const HostRun plain = hostRun({"skirmisher", "hulk"}, "duy", seed);
+        CHECK(arenaFeatureChecks(plain.stats).breakOutCheck == ArenaCheck::NotShown);
+        CHECK(plain.stats.flinches == 0); // unaimed: the same lights, no shots, so no chance either
+        CHECK(plain.stats.flinchChances == 0);
+        CHECK(arenaFeatureChecks(plain.stats).flinchCheck == ArenaCheck::NotShown);
+    }
+}
+
+TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out always on Duy") {
+    // The demo's feature check lines read arenaFeatureChecks over this fight. Duy leaves both kinds upright, so they
+    // break out on him every seed; Devin's string, slowed (AttackMove), staggers first on some seeds (n/a) and not on others.
+    int devinBreaks = 0;
+    for (const char* kit : {"devin", "duy"})
+        for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+            const HostRun r = hostRun({"duelist", "skirmisher"}, kit, seed);
+            const bool devin = std::string_view(kit) == "devin";
+            CAPTURE(kit);
+            CAPTURE(seed);
+            CHECK(r.phase == ArenaPhase::Victory);
+            const ArenaFeatureChecks c = arenaFeatureChecks(r.stats);
+            CHECK(c.lightsFree);
+            CHECK(c.cancels);
+            CHECK(c.softTarget);
+            CHECK(c.lightsFreeCheck == ArenaCheck::Pass);
+            CHECK(c.cancelsCheck == ArenaCheck::Pass);
+            CHECK(c.breakOutCheck != ArenaCheck::Fail);
+            if (!devin) CHECK(c.breakOutCheck == ArenaCheck::Pass);
+            devinBreaks += devin && c.breakOut ? 1 : 0;
+        }
+    CHECK(devinBreaks == 8); // of 12 seeds
+}
+
+TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and always break out on Duy") {
+    for (const char* kit : {"devin", "duy"})
+        for (const bool shoots : {false, true})
+            for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+                const HostRun r = hostRun({"duelist", "skirmisher"}, kit, seed, shoots);
+                CAPTURE(kit);
+                CAPTURE(shoots);
+                CAPTURE(seed);
+                CHECK(r.phase == ArenaPhase::Victory);
+                CHECK(r.stats.flinches > 0);
+                CHECK(r.stats.flinchChances >= r.stats.flinches);
+                CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
+                if (std::string_view(kit) == "duy") CHECK(r.stats.breakOuts > 0);
+            }
+}
+
+TEST_CASE("arena feature checks: each verdict reads its own counter") {
+    ArenaStats s;
+    CHECK(!arenaFeatureChecks(s).lightsFree); // no lights, nothing shown
+    s.lights = 3;
+    CHECK(arenaFeatureChecks(s).lightsFree);
+    s.lightStamina = 5.f;
+    CHECK(!arenaFeatureChecks(s).lightsFree);
+    s.cancels = 1;
+    s.flinches = 1;
+    s.breakOuts = 1;
+    s.softTargets = 1;
+    const ArenaFeatureChecks c = arenaFeatureChecks(s);
+    CHECK((c.cancels && c.flinch && c.breakOut && c.softTarget));
+    CHECK_FALSE(c.breakOutDue);
+    s.breakDue = 1;
+    CHECK(arenaFeatureChecks(s).breakOutDue);
+}
+
+TEST_CASE("arena feature checks: verdicts read n/a without a chance, FAIL or barred with one") {
+    ArenaStats s; // an idle run, or a kit with no attacks
+    ArenaFeatureChecks c = arenaFeatureChecks(s);
+    CHECK(c.lightsFreeCheck == ArenaCheck::NotShown);
+    CHECK(c.cancelsCheck == ArenaCheck::NotShown);
+    CHECK(c.flinchCheck == ArenaCheck::NotShown);
+    CHECK(c.breakOutCheck == ArenaCheck::NotShown);
+    CHECK(std::string(arenaCheckText(c.breakOutCheck)) == "n/a");
+    s.flinchChances = 2; // blows that could flinch, and none did: FAIL
+    CHECK(arenaFeatureChecks(s).flinchCheck == ArenaCheck::Fail);
+    s.flinches = 1;
+    CHECK(arenaFeatureChecks(s).flinchCheck == ArenaCheck::Pass);
+    s.flinchChances = 0;
+    s.flinches = 0;
+    s.lights = 2;
+    s.lightStamina = 1.f;
+    s.cancelChances = 3;
+    c = arenaFeatureChecks(s);
+    CHECK(c.lightsFreeCheck == ArenaCheck::Fail);
+    CHECK(c.cancelsCheck == ArenaCheck::Fail);
+    s.cancels = 1;
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::Pass);
+    // Upright blows landed and the run never moved: FAIL, not n/a.
+    s.breakUpright = 4;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Fail);
+    // Every one vetoed by the host: barred.
+    s.breakVetoed = 4;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Barred);
+    // The run moved, poise always broke first: n/a.
+    s.breakVetoed = 0;
+    s.breakRunBest = 2;
+    s.breakRunNeed = 4;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::NotShown);
+    // Due, the move barred by a mask: barred, not FAIL.
+    s.breakDue = 1;
+    s.breakBarred = 1;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Barred);
+    CHECK(std::string(arenaCheckText(ArenaCheck::Barred)) == "barred");
+    // Due and free, none: FAIL.
+    s.breakDue = 2;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Fail);
+    s.breakOuts = 1;
+    CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Pass);
+}
+
+// ---- the autopilot's shots (opt in) ----
+
+namespace {
+struct ShotRun {
+    ArenaStats stats;
+    ArenaPhase phase = ArenaPhase::NotStarted;
+    bool aimedOff = false; // an input aimed with the option off
+};
+ShotRun runShots(const ArenaDef& def, bool shoots, std::uint32_t seed) {
+    const ArenaRing ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+    ArenaFight fight;
+    fight.setAutopilotShoots(shoots);
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, seed);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < def.enemyCount; ++i) bodies.enemies[i] = fight.enemyStart(i);
+    ShotRun r;
+    for (int i = 0; i < 20000 && !fight.over(); ++i) {
+        const ArenaInput in = fight.autopilot();
+        if (in.aim && !shoots) r.aimedOff = true;
+        fight.tick(kDt, in, bodies);
+        arenaStep(fight, bodies, kDt);
+    }
+    r.stats = fight.stats();
+    r.phase = fight.phase();
+    return r;
+}
+} // namespace
+
+TEST_CASE("arena autopilot: a guns kit shoots on the way in only when opted in") {
+    const ArenaTable table = loadShipped();
+    const ArenaDef def = shippedFight(table, {"duelist", "skirmisher"}, 2, "duy");
+    REQUIRE(def.fighter.weapon == ArenaWeapon::Guns);
+    for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+        const ShotRun off = runShots(def, false, seed);
+        CHECK_FALSE(off.aimedOff);
+        CHECK(off.stats.shots == 0);
+        CHECK_FALSE(arenaFeatureChecks(off.stats).shots);
+        const ShotRun on = runShots(def, true, seed);
+        CHECK(on.phase == ArenaPhase::Victory);
+        CHECK(on.stats.shots > 0);
+        CHECK(on.stats.shotHits > 0);
+        CHECK(on.stats.shotHits <= on.stats.hits);
+        CHECK(arenaFeatureChecks(on.stats).shots);
+    }
+    // A kit with no gun never aims, opted in or not.
+    const ArenaDef fists = shippedFight(table, {"duelist", "skirmisher"}, 2, "devin");
+    const ShotRun devin = runShots(fists, true, 1);
+    CHECK(devin.stats.shots == 0);
+}
+
+// ---- the host's blows (hostBlow) ----
+
+namespace {
+int countEvents(const ArenaOutput& out, ArenaEventType type, int* amount = nullptr, std::uint8_t* move = nullptr) {
+    int c = 0;
+    for (std::size_t e = 0; e < out.events.count; ++e)
+        if (out.events.items[e].type == type) {
+            ++c;
+            if (amount) *amount = out.events.items[e].amount;
+            if (move) *move = out.events.items[e].move;
+        }
+    return c;
+}
+} // namespace
+
+TEST_CASE("arena hostBlow: damage from outside a blow, reported with the next tick") {
+    ArenaDef def = defaultArenaDef();
+    def.enemyCount = 2;
+    def.enemies[1] = def.enemies[0];
+    const ArenaRing ring{Vec2{0.f, 0.f}, 12.f};
+    ArenaFight fight;
+    CHECK_FALSE(fight.hostBlow(0, 10, 1)); // not begun
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < 2; ++i) bodies.enemies[i] = fight.enemyStart(i);
+    const ArenaInput idle;
+    fight.tick(kDt, idle, bodies);
+    const int hp0 = fight.enemyHp(0);
+    const float poise0 = fight.enemyPoise(0);
+    CHECK_FALSE(fight.hostBlow(0, 0, 1));
+    CHECK_FALSE(fight.hostBlow(0, -5, 1));
+    CHECK_FALSE(fight.hostBlow(7, 5, 1));
+    REQUIRE(fight.hostBlow(0, 9, 2));
+    CHECK(fight.enemyHp(0) == hp0 - 9);        // at once
+    CHECK(fight.stats().damageDealt == 9);
+    CHECK(fight.enemyPoise(0) == poise0);      // no poise
+    const ArenaOutput& out = fight.tick(kDt, idle, bodies);
+    int amount = 0;
+    std::uint8_t move = 0;
+    CHECK(countEvents(out, ArenaEventType::HostHit, &amount, &move) == 1);
+    CHECK(amount == 9);
+    CHECK(move == 2);
+    CHECK(countEvents(out, ArenaEventType::Flinched) == 0);
+    CHECK(out.enemies[0].stopLeft <= 0.f);     // no hit pause
+    CHECK(countEvents(fight.tick(kDt, idle, bodies), ArenaEventType::HostHit) == 0); // reported once
+
+    // The hp floor holds.
+    fight.setEnemyHpFloor(1, fight.enemyHp(1) - 4);
+    REQUIRE(fight.hostBlow(1, 50, 0));
+    CHECK(fight.enemyHp(1) == fight.enemyHpFloor(1));
+    fight.tick(kDt, idle, bodies);
+    fight.setEnemyHpFloor(1, 0);
+
+    // A kill: dead at once, HostHit then Downed with the next tick; the last one ends the fight.
+    REQUIRE(fight.hostBlow(0, 100000, 3));
+    CHECK_FALSE(fight.enemyAlive(0));
+    CHECK_FALSE(fight.hostBlow(0, 5, 3)); // dead
+    const ArenaOutput& k = fight.tick(kDt, idle, bodies);
+    CHECK(countEvents(k, ArenaEventType::HostHit) == 1);
+    CHECK(countEvents(k, ArenaEventType::Downed) == 1);
+    CHECK(fight.phase() == ArenaPhase::Fighting);
+    REQUIRE(fight.hostBlow(1, 100000, 3));
+    CHECK_FALSE(fight.over()); // the host steps once more and reads the kill
+    const ArenaOutput& v = fight.tick(kDt, idle, bodies);
+    CHECK(countEvents(v, ArenaEventType::Victory) == 1);
+    CHECK(fight.phase() == ArenaPhase::Victory);
+    CHECK_FALSE(fight.hostBlow(1, 5, 3)); // outside Fighting
+}
+
+namespace {
+// A boss phase as a sub-host rules it: every blow on the boss vetoed while it is invulnerable, else scaled.
+struct PhaseRule {
+    bool invulnerable = false;
+    float scale = 1.f;
+    int calls = 0;
+    ArenaBlow last;
+    static ArenaBlowRuling rule(void* user, const ArenaBlow& blow) {
+        PhaseRule& p = *static_cast<PhaseRule*>(user);
+        ++p.calls;
+        p.last = blow;
+        ArenaBlowRuling r;
+        r.veto = p.invulnerable;
+        r.damage = p.scale;
+        return r;
+    }
+};
+} // namespace
+
+TEST_CASE("arena ruledHostBlow: a held blow's bonus is ruled like a blow, so a boss gone invulnerable before the settle takes none") {
+    ArenaDef def = defaultArenaDef();
+    const ArenaRing ring{Vec2{0.f, 0.f}, 12.f};
+    ArenaFight fight;
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    bodies.enemies[0] = fight.enemyStart(0);
+    const ArenaInput idle;
+    fight.tick(kDt, idle, bodies);
+
+    // The session holds a blow on the count; the partner joins, and the settle pays a bonus on a later tick.
+    FightSession session;
+    REQUIRE(session.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(session.callCount(kLeadA) == CountError::None);
+    for (int i = 0; i < 2000 && !session.strikeCount().open(session.now()); ++i) session.tick(kDt);
+    REQUIRE(session.strikeCount().open(session.now()));
+    REQUIRE(session.judgeHeldBlow(kLeadA, 0, 10, 2).outcome == CountOutcome::Held);
+    // The boss turns invulnerable between the landing and the settle.
+    PhaseRule phase;
+    phase.invulnerable = true;
+    REQUIRE(session.judgeBlow(kLeadB).outcome == CountOutcome::OnCount);
+    const FightTick& t = session.tick(kDt);
+    REQUIRE(t.bonuses.size() == 1);
+    const HeldBonus bonus = t.bonuses[0];
+    REQUIRE(bonus.extraDamage > 0);
+    const int hp0 = fight.enemyHp(0);
+    CHECK_FALSE(fight.ruledHostBlow(bonus.enemy, bonus.extraDamage, bonus.move, &PhaseRule::rule, &phase));
+    CHECK(phase.calls == 1); // asked once, as a blow
+    CHECK(phase.last.type == ArenaEventType::HostHit); // a bonus, not a hit: sub-hosts count nothing for it
+    CHECK(phase.last.source == kArenaPlayer);
+    CHECK(phase.last.target == 0);
+    CHECK(phase.last.damage == bonus.extraDamage);
+    CHECK(phase.last.poise == 0.f);
+    CHECK(fight.enemyHp(0) == hp0);
+    CHECK(fight.stats().damageDealt == 0);
+    CHECK(countEvents(fight.tick(kDt, idle, bodies), ArenaEventType::HostHit) == 0);
+    // Out of the phase the same bonus lands, scaled as the phase scales a blow; with no ruling, as it is.
+    phase.invulnerable = false;
+    phase.scale = 0.5f;
+    REQUIRE(fight.ruledHostBlow(0, 10, 2, &PhaseRule::rule, &phase));
+    CHECK(fight.enemyHp(0) == hp0 - 5);
+    phase.scale = 0.f;
+    CHECK_FALSE(fight.ruledHostBlow(0, 10, 2, &PhaseRule::rule, &phase)); // scaled to nothing
+    REQUIRE(fight.ruledHostBlow(0, 3, 2, nullptr, nullptr));
+    CHECK(fight.enemyHp(0) == hp0 - 8);
+    // The fight's own hook (the session's judge in the host) is never asked for a bonus.
+    PhaseRule own;
+    fight.setBlowHook(&PhaseRule::rule, &own);
+    phase.scale = 1.f;
+    REQUIRE(fight.ruledHostBlow(0, 2, 2, &PhaseRule::rule, &phase));
+    CHECK(own.calls == 0);
+    fight.setBlowHook(nullptr, nullptr);
+}
+
+TEST_CASE("arena host mirror: a shared count's held blows get their bonus through hostBlow") {
+    // The host's -ArenaSharedCount run: the lead calls the count whenever it can, a scripted partner joins a window
+    // the step a lead's blow is held, and each held blow's settle (x2.5 on the count) adds its extra damage outside a
+    // blow. Seed 1 is the headless check line's expected run.
+    const HostRun devin = hostRun({"duelist", "skirmisher"}, "devin", 1, false, true);
+    CHECK(devin.phase == ArenaPhase::Victory);
+    CHECK(devin.held == 3);
+    CHECK(devin.joins == 2);
+    CHECK(devin.bonuses == 3);
+    CHECK(devin.bonusDamage == 78);
+    CHECK(devin.hostHits >= 1);
+    const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
+    CHECK(duy.phase == ArenaPhase::Victory);
+    CHECK(duy.joins == 2);
+    CHECK(duy.bonuses == 1);
+    CHECK(duy.bonusDamage == 17);
+    for (std::uint32_t seed = 1; seed <= 6; ++seed) {
+        const HostRun shared = hostRun({"duelist", "skirmisher"}, "devin", seed, false, true);
+        const HostRun alone = hostRun({"duelist", "skirmisher"}, "devin", seed, false, false);
+        CAPTURE(seed);
+        CHECK(shared.bonuses > 0);
+        CHECK(shared.bonusDamage > 0);
+        CHECK(alone.bonuses == 0);
+        CHECK(alone.hostHits == 0);
+    }
+}
+
+namespace {
+ArenaBlowRuling noRuling(void*, const ArenaBlow&) { return ArenaBlowRuling{}; }
+} // namespace
+
+TEST_CASE("arena blow hook: the getters read back what setBlowHook set") {
+    ArenaFight fight;
+    CHECK(fight.blowHook() == nullptr);
+    CHECK(fight.blowHookUser() == nullptr);
+    int user = 0;
+    fight.setBlowHook(&noRuling, &user);
+    CHECK(fight.blowHook() == &noRuling);
+    CHECK(fight.blowHookUser() == &user);
+    fight.setBlowHook(nullptr, &user); // no hook keeps no user
+    CHECK(fight.blowHook() == nullptr);
+    CHECK(fight.blowHookUser() == nullptr);
+}
+
+namespace {
+// A body hanging `hover` m over the floor, `height` m tall, 1 m round (a look with clips, so the hover counts).
+ArenaEnemyKind hoveringKind(float hover, float height) {
+    ArenaEnemyKind k = dummyKind();
+    k.look.clipsText[0] = 'x';
+    k.look.hover = hover;
+    k.look.scale = 1.f;
+    k.height = height;
+    k.bodyRadius = 1.f;
+    return k;
+}
+} // namespace
+
+TEST_CASE("arena attack: Duy's pitched round meets the first body its line enters, over a short enemy's head and far off") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    // A ground enemy 3 m out and a body hanging 3.5 to 6.5 m up 9 m out, both on the line ahead.
+    const float up = std::atan2(5.f - kArenaShotHeight, 9.f); // to the hanging body's middle
+    const auto aimed = [](Rig& rig, bool pitched, float pitch) {
+        rig.in.aim = true;
+        rig.in.aimDir = Vec2{1.f, 0.f};
+        rig.in.aimPitched = pitched;
+        rig.in.aimPitch = pitch;
+        rig.in.light = true;
+    };
+    {   // pitched up at it: the round passes over the ground enemy's head and hits the hanging body
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 3.f, 0.f);
+        rig.put(1, 9.f, 0.f);
+        rig.tick();
+        float along = 0.f;
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, up, &along) == 1);
+        CHECK(along == doctest::Approx(8.f / std::cos(up)).epsilon(0.02)); // in at its near side (1 m round), up the line
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, 0.f) == 0);              // level: the ground enemy is in the way
+        aimed(rig, true, up);
+        rig.runFor(0.45f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.find(ArenaEventType::Hit)->event.target == 1);
+        CHECK(rig.fight.enemyHp(0) == 100);
+    }
+    {   // the flat lane (no pitch given) still takes the nearest body on the ground
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 3.f, 0.f);
+        rig.put(1, 9.f, 0.f);
+        aimed(rig, false, 0.f);
+        rig.runFor(0.45f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.find(ArenaEventType::Hit)->event.target == 0);
+    }
+    {   // pitched level under a hanging body: the round passes under it
+        Rig rig(duy, {hoveringKind(3.5f, 3.f)});
+        rig.put(0, 9.f, 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // 20 m out, past the old 9 m: a crosshair on it lands, pitched or flat
+        for (const bool pitched : {true, false}) {
+            Rig rig(duy, {dummyKind()});
+            rig.put(0, 20.f, 0.f);
+            aimed(rig, pitched, 0.f);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+        }
+    }
+    {   // past the range: shotMeets says nobody (the host shows the crosshair as out of reach) and the round misses
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, duy.shot.range + 2.f, 0.f);
+        rig.tick();
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, 0.f) == kArenaNobody);
+        aimed(rig, true, 0.f);
+        rig.runFor(1.5f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // point-blank: a body the round starts inside is hit, at 0
+        Rig rig(duy, {hoveringKind(0.f, 3.f)});
+        rig.put(0, 0.5f, 0.f);
+        rig.tick();
+        float along = 1.f;
+        CHECK(rig.fight.shotMeets(Vec2{1.f, 0.f}, 0.f, &along) == 0);
+        CHECK(along == 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+}
+
+TEST_CASE("arena attack: Duy's pitched round, the edges (point-blank by direction, bad pitches, the first of two, scale, lock)") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    const Vec2 ahead{1.f, 0.f};
+    const auto aimed = [](Rig& rig, Vec2 dir, bool pitched, float pitch) {
+        rig.in.aim = true;
+        rig.in.aimDir = dir;
+        rig.in.aimPitched = pitched;
+        rig.in.aimPitch = pitch;
+        rig.in.light = true;
+    };
+    const auto hitOn = [](const Rig& rig) {
+        const auto* h = rig.find(ArenaEventType::Hit);
+        return h ? static_cast<int>(h->event.target) : -1;
+    };
+    {   // a body the lead stands in, its centre behind or beside the lead, takes no round aimed away: the far one does
+        for (const Vec2 overlap : {Vec2{-0.5f, 0.f}, Vec2{0.f, 0.5f}, Vec2{0.f, -0.5f}}) {
+            Rig rig(duy, {hoveringKind(0.f, 3.f), dummyKind()});
+            rig.put(0, overlap.x, overlap.y);
+            rig.put(1, 8.f, 0.f);
+            rig.tick();
+            CHECK(rig.fight.shotMeets(ahead, 0.f) == 1);
+            aimed(rig, ahead, true, 0.f);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == 1);
+        }
+        // the same body behind and nothing ahead: nobody
+        Rig rig(duy, {hoveringKind(0.f, 3.f)});
+        rig.put(0, -0.5f, 0.f);
+        rig.tick();
+        CHECK(rig.fight.shotMeets(ahead, 0.f) == kArenaNobody);
+    }
+    {   // a body wholly behind the lead on the line backward is never met
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, -5.f, 0.f);
+        rig.tick();
+        CHECK(rig.fight.shotMeets(ahead, 0.f) == kArenaNobody);
+        CHECK(rig.fight.shotMeets(Vec2{-1.f, 0.f}, 0.f) == 0);
+    }
+    {   // NaN or infinite pitch counts as level; a pitch past the clamp goes nearly straight up or down
+        Rig rig(duy, {dummyKind()});
+        rig.put(0, 5.f, 0.f);
+        rig.tick();
+        const float inf = std::numeric_limits<float>::infinity();
+        CHECK(rig.fight.shotMeets(ahead, std::numeric_limits<float>::quiet_NaN()) == 0);
+        CHECK(rig.fight.shotMeets(ahead, inf) == 0);
+        CHECK(rig.fight.shotMeets(ahead, -inf) == 0);
+        CHECK(rig.fight.shotMeets(ahead, 10.f) == kArenaNobody);
+        CHECK(rig.fight.shotMeets(ahead, -10.f) == kArenaNobody);
+        aimed(rig, ahead, true, std::numeric_limits<float>::quiet_NaN());
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // two bodies on the line: the nearer takes the round, whichever slot it has
+        for (const bool nearFirst : {true, false}) {
+            Rig rig(duy, {dummyKind(), dummyKind()});
+            rig.put(0, nearFirst ? 4.f : 8.f, 0.f);
+            rig.put(1, nearFirst ? 8.f : 4.f, 0.f);
+            aimed(rig, ahead, true, 0.f);
+            rig.runFor(0.45f);
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == (nearFirst ? 0 : 1));
+        }
+    }
+    {   // a scaled body is met as drawn (radius * scale), pitched and on the flat lane alike
+        ArenaEnemyKind big = hoveringKind(0.f, 2.f);
+        big.look.scale = 2.f; // 2 m round
+        for (const bool pitched : {true, false}) {
+            Rig rig(duy, {big});
+            rig.put(0, 6.f, 1.8f); // 1.8 m off the line: inside 2 m (plus half the shot's width), outside 1 m
+            aimed(rig, ahead, pitched, 0.f);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 1);
+        }
+        Rig rig(duy, {hoveringKind(0.f, 2.f)}); // the same off the line at scale 1: missed
+        rig.put(0, 6.f, 1.8f);
+        aimed(rig, ahead, true, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+    {   // locked on: the round goes along the aim at the locked body's middle, past a nearer one off that line
+        Rig rig(duy, {dummyKind(), dummyKind()});
+        rig.put(0, 4.f, 0.f);
+        rig.put(1, 6.f, 4.f);
+        const Vec2 toLocked{6.f / std::sqrt(52.f), 4.f / std::sqrt(52.f)};
+        rig.in.view = toLocked;
+        rig.in.lock = true;
+        rig.tick();
+        REQUIRE(rig.fight.lock() == 1);
+        const float mid = std::atan2(arenaEnemyHeight(dummyKind()) * 0.5f - kArenaShotHeight, std::sqrt(52.f));
+        aimed(rig, toLocked, true, mid);
+        rig.runFor(0.45f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(hitOn(rig) == 1);
+    }
+    {   // pitched up at a hanging body well inside the range (25 m): hit
+        Rig rig(duy, {hoveringKind(3.5f, 3.f)});
+        rig.put(0, 25.f, 0.f);
+        aimed(rig, ahead, true, std::atan2(5.f - kArenaShotHeight, 25.f));
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // the flat lane (unpitched, the autopilot) takes a hanging body too: it knows no height
+        Rig rig(duy, {hoveringKind(3.5f, 3.f)});
+        rig.put(0, 9.f, 0.f);
+        aimed(rig, ahead, false, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // the pitch is the shot's from its start: letting the pitch go in the startup keeps the round pitched (over the
+        // ground enemy to the hanging body), and a pitch given after an unpitched start keeps the flat lane
+        const float up = std::atan2(5.f - kArenaShotHeight, 9.f);
+        for (const bool startPitched : {true, false}) {
+            Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+            rig.put(0, 3.f, 0.f);
+            rig.put(1, 9.f, 0.f);
+            aimed(rig, ahead, startPitched, up);
+            rig.tick();
+            rig.in.aimPitched = !startPitched;
+            rig.runFor(0.45f);
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == (startPitched ? 1 : 0));
+        }
+    }
+}
+
+TEST_CASE("arena attack: Duy's pitched round, point-blank against the climb, a body on the lead, the climb kept from the fire") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter duy = t.fighter("duy");
+    const Vec2 ahead{1.f, 0.f};
+    const auto aimed = [](Rig& rig, bool pitched, float pitch) {
+        rig.in.aim = true;
+        rig.in.aimDir = Vec2{1.f, 0.f};
+        rig.in.aimPitched = pitched;
+        rig.in.aimPitch = pitch;
+        rig.in.light = true;
+    };
+    const auto hitOn = [](const Rig& rig) {
+        const auto* h = rig.find(ArenaEventType::Hit);
+        return h ? static_cast<int>(h->event.target) : -1;
+    };
+    const float steep = 60.f * 3.14159265f / 180.f;
+    {   // the lead inside a body 0.3 m ahead (0 to 2 m up), a hovering boss over it: a steep round up (60 and 63
+        // degrees) leaves through the body's top within a metre and goes on to the boss; a shallow one (15 degrees)
+        // leaves through the side, point-blank
+        for (const float pitch : {steep, 1.1f}) {
+            Rig rig(duy, {hoveringKind(0.f, 2.f), hoveringKind(3.5f, 3.f)});
+            rig.put(0, 0.3f, 0.f);
+            rig.put(1, 3.f, 0.f);
+            rig.tick();
+            CHECK(rig.fight.shotMeets(ahead, pitch) == 1);
+            aimed(rig, true, pitch);
+            rig.runFor(0.45f);
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(hitOn(rig) == 1);
+        }
+        Rig rig(duy, {hoveringKind(0.f, 2.f), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 0.3f, 0.f);
+        rig.put(1, 3.f, 0.f);
+        rig.tick();
+        float along = 1.f;
+        CHECK(rig.fight.shotMeets(ahead, 0.26f, &along) == 0); // about 15 degrees: out through the side
+        CHECK(along == 0.f);
+    }
+    {   // the same body, steep down (out through its base, into the floor): not met, nor anything else
+        for (const float pitch : {-steep, -1.3f}) {
+            Rig rig(duy, {hoveringKind(0.f, 2.f)});
+            rig.put(0, 0.3f, 0.f);
+            rig.tick();
+            CHECK(rig.fight.shotMeets(ahead, pitch) == kArenaNobody);
+            aimed(rig, true, pitch);
+            rig.runFor(0.45f);
+            CHECK(rig.count(ArenaEventType::Hit) == 0);
+        }
+    }
+    {   // a body exactly on the lead (no offset) counts as ahead: met at 0 whichever way the round goes level
+        for (const Vec2 dir : {Vec2{1.f, 0.f}, Vec2{-1.f, 0.f}, Vec2{0.f, 1.f}}) {
+            Rig rig(duy, {hoveringKind(0.f, 3.f)});
+            rig.put(0, 0.f, 0.f);
+            rig.tick();
+            float along = 1.f;
+            CHECK(rig.fight.shotMeets(dir, 0.f, &along) == 0);
+            CHECK(along == 0.f);
+        }
+        Rig rig(duy, {hoveringKind(0.f, 3.f)});
+        rig.put(0, 0.f, 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(0.45f);
+        CHECK(rig.count(ArenaEventType::Hit) == 1);
+    }
+    {   // skip leaves a body out: the one behind it is asked
+        Rig rig(duy, {dummyKind(), dummyKind()});
+        rig.put(0, 4.f, 0.f);
+        rig.put(1, 8.f, 0.f);
+        rig.tick();
+        float along = 0.f;
+        CHECK(rig.fight.shotMeets(ahead, 0.f, &along, 1u) == 1);
+        CHECK(along > 6.f);
+    }
+    const float upToHanging = std::atan2(5.f - kArenaShotHeight, 12.f);
+    {   // the climb follows the crosshair through the startup: changed mid-startup, the round takes the new one
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 6.f, 0.f);
+        rig.put(1, 12.f, 0.f);
+        aimed(rig, true, 0.f);
+        rig.runFor(0.1f);
+        rig.in.aimPitch = upToHanging;
+        rig.runFor(0.4f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(hitOn(rig) == 1);
+    }
+    {   // ... and stays from the fire on: a miss over everything, the crosshair brought down mid-active, still a miss
+        Rig rig(duy, {dummyKind(), hoveringKind(3.5f, 3.f)});
+        rig.put(0, 6.f, 0.f);
+        rig.put(1, 12.f, 0.f);
+        aimed(rig, true, 1.2f);
+        rig.runFor(duy.shot.startup + 0.01f);
+        rig.in.aimPitch = 0.f;
+        rig.runFor(0.4f);
+        CHECK(rig.count(ArenaEventType::Hit) == 0);
+    }
+}
+
+TEST_CASE("arena checks: soft target is n/a when no attack could take one") {
+    ArenaStats s;
+    CHECK(arenaFeatureChecks(s).softTargetCheck == ArenaCheck::NotShown);
+    s.softChances = 3;
+    CHECK(arenaFeatureChecks(s).softTargetCheck == ArenaCheck::Fail);
+    s.softTargets = 1;
+    CHECK(arenaFeatureChecks(s).softTargetCheck == ArenaCheck::Pass);
+    // an aimed shot takes the aim: no chance counted
+    const ArenaTable t = loadShipped();
+    Rig rig(t.fighter("duy"), {dummyKind()});
+    rig.put(0, 5.f, 0.f);
+    rig.in.aim = true;
+    rig.in.aimDir = Vec2{1.f, 0.f};
+    rig.in.light = true;
+    rig.runFor(0.45f);
+    CHECK(rig.count(ArenaEventType::Hit) == 1);
+    CHECK(rig.fight.stats().softChances == 0);
+    // unaimed and unlocked, a light is a chance, and takes the soft target ahead
+    Rig free(t.fighter("devin"), {dummyKind()});
+    free.put(0, 1.5f, 0.f);
+    free.in.light = true;
+    free.runFor(0.1f);
+    CHECK(free.fight.stats().softChances >= 1);
+    CHECK(free.fight.stats().softTargets >= 1);
+}
+
+TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk, 0 let go, unknown outside a walk") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 6.f};
+    ArenaFighter fighter = ruleFighter();
+    fighter.moveAccel = 20.f; // eased, so letting go leaves a slide
+    fighter.moveBrake = 40.f;
+    Rig rig(fighter, {dummyKind()}, 1, ring);
+    rig.put(0, -20.f, 0.f);
+    rig.in.move = Vec2{0.5f, 0.f};
+    CHECK(rig.tick().player.wantSpeed == doctest::Approx(0.5f * fighter.moveSpeed));
+    rig.run(10);
+    rig.in.move = Vec2{};
+    {
+        const ArenaOutput& o = rig.tick();
+        CHECK(o.player.wantSpeed == 0.f); // let go: braking toward a stand
+        const float v = std::sqrt(o.player.velocity.x * o.player.velocity.x + o.player.velocity.y * o.player.velocity.y);
+        REQUIRE(v > 0.f);
+        CHECK(o.player.stopDistance == doctest::Approx(v * v / (2.f * fighter.moveBrake))); // the slide left at the brake
+    }
+    rig.in.move = Vec2{0.f, 1.f};
+    rig.in.dodge = true;
+    CHECK(rig.tick().player.wantSpeed == -1.f); // a roll moves by its own rule
+    rig.in.dodge = false;
+    rig.run(60);
+    REQUIRE(rig.out().player.action == ArenaAction::Move);
+    CHECK(rig.out().player.wantSpeed == doctest::Approx(fighter.moveSpeed));
+    rig.in.light = true;
+    const ArenaOutput& hit = rig.tick();
+    REQUIRE(hit.player.action == ArenaAction::Light);
+    CHECK(hit.player.wantSpeed == -1.f); // an attack's walk is its own (AttackMove)
+    CHECK(hit.player.stopDistance == -1.f);
 }

@@ -7,6 +7,7 @@
 #include "Misc/Paths.h"
 
 #include "ForgottenThird.h"
+#include "FTStoryStateSubsystem.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 #include "FTUiText.h"
@@ -89,6 +90,10 @@ bool UFTGameInstance::ReloadStory()
 	FString Error;
 	TArray<FString> Warnings;
 	const bool bOk = Story->LoadStory(StoryDir, Error, Warnings);
+	if (UFTStoryStateSubsystem* State = GetSubsystem<UFTStoryStateSubsystem>(); State && bOk)
+	{
+		State->LoadRegistry(StoryDir); // the facts the story writes come from the same folder (a failed load keeps both)
+	}
 	for (const FString& Warning : Warnings)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Story: %s"), *Warning);

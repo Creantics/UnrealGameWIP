@@ -3,7 +3,7 @@
 Status: plan (research, decision, phases). Nothing in the engine has changed yet.
 Owner: engine + art pipeline. Readers: engine and tools programmers, the art owner, design.
 
-The brief: rig every model "perfectly", and, at higher priority, "mouth movement and facial expressions. If our characters lack these, the emotion is lost throughout everything." The 2,328 directed VO lines already carry emotion, intensity, pace and volume (`design/forgotten_third/voice/line_direction_schema.md`); the face system turns those columns into a performance.
+The brief: rig every model "perfectly", and, at higher priority, "mouth movement and facial expressions. If our characters lack these, the emotion is lost throughout everything." The 2,328 directed VO lines already carry emotion, intensity, pace and volume (the design package's line direction schema); the face system turns those columns into a performance.
 
 "Perfect" means measurable criteria: R1–R16 for the body (§2), F1–F16 for the face (§3). A headless validator checks them (§10); no asset enters `assets/` without a PASS.
 
@@ -15,7 +15,7 @@ Evidence labels: **[verified]** read in this repo or run in this session; **[doc
 
 | Question | Decision | Section |
 |---|---|---|
-| Face technique | **Morph targets** (a 52-shape facial-action set plus tongue and jaw bones) for every speaking named character, in every world; a world's look comes from StylePack shading, never from flattening the face (Q5). **2D decal faces** (atlas swap) for the Gathered, the Staff, crowds and the Third's porcelain oval | §5 |
+| Face technique | **Morph targets** (a 52-shape facial-action set plus tongue and jaw bones) for every speaking named character, in every world; a world's look comes from StylePack shading, never from flattening the face. **2D decal faces** (atlas swap) for background groups, crowds and one non-human lead's porcelain oval | §5 |
 | Visemes | 15 visemes, authored as **presets over the 52 shapes** (no extra sculpts unless the validator asks for a corrective) | §5.2 |
 | Lip-sync source | **Forced alignment** of VO wav + `spoken_text` with Montreal Forced Aligner, run offline at build time. Rhubarb Lip Sync is the fallback when alignment fails. An RMS envelope covers unbaked lines at runtime | §6 |
 | Expression | Runtime mapping from the direction columns to expression poses, layered by face region with the baked mouth track | §7 |
@@ -77,7 +77,7 @@ The 21-bone test hero (`tools/blender/make_character.py`: `upper_arm.L`, T-pose)
 | R15 | Deform-only export | No control or MCH bones in the skin. No constraints or drivers left unbaked (§11) | glTF joint names ⊆ canonical set + declared extras | P1 |
 | R16 | Feet planted at rest | Both soles at y = 0 ± 2 mm. `root` at the origin; `pelvis` above it | Rest-pose bounds | P1 |
 
-Thresholds are first estimates [estimate]; P1 calibrates them on the pilot (Devin) and freezes them in `canonical_humanoid.json`.
+Thresholds are first estimates [estimate]; P1 calibrates them on the pilot (lead 1) and freezes them in `canonical_humanoid.json`.
 
 ---
 
@@ -134,15 +134,15 @@ That leaves 41 slots for secondary bones (hair, capes, coat tails: ≤ 30 per ch
 
 ### 4.3 Proportion variants
 
-One skeleton serves every humanoid, from Toby to Devin's 1.3× hands to the 12-year-olds. Clips are authored on Devin. Rotations transfer unchanged; translation is keyed only on `root`/`pelvis` and scaled by the pelvis-height ratio.
+One skeleton serves every humanoid, from the smallest child to lead 1's 1.3× hands to the 12-year-olds. Clips are authored on lead 1. Rotations transfer unchanged; translation is keyed only on `root`/`pelvis` and scaled by the pelvis-height ratio.
 
 ### 4.4 Non-humanoids and the Unwritten
 
 - **Creatures and constructs** (28 enemy rows) get their own templates (`canonical_quadruped.json`, `canonical_construct.json`) with ROM clips and per-template thresholds.
-- **The Third, true form:** a humanoid core plus a declared **extra-hands chain** (≤ 6 arm/hand rigs × 12 joints; the face is 2D, §5.4), about 128 total. Over budget, it splits into two skins on one hierarchy.
+- **A non-human lead's true form:** a humanoid core plus a declared **extra-hands chain** (≤ 6 arm/hand rigs × 12 joints; the face is 2D, §5.4), about 128 total. Over budget, it splits into two skins on one hierarchy.
 - **Distortion, uncanny and tender, never gore** (art direction D1): elongation via scale-free **length bones** (translation-keyed segment bones declared in the template), too-perfect posture via clips, and "a hand that runs into the tablecloth" via a shared mesh skinned to both. No splitting, wounds or exposed anatomy shapes are authored. The validator rejects any shape key or bone in an `ne_tone_forbidden` list.
-- **Minors** (Pia, Lumi, Toby, the Child) are never distorted. Their rigs carry `ne_minor = 1`, which (a) forbids length bones and asymmetric shapes, (b) caps expression intensity at 4 (§7), and (c) is read by the physics ragdoll profile (`docs/physics_plan.md` §1 tone constraint).
-- **Asymmetry is opt-in**: the Third's slightly asymmetric porcelain face and Granite's broken nose are tagged `ne_asymmetric` with the affected region, so R6/F11 skip only that region.
+- **Minors** (every child character) are never distorted. Their rigs carry `ne_minor = 1`, which (a) forbids length bones and asymmetric shapes, (b) caps expression intensity at 4 (§7), and (c) is read by the physics ragdoll profile (`docs/physics_plan.md` §1 tone constraint).
+- **Asymmetry is opt-in**: a non-human lead's slightly asymmetric porcelain face and an NPC's broken nose are tagged `ne_asymmetric` with the affected region, so R6/F11 skip only that region.
 
 ---
 
@@ -163,9 +163,9 @@ A bone face avoids engine work (E4) but fails the brief: sealed lips for /m b p/
 - Mouth: `mouthClose`, `mouthFunnel`, `mouthPucker`, `mouthLeft/Right`, `mouthSmile`, `mouthFrown`, `mouthDimple`, `mouthStretch`, `mouthPress`, `mouthLowerDown`, `mouthUpperUp` (each `Left/Right` where sided), `mouthRollLower`, `mouthRollUpper`, `mouthShrugLower`, `mouthShrugUpper`
 - Tongue: `tongueOut` (the 53rd; the tongue is otherwise posed with bones)
 
-Plus up to **11 house shapes** to reach the 64 cap (F15): `mouthSmileNoCheek` (the Third's "smile that does not reach the eyes"), `lipsTogetherSoft`, `eyeLidTension`, `jawOpen_x_mouthSmile` and other combination correctives, added only when F12/F13 fail.
+Plus up to **11 house shapes** to reach the 64 cap (F15): `mouthSmileNoCheek` (a smile that does not reach the eyes), `lipsTogetherSoft`, `eyeLidTension`, `jawOpen_x_mouthSmile` and other combination correctives, added only when F12/F13 fail.
 
-**Visemes (15):** `sil`, `PP` (p b m), `FF` (f v), `TH`, `DD` (t d n l), `kk` (k g ng), `CH` (ch j sh zh), `SS` (s z), `RR` (r), `aa`, `E`, `ih`, `oh`, `ou`, `nn` (nasal hum, lips together soft). Each viseme is a **preset**: a sparse vector of shape weights plus jaw-bone and tongue-bone angles, kept in `face_presets.json`. Character variation (Duy's flat mouth, Devin's wide one) lives in the sculpted shapes, not in the presets, so the presets are shared by the whole cast. A character may override a preset entry if review demands it.
+**Visemes (15):** `sil`, `PP` (p b m), `FF` (f v), `TH`, `DD` (t d n l), `kk` (k g ng), `CH` (ch j sh zh), `SS` (s z), `RR` (r), `aa`, `E`, `ih`, `oh`, `ou`, `nn` (nasal hum, lips together soft). Each viseme is a **preset**: a sparse vector of shape weights plus jaw-bone and tongue-bone angles, kept in `face_presets.json`. Character variation (one lead's flat mouth, another's wide one) lives in the sculpted shapes, not in the presets, so the presets are shared by the whole cast. A character may override a preset entry if review demands it.
 
 ### 5.3 Eyes, lids, jaw
 
@@ -176,13 +176,13 @@ Plus up to **11 house shapes** to reach the 64 cap (F15): `mouthSmileNoCheek` (t
 
 Characters cross worlds with the same mesh (art direction §4), so the face technique is chosen **per character**; the world changes only shading.
 
-**Ruling (owner, Q5).** Every speaking named character has a full 3D morph face in every world. Without mouth movement and expressions the emotion is lost. Stylisation comes from StylePack shading (hatch, ink, rim, optionally snapped morph weights), never from flattening the face. 2D decals remain only for the faces in the last three rows.
+**Rule.** Every speaking named character has a full 3D morph face in every world. Without mouth movement and expressions the emotion is lost. Stylisation comes from StylePack shading (hatch, ink, rim, optionally snapped morph weights), never from flattening the face. 2D decals remain only for the faces in the last three rows.
 
 | Who | Face | Why |
 |---|---|---|
-| Party and named cast (Devin, Duy, Mina, Torrin, Nil, Granite, Odette, the minors, every speaking named character) | **Full 3D morph face** in all worlds, Solhaven included | They carry the 2,328 lines. In Solhaven (heroic cel + hatch) and the Lattice (sharp webtoon cel) a sculpted face with proxy normals (below) gives clean cel shadows. In the Unwritten the same face is drawn in ink |
-| The Gathered, the Staff | **2D decal face**: a face material with an atlas of eye and mouth cells, selected by `Material::baseUv` offset (E13). Mouths use a 9-cell mouth set (A–H + rest, the classic limited-animation set) mapped from the same viseme track | "Two lines and a mouth" (art direction §4). The **unison mouth** is one track driving many decals |
-| The Third, true form | 2D decal on the porcelain oval, plus a few morphs for slight asymmetry when it "draws itself" | The art direction calls for a flat, drawn face; morphs would read as flesh |
+| Party and named cast (the leads, the main NPCs, the minors, every speaking named character) | **Full 3D morph face** in all worlds, Solhaven included | They carry the 2,328 lines. In Solhaven (heroic cel + hatch) and the Lattice (sharp webtoon cel) a sculpted face with proxy normals (below) gives clean cel shadows. In the Unwritten the same face is drawn in ink |
+| Background groups | **2D decal face**: a face material with an atlas of eye and mouth cells, selected by `Material::baseUv` offset (E13). Mouths use a 9-cell mouth set (A–H + rest, the classic limited-animation set) mapped from the same viseme track | "Two lines and a mouth" (art direction §4). The **unison mouth** is one track driving many decals |
+| A non-human lead, true form | 2D decal on the porcelain oval, plus a few morphs for slight asymmetry when it "draws itself" | The art direction calls for a flat, drawn face; morphs would read as flesh |
 | Crowds, minor NPCs | 2D decal or none | Budget |
 
 **Toon normals.** Cel shading turns noisy face normals into shadow islands. Every 3D face gets **custom normals transferred from a smooth proxy** (head ellipsoid + nose wedge, Data Transfer modifier); the loader keeps them (`Gltf.cpp:419`). Face morphs carry **no NORMAL deltas** in the proxy region, so the cel terminator stays stable while the mouth moves; the jaw still rotates chin normals via skinning, and lips/mouth interior keep real deltas (a vertex mask the validator checks). Hatching on Unwritten faces is open (§14).
@@ -228,7 +228,7 @@ The schema's ~50 emotion words map to **14 base poses** (presets over the 52 sha
 |---|---|
 | `emotion_primary` | Base pose, **all regions** |
 | `emotion_secondary` | Base pose at 0.35, **upper face only** (brows, lids, cheeks), plus micro-expression flashes. What leaks through shows in the eyes |
-| `intensity` 1–5 | Weight 0.2–1.0, then a per-character **containment profile** (Devin: cap 0.7 + `mouthPress`; Duy: cap 0.6, blink × 0.5; Odette: cap 0.5, still head). Above the cap, micro-expression rate rises instead. Minors cap at 4 |
+| `intensity` 1–5 | Weight 0.2–1.0, then a per-character **containment profile** (lead 1: cap 0.7 + `mouthPress`; lead 2: cap 0.6, blink × 0.5; a reserved NPC: cap 0.5, still head). Above the cap, micro-expression rate rises instead. Minors cap at 4 |
 | `volume` | Baked jaw aperture scale: whisper 0.5 … shout 1.3, plus `mouthStretch` at raised/shout |
 | `pace` / `pace_wpm` | Blink rate × 0.8–1.2, blend time 400–150 ms, head-motion amplitude |
 | `pitch_contour` | Brows: `rising` lifts, `falling` settles, `breaking` lid flutter, `clipped` `mouthPress` |
@@ -408,7 +408,7 @@ glTF carries no constraints, drivers or IK: each feature becomes keys/morphs at 
 - `fit_canonical.py`, `bake_to_canonical.py`, the `rig` export profile in `ne_blender.py`.
 - **Engine-caps audit** (§1) pinned by doctests on E1/E2 behaviour.
 - **Loader + anim side of morphs (no renderer):** read `targets`/`weights` into `MeshData`/`AnimationClip`; `anim::FacePlayer` with the CPU reference morph. **Proof:** a doctest morphs the proof head on the CPU and matches Blender's evaluated shapes from `proof_head.expected.json` within 0.1 mm (the `test_blender_assets.cpp` pattern).
-- **Viseme pipeline proven:** `bake_face_tracks.py` on a **20-line gold set** (from `draft56_04a.csv`, incl. a minor's human line and an `UNKNOWN` speaker) meets F1–F4 against hand-marked TextGrids, F3 on every line with audio, with MFA, Rhubarb and ElevenLabs alignment reported side by side.
+- **Viseme pipeline proven:** `bake_face_tracks.py` on a **20-line gold set** (from the VO direction table, kept outside the repo, incl. a minor's human line and an `UNKNOWN` speaker) meets F1–F4 against hand-marked TextGrids, F3 on every line with audio, with MFA, Rhubarb and ElevenLabs alignment reported side by side.
 - `ne_rig_check` (§10.4).
 - Docs: `docs/rigging.md` (artist how-to), `docs/blender.md` update.
 
@@ -419,7 +419,7 @@ glTF carries no constraints, drivers or IK: each feature becomes keys/morphs at 
 - **`dialogue_demo` speaks**: one line with a baked track, a listener, blinks and look-at, on the proof head.
 
 Extra P1 gates:
-- the pilot character (Devin) passes all R and F11–F13, F15 counts;
+- the pilot character (lead 1) passes all R and F11–F13, F15 counts;
 - the gold set passes F1–F4;
 - `dialogue_demo --autoplay` at 0 allocs with 2 faces;
 - the GPU morph pass ≤ 0.3 ms for 6 faces measured on the bench GPU (F15).
@@ -429,7 +429,7 @@ Extra P1 gates:
 - Expression mapping and layering (§7) in `FacePlayer`; listeners; containment profiles; the emotion map reviewed against the expression sheet (F10).
 - Story import of direction columns; rpg `StoryState` VO + face wiring (§8.4) behind a setting until all of Act I is baked.
 - Body pose-space correctives (§11) on the morph path; head look-at.
-- Face for the whole party; 2D decal faces for the Gathered/Staff.
+- Face for the whole party; 2D decal faces for background groups.
 - **>4 influences: not added.** The validator enforces 4, and nothing in the spec needs more [estimate]. Revisit only if R1–R4 fail on a hero after helpers and correctives.
 - **DQS: not added** (§11).
 
@@ -458,6 +458,6 @@ Extra P3 gates:
 2. **AccuRIG is Windows-only and GUI-only.** Is the art owner on Windows (the 3080 Ti box)? If not, use manual landmarks or UniRig for humanoids too.
 3. **ElevenLabs v3 timestamps:** should someone run one test call to confirm `with-timestamps` works with `eleven_v3`? It is a cross-check only, not on the critical path.
 4. **Face capture:** is a phone face-capture pass for hero lines wanted later? It would replace the procedural layer for marquee scenes; the shape names already allow it.
-5. **Decal vs morph boundary: RESOLVED (owner + advisor).** Devin, the party and every speaking named character use full 3D morph faces in every world, including Solhaven. A drawn look comes from StylePack shading (hatch, ink, rim, optionally snapped morph weights), never from flattening the face. 2D decal faces stay limited to the Gathered, the Staff, crowds and the Third's true form.
+5. **Decal vs morph boundary: resolved.** The leads, the party and every speaking named character use full 3D morph faces in every world, including Solhaven. A drawn look comes from StylePack shading (hatch, ink, rim, optionally snapped morph weights), never from flattening the face. 2D decal faces stay limited to background groups, crowds and a non-human lead's true form.
 6. **Unwritten faces under hatching: RESOLVED (P1c).** No mask: face materials carry a role (skin or feature), and the style packs' face fields keep features at their own value (no paper base, no strokes) and hatch the skin sparser, with some lit shading kept. Measured by `dialogue_demo --face-read-check` (ctest `dialogue_face_read`): every look keeps at least 0.70 of the default face change (it was 0.22 in the Unwritten and 0.26 in `inksolhaven`). See `docs/rigging.md` "Faces in every world style". Still open: the screen-locked strokes slide on a moving face ("shower door"); object-space hatching stays deferred.
 7. **Distortion limits (art direction D1):** this plan assumes "uncanny and tender". If the writer chooses otherwise, the forbidden-shape list in §4.4 changes.

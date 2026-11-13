@@ -2,6 +2,7 @@
 
 #include "ftcore/ArenaFight.h"
 #include "ftcore/BeatChoreo.h"
+#include "ftcore/FightSession.h"
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
@@ -745,6 +746,7 @@ TEST_CASE("stone bearer: a frozen boss keeps its carried piece through a stagger
         CHECK(firstOf(e, ArenaBossEventType::Broke)->at == doctest::Approx(3.7));
     }
     CHECK(b.poiseFrozen());
+    CHECK(b.bonusScale() == 1.0f); // off the pedestal: the bonus passes as worked out
     CHECK(b.run().broken());
     CHECK(b.run().liveMove() == move("marked_throw"));
     CHECK(b.run().pending());
@@ -756,6 +758,7 @@ TEST_CASE("stone bearer: a frozen boss keeps its carried piece through a stagger
     CHECK(firstOf(e, ArenaBossEventType::Invulnerable)->value == 1);
     CHECK(countOf(e, ArenaBossEventType::Broke) == 0); // once
     CHECK(b.invulnerable());
+    CHECK(b.bonusScale() == 0.0f); // a held blow's bonus settling now deals nothing
     CHECK(b.run().liveMove() == kArenaBossNoMove); // the pedestal cancelled the throw
     CHECK(b.onStagger(4.5).empty());
 
@@ -1119,11 +1122,14 @@ TEST_CASE("stone bearer: a non-finite time or hp stalls the boss instead of hang
     // The move plays on from there.
     CHECK(countOf(b.update(1.0 + 3 * B + 0.01, 1.0f), ArenaBossEventType::Answered) == 1);
 
-    // On the pedestal: a stalled clock emits no call storm, and a huge jump plays only the last period.
+    // On the pedestal: a stalled clock emits no call storm, a junk jump past kMaxTimeJump is ignored,
+    // and a long real jump plays only the last period.
     b.update(20.0, 0.2f);
     REQUIRE(b.invulnerable());
     CHECK(countOf(b.update(kInf, 0.2f), ArenaBossEventType::Call) == 0);
-    const ArenaBossEvents& jump = b.update(20.0 + 1.0e7, 0.2f);
+    CHECK(countOf(b.update(20.0 + 1.0e7, 0.2f), ArenaBossEventType::Call) == 0);
+    CHECK(b.run().now() == 20.0);
+    const ArenaBossEvents& jump = b.update(20.0 + 500.0, 0.2f);
     CHECK(countOf(jump, ArenaBossEventType::Call) >= 4);
     CHECK(countOf(jump, ArenaBossEventType::Call) <= 5);
     CHECK(jump.dropped == 0);
@@ -1327,4 +1333,70 @@ TEST_CASE("stone bearer: a whole scripted fight allocates nothing") {
         CHECK(f->run().crit().openings() > 0);
     }
     CHECK(hpBreaks == 1); // the boss that never staggered, on its share
+}
+
+namespace {
+// The host's ruling of the stone bearer (FFTStoneBearerHost::RuleBlow): a lead's blow scaled by onHit, a held
+// blow's bonus by bonusScale.
+struct BearerRule {
+    StoneBearer* boss = nullptr;
+    double t = 0.0;
+    static ArenaBlowRuling rule(void* user, const ArenaBlow& blow) {
+        BearerRule& h = *static_cast<BearerRule*>(user);
+        ArenaBlowRuling r;
+        if (blow.type == ArenaEventType::HostHit) {
+            r.damage = h.boss->bonusScale();
+            r.veto = h.boss->invulnerable();
+            return r;
+        }
+        StoneBearerHit hit;
+        h.boss->onHit(blow.from, blow.at, Vec2{1.f, 0.f}, h.t, nullptr, &hit);
+        r.damage = hit.damage;
+        return r;
+    }
+};
+} // namespace
+
+TEST_CASE("stone bearer: a held blow's bonus under defence is scaled once (by the blow), not again at the settle") {
+    const StoneBearerDef& def = shipped();
+    StoneBearer b;
+    b.begin(def, 0.0);
+    for (int i = 0; i < 5; ++i) b.onSoloLift(1.0 + 0.1 * i);
+    REQUIRE(b.takenScale() < 0.75f); // stacked defence
+    REQUIRE_FALSE(b.invulnerable());
+
+    ArenaFight fight;
+    fight.begin(defaultArenaDef(), ArenaRing{Vec2{0.f, 0.f}, 12.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    BearerRule host;
+    host.boss = &b;
+    host.t = 2.0;
+    // The blow as the host rules it: onHit's damage (crit x takenScale) on a raw 40.
+    const ArenaBlowRuling landed = BearerRule::rule(&host, ArenaBlow{});
+    const int raw = 40;
+    const int base = static_cast<int>(std::lround(static_cast<float>(raw) * landed.damage));
+    REQUIRE(base > 0);
+    REQUIRE(base < raw);
+
+    FightSession session;
+    REQUIRE(session.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(session.callCount(kLeadA) == CountError::None);
+    for (int i = 0; i < 2000 && !session.strikeCount().open(session.now()); ++i) session.tick(kDt);
+    REQUIRE(session.judgeHeldBlow(kLeadA, 0, base, 2).outcome == CountOutcome::Held);
+    REQUIRE(session.judgeBlow(kLeadB).outcome == CountOutcome::OnCount);
+    const FightTick& t = session.tick(kDt);
+    REQUIRE(t.bonuses.size() == 1);
+    const int extra = t.bonuses[0].extraDamage;
+    const int hp0 = fight.enemyHp(0);
+    REQUIRE(fight.ruledHostBlow(0, extra, 2, &BearerRule::rule, &host));
+    // The bonus lands whole: base + bonus is the settled multiple of the scaled blow, not of a twice-scaled one.
+    CHECK(hp0 - fight.enemyHp(0) == extra);
+    CHECK(base + extra == static_cast<int>(std::lround(static_cast<float>(base) * 2.5f)));
+
+    // On the pedestal the same bonus through the same path is vetoed: nothing lands.
+    b.update(3.0, 0.2f);
+    REQUIRE(b.invulnerable());
+    CHECK(b.bonusScale() == 0.0f);
+    const int hp1 = fight.enemyHp(0);
+    CHECK_FALSE(fight.ruledHostBlow(0, extra, 2, &BearerRule::rule, &host));
+    CHECK(fight.enemyHp(0) == hp1);
 }

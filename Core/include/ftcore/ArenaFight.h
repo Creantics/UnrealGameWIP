@@ -42,13 +42,18 @@
 // * Player actions. Idle/Move, Light, Heavy, Riposte, Release, Dodge, Guard, Heal; and the ones that happen to
 //   the player: Hitstun, GuardBreak, Downed.
 //   - A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed,
-//     from a dodge once `dodgeCancel` of it has passed, and from Guard at any time. An action pressed
+//     from a dodge once `dodgeCancel` of it has passed, and from Guard at any time. An attack may name its own
+//     cancel windows instead, each a share of the whole attack (startup + active + recovery) after which that
+//     action may cut in: cancelGuard (Guard, and a guard press there opens the parry window as anywhere),
+//     cancelRoll (Dodge) and cancelLight (the next light, the riposte and the aimed shot); below 0, the
+//     default, the `cancel` rule. Heavy, heal and Release always keep the `cancel` rule. An action pressed
 //     while it can't start is buffered for `bufferTime` (only the latest press is kept) and starts as
 //     soon as it can. Pressed in one tick, Release beats dodge, which beats heal, heavy and light.
 //   - Light: the chain's next attack when it starts during the previous light's recovery or within
 //     `chainGap` after it, else the first. The chain wraps after lightCount.
-//   - Every attack and the dodge cost stamina; an action needs stamina > 0 to start and may take it
-//     to 0 (StaminaEmpty). Stamina refills at staminaRegen per second once staminaDelay has passed
+//   - Every attack and the dodge cost their `stamina` (dodgeStamina); one that costs some needs stamina > 0
+//     to start and may take it to 0 (StaminaEmpty). One that costs 0 (a free light) starts whatever the
+//     stamina and never holds its refill back. Stamina refills at staminaRegen per second once staminaDelay has passed
 //     since the last spend.
 //   - Dodge: a roll of dodgeDistance over dodgeTime along the stick (straight back, away from the
 //     facing, when the stick is idle). Invulnerable from dodgeInvulnStart to dodgeInvulnEnd: an enemy
@@ -101,8 +106,13 @@
 //     Hitstun (cancelling the current action) and poise refills. Poise also refills after poiseDelay
 //     with no poise damage. hp 0: Downed, then Defeat.
 //   - Facing: locked, the player faces the lock target (and strafes); otherwise it turns toward the
-//     stick at turnRate. An attack starts facing the lock target, or the stick when it is pushed,
-//     then turns only at its `tracking`.
+//     stick at turnRate. The drawn facing (drawFacing) follows at turnRate outside attacks and dodges,
+//     so the body is drawn turning where the rules snap; a dodge and an attack's startup turn it faster
+//     (an attack's reaches the rules' facing by its active part, so a blow lands from where the body looks). An attack starts facing, in this order: the aim, the lock target, the soft
+//     target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed; then turns only
+//     at its `tracking` toward the same. A riposte turns onto its enemy over its startup instead, at
+//     its tracking or faster, so it faces the enemy as the blow lands (at once with no startup). On a soft target the attack also closes in by
+//     up to homingReach on top of its lunge, never past touching.
 // * Enemies. Each enemy's brain is Approach (run when farther than runRange, else walk, toward its
 //   preferred range), Strafe (circle the player at preferredRange, changing direction now and then
 //   from the seeded RNG), Attack (one move's startup, active and recovery; then its `chain` move at
@@ -115,6 +125,38 @@
 //   `weight`, from the seeded RNG), or closes in to the nearest move's maxRange when none fits.
 //   Enemy poise works like the player's: poise damage beyond poise staggers, `armor` ignores a share
 //   of it during an attack's startup and active parts, and poise refills after poiseDelay.
+// * Hit pause. A blow that lands (a Hit on either side, not one the host vetoes) with hitStop > 0 pauses the
+//   body it lands on for hitStop seconds and its attacker for hitStop * hitStopSelf (0 for a shot: the
+//   shooter goes on); a parry pauses the player and the parried enemy for the fighter's parryStop. A paused
+//   body's own time stands still: its action or brain time, its move, its stance and token asking (an
+//   enemy), its velocity (0) and, for the player, the age of a buffered press and the parry window, so a
+//   press made in a pause still starts, and a guard still parries, when it ends. Pauses that overlap
+//   end at the latest, never added up. A tick that a pause ends inside advances that body by the part of
+//   the tick after it, so the result doesn't hang on the step. Everything else runs on fight time: the
+//   fight's clock (time(), stats.time, every event's time), stamina and poise refill, cooldowns, attack
+//   tokens and attackDelay, the pair window and the Read deal. Beside it runs the held
+//   clock (heldTime()): the fight clock less the player's hit pauses, so it stands still while the player
+//   is paused and, in a tick a pause ends inside, advances by the part after it. The shared combat inputs
+//   the host ticks beside the fight are ticked every frame with the held clock, never with time(); the host
+//   reads hitStopLeft() for the player's pause, and ArenaPlayerOut::stopLeft / ArenaEnemyOut::stopLeft to
+//   stop each figure. Both read 0 once the fight is over and on a dead enemy, so the blow that ends a fight
+//   reports no pause (the host may play one from its Hit event).
+// * Flinch. An enemy kind with flinchTime > 0 flinches (Flinch, the Flinched event) when a player's blow
+//   of at least flinchPoise poise damage lands and its poise holds: in Approach, Strafe, Flinch (it
+//   starts again) or an attack's startup or recovery, never in its active part or while its `armor` is on.
+//   A flinch cuts the move short and gives the token back, as a stagger does; it is pushed flinchPush
+//   metres straight away from the player over the flinch, then walks again. A broken poise staggers
+//   instead. The host may forbid it for one enemy (setEnemyFlinch: a boss whose script allows it only in
+//   some phases; a restart allows it again, so the host sets it after restart()); bosses leave flinchTime at 0.
+//   No stunlock: after kArenaMaxFlinchChain flinches in a run, blows land on it without a flinch until
+//   kArenaFlinchChainGap passes with no blow of flinchPoise or more (every kind's poise still breaks).
+// * Break-out. An enemy kind with breakAt > 0 counts the player's blows that land on it while it is
+//   upright (Approach, Strafe, Attack, Flinch), the count going back to 0 after breakDecay with none, when
+//   it goes down (Staggered, Open, Down) and on a break-out. The blow that reaches breakAt, if it
+//   doesn't stagger it, starts its breakMove at once (BrokeOut, then AttackStarted): whatever the token count, its cooldown and the
+//   flinch, though never a move the host's move mask clears. That move should carry `armor`. A stagger,
+//   Open or Down never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the
+//   count and the break-out too.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
 //   lets go when already locked. lockSwitch moves the lock to the next living enemy in range to the
@@ -204,10 +246,17 @@ inline constexpr std::uint8_t kArenaNobody = 0xFF;
 inline constexpr std::uint8_t kArenaHeavyMove = 8;
 inline constexpr std::uint8_t kArenaRiposteMove = 9;
 inline constexpr std::uint8_t kArenaReleaseMove = 10;
+// A gun kit's aimed light: one round (ArenaAction::Light with this move, never part of the chain).
+inline constexpr std::uint8_t kArenaShotMove = 11;
 // A Release is open only with more Load than this: a third of kMaxLoad.
 inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
 // An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.
 inline constexpr float kArenaBeatTolerance = 0.002f;
+// The longest hit pause or parry pause the table takes (hitStop, parryStop), in seconds.
+inline constexpr float kArenaMaxStop = 0.3f;
+// No flinch stunlock: at most this many flinches in a run; the run ends after kArenaFlinchChainGap s with no blow.
+inline constexpr std::uint8_t kArenaMaxFlinchChain = 3;
+inline constexpr float kArenaFlinchChainGap = 1.f;
 
 // How many whole beats of `bpm` `seconds` lasts (1 or more, within kArenaBeatTolerance), else -1 (also
 // for bpm <= 0). A host counts an attack in from it: the impact is that many beats after AttackStarted.
@@ -236,6 +285,12 @@ struct ArenaAttack {
     float armor = 0.f;        // 0..1: share of incoming poise damage ignored during startup + active
     float stamina = 0.f;      // the player's cost; enemies have no stamina
     float cancel = 0.6f;      // the player's: share of recovery after which another action may start
+    float cancelGuard = -1.f; // the player's: share of the whole attack after which Guard may cut in; < 0: `cancel`
+    float cancelRoll = -1.f;  // ... a dodge; < 0: `cancel`
+    float cancelLight = -1.f; // ... the next light (a riposte, a shot); < 0: `cancel`
+    float hitStop = 0.f;      // s the body it lands on pauses (see Hit pause); 0: none
+    float hitStopSelf = 1.f;  // share of hitStop the attacker pauses too (0: a shot, the shooter goes on)
+    float jolt = 0.f;         // degrees the host's camera kicks when it lands (ArenaImpact.h); 0: none
     std::uint8_t maxTargets = 0; // 0: connects with every target in range and arc; N: with at most N distinct
                                  // targets over its whole active part, the nearest first (the player's matter)
 
@@ -252,6 +307,11 @@ FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "
 // parry numbers (guardArcCos, guardAbsorb, guardMoveScale, guardBreakTime, parryWindow, parryRearm).
 struct ArenaFighter {
     ArenaWeapon weapon = ArenaWeapon::None; // a lead's kit inherits the default's like every other key
+    // Whether the lead has attacks of its own (arena.json "attacks", default true). False: light, heavy, the riposte a
+    // light would start and the Release are refused (the press is dropped); guard, parry, dodge, heal, the partner's
+    // pair and Read still work. Such a kit stores no Load (a parry stores none, giveLoad gives 0), so it never
+    // overloads. A lead whose part in a fight is helping the others has none.
+    bool attacks = true;
     int hp = 100;
     float stamina = 100.f;
     float staminaRegen = 45.f;  // per second, once staminaDelay has passed since the last spend
@@ -265,10 +325,14 @@ struct ArenaFighter {
     float bufferTime = 0.2f;
 
     std::array<ArenaAttack, kMaxLightChain> light{};
+
     std::uint8_t lightCount = 3;
     float chainGap = 0.3f;
     ArenaAttack heavy;
     ArenaAttack riposte;
+    // Guns: the one round a light fires while aiming (ArenaInput::aim); unaimed, a light is the kit's own chain
+    // (kicks). arena.json "shot", required on a guns kit and refused on any other.
+    ArenaAttack shot;
 
     float dodgeTime = 0.6f;
     float dodgeDistance = 3.5f;
@@ -283,6 +347,8 @@ struct ArenaFighter {
     float guardBreakTime = 1.2f;
     float parryWindow = 0.15f;
     float parryRearm = 0.5f;
+    float parryStop = 0.f;      // s a parry pauses the player and the parried enemy (see Hit pause)
+    float hurtJolt = 0.f;       // degrees the camera kicks when an enemy move with no jolt of its own hits the player
     float riposteReach = 2.2f;
 
     std::uint8_t healCharges = 3;
@@ -293,6 +359,10 @@ struct ArenaFighter {
 
     float lockRange = 15.f;
     float lockBreak = 20.f;
+    // Soft target and homing for an attack started with no lock (ArenaSoftTarget.h; the host asks for them).
+    float softRange = 0.f;      // metres to an enemy's near edge; 0: no soft target
+    float softArcCos = 0.5f;    // the arc either side of the stick or the facing (dot)
+    float homingReach = 0.f;    // most metres an attack closes in on top of its lunge
 
     float moveAccel = 0.f;      // m/s^2: how fast the velocity gains speed toward the one the stick asks for ...
     float moveBrake = 0.f;      // ... and loses it (a slower one asked for); 0: instant. Idle, Move, Guard, Heal only
@@ -308,21 +378,25 @@ struct ArenaFighter {
     float readWrongPoise = 10.f; // poise a misread gives the attacker back (up to its kind's poise)
 };
 
-// A shot from a gun reaches at least this far; a light, heavy or riposte shorter than that is a close-in move.
+// Whether the player may take this kit as the lead: only one with attacks of its own. A kit without is a party
+// slot, never played alone: the explore start, the explore lead switch and the arena's lead pick pass over it.
+inline bool arenaPlayable(const ArenaFighter& kit) { return kit.attacks; }
+
+// A gun kit's shot reaches at least this far (the shipped data holds to it); its kicks are close-in moves.
 inline constexpr float kArenaShotRange = 5.f;
 // The strike pattern of a lead's kit for a FightAnimator::setPattern, in chain order (one entry per light, so at most
-// kMaxLightChain): None and Gauntlets punch (StrikeLeft, StrikeRight, ...), Magic casts (Cast), Guns shoots
-// (WeaponRight) with every light that reaches kArenaShotRange and kicks (KickLeft, KickRight in turn) with the
-// rest. Writes up to `cap` entries to `out` and returns how many (no allocation).
+// kMaxLightChain): None and Gauntlets punch (StrikeLeft, StrikeRight, ...), Magic casts (Cast), Guns kicks (KickLeft,
+// KickRight in turn; its shot is the aimed light, kArenaShotMove, never in the chain). Writes up to `cap` entries to
+// `out` and returns how many (no allocation).
 FTCORE_API std::size_t arenaStrikePattern(const ArenaFighter& kit, FightClip* out, std::size_t cap);
-// The clip of the kit's heavy: a gun's heavy that reaches kArenaShotRange is a shot (WeaponRight), a shorter one a
-// kick (KickRight); Magic casts, the rest punch (StrikeRight).
+// The clip of the kit's heavy: Guns kicks (KickRight), Magic casts, the rest punch (StrikeRight).
 FTCORE_API FightClip arenaHeavyStrike(const ArenaFighter& kit);
 // The kit's attack for the player's move id (an event's or ArenaPlayerOut::move: a light's chain index below
-// lightCount, kArenaHeavyMove, kArenaRiposteMove or kArenaReleaseMove); nullptr for any other id.
+// lightCount, kArenaHeavyMove, kArenaRiposteMove, kArenaReleaseMove, or kArenaShotMove on a guns kit); nullptr for any
+// other id.
 FTCORE_API const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::uint8_t move);
 // The clip that shows the player's move: a light its pattern strike (arenaStrikePattern), the heavy
-// arenaHeavyStrike's, a riposte Counter, a Release Finisher; Stance for any other id. A host plays it with
+// arenaHeavyStrike's, a riposte Counter, a Release Finisher, a guns kit's shot WeaponRight; Stance for any other id. A host plays it with
 // FightAnimator::playStrike (a riposte or Release with play) keyed to the attack's active part, startup after
 // AttackStarted.
 FTCORE_API FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move);
@@ -356,7 +430,8 @@ struct ArenaEnemyMove {
 };
 
 // How the host draws an enemy kind as a skinned mesh instead of its placeholder shapes (arena.json's `look`). All
-// host-side: the fight's rules never read it. An empty `clipsText` is no look (the shapes).
+// host-side, except that a pitched shot (ArenaInput::aimPitched) meets the body where `hover` and `scale` put it. An
+// empty `clipsText` is no look (the shapes).
 struct ArenaEnemyLook {
     std::array<char, kMaxArenaLookPath + 1> clipsText{}; // project-relative path of the clip table (Data/Anim/*.json)
     float hover = 0.f;     // m: the mesh is lifted this far above the enemy's position on the ground
@@ -392,6 +467,12 @@ struct ArenaEnemyKind {
     bool passive = false;     // never asks for an attack token: a target dummy (arena.json's `dummy`); with its
                               // speeds at 0 it stands where it spawned and only takes blows
     ArenaEnemyLook look;      // the host's skinned figure for it, if any
+    float flinchTime = 0.f;   // > 0: a landed blow flinches it this long (see Flinch); 0: it never flinches
+    float flinchPoise = 0.f;  // the least poise damage a blow needs to flinch it
+    float flinchPush = 0.f;   // metres a flinch pushes it back
+    std::uint8_t breakAt = 0; // > 0: the blows in a row that make it break out (see Break-out); 0: never
+    float breakDecay = 1.5f;  // s without a blow after which the count goes back to 0
+    int breakMove = -1;       // the move it breaks out with; -1: none
 };
 
 // An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius
@@ -457,6 +538,16 @@ FTCORE_API ArenaRing arenaRingAt(Vec2 playerPos, Vec2 facing, float radius, cons
 // spread around the edge (i = 0, 1, ...).
 FTCORE_API Vec2 arenaParkSpot(const ArenaRing& ring, Vec2 playerStart, std::size_t i);
 
+// A point in metres: x, y on the floor plane, z up.
+struct ArenaPoint3 {
+    float x = 0.f;
+    float y = 0.f;
+    float z = 0.f;
+};
+
+// A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
+inline constexpr float kArenaShotHeight = 1.4f;
+
 // What the player pressed this frame. Edges (true on the frame of the press) except `guard`.
 struct ArenaInput {
     Vec2 move;                  // the stick on the ground, already turned by the camera; length 0..1
@@ -471,6 +562,28 @@ struct ArenaInput {
     bool release = false;       // the Release (open above kArenaReleaseOpenLoad)
     bool pair = false;          // the partner's press: a second lead's input, paired with a parry within pairWindow
     std::int8_t read = -1;      // the partner's Read: the index of the card picked, or -1
+    // The aim (AimStance, right mouse held): while on, the player turns toward aimDir (the camera's aim on the ground,
+    // unit) at aimTurn rad/s (0: the kit's turnRate) instead of the stick or the lock, attacks start and track toward
+    // it, and walking is scaled by aimSpeed (0..1). A guns kit's light pressed while aiming is its shot.
+    bool aim = false;
+    Vec2 aimDir{1.f, 0.f};
+    float aimTurn = 0.f;
+    float aimSpeed = 1.f;
+    // The round's climb (rad, + up) from kArenaShotHeight toward the crosshair. Pitched, a guns kit's shot is a line in
+    // space along the lead's facing: it meets the first standing body (ArenaLook's arenaBodyCylinder, its radius
+    // widened by half the shot's width) it enters within the shot's range, so a round over a short enemy's head goes
+    // on to the body behind it. Unpitched (the autopilot, a host without a camera), it is the flat lane. A shot keeps
+    // the choice it started with; while pitched it follows aimPitch until it fires.
+    bool aimPitched = false;
+    float aimPitch = 0.f;
+    // Attacking on the move (AttackMove, the host's attackMove for the attack under way): walking during an attack at
+    // attackSpeed (0..1) of the pace (ramped from the pace the attack began at, at the brake or the accel, so a 0
+    // slides to a stop), and turning at up to attackTurn rad/s all through it toward the aim, the lock or the stick
+    // (during startup the attack's own tracking if faster). Both 0 (the defaults, for a host that moves nothing): the
+    // attack roots at once and holds its facing after startup. The game's hosts always fill both from attackMove,
+    // whose turn is never 0, so a lead's facing is never held.
+    float attackSpeed = 0.f;
+    float attackTurn = 0.f;
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -485,7 +598,7 @@ enum class ArenaAction : std::uint8_t {
     Release, // appended
 };
 // An enemy's brain state (append only).
-enum class ArenaBrain : std::uint8_t { Approach, Strafe, Attack, Staggered, Open, Down, Dead };
+enum class ArenaBrain : std::uint8_t { Approach, Strafe, Attack, Staggered, Open, Down, Dead, Flinch /* appended */ };
 // Where an attack is.
 enum class ArenaPart : std::uint8_t { None, Startup, Active, Recovery };
 
@@ -494,19 +607,29 @@ FTCORE_API const char* arenaBrainName(ArenaBrain b);
 
 struct ArenaPlayerOut {
     Vec2 velocity;                    // m/s this frame
-    Vec2 facing{1.f, 0.f};            // unit
+    Vec2 facing{1.f, 0.f};            // unit: the facing the rules use (guard, parry, backstep, riposte, attacks)
+    Vec2 drawFacing{1.f, 0.f};        // unit: the facing to draw the body at. Outside attacks and dodges it turns toward
+                                      // `facing` at turnRate, so a lock that snaps the facing back after a dodge turns
+                                      // the drawn body round over a few frames (turnRate 0: the same as `facing`); an
+                                      // attack's startup turns it faster and it is `facing` from the active part on
     ArenaAction action = ArenaAction::Idle;
     ArenaPart part = ArenaPart::None; // Light, Heavy, Riposte, Release
-    std::uint8_t move = 0;            // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove; kArenaReleaseMove
+    std::uint8_t move = 0;            // Light: the chain index or kArenaShotMove; kArenaHeavyMove; kArenaRiposteMove; kArenaReleaseMove
     float actionTime = 0.f;           // seconds since the action started
     bool invulnerable = false;        // dodge i-frames, a riposte or a Release
     bool parrying = false;            // inside a parry window
     std::uint8_t lock = kArenaNobody; // the locked enemy
+    std::uint8_t soft = kArenaNobody; // the current attack's soft target (living), else kArenaNobody
     Vec2 dodgeDir{1.f, 0.f};          // unit: set once when a dodge starts (the stick, or the backstep's direction,
                                       // before any ring cut) and kept until the next dodge
     bool backstep = false;            // whether the current or last dodge is a backstep
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
     bool overloaded = false;          // Load at kMaxLoad: light, heavy and heal are refused until a Release
+    float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
+    float wantSpeed = -1.f;           // m/s the stick asks of a walk that ramps (Idle, Move, Guard, Heal) this frame, the
+                                      // pace the velocity heads for; -1 otherwise (an attack, a dodge, a pause, a stun)
+    float stopDistance = -1.f;        // m the body would slide at moveBrake from this velocity to a stand, while wantSpeed
+                                      // is known; -1 otherwise
 };
 
 struct ArenaEnemyOut {
@@ -517,8 +640,9 @@ struct ArenaEnemyOut {
     std::uint8_t move = 0;            // Attack: the move index
     float stateTime = 0.f;            // seconds in this brain state (Attack: in this move)
     float stateLength = 0.f;          // Staggered, Open, Down: the state's whole length, s (the host's hold while one
-                                      // runs; +infinity until a release); 0 in any other state
+                                      // runs; +infinity until a release); Flinch: flinchTime; 0 in any other state
     bool token = false;               // holds an attack token
+    float stopLeft = 0.f;             // s left in a hit pause (0: none); its state time and velocity stand still
 };
 
 enum class ArenaEventType : std::uint8_t { // append only
@@ -544,6 +668,9 @@ enum class ArenaEventType : std::uint8_t { // append only
     Read,           // the partner picked the right card for source's `move`: amount = the stacks now (appended)
     Misread,        // ... a decoy: the stacks are 0 and source regained `amount` poise (appended)
     ReadCounter,    // the partner's Read counter hit target for `amount` hp; move = the stacks (appended)
+    Flinched,       // the player's blow made target flinch (appended)
+    BrokeOut,       // source broke out of the player's blows with its move `move` (appended)
+    HostHit,        // the host's hostBlow took `amount` hp from target (a held blow's bonus); move = the blow's (appended)
 };
 
 struct ArenaEvent {
@@ -585,6 +712,24 @@ struct ArenaStats {
     int evades = 0;
     int heals = 0;
     int staggers = 0;  // enemy poise breaks
+    int flinches = 0;  // enemy flinches
+    int flinchChances = 0; // blows of flinchPoise or more on an upright kind that flinches, host-allowed (a flinch
+                           // could show; the chain cap and an active or armoured attack may still stop it)
+    int breakOuts = 0; // enemy break-outs
+    int breakDue = 0;      // blows that brought an upright enemy's count to its breakAt without staggering it
+    int breakRunBest = 0;  // the longest run toward a break-out (relative to its breakAt), counted as each blow lands
+    int breakRunNeed = 0;  // that run's breakAt (0: no blow counted)
+    int breakUpright = 0;  // the player's blows landed on an upright enemy whose kind has a breakAt
+    int breakVetoed = 0;   // ... of them the host barred (as it bars a flinch), so none counted
+    int breakBarred = 0;   // breakDue whose break move the enemy's move mask barred
+    int cancels = 0;          // actions the player started inside an attack (its recovery or cancel window)
+    int cancelChances = 0;    // attacks in whose cut window a press or a guard waited (a cancel could show)
+    int lights = 0;           // light attacks started (not ripostes or shots)
+    float lightStamina = 0.f; // stamina those lights cost
+    int softTargets = 0;      // attacks started on a soft target
+    int softChances = 0;      // attacks started with nothing locked, no aim and a kit with a softRange (one could)
+    int shots = 0;            // a guns kit's shots started
+    int shotHits = 0;         // of them, the ones that connected (per target; also in hits)
     int guardBreaks = 0;
     int restarts = 0;
     int loadStored = 0;      // Load stored by parries
@@ -596,7 +741,42 @@ struct ArenaStats {
     int correctReads = 0;
     int readCounters = 0;    // Read counters that landed
     int readDamage = 0;      // their damage (also in damageDealt)
+    // Pace (ArenaImpact.h's arenaPaceText), summed over restarts:
+    int kills = 0;                                      // enemies killed
+    std::array<float, kMaxArenaEnemies> killSeconds{};  // per slot: seconds from the player's first blow on it to its
+                                                        // death, summed over its kills (a kill with no blow adds none)
+    std::array<int, kMaxArenaEnemies> killCount{};      // per slot: the kills those seconds cover
+    int punishWindows = 0; // times an enemy went Staggered, Open or Down (Open turning Down is the same window)
+    int punishUsed = 0;    // ... of them, the windows the player's side landed a blow in
 };
+
+// Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
+// showed the feature at least once.
+// A check's verdict: n/a (the run gave it no chance), PASS, FAIL, or barred (it was due and a mask barred it).
+enum class ArenaCheck : std::uint8_t { NotShown, Pass, Fail, Barred };
+FTCORE_API const char* arenaCheckText(ArenaCheck c); // "n/a", "PASS", "FAIL", "barred"
+
+struct ArenaFeatureChecks {
+    bool lightsFree = false; // lights were started and cost no stamina
+    bool cancels = false;    // an action cut into an attack
+    bool flinch = false;     // an enemy flinched
+    bool breakOut = false;   // an enemy broke out
+    bool breakOutDue = false; // a blow reached an enemy's breakAt without staggering it (else break-out can't show)
+    bool softTarget = false; // an attack started on a soft target
+    bool shots = false;      // a guns kit fired a shot that connected
+    // Verdicts with their own can-show rule (the host adds its own for shots):
+    ArenaCheck lightsFreeCheck = ArenaCheck::NotShown; // n/a with no light started
+    ArenaCheck cancelsCheck = ArenaCheck::NotShown;    // n/a with no cancelChances
+    ArenaCheck flinchCheck = ArenaCheck::NotShown;     // n/a with no flinchChances (a kit too light, or poise first)
+    // n/a with no softChances: every attack started locked on or aimed (the autopilot locks unless -ArenaNoLock; a
+    // guns kit's aimed shot always takes the aim), or the kit has no softRange.
+    ArenaCheck softTargetCheck = ArenaCheck::NotShown;
+    // PASS on a break-out; barred when it was due (or every upright blow vetoed) and barred; FAIL when it was due and
+    // unbarred, or upright blows landed and the run never moved; n/a with no upright blow, or poise always first.
+    ArenaCheck breakOutCheck = ArenaCheck::NotShown;
+};
+
+FTCORE_API ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats);
 
 enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
 
@@ -604,7 +784,8 @@ enum class ArenaPhase : std::uint8_t { NotStarted, Fighting, Victory, Defeat };
 // partner's counters on an enemy, or an enemy's attack on the player.
 struct ArenaBlow {
     ArenaEventType type = ArenaEventType::Hit; // the event it reports with: Hit (an attack, either way),
-                                               // CounterStagger or ReadCounter (the partner's, on an enemy)
+                                               // CounterStagger or ReadCounter (the partner's, on an enemy), or
+                                               // HostHit (a bonus, ArenaFight::ruledHostBlow; never from tick)
     std::uint8_t source = kArenaNobody;        // kArenaPlayer (the partner's counters too) or the enemy
     std::uint8_t target = kArenaNobody;        // the enemy, or kArenaPlayer
     std::uint8_t move = 0;                     // as the event's
@@ -666,12 +847,28 @@ public:
     // (the tests tick at a fixed 1/60 s and move the bodies with arenaStep).
     FTCORE_API ArenaInput autopilot() const;
 
+    // The standing enemy a pitched shot from the player's place (as of the last tick) along `dir` (unit, on the ground)
+    // at `pitch` would meet first, by the rule ArenaInput::aimPitched gives; kArenaNobody for none or a kit without a
+    // shot. `distance`, when given, gets how far along the round's line it enters (0 for a lead inside the body). A
+    // host shows the crosshair as out of reach when this is not the enemy under it. Enemies with their bit in `skip`
+    // are left out (to ask how far along the round the one under the crosshair would be, the others aside).
+    FTCORE_API std::uint8_t shotMeets(Vec2 dir, float pitch, float* distance = nullptr, std::uint32_t skip = 0u) const;
+    // Opt in (off by default; begin and restart keep it): with a guns kit the autopilot also aims and shoots while it
+    // closes in on its target, when the target stands within the shot's range and outside the light chain's reach and
+    // the shot leaves a dodge's stamina in reserve. Off, the autopilot never aims.
+    FTCORE_API void setAutopilotShoots(bool on);
+    FTCORE_API bool autopilotShoots() const;
+
     FTCORE_API ArenaPhase phase() const;
     bool over() const {
         const ArenaPhase p = phase();
         return p == ArenaPhase::Victory || p == ArenaPhase::Defeat;
     }
     FTCORE_API float time() const; // seconds since begin() / restart()
+    // The held clock (see Hit pause): time() less the player's hit pauses; 0 at begin() / restart(). The clock
+    // the shared combat inputs are ticked with. hitStopLeft: seconds left in the player's hit pause (0: none).
+    FTCORE_API float heldTime() const;
+    FTCORE_API float hitStopLeft() const;
     FTCORE_API const ArenaDef& def() const;
     FTCORE_API const ArenaRing& ring() const;
     FTCORE_API const ArenaOutput& output() const; // the last tick's
@@ -742,11 +939,19 @@ public:
     // restart() clear it. Nothing for an enemy out of range; enemyTurnHeld is then false.
     FTCORE_API void setEnemyTurnHeld(std::size_t i, bool held);
     FTCORE_API bool enemyTurnHeld(std::size_t i) const;
+    // While false, enemy i never flinches (a boss whose script allows it only in some phases); true, the default,
+    // leaves it to its kind's flinchTime. It applies from the next blow and never ends a flinch already running.
+    // begin() and restart() set it again. Nothing for an enemy out of range; enemyFlinch is then false.
+    FTCORE_API void setEnemyFlinch(std::size_t i, bool allowed);
+    FTCORE_API bool enemyFlinch(std::size_t i) const;
     // Turns enemy i to `facing` (made unit) now; the next tick works from it and reports it. Nothing for a zero
     // vector or an enemy out of range.
     FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);
     // Every blow goes to `hook` with `user` before it applies (ArenaBlowHook); nullptr: none (every blow as it is).
     FTCORE_API void setBlowHook(ArenaBlowHook hook, void* user);
+    // The hook set now and its user pointer (nullptr, nullptr: none), for a host that chains its own ruling after it.
+    FTCORE_API ArenaBlowHook blowHook() const;
+    FTCORE_API void* blowHookUser() const;
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
     // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
     // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they
@@ -754,20 +959,35 @@ public:
     // overloaded() and output().player show it at once; stats().overloads counts the fill at once, and
     // stats().loadStored stays the parries'. begin() and restart() empty the gauge and drop events not yet reported;
     // a fill already counted stays in the stats until begin() clears them. 0, and nothing stored, when the fight is
-    // not running (before begin(), after Victory or Defeat). kMaxLoad (Load.h) is the gauge's cap.
+    // not running (before begin(), after Victory or Defeat), or for a kit with no attacks. kMaxLoad (Load.h) is the gauge's cap.
     FTCORE_API int giveLoad(int amount);
+    // Extra damage from outside a blow (a held blow's settle, the fight session's bonuses): honours the hp floor,
+    // counts in damageDealt, kills at 0 like a landed blow, and reports a HostHit (amount, move) for the enemy, then
+    // its Downed when it died. No poise, no flinch, no hit pause, no hook call. The hp changes at once (enemyHp,
+    // enemyAlive); the events come in the next tick's output (at once when called from a blow hook), and a kill's
+    // Victory with that tick. False (nothing) on a dead or out-of-range enemy, damage <= 0, or outside Fighting.
+    FTCORE_API bool hostBlow(std::size_t enemy, int damage, std::uint8_t move);
+    // hostBlow, ruled first as a blow would be: `hook` (with `user`) sees an ArenaBlow (type HostHit, from kArenaPlayer
+    // on the enemy, `damage`, no poise, the player's position and facing, the enemy's position, time()) and its veto
+    // deals nothing, its damage scale scales the bonus. A HostHit blow is a bonus on a blow already ruled: a hook rules
+    // it without counting a hit (no crit judged, no hit noted), vetoing it where the target takes no damage now. Pass the rulings that bar blows (a boss's invulnerable phase, a
+    // weak point) and not the caller's own judge, so the bonus is not judged twice; nullptr: hostBlow as it is. The
+    // fight's own hook is not called. Inside the call, tick, begin and restart do nothing, as inside the blow hook.
+    // False (nothing) when vetoed, scaled to 0, or as hostBlow.
+    FTCORE_API bool ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move, ArenaBlowHook hook, void* user);
 
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
     friend struct ArenaFightImpl;
 
-    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release }; // an action waiting in the input buffer
+    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release, Shot }; // an action waiting in the input buffer
     enum class HoldAsk : std::uint8_t { None, Hold, Release };                     // a host's hold request
 
     struct PlayerState {
         Vec2 pos;
         Vec2 facing{1.f, 0.f};
+        Vec2 drawFacing{1.f, 0.f};          // ArenaPlayerOut::drawFacing
         Vec2 velocity;                      // last output, after the ring cut
         int hp = 0;
         float stamina = 0.f;
@@ -779,7 +999,10 @@ private:
         float actionTime = 0.f;             // seconds since the action started
         std::uint8_t move = 0;              // Light: the chain index; kArenaHeavyMove; kArenaRiposteMove
         std::uint8_t hitMask = 0;           // enemies the current attack has hit (one bit each)
+        bool cancelChance = false;          // the current attack's cut window has had a press or guard waiting
         std::uint8_t target = kArenaNobody; // the enemy a riposte is aimed at
+        std::uint8_t soft = kArenaNobody;   // the current attack's soft target ...
+        float homeClose = 0.f;              // ... and the metres it closes in on it over startup and active
         bool healApplied = false;
         bool invulnerable = false;          // this tick: dodge frames or a riposte
         Vec2 dodgeDir{1.f, 0.f};            // the current or last dodge's direction (unit)
@@ -789,6 +1012,10 @@ private:
         bool chainLive = false;             // the last action was a light: the chain may go on
         std::uint8_t chainNext = 0;         // the light a chained press starts
         float lightEnd = 0.f;               // fight time that light ended
+        bool shotPitched = false;           // the shot under way is a pitched round (ArenaInput::aimPitched at its start) ...
+        float shotPitch = 0.f;              // ... climbing at this (rad)
+        Vec2 attackWalk{};                  // the walking part of the velocity during an attack (the lunge apart)
+        float wantSpeed = -1.f;             // ArenaPlayerOut::wantSpeed, this step
         bool guardHeld = false;             // last tick's guard flag
         float lastGuardPress = -1.0e9f;     // fight time of the last guard press (every press counts)
         float parryLeft = 0.f;              // seconds left in the parry window
@@ -801,6 +1028,7 @@ private:
         float pairParry = -1.0e9f;          // fight time of the last unpaired parry ...
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
         int readStacks = 0;                 // correct Reads in a row, 0..kMaxReadStacks
+        float stopUntil = -1.0e9f;          // fight time a hit pause ends
     };
 
     struct EnemyState {
@@ -830,6 +1058,18 @@ private:
         std::uint32_t moveMask = 0xFFFFFFFFu; // the moves a pick may begin (bit m: move m)
         bool facingHeld = false;            // the host's hold: a move keeps the facing it began with
         bool turnHeld = false;              // the host's hold: Approach and Strafe keep the facing (the host turns it)
+        bool flinchAllowed = true;          // the host's: false, it never flinches
+        float stopUntil = -1.0e9f;          // fight time a hit pause ends
+        std::uint8_t breakHits = 0;         // the player's blows in a row toward a break-out
+        std::uint8_t flinchChain = 0;       // flinches in a row (see Flinch)
+        float lastFlinch = -1.0e9f;         // fight time of the last blow that could flinch it
+        float lastBreakHit = -1.0e9f;       // fight time of the last of them
+        int hostOwed = 0;                   // hostBlow damage since the last tick, not yet reported
+        std::uint8_t hostMove = 0;          // the last of those blows' move
+        bool hostKilled = false;            // one of them took the last hp (its Downed not yet reported)
+        float firstBlow = -1.f;             // fight time of the player's side's first blow on it (< 0: none yet)
+        bool punishOpen = false;            // in a punish window (Staggered, Open or Down) ...
+        bool punishHit = false;             // ... that a blow of the player's side has landed in
     };
 
     ArenaDef def_;
@@ -838,6 +1078,7 @@ private:
     std::uint32_t rng_ = 1;                 // xorshift32 state: a copy or a restart replays the same numbers
     ArenaPhase phase_ = ArenaPhase::NotStarted;
     float time_ = 0.f;
+    float heldTime_ = 0.f;                  // time_ less the player's hit pauses
     std::size_t enemyCount_ = 0;
     Vec2 playerStart_;
     Vec2 playerStartFacing_{1.f, 0.f};
@@ -848,6 +1089,7 @@ private:
     ArenaOutput out_;
     ArenaStats stats_;
     std::uint32_t dropped_ = 0;
+    bool autoShoot_ = false; // setAutopilotShoots
     ReadCards read_;                        // the open Read deal
     std::array<ReadCard, kMaxArenaEnemies * kMaxArenaMoves> readPool_{}; // the deal's pool (tells are literals)
     std::uint8_t readFoe_ = kArenaNobody;
