@@ -83,6 +83,12 @@ inline constexpr const TCHAR* LookUnderwaterMaterial = TEXT("/Game/Look/M_Look_U
 // What stirs the water and lights it from above: the rings, the lead's place and wake, the sun under water. Read by the
 // water surfaces and the underwater view, written each frame by the water subsystem (FTBuildLookMaterials, with -Water).
 inline constexpr const TCHAR* LookWaterCollection = TEXT("/Game/Look/MPC_Water");
+// A wet print on dry ground, a deferred decal (FTBuildLookMaterials, alone with -Prints; ftcore/WetPrints.h): the sole
+// drawn in the decal's middle, the drops round it, darker and glossier than the ground. The decal's colour carries the
+// print (r the foot, 0 left and 1 right; g the drops; b a seed; a the stamp) and the engine's fade its age.
+inline constexpr const TCHAR* LookWetPrintMaterial = TEXT("/Game/Look/M_Look_WetPrint");
+// The print decal's whole side, cm: the material's PrintSpan and twice the decal's half size across.
+inline constexpr double WetPrintSpan = 44.0;
 inline constexpr const TCHAR* LookGlassMaterial = TEXT("/Game/Look/M_Look_Glass");
 // The glass system's materials (FTBuildLookMaterials -Glass; ftcore/GlassSurface.h): the true pane (thin translucent,
 // coloured transmission, the scene mirrored in its front layer), the same pane as a mirror layer weighted by the

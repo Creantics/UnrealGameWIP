@@ -22,11 +22,14 @@
 #include "Materials/MaterialExpressionThinTranslucentMaterialOutput.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionDecalColor.h"
+#include "Materials/MaterialExpressionDecalLifetimeOpacity.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
 #include "Materials/MaterialExpressionScreenPosition.h"
 #include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionSingleLayerWaterMaterialOutput.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTime.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
@@ -1556,6 +1559,70 @@ UMaterial* BuildGlow(UMaterialParameterCollection* Look)
 	return Material;
 }
 
+// ---- A wet print on dry ground (-Prints; ftcore/WetPrints.h) ----
+// The decal's UV: u along the heading (1 at the toe), v to the body's right. Its colour: r the foot (0 left, 1 right),
+// g the drops round it (0 none), b a seed, a the stamp (the lead's wetness at the plant). The engine's fade is the age:
+// over the print's life (stamp x 120 s) it goes linearly from 1 to 0, so stamp x fade is the Core's stamp - age / 120.
+const TCHAR* const kWetPrintCode = TEXT(
+	"struct FTHash { float At(float2 p) { return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); } };\n"
+	"FTHash H;\n"
+	"float2 P = (UV - 0.5) * Span;\n"
+	"// y toward the arch: the right foot's arch is on its left.\n"
+	"float2 S = float2(P.x, DC.r > 0.5 ? -P.y : P.y);\n"
+	"float dFore = length((S - float2(5.0, 0.4)) / float2(9.0, 5.2));\n"
+	"float dHeel = length((S - float2(-8.5, -0.2)) / float2(5.0, 4.0));\n"
+	"float dWaist = length((S - float2(0.0, -1.8)) / float2(8.0, 2.8));\n"
+	"float Sole = 1.0 - smoothstep(0.78, 1.0, min(dFore, min(dHeel, dWaist)));\n"
+	"// The tread and an uneven sole: some of it presses harder.\n"
+	"float2 q = P / 3.0 + DC.b * 17.0;\n"
+	"float2 i = floor(q);\n"
+	"float2 f = frac(q);\n"
+	"f = f * f * (3.0 - 2.0 * f);\n"
+	"float Noise = lerp(lerp(H.At(i), H.At(i + float2(1, 0)), f.x), lerp(H.At(i + float2(0, 1)), H.At(i + float2(1, 1)), f.x), f.y);\n"
+	"Sole *= lerp(0.45, 1.0, Noise) * (0.8 + 0.2 * step(0.35, frac(S.x / 1.5)));\n"
+	"// Drops shaken off round the first prints: a 4 cm grid, some cells keeping one drop.\n"
+	"float Drops = 0.0;\n"
+	"if (DC.g > 0.0)\n"
+	"{\n"
+	"\tfloat2 cell = floor(P / 4.0);\n"
+	"\tfor (int dy = -1; dy <= 1; ++dy)\n"
+	"\t{\n"
+	"\t\tfor (int dx = -1; dx <= 1; ++dx)\n"
+	"\t\t{\n"
+	"\t\t\tfloat2 c = cell + float2(dx, dy) + DC.b * 31.0;\n"
+	"\t\t\tif (H.At(c) < 0.4 * DC.g)\n"
+	"\t\t\t{\n"
+	"\t\t\t\tfloat2 at = (cell + float2(dx, dy) + float2(H.At(c + 7.1), H.At(c + 3.7))) * 4.0;\n"
+	"\t\t\t\tfloat r = lerp(0.35, 1.1, H.At(c + 11.3));\n"
+	"\t\t\t\tfloat inside = 1.0 - smoothstep(16.0, 20.0, length(at));\n"
+	"\t\t\t\tDrops = max(Drops, inside * (1.0 - smoothstep(r * 0.7, r, length(P - at))));\n"
+	"\t\t\t}\n"
+	"\t\t}\n"
+	"\t}\n"
+	"}\n"
+	"return saturate(max(Sole, 0.8 * Drops)) * saturate(DC.a) * saturate(Life) * Gain;\n");
+
+UMaterial* BuildWetPrint()
+{
+	UMaterial* Material = NewMaterial(FTScene::LookWetPrintMaterial);
+	Material->MaterialDomain = MD_DeferredDecal;
+	Material->BlendMode = BLEND_Translucent;
+	UMaterialExpressionCustom* Print = AddCustom(Material, TEXT("FTWetPrint"), kWetPrintCode, CMOT_Float1, 0);
+	AddInput(Print, TEXT("UV"), AddExpression<UMaterialExpressionTextureCoordinate>(Material, -900, -300));
+	// Output 5 is RGBA (output 0 is RGB only, and the stamp rides in alpha).
+	AddInputAt(Print, TEXT("DC"), AddExpression<UMaterialExpressionDecalColor>(Material, -900, -200), 5);
+	AddInput(Print, TEXT("Life"), AddExpression<UMaterialExpressionDecalLifetimeOpacity>(Material, -900, -100));
+	AddInput(Print, TEXT("Span"), AddScalar(Material, TEXT("PrintSpan"), static_cast<float>(FTScene::WetPrintSpan), 0));
+	AddInput(Print, TEXT("Gain"), AddScalar(Material, TEXT("PrintDark"), 0.55f, 100));
+	Print->RebuildOutputs();
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, AddVector(Material, TEXT("WetColor"), FLinearColor(0.035f, 0.03f, 0.025f), 200));
+	Inputs->Roughness.Connect(0, AddScalar(Material, TEXT("WetRoughness"), 0.1f, 300));
+	Inputs->Opacity.Connect(0, Print);
+	Finish(Material);
+	return Material;
+}
+
 bool Save(UObject* Asset, const TCHAR* PackageName)
 {
 	const FString File = PackageFile(PackageName);
@@ -1593,6 +1660,23 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 		UMaterial* Material;
 		const TCHAR* Package;
 	};
+	if (FParse::Param(*Params, TEXT("Prints")))
+	{
+		// The wet print's decal alone: nothing else is rebuilt or resaved.
+		const FString File = PackageFile(FTScene::LookWetPrintMaterial);
+		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: couldn't replace %s."), *File);
+			return 1;
+		}
+		UMaterial* Print = BuildWetPrint();
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		if (!Print || FT::CompileErrors(TEXT("FTBuildLookMaterials"), Print) > 0)
+		{
+			return 1;
+		}
+		return Save(Print, FTScene::LookWetPrintMaterial) ? 0 : 1;
+	}
 	if (FParse::Param(*Params, TEXT("Glass")))
 	{
 		// The glass system's materials alone, on the look collection as it stands: nothing else is rebuilt or resaved.

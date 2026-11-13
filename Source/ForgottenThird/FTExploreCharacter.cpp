@@ -48,6 +48,10 @@
 #include "FTInputBindings.h"
 #include "FTPauseSubsystem.h"
 #include "FTMeshFacing.h"
+#include "FTPartyFollower.h"
+#include "FTSceneLook.h"
+#include "Components/DecalComponent.h"
+#include "Misc/PackageName.h"
 #include "ForgottenThird.h"
 #include "FTText.h"
 
@@ -166,6 +170,8 @@ void AFTExploreCharacter::BeginPlay()
 			bLeadGoJump = FParse::Param(FCommandLine::Get(), TEXT("LeadGoJump"));
 			FParse::Value(FCommandLine::Get(), TEXT("LeadGoQuit="), LeadGoQuit);
 		}
+		FParse::Value(FCommandLine::Get(), TEXT("LeadGoPace="), LeadGoPace);
+		LeadGoPace = FMath::Clamp(LeadGoPace, 0.1f, 1.f);
 	}
 	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
@@ -2755,6 +2761,7 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		RollTurnLeft = FMath::Max(RollTurnLeft - DeltaSeconds, 0.f);
 	}
 	TickWater(DeltaSeconds);
+	TickWetPrints(DeltaSeconds);
 	TickWeapon(DeltaSeconds);
 	TickUnstick(DeltaSeconds);
 	TickWedge();
@@ -2797,7 +2804,7 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		const FVector Way = (LeadGoTo - GetActorLocation()).GetSafeNormal2D();
 		if (FVector::Dist2D(LeadGoTo, GetActorLocation()) > 30.0 && !bWaterClimbing)
 		{
-			AddMovementInput(Way, 1.f);
+			AddMovementInput(Way, LeadGoPace);
 			LeadGoStuck = GetVelocity().Size2D() < 15.0 ? LeadGoStuck + DeltaSeconds : 0.f;
 			if (bLeadGoJump && LeadGoStuck > 1.f)
 			{
@@ -2958,6 +2965,180 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 	}
 	System->LeadWater(*this, State, At, GetVelocity(), 2.f * Half, DeltaSeconds);
 	ShowWetness(System->LeadWetness());
+}
+
+namespace
+{
+// No wet print on the party: every primitive of `Actor` and of what hangs on it (clothes, weapons) takes no decals.
+void NoPrintsOn(AActor* Actor)
+{
+	if (!Actor)
+	{
+		return;
+	}
+	TInlineComponentArray<UPrimitiveComponent*> Parts(Actor);
+	for (UPrimitiveComponent* Part : Parts)
+	{
+		if (Part && Part->bReceivesDecals)
+		{
+			Part->SetReceivesDecals(false);
+		}
+	}
+	Actor->ForEachAttachedActors([](AActor* Attached)
+	{
+		NoPrintsOn(Attached);
+		return true;
+	});
+}
+} // namespace
+
+void AFTExploreCharacter::TickWetPrints(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (!System || !System->HasBodies())
+	{
+		return;
+	}
+	const float Wetness = System->LeadWetness().wetness;
+	// The pool, once, the first time the lead is wet (in the water, out of sight of any print).
+	if (WetPrintDecals.Num() == 0 && Wetness > 0.f)
+	{
+		const FString Path = FString(FTScene::LookWetPrintMaterial) + TEXT(".") + FPackageName::GetShortName(FTScene::LookWetPrintMaterial);
+		UMaterialInterface* PrintMaterial = LoadObject<UMaterialInterface>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!PrintMaterial)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Wet prints: %s is missing (FTBuildLookMaterials -Prints); none show."), FTScene::LookWetPrintMaterial);
+		}
+		WetPrintDecals.Reserve(static_cast<int32>(ftcore::kWetPrintCap));
+		for (std::size_t I = 0; I < ftcore::kWetPrintCap; ++I)
+		{
+			UDecalComponent* Decal = NewObject<UDecalComponent>(this);
+			Decal->SetUsingAbsoluteLocation(true);
+			Decal->SetUsingAbsoluteRotation(true);
+			Decal->SetUsingAbsoluteScale(true);
+			// Down 5 cm into the ground and up 5 out of it; the print's whole side across.
+			Decal->DecalSize = FVector(5.0, 0.5 * FTScene::WetPrintSpan, 0.5 * FTScene::WetPrintSpan);
+			Decal->FadeScreenSize = 0.f;
+			Decal->SetDecalMaterial(PrintMaterial);
+			Decal->SetVisibility(false);
+			Decal->RegisterComponent();
+			WetPrintDecals.Add(Decal);
+		}
+		NoPrintsOn(this);
+		for (TActorIterator<AFTPartyFollower> It(World); It; ++It)
+		{
+			NoPrintsOn(*It);
+		}
+		WetPrintLook = 2.f;
+	}
+	// On foot on dry ground: walking or running, not falling, swimming, wading, climbing or vaulting.
+	const UFTLocomotionAnimInstance* Anim = GetMesh() ? Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()) : nullptr;
+	const UCharacterMovementComponent* Move = GetCharacterMovement();
+	const bool bInWater = bSwimming || bWaterClimbing || WaterNow.mode != ftcore::WaterMode::Dry;
+	bool bOnFoot = Anim && Move && Move->IsMovingOnGround() && !bInWater && !bTraversing;
+	if (bOnFoot)
+	{
+		const ftcore::Locomotion& Loco = Anim->GetLocomotion();
+		bOnFoot = Loco.state() == ftcore::LocoState::Ground && GetVelocity().Size2D() >= Loco.tuning().moveStop;
+	}
+	const float Phase = Anim ? Anim->LeadPhaseAtFrameStart() : -1.f;
+	// The body dries at the water's rate (UFTWaterSubsystem steps it at dryScale 1); its prints age at the same.
+	constexpr float DryScale = 1.f;
+	const int Laid = WetPrints.step(Phase, bOnFoot, Wetness, DeltaSeconds, DryScale);
+	if (Laid >= 0 && Laid < WetPrintDecals.Num())
+	{
+		PlaceWetPrint(Laid, DryScale);
+	}
+	// Now and then: the faded decals hidden; a follower come in since takes no prints.
+	if ((WetPrintLook -= DeltaSeconds) <= 0.f && WetPrintDecals.Num() > 0)
+	{
+		WetPrintLook = 2.f;
+		for (int32 I = 0; I < WetPrintDecals.Num(); ++I)
+		{
+			UDecalComponent* Decal = WetPrintDecals[I];
+			if (Decal && Decal->IsVisible() && !(WetPrints.strength(static_cast<std::size_t>(I)) > 0.f))
+			{
+				Decal->SetVisibility(false);
+			}
+		}
+		NoPrintsOn(this);
+		for (TActorIterator<AFTPartyFollower> It(World); It; ++It)
+		{
+			NoPrintsOn(*It);
+		}
+	}
+	// The low-rate log: from leaving the water, every 2 s while the lead is wet or prints show, and once when both end.
+	if (bInWater)
+	{
+		WetPrintOut = 0.f;
+		WetPrintLogAt = 0.f;
+		bWetPrintLoggedDry = false;
+	}
+	else if (WetPrintOut >= 0.f)
+	{
+		WetPrintOut += DeltaSeconds;
+		if (!bWetPrintLoggedDry && WetPrintOut >= WetPrintLogAt)
+		{
+			WetPrintLogAt += 2.f;
+			const int32 Live = static_cast<int32>(WetPrints.live());
+			int32 Shown = 0;
+			for (const UDecalComponent* Decal : WetPrintDecals)
+			{
+				Shown += Decal && Decal->IsVisible() ? 1 : 0;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Wet prints: %d live (%d shown), %u laid, wetness %.2f, %.0f s out of the water, frame %llu."), Live, Shown,
+				WetPrints.laid(), Wetness, WetPrintOut, static_cast<unsigned long long>(GFrameCounter));
+			bWetPrintLoggedDry = Live == 0 && !(Wetness > 0.f);
+		}
+	}
+}
+
+void AFTExploreCharacter::PlaceWetPrint(int32 Index, float DryScale)
+{
+	UDecalComponent* Decal = WetPrintDecals[Index];
+	if (!Decal)
+	{
+		return;
+	}
+	const ftcore::WetPrint& Print = WetPrints.print(static_cast<std::size_t>(Index));
+	const bool bLeft = Print.foot == ftcore::WetFoot::Left;
+	// The foot: between its ankle and its ball, else a hand's width to the body's side.
+	const USkeletalMeshComponent* Body = GetMesh();
+	const FName Ankle = bLeft ? FName(TEXT("foot_l")) : FName(TEXT("foot_r"));
+	const FName Ball = bLeft ? FName(TEXT("ball_l")) : FName(TEXT("ball_r"));
+	const FVector At = GetActorLocation();
+	const float FeetZ = static_cast<float>(At.Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	FVector Foot = At + GetActorRightVector() * (bLeft ? -11.0 : 11.0);
+	if (Body && Body->GetBoneIndex(Ankle) != INDEX_NONE && Body->GetBoneIndex(Ball) != INDEX_NONE)
+	{
+		Foot = 0.5 * (Body->GetSocketLocation(Ankle) + Body->GetSocketLocation(Ball));
+	}
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(FTWetPrint), false, this);
+	FHitResult Hit;
+	const bool bGround = GetWorld()->LineTraceSingleByChannel(Hit, FVector(Foot.X, Foot.Y, FeetZ + 30.0), FVector(Foot.X, Foot.Y, FeetZ - 60.0), ECC_Visibility, Params);
+	// Dry walkable ground only: never on water, a slope or inside something.
+	if (!bGround || Hit.bStartPenetrating || Hit.ImpactNormal.Z < 0.7)
+	{
+		Decal->SetVisibility(false);
+		return;
+	}
+	const UFTWaterSubsystem* System = GetWorld()->GetSubsystem<UFTWaterSubsystem>();
+	const ftcore::Vec2 Plan{static_cast<float>(Hit.ImpactPoint.X * 0.01), static_cast<float>(Hit.ImpactPoint.Y * 0.01)};
+	if (System && System->HasBodies() && System->Bodies().overWater(Plan, static_cast<float>(Hit.ImpactPoint.Z * 0.01), 0.02f))
+	{
+		Decal->SetVisibility(false);
+		return;
+	}
+	// Down the decal's X; its u (the material's along) is the body's heading, its v the body's right.
+	Decal->SetWorldLocationAndRotation(Hit.ImpactPoint, FRotator(-90.0, GetActorRotation().Yaw, 0.0));
+	Decal->SetDecalColor(FLinearColor(bLeft ? 0.f : 1.f, Print.drops, FMath::Frac(static_cast<float>(Print.serial) * 0.618034f), Print.stamp));
+	Decal->SetVisibility(true);
+	// The engine's fade last, from this frame (a colour or visibility change re-makes the decal's proxy, which starts
+	// its fade from when it is made): 1 to 0 over the print's life, so the stamp x fade is the Core's strength. The
+	// fade's own end would destroy the component; the pool keeps it.
+	Decal->SetFadeOut(0.f, ftcore::WetPrints::life(Print.stamp) / DryScale, false);
+	Decal->SetLifeSpan(0.f);
 }
 
 void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)

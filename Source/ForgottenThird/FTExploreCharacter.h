@@ -94,6 +94,7 @@
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
 #include "ftcore/WaterBodies.h"
+#include "ftcore/WetPrints.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
 
@@ -103,6 +104,7 @@ class AFTExploreDirector;
 class UAnimSequence;
 class AFTPartyVan;
 class UCameraComponent;
+class UDecalComponent;
 class UInputAction;
 class UInputMappingContext;
 class URectLightComponent;
@@ -520,9 +522,25 @@ private:
 	float WetShown = 0.f;
 	float WetLineShown = 0.f;
 	float WetSiltShown = 0.f;
+	// Wet prints (ftcore::WetPrints): on foot on dry ground the lead leaves a print at each plant of its foot phase,
+	// as wet as it is, fading as it dries. A fixed pool of decals, one per Core slot, made once the first time the lead
+	// is wet (in the water, so the hitch is out of sight of any print); a laid
+	// print's decal is placed by a short trace down at the foot (dry walkable ground only, never over water), its colour
+	// carries the print and the engine's fade its age, so what shows is the Core's strength. The party's meshes take no
+	// decals. While the lead is out of the water and wet, or prints show, the live count is logged every 2 s.
+	void TickWetPrints(float DeltaSeconds);
+	void PlaceWetPrint(int32 Index, float DryScale);
+	ftcore::WetPrints WetPrints;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UDecalComponent>> WetPrintDecals;
+	float WetPrintLook = 0.f;  // to the next sweep for faded decals and decal-taking party meshes
+	float WetPrintOut = -1.f;  // seconds out of the water (-1 in it, or before it was ever in)
+	float WetPrintLogAt = 0.f; // the out-of-water time of the next log line
+	bool bWetPrintLoggedDry = true;
 	// A scripted walk for captures and checks (BeginLeadGo, or -LeadGo=<x,y> in the plan frame of -WorldEyeSide after
 	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it presses jump (with -LeadGoJump); the run
-	// quits -LeadGoQuit=<s> after it began.
+	// quits -LeadGoQuit=<s> after it began. -LeadGoPace=<0.1..1> walks it slower (the stick's push).
+	float LeadGoPace = 1.f;
 	bool bLeadGo = false;
 	bool bLeadGoJump = false;
 	FVector LeadGoTo = FVector::ZeroVector;

@@ -93,6 +93,7 @@ private:
 	FVector WalkTo = FVector::ZeroVector;
 	int32 WalkFrames = 0;
 	int32 WalkFrame = 0;
+	int32 WalkEvery = 1; // -WorldEyeEvery: a walk saves every n-th frame
 	// -WorldEyeLeadCam and its script (the .cpp's note).
 	bool bLeadCam = false;
 	bool bDip = false;

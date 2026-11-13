@@ -185,6 +185,8 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		float Speed = 1.4f, Fps = 60.f;
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkSpeed="), Speed);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkFps="), Fps);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeEvery="), WalkEvery);
+		WalkEvery = FMath::Max(WalkEvery, 1);
 		const ftcore::MassingVec WalkM = ftcore::massingEnginePoint(Side, WalkX, WalkY, WalkZ);
 		WalkFrom = From;
 		WalkTo = FVector(WalkM.x * 100.0, WalkM.y * 100.0, WalkM.z * 100.0);
@@ -429,6 +431,11 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	if (bWalk && Eye && WalkFrame < WalkFrames)
 	{
 		++WalkFrame;
+		if (WalkFrame == 1)
+		{
+			// What ties the saved frames to lines logged with the engine's frame.
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: walk frame 1 is engine frame %llu."), static_cast<unsigned long long>(GFrameCounter));
+		}
 		if (WalkFrame == 1 && bLeadGo)
 		{
 			if (AFTExploreCharacter* LeadBody = Cast<AFTExploreCharacter>(Player->GetPawn()))
@@ -441,7 +448,11 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 			}
 		}
 		Eye->SetActorLocation(FMath::Lerp(WalkFrom, WalkTo, static_cast<double>(WalkFrame) / WalkFrames));
-		FScreenshotRequest::RequestScreenshot(FString::Printf(TEXT("%s_f%04d.png"), *FPaths::ChangeExtension(File, TEXT("")), WalkFrame), false, false);
+		// -WorldEyeEvery=<n>: only every n-th frame is saved (a long walk at a few frames a second of play).
+		if (WalkEvery <= 1 || WalkFrame % WalkEvery == 0)
+		{
+			FScreenshotRequest::RequestScreenshot(FString::Printf(TEXT("%s_f%04d.png"), *FPaths::ChangeExtension(File, TEXT("")), WalkFrame), false, false);
+		}
 		return;
 	}
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.

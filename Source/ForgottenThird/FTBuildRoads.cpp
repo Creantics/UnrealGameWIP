@@ -200,6 +200,12 @@ struct FRoadPainter
 		Options.bCastShadow = !bFlat;
 		// Gutters, grates and markings stay in the ray-traced scene: a reflected or bounced road shows them.
 		Options.bRayTraced = !bVehicle;
+		// Overhead wires (a few cm thick) are not: the canal's traced reflection broke each into a dark wavy dashed
+		// line on the water. Seen on screen they stay in its screen-space reflection.
+		if (Which == ftcore::RoadTint::Wire)
+		{
+			Options.bRayTraced = false;
+		}
 		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));
 		Options.Label = RoadsUtf8(Box.id);
 		const EFTCellKind Kind = !Solid.collide ? EFTCellKind::NoCollide : (bGround ? EFTCellKind::Walk : EFTCellKind::Solid);
