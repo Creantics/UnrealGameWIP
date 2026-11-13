@@ -602,7 +602,9 @@ struct ArenaFightImpl {
     // ---- the player ----
 
     void regenerate() {
-        // Stamina refills at staminaRegen per second once staminaDelay has passed since the last spend.
+        // Stamina refills at staminaRegen per second once staminaDelay has passed since the last spend. Off the ground
+        // it waits: the delay starts again at touch-down (and runs through the landing lock), so each jump costs.
+        if (pl.jumpTime >= 0.f && pl.jumpTime < fi.jumpStartup + fi.jumpAir) pl.lastSpend = std::max(pl.lastSpend, t1);
         const float from = std::max(t0, pl.lastSpend + fi.staminaDelay);
         if (t1 > from && pl.stamina < fi.stamina)
             pl.stamina = std::min(fi.stamina, pl.stamina + fi.staminaRegen * (t1 - from));
@@ -2845,7 +2847,7 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     case kArenaRiposteMove: return FightClip::Counter;
     case kArenaReleaseMove: return FightClip::Finisher;
     case kArenaShotMove: return kit.weapon == ArenaWeapon::Guns ? FightClip::WeaponRight : FightClip::Stance;
-    case kArenaAirMove: move = 0; break; // the air light strikes as the chain's first
+    case kArenaAirMove: return arenaHeavyStrike(kit); // the air light: the kit's committed strike, downward from the air
     default: break;
     }
     if (move >= kit.lightCount || static_cast<std::size_t>(move) >= kMaxLightChain) return FightClip::Stance;
