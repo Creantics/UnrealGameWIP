@@ -295,6 +295,60 @@ TEST_CASE("ui arena view: the lead and target sections come from the fight; revi
     CHECK(view.now.boss.weakPoint == UiWeakPoint::Open);
 }
 
+TEST_CASE("ui arena view: the carry fields (cap, Release mark, chairs, heal places, the ally) follow the fight") {
+    ArenaDef def = defaultArenaDef();
+    {   // carrying off: the cap is the track, the Release mark is the constant one, no chairs, no ally
+        ArenaFight fight;
+        fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+        ArenaHudLead lead;
+        ArenaHudPartner partner;
+        fillArenaHudLead(fight, lead);
+        fillArenaHudPartner(fight, partner);
+        CHECK(lead.loadCap == kMaxLoad);
+        CHECK(lead.releaseAt == kArenaReleaseOpenLoad);
+        CHECK(lead.chairCount == 0);
+        CHECK(lead.chairs[0] == ChairKind::None);
+        CHECK(lead.healsMax == def.fighter.healCharges);
+        CHECK_FALSE(lead.tookHalf);
+        CHECK_FALSE(partner.present);
+        CHECK(partner.hpMax == 0);
+    }
+    {   // a cap of 70, two Named chairs (one adds a heal charge) and an ally of 120 hp
+        ArenaFight fight;
+        ArenaChairs chairs;
+        chairs.named[0] = ChairEffect{ChairKind::HealCharges, 1.f, 0.f};
+        chairs.named[1] = ChairEffect{ChairKind::LoadGain, 0.1f, 3.f};
+        chairs.count = 2;
+        fight.setLoadCap(70);
+        fight.setChairs(chairs);
+        fight.setCarry(true);
+        fight.setAlly(120, 0.4f);
+        fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+        REQUIRE(fight.giveLoad(30) == 30);
+        ArenaHudLead lead;
+        ArenaHudPartner partner;
+        partner.lead = 2;
+        fillArenaHudLead(fight, lead);
+        fillArenaHudPartner(fight, partner);
+        CHECK(lead.loadMax == kMaxLoad);
+        CHECK(lead.loadCap == 70);
+        CHECK(lead.releaseAt == 23);
+        CHECK(lead.load == 30);
+        CHECK(lead.releaseReady); // 30 > 23, though under the uncapped 33
+        CHECK_FALSE(lead.overloaded);
+        CHECK(lead.healsMax == def.fighter.healCharges + 1);
+        CHECK(lead.chairCount == 2);
+        CHECK(lead.chairs[0] == ChairKind::HealCharges);
+        CHECK(lead.chairs[1] == ChairKind::LoadGain);
+        CHECK(lead.chairs[2] == ChairKind::None);
+        CHECK(partner.present);
+        CHECK(partner.lead == 2); // kept
+        CHECK(partner.hp == 120);
+        CHECK(partner.hpMax == 120);
+        CHECK_FALSE(partner.down);
+    }
+}
+
 // ---- dialogue ----------------------------------------------------------------------------------------------------
 
 TEST_CASE("ui dialogue view: speaker on every line, text by reveal, prompt once complete, options on a choice") {
