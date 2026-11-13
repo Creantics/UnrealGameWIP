@@ -1164,9 +1164,8 @@ void AFTArenaHUD::DrawHUD()
 	}
 	if (NewUiWidget.IsValid())
 	{
-		// The Slate layer draws all of the fight's HUD. The wall cue is the world's, and the aim reticle is shared with the
-		// other modes: both stay on the canvas.
-		DrawEdgeCue(*Mode);
+		// The Slate layer draws all of the fight's HUD, the wall's cue included. The aim reticle is shared with the other
+		// modes: it stays on the canvas.
 		FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
 		FT::DrawPauseOverlay(*this, Canvas);
 		return;

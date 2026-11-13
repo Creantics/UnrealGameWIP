@@ -96,6 +96,7 @@ constexpr double kOnsetLife = 0.35;    // an off-frame windup marker's onset swe
 constexpr double kHitEdgeLife = 0.45;  // the edge hairline when the lead is hit
 constexpr double kParryEdgeLife = 0.4;
 constexpr double kResultFade = 0.3;
+constexpr float kWallBand = 3.5f; // m from the wall where its cue starts
 constexpr double kReleaseBanner = 1.0;
 constexpr double kOverloadBanner = 1.4;
 
@@ -1643,6 +1644,27 @@ private:
 		const ftcore::ArenaHudTarget& T = View.now.target;
 		bCardsLoose = false;
 		bCardsShown = false;
+		// The wall: how near (within the old cue's 3.5 m band) and which way on screen, down the zone's distance field.
+		WallA = 0.f;
+		if (PC && PC->PlayerCameraManager)
+		{
+			const ftcore::ArenaZone& Zone = Runner.GetZone();
+			const ftcore::Vec2 Me = Runner.GetPlayerPosition();
+			const float Near = Zone.wallDistance(Me);
+			if (Near < kWallBand)
+			{
+				constexpr float E = 0.25f;
+				const float GX = Zone.wallDistance(ftcore::Vec2{Me.x + E, Me.y}) - Zone.wallDistance(ftcore::Vec2{Me.x - E, Me.y});
+				const float GY = Zone.wallDistance(ftcore::Vec2{Me.x, Me.y + E}) - Zone.wallDistance(ftcore::Vec2{Me.x, Me.y - E});
+				const FVector Dir(-GX, -GY, 0.0); // towards less room: the wall
+				if (!Dir.IsNearlyZero())
+				{
+					const FVector Local = FRotator(0.0, PC->PlayerCameraManager->GetCameraRotation().Yaw, 0.0).UnrotateVector(Dir);
+					WallDeg = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Local.Y, Local.X))); // 0 ahead (up), clockwise
+					WallA = FMath::Clamp(1.f - Near / kWallBand, 0.f, 1.f);
+				}
+			}
+		}
 		for (int32 I = 0; I < UFTArenaRunner::MaxEnemies; ++I)
 		{
 			FFoeMark& M = Foes[I];
@@ -2097,6 +2119,19 @@ private:
 			P.Box(0.f, T, T, Size.Y - 2.f * T, C);
 			P.Box(Size.X - T, T, T, Size.Y - 2.f * T, C);
 		}
+		// The wall near: a hairline arc in the accent along the screen's edge, on the wall's side.
+		if (WallA > 0.01f)
+		{
+			const float MidY = Size.Y * 0.5f;
+			const float RY = MidY - 34.f * S;
+			const float RX = CX - 34.f * S;
+			ftcore::uiStrokeArc(Line, CX, MidY, RY, WallDeg - 28.f, WallDeg + 28.f, StrokeStyle(1.8f, 131, S, 0.3f));
+			for (uint32 I = 0; I < Line.count; ++I)
+			{
+				Line.pt[I].x = CX + (Line.pt[I].x - CX) * (RX / RY);
+			}
+			Mesh.Stroke(Line, Tok(UiToken::Accent, 0.9f * WallA));
+		}
 		if (ParryA > 0.f)
 		{
 			const FLinearColor C = Tok(UiToken::WeakPoint, 0.8f * ParryA);
@@ -2275,6 +2310,8 @@ private:
 	FString PopWord[PwCount];
 	float PopWordW[PwCount] = {};
 	float HitA = 0.f, ParryA = 0.f, ReleaseA = 0.f, OverA = 0.f;
+	float WallA = 0.f;   // the wall's nearness (0 out of the band)
+	float WallDeg = 0.f; // its side on screen: 0 up, clockwise
 	FString ReleaseWord, OverBigWord, VictoryWord, DefeatWord, LockedWord, AgainWord;
 	float ReleaseW = 0.f, OverBigW = 0.f, VictoryW = 0.f, DefeatW = 0.f, LockedW = 0.f, AgainW = 0.f;
 	FString ReleaseNum;
