@@ -65,6 +65,11 @@ enum class UiCueShape : std::uint8_t { None, Diamond, Chevron, Circle, Square, T
 enum class UiMeterShape : std::uint8_t { Line, Ring, Teeth, Stroke };
 inline constexpr std::size_t kUiMeterShapeCount = 4;
 
+// The small drawn mark in the centre of the lead's ring, one per party seat: Knuckles (a gauntlet's knuckle line),
+// Cylinder (a revolver cylinder's dot ring), Mask (a mask outline). None draws nothing.
+enum class UiLeadMark : std::uint8_t { None, Knuckles, Cylinder, Mask };
+inline constexpr std::size_t kUiLeadMarkCount = 4;
+
 // A block that shows on change and rests after: fades in, stays for `rest` seconds after its last change, then fades
 // to `restAlpha` (0 hides it).
 struct UiFadeTimes {
@@ -113,6 +118,7 @@ struct UiStyle {
     float edgeText = 0.6f;             // the glyph edge's share of the edge colour's alpha (0.5..1): lighter than a
                                        // stroke's edge, so a light word on bright ground does not read as doubled
     UiMeterShape meter = UiMeterShape::Line;
+    std::array<UiLeadMark, 3> leadMark{UiLeadMark::Knuckles, UiLeadMark::Cylinder, UiLeadMark::Mask}; // by party seat
     UiFadeTimes fade;
     float minTextPx = 18.f;     // the floor at 1080p
     float minTextPxAbsolute = 14.f; // the floor at any height
@@ -157,5 +163,6 @@ FTCORE_API std::string_view uiPaletteName(UiPalette p); // "default", "protan", 
 FTCORE_API std::string_view uiTokenName(UiToken t);     // "ink", "ink_dim", ...
 FTCORE_API std::string_view uiTextRoleName(UiTextRole r);
 FTCORE_API std::string_view uiMeterShapeName(UiMeterShape m); // "line", "ring", "teeth", "stroke"
+FTCORE_API std::string_view uiLeadMarkName(UiLeadMark m);     // "none", "knuckles", "cylinder", "mask"
 
 } // namespace ftcore

@@ -384,7 +384,10 @@ void AFTStoryHUD::DrawBox(const AFTStoryDirector& D)
 		DrawStrCentered(kEndHintBox, kDimBox, CX, Y + 70.f * S, Small, 1.f);
 		return;
 	}
-	DrawStrCentered(kHintBox, kDimBox, CX, Canvas->ClipY - 32.f * S, Small, 1.f);
+	if (!NewUiWidget.IsValid() || State == StoryRunner::State::Gameplay)
+	{
+		DrawStrCentered(kHintBox, kDimBox, CX, Canvas->ClipY - 32.f * S, Small, 1.f); // the Slate block draws its own
+	}
 	if (NewUiWidget.IsValid() && State != StoryRunner::State::Gameplay)
 	{
 		return; // the Slate subtitle block draws lines, directions and choices

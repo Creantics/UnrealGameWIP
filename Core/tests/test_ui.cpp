@@ -145,6 +145,8 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK(err.find("edge text") != std::string::npos);
     CHECK_FALSE(importUiStyle(R"({"backing_soft": {"hud": 1.5}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"meter": "dial"})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"lead_marks": ["knuckles", "mask"]})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"lead_marks": ["knuckles", "cylinder", "crown"]})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"fade": {"rest_alpha": 2}})", s, &err));
     // Each key is optional; the pick swaps them in.
     s = defaultUiStyle();
@@ -157,6 +159,13 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK(defaultUiStyle().edgeText == doctest::Approx(0.6f));
     CHECK(s.fade.rest == doctest::Approx(4.f));
     CHECK(s.fade.in == doctest::Approx(defaultUiStyle().fade.in));
+    // Each lead's ring carries a drawn mark, not a letter; the table can reorder or blank them.
+    CHECK(defaultUiStyle().leadMark[0] == UiLeadMark::Knuckles);
+    CHECK(defaultUiStyle().leadMark[2] == UiLeadMark::Mask);
+    REQUIRE(importUiStyle(R"({"lead_marks": ["mask", "none", "cylinder"]})", s, &err));
+    CHECK(s.leadMark[0] == UiLeadMark::Mask);
+    CHECK(s.leadMark[1] == UiLeadMark::None);
+    CHECK(uiLeadMarkName(s.leadMark[2]) == "cylinder");
 }
 
 TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while, and a new change wakes it") {

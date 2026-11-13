@@ -89,6 +89,7 @@ const FTUiText kAgainUi(TEXT("battle.again"));
 const FTUiText kStatsUi(TEXT("arena.stats"));
 const FTUiText kAutoPlayUi(TEXT("arena.autoplay"));
 const FTUiText kIdleUi(TEXT("arena.idle"));
+const FTUiText kStoryHintUi(TEXT("story.hint"));
 constexpr double kPopupLife = 0.9;
 constexpr double kImpactLife = 0.3;    // the tell's flash once the move is active
 constexpr double kOnsetLife = 0.35;    // an off-frame windup marker's onset swell
@@ -284,7 +285,9 @@ struct FPainter
 		const FLinearColor C = Tok(UiToken::Backing, 0.f) + FLinearColor(0.f, 0.f, 0.f, Each);
 		for (int32 I = 0; I < Bands; ++I)
 		{
-			const float T = 0.3f + 0.7f * static_cast<float>(I + 1) / static_cast<float>(Bands);
+			// Bands spaced by the inverse of a smoothstep over the outer part: an even middle, a soft fall, no cone.
+			const float Y = (static_cast<float>(I) + 0.5f) / static_cast<float>(Bands);
+			const float T = 0.55f + 0.45f * (0.5f - FMath::Sin(FMath::Asin(1.f - 2.f * Y) / 3.f));
 			const float BW = W * T;
 			const float BH = H * T;
 			FSlateDrawElement::MakeBox(Out, Layer, Geometry.ToPaintGeometry(FVector2f(BW, BH), FSlateLayoutTransform(FVector2f(CX - BW * 0.5f, CY - BH * 0.5f))),
@@ -454,8 +457,9 @@ public:
 		{
 			return;
 		}
-		constexpr int32 Rings = 12;
+		constexpr int32 Rings = 24;
 		constexpr int32 Segs = 48;
+		constexpr float Flat = 0.55f; // the even middle, as a share of the radius
 		FPart& P = Parts[ShadePart];
 		const SlateIndex Base = static_cast<SlateIndex>(P.Verts.Num());
 		const FLinearColor Back = Tok(UiToken::Backing, 1.f);
@@ -463,7 +467,8 @@ public:
 		for (int32 R = 1; R <= Rings; ++R)
 		{
 			const float T = static_cast<float>(R) / Rings;
-			const float A = Peak * FMath::Square(1.f - T * T); // zero slope at the rim: no edge reads
+			const float U = FMath::Clamp((T - Flat) / (1.f - Flat), 0.f, 1.f);
+			const float A = Peak * FMath::Square(1.f - U * U); // flat, then zero slope at the rim: no edge or blob reads
 			for (int32 K = 0; K < Segs; ++K)
 			{
 				const float Ang = K * (2.f * UE_PI / Segs);
@@ -1014,6 +1019,7 @@ public:
 			HpText = FString::Printf(TEXT("%d"), L.hp);
 			HpTextW = TextWidth(HpText, ValueFont);
 			LoadText = FString::Printf(TEXT("%d"), L.load);
+			RoundsText = FString::Printf(TEXT("%d"), L.rounds);
 		}
 		TakeHalfAge = L.tookHalf ? 0.f : TakeHalfAge + DeltaTime;
 		HpLost.Step(L.hpMax > 0 ? static_cast<float>(L.hp) / L.hpMax : 0.f, DeltaTime);
@@ -1179,6 +1185,65 @@ private:
 		}
 	}
 
+	// A lead's own mark (style data, by party seat): a gauntlet's knuckle line, a cylinder's dot ring or a mask outline, in
+	// the ring's pencil line. K scales it (1 in the lead's ring); Width is the line at 1080p.
+	void LeadMark(float X, float Y, float K, int32 Seat, float Width, float S, const FLinearColor& C) const
+	{
+		const ftcore::UiLeadMark M = Table().Style.leadMark[static_cast<size_t>(FMath::Clamp(Seat, 0, 2))];
+		const float U = K * S;
+		const ftcore::UiStrokeStyle Pen = StrokeStyle(Width * K, 141u + static_cast<uint32>(Seat), S, 0.f);
+		if (M == ftcore::UiLeadMark::Knuckles)
+		{
+			for (int32 I = 0; I < 4; ++I)
+			{
+				ftcore::uiStrokeArc(Line, X + (static_cast<float>(I) - 1.5f) * 7.f * U, Y - 2.f * U, 3.6f * U, -90.f, 90.f, Pen);
+				Mesh.Stroke(Line, C);
+			}
+			ftcore::uiStrokeLine(Line, X - 15.f * U, Y - 1.f * U, X + 15.f * U, Y - 1.f * U, Pen);
+			Mesh.Stroke(Line, C);
+			ftcore::uiStrokeLine(Line, X - 11.f * U, Y + 7.f * U, X + 11.f * U, Y + 7.f * U, Pen);
+			Mesh.Stroke(Line, C);
+		}
+		else if (M == ftcore::UiLeadMark::Cylinder)
+		{
+			ftcore::uiStrokeArc(Line, X, Y, 11.f * U, 0.f, 360.f, Pen);
+			Mesh.Stroke(Line, C, true, true);
+			for (int32 I = 0; I < 6; ++I)
+			{
+				float DX = 0.f;
+				float DY = 0.f;
+				ftcore::uiArcPoint(X, Y, 6.5f * U, I * 60.f, DX, DY);
+				Mesh.Dot(DX, DY, 1.9f * U, C);
+			}
+		}
+		else if (M == ftcore::UiLeadMark::Mask)
+		{
+			constexpr int32 N = 25;
+			FVector2f Pts[N];
+			for (int32 I = 0; I < N; ++I)
+			{
+				const float T = I * (2.f * UE_PI / (N - 1));
+				const float C0 = FMath::Cos(T);
+				Pts[I] = FVector2f(X + 10.f * U * FMath::Sin(T) * (C0 < 0.f ? 0.8f : 1.f), Y - 13.f * U * C0);
+			}
+			Poly(Pts, N, 0.5f * Width * U, C, true);
+			const FVector2f EyeL[2] = {FVector2f(X - 7.f * U, Y - 4.f * U), FVector2f(X - 2.5f * U, Y - 1.5f * U)};
+			const FVector2f EyeR[2] = {FVector2f(X + 7.f * U, Y - 4.f * U), FVector2f(X + 2.5f * U, Y - 1.5f * U)};
+			Poly(EyeL, 2, 0.6f * Width * U, C);
+			Poly(EyeR, 2, 0.6f * Width * U, C);
+		}
+	}
+
+	// An empty place at the table: a dashed ring.
+	void EmptySeat(float X, float Y, float R, float S, const FLinearColor& C) const
+	{
+		for (float Deg = 0.f; Deg < 360.f; Deg += 30.f)
+		{
+			ftcore::uiStrokeArc(Line, X, Y, R, Deg, Deg + 14.f, StrokeStyle(1.3f, 71, S, 0.f));
+			Mesh.Stroke(Line, C);
+		}
+	}
+
 	// The lead, bottom left: the ring as a table, HP as the hand-drawn line round it (what was just lost rubbed out to a
 	// faint trace), stamina a hairline inside, Load the accent line outside with the Release mark at its place; the
 	// numbers and heals in the open bottom; one state word at the ring's shoulder.
@@ -1191,21 +1256,25 @@ private:
 		const float TA = TextAlpha(A);
 		const float CX = Carry::LeadX * S;
 		const float CY = Size.Y - Carry::LeadUp * S;
-		Mesh.Shade(CX + 10.f * S, CY - 40.f * S, 230.f * S, 230.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
+		// In action the lines take the sheet's action weight; they thin back as the ring fades to rest.
+		const float Act = FMath::Clamp((A - St.fade.restAlpha) / FMath::Max(1.f - St.fade.restAlpha, 0.01f), 0.f, 1.f);
+		const auto W = [Act](float Rest, float Action) { return FMath::Lerp(Rest, Action, Act); };
+		Mesh.Shade(CX + 4.f * S, CY - 70.f * S, 250.f * S, 290.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
 
-		Ring(CX, CY, Carry::RingR * S, 2.1f, 11, S, Tok(UiToken::Ink, 0.9f * A));
+		Ring(CX, CY, Carry::RingR * S, W(2.1f, 3.4f), 11, S, Tok(UiToken::Ink, 0.9f * A));
+		LeadMark(CX, CY + 8.f * S, 1.f, L.lead, W(1.5f, 2.1f), S, Tok(UiToken::Ink, 0.9f * A));
 
 		const float Hp = L.hpMax > 0 ? FMath::Clamp(static_cast<float>(L.hp) / L.hpMax, 0.f, 1.f) : 0.f;
 		const bool bLow = Hp <= Carry::LowHp;
 		const FLinearColor HpC = bLow ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A);
-		Arc(CX, CY, Carry::HpR * S, 0.f, Hp, StrokeStyle(5.6f, 21, S), HpC);
+		Arc(CX, CY, Carry::HpR * S, 0.f, Hp, StrokeStyle(W(5.6f, 7.6f), 21, S), HpC);
 		if (HpLost.Was > Hp + 0.004f)
 		{
 			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 21, S, 0.f);
 			Rub.broken = true;
 			Arc(CX, CY, Carry::HpR * S, Hp, HpLost.Was, Rub, Tok(UiToken::Ink, 0.22f * A), false);
 		}
-		Arc(CX, CY, Carry::StaminaR * S, 0.f, FMath::Clamp(L.stamina01, 0.f, 1.f), StrokeStyle(1.6f, 23, S), Tok(UiToken::InkDim, 0.8f * A), false);
+		Arc(CX, CY, Carry::StaminaR * S, 0.f, FMath::Clamp(L.stamina01, 0.f, 1.f), StrokeStyle(W(1.6f, 2.4f), 23, S), Tok(UiToken::InkDim, 0.8f * A), false);
 
 		if (L.loadMax > 0)
 		{
@@ -1213,7 +1282,7 @@ private:
 			// The track runs to the cap (the named chairs' limit); past it the arc is not drawn, and a short cross-stroke
 			// closes it.
 			const float Cap = L.loadCap > 0 ? FMath::Clamp(static_cast<float>(L.loadCap) / L.loadMax, 0.f, 1.f) : 1.f;
-			Arc(CX, CY, Carry::LoadR * S, 0.f, Cap, StrokeStyle(1.f, 31, S, 0.f), Tok(UiToken::Ink, 0.28f * A), false);
+			Arc(CX, CY, Carry::LoadR * S, 0.f, Cap, StrokeStyle(W(1.f, 1.8f), 31, S, 0.f), Tok(UiToken::Ink, W(0.28f, 0.4f) * A), false);
 			if (Cap < 0.999f)
 			{
 				const float CapDeg = Carry::A0 + (Carry::A1 - Carry::A0) * Cap;
@@ -1226,7 +1295,7 @@ private:
 				const FVector2f Pts[2] = {FVector2f(X0, Y0), FVector2f(X1, Y1)};
 				Poly(Pts, 2, 0.9f * S, Tok(UiToken::Ink, 0.8f * A));
 			}
-			Arc(CX, CY, Carry::LoadR * S, 0.f, Load, StrokeStyle(4.2f, 33, S), L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
+			Arc(CX, CY, Carry::LoadR * S, 0.f, Load, StrokeStyle(W(4.2f, 5.6f), 33, S), L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
 			const int32 ReleaseAt = L.releaseAt > 0 ? L.releaseAt : ftcore::kArenaReleaseOpenLoad;
 			const float Mark = FMath::Clamp(static_cast<float>(ReleaseAt) / L.loadMax, 0.f, 1.f);
 			const float Deg = Carry::A0 + (Carry::A1 - Carry::A0) * Mark;
@@ -1301,26 +1370,29 @@ private:
 			P.Text(WX + 22.f * S, WY - VerbAsc, *Word, VerbFont, C);
 		}
 
-		// The party places stacked above the lead: the partner, then the third place, always empty (the only dashed ring).
+		// The party's places stacked above the lead, always drawn (the table's chairs): the partner's ring with its mark and
+		// its HP round it, else an empty dashed place; the third place is always empty. A fine thread joins them, the
+		// dialogue's leader line in small.
 		const ftcore::ArenaHudPartner& Pa = View.now.partner;
+		const float PX = CX - 6.f * S;
+		const float PY = CY - 140.f * S;
+		const float TY = CY - 208.f * S;
+		const FVector2f Thread0[2] = {FVector2f(CX - 1.f * S, CY - (Carry::LoadR + 8.f) * S), FVector2f(PX, PY + 31.f * S)};
+		const FVector2f Thread1[2] = {FVector2f(PX, PY - 31.f * S), FVector2f(PX, TY + 25.f * S)};
+		Poly(Thread0, 2, 0.5f * S, Tok(UiToken::Ink, 0.55f * A));
+		Poly(Thread1, 2, 0.5f * S, Tok(UiToken::Ink, 0.4f * A));
 		if (Pa.present)
 		{
-			const float PX = CX - 6.f * S;
-			const float PY = CY - 140.f * S;
-			Ring(PX, PY, 20.f * S, 1.4f, 61, S, Tok(UiToken::Ink, A));
+			Ring(PX, PY, 20.f * S, W(1.4f, 2.f), 61, S, Tok(UiToken::Ink, A));
+			LeadMark(PX, PY + 1.f * S, 0.62f, Pa.lead, W(1.6f, 2.2f), S, Tok(UiToken::Ink, 0.9f * A));
 			const float F = Pa.hpMax > 0 ? FMath::Clamp(static_cast<float>(Pa.hp) / Pa.hpMax, 0.f, 1.f) : 0.f;
-			Arc(PX, PY, 27.f * S, 0.f, F, StrokeStyle(2.2f, 62, S), Pa.down ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A));
+			Arc(PX, PY, 27.f * S, 0.f, F, StrokeStyle(W(2.2f, 3.f), 62, S), Pa.down ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A));
 		}
-		if (View.now.third.present)
+		else
 		{
-			const float TX = CX - 6.f * S;
-			const float TY = CY - 208.f * S;
-			for (float Deg = 0.f; Deg < 360.f; Deg += 30.f)
-			{
-				ftcore::uiStrokeArc(Line, TX, TY, 20.f * S, Deg, Deg + 14.f, StrokeStyle(1.3f, 71, S, 0.f));
-				Mesh.Stroke(Line, Tok(UiToken::Ink, 0.75f * A));
-			}
+			EmptySeat(PX, PY, 20.f * S, S, Tok(UiToken::Ink, 0.6f * A));
 		}
+		EmptySeat(PX, TY, 20.f * S, S, Tok(UiToken::Ink, 0.75f * A));
 	}
 
 	// The top: the boss as one fine line with its HP drawn over it and phase notches; a plain target as a shorter line
@@ -1351,9 +1423,19 @@ private:
 		Hair.endAlpha = 0.f;
 		Hair.endWidth = 0.6f;
 		Hair.wobble = 0.3f * S;
-		HLine(X0 - 40.f * S, X0 + Len + 40.f * S, Y, 0.f, 1.f, Hair, Tok(UiToken::Ink, 0.5f * A));
-		ftcore::UiStrokeStyle HpSt = StrokeStyle(B.present ? 3.6f : 3.f, 101, S, 0.04f);
+		HLine(X0 - 40.f * S, X0 + Len + 40.f * S, Y, 0.f, 1.f, Hair, Tok(UiToken::Ink, 0.75f * A));
+		ftcore::UiStrokeStyle HpSt = StrokeStyle(B.present ? 5.4f : 3.4f, 101, S, 0.1f);
 		HLine(X0, X0 + Len, Y, 0.f, Hp, HpSt, Tok(UiToken::Ink, A));
+		if (B.present)
+		{
+			// The line starts from a small drawn oval (the dialogue's portrait oval in small), open where the line leaves it.
+			ftcore::uiStrokeArc(Line, X0 - 12.f * S, Y, 9.f * S, 120.f, 420.f, StrokeStyle(1.6f, 109, S, 0.2f));
+			for (uint32 I = 0; I < Line.count; ++I)
+			{
+				Line.pt[I].y = Y + (Line.pt[I].y - Y) * 0.7f; // flatten the circle to an oval
+			}
+			Mesh.Stroke(Line, Tok(UiToken::Ink, A));
+		}
 		if (TopLost.Was > Hp + 0.004f)
 		{
 			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 101, S, 0.f);
@@ -2094,8 +2176,8 @@ private:
 		}
 		const float CX = Size.X * 0.5f;
 		const float CY = Size.Y * 0.5f;
-		const float R = 30.f * S;
-		constexpr float Step = 15.f; // degrees between chambers
+		const float R = 46.f * S;
+		constexpr float Step = 19.f; // degrees between chambers
 		const float A0 = 90.f - Step * 0.5f * (L.roundsMax - 1);
 		const float A1 = 90.f + Step * 0.5f * (L.roundsMax - 1);
 		for (int32 I = 0; I < L.roundsMax; ++I)
@@ -2105,16 +2187,19 @@ private:
 			ftcore::uiArcPoint(CX, CY, R, A0 + Step * I, X, Y);
 			if (I < L.rounds)
 			{
-				Mesh.Dot(X, Y, 2.6f * S, Tok(UiToken::Ink, A));
+				Mesh.Dot(X, Y, 7.f * S, Tok(UiToken::Ink, A));
 			}
 			else
 			{
-				Mesh.Dot(X, Y, 1.4f * S, Tok(UiToken::InkDim, 0.5f * A), false);
+				ftcore::uiStrokeArc(Line, X, Y, 6.f * S, 0.f, 360.f, StrokeStyle(1.4f, 63u + static_cast<uint32>(I), S, 0.f));
+				Mesh.Stroke(Line, Tok(UiToken::InkDim, 0.7f * A), true, true);
 			}
 		}
+		// The count beside the chambers, so the number never has to be counted.
+		P.Text(CX + R + 22.f * S, CY - ValueAsc * 0.64f, RoundsText, ValueFont, Tok(UiToken::Ink, TextAlpha(A)));
 		if (L.reload01 > 0.f)
 		{
-			ftcore::uiStrokeArc(Line, CX, CY, R + 8.f * S, A0 - Step * 0.5f, A1 + Step * 0.5f, StrokeStyle(1.2f, 61, S, 0.f), 0.f, FMath::Clamp(L.reload01, 0.f, 1.f));
+			ftcore::uiStrokeArc(Line, CX, CY, R + 13.f * S, A0 - Step * 0.5f, A1 + Step * 0.5f, StrokeStyle(1.2f, 61, S, 0.f), 0.f, FMath::Clamp(L.reload01, 0.f, 1.f));
 			Mesh.Stroke(Line, Tok(UiToken::Accent, A));
 		}
 	}
@@ -2147,6 +2232,7 @@ private:
 	FString HpText;
 	float HpTextW = 0.f;
 	FString LoadText;
+	FString RoundsText;
 	FString DownWord, OverWord, BrokenWord, ReadyWord, TargetWord, WeightWord, WeakWord, InvulWord;
 	float DownW = 0.f, OverW = 0.f, BrokenW = 0.f, ReadyW = 0.f, TargetW = 0.f, WeightW = 0.f, WeakW = 0.f, InvulW = 0.f;
 	// The top line's name, its called zone and answer words.
@@ -2339,7 +2425,12 @@ public:
 		const float Bottom = Size.Y - 96.f * S;
 		const float Top = Bottom - BlockH;
 		const float CX = Size.X * 0.5f;
-		P.Soft(CX, Top + BlockH * 0.5f, MaxW + 360.f * S, BlockH + 200.f * S, Table().Style.backingSoftDialogue);
+		Mesh.Begin(Geometry, S);
+		const float BlockW = Lines.Num() > 0 ? FMath::Max(LineW[0] + SpeakerW, MaxW * 0.5f) : MaxW * 0.5f;
+		Mesh.Shade(CX, Top + BlockH * 0.5f + 10.f * S, BlockW * 0.5f / 0.6f + 120.f * S, BlockH * 0.5f / 0.5f + 110.f * S,
+			Table().Style.backingSoftDialogue);
+		// The keys, once, under the block at the prompt size (never under the 18 px floor).
+		P.Text(CX - HintW * 0.5f, Size.Y - 50.f * S, HintText, HintFont, Tok(UiToken::InkDim, 0.8f));
 
 		const FLinearColor Body = View.kind == ftcore::DialogueViewKind::Direction ? Tok(UiToken::InkDim) : Tok(UiToken::Ink);
 		const int32 RevealedUnits = CpToUnit.Num() > 0 ? CpToUnit[FMath::Min(static_cast<int32>(View.revealedChars), CpToUnit.Num() - 1)] : 0;
@@ -2358,7 +2449,6 @@ public:
 			PaintArriving(P, X, Y, Text, Lines[I].X, End, Body);
 			LastRight = X + LineW[I];
 		}
-		Mesh.Begin(Geometry, S);
 		if (OptionRows > 0)
 		{
 			const float RowH = LineH * 1.05f;
@@ -2376,8 +2466,9 @@ public:
 				OptTop = FMath::Clamp(H.Y - 30.f * S - OptBlockH * 0.5f, 60.f * S, Top - OptBlockH - 40.f * S);
 				// Off the line's block the options often sit on a lamp pool or a bright wall: a deeper, tighter shade than
 				// the line's (still a falloff, never a box).
-				P.Soft(MarkX + (MarkGap + OptionW) * 0.5f, OptTop + OptBlockH * 0.5f, OptionW + 200.f * S, OptBlockH + 110.f * S,
-					FMath::Min(0.62f, Table().Style.backingSoftDialogue * 1.45f));
+				// One even shade over the whole choice block, its flat middle covering every row.
+				Mesh.Shade(MarkX + (MarkGap + OptionW) * 0.5f, OptTop + OptBlockH * 0.5f, (MarkGap + OptionW) * 0.5f / 0.55f + 110.f * S,
+					OptBlockH * 0.5f / 0.55f + 90.f * S, FMath::Min(0.62f, Table().Style.backingSoftDialogue * 1.45f));
 				// The leader: a fine line from beside the face to the middle row's mark, eased flat at both ends.
 				const float MidY = OptTop + RowH * (static_cast<float>(OptionRows - 1) * 0.5f) + OptionH * 0.5f;
 				const FVector2f P0(H.X + (bRight ? 40.f : -40.f) * S, H.Y);
@@ -2503,6 +2594,9 @@ private:
 		TextFont = FontFor(UiTextRole::Subtitle, Size.Y, Scale);
 		SpeakerFont = FontFor(UiTextRole::Speaker, Size.Y, Scale);
 		OptionFont = FontFor(UiTextRole::Subtitle, Size.Y, Scale);
+		HintFont = FontFor(UiTextRole::Prompt, Size.Y, Scale);
+		HintText = kStoryHintUi;
+		HintW = TextWidth(HintText, HintFont);
 		const TSharedRef<FSlateFontMeasure> M = FontMeasure();
 		LineH = M->GetMaxCharacterHeight(TextFont) * 1.15f;
 		OptionH = M->GetMaxCharacterHeight(OptionFont);
@@ -2579,6 +2673,9 @@ private:
 	FSlateFontInfo TextFont;
 	FSlateFontInfo SpeakerFont;
 	FSlateFontInfo OptionFont;
+	FSlateFontInfo HintFont;
+	FString HintText;
+	float HintW = 0.f;
 	FString SpeakerUpper;
 	float SpeakerW = 0.f;
 	float SpeakerDy = 0.f;
