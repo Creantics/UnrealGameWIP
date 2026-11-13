@@ -725,15 +725,26 @@ void AFTArenaGameMode::Begin()
 	Setup.ZoneStyle = ZoneStyle;
 	Setup.KitId = KitId;
 	Setup.Lead = FindLead();
-	// The ally a carrying run shows (the runner spawns it only under its switches): the first other look in the party.
-	for (const FFTLeadLook& Member : GetDefault<AFTExploreCharacter>()->PartyLooks)
+	// The ally a carrying run shows (the runner spawns it only under its switches): the first other look in the party, or
+	// the one -ArenaAllyLook=<name> names (review stills of a given partner's mark).
+	const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
+	FString WantAlly;
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaAllyLook="), WantAlly, false);
+	for (const FFTLeadLook& Member : Party)
 	{
-		if (&Member != Setup.Lead)
+		if (&Member != Setup.Lead && (WantAlly.IsEmpty() || Member.Name.Equals(WantAlly, ESearchCase::IgnoreCase)))
 		{
 			Setup.Ally = &Member;
 			break;
 		}
 	}
+	auto SeatOf = [&Party](const FFTLeadLook* Look) -> uint8
+	{
+		const int32 I = Look ? static_cast<int32>(Look - Party.GetData()) : 0;
+		return static_cast<uint8>(Party.IsValidIndex(I) ? FMath::Min(I, 2) : 0);
+	};
+	Setup.LeadSeat = SeatOf(Setup.Lead);
+	Setup.AllySeat = SeatOf(Setup.Ally);
 	Setup.Seed = Seed;
 	Setup.bAutoPlay = bAutoPlay;
 	Setup.bIdle = bIdle;

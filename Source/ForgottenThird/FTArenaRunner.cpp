@@ -271,6 +271,22 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 	Def = Setup.Def;
 	Fit = Setup.Fit;
+	LeadSeat = Setup.LeadSeat;
+	AllySeat = Setup.AllySeat;
+#if !UE_BUILD_SHIPPING
+	// Review stills: start the player 1.2 m from the zone's wall, beside it, so the wall's cue shows.
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNearWall")))
+	{
+		const ftcore::Vec2 Side{Fit.playerFacing.y, -Fit.playerFacing.x};
+		ftcore::Vec2 P = Fit.playerStart;
+		for (int32 I = 0; I < 400 && Fit.zone.wallDistance(P) > 1.2f; ++I)
+		{
+			P = ftcore::Vec2{P.x + Side.x * 0.1f, P.y + Side.y * 0.1f};
+		}
+		Fit.playerStart = P;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the player starts %.1f m from the wall (-ArenaNearWall)."), Fit.zone.wallDistance(P));
+	}
+#endif
 	ZoneId = Setup.ZoneId;
 	ZoneZ = Setup.ZoneZ;
 	ZoneStyle = Setup.ZoneStyle;

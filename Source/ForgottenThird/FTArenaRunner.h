@@ -111,6 +111,8 @@ struct FFTArenaRunSetup
 	FString KitId;       // the fighter kit the player plays, as the table resolved it
 	const FFTLeadLook* Lead = nullptr; // the look the player's figure wears (null: the test human)
 	const FFTLeadLook* Ally = nullptr; // the partner lead's look, worn by the ally in a carrying run (null: the test human)
+	uint8 LeadSeat = 0; // the lead's place in the party (0 to 2): the HUD's mark and name
+	uint8 AllySeat = 0; // the ally's place in the party
 	uint32 Seed = 1;
 	bool bAutoPlay = false;
 	bool bIdle = false;
@@ -281,6 +283,9 @@ public:
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
+	// The party places (0 to 2) of the lead and the carrying run's ally, for the HUD's marks.
+	uint8 GetLeadSeat() const { return LeadSeat; }
+	uint8 GetAllySeat() const { return AllySeat; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -546,6 +551,8 @@ private:
 	float SessionHeld = 0.f;         // Fight.heldTime() at the last session tick
 	bool bSessionGuard = false;      // the guard as last sent to the session (refusal hold edges)
 	uint8 SessionLead = ftcore::kLeadA; // the lead slot the player's figure fills
+	uint8 LeadSeat = 0;
+	uint8 AllySeat = 0;
 	ftcore::ArenaBlowHook SessionInnerHook = nullptr; // the sub-hosts' hook the session's ruling chains after
 	void* SessionInnerUser = nullptr;
 	bool bSessionPartnerDue = false; // -ArenaSharedCount: a lead's blow is held, the scripted partner joins after the step

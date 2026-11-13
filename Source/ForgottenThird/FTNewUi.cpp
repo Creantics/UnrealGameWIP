@@ -74,11 +74,12 @@ const FTUiText kTellUi[] = {FTUiText(TEXT("arena.tell.strike")), FTUiText(TEXT("
 	FTUiText(TEXT("arena.tell.charge")), FTUiText(TEXT("arena.tell.thrust")), FTUiText(TEXT("arena.tell.slash")), FTUiText(TEXT("arena.tell.sweep")),
 	FTUiText(TEXT("arena.tell.slam")), FTUiText(TEXT("arena.tell.shot"))};
 static_assert(UE_ARRAY_COUNT(kTellUi) == ftcore::kArenaTellCount, "a word for every ArenaTell");
-// The popup words, by EPopWord.
-enum EPopWord : int32 { PwBlocked, PwGuardBroken, PwParried, PwEvaded, PwStaggered, PwDown, PwCounter, PwReadCounter, PwMisread, PwNoStamina, PwCount };
+// The popup words, by EPopWord. SHARED is new with the table and named here so the key check sees it.
+const FTUiText kSharedUi(TEXT("arena.shared"));
+enum EPopWord : int32 { PwBlocked, PwGuardBroken, PwParried, PwEvaded, PwStaggered, PwDown, PwCounter, PwReadCounter, PwMisread, PwNoStamina, PwShared, PwCount };
 const FTUiText kPopWordUi[PwCount] = {FTUiText(TEXT("arena.blocked")), FTUiText(TEXT("arena.guard_broken")), FTUiText(TEXT("arena.parried")),
 	FTUiText(TEXT("arena.evaded")), FTUiText(TEXT("battle.staggered")), FTUiText(TEXT("battle.down")), FTUiText(TEXT("arena.counter")),
-	FTUiText(TEXT("arena.read_counter")), FTUiText(TEXT("arena.misread")), FTUiText(TEXT("arena.no_stamina"))};
+	FTUiText(TEXT("arena.read_counter")), FTUiText(TEXT("arena.misread")), FTUiText(TEXT("arena.no_stamina")), kSharedUi};
 const FTUiText kReadUi(TEXT("arena.read"));
 const FTUiText kLoadPlusUi(TEXT("arena.load_plus"));
 const FTUiText kReleaseUi(TEXT("arena.release"));
@@ -776,6 +777,7 @@ void FillBoss(const UFTArenaRunner& Runner, ftcore::ArenaHudBoss& Out)
 	}
 	Out.present = true;
 	Out.slot = static_cast<std::uint8_t>(Slot);
+	Out.rank = static_cast<std::uint8_t>(Runner.GetSlotRank(static_cast<int32>(Slot)));
 	Out.nameKey = static_cast<std::uint16_t>(Slot);
 	Out.hp = Fight.enemyHp(Slot);
 	Out.hpMax = Fight.def().enemies[Slot].hp;
@@ -800,6 +802,9 @@ constexpr float TopLine = 100.f; // the boss's line, down from the top
 constexpr float BossLen = 680.f;
 constexpr float TargetLen = 420.f;
 constexpr float LowHp = 0.3f;
+constexpr float LeadScale = 1.2f; // the lead's block (ring, marks, numbers) against the 1080p unit
+constexpr int32 LaneMax = 4;      // popups shown at once beside one body; older ones leave the lane
+constexpr float LaneOut = 120.f;  // the lane's edge out from the body
 } // namespace Carry
 
 // What was just lost: held a moment, then rubbed away toward the value (a hit rubs the line, it does not snap).
@@ -891,6 +896,13 @@ struct FPopMark
 	float NumW = 0.f;
 	bool bNumPop = false; // the number in the popup face (with a word in it), else the figures' face
 	FVector2f NumAt = FVector2f::ZeroVector;
+	// The lane: one per body, the newest line at the bottom, the older ones pushed up a line each as they fade.
+	uint8 Target = 0;
+	bool bLead = false; // the lane runs left of the lead (text right-aligned), right of anyone else
+	bool bFresh = false;
+	float Life = 0.f;
+	float Slot = 0.f; // eased toward the line it holds
+	FVector2f Anchor = FVector2f::ZeroVector;
 };
 
 class SFTArenaHud : public SLeafWidget
@@ -918,6 +930,8 @@ public:
 			BuiltHeight = H;
 			LabelFont = FontFor(UiTextRole::Label, H);
 			ValueFont = FontFor(UiTextRole::Value, H);
+			LeadFont = FontFor(UiTextRole::Value, H, Carry::LeadScale);
+			LeadAsc = FontMeasure()->GetMaxCharacterHeight(LeadFont) + FontMeasure()->GetBaseline(LeadFont);
 			VerbFont = FontFor(UiTextRole::Verb, H);
 			NameFont = FontFor(UiTextRole::Title, H);
 			NameAsc = FontMeasure()->GetMaxCharacterHeight(NameFont) + FontMeasure()->GetBaseline(NameFont);
@@ -1007,10 +1021,12 @@ public:
 		AimA = Runner->GetAimAlpha();
 		const ftcore::ArenaFight& Fight = Runner->GetFight();
 		ftcore::ArenaHudFrame Frame = View.now;
+		Frame.lead.lead = Runner->GetLeadSeat();
 		ftcore::fillArenaHudLead(Fight, Frame.lead);
 		ftcore::fillArenaHudTarget(Fight, Frame.target);
 		FillBoss(*Runner, Frame.boss);
 		Frame.partner = ftcore::ArenaHudPartner{};
+		Frame.partner.lead = Runner->GetAllySeat();
 		ftcore::fillArenaHudPartner(Fight, Frame.partner); // the carrying runs' ally; zero (absent) otherwise
 		Frame.third = ftcore::ArenaHudThird{};
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
@@ -1018,7 +1034,7 @@ public:
 		if (bRebuildNow || (Changed & SectionBit(ftcore::ArenaHudSection::Lead)))
 		{
 			HpText = FString::Printf(TEXT("%d"), L.hp);
-			HpTextW = TextWidth(HpText, ValueFont);
+			HpTextW = TextWidth(HpText, LeadFont);
 			LoadText = FString::Printf(TEXT("%d"), L.load);
 			RoundsText = FString::Printf(TEXT("%d"), L.rounds);
 		}
@@ -1252,7 +1268,7 @@ private:
 	{
 		const ftcore::ArenaHudLead& L = View.now.lead;
 		const ftcore::UiStyle& St = Table().Style;
-		const float S = P.S;
+		const float S = P.S * Carry::LeadScale; // the whole block at the sheet's share of the frame
 		const float A = LeadFade.alpha;
 		const float TA = TextAlpha(A);
 		const float CX = Carry::LeadX * S;
@@ -1304,21 +1320,23 @@ private:
 			float MY = 0.f;
 			ftcore::uiArcPoint(CX, CY, (Carry::LoadR + 11.f) * S, Deg, MX, MY);
 			Chevron(MX, MY, 10.f * S, Deg, S, Tok(UiToken::Ink, A));
-			P.Text(CX + 30.f * S, CY + 84.f * S - ValueAsc, LoadText, ValueFont, L.overloaded ? Tok(UiToken::Danger, TA) : Tok(UiToken::Accent, TA));
+			P.Text(CX + 30.f * S, CY + 84.f * S - LeadAsc, LoadText, LeadFont, L.overloaded ? Tok(UiToken::Danger, TA) : Tok(UiToken::Accent, TA));
 		}
 
 		// The chairs at the table: one small filled mark per named chair, in a row inside the ring's crown.
 		for (int32 I = 0; I < L.chairCount; ++I)
 		{
-			const float X = CX + (static_cast<float>(I) - 0.5f * (L.chairCount - 1)) * 16.f * S;
-			Mesh.Dot(X, CY - 26.f * S, 4.6f * S, Tok(UiToken::Ink, A));
+			// Countable at a glance: a filled round each, a clear gap between them.
+			const float Step = (L.chairCount > 3 ? 16.f : 20.f) * S;
+			const float X = CX + (static_cast<float>(I) - 0.5f * (L.chairCount - 1)) * Step;
+			Mesh.Dot(X, CY - 30.f * S, 6.f * S, Tok(UiToken::Ink, A));
 		}
 
 		// The numbers in the open bottom: HP to the left of the middle (a danger mark beside it when low), Load to the right.
-		P.Text(CX - 30.f * S - HpTextW, CY + 84.f * S - ValueAsc, HpText, ValueFont, bLow ? Tok(UiToken::Danger, TA) : Tok(UiToken::Ink, TA));
+		P.Text(CX - 30.f * S - HpTextW, CY + 84.f * S - LeadAsc, HpText, LeadFont, bLow ? Tok(UiToken::Danger, TA) : Tok(UiToken::Ink, TA));
 		if (bLow)
 		{
-			Danger(CX - 30.f * S - HpTextW - 14.f * S, CY + 84.f * S - ValueAsc * 0.45f, 13.f * S, Tok(UiToken::Danger, A));
+			Danger(CX - 30.f * S - HpTextW - 14.f * S, CY + 84.f * S - LeadAsc * 0.45f, 13.f * S, Tok(UiToken::Danger, A));
 		}
 		// Heals: lozenges between the numbers, filled while held. Read: upright marks under them, full height while held.
 		for (int32 I = 0; I < L.healsMax; ++I)
@@ -1424,9 +1442,17 @@ private:
 		Hair.endAlpha = 0.f;
 		Hair.endWidth = 0.6f;
 		Hair.wobble = 0.3f * S;
-		HLine(X0 - 40.f * S, X0 + Len + 40.f * S, Y, 0.f, 1.f, Hair, Tok(UiToken::Ink, 0.75f * A));
-		ftcore::UiStrokeStyle HpSt = StrokeStyle(B.present ? 5.4f : 3.4f, 101, S, 0.1f);
-		HLine(X0, X0 + Len, Y, 0.f, Hp, HpSt, Tok(UiToken::Ink, A));
+		// A boss's line keeps the sheet's drawn weight at rest: it never fades below 0.9, and a dark under-stroke holds it on
+		// a bright sky.
+		const float LA = B.present ? FMath::Max(A, 0.9f) : A;
+		HLine(X0 - 40.f * S, X0 + Len + 40.f * S, Y, 0.f, 1.f, Hair, Tok(UiToken::Ink, 0.8f * LA));
+		ftcore::UiStrokeStyle HpSt = StrokeStyle(B.present ? 7.f : 3.8f, 101, S, 0.1f);
+		if (B.present)
+		{
+			ftcore::UiStrokeStyle Under = StrokeStyle(10.f, 101, S, 0.1f);
+			HLine(X0, X0 + Len, Y + 1.f * S, 0.f, Hp, Under, Tok(UiToken::Backing, 0.35f * LA), false);
+		}
+		HLine(X0, X0 + Len, Y, 0.f, Hp, HpSt, Tok(UiToken::Ink, LA));
 		if (B.present)
 		{
 			// The line starts from a small drawn oval (the dialogue's portrait oval in small), open where the line leaves it.
@@ -1441,7 +1467,7 @@ private:
 		{
 			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 101, S, 0.f);
 			Rub.broken = true;
-			HLine(X0, X0 + Len, Y, Hp, TopLost.Was, Rub, Tok(UiToken::Ink, 0.22f * A), false);
+			HLine(X0, X0 + Len, Y, Hp, TopLost.Was, Rub, Tok(UiToken::Ink, 0.4f * LA), false);
 		}
 		// The name over the line in the title small caps, the boss's rank as short strokes after it; else the TARGET word.
 		if (bNamed)
@@ -1452,7 +1478,7 @@ private:
 			{
 				const float X = CX + NameW * 0.5f + 18.f * S + I * 8.f * S;
 				const FVector2f Pts[2] = {FVector2f(X, Base - 20.f * S), FVector2f(X, Base - 2.f * S)};
-				Poly(Pts, 2, 0.9f * S, Tok(UiToken::Ink, A));
+				Poly(Pts, 2, 1.6f * S, Tok(UiToken::Ink, LA));
 			}
 		}
 		else if (!B.present)
@@ -1783,8 +1809,13 @@ private:
 			M.Amount = Pp.Amount;
 			M.bShow = true;
 			M.A = FMath::Min(1.f, Life * 2.f);
+			M.Life = Life;
+			M.Target = Pp.Target;
+			M.Anchor = At;
+			M.bFresh = bNew;
 			const float Y = At.Y - 40.f * S - (1.f - Life) * 70.f * S;
 			const bool bOnLead = Pp.Target == ftcore::kArenaPlayer;
+			M.bLead = bOnLead;
 			// Numbers stand beside the body (right of an enemy, left of the lead), clear of its line and its tell.
 			M.NumAt = FVector2f(At.X + (bOnLead ? -110.f : 110.f) * S, Y + 40.f * S);
 			M.WordAt = FVector2f(At.X, Y - 30.f * S);
@@ -1867,6 +1898,12 @@ private:
 				M.WordAt.Y = Y - 90.f * S;
 				Number = Pp.Amount;
 				break;
+			case ftcore::ArenaEventType::TableShare:
+				// The table passed part of a blow on: SHARED and the hp, in the hit's colour on the body that took it.
+				M.Tok = UiToken::Danger;
+				M.Word = PwShared;
+				Number = Pp.Amount;
+				break;
 			case ftcore::ArenaEventType::StaminaEmpty:
 				M.Tok = UiToken::Danger;
 				M.Word = PwNoStamina;
@@ -1879,8 +1916,16 @@ private:
 			if (bNew)
 			{
 				M.Num.Reset();
+				if (M.Word >= 0)
+				{
+					M.Num += PopWord[M.Word]; // one line per popup: the word, then its number
+				}
 				if (Number != MIN_int32)
 				{
+					if (M.Word >= 0)
+					{
+						M.Num += TEXT(" ");
+					}
 					if (Pp.Type == ftcore::ArenaEventType::Read)
 					{
 						M.Num += kReadUi.Get();
@@ -1897,8 +1942,41 @@ private:
 						M.Num += *After;
 					}
 				}
-				M.NumW = TextWidth(M.Num, M.bNumPop ? PopFont : ValueFont);
+				M.NumW = TextWidth(M.Num, PopFont);
 			}
+		}
+		// The lanes: each body's popups in one column beside it, the newest at the bottom, each older one a line up, all
+		// rising a little and fading as they go; past LaneMax the oldest leave.
+		const float LineH = PopAsc * 1.3f;
+		for (FPopMark& M : Pops)
+		{
+			if (!M.bShow)
+			{
+				continue;
+			}
+			int32 K = 0;
+			int32 Newest = M.Serial;
+			FVector2f LaneAt = M.Anchor;
+			for (const FPopMark& O : Pops)
+			{
+				if (O.bShow && O.Target == M.Target && O.Serial > M.Serial)
+				{
+					++K;
+					if (O.Serial > Newest)
+					{
+						Newest = O.Serial;
+						LaneAt = O.Anchor; // the lane follows its newest line's body
+					}
+				}
+			}
+			if (K >= Carry::LaneMax)
+			{
+				M.bShow = false;
+				continue;
+			}
+			M.Slot = M.bFresh ? static_cast<float>(K) : FMath::Lerp(M.Slot, static_cast<float>(K), 0.3f);
+			const float Rise = (1.f - M.Life) * 26.f * S;
+			M.NumAt = FVector2f(LaneAt.X + (M.bLead ? -Carry::LaneOut : Carry::LaneOut) * S, LaneAt.Y - 20.f * S - M.Slot * LineH - Rise);
 		}
 		HitA = Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
 		ParryA = Pulse(Now, Runner.GetParryTime(), kParryEdgeLife);
@@ -1930,7 +2008,8 @@ private:
 			ResultA = FMath::Clamp(static_cast<float>(Runner.GetResultAge() / kResultFade), 0.f, 1.f);
 			bAgain = !Runner.IsAutoPlay() && Runner.CanFightAgain();
 		}
-		TagMode = Runner.IsIdle() ? 2 : (Runner.IsAutoPlay() ? 1 : 0);
+		static const bool bShotRun = FParse::Param(FCommandLine::Get(), TEXT("ArenaShotUi")); // review stills carry no debug tag
+		TagMode = bShotRun ? 0 : (Runner.IsIdle() ? 2 : (Runner.IsAutoPlay() ? 1 : 0));
 	}
 
 	// The world's marks, under everything else.
@@ -2151,13 +2230,9 @@ private:
 			{
 				continue;
 			}
-			if (M.Word >= 0)
-			{
-				P.Text(M.WordAt.X - PopWordW[M.Word] * 0.5f, M.WordAt.Y - PopAsc, PopWord[M.Word], PopFont, Tok(M.Tok, M.A));
-			}
 			if (!M.Num.IsEmpty())
 			{
-				P.Text(M.NumAt.X - M.NumW * 0.5f, M.NumAt.Y - (M.bNumPop ? PopAsc : ValueAsc), M.Num, M.bNumPop ? PopFont : ValueFont, Tok(M.Tok, M.A));
+				P.Text(M.bLead ? M.NumAt.X - M.NumW : M.NumAt.X, M.NumAt.Y - PopAsc, M.Num, PopFont, Tok(M.Tok, M.A));
 			}
 		}
 		// Release: the word large in the accent, a hairline opening under it, the Load it spent; overload in the danger colour.
@@ -2269,6 +2344,8 @@ private:
 	float LabelH = 0.f;
 	float LabelAsc = 0.f;
 	float ValueAsc = 0.f;
+	FSlateFontInfo LeadFont; // the lead's numbers, at the block's scale
+	float LeadAsc = 0.f;
 	float VerbAsc = 0.f;
 	FString HpText;
 	float HpTextW = 0.f;
