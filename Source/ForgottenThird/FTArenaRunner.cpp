@@ -306,11 +306,12 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaGlide="), GlideWord))
 	{
 		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2
-			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : 3;
+			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : GlideWord == TEXT("backstep") ? 7 : 3;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: glide probe on, the stick %s (-ArenaGlide)."),
 			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
 			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : GlideStick == 5 ? TEXT("held across with the guard up")
-			: GlideStick == 6 ? TEXT("the autopilot's, a light attack on the first free frame after each roll") : TEXT("the autopilot's"));
+			: GlideStick == 6 ? TEXT("the autopilot's, a light attack on the first free frame after each roll")
+			: GlideStick == 7 ? TEXT("the autopilot's, let go for each roll (a backstep under the lock)") : TEXT("the autopilot's"));
 	}
 #endif
 	Glide.Begin(GlideStick >= 0);
@@ -1651,6 +1652,12 @@ void UFTArenaRunner::StepFight()
 			// -ArenaGlide=rollstrike: a light attack the moment a roll ends, while the drawn body may still be turning.
 			In.light = true;
 			In.dodge = In.guard = false;
+		}
+		if (GlideStick == 7 && In.dodge)
+		{
+			// -ArenaGlide=backstep: every roll pressed with the stick let go, so the rules backstep (the
+			// drawn body rolls the way it goes, then turns back to the lock).
+			In.move = ftcore::Vec2{0.f, 0.f};
 		}
 		if (GlideNow >= 0 && GlideNow < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
 		{

@@ -250,6 +250,11 @@ private:
 	float RollFrom = 0.f;
 	float RollTo = 0.f;
 	float RollRate = 1.f;
+	float RollFraction = 0.f;
+	bool bRollPlanFailed = false;
+	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
+	float RollLift = 0.f;
+	float RollFloorBall = 1e9f;
 	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
 	bool RollWithClip(const FFTArenaPose& Pose);
 	TWeakObjectPtr<AActor> PoseHost;
