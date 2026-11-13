@@ -233,6 +233,8 @@
 
 namespace ftcore {
 
+class JsonValue; // ftcore/Json.h
+
 inline constexpr std::size_t kMaxArenaEnemies = 6;
 // Per enemy (a boss move of n impacts is n chained moves). Fixed storage: at 24 an ArenaDef is about 17.4 KiB and an
 // ArenaFight about 23 KiB (MSVC x64; 7 and 10 KiB at 8); test_arena.cpp holds them under 20 and 28 KiB.
@@ -385,6 +387,12 @@ struct ArenaFighter {
     float takeHalfReach = 4.f;      // m, centre to centre, the player may stand from the ally (1..10)
     float takeHalfLoadShare = 1.f;  // the hp the player takes, times this, is stored as Load (0..2)
     float takeHalfRearm = 0.5f;     // s after a take half press before the next one opens a window (0..2)
+    // The cylinder (a guns kit only; arena.json "rounds" 0..30, "reload" 0..10 s). 0 rounds: no cylinder, the shot
+    // is limited by stamina alone. Otherwise each shot spends a round; with none left a shot press is dropped (a
+    // kick still starts), and once the last round's shot has ended the cylinder refills after `reload` seconds of
+    // the player's own time (a hit pause holds it). Full at begin() and restart().
+    std::uint8_t rounds = 0;
+    float reload = 1.2f;
 };
 
 // Whether the player may take this kit as the lead: only one with attacks of its own. A kit without is a party
@@ -748,6 +756,8 @@ struct ArenaStats {
     int softChances = 0;      // attacks started with nothing locked, no aim and a kit with a softRange (one could)
     int shots = 0;            // a guns kit's shots started
     int shotHits = 0;         // of them, the ones that connected (per target; also in hits)
+    int reloads = 0;          // the cylinder refilled (ArenaFighter::rounds)
+    int dryPresses = 0;       // shot presses dropped with the cylinder empty
     int guardBreaks = 0;
     int restarts = 0;
     int loadStored = 0;      // Load stored by parries
@@ -1019,6 +1029,9 @@ public:
     // once. A loadGain chair's gain counts on a store (not giveLoad's) while the ally is alive within its radius.
     FTCORE_API void setChairs(const ArenaChairs& chairs);
     FTCORE_API const ArenaChairs& chairs() const;
+    FTCORE_API std::uint8_t roundsMax() const;    // the kit's cylinder (ArenaFighter::rounds); 0: none
+    FTCORE_API std::uint8_t rounds() const;       // rounds still loaded, 0..roundsMax()
+    FTCORE_API float reloadProgress() const;      // 0..1 while a reload runs, else 0
     FTCORE_API std::uint8_t healChargesMax() const; // the kit's charges plus the chairs' at the last begin or restart
     // One ally body (ArenaBodies::ally): maxHp > 0 turns it on with full hp, 0 or less turns it off (the default).
     // restart() fills its hp again. Every enemy attack's active part tests it as it tests the player (the move's
@@ -1097,6 +1110,8 @@ private:
         float lastTakeHalfPress = -1.0e9f;  // fight time of the last take half press (every press counts)
         int spentLoad = 0;                  // Load spendLoad removed since the last tick, not yet reported
         bool capFilled = false;             // setLoadCap overloaded the gauge since the last tick, not yet reported
+        std::uint8_t rounds = 0;            // the cylinder's loaded rounds
+        float reloadLeft = 0.f;             // > 0: a reload is running, this many seconds left
     };
 
     struct EnemyState {
@@ -1243,6 +1258,11 @@ constexpr std::size_t kArenaResultLineMax = 512; // a buffer this size always ho
 FTCORE_API std::size_t arenaResultLine(char* out, std::size_t cap, const ArenaFight& fight, const ArenaTable& table,
                                        const ArenaLogIds& ids);
 
+// Lays a fighter object of arena.json's form (only the keys it lists) over `f`, the way a lead's row lies over the
+// "default" one. Problems go to `errors` with `path` in front; unknown keys go to `warnings` (none if null). The
+// Brief table (Brief.h) lays its kits over a lead's row with it.
+FTCORE_API void arenaOverlayFighter(const JsonValue& j, const std::string& path, ArenaFighter& f,
+                                    std::vector<std::string>& errors, std::vector<std::string>* warnings);
 // On failure `out` is empty and *error lists each problem with its path, one per line.
 FTCORE_API bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error = nullptr,
                                  std::vector<std::string>* warnings = nullptr);

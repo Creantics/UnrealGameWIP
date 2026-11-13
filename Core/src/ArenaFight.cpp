@@ -324,6 +324,7 @@ struct ArenaFightImpl {
         pl.poise = fi.poise;
         pl.charges = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fi.healCharges) + fight.chairs_.healCharges()));
         fight.healMax_ = pl.charges;
+        pl.rounds = fi.rounds;
         fight.allyHp_ = fight.allyMaxHp_;
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             Enemy& foe = foes[i];
@@ -696,7 +697,12 @@ struct ArenaFightImpl {
 
     // A gun kit's aimed light: one round at the aim, no riposte (that stays the unaimed light's), and it ends a chain.
     bool startShot(const ArenaInput& in) {
+        if (fi.rounds > 0 && pl.rounds == 0) { // the cylinder is empty: the press is dropped
+            ++stats.dryPresses;
+            return dropPress();
+        }
         if (!affords(fi.shot)) return false;
+        if (fi.rounds > 0) --pl.rounds;
         pl.chainLive = false;
         ++stats.shots;
         faceAtStart(in, fi.shot);
@@ -950,6 +956,7 @@ struct ArenaFightImpl {
         // Paused for the whole tick, nothing starts (a press waits in the buffer, which doesn't age) and the
         // player stands still.
         playerOwn = ownTime(pl.stopUntil);
+        reloadStep();
         pl.wantSpeed = -1.f;
         if (!(playerOwn > 0.f)) {
             pl.velocity = Vec2{};
@@ -981,6 +988,25 @@ struct ArenaFightImpl {
         advancePlayer(in);
         dt = whole;
         pl.velocity = arenaScaled(pl.velocity, playerOwn / whole);
+    }
+
+    // ---- the cylinder ----
+
+    // An empty cylinder refills `reload` seconds of the player's own time after the last round's shot has ended.
+    void reloadStep() {
+        if (fi.rounds == 0 || pl.rounds > 0) return;
+        if (pl.reloadLeft > 0.f) {
+            pl.reloadLeft -= playerOwn;
+            if (pl.reloadLeft > kArenaEps) return;
+        } else if (pl.action == ArenaAction::Light && pl.move == kArenaShotMove) {
+            return; // the last round's shot is still under way
+        } else if (fi.reload > kArenaEps) {
+            pl.reloadLeft = fi.reload;
+            return;
+        }
+        pl.reloadLeft = 0.f;
+        pl.rounds = fi.rounds;
+        ++stats.reloads;
     }
 
     // ---- the hit pause ----
@@ -2247,6 +2273,7 @@ struct ArenaFightImpl {
         // Opted in, a guns kit shoots on the way in: aimed at the target, in the shot's range, a dodge kept in reserve.
         if (farOff && self.autoShoot_ && f.weapon == ArenaWeapon::Guns && f.attacks &&
             d <= f.shot.range + self.def_.enemies[target].bodyRadius && p.action != ArenaAction::Light &&
+            (f.rounds == 0 || p.rounds > 0) &&
             (f.shot.stamina <= 0.f || p.stamina >= f.shot.stamina + f.dodgeStamina)) {
             in.aim = true;
             in.aimDir = arenaUnit(to, p.facing);
@@ -2461,6 +2488,13 @@ void ArenaFight::setChairs(const ArenaChairs& chairs) {
 }
 const ArenaChairs& ArenaFight::chairs() const { return chairs_; }
 std::uint8_t ArenaFight::healChargesMax() const { return healMax_; }
+std::uint8_t ArenaFight::roundsMax() const { return def_.fighter.rounds; }
+std::uint8_t ArenaFight::rounds() const { return def_.fighter.rounds > 0 ? player_.rounds : static_cast<std::uint8_t>(0); }
+float ArenaFight::reloadProgress() const {
+    const float r = def_.fighter.reload;
+    if (def_.fighter.rounds == 0 || player_.rounds > 0 || player_.reloadLeft <= 0.f || !(r > 0.f)) return 0.f;
+    return std::clamp(1.f - player_.reloadLeft / r, 0.f, 1.f);
+}
 void ArenaFight::setAlly(int maxHp, float radius) {
     allyMaxHp_ = std::max(maxHp, 0);
     allyHp_ = allyMaxHp_;
@@ -2974,7 +3008,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
                       "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
                       "hurtJolt", "blockLoadShare", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
-                      "takeHalfRearm"},
+                      "takeHalfRearm", "rounds", "reload"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -3038,6 +3072,8 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "takeHalfReach", f.takeHalfReach, 1, 10, false, path, errors);
     arenaNum(j, "takeHalfLoadShare", f.takeHalfLoadShare, 0, 2, false, path, errors);
     arenaNum(j, "takeHalfRearm", f.takeHalfRearm, 0, 2, false, path, errors);
+    arenaByte(j, "rounds", f.rounds, 0, 30, path, errors);
+    arenaNum(j, "reload", f.reload, 0, 10, false, path, errors);
 
     const JsonValue light = j["light"];
     if (!light.isAbsent()) {
@@ -3063,6 +3099,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
         errors.push_back(path + ".dodgeInvulnStart: expected at most dodgeInvulnEnd");
     if (f.dodgeInvulnEnd > f.dodgeTime) errors.push_back(path + ".dodgeInvulnEnd: expected at most dodgeTime");
     if (f.lockBreak < f.lockRange) errors.push_back(path + ".lockBreak: expected at least lockRange");
+    if (f.rounds > 0 && f.weapon != ArenaWeapon::Guns) errors.push_back(path + ".rounds: only a guns kit has a cylinder");
 }
 
 // 1 or more letters, digits, _ and -.
@@ -3249,6 +3286,15 @@ void arenaParseFightBody(JsonValue j, const std::string& path, const ArenaTable&
 }
 
 } // namespace
+
+void arenaOverlayFighter(const JsonValue& j, const std::string& path, ArenaFighter& f, std::vector<std::string>& errors,
+                         std::vector<std::string>* warnings) {
+    if (!j.isObject()) {
+        errors.push_back(path + ": expected an object");
+        return;
+    }
+    arenaParseFighter(j, path, f, errors, warnings);
+}
 
 bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error, std::vector<std::string>* warnings) {
     out = ArenaTable{};
