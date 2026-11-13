@@ -232,6 +232,14 @@ public:
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
 	double GetReleaseTime() const { return ReleaseTime; }
 	int32 GetReleaseSpent() const { return ReleaseSpent; }
+	// The count's Load and the Lift (-ArenaCountLift): the last Lift (its join time, -1e9 when none, and multiplier),
+	// the Load the count stored, the Lifts, and a Release's mark per enemy slot (0 / -1e9 when unmarked).
+	double GetLiftTime() const { return LiftTime; }
+	float GetLiftMultiplier() const { return LiftMultiplier; }
+	int32 GetCountLoadStored() const { return CountLoadStored; }
+	int32 GetLifts() const { return Lifts; }
+	float GetEnemyMarkBonus(int32 Slot) const;
+	double GetEnemyMarkUntil(int32 Slot) const;
 	double GetOverloadTime() const { return OverloadTime; }
 	int32 GetPopupCount() const { return FMath::Min(PopupTotal, MaxPopups); }
 	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }
@@ -553,6 +561,25 @@ private:
 	int32 SessionJoins = 0;          // the scripted partner's blows that joined a window
 	int32 SessionBonuses = 0;        // held-blow bonuses the fight took (hostBlow)
 	int32 SessionBonusDamage = 0;    // their extra damage
+	// -ArenaCountLift: the count stores Load and lifts, a releaseMark chair marks the Release's target, and a locked kite
+	// seam opens on a shared blow.
+	bool bCountLift = false;
+	int32 CountLoadStored = 0;
+	int32 CountLoadStores = 0;
+	int32 Lifts = 0;
+	int32 LiftSpent = 0;
+	double LiftTime = -1e9;
+	float LiftMultiplier = 1.f;
+	double LastJoinAt = -1e9;   // the session's last join time seen
+	int32 Marks = 0;
+	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
+	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)
+	double KiteLockUntil = -1e9; // the kite's lock end last opened
+	int32 KiteUnlocks = 0;
+	// Feeds the lead's Load to the session (the scripted partner has no gauge).
+	void FeedSessionLoads();
+	// After a session tick: applies its Load changes, notes a Lift and opens the kite's seam on an unlock.
+	void ApplyCountLift(const ftcore::FightTick& Tick);
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
 	// The lead's speed as its body moved (m/s; the sim's velocity less what the bodies' push took off), the median of
