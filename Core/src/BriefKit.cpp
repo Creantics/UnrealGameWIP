@@ -103,6 +103,8 @@ BriefKitBuild buildBriefKit(const BriefDef& brief, const LicenceStats& stats) {
     f.heavy.damage = wholeField(b.heavy.damage, reach, kKick, c.kickDamage);
     f.heavy.poiseDamage = floatField(b.heavy.poiseDamage, reach, kKickPoise, c.kickPoiseDamage);
     f.riposte.damage = wholeField(b.riposte.damage, reach, kKick, c.kickDamage);
+    f.jumpLight.damage = wholeField(b.jumpLight.damage, reach, kKick, c.kickDamage);
+    f.jumpLight.poiseDamage = floatField(b.jumpLight.poiseDamage, reach, kKickPoise, c.kickPoiseDamage);
     f.release.damage = wholeField(b.release.damage, reach, kKick, c.releaseDamage);
 
     f.shot.damage = wholeField(b.shot.damage, drive, kShot, c.shotDamage);
