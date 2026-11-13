@@ -6,7 +6,8 @@
 // notches and pips together), each other hp line, each verb, the cylinder, the wall cue and the lead's state word
 // each count once. Text inside a mark is part of it.
 //
-// At rest (nothing changed for `rules.rest` seconds) only the lead mark and the party places show. In action the
+// At rest (nothing changed for `rules.rest` seconds) the other marks fade out (`actionAlpha`), then only the lead mark
+// and the party places show. In action the
 // marks are granted in priority order up to `rules.marks`; what does not fit is not drawn.
 //
 //   UiBudgetState st;
@@ -62,7 +63,8 @@ struct UiBudgetInput {
 };
 
 struct UiBudgetOut {
-    bool rest = false;
+    bool rest = false;            // nothing changed for the rest time: the in-action marks are fading out (or gone)
+    float actionAlpha = 0.f;      // the in-action marks' show level: 1 in action, fading to 0 over the fade-out at rest
     std::array<std::uint8_t, kUiMarkKindCount> allow{}; // how many of each may be drawn
     std::uint8_t marks = 0;       // the total allowed
     float bossAlpha = 0.f;        // the boss line's show level (0 at rest)
@@ -77,6 +79,7 @@ struct UiBudgetState {
     float sinceBoss = 1e9f;       // since the boss last acted, was hit or locked anew
     UiFade boss;
     UiFade verbs;
+    UiFade action;                // the in-action marks (all but the lead's ring and the party places)
     std::uint8_t maxMarks = 0;    // the most marks allowed in any tick so far (the widget logs it)
     UiBudgetOut out;
 };

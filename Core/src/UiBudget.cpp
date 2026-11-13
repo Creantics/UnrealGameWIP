@@ -54,11 +54,14 @@ const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, cons
     const UiFadeTimes gone{0.15f, rules.rest, 0.6f, 0.f};
     uiFadeStep(st.boss, in.bossEvent, dt, gone);
     uiFadeStep(st.verbs, changed && !o.rest, dt, gone);
+    uiFadeStep(st.action, changed, dt, gone);
+    o.actionAlpha = st.action.alpha;
 
     if (in.resultOpen) {
         // The result card stands alone.
         st.boss.alpha = 0.f;
         st.verbs.alpha = 0.f;
+        o.actionAlpha = 0.f;
         return o;
     }
 
@@ -66,7 +69,8 @@ const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, cons
     for (std::size_t k = 0; k < kUiMarkKindCount; ++k) {
         const UiMarkKind kind = static_cast<UiMarkKind>(k);
         std::uint8_t want = in.want[k];
-        if (o.rest && kind != UiMarkKind::Lead && kind != UiMarkKind::Party) want = 0;
+        // At rest the in-action marks keep their place only while they fade out.
+        if (o.rest && kind != UiMarkKind::Lead && kind != UiMarkKind::Party && st.action.alpha <= 0.f) want = 0;
         if (kind == UiMarkKind::Boss && st.boss.alpha <= 0.f) want = 0;
         if (kind == UiMarkKind::Verb && st.verbs.alpha <= 0.f) want = 0;
         const std::uint8_t give = std::min(want, left);

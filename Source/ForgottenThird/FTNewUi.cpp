@@ -1252,10 +1252,13 @@ public:
 		In.activity = bPopNew || Tells > 0 || HitA > 0.f || ParryA > 0.f || ReleaseA > 0.f || OverA > 0.f || AimA > 0.01f || bCardsShown;
 		// The boss line returns when the boss acts (a windup or its hit), is hit, opens its weak point, or is locked on anew.
 		const uint8 LockNow = Fight.lock();
+		// Any change in the boss's line (hp, phase, a call, a note, down, invulnerable, the weak point) counts, and a live call
+		// keeps it up.
 		In.bossEvent = B.present
-			&& (!bBossSeen || bBossActs || B.hp < BossHpSeen || B.weakPoint == ftcore::UiWeakPoint::Open || (LockNow == B.slot && LockSeen != LockNow));
+			&& (!bBossSeen || bBossActs || !(B == BossSeen) || B.call != ftcore::UiCalledZone::None || B.weakPoint == ftcore::UiWeakPoint::Open
+				|| (LockNow == B.slot && LockSeen != LockNow));
 		bBossSeen = B.present;
-		BossHpSeen = B.present ? B.hp : 0;
+		BossSeen = B;
 		LockSeen = LockNow;
 
 		const ftcore::UiBudgetOut& G = ftcore::uiBudgetStep(Budget, In, Table().Style.budget);
@@ -1317,7 +1320,7 @@ public:
 			WallA = 0.f;
 		}
 		// The lead's details (numbers, Load, stamina, heals, read) go at rest, leaving the ring and its mark.
-		RestA = FMath::FInterpConstantTo(RestA, G.rest ? 0.f : 1.f, DeltaTime, G.rest ? 1.f / 0.6f : 1.f / 0.15f);
+		RestA = G.actionAlpha;
 		if (Budget.maxMarks > MarksLogged)
 		{
 			MarksLogged = Budget.maxMarks;
@@ -1343,6 +1346,7 @@ public:
 		PaintWorld(P, Size);
 		PaintLead(P, Size);
 		PaintTop(P, Size);
+		PaintSecondLine(P, Size);
 		PaintVerbs(P, Size);
 		PaintRounds(P, Size);
 		PaintEvents(P, Size);
@@ -1638,7 +1642,7 @@ private:
 		using ftcore::UiMarkKind;
 		// The boss line comes and goes with the boss (the budget's boss fade); a plain target's line goes at rest.
 		const bool bBossLine = B.present && Budget.out.allowed(UiMarkKind::Boss) > 0;
-		const bool bTargetLine = !B.present && T.present && (Budget.out.allowed(UiMarkKind::Target) > 0 || (Budget.out.rest && RestA > 0.01f));
+		const bool bTargetLine = !B.present && T.present && Budget.out.allowed(UiMarkKind::Target) > 0;
 		if (!bBossLine && !bTargetLine)
 		{
 			return;
@@ -1771,16 +1775,29 @@ private:
 		{
 			P.Text(X0 + Len - NoteW, WY, NoteWord, LabelFont, WordTok(NoteTok, NoteA * A));
 		}
-		if (B.present && T.present && T.enemy != B.slot && Budget.out.allowed(UiMarkKind::Target) > 0)
+	}
+
+	// The second hp line under the boss's: the target, when it is not the boss. Its own grant and fade (the boss line may be
+	// gone at rest while an add is still targeted).
+	void PaintSecondLine(const FPainter& P, const FVector2f& Size) const
+	{
+		const ftcore::ArenaHudBoss& B = View.now.boss;
+		const ftcore::ArenaHudTarget& T = View.now.target;
+		if (!(B.present && T.present && T.enemy != B.slot) || Budget.out.allowed(ftcore::UiMarkKind::Target) == 0)
 		{
-			const float OY = Y + 96.f * S;
-			const float OLen = 300.f * S;
-			const float OX = CX - OLen * 0.5f;
-			const float OHp = T.hpMax > 0 ? FMath::Clamp(static_cast<float>(T.hp) / T.hpMax, 0.f, 1.f) : 0.f;
-			HLine(OX, OX + OLen, OY, 0.f, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A), false);
-			HLine(OX, OX + OLen, OY, 0.f, OHp, StrokeStyle(2.4f, 106, S, 0.04f), Tok(UiToken::Ink, A));
-			HLine(OX, OX + OLen, OY + 9.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.2f, 107, S), Tok(UiToken::InkDim, A), false);
+			return;
 		}
+		const float S = P.S;
+		const float A = TopFade.alpha * RestA;
+		const float CX = Size.X * 0.5f;
+		const float Y = Carry::TopLine * S;
+		const float OY = Y + 96.f * S;
+		const float OLen = 300.f * S;
+		const float OX = CX - OLen * 0.5f;
+		const float OHp = T.hpMax > 0 ? FMath::Clamp(static_cast<float>(T.hp) / T.hpMax, 0.f, 1.f) : 0.f;
+		HLine(OX, OX + OLen, OY, 0.f, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A), false);
+		HLine(OX, OX + OLen, OY, 0.f, OHp, StrokeStyle(2.4f, 106, S, 0.04f), Tok(UiToken::Ink, A));
+		HLine(OX, OX + OLen, OY + 9.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.2f, 107, S), Tok(UiToken::InkDim, A), false);
 	}
 
 	// The verbs bottom right: only the verbs that can be used right now, stacked without gaps on a hairline rule; the one the
@@ -2852,7 +2869,7 @@ private:
 	uint8 MarksLogged = 0;
 	bool bRestLogged = false;
 	bool bBossSeen = false;
-	int32 BossHpSeen = 0;
+	ftcore::ArenaHudBoss BossSeen;
 	uint8 LockSeen = ftcore::kArenaNobody;
 	ftcore::UiCalledZone LastCall = ftcore::UiCalledZone::None;
 	ftcore::UiCalledZone WrongCall = ftcore::UiCalledZone::None;

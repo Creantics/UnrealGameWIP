@@ -105,6 +105,35 @@ TEST_CASE("ui budget: at rest only the lead and the party show") {
     CHECK_FALSE(st.out.rest);
 }
 
+TEST_CASE("ui budget: at rest the marks fade out, they do not pop") {
+    const UiBudgetRules rules;
+    UiBudgetState st;
+    ArenaHudFrame f = fullFrame();
+    UiBudgetInput in = busy(f);
+    in.want[K(UiMarkKind::Popup)] = 1;
+    for (int i = 0; i < 30; ++i) uiBudgetStep(st, in, rules);
+    CHECK(st.out.actionAlpha == doctest::Approx(1.f));
+    in.activity = false;
+    in.bossEvent = false;
+    in.changed = 0;
+    // A little past the rest time: resting, but everything still on screen and fading.
+    const int restTicks = static_cast<int>(rules.rest * 60.f) + 12;
+    for (int i = 0; i < restTicks; ++i) uiBudgetStep(st, in, rules);
+    const UiBudgetOut& o = st.out;
+    CHECK(o.rest);
+    CHECK(o.actionAlpha > 0.f);
+    CHECK(o.actionAlpha < 1.f);
+    CHECK(o.bossAlpha > 0.f);
+    CHECK(o.bossAlpha < 1.f);
+    CHECK(o.verbAlpha > 0.f);
+    CHECK(o.allowed(UiMarkKind::Popup) == 1);
+    CHECK(o.allowed(UiMarkKind::State) == 1);
+    // After the fade-out only the lead and the party.
+    for (int i = 0; i < 60; ++i) uiBudgetStep(st, in, rules);
+    CHECK(st.out.actionAlpha == 0.f);
+    CHECK(st.out.marks == 2);
+}
+
 TEST_CASE("ui budget: the boss line fades at rest and returns on a boss event") {
     const UiBudgetRules rules;
     UiBudgetState st;
