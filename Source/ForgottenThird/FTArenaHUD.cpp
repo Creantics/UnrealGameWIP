@@ -15,6 +15,8 @@
 #include "ftcore/Settings.h"
 #include "FTPauseOverlay.h"
 #include "FTInputBindings.h"
+#include "FTNewUi.h"
+#include "Engine/GameViewportClient.h"
 #include "FTUiText.h"
 #include "GameFramework/PlayerController.h"
 
@@ -652,19 +654,22 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	const double T = Fight.time();
 	DrawRect(kArenaPanel, X - 12.f * S, Y - 6.f * S, W + 24.f * S, 34.f * S);
 
-	// The stacks, as pips.
-	DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
-	const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
-	for (int32 I = 0; I < Cap; ++I)
+	// The stacks, as pips (the Slate layer draws them when the new UI is on).
+	if (!NewUiWidget.IsValid())
 	{
-		const float PX = X + 86.f * S + static_cast<float>(I) * 22.f * S;
-		if (I < Boss.stacks())
+		DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
+		const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
+		for (int32 I = 0; I < Cap; ++I)
 		{
-			DrawRect(kArenaLoad, PX, Y + 2.f * S, 16.f * S, 16.f * S);
-		}
-		else
-		{
-			DrawFrame(PX, Y + 2.f * S, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+			const float PX = X + 86.f * S + static_cast<float>(I) * 22.f * S;
+			if (I < Boss.stacks())
+			{
+				DrawRect(kArenaLoad, PX, Y + 2.f * S, 16.f * S, 16.f * S);
+			}
+			else
+			{
+				DrawFrame(PX, Y + 2.f * S, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+			}
 		}
 	}
 
@@ -680,6 +685,7 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	}
 	else if (Run.crit().isOpen(Run.now()))
 	{
+		if (!NewUiWidget.IsValid()) // the Slate layer shows the open weak point
 		DrawStrCentered(kBossWeakPointArena, ArenaAlpha(kArenaGold, 0.7f + 0.3f * FMath::Sin(static_cast<float>(Mode.GetNow()) * 10.f)), Mid, Y, Small, 1.2f);
 	}
 	else if (Boss.down())
@@ -1072,6 +1078,40 @@ void AFTArenaHUD::DrawEdgeCue(const UFTArenaRunner& Mode)
 	}
 }
 
+const UFTArenaRunner* AFTArenaHUD::FindRunner() const
+{
+	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
+	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
+	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
+	{
+		Mode = It->GetRunner();
+	}
+	return Mode;
+}
+
+void AFTArenaHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (FT::NewUiEnabled() && Viewport)
+	{
+		TWeakObjectPtr<const AFTArenaHUD> Self(this);
+		NewUiWidget = FT::MakeArenaHudWidget([Self]() -> const UFTArenaRunner* { return Self.IsValid() && Self->bShowHUD ? Self->FindRunner() : nullptr; });
+		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
+	}
+}
+
+void AFTArenaHUD::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (NewUiWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(NewUiWidget.ToSharedRef());
+	}
+	NewUiWidget.Reset();
+	Super::EndPlay(Reason);
+}
+
 void AFTArenaHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -1079,13 +1119,7 @@ void AFTArenaHUD::DrawHUD()
 	{
 		return;
 	}
-	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world).
-	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
-	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
-	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
-	{
-		Mode = It->GetRunner();
-	}
+	const UFTArenaRunner* Mode = FindRunner();
 	if (!Mode || !Mode->IsBegun())
 	{
 		FT::DrawPauseOverlay(*this, Canvas);
@@ -1103,9 +1137,15 @@ void AFTArenaHUD::DrawHUD()
 	DrawFlashes(*Mode);
 	DrawEnemies(*Mode);
 	DrawLock(*Mode);
-	DrawTargetBar(*Mode);
-	DrawBossPanel(*Mode);
-	DrawPlayerPanel(*Mode);
+	if (!NewUiWidget.IsValid()) // the Slate layer draws the lead's block and the target bar
+	{
+		DrawTargetBar(*Mode);
+	}
+	DrawBossPanel(*Mode); // kept: the called zone and the answer words have no view fields yet
+	if (!NewUiWidget.IsValid())
+	{
+		DrawPlayerPanel(*Mode);
+	}
 	DrawPopups(*Mode);
 	DrawBanners(*Mode);
 	if (Mode->IsAutoPlay() || Mode->IsIdle())

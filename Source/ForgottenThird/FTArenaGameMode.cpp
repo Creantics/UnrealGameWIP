@@ -16,6 +16,7 @@
 #include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
 #include "Engine/GameViewportClient.h"
+#include "UnrealClient.h"
 #include "Engine/World.h"
 #include "FTArenaFighter.h"
 #include "FTArenaHUD.h"
@@ -190,6 +191,9 @@ void AFTArenaGameMode::StartPlay()
 		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
 		bShotSide = FParse::Param(Cmd, TEXT("ArenaShotSide"));
 		bShotWorld = FParse::Param(Cmd, TEXT("ArenaShotWorld"));
+#if !UE_BUILD_SHIPPING
+		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
+#endif
 		bShotSide = bShotSide || bShotWorld;
 	}
 #if !UE_BUILD_SHIPPING
@@ -1554,8 +1558,14 @@ bool AFTArenaGameMode::EdgeShot()
 void AFTArenaGameMode::TakeShot(const TCHAR* Name, bool bCounted)
 {
 	const FString File = FString::Printf(TEXT("%s_%s.png"), *ShotPrefix, Name);
+	if (bShotUi)
+	{
+		// -ArenaShotUi: the viewport's own frame with the UI drawn, Slate widgets included (the new UI's captures); the
+		// size is the window's (-ResX/-ResY).
+		FScreenshotRequest::RequestScreenshot(File, true, false);
+	}
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
-	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+	else if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
 	{
 		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
 	}
