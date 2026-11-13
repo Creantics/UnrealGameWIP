@@ -5101,7 +5101,9 @@ bool UFTArenaRunner::BeginTableNow(double T)
 	Held.value = Fight.load();
 	const ftcore::Vec2 At = Bodies.player;
 	const ftcore::TableSpot Spot{At.x, At.y, TableSeats.tuning().radius};
-	const ftcore::TableError E = TableClock.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
+	// While Lone the table is refused, whichever path asks (the key, -ArenaTableAuto).
+	const ftcore::TableError E = Fight.lone() ? ftcore::TableError::Lone
+		: TableClock.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
 	if (E != ftcore::TableError::None)
 	{
 		++TableRefusals;
