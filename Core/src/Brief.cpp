@@ -103,21 +103,21 @@ void readChange(JsonValue j, const std::string& path, BriefChange& c, std::vecto
         double lo, hi;
     };
     static constexpr Key keys[] = {
-        {"hp", &BriefChange::hp, 0.5, 2.0},
-        {"poise", &BriefChange::poise, 0.5, 2.0},
-        {"guardLeak", &BriefChange::guardLeak, 0.5, 2.0},
-        {"parryWindowAdd", &BriefChange::parryWindowAdd, -0.05, 0.05},
-        {"kickDamage", &BriefChange::kickDamage, 0.5, 2.0},
-        {"kickPoiseDamage", &BriefChange::kickPoiseDamage, 0.5, 2.0},
-        {"releaseDamage", &BriefChange::releaseDamage, 0.5, 2.0},
-        {"shotDamage", &BriefChange::shotDamage, 0.5, 2.0},
-        {"shotPoiseDamage", &BriefChange::shotPoiseDamage, 0.5, 2.0},
-        {"termDuration", &BriefChange::termDuration, 0.5, 2.0},
-        {"readPower", &BriefChange::readPower, 0.5, 2.0},
-        {"readStackPower", &BriefChange::readStackPower, 0.5, 2.0},
-        {"loadShare", &BriefChange::loadShare, 0.5, 2.0},
-        {"dodgeDistance", &BriefChange::dodgeDistance, 0.5, 2.0},
-        {"invuln", &BriefChange::invuln, 0.5, 2.0},
+        {"hp", &BriefChange::hp, kBriefChangeMin, kBriefChangeMax},
+        {"poise", &BriefChange::poise, kBriefChangeMin, kBriefChangeMax},
+        {"guardLeak", &BriefChange::guardLeak, kBriefChangeMin, kBriefChangeMax},
+        {"parryWindowAdd", &BriefChange::parryWindowAdd, -kBriefParryAddMax, kBriefParryAddMax},
+        {"kickDamage", &BriefChange::kickDamage, kBriefChangeMin, kBriefChangeMax},
+        {"kickPoiseDamage", &BriefChange::kickPoiseDamage, kBriefChangeMin, kBriefChangeMax},
+        {"releaseDamage", &BriefChange::releaseDamage, kBriefChangeMin, kBriefChangeMax},
+        {"shotDamage", &BriefChange::shotDamage, kBriefChangeMin, kBriefChangeMax},
+        {"shotPoiseDamage", &BriefChange::shotPoiseDamage, kBriefChangeMin, kBriefChangeMax},
+        {"termDuration", &BriefChange::termDuration, kBriefChangeMin, kBriefChangeMax},
+        {"readPower", &BriefChange::readPower, kBriefChangeMin, kBriefChangeMax},
+        {"readStackPower", &BriefChange::readStackPower, kBriefChangeMin, kBriefChangeMax},
+        {"loadShare", &BriefChange::loadShare, kBriefChangeMin, kBriefChangeMax},
+        {"dodgeDistance", &BriefChange::dodgeDistance, kBriefChangeMin, kBriefChangeMax},
+        {"invuln", &BriefChange::invuln, kBriefChangeMin, kBriefChangeMax},
     };
     for (std::uint32_t k = 0; k < j.size(); ++k) {
         const std::string_view name = j.key(k);

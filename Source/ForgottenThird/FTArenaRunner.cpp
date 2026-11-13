@@ -4432,7 +4432,20 @@ void UFTArenaRunner::BeginBrief()
 	if (bRating)
 	{
 		RatingText.TrimStartAndEndInline();
-		const int32 Rating = RatingText.IsNumeric() && !RatingText.Contains(TEXT(".")) ? FCString::Atoi(*RatingText) : 0;
+		// Digits only (IsNumeric takes signs, points and exponents): "1e3" or "+5" is refused, not read as 1 or 5.
+		int32 Rating = 0;
+		bool bDigits = RatingText.Len() >= 1 && RatingText.Len() <= 2;
+		for (const TCHAR C : RatingText)
+		{
+			bDigits = bDigits && C >= TEXT('0') && C <= TEXT('9');
+		}
+		if (bDigits)
+		{
+			for (const TCHAR C : RatingText)
+			{
+				Rating = Rating * 10 + (C - TEXT('0'));
+			}
+		}
 		if (Rating < 1 || Rating > ftcore::kMaxRating)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaRating=%s: a Rating is a whole number 1..%d; the run stops."), *RatingText, ftcore::kMaxRating);
