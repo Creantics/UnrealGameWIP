@@ -2342,6 +2342,11 @@ void UFTArenaRunner::StepFight()
 			LeadUpperShare = FMath::Clamp(Want, LeadUpperShare - kUpperShareRate * StepSeconds, LeadUpperShare + kUpperShareRate * StepSeconds);
 		}
 		LeadWeapons.SetActionUpper(LeadUpperShare);
+		// A kick in the air (the guns kit's heavy clip, until its own air clip exists): the kicking leg, hip down, keeps
+		// the ground kick over the fall's other leg and pelvis.
+		const ftcore::FightClip AirClip = ftcore::arenaHeavyStrike(Fight.def().fighter);
+		LeadWeapons.SetActionLeg(!bAirStrike ? -1
+			: AirClip == ftcore::FightClip::KickRight ? 1 : AirClip == ftcore::FightClip::KickLeft ? 0 : -1);
 		// The legs toward the way the body went, where they walk: on the locomotion (no strike, or by the strike's
 		// upper share). Standing, dodging or under a whole-body clip they ease back under the facing.
 		if (!bLeadPaused)

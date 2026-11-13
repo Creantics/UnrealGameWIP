@@ -8256,8 +8256,12 @@ TEST_CASE("arena table: the shipped kits jump with their own air lights; the ten
     const ArenaFighter& third = t.fighter("third");
     CHECK(devin.jumpLight.damage > duy.jumpLight.damage); // the gauntlets' downward strike hits hardest ...
     CHECK(duy.jumpLight.range > devin.jumpLight.range);   // ... the kick reaches furthest ...
-    // The Third's row is kept for when its attacks are on; with them off it strikes nothing.
+    // The Third's row is kept for when his attacks come on (off today, so it strikes nothing yet): the weakest of the
+    // three, and on the light's stamina like the others.
     CHECK_FALSE(third.attacks);
+    CHECK(third.jumpLight.damage > 0.f);
+    CHECK(third.jumpLight.damage < duy.jumpLight.damage);
+    CHECK(third.jumpLight.stamina == third.light[0].stamina);
     for (const ArenaFighter* f : {&devin, &duy}) CHECK(f->jumpLight.stamina == f->light[0].stamina);
     // The ten low moves, each by name: a sweep or slam along the floor passes under a jump unless set to reach it.
     struct LowMove {
@@ -8328,4 +8332,22 @@ TEST_CASE("arena jump: no stamina comes back in the air, and the wait starts aga
         least = std::min(least, spam.fight.stamina());
     }
     CHECK(least <= 0.f);
+
+    // The landing lock blocks it as a rule, not through staminaDelay: with no delay at all, none comes back until the
+    // lock is over.
+    ArenaFighter quick = devin;
+    quick.staminaDelay = 0.f;
+    Rig q(quick, {dummyKind()});
+    q.run(30);
+    q.in.jump = true;
+    q.tick();
+    q.in.jump = false;
+    const float spent = q.fight.stamina();
+    const float lock = quick.jumpStartup + quick.jumpAir + quick.jumpLandLock;
+    while (q.out().player.jumpTime >= 0.f && q.out().player.jumpTime < lock - kDt) {
+        q.tick();
+        CHECK(q.fight.stamina() == doctest::Approx(spent));
+    }
+    q.run(10);
+    CHECK(q.fight.stamina() > spent);
 }

@@ -602,10 +602,14 @@ struct ArenaFightImpl {
     // ---- the player ----
 
     void regenerate() {
-        // Stamina refills at staminaRegen per second once staminaDelay has passed since the last spend. Off the ground
-        // it waits: the delay starts again at touch-down (and runs through the landing lock), so each jump costs.
-        if (pl.jumpTime >= 0.f && pl.jumpTime < fi.jumpStartup + fi.jumpAir) pl.lastSpend = std::max(pl.lastSpend, t1);
-        const float from = std::max(t0, pl.lastSpend + fi.staminaDelay);
+        // Stamina refills at staminaRegen per second once staminaDelay has passed since the last spend. A jump costs
+        // in full: none comes back off the ground (the delay starts again at touch-down) nor through the landing lock,
+        // whatever staminaDelay is.
+        const float down = fi.jumpStartup + fi.jumpAir;
+        const bool jumping = pl.jumpTime >= 0.f;
+        if (jumping && pl.jumpTime < down) pl.lastSpend = std::max(pl.lastSpend, t1);
+        float from = std::max(t0, pl.lastSpend + fi.staminaDelay);
+        if (jumping && pl.jumpTime < down + fi.jumpLandLock) from = t1;
         if (t1 > from && pl.stamina < fi.stamina)
             pl.stamina = std::min(fi.stamina, pl.stamina + fi.staminaRegen * (t1 - from));
         // Poise refills after poiseDelay with no poise damage.

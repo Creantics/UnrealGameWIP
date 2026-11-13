@@ -314,6 +314,15 @@ TEST_CASE("locomotion: a host's landing hand-back holds for a moving landing tha
     CHECK(l.state() == LocoState::Landing);
     run(l, 0.03f, {});
     CHECK(l.state() == LocoState::Ground);
+
+    // A moving landing's own hand-back, sooner; a standing one keeps landPlay.
+    l.tuning().landPlayMoving = 0.02f;
+    l.update({kDt, 700.f, 0.f, true, 520.f});
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    l.update({kDt, 700.f, 0.f, false, 0.f});
+    REQUIRE(l.target() == LocoClip::LandMoving);
+    run(l, 0.03f, {});
+    CHECK(l.state() == LocoState::Ground);
 }
 
 TEST_CASE("locomotion: a moving jump takes off and lands with the moving clips") {
