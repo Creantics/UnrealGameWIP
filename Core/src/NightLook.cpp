@@ -96,18 +96,34 @@ DuskFrame duskFrame(const DuskLook& look, float amount) {
     return f;
 }
 
-double duskPeakHour(const DuskLook& look, float latitudeDeg) {
+namespace {
+// The hour of the evening the sun stands `deg` up: it sinks through the afternoon, so bisect 12:00..24:00.
+double eveningHourAt(float deg, float latitudeDeg) {
     WorldClockSpec spec;
     spec.latitudeDeg = latitudeDeg;
-    // The sun sinks through the afternoon: bisect 12:00..24:00 for the elevation crossing peakDeg.
     double a = 12.0, b = 24.0;
-    if (sunElevationDeg(spec, a) < look.peakDeg) return a;
-    if (sunElevationDeg(spec, b) > look.peakDeg) return b;
+    if (sunElevationDeg(spec, a) < deg) return a;
+    if (sunElevationDeg(spec, b) > deg) return b;
     for (int i = 0; i < 40; ++i) {
         const double m = 0.5 * (a + b);
-        if (sunElevationDeg(spec, m) > look.peakDeg) a = m; else b = m;
+        if (sunElevationDeg(spec, m) > deg) a = m; else b = m;
     }
     return 0.5 * (a + b);
+}
+} // namespace
+
+double duskPeakHour(const DuskLook& look, float latitudeDeg) { return eveningHourAt(look.peakDeg, latitudeDeg); }
+
+double duskStillHour(const DuskLook& look, float latitudeDeg) { return eveningHourAt(look.stillDeg, latitudeDeg); }
+
+float duskLights(const DuskLook& look, float sunElevationDeg) {
+    if (!(look.lightsOnDeg > look.lightsFullDeg)) return 0.f;
+    return smooth01((look.lightsOnDeg - sunElevationDeg) / (look.lightsOnDeg - look.lightsFullDeg));
+}
+
+float duskDaylight(const DuskLook& look, float sunElevationDeg) {
+    if (!(look.dayFullDeg > look.dayEndDeg)) return sunElevationDeg > look.dayEndDeg ? 1.f : 0.f;
+    return smooth01((sunElevationDeg - look.dayEndDeg) / (look.dayFullDeg - look.dayEndDeg));
 }
 
 } // namespace ftcore

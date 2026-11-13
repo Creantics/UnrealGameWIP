@@ -84,6 +84,18 @@ inline constexpr const TCHAR* LookUnderwaterMaterial = TEXT("/Game/Look/M_Look_U
 // water surfaces and the underwater view, written each frame by the water subsystem (FTBuildLookMaterials, with -Water).
 inline constexpr const TCHAR* LookWaterCollection = TEXT("/Game/Look/MPC_Water");
 inline constexpr const TCHAR* LookGlassMaterial = TEXT("/Game/Look/M_Look_Glass");
+// The glass system's materials (FTBuildLookMaterials -Glass; ftcore/GlassSurface.h): the true pane (thin translucent,
+// coloured transmission, the scene mirrored in its front layer), the same pane as a mirror layer weighted by the
+// pane's own Fresnel share (the route for a renderer without thin translucency), glass over a picture (opaque), a lit
+// sign and the fully cut-out surface a kit piece's glass slot wears where a true pane stands in its place.
+inline constexpr const TCHAR* LookGlassPaneMaterial = TEXT("/Game/Look/M_Look_GlassPane");
+inline constexpr const TCHAR* LookGlassMirrorMaterial = TEXT("/Game/Look/M_Look_GlassMirror");
+inline constexpr const TCHAR* LookGlassOverMaterial = TEXT("/Game/Look/M_Look_GlassOver");
+inline constexpr const TCHAR* LookSignMaterial = TEXT("/Game/Look/M_Look_Sign");
+inline constexpr const TCHAR* LookGlassHoleMaterial = TEXT("/Game/Look/M_Look_GlassHole");
+// The surfaces of a real shop bay behind a true pane: a painted surface with the bay's own light (the window
+// collection's Daylight, Night and ProofShopNight), so the bay's level is the one glass over a picture draws.
+inline constexpr const TCHAR* LookGlassBayMaterial = TEXT("/Game/Look/M_Look_GlassBay");
 inline constexpr const TCHAR* LookChromeMaterial = TEXT("/Game/Look/M_Look_Chrome");
 inline constexpr const TCHAR* LookWetStoneMaterial = TEXT("/Game/Look/M_Look_WetStone");
 inline constexpr const TCHAR* LookGlowMaterial = TEXT("/Game/Look/M_Look_Glow");

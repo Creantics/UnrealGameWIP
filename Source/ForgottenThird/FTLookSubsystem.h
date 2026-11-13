@@ -21,6 +21,16 @@
 #include "FTLookSubsystem.generated.h"
 
 class FFTLookGradeExtension;
+namespace ftcore
+{
+struct LookTable;
+}
+
+namespace FTLook
+{
+// Data/Look/looks.json, read once (empty when it is missing or refused; the problems are logged).
+FORGOTTENTHIRD_API const ftcore::LookTable& Table();
+} // namespace FTLook
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTLookSubsystem : public UTickableWorldSubsystem

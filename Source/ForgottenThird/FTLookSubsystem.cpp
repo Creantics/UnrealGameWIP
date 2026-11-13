@@ -34,8 +34,14 @@ TAutoConsoleVariable<int32> CVarLook(TEXT("r.FT.Look"), 1,
 	TEXT("The per-world photoreal look: 1 applies the world's look from Data/Look/looks.json when a map starts, 0 keeps the shared look (as -LookOff)."),
 	ECVF_Default);
 
-// Data/Look/looks.json, read once. Empty when it's missing or refused (the problems logged).
 const ftcore::LookTable& LookTable()
+{
+	return FTLook::Table();
+}
+} // namespace
+
+// Data/Look/looks.json, read once. Empty when it's missing or refused (the problems logged).
+const ftcore::LookTable& FTLook::Table()
 {
 	static ftcore::LookTable Table;
 	static bool bLoaded = false;
@@ -65,6 +71,9 @@ const ftcore::LookTable& LookTable()
 	}
 	return Table;
 }
+
+namespace
+{
 
 // Data/Look/looks.json's render settings, once per run: each console variable set at the game-setting priority, under
 // the project's ini and the command line (-dpcvars=), which keep theirs.

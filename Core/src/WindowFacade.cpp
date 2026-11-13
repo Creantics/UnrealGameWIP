@@ -892,7 +892,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     return h;
 }
 
-std::string windowFacadeComposeHlsl() {
+std::string windowFacadeComposeHlsl(bool glass) {
     std::string h;
     h.reserve(4096);
     h += "float p = floor(Win.a + 0.5);\n";
@@ -925,8 +925,19 @@ std::string windowFacadeComposeHlsl() {
          "(p == 10.0 ? 0.45 : (Own ? 0.8 : WallRough)))));\n";
     h += "MetalOut = Glass ? 0.0 : (Frame || Metal ? FrameMetal : (p == 10.0 ? 0.5 : (Fascia || Own ? 0.0 : WallMetal)));\n";
     h += "AOOut = Reveal ? 0.6 * WallAO : (Flat ? 1.0 : (Shade ? 0.7 * WallAO : WallAO));\n";
-    h += "EmissiveOut = Emit;\n";
-    h += "float3 GlassAlbedo = Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo;\n";
+    if (glass) {
+        // The pane (GlassSurface.h): its mirror share by the view's angle, what it passes as a share of a square-on
+        // view's, and its tint.
+        h += "float gCosV = saturate(abs(dot(normalize(VertexNormal), normalize(CamV))));\n";
+        h += "float gFace = 0.04 + 0.96 * pow(1.0 - gCosV, 5.0);\n";
+        h += "float gPass = (1.0 - 2.0 * gFace / (1.0 + gFace)) / 0.9231;\n";
+        h += "EmissiveOut = Glass ? Emit * gPass * float3(0.95, 0.99, 0.97) : Emit;\n";
+        h += "SpecOut = Glass ? GlassSpec : 0.5;\n";
+        h += "float3 GlassAlbedo = (Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo) * gPass;\n";
+    } else {
+        h += "EmissiveOut = Emit;\n";
+        h += "float3 GlassAlbedo = Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo;\n";
+    }
     h += "return top ? roof : (Glass ? GlassAlbedo : (Frame ? FrameColor.rgb : (Band ? Win.rgb * grain : (Reveal ? wall "
          "* 0.8 : (Fascia || Own ? Win.rgb : (Shade ? wall * 0.5 : wall))))));\n";
     return h;

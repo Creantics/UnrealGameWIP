@@ -11,6 +11,7 @@
 #include "Components/SkyLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Components/StaticMeshComponent.h"
 #include "DynamicRHI.h"
 #include "Engine/DirectionalLight.h"
@@ -562,7 +563,7 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 	// -WorldEyeDusk: the evening hour the sun stands at the dusk's peak (FTNightLook.h).
 	if (!bSunHour && FParse::Param(FCommandLine::Get(), TEXT("WorldEyeDusk")))
 	{
-		SunHour = static_cast<float>(ftcore::duskPeakHour(FTNight::Dusk(), ftcore::WorldClockSpec{}.latitudeDeg));
+		SunHour = static_cast<float>(ftcore::duskStillHour(FTNight::Dusk(), ftcore::WorldClockSpec{}.latitudeDeg));
 		bSunHour = true;
 	}
 	const FTCHARToUTF8 MapName(*World.GetMapName());
@@ -603,6 +604,12 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		const float Wet = Look ? Look->GetLook().wetness * ftcore::nightFrame(FTNight::Look(), bWetNight ? 1.f : 0.f).wetShare : 0.f;
 		const bool bWet = Look && LookParams && LookParams->SetScalarParameterValue(TEXT("Wetness"), Wet);
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: wetness %.3f %s."), Wet, bWet ? TEXT("written") : TEXT("not written (no look or MPC_Look)"));
+		// A day still: no lights, full daylight in the rooms (a dusk hour's and the night's own writes go over this).
+		if (!bWetNight && !(DayClock && DayClock->IsRunning()))
+		{
+			const FTNight::FSkyFrame DaySky = FTNight::FrameAt(ftcore::WorldClockSpec{}, SunHour);
+			FTNight::WriteWindowLights(World, DaySky.Lights, DaySky.Daylight);
+		}
 		// For a still alone (the clock does not run under a still): -WindowParallax=<0..1>, 0 shows every room and shop
 		// display case flat; -ShopDayLevel= and -ShopNightLevel=.
 		const TCHAR* const Switches[] = {TEXT("WindowParallax="), TEXT("ShopDayLevel="), TEXT("ShopNightLevel=")};
@@ -647,6 +654,8 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		UMaterialParameterCollection* Collection =
 			LoadObject<UMaterialParameterCollection>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		UMaterialParameterCollectionInstance* Windows = Collection ? World.GetParameterCollectionInstance(Collection) : nullptr;
+		// The lights all on, no daylight in the rooms, and the glass values a look sets.
+		FTNight::WriteWindowLights(World, 1.f, 0.f);
 		const bool bNight = Windows && Windows->SetScalarParameterValue(TEXT("Night"), 1.f);
 		const bool bGlow = Glow >= 0.f && Windows && Windows->SetScalarParameterValue(TEXT("NightGlow"), Glow);
 		int32 Suns = 0, Skies = 0, Volumes = 0;
@@ -800,6 +809,50 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 			bNight ? TEXT("1") : TEXT("unset (no window collection)"), *GlowText, Suns, SunShare, Skies,
 			SkyFill, Fogs, Lamps, LampCd, LampRadius, Shops, ShopCd, Heads, Lenses, LampMaterial ? TEXT("") : TEXT(" (no lamp material)"), Ev, EvRange,
 			Frame.whiteKelvin, Volumes);
+	}
+	// -WorldEyeGlassOverPicture: the glass proof front as glass over a picture, for a still of that state from the map
+	// that holds its true panes: the panes and the bay behind them hidden, the glazed piece's cut-out glass slot back on
+	// the kit's glass.
+	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeGlassOverPicture")))
+	{
+		UMaterialInterface* KitGlass = nullptr;
+		for (TObjectIterator<UMaterialInstanceConstant> It; It; ++It)
+		{
+			if (It->GetOutermost() != World.GetOutermost())
+			{
+				continue;
+			}
+			const FString Name = It->GetName();
+			if (Name.StartsWith(TEXT("MI_Kit_jpk_glass_")) || (!KitGlass && Name == TEXT("MI_Kit_jpk_glass")))
+			{
+				KitGlass = *It;
+			}
+		}
+		int32 Hidden = 0, Swapped = 0;
+		for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+		{
+			if (It->GetWorld() != &World)
+			{
+				continue;
+			}
+			if (It->ComponentHasTag(TEXT("GlassProofPane")) || It->ComponentHasTag(TEXT("GlassProofBay")))
+			{
+				It->SetVisibility(false);
+				++Hidden;
+				continue;
+			}
+			for (int32 Slot = 0; KitGlass && Slot < It->GetNumMaterials(); ++Slot)
+			{
+				const UMaterialInterface* Material = It->GetMaterial(Slot);
+				if (Material && Material->GetName() == TEXT("M_Look_GlassHole"))
+				{
+					It->SetMaterial(Slot, KitGlass);
+					++Swapped;
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: glass over a picture on the proof front: %d pane and bay components hidden, %d cut-out slots back on %s."),
+			Hidden, Swapped, KitGlass ? *KitGlass->GetName() : TEXT("nothing (no kit glass in the map)"));
 	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyePlainWalls")))
 	{

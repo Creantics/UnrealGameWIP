@@ -32,7 +32,7 @@ enum EData : int32
 	DataSignFg,
 	DataSeed,  // 0..1
 	DataDirt,  // 0..1
-	DataShop,  // 1 on a shop storey's glass
+	DataShop,  // 1 on a shop storey's glass, 2 on the glass proof front's
 	DataCount
 };
 
@@ -43,6 +43,8 @@ struct FBuild
 	ftcore::FrontagePlan Plan;
 	std::vector<ftcore::KitPlacement> Placements;
 	std::vector<bool> Replaced; // by box: a lot stands in its place (no box, no windows, no frontage, no roof dressing)
+	int32 GlassProofLot = -1;   // -GlassProofLot=<lot>: the one front whose shop glass takes the look's own night level
+	bool bGlassProofPane = false; // -GlassProofPane: that front's glass is true panes over a real bay (else glass over a picture)
 };
 
 // Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces. True with bOn false without

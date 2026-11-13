@@ -102,6 +102,13 @@ struct DuskLook {
     float flare = 1.6f;       // lens flare intensity at full dusk (blended from the volume's own; the engine default is 1)
     float flareThreshold = 2.5f; // the flare threshold at full dusk (the engine default 8 hides a low sun's flare)
     float bloomAdd = 0.35f;   // added to the volume's bloom at full dusk
+    // The look table's dusk row (Data/Look/looks.json "dusk") sets every value above and these:
+    float stillDeg = 2.f;         // the sun's elevation a dusk still stands at (duskStillHour)
+    float exposureBias = 0.f;     // EV added to the camera's exposure bias at full dusk
+    float lightsOnDeg = -90.f;    // shop, window and street lights start to come on as the sun sinks through this ...
+    float lightsFullDeg = -90.f;  // ... and are all on by this (on <= full: they follow the night alone)
+    float dayEndDeg = -6.f;       // daylight inside a room: gone with the sun this low ...
+    float dayFullDeg = 12.f;      // ... and full with the sun this high
 };
 
 struct DuskFrame {
@@ -123,5 +130,14 @@ FTCORE_API float duskAmount(const DuskLook& look, float sunElevationDeg, bool ev
 FTCORE_API DuskFrame duskFrame(const DuskLook& look, float amount);
 // The hour of the evening the sun stands at peakDeg, for a still or a -TimeOfDay at full dusk. No allocation.
 FTCORE_API double duskPeakHour(const DuskLook& look, float latitudeDeg);
+// The hour of the evening the sun stands at stillDeg: where a dusk still is taken. No allocation.
+FTCORE_API double duskStillHour(const DuskLook& look, float latitudeDeg);
+// The share of the shop, window and street lights on with the sun this many degrees up: 0 above lightsOnDeg, 1 from
+// lightsFullDeg down, eased between (0 everywhere when on <= full). A world takes the larger of this and the night's
+// amount. No allocation.
+FTCORE_API float duskLights(const DuskLook& look, float sunElevationDeg);
+// The daylight reaching a room behind glass, as a share of a clear day's: 0 from dayEndDeg down, 1 from dayFullDeg up.
+// No allocation.
+FTCORE_API float duskDaylight(const DuskLook& look, float sunElevationDeg);
 
 } // namespace ftcore

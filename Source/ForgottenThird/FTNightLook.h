@@ -18,6 +18,8 @@
 // under the night (FSkyFrame). The clock and a still at a dusk hour (-WorldEyeSunHour, -WorldEyeDusk) read the same.
 //   -NoDusk  no dusk;  -DuskPeak=<deg> the sun's elevation at full dusk;  -DuskStart=<deg> -DuskEnd=<deg> its ends
 //   -DuskFill=<scale> the sky light at full dusk;  -DuskFlare=<intensity> the lens flare at full dusk
+// Data/Look/looks.json's dusk row for solhaven, when there is one, replaces the defaults (the switches still go over
+// it): it adds the sun's elevation a dusk still stands at, the exposure bias and when the lights come on.
 
 #include "CoreMinimal.h"
 
@@ -45,8 +47,21 @@ struct FSkyFrame
 	float NightAmount = 0.f;
 	ftcore::NightFrame Night;
 	ftcore::DuskFrame Dusk;
+	// The share of the shop, window and street lights on (the night's amount, or the dusk row's lights if more) and the
+	// daylight reaching a room behind glass (ftcore::duskLights, duskDaylight).
+	float Lights = 0.f;
+	float Daylight = 1.f;
+	// The dusk row's exposure bias at this frame (EV, 0 by day and by night).
+	float ExposureBias = 0.f;
 };
 FORGOTTENTHIRD_API FSkyFrame FrameAt(const ftcore::WorldClockSpec& Spec, double Hours);
+// The window collection's light values at a frame: Night (the lights' share), Daylight, and the glass values a look
+// sets (Data/Look/looks.json "glass": ProofShopNight, or -GlassProofNight=<level> over it). False without the collection.
+FORGOTTENTHIRD_API bool WriteWindowLights(UWorld& World, float Lights, float Daylight);
+// The look table's glass values (read once): the proof front's interior light at night (-GlassProofNight=<level> over it;
+// under 0: none set, the collection keeps its default) and the share of the rooms' daylight a look keeps (interiorDay).
+FORGOTTENTHIRD_API float ProofShopNight();
+FORGOTTENTHIRD_API float InteriorDay();
 
 inline FLinearColor Tint(const FLinearColor& C, const std::array<float, 3>& M)
 {

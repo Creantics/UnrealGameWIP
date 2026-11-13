@@ -19,8 +19,16 @@
 //   must be an object; each key starts with "r." and is 3..128 characters of letters, digits, '.' and '_', with
 //   no duplicates (case-insensitive); each value is a finite number. A bad key or value is an error naming
 //   render.<key> and the whole table is refused.
+//   `dusk` is optional: world id -> the dusk row (ftcore::DuskLook, NightLook.h): the sun's elevation a dusk still
+//   stands at (stillDeg), the bell (startDeg, peakDeg, endDeg), the sun's, sky's, fill's and fog's colours
+//   (sunTintR/G/B, skyGlowR/G/B, fillTintR/G/B, fogTintR/G/B), fillScale, exposureBias, when the shop, window and
+//   street lights come on (lightsOnDeg, lightsFullDeg) and the daylight in a room (dayEndDeg, dayFullDeg). A key a
+//   row leaves out keeps the DuskLook default; `status` and `about` are notes (strings) and are kept as read.
+//   `glass` is optional: name -> number, the glass system's values a look may set (letters and digits, 2..64
+//   characters); `status` and `about` are notes. A bad key or value in either is an error and the table is refused.
 
 #include "ftcore/Api.h"
+#include "ftcore/NightLook.h"
 #include "ftcore/SceneLook.h"
 
 #include <string>
@@ -38,11 +46,27 @@ struct LookTable {
         std::string id;
         SceneLook look;
     };
+    struct DuskRow {
+        std::string world;
+        std::string status; // a note, such as "proposed, unruled"
+        DuskLook look;
+    };
+    struct GlassValue {
+        std::string name;
+        float value;
+    };
     std::vector<Entry> worlds;
     std::vector<RenderSetting> render; // in file order
+    std::vector<DuskRow> dusk;
+    std::vector<GlassValue> glass;
+    std::string glassStatus;
 
     // The world with this id (case-insensitive), or null. No allocation.
     FTCORE_API const SceneLook* find(std::string_view id) const;
+    // The world's dusk row, or null. No allocation.
+    FTCORE_API const DuskRow* findDusk(std::string_view world) const;
+    // The glass value of this name, or `fallback`. No allocation.
+    FTCORE_API float glassValue(std::string_view name, float fallback) const;
 };
 
 // On failure `out` is empty and *error lists each problem with its path, one per line.

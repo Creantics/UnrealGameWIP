@@ -387,7 +387,14 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	}
 	if (UMaterialParameterCollectionInstance* WindowParams = Windows.Get())
 	{
-		WindowParams->SetScalarParameterValue(TEXT("Night"), Night);
+		// The shop and window lights come on with the dusk row's lights (or the night, if more); the rooms' daylight
+		// falls with the sun.
+		WindowParams->SetScalarParameterValue(TEXT("Night"), Sky.Lights);
+		WindowParams->SetScalarParameterValue(TEXT("Daylight"), Sky.Daylight * FTNight::InteriorDay());
+		if (FTNight::ProofShopNight() >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("ProofShopNight"), FTNight::ProofShopNight());
+		}
 		// -WindowParallax=<0..1> at run time: 0 shows every room and shop display case flat (no movement behind glass).
 		static const float Parallax = []
 		{

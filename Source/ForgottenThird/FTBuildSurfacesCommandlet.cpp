@@ -662,6 +662,10 @@ constexpr const TCHAR* kWindowNightGlow = TEXT("NightGlow");
 constexpr const TCHAR* kWindowParallax = TEXT("Parallax");
 constexpr const TCHAR* kWindowShopDayLevel = TEXT("ShopDayLevel");
 constexpr const TCHAR* kWindowShopNightLevel = TEXT("ShopNightLevel");
+// The glass system (ftcore/GlassSurface.h): the daylight reaching a room behind glass (1 by day, 0 at night; the clock and
+// the stills write it) and the proof front's interior light at night (a look sets it; the default is the shops' cap).
+constexpr const TCHAR* kWindowDaylight = TEXT("Daylight");
+constexpr const TCHAR* kWindowProofShopNight = TEXT("ProofShopNight");
 // The window widths a building finish may take (metres): each finish keeps one, so a building never mixes sizes.
 constexpr float kWindowWidths[] = {1.2f, 1.35f, 1.5f};
 
@@ -718,8 +722,9 @@ UMaterialParameterCollection* BuildWindowCollection(float Parallax)
 	UPackage* Package = CreatePackage(FTScene::WindowCollection);
 	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
 		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
-	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel};
-	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f};
+	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel, kWindowDaylight,
+		kWindowProofShopNight};
+	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f, 1.f, ftcore::WindowFacadeSpec{}.shopGlowCap};
 	for (int32 P = 0; P < static_cast<int32>(UE_ARRAY_COUNT(Names)); ++P)
 	{
 		FCollectionScalarParameter& Scalar = Collection->ScalarParameters.AddDefaulted_GetRef();
@@ -975,7 +980,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionCustom* Compose = AddExpression<UMaterialExpressionCustom>(Material, 0, 0);
 	Compose->Description = TEXT("FTWindowCompose");
 	Compose->OutputType = CMOT_Float3;
-	Compose->Code = bR5 ? FT::ToFString(ftcore::windowFacadeComposeHlsl()) : FString(kWindowComposeCode);
+	Compose->Code = bR5 ? FT::ToFString(ftcore::windowFacadeComposeHlsl(true)) : FString(kWindowComposeCode);
 	Compose->Inputs.Reset();
 	AddInputFrom(Compose, TEXT("Win"), Win, 0);
 	AddInputFrom(Compose, TEXT("Curtain"), Win, 1);
@@ -998,12 +1003,20 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	if (bR5)
 	{
 		AddR5ComposeInputs(Compose, Face, Data[FTScene::WindowDataTint], Data[FTScene::WindowDataRoof]);
+		// The glass function's pass share reads the view's angle to the pane. GlassSpecular: 0.5 keeps the windows'
+		// mirror as it was (the city's night with it); 0.96 is a pane's two faces.
+		AddInput(Compose, TEXT("CamV"), Camera);
+		AddInput(Compose, TEXT("GlassSpec"), AddWindowScalar(Material, TEXT("GlassSpecular"), 0.5f, 3350));
 	}
 	AddOutput(Compose, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Compose, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Compose, TEXT("MetalOut"), CMOT_Float1);
 	AddOutput(Compose, TEXT("AOOut"), CMOT_Float1);
 	AddOutput(Compose, TEXT("EmissiveOut"), CMOT_Float3);
+	if (bR5)
+	{
+		AddOutput(Compose, TEXT("SpecOut"), CMOT_Float1); // output 6: the pane's two-face mirror share on glass
+	}
 	Compose->RebuildOutputs();
 
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
@@ -1013,6 +1026,10 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	Inputs->Metallic.Connect(3, Compose);
 	Inputs->AmbientOcclusion.Connect(4, Compose);
 	Inputs->EmissiveColor.Connect(5, Compose);
+	if (bR5)
+	{
+		Inputs->Specular.Connect(6, Compose);
+	}
 	if (Look)
 	{
 		// The face's output 2 is UpOut, metres over the face's street floor.

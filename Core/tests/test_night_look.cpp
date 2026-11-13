@@ -297,6 +297,37 @@ TEST_CASE("duskPeakHour: an evening hour where the sun stands at the peak, befor
     CHECK(nightAmount(spec, h) < 0.5f);
 }
 
+TEST_CASE("dusk row: the still's hour, the lights coming on and the daylight in a room follow the sun's elevation") {
+    DuskLook look;
+    const WorldClockSpec spec;
+    // Without a row the lights follow the night alone.
+    CHECK(duskLights(look, 3.f) == 0.f);
+    CHECK(duskLights(look, -30.f) == 0.f);
+    look.stillDeg = 4.f;
+    look.lightsOnDeg = 8.f;
+    look.lightsFullDeg = 0.f;
+    const double h = duskStillHour(look, spec.latitudeDeg);
+    CHECK(h > 16.0);
+    CHECK(h < duskPeakHour(look, spec.latitudeDeg));
+    CHECK(sunElevationDeg(spec, h) == doctest::Approx(look.stillDeg).epsilon(0.02));
+    CHECK(duskLights(look, 20.f) == 0.f);
+    CHECK(duskLights(look, 8.f) == 0.f);
+    CHECK(duskLights(look, 4.f) == doctest::Approx(0.5f));
+    CHECK(duskLights(look, 0.f) == 1.f);
+    CHECK(duskLights(look, -10.f) == 1.f);
+    CHECK(duskDaylight(look, 40.f) == 1.f);
+    CHECK(duskDaylight(look, -10.f) == 0.f);
+    const float mid = duskDaylight(look, 4.f);
+    CHECK(mid > 0.3f);
+    CHECK(mid < 0.8f);
+    const auto before = ftcore_test::allocStats().count;
+    float sum = 0.f;
+    for (int k = -20; k < 40; ++k) sum += duskLights(look, static_cast<float>(k)) + duskDaylight(look, static_cast<float>(k));
+    const auto after = ftcore_test::allocStats().count;
+    CHECK(sum > 0.f);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
 TEST_CASE("hillPlantMask: the hill 0 (planted), low ground 255, a ramp between; no allocation") {
     const std::vector<std::uint16_t> g = ridgeGrid(201);
     HeightField f{g.data(), 201, 201, 1.0, 0.0, 0.0};

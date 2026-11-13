@@ -711,3 +711,16 @@ TEST_CASE("r12 HLSL: the display case replaces a shop's photo; a lit window ligh
     const WindowFacadeSpec spec;
     CHECK(spec.revealSpill * spec.glowScale < spec.glowCap);
 }
+
+TEST_CASE("facade r5: the compose node with the glass function weighs the room's light by the pane's pass share") {
+    const std::string plain = windowFacadeComposeHlsl();
+    const std::string glass = windowFacadeComposeHlsl(true);
+    CHECK(plain.find("CamV") == std::string::npos);
+    CHECK(plain.find("SpecOut") == std::string::npos);
+    CHECK(glass.find("CamV") != std::string::npos);
+    CHECK(glass.find("SpecOut") != std::string::npos);
+    CHECK(glass.find("Emit * gPass") != std::string::npos);
+    CHECK(glass.find("GlassSpec") != std::string::npos);
+    // Nothing in the compose reads the hour: the flip is the room's light against the mirrored street.
+    CHECK(glass.find("Night") == std::string::npos);
+}

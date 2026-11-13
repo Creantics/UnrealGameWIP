@@ -209,3 +209,44 @@ TEST_CASE("looks: lookWorldForMap names the world a map belongs to") {
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(hits == 100);
 }
+
+TEST_CASE("looks: the dusk row and the glass values load; a bad one refuses the table") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Look/looks.json", text));
+    LookTable t;
+    std::string error;
+    REQUIRE_MESSAGE(importLookTable(text, t, &error), error);
+    const LookTable::DuskRow* row = t.findDusk("solhaven");
+    REQUIRE(row != nullptr);
+    CHECK(contains(row->status, "unruled"));
+    CHECK(row->look.startDeg > row->look.peakDeg);
+    CHECK(row->look.peakDeg > row->look.endDeg);
+    CHECK(row->look.stillDeg <= row->look.startDeg);
+    CHECK(row->look.stillDeg >= row->look.endDeg);
+    // At the still's hour the lights are part on and the rooms still have some daylight: the half-way state.
+    const float lights = duskLights(row->look, row->look.stillDeg);
+    const float day = duskDaylight(row->look, row->look.stillDeg);
+    CHECK(lights > 0.01f);
+    CHECK(lights < 1.f);
+    CHECK(day > 0.f);
+    CHECK(day < 1.f);
+    CHECK(t.findDusk("lattice") == nullptr);
+    CHECK(t.glassValue("proofShopNight", -1.f) > 0.f);
+    CHECK(t.glassValue("noSuchValue", -7.f) == -7.f);
+    CHECK(contains(t.glassStatus, "unruled"));
+
+    const char* head = R"({"version": 1, "worlds": {"solhaven": {"sunKelvin": 6000}}, )";
+    LookTable bad;
+    CHECK(!importLookTable(std::string(head) + R"("dusk": {"solhaven": {"stillDeg": 99}}})", bad, &error));
+    CHECK(contains(error, "dusk.solhaven.stillDeg"));
+    CHECK(!importLookTable(std::string(head) + R"("dusk": {"solhaven": {"startDeg": 1, "peakDeg": 2}}})", bad, &error));
+    CHECK(!importLookTable(std::string(head) + R"("glass": {"proof shop": 1}})", bad, &error));
+    CHECK(!importLookTable(std::string(head) + R"("glass": {"proofShopNight": "bright"}})", bad, &error));
+    std::vector<std::string> warnings;
+    CHECK(importLookTable(std::string(head) + R"("dusk": {"solhaven": {"status": "x", "moonDeg": 1}}})", bad, &error, &warnings));
+    CHECK(warnings.size() == 1);
+    // A table without either keeps the defaults.
+    CHECK(importLookTable(std::string(head) + R"("render": {}})", bad, &error));
+    CHECK(bad.dusk.empty());
+    CHECK(bad.glass.empty());
+}

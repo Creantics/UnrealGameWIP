@@ -5,6 +5,9 @@
 
 #include "ForgottenThird.h"
 #include "FTSceneLook.h"
+#include "FTText.h"
+
+#include "ftcore/GlassSurface.h"
 
 #if WITH_EDITOR
 #include "AssetCompilingManager.h"
@@ -14,6 +17,9 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionCameraPositionWS.h"
+#include "Materials/MaterialExpressionCameraVectorWS.h"
+#include "Materials/MaterialExpressionLocalPosition.h"
+#include "Materials/MaterialExpressionThinTranslucentMaterialOutput.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
@@ -1274,6 +1280,213 @@ UMaterial* BuildGlass()
 	return Material;
 }
 
+// ---- The glass system (-Glass; ftcore/GlassSurface.h) ----
+
+// The true pane's code: the shared glass function over the pane's own coordinates (the pane is a cube thin along its
+// x: its local y and z run across and up it).
+// Mode 0: thin translucent (TintOut is the light it passes, the opacity only its dirt and seal); mode 1: a mirror layer
+// whose opacity is the pane's mirror share (the surface a full mirror), for a renderer without thin translucency.
+FString GlassPaneCode()
+{
+	FString Code = TEXT("float2 gUV = saturate(LocalPos.yz / 100.0 + 0.5);\n"
+		"float2 gSize = max(PaneSize.xy, 0.05);\n"
+		"float gSeed = Seed;\nfloat gAge = Age;\nfloat gWet = Wet;\nfloat gThick = Thick;\n"
+		"float gCos = abs(dot(normalize(VNormal), normalize(CamV)));\n"
+		"float2 gHandle = Handle.xy;\n");
+	Code += FT::ToFString(ftcore::glassHlsl());
+	Code += TEXT("float3 dirt = float3(0.60, 0.58, 0.53);\n"
+		"TintOut = gTint * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge) * (1.0 - gSeal);\n"
+		"RoughOut = lerp(gRough, 0.6, gSeal);\n"
+		"NormalOut = normalize(float3(gWave.x, gWave.y, 1.0));\n"
+		"OpacityOut = Mode > 0.5 ? saturate(gMirror + gVeil + gSeal) : saturate(gVeil + gSeal);\n"
+		"MetalOut = Mode > 0.5 ? (1.0 - saturate(gVeil + gSeal)) : 0.0;\n"
+		"SpecOut = lerp(0.96, 0.3, gSeal);\n"
+		"return Mode > 0.5 ? lerp(float3(1.0, 1.0, 1.0), lerp(dirt, float3(0.02, 0.02, 0.02), gSeal), saturate(gVeil + gSeal)) : lerp(dirt, float3(0.02, 0.02, 0.02), gSeal);\n");
+	return Code;
+}
+
+UMaterial* BuildGlassPane(UMaterialParameterCollection* Look, bool bMirror)
+{
+	UMaterial* Material = NewMaterial(bMirror ? FTScene::LookGlassMirrorMaterial : FTScene::LookGlassPaneMaterial);
+	Material->BlendMode = BLEND_Translucent;
+	Material->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
+	Material->bAllowFrontLayerTranslucency = true;
+	Material->bScreenSpaceReflections = true;
+	Material->bTangentSpaceNormal = true;
+	if (!bMirror)
+	{
+		Material->SetShadingModel(MSM_ThinTranslucent);
+	}
+	const FString Code = GlassPaneCode();
+	UMaterialExpressionCustom* Pane = AddCustom(Material, TEXT("FTGlassPane"), *Code, CMOT_Float3, 0);
+	AddInput(Pane, TEXT("LocalPos"), AddExpression<UMaterialExpressionLocalPosition>(Material, -900, -300));
+	AddInput(Pane, TEXT("VNormal"), AddExpression<UMaterialExpressionVertexNormalWS>(Material, -900, -200));
+	AddInput(Pane, TEXT("CamV"), AddExpression<UMaterialExpressionCameraVectorWS>(Material, -900, -100));
+	AddInput(Pane, TEXT("PaneSize"), AddVector(Material, TEXT("PaneSize"), FLinearColor(1.5f, 2.5f, 0.f, 0.f), 0));
+	AddInput(Pane, TEXT("Handle"), AddVector(Material, TEXT("Handle"), FLinearColor(-1.f, 0.f, 0.f, 0.f), 100));
+	AddInput(Pane, TEXT("Seed"), AddScalar(Material, TEXT("Seed"), 0.37f, 200));
+	AddInput(Pane, TEXT("Age"), AddScalar(Material, TEXT("Age"), 0.15f, 300));
+	AddInput(Pane, TEXT("Thick"), AddScalar(Material, TEXT("ThicknessM"), 0.008f, 400));
+	AddInput(Pane, TEXT("Wet"), AddLook(Material, Look, TEXT("Wetness"), 500));
+	AddInput(Pane, TEXT("Mode"), AddScalar(Material, TEXT("MirrorLayer"), bMirror ? 1.f : 0.f, 600));
+	AddOutput(Pane, TEXT("TintOut"), CMOT_Float3);
+	AddOutput(Pane, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Pane, TEXT("NormalOut"), CMOT_Float3);
+	AddOutput(Pane, TEXT("OpacityOut"), CMOT_Float1);
+	AddOutput(Pane, TEXT("MetalOut"), CMOT_Float1);
+	AddOutput(Pane, TEXT("SpecOut"), CMOT_Float1);
+	Pane->RebuildOutputs();
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Pane);
+	Inputs->Roughness.Connect(2, Pane);
+	Inputs->Normal.Connect(3, Pane);
+	Inputs->Opacity.Connect(4, Pane);
+	Inputs->Metallic.Connect(5, Pane);
+	Inputs->Specular.Connect(6, Pane);
+	if (!bMirror)
+	{
+		UMaterialExpressionThinTranslucentMaterialOutput* Thin = AddExpression<UMaterialExpressionThinTranslucentMaterialOutput>(Material, 200, 300);
+		Thin->TransmittanceColor.Connect(1, Pane);
+	}
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Finish(Material);
+	return Material;
+}
+
+// Glass over a picture: an opaque smooth surface (the engine mirrors the scene in it, with its own Fresnel), the room
+// behind it (ftcore::glassPictureHlsl, met by the true view ray) added as emitted light times what the pane passes.
+// The room's light is the daylight share (Daylight) and its lamps (Lights): no value here reads the hour.
+UMaterial* BuildGlassOver(UMaterialParameterCollection* Look)
+{
+	UMaterial* Material = NewMaterial(FTScene::LookGlassOverMaterial);
+	Material->bTangentSpaceNormal = false;
+	FString Code = TEXT("float3 n = normalize(VNormal);\n"
+		"float3 hx = normalize(cross(float3(0.0, 0.0, 1.0), n) + float3(1e-4, 0.0, 0.0));\n"
+		"float3 V = -normalize(CamV);\n"
+		"float2 iA = float2(dot(WorldPos, hx), WorldPos.z) / 100.0;\n"
+		"float iFloor = FloorCm / 100.0;\n"
+		"float3 iV = float3(dot(V, hx), V.z, dot(V, -n));\n"
+		"float iShop = Shop;\nfloat iSeed = Seed;\nfloat iLit = Lights;\nfloat iDay = Daylight;\nfloat iDayLevel = DayLevel;\n"
+		"float3 iLamp = Lamp.rgb;\n");
+	Code += FT::ToFString(ftcore::glassPictureHlsl());
+	Code += TEXT("float2 gUV = saturate(LocalPos.yz / 100.0 + 0.5);\n"
+		"float2 gSize = max(PaneSize.xy, 0.05);\n"
+		"float gSeed = Seed;\nfloat gAge = Age;\nfloat gWet = Wet;\nfloat gThick = Thick;\n"
+		"float gCos = abs(dot(n, V));\n"
+		"float2 gHandle = Handle.xy;\n");
+	Code += FT::ToFString(ftcore::glassHlsl());
+	Code += TEXT("EmissiveOut = iCol * (1.0 - gMirror) * gTint * (1.0 - gVeil) * (1.0 - gSeal) * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge);\n"
+		"RoughOut = lerp(gRough, 0.6, gSeal);\n"
+		"SpecOut = lerp(0.96, 0.3, gSeal);\n"
+		"NormalOut = normalize(n + hx * gWave.x + float3(0.0, 0.0, 1.0) * gWave.y);\n"
+		"return lerp(float3(0.60, 0.58, 0.53) * gVeil, float3(0.02, 0.02, 0.02), gSeal);\n");
+	UMaterialExpressionCustom* Over = AddCustom(Material, TEXT("FTGlassOver"), *Code, CMOT_Float3, 0);
+	AddInput(Over, TEXT("LocalPos"), AddExpression<UMaterialExpressionLocalPosition>(Material, -900, -400));
+	AddInput(Over, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, -300));
+	AddInput(Over, TEXT("VNormal"), AddExpression<UMaterialExpressionVertexNormalWS>(Material, -900, -200));
+	AddInput(Over, TEXT("CamV"), AddExpression<UMaterialExpressionCameraVectorWS>(Material, -900, -100));
+	AddInput(Over, TEXT("PaneSize"), AddVector(Material, TEXT("PaneSize"), FLinearColor(1.5f, 2.5f, 0.f, 0.f), 0));
+	AddInput(Over, TEXT("Handle"), AddVector(Material, TEXT("Handle"), FLinearColor(-1.f, 0.f, 0.f, 0.f), 100));
+	AddInput(Over, TEXT("Lamp"), AddVector(Material, TEXT("Lamp"), FLinearColor(1.6f, 1.3f, 0.95f, 0.f), 150));
+	AddInput(Over, TEXT("Seed"), AddScalar(Material, TEXT("Seed"), 0.37f, 200));
+	AddInput(Over, TEXT("Age"), AddScalar(Material, TEXT("Age"), 0.15f, 300));
+	AddInput(Over, TEXT("Thick"), AddScalar(Material, TEXT("ThicknessM"), 0.008f, 400));
+	AddInput(Over, TEXT("Wet"), AddLook(Material, Look, TEXT("Wetness"), 500));
+	AddInput(Over, TEXT("FloorCm"), AddScalar(Material, TEXT("FloorCm"), 0.f, 600));
+	AddInput(Over, TEXT("Shop"), AddScalar(Material, TEXT("Shop"), 1.f, 700));
+	AddInput(Over, TEXT("Lights"), AddScalar(Material, TEXT("Lights"), 0.f, 800));
+	AddInput(Over, TEXT("Daylight"), AddScalar(Material, TEXT("Daylight"), 1.f, 900));
+	AddInput(Over, TEXT("DayLevel"), AddScalar(Material, TEXT("DayLevel"), 0.35f, 1000));
+	AddOutput(Over, TEXT("EmissiveOut"), CMOT_Float3);
+	AddOutput(Over, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Over, TEXT("SpecOut"), CMOT_Float1);
+	AddOutput(Over, TEXT("NormalOut"), CMOT_Float3);
+	Over->RebuildOutputs();
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Over);
+	Inputs->EmissiveColor.Connect(1, Over);
+	Inputs->Roughness.Connect(2, Over);
+	Inputs->Specular.Connect(3, Over);
+	Inputs->Normal.Connect(4, Over);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Finish(Material);
+	return Material;
+}
+
+// A lit sign: a dark face that gives SignColor x SignStrength of its own light.
+UMaterial* BuildSign()
+{
+	UMaterial* Material = NewMaterial(FTScene::LookSignMaterial);
+	UMaterialExpressionCustom* Glow = AddCustom(Material, TEXT("FTSignGlow"), TEXT("return max(SignColor.rgb, 0.0) * max(Strength, 0.0);\n"), CMOT_Float3, 0);
+	UMaterialExpressionVectorParameter* Color = AddVector(Material, TEXT("SignColor"), FLinearColor(1.f, 0.25f, 0.2f), 0);
+	AddInput(Glow, TEXT("SignColor"), Color);
+	AddInput(Glow, TEXT("Strength"), AddScalar(Material, TEXT("SignStrength"), 6.f, 100));
+	Glow->RebuildOutputs();
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Color);
+	Inputs->Roughness.Connect(0, AddScalar(Material, TEXT("Roughness"), 0.4f, 200));
+	Inputs->EmissiveColor.Connect(0, Glow);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Finish(Material);
+	return Material;
+}
+
+// Nothing: every pixel cut out. A kit piece's glass slot wears it where a true pane stands in the slot's place.
+UMaterial* BuildGlassHole()
+{
+	UMaterial* Material = NewMaterial(FTScene::LookGlassHoleMaterial);
+	Material->BlendMode = BLEND_Masked;
+	Material->OpacityMaskClipValue = 0.5f;
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, AddVector(Material, TEXT("Color"), FLinearColor(0.f, 0.f, 0.f), 0));
+	Inputs->OpacityMask.Connect(0, AddScalar(Material, TEXT("Open"), 0.f, 100));
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Material->SetUsageByFlag(MATUSAGE_Nanite, true);
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	return Material;
+}
+
+// A real bay's surfaces behind a true pane: Color under the scene's light, plus the bay's own: a little by day (the
+// shop's lamps are on, the daylight comes in through the pane by itself) and, with the lights on (the window
+// collection's Night), Color x ProofShopNight; LampPanel 1 is a ceiling light panel. A collection without those values
+// (built before the glass system) gives plain parameters instead.
+UMaterial* BuildGlassBay()
+{
+	UMaterial* Material = NewMaterial(FTScene::LookGlassBayMaterial);
+	UMaterialParameterCollection* Windows = LoadObject<UMaterialParameterCollection>(nullptr,
+		*(FString(FTScene::WindowCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::WindowCollection)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	const auto Light = [&](const TCHAR* Name, float Fallback, int32 Y) -> UMaterialExpression*
+	{
+		if (Windows && Windows->GetParameterId(Name).IsValid())
+		{
+			return AddLook(Material, Windows, Name, Y);
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildLookMaterials: the window collection has no %s; %s reads a plain value."), Name, FTScene::LookGlassBayMaterial);
+		return AddScalar(Material, Name, Fallback, Y);
+	};
+	UMaterialExpressionVectorParameter* Color = AddVector(Material, TEXT("Color"), FLinearColor(0.7f, 0.68f, 0.63f), 0);
+	UMaterialExpressionCustom* Glow = AddCustom(Material, TEXT("FTGlassBay"),
+		TEXT("float3 lamp = float3(1.0, 0.9, 0.76) * ProofNight * Night;\n"
+			 "float3 own = Color.rgb * (DayLamp * Daylight + lamp * 1.3);\n"
+			 "return own + LampPanel * (DayLamp * Daylight * 6.0 + lamp * 4.0);\n"),
+		CMOT_Float3, 100);
+	AddInput(Glow, TEXT("Color"), Color);
+	AddInput(Glow, TEXT("Night"), Light(TEXT("Night"), 0.f, 200));
+	AddInput(Glow, TEXT("Daylight"), Light(TEXT("Daylight"), 1.f, 300));
+	AddInput(Glow, TEXT("ProofNight"), Light(TEXT("ProofShopNight"), 0.3f, 400));
+	AddInput(Glow, TEXT("DayLamp"), AddScalar(Material, TEXT("DayLamp"), 0.12f, 500));
+	AddInput(Glow, TEXT("LampPanel"), AddScalar(Material, TEXT("LampPanel"), 0.f, 600));
+	Glow->RebuildOutputs();
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Color);
+	Inputs->Roughness.Connect(0, AddScalar(Material, TEXT("Roughness"), 0.6f, 700));
+	Inputs->EmissiveColor.Connect(0, Glow);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Finish(Material);
+	return Material;
+}
+
 UMaterial* BuildChrome()
 {
 	UMaterial* Material = NewMaterial(FTScene::LookChromeMaterial);
@@ -1374,6 +1587,47 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 		UMaterial* Material;
 		const TCHAR* Package;
 	};
+	if (FParse::Param(*Params, TEXT("Glass")))
+	{
+		// The glass system's materials alone, on the look collection as it stands: nothing else is rebuilt or resaved.
+		UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, FTScene::LookCollection);
+		if (!Look)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: %s is missing; run without -Glass first."), FTScene::LookCollection);
+			return 1;
+		}
+		const TCHAR* const Parts[] = {FTScene::LookGlassPaneMaterial, FTScene::LookGlassMirrorMaterial, FTScene::LookGlassOverMaterial,
+			FTScene::LookSignMaterial, FTScene::LookGlassHoleMaterial, FTScene::LookGlassBayMaterial};
+		for (const TCHAR* Package : Parts)
+		{
+			const FString File = PackageFile(Package);
+			if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: couldn't replace %s."), *File);
+				return 1;
+			}
+		}
+		const FBuilt Built[] = {{BuildGlassPane(Look, false), Parts[0]}, {BuildGlassPane(Look, true), Parts[1]}, {BuildGlassOver(Look), Parts[2]},
+			{BuildSign(), Parts[3]}, {BuildGlassHole(), Parts[4]}, {BuildGlassBay(), Parts[5]}};
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		int32 Errors = 0;
+		for (const FBuilt& Each : Built)
+		{
+			Errors += Each.Material ? FT::CompileErrors(TEXT("FTBuildLookMaterials"), Each.Material) : 1;
+		}
+		if (Errors > 0)
+		{
+			return 1;
+		}
+		for (const FBuilt& Each : Built)
+		{
+			if (!Save(Each.Material, Each.Package))
+			{
+				return 1;
+			}
+		}
+		return 0;
+	}
 	const bool bCanal = FParse::Param(*Params, TEXT("Canal"));
 	const bool bUnderwater = FParse::Param(*Params, TEXT("Underwater"));
 	const bool bWater = FParse::Param(*Params, TEXT("Water"));

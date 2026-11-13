@@ -70,6 +70,7 @@ add_library(ftcore STATIC
     src/FrameStats.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
+    src/GlassSurface.cpp
     src/DayShade.cpp
     src/Backdrop.cpp
     src/StandIns.cpp
@@ -347,6 +348,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_frame_stats.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
+        tests/test_glass_surface.cpp
         tests/test_backdrop_seat.cpp
         tests/test_day_shade.cpp
         tests/test_shop_front.cpp

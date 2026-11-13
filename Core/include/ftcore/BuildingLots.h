@@ -49,7 +49,7 @@ struct KitPiece {
 
 struct KitTable {
     std::vector<KitPiece> pieces;
-    int find(std::string_view id) const; // -1 when absent
+    FTCORE_API int find(std::string_view id) const; // -1 when absent
 };
 
 // Columns by header name: id, group, size_x, size_y, size_z, min ("x/y/z"), triangles, slots ("a;b"),
@@ -61,10 +61,10 @@ struct FrontageRun {
     double ax = 0.0, ay = 0.0, bx = 0.0, by = 0.0; // plan frame, m; A is the left end seen from the street
     double maxDepth = 14.0;                        // m, lots go no deeper
     bool cornerAtA = false;                        // the first lot is a corner shop whose return faces past A
-    double length() const;
-    double yaw() const;                            // degrees, counter-clockwise from plan +x to the run's +x
+    FTCORE_API double length() const;
+    FTCORE_API double yaw() const;                            // degrees, counter-clockwise from plan +x to the run's +x
     // The plan point s m along the run and y m inward from its line.
-    void toPlan(double s, double y, double& px, double& py) const;
+    FTCORE_API void toPlan(double s, double y, double& px, double& py) const;
 };
 
 // Columns: id, ax, ay, bx, by, max_depth, corner (0/1).
