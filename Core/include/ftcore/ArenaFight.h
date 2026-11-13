@@ -601,6 +601,10 @@ struct ArenaPoint3 {
 
 // A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
 inline constexpr float kArenaShotHeight = 1.4f;
+// A pitched round that would meet the body under the crosshair (ArenaInput::aimBody) within this far (m, along its
+// line) of the first body it enters takes the crosshair's body: where two bodies' edges cross on the muzzle's line, the
+// one aimed at wins. ArenaFight::shotMeets asks by the same rule, so a host's crosshair readout and the round agree.
+inline constexpr float kArenaShotGraze = 0.25f;
 
 // What the player pressed this frame. Edges (true on the frame of the press) except `guard`.
 struct ArenaInput {
@@ -631,6 +635,9 @@ struct ArenaInput {
     // the choice it started with; while pitched it follows aimPitch until it fires.
     bool aimPitched = false;
     float aimPitch = 0.f;
+    // The body under the crosshair (kArenaNobody: none, or a host without a crosshair). A pitched round prefers it
+    // within kArenaShotGraze of the first body met; the shot keeps it with the climb until it fires.
+    std::uint8_t aimBody = kArenaNobody;
     // Attacking on the move (AttackMove, the host's attackMove for the attack under way): walking during an attack at
     // attackSpeed (0..1) of the pace (ramped from the pace the attack began at, at the brake or the accel, so a 0
     // slides to a stop), and turning at up to attackTurn rad/s all through it toward the aim, the lock or the stick
@@ -945,8 +952,10 @@ public:
     // at `pitch` would meet first, by the rule ArenaInput::aimPitched gives; kArenaNobody for none or a kit without a
     // shot. `distance`, when given, gets how far along the round's line it enters (0 for a lead inside the body). A
     // host shows the crosshair as out of reach when this is not the enemy under it. Enemies with their bit in `skip`
-    // are left out (to ask how far along the round the one under the crosshair would be, the others aside).
-    FTCORE_API std::uint8_t shotMeets(Vec2 dir, float pitch, float* distance = nullptr, std::uint32_t skip = 0u) const;
+    // are left out (to ask how far along the round the one under the crosshair would be, the others aside). `prefer`
+    // is the crosshair's body (ArenaInput::aimBody): met within kArenaShotGraze of the first, it is the answer.
+    FTCORE_API std::uint8_t shotMeets(Vec2 dir, float pitch, float* distance = nullptr, std::uint32_t skip = 0u,
+                                      std::uint8_t prefer = kArenaNobody) const;
     // Opt in (off by default; begin and restart keep it): with a guns kit the autopilot also aims and shoots while it
     // closes in on its target, when the target stands within the shot's range and outside the light chain's reach and
     // the shot leaves a dodge's stamina in reserve. Off, the autopilot never aims.
@@ -1184,7 +1193,8 @@ private:
         std::uint8_t chainNext = 0;         // the light a chained press starts
         float lightEnd = 0.f;               // fight time that light ended
         bool shotPitched = false;           // the shot under way is a pitched round (ArenaInput::aimPitched at its start) ...
-        float shotPitch = 0.f;              // ... climbing at this (rad)
+        float shotPitch = 0.f;              // ... climbing at this (rad) ...
+        std::uint8_t shotBody = kArenaNobody; // ... preferring this body (ArenaInput::aimBody, kArenaShotGraze)
         Vec2 attackWalk{};                  // the walking part of the velocity during an attack (the lunge apart)
         float wantSpeed = -1.f;             // ArenaPlayerOut::wantSpeed, this step
         bool guardHeld = false;             // last tick's guard flag

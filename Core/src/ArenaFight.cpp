@@ -114,12 +114,15 @@ bool arenaReaches(Vec2 from, Vec2 facing, const ArenaAttack& a, Vec2 to, float r
 // a body whose centre is ahead of it (along `dir`, or exactly on the lead) meets it at 0 (point-blank), where
 // arenaRayEntersBody, a lens's rule, would see through it, but only when the round leaves the body through its side:
 // one that climbs out through its top (or dives out through its base) first, as a steep round at a hovering boss over
-// an enemy the lead stands in, passes it. A body beside or behind the lead is not met (the round leaves it).
+// an enemy the lead stands in, passes it. A body beside or behind the lead is not met (the round leaves it). `prefer`
+// (the crosshair's body), met within kArenaShotGraze of the first body met, is the one instead.
 std::uint8_t arenaShotFirst(const ArenaAttack& a, Vec2 from, Vec2 dir, float pitch, const ArenaEnemyKind* kinds,
                             const Vec2* at, const bool* standing, std::size_t count, std::uint32_t skip,
-                            float& distance) {
+                            std::uint8_t prefer, float& distance) {
     std::uint8_t best = kArenaNobody;
     float nearest = 0.f;
+    bool preferMet = false;
+    float preferAt = 0.f;
     const float climb = std::isfinite(pitch) ? std::clamp(pitch, -1.5f, 1.5f) : 0.f; // about 86 degrees either way
     const float c = std::cos(climb), s = std::sin(climb);
     const ArenaPoint3 o{from.x, from.y, kArenaShotHeight};
@@ -147,10 +150,18 @@ std::uint8_t arenaShotFirst(const ArenaAttack& a, Vec2 from, Vec2 dir, float pit
             if (!arenaRayEntersBody(o, end, b, t)) continue;
             d = t * length;
         }
+        if (i == static_cast<std::size_t>(prefer)) {
+            preferMet = true;
+            preferAt = d;
+        }
         if (best == kArenaNobody || d < nearest) {
             best = static_cast<std::uint8_t>(i);
             nearest = d;
         }
+    }
+    if (preferMet && preferAt - nearest <= kArenaShotGraze) {
+        best = prefer;
+        nearest = preferAt;
     }
     distance = nearest;
     return best;
@@ -764,6 +775,7 @@ struct ArenaFightImpl {
         beginAttack(ArenaAction::Light, kArenaShotMove, fi.shot);
         pl.shotPitched = in.aimPitched;
         pl.shotPitch = in.aimPitch;
+        pl.shotBody = in.aimBody;
         return true;
     }
 
@@ -994,12 +1006,14 @@ struct ArenaFightImpl {
 
     void stepPlayer(const ArenaInput& in) {
         aimOn = in.aim;
-        // A shot keeps the pitch it started with (pitched or the flat lane) and follows the crosshair's climb until it
-        // fires (the tick its startup ends takes that tick's climb), while the aim still gives one; from then on the
-        // climb stays, hit or miss, through the active part.
+        // A shot keeps the pitch it started with (pitched or the flat lane) and follows the crosshair's climb and body
+        // until it fires (the tick its startup ends takes that tick's), while the aim still gives one; from then on
+        // they stay, hit or miss, through the active part.
         if (pl.action == ArenaAction::Light && pl.move == kArenaShotMove && pl.shotPitched && in.aimPitched &&
-            pl.actionTime < fi.shot.startup)
+            pl.actionTime < fi.shot.startup) {
             pl.shotPitch = in.aimPitch;
+            pl.shotBody = in.aimBody;
+        }
         aimWay = arenaUnit(in.aimDir, pl.facing);
         aimTurn = std::isfinite(in.aimTurn) ? in.aimTurn : 0.f;
         aimSpeed = std::isfinite(in.aimSpeed) ? std::clamp(in.aimSpeed, 0.f, 1.f) : 1.f;
@@ -1533,16 +1547,14 @@ struct ArenaFightImpl {
             }
             float distance = 0.f;
             const std::uint8_t first = arenaShotFirst(a, pl.pos, pl.facing, pl.shotPitch, def.enemies.data(), at.data(),
-                                                      standing.data(), n, pl.hitMask, distance);
+                                                      standing.data(), n, pl.hitMask, pl.shotBody, distance);
             if (first != kArenaNobody) reached[count++] = first;
         } else {
             for (std::size_t i = 0; i < n; ++i) {
                 if (foes[i].brain == ArenaBrain::Dead || (pl.hitMask & (1u << i)) != 0u) continue;
-                // A shot's flat lane takes the body as drawn (scaled, as the pitched round does); other attacks the
-                // kind's bodyRadius.
-                const float radius = pl.move == kArenaShotMove && pl.action == ArenaAction::Light
-                                         ? arenaBodyCylinder(def.enemies[i], foes[i].pos, 0.f).radius
-                                         : def.enemies[i].bodyRadius;
+                // Every blow and the shot's flat lane take the body as drawn (bodyRadius times a skinned look's
+                // scale), as the pitched round does.
+                const float radius = arenaBodyCylinder(def.enemies[i], foes[i].pos, 0.f).radius;
                 if (arenaReaches(pl.pos, pl.facing, a, foes[i].pos, radius)) reached[count++] = i;
             }
         }
@@ -2609,7 +2621,8 @@ std::uint8_t ArenaFight::lock() const { return player_.lock; }
 int ArenaFight::enemyHp(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hp : 0; }
 float ArenaFight::enemyPoise(std::size_t i) const { return i < enemyCount_ ? enemy_[i].poise : 0.f; }
 bool ArenaFight::enemyAlive(std::size_t i) const { return i < enemyCount_ && enemy_[i].brain != ArenaBrain::Dead; }
-std::uint8_t ArenaFight::shotMeets(Vec2 dir, float pitch, float* distance, std::uint32_t skip) const {
+std::uint8_t ArenaFight::shotMeets(Vec2 dir, float pitch, float* distance, std::uint32_t skip,
+                                   std::uint8_t prefer) const {
     float d = 0.f;
     std::uint8_t first = kArenaNobody;
     if (def_.fighter.weapon == ArenaWeapon::Guns && def_.fighter.attacks) {
@@ -2620,7 +2633,7 @@ std::uint8_t ArenaFight::shotMeets(Vec2 dir, float pitch, float* distance, std::
             standing[i] = enemy_[i].brain != ArenaBrain::Dead;
         }
         first = arenaShotFirst(def_.fighter.shot, player_.pos, arenaUnit(dir, player_.facing), pitch,
-                               def_.enemies.data(), at.data(), standing.data(), enemyCount_, skip, d);
+                               def_.enemies.data(), at.data(), standing.data(), enemyCount_, skip, prefer, d);
     }
     if (distance) *distance = d;
     return first;

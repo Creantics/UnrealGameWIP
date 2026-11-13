@@ -48,6 +48,7 @@ struct Settings {
     SkipMode skipMode = SkipMode::Seen;
     float master = 1.f, music = 0.8f, voice = 1.f, sfx = 1.f; // 0..1
     DefenceAssist defenceAssist = DefenceAssist::Off;
+    bool aimAssist = true;        // the arena's aimed crosshair turns slower over a body (AimStance's aimAssistTurn)
     SubtitleSize subtitleSize = SubtitleSize::Medium;
     bool reduceFlashes = false;
     bool qteAutoComplete = false; // quick-time events play themselves
@@ -84,7 +85,7 @@ FTCORE_API void clampSettings(Settings& s);
 
 // ---- JSON text ----
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
-//  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"subtitleSize":1,"reduceFlashes":false,
+//  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"aimAssist":true,"subtitleSize":1,"reduceFlashes":false,
 //  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
 // defenceAssist off/wide, subtitleSize small..large).
@@ -106,6 +107,7 @@ enum class SettingsRow : std::uint8_t {
     Voice,
     Sfx,
     DefenceAssist,
+    AimAssist,
     SubtitleSize,
     ReduceFlashes,
     QteAutoComplete,
@@ -115,7 +117,7 @@ enum class SettingsRow : std::uint8_t {
     CameraShake,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 17;
+inline constexpr std::uint32_t kSettingsRowCount = 18;
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 

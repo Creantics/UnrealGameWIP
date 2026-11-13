@@ -29,6 +29,7 @@ TEST_CASE("settings defaults") {
     CHECK_FALSE(s.holdToggle);
     CHECK_FALSE(s.skipChoices);
     CHECK_FALSE(s.stickFlicks);
+    CHECK(s.aimAssist);
 
     Settings t;
     t.textSpeed = TextSpeed::Instant;
@@ -60,6 +61,7 @@ TEST_CASE("settings round-trip through JSON") {
     s.holdToggle = true;
     s.skipChoices = true;
     s.stickFlicks = true;
+    s.aimAssist = false;
     const std::string text = encodeSettings(s);
     CHECK(text.find("\"version\":1") != std::string::npos);
 
@@ -392,4 +394,27 @@ TEST_CASE("settings menu allocates nothing") {
     const auto after = ftcore_test::allocStats().count;
     CHECK(total > 0);
     if (counting) CHECK(after == before);
+}
+
+TEST_CASE("settings menu: aim assist is on by default, sits under Defence window assist, toggles and saves") {
+    Settings s;
+    CHECK(s.aimAssist);
+    SettingsMenu m;
+    char value[32];
+    CHECK(std::string(settingsRowLabel(SettingsRow::AimAssist)) == "Aim assist");
+    settingsRowValue(s, SettingsRow::AimAssist, value, sizeof value);
+    CHECK(std::string(value) == "On");
+    CHECK(m.click(s, SettingsRow::AimAssist, 1) == SettingsAction::Changed);
+    CHECK_FALSE(s.aimAssist);
+    settingsRowValue(s, SettingsRow::AimAssist, value, sizeof value);
+    CHECK(std::string(value) == "Off");
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK_FALSE(out.aimAssist);
+    CHECK(out == s);
+    // An old file without the field keeps it on.
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.aimAssist);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::AimAssist) == static_cast<std::uint32_t>(SettingsRow::DefenceAssist) + 1u);
+    CHECK(kSettingsRowCount == 18u);
 }

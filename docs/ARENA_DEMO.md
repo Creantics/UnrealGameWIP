@@ -725,8 +725,12 @@ warning and quits with exit code 2, so an unattended run never hangs.
   aim go in the startup does not change it, and its climb follows the crosshair only until it fires. A
   crosshair on a body the round would not reach is drawn faint, without its dot; one where another body on the
   muzzle's line would take the round is dimmed, with a small cross for the dot (`ArenaFight::shotMeets`; neither while
-  locked on, when the round goes at the lock). Blocked needs the crosshair's own body 0.25 m or more further along the
-  round than the other, and the dimming changes only once the new state has held 4 frames, so an edge does not flicker. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  locked on, when the round goes at the lock). The round and the readout share one rule: the crosshair's body
+  (`ArenaInput::aimBody`) takes the round when it is met within 0.25 m (`kArenaShotGraze`) along the round of the body met
+  first, so blocked means the round goes elsewhere, and the dimming changes only once the new state has held 4 frames,
+  so an edge does not flicker. Aim assist (Settings, "Aim assist", on by default; `ftcore::aimAssistTurn`): while the
+  unlocked crosshair is over a body the round would take, the look turns at 0.8 of its rate with the mouse and 0.6 with
+  the stick; off, or under `-ArenaAutoPlay`, it is unchanged. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
   about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).

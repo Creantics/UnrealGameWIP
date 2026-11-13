@@ -1536,8 +1536,16 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		float MouseX = 0.f;
 		float MouseY = 0.f;
 		PC->GetInputMouseDelta(MouseX, MouseY);
-		CameraYaw += MouseX * kArenaMouseTurn + LookX * kArenaStickTurn * DeltaSeconds;
-		CameraPitch = FMath::Clamp(CameraPitch + MouseY * kArenaMouseTurn + LookY * kArenaStickTurn * 0.6f * DeltaSeconds,
+		// Aim assist: a guns kit's aimed crosshair over a body its round would take (last frame's readout) turns
+		// slower, the stick more than the mouse. Never under -ArenaAutoPlay; off, both shares are exactly 1.
+		const ftcore::Settings* Prefs = GetSettings();
+		const bool bAssist = !bAutoPlay && (!Prefs || Prefs->aimAssist);
+		const bool bOverBody = ArenaAim.alpha() > 0.f && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns
+			&& ReticleEnemy >= 0 && !bReticleBlocked && !bReticleOutOfReach;
+		const float MouseKeep = ftcore::aimAssistTurn(bAssist, false, bOverBody);
+		const float StickKeep = ftcore::aimAssistTurn(bAssist, true, bOverBody);
+		CameraYaw += MouseX * kArenaMouseTurn * MouseKeep + LookX * kArenaStickTurn * DeltaSeconds * StickKeep;
+		CameraPitch = FMath::Clamp(CameraPitch + MouseY * kArenaMouseTurn * MouseKeep + LookY * kArenaStickTurn * 0.6f * DeltaSeconds * StickKeep,
 			ftcore::kArenaLook.viewMin, ftcore::kArenaLook.viewMax);
 		bStickFlicked = false;
 		bMouseFlicked = false;
@@ -1585,6 +1593,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 		{
 			In.aimDir = ReticleAimDir(In.view);
 			In.aimPitched = ReticlePitch(In.aimPitch);
+			In.aimBody = ReticleAimBody(); // the round prefers it by the crosshair readout's own rule
 		}
 	}
 	In.aimTurn = ArenaAim.rules().turnRate;
@@ -3240,18 +3249,11 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		{
 			const float Yaw = FMath::DegreesToRadians(CameraYaw);
 			const ftcore::Vec2 Dir = ReticleAimDir(ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)});
-			float MeetsAt = 0.f;
-			const uint8 Meets = Fight.shotMeets(Dir, Pitch, &MeetsAt);
+			// The round's own rule: the crosshair's body wins within kArenaShotGraze of another met first (a graze where
+			// the two bodies' edges cross on the muzzle's line), so blocked here is blocked for the round.
+			const uint8 Meets = Fight.shotMeets(Dir, Pitch, nullptr, 0u, ReticleAimBody());
 			bReticleOutOfReach = ReticleEnemy >= 0 && Meets == ftcore::kArenaNobody;
-			bool bBlockedNow = ReticleEnemy >= 0 && Meets != ftcore::kArenaNobody && static_cast<int32>(Meets) != ReticleEnemy;
-			if (bBlockedNow)
-			{
-				// Not blocked while the crosshair's body would be met within kBlockMargin of the other (a graze where
-				// the two bodies' edges cross on the muzzle's line).
-				float OwnAt = 0.f;
-				const uint32 OnlyIt = ~(1u << static_cast<uint32>(ReticleEnemy));
-				bBlockedNow = Fight.shotMeets(Dir, Pitch, &OwnAt, OnlyIt) == ftcore::kArenaNobody || OwnAt - MeetsAt > kBlockMargin;
-			}
+			const bool bBlockedNow = ReticleEnemy >= 0 && Meets != ftcore::kArenaNobody && static_cast<int32>(Meets) != ReticleEnemy;
 			// Shown blocked or clear only once the new state has held kBlockHoldFrames frames, so a crosshair on the
 			// edge does not flicker.
 			BlockedRun = bBlockedNow != bReticleBlocked ? BlockedRun + 1 : 0;
@@ -3333,6 +3335,11 @@ FRotator UFTArenaRunner::ViewRotation(const APlayerCameraManager& Camera) const
 {
 	const FRotator Rendered = Camera.GetCameraRotation();
 	return JoltModifier ? JoltModifier->Unjolted(Rendered) : Rendered;
+}
+
+uint8 UFTArenaRunner::ReticleAimBody() const
+{
+	return ReticleEnemy >= 0 && ReticleEnemy < static_cast<int32>(ftcore::kArenaNobody) ? static_cast<uint8>(ReticleEnemy) : ftcore::kArenaNobody;
 }
 
 ftcore::Vec2 UFTArenaRunner::ReticleAimDir(const ftcore::Vec2& Fallback) const
