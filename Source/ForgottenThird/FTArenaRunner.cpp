@@ -420,7 +420,8 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the lead fights Lone (%s; cap %d, gain x%.2f, Release x%.2f, taken x%.2f)."),
 			bLone ? TEXT("-ArenaLone") : TEXT("forced by the third slot"), LoneTuning.cap, LoneTuning.gain, LoneTuning.release, LoneTuning.taken);
 	}
-	Fight.setLone(LoneWanted(), LoneTuning); // before begin: the chairs' heal charges are left out from the start
+	// Before begin, and only a stance the session will accept: the chairs' heal charges are left out from the start.
+	Fight.setLone(LoneAccepted(SessionLeadOf(Setup.Lead)), LoneTuning);
 
 	bBegun = true;
 	bDrawSnap = FParse::Param(FCommandLine::Get(), TEXT("ArenaDrawSnap"));
@@ -1610,8 +1611,9 @@ void UFTArenaRunner::BeginSession()
 	CountLoadStored = CountLoadStores = Lifts = LiftSpent = Marks = KiteUnlocks = MaxJoinLoad = PartnerLoadStored = 0;
 	CappedBlows = 0;
 	LoneEndedAt = -1.0;
-	LoneReleases = LoneGiftPresses = 0;
+	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = 0;
 	bLoneGiftDone = false;
+	bLoneGiftPending = false;
 	PartnerLoadTime = -1e9;
 	LiftTime = LastJoinAt = KiteLockUntil = -1e9;
 	LiftMultiplier = 1.f;
@@ -1687,12 +1689,31 @@ void UFTArenaRunner::BeginSession()
 	}
 	if (LoneWanted())
 	{
-		Fight.setLone(Session && Session->Get().lone(), LoneTuning); // no session, or a refused stance: not Lone
+		// No session, or a refused stance: not Lone (LoneAccepted kept the heal charges). The single-blow cap keeps a
+		// Lone Release's x1.3 under it.
+		Fight.setLone(Session && Session->Get().lone(), LoneTuning, Session ? Session->Get().blowCap() : 0.f);
 		bLoneAtStart = Fight.lone();
 		if (!bLoneAtStart)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: the Lone Carry was refused (no session, or a refused stance); the lead fights as usual."));
 		}
+	}
+}
+
+void UFTArenaRunner::PressPendingLoneGift()
+{
+	if (!bLoneGiftPending || !Session)
+	{
+		return;
+	}
+	bLoneGiftPending = false;
+	++LoneGiftPresses;
+	const bool bGiven = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift.given;
+	MirrorLone();
+	if (!bGiven)
+	{
+		++LoneGiftsRefused;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: a gift pressed while Lone was refused at %.2f s; still Lone."), Fight.time());
 	}
 }
 
@@ -1702,7 +1723,7 @@ void UFTArenaRunner::MirrorLone()
 	{
 		return;
 	}
-	Fight.setLone(false, LoneTuning);
+	Fight.setLone(false, LoneTuning, Session->Get().blowCap()); // a Release begun Lone keeps its x1.3 under the cap
 	LoneEndedAt = Fight.time();
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: a gift given ended the Lone Carry at %.2f s (Load %d/%d)."), Fight.time(), Fight.load(),
 		Fight.loadCap());
@@ -1726,9 +1747,14 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	}
 	if (In.heal || bProbeGift)
 	{
-		LoneGiftPresses += Fight.lone() ? 1 : 0;
-		Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
-		MirrorLone();
+		if (Fight.lone())
+		{
+			bLoneGiftPending = true; // pressed after the step (PressPendingLoneGift)
+		}
+		else
+		{
+			Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
+		}
 	}
 	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
 	{
@@ -1816,6 +1842,7 @@ void UFTArenaRunner::FeedSession()
 		FeedSessionLoads();
 		if (ftcore::sharedOutcome(Session->Get().judgeBlow(Partner).outcome))
 		{
+			LoneBreaches += Fight.lone() ? 1 : 0;
 			++SessionJoins;
 		}
 	}
@@ -2232,6 +2259,7 @@ void UFTArenaRunner::StepFight()
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
 	FeedSession();
 	HandleEvents(Out.events);
+	PressPendingLoneGift(); // after this step's Released was pooled
 	TickTable(Out);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
@@ -2474,9 +2502,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::Released:
 			ReleaseTime = Now;
 			ReleaseSpent = E.amount;
-			if (Session && Fight.lone() && Session->Get().poolRelease(SessionLead, E.amount))
+			if (Session && Fight.lone())
 			{
-				++LoneReleases;
+				const bool bPooled = Session->Get().poolRelease(SessionLead, E.amount);
+				LoneReleases += bPooled ? 1 : 0;
+				LoneBreaches += bPooled ? 0 : 1;
 			}
 			// A releaseMark chair: the Release marks its target (the lock target) for the next joined count on it.
 			if (bCountLift && Session && CarryChairs.releaseMark() > 0.f)
@@ -3642,9 +3672,13 @@ void UFTArenaRunner::LogFeatureChecks() const
 	}
 	if (LoneWanted())
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: LONE start %d end %d endedAt %.2f releases %d pooled %u giftPresses %d slot %d (pool exposed, not persisted)."),
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: LONE start %d end %d endedAt %.2f releases %d pooled %u giftPresses %d refused %d slot %d (pool exposed, not persisted)."),
 			bLoneAtStart ? 1 : 0, Fight.lone() ? 1 : 0, LoneEndedAt, LoneReleases, Session ? Session->Get().lonePooled() : 0u, LoneGiftPresses,
-			static_cast<int32>(LoneSlot));
+			LoneGiftsRefused, static_cast<int32>(LoneSlot));
+		// The glue: while Lone nobody joined, no table began and every Release pooled (a refused gift is on the LONE line).
+		const bool bLoneOk = LoneBreaches == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone %s (%d breaches, %d of %d gift presses refused)."),
+			Verdict(bLoneOk, bLoneAtStart), LoneBreaches, LoneGiftsRefused, LoneGiftPresses);
 	}
 	// Impact (ftcore/ArenaImpact.h): numbers only, no verdict. The jolt is rotation only (the arm and the field of view
 	// are never touched); the marker is the off-frame tell and the stinger only doubles it.
@@ -3823,7 +3857,7 @@ void UFTArenaRunner::EndImpact()
 
 void UFTArenaRunner::Restart()
 {
-	Fight.setLone(LoneWanted(), LoneTuning); // a restart is Lone again (and leaves the chairs' heal charges out)
+	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
 	Fight.restart();
 	if (bStoryFight)
 	{
@@ -5137,6 +5171,7 @@ bool UFTArenaRunner::BeginTableNow(double T)
 	const int32 Spent = Fight.spendLoad(Fight.load());
 	TableSeats.place(At);
 	++TableBegins;
+	LoneBreaches += Fight.lone() ? 1 : 0;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table setting at %.2f s at (%.2f, %.2f): %d Load spent, %d would sit."),
 		T, At.x, At.y, Spent, TableSeats.wouldSit(Fight, Bodies, At));
 	return true;

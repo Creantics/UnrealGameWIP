@@ -1100,11 +1100,12 @@ public:
     FTCORE_API const ArenaChairs& chairs() const;
     // The Lone Carry (LoneCarry.h), off by default and kept across begin() and restart(). While on: the cap is the
     // tuning's (loadCap() reads it; setLoadCap's own cap is kept for when it ends), stores gain x its gain in place
-    // of the chairs', the Release's hp damage is x its release (on the base, before the blow hook), an enemy blow's
+    // of the chairs', a Release begun while Lone deals x its release for its whole swing (after the blow hook, kept
+    // under `blowCap`, the host's single-blow cap: 0 none; loneReleaseScale), an enemy blow's
     // hp on the player (a hit, a guard's chip) is x its taken (after the hook; a parry or a block stores from the
     // hook's damage), the chairs' heal charges are left out at begin and restart, and take half never happens. A
     // change follows setLoadCap's rule: reaching the cap it now reads overloads once. A refused tuning turns it off.
-    FTCORE_API void setLone(bool on, const LoneTuning& tuning = LoneTuning{});
+    FTCORE_API void setLone(bool on, const LoneTuning& tuning = LoneTuning{}, float blowCap = 0.f);
     FTCORE_API bool lone() const;
     FTCORE_API std::uint8_t roundsMax() const;    // the kit's cylinder (ArenaFighter::rounds); 0: none
     FTCORE_API std::uint8_t rounds() const;       // rounds still loaded, 0..roundsMax()
@@ -1192,6 +1193,7 @@ private:
         std::uint8_t lock = kArenaNobody;
         Load gauge;                         // the Load, beside stamina
         int releaseSpent = 0;               // the Load the Release in progress spent
+        bool releaseLone = false;           // the Release in progress began while Lone (x the Lone release)
         int giftLoad = 0;                   // Load giveLoad stored since the last tick, not yet reported ...
         bool giftFilled = false;            // ... and whether it filled the gauge
         float pairPress = -1.0e9f;          // fight time of the partner's last unused press
@@ -1300,6 +1302,7 @@ private:
     ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
     bool lone_ = false;                     // setLone (kept across begin and restart)
     LoneTuning loneTuning_{};
+    float loneBlowCap_ = 0.f;               // setLone's blowCap (0: none)
     // The cap in force: the Lone tuning's while Lone, else setLoadCap's.
     int capNow() const { return lone_ ? loneTuning_.cap : loadCap_; }
 };
