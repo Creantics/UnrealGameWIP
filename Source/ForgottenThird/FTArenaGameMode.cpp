@@ -189,6 +189,8 @@ void AFTArenaGameMode::StartPlay()
 		}
 		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
 		bShotSide = FParse::Param(Cmd, TEXT("ArenaShotSide"));
+		bShotWorld = FParse::Param(Cmd, TEXT("ArenaShotWorld"));
+		bShotSide = bShotSide || bShotWorld;
 	}
 #if !UE_BUILD_SHIPPING
 	bIdle = FParse::Param(Cmd, TEXT("ArenaIdle")); // a test flag: the fight must be lost
@@ -999,12 +1001,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	// unchanged).
 	if (NextShotAt < ShotAt.Num() && ShotsTaken > 0 && static_cast<double>(Runner->GetFight().time()) >= ShotAt[NextShotAt])
 	{
-		// -ArenaShotSide: 3.4 m off the lead's right and 0.9 m above its hips, a frame before the view.
+		// -ArenaShotSide: 3.4 m off the lead's right and 0.9 m above its hips, a frame before the view. -ArenaShotWorld:
+		// the same off the world's +Y instead, so the lead's turns show (the side view turns with it).
 		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
 		if (bShotSide && !bSideAimed && Lead)
 		{
 			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0);
-			bSideAimed = AimStrikeCamera(At + Lead->GetActorRightVector().GetSafeNormal2D() * 340.0 + FVector(0.0, 0.0, 90.0), At);
+			const FVector Side = bShotWorld ? FVector(0.0, 1.0, 0.0) : Lead->GetActorRightVector().GetSafeNormal2D();
+			bSideAimed = AimStrikeCamera(At + Side * 340.0 + FVector(0.0, 0.0, 90.0), At);
 			if (bSideAimed)
 			{
 				return true;

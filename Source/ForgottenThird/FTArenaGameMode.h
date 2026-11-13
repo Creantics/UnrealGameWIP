@@ -274,6 +274,7 @@ private:
 	// -ArenaShotSide: -ArenaShotAt's views from the lead's side, the whole body in frame (the feet on the ground), HUD
 	// off; the camera placed a frame before each view.
 	bool bShotSide = false;
+	bool bShotWorld = false; // -ArenaShotWorld: the side views from a fixed world side, not the lead's
 	bool bSideAimed = false;
 	UPROPERTY()
 	TObjectPtr<AActor> StrikeCamera;
