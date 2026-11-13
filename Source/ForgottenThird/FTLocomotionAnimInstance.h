@@ -257,6 +257,8 @@ public:
 	static constexpr int32 FirstDashClip = FirstCatchClip + NumCatchClips;
 	static constexpr int32 NumDashClips = 3;
 	bool HasTraversalClip(int32 Clip) const { return Clip >= 0 && Clip < NumTraversalClips && TraversalClips[Clip] != nullptr; }
+	// The clip's length in seconds (0 when it is not loaded).
+	float TraversalClipLength(int32 Clip) const { return HasTraversalClip(Clip) ? TraversalClips[Clip]->GetPlayLength() : 0.f; }
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
 	// then with Clip -1 (or LetGoTraversal) when it hands the body back: the clip plays on at its own pace while it

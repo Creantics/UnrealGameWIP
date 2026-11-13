@@ -622,11 +622,13 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	{
 		const FDashSpan& Span = kDashSpans[Dash - UFTLocomotionAnimInstance::FirstDashClip];
 		RollClip = Dash;
-		RollFrom = Span.From;
-		RollTo = Span.To;
+		// Clamped to the clip's own length, so a shorter retarget still plays to its end and never past it.
+		const float Length = Anim->TraversalClipLength(Dash);
+		RollTo = FMath::Min(Span.To, Length);
+		RollFrom = FMath::Min(Span.From, RollTo);
 		RollRate = Pose.DodgeTime > 0.f ? (RollTo - RollFrom) / Pose.DodgeTime : 1.f;
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s dashes on clip %d, %.2f-%.2f s over %.2f s (x%.2f)."), *GetName(), RollClip,
-			RollFrom, RollTo, Pose.DodgeTime, RollRate);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s dashes on clip %d, %.2f-%.2f s of %.2f s over %.2f s (x%.2f)."), *GetName(),
+			RollClip, RollFrom, RollTo, Length, Pose.DodgeTime, RollRate);
 	}
 	if (RollClip < 0 && !bRollPlanFailed)
 	{
