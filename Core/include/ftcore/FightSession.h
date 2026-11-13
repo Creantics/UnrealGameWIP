@@ -26,6 +26,13 @@
 //   partner that defends: the arena's scripted partner does not yet, so no host calls them. setKeptDown(true) (the
 //   partner is down): it stores and spends nothing and counts 0 toward a Lift, until the next begin. The session
 //   feeds it to the count itself; its changes still come in `loads`, marked kept (already applied).
+// * The Lone Carry (def.loneLead a lead; LoneCarry.h): that lead is Lone from begin until a gift is actually given
+//   (giveGift's given; a press refused as Vacant, Hostile, cooling or otherwise leaves it Lone), then not for the
+//   rest of the fight; begin makes it Lone again. While Lone: setTable is refused (TableError::Lone, for any setter),
+//   nobody joins the count (another striker's blow is judged Alone at x1 without touching the count, so the lead's
+//   own call, unanswered, lands at callerAloneMultiplier), and poolRelease adds a Release's spent Load to the
+//   fight's lone pool (saturating). The host mirrors lone() into its fight (ArenaFight::setLone) and refuses take
+//   half itself; it adds lonePooled() to the save's LoneSave after the fight.
 // * Marks: markEnemy(enemy, bonus, seconds) marks an enemy slot (a Release's chair effect). The joined blows of the
 //   next joined window judged on that enemy (judgeHeldBlow, held ones at their settle) take x (1 + bonus); the mark
 //   is used up once that window is over, or ends unused at its time. begin clears every mark.
@@ -49,6 +56,7 @@
 #include "ftcore/GiftSlot.h"
 #include "ftcore/HeldRefusal.h"
 #include "ftcore/Load.h"
+#include "ftcore/LoneCarry.h"
 #include "ftcore/Places.h"
 #include "ftcore/StoryState.h"
 #include "ftcore/StrikeCount.h"
@@ -101,6 +109,9 @@ struct FightSessionDef {
     // One blow's multiplier from all sources kept to this (StrikeCount.h capBlowScale; 0: no cap, else 1..20). With a
     // cap, judgeHeldBlow takes the base before crits and the scale the blow landed at, and a settle stays under it.
     float blowCap = 0.f;
+    // The Lone Carry's lead (kNoFighter: nobody Lone) and its tuning (LoneCarry.h).
+    FighterId loneLead = kNoFighter;
+    LoneTuning loneTuning{};
 };
 
 inline bool validKeptGauge(const FightSessionDef& d) {
@@ -120,9 +131,10 @@ struct FightSessionCheck {
     bool lift = true;  // false: the lift tuning was refused (the Lift stays off)
     bool kept = true;  // false: the kept gauge was refused (no gauge kept)
     bool cap = true;   // false: the blow cap was refused (no cap)
+    bool lone = true;  // false: the Lone Carry was refused (not a lead, or its tuning out of range): nobody Lone
     bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
     // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
-    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap; }
+    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap && lone; }
 };
 
 // A Load change the count asks of a lead's gauge (def.lift): the host applies it, store or spend. Append only.
@@ -220,6 +232,10 @@ public:
         keptOn_ = count_.liftOn() && c.kept && def_.keptLead != kNoFighter;
         kept_ = 0;
         keptDown_ = false;
+        c.lone = def_.loneLead == kNoFighter || loneStanceAccepted(def_.loneLead, def_.loneTuning);
+        lone_ = c.lone && def_.loneLead != kNoFighter;
+        loneEnded_ = false;
+        lonePooled_ = 0;
         {
             const PlaceTuning pt = validPlaceTuning(def_.places) ? def_.places : PlaceTuning{};
             const int cap = pt.baseCarry + pt.perPlace * (c.kept ? def_.keptNamed : 0);
@@ -324,6 +340,19 @@ public:
     }
     FighterId activeLead() const { return activeLead_; }
 
+    // ---- the Lone Carry ----
+    bool lone() const { return lone_; }
+    FighterId loneLead() const { return lone_ ? def_.loneLead : kNoFighter; }
+    bool loneEnded() const { return loneEnded_; } // a given gift ended it this fight
+    const LoneTuning& loneTuning() const { return def_.loneTuning; }
+    // A Release by `who` that spent `spent` Load: pooled while `who` is the Lone lead (true), else nothing.
+    bool poolRelease(FighterId who, int spent) {
+        if (!lone_ || who != def_.loneLead || spent <= 0) return false;
+        lonePooled_ = saturatingAdd(lonePooled_, static_cast<std::uint32_t>(spent));
+        return true;
+    }
+    std::uint32_t lonePooled() const { return lonePooled_; } // this fight's
+
     // ---- Presses (stamped with now()) ----
 
     SharedReply press(SharedAction action, FighterId who, FighterId target = kNoFighter) {
@@ -363,6 +392,10 @@ public:
     bool selectGift(Gift g) { return gift_.select(g); }
     GiftResult giveGift(FighterId target) {
         const GiftResult r = gift_.press(target, now_, &count_);
+        if (r.given && lone_) { // a gift given ends the Lone Carry for the rest of the fight
+            lone_ = false;
+            loneEnded_ = true;
+        }
         lastStory_ = SetResult::Unchanged;
         if (story_ && isLead(r.target) && r.gift != Gift::None) // the slot never selects None
             lastStory_ = storyCountPress(*story_, *reg_, r.target, static_cast<std::uint8_t>(r.gift));
@@ -381,6 +414,7 @@ public:
 
     TableError setTable(FighterId setter, Load& load, std::uint8_t seated) {
         if (!isFighter(setter)) return TableError::BadSetter;
+        if (lone_) return TableError::Lone;
         return table_.begin(setter, load, places_[setter], seated, now_);
     }
     bool interruptTable() { return table_.interrupt(now_); }
@@ -413,6 +447,7 @@ public:
 
     // A blow by `striker`, judged on the count before its damage; an OnCount (or Lift) blow is a shared blow at once.
     CountHit judgeBlow(FighterId striker) {
+        if (lone_ && striker != def_.loneLead) return CountHit{}; // nobody joins a Lone lead: Alone, x1
         if (keptOn_) count_.setLoad(def_.keptLead, keptDown_ ? 0 : kept_);
         const CountHit h = count_.judgeBlow(striker, now_);
         takeJoin();
@@ -653,6 +688,9 @@ private:
     bool keptDown_ = false;
     int keptCap_ = 0;
     float blowCap_ = 0.f;
+    bool lone_ = false;
+    bool loneEnded_ = false;
+    std::uint32_t lonePooled_ = 0;
     // The empty buffers a tick points at before the first tick and when there is no boss script.
     static inline const CountEvents kNoCount{};
     static inline const TableEvents kNoTable{};

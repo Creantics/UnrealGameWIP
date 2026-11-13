@@ -234,6 +234,7 @@
 #include "ftcore/Explore.h" // Vec2
 #include "ftcore/FightAnimator.h" // FightClip
 #include "ftcore/Load.h"
+#include "ftcore/LoneCarry.h"
 #include "ftcore/ReadCards.h"
 
 #include <array>
@@ -361,7 +362,9 @@ struct ArenaFighter {
     float jumpAir = 0.6f;         // s in the air
     float jumpLand = 0.3f;        // s of landing on the ground
     float jumpLandLock = 0.15f;   // s of the landing nothing cuts into (the weight)
-    float jumpHeight = 0.55f;     // m at the top (drawn only)
+    float jumpHeight = 0.55f;     // m at the top (drawn only). The arena draws its lift eased at most 5 m/s (the
+                                  // fighter's kAirLiftMove, 500 cm/s): keep the arc's take-off speed, 4 * jumpHeight /
+                                  // jumpAir (3.7 m/s here), under it, or the drawn body lags the arc
     float jumpClearStart = 0.2f;  // s of the air clock (from take-off) after which low moves pass under ...
     float jumpClearEnd = 0.5f;    // ... and before which (at most jumpStartup + jumpAir)
     float jumpAirControl = 4.f;   // m/s^2 the stick steers the velocity in the air
@@ -1095,6 +1098,15 @@ public:
     // once. A loadGain chair's gain counts on a store (not giveLoad's) while the ally is alive within its radius.
     FTCORE_API void setChairs(const ArenaChairs& chairs);
     FTCORE_API const ArenaChairs& chairs() const;
+    // The Lone Carry (LoneCarry.h), off by default and kept across begin() and restart(). While on: the cap is the
+    // tuning's (loadCap() reads it; setLoadCap's own cap is kept for when it ends), stores gain x its gain in place
+    // of the chairs', a Release begun while Lone deals x its release for its whole swing (after the blow hook, kept
+    // under `blowCap`, the host's single-blow cap: 0 none; loneReleaseScale), an enemy blow's
+    // hp on the player (a hit, a guard's chip) is x its taken (after the hook; a parry or a block stores from the
+    // hook's damage), the chairs' heal charges are left out at begin and restart, and take half never happens. A
+    // change follows setLoadCap's rule: reaching the cap it now reads overloads once. A refused tuning turns it off.
+    FTCORE_API void setLone(bool on, const LoneTuning& tuning = LoneTuning{}, float blowCap = 0.f);
+    FTCORE_API bool lone() const;
     FTCORE_API std::uint8_t roundsMax() const;    // the kit's cylinder (ArenaFighter::rounds); 0: none
     FTCORE_API std::uint8_t rounds() const;       // rounds still loaded, 0..roundsMax()
     FTCORE_API float reloadProgress() const;      // 0..1 while a reload runs, else 0
@@ -1181,6 +1193,7 @@ private:
         std::uint8_t lock = kArenaNobody;
         Load gauge;                         // the Load, beside stamina
         int releaseSpent = 0;               // the Load the Release in progress spent
+        bool releaseLone = false;           // the Release in progress began while Lone (x the Lone release)
         int giftLoad = 0;                   // Load giveLoad stored since the last tick, not yet reported ...
         bool giftFilled = false;            // ... and whether it filled the gauge
         float pairPress = -1.0e9f;          // fight time of the partner's last unused press
@@ -1287,6 +1300,11 @@ private:
     int allyHp_ = 0;
     Vec2 allyPos_;
     ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
+    bool lone_ = false;                     // setLone (kept across begin and restart)
+    LoneTuning loneTuning_{};
+    float loneBlowCap_ = 0.f;               // setLone's blowCap (0: none)
+    // The cap in force: the Lone tuning's while Lone, else setLoadCap's.
+    int capNow() const { return lone_ ? loneTuning_.cap : loadCap_; }
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

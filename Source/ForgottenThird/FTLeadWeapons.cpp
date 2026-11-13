@@ -1063,6 +1063,7 @@ void FFTLeadWeapons::Paint(double T)
 	}
 	Instance->ClearActions();
 	Instance->SetActionUpper(ActionUpper);
+	Instance->SetActionLeg(ActionLeg);
 	float Fade = 1.f;
 	if (FadeSince >= 0.0)
 	{

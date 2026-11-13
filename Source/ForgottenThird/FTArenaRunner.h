@@ -592,6 +592,28 @@ private:
 	int32 Marks = 0;
 	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
 	int32 CappedBlows = 0; // blows the blow cap kept down this fight (-ArenaCountLift)
+	// -ArenaLone (or -ArenaThirdSlot=Vacant|Hostile, which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
+	bool bLone = false;
+	uint8 LoneSlot = 0;                 // ftcore::SlotState set on the third slot after the session begins
+	ftcore::LoneTuning LoneTuning{};
+	bool bLoneAtStart = false;
+	double LoneEndedAt = -1.0;          // the fight time a given gift ended it (-1: it did not)
+	int32 LoneReleases = 0;             // Releases made while Lone (each pooled)
+	int32 LoneGiftPresses = 0;          // gift presses while Lone, given or refused
+	int32 LoneGiftsRefused = 0;         // of those, refused (still Lone)
+	int32 LoneBreaches = 0;             // while Lone: a join, a table begun, or a Release not pooled (the check: 0)
+	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
+	bool bLoneGiftDone = false;
+	// The stance this fight begins in: chosen, or forced by the third slot.
+	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
+	// The stance the session will accept for this lead (asked before the fight begins, so a refused one changes
+	// nothing: the chairs' heal charges stay).
+	bool LoneAccepted(uint8 Lead) const { return ftcore::loneAtBegin(LoneWanted(), Session != nullptr, Lead, LoneTuning); }
+	// The fight follows the session's truth (a given gift ends it).
+	void MirrorLone();
+	// While Lone a gift press waits until after the step (a same-tick Release pools first).
+	ftcore::LoneGiftHold LoneGift;
+	void PressPendingLoneGift();
 	int32 PartnerLoadStored = 0; // the partner's kept gauge: stored this fight, and the last change
 	double PartnerLoadTime = -1e9;
 	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)

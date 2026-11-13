@@ -6159,6 +6159,9 @@ TEST_CASE("arena data: each player move's attack and clip, and what the leads' p
     CHECK(arenaPlayerStrike(duy, kArenaShotMove) == FightClip::WeaponRight);
     CHECK(arenaPlayerStrike(devin, kArenaShotMove) == FightClip::Stance);
     CHECK(arenaPlayerStrike(duy, kArenaHeavyMove) == FightClip::KickRight);
+    // The air light throws the heavy's strike: the gauntlets' right punch, the gun kit's right kick.
+    CHECK(arenaPlayerStrike(devin, kArenaAirMove) == FightClip::StrikeRight);
+    CHECK(arenaPlayerStrike(duy, kArenaAirMove) == FightClip::KickRight);
     CHECK(arenaPlayerStrike(third, 1) == FightClip::Cast);
     CHECK(arenaPlayerStrike(third, kArenaRiposteMove) == FightClip::Counter);
     CHECK(arenaPlayerStrike(third, kArenaReleaseMove) == FightClip::Finisher);
@@ -8253,6 +8256,98 @@ TEST_CASE("arena table: the shipped kits jump with their own air lights; the ten
     const ArenaFighter& third = t.fighter("third");
     CHECK(devin.jumpLight.damage > duy.jumpLight.damage); // the gauntlets' downward strike hits hardest ...
     CHECK(duy.jumpLight.range > devin.jumpLight.range);   // ... the kick reaches furthest ...
-    CHECK(third.jumpLight.damage < duy.jumpLight.damage); // ... the Third's is the weakest
+    // The Third's row is kept for when his attacks come on (off today, so it strikes nothing yet): the weakest of the
+    // three, and on the light's stamina like the others.
+    CHECK_FALSE(third.attacks);
+    CHECK(third.jumpLight.damage > 0.f);
+    CHECK(third.jumpLight.damage < duy.jumpLight.damage);
+    CHECK(third.jumpLight.stamina == third.light[0].stamina);
     for (const ArenaFighter* f : {&devin, &duy}) CHECK(f->jumpLight.stamina == f->light[0].stamina);
+    // The ten low moves, each by name: a sweep or slam along the floor passes under a jump unless set to reach it.
+    struct LowMove {
+        const char* enemy;
+        std::size_t move;
+        const char* name;
+        ArenaTell tell;
+        bool hitsAir;
+    };
+    const LowMove low[] = {
+        {"breaker", 0, "sweep", ArenaTell::Sweep, false},
+        {"breaker", 1, "slam", ArenaTell::Slam, true},
+        {"titan", 0, "sweep", ArenaTell::Sweep, false},
+        {"titan", 2, "slam", ArenaTell::Slam, false},
+        {"kite_boss", 0, "mitten_drop", ArenaTell::Slam, true},
+        {"kite_boss", 1, "swoop", ArenaTell::Sweep, false},
+        {"stone_bearer", 3, "low_sweep", ArenaTell::Sweep, false},
+        {"stone_bearer", 6, "stamp", ArenaTell::Slam, false},
+        {"white_glove", 1, "fan_of_blades", ArenaTell::Sweep, false},
+        {"spitter", 2, "sweep", ArenaTell::Sweep, false},
+    };
+    for (const LowMove& m : low) {
+        INFO(m.enemy << " " << m.name);
+        std::size_t k = t.enemyIds.size();
+        for (std::size_t i = 0; i < t.enemyIds.size(); ++i)
+            if (t.enemyIds[i] == m.enemy) k = i;
+        REQUIRE(k < t.enemies.size());
+        REQUIRE(m.move < t.enemies[k].moveCount);
+        const ArenaEnemyMove& mv = t.enemies[k].moves[m.move];
+        CHECK(mv.tell == m.tell);
+        CHECK(mv.hitsAir == m.hitsAir);
+    }
+}
+
+TEST_CASE("arena jump: no stamina comes back in the air, and the wait starts again at touch-down; ten jumps run out") {
+    const ArenaFighter devin = loadShipped().fighter("devin");
+    REQUIRE(devin.jumpAir > 0.f);
+    Rig rig(devin, {dummyKind()});
+    rig.run(30);
+    REQUIRE(rig.fight.stamina() == doctest::Approx(devin.stamina));
+    // One jump: the stamina spent at take-off stays down until staminaDelay after touch-down.
+    rig.in.jump = true;
+    rig.tick();
+    rig.in.jump = false;
+    const float after = rig.fight.stamina();
+    CHECK(after < devin.stamina);
+    const float down = devin.jumpStartup + devin.jumpAir;
+    while (rig.out().player.jumpTime >= 0.f && rig.out().player.jumpTime < down + devin.jumpLandLock) {
+        rig.tick();
+        CHECK(rig.fight.stamina() == doctest::Approx(after));
+    }
+    rig.run(static_cast<int>(std::lround((devin.staminaDelay - devin.jumpLandLock) / kDt)) - 2);
+    CHECK(rig.fight.stamina() == doctest::Approx(after));
+    rig.run(20);
+    CHECK(rig.fight.stamina() > after);
+
+    // Ten in a row, each pressed as soon as the last one lets go: the lead runs out.
+    Rig spam(devin, {dummyKind()});
+    spam.run(30);
+    float least = devin.stamina;
+    int started = 0;
+    for (int i = 0; i < 6000 && started < 10; ++i) {
+        const bool free = spam.out().player.action != ArenaAction::Jump;
+        spam.in.jump = free;
+        const int before = spam.fight.stats().jumps;
+        spam.tick();
+        if (spam.fight.stats().jumps > before) ++started;
+        least = std::min(least, spam.fight.stamina());
+    }
+    CHECK(least <= 0.f);
+
+    // The landing lock blocks it as a rule, not through staminaDelay: with no delay at all, none comes back until the
+    // lock is over.
+    ArenaFighter quick = devin;
+    quick.staminaDelay = 0.f;
+    Rig q(quick, {dummyKind()});
+    q.run(30);
+    q.in.jump = true;
+    q.tick();
+    q.in.jump = false;
+    const float spent = q.fight.stamina();
+    const float lock = quick.jumpStartup + quick.jumpAir + quick.jumpLandLock;
+    while (q.out().player.jumpTime >= 0.f && q.out().player.jumpTime < lock - kDt) {
+        q.tick();
+        CHECK(q.fight.stamina() == doctest::Approx(spent));
+    }
+    q.run(10);
+    CHECK(q.fight.stamina() > spent);
 }

@@ -1032,7 +1032,8 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
 		if (bShotSide && !bSideAimed && Lead)
 		{
-			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0);
+			// Up with the jump's lift, so the head stays in the view at the top of the arc.
+			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0 + Lead->GetJumpLift());
 			const FVector Side = bShotWorld ? FVector(0.0, 1.0, 0.0) : Lead->GetActorRightVector().GetSafeNormal2D();
 			bSideAimed = AimStrikeCamera(At + Side * 340.0 + FVector(0.0, 0.0, 90.0), At);
 			if (bSideAimed)

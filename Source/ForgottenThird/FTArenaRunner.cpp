@@ -401,6 +401,43 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the count stores Load and lifts; a Release marks its target; a locked kite seam opens on a shared blow (-ArenaCountLift, partner Load %d)."), PartnerLoad);
 	}
+#if !UE_BUILD_SHIPPING
+	bLone = FParse::Param(FCommandLine::Get(), TEXT("ArenaLone"));
+	LoneGiftAt = -1.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaLoneGiftAt="), LoneGiftAt) && !(LoneGiftAt >= 0.f))
+	{
+		LoneGiftAt = -1.f;
+	}
+	LoneSlot = static_cast<uint8>(ftcore::SlotState::Companion);
+	{
+		FString Slot;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaThirdSlot="), Slot))
+		{
+			if (Slot.Equals(TEXT("Vacant"), ESearchCase::IgnoreCase)) LoneSlot = static_cast<uint8>(ftcore::SlotState::Vacant);
+			else if (Slot.Equals(TEXT("Hostile"), ESearchCase::IgnoreCase)) LoneSlot = static_cast<uint8>(ftcore::SlotState::Hostile);
+		}
+	}
+#else
+	bLone = false;
+	LoneSlot = 0;
+#endif
+	LoneTuning = ftcore::LoneTuning();
+	if (LoneWanted())
+	{
+		TArray<uint8> Bytes;
+		std::string Error;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/lone_carry.json");
+		if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importLoneCarry(FT::BytesAsText(Bytes), LoneTuning, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/lone_carry.json; the Lone Carry keeps its defaults.\n%s"),
+				*FT::ToFString(Error));
+			LoneTuning = ftcore::LoneTuning();
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the lead fights Lone (%s; cap %d, gain x%.2f, Release x%.2f, taken x%.2f)."),
+			bLone ? TEXT("-ArenaLone") : TEXT("forced by the third slot"), LoneTuning.cap, LoneTuning.gain, LoneTuning.release, LoneTuning.taken);
+	}
+	// Before begin, and only a stance the session will accept: the chairs' heal charges are left out from the start.
+	Fight.setLone(LoneAccepted(SessionLeadOf(Setup.Lead)), LoneTuning);
 
 	bBegun = true;
 	bDrawSnap = FParse::Param(FCommandLine::Get(), TEXT("ArenaDrawSnap"));
@@ -444,6 +481,12 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	if (!bHold)
 	{
 		Now += DeltaSeconds;
+	}
+	// A view holding the fight's clock holds the lead's own clips too (its locomotion runs on the frame's time), so the
+	// views after it show the pose at their fight time.
+	if (USkeletalMeshComponent* LeadSkin = PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr)
+	{
+		LeadSkin->GlobalAnimRateScale = bHold ? 0.f : 1.f;
 	}
 	// The pose drawn last frame at last frame's placement, before anything moves.
 	Glide.Sample(PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr, DeltaSeconds);
@@ -650,6 +693,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		if (Lead)
 		{
 			LeadWeapons.Begin(PlayerFigure, *Lead, Def.fighter);
+			PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLandLock);
 		}
 	}
 	if (PC)
@@ -1582,6 +1626,10 @@ void UFTArenaRunner::BeginSession()
 	SessionBonusDamage = 0;
 	CountLoadStored = CountLoadStores = Lifts = LiftSpent = Marks = KiteUnlocks = MaxJoinLoad = PartnerLoadStored = 0;
 	CappedBlows = 0;
+	LoneEndedAt = -1.0;
+	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = 0;
+	bLoneGiftDone = false;
+	LoneGift = {};
 	PartnerLoadTime = -1e9;
 	LiftTime = LastJoinAt = KiteLockUntil = -1e9;
 	LiftMultiplier = 1.f;
@@ -1620,7 +1668,16 @@ void UFTArenaRunner::BeginSession()
 				SessionDef.lock = Kite.GetWeakPoints().lock;
 			}
 		}
+		if (LoneWanted())
+		{
+			SessionDef.loneLead = SessionLead;
+			SessionDef.loneTuning = LoneTuning;
+		}
 		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
+		if (LoneSlot != static_cast<uint8>(ftcore::SlotState::Companion))
+		{
+			Session->Get().giftSlot().setState(static_cast<ftcore::SlotState>(LoneSlot)); // begin set it Companion
+		}
 		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
 		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
 		const UWorld* World = GetWorld();
@@ -1646,6 +1703,45 @@ void UFTArenaRunner::BeginSession()
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: fight session story %s"),
 			Session->IsStoryBound() ? TEXT("bound") : (bStoryFight ? TEXT("REFUSED (plays unbound)") : TEXT("unbound")));
 	}
+	if (LoneWanted())
+	{
+		// No session, or a refused stance: not Lone (LoneAccepted kept the heal charges). The single-blow cap keeps a
+		// Lone Release's x1.3 under it.
+		Fight.setLone(Session && Session->Get().lone(), LoneTuning, Session ? Session->Get().blowCap() : 0.f);
+		bLoneAtStart = Fight.lone();
+		if (!bLoneAtStart)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: the Lone Carry was refused (no session, or a refused stance); the lead fights as usual."));
+		}
+	}
+}
+
+void UFTArenaRunner::PressPendingLoneGift()
+{
+	if (!LoneGift.take() || !Session)
+	{
+		return;
+	}
+	++LoneGiftPresses;
+	const bool bGiven = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift.given;
+	MirrorLone();
+	if (!bGiven)
+	{
+		++LoneGiftsRefused;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: a gift pressed while Lone was refused at %.2f s; still Lone."), Fight.time());
+	}
+}
+
+void UFTArenaRunner::MirrorLone()
+{
+	if (!Fight.lone() || !Session || Session->Get().lone())
+	{
+		return;
+	}
+	Fight.setLone(false, LoneTuning, Session->Get().blowCap()); // a Release begun Lone keeps its x1.3 under the cap
+	LoneEndedAt = Fight.time();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: a gift given ended the Lone Carry at %.2f s (Load %d/%d)."), Fight.time(), Fight.load(),
+		Fight.loadCap());
 }
 
 // Before the step, from the step's input (the player's, or the autopilot's in an unattended run): its gift and
@@ -1657,9 +1753,19 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	{
 		return;
 	}
-	if (In.heal)
+	// Probe: one gift press at -ArenaLoneGiftAt's fight time (the heal's own press otherwise).
+	const bool bProbeGift = LoneGiftAt >= 0.f && !bLoneGiftDone && Fight.time() >= LoneGiftAt;
+	if (bProbeGift)
 	{
-		Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
+		bLoneGiftDone = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: probe gift press at %.2f s (-ArenaLoneGiftAt)."), Fight.time());
+	}
+	if (In.heal || bProbeGift)
+	{
+		if (LoneGift.press(Fight.lone())) // else pressed after the step (PressPendingLoneGift)
+		{
+			Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
+		}
 	}
 	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
 	{
@@ -1747,6 +1853,7 @@ void UFTArenaRunner::FeedSession()
 		FeedSessionLoads();
 		if (ftcore::sharedOutcome(Session->Get().judgeBlow(Partner).outcome))
 		{
+			LoneBreaches += Fight.lone() ? 1 : 0;
 			++SessionJoins;
 		}
 	}
@@ -2170,6 +2277,7 @@ void UFTArenaRunner::StepFight()
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
 	FeedSession();
 	HandleEvents(Out.events);
+	PressPendingLoneGift(); // after this step's Released was pooled
 	TickTable(Out);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
@@ -2246,11 +2354,22 @@ void UFTArenaRunner::StepFight()
 			}
 		}
 		const float Want = ftcore::attackUpperShare(AttackMoveTable, Walk);
-		if (!bLeadPaused)
+		// The air light has no clip of its own yet: the strike plays on the upper body only, over the jump's legs.
+		const bool bAirStrike = bAttacking && Out.player.move == ftcore::kArenaAirMove;
+		if (bAirStrike)
+		{
+			LeadUpperShare = 1.f;
+		}
+		else if (!bLeadPaused)
 		{
 			LeadUpperShare = FMath::Clamp(Want, LeadUpperShare - kUpperShareRate * StepSeconds, LeadUpperShare + kUpperShareRate * StepSeconds);
 		}
 		LeadWeapons.SetActionUpper(LeadUpperShare);
+		// A kick in the air (the guns kit's heavy clip, until its own air clip exists): the kicking leg, hip down, keeps
+		// the ground kick over the fall's other leg and pelvis.
+		const ftcore::FightClip AirClip = ftcore::arenaHeavyStrike(Fight.def().fighter);
+		LeadWeapons.SetActionLeg(!bAirStrike ? -1
+			: AirClip == ftcore::FightClip::KickRight ? 1 : AirClip == ftcore::FightClip::KickLeft ? 0 : -1);
 		// The legs toward the way the body went, where they walk: on the locomotion (no strike, or by the strike's
 		// upper share). Standing, dodging or under a whole-body clip they ease back under the facing.
 		if (!bLeadPaused)
@@ -2401,6 +2520,12 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::Released:
 			ReleaseTime = Now;
 			ReleaseSpent = E.amount;
+			if (Session && Fight.lone())
+			{
+				const bool bPooled = Session->Get().poolRelease(SessionLead, E.amount);
+				LoneReleases += bPooled ? 1 : 0;
+				LoneBreaches += bPooled ? 0 : 1;
+			}
 			// A releaseMark chair: the Release marks its target (the lock target) for the next joined count on it.
 			if (bCountLift && Session && CarryChairs.releaseMark() > 0.f)
 			{
@@ -2928,6 +3053,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.bAir = AirT < Kit.jumpAir;
 			Pose.AirHeight = AirT > 0.f ? 100.f * Kit.jumpHeight * 4.f * U * (1.f - U) : 0.f;
 			Pose.AirRise = 100.f * Kit.jumpHeight * 4.f * (1.f - 2.f * U) / Air;
+			Pose.AirFraction = AirT > 0.f && Pose.bAir ? U : -1.f;
 			Pose.bFootLock = false;
 			Pose.JumpClock = P.jumpTime;
 		}
@@ -3577,13 +3703,24 @@ void UFTArenaRunner::LogFeatureChecks() const
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shots %s (%d fired, %d hit)."), Verdict(C.shots, bGuns && (bAutoShoot || S.shots > 0)),
 		S.shots, S.shotHits);
 	// Two leads on one count (the partner scripted under -ArenaSharedCount): a held blow's bonus landed.
+	// n/a for a fight that ends Lone: nobody joins a Lone lead.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shared count bonus %s (%d held, %d joined, %d bonuses, +%d damage)."),
-		Verdict(SessionBonuses > 0, bSharedCount && Session != nullptr), SessionHeldBlows, SessionJoins, SessionBonuses, SessionBonusDamage);
+		Verdict(SessionBonuses > 0, bSharedCount && Session != nullptr && !Fight.lone()), SessionHeldBlows, SessionJoins, SessionBonuses, SessionBonusDamage);
 	if (bCountLift)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: COUNT stores %d stored %d lifts %d liftSpent %d marks %d kiteUnlocks %d maxJoinLoad %d partnerStored %d partnerLoad %d/%d blowCap %.1f capped %d."),
 			CountLoadStores, CountLoadStored, Lifts, LiftSpent, Marks, KiteUnlocks, MaxJoinLoad, PartnerLoadStored,
 			GetPartnerLoad(), GetPartnerLoadCap(), Session ? Session->Get().blowCap() : 0.f, CappedBlows);
+	}
+	if (LoneWanted())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: LONE start %d end %d endedAt %.2f releases %d pooled %u giftPresses %d refused %d slot %d (pool exposed, not persisted)."),
+			bLoneAtStart ? 1 : 0, Fight.lone() ? 1 : 0, LoneEndedAt, LoneReleases, Session ? Session->Get().lonePooled() : 0u, LoneGiftPresses,
+			LoneGiftsRefused, static_cast<int32>(LoneSlot));
+		// The glue: while Lone nobody joined, no table began and every Release pooled (a refused gift is on the LONE line).
+		const bool bLoneOk = LoneBreaches == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone %s (%d breaches, %d of %d gift presses refused)."),
+			Verdict(bLoneOk, bLoneAtStart), LoneBreaches, LoneGiftsRefused, LoneGiftPresses);
 	}
 	// Impact (ftcore/ArenaImpact.h): numbers only, no verdict. The jolt is rotation only (the arm and the field of view
 	// are never touched); the marker is the off-frame tell and the stinger only doubles it.
@@ -3762,6 +3899,8 @@ void UFTArenaRunner::EndImpact()
 
 void UFTArenaRunner::Restart()
 {
+	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
+	LoneGift = {}; // a press held from the last attempt is not this one's
 	Fight.restart();
 	if (bStoryFight)
 	{
@@ -4606,9 +4745,10 @@ void UFTArenaRunner::BeginKite()
 	{
 		// A seam behind a shared-blow lock in a fight with nothing to offer one has no crits at all: say so.
 		ftcore::SharedBlowSources Sources;
-		Sources.sharedCount = bSharedCount;
-		Sources.takeHalf = bAutoPlay ? bTakeHalfAuto : bCarry;
-		Sources.tableShare = bTable;
+		// While Lone nobody joins, and take half and the table are refused.
+		Sources.sharedCount = bSharedCount && !Fight.lone();
+		Sources.takeHalf = (bAutoPlay ? bTakeHalfAuto : bCarry) && !Fight.lone();
+		Sources.tableShare = bTable && !Fight.lone();
 		if (!ftcore::lockCanOpen(Kite.GetWeakPoints().lock, Sources))
 		{
 			UE_LOG(LogForgottenThird, Warning,
@@ -4977,6 +5117,7 @@ const TCHAR* TableErrorName(ftcore::TableError E)
 	case ftcore::TableError::Cooling: return TEXT("cooling");
 	case ftcore::TableError::BadSetter: return TEXT("badSetter");
 	case ftcore::TableError::Occupied: return TEXT("occupied");
+	case ftcore::TableError::Lone: return TEXT("lone");
 	}
 	return TEXT("?");
 }
@@ -5057,7 +5198,9 @@ bool UFTArenaRunner::BeginTableNow(double T)
 	Held.value = Fight.load();
 	const ftcore::Vec2 At = Bodies.player;
 	const ftcore::TableSpot Spot{At.x, At.y, TableSeats.tuning().radius};
-	const ftcore::TableError E = TableClock.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
+	// While Lone the table is refused, whichever path asks (the key, -ArenaTableAuto).
+	const ftcore::TableError E = Fight.lone() ? ftcore::TableError::Lone
+		: TableClock.beginAt(ftcore::kLeadA, Held, TablePlaces, 0, Spot, nullptr, 0, T);
 	if (E != ftcore::TableError::None)
 	{
 		++TableRefusals;
@@ -5072,6 +5215,7 @@ bool UFTArenaRunner::BeginTableNow(double T)
 	const int32 Spent = Fight.spendLoad(Fight.load());
 	TableSeats.place(At);
 	++TableBegins;
+	LoneBreaches += Fight.lone() ? 1 : 0;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table setting at %.2f s at (%.2f, %.2f): %d Load spent, %d would sit."),
 		T, At.x, At.y, Spent, TableSeats.wouldSit(Fight, Bodies, At));
 	return true;
@@ -5086,7 +5230,7 @@ bool UFTArenaRunner::TableCouldBegin() const
 {
 	ftcore::Load Held;
 	Held.value = Fight.load();
-	return TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
+	return !Fight.lone() && TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
 		&& TablePlaces.full(Held) && TablePlaces.tableSeats() >= TableClock.tuning().minSeats
 		&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies;
 }

@@ -131,6 +131,10 @@ private:
 	float LocoWeight[MaxLayers] = {};
 	float UpperShare = 0.f;
 	TArray<bool> UpperMask;
+	// One leg kept on the actions under an upper-body share (SetActionLeg): the thigh and every bone under it, per side
+	// (0 left, 1 right), made with the bones. LegSide -1: none.
+	TArray<bool> LegMask[2];
+	int32 LegSide = -1;
 	// The spine's bend this frame, in component space: one rotation shared over the spine bones.
 	FQuat SpineBend = FQuat::Identity;
 	// The legs turned from the body's facing by this (degrees, + right) about the root (SetLegYaw).
@@ -409,6 +413,9 @@ public:
 	// The share (0..1) of the actions that plays on the upper body only (ftcore::attackUpperShare): spine_01 and the
 	// bones under it take the action, the pelvis and the legs keep the locomotion by that share (0: the whole body).
 	void SetActionUpper(float Share) { ActionUpper = FMath::Clamp(Share, 0.f, 1.f); }
+	// One leg (0 left, 1 right; -1 none), hip down, that keeps the actions' clip under SetActionUpper's share: a kick
+	// played over another pose's legs (the air kick over the jump's fall).
+	void SetActionLeg(int32 Side) { ActionLeg = Side == 0 || Side == 1 ? Side : -1; }
 	void AddAction(int32 Slot, float Time, float Weight)
 	{
 		if (NumActions < MaxActions && Slot >= 0 && Slot < MaxActionClips && Weight > 0.f)
@@ -458,6 +465,7 @@ private:
 	FAction Actions[MaxActions];
 	int32 NumActions = 0;
 	float ActionUpper = 0.f;
+	int32 ActionLeg = -1;
 	ftcore::TraversalSet Traversal;
 	ftcore::SlideSet Slide;
 	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and

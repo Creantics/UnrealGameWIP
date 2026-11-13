@@ -641,3 +641,176 @@ TEST_CASE("count lift: a kept joiner holding under the cost pays what it holds")
     CHECK(leadSpent == 30);
     CHECK(s.keptLoad() == 0);
 }
+
+TEST_CASE("lone carry: the session's stance starts Lone, refuses the table and ends only on a given gift") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.lone());
+    CHECK(s.loneLead() == kLeadA);
+    Load load;
+    load.value = 100;
+    CHECK(s.setTable(kLeadA, load, 3) == TableError::Lone);
+    CHECK(s.setTable(kLeadB, load, 3) == TableError::Lone);
+    CHECK(s.setTable(kThirdSlot, load, 3) == TableError::Lone);
+    CHECK(load.value == 100);
+
+    // A press refused as Vacant or Hostile leaves it Lone.
+    REQUIRE(s.selectGift(Gift::Heal));
+    s.giftSlot().setState(SlotState::Vacant);
+    CHECK_FALSE(s.giveGift(kLeadA).given);
+    CHECK(s.lone());
+    s.giftSlot().setState(SlotState::Hostile);
+    CHECK_FALSE(s.giveGift(kLeadA).given);
+    CHECK(s.lone());
+    // Given: the gift lands, and the stance is over for the fight.
+    s.giftSlot().setState(SlotState::Companion);
+    const GiftResult g = s.giveGift(kLeadA);
+    CHECK(g.given);
+    CHECK(g.gift == Gift::Heal);
+    CHECK_FALSE(s.lone());
+    CHECK(s.loneEnded());
+    CHECK(s.loneLead() == kNoFighter);
+    CHECK(s.setTable(kLeadA, load, 3) != TableError::Lone);
+    // A press refused while cooling changes nothing either way.
+    CHECK_FALSE(s.giveGift(kLeadA).given);
+    CHECK_FALSE(s.lone());
+    // begin makes it Lone again.
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.lone());
+    CHECK_FALSE(s.loneEnded());
+}
+
+TEST_CASE("lone carry: a Count gift refused while a count is live leaves it Lone") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    REQUIRE(s.selectGift(Gift::Count));
+    const GiftResult r = s.giveGift(kLeadA);
+    CHECK_FALSE(r.given);
+    CHECK(r.error == GiftError::CountRefused);
+    CHECK(s.lone());
+    CHECK_FALSE(s.loneEnded());
+}
+
+TEST_CASE("lone carry: a refused stance is nobody Lone") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kThirdSlot;
+    FightSession s;
+    FightSessionCheck c = s.begin(d, 0.0);
+    CHECK_FALSE(c.lone);
+    CHECK_FALSE(c.ok());
+    CHECK_FALSE(s.lone());
+    d.loneLead = kLeadB;
+    d.loneTuning.taken = 2.5f;
+    c = s.begin(d, 0.0);
+    CHECK_FALSE(c.lone);
+    CHECK_FALSE(s.lone());
+    d.loneTuning = LoneTuning{};
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.loneLead() == kLeadB);
+}
+
+TEST_CASE("lone carry: nobody joins a Lone lead's count; the call alone lands light") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.setLoad(kLeadA, 80);
+    s.setLoad(kLeadB, 80);
+    toNow(s);
+    REQUIRE(s.judgeHeldBlow(kLeadA, 0, 14, 1).outcome == CountOutcome::Held);
+    const CountHit b = s.judgeHeldBlow(kLeadB, 0, 14, 1);
+    CHECK(b.outcome == CountOutcome::Alone);
+    CHECK(b.multiplier == doctest::Approx(1.0f));
+    bool unanswered = false;
+    int lifts = 0;
+    for (int k = 0; k < 8; ++k) {
+        const FightTick& t = s.tick(0.25);
+        CHECK(t.loads.empty()); // no joined count: nothing stored, no Lift spent
+        CHECK(t.sharedBlows == 0);
+        for (const CountEvent& e : *t.count) {
+            if (e.type == CountEventType::BlowSettled && e.outcome == CountOutcome::Unanswered) {
+                unanswered = true;
+                CHECK(e.multiplier == doctest::Approx(0.5f));
+            }
+            if (e.type == CountEventType::BlowSettled && e.outcome == CountOutcome::Lift) ++lifts;
+        }
+    }
+    CHECK(unanswered);
+    CHECK(lifts == 0);
+}
+
+TEST_CASE("lone carry: Releases pool while Lone, saturating; none after a gift ends it") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.poolRelease(kLeadA, 100));
+    CHECK_FALSE(s.poolRelease(kLeadB, 50)); // not the Lone lead
+    CHECK_FALSE(s.poolRelease(kLeadA, 0));
+    CHECK(s.lonePooled() == 100u);
+    LoneSave save;
+    save.pooled = 4294967200u;
+    CHECK(poolLoneRelease(save, 100) == 4294967295u);
+    CHECK(poolLoneRelease(save, 1) == 4294967295u);
+    LoneSave fresh;
+    CHECK(poolLoneRelease(fresh, static_cast<int>(s.lonePooled())) == 100u);
+    REQUIRE(s.selectGift(Gift::Guard));
+    REQUIRE(s.giveGift(kLeadA).given);
+    CHECK_FALSE(s.poolRelease(kLeadA, 60));
+    CHECK(s.lonePooled() == 100u);
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.lonePooled() == 0u);
+}
+
+TEST_CASE("lone carry: forced when the third slot is Vacant or Hostile; the worst Lone blow fits the cap") {
+    CHECK_FALSE(loneForced(SlotState::Companion));
+    CHECK(loneForced(SlotState::Vacant));
+    CHECK(loneForced(SlotState::Hostile));
+    // A crit x2 on a Release at the largest release scale (3): 6, inside the default blow cap.
+    CHECK(capBlowScale(2.0f * 3.0f, kDefaultBlowCap) == doctest::Approx(6.0f));
+    LoneTuning t;
+    CHECK(validLoneTuning(t));
+    t.cap = 0;
+    CHECK_FALSE(validLoneTuning(t));
+}
+
+TEST_CASE("lone carry: lone_carry.json reads, keeps defaults for missing fields and refuses bad ones") {
+    LoneTuning t;
+    std::string err;
+    REQUIRE(importLoneCarry(R"({ "version": 1, "cap": 90, "taken": 1.2 })", t, &err));
+    CHECK(t.cap == 90);
+    CHECK(t.taken == doctest::Approx(1.2f));
+    CHECK(t.gain == doctest::Approx(1.5f));
+    REQUIRE(importLoneCarry(R"({ "version": 1 })", t, &err));
+    CHECK(t.cap == 100);
+    CHECK_FALSE(importLoneCarry(R"({ "version": 2 })", t, &err));
+    CHECK_FALSE(importLoneCarry(R"({ "version": 1, "cap": 101 })", t, &err));
+    CHECK(err.find("cap") != std::string::npos);
+    CHECK_FALSE(importLoneCarry(R"({ "version": 1, "cap": 50.5 })", t, &err));
+    CHECK_FALSE(importLoneCarry(R"({ "version": 1, "gain": 0.9 })", t, &err));
+    CHECK_FALSE(importLoneCarry(R"({ "version": 1, "release": "x" })", t, &err));
+    CHECK_FALSE(importLoneCarry(R"({ "version": 1, "extra": 1 })", t, &err));
+    CHECK(t.cap == 100); // refused: the defaults
+}
+
+TEST_CASE("lone carry: a host can ask before begin whether the stance will be accepted") {
+    CHECK(loneStanceAccepted(kLeadA, LoneTuning{}));
+    CHECK(loneStanceAccepted(kLeadB, LoneTuning{}));
+    CHECK_FALSE(loneStanceAccepted(kThirdSlot, LoneTuning{}));
+    LoneTuning bad;
+    bad.taken = 2.5f;
+    CHECK_FALSE(loneStanceAccepted(kLeadA, bad));
+    // The session agrees with the host's answer.
+    for (const FighterId lead : {kLeadA, kThirdSlot}) {
+        FightSessionDef d;
+        d.loneLead = lead;
+        FightSession s;
+        s.begin(d, 0.0);
+        CHECK(s.lone() == loneStanceAccepted(lead, d.loneTuning));
+    }
+}
