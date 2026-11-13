@@ -2563,12 +2563,19 @@ TEST_CASE("arena lock-on: after a roll away the rules face the target at once, t
     Vec2 last = rig.out().player.drawFacing;
     float worst = 0.f;
     int ticks = 0;
+    float lastStep = 0.f, before = 0.f;
     while (angleBetween(rig.out().player.drawFacing, rig.out().player.facing) > 0.f && ticks < 120) {
         const Vec2 f = rig.tick().player.drawFacing;
-        worst = std::max(worst, angleBetween(last, f));
+        before = lastStep;
+        lastStep = angleBetween(last, f);
+        worst = std::max(worst, lastStep);
         last = f;
         ++ticks;
     }
+    // slow out: the last steps shrink, to well under the full pace
+    CHECK(lastStep <= before + 1e-5f);
+    CHECK(lastStep < 0.5f * worst);
+    CHECK(before < 0.75f * worst);
     CHECK(ticks > 1);
     CHECK(worst <= fighter.turnRate * kDt + 0.001f);
     // it arrives: the drawn facing is the rules' facing, exactly
@@ -2604,16 +2611,23 @@ TEST_CASE("arena dodge: the drawn body turns into the roll over its first part i
     CHECK(angleBetween(rig.out().player.drawFacing, way) > 1.f);
     Vec2 last = rig.out().player.drawFacing;
     int ticks = 1;
+    float biggest = 0.f, lastStep = 0.f, prevStep = 0.f;
     while (angleBetween(rig.out().player.drawFacing, way) > 0.f && rig.out().player.action == ArenaAction::Dodge) {
         const Vec2 f = rig.tick().player.drawFacing;
-        CHECK(angleBetween(last, f) <= most);
+        prevStep = lastStep;
+        lastStep = angleBetween(last, f);
+        CHECK(lastStep <= most);
+        biggest = std::max(biggest, lastStep);
         last = f;
         ++ticks;
     }
-    // into the roll's way within its first 30% (plus a frame), and before the roll ends
+    // into the roll's way within its first half, before the roll ends, slowing out: the last steps shrink
     CHECK(rig.out().player.action == ArenaAction::Dodge);
     CHECK(angleBetween(rig.out().player.drawFacing, way) == 0.f);
-    CHECK(static_cast<float>(ticks) * kDt <= 0.3f * fighter.dodgeTime + kDt + 1e-4f);
+    CHECK(static_cast<float>(ticks) * kDt <= 0.5f * fighter.dodgeTime);
+    CHECK(lastStep <= prevStep + 1e-5f);
+    CHECK(lastStep < 0.5f * biggest);
+    CHECK(prevStep < 0.75f * biggest);
 }
 
 TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll away faces the target") {

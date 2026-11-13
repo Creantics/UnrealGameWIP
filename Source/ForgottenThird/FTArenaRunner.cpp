@@ -306,10 +306,11 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaGlide="), GlideWord))
 	{
 		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2
-			: GlideWord == TEXT("pulse") ? 4 : 3;
+			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : 3;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: glide probe on, the stick %s (-ArenaGlide)."),
 			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
-			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : TEXT("the autopilot's"));
+			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : GlideStick == 5 ? TEXT("held across with the guard up")
+			: GlideStick == 6 ? TEXT("the autopilot's, a light attack on the first free frame after each roll") : TEXT("the autopilot's"));
 	}
 #endif
 	Glide.Begin(GlideStick >= 0);
@@ -1634,6 +1635,22 @@ void UFTArenaRunner::StepFight()
 			const double Phase = FMath::Fmod(Now, 2.0 * (kPulseGo + kPulseRest));
 			GlideNow = Phase < kPulseGo ? 0 : Phase < kPulseGo + kPulseRest ? -1 : Phase < 2.0 * kPulseGo + kPulseRest ? 2 : -1;
 			In.move = ftcore::Vec2{0.f, 0.f};
+		}
+		if (GlideStick == 5 && !In.dodge)
+		{
+			// -ArenaGlide=orbitguard: round the target with the guard held, no attacks (the guard cone against the body).
+			GlideNow = 1;
+			In.move = ftcore::Vec2{0.f, 0.f};
+			In.guard = true;
+			In.light = In.heavy = In.release = false;
+		}
+		const bool bWasRolling = GlideRolling;
+		GlideRolling = Fight.output().player.action == ftcore::ArenaAction::Dodge;
+		if (GlideStick == 6 && bWasRolling && !GlideRolling)
+		{
+			// -ArenaGlide=rollstrike: a light attack the moment a roll ends, while the drawn body may still be turning.
+			In.light = true;
+			In.dodge = In.guard = false;
 		}
 		if (GlideNow >= 0 && GlideNow < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
 		{
