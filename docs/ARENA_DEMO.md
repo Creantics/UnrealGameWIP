@@ -338,6 +338,12 @@ kind in whatever zone `-ArenaStage` names (the sand ring by default). `-ArenaAut
 For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaShotDelay=8` in place of `-windowed`
 (needs a renderer, not `-NullRHI`).
 
+Carrying (slice 1, off unless asked, never in shipping builds): `-ArenaChairs=chair_a01,chair_a02,chair_a03` names those
+chairs of `Data/Battle/chairs.json` (four seats; `none` names none, so the Load cap is 40, three named give 100),
+`-ArenaCap=N` sets the cap outright, `-ArenaAlly` adds the ally alone, `-ArenaTakeHalfAuto` has the autopilot take half of
+blows aimed at the ally and `-ArenaAutoBlock` has it guard through every wind-up (blocks store a quarter of the blocked
+damage as Load). Any of the first four turns carrying on; the result is one `Arena: CARRY ...` line at the end.
+
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips
@@ -646,6 +652,8 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaShotSide` | With `-ArenaShotAt`, those views from the lead's right side: 3.4 m off it and 0.9 m above its hips, aimed a frame before each view, so the feet show. |
 | `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` at each of the lead's first N attacks (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none): odd views just after the impact (a strike's landing, a shot's or cast's arrival at the hit point), even views a shot's or cast's mid-flight (`FFTLeadWeapons::GetViewTime`). The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
 | `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 65 cm from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle, then `_front` from 55 cm ahead of it (off to its side, a little above). A lead with a pistol adds `_1_holstered` and `_1_drawn` after the ring view, 60 cm off its right side. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
+| `-ArenaNoDash` | The squash in place of the locked hop-back clip (the before half of a side-by-side); not in shipping builds. |
+| `-ArenaRollFloor` | Each frame of a roll on its clip logs the pelvis, head and balls over the floor and the floor lift; the lift's fade after it is logged too. Not in shipping builds. |
 | `-ArenaNoWeaponProps` | The lead's weapon props (gauntlets, pistol) stay off; the fight runs the same. |
 | `-ArenaNoWeaponFx` | The lead's weapon effects (muzzle flash, gauntlet sparks, the Third's bolt, burst and ward) stay off; the fight runs the same (the OFF half of an OFF/ON capture). |
 | `-ArenaNoBossFx` | The stone bearer's effects (tells, impacts, chips, the weak point's glow) stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
@@ -672,7 +680,14 @@ warning and quits with exit code 2, so an unattended run never hangs.
   from the look's retargeted locomotion clips, `UFTLocomotionAnimInstance`), else the test human. Its attacks play the
   strike clips retargeted onto its body over that locomotion, and it carries its weapon (see "The leads' weapons"); without
   the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a
-  crouch and lean; enemy figures also show a guard plate, the player's never). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
+  crouch and lean; enemy figures also show a guard plate, the player's never). A roll plays the land-roll clip; a
+  locked dodge back from the target (within 45 degrees of straight back) plays a hop back that keeps facing it.
+  The hop is `MM_Dash_Backward_to_<body mesh>`, next to the run loop, and its sideways siblings `MM_Dash_Left` and
+  `MM_Dash_Right` load too. It is played from its take-off, 0.20 s, to its landing, 0.73 s, fitted to the roll's time, with the root
+  held, so the rules alone move the body. Without the clip the figure squashes, as before. **PROVISIONAL:** these
+  dash clips are the engine's MoverExamples dash animations retargeted (`FTBuildRig`, local assets, never committed).
+  They are the motion target for our own hand-keyed or mocap clips, which must replace them before any shipping
+  build. Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking
   on or looking up, from -50 to +85 degrees, free, aimed and locked alike: `ftcore::kArenaLook` in `ArenaLook.h`). The

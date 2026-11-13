@@ -61,8 +61,10 @@ enum class InputAction : std::uint8_t {
     FocusNext,
     LinePrev,
     LineNext,
+    // Foot (appended)
+    TakeHalf,
 };
-inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::LineNext) + 1;
+inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::TakeHalf) + 1;
 
 enum class InputContext : std::uint8_t { Foot, ReadHeld };
 enum class InputDevice : std::uint8_t { Keys, Pad };

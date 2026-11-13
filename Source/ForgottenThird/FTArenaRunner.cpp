@@ -39,6 +39,7 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 
+#include "ftcore/Chairs.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
 
@@ -355,6 +356,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bWasDodging = false;
 	BeginNow = Now;
 	// The fitted zone's ring, and where the player starts in it.
+	BeginCarry(Setup.Ally);
 	PrepareStoneBearer();
 	PrepareKite();
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
@@ -476,6 +478,11 @@ void UFTArenaRunner::End()
 		Skins[I] = FFTArenaSkin();
 	}
 	LeadWeapons.Reset(); // its components are the player's figure's
+	if (AllyFigure)
+	{
+		AllyFigure->Destroy();
+		AllyFigure = nullptr;
+	}
 	if (PlayerFigure)
 	{
 		PlayerFigure->Destroy();
@@ -592,6 +599,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 	{
 		PC->SetViewTarget(PlayerFigure);
 	}
+	SpawnAlly(World);
 
 	for (int32 I = 0; I < static_cast<int32>(Def.enemyCount) && I < MaxEnemies; ++I)
 	{
@@ -618,6 +626,10 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		if (PlayerFigure)
 		{
 			PlayerFigure->PoseAfter(Ticker);
+		}
+		if (AllyFigure)
+		{
+			AllyFigure->PoseAfter(Ticker);
 		}
 		for (int32 I = 0; I < MaxEnemies; ++I)
 		{
@@ -1146,6 +1158,10 @@ void UFTArenaRunner::PutBodiesAtStart()
 {
 	Bodies = ftcore::ArenaBodies();
 	Bodies.player = Fight.playerStart();
+	if (bAllyOn)
+	{
+		Bodies.ally = AllyHome(Bodies.player, Fight.playerStartFacing());
+	}
 	for (size_t I = 0; I < Fight.enemyCount(); ++I)
 	{
 		Bodies.enemies[I] = Fight.enemyStart(I);
@@ -1303,6 +1319,18 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressLock |= Pressed(InputAction::LockOn);
 	bPressRelease |= Pressed(InputAction::Release);
 	bPressPair |= Pressed(InputAction::Count);
+	// Take half: its key, and on a pad with none bound, Interact pressed while the guard is down (route "guard_interact").
+	bPressTakeHalf |= Pressed(InputAction::TakeHalf);
+	{
+		const FKey& PadTake = FTInputBindings::Key(InputAction::TakeHalf, ftcore::InputDevice::Pad);
+		const FKey& PadGuard = FTInputBindings::Key(InputAction::Guard, ftcore::InputDevice::Pad);
+		const FKey& PadInteract = FTInputBindings::Key(InputAction::Interact, ftcore::InputDevice::Pad);
+		if (!PadTake.IsValid() && PadGuard.IsValid() && PadInteract.IsValid() && PC->IsInputKeyDown(PadGuard)
+			&& PC->WasInputKeyJustPressed(PadInteract))
+		{
+			bPressTakeHalf = true;
+		}
+	}
 	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
 	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
 	// A called-blow boss's Intercept (its Guard is the guard above), held or toggled.
@@ -1397,6 +1425,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.lockSwitch = PressSwitch;
 	In.release = bPressRelease;
 	In.pair = bPressPair;
+	In.takeHalf = bPressTakeHalf;
 	In.read = PressRead;
 	// Aimed: the lead faces the camera's way and strafes (ArenaFight's aim input).
 	In.aim = ArenaAim.aiming();
@@ -1429,7 +1458,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	// roots: a light by the light's numbers, a heavy, a riposte and a Release by the heavy's.
 	ftcore::attackMoveInput(AttackMoveTable, Fight, In);
 	// Each press goes to one step.
-	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = false;
+	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = bPressTakeHalf = false;
 	PressSwitch = 0;
 	PressRead = -1;
 	return In;
@@ -1747,6 +1776,30 @@ void UFTArenaRunner::StepFight()
 	PrevBodies = Bodies;
 	PrevHeldTime = static_cast<double>(Fight.heldTime());
 	HoldPausedEnemies();
+	if (bAllyOn)
+	{
+		if (bAutoPlay)
+		{
+			In.takeHalf = bTakeHalfAuto && Fight.takeHalfDue(0.1f);
+			// -ArenaAutoBlock: the guard held from the start of any enemy wind-up (so it blocks, never parries) in place
+			// of the autopilot's parry, roll or swing, for a capture of block Load.
+			if (bAutoBlock)
+			{
+				const ftcore::ArenaOutput& Was = Fight.output();
+				for (size_t I = 0; I < Fight.enemyCount(); ++I)
+				{
+					if (Fight.enemyHp(I) > 0 && (Was.enemies[I].part == ftcore::ArenaPart::Startup
+						|| Was.enemies[I].part == ftcore::ArenaPart::Active))
+					{
+						In.guard = true;
+						In.dodge = In.light = In.heavy = In.release = false;
+						break;
+					}
+				}
+			}
+		}
+		MoveAlly(); // after PrevBodies: the ally is drawn from where it stood
+	}
 	PressSession(In);
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
@@ -1995,6 +2048,23 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				EnemyHitTime[E.target] = Now;
 				StartFlinch(E.target, true);
 			}
+			break;
+		case ftcore::ArenaEventType::AllyHit:
+			AllyHitTime = Now;
+			break;
+		case ftcore::ArenaEventType::AllyDowned:
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the ally is down at %.2f s."), Fight.time());
+			break;
+		case ftcore::ArenaEventType::TookHalf:
+			// Taking half is a shared input: offered to the boss script's point (or the session's lock) as a shared blow.
+			if (Session)
+			{
+				const ftcore::UnlockResult Unlock = Session->Get().offerKey(ftcore::kUnlockSharedBlow);
+				++CarrySharedOffers;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: take half offered a shared blow: unlock result %d."), static_cast<int32>(Unlock));
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: took half of enemy %d's blow (%d hp) at %.2f s."), static_cast<int32>(E.source),
+				E.amount, Fight.time());
 			break;
 		case ftcore::ArenaEventType::Released:
 			ReleaseTime = Now;
@@ -2466,6 +2536,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last).
 		LeadWeapons.Paint(DrawnTime);
 	}
+	PlaceAlly(Alpha);
 
 	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
 	{
@@ -3050,6 +3121,7 @@ void UFTArenaRunner::LogResult() const
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), UTF8_TO_TCHAR(Line));
 	}
 	LogFeatureChecks();
+	LogCarry();
 }
 
 void UFTArenaRunner::LogFeatureChecks() const
@@ -4154,4 +4226,172 @@ void UFTArenaRunner::LogKiteNotes()
 			break;
 		}
 	}
+}
+
+// ---- Carrying: Load by chairs, block Load, the ally and take half (off unless a switch asks) ----
+
+namespace
+{
+constexpr int32 kArenaAllyHp = 135;           // the ally's hp in a carrying run
+constexpr float kArenaAllyBack = 0.5f;        // m the ally stands behind the player... (beside it, so a blow that
+constexpr float kArenaAllySide = 2.f;         // ... and to its left                     reaches the player can reach it)
+constexpr float kArenaAllyPace = 0.8f;        // of the fighter's moveSpeed: how fast the ally follows
+constexpr float kArenaAllySettle = 0.15f;     // m: closer than this to its place, the ally stands
+}
+
+void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
+{
+	bCarry = bAllyOn = bTakeHalfAuto = bAutoBlock = false;
+	CarryChairKeys.Reset();
+	CarryChairs = ftcore::ArenaChairs();
+	CarryCap = ftcore::kMaxLoad;
+	AllyLook = AllyLookIn;
+	CarrySharedOffers = 0;
+#if !UE_BUILD_SHIPPING
+	const TCHAR* Cmd = FCommandLine::Get();
+	FString Keys;
+	const bool bChairs = FParse::Value(Cmd, TEXT("ArenaChairs="), Keys, false);
+	int32 CapArg = 0;
+	const bool bCapArg = FParse::Value(Cmd, TEXT("ArenaCap="), CapArg);
+	bTakeHalfAuto = FParse::Param(Cmd, TEXT("ArenaTakeHalfAuto"));
+	bAutoBlock = FParse::Param(Cmd, TEXT("ArenaAutoBlock"));
+	bCarry = bChairs || bCapArg || bTakeHalfAuto || FParse::Param(Cmd, TEXT("ArenaAlly"));
+	if (!bCarry)
+	{
+		return;
+	}
+	bAllyOn = true;
+
+	// The named places: four seats, one Named per chair key (its row's person), the rest never laid. "none" names
+	// none, so the cap is the base carry alone.
+	if (bChairs)
+	{
+		CarryChairKeys = Keys;
+		ftcore::PlaceTable Places;
+		Places.reset(4);
+		if (Keys != TEXT("none"))
+		{
+			ftcore::ChairTable ChairRows;
+			TArray<uint8> Bytes;
+			std::string Error;
+			const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/chairs.json");
+			if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importChairTable(FT::BytesAsText(Bytes), ChairRows, &Error)))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/chairs.json; no chairs are named.\n%s"), *FT::ToFString(Error));
+				ChairRows = ftcore::ChairTable();
+			}
+			TArray<FString> Parts;
+			Keys.ParseIntoArray(Parts, TEXT(","), true);
+			for (const FString& Part : Parts)
+			{
+				const std::string Key(TCHAR_TO_UTF8(*Part));
+				const ftcore::ChairRow* Row = ChairRows.findKey(Key);
+				if (!Row)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaChairs: no chair %s in Data/Battle/chairs.json."), *Part);
+					continue;
+				}
+				if (Places.layPlace(Row->person) != ftcore::PlaceError::None)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaChairs: chair %s could not be named (the seats are full or it is named already)."), *Part);
+				}
+			}
+			CarryChairs = ftcore::chairsFor(Places, ChairRows);
+		}
+		CarryCap = Places.carryCap();
+	}
+	if (bCapArg)
+	{
+		CarryCap = FMath::Clamp(CapArg, 1, ftcore::kMaxLoad);
+	}
+
+	Fight.setLoadCap(CarryCap);
+	Fight.setChairs(CarryChairs);
+	Fight.setCarry(true);
+	Fight.setAlly(kArenaAllyHp, Def.fighter.bodyRadius);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: carrying: chairs %s (%d named), Load cap %d, blocks store Load, ally %d hp%s%s."),
+		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, static_cast<int32>(CarryChairs.count), CarryCap, kArenaAllyHp,
+		bTakeHalfAuto ? TEXT(", the autopilot takes half") : TEXT(""), bAutoBlock ? TEXT(", the autopilot blocks") : TEXT(""));
+#endif
+}
+
+void UFTArenaRunner::SpawnAlly(UWorld* World)
+{
+	if (!bAllyOn || !World || AllyFigure)
+	{
+		return;
+	}
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AllyFigure = World->SpawnActor<AFTArenaFighter>(AFTArenaFighter::StaticClass(), FTransform::Identity, Params);
+	if (AllyFigure)
+	{
+		// A lead's look is worn only by a player-side figure; the view stays on the player's figure.
+		AllyFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor, 0.f, AllyLook);
+		AllyFigure->ResetFeet();
+	}
+}
+
+ftcore::Vec2 UFTArenaRunner::AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const
+{
+	// Behind (against the facing) and to the left (the facing turned a quarter anticlockwise), kept in the ring.
+	const ftcore::Vec2 Home{Player.x - Facing.x * kArenaAllyBack - Facing.y * kArenaAllySide,
+		Player.y - Facing.y * kArenaAllyBack + Facing.x * kArenaAllySide};
+	return Fit.ring.clamp(Home, Def.fighter.bodyRadius + 0.5f);
+}
+
+void UFTArenaRunner::MoveAlly()
+{
+	if (!bAllyOn || !Fight.allyAlive())
+	{
+		return;
+	}
+	const ftcore::ArenaPlayerOut& P = Fight.output().player;
+	const ftcore::Vec2 Home = AllyHome(Bodies.player, P.facing);
+	const ftcore::Vec2 To{Home.x - Bodies.ally.x, Home.y - Bodies.ally.y};
+	const float Far = ArenaLength(To);
+	if (Far <= kArenaAllySettle)
+	{
+		return;
+	}
+	const float Step = FMath::Min(Far, Def.fighter.moveSpeed * kArenaAllyPace * StepSeconds);
+	Bodies.ally.x += To.x / Far * Step;
+	Bodies.ally.y += To.y / Far * Step;
+}
+
+void UFTArenaRunner::PlaceAlly(float Alpha)
+{
+	if (!AllyFigure || !bAllyOn)
+	{
+		return;
+	}
+	const ftcore::Vec2 Was = PrevBodies.ally;
+	const ftcore::Vec2 Is = Bodies.ally;
+	const ftcore::Vec2 Moved{Is.x - Was.x, Is.y - Was.y};
+	const float Speed = ArenaLength(Moved) / StepSeconds;
+	FFTArenaPose Pose;
+	Pose.Feet = ToWorld(ArenaLerp(Was, Is, Alpha));
+	// Walking: the way it goes; standing: the player's drawn facing.
+	Pose.Yaw = ArenaYaw(Speed > 0.05f ? Moved : PlayerDrawFacing(Fight.output().player));
+	Pose.Speed = Speed;
+	Pose.bLying = !Fight.allyAlive();
+	Pose.Tint = AllyFigure->GetBaseColor();
+	if (Now - AllyHitTime < kArenaHitTint)
+	{
+		Pose.Tint = FLinearColor(1.f, 0.2f, 0.2f);
+	}
+	AllyFigure->ApplyPose(Pose);
+}
+
+void UFTArenaRunner::LogCarry() const
+{
+	if (!bCarry)
+	{
+		return;
+	}
+	const ftcore::ArenaStats& S = Fight.stats();
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: CARRY chairs %s cap %d blockLoad %d takeHalfLoad %d takeHalves %d sharedOffers %d ally %d/%d."),
+		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, Fight.loadCap(), S.blockLoad, S.takeHalfLoad, S.takeHalves,
+		CarrySharedOffers, Fight.allyHp(), Fight.allyMaxHp());
 }

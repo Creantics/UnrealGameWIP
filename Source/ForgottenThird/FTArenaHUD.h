@@ -88,6 +88,7 @@ private:
 	float UiScale = 1.f;
 
 	FArenaNumberText HpText;
+	FArenaNumberText AllyText;
 	FArenaNumberText TargetText;
 	FArenaNumberText LoadText;
 	FArenaNumberText ReleaseText;
