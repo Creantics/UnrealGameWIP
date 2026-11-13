@@ -132,6 +132,97 @@ RoughOut = saturate(lerp(Rough, 0.02, Puddle));
 AOOut = lerp(Pack.r, 1.0, Puddle);
 return max(lerp(Soaked, 0.35 * Soaked, Puddle), 0.02);
 )HLSL");
+
+// A canal's surface: water that runs. Flow is the way it runs (xy, world) and its speed mid-channel (z, cm a second);
+// Channel is the channel's middle (xy, world cm) and its half width across the flow (z, cm). The speed falls from the
+// middle to an eighth at the walls. The ripples (two sizes, RippleCm and 0.37 of it) are carried along it by two
+// copies half a period apart, each fading out before it jumps back and coming in on a new patch, so the surface
+// travels without a visible reset however unevenly it is sheared. Long thin streaks of scum ride the same way, broken
+// into patches, and a ragged line of it lies along each wall. Where the water lies less than 25 cm deep over what's
+// behind it the ripples calm, as the look's water's do.
+const TCHAR* const kCanalWaterCode = FT_LOOK_NOISE_STRUCT(FLookCanal) TEXT(R"HLSL(FLookCanal W;
+float2 P = WorldPos.xy;
+float2 Dir = normalize(Flow.xy + float2(1e-5, 0.0));
+float2 Perp = float2(-Dir.y, Dir.x);
+float2 Rel = P - Channel.xy;
+float Across = dot(Rel, Perp) / max(Channel.z, 1.0);
+float Profile = saturate(1.0 - Across * Across);
+float Speed = max(Flow.z, 0.0) * lerp(0.125, 1.0, Profile) * max(WaveSpeed, 0.0);
+const float Period = 4.0;
+float Cycle = Time / Period;
+float Cell = max(RippleCm, 1.0);
+float2 Grad = 0.0;
+float Foam = 0.0;
+float Norm = 0.0;
+for (int K = 0; K < 2; ++K)
+{
+	float C = Cycle + 0.5 * K;
+	float Phase = frac(C);
+	float Weight = 1.0 - abs(1.0 - 2.0 * Phase);
+	float2 Jump = float2(37.3, 91.7) * (floor(C) + 0.5 * K);
+	float2 U = P - Dir * Speed * Period * (Phase - 0.5);
+	float2 G = 0.05 * W.Slope(U / Cell + Jump);
+	float2 Q = float2(0.4535961 * U.x + 0.8912074 * U.y, 0.4535961 * U.y - 0.8912074 * U.x) / (0.37 * Cell);
+	// The fine layer: one octave, its slope by central differences.
+	float2 QJ = Q - Jump;
+	const float E = 0.04;
+	float2 F = float2(W.Noise(QJ + float2(E, 0.0)) - W.Noise(QJ - float2(E, 0.0)), W.Noise(QJ + float2(0.0, E)) - W.Noise(QJ - float2(0.0, E))) / (2.0 * E);
+	G += 0.035 * float2(0.4535961 * F.x - 0.8912074 * F.y, 0.8912074 * F.x + 0.4535961 * F.y);
+	Grad += Weight * G;
+	// Scum: small specks, a little longer along the flow than across it, gathered in loose patches.
+	float2 S = float2(dot(U, Dir), dot(U, Perp));
+	float Streak = W.Noise(float2(S.x / 16.0, S.y / 7.0) + Jump);
+	float Patch = W.Noise(float2(S.x / 430.0, S.y / 120.0) - Jump);
+	Foam += Weight * smoothstep(0.78, 0.98, Streak) * smoothstep(0.5, 0.8, Patch);
+	Norm += Weight * Weight;
+}
+Grad /= sqrt(max(Norm, 1e-4));
+float Edge = smoothstep(0.955, 0.995, abs(Across)) * smoothstep(0.4, 0.7, W.Noise(float2(dot(Rel, Dir) / 40.0, Across * 3.0) + Time * 0.02));
+// Too fine to draw far off: the flecks fade out between 25 and 60 m.
+Foam = saturate(max(Foam, 0.7 * Edge) * FoamAmount * saturate(1.0 - (EyeDepth - 2500.0) / 3500.0));
+float Deep = saturate(max(BehindDepth - EyeDepth, 0.0) / 25.0);
+Grad *= max(WaveStrength, 0.0) * RippleStrength * lerp(0.4, 1.0, Deep) * lerp(0.6, 1.0, Profile);
+// A slow broad swell under the ripples, drifting: the surface is never a flat sheet.
+float2 SwellAt = P / 380.0 + Time * float2(0.05, -0.03);
+Grad += 0.02 * max(WaveStrength, 0.0) * float2(cos(SwellAt.x + 1.7 * sin(SwellAt.y)), 0.8 * cos(1.3 * SwellAt.y + 1.1 * sin(0.7 * SwellAt.x)));
+RoughOut = saturate(lerp(max(Rough, 0.02), 0.55, Foam));
+FoamOut = Foam;
+return normalize(float3(-Grad.x, -Grad.y, 1.0));
+)HLSL");
+
+// A canal's walls and bed, one material on the channel's boxes, laid on the world position. Faces looking up are the
+// bed: silt mottled light and dark, scattered stones (pale, raised), patches of dark weed. The others are the walls:
+// concrete, stained down its height, with a dark wet band from the waterline (WaterZ, world cm) up to a ragged edge
+// 10 to 30 cm over it, a green line of growth just above the water and dark slime under it.
+const TCHAR* const kCanalBedCode = FT_LOOK_NOISE_STRUCT(FLookBed) TEXT(R"HLSL(FLookBed B;
+float3 Up = normalize(VertexNormal);
+float Floor = smoothstep(0.6, 0.9, Up.z);
+float2 P = WorldPos.xy;
+float Silt = B.Height(P / 170.0 + 2.3);
+float Grit = B.Height(P / 9.0 + 7.9);
+float3 Bed = lerp(float3(0.13, 0.11, 0.08), float3(0.27, 0.24, 0.18), Silt) * lerp(0.8, 1.15, Grit);
+float StoneField = B.Height(P / 13.0 + 11.0);
+float Stone = smoothstep(0.60, 0.66, StoneField);
+float3 StoneColor = lerp(float3(0.16, 0.16, 0.15), float3(0.36, 0.35, 0.32), B.Noise(P / 19.0 + 5.1));
+Bed = lerp(Bed, StoneColor, Stone);
+float Weed = smoothstep(0.52, 0.7, B.Height(P / 330.0 + 21.0)) * smoothstep(0.3, 0.6, B.Noise(P / 13.0 + 1.7)) * (1.0 - Stone);
+Bed = lerp(Bed, float3(0.035, 0.085, 0.025), 0.85 * Weed);
+float2 BedSlope = B.Slope(P / 13.0 + 11.0) * Stone * (1.0 - smoothstep(0.66, 0.8, StoneField));
+float Along = WorldPos.x + WorldPos.y;
+float H = WorldPos.z - WaterZ;
+float3 Wall = float3(0.36, 0.35, 0.33) * lerp(0.75, 1.1, B.Height(float2(Along, WorldPos.z) / 95.0));
+Wall *= lerp(0.7, 1.0, smoothstep(0.25, 0.6, B.Noise(float2(Along / 17.0, WorldPos.z / 210.0))));
+float Ragged = B.Height(float2(Along / 41.0, 3.3));
+float Wet = 1.0 - smoothstep(4.0, 10.0 + 20.0 * Ragged, H);
+float Growth = (1.0 - smoothstep(2.0, 9.0 + 8.0 * Ragged, H)) * smoothstep(-6.0, 0.0, H);
+float Under = 1.0 - smoothstep(-8.0, 0.0, H);
+Wall = lerp(Wall, 0.42 * Wall, Wet);
+Wall = lerp(Wall, float3(0.07, 0.11, 0.035), 0.7 * Growth);
+Wall = lerp(Wall, float3(0.05, 0.065, 0.035), 0.8 * Under);
+NormalOut = normalize(Up + Floor * float3(-BedSlope.x, -BedSlope.y, 0.0) * 0.9);
+RoughOut = lerp(lerp(0.85, 0.22, Wet), 0.7, Floor);
+return max(lerp(Wall, Bed, Floor), 0.01);
+)HLSL");
 #undef FT_LOOK_NOISE_STRUCT
 
 FString PackageFile(const TCHAR* Package)
@@ -318,6 +409,82 @@ UMaterial* BuildWater(UMaterialParameterCollection* Look)
 	return Material;
 }
 
+// A canal's water (kCanalWaterCode): the look's water with a flow. Its Flow and Channel are set per canal on an
+// instance by the map's builder; the medium, roughness and wave strength are the look's.
+UMaterial* BuildCanalWater(UMaterialParameterCollection* Look)
+{
+	UMaterial* Material = NewMaterial(FTScene::LookCanalWaterMaterial);
+	Material->SetShadingModel(MSM_SingleLayerWater);
+	Material->BlendMode = BLEND_Opaque;
+	Material->bTangentSpaceNormal = false;
+	UClass* BehindClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionSceneDepthWithoutWater"));
+	if (!BehindClass)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: the engine has no MaterialExpressionSceneDepthWithoutWater."));
+		return nullptr;
+	}
+	UMaterialExpressionCustom* Waves = AddCustom(Material, TEXT("FTLookCanalWater"), FTLookMaterialsBuild::kCanalWaterCode, CMOT_Float3, 0);
+	AddInput(Waves, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, 0));
+	AddInput(Waves, TEXT("Time"), AddExpression<UMaterialExpressionTime>(Material, -900, 100));
+	AddInput(Waves, TEXT("Flow"), AddVector(Material, TEXT("Flow"), FLinearColor(1.f, 0.f, 25.f, 0.f), 150));
+	AddInput(Waves, TEXT("Channel"), AddVector(Material, TEXT("Channel"), FLinearColor(0.f, 0.f, 350.f, 0.f), 200));
+	AddInput(Waves, TEXT("RippleCm"), AddScalar(Material, TEXT("RippleCm"), 34.f, 250));
+	AddInput(Waves, TEXT("RippleStrength"), AddScalar(Material, TEXT("RippleStrength"), 0.55f, 300));
+	AddInput(Waves, TEXT("FoamAmount"), AddScalar(Material, TEXT("FoamAmount"), 0.22f, 350));
+	AddInput(Waves, TEXT("WaveSpeed"), AddLook(Material, Look, TEXT("WaterWaveSpeed"), 400));
+	AddInput(Waves, TEXT("WaveStrength"), AddLook(Material, Look, TEXT("WaterWaveStrength"), 450));
+	AddInput(Waves, TEXT("Rough"), AddLook(Material, Look, TEXT("WaterRoughness"), 500));
+	AddInput(Waves, TEXT("EyeDepth"), AddExpression<UMaterialExpressionPixelDepth>(Material, -900, 600));
+	AddInput(Waves, TEXT("BehindDepth"), AddExpressionOf(Material, BehindClass, -900, 700));
+	AddOutput(Waves, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Waves, TEXT("FoamOut"), CMOT_Float1);
+	Waves->RebuildOutputs();
+
+	UMaterialExpressionCustom* Medium = AddCustom(Material, TEXT("FTLookWaterMedium"), FTLookMaterialsBuild::kWaterMediumCode, CMOT_Float3, 900);
+	AddInput(Medium, TEXT("Absorb"), AddLook(Material, Look, TEXT("WaterAbsorb"), 900));
+	AddInput(Medium, TEXT("Scatter"), AddLook(Material, Look, TEXT("WaterScatter"), 1000));
+	AddOutput(Medium, TEXT("ScatterOut"), CMOT_Float3);
+	Medium->RebuildOutputs();
+
+	UMaterialExpressionSingleLayerWaterMaterialOutput* Water = AddExpression<UMaterialExpressionSingleLayerWaterMaterialOutput>(Material, 0, 900);
+	Water->AbsorptionCoefficients.Connect(0, Medium);
+	Water->ScatteringCoefficients.Connect(1, Medium);
+	Water->PhaseG.Connect(0, AddLook(Material, Look, TEXT("WaterPhaseG"), 1100));
+
+	// The scum is the top layer: pale, as much of it as the code's foam.
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, AddVector(Material, TEXT("FoamColor"), FLinearColor(0.30f, 0.29f, 0.20f), -300));
+	Inputs->Opacity.Connect(2, Waves);
+	Inputs->Specular.Connect(0, AddScalar(Material, TEXT("Specular"), 0.25f, -100));
+	Inputs->Refraction.Connect(0, AddScalar(Material, TEXT("IOR"), 1.33f, -400));
+	Inputs->Normal.Connect(0, Waves);
+	Inputs->Roughness.Connect(1, Waves);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Finish(Material);
+	return Material;
+}
+
+// A canal's walls and bed (kCanalBedCode). WaterZ (world cm) is set per canal on an instance by the map's builder.
+UMaterial* BuildCanalBed()
+{
+	UMaterial* Material = NewMaterial(FTScene::LookCanalBedMaterial);
+	Material->bTangentSpaceNormal = false;
+	UMaterialExpressionCustom* Bed = AddCustom(Material, TEXT("FTLookCanalBed"), FTLookMaterialsBuild::kCanalBedCode, CMOT_Float3, 0);
+	AddInput(Bed, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, 0));
+	AddInput(Bed, TEXT("VertexNormal"), AddExpression<UMaterialExpressionVertexNormalWS>(Material, -900, 100));
+	AddInput(Bed, TEXT("WaterZ"), AddScalar(Material, TEXT("WaterZ"), 250.f, 200));
+	AddOutput(Bed, TEXT("NormalOut"), CMOT_Float3);
+	AddOutput(Bed, TEXT("RoughOut"), CMOT_Float1);
+	Bed->RebuildOutputs();
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Bed);
+	Inputs->Normal.Connect(1, Bed);
+	Inputs->Roughness.Connect(2, Bed);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Finish(Material);
+	return Material;
+}
+
 UMaterial* BuildGlass()
 {
 	UMaterial* Material = NewMaterial(FTScene::LookGlassMaterial);
@@ -431,8 +598,36 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
 	using namespace FTLookMaterialsBuild;
+	if (FParse::Param(*Params, TEXT("Canal")))
+	{
+		// -Canal: the canal's two materials alone, on the collection as it stands (nothing else is rebuilt or resaved).
+		UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, FTScene::LookCollection);
+		if (!Look)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials -Canal: %s is missing; run without -Canal first."), FTScene::LookCollection);
+			return 1;
+		}
+		for (const TCHAR* Package : {FTScene::LookCanalWaterMaterial, FTScene::LookCanalBedMaterial})
+		{
+			const FString File = PackageFile(Package);
+			if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: couldn't replace %s."), *File);
+				return 1;
+			}
+		}
+		UMaterial* const CanalWater = BuildCanalWater(Look);
+		UMaterial* const CanalBed = BuildCanalBed();
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		if (!CanalWater || !CanalBed || FT::CompileErrors(TEXT("FTBuildLookMaterials"), CanalWater) + FT::CompileErrors(TEXT("FTBuildLookMaterials"), CanalBed) > 0)
+		{
+			return 1;
+		}
+		return Save(CanalWater, FTScene::LookCanalWaterMaterial) && Save(CanalBed, FTScene::LookCanalBedMaterial) ? 0 : 1;
+	}
 	const TCHAR* const Packages[] = {FTScene::LookCollection, FTScene::LookWaterMaterial, FTScene::LookGlassMaterial,
-		FTScene::LookChromeMaterial, FTScene::LookWetStoneMaterial, FTScene::LookGlowMaterial};
+		FTScene::LookChromeMaterial, FTScene::LookWetStoneMaterial, FTScene::LookGlowMaterial, FTScene::LookCanalWaterMaterial,
+		FTScene::LookCanalBedMaterial};
 	// Start from nothing: replace the files up front, before anything loads the old assets.
 	for (const TCHAR* Package : Packages)
 	{
@@ -473,6 +668,8 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 		{BuildChrome(), FTScene::LookChromeMaterial},
 		{BuildWetStone(Look, Stone), FTScene::LookWetStoneMaterial},
 		{BuildGlow(Look), FTScene::LookGlowMaterial},
+		{BuildCanalWater(Look), FTScene::LookCanalWaterMaterial},
+		{BuildCanalBed(), FTScene::LookCanalBedMaterial},
 	};
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	int32 Errors = 0;

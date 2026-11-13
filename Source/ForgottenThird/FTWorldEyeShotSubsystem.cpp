@@ -29,6 +29,7 @@
 #include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "GameFramework/HUD.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
 #include "Materials/MaterialInstance.h"
@@ -240,6 +241,26 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	if (!bLookApplied)
 	{
 		ApplyLook(*World);
+		// -WorldEyeLead=<x,y,z>: the lead stands there (plan frame, metres, z its feet) for the still, to judge it in a
+		// reflection or against the scene; it is set down a little high and falls to the ground under it.
+		double LeadX = 0.0, LeadY = 0.0, LeadZ = 0.0;
+		if (ParseTriple(TEXT("WorldEyeLead="), LeadX, LeadY, LeadZ))
+		{
+			APawn* Lead = Player ? Player->GetPawn() : nullptr;
+			if (Lead)
+			{
+				double LeadSide = 1000.0;
+				FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), LeadSide);
+				const ftcore::MassingVec At = ftcore::massingEnginePoint(LeadSide, LeadX, LeadY, LeadZ);
+				const bool bMoved = Lead->SetActorLocation(FVector(At.x, At.y, At.z) * 100.0 + FVector(0.0, 0.0, 110.0), false, nullptr, ETeleportType::TeleportPhysics);
+				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: lead %s %s at engine %s."), *Lead->GetName(), bMoved ? TEXT("set") : TEXT("NOT set"),
+					*Lead->GetActorLocation().ToString());
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeLead given but the player has no pawn yet."));
+			}
+		}
 		bLookApplied = true;
 		Waited = 0.f;
 		return;

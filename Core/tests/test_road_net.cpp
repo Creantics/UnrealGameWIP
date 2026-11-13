@@ -821,10 +821,59 @@ TEST_CASE("road net: a canal row builds its channel: walls, copings at the bank 
             CHECK(x.z0 == doctest::Approx(1.2));
         }
     }
+    // Its water surface: the rectangle between the walls, running north (the long side) at the default speed.
+    REQUIRE(b.waters.size() == 1);
+    const RoadWater& w = b.waters[0];
+    CHECK(w.id == "CN-T");
+    CHECK(w.cx == doctest::Approx(15.0));
+    CHECK(w.cy == doctest::Approx(100.0));
+    CHECK(w.sx == doctest::Approx(16.0 - 2.0 * c.wall));
+    CHECK(w.sy == doctest::Approx(160.0 - 2.0 * c.wall));
+    CHECK(w.z == doctest::Approx(2.5));
+    CHECK(w.depth == doctest::Approx(1.0));
+    CHECK(w.flowX == doctest::Approx(0.0));
+    CHECK(w.flowY == doctest::Approx(1.0));
+    CHECK(w.flow == doctest::Approx(kCanalFlow));
+    CHECK(w.halfWidth == doctest::Approx(0.5 * (16.0 - 2.0 * c.wall)));
     // Too small a rectangle: nothing.
     RoadCanal tiny = c;
     tiny.x1 = tiny.x0 + 2.5;
     CHECK(roadCanalBuild(tiny, MassingGround{}, b) == 0);
+    CHECK(b.waters.size() == 1);
+}
+
+TEST_CASE("road net: a canal row's flow column gives the water's speed and way; without it the long side") {
+    std::vector<RoadNetStreet> s;
+    std::vector<RoadCanal> canals;
+    const char* const csv = "id,kind,pts,canal,flow\n"
+                            "CN-A,canal,0:0;10:50,1.5:2.5,\n"       // none: the default, north
+                            "CN-B,canal,0:100;60:112,1.5:2.5,0.1\n"  // a speed only: east along its long side
+                            "CN-C,canal,0:200;60:212,1:2.5,0.6:180\n" // west
+                            "CN-D,canal,100:0;110:50,1.5:2.5,0\n";   // still
+    REQUIRE(importRoadNet(csv, s, nullptr, &canals));
+    REQUIRE(canals.size() == 4);
+    CHECK(canals[0].flow == doctest::Approx(kCanalFlow));
+    CHECK(roadCanalFlowDir(canals[0]).y == doctest::Approx(1.0));
+    CHECK(canals[1].flow == doctest::Approx(0.1));
+    CHECK(roadCanalFlowDir(canals[1]).x == doctest::Approx(1.0));
+    CHECK(roadCanalFlowDir(canals[1]).y == doctest::Approx(0.0));
+    CHECK(canals[2].flow == doctest::Approx(0.6));
+    CHECK(roadCanalFlowDir(canals[2]).x == doctest::Approx(-1.0));
+    CHECK(std::fabs(roadCanalFlowDir(canals[2]).y) < 1e-9);
+    CHECK(canals[3].flow == doctest::Approx(0.0));
+    // Across the flow: the short side of an east-west channel, whichever way it runs along it.
+    RoadBuild b;
+    REQUIRE(roadCanalBuild(canals[2], MassingGround{}, b) > 0);
+    REQUIRE(b.waters.size() == 1);
+    CHECK(b.waters[0].flowX == doctest::Approx(-1.0));
+    CHECK(b.waters[0].halfWidth == doctest::Approx(0.5 * (12.0 - 2.0 * canals[2].wall)));
+    CHECK(b.waters[0].depth == doctest::Approx(1.5));
+    // A speed that is no number, under 0 or over the cap, or a heading that is no number, fails.
+    std::vector<RoadCanal> cx;
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,fast\n", s, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,-0.1\n", s, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,3.5\n", s, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,0.2:north\n", s, nullptr, &cx));
 }
 
 TEST_CASE("road net: tints carry the surface master's street kind; the ramps' tactile strips wear Tactile") {

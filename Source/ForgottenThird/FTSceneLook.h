@@ -73,6 +73,9 @@ inline constexpr const TCHAR* GroundMaterial = TEXT("/Game/Rendering/M_WorldGrou
 // docs/PHOTOREAL_LOOK.md.
 inline constexpr const TCHAR* LookCollection = TEXT("/Game/Look/MPC_Look");
 inline constexpr const TCHAR* LookWaterMaterial = TEXT("/Game/Look/M_Look_Water");
+// A canal's running water and its walls and bed (FTBuildLookMaterials, alone with -Canal).
+inline constexpr const TCHAR* LookCanalWaterMaterial = TEXT("/Game/Look/M_Look_CanalWater");
+inline constexpr const TCHAR* LookCanalBedMaterial = TEXT("/Game/Look/M_Look_CanalBed");
 inline constexpr const TCHAR* LookGlassMaterial = TEXT("/Game/Look/M_Look_Glass");
 inline constexpr const TCHAR* LookChromeMaterial = TEXT("/Game/Look/M_Look_Chrome");
 inline constexpr const TCHAR* LookWetStoneMaterial = TEXT("/Game/Look/M_Look_WetStone");

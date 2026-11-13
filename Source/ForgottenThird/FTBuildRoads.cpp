@@ -1,6 +1,7 @@
 #include "FTBuildRoads.h"
 #include "FTBuildKeiCars.h"
 #include "FTCellInstancer.h"
+#include "FTSceneLook.h"
 
 #include "ForgottenThird.h"
 
@@ -67,6 +68,58 @@ struct FRoadPainter
 	UMaterialInterface* Tints[static_cast<int32>(ftcore::RoadTint::Count)] = {};
 	int32 Laid = 0; // solids and vehicles given to the instancer
 	FTBuildKeiCars::FSet* KeiCars = nullptr; // -KeiCars (FTBuildKeiCars.h); null lays the stand-ins
+	// The canals' water (ftcore::RoadWater, by canal id) and what it and its channel wear; without the materials or the
+	// plane the channel keeps its flat tints.
+	const std::vector<ftcore::RoadWater>* Waters = nullptr;
+	UMaterialInterface* CanalWater = nullptr;
+	UMaterialInterface* CanalBed = nullptr;
+	UStaticMesh* Plane = nullptr;
+	TMap<FString, UMaterialInterface*> CanalWorn;
+	int32 WaterPlanes = 0, BedPieces = 0;
+
+	const ftcore::RoadWater* WaterOf(const std::string& Canal) const
+	{
+		if (Waters)
+		{
+			for (const ftcore::RoadWater& Water : *Waters)
+			{
+				if (Water.id == Canal)
+				{
+					return &Water;
+				}
+			}
+		}
+		return nullptr;
+	}
+
+	// A canal's own instance of the water (its flow and channel in the engine's frame) or of the bed (its waterline).
+	UMaterialInterface* CanalInstance(const ftcore::RoadWater& Water, bool bSurface)
+	{
+		const FString Name = FString::Printf(TEXT("MI_Canal_%s_%s"), bSurface ? TEXT("Water") : TEXT("Bed"), *RoadsUtf8(Water.id)).Replace(TEXT("-"), TEXT("_"));
+		if (UMaterialInterface** Known = CanalWorn.Find(Name))
+		{
+			return *Known;
+		}
+		const ftcore::MassingVec At = ftcore::massingEnginePoint(Host.Side, Water.cx, Water.cy, Water.z);
+		const ftcore::MassingVec On = ftcore::massingEnginePoint(Host.Side, Water.cx + Water.flowX, Water.cy + Water.flowY, Water.z);
+		UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Host.Package, *Name, RF_Public);
+		Mic->SetParentEditorOnly(bSurface ? CanalWater : CanalBed);
+		if (bSurface)
+		{
+			const FVector2D Way = FVector2D(On.x - At.x, On.y - At.y).GetSafeNormal();
+			Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Flow")),
+				FLinearColor(static_cast<float>(Way.X), static_cast<float>(Way.Y), static_cast<float>(Water.flow * 100.0), 0.f));
+			Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Channel")),
+				FLinearColor(static_cast<float>(At.x * 100.0), static_cast<float>(At.y * 100.0), static_cast<float>(Water.halfWidth * 100.0), 0.f));
+		}
+		else
+		{
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WaterZ")), static_cast<float>(At.z * 100.0));
+		}
+		Mic->PostEditChange();
+		CanalWorn.Add(Name, Mic);
+		return Mic;
+	}
 
 	UMaterialInterface* Tint(ftcore::RoadTint Which)
 	{
@@ -149,8 +202,28 @@ struct FRoadPainter
 		Options.Tag = Solid.tag.empty() ? FName(TEXT("FTRoad")) : FName(RoadsUtf8(Solid.tag));
 		Options.Label = RoadsUtf8(Box.id);
 		const EFTCellKind Kind = !Solid.collide ? EFTCellKind::NoCollide : (bGround ? EFTCellKind::Walk : EFTCellKind::Solid);
-		UMaterialInterface* const Materials[1] = {Box.kind == "median_lawn" && Host.Lawn ? Host.Lawn : Tint(Which)};
-		if (!Host.Cells->Add(bCyl ? Cylinder : Host.Cube, Materials, FTransform(Rotation, Location, Scale), {}, Kind, Options).IsValid())
+		UMaterialInterface* Worn = Box.kind == "median_lawn" && Host.Lawn ? Host.Lawn : Tint(Which);
+		UStaticMesh* Mesh = bCyl ? Cylinder : Host.Cube;
+		const ftcore::RoadWater* const Water = bCanal ? WaterOf(Box.row) : nullptr;
+		if (Water && Box.kind == "canal_water" && CanalWater && Plane)
+		{
+			// The water: a plane at its level, wearing the canal's own running water (the engine's plane is 1 m square).
+			const ftcore::MassingVec Top = ftcore::massingEnginePoint(Host.Side, Box.cx, Box.cy, Box.z1);
+			Location = FVector(Top.x, Top.y, Top.z) * 100.0;
+			Scale.Z = 1.0;
+			Mesh = Plane;
+			Worn = CanalInstance(*Water, true);
+			Options.bCastShadow = false;
+			Options.bRayTraced = false;
+			++WaterPlanes;
+		}
+		else if (Water && (Box.kind == "canal_wall" || Box.kind == "canal_floor") && CanalBed)
+		{
+			Worn = CanalInstance(*Water, false);
+			++BedPieces;
+		}
+		UMaterialInterface* const Materials[1] = {Worn};
+		if (!Host.Cells->Add(Mesh, Materials, FTransform(Rotation, Location, Scale), {}, Kind, Options).IsValid())
 		{
 			return false;
 		}
@@ -519,6 +592,22 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: roads: the engine's cylinder didn't load; cylinders are built as cubes."));
 	}
+	// The canals: a water plane and the channel's bed and walls (FTBuildLookMaterials -Canal).
+	if (!Builds.empty() && !Builds[0].waters.empty())
+	{
+		Paint.Waters = &Builds[0].waters;
+		Paint.Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+		const auto LoadWorn = [](const TCHAR* Package) {
+			return LoadObject<UMaterialInterface>(nullptr, *FString::Printf(TEXT("%s.%s"), Package, *FPackageName::GetShortName(Package)));
+		};
+		Paint.CanalWater = LoadWorn(FTScene::LookCanalWaterMaterial);
+		Paint.CanalBed = LoadWorn(FTScene::LookCanalBedMaterial);
+		if (!Paint.Plane || !Paint.CanalWater || !Paint.CanalBed)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: canals: %s, %s or the engine's plane is missing (FTBuildLookMaterials "
+				"-Canal builds them); the channels keep their flat tints."), FTScene::LookCanalWaterMaterial, FTScene::LookCanalBedMaterial);
+		}
+	}
 	UStaticMesh* Lamp = LoadObject<UStaticMesh>(nullptr, kRoadLampMesh);
 	UStaticMesh* Scooter = Options.bVehicles ? LoadObject<UStaticMesh>(nullptr, kRoadScooterMesh) : nullptr;
 	std::vector<ftcore::MassingFoot> Doors;
@@ -584,6 +673,17 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 	}
 	Host.RoadsTo = Host.Taken ? Host.Taken->size() : 0;
 	FTBuildKeiCars::LogSummary(KeiCars);
+	if (Paint.Waters)
+	{
+		for (const ftcore::RoadWater& Water : *Paint.Waters)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canal water %s: %.1f x %.1f m at %.2f m, %.2f m deep, runs (%.2f, %.2f) at "
+				"%.2f m/s, %.1f m from its middle to a wall."), *RoadsUtf8(Water.id), Water.sx, Water.sy, Water.z, Water.depth, Water.flowX, Water.flowY,
+				Water.flow, Water.halfWidth);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canals: %d water planes on %s, %d wall and floor pieces on %s."), Paint.WaterPlanes,
+			Paint.CanalWater ? *Paint.CanalWater->GetName() : TEXT("the flat tint"), Paint.BedPieces, Paint.CanalBed ? *Paint.CanalBed->GetName() : TEXT("the flat tint"));
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids and vehicles laid as instances of their cells."), Paint.Laid);
 	return true;
 }

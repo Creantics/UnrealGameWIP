@@ -232,7 +232,21 @@ struct RoadCounts {
 };
 
 // Everything a road builds.
+// A canal's water surface (roadCanalBuild): the plan rectangle between its walls at its level, and how it runs. Its
+// canal_water solid (row = id) is the same rectangle; the drawn surface reads the flow from here.
+struct RoadWater {
+    std::string id;                 // the canal's
+    double cx = 0.0, cy = 0.0;      // m: the rectangle's centre
+    double sx = 0.0, sy = 0.0;      // m: its sides along x and y
+    double z = 0.0;                 // m: the surface
+    double depth = 0.0;             // m: down to the floor
+    double flowX = 0.0, flowY = 0.0; // plan unit vector
+    double flow = 0.0;              // m/s mid-channel
+    double halfWidth = 0.0;         // m: from the channel's middle line to a wall, across the flow
+};
+
 struct RoadBuild {
+    std::vector<RoadWater> waters;       // one per canal built (roadCanalBuild)
     std::vector<RoadSolid> solids;
     std::vector<MassingProp> lamps;      // a TQ-04 street lamp each (face: towards the road's centre line)
     std::vector<RoadBay> bays;
@@ -403,8 +417,10 @@ FTCORE_API double roadNetLaneOffset(const RoadNetStreet& street, int k);
 // Whether a roads table is a network table: its header names pts but no ground_z (the ground is the world's).
 FTCORE_API bool roadNetTable(std::string_view csv);
 // Reads a network table (CSV, a header row; '#' comment rows). A row of kind canal is a canal (RoadCanal), not a
-// street: pts its two plan corners "x0:y0;x1:y1", optional column canal "floor_z:water_z[:bridge_at]"; it goes to
-// `canals` (skipped when that is null). Columns:
+// street: pts its two plan corners "x0:y0;x1:y1", optional column canal "floor_z:water_z[:bridge_at]", optional column
+// flow "speed_mps[:heading_deg]" (0 to kCanalFlowMax; the heading plan degrees from +x toward +y; without one the
+// water runs along the long side toward +; without the column kCanalFlow); it goes to `canals` (skipped when that is
+// null). Columns:
 //   id, kind      as importRoads
 //   width_m       wall to wall
 //   pts           "x:y;x:y;...", at least two points, plan frame
@@ -486,6 +502,8 @@ inline constexpr double kQuayBridgeWide = 2.4; // m: the footbridge's walking wi
 inline constexpr double kQuayBridgeRise = 0.45; // m: its middle deck over the higher bank
 inline constexpr double kQuayBridgeDeck = 2.2;  // m: its level middle's length
 inline constexpr double kQuaySlab = 0.35;       // m: a deck's, landing's or ramp's thickness
+inline constexpr double kCanalFlow = 0.25;      // m/s: a canal's flow mid-channel when its row gives none
+inline constexpr double kCanalFlowMax = 3.0;    // m/s: the fastest a row may ask for
 
 // A canal between two roads: an axis-aligned plan rectangle (bank back to bank), the banks along its long side, each a
 // coping `bank` wide before the water.
@@ -499,7 +517,11 @@ struct RoadCanal {
     double waterZ = 2.5;     // m: the water's surface
     double wall = 1.0;       // m: each quay wall's thickness, from the rectangle's edge in (sides and ends)
     double coping = 0.25;    // m: the coping slab on each wall's top
+    double flow = kCanalFlow; // m/s: the water's speed mid-channel (0: still)
+    double flowX = 0.0, flowY = 0.0; // plan unit vector the water runs along; (0, 0): the long side, toward +x or +y
 };
+// The way a canal's water runs (plan unit vector): its own flowX, flowY when set, else along its long side toward +.
+FTCORE_API RoadPoint roadCanalFlowDir(const RoadCanal& canal);
 // One row of the point table (kinds railing_span, lamp_mast, bridge_deck, bridge_landing, bridge_stair, bridge_pier).
 struct RoadQuayPoint {
     std::string kind, id, group, deck;
@@ -530,7 +552,8 @@ FTCORE_API void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, c
 // and across each end, `wall` thick from the rectangle's edge in, from 0.3 m under the floor up to the bank top less
 // `coping`, in pieces of 10 m at most along the banks (each bank's top as roadQuayPoints reads it); a coping slab
 // (Kerb, walked on) over each wall piece up to the bank top; the floor (PoleConcrete, walked on) between the walls,
-// 0.3 m deep up to floorZ; the water (Water, no collision) a 5 cm plate up to waterZ between the walls. The ground stays
+// 0.3 m deep up to floorZ; the water (Water, no collision) a 5 cm plate up to waterZ between the walls, and its
+// surface and flow as a RoadWater in build.waters. The ground stays
 // as it is: under ground higher than waterZ the channel is buried until the height field is cut. Returns the solids
 // added (0 for a rectangle under 4 x (2 wall + 1) m).
 FTCORE_API std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build);

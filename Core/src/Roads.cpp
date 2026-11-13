@@ -2349,6 +2349,18 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
             }
             if (std::fabs(c.x1 - c.x0) < 1.0 || std::fabs(c.y1 - c.y0) < 1.0 || c.waterZ <= c.floorZ)
                 return fail(error, rec.line, r.id + ": a canal needs a rectangle and its water over its floor");
+            const std::string_view fs = col("flow");
+            if (!fs.empty()) {
+                const std::size_t q = fs.find(':');
+                double heading = 0.0;
+                if (!parseNumber(trim(fs.substr(0, q)), c.flow) || c.flow < 0.0 || c.flow > kCanalFlowMax ||
+                    (q != std::string_view::npos && !parseNumber(trim(fs.substr(q + 1)), heading)))
+                    return fail(error, rec.line, r.id + ": flow is \"speed_mps[:heading_deg]\", the speed 0 to 3");
+                if (q != std::string_view::npos) {
+                    c.flowX = std::cos(heading * kPi / 180.0);
+                    c.flowY = std::sin(heading * kPi / 180.0);
+                }
+            }
             if (canals) {
                 for (const RoadCanal& o : *canals)
                     if (o.id == c.id) return fail(error, rec.line, r.id + ": the id is used twice");
@@ -3502,7 +3514,29 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     const double cx = 0.5 * (x0 + x1), cy = 0.5 * (y0 + y1), sx = x1 - x0 - 2.0 * t, sy = y1 - y0 - 2.0 * t;
     put("FLOOR", "canal_floor", cx, cy, sx, sy, base, canal.floorZ, RoadTint::PoleConcrete, true);
     put("WATER", "canal_water", cx, cy, sx, sy, canal.waterZ - 0.05, canal.waterZ, RoadTint::Water, false);
+    RoadWater w;
+    w.id = canal.id;
+    w.cx = cx;
+    w.cy = cy;
+    w.sx = sx;
+    w.sy = sy;
+    w.z = canal.waterZ;
+    w.depth = canal.waterZ - canal.floorZ;
+    const RoadPoint dir = roadCanalFlowDir(canal);
+    w.flowX = dir.x;
+    w.flowY = dir.y;
+    w.flow = std::clamp(canal.flow, 0.0, kCanalFlowMax);
+    // Across the flow: the rectangle's half extent along the flow's normal.
+    w.halfWidth = 0.5 * (std::fabs(dir.y) * sx + std::fabs(dir.x) * sy);
+    build.waters.push_back(std::move(w));
     return build.solids.size() - before;
+}
+
+RoadPoint roadCanalFlowDir(const RoadCanal& canal) {
+    const double len = std::hypot(canal.flowX, canal.flowY);
+    if (len > 1e-9) return {canal.flowX / len, canal.flowY / len};
+    const bool alongY = std::fabs(canal.y1 - canal.y0) >= std::fabs(canal.x1 - canal.x0);
+    return alongY ? RoadPoint{0.0, 1.0} : RoadPoint{1.0, 0.0};
 }
 
 void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, const MassingGround& ground,
