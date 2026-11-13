@@ -387,6 +387,8 @@ private:
 	// Briefs (Lattice slice 1), off unless -ArenaBrief=<id> asks (never in a shipping build until promoted): the
 	// lead's kit takes that Brief's kit from Data/Battle/briefs.json (the cylinder and the kit changes) before the
 	// fight begins. Only the guns lead's own kit has Briefs; any other is left alone with a warning.
+	// Slice 2: the kit is built from the Brief's stats (BriefKit); every stat 10 unless -ArenaRating=<1..30> asks
+	// for that Rating's stats. A bad Rating, or one without -ArenaBrief, stops the run.
 	void BeginBrief();
 	void LogBrief() const;
 	static uint8 SessionLeadOf(const FFTLeadLook* Look);
@@ -702,6 +704,8 @@ private:
 	double AllyHitTime = -1e9;
 	int32 CarrySharedOffers = 0;
 	FString BriefId; // -ArenaBrief: the Brief laid over the kit ("" none)
+	FString BriefStats;    // the five stats the kit was built from, for the log
+	int32 BriefRating = 0; // -ArenaRating: the Brief's stats at this Rating (0: every stat 10, the plain kit)
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;

@@ -198,9 +198,11 @@ void ScarePacer::save(ScareSave& out) const {
 bool ScarePacer::load(const ScareSave& in) {
     if (!std::isfinite(in.playSeconds) || in.playSeconds < 0.0) return false;
     if (in.count > kScareRing || in.head >= kScareRing) return false;
+    if (in.count < kScareRing && in.head != in.count) return false; // a ring not yet full is filled from slot 0
     if (in.lastKind > ScareKind::Count) return false;
     for (std::size_t i = 0; i < kScareRing; ++i) {
         if (!std::isfinite(in.times[i]) || in.times[i] < 0.0 || in.kinds[i] > ScareKind::Count) return false;
+        if (i < in.count && in.kinds[i] == ScareKind::Count) return false;
     }
     if (in.seenHex.size() * 4 > kScareSeenBits + 3) return false;
     std::bitset<kScareSeenBits> bits;
@@ -219,12 +221,13 @@ bool ScarePacer::load(const ScareSave& in) {
     }
     now_ = in.playSeconds;
     times_ = in.times;
+    for (double& t : times_) t = t > now_ ? now_ : t; // a scare can't be later than the clock that recorded it
     kinds_ = in.kinds;
     count_ = in.count;
     head_ = in.head;
     lastKind_ = in.lastKind;
     seen_ = bits;
-    quietAt_ = -1e30;
+    quietAt_ = now_; // a load starts the quiet
     return true;
 }
 

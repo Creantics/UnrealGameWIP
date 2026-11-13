@@ -10,6 +10,7 @@
 // * Moments: a moment is seen once it completes (its scare beat finished, in any form) and never plays again in that
 //   save. One that played but did not complete before a reload may play again.
 // * Quiet: none within 180 s of a load, a death or a tutorial prompt (markQuiet), and none in the Finale (setFinale).
+//   A new pacer starts quiet, and load() starts the quiet itself, so no caller has to remember markQuiet() for them.
 // * Setting: Full or Soft play the scare (Soft without the sting); Off drops ambient scares and plays scripted ones
 //   Calm. A scripted moment refused by any rule plays Calm too. A Calm play is not recorded; it still completes.
 //
@@ -88,7 +89,7 @@ public:
     ScareSetting setting() const { return setting_; }
     void setFinale(bool inFinale) { finale_ = inFinale; }
     bool finale() const { return finale_; }
-    // A load, a death or a tutorial prompt: no scare for the next 180 s of play.
+    // A death or a tutorial prompt: no scare for the next 180 s of play (a new pacer and a load start it themselves).
     FTCORE_API void markQuiet();
 
     // Whether the rules let this moment be a scare now (the setting aside, except Off refusing ambient ones).
@@ -113,13 +114,15 @@ public:
     ScareKind lastKind() const { return lastKind_; }
 
     FTCORE_API void save(ScareSave& out) const;
-    // False (pacer untouched) when the save is malformed: count past the ring, head past it, a kind past Count, a
-    // non-finite or negative time, or seenHex with a non-hex digit or more bits than kScareSeenBits.
+    // False (pacer untouched) when the save is malformed: count past the ring, head past it, head != count while
+    // the ring is not full, a kind past Count (or Count in a filled slot), a non-finite or negative time, or seenHex
+    // with a non-hex digit or more bits than kScareSeenBits. A ring time later than playSeconds is clamped to it.
+    // On success the post-load quiet starts (as markQuiet()).
     FTCORE_API bool load(const ScareSave& in);
 
 private:
     double now_ = 0.0;
-    double quietAt_ = -1e30;
+    double quietAt_ = 0.0; // a new pacer starts quiet
     std::array<double, kScareRing> times_{};
     std::array<ScareKind, kScareRing> kinds_{};
     std::uint8_t count_ = 0, head_ = 0;

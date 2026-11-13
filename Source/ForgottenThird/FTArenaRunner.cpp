@@ -40,6 +40,8 @@
 #include "Misc/Parse.h"
 
 #include "ftcore/Brief.h"
+#include "ftcore/BriefKit.h"
+#include "ftcore/LicenceRating.h"
 #include "ftcore/Chairs.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
@@ -4495,11 +4497,32 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 void UFTArenaRunner::BeginBrief()
 {
 	BriefId.Reset();
+	BriefStats.Reset();
+	BriefRating = 0;
 #if !UE_BUILD_SHIPPING
+	FString RatingText;
+	const bool bRating = FParse::Value(FCommandLine::Get(), TEXT("ArenaRating="), RatingText, false);
 	FString Want;
 	if (!FParse::Value(FCommandLine::Get(), TEXT("ArenaBrief="), Want, false) || Want.TrimStartAndEnd().IsEmpty())
 	{
+		if (bRating)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaRating needs -ArenaBrief (a Rating is a Brief's); the run stops."));
+			FTRequestExit(1, TEXT("ArenaRating"));
+		}
 		return;
+	}
+	if (bRating)
+	{
+		RatingText.TrimStartAndEndInline();
+		const int32 Rating = RatingText.IsNumeric() && !RatingText.Contains(TEXT(".")) ? FCString::Atoi(*RatingText) : 0;
+		if (Rating < 1 || Rating > ftcore::kMaxRating)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaRating=%s: a Rating is a whole number 1..%d; the run stops."), *RatingText, ftcore::kMaxRating);
+			FTRequestExit(1, TEXT("ArenaRating"));
+			return;
+		}
+		BriefRating = Rating;
 	}
 	Want = Want.TrimStartAndEnd().ToLower();
 	ftcore::BriefId Id = ftcore::BriefId::Count;
@@ -4532,13 +4555,16 @@ void UFTArenaRunner::BeginBrief()
 		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
-	Def.fighter = Brief->kit;
+	// Without -ArenaRating every stat is 10: the Brief's kit changes on the lead's own kit (slice 1's kit).
+	const ftcore::LicenceStats Stats = BriefRating > 0 ? ftcore::LicenceRating{}.statsFor(*Brief, BriefRating) : ftcore::LicenceStats{};
+	Def.fighter = ftcore::buildBriefKit(*Brief, Stats).fighter;
 	BriefId = Want;
+	BriefStats = FString::Printf(TEXT("%d/%d/%d/%d/%d"), Stats.v[0], Stats.v[1], Stats.v[2], Stats.v[3], Stats.v[4]);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: Brief %s on the %s kit (-ArenaBrief): rounds %d, reload %.2f s, shot %d damage %.0f m startup %.2f s, kicks %d/%d/%d, heavy %d, poise %.2f, guard absorb %.2f."),
-		*BriefId, *KitId, static_cast<int32>(Def.fighter.rounds), Def.fighter.reload, Def.fighter.shot.damage, Def.fighter.shot.range,
-		Def.fighter.shot.startup, Def.fighter.light[0].damage, Def.fighter.light[1].damage, Def.fighter.light[2].damage,
-		Def.fighter.heavy.damage, Def.fighter.poise, Def.fighter.guardAbsorb);
+		TEXT("Arena: Brief %s on the %s kit (-ArenaBrief): Rating %d, stats %s, hp %d, rounds %d, reload %.2f s, shot %d damage %.0f m startup %.2f s, kicks %d/%d/%d, heavy %d, poise %.2f, guard absorb %.4f, parry %.4f."),
+		*BriefId, *KitId, BriefRating, *BriefStats, Def.fighter.hp, static_cast<int32>(Def.fighter.rounds), Def.fighter.reload, Def.fighter.shot.damage,
+		Def.fighter.shot.range, Def.fighter.shot.startup, Def.fighter.light[0].damage, Def.fighter.light[1].damage, Def.fighter.light[2].damage,
+		Def.fighter.heavy.damage, Def.fighter.poise, Def.fighter.guardAbsorb, Def.fighter.parryWindow);
 #endif
 }
 
@@ -4550,8 +4576,8 @@ void UFTArenaRunner::LogBrief() const
 	}
 	const ftcore::ArenaStats& S = Fight.stats();
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: BRIEF %s rounds %d/%d reload %.2f shots %d shotHits %d reloads %d dryPresses %d kicks %d."),
-		*BriefId, static_cast<int32>(Fight.rounds()), static_cast<int32>(Fight.roundsMax()), Def.fighter.reload, S.shots,
+		TEXT("Arena: BRIEF %s rating %d stats %s rounds %d/%d reload %.2f shots %d shotHits %d reloads %d dryPresses %d kicks %d."),
+		*BriefId, BriefRating, *BriefStats, static_cast<int32>(Fight.rounds()), static_cast<int32>(Fight.roundsMax()), Def.fighter.reload, S.shots,
 		S.shotHits, S.reloads, S.dryPresses, S.lights);
 }
 
