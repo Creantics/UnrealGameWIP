@@ -2,6 +2,7 @@
 #include "ftcore/ArenaSoftTarget.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaLook.h"
+#include "ftcore/TableRing.h"
 
 #include "SeedMix.h"
 #include "ftcore/Json.h"
@@ -337,6 +338,7 @@ struct ArenaFightImpl {
         fight.healMax_ = pl.charges;
         pl.rounds = fi.rounds;
         fight.allyHp_ = fight.allyMaxHp_;
+        fight.tableSeats_ = ArenaTableSeats{};
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             Enemy& foe = foes[i];
             foe = Enemy{};
@@ -2061,6 +2063,7 @@ struct ArenaFightImpl {
                 storeCapped(source, foe.move, static_cast<float>(lead) * fi.takeHalfLoadShare, stats.takeHalfLoad);
             }
         }
+        allyPart = tableShare(source, foe.move, kArenaAlly, allyPart); // after take half: what is left is shared
         const int lost = std::min(allyPart, fight.allyHp_);
         fight.allyHp_ -= lost;
         if (lost > 0) emit(ArenaEventType::AllyHit, source, kArenaAlly, foe.move, lost, fight.allyPos_);
@@ -2076,7 +2079,59 @@ struct ArenaFightImpl {
         }
     }
 
+    // A set table (ArenaFight::setTableSeats): the even split of `damage` from source's blow on a seated lead
+    // (`struck`: kArenaPlayer or kArenaAlly). Passes the other parts on and returns the struck one's.
+    int tableShare(std::uint8_t source, std::uint8_t move, std::uint8_t struck, int damage) {
+        const ArenaTableSeats& s = fight.tableSeats_;
+        if (damage <= 0 || !s.any()) return damage;
+        if (!(struck == kArenaPlayer ? s.player : (struck == kArenaAlly && s.ally))) return damage;
+        const bool player = s.player && pl.hp > 0;
+        const bool ally = s.ally && allyUp();
+        int bodies = (player ? 1 : 0) + (ally ? 1 : 0);
+        for (std::size_t i = 0; i < n; ++i)
+            if (((s.enemies >> i) & 1u) && alive(i)) ++bodies;
+        const TableEvenSplit split = tableEvenSplit(damage, bodies);
+        if (split.each <= 0) return split.struck;
+        if (player && struck != kArenaPlayer) {
+            const int lost = std::min(split.each, pl.hp);
+            pl.hp -= lost;
+            stats.damageTaken += lost;
+            emit(ArenaEventType::TableShare, source, kArenaPlayer, move, lost, pl.pos);
+            if (pl.hp <= 0) downPlayer(source, move);
+        }
+        if (ally && struck != kArenaAlly) {
+            const int lost = std::min(split.each, fight.allyHp_);
+            fight.allyHp_ -= lost;
+            emit(ArenaEventType::TableShare, source, kArenaAlly, move, lost, fight.allyPos_);
+            if (fight.allyHp_ <= 0) {
+                fight.allyHp_ = 0;
+                emit(ArenaEventType::AllyDowned, source, kArenaAlly, move, 0, fight.allyPos_);
+            }
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!((s.enemies >> i) & 1u) || !alive(i)) continue;
+            const int part = tableEnemyPart(split.each, s.enemyShare[i]);
+            if (part <= 0) continue;
+            const int amount = lose(i, part);
+            if (amount <= 0) continue;
+            emit(ArenaEventType::TableShare, source, id(i), move, amount, foes[i].pos);
+            if (foes[i].hp <= 0) killEnemy(i);
+        }
+        return split.struck;
+    }
+
+    void downPlayer(std::uint8_t source, std::uint8_t move) {
+        pl.hp = 0;
+        pl.action = ArenaAction::Downed;
+        pl.actionTime = 0.f;
+        pl.velocity = Vec2{};
+        pl.buffered = Press::None;
+        pl.parryLeft = 0.f;
+        emit(ArenaEventType::Downed, source, kArenaPlayer, move, 0, pl.pos);
+    }
+
     void damagePlayer(std::uint8_t source, int damage, std::uint8_t move) {
+        damage = tableShare(source, move, kArenaPlayer, damage);
         const int amount = std::min(damage, pl.hp);
         pl.hp -= amount;
         stats.damageTaken += amount;
@@ -2642,6 +2697,12 @@ int ArenaFight::allyHp() const { return allyHp_; }
 int ArenaFight::allyMaxHp() const { return allyMaxHp_; }
 bool ArenaFight::allyAlive() const { return allyMaxHp_ > 0 && allyHp_ > 0; }
 Vec2 ArenaFight::allyPos() const { return allyPos_; }
+float ArenaFight::allyRadius() const { return allyRadius_; }
+void ArenaFight::setTableSeats(const ArenaTableSeats& seats) {
+    tableSeats_ = seats;
+    for (float& v : tableSeats_.enemyShare) v = std::isfinite(v) ? std::clamp(v, 0.f, 4.f) : 0.f;
+}
+const ArenaTableSeats& ArenaFight::tableSeats() const { return tableSeats_; }
 bool ArenaFight::takeHalfDue(float lead) const {
     if (phase_ != ArenaPhase::Fighting || !allyAlive() || player_.hp <= 0) return false;
     if (arenaDistance(player_.pos, allyPos_) > def_.fighter.takeHalfReach) return false;
@@ -3292,7 +3353,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
                       "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
-                      "breakDecay", "breakMove"},
+                      "breakDecay", "breakMove", "carry", "seatable"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
     arenaBool(j, "passive", k.passive, path, errors);
@@ -3318,6 +3379,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaByte(j, "breakAt", k.breakAt, 0, 255, path, errors);
     arenaNum(j, "breakDecay", k.breakDecay, 0, 60, false, path, errors);
     arenaInt(j, "breakMove", k.breakMove, -1, static_cast<int>(kMaxArenaMoves) - 1, path, errors);
+    arenaByte(j, "carry", k.carry, 0, 255, path, errors);
+    arenaBool(j, "seatable", k.seatable, path, errors);
     arenaParseLook(j["look"], path + ".look", k.look, errors, warnings);
     if (k.runRange < k.preferredRange) errors.push_back(path + ".runRange: expected at least preferredRange");
 

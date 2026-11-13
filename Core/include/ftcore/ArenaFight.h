@@ -516,6 +516,9 @@ struct ArenaEnemyKind {
     std::uint8_t breakAt = 0; // > 0: the blows in a row that make it break out (see Break-out); 0: never
     float breakDecay = 1.5f;  // s without a blow after which the count goes back to 0
     int breakMove = -1;       // the move it breaks out with; -1: none
+    // A set table (TableRing.h). Only a set table reads them: the fight's own rules never do.
+    std::uint8_t carry = 0;   // carry grade: a seated one's share of a blow halves for each grade past the table's seats
+    bool seatable = true;     // whether it may be seated at a table at all
 };
 
 // An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius
@@ -731,6 +734,8 @@ enum class ArenaEventType : std::uint8_t { // append only
     AllyHit,        // source's attack `move` hit the ally (target kArenaAlly) for `amount` hp (appended)
     AllyDowned,     // the ally reached 0 hp: down for the rest of the fight, never a Defeat (appended)
     TookHalf,       // the player took half of source's blow on the ally: `amount` hp (target kArenaPlayer) (appended)
+    TableShare,     // a set table passed `amount` hp of source's blow on a seated lead to target: the player, the ally
+                    // or a seated enemy (ArenaFight::setTableSeats) (appended)
 };
 
 struct ArenaEvent {
@@ -881,6 +886,16 @@ struct ArenaBlowRuling {
     float damage = 1.f;
     float poise = 1.f;
     bool veto = false;
+};
+
+// Who sits at a set table (TableRing.h). All off by default: nothing is shared.
+struct ArenaTableSeats {
+    bool player = false;
+    bool ally = false;
+    std::uint8_t enemies = 0;                          // bit i: enemy i
+    std::array<float, kMaxArenaEnemies> enemyShare{}; // a seated enemy's part of the even split, times this (0..4)
+
+    bool any() const { return player || ally || enemies != 0; }
 };
 
 // Called inside tick(), once per blow, in the order the blows land (a player's attack reaching several enemies on
@@ -1094,6 +1109,16 @@ public:
     FTCORE_API int allyMaxHp() const;
     FTCORE_API bool allyAlive() const;
     FTCORE_API Vec2 allyPos() const; // as the last tick's bodies placed it
+    FTCORE_API float allyRadius() const;
+    // ---- a set table ----
+    // The host's seats at a set table (TableRing.h; begin and restart clear them). While the player or the ally is
+    // seated and two or more living bodies sit, the hp an enemy's blow takes from a seated lead (a hit, a guard's
+    // chip, the ally's part after take half) is split evenly among them: each loses amount / bodies (rounded down)
+    // and the one struck the rest. A seated enemy loses its part times its enemyShare (rounded, halves up; the hp
+    // floor holds). Each part passed on reports TableShare; a part that empties the player downs it, the ally's
+    // reports AllyDowned, an enemy's kills it. The struck lead's own part reports Hit or AllyHit as before.
+    FTCORE_API void setTableSeats(const ArenaTableSeats& seats);
+    FTCORE_API const ArenaTableSeats& tableSeats() const;
     // An enemy is in its attack's startup with `lead` s of it left or less, the ally is alive and the player within
     // takeHalfReach of it: when an autopilot would press take half.
     FTCORE_API bool takeHalfDue(float lead) const;
@@ -1251,6 +1276,7 @@ private:
     float allyRadius_ = 0.4f;
     int allyHp_ = 0;
     Vec2 allyPos_;
+    ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
