@@ -20,12 +20,28 @@ void fillArenaHudLead(const ArenaFight& fight, ArenaHudLead& out) {
     out.loadMax = f.attacks ? kMaxLoad : 0; // a kit with no attacks stores no Load
     out.load = out.loadMax > 0 ? fight.load() : 0;
     out.overloaded = out.loadMax > 0 && fight.overloaded();
-    out.releaseReady = out.loadMax > 0 && out.load > kArenaReleaseOpenLoad;
+    out.loadCap = out.loadMax > 0 ? fight.loadCap() : 0;
+    out.releaseAt = out.loadMax > 0 ? fight.releaseOpenLoad() : 0;
+    out.releaseReady = out.loadMax > 0 && out.load > fight.releaseOpenLoad();
     out.heals = fight.healCharges();
-    out.healsMax = f.healCharges;
+    out.healsMax = fight.healChargesMax();
+    const ArenaChairs& chairs = fight.chairs();
+    out.chairs = {};
+    out.chairCount = chairs.count;
+    for (std::size_t i = 0; i < chairs.count && i < kMaxPlaces; ++i) out.chairs[i] = chairs.named[i].kind;
+    out.tookHalf = false;
+    for (const ArenaEvent& e : fight.output().events)
+        if (e.type == ArenaEventType::TookHalf) out.tookHalf = true;
     out.read = fight.readStacks();
     out.readMax = kMaxReadStacks;
     out.down = p.action == ArenaAction::Downed;
+}
+
+void fillArenaHudPartner(const ArenaFight& fight, ArenaHudPartner& out) {
+    out.present = fight.allyMaxHp() > 0;
+    out.hp = out.present ? fight.allyHp() : 0;
+    out.hpMax = out.present ? fight.allyMaxHp() : 0;
+    out.down = out.present && !fight.allyAlive();
 }
 
 void fillArenaHudTarget(const ArenaFight& fight, ArenaHudTarget& out) {

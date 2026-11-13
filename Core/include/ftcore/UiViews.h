@@ -15,6 +15,8 @@
 //
 // Zero allocation.
 #include "ftcore/Api.h"
+#include "ftcore/Chairs.h"
+#include "ftcore/Places.h"
 #include "ftcore/StoryRunner.h"
 
 #include <array>
@@ -34,10 +36,15 @@ struct ArenaHudLead {
     float stamina01 = 0.f;     // 0..1
     bool guarding = false;     // guard held (or a refusal held)
     bool guardBroken = false;
-    int load = 0, loadMax = 0; // the Load gauge (0 max: the lead has none)
-    bool overloaded = false;
+    int load = 0, loadMax = 0; // the Load gauge (0 max: the lead has none); loadMax is the track's length (kMaxLoad)
+    int loadCap = 0;           // where the Load stops (the named chairs' cap; loadMax when carrying is off)
+    int releaseAt = 0;         // the Release opens while load > this (a third of the cap)
+    bool overloaded = false;   // load at the cap
     bool releaseReady = false; // more Load than the Release needs
-    std::uint8_t heals = 0, healsMax = 0;
+    std::uint8_t heals = 0, healsMax = 0; // healsMax: the kit's charges plus the chairs'
+    std::array<ChairKind, kMaxPlaces> chairs{}; // the Named chairs' kinds, in chair order
+    std::uint8_t chairCount = 0;
+    bool tookHalf = false;     // this tick's events hold a TookHalf (an edge: the take-half mark pulses)
     int read = 0, readMax = 0; // Read stacks
     bool down = false;
     bool operator==(const ArenaHudLead&) const = default;
@@ -109,6 +116,8 @@ struct ArenaHudView {
 FTCORE_API void fillArenaHudLead(const ArenaFight& fight, ArenaHudLead& out);
 // The locked enemy, else the current attack's soft target, else none.
 FTCORE_API void fillArenaHudTarget(const ArenaFight& fight, ArenaHudTarget& out);
+// The ally of a carrying run (present only when the fight has one); `lead` is left as the host set it.
+FTCORE_API void fillArenaHudPartner(const ArenaFight& fight, ArenaHudPartner& out);
 // Copies `f` into the view; bumps each changed section's revision. Returns a mask of the changed sections (bit i:
 // ArenaHudSection i).
 FTCORE_API std::uint32_t updateArenaHudView(ArenaHudView& view, const ArenaHudFrame& f);

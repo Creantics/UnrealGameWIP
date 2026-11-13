@@ -1,6 +1,7 @@
 // Carrying in the arena: the Load cap from the chairs, block Load, take half for an ally, and the chairs' effects.
 #include "ftcore/ArenaFight.h"
 #include "ftcore/Places.h"
+#include "ftcore/UiViews.h"
 
 #include "TestAssets.h"
 
@@ -394,6 +395,33 @@ TEST_CASE("arena take half: pressed just before a blow lands on the ally, the pl
         CHECK(rig.fight.stats().takeHalves == 1);
         CHECK(rig.count(ArenaEventType::Hit) == 0); // no hitstun or Hit: the player was never struck
     }
+}
+
+TEST_CASE("arena take half: the HUD view's tookHalf is set on the tick it lands only; the ally's down shows") {
+    AllySetup s;
+    s.allyHp = 10; // the ally's 11 of the bite downs it
+    const int land = landTick(s);
+    REQUIRE(land > 6);
+    Rig rig({biterKind(22, 10.f)});
+    placeAlly(rig, s);
+    ArenaHudLead lead;
+    ArenaHudPartner partner;
+    for (int k = 1; k < land; ++k) {
+        if (k == land - 5) rig.in.takeHalf = true;
+        rig.tick();
+        fillArenaHudLead(rig.fight, lead);
+        CHECK_FALSE(lead.tookHalf);
+    }
+    rig.tick();
+    fillArenaHudLead(rig.fight, lead);
+    fillArenaHudPartner(rig.fight, partner);
+    CHECK(lead.tookHalf);
+    CHECK(partner.present);
+    CHECK(partner.down);
+    CHECK(partner.hp == 0);
+    rig.tick();
+    fillArenaHudLead(rig.fight, lead);
+    CHECK_FALSE(lead.tookHalf);
 }
 
 TEST_CASE("arena take half: too early or out of reach, the ally takes it all (S12)") {
