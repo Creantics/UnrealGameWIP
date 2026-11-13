@@ -1749,7 +1749,10 @@ void UFTArenaRunner::StepFight()
 			}
 			const bool bFree = P.action == ftcore::ArenaAction::Idle || P.action == ftcore::ArenaAction::Move;
 			In.jump = bFree && Now - GlideJumpLast >= kGlideJumpEvery;
-			In.light = GlideStick == 11 && P.action == ftcore::ArenaAction::Jump && P.jumpTime >= kGlideAirLightAt;
+			// Only in the air: once the air light hands back to the jump, a press in the landing would start a ground light.
+			const ftcore::ArenaFighter& Kit = Fight.def().fighter;
+			In.light = GlideStick == 11 && P.action == ftcore::ArenaAction::Jump && P.jumpTime >= kGlideAirLightAt
+				&& P.jumpTime < Kit.jumpStartup + Kit.jumpAir;
 		}
 		if (GlideNow >= 0 && GlideNow < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
 		{
