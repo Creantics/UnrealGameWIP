@@ -86,22 +86,30 @@ TEST_CASE("ui event marks: an evade opens the ring and lets it go") {
     CHECK(uiEventMarkPose(UiEventMark::RingOpen, 0.4f).alpha < 0.05f);
 }
 
-TEST_CASE("ui event marks: a stagger breaks open and settles to a trembling hold") {
+TEST_CASE("ui event marks: a stagger springs out to a clearly larger ring and holds still") {
     const UiMarkPose open = uiEventMarkPose(UiEventMark::LineBreak, 0.12f);
     CHECK(open.tip == doctest::Approx(1.f));
     CHECK(open.jitter > uiStaggerHoldPose().jitter);
+    CHECK(open.radius > uiStaggerHoldPose().radius); // the spring overshoots once
     const UiMarkPose settled = uiEventMarkPose(UiEventMark::LineBreak, 0.5f);
     CHECK(settled.span == doctest::Approx(uiStaggerHoldPose().span));
-    CHECK(settled.jitter == doctest::Approx(uiStaggerHoldPose().jitter));
-    CHECK(uiStaggerHoldPose().jitter > 0.f);
+    CHECK(settled.radius == doctest::Approx(uiStaggerHoldPose().radius));
+    CHECK(settled.jitter == 0.f);
+    CHECK(uiStaggerHoldPose().radius >= 1.45f); // not near the resting ring's size
+    CHECK(uiStaggerHoldPose().span > kUiLockSpan);
     CHECK(uiStaggerHoldPose().base == 0.f);
 }
 
-TEST_CASE("ui event marks: a shared blow's thread draws in, pulses once, fades") {
+TEST_CASE("ui event marks: a shared blow's thread draws in, a pulse travels it and rings once, fades") {
     CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.05f).tip < 1.f);
-    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.2f).tip == doctest::Approx(1.f));
-    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.19f).rippleAlpha > 0.9f);
-    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.4f).rippleAlpha == 0.f);
+    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.12f).tip == doctest::Approx(1.f));
+    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.04f).ripple == 0.f);
+    const float mid = uiEventMarkPose(UiEventMark::ShareThread, 0.18f).ripple;
+    CHECK(mid > 0.2f);
+    CHECK(mid < 0.8f);
+    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.3f).ripple == doctest::Approx(1.f));
+    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.31f).rippleAlpha > 0.9f);
+    CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.55f).rippleAlpha == 0.f);
     CHECK(uiEventMarkPose(UiEventMark::ShareThread, 0.74f).alpha < 0.05f);
 }
 

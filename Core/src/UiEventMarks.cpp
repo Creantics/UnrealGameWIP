@@ -1,6 +1,7 @@
 #include "ftcore/UiEventMarks.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace ftcore {
 
@@ -104,22 +105,26 @@ UiMarkPose uiEventMarkPose(UiEventMark mark, float age) {
         p.alpha = t < 0.2f ? 1.f : 1.f - (t - 0.2f) / 0.2f;
         break;
     case UiEventMark::LineBreak: {
-        // The line breaks open in 0.1 s and the ring springs open with it, trembling hard, then settles to the hold.
+        // The line breaks open in 0.1 s and the ring springs out with it to a clearly larger radius (overshooting once,
+        // a short shake), then holds still there.
         const UiMarkPose hold = uiStaggerHoldPose();
         const float k = easeOut(t / 0.1f);
+        const float over = std::sin(clamp01(t / 0.3f) * 3.14159265f);
         p.tip = k;
         p.base = 0.f;
         p.span = lerp(kUiLockSpan, hold.span, k);
-        p.radius = lerp(1.f, hold.radius, k);
-        p.jitter = lerp(1.f, hold.jitter, clamp01((t - 0.1f) / 0.2f));
+        p.radius = lerp(1.f, hold.radius, k) + 0.12f * over;
+        p.jitter = lerp(0.6f, hold.jitter, clamp01((t - 0.1f) / 0.2f));
         p.alpha = t < 0.75f ? 1.f : 1.f - (t - 0.75f) / 0.25f;
         break;
     }
     case UiEventMark::ShareThread:
-        // Drawn from the struck body to the sharer, pulses once as it arrives, fades.
-        p.tip = easeOut(t / 0.18f);
-        p.alpha = t < 0.18f ? 0.7f : (t < 0.36f ? 1.f : 1.f - (t - 0.36f) / 0.39f);
-        p.rippleAlpha = t < 0.18f ? 0.f : 1.f - clamp01((t - 0.18f) / 0.18f);
+        // Drawn from the struck body to the sharer in 0.1 s; a pulse travels along it (`ripple`: its place, 0 at the
+        // struck body, 1 at the seat) and rings once as it arrives; fades.
+        p.tip = easeOut(t / 0.1f);
+        p.ripple = smooth((t - 0.06f) / 0.24f);
+        p.alpha = t < 0.45f ? 1.f : 1.f - (t - 0.45f) / 0.3f;
+        p.rippleAlpha = t < 0.3f ? 0.f : 1.f - clamp01((t - 0.3f) / 0.2f);
         break;
     case UiEventMark::LoadTip:
         // The leading tip flares and shrinks back as it fades.
@@ -140,9 +145,9 @@ UiMarkPose uiStaggerHoldPose() {
     UiMarkPose p;
     p.alpha = 1.f;
     p.base = 0.f;
-    p.span = 0.30f;
-    p.radius = 1.18f;
-    p.jitter = 0.35f;
+    p.span = 0.55f;
+    p.radius = 1.5f;
+    p.jitter = 0.f;
     p.tip = 1.f;
     return p;
 }

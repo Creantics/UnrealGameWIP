@@ -957,6 +957,11 @@ public:
 				RoleWord(UiTextRole::Popup, kZoneUi[I], ZoneWord[I], ZoneW[I], CallFont);
 			}
 			Word(kAgainUi, AgainWord, AgainW, LabelFont);
+			for (int32 I = 0; I < 3; ++I)
+			{
+				ReadNum[I] = FString::FromInt(I + 1); // the Read pick's keys (1-3), numerals, not text
+				ReadNumW[I] = TextWidth(ReadNum[I], LabelFont);
+			}
 			Word(kAutoPlayUi, TagWord[0], TagW[0], LabelFont);
 			Word(kIdleUi, TagWord[1], TagW[1], LabelFont);
 			RoleWord(UiTextRole::Title, kVictoryUi, VictoryWord, VictoryW, BigFont);
@@ -1477,9 +1482,9 @@ private:
 				float X1 = 0.f;
 				float Y1 = 0.f;
 				ftcore::uiArcPoint(CX, CY, (Carry::RingR + 2.f) * S, GDeg, X0, Y0);
-				ftcore::uiArcPoint(CX, CY, (Carry::RingR + 2.f + 11.f * Po.tip) * S, GDeg, X1, Y1);
+				ftcore::uiArcPoint(CX, CY, (Carry::RingR + 2.f + 18.f * Po.tip) * S, GDeg, X1, Y1);
 				const FVector2f Pts[2] = {FVector2f(X0, Y0), FVector2f(X1, Y1)};
-				Poly(Pts, 2, 1.3f * S, Tok(UiToken::Ink, Po.alpha * A));
+				Poly(Pts, 2, 2.f * S, Tok(UiToken::Ink, Po.alpha * A));
 			});
 		}
 
@@ -1826,6 +1831,8 @@ private:
 		const bool bCalm = Settings && Settings->reduceFlashes;
 		const ftcore::ArenaHudBoss& B = View.now.boss;
 		const ftcore::ArenaHudTarget& T = View.now.target;
+		ReadN = 0;
+		ReadPicked = -1;
 		// The wall: how near (within the old cue's 3.5 m band) and which way on screen, down the zone's distance field.
 		WallA = 0.f;
 		if (PC && PC->PlayerCameraManager)
@@ -1882,6 +1889,12 @@ private:
 			}
 			M.Tell = bStartup ? 1 : 2;
 			M.Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup, 0.01f), 0.f, 1.f) : 1.f;
+			if (bStartup && Fight.readFoe() == static_cast<uint8>(I) && Fight.readCards().dealt())
+			{
+				const ftcore::ReadCards& Cards = Fight.readCards();
+				ReadN = FMath::Min(static_cast<int32>(Cards.size()), 3);
+				ReadPicked = Cards.picked() ? static_cast<int32>(Cards.pickedIndex()) : -1;
+			}
 			// Out of the camera's view (the runner's off-frame test, the one the stinger answers to), or off the screen.
 			const bool bOffFrame = bStartup && Runner.IsOffFrame(I);
 			if (!M.bOn || bOffFrame)
@@ -2227,25 +2240,39 @@ private:
 		}
 	}
 
-	// The weak point open: four short cracks pointing in from the ring's four gaps (the stagger's mark, unlike the rest ring).
-	void StaggerCracks(float X, float Y, float R, float S, float A) const
+	// The stagger (weak point open): the ring sprung out large at ink weight; with the boss's weak point on screen its
+	// gap opens toward it and a thin line runs from the gap to the diamond on the body.
+	void StaggerRing(float X, float Y, float R0, const ftcore::UiMarkPose& Po, float S, float A) const
 	{
 		if (A <= 0.005f)
 		{
 			return;
 		}
-		for (int32 K = 0; K < 4; ++K)
+		const FLinearColor C = Tok(UiToken::Ink, A);
+		const float R = R0 * Po.radius * (1.f + Po.jitter * 0.05f * FMath::Sin(Time * 53.f));
+		const FVector2f To(WeakAt.X - X, WeakAt.Y - Y);
+		if (!bWeakOn || To.Size() < R + 20.f * S)
 		{
-			const float Deg = 90.f * K;
-			float X0 = 0.f;
-			float Y0 = 0.f;
-			float X1 = 0.f;
-			float Y1 = 0.f;
-			ftcore::uiArcPoint(X, Y, R * 0.96f, Deg, X0, Y0);
-			ftcore::uiArcPoint(X, Y, R * 0.7f, Deg, X1, Y1);
-			const FVector2f Pts[2] = {FVector2f(X0, Y0), FVector2f(X1, Y1)};
-			Poly(Pts, 2, 2.f * S, Tok(UiToken::WeakPoint, A));
+			ReticleRing(X, Y, R0, Po, S, 2.2f, C);
+			return;
 		}
+		const float Toward = FMath::RadiansToDegrees(FMath::Atan2(To.X, -To.Y)); // 0 up, clockwise
+		const float Gap = 70.f;
+		const float Small = 90.f * (1.f - Po.span);
+		const float Each = (360.f - Gap - 2.f * Small) / 3.f;
+		float From = Toward + Gap * 0.5f;
+		for (int32 K = 0; K < 3; ++K)
+		{
+			ftcore::uiStrokeArc(Line, X, Y, R, From, From + Each, StrokeStyle(2.2f, 111 + K, S, 0.f));
+			Mesh.Stroke(Line, C);
+			From += Each + Small;
+		}
+		float X0 = 0.f;
+		float Y0 = 0.f;
+		ftcore::uiArcPoint(X, Y, R, Toward, X0, Y0);
+		const FVector2f Dir = To.GetSafeNormal();
+		const FVector2f Pts[2] = {FVector2f(X0, Y0), WeakAt - Dir * (16.f * S)};
+		Poly(Pts, 2, 0.7f * S, Tok(UiToken::WeakPoint, A));
 	}
 
 	// The reticle: the lock's ring round the locked body (the screen's centre without a lock), where a parry snaps it shut
@@ -2286,14 +2313,12 @@ private:
 			}
 			bBroke = true;
 			const float A = bHold ? 1.f : Po.alpha;
-			ReticleRing(At.X, At.Y, R0, Po, S, 2.4f, Tok(UiToken::Accent, A * (1.f - SnapA)));
-			StaggerCracks(At.X, At.Y, R0 * Po.radius, S, A * (1.f - SnapA));
+			StaggerRing(At.X, At.Y, R0, Po, S, A * (1.f - SnapA));
 			Base = FMath::Min(Base, bHold ? 0.f : Po.base + (1.f - Po.alpha));
 		});
 		if (bHold && !bBroke)
 		{
-			ReticleRing(At.X, At.Y, R0, ftcore::uiStaggerHoldPose(), S, 2.4f, Tok(UiToken::Accent, 1.f - SnapA));
-			StaggerCracks(At.X, At.Y, R0 * ftcore::uiStaggerHoldPose().radius, S, 1.f - SnapA);
+			StaggerRing(At.X, At.Y, R0, ftcore::uiStaggerHoldPose(), S, 1.f - SnapA);
 			Base = 0.f;
 		}
 		if (bLockOn && Base > 0.01f)
@@ -2302,6 +2327,23 @@ private:
 			Rest.span = ftcore::kUiLockSpan;
 			ReticleRing(At.X, At.Y, R0, Rest, S, 1.3f, Tok(UiToken::Ink, 0.9f * Base));
 			Mesh.Dot(At.X, At.Y, 2.6f * S, Tok(UiToken::Ink, 0.9f * Base));
+		}
+		// The Read pick: while a read is dealt on a windup, its keys' numerals on the ring's lower arc (one per card); once
+		// picked, the chosen one closes to a dot and the rest go. Nothing when no read is dealt.
+		for (int32 I = 0; I < ReadN; ++I)
+		{
+			const float Deg = 180.f + (static_cast<float>(I) - 0.5f * (ReadN - 1)) * 24.f;
+			float X = 0.f;
+			float Y = 0.f;
+			ftcore::uiArcPoint(At.X, At.Y, R0 + 18.f * S, Deg, X, Y);
+			if (ReadPicked == I)
+			{
+				Mesh.Dot(X, Y, 3.5f * S, Tok(UiToken::Ink));
+			}
+			else if (ReadPicked < 0)
+			{
+				P.Text(X - ReadNumW[I] * 0.5f, Y - LabelAsc * 0.69f, ReadNum[I], LabelFont, Tok(UiToken::Ink));
+			}
 		}
 		// The Read stacks: small ticks out from the ring in its top gap, the newest growing in.
 		const int32 N = View.now.lead.read;
@@ -2440,7 +2482,12 @@ private:
 				return;
 			}
 			const FVector2f Pts[2] = {From, From + (To - From) * Po.tip};
-			Poly(Pts, 2, 0.6f * S, Tok(UiToken::Ink, 0.85f * Po.alpha));
+			Poly(Pts, 2, 1.1f * S, Tok(UiToken::Ink, 0.9f * Po.alpha));
+			if (Po.ripple > 0.f && Po.ripple < 1.f)
+			{
+				const FVector2f PulseAt = From + (To - From) * Po.ripple;
+				Mesh.Dot(PulseAt.X, PulseAt.Y, 4.5f * S, Tok(UiToken::Ink, Po.alpha));
+			}
 			if (Po.rippleAlpha > 0.f)
 			{
 				Ring(To.X, To.Y, (10.f + 16.f * (1.f - Po.rippleAlpha)) * S, 1.4f, 159, S, Tok(UiToken::Danger, Po.rippleAlpha));
@@ -2596,6 +2643,10 @@ private:
 	float WallA = 0.f;   // the wall's nearness (0 out of the band)
 	float WallDeg = 0.f; // its side on screen: 0 up, clockwise
 	FString VictoryWord, DefeatWord, AgainWord;
+	FString ReadNum[3];
+	float ReadNumW[3] = {};
+	int32 ReadN = 0;       // the Read pick's cards on show (0: none dealt on a windup)
+	int32 ReadPicked = -1; // the card picked, -1 while the pick is open
 	float VictoryW = 0.f, DefeatW = 0.f, AgainW = 0.f;
 	bool bResult = false;
 	bool bWon = false;
