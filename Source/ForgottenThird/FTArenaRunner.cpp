@@ -39,6 +39,7 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 
+#include "ftcore/Brief.h"
 #include "ftcore/Chairs.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
@@ -358,6 +359,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bWasDodging = false;
 	BeginNow = Now;
 	// The fitted zone's ring, and where the player starts in it.
+	BeginBrief();
 	BeginCarry(Setup.Ally);
 	PrepareStoneBearer();
 	PrepareKite();
@@ -3145,6 +3147,7 @@ void UFTArenaRunner::LogResult() const
 	}
 	LogFeatureChecks();
 	LogCarry();
+	LogBrief();
 }
 
 void UFTArenaRunner::LogFeatureChecks() const
@@ -4404,6 +4407,65 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 		Pose.Tint = FLinearColor(1.f, 0.2f, 0.2f);
 	}
 	AllyFigure->ApplyPose(Pose);
+}
+
+void UFTArenaRunner::BeginBrief()
+{
+	BriefId.Reset();
+#if !UE_BUILD_SHIPPING
+	FString Want;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("ArenaBrief="), Want, false) || Want.TrimStartAndEnd().IsEmpty())
+	{
+		return;
+	}
+	Want = Want.TrimStartAndEnd().ToLower();
+	ftcore::BriefId Id = ftcore::BriefId::Count;
+	if (!ftcore::briefFromName(FT::ToUtf8(Want), Id))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: no Brief %s (counsel, bailiff, notary, proxy, escrow); the kit is left alone."), *Want);
+		return;
+	}
+	if (KitId != TEXT("duy"))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: only the guns lead's own kit takes a Brief (this kit is %s); the kit is left alone."), *KitId);
+		return;
+	}
+	FString Text;
+	const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/briefs.json");
+	ftcore::BriefTable Briefs;
+	std::string Error;
+	if (!FFileHelper::LoadFileToString(Text, *File) || !ftcore::importBriefTable(FT::ToUtf8(Text), Def.fighter, Briefs, &Error))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/briefs.json; the kit is left alone. %s"), *FT::ToFString(Error));
+		return;
+	}
+	const ftcore::BriefDef* Brief = Briefs.find(Id);
+	if (!Brief)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: %s is not in Data/Battle/briefs.json yet; the kit is left alone."), *Want);
+		return;
+	}
+	Def.fighter = Brief->kit;
+	BriefId = Want;
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: Brief %s on the %s kit (-ArenaBrief): rounds %d, reload %.2f s, shot %d damage %.0f m startup %.2f s, kicks %d/%d/%d, heavy %d, poise %.2f, guard absorb %.2f."),
+		*BriefId, *KitId, static_cast<int32>(Def.fighter.rounds), Def.fighter.reload, Def.fighter.shot.damage, Def.fighter.shot.range,
+		Def.fighter.shot.startup, Def.fighter.light[0].damage, Def.fighter.light[1].damage, Def.fighter.light[2].damage,
+		Def.fighter.heavy.damage, Def.fighter.poise, Def.fighter.guardAbsorb);
+#endif
+}
+
+void UFTArenaRunner::LogBrief() const
+{
+	if (BriefId.IsEmpty())
+	{
+		return;
+	}
+	const ftcore::ArenaStats& S = Fight.stats();
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: BRIEF %s rounds %d/%d reload %.2f shots %d shotHits %d reloads %d dryPresses %d kicks %d."),
+		*BriefId, static_cast<int32>(Fight.rounds()), static_cast<int32>(Fight.roundsMax()), Def.fighter.reload, S.shots,
+		S.shotHits, S.reloads, S.dryPresses, S.lights);
 }
 
 void UFTArenaRunner::LogCarry() const

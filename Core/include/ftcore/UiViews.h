@@ -46,6 +46,9 @@ struct ArenaHudLead {
     std::uint8_t chairCount = 0;
     bool tookHalf = false;     // this tick's events hold a TookHalf (an edge: the take-half mark pulses)
     int read = 0, readMax = 0; // Read stacks
+    std::uint8_t roundsMax = 0; // the cylinder's size (0: the kit has none; set only under a Brief)
+    std::uint8_t rounds = 0;    // rounds left in the cylinder
+    float reload01 = 0.f;       // reload progress 0..1 (0 when not reloading)
     bool down = false;
     bool operator==(const ArenaHudLead&) const = default;
 };

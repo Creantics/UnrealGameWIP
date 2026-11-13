@@ -344,6 +344,12 @@ chairs of `Data/Battle/chairs.json` (four seats; `none` names none, so the Load 
 blows aimed at the ally and `-ArenaAutoBlock` has it guard through every wind-up (blocks store a quarter of the blocked
 damage as Load). Any of the first four turns carrying on; the result is one `Arena: CARRY ...` line at the end.
 
+Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBrief=bailiff` or `-ArenaBrief=notary` with
+`-ArenaLead=Duy` lays that Brief's kit from `Data/Battle/briefs.json` over the guns lead's own kit: a six-round cylinder
+with a 1.2 s reload (the shot spends a round instead of stamina; with none left a shot press is dropped and kicks still
+go), plus the Brief's kit changes. Any other lead is left alone with a warning. `-ArenaAutoShoot` has the autopilot use
+the pistol; `-ArenaLineup=dummy,maw_pup` is the test line-up. The result is one `Arena: BRIEF ...` line at the end.
+
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips

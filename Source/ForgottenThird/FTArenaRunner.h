@@ -381,6 +381,11 @@ private:
 	void MoveAlly();
 	void PlaceAlly(float Alpha);
 	void LogCarry() const;
+	// Briefs (Lattice slice 1), off unless -ArenaBrief=<id> asks (never in a shipping build until promoted): the
+	// lead's kit takes that Brief's kit from Data/Battle/briefs.json (the cylinder and the kit changes) before the
+	// fight begins. Only the guns lead's own kit has Briefs; any other is left alone with a warning.
+	void BeginBrief();
+	void LogBrief() const;
 	static uint8 SessionLeadOf(const FFTLeadLook* Look);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
@@ -690,6 +695,7 @@ private:
 	const FFTLeadLook* AllyLook = nullptr;
 	double AllyHitTime = -1e9;
 	int32 CarrySharedOffers = 0;
+	FString BriefId; // -ArenaBrief: the Brief laid over the kit ("" none)
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;
