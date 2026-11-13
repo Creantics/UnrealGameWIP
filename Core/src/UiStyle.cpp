@@ -19,6 +19,7 @@ constexpr std::array<std::string_view, kUiTextRoleCount> kRoleNames{"title", "he
     "speaker", "prompt", "popup"};
 constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans", "sans_bold", "serif", "hand"};
 constexpr std::array<std::string_view, 7> kShapeNames{"none", "diamond", "chevron", "circle", "square", "triangle", "ring"};
+constexpr std::array<std::string_view, kUiMeterShapeCount> kMeterNames{"line", "ring", "teeth", "stroke"};
 
 template <std::size_t N>
 bool findName(const std::array<std::string_view, N>& names, std::string_view key, std::size_t& out) {
@@ -82,6 +83,26 @@ std::string_view uiWorldName(UiWorld w) { return kWorldNames[static_cast<std::si
 std::string_view uiPaletteName(UiPalette p) { return kPaletteNames[static_cast<std::size_t>(p)]; }
 std::string_view uiTokenName(UiToken t) { return kTokenNames[static_cast<std::size_t>(t)]; }
 std::string_view uiTextRoleName(UiTextRole r) { return kRoleNames[static_cast<std::size_t>(r)]; }
+std::string_view uiMeterShapeName(UiMeterShape m) { return kMeterNames[static_cast<std::size_t>(m) % kUiMeterShapeCount]; }
+
+float uiEdgePx(const UiStyle& s, float height) { return std::max(1.f, s.edgePx * std::max(height, 1.f) / 1080.f); }
+
+void uiFadeStep(UiFade& f, bool changed, float dt, const UiFadeTimes& t) {
+    const float step = std::max(dt, 0.f);
+    if (changed) f.sinceChange = 0.f;
+    else f.sinceChange += step;
+    const float rest = std::clamp(t.restAlpha, 0.f, 1.f);
+    if (f.sinceChange <= t.rest) {
+        // Showing: rise to full.
+        f.alpha = t.in > 0.f ? std::min(1.f, f.alpha + step / t.in) : 1.f;
+        if (changed && t.in <= 0.f) f.alpha = 1.f;
+    } else if (f.alpha > rest) {
+        // Resting: fall to the rest level.
+        f.alpha = t.out > 0.f ? std::max(rest, f.alpha - step * (1.f - rest) / t.out) : rest;
+    } else {
+        f.alpha = std::min(f.alpha + (t.in > 0.f ? step / t.in : 1.f), rest);
+    }
+}
 
 UiStyle defaultUiStyle() {
     UiStyle s;
@@ -161,6 +182,10 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
     if (s.minTextPx < 18.f) return fail(error, "min_text_px is below 18");
     if (s.minTextPxAbsolute < 14.f) return fail(error, "min_text_px_absolute is below 14");
     if (s.backingDefault < 0.f || s.backingDefault > 1.f) return fail(error, "backing_default is outside 0..1");
+    if (s.edgePx < 1.f) return fail(error, "edge px is below 1");
+    if (s.backingSoftHud < 0.f || s.backingSoftHud > 1.f || s.backingSoftDialogue < 0.f || s.backingSoftDialogue > 1.f)
+        return fail(error, "backing_soft is outside 0..1");
+    if (s.edge.a < 0.5f) return fail(error, "the edge is fainter than 50%");
     // The backing at its default strength over the worst picture behind it (white for light text).
     const UiColor white{1.f, 1.f, 1.f, 1.f};
     char buf[128];
@@ -186,6 +211,18 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
                         static_cast<int>(kTokenNames[static_cast<std::size_t>(n.token)].size()),
                         kTokenNames[static_cast<std::size_t>(n.token)].data(), static_cast<double>(c),
                         static_cast<double>(n.ratio));
+                    return fail(error, buf);
+                }
+            }
+            // The default look: text tokens on their own hairline edge, over the worst picture.
+            for (UiToken t : {UiToken::Ink, UiToken::InkDim, UiToken::Accent}) {
+                const float c = uiContrast(uiColor(s, world, palette, t), s.edge, white);
+                if (c < 4.5f) {
+                    std::snprintf(buf, sizeof buf, "%.*s/%.*s: %.*s on the edge is %.2f:1, needs 4.5:1",
+                        static_cast<int>(kWorldNames[w].size()), kWorldNames[w].data(),
+                        static_cast<int>(kPaletteNames[p].size()), kPaletteNames[p].data(),
+                        static_cast<int>(kTokenNames[static_cast<std::size_t>(t)].size()),
+                        kTokenNames[static_cast<std::size_t>(t)].data(), static_cast<double>(c));
                     return fail(error, buf);
                 }
             }
@@ -254,6 +291,44 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             if (!number(v, 0.f, 64.f, s.minTextPx)) return bad("style", key);
         } else if (key == "min_text_px_absolute") {
             if (!number(v, 0.f, 64.f, s.minTextPxAbsolute)) return bad("style", key);
+        } else if (key == "backing_soft") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view bk = v.key(j);
+                if (bk == "hud") {
+                    if (!number(v.value(j), 0.f, 1.f, s.backingSoftHud)) return bad(key, bk);
+                } else if (bk == "dialogue") {
+                    if (!number(v.value(j), 0.f, 1.f, s.backingSoftDialogue)) return bad(key, bk);
+                } else {
+                    return bad(key, bk);
+                }
+            }
+        } else if (key == "edge") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view ek = v.key(j);
+                const JsonValue ev = v.value(j);
+                if (ek == "color") {
+                    if (ev.type() != JsonType::String || !parseHex(ev.string(), s.edge)) return bad(key, ek);
+                } else if (ek == "px") {
+                    if (!number(ev, 0.f, 8.f, s.edgePx)) return bad(key, ek);
+                } else {
+                    return bad(key, ek);
+                }
+            }
+        } else if (key == "meter") {
+            std::size_t m = 0;
+            if (v.type() != JsonType::String || !findName(kMeterNames, v.string(), m)) return bad("style", key);
+            s.meter = static_cast<UiMeterShape>(m);
+        } else if (key == "fade") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view fk = v.key(j);
+                const JsonValue fv = v.value(j);
+                float* dst = fk == "in" ? &s.fade.in : fk == "rest" ? &s.fade.rest : fk == "out" ? &s.fade.out
+                    : fk == "rest_alpha" ? &s.fade.restAlpha : nullptr;
+                if (!dst || !number(fv, 0.f, fk == "rest_alpha" ? 1.f : 30.f, *dst)) return bad(key, fk);
+            }
         } else if (key == "layers") {
             if (v.type() != JsonType::Object) return bad("style", key);
             for (std::uint32_t j = 0; j < v.size(); ++j) {

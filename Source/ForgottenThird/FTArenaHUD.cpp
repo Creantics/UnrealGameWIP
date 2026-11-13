@@ -654,19 +654,22 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	const double T = Fight.time();
 	DrawRect(kArenaPanel, X - 12.f * S, Y - 6.f * S, W + 24.f * S, 34.f * S);
 
-	// The stacks, as pips.
-	DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
-	const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
-	for (int32 I = 0; I < Cap; ++I)
+	// The stacks, as pips (the Slate layer draws them when the new UI is on).
+	if (!FT::NewUiEnabled())
 	{
-		const float PX = X + 86.f * S + static_cast<float>(I) * 22.f * S;
-		if (I < Boss.stacks())
+		DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
+		const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
+		for (int32 I = 0; I < Cap; ++I)
 		{
-			DrawRect(kArenaLoad, PX, Y + 2.f * S, 16.f * S, 16.f * S);
-		}
-		else
-		{
-			DrawFrame(PX, Y + 2.f * S, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+			const float PX = X + 86.f * S + static_cast<float>(I) * 22.f * S;
+			if (I < Boss.stacks())
+			{
+				DrawRect(kArenaLoad, PX, Y + 2.f * S, 16.f * S, 16.f * S);
+			}
+			else
+			{
+				DrawFrame(PX, Y + 2.f * S, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+			}
 		}
 	}
 
@@ -682,6 +685,7 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	}
 	else if (Run.crit().isOpen(Run.now()))
 	{
+		if (!FT::NewUiEnabled()) // the Slate layer shows the open weak point
 		DrawStrCentered(kBossWeakPointArena, ArenaAlpha(kArenaGold, 0.7f + 0.3f * FMath::Sin(static_cast<float>(Mode.GetNow()) * 10.f)), Mid, Y, Small, 1.2f);
 	}
 	else if (Boss.down())
@@ -1133,9 +1137,15 @@ void AFTArenaHUD::DrawHUD()
 	DrawFlashes(*Mode);
 	DrawEnemies(*Mode);
 	DrawLock(*Mode);
-	DrawTargetBar(*Mode);
-	DrawBossPanel(*Mode);
-	DrawPlayerPanel(*Mode);
+	if (!FT::NewUiEnabled()) // the Slate layer draws the lead's block and the target bar
+	{
+		DrawTargetBar(*Mode);
+	}
+	DrawBossPanel(*Mode); // kept: the called zone and the answer words have no view fields yet
+	if (!FT::NewUiEnabled())
+	{
+		DrawPlayerPanel(*Mode);
+	}
 	DrawPopups(*Mode);
 	DrawBanners(*Mode);
 	if (Mode->IsAutoPlay() || Mode->IsIdle())

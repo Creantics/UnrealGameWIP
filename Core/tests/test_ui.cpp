@@ -112,6 +112,59 @@ TEST_CASE("ui style: contrast is measured on the backing over the worst picture;
     CHECK_FALSE(importUiStyle(R"({"text": {"label": {"font": "comic"}}})", s, &err));
 }
 
+TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is refused; new keys are optional") {
+    std::string err;
+    UiStyle s = defaultUiStyle();
+    CHECK(validateUiStyle(s, &err));
+    CHECK(uiEdgePx(s, 1080.f) == doctest::Approx(1.f));
+    CHECK(uiEdgePx(s, 2160.f) == doctest::Approx(2.f));
+    CHECK(uiEdgePx(s, 540.f) == doctest::Approx(1.f)); // never thinner than a pixel
+    // A light edge leaves light text unreadable over a bright sky.
+    CHECK_FALSE(importUiStyle(R"({"edge": {"color": "#C0C0C0E6"}})", s, &err));
+    CHECK(err.find("on the edge") != std::string::npos);
+    CHECK_FALSE(importUiStyle(R"({"edge": {"color": "#0A090840"}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"edge": {"px": 0.5}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"edge": {"width": 1}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"backing_soft": {"hud": 1.5}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"meter": "dial"})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"fade": {"rest_alpha": 2}})", s, &err));
+    // Each key is optional; the pick swaps them in.
+    s = defaultUiStyle();
+    REQUIRE(importUiStyle(R"({"meter": "teeth", "backing_soft": {"hud": 0.3}, "edge": {"px": 2}, "fade": {"rest": 4}})", s, &err));
+    CHECK(s.meter == UiMeterShape::Teeth);
+    CHECK(uiMeterShapeName(s.meter) == "teeth");
+    CHECK(s.backingSoftHud == doctest::Approx(0.3f));
+    CHECK(s.backingSoftDialogue == doctest::Approx(defaultUiStyle().backingSoftDialogue));
+    CHECK(s.edgePx == doctest::Approx(2.f));
+    CHECK(s.fade.rest == doctest::Approx(4.f));
+    CHECK(s.fade.in == doctest::Approx(defaultUiStyle().fade.in));
+}
+
+TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while, and a new change wakes it") {
+    UiFadeTimes t;
+    t.in = 0.2f;
+    t.rest = 1.f;
+    t.out = 0.5f;
+    t.restAlpha = 0.4f;
+    UiFade f;
+    uiFadeStep(f, true, 0.1f, t);
+    CHECK(f.alpha == doctest::Approx(0.5f));
+    uiFadeStep(f, false, 0.1f, t);
+    CHECK(f.alpha == doctest::Approx(1.f));
+    for (int i = 0; i < 8; ++i) uiFadeStep(f, false, 0.1f, t); // 1.0 s since the change
+    CHECK(f.alpha == doctest::Approx(1.f));
+    uiFadeStep(f, false, 0.25f, t); // half the way down
+    CHECK(f.alpha == doctest::Approx(0.7f));
+    for (int i = 0; i < 10; ++i) uiFadeStep(f, false, 0.1f, t);
+    CHECK(f.alpha == doctest::Approx(0.4f)); // never below the rest level
+    uiFadeStep(f, true, 0.1f, t);
+    CHECK(f.alpha == doctest::Approx(0.9f));
+    // From nothing with no changes: it rises only to the rest level.
+    UiFade g;
+    for (int i = 0; i < 20; ++i) uiFadeStep(g, false, 0.1f, t);
+    CHECK(g.alpha == doctest::Approx(0.4f));
+}
+
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
     UiStyle s;
     std::string err;
@@ -276,6 +329,8 @@ TEST_CASE("ui dialogue view: speaker on every line, text by reveal, prompt once 
     CHECK(updateDialogueView(v, p, flags));
     if (counting) CHECK(ftcore_test::allocStats().count == before);
     CHECK(v.text == "He");
+    CHECK(v.revealedChars == 2);
+    CHECK(v.fullText.substr(0, 2) == "He"); // the whole line, set once per beat, for wrapping
     CHECK(v.beatRevision == beat);
     const std::uint32_t textRev = v.textRevision;
     CHECK_FALSE(updateDialogueView(v, p, flags)); // nothing new
@@ -285,6 +340,7 @@ TEST_CASE("ui dialogue view: speaker on every line, text by reveal, prompt once 
     CHECK(updateDialogueView(v, p, flags));
     CHECK(v.complete);
     CHECK(v.continuePrompt);
+    CHECK(v.revealedChars == v.fullText.size()); // ASCII line: codepoints == bytes
     const std::uint32_t textDone = v.textRevision;
 
     // Auto on: only the prompt section moves.

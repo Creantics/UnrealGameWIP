@@ -1,9 +1,13 @@
 {
   "version": 1,
-  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture and that danger, ally and weak_point each have their own cue shape.",
+  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The pick swaps this table plus the meter painter.",
   "layers": { "hairlines": true, "plates": false, "world_anchored": false, "letterbox": true },
   "line_weight": 3,
   "backing_default": 0.75,
+  "backing_soft": { "hud": 0.24, "dialogue": 0.42 },
+  "edge": { "color": "#0A0908E6", "px": 1 },
+  "meter": "line",
+  "fade": { "in": 0.15, "rest": 2.5, "out": 0.6, "rest_alpha": 0.35 },
   "min_text_px": 18,
   "min_text_px_absolute": 14,
   "worlds": {

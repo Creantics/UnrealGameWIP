@@ -90,6 +90,8 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
             }
         }
         view.text = std::string_view();
+        view.fullText = shown ? r->text() : std::string_view();
+        view.revealedChars = 0;
         view.complete = false;
         ++view.beatRevision;
         changed = true;
@@ -99,6 +101,7 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
     const bool complete = kind != DialogueViewKind::Hidden && p.revealed();
     if (text.size() != view.text.size() || text.data() != view.text.data() || complete != view.complete) {
         view.text = text;
+        view.revealedChars = kind == DialogueViewKind::Hidden ? 0u : p.revealedChars();
         view.complete = complete;
         ++view.textRevision;
         changed = true;

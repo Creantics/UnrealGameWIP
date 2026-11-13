@@ -6,8 +6,10 @@
 #include "EngineUtils.h"
 
 #include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 
+#include "FTNewUi.h"
 #include "FTPauseOverlay.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
@@ -112,6 +114,29 @@ AFTStoryDirector* AFTStoryHUD::FindDirector()
 		}
 	}
 	return CachedDirector.Get();
+}
+
+void AFTStoryHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (FT::NewUiEnabled() && Viewport)
+	{
+		TWeakObjectPtr<AFTStoryHUD> Self(this);
+		NewUiWidget = FT::MakeDialogueWidget([Self]() -> const AFTStoryDirector* { return Self.IsValid() ? Self->FindDirector() : nullptr; });
+		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
+	}
+}
+
+void AFTStoryHUD::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (NewUiWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(NewUiWidget.ToSharedRef());
+	}
+	NewUiWidget.Reset();
+	Super::EndPlay(Reason);
 }
 
 void AFTStoryHUD::DrawHUD()
@@ -360,6 +385,10 @@ void AFTStoryHUD::DrawBox(const AFTStoryDirector& D)
 		return;
 	}
 	DrawStrCentered(kHintBox, kDimBox, CX, Canvas->ClipY - 32.f * S, Small, 1.f);
+	if (FT::NewUiEnabled() && State != StoryRunner::State::Gameplay)
+	{
+		return; // the Slate subtitle block draws lines, directions and choices
+	}
 	if (State == StoryRunner::State::Idle || State == StoryRunner::State::Hold || D.GetText().IsEmpty())
 	{
 		return; // a hold shows nothing new

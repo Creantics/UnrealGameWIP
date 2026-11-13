@@ -10,7 +10,7 @@
 //               updateArenaHudView(view, f);
 //   DialogueView dv;  each frame:  updateDialogueView(dv, presenter, flags);
 //
-// Data Core does not have yet (the third chair's gift slot, the shared count) is a section with `planned` set: the
+// Data Core does not have yet (the third place's gift slot, the shared count) is a section with `planned` set: the
 // UI draws a reserved, labelled slot and never invents values.
 //
 // Zero allocation.
@@ -51,7 +51,7 @@ struct ArenaHudPartner {
     bool operator==(const ArenaHudPartner&) const = default;
 };
 
-// The third chair: the gift slot and the shared count (FightSession, not hooked to the arena runner yet).
+// The third place in the party: the gift slot and the shared count (FightSession, not hooked to the arena runner yet).
 struct ArenaHudThird {
     bool present = false;
     bool planned = true;           // true: no data yet, draw the reserved slot only
@@ -136,6 +136,8 @@ struct DialogueView {
     std::string_view speaker;  // shown on every line, in the subtitle block (never only on the body)
     std::string_view lineId;   // the voice and the backlog key
     std::string_view text;     // the text so far (whole codepoints)
+    std::string_view fullText; // the whole text of the beat: wrap this once per beatRevision, reveal by revealedChars
+    std::uint32_t revealedChars = 0; // codepoints of fullText out so far
     bool complete = false;     // the whole text is out
     bool continuePrompt = false; // the "next" glyph: a complete line or direction waiting for a press
     std::uint32_t optionCount = 0;

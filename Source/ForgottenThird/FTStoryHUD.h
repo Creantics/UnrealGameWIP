@@ -24,6 +24,12 @@ class FORGOTTENTHIRD_API AFTStoryHUD : public AHUD
 public:
 	virtual void DrawHUD() override;
 
+protected:
+	// With the new UI on (FTNewUi.h) the subtitle block is a Slate widget added here; the Canvas box then draws only
+	// the hint line, gameplay beats and the end card.
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+
 private:
 	AFTStoryDirector* FindDirector();
 
@@ -64,4 +70,6 @@ private:
 	float BacklogBuiltWidth = -1.f;
 	float BacklogBuiltScale = -1.f;
 	float BacklogBuiltBottom = -1.f;
+
+	TSharedPtr<class SWidget> NewUiWidget;
 };
