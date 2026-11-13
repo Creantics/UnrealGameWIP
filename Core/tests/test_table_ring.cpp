@@ -381,3 +381,69 @@ TEST_CASE("table: arena.json gives the carry grades and reads seatable") {
     CHECK_FALSE(importArenaTable(R"({"enemies":[{"id":"x","carry":300}]})", bad, &error));
     CHECK(error.find("carry") != std::string::npos);
 }
+
+TEST_CASE("table: the Release hold sets the table, a tap stays a Release") {
+    TableHold h(0.5);
+    // Not possible now: the press is the fight's.
+    CHECK(h.step(true, true, false, 1.0) == TableHoldResult::None);
+    CHECK_FALSE(h.holding());
+    // Held the whole time: holding, then Begin at 0.5 s.
+    CHECK(h.step(true, true, true, 2.0) == TableHoldResult::Holding);
+    CHECK(h.holding());
+    CHECK(h.step(false, true, true, 2.25) == TableHoldResult::Holding);
+    CHECK(h.share() == doctest::Approx(0.5f));
+    CHECK(h.step(false, true, true, 2.5) == TableHoldResult::Begin);
+    CHECK_FALSE(h.holding());
+    CHECK(h.share() == 0.f);
+    // A tap: passed on as a Release at the let-go.
+    CHECK(h.step(true, true, true, 3.0) == TableHoldResult::Holding);
+    CHECK(h.step(false, false, true, 3.1) == TableHoldResult::PassRelease);
+    // Pressed and let go inside one step: a Release at once.
+    CHECK(h.step(true, false, true, 4.0) == TableHoldResult::PassRelease);
+    CHECK_FALSE(h.holding());
+    // The table stops being possible mid-hold: cancelled, nothing passed on; the next step is the fight's.
+    CHECK(h.step(true, true, true, 5.0) == TableHoldResult::Holding);
+    CHECK(h.step(false, true, false, 5.2) == TableHoldResult::Cancelled);
+    CHECK(h.step(false, true, true, 5.3) == TableHoldResult::None);
+    // A hold time of 0: the press sets it at once.
+    TableHold now(0.0);
+    CHECK(now.step(true, true, true, 1.0) == TableHoldResult::Begin);
+}
+
+TEST_CASE("table: the view the HUD reads") {
+    TableTuning tt;
+    tt.minSeats = 3;
+    tt.setTime = 0.8;
+    tt.setDuration = 6.0;
+    tt.cooldown = 20.0;
+    TableSet table;
+    REQUIRE(table.reset(tt, 0.0));
+    TableRing ring;
+    TableHold hold;
+    ArenaTableView v = tableView(table, ring, hold, 0.0);
+    CHECK(v.state == static_cast<std::uint8_t>(TableState::Ready));
+    CHECK(v.radius == 0.f);
+    CHECK(v.duration == 0.f);
+    Load load = fullLoad();
+    REQUIRE(table.begin(kLeadA, load, threeSeats(), 0, 1.0) == TableError::None);
+    ring.place(Vec2{2.f, -3.f});
+    v = tableView(table, ring, hold, 1.2);
+    CHECK(v.state == static_cast<std::uint8_t>(TableState::Setting));
+    CHECK(v.duration == doctest::Approx(0.8f));
+    CHECK(v.timeLeft == doctest::Approx(0.6f));
+    CHECK(v.centreX == 2.f);
+    CHECK(v.centreY == -3.f);
+    CHECK(v.radius == 6.f);
+    table.update(2.0);
+    v = tableView(table, ring, hold, 2.0);
+    CHECK(v.state == static_cast<std::uint8_t>(TableState::Set));
+    CHECK(v.duration == doctest::Approx(6.f));
+    CHECK(v.timeLeft == doctest::Approx(5.8f));
+    table.update(8.0);
+    ring.clear();
+    v = tableView(table, ring, hold, 10.0);
+    CHECK(v.state == static_cast<std::uint8_t>(TableState::Cooling));
+    CHECK(v.cooldownLeft > 0.f);
+    CHECK(v.timeLeft == 0.f);
+    CHECK(v.radius == 0.f);
+}

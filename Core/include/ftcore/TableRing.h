@@ -17,6 +17,7 @@
 //   every carry grade past the table's seats (tableEnemyShare).
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/TableSet.h"
 
 #include <algorithm>
 #include <cmath>
@@ -244,5 +245,102 @@ private:
     std::uint16_t stood_ = 0;
     std::uint16_t waiting_ = 0;
 };
+
+// The player's key for the table: hold Release while the table could begin (TableSet Ready, the Load full, enough
+// bodies in reach). The press is then held back from the fight; held holdTime it sets the table (Begin); let go
+// sooner, it is passed on as the Release it was (PassRelease, at the let-go). If the table stops being possible during
+// the hold, the hold ends and nothing is passed on (Cancelled). A press while the table could not begin is the
+// fight's (None).
+enum class TableHoldResult : std::uint8_t { None, Holding, Begin, PassRelease, Cancelled }; // append only
+
+class TableHold {
+public:
+    static constexpr double kDefaultHoldTime = 0.5; // s
+
+    explicit TableHold(double holdTime = kDefaultHoldTime) { reset(holdTime); }
+
+    void reset(double holdTime = kDefaultHoldTime) {
+        holdTime_ = std::isfinite(holdTime) ? std::clamp(holdTime, 0.0, 5.0) : kDefaultHoldTime;
+        holding_ = false;
+        start_ = 0.0;
+        share_ = 0.f;
+    }
+
+    // One step: `pressed` the Release pressed this step, `down` its key down now, `eligible` the table could begin.
+    // Holding, Begin and Cancelled: hold the step's Release back from the fight. PassRelease: send a Release now.
+    TableHoldResult step(bool pressed, bool down, bool eligible, double t) {
+        if (!holding_) {
+            share_ = 0.f;
+            if (!(pressed && eligible)) return TableHoldResult::None;
+            holding_ = true;
+            start_ = t;
+        }
+        if (!eligible) {
+            holding_ = false;
+            share_ = 0.f;
+            return TableHoldResult::Cancelled;
+        }
+        const double held = std::isfinite(t) ? std::max(0.0, t - start_) : 0.0;
+        if (held + 1e-9 >= holdTime_) {
+            holding_ = false;
+            share_ = 0.f;
+            return TableHoldResult::Begin;
+        }
+        if (!down) {
+            holding_ = false;
+            share_ = 0.f;
+            return TableHoldResult::PassRelease;
+        }
+        share_ = holdTime_ > 0.0 ? static_cast<float>(held / holdTime_) : 1.f;
+        return TableHoldResult::Holding;
+    }
+
+    bool holding() const { return holding_; }
+    float share() const { return share_; } // 0..1 toward Begin while holding
+    double holdTime() const { return holdTime_; }
+
+private:
+    double holdTime_ = kDefaultHoldTime;
+    double start_ = 0.0;
+    float share_ = 0.f;
+    bool holding_ = false;
+};
+
+// The table as the HUD and effects read it: plain data, filled by tableView.
+struct ArenaTableView {
+    std::uint8_t state = 0;    // TableState: Ready, Setting, Set, Cooling
+    float timeLeft = 0.f;      // s left of Setting or Set (0 otherwise)
+    float duration = 0.f;      // s, the whole of that state (> 0 while Setting or Set)
+    float cooldownLeft = 0.f;  // s left of Cooling
+    float centreX = 0.f;       // m, the ring's centre (while one is placed)
+    float centreY = 0.f;
+    float radius = 0.f;        // m (0 while no ring is placed)
+    int bodies = 0;            // seated now
+    std::uint16_t seated = 0;  // bit 0 the player, bit 1 the ally, bit 2 + i enemy i
+    float holdShare = 0.f;     // 0..1, the player's Release hold toward setting it
+};
+
+inline ArenaTableView tableView(const TableSet& table, const TableRing& ring, const TableHold& hold, double t) {
+    ArenaTableView v;
+    const TableState s = table.state();
+    v.state = static_cast<std::uint8_t>(s);
+    const float left = std::isfinite(t) ? static_cast<float>(std::max(0.0, table.until() - t)) : 0.f;
+    if (s == TableState::Setting || s == TableState::Set) {
+        v.timeLeft = left;
+        v.duration = static_cast<float>(s == TableState::Setting ? table.tuning().setTime : table.tuning().setDuration);
+        if (!(v.duration > 0.f)) v.duration = 1e-3f;
+    } else if (s == TableState::Cooling) {
+        v.cooldownLeft = left;
+    }
+    if (ring.placed()) {
+        v.centreX = ring.centre().x;
+        v.centreY = ring.centre().y;
+        v.radius = ring.tuning().radius;
+    }
+    v.bodies = ring.bodies();
+    v.seated = ring.seated();
+    v.holdShare = hold.share();
+    return v;
+}
 
 } // namespace ftcore

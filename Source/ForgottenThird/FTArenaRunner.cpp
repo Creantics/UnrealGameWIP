@@ -1330,6 +1330,15 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressHeal |= Pressed(InputAction::Gift);
 	bPressLock |= Pressed(InputAction::LockOn);
 	bPressRelease |= Pressed(InputAction::Release);
+	if (bTable)
+	{
+		bReleaseDown = false;
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& K = FTInputBindings::Key(InputAction::Release, Device);
+			bReleaseDown |= K.IsValid() && !Shadowed(InputAction::Release, Device) && PC->IsInputKeyDown(K);
+		}
+	}
 	bPressPair |= Pressed(InputAction::Count);
 	// Take half: its key, and on a pad with none bound, Interact pressed while the guard is down (route "guard_interact").
 	bPressTakeHalf |= Pressed(InputAction::TakeHalf);
@@ -1792,6 +1801,7 @@ void UFTArenaRunner::StepFight()
 	{
 		In = TakeInput();
 		bIntercept = bInterceptHeld;
+		StepTableKey(In);
 	}
 	const bool bBoss = StoneBearer.IsActive();
 	if (bBoss)
@@ -2080,6 +2090,21 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			break;
 		case ftcore::ArenaEventType::AllyHit:
 			AllyHitTime = Now;
+			break;
+		case ftcore::ArenaEventType::TableShare:
+			// A set table passed part of a blow on: the body that took it flashes as hit, and it joins the popups.
+			if (E.target == ftcore::kArenaPlayer)
+			{
+				PlayerHitTime = Now;
+			}
+			else if (E.target == ftcore::kArenaAlly)
+			{
+				AllyHitTime = Now;
+			}
+			else if (E.target < MaxEnemies)
+			{
+				EnemyHitTime[E.target] = Now;
+			}
 			break;
 		case ftcore::ArenaEventType::AllyDowned:
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the ally is down at %.2f s."), Fight.time());
@@ -4638,6 +4663,8 @@ void UFTArenaRunner::ResetTable()
 	TableLastRefusal = ftcore::TableError::None;
 	TableBegins = TableRefusals = TableSets = TableMostBodies = TableStands = TableLeaves = 0;
 	TableGutters = TableFails = TableClears = TableShares = TableShareHp = 0;
+	TableKey.reset();
+	TableKeyBegins = TableKeyTaps = TableKeyCancels = 0;
 	if (TableActor)
 	{
 		TableActor->SetActorHiddenInGame(true);
@@ -4667,6 +4694,51 @@ void UFTArenaRunner::BeginTableNow(double T)
 	++TableBegins;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table setting at %.2f s at (%.2f, %.2f): %d Load spent, %d would sit."),
 		T, At.x, At.y, Spent, TableSeats.wouldSit(Fight, Bodies, At));
+}
+
+bool UFTArenaRunner::TableCanBegin() const
+{
+	return TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
+		&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies;
+}
+
+void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
+{
+	if (!bTable)
+	{
+		return;
+	}
+	const double T = static_cast<double>(Fight.heldTime());
+	switch (TableKey.step(In.release, bReleaseDown, TableCanBegin(), T))
+	{
+	case ftcore::TableHoldResult::Holding:
+		In.release = false;
+		break;
+	case ftcore::TableHoldResult::Cancelled:
+		In.release = false;
+		++TableKeyCancels;
+		break;
+	case ftcore::TableHoldResult::Begin:
+		In.release = false;
+		++TableKeyBegins;
+		BeginTableNow(T);
+		break;
+	case ftcore::TableHoldResult::PassRelease:
+		In.release = true;
+		++TableKeyTaps;
+		break;
+	default:
+		break;
+	}
+}
+
+ftcore::ArenaTableView UFTArenaRunner::GetTableView() const
+{
+	if (!bTable)
+	{
+		return ftcore::ArenaTableView();
+	}
+	return ftcore::tableView(TableClock, TableSeats, TableKey, static_cast<double>(Fight.heldTime()));
 }
 
 void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
@@ -4907,9 +4979,9 @@ void UFTArenaRunner::LogTable() const
 		return;
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d state %s."),
+		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d keyBegins %d keyTaps %d keyCancels %d state %s."),
 		TableBegins, TableRefusals, TableSets, TableMostBodies, TableStands, TableLeaves, TableGutters, TableFails, TableClears,
-		TableShares, TableShareHp, TableStateName(TableClock.state()));
+		TableShares, TableShareHp, TableKeyBegins, TableKeyTaps, TableKeyCancels, TableStateName(TableClock.state()));
 }
 
 void UFTArenaRunner::EndTable()

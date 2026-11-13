@@ -200,6 +200,10 @@ public:
 	ftcore::Vec2 GetPlayerPosition() const { return Bodies.player; }
 	// Everyone's position after the last step (metres).
 	const ftcore::ArenaBodies& GetBodies() const { return Bodies; }
+	// The table (-ArenaTable) for the HUD and effects: on at all, and its state, ring, seats and the Release hold.
+	// A shared blow arrives as an ArenaEventType::TableShare event (in the popup stream, the target tinted as hit).
+	bool IsTableOn() const { return bTable; }
+	ftcore::ArenaTableView GetTableView() const;
 	double GetZoneZ() const { return ZoneZ; }
 	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
 	// The move enemy Index is in (its attack's numbers), or null when it isn't attacking.
@@ -391,6 +395,9 @@ private:
 	void ResetTable();
 	void TickTable(const ftcore::ArenaOutput& Out);
 	void BeginTableNow(double T);
+	// The player's table key: Release held at full Load with enough bodies in reach (TableHold), on the step's input.
+	bool TableCanBegin() const;
+	void StepTableKey(ftcore::ArenaInput& In);
 	void SpawnTable();
 	void PaintTable(float Alpha);
 	void LogTable() const;
@@ -573,6 +580,8 @@ private:
 	bool bPressHeal = false;
 	bool bPressLock = false;
 	bool bPressRelease = false;
+	// The Release key down now, either device (read only under -ArenaTable, for the table's hold).
+	bool bReleaseDown = false;
 	bool bPressPair = false;
 	bool bPressTakeHalf = false;
 	// Autoplay's partner: a parry came, so press the pair on the next step.
@@ -723,6 +732,10 @@ private:
 	ftcore::PlaceTable TablePlaces;
 	ftcore::TableSet TableClock;
 	ftcore::TableRing TableSeats;
+	ftcore::TableHold TableKey;
+	int32 TableKeyBegins = 0;
+	int32 TableKeyTaps = 0;
+	int32 TableKeyCancels = 0;
 	int32 TableBegins = 0;
 	int32 TableRefusals = 0;
 	int32 TableSets = 0;
