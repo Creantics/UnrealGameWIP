@@ -563,6 +563,20 @@ struct FDashSpan
 constexpr FDashSpan kDashSpans[UFTLocomotionAnimInstance::NumDashClips] = {{0.20f, 0.73f}, {0.23f, 0.70f}, {0.27f, 0.77f}};
 }
 
+bool AFTArenaFighter::CanSideDash() const
+{
+#if !UE_BUILD_SHIPPING
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash")))
+	{
+		return false;
+	}
+#endif
+	const UFTLocomotionAnimInstance* Anim =
+		SkinKind == ESkin::Lead && Skin ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	return Anim && Anim->HasTraversalClip(UFTLocomotionAnimInstance::FirstDashClip + 1) &&
+		Anim->HasTraversalClip(UFTLocomotionAnimInstance::FirstDashClip + 2);
+}
+
 bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 {
 	UFTLocomotionAnimInstance* Anim = SkinKind == ESkin::Lead ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
@@ -570,8 +584,11 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	// The roll's floor lift comes down with the clip as it fades out (kRollLiftOut, the traversal's fade), not in one frame.
 	constexpr float kRollLiftOut = 0.25f;
 	// A locked dodge back from the target keeps facing it: a hop back on the dash clip (the squash without one), not a
-	// forward roll.
-	const int32 Dash = Pose.bDodgeBack ? UFTLocomotionAnimInstance::FirstDashClip : INDEX_NONE;
+	// forward roll. A side dash across it (drawn side-on) leaps to the body's right or left on those dash clips.
+	const int32 Dash = Pose.bDodgeBack ? UFTLocomotionAnimInstance::FirstDashClip
+		: Pose.DodgeSide > 0 ? UFTLocomotionAnimInstance::FirstDashClip + 2
+		: Pose.DodgeSide < 0 ? UFTLocomotionAnimInstance::FirstDashClip + 1
+		: INDEX_NONE;
 #if UE_BUILD_SHIPPING
 	constexpr bool bNoDash = false;
 #else
@@ -579,13 +596,13 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	static const bool bNoDash = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash"));
 #endif
 	const bool bDash = Dash != INDEX_NONE && Anim && !bNoDash && Anim->HasTraversalClip(Dash);
-	// -ArenaDashTight: the dash's arc flattened (the body lowered by kDashFlatten of the lower ball's height over its
-	// standing height, nothing at take-off or landing, the feet never under) and its trunk pitched back toward upright by
-	// kDashUpright degrees, for choosing against the clip as it is. Not in shipping builds until it is chosen.
+	// The dashes tightened (chosen): the arc flattened (the body lowered by kDashFlatten of the lower ball's height over
+	// its standing height, nothing at take-off or landing, the feet never under) and the trunk pitched back toward
+	// upright by kDashUpright degrees. -ArenaDashTall plays the clips as they are, to compare by feel; not in shipping.
 #if UE_BUILD_SHIPPING
-	constexpr bool bDashTight = false;
+	constexpr bool bDashTight = true;
 #else
-	static const bool bDashTight = FParse::Param(FCommandLine::Get(), TEXT("ArenaDashTight"));
+	static const bool bDashTight = !FParse::Param(FCommandLine::Get(), TEXT("ArenaDashTall"));
 #endif
 	constexpr float kDashFlatten = 0.4f, kDashUpright = 15.f;
 	if (Anim)

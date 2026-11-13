@@ -569,7 +569,8 @@ host), so each frame's pose is drawn where the body stands that frame, not a fra
 
 `-ArenaGlide` logs foot slip per move part on quit (`Arena glide: <part>: ...`). It gives the planted foot's
 frame-to-frame speed and the net slip per plant (as the field's `-LocoSlide`). `-ArenaGlide=toward` and `=across` make
-the autopilot walk at the target or strafe it. `-ArenaNoFootLock` leaves the feet to the clips, for comparison.
+the autopilot walk at the target or strafe it; `=backstep` lets go of the stick for each roll (a backstep under the
+lock) and `=sidestep` holds it across the lock for each, to the target's right then its left (the side dashes). `-ArenaNoFootLock` leaves the feet to the clips, for comparison.
 Each line ends with its pops: frames in which a foot moved more than 20 cm, a pose snap (still counted in the slip).
 Moving is split four ways: steady, speeding up and braking (the legs' speed changing faster than 2 m/s²) and turning
 (the facing turning faster than 1.5 rad/s, whatever the speed does).
@@ -652,8 +653,8 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaShotSide` | With `-ArenaShotAt`, those views from the lead's right side: 3.4 m off it and 0.9 m above its hips, aimed a frame before each view, so the feet show. |
 | `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` at each of the lead's first N attacks (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none): odd views just after the impact (a strike's landing, a shot's or cast's arrival at the hit point), even views a shot's or cast's mid-flight (`FFTLeadWeapons::GetViewTime`). The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
 | `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 65 cm from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle, then `_front` from 55 cm ahead of it (off to its side, a little above). A lead with a pistol adds `_1_holstered` and `_1_drawn` after the ring view, 60 cm off its right side. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
-| `-ArenaNoDash` | The squash in place of the locked hop-back clip (the before half of a side-by-side); not in shipping builds. |
-| `-ArenaDashTight` | The hop-back clip tightened, for choosing against it as it is: the body lowered by 0.4 of the lower foot's height over its standing height (none at take-off or landing) and the trunk pitched 15 degrees back toward upright under the clip, held through its fade; not in shipping builds until chosen. |
+| `-ArenaNoDash` | The squash in place of the locked dash clips, and no side dashes (the before half of a side-by-side); not in shipping builds. |
+| `-ArenaDashTall` | The dash clips as they are, to compare by feel with the default tightened dashes (the body lowered by 0.4 of the lower foot's height over its standing height, none at take-off or landing, and the trunk pitched 15 degrees back toward upright under the clip, held through its fade); not in shipping builds. |
 | `-ArenaRollFloor` | Each frame of a roll on its clip logs the pelvis, head and balls over the floor and the floor lift; the lift's fade after it is logged too. Not in shipping builds. |
 | `-ArenaNoWeaponProps` | The lead's weapon props (gauntlets, pistol) stay off; the fight runs the same. |
 | `-ArenaNoWeaponFx` | The lead's weapon effects (muzzle flash, gauntlet sparks, the Third's bolt, burst and ward) stay off; the fight runs the same (the OFF half of an OFF/ON capture). |
@@ -682,10 +683,14 @@ warning and quits with exit code 2, so an unattended run never hangs.
   strike clips retargeted onto its body over that locomotion, and it carries its weapon (see "The leads' weapons"); without
   the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a
   crouch and lean; enemy figures also show a guard plate, the player's never). A roll plays the land-roll clip; a
-  locked dodge back from the target (within 45 degrees of straight back) plays a hop back that keeps facing it.
-  The hop is `MM_Dash_Backward_to_<body mesh>`, next to the run loop, and its sideways siblings `MM_Dash_Left` and
-  `MM_Dash_Right` load too. It is played from its take-off, 0.20 s, to its landing, 0.73 s, fitted to the roll's time, with the root
-  held, so the rules alone move the body. Without the clip the figure squashes, as before. **PROVISIONAL:** these
+  locked dodge back from the target (within 45 degrees of straight back) plays a hop back that keeps facing it, and
+  a locked dodge across it (more than 45 degrees off both straight at it and straight back) is a side dash: drawn
+  side-on, facing across its way on the target's side, leaping to the body's right or left. The hop is
+  `MM_Dash_Backward_to_<body mesh>`, next to the run loop, and the side dashes `MM_Dash_Left` and `MM_Dash_Right`;
+  side dashes are on (`ArenaFight::setSideDashes`) only when the body has both side clips, else those dodges stay
+  rolls. Each is played from its take-off to its landing (back 0.20-0.73 s, left 0.23-0.70 s, right 0.27-0.77 s),
+  fitted to the roll's time, with the root held, so the rules alone move the body; the arc is flattened and the trunk
+  stood up a little (`-ArenaDashTall` plays them as they are). Without the clip the figure squashes, as before. **PROVISIONAL:** these
   dash clips are the engine's MoverExamples dash animations retargeted (`FTBuildRig`, local assets, never committed).
   They are the motion target for our own hand-keyed or mocap clips, which must replace them before any shipping
   build. Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.

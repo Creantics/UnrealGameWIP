@@ -369,6 +369,7 @@ struct ArenaFightImpl {
         po.dodgeDir = pl.dodgeDir;
         po.backstep = pl.backstep;
         po.dodgeBack = pl.dodgeBack;
+        po.dodgeSide = pl.dodgeSide;
         po.load = pl.gauge.value;
         po.overloaded = overloadedNow();
         po.loadCap = fight.loadCap_;
@@ -726,9 +727,14 @@ struct ArenaFightImpl {
             pl.backstep = true;
         }
         pl.dodgeBack = false;
+        pl.dodgeSide = 0;
         if (pl.lock != kArenaNobody) {
             const Vec2 to = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), Vec2{-pl.dodgeDir.x, -pl.dodgeDir.y});
-            pl.dodgeBack = arenaDot(pl.dodgeDir, to) <= -kArenaDodgeBackCos;
+            const float along = arenaDot(pl.dodgeDir, to);
+            pl.dodgeBack = along <= -kArenaDodgeBackCos;
+            pl.dodgeSide = 0;
+            if (fight.sideDashes_ && !pl.dodgeBack && along < kArenaDodgeBackCos)
+                pl.dodgeSide = arenaCross(to, pl.dodgeDir) >= 0.f ? std::int8_t{1} : std::int8_t{-1};
         }
         spend(fi.dodgeStamina);
         pl.chainLive = false;
@@ -1093,9 +1099,15 @@ struct ArenaFightImpl {
             const float need = left * dt / std::max(attack->startup - a0, dt);
             const float took = std::fabs(std::atan2(arenaCross(pl.drawFacing, eased), arenaDot(pl.drawFacing, eased)));
             pl.drawFacing = took >= need ? eased : arenaTurn(pl.drawFacing, pl.facing, need);
-        } else if (pl.action == ArenaAction::Dodge)
-            pl.drawFacing = arenaDrawTurn(pl.drawFacing, pl.dodgeBack ? Vec2{-pl.dodgeDir.x, -pl.dodgeDir.y} : pl.dodgeDir,
+        } else if (pl.action == ArenaAction::Dodge) {
+            // a side dash: side-on to its way, facing across it on the target's side (its way to the body's side)
+            const float s = static_cast<float>(pl.dodgeSide);
+            const Vec2 way = pl.dodgeBack ? Vec2{-pl.dodgeDir.x, -pl.dodgeDir.y}
+                             : pl.dodgeSide != 0 ? Vec2{s * pl.dodgeDir.y, -s * pl.dodgeDir.x}
+                                                 : pl.dodgeDir;
+            pl.drawFacing = arenaDrawTurn(pl.drawFacing, way,
                                       std::max(fi.turnRate, kArenaPi / (kArenaDodgeTurnShare * std::max(fi.dodgeTime, dt))) * dt);
+        }
         else pl.drawFacing = arenaDrawTurn(pl.drawFacing, pl.facing, fi.turnRate * dt);
     }
 
@@ -2413,6 +2425,8 @@ void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowUser_ = hook ? user : nullptr;
 }
 ArenaBlowHook ArenaFight::blowHook() const { return blowHook_; }
+void ArenaFight::setSideDashes(bool on) { sideDashes_ = on; }
+bool ArenaFight::sideDashes() const { return sideDashes_; }
 void* ArenaFight::blowHookUser() const { return blowUser_; }
 bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
     if (phase_ != ArenaPhase::Fighting) return false;

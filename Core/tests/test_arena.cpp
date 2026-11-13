@@ -1978,6 +1978,31 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         rig.in.light = true;
         CHECK(rig.tick().player.action == ArenaAction::Riposte);
     }
+    for (const float across : {1.f, -1.f}) {
+        // a side dash across the open enemy (side dashes on), still in reach: a light on the first free frame ripostes
+        CAPTURE(across);
+        ArenaFighter f = ruleFighter();
+        f.turnRate = 14.f;
+        f.dodgeDistance = 0.3f;
+        f.dodgeStamina = 0.f;
+        Rig rig(f, {hitterKind(bite)});
+        rig.fight.setSideDashes(true);
+        parry(rig, 1.2f, 0.f);
+        rig.in.view = Vec2{1.f, 0.f};
+        rig.in.lock = true;
+        rig.tick();
+        REQUIRE(rig.fight.lock() == 0);
+        rig.in.move = Vec2{0.f, across};
+        rig.in.dodge = true;
+        rig.tick();
+        rig.in.move = Vec2{};
+        REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+        CHECK(rig.out().player.dodgeSide == static_cast<std::int8_t>(across));
+        while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+        REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Open);
+        rig.in.light = true;
+        CHECK(rig.tick().player.action == ArenaAction::Riposte);
+    }
     {   // out of reach: an ordinary light, and the enemy stays open
         Rig rig(ruleFighter(), {hitterKind(bite)});
         parry(rig, 1.5f, 0.f);
@@ -2691,6 +2716,129 @@ TEST_CASE("arena dodge: a locked dodge back from the target is drawn facing it; 
             }
             CHECK(ticks < 120);
             CHECK(angleBetween(rig.out().player.facing, toEnemy(rig)) < 0.05f);
+        }
+    }
+}
+
+TEST_CASE("arena dodge: with side dashes on, a locked dodge across the target is a side dash, drawn side-on facing across") {
+    const ArenaFighter fighter = shortRoller();
+    struct Case { const char* name; bool on; Vec2 stick; bool back; int side; };
+    // the stick along the target (+x toward it, -x away) and across it (+y: to its right, the ground plane's y)
+    const Case cases[] = {
+        {"90 degrees right", true, Vec2{0.f, 1.f}, false, 1},
+        {"90 degrees left", true, Vec2{0.f, -1.f}, false, -1},
+        {"120 degrees right", true, Vec2{-0.5f, 0.866f}, false, 1},
+        {"120 degrees left", true, Vec2{-0.5f, -0.866f}, false, -1},
+        {"60 degrees right", true, Vec2{0.5f, 0.866f}, false, 1},
+        {"134 degrees right (just outside back)", true, Vec2{-0.6947f, 0.7193f}, false, 1},
+        {"136 degrees left (back)", true, Vec2{-0.7193f, -0.6947f}, true, 0},
+        {"46 degrees left (a side dash)", true, Vec2{0.6947f, -0.7193f}, false, -1},
+        {"44 degrees right (a roll)", true, Vec2{0.7193f, 0.6947f}, false, 0},
+        {"toward (a roll)", true, Vec2{1.f, 0.f}, false, 0},
+        {"locked backstep (no stick)", true, Vec2{0.f, 0.f}, true, 0},
+        {"off: 90 degrees right rolls", false, Vec2{0.f, 1.f}, false, 0},
+        {"off: 120 degrees left rolls", false, Vec2{-0.5f, -0.866f}, false, 0},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.name);
+        Rig rig(fighter, {dummyKind()});
+        rig.fight.setSideDashes(c.on);
+        rig.in.view = Vec2{1.f, 0.f};
+        rig.in.lock = true;
+        rig.run(3);
+        REQUIRE(rig.fight.lock() == 0);
+        const Vec2 to = toEnemy(rig);
+        rig.in.move = Vec2{c.stick.x * to.x - c.stick.y * to.y, c.stick.x * to.y + c.stick.y * to.x};
+        rig.in.dodge = true;
+        rig.tick();
+        rig.in.dodge = false;
+        rig.in.move = Vec2{0.f, 0.f};
+        REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+        CHECK(rig.out().player.dodgeBack == c.back);
+        CHECK(static_cast<int>(rig.out().player.dodgeSide) == c.side);
+        bool reached = false, sideOn = false;
+        float lastCross = 0.f;
+        while (rig.out().player.action == ArenaAction::Dodge) {
+            const ArenaPlayerOut& p = rig.out().player;
+            if (c.side != 0) {
+                // the way it is drawn: across the dash, the dash to the drawn body's side, facing the target's side
+                const Vec2 way{static_cast<float>(c.side) * p.dodgeDir.y, -static_cast<float>(c.side) * p.dodgeDir.x};
+                if (angleBetween(p.drawFacing, way) < 0.01f && p.actionTime <= 0.5f * fighter.dodgeTime + kDt) sideOn = true;
+                CHECK(way.x * to.x + way.y * to.y > 0.f);
+                if (sideOn) CHECK(std::abs(angleBetween(p.drawFacing, p.dodgeDir) - 1.5708f) < 0.02f); // stays side-on
+                CHECK(angleBetween(p.drawFacing, p.dodgeDir) > 0.f);
+                lastCross = p.drawFacing.x * p.dodgeDir.y - p.drawFacing.y * p.dodgeDir.x;
+            } else if (!c.back) {
+                if (angleBetween(p.drawFacing, p.dodgeDir) < 0.01f && p.actionTime <= 0.5f * fighter.dodgeTime + kDt) reached = true;
+            }
+            rig.tick();
+        }
+        if (c.side != 0) {
+            CHECK(sideOn); // side-on within half the dash
+            CHECK(lastCross * static_cast<float>(c.side) > 0.99f); // and still there on its last frame
+        } else if (!c.back) {
+            CHECK(reached);
+        }
+        // the rules face the target on the first free frame; the drawn body turns back to it
+        CHECK(angleBetween(rig.out().player.facing, toEnemy(rig)) < 0.05f);
+        int ticks = 0;
+        while (angleBetween(rig.out().player.drawFacing, rig.out().player.facing) > 0.f && ticks < 120) {
+            rig.tick();
+            ++ticks;
+        }
+        CHECK(ticks < 120);
+    }
+    {   // the setting is kept through restart()
+        Rig rig(fighter, {dummyKind()});
+        CHECK_FALSE(rig.fight.sideDashes());
+        rig.fight.setSideDashes(true);
+        rig.fight.restart();
+        CHECK(rig.fight.sideDashes());
+    }
+}
+
+TEST_CASE("arena dodge: after a side dash a guard parries and a backstep goes straight away, as after a roll") {
+    for (const float across : {1.f, -1.f}) {
+        CAPTURE(across);
+        {   // a parry pressed on the first free frame after a side dash catches the blow
+            const float startup = 1.2f;
+            Rig rig(shortRoller(), {hitterKind(swing(startup, 0.15f, 0.5f, 3.f, 20))});
+            rig.fight.setSideDashes(true);
+            rig.in.view = Vec2{1.f, 0.f};
+            rig.in.lock = true;
+            rig.tick();
+            for (int i = 0; i < 120 && rig.count(ArenaEventType::AttackStarted) == 0; ++i) rig.tick();
+            REQUIRE(rig.count(ArenaEventType::AttackStarted) == 1);
+            const float rollAt = startup - rig.fight.def().fighter.dodgeTime - 3.f * kDt;
+            while (rig.out().enemies[0].stateTime < rollAt) rig.tick();
+            rig.in.move = Vec2{0.f, across};
+            rig.in.dodge = true;
+            rig.tick();
+            rig.in.move = Vec2{};
+            rig.in.dodge = false;
+            REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+            CHECK(rig.out().player.dodgeSide == static_cast<std::int8_t>(across));
+            while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
+            REQUIRE(rig.count(ArenaEventType::Hit) == 0);
+            rig.in.guard = true;
+            for (int i = 0; i < 60 && rig.count(ArenaEventType::Parried) + rig.count(ArenaEventType::Hit) == 0; ++i) rig.tick();
+            CHECK(rig.count(ArenaEventType::Parried) == 1);
+            CHECK(rig.count(ArenaEventType::Hit) == 0);
+        }
+        {   // a backstep (no stick) on the first free frame goes straight away from the target, a back dodge
+            Rig rig(shortRoller(), {dummyKind()});
+            rig.fight.setSideDashes(true);
+            rollAwayLocked(rig, Vec2{0.f, across});
+            CHECK(rig.out().player.dodgeSide == static_cast<std::int8_t>(across));
+            const Vec2 to = toEnemy(rig);
+            rig.in.dodge = true;
+            rig.tick();
+            REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+            CHECK(rig.out().player.backstep);
+            CHECK(rig.out().player.dodgeBack);
+            CHECK(rig.out().player.dodgeSide == 0);
+            CHECK(rig.out().player.dodgeDir.x == doctest::Approx(-to.x).epsilon(0.01));
+            CHECK(rig.out().player.dodgeDir.y == doctest::Approx(-to.y).epsilon(0.01));
         }
     }
 }

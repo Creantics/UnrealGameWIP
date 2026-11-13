@@ -307,12 +307,14 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaGlide="), GlideWord))
 	{
 		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2
-			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : GlideWord == TEXT("backstep") ? 7 : 3;
+			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : GlideWord == TEXT("backstep") ? 7
+			: GlideWord == TEXT("sidestep") ? 8 : 3;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: glide probe on, the stick %s (-ArenaGlide)."),
 			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
 			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : GlideStick == 5 ? TEXT("held across with the guard up")
 			: GlideStick == 6 ? TEXT("the autopilot's, a light attack on the first free frame after each roll")
-			: GlideStick == 7 ? TEXT("the autopilot's, let go for each roll (a backstep under the lock)") : TEXT("the autopilot's"));
+			: GlideStick == 7 ? TEXT("the autopilot's, let go for each roll (a backstep under the lock)")
+			: GlideStick == 8 ? TEXT("the autopilot's, across the lock for each roll, right then left (a side dash)") : TEXT("the autopilot's"));
 	}
 #endif
 	Glide.Begin(GlideStick >= 0);
@@ -587,6 +589,10 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 	if (PlayerFigure)
 	{
 		PlayerFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor, 0.f, Lead);
+		// Locked dodges across the target are side dashes (drawn side-on, leaping on the dash clips) when the body
+		// has both side clips; without them they stay rolls.
+		Fight.setSideDashes(PlayerFigure->CanSideDash());
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: side dashes %s"), Fight.sideDashes() ? TEXT("on") : TEXT("off"));
 		const ftcore::ZoneCamera& Rig = Fit.camera;
 		PlayerFigure->SetCameraRig(Rig.arm, Rig.pivot, Rig.side, Rig.up, Rig.fov);
 		// The kit's weapon on the lead's body: its strike clips, props and effects.
@@ -1688,6 +1694,22 @@ void UFTArenaRunner::StepFight()
 			// drawn body rolls the way it goes, then turns back to the lock).
 			In.move = ftcore::Vec2{0.f, 0.f};
 		}
+		if (GlideStick == 8 && In.dodge && !GlideRolling)
+		{
+			// -ArenaGlide=sidestep: every roll pressed with the stick straight across the lock, to the target's right
+			// then its left in turn (side dashes where the body has the clips, rolls where it has not).
+			const std::uint8_t Lock = Fight.lock();
+			if (Lock != ftcore::kArenaNobody && Lock < MaxEnemies)
+			{
+				const ftcore::Vec2 D{Bodies.enemies[Lock].x - Bodies.player.x, Bodies.enemies[Lock].y - Bodies.player.y};
+				const float L = ArenaLength(D);
+				if (L > 1e-3f)
+				{
+					const float S = (GlideSideRolls++ & 1) ? -1.f : 1.f; // +: the ground plane's right (y right of x)
+					In.move = ftcore::Vec2{-S * D.y / L, S * D.x / L};
+				}
+			}
+		}
 		if (GlideNow >= 0 && GlideNow < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
 		{
 			// -ArenaGlide: the stick held toward, across or away from the target (the lock, else the nearest standing).
@@ -2482,6 +2504,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.DodgeFraction = D.fighter.dodgeTime > 0.f ? P.actionTime / D.fighter.dodgeTime : 1.f;
 			Pose.DodgeTime = D.fighter.dodgeTime;
 			Pose.bDodgeBack = P.dodgeBack;
+			Pose.DodgeSide = P.dodgeSide;
 			break;
 		}
 		case ftcore::ArenaAction::Guard:

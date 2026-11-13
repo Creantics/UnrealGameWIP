@@ -636,6 +636,9 @@ struct ArenaPlayerOut {
     bool backstep = false;            // whether the current or last dodge is a backstep
     bool dodgeBack = false;           // ... and whether it goes back from the locked target (within kArenaDodgeBackCos of
                                       // straight away from it): drawn facing the target, not as a roll the way it goes
+    std::int8_t dodgeSide = 0;        // ... or a side dash across it (ArenaFight::setSideDashes): +1 to the target's
+                                      // right (the ground plane has y to the right), -1 to its left; drawn side-on to
+                                      // its way on the target's side, so the dash goes to the drawn body's right or left
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
     bool overloaded = false;          // Load at the cap (loadCap): light, heavy and heal are refused until a Release
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
@@ -973,6 +976,12 @@ public:
     // The hook set now and its user pointer (nullptr, nullptr: none), for a host that chains its own ruling after it.
     FTCORE_API ArenaBlowHook blowHook() const;
     FTCORE_API void* blowHookUser() const;
+    // While on, a locked dodge across the target (more than 45 degrees off both straight at it and straight away from
+    // it) is a side dash: ArenaPlayerOut::dodgeSide gives its side, and the body is drawn side-on to the dash's way,
+    // facing across it on the target's side, instead of rolling its way. The rules (facing, path, frames) are the same
+    // either way. Off, the default, for a body with no side-dash clips. begin() and restart() keep it.
+    FTCORE_API void setSideDashes(bool on);
+    FTCORE_API bool sideDashes() const;
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
     // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
     // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they
@@ -1071,6 +1080,7 @@ private:
         Vec2 dodgeDir{1.f, 0.f};            // the current or last dodge's direction (unit)
         bool backstep = false;              // ... and whether it is a backstep
         bool dodgeBack = false;             // ... and whether it goes back from the locked target (drawn facing it)
+        std::int8_t dodgeSide = 0;          // ArenaPlayerOut::dodgeSide
         Press buffered = Press::None;
         float bufferAge = 0.f;
         bool chainLive = false;             // the last action was a light: the chain may go on
@@ -1165,6 +1175,7 @@ private:
     std::uint8_t readMove_ = 0;
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
     ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
+    bool sideDashes_ = false;               // setSideDashes (begin() and restart() keep it)
     // The blow hook is running: tick, begin and restart do nothing. A copy starts clear (its hook isn't running),
     // and assigning to a fight keeps its own.
     struct HookFlag {
