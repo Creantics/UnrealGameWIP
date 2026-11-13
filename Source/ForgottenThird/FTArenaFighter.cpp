@@ -553,7 +553,11 @@ void AFTArenaFighter::TieMeshTicks()
 bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 {
 	UFTLocomotionAnimInstance* Anim = SkinKind == ESkin::Lead ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
-	if (!Anim || !Pose.bDodging || Pose.bLying)
+	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	// The roll's floor lift comes down with the clip as it fades out (kRollLiftOut, the traversal's fade), not in one frame.
+	constexpr float kRollLiftOut = 0.25f;
+	// A locked dodge back from the target keeps facing it: no forward roll for it (the squash until a back-hop clip).
+	if (!Anim || !Pose.bDodging || Pose.bLying || Pose.bDodgeBack)
 	{
 		if (RollClip >= 0 && Anim)
 		{
@@ -561,10 +565,25 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 			// turning back to the lock).
 			Anim->LetGoTraversal(RollRate, true);
 		}
+		if (RollClip >= 0)
+		{
+			RollLiftFall = RollLift / kRollLiftOut;
+		}
+		RollLift = FMath::Max(0.f, RollLift - RollLiftFall * Dt);
 		RollClip = -1;
+		RollFraction = 0.f;
+		bRollPlanFailed = false;
 		return false;
 	}
-	if (RollClip < 0)
+	// A roll begun on the tick the last one ended (its fraction starts over) is a new roll: planned afresh.
+	const float Fraction = FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f);
+	if (Fraction < RollFraction)
+	{
+		RollClip = -1;
+		bRollPlanFailed = false;
+	}
+	RollFraction = Fraction;
+	if (RollClip < 0 && !bRollPlanFailed)
 	{
 		// A new roll: off the planted foot (the lower ball), the clip from where it is down on the floor to back up,
 		// fitted to the roll's time (the rules' time, distance and invulnerability stay); its root is held, so the
@@ -579,6 +598,9 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		const ftcore::TraversalPlan Plan = Set.planRoll(0.f, Foot);
 		if (!Plan.ok())
 		{
+			// No roll clip on this skin: the squash for this roll, without planning again every tick.
+			bRollPlanFailed = true;
+			RollLift = 0.f;
 			return false;
 		}
 		const ftcore::TraversalClipInfo& Info = Set.clip(static_cast<std::size_t>(Plan.clip));
@@ -589,7 +611,65 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s rolls on clip %d (foot %d), %.2f-%.2f s over %.2f s (x%.2f)."), *GetName(),
 			RollClip, Foot, RollFrom, RollTo, Pose.DodgeTime, RollRate);
 	}
-	Anim->SetTraversal(RollClip, FMath::Lerp(RollFrom, RollTo, FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f)));
+	if (RollClip < 0)
+	{
+		RollLift = 0.f;
+		return false;
+	}
+	// Kept out of the floor: the clip rolls over the head and pushes off a toe a little under the standing floor, so
+	// the body is lifted by what the last pose (the clip's, over its held root) has of the balls under their height
+	// standing and of the head bone nearer the floor than the skull's back.
+	constexpr double kSkullCm = 9.0;
+	const FName BallL(TEXT("ball_l")), BallR(TEXT("ball_r")), HeadBone(TEXT("head"));
+	if (RollFloorBall >= 1e8f)
+	{
+		RollFloorBall = 0.f;
+		if (const USkinnedAsset* Asset = Skin->GetSkinnedAsset())
+		{
+			const FReferenceSkeleton& Ref = Asset->GetRefSkeleton();
+			const int32 L = Ref.FindBoneIndex(BallL), R = Ref.FindBoneIndex(BallR);
+			if (L != INDEX_NONE && R != INDEX_NONE)
+			{
+				RollFloorBall = static_cast<float>(FMath::Min(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, L).GetLocation().Z,
+					FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, R).GetLocation().Z));
+			}
+		}
+	}
+	{
+		const double Base = Skin->GetComponentLocation().Z;
+		const double Scale = Skin->GetComponentScale().Z;
+		double Need = 0.0;
+		if (Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		{
+			const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
+			Need = FMath::Max(Need, RollFloorBall * Scale - Ball);
+		}
+		if (Skin->GetBoneIndex(HeadBone) != INDEX_NONE)
+		{
+			Need = FMath::Max(Need, kSkullCm * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
+		}
+		// Taken from the last pose, so eased toward: up at most kRollLiftRise, down at most kRollLiftFall (cm/s), no pop
+		// from one frame's bones.
+		constexpr float kRollLiftRise = 90.f, kRollLiftFall = 45.f;
+		const float Want = static_cast<float>(Need);
+		RollLift = Want > RollLift ? FMath::Min(Want, RollLift + kRollLiftRise * Scale * Dt)
+								   : FMath::Max(Want, RollLift - kRollLiftFall * Scale * Dt);
+	}
+	Anim->SetTraversal(RollClip, FMath::Lerp(RollFrom, RollTo, Fraction));
+#if !UE_BUILD_SHIPPING
+	// -ArenaRollFloor: the last evaluated pose's lowest pelvis, head and balls over the floor the figure stands on.
+	static const bool bRollFloor = FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor"));
+	if (bRollFloor)
+	{
+		const double Base = GetActorLocation().Z;
+		auto Over = [this, Base](const TCHAR* Bone)
+		{
+			return Skin->GetBoneIndex(FName(Bone)) != INDEX_NONE ? Skin->GetBoneLocation(FName(Bone)).Z - Base : 0.0;
+		};
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena roll floor: %.2f of the roll, pelvis %.1f head %.1f balls %.1f %.1f cm over the floor, lifted %.1f."),
+			Fraction, Over(TEXT("pelvis")), Over(TEXT("head")), Over(TEXT("ball_l")), Over(TEXT("ball_r")), RollLift);
+	}
+#endif
 	return true;
 }
 
@@ -616,7 +696,9 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	{
 		Lean.Pitch = Pose.LeanBack;
 		Lean.Roll = Pose.Wobble;
-		if (Pose.bDodging && !bRollClip)
+		// The roll's lift, and as its clip fades out, what is left of it coming down.
+		Lift.Z = RollLift;
+		if (!bRollClip && Pose.bDodging)
 		{
 			const float Arc = FMath::Sin(PI * FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f));
 			Squash = 1.f - 0.42f * Arc;
