@@ -21,8 +21,8 @@
 // * checkBodies(bodies, t) while Set: with fewer than minBodies at the table (the host counts them: TableRing.h),
 //   the table gutters out as checkSeats does. The host calls it at Set and after every stand-up or death.
 // * seatEnemy(t) while Set: the enemy sits until the table clears.
-// * split(target, amount, t) while Set: a blow on a seated fighter is shared evenly by everyone at the
-//   table, the seated enemy included (its share, times enemyShare, is real damage to it: this is how
+// * split(target, amount, t) while Set: an enemy's blow on a seated fighter (enemy blows only: never a lead's
+//   blow, a Release, a hazard or a heal) is shared evenly by everyone at the table, the seated enemy included (its share, times enemyShare, is real damage to it: this is how
 //   it is hurt). A blow on the enemy itself is not shared back: it takes it all. Outside Set, or on a
 //   fighter not seated, the target takes it all.
 // * update(now): the timed changes since the last update, and the ones the calls made, in order.

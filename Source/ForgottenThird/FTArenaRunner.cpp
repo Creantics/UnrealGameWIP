@@ -1765,6 +1765,14 @@ void UFTArenaRunner::StepFight()
 		{
 			In.release = false;
 		}
+		if (bTableKey)
+		{
+			const bool bStart = !TableKey.holding() && TableCanBegin();
+			TableKeyPresses += bStart ? 1 : 0;
+			bReleaseDown = (TableKeyPresses % 2) == 1;
+			In.release = In.release || bStart;
+			StepTableKey(In);
+		}
 		// The pilot's heavy (stone_bearer only), pressed before Assist so its holds (the weak point's gate, the plinth)
 		// can still take it back; the cooldown runs only from a press that stood.
 		bool bPilotHeavy = false;
@@ -4315,7 +4323,8 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	bTakeHalfAuto = FParse::Param(Cmd, TEXT("ArenaTakeHalfAuto"));
 	bAutoBlock = FParse::Param(Cmd, TEXT("ArenaAutoBlock"));
 	bCarry = bChairs || bCapArg || bTakeHalfAuto || FParse::Param(Cmd, TEXT("ArenaAlly")) || FParse::Param(Cmd, TEXT("ArenaTable"))
-		|| FParse::Param(Cmd, TEXT("ArenaTableAuto")) || FParse::Param(Cmd, TEXT("ArenaTableFill"));
+		|| FParse::Param(Cmd, TEXT("ArenaTableAuto")) || FParse::Param(Cmd, TEXT("ArenaTableFill"))
+		|| FParse::Param(Cmd, TEXT("ArenaTableKey"));
 	if (!bCarry)
 	{
 		return;
@@ -4620,13 +4629,14 @@ const TCHAR* TableStateName(ftcore::TableState S)
 
 void UFTArenaRunner::BeginTable(const ftcore::PlaceTable& Places, bool bCapArg)
 {
-	bTable = bTableAuto = bTableFill = false;
+	bTable = bTableAuto = bTableFill = bTableKey = false;
 	TablePlaces = Places;
 #if !UE_BUILD_SHIPPING
 	const TCHAR* Cmd = FCommandLine::Get();
 	bTableAuto = FParse::Param(Cmd, TEXT("ArenaTableAuto"));
 	bTableFill = FParse::Param(Cmd, TEXT("ArenaTableFill"));
-	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill;
+	bTableKey = FParse::Param(Cmd, TEXT("ArenaTableKey"));
+	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill || bTableKey;
 	if (!bTable)
 	{
 		return;
@@ -4664,14 +4674,17 @@ void UFTArenaRunner::ResetTable()
 	TableBegins = TableRefusals = TableSets = TableMostBodies = TableStands = TableLeaves = 0;
 	TableGutters = TableFails = TableClears = TableShares = TableShareHp = 0;
 	TableKey.reset();
-	TableKeyBegins = TableKeyTaps = TableKeyCancels = 0;
+	TableKeyBegins = TableKeyTaps = TableKeyCancels = TableKeyPresses = 0;
+	TableSetSeconds = 0.0;
+	TableLastTick = -1.0;
+	TableKeyLastStep = -1.0;
 	if (TableActor)
 	{
 		TableActor->SetActorHiddenInGame(true);
 	}
 }
 
-void UFTArenaRunner::BeginTableNow(double T)
+bool UFTArenaRunner::BeginTableNow(double T)
 {
 	ftcore::Load Held;
 	Held.value = Fight.load();
@@ -4686,7 +4699,7 @@ void UFTArenaRunner::BeginTableNow(double T)
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: table refused at %.2f s: %s."), T, TableErrorName(E));
 		}
 		TableLastRefusal = E;
-		return;
+		return false;
 	}
 	TableLastRefusal = ftcore::TableError::None;
 	const int32 Spent = Fight.spendLoad(Fight.load());
@@ -4694,11 +4707,15 @@ void UFTArenaRunner::BeginTableNow(double T)
 	++TableBegins;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: table setting at %.2f s at (%.2f, %.2f): %d Load spent, %d would sit."),
 		T, At.x, At.y, Spent, TableSeats.wouldSit(Fight, Bodies, At));
+	return true;
 }
 
 bool UFTArenaRunner::TableCanBegin() const
 {
+	ftcore::Load Held;
+	Held.value = Fight.load();
 	return TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
+		&& TablePlaces.full(Held) && TablePlaces.tableSeats() >= TableClock.tuning().minSeats
 		&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies;
 }
 
@@ -4709,6 +4726,12 @@ void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
 		return;
 	}
 	const double T = static_cast<double>(Fight.heldTime());
+	// Steps the key missed (idle, a scripted pilot): a hold from before them is dropped, not fired late.
+	if (TableKey.holding() && T - TableKeyLastStep > 0.1)
+	{
+		TableKey.reset();
+	}
+	TableKeyLastStep = T;
 	switch (TableKey.step(In.release, bReleaseDown, TableCanBegin(), T))
 	{
 	case ftcore::TableHoldResult::Holding:
@@ -4719,9 +4742,17 @@ void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
 		++TableKeyCancels;
 		break;
 	case ftcore::TableHoldResult::Begin:
-		In.release = false;
-		++TableKeyBegins;
-		BeginTableNow(T);
+		// A refusal the checks above missed: the press goes to the fight as the Release it was.
+		if (BeginTableNow(T))
+		{
+			In.release = false;
+			++TableKeyBegins;
+		}
+		else
+		{
+			In.release = true;
+			++TableKeyTaps;
+		}
 		break;
 	case ftcore::TableHoldResult::PassRelease:
 		In.release = true;
@@ -4748,6 +4779,11 @@ void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
 		return;
 	}
 	const double T = static_cast<double>(Fight.heldTime());
+	if (TableClock.state() == ftcore::TableState::Set && TableLastTick >= 0.0)
+	{
+		TableSetSeconds += FMath::Max(0.0, T - TableLastTick);
+	}
+	TableLastTick = T;
 	for (const ftcore::ArenaEvent& E : Out.events)
 	{
 		if (E.type == ftcore::ArenaEventType::TableShare)
@@ -4979,9 +5015,10 @@ void UFTArenaRunner::LogTable() const
 		return;
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d keyBegins %d keyTaps %d keyCancels %d state %s."),
+		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d keyBegins %d keyTaps %d keyCancels %d setSeconds %.1f of %.1f state %s."),
 		TableBegins, TableRefusals, TableSets, TableMostBodies, TableStands, TableLeaves, TableGutters, TableFails, TableClears,
-		TableShares, TableShareHp, TableKeyBegins, TableKeyTaps, TableKeyCancels, TableStateName(TableClock.state()));
+		TableShares, TableShareHp, TableKeyBegins, TableKeyTaps, TableKeyCancels, TableSetSeconds,
+		static_cast<double>(Fight.heldTime()), TableStateName(TableClock.state()));
 }
 
 void UFTArenaRunner::EndTable()

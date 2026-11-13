@@ -259,13 +259,21 @@ TEST_CASE("table ring: who sits, and when they stand") {
         Rig rig({k});
         CHECK(rig.sit() == 2);
     }
-    SUBCASE("the ally stands past the margin; the setter never does") {
+    SUBCASE("the ally stands past the margin, and so does the setter") {
         Rig rig({standerKind()});
         REQUIRE(rig.sit() == 3);
         rig.bodies.ally = Vec2{0.f, 7.5f}; // edge 7.1
         rig.tick();
         CHECK(rig.ring.update(rig.fight, rig.bodies).stood == 1);
         CHECK((rig.ring.seated() & kTablePlayerBit) != 0);
+        rig.bodies.player = Vec2{-7.35f, 0.f}; // edge 6.95: still seated
+        rig.tick();
+        CHECK(rig.ring.update(rig.fight, rig.bodies).stood == 0);
+        rig.bodies.player = Vec2{-7.45f, 0.f}; // edge 7.05: past radius + margin
+        rig.tick();
+        CHECK(rig.ring.update(rig.fight, rig.bodies).stood == 1);
+        CHECK((rig.ring.seated() & kTablePlayerBit) == 0);
+        CHECK((rig.ring.stood() & kTablePlayerBit) != 0);
     }
 }
 
@@ -446,4 +454,228 @@ TEST_CASE("table: the view the HUD reads") {
     CHECK(v.cooldownLeft > 0.f);
     CHECK(v.timeLeft == 0.f);
     CHECK(v.radius == 0.f);
+}
+
+namespace {
+
+// Bites from up to 10 m: placed 2 m past the ally, it reaches the ally and never the player at the origin.
+ArenaEnemyKind farBiter(int damage, int hp = 100) {
+    ArenaEnemyKind k = biterKind(damage);
+    k.hp = hp;
+    k.preferredRange = 10.f;
+    k.runRange = 15.f;
+    k.moves[0].maxRange = 10.f;
+    return k;
+}
+
+// The ally 3 m along +x and the biter at 5 m: all three inside the ring round the origin.
+void allySide(Rig& rig) {
+    rig.bodies.ally = Vec2{3.f, 0.f};
+    rig.bodies.enemies[0] = Vec2{5.f, 0.f};
+}
+
+// Starts the fight again with the player's hp and guard absorb changed (the ally given the same hp).
+void rebegin(Rig& rig, int hp, float guardAbsorb = 1.f) {
+    rig.def.fighter.hp = hp;
+    rig.def.fighter.guardAbsorb = guardAbsorb;
+    rig.fight.begin(rig.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    rig.fight.setAlly(hp, 0.4f);
+    rig.fight.tick(0.f, rig.in, rig.bodies);
+}
+
+int allyLost(const Rig& rig) {
+    return rig.sum(ArenaEventType::AllyHit, kArenaAlly) + rig.sum(ArenaEventType::TableShare, kArenaAlly);
+}
+
+// The tick (from 1) the bite lands on the ally with nothing pressed (the fight is deterministic), or -1.
+int allyLandTick(int damage) {
+    Rig rig({farBiter(damage)});
+    allySide(rig);
+    rig.sit();
+    for (int k = 1; k <= 120; ++k) {
+        rig.tick();
+        if (rig.count(ArenaEventType::AllyHit) > 0) return k;
+    }
+    return -1;
+}
+
+ArenaChairs takeHalfChair() {
+    ArenaChairs c;
+    c.named[0] = ChairEffect{ChairKind::TakeHalf, 0.1f, 0.05f};
+    c.count = 1;
+    return c;
+}
+
+} // namespace
+
+TEST_CASE("table: a shared blow with the take-half chair heals nothing") {
+    Rig rig({farBiter(30)});
+    allySide(rig);
+    rig.fight.setChairs(takeHalfChair());
+    REQUIRE(rig.sit() == 3);
+    for (int k = 0; k < 120 && rig.count(ArenaEventType::AllyHit) == 0; ++k) rig.tick();
+    REQUIRE(rig.count(ArenaEventType::AllyHit) == 1);
+    CHECK(rig.count(ArenaEventType::TookHalf) == 0);
+    CHECK(rig.sum(ArenaEventType::AllyHit, kArenaAlly) == 10);
+    CHECK(rig.sum(ArenaEventType::TableShare, kArenaPlayer) == 10);
+    CHECK(rig.fight.allyHp() == 100 - allyLost(rig)); // no heal
+    CHECK(rig.fight.allyHp() == 90);
+}
+
+TEST_CASE("table: take half at a set table: the lead's half first, the rest shared, the chair heals once") {
+    const int land = allyLandTick(30);
+    REQUIRE(land > 6);
+    Rig rig({farBiter(30)});
+    allySide(rig);
+    rig.fight.setChairs(takeHalfChair());
+    REQUIRE(rig.sit() == 3);
+    for (int k = 1; k <= land + 2; ++k) {
+        rig.in.takeHalf = k == land - 5;
+        rig.tick();
+    }
+    rig.in.takeHalf = false;
+    CHECK(rig.sum(ArenaEventType::TookHalf, kArenaPlayer) == 15);
+    // The other 15 split three ways: 5 each.
+    CHECK(rig.sum(ArenaEventType::AllyHit, kArenaAlly) == 5);
+    CHECK(rig.sum(ArenaEventType::TableShare, kArenaPlayer) == 5);
+    CHECK(rig.sum(ArenaEventType::TableShare, 0) == 5);
+    CHECK(rig.fight.hp() == 100 - 15 - 5);
+    CHECK(rig.fight.allyHp() == 100); // 95, and the chair's 5 back
+}
+
+TEST_CASE("table: a blocked blow shares its chip; a parried one shares nothing") {
+    SUBCASE("block") {
+        Rig rig({biterKind(30)});
+        rebegin(rig, 100, 0.5f);
+        REQUIRE(rig.sit() == 3);
+        rig.in.guard = true;
+        for (int k = 0; k < 120 && rig.count(ArenaEventType::Blocked) == 0; ++k) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::Blocked) == 1);
+        CHECK(rig.sum(ArenaEventType::Hit, kArenaPlayer) == 5); // chip 15, split three ways
+        CHECK(rig.sum(ArenaEventType::TableShare, kArenaAlly) == 5);
+        CHECK(rig.sum(ArenaEventType::TableShare, 0) == 5);
+    }
+    SUBCASE("parry") {
+        Rig rig({biterKind(30)});
+        REQUIRE(rig.sit() == 3);
+        for (int k = 1; k <= 40; ++k) {
+            if (k == 19) rig.in.guard = true;
+            rig.tick();
+        }
+        REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.count(ArenaEventType::TableShare) == 0);
+        CHECK(rig.fight.hp() == 100);
+        CHECK(rig.fight.allyHp() == 100);
+    }
+}
+
+TEST_CASE("table: a seated body carries its share whatever it is doing") {
+    const int land = allyLandTick(30);
+    REQUIRE(land > 8);
+    enum class Doing { Guard, Parry, Dodge, Release, Air };
+    for (const Doing doing : {Doing::Guard, Doing::Parry, Doing::Dodge, Doing::Release, Doing::Air}) {
+        CAPTURE(static_cast<int>(doing));
+        Rig rig({farBiter(30)});
+        allySide(rig);
+        if (doing == Doing::Release) {
+            rig.fight.setCarry(true);
+            rig.fight.setLoadCap(100);
+            rig.tick();
+            rig.fight.giveLoad(100);
+        }
+        REQUIRE(rig.sit() == 3);
+        ArenaAction at = ArenaAction::Idle;
+        bool invulnerable = false;
+        float height = 0.f;
+        for (int k = 1; k <= land + 2 && rig.count(ArenaEventType::AllyHit) == 0; ++k) {
+            rig.in.guard = doing == Doing::Guard || (doing == Doing::Parry && k >= land - 3);
+            rig.in.dodge = doing == Doing::Dodge && k == land - 2;
+            rig.in.release = doing == Doing::Release && k == land - 2;
+            rig.in.jump = doing == Doing::Air && k == land - 12;
+            rig.tick();
+            at = rig.fight.output().player.action;
+            invulnerable = rig.fight.output().player.invulnerable;
+            height = rig.fight.output().player.height;
+        }
+        REQUIRE(rig.count(ArenaEventType::AllyHit) == 1);
+        switch (doing) {
+        case Doing::Guard: CHECK(at == ArenaAction::Guard); break;
+        case Doing::Parry: CHECK(at == ArenaAction::Guard); break;
+        case Doing::Dodge: CHECK(invulnerable); break;
+        case Doing::Release: CHECK(at == ArenaAction::Release); CHECK(invulnerable); break;
+        case Doing::Air: CHECK(height > 0.f); break;
+        }
+        CHECK(rig.sum(ArenaEventType::TableShare, kArenaPlayer) == 10);
+        CHECK(rig.fight.hp() == 100 - 10);
+    }
+}
+
+TEST_CASE("table: the player walks out during the wind-up and carries nothing") {
+    Rig rig({farBiter(30)});
+    allySide(rig);
+    REQUIRE(rig.sit() == 3);
+    int guard = 0;
+    while (rig.fight.output().enemies[0].part != ArenaPart::Startup && guard++ < 120) rig.tick();
+    REQUIRE(rig.fight.output().enemies[0].part == ArenaPart::Startup);
+    rig.bodies.player = Vec2{-7.5f, 0.f}; // edge 7.1
+    CHECK(rig.ring.update(rig.fight, rig.bodies).stood == 1);
+    rig.fight.setTableSeats(rig.ring.seats(rig.fight, 1.f, 3));
+    for (int k = 0; k < 120 && rig.count(ArenaEventType::AllyHit) == 0; ++k) rig.tick();
+    REQUIRE(rig.count(ArenaEventType::AllyHit) == 1);
+    CHECK(rig.sum(ArenaEventType::TableShare, kArenaPlayer) == 0);
+    CHECK(rig.sum(ArenaEventType::AllyHit, kArenaAlly) == 15); // two at the table now
+    CHECK(rig.sum(ArenaEventType::TableShare, 0) == 15);
+    CHECK(rig.fight.hp() == 100);
+}
+
+TEST_CASE("table: an enemy killed by its own blow's share is left alone after") {
+    for (const bool onAlly : {false, true}) {
+        CAPTURE(onAlly);
+        Rig rig({onAlly ? farBiter(30, 4) : [] { ArenaEnemyKind k = biterKind(30); k.hp = 4; return k; }()});
+        if (onAlly) allySide(rig);
+        REQUIRE(rig.sit() == 3);
+        int k = 0;
+        for (; k < 120 && rig.count(ArenaEventType::TableShare) == 0; ++k) rig.tick();
+        REQUIRE(rig.count(ArenaEventType::TableShare) > 0);
+        CHECK(rig.sum(ArenaEventType::TableShare, 0) == 4); // the hp floor: 4 of its 10
+        const ArenaEnemyOut& foe = rig.fight.output().enemies[0];
+        CHECK(foe.brain == ArenaBrain::Dead);
+        CHECK(foe.velocity.x == 0.f);
+        CHECK(foe.velocity.y == 0.f);
+        CHECK(rig.fight.stats().kills == 1);
+        const std::size_t events = rig.log.size();
+        for (int j = 0; j < 120; ++j) rig.tick();
+        for (std::size_t e = events; e < rig.log.size(); ++e) CHECK(rig.log[e].source != 0);
+        CHECK(rig.fight.output().enemies[0].brain == ArenaBrain::Dead);
+        CHECK(rig.fight.stats().kills == 1);
+    }
+}
+
+TEST_CASE("table: a shared blow sums to the blow exactly, the remainder to the one struck") {
+    for (int extra = 0; extra <= 3; ++extra) { // bodies: the player, the ally, the biter and `extra` standers
+        for (int damage = 1; damage <= 200; ++damage) {
+            CAPTURE(extra);
+            CAPTURE(damage);
+            ArenaEnemyKind biter = biterKind(damage);
+            biter.hp = 1000;
+            ArenaEnemyKind stander = standerKind();
+            stander.hp = 1000;
+            Rig rig = extra == 0 ? Rig({biter})
+                    : extra == 1 ? Rig({biter, stander})
+                    : extra == 2 ? Rig({biter, stander, stander})
+                                 : Rig({biter, stander, stander, stander});
+            const Vec2 spots[3] = {Vec2{0.f, 3.f}, Vec2{0.f, -3.f}, Vec2{-3.f, 3.f}};
+            for (int i = 0; i < extra; ++i) rig.bodies.enemies[static_cast<std::size_t>(i) + 1] = spots[i];
+            rebegin(rig, 1000);
+            const int bodies = 3 + extra;
+            REQUIRE(rig.sit() == bodies);
+            rig.untilBite();
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            const int each = damage / bodies;
+            int total = rig.sum(ArenaEventType::Hit, kArenaPlayer) + rig.sum(ArenaEventType::TableShare, kArenaAlly);
+            for (int i = 0; i < bodies - 2; ++i) total += rig.sum(ArenaEventType::TableShare, static_cast<std::uint8_t>(i));
+            CHECK(total == damage);
+            CHECK(rig.sum(ArenaEventType::Hit, kArenaPlayer) == damage - each * (bodies - 1));
+        }
+    }
 }

@@ -9,8 +9,8 @@
 //   within the radius; each living enemy within the radius that may sit (enemyMaySit). An enemy turned away only
 //   because its armour is on in an attack's startup or active part is tried again every tick while the table is set
 //   (still within the radius); one turned away for any other reason, or arriving later, never sits.
-// * Who stands (update, every tick while set): a seated body other than the setter whose edge goes past radius +
-//   standMargin stands, and never sits again at this table. A seated body that dies or goes down leaves at once.
+// * Who stands (update, every tick while set): a seated body, the setter too, whose edge goes past radius +
+//   standMargin stands, and never sits again at this table. The player can always leave this way. A seated body that dies or goes down leaves at once.
 //   The host calls TableSet::checkBodies(bodies()) after sit and whenever update reports a change.
 // * The share (ArenaFight::setTableSeats with seats()): an enemy's blow on a seated lead is split evenly among the
 //   bodies at the table (tableEvenSplit). A seated enemy's part is times enemyShare, and times carryShortfall for
@@ -174,9 +174,16 @@ public:
                 waiting_ &= static_cast<std::uint16_t>(~bit); // gone, or turned away for good
             }
         }
-        if ((seated_ & kTablePlayerBit) && fight.hp() <= 0) {
-            seated_ &= static_cast<std::uint16_t>(~kTablePlayerBit);
-            ++c.left;
+        if (seated_ & kTablePlayerBit) {
+            if (fight.hp() <= 0) {
+                seated_ &= static_cast<std::uint16_t>(~kTablePlayerBit);
+                ++c.left;
+            } else if (tableEdgeOut(tableEdge(at.player, fight.def().fighter.bodyRadius, centre_), tuning_.radius,
+                                    tuning_.standMargin)) {
+                seated_ &= static_cast<std::uint16_t>(~kTablePlayerBit);
+                stood_ |= kTablePlayerBit;
+                ++c.stood;
+            }
         }
         if (seated_ & kTableAllyBit) {
             if (!fight.allyAlive()) {

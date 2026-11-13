@@ -1900,7 +1900,8 @@ struct ArenaFightImpl {
         ++stats.hitsTaken;
         damagePlayer(source, damage, foe.move);
         pause(pl.stopUntil, t1, a.hitStop); // both have moved this tick
-        pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
+        // Its own blow's table share may have killed it: then nothing more touches it this tick.
+        if (alive(i)) pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
         if (pl.hp <= 0) return;
         if (jumpHeightAt(pl.jumpTime) > 0.f) {
             // A blow that lands in the air ends the jump: knocked out of it, whatever the poise.
@@ -2034,6 +2035,7 @@ struct ArenaFightImpl {
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
         int allyPart = damage;
+        bool tookHalf = false; // the chair's heal follows take half, never a table share
         // Take half: a press within the window before this blow, the player near enough and free to take it. Not
         // while invulnerable (a dodge's i-frames, a riposte, a Release: the blow would skip guard, poise and hurt),
         // nor while hurt (hitstun) or guard-broken.
@@ -2044,6 +2046,7 @@ struct ArenaFightImpl {
                              pl.action != ArenaAction::GuardBreak;
         if (pressed && canTake && arenaDistance(pl.pos, fight.allyPos_) <= fi.takeHalfReach + kArenaEps) {
             pl.takeHalfPress = -1.0e9f; // used
+            tookHalf = true;
             const int lead = (damage + 1) / 2;
             allyPart = damage - lead;
             const int taken = std::min(lead, pl.hp);
@@ -2073,7 +2076,7 @@ struct ArenaFightImpl {
             return;
         }
         // A takeHalf chair heals the ally a share of its max hp each time the player takes half (never past it).
-        if (allyPart < damage) {
+        if (tookHalf) {
             const int heal = static_cast<int>(std::lround(fight.chairs_.takeHalfHeal() * static_cast<float>(fight.allyMaxHp_)));
             fight.allyHp_ = std::min(fight.allyMaxHp_, fight.allyHp_ + std::max(heal, 0));
         }
@@ -2161,8 +2164,10 @@ struct ArenaFightImpl {
         }
         // The ally, tested as the player is (it never guards or rolls).
         if (!foe.hitAlly && allyUp() && a1 > a.startup && a0 < a.startup + a.active &&
-            arenaReaches(foe.pos, foe.facing, a, fight.allyPos_, fight.allyRadius_))
+            arenaReaches(foe.pos, foe.facing, a, fight.allyPos_, fight.allyRadius_)) {
             enemyStrikeAlly(i);
+            if (!alive(i)) return Vec2{}; // its own blow's table share killed it
+        }
         Vec2 vel{};
         const float span = a.startup + a.active;
         if (span > kArenaEps && a.lunge != 0.f) {

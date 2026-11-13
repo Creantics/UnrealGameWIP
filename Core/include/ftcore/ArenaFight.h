@@ -1117,6 +1117,11 @@ public:
     // and the one struck the rest. A seated enemy loses its part times its enemyShare (rounded, halves up; the hp
     // floor holds). Each part passed on reports TableShare; a part that empties the player downs it, the ally's
     // reports AllyDowned, an enemy's kills it. The struck lead's own part reports Hit or AllyHit as before.
+    // The table's price: a seat means carrying a share whatever that body is doing. The parts passed on ignore guard,
+    // parry, a dodge's i-frames, a Release and the air; only the struck body's defence counts (a parried, evaded or
+    // dodged blow shares nothing; a blocked one shares its chip). A share can down or kill. Only enemy blows are
+    // shared. Every part passed on is a TableShare event (amount, from whom), so no share is silent. A body leaves
+    // its seat by walking out (TableRing.h: the setter too), from the next blow on.
     FTCORE_API void setTableSeats(const ArenaTableSeats& seats);
     FTCORE_API const ArenaTableSeats& tableSeats() const;
     // An enemy is in its attack's startup with `lead` s of it left or less, the ally is alive and the player within

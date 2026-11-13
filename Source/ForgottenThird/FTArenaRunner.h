@@ -394,7 +394,7 @@ private:
 	void BeginTable(const ftcore::PlaceTable& Places, bool bCapArg);
 	void ResetTable();
 	void TickTable(const ftcore::ArenaOutput& Out);
-	void BeginTableNow(double T);
+	bool BeginTableNow(double T);
 	// The player's table key: Release held at full Load with enough bodies in reach (TableHold), on the step's input.
 	bool TableCanBegin() const;
 	void StepTableKey(ftcore::ArenaInput& In);
@@ -729,11 +729,17 @@ private:
 	bool bTable = false;
 	bool bTableAuto = false;
 	bool bTableFill = false;
+	// -ArenaTableKey: the autopilot works the player's key (StepTableKey): odd presses held to a begin, even ones tapped.
+	bool bTableKey = false;
+	int32 TableKeyPresses = 0;
+	double TableKeyLastStep = -1.0;
 	ftcore::PlaceTable TablePlaces;
 	ftcore::TableSet TableClock;
 	ftcore::TableRing TableSeats;
 	ftcore::TableHold TableKey;
 	int32 TableKeyBegins = 0;
+	double TableSetSeconds = 0.0; // fight seconds a table stood Set (the uptime on the TABLE line)
+	double TableLastTick = -1.0;
 	int32 TableKeyTaps = 0;
 	int32 TableKeyCancels = 0;
 	int32 TableBegins = 0;
