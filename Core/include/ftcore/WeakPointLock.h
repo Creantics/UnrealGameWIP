@@ -46,6 +46,19 @@ inline bool validLockTuning(const LockTuning& t) {
     return t.openSeconds == 0.0 || (t.openSeconds >= 0.1 && t.openSeconds <= 30.0);
 }
 
+// What a fight has that can offer a lock a shared blow: a joined count, a take half, a table share.
+struct SharedBlowSources {
+    bool sharedCount = false;
+    bool takeHalf = false;
+    bool tableShare = false;
+};
+// Whether a lock can ever open in such a fight: it takes a key other than the shared blow (the script offers those),
+// or a shared blow with at least one source.
+inline bool lockCanOpen(const LockTuning& t, const SharedBlowSources& s) {
+    if ((t.keys & ~kUnlockSharedBlow) != 0) return true;
+    return s.sharedCount || s.takeHalf || s.tableShare;
+}
+
 // True when a judged blow counts as a shared blow.
 inline bool sharedBlow(const CountHit& hit) { return sharedOutcome(hit.outcome); }
 // True when a held blow settled as a shared blow (StrikeCount's BlowSettled event).

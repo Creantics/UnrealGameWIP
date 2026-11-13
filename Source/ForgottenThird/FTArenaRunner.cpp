@@ -44,6 +44,7 @@
 #include "ftcore/BriefKit.h"
 #include "ftcore/LicenceRating.h"
 #include "ftcore/Chairs.h"
+#include "ftcore/CountLiftData.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
 
@@ -1563,7 +1564,9 @@ void UFTArenaRunner::BeginSession()
 	SessionJoins = 0;
 	SessionBonuses = 0;
 	SessionBonusDamage = 0;
-	CountLoadStored = CountLoadStores = Lifts = LiftSpent = Marks = KiteUnlocks = MaxJoinLoad = 0;
+	CountLoadStored = CountLoadStores = Lifts = LiftSpent = Marks = KiteUnlocks = MaxJoinLoad = PartnerLoadStored = 0;
+	CappedBlows = 0;
+	PartnerLoadTime = -1e9;
 	LiftTime = LastJoinAt = KiteLockUntil = -1e9;
 	LiftMultiplier = 1.f;
 	if (Session)
@@ -1572,6 +1575,28 @@ void UFTArenaRunner::BeginSession()
 		if (bCountLift)
 		{
 			SessionDef.lift = true;
+			// The Lift's tuning and the blow cap from Data/Battle/count_lift.json (the defaults, 6x, if it is refused).
+			{
+				ftcore::CountLiftData LiftData;
+				TArray<uint8> Bytes;
+				std::string Error;
+				const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/count_lift.json");
+				if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importCountLift(FT::BytesAsText(Bytes), LiftData, &Error)))
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/count_lift.json; the Lift keeps its defaults.\n%s"),
+						*FT::ToFString(Error));
+					LiftData = ftcore::CountLiftData();
+				}
+				SessionDef.liftTuning = LiftData.lift;
+				SessionDef.blowCap = LiftData.blowCap;
+			}
+			// The partner lead's own gauge, kept by the session (a probe's fixed -ArenaPartnerLoad replaces it). Its cap
+			// is the chairs' formula with the partner's own Named chairs: one for now (60).
+			if (PartnerLoad < 0)
+			{
+				SessionDef.keptLead = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+				SessionDef.keptNamed = 1;
+			}
 			// The kite's seam behind its lock: the session holds the lock (a shared blow, a take half, opens it).
 			if (KiteSlot >= 0 && Kite.IsLoaded() && Kite.GetWeakPoints().locked)
 			{
@@ -1648,17 +1673,28 @@ ftcore::ArenaBlowRuling UFTArenaRunner::RuleSessionBlow(void* User, const ftcore
 		return Ruling;
 	}
 	const float Scale = Ruling.damage > 0.f ? FMath::Min(Ruling.damage, 1.0e6f) : 0.f; // NaN counts as 0, as the fight reads it
-	const int Base = static_cast<int>(FMath::RoundToFloat(static_cast<float>(Blow.damage) * Scale));
+	// With a blow cap (-ArenaCountLift) a held blow's bonus comes from its damage before the crit, and the whole blow
+	// (crit, count, Lift, mark) stays under the cap. Without one, as before: the base is the damage after the crit.
+	ftcore::FightSession& S = Self->Session->Get();
+	const bool bCapped = S.blowCap() > 0.f;
+	const int Base = static_cast<int>(FMath::RoundToFloat(static_cast<float>(Blow.damage) * (bCapped ? 1.f : Scale)));
 	Self->FeedSessionLoads();
-	const ftcore::CountHit Hit = Self->Session->Get().judgeHeldBlow(Self->SessionLead, Blow.target, Base, Blow.move);
+	const ftcore::CountHit Hit = S.judgeHeldBlow(Self->SessionLead, Blow.target, Base, Blow.move, bCapped ? Scale : 1.f);
+	const float Want = Hit.outcome == ftcore::CountOutcome::Held ? Scale : Scale * Hit.multiplier;
 	if (Hit.outcome == ftcore::CountOutcome::Held)
 	{
 		++Self->SessionHeldBlows;
 		Self->bSessionPartnerDue = Self->bSharedCount;
 	}
-	else
+	if (bCapped)
 	{
-		Ruling.damage = Scale * Hit.multiplier;
+		const float Kept = S.capBlow(Want);
+		Self->CappedBlows += Kept < Want ? 1 : 0;
+		Ruling.damage = Kept;
+	}
+	else if (Hit.outcome != ftcore::CountOutcome::Held)
+	{
+		Ruling.damage = Want;
 	}
 	return Ruling;
 }
@@ -1724,7 +1760,10 @@ void UFTArenaRunner::FeedSessionLoads()
 	}
 	const uint8 Partner = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
 	Session->Get().setLoad(SessionLead, Fight.load());
-	Session->Get().setLoad(Partner, PartnerLoad); // the scripted partner: no gauge (-1), or a probe's fixed Load
+	if (!Session->Get().keepsLoad(Partner))
+	{
+		Session->Get().setLoad(Partner, PartnerLoad); // a probe's fixed Load (the session keeps the partner's otherwise)
+	}
 }
 
 void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
@@ -1748,12 +1787,30 @@ void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
 			LiftMultiplier = S.strikeCount().tuning().onCountMultiplier * S.strikeCount().liftTuning().liftMultiplier;
 		}
 	}
-	int32 Spent[2] = {0, 0};
+	int32 Spent[2] = {0, 0}; // the player's, the partner's
 	for (const ftcore::CountLoadChange& C : Tick.loads)
 	{
+		if (C.kept)
+		{
+			// The partner's gauge: the session applied it already.
+			PartnerLoadTime = Now;
+			if (C.kind == ftcore::CountLoadKind::LiftSpend)
+			{
+				Spent[1] += C.amount;
+				LiftSpent += C.amount;
+			}
+			else
+			{
+				PartnerLoadStored += C.amount;
+				const TCHAR* Source = C.kind == ftcore::CountLoadKind::ParryStore ? TEXT("parry")
+					: (C.kind == ftcore::CountLoadKind::BlockStore ? TEXT("block") : TEXT("count"));
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner stored %d Load (%s), %d/%d."), C.amount, Source, S.keptLoad(), S.keptCap());
+			}
+			continue;
+		}
 		if (C.lead != SessionLead)
 		{
-			continue; // only the player's figure has a gauge here
+			continue; // a probe's fixed partner Load: nothing to apply
 		}
 		if (C.kind == ftcore::CountLoadKind::CountStore)
 		{
@@ -1766,7 +1823,7 @@ void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
 		{
 			const int Gone = Fight.spendLoad(C.amount);
 			LiftSpent += Gone;
-			Spent[C.lead < 2 ? C.lead : 0] += Gone;
+			Spent[0] += Gone;
 		}
 	}
 	if (bNewLift)
@@ -1785,6 +1842,16 @@ void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the kite's seam unlocked at %.2f s for %.2f s."), Fight.time(), Until - S.now());
 		}
 	}
+}
+
+int32 UFTArenaRunner::GetPartnerLoad() const
+{
+	return Session ? Session->Get().keptLoad() : 0;
+}
+
+int32 UFTArenaRunner::GetPartnerLoadCap() const
+{
+	return Session ? Session->Get().keptCap() : 0;
 }
 
 float UFTArenaRunner::GetEnemyMarkBonus(int32 Slot) const
@@ -2280,6 +2347,13 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			else if (E.target < MaxEnemies)
 			{
 				EnemyHitTime[E.target] = Now;
+			}
+			// Under -ArenaCountLift a table share is a shared blow: offered to the lock (the kite's seam) as take half is.
+			if (bCountLift && Session)
+			{
+				const ftcore::UnlockResult Unlock = Session->Get().offerKey(ftcore::kUnlockSharedBlow);
+				++CarrySharedOffers;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: a table share offered a shared blow: unlock result %d."), static_cast<int32>(Unlock));
 			}
 			break;
 		case ftcore::ArenaEventType::AllyDowned:
@@ -3455,8 +3529,9 @@ void UFTArenaRunner::LogFeatureChecks() const
 		Verdict(SessionBonuses > 0, bSharedCount && Session != nullptr), SessionHeldBlows, SessionJoins, SessionBonuses, SessionBonusDamage);
 	if (bCountLift)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: COUNT stores %d stored %d lifts %d liftSpent %d marks %d kiteUnlocks %d maxJoinLoad %d."),
-			CountLoadStores, CountLoadStored, Lifts, LiftSpent, Marks, KiteUnlocks, MaxJoinLoad);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: COUNT stores %d stored %d lifts %d liftSpent %d marks %d kiteUnlocks %d maxJoinLoad %d partnerStored %d partnerLoad %d/%d blowCap %.1f capped %d."),
+			CountLoadStores, CountLoadStored, Lifts, LiftSpent, Marks, KiteUnlocks, MaxJoinLoad, PartnerLoadStored,
+			GetPartnerLoad(), GetPartnerLoadCap(), Session ? Session->Get().blowCap() : 0.f, CappedBlows);
 	}
 	// Impact (ftcore/ArenaImpact.h): numbers only, no verdict. The jolt is rotation only (the arm and the field of view
 	// are never touched); the marker is the off-frame tell and the stinger only doubles it.
@@ -4475,6 +4550,19 @@ void UFTArenaRunner::BeginKite()
 	}
 	Kite.Begin(Fight, static_cast<size_t>(KiteSlot));
 	Kite.SetLock(bCountLift && Session ? &Session->Get() : nullptr);
+	if (Kite.IsLocked())
+	{
+		// A seam behind a shared-blow lock in a fight with nothing to offer one has no crits at all: say so.
+		ftcore::SharedBlowSources Sources;
+		Sources.sharedCount = bSharedCount;
+		Sources.takeHalf = bAutoPlay ? bTakeHalfAuto : bCarry;
+		Sources.tableShare = bTable;
+		if (!ftcore::lockCanOpen(Kite.GetWeakPoints().lock, Sources))
+		{
+			UE_LOG(LogForgottenThird, Warning,
+				TEXT("Arena: the kite's seam is locked and nothing in this fight can open it (no shared count, take half or table): no crits on the kite."));
+		}
+	}
 	KiteLogged = Kite.GetNoteTotal();
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: kite in slot %d: %d weak point(s), socket %s."), KiteSlot,
 		static_cast<int32>(Kite.GetWeakPoints().points.size()), UTF8_TO_TCHAR(FFTKiteHost::WeakPointSocket));

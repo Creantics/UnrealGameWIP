@@ -60,6 +60,7 @@
 #include "ftcore/CombatInputs.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -91,7 +92,31 @@ struct LiftTuning {
     int liftThreshold = 120;      // the joiners' Load together that makes a Lift: 1..200
     float liftMultiplier = 1.5f;  // a Lift's blows, on top of the count's boost: 1..2.6
     int liftCost = 30;            // Load each joiner spends on a Lift (what it holds, if less): 0..100
+    int soloCountLoad = 5;        // countLoad for a window whose other joiner is the third slot's caller: 0..50
 };
+
+// One blow's multiplier from all its sources (a crit, the count's boost, a Lift, a mark) kept to a cap: 0 is no cap,
+// else 1..kMaxBlowCap. kDefaultBlowCap is the data's default.
+inline constexpr float kDefaultBlowCap = 6.0f;
+inline constexpr float kMaxBlowCap = 20.0f;
+inline bool validBlowCap(float cap) { return cap == 0.f || (cap >= 1.f && cap <= kMaxBlowCap); }
+inline float capBlowScale(float scale, float cap) { return cap > 0.f && scale > cap ? cap : scale; }
+
+// A held blow's settle bonus: base x (mult - 1), rounded, where base is what the blow deals before any crit and it
+// landed at base x landed. With a cap the whole blow stays at base x cap (the bonus at most base x (cap - landed)).
+// 0 at x1 or below, or with nothing left under the cap.
+inline int heldSettleBonus(int base, float landed, float mult, float cap) {
+    if (base <= 0 || !(mult > 1.0f) || !std::isfinite(mult)) return 0;
+    double add = static_cast<double>(mult) - 1.0;
+    if (cap > 0.f) {
+        const double room = static_cast<double>(cap) - static_cast<double>(landed);
+        if (room < add) add = room;
+    }
+    if (!(add > 0.0)) return 0;
+    const double extra = std::round(static_cast<double>(base) * add);
+    if (extra < 1.0) return 0;
+    return extra > 1e9 ? 1000000000 : static_cast<int>(extra);
+}
 
 // The ranges, and the hardest blow kept to x10: boost x liftMultiplier x (1 + kMaxReleaseMark), both boosts.
 inline bool validLiftTuning(const LiftTuning& l, const CountTuning& c) {
@@ -100,6 +125,7 @@ inline bool validLiftTuning(const LiftTuning& l, const CountTuning& c) {
     if (l.liftThreshold < 1 || l.liftThreshold > 200) return false;
     if (!(l.liftMultiplier >= 1.0f && l.liftMultiplier <= 2.6f)) return false;
     if (l.liftCost < 0 || l.liftCost > 100) return false;
+    if (l.soloCountLoad < 0 || l.soloCountLoad > 50) return false;
     const double top = static_cast<double>(l.liftMultiplier) * (1.0 + static_cast<double>(kMaxReleaseMark));
     if (static_cast<double>(c.onCountMultiplier) * top > 10.0 + 1e-9) return false;
     if (static_cast<double>(c.silencedMultiplier) * top > 10.0 + 1e-9) return false;

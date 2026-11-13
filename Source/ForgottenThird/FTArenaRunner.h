@@ -240,6 +240,12 @@ public:
 	int32 GetLifts() const { return Lifts; }
 	float GetEnemyMarkBonus(int32 Slot) const;
 	double GetEnemyMarkUntil(int32 Slot) const;
+	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
+	// Load it stored this fight and its last change (-1e9 when none).
+	int32 GetPartnerLoad() const;
+	int32 GetPartnerLoadCap() const;
+	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }
+	double GetPartnerLoadTime() const { return PartnerLoadTime; }
 	double GetOverloadTime() const { return OverloadTime; }
 	int32 GetPopupCount() const { return FMath::Min(PopupTotal, MaxPopups); }
 	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }
@@ -573,6 +579,9 @@ private:
 	double LastJoinAt = -1e9;   // the session's last join time seen
 	int32 Marks = 0;
 	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
+	int32 CappedBlows = 0; // blows the blow cap kept down this fight (-ArenaCountLift)
+	int32 PartnerLoadStored = 0; // the partner's kept gauge: stored this fight, and the last change
+	double PartnerLoadTime = -1e9;
 	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)
 	double KiteLockUntil = -1e9; // the kite's lock end last opened
 	int32 KiteUnlocks = 0;
