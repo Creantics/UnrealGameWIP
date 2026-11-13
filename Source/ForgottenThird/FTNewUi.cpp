@@ -1622,8 +1622,9 @@ private:
 			Poly(Pts, 2, 3.2f * S, Tok(UiToken::Backing, 0.35f * LA));
 			Poly(Pts, 2, 1.8f * S, Tok(I < B.phase ? UiToken::InkDim : UiToken::Ink, (I < B.phase ? 0.55f : 1.f) * LA));
 		}
-		// The target's poise under the line (the boss's own when the target is the boss).
-		if (T.present && (!B.present || T.enemy == B.slot))
+		// The target's poise under the line (the boss's own when the target is the boss), only once some is spent: whole, it
+		// ran the line's length and read as the line splitting.
+		if (T.present && (!B.present || T.enemy == B.slot) && T.poise01 < 0.98f)
 		{
 			HLine(X0, X0 + Len, Y + 12.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.4f, 103, S), Tok(UiToken::InkDim, A), false);
 		}
@@ -2787,14 +2788,17 @@ public:
 		{
 			DimFor = MAX_uint32;
 			OptionDim = 0.f;
+			DimTries = 0;
 		}
 		else if (DimFor != OptionsFor)
 		{
 			const float Dim = MeasureOptionDim(Size);
-			if (Dim >= 0.f) // below 0: no picture yet; measure again next frame
+			// Below 0: no picture yet; measure again next frame, ten tries at most (a truly black scene needs no dim).
+			if (Dim >= 0.f || ++DimTries >= 10)
 			{
 				DimFor = OptionsFor;
-				OptionDim = Dim;
+				OptionDim = FMath::Max(Dim, 0.f);
+				DimTries = 0;
 			}
 		}
 	}
@@ -2952,7 +2956,8 @@ private:
 	{
 		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
 		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
-		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f || !VP->GetRenderTargetTexture().IsValid())
+		// Not on a frame a screenshot is taken: that frame's back buffer is not there to read (an ensure, and a black read).
+		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f || FScreenshotRequest::IsScreenshotRequested())
 		{
 			return -1.f;
 		}
@@ -2980,6 +2985,10 @@ private:
 			ftcore::uiLumaAdd(Hist, ftcore::UiColor{C.R / 255.f, C.G / 255.f, C.B / 255.f, 1.f});
 		}
 		const ftcore::UiColor Pic = ftcore::uiLumaBrightest(Hist, 0.1f);
+		if (Pic.r + Pic.g + Pic.b <= 0.f)
+		{
+			return -1.f; // an all-black read is no picture yet: measure again next frame
+		}
 		const ftcore::UiStyle& St = Table().Style;
 		const ftcore::UiColor Ink = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Ink);
 		const ftcore::UiColor Back = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Backing);
@@ -3167,6 +3176,7 @@ private:
 	FVector2f AnchorUV = FVector2f::ZeroVector; // the answered person's head, as a fraction of the view
 	float OptionDim = 0.f;     // the measured dim behind the options (0 over a dark picture)
 	uint32 DimFor = MAX_uint32; // the options it was measured for
+	int32 DimTries = 0;         // reads that found no picture yet for these options
 	bool bHintUp = false;
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line;
