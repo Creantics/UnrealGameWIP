@@ -1953,7 +1953,10 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         }
         CHECK(moved > 0);
     }
-    {   // locked, rolled 150 degrees away from the open enemy and still in reach: a light on the first free frame ripostes
+    for (const Vec2 stick : {Vec2{-0.866f, 0.5f}, Vec2{-1.f, 0.f}}) {
+        // locked, rolled 150 degrees or straight away from the open enemy (a back dodge, drawn facing it) and still in
+        // reach: a light on the first free frame ripostes
+        CAPTURE(stick.y);
         ArenaFighter f = ruleFighter();
         f.turnRate = 14.f;
         f.dodgeDistance = 0.3f;
@@ -1964,11 +1967,12 @@ TEST_CASE("arena riposte: only in reach and in front, the enemy goes Down, invul
         rig.in.lock = true;
         rig.tick();
         REQUIRE(rig.fight.lock() == 0);
-        rig.in.move = Vec2{-0.866f, 0.5f};
+        rig.in.move = stick;
         rig.in.dodge = true;
         rig.tick();
         rig.in.move = Vec2{};
         REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+        CHECK(rig.out().player.dodgeBack);
         while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
         REQUIRE(rig.out().enemies[0].brain == ArenaBrain::Open);
         rig.in.light = true;
@@ -2524,12 +2528,13 @@ float angleBetween(Vec2 a, Vec2 b) { return std::abs(std::atan2(a.x * b.y - a.y 
 
 // A fighter locked on enemy 0 at (1.5, 0), rolled 120 degrees off it with a short roll (still in reach; not within 45
 // degrees of straight back, which is drawn facing the target): the rig stands on the first free frame after the roll.
-void rollAwayLocked(Rig& rig) {
+// With Stick another way: (-0.866, 0.5) is 150 degrees off and (-1, 0) straight away, both back dodges.
+void rollAwayLocked(Rig& rig, Vec2 stick = Vec2{-0.5f, 0.866f}) {
     rig.in.view = Vec2{1.f, 0.f};
     rig.in.lock = true;
     rig.run(3);
     REQUIRE(rig.fight.lock() == 0);
-    rig.in.move = Vec2{-0.5f, 0.866f};
+    rig.in.move = stick;
     rig.in.dodge = true;
     rig.tick();
     rig.in.move = Vec2{};
@@ -2638,6 +2643,9 @@ TEST_CASE("arena dodge: a locked dodge back from the target is drawn facing it; 
         {"locked backstep (no stick)", true, Vec2{0.f, 0.f}, true},
         {"locked, stick away", true, Vec2{-1.f, 0.f}, true},
         {"locked, stick away and a little across", true, Vec2{-1.f, 0.6f}, true},
+        {"locked, 150 degrees off", true, Vec2{-0.866f, 0.5f}, true},
+        {"locked, 136 degrees off (just inside 45 of straight back)", true, Vec2{-0.7193f, 0.6947f}, true},
+        {"locked, 134 degrees off (just outside)", true, Vec2{-0.6947f, 0.7193f}, false},
         {"locked, stick across", true, Vec2{0.f, 1.f}, false},
         {"locked, stick toward", true, Vec2{1.f, 0.f}, false},
         {"unlocked backstep", false, Vec2{0.f, 0.f}, false},
@@ -2659,8 +2667,11 @@ TEST_CASE("arena dodge: a locked dodge back from the target is drawn facing it; 
         CHECK(rig.out().player.dodgeBack == c.back);
         bool reached = false;
         float worst = 0.f;
+        const bool backstep = rig.out().player.backstep;
+        CHECK(backstep == (c.stick.x == 0.f && c.stick.y == 0.f));
         while (rig.out().player.action == ArenaAction::Dodge) {
             const ArenaPlayerOut& p = rig.out().player;
+            if (backstep && c.lock) CHECK(angleBetween(p.facing, toEnemy(rig)) < 0.05f); // the rules face the target throughout
             if (c.back) worst = std::max(worst, angleBetween(p.drawFacing, Vec2{-p.dodgeDir.x, -p.dodgeDir.y}));
             if (angleBetween(p.drawFacing, p.dodgeDir) < 0.01f && p.actionTime <= 0.5f * fighter.dodgeTime + kDt) reached = true;
             rig.tick();
@@ -2720,7 +2731,10 @@ TEST_CASE("arena attack: a light right after a roll away turns the drawn body ov
 }
 
 TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll away faces the target") {
-    {   // a parry pressed on the first free frame after a 150 degree roll away catches the blow
+    for (const Vec2 stick : {Vec2{-0.866f, 0.5f}, Vec2{-1.f, 0.f}, Vec2{-0.5f, 0.866f}}) {
+        // a parry pressed on the first free frame after a roll 150 degrees away, straight away (both back dodges, drawn
+        // facing the target) or 120 degrees off (a roll) catches the blow
+        CAPTURE(stick.y);
         const float startup = 1.2f;
         Rig rig(shortRoller(), {hitterKind(swing(startup, 0.15f, 0.5f, 3.f, 20))});
         rig.in.view = Vec2{1.f, 0.f};
@@ -2731,10 +2745,11 @@ TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll aw
         // roll so it ends three frames before the blow
         const float rollAt = startup - rig.fight.def().fighter.dodgeTime - 3.f * kDt;
         while (rig.out().enemies[0].stateTime < rollAt) rig.tick();
-        rig.in.move = Vec2{-0.866f, 0.5f};
+        rig.in.move = stick;
         rig.in.dodge = true;
         rig.tick();
         rig.in.move = Vec2{};
+        CHECK(rig.out().player.dodgeBack == (stick.x < -0.75f));
         while (rig.out().player.action == ArenaAction::Dodge) rig.tick();
         REQUIRE(rig.count(ArenaEventType::Hit) == 0);
         rig.in.guard = true;
@@ -2742,9 +2757,11 @@ TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll aw
         CHECK(rig.count(ArenaEventType::Parried) == 1);
         CHECK(rig.count(ArenaEventType::Hit) == 0);
     }
-    {   // a backstep right after the roll goes straight away from the target
+    for (const Vec2 stick : {Vec2{-0.866f, 0.5f}, Vec2{-1.f, 0.f}, Vec2{-0.5f, 0.866f}}) {
+        // a backstep right after a back dodge or a roll goes straight away from the target
+        CAPTURE(stick.y);
         Rig rig(shortRoller(), {dummyKind()});
-        rollAwayLocked(rig);
+        rollAwayLocked(rig, stick);
         const Vec2 to = toEnemy(rig);
         rig.in.dodge = true; // no stick: a backstep
         rig.tick();
