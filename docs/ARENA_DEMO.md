@@ -338,6 +338,12 @@ kind in whatever zone `-ArenaStage` names (the sand ring by default). `-ArenaAut
 For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaShotDelay=8` in place of `-windowed`
 (needs a renderer, not `-NullRHI`).
 
+Carrying (slice 1, off unless asked, never in shipping builds): `-ArenaChairs=chair_a01,chair_a02,chair_a03` names those
+chairs of `Data/Battle/chairs.json` (four seats; `none` names none, so the Load cap is 40, three named give 100),
+`-ArenaCap=N` sets the cap outright, `-ArenaAlly` adds the ally alone, `-ArenaTakeHalfAuto` has the autopilot take half of
+blows aimed at the ally and `-ArenaAutoBlock` has it guard through every wind-up (blocks store a quarter of the blocked
+damage as Load). Any of the first four turns carrying on; the result is one `Arena: CARRY ...` line at the end.
+
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips

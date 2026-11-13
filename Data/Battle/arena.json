@@ -21,7 +21,8 @@
       "healCharges": 3, "healAmount": 45, "healTime": 0.9, "healRecovery": 0.4, "healMoveScale": 0.35,
       "lockRange": 15, "lockBreak": 20,
       "loadShare": 1, "releasePoise": 1, "pairWindow": 0.12, "pairHits": 3,
-      "readPower": 0.5, "readStackPower": 0.2, "readPoise": 5, "readWrongPoise": 10
+      "readPower": 0.5, "readStackPower": 0.2, "readPoise": 5, "readWrongPoise": 10,
+      "blockLoadShare": 0.25, "takeHalfWindow": 0.25, "takeHalfReach": 4, "takeHalfLoadShare": 1, "takeHalfRearm": 0.5
     },
     {
       "id": "devin", "weapon": "gauntlets",
