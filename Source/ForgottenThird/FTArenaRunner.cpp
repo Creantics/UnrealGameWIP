@@ -1809,6 +1809,11 @@ void UFTArenaRunner::StepFight()
 		}
 		if (bTableKey)
 		{
+			// The pilot stops attacking and releasing while it means to set the table, so the setter comes free and stays so.
+			if (TableKey.holding() || TableCouldBegin())
+			{
+				In.light = In.heavy = In.release = false;
+			}
 			const bool bStart = !TableKey.holding() && TableCanBegin();
 			TableKeyPresses += bStart ? 1 : 0;
 			bReleaseDown = (TableKeyPresses % 2) == 1;
@@ -4795,9 +4800,14 @@ bool UFTArenaRunner::BeginTableNow(double T)
 
 bool UFTArenaRunner::TableCanBegin() const
 {
+	return TableSetterFree() && TableCouldBegin();
+}
+
+bool UFTArenaRunner::TableCouldBegin() const
+{
 	ftcore::Load Held;
 	Held.value = Fight.load();
-	return TableSetterFree() && TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
+	return TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
 		&& TablePlaces.full(Held) && TablePlaces.tableSeats() >= TableClock.tuning().minSeats
 		&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies;
 }
@@ -4815,7 +4825,7 @@ void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
 	}
 	const double T = static_cast<double>(Fight.heldTime());
 	const bool bFree = TableSetterFree();
-	const bool bPossible = bFree && TableCanBegin();
+	const bool bPossible = TableCouldBegin();
 	const ftcore::TableKeyStep S = TableKey.step(In.release, bReleaseDown, bFree, bPossible, T);
 	In.release = S.release;
 	if (S.why != ftcore::TableKeyDrop::None)

@@ -404,7 +404,8 @@ private:
 	void TickTable(const ftcore::ArenaOutput& Out);
 	bool BeginTableNow(double T);
 	// The player's table key: Release held at full Load with enough bodies in reach (TableHold), on the step's input.
-	bool TableCanBegin() const;
+	bool TableCanBegin() const;   // TableCouldBegin and the setter free
+	bool TableCouldBegin() const; // the table's own conditions: Ready, alive, full Load, places, bodies in reach
 	bool TableSetterFree() const; // ftcore::tableSetterFree on the player's last action
 	void StepTableKey(ftcore::ArenaInput& In);
 	void SpawnTable();
