@@ -112,6 +112,20 @@ TEST_CASE("ui style: contrast is measured on the backing over the worst picture;
     CHECK_FALSE(importUiStyle(R"({"text": {"label": {"font": "comic"}}})", s, &err));
 }
 
+TEST_CASE("ui style: the serif faces parse by name; the verbs and numbers default to the small caps") {
+    std::string err;
+    UiStyle s = defaultUiStyle();
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Verb)].font == UiFont::SerifScBold);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Value)].font == UiFont::SerifScBold);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Subtitle)].font == UiFont::Serif);
+    REQUIRE(importUiStyle(R"({"text": {"label": {"font": "serif_sc"}, "title": {"font": "serif_bold"},
+                                       "prompt": {"font": "sans_bold"}}})", s, &err));
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Label)].font == UiFont::SerifSc);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Title)].font == UiFont::SerifBold);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Prompt)].font == UiFont::SansBold);
+    CHECK_FALSE(importUiStyle(R"({"text": {"label": {"font": "serif_caps"}}})", s, &err));
+}
+
 TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is refused; new keys are optional") {
     std::string err;
     UiStyle s = defaultUiStyle();

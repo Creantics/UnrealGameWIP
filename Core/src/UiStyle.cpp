@@ -17,7 +17,8 @@ constexpr std::array<std::string_view, kUiTokenCount> kTokenNames{"ink", "ink_di
     "accent2", "danger", "ally", "weak_point"};
 constexpr std::array<std::string_view, kUiTextRoleCount> kRoleNames{"title", "heading", "label", "value", "subtitle",
     "speaker", "prompt", "popup", "verb"};
-constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans", "sans_bold", "serif", "hand"};
+constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans",  "sans_bold", "serif",        "hand",
+                                                                 "serif_bold", "serif_sc", "serif_sc_bold"};
 constexpr std::array<std::string_view, 7> kShapeNames{"none", "diamond", "chevron", "circle", "square", "triangle", "ring"};
 constexpr std::array<std::string_view, kUiMeterShapeCount> kMeterNames{"line", "ring", "teeth", "stroke"};
 
@@ -135,15 +136,15 @@ UiStyle defaultUiStyle() {
     cue(UiPalette::HighContrast, UiToken::Ally, hex(0x00E0FF));
     cue(UiPalette::HighContrast, UiToken::WeakPoint, hex(0xFFFF00));
 
-    s.text[static_cast<std::size_t>(UiTextRole::Title)] = {UiFont::SansBold, 44.f, 0.08f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Heading)] = {UiFont::SansBold, 28.f, 0.06f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Label)] = {UiFont::Sans, 18.f, 0.12f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Value)] = {UiFont::SansBold, 24.f, 0.f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Subtitle)] = {UiFont::Sans, 36.f, 0.f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Speaker)] = {UiFont::SansBold, 24.f, 0.12f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Prompt)] = {UiFont::Sans, 20.f, 0.04f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Popup)] = {UiFont::SansBold, 28.f, 0.04f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::Sans, 26.f, 0.08f, true};
+    s.text[static_cast<std::size_t>(UiTextRole::Title)] = {UiFont::SerifScBold, 40.f, 0.08f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Heading)] = {UiFont::SerifScBold, 28.f, 0.06f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Label)] = {UiFont::SerifSc, 22.f, 0.08f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Value)] = {UiFont::SerifScBold, 28.f, 0.f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Subtitle)] = {UiFont::Serif, 36.f, 0.f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Speaker)] = {UiFont::SerifScBold, 26.f, 0.08f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Prompt)] = {UiFont::Serif, 22.f, 0.02f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Popup)] = {UiFont::SerifScBold, 30.f, 0.04f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::SerifScBold, 27.f, 0.12f, true};
 
     s.cueShape[static_cast<std::size_t>(UiToken::Danger)] = UiCueShape::Triangle;
     s.cueShape[static_cast<std::size_t>(UiToken::Ally)] = UiCueShape::Circle;

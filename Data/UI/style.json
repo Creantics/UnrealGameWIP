@@ -22,15 +22,15 @@
     "high_contrast": { "ink": "#FFFFFF", "ink_dim": "#FFFFFF", "backing": "#000000", "track": "#FFFFFF73", "danger": "#FF8A00", "ally": "#00E0FF", "weak_point": "#FFFF00" }
   },
   "text": {
-    "title":    { "font": "sans_bold", "px": 44, "tracking": 0.08, "upper": true },
-    "heading":  { "font": "sans_bold", "px": 28, "tracking": 0.06, "upper": true },
-    "label":    { "font": "sans",      "px": 18, "tracking": 0.12, "upper": true },
-    "value":    { "font": "sans_bold", "px": 24, "tracking": 0,    "upper": false },
-    "subtitle": { "font": "sans",      "px": 36, "tracking": 0,    "upper": false },
-    "speaker":  { "font": "sans_bold", "px": 24, "tracking": 0.12, "upper": true },
-    "prompt":   { "font": "sans",      "px": 20, "tracking": 0.04, "upper": false },
-    "popup":    { "font": "sans_bold", "px": 28, "tracking": 0.04, "upper": true },
-    "verb":     { "font": "sans",      "px": 26, "tracking": 0.08, "upper": true }
+    "title":    { "font": "serif_sc_bold", "px": 40, "tracking": 0.08, "upper": false },
+    "heading":  { "font": "serif_sc_bold", "px": 28, "tracking": 0.06, "upper": false },
+    "label":    { "font": "serif_sc",      "px": 22, "tracking": 0.08, "upper": false },
+    "value":    { "font": "serif_sc_bold", "px": 28, "tracking": 0,    "upper": false },
+    "subtitle": { "font": "serif",         "px": 36, "tracking": 0,    "upper": false },
+    "speaker":  { "font": "serif_sc_bold", "px": 26, "tracking": 0.08, "upper": false },
+    "prompt":   { "font": "serif",         "px": 22, "tracking": 0.02, "upper": false },
+    "popup":    { "font": "serif_sc_bold", "px": 30, "tracking": 0.04, "upper": false },
+    "verb":     { "font": "serif_sc_bold", "px": 27, "tracking": 0.12, "upper": true }
   },
   "cues": { "danger": "triangle", "ally": "circle", "weak_point": "diamond" }
 }

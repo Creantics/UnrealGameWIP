@@ -16,7 +16,9 @@
 #include "Algo/BinarySearch.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Engine/World.h"
+#include "Fonts/CompositeFont.h"
 #include "Fonts/FontMeasure.h"
+#include "HAL/FileManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
@@ -101,14 +103,65 @@ FLinearColor Tok(UiToken T, float Alpha = 1.f)
 	return C;
 }
 
-// The interim font (the engine's Roboto); Hand is a marked placeholder italic. Every glyph carries the hairline edge.
+// The UI's faces, read once from Content/UI/Fonts (OFL, each beside its licence): the serif and its small caps for
+// display and labels, the sans for key caps and figures only. The small-caps files are baked by
+// tools/bake_small_caps.py (Slate shapes Latin kerning-only, so the font's own substitution would never run). A missing
+// file leaves that face on the engine's Roboto, logged once.
+const FName FaceName(TEXT("Face")); // each composite holds one typeface entry, named
+
+struct FUiFaces
+{
+	TSharedPtr<const FCompositeFont> Font[ftcore::kUiFontCount];
+};
+
+const FUiFaces& Faces()
+{
+	static FUiFaces Built = []
+	{
+		FUiFaces F;
+		const FString Dir = FPaths::ProjectContentDir() / TEXT("UI/Fonts");
+		const TCHAR* Files[ftcore::kUiFontCount] = {
+			TEXT("SourceSans3/SourceSans3-Regular.ttf"),   // Sans
+			TEXT("SourceSans3/SourceSans3-Semibold.ttf"),  // SansBold
+			TEXT("Spectral/Spectral-Medium.ttf"),          // Serif
+			nullptr,                                       // Hand: the placeholder italic
+			TEXT("Spectral/Spectral-SemiBold.ttf"),        // SerifBold
+			TEXT("Spectral/SpectralSCBaked-Medium.ttf"),   // SerifSc
+			TEXT("Spectral/SpectralSCBaked-SemiBold.ttf"), // SerifScBold
+		};
+		int32 Loaded = 0;
+		for (size_t I = 0; I < ftcore::kUiFontCount; ++I)
+		{
+			if (!Files[I])
+			{
+				continue;
+			}
+			const FString Path = Dir / Files[I];
+			if (IFileManager::Get().FileSize(*Path) < 4096) // missing (-1), or an unfetched LFS pointer (tiny)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("UI: font %s missing; that face stays on Roboto."), *Path);
+				continue;
+			}
+			F.Font[I] = MakeShared<FStandaloneCompositeFont>(FaceName, Path, EFontHinting::Default, EFontLoadingPolicy::LazyLoad);
+			++Loaded;
+		}
+		UE_LOG(LogForgottenThird, Log, TEXT("UI: %d of 6 font faces loaded from %s."), Loaded, *Dir);
+		return F;
+	}();
+	return Built;
+}
+
+// Every glyph carries the hairline edge.
 FSlateFontInfo FontFor(UiTextRole Role, float Height, float TextScale = 1.f)
 {
 	const ftcore::UiStyle& S = Table().Style;
 	const ftcore::UiTextStyle& T = S.text[static_cast<size_t>(Role)];
 	const float Px = ftcore::uiTextPx(S, Role, Height, TextScale);
-	const TCHAR* Face = T.font == ftcore::UiFont::SansBold ? TEXT("Bold") : (T.font == ftcore::UiFont::Hand ? TEXT("Italic") : TEXT("Regular"));
-	FSlateFontInfo F = FCoreStyle::GetDefaultFontStyle(Face, Px * 0.75f); // Slate sizes are points at 96 dpi
+	const TSharedPtr<const FCompositeFont>& Face = Faces().Font[static_cast<size_t>(T.font)];
+	const bool bBold = T.font == ftcore::UiFont::SansBold || T.font == ftcore::UiFont::SerifBold || T.font == ftcore::UiFont::SerifScBold;
+	const TCHAR* Fallback = bBold ? TEXT("Bold") : (T.font == ftcore::UiFont::Hand ? TEXT("Italic") : TEXT("Regular"));
+	// Slate sizes are points at 96 dpi.
+	FSlateFontInfo F = Face.IsValid() ? FSlateFontInfo(Face, Px * 0.75f, FaceName) : FCoreStyle::GetDefaultFontStyle(Fallback, Px * 0.75f);
 	F.LetterSpacing = FMath::RoundToInt(T.tracking * 1000.f);
 	F.OutlineSettings.OutlineSize = FMath::Max(1, FMath::RoundToInt(ftcore::uiEdgePx(S, Height)));
 	F.OutlineSettings.OutlineColor = Table().Edge;
@@ -505,12 +558,14 @@ void PolyStroke(ftcore::UiStroke& Out, const FVector2f* Pts, int32 N, float Half
 	}
 }
 
-// A closed stadium (a key's ring) round (CX, CY): W wide, H high, round ends; the first point repeats at the end.
-void StadiumStroke(ftcore::UiStroke& Out, float CX, float CY, float W, float H, float HalfWidth)
+// A closed rounded box (a key cap) round (CX, CY): W wide, H high, corners of radius Corner; the first point repeats at
+// the end.
+void KeyCapStroke(ftcore::UiStroke& Out, float CX, float CY, float W, float H, float HalfWidth, float Corner)
 {
-	const float R = H * 0.5f;
-	const float Half = FMath::Max(0.f, W * 0.5f - R);
-	constexpr int32 Arc = 14;
+	const float R = FMath::Clamp(Corner, 0.f, FMath::Min(W, H) * 0.5f);
+	const float HX = W * 0.5f - R;
+	const float HY = H * 0.5f - R;
+	constexpr int32 Arc = 6;
 	Out.count = 0;
 	const auto Put = [&Out, HalfWidth](float X, float Y)
 	{
@@ -520,15 +575,15 @@ void StadiumStroke(ftcore::UiStroke& Out, float CX, float CY, float W, float H, 
 		P.halfWidth = HalfWidth;
 		P.alpha = 1.f;
 	};
-	for (int32 I = 0; I <= Arc; ++I) // the right end, top to bottom
+	const float SX[4] = {1.f, 1.f, -1.f, -1.f}; // the corners clockwise from the top right
+	const float SY[4] = {-1.f, 1.f, 1.f, -1.f};
+	for (int32 K = 0; K < 4; ++K)
 	{
-		const float A = -0.5f * UE_PI + UE_PI * I / Arc;
-		Put(CX + Half + R * FMath::Cos(A), CY + R * FMath::Sin(A));
-	}
-	for (int32 I = 0; I <= Arc; ++I) // the left end, bottom to top
-	{
-		const float A = 0.5f * UE_PI + UE_PI * I / Arc;
-		Put(CX - Half + R * FMath::Cos(A), CY + R * FMath::Sin(A));
+		for (int32 I = 0; I <= Arc; ++I)
+		{
+			const float A = -0.5f * UE_PI + 0.5f * UE_PI * (K + static_cast<float>(I) / Arc);
+			Put(CX + SX[K] * HX + R * FMath::Cos(A), CY + SY[K] * HY + R * FMath::Sin(A));
+		}
 	}
 	Put(Out.pt[0].x, Out.pt[0].y);
 }
@@ -683,9 +738,10 @@ public:
 			ValueAsc = FontMeasure()->GetMaxCharacterHeight(ValueFont) + FontMeasure()->GetBaseline(ValueFont);
 			LabelAsc = LabelH + FontMeasure()->GetBaseline(LabelFont);
 			VerbAsc = FontMeasure()->GetMaxCharacterHeight(VerbFont) + FontMeasure()->GetBaseline(VerbFont);
-			const auto Word = [this](const FString& In, FString& Out, float& W, const FSlateFontInfo& F)
+			// Each role says whether it shows in capitals; the small caps take mixed case (a capital, then small caps).
+			const auto Word = [this](const FString& In, FString& Out, float& W, const FSlateFontInfo& F, bool bUpper = false)
 			{
-				Out = In.ToUpper();
+				Out = bUpper ? In.ToUpper() : In;
 				W = TextWidth(Out, F);
 			};
 			Word(kDownUi, DownWord, DownW, VerbFont);
@@ -698,7 +754,8 @@ public:
 			Word(kInvulnerableUi, InvulWord, InvulW, LabelFont);
 			for (FVerbSlot& V : Verbs)
 			{
-				Word(FTUiText::Lookup(*FT::ToFString(V.Label)), V.Word, V.WordW, VerbFont);
+				Word(FTUiText::Lookup(*FT::ToFString(V.Label)), V.Word, V.WordW, VerbFont,
+					Table().Style.text[static_cast<size_t>(UiTextRole::Verb)].upper);
 			}
 			bRebuild = true; // kept until a live frame rebuilds the strings that need the fight
 		}
@@ -748,7 +805,7 @@ public:
 				{
 					if (FCStringAnsi::Strcmp(Entries[I].label, V.Label) == 0)
 					{
-						V.Keys = FT::ToFString(ftcore::inputHintKeys(FTInputBindings::Get(), Entries[I], Device)).ToUpper();
+						V.Keys = FT::ToFString(ftcore::inputHintKeys(FTInputBindings::Get(), Entries[I], Device)); // as bound: Ctrl, R
 						break;
 					}
 				}
@@ -861,19 +918,19 @@ private:
 		const float CY = Size.Y - Carry::LeadUp * S;
 		Mesh.Shade(CX + 10.f * S, CY - 40.f * S, 230.f * S, 230.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
 
-		Ring(CX, CY, Carry::RingR * S, 1.5f, 11, S, Tok(UiToken::Ink, 0.9f * A));
+		Ring(CX, CY, Carry::RingR * S, 2.1f, 11, S, Tok(UiToken::Ink, 0.9f * A));
 
 		const float Hp = L.hpMax > 0 ? FMath::Clamp(static_cast<float>(L.hp) / L.hpMax, 0.f, 1.f) : 0.f;
 		const bool bLow = Hp <= Carry::LowHp;
 		const FLinearColor HpC = bLow ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A);
-		Arc(CX, CY, Carry::HpR * S, 0.f, Hp, StrokeStyle(4.2f, 21, S), HpC);
+		Arc(CX, CY, Carry::HpR * S, 0.f, Hp, StrokeStyle(5.6f, 21, S), HpC);
 		if (HpLost.Was > Hp + 0.004f)
 		{
 			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 21, S, 0.f);
 			Rub.broken = true;
 			Arc(CX, CY, Carry::HpR * S, Hp, HpLost.Was, Rub, Tok(UiToken::Ink, 0.22f * A), false);
 		}
-		Arc(CX, CY, Carry::StaminaR * S, 0.f, FMath::Clamp(L.stamina01, 0.f, 1.f), StrokeStyle(1.2f, 23, S), Tok(UiToken::InkDim, 0.7f * A), false);
+		Arc(CX, CY, Carry::StaminaR * S, 0.f, FMath::Clamp(L.stamina01, 0.f, 1.f), StrokeStyle(1.6f, 23, S), Tok(UiToken::InkDim, 0.8f * A), false);
 
 		if (L.loadMax > 0)
 		{
@@ -894,7 +951,7 @@ private:
 				const FVector2f Pts[2] = {FVector2f(X0, Y0), FVector2f(X1, Y1)};
 				Poly(Pts, 2, 0.9f * S, Tok(UiToken::Ink, 0.8f * A));
 			}
-			Arc(CX, CY, Carry::LoadR * S, 0.f, Load, StrokeStyle(3.f, 33, S), L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
+			Arc(CX, CY, Carry::LoadR * S, 0.f, Load, StrokeStyle(4.2f, 33, S), L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
 			const int32 ReleaseAt = L.releaseAt > 0 ? L.releaseAt : ftcore::kArenaReleaseOpenLoad;
 			const float Mark = FMath::Clamp(static_cast<float>(ReleaseAt) / L.loadMax, 0.f, 1.f);
 			const float Deg = Carry::A0 + (Carry::A1 - Carry::A0) * Mark;
@@ -908,8 +965,8 @@ private:
 		// The chairs at the table: one small filled mark per named chair, in a row inside the ring's crown.
 		for (int32 I = 0; I < L.chairCount; ++I)
 		{
-			const float X = CX + (static_cast<float>(I) - 0.5f * (L.chairCount - 1)) * 13.f * S;
-			Mesh.Dot(X, CY - 26.f * S, 3.4f * S, Tok(UiToken::Ink, A));
+			const float X = CX + (static_cast<float>(I) - 0.5f * (L.chairCount - 1)) * 16.f * S;
+			Mesh.Dot(X, CY - 26.f * S, 4.6f * S, Tok(UiToken::Ink, A));
 		}
 
 		// The numbers in the open bottom: HP to the left of the middle (a danger mark beside it when low), Load to the right.
@@ -1120,21 +1177,22 @@ private:
 			const FLinearColor WC = I == Hot ? Tok(UiToken::Accent, WA) : Avail[I] ? Tok(UiToken::Ink, WA) : Tok(UiToken::InkDim, WA);
 			const float KX = RX - 44.f * S;
 			const float KY = Y - 7.f * S;
-			const float KW = V.Keys.Len() <= 1 ? 30.f * S : FMath::Max(30.f * S, V.KeysW + 18.f * S);
-			StadiumStroke(Line, KX, KY, KW, 30.f * S, 0.65f * S);
+			const float KW = V.Keys.Len() <= 1 ? 30.f * S : FMath::Max(30.f * S, V.KeysW + 26.f * S);
+			KeyCapStroke(Line, KX, KY, KW, 30.f * S, 0.75f * S, 6.f * S);
 			Mesh.Stroke(Line, C, true, true);
 			if (I == 0 && TakeHalfAge < 0.6f)
 			{
 				// Took half: a fine accent ring opens out from the Guard key and fades.
 				const float T = TakeHalfAge / 0.6f;
-				StadiumStroke(Line, KX, KY, KW + 16.f * T * S, (30.f + 16.f * T) * S, 0.8f * S);
+				KeyCapStroke(Line, KX, KY, KW + 16.f * T * S, (30.f + 16.f * T) * S, 0.8f * S, (6.f + 8.f * T) * S);
 				Mesh.Stroke(Line, Tok(UiToken::Accent, (1.f - T) * FMath::Max(A, 0.6f)), true, true);
 			}
 			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.55f, V.Keys, LabelFont, WC);
 			P.Text(KX - KW * 0.5f - 18.f * S - V.WordW, Y - VerbAsc, V.Word, VerbFont, WC);
 			if (I == Hot)
 			{
-				const FVector2f Pts[3] = {FVector2f(RX + 19.f * S, Y - 15.f * S), FVector2f(RX + 10.f * S, Y - 7.f * S), FVector2f(RX + 19.f * S, Y + 1.f * S)};
+				// Points out past the rule, as on the sheet.
+				const FVector2f Pts[3] = {FVector2f(RX + 11.f * S, Y - 16.f * S), FVector2f(RX + 19.f * S, Y - 8.f * S), FVector2f(RX + 11.f * S, Y)};
 				Poly(Pts, 3, 0.9f * S, Tok(UiToken::Accent, A));
 			}
 		}
@@ -1391,8 +1449,10 @@ public:
 				const bool bRight = H.X + Gap + MarkGap + OptionW < Size.X - 80.f * S;
 				MarkX = bRight ? H.X + Gap : H.X - Gap - MarkGap - OptionW;
 				OptTop = FMath::Clamp(H.Y - 30.f * S - OptBlockH * 0.5f, 60.f * S, Top - OptBlockH - 40.f * S);
-				P.Soft(MarkX + (MarkGap + OptionW) * 0.5f, OptTop + OptBlockH * 0.5f, OptionW + 260.f * S, OptBlockH + 140.f * S,
-					Table().Style.backingSoftDialogue);
+				// Off the line's block the options often sit on a lamp pool or a bright wall: a deeper, tighter shade than
+				// the line's (still a falloff, never a box).
+				P.Soft(MarkX + (MarkGap + OptionW) * 0.5f, OptTop + OptBlockH * 0.5f, OptionW + 200.f * S, OptBlockH + 110.f * S,
+					FMath::Min(0.62f, Table().Style.backingSoftDialogue * 1.45f));
 				// The leader: a fine line from beside the face to the middle row's mark, eased flat at both ends.
 				const float MidY = OptTop + RowH * (static_cast<float>(OptionRows - 1) * 0.5f) + OptionH * 0.5f;
 				const FVector2f P0(H.X + (bRight ? 40.f : -40.f) * S, H.Y);
@@ -1521,7 +1581,8 @@ private:
 		const TSharedRef<FSlateFontMeasure> M = FontMeasure();
 		LineH = M->GetMaxCharacterHeight(TextFont) * 1.15f;
 		OptionH = M->GetMaxCharacterHeight(OptionFont);
-		SpeakerUpper = View.kind == ftcore::DialogueViewKind::Line ? D.GetSpeaker().ToUpper() : FString();
+		const bool bSpeakerUpper = Table().Style.text[static_cast<size_t>(UiTextRole::Speaker)].upper;
+		SpeakerUpper = View.kind != ftcore::DialogueViewKind::Line ? FString() : bSpeakerUpper ? D.GetSpeaker().ToUpper() : D.GetSpeaker();
 		SpeakerW = SpeakerUpper.IsEmpty() ? 0.f : TextWidth(SpeakerUpper, SpeakerFont) + 18.f * S;
 		SpeakerDy = (M->GetMaxCharacterHeight(TextFont) - M->GetMaxCharacterHeight(SpeakerFont)) * 0.62f;
 		MaxW = FMath::Min(Size.X - 160.f * S, 1500.f * S);

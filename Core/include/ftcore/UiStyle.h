@@ -51,10 +51,11 @@ inline constexpr std::size_t kUiTokenCount = 9;
 enum class UiTextRole : std::uint8_t { Title, Heading, Label, Value, Subtitle, Speaker, Prompt, Popup, Verb };
 inline constexpr std::size_t kUiTextRoleCount = 9;
 
-// Font families the style may name. Sans is the engine's Roboto until the final font is ruled; Hand is the
-// Third's handwriting (a marked placeholder italic until an owned font exists).
-enum class UiFont : std::uint8_t { Sans, SansBold, Serif, Hand };
-inline constexpr std::size_t kUiFontCount = 4;
+// Font families the style may name. The display and label face is a serif with real small caps (SerifSc: lowercase
+// draws as small caps, figures stay lining); Sans is the secondary face, for key caps and figures only where the serif
+// fails small. Hand is the Third's handwriting (a marked placeholder italic until an owned font exists).
+enum class UiFont : std::uint8_t { Sans, SansBold, Serif, Hand, SerifBold, SerifSc, SerifScBold };
+inline constexpr std::size_t kUiFontCount = 7;
 
 // The cue shapes that carry meaning besides colour.
 enum class UiCueShape : std::uint8_t { None, Diamond, Chevron, Circle, Square, Triangle, Ring };
