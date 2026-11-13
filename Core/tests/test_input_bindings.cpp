@@ -245,7 +245,7 @@ bool piecesFromTable(const InputBindings& b, const InputHintEntry& e, InputDevic
 }
 
 void checkLines(const InputBindings& b) {
-    for (const InputHintScreen screen : {InputHintScreen::Arena, InputHintScreen::Field})
+    for (const InputHintScreen screen : {InputHintScreen::Arena, InputHintScreen::Field, InputHintScreen::ArenaJump})
         for (const InputDevice d : {InputDevice::Keys, InputDevice::Pad}) {
             CAPTURE(static_cast<int>(screen));
             CAPTURE(static_cast<int>(d));
@@ -310,6 +310,21 @@ TEST_CASE("input hints: the lines follow a rebind and leave out what nothing rea
     // The host's words come through the callback.
     const auto word = [](const char* key, void*) { return std::string("<") + key + ">"; };
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, +word).find("Space <input.jump>") != std::string::npos);
+}
+
+TEST_CASE("input hints: the jump's arena line is the arena line with the jump after the dodge, on each device") {
+    const InputBindings b = defaultInputBindings();
+    for (const InputDevice d : {InputDevice::Keys, InputDevice::Pad}) {
+        CAPTURE(static_cast<int>(d));
+        const std::string plain = inputHintLine(b, InputHintScreen::Arena, d, nullptr);
+        const std::string jump = inputHintLine(b, InputHintScreen::ArenaJump, d, nullptr);
+        CHECK(plain.find("input.jump") == std::string::npos); // the default line names no jump key
+        const std::string piece = (d == InputDevice::Keys ? "Space" : "A") + std::string(" input.jump  ");
+        const std::size_t at = jump.find(piece);
+        REQUIRE(at != std::string::npos);
+        CHECK(jump.substr(0, at) + jump.substr(at + piece.size()) == plain);
+        CHECK(jump.find("input.dodge  " + piece) != std::string::npos);
+    }
 }
 
 TEST_CASE("input hints: key labels") {

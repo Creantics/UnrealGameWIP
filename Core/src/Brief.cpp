@@ -70,6 +70,74 @@ void unknownKeys(JsonValue j, const std::string& path, std::initializer_list<std
     }
 }
 
+// Stat-driven fighter keys (BriefKit.h): a Brief's kit may not set them; its change scales them instead.
+void statKeys(JsonValue j, const std::string& path, std::vector<std::string>& errors) {
+    if (!j.isObject()) return;
+    static constexpr std::string_view top[] = {"hp", "poise", "stamina", "staminaRegen", "guardAbsorb", "parryWindow",
+                                               "dodgeInvulnEnd", "dodgeDistance", "moveSpeed", "readPower",
+                                               "readStackPower", "readPoise", "loadShare"};
+    for (const std::string_view k : top)
+        if (j.has(k)) errors.push_back(path + "." + std::string(k) + ": a stat drives it; use change");
+    const auto attack = [&](JsonValue a, const std::string& at, bool poise) {
+        if (!a.isObject()) return;
+        if (a.has("damage")) errors.push_back(at + ".damage: a stat drives it; use change");
+        if (poise && a.has("poiseDamage")) errors.push_back(at + ".poiseDamage: a stat drives it; use change");
+    };
+    if (const JsonValue light = j["light"]; light.isArray())
+        for (std::uint32_t i = 0; i < light.size(); ++i)
+            attack(light[i], path + ".light[" + std::to_string(i) + "]", true);
+    attack(j["heavy"], path + ".heavy", true);
+    attack(j["shot"], path + ".shot", true);
+    attack(j["riposte"], path + ".riposte", false);
+    attack(j["release"], path + ".release", false);
+}
+
+void readChange(JsonValue j, const std::string& path, BriefChange& c, std::vector<std::string>& errors) {
+    if (!j.isObject()) {
+        errors.push_back(path + ": expected an object");
+        return;
+    }
+    struct Key {
+        std::string_view name;
+        float BriefChange::*field;
+        double lo, hi;
+    };
+    static constexpr Key keys[] = {
+        {"hp", &BriefChange::hp, kBriefChangeMin, kBriefChangeMax},
+        {"poise", &BriefChange::poise, kBriefChangeMin, kBriefChangeMax},
+        {"guardLeak", &BriefChange::guardLeak, kBriefChangeMin, kBriefChangeMax},
+        {"parryWindowAdd", &BriefChange::parryWindowAdd, -kBriefParryAddMax, kBriefParryAddMax},
+        {"kickDamage", &BriefChange::kickDamage, kBriefChangeMin, kBriefChangeMax},
+        {"kickPoiseDamage", &BriefChange::kickPoiseDamage, kBriefChangeMin, kBriefChangeMax},
+        {"releaseDamage", &BriefChange::releaseDamage, kBriefChangeMin, kBriefChangeMax},
+        {"shotDamage", &BriefChange::shotDamage, kBriefChangeMin, kBriefChangeMax},
+        {"shotPoiseDamage", &BriefChange::shotPoiseDamage, kBriefChangeMin, kBriefChangeMax},
+        {"termDuration", &BriefChange::termDuration, kBriefChangeMin, kBriefChangeMax},
+        {"readPower", &BriefChange::readPower, kBriefChangeMin, kBriefChangeMax},
+        {"readStackPower", &BriefChange::readStackPower, kBriefChangeMin, kBriefChangeMax},
+        {"loadShare", &BriefChange::loadShare, kBriefChangeMin, kBriefChangeMax},
+        {"dodgeDistance", &BriefChange::dodgeDistance, kBriefChangeMin, kBriefChangeMax},
+        {"invuln", &BriefChange::invuln, kBriefChangeMin, kBriefChangeMax},
+    };
+    for (std::uint32_t k = 0; k < j.size(); ++k) {
+        const std::string_view name = j.key(k);
+        const Key* key = nullptr;
+        for (const Key& w : keys)
+            if (w.name == name) key = &w;
+        if (!key) {
+            errors.push_back(path + ": unknown key: " + std::string(name));
+            continue;
+        }
+        const JsonValue v = j[name];
+        if (!v.isNumber() || v.number() < key->lo || v.number() > key->hi) {
+            errors.push_back(path + "." + std::string(name) + ": expected a number in [" + std::to_string(key->lo) +
+                             ", " + std::to_string(key->hi) + "]");
+            continue;
+        }
+        c.*(key->field) = static_cast<float>(v.number());
+    }
+}
+
 // Lays a fighter object over `kit`; its unknown keys refuse the file like any other problem.
 void overlay(JsonValue j, const std::string& path, ArenaFighter& kit, std::vector<std::string>& errors) {
     if (j.isObject() && (j.has("id") || j.has("weapon"))) errors.push_back(path + ": may not name an id or a weapon");
@@ -126,7 +194,7 @@ bool importBriefTable(std::string_view json, const ArenaFighter& lead, BriefTabl
             errors.push_back(path + ": expected an object");
             continue;
         }
-        unknownKeys(row, path, {"id", "base", "growth", "kit"}, errors);
+        unknownKeys(row, path, {"id", "base", "growth", "change", "kit"}, errors);
         BriefId id = BriefId::Count;
         if (!row["id"].isString() || !briefFromName(row["id"].string(), id)) {
             errors.push_back(path + ".id: expected counsel, bailiff, notary, proxy or escrow");
@@ -140,8 +208,12 @@ bool importBriefTable(std::string_view json, const ArenaFighter& lead, BriefTabl
         d.present = true;
         readFive(row["base"], path + ".base", 1, 50, kBriefBaseSum, d.base, errors);
         readFive(row["growth"], path + ".growth", 0, 100, kBriefGrowthSum, d.growth, errors);
+        if (row.has("change")) readChange(row["change"], path + ".change", d.change, errors);
         d.kit = common;
-        if (row.has("kit")) overlay(row["kit"], path + ".kit", d.kit, errors);
+        if (row.has("kit")) {
+            statKeys(row["kit"], path + ".kit", errors);
+            overlay(row["kit"], path + ".kit", d.kit, errors);
+        }
     }
     if (!errors.empty()) return finish();
     out = table;

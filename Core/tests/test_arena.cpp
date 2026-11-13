@@ -7815,10 +7815,9 @@ std::pair<float, int> jumpOutOfLight(float cancelRoll) {
 
 } // namespace
 
-TEST_CASE("arena jump: take-off, air and landing run on the air clock; free; the arc tops at jumpHeight") {
+TEST_CASE("arena jump: take-off, air and landing run on the air clock; the arc tops at jumpHeight") {
     Rig rig(jumpFighter(), {dummyKind()});
     rig.put(0, 10.f, 0.f);
-    const float stamina = rig.fight.stamina();
     rig.in.jump = true;
     float t = 0.f, peak = 0.f, freeAt = -1.f;
     for (int i = 0; i < 90; ++i) {
@@ -7837,9 +7836,8 @@ TEST_CASE("arena jump: take-off, air and landing run on the air clock; free; the
         peak = std::max(peak, o.player.height);
     }
     CHECK(peak == doctest::Approx(0.5f).epsilon(0.01));
-    CHECK(freeAt >= 1.f - 1e-4f); // free once the landing has run out ...
+    CHECK(freeAt >= 1.f - 1e-4f); // free once the landing has run out
     CHECK(freeAt <= 1.f + kDt + 1e-4f);
-    CHECK(rig.fight.stamina() == stamina); // ... and it cost nothing
     CHECK(rig.fight.stats().jumps == 1);
     CHECK(rig.fight.stats().landings == 1);
     CHECK(arenaFeatureChecks(rig.fight.stats()).jumpCheck == ArenaCheck::Pass);
@@ -7873,7 +7871,7 @@ TEST_CASE("arena jump: the landing's weight: no guard or dodge cuts in before ju
     CHECK(rig.tick().player.action == ArenaAction::Jump);
     runToJumpClock(rig, 0.72f);
     REQUIRE(rig.out().player.action == ArenaAction::Jump);
-    CHECK(rig.fight.stamina() == stamina);
+    CHECK(rig.fight.stamina() >= stamina); // the refused presses spent nothing
     CHECK(rig.fight.stats().jumps == 1);
     // Landed: a held guard waits for the lock to pass (0.85).
     rig.in.guard = true;
@@ -8103,4 +8101,158 @@ TEST_CASE("arena table: the jump's keys load; hitsAir defaults from the tell; ba
     CHECK(contains(loadError(tableJson(R"([ { "id": "default", "jumpLandLock": 0.5 } ])", kEnemiesOk)), "jumpLandLock"));
     CHECK(contains(loadError(tableJson(R"([ { "id": "default", "jumpAir": 9 } ])", kEnemiesOk)), "jumpAir"));
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "moves": [ { "hitsAir": 1 } ] } ])")), "hitsAir"));
+}
+
+TEST_CASE("arena jump: it costs 60 percent of a dodge's stamina and is refused with none left, as a dodge is") {
+    {
+        Rig rig(jumpFighter(), {dummyKind()});
+        rig.put(0, 10.f, 0.f);
+        const float before = rig.fight.stamina();
+        rig.in.jump = true;
+        CHECK(rig.tick().player.action == ArenaAction::Jump);
+        CHECK(rig.fight.stamina() == doctest::Approx(before - kArenaJumpStaminaShare * 20.f));
+    }
+    {   // emptied by a heavy (stamina 100, no regen): the jump is refused
+        ArenaFighter f = jumpFighter();
+        f.staminaRegen = 0.f;
+        f.heavy.stamina = 100.f;
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 10.f, 0.f);
+        rig.in.heavy = true;
+        rig.tick();
+        for (int i = 0; i < 120 && rig.out().player.action != ArenaAction::Idle; ++i) rig.tick();
+        REQUIRE(rig.fight.stamina() == doctest::Approx(0.f));
+        rig.in.jump = true;
+        rig.run(20);
+        CHECK(rig.fight.stats().jumps == 0);
+    }
+    {   // the air light costs the kit's jumpLight stamina (the kits set it to their light's)
+        ArenaFighter f = jumpFighter();
+        f.jumpLight.stamina = 5.f;
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 10.f, 0.f);
+        rig.in.jump = true;
+        rig.tick();
+        runToJumpClock(rig, 0.2f);
+        const float before = rig.fight.stamina();
+        rig.in.light = true;
+        rig.tick();
+        CHECK(rig.fight.stamina() == doctest::Approx(before - 5.f));
+    }
+}
+
+TEST_CASE("arena jump: not out of a Release or hitstun; out of a dodge only once its i-frames are over; nothing cuts an air light") {
+    SUBCASE("Release: the press waits it out") {
+        Rig rig(jumpFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 40))});
+        parryRun(rig, 40);
+        REQUIRE(rig.fight.load() >= 34);
+        rig.in.guard = false;
+        rig.tick();
+        rig.in.release = true;
+        rig.tick();
+        REQUIRE(rig.out().player.action == ArenaAction::Release);
+        rig.in.jump = true; // the Release's cancelRoll would let a dodge through; a jump never
+        for (int i = 0; i < 60 && rig.out().player.action == ArenaAction::Release; ++i) {
+            rig.in.jump = true;
+            rig.tick();
+        }
+        CHECK(rig.out().player.action != ArenaAction::Release);
+        CHECK(rig.fight.stats().jumps <= 1); // only once the Release is over
+        CHECK(rig.count(ArenaEventType::Released) == 1);
+    }
+    SUBCASE("hitstun: a jump pressed in it never starts there") {
+        ArenaEnemyKind k = hitterKind(swing(0.3f, 0.15f, 0.5f, 2.f, 10));
+        k.moves[0].attack.poiseDamage = 100.f;
+        Rig rig(jumpFighter(), {k});
+        for (int i = 0; i < 120 && rig.out().player.action != ArenaAction::Hitstun; ++i) rig.tick();
+        REQUIRE(rig.out().player.action == ArenaAction::Hitstun);
+        bool jumpedInHitstun = false;
+        for (int i = 0; i < 60 && rig.out().player.action == ArenaAction::Hitstun; ++i) {
+            rig.in.jump = true;
+            const ArenaAction before = rig.out().player.action;
+            const ArenaOutput& o = rig.tick();
+            if (before == ArenaAction::Hitstun && o.player.action == ArenaAction::Jump) jumpedInHitstun = true;
+        }
+        CHECK_FALSE(jumpedInHitstun);
+    }
+    SUBCASE("a dodge: a jump waits for dodgeInvulnEnd (0.4) though dodgeCancel opens at 0.18") {
+        ArenaFighter f = jumpFighter();
+        f.dodgeCancel = 0.3f; // 0.18 s of the 0.6 s dodge
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 10.f, 0.f);
+        rig.in.dodge = true;
+        rig.tick();
+        float last = rig.out().player.actionTime;
+        for (int i = 0; i < 60; ++i) {
+            rig.in.jump = true; // pressed every tick from 1/60
+            const ArenaOutput& o = rig.tick();
+            if (o.player.action == ArenaAction::Jump) break;
+            last = o.player.actionTime;
+        }
+        CHECK(rig.out().player.action == ArenaAction::Jump);
+        CHECK(last == doctest::Approx(0.4f).epsilon(0.03));
+        CHECK_FALSE(rig.out().player.invulnerable);
+    }
+    SUBCASE("an air light: a dodge pressed in it is refused (the air clock goes on)") {
+        Rig rig(jumpFighter(), {dummyKind()});
+        rig.put(0, 10.f, 0.f);
+        rig.in.jump = true;
+        rig.tick();
+        runToJumpClock(rig, 0.2f);
+        rig.in.light = true;
+        rig.tick();
+        REQUIRE(rig.out().player.move == kArenaAirMove);
+        for (int i = 0; i < 25; ++i) {
+            rig.in.dodge = true;
+            rig.in.move = Vec2{0.f, 1.f};
+            const ArenaOutput& o = rig.tick();
+            CHECK(o.player.action != ArenaAction::Dodge);
+        }
+    }
+}
+
+TEST_CASE("arena jump: a blow late in the air (0.5 to 0.68 s) still knocks the player out of it; so does one at jumpHeight 0") {
+    for (const float at : {0.5f, 0.55f, 0.6f, 0.65f, 0.68f}) {
+        CAPTURE(at);
+        const SweepJump r = sweepJump(true, at);
+        CHECK(r.hit == 1);
+        CHECK(r.knocked);
+        CHECK(r.landings == 0);
+    }
+    {   // past the clear window (0.5): a low move lands too, and knocks it out
+        const SweepJump r = sweepJump(false, 0.6f);
+        CHECK(r.evaded == 0);
+        CHECK(r.hit == 1);
+        CHECK(r.knocked);
+    }
+    {   // jumpHeight 0: drawn on the floor, but in the air all the same
+        ArenaFighter f = jumpFighter();
+        f.jumpHeight = 0.f;
+        ArenaEnemyKind k = hitterKind(swing(0.6f, 0.15f, 0.5f, 2.f, 20));
+        k.moves[0].hitsAir = true;
+        Rig rig(f, {k});
+        for (int i = 0; i < 600 && rig.out().enemies[0].part != ArenaPart::Startup; ++i) rig.tick();
+        rig.run(std::max(0, static_cast<int>(std::lround((0.6f - rig.out().enemies[0].stateTime - 0.3f) / kDt)) - 1));
+        rig.in.jump = true;
+        bool knocked = false;
+        for (int i = 0; i < 70; ++i) {
+            const ArenaOutput& o = rig.tick();
+            for (const ArenaEvent& e : o.events)
+                if (e.type == ArenaEventType::Hit && e.target == kArenaPlayer)
+                    knocked = o.player.action == ArenaAction::Hitstun && o.player.jumpTime == -1.f;
+        }
+        CHECK(knocked);
+        CHECK(rig.fight.stats().landings == 0);
+    }
+}
+
+TEST_CASE("arena table: the shipped kits jump with their own air lights; the ten low moves are set by hand") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    const ArenaFighter& third = t.fighter("third");
+    CHECK(devin.jumpLight.damage > duy.jumpLight.damage); // the gauntlets' downward strike hits hardest ...
+    CHECK(duy.jumpLight.range > devin.jumpLight.range);   // ... the kick reaches furthest ...
+    CHECK(third.jumpLight.damage < duy.jumpLight.damage); // ... the Third's is the weakest
+    for (const ArenaFighter* f : {&devin, &duy}) CHECK(f->jumpLight.stamina == f->light[0].stamina);
 }

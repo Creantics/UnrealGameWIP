@@ -45,12 +45,22 @@
 //   holds nothing but settles; it is then counted in `droppedSettles` too, and the host applies every
 //   blow it still holds back at x1 (the plain value).
 //
+// * The Lift (setLift; off by default, and off it changes nothing above). With it on:
+//   - A count called by kThirdSlot (the Count gift) has the caller as a joiner who never strikes: the first lead blow
+//     in its window joins it at once (the third slot adds no Load).
+//   - At the join, S = the two joiners' Load as the host last fed it (setLoad; a fighter never fed, or fed a
+//     negative value, counts 0). S >= liftThreshold makes the window a Lift: every joined blow in it, held ones
+//     included, is CountOutcome::Lift at boost x liftMultiplier.
+//   - Each join is kept for the host (lastJoin: the joiners, the Lift, its time; takeJoin hands it over once).
+//     The host stores countLoad or spends liftCost from that (FightSession does).
+//
 // Times as CombatInputs.h (queries included): an earlier or non-finite time reads as the latest seen,
 // and a time more than kMaxTimeJump ahead is ignored (not stored). No allocation.
 
 #include "ftcore/CombatInputs.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -72,6 +82,53 @@ struct CountTuning {
     double beat() const { return 60.0 / bpm; }
 };
 
+// The most a Release's mark adds to a joined count on its target (Chairs.h kChairReleaseMarkCap).
+inline constexpr float kMaxReleaseMark = 0.5f;
+
+// The count's Load and the Lift (see setLift; FightSession stores and spends from it).
+struct LiftTuning {
+    int countLoad = 10;           // Load a lead joiner stores from a joined window that is not a Lift: 0..50
+    double countLoadEvery = 8.0;  // seconds between two stores for one joiner: 0..30 (0: no limit)
+    int liftThreshold = 120;      // the joiners' Load together that makes a Lift: 1..200
+    float liftMultiplier = 1.5f;  // a Lift's blows, on top of the count's boost: 1..2.6
+    int liftCost = 30;            // Load each joiner spends on a Lift (what it holds, if less): 0..100
+    int soloCountLoad = 5;        // countLoad for a window whose other joiner is the third slot's caller: 0..50
+};
+
+// One blow's multiplier from all its sources (a crit, the count's boost, a Lift, a mark) kept to a cap: 0 is no cap,
+// else 1..kMaxBlowCap. kDefaultBlowCap is the data's default.
+inline constexpr float kDefaultBlowCap = 6.0f;
+inline constexpr float kMaxBlowCap = 20.0f;
+inline bool validBlowCap(float cap) { return cap == 0.f || (cap >= 1.f && cap <= kMaxBlowCap); }
+inline float capBlowScale(float scale, float cap) { return cap > 0.f && scale > cap ? cap : scale; }
+
+// A held blow's settle bonus: base is what the blow deals before any crit and it landed at base x landed. It settles
+// to the same total an immediate blow would deal, base x capBlowScale(landed x mult, cap): the bonus is base x
+// (that - landed), rounded. 0 at x1 or below, or with nothing left under the cap.
+inline int heldSettleBonus(int base, float landed, float mult, float cap) {
+    if (base <= 0 || !(mult > 1.0f) || !std::isfinite(mult) || !std::isfinite(landed)) return 0;
+    const double total = static_cast<double>(capBlowScale(landed * mult, cap));
+    const double add = total - static_cast<double>(landed);
+    if (!(add > 0.0)) return 0;
+    const double extra = std::round(static_cast<double>(base) * add);
+    if (extra < 1.0) return 0;
+    return extra > 1e9 ? 1000000000 : static_cast<int>(extra);
+}
+
+// The ranges, and the hardest blow kept to x10: boost x liftMultiplier x (1 + kMaxReleaseMark), both boosts.
+inline bool validLiftTuning(const LiftTuning& l, const CountTuning& c) {
+    if (l.countLoad < 0 || l.countLoad > 50) return false;
+    if (!(l.countLoadEvery >= 0.0 && l.countLoadEvery <= 30.0)) return false;
+    if (l.liftThreshold < 1 || l.liftThreshold > 200) return false;
+    if (!(l.liftMultiplier >= 1.0f && l.liftMultiplier <= 2.6f)) return false;
+    if (l.liftCost < 0 || l.liftCost > 100) return false;
+    if (l.soloCountLoad < 0 || l.soloCountLoad > 50) return false;
+    const double top = static_cast<double>(l.liftMultiplier) * (1.0 + static_cast<double>(kMaxReleaseMark));
+    if (static_cast<double>(c.onCountMultiplier) * top > 10.0 + 1e-9) return false;
+    if (static_cast<double>(c.silencedMultiplier) * top > 10.0 + 1e-9) return false;
+    return true;
+}
+
 inline bool validCountTuning(const CountTuning& t) {
     if (!(t.bpm >= 40.0 && t.bpm <= 240.0)) return false;
     if (t.leadBeats < 1 || t.leadBeats > 4) return false;
@@ -88,7 +145,7 @@ inline bool validCountTuning(const CountTuning& t) {
 }
 
 enum class CountVoice : std::uint8_t { Voice, Click }; // append only
-enum class CountOutcome : std::uint8_t { Alone, Held, OnCount, Unanswered, FalseCount }; // append only
+enum class CountOutcome : std::uint8_t { Alone, Held, OnCount, Unanswered, FalseCount, Lift }; // append only
 enum class CountError : std::uint8_t { None, Live, Cooling, BadCaller }; // append only
 
 struct CountHit {
@@ -117,6 +174,16 @@ struct CountEvent {
 };
 
 inline constexpr std::size_t kMaxCountEvents = 64;
+
+// A window that became joined (setLift on): its two joiners, the first the one already in it (the held blows'
+// striker, or a kThirdSlot caller), and whether it is a Lift.
+struct CountJoin {
+    FighterId first = kNoFighter;
+    FighterId second = kNoFighter;
+    bool lift = false;
+    int loadSum = 0; // S at the join
+    double at = 0.0;
+};
 
 struct CountEvents {
     std::array<CountEvent, kMaxCountEvents> items{};
@@ -188,8 +255,42 @@ public:
         pendingHead_ = 0;
         nextBlow_ = 1;
         events_.clear();
+        liftOn_ = false;
+        lift_ = LiftTuning{};
+        lifted_ = false;
+        loads_.fill(-1);
+        join_ = CountJoin{};
+        joinFresh_ = false;
         return ok;
     }
+
+    // Turns the Lift on (or off) with `tuning`; a tuning that is not valid with this count's leaves the Lift off
+    // and returns false. reset turns it off.
+    bool setLift(bool on, const LiftTuning& tuning) {
+        const bool ok = validLiftTuning(tuning, tuning_);
+        liftOn_ = on && ok;
+        lift_ = ok ? tuning : LiftTuning{};
+        return ok || !on;
+    }
+    bool liftOn() const { return liftOn_; }
+    const LiftTuning& liftTuning() const { return lift_; }
+    // A fighter's Load now, for S at a join (negative: no gauge, counts 0). Ignored for a non-fighter.
+    void setLoad(FighterId f, int load) {
+        if (isFighter(f)) loads_[f] = load;
+    }
+    int loadOf(FighterId f) const { return isFighter(f) && loads_[f] > 0 ? loads_[f] : 0; }
+    // The fighter was fed a Load of 0 or more (it has a gauge).
+    bool hasGauge(FighterId f) const { return isFighter(f) && loads_[f] >= 0; }
+    // The last join (setLift on), and whether takeJoin has handed it over yet.
+    const CountJoin& lastJoin() const { return join_; }
+    bool takeJoin(CountJoin& out) {
+        if (!joinFresh_) return false;
+        out = join_;
+        joinFresh_ = false;
+        return true;
+    }
+    // The live window is a Lift.
+    bool lifted() const { return joined_ && lifted_; }
 
     // Calls a true count at t. kNoFighter is a silenced count (always a click).
     CountError call(FighterId caller, double t, CountVoice voice = CountVoice::Voice) {
@@ -212,6 +313,7 @@ public:
         readyAt_ = true_.hi + tuning_.cooldown;
         held_ = HeldRun{};
         joined_ = false;
+        lifted_ = false;
         return CountError::None;
     }
 
@@ -271,11 +373,13 @@ public:
         hit.blow = takeBlowId();
         if (true_.active && t >= true_.lo && t <= true_.hi) {
             if (!joined_ && held_.count > 0 && held_.striker != striker) {
-                joined_ = true;
-                settleHeld(CountOutcome::OnCount, boost(), t); // the held blows were joined at t
+                join(held_.striker, striker, t);
+                settleHeld(joinedOutcome(), boost(), t); // the held blows were joined at t
+            } else if (!joined_ && liftOn_ && true_.caller == kThirdSlot && isLead(striker)) {
+                join(kThirdSlot, striker, t); // the caller's voice is the second joiner
             }
             if (joined_) {
-                hit.outcome = CountOutcome::OnCount;
+                hit.outcome = joinedOutcome();
                 hit.multiplier = boost();
                 return hit;
             }
@@ -388,7 +492,20 @@ private:
         return id;
     }
 
-    float boost() const { return true_.caller == kNoFighter ? tuning_.silencedMultiplier : tuning_.onCountMultiplier; }
+    float baseBoost() const { return true_.caller == kNoFighter ? tuning_.silencedMultiplier : tuning_.onCountMultiplier; }
+    float boost() const { return lifted_ ? baseBoost() * lift_.liftMultiplier : baseBoost(); }
+    CountOutcome joinedOutcome() const { return lifted_ ? CountOutcome::Lift : CountOutcome::OnCount; }
+
+    // The window becomes joined by `first` (already in it) and `second`; with the Lift on, S decides a Lift.
+    void join(FighterId first, FighterId second, double t) {
+        joined_ = true;
+        lifted_ = false;
+        if (!liftOn_) return;
+        const int s = loadOf(first) + loadOf(second);
+        lifted_ = s >= lift_.liftThreshold;
+        join_ = CountJoin{first, second, lifted_, s, t};
+        joinFresh_ = true;
+    }
     CountOutcome loneOutcome(FighterId striker) const {
         return striker == true_.caller ? CountOutcome::Unanswered : CountOutcome::Alone;
     }
@@ -483,9 +600,15 @@ private:
     std::size_t pendingHead_ = 0;
     std::uint16_t nextBlow_ = 1;
     CountEvents events_{};
+    bool liftOn_ = false;
+    LiftTuning lift_{};
+    bool lifted_ = false;
+    std::array<int, kMaxFighters> loads_{-1, -1, -1, -1};
+    CountJoin join_{};
+    bool joinFresh_ = false;
 };
 
-// True when a settled outcome is a shared blow (a joined window).
-inline bool sharedOutcome(CountOutcome o) { return o == CountOutcome::OnCount; }
+// True when a settled outcome is a shared blow (a joined window, a Lift included).
+inline bool sharedOutcome(CountOutcome o) { return o == CountOutcome::OnCount || o == CountOutcome::Lift; }
 
 } // namespace ftcore

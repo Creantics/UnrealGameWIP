@@ -12,6 +12,7 @@ const char* chairKindName(ChairKind k) {
     case ChairKind::HealCharges: return "healCharges";
     case ChairKind::LoadGain: return "loadGain";
     case ChairKind::TakeHalf: return "takeHalf";
+    case ChairKind::ReleaseMark: return "releaseMark";
     default: return "none";
     }
 }
@@ -42,6 +43,7 @@ bool rangesOf(ChairKind k, Range& a, Range& b) {
     case ChairKind::LoadGain: a = {0.0, 0.5}; b = {1.0, 15.0}; return true;
     case ChairKind::HealCharges: a = {0.0, 3.0}; b = {0.0, 0.0}; return true;
     case ChairKind::TakeHalf: a = {0.0, 0.2}; b = {0.0, 0.1}; return true;
+    case ChairKind::ReleaseMark: a = {0.0, 0.5}; b = {1.0, 15.0}; return true;
     default: return false;
     }
 }
@@ -50,6 +52,7 @@ bool kindOf(std::string_view s, ChairKind& k) {
     if (s == "loadGain") k = ChairKind::LoadGain;
     else if (s == "healCharges") k = ChairKind::HealCharges;
     else if (s == "takeHalf") k = ChairKind::TakeHalf;
+    else if (s == "releaseMark") k = ChairKind::ReleaseMark;
     else return false;
     return true;
 }
@@ -123,7 +126,7 @@ bool importChairTable(std::string_view json, ChairTable& out, std::string* error
         const JsonValue kind = row["kind"];
         Range ra{}, rb{};
         if (!kind.isString() || !kindOf(kind.string(), r.effect.kind) || !rangesOf(r.effect.kind, ra, rb)) {
-            errors.push_back(path + ".kind: expected loadGain, healCharges or takeHalf");
+            errors.push_back(path + ".kind: expected loadGain, healCharges, takeHalf or releaseMark");
             ok = false;
         } else {
             const JsonValue a = row["a"];
@@ -190,6 +193,15 @@ float ArenaChairs::takeHalfWindow() const {
 }
 float ArenaChairs::takeHalfHeal() const {
     return std::clamp(sumOf(*this, ChairKind::TakeHalf, true), 0.f, kChairTakeHalfHealCap);
+}
+float ArenaChairs::releaseMark() const {
+    return std::clamp(sumOf(*this, ChairKind::ReleaseMark, false), 0.f, kChairReleaseMarkCap);
+}
+float ArenaChairs::releaseMarkSeconds() const {
+    float s = 0.f;
+    for (std::size_t i = 0; i < count && i < named.size(); ++i)
+        if (named[i].kind == ChairKind::ReleaseMark) s = std::max(s, named[i].b);
+    return std::min(s, kChairReleaseMarkSecondsCap);
 }
 
 ArenaChairs chairsFor(const PlaceTable& places, const ChairTable& table) {

@@ -62,7 +62,8 @@
 //     or the backstep direction before any ring cut, and stay until the next dodge: the host picks
 //     the clip once from them, since a direction read from the velocity turns when a roll slides
 //     along the ring's edge.
-//   - Jump (ArenaInput::jump): free (no stamina, no cooldown; the landing is its cost). jumpStartup on the
+//   - Jump (ArenaInput::jump): kArenaJumpStaminaShare of dodgeStamina, refused with none left (as a dodge);
+//     no cooldown, the landing is its weight. jumpStartup on the
 //     ground (the take-off), jumpAir in the air, jumpLand on the ground again (the landing). The air clock
 //     (ArenaPlayerOut::jumpTime) runs beside the action, in the player's own time (a hit pause holds it), and
 //     the height is a closed-form arc of it (jumpHeight at the top), drawn only. In the air the velocity keeps
@@ -71,7 +72,9 @@
 //     only one light may start, the air light (kArenaAirMove, ArenaFighter::jumpLight), and the landing cuts
 //     it short. From jumpClearStart to jumpClearEnd of the air clock an enemy move with hitsAir false passes
 //     under the player and reports Evaded (once per attack); one with hitsAir true lands as on the ground,
-//     and a blow that lands in the air ends the jump (Hitstun). It cuts into an attack through cancelRoll.
+//     and a blow that lands in the air ends the jump (Hitstun), whatever jumpHeight. No take half from the
+//     air. It cuts into an attack through cancelRoll (never a Release), into a dodge only once its i-frames
+//     are over, and never out of Hitstun, GuardBreak or Downed. Nothing cuts the air light.
 //   - Guard (held): blocks attacks from within guardArcCos of the facing. A blocked hit deals
 //     damage * (1 - guardAbsorb) and costs the guard guardDamage stamina; if that empties stamina
 //     the guard breaks (GuardBroken, GuardBreak for guardBreakTime). Unblockable attacks ignore it.
@@ -265,6 +268,8 @@ inline constexpr std::uint8_t kArenaReleaseMove = 10;
 inline constexpr std::uint8_t kArenaShotMove = 11;
 // The light struck in the air (ArenaAction::Light with this move during a jump, never part of the chain).
 inline constexpr std::uint8_t kArenaAirMove = 12;
+// A jump's stamina: this share of the kit's dodgeStamina.
+inline constexpr float kArenaJumpStaminaShare = 0.6f;
 // A Release is open only with more Load than this: a third of kMaxLoad.
 inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
 // An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.
@@ -516,6 +521,9 @@ struct ArenaEnemyKind {
     std::uint8_t breakAt = 0; // > 0: the blows in a row that make it break out (see Break-out); 0: never
     float breakDecay = 1.5f;  // s without a blow after which the count goes back to 0
     int breakMove = -1;       // the move it breaks out with; -1: none
+    // A set table (TableRing.h). Only a set table reads them: the fight's own rules never do.
+    std::uint8_t carry = 0;   // carry grade: a seated one's share of a blow halves for each grade past the table's seats
+    bool seatable = true;     // whether it may be seated at a table at all
 };
 
 // An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius
@@ -731,6 +739,8 @@ enum class ArenaEventType : std::uint8_t { // append only
     AllyHit,        // source's attack `move` hit the ally (target kArenaAlly) for `amount` hp (appended)
     AllyDowned,     // the ally reached 0 hp: down for the rest of the fight, never a Defeat (appended)
     TookHalf,       // the player took half of source's blow on the ally: `amount` hp (target kArenaPlayer) (appended)
+    TableShare,     // a set table passed `amount` hp of source's blow on a seated lead to target: the player, the ally
+                    // or a seated enemy (ArenaFight::setTableSeats) (appended)
 };
 
 struct ArenaEvent {
@@ -881,6 +891,16 @@ struct ArenaBlowRuling {
     float damage = 1.f;
     float poise = 1.f;
     bool veto = false;
+};
+
+// Who sits at a set table (TableRing.h). All off by default: nothing is shared.
+struct ArenaTableSeats {
+    bool player = false;
+    bool ally = false;
+    std::uint8_t enemies = 0;                          // bit i: enemy i
+    std::array<float, kMaxArenaEnemies> enemyShare{}; // a seated enemy's part of the even split, times this (0..4)
+
+    bool any() const { return player || ally || enemies != 0; }
 };
 
 // Called inside tick(), once per blow, in the order the blows land (a player's attack reaching several enemies on
@@ -1094,6 +1114,21 @@ public:
     FTCORE_API int allyMaxHp() const;
     FTCORE_API bool allyAlive() const;
     FTCORE_API Vec2 allyPos() const; // as the last tick's bodies placed it
+    FTCORE_API float allyRadius() const;
+    // ---- a set table ----
+    // The host's seats at a set table (TableRing.h; begin and restart clear them). While the player or the ally is
+    // seated and two or more living bodies sit, the hp an enemy's blow takes from a seated lead (a hit, a guard's
+    // chip, the ally's part after take half) is split evenly among them: each loses amount / bodies (rounded down)
+    // and the one struck the rest. A seated enemy loses its part times its enemyShare (rounded, halves up; the hp
+    // floor holds). Each part passed on reports TableShare; a part that empties the player downs it, the ally's
+    // reports AllyDowned, an enemy's kills it. The struck lead's own part reports Hit or AllyHit as before.
+    // The table's price: a seat means carrying a share whatever that body is doing. The parts passed on ignore guard,
+    // parry, a dodge's i-frames, a Release and the air; only the struck body's defence counts (a parried, evaded or
+    // dodged blow shares nothing; a blocked one shares its chip). A share can down or kill. Only enemy blows are
+    // shared. Every part passed on is a TableShare event (amount, from whom), so no share is silent. A body leaves
+    // its seat by walking out (TableRing.h: the setter too), from the next blow on.
+    FTCORE_API void setTableSeats(const ArenaTableSeats& seats);
+    FTCORE_API const ArenaTableSeats& tableSeats() const;
     // An enemy is in its attack's startup with `lead` s of it left or less, the ally is alive and the player within
     // takeHalfReach of it: when an autopilot would press take half.
     FTCORE_API bool takeHalfDue(float lead) const;
@@ -1251,6 +1286,7 @@ private:
     float allyRadius_ = 0.4f;
     int allyHp_ = 0;
     Vec2 allyPos_;
+    ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

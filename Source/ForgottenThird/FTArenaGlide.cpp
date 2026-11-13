@@ -12,7 +12,7 @@ const TCHAR* const kGlideNames[FFTArenaGlideProbe::NumBuckets] = {TEXT("idle"), 
 	TEXT("move braking"), TEXT("move turning"), TEXT("move after a hit"),
 	TEXT("light 0 strike"), TEXT("light 1 strike"), TEXT("light 2 strike"), TEXT("light 3 strike"), TEXT("light recovery"),
 	TEXT("heavy startup"), TEXT("heavy active"), TEXT("heavy recovery"), TEXT("riposte or release"), TEXT("dodge"),
-	TEXT("hitstun"), TEXT("guard or heal"), TEXT("hit pause"), TEXT("other")};
+	TEXT("hitstun"), TEXT("guard or heal"), TEXT("jump"), TEXT("hit pause"), TEXT("other")};
 constexpr double kGlideAfterHit = 0.6;
 constexpr float kGlideAccel = 2.f; // m/s^2: a move whose legs' speed changes faster is speeding up or braking
 constexpr float kGlideTurn = 1.5f; // rad/s: a move whose facing turns faster is turning
@@ -52,6 +52,11 @@ void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now, floa
 	if (P.stopLeft > 0.f)
 	{
 		Key = HitPause;
+		return;
+	}
+	if (P.jumpTime >= 0.f)
+	{
+		Key = Jump;
 		return;
 	}
 	switch (P.action)

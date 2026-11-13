@@ -148,7 +148,10 @@ add_library(ftcore STATIC
     src/Shop.cpp
     src/ArenaFight.cpp
     src/Chairs.cpp
+    src/CountLiftData.cpp
     src/Brief.cpp
+    src/BriefKit.cpp
+    src/LicenceRating.cpp
     src/ScarePacer.cpp
     src/FieldStrike.cpp
     src/AimStance.cpp
@@ -313,7 +316,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_turns_demo.cpp
         tests/test_load.cpp
         tests/test_strike_count.cpp
+        tests/test_count_lift.cpp
         tests/test_combat_inputs.cpp
+        tests/test_table_ring.cpp
         tests/test_boss_script.cpp
         tests/test_battle_demo.cpp
         tests/test_combo.cpp
@@ -425,6 +430,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena_load.cpp
         tests/test_chairs.cpp
         tests/test_brief.cpp
+        tests/test_licence.cpp
         tests/test_scare_pacer.cpp
         tests/test_field_strike.cpp
         tests/test_aim.cpp

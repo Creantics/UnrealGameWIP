@@ -794,6 +794,29 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		Lean.Roll = Pose.Wobble;
 		// The roll's lift, and as its clip fades out, what is left of it coming down.
 		Lift.Z = RollLift;
+		// The jump's arc; cut short by a blow in the air (Core's height drops to 0), the body comes down at
+		// kAirLiftDrop rather than in one frame.
+		constexpr float kAirLiftDrop = 500.f; // cm/s; the arc's own fall is at most 4 * jumpHeight / jumpAir
+		const float AirDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+		AirLift = Pose.AirHeight >= AirLift ? Pose.AirHeight : FMath::Max(Pose.AirHeight, AirLift - kAirLiftDrop * AirDt);
+		Lift.Z += AirLift;
+#if !UE_BUILD_SHIPPING
+		// -ArenaJumpFloor: each frame on the jump's clock and 0.4 s after it, the last evaluated pose's pelvis, head and
+		// balls over the floor the figure stands on, and the arc's lift (the jump sheets' floor numbers).
+		static const bool bJumpFloor = FParse::Param(FCommandLine::Get(), TEXT("ArenaJumpFloor"));
+		if (bJumpFloor && Skin && (Pose.JumpClock >= 0.f || JumpFloorAfter > 0.f))
+		{
+			JumpFloorAfter = Pose.JumpClock >= 0.f ? 0.4f : FMath::Max(0.f, JumpFloorAfter - AirDt);
+			const double Base = GetActorLocation().Z;
+			auto Over = [this, Base](const TCHAR* Bone)
+			{
+				return Skin->GetBoneIndex(FName(Bone)) != INDEX_NONE ? Skin->GetBoneLocation(FName(Bone)).Z - Base : 0.0;
+			};
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena jump floor: clock %.3f, %s, pelvis %.1f head %.1f balls %.1f %.1f cm over the floor, lifted %.1f."),
+				Pose.JumpClock, Pose.bAir ? TEXT("air") : TEXT("ground"), Over(TEXT("pelvis")), Over(TEXT("head")), Over(TEXT("ball_l")),
+				Over(TEXT("ball_r")), AirLift);
+		}
+#endif
 		if (!bRollClip && Pose.bDodging)
 		{
 			const float Arc = FMath::Sin(PI * FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f));
@@ -832,6 +855,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
 			}
 			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
+			// The jump's clips: take-off, rise and fall while in the air, the land clip at touch-down.
+			Anim->SetAir(Pose.bAir && !Pose.bLying, Pose.AirRise);
 			// Where the walk heads, so the legs start and stop with the clips made for it (in cm).
 			const bool bWalks = !Pose.bLying && !Pose.bDodging && Pose.WantSpeed >= 0.f;
 			Anim->SetIntent(bWalks ? Pose.WantSpeed * 100.f : -1.f, bWalks && Pose.StopDistance >= 0.f ? Pose.StopDistance * 100.f : -1.f);
