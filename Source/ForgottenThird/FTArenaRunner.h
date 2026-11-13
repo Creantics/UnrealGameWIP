@@ -216,6 +216,8 @@ public:
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
 	double GetReleaseTime() const { return ReleaseTime; }
 	int32 GetReleaseSpent() const { return ReleaseSpent; }
+	// The kind id of enemy slot I, as the table names it ("" for a def built in code): the HUD's name key.
+	const char* GetSlotKindId(int32 I) const { return SlotKindId(I); }
 	double GetOverloadTime() const { return OverloadTime; }
 	int32 GetPopupCount() const { return FMath::Min(PopupTotal, MaxPopups); }
 	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }

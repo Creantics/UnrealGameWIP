@@ -84,11 +84,23 @@ struct ArenaHudTarget {
 enum class UiWeakPoint : std::uint8_t { None, Closed, Opening, Open };
 enum class UiWeakPointWay : std::uint8_t { None, Share, Read, Refuse };
 
+// The zone a boss calls for its next blow (the stone bearer's called strike), as the line shows it.
+enum class UiCalledZone : std::uint8_t { None, Left, Right, Path };
+
+inline constexpr std::size_t kArenaHudPhases = 4;
+
 struct ArenaHudBoss {
     bool present = false;
+    std::uint8_t slot = 0;          // the boss's enemy slot (a target with this slot is the boss)
     std::uint16_t nameKey = 0;      // the host's index of the boss's name string
+    std::uint8_t rank = 0;          // the boss's rank marks beside its name (0: none drawn; no data sets it yet)
     int hp = 0, hpMax = 0;
     std::uint8_t phase = 0, phaseCount = 1; // 0-based phase, and how many; drawn as marks on the bar
+    std::array<float, kArenaHudPhases> phaseEnd{}; // each phase's floor as a share of max hp (where its notch sits)
+    UiCalledZone call = UiCalledZone::None; // the zone called for the next blow
+    bool callIn = false;            // the lead stands in the called zone
+    bool down = false;              // knocked down (open to blows)
+    std::int32_t noteSerial = -1;   // the host's latest answer or rule note (-1: none); the word and its fade are the host's
     std::uint8_t weight = 0, weightMax = 0; // the stone bearer's WEIGHT pips (0 max: none)
     UiWeakPoint weakPoint = UiWeakPoint::None;
     UiWeakPointWay way = UiWeakPointWay::None;

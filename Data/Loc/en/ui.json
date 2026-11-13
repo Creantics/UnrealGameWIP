@@ -33,6 +33,7 @@
     "arena.boss.invulnerable": "INVULNERABLE",
     "arena.boss.weak_point": "WEAK POINT OPEN",
     "arena.boss.call": "CALL",
+    "arena.name.kite_boss": "the Kite-Mother",
     "arena.boss.left": "LEFT",
     "arena.boss.right": "RIGHT",
     "arena.boss.path": "PATH",

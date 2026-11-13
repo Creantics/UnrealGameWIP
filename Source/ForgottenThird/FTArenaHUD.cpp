@@ -1162,20 +1162,23 @@ void AFTArenaHUD::DrawHUD()
 	{
 		bStatsBuilt = false; // the next result gets its own counts
 	}
+	if (NewUiWidget.IsValid())
+	{
+		// The Slate layer draws all of the fight's HUD. The wall cue is the world's, and the aim reticle is shared with the
+		// other modes: both stay on the canvas.
+		DrawEdgeCue(*Mode);
+		FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
+		FT::DrawPauseOverlay(*this, Canvas);
+		return;
+	}
 
 	DrawEdgeCue(*Mode);
 	DrawFlashes(*Mode);
 	DrawEnemies(*Mode);
 	DrawLock(*Mode);
-	if (!NewUiWidget.IsValid()) // the Slate layer draws the lead's block and the target bar
-	{
-		DrawTargetBar(*Mode);
-	}
-	DrawBossPanel(*Mode); // kept: the called zone and the answer words have no view fields yet
-	if (!NewUiWidget.IsValid())
-	{
-		DrawPlayerPanel(*Mode);
-	}
+	DrawTargetBar(*Mode);
+	DrawBossPanel(*Mode);
+	DrawPlayerPanel(*Mode);
 	DrawPopups(*Mode);
 	DrawBanners(*Mode);
 	if (Mode->IsAutoPlay() || Mode->IsIdle())
@@ -1188,10 +1191,7 @@ void AFTArenaHUD::DrawHUD()
 	}
 	// The aim's centre reticle (right mouse held), faded in with the stance.
 	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
-	if (!NewUiWidget.IsValid()) // the new UI shows the fight's verbs with their keys bottom right instead
-	{
-		DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
-		DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
-	}
+	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
+	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
 	FT::DrawPauseOverlay(*this, Canvas);
 }

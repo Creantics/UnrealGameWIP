@@ -52,6 +52,13 @@ if(DEFINED HINTS AND EXISTS "${HINTS}")
         list(APPEND used "${key}")
     endforeach()
 endif()
+# A boss's name is looked up at run time from its kind id ("arena.name.<kind>", with the key itself shown
+# when the table has none): every such key in the table counts as used.
+foreach(key IN LISTS known)
+    if(key MATCHES "^arena\.name\.[a-z0-9_]+$")
+        list(APPEND used "${key}")
+    endif()
+endforeach()
 list(REMOVE_DUPLICATES used)
 
 set(problems "")

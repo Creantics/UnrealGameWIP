@@ -312,6 +312,19 @@ TEST_CASE("ui arena view: the lead and target sections come from the fight; revi
     CHECK((mask2 & (1u << static_cast<std::uint32_t>(ArenaHudSection::Lead))) != 0u);
     CHECK((mask2 & (1u << static_cast<std::uint32_t>(ArenaHudSection::Boss))) != 0u);
     CHECK(view.now.boss.weakPoint == UiWeakPoint::Open);
+
+    // A called zone, the lead stepping into it, and a new answer note each wake the boss section, and only it.
+    constexpr std::uint32_t bossBit = 1u << static_cast<std::uint32_t>(ArenaHudSection::Boss);
+    fillArenaHudTarget(fight, f.target);
+    updateArenaHudView(view, f);
+    f.boss.call = UiCalledZone::Left;
+    CHECK(updateArenaHudView(view, f) == bossBit);
+    f.boss.callIn = true;
+    CHECK(updateArenaHudView(view, f) == bossBit);
+    f.boss.noteSerial = 0;
+    CHECK(updateArenaHudView(view, f) == bossBit);
+    CHECK(updateArenaHudView(view, f) == 0u);
+    CHECK(view.now.boss.rank == 0); // no rank data: nothing drawn
 }
 
 TEST_CASE("ui arena view: the carry fields (cap, Release mark, chairs, heal places, the ally) follow the fight") {
