@@ -4399,12 +4399,14 @@ void UFTArenaRunner::BeginBrief()
 	ftcore::BriefId Id = ftcore::BriefId::Count;
 	if (!ftcore::briefFromName(FT::ToUtf8(Want), Id))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: no Brief %s (counsel, bailiff, notary, proxy, escrow); the kit is left alone."), *Want);
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: no Brief %s (counsel, bailiff, notary, proxy, escrow); the run stops."), *Want);
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
 	if (KitId != TEXT("duy"))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: only the guns lead's own kit takes a Brief (this kit is %s); the kit is left alone."), *KitId);
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: only the guns lead's own kit takes a Brief (this kit is %s); the run stops."), *KitId);
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
 	FString Text;
@@ -4413,13 +4415,15 @@ void UFTArenaRunner::BeginBrief()
 	std::string Error;
 	if (!FFileHelper::LoadFileToString(Text, *File) || !ftcore::importBriefTable(FT::ToUtf8(Text), Def.fighter, Briefs, &Error))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/briefs.json; the kit is left alone. %s"), *FT::ToFString(Error));
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: no usable Data/Battle/briefs.json; the run stops. %s"), *FT::ToFString(Error));
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
 	const ftcore::BriefDef* Brief = Briefs.find(Id);
 	if (!Brief)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaBrief: %s is not in Data/Battle/briefs.json yet; the kit is left alone."), *Want);
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: -ArenaBrief: %s is not in Data/Battle/briefs.json yet; the run stops."), *Want);
+		FTRequestExit(1, TEXT("ArenaBrief"));
 		return;
 	}
 	Def.fighter = Brief->kit;

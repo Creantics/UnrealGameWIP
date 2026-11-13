@@ -216,7 +216,9 @@ void AFTArenaGameMode::StartPlay()
 	bWorldView = !bOverview && FParse::Param(Cmd, TEXT("ArenaWorldView"));
 	bHoldLoad = FParse::Param(Cmd, TEXT("ArenaHoldLoad"));
 	bNoLock = FParse::Param(Cmd, TEXT("ArenaNoLock"));
-	bAutoShoot = FParse::Param(Cmd, TEXT("ArenaAutoShoot"));
+#if !UE_BUILD_SHIPPING
+	bAutoShoot = FParse::Param(Cmd, TEXT("ArenaAutoShoot")); // a test switch: never in a shipping build
+#endif
 	bSharedCount = FParse::Param(Cmd, TEXT("ArenaSharedCount"));
 	FParse::Value(Cmd, TEXT("ArenaParryHold="), ParryHold);
 	ParryHold = FMath::Clamp(ParryHold, 0.f, 10.f);
