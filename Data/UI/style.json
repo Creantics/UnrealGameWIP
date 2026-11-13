@@ -11,6 +11,7 @@
   "fade": { "in": 0.15, "rest": 2.5, "out": 0.6, "rest_alpha": 0.35 },
   "budget": { "rest": 3, "marks": 10, "hint": 3 },
   "word_luma_floor": 0.45,
+  "tone": { "hold": 0.5, "fade": 0.1, "margin": 1.15, "word_luma_ceiling": 0.1 },
   "min_text_px": 18,
   "min_text_px_absolute": 14,
   "worlds": {

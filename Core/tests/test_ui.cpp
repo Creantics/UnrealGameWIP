@@ -496,6 +496,71 @@ TEST_CASE("ui style: the dim behind dialogue options is measured: none on a dark
     CHECK_FALSE(importUiStyle(R"({"backing_soft": {"options_max": 1.5}})", loose, &err));
 }
 
+TEST_CASE("ui style: a cluster's tone follows the picture: dark ink on a bright one, pale on a dark one, kept near the middle") {
+    UiStyle s = defaultUiStyle();
+    const UiColor pale{0.953f, 0.933f, 0.902f, 1.f};
+    const UiColor dark{0.039f, 0.031f, 0.024f, 1.f};
+    const UiColor sky{0.85f, 0.88f, 0.92f, 1.f};
+    const UiColor night{0.05f, 0.05f, 0.08f, 1.f};
+    CHECK(uiToneFor(s, pale, dark, sky, UiTone::Pale) == UiTone::Dark);
+    CHECK(uiToneFor(s, pale, dark, night, UiTone::Dark) == UiTone::Pale);
+    CHECK(uiToneFor(s, pale, dark, night, UiTone::Pale) == UiTone::Pale);
+    const UiColor mid{0.45f, 0.45f, 0.45f, 1.f}; // both tones read about the same: no flapping either way
+    CHECK(uiToneFor(s, pale, dark, mid, UiTone::Pale) == UiTone::Pale);
+    CHECK(uiToneFor(s, pale, dark, mid, UiTone::Dark) == UiTone::Dark);
+    std::string err;
+    REQUIRE(importUiStyle(R"({"tone": {"hold": 0.8, "fade": 0.05, "margin": 1.3, "word_luma_ceiling": 0.12}})", s, &err));
+    CHECK(s.toneHold == doctest::Approx(0.8f));
+    CHECK(s.toneMargin == doctest::Approx(1.3f));
+    CHECK_FALSE(importUiStyle(R"({"tone": {"margin": 0.5}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"tone": {"speed": 1}})", s, &err));
+    // The ceiling drops a coloured mark to at most its luminance, keeping its hue's order and its alpha.
+    const UiColor amber{0.914f, 0.702f, 0.420f, 0.7f};
+    const UiColor low = uiLumaCeiling(amber, 0.1f);
+    // Over black, contrast is (L + 0.05) / 0.05: at most 3 means a luminance of at most 0.1.
+    CHECK(uiContrast(UiColor{low.r, low.g, low.b, 1.f}, UiColor{0.f, 0.f, 0.f, 0.f}, UiColor{0.f, 0.f, 0.f, 1.f}) <= 3.01f);
+    CHECK(uiContrast(UiColor{low.r, low.g, low.b, 1.f}, UiColor{0.f, 0.f, 0.f, 0.f}, UiColor{0.f, 0.f, 0.f, 1.f}) >= 2.9f);
+    CHECK(low.r > low.b);
+    CHECK(low.a == doctest::Approx(0.7f));
+    CHECK(uiLumaCeiling(dark, 0.1f).r == doctest::Approx(dark.r)); // already under: unchanged
+}
+
+TEST_CASE("ui style: a tone is set before its cluster shows, and switches only after the hold, through a dip") {
+    const UiStyle s = defaultUiStyle(); // hold 0.5 s, fade 0.1 s
+    const float dt = 1.f / 60.f;
+    UiToneState st;
+    // The first read sets the tone at once, even while shown (the cluster never shows in the wrong tone first).
+    CHECK(uiToneStep(st, s, true, true, UiTone::Dark, dt));
+    CHECK(st.tone == UiTone::Dark);
+    CHECK(st.alpha == 1.f);
+    // Hidden, a read sets it at once too.
+    CHECK(uiToneStep(st, s, false, true, UiTone::Pale, dt));
+    CHECK(st.tone == UiTone::Pale);
+    // Shown, the other tone waits the hold: no switch at 0.48 s, with no read keeping the last ask.
+    CHECK_FALSE(uiToneStep(st, s, true, true, UiTone::Dark, dt));
+    for (int i = 0; i < 28; ++i) CHECK_FALSE(uiToneStep(st, s, true, false, UiTone::Pale, dt));
+    CHECK(st.tone == UiTone::Pale);
+    CHECK(st.alpha == 1.f);
+    // An ask that goes back before the hold starts the count again.
+    uiToneStep(st, s, true, true, UiTone::Pale, dt);
+    CHECK(st.asked == 0.f);
+    uiToneStep(st, s, true, true, UiTone::Dark, dt);
+    bool flipped = false;
+    float lowest = 1.f;
+    int frames = 0;
+    for (; frames < 120 && !flipped; ++frames) {
+        flipped = uiToneStep(st, s, true, false, UiTone::Pale, dt);
+        lowest = std::min(lowest, st.alpha);
+    }
+    CHECK(flipped);
+    CHECK(frames * dt >= s.toneHold + s.toneFade - 2.f * dt); // the hold, then the fade out
+    CHECK(st.tone == UiTone::Dark);
+    CHECK(lowest < 0.1f); // the old tone faded out before the flip: never a colour between
+    for (int i = 0; i < 12; ++i) uiToneStep(st, s, true, false, UiTone::Pale, dt);
+    CHECK(st.alpha == 1.f);
+    CHECK(st.dip < 0.f);
+}
+
 TEST_CASE("ui style: the picture's brightest share, by luminance, with no allocation") {
     UiLumaHistogram h;
     CHECK(uiLumaBrightest(h, 0.1f).r == 0.f); // nothing measured: black, so no dim

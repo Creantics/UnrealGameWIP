@@ -10,13 +10,15 @@ constexpr std::size_t K(UiMarkKind k) { return static_cast<std::size_t>(k); }
 
 ArenaHudFrame fullFrame() {
     ArenaHudFrame f;
-    f.lead.hp = f.lead.hpMax = 100;
+    f.lead.hpMax = 100;
+    f.lead.hp = 80;
     f.lead.loadMax = 90;
     f.lead.releaseReady = true;
     f.lead.heals = 2;
     f.lead.roundsMax = 6;
     f.partner.present = true;
-    f.partner.hp = f.partner.hpMax = 80;
+    f.partner.hpMax = 80;
+    f.partner.hp = 60;
     f.boss.present = true;
     f.boss.hp = f.boss.hpMax = 500;
     f.boss.slot = 0;
@@ -61,6 +63,21 @@ TEST_CASE("ui budget: absent data asks for no mark") {
     CHECK(wg[K(UiMarkKind::Boss)] == 0);
     g.boss.hpMax = 500;
     CHECK(uiMarkWants(g, 0)[K(UiMarkKind::Target)] == 0);
+}
+
+TEST_CASE("ui budget: the partner's place shows only when hurt, down or holding Load; Heal only when it would heal") {
+    ArenaHudFrame f = fullFrame();
+    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 1); // hurt
+    f.partner.hp = f.partner.hpMax;
+    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 0); // full health: nothing to say
+    f.partner.load = 12;
+    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 1); // holding Load
+    f.partner.load = 0;
+    f.partner.down = true;
+    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 1);
+    CHECK((uiVerbsAvailable(f) & uiVerbBit(UiVerb::Heal)) != 0);
+    f.lead.hp = f.lead.hpMax;
+    CHECK((uiVerbsAvailable(f) & uiVerbBit(UiVerb::Heal)) == 0);
 }
 
 TEST_CASE("ui budget: verbs available come from the data") {

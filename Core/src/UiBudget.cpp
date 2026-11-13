@@ -22,14 +22,16 @@ std::uint8_t uiVerbsAvailable(const ArenaHudFrame& f) {
     if (l.hpMax > 0 && !l.down && !l.guardBroken) m |= uiVerbBit(UiVerb::Guard);
     if (l.loadMax > 0 && l.releaseReady) m |= uiVerbBit(UiVerb::Release);
     if (f.partner.present && !f.partner.down) m |= uiVerbBit(UiVerb::Pair);
-    if (l.heals > 0 && !l.down) m |= uiVerbBit(UiVerb::Heal);
+    if (l.heals > 0 && !l.down && l.hp < l.hpMax) m |= uiVerbBit(UiVerb::Heal); // at full HP a heal would do nothing
     return m;
 }
 
 std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, std::uint8_t verbsAvailable) {
     std::array<std::uint8_t, kUiMarkKindCount> w{};
     w[idx(UiMarkKind::Lead)] = f.lead.hpMax > 0 ? 1 : 0;
-    w[idx(UiMarkKind::Party)] = static_cast<std::uint8_t>((f.partner.present ? 1 : 0)
+    // The partner's place only when it has something to say: hurt, down or holding Load (hidden at full health).
+    const bool partnerNews = f.partner.present && (f.partner.down || f.partner.hp < f.partner.hpMax || f.partner.load > 0);
+    w[idx(UiMarkKind::Party)] = static_cast<std::uint8_t>((partnerNews ? 1 : 0)
         + (f.third.present && !f.third.planned ? 1 : 0)); // a planned place has no data: no mark
     w[idx(UiMarkKind::Boss)] = f.boss.present && f.boss.hpMax > 0 ? 1 : 0;
     w[idx(UiMarkKind::Target)] = f.target.present && f.target.hpMax > 0

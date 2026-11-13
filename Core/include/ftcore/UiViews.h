@@ -58,6 +58,7 @@ struct ArenaHudPartner {
     std::uint8_t lead = 0;
     int hp = 0, hpMax = 0;
     bool down = false;
+    int load = 0;           // the partner's kept Load (the runner's; 0 without a cap)
     bool operator==(const ArenaHudPartner&) const = default;
 };
 
