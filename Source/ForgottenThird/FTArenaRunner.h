@@ -20,6 +20,7 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/Hallucination.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
@@ -602,6 +603,26 @@ private:
 	// While Lone a gift press waits until after the step (a same-tick Release pools first).
 	ftcore::LoneGiftHold LoneGift;
 	void PressPendingLoneGift();
+	// -ArenaHallucination=accept|refuse|expire (a probe; off by default): offers of the lead's tragedies by the Core
+	// rules (ftcore/Hallucination.h). The hold slows the lead's stick and a full one stills the lead; the enemies go on.
+	int32 HallMode = 0;            // 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire
+	float HallAt = 5.f;            // no offer before this fight time (-ArenaHallucinationAt=S)
+	ftcore::HallucinationTuning HallTuning{};
+	ftcore::TragedyTable HallTable;
+	ftcore::TragedyPool HallPool;
+	ftcore::Hallucination Hall;
+	uint32 HallRng = 7u;
+	double HallShownAt = 0.0;
+	int32 HallSeen[8] = {};        // events by ftcore::HallucinationEventType
+	int32 HallHeldSteps = 0;       // steps the lead stood held
+	int32 HallEnemyActs = 0;       // enemy attacks begun while the lead stood held
+	float HallHeldDrift = 0.f;     // metres the lead's body moved while held (knocks included)
+	float HallMaxHold = 0.f;
+	bool bHallHeldStep = false;
+	ftcore::Vec2 HallHeldFrom{};
+	void BeginHallucination();
+	void StepHallucination(ftcore::ArenaInput& In);
+	void AfterHallucinationStep(const ftcore::ArenaOutput& Out);
 	int32 PartnerLoadStored = 0; // the partner's kept gauge: stored this fight, and the last change
 	double PartnerLoadTime = -1e9;
 	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)

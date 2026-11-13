@@ -420,6 +420,40 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the lead fights Lone (%s; cap %d, gain x%.2f, Release x%.2f, taken x%.2f)."),
 			bLone ? TEXT("-ArenaLone") : TEXT("forced by the third slot"), LoneTuning.cap, LoneTuning.gain, LoneTuning.release, LoneTuning.taken);
 	}
+	HallMode = 0;
+#if !UE_BUILD_SHIPPING
+	{
+		FString Mode;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaHallucination="), Mode))
+		{
+			HallMode = Mode.Equals(TEXT("accept"), ESearchCase::IgnoreCase) ? 1
+				: Mode.Equals(TEXT("refuse"), ESearchCase::IgnoreCase) ? 2
+				: Mode.Equals(TEXT("expire"), ESearchCase::IgnoreCase) ? 3 : 0;
+		}
+		FParse::Value(FCommandLine::Get(), TEXT("ArenaHallucinationAt="), HallAt);
+	}
+#endif
+	if (HallMode != 0)
+	{
+		const FString Dir = FPaths::ProjectDir() / TEXT("Data/Unwritten/");
+		TArray<uint8> Bytes;
+		std::string Error;
+		if (!(FFileHelper::LoadFileToArray(Bytes, *(Dir + TEXT("hallucination.json")))
+			&& ftcore::importHallucinationTuning(FT::BytesAsText(Bytes), HallTuning, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Unwritten/hallucination.json; defaults kept.\n%s"), *FT::ToFString(Error));
+			HallTuning = ftcore::HallucinationTuning();
+		}
+		Bytes.Reset();
+		if (!(FFileHelper::LoadFileToArray(Bytes, *(Dir + TEXT("tragedies.json")))
+			&& ftcore::importTragedies(FT::BytesAsText(Bytes), HallTable, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Unwritten/tragedies.json; no offer can start.\n%s"), *FT::ToFString(Error));
+		}
+		BeginHallucination();
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: hallucination probe (-ArenaHallucination, mode %d, from %.1f s; %d keys; hold %.1f s, expire %.0f s, gap %.0f s)."),
+			HallMode, HallAt, static_cast<int32>(HallTable.keys.size()), HallTuning.holdSeconds, HallTuning.expireSeconds, HallTuning.gapSeconds);
+	}
 	// Before begin, and only a stance the session will accept: the chairs' heal charges are left out from the start.
 	Fight.setLone(LoneAccepted(SessionLeadOf(Setup.Lead)), LoneTuning);
 
@@ -2197,9 +2231,17 @@ void UFTArenaRunner::StepFight()
 		}
 		MoveAlly(); // after PrevBodies: the ally is drawn from where it stood
 	}
+	if (HallMode != 0)
+	{
+		StepHallucination(In);
+	}
 	PressSession(In);
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	if (HallMode != 0)
+	{
+		AfterHallucinationStep(Out);
+	}
 	// In a hit pause the figure's clips stand still (its clock stopped), so what drives its legs holds too: the body
 	// standing for the pause is not a stop, and easing the gait, the strike's walk share or the legs' turn under a
 	// frozen clip would move the feet with nothing else moving.
@@ -3682,6 +3724,16 @@ void UFTArenaRunner::LogFeatureChecks() const
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone %s (%d breaches, %d of %d gift presses refused)."),
 			Verdict(bLoneOk, bLoneAtStart), LoneBreaches, LoneGiftsRefused, LoneGiftPresses);
 	}
+	if (HallMode != 0)
+	{
+		using EV = ftcore::HallucinationEventType;
+		const auto N = [this](EV E) { return HallSeen[static_cast<int32>(E)]; };
+		const bool bOk = HallMode == 1 ? N(EV::Held) > 0 && N(EV::PulledBack) > 0
+			: HallMode == 2 ? N(EV::Refused) > 0 && N(EV::Held) == 0 : N(EV::Expired) > 0 && N(EV::Held) == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: hallucination %s (mode %d: %d started, %d held, %d refused, %d pulled back, %d expired, %d torn; max hold %.2f; %d steps held, %.2f m drift, %d enemy attacks begun meanwhile)."),
+			Verdict(bOk, true), HallMode, N(EV::Started), N(EV::Held), N(EV::Refused), N(EV::PulledBack), N(EV::Expired), N(EV::Torn),
+			HallMaxHold, HallHeldSteps, HallHeldDrift, HallEnemyActs);
+	}
 	// Impact (ftcore/ArenaImpact.h): numbers only, no verdict. The jolt is rotation only (the arm and the field of view
 	// are never touched); the marker is the off-frame tell and the stinger only doubles it.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: jolt (%d blows asked; peak %.2f deg handed to the camera; camera shake %.2f)."),
@@ -3857,10 +3909,89 @@ void UFTArenaRunner::EndImpact()
 	Jolt = ftcore::ArenaJolt();
 }
 
+void UFTArenaRunner::BeginHallucination()
+{
+	HallPool = ftcore::TragedyPool(HallTable);
+	for (int32 K = 0; K < static_cast<int32>(HallTable.keys.size()); ++K)
+	{
+		HallPool.unlock(K); // the probe has lived every key
+	}
+	Hall = ftcore::Hallucination(HallTuning);
+	HallRng = 7u;
+	HallShownAt = 0.0;
+	FMemory::Memzero(HallSeen);
+	HallHeldSteps = HallEnemyActs = 0;
+	HallHeldDrift = HallMaxHold = 0.f;
+	bHallHeldStep = false;
+}
+
+void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
+{
+	static const TCHAR* const Names[] = {TEXT("started"), TEXT("hold began"), TEXT("held"), TEXT("refused"), TEXT("pulled back"),
+		TEXT("expired"), TEXT("torn")};
+	const auto Count = [this]()
+	{
+		for (int32 I = 0; I < Hall.eventCount(); ++I)
+		{
+			const ftcore::HallucinationEvent& E = Hall.events()[I];
+			const int32 T = static_cast<int32>(E.type);
+			++HallSeen[T];
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: hallucination %s (key %d)."), Fight.time(), T < 7 ? Names[T] : TEXT("?"), E.key);
+		}
+	};
+	ftcore::HallucinationInput H;
+	H.lead = SessionLead;
+	H.inFight = true;
+	H.partnerPresent = Session != nullptr && !Fight.lone(); // alone, only the refusal ends a hold
+	H.accepting = HallMode == 1 && Hall.active();
+	H.refuse = HallMode == 2 && Hall.active() && Hall.now() - HallShownAt >= 1.0;
+	Hall.tick(static_cast<double>(StepSeconds), H);
+	Count();
+	if (!Hall.active() && Fight.time() >= HallAt
+		&& Hall.start(HallPool, HallRng, 0u, ftcore::intensityBand(ftcore::IntensityBand::Low, 0, HallTuning), false)
+			== ftcore::HallucinationStart::Started)
+	{
+		HallShownAt = Hall.now();
+		Count();
+	}
+	const float Hold = Hall.holdLevel();
+	HallMaxHold = FMath::Max(HallMaxHold, Hold);
+	bHallHeldStep = Hall.held();
+	if (bHallHeldStep)
+	{
+		// Still and blank: no stick and no buttons until the partner pulls the lead back or the lead refuses.
+		++HallHeldSteps;
+		HallHeldFrom = Bodies.player;
+		In.move = ftcore::Vec2{0.f, 0.f};
+		In.light = In.heavy = In.dodge = In.jump = In.heal = In.release = In.pair = false;
+	}
+	else if (Hold > 0.f)
+	{
+		In.move = ftcore::Vec2{In.move.x * (1.f - Hold), In.move.y * (1.f - Hold)};
+	}
+}
+
+void UFTArenaRunner::AfterHallucinationStep(const ftcore::ArenaOutput& Out)
+{
+	if (!bHallHeldStep)
+	{
+		return;
+	}
+	HallHeldDrift += ArenaLength(ftcore::Vec2{Bodies.player.x - HallHeldFrom.x, Bodies.player.y - HallHeldFrom.y});
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		HallEnemyActs += (E.type == ftcore::ArenaEventType::AttackStarted && E.source < ftcore::kMaxArenaEnemies) ? 1 : 0;
+	}
+}
+
 void UFTArenaRunner::Restart()
 {
 	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
 	LoneGift = {}; // a press held from the last attempt is not this one's
+	if (HallMode != 0)
+	{
+		BeginHallucination();
+	}
 	Fight.restart();
 	if (bStoryFight)
 	{
