@@ -323,6 +323,18 @@ TEST_CASE("locomotion: a host's landing hand-back holds for a moving landing tha
     REQUIRE(l.target() == LocoClip::LandMoving);
     run(l, 0.03f, {});
     CHECK(l.state() == LocoState::Ground);
+
+    // A standing jump's landing, with landPlayMoving still set, keeps landPlay (0.06 s), not 0.02.
+    run(l, 1.f, {});
+    l.update({kDt, 0.f, 0.f, true, 300.f});
+    run(l, 0.6f, {0.f, 0.f, 0.f, true, -200.f});
+    l.update({kDt, 0.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    REQUIRE(l.target() == LocoClip::Land);
+    run(l, 0.04f, {});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.03f, {});
+    CHECK(l.state() == LocoState::Ground);
 }
 
 TEST_CASE("locomotion: a moving jump takes off and lands with the moving clips") {
