@@ -203,6 +203,11 @@ public:
 	// The table (-ArenaTable) for the HUD and effects: on at all, and its state, ring, seats and the Release hold.
 	// A shared blow arrives as an ArenaEventType::TableShare event (in the popup stream, the target tinted as hit).
 	bool IsTableOn() const { return bTable; }
+	// Enemy Slot's rank for the HUD: its kind's carry grade (arena.json "carry"), 0 none, at most 5; 0 for an empty slot.
+	int32 GetSlotRank(int32 Slot) const
+	{
+		return (Slot >= 0 && Slot < static_cast<int32>(Fight.def().enemyCount)) ? FMath::Clamp(static_cast<int32>(Fight.def().enemies[Slot].carry), 0, 5) : 0;
+	}
 	ftcore::ArenaTableView GetTableView() const;
 	double GetZoneZ() const { return ZoneZ; }
 	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
