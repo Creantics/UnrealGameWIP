@@ -78,6 +78,29 @@ inline float loneReleaseScale(float ruled, float release, float cap) {
 // asks this before its fight begins so a refused stance changes nothing there either).
 inline bool loneStanceAccepted(FighterId lead, const LoneTuning& t) { return isLead(lead) && validLoneTuning(t); }
 
+// Whether a host's fight goes Lone before it begins: wanted, with a session, and a stance that session will accept.
+// The fight leaves the chairs' heal charges out at begin, so a stance refused later would cost them.
+inline bool loneAtBegin(bool wanted, bool session, FighterId lead, const LoneTuning& t) {
+    return wanted && session && loneStanceAccepted(lead, t);
+}
+
+// A host's gift press while Lone waits for the end of the step: a Release resolved on that tick pools first (with its
+// x`release`), then the gift ends the stance. Not Lone, the press goes through at once.
+struct LoneGiftHold {
+    bool pending = false;
+    // A press before the step; true: press the gift now.
+    bool press(bool lone) {
+        pending = pending || lone;
+        return !lone;
+    }
+    // After the step's events (its Released pooled); true once for a held press.
+    bool take() {
+        const bool held = pending;
+        pending = false;
+        return held;
+    }
+};
+
 // Lone is forced when the third slot is Vacant or Hostile.
 inline bool loneForced(SlotState third) { return third == SlotState::Vacant || third == SlotState::Hostile; }
 

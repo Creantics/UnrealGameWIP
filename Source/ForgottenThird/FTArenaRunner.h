@@ -596,12 +596,11 @@ private:
 	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
 	// The stance the session will accept for this lead (asked before the fight begins, so a refused one changes
 	// nothing: the chairs' heal charges stay).
-	bool LoneAccepted(uint8 Lead) const { return LoneWanted() && Session && ftcore::loneStanceAccepted(Lead, LoneTuning); }
+	bool LoneAccepted(uint8 Lead) const { return ftcore::loneAtBegin(LoneWanted(), Session != nullptr, Lead, LoneTuning); }
 	// The fight follows the session's truth (a given gift ends it).
 	void MirrorLone();
-	// While Lone a gift press waits until after the step: a Release begun on the same tick resolves first (its x1.3
-	// and its pool entry), then the gift ends the stance.
-	bool bLoneGiftPending = false;
+	// While Lone a gift press waits until after the step (a same-tick Release pools first).
+	ftcore::LoneGiftHold LoneGift;
 	void PressPendingLoneGift();
 	int32 PartnerLoadStored = 0; // the partner's kept gauge: stored this fight, and the last change
 	double PartnerLoadTime = -1e9;

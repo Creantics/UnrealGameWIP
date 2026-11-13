@@ -132,6 +132,7 @@ add_library(ftcore STATIC
     src/Chairs.cpp
     src/CountLiftData.cpp
     src/LoneCarry.cpp
+    src/Hallucination.cpp
     src/Brief.cpp
     src/BriefKit.cpp
     src/LicenceRating.cpp
@@ -343,6 +344,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_pause.cpp
         tests/test_arena.cpp
         tests/test_arena_load.cpp
+        tests/test_hallucination.cpp
         tests/test_chairs.cpp
         tests/test_brief.cpp
         tests/test_licence.cpp

@@ -1,5 +1,6 @@
 // Carrying in the arena: the Load cap from the chairs, block Load, take half for an ally, and the chairs' effects.
 #include "ftcore/ArenaFight.h"
+#include "ftcore/FightSession.h"
 #include "ftcore/Places.h"
 #include "ftcore/UiViews.h"
 
@@ -921,4 +922,98 @@ TEST_CASE("lone carry: the Release's x1.3 is one more factor under the single-bl
     CHECK(loneReleaseScale(3.f, 1.3f, 2.f) == doctest::Approx(3.f)); // over the cap already: left
     CHECK(loneReleaseScale(0.f, 1.3f, 2.f) == 0.f);
     CHECK(loneReleaseScale(2.f, 0.5f, 0.f) == doctest::Approx(2.f));
+}
+
+TEST_CASE("lone carry: a blow cap passed through setLone does nothing outside Lone") {
+    // 20 base, a x2 crit: 40 whatever the cap, when not Lone (the cap is the host's to apply).
+    for (const float cap : {0.f, 1.5f, 2.f, 6.f}) {
+        CAPTURE(cap);
+        ScaleHook crit;
+        Rig rig({dummyKind()});
+        rig.fight.setBlowHook(&ScaleHook::hook, &crit);
+        rig.fight.setLone(false, LoneTuning{}, cap);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        CHECK(releaseDealt(rig) == 40);
+    }
+}
+
+namespace {
+FightSessionDef loneSessionDef(FighterId lead, const LoneTuning& t) {
+    FightSessionDef d;
+    d.count.bpm = 60.0;
+    d.lift = true;
+    d.loneLead = lead;
+    d.loneTuning = t;
+    return d;
+}
+} // namespace
+
+TEST_CASE("lone carry: before begin the fight goes Lone only on a stance the session accepts; a refused one keeps the heal charges") {
+    LoneTuning bad;
+    bad.taken = 2.5f;
+    struct Case {
+        bool wanted;
+        bool session;
+        FighterId lead;
+        LoneTuning tuning;
+        bool lone;
+    };
+    for (const Case c : {Case{true, true, kLeadA, LoneTuning{}, true}, Case{true, true, kThirdSlot, LoneTuning{}, false},
+                         Case{true, true, kLeadB, bad, false}, Case{true, false, kLeadA, LoneTuning{}, false},
+                         Case{false, true, kLeadA, LoneTuning{}, false}}) {
+        CAPTURE(c.wanted);
+        CAPTURE(c.session);
+        CAPTURE(static_cast<int>(c.lead));
+        CHECK(loneAtBegin(c.wanted, c.session, c.lead, c.tuning) == c.lone);
+        ArenaChairs chairs;
+        chairs.named[0] = ChairEffect{ChairKind::HealCharges, 2.f, 0.f};
+        chairs.count = 1;
+        Rig rig({dummyKind()});
+        rig.fight.setChairs(chairs);
+        rig.fight.setLone(loneAtBegin(c.wanted, c.session, c.lead, c.tuning), c.tuning);
+        rig.fight.restart();
+        CHECK(rig.fight.lone() == c.lone);
+        CHECK(rig.fight.healChargesMax() == ruleFighter().healCharges + (c.lone ? 0 : 2));
+        if (c.wanted && c.session) {
+            // The session's own begin rules the same way.
+            FightSession s;
+            s.begin(loneSessionDef(c.lead, c.tuning), 0.0);
+            CHECK(s.lone() == c.lone);
+        }
+    }
+}
+
+TEST_CASE("lone carry: a gift pressed on a Release's tick is held; the Release pools with its x1.3, then the gift ends Lone") {
+    Rig rig({dummyKind()});
+    rig.fight.setLone(true);
+    FightSession s;
+    REQUIRE(s.begin(loneSessionDef(kLeadA, LoneTuning{}), 0.0).ok());
+    REQUIRE(s.lone());
+    REQUIRE(s.selectGift(Gift::Heal));
+    LoneGiftHold hold;
+    rig.fight.giveLoad(50);
+    rig.tick();
+    // One tick: the Release and the gift pressed together.
+    rig.in.release = true;
+    CHECK_FALSE(hold.press(rig.fight.lone())); // held
+    rig.tick();
+    REQUIRE(rig.find(ArenaEventType::Released) != nullptr);
+    const int spent = rig.find(ArenaEventType::Released)->amount; // the log grows: keep the value, not the pointer
+    CHECK(s.poolRelease(kLeadA, spent));
+    REQUIRE(hold.take());
+    CHECK_FALSE(hold.take()); // once
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK_FALSE(s.lone());
+    rig.fight.setLone(s.lone());
+    rig.run(40);
+    CHECK(s.lonePooled() == static_cast<unsigned>(spent));
+    CHECK(releaseDealt(rig) == 26); // begun Lone: x1.3 for its whole swing
+    CHECK_FALSE(rig.fight.lone());
+    // Pressed the other way round, the gift would have ended Lone first and the pool would refuse the Release.
+    CHECK_FALSE(s.poolRelease(kLeadA, spent));
+    // Not Lone: a press goes through at once and nothing is held.
+    CHECK(hold.press(false));
+    CHECK_FALSE(hold.take());
 }
