@@ -754,6 +754,8 @@ private:
 	bool bTableFill = false;
 	// -ArenaTableKey: the autopilot works the player's key (StepTableKey): odd presses held to a begin, even ones tapped.
 	bool bTableKey = false;
+	// -ArenaTableOpen: the autopilot stands still and open while the table is set (a review switch for the share).
+	bool bTableOpen = false;
 	int32 TableKeyPresses = 0;
 	double TableKeyLastStep = -1.0;
 	ftcore::PlaceTable TablePlaces;

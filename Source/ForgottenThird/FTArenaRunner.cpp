@@ -1823,6 +1823,13 @@ void UFTArenaRunner::StepFight()
 		{
 			In.release = false;
 		}
+		if (bTableOpen && TableClock.state() == ftcore::TableState::Set)
+		{
+			// -ArenaTableOpen: the autopilot stands still and open while the table is set, so a blow lands on a seated
+			// lead and the share shows (a review switch for the HUD's SHARED popup, not a way to play).
+			In.move = ftcore::Vec2{};
+			In.light = In.heavy = In.dodge = In.guard = In.release = In.pair = In.jump = In.heal = false;
+		}
 		if (bTableKey)
 		{
 			const bool bStart = !TableKey.holding() && TableCanBegin();
@@ -4752,14 +4759,15 @@ const TCHAR* TableStateName(ftcore::TableState S)
 
 void UFTArenaRunner::BeginTable(const ftcore::PlaceTable& Places, bool bCapArg)
 {
-	bTable = bTableAuto = bTableFill = bTableKey = false;
+	bTable = bTableAuto = bTableFill = bTableKey = bTableOpen = false;
 	TablePlaces = Places;
 #if !UE_BUILD_SHIPPING
 	const TCHAR* Cmd = FCommandLine::Get();
 	bTableAuto = FParse::Param(Cmd, TEXT("ArenaTableAuto"));
 	bTableFill = FParse::Param(Cmd, TEXT("ArenaTableFill"));
 	bTableKey = FParse::Param(Cmd, TEXT("ArenaTableKey"));
-	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill || bTableKey;
+	bTableOpen = FParse::Param(Cmd, TEXT("ArenaTableOpen"));
+	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill || bTableKey || bTableOpen;
 	if (!bTable)
 	{
 		return;
