@@ -574,7 +574,10 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 		TickSpeakingShots();
 	}
 #endif
-	if (!bFast && ShotsLeft > 0 && ShotSpeakingModel.IsEmpty() && bLine && !bShotThisBeat && Presenter.revealed() && BeatAge >= 1.f)
+	// The still waits 0.4 s past the reveal (inside the autoplay's pause): what arrives with the finished line (options and
+	// their dim) has settled.
+	if (!bFast && ShotsLeft > 0 && ShotSpeakingModel.IsEmpty() && bLine && !bShotThisBeat && Presenter.revealed() && BeatAge >= 1.f
+		&& WaitTime >= 0.4f)
 	{
 		bShotThisBeat = true;
 		const FString File = StoryShotFile(Story->GetLineId());

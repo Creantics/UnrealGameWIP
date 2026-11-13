@@ -86,6 +86,13 @@ TEST_CASE("ui event marks: an evade opens the ring and lets it go") {
     CHECK(uiEventMarkPose(UiEventMark::RingOpen, 0.4f).alpha < 0.05f);
 }
 
+TEST_CASE("ui event marks: a block tick holds full for 150 ms, then fades out by 300 ms") {
+    CHECK(uiEventMarkPose(UiEventMark::GuardTick, 0.f).tip > 1.5f); // strikes long
+    CHECK(uiEventMarkPose(UiEventMark::GuardTick, 0.14f).alpha == doctest::Approx(1.f));
+    CHECK(uiEventMarkPose(UiEventMark::GuardTick, 0.225f).alpha == doctest::Approx(0.5f));
+    CHECK(uiEventMarkPose(UiEventMark::GuardTick, 0.3f).alpha == 0.f);
+}
+
 TEST_CASE("ui event marks: a stagger springs out to a clearly larger ring and holds still") {
     const UiMarkPose open = uiEventMarkPose(UiEventMark::LineBreak, 0.12f);
     CHECK(open.tip == doctest::Approx(1.f));
@@ -95,7 +102,7 @@ TEST_CASE("ui event marks: a stagger springs out to a clearly larger ring and ho
     CHECK(settled.span == doctest::Approx(uiStaggerHoldPose().span));
     CHECK(settled.radius == doctest::Approx(uiStaggerHoldPose().radius));
     CHECK(settled.jitter == 0.f);
-    CHECK(uiStaggerHoldPose().radius >= 1.45f); // not near the resting ring's size
+    CHECK(uiStaggerHoldPose().radius >= 1.7f); // clearly larger than the resting ring
     CHECK(uiStaggerHoldPose().span > kUiLockSpan);
     CHECK(uiStaggerHoldPose().base == 0.f);
 }

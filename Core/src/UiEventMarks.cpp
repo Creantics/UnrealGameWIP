@@ -16,7 +16,7 @@ float smooth(float t) { t = clamp01(t); return t * t * (3.f - 2.f * t); }
 constexpr std::array<UiEventMarkSpec, kUiEventMarkCount> kSpecs = {{
     {UiEventMark::None, UiMarkPlace::None, 0.f, 0},
     {UiEventMark::RingSnap, UiMarkPlace::Reticle, 0.55f, 0},
-    {UiEventMark::GuardTick, UiMarkPlace::LeadRing, 0.4f, 0},
+    {UiEventMark::GuardTick, UiMarkPlace::LeadRing, 0.3f, 0},
     {UiEventMark::RingOpen, UiMarkPlace::Reticle, 0.45f, 0},
     {UiEventMark::LineBreak, UiMarkPlace::TopLine, 1.0f, 0},
     {UiEventMark::ShareThread, UiMarkPlace::Between, 0.75f, 0},
@@ -100,9 +100,9 @@ UiMarkPose uiEventMarkPose(UiEventMark mark, float age) {
         break;
     }
     case UiEventMark::GuardTick:
-        // Strikes long, settles to its length, fades.
+        // Strikes long, settles to its length, holds to 150 ms, fades by 300 ms.
         p.tip = 1.f + 0.6f * (1.f - easeOut(t / 0.12f));
-        p.alpha = t < 0.2f ? 1.f : 1.f - (t - 0.2f) / 0.2f;
+        p.alpha = t < 0.15f ? 1.f : 1.f - (t - 0.15f) / 0.15f;
         break;
     case UiEventMark::LineBreak: {
         // The line breaks open in 0.1 s and the ring springs out with it to a clearly larger radius (overshooting once,
@@ -146,7 +146,7 @@ UiMarkPose uiStaggerHoldPose() {
     p.alpha = 1.f;
     p.base = 0.f;
     p.span = 0.55f;
-    p.radius = 1.5f;
+    p.radius = 1.75f;
     p.jitter = 0.f;
     p.tip = 1.f;
     return p;

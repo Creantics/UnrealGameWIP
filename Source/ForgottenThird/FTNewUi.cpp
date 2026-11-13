@@ -53,7 +53,8 @@ using ftcore::UiToken;
 // The words a fight keeps: the call word under the boss name (a called zone, or the answer a boss's move needs).
 const FTUiText kZoneUi[3] = {FTUiText(TEXT("arena.boss.left")), FTUiText(TEXT("arena.boss.right")), FTUiText(TEXT("arena.boss.path"))};
 constexpr double kBossNoteLife = 1.2; // a wrong-side answer's side mark, fading
-const FTUiText kAnswerUi[3] = {FTUiText(TEXT("arena.parry")), FTUiText(TEXT("arena.block")), FTUiText(TEXT("arena.dodge"))};
+const FTUiText kCallDodgeUi(TEXT("arena.call.dodge")); // the call word has no "!" (the old HUD keeps arena.dodge)
+const FTUiText kAnswerUi[3] = {FTUiText(TEXT("arena.parry")), FTUiText(TEXT("arena.block")), kCallDodgeUi};
 const FTUiText kVictoryUi(TEXT("battle.victory"));
 const FTUiText kDefeatUi(TEXT("battle.defeat"));
 const FTUiText kAgainUi(TEXT("battle.again"));
@@ -446,7 +447,8 @@ public:
 
 	// A vignette with no edge at all: an ellipse centred on a screen corner or edge (most of it off the screen) whose alpha
 	// falls from Peak at its centre to nothing at the rim, with zero slope at both ends, so no boundary or patch reads.
-	void Vignette(float CX, float CY, float RX, float RY, float Peak, const FLinearColor* Colour = nullptr)
+	// Flat: the part of the way out that stays at Peak before the fall starts (0: the fall starts at the centre).
+	void Vignette(float CX, float CY, float RX, float RY, float Peak, const FLinearColor* Colour = nullptr, float Flat = 0.f)
 	{
 		if (Peak <= 0.f || RX <= 0.f || RY <= 0.f)
 		{
@@ -454,7 +456,6 @@ public:
 		}
 		constexpr int32 Rings = 24;
 		constexpr int32 Segs = 48;
-		constexpr float Flat = 0.f; // no even middle: the fall starts at the centre
 		FPart& P = Parts[ShadePart];
 		const SlateIndex Base = static_cast<SlateIndex>(P.Verts.Num());
 		const FLinearColor Back = Colour ? *Colour : Tok(UiToken::Backing, 1.f);
@@ -1482,9 +1483,9 @@ private:
 				float X1 = 0.f;
 				float Y1 = 0.f;
 				ftcore::uiArcPoint(CX, CY, (Carry::RingR + 2.f) * S, GDeg, X0, Y0);
-				ftcore::uiArcPoint(CX, CY, (Carry::RingR + 2.f + 18.f * Po.tip) * S, GDeg, X1, Y1);
+				ftcore::uiArcPoint(CX, CY, (Carry::RingR + 2.f + 26.f * Po.tip) * S, GDeg, X1, Y1);
 				const FVector2f Pts[2] = {FVector2f(X0, Y0), FVector2f(X1, Y1)};
-				Poly(Pts, 2, 2.f * S, Tok(UiToken::Ink, Po.alpha * A));
+				Poly(Pts, 2, 3.5f * S, Tok(UiToken::Ink, Po.alpha * A));
 			});
 		}
 
@@ -1583,9 +1584,9 @@ private:
 		}
 		if (BreakAt > 0.f)
 		{
-			const float Gap = 0.018f * BreakK;
+			const float Gap = 0.045f * BreakK;
 			HLine(X0, X0 + Len, Y, 0.f, FMath::Max(BreakAt - Gap, 0.f), HpSt, Tok(UiToken::Ink, LA));
-			HLine(X0, X0 + Len, Y + 2.f * S * BreakK, BreakAt + Gap, Hp, HpSt, Tok(UiToken::Ink, LA));
+			HLine(X0, X0 + Len, Y + 6.f * S * BreakK, BreakAt + Gap, Hp, HpSt, Tok(UiToken::Ink, LA));
 		}
 		else
 		{
@@ -1694,14 +1695,7 @@ private:
 				Danger(MX, MidY, 15.f * S, Tok(UiToken::Danger, TA));
 			}
 		}
-		else if (I == 0)
-		{
-			Lozenge(MX, MidY, 7.f * S, true, S, Tok(UiToken::WeakPoint, TA));
-		}
-		else if (I == 2)
-		{
-			Danger(MX, MidY, 15.f * S, Tok(UiToken::Danger, TA));
-		}
+		// An answer is the word alone; a zone keeps its in or out mark (the word names only the place).
 		P.Text(TX, Top, Word, CallFont, Tok(UiToken::Ink, TA));
 	}
 
@@ -2253,7 +2247,7 @@ private:
 		const FVector2f To(WeakAt.X - X, WeakAt.Y - Y);
 		if (!bWeakOn || To.Size() < R + 20.f * S)
 		{
-			ReticleRing(X, Y, R0, Po, S, 2.2f, C);
+			ReticleRing(X, Y, R0, Po, S, 2.6f, C);
 			return;
 		}
 		const float Toward = FMath::RadiansToDegrees(FMath::Atan2(To.X, -To.Y)); // 0 up, clockwise
@@ -2263,7 +2257,7 @@ private:
 		float From = Toward + Gap * 0.5f;
 		for (int32 K = 0; K < 3; ++K)
 		{
-			ftcore::uiStrokeArc(Line, X, Y, R, From, From + Each, StrokeStyle(2.2f, 111 + K, S, 0.f));
+			ftcore::uiStrokeArc(Line, X, Y, R, From, From + Each, StrokeStyle(2.6f, 111 + K, S, 0.f));
 			Mesh.Stroke(Line, C);
 			From += Each + Small;
 		}
@@ -2272,7 +2266,7 @@ private:
 		ftcore::uiArcPoint(X, Y, R, Toward, X0, Y0);
 		const FVector2f Dir = To.GetSafeNormal();
 		const FVector2f Pts[2] = {FVector2f(X0, Y0), WeakAt - Dir * (16.f * S)};
-		Poly(Pts, 2, 0.7f * S, Tok(UiToken::WeakPoint, A));
+		Poly(Pts, 2, 1.3f * S, Tok(UiToken::WeakPoint, A));
 	}
 
 	// The reticle: the lock's ring round the locked body (the screen's centre without a lock), where a parry snaps it shut
@@ -2754,6 +2748,7 @@ public:
 		{
 			OptionsFor = ArrivalSerial ^ (bFakeOptions ? 0x80000000u : 0u);
 			OptionW = 0.f;
+			DimWait = 0.f;
 			for (int32 I = 0; I < OptionRows; ++I)
 			{
 				OptionW = FMath::Max(OptionW, TextWidth(OptionText(*D, I), OptionFont));
@@ -2790,9 +2785,11 @@ public:
 			DimFor = MAX_uint32;
 			OptionDim = 0.f;
 			DimTries = 0;
+			DimWait = 0.f;
 		}
 		else if (DimFor != OptionsFor)
 		{
+			DimWait += DeltaTime;
 			DimSize = Size;
 			if (!bDimBound && GEngine && GEngine->GameViewport)
 			{
@@ -2852,7 +2849,12 @@ public:
 			PaintArriving(P, X, Y, Text, Lines[I].X, End, Body);
 			LastRight = X + LineW[I];
 		}
-		if (OptionRows > 0)
+		if (OptionRows > 0 && DimFor != OptionsFor && DimWait < 0.25f)
+		{
+			// A new choice's options wait for their dim (one frame in play), so they never show undimmed over a bright
+			// picture; a quarter second at most.
+		}
+		else if (OptionRows > 0)
 		{
 			const float RowH = LineH * 1.05f;
 			const float OptBlockH = RowH * OptionRows;
@@ -2864,12 +2866,13 @@ public:
 			OptionPlace(Size, S, MarkX, OptTop, bRight, H);
 			if (OptionDim > 0.f)
 			{
-				// The measured dim (Tick), only over a bright picture: a wide falloff with no edge, its middle sized so the
-				// block's ends still get the measured strength (the falloff gives 0.56 of its peak half way out).
+				// The measured dim, only over a bright picture: even at the measured strength over the whole block (its
+				// corners at 0.57 of the way out, inside the even middle) and a long skirt with zero slope at both ends, so
+				// neither an edge nor a darker blob reads.
 				const float HalfW = (MarkGap + OptionW) * 0.5f + 16.f * S;
 				const float HalfH = OptBlockH * 0.5f + 10.f * S;
-				Mesh.Vignette(MarkX + HalfW - 16.f * S, OptTop + OptBlockH * 0.5f, HalfW * 2.f, HalfH * 2.2f,
-					FMath::Min(OptionDim / 0.56f, 0.85f));
+				Mesh.Vignette(MarkX + HalfW - 16.f * S, OptTop + OptBlockH * 0.5f, HalfW * 2.4f, HalfH * 2.6f, FMath::Min(OptionDim, 0.85f),
+					nullptr, 0.58f);
 			}
 			if (bAnchor)
 			{
@@ -2910,7 +2913,8 @@ public:
 					ftcore::uiStrokeLine(Line, MarkX - 4.5f * S, MY, MarkX + 4.5f * S, MY, StrokeStyle(1.3f, 50u + static_cast<uint32>(I), S, 0.f));
 					Mesh.Stroke(Line, Tok(UiToken::InkDim));
 				}
-				P.Text(MarkX + MarkGap, Y, OptionText(*D, I), OptionFont, bPick ? Tok(UiToken::Ink) : Tok(UiToken::InkDim));
+				P.Text(MarkX + MarkGap, Y, OptionText(*D, I), OptionDim > 0.f ? OptionEdgeFont : OptionFont,
+					bPick ? Tok(UiToken::Ink) : Tok(UiToken::InkDim));
 			}
 		}
 		else if (View.continuePrompt)
@@ -3082,6 +3086,8 @@ private:
 		TextFont = FontFor(UiTextRole::Subtitle, Size.Y, Scale);
 		SpeakerFont = FontFor(UiTextRole::Speaker, Size.Y, Scale);
 		OptionFont = FontFor(UiTextRole::Subtitle, Size.Y, Scale);
+		OptionEdgeFont = OptionFont;
+		OptionEdgeFont.OutlineSettings.OutlineColor = Table().Edge; // over a measured dim: the full dark edge, as the call word's
 		HintFont = FontFor(UiTextRole::Prompt, Size.Y, Scale);
 		HintText = kStoryHintUi;
 		HintW = TextWidth(HintText, HintFont);
@@ -3161,6 +3167,7 @@ private:
 	FSlateFontInfo TextFont;
 	FSlateFontInfo SpeakerFont;
 	FSlateFontInfo OptionFont;
+	FSlateFontInfo OptionEdgeFont;
 	FSlateFontInfo HintFont;
 	FString HintText;
 	float HintW = 0.f;
@@ -3191,6 +3198,7 @@ private:
 	float OptionDim = 0.f;     // the measured dim behind the options (0 over a dark picture)
 	uint32 DimFor = MAX_uint32; // the options it was measured for
 	int32 DimTries = 0;         // reads that found no picture yet for these options
+	float DimWait = 0.f;        // seconds these options have waited for their dim
 	FVector2f DimSize = FVector2f::ZeroVector; // the widget size the options are placed in, for the end-of-draw read
 	bool bDimBound = false;     // the end-of-draw read is bound to the game viewport
 	bool bHintUp = false;
