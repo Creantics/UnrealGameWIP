@@ -2,12 +2,15 @@
 #include "ftcore/ArenaFight.h"
 #include "ftcore/Places.h"
 
+#include "TestAssets.h"
+
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
+#include <string>
 #include <vector>
 
 using namespace ftcore;
@@ -494,4 +497,91 @@ TEST_CASE("arena carry: spendLoad removes what there is and reports it once") {
     rig.tick();
     REQUIRE(rig.count(ArenaEventType::LoadSpent) == 1);
     CHECK(rig.find(ArenaEventType::LoadSpent)->amount == 20);
+}
+
+// ---- the default fight is unchanged ----
+
+namespace {
+
+// The shipped fight under the autopilot to its end (or 120 s): its result line and a hash over every event and the
+// player's hp, Load and stamina each tick. `carryNeutral` calls the carrying setters at their defaults (carry off,
+// cap 100, no chairs, no ally) before begin and presses take half every 7th tick: none of it may change the fight.
+struct FightTrace {
+    std::string line;
+    std::uint64_t hash = 1469598103934665603ull;
+};
+
+void mix(std::uint64_t& h, std::int64_t v) {
+    h ^= static_cast<std::uint64_t>(v);
+    h *= 1099511628211ull;
+}
+
+FightTrace traceOf(const ArenaDef& def, const ArenaTable& table, bool carryNeutral) {
+    const ArenaRing ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+    ArenaFight fight;
+    if (carryNeutral) {
+        fight.setCarry(false);
+        fight.setLoadCap(kMaxLoad);
+        fight.setChairs(ArenaChairs{});
+    }
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 7);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    FightTrace t;
+    int n = 0;
+    while (!fight.over() && fight.time() < 120.f) {
+        ArenaInput in = fight.autopilot();
+        if (carryNeutral && ++n % 7 == 0) in.takeHalf = true;
+        const ArenaOutput& out = fight.tick(kDt, in, bodies);
+        for (const ArenaEvent& e : out.events) {
+            mix(t.hash, static_cast<std::int64_t>(e.type));
+            mix(t.hash, e.source);
+            mix(t.hash, e.target);
+            mix(t.hash, e.move);
+            mix(t.hash, e.amount);
+        }
+        mix(t.hash, fight.hp());
+        mix(t.hash, fight.load());
+        mix(t.hash, static_cast<std::int64_t>(std::lround(fight.stamina() * 1000.f)));
+        arenaStep(fight, bodies, kDt);
+    }
+    char buf[kArenaResultLineMax] = {};
+    ArenaLogIds ids;
+    ids.kit = "default";
+    ids.pilot = "autoplay";
+    ids.seed = 7;
+    const std::size_t len = arenaResultLine(buf, sizeof buf, fight, table, ids);
+    t.line.assign(buf, len);
+    return t;
+}
+
+} // namespace
+
+TEST_CASE("arena carry: with carrying off, the default fight and the kite boss fight play exactly as before") {
+    std::string text;
+    if (!ftcore_test::readProjectData("Battle/arena.json", text)) FAIL("Data/Battle/arena.json not found");
+    ArenaTable table;
+    std::string err;
+    REQUIRE_MESSAGE(importArenaTable(text, table, &err), err);
+
+    // The default fight.
+    const FightTrace plain = traceOf(table.fallback, table, false);
+    const FightTrace neutral = traceOf(table.fallback, table, true);
+    CHECK(plain.line == neutral.line);
+    CHECK(plain.hash == neutral.hash);
+
+    // The kite boss alone against the default kit.
+    std::size_t kite = 0;
+    while (kite < table.enemyIds.size() && table.enemyIds[kite] != "kite_boss") ++kite;
+    REQUIRE(kite < table.enemyIds.size());
+    ArenaDef def = table.fallback;
+    def.enemies[0] = table.enemies[kite];
+    def.enemyKind = arenaNoKinds();
+    def.enemyKind[0] = static_cast<std::uint8_t>(kite);
+    def.enemyCount = 1;
+    const FightTrace kitePlain = traceOf(def, table, false);
+    const FightTrace kiteNeutral = traceOf(def, table, true);
+    CHECK(kitePlain.line == kiteNeutral.line);
+    CHECK(kitePlain.hash == kiteNeutral.hash);
 }
