@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "holdSeconds": 4,
+  "expireSeconds": 30,
+  "gapSeconds": 90,
+  "switchSeconds": 20,
+  "refuseSeconds": 0.5,
+  "refusalCooldownSeconds": 4,
+  "pullSeconds": 6,
+  "recentSeconds": 1800,
+  "fewerGapScale": 2,
+  "actFloors": ["none", "none", "none", "low", "mid"]
+}
