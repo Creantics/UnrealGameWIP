@@ -4,7 +4,7 @@
   "layers": { "hairlines": true, "plates": false, "world_anchored": false, "letterbox": true },
   "line_weight": 3,
   "backing_default": 0.75,
-  "backing_soft": { "hud": 0.3, "dialogue": 0.42, "options_contrast": 3, "options_max": 0.65 },
+  "backing_soft": { "hud": 0.3, "dialogue": 0.42, "options_contrast": 4.5, "options_max": 0.65 },
   "edge": { "color": "#0A0908E6", "px": 1, "text": 0.6 },
   "meter": "line",
   "lead_marks": ["knuckles", "cylinder", "mask"],
