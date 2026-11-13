@@ -252,6 +252,9 @@ public:
 	}
 	// The Kite-Mother's weak-point host while it fights here (null otherwise).
 	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
+	// The world point of the weak point on the boss in Slot (the stone bearer's set stone, the Kite-Mother's seam); false
+	// when that slot holds no boss with one.
+	bool GetBossWeakPoint(int32 Slot, FVector& Out) const;
 	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h); the mode's strike views freeze and thaw it.
 	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
 	// The aim stance (right mouse held): its blend 0..1, for the HUD's reticle.

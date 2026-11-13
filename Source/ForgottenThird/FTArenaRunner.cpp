@@ -2467,6 +2467,30 @@ FVector UFTArenaRunner::BossFlashPoint() const
 	return Weak + FVector(0.0, 0.0, T.FlashUp * 100.0) + Toward * (T.FlashToCamera * 100.0);
 }
 
+bool UFTArenaRunner::GetBossWeakPoint(int32 Slot, FVector& Out) const
+{
+	if (Slot < 0 || Slot >= MaxEnemies)
+	{
+		return false;
+	}
+	if (Slot == StoneBearerSlot)
+	{
+		Out = BossWeakPoint();
+		return true;
+	}
+	const AFTArenaFighter* Figure = EnemyFigures[Slot].Get();
+	if (Slot != KiteSlot || !Figure)
+	{
+		return false;
+	}
+	static const FName Socket(FFTKiteHost::WeakPointSocket);
+	if (!Figure->GetSkinPoint(Socket, Out))
+	{
+		Out = Figure->GetChest();
+	}
+	return true;
+}
+
 FVector UFTArenaRunner::BossWeakPoint() const
 {
 	if (StoneBearerSlot < 0 || StoneBearerSlot >= MaxEnemies)

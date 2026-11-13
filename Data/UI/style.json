@@ -25,11 +25,11 @@
   "text": {
     "title":    { "font": "serif_sc_bold", "px": 40, "tracking": 0.08, "upper": false },
     "heading":  { "font": "serif_sc_bold", "px": 28, "tracking": 0.06, "upper": false },
-    "label":    { "font": "serif_sc",      "px": 22, "tracking": 0.08, "upper": false },
+    "label":    { "font": "serif_sc",      "px": 26, "tracking": 0.08, "upper": false },
     "value":    { "font": "serif_sc_bold", "px": 28, "tracking": 0,    "upper": false },
     "subtitle": { "font": "serif",         "px": 36, "tracking": 0,    "upper": false },
     "speaker":  { "font": "serif_sc_bold", "px": 26, "tracking": 0.08, "upper": false },
-    "prompt":   { "font": "serif",         "px": 22, "tracking": 0.02, "upper": false },
+    "prompt":   { "font": "serif",         "px": 26, "tracking": 0.02, "upper": false },
     "popup":    { "font": "serif_sc_bold", "px": 30, "tracking": 0.04, "upper": false },
     "verb":     { "font": "serif_sc_bold", "px": 27, "tracking": 0.22, "upper": true }
   },

@@ -452,8 +452,9 @@ public:
 		Fill(Pts, 16, C, bEdge);
 	}
 
-	// Shade with no edge at all: an ellipse whose alpha falls smoothly from Peak in the middle to nothing at the rim.
-	void Shade(float CX, float CY, float RX, float RY, float Peak)
+	// A vignette with no edge at all: an ellipse centred on a screen corner or edge (most of it off the screen) whose alpha
+	// falls from Peak at its centre to nothing at the rim, with zero slope at both ends, so no boundary or patch reads.
+	void Vignette(float CX, float CY, float RX, float RY, float Peak)
 	{
 		if (Peak <= 0.f || RX <= 0.f || RY <= 0.f)
 		{
@@ -461,7 +462,7 @@ public:
 		}
 		constexpr int32 Rings = 24;
 		constexpr int32 Segs = 48;
-		constexpr float Flat = 0.55f; // the even middle, as a share of the radius
+		constexpr float Flat = 0.f; // no even middle: the fall starts at the centre
 		FPart& P = Parts[ShadePart];
 		const SlateIndex Base = static_cast<SlateIndex>(P.Verts.Num());
 		const FLinearColor Back = Tok(UiToken::Backing, 1.f);
@@ -488,6 +489,45 @@ public:
 				Tri(P, I0 + K, I1 + K, I1 + K1);
 				Tri(P, I0 + K, I1 + K1, I0 + K1);
 			}
+		}
+	}
+
+	// A gradient strip with no edge: alpha Peak along one side (bPeakAtEnd: the bottom or right side), even for the first
+	// 1 - Ramp of the way, then falling to nothing at the other side with zero slope at both ends of the fall.
+	void Band(float X0, float Y0, float X1, float Y1, bool bAlongY, bool bPeakAtEnd, float Ramp, float Peak, const FLinearColor& C)
+	{
+		if (Peak <= 0.f || X1 <= X0 || Y1 <= Y0)
+		{
+			return;
+		}
+		constexpr int32 Steps = 32;
+		FPart& P = Parts[ShadePart];
+		const int32 Base = P.Verts.Num();
+		const float R = FMath::Clamp(Ramp, 0.05f, 1.f);
+		for (int32 I = 0; I <= Steps; ++I)
+		{
+			const float T = static_cast<float>(I) / Steps;
+			const float D = bPeakAtEnd ? 1.f - T : T; // the share of the way from the peak side
+			const float U = FMath::Clamp((D - (1.f - R)) / R, 0.f, 1.f);
+			const float A = Peak * (1.f - U * U * (3.f - 2.f * U));
+			if (bAlongY)
+			{
+				const float Y = FMath::Lerp(Y0, Y1, T);
+				P.Verts.Add(Vert(X0, Y, C, A));
+				P.Verts.Add(Vert(X1, Y, C, A));
+			}
+			else
+			{
+				const float X = FMath::Lerp(X0, X1, T);
+				P.Verts.Add(Vert(X, Y0, C, A));
+				P.Verts.Add(Vert(X, Y1, C, A));
+			}
+		}
+		for (int32 I = 0; I < Steps; ++I)
+		{
+			const int32 I0 = Base + 2 * I;
+			Tri(P, I0, I0 + 1, I0 + 3);
+			Tri(P, I0, I0 + 3, I0 + 2);
 		}
 	}
 
@@ -796,8 +836,8 @@ constexpr float LoadR = 84.f;
 constexpr float A0 = -135.f; // the arcs' sweep: open at the bottom, where the numbers sit (0 = up, clockwise)
 constexpr float A1 = 135.f;
 constexpr float VerbIn = 108.f;  // the verbs' rule, in from the right
-constexpr float VerbUp = 238.f;  // the first verb's baseline, up from the bottom
-constexpr float VerbStep = 46.f;
+constexpr float VerbUp = 252.f;  // the first verb's baseline, up from the bottom
+constexpr float VerbStep = 52.f;
 constexpr float TopLine = 100.f; // the boss's line, down from the top
 constexpr float BossLen = 680.f;
 constexpr float TargetLen = 420.f;
@@ -806,6 +846,9 @@ constexpr float LeadScale = 1.2f; // the lead's block (ring, marks, numbers) aga
 constexpr int32 LaneMax = 4;      // popups shown at once beside one body; older ones leave the lane
 constexpr float LaneOut = 120.f;  // the lane's edge out from the body
 } // namespace Carry
+
+// An enemy's popup lane never rises past this line (1080p units): the top line's block keeps the screen above it.
+constexpr float kLaneFloor = 300.f;
 
 // What was just lost: held a moment, then rubbed away toward the value (a hit rubs the line, it does not snap).
 struct FLostTrace
@@ -903,6 +946,7 @@ struct FPopMark
 	float Life = 0.f;
 	float Slot = 0.f; // eased toward the line it holds
 	FVector2f Anchor = FVector2f::ZeroVector;
+	bool bStagger = false; // a STAGGERED popup (gives way to the body's own state word in its lane)
 };
 
 class SFTArenaHud : public SLeafWidget
@@ -934,6 +978,7 @@ public:
 			LeadAsc = FontMeasure()->GetMaxCharacterHeight(LeadFont) + FontMeasure()->GetBaseline(LeadFont);
 			VerbFont = FontFor(UiTextRole::Verb, H);
 			NameFont = FontFor(UiTextRole::Title, H);
+			NameFont.LetterSpacing = 220; // the name in spaced small caps
 			NameAsc = FontMeasure()->GetMaxCharacterHeight(NameFont) + FontMeasure()->GetBaseline(NameFont);
 			LabelH = FontMeasure()->GetMaxCharacterHeight(LabelFont);
 			ValueAsc = FontMeasure()->GetMaxCharacterHeight(ValueFont) + FontMeasure()->GetBaseline(ValueFont);
@@ -986,10 +1031,11 @@ public:
 			}
 			for (int32 I = 0; I < static_cast<int32>(ftcore::kArenaTellCount); ++I)
 			{
-				Word(kTellUi[I], TellWord[I], TellW[I], LabelFont);
+				Word(kTellUi[I], TellWord[I], TellW[I], PopFont);
 			}
-			Word(kStaggeredUi, StaggerWord, StaggerW, LabelFont);
-			Word(kRiposteUi, RiposteWord, RiposteW, LabelFont);
+			Word(kStaggeredUi, StaggerWord, StaggerW, PopFont);
+			Word(kRiposteUi, RiposteWord, RiposteW, PopFont);
+			CardKeyW = TextWidth(TEXT("2"), PopFont);
 			Word(kOverloadLockedUi, LockedWord, LockedW, LabelFont);
 			Word(kAgainUi, AgainWord, AgainW, LabelFont);
 			Word(kAutoPlayUi, TagWord[0], TagW[0], LabelFont);
@@ -1042,7 +1088,8 @@ public:
 		HpLost.Step(L.hpMax > 0 ? static_cast<float>(L.hp) / L.hpMax : 0.f, DeltaTime);
 		const ftcore::ArenaHudBoss& B = View.now.boss;
 		const ftcore::ArenaHudTarget& T = View.now.target;
-		// The name over the line: the boss's, else the target's, from the loc table by its arena kind (none: the TARGET word).
+		// The name over the line: the boss's, else the target's, from the loc table by its arena kind (none: no name, the line
+		// alone). Lowercase in the small-caps face: one even small-cap height.
 		const int32 WantSlot = B.present ? static_cast<int32>(B.slot) : (T.present ? static_cast<int32>(T.enemy) : -1);
 		if (WantSlot != NameSlot)
 		{
@@ -1055,7 +1102,7 @@ public:
 				const FString& Name = FTUiText::Lookup(*Key);
 				if (Name != Key)
 				{
-					NameText = Name;
+					NameText = Name.ToLower();
 					NameW = TextWidth(NameText, NameFont);
 					bNamed = true;
 				}
@@ -1276,7 +1323,9 @@ private:
 		// In action the lines take the sheet's action weight; they thin back as the ring fades to rest.
 		const float Act = FMath::Clamp((A - St.fade.restAlpha) / FMath::Max(1.f - St.fade.restAlpha, 0.01f), 0.f, 1.f);
 		const auto W = [Act](float Rest, float Action) { return FMath::Lerp(Rest, Action, Act); };
-		Mesh.Shade(CX + 4.f * S, CY - 70.f * S, 250.f * S, 290.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
+		// No shade behind the block: the glyph edge carries the words, and one wide, weak darkening of the whole corner (a
+		// lens vignette with no boundary) steadies them on a bright sky.
+		Mesh.Vignette(0.f, Size.Y, Size.X * 0.46f, Size.Y * 0.72f, St.backingSoftHud * FMath::Max(A, 0.6f));
 
 		Ring(CX, CY, Carry::RingR * S, W(2.1f, 3.4f), 11, S, Tok(UiToken::Ink, 0.9f * A));
 		LeadMark(CX, CY + 8.f * S, 1.5f, L.lead, W(1.5f, 2.1f), S, Tok(UiToken::Ink, 0.9f * A));
@@ -1435,7 +1484,7 @@ private:
 		const float Hp = (B.present ? B.hpMax : T.hpMax) > 0
 			? FMath::Clamp(static_cast<float>(B.present ? B.hp : T.hp) / (B.present ? B.hpMax : T.hpMax), 0.f, 1.f)
 			: 0.f;
-		Mesh.Shade(CX, Y - 8.f * S, Len * 0.5f + 180.f * S, 150.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
+		Mesh.Vignette(CX, 0.f, Size.X * 0.42f, Size.Y * 0.3f, St.backingSoftHud * FMath::Max(A, 0.6f));
 
 		// The track: a hairline past both ends, fading out over its last 80 px.
 		ftcore::UiStrokeStyle Hair = StrokeStyle(1.f, 99, S, 80.f / (Carry::BossLen + 80.f));
@@ -1469,28 +1518,27 @@ private:
 			Rub.broken = true;
 			HLine(X0, X0 + Len, Y, Hp, TopLost.Was, Rub, Tok(UiToken::Ink, 0.4f * LA), false);
 		}
-		// The name over the line in the title small caps, the boss's rank as short strokes after it; else the TARGET word.
+		// The name over the line in spaced small caps, the boss's rank as short strokes after it. An unnamed target shows no
+		// name: the line alone.
 		if (bNamed)
 		{
 			const float Base = Y - 22.f * S;
 			P.Text(CX - NameW * 0.5f, Base - NameAsc, NameText, NameFont, Tok(UiToken::Ink, TA));
 			for (int32 I = 0; B.present && I < B.rank; ++I)
 			{
-				const float X = CX + NameW * 0.5f + 18.f * S + I * 8.f * S;
-				const FVector2f Pts[2] = {FVector2f(X, Base - 20.f * S), FVector2f(X, Base - 2.f * S)};
-				Poly(Pts, 2, 1.6f * S, Tok(UiToken::Ink, LA));
+				const float X = CX + NameW * 0.5f + 22.f * S + I * 11.f * S;
+				const FVector2f Pts[2] = {FVector2f(X, Base - 26.f * S), FVector2f(X, Base - 2.f * S)};
+				Poly(Pts, 2, 2.2f * S, Tok(UiToken::Ink, LA));
 			}
 		}
-		else if (!B.present)
-		{
-			P.Text(CX - TargetW * 0.5f, Y - 26.f * S - LabelAsc, TargetWord, LabelFont, Tok(UiToken::InkDim, TA));
-		}
-		// A notch at each phase's floor; the phases already passed step back.
+		// A notch across the line at each phase's floor, over a dark under-stroke so it holds on a bright sky; the phases
+		// already passed step back.
 		for (int32 I = 0; B.present && I + 1 < B.phaseCount; ++I)
 		{
 			const float X = X0 + Len * B.phaseEnd[static_cast<size_t>(I)];
-			const FVector2f Pts[2] = {FVector2f(X, Y - 9.f * S), FVector2f(X, Y + 9.f * S)};
-			Poly(Pts, 2, 0.8f * S, Tok(I < B.phase ? UiToken::InkDim : UiToken::Ink, (I < B.phase ? 0.5f : 1.f) * A));
+			const FVector2f Pts[2] = {FVector2f(X, Y - 16.f * S), FVector2f(X, Y + 16.f * S)};
+			Poly(Pts, 2, 3.2f * S, Tok(UiToken::Backing, 0.35f * LA));
+			Poly(Pts, 2, 1.8f * S, Tok(I < B.phase ? UiToken::InkDim : UiToken::Ink, (I < B.phase ? 0.55f : 1.f) * LA));
 		}
 		// The target's poise under the line (the boss's own when the target is the boss).
 		if (T.present && (!B.present || T.enemy == B.slot))
@@ -1567,7 +1615,6 @@ private:
 			const float OLen = 300.f * S;
 			const float OX = CX - OLen * 0.5f;
 			const float OHp = T.hpMax > 0 ? FMath::Clamp(static_cast<float>(T.hp) / T.hpMax, 0.f, 1.f) : 0.f;
-			P.Text(OX - TargetW - 16.f * S, OY - LabelAsc * 0.6f, TargetWord, LabelFont, Tok(UiToken::InkDim, TA));
 			HLine(OX, OX + OLen, OY, 0.f, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A), false);
 			HLine(OX, OX + OLen, OY, 0.f, OHp, StrokeStyle(2.4f, 106, S, 0.04f), Tok(UiToken::Ink, A));
 			HLine(OX, OX + OLen, OY + 9.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.2f, 107, S), Tok(UiToken::InkDim, A), false);
@@ -1584,7 +1631,7 @@ private:
 		const float A = VerbFade.alpha;
 		const float RX = Size.X - Carry::VerbIn * S;
 		const float Y0 = Size.Y - Carry::VerbUp * S;
-		Mesh.Shade(RX - 110.f * S, Y0 + 60.f * S, 250.f * S, 170.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
+		Mesh.Vignette(Size.X, Size.Y, Size.X * 0.46f, Size.Y * 0.72f, St.backingSoftHud * FMath::Max(A, 0.6f));
 		ftcore::UiStrokeStyle Rule = StrokeStyle(1.f, 121, S, 0.2f);
 		Rule.endAlpha = 0.f;
 		ftcore::uiStrokeLine(Line, RX, Y0 - 50.f * S, RX, Y0 + (3.f * Carry::VerbStep + 34.f) * S, Rule);
@@ -1606,16 +1653,16 @@ private:
 			// The words keep full strength at rest (they must read on bright sky); an unavailable verb is the dim ink.
 			const float WA = TextAlpha(A);
 			const FLinearColor WC = I == Hot ? Tok(UiToken::Accent, WA) : Avail[I] ? Tok(UiToken::Ink, WA) : Tok(UiToken::InkDim, WA);
-			const float KX = RX - 44.f * S;
-			const float KY = Y - 7.f * S;
-			const float KW = V.Keys.Len() <= 1 ? 30.f * S : FMath::Max(30.f * S, V.KeysW + 26.f * S);
-			KeyCapStroke(Line, KX, KY, KW, 30.f * S, 0.75f * S, 6.f * S);
+			const float KX = RX - 50.f * S;
+			const float KY = Y - 9.f * S;
+			const float KW = V.Keys.Len() <= 1 ? 38.f * S : FMath::Max(38.f * S, V.KeysW + 28.f * S);
+			KeyCapStroke(Line, KX, KY, KW, 38.f * S, 0.75f * S, 7.f * S);
 			Mesh.Stroke(Line, C, true, true);
 			if (I == 0 && TakeHalfAge < 0.6f)
 			{
 				// Took half: a fine accent ring opens out from the Guard key and fades.
 				const float T = TakeHalfAge / 0.6f;
-				KeyCapStroke(Line, KX, KY, KW + 16.f * T * S, (30.f + 16.f * T) * S, 0.8f * S, (6.f + 8.f * T) * S);
+				KeyCapStroke(Line, KX, KY, KW + 16.f * T * S, (38.f + 16.f * T) * S, 0.8f * S, (7.f + 8.f * T) * S);
 				Mesh.Stroke(Line, Tok(UiToken::Accent, (1.f - T) * FMath::Max(A, 0.6f)), true, true);
 			}
 			// Centred on the cap height (the serif's capitals are 0.62 of its ascent), not on the line box.
@@ -1771,6 +1818,13 @@ private:
 				CardState[I] = !bPicked ? 0 : (!bThis ? 3 : (Cards.correct() == static_cast<size_t>(I) ? 1 : 2));
 			}
 		}
+		// The weak point while it is open: on the boss's body itself.
+		bWeakOn = false;
+		if (B.present && B.weakPoint == ftcore::UiWeakPoint::Open)
+		{
+			FVector Weak;
+			bWeakOn = Runner.GetBossWeakPoint(static_cast<int32>(B.slot), Weak) && Project(PC, Weak, Size, WeakAt) && OnScreen(WeakAt);
+		}
 		// The lock: on the locked body while it is on the screen.
 		bLockOn = false;
 		const uint8 Lock = Fight.lock();
@@ -1813,6 +1867,7 @@ private:
 			M.Target = Pp.Target;
 			M.Anchor = At;
 			M.bFresh = bNew;
+			M.bStagger = Pp.Type == ftcore::ArenaEventType::Staggered;
 			const float Y = At.Y - 40.f * S - (1.f - Life) * 70.f * S;
 			const bool bOnLead = Pp.Target == ftcore::kArenaPlayer;
 			M.bLead = bOnLead;
@@ -1948,6 +2003,20 @@ private:
 		// The lanes: each body's popups in one column beside it, the newest at the bottom, each older one a line up, all
 		// rising a little and fading as they go; past LaneMax the oldest leave.
 		const float LineH = PopAsc * 1.3f;
+		const auto FoeLane = [this](const FPopMark& M) -> const FFoeMark*
+		{
+			const int32 T = static_cast<int32>(M.Target);
+			return !M.bLead && T < UFTArenaRunner::MaxEnemies && Foes[T].bShow && Foes[T].bOn ? &Foes[T] : nullptr;
+		};
+		// A body standing staggered shows that word at its lane's foot: its own STAGGERED popup gives way to it.
+		for (FPopMark& M : Pops)
+		{
+			const FFoeMark* F = M.bShow && M.bStagger ? FoeLane(M) : nullptr;
+			if (F && F->Word == 1)
+			{
+				M.bShow = false;
+			}
+		}
 		for (FPopMark& M : Pops)
 		{
 			if (!M.bShow)
@@ -1969,6 +2038,15 @@ private:
 					}
 				}
 			}
+			// An enemy's lane stands on its figure's anchor (over its head, whatever its size), kept under the top line's block;
+			// a state word (staggered, open) holds the lane's foot and the popups start a line up.
+			float Foot = LaneAt.Y - 20.f * S;
+			if (const FFoeMark* F = FoeLane(M))
+			{
+				LaneAt = F->Over;
+				Foot = FMath::Max(F->Over.Y - 20.f * S, kLaneFloor * S);
+				K += F->Word != 0 ? 1 : 0;
+			}
 			if (K >= Carry::LaneMax)
 			{
 				M.bShow = false;
@@ -1976,7 +2054,7 @@ private:
 			}
 			M.Slot = M.bFresh ? static_cast<float>(K) : FMath::Lerp(M.Slot, static_cast<float>(K), 0.3f);
 			const float Rise = (1.f - M.Life) * 26.f * S;
-			M.NumAt = FVector2f(LaneAt.X + (M.bLead ? -Carry::LaneOut : Carry::LaneOut) * S, LaneAt.Y - 20.f * S - M.Slot * LineH - Rise);
+			M.NumAt = FVector2f(LaneAt.X + (M.bLead ? -Carry::LaneOut : Carry::LaneOut) * S, Foot - M.Slot * LineH - Rise);
 		}
 		HitA = Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
 		ParryA = Pulse(Now, Runner.GetParryTime(), kParryEdgeLife);
@@ -2035,9 +2113,13 @@ private:
 				}
 				if (M.Word != 0)
 				{
+					// The state word at the foot of the body's popup lane, in the popup face with its cue shape: never on the body.
 					const FString& Wd = M.Word == 1 ? StaggerWord : RiposteWord;
-					const float WW = M.Word == 1 ? StaggerW : RiposteW;
-					P.Text(M.Over.X - WW * 0.5f, M.Over.Y + 12.f * S, Wd, LabelFont, Tok(M.Word == 1 ? UiToken::Accent : UiToken::WeakPoint));
+					const UiToken Tk = M.Word == 1 ? UiToken::Accent : UiToken::WeakPoint;
+					const float LX = M.Over.X + Carry::LaneOut * S;
+					const float Base = FMath::Max(M.Over.Y - 20.f * S, kLaneFloor * S);
+					P.Text(LX, Base - PopAsc, Wd, PopFont, Tok(Tk));
+					PopCue(P, LX - 16.f * S, Base - PopAsc * 0.35f, Tk, 1.f);
 				}
 			}
 			if (M.Tell == 0)
@@ -2087,6 +2169,14 @@ private:
 		{
 			PaintCards(P, Size.X * 0.5f, Size.Y - 130.f * S); // the cards still want a pick: bottom centre
 		}
+		if (bWeakOn)
+		{
+			// The weak point open on the body: a filled diamond and a ring round it, breathing, in the weak point's colour.
+			const float Br = 0.5f + 0.5f * FMath::Sin(Time * 6.f);
+			const FLinearColor C = Tok(UiToken::WeakPoint, 0.8f + 0.2f * Br);
+			Lozenge(WeakAt.X, WeakAt.Y, 7.f * S, true, S, C);
+			Ring(WeakAt.X, WeakAt.Y, (24.f + 4.f * Br) * S, 1.6f, 141, S, C);
+		}
 		if (bLockOn)
 		{
 			// The lock: four arcs round the body and a point on it, breathing a little.
@@ -2098,6 +2188,29 @@ private:
 				Mesh.Stroke(Line, Tok(UiToken::Ink, 0.9f));
 			}
 			Mesh.Dot(LockAt.X, LockAt.Y, 2.6f * S, Tok(UiToken::Ink, 0.9f));
+		}
+	}
+
+	// A popup's cue shape beside its words, by what its colour means: danger a triangle, ally a circle, the weak point a
+	// diamond, the accent (a gain of the lead's) a chevron. The ink takes none: its word or plain number says it.
+	void PopCue(const FPainter& P, float X, float Y, UiToken Tk, float A) const
+	{
+		const float S = P.S;
+		if (Tk == UiToken::Danger)
+		{
+			Danger(X, Y, 14.f * S, Tok(Tk, A));
+		}
+		else if (Tk == UiToken::Ally)
+		{
+			P.Circle(X, Y, 12.f * S, Tok(Tk, A));
+		}
+		else if (Tk == UiToken::WeakPoint)
+		{
+			Lozenge(X, Y, 6.5f * S, true, S, Tok(Tk, A));
+		}
+		else if (Tk == UiToken::Accent)
+		{
+			P.Chevron(X, Y, 14.f * S, Tok(Tk, A));
 		}
 	}
 
@@ -2153,8 +2266,9 @@ private:
 		HLine(In.X - BW * 0.5f, In.X + BW * 0.5f, In.Y + 6.f * S, 0.f, M.Fill, StrokeStyle(1.5f, 107, S, 0.f), C);
 	}
 
-	// The Read cards over Bottom, centred on X: a hairline frame each, its key and the shape it names; the pick in the ally
-	// colour when right, the danger colour when wrong, the others stepping back.
+	// The Read cards over Bottom, centred on X, in the tell style: no frame, each its key figure dim and the shape it names in
+	// the popup face over a hairline. The pick takes the ally colour and its circle when right, the danger colour and its
+	// triangle when wrong; the others step back.
 	void PaintCards(const FPainter& P, float X, float Bottom) const
 	{
 		static const FString Keys[ftcore::kReadCards] = {TEXT("1"), TEXT("2"), TEXT("3")};
@@ -2163,29 +2277,30 @@ private:
 			return;
 		}
 		const float S = P.S;
-		float Widest = 0.f;
+		const float Gap = 44.f * S;
+		const float KeyGap = 10.f * S;
+		float Total = 0.f;
 		for (int32 I = 0; I < CardCount; ++I)
 		{
-			Widest = FMath::Max(Widest, TellW[CardTell[I]]);
+			Total += CardKeyW + KeyGap + TellW[CardTell[I]] + (I > 0 ? Gap : 0.f);
 		}
-		const float CW = FMath::Max(116.f * S, Widest + 22.f * S); // the longest word fits its card
-		const float CH = 52.f * S;
-		const float Gap = 10.f * S;
-		const float Total = CardCount * CW + (CardCount - 1) * Gap;
-		const float Left = X - Total * 0.5f;
-		const float Top = Bottom - CH;
-		P.Soft(X, Top + CH * 0.5f, Total + 120.f * S, CH + 60.f * S, Table().Style.backingSoftHud);
+		float KX = X - Total * 0.5f;
+		const float Base = Bottom - 10.f * S;
 		for (int32 I = 0; I < CardCount; ++I)
 		{
 			const uint8 St = CardState[I];
-			const UiToken EdgeTok = St == 1 ? UiToken::Ally : (St == 2 ? UiToken::Danger : (St == 3 ? UiToken::InkDim : UiToken::Ink));
+			const UiToken Tk = St == 1 ? UiToken::Ally : (St == 2 ? UiToken::Danger : (St == 3 ? UiToken::InkDim : UiToken::Ink));
 			const float EA = St == 3 ? 0.5f : 1.f;
-			const float X0 = Left + I * (CW + Gap);
-			const FVector2f Pts[4] = {FVector2f(X0, Top), FVector2f(X0 + CW, Top), FVector2f(X0 + CW, Top + CH), FVector2f(X0, Top + CH)};
-			Poly(Pts, 4, ((St == 1 || St == 2) ? 1.2f : 0.6f) * S, Tok(EdgeTok, EA), true);
-			P.Text(X0 + 7.f * S, Top + 3.f * S, Keys[I], LabelFont, Tok(EdgeTok, EA));
 			const int32 Ti = CardTell[I];
-			P.Text(X0 + CW * 0.5f - TellW[Ti] * 0.5f, Top + CH - 6.f * S - LabelAsc, TellWord[Ti], LabelFont, Tok(St == 3 ? UiToken::InkDim : UiToken::Ink, EA));
+			const float WX = KX + CardKeyW + KeyGap;
+			P.Text(KX, Base - PopAsc, Keys[I], PopFont, Tok(UiToken::InkDim, EA));
+			P.Text(WX, Base - PopAsc, TellWord[Ti], PopFont, Tok(Tk, EA));
+			HLine(WX, WX + TellW[Ti], Base + 7.f * S, 0.f, 1.f, StrokeStyle((St == 1 || St == 2) ? 1.4f : 0.8f, 151 + I, S, 0.2f), Tok(Tk, 0.8f * EA), false);
+			if (St == 1 || St == 2)
+			{
+				PopCue(P, KX - 16.f * S, Base - PopAsc * 0.35f, Tk, EA);
+			}
+			KX = WX + TellW[Ti] + Gap;
 		}
 	}
 
@@ -2194,15 +2309,17 @@ private:
 	{
 		const float S = P.S;
 		const float CX = Size.X * 0.5f;
-		// A hit: a danger hairline round the screen's edge; a parry: the weak point's gold along the top and bottom.
+		// A hit: the danger colour glowing in from the screen's edges, with no line anywhere (a hard frame read as an artefact).
+		// A parry has no frame: its PARRIED popup and diamond say it.
 		if (HitA > 0.f)
 		{
-			const FLinearColor C = Tok(UiToken::Danger, 0.85f * HitA);
-			const float T = 3.f * S;
-			P.Box(0.f, 0.f, Size.X, T, C);
-			P.Box(0.f, Size.Y - T, Size.X, T, C);
-			P.Box(0.f, T, T, Size.Y - 2.f * T, C);
-			P.Box(Size.X - T, T, T, Size.Y - 2.f * T, C);
+			const FLinearColor C = Tok(UiToken::Danger, 1.f);
+			const float Pk = 0.3f * HitA;
+			const float D = 90.f * S;
+			Mesh.Band(0.f, 0.f, Size.X, D, true, false, 1.f, Pk, C);
+			Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, 1.f, Pk, C);
+			Mesh.Band(0.f, 0.f, D, Size.Y, false, false, 1.f, Pk, C);
+			Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, 1.f, Pk, C);
 		}
 		// The wall near: a hairline arc in the accent along the screen's edge, on the wall's side.
 		if (WallA > 0.01f)
@@ -2217,13 +2334,6 @@ private:
 			}
 			Mesh.Stroke(Line, Tok(UiToken::Accent, 0.9f * WallA));
 		}
-		if (ParryA > 0.f)
-		{
-			const FLinearColor C = Tok(UiToken::WeakPoint, 0.8f * ParryA);
-			const float T = 2.f * S;
-			P.Box(0.f, 0.f, Size.X, T, C);
-			P.Box(0.f, Size.Y - T, Size.X, T, C);
-		}
 		for (const FPopMark& M : Pops)
 		{
 			if (!M.bShow)
@@ -2233,6 +2343,7 @@ private:
 			if (!M.Num.IsEmpty())
 			{
 				P.Text(M.bLead ? M.NumAt.X - M.NumW : M.NumAt.X, M.NumAt.Y - PopAsc, M.Num, PopFont, Tok(M.Tok, M.A));
+				PopCue(P, M.bLead ? M.NumAt.X + 16.f * S : M.NumAt.X - 16.f * S, M.NumAt.Y - PopAsc * 0.35f, M.Tok, M.A);
 			}
 		}
 		// Release: the word large in the accent, a hairline opening under it, the Load it spent; overload in the danger colour.
@@ -2253,13 +2364,13 @@ private:
 			HLine(CX - 160.f * S, CX + 160.f * S, Base + 14.f * S, 0.f, 1.f, StrokeStyle(1.2f, 123, S), Tok(UiToken::Danger, A));
 			P.Text(CX - LockedW * 0.5f, Base + 24.f * S, LockedWord, LabelFont, Tok(UiToken::InkDim, A));
 		}
-		// The result: the word, a hairline, the counts and how to fight again, on a soft shade (no band).
+		// The result: the word, a hairline, the counts and how to fight again, over one weak dim of the whole screen.
 		if (bResult && ResultA > 0.f)
 		{
 			const float A = ResultA;
 			const float Base = Size.Y * 0.42f;
 			const float WordW = bWon ? VictoryW : DefeatW;
-			P.Soft(CX, Base + 30.f * S, FMath::Max(WordW, StatsW) + 360.f * S, 260.f * S, Table().Style.backingSoftDialogue, A);
+			P.Box(0.f, 0.f, Size.X, Size.Y, Tok(UiToken::Backing, Table().Style.backingSoftHud * A), 0); // one even dim, no shape
 			P.Text(CX - WordW * 0.5f, Base - BigAsc, bWon ? VictoryWord : DefeatWord, BigFont, Tok(bWon ? UiToken::Accent : UiToken::Danger, A));
 			HLine(CX - 220.f * S, CX + 220.f * S, Base + 16.f * S, 0.f, 1.f, StrokeStyle(1.1f, 125, S), Tok(UiToken::Ink, 0.8f * A));
 			P.Text(CX - StatsW * 0.5f, Base + 34.f * S, StatsText, LabelFont, Tok(UiToken::Ink, A));
@@ -2374,6 +2485,9 @@ private:
 	FFoeMark Foes[UFTArenaRunner::MaxEnemies];
 	bool bLockOn = false;
 	FVector2f LockAt = FVector2f::ZeroVector;
+	bool bWeakOn = false;
+	FVector2f WeakAt = FVector2f::ZeroVector;
+	float CardKeyW = 0.f;
 	bool bCardsShown = false;
 	bool bCardsLoose = false;
 	int32 CardCount = 0;
@@ -2546,11 +2660,13 @@ public:
 		const float Top = Bottom - BlockH;
 		const float CX = Size.X * 0.5f;
 		Mesh.Begin(Geometry, S);
-		const float BlockW = Lines.Num() > 0 ? FMath::Max(LineW[0] + SpeakerW, MaxW * 0.5f) : MaxW * 0.5f;
-		Mesh.Shade(CX, Top + BlockH * 0.5f + 10.f * S, BlockW * 0.5f / 0.6f + 120.f * S, BlockH * 0.5f / 0.5f + 110.f * S,
-			Table().Style.backingSoftDialogue);
+		// No oval: a full-width gradient up from the screen's foot (a letterbox's falloff), even under the block and fading
+		// out above it with no line where it ends.
+		const float FadeTop = FMath::Max(0.f, Top - 170.f * S);
+		Mesh.Band(0.f, FadeTop, Size.X, Size.Y, true, true, (Top + 30.f * S - FadeTop) / FMath::Max(Size.Y - FadeTop, 1.f),
+			Table().Style.backingSoftDialogue, Tok(UiToken::Backing, 1.f));
 		// The keys, once, under the block at the prompt size (never under the 18 px floor).
-		P.Text(CX - HintW * 0.5f, Size.Y - 50.f * S, HintText, HintFont, Tok(UiToken::InkDim, 0.8f));
+		P.Text(CX - HintW * 0.5f, Size.Y - 50.f * S, HintText, HintFont, Tok(UiToken::InkDim));
 
 		const FLinearColor Body = View.kind == ftcore::DialogueViewKind::Direction ? Tok(UiToken::InkDim) : Tok(UiToken::Ink);
 		const int32 RevealedUnits = CpToUnit.Num() > 0 ? CpToUnit[FMath::Min(static_cast<int32>(View.revealedChars), CpToUnit.Num() - 1)] : 0;
@@ -2584,11 +2700,7 @@ public:
 				const bool bRight = H.X + Gap + MarkGap + OptionW < Size.X - 80.f * S;
 				MarkX = bRight ? H.X + Gap : H.X - Gap - MarkGap - OptionW;
 				OptTop = FMath::Clamp(H.Y - 30.f * S - OptBlockH * 0.5f, 60.f * S, Top - OptBlockH - 40.f * S);
-				// Off the line's block the options often sit on a lamp pool or a bright wall: a deeper, tighter shade than
-				// the line's (still a falloff, never a box).
-				// One even shade over the whole choice block, its flat middle covering every row.
-				Mesh.Shade(MarkX + (MarkGap + OptionW) * 0.5f, OptTop + OptBlockH * 0.5f, (MarkGap + OptionW) * 0.5f / 0.55f + 110.f * S,
-					OptBlockH * 0.5f / 0.55f + 90.f * S, FMath::Min(0.62f, Table().Style.backingSoftDialogue * 1.45f));
+				// No shade behind the choices (an oval read as an object): the glyph edge carries them.
 				// The leader: a fine line from beside the face to the middle row's mark, eased flat at both ends.
 				const float MidY = OptTop + RowH * (static_cast<float>(OptionRows - 1) * 0.5f) + OptionH * 0.5f;
 				const FVector2f P0(H.X + (bRight ? 40.f : -40.f) * S, H.Y);
