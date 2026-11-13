@@ -845,6 +845,7 @@ struct ArenaFightImpl {
         pl.chainLive = false;
         faceAtStart(in, fi.release);
         pl.releaseSpent = pl.gauge.release();
+        pl.releaseLone = fight.lone_;
         ++stats.releases;
         beginAttack(ArenaAction::Release, kArenaReleaseMove, fi.release);
         emit(ArenaEventType::Released, kArenaPlayer, kArenaNobody, kArenaReleaseMove, pl.releaseSpent, pl.pos);
@@ -1567,14 +1568,15 @@ struct ArenaFightImpl {
             const float poise = a.poiseDamage + (pl.action == ArenaAction::Release
                                                      ? static_cast<float>(pl.releaseSpent) * fi.releasePoise
                                                      : 0.f);
-            // While Lone, the Release's hp damage is x the tuning's release, on the base the hook sees.
-            const int base = fight.lone_ && pl.action == ArenaAction::Release
-                                 ? loneScale(a.damage, fight.loneTuning_.release)
-                                 : a.damage;
             ArenaBlowRuling r;
-            if (!rule(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, base, poise, pl.pos, pl.facing, foe.pos, r))
+            if (!rule(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, a.damage, poise, pl.pos, pl.facing, foe.pos,
+                      r))
                 continue;
-            const int amount = lose(i, scaledDamage(base, r.damage));
+            // A Release begun while Lone: x the tuning's release on the ruled scale, kept under the single-blow cap.
+            const float scale = pl.action == ArenaAction::Release && pl.releaseLone
+                                    ? loneReleaseScale(r.damage, fight.loneTuning_.release, fight.loneBlowCap_)
+                                    : r.damage;
+            const int amount = lose(i, scaledDamage(a.damage, scale));
             ++stats.hits;
             if (pl.move == kArenaShotMove) ++stats.shotHits;
             notePlayerBlow(i, t1);
@@ -2035,10 +2037,11 @@ struct ArenaFightImpl {
     }
 
     // The host's setLone: the Load stays; reaching the cap it now reads overloads once.
-    void setLone(bool on, const LoneTuning& t) {
+    void setLone(bool on, const LoneTuning& t, float blowCap) {
         const bool was = overloadedNow();
         fight.lone_ = on && validLoneTuning(t);
         fight.loneTuning_ = validLoneTuning(t) ? t : LoneTuning{};
+        fight.loneBlowCap_ = validBlowCap(blowCap) ? blowCap : 0.f;
         capChanged(was);
     }
 
@@ -2708,7 +2711,9 @@ int ArenaFight::giveLoad(int amount) {
 void ArenaFight::setLoadCap(int cap) { ArenaFightImpl(*this).setLoadCap(cap); }
 int ArenaFight::loadCap() const { return capNow(); }
 int ArenaFight::releaseOpenLoad() const { return capNow() / 3; }
-void ArenaFight::setLone(bool on, const LoneTuning& tuning) { ArenaFightImpl(*this).setLone(on, tuning); }
+void ArenaFight::setLone(bool on, const LoneTuning& tuning, float blowCap) {
+    ArenaFightImpl(*this).setLone(on, tuning, blowCap);
+}
 bool ArenaFight::lone() const { return lone_; }
 int ArenaFight::spendLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;

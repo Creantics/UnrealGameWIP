@@ -232,7 +232,7 @@ public:
         keptOn_ = count_.liftOn() && c.kept && def_.keptLead != kNoFighter;
         kept_ = 0;
         keptDown_ = false;
-        c.lone = def_.loneLead == kNoFighter || (isLead(def_.loneLead) && validLoneTuning(def_.loneTuning));
+        c.lone = def_.loneLead == kNoFighter || loneStanceAccepted(def_.loneLead, def_.loneTuning);
         lone_ = c.lone && def_.loneLead != kNoFighter;
         loneEnded_ = false;
         lonePooled_ = 0;

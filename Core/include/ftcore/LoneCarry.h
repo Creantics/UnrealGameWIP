@@ -6,7 +6,8 @@
 // While Lone (FightSession::lone(), mirrored into ArenaFight::setLone):
 //   - the Load cap is `cap` whatever the chairs give, and every store (a parry, a block, take half) gains x`gain`
 //     instead of the chairs' gain (the host's giveLoad stays ungained, as with chairs);
-//   - the Release's hp damage is rnd(damage x `release`), on the base before the host's blow hook;
+//   - a Release begun while Lone deals x`release` on its hp damage, its whole swing (a gift ending Lone mid-swing
+//     leaves it): one more factor on the blow hook's scale, kept under the host's single-blow cap like the others;
 //   - an enemy blow's hp on the lead (a hit, a guard's chip) is rnd(D x `taken`), after the blow hook; a parry or a
 //     block still stores from D itself;
 //   - the chairs' effects are off (the PlaceTable is untouched: the Named chairs still count where a carry check
@@ -18,6 +19,7 @@
 // Every field but version may be left out (its default stays).
 
 #include "ftcore/Api.h"
+#include "ftcore/CombatInputs.h"
 #include "ftcore/GiftSlot.h"
 #include "ftcore/Load.h"
 
@@ -61,6 +63,20 @@ inline std::uint32_t poolLoneRelease(LoneSave& s, int spent) {
     if (spent > 0) s.pooled = saturatingAdd(s.pooled, static_cast<std::uint32_t>(spent));
     return s.pooled;
 }
+
+// A Lone Release's scale: the hook's ruled scale x `release`, kept to the single-blow cap (0: none) but never below
+// the ruled scale itself (a cap the host did not apply is not applied here either).
+inline float loneReleaseScale(float ruled, float release, float cap) {
+    if (!(ruled > 0.f) || !std::isfinite(ruled)) return ruled;
+    if (!(release >= 1.f) || !std::isfinite(release)) return ruled;
+    const float product = ruled * release;
+    if (cap > 0.f && product > cap) return ruled > cap ? ruled : cap;
+    return product;
+}
+
+// The stance a session accepts: a lead and a tuning in range (FightSession::begin refuses anything else; a host
+// asks this before its fight begins so a refused stance changes nothing there either).
+inline bool loneStanceAccepted(FighterId lead, const LoneTuning& t) { return isLead(lead) && validLoneTuning(t); }
 
 // Lone is forced when the third slot is Vacant or Hostile.
 inline bool loneForced(SlotState third) { return third == SlotState::Vacant || third == SlotState::Hostile; }

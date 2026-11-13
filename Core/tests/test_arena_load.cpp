@@ -861,3 +861,64 @@ TEST_CASE("lone carry: take half never happens and takeHalfDue stays false") {
     CHECK(rig.fight.allyHp() == 100 - s.damage);
     CHECK(rig.fight.hp() == 100);
 }
+
+namespace {
+// A crit hook: every player hit at x`scale`.
+struct ScaleHook {
+    float scale = 2.f;
+    static ArenaBlowRuling hook(void* user, const ArenaBlow& b) {
+        ArenaBlowRuling r;
+        if (b.source == kArenaPlayer) r.damage = static_cast<const ScaleHook*>(user)->scale;
+        return r;
+    }
+};
+
+// The Release's first hit on the dummy (-1: none).
+int releaseDealt(const Rig& rig) {
+    for (const ArenaEvent& e : rig.log)
+        if (e.type == ArenaEventType::Hit && e.source == kArenaPlayer && e.move == kArenaReleaseMove) return e.amount;
+    return -1;
+}
+} // namespace
+
+TEST_CASE("lone carry: a Release begun while Lone keeps its x1.3 when Lone ends mid-swing; one begun after does not") {
+    for (const bool lonePress : {true, false}) {
+        CAPTURE(lonePress);
+        Rig rig({dummyKind()});
+        rig.fight.setLone(lonePress);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        rig.in.release = true;
+        rig.tick(); // the Release begins (Released)
+        rig.in.release = false;
+        REQUIRE(rig.count(ArenaEventType::Released) == 1);
+        rig.fight.setLone(!lonePress); // the stance flips before the swing lands
+        rig.run(40);
+        CHECK(releaseDealt(rig) == (lonePress ? 26 : 20));
+    }
+}
+
+TEST_CASE("lone carry: the Release's x1.3 is one more factor under the single-blow cap") {
+    struct Case {
+        float cap;
+        int dealt;
+    };
+    // 20 base, a x2 crit: 52 with no cap; a cap of 2 keeps it to 40 (x2, not x2.6); a cap of 6 leaves 52; a cap
+    // under the hook's own ruling never lowers that ruling (the host's to apply).
+    for (const Case c : {Case{0.f, 52}, Case{2.f, 40}, Case{6.f, 52}, Case{1.5f, 40}}) {
+        CAPTURE(c.cap);
+        ScaleHook crit;
+        Rig rig({dummyKind()});
+        rig.fight.setBlowHook(&ScaleHook::hook, &crit);
+        rig.fight.setLone(true, LoneTuning{}, c.cap);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        CHECK(releaseDealt(rig) == c.dealt);
+    }
+    CHECK(loneReleaseScale(2.f, 1.3f, 0.f) == doctest::Approx(2.6f));
+    CHECK(loneReleaseScale(2.f, 1.3f, 2.2f) == doctest::Approx(2.2f));
+    CHECK(loneReleaseScale(3.f, 1.3f, 2.f) == doctest::Approx(3.f)); // over the cap already: left
+    CHECK(loneReleaseScale(0.f, 1.3f, 2.f) == 0.f);
+    CHECK(loneReleaseScale(2.f, 0.5f, 0.f) == doctest::Approx(2.f));
+}

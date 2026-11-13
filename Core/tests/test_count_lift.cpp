@@ -797,3 +797,20 @@ TEST_CASE("lone carry: lone_carry.json reads, keeps defaults for missing fields 
     CHECK_FALSE(importLoneCarry(R"({ "version": 1, "extra": 1 })", t, &err));
     CHECK(t.cap == 100); // refused: the defaults
 }
+
+TEST_CASE("lone carry: a host can ask before begin whether the stance will be accepted") {
+    CHECK(loneStanceAccepted(kLeadA, LoneTuning{}));
+    CHECK(loneStanceAccepted(kLeadB, LoneTuning{}));
+    CHECK_FALSE(loneStanceAccepted(kThirdSlot, LoneTuning{}));
+    LoneTuning bad;
+    bad.taken = 2.5f;
+    CHECK_FALSE(loneStanceAccepted(kLeadA, bad));
+    // The session agrees with the host's answer.
+    for (const FighterId lead : {kLeadA, kThirdSlot}) {
+        FightSessionDef d;
+        d.loneLead = lead;
+        FightSession s;
+        s.begin(d, 0.0);
+        CHECK(s.lone() == loneStanceAccepted(lead, d.loneTuning));
+    }
+}
