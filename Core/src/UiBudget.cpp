@@ -29,7 +29,6 @@ std::uint8_t uiVerbsAvailable(const ArenaHudFrame& f) {
 std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, std::uint8_t verbsAvailable) {
     std::array<std::uint8_t, kUiMarkKindCount> w{};
     w[idx(UiMarkKind::Lead)] = f.lead.hpMax > 0 ? 1 : 0;
-    w[idx(UiMarkKind::State)] = (f.lead.down || f.lead.overloaded || f.lead.guardBroken || f.lead.releaseReady) ? 1 : 0;
     w[idx(UiMarkKind::Party)] = static_cast<std::uint8_t>((f.partner.present ? 1 : 0)
         + (f.third.present && !f.third.planned ? 1 : 0)); // a planned place has no data: no mark
     w[idx(UiMarkKind::Boss)] = f.boss.present && f.boss.hpMax > 0 ? 1 : 0;
@@ -101,73 +100,6 @@ const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, cons
     }
     st.maxMarks = std::max(st.maxMarks, o.marks);
     return o;
-}
-
-// ---- Popup lanes -----------------------------------------------------------------------------------------------
-
-std::uint32_t uiPopPush(UiPopLanes& lanes, std::uint8_t body, std::uint8_t kind, int amount, const UiBudgetRules& rules) {
-    ++lanes.serial;
-    for (std::uint32_t i = 0; i < kUiPopMax; ++i) {
-        UiPop& p = lanes.pop[i];
-        if (p.live && p.body == body && p.kind == kind && p.amount == amount) {
-            p.count = static_cast<std::uint8_t>(std::min(99, p.count + 1));
-            p.age = 0.f;
-            p.serial = lanes.serial;
-            return i;
-        }
-    }
-    // Room on the body: drop its oldest while it is full.
-    const std::uint32_t cap = std::max<std::uint32_t>(1u, rules.popupsPerBody);
-    while (uiPopLiveCount(lanes, body) >= cap) {
-        std::uint32_t oldest = kUiPopMax;
-        for (std::uint32_t i = 0; i < kUiPopMax; ++i) {
-            const UiPop& p = lanes.pop[i];
-            if (p.live && p.body == body && (oldest == kUiPopMax || p.serial < lanes.pop[oldest].serial)) oldest = i;
-        }
-        lanes.pop[oldest].live = false;
-    }
-    // A free slot, else the oldest anywhere.
-    std::uint32_t slot = kUiPopMax;
-    for (std::uint32_t i = 0; i < kUiPopMax; ++i) {
-        if (!lanes.pop[i].live) {
-            slot = i;
-            break;
-        }
-        if (slot == kUiPopMax || lanes.pop[i].serial < lanes.pop[slot].serial) slot = i;
-    }
-    lanes.pop[slot] = UiPop{true, body, kind, amount, 1, 0.f, lanes.serial};
-    return slot;
-}
-
-void uiPopTick(UiPopLanes& lanes, float dt, float life) {
-    const float step = std::max(dt, 0.f);
-    for (UiPop& p : lanes.pop) {
-        if (!p.live) continue;
-        p.age += step;
-        if (p.age >= life) p.live = false;
-    }
-}
-
-void uiPopClear(UiPopLanes& lanes) {
-    for (UiPop& p : lanes.pop) p.live = false;
-}
-
-std::uint32_t uiPopLane(const UiPopLanes& lanes, std::uint32_t slot) {
-    if (slot >= kUiPopMax || !lanes.pop[slot].live) return 0;
-    const UiPop& me = lanes.pop[slot];
-    std::uint32_t lane = 0;
-    for (const UiPop& p : lanes.pop) {
-        if (p.live && p.body == me.body && p.serial > me.serial) ++lane;
-    }
-    return lane;
-}
-
-std::uint32_t uiPopLiveCount(const UiPopLanes& lanes, std::uint8_t body) {
-    std::uint32_t n = 0;
-    for (const UiPop& p : lanes.pop) {
-        if (p.live && p.body == body) ++n;
-    }
-    return n;
 }
 
 } // namespace ftcore

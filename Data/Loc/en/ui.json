@@ -21,7 +21,6 @@
     "arena.block": "BLOCK",
     "arena.dodge": "DODGE!",
     "arena.blocked": "BLOCKED",
-    "arena.shared": "SHARED",
     "arena.parried": "PARRIED",
     "arena.guard_broken": "GUARD BROKEN",
     "arena.evaded": "EVADED",

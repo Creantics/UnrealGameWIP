@@ -372,9 +372,6 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 } else if (bk == "marks") {
                     if (!number(bv, 2.f, 40.f, n)) return bad(key, bk);
                     s.budget.marks = static_cast<std::uint8_t>(n);
-                } else if (bk == "popups_per_body") {
-                    if (!number(bv, 1.f, 8.f, n)) return bad(key, bk);
-                    s.budget.popupsPerBody = static_cast<std::uint8_t>(n);
                 } else {
                     return bad(key, bk);
                 }

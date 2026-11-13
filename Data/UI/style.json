@@ -9,7 +9,7 @@
   "meter": "line",
   "lead_marks": ["knuckles", "cylinder", "mask"],
   "fade": { "in": 0.15, "rest": 2.5, "out": 0.6, "rest_alpha": 0.35 },
-  "budget": { "rest": 3, "marks": 10, "popups_per_body": 2, "hint": 3 },
+  "budget": { "rest": 3, "marks": 10, "hint": 3 },
   "word_luma_floor": 0.45,
   "min_text_px": 18,
   "min_text_px_absolute": 14,

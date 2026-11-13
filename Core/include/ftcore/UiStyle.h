@@ -83,7 +83,6 @@ struct UiFadeTimes {
 struct UiBudgetRules {
     float rest = 3.f;            // seconds with nothing changed before the HUD rests (only the lead and party show)
     std::uint8_t marks = 10;     // at most this many marks in action
-    std::uint8_t popupsPerBody = 2; // at most this many popups on one body
     float hint = 3.f;            // seconds the dialogue's key hints show after an input
 };
 

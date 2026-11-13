@@ -79,7 +79,7 @@ TEST_CASE("ui budget: at rest only the lead and the party show") {
     UiBudgetState st;
     ArenaHudFrame f = fullFrame();
     UiBudgetInput in = busy(f);
-    in.want[K(UiMarkKind::Popup)] = 2;
+    in.want[K(UiMarkKind::Event)] = 2;
     in.want[K(UiMarkKind::Tell)] = 1;
     uiBudgetStep(st, in, rules);
     CHECK_FALSE(st.out.rest);
@@ -110,7 +110,7 @@ TEST_CASE("ui budget: at rest the marks fade out, they do not pop") {
     UiBudgetState st;
     ArenaHudFrame f = fullFrame();
     UiBudgetInput in = busy(f);
-    in.want[K(UiMarkKind::Popup)] = 1;
+    in.want[K(UiMarkKind::Event)] = 1;
     for (int i = 0; i < 30; ++i) uiBudgetStep(st, in, rules);
     CHECK(st.out.actionAlpha == doctest::Approx(1.f));
     in.activity = false;
@@ -126,8 +126,7 @@ TEST_CASE("ui budget: at rest the marks fade out, they do not pop") {
     CHECK(o.bossAlpha > 0.f);
     CHECK(o.bossAlpha < 1.f);
     CHECK(o.verbAlpha > 0.f);
-    CHECK(o.allowed(UiMarkKind::Popup) == 1);
-    CHECK(o.allowed(UiMarkKind::State) == 1);
+    CHECK(o.allowed(UiMarkKind::Event) == 1);
     // After the fade-out only the lead and the party.
     for (int i = 0; i < 60; ++i) uiBudgetStep(st, in, rules);
     CHECK(st.out.actionAlpha == 0.f);
@@ -166,7 +165,7 @@ TEST_CASE("ui budget: never more than the mark cap in action, highest priority k
                     UiBudgetState st;
                     UiBudgetInput in = busy(f);
                     in.want[K(UiMarkKind::Tell)] = static_cast<std::uint8_t>(tells);
-                    in.want[K(UiMarkKind::Popup)] = static_cast<std::uint8_t>(pops);
+                    in.want[K(UiMarkKind::Event)] = static_cast<std::uint8_t>(pops);
                     in.want[K(UiMarkKind::Foe)] = static_cast<std::uint8_t>(foes);
                     in.want[K(UiMarkKind::Cards)] = (extra & 1) ? 1 : 0;
                     in.want[K(UiMarkKind::Lock)] = (extra & 2) ? 1 : 0;
@@ -214,63 +213,11 @@ TEST_CASE("ui budget: the result card stands alone") {
     UiBudgetState st;
     ArenaHudFrame f = fullFrame();
     UiBudgetInput in = busy(f);
-    in.want[K(UiMarkKind::Popup)] = 3;
+    in.want[K(UiMarkKind::Event)] = 3;
     in.resultOpen = true;
     uiBudgetStep(st, in, rules);
     CHECK(st.out.marks == 0);
     CHECK(st.out.bossAlpha == 0.f);
-}
-
-TEST_CASE("ui popups: at most two per body, repeats coalesce, the result clears them") {
-    const UiBudgetRules rules;
-    UiPopLanes lanes;
-    const std::uint32_t a = uiPopPush(lanes, 3, 7, 7, rules); // SHARED 7 on body 3
-    CHECK(lanes.pop[a].count == 1);
-    const std::uint32_t a2 = uiPopPush(lanes, 3, 7, 7, rules);
-    const std::uint32_t a3 = uiPopPush(lanes, 3, 7, 7, rules);
-    CHECK(a2 == a);
-    CHECK(a3 == a);
-    CHECK(lanes.pop[a].count == 3); // "SHARED 7 x3"
-    CHECK(uiPopLiveCount(lanes, 3) == 1);
-
-    // A different amount is its own popup; a third kind pushes the oldest off the body.
-    const std::uint32_t b = uiPopPush(lanes, 3, 7, 4, rules);
-    CHECK(b != a);
-    CHECK(uiPopLiveCount(lanes, 3) == 2);
-    CHECK(uiPopLane(lanes, b) == 0);
-    CHECK(uiPopLane(lanes, a) == 1);
-    const std::uint32_t c = uiPopPush(lanes, 3, 1, 12, rules);
-    CHECK(uiPopLiveCount(lanes, 3) == 2);
-    CHECK(lanes.pop[c].live);
-    CHECK(lanes.pop[b].live);
-    // The SHARED 7 popup (the oldest) is gone; its slot may be the new one's.
-    for (const UiPop& p : lanes.pop) CHECK_FALSE((p.live && p.body == 3 && p.kind == 7 && p.amount == 7));
-
-    // Other bodies keep their own two.
-    uiPopPush(lanes, 0, 1, 5, rules);
-    uiPopPush(lanes, 0, 2, 0, rules);
-    CHECK(uiPopLiveCount(lanes, 0) == 2);
-    CHECK(uiPopLiveCount(lanes, 3) == 2);
-
-    // A coalesced repeat restarts its life.
-    uiPopTick(lanes, 1.f, 1.5f);
-    uiPopPush(lanes, 3, 1, 12, rules);
-    uiPopTick(lanes, 0.8f, 1.5f);
-    CHECK(lanes.pop[c].live);
-    CHECK_FALSE(lanes.pop[b].live);
-
-    uiPopClear(lanes);
-    CHECK(uiPopLiveCount(lanes, 0) == 0);
-    CHECK(uiPopLiveCount(lanes, 3) == 0);
-}
-
-TEST_CASE("ui popups: never more than two on a body under a storm") {
-    const UiBudgetRules rules;
-    UiPopLanes lanes;
-    for (int i = 0; i < 200; ++i) {
-        uiPopPush(lanes, static_cast<std::uint8_t>(i % 5), static_cast<std::uint8_t>(i % 3), i % 7, rules);
-        for (std::uint8_t body = 0; body < 5; ++body) CHECK(uiPopLiveCount(lanes, body) <= rules.popupsPerBody);
-    }
 }
 
 TEST_CASE("ui luma floor lifts dark colours and keeps light ones") {
