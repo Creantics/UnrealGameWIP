@@ -58,7 +58,8 @@ const FScalarSpec kScalars[] = {
 	{TEXT("EdgeLighten"), 0.4f},      // albedo x (1 + EdgeLighten) on convex worn edges
 	{TEXT("CavityDarken"), 0.25f},    // albedo towards the detail cavity
 	{TEXT("AOStrength"), 1.f},
-	{TEXT("MetalScale"), 1.f},        // metal = max(map B x MetalScale, ForceMetal)
+	{TEXT("MetalScale"), 1.f},        // metal = max(smoothstep(MetalFloor, MetalFloor + 0.2, map B x MetalScale), ForceMetal)
+	{TEXT("MetalFloor"), 0.25f},      // map B below this is bake noise on the cloth (p90 0.14), not metal; zips and studs sit above 0.5
 	{TEXT("ForceMetal"), 0.f},
 	{TEXT("MetalRoughness"), 0.55f},
 	{TEXT("DetailSizeA"), 3.f},       // centimetres per repeat of the fine tile
@@ -95,7 +96,8 @@ const FVectorSpec kVectors[] = {
 	{TEXT("MetalColor"), FLinearColor(0.3f, 0.3f, 0.31f)}, // worn steel, not chrome
 	{TEXT("FuzzTint"), FLinearColor::White}, // cloth master only: fuzz colour = albedo x FuzzTint
 	{TEXT("SoleTint"), FLinearColor::White},  // albedo x SoleTint on the sole
-	{TEXT("SiltColor"), FLinearColor(0.16f, 0.12f, 0.08f)}, // dried canal silt
+	{TEXT("SiltColor"), FLinearColor(0.085f, 0.08f, 0.062f)}, // silt film: a grey-green-brown dulling, not a paint
+	{TEXT("TideTint"), FLinearColor(0.55f, 0.45f, 0.33f)}, // tide line multiplies the cloth: darker and browner on any colour
 };
 
 struct FValue
@@ -193,7 +195,9 @@ const TCHAR* const kNormalCode = TEXT("return normalize(float3(Base.xy + D.xy, B
 // A shoe's rubber sole, split from the upper by pre-skinned height (the rigid foot pieces stand on z = 0).
 const TCHAR* const kSoleCode = TEXT("return saturate((SoleHeight - P.z) / max(SoleBlend, 0.01) + 0.5);");
 
-const TCHAR* const kMetalCode = TEXT("return saturate(max(ORM.b * MetalScale, ForceMetal));");
+// Metal is all or nothing: the Tripo bake leaves a low metal noise over the whole cloth (median 0.03 to 0.05, p90 0.14),
+// which lerped the black leather and the navy twill toward the grey MetalColor (the grey-green lift on both jackets).
+const TCHAR* const kMetalCode = TEXT("return saturate(max(smoothstep(MetalFloor, MetalFloor + 0.2, ORM.b * MetalScale), ForceMetal));");
 
 // Gain lifts dark albedo (x Gain near black) but rolls off towards white, so a map whose cloth is crushed to 0.004
 // comes up to about 0.03 while its bright zips and stitching stay below 1: x Gain / (1 + x (Gain - 1)).
@@ -209,7 +213,8 @@ c *= 1.0 + EdgeLighten * edge;
 c *= lerp(1.0, D.z, CavityDarken);
 c *= lerp(1.0, SoleTint.rgb, Sole);
 c *= lerp(1.0, WetDarken, Wet.x);
-c = lerp(c, SiltColor.rgb, saturate(Wet.y + Wet.z));
+c = lerp(c, SiltColor.rgb, Wet.z); // silt film below the line
+c *= lerp(float3(1.0, 1.0, 1.0), TideTint.rgb, Wet.y); // tide line: a stain that darkens, never a lighter paint
 return lerp(c, MetalColor.rgb * lerp(0.55, 1.0, D.z), Metal); // grime in the metal's recesses
 )HLSL");
 
@@ -220,19 +225,28 @@ r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
 r += crease * CreaseRough - edge * EdgeSmooth;
 r = lerp(r, SoleRough + D.w * MicroRough, Sole);
 r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
+r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
 return saturate(lerp(r, lerp(WetRough, 0.1, Metal), Wet.x));
 )HLSL");
 
 // Wetness by world height: x soaked share (below the line; dries from open surfaces inward, creases and grooves last),
-// y tide line (uneven 3 cm band at the line, shows as the cloth dries), z silt film below the line.
-const TCHAR* const kWetCode = TEXT(R"HLSL(float3 q = P * 0.045;
+// y tide line weight (uneven 3 cm band at the line, broken by noise, shows as the cloth dries; the colour code multiplies
+// by TideTint, so it is darker and browner on black leather and white cotton alike), z silt film share (toward SiltColor,
+// at most 0.15, heavier lower down and in creases), w the film's roughness lift (up to 0.1, once dry).
+// The line is tested on world height (P); the noise that breaks it is taken in pre-skinned space (PS), so it stays on the
+// cloth when the lead moves instead of crawling over it.
+const TCHAR* const kWetCode = TEXT(R"HLSL(float3 q = PS * 0.045;
 float n = 0.5 + 0.5 * sin(q.x + 2.1 * sin(q.y * 1.3)) * sin(q.y * 1.1 + 1.7 * sin(q.z * 0.9)) * sin(q.z * 1.2 + 1.3 * sin(q.x * 0.7));
 float below = saturate((LineZ - P.z) / max(Soft, 1.0) + 0.5 + (n - 0.5) * 0.6);
 float fold = saturate(saturate((0.5 - Wear.r) * 2.0) + (1.0 - D.z) * 2.0);
 float soaked = below * saturate(Wetness * 2.0 - n * (1.0 - fold));
+float3 k = PS * 0.6;
+float grain = 0.5 + 0.5 * sin(k.x + 1.9 * sin(k.z * 0.8)) * sin(k.y + 1.4 * sin(k.x * 0.9));
 float band = 1.0 - saturate(abs(P.z - LineZ - (n - 0.5) * 3.0) / 1.5);
-float tide = Silt * (1.0 - Wetness) * band * (0.35 + 0.4 * n);
-return float4(soaked, tide, below * Silt * 0.15, 0.0);
+float tide = Silt * (1.0 - Wetness) * band * saturate(0.2 + 0.9 * n) * saturate(grain * 1.6 - 0.2);
+float low = lerp(0.45, 1.0, saturate((LineZ - P.z) / 60.0)) * (1.0 + 0.4 * fold);
+float film = min(below * Silt * 0.25 * low, 0.15);
+return float4(soaked, tide, film, film * (0.1 / 0.15) * (1.0 - soaked));
 )HLSL");
 
 const TCHAR* const kSpecularCode = TEXT("return lerp(Spec, SoleSpec, Sole) * lerp(CavitySpec, 1.0, D.z);");
@@ -489,12 +503,13 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("FadeNearB"), G.Scalar(TEXT("FadeNearB")), 0}, {TEXT("FadeFarB"), G.Scalar(TEXT("FadeFarB")), 0}},
 		600);
 	UMaterialExpressionCustom* Metal = Custom(Material, TEXT("GarmentMetal"), CMOT_Float1, kMetalCode,
-		{{TEXT("ORM"), Orm, 0}, {TEXT("MetalScale"), G.Scalar(TEXT("MetalScale")), 0}, {TEXT("ForceMetal"), G.Scalar(TEXT("ForceMetal")), 0}}, -500);
+		{{TEXT("ORM"), Orm, 0}, {TEXT("MetalScale"), G.Scalar(TEXT("MetalScale")), 0}, {TEXT("MetalFloor"), G.Scalar(TEXT("MetalFloor")), 0},
+			{TEXT("ForceMetal"), G.Scalar(TEXT("ForceMetal")), 0}}, -500);
 	UMaterialExpressionCustom* Sole = Custom(Material, TEXT("GarmentSole"), CMOT_Float1, kSoleCode,
 		{{TEXT("P"), Position, 0}, {TEXT("SoleHeight"), G.Scalar(TEXT("SoleHeight")), 0}, {TEXT("SoleBlend"), G.Scalar(TEXT("SoleBlend")), 0}}, -700);
 	UMaterialExpressionWorldPosition* WorldPos = AddExpression<UMaterialExpressionWorldPosition>(Material, -1900, 1000);
 	UMaterialExpressionCustom* WetMask = Custom(Material, TEXT("GarmentWet"), CMOT_Float4, kWetCode,
-		{{TEXT("P"), WorldPos, 0}, {TEXT("Wear"), Wear, 0}, {TEXT("D"), Detail, 0}, {TEXT("Wetness"), G.Scalar(TEXT("Wetness")), 0},
+		{{TEXT("P"), WorldPos, 0}, {TEXT("PS"), Position, 0}, {TEXT("Wear"), Wear, 0}, {TEXT("D"), Detail, 0}, {TEXT("Wetness"), G.Scalar(TEXT("Wetness")), 0},
 			{TEXT("LineZ"), G.Scalar(TEXT("WetLineZ")), 0}, {TEXT("Soft"), G.Scalar(TEXT("WetLineSoft")), 0},
 			{TEXT("Silt"), G.Scalar(TEXT("WetSilt")), 0}},
 		1000);
@@ -504,7 +519,8 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("CavityDarken"), G.Scalar(TEXT("CavityDarken")), 0}, {TEXT("MetalColor"), G.Vector(TEXT("MetalColor")), 0},
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0},
 			{TEXT("P"), Position, 0}, {TEXT("DiffResp"), G.Scalar(TEXT("DiffuseResponse")), 0},
-			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0}},
+			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0},
+			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}},
 		-900);
 	UMaterialExpressionCustom* NormalOut = Custom(Material, TEXT("GarmentNormal"), CMOT_Float3, kNormalCode,
 		{{TEXT("Base"), Normal, 0}, {TEXT("D"), Detail, 0}}, -300);
