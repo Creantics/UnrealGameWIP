@@ -712,7 +712,8 @@ public:
 		ftcore::fillArenaHudLead(Fight, Frame.lead);
 		ftcore::fillArenaHudTarget(Fight, Frame.target);
 		FillBoss(*Runner, Frame.boss);
-		Frame.partner = ftcore::ArenaHudPartner{}; // the arena runs one fighter; the session's partner arrives with the party
+		Frame.partner = ftcore::ArenaHudPartner{};
+		ftcore::fillArenaHudPartner(Fight, Frame.partner); // the carrying runs' ally; zero (absent) otherwise
 		Frame.third = ftcore::ArenaHudThird{};
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
 		const ftcore::ArenaHudLead& L = View.now.lead;
@@ -722,6 +723,7 @@ public:
 			HpTextW = TextWidth(HpText, ValueFont);
 			LoadText = FString::Printf(TEXT("%d"), L.load);
 		}
+		TakeHalfAge = L.tookHalf ? 0.f : TakeHalfAge + DeltaTime;
 		HpLost.Step(L.hpMax > 0 ? static_cast<float>(L.hp) / L.hpMax : 0.f, DeltaTime);
 		const ftcore::ArenaHudBoss& B = View.now.boss;
 		const ftcore::ArenaHudTarget& T = View.now.target;
@@ -872,15 +874,38 @@ private:
 		if (L.loadMax > 0)
 		{
 			const float Load = FMath::Clamp(static_cast<float>(L.load) / L.loadMax, 0.f, 1.f);
-			Arc(CX, CY, Carry::LoadR * S, 0.f, 1.f, StrokeStyle(1.f, 31, S, 0.f), Tok(UiToken::Ink, 0.28f * A), false);
+			// The track runs to the cap (the named chairs' limit); past it the arc is not drawn, and a short cross-stroke
+			// closes it.
+			const float Cap = L.loadCap > 0 ? FMath::Clamp(static_cast<float>(L.loadCap) / L.loadMax, 0.f, 1.f) : 1.f;
+			Arc(CX, CY, Carry::LoadR * S, 0.f, Cap, StrokeStyle(1.f, 31, S, 0.f), Tok(UiToken::Ink, 0.28f * A), false);
+			if (Cap < 0.999f)
+			{
+				const float CapDeg = Carry::A0 + (Carry::A1 - Carry::A0) * Cap;
+				float X0 = 0.f;
+				float Y0 = 0.f;
+				float X1 = 0.f;
+				float Y1 = 0.f;
+				ftcore::uiArcPoint(CX, CY, (Carry::LoadR - 6.f) * S, CapDeg, X0, Y0);
+				ftcore::uiArcPoint(CX, CY, (Carry::LoadR + 6.f) * S, CapDeg, X1, Y1);
+				const FVector2f Pts[2] = {FVector2f(X0, Y0), FVector2f(X1, Y1)};
+				Poly(Pts, 2, 0.9f * S, Tok(UiToken::Ink, 0.8f * A));
+			}
 			Arc(CX, CY, Carry::LoadR * S, 0.f, Load, StrokeStyle(3.f, 33, S), L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
-			const float Mark = FMath::Clamp(static_cast<float>(ftcore::kArenaReleaseOpenLoad) / L.loadMax, 0.f, 1.f);
+			const int32 ReleaseAt = L.releaseAt > 0 ? L.releaseAt : ftcore::kArenaReleaseOpenLoad;
+			const float Mark = FMath::Clamp(static_cast<float>(ReleaseAt) / L.loadMax, 0.f, 1.f);
 			const float Deg = Carry::A0 + (Carry::A1 - Carry::A0) * Mark;
 			float MX = 0.f;
 			float MY = 0.f;
 			ftcore::uiArcPoint(CX, CY, (Carry::LoadR + 11.f) * S, Deg, MX, MY);
 			Chevron(MX, MY, 10.f * S, Deg, S, Tok(UiToken::Ink, A));
 			P.Text(CX + 30.f * S, CY + 84.f * S - ValueAsc, LoadText, ValueFont, L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
+		}
+
+		// The chairs at the table: one small filled mark per named chair, in a row inside the ring's crown.
+		for (int32 I = 0; I < L.chairCount; ++I)
+		{
+			const float X = CX + (static_cast<float>(I) - 0.5f * (L.chairCount - 1)) * 13.f * S;
+			Mesh.Dot(X, CY - 26.f * S, 3.4f * S, Tok(UiToken::Ink, A));
 		}
 
 		// The numbers in the open bottom: HP to the left of the middle (a danger mark beside it when low), Load to the right.
@@ -1090,6 +1115,13 @@ private:
 			const float KW = V.Keys.Len() <= 1 ? 30.f * S : FMath::Max(30.f * S, V.KeysW + 18.f * S);
 			StadiumStroke(Line, KX, KY, KW, 30.f * S, 0.65f * S);
 			Mesh.Stroke(Line, C, true, true);
+			if (I == 0 && TakeHalfAge < 0.6f)
+			{
+				// Took half: a fine accent ring opens out from the Guard key and fades.
+				const float T = TakeHalfAge / 0.6f;
+				StadiumStroke(Line, KX, KY, KW + 16.f * T * S, (30.f + 16.f * T) * S, 0.8f * S);
+				Mesh.Stroke(Line, Tok(UiToken::Accent, (1.f - T) * FMath::Max(A, 0.6f)), true, true);
+			}
 			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.55f, V.Keys, LabelFont, C);
 			P.Text(KX - KW * 0.5f - 18.f * S - V.WordW, Y - VerbAsc, V.Word, VerbFont, C);
 			if (I == Hot)
@@ -1111,6 +1143,7 @@ private:
 	ftcore::InputDevice VerbDevice = ftcore::InputDevice::Keys;
 	uint32 LastVerbState = MAX_uint32;
 	bool bRebuild = true;
+	float TakeHalfAge = 10.f; // s since the last take-half (its pulse on the Guard key)
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line; // the stroke being drawn (Core fills it, the mesh takes it)
 	bool bLive = false;
