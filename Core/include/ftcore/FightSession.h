@@ -14,6 +14,21 @@
 //   boss script, or an offer of the shared-blow key to the session's own lock when there is no boss script. A settle
 //   the count's full event buffer lost (droppedSettles) is not a shared blow. A change to
 //   the table setter's places re-checks the table's seats.
+// * The count's Load and the Lift (def.lift; off by default, and off nothing below happens). The host feeds each
+//   lead's Load (setLoad; a lead never fed has no gauge) before it judges blows. When a window becomes joined, each
+//   lead joiner with a gauge stores countLoad, at most once per countLoadEvery per lead; a Lift stores none and each
+//   lead joiner spends min(liftCost, its Load) instead. These come as the next tick's `loads`; the host applies them
+//   to its gauges (its own capped store and spend). A kThirdSlot caller joins without a gauge (StrikeCount.h).
+// * The kept gauge (def.lift with def.keptLead a lead): the session keeps that lead's Load itself (the partner lead,
+//   whose gauge no host keeps). Its cap is the chairs' formula, baseCarry + perPlace x keptNamed (at most kMaxLoad).
+//   It fills from its joined counts, capped at the cap (no chair gain), and a Lift spends from it. keptParried and
+//   keptBlocked (parried damage x keptParryShare, blocked damage x keptBlockShare) store as the host's do, for a
+//   partner that defends: the arena's scripted partner does not yet, so no host calls them. setKeptDown(true) (the
+//   partner is down): it stores and spends nothing and counts 0 toward a Lift, until the next begin. The session
+//   feeds it to the count itself; its changes still come in `loads`, marked kept (already applied).
+// * Marks: markEnemy(enemy, bonus, seconds) marks an enemy slot (a Release's chair effect). The joined blows of the
+//   next joined window judged on that enemy (judgeHeldBlow, held ones at their settle) take x (1 + bonus); the mark
+//   is used up once that window is over, or ends unused at its time. begin clears every mark.
 // * Story: with a story state bound, every press of the gift button aimed at a lead is one press in it
 //   (storyCountPress), given or refused (cooling, a refused count, a hostile or vacant slot): the side is the
 //   target lead (kLeadA 0, kLeadB 1), the kind is the selected gift (Heal 0, Guard 1, Count 2). A press at a
@@ -43,6 +58,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <span>
 
 namespace ftcore {
@@ -65,6 +81,8 @@ enum class SharedAction : std::uint8_t {
 
 struct FightSessionDef {
     CountTuning count{};
+    bool lift = false; // the count's Load and the Lift (see above)
+    LiftTuning liftTuning{};
     GiftTuning gift{};
     PlaceTuning places{};
     int seats = 3;
@@ -74,7 +92,22 @@ struct FightSessionDef {
     LockTuning lock{};
     bool hasBoss = false;
     BossScriptDef boss{};
+    // The kept gauge (see above; only with lift): the lead whose Load the session keeps (kNoFighter: none), its
+    // Named chairs (0..kMaxPlaces) and the shares of a parried (0..2) and a blocked (0..1) blow it stores.
+    FighterId keptLead = kNoFighter;
+    int keptNamed = 1;
+    float keptParryShare = 1.0f;
+    float keptBlockShare = 0.25f;
+    // One blow's multiplier from all sources kept to this (StrikeCount.h capBlowScale; 0: no cap, else 1..20). With a
+    // cap, judgeHeldBlow takes the base before crits and the scale the blow landed at, and a settle stays under it.
+    float blowCap = 0.f;
 };
+
+inline bool validKeptGauge(const FightSessionDef& d) {
+    if (d.keptLead == kNoFighter) return true;
+    return isLead(d.keptLead) && d.keptNamed >= 0 && d.keptNamed <= static_cast<int>(kMaxPlaces) &&
+           d.keptParryShare >= 0.f && d.keptParryShare <= 2.f && d.keptBlockShare >= 0.f && d.keptBlockShare <= 1.f;
+}
 
 // What begin() refused: each refused piece keeps its defaults, except a refused boss def, which leaves no boss script.
 struct FightSessionCheck {
@@ -84,10 +117,33 @@ struct FightSessionCheck {
     bool table = true;
     bool lock = true;
     bool boss = true;
+    bool lift = true;  // false: the lift tuning was refused (the Lift stays off)
+    bool kept = true;  // false: the kept gauge was refused (no gauge kept)
+    bool cap = true;   // false: the blow cap was refused (no cap)
     bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
     // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
-    bool ok() const { return count && gift && places && table && lock && boss; }
+    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap; }
 };
+
+// A Load change the count asks of a lead's gauge (def.lift): the host applies it, store or spend. Append only.
+// ParryStore and BlockStore come only from the kept gauge.
+enum class CountLoadKind : std::uint8_t { CountStore, LiftSpend, ParryStore, BlockStore };
+struct CountLoadChange {
+    FighterId lead = kNoFighter;
+    int amount = 0; // CountStore: the Load to store (above 0); LiftSpend: the Load to spend (above 0)
+    CountLoadKind kind = CountLoadKind::CountStore;
+    bool kept = false; // the session's kept gauge: already applied (kept stores are what it took, after the cap)
+};
+// Two joiners per window: a tick between joins holds at most a few.
+inline constexpr std::size_t kMaxCountLoadChanges = 8;
+
+// A Release's mark on an enemy slot (markEnemy).
+struct EnemyMark {
+    float bonus = 0.f;
+    double until = -1.0e300;
+    bool used = false; // a joined window's blow on the enemy took it; it ends with that window
+};
+inline constexpr std::size_t kMaxMarkedEnemies = 8;
 
 // A held blow's settle above x1: the extra damage its enemy takes now (the blow itself landed at base).
 struct HeldBonus {
@@ -111,6 +167,8 @@ struct FightTick {
     std::span<const HeldBonus> bonuses; // this tick's held-blow bonuses (the session's own buffer)
     int heldDropped = 0;  // held blows judged since the last tick with no room to wait (they stay at base)
     int heldExpired = 0;  // held blows whose settle never came (a dropped settle): they stay at base
+    std::span<const CountLoadChange> loads; // def.lift: the gauges' changes since the last tick (the session's own buffer)
+    int loadsDropped = 0;                   // changes with no room in the buffer (never with two joiners a tick)
 };
 
 // What a press did, for the generic press(); the typed calls return the pieces' own results.
@@ -151,6 +209,23 @@ public:
         def_ = def;
         c.count = count_.reset(def_.count, now_);
         if (!c.count) count_.reset(CountTuning{}, now_);
+        c.lift = count_.setLift(def_.lift, def_.liftTuning);
+        lastStore_.fill(-1.0e300);
+        pendingLoads_ = 0;
+        pendingLoadsDropped_ = 0;
+        marks_.fill(EnemyMark{});
+        c.kept = validKeptGauge(def_);
+        c.cap = validBlowCap(def_.blowCap);
+        blowCap_ = c.cap ? def_.blowCap : 0.f;
+        keptOn_ = count_.liftOn() && c.kept && def_.keptLead != kNoFighter;
+        kept_ = 0;
+        keptDown_ = false;
+        {
+            const PlaceTuning pt = validPlaceTuning(def_.places) ? def_.places : PlaceTuning{};
+            const int cap = pt.baseCarry + pt.perPlace * (c.kept ? def_.keptNamed : 0);
+            keptCap_ = cap < kMaxLoad ? cap : kMaxLoad;
+        }
+        if (keptOn_) count_.setLoad(def_.keptLead, 0);
         c.gift = gift_.reset(def_.gift, now_);
         if (!c.gift) gift_.reset(GiftTuning{}, now_);
         for (PlaceTable& p : places_) {
@@ -220,6 +295,16 @@ public:
             heldCount_ = 0;
         }
         tick_.bonuses = std::span<const HeldBonus>(bonuses_.data(), bonuses);
+        // The gauges' changes since the last tick, then the marks: a used one ends with its window, an unused one at its time.
+        tickLoads_ = pendingLoads_;
+        for (std::size_t i = 0; i < pendingLoads_; ++i) loadsOut_[i] = loadsIn_[i];
+        tick_.loads = std::span<const CountLoadChange>(loadsOut_.data(), tickLoads_);
+        tick_.loadsDropped = pendingLoadsDropped_;
+        pendingLoads_ = 0;
+        pendingLoadsDropped_ = 0;
+        for (EnemyMark& m : marks_) {
+            if ((m.used && !count_.live()) || (!m.used && now_ > m.until)) m = EnemyMark{};
+        }
         gift_.update(now_);
         tick_.table = &table_.update(now_);
         lock_.update(now_);
@@ -326,24 +411,69 @@ public:
         return r;
     }
 
-    // A blow by `striker`, judged on the count before its damage; an OnCount blow is a shared blow at once.
+    // A blow by `striker`, judged on the count before its damage; an OnCount (or Lift) blow is a shared blow at once.
     CountHit judgeBlow(FighterId striker) {
+        if (keptOn_) count_.setLoad(def_.keptLead, keptDown_ ? 0 : kept_);
         const CountHit h = count_.judgeBlow(striker, now_);
+        takeJoin();
         if (sharedBlow(h)) shareBlow();
         return h;
     }
+    // A fighter's Load now, for the Lift (def.lift); negative: no gauge. Feed it before judging its blows.
+    // For the kept lead it sets the kept gauge (0..its cap).
+    void setLoad(FighterId f, int load) {
+        if (keptOn_ && f == def_.keptLead) {
+            kept_ = load < 0 ? 0 : (load > keptCap_ ? keptCap_ : load);
+            count_.setLoad(f, keptDown_ ? 0 : kept_);
+            return;
+        }
+        count_.setLoad(f, load);
+    }
+    // The blow cap (0: none) and a blow's scale kept under it.
+    float blowCap() const { return blowCap_; }
+    float capBlow(float scale) const { return capBlowScale(scale, blowCap_); }
+    // The kept gauge: whether the session keeps `f`'s Load, that Load, its cap.
+    bool keepsLoad(FighterId f) const { return keptOn_ && f == def_.keptLead; }
+    FighterId keptLead() const { return keptOn_ ? def_.keptLead : kNoFighter; }
+    int keptLoad() const { return keptOn_ ? kept_ : 0; }
+    int keptCap() const { return keptOn_ ? keptCap_ : 0; }
+    // The kept lead parried (blocked) a blow of `damage`: it stores damage x keptParryShare (keptBlockShare), rounded,
+    // up to its cap. Returns what it stored (0 with no kept gauge).
+    // The kept lead is down (true) or up again: down, its Load stays where it was but is neither stored, spent nor
+    // counted toward a Lift.
+    void setKeptDown(bool down) {
+        keptDown_ = down;
+        if (keptOn_) count_.setLoad(def_.keptLead, down ? 0 : kept_);
+    }
+    bool keptDown() const { return keptDown_; }
+    int keptParried(int damage) { return keptStore(damage, def_.keptParryShare, CountLoadKind::ParryStore); }
+    int keptBlocked(int damage) { return keptStore(damage, def_.keptBlockShare, CountLoadKind::BlockStore); }
+    // Marks enemy slot `enemy`: its next joined window's blows take x (1 + bonus), bonus clamped to
+    // 0..kMaxReleaseMark, for `seconds` (0..15) from now. A new mark replaces the old. False (nothing) for a slot
+    // past kMaxMarkedEnemies, a bonus of 0 or less, or seconds of 0 or less (or not finite).
+    bool markEnemy(std::uint8_t enemy, float bonus, double seconds) {
+        if (enemy >= kMaxMarkedEnemies || !(bonus > 0.f) || !(seconds > 0.0) || !std::isfinite(seconds)) return false;
+        EnemyMark m;
+        m.bonus = bonus < kMaxReleaseMark ? bonus : kMaxReleaseMark;
+        m.until = now_ + (seconds < 15.0 ? seconds : 15.0);
+        marks_[enemy] = m;
+        return true;
+    }
+    EnemyMark mark(std::uint8_t enemy) const { return enemy < kMaxMarkedEnemies ? marks_[enemy] : EnemyMark{}; }
     // judgeBlow for a blow the host lands at `baseDamage` on `enemy` now. A Held blow lands at base and the session
     // waits on it: when it settles above x1, a later tick's `bonuses` lists the extra damage to add (the host deals
     // it outside a blow). A settle at x1 or below, a dropped settle (heldExpired) or no room to wait (heldDropped)
     // adds nothing. Other outcomes are final: the host multiplies as with judgeBlow.
-    CountHit judgeHeldBlow(FighterId striker, std::uint8_t enemy, int baseDamage, std::uint8_t move) {
-        const CountHit h = judgeBlow(striker);
+    // With a blow cap, baseDamage is the blow's damage before crits and `landed` the scale it lands at (its crit).
+    CountHit judgeHeldBlow(FighterId striker, std::uint8_t enemy, int baseDamage, std::uint8_t move, float landed = 1.0f) {
+        CountHit h = judgeBlow(striker);
+        if (sharedOutcome(h.outcome)) h.multiplier *= markFactor(enemy);
         if (h.outcome != CountOutcome::Held || baseDamage <= 0) return h;
         if (heldCount_ == kMaxHeldBlows) {
             ++heldDropped_;
             return h;
         }
-        held_[heldCount_++] = HeldRecord{h.blow, enemy, move, baseDamage};
+        held_[heldCount_++] = HeldRecord{h.blow, enemy, move, baseDamage, landed};
         return h;
     }
     // An unlock key (a read clause with its id, a refusal, a shared blow) offered to the boss script's point when
@@ -412,6 +542,7 @@ private:
         std::uint8_t enemy = 0;
         std::uint8_t move = 0;
         int baseDamage = 0;
+        float landed = 1.0f;
     };
     // Frees the settled blow's record; above x1 it adds a bonus (at most one per record, so the buffer fits).
     void settleHeld(const CountEvent& e, std::size_t& bonuses) {
@@ -419,13 +550,72 @@ private:
             if (held_[i].blow != e.blow) continue;
             const HeldRecord r = held_[i];
             held_[i] = held_[--heldCount_];
-            if (!(e.multiplier > 1.0f) || !std::isfinite(e.multiplier)) return;
-            const double extra = std::round(static_cast<double>(r.baseDamage) * (static_cast<double>(e.multiplier) - 1.0));
-            if (extra < 1.0) return;
-            const int add = extra > 1e9 ? 1000000000 : static_cast<int>(extra);
+            const float mult = sharedOutcome(e.outcome) ? e.multiplier * markFactor(r.enemy) : e.multiplier;
+            const int add = heldSettleBonus(r.baseDamage, r.landed, mult, blowCap_);
+            if (add < 1) return;
             bonuses_[bonuses++] = HeldBonus{r.enemy, r.move, add};
             return;
         }
+    }
+    // A joined blow on `enemy`: its mark's factor (1 + bonus), using the mark; 1 with no live mark.
+    float markFactor(std::uint8_t enemy) {
+        if (enemy >= kMaxMarkedEnemies) return 1.0f;
+        EnemyMark& m = marks_[enemy];
+        if (!(m.bonus > 0.f) || (!m.used && now_ > m.until)) return 1.0f;
+        m.used = true;
+        return 1.0f + m.bonus;
+    }
+    void pushLoad(FighterId lead, int amount, CountLoadKind kind, bool kept = false) {
+        if (pendingLoads_ == loadsIn_.size()) {
+            ++pendingLoadsDropped_;
+            return;
+        }
+        loadsIn_[pendingLoads_++] = CountLoadChange{lead, amount, kind, kept};
+    }
+    // A window just joined (def.lift): each lead joiner with a gauge stores countLoad (rate-limited) or, on a Lift,
+    // spends min(liftCost, its Load).
+    void takeJoin() {
+        CountJoin j;
+        if (!count_.takeJoin(j)) return;
+        const LiftTuning& l = count_.liftTuning();
+        // A window joined with the third slot's caller (the lead counting alone) stores the smaller solo amount.
+        const int store = (j.first == kThirdSlot || j.second == kThirdSlot) ? l.soloCountLoad : l.countLoad;
+        for (const FighterId f : {j.first, j.second}) {
+            if (!isLead(f) || !count_.hasGauge(f)) continue;
+            const bool kept = keepsLoad(f);
+            if (kept && keptDown_) continue;
+            if (j.lift) {
+                const int held = count_.loadOf(f);
+                const int spend = l.liftCost < held ? l.liftCost : held;
+                if (spend > 0) {
+                    pushLoad(f, spend, CountLoadKind::LiftSpend, kept);
+                    count_.setLoad(f, held - spend);
+                    if (kept) kept_ = held - spend;
+                }
+            } else if (store > 0 && (l.countLoadEvery <= 0.0 || now_ - lastStore_[f] >= l.countLoadEvery - 1e-9)) {
+                lastStore_[f] = now_;
+                if (!kept) {
+                    pushLoad(f, store, CountLoadKind::CountStore);
+                } else {
+                    const int room = keptCap_ - kept_;
+                    const int stored = store < room ? store : (room > 0 ? room : 0);
+                    kept_ += stored;
+                    count_.setLoad(f, kept_);
+                    if (stored > 0) pushLoad(f, stored, CountLoadKind::CountStore, true);
+                }
+            }
+        }
+    }
+    int keptStore(int damage, float share, CountLoadKind kind) {
+        if (!keptOn_ || keptDown_ || damage <= 0) return 0;
+        const double raw = std::round(static_cast<double>(damage) * static_cast<double>(share));
+        const int room = keptCap_ - kept_;
+        if (room <= 0 || !(raw > 0.0)) return 0;
+        const int stored = raw < static_cast<double>(room) ? static_cast<int>(raw) : room;
+        kept_ += stored;
+        count_.setLoad(def_.keptLead, kept_);
+        pushLoad(def_.keptLead, stored, kind, true);
+        return stored;
     }
     void deferLocks() {
         if (hasBoss_) boss_.onDeferred(now_);
@@ -451,6 +641,18 @@ private:
     std::size_t heldCount_ = 0;
     int heldDropped_ = 0;
     std::array<HeldBonus, kMaxHeldBlows> bonuses_{};
+    std::array<double, kMaxFighters> lastStore_{};
+    std::array<CountLoadChange, kMaxCountLoadChanges> loadsIn_{};
+    std::array<CountLoadChange, kMaxCountLoadChanges> loadsOut_{};
+    std::size_t pendingLoads_ = 0;
+    std::size_t tickLoads_ = 0;
+    int pendingLoadsDropped_ = 0;
+    std::array<EnemyMark, kMaxMarkedEnemies> marks_{};
+    bool keptOn_ = false;
+    int kept_ = 0;
+    bool keptDown_ = false;
+    int keptCap_ = 0;
+    float blowCap_ = 0.f;
     // The empty buffers a tick points at before the first tick and when there is no boss script.
     static inline const CountEvents kNoCount{};
     static inline const TableEvents kNoTable{};

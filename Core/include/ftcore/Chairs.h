@@ -14,6 +14,8 @@
 //   - healCharges: a = whole heal charges added at the fight's begin (0..3), b unused (0).
 //   - takeHalf:    a = seconds added to the take half window (0..0.2), b = the share of the ally's max hp it heals
 //                  on each take half (0..0.1).
+//   - releaseMark: a = the bonus a Release's mark adds to the next joined count on its target (0..0.5), b = the
+//                  mark's seconds (1..15): the joined blows on the marked enemy take x (1 + a).
 //
 // chairsFor gives the effects of a PlaceTable's Named chairs, in chair order, as a fixed array the fight can copy
 // with no allocation. Totals: each kind sums a (and b where it is a value, not a radius) over the Named chairs of
@@ -30,9 +32,10 @@
 
 namespace ftcore {
 
-enum class ChairKind : std::uint8_t { None, HealCharges, LoadGain, TakeHalf }; // append only
+enum class ChairKind : std::uint8_t { None, HealCharges, LoadGain, TakeHalf, ReleaseMark }; // append only
 
-FTCORE_API const char* chairKindName(ChairKind k); // "none", "healCharges", "loadGain", "takeHalf". Literals.
+// "none", "healCharges", "loadGain", "takeHalf", "releaseMark". Literals.
+FTCORE_API const char* chairKindName(ChairKind k);
 
 struct ChairEffect {
     ChairKind kind = ChairKind::None;
@@ -61,6 +64,8 @@ inline constexpr int kChairHealChargesCap = 3;           // total added charges
 inline constexpr float kChairLoadGainCap = 0.5f;         // total added gain
 inline constexpr float kChairTakeHalfWindowCap = 0.2f;   // total added window, s
 inline constexpr float kChairTakeHalfHealCap = 0.15f;    // total ally heal share
+inline constexpr float kChairReleaseMarkCap = 0.5f;      // total mark bonus (StrikeCount.h kMaxReleaseMark)
+inline constexpr float kChairReleaseMarkSecondsCap = 15.f; // the mark's seconds
 
 // The effects of a fighter's Named chairs, in chair order (fixed size: the fight copies it, no allocation).
 struct ArenaChairs {
@@ -73,6 +78,10 @@ struct ArenaChairs {
     FTCORE_API float loadGainRadius() const;
     FTCORE_API float takeHalfWindow() const;
     FTCORE_API float takeHalfHeal() const;
+    // The mark a Release leaves: the summed bonus (capped) and the longest seconds among the releaseMark chairs
+    // (0: none).
+    FTCORE_API float releaseMark() const;
+    FTCORE_API float releaseMarkSeconds() const;
 };
 
 // Named chairs only; a person with no row adds nothing (and takes no slot).

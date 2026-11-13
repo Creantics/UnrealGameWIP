@@ -44,6 +44,7 @@
 #include "ftcore/BriefKit.h"
 #include "ftcore/LicenceRating.h"
 #include "ftcore/Chairs.h"
+#include "ftcore/CountLiftData.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
 
@@ -385,6 +386,20 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	if (bSharedCount)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the lead calls the count whenever it can and a scripted partner joins a held blow's window (-ArenaSharedCount)."));
+	}
+#if !UE_BUILD_SHIPPING
+	bCountLift = FParse::Param(FCommandLine::Get(), TEXT("ArenaCountLift"));
+	PartnerLoad = -1;
+	if (bCountLift && FParse::Value(FCommandLine::Get(), TEXT("ArenaPartnerLoad="), PartnerLoad))
+	{
+		PartnerLoad = FMath::Clamp(PartnerLoad, 0, 100);
+	}
+#else
+	bCountLift = false;
+#endif
+	if (bCountLift)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the count stores Load and lifts; a Release marks its target; a locked kite seam opens on a shared blow (-ArenaCountLift, partner Load %d)."), PartnerLoad);
 	}
 
 	bBegun = true;
@@ -1565,9 +1580,47 @@ void UFTArenaRunner::BeginSession()
 	SessionJoins = 0;
 	SessionBonuses = 0;
 	SessionBonusDamage = 0;
+	CountLoadStored = CountLoadStores = Lifts = LiftSpent = Marks = KiteUnlocks = MaxJoinLoad = PartnerLoadStored = 0;
+	CappedBlows = 0;
+	PartnerLoadTime = -1e9;
+	LiftTime = LastJoinAt = KiteLockUntil = -1e9;
+	LiftMultiplier = 1.f;
 	if (Session)
 	{
-		Session->Begin(ftcore::FightSessionDef{}, static_cast<double>(SessionHeld));
+		ftcore::FightSessionDef SessionDef;
+		if (bCountLift)
+		{
+			SessionDef.lift = true;
+			// The Lift's tuning and the blow cap from Data/Battle/count_lift.json (the defaults, 6x, if it is refused).
+			{
+				ftcore::CountLiftData LiftData;
+				TArray<uint8> Bytes;
+				std::string Error;
+				const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/count_lift.json");
+				if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importCountLift(FT::BytesAsText(Bytes), LiftData, &Error)))
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/count_lift.json; the Lift keeps its defaults.\n%s"),
+						*FT::ToFString(Error));
+					LiftData = ftcore::CountLiftData();
+				}
+				SessionDef.liftTuning = LiftData.lift;
+				SessionDef.blowCap = LiftData.blowCap;
+			}
+			// The partner lead's own gauge, kept by the session (a probe's fixed -ArenaPartnerLoad replaces it). Its cap
+			// is the chairs' formula with the partner's own Named chairs: one for now (60).
+			if (PartnerLoad < 0)
+			{
+				SessionDef.keptLead = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+				SessionDef.keptNamed = 1;
+			}
+			// The kite's seam behind its lock: the session holds the lock (a shared blow, a take half, opens it).
+			if (KiteSlot >= 0 && Kite.IsLoaded() && Kite.GetWeakPoints().locked)
+			{
+				SessionDef.locked = true;
+				SessionDef.lock = Kite.GetWeakPoints().lock;
+			}
+		}
+		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
 		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
 		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
 		const UWorld* World = GetWorld();
@@ -1636,16 +1689,28 @@ ftcore::ArenaBlowRuling UFTArenaRunner::RuleSessionBlow(void* User, const ftcore
 		return Ruling;
 	}
 	const float Scale = Ruling.damage > 0.f ? FMath::Min(Ruling.damage, 1.0e6f) : 0.f; // NaN counts as 0, as the fight reads it
-	const int Base = static_cast<int>(FMath::RoundToFloat(static_cast<float>(Blow.damage) * Scale));
-	const ftcore::CountHit Hit = Self->Session->Get().judgeHeldBlow(Self->SessionLead, Blow.target, Base, Blow.move);
+	// With a blow cap (-ArenaCountLift) a held blow's bonus comes from its damage before the crit, and the whole blow
+	// (crit, count, Lift, mark) stays under the cap. Without one, as before: the base is the damage after the crit.
+	ftcore::FightSession& S = Self->Session->Get();
+	const bool bCapped = S.blowCap() > 0.f;
+	const int Base = static_cast<int>(FMath::RoundToFloat(static_cast<float>(Blow.damage) * (bCapped ? 1.f : Scale)));
+	Self->FeedSessionLoads();
+	const ftcore::CountHit Hit = S.judgeHeldBlow(Self->SessionLead, Blow.target, Base, Blow.move, bCapped ? Scale : 1.f);
+	const float Want = Hit.outcome == ftcore::CountOutcome::Held ? Scale : Scale * Hit.multiplier;
 	if (Hit.outcome == ftcore::CountOutcome::Held)
 	{
 		++Self->SessionHeldBlows;
 		Self->bSessionPartnerDue = Self->bSharedCount;
 	}
-	else
+	if (bCapped)
 	{
-		Ruling.damage = Scale * Hit.multiplier;
+		const float Kept = S.capBlow(Want);
+		Self->CappedBlows += Kept < Want ? 1 : 0;
+		Ruling.damage = Kept;
+	}
+	else if (Hit.outcome != ftcore::CountOutcome::Held)
+	{
+		Ruling.damage = Want;
 	}
 	return Ruling;
 }
@@ -1679,7 +1744,8 @@ void UFTArenaRunner::FeedSession()
 	{
 		bSessionPartnerDue = false;
 		const uint8 Partner = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
-		if (Session->Get().judgeBlow(Partner).outcome == ftcore::CountOutcome::OnCount)
+		FeedSessionLoads();
+		if (ftcore::sharedOutcome(Session->Get().judgeBlow(Partner).outcome))
 		{
 			++SessionJoins;
 		}
@@ -1687,6 +1753,7 @@ void UFTArenaRunner::FeedSession()
 	const float Held = Fight.heldTime();
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
 	SessionHeld = Held;
+	ApplyCountLift(Tick);
 	for (const ftcore::HeldBonus& Bonus : Tick.bonuses)
 	{
 		// Ruled as a blow by the sub-hosts' hook (a boss gone invulnerable or a vetoing phase takes none), not by the
@@ -1699,6 +1766,127 @@ void UFTArenaRunner::FeedSession()
 				UTF8_TO_TCHAR(SlotKindId(Bonus.enemy)), Bonus.move);
 		}
 	}
+}
+
+void UFTArenaRunner::FeedSessionLoads()
+{
+	if (!bCountLift || !Session)
+	{
+		return;
+	}
+	const uint8 Partner = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+	Session->Get().setLoad(SessionLead, Fight.load());
+	if (!Session->Get().keepsLoad(Partner))
+	{
+		Session->Get().setLoad(Partner, PartnerLoad); // a probe's fixed Load (the session keeps the partner's otherwise)
+	}
+}
+
+void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
+{
+	if (!bCountLift || !Session)
+	{
+		return;
+	}
+	const ftcore::FightSession& S = Session->Get();
+	const ftcore::CountJoin& Join = S.strikeCount().lastJoin();
+	bool bNewLift = false;
+	if (Join.at != LastJoinAt && Join.first != ftcore::kNoFighter)
+	{
+		LastJoinAt = Join.at;
+		bNewLift = Join.lift;
+		MaxJoinLoad = FMath::Max(MaxJoinLoad, static_cast<int32>(Join.loadSum));
+		if (Join.lift)
+		{
+			++Lifts;
+			LiftTime = Now;
+			LiftMultiplier = S.strikeCount().tuning().onCountMultiplier * S.strikeCount().liftTuning().liftMultiplier;
+		}
+	}
+	int32 Spent[2] = {0, 0}; // the player's, the partner's
+	for (const ftcore::CountLoadChange& C : Tick.loads)
+	{
+		if (C.kept)
+		{
+			// The partner's gauge: the session applied it already.
+			PartnerLoadTime = Now;
+			if (C.kind == ftcore::CountLoadKind::LiftSpend)
+			{
+				Spent[1] += C.amount;
+				LiftSpent += C.amount;
+			}
+			else
+			{
+				PartnerLoadStored += C.amount;
+				const TCHAR* Source = C.kind == ftcore::CountLoadKind::ParryStore ? TEXT("parry")
+					: (C.kind == ftcore::CountLoadKind::BlockStore ? TEXT("block") : TEXT("count"));
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner stored %d Load (%s), %d/%d."), C.amount, Source, S.keptLoad(), S.keptCap());
+			}
+			continue;
+		}
+		if (C.lead != SessionLead)
+		{
+			continue; // a probe's fixed partner Load: nothing to apply
+		}
+		if (C.kind == ftcore::CountLoadKind::CountStore)
+		{
+			const int Stored = Fight.giveLoad(C.amount);
+			CountLoadStored += Stored;
+			++CountLoadStores;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: count stored %d Load for lead %d."), Stored, static_cast<int32>(C.lead));
+		}
+		else
+		{
+			const int Gone = Fight.spendLoad(C.amount);
+			LiftSpent += Gone;
+			Spent[0] += Gone;
+		}
+	}
+	if (bNewLift)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: count Lift at %.2f s: x%.2f, spent %d+%d."), Fight.time(), LiftMultiplier, Spent[0], Spent[1]);
+	}
+	// The kite's locked seam opens with the session's lock (a joined count, a take half) for the lock's open time.
+	if (Kite.IsActive() && Kite.IsLocked() && S.weakPointOpen())
+	{
+		const double Until = S.lock().until();
+		if (Until != KiteLockUntil)
+		{
+			KiteLockUntil = Until;
+			++KiteUnlocks;
+			Kite.OnUnlocked(static_cast<double>(Fight.time()), Until - S.now());
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the kite's seam unlocked at %.2f s for %.2f s."), Fight.time(), Until - S.now());
+		}
+	}
+}
+
+int32 UFTArenaRunner::GetPartnerLoad() const
+{
+	return Session ? Session->Get().keptLoad() : 0;
+}
+
+int32 UFTArenaRunner::GetPartnerLoadCap() const
+{
+	return Session ? Session->Get().keptCap() : 0;
+}
+
+float UFTArenaRunner::GetEnemyMarkBonus(int32 Slot) const
+{
+	if (!Session || Slot < 0 || Slot >= static_cast<int32>(ftcore::kMaxMarkedEnemies))
+	{
+		return 0.f;
+	}
+	return Session->Get().mark(static_cast<uint8>(Slot)).bonus;
+}
+
+double UFTArenaRunner::GetEnemyMarkUntil(int32 Slot) const
+{
+	if (!Session || Slot < 0 || Slot >= static_cast<int32>(ftcore::kMaxMarkedEnemies))
+	{
+		return -1e9;
+	}
+	const ftcore::EnemyMark M = Session->Get().mark(static_cast<uint8>(Slot));
+	return M.bonus > 0.f ? M.until : -1e9;
 }
 
 void UFTArenaRunner::StepFight()
@@ -1832,6 +2020,11 @@ void UFTArenaRunner::StepFight()
 		}
 		if (bTableKey)
 		{
+			// The pilot stops attacking and releasing while it means to set the table, so the setter comes free and stays so.
+			if (TableKey.holding() || TableCouldBegin())
+			{
+				In.light = In.heavy = In.release = false;
+			}
 			const bool bStart = !TableKey.holding() && TableCanBegin();
 			TableKeyPresses += bStart ? 1 : 0;
 			bReleaseDown = (TableKeyPresses % 2) == 1;
@@ -2178,9 +2371,21 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			{
 				EnemyHitTime[E.target] = Now;
 			}
+			// Under -ArenaCountLift a table share is a shared blow: offered to the lock (the kite's seam) as take half is.
+			if (bCountLift && Session)
+			{
+				const ftcore::UnlockResult Unlock = Session->Get().offerKey(ftcore::kUnlockSharedBlow);
+				++CarrySharedOffers;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: a table share offered a shared blow: unlock result %d."), static_cast<int32>(Unlock));
+			}
 			break;
 		case ftcore::ArenaEventType::AllyDowned:
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the ally is down at %.2f s."), Fight.time());
+			// The partner down: its kept gauge stores and spends nothing for the rest of the fight.
+			if (Session && Session->Get().keepsLoad(Session->Get().keptLead()))
+			{
+				Session->Get().setKeptDown(true);
+			}
 			break;
 		case ftcore::ArenaEventType::TookHalf:
 			// Taking half is a shared input: offered to the boss script's point (or the session's lock) as a shared blow.
@@ -2196,6 +2401,17 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::Released:
 			ReleaseTime = Now;
 			ReleaseSpent = E.amount;
+			// A releaseMark chair: the Release marks its target (the lock target) for the next joined count on it.
+			if (bCountLift && Session && CarryChairs.releaseMark() > 0.f)
+			{
+				const std::uint8_t Target = Fight.lock();
+				if (Target < MaxEnemies && Session->Get().markEnemy(Target, CarryChairs.releaseMark(), CarryChairs.releaseMarkSeconds()))
+				{
+					++Marks;
+					UE_LOG(LogForgottenThird, Display, TEXT("Arena: Release marked enemy %d (+%.2f until %.2f s)."), static_cast<int32>(Target),
+						CarryChairs.releaseMark(), Session->Get().mark(Target).until);
+				}
+			}
 			continue; // a banner, not a popup
 		case ftcore::ArenaEventType::Overloaded:
 			OverloadTime = Now;
@@ -3363,6 +3579,12 @@ void UFTArenaRunner::LogFeatureChecks() const
 	// Two leads on one count (the partner scripted under -ArenaSharedCount): a held blow's bonus landed.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shared count bonus %s (%d held, %d joined, %d bonuses, +%d damage)."),
 		Verdict(SessionBonuses > 0, bSharedCount && Session != nullptr), SessionHeldBlows, SessionJoins, SessionBonuses, SessionBonusDamage);
+	if (bCountLift)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: COUNT stores %d stored %d lifts %d liftSpent %d marks %d kiteUnlocks %d maxJoinLoad %d partnerStored %d partnerLoad %d/%d blowCap %.1f capped %d."),
+			CountLoadStores, CountLoadStored, Lifts, LiftSpent, Marks, KiteUnlocks, MaxJoinLoad, PartnerLoadStored,
+			GetPartnerLoad(), GetPartnerLoadCap(), Session ? Session->Get().blowCap() : 0.f, CappedBlows);
+	}
 	// Impact (ftcore/ArenaImpact.h): numbers only, no verdict. The jolt is rotation only (the arm and the field of view
 	// are never touched); the marker is the off-frame tell and the stinger only doubles it.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: jolt (%d blows asked; peak %.2f deg handed to the camera; camera shake %.2f)."),
@@ -4379,6 +4601,20 @@ void UFTArenaRunner::BeginKite()
 		return;
 	}
 	Kite.Begin(Fight, static_cast<size_t>(KiteSlot));
+	Kite.SetLock(bCountLift && Session ? &Session->Get() : nullptr);
+	if (Kite.IsLocked())
+	{
+		// A seam behind a shared-blow lock in a fight with nothing to offer one has no crits at all: say so.
+		ftcore::SharedBlowSources Sources;
+		Sources.sharedCount = bSharedCount;
+		Sources.takeHalf = bAutoPlay ? bTakeHalfAuto : bCarry;
+		Sources.tableShare = bTable;
+		if (!ftcore::lockCanOpen(Kite.GetWeakPoints().lock, Sources))
+		{
+			UE_LOG(LogForgottenThird, Warning,
+				TEXT("Arena: the kite's seam is locked and nothing in this fight can open it (no shared count, take half or table): no crits on the kite."));
+		}
+	}
 	KiteLogged = Kite.GetNoteTotal();
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: kite in slot %d: %d weak point(s), socket %s."), KiteSlot,
 		static_cast<int32>(Kite.GetWeakPoints().points.size()), UTF8_TO_TCHAR(FFTKiteHost::WeakPointSocket));
@@ -4438,6 +4674,7 @@ constexpr float kArenaAllySettle = 0.15f;     // m: closer than this to its plac
 
 void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 {
+	// Off by default, in every build; only the dev switches below turn carrying on (a shipping build keeps it off).
 	bCarry = bAllyOn = bTakeHalfAuto = bAutoBlock = false;
 	CarryChairKeys.Reset();
 	CarryChairs = ftcore::ArenaChairs();
@@ -4805,10 +5042,9 @@ void UFTArenaRunner::ResetTable()
 	TableBegins = TableRefusals = TableSets = TableMostBodies = TableStands = TableLeaves = 0;
 	TableGutters = TableFails = TableClears = TableShares = TableShareHp = 0;
 	TableKey.reset();
-	TableKeyBegins = TableKeyTaps = TableKeyCancels = TableKeyPresses = 0;
+	TableKeyBegins = TableKeyTaps = TableKeyCancels = TableKeyPresses = TableKeyDrops = 0;
 	TableSetSeconds = 0.0;
 	TableLastTick = -1.0;
-	TableKeyLastStep = -1.0;
 	if (TableActor)
 	{
 		TableActor->SetActorHiddenInGame(true);
@@ -4843,11 +5079,21 @@ bool UFTArenaRunner::BeginTableNow(double T)
 
 bool UFTArenaRunner::TableCanBegin() const
 {
+	return TableSetterFree() && TableCouldBegin();
+}
+
+bool UFTArenaRunner::TableCouldBegin() const
+{
 	ftcore::Load Held;
 	Held.value = Fight.load();
 	return TableClock.state() == ftcore::TableState::Ready && Fight.hp() > 0 && Fight.load() >= Fight.loadCap()
 		&& TablePlaces.full(Held) && TablePlaces.tableSeats() >= TableClock.tuning().minSeats
 		&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies;
+}
+
+bool UFTArenaRunner::TableSetterFree() const
+{
+	return ftcore::tableSetterFree(Fight.output().player.action);
 }
 
 void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
@@ -4857,26 +5103,31 @@ void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
 		return;
 	}
 	const double T = static_cast<double>(Fight.heldTime());
-	// Steps the key missed (idle, a scripted pilot): a hold from before them is dropped, not fired late.
-	if (TableKey.holding() && T - TableKeyLastStep > 0.1)
+	const bool bFree = TableSetterFree();
+	const bool bPossible = TableCouldBegin();
+	const ftcore::TableKeyStep S = TableKey.step(In.release, bReleaseDown, bFree, bPossible, T);
+	In.release = S.release;
+	if (S.why != ftcore::TableKeyDrop::None)
 	{
-		TableKey.reset();
+		const TCHAR* Why = S.why == ftcore::TableKeyDrop::Stale ? TEXT("steps were missed (stale)")
+			: S.why == ftcore::TableKeyDrop::Busy ? TEXT("the setter can't act (press swallowed)")
+			: TEXT("the table stopped being possible (passed on as a Release)");
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: table key hold dropped at %.2f s: %s."), T, Why);
+		if (S.why == ftcore::TableKeyDrop::Lost)
+		{
+			++TableKeyCancels;
+		}
+		else
+		{
+			++TableKeyDrops;
+		}
 	}
-	TableKeyLastStep = T;
-	switch (TableKey.step(In.release, bReleaseDown, TableCanBegin(), T))
+	switch (S.result)
 	{
-	case ftcore::TableHoldResult::Holding:
-		In.release = false;
-		break;
-	case ftcore::TableHoldResult::Cancelled:
-		In.release = false;
-		++TableKeyCancels;
-		break;
 	case ftcore::TableHoldResult::Begin:
 		// A refusal the checks above missed: the press goes to the fight as the Release it was.
 		if (BeginTableNow(T))
 		{
-			In.release = false;
 			++TableKeyBegins;
 		}
 		else
@@ -4886,7 +5137,6 @@ void UFTArenaRunner::StepTableKey(ftcore::ArenaInput& In)
 		}
 		break;
 	case ftcore::TableHoldResult::PassRelease:
-		In.release = true;
 		++TableKeyTaps;
 		break;
 	default:
@@ -4900,7 +5150,7 @@ ftcore::ArenaTableView UFTArenaRunner::GetTableView() const
 	{
 		return ftcore::ArenaTableView();
 	}
-	return ftcore::tableView(TableClock, TableSeats, TableKey, static_cast<double>(Fight.heldTime()));
+	return ftcore::tableView(TableClock, TableSeats, TableKey.hold(), static_cast<double>(Fight.heldTime()));
 }
 
 void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
@@ -4939,7 +5189,7 @@ void UFTArenaRunner::TickTable(const ftcore::ArenaOutput& Out)
 		{
 			Fight.giveLoad(Fight.loadCap() - Fight.load());
 		}
-		if (bTableAuto && Fight.load() >= Fight.loadCap()
+		if (bTableAuto && TableSetterFree() && Fight.load() >= Fight.loadCap()
 			&& TableSeats.wouldSit(Fight, Bodies, Bodies.player) >= kArenaTableMinBodies)
 		{
 			BeginTableNow(T);
@@ -5146,9 +5396,9 @@ void UFTArenaRunner::LogTable() const
 		return;
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d keyBegins %d keyTaps %d keyCancels %d setSeconds %.1f of %.1f state %s."),
+		TEXT("Arena: TABLE begins %d refusals %d sets %d mostBodies %d stood %d left %d guttered %d failed %d cleared %d shares %d shareHp %d keyBegins %d keyTaps %d keyCancels %d keyDrops %d setSeconds %.1f of %.1f state %s."),
 		TableBegins, TableRefusals, TableSets, TableMostBodies, TableStands, TableLeaves, TableGutters, TableFails, TableClears,
-		TableShares, TableShareHp, TableKeyBegins, TableKeyTaps, TableKeyCancels, TableSetSeconds,
+		TableShares, TableShareHp, TableKeyBegins, TableKeyTaps, TableKeyCancels, TableKeyDrops, TableSetSeconds,
 		static_cast<double>(Fight.heldTime()), TableStateName(TableClock.state()));
 }
 

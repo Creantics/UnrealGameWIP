@@ -394,6 +394,29 @@ TEST_CASE("brief kit: worked cases for each Brief") {
     }
 }
 
+TEST_CASE("brief kit: a kit value of 0 stays 0") {
+    const AllBriefs a = allBriefs();
+    REQUIRE(a.ok);
+    for (std::size_t i = 0; i < kBriefCount; ++i) {
+        BriefDef d = *a.table.find(static_cast<BriefId>(i));
+        d.kit.jumpLight.damage = 0;
+        d.kit.jumpLight.poiseDamage = 0.f;
+        d.kit.riposte.damage = 0;
+        d.kit.shot.damage = 0;
+        d.kit.shot.poiseDamage = 0.f;
+        for (int rating : {1, 10, 30}) {
+            CAPTURE(i);
+            CAPTURE(rating);
+            const ArenaFighter f = buildBriefKit(d, statsAt(d, rating)).fighter;
+            CHECK(f.jumpLight.damage == 0);
+            CHECK(f.jumpLight.poiseDamage == 0.f);
+            CHECK(f.riposte.damage == 0);
+            CHECK(f.shot.damage == 0);
+            CHECK(f.shot.poiseDamage == 0.f);
+        }
+    }
+}
+
 TEST_CASE("brief kit: the air light takes the Reach row like the heavy") {
     const AllBriefs a = allBriefs();
     REQUIRE(a.ok);

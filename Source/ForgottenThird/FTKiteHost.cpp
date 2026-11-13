@@ -84,6 +84,14 @@ void FFTKiteHost::AfterTick(const ftcore::ArenaEvents& Events)
 	bWasOpen = bOpen;
 }
 
+void FFTKiteHost::OnUnlocked(double At, double Seconds)
+{
+	if (IsActive() && IsLocked() && Seconds > 0.0)
+	{
+		OpenWindow(At, static_cast<float>(Seconds));
+	}
+}
+
 void FFTKiteHost::OpenWindow(double At, float Seconds)
 {
 	Crit.open(At, static_cast<double>(Seconds));
@@ -123,6 +131,11 @@ ftcore::ArenaBlowRuling FFTKiteHost::RuleLeadBlow(const ftcore::ArenaBlow& Blow)
 {
 	// Locked on (no aim point): the judge takes the best point whose gate the lead's side of the boss passes.
 	const double T = static_cast<double>(Blow.time);
+	if (IsLocked() && !LockSession->weakPointOpen())
+	{
+		OnHitTaken(false, T); // locked: the seam takes no crit, whatever opened the window
+		return ftcore::ArenaBlowRuling();
+	}
 	const ftcore::CritResult Result = Crit.judgeLockOn(Blow.from, Blow.at, BossFacing(), T);
 	ftcore::ArenaBlowRuling Ruling;
 	if (Result.crit)
