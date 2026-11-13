@@ -2583,6 +2583,39 @@ TEST_CASE("arena lock-on: after a roll away the rules face the target at once, t
     }
 }
 
+TEST_CASE("arena dodge: the drawn body turns into the roll over its first part instead of snapping") {
+    const ArenaFighter fighter = shortRoller();
+    Rig rig(fighter, {dummyKind()});
+    rig.in.view = Vec2{1.f, 0.f};
+    rig.in.lock = true;
+    rig.run(3);
+    REQUIRE(rig.fight.lock() == 0);
+    rig.in.lock = false;
+    const Vec2 before = rig.out().player.drawFacing;
+    rig.in.move = Vec2{-0.866f, 0.5f}; // 150 degrees off the target
+    rig.in.dodge = true;
+    rig.tick();
+    rig.in = ArenaInput{};
+    REQUIRE(rig.out().player.action == ArenaAction::Dodge);
+    const Vec2 way = rig.out().player.facing; // the rules face the roll's way at once
+    CHECK(angleBetween(way, Vec2{-0.866f, 0.5f}) < 0.01f);
+    const float most = 3.14159265f / (0.3f * fighter.dodgeTime) * kDt + 0.001f;
+    CHECK(angleBetween(before, rig.out().player.drawFacing) <= most); // the first frame turns, it does not snap
+    CHECK(angleBetween(rig.out().player.drawFacing, way) > 1.f);
+    Vec2 last = rig.out().player.drawFacing;
+    int ticks = 1;
+    while (angleBetween(rig.out().player.drawFacing, way) > 0.f && rig.out().player.action == ArenaAction::Dodge) {
+        const Vec2 f = rig.tick().player.drawFacing;
+        CHECK(angleBetween(last, f) <= most);
+        last = f;
+        ++ticks;
+    }
+    // into the roll's way within its first 30% (plus a frame), and before the roll ends
+    CHECK(rig.out().player.action == ArenaAction::Dodge);
+    CHECK(angleBetween(rig.out().player.drawFacing, way) == 0.f);
+    CHECK(static_cast<float>(ticks) * kDt <= 0.3f * fighter.dodgeTime + kDt + 1e-4f);
+}
+
 TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll away faces the target") {
     {   // a parry pressed on the first free frame after a 150 degree roll away catches the blow
         const float startup = 1.2f;

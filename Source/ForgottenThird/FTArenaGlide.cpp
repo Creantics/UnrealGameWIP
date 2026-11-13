@@ -42,7 +42,7 @@ void FFTArenaGlideProbe::Drawn(const ftcore::ArenaPlayerOut& P, double Now, floa
 	}
 	LastAction = P.action;
 	CycleSpeed = 100.f * LegSpeed;
-	const float Facing = FMath::Atan2(P.facing.y, P.facing.x);
+	const float Facing = FMath::Atan2(P.drawFacing.y, P.drawFacing.x); // the mesh's yaw, not the rules' snapped facing
 	const double Since = LastNow >= 0.0 ? Now - LastNow : 0.0;
 	const float Accel = Since > 0.0 ? static_cast<float>((LegSpeed - LastLeg) / Since) : 0.f;
 	const float Turn = Since > 0.0 ? static_cast<float>(FMath::Abs(FMath::FindDeltaAngleRadians(LastFacing, Facing)) / Since) : 0.f;

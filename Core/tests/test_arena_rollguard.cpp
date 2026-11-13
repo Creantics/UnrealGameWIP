@@ -1,6 +1,6 @@
-// A scripted fight that rolls away under lock and guards on the first free frame after, over and over: the rules'
-// facing has to face the target there (the drawn one may still be turning), so its outcome is the plain autopilot's
-// way of meeting such a player, the same build to build.
+// A scripted fight with no autopilot: the player locks, rolls 150 degrees off the lock as the locked enemy's swing
+// runs and guards on the first free frame after, over and over. The rules' facing has to face the target there (the
+// drawn one may still be turning back), so the swings are met; the totals are pinned below.
 #include "ftcore/ArenaFight.h"
 
 #include <doctest/doctest.h>
@@ -124,6 +124,11 @@ TEST_CASE("arena roll and guard script: the built-in fight, rolled away under lo
                                               << " s, hp " << o.hp << ", damage taken " << o.damageTaken << " over " << o.hitsTaken
                                               << " hits, blocks " << o.blocks << ", parries " << o.parries << ", rolls " << o.rolls);
     }
+    // Pinned to the rules' facing snapping to the lock on the first free frame (a build that guards along the drawn,
+    // still-turning body parries 230 and takes 17216 here): every swing rolled under is met, and most are parried.
+    CHECK(rolls > 1500);
+    CHECK(parries >= 440);
+    CHECK(damage <= 15500);
     MESSAGE("arena roll and guard: " << wins << "/128 won, damage taken " << damage << " over " << hits << " hits, blocks " << blocks
                                      << ", parries " << parries << ", rolls " << rolls);
 }

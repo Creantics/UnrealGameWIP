@@ -26,6 +26,7 @@ constexpr float kArenaEps = 1.0e-4f;       // lengths and times below this are z
 constexpr float kArenaTie = 1.0e-5f;       // scores closer than this tie (the nearer enemy wins)
 constexpr float kArenaRiposteDot = 0.5f;   // the riposte's enemy must be this far inside the facing
 constexpr float kArenaLockViewWeight = 0.7f; // lock-on score = 0.7 * alignment with the view + 0.3 * nearness (1 - d / lockRange)
+constexpr float kArenaDodgeTurnShare = 0.3f; // a roll's drawn body turns into its way over this share of dodgeTime, at most
 constexpr float kArenaLockNearWeight = 0.3f;
 constexpr int kArenaAutoHealPercent = 40;  // the autopilot heals below this share of its hp ...
 constexpr float kArenaAutoParryWindow = 0.12f; // ... and parries only with a window at least this long
@@ -1039,11 +1040,16 @@ struct ArenaFightImpl {
             break;
         }
         pl.velocity = vel;
-        // The drawn facing: an attack or a dodge is drawn as the rules face it (its own turn already eased or meant);
-        // anything else turns toward the rules' facing at turnRate, so a snap of theirs is drawn as a turn.
+        // The drawn facing: an attack is drawn as the rules face it (its own turn already eased); a roll turns the body
+        // into its way over the roll's first kArenaDodgeTurnShare (at least turnRate), so its start snap is drawn with the
+        // roll; anything else turns toward the rules' facing at turnRate, so a snap of theirs is drawn as a turn.
         const bool own = pl.action == ArenaAction::Light || pl.action == ArenaAction::Heavy || pl.action == ArenaAction::Riposte ||
-                         pl.action == ArenaAction::Release || pl.action == ArenaAction::Dodge;
-        pl.drawFacing = own || !(fi.turnRate > 0.f) ? pl.facing : arenaTurn(pl.drawFacing, pl.facing, fi.turnRate * dt);
+                         pl.action == ArenaAction::Release;
+        if (own || !(fi.turnRate > 0.f)) pl.drawFacing = pl.facing;
+        else if (pl.action == ArenaAction::Dodge)
+            pl.drawFacing = arenaTurn(pl.drawFacing, pl.facing,
+                                      std::max(fi.turnRate, kArenaPi / (kArenaDodgeTurnShare * std::max(fi.dodgeTime, dt))) * dt);
+        else pl.drawFacing = arenaTurn(pl.drawFacing, pl.facing, fi.turnRate * dt);
     }
 
     Vec2 advanceAttack(Vec2 stick, bool pushed, float a0, float a1) {

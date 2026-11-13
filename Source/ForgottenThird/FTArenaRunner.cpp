@@ -1837,6 +1837,8 @@ void UFTArenaRunner::StepFight()
 		else
 		{
 			bLeadAimDir = false;
+			// The rules' facing, not the drawn one: the shot goes where the rules aim it, so the arm may lead the body by a
+			// few frames of its turn.
 			LeadWeapons.SetAim(LeadChest + FVector(Out.player.facing.x, Out.player.facing.y, 0.0) * 100.0, false);
 		}
 		// Aimed with nothing locked: the shot, the bolt and the raised arm go at the reticle point.
