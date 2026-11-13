@@ -2411,6 +2411,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.DodgeLocal = FVector2D(Dir.x * F.x + Dir.y * F.y, Dir.y * F.x - Dir.x * F.y);
 			Pose.DodgeFraction = D.fighter.dodgeTime > 0.f ? P.actionTime / D.fighter.dodgeTime : 1.f;
 			Pose.DodgeTime = D.fighter.dodgeTime;
+			Pose.bDodgeBack = P.dodgeBack;
 			break;
 		}
 		case ftcore::ArenaAction::Guard:

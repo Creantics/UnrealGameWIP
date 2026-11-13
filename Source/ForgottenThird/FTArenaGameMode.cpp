@@ -768,6 +768,7 @@ void AFTArenaGameMode::Begin()
 void AFTArenaGameMode::HandBackStory()
 {
 	bStoryHandedBack = true;
+	UGameplayStatics::SetGlobalTimeDilation(this, 1.f); // whichever way the story goes on (or none), at normal speed
 	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	if (!GI || !GI->StoryCarry.bValid)
 	{
@@ -778,7 +779,6 @@ void AFTArenaGameMode::HandBackStory()
 	Carry.bWon = Runner && Runner->GetFight().phase() == ftcore::ArenaPhase::Victory;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: the story's fight on stage %s is %s; back to %s."), *Carry.Stage,
 		Carry.bWon ? TEXT("won") : TEXT("lost"), *Carry.ReturnMap);
-	UGameplayStatics::SetGlobalTimeDilation(this, 1.f); // whichever way the story goes on, at normal speed
 	if (FTStep::ContinueHere(this))
 	{
 		return; // the beat's next step plays on this map

@@ -14,6 +14,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <cstdio>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -816,8 +817,9 @@ TEST_CASE("every listed encounter is a real battle step of the script") {
     CHECK(scriptBattleSteps(s.db, d.table, real, absent));
     std::string absentList;
     for (const std::string& a : absent) absentList += (absentList.empty() ? "" : ", ") + a;
-    MESSAGE(absent.size() << " listed encounters in newer-draft scenes, not checked here: "
-                          << (absentList.empty() ? std::string("none") : absentList));
+    // A plain line, so it shows in a ctest run (a doctest MESSAGE shows only with -s or on a failure).
+    std::printf("ENCOUNTERS %zu listed in newer-draft scenes, not checked here: %s\n", absent.size(),
+                absentList.empty() ? "none" : absentList.c_str());
     CHECK(real.size() + absent.size() >= d.table.entries.size());
     for (const EncounterEntry& e : d.table.entries) {
         if (s.db.findScene(e.scene) == kNone) continue;

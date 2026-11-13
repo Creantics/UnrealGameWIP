@@ -67,6 +67,7 @@ struct FFTArenaPose
 	FVector2D DodgeLocal = FVector2D(-1.0, 0.0); // the roll's way in the figure's own frame (x forward)
 	float DodgeFraction = 0.f;
 	float DodgeTime = 0.f; // s: the whole roll (the land-roll clip is fitted to it)
+	bool bDodgeBack = false; // a locked dodge back from the target: drawn facing it with the squash (no back-hop clip yet)
 	float LeanBack = 0.f;  // degrees: hitstun, guard break, stagger, open
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
@@ -254,6 +255,7 @@ private:
 	bool bRollPlanFailed = false;
 	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
 	float RollLift = 0.f;
+	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
 	float RollFloorBall = 1e9f;
 	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
 	bool RollWithClip(const FFTArenaPose& Pose);
