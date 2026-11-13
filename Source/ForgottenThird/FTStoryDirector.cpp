@@ -1,6 +1,8 @@
 #include "FTStoryDirector.h"
 
 #include "Engine/World.h"
+#include "GameFramework/HUD.h"
+#include "GameFramework/PlayerController.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
@@ -101,6 +103,7 @@ void AFTStoryDirector::BeginPlay()
 				}
 			}
 			ShotPrefix = Prefix;
+			bShotNoHud = FParse::Param(Cmd, TEXT("StoryShotNoHud"));
 			ShotsLeft = ftcore::remainingStoryShots(Max, Story->StoryShotsTaken); // the count is per run, not per map
 			if (ShotsLeft == 0)
 			{
@@ -552,6 +555,14 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 	BeatAge += DeltaSeconds;
 	const bool bLine = Story->GetRunner().state() == StoryRunner::State::Line;
 #if !UE_BUILD_SHIPPING
+	if (bShotNoHud && ShotsLeft > 0)
+	{
+		APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+		if (PC && PC->MyHUD)
+		{
+			PC->MyHUD->bShowHUD = false; // the clean plate: no HUD in the still
+		}
+	}
 	if (!bFast && ShotsLeft > 0 && !ShotSpeakingModel.IsEmpty())
 	{
 		TickSpeakingShots();

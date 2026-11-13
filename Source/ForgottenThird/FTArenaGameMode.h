@@ -275,6 +275,7 @@ private:
 	// off; the camera placed a frame before each view.
 	bool bShotSide = false;
 	bool bShotWorld = false; // -ArenaShotWorld: the side views from a fixed world side, not the lead's
+	bool bShotUi = false;    // -ArenaShotUi: views through FScreenshotRequest with the UI (Slate included), window-sized
 	bool bSideAimed = false;
 	UPROPERTY()
 	TObjectPtr<AActor> StrikeCamera;

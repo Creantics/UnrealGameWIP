@@ -15,6 +15,8 @@
 #include "ftcore/Settings.h"
 #include "FTPauseOverlay.h"
 #include "FTInputBindings.h"
+#include "FTNewUi.h"
+#include "Engine/GameViewportClient.h"
 #include "FTUiText.h"
 #include "GameFramework/PlayerController.h"
 
@@ -1072,6 +1074,40 @@ void AFTArenaHUD::DrawEdgeCue(const UFTArenaRunner& Mode)
 	}
 }
 
+const UFTArenaRunner* AFTArenaHUD::FindRunner() const
+{
+	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
+	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
+	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
+	{
+		Mode = It->GetRunner();
+	}
+	return Mode;
+}
+
+void AFTArenaHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (FT::NewUiEnabled() && Viewport)
+	{
+		TWeakObjectPtr<const AFTArenaHUD> Self(this);
+		NewUiWidget = FT::MakeArenaHudWidget([Self]() -> const UFTArenaRunner* { return Self.IsValid() ? Self->FindRunner() : nullptr; });
+		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
+	}
+}
+
+void AFTArenaHUD::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (NewUiWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(NewUiWidget.ToSharedRef());
+	}
+	NewUiWidget.Reset();
+	Super::EndPlay(Reason);
+}
+
 void AFTArenaHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -1079,13 +1115,7 @@ void AFTArenaHUD::DrawHUD()
 	{
 		return;
 	}
-	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world).
-	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
-	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
-	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
-	{
-		Mode = It->GetRunner();
-	}
+	const UFTArenaRunner* Mode = FindRunner();
 	if (!Mode || !Mode->IsBegun())
 	{
 		FT::DrawPauseOverlay(*this, Canvas);
