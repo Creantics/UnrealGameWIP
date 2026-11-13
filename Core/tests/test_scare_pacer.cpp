@@ -211,7 +211,7 @@ TEST_CASE("scare pacer 11: the ring, the last kind and the seen moments survive 
     q.advance(7.0 * kMin);
     CHECK(q.canFire(ScareKind::Fight, ScareWorld::Lattice, true, scripted(13)));
 
-    // A save from before the pacer has none; a malformed one is refused.
+    // A save from before the pacer has none; a malformed one is dropped and the rest of the save loads.
     StorySave old;
     old.scene = "SC-A";
     REQUIRE(decodeStorySave(encodeStorySave(old), back, &err));
@@ -220,7 +220,10 @@ TEST_CASE("scare pacer 11: the ring, the last kind and the seen moments survive 
     const std::size_t at = bad.find("\"head\":");
     REQUIRE(at != std::string::npos);
     bad.replace(at, 8, "\"head\":9");
-    CHECK_FALSE(decodeStorySave(bad, back, &err));
+    REQUIRE(decodeStorySave(bad, back, &err));
+    CHECK_FALSE(back.hasScares);
+    CHECK(back.scaresDropped);
+    CHECK(back.scene == "SC-A");
     ScareSave neg = s.scares;
     neg.playSeconds = -1.0;
     CHECK_FALSE(q.load(neg));
@@ -323,4 +326,98 @@ TEST_CASE("scare pacer 16: the shipped placement table keeps every rule; a bad t
     CHECK(err.find("unknown key") != std::string::npos);
     CHECK_FALSE(importScarePlacements(R"({"version":1,"placements":[{"id":"scare_001","world":"lattice","kind":"scene","minute":1},{"id":"scare_001","world":"lattice","kind":"fight","minute":90}]})", t, &err));
     CHECK(err.find("duplicate") != std::string::npos);
+}
+
+TEST_CASE("scare pacer 17: a new pacer and a load start quiet without markQuiet") {
+    ScarePacer p;
+    CHECK_FALSE(p.canFire(ScareKind::Scene, ScareWorld::Solhaven, true, scripted(1)));
+    p.advance(kScareQuietSeconds - 1.0);
+    CHECK_FALSE(p.canFire(ScareKind::Scene, ScareWorld::Solhaven, true, scripted(1)));
+    p.advance(1.0);
+    CHECK(p.canFire(ScareKind::Scene, ScareWorld::Solhaven, true, scripted(1)));
+
+    ScarePacer q = fresh();
+    ScareSave s;
+    q.save(s);
+    ScarePacer r = fresh();
+    r.advance(60.0 * kMin);
+    REQUIRE(r.load(s));
+    CHECK_FALSE(r.canFire(ScareKind::Scene, ScareWorld::Solhaven, true, scripted(1)));
+    r.advance(kScareQuietSeconds);
+    CHECK(r.canFire(ScareKind::Scene, ScareWorld::Solhaven, true, scripted(1)));
+}
+
+TEST_CASE("scare pacer 18: load checks the ring against itself and clamps scares later than the clock") {
+    ScarePacer p = fresh();
+    p.play(ScareKind::Scene, ScareWorld::Solhaven, true, scripted(1));
+    p.advance(20.0 * kMin);
+    p.play(ScareKind::Fight, ScareWorld::Solhaven, true, scripted(2));
+    ScareSave s;
+    p.save(s);
+    REQUIRE(s.count == 2);
+    REQUIRE(s.head == 2);
+    ScarePacer q;
+    ScareSave bad = s;
+    bad.head = 5; // a ring of 2 is in slots 0 and 1, so the next slot is 2
+    CHECK_FALSE(q.load(bad));
+    bad = s;
+    bad.kinds[1] = ScareKind::Count; // a filled slot with no kind
+    CHECK_FALSE(q.load(bad));
+    bad = s;
+    bad.count = 8; // a full ring may have its head anywhere
+    for (std::size_t i = 2; i < kScareRing; ++i) bad.times[i] = 1.0, bad.kinds[i] = ScareKind::Map;
+    CHECK(q.load(bad));
+
+    // A scare dated an hour past the clock is clamped to the clock: the gap runs from the load, not from the future.
+    ScareSave future = s;
+    future.times[1] = s.playSeconds + 60.0 * kMin;
+    ScarePacer r;
+    REQUIRE(r.load(future));
+    CHECK(r.lastTime() == doctest::Approx(s.playSeconds));
+    r.advance(15.0 * kMin);
+    CHECK(r.canFire(ScareKind::Exploration, ScareWorld::Unwritten, true, scripted(3)));
+}
+
+TEST_CASE("scare pacer 19: a malformed or newer scares object is dropped; the rest of the save survives") {
+    StorySave s;
+    s.scene = "SC-A";
+    s.beat = 4;
+    s.clock.day = 3;
+    s.hasClock = true;
+    s.party.gold = 77;
+    fresh().save(s.scares);
+    s.hasScares = true;
+    const std::string text = encodeStorySave(s);
+    REQUIRE(text.find("\"scares\":{\"version\":1,") != std::string::npos);
+
+    const auto dropped = [&](std::string t, const char* from, const char* to) {
+        const std::size_t at = t.find(from);
+        REQUIRE(at != std::string::npos);
+        t.replace(at, std::string(from).size(), to);
+        StorySave back;
+        std::string err;
+        REQUIRE_MESSAGE(decodeStorySave(t, back, &err), err);
+        CHECK_FALSE(back.hasScares);
+        CHECK(back.scaresDropped);
+        CHECK_FALSE(back.scaresProblem.empty());
+        CHECK(back.scene == "SC-A");
+        CHECK(back.beat == 4);
+        CHECK(back.hasClock);
+        CHECK(back.clock.day == 3);
+        CHECK(back.party.gold == 77);
+    };
+    dropped(text, "\"version\":1", "\"version\":2");
+    dropped(text, "\"head\":0", "\"head\":3");
+    dropped(text, "\"playSeconds\":", "\"playSeconds\":\"x\",\"was\":");
+    dropped(text, "\"scares\":{", "\"scares\":7,\"old\":{");
+
+    // A save written before the version field reads as version 1.
+    std::string old = text;
+    old.replace(old.find("\"version\":1,"), 12, "");
+    StorySave back;
+    std::string err;
+    REQUIRE_MESSAGE(decodeStorySave(old, back, &err), err);
+    CHECK(back.hasScares);
+    CHECK_FALSE(back.scaresDropped);
+    CHECK(back.scares == s.scares);
 }
