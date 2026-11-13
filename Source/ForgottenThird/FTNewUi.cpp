@@ -708,6 +708,7 @@ public:
 		}
 		const bool bRebuildNow = bRebuild;
 		bRebuild = false;
+		AimA = Runner->GetAimAlpha();
 		const ftcore::ArenaFight& Fight = Runner->GetFight();
 		ftcore::ArenaHudFrame Frame = View.now;
 		ftcore::fillArenaHudLead(Fight, Frame.lead);
@@ -782,6 +783,7 @@ public:
 		PaintLead(P, Size);
 		PaintTop(P, Size);
 		PaintVerbs(P, Size);
+		PaintRounds(P, Size);
 		Mesh.Flush(Out, Layer + 1); // every line, mark and shade in one element under the words
 		return Layer + 3;
 	}
@@ -1146,12 +1148,56 @@ private:
 		return Rest > 0.01f ? FMath::Min(1.f, A / Rest) : A;
 	}
 
+	// The cylinder, by the crosshair (a guns kit only): one mark per chamber on a short arc to the reticle's right, top
+	// down, filled while loaded and a faint point once spent; a reload draws the accent along the same arc as it fills.
+	// Full while aiming; otherwise held at the rest alpha so the count is never lost.
+	void PaintRounds(const FPainter& P, const FVector2f& Size) const
+	{
+		const ftcore::ArenaHudLead& L = View.now.lead;
+		if (L.roundsMax == 0)
+		{
+			return;
+		}
+		const float S = P.S;
+		const float A = FMath::Max(AimA, FMath::Min(LeadFade.alpha, Table().Style.fade.restAlpha));
+		if (A <= 0.01f)
+		{
+			return;
+		}
+		const float CX = Size.X * 0.5f;
+		const float CY = Size.Y * 0.5f;
+		const float R = 30.f * S;
+		constexpr float Step = 15.f; // degrees between chambers
+		const float A0 = 90.f - Step * 0.5f * (L.roundsMax - 1);
+		const float A1 = 90.f + Step * 0.5f * (L.roundsMax - 1);
+		for (int32 I = 0; I < L.roundsMax; ++I)
+		{
+			float X;
+			float Y;
+			ftcore::uiArcPoint(CX, CY, R, A0 + Step * I, X, Y);
+			if (I < L.rounds)
+			{
+				Mesh.Dot(X, Y, 2.6f * S, Tok(UiToken::Ink, A));
+			}
+			else
+			{
+				Mesh.Dot(X, Y, 1.4f * S, Tok(UiToken::InkDim, 0.5f * A), false);
+			}
+		}
+		if (L.reload01 > 0.f)
+		{
+			ftcore::uiStrokeArc(Line, CX, CY, R + 8.f * S, A0 - Step * 0.5f, A1 + Step * 0.5f, StrokeStyle(1.2f, 61, S, 0.f), 0.f, FMath::Clamp(L.reload01, 0.f, 1.f));
+			Mesh.Stroke(Line, Tok(UiToken::Accent, A));
+		}
+	}
+
 	TFunction<const UFTArenaRunner*()> GetRunner;
 	ftcore::ArenaHudView View;
 	ftcore::UiFade LeadFade;
 	ftcore::UiFade TopFade;
 	ftcore::UiFade VerbFade;
 	FLostTrace HpLost;
+	float AimA = 0.f; // the aim stance's fade (the runner's), for the cylinder by the crosshair
 	FLostTrace TopLost;
 	FVerbSlot Verbs[4] = {{"input.guard"}, {"input.release"}, {"input.count"}, {"input.heal"}};
 	ftcore::InputDevice VerbDevice = ftcore::InputDevice::Keys;
