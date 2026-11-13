@@ -2036,8 +2036,9 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			// Taking half is a shared input: offered to the boss script's point (or the session's lock) as a shared blow.
 			if (Session)
 			{
-				Session->Get().offerKey(ftcore::kUnlockSharedBlow);
+				const ftcore::UnlockResult Unlock = Session->Get().offerKey(ftcore::kUnlockSharedBlow);
 				++CarrySharedOffers;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: take half offered a shared blow: unlock result %d."), static_cast<int32>(Unlock));
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: took half of enemy %d's blow (%d hp) at %.2f s."), static_cast<int32>(E.source),
 				E.amount, Fight.time());
@@ -4208,8 +4209,8 @@ void UFTArenaRunner::LogKiteNotes()
 namespace
 {
 constexpr int32 kArenaAllyHp = 135;           // the ally's hp in a carrying run
-constexpr float kArenaAllyBack = 2.f;         // m the ally stands behind the player...
-constexpr float kArenaAllySide = 1.5f;        // ... and to its left
+constexpr float kArenaAllyBack = 0.5f;        // m the ally stands behind the player... (beside it, so a blow that
+constexpr float kArenaAllySide = 2.f;         // ... and to its left                     reaches the player can reach it)
 constexpr float kArenaAllyPace = 0.8f;        // of the fighter's moveSpeed: how fast the ally follows
 constexpr float kArenaAllySettle = 0.15f;     // m: closer than this to its place, the ally stands
 }
