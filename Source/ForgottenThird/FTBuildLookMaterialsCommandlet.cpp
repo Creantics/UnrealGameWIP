@@ -149,8 +149,10 @@ return normalize(float3(-Grad.x, -Grad.y, 1.0));
 //    The waterline on the body: foam where the surface meets what stands in it (the depth behind it less than a
 //    hand's width along the view), a churned ring close around it, and the water darker just beyond.
 //  - Wake: the way the lead moves (xy), its speed (z, cm a second) and how much wake it draws (w, 0..1): two arms
-//    behind it at the angle a hull's make (about 20 degrees each side), each a crest and a fainter one inside it,
-//    short waves across between them, and a trail of foam down the middle, for as far as 2.8 s of travel.
+//    behind it at the angle a hull's make (about 20 degrees each side), each a crest and a fainter one inside it, a
+//    thin broken line of foam on each crest near the body and a soft pale trail close behind it, the crests for as far
+//    as 2.8 s of travel (4.5 m at most). The
+//    rings a moving body feeds keep their ripples (fainter) but draw no foam, so the V reads alone.
 const TCHAR* const kWaterReactCode = TEXT(R"HLSL(float2 ReactGrad = 0.0;
 float ReactFoam = 0.0;
 float ReactDark = 0.0;
@@ -173,15 +175,17 @@ float ReactDark = 0.0;
 		float RingFront = RingX - 0.3 * RingWide;
 		ReactFoam += RingAmp * exp(-RingFront * RingFront / (0.4 * RingWide * RingWide));
 	}
-	ReactGrad *= RingSlope;
+	float WakeOn = saturate(Wake.w);
+	ReactGrad *= RingSlope * (1.0 - 0.6 * WakeOn);
 	float Fleck = W.Noise(P / 2.6 + Time * float2(0.6, -0.4));
 	float Clump = W.Noise(P / 9.0 - Time * float2(0.2, 0.3));
-	// (The foam is thin: scattered flecks on the fronts, never a sheet.)
-	ReactFoam *= RingFoam * smoothstep(0.55, 0.95, Fleck);
+	// (The foam is thin: scattered flecks on the fronts, never a sheet; none while the body moves.)
+	ReactFoam *= RingFoam * smoothstep(0.55, 0.95, Fleck) * (1.0 - WakeOn);
 	float Wading = step(1.0, Lead.z);
 	float2 LeadRel = P - Lead.xy;
 	float LeadDst = length(LeadRel);
-	float LeadClose = Wading * (1.0 - smoothstep(Lead.z * 2.0, Lead.z * 4.5, LeadDst));
+	// Only at the body itself: a wall or a step a hand beyond its radius (a body on the shelf) takes no foam or dark.
+	float LeadClose = Wading * (1.0 - smoothstep(Lead.z * 1.1, Lead.z * 1.8, LeadDst));
 	float LeadGap = max(BehindDepth - EyeDepth, 0.0);
 	// The line where the surface meets the body: a thin line of foam (the water no more than a finger deep over the
 	// body along the view), in short lengths with gaps between them, thick and thin, never still; and just outside it
@@ -202,33 +206,35 @@ float ReactDark = 0.0;
 		float2 WakeSide = float2(-WakeDir.y, WakeDir.x);
 		float WakeBack = -dot(LeadRel, WakeDir);
 		float WakeOff = dot(LeadRel, WakeSide);
-		float WakeLen = max(2.8 * Wake.z, 90.0);
+		float WakeLen = clamp(2.8 * Wake.z, 90.0, 450.0);
 		float WakeTail = saturate(1.0 - WakeBack / WakeLen) * smoothstep(-30.0, 10.0, WakeBack);
 		const float TanK = 0.36;
 		float Arm = abs(WakeOff) - (WakeBack + 25.0) * TanK;
 		float ArmW = 6.0 + 0.045 * max(WakeBack, 0.0);
 		float ArmEnv = exp(-Arm * Arm / (ArmW * ArmW));
 		float2 ArmN = normalize((WakeOff >= 0.0 ? WakeSide : -WakeSide) + TanK * WakeDir);
-		float Feather = lerp(0.55, 1.0, W.Noise(float2(WakeBack / 14.0, WakeOff / 30.0) + Time * 0.3));
-		float Push = WakeSlope * Wake.w * WakeTail;
+		float Feather = lerp(0.7, 1.0, W.Noise(float2(WakeBack / 40.0, WakeOff / 60.0) + Time * 0.2));
+		// One crest an arm, lower as it spreads. (A second crest inside each arm caught the sun as a second line: from
+		// above the V read as a fan of four rays.)
+		float Push = WakeSlope * Wake.w * WakeTail * exp(-max(WakeBack, 0.0) / 260.0);
 		ReactGrad += ArmN * (Push * Feather * ArmEnv * sin(Arm * 2.6 / ArmW));
-		float Arm2 = Arm + 3.2 * ArmW;
-		ReactGrad += ArmN * (0.5 * Push * exp(-Arm2 * Arm2 / (ArmW * ArmW)) * sin(Arm2 * 2.6 / ArmW));
-		float Between = 1.0 - smoothstep(-ArmW, ArmW, Arm);
-		float Cross = max(0.42 * Wake.z, 16.0);
-		ReactGrad -= WakeDir * (0.4 * Push * Between * sin(WakeBack * 6.2832 / Cross) * smoothstep(0.0, 40.0, WakeBack));
+		// (No waves across between the arms: from above they read as a ladder. No field of flecks: a thin line on each
+		// crest, broken into lengths, white near the body and gone within about 2 m, the crests going on without it; a
+		// white line the whole length read as a beam of light.)
+		float ArmBreak = lerp(0.3, 1.0, smoothstep(0.35, 0.65, W.Noise(float2(WakeBack / 22.0, WakeOff / 22.0) + Time * float2(0.4, 0.3))));
+		float ArmLine = exp(-Arm * Arm / (0.12 * ArmW * ArmW)) * smoothstep(-25.0, 15.0, WakeBack) * exp(-max(WakeBack, 0.0) / 110.0) * ArmBreak;
 		float TrailW = 12.0 + 0.1 * max(WakeBack, 0.0);
-		float Trail = exp(-WakeOff * WakeOff / (TrailW * TrailW)) * WakeTail * smoothstep(0.0, 25.0, WakeBack);
-		ReactFoam += WakeFoam * Wake.w * (Trail * smoothstep(0.6, 0.97, Fleck) + 0.7 * ArmEnv * WakeTail * smoothstep(0.6, 0.95, Fleck));
+		float Trail = exp(-WakeOff * WakeOff / (TrailW * TrailW)) * smoothstep(0.0, 25.0, WakeBack) * (1.0 - smoothstep(40.0, 180.0, WakeBack));
+		ReactFoam += WakeFoam * Wake.w * WakeTail * (ArmLine * Feather + 0.35 * Trail);
 	}
 }
 )HLSL");
 
 // The water's medium: the look's coefficients are per metre, the engine's per centimetre. Dark (the surface's DarkOut,
-// 0..1) is the dark band where the water meets a body: up to 0.14 more absorption a centimetre, so what stands in the
-// water a hand's width behind the surface is seen darkened.
+// 0..1) is the shade where the water meets a body: up to 0.06 more absorption a centimetre, so what stands in the
+// water a hand's width behind the surface is seen a little darker (at 0.14 it read near black at 2 m).
 const TCHAR* const kWaterMediumCode = TEXT(R"HLSL(ScatterOut = max(Scatter.rgb, 0.0) * 0.01 * max(Clear, 0.0);
-return max(Absorb.rgb, 0.0) * 0.01 * max(Clear, 0.0) + 0.14 * saturate(Dark);
+return max(Absorb.rgb, 0.0) * 0.01 * max(Clear, 0.0) + 0.06 * saturate(Dark);
 )HLSL");
 
 // The wet stone: a photographed surface laid on the world position along each face's main axis (the floor's from above,
@@ -922,8 +928,8 @@ UMaterialParameterCollection* BuildWaterCollection()
 	PutVector(TEXT("Sun"), FLinearColor(0.f, 0.f, 1.f, 0.f));
 	PutScalar(TEXT("RingSlope"), 0.5f);
 	PutScalar(TEXT("RingFoam"), 0.35f);
-	PutScalar(TEXT("ContactFoam"), 0.75f);
-	PutScalar(TEXT("ContactDark"), 0.85f);
+	PutScalar(TEXT("ContactFoam"), 0.5f);
+	PutScalar(TEXT("ContactDark"), 0.6f);
 	// A canal's own: how much of the look's absorption and scattering its water keeps (so its bed shows through a
 	// metre of it and the deep middle goes dark), its specks, its ripples and cat's paws; the sea's share likewise;
 	// the sun's net on a bed seen from above.
@@ -934,7 +940,7 @@ UMaterialParameterCollection* BuildWaterCollection()
 	PutScalar(TEXT("SeaClear"), 0.45f);
 	PutScalar(TEXT("BedCaustic"), 0.9f);
 	PutScalar(TEXT("WakeSlope"), 0.45f);
-	PutScalar(TEXT("WakeFoam"), 0.22f);
+	PutScalar(TEXT("WakeFoam"), 0.4f);
 	Collection->PostEditChange();
 	return Collection;
 }

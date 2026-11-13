@@ -2962,7 +2962,7 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 
 void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 {
-	if (!(Wet.wetness > 0.f) && !(WetShown > 0.f))
+	if (!(Wet.wetness > 0.f) && !(WetShown > 0.f) && !(Wet.silt > 0.f) && !(WetSiltShown > 0.f))
 	{
 		return;
 	}
@@ -2987,21 +2987,21 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 				}
 			}
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Water: wetness goes to %d dynamic materials on %d skeletal meshes (Wetness, WetLineZ, WetLineSoft, WetDrip)."),
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: wetness goes to %d dynamic materials on %d skeletal meshes (Wetness, WetLineZ, WetLineSoft, WetSilt)."),
 			WetMaterials.Num(), Meshes.Num());
 	}
 	// The line is kept over the feet, so it travels with the body; it is written when it has moved a centimetre.
 	const float LineZ = static_cast<float>(GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight()) + Wet.line * 100.f;
 	const bool bWet = FMath::Abs(Wet.wetness - WetShown) > 0.004f || (Wet.wetness <= 0.f && WetShown > 0.f);
 	const bool bLine = FMath::Abs(LineZ - WetLineShown) > 1.f;
-	const bool bDrip = FMath::Abs(Wet.drip - WetDripShown) > 0.02f || (Wet.drip <= 0.f && WetDripShown > 0.f);
-	if (!bWet && !bLine && !bDrip)
+	const bool bSilt = Wet.silt != WetSiltShown;
+	if (!bWet && !bLine && !bSilt)
 	{
 		return;
 	}
 	static const FName WetnessName(TEXT("Wetness"));
 	static const FName LineName(TEXT("WetLineZ"));
-	static const FName DripName(TEXT("WetDrip"));
+	static const FName SiltName(TEXT("WetSilt"));
 	for (UMaterialInstanceDynamic* Dynamic : WetMaterials)
 	{
 		if (!Dynamic)
@@ -3016,14 +3016,14 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 		{
 			Dynamic->SetScalarParameterValue(LineName, LineZ);
 		}
-		if (bDrip)
+		if (bSilt)
 		{
-			Dynamic->SetScalarParameterValue(DripName, Wet.drip);
+			Dynamic->SetScalarParameterValue(SiltName, Wet.silt);
 		}
 	}
 	WetShown = bWet ? Wet.wetness : WetShown;
 	WetLineShown = bLine ? LineZ : WetLineShown;
-	WetDripShown = bDrip ? Wet.drip : WetDripShown;
+	WetSiltShown = Wet.silt;
 }
 
 bool AFTExploreCharacter::TryLadderClimb(bool bPressed)

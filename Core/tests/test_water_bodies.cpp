@@ -525,26 +525,23 @@ TEST_CASE("water stir: splash on entry by fall speed, wake while moving, idle ri
     CHECK_FALSE(e.left);
 }
 
-TEST_CASE("water wetness: soaked to the line, dries in about 90 s, drips a few seconds") {
+TEST_CASE("water wetness: soaked to the line, dries in about 90 s") {
     WaterWetness wet;
     wet.step(0.f, 1.8f, 1.f);
     CHECK(wet.wetness == 0.f);
     wet.step(1.1f, 1.8f, 0.1f);
     CHECK(wet.wetness == doctest::Approx(1.f));
     CHECK(wet.line == doctest::Approx(1.1f));
-    CHECK(wet.drip == doctest::Approx(1.f));
     // Shallower water does not lower a line that is still wet.
     wet.step(0.4f, 1.8f, 0.1f);
     CHECK(wet.line == doctest::Approx(1.1f));
     // A full dunk carries it over the head, no further.
     wet.step(5.f, 1.8f, 0.1f);
     CHECK(wet.line == doctest::Approx(2.0f));
-    // Out: drips end in kWaterDripTime, the wetness in kWaterDryTime.
+    // Out: the wetness ends in kWaterDryTime.
     for (int i = 0; i < 30; ++i) wet.step(0.f, 1.8f, 0.1f);
-    CHECK(wet.drip == doctest::Approx(0.5f).epsilon(0.02));
     CHECK(wet.wetness == doctest::Approx(1.f - 3.f / kWaterDryTime).epsilon(0.001));
     for (int i = 0; i < 40; ++i) wet.step(0.f, 1.8f, 0.1f);
-    CHECK(wet.drip == 0.f);
     CHECK(wet.line == doctest::Approx(2.0f));
     for (int i = 0; i < 430; ++i) wet.step(0.f, 1.8f, 0.1f);
     CHECK(wet.wetness > 0.4f);
@@ -560,6 +557,32 @@ TEST_CASE("water wetness: soaked to the line, dries in about 90 s, drips a few s
     CHECK(wet.wetness == doctest::Approx(1.f - 60.f / kWaterDryTime));
     wet.step(0.f, 1.8f, 100.f);
     CHECK(wet.wetness == 0.f);
+    CHECK(wet.line == 0.f);
+}
+
+TEST_CASE("water wetness: the silt is set on immersion by the water's kind, stays as it dries, the next water replaces it") {
+    CHECK(waterSilt(WaterKind::Canal) == doctest::Approx(0.6f));
+    CHECK(waterSilt(WaterKind::Sea) == doctest::Approx(0.15f));
+    CHECK(waterSilt(WaterKind::Pool) == 0.f);
+    WaterWetness wet;
+    wet.step(1.2f, 1.8f, 0.1f, 1.f, waterSilt(WaterKind::Canal));
+    CHECK(wet.silt == doctest::Approx(0.6f));
+    // Out of the water a silt passed in is not taken: only immersion sets it.
+    wet.step(0.f, 1.8f, 0.1f, 1.f, waterSilt(WaterKind::Sea));
+    CHECK(wet.silt == doctest::Approx(0.6f));
+    // Dry: the stain and its line stay.
+    for (int i = 0; i < 1000; ++i) wet.step(0.f, 1.8f, 0.1f);
+    CHECK(wet.wetness == 0.f);
+    CHECK(wet.silt == doctest::Approx(0.6f));
+    CHECK(wet.line == doctest::Approx(1.2f));
+    // The sea next: its silt replaces the canal's.
+    wet.step(0.5f, 1.8f, 0.1f, 1.f, waterSilt(WaterKind::Sea));
+    CHECK(wet.silt == doctest::Approx(0.15f));
+    CHECK(wet.line == doctest::Approx(0.5f));
+    // A clean pool washes it out; dry then, the line goes too.
+    wet.step(0.5f, 1.8f, 0.1f, 1.f, waterSilt(WaterKind::Pool));
+    CHECK(wet.silt == 0.f);
+    wet.step(0.f, 1.8f, 100.f);
     CHECK(wet.line == 0.f);
 }
 

@@ -167,19 +167,18 @@ void UFTWaterSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Water: %d ways out (%d ladders, %d flights of steps); a jump at any other wall is the fallback."),
 			static_cast<int32>(Water.exitCount()), Ladders, static_cast<int32>(Water.exitCount()) - Ladders);
-		// What the surfaces read (rings, the lead, the sun under water) and the two effects; each is done without if missing.
+		// What the surfaces read (rings, the lead, the sun under water) and the splash; each is done without if missing.
 		const FString Path = FTScene::LookWaterCollection;
 		SurfaceParams = LoadObject<UMaterialParameterCollection>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		SplashSystem = LoadObject<UNiagaraSystem>(nullptr, *UFTVfxComponent::SystemPath(TEXT("water_splash")), nullptr, LOAD_NoWarn | LOAD_Quiet);
-		DripSystem = LoadObject<UNiagaraSystem>(nullptr, *UFTVfxComponent::SystemPath(TEXT("water_drips")), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		if (!SurfaceParams)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("Water: %s is missing (FTBuildLookMaterials -Water builds it); no rings, wake or light shafts."),
 				FTScene::LookWaterCollection);
 		}
-		if (!SplashSystem || !DripSystem)
+		if (!SplashSystem)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("Water: no water_splash or water_drips effect (FTBuildVfx -Only=water_splash, then -Only=water_drips, builds them)."));
+			UE_LOG(LogForgottenThird, Warning, TEXT("Water: no water_splash effect (FTBuildVfx -Only=water_splash builds it)."));
 		}
 	}
 }
@@ -370,8 +369,9 @@ void UFTWaterSubsystem::LeadWater(AActor& Lead, const ftcore::WaterState& State,
 	const float Fall = FMath::Max(LeadFall, FallNow);
 	const ftcore::WaterStirEvents Event = Stir.step(Rings, State, P, V, Fall, DeltaSeconds);
 	LeadFall = bIn ? 0.f : FallNow;
-	Wet.step(bIn ? State.immersion : 0.f, Height * 0.01f, DeltaSeconds);
-	const FName Kind(State.body >= 0 ? ANSI_TO_TCHAR(ftcore::waterKindName(Water.body(static_cast<std::size_t>(State.body)).kind)) : TEXT("none"));
+	const ftcore::WaterKind BodyKind = State.body >= 0 ? Water.body(static_cast<std::size_t>(State.body)).kind : ftcore::WaterKind::Pool;
+	Wet.step(bIn ? State.immersion : 0.f, Height * 0.01f, DeltaSeconds, 1.f, ftcore::waterSilt(BodyKind));
+	const FName Kind(State.body >= 0 ? ANSI_TO_TCHAR(ftcore::waterKindName(BodyKind)) : TEXT("none"));
 	UWorld* World = GetWorld();
 	if (Event.entered)
 	{
@@ -393,8 +393,8 @@ void UFTWaterSubsystem::LeadWater(AActor& Lead, const ftcore::WaterState& State,
 	}
 	if (Event.left)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Water: the lead is out, wet to %.2f m over its feet; dripping %.0f s, dry in about %.0f s."), Wet.line,
-			ftcore::kWaterDripTime, ftcore::kWaterDryTime);
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: the lead is out, wet to %.2f m over its feet, silt %.2f; dry in about %.0f s."), Wet.line, Wet.silt,
+			ftcore::kWaterDryTime);
 		OnLeadWaterExit.Broadcast(Wet.line, LeadKind);
 	}
 	const uint8 Mode = static_cast<uint8>(State.mode);
@@ -425,28 +425,5 @@ void UFTWaterSubsystem::LeadWater(AActor& Lead, const ftcore::WaterState& State,
 			WakeWay = Way;
 		}
 		WakeSpeed = FMath::FInterpTo(WakeSpeed, Event.speed * 100.f, DeltaSeconds, 4.f);
-	}
-	// The drips: on the lead for some seconds after it leaves the water.
-	if (Drips && Drips->GetOwner() != &Lead)
-	{
-		Drips->DestroyComponent();
-		Drips = nullptr;
-	}
-	const bool bDrip = !bIn && Wet.drip > 0.05f;
-	if (bDrip && !Drips && DripSystem && Lead.GetRootComponent())
-	{
-		Drips = UNiagaraFunctionLibrary::SpawnSystemAttached(DripSystem, Lead.GetRootComponent(), NAME_None, FVector(0.0, 0.0, 15.0), FRotator::ZeroRotator,
-			EAttachLocation::KeepRelativeOffset, false, true);
-	}
-	else if (Drips && bDrip != Drips->IsActive())
-	{
-		if (bDrip)
-		{
-			Drips->Activate(true);
-		}
-		else
-		{
-			Drips->Deactivate();
-		}
 	}
 }

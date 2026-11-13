@@ -233,7 +233,8 @@ FTCORE_API float waterSwimFeetZ(float surface, float t);
 //     its sway. It is moving from kWaterWakeSpeed up and stays so until it slows under kWaterWakeStop, so a speed
 //     that hovers at the line does not flicker between the two.
 //   - Wetness: what was under the surface is soaked (1) up to a line measured from the feet; out of the water it dries
-//     in kWaterDryTime s (times `dryScale`: over 1 in sun and wind, 0 in rain), and drips for kWaterDripTime s.
+//     in kWaterDryTime s (times `dryScale`: over 1 in sun and wind, 0 in rain). The water's silt (waterSilt) is taken
+//     on at each immersion and stays as the body dries, a stain up to the line, until the next immersion replaces it.
 
 inline constexpr std::size_t kWaterRippleCount = 8;
 inline constexpr float kWaterSplashFall = 6.f;    // m/s down: a full splash
@@ -247,7 +248,6 @@ inline constexpr float kWaterWakeLife = 0.9f;     // s: six of them and a splash
 inline constexpr float kWaterIdleEvery = 1.1f;    // s between a stander's rings
 inline constexpr float kWaterIdleLife = 2.2f;     // s
 inline constexpr float kWaterDryTime = 90.f;      // s from soaked to dry
-inline constexpr float kWaterDripTime = 6.f;      // s of drips after leaving
 
 struct WaterRing {
     Vec2 p{};
@@ -304,13 +304,16 @@ private:
 
 // An entry's strength for a fall at `fallSpeed` m/s (0 or more).
 FTCORE_API float waterSplashStrength(float fallSpeed);
+// How dirty a kind's water leaves what was in it, 0..1: a canal 0.6, a lake 0.35, the sea 0.15, a pool 0.
+FTCORE_API float waterSilt(WaterKind kind);
 
 struct WaterWetness {
     float wetness = 0.f; // 0..1 of the soaked part
-    float line = 0.f;    // m over the feet: the highest waterline that is still wet
-    float drip = 0.f;    // 0..1: just out of the water
-    // One step: `immersion` m of the body under the surface now (0 out of the water), a body `height` m tall.
-    FTCORE_API void step(float immersion, float height, float dt, float dryScale = 1.f);
+    float line = 0.f;    // m over the feet: the highest waterline that is still wet, or that left the stain
+    float silt = 0.f;    // 0..1: the stain of the water last in; it does not dry
+    // One step: `immersion` m of the body under the surface now (0 out of the water), a body `height` m tall, in water
+    // of that `waterSilt` (taken only while immersed).
+    FTCORE_API void step(float immersion, float height, float dt, float dryScale = 1.f, float waterSilt = 0.f);
 };
 
 } // namespace ftcore

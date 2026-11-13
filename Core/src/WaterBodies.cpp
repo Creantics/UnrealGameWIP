@@ -31,6 +31,16 @@ const char* waterKindName(WaterKind kind) {
     return "water";
 }
 
+float waterSilt(WaterKind kind) {
+    switch (kind) {
+    case WaterKind::Canal: return 0.6f;
+    case WaterKind::Lake: return 0.35f;
+    case WaterKind::Sea: return 0.15f;
+    case WaterKind::Pool: return 0.f;
+    }
+    return 0.f;
+}
+
 const char* waterModeName(WaterMode mode) {
     switch (mode) {
     case WaterMode::Dry: return "dry";
@@ -436,7 +446,7 @@ WaterStirEvents WaterStir::step(WaterRipples& rings, const WaterState& state, Ve
     return e;
 }
 
-void WaterWetness::step(float immersion, float height, float dt, float dryScale) {
+void WaterWetness::step(float immersion, float height, float dt, float dryScale, float waterSilt) {
     const float passed = std::max(dt, 0.f);
     if (immersion > 0.f && std::isfinite(immersion)) {
         // A full dunk carries the line over the head.
@@ -444,14 +454,13 @@ void WaterWetness::step(float immersion, float height, float dt, float dryScale)
         // What was wet higher up stays in the line while it is still more wet than dry.
         line = wetness >= 0.5f ? std::max(line, reach) : reach;
         wetness = 1.f;
-        drip = 1.f;
+        silt = std::isfinite(waterSilt) ? std::clamp(waterSilt, 0.f, 1.f) : 0.f;
         return;
     }
-    drip = std::max(drip - passed / kWaterDripTime, 0.f);
     wetness = std::max(wetness - passed * std::max(dryScale, 0.f) / kWaterDryTime, 0.f);
-    if (!(wetness > 0.f)) {
+    // A stain keeps its line once dry: the tide line shows most then.
+    if (!(wetness > 0.f) && !(silt > 0.f)) {
         line = 0.f;
-        drip = 0.f;
     }
 }
 

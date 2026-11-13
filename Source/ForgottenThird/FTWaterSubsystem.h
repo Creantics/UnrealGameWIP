@@ -8,11 +8,12 @@
 // waterline per pixel, so a half-sunk view is fogged below the line only. The volume is off while the view is dry.
 //
 // The water answers the lead (LeadWater, told by the lead each tick): an entry splashes (by the fall's speed), a body
-// in it sends rings out where it stands and a wake where it moves, and one that leaves drips for some seconds. The
+// in it sends rings out where it stands and a wake where it moves, and one that leaves is wet (and stained by the
+// water's silt) until it dries; its clothes show it and its feet leave wet prints (the lead's). No drips are spawned. The
 // rings are ftcore::WaterRipples' last eight; they, the lead's place, its wake and the sun's way under water go to the
 // water collection (FTScene::LookWaterCollection) each frame, which every water surface and the underwater view read,
-// so any number of water planes show them at no cost per plane. The splash and the drips are the effects
-// "water_splash" and "water_drips" (Data/Vfx, FTBuildVfx).
+// so any number of water planes show them at no cost per plane. The splash is the effect "water_splash" (Data/Vfx,
+// FTBuildVfx).
 //
 // The sound hooks: OnCameraWater fires when the eye goes under a surface and when it comes back out, with its depth in
 // metres and the body's kind ("canal", "pool", "lake", "sea"); CameraDepth() is the depth at any time. OnLeadSplash
@@ -37,7 +38,6 @@ class ADirectionalLight;
 class APostProcessVolume;
 class UMaterialInstanceDynamic;
 class UMaterialParameterCollection;
-class UNiagaraComponent;
 class UNiagaraSystem;
 
 // One body as the map keeps it (the engine's frame, metres): ftcore::WaterBody's fields.
@@ -126,9 +126,9 @@ public:
 	float WaterTime() const;
 
 	// The lead's water this tick: its state (dry too), its place (cm), its velocity (cm/s) and its height
-	// (cm). Splashes, feeds the rings, starts and stops the drips, keeps its wetness and fires the lead's hooks.
+	// (cm). Splashes, feeds the rings, keeps its wetness and silt and fires the lead's hooks.
 	void LeadWater(AActor& Lead, const ftcore::WaterState& State, const FVector& At, const FVector& Velocity, float Height, float DeltaSeconds);
-	// How wet the lead is (the wetness, the line's height over its feet in metres, the drip).
+	// How wet the lead is (the wetness, the line's height over its feet in metres, the silt).
 	const ftcore::WaterWetness& LeadWetness() const { return Wet; }
 	const ftcore::WaterRipples& Ripples() const { return Rings; }
 
@@ -187,9 +187,5 @@ private:
 	TObjectPtr<UMaterialParameterCollection> SurfaceParams;
 	UPROPERTY()
 	TObjectPtr<UNiagaraSystem> SplashSystem;
-	UPROPERTY()
-	TObjectPtr<UNiagaraSystem> DripSystem;
-	UPROPERTY()
-	TObjectPtr<UNiagaraComponent> Drips;
 	TWeakObjectPtr<ADirectionalLight> Sun;
 };
