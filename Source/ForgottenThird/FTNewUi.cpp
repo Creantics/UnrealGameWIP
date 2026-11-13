@@ -12,6 +12,7 @@
 #include "ftcore/UiStyle.h"
 #include "ftcore/UiViews.h"
 
+#include "Algo/BinarySearch.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Engine/World.h"
 #include "Fonts/FontMeasure.h"
@@ -1133,6 +1134,11 @@ private:
 
 bool IsLowSurrogateUnit(TCHAR C) { return C >= 0xDC00 && C <= 0xDFFF; }
 
+#if !UE_BUILD_SHIPPING
+// -UiChoiceShot placeholders (non-shipping stills only; the script has no choice beats yet). The last cannot be taken.
+const TCHAR* const kFakeOptions[3] = {TEXT("1   First option"), TEXT("2   Second option"), TEXT("3   A locked option")};
+#endif
+
 class SFTDialogue : public SLeafWidget
 {
 public:
@@ -1173,6 +1179,62 @@ public:
 		{
 			Rewrap(*D, Size, Scale);
 		}
+		// Line arrival: each codepoint's time out, so the words come up by alpha behind the reveal.
+		if (ArrivalSerial != D->GetBeatSerial())
+		{
+			ArrivalSerial = D->GetBeatSerial();
+			ArriveAt.Init(TNumericLimits<float>::Max(), CpToUnit.Num()); // once per beat
+			SeenRevealed = 0;
+		}
+		const int32 Revealed = FMath::Min(static_cast<int32>(View.revealedChars), ArriveAt.Num());
+		for (int32 I = SeenRevealed; I < Revealed; ++I)
+		{
+			ArriveAt[I] = Time;
+		}
+		SeenRevealed = FMath::Max(SeenRevealed, Revealed);
+
+		// The options: the beat's own, or (non-shipping -UiChoiceShot, for stills while the script has no choices)
+		// three placeholders under any finished line.
+		OptionRows = 0;
+		bFakeOptions = false;
+		if (View.kind == ftcore::DialogueViewKind::Choice && D->GetPresenter().optionsVisible())
+		{
+			OptionRows = FMath::Min(static_cast<int32>(View.optionCount), D->GetOptions().Num());
+		}
+#if !UE_BUILD_SHIPPING
+		static const bool bChoiceShot = FParse::Param(FCommandLine::Get(), TEXT("UiChoiceShot"));
+		if (bChoiceShot && View.kind == ftcore::DialogueViewKind::Line && View.complete)
+		{
+			OptionRows = UE_ARRAY_COUNT(kFakeOptions);
+			bFakeOptions = true;
+		}
+#endif
+		if (OptionRows > 0 && OptionsFor != (ArrivalSerial ^ (bFakeOptions ? 0x80000000u : 0u)))
+		{
+			OptionsFor = ArrivalSerial ^ (bFakeOptions ? 0x80000000u : 0u);
+			OptionW = 0.f;
+			for (int32 I = 0; I < OptionRows; ++I)
+			{
+				OptionW = FMath::Max(OptionW, TextWidth(OptionText(*D, I), OptionFont));
+			}
+		}
+		// Where the options hang: beside the person answered, projected each frame.
+		bAnchor = false;
+		FVector Head;
+		const UWorld* World = D->GetWorld();
+		const APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+		if (OptionRows > 0 && PC && D->GetAnsweredHead(Head))
+		{
+			int32 VX = 0;
+			int32 VY = 0;
+			PC->GetViewportSize(VX, VY);
+			FVector2D Px;
+			if (VX > 0 && VY > 0 && PC->ProjectWorldLocationToScreen(Head, Px, true))
+			{
+				AnchorUV = FVector2f(static_cast<float>(Px.X / VX), static_cast<float>(Px.Y / VY));
+				bAnchor = AnchorUV.X > 0.05f && AnchorUV.X < 0.95f && AnchorUV.Y > 0.08f && AnchorUV.Y < 0.75f;
+			}
+		}
 	}
 
 	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
@@ -1189,9 +1251,9 @@ public:
 		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f)};
 		const float S = P.S;
 		const FString& Text = D->GetText();
-		const bool bOptions = View.kind == ftcore::DialogueViewKind::Choice && D->GetPresenter().optionsVisible();
-		const int32 OptionRows = bOptions ? FMath::Min(static_cast<int32>(View.optionCount), D->GetOptions().Num()) : 0;
-		const float BlockH = LineH * (Lines.Num() + OptionRows + (OptionRows > 0 ? 0.4f : 0.f));
+		// Anchored options stand beside the person; otherwise they sit under the line in the same block.
+		const int32 BelowRows = bAnchor ? 0 : OptionRows;
+		const float BlockH = LineH * (Lines.Num() + BelowRows + (BelowRows > 0 ? 0.4f : 0.f));
 		const float Bottom = Size.Y - 96.f * S;
 		const float Top = Bottom - BlockH;
 		const float CX = Size.X * 0.5f;
@@ -1211,27 +1273,70 @@ public:
 			}
 			X += Lead;
 			const int32 End = FMath::Min(Lines[I].Y, RevealedUnits);
-			P.Text(X, Y, Text, TextFont, Body, Lines[I].X, End);
+			PaintArriving(P, X, Y, Text, Lines[I].X, End, Body);
 			LastRight = X + LineW[I];
 		}
+		Mesh.Begin(Geometry, S);
 		if (OptionRows > 0)
 		{
-			const float OX = CX - MaxW * 0.35f;
-			float Y = Top + LineH * (Lines.Num() + 0.4f);
-			const float Mark = 10.f * S;
-			for (int32 I = 0; I < OptionRows; ++I, Y += LineH)
+			const float RowH = LineH * 1.05f;
+			const float OptBlockH = RowH * OptionRows;
+			const float MarkGap = 22.f * S; // the mark's centre to the text
+			float MarkX;
+			float OptTop;
+			if (bAnchor)
 			{
-				const bool bPick = View.options[static_cast<size_t>(I)].selectable;
-				const float MY = Y + (OptionH - Mark) * 0.5f;
+				// Beside the person: to their right when it fits, else to their left; never down into the line.
+				const FVector2f H(AnchorUV.X * Size.X, AnchorUV.Y * Size.Y);
+				const float Gap = 150.f * S;
+				const bool bRight = H.X + Gap + MarkGap + OptionW < Size.X - 80.f * S;
+				MarkX = bRight ? H.X + Gap : H.X - Gap - MarkGap - OptionW;
+				OptTop = FMath::Clamp(H.Y - 30.f * S - OptBlockH * 0.5f, 60.f * S, Top - OptBlockH - 40.f * S);
+				P.Soft(MarkX + (MarkGap + OptionW) * 0.5f, OptTop + OptBlockH * 0.5f, OptionW + 260.f * S, OptBlockH + 140.f * S,
+					Table().Style.backingSoftDialogue);
+				// The leader: a fine line from beside the face to the middle row's mark, eased flat at both ends.
+				const float MidY = OptTop + RowH * (static_cast<float>(OptionRows - 1) * 0.5f) + OptionH * 0.5f;
+				const FVector2f P0(H.X + (bRight ? 40.f : -40.f) * S, H.Y);
+				const FVector2f P1(bRight ? MarkX - 12.f * S : MarkX + MarkGap + OptionW + 12.f * S, MidY);
+				constexpr int32 N = 17;
+				FVector2f Pts[N];
+				for (int32 I = 0; I < N; ++I)
+				{
+					const float T = static_cast<float>(I) / (N - 1);
+					const float E = T * T * (3.f - 2.f * T);
+					Pts[I] = FVector2f(FMath::Lerp(P0.X, P1.X, T), FMath::Lerp(P0.Y, P1.Y, E));
+				}
+				PolyStroke(Line, Pts, N, 0.6f * S, 0.85f);
+				Mesh.Stroke(Line, Tok(UiToken::Ink));
+				Mesh.Dot(P0.X, P0.Y, 2.4f * S, Tok(UiToken::Ink));
+			}
+			else
+			{
+				MarkX = CX - MaxW * 0.35f - MarkGap;
+				OptTop = Top + LineH * (Lines.Num() + 0.4f);
+			}
+			for (int32 I = 0; I < OptionRows; ++I)
+			{
+				const float Y = OptTop + RowH * I;
+				const bool bPick = OptionPick(*D, I);
+				const float MY = Y + OptionH * 0.5f;
+				// A small ring: open for a choice that can be taken, a short dash for one that cannot.
 				if (bPick)
 				{
-					P.Box(OX - 24.f * S, MY, Mark, Mark, Tok(UiToken::Accent), 1);
+					ftcore::uiStrokeArc(Line, MarkX, MY, 4.5f * S, 0.f, 360.f, StrokeStyle(1.3f, 40u + static_cast<uint32>(I), S, 0.f));
+					if (Line.count > 1)
+					{
+						Line.pt[Line.count - 1].x = Line.pt[0].x; // closed without a seam
+						Line.pt[Line.count - 1].y = Line.pt[0].y;
+					}
+					Mesh.Stroke(Line, Tok(UiToken::Ink), true, true);
 				}
 				else
 				{
-					P.Hollow(OX - 24.f * S, MY, Mark, Mark, FMath::Max(1.f, S), Tok(UiToken::InkDim));
+					ftcore::uiStrokeLine(Line, MarkX - 4.5f * S, MY, MarkX + 4.5f * S, MY, StrokeStyle(1.3f, 50u + static_cast<uint32>(I), S, 0.f));
+					Mesh.Stroke(Line, Tok(UiToken::InkDim));
 				}
-				P.Text(OX, Y, D->GetOptions()[I], OptionFont, bPick ? Tok(UiToken::Ink) : Tok(UiToken::InkDim));
+				P.Text(MarkX + MarkGap, Y, OptionText(*D, I), OptionFont, bPick ? Tok(UiToken::Ink) : Tok(UiToken::InkDim));
 			}
 		}
 		else if (View.continuePrompt)
@@ -1239,13 +1344,73 @@ public:
 			const float A = 0.55f + 0.45f * FMath::Sin(Time * 5.f);
 			P.Chevron(LastRight + 22.f * S, Top + LineH * (Lines.Num() - 1) + LineH * 0.45f, 18.f * S, Tok(UiToken::Accent, A));
 		}
+		Mesh.Flush(Out, Layer + 1);
 		return Layer + 3;
 	}
 
 private:
+	const FString& OptionText(const AFTStoryDirector& D, int32 I) const
+	{
+#if !UE_BUILD_SHIPPING
+		if (bFakeOptions)
+		{
+			static const FString Fake[UE_ARRAY_COUNT(kFakeOptions)] = {kFakeOptions[0], kFakeOptions[1], kFakeOptions[2]};
+			return Fake[I];
+		}
+#endif
+		return D.GetOptions()[I];
+	}
+
+	bool OptionPick(const AFTStoryDirector& D, int32 I) const
+	{
+		return bFakeOptions ? I < OptionRows - 1 : D.IsOptionSelectable(I);
+	}
+
+	// One line's revealed text [From, To), in runs of equal arrival alpha (a few steps): the words just out come up by
+	// alpha behind the reveal; once every codepoint is out a while, one run, as before.
+	void PaintArriving(const FPainter& P, float X, float Y, const FString& T, int32 From, int32 To, const FLinearColor& Body) const
+	{
+		if (To <= From)
+		{
+			return;
+		}
+		constexpr float Fade = 0.4f; // s from out to full
+		constexpr int32 Steps = 4;
+		const TSharedRef<FSlateFontMeasure> M = FontMeasure();
+		const auto Draw = [&](int32 U0, int32 U1, int32 Level)
+		{
+			const float Off = U0 > From ? static_cast<float>(M->Measure(FStringView(T), From, U0 - 1, TextFont).X) : 0.f;
+			FLinearColor C = Body;
+			C.A *= static_cast<float>(Level) / Steps;
+			P.Text(X + Off, Y, T, TextFont, C, U0, U1);
+		};
+		int32 Cp = Algo::LowerBound(CpToUnit, From);
+		int32 RunStart = From;
+		int32 RunLevel = -1;
+		for (; Cp < CpToUnit.Num() && CpToUnit[Cp] < To; ++Cp)
+		{
+			const float Age = Cp < ArriveAt.Num() ? Time - ArriveAt[Cp] : Fade;
+			const int32 Level = FMath::Clamp(FMath::CeilToInt(FMath::Clamp(Age / Fade, 0.f, 1.f) * Steps), 1, Steps);
+			if (Level != RunLevel)
+			{
+				if (RunLevel >= 0 && CpToUnit[Cp] > RunStart)
+				{
+					Draw(RunStart, CpToUnit[Cp], RunLevel);
+				}
+				RunStart = CpToUnit[Cp];
+				RunLevel = Level;
+			}
+		}
+		if (RunLevel >= 0)
+		{
+			Draw(RunStart, To, RunLevel);
+		}
+	}
+
 	// Once per beat (or on a size change): fonts, the speaker's capitals, the codepoint-to-unit map and the line breaks.
 	void Rewrap(const AFTStoryDirector& D, const FVector2f& Size, float Scale)
 	{
+		OptionsFor = MAX_uint32; // the options are measured again in the new font
 		WrappedSerial = D.GetBeatSerial();
 		WrappedBeat = View.beatRevision;
 		WrappedSize = Size;
@@ -1338,6 +1503,19 @@ private:
 	TArray<int32> CpToUnit;
 	TArray<FIntPoint> Lines; // [start, end) in UTF-16 units
 	TArray<float> LineW;
+	// Line arrival.
+	uint32 ArrivalSerial = MAX_uint32;
+	TArray<float> ArriveAt; // by codepoint: the widget time it came out (sized once per beat)
+	int32 SeenRevealed = 0;
+	// Options.
+	int32 OptionRows = 0;
+	bool bFakeOptions = false;
+	uint32 OptionsFor = MAX_uint32;
+	float OptionW = 0.f;
+	bool bAnchor = false;
+	FVector2f AnchorUV = FVector2f::ZeroVector; // the answered person's head, as a fraction of the view
+	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line;
 };
 }
 
