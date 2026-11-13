@@ -841,8 +841,20 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				AirWant = FMath::Max(AirWant, Pose.AirHeight + W * FMath::Max(0.f, Gap));
 			}
 		}
-		AirLift = AirWant >= AirLift ? FMath::Min(AirWant, AirLift + kAirLiftMove * AirDt) : FMath::Max(AirWant, AirLift - kAirLiftMove * AirDt);
-		AirLift = FMath::Max(AirLift, FloorNeed);
+		if (SkinKind == ESkin::Lead && Pose.JumpClock >= 0.f && !Pose.bAir)
+		{
+			// Landed: the landing's crossfades move the feet a few cm a frame, so the lift follows them smoothed
+			// (kGroundLiftTau), the balls let at most kGroundSink under the floor meanwhile; the stand-up eases.
+			constexpr float kGroundLiftTau = 0.04f; // s
+			constexpr float kGroundSink = 3.f;      // cm
+			AirLift += (FMath::Max(AirWant, FloorNeed) - AirLift) * FMath::Min(1.f, AirDt / kGroundLiftTau);
+			AirLift = FMath::Max(AirLift, FloorNeed - kGroundSink);
+		}
+		else
+		{
+			AirLift = AirWant >= AirLift ? FMath::Min(AirWant, AirLift + kAirLiftMove * AirDt) : FMath::Max(AirWant, AirLift - kAirLiftMove * AirDt);
+			AirLift = FMath::Max(AirLift, FloorNeed);
+		}
 		Lift.Z += AirLift;
 #if !UE_BUILD_SHIPPING
 		// -ArenaJumpFloor: each frame on the jump's clock and 0.4 s after it, the last evaluated pose's pelvis, head and

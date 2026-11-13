@@ -362,7 +362,9 @@ struct ArenaFighter {
     float jumpAir = 0.6f;         // s in the air
     float jumpLand = 0.3f;        // s of landing on the ground
     float jumpLandLock = 0.15f;   // s of the landing nothing cuts into (the weight)
-    float jumpHeight = 0.55f;     // m at the top (drawn only)
+    float jumpHeight = 0.55f;     // m at the top (drawn only). The arena draws its lift eased at most 5 m/s (the
+                                  // fighter's kAirLiftMove, 500 cm/s): keep the arc's take-off speed, 4 * jumpHeight /
+                                  // jumpAir (3.7 m/s here), under it, or the drawn body lags the arc
     float jumpClearStart = 0.2f;  // s of the air clock (from take-off) after which low moves pass under ...
     float jumpClearEnd = 0.5f;    // ... and before which (at most jumpStartup + jumpAir)
     float jumpAirControl = 4.f;   // m/s^2 the stick steers the velocity in the air
