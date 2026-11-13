@@ -379,6 +379,35 @@ void AFTExploreCharacter::BeginPlay()
 					}
 				}
 			}
+			if (!FaceClip && FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyClip="), ClipPath)
+				&& FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyTimes="), TimeList, false))
+			{
+				BodyClip = LoadObject<UAnimSequence>(nullptr, *ClipPath);
+				TArray<FString> Parts;
+				TimeList.ParseIntoArray(Parts, TEXT(","));
+				for (const FString& Part : Parts)
+				{
+					BodyTimes.Add(FCString::Atof(*Part));
+				}
+				if (!BodyClip || BodyTimes.IsEmpty())
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: body clip %s not loaded or no times; body poses off."), *ClipPath);
+					BodyClip = nullptr;
+					BodyTimes.Reset();
+				}
+				else
+				{
+					// One shot per time; the yaw list repeats round them.
+					const TArray<float> Yaws = ShotYaws;
+					ShotYaws.Reset();
+					for (int32 Index = 0; Index < BodyTimes.Num(); ++Index)
+					{
+						ShotYaws.Add(Yaws[Index % Yaws.Num()]);
+					}
+					bPortraitWalk = false;
+					bPortraitJump = false;
+				}
+			}
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
 			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotDelay="), Delay);
@@ -420,11 +449,16 @@ void AFTExploreCharacter::StepPortraitShots()
 		{
 			HoldFaceAt(FaceTimes[ShotIndex]);
 		}
+		else if (BodyClip)
+		{
+			HoldBodyAt(BodyTimes[ShotIndex]);
+		}
 		bShotAimed = true;
 		return;
 	}
 	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
 	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
@@ -460,6 +494,21 @@ void AFTExploreCharacter::HoldFaceAt(float Time)
 		return;
 	}
 	UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no FaceMesh piece to hold the face clip on."));
+}
+
+void AFTExploreCharacter::HoldBodyAt(float Time)
+{
+	// The body leaves its anim blueprint and holds the clip's frame; the leader-posed pieces (garments, shoes, face)
+	// copy its bones, so the outfit is seen in that pose. The clip's root is not applied, so the capsule stays put.
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!Body || !BodyClip)
+	{
+		return;
+	}
+	Body->PlayAnimation(BodyClip, false);
+	Body->SetPosition(FMath::Clamp(Time, 0.f, BodyClip->GetPlayLength()), false);
+	Body->Stop();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body held on %s at %.2f s."), *BodyClip->GetName(), Time);
 }
 
 void AFTExploreCharacter::AddPortraitLights()

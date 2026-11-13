@@ -286,6 +286,7 @@ private:
 #endif
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
+	void HoldBodyAt(float Time);
 
 	AFTExploreDirector* GetDirector();
 
@@ -338,6 +339,12 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> FaceClip;
 	TArray<float> FaceTimes;
+	// -ExplorePortraitBodyClip=<anim> with -ExplorePortraitBodyTimes=<s,s,..>: each shot holds the whole body (and every
+	// leader-posed piece with it) on that clip at its time, so garments are judged posed in the game (a crouch, an arm
+	// raise), not in a Blender render. Not with a face clip; the walk circle is off while a pose is held.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> BodyClip;
+	TArray<float> BodyTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	TWeakObjectPtr<AFTPartyVan> Van;
