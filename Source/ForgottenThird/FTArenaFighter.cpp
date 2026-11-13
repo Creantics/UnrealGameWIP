@@ -923,6 +923,9 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				Tune.jumpLead = JumpStartup;
 				Tune.landPlay = FMath::Max(0.05f, JumpLandLock - kLandHandBack);
 				Tune.landRate = kLandRate;
+				// A moving landing crouches about twice as deep: handed back at once, it rises over the crossfade
+				// instead of in the last frames before the lock ends.
+				Tune.landPlayMoving = 0.02f;
 			}
 			Anim->SetAir(Pose.bAir && !Pose.bLying, Pose.AirRise);
 			// Where the walk heads, so the legs start and stop with the clips made for it (in cm).
