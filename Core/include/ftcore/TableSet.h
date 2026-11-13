@@ -41,7 +41,7 @@
 namespace ftcore {
 
 enum class TableState : std::uint8_t { Ready, Setting, Set, Cooling }; // append only
-enum class TableError : std::uint8_t { None, NotFull, TooFewSeats, Busy, Cooling, BadSetter, Occupied }; // append only
+enum class TableError : std::uint8_t { None, NotFull, TooFewSeats, Busy, Cooling, BadSetter, Occupied, Lone }; // append only
 enum class TableEventType : std::uint8_t { Setting, Set, Failed, EnemySeated, Cleared, Ready, Guttered }; // append only
 
 struct TableTuning {

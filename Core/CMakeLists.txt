@@ -131,6 +131,7 @@ add_library(ftcore STATIC
     src/ArenaFight.cpp
     src/Chairs.cpp
     src/CountLiftData.cpp
+    src/LoneCarry.cpp
     src/Brief.cpp
     src/BriefKit.cpp
     src/LicenceRating.cpp
