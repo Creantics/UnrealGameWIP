@@ -504,7 +504,7 @@ void AFTArenaFighter::MendCarried()
 
 void AFTArenaFighter::ResetFeet()
 {
-	AirLift = 0.f; // a restart: no lift kept from a jump
+	AirLift = LastFloorNeed = 0.f; // a restart: no lift kept from a jump
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 	{
 		Anim->ResetFeet();
@@ -798,7 +798,7 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	{
 		Lean.Pitch = 84.0;
 		Lift.Z = Radius * 0.7f;
-		AirLift = 0.f; // down or dead in the air: no lift kept from the jump
+		AirLift = LastFloorNeed = 0.f; // down or dead in the air: no lift kept from the jump
 	}
 	else
 	{
@@ -816,6 +816,7 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		constexpr float kHeadEase = 0.3f;
 		const float AirDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
 		float AirWant = Pose.AirHeight;
+		float FloorNeed = 0.f; // the lift that keeps the lower ball on the floor: not eased (the feet never go under)
 		if (SkinKind == ESkin::Lead && Skin && Pose.JumpClock >= 0.f)
 		{
 			ReadFloorBones();
@@ -825,7 +826,12 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 			if (Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
 			{
 				const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
-				AirWant = FMath::Max(AirWant, static_cast<float>(RollFloorBall * Scale - Ball));
+				// The pose read is last frame's: through the push-off a foot still dropping is led by its last frame's
+				// drop (not on the landing, where the crossfade to the ground clips would overshoot it).
+				const float Need = static_cast<float>(RollFloorBall * Scale - Ball);
+				FloorNeed = Need + (Pose.bAir ? FMath::Max(0.f, Need - LastFloorNeed) : 0.f);
+				LastFloorNeed = Need;
+				AirWant = FMath::Max(AirWant, FloorNeed);
 			}
 			if (Pose.AirFraction >= 0.f && StandHead > 0.f && Skin->GetBoneIndex(HeadBone) != INDEX_NONE)
 			{
@@ -836,6 +842,7 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 			}
 		}
 		AirLift = AirWant >= AirLift ? FMath::Min(AirWant, AirLift + kAirLiftMove * AirDt) : FMath::Max(AirWant, AirLift - kAirLiftMove * AirDt);
+		AirLift = FMath::Max(AirLift, FloorNeed);
 		Lift.Z += AirLift;
 #if !UE_BUILD_SHIPPING
 		// -ArenaJumpFloor: each frame on the jump's clock and 0.4 s after it, the last evaluated pose's pelvis, head and
@@ -894,15 +901,15 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
 			// The jump's clips: take-off, rise and fall while in the air, the land clip at touch-down, fitted to the
 			// kit's clock: the take-off's air span to Core's air time, entered for its push-off over the startup, and a
-			// standing landing played a little fast and handed back to the idle kLandHandBack before the landing ends,
-			// so the first free frame stands.
+			// standing landing's dip played fast and handed back to the idle kLandHandBack before the landing lock
+			// ends, so the idle's crossfade is mostly in by the first free frame (the body stands when it can act).
 			if (JumpAirTime > 0.f)
 			{
-				constexpr float kLandHandBack = 0.15f, kLandRate = 1.5f;
+				constexpr float kLandHandBack = 0.09f, kLandRate = 2.5f;
 				ftcore::LocoTuning& Tune = Anim->Tuning();
 				Tune.jumpAir = JumpAirTime;
 				Tune.jumpLead = JumpStartup;
-				Tune.landPlay = FMath::Max(0.05f, JumpLandTime - kLandHandBack);
+				Tune.landPlay = FMath::Max(0.05f, JumpLandLock - kLandHandBack);
 				Tune.landRate = kLandRate;
 			}
 			Anim->SetAir(Pose.bAir && !Pose.bLying, Pose.AirRise);

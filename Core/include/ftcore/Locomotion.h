@@ -230,9 +230,9 @@ struct LocoTuning {
                                 // time (rate 1 when the clip has no such span), so the landing meets it at its contact...
     float jumpLead = 0.f;       // ...entered this long (s, at that rate) before it leaves the ground: the push-off, which the
                                 // host plays on the floor before its arc starts
-    float landPlay = 0.f;       // > 0: a standing landing hands back to the ground this long (s) after touchdown, not near its
+    float landPlay = 0.f;       // > 0: a landing (standing or moving) hands back to the ground this long (s) after touchdown, not near its
                                 // clip's end (the host's own landing lock is shorter than the clip's recovery)...
-    float landRate = 1.f;       // ...and plays at this rate
+    float landRate = 1.f;       // ...and a standing one plays at this rate (a moving one keeps its speed's)
     float movingAir = 150.f;    // at this ground speed or more, jumps and landings use the moving clips
     float minLandRate = 0.5f;   // the moving jump's and landing's rate range
     float maxLandRate = 2.f;

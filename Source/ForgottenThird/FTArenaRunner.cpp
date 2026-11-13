@@ -413,6 +413,12 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	{
 		Now += DeltaSeconds;
 	}
+	// A view holding the fight's clock holds the lead's own clips too (its locomotion runs on the frame's time), so the
+	// views after it show the pose at their fight time.
+	if (USkeletalMeshComponent* LeadSkin = PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr)
+	{
+		LeadSkin->GlobalAnimRateScale = bHold ? 0.f : 1.f;
+	}
 	// The pose drawn last frame at last frame's placement, before anything moves.
 	Glide.Sample(PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr, DeltaSeconds);
 	PollInput(DeltaSeconds);
@@ -617,7 +623,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		if (Lead)
 		{
 			LeadWeapons.Begin(PlayerFigure, *Lead, Def.fighter);
-			PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLand);
+			PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLandLock);
 		}
 	}
 	if (PC)

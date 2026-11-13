@@ -297,6 +297,25 @@ TEST_CASE("locomotion: a jump plays start, fall and landing, then hands back to 
     CHECK(l.target() == LocoClip::Run);
 }
 
+TEST_CASE("locomotion: a host's landing hand-back holds for a moving landing that stops too") {
+    Locomotion l = makeLoco();
+    l.setClip(LocoClip::JumpMoving, {0.6f, 460.f, 1, 0.f});
+    l.setClip(LocoClip::LandMoving, {0.9f, 560.f, 1, 0.f});
+    l.tuning().landPlay = 0.06f;
+    l.reset();
+    run(l, 1.f, {0.f, 700.f});
+    l.update({kDt, 700.f, 0.f, true, 520.f});
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    l.update({kDt, 700.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    REQUIRE(l.target() == LocoClip::LandMoving);
+    // Stopped on landing: back to the ground at landPlay, not near the moving clip's end.
+    run(l, 0.04f, {});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.03f, {});
+    CHECK(l.state() == LocoState::Ground);
+}
+
 TEST_CASE("locomotion: a moving jump takes off and lands with the moving clips") {
     Locomotion l = makeLoco();
     l.setClip(LocoClip::JumpMoving, {0.6f, 460.f, 1, 0.f});

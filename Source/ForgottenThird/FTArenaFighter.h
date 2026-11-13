@@ -140,7 +140,7 @@ public:
 	void SetCameraTilt(float Degrees);
 	void ApplyPose(const FFTArenaPose& Pose);
 	// The jump's clock from the fighter's kit (s), so a lead's take-off and landing clips fit Core's arc and landing.
-	void SetJumpTiming(float Startup, float Air, float Land) { JumpStartup = Startup; JumpAirTime = Air; JumpLandTime = Land; }
+	void SetJumpTiming(float Startup, float Air, float LandLock) { JumpStartup = Startup; JumpAirTime = Air; JumpLandLock = LandLock; }
 	// How far the body is drawn lifted off its feet' floor for the jump (cm), for a view that follows it.
 	float GetJumpLift() const { return AirLift; }
 	// Drops the lead's held feet and sunk pelvis (UFTLocomotionAnimInstance::ResetFeet): the body was put somewhere
@@ -270,11 +270,12 @@ private:
 	float RollLift = 0.f;
 	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
 	float AirLift = 0.f;      // cm: the jump's lift as drawn (floor hold, the arc and the head kept on it; eased)
-	// The jump's clock (Core's jumpStartup, jumpAir, jumpLand; SetJumpTiming), handed to the locomotion so its take-off
+	float LastFloorNeed = 0.f; // cm: last frame's floor hold, before its lead
+	// The jump's clock (Core's jumpStartup, jumpAir, jumpLandLock; SetJumpTiming), handed to the locomotion so its take-off
 	// and landing clips fit it. 0: not set, the clips keep their own timing.
 	float JumpStartup = 0.f;
 	float JumpAirTime = 0.f;
-	float JumpLandTime = 0.f;
+	float JumpLandLock = 0.f;
 	float StandHead = 0.f; // the head bone's height in the reference pose (cm, unscaled; 0: not read yet)
 	void ReadFloorBones();
 	float JumpFloorAfter = 0.f; // s left to log after a jump (-ArenaJumpFloor)

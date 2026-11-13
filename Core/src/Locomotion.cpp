@@ -885,7 +885,7 @@ void Locomotion::update(const LocoInput& in) {
         } else if (state_ == LocoState::Landing) {
             // The landing, entered at its contact, holds to near its end unless the body moves on.
             const LocoClipInfo& landing = clip(land_);
-            const float hold = tuning_.landPlay > 0.f && land_ == LocoClip::Land ? tuning_.landPlay
+            const float hold = tuning_.landPlay > 0.f ? tuning_.landPlay
                 : 0.9f * (landing.length - landing.contact);
             if ((speed >= tuning_.moveStart && landTime_ >= tuning_.landHoldMoving) || landTime_ >= hold) {
                 state_ = LocoState::Ground;
