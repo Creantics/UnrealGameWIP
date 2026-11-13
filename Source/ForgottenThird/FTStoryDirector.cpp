@@ -1,6 +1,8 @@
 #include "FTStoryDirector.h"
 
 #include "Engine/World.h"
+#include "GameFramework/HUD.h"
+#include "GameFramework/PlayerController.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
@@ -21,6 +23,7 @@
 #include "FTLook.h"
 #include "FTFaceComponent.h"
 #include "FTGameInstance.h"
+#include "FTGameMode.h"
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
@@ -101,6 +104,7 @@ void AFTStoryDirector::BeginPlay()
 				}
 			}
 			ShotPrefix = Prefix;
+			bShotNoHud = FParse::Param(Cmd, TEXT("StoryShotNoHud"));
 			ShotsLeft = ftcore::remainingStoryShots(Max, Story->StoryShotsTaken); // the count is per run, not per map
 			if (ShotsLeft == 0)
 			{
@@ -552,6 +556,14 @@ void AFTStoryDirector::TickAutoPlay(float DeltaSeconds)
 	BeatAge += DeltaSeconds;
 	const bool bLine = Story->GetRunner().state() == StoryRunner::State::Line;
 #if !UE_BUILD_SHIPPING
+	if (bShotNoHud && ShotsLeft > 0)
+	{
+		APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+		if (PC && PC->MyHUD)
+		{
+			PC->MyHUD->bShowHUD = false; // the clean plate: no HUD in the still
+		}
+	}
 	if (!bFast && ShotsLeft > 0 && !ShotSpeakingModel.IsEmpty())
 	{
 		TickSpeakingShots();
@@ -812,6 +824,12 @@ void AFTStoryDirector::OpenStep()
 	HandleVoiceStopped();
 	ClearSceneCast(TEXT("a step takes over"));
 	const FString Map = FTStep::Prepare(*GI, Story->GetRunner(), UGameplayStatics::GetCurrentLevelName(this, true), bAutoPlay);
+	if (Map.IsEmpty())
+	{
+		// The step can't play as written (Prepare logged why): it rolls back and the title opens on this story map.
+		FTStep::QuitToTitle(this, GetDefault<AFTGameMode>()->TitleMap, TEXT("the story"));
+		return;
+	}
 	FTStep::OpenMap(this, Map);
 }
 
@@ -959,7 +977,7 @@ void AFTStoryDirector::PlaceSceneCast()
 	const AFTExploreCharacter* LookSource = GetDefault<AFTExploreCharacter>();
 
 	AFTCastMember* OnScreen[ftcore::kMaxSceneCast] = {};
-	int32 Own = 0, NoLook = 0;
+	int32 Own = 0, NoLook = 0, Shared = 0;
 	for (size_t I = 0; I < Count; ++I)
 	{
 		const FString Model = FT::ToFString(Speakers.modelFor(Cast[I], SceneView)); // the look this scene puts them in
@@ -987,7 +1005,11 @@ void AFTStoryDirector::PlaceSceneCast()
 			}
 			Found = &CastActors.Add(Model, Made);
 		}
-		if (*Found)
+		if (*Found && ftcore::heldEarlier(std::span<AFTCastMember* const>(OnScreen), I, Found->Get()))
+		{
+			++Shared; // a second speaker on a model already placed: its actor stands once
+		}
+		else if (*Found)
 		{
 			OnScreen[I] = Found->Get();
 			++Own;
@@ -1076,8 +1098,8 @@ void AFTStoryDirector::PlaceSceneCast()
 	{
 		Pooled += Pair.Value ? 1 : 0;
 	}
-	UE_LOG(LogForgottenThird, Log, TEXT("Story: scene %s cast on screen: %d (%d on marks), %d without a look, %u past the cap; stand-in %s; cast actors in the world %d (pool %d); spot checks %s."),
-		*SceneId, Own, Marked, NoLook, Dropped, bStandInStays ? TEXT("shown") : TEXT("hidden"), InWorld, Pooled,
+	UE_LOG(LogForgottenThird, Log, TEXT("Story: scene %s cast on screen: %d (%d on marks), %d sharing an actor, %d without a look, %u past the cap; stand-in %s; cast actors in the world %d (pool %d); spot checks %s."),
+		*SceneId, Own, Marked, Shared, NoLook, Dropped, bStandInStays ? TEXT("shown") : TEXT("hidden"), InWorld, Pooled,
 		bAnchorGrounded ? TEXT("on (ground under the anchor)") : TEXT("off (nothing under the anchor)"));
 	if (InWorld != Pooled)
 	{

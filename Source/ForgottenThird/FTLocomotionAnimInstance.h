@@ -131,6 +131,10 @@ private:
 	float LocoWeight[MaxLayers] = {};
 	float UpperShare = 0.f;
 	TArray<bool> UpperMask;
+	// One leg kept on the actions under an upper-body share (SetActionLeg): the thigh and every bone under it, per side
+	// (0 left, 1 right), made with the bones. LegSide -1: none.
+	TArray<bool> LegMask[2];
+	int32 LegSide = -1;
 	// The spine's bend this frame, in component space: one rotation shared over the spine bones.
 	FQuat SpineBend = FQuat::Identity;
 	// The legs turned from the body's facing by this (degrees, + right) about the root (SetLegYaw).
@@ -250,6 +254,15 @@ public:
 	// The catches are traversal clips FirstCatchClip on, in the TraversalSet with the vaults and climbs.
 	static constexpr int32 FirstCatchClip = FirstSlideClip + static_cast<int32>(ftcore::kSlideClips);
 	static constexpr int32 NumCatchClips = 7;
+	// The arena's locked dodges (PROVISIONAL: engine example dash clips retargeted, to be replaced by our own) are
+	// traversal clips FirstDashClip on, a hop back then a leap to the left and to the right
+	// (MM_Dash_Backward_to_x, MM_Dash_Left_to_x, MM_Dash_Right_to_x in place of the run loop's whole name). Left
+	// unmeasured: the TraversalSet never plans them; the owner plays them by index (HasTraversalClip).
+	static constexpr int32 FirstDashClip = FirstCatchClip + NumCatchClips;
+	static constexpr int32 NumDashClips = 3;
+	bool HasTraversalClip(int32 Clip) const { return Clip >= 0 && Clip < NumTraversalClips && TraversalClips[Clip] != nullptr; }
+	// The clip's length in seconds (0 when it is not loaded).
+	float TraversalClipLength(int32 Clip) const { return HasTraversalClip(Clip) ? TraversalClips[Clip]->GetPlayLength() : 0.f; }
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
 	// then with Clip -1 (or LetGoTraversal) when it hands the body back: the clip plays on at its own pace while it
@@ -344,6 +357,8 @@ public:
 	// The legs turned from the facing by Yaw degrees (+ right), the chest turned back by as much over the spine: a
 	// body with forward gaits only walks along the way it moves while it faces elsewhere (a strafe). Any owner.
 	void SetLegYaw(float Yaw) { PushedLegYaw = Yaw; }
+	// The trunk pitched by this (degrees, + forward) under a traversal clip, by its weight (0: the clip's own trunk).
+	void SetTraversalTrunkPitch(float Pitch) { PushedTrunkPitch = Pitch; }
 	// The feet held where they stand while bLock holds (a strike whose clip has the legs; FFTLocomotionAnimProxy::
 	// ftcore::FootHold), stepping when the body has gone too far over one. Any owner.
 	void SetFootLock(bool bLock) { bPushedFootLock = bLock; }
@@ -398,6 +413,9 @@ public:
 	// The share (0..1) of the actions that plays on the upper body only (ftcore::attackUpperShare): spine_01 and the
 	// bones under it take the action, the pelvis and the legs keep the locomotion by that share (0: the whole body).
 	void SetActionUpper(float Share) { ActionUpper = FMath::Clamp(Share, 0.f, 1.f); }
+	// One leg (0 left, 1 right; -1 none), hip down, that keeps the actions' clip under SetActionUpper's share: a kick
+	// played over another pose's legs (the air kick over the jump's fall).
+	void SetActionLeg(int32 Side) { ActionLeg = Side == 0 || Side == 1 ? Side : -1; }
 	void AddAction(int32 Slot, float Time, float Weight)
 	{
 		if (NumActions < MaxActions && Slot >= 0 && Slot < MaxActionClips && Weight > 0.f)
@@ -430,8 +448,9 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> Clips[59];
 	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
-	// The traversal clips (the TraversalSet's), then the slide's, then the catches (the TraversalSet's again).
-	static constexpr int32 NumTraversalClips = FirstCatchClip + NumCatchClips;
+	// The traversal clips (the TraversalSet's), then the slide's, then the catches (the TraversalSet's again), then the
+	// arena's dashes.
+	static constexpr int32 NumTraversalClips = FirstDashClip + NumDashClips;
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
 	// The action clips by slot (SetActionClip) and this frame's actions (AddAction).
@@ -446,6 +465,7 @@ private:
 	FAction Actions[MaxActions];
 	int32 NumActions = 0;
 	float ActionUpper = 0.f;
+	int32 ActionLeg = -1;
 	ftcore::TraversalSet Traversal;
 	ftcore::SlideSet Slide;
 	// The traversal playing (-1 none), its clip time, how long it has played, its weight over the locomotion and
@@ -496,6 +516,7 @@ private:
 	bool bPushedGrip[2] = {false, false};
 	float PushedSupport = 0.f;
 	float PushedLegYaw = 0.f;
+	float PushedTrunkPitch = 0.f;
 	bool bPushedFootLock = false;
 	uint32 PushedFeetReset = 0;
 	bool bPushedFace = false;

@@ -338,6 +338,18 @@ kind in whatever zone `-ArenaStage` names (the sand ring by default). `-ArenaAut
 For a picture with no window: `-RenderOffScreen -ArenaShot=<path prefix> -ArenaShotDelay=8` in place of `-windowed`
 (needs a renderer, not `-NullRHI`).
 
+Carrying (slice 1, off unless asked, never in shipping builds): `-ArenaChairs=chair_a01,chair_a02,chair_a03` names those
+chairs of `Data/Battle/chairs.json` (four seats; `none` names none, so the Load cap is 40, three named give 100),
+`-ArenaCap=N` sets the cap outright, `-ArenaAlly` adds the ally alone, `-ArenaTakeHalfAuto` has the autopilot take half of
+blows aimed at the ally and `-ArenaAutoBlock` has it guard through every wind-up (blocks store a quarter of the blocked
+damage as Load). Any of the first four turns carrying on; the result is one `Arena: CARRY ...` line at the end.
+
+Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBrief=bailiff` or `-ArenaBrief=notary` with
+`-ArenaLead=Duy` lays that Brief's kit from `Data/Battle/briefs.json` over the guns lead's own kit: a six-round cylinder
+with a 1.2 s reload (the shot spends a round instead of stamina; with none left a shot press is dropped and kicks still
+go), plus the Brief's kit changes. Any other lead is left alone with a warning. `-ArenaAutoShoot` has the autopilot use
+the pistol; `-ArenaLineup=dummy,maw_pup` is the test line-up. The result is one `Arena: BRIEF ...` line at the end.
+
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips
@@ -563,8 +575,15 @@ host), so each frame's pose is drawn where the body stands that frame, not a fra
 
 `-ArenaGlide` logs foot slip per move part on quit (`Arena glide: <part>: ...`). It gives the planted foot's
 frame-to-frame speed and the net slip per plant (as the field's `-LocoSlide`). `-ArenaGlide=toward` and `=across` make
-the autopilot walk at the target or strafe it. `-ArenaNoFootLock` leaves the feet to the clips, for comparison.
+the autopilot walk at the target or strafe it; `=backstep` lets go of the stick for each roll (a backstep under the
+lock) and `=sidestep` holds it across the lock for each, to the target's right then its left (the side dashes). `-ArenaNoFootLock` leaves the feet to the clips, for comparison.
+`=jump`, `=jumpmove` and `=jumpstrike` have the autopilot only jump (no attack, roll, guard or heal), 1.2 s after
+each jump's end: standing, with the stick held across the target, or standing with the air light pressed 0.22 s
+into the air clock. Every frame on the jump's clock (take-off, air, landing, an air light) goes to its own `jump`
+row, and these runs add the check line `Arena check: jump <PASS|FAIL|n/a> (<n> started, <n> landed).`
 Each line ends with its pops: frames in which a foot moved more than 20 cm, a pose snap (still counted in the slip).
+Moving is split four ways: steady, speeding up and braking (the legs' speed changing faster than 2 m/s²) and turning
+(the facing turning faster than 1.5 rad/s, whatever the speed does).
 
 Every key here comes from the binding table (`ftcore/InputBindings.h`, one set for the field and the arena; the
 defaults are provisional). Override any of them in `Saved/InputBindings.json`, read once at start, e.g.
@@ -644,6 +663,11 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaShotSide` | With `-ArenaShotAt`, those views from the lead's right side: 3.4 m off it and 0.9 m above its hips, aimed a frame before each view, so the feet show. |
 | `-ArenaShotStrikes=N` | With `-ArenaShot`, an extra view `_s<k>_<clip>` at each of the lead's first N attacks (after `_1_ring`; `<clip>` is the strike clip it plays, `noclip` when none): odd views just after the impact (a strike's landing, a shot's or cast's arrival at the hit point), even views a shot's or cast's mid-flight (`FFTLeadWeapons::GetViewTime`). The frame is that moment exactly: the fight's clock is brought to it and held, the lead's effects are run to their age then and paused (Niagara keeps the world's clock, which runs on in the frames before the view), and the lead's own clock stops until the view is taken. Attacks that go by while another view holds the fight are skipped. |
 | `-ArenaShotClose` | With `-ArenaShotStrikes`, those views close and HUD off: a camera 65 cm from the striking hand (the foot for a kick), square to the lead's side on that hand's side, the hand at the frame's centre, after a 0.6 s settle, then `_front` from 55 cm ahead of it (off to its side, a little above). A lead with a pistol adds `_1_holstered` and `_1_drawn` after the ring view, 60 cm off its right side. With gauntlets the first strike adds `_s1_<clip>_arms`, both forearms from 1.4 m ahead of the lead on the striking side. Each view logs where the hand (and the pistol's muzzle) fall in the frame. |
+| `-ArenaJump` | The jump's key (Space, the pad's A) is read in a fight and the controls line names it after the dodge; without it the key does nothing in a fight and default fights play as before the jump. Until the user has tried the jump; not in shipping builds. The jump costs 0.6 of a dodge's stamina, takes off for 0.08 s, is 0.6 s in the air (0.55 m at the top) and lands for 0.3 s, the first 0.15 s of it locked; low sweeps and ground-shock slams pass under it from 0.2 s to 0.5 s of its clock; any blow in the air knocks it out; one air light per jump (the kit's `jumpLight`). The run's log adds `Arena: jump takes off at <s> s` and `Arena: jump ends at <s> s, <s> s after take-off, into <action>` and the check line `Arena check: jump ...`. The lead plays its field jump, fall and land clips (moving ones while it moves). |
+| `-ArenaJumpFloor` | Each frame on the jump's clock and 0.4 s after it, the lead's pelvis, head and balls over the floor and the arc's lift (`Arena jump floor: clock <s>, air|ground, ...`). Not in shipping builds. |
+| `-ArenaNoDash` | The squash in place of the locked dash clips, and no side dashes (the before half of a side-by-side); not in shipping builds. |
+| `-ArenaDashTall` | The dash clips as they are, to compare by feel with the default tightened dashes (the body lowered by 0.4 of the lower foot's height over its standing height, none at take-off or landing, and the trunk pitched 15 degrees back toward upright under the clip, held through its fade); not in shipping builds. |
+| `-ArenaRollFloor` | Each frame of a roll on its clip logs the pelvis, head and balls over the floor and the floor lift; the lift's fade after it is logged too. Not in shipping builds. |
 | `-ArenaNoWeaponProps` | The lead's weapon props (gauntlets, pistol) stay off; the fight runs the same. |
 | `-ArenaNoWeaponFx` | The lead's weapon effects (muzzle flash, gauntlet sparks, the Third's bolt, burst and ward) stay off; the fight runs the same (the OFF half of an OFF/ON capture). |
 | `-ArenaNoBossFx` | The stone bearer's effects (tells, impacts, chips, the weak point's glow) stay off and the fight runs the same (the OFF half of an OFF/ON capture). |
@@ -670,7 +694,18 @@ warning and quits with exit code 2, so an unattended run never hangs.
   from the look's retargeted locomotion clips, `UFTLocomotionAnimInstance`), else the test human. Its attacks play the
   strike clips retargeted onto its body over that locomotion, and it carries its weapon (see "The leads' weapons"); without
   the clips, and for its guard and roll, the figure keeps its own overlay (a blade on a pivot arm, a
-  crouch and lean; enemy figures also show a guard plate, the player's never). Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
+  crouch and lean; enemy figures also show a guard plate, the player's never). A roll plays the land-roll clip; a
+  locked dodge back from the target (within 45 degrees of straight back) plays a hop back that keeps facing it, and
+  a locked dodge across it (more than 45 degrees off both straight at it and straight back) is a side dash: drawn
+  side-on, facing across its way on the target's side, leaping to the body's right or left. The hop is
+  `MM_Dash_Backward_to_<body mesh>`, next to the run loop, and the side dashes `MM_Dash_Left` and `MM_Dash_Right`;
+  side dashes are on (`ArenaFight::setSideDashes`) only when the body has both side clips, else those dodges stay
+  rolls. Each is played from its take-off to its landing (back 0.20-0.73 s, left 0.23-0.70 s, right 0.27-0.77 s),
+  fitted to the roll's time, with the root held, so the rules alone move the body; the arc is flattened and the trunk
+  stood up a little (`-ArenaDashTall` plays them as they are). Without the clip the figure squashes, as before. **PROVISIONAL:** these
+  dash clips are the engine's MoverExamples dash animations retargeted (`FTBuildRig`, local assets, never committed).
+  They are the motion target for our own hand-keyed or mocap clips, which must replace them before any shipping
+  build. Enemies are primitive figures in their kind's colour, or a skinned mesh (above). Swings, guards, rolls, staggers and falls are posed from the fight's output each frame.
 - The camera is a spring arm over the lead's shoulder, its length, height, shoulder offset and lock pitch from
   the zone's camera rig (6.4 m, 1.5 m, 1.2 m and -20 degrees, the same for every fight: a giant is found by locking
   on or looking up, from -50 to +85 degrees, free, aimed and locked alike: `ftcore::kArenaLook` in `ArenaLook.h`). The
@@ -690,8 +725,12 @@ warning and quits with exit code 2, so an unattended run never hangs.
   aim go in the startup does not change it, and its climb follows the crosshair only until it fires. A
   crosshair on a body the round would not reach is drawn faint, without its dot; one where another body on the
   muzzle's line would take the round is dimmed, with a small cross for the dot (`ArenaFight::shotMeets`; neither while
-  locked on, when the round goes at the lock). Blocked needs the crosshair's own body 0.25 m or more further along the
-  round than the other, and the dimming changes only once the new state has held 4 frames, so an edge does not flicker. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  locked on, when the round goes at the lock). The round and the readout share one rule: the crosshair's body
+  (`ArenaInput::aimBody`) takes the round when it is met within 0.25 m (`kArenaShotGraze`) along the round of the body met
+  first, so blocked means the round goes elsewhere, and the dimming changes only once the new state has held 4 frames,
+  so an edge does not flicker. Aim assist (Settings, "Aim assist", on by default; `ftcore::aimAssistTurn`): while the
+  unlocked crosshair is over a body the round would take, the look turns at 0.8 of its rate with the mouse and 0.6 with
+  the stick; off, or under `-ArenaAutoPlay`, it is unchanged. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
   about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).

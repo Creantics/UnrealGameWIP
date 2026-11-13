@@ -156,6 +156,9 @@ const TCHAR* const CatchNames[] = {
 	TEXT("_Traversal_Catch_Cliff_high_stand"),
 	TEXT("_Traversal_Catch_Mantle_med_stand"), TEXT("_Traversal_Catch_Mantle_med_walk"), TEXT("_Traversal_Catch_Mantle_med_run"),
 	TEXT("_Traversal_Catch_Mantle_low_stand"), TEXT("_Traversal_Catch_Mantle_low_walk"), TEXT("_Traversal_Catch_Mantle_low_run")};
+// The arena's dashes (PROVISIONAL), each in place of the run loop's whole name, in TraversalClips' order from
+// FirstDashClip: back, left, right.
+const TCHAR* const DashNames[] = {TEXT("MM_Dash_Backward"), TEXT("MM_Dash_Left"), TEXT("MM_Dash_Right")};
 // A traversal clip fades in over the locomotion this long (s), and out over this long before its end; one that
 // takes over from another (a slide's next clip) takes this long to.
 constexpr float kTraversalIn = 0.15f;
@@ -712,6 +715,7 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	static_assert(NumTraversalClips <= static_cast<int32>(ftcore::kMaxTraversalClips), "the traversal clips fit the TraversalSet");
 	static_assert(UE_ARRAY_COUNT(SlideNames) == ftcore::kSlideClips, "one name per slide clip");
 	static_assert(UE_ARRAY_COUNT(CatchNames) == NumCatchClips, "one name per catch clip");
+	static_assert(UE_ARRAY_COUNT(DashNames) == NumDashClips, "one name per dash clip");
 	static const bool bNoTraversal = FParse::Param(FCommandLine::Get(), TEXT("LocoNoTraversal"));
 	const UAnimSequence* Loop = bNoTraversal ? nullptr : Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
 	const FString Path = Loop ? Loop->GetPathName() : FString();
@@ -733,9 +737,11 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	{
 		// A traversal or catch clip's name stands in for the run loop's _Run_Loop_F, a slide clip's for its whole name.
 		const bool bSlideClip = I >= FirstSlideClip && I < FirstCatchClip;
-		const bool bCatchClip = I >= FirstCatchClip;
-		const TCHAR* const RunName = bSlideClip ? TEXT("M_Neutral_Run_Loop_F") : TEXT("_Run_Loop_F");
-		const TCHAR* const ClipName = bCatchClip ? CatchNames[I - FirstCatchClip] : bSlideClip ? SlideNames[I - FirstSlideClip] : TraversalNames[I];
+		const bool bCatchClip = I >= FirstCatchClip && I < FirstDashClip;
+		const bool bDashClip = I >= FirstDashClip;
+		const TCHAR* const RunName = bSlideClip || bDashClip ? TEXT("M_Neutral_Run_Loop_F") : TEXT("_Run_Loop_F");
+		const TCHAR* const ClipName = bDashClip ? DashNames[I - FirstDashClip] : bCatchClip ? CatchNames[I - FirstCatchClip]
+			: bSlideClip ? SlideNames[I - FirstSlideClip] : TraversalNames[I];
 		UAnimSequence* Clip = nullptr;
 		if (Path.Contains(RunName))
 		{
@@ -749,6 +755,16 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 		if (Clip)
 		{
 			Yaws += FString::Printf(TEXT(" %d %.1f>%.1f"), I, RootYaw(*Clip, 0.0), RootYaw(*Clip, Clip->GetPlayLength()));
+		}
+		if (bDashClip)
+		{
+			// Played by index (the arena's dodges), never planned: left unmeasured.
+			if (Clip)
+			{
+				++Found;
+				UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: dash %d = %s, %.2f s (PROVISIONAL)"), I - FirstDashClip, *Clip->GetName(), Clip->GetPlayLength());
+			}
+			continue;
 		}
 		const bool bSampled = Clip && SampleFeet(*Clip, Gait, &Pelvis);
 		if (bSampled)
@@ -846,7 +862,7 @@ void UFTLocomotionAnimInstance::SetTraversalFromRun()
 	}
 	if (Loop)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d traversal, slide and catch clips next to %s."), Found, NumTraversalClips, *Loop->GetName());
+		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %d of %d traversal, slide, catch and dash clips next to %s."), Found, NumTraversalClips, *Loop->GetName());
 		FString Gaits;
 		for (const ftcore::LocoClip G : {ftcore::LocoClip::Walk, ftcore::LocoClip::Sprint, ftcore::LocoClip::CrouchWalk})
 		{
@@ -1102,7 +1118,7 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 	}
 	// A body a catch carries up from the air stays in the air to its locomotion until the catch plays at full
 	// weight, so the landing it would play then does so under the catch rather than as the catch fades in.
-	if (TravClip >= FirstCatchClip && !bTravOut && TravWeight < 1.f)
+	if (TravClip >= FirstCatchClip && TravClip < FirstDashClip && !bTravOut && TravWeight < 1.f)
 	{
 		In.falling = true;
 	}
@@ -1496,6 +1512,7 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		}
 		NumLoco = Sum > 0.f ? NumLayers : 0;
 		UpperShare = NumLoco > 0 && UpperMask.Num() > 0 ? Instance->ActionUpper : 0.f;
+		LegSide = Instance->ActionLeg >= 0 && LegMask[Instance->ActionLeg].Num() > 0 ? Instance->ActionLeg : -1;
 		// Nothing under them: the actions are the whole pose.
 		const float Scale = Sum > 0.f ? 1.f : 1.f / ActSum;
 		float Added = 0.f;
@@ -1589,6 +1606,11 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		LimbWeight[0] *= Keep;
 		// Under an upper-body strike the legs keep their locomotion, the air pose with it.
 		LimbWeight[1] *= (1.f - TravWeight) * (1.f - ActWeight * (1.f - UpperShare));
+	}
+	// A traversal clip's trunk pitched on top of it (SetTraversalTrunkPitch), by the clip's weight.
+	if (TravWeight > 0.f && Instance->PushedTrunkPitch != 0.f)
+	{
+		SpineBend = FQuat(Right, FMath::DegreesToRadians(Instance->PushedTrunkPitch * TravWeight)) * SpineBend;
 	}
 	// The legs turned toward the way the body moves (the root, in Evaluate), the chest turned back over the spine.
 	LegYaw = TravWeight > 0.f ? 0.f : FMath::Clamp(Instance->PushedLegYaw, -100.f, 100.f);
@@ -1763,7 +1785,8 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 				// Per bone, the locomotion layers' running blend (no pose, curve or attribute containers made).
 				for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
 				{
-					if (B.GetInt() == 0 || UpperMask[B.GetInt()])
+					if (B.GetInt() == 0 || UpperMask[B.GetInt()]
+						|| (LegSide >= 0 && LegMask[LegSide].Num() == UpperMask.Num() && LegMask[LegSide][B.GetInt()]))
 					{
 						continue;
 					}
@@ -1890,6 +1913,24 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			{
 				const FCompactPoseBoneIndex Parent = Container.GetParentBoneIndex(B);
 				UpperMask[B.GetInt()] = B.GetInt() == Spine01 || (Parent.IsValid() && UpperMask[Parent.GetInt()]);
+			}
+		}
+		// Each leg: its thigh and every bone under it.
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			LegMask[Side].Reset();
+			FBoneReference Thigh;
+			Thigh.BoneName = Side == 0 ? TEXT("thigh_l") : TEXT("thigh_r");
+			Thigh.Initialize(Container);
+			if (UpperMask.Num() > 0 && Thigh.IsValidToEvaluate(Container))
+			{
+				LegMask[Side].Init(false, Output.Pose.GetNumBones());
+				const int32 Top = Thigh.GetCompactPoseIndex(Container).GetInt();
+				for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
+				{
+					const FCompactPoseBoneIndex Parent = Container.GetParentBoneIndex(B);
+					LegMask[Side][B.GetInt()] = B.GetInt() == Top || (Parent.IsValid() && LegMask[Side][Parent.GetInt()]);
+				}
 			}
 		}
 		for (int32 Side = 0; Side < 2; ++Side)

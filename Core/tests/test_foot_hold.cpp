@@ -63,6 +63,30 @@ TEST_CASE("foot hold: let go, a held foot steps back; a lifted one follows the c
     CHECK_FALSE(h.foot(1).held);
 }
 
+TEST_CASE("foot hold: a held foot the clip lifts away from its place eases there over a step, no snap") {
+    FootHold h;
+    Feet f;
+    h.update(f.ball, f.lifted, true, kDt, 0.f, f.by);
+    f.move(20.f); // within the reach: still held, 20 cm back
+    h.update(f.ball, f.lifted, true, kDt, 20.f, f.by);
+    REQUIRE(f.by[0].x == doctest::Approx(-20.f));
+    f.lifted[0] = true;
+    h.update(f.ball, f.lifted, true, kDt, 0.f, f.by);
+    CHECK(h.foot(0).stepping);
+    CHECK(f.by[0].x < -15.f); // the first frame of the step: still near where it stood
+    for (int i = 0; i < 20; ++i) h.update(f.ball, f.lifted, true, kDt, 0.f, f.by);
+    CHECK_FALSE(h.foot(0).stepping);
+    CHECK(f.by[0].x == 0.f); // with the clip once the step is done
+    CHECK_FALSE(h.foot(0).held);
+    // Lifted when already at its place: nothing to ease.
+    FootHold near;
+    Feet g;
+    near.update(g.ball, g.lifted, true, kDt, 0.f, g.by);
+    g.lifted[1] = true;
+    near.update(g.ball, g.lifted, true, kDt, 0.f, g.by);
+    CHECK_FALSE(near.foot(1).stepping);
+}
+
 TEST_CASE("foot hold: the pelvis sinks fast, rises slower, never below the floor or past its most") {
     FootHold h;
     const FootHoldTuning& t = h.tuning();

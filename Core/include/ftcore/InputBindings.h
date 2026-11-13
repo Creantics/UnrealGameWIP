@@ -61,8 +61,10 @@ enum class InputAction : std::uint8_t {
     FocusNext,
     LinePrev,
     LineNext,
+    // Foot (appended)
+    TakeHalf,
 };
-inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::LineNext) + 1;
+inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::TakeHalf) + 1;
 
 enum class InputContext : std::uint8_t { Foot, ReadHeld };
 enum class InputDevice : std::uint8_t { Keys, Pad };
@@ -129,7 +131,10 @@ FTCORE_API std::string encodeInputBindings(const InputBindings& b);
 // ("W/A/S/D"), the two target switches another. Each action shows its key's short label ("LMB", "Ctrl", "RT", "A"),
 // or, unbound, its route ("LS", "RS flick", "Hold M"); an entry nothing reaches on that device is left out.
 
-enum class InputHintScreen : std::uint8_t { Arena, Field };
+// ArenaJump: the arena's line with the jump after the dodge, for runs with the jump's binding on (-ArenaJump, until
+// the jump is promoted); the plain arena line names no jump key, so it sends no one to a key that does nothing.
+enum class InputHintScreen : std::uint8_t { Arena, Field, ArenaJump };
+inline constexpr std::size_t kInputHintScreenCount = 3;
 
 struct InputHintEntry {
     std::array<InputAction, 4> actions{};

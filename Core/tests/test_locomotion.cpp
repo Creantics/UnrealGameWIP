@@ -147,17 +147,17 @@ TEST_CASE("locomotion: the faster gait plays alone a band short of its own speed
         CHECK(phaseGap(l) < 1e-3f);
         last = w;
     }
-    run(l, 0.1f, {0.f, 0.5f * (190.f + runAlone)});
+    run(l, 0.4f, {0.f, 0.5f * (190.f + runAlone)});
     CHECK(l.weight(LocoClip::Run) == doctest::Approx(0.5f).epsilon(0.01));
-    run(l, 0.1f, {0.f, runAlone + 1.f});
+    run(l, 0.4f, {0.f, runAlone + 1.f});
     CHECK(l.weight(LocoClip::Run) == doctest::Approx(1.f));
 
     // The run and the sprint the same way.
     const float sprintAlone = (1.f - t.gaitBand) * 680.f;
-    run(l, 0.1f, {0.f, 0.5f * (489.f + sprintAlone)});
+    run(l, 0.4f, {0.f, 0.5f * (489.f + sprintAlone)});
     CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(0.5f).epsilon(0.01));
     CHECK(l.weight(LocoClip::Run) == doctest::Approx(0.5f).epsilon(0.01));
-    run(l, 0.1f, {0.f, sprintAlone + 1.f});
+    run(l, 0.4f, {0.f, sprintAlone + 1.f});
     CHECK(l.weight(LocoClip::Sprint) == doctest::Approx(1.f));
     CHECK(footSpeed(l) == doctest::Approx(sprintAlone + 1.f));
 
@@ -169,8 +169,43 @@ TEST_CASE("locomotion: the faster gait plays alone a band short of its own speed
     near.reset();
     run(near, 1.f, {0.f, 301.f});
     CHECK(near.weight(LocoClip::Run) == doctest::Approx(1.f));
-    run(near, 0.1f, {0.f, 300.f});
+    run(near, 0.4f, {0.f, 300.f});
     CHECK(near.weight(LocoClip::Walk) == doctest::Approx(1.f));
+}
+
+TEST_CASE("locomotion: a speed that drops in a frame eases the gaits' split, the feet keeping pace") {
+    // The MetaHuman walk and run; a body at a run checked to a walk's speed in one frame (a strike's contact).
+    Locomotion l;
+    l.setClip(LocoClip::Idle, {7.57f, 0.f, 1, 0.f});
+    l.setClip(LocoClip::Walk, {4.f, 190.f, 4, 0.1f});
+    l.setClip(LocoClip::Run, {2.5f, 489.f, 4, 0.01f});
+    l.reset();
+    const LocoTuning& t = l.tuning();
+    run(l, 1.f, {0.f, 300.f});
+    const float before = l.weight(LocoClip::Run);
+    REQUIRE(before > 0.3f);
+    // At 200 the split's own run share is a few percent: it eases there, never a step more than the fade allows.
+    const float a = 1.f - std::exp(-kDt / t.gaitShareFade);
+    float last = before;
+    for (int f = 0; f < 6; ++f) {
+        l.update({kDt, 200.f});
+        const float w = l.weight(LocoClip::Run);
+        CHECK(w < last + 1e-5f);
+        CHECK(last - w <= a * last + 1e-3f);
+        CHECK(footSpeed(l) == doctest::Approx(200.f));
+        CHECK(phaseGap(l) < 1e-3f);
+        last = w;
+    }
+    CHECK(last > 0.1f);
+    // Settled, it is the split's own.
+    run(l, 0.5f, {0.f, 200.f});
+    Locomotion fresh;
+    fresh.setClip(LocoClip::Idle, {7.57f, 0.f, 1, 0.f});
+    fresh.setClip(LocoClip::Walk, {4.f, 190.f, 4, 0.1f});
+    fresh.setClip(LocoClip::Run, {2.5f, 489.f, 4, 0.01f});
+    fresh.reset();
+    run(fresh, 1.f, {0.f, 200.f});
+    CHECK(l.weight(LocoClip::Run) == doctest::Approx(fresh.weight(LocoClip::Run)).epsilon(0.01));
 }
 
 TEST_CASE("locomotion: on a speed ramp the blend moves smoothly and the lead gait changes once") {
@@ -260,6 +295,46 @@ TEST_CASE("locomotion: a jump plays start, fall and landing, then hands back to 
     l.update({kDt, 700.f, 0.f, false, 0.f});
     CHECK(l.state() == LocoState::Ground);
     CHECK(l.target() == LocoClip::Run);
+}
+
+TEST_CASE("locomotion: a host's landing hand-back holds for a moving landing that stops too") {
+    Locomotion l = makeLoco();
+    l.setClip(LocoClip::JumpMoving, {0.6f, 460.f, 1, 0.f});
+    l.setClip(LocoClip::LandMoving, {0.9f, 560.f, 1, 0.f});
+    l.tuning().landPlay = 0.06f;
+    l.reset();
+    run(l, 1.f, {0.f, 700.f});
+    l.update({kDt, 700.f, 0.f, true, 520.f});
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    l.update({kDt, 700.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    REQUIRE(l.target() == LocoClip::LandMoving);
+    // Stopped on landing: back to the ground at landPlay, not near the moving clip's end.
+    run(l, 0.04f, {});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.03f, {});
+    CHECK(l.state() == LocoState::Ground);
+
+    // A moving landing's own hand-back, sooner; a standing one keeps landPlay.
+    l.tuning().landPlayMoving = 0.02f;
+    l.update({kDt, 700.f, 0.f, true, 520.f});
+    run(l, 0.6f, {0.f, 700.f, 0.f, true, -200.f});
+    l.update({kDt, 700.f, 0.f, false, 0.f});
+    REQUIRE(l.target() == LocoClip::LandMoving);
+    run(l, 0.03f, {});
+    CHECK(l.state() == LocoState::Ground);
+
+    // A standing jump's landing, with landPlayMoving still set, keeps landPlay (0.06 s), not 0.02.
+    run(l, 1.f, {});
+    l.update({kDt, 0.f, 0.f, true, 300.f});
+    run(l, 0.6f, {0.f, 0.f, 0.f, true, -200.f});
+    l.update({kDt, 0.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    REQUIRE(l.target() == LocoClip::Land);
+    run(l, 0.04f, {});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.03f, {});
+    CHECK(l.state() == LocoState::Ground);
 }
 
 TEST_CASE("locomotion: a moving jump takes off and lands with the moving clips") {
@@ -686,6 +761,46 @@ TEST_CASE("locomotion: the lean leads a start and leans back into a stop by how 
         peak = std::fmax(peak, std::fabs(plain.pitch()));
     }
     CHECK(peak < 0.01f);
+}
+
+TEST_CASE("locomotion: a host's own arc fits the take-off to its air time and cuts the standing landing short") {
+    Locomotion l = makeLoco();
+    LocoClipInfo jump{2.5f, 0.f, 1, 0.f};
+    jump.launch = 0.35f;
+    jump.contact = 1.29f;
+    LocoClipInfo land{2.77f, 0.f, 1, 0.f};
+    land.contact = 0.5f;
+    l.setClip(LocoClip::JumpStart, jump);
+    l.setClip(LocoClip::Land, land);
+    l.tuning().jumpAir = 0.6f;
+    l.tuning().jumpLead = 0.08f;
+    l.tuning().landPlay = 0.24f;
+    l.tuning().landRate = 1.5f;
+    l.reset();
+    run(l, 1.f, {});
+    // In from the push-off: 0.08 s before the launch at the rate that fits 0.94 s of clip air into 0.6 s.
+    l.update({kDt, 0.f, 0.f, true, 300.f});
+    REQUIRE(l.state() == LocoState::Rising);
+    const float r = 0.94f / 0.6f;
+    CHECK(l.rate(LocoClip::JumpStart) == doctest::Approx(r));
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(0.35f - 0.08f * r + kDt * r));
+    // At the host's touchdown, 0.68 s on, the clip is at its contact.
+    run(l, 0.68f - kDt, {0.f, 0.f, 0.f, true, -100.f});
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(1.29f).epsilon(0.02));
+    l.update({kDt, 0.f, 0.f, false, 0.f});
+    REQUIRE(l.state() == LocoState::Landing);
+    CHECK(l.rate(LocoClip::Land) == doctest::Approx(1.5f));
+    run(l, 0.2f, {});
+    CHECK(l.state() == LocoState::Landing);
+    run(l, 0.05f, {});
+    CHECK(l.state() == LocoState::Ground);
+    CHECK(l.target() == LocoClip::Idle);
+    // Unset, the take-off plays at its own rate from its launch again.
+    l.tuning().jumpAir = 0.f;
+    run(l, 1.f, {});
+    l.update({kDt, 0.f, 0.f, true, 300.f});
+    CHECK(l.rate(LocoClip::JumpStart) == doctest::Approx(1.f));
+    CHECK(l.time(LocoClip::JumpStart) == doctest::Approx(0.35f + kDt));
 }
 
 TEST_CASE("locomotion: the body tucks in the air and dips into the landing") {

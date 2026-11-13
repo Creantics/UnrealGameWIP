@@ -399,3 +399,16 @@ TEST_CASE("cast marks: a model's mark is found under any label the scene casts a
     CHECK(findCastMark(marks, cast, "SC-A", "SPK-B") == nullptr);
     CHECK(findCastMark(marks, cast, "SC-B", "SPK-A") == nullptr);
 }
+
+TEST_CASE("cast actors: a second speaker on a model already placed shares its actor and stands once") {
+    int a = 0, b = 0;
+    int* held[4] = {&a, &b, nullptr, nullptr};
+    const std::span<int* const> slots(held);
+    CHECK(ftcore::heldEarlier(slots, 2, &a));
+    CHECK(ftcore::heldEarlier(slots, 2, &b));
+    CHECK_FALSE(ftcore::heldEarlier(slots, 1, &b)); // only slots before the speaker count
+    CHECK_FALSE(ftcore::heldEarlier(slots, 0, &a));
+    CHECK_FALSE(ftcore::heldEarlier(slots, 4, static_cast<int*>(nullptr))); // no look is never "shared"
+    int c = 0;
+    CHECK_FALSE(ftcore::heldEarlier(slots, 99, &c)); // count past the span stops at its end
+}

@@ -54,6 +54,16 @@ FTCORE_API bool importAimRules(std::string_view json, AimRules& out, std::string
 
 enum class AimPhase : std::uint8_t { Off, In, Held, Out };
 
+// Aim assist's slowdown (Settings::aimAssist): the share of the look's turn kept while the unlocked, aimed crosshair is
+// over a body its round would take (not blocked by another body, not out of reach), so a small body is easier to hold.
+// The stick is slowed more than the mouse. Off, or not over such a body: exactly 1, so the look is unchanged to the
+// bit. Locked on, the look does not turn the view, so the lock is untouched.
+inline constexpr float kAimAssistMouse = 0.8f;
+inline constexpr float kAimAssistPad = 0.6f;
+inline constexpr float aimAssistTurn(bool on, bool pad, bool overBody) {
+    return on && overBody ? (pad ? kAimAssistPad : kAimAssistMouse) : 1.f;
+}
+
 // Whether aim may be held while the body does this (seated, hanging, traversing, sliding, rolling: no).
 inline constexpr bool aimAllowed(FieldBody body) {
     return body == FieldBody::Free || body == FieldBody::Falling;

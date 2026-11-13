@@ -293,7 +293,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	FTLook::SwapMaterials(*Skin, Pieces, Look.MaterialSwaps, TEXT("FTArenaFighter"));
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 	{
-		Anim->SetBaseClips(Loaded.Clips, false);
+		Anim->SetBaseClips(Loaded.Clips, true); // with the traversals: the land roll plays the dodge (RollWithClip)
 	}
 	else
 	{
@@ -504,6 +504,7 @@ void AFTArenaFighter::MendCarried()
 
 void AFTArenaFighter::ResetFeet()
 {
+	AirLift = LastFloorNeed = 0.f; // a restart: no lift kept from a jump
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 	{
 		Anim->ResetFeet();
@@ -550,11 +551,242 @@ void AFTArenaFighter::TieMeshTicks()
 	}
 }
 
+namespace
+{
+// The span of each dash clip played over a locked dodge (clip seconds, back, left, right): from the take-off (both
+// balls off the floor) to the landing; the let-go plays the settle as it fades. Not from the crouch before it: blended
+// in over the standing pose, the crouch's bent legs put a foot 12 cm under the floor. PROVISIONAL: measured on
+// the engine's example dash clips retargeted (the retarget keeps their timing, so one span serves every lead).
+struct FDashSpan
+{
+	float From, To;
+};
+constexpr FDashSpan kDashSpans[UFTLocomotionAnimInstance::NumDashClips] = {{0.20f, 0.73f}, {0.23f, 0.70f}, {0.27f, 0.77f}};
+}
+
+bool AFTArenaFighter::CanSideDash() const
+{
+#if !UE_BUILD_SHIPPING
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash")))
+	{
+		return false;
+	}
+#endif
+	const UFTLocomotionAnimInstance* Anim =
+		SkinKind == ESkin::Lead && Skin ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	return Anim && Anim->HasTraversalClip(UFTLocomotionAnimInstance::FirstDashClip + 1) &&
+		Anim->HasTraversalClip(UFTLocomotionAnimInstance::FirstDashClip + 2);
+}
+
+bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
+{
+	UFTLocomotionAnimInstance* Anim = SkinKind == ESkin::Lead ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	// The roll's floor lift comes down with the clip as it fades out (kRollLiftOut, the traversal's fade), not in one frame.
+	constexpr float kRollLiftOut = 0.25f;
+	// A locked dodge back from the target keeps facing it: a hop back on the dash clip (the squash without one), not a
+	// forward roll. A side dash across it (drawn side-on) leaps to the body's right or left on those dash clips.
+	const int32 Dash = Pose.bDodgeBack ? UFTLocomotionAnimInstance::FirstDashClip
+		: Pose.DodgeSide > 0 ? UFTLocomotionAnimInstance::FirstDashClip + 2
+		: Pose.DodgeSide < 0 ? UFTLocomotionAnimInstance::FirstDashClip + 1
+		: INDEX_NONE;
+#if UE_BUILD_SHIPPING
+	constexpr bool bNoDash = false;
+#else
+	// -ArenaNoDash: the squash in place of the dash clips, for side-by-side captures.
+	static const bool bNoDash = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash"));
+#endif
+	const bool bDash = Dash != INDEX_NONE && Anim && !bNoDash && Anim->HasTraversalClip(Dash);
+	// The dashes tightened (chosen): the arc flattened (the body lowered by kDashFlatten of the lower ball's height over
+	// its standing height, nothing at take-off or landing, the feet never under) and the trunk pitched back toward
+	// upright by kDashUpright degrees. -ArenaDashTall plays the clips as they are, to compare by feel; not in shipping.
+#if UE_BUILD_SHIPPING
+	constexpr bool bDashTight = true;
+#else
+	static const bool bDashTight = !FParse::Param(FCommandLine::Get(), TEXT("ArenaDashTall"));
+#endif
+	constexpr float kDashFlatten = 0.4f, kDashUpright = 15.f;
+	if (Anim)
+	{
+		// Held while the dash plays and while it fades (the pitch goes with the clip's weight), so it does not snap.
+		const bool bPlaying = bDash && Pose.bDodging && !Pose.bLying;
+		bDashPitched = bDashTight && (bPlaying || (bDashPitched && RollClip < 0 && RollFadeLog > 0.f) ||
+										 (bDashPitched && RollClip >= UFTLocomotionAnimInstance::FirstDashClip));
+		Anim->SetTraversalTrunkPitch(bDashPitched ? kDashUpright : 0.f); // + stands the hop's trunk up (checked on a capture: - bent it further)
+	}
+	if (!Anim || !Pose.bDodging || Pose.bLying || (Dash != INDEX_NONE && !bDash))
+	{
+		if (RollClip >= 0 && Anim)
+		{
+			// Back up: the clip plays on at the roll's pace as it fades, and the walk may turn under it (the drawn body
+			// turning back to the lock).
+			Anim->LetGoTraversal(RollRate, true);
+		}
+		if (RollClip >= 0)
+		{
+			RollLiftFall = FMath::Abs(RollLift) / kRollLiftOut;
+			RollFadeLog = kRollLiftOut;
+		}
+		RollFadeLog = FMath::Max(0.f, RollFadeLog - Dt);
+		// Back to none from either side (a tight dash lowers the body: its lift is under 0).
+		RollLift = RollLift > 0.f ? FMath::Max(0.f, RollLift - RollLiftFall * Dt) : FMath::Min(0.f, RollLift + RollLiftFall * Dt);
+#if !UE_BUILD_SHIPPING
+		if ((RollLift != 0.f || RollFadeLog > 0.f) && FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor")))
+		{
+			auto Over = [this](const TCHAR* Bone)
+			{
+				return Skin->GetBoneIndex(FName(Bone)) != INDEX_NONE ? Skin->GetBoneLocation(FName(Bone)).Z - GetActorLocation().Z : 0.0;
+			};
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena roll floor: fading, head %.1f balls %.1f %.1f cm over the floor, lifted %.1f."),
+				Over(TEXT("head")), Over(TEXT("ball_l")), Over(TEXT("ball_r")), RollLift);
+		}
+#endif
+		RollClip = -1;
+		RollFraction = 0.f;
+		bRollPlanFailed = false;
+		return false;
+	}
+	// A roll begun on the tick the last one ended (its fraction starts over) is a new roll: planned afresh.
+	const float Fraction = FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f);
+	if (Fraction < RollFraction)
+	{
+		RollClip = -1;
+		bRollPlanFailed = false;
+	}
+	RollFraction = Fraction;
+	if (RollClip < 0 && bDash)
+	{
+		const FDashSpan& Span = kDashSpans[Dash - UFTLocomotionAnimInstance::FirstDashClip];
+		RollClip = Dash;
+		// Clamped to the clip's own length, so a shorter retarget still plays to its end and never past it.
+		const float Length = Anim->TraversalClipLength(Dash);
+		RollTo = FMath::Min(Span.To, Length);
+		RollFrom = FMath::Min(Span.From, RollTo);
+		RollRate = Pose.DodgeTime > 0.f ? (RollTo - RollFrom) / Pose.DodgeTime : 1.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s dashes on clip %d, %.2f-%.2f s of %.2f s over %.2f s (x%.2f)."), *GetName(),
+			RollClip, RollFrom, RollTo, Length, Pose.DodgeTime, RollRate);
+	}
+	if (RollClip < 0 && !bRollPlanFailed)
+	{
+		// A new roll: off the planted foot (the lower ball), the clip from where it is down on the floor to back up,
+		// fitted to the roll's time (the rules' time, distance and invulnerability stay); its root is held, so the
+		// figure moves only as the rules move it.
+		const FName BallL(TEXT("ball_l")), BallR(TEXT("ball_r"));
+		int Foot = -1;
+		if (Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		{
+			Foot = Skin->GetBoneLocation(BallL).Z <= Skin->GetBoneLocation(BallR).Z ? 0 : 1;
+		}
+		const ftcore::TraversalSet& Set = Anim->GetTraversal();
+		const ftcore::TraversalPlan Plan = Set.planRoll(0.f, Foot);
+		if (!Plan.ok())
+		{
+			// No roll clip on this skin: the squash for this roll, without planning again every tick.
+			bRollPlanFailed = true;
+			RollLift = 0.f;
+			return false;
+		}
+		const ftcore::TraversalClipInfo& Info = Set.clip(static_cast<std::size_t>(Plan.clip));
+		RollClip = Plan.clip;
+		RollFrom = Info.touchdown;
+		RollTo = FMath::Clamp(Info.land, RollFrom, Info.length);
+		RollRate = Pose.DodgeTime > 0.f ? (RollTo - RollFrom) / Pose.DodgeTime : 1.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s rolls on clip %d (foot %d), %.2f-%.2f s over %.2f s (x%.2f)."), *GetName(),
+			RollClip, Foot, RollFrom, RollTo, Pose.DodgeTime, RollRate);
+	}
+	if (RollClip < 0)
+	{
+		RollLift = 0.f;
+		return false;
+	}
+	// Kept out of the floor: the clip rolls over the head and pushes off a toe a little under the standing floor, so
+	// the body is lifted by what the last pose (the clip's, over its held root) has of the balls under their height
+	// standing and of the head bone nearer the floor than the skull's back.
+	constexpr double kSkullCm = 9.0;
+	const FName BallL(TEXT("ball_l")), BallR(TEXT("ball_r")), HeadBone(TEXT("head"));
+	ReadFloorBones();
+	{
+		const double Base = Skin->GetComponentLocation().Z;
+		const double Scale = Skin->GetComponentScale().Z;
+		double Need = 0.0;
+		// A dash keeps its feet on the floor or over it: no lift (what a roll left eases away).
+		if (!bDash && Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		{
+			const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
+			Need = FMath::Max(Need, RollFloorBall * Scale - Ball);
+		}
+		if (!bDash && Skin->GetBoneIndex(HeadBone) != INDEX_NONE)
+		{
+			Need = FMath::Max(Need, kSkullCm * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
+		}
+		// A tight dash: lowered by part of the lower ball's height over its standing height (the bones are the clip's,
+		// over the skin, so the lowering itself is not in them). It follows the pose's own smooth curve, except that a
+		// lift still fading from a roll just before (up to kRollLiftOut) comes down to it at kDashLiftIn, not in one frame.
+		if (bDash && bDashTight && Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		{
+			constexpr float kDashLiftIn = 240.f; // cm/s: faster than the clip's own lowering, so it is caught within ~0.15 s
+			const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
+			const float Want = -kDashFlatten * static_cast<float>(FMath::Max(0.0, Ball - RollFloorBall * Scale));
+			RollLift = RollLift > Want ? FMath::Max(Want, RollLift - kDashLiftIn * Scale * Dt) : Want;
+		}
+		else
+		{
+			// Taken from the last pose, so eased toward: up at most kRollLiftRise, down at most kRollLiftFall (cm/s), no
+			// pop from one frame's bones.
+			constexpr float kRollLiftRise = 90.f, kRollLiftFall = 45.f;
+			const float Want = static_cast<float>(Need);
+			RollLift = Want > RollLift ? FMath::Min(Want, RollLift + kRollLiftRise * Scale * Dt)
+									   : FMath::Max(Want, RollLift - kRollLiftFall * Scale * Dt);
+		}
+	}
+	Anim->SetTraversal(RollClip, FMath::Lerp(RollFrom, RollTo, Fraction));
+#if !UE_BUILD_SHIPPING
+	// -ArenaRollFloor: the last evaluated pose's lowest pelvis, head and balls over the floor the figure stands on.
+	static const bool bRollFloor = FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor"));
+	if (bRollFloor)
+	{
+		const double Base = GetActorLocation().Z;
+		auto Over = [this, Base](const TCHAR* Bone)
+		{
+			return Skin->GetBoneIndex(FName(Bone)) != INDEX_NONE ? Skin->GetBoneLocation(FName(Bone)).Z - Base : 0.0;
+		};
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena roll floor: %.2f of the roll, pelvis %.1f head %.1f balls %.1f %.1f cm over the floor, lifted %.1f."),
+			Fraction, Over(TEXT("pelvis")), Over(TEXT("head")), Over(TEXT("ball_l")), Over(TEXT("ball_r")), RollLift);
+	}
+#endif
+	return true;
+}
+
+void AFTArenaFighter::ReadFloorBones()
+{
+	if (RollFloorBall < 1e8f || !Skin)
+	{
+		return;
+	}
+	RollFloorBall = 0.f;
+	if (const USkinnedAsset* Asset = Skin->GetSkinnedAsset())
+	{
+		const FReferenceSkeleton& Ref = Asset->GetRefSkeleton();
+		const int32 L = Ref.FindBoneIndex(TEXT("ball_l")), R = Ref.FindBoneIndex(TEXT("ball_r")), H = Ref.FindBoneIndex(TEXT("head"));
+		if (L != INDEX_NONE && R != INDEX_NONE)
+		{
+			RollFloorBall = static_cast<float>(FMath::Min(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, L).GetLocation().Z,
+				FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, R).GetLocation().Z));
+		}
+		if (H != INDEX_NONE)
+		{
+			StandHead = static_cast<float>(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, H).GetLocation().Z);
+		}
+	}
+}
+
 void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 {
 	SetActorLocationAndRotation(Pose.Feet, FRotator(0.0, Pose.Yaw, 0.0));
 
-	// The whole body: lean back, crouch and lean along a roll, or lie flat. A skinned enemy's clips do all that.
+	// The whole body: lean back, crouch and lean along a roll, or lie flat. A skinned enemy's clips do all that, and a
+	// lead's land-roll clip its roll.
+	const bool bRollClip = RollWithClip(Pose);
 	FRotator Lean = FRotator::ZeroRotator;
 	FVector Lift = FVector::ZeroVector;
 	float Squash = 1.f;
@@ -566,12 +798,82 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	{
 		Lean.Pitch = 84.0;
 		Lift.Z = Radius * 0.7f;
+		AirLift = LastFloorNeed = 0.f; // down or dead in the air: no lift kept from the jump
 	}
 	else
 	{
 		Lean.Pitch = Pose.LeanBack;
 		Lean.Roll = Pose.Wobble;
-		if (Pose.bDodging)
+		// The roll's lift, and as its clip fades out, what is left of it coming down.
+		Lift.Z = RollLift;
+		// The jump: the arc's height, and on a lead's clips (from the last evaluated pose, over the skin's base, so the
+		// lift itself is not in them) the balls kept out of the floor through the push-off and the landing and, in the
+		// air, the head carried up the whole arc over its standing height (the clip's own air tucks the legs and drops
+		// the head: its root's rise is held). The head's share eases in over the first kHeadEase of the arc and out over
+		// its last, where the clip's legs reach for the floor. Eased toward at kAirLiftMove (a blow cutting the jump short
+		// brings the body down at that, not in one frame).
+		constexpr float kAirLiftMove = 500.f; // cm/s; the arc's own speed is at most 4 * jumpHeight / jumpAir
+		constexpr float kHeadEase = 0.3f;
+		const float AirDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+		float AirWant = Pose.AirHeight;
+		float FloorNeed = 0.f; // the lift that keeps the lower ball on the floor: not eased (the feet never go under)
+		if (SkinKind == ESkin::Lead && Skin && Pose.JumpClock >= 0.f)
+		{
+			ReadFloorBones();
+			const FName BallL(TEXT("ball_l")), BallR(TEXT("ball_r")), HeadBone(TEXT("head"));
+			const double Base = Skin->GetComponentLocation().Z;
+			const double Scale = Skin->GetComponentScale().Z;
+			if (Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+			{
+				const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
+				// The pose read is last frame's: through the push-off a foot still dropping is led by its last frame's
+				// drop (not on the landing, where the crossfade to the ground clips would overshoot it).
+				const float Need = static_cast<float>(RollFloorBall * Scale - Ball);
+				FloorNeed = Need + (Pose.bAir ? FMath::Max(0.f, Need - LastFloorNeed) : 0.f);
+				LastFloorNeed = Need;
+				AirWant = FMath::Max(AirWant, FloorNeed);
+			}
+			if (Pose.AirFraction >= 0.f && StandHead > 0.f && Skin->GetBoneIndex(HeadBone) != INDEX_NONE)
+			{
+				const float U = Pose.AirFraction;
+				const float W = FMath::SmoothStep(0.f, kHeadEase, U) * FMath::SmoothStep(0.f, kHeadEase, 1.f - U);
+				const float Gap = static_cast<float>(StandHead * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
+				AirWant = FMath::Max(AirWant, Pose.AirHeight + W * FMath::Max(0.f, Gap));
+			}
+		}
+		if (SkinKind == ESkin::Lead && Pose.JumpClock >= 0.f && !Pose.bAir)
+		{
+			// Landed: the landing's crossfades move the feet a few cm a frame, so the lift follows them smoothed
+			// (kGroundLiftTau), the balls let at most kGroundSink under the floor meanwhile; the stand-up eases.
+			constexpr float kGroundLiftTau = 0.04f; // s
+			constexpr float kGroundSink = 3.f;      // cm
+			AirLift += (FMath::Max(AirWant, FloorNeed) - AirLift) * FMath::Min(1.f, AirDt / kGroundLiftTau);
+			AirLift = FMath::Max(AirLift, FloorNeed - kGroundSink);
+		}
+		else
+		{
+			AirLift = AirWant >= AirLift ? FMath::Min(AirWant, AirLift + kAirLiftMove * AirDt) : FMath::Max(AirWant, AirLift - kAirLiftMove * AirDt);
+			AirLift = FMath::Max(AirLift, FloorNeed);
+		}
+		Lift.Z += AirLift;
+#if !UE_BUILD_SHIPPING
+		// -ArenaJumpFloor: each frame on the jump's clock and 0.4 s after it, the last evaluated pose's pelvis, head and
+		// balls over the floor the figure stands on, and the arc's lift (the jump sheets' floor numbers).
+		static const bool bJumpFloor = FParse::Param(FCommandLine::Get(), TEXT("ArenaJumpFloor"));
+		if (bJumpFloor && Skin && (Pose.JumpClock >= 0.f || JumpFloorAfter > 0.f))
+		{
+			JumpFloorAfter = Pose.JumpClock >= 0.f ? 0.4f : FMath::Max(0.f, JumpFloorAfter - AirDt);
+			const double Base = GetActorLocation().Z;
+			auto Over = [this, Base](const TCHAR* Bone)
+			{
+				return Skin->GetBoneIndex(FName(Bone)) != INDEX_NONE ? Skin->GetBoneLocation(FName(Bone)).Z - Base : 0.0;
+			};
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena jump floor: clock %.3f, %s, pelvis %.1f head %.1f balls %.1f %.1f cm over the floor, lifted %.1f."),
+				Pose.JumpClock, Pose.bAir ? TEXT("air") : TEXT("ground"), Over(TEXT("pelvis")), Over(TEXT("head")), Over(TEXT("ball_l")),
+				Over(TEXT("ball_r")), AirLift);
+		}
+#endif
+		if (!bRollClip && Pose.bDodging)
 		{
 			const float Arc = FMath::Sin(PI * FMath::Clamp(Pose.DodgeFraction, 0.f, 1.f));
 			Squash = 1.f - 0.42f * Arc;
@@ -609,7 +911,26 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
 			}
 			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
-			Anim->SetIntent(-1.f, -1.f);
+			// The jump's clips: take-off, rise and fall while in the air, the land clip at touch-down, fitted to the
+			// kit's clock: the take-off's air span to Core's air time, entered for its push-off over the startup, and a
+			// standing landing's dip played fast and handed back to the idle kLandHandBack before the landing lock
+			// ends, so the idle's crossfade is mostly in by the first free frame (the body stands when it can act).
+			if (JumpAirTime > 0.f)
+			{
+				constexpr float kLandHandBack = 0.09f, kLandRate = 2.5f;
+				ftcore::LocoTuning& Tune = Anim->Tuning();
+				Tune.jumpAir = JumpAirTime;
+				Tune.jumpLead = JumpStartup;
+				Tune.landPlay = FMath::Max(0.05f, JumpLandLock - kLandHandBack);
+				Tune.landRate = kLandRate;
+				// A moving landing crouches about twice as deep: handed back at once, it rises over the crossfade
+				// instead of in the last frames before the lock ends.
+				Tune.landPlayMoving = 0.02f;
+			}
+			Anim->SetAir(Pose.bAir && !Pose.bLying, Pose.AirRise);
+			// Where the walk heads, so the legs start and stop with the clips made for it (in cm).
+			const bool bWalks = !Pose.bLying && !Pose.bDodging && Pose.WantSpeed >= 0.f;
+			Anim->SetIntent(bWalks ? Pose.WantSpeed * 100.f : -1.f, bWalks && Pose.StopDistance >= 0.f ? Pose.StopDistance * 100.f : -1.f);
 		}
 	}
 	bWasLying = Pose.bLying;

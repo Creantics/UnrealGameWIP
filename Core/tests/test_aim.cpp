@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstring>
 #include <string>
 
 using namespace ftcore;
@@ -349,4 +350,22 @@ TEST_CASE("aim: in the arena the aimed player turns to the camera's aim, walks s
     in.aim = false;
     for (int i = 0; i < 90; ++i) out = &fight.tick(kDt, in, bodies);
     CHECK(out->player.facing.x > 0.9f);
+}
+
+TEST_CASE("aim assist: over a body the look turns slower, the stick more than the mouse; off it is exactly unchanged") {
+    CHECK(aimAssistTurn(true, false, true) == doctest::Approx(kAimAssistMouse));
+    CHECK(aimAssistTurn(true, true, true) == doctest::Approx(kAimAssistPad));
+    CHECK(kAimAssistPad < kAimAssistMouse);
+    CHECK(kAimAssistMouse < 1.f);
+    CHECK(kAimAssistPad > 0.f);
+    // Off, or not over a body its round would take: 1 exactly, so a look scaled by it is the same to the bit.
+    for (const bool pad : {false, true}) {
+        CHECK(aimAssistTurn(false, pad, true) == 1.f);
+        CHECK(aimAssistTurn(false, pad, false) == 1.f);
+        CHECK(aimAssistTurn(true, pad, false) == 1.f);
+        for (const float look : {0.f, 1e-7f, 0.37f, -2.5f, 123.456f}) {
+            const float scaled = look * aimAssistTurn(false, pad, true);
+            CHECK(std::memcmp(&scaled, &look, sizeof look) == 0);
+        }
+    }
 }

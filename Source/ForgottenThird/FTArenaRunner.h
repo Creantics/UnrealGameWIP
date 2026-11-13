@@ -20,11 +20,15 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/Hallucination.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
+#include "ftcore/Places.h"
+#include "ftcore/TableRing.h"
+#include "ftcore/TableSet.h"
 #include "ftcore/BeatChoreo.h"
 #include "ftcore/InputBindings.h"
 
@@ -52,6 +56,7 @@ struct Settings;
 
 class AFTArenaFighter;
 class AStaticMeshActor;
+class UStaticMeshComponent;
 class APlayerController;
 class UWorld;
 class UAnimSequence;
@@ -106,6 +111,7 @@ struct FFTArenaRunSetup
 	int32 ZoneStyle = 0; // the world's look: 0 the plain zone, 1 Solhaven, 2 the Lattice, 3 the Unwritten
 	FString KitId;       // the fighter kit the player plays, as the table resolved it
 	const FFTLeadLook* Lead = nullptr; // the look the player's figure wears (null: the test human)
+	const FFTLeadLook* Ally = nullptr; // the partner lead's look, worn by the ally in a carrying run (null: the test human)
 	uint32 Seed = 1;
 	bool bAutoPlay = false;
 	bool bIdle = false;
@@ -157,6 +163,9 @@ public:
 
 	// The result line's name for who plays: "autoplay", "idle" or "player".
 	static const TCHAR* PilotName(bool bAutoPlayRun, bool bIdleRun);
+	// Whether the jump's key is read in a fight: -ArenaJump, until the user has tried it; never in a shipping build.
+	// Off, a fight plays as before the jump (Core's jump is only ever pressed by the jump probes).
+	static bool JumpBound();
 	// The world's ground height at p (metres, in cm), from a trace onto its Landscape or a plaza's paving (0 when there is none).
 	static double SampleGround(const UWorld* World, const ftcore::Vec2& P);
 
@@ -182,6 +191,8 @@ public:
 	// Seconds since the fight ended (0 while it runs).
 	double GetResultAge() const { return bResultLogged ? Now - ResultTime : 0.0; }
 	bool IsAutoPlay() const { return bAutoPlay; }
+	// How long after the result the autopilot fights again: covers the longest defeat clip (s).
+	double GetAutoAgainWait() const { return AutoAgainWait; }
 	bool IsIdle() const { return bIdle; }
 	// The result offers to fight again.
 	bool CanFightAgain() const { return bFightAgain; }
@@ -193,6 +204,15 @@ public:
 	ftcore::Vec2 GetPlayerPosition() const { return Bodies.player; }
 	// Everyone's position after the last step (metres).
 	const ftcore::ArenaBodies& GetBodies() const { return Bodies; }
+	// The table (-ArenaTable) for the HUD and effects: on at all, and its state, ring, seats and the Release hold.
+	// A shared blow arrives as an ArenaEventType::TableShare event (in the popup stream, the target tinted as hit).
+	bool IsTableOn() const { return bTable; }
+	// Enemy Slot's rank for the HUD: its kind's carry grade (arena.json "carry"), 0 none, at most 5; 0 for an empty slot.
+	int32 GetSlotRank(int32 Slot) const
+	{
+		return (Slot >= 0 && Slot < static_cast<int32>(Fight.def().enemyCount)) ? FMath::Clamp(static_cast<int32>(Fight.def().enemies[Slot].carry), 0, 5) : 0;
+	}
+	ftcore::ArenaTableView GetTableView() const;
 	double GetZoneZ() const { return ZoneZ; }
 	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
 	// The move enemy Index is in (its attack's numbers), or null when it isn't attacking.
@@ -213,6 +233,20 @@ public:
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
 	double GetReleaseTime() const { return ReleaseTime; }
 	int32 GetReleaseSpent() const { return ReleaseSpent; }
+	// The count's Load and the Lift (-ArenaCountLift): the last Lift (its join time, -1e9 when none, and multiplier),
+	// the Load the count stored, the Lifts, and a Release's mark per enemy slot (0 / -1e9 when unmarked).
+	double GetLiftTime() const { return LiftTime; }
+	float GetLiftMultiplier() const { return LiftMultiplier; }
+	int32 GetCountLoadStored() const { return CountLoadStored; }
+	int32 GetLifts() const { return Lifts; }
+	float GetEnemyMarkBonus(int32 Slot) const;
+	double GetEnemyMarkUntil(int32 Slot) const;
+	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
+	// Load it stored this fight and its last change (-1e9 when none).
+	int32 GetPartnerLoad() const;
+	int32 GetPartnerLoadCap() const;
+	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }
+	double GetPartnerLoadTime() const { return PartnerLoadTime; }
 	double GetOverloadTime() const { return OverloadTime; }
 	int32 GetPopupCount() const { return FMath::Min(PopupTotal, MaxPopups); }
 	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }
@@ -368,6 +402,38 @@ private:
 	// One "Arena check:" line per combat feature (Core's arenaFeatureChecks over the fight's stats), for the headless
 	// demo: PASS, FAIL, or n/a where nothing in the line-up can show it.
 	void LogFeatureChecks() const;
+	// Carrying (Load by chairs), off unless -ArenaChairs, -ArenaCap or -ArenaAlly asks for it (never in a shipping
+	// build until promoted): the cap, block Load, the chairs and the ally go on the fight before it begins and stay
+	// across restarts (ArenaFight keeps them).
+	void BeginCarry(const FFTLeadLook* AllyLookIn);
+	void SpawnAlly(UWorld* World);
+	// Where the ally stands behind the player's left (m), facing `Facing`.
+	ftcore::Vec2 AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
+	void MoveAlly();
+	void PlaceAlly(float Alpha);
+	void LogCarry() const;
+	// Setting the table (-ArenaTable, a carrying run's): its switches, its reset (each attempt), its step after the
+	// fight's, its ring drawn, its log line and its ring's removal.
+	void BeginTable(const ftcore::PlaceTable& Places, bool bCapArg);
+	void ResetTable();
+	void TickTable(const ftcore::ArenaOutput& Out);
+	bool BeginTableNow(double T);
+	// The player's table key: Release held at full Load with enough bodies in reach (TableHold), on the step's input.
+	bool TableCanBegin() const;   // TableCouldBegin and the setter free
+	bool TableCouldBegin() const; // the table's own conditions: Ready, alive, full Load, places, bodies in reach
+	bool TableSetterFree() const; // ftcore::tableSetterFree on the player's last action
+	void StepTableKey(ftcore::ArenaInput& In);
+	void SpawnTable();
+	void PaintTable(float Alpha);
+	void LogTable() const;
+	void EndTable();
+	// Briefs (Lattice slice 1), off unless -ArenaBrief=<id> asks (never in a shipping build until promoted): the
+	// lead's kit takes that Brief's kit from Data/Battle/briefs.json (the cylinder and the kit changes) before the
+	// fight begins. Only the guns lead's own kit has Briefs; any other is left alone with a warning.
+	// Slice 2: the kit is built from the Brief's stats (BriefKit); every stat 10 unless -ArenaRating=<1..30> asks
+	// for that Rating's stats. A bad Rating, or one without -ArenaBrief, stops the run.
+	void BeginBrief();
+	void LogBrief() const;
 	static uint8 SessionLeadOf(const FFTLeadLook* Look);
 	APlayerController* GetPC() const;
 	FVector ToWorld(const ftcore::Vec2& P) const { return FVector(P.x * 100.0, P.y * 100.0, ZoneZ); }
@@ -383,6 +449,8 @@ private:
 	UPROPERTY()
 	TObjectPtr<AFTArenaFighter> EnemyFigures[6]; // ftcore::kMaxArenaEnemies (a literal for UHT; checked in the .cpp)
 	UPROPERTY()
+	TObjectPtr<AFTArenaFighter> AllyFigure;      // the ally in a carrying run (BeginCarry)
+	UPROPERTY()
 	FFTArenaSkin Skins[6];                       // ... likewise
 	// The stone_bearer's plinth and the guest's keep-out disc (markers). UPROPERTYs sit up here, ahead of the fight's
 	// large members: UHT stores a property's offset in 16 bits.
@@ -390,6 +458,10 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// A set table's ring on the ground, its countdown arc and the lines to the setter (-ArenaTable; its parts are its
+	// components).
+	UPROPERTY()
+	TObjectPtr<AStaticMeshActor> TableActor;
 	// The impact jolt's camera modifier (added to the player's camera manager on the first frame it is there) and the
 	// off-frame stinger's procedural voice and its sound (null with no audio device: the marker carries the tell alone).
 	UPROPERTY()
@@ -496,6 +568,70 @@ private:
 	int32 SessionJoins = 0;          // the scripted partner's blows that joined a window
 	int32 SessionBonuses = 0;        // held-blow bonuses the fight took (hostBlow)
 	int32 SessionBonusDamage = 0;    // their extra damage
+	// -ArenaCountLift: the count stores Load and lifts, a releaseMark chair marks the Release's target, and a locked kite
+	// seam opens on a shared blow.
+	bool bCountLift = false;
+	int32 CountLoadStored = 0;
+	int32 CountLoadStores = 0;
+	int32 Lifts = 0;
+	int32 LiftSpent = 0;
+	double LiftTime = -1e9;
+	float LiftMultiplier = 1.f;
+	double LastJoinAt = -1e9;   // the session's last join time seen
+	int32 Marks = 0;
+	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
+	int32 CappedBlows = 0; // blows the blow cap kept down this fight (-ArenaCountLift)
+	// -ArenaLone (or -ArenaThirdSlot=Vacant|Hostile, which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
+	bool bLone = false;
+	uint8 LoneSlot = 0;                 // ftcore::SlotState set on the third slot after the session begins
+	ftcore::LoneTuning LoneTuning{};
+	bool bLoneAtStart = false;
+	double LoneEndedAt = -1.0;          // the fight time a given gift ended it (-1: it did not)
+	int32 LoneReleases = 0;             // Releases made while Lone (each pooled)
+	int32 LoneGiftPresses = 0;          // gift presses while Lone, given or refused
+	int32 LoneGiftsRefused = 0;         // of those, refused (still Lone)
+	int32 LoneBreaches = 0;             // while Lone: a join, a table begun, or a Release not pooled (the check: 0)
+	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
+	bool bLoneGiftDone = false;
+	// The stance this fight begins in: chosen, or forced by the third slot.
+	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
+	// The stance the session will accept for this lead (asked before the fight begins, so a refused one changes
+	// nothing: the chairs' heal charges stay).
+	bool LoneAccepted(uint8 Lead) const { return ftcore::loneAtBegin(LoneWanted(), Session != nullptr, Lead, LoneTuning); }
+	// The fight follows the session's truth (a given gift ends it).
+	void MirrorLone();
+	// While Lone a gift press waits until after the step (a same-tick Release pools first).
+	ftcore::LoneGiftHold LoneGift;
+	void PressPendingLoneGift();
+	// -ArenaHallucination=accept|refuse|expire (a probe; off by default): offers of the lead's tragedies by the Core
+	// rules (ftcore/Hallucination.h). The hold slows the lead's stick and a full one stills the lead; the enemies go on.
+	int32 HallMode = 0;            // 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire
+	float HallAt = 5.f;            // no offer before this fight time (-ArenaHallucinationAt=S)
+	ftcore::HallucinationTuning HallTuning{};
+	ftcore::TragedyTable HallTable;
+	ftcore::TragedyPool HallPool;
+	ftcore::Hallucination Hall;
+	uint32 HallRng = 7u;
+	double HallShownAt = 0.0;
+	int32 HallSeen[8] = {};        // events by ftcore::HallucinationEventType
+	int32 HallHeldSteps = 0;       // steps the lead stood held
+	int32 HallEnemyActs = 0;       // enemy attacks begun while the lead stood held
+	float HallHeldDrift = 0.f;     // metres the lead's body moved while held (knocks included)
+	float HallMaxHold = 0.f;
+	bool bHallHeldStep = false;
+	ftcore::Vec2 HallHeldFrom{};
+	void BeginHallucination();
+	void StepHallucination(ftcore::ArenaInput& In);
+	void AfterHallucinationStep(const ftcore::ArenaOutput& Out);
+	int32 PartnerLoadStored = 0; // the partner's kept gauge: stored this fight, and the last change
+	double PartnerLoadTime = -1e9;
+	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)
+	double KiteLockUntil = -1e9; // the kite's lock end last opened
+	int32 KiteUnlocks = 0;
+	// Feeds the lead's Load to the session (the scripted partner has no gauge).
+	void FeedSessionLoads();
+	// After a session tick: applies its Load changes, notes a Lift and opens the kite's seam on an unlock.
+	void ApplyCountLift(const ftcore::FightTick& Tick);
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
 	// The lead's speed as its body moved (m/s; the sim's velocity less what the bodies' push took off), the median of
@@ -503,9 +639,16 @@ private:
 	// it sets the strikes' upper share. A median, not one step: a body pushed in and out against another swings step to
 	// step, and the gait and the foot lock would flip with it each frame.
 	float PlayerStepSpeed = 0.f;
+	float LeadWantSpeed = -1.f; // the walk's wanted pace handed to the lead's legs (m/s; -1 unknown), held through a hit pause
+	float LeadStopDistance = -1.f; // and how far the body would slide at the brake (m; -1 unknown), held with it
 	float PlayerSteps[3] = {0.f, 0.f, 0.f};
 	int32 PlayerStepAt = -1; // the next slot in PlayerSteps; -1 after a start, a teleport or a facing snap
 	float PlayerStepFacing = 0.f; // rad, at the last step
+	bool bDrawSnap = false; // -ArenaDrawSnap: the mesh yaws by the rules' facing (the old snap), for before/after captures
+	bool bWasDodging = false; // the player's last drawn action was a roll (logs each roll's start)
+	double JumpStartedAt = -1.0; // fight time the drawn jump took off (logs its end and the first free frame); -1: none
+	// The facing the player's mesh is drawn with: the eased drawn facing, or the rules' one under -ArenaDrawSnap.
+	ftcore::Vec2 PlayerDrawFacing(const ftcore::ArenaPlayerOut& P) const { return bDrawSnap ? P.facing : P.drawFacing; }
 	static constexpr float kMaxStepSpeed = 12.f; // m/s: a faster step is a teleport (the dodge is under 6)
 	static constexpr float kStepSnapTurn = 1.f;  // rad in one step: a snap, not a running turn
 	// The strike clips' upper-body share this step, eased toward attackUpperShare of the walk (the lunge left out).
@@ -524,10 +667,14 @@ private:
 	bool bPressLight = false;
 	bool bPressHeavy = false;
 	bool bPressDodge = false;
+	bool bPressJump = false; // only with the jump bound (JumpBound)
 	bool bPressHeal = false;
 	bool bPressLock = false;
 	bool bPressRelease = false;
+	// The Release key down now, either device (read only under -ArenaTable, for the table's hold).
+	bool bReleaseDown = false;
 	bool bPressPair = false;
+	bool bPressTakeHalf = false;
 	// Autoplay's partner: a parry came, so press the pair on the next step.
 	bool bPartnerDue = false;
 	int8 PressSwitch = 0;
@@ -557,9 +704,8 @@ private:
 	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
 	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
 	bool bReticleBlocked = false;    // see IsReticleBlocked
-	// The blocked crosshair's hysteresis: another body blocks only when the crosshair's own is met more than
-	// kBlockMargin (m) further along the round, and the shown state changes once the new one has held kBlockHoldFrames.
-	static constexpr float kBlockMargin = 0.25f;
+	// The blocked crosshair's display hold: another body blocks by the round's own rule (Core's kArenaShotGraze), and
+	// the shown state changes once the new one has held kBlockHoldFrames.
 	static constexpr int32 kBlockHoldFrames = 4;
 	int32 BlockedRun = 0;  // frames the unshown state has held
 	int32 BlockedFor = -1; // the crosshair's body that state is about (a new one starts clear)
@@ -589,6 +735,8 @@ private:
 	int32 TallestStanding(float& OutTop) const;
 	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
 	ftcore::Vec2 ReticleAimDir(const ftcore::Vec2& Fallback) const;
+	// The body under the crosshair as the fight's ArenaInput::aimBody (kArenaNobody: none).
+	uint8 ReticleAimBody() const;
 	// The round's climb (rad) from the lead's muzzle (ftcore::kArenaShotHeight over its floor) to the reticle's heading
 	// point; false (and 0) with no reticle traced.
 	bool ReticlePitch(float& OutPitch) const;
@@ -625,10 +773,14 @@ private:
 	// stinger (Now), and the counts for the check line.
 	ftcore::ArenaJolt Jolt;
 	float ShakeOverride = -1.f;
-	// -ArenaGlide=<toward|across|away|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// -ArenaGlide=<toward|across|away|pulse|free>: the glide probe (FTArenaGlide.h) on; with the autopilot, its stick held that way
+	// (pulse: 0.8 s toward, 0.6 s let go, 0.8 s away, 0.6 s let go, over and over)
 	// to its target (toward, across to the right, away) whenever the autopilot itself leaves the stick at rest, so its
 	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
 	int32 GlideStick = -1;
+	double GlideJumpLast = -1e9; // -ArenaGlide=jump...: the last time the lead was on the jump's clock
+	bool GlideRolling = false; // the player was rolling at the last step (-ArenaGlide=rollstrike)
+	int32 GlideSideRolls = 0;  // rolls pressed so far under -ArenaGlide=sidestep (odd: to the target's left)
 	FFTArenaGlideProbe Glide;
 	int32 JoltAsks = 0;
 	float JoltApplied = 0.f;
@@ -653,6 +805,54 @@ private:
 	bool bNoLock = false;
 	bool bAutoShoot = false;
 	bool bSharedCount = false;
+	// Carrying (BeginCarry): on at all, the ally's body, the autopilot's take half, the chair keys named and their
+	// effects, the cap given, the partner's look, and when the ally was last hit (its tint).
+	bool bCarry = false;
+	bool bAllyOn = false;
+	bool bTakeHalfAuto = false;
+	bool bAutoBlock = false; // -ArenaAutoBlock (carrying runs): the autopilot guards through every wind-up
+	FString CarryChairKeys;
+	ftcore::ArenaChairs CarryChairs;
+	int32 CarryCap = ftcore::kMaxLoad;
+	const FFTLeadLook* AllyLook = nullptr;
+	double AllyHitTime = -1e9;
+	int32 CarrySharedOffers = 0;
+	// Setting the table (BeginTable): on, the autopilot sets it at full Load, the Load filled for a capture; the
+	// places it counts, its clock and ring, and the counts for the TABLE line.
+	bool bTable = false;
+	bool bTableAuto = false;
+	bool bTableFill = false;
+	// -ArenaTableKey: the autopilot works the player's key (StepTableKey): odd presses held to a begin, even ones tapped.
+	bool bTableKey = false;
+	int32 TableKeyPresses = 0;
+	ftcore::PlaceTable TablePlaces;
+	ftcore::TableSet TableClock;
+	ftcore::TableRing TableSeats;
+	ftcore::TableKeyPath TableKey;
+	int32 TableKeyBegins = 0;
+	double TableSetSeconds = 0.0; // fight seconds a table stood Set (the uptime on the TABLE line)
+	double TableLastTick = -1.0;
+	int32 TableKeyTaps = 0;
+	int32 TableKeyCancels = 0;
+	int32 TableKeyDrops = 0; // holds dropped stale or while the setter was busy (logged)
+	int32 TableBegins = 0;
+	int32 TableRefusals = 0;
+	int32 TableSets = 0;
+	int32 TableMostBodies = 0;
+	int32 TableStands = 0;
+	int32 TableLeaves = 0;
+	int32 TableGutters = 0;
+	int32 TableFails = 0;
+	int32 TableClears = 0;
+	int32 TableShares = 0;
+	int32 TableShareHp = 0;
+	ftcore::TableError TableLastRefusal = ftcore::TableError::None;
+	TArray<TObjectPtr<UStaticMeshComponent>> TableRingParts; // the ring's segments
+	TArray<TObjectPtr<UStaticMeshComponent>> TableArcParts;  // the countdown arc's
+	TArray<TObjectPtr<UStaticMeshComponent>> TableLineParts; // a line per seat but the setter's: the ally, each enemy
+	FString BriefId; // -ArenaBrief: the Brief laid over the kit ("" none)
+	FString BriefStats;    // the five stats the kit was built from, for the log
+	int32 BriefRating = 0; // -ArenaRating: the Brief's stats at this Rating (0: every stat 10, the plain kit)
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;

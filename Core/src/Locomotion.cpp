@@ -328,6 +328,7 @@ void Locomotion::reset() {
     state_ = LocoState::Ground;
     target_ = gait_ = LocoClip::Idle;
     share_.fill(0.f);
+    shown_.fill(0.f);
     stride_.fill(0);
     fade_ = phase_ = airTime_ = drop_ = groundTime_ = 0.f;
     landTime_ = -1.f;
@@ -404,6 +405,31 @@ LocoClip Locomotion::groundTarget(float speed) {
     }
     gait_ = heaviestGait();
     return gait_;
+}
+
+void Locomotion::easeShares(float dt) {
+    float gaits = 0.f;
+    for (const LocoClip c : kGaits) gaits += weight_[index(c)];
+    if (gaits <= 0.f) {
+        shown_ = share_;
+        return;
+    }
+    const float a = follow(dt, tuning_.gaitShareFade);
+    float sum = 0.f, want = 0.f;
+    for (const LocoClip c : kGaits) {
+        float& s = shown_[index(c)];
+        const float to = share_[index(c)];
+        s += (to - s) * a;
+        // Easing out, a gait drops at the dead band (as the split's own), not a long tail of a few percent.
+        if (to <= 0.f && s < tuning_.gaitDeadBand) s = 0.f;
+        sum += s;
+        want += to;
+    }
+    if (sum <= 0.f) {
+        shown_ = share_;
+        return;
+    }
+    for (const LocoClip c : kGaits) shown_[index(c)] *= want / sum;
 }
 
 LocoClip Locomotion::heaviestGait() const {
@@ -754,7 +780,7 @@ void Locomotion::advance(float dt, float speed, float leadPhase, float leadStrid
     for (std::size_t i = 0; i < kLocoClipCount; ++i) {
         const LocoClip c = static_cast<LocoClip>(i);
         float& w = weight_[i];
-        w = isLocoGait(c) ? gaits * share_[i] : w * (1.f - a) + (c == target_ ? a : 0.f);
+        w = isLocoGait(c) ? gaits * shown_[i] : w * (1.f - a) + (c == target_ ? a : 0.f);
         if (w < kMinWeight) w = 0.f;
         sum += w;
     }
@@ -769,7 +795,7 @@ void Locomotion::advance(float dt, float speed, float leadPhase, float leadStrid
     for (const LocoClip c : kGaits) gaits += weight_[index(c)];
     float stride = 0.f, natural = 0.f;
     for (const LocoClip c : kGaits) {
-        const float s = gaits > 0.f ? weight_[index(c)] / gaits : share_[index(c)];
+        const float s = gaits > 0.f ? weight_[index(c)] / gaits : shown_[index(c)];
         const LocoClipInfo& i = clip(c);
         if (s <= 0.f || i.length <= 0.f) continue;
         stride += s * i.groundSpeed * i.length / static_cast<float>(i.cycles);
@@ -847,13 +873,23 @@ void Locomotion::update(const LocoInput& in) {
             jump_ = moving && has(LocoClip::JumpMoving) ? LocoClip::JumpMoving : LocoClip::JumpStart;
             state_ = jumped && has(jump_) ? LocoState::Rising : LocoState::Falling;
             // The take-off enters where its root leaves the ground, as the capsule just has.
-            if (state_ == LocoState::Rising) enter_ = clip(jump_).launch;
+            if (state_ == LocoState::Rising) {
+                const LocoClipInfo& j = clip(jump_);
+                const float span = j.contact - j.launch;
+                const float r = tuning_.jumpAir > 0.f && span > 0.f ? span / tuning_.jumpAir : 1.f;
+                rate_[index(jump_)] = r;
+                // A host with its own arc enters before the launch (the push-off), as its arc waits for it.
+                enter_ = tuning_.jumpAir > 0.f ? std::max(0.f, j.launch - tuning_.jumpLead * r) : j.launch;
+            }
             landFell_ = false;
         } else if (state_ == LocoState::Landing) {
             // The landing, entered at its contact, holds to near its end unless the body moves on.
             const LocoClipInfo& landing = clip(land_);
-            if ((speed >= tuning_.moveStart && landTime_ >= tuning_.landHoldMoving) ||
-                landTime_ >= 0.9f * (landing.length - landing.contact)) {
+            const float play =
+                land_ == LocoClip::LandMoving && tuning_.landPlayMoving > 0.f ? tuning_.landPlayMoving : tuning_.landPlay;
+            const float hold = play > 0.f ? play
+                : 0.9f * (landing.length - landing.contact);
+            if ((speed >= tuning_.moveStart && landTime_ >= tuning_.landHoldMoving) || landTime_ >= hold) {
                 state_ = LocoState::Ground;
             }
         }
@@ -869,6 +905,7 @@ void Locomotion::update(const LocoInput& in) {
             landTime_ = hard ? 0.f : -1.f;
             // The landing enters where its root comes down onto the ground, as the capsule just has.
             if (hard) enter_ = clip(land_).contact;
+            if (hard && land_ == LocoClip::Land) rate_[index(land_)] = tuning_.landPlay > 0.f ? tuning_.landRate : 1.f;
             landRoll_ = airTime_ >= tuning_.rollMinAir && ((moving && (in.crouch || in.roll)) || drop_ >= tuning_.rollDrop);
         } else if (state_ == LocoState::Rising) {
             if (time(jump_) >= 0.85f * clip(jump_).length) state_ = LocoState::Falling;
@@ -887,6 +924,7 @@ void Locomotion::update(const LocoInput& in) {
     crouch_ += (crouchTo - crouch_) * follow(dt, tuning_.crouchFade);
     if (std::fabs(crouchTo - crouch_) < 0.01f) crouch_ = crouchTo;
     splitGaits(speed);
+    easeShares(dt);
     // A clip over the layers handing the body back (handBack): one moving on on the ground goes straight to its gaits,
     // at the phase that continues the clip's feet. The rest of the frame finds it on them, as if it had run all along.
     if (handBack_) {
@@ -899,6 +937,7 @@ void Locomotion::update(const LocoInput& in) {
             state_ = LocoState::Ground;
             gait_ = target_ = g;
             groundTime_ = 0.f;
+            shown_ = share_;
             for (std::size_t i = 0; i < kLocoClipCount; ++i) weight_[i] = isLocoGait(static_cast<LocoClip>(i)) ? share_[i] : 0.f;
             matchGaits(g, handFeet_, handVelocity_, speed);
         }

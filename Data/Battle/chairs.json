@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "chairs": [
+    { "person": 1, "key": "chair_a01", "kind": "loadGain",    "a": 0.25, "b": 4 },
+    { "person": 2, "key": "chair_a02", "kind": "healCharges", "a": 1,    "b": 0 },
+    { "person": 3, "key": "chair_a03", "kind": "takeHalf",    "a": 0.1,  "b": 0.05 },
+    { "person": 4, "key": "chair_a04", "kind": "releaseMark", "a": 0.25, "b": 8 }
+  ]
+}

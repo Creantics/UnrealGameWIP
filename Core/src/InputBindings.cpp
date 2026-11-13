@@ -52,6 +52,8 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::FocusNext, "focus_next", InputContext::ReadHeld, false, "MouseScrollDown", "Gamepad_RightStick_Right"},
     {InputAction::LinePrev, "line_prev", InputContext::ReadHeld, false, "W", "Gamepad_LeftStick_Up"},
     {InputAction::LineNext, "line_next", InputContext::ReadHeld, false, "S", "Gamepad_LeftStick_Down"},
+    // Pad: no free Foot button; take half is Guard held plus Interact (route "guard_interact").
+    {InputAction::TakeHalf, "take_half", InputContext::Foot, false, "T", ""},
 }};
 
 const ActionRow& row(InputAction a) { return kRows[static_cast<std::size_t>(a) % kInputActionCount]; }
@@ -163,6 +165,7 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     case InputAction::TargetPrev:
     case InputAction::TargetNext: return pad ? "right_stick_flick" : "mouse_flick";
     case InputAction::Party: return "map_hold";
+    case InputAction::TakeHalf: return pad ? "guard_interact" : nullptr;
     default: break;
     }
     return nullptr;
@@ -327,6 +330,24 @@ constexpr InputHintEntry kArenaHint[] = {
     {{A::TargetPrev, A::TargetNext}, 2, "input.switch", false},
     {{A::Intercept}, 1, "input.intercept", false},
 };
+// The arena's line with the jump after the dodge (InputHintScreen::ArenaJump); everything else as kArenaHint.
+constexpr InputHintEntry kArenaJumpHint[] = {
+    {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move", false},
+    {{A::Light}, 1, "input.light", false},
+    {{A::Light}, 1, "input.heavy", true},
+    {{A::Aim}, 1, "input.aim", false},
+    {{A::Guard}, 1, "input.guard", false},
+    {{A::Roll}, 1, "input.dodge", false},
+    {{A::Jump}, 1, "input.jump", false},
+    {{A::Gift}, 1, "input.heal", false},
+    {{A::Release}, 1, "input.release", false},
+    {{A::Count}, 1, "input.count", false},
+    {{A::ReadPick1, A::ReadPick2, A::ReadPick3}, 3, "input.pick", false},
+    {{A::LockOn}, 1, "input.lock", false},
+    {{A::TargetPrev, A::TargetNext}, 2, "input.switch", false},
+    {{A::Intercept}, 1, "input.intercept", false},
+};
+static_assert(std::size(kArenaJumpHint) == std::size(kArenaHint) + 1);
 constexpr InputHintEntry kFieldHint[] = {
     {{A::MoveForward, A::MoveLeft, A::MoveBack, A::MoveRight}, 4, "input.move", false},
     {{A::Run}, 1, "input.run", false},
@@ -342,8 +363,9 @@ constexpr InputHintEntry kFieldHint[] = {
 };
 
 // What the host reads but no controls line names, each on purpose (ctest hints_read checks both ways): the map key
-// shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause};
+// shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares, and take half
+// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {
@@ -388,6 +410,10 @@ std::size_t inputHintEntries(InputHintScreen screen, const InputHintEntry*& out)
         out = kFieldHint;
         return std::size(kFieldHint);
     }
+    if (screen == InputHintScreen::ArenaJump) {
+        out = kArenaJumpHint;
+        return std::size(kArenaJumpHint);
+    }
     out = kArenaHint;
     return std::size(kArenaHint);
 }
@@ -403,6 +429,7 @@ std::string_view inputRouteLabel(std::string_view route) {
     if (route == "left_stick_full") return "LS full";
     if (route == "mouse_flick") return "Mouse flick";
     if (route == "right_stick_flick") return "RS flick";
+    if (route == "guard_interact") return "Guard+Interact";
     return std::string_view();
 }
 

@@ -15,9 +15,14 @@
 //   gutters out: Guttered, failed(), and failCooldown. An open chair is a seat; an emptied one is not.
 //   TableSet keeps no reference to the PlaceTable, so the host must call checkSeats after every change
 //   to the setter's places while the table is Setting or Set.
+// * beginAt(..., spot, others, count, t): begin with a place on the ground (TableSpot). Refused with Occupied
+//   (nothing spent, no cooldown) while another table in `others` is Set and the two rings overlap: the centres
+//   closer than the two radii added. A table still Setting does not block. One table per place.
+// * checkBodies(bodies, t) while Set: with fewer than minBodies at the table (the host counts them: TableRing.h),
+//   the table gutters out as checkSeats does. The host calls it at Set and after every stand-up or death.
 // * seatEnemy(t) while Set: the enemy sits until the table clears.
-// * split(target, amount, t) while Set: a blow on a seated fighter is shared evenly by everyone at the
-//   table, the seated enemy included (its share, times enemyShare, is real damage to it: this is how
+// * split(target, amount, t) while Set: an enemy's blow on a seated fighter (enemy blows only: never a lead's
+//   blow, a Release, a hazard or a heal) is shared evenly by everyone at the table, the seated enemy included (its share, times enemyShare, is real damage to it: this is how
 //   it is hurt). A blow on the enemy itself is not shared back: it takes it all. Outside Set, or on a
 //   fighter not seated, the target takes it all.
 // * update(now): the timed changes since the last update, and the ones the calls made, in order.
@@ -36,7 +41,7 @@
 namespace ftcore {
 
 enum class TableState : std::uint8_t { Ready, Setting, Set, Cooling }; // append only
-enum class TableError : std::uint8_t { None, NotFull, TooFewSeats, Busy, Cooling, BadSetter }; // append only
+enum class TableError : std::uint8_t { None, NotFull, TooFewSeats, Busy, Cooling, BadSetter, Occupied, Lone }; // append only
 enum class TableEventType : std::uint8_t { Setting, Set, Failed, EnemySeated, Cleared, Ready, Guttered }; // append only
 
 struct TableTuning {
@@ -46,12 +51,29 @@ struct TableTuning {
     double cooldown = 20.0;    // after it clears: 0..300
     double failCooldown = 8.0; // after a failure: 0..300
     float enemyShare = 1.0f;   // a seated enemy's share of a blow, times this: 0..4
+    int minBodies = 1;         // bodies at a set table below which it gutters (checkBodies): 1..16. 1: never
 };
+
+// Where a table sits: its ring's centre on the ground and radius, fixed when it begins.
+struct TableSpot {
+    float x = 0.f;
+    float y = 0.f;
+    float radius = 0.f;
+};
+
+// Two rings overlap: the centres are closer than the radii added (touching is not overlapping).
+inline bool tableSpotsOverlap(const TableSpot& a, const TableSpot& b) {
+    const double dx = static_cast<double>(a.x) - b.x;
+    const double dy = static_cast<double>(a.y) - b.y;
+    const double r = static_cast<double>(a.radius) + b.radius;
+    return dx * dx + dy * dy < r * r;
+}
 
 inline bool validTableTuning(const TableTuning& t) {
     return t.minSeats >= 1 && t.minSeats <= static_cast<int>(kMaxPlaces) && t.setTime >= 0.0 && t.setTime <= 5.0 &&
            t.setDuration >= 0.1 && t.setDuration <= 60.0 && t.cooldown >= 0.0 && t.cooldown <= 300.0 &&
-           t.failCooldown >= 0.0 && t.failCooldown <= 300.0 && t.enemyShare >= 0.0f && t.enemyShare <= 4.0f;
+           t.failCooldown >= 0.0 && t.failCooldown <= 300.0 && t.enemyShare >= 0.0f && t.enemyShare <= 4.0f &&
+           t.minBodies >= 1 && t.minBodies <= 16;
 }
 
 struct TableEvent {
@@ -99,6 +121,7 @@ public:
         seated_ = 0;
         enemySeated_ = false;
         failed_ = false;
+        spot_ = TableSpot{};
         pending_.clear();
         out_.clear();
         return ok;
@@ -117,11 +140,39 @@ public:
         seated_ = static_cast<std::uint8_t>((seated | fighterBit(setter)) & ~fighterBit(kEnemyFighter) & 0x0F);
         enemySeated_ = false;
         failed_ = false;
+        spot_ = TableSpot{};
         state_ = TableState::Setting;
         until_ = t + tuning_.setTime;
         pending_.push(TableEventType::Setting, t);
         advance(t); // a setTime of 0 sets it at once
         return TableError::None;
+    }
+
+    // Begins at `spot`, unless one of `others` (count of them; null ones and this one are skipped) is Set on an
+    // overlapping spot: then Occupied, and `load` and the cooldown are untouched.
+    TableError beginAt(FighterId setter, Load& load, const PlaceTable& places, std::uint8_t seated, TableSpot spot,
+                       const TableSet* const* others, std::size_t count, double t) {
+        for (std::size_t i = 0; others && i < count; ++i) {
+            const TableSet* o = others[i];
+            if (o && o != this && o->set() && tableSpotsOverlap(o->spot(), spot)) {
+                advance(t);
+                return TableError::Occupied;
+            }
+        }
+        const TableError e = begin(setter, load, places, seated, t);
+        if (e == TableError::None) spot_ = spot;
+        return e;
+    }
+
+    // The bodies at a set table changed (or it just set). True when they are too few and it guttered out.
+    bool checkBodies(int bodies, double t) {
+        t = advance(t);
+        if (state_ != TableState::Set || bodies >= tuning_.minBodies) return false;
+        failed_ = true;
+        enemySeated_ = false;
+        pending_.push(TableEventType::Guttered, t);
+        startCooling(t, tuning_.failCooldown);
+        return true;
     }
 
     // The setter is interrupted. True when it failed the table (only while Setting).
@@ -198,6 +249,7 @@ public:
     FighterId setter() const { return setter_; }
     double until() const { return until_; }
     const TableTuning& tuning() const { return tuning_; }
+    const TableSpot& spot() const { return spot_; } // the last beginAt's (radius 0 after begin or reset)
 
 private:
     double advance(double t) {
@@ -241,6 +293,7 @@ private:
     std::uint8_t seated_ = 0;
     bool enemySeated_ = false;
     bool failed_ = false;
+    TableSpot spot_{};
     TableEvents pending_{};
     TableEvents out_{};
 };

@@ -52,6 +52,8 @@ struct FFTArenaPose
 	float Speed = 0.f;                  // m/s on the ground: idle or walk
 	float LegYaw = 0.f;                 // degrees the legs turn from Yaw toward the way the body moves (+ right)
 	bool bFootLock = false;             // the feet held where they stand (a strike whose clip has the legs)
+	float WantSpeed = -1.f;             // m/s the walk heads for (0: braking to a stand; below 0 unknown: no starts or stops)
+	float StopDistance = -1.f;          // m left to slide while braking to a stand (below 0 unknown)
 
 	// The attack under way: its part, how far through that part (0..1) and how the arm moves.
 	bool bAttacking = false;
@@ -64,10 +66,18 @@ struct FFTArenaPose
 	bool bDodging = false;
 	FVector2D DodgeLocal = FVector2D(-1.0, 0.0); // the roll's way in the figure's own frame (x forward)
 	float DodgeFraction = 0.f;
+	float DodgeTime = 0.f; // s: the whole roll (the land-roll clip is fitted to it)
+	bool bDodgeBack = false; // a locked dodge back from the target: drawn facing it, a hop back on the dash clip
+	int8 DodgeSide = 0;      // a locked side dash across it (ftcore dodgeSide): +1 to the body's right, -1 to its left
 	float LeanBack = 0.f;  // degrees: hitstun, guard break, stagger, open
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
 	bool bHealing = false;
+	bool bAir = false;      // a jump from take-off to touch-down: the clips' jump, fall and land (UFTLocomotionAnimInstance::SetAir)
+	float AirHeight = 0.f;  // cm the body is drawn over the floor (the jump's arc)
+	float AirRise = 0.f;    // cm/s the arc climbs (below 0: coming down)
+	float JumpClock = -1.f; // s on the jump's clock (Core's jumpTime; -1: not jumping), for -ArenaJumpFloor
+	float AirFraction = -1.f; // 0..1 through the arc from leaving the ground to touching down (-1: on the ground)
 
 	FLinearColor Tint = FLinearColor::White; // the body's colour this frame
 
@@ -107,6 +117,9 @@ public:
 	// its locomotion clips); with none, or when its body doesn't load (one warning), the test human is.
 	void Setup(bool bPlayer, float BodyRadius, const FLinearColor& BaseColor, float HeightMeters = 0.f,
 		const FFTLeadLook* Look = nullptr);
+	// Whether the lead's body has both side-dash clips (left and right) to draw a locked side dash with, and the dashes
+	// are not swapped for the squash (-ArenaNoDash). Call after Setup.
+	bool CanSideDash() const;
 	// Draws an enemy as Mesh instead of the shapes: lifted HoverMeters off the ground, scaled, turned YawOffset degrees
 	// from the mesh's own facing. Its height (for the HUD's markers) is HeightMeters x Scale over the hover. Call after
 	// Setup. False when the mesh is null.
@@ -126,6 +139,10 @@ public:
 	// the boom may swing.
 	void SetCameraTilt(float Degrees);
 	void ApplyPose(const FFTArenaPose& Pose);
+	// The jump's clock from the fighter's kit (s), so a lead's take-off and landing clips fit Core's arc and landing.
+	void SetJumpTiming(float Startup, float Air, float LandLock) { JumpStartup = Startup; JumpAirTime = Air; JumpLandLock = LandLock; }
+	// How far the body is drawn lifted off its feet' floor for the jump (cm), for a view that follows it.
+	float GetJumpLift() const { return AirLift; }
 	// Drops the lead's held feet and sunk pelvis (UFTLocomotionAnimInstance::ResetFeet): the body was put somewhere
 	// else. ApplyPose does it itself when the body goes down.
 	void ResetFeet();
@@ -242,6 +259,33 @@ private:
 	bool bTellShown = true;
 	bool bShieldShown = true;
 	bool bWasLying = false;
+	// A lead's roll: the land-roll traversal clip playing for it (-1: none), from its touchdown to back up.
+	int32 RollClip = -1;
+	float RollFrom = 0.f;
+	float RollTo = 0.f;
+	float RollRate = 1.f;
+	float RollFraction = 0.f;
+	bool bRollPlanFailed = false;
+	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
+	float RollLift = 0.f;
+	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
+	float AirLift = 0.f;      // cm: the jump's lift as drawn (floor hold, the arc and the head kept on it; eased)
+	float LastFloorNeed = 0.f; // cm: last frame's floor hold, before its lead
+	// The jump's clock (Core's jumpStartup, jumpAir, jumpLandLock; SetJumpTiming), handed to the locomotion so its take-off
+	// and landing clips fit it. 0: not set, the clips keep their own timing.
+	float JumpStartup = 0.f;
+	float JumpAirTime = 0.f;
+	float JumpLandLock = 0.f;
+	float StandHead = 0.f; // the head bone's height in the reference pose (cm, unscaled; 0: not read yet)
+	void ReadFloorBones();
+	float JumpFloorAfter = 0.f; // s left to log after a jump (-ArenaJumpFloor)
+	// -ArenaRollFloor: how long the clip's fade-out after a roll or dash is still logged.
+	float RollFadeLog = 0.f;
+	// The dashes tightened (not -ArenaDashTall): the trunk pitched back under the dash clip, held through its fade.
+	bool bDashPitched = false;
+	float RollFloorBall = 1e9f;
+	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
+	bool RollWithClip(const FFTArenaPose& Pose);
 	TWeakObjectPtr<AActor> PoseHost;
 	void TieMeshTicks();
 	void UntieMeshTicks();

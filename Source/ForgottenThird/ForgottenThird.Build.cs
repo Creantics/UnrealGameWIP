@@ -21,7 +21,7 @@ public class ForgottenThird : ModuleRules
 		if (Target.bBuildEditor)
 		{
 			// The demo-world, character-import and rig commandlets.
-			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor", "Slate", "SlateCore" });
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor" });
 
 			// FTBuildExploreWorld imports each big world's ground as a Landscape. FTBuildMassingWorld's read-back includes
 			// LandscapeEdit.h, which includes InstancedFoliageActor.h: Foliage is only a private dependency of Landscape.
@@ -43,8 +43,8 @@ public class ForgottenThird : ModuleRules
 			PrivateIncludePaths.Add(Path.Combine(NiagaraSource, "NiagaraShader", "Internal"));
 		}
 
-		// Uncomment if you are using Slate UI
-		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
+		// Slate: the new game UI (FTNewUi.h; off unless -FTNewUi or ft.NewUi 1), drawn as viewport widgets built in code.
+		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		
 		// Uncomment if you are using online features
 		// PrivateDependencyModuleNames.Add("OnlineSubsystem");
