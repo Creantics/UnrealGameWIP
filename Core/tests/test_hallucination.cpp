@@ -79,6 +79,7 @@ ArenaInput everyInput() {
     a.aimSpeed = 0.5f;
     a.aimPitched = true;
     a.aimPitch = 0.3f;
+    a.aimBody = 1;
     a.attackSpeed = 0.7f;
     a.attackTurn = 4.f;
     a.takeHalf = true;
@@ -91,7 +92,7 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
            a.guard == b.guard && a.lock == b.lock && a.lockSwitch == b.lockSwitch && a.release == b.release &&
            a.pair == b.pair && a.read == b.read && a.aim == b.aim && a.aimDir.x == b.aimDir.x &&
            a.aimDir.y == b.aimDir.y && a.aimTurn == b.aimTurn && a.aimSpeed == b.aimSpeed &&
-           a.aimPitched == b.aimPitched && a.aimPitch == b.aimPitch && a.attackSpeed == b.attackSpeed &&
+           a.aimPitched == b.aimPitched && a.aimPitch == b.aimPitch && a.aimBody == b.aimBody && a.attackSpeed == b.attackSpeed &&
            a.attackTurn == b.attackTurn && a.takeHalf == b.takeHalf;
 }
 
