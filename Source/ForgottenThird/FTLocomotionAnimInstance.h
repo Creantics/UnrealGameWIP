@@ -250,6 +250,13 @@ public:
 	// The catches are traversal clips FirstCatchClip on, in the TraversalSet with the vaults and climbs.
 	static constexpr int32 FirstCatchClip = FirstSlideClip + static_cast<int32>(ftcore::kSlideClips);
 	static constexpr int32 NumCatchClips = 7;
+	// The arena's locked dodges (PROVISIONAL: engine example dash clips retargeted, to be replaced by our own) are
+	// traversal clips FirstDashClip on, a hop back then a leap to the left and to the right
+	// (MM_Dash_Backward_to_x, MM_Dash_Left_to_x, MM_Dash_Right_to_x in place of the run loop's whole name). Left
+	// unmeasured: the TraversalSet never plans them; the owner plays them by index (HasTraversalClip).
+	static constexpr int32 FirstDashClip = FirstCatchClip + NumCatchClips;
+	static constexpr int32 NumDashClips = 3;
+	bool HasTraversalClip(int32 Clip) const { return Clip >= 0 && Clip < NumTraversalClips && TraversalClips[Clip] != nullptr; }
 	// Plays traversal clip Clip (a TraversalPlan's) at clip time Time over the locomotion, fading in over its first
 	// moments and out by its end; the owner moves the body along TraversalSet::rootAt and calls this every frame,
 	// then with Clip -1 (or LetGoTraversal) when it hands the body back: the clip plays on at its own pace while it
@@ -430,8 +437,9 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> Clips[59];
 	static_assert(ftcore::kLocoClipCount == 59, "Clips[] holds one per LocoClip");
-	// The traversal clips (the TraversalSet's), then the slide's, then the catches (the TraversalSet's again).
-	static constexpr int32 NumTraversalClips = FirstCatchClip + NumCatchClips;
+	// The traversal clips (the TraversalSet's), then the slide's, then the catches (the TraversalSet's again), then the
+	// arena's dashes.
+	static constexpr int32 NumTraversalClips = FirstDashClip + NumDashClips;
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> TraversalClips[NumTraversalClips];
 	// The action clips by slot (SetActionClip) and this frame's actions (AddAction).

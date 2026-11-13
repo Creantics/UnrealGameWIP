@@ -550,14 +550,36 @@ void AFTArenaFighter::TieMeshTicks()
 	}
 }
 
+namespace
+{
+// The span of each dash clip played over a locked dodge (clip seconds, back, left, right): from the take-off (both
+// balls off the floor) to the landing; the let-go plays the settle as it fades. Not from the crouch before it: blended
+// in over the standing pose, the crouch's bent legs put a foot 12 cm under the floor. PROVISIONAL: measured on
+// the engine's example dash clips retargeted (the retarget keeps their timing, so one span serves every lead).
+struct FDashSpan
+{
+	float From, To;
+};
+constexpr FDashSpan kDashSpans[UFTLocomotionAnimInstance::NumDashClips] = {{0.20f, 0.73f}, {0.23f, 0.70f}, {0.27f, 0.77f}};
+}
+
 bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 {
 	UFTLocomotionAnimInstance* Anim = SkinKind == ESkin::Lead ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
 	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
 	// The roll's floor lift comes down with the clip as it fades out (kRollLiftOut, the traversal's fade), not in one frame.
 	constexpr float kRollLiftOut = 0.25f;
-	// A locked dodge back from the target keeps facing it: no forward roll for it (the squash until a back-hop clip).
-	if (!Anim || !Pose.bDodging || Pose.bLying || Pose.bDodgeBack)
+	// A locked dodge back from the target keeps facing it: a hop back on the dash clip (the squash without one), not a
+	// forward roll.
+	const int32 Dash = Pose.bDodgeBack ? UFTLocomotionAnimInstance::FirstDashClip : INDEX_NONE;
+#if UE_BUILD_SHIPPING
+	constexpr bool bNoDash = false;
+#else
+	// -ArenaNoDash: the squash in place of the dash clips, for side-by-side captures.
+	static const bool bNoDash = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoDash"));
+#endif
+	const bool bDash = Dash != INDEX_NONE && Anim && !bNoDash && Anim->HasTraversalClip(Dash);
+	if (!Anim || !Pose.bDodging || Pose.bLying || (Dash != INDEX_NONE && !bDash))
 	{
 		if (RollClip >= 0 && Anim)
 		{
@@ -568,8 +590,21 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		if (RollClip >= 0)
 		{
 			RollLiftFall = RollLift / kRollLiftOut;
+			RollFadeLog = kRollLiftOut;
 		}
+		RollFadeLog = FMath::Max(0.f, RollFadeLog - Dt);
 		RollLift = FMath::Max(0.f, RollLift - RollLiftFall * Dt);
+#if !UE_BUILD_SHIPPING
+		if ((RollLift > 0.f || RollFadeLog > 0.f) && FParse::Param(FCommandLine::Get(), TEXT("ArenaRollFloor")))
+		{
+			auto Over = [this](const TCHAR* Bone)
+			{
+				return Skin->GetBoneIndex(FName(Bone)) != INDEX_NONE ? Skin->GetBoneLocation(FName(Bone)).Z - GetActorLocation().Z : 0.0;
+			};
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena roll floor: fading, head %.1f balls %.1f %.1f cm over the floor, lifted %.1f."),
+				Over(TEXT("head")), Over(TEXT("ball_l")), Over(TEXT("ball_r")), RollLift);
+		}
+#endif
 		RollClip = -1;
 		RollFraction = 0.f;
 		bRollPlanFailed = false;
@@ -583,6 +618,16 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		bRollPlanFailed = false;
 	}
 	RollFraction = Fraction;
+	if (RollClip < 0 && bDash)
+	{
+		const FDashSpan& Span = kDashSpans[Dash - UFTLocomotionAnimInstance::FirstDashClip];
+		RollClip = Dash;
+		RollFrom = Span.From;
+		RollTo = Span.To;
+		RollRate = Pose.DodgeTime > 0.f ? (RollTo - RollFrom) / Pose.DodgeTime : 1.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s dashes on clip %d, %.2f-%.2f s over %.2f s (x%.2f)."), *GetName(), RollClip,
+			RollFrom, RollTo, Pose.DodgeTime, RollRate);
+	}
 	if (RollClip < 0 && !bRollPlanFailed)
 	{
 		// A new roll: off the planted foot (the lower ball), the clip from where it is down on the floor to back up,
@@ -639,12 +684,13 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 		const double Base = Skin->GetComponentLocation().Z;
 		const double Scale = Skin->GetComponentScale().Z;
 		double Need = 0.0;
-		if (Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+		// A dash keeps its feet on the floor or over it: no lift (what a roll left eases away).
+		if (!bDash && Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
 		{
 			const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
 			Need = FMath::Max(Need, RollFloorBall * Scale - Ball);
 		}
-		if (Skin->GetBoneIndex(HeadBone) != INDEX_NONE)
+		if (!bDash && Skin->GetBoneIndex(HeadBone) != INDEX_NONE)
 		{
 			Need = FMath::Max(Need, kSkullCm * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
 		}

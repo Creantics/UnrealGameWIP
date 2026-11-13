@@ -255,7 +255,9 @@ private:
 	bool bRollPlanFailed = false;
 	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
 	float RollLift = 0.f;
-	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
+	float RollLiftFall = 0.f;
+	// -ArenaRollFloor: how long the clip's fade-out after a roll or dash is still logged.
+	float RollFadeLog = 0.f; // cm/s the lift comes down at as the clip fades out
 	float RollFloorBall = 1e9f;
 	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
 	bool RollWithClip(const FFTArenaPose& Pose);
