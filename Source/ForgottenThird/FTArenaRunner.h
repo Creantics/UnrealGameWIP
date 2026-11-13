@@ -684,9 +684,8 @@ private:
 	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
 	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
 	bool bReticleBlocked = false;    // see IsReticleBlocked
-	// The blocked crosshair's hysteresis: another body blocks only when the crosshair's own is met more than
-	// kBlockMargin (m) further along the round, and the shown state changes once the new one has held kBlockHoldFrames.
-	static constexpr float kBlockMargin = 0.25f;
+	// The blocked crosshair's display hold: another body blocks by the round's own rule (Core's kArenaShotGraze), and
+	// the shown state changes once the new one has held kBlockHoldFrames.
 	static constexpr int32 kBlockHoldFrames = 4;
 	int32 BlockedRun = 0;  // frames the unshown state has held
 	int32 BlockedFor = -1; // the crosshair's body that state is about (a new one starts clear)
@@ -716,6 +715,8 @@ private:
 	int32 TallestStanding(float& OutTop) const;
 	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
 	ftcore::Vec2 ReticleAimDir(const ftcore::Vec2& Fallback) const;
+	// The body under the crosshair as the fight's ArenaInput::aimBody (kArenaNobody: none).
+	uint8 ReticleAimBody() const;
 	// The round's climb (rad) from the lead's muzzle (ftcore::kArenaShotHeight over its floor) to the reticle's heading
 	// point; false (and 0) with no reticle traced.
 	bool ReticlePitch(float& OutPitch) const;

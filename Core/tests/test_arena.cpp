@@ -8351,3 +8351,106 @@ TEST_CASE("arena jump: no stamina comes back in the air, and the wait starts aga
     q.run(10);
     CHECK(q.fight.stamina() > spent);
 }
+
+namespace {
+// A body that stands where it is put and never attacks.
+ArenaEnemyKind standKind(float radius, bool skinned = false, float scale = 1.f) {
+    ArenaEnemyKind k = dummyKind();
+    k.passive = true;
+    k.walkSpeed = k.runSpeed = k.strafeSpeed = 0.f;
+    k.bodyRadius = radius;
+    k.look.clipsText[0] = skinned ? 'x' : 0;
+    k.look.scale = scale;
+    return k;
+}
+} // namespace
+
+TEST_CASE("arena attack: a melee blow reaches a body as drawn (bodyRadius times a skinned look's scale), as the round does") {
+    // ruleFighter's first light reaches 2 m all round, plus the body's radius.
+    struct Case {
+        bool skinned;
+        float scale;
+        float x;
+        int hits;
+    };
+    const Case cases[] = {
+        {true, 2.f, 2.9f, 1},  // drawn 1 m round: 2.9 m is inside 3 m
+        {true, 1.f, 2.9f, 0},  // 0.5 m: outside 2.5 m
+        {false, 2.f, 2.9f, 0}, // an unskinned kind is not drawn scaled: 0.5 m
+        {true, 1.f, 2.3f, 1},  // 0.5 m: inside 2.5 m
+        {true, 0.5f, 2.3f, 0}, // drawn 0.25 m round: outside 2.25 m
+    };
+    for (const Case& c : cases) {
+        INFO("skinned " << c.skinned << " scale " << c.scale << " at " << c.x << " m");
+        Rig rig(ruleFighter(), {standKind(0.5f, c.skinned, c.scale)});
+        rig.put(0, c.x, 0.f);
+        rig.in.light = true;
+        rig.runFor(0.6f);
+        CHECK(rig.count(ArenaEventType::Hit) == c.hits);
+    }
+}
+
+TEST_CASE("arena attack: Duy's round at the smallest body 8 m out meets it within its radius plus half the round's width") {
+    const ArenaFighter duy = loadShipped().fighter("duy");
+    REQUIRE(duy.shot.width == doctest::Approx(0.3f));
+    REQUIRE(duy.shot.range >= 8.f);
+    // 0.35 m, the smallest body in arena.json. A line at angle a off its centre passes 8 sin(a) from it, so the edge is
+    // 0.35 + 0.15 = 0.5 m: about 3.6 degrees either side of the centre, 7.2 across.
+    const float edge = 0.35f + 0.5f * duy.shot.width;
+    CHECK(std::asin(edge / 8.f) * 57.2957795f == doctest::Approx(3.58f).epsilon(0.005));
+    for (const float side : {1.f, -1.f}) {
+        for (const float off : {edge - 0.03f, edge + 0.03f}) {
+            const float a = side * std::asin(off / 8.f);
+            const Vec2 dir{std::cos(a), std::sin(a)};
+            const int want = off < edge ? 1 : 0;
+            for (const bool pitched : {true, false}) {
+                INFO("side " << side << " off " << off << " m, " << (pitched ? "pitched" : "flat lane"));
+                Rig rig(duy, {standKind(0.35f)});
+                rig.put(0, 8.f, 0.f);
+                rig.tick();
+                if (pitched) CHECK(rig.fight.shotMeets(dir, 0.f) == (want ? 0 : kArenaNobody));
+                rig.in.aim = true;
+                rig.in.aimDir = dir;
+                rig.in.aimPitched = pitched;
+                rig.in.aimPitch = 0.f;
+                rig.in.light = true;
+                rig.runFor(0.45f);
+                CHECK(rig.count(ArenaEventType::Hit) == want);
+            }
+        }
+    }
+}
+
+TEST_CASE("arena attack: Duy's pitched round takes the crosshair's body within kArenaShotGraze of another met first; shotMeets agrees") {
+    const ArenaFighter duy = loadShipped().fighter("duy");
+    const Vec2 ahead{1.f, 0.f};
+    // A (slot 0) is grazed at its edge, entered 2.75 m along the line. B (slot 1), behind it on the other side, is entered
+    // 0.2 m (within the graze) or 0.3 m (past it) further on. Both are 0.5 m round and apart. aimBody 7 is no body.
+    for (const float behind : {0.2f, 0.3f}) {
+        for (const std::uint8_t aimBody : {kArenaNobody, std::uint8_t{1}, std::uint8_t{7}}) {
+            INFO("B " << behind << " m further, aimBody " << static_cast<int>(aimBody));
+            Rig rig(duy, {standKind(0.5f), standKind(0.5f)});
+            rig.put(0, 3.f, 0.6f);
+            rig.put(1, 2.75f + behind + 0.52f, -0.39f);
+            rig.tick();
+            float atA = 0.f, atB = 0.f;
+            REQUIRE(rig.fight.shotMeets(ahead, 0.f, &atA, 1u << 1) == 0);
+            REQUIRE(rig.fight.shotMeets(ahead, 0.f, &atB, 1u << 0) == 1);
+            CHECK(atA == doctest::Approx(2.75f).epsilon(0.001));
+            CHECK(atB - atA == doctest::Approx(behind).epsilon(0.01));
+            const int want = aimBody == 1 && behind < kArenaShotGraze ? 1 : 0;
+            float at = 0.f;
+            CHECK(rig.fight.shotMeets(ahead, 0.f, &at, 0u, aimBody) == want);
+            CHECK(at == doctest::Approx(want == 1 ? atB : atA));
+            rig.in.aim = true;
+            rig.in.aimDir = ahead;
+            rig.in.aimPitched = true;
+            rig.in.aimPitch = 0.f;
+            rig.in.aimBody = aimBody;
+            rig.in.light = true;
+            rig.runFor(0.45f);
+            REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+            CHECK(static_cast<int>(rig.find(ArenaEventType::Hit)->event.target) == want);
+        }
+    }
+}
