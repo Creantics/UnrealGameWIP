@@ -73,6 +73,10 @@ struct FFTArenaPose
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
 	bool bHealing = false;
+	bool bAir = false;      // a jump from take-off to touch-down: the clips' jump, fall and land (UFTLocomotionAnimInstance::SetAir)
+	float AirHeight = 0.f;  // cm the body is drawn over the floor (the jump's arc)
+	float AirRise = 0.f;    // cm/s the arc climbs (below 0: coming down)
+	float JumpClock = -1.f; // s on the jump's clock (Core's jumpTime; -1: not jumping), for -ArenaJumpFloor
 
 	FLinearColor Tint = FLinearColor::White; // the body's colour this frame
 
@@ -260,6 +264,8 @@ private:
 	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
 	float RollLift = 0.f;
 	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
+	float AirLift = 0.f;      // cm: the jump's height as drawn (eased down when a blow cuts the jump short)
+	float JumpFloorAfter = 0.f; // s left to log after a jump (-ArenaJumpFloor)
 	// -ArenaRollFloor: how long the clip's fade-out after a roll or dash is still logged.
 	float RollFadeLog = 0.f;
 	// The dashes tightened (not -ArenaDashTall): the trunk pitched back under the dash clip, held through its fade.

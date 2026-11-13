@@ -135,8 +135,8 @@ inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 // ("input.light"), so it names only keys the player has. Built once per screen and device, then kept.
 inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevice Device)
 {
-	static TOptional<FString> Lines[2][ftcore::kInputDeviceCount];
-	TOptional<FString>& Line = Lines[static_cast<size_t>(Screen) % 2][static_cast<size_t>(Device) % ftcore::kInputDeviceCount];
+	static TOptional<FString> Lines[ftcore::kInputHintScreenCount][ftcore::kInputDeviceCount];
+	TOptional<FString>& Line = Lines[static_cast<size_t>(Screen) % ftcore::kInputHintScreenCount][static_cast<size_t>(Device) % ftcore::kInputDeviceCount];
 	if (!Line.IsSet())
 	{
 		const std::string Text = ftcore::inputHintLine(Get(), Screen, Device,
