@@ -25,6 +25,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaLook.h"
 #include "ftcore/FieldStrike.h"
 
 #include <cstdint>
@@ -62,6 +63,30 @@ inline constexpr float kAimAssistMouse = 0.8f;
 inline constexpr float kAimAssistPad = 0.6f;
 inline constexpr float aimAssistTurn(bool on, bool pad, bool overBody) {
     return on && overBody ? (pad ? kAimAssistPad : kAimAssistMouse) : 1.f;
+}
+
+// The unlocked look's turn for one frame (degrees): the mouse turns kArenaMouseTurn a unit of its axis, the right stick
+// kArenaStickTurn a second at full tilt (its pitch kArenaStickPitch of that), each by its aimAssistTurn share; the pitch
+// is held to kArenaLook's [viewMin, viewMax]. Off, or not over a body, both shares are 1 and the step is the plain
+// look's to the bit. Locked on, the host does not call it: the view follows the lock.
+inline constexpr float kArenaMouseTurn = 2.5f;  // degrees per unit of mouse axis (as the engine's yaw scale)
+inline constexpr float kArenaStickTurn = 140.f; // degrees a second at full stick
+inline constexpr float kArenaStickPitch = 0.6f; // the stick's pitch rate, a share of its yaw rate
+struct ArenaLookTurn {
+    float yaw = 0.f;
+    float pitch = 0.f;
+    float stickKeep = 1.f; // the stick's share this step (aimAssistTurn)
+};
+inline ArenaLookTurn arenaLookStep(float yaw, float pitch, float mouseX, float mouseY, float lookX, float lookY, float dt,
+                                   bool assist, bool overBody) {
+    const float mouseKeep = aimAssistTurn(assist, false, overBody);
+    const float stickKeep = aimAssistTurn(assist, true, overBody);
+    ArenaLookTurn out;
+    out.yaw = yaw + (mouseX * kArenaMouseTurn * mouseKeep + lookX * kArenaStickTurn * dt * stickKeep);
+    const float p = pitch + mouseY * kArenaMouseTurn * mouseKeep + lookY * kArenaStickTurn * kArenaStickPitch * dt * stickKeep;
+    out.pitch = p < kArenaLook.viewMin ? kArenaLook.viewMin : (p < kArenaLook.viewMax ? p : kArenaLook.viewMax);
+    out.stickKeep = stickKeep;
+    return out;
 }
 
 // Whether aim may be held while the body does this (seated, hanging, traversing, sliding, rolling: no).
