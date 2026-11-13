@@ -89,7 +89,7 @@ struct Rig {
     }
     void tick() {
         fight.tick(kDt, in, bodies);
-        in.light = in.heavy = in.dodge = in.heal = in.lock = in.release = in.pair = false;
+        in.light = in.heavy = in.dodge = in.jump = in.heal = in.lock = in.release = in.pair = false;
     }
     void run(int n) {
         for (int i = 0; i < n; ++i) tick();

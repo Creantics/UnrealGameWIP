@@ -62,7 +62,8 @@
 //     or the backstep direction before any ring cut, and stay until the next dodge: the host picks
 //     the clip once from them, since a direction read from the velocity turns when a roll slides
 //     along the ring's edge.
-//   - Jump (ArenaInput::jump): free (no stamina, no cooldown; the landing is its cost). jumpStartup on the
+//   - Jump (ArenaInput::jump): kArenaJumpStaminaShare of dodgeStamina, refused with none left (as a dodge);
+//     no cooldown, the landing is its weight. jumpStartup on the
 //     ground (the take-off), jumpAir in the air, jumpLand on the ground again (the landing). The air clock
 //     (ArenaPlayerOut::jumpTime) runs beside the action, in the player's own time (a hit pause holds it), and
 //     the height is a closed-form arc of it (jumpHeight at the top), drawn only. In the air the velocity keeps
@@ -71,7 +72,9 @@
 //     only one light may start, the air light (kArenaAirMove, ArenaFighter::jumpLight), and the landing cuts
 //     it short. From jumpClearStart to jumpClearEnd of the air clock an enemy move with hitsAir false passes
 //     under the player and reports Evaded (once per attack); one with hitsAir true lands as on the ground,
-//     and a blow that lands in the air ends the jump (Hitstun). It cuts into an attack through cancelRoll.
+//     and a blow that lands in the air ends the jump (Hitstun), whatever jumpHeight. No take half from the
+//     air. It cuts into an attack through cancelRoll (never a Release), into a dodge only once its i-frames
+//     are over, and never out of Hitstun, GuardBreak or Downed. Nothing cuts the air light.
 //   - Guard (held): blocks attacks from within guardArcCos of the facing. A blocked hit deals
 //     damage * (1 - guardAbsorb) and costs the guard guardDamage stamina; if that empties stamina
 //     the guard breaks (GuardBroken, GuardBreak for guardBreakTime). Unblockable attacks ignore it.
@@ -265,6 +268,8 @@ inline constexpr std::uint8_t kArenaReleaseMove = 10;
 inline constexpr std::uint8_t kArenaShotMove = 11;
 // The light struck in the air (ArenaAction::Light with this move during a jump, never part of the chain).
 inline constexpr std::uint8_t kArenaAirMove = 12;
+// A jump's stamina: this share of the kit's dodgeStamina.
+inline constexpr float kArenaJumpStaminaShare = 0.6f;
 // A Release is open only with more Load than this: a third of kMaxLoad.
 inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
 // An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.

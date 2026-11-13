@@ -162,6 +162,9 @@ public:
 
 	// The result line's name for who plays: "autoplay", "idle" or "player".
 	static const TCHAR* PilotName(bool bAutoPlayRun, bool bIdleRun);
+	// Whether the jump's key is read in a fight: -ArenaJump, until the user has tried it; never in a shipping build.
+	// Off, a fight plays as before the jump (Core's jump is only ever pressed by the jump probes).
+	static bool JumpBound();
 	// The world's ground height at p (metres, in cm), from a trace onto its Landscape or a plaza's paving (0 when there is none).
 	static double SampleGround(const UWorld* World, const ftcore::Vec2& P);
 
@@ -562,6 +565,7 @@ private:
 	float PlayerStepFacing = 0.f; // rad, at the last step
 	bool bDrawSnap = false; // -ArenaDrawSnap: the mesh yaws by the rules' facing (the old snap), for before/after captures
 	bool bWasDodging = false; // the player's last drawn action was a roll (logs each roll's start)
+	double JumpStartedAt = -1.0; // fight time the drawn jump took off (logs its end and the first free frame); -1: none
 	// The facing the player's mesh is drawn with: the eased drawn facing, or the rules' one under -ArenaDrawSnap.
 	ftcore::Vec2 PlayerDrawFacing(const ftcore::ArenaPlayerOut& P) const { return bDrawSnap ? P.facing : P.drawFacing; }
 	static constexpr float kMaxStepSpeed = 12.f; // m/s: a faster step is a teleport (the dodge is under 6)
@@ -582,6 +586,7 @@ private:
 	bool bPressLight = false;
 	bool bPressHeavy = false;
 	bool bPressDodge = false;
+	bool bPressJump = false; // only with the jump bound (JumpBound)
 	bool bPressHeal = false;
 	bool bPressLock = false;
 	bool bPressRelease = false;
@@ -691,6 +696,7 @@ private:
 	// to its target (toward, across to the right, away) whenever the autopilot itself leaves the stick at rest, so its
 	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
 	int32 GlideStick = -1;
+	double GlideJumpLast = -1e9; // -ArenaGlide=jump...: the last time the lead was on the jump's clock
 	bool GlideRolling = false; // the player was rolling at the last step (-ArenaGlide=rollstrike)
 	int32 GlideSideRolls = 0;  // rolls pressed so far under -ArenaGlide=sidestep (odd: to the target's left)
 	FFTArenaGlideProbe Glide;

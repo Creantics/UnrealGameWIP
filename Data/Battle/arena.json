@@ -14,6 +14,7 @@
       ],
       "chainGap": 0.3,
       "heavy": { "startup": 0.55, "active": 0.18, "recovery": 0.65, "range": 2.4, "arcCos": 0.2, "damage": 38, "poiseDamage": 45, "lunge": 0.9, "tracking": 4, "armor": 0.6, "stamina": 30, "cancel": 0.7, "hitStop": 0.1, "jolt": 1.6 },
+      "jumpLight": { "startup": 0.14, "active": 0.1, "recovery": 0.32, "range": 2.0, "arcCos": 0.3, "damage": 12, "poiseDamage": 12, "lunge": 0.4, "tracking": 6, "stamina": 0, "hitStop": 0.06, "jolt": 0.6 },
       "riposte": { "startup": 0.12, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 48, "poiseDamage": 0, "lunge": 0.5, "tracking": 12, "stamina": 0, "cancel": 0.5, "maxTargets": 1, "hitStop": 0.12, "jolt": 2.2 },
       "release": { "startup": 0.2, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 30, "poiseDamage": 0, "lunge": 0.5, "tracking": 10, "stamina": 0, "cancel": 0.5, "maxTargets": 1, "jolt": 1.8 },
       "dodgeTime": 0.6, "dodgeDistance": 3.5, "dodgeInvulnStart": 0.05, "dodgeInvulnEnd": 0.4, "dodgeStamina": 20, "dodgeCancel": 0.75,
@@ -34,6 +35,7 @@
         { "startup": 0.2, "active": 0.14, "recovery": 0.55, "range": 2.1, "arcCos": 0, "damage": 24, "poiseDamage": 32, "lunge": 0.7, "tracking": 8, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.9 }
       ],
       "heavy": { "startup": 0.5, "damage": 44, "poiseDamage": 60, "range": 2.2, "jolt": 1.6 },
+      "jumpLight": { "startup": 0.12, "active": 0.1, "recovery": 0.3, "range": 1.8, "arcCos": 0.3, "damage": 16, "poiseDamage": 20, "lunge": 0.3, "tracking": 6, "stamina": 0, "hitStop": 0.06, "jolt": 0.9 },
       "riposte": { "damage": 60, "range": 2.8, "jolt": 2.2 },
       "release": { "damage": 36, "jolt": 1.8 },
       "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.55, "guardBreakTime": 1.0,
@@ -50,6 +52,7 @@
       ],
       "shot": { "startup": 0.2, "active": 0.06, "recovery": 0.3, "range": 30, "width": 0.3, "damage": 10, "poiseDamage": 6, "lunge": 0, "tracking": 6, "stamina": 12, "cancel": 0.55, "maxTargets": 1, "hitStop": 0.04, "hitStopSelf": 0, "jolt": 0.35 },
       "heavy": { "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 2.7, "arcCos": -0.2, "damage": 36, "poiseDamage": 45, "lunge": 0.8, "tracking": 6, "armor": 0.3, "stamina": 24, "cancel": 0.7, "jolt": 1.6 },
+      "jumpLight": { "startup": 0.14, "active": 0.12, "recovery": 0.3, "range": 2.4, "arcCos": 0.3, "damage": 13, "poiseDamage": 14, "lunge": 0.5, "tracking": 6, "stamina": 0, "hitStop": 0.06, "jolt": 0.7 },
       "riposte": { "damage": 44, "jolt": 2.2 },
       "guardArcCos": 0.35, "guardAbsorb": 0.85, "guardMoveScale": 0.8, "guardBreakTime": 0.9,
       "parryWindow": 0.13, "parryRearm": 0.45, "parryStop": 0.12, "softRange": 5, "softArcCos": 0.4, "homingReach": 1.8
@@ -57,7 +60,8 @@
     {
       "id": "third", "weapon": "none", "attacks": false,
       "guardArcCos": -1, "guardAbsorb": 0.75, "guardMoveScale": 0.35, "guardBreakTime": 1.4,
-      "parryWindow": 0.12, "parryRearm": 0.5, "parryStop": 0.16
+      "parryWindow": 0.12, "parryRearm": 0.5, "parryStop": 0.16,
+      "jumpLight": { "startup": 0.16, "active": 0.1, "recovery": 0.34, "range": 1.9, "arcCos": 0.3, "damage": 8, "poiseDamage": 8, "lunge": 0.3, "tracking": 5, "stamina": 0, "hitStop": 0.05, "jolt": 0.5 }
     }
   ],
   "enemies": [
@@ -88,8 +92,8 @@
       "walkSpeed": 1.5, "runSpeed": 3.5, "strafeSpeed": 1.1, "accel": 6, "turnRate": 4,
       "preferredRange": 3.5, "runRange": 9, "attackDelay": 1.8, "bodyRadius": 0.5, "flinchTime": 0.2, "flinchPoise": 20, "flinchPush": 0.2, "breakAt": 5, "breakDecay": 3, "breakMove": 1,
       "moves": [
-        { "tell": "sweep", "startup": 0.8, "active": 0.25, "recovery": 1, "range": 2.5, "arcCos": 0.5, "damage": 24, "poiseDamage": 30, "guardDamage": 35, "lunge": 0.7, "tracking": 2, "minRange": 0, "maxRange": 2.7, "weight": 1 },
-        { "tell": "slam", "startup": 1.2, "active": 0.2, "recovery": 1.2, "range": 2.2, "arcCos": 0.5, "damage": 28, "poiseDamage": 30, "guardDamage": 0, "lunge": 1.2, "tracking": 2.5, "armor": 0.5, "minRange": 0, "maxRange": 2.6, "cooldown": 5, "weight": 0.6, "unblockable": true, "parryable": false }
+        { "tell": "sweep", "hitsAir": false, "startup": 0.8, "active": 0.25, "recovery": 1, "range": 2.5, "arcCos": 0.5, "damage": 24, "poiseDamage": 30, "guardDamage": 35, "lunge": 0.7, "tracking": 2, "minRange": 0, "maxRange": 2.7, "weight": 1 },
+        { "tell": "slam", "hitsAir": true, "startup": 1.2, "active": 0.2, "recovery": 1.2, "range": 2.2, "arcCos": 0.5, "damage": 28, "poiseDamage": 30, "guardDamage": 0, "lunge": 1.2, "tracking": 2.5, "armor": 0.5, "minRange": 0, "maxRange": 2.6, "cooldown": 5, "weight": 0.6, "unblockable": true, "parryable": false }
       ]
     },
     {
@@ -120,9 +124,9 @@
       "walkSpeed": 1.6, "runSpeed": 3.6, "strafeSpeed": 1.2, "accel": 6, "turnRate": 3,
       "preferredRange": 6.1, "runRange": 14, "attackDelay": 1.8, "bodyRadius": 2.2, "height": 7,
       "moves": [
-        { "tell": "sweep", "startup": 1.6, "active": 0.3, "recovery": 1.2, "range": 5, "arcCos": 0.3, "damage": 28, "poiseDamage": 30, "guardDamage": 36, "lunge": 0.6, "tracking": 1.5, "minRange": 0, "maxRange": 5.2, "weight": 1 },
+        { "tell": "sweep", "hitsAir": false, "startup": 1.6, "active": 0.3, "recovery": 1.2, "range": 5, "arcCos": 0.3, "damage": 28, "poiseDamage": 30, "guardDamage": 36, "lunge": 0.6, "tracking": 1.5, "minRange": 0, "maxRange": 5.2, "weight": 1 },
         { "tell": "overhead", "startup": 1.2, "active": 0.25, "recovery": 1.2, "range": 4.8, "arcCos": 0.5, "damage": 26, "poiseDamage": 28, "guardDamage": 32, "lunge": 0.6, "tracking": 2, "minRange": 0, "maxRange": 5, "weight": 0.6 },
-        { "tell": "slam", "startup": 2, "active": 0.3, "recovery": 1.6, "range": 4.6, "arcCos": -0.2, "damage": 36, "poiseDamage": 40, "guardDamage": 0, "lunge": 0.4, "tracking": 1.5, "armor": 0.5, "minRange": 0, "maxRange": 4.8, "cooldown": 7, "weight": 0.5, "unblockable": true, "parryable": false }
+        { "tell": "slam", "hitsAir": false, "startup": 2, "active": 0.3, "recovery": 1.6, "range": 4.6, "arcCos": -0.2, "damage": 36, "poiseDamage": 40, "guardDamage": 0, "lunge": 0.4, "tracking": 1.5, "armor": 0.5, "minRange": 0, "maxRange": 4.8, "cooldown": 7, "weight": 0.5, "unblockable": true, "parryable": false }
       ]
     },
     {
@@ -132,8 +136,8 @@
       "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72, "carry": 3,
       "look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": -90 },
       "moves": [
-        { "clip": "mitten_drop", "tell": "slam", "startup": 1.667, "active": 0.2, "recovery": 1.5, "range": 7, "arcCos": 0.3, "damage": 8, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
-        { "clip": "swoop", "tell": "sweep", "startup": 1.667, "active": 0.25, "recovery": 2.0, "range": 8, "arcCos": 0.5, "damage": 22, "poiseDamage": 28, "guardDamage": 30, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 8.6, "weight": 20, "cooldown": 8 },
+        { "clip": "mitten_drop", "tell": "slam", "hitsAir": true, "startup": 1.667, "active": 0.2, "recovery": 1.5, "range": 7, "arcCos": 0.3, "damage": 8, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
+        { "clip": "swoop", "tell": "sweep", "hitsAir": false, "startup": 1.667, "active": 0.25, "recovery": 2.0, "range": 8, "arcCos": 0.5, "damage": 22, "poiseDamage": 28, "guardDamage": 30, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 8.6, "weight": 20, "cooldown": 8 },
         { "clip": "peg_spray", "tell": "strike", "startup": 1.667, "active": 0.8, "recovery": 1.0, "range": 7, "arcCos": -0.3, "damage": 11, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
         { "clip": "snag", "tell": "charge", "startup": 2.5, "active": 1.5, "recovery": 2.0, "range": 8, "arcCos": 0.3, "damage": 11, "poiseDamage": 14, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 8.6, "weight": 0.8, "parryable": false },
         { "clip": "wet_sheet", "tell": "overhead", "startup": 2.5, "active": 2.5, "recovery": 1.0, "range": 7, "arcCos": 0.0, "damage": 7, "poiseDamage": 8, "guardDamage": 12, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 0.8, "parryable": false },
@@ -152,10 +156,10 @@
         { "clip": "called_fist", "tell": "strike", "startup": 2.368, "active": 0.2, "recovery": 1.2, "range": 3.8, "arcCos": 0.3, "damage": 17, "poiseDamage": 20, "guardDamage": 26, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 4.2, "weight": 1.2 },
         { "clip": "slab_drive", "tell": "charge", "startup": 1.579, "active": 0.3, "recovery": 1.6, "range": 5.7, "arcCos": 0.3, "damage": 14, "poiseDamage": 17, "guardDamage": 21, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 6.1, "weight": 1.0, "parryable": false },
         { "clip": "debris_shower", "tell": "shot", "startup": 2.368, "active": 1.0, "recovery": 1.6, "range": 11.2, "arcCos": -1, "damage": 17, "poiseDamage": 20, "guardDamage": 26, "lunge": 0, "tracking": 1.0, "minRange": 0, "maxRange": 11.6, "cooldown": 8, "weight": 0.6, "parryable": false },
-        { "clip": "low_sweep", "tell": "sweep", "startup": 1.579, "active": 0.3, "recovery": 1.6, "range": 5.7, "arcCos": -0.2, "damage": 14, "poiseDamage": 17, "guardDamage": 21, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 6.1, "weight": 0.8, "unblockable": true, "parryable": false },
+        { "clip": "low_sweep", "tell": "sweep", "hitsAir": false, "startup": 1.579, "active": 0.3, "recovery": 1.6, "range": 5.7, "arcCos": -0.2, "damage": 14, "poiseDamage": 17, "guardDamage": 21, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 6.1, "weight": 0.8, "unblockable": true, "parryable": false },
         { "clip": "ground_punch", "tell": "overhead", "startup": 3.158, "active": 0.2, "recovery": 2.0, "range": 2.7, "arcCos": 0.3, "damage": 20, "poiseDamage": 24, "guardDamage": 30, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 3.1, "cooldown": 6, "weight": 0.6 },
         { "clip": "edge_jab", "tell": "thrust", "startup": 0.789, "active": 0.15, "recovery": 0.8, "range": 3.2, "arcCos": 0.5, "damage": 9, "poiseDamage": 11, "guardDamage": 14, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 3.6, "weight": 0.6 },
-        { "clip": "stamp", "tell": "slam", "startup": 0.789, "active": 0.15, "recovery": 0.8, "range": 3.2, "arcCos": -0.5, "damage": 9, "poiseDamage": 11, "guardDamage": 14, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 3.6, "weight": 0.6 },
+        { "clip": "stamp", "tell": "slam", "hitsAir": false, "startup": 0.789, "active": 0.15, "recovery": 0.8, "range": 3.2, "arcCos": -0.5, "damage": 9, "poiseDamage": 11, "guardDamage": 14, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 3.6, "weight": 0.6 },
         { "clip": "backhand", "tell": "backhand", "startup": 0.789, "active": 0.15, "recovery": 0.8, "range": 3.4, "arcCos": 0.0, "damage": 9, "poiseDamage": 11, "guardDamage": 14, "lunge": 0, "tracking": 2.5, "minRange": 0, "maxRange": 3.8, "weight": 0.6 }
       ]
     },
@@ -167,7 +171,7 @@
       "look": { "clips": "Data/Anim/white_glove_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
         { "clip": "deal", "tell": "shot", "startup": 2.308, "active": 0.2, "recovery": 1.6, "range": 12, "width": 0.5, "damage": 20, "poiseDamage": 24, "guardDamage": 0, "lunge": 0, "tracking": 0.4, "minRange": 0, "maxRange": 11.5, "cooldown": 8, "weight": 1.5, "unblockable": true, "parryable": false },
-        { "clip": "fan_of_blades", "tell": "sweep", "startup": 1.731, "active": 0.6, "recovery": 1.2, "range": 8, "arcCos": 0.5, "damage": 14, "poiseDamage": 14, "guardDamage": 18, "lunge": 0, "tracking": 1.0, "minRange": 0, "maxRange": 7.5, "cooldown": 4, "weight": 1.0, "parryable": false },
+        { "clip": "fan_of_blades", "tell": "sweep", "hitsAir": false, "startup": 1.731, "active": 0.6, "recovery": 1.2, "range": 8, "arcCos": 0.5, "damage": 14, "poiseDamage": 14, "guardDamage": 18, "lunge": 0, "tracking": 1.0, "minRange": 0, "maxRange": 7.5, "cooldown": 4, "weight": 1.0, "parryable": false },
         { "clip": "extra_elbow", "tell": "backhand", "startup": 1.154, "active": 0.2, "recovery": 1.0, "range": 3, "arcCos": 0.3, "damage": 13, "poiseDamage": 16, "guardDamage": 15, "lunge": 0, "tracking": 2.0, "minRange": 0, "maxRange": 3.0, "weight": 1.0 }
       ]
     },
@@ -189,7 +193,7 @@
       "moves": [
         { "tell": "strike", "armor": 0.6, "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 1.8, "arcCos": 0.5, "damage": 6, "poiseDamage": 6, "guardDamage": 8, "lunge": 0.5, "tracking": 4, "minRange": 0, "maxRange": 2.2, "weight": 1 },
         { "tell": "shot", "startup": 0.8, "active": 0.08, "recovery": 0.6, "range": 9, "width": 0.5, "damage": 12, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 0.3, "minRange": 3, "maxRange": 8.5, "cooldown": 1.5, "weight": 1.5, "parryable": false },
-        { "tell": "sweep", "startup": 1.2, "active": 0.1, "recovery": 0.9, "range": 9.5, "width": 1.6, "damage": 20, "poiseDamage": 20, "guardDamage": 0, "lunge": 0, "tracking": 0.2, "minRange": 3.5, "maxRange": 9, "cooldown": 5, "weight": 0.5, "unblockable": true, "parryable": false }
+        { "tell": "sweep", "hitsAir": false, "startup": 1.2, "active": 0.1, "recovery": 0.9, "range": 9.5, "width": 1.6, "damage": 20, "poiseDamage": 20, "guardDamage": 0, "lunge": 0, "tracking": 0.2, "minRange": 3.5, "maxRange": 9, "cooldown": 5, "weight": 0.5, "unblockable": true, "parryable": false }
       ]
     },
     {

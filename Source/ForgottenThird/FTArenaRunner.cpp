@@ -248,6 +248,16 @@ UFTArenaRunner::UFTArenaRunner()
 	}
 }
 
+bool UFTArenaRunner::JumpBound()
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	static const bool bOn = FParse::Param(FCommandLine::Get(), TEXT("ArenaJump"));
+	return bOn;
+#endif
+}
+
 const TCHAR* UFTArenaRunner::PilotName(bool bAutoPlayRun, bool bIdleRun)
 {
 	return ArenaPilotName(bAutoPlayRun, bIdleRun);
@@ -312,13 +322,17 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		GlideStick = GlideWord == TEXT("toward") ? 0 : GlideWord == TEXT("across") ? 1 : GlideWord == TEXT("away") ? 2
 			: GlideWord == TEXT("pulse") ? 4 : GlideWord == TEXT("orbitguard") ? 5 : GlideWord == TEXT("rollstrike") ? 6 : GlideWord == TEXT("backstep") ? 7
-			: GlideWord == TEXT("sidestep") ? 8 : 3;
+			: GlideWord == TEXT("sidestep") ? 8 : GlideWord == TEXT("jump") ? 9 : GlideWord == TEXT("jumpmove") ? 10
+			: GlideWord == TEXT("jumpstrike") ? 11 : 3;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: glide probe on, the stick %s (-ArenaGlide)."),
 			GlideStick == 0 ? TEXT("held toward the target") : GlideStick == 1 ? TEXT("held across") : GlideStick == 2 ? TEXT("held away")
 			: GlideStick == 4 ? TEXT("pulsed: toward, let go, away, let go") : GlideStick == 5 ? TEXT("held across with the guard up")
 			: GlideStick == 6 ? TEXT("the autopilot's, a light attack on the first free frame after each roll")
 			: GlideStick == 7 ? TEXT("the autopilot's, let go for each roll (a backstep under the lock)")
-			: GlideStick == 8 ? TEXT("the autopilot's, across the lock for each roll, right then left (a side dash)") : TEXT("the autopilot's"));
+			: GlideStick == 8 ? TEXT("the autopilot's, across the lock for each roll, right then left (a side dash)")
+			: GlideStick == 9 ? TEXT("let go: standing jumps only")
+			: GlideStick == 10 ? TEXT("held across: moving jumps only")
+			: GlideStick == 11 ? TEXT("let go: standing jumps, each with an air light") : TEXT("the autopilot's"));
 	}
 #endif
 	Glide.Begin(GlideStick >= 0);
@@ -1245,7 +1259,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	ReleaseTime = -1e9;
 	ReleaseSpent = 0;
 	OverloadTime = -1e9;
-	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = bPartnerDue = false;
+	bPressLight = bPressHeavy = bPressDodge = bPressJump = bPressHeal = bPressLock = bPressRelease = bPressPair = bPartnerDue = false;
 	PressSwitch = 0;
 	PressRead = -1;
 	CameraYaw = ArenaYaw(Fight.playerStartFacing());
@@ -1282,6 +1296,11 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
 	bPressDodge |= FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
+	// The jump: its key does nothing in a fight unless the jump is bound (-ArenaJump, until the user has tried it).
+	if (JumpBound())
+	{
+		bPressJump |= FTInputBindings::WasJustPressed(*PC, InputAction::Jump);
+	}
 	// The partner's Read: the three pick keys (1 / 2 / 3, the d-pad's left, up and right) while the cards are up,
 	// picked or not, until the move goes active. Core refuses a second pick. While the cards are up those keys are
 	// the picks only, so the d-pad's up is not also the heal.
@@ -1440,6 +1459,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.light = bPressLight;
 	In.heavy = bPressHeavy;
 	In.dodge = bPressDodge;
+	In.jump = bPressJump;
 	In.heal = bPressHeal;
 	In.guard = bGuardHeld;
 	In.lock = bPressLock;
@@ -1479,7 +1499,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	// roots: a light by the light's numbers, a heavy, a riposte and a Release by the heavy's.
 	ftcore::attackMoveInput(AttackMoveTable, Fight, In);
 	// Each press goes to one step.
-	bPressLight = bPressHeavy = bPressDodge = bPressHeal = bPressLock = bPressRelease = bPressPair = bPressTakeHalf = false;
+	bPressLight = bPressHeavy = bPressDodge = bPressJump = bPressHeal = bPressLock = bPressRelease = bPressPair = bPressTakeHalf = false;
 	PressSwitch = 0;
 	PressRead = -1;
 	return In;
@@ -1724,6 +1744,28 @@ void UFTArenaRunner::StepFight()
 					In.move = ftcore::Vec2{-S * D.y / L, S * D.x / L};
 				}
 			}
+		}
+		if (GlideStick >= 9 && GlideStick <= 11)
+		{
+			// -ArenaGlide=jump / jumpmove / jumpstrike: jumps only (no attack, roll, guard or heal), one from the first
+			// free frame kGlideJumpEvery after the last frame on the jump's clock; let go (jump), held across the target
+			// (jumpmove), or let go with a light at kGlideAirLightAt on the air clock (jumpstrike: the air light).
+			constexpr double kGlideJumpEvery = 1.2;
+			constexpr float kGlideAirLightAt = 0.22f;
+			const ftcore::ArenaPlayerOut& P = Fight.output().player;
+			In.light = In.heavy = In.release = In.dodge = In.guard = In.heal = In.pair = In.takeHalf = false;
+			In.move = ftcore::Vec2{0.f, 0.f};
+			GlideNow = GlideStick == 10 ? 1 : -1;
+			if (P.jumpTime >= 0.f)
+			{
+				GlideJumpLast = Now;
+			}
+			const bool bFree = P.action == ftcore::ArenaAction::Idle || P.action == ftcore::ArenaAction::Move;
+			In.jump = bFree && Now - GlideJumpLast >= kGlideJumpEvery;
+			// Only in the air: once the air light hands back to the jump, a press in the landing would start a ground light.
+			const ftcore::ArenaFighter& Kit = Fight.def().fighter;
+			In.light = GlideStick == 11 && P.action == ftcore::ArenaAction::Jump && P.jumpTime >= kGlideAirLightAt
+				&& P.jumpTime < Kit.jumpStartup + Kit.jumpAir;
 		}
 		if (GlideNow >= 0 && GlideNow < 3 && !In.dodge && In.move.x * In.move.x + In.move.y * In.move.y < 1e-4f)
 		{
@@ -2484,6 +2526,19 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: roll starts at %.2f s"), Fight.time());
 		}
 		bWasDodging = bDodging;
+		// The jump's take-off and its end: the first frame drawn off the jump's clock, and the action then (free when
+		// Idle or Move; a blow in the air ends it in Hitstun).
+		if (P.jumpTime >= 0.f && JumpStartedAt < 0.0)
+		{
+			JumpStartedAt = Fight.time() - P.jumpTime;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: jump takes off at %.2f s"), JumpStartedAt);
+		}
+		else if (P.jumpTime < 0.f && JumpStartedAt >= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: jump ends at %.2f s, %.2f s after take-off, into %s"), Fight.time(),
+				Fight.time() - JumpStartedAt, UTF8_TO_TCHAR(ftcore::arenaActionName(P.action)));
+			JumpStartedAt = -1.0;
+		}
 #endif
 		// The legs at the pace the body is drawn moving (the last steps' median), not the sim's wish (which the
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
@@ -2517,6 +2572,13 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			{
 				Attack = ftcore::arenaPlayerAttack(D.fighter, P.move);
 				Pose.Swing = EFTArenaSwing::Across;
+				break;
+			}
+			// The air light: its own move id and numbers (the kit's jumpLight), a downward swing.
+			if (P.move == ftcore::kArenaAirMove)
+			{
+				Attack = ftcore::arenaPlayerAttack(D.fighter, P.move);
+				Pose.Swing = EFTArenaSwing::Overhead;
 				break;
 			}
 			Attack = &D.fighter.light[FMath::Min<size_t>(P.move, ftcore::kMaxLightChain - 1)];
@@ -2589,6 +2651,22 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				// The legs keep the way they went: what the body turns, they turn back.
 				Pose.LegYaw = FMath::Clamp(Pose.LegYaw - W * Delta, -kLegYawMax, kLegYawMax);
 			}
+		}
+		// The jump, on Core's air clock (an air light's too): the body at the arc's height at the time drawn (a step
+		// behind, Alpha of the way to the last; a hit pause holds it), the clips told it is in the air from take-off to
+		// touch-down (rising while the arc climbs) and no foot held. The landing is on the ground: the land clip plays.
+		if (P.jumpTime >= 0.f)
+		{
+			const ftcore::ArenaFighter& Kit = D.fighter;
+			const float Behind = P.stopLeft > 0.f ? 0.f : (1.f - Alpha) * StepSeconds;
+			const float AirT = FMath::Max(0.f, P.jumpTime - Behind) - Kit.jumpStartup;
+			const float Air = FMath::Max(Kit.jumpAir, 1e-3f);
+			const float U = FMath::Clamp(AirT / Air, 0.f, 1.f);
+			Pose.bAir = AirT < Kit.jumpAir;
+			Pose.AirHeight = AirT > 0.f ? 100.f * Kit.jumpHeight * 4.f * U * (1.f - U) : 0.f;
+			Pose.AirRise = 100.f * Kit.jumpHeight * 4.f * (1.f - 2.f * U) / Air;
+			Pose.bFootLock = false;
+			Pose.JumpClock = P.jumpTime;
 		}
 		if (P.invulnerable)
 		{
@@ -3201,6 +3279,11 @@ void UFTArenaRunner::LogFeatureChecks() const
 		S.lightStamina);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: cancels %s (%d of %d chances)."), *Text(C.cancelsCheck), S.cancels,
 		S.cancelChances);
+	// The jump: only in runs that can jump (-ArenaJump or a jump probe), so a default run's lines stay as they were.
+	if (JumpBound() || (GlideStick >= 9 && GlideStick <= 11))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: jump %s (%d started, %d landed)."), *Text(C.jumpCheck), S.jumps, S.landings);
+	}
 	// Flinch (ftcore::arenaFeatureChecks): n/a when no blow could flinch an upright enemy (a kit too light for the
 	// kinds' flinchPoise, poise breaking first, or no kind that flinches, as a boss).
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d of %d chances)."), *Text(C.flinchCheck), S.flinches,

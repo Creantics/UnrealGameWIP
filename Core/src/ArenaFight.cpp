@@ -273,20 +273,21 @@ struct ArenaFightImpl {
     }
 
     // What wants to cut into the current action: an attack's own cancel window for it, if it names one.
-    enum class Cut : std::uint8_t { Other, Guard, Roll, Light };
+    enum class Cut : std::uint8_t { Other, Guard, Roll, Light, Jump };
     static Cut cutOf(Press what) {
         switch (what) {
         case Press::Light:
         case Press::Shot: return Cut::Light;
-        case Press::Dodge:
-        case Press::Jump: return Cut::Roll;
+        case Press::Dodge: return Cut::Roll;
+        case Press::Jump: return Cut::Jump;
         default: return Cut::Other;
         }
     }
 
     // A new action may start from Idle/Move, from an attack once `cancel` of its recovery has passed (or its own
     // window for that action, a share of the whole attack), from a dodge once `dodgeCancel` of it has passed, and
-    // from Guard at any time.
+    // from Guard at any time. A jump cuts an attack through its roll window, never a Release, and a dodge only once
+    // its i-frames are over (no chaining them into the air's clear window). Nothing cuts an air light.
     static bool canStart(const Player& p, const ArenaFighter& f, Cut cut = Cut::Other) {
         switch (p.action) {
         case ArenaAction::Idle:
@@ -297,15 +298,18 @@ struct ArenaFightImpl {
         case ArenaAction::Heavy:
         case ArenaAction::Riposte:
         case ArenaAction::Release: {
+            if (p.action == ArenaAction::Light && p.move == kArenaAirMove) return false;
+            if (p.action == ArenaAction::Release && cut == Cut::Jump) return false;
             const ArenaAttack& a = *attackOf(p, f);
-            const float own = cut == Cut::Guard  ? a.cancelGuard
-                              : cut == Cut::Roll  ? a.cancelRoll
-                              : cut == Cut::Light ? a.cancelLight
-                                                  : -1.f;
+            const float own = cut == Cut::Guard                    ? a.cancelGuard
+                              : cut == Cut::Roll || cut == Cut::Jump ? a.cancelRoll
+                              : cut == Cut::Light                  ? a.cancelLight
+                                                                   : -1.f;
             if (own >= 0.f) return p.actionTime >= own * a.total();
             return p.actionTime >= a.startup + a.active + a.cancel * a.recovery;
         }
         case ArenaAction::Dodge:
+            if (cut == Cut::Jump && p.actionTime < f.dodgeInvulnEnd - kArenaEps) return false;
             return p.actionTime >= f.dodgeCancel * f.dodgeTime;
         case ArenaAction::Jump: {
             // Nothing in the take-off; in the air only the one air light; on the ground again once the landing's
@@ -613,6 +617,11 @@ struct ArenaFightImpl {
         return 4.f * std::max(0.f, fi.jumpHeight) * u * (1.f - u);
     }
 
+    // Off the floor: the jump's air phase (past the take-off, short of the landing), whatever its height.
+    bool airborne() const {
+        return pl.jumpTime > fi.jumpStartup && pl.jumpTime < fi.jumpStartup + fi.jumpAir - kArenaEps;
+    }
+
     void endAction() {
         if (pl.action == ArenaAction::Light && pl.move == kArenaAirMove && pl.jumpTime >= 0.f) {
             // An air light that ends in the air: the jump goes on from its clock.
@@ -787,8 +796,11 @@ struct ArenaFightImpl {
         return true;
     }
 
-    // The jump: free, from the ground. The velocity carries the take-off's (no faster than a run).
+    // The jump, from the ground: kArenaJumpStaminaShare of a dodge's stamina, refused as a dodge is (with none left).
+    // The velocity carries the take-off's (no faster than a run).
     bool startJump() {
+        if (fi.dodgeStamina > 0.f && pl.stamina <= 0.f) return false;
+        spend(kArenaJumpStaminaShare * fi.dodgeStamina);
         pl.chainLive = false;
         pl.action = ArenaAction::Jump;
         pl.actionTime = 0.f;
@@ -1903,8 +1915,8 @@ struct ArenaFightImpl {
         // Its own blow's table share may have killed it: then nothing more touches it this tick.
         if (alive(i)) pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
         if (pl.hp <= 0) return;
-        if (jumpHeightAt(pl.jumpTime) > 0.f) {
-            // A blow that lands in the air ends the jump: knocked out of it, whatever the poise.
+        if (airborne()) {
+            // A blow that lands in the air ends the jump: knocked out of it, whatever the poise (or the height).
             pl.chainLive = false;
             pl.action = ArenaAction::Hitstun;
             pl.actionTime = 0.f;
@@ -2043,7 +2055,7 @@ struct ArenaFightImpl {
         const bool pressed = pl.takeHalfPress >= t1 - window - kArenaEps && pl.takeHalfPress <= t1;
         const bool canTake = pl.hp > 0 && !pl.invulnerable && pl.action != ArenaAction::Downed &&
                              pl.action != ArenaAction::Release && pl.action != ArenaAction::Hitstun &&
-                             pl.action != ArenaAction::GuardBreak;
+                             pl.action != ArenaAction::GuardBreak && !airborne(); // not from the air
         if (pressed && canTake && arenaDistance(pl.pos, fight.allyPos_) <= fi.takeHalfReach + kArenaEps) {
             pl.takeHalfPress = -1.0e9f; // used
             tookHalf = true;
