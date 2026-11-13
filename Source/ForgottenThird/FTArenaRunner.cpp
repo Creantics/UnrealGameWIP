@@ -1613,7 +1613,7 @@ void UFTArenaRunner::BeginSession()
 	LoneEndedAt = -1.0;
 	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = 0;
 	bLoneGiftDone = false;
-	bLoneGiftPending = false;
+	LoneGift = {};
 	PartnerLoadTime = -1e9;
 	LiftTime = LastJoinAt = KiteLockUntil = -1e9;
 	LiftMultiplier = 1.f;
@@ -1702,11 +1702,10 @@ void UFTArenaRunner::BeginSession()
 
 void UFTArenaRunner::PressPendingLoneGift()
 {
-	if (!bLoneGiftPending || !Session)
+	if (!LoneGift.take() || !Session)
 	{
 		return;
 	}
-	bLoneGiftPending = false;
 	++LoneGiftPresses;
 	const bool bGiven = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift.given;
 	MirrorLone();
@@ -1747,11 +1746,7 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	}
 	if (In.heal || bProbeGift)
 	{
-		if (Fight.lone())
-		{
-			bLoneGiftPending = true; // pressed after the step (PressPendingLoneGift)
-		}
-		else
+		if (LoneGift.press(Fight.lone())) // else pressed after the step (PressPendingLoneGift)
 		{
 			Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
 		}
@@ -3853,6 +3848,7 @@ void UFTArenaRunner::EndImpact()
 void UFTArenaRunner::Restart()
 {
 	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
+	LoneGift = {}; // a press held from the last attempt is not this one's
 	Fight.restart();
 	if (bStoryFight)
 	{
