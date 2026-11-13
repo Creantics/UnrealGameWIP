@@ -1209,7 +1209,7 @@ bool AFTStoryDirector::GetAnsweredHead(FVector& Out) const
 	}
 	FVector Origin;
 	FVector Extent;
-	Who->GetActorBounds(true, Origin, Extent);
+	Who->GetActorBounds(false, Origin, Extent); // all components: the stand-in face has no collision
 	// A body: about a head below its top. The stand-in is a face alone: its middle.
 	Out = bHead ? Origin + FVector(0.0, 0.0, FMath::Max(0.0, Extent.Z - 12.0)) : Origin;
 	return true;

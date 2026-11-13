@@ -1,6 +1,7 @@
 #include "FTNewUi.h"
 
 #include "FTArenaRunner.h"
+#include "ForgottenThird.h"
 #include "FTInputBindings.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
@@ -853,6 +854,7 @@ private:
 		const ftcore::UiStyle& St = Table().Style;
 		const float S = P.S;
 		const float A = LeadFade.alpha;
+		const float TA = TextAlpha(A);
 		const float CX = Carry::LeadX * S;
 		const float CY = Size.Y - Carry::LeadUp * S;
 		Mesh.Shade(CX + 10.f * S, CY - 40.f * S, 230.f * S, 230.f * S, St.backingSoftHud * FMath::Max(A, 0.6f));
@@ -898,7 +900,7 @@ private:
 			float MY = 0.f;
 			ftcore::uiArcPoint(CX, CY, (Carry::LoadR + 11.f) * S, Deg, MX, MY);
 			Chevron(MX, MY, 10.f * S, Deg, S, Tok(UiToken::Ink, A));
-			P.Text(CX + 30.f * S, CY + 84.f * S - ValueAsc, LoadText, ValueFont, L.overloaded ? Tok(UiToken::Danger, A) : Tok(UiToken::Accent, A));
+			P.Text(CX + 30.f * S, CY + 84.f * S - ValueAsc, LoadText, ValueFont, L.overloaded ? Tok(UiToken::Danger, TA) : Tok(UiToken::Accent, TA));
 		}
 
 		// The chairs at the table: one small filled mark per named chair, in a row inside the ring's crown.
@@ -909,7 +911,7 @@ private:
 		}
 
 		// The numbers in the open bottom: HP to the left of the middle (a danger mark beside it when low), Load to the right.
-		P.Text(CX - 30.f * S - HpTextW, CY + 84.f * S - ValueAsc, HpText, ValueFont, HpC);
+		P.Text(CX - 30.f * S - HpTextW, CY + 84.f * S - ValueAsc, HpText, ValueFont, bLow ? Tok(UiToken::Danger, TA) : Tok(UiToken::Ink, TA));
 		if (bLow)
 		{
 			Danger(CX - 30.f * S - HpTextW - 14.f * S, CY + 84.f * S - ValueAsc * 0.45f, 13.f * S, Tok(UiToken::Danger, A));
@@ -1000,6 +1002,7 @@ private:
 		const ftcore::UiStyle& St = Table().Style;
 		const float S = P.S;
 		const float A = TopFade.alpha;
+		const float TA = TextAlpha(A);
 		const float CX = Size.X * 0.5f;
 		const float Y = Carry::TopLine * S;
 		const float Len = (B.present ? Carry::BossLen : Carry::TargetLen) * S;
@@ -1025,7 +1028,7 @@ private:
 		}
 		if (!B.present)
 		{
-			P.Text(CX - TargetW * 0.5f, Y - 26.f * S - LabelAsc, TargetWord, LabelFont, Tok(UiToken::InkDim, A));
+			P.Text(CX - TargetW * 0.5f, Y - 26.f * S - LabelAsc, TargetWord, LabelFont, Tok(UiToken::InkDim, TA));
 		}
 		for (int32 I = 1; B.present && I < B.phaseCount; ++I)
 		{
@@ -1041,7 +1044,7 @@ private:
 		float LY = Y + 28.f * S; // the next row's top
 		if (B.present && B.weightMax > 0)
 		{
-			P.Text(X0, LY, WeightWord, LabelFont, Tok(UiToken::InkDim, A));
+			P.Text(X0, LY, WeightWord, LabelFont, Tok(UiToken::InkDim, TA));
 			for (int32 I = 0; I < B.weightMax; ++I)
 			{
 				const float X = X0 + WeightW + 14.f * S + I * 9.f * S;
@@ -1066,7 +1069,7 @@ private:
 			const FVector2f Pts[5] = {FVector2f(BX - R, BY - R), FVector2f(BX + R, BY - R), FVector2f(BX + R, BY + R), FVector2f(BX - R, BY + R),
 				FVector2f(BX - R, BY - R)};
 			Poly(Pts, 5, 0.7f * S, Tok(UiToken::Ink, A), true);
-			P.Text(CX - InvulW * 0.5f, WY, InvulWord, LabelFont, Tok(UiToken::Ink, A));
+			P.Text(CX - InvulW * 0.5f, WY, InvulWord, LabelFont, Tok(UiToken::Ink, TA));
 		}
 		if (B.present && T.present && T.enemy != B.nameKey)
 		{
@@ -1074,7 +1077,7 @@ private:
 			const float OLen = 300.f * S;
 			const float OX = CX - OLen * 0.5f;
 			const float OHp = T.hpMax > 0 ? FMath::Clamp(static_cast<float>(T.hp) / T.hpMax, 0.f, 1.f) : 0.f;
-			P.Text(OX - TargetW - 16.f * S, OY - LabelAsc * 0.6f, TargetWord, LabelFont, Tok(UiToken::InkDim, A));
+			P.Text(OX - TargetW - 16.f * S, OY - LabelAsc * 0.6f, TargetWord, LabelFont, Tok(UiToken::InkDim, TA));
 			HLine(OX, OX + OLen, OY, 0.f, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A), false);
 			HLine(OX, OX + OLen, OY, 0.f, OHp, StrokeStyle(2.4f, 106, S, 0.04f), Tok(UiToken::Ink, A));
 			HLine(OX, OX + OLen, OY + 9.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.2f, 107, S), Tok(UiToken::InkDim, A), false);
@@ -1108,8 +1111,11 @@ private:
 				continue;
 			}
 			const float Y = Y0 + I * Carry::VerbStep * S; // the word's baseline
-			const float VA = FMath::Max(A, 0.6f) * (Avail[I] ? 1.f : 0.5f); // a reference list: it steps back, never out
+			const float VA = FMath::Max(A, 0.6f) * (Avail[I] ? 1.f : 0.5f); // a reference list: its marks step back, never out
 			const FLinearColor C = I == Hot ? Tok(UiToken::Accent, VA) : Tok(UiToken::Ink, VA);
+			// The words keep full strength at rest (they must read on bright sky); an unavailable verb is the dim ink.
+			const float WA = TextAlpha(A);
+			const FLinearColor WC = I == Hot ? Tok(UiToken::Accent, WA) : Avail[I] ? Tok(UiToken::Ink, WA) : Tok(UiToken::InkDim, WA);
 			const float KX = RX - 44.f * S;
 			const float KY = Y - 7.f * S;
 			const float KW = V.Keys.Len() <= 1 ? 30.f * S : FMath::Max(30.f * S, V.KeysW + 18.f * S);
@@ -1122,14 +1128,22 @@ private:
 				StadiumStroke(Line, KX, KY, KW + 16.f * T * S, (30.f + 16.f * T) * S, 0.8f * S);
 				Mesh.Stroke(Line, Tok(UiToken::Accent, (1.f - T) * FMath::Max(A, 0.6f)), true, true);
 			}
-			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.55f, V.Keys, LabelFont, C);
-			P.Text(KX - KW * 0.5f - 18.f * S - V.WordW, Y - VerbAsc, V.Word, VerbFont, C);
+			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.55f, V.Keys, LabelFont, WC);
+			P.Text(KX - KW * 0.5f - 18.f * S - V.WordW, Y - VerbAsc, V.Word, VerbFont, WC);
 			if (I == Hot)
 			{
 				const FVector2f Pts[3] = {FVector2f(RX + 19.f * S, Y - 15.f * S), FVector2f(RX + 10.f * S, Y - 7.f * S), FVector2f(RX + 19.f * S, Y + 1.f * S)};
 				Poly(Pts, 3, 0.9f * S, Tok(UiToken::Accent, A));
 			}
 		}
+	}
+
+	// Text at the rest alpha keeps full strength (a faded word on bright sky reads as a hollow outline); below the rest
+	// alpha (the HUD going away) it fades with the rest.
+	static float TextAlpha(float A)
+	{
+		const float Rest = Table().Style.fade.restAlpha;
+		return Rest > 0.01f ? FMath::Min(1.f, A / Rest) : A;
 	}
 
 	TFunction<const UFTArenaRunner*()> GetRunner;
@@ -1267,6 +1281,12 @@ public:
 				AnchorUV = FVector2f(static_cast<float>(Px.X / VX), static_cast<float>(Px.Y / VY));
 				bAnchor = AnchorUV.X > 0.05f && AnchorUV.X < 0.95f && AnchorUV.Y > 0.08f && AnchorUV.Y < 0.75f;
 			}
+		}
+		if (OptionRows > 0 && AnchorLoggedFor != OptionsFor)
+		{
+			AnchorLoggedFor = OptionsFor;
+			UE_LOG(LogForgottenThird, Log, TEXT("UI: choice anchor %s (%.2f, %.2f)."), bAnchor ? TEXT("beside the face") : TEXT("none, under the line"),
+				AnchorUV.X, AnchorUV.Y);
 		}
 	}
 
@@ -1412,7 +1432,7 @@ private:
 		const TSharedRef<FSlateFontMeasure> M = FontMeasure();
 		const auto Draw = [&](int32 U0, int32 U1, int32 Level)
 		{
-			const float Off = U0 > From ? static_cast<float>(M->Measure(FStringView(T), From, U0 - 1, TextFont).X) : 0.f;
+			const float Off = U0 > From ? static_cast<float>(M->Measure(FStringView(T), From, U0, TextFont).X) : 0.f;
 			FLinearColor C = Body;
 			C.A *= static_cast<float>(Level) / Steps;
 			P.Text(X + Off, Y, T, TextFont, C, U0, U1);
@@ -1544,6 +1564,7 @@ private:
 	int32 OptionRows = 0;
 	bool bFakeOptions = false;
 	uint32 OptionsFor = MAX_uint32;
+	uint32 AnchorLoggedFor = MAX_uint32;
 	float OptionW = 0.f;
 	bool bAnchor = false;
 	FVector2f AnchorUV = FVector2f::ZeroVector; // the answered person's head, as a fraction of the view
