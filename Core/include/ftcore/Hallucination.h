@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -115,8 +116,10 @@ public:
         return HallucinationStart::Started;
     }
 
-    // One step of `dt` seconds. events() holds what happened in it (and a Started from a start() after it).
+    // One step of `dt` seconds (a negative, NaN or infinite step counts as 0, so the clock stays sound). events()
+    // holds what happened in it (and a Started from a start() after it).
     void tick(double dt, const HallucinationInput& in) {
+        if (!(dt > 0.0 && std::isfinite(dt))) dt = 0.0;
         eventCount_ = 0;
         now_ += dt;
         cooldown_ = std::max(0.f, cooldown_ - static_cast<float>(dt));
