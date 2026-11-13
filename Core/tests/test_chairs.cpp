@@ -66,7 +66,12 @@ TEST_CASE("chairs: the shipped table loads, and only named places' chairs count 
     ChairTable t;
     std::string err;
     REQUIRE_MESSAGE(importChairTable(text, t, &err), err);
-    CHECK(t.rows.size() == 3);
+    CHECK(t.rows.size() == 4);
+    const ChairRow* m = t.findKey("chair_a04");
+    REQUIRE(m);
+    CHECK(m->effect.kind == ChairKind::ReleaseMark);
+    CHECK(m->effect.a == doctest::Approx(0.25f));
+    CHECK(m->effect.b == doctest::Approx(8.f));
     const ChairRow* c = t.findKey("chair_a03");
     REQUIRE(c);
     CHECK(c->person == 3);

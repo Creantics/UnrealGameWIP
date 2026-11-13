@@ -25,6 +25,9 @@
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
+#include "ftcore/Places.h"
+#include "ftcore/TableRing.h"
+#include "ftcore/TableSet.h"
 #include "ftcore/BeatChoreo.h"
 #include "ftcore/InputBindings.h"
 
@@ -52,6 +55,7 @@ struct Settings;
 
 class AFTArenaFighter;
 class AStaticMeshActor;
+class UStaticMeshComponent;
 class APlayerController;
 class UWorld;
 class UAnimSequence;
@@ -199,6 +203,15 @@ public:
 	ftcore::Vec2 GetPlayerPosition() const { return Bodies.player; }
 	// Everyone's position after the last step (metres).
 	const ftcore::ArenaBodies& GetBodies() const { return Bodies; }
+	// The table (-ArenaTable) for the HUD and effects: on at all, and its state, ring, seats and the Release hold.
+	// A shared blow arrives as an ArenaEventType::TableShare event (in the popup stream, the target tinted as hit).
+	bool IsTableOn() const { return bTable; }
+	// Enemy Slot's rank for the HUD: its kind's carry grade (arena.json "carry"), 0 none, at most 5; 0 for an empty slot.
+	int32 GetSlotRank(int32 Slot) const
+	{
+		return (Slot >= 0 && Slot < static_cast<int32>(Fight.def().enemyCount)) ? FMath::Clamp(static_cast<int32>(Fight.def().enemies[Slot].carry), 0, 5) : 0;
+	}
+	ftcore::ArenaTableView GetTableView() const;
 	double GetZoneZ() const { return ZoneZ; }
 	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
 	// The move enemy Index is in (its attack's numbers), or null when it isn't attacking.
@@ -219,6 +232,20 @@ public:
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
 	double GetReleaseTime() const { return ReleaseTime; }
 	int32 GetReleaseSpent() const { return ReleaseSpent; }
+	// The count's Load and the Lift (-ArenaCountLift): the last Lift (its join time, -1e9 when none, and multiplier),
+	// the Load the count stored, the Lifts, and a Release's mark per enemy slot (0 / -1e9 when unmarked).
+	double GetLiftTime() const { return LiftTime; }
+	float GetLiftMultiplier() const { return LiftMultiplier; }
+	int32 GetCountLoadStored() const { return CountLoadStored; }
+	int32 GetLifts() const { return Lifts; }
+	float GetEnemyMarkBonus(int32 Slot) const;
+	double GetEnemyMarkUntil(int32 Slot) const;
+	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
+	// Load it stored this fight and its last change (-1e9 when none).
+	int32 GetPartnerLoad() const;
+	int32 GetPartnerLoadCap() const;
+	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }
+	double GetPartnerLoadTime() const { return PartnerLoadTime; }
 	double GetOverloadTime() const { return OverloadTime; }
 	int32 GetPopupCount() const { return FMath::Min(PopupTotal, MaxPopups); }
 	const FPopup& GetPopup(int32 Index) const { return Popups[(PopupTotal - GetPopupCount() + Index) % MaxPopups]; }
@@ -384,6 +411,21 @@ private:
 	void MoveAlly();
 	void PlaceAlly(float Alpha);
 	void LogCarry() const;
+	// Setting the table (-ArenaTable, a carrying run's): its switches, its reset (each attempt), its step after the
+	// fight's, its ring drawn, its log line and its ring's removal.
+	void BeginTable(const ftcore::PlaceTable& Places, bool bCapArg);
+	void ResetTable();
+	void TickTable(const ftcore::ArenaOutput& Out);
+	bool BeginTableNow(double T);
+	// The player's table key: Release held at full Load with enough bodies in reach (TableHold), on the step's input.
+	bool TableCanBegin() const;   // TableCouldBegin and the setter free
+	bool TableCouldBegin() const; // the table's own conditions: Ready, alive, full Load, places, bodies in reach
+	bool TableSetterFree() const; // ftcore::tableSetterFree on the player's last action
+	void StepTableKey(ftcore::ArenaInput& In);
+	void SpawnTable();
+	void PaintTable(float Alpha);
+	void LogTable() const;
+	void EndTable();
 	// Briefs (Lattice slice 1), off unless -ArenaBrief=<id> asks (never in a shipping build until promoted): the
 	// lead's kit takes that Brief's kit from Data/Battle/briefs.json (the cylinder and the kit changes) before the
 	// fight begins. Only the guns lead's own kit has Briefs; any other is left alone with a warning.
@@ -415,6 +457,10 @@ private:
 	TObjectPtr<AStaticMeshActor> PlinthActor;
 	UPROPERTY()
 	TObjectPtr<AStaticMeshActor> KeepOutActor;
+	// A set table's ring on the ground, its countdown arc and the lines to the setter (-ArenaTable; its parts are its
+	// components).
+	UPROPERTY()
+	TObjectPtr<AStaticMeshActor> TableActor;
 	// The impact jolt's camera modifier (added to the player's camera manager on the first frame it is there) and the
 	// off-frame stinger's procedural voice and its sound (null with no audio device: the marker carries the tell alone).
 	UPROPERTY()
@@ -521,6 +567,42 @@ private:
 	int32 SessionJoins = 0;          // the scripted partner's blows that joined a window
 	int32 SessionBonuses = 0;        // held-blow bonuses the fight took (hostBlow)
 	int32 SessionBonusDamage = 0;    // their extra damage
+	// -ArenaCountLift: the count stores Load and lifts, a releaseMark chair marks the Release's target, and a locked kite
+	// seam opens on a shared blow.
+	bool bCountLift = false;
+	int32 CountLoadStored = 0;
+	int32 CountLoadStores = 0;
+	int32 Lifts = 0;
+	int32 LiftSpent = 0;
+	double LiftTime = -1e9;
+	float LiftMultiplier = 1.f;
+	double LastJoinAt = -1e9;   // the session's last join time seen
+	int32 Marks = 0;
+	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
+	int32 CappedBlows = 0; // blows the blow cap kept down this fight (-ArenaCountLift)
+	// -ArenaLone (or -ArenaThirdSlot=Vacant|Hostile, which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
+	bool bLone = false;
+	uint8 LoneSlot = 0;                 // ftcore::SlotState set on the third slot after the session begins
+	ftcore::LoneTuning LoneTuning{};
+	bool bLoneAtStart = false;
+	double LoneEndedAt = -1.0;          // the fight time a given gift ended it (-1: it did not)
+	int32 LoneReleases = 0;             // Releases made while Lone (each pooled)
+	int32 LoneGiftPresses = 0;          // gift presses while Lone, given or refused
+	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
+	bool bLoneGiftDone = false;
+	// The stance this fight begins in: chosen, or forced by the third slot.
+	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
+	// The fight follows the session's truth (a given gift ends it).
+	void MirrorLone();
+	int32 PartnerLoadStored = 0; // the partner's kept gauge: stored this fight, and the last change
+	double PartnerLoadTime = -1e9;
+	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)
+	double KiteLockUntil = -1e9; // the kite's lock end last opened
+	int32 KiteUnlocks = 0;
+	// Feeds the lead's Load to the session (the scripted partner has no gauge).
+	void FeedSessionLoads();
+	// After a session tick: applies its Load changes, notes a Lift and opens the kite's seam on an unlock.
+	void ApplyCountLift(const ftcore::FightTick& Tick);
 	ftcore::ArenaBodies Bodies;
 	ftcore::ArenaBodies PrevBodies;
 	// The lead's speed as its body moved (m/s; the sim's velocity less what the bodies' push took off), the median of
@@ -560,6 +642,8 @@ private:
 	bool bPressHeal = false;
 	bool bPressLock = false;
 	bool bPressRelease = false;
+	// The Release key down now, either device (read only under -ArenaTable, for the table's hold).
+	bool bReleaseDown = false;
 	bool bPressPair = false;
 	bool bPressTakeHalf = false;
 	// Autoplay's partner: a parry came, so press the pair on the next step.
@@ -703,6 +787,39 @@ private:
 	const FFTLeadLook* AllyLook = nullptr;
 	double AllyHitTime = -1e9;
 	int32 CarrySharedOffers = 0;
+	// Setting the table (BeginTable): on, the autopilot sets it at full Load, the Load filled for a capture; the
+	// places it counts, its clock and ring, and the counts for the TABLE line.
+	bool bTable = false;
+	bool bTableAuto = false;
+	bool bTableFill = false;
+	// -ArenaTableKey: the autopilot works the player's key (StepTableKey): odd presses held to a begin, even ones tapped.
+	bool bTableKey = false;
+	int32 TableKeyPresses = 0;
+	ftcore::PlaceTable TablePlaces;
+	ftcore::TableSet TableClock;
+	ftcore::TableRing TableSeats;
+	ftcore::TableKeyPath TableKey;
+	int32 TableKeyBegins = 0;
+	double TableSetSeconds = 0.0; // fight seconds a table stood Set (the uptime on the TABLE line)
+	double TableLastTick = -1.0;
+	int32 TableKeyTaps = 0;
+	int32 TableKeyCancels = 0;
+	int32 TableKeyDrops = 0; // holds dropped stale or while the setter was busy (logged)
+	int32 TableBegins = 0;
+	int32 TableRefusals = 0;
+	int32 TableSets = 0;
+	int32 TableMostBodies = 0;
+	int32 TableStands = 0;
+	int32 TableLeaves = 0;
+	int32 TableGutters = 0;
+	int32 TableFails = 0;
+	int32 TableClears = 0;
+	int32 TableShares = 0;
+	int32 TableShareHp = 0;
+	ftcore::TableError TableLastRefusal = ftcore::TableError::None;
+	TArray<TObjectPtr<UStaticMeshComponent>> TableRingParts; // the ring's segments
+	TArray<TObjectPtr<UStaticMeshComponent>> TableArcParts;  // the countdown arc's
+	TArray<TObjectPtr<UStaticMeshComponent>> TableLineParts; // a line per seat but the setter's: the ally, each enemy
 	FString BriefId; // -ArenaBrief: the Brief laid over the kit ("" none)
 	FString BriefStats;    // the five stats the kit was built from, for the log
 	int32 BriefRating = 0; // -ArenaRating: the Brief's stats at this Rating (0: every stat 10, the plain kit)

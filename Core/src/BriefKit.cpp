@@ -55,10 +55,13 @@ i64 build(i64 base4, int dMilli, const Row& r, i64 change4) {
 int roundWhole(i64 e15) { return static_cast<int>((e15 + kE15 / 2) / kE15); }
 i64 roundE4(i64 e15) { return (e15 + kE11 / 2) / kE11; }
 
+// A kit value of 0 stays 0 (an attack the kit lacks gets no damage from the final clamp's floor).
 int wholeField(int base, int dMilli, const Row& r, float change) {
+    if (base == 0) return 0;
     return roundWhole(build(baseE4(static_cast<float>(base)), dMilli, r, changeE4(change)));
 }
 float floatField(float base, int dMilli, const Row& r, float change) {
+    if (base == 0.f) return 0.f;
     return fromE4(roundE4(build(baseE4(base), dMilli, r, changeE4(change))));
 }
 
@@ -103,6 +106,8 @@ BriefKitBuild buildBriefKit(const BriefDef& brief, const LicenceStats& stats) {
     f.heavy.damage = wholeField(b.heavy.damage, reach, kKick, c.kickDamage);
     f.heavy.poiseDamage = floatField(b.heavy.poiseDamage, reach, kKickPoise, c.kickPoiseDamage);
     f.riposte.damage = wholeField(b.riposte.damage, reach, kKick, c.kickDamage);
+    f.jumpLight.damage = wholeField(b.jumpLight.damage, reach, kKick, c.kickDamage);
+    f.jumpLight.poiseDamage = floatField(b.jumpLight.poiseDamage, reach, kKickPoise, c.kickPoiseDamage);
     f.release.damage = wholeField(b.release.damage, reach, kKick, c.releaseDamage);
 
     f.shot.damage = wholeField(b.shot.damage, drive, kShot, c.shotDamage);

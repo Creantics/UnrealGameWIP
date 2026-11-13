@@ -133,7 +133,7 @@
       "id": "kite_boss",
       "hp": 1100, "poise": 120, "poiseDelay": 4, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
       "walkSpeed": 0.6, "runSpeed": 1, "strafeSpeed": 0.5, "accel": 2, "turnRate": 1.2,
-      "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72,
+      "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72, "carry": 3,
       "look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": -90 },
       "moves": [
         { "clip": "mitten_drop", "tell": "slam", "hitsAir": true, "startup": 1.667, "active": 0.2, "recovery": 1.5, "range": 7, "arcCos": 0.3, "damage": 8, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
@@ -179,7 +179,7 @@
       "id": "maw_pup",
       "hp": 70, "poise": 40, "poiseDelay": 2, "staggerTime": 0.7, "openTime": 1.2, "downTime": 0.9,
       "walkSpeed": 2.6, "runSpeed": 5.5, "strafeSpeed": 2.4, "accel": 16, "turnRate": 10,
-      "preferredRange": 2.5, "runRange": 7, "attackDelay": 0.8, "bodyRadius": 0.35, "height": 0.9, "flinchTime": 0.4, "flinchPoise": 20, "flinchPush": 0.7,
+      "preferredRange": 2.5, "runRange": 7, "attackDelay": 0.8, "bodyRadius": 0.35, "height": 0.9, "flinchTime": 0.4, "flinchPoise": 20, "flinchPush": 0.7, "carry": 1,
       "moves": [
         { "tell": "thrust", "armor": 0.6, "startup": 0.4, "active": 0.12, "recovery": 0.5, "range": 1.6, "arcCos": 0.4, "damage": 5, "poiseDamage": 5, "guardDamage": 6, "lunge": 0.8, "tracking": 5, "minRange": 0, "maxRange": 1.9, "weight": 1 },
         { "tell": "charge", "armor": 0.6, "startup": 0.8, "active": 0.2, "recovery": 0.8, "range": 1.8, "arcCos": 0.5, "damage": 9, "poiseDamage": 10, "guardDamage": 10, "lunge": 2.2, "tracking": 3, "minRange": 0, "maxRange": 4.5, "cooldown": 3, "weight": 0.5 }

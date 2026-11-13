@@ -9,11 +9,12 @@
 //
 // The bases are the Brief's own kit (BriefDef::kit: the lead's row, then common, then the Brief's non-stat keys),
 // held to 0..1000. At every stat 10 each mult is 1, so the kit is the lead's own with only the changes applied.
+// A base of 0 stays 0 whatever the row's final clamp (a kit without that attack keeps it at no damage).
 //
 //   stat      field                                         k       stat clamp         final clamp     P
-//   Reach     light[i].damage, heavy.damage, riposte.damage  0.040   x 0.80..1.70       1..200          kickDamage
+//   Reach     light[i], heavy, riposte, jumpLight .damage   0.040   x 0.80..1.70       1..200          kickDamage
 //   Reach     release.damage                                 0.040   x 0.80..1.70       1..200          releaseDamage
-//   Reach     light[i].poiseDamage, heavy.poiseDamage        0.050   x 0.80..1.80       1..120          kickPoiseDamage
+//   Reach     light[i], heavy, jumpLight .poiseDamage       0.050   x 0.80..1.80       1..120          kickPoiseDamage
 //   Drive     shot.damage                                    0.050   x 0.80..1.80       1..60           shotDamage
 //   Drive     shot.poiseDamage                               0.030   x 0.85..1.45       1..20           shotPoiseDamage
 //   Drive     term duration (not a fighter field)            0.030   x 0.85..1.50       0.5..2.0        termDuration

@@ -737,3 +737,127 @@ TEST_CASE("arena take half: refused from the air (no one takes a blow for someon
         CHECK(rig.fight.allyHp() == 89);
     }
 }
+
+TEST_CASE("lone carry: a hit of 22 takes 25, a block's chip is from the scaled hp, a parry of 22 stores 33") {
+    CHECK(loneScale(22, 1.15f) == 25);
+    CHECK(loneScale(36, 1.3f) == 47);
+    CHECK(loneScale(0, 1.15f) == 0);
+    CHECK(loneScale(-5, 1.15f) == 0);
+    CHECK(loneScale(22, 0.5f) == 22); // a scale below 1 is not one
+    CHECK(loneScale(2000000, 2.f) == 3000000);
+    {   // a landed hit
+        Rig rig({biterKind(22)});
+        rig.fight.setLone(true);
+        CHECK(rig.fight.lone());
+        rig.run(42);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.fight.hp() == 75);
+        CHECK(rig.find(ArenaEventType::Hit)->amount == 25);
+    }
+    {   // not Lone (the default): 22
+        Rig rig({biterKind(22)});
+        CHECK_FALSE(rig.fight.lone());
+        rig.run(42);
+        CHECK(rig.fight.hp() == 78);
+    }
+    {   // a block's chip: 40 is 46 while Lone, 25% of it 12 (10 not Lone); the block's Load reads the 40
+        Rig rig({biterKind(40)});
+        rig.fight.setLone(true);
+        rig.fight.setCarry(true);
+        rig.in.guard = true;
+        rig.run(42);
+        REQUIRE(rig.count(ArenaEventType::Blocked) == 1);
+        CHECK(rig.fight.hp() == 88);
+        CHECK(rig.fight.load() == 15); // 40 x 0.25 x 1.5
+    }
+    {   // a parry of 22 stores 22 x 1.5 = 33, and takes no hp
+        Rig rig({biterKind(22)});
+        rig.fight.setLone(true);
+        rig.parry();
+        REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.fight.load() == 33);
+        CHECK(rig.fight.hp() == 100);
+    }
+}
+
+TEST_CASE("lone carry: the cap is 100 whatever setLoadCap says; ending it at 80 under a cap of 40 overloads once") {
+    Rig rig({biterKind(22)});
+    rig.fight.setLoadCap(40);
+    rig.fight.setLone(true);
+    CHECK(rig.fight.loadCap() == 100);
+    CHECK(rig.fight.releaseOpenLoad() == 33);
+    rig.fight.giveLoad(80);
+    rig.tick();
+    CHECK(rig.fight.load() == 80);
+    CHECK_FALSE(rig.fight.overloaded());
+    CHECK(rig.count(ArenaEventType::Overloaded) == 0);
+    rig.fight.setLone(false); // a gift given: back to the chairs' cap
+    CHECK(rig.fight.loadCap() == 40);
+    CHECK(rig.fight.load() == 80);
+    CHECK(rig.fight.overloaded());
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+    CHECK(rig.fight.stats().overloads == 1);
+    // A refused tuning turns it off.
+    LoneTuning bad;
+    bad.gain = 4.f;
+    rig.fight.setLone(true, bad);
+    CHECK_FALSE(rig.fight.lone());
+}
+
+TEST_CASE("lone carry: stores gain the stance's x1.5 in place of the chairs'; giveLoad stays ungained") {
+    ArenaChairs chairs;
+    chairs.named[0] = ChairEffect{ChairKind::LoadGain, 0.25f, 15.f};
+    chairs.named[1] = ChairEffect{ChairKind::HealCharges, 2.f, 0.f};
+    chairs.count = 2;
+    Rig rig({biterKind(10)});
+    rig.fight.setAlly(100, 0.4f);
+    rig.bodies.ally = Vec2{0.f, 2.f};
+    rig.fight.setChairs(chairs);
+    rig.fight.setLone(true);
+    rig.fight.restart();
+    CHECK(rig.fight.healChargesMax() == ruleFighter().healCharges); // the chairs' charges are left out
+    rig.parry();
+    REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+    CHECK(rig.fight.load() == 15); // 10 x 1.5, not x 1.25
+    rig.fight.giveLoad(10);
+    rig.tick();
+    CHECK(rig.fight.load() == 25);
+    rig.fight.setLone(false);
+    rig.fight.restart();
+    CHECK(rig.fight.healChargesMax() == ruleFighter().healCharges + 2);
+}
+
+TEST_CASE("lone carry: the Release's hp damage is x1.3 on its base") {
+    for (const bool lone : {false, true}) {
+        CAPTURE(lone);
+        Rig rig({dummyKind()});
+        rig.fight.setLone(lone);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        int dealt = -1;
+        for (const ArenaEvent& e : rig.log)
+            if (e.type == ArenaEventType::Hit && e.source == kArenaPlayer && e.move == kArenaReleaseMove) dealt = e.amount;
+        CHECK(dealt == (lone ? 26 : 20)); // 20 x 1.3
+    }
+}
+
+TEST_CASE("lone carry: take half never happens and takeHalfDue stays false") {
+    AllySetup s;
+    const int land = landTick(s);
+    REQUIRE(land > 6);
+    Rig rig({biterKind(s.damage, 10.f)});
+    rig.fight.setLone(true);
+    placeAlly(rig, s);
+    bool due = false;
+    for (int k = 1; k <= land + 2; ++k) {
+        due = due || rig.fight.takeHalfDue(0.2f);
+        if (k == land - 5) rig.in.takeHalf = true;
+        rig.tick();
+    }
+    CHECK_FALSE(due);
+    CHECK(rig.count(ArenaEventType::TookHalf) == 0);
+    CHECK(rig.fight.allyHp() == 100 - s.damage);
+    CHECK(rig.fight.hp() == 100);
+}

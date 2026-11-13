@@ -2,6 +2,7 @@
 #include "ftcore/ArenaSoftTarget.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaLook.h"
+#include "ftcore/TableRing.h"
 
 #include "SeedMix.h"
 #include "ftcore/Json.h"
@@ -337,10 +338,12 @@ struct ArenaFightImpl {
         pl.hp = std::max(fi.hp, 1);
         pl.stamina = fi.stamina;
         pl.poise = fi.poise;
-        pl.charges = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fi.healCharges) + fight.chairs_.healCharges()));
+        pl.charges = static_cast<std::uint8_t>(
+            std::min(255, static_cast<int>(fi.healCharges) + (fight.lone_ ? 0 : fight.chairs_.healCharges())));
         fight.healMax_ = pl.charges;
         pl.rounds = fi.rounds;
         fight.allyHp_ = fight.allyMaxHp_;
+        fight.tableSeats_ = ArenaTableSeats{};
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             Enemy& foe = foes[i];
             foe = Enemy{};
@@ -388,7 +391,7 @@ struct ArenaFightImpl {
         po.dodgeSide = pl.dodgeSide;
         po.load = pl.gauge.value;
         po.overloaded = overloadedNow();
-        po.loadCap = fight.loadCap_;
+        po.loadCap = fight.capNow();
         po.jumpTime = pl.jumpTime;
         po.height = fight.phase_ == ArenaPhase::Fighting ? jumpHeightAt(pl.jumpTime) : 0.f;
         po.airClear = pl.airClear;
@@ -840,7 +843,7 @@ struct ArenaFightImpl {
     // The Release: open only above a third of the cap (kArenaReleaseOpenLoad at the full cap), whatever the stamina
     // (the two gauges are apart). All the Load goes at once; the strike's hits turn it into poise damage.
     bool startRelease(const ArenaInput& in) {
-        if (pl.gauge.value <= fight.loadCap_ / 3) return false;
+        if (pl.gauge.value <= fight.capNow() / 3) return false;
         pl.chainLive = false;
         faceAtStart(in, fi.release);
         pl.releaseSpent = pl.gauge.release();
@@ -1428,6 +1431,9 @@ struct ArenaFightImpl {
         return !r.veto;
     }
 
+    // An enemy blow's hp on the player: x the Lone tuning's taken while Lone (Load stores read the damage itself).
+    int hpTaken(int damage) const { return fight.lone_ ? loneScale(damage, fight.loneTuning_.taken) : damage; }
+
     static int scaledDamage(int damage, float scale) {
         const float v = static_cast<float>(damage) * (scale > 0.f ? scale : 0.f); // NaN: 0
         if (!(v > 0.f)) return 0;
@@ -1563,11 +1569,14 @@ struct ArenaFightImpl {
             const float poise = a.poiseDamage + (pl.action == ArenaAction::Release
                                                      ? static_cast<float>(pl.releaseSpent) * fi.releasePoise
                                                      : 0.f);
+            // While Lone, the Release's hp damage is x the tuning's release, on the base the hook sees.
+            const int base = fight.lone_ && pl.action == ArenaAction::Release
+                                 ? loneScale(a.damage, fight.loneTuning_.release)
+                                 : a.damage;
             ArenaBlowRuling r;
-            if (!rule(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, a.damage, poise, pl.pos, pl.facing, foe.pos,
-                      r))
+            if (!rule(ArenaEventType::Hit, kArenaPlayer, id(i), pl.move, base, poise, pl.pos, pl.facing, foe.pos, r))
                 continue;
-            const int amount = lose(i, scaledDamage(a.damage, r.damage));
+            const int amount = lose(i, scaledDamage(base, r.damage));
             ++stats.hits;
             if (pl.move == kArenaShotMove) ++stats.shotHits;
             notePlayerBlow(i, t1);
@@ -1897,7 +1906,7 @@ struct ArenaFightImpl {
                  static_cast<int>(std::lround(before - pl.stamina)), pl.pos);
             // Carrying, a block stores a share of the blocked damage (a guard break too).
             if (fight.carry_) storeCapped(source, foe.move, static_cast<float>(damage) * fi.blockLoadShare, stats.blockLoad);
-            const int chip = std::max(0, static_cast<int>(std::lround(damage * (1.f - fi.guardAbsorb))));
+            const int chip = std::max(0, static_cast<int>(std::lround(hpTaken(damage) * (1.f - fi.guardAbsorb))));
             if (chip > 0) damagePlayer(source, chip, foe.move);
             if (pl.hp > 0 && pl.stamina <= 0.f) { // the block emptied the stamina: the guard breaks
                 ++stats.guardBreaks;
@@ -1910,9 +1919,10 @@ struct ArenaFightImpl {
             return;
         }
         ++stats.hitsTaken;
-        damagePlayer(source, damage, foe.move);
+        damagePlayer(source, hpTaken(damage), foe.move);
         pause(pl.stopUntil, t1, a.hitStop); // both have moved this tick
-        pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
+        // Its own blow's table share may have killed it: then nothing more touches it this tick.
+        if (alive(i)) pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
         if (pl.hp <= 0) return;
         if (airborne()) {
             // A blow that lands in the air ends the jump: knocked out of it, whatever the poise (or the height).
@@ -1945,10 +1955,12 @@ struct ArenaFightImpl {
 
     // ---- Load ----
 
-    bool overloadedNow() const { return pl.gauge.value >= fight.loadCap_; }
+    bool overloadedNow() const { return pl.gauge.value >= fight.capNow(); }
 
     // The chairs' Load gain: 1 + their loadGain while the ally is alive within their radius of the player, else 1.
+    // While Lone, the Lone tuning's gain instead.
     float loadGain() const {
+        if (fight.lone_) return fight.loneTuning_.gain;
         const ArenaChairs& c = fight.chairs_;
         const float extra = c.loadGain();
         if (!(extra > 0.f) || fight.allyMaxHp_ <= 0 || fight.allyHp_ <= 0) return 1.f;
@@ -1962,7 +1974,7 @@ struct ArenaFightImpl {
         if (!fi.attacks || !(raw > 0.f)) return 0;
         const bool was = overloadedNow();
         const float gained = std::min(raw * loadGain(), static_cast<float>(kMaxLoad));
-        const int room = std::max(0, fight.loadCap_ - pl.gauge.value);
+        const int room = std::max(0, fight.capNow() - pl.gauge.value);
         const int stored = pl.gauge.store(std::min(static_cast<int>(std::lround(gained)), room));
         if (stored > 0) {
             stat += stored;
@@ -1985,7 +1997,7 @@ struct ArenaFightImpl {
     int giveLoad(int amount) {
         if (!fi.attacks) return 0;
         const bool was = overloadedNow();
-        const int room = std::max(0, fight.loadCap_ - pl.gauge.value);
+        const int room = std::max(0, fight.capNow() - pl.gauge.value);
         const int stored = pl.gauge.store(std::min(amount, room));
         const bool filled = !was && overloadedNow();
         if (filled) ++stats.overloads;
@@ -2021,7 +2033,19 @@ struct ArenaFightImpl {
     void setLoadCap(int cap) {
         const bool was = overloadedNow();
         fight.loadCap_ = std::clamp(cap, 1, kMaxLoad);
-        out.player.loadCap = fight.loadCap_;
+        capChanged(was);
+    }
+
+    // The host's setLone: the Load stays; reaching the cap it now reads overloads once.
+    void setLone(bool on, const LoneTuning& t) {
+        const bool was = overloadedNow();
+        fight.lone_ = on && validLoneTuning(t);
+        fight.loneTuning_ = validLoneTuning(t) ? t : LoneTuning{};
+        capChanged(was);
+    }
+
+    void capChanged(bool was) {
+        out.player.loadCap = fight.capNow();
         out.player.overloaded = overloadedNow();
         if (fight.phase_ != ArenaPhase::Fighting || was || !overloadedNow()) return;
         ++stats.overloads;
@@ -2046,6 +2070,7 @@ struct ArenaFightImpl {
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
         int allyPart = damage;
+        bool tookHalf = false; // the chair's heal follows take half, never a table share
         // Take half: a press within the window before this blow, the player near enough and free to take it. Not
         // while invulnerable (a dodge's i-frames, a riposte, a Release: the blow would skip guard, poise and hurt),
         // nor while hurt (hitstun) or guard-broken.
@@ -2053,9 +2078,11 @@ struct ArenaFightImpl {
         const bool pressed = pl.takeHalfPress >= t1 - window - kArenaEps && pl.takeHalfPress <= t1;
         const bool canTake = pl.hp > 0 && !pl.invulnerable && pl.action != ArenaAction::Downed &&
                              pl.action != ArenaAction::Release && pl.action != ArenaAction::Hitstun &&
-                             pl.action != ArenaAction::GuardBreak && !airborne(); // not from the air
+                             pl.action != ArenaAction::GuardBreak && !airborne() && // not from the air
+                             !fight.lone_; // never while Lone
         if (pressed && canTake && arenaDistance(pl.pos, fight.allyPos_) <= fi.takeHalfReach + kArenaEps) {
             pl.takeHalfPress = -1.0e9f; // used
+            tookHalf = true;
             const int lead = (damage + 1) / 2;
             allyPart = damage - lead;
             const int taken = std::min(lead, pl.hp);
@@ -2075,6 +2102,7 @@ struct ArenaFightImpl {
                 storeCapped(source, foe.move, static_cast<float>(lead) * fi.takeHalfLoadShare, stats.takeHalfLoad);
             }
         }
+        allyPart = tableShare(source, foe.move, kArenaAlly, allyPart); // after take half: what is left is shared
         const int lost = std::min(allyPart, fight.allyHp_);
         fight.allyHp_ -= lost;
         if (lost > 0) emit(ArenaEventType::AllyHit, source, kArenaAlly, foe.move, lost, fight.allyPos_);
@@ -2084,13 +2112,65 @@ struct ArenaFightImpl {
             return;
         }
         // A takeHalf chair heals the ally a share of its max hp each time the player takes half (never past it).
-        if (allyPart < damage) {
+        if (tookHalf) {
             const int heal = static_cast<int>(std::lround(fight.chairs_.takeHalfHeal() * static_cast<float>(fight.allyMaxHp_)));
             fight.allyHp_ = std::min(fight.allyMaxHp_, fight.allyHp_ + std::max(heal, 0));
         }
     }
 
+    // A set table (ArenaFight::setTableSeats): the even split of `damage` from source's blow on a seated lead
+    // (`struck`: kArenaPlayer or kArenaAlly). Passes the other parts on and returns the struck one's.
+    int tableShare(std::uint8_t source, std::uint8_t move, std::uint8_t struck, int damage) {
+        const ArenaTableSeats& s = fight.tableSeats_;
+        if (damage <= 0 || !s.any()) return damage;
+        if (!(struck == kArenaPlayer ? s.player : (struck == kArenaAlly && s.ally))) return damage;
+        const bool player = s.player && pl.hp > 0;
+        const bool ally = s.ally && allyUp();
+        int bodies = (player ? 1 : 0) + (ally ? 1 : 0);
+        for (std::size_t i = 0; i < n; ++i)
+            if (((s.enemies >> i) & 1u) && alive(i)) ++bodies;
+        const TableEvenSplit split = tableEvenSplit(damage, bodies);
+        if (split.each <= 0) return split.struck;
+        if (player && struck != kArenaPlayer) {
+            const int lost = std::min(split.each, pl.hp);
+            pl.hp -= lost;
+            stats.damageTaken += lost;
+            emit(ArenaEventType::TableShare, source, kArenaPlayer, move, lost, pl.pos);
+            if (pl.hp <= 0) downPlayer(source, move);
+        }
+        if (ally && struck != kArenaAlly) {
+            const int lost = std::min(split.each, fight.allyHp_);
+            fight.allyHp_ -= lost;
+            emit(ArenaEventType::TableShare, source, kArenaAlly, move, lost, fight.allyPos_);
+            if (fight.allyHp_ <= 0) {
+                fight.allyHp_ = 0;
+                emit(ArenaEventType::AllyDowned, source, kArenaAlly, move, 0, fight.allyPos_);
+            }
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!((s.enemies >> i) & 1u) || !alive(i)) continue;
+            const int part = tableEnemyPart(split.each, s.enemyShare[i]);
+            if (part <= 0) continue;
+            const int amount = lose(i, part);
+            if (amount <= 0) continue;
+            emit(ArenaEventType::TableShare, source, id(i), move, amount, foes[i].pos);
+            if (foes[i].hp <= 0) killEnemy(i);
+        }
+        return split.struck;
+    }
+
+    void downPlayer(std::uint8_t source, std::uint8_t move) {
+        pl.hp = 0;
+        pl.action = ArenaAction::Downed;
+        pl.actionTime = 0.f;
+        pl.velocity = Vec2{};
+        pl.buffered = Press::None;
+        pl.parryLeft = 0.f;
+        emit(ArenaEventType::Downed, source, kArenaPlayer, move, 0, pl.pos);
+    }
+
     void damagePlayer(std::uint8_t source, int damage, std::uint8_t move) {
+        damage = tableShare(source, move, kArenaPlayer, damage);
         const int amount = std::min(damage, pl.hp);
         pl.hp -= amount;
         stats.damageTaken += amount;
@@ -2120,8 +2200,10 @@ struct ArenaFightImpl {
         }
         // The ally, tested as the player is (it never guards or rolls).
         if (!foe.hitAlly && allyUp() && a1 > a.startup && a0 < a.startup + a.active &&
-            arenaReaches(foe.pos, foe.facing, a, fight.allyPos_, fight.allyRadius_))
+            arenaReaches(foe.pos, foe.facing, a, fight.allyPos_, fight.allyRadius_)) {
             enemyStrikeAlly(i);
+            if (!alive(i)) return Vec2{}; // its own blow's table share killed it
+        }
         Vec2 vel{};
         const float span = a.startup + a.active;
         if (span > kArenaEps && a.lunge != 0.f) {
@@ -2354,7 +2436,7 @@ struct ArenaFightImpl {
         }
 
         // Heal when low, and nothing is near or winding up.
-        const bool locked = p.gauge.value >= self.loadCap_; // Overloaded: no heal, no attack but the Release
+        const bool locked = p.gauge.value >= self.capNow(); // Overloaded: no heal, no attack but the Release
         if (!locked && p.charges > 0 && p.hp * 100 < kArenaAutoHealPercent * f.hp && !windingUp) {
             bool crowded = false;
             for (std::size_t i = 0; i < count; ++i) {
@@ -2412,7 +2494,7 @@ struct ArenaFightImpl {
             cost = std::max(cost, f.light[l].stamina);
         }
         // Enough Load and an upright target in the Release's reach: spend it as poise damage.
-        if (p.gauge.value >= std::min(kArenaAutoReleaseAt, self.loadCap_) && !down(target) &&
+        if (p.gauge.value >= std::min(kArenaAutoReleaseAt, self.capNow()) && !down(target) &&
             d <= (f.release.range + self.def_.enemies[target].bodyRadius) * kArenaAutoStand) {
             in.release = true;
             return in;
@@ -2512,7 +2594,7 @@ Vec2 ArenaFight::enemyStartFacing(std::size_t i) const { return i < kMaxArenaEne
 
 int ArenaFight::hp() const { return player_.hp; }
 int ArenaFight::load() const { return player_.gauge.value; }
-bool ArenaFight::overloaded() const { return player_.gauge.value >= loadCap_; }
+bool ArenaFight::overloaded() const { return player_.gauge.value >= capNow(); }
 float ArenaFight::stamina() const { return player_.stamina; }
 float ArenaFight::poise() const { return player_.poise; }
 std::uint8_t ArenaFight::healCharges() const { return player_.charges; }
@@ -2626,8 +2708,10 @@ int ArenaFight::giveLoad(int amount) {
 }
 
 void ArenaFight::setLoadCap(int cap) { ArenaFightImpl(*this).setLoadCap(cap); }
-int ArenaFight::loadCap() const { return loadCap_; }
-int ArenaFight::releaseOpenLoad() const { return loadCap_ / 3; }
+int ArenaFight::loadCap() const { return capNow(); }
+int ArenaFight::releaseOpenLoad() const { return capNow() / 3; }
+void ArenaFight::setLone(bool on, const LoneTuning& tuning) { ArenaFightImpl(*this).setLone(on, tuning); }
+bool ArenaFight::lone() const { return lone_; }
 int ArenaFight::spendLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
     return ArenaFightImpl(*this).spendLoad(amount);
@@ -2656,8 +2740,14 @@ int ArenaFight::allyHp() const { return allyHp_; }
 int ArenaFight::allyMaxHp() const { return allyMaxHp_; }
 bool ArenaFight::allyAlive() const { return allyMaxHp_ > 0 && allyHp_ > 0; }
 Vec2 ArenaFight::allyPos() const { return allyPos_; }
+float ArenaFight::allyRadius() const { return allyRadius_; }
+void ArenaFight::setTableSeats(const ArenaTableSeats& seats) {
+    tableSeats_ = seats;
+    for (float& v : tableSeats_.enemyShare) v = std::isfinite(v) ? std::clamp(v, 0.f, 4.f) : 0.f;
+}
+const ArenaTableSeats& ArenaFight::tableSeats() const { return tableSeats_; }
 bool ArenaFight::takeHalfDue(float lead) const {
-    if (phase_ != ArenaPhase::Fighting || !allyAlive() || player_.hp <= 0) return false;
+    if (phase_ != ArenaPhase::Fighting || lone_ || !allyAlive() || player_.hp <= 0) return false;
     if (arenaDistance(player_.pos, allyPos_) > def_.fighter.takeHalfReach) return false;
     for (std::size_t i = 0; i < enemyCount_; ++i) {
         const EnemyState& foe = enemy_[i];
@@ -3306,7 +3396,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
                       "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
-                      "breakDecay", "breakMove"},
+                      "breakDecay", "breakMove", "carry", "seatable"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
     arenaBool(j, "passive", k.passive, path, errors);
@@ -3332,6 +3422,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaByte(j, "breakAt", k.breakAt, 0, 255, path, errors);
     arenaNum(j, "breakDecay", k.breakDecay, 0, 60, false, path, errors);
     arenaInt(j, "breakMove", k.breakMove, -1, static_cast<int>(kMaxArenaMoves) - 1, path, errors);
+    arenaByte(j, "carry", k.carry, 0, 255, path, errors);
+    arenaBool(j, "seatable", k.seatable, path, errors);
     arenaParseLook(j["look"], path + ".look", k.look, errors, warnings);
     if (k.runRange < k.preferredRange) errors.push_back(path + ".runRange: expected at least preferredRange");
 

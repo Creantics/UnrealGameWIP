@@ -91,6 +91,7 @@ void sameFighter(const ArenaFighter& a, const ArenaFighter& b) {
     for (std::size_t i = 0; i < a.light.size(); ++i) sameAttack(a.light[i], b.light[i]);
     sameAttack(a.heavy, b.heavy);
     sameAttack(a.riposte, b.riposte);
+    sameAttack(a.jumpLight, b.jumpLight);
     sameAttack(a.shot, b.shot);
     sameAttack(a.release, b.release);
 }
@@ -247,15 +248,17 @@ TEST_CASE("brief kit: every stat 10 builds the slice-1 kits field for field, and
     REQUIRE_MESSAGE(shippedBriefs(duy, t, err), err);
 
     // Slice 1 shipped the kit changes as absolute values; laid over duy + common they are the golden kits.
+    // The air light came later and takes the Reach row like the heavy (13 x 1.10 = 14, 14 x 1.20 = 16.8; 13 x 0.90 = 12).
     const char* slice1[2] = {
         R"({ "rounds": 6, "reload": 1.2, "shot": { "stamina": 0, "startup": 0.26, "recovery": 0.38 },
              "poise": 31.25, "guardAbsorb": 0.88,
              "light": [ { "damage": 12, "poiseDamage": 12 }, { "damage": 12, "poiseDamage": 12 },
                         { "damage": 19, "poiseDamage": 24 } ],
-             "heavy": { "damage": 40, "poiseDamage": 54 }, "riposte": { "damage": 48 } })",
+             "heavy": { "damage": 40, "poiseDamage": 54 }, "riposte": { "damage": 48 },
+             "jumpLight": { "damage": 14, "poiseDamage": 16.8 } })",
         R"({ "rounds": 6, "reload": 1.2, "shot": { "stamina": 0, "damage": 12, "range": 36, "poiseDamage": 7.5 },
              "light": [ { "damage": 10 }, { "damage": 10 }, { "damage": 15 } ],
-             "heavy": { "damage": 32 }, "riposte": { "damage": 40 } })"};
+             "heavy": { "damage": 32 }, "riposte": { "damage": 40 }, "jumpLight": { "damage": 12 } })"};
     const BriefId ids[2] = {BriefId::Bailiff, BriefId::Notary};
     for (int i = 0; i < 2; ++i) {
         CAPTURE(i);
@@ -388,6 +391,50 @@ TEST_CASE("brief kit: worked cases for each Brief") {
         CHECK(invuln(f) == doctest::Approx(len));
         CHECK(f.dodgeInvulnEnd <= f.dodgeTime);
         if (b == BriefId::Escrow) CHECK(f.loadShare == doctest::Approx(1.9575f));
+    }
+}
+
+TEST_CASE("brief kit: a kit value of 0 stays 0") {
+    const AllBriefs a = allBriefs();
+    REQUIRE(a.ok);
+    for (std::size_t i = 0; i < kBriefCount; ++i) {
+        BriefDef d = *a.table.find(static_cast<BriefId>(i));
+        d.kit.jumpLight.damage = 0;
+        d.kit.jumpLight.poiseDamage = 0.f;
+        d.kit.riposte.damage = 0;
+        d.kit.shot.damage = 0;
+        d.kit.shot.poiseDamage = 0.f;
+        for (int rating : {1, 10, 30}) {
+            CAPTURE(i);
+            CAPTURE(rating);
+            const ArenaFighter f = buildBriefKit(d, statsAt(d, rating)).fighter;
+            CHECK(f.jumpLight.damage == 0);
+            CHECK(f.jumpLight.poiseDamage == 0.f);
+            CHECK(f.riposte.damage == 0);
+            CHECK(f.shot.damage == 0);
+            CHECK(f.shot.poiseDamage == 0.f);
+        }
+    }
+}
+
+TEST_CASE("brief kit: the air light takes the Reach row like the heavy") {
+    const AllBriefs a = allBriefs();
+    REQUIRE(a.ok);
+    for (std::size_t i = 0; i < kBriefCount; ++i) {
+        BriefDef d = *a.table.find(static_cast<BriefId>(i));
+        d.kit.jumpLight.damage = 12;
+        d.kit.jumpLight.poiseDamage = 14.f;
+        BriefDef twin = d;
+        twin.kit.heavy.damage = d.kit.jumpLight.damage;
+        twin.kit.heavy.poiseDamage = d.kit.jumpLight.poiseDamage;
+        for (int rating : {1, 10, 30}) {
+            CAPTURE(i);
+            CAPTURE(rating);
+            const ArenaFighter f = buildBriefKit(d, statsAt(d, rating)).fighter;
+            const ArenaFighter t = buildBriefKit(twin, statsAt(twin, rating)).fighter;
+            CHECK(f.jumpLight.damage == t.heavy.damage);
+            CHECK(f.jumpLight.poiseDamage == t.heavy.poiseDamage);
+        }
     }
 }
 
