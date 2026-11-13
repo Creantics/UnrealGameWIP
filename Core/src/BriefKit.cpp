@@ -14,9 +14,23 @@ using i64 = std::int64_t;
 // change in e4 gives e15. Bases are held to 0..1000 (1e7 in e4), so e15 stays below 4.1e18.
 constexpr i64 kE3 = 1000, kE7 = 10'000'000, kE11 = 100'000'000'000, kE15 = 1'000'000'000'000'000;
 
-i64 toE4(float f) { return static_cast<i64>(std::llround(static_cast<double>(f) * 1e4)); }
+i64 toE4(float f) {
+    if (!std::isfinite(f)) return 0;
+    const double v = std::clamp(static_cast<double>(f) * 1e4, -1e13, 1e13);
+    return static_cast<i64>(std::llround(v));
+}
 i64 baseE4(float f) { return std::clamp<i64>(toE4(f), 0, 1000 * 10'000); }
 float fromE4(i64 v) { return static_cast<float>(static_cast<double>(v) / 1e4); }
+
+// A Brief change in e4, held to its bounds here too (not only at import); a non-finite one is no change.
+i64 changeE4(float c) {
+    if (!std::isfinite(c)) return 10'000;
+    return std::clamp<i64>(toE4(c), toE4(kBriefChangeMin), toE4(kBriefChangeMax));
+}
+i64 parryAddE4(float c) {
+    if (!std::isfinite(c)) return 0;
+    return std::clamp<i64>(toE4(c), -toE4(kBriefParryAddMax), toE4(kBriefParryAddMax));
+}
 
 struct Row {
     int k4;         // per stat point, ten-thousandths (0.040 -> 400)
@@ -42,10 +56,10 @@ int roundWhole(i64 e15) { return static_cast<int>((e15 + kE15 / 2) / kE15); }
 i64 roundE4(i64 e15) { return (e15 + kE11 / 2) / kE11; }
 
 int wholeField(int base, int dMilli, const Row& r, float change) {
-    return roundWhole(build(baseE4(static_cast<float>(base)), dMilli, r, toE4(change)));
+    return roundWhole(build(baseE4(static_cast<float>(base)), dMilli, r, changeE4(change)));
 }
 float floatField(float base, int dMilli, const Row& r, float change) {
-    return fromE4(roundE4(build(baseE4(base), dMilli, r, toE4(change))));
+    return fromE4(roundE4(build(baseE4(base), dMilli, r, changeE4(change))));
 }
 
 // The rows (BriefKit.h's table).
@@ -102,14 +116,14 @@ BriefKitBuild buildBriefKit(const BriefDef& brief, const LicenceStats& stats) {
         // Guard leak: 1 - absorb, x clamp(1 - 0.03 D, 0.50, 1.15) x change; rounded, then absorb = 1 - leak.
         const i64 leak4 = std::clamp<i64>(10'000 - toE4(b.guardAbsorb), 0, 10'000);
         const i64 m = std::clamp<i64>(kE7 - static_cast<i64>(300) * nerve, 5000 * kE3, 11500 * kE3);
-        const i64 leak = roundE4(leak4 * m * toE4(c.guardLeak));
+        const i64 leak = roundE4(leak4 * m * changeE4(c.guardLeak));
         f.guardAbsorb = fromE4(std::clamp<i64>(10'000 - leak, 8000, 9500));
     }
     {
         // Parry window: clamp(base + 0.0015 D, 0.12, 0.155) + add, final 0.11..0.17 (in e7).
         const i64 v = std::clamp<i64>(baseE4(b.parryWindow) * kE3 + static_cast<i64>(15) * nerve, 1200 * kE3,
                                       1550 * kE3);
-        const i64 w = std::clamp<i64>(v + toE4(c.parryWindowAdd) * kE3, 1100 * kE3, 1700 * kE3);
+        const i64 w = std::clamp<i64>(v + parryAddE4(c.parryWindowAdd) * kE3, 1100 * kE3, 1700 * kE3);
         f.parryWindow = fromE4((w + kE3 / 2) / kE3);
     }
 
@@ -117,7 +131,7 @@ BriefKitBuild buildBriefKit(const BriefDef& brief, const LicenceStats& stats) {
     {
         const i64 start4 = baseE4(b.dodgeInvulnStart);
         const i64 len4 = std::max<i64>(0, baseE4(b.dodgeInvulnEnd) - start4);
-        const i64 l4 = roundE4(build(len4, foot, kInvuln, toE4(c.invuln)));
+        const i64 l4 = roundE4(build(len4, foot, kInvuln, changeE4(c.invuln)));
         const i64 end4 = std::min({start4 + l4, static_cast<i64>(4500), baseE4(b.dodgeTime)});
         f.dodgeInvulnEnd = fromE4(end4);
     }

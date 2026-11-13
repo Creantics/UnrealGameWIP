@@ -115,7 +115,7 @@ TEST_CASE("briefs: the shipped table lays bailiff and notary over the guns lead'
     // The kits a fight gets at every stat 10 (BriefKit): the slice-1 kits exactly.
     const ArenaFighter bk = buildBriefKit(*bailiff, LicenceStats{}).fighter;
     const ArenaFighter nk = buildBriefKit(*notary, LicenceStats{}).fighter;
-    // Bailiff: kicks x1.10, kick poise x1.20, poise x1.25, guard leak x0.80, the slower shot (D.C).
+    // Bailiff: kicks x1.10, kick poise x1.20, poise x1.25, guard leak x0.80, the slower shot.
     CHECK(bailiff->base == std::array<int, 5>{14, 7, 12, 9, 8});
     CHECK(bailiff->growth == std::array<int, 5>{85, 30, 70, 35, 30});
     CHECK(bk.light[0].damage == 12);
@@ -187,7 +187,7 @@ TEST_CASE("briefs: refused files leave the table empty and name the problem") {
     CHECK_MESSAGE(e.find("only a guns kit") != std::string::npos, e);
 }
 
-TEST_CASE("cylinder: six rounds, then a reload that refuses only the shot; restart fills it (D.J 34)") {
+TEST_CASE("cylinder: six rounds, then a reload that refuses only the shot; restart fills it") {
     const ArenaTable arena = shippedArena();
     BriefTable t;
     std::string err;

@@ -45,6 +45,12 @@ FTCORE_API const char* briefName(BriefId b); // "counsel", "bailiff", "notary", 
 FTCORE_API bool briefFromName(std::string_view name, BriefId& out);
 
 // A Brief's kit changes on stat-driven fields (BriefKit.h's P). Multipliers default to 1, adds to 0.
+// A change's bounds: multipliers 0.5..2, parryWindowAdd -0.05..0.05. The import refuses values outside them and
+// buildBriefKit holds to them as well (a non-finite one counts as no change).
+inline constexpr float kBriefChangeMin = 0.5f;
+inline constexpr float kBriefChangeMax = 2.f;
+inline constexpr float kBriefParryAddMax = 0.05f;
+
 struct BriefChange {
     float hp = 1.f;
     float poise = 1.f;

@@ -40,7 +40,7 @@ bool shippedBriefs(const ArenaFighter& lead, BriefTable& out, std::string& err) 
     return importBriefTable(text, lead, out, &err);
 }
 
-// The other three Briefs' numbers (the design's D.C), for the comparison table until they ship with their passives.
+// The other three Briefs' bases, growths and changes, for the comparison table until they ship with their passives.
 constexpr const char* kFixtureBriefs = R"({ "version": 1,
   "common": { "rounds": 6, "reload": 1.2, "shot": { "stamina": 0 } },
   "briefs": [
@@ -109,7 +109,7 @@ TEST_CASE("licence: the stat curve D (thousandths, truncated)") {
     CHECK(licenceCurveMilli(10) == 0);
     CHECK(licenceCurveMilli(1) == -9000);
     CHECK(licenceCurveMilli(50) == 17142);
-    CHECK(licenceCurveMilli(22) == 8571); // 8571.43, truncated (D.J 2)
+    CHECK(licenceCurveMilli(22) == 8571); // 8571.43, truncated
     CHECK(licenceCurveMilli(7) == -3000);
     CHECK(licenceCurveMilli(16) == 5000);
     CHECK(licenceCurveMilli(20) == 7500);
@@ -131,22 +131,22 @@ TEST_CASE("licence: the Rating curve, fight xp and allowances") {
     CHECK(ratingNeed(1) == 100);
     CHECK(ratingNeed(30) == 680);
     CHECK(ratingForXp(0) == 1);
-    CHECK(ratingForXp(1119) == 7); // D.J 4
+    CHECK(ratingForXp(1119) == 7); // one xp short of Rating 8
     CHECK(ratingForXp(1120) == 8);
     CHECK(ratingForXp(1134) == 8);
     CHECK(ratingForXp(99999) == 30);
 
     LicenceRating r;
-    CHECK(r.addXp(99999) == 11020); // D.J 5
+    CHECK(r.addXp(99999) == 11020); // xp past the cap is dropped
     CHECK(r.xp == 11020);
     CHECK(r.rating() == 30);
     CHECK(r.addXp(500) == 0);
     CHECK(r.addXp(-5) == 0);
 
-    CHECK(fightXp(7, FightXpKind::Boss, 7) == 275);   // D.J 6
+    CHECK(fightXp(7, FightXpKind::Boss, 7) == 275);   // a boss at the lead's own Rating
     CHECK(fightXp(30, FightXpKind::Boss, 30) == 850);
     CHECK(fightXp(1, FightXpKind::Standard, 3) == 18); // c 0.5 (0.3 clamped): the least a fight gives
-    CHECK(fightXp(10, FightXpKind::Standard, 12) == fightXp(10, FightXpKind::Standard, 20)); // D.J 7: both 0.5
+    CHECK(fightXp(10, FightXpKind::Standard, 12) == fightXp(10, FightXpKind::Standard, 20)); // both clamp to 0.5
     CHECK(fightXp(10, FightXpKind::Standard, 6) == (ratingNeed(10) * 35 * 200 + 5000) / 10000); // c 2.0 (2.4)
     CHECK(fightXp(30, FightXpKind::Boss, 26) == 1700);                                         // the most
 
@@ -156,7 +156,7 @@ TEST_CASE("licence: the Rating curve, fight xp and allowances") {
     CHECK(ratingAllowances(30) == 15);
 }
 
-TEST_CASE("licence: a Brief's stats by Rating, allowances placed and refused (D.J 30)") {
+TEST_CASE("licence: a Brief's stats by Rating, allowances placed and refused") {
     const AllBriefs a = allBriefs();
     REQUIRE(a.ok);
     const BriefDef& bailiff = *a.table.find(BriefId::Bailiff);
@@ -188,7 +188,7 @@ TEST_CASE("licence: a Brief's stats by Rating, allowances placed and refused (D.
     CHECK_FALSE(none.place(LicenceStat::Reach, counsel));
 }
 
-TEST_CASE("licence: the 9-byte save keeps the Brief, xp and spends (D.J 27)") {
+TEST_CASE("licence: the 9-byte save keeps the Brief, xp and spends") {
     const AllBriefs a = allBriefs();
     REQUIRE(a.ok);
     const BriefDef& notary = *a.table.find(BriefId::Notary);
@@ -268,7 +268,7 @@ TEST_CASE("brief kit: every stat 10 builds the slice-1 kits field for field, and
         sameFighter(buildBriefKit(*t.find(ids[i]), LicenceStats{}).fighter, golden);
     }
 
-    // D.J 1: no Brief change and every stat 10: the lead's own kit (plus the cylinder).
+    // No Brief change and every stat 10: the lead's own kit (plus the cylinder).
     BriefDef plain;
     plain.kit = t.find(BriefId::Bailiff)->kit; // duy + common, no stat-driven changes
     const BriefKitBuild k = buildBriefKit(plain, LicenceStats{});
@@ -280,7 +280,7 @@ TEST_CASE("brief kit: every stat 10 builds the slice-1 kits field for field, and
     CHECK(k.termDuration == doctest::Approx(1.f));
 }
 
-TEST_CASE("brief kit: the comparison table, every Brief at Rating 1, 10, 20 and 30 (D.D)") {
+TEST_CASE("brief kit: the comparison table, every Brief at Rating 1, 10, 20 and 30") {
     const AllBriefs a = allBriefs();
     REQUIRE(a.ok);
     struct Row {
@@ -294,7 +294,7 @@ TEST_CASE("brief kit: the comparison table, every Brief at Rating 1, 10, 20 and 
     using B = BriefId;
     const Row rows[] = {
         {B::Counsel, 1, {8, 9, 8, 10, 15}, 113, 10, 33, 10, 23.0f, 0.8410f, 0.1270f, 0.3500f, 7, 20},
-        // The table shows invuln .3614: 0.35 x 1.032724 = 0.361453, which D.A2's half-up rounding makes .3615.
+        // The table shows invuln .3614: 0.35 x 1.032724 = 0.361453, which the one half-up rounding makes .3615.
         {B::Counsel, 10, {11, 13, 11, 13, 23}, 126, 11, 37, 11, 26.0f, 0.8544f, 0.1315f, 0.3615f, 10, 23},
         {B::Counsel, 20, {14, 17, 15, 17, 32}, 140, 13, 41, 13, 29.3f, 0.8693f, 0.1364f, 0.3738f, 13, 25},
         {B::Counsel, 30, {18, 22, 19, 21, 41}, 151, 14, 45, 14, 31.9f, 0.8812f, 0.1404f, 0.3838f, 15, 26},
@@ -343,40 +343,40 @@ TEST_CASE("brief kit: the comparison table, every Brief at Rating 1, 10, 20 and 
     }
 }
 
-TEST_CASE("brief kit: the design's worked cases (D.J 8-12, 17-20, 32, 35)") {
+TEST_CASE("brief kit: worked cases for each Brief") {
     const AllBriefs a = allBriefs();
     REQUIRE(a.ok);
     const auto kit = [&](BriefId b, int rating) { return buildBriefKit(*a.table.find(b), statsAt(*a.table.find(b), rating)); };
 
-    const ArenaFighter counsel1 = kit(BriefId::Counsel, 1).fighter; // D.J 8, 35
+    const ArenaFighter counsel1 = kit(BriefId::Counsel, 1).fighter;
     CHECK(counsel1.hp == 113);
     CHECK(counsel1.heavy.damage == 33);
     CHECK(counsel1.parryWindow == doctest::Approx(0.127f));
     CHECK(counsel1.readPower == doctest::Approx(0.7286f).epsilon(0.0001)); // abs clamp, then x1.20
     CHECK(readCounter(counsel1) == 7);
 
-    const ArenaFighter notary30 = kit(BriefId::Notary, 30).fighter; // D.J 10
+    const ArenaFighter notary30 = kit(BriefId::Notary, 30).fighter;
     CHECK(notary30.shot.damage == 20);
     CHECK(notary30.shot.range == doctest::Approx(36.f));
     CHECK(notary30.hp == 175);
     CHECK(kit(BriefId::Notary, 1).termDuration == doctest::Approx(1.25f * (1.f + 0.03f * 4.286f)).epsilon(0.001));
 
-    CHECK(kit(BriefId::Proxy, 30).fighter.pairWindow == doctest::Approx(0.17f)); // D.J 11
+    CHECK(kit(BriefId::Proxy, 30).fighter.pairWindow == doctest::Approx(0.17f)); // a kit absolute, no stat
 
-    const ArenaFighter escrow1 = kit(BriefId::Escrow, 1).fighter; // D.J 12
+    const ArenaFighter escrow1 = kit(BriefId::Escrow, 1).fighter;
     CHECK(escrow1.dodgeInvulnEnd == doctest::Approx(0.05f + 0.2868f));
     CHECK(escrow1.dodgeDistance == doctest::Approx(2.9036f));
     CHECK(escrow1.releasePoise == doctest::Approx(1.25f));
 
-    CHECK(kit(BriefId::Bailiff, 1).fighter.shot.damage == 9); // D.J 17: 8.5 rounds half up
+    CHECK(kit(BriefId::Bailiff, 1).fighter.shot.damage == 9); // 8.5 rounds half up
 
-    // D.J 32: Enforce (release) takes the Reach mult only, x1.30 for Escrow.
+    // The release (Enforce) takes the Reach mult only, x1.30 for Escrow.
     CHECK(kit(BriefId::Escrow, 10).fighter.release.damage == 45);
     CHECK(kit(BriefId::Counsel, 10).fighter.release.damage == 31);
     CHECK(kit(BriefId::Escrow, 1).fighter.release.damage == 39);
     CHECK(kit(BriefId::Bailiff, 30).fighter.release.damage == 47);
 
-    // D.J 18-20: stats at 50.
+    // Every stat at 50.
     LicenceStats top;
     top.v = {50, 50, 50, 50, 50};
     for (std::size_t i = 0; i < kBriefCount; ++i) {
@@ -454,4 +454,58 @@ TEST_CASE("briefs: a Brief's kit may not set a stat-driven field; change keys ar
                                        R"(, "kit": { "riposte": { "poiseDamage": 9 }, "shot": { "range": 36 } } } ] })",
                                    duy, t, &err),
                   err); // the riposte's poise and the shot's range are no stat's
+}
+
+TEST_CASE("brief kit: what every stat 10 does to each lead row (no clamp moves a kit silently)") {
+    // The value-clamped rows (invuln, dodge, move, the reads), the absorb and the parry clamp even at a mult of 1,
+    // so a row outside them changes at plain stats. The guns lead's row must come through untouched; the others
+    // (never given a Brief: the runner refuses) are pinned with exactly the fields the clamps move, so a retune
+    // that crosses a clamp shows up here.
+    const ArenaTable arena = shippedArena();
+    REQUIRE_FALSE(arena.fighters.empty());
+    struct Moves {
+        const char* id;
+        float moveSpeed, guardAbsorb, parryWindow; // the clamped values; 0 = the row's own
+    };
+    const Moves leads[] = {
+        {"duy", 0.f, 0.f, 0.f},
+        {"devin", 4.8f, 0.95f, 0.155f},
+        {"third", 4.8f, 0.8f, 0.f},
+        {"default", 4.8f, 0.95f, 0.f},
+    };
+    for (const Moves& m : leads) {
+        CAPTURE(std::string(m.id));
+        BriefDef plain;
+        plain.kit = arena.fighter(m.id);
+        ArenaFighter expect = plain.kit;
+        if (m.moveSpeed > 0.f) expect.moveSpeed = m.moveSpeed;
+        if (m.guardAbsorb > 0.f) expect.guardAbsorb = m.guardAbsorb;
+        if (m.parryWindow > 0.f) expect.parryWindow = m.parryWindow;
+        sameFighter(buildBriefKit(plain, LicenceStats{}).fighter, expect);
+    }
+}
+
+TEST_CASE("brief kit: a change outside its bounds is held to them, a non-finite one is no change") {
+    const ArenaTable arena = shippedArena();
+    BriefDef d;
+    d.kit = arena.fighter("duy");
+    const ArenaFighter plain = buildBriefKit(d, LicenceStats{}).fighter;
+    BriefDef wild = d;
+    wild.change.hp = 9.f;
+    wild.change.kickDamage = 0.01f;
+    wild.change.parryWindowAdd = 1.f;
+    wild.change.poise = std::nanf("");
+    wild.change.loadShare = -INFINITY;
+    BriefDef bound = d;
+    bound.change.hp = kBriefChangeMax;
+    bound.change.kickDamage = kBriefChangeMin;
+    bound.change.parryWindowAdd = kBriefParryAddMax;
+    bound.change.loadShare = 1.f;
+    const ArenaFighter w = buildBriefKit(wild, LicenceStats{}).fighter;
+    const ArenaFighter b = buildBriefKit(bound, LicenceStats{}).fighter;
+    CHECK(w.hp == b.hp);
+    CHECK(w.light[0].damage == b.light[0].damage);
+    CHECK(w.parryWindow == b.parryWindow);
+    CHECK(w.poise == plain.poise);
+    CHECK(w.loadShare == plain.loadShare);
 }
