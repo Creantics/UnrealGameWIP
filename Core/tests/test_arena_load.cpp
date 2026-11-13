@@ -1001,11 +1001,26 @@ TEST_CASE("lone carry: a gift pressed on a Release's tick is held; the Release p
     rig.tick();
     REQUIRE(rig.find(ArenaEventType::Released) != nullptr);
     const int spent = rig.find(ArenaEventType::Released)->amount; // the log grows: keep the value, not the pointer
-    CHECK(s.poolRelease(kLeadA, spent));
-    REQUIRE(hold.take());
-    CHECK_FALSE(hold.take()); // once
-    CHECK(s.giveGift(kLeadA).given);
+    // The step's end, as the host makes it: the events first (the Release pooled), then the held gift.
+    int order = 0, pooledAt = 0, giftAt = 0;
+    bool pooled = false, given = false;
+    hold.stepEnd(
+        [&] {
+            pooledAt = ++order;
+            pooled = s.poolRelease(kLeadA, spent);
+        },
+        [&] {
+            giftAt = ++order;
+            given = s.giveGift(kLeadA).given;
+        });
+    CHECK(pooledAt == 1);
+    CHECK(giftAt == 2);
+    CHECK(pooled);
+    CHECK(given);
     CHECK_FALSE(s.lone());
+    hold.stepEnd([&] { ++order; }, [&] { giftAt = ++order; }); // once: the next step's end gives nothing
+    CHECK(order == 3);
+    CHECK(giftAt == 2);
     rig.fight.setLone(s.lone());
     rig.run(40);
     CHECK(s.lonePooled() == static_cast<unsigned>(spent));

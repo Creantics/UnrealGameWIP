@@ -4,6 +4,7 @@
 #include "doctest/doctest.h"
 
 #include "ftcore/Hallucination.h"
+#include "ftcore/HallucinationArena.h"
 
 #include <array>
 #include <cmath>
@@ -64,6 +65,35 @@ struct Rig {
     }
     int saw(Ev e) const { return seen[static_cast<std::size_t>(e)]; }
 };
+
+// Every field of an arena input away from its default.
+ArenaInput everyInput() {
+    ArenaInput a;
+    a.move = Vec2{0.6f, -0.8f};
+    a.view = Vec2{0.f, 1.f};
+    a.light = a.heavy = a.dodge = a.jump = a.heal = a.guard = a.lock = a.release = a.pair = a.aim = true;
+    a.lockSwitch = 1;
+    a.read = 2;
+    a.aimDir = Vec2{0.f, -1.f};
+    a.aimTurn = 3.f;
+    a.aimSpeed = 0.5f;
+    a.aimPitched = true;
+    a.aimPitch = 0.3f;
+    a.attackSpeed = 0.7f;
+    a.attackTurn = 4.f;
+    a.takeHalf = true;
+    return a;
+}
+
+bool same(const ArenaInput& a, const ArenaInput& b) {
+    return a.move.x == b.move.x && a.move.y == b.move.y && a.view.x == b.view.x && a.view.y == b.view.y &&
+           a.light == b.light && a.heavy == b.heavy && a.dodge == b.dodge && a.jump == b.jump && a.heal == b.heal &&
+           a.guard == b.guard && a.lock == b.lock && a.lockSwitch == b.lockSwitch && a.release == b.release &&
+           a.pair == b.pair && a.read == b.read && a.aim == b.aim && a.aimDir.x == b.aimDir.x &&
+           a.aimDir.y == b.aimDir.y && a.aimTurn == b.aimTurn && a.aimSpeed == b.aimSpeed &&
+           a.aimPitched == b.aimPitched && a.aimPitch == b.aimPitch && a.attackSpeed == b.attackSpeed &&
+           a.attackTurn == b.attackTurn && a.takeHalf == b.takeHalf;
+}
 
 } // namespace
 
@@ -290,6 +320,76 @@ TEST_CASE("a held lead stays held past the expiry until refused or pulled back")
     g.in.refuse = true;
     g.run(0.5);
     CHECK(g.saw(Ev::Refused) == 1);
+}
+
+TEST_CASE("a held lead is blank to the fight: the guard feeds only the refusal, and a partial hold slows the stick") {
+    const ArenaInput raw = everyInput();
+    Rig r;
+    CHECK(same(hallucinationArenaInput(r.h, raw), raw)); // no offer: all of it goes through
+    r.start();
+    CHECK(same(hallucinationArenaInput(r.h, raw), raw)); // shown, not taken: all of it
+
+    r.in.accepting = true;
+    r.run(1.0); // a quarter of the hold: the stick at three quarters, the rest untouched
+    REQUIRE(r.h.holdLevel() == doctest::Approx(0.25f));
+    ArenaInput slowed = raw;
+    slowed.move = Vec2{raw.move.x * 0.75f, raw.move.y * 0.75f};
+    CHECK(same(hallucinationArenaInput(r.h, raw), slowed));
+
+    r.run(3.0);
+    REQUIRE(r.h.held());
+    ArenaInput blank;
+    blank.view = raw.view; // the camera's forward only
+    CHECK(same(hallucinationArenaInput(r.h, raw), blank));
+
+    // The host sends the raw guard to the refusal: held refuseSeconds it refuses, and not once does the fight see it.
+    r.in.accepting = false;
+    int guarded = 0, steps = 0;
+    while (r.h.held() && steps < 8) {
+        r.in.refuse = raw.guard;
+        r.step(0.25);
+        ++steps;
+        if (r.h.held()) guarded += hallucinationArenaInput(r.h, raw).guard ? 1 : 0;
+    }
+    CHECK(r.saw(Ev::Refused) == 1);
+    CHECK(steps == 2); // 0.5 s
+    CHECK(guarded == 0);
+    ArenaInput kept = raw; // refused with the guard still down: the press stays the refusal's, no guard and no parry
+    kept.guard = false;
+    CHECK(same(hallucinationArenaInput(r.h, raw), kept));
+    r.step(0.25);
+    CHECK(same(hallucinationArenaInput(r.h, raw), kept));
+    r.in.refuse = false;
+    r.step(0.25);
+    CHECK(same(hallucinationArenaInput(r.h, raw), raw)); // let go: the next press is a guard
+
+    Rig t; // torn by a switch with the guard down: that press stays the refusal's too
+    t.start();
+    t.in.accepting = true;
+    t.run(4.0);
+    REQUIRE(t.h.held());
+    t.in.refuse = true;
+    t.step(0.25);
+    t.in.lead = kLeadB;
+    t.step(0.25);
+    CHECK(t.saw(Ev::Torn) == 1);
+    CHECK(t.saw(Ev::Refused) == 0);
+    CHECK_FALSE(hallucinationArenaInput(t.h, raw).guard);
+    t.in.refuse = false;
+    t.step(0.25);
+    CHECK(hallucinationArenaInput(t.h, raw).guard);
+
+    Rig o; // a guard down on an offer only shown or holding is the fight's as well as the refusal's
+    o.start();
+    o.in.refuse = true;
+    o.step(0.25);
+    CHECK(o.h.active());
+    CHECK_FALSE(o.h.refuseKept());
+    CHECK(hallucinationArenaInput(o.h, raw).guard);
+    o.step(0.25);
+    CHECK(o.saw(Ev::Refused) == 1);
+    CHECK_FALSE(o.h.refuseKept());
+    CHECK(hallucinationArenaInput(o.h, raw).guard);
 }
 
 TEST_CASE("the refusal: held refuseSeconds it closes the offer; a wrong guess, the cooldown and a stale button") {

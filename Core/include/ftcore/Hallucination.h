@@ -13,7 +13,9 @@
 //   (gapSeconds; x fewerGapScale under Fewer; none at all under StoryOnly) and switchSeconds since a lead switch.
 // * The refusal uses HeldRefusal: a button already down when it starts does not count. A refusal pressed with no
 //   offer open starts the refusal cooldown and nothing else; a refusal that closes one starts it too. While cooling,
-//   presses do nothing.
+//   presses do nothing. A refusal button down while the lead is held stays the refusal's until it is let go, even
+//   once the hold has ended (refuseKept()), so a host that shares the button with another action never sees that
+//   press as its own.
 // * In a fight the partner pulls a held lead back after pullSeconds held; elsewhere the host says when (partnerPull).
 //   With no partner present only the refusal ends a hold.
 // * The intensity band is authored: max(the page's place band, the act's floor). Nothing accumulates.
@@ -119,6 +121,25 @@ public:
     // One step of `dt` seconds (a negative, NaN or infinite step counts as 0, so the clock stays sound). events()
     // holds what happened in it (and a Started from a start() after it).
     void tick(double dt, const HallucinationInput& in) {
+        const bool wasHeld = held();
+        rules(dt, in);
+        refuseKept_ = in.refuse && (refuseKept_ || wasHeld || held());
+    }
+
+    bool active() const { return key_ >= 0; }
+    bool held() const { return active() && hold_ >= 1.f; }
+    // The refusal button went down while the lead was held and is still down: it is the refusal's until let go.
+    bool refuseKept() const { return refuseKept_; }
+    int key() const { return key_; }
+    IntensityBand band() const { return active() ? band_ : IntensityBand::None; }
+    float holdLevel() const { return hold_; } // the host slows the lead by it and stills them at 1
+    float refusalCooldown() const { return cooldown_; }
+    double now() const { return now_; }
+    const HallucinationEvent* events() const { return events_.data(); }
+    int eventCount() const { return eventCount_; }
+
+private:
+    void rules(double dt, const HallucinationInput& in) {
         if (!(dt > 0.0 && std::isfinite(dt))) dt = 0.0;
         eventCount_ = 0;
         now_ += dt;
@@ -177,17 +198,6 @@ public:
         if (now_ - shownAt_ >= tuning_.expireSeconds) end(HallucinationEventType::Expired);
     }
 
-    bool active() const { return key_ >= 0; }
-    bool held() const { return active() && hold_ >= 1.f; }
-    int key() const { return key_; }
-    IntensityBand band() const { return active() ? band_ : IntensityBand::None; }
-    float holdLevel() const { return hold_; } // the host slows the lead by it and stills them at 1
-    float refusalCooldown() const { return cooldown_; }
-    double now() const { return now_; }
-    const HallucinationEvent* events() const { return events_.data(); }
-    int eventCount() const { return eventCount_; }
-
-private:
     void emit(HallucinationEventType type) {
         if (eventCount_ < static_cast<int>(events_.size())) events_[static_cast<std::size_t>(eventCount_++)] = {type, key_};
     }
@@ -217,6 +227,7 @@ private:
     float cooldown_ = 0.f;
     bool refuseDown_ = false;
     bool refuseCounts_ = false; // this hold was pressed on an open offer, not while cooling
+    bool refuseKept_ = false;
 };
 
 } // namespace ftcore
