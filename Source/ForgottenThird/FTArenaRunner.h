@@ -660,6 +660,7 @@ private:
 	// strikes play with the stick held as a player's do (free: the autopilot's own stick). -1: off; 3: free.
 	int32 GlideStick = -1;
 	bool GlideRolling = false; // the player was rolling at the last step (-ArenaGlide=rollstrike)
+	int32 GlideSideRolls = 0;  // rolls pressed so far under -ArenaGlide=sidestep (odd: to the target's left)
 	FFTArenaGlideProbe Glide;
 	int32 JoltAsks = 0;
 	float JoltApplied = 0.f;

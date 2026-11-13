@@ -48,7 +48,7 @@
 //     cancelRoll (Dodge) and cancelLight (the next light, the riposte and the aimed shot); below 0, the
 //     default, the `cancel` rule. Heavy, heal and Release always keep the `cancel` rule. An action pressed
 //     while it can't start is buffered for `bufferTime` (only the latest press is kept) and starts as
-//     soon as it can. Pressed in one tick, Release beats dodge, which beats heal, heavy and light.
+//     soon as it can. Pressed in one tick, Release beats dodge, which beats jump, which beats heal, heavy and light.
 //   - Light: the chain's next attack when it starts during the previous light's recovery or within
 //     `chainGap` after it, else the first. The chain wraps after lightCount.
 //   - Every attack and the dodge cost their `stamina` (dodgeStamina); one that costs some needs stamina > 0
@@ -62,6 +62,16 @@
 //     or the backstep direction before any ring cut, and stay until the next dodge: the host picks
 //     the clip once from them, since a direction read from the velocity turns when a roll slides
 //     along the ring's edge.
+//   - Jump (ArenaInput::jump): free (no stamina, no cooldown; the landing is its cost). jumpStartup on the
+//     ground (the take-off), jumpAir in the air, jumpLand on the ground again (the landing). The air clock
+//     (ArenaPlayerOut::jumpTime) runs beside the action, in the player's own time (a hit pause holds it), and
+//     the height is a closed-form arc of it (jumpHeight at the top), drawn only. In the air the velocity keeps
+//     the take-off's and steers toward the stick at jumpAirControl m/s^2; the landing brakes at moveBrake.
+//     A dodge, guard or buffered press cuts in only once jumpLandLock of the landing has passed; in the air
+//     only one light may start, the air light (kArenaAirMove, ArenaFighter::jumpLight), and the landing cuts
+//     it short. From jumpClearStart to jumpClearEnd of the air clock an enemy move with hitsAir false passes
+//     under the player and reports Evaded (once per attack); one with hitsAir true lands as on the ground,
+//     and a blow that lands in the air ends the jump (Hitstun). It cuts into an attack through cancelRoll.
 //   - Guard (held): blocks attacks from within guardArcCos of the facing. A blocked hit deals
 //     damage * (1 - guardAbsorb) and costs the guard guardDamage stamina; if that empties stamina
 //     the guard breaks (GuardBroken, GuardBreak for guardBreakTime). Unblockable attacks ignore it.
@@ -253,6 +263,8 @@ inline constexpr std::uint8_t kArenaRiposteMove = 9;
 inline constexpr std::uint8_t kArenaReleaseMove = 10;
 // A gun kit's aimed light: one round (ArenaAction::Light with this move, never part of the chain).
 inline constexpr std::uint8_t kArenaShotMove = 11;
+// The light struck in the air (ArenaAction::Light with this move during a jump, never part of the chain).
+inline constexpr std::uint8_t kArenaAirMove = 12;
 // A Release is open only with more Load than this: a third of kMaxLoad.
 inline constexpr int kArenaReleaseOpenLoad = kMaxLoad / 3;
 // An enemy move's startup is on the beat when it is within this many seconds of a whole number of beats.
@@ -338,6 +350,17 @@ struct ArenaFighter {
     // Guns: the one round a light fires while aiming (ArenaInput::aim); unaimed, a light is the kit's own chain
     // (kicks). arena.json "shot", required on a guns kit and refused on any other.
     ArenaAttack shot;
+
+    // The jump (see Jump above). jumpAir 0: the kit can't jump (the press is dropped).
+    float jumpStartup = 0.08f;    // s of take-off on the ground
+    float jumpAir = 0.6f;         // s in the air
+    float jumpLand = 0.3f;        // s of landing on the ground
+    float jumpLandLock = 0.15f;   // s of the landing nothing cuts into (the weight)
+    float jumpHeight = 0.55f;     // m at the top (drawn only)
+    float jumpClearStart = 0.2f;  // s of the air clock (from take-off) after which low moves pass under ...
+    float jumpClearEnd = 0.5f;    // ... and before which (at most jumpStartup + jumpAir)
+    float jumpAirControl = 4.f;   // m/s^2 the stick steers the velocity in the air
+    ArenaAttack jumpLight;        // the air light (kArenaAirMove)
 
     float dodgeTime = 0.6f;
     float dodgeDistance = 3.5f;
@@ -438,6 +461,9 @@ struct ArenaEnemyMove {
     std::int8_t chain = -1;   // the move that follows at once (a string), or -1
     bool unblockable = false; // a guard doesn't stop it: dodge it
     bool parryable = true;
+    // Whether it reaches a jumping player (ArenaFighter::jumpClearStart..End). arena.json "hitsAir"; when the file
+    // leaves it out, false for a sweep or a slam (low, along the floor) and true for every other tell.
+    bool hitsAir = true;
     ArenaTell tell = ArenaTell::Strike; // its Read card's word; arena.json names a different one per move
     // The id of the animation clip the host plays for this move (a skinned enemy's look.clips table), "" for none.
     // Only the host reads it: the fight's rules never do.
@@ -572,6 +598,7 @@ struct ArenaInput {
     bool light = false;
     bool heavy = false;
     bool dodge = false;
+    bool jump = false;
     bool heal = false;
     bool guard = false;         // held
     bool lock = false;          // lock on, or let go
@@ -615,6 +642,7 @@ struct ArenaBodies {
 enum class ArenaAction : std::uint8_t {
     Idle, Move, Light, Heavy, Riposte, Dodge, Guard, Heal, Hitstun, GuardBreak, Downed,
     Release, // appended
+    Jump,    // appended: take-off, air and landing (an air light is Light with kArenaAirMove)
 };
 // An enemy's brain state (append only).
 enum class ArenaBrain : std::uint8_t { Approach, Strafe, Attack, Staggered, Open, Down, Dead, Flinch /* appended */ };
@@ -644,6 +672,9 @@ struct ArenaPlayerOut {
     bool backstep = false;            // whether the current or last dodge is a backstep
     bool dodgeBack = false;           // ... and whether it goes back from the locked target (within kArenaDodgeBackCos of
                                       // straight away from it): drawn facing the target, not as a roll the way it goes
+    std::int8_t dodgeSide = 0;        // ... or a side dash across it (ArenaFight::setSideDashes): +1 to the target's
+                                      // right (the ground plane has y to the right), -1 to its left; drawn side-on to
+                                      // its way on the target's side, so the dash goes to the drawn body's right or left
     int load = 0;                     // the Load gauge, 0..kMaxLoad (beside stamina)
     bool overloaded = false;          // Load at the cap (loadCap): light, heavy and heal are refused until a Release
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its action time and velocity stand still
@@ -652,6 +683,9 @@ struct ArenaPlayerOut {
     float stopDistance = -1.f;        // m the body would slide at moveBrake from this velocity to a stand, while wantSpeed
                                       // is known; -1 otherwise
     int loadCap = kMaxLoad;           // the most Load the gauge holds now (ArenaFight::setLoadCap)
+    float jumpTime = -1.f;            // s on the air clock since take-off (Jump, or an air light), -1: not jumping
+    float height = 0.f;               // m over the floor: the jump's arc (0 on the ground); the host draws it
+    bool airClear = false;            // inside jumpClearStart..End this tick: low moves pass under
 };
 
 struct ArenaEnemyOut {
@@ -779,6 +813,10 @@ struct ArenaStats {
     int blockLoad = 0;     // Load stored by blocks (ArenaFight::setCarry)
     int takeHalfLoad = 0;  // Load stored by take half
     int takeHalves = 0;    // take halves that landed
+    int jumps = 0;         // jumps started
+    int landings = 0;      // ... that came down on their feet (not cut by a blow, a defeat or the fight's end)
+    int airLights = 0;     // air lights started
+    int airEvades = 0;     // enemy moves that passed under a jump (also in evades)
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -805,6 +843,8 @@ struct ArenaFeatureChecks {
     // PASS on a break-out; barred when it was due (or every upright blow vetoed) and barred; FAIL when it was due and
     // unbarred, or upright blows landed and the run never moved; n/a with no upright blow, or poise always first.
     ArenaCheck breakOutCheck = ArenaCheck::NotShown;
+    // PASS when a jump landed; FAIL when jumps started and none landed; n/a with no jump.
+    ArenaCheck jumpCheck = ArenaCheck::NotShown;
 };
 
 FTCORE_API ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats);
@@ -983,6 +1023,12 @@ public:
     // The hook set now and its user pointer (nullptr, nullptr: none), for a host that chains its own ruling after it.
     FTCORE_API ArenaBlowHook blowHook() const;
     FTCORE_API void* blowHookUser() const;
+    // While on, a locked dodge across the target (more than 45 degrees off both straight at it and straight away from
+    // it) is a side dash: ArenaPlayerOut::dodgeSide gives its side, and the body is drawn side-on to the dash's way,
+    // facing across it on the target's side, instead of rolling its way. The rules (facing, path, frames) are the same
+    // either way. Off, the default, for a body with no side-dash clips. begin() and restart() keep it.
+    FTCORE_API void setSideDashes(bool on);
+    FTCORE_API bool sideDashes() const;
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
     // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
     // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they
@@ -1057,7 +1103,7 @@ private:
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
     friend struct ArenaFightImpl;
 
-    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release, Shot }; // an action waiting in the input buffer
+    enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release, Shot, Jump }; // an action waiting in the input buffer
     enum class HoldAsk : std::uint8_t { None, Hold, Release };                     // a host's hold request
 
     struct PlayerState {
@@ -1084,6 +1130,7 @@ private:
         Vec2 dodgeDir{1.f, 0.f};            // the current or last dodge's direction (unit)
         bool backstep = false;              // ... and whether it is a backstep
         bool dodgeBack = false;             // ... and whether it goes back from the locked target (drawn facing it)
+        std::int8_t dodgeSide = 0;          // ArenaPlayerOut::dodgeSide
         Press buffered = Press::None;
         float bufferAge = 0.f;
         bool chainLive = false;             // the last action was a light: the chain may go on
@@ -1112,6 +1159,10 @@ private:
         bool capFilled = false;             // setLoadCap overloaded the gauge since the last tick, not yet reported
         std::uint8_t rounds = 0;            // the cylinder's loaded rounds
         float reloadLeft = 0.f;             // > 0: a reload is running, this many seconds left
+        float jumpTime = -1.f;              // ArenaPlayerOut::jumpTime
+        Vec2 jumpVel{};                     // the velocity in the air (the take-off's, steered)
+        bool airLightUsed = false;          // this jump's air light has started
+        bool airClear = false;              // ArenaPlayerOut::airClear, this tick
     };
 
     struct EnemyState {
@@ -1180,6 +1231,7 @@ private:
     std::uint8_t readMove_ = 0;
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
     ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
+    bool sideDashes_ = false;               // setSideDashes (begin() and restart() keep it)
     // The blow hook is running: tick, begin and restart do nothing. A copy starts clear (its hook isn't running),
     // and assigning to a fight keeps its own.
     struct HookFlag {
