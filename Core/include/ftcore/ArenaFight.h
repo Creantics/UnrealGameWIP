@@ -107,7 +107,8 @@
 //     with no poise damage. hp 0: Downed, then Defeat.
 //   - Facing: locked, the player faces the lock target (and strafes); otherwise it turns toward the
 //     stick at turnRate. The drawn facing (drawFacing) follows at turnRate outside attacks and dodges,
-//     so the body is drawn turning where the rules snap. An attack starts facing, in this order: the aim, the lock target, the soft
+//     so the body is drawn turning where the rules snap; a dodge and an attack's startup turn it faster
+//     (an attack's reaches the rules' facing by its active part, so a blow lands from where the body looks). An attack starts facing, in this order: the aim, the lock target, the soft
 //     target (softRange, softArcCos: ArenaSoftTarget.h), the stick when it is pushed; then turns only
 //     at its `tracking` toward the same. A riposte turns onto its enemy over its startup instead, at
 //     its tracking or faster, so it faces the enemy as the blow lands (at once with no startup). On a soft target the attack also closes in by
@@ -609,7 +610,8 @@ struct ArenaPlayerOut {
     Vec2 facing{1.f, 0.f};            // unit: the facing the rules use (guard, parry, backstep, riposte, attacks)
     Vec2 drawFacing{1.f, 0.f};        // unit: the facing to draw the body at. Outside attacks and dodges it turns toward
                                       // `facing` at turnRate, so a lock that snaps the facing back after a dodge turns
-                                      // the drawn body round over a few frames (turnRate 0: the same as `facing`)
+                                      // the drawn body round over a few frames (turnRate 0: the same as `facing`); an
+                                      // attack's startup turns it faster and it is `facing` from the active part on
     ArenaAction action = ArenaAction::Idle;
     ArenaPart part = ArenaPart::None; // Light, Heavy, Riposte, Release
     std::uint8_t move = 0;            // Light: the chain index or kArenaShotMove; kArenaHeavyMove; kArenaRiposteMove; kArenaReleaseMove

@@ -2630,6 +2630,41 @@ TEST_CASE("arena dodge: the drawn body turns into the roll over its first part i
     CHECK(prevStep < 0.75f * biggest);
 }
 
+TEST_CASE("arena attack: a light right after a roll away turns the drawn body over startup, on the rules' facing by the blow") {
+    for (const bool heavy : {false, true}) {
+        CAPTURE(heavy);
+        const ArenaFighter fighter = shortRoller();
+        const ArenaAttack& attack = heavy ? fighter.heavy : fighter.light[0];
+        REQUIRE(attack.startup > 4.f * kDt);
+        Rig rig(fighter, {dummyKind()});
+        rollAwayLocked(rig);
+        const Vec2 before = rig.out().player.drawFacing;
+        REQUIRE(angleBetween(before, rig.out().player.facing) > 1.f); // still turned away from the lock
+        (heavy ? rig.in.heavy : rig.in.light) = true;
+        rig.tick();
+        rig.in = ArenaInput{};
+        REQUIRE(rig.out().player.action == (heavy ? ArenaAction::Heavy : ArenaAction::Light));
+        REQUIRE(rig.out().player.part == ArenaPart::Startup);
+        // the first frame turns, it does not snap: at most half a turn per 0.6 of startup (or turnRate)
+        const float most = std::max(fighter.turnRate, 3.14159265f / (0.6f * attack.startup)) * kDt + 0.001f;
+        CHECK(angleBetween(before, rig.out().player.drawFacing) <= most);
+        CHECK(angleBetween(rig.out().player.drawFacing, rig.out().player.facing) > 0.5f);
+        Vec2 last = rig.out().player.drawFacing;
+        int frames = 0;
+        while (rig.out().player.part == ArenaPart::Startup && frames < 120) {
+            const Vec2 f = rig.tick().player.drawFacing;
+            CHECK(angleBetween(last, f) <= most); // every step, the one into the blow too: no pop
+            last = f;
+            ++frames;
+        }
+        // the first active frame: the drawn body is the rules' facing, exactly, so the blow lands from where it looks
+        REQUIRE(rig.out().player.part == ArenaPart::Active);
+        CHECK(rig.out().player.drawFacing.x == rig.out().player.facing.x);
+        CHECK(rig.out().player.drawFacing.y == rig.out().player.facing.y);
+        CHECK(frames > 2);
+    }
+}
+
 TEST_CASE("arena lock-on: a guard, a backstep or a riposte right after a roll away faces the target") {
     {   // a parry pressed on the first free frame after a 150 degree roll away catches the blow
         const float startup = 1.2f;

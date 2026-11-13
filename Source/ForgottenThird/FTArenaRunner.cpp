@@ -2338,12 +2338,14 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		FFTArenaPose Pose;
 		Pose.Feet = ToWorld(ArenaLerp(PrevBodies.player, Bodies.player, Alpha));
 		Pose.Yaw = ArenaYaw(PlayerDrawFacing(P)); // the drawn facing: a lock's snap is drawn as a turn
+#if !UE_BUILD_SHIPPING
 		const bool bDodging = P.action == ftcore::ArenaAction::Dodge;
 		if (bDodging && !bWasDodging)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: roll starts at %.2f s"), Fight.time());
 		}
 		bWasDodging = bDodging;
+#endif
 		// The legs at the pace the body is drawn moving (the last steps' median), not the sim's wish (which the
 		// bodies' push may have cut): a cycle faster than the ground goes by is a glide.
 		Pose.Speed = PlayerStepSpeed;
