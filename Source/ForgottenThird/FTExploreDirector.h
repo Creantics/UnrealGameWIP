@@ -62,6 +62,7 @@
 
 #include "FTNavIslands.h"
 #include "FTStepHost.h"
+#include "FTWaterSubsystem.h"
 
 #include "FTExploreDirector.generated.h"
 
@@ -137,6 +138,10 @@ public:
 	bool bHasSeaLevel = false;
 	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
 	float SeaLevel = 0.f;
+	// The map's water (FTWaterSubsystem.h): its canals (the road net's canal rows) and its sea, in the engine's frame,
+	// metres. Filled by the builder.
+	UPROPERTY()
+	TArray<FFTWaterBodyRow> WaterBodies;
 	// The plan's square (m, FTBuildMassingWorld -Side=), for the tour's lines in the plan frame; 0 when not known, and
 	// the lines give engine metres.
 	UPROPERTY(EditAnywhere, Category = "Explore|Tour")

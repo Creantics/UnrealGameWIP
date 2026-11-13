@@ -93,6 +93,7 @@
 #include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
+#include "ftcore/WaterBodies.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
 
@@ -487,4 +488,36 @@ private:
 	float StripStep = 0.1f;
 	double StripAt = -1.0;
 
+	// Water (ftcore::WaterBodies through UFTWaterSubsystem), read each tick: a wade and a deep wade slow the walk by
+	// the state's factor (AddMovementInput); over the swim depth the body is held at the surface (the movement's
+	// flying mode at the swim speed, the feet eased to the swimmer's draft with its bob, the flow pushing it) until
+	// the column is a wade's again. No diving. Jump in the water, facing a wall whose top is within reach, climbs out
+	// onto it (a stand-in for a ladder or steps; TryWaterClimb).
+	void TickWater(float DeltaSeconds);
+	bool TryWaterClimb();
+	ftcore::WaterState WaterNow;
+	bool bSwimming = false;
+	bool bSwimSaid = false;
+	float SwimSavedFly = 0.f;
+	float SwimSavedBrake = 0.f;
+	bool bWaterClimbing = false;
+	float WaterClimbTime = 0.f;
+	FVector WaterClimbFrom = FVector::ZeroVector;
+	FVector WaterClimbTo = FVector::ZeroVector;
+	// A scripted walk for captures and checks (BeginLeadGo, or -LeadGo=<x,y> in the plan frame of -WorldEyeSide after
+	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it presses jump (with -LeadGoJump); the run
+	// quits -LeadGoQuit=<s> after it began.
+	bool bLeadGo = false;
+	bool bLeadGoJump = false;
+	FVector LeadGoTo = FVector::ZeroVector;
+	float LeadGoAfter = -1.f;
+	float LeadGoQuit = 0.f;
+	float LeadGoStuck = 0.f;
+	float LeadGoRan = 0.f;
+
+public:
+	// The lead walks at a point (cm) from now on.
+	void BeginLeadGo(const FVector& To, bool bJumpWhenHeld);
+	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
+	bool IsSwimming() const { return bSwimming; }
 };

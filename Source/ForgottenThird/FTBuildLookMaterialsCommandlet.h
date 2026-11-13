@@ -26,7 +26,12 @@
 // - M_Look_CanalBed: a canal's walls and bed: silt, stones and weed on the faces looking up; concrete with a dark wet
 //   band and a line of growth at the waterline on the others.
 // Every file is replaced, and nothing is saved if a material doesn't compile. See docs/PHOTOREAL_LOOK.md.
-// -Canal builds the last two alone on the collection as it stands, and saves nothing else.
+// - M_Look_Underwater: the view from under a water surface, a post-process the water subsystem switches on while the
+//   view's eye is in a body of water: it cuts at the waterline per pixel, fogs and tints what is seen through the water
+//   by the look's absorption and scattering, dims with the eye's depth, wobbles a little, and shows the surface from
+//   below as a bright window overhead with a mirror beyond the critical angle.
+// -Canal builds the two canal materials alone on the collection as it stands, and saves nothing else; -Underwater
+// likewise the underwater view.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

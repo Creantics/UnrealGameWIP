@@ -76,6 +76,8 @@ inline constexpr const TCHAR* LookWaterMaterial = TEXT("/Game/Look/M_Look_Water"
 // A canal's running water and its walls and bed (FTBuildLookMaterials, alone with -Canal).
 inline constexpr const TCHAR* LookCanalWaterMaterial = TEXT("/Game/Look/M_Look_CanalWater");
 inline constexpr const TCHAR* LookCanalBedMaterial = TEXT("/Game/Look/M_Look_CanalBed");
+// The view from under a water surface, a post-process (FTBuildLookMaterials, alone with -Underwater; FTWaterSubsystem.h).
+inline constexpr const TCHAR* LookUnderwaterMaterial = TEXT("/Game/Look/M_Look_Underwater");
 inline constexpr const TCHAR* LookGlassMaterial = TEXT("/Game/Look/M_Look_Glass");
 inline constexpr const TCHAR* LookChromeMaterial = TEXT("/Game/Look/M_Look_Chrome");
 inline constexpr const TCHAR* LookWetStoneMaterial = TEXT("/Game/Look/M_Look_WetStone");

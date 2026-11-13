@@ -39,6 +39,9 @@
 // -WorldEyeWalkTo: once settled, the eye moves in a straight line to that point at -WorldEyeWalkSpeed metres a second,
 // facing as it started, one step and one frame (<file>_f0001.png ...) a tick at -WorldEyeWalkFps steps a second, so the
 // frames play back as a walk past whatever the machine's own frame rate was; the still is then saved from the far end.
+// -WorldEyeLeadCam [-WorldEyeLeadYaw=<deg>] [-WorldEyeLeadPitch=<deg>] [-WorldEyeFrames=<n>] [-WorldEyeLeadGo=<x,y>]
+// [-WorldEyeLeadDip=<pitch>,<from>,<to>]: the still, or n frames, through the lead's own camera instead of the eye's, the
+// lead walking at a plan point and the camera's pitch dipped and brought back over the frames (the .cpp's note).
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -86,4 +89,14 @@ private:
 	FVector WalkTo = FVector::ZeroVector;
 	int32 WalkFrames = 0;
 	int32 WalkFrame = 0;
+	// -WorldEyeLeadCam and its script (the .cpp's note).
+	bool bLeadCam = false;
+	bool bDip = false;
+	bool bLeadGo = false;
+	float LeadYaw = 0.f;
+	float LeadPitch = -10.f;
+	float DipPitch = 0.f;
+	float DipFrom = 0.4f;
+	float DipTo = 0.9f;
+	FVector LeadGoTo = FVector::ZeroVector;
 };

@@ -80,6 +80,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h"
+#include "ftcore/WaterBodies.h"
 #include "ftcore/WorldLayout.h"
 
 #include <array>
@@ -91,6 +92,8 @@
 namespace ftcore {
 
 // Water on a world's ground, or a cut into it (WorldTerrain::feature()).
+// What a body does in water (wade, deep wade, swim) is WaterBodies.h's rule; a feature's `blocked` only says the
+// world's builder keeps players out of it.
 struct TerrainFeature {
     enum class Kind : std::uint8_t {
         Sea,    // water at `level` over the half-plane past the playable square's `side` edge
@@ -139,7 +142,7 @@ public:
     static constexpr float kShoulder = 1.5f;          // m of ground level with the road either side
     static constexpr float kRockSlope = 1.8f;         // the steepest ground off the sheer walls (61 degrees)
     static constexpr std::size_t kMaxFeatures = 8;
-    static constexpr float kWadeDepth = 0.7f;         // m: water deeper than this is blocked
+    static constexpr float kWadeDepth = kWaterWadeDepth; // m: a wade up to this; deeper is a deep wade, then a swim (WaterBodies.h)
     static constexpr float kRoadMaskFeather = 2.f;    // m either side of a road's edge over which roadMask() fades
     static constexpr std::size_t kShapeNear = 3;      // samples: the radii of shapeMask()'s two rings
     static constexpr std::size_t kShapeFar = 8;

@@ -13,7 +13,11 @@
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
+#include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionSceneTexture.h"
+#include "Materials/MaterialExpressionScreenPosition.h"
 #include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionSingleLayerWaterMaterialOutput.h"
@@ -304,6 +308,76 @@ UMaterialExpressionTextureObjectParameter* AddTexture(UMaterial* Material, FName
 }
 
 // One of the look collection's parameters.
+
+// The view from under a water surface (BuildUnderwater), a post-process. Per pixel: the point where its ray crosses
+// the near plane is under the surface (WaterZ, world cm) or not, so a half-sunk view cuts at the waterline. Under it,
+// the scene is seen through the water the ray crosses (to what it meets, or to the surface): the look's absorption
+// and scattering per metre (times Clarity) take it toward the water's own colour, lit by what light the frame has
+// (four taps of it: their mean and their brightest, half each) less what the water above the eye has taken. A ray that leaves through the surface sees the world
+// above through a bright window (refracted, bent by the ripples) inside the critical angle, and a mirror of the
+// water's own colour past it.
+const TCHAR* const kUnderRippleCode = TEXT(R"HLSL(float3 V = WorldPos - CamPos;
+float Dist = max(length(V), 1.0);
+float3 D = V / Dist;
+float T = (D.z > 1e-4 && CamPos.z < WaterZ) ? (WaterZ - CamPos.z) / D.z : 0.0;
+float2 H = (CamPos + D * T).xy * 0.01;
+float2 G = float2(cos(H.x * 9.1 + H.y * 2.3 + Time * 1.6), cos(H.y * 7.7 - H.x * 1.9 - Time * 1.4)) * 0.35;
+G += float2(cos(H.x * 21.7 - H.y * 12.1 + Time * 2.6), cos(H.y * 24.3 + H.x * 9.7 + Time * 2.2)) * 0.35;
+G += float2(cos(H.x * 47.0 + H.y * 35.0 - Time * 3.6), cos(H.y * 53.0 - H.x * 29.0 + Time * 3.1)) * 0.3;
+G *= Strength / (1.0 + T * 0.0015);
+return float3(G, T);)HLSL");
+
+const TCHAR* const kUnderRefractUvCode = TEXT(R"HLSL(return clamp(UV + Ripple.xy * 0.22, 0.002, 0.998);)HLSL");
+
+const TCHAR* const kUnderWobbleUvCode = TEXT(R"HLSL(float2 W = float2(sin(UV.y * 38.0 + Time * 1.9), cos(UV.x * 31.0 + Time * 1.5));
+return clamp(UV + W * Wobble, 0.002, 0.998);)HLSL");
+
+const TCHAR* const kUnderwaterCode = TEXT(R"HLSL(float3 V = WorldPos - CamPos;
+float Dist = max(length(V), 1.0);
+float3 D = V / Dist;
+float CosF = max(dot(D, ResolvedView.ViewForward), 0.05);
+float3 P0 = CamPos + D * (ResolvedView.NearPlane / CosF);
+float Below = WaterZ - P0.z + 0.1 * sin(dot(P0.xy, float2(0.83, 0.61)) + Time * 2.3) + 0.05 * sin(dot(P0.xy, float2(-1.9, 2.3)) - Time * 3.1);
+if (Below <= 0.0)
+{
+	return Scene.rgb;
+}
+float3 Col = lerp(Scene.rgb, Wobbled.rgb, saturate(Below / 1.5));
+float TExit = (D.z > 1e-4 && CamPos.z < WaterZ) ? (WaterZ - CamPos.z) / D.z : 1e12;
+float Len = min(Dist, TExit) * 0.01;
+float3 A = max(Absorb.rgb, 0.0);
+float3 S = max(Scatter.rgb, 0.0);
+float CamDepth = max(WaterZ - CamPos.z, 0.0) * 0.01;
+float3 Lw = float3(0.3, 0.59, 0.11);
+float4 Taps = float4(dot(Tap0.rgb, Lw), dot(Tap1.rgb, Lw), dot(Tap2.rgb, Lw), dot(Tap3.rgb, Lw));
+float Lum = 0.5 * dot(Taps, 0.25) + 0.5 * max(max(Taps.x, Taps.y), max(Taps.z, Taps.w));
+float3 Albedo = S / max(A + S, 1e-4);
+Albedo /= max(max(Albedo.r, Albedo.g), max(Albedo.b, 1e-4));
+Albedo = lerp(Albedo, dot(Albedo, float3(0.3, 0.59, 0.11)), 0.2);
+float3 Down = exp(-A * Clarity * 0.5 * CamDepth);
+float3 Fog = Albedo * Lum * FogGain * Down * lerp(0.7, 1.3, saturate(D.z * 0.5 + 0.5));
+if (Dist > TExit)
+{
+	float3 N = normalize(float3(-Ripple.xy, 1.0));
+	float CosI = saturate(dot(D, N));
+	float Sin2T = 1.769 * (1.0 - CosI * CosI);
+	float Fres = 1.0;
+	if (Sin2T < 1.0)
+	{
+		float CosT = sqrt(1.0 - Sin2T);
+		Fres = max(0.02 + 0.98 * pow(1.0 - CosT, 5.0), smoothstep(0.8, 1.0, Sin2T));
+	}
+	float Glint = Ripple.x + Ripple.y;
+	float3 Mirror = Fog * (0.6 + 3.0 * abs(Ripple.x - Ripple.y) + 1.5 * max(Glint, 0.0));
+	float3 Window = Refracted.rgb * WindowGain * max(1.0 + 1.4 * Glint, 0.45);
+	Col = lerp(Window, Mirror, Fres);
+}
+float3 Through = exp(-(A + S) * Clarity * Len);
+Col = Col * Through + Fog * (1.0 - Through);
+Col *= lerp(1.0, 0.5, saturate(CamDepth / 8.0));
+Col *= 1.0 - 0.45 * (1.0 - saturate(Below / 0.3));
+return Col;)HLSL");
+
 UMaterialExpressionCollectionParameter* AddLook(UMaterial* Material, UMaterialParameterCollection* Collection, FName Name, int32 Y)
 {
 	UMaterialExpressionCollectionParameter* P = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
@@ -461,6 +535,79 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look)
 	Inputs->Roughness.Connect(1, Waves);
 	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
 	Finish(Material);
+	return Material;
+}
+
+// The view from under a water surface (kUnderwaterCode): a post-process before the tone curve, on the look's water.
+// WaterZ (world cm) and Clarity (the share of the look's absorption and scattering the view keeps, by the body's kind:
+// open water is seen further through than a canal) are set each frame by the water subsystem on its instance.
+// Its pixel shader is compiled on first use, so a mistake in the custom node's own code passes this build and shows in
+// a game run's log instead ("Failed to compile Material", and the engine's default post-process is drawn).
+UMaterial* BuildUnderwater(UMaterialParameterCollection* Look)
+{
+	UMaterial* Material = NewMaterial(FTScene::LookUnderwaterMaterial);
+	Material->MaterialDomain = MD_PostProcess;
+	Material->BlendableLocation = BL_SceneColorAfterDOF;
+	UMaterialExpression* const WorldPos = AddExpression<UMaterialExpressionWorldPosition>(Material, -1400, 0);
+	UMaterialExpression* const CamPos = AddExpression<UMaterialExpressionCameraPositionWS>(Material, -1400, 100);
+	UMaterialExpression* const Time = AddExpression<UMaterialExpressionTime>(Material, -1400, 200);
+	UMaterialExpression* const WaterZ = AddScalar(Material, TEXT("WaterZ"), 0.f, 300);
+	UMaterialExpression* const Screen = AddExpression<UMaterialExpressionScreenPosition>(Material, -1400, 400);
+	auto SceneAt = [Material](UMaterialExpression* Uv, int32 Y)
+	{
+		UMaterialExpressionSceneTexture* Scene = AddExpression<UMaterialExpressionSceneTexture>(Material, -700, Y);
+		Scene->SceneTextureId = PPI_PostProcessInput0;
+		if (Uv)
+		{
+			Scene->Coordinates.Connect(0, Uv);
+		}
+		return Scene;
+	};
+	auto TapAt = [Material, &SceneAt](float U, float V, int32 Y)
+	{
+		UMaterialExpressionConstant2Vector* At = AddExpression<UMaterialExpressionConstant2Vector>(Material, -1000, Y);
+		At->R = U;
+		At->G = V;
+		return SceneAt(At, Y);
+	};
+
+	UMaterialExpressionCustom* Ripple = AddCustom(Material, TEXT("FTLookUnderRipple"), FTLookMaterialsBuild::kUnderRippleCode, CMOT_Float3, 500);
+	AddInput(Ripple, TEXT("WorldPos"), WorldPos);
+	AddInput(Ripple, TEXT("CamPos"), CamPos);
+	AddInput(Ripple, TEXT("WaterZ"), WaterZ);
+	AddInput(Ripple, TEXT("Time"), Time);
+	AddInput(Ripple, TEXT("Strength"), AddScalar(Material, TEXT("RippleStrength"), 0.2f, 600));
+
+	UMaterialExpressionCustom* RefractUv = AddCustom(Material, TEXT("FTLookUnderRefractUv"), FTLookMaterialsBuild::kUnderRefractUvCode, CMOT_Float2, 700);
+	AddInput(RefractUv, TEXT("UV"), Screen);
+	AddInput(RefractUv, TEXT("Ripple"), Ripple);
+	UMaterialExpressionCustom* WobbleUv = AddCustom(Material, TEXT("FTLookUnderWobbleUv"), FTLookMaterialsBuild::kUnderWobbleUvCode, CMOT_Float2, 800);
+	AddInput(WobbleUv, TEXT("UV"), Screen);
+	AddInput(WobbleUv, TEXT("Time"), Time);
+	AddInput(WobbleUv, TEXT("Wobble"), AddScalar(Material, TEXT("Wobble"), 0.0022f, 900));
+
+	UMaterialExpressionCustom* Under = AddCustom(Material, TEXT("FTLookUnderwater"), FTLookMaterialsBuild::kUnderwaterCode, CMOT_Float3, 0);
+	Under->MaterialExpressionEditorX = -300;
+	AddInput(Under, TEXT("WorldPos"), WorldPos);
+	AddInput(Under, TEXT("CamPos"), CamPos);
+	AddInput(Under, TEXT("WaterZ"), WaterZ);
+	AddInput(Under, TEXT("Time"), Time);
+	AddInput(Under, TEXT("Scene"), SceneAt(nullptr, 1000));
+	AddInput(Under, TEXT("Wobbled"), SceneAt(WobbleUv, 1100));
+	AddInput(Under, TEXT("Refracted"), SceneAt(RefractUv, 1200));
+	AddInput(Under, TEXT("Tap0"), TapAt(0.5f, 0.2f, 1300));
+	AddInput(Under, TEXT("Tap1"), TapAt(0.2f, 0.5f, 1400));
+	AddInput(Under, TEXT("Tap2"), TapAt(0.8f, 0.5f, 1500));
+	AddInput(Under, TEXT("Tap3"), TapAt(0.5f, 0.8f, 1600));
+	AddInput(Under, TEXT("Ripple"), Ripple);
+	AddInput(Under, TEXT("Absorb"), AddLook(Material, Look, TEXT("WaterAbsorb"), 1700));
+	AddInput(Under, TEXT("Scatter"), AddLook(Material, Look, TEXT("WaterScatter"), 1800));
+	AddInput(Under, TEXT("Clarity"), AddScalar(Material, TEXT("Clarity"), 0.3f, 1900));
+	AddInput(Under, TEXT("FogGain"), AddScalar(Material, TEXT("FogGain"), 0.36f, 2000));
+	AddInput(Under, TEXT("WindowGain"), AddScalar(Material, TEXT("WindowGain"), 1.1f, 2100));
+	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Under);
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
 	return Material;
 }
 
@@ -625,7 +772,30 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 		}
 		return Save(CanalWater, FTScene::LookCanalWaterMaterial) && Save(CanalBed, FTScene::LookCanalBedMaterial) ? 0 : 1;
 	}
-	const TCHAR* const Packages[] = {FTScene::LookCollection, FTScene::LookWaterMaterial, FTScene::LookGlassMaterial,
+	if (FParse::Param(*Params, TEXT("Underwater")))
+	{
+		// -Underwater: the underwater view's post-process alone, on the collection as it stands.
+		UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, FTScene::LookCollection);
+		if (!Look)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials -Underwater: %s is missing; run without -Underwater first."), FTScene::LookCollection);
+			return 1;
+		}
+		const FString File = PackageFile(FTScene::LookUnderwaterMaterial);
+		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: couldn't replace %s."), *File);
+			return 1;
+		}
+		UMaterial* const Underwater = BuildUnderwater(Look);
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		if (!Underwater || FT::CompileErrors(TEXT("FTBuildLookMaterials"), Underwater) > 0)
+		{
+			return 1;
+		}
+		return Save(Underwater, FTScene::LookUnderwaterMaterial) ? 0 : 1;
+	}
+	const TCHAR* const Packages[] = {FTScene::LookUnderwaterMaterial, FTScene::LookCollection, FTScene::LookWaterMaterial, FTScene::LookGlassMaterial,
 		FTScene::LookChromeMaterial, FTScene::LookWetStoneMaterial, FTScene::LookGlowMaterial, FTScene::LookCanalWaterMaterial,
 		FTScene::LookCanalBedMaterial};
 	// Start from nothing: replace the files up front, before anything loads the old assets.
@@ -670,6 +840,7 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 		{BuildGlow(Look), FTScene::LookGlowMaterial},
 		{BuildCanalWater(Look), FTScene::LookCanalWaterMaterial},
 		{BuildCanalBed(), FTScene::LookCanalBedMaterial},
+		{BuildUnderwater(Look), FTScene::LookUnderwaterMaterial},
 	};
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	int32 Errors = 0;

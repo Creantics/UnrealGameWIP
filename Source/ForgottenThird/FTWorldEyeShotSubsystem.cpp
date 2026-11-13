@@ -1,5 +1,7 @@
 #include "FTWorldEyeShotSubsystem.h"
 
+#include "FTExploreCharacter.h"
+
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "CineCameraActor.h"
@@ -188,6 +190,43 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		bWalk = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: walk to engine %s at %.2f m/s, %d frames at %.0f a second."), *WalkTo.ToString(), Speed, WalkFrames, Fps);
 	}
+	// -WorldEyeLeadCam: the view stays on the lead's own camera (the eye's camera is not used), turned to
+	// -WorldEyeLeadYaw / -WorldEyeLeadPitch (control degrees; a positive pitch looks up, swinging the camera down behind
+	// the lead). With -WorldEyeFrames=<n> it saves n frames like a walk, during which the lead walks at -WorldEyeLeadGo=<x,y>
+	// (plan frame) and -WorldEyeLeadDip=<pitch>,<from>,<to> eases the pitch to <pitch> at the share <from> of the frames,
+	// holds it and eases back by the share <to>.
+	bLeadCam = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadCam"));
+	if (bLeadCam)
+	{
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadYaw="), LeadYaw);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadPitch="), LeadPitch);
+		int32 Frames = 0;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeFrames="), Frames) && Frames > 0)
+		{
+			bWalk = true;
+			WalkFrames = FMath::Min(Frames, 3600);
+			WalkFrom = WalkTo = From;
+		}
+		FString Dip;
+		TArray<FString> DipParts;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadDip="), Dip, false) && Dip.ParseIntoArray(DipParts, TEXT(",")) == 3)
+		{
+			DipPitch = FCString::Atof(*DipParts[0]);
+			DipFrom = FCString::Atof(*DipParts[1]);
+			DipTo = FCString::Atof(*DipParts[2]);
+			bDip = true;
+		}
+		FString Go, GoX, GoY;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadGo="), Go, false) && Go.Split(TEXT(","), &GoX, &GoY))
+		{
+			const ftcore::MassingVec GoM = ftcore::massingEnginePoint(Side, FCString::Atod(*GoX), FCString::Atod(*GoY), 0.0);
+			LeadGoTo = FVector(GoM.x * 100.0, GoM.y * 100.0, 0.0);
+			bLeadGo = true;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: the lead's own camera, yaw %.1f, pitch %.1f%s%s."), LeadYaw, LeadPitch,
+			bDip ? *FString::Printf(TEXT(", dipping to %.1f over %.2f to %.2f of %d frames"), DipPitch, DipFrom, DipTo, WalkFrames) : TEXT(""),
+			bLeadGo ? TEXT(", the lead walking") : TEXT(""));
+	}
 	// The same name again only proves the new still landed once the old one is gone.
 	IFileManager::Get().Delete(*File, false, true, true);
 	bActive = true;
@@ -208,7 +247,25 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	if (Player && Eye)
 	{
 		// Anything that sets the view (the lead's own camera on possession) is overruled until the still is saved.
-		if (Player->GetViewTarget() != Eye)
+		if (bLeadCam)
+		{
+			// The lead's own camera, its control turned as asked (and dipped over a capture's frames).
+			float Pitch = LeadPitch;
+			if (bDip && WalkFrames > 0)
+			{
+				const float Share = static_cast<float>(WalkFrame) / static_cast<float>(WalkFrames);
+				const float Ease = 0.12f;
+				const float In = FMath::SmoothStep(DipFrom, DipFrom + Ease, Share);
+				const float Out = FMath::SmoothStep(DipTo - Ease, DipTo, Share);
+				Pitch = FMath::Lerp(LeadPitch, DipPitch, In * (1.f - Out));
+			}
+			Player->SetControlRotation(FRotator(Pitch, LeadYaw, 0.0));
+			if (APawn* LeadPawn = Player->GetPawn(); LeadPawn && Player->GetViewTarget() != LeadPawn)
+			{
+				Player->SetViewTarget(LeadPawn);
+			}
+		}
+		else if (Player->GetViewTarget() != Eye)
 		{
 			Player->SetViewTarget(Eye);
 		}
@@ -292,6 +349,13 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	if (bWalk && Eye && WalkFrame < WalkFrames)
 	{
 		++WalkFrame;
+		if (WalkFrame == 1 && bLeadGo)
+		{
+			if (AFTExploreCharacter* LeadBody = Cast<AFTExploreCharacter>(Player->GetPawn()))
+			{
+				LeadBody->BeginLeadGo(LeadGoTo, false);
+			}
+		}
 		Eye->SetActorLocation(FMath::Lerp(WalkFrom, WalkTo, static_cast<double>(WalkFrame) / WalkFrames));
 		FScreenshotRequest::RequestScreenshot(FString::Printf(TEXT("%s_f%04d.png"), *FPaths::ChangeExtension(File, TEXT("")), WalkFrame), false, false);
 		return;

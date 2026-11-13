@@ -83,6 +83,7 @@ add_library(ftcore STATIC
     src/WorldClock.cpp
     src/WorldChecks.cpp
     src/Roads.cpp
+    src/WaterBodies.cpp
     src/RoadGraph.cpp
     src/CityPlacer.cpp
     src/OuterPlaces.cpp
@@ -340,6 +341,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp
         tests/test_roads.cpp
+        tests/test_water_bodies.cpp
         tests/test_road_decals.cpp
         tests/test_stand_ins.cpp
         tests/test_tree_meshes.cpp

@@ -92,6 +92,14 @@ the one written during its start), and the subsystem's log line says how many pa
 | `M_Look_Glass` | Lit translucent glass, index of refraction 1.5, with Lumen front-layer reflections (the `render` block turns them on). |
 | `M_Look_Chrome` | A near-mirror metal, to read the reflections by. |
 | `M_Look_Glow` | The world's glow colour times its strength: the Lattice's game-light. |
+| `M_Look_Underwater` | The view from under a water surface, a post-process (`FTBuildLookMaterials -Underwater` builds it alone). Each pixel is cut at the waterline, then fogged and tinted by the same absorption and scattering over the water its ray crosses, dimmed with the eye's depth and wobbled a little; a ray that leaves through the surface sees a bright window overhead and a mirror past the critical angle. |
+
+Water a body can be in is `ftcore::WaterBodies` (`Core/include/ftcore/WaterBodies.h`): a map's canals (the road net's
+canal rows) and its sea as footprints with a surface, a bed and a flow, saved on the map's director by the builder.
+`UFTWaterSubsystem` reads them: the lead wades (slowed with depth, to 0.7 m), wades deep (to 1.2 m) and swims on the
+surface over that, the followers keep to the bank, and while the view's eye is in a body the underwater material is on
+(through whichever camera is the view). Its `OnCameraWater` event (under or out, the depth, the body's kind) is the
+hook for sound.
 
 ApplyLook also sets the fog's albedo and the practical lights: every light component tagged `FTPractical` takes the
 world's practical colour temperature, intensity and volumetric scattering.

@@ -1,5 +1,7 @@
 #include "FTExploreCharacter.h"
 #include "FTPartyVan.h"
+#include "FTWaterSubsystem.h"
+#include "ftcore/MassingPlan.h"
 
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
@@ -148,6 +150,23 @@ AFTExploreCharacter::AFTExploreCharacter()
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	{
+		// -LeadGo=<x,y> (plan frame of -WorldEyeSide, default 1000 m) [-LeadGoAfter=<s>] [-LeadGoJump] [-LeadGoQuit=<s>].
+		FString Go;
+		FString GoX, GoY;
+		if (FParse::Value(FCommandLine::Get(), TEXT("LeadGo="), Go, false) && Go.Split(TEXT(","), &GoX, &GoY))
+		{
+			double GoSide = 1000.0;
+			FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), GoSide);
+			const ftcore::MassingVec To = ftcore::massingEnginePoint(GoSide, FCString::Atod(*GoX), FCString::Atod(*GoY), 0.0);
+			LeadGoTo = FVector(To.x * 100.0, To.y * 100.0, 0.0);
+			LeadGoAfter = 3.f;
+			FParse::Value(FCommandLine::Get(), TEXT("LeadGoAfter="), LeadGoAfter);
+			LeadGoAfter = FMath::Max(LeadGoAfter, 0.f);
+			bLeadGoJump = FParse::Param(FCommandLine::Get(), TEXT("LeadGoJump"));
+			FParse::Value(FCommandLine::Get(), TEXT("LeadGoQuit="), LeadGoQuit);
+		}
+	}
 	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
@@ -1522,7 +1541,12 @@ void AFTExploreCharacter::HandleJump()
 		UnCrouch();
 		return;
 	}
-	if (TryTraverse(true))
+	if (!bSwimming && TryTraverse(true))
+	{
+		return;
+	}
+	// In the water, at a wall: out onto it. A swimmer doesn't jump otherwise.
+	if (TryWaterClimb() || bSwimming)
 	{
 		return;
 	}
@@ -1549,7 +1573,8 @@ void AFTExploreCharacter::HandleJumpRelease()
 
 void AFTExploreCharacter::HandleRoll()
 {
-	if (Van.IsValid())
+	// Not in a van, nor swimming or climbing out of the water.
+	if (Van.IsValid() || bSwimming || bWaterClimbing)
 	{
 		return;
 	}
@@ -2285,7 +2310,8 @@ void AFTExploreCharacter::TickWedge()
 
 void AFTExploreCharacter::HandleCrouch()
 {
-	if (Van.IsValid())
+	// Not in a van, nor swimming or climbing out of the water.
+	if (Van.IsValid() || bSwimming || bWaterClimbing)
 	{
 		return;
 	}
@@ -2728,9 +2754,229 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		RollTurnLeft = FMath::Max(RollTurnLeft - DeltaSeconds, 0.f);
 	}
+	TickWater(DeltaSeconds);
 	TickWeapon(DeltaSeconds);
 	TickUnstick(DeltaSeconds);
 	TickWedge();
+}
+
+void AFTExploreCharacter::BeginLeadGo(const FVector& To, bool bJumpWhenHeld)
+{
+	bLeadGo = true;
+	bLeadGoJump = bJumpWhenHeld;
+	LeadGoTo = To;
+	LeadGoAfter = -1.f;
+	LeadGoStuck = 0.f;
+	LeadGoRan = 0.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: walking from (%.0f, %.0f, %.0f) at (%.0f, %.0f) cm%s."), GetActorLocation().X, GetActorLocation().Y,
+		GetActorLocation().Z, To.X, To.Y, bJumpWhenHeld ? TEXT(", jumping when held up") : TEXT(""));
+}
+
+void AFTExploreCharacter::TickWater(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	// The scripted walk.
+	if (LeadGoAfter >= 0.f && (LeadGoAfter -= DeltaSeconds) < 0.f)
+	{
+		BeginLeadGo(LeadGoTo, bLeadGoJump);
+	}
+	if (bLeadGo)
+	{
+		LeadGoRan += DeltaSeconds;
+		const FVector Way = (LeadGoTo - GetActorLocation()).GetSafeNormal2D();
+		if (FVector::Dist2D(LeadGoTo, GetActorLocation()) > 30.0 && !bWaterClimbing)
+		{
+			AddMovementInput(Way, 1.f);
+			LeadGoStuck = GetVelocity().Size2D() < 15.0 ? LeadGoStuck + DeltaSeconds : 0.f;
+			if (bLeadGoJump && LeadGoStuck > 1.f)
+			{
+				LeadGoStuck = 0.f;
+				SetActorRotation(FRotator(0.0, Way.Rotation().Yaw, 0.0));
+				UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump."), GetActorLocation().X, GetActorLocation().Y,
+					GetActorLocation().Z);
+				HandleJump();
+				HandleJumpRelease();
+			}
+		}
+		if (LeadGoQuit > 0.f && LeadGoRan >= LeadGoQuit)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: ends at (%.0f, %.0f, %.0f) cm, feet %.0f, water %s."), GetActorLocation().X, GetActorLocation().Y,
+				GetActorLocation().Z, GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight(), ANSI_TO_TCHAR(ftcore::waterModeName(WaterNow.mode)));
+			LeadGoQuit = 0.f;
+			FTRequestExit(0, TEXT("LeadGo"));
+		}
+	}
+	// A climb out of the water: up the wall's face, then onto its top.
+	if (bWaterClimbing)
+	{
+		WaterClimbTime += DeltaSeconds / 0.9f;
+		const float T = FMath::Min(WaterClimbTime, 1.f);
+		const float Up = FMath::SmoothStep(0.f, 0.65f, T);
+		const float Over = FMath::SmoothStep(0.5f, 1.f, T);
+		FVector At = FMath::Lerp(WaterClimbFrom, WaterClimbTo, Over);
+		At.Z = FMath::Lerp(WaterClimbFrom.Z, WaterClimbTo.Z, Up);
+		SetActorLocation(At, false, nullptr, ETeleportType::TeleportPhysics);
+		if (T >= 1.f)
+		{
+			bWaterClimbing = false;
+			Move->SetMovementMode(MOVE_Walking);
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: climbed out onto (%.0f, %.0f, %.0f) cm."), At.X, At.Y, At.Z);
+		}
+		return;
+	}
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const ftcore::WaterMode Was = WaterNow.mode;
+	const bool bOut = !System || !System->HasBodies() || Van.IsValid();
+	if (bOut)
+	{
+		WaterNow = ftcore::WaterState{};
+	}
+	else
+	{
+		const FVector At = GetActorLocation();
+		const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		ftcore::WaterCapsule Body;
+		Body.p = {static_cast<float>(At.X * 0.01), static_cast<float>(At.Y * 0.01)};
+		Body.feetZ = static_cast<float>((At.Z - Half) * 0.01);
+		Body.height = 2.f * Half * 0.01f;
+		Body.swimming = bSwimming;
+		if (System->Bodies().bodyAt(Body.p) >= 0)
+		{
+			if (Move->IsMovingOnGround())
+			{
+				Body.groundZ = Body.feetZ;
+				Body.hasGround = true;
+			}
+			else
+			{
+				// Off the ground (falling in, swimming): the bed under it, as far down as matters.
+				FHitResult Bed;
+				FCollisionQueryParams Query(SCENE_QUERY_STAT(FTWaterBed), false, this);
+				const bool bBed = World->LineTraceSingleByChannel(Bed, At, At - FVector(0.0, 0.0, Half + 400.0), ECC_Visibility, Query);
+				Body.groundZ = bBed ? static_cast<float>(Bed.ImpactPoint.Z * 0.01) : Body.feetZ - 4.f;
+				Body.hasGround = true;
+			}
+		}
+		WaterNow = ftcore::waterState(System->Bodies(), Body, System->WaterTime());
+	}
+	if (WaterNow.mode != Was)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: the lead is %s (column %.2f m, %.0f%% under, walk x%.2f) at (%.0f, %.0f, %.0f) cm."),
+			WaterNow.mode == ftcore::WaterMode::Dry ? TEXT("dry") : WaterNow.mode == ftcore::WaterMode::Wade ? TEXT("wading")
+			: WaterNow.mode == ftcore::WaterMode::DeepWade ? TEXT("wading deep") : TEXT("swimming"),
+			WaterNow.column, WaterNow.submerged * 100.f, WaterNow.speedFactor, GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z);
+	}
+	const bool bSwimNow = WaterNow.mode == ftcore::WaterMode::Swim && !bTraversing;
+	if (bSwimNow && !bSwimming)
+	{
+		bSwimming = true;
+		if (bIsCrouched)
+		{
+			UnCrouch();
+		}
+		SwimSavedFly = Move->MaxFlySpeed;
+		SwimSavedBrake = Move->BrakingDecelerationFlying;
+		Move->MaxFlySpeed = ftcore::kWaterSwimSpeed * 100.f;
+		Move->BrakingDecelerationFlying = 350.f;
+		Move->SetMovementMode(MOVE_Flying);
+		if (!bSwimSaid)
+		{
+			bSwimSaid = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: stand-in clips: no swim, tread or wade clip exists, so the swim plays the locomotion's own idle (treading) and "
+				"walk (the stroke) held upright at the surface, and the wade plays the walk slowed; the climb out is a placed move with no clip."));
+		}
+	}
+	else if (!bSwimNow && bSwimming)
+	{
+		bSwimming = false;
+		Move->MaxFlySpeed = SwimSavedFly;
+		Move->BrakingDecelerationFlying = SwimSavedBrake;
+		if (Move->MovementMode == MOVE_Flying)
+		{
+			Move->SetMovementMode(MOVE_Falling);
+		}
+	}
+	if (bSwimming)
+	{
+		if (Move->MovementMode != MOVE_Flying)
+		{
+			Move->SetMovementMode(MOVE_Flying);
+		}
+		// Held at the surface: the feet eased to the swimmer's draft, never thrown up out of the water.
+		const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		const double Target = ftcore::waterSwimFeetZ(WaterNow.surface, System->WaterTime()) * 100.0 + Half;
+		Move->Velocity.Z = FMath::Clamp((Target - GetActorLocation().Z) * 5.0, -250.0, 120.0);
+		const FVector Push(WaterNow.flow.x * 100.0 * DeltaSeconds, WaterNow.flow.y * 100.0 * DeltaSeconds, 0.0);
+		if (!Push.IsNearlyZero())
+		{
+			AddActorWorldOffset(Push, true);
+		}
+	}
+}
+
+bool AFTExploreCharacter::TryWaterClimb()
+{
+	// Facing a wall within arm's reach whose top is dry, walkable and no more than a reach over the feet: up and onto it.
+	constexpr double kReach = 90.0;    // cm ahead
+	constexpr double kTopMost = 330.0; // cm over the feet
+	UWorld* World = GetWorld();
+	if (!World || bWaterClimbing || WaterNow.mode == ftcore::WaterMode::Dry)
+	{
+		return false;
+	}
+	const FVector At = GetActorLocation();
+	const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const float Radius = GetCapsuleComponent()->GetScaledCapsuleRadius();
+	const double Feet = At.Z - Half;
+	const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(FTWaterClimb), false, this);
+	FHitResult Wall;
+	// The wall is looked for just over the surface and at the body's middle (a wall that ends under the surface is a step).
+	const FVector Chest(At.X, At.Y, FMath::Max(At.Z, WaterNow.surface * 100.0 + 10.0));
+	if (!World->LineTraceSingleByChannel(Wall, Chest, Chest + Ahead * kReach, ECC_Visibility, Query) || FMath::Abs(Wall.ImpactNormal.Z) > 0.5)
+	{
+		return false;
+	}
+	// Onto the top just past the wall's face, or, where something stands there (a railing along the edge), past it.
+	FVector Onto = FVector::ZeroVector;
+	FHitResult Top;
+	bool bFound = false;
+	for (const double Past : {Radius + 12.0, Radius + 55.0, Radius + 95.0})
+	{
+		Onto = Wall.ImpactPoint + Ahead * Past;
+		if (!World->LineTraceSingleByChannel(Top, FVector(Onto.X, Onto.Y, Feet + kTopMost), FVector(Onto.X, Onto.Y, Feet + 20.0), ECC_Visibility, Query)
+			|| Top.bStartPenetrating || Top.ImpactNormal.Z < 0.7 || Top.ImpactPoint.Z <= WaterNow.surface * 100.0)
+		{
+			continue;
+		}
+		const FVector Stand(Onto.X, Onto.Y, Top.ImpactPoint.Z + Half + 2.0);
+		if (!World->OverlapBlockingTestByChannel(Stand, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeCapsule(Radius, Half), Query))
+		{
+			bFound = true;
+			break;
+		}
+	}
+	if (!bFound)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: no way out up this wall at (%.0f, %.0f) cm (no clear dry top within %.1f m of the feet)."),
+			Wall.ImpactPoint.X, Wall.ImpactPoint.Y, kTopMost * 0.01);
+		return false;
+	}
+	bWaterClimbing = true;
+	WaterClimbTime = 0.f;
+	WaterClimbFrom = At;
+	WaterClimbTo = FVector(Onto.X, Onto.Y, Top.ImpactPoint.Z + Half + 2.0);
+	if (bSwimming)
+	{
+		bSwimming = false;
+		GetCharacterMovement()->MaxFlySpeed = SwimSavedFly;
+		GetCharacterMovement()->BrakingDecelerationFlying = SwimSavedBrake;
+	}
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->SetMovementMode(MOVE_None);
+	UE_LOG(LogForgottenThird, Display, TEXT("Water: climbing out, %.2f m up the wall at (%.0f, %.0f) cm."), (Top.ImpactPoint.Z - Feet) * 0.01, Onto.X, Onto.Y);
+	return true;
 }
 
 void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)
@@ -2742,6 +2988,11 @@ void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleVa
 	if (RollTurnLeft > 0.f)
 	{
 		WorldDirection = WorldDirection.RotateAngleAxis(RollTurn, FVector::UpVector);
+	}
+	// Wading: the walk is slowed by the water's depth (the movement caps its speed at the input's share).
+	if (!bSwimming && (WaterNow.mode == ftcore::WaterMode::Wade || WaterNow.mode == ftcore::WaterMode::DeepWade))
+	{
+		ScaleValue *= WaterNow.speedFactor;
 	}
 	Super::AddMovementInput(WorldDirection, ScaleValue, bForce);
 }

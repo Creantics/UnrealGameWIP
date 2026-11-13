@@ -94,6 +94,7 @@ constexpr int32 kLandSubsectionQuads = 63;
 constexpr double kSeaReach = 20000.0;
 constexpr double kSeaFarReach = 60000.0;
 constexpr double kSeaFarDrop = 40.0; // m under the datum (the bed lies at -33 m at its deepest)
+constexpr double kSeaBedDeepest = 33.0; // m under the datum
 // How far (cm) the entry and a goal may lie from the navmesh and still count as on it.
 const FVector kNavProjectExtent(300.0, 300.0, 600.0);
 // The material slot of a sloped box's mesh.
@@ -3132,6 +3133,23 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		Director->bHasSeaLevel = bSea;
 		Director->SeaLevel = 0.f; // the sea plane stands at the datum
+		// The water the lead wades and swims in and the view dips under (FTWaterSubsystem.h): each canal row's surface
+		// and the sea, taken to the engine's frame.
+		Director->WaterBodies.Reset();
+		for (const ftcore::RoadBuild& RoadBuilt : RoadBuilds)
+		{
+			for (const ftcore::RoadWater& Canal : RoadBuilt.waters)
+			{
+				Director->WaterBodies.Add(FFTWaterBodyRow::From(ftcore::waterBodyToEngine(ftcore::waterBodyFromCanal(Canal), static_cast<float>(Side))));
+			}
+		}
+		if (bSea)
+		{
+			Director->WaterBodies.Add(FFTWaterBodyRow::From(ftcore::waterBodyToEngine(
+				ftcore::waterSea(static_cast<float>(SeaWest), 0.f, static_cast<float>(-kSeaBedDeepest)), static_cast<float>(Side))));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: water: %d bodies on the director (%s; buoy line %.0f m out)."), Director->WaterBodies.Num(),
+			bSea ? TEXT("canal rows and the sea") : TEXT("canal rows"), ftcore::kWaterBuoyLine);
 		Director->PlanSide = static_cast<float>(Side);
 		Director->SetActorLabel(TEXT("ExploreDirector"));
 
