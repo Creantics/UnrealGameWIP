@@ -504,6 +504,7 @@ void AFTArenaFighter::MendCarried()
 
 void AFTArenaFighter::ResetFeet()
 {
+	AirLift = 0.f; // a restart: no lift kept from a jump
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 	{
 		Anim->ResetFeet();
@@ -797,6 +798,7 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	{
 		Lean.Pitch = 84.0;
 		Lift.Z = Radius * 0.7f;
+		AirLift = 0.f; // down or dead in the air: no lift kept from the jump
 	}
 	else
 	{

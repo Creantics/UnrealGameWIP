@@ -8256,6 +8256,76 @@ TEST_CASE("arena table: the shipped kits jump with their own air lights; the ten
     const ArenaFighter& third = t.fighter("third");
     CHECK(devin.jumpLight.damage > duy.jumpLight.damage); // the gauntlets' downward strike hits hardest ...
     CHECK(duy.jumpLight.range > devin.jumpLight.range);   // ... the kick reaches furthest ...
-    CHECK(third.jumpLight.damage < duy.jumpLight.damage); // ... the Third's is the weakest
+    // The Third's row is kept for when its attacks are on; with them off it strikes nothing.
+    CHECK_FALSE(third.attacks);
     for (const ArenaFighter* f : {&devin, &duy}) CHECK(f->jumpLight.stamina == f->light[0].stamina);
+    // The ten low moves, each by name: a sweep or slam along the floor passes under a jump unless set to reach it.
+    struct LowMove {
+        const char* enemy;
+        std::size_t move;
+        const char* name;
+        ArenaTell tell;
+        bool hitsAir;
+    };
+    const LowMove low[] = {
+        {"breaker", 0, "sweep", ArenaTell::Sweep, false},
+        {"breaker", 1, "slam", ArenaTell::Slam, true},
+        {"titan", 0, "sweep", ArenaTell::Sweep, false},
+        {"titan", 2, "slam", ArenaTell::Slam, false},
+        {"kite_boss", 0, "mitten_drop", ArenaTell::Slam, true},
+        {"kite_boss", 1, "swoop", ArenaTell::Sweep, false},
+        {"stone_bearer", 3, "low_sweep", ArenaTell::Sweep, false},
+        {"stone_bearer", 6, "stamp", ArenaTell::Slam, false},
+        {"white_glove", 1, "fan_of_blades", ArenaTell::Sweep, false},
+        {"spitter", 2, "sweep", ArenaTell::Sweep, false},
+    };
+    for (const LowMove& m : low) {
+        INFO(m.enemy << " " << m.name);
+        std::size_t k = t.enemyIds.size();
+        for (std::size_t i = 0; i < t.enemyIds.size(); ++i)
+            if (t.enemyIds[i] == m.enemy) k = i;
+        REQUIRE(k < t.enemies.size());
+        REQUIRE(m.move < t.enemies[k].moveCount);
+        const ArenaEnemyMove& mv = t.enemies[k].moves[m.move];
+        CHECK(mv.tell == m.tell);
+        CHECK(mv.hitsAir == m.hitsAir);
+    }
+}
+
+TEST_CASE("arena jump: no stamina comes back in the air, and the wait starts again at touch-down; ten jumps run out") {
+    const ArenaFighter devin = loadShipped().fighter("devin");
+    REQUIRE(devin.jumpAir > 0.f);
+    Rig rig(devin, {dummyKind()});
+    rig.run(30);
+    REQUIRE(rig.fight.stamina() == doctest::Approx(devin.stamina));
+    // One jump: the stamina spent at take-off stays down until staminaDelay after touch-down.
+    rig.in.jump = true;
+    rig.tick();
+    rig.in.jump = false;
+    const float after = rig.fight.stamina();
+    CHECK(after < devin.stamina);
+    const float down = devin.jumpStartup + devin.jumpAir;
+    while (rig.out().player.jumpTime >= 0.f && rig.out().player.jumpTime < down + devin.jumpLandLock) {
+        rig.tick();
+        CHECK(rig.fight.stamina() == doctest::Approx(after));
+    }
+    rig.run(static_cast<int>(std::lround((devin.staminaDelay - devin.jumpLandLock) / kDt)) - 2);
+    CHECK(rig.fight.stamina() == doctest::Approx(after));
+    rig.run(20);
+    CHECK(rig.fight.stamina() > after);
+
+    // Ten in a row, each pressed as soon as the last one lets go: the lead runs out.
+    Rig spam(devin, {dummyKind()});
+    spam.run(30);
+    float least = devin.stamina;
+    int started = 0;
+    for (int i = 0; i < 6000 && started < 10; ++i) {
+        const bool free = spam.out().player.action != ArenaAction::Jump;
+        spam.in.jump = free;
+        const int before = spam.fight.stats().jumps;
+        spam.tick();
+        if (spam.fight.stats().jumps > before) ++started;
+        least = std::min(least, spam.fight.stamina());
+    }
+    CHECK(least <= 0.f);
 }

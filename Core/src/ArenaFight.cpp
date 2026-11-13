@@ -599,7 +599,9 @@ struct ArenaFightImpl {
     // ---- the player ----
 
     void regenerate() {
-        // Stamina refills at staminaRegen per second once staminaDelay has passed since the last spend.
+        // Stamina refills at staminaRegen per second once staminaDelay has passed since the last spend. Off the ground
+        // it waits: the delay starts again at touch-down (and runs through the landing lock), so each jump costs.
+        if (pl.jumpTime >= 0.f && pl.jumpTime < fi.jumpStartup + fi.jumpAir) pl.lastSpend = std::max(pl.lastSpend, t1);
         const float from = std::max(t0, pl.lastSpend + fi.staminaDelay);
         if (t1 > from && pl.stamina < fi.stamina)
             pl.stamina = std::min(fi.stamina, pl.stamina + fi.staminaRegen * (t1 - from));
