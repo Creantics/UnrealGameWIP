@@ -240,6 +240,7 @@ private:
 	// existing one (ftcore::storyShotNameOk, clampStoryShotMax).
 	FString ShotPrefix;
 	int32 ShotsLeft = 0;
+	bool bShotNoHud = false; // -StoryShotNoHud: the stills leave the HUD out (clean plates for UI mock-ups)
 	float ShotQuitIn = -1.f;
 	bool bShotThisBeat = false;
 	// -StoryShotSpeaking=<model id> (non-shipping, with -StoryShot): instead of one still per line, three stills

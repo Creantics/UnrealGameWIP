@@ -33,6 +33,9 @@ add_library(ftcore STATIC
     src/StoryCast.cpp
     src/AudioCues.cpp
     src/Backlog.cpp
+    src/UiGlyphs.cpp
+    src/UiStyle.cpp
+    src/UiViews.cpp
     src/Banter.cpp
     src/Battle.cpp
     src/BattleCamera.cpp
@@ -231,6 +234,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_look_body.cpp
         tests/test_garment_front.cpp
         tests/test_backlog.cpp
+        tests/test_ui.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_battle_camera.cpp

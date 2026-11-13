@@ -49,8 +49,13 @@ public:
 	AFTArenaHUD();
 
 	virtual void DrawHUD() override;
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
 private:
+	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world); null before either.
+	const UFTArenaRunner* FindRunner() const;
+
 	void DrawStrCentered(const FString& Text, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale);
 	void DrawRing(float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
 	void DrawFrame(float X, float Y, float W, float H, const FLinearColor& Color, float Thickness);
@@ -91,4 +96,6 @@ private:
 	FArenaNumberText PopupText[16];
 	FString StatsText;
 	bool bStatsBuilt = false;
+	// The new UI's Slate layer on the viewport (FTNewUi.h), while it is on.
+	TSharedPtr<class SWidget> NewUiWidget;
 };
