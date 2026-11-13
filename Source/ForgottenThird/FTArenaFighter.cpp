@@ -732,11 +732,14 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 			Need = FMath::Max(Need, kSkullCm * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
 		}
 		// A tight dash: lowered by part of the lower ball's height over its standing height (the bones are the clip's,
-		// over the skin, so the lowering itself is not in them). It follows the pose's own smooth curve, not eased.
+		// over the skin, so the lowering itself is not in them). It follows the pose's own smooth curve, except that a
+		// lift still fading from a roll just before (up to kRollLiftOut) comes down to it at kDashLiftIn, not in one frame.
 		if (bDash && bDashTight && Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
 		{
+			constexpr float kDashLiftIn = 240.f; // cm/s: faster than the clip's own lowering, so it is caught within ~0.15 s
 			const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
-			RollLift = -kDashFlatten * static_cast<float>(FMath::Max(0.0, Ball - RollFloorBall * Scale));
+			const float Want = -kDashFlatten * static_cast<float>(FMath::Max(0.0, Ball - RollFloorBall * Scale));
+			RollLift = RollLift > Want ? FMath::Max(Want, RollLift - kDashLiftIn * Scale * Dt) : Want;
 		}
 		else
 		{

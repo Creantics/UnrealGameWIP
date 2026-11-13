@@ -2720,7 +2720,7 @@ TEST_CASE("arena dodge: a locked dodge back from the target is drawn facing it; 
     }
 }
 
-TEST_CASE("arena dodge: with side dashes on, a locked dodge across the target is a side dash, drawn side-on facing across") {
+TEST_CASE("arena dodge: with side dashes on, a locked dodge across the target is a side dash, drawn side-on facing across (boundaries tested 1 degree either side of 45 and 135)") {
     const ArenaFighter fighter = shortRoller();
     struct Case { const char* name; bool on; Vec2 stick; bool back; int side; };
     // the stick along the target (+x toward it, -x away) and across it (+y: to its right, the ground plane's y)
@@ -2730,10 +2730,10 @@ TEST_CASE("arena dodge: with side dashes on, a locked dodge across the target is
         {"120 degrees right", true, Vec2{-0.5f, 0.866f}, false, 1},
         {"120 degrees left", true, Vec2{-0.5f, -0.866f}, false, -1},
         {"60 degrees right", true, Vec2{0.5f, 0.866f}, false, 1},
-        {"134 degrees right (just outside back)", true, Vec2{-0.6947f, 0.7193f}, false, 1},
-        {"136 degrees left (back)", true, Vec2{-0.7193f, -0.6947f}, true, 0},
-        {"46 degrees left (a side dash)", true, Vec2{0.6947f, -0.7193f}, false, -1},
-        {"44 degrees right (a roll)", true, Vec2{0.7193f, 0.6947f}, false, 0},
+        {"134 degrees right: a side dash (1 degree inside 135, a float-safe margin)", true, Vec2{-0.6947f, 0.7193f}, false, 1},
+        {"136 degrees left: back (1 degree past 135; exactly 135 is back, along <= -cos 45)", true, Vec2{-0.7193f, -0.6947f}, true, 0},
+        {"46 degrees left: a side dash (1 degree past 45)", true, Vec2{0.6947f, -0.7193f}, false, -1},
+        {"44 degrees right: a roll (1 degree inside 45; exactly 45 is a roll, along < cos 45 fails)", true, Vec2{0.7193f, 0.6947f}, false, 0},
         {"toward (a roll)", true, Vec2{1.f, 0.f}, false, 0},
         {"locked backstep (no stick)", true, Vec2{0.f, 0.f}, true, 0},
         {"off: 90 degrees right rolls", false, Vec2{0.f, 1.f}, false, 0},
@@ -2841,6 +2841,97 @@ TEST_CASE("arena dodge: after a side dash a guard parries and a backstep goes st
             CHECK(rig.out().player.dodgeDir.y == doctest::Approx(-to.y).epsilon(0.01));
         }
     }
+}
+
+namespace {
+// A scripted fight against two hitters, the host moving the bodies by the output's velocities: every tick's rules
+// state (the bodies, velocities, the rules' facing, hp, stamina, Load, the enemies' brains and hp) and every event in
+// order, with side dashes on or off. Also counts the side dashes it started.
+struct SameFightTrace {
+    std::vector<float> state;
+    std::vector<int> events;
+    int sideDashes = 0;
+    int dodges = 0;
+};
+
+SameFightTrace sameFightTrace(bool sideDashes) {
+    ArenaFighter f = ruleFighter();
+    f.turnRate = 14.f;
+    f.dodgeDistance = 1.2f;
+    f.dodgeStamina = 10.f;
+    Rig rig(f, {hitterKind(swing(0.5f, 0.15f, 0.5f, 2.f, 8)), hitterKind(swing(0.7f, 0.15f, 0.6f, 2.5f, 6))}, 1);
+    rig.fight.setSideDashes(sideDashes);
+    rig.put(0, 3.f, 0.f);
+    rig.put(1, -2.f, 3.f);
+    // dodges every 45 ticks, the stick along the target (+x) and across it (+y), round these in turn
+    const Vec2 sticks[] = {Vec2{0.f, 1.f},  Vec2{0.f, -1.f}, Vec2{-0.5f, 0.866f}, Vec2{-1.f, 0.f}, Vec2{1.f, 0.f},
+                           Vec2{0.5f, -0.866f}, Vec2{-0.5f, -0.866f}, Vec2{0.f, 0.f}, Vec2{0.7f, 0.7f}};
+    SameFightTrace t;
+    rig.in.view = Vec2{1.f, 0.f};
+    rig.in.lock = true;
+    for (int i = 0; i < 1200 && rig.fight.phase() == ArenaPhase::Fighting; ++i) {
+        const Vec2 d{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y - rig.bodies.player.y};
+        const float l = std::max(std::sqrt(d.x * d.x + d.y * d.y), 1e-3f);
+        const Vec2 to{d.x / l, d.y / l};
+        rig.in.move = Vec2{0.6f * to.x, 0.6f * to.y}; // walk in
+        rig.in.guard = (i / 30) % 7 == 3;
+        if (i % 45 == 20) {
+            const Vec2 s = sticks[(i / 45) % 9];
+            rig.in.move = Vec2{s.x * to.x - s.y * to.y, s.x * to.y + s.y * to.x};
+            rig.in.dodge = true;
+            rig.in.guard = false;
+        }
+        if (i % 45 == 34 || i % 45 == 40) rig.in.light = true;
+        if (i % 180 == 100) rig.in.heavy = true;
+        if (i % 300 == 299) rig.in.lock = true; // a press: off, and on again at the next
+        if (i % 300 == 0 && i > 0) rig.in.lock = true;
+        const ArenaOutput& o = rig.tick();
+        if (o.player.action == ArenaAction::Dodge && o.player.actionTime <= kDt + 1e-6f) {
+            ++t.dodges;
+            if (o.player.dodgeSide != 0) ++t.sideDashes;
+        }
+        rig.bodies.player.x += o.player.velocity.x * kDt;
+        rig.bodies.player.y += o.player.velocity.y * kDt;
+        for (std::size_t e = 0; e < 2; ++e) {
+            rig.bodies.enemies[e].x += o.enemies[e].velocity.x * kDt;
+            rig.bodies.enemies[e].y += o.enemies[e].velocity.y * kDt;
+        }
+        const float row[] = {rig.bodies.player.x, rig.bodies.player.y, o.player.velocity.x, o.player.velocity.y,
+                             o.player.facing.x, o.player.facing.y, o.player.dodgeDir.x, o.player.dodgeDir.y,
+                             static_cast<float>(o.player.action), o.player.actionTime,
+                             static_cast<float>(rig.fight.hp()), rig.fight.stamina(), static_cast<float>(rig.fight.load()),
+                             rig.bodies.enemies[0].x, rig.bodies.enemies[0].y, rig.bodies.enemies[1].x, rig.bodies.enemies[1].y,
+                             static_cast<float>(o.enemies[0].brain), static_cast<float>(o.enemies[1].brain),
+                             static_cast<float>(rig.fight.enemyHp(0)), static_cast<float>(rig.fight.enemyHp(1)),
+                             static_cast<float>(rig.fight.lock())};
+        t.state.insert(t.state.end(), std::begin(row), std::end(row));
+        for (const ArenaEvent& e : o.events) {
+            t.events.push_back(i);
+            t.events.push_back(static_cast<int>(e.type));
+            t.events.push_back(e.source);
+            t.events.push_back(e.target);
+            t.events.push_back(e.amount);
+        }
+    }
+    return t;
+}
+} // namespace
+
+TEST_CASE("arena dodge: side dashes on or off play the same fight (only the drawn fields differ)") {
+    // a body without the side-dash clips plays with them off: the fight must be the same tick for tick
+    const SameFightTrace on = sameFightTrace(true);
+    const SameFightTrace off = sameFightTrace(false);
+    CHECK(on.sideDashes >= 4); // the script does cross the target, more than once each way
+    CHECK(off.sideDashes == 0);
+    CHECK(on.dodges == off.dodges);
+    CHECK(on.dodges >= 10);
+    CHECK(on.events.size() >= 20); // blows land, both ways
+    REQUIRE(on.state.size() == off.state.size());
+    std::size_t firstDiff = on.state.size();
+    for (std::size_t i = 0; i < on.state.size() && firstDiff == on.state.size(); ++i)
+        if (on.state[i] != off.state[i]) firstDiff = i;
+    CHECK(firstDiff == on.state.size()); // bit for bit
+    CHECK(on.events == off.events);      // the same events in the same order
 }
 
 TEST_CASE("arena attack: a light right after a roll away turns the drawn body over startup, on the rules' facing by the blow") {
