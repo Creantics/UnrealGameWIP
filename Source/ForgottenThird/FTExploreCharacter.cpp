@@ -315,6 +315,18 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			Nightfall();
 		}
+		// Wetness proof for the lead materials: -ExploreWet=<Wetness>,<line cm above the feet>,<WetSilt> sets the garment
+		// wet inputs (Wetness, WetLineZ, WetSilt) on every slot that has them, once a second so the garments ApplyLook
+		// makes later (and a look switch) take them too. The world drives these in play; this only shows a fixed state.
+		FString Wet;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreWet="), Wet, false))
+		{
+			TArray<FString> Parts;
+			Wet.ParseIntoArray(Parts, TEXT(","));
+			WetReview = FVector(Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 1.f, Parts.Num() > 1 ? FCString::Atof(*Parts[1]) : 130.f,
+				Parts.Num() > 2 ? FCString::Atof(*Parts[2]) : 0.f);
+			GetWorldTimerManager().SetTimer(WetTimer, this, &AFTExploreCharacter::SoakForReview, 1.f, true, 0.5f);
+		}
 		FString Range;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
 		{
@@ -566,6 +578,36 @@ void AFTExploreCharacter::FixExposure(float Bias)
 }
 
 #if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::SoakForReview()
+{
+	const float FeetZ = GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	int32 Slots = 0;
+	TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+	for (USkeletalMeshComponent* Skin : Meshes)
+	{
+		for (int32 Slot = 0; Slot < Skin->GetNumMaterials(); ++Slot)
+		{
+			UMaterialInterface* Material = Skin->GetMaterial(Slot);
+			float Unused = 0.f;
+			if (!Material || !Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Wetness")), Unused))
+			{
+				continue;
+			}
+			UMaterialInstanceDynamic* Dynamic = Skin->CreateAndSetMaterialInstanceDynamic(Slot);
+			Dynamic->SetScalarParameterValue(TEXT("Wetness"), WetReview.X);
+			Dynamic->SetScalarParameterValue(TEXT("WetLineZ"), FeetZ + WetReview.Y);
+			Dynamic->SetScalarParameterValue(TEXT("WetSilt"), WetReview.Z);
+			++Slots;
+		}
+	}
+	if (Slots != WetSlots)
+	{
+		WetSlots = Slots;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: wet review on %d garment slots (wetness %.2f, line %.0f cm above the feet, silt %.2f)."),
+			Slots, WetReview.X, WetReview.Y, WetReview.Z);
+	}
+}
+
 void AFTExploreCharacter::Nightfall()
 {
 	int32 Dimmed = 0;

@@ -283,7 +283,12 @@ private:
 	void GreyGround();
 #if !UE_BUILD_SHIPPING
 	void Nightfall(); // -ExploreNight
+	void SoakForReview(); // -ExploreWet
 #endif
+	// -ExploreWet=<Wetness>,<wet line cm above the feet>,<WetSilt>: review only (see the .cpp); unused in shipping builds.
+	FVector WetReview = FVector::ZeroVector;
+	FTimerHandle WetTimer;
+	int32 WetSlots = -1;
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 	void HoldBodyAt(float Time);
