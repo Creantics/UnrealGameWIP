@@ -34,6 +34,9 @@ void fillArenaHudLead(const ArenaFight& fight, ArenaHudLead& out) {
         if (e.type == ArenaEventType::TookHalf) out.tookHalf = true;
     out.read = fight.readStacks();
     out.readMax = kMaxReadStacks;
+    out.roundsMax = fight.roundsMax();
+    out.rounds = fight.rounds();
+    out.reload01 = fight.reloadProgress();
     out.down = p.action == ArenaAction::Downed;
 }
 
