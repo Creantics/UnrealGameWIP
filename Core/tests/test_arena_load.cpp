@@ -423,6 +423,7 @@ TEST_CASE("arena take half: the HUD view's tookHalf is set on the tick it lands 
     rig.tick();
     fillArenaHudLead(rig.fight, lead);
     CHECK_FALSE(lead.tookHalf);
+    CHECK(lead.debt == -1); // no fight reports Debt yet: the HUD's hook stays empty
 }
 
 TEST_CASE("arena take half: too early or out of reach, the ally takes it all (S12)") {

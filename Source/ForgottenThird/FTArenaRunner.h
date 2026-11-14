@@ -115,6 +115,8 @@ struct FFTArenaRunSetup
 	FString KitId;       // the fighter kit the player plays, as the table resolved it
 	const FFTLeadLook* Lead = nullptr; // the look the player's figure wears (null: the test human)
 	const FFTLeadLook* Ally = nullptr; // the partner lead's look, worn by the ally in a carrying run (null: the test human)
+	uint8 LeadSeat = 0; // the lead's place in the party (0 to 2): the HUD's mark and name
+	uint8 AllySeat = 0; // the ally's place in the party
 	uint32 Seed = 1;
 	bool bAutoPlay = false;
 	bool bIdle = false;
@@ -232,10 +234,13 @@ public:
 	// When enemy Index was last hit (far in the past when never).
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
+	double GetAllyHitTime() const { return AllyHitTime; }
 	double GetParryTime() const { return ParryTime; }
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
 	double GetReleaseTime() const { return ReleaseTime; }
 	int32 GetReleaseSpent() const { return ReleaseSpent; }
+	// The kind id of enemy slot I, as the table names it ("" for a def built in code): the HUD's name key.
+	const char* GetSlotKindId(int32 I) const { return SlotKindId(I); }
 	// The count's Load and the Lift (-ArenaCountLift): the last Lift (its join time, -1e9 when none, and multiplier),
 	// the Load the count stored, the Lifts, and a Release's mark per enemy slot (0 / -1e9 when unmarked).
 	double GetLiftTime() const { return LiftTime; }
@@ -266,6 +271,9 @@ public:
 	}
 	// The Kite-Mother's weak-point host while it fights here (null otherwise).
 	const FFTKiteHost* GetKite() const { return Kite.IsActive() ? &Kite : nullptr; }
+	// The world point of the weak point on the boss in Slot (the stone bearer's set stone, the Kite-Mother's seam); false
+	// when that slot holds no boss with one.
+	bool GetBossWeakPoint(int32 Slot, FVector& Out) const;
 	// The lead's weapon: its strike clips, props and effects (FTLeadWeapons.h); the mode's strike views freeze and thaw it.
 	const FFTLeadWeapons& GetLeadWeapons() const { return LeadWeapons; }
 	// The aim stance (right mouse held): its blend 0..1, for the HUD's reticle.
@@ -302,6 +310,9 @@ public:
 	int32 GetGiftHealsLeft() const;
 	double GetGiftHealReadyIn() const;
 	double GetGiftGuardReadyIn() const;
+	// For the GIFT row's prompts: what a press of gift `G` at the lead would answer now (the session's giftReason, the
+	// press's own slot check, with the lead's health as the press sets it); Absent with no session.
+	ftcore::PressReason GetGiftReason(ftcore::Gift G) const;
 	bool IsRefusedTooEarly() const;
 	bool IsEscrowWaiting() const;
 	float GetEscrowWaitLeft() const;
@@ -316,6 +327,12 @@ public:
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
+	// The party places (0 to 2) of the lead and the carrying run's ally, for the HUD's marks.
+	uint8 GetLeadSeat() const { return LeadSeat; }
+	uint8 GetAllySeat() const { return AllySeat; }
+	// The lead's and the ally's look names (empty for the test human), the HUD's party rows' names.
+	const FString& GetLeadName() const { return LeadName; }
+	const FString& GetAllyName() const { return AllyName; }
 	// The third slot as the session holds it (a checkpoint keeps it), and why any gift press is refused in it now
 	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
 	ftcore::SlotState GetThirdSlot() const;
@@ -607,6 +624,10 @@ private:
 	float SessionHeld = 0.f;         // Fight.heldTime() at the last session tick
 	bool bSessionGuard = false;      // the guard as last sent to the session (refusal hold edges)
 	uint8 SessionLead = ftcore::kLeadA; // the lead slot the player's figure fills
+	uint8 LeadSeat = 0;
+	uint8 AllySeat = 0;
+	FString LeadName;
+	FString AllyName;
 	ftcore::ArenaBlowHook SessionInnerHook = nullptr; // the sub-hosts' hook the session's ruling chains after
 	void* SessionInnerUser = nullptr;
 	bool bSessionPartnerDue = false; // -ArenaSharedCount: a lead's blow is held, the scripted partner joins after the step
@@ -988,6 +1009,8 @@ private:
 	bool bTableFill = false;
 	// -ArenaTableKey: the autopilot works the player's key (StepTableKey): odd presses held to a begin, even ones tapped.
 	bool bTableKey = false;
+	// -ArenaTableOpen: the autopilot stands still and open while the table is set (a review switch for the share).
+	bool bTableOpen = false;
 	int32 TableKeyPresses = 0;
 	ftcore::PlaceTable TablePlaces;
 	ftcore::TableSet TableClock;

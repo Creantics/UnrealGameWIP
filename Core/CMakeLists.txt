@@ -35,7 +35,13 @@ add_library(ftcore STATIC
     src/Backlog.cpp
     src/UiGlyphs.cpp
     src/UiStyle.cpp
+    src/UiStroke.cpp
     src/UiViews.cpp
+    src/UiBudget.cpp
+    src/UiEventMarks.cpp
+    src/UiFirstUse.cpp
+    src/UiLone.cpp
+    src/UiPartyScreen.cpp
     src/Banter.cpp
     src/Battle.cpp
     src/BattleCamera.cpp
@@ -154,6 +160,7 @@ add_library(ftcore STATIC
     src/LoneCarry.cpp
     src/PartnerBrain.cpp
     src/GiftSlot.cpp
+    src/LeadSwitch.cpp
     src/Hallucination.cpp
     src/Brief.cpp
     src/BriefKit.cpp
@@ -318,6 +325,12 @@ if(FTCORE_BUILD_TESTS)
         tests/test_garment_front.cpp
         tests/test_backlog.cpp
         tests/test_ui.cpp
+        tests/test_ui_budget.cpp
+        tests/test_ui_event_marks.cpp
+        tests/test_ui_first_use.cpp
+        tests/test_ui_lone.cpp
+        tests/test_ui_party.cpp
+        tests/test_ui_stroke.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_battle_camera.cpp
@@ -480,7 +493,8 @@ if(FTCORE_BUILD_TESTS)
         "newengine assets folder (story script, face presets, golden data) for the real-data tests")
     target_compile_definitions(ftcore_tests PRIVATE FTCORE_TEST_ASSET_DIR="${FTCORE_NEWENGINE_ASSETS}"
         FTCORE_PROJECT_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Data"
-        FTCORE_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        FTCORE_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+        FTCORE_TEST_ACCESS) # FightSessionTestAccess: the test target alone may reach private fields
     if(MSVC)
         target_compile_options(ftcore_tests PRIVATE /EHsc)
     endif()

@@ -56,20 +56,30 @@
 //   as unknown for the gift Heal) is down, and above 0 it stands again; NaN or an infinity changes nothing. A lead
 //   at 0 is down, not dead: while the other lead in the fight stands, the fight goes on. When the controlled lead
 //   (activeLead) falls and the other stands, control passes to it (tick.tookOver). It never passes back by
-//   itself: only setActiveLead (the player's switch) moves it, and that refuses a lead that is down or not in the
-//   fight. The fallen lead stands again by itself after the partner's downSeconds (30 s) at its riseHealth
+//   itself: only setActiveLead (the player's switch) moves it, and that is resolved at the step's close (below).
+//   The fallen lead stands again by itself after the partner's downSeconds (30 s) at its riseHealth
 //   (25%): the partner's brain drives the uncontrolled body, which a fallen lead always is, so it times the fall
 //   and asks for the rise (PartnerBrain rule 5) and the host stands the body and feeds its health. Every lead in
 //   the fight down when the step closes is a defeat (tick.defeated, once); after it nothing falls or stands until
 //   a retry or a begin. Each fall and rise comes once, on the next tick (leadsFell, leadsRose).
 //   One step's falls and rises settle when the step closes: at the next tick, or at a checkpoint taken between
-//   ticks. Within a step setLeadHealth only marks a lead down or up (down() reads the mark); the close compares
-//   each lead with how it stood when the step opened, so a lead that fell and stood again within one step did
-//   neither, and the order of the calls never changes the result. Rises apply first, then falls. If a lead fell
-//   and every lead in the fight is down after both, it is a defeat: tick.defeated, no tookOver, the controlled
-//   lead unchanged. Otherwise, if the controlled lead is down, control passes to the other (tick.tookOver), and
-//   that may be the lead that stood on this very step (at its riseHealth). defeated() and the takeover come at
-//   the close.
+//   ticks (which settles them early, and leaves the switch for the tick). Within a step setLeadHealth only marks a
+//   lead down or up (down() reads the mark); the close compares each lead with how it stood when the step opened,
+//   so a lead that fell and stood again within one step did neither, and the order of the calls never changes the
+//   result. Rises apply first, then falls. If a lead fell and every lead in the fight is down after both, it is a
+//   defeat: tick.defeated, no tookOver, the controlled lead unchanged. Otherwise, if the controlled lead is down,
+//   control passes to the other (tick.tookOver), and that may be the lead that stood on this very step (at its
+//   riseHealth). defeated() and the takeover come at the close. Last, at the tick only, the player's switch asked
+//   in the step (setActiveLead returns true for "request taken", not "switched"; of two asks in one step the last
+//   wins and the earlier raises no event) is honoured if that lead stands after both (tick.switched; none when it
+//   already has control), else refused (tick.switchRefused, tick.switchRefusal: why, by leadSwitchReason, the
+//   function the HUD previews with: Down, FightOver, Lone or Cooldown). So a switch to a lead who stands up in the
+//   same step is honoured, a switch to a lead who falls in it is refused, and tookOver is the same, whatever the
+//   call order. A checkpoint carries a switch still waiting (switchRequested), and a retry to it opens on that lead
+//   if it stands there, reported by tick.switched on the first tick after the retry. A switch is refused Cooldown
+//   for def.leadSwitchCooldownSeconds (1 s by default) after an accepted one; a takeover by a fall is never blocked
+//   by it and does not start it. While a Lone Carry is on, a switch to any lead but the Lone one is refused Lone,
+//   and the request leaves the carry on.
 //   A lead the def marks cannotFall (per fight, per lead; false by default) never goes down in that fight: a
 //   blow that would take it to 0 or below leaves it at 1 hp (blowOnLead does the sum for the host) and raises
 //   tick.heldUp once, on the next tick. With every lead in the fight marked, health never loses the fight: what
@@ -85,11 +95,14 @@
 //   on one tick) and the latest (tick.checkpoint). setHostCheckpoint(host) fills the oldest one not written yet,
 //   so the host writes once per bit, the start first; setHostCheckpoint(host, at) names one. A checkpoint whose
 //   host part was never written says so (hostWritten false): retry() returns it as is, and its host part (an
-//   unbegun brain's save among it) is not the fight's. retry() goes back to the latest: every piece starts clean, as at a begin, at the
-//   checkpoint's clock, and then the checkpoint's fields are put back exactly. A defeat costs nothing but the
-//   attempt: the Load, the currency and the gift tally come back as the checkpoint has them. A checkpoint holds
-//   the fight's state only. A retry to the fight start unbinds the story, as a begin does (the host rolls the
-//   step back and binds anew); a phase retry leaves the binding and the story state exactly as they are.
+//   unbegun brain's save among it) is not the fight's. retry() goes back to the latest: every piece starts
+//   clean, as at a begin, at the checkpoint's clock, and then the checkpoint's fields are put back exactly, with
+//   one exception: a switch the checkpoint carried (switchRequested) is applied, so activeLead() may differ from
+//   the checkpoint's activeLead (the next tick reports it, tick.switched). The host reads activeLead() after a
+//   retry, never the checkpoint's field. A defeat costs nothing but the attempt: the Load, the currency and the
+//   gift tally come back as the checkpoint has them. A checkpoint holds the fight's state only. A retry to the
+//   fight start unbinds the story, as a begin does (the host rolls the step back and binds anew); a phase retry
+//   leaves the binding and the story state exactly as they are.
 //   Not in a checkpoint, by design (each starts clean at a retry, as at a begin): the count and its windows, the
 //   table, the held refusal, the session's own lock, marks, held blows and their bonuses, Load changes not yet
 //   reported, the per-lead store timers, the Lone Carry's due flags, and (at a fight-start retry) the story
@@ -99,12 +112,18 @@
 //   as timers or a rotation, the host keeps beside it). The arena's hallucination state is the host fight's
 //   (ArenaFight), never the session's: the host keeps it too.
 // * stateHash(): FNV-1a over every field of the session that affects play (each piece's state, the gift slot with
-//   its cooldowns, threads and charges, places, the table, the refusal, the lock, a boss script's hp, phase,
-//   break, poise, rotation and lock, held blows, pending Load changes, marks, the kept gauge, the Lone Carry and
-//   its pool, both leads' health, down marks and the step's opening marks, defeat, every due flag, both
-//   checkpoints' clock, phase and written flag). Left out: the last tick's output buffers (tick, its loads and
-//   bonuses: outputs, rebuilt every tick), the def (fixed from begin) and the story pointer's address (only
-//   whether one is bound). Two sessions with one hash do the same from there on the same calls.
+//   its cooldowns, threads and charges, places, the table, the refusal, the lock, a boss script's hp, phase, break,
+//   poise, rotation and lock, held blows, pending Load changes, marks, the kept gauge, the Lone Carry and its pool,
+//   both leads' health, down marks and the step's opening marks, defeat, the waiting switch request (switchReq),
+//   the last switch's time and the cooldown, every due flag (the switch's results among them), and both checkpoints
+//   whole: clock, phase, written flag, active lead, the switch it carries (switchRequested) and the last switch's
+//   time (switchAt), lead health, down marks, the gift slot, places, the kept Load, the Lone fields, a boss script
+//   and the host's part as written). Left out: the last tick's output buffers (tick, its loads and bonuses:
+//   outputs, rebuilt every tick), the slots of the held-blow and pending-Load buffers past their counts (stale),
+//   the def (fixed from begin), the story pointer's address (only whether one is bound), the fact registry pointer
+//   (bound with the story) and the hallucination state, which is the host's (ArenaFight), not the session's, so
+//   this hash says nothing about it. Two sessions begun with the same def and with one hash do the same from there
+//   on the same calls, a retry included.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
@@ -113,10 +132,12 @@
 #include "ftcore/CombatInputs.h"
 #include "ftcore/GiftSlot.h"
 #include "ftcore/HeldRefusal.h"
+#include "ftcore/LeadSwitch.h"
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
 #include "ftcore/PartnerBrain.h"
 #include "ftcore/Places.h"
+#include "ftcore/PressReason.h"
 #include "ftcore/StateHash.h"
 #include "ftcore/StoryState.h"
 #include "ftcore/StrikeCount.h"
@@ -179,6 +200,9 @@ struct FightSessionDef {
     // The third slot as the fight begins (and at each retry, before the checkpoint's own state goes back):
     // Companion gives gifts; Vacant or Hostile gives none (a press is refused Vacant or Hostile).
     SlotState thirdSlot = SlotState::Companion;
+    // Fight seconds after an accepted switch during which another is refused (LeadSwitch::Cooldown); 0..5
+    // (LeadSwitch.h; Data/Battle/lead_switch.json). A takeover by a fall is never blocked by it, nor starts it.
+    double leadSwitchCooldownSeconds = kLeadSwitchCooldownDefault;
 };
 
 inline bool validKeptGauge(const FightSessionDef& d) {
@@ -201,8 +225,10 @@ struct FightSessionCheck {
     bool lone = true;  // false: the Lone Carry was refused (not a lead, or its tuning out of range): nobody Lone
     bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
     bool party = true; // false: no lead in the fight (both are then)
+    bool leadSwitch = true; // false: the switch cooldown was refused (not in 0..5): the default 1 s is used
     // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
-    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap && lone && party; }
+    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap && lone && party && leadSwitch;
+    }
 };
 
 // A Load change the count asks of a lead's gauge (def.lift): the host applies it, store or spend. Append only.
@@ -237,6 +263,8 @@ inline constexpr std::size_t kMaxHeldBlows = 16;
 
 // Which checkpoint a tick or call took (None: none).
 enum class CheckpointAt : std::uint8_t { None, FightStart, Phase };
+// The fight time of a fight's last accepted switch before any (no cooldown runs).
+inline constexpr double kNeverSwitched = -1.0e300;
 
 // The host's part of a checkpoint: what a retry must put back that the session does not own. The host writes it
 // (setHostCheckpoint) when a checkpoint is taken and applies it from retry()'s checkpoint.
@@ -258,6 +286,11 @@ struct FightCheckpoint {
     std::uint8_t phase = 0;               // the boss's phase (0 at the fight's start)
     double now = 0.0;                     // the fight clock
     FighterId activeLead = kLeadA;        // the controlled lead
+    FighterId switchRequested = kNoFighter; // a switch asked and waiting for the step's close (a retry applies it)
+    double switchAt = kNeverSwitched;       // the fight time of the last accepted switch (its cooldown runs from it)
+    std::array<bool, 2> inFight{true, true}; // the leads in the fight (a join adds one)
+    FighterId joinRequested = kNoFighter;    // a join asked and waiting for the step's close (a retry applies it)
+    float joinHealth = 0.f;                  // and the health it enters at
     std::array<float, 2> leadHealth{kHealthUnknown, kHealthUnknown}; // setLeadHealth's stored values
     std::array<bool, 2> down{};           // which leads were down
     GiftSlot gift{};                      // the whole slot: tally, threads, cooldowns, heals given, its state
@@ -294,6 +327,12 @@ struct FightTick {
     std::uint8_t leadsRose = 0;             // and for each that stood again
     std::uint8_t heldUp = 0;                // and for each cannotFall lead a blow left at 1 hp
     FighterId tookOver = kNoFighter;        // the lead that took control when the controlled lead fell
+    FighterId switched = kNoFighter;        // the lead the player's switch gave control to at a step's close
+    FighterId switchRefused = kNoFighter;   // the lead the player's switch asked for and did not get
+    LeadSwitch switchRefusal = LeadSwitch::Ok; // and why (Ok when nothing was refused)
+    FighterId joined = kNoFighter;          // the lead joinFight brought into the fight at a step's close
+    FighterId joinRefused = kNoFighter;     // the lead joinFight asked for and did not bring in
+    LeadJoin joinRefusal = LeadJoin::Ok;    // and why (Ok when nothing was refused)
     bool defeated = false;                  // once: every lead in the fight down when a step closes
     CheckpointAt checkpoint = CheckpointAt::None; // the latest taken since the last tick: write the host's part now
     std::uint8_t checkpoints = 0; // every one taken since the last tick: bit (1 << CheckpointAt), start first
@@ -332,10 +371,12 @@ public:
     // an infinite one, is clamped to +-kMaxFightStart; a NaN start is 0. Either way the fight begins (check.start).
     FightSessionCheck begin(const FightSessionDef& def, double start) {
         def_ = def;
+        const FighterId asked = switchReq_; // a switch asked before begin: the new fight opens on it
         const FightSessionCheck c = restart(start);
+        if (isLead(asked) && inFight_[asked]) activeLead_ = asked;
         start_ = now_;
-        startCp_.at = CheckpointAt::None;
-        phaseCp_.at = CheckpointAt::None;
+        startCp_ = FightCheckpoint{}; // whole: nothing of an earlier fight stays (stateHash reads every field)
+        phaseCp_ = FightCheckpoint{};
         startDue_ = true;
         return c;
     }
@@ -344,12 +385,15 @@ public:
     bool inFight(FighterId lead) const { return isLead(lead) && inFight_[lead]; }
     bool down(FighterId lead) const { return isLead(lead) && down_[lead]; }
     bool cannotFall(FighterId lead) const { return inFight(lead) && def_.cannotFall[lead]; }
-    // The host's hp sum for a blow of `damage` on a lead at `hp` of `maxHp`: hp - damage, but at least 1 for a lead
-    // that cannot fall (raising heldUp when the blow would have taken it to 0 or below). It feeds setLeadHealth
-    // with the result over maxHp (when maxHp > 0), so the host needs no second call.
+    // The host's hp sum for a blow of `damage` on a lead at `hp` of `maxHp`: hp - damage with the damage first held
+    // to 0..hp (0..0 at hp 0 or below), so it never overflows, a blow never heals and never takes hp under 0; but at
+    // least 1 for a lead that cannot fall (raising heldUp when the blow would have taken it to 0 or below). It feeds
+    // setLeadHealth with the result over maxHp (when maxHp > 0), so the host needs no second call.
     int blowOnLead(FighterId lead, int hp, int damage, int maxHp) {
-        if (!isLead(lead)) return hp - damage;
-        int left = hp - damage;
+        const int room = hp > 0 ? hp : 0;
+        const int dealt = damage < 0 ? 0 : (damage > room ? room : damage);
+        if (!isLead(lead)) return hp - dealt;
+        int left = hp - dealt;
         if (left < 1 && cannotFall(lead)) {
             left = 1;
             if (!defeated_) heldUpDue_ = static_cast<std::uint8_t>(heldUpDue_ | (1u << lead));
@@ -365,7 +409,7 @@ public:
     // A phase checkpoint for a boss the host runs itself, when its def says checkpointAtPhase: call it on the
     // step its phase changes (`phase`, the new one), then setHostCheckpoint. False (none taken) after a defeat.
     bool checkpointPhase(std::uint8_t phase) {
-        settle(); // a defeat on this step closes it first
+        settleFalls(); // a defeat on this step settles first (the switch waits for the step's close)
         if (defeated_) return false;
         takeStartIfDue();
         takeCheckpoint(phaseCp_, CheckpointAt::Phase, phase);
@@ -410,6 +454,7 @@ public:
             return cp;
         }
         activeLead_ = cp.activeLead;
+        inFight_ = cp.inFight;
         leadHealth_ = cp.leadHealth;
         down_ = cp.down;
         stepDown_ = cp.down; // the step opens as the checkpoint stood
@@ -425,6 +470,28 @@ public:
         lonePooled_ = cp.lonePooled;
         loneBeganDue_ = !atPhase && lone_;
         if (hasBoss_) boss_ = cp.boss;
+        switchAt_ = cp.switchAt;
+        // A join that was waiting: judged now, as the close would; Ok brings that lead in and the next tick
+        // reports tick.joined; else it is dropped. Before the carried switch, as at the close.
+        if (cp.joinRequested != kNoFighter && leadJoinReason(cp.joinRequested) == LeadJoin::Ok) {
+            enter(cp.joinRequested, cp.joinHealth);
+            joinedDue_ = cp.joinRequested;
+        }
+        // A switch that was waiting: judged now, as the close would (leadSwitchReason, on the checkpoint's state):
+        // Ok opens the retry on it, starts its cooldown and the next tick reports tick.switched; any refusal
+        // (Down, Cooldown, Lone ...) is reported by the next tick as the close would (tick.switchRefused and
+        // tick.switchRefusal) and the request is dropped; Same reports nothing.
+        if (cp.switchRequested != kNoFighter) {
+            const LeadSwitch why = leadSwitchReason(cp.switchRequested);
+            if (why == LeadSwitch::Ok) {
+                activeLead_ = cp.switchRequested;
+                switchAt_ = now_;
+                switchedDue_ = cp.switchRequested;
+            } else if (why != LeadSwitch::Same) {
+                switchRefusedDue_ = cp.switchRequested;
+                switchRefusalDue_ = why;
+            }
+        }
         return cp;
     }
 
@@ -504,6 +571,18 @@ private:
         heldUpDue_ = 0;
         tookOverDue_ = kNoFighter;
         defeatedDue_ = false;
+        switchReq_ = kNoFighter;
+        switchedDue_ = kNoFighter;
+        switchRefusedDue_ = kNoFighter;
+        switchRefusalDue_ = LeadSwitch::Ok;
+        joinReq_ = kNoFighter;
+        joinHealth_ = 0.f;
+        joinedDue_ = kNoFighter;
+        joinRefusedDue_ = kNoFighter;
+        joinRefusalDue_ = LeadJoin::Ok;
+        switchAt_ = kNeverSwitched;
+        c.leadSwitch = validLeadSwitchCooldown(def_.leadSwitchCooldownSeconds);
+        switchCooldown_ = c.leadSwitch ? def_.leadSwitchCooldownSeconds : kLeadSwitchCooldownDefault;
         cpDue_ = 0;
         startDue_ = false;
         return c;
@@ -531,7 +610,7 @@ public:
 
     // Moves the fight clock by `fightDt` (0 during hit-stop) and every piece with it.
     const FightTick& tick(double fightDt) {
-        settle(); // the step since the last tick closes: its falls and rises
+        settle(); // the step since the last tick closes: its rises and falls, then the switch asked in it
         takeStartIfDue();
         const double step = std::isfinite(fightDt) && fightDt > 0.0 ? (fightDt < kMaxFightStep ? fightDt : kMaxFightStep) : 0.0;
         now_ += step;
@@ -583,6 +662,12 @@ public:
         tick_.leadsRose = roseDue_;
         tick_.heldUp = heldUpDue_;
         tick_.tookOver = tookOverDue_;
+        tick_.switched = switchedDue_;
+        tick_.switchRefused = switchRefusedDue_;
+        tick_.switchRefusal = switchRefusalDue_;
+        tick_.joined = joinedDue_;
+        tick_.joinRefused = joinRefusedDue_;
+        tick_.joinRefusal = joinRefusalDue_;
         tick_.defeated = defeatedDue_;
         tick_.checkpoints = cpDue_;
         tick_.checkpoint = (cpDue_ & (1u << static_cast<unsigned>(CheckpointAt::Phase))) != 0 ? CheckpointAt::Phase
@@ -592,6 +677,12 @@ public:
         roseDue_ = 0;
         heldUpDue_ = 0;
         tookOverDue_ = kNoFighter;
+        switchedDue_ = kNoFighter;
+        switchRefusedDue_ = kNoFighter;
+        switchRefusalDue_ = LeadSwitch::Ok;
+        joinedDue_ = kNoFighter;
+        joinRefusedDue_ = kNoFighter;
+        joinRefusalDue_ = LeadJoin::Ok;
         defeatedDue_ = false;
         cpDue_ = 0;
         return tick_;
@@ -602,13 +693,65 @@ public:
     // The lead the player's figure fills (kLeadA until set): the host aims its gift presses at it and reports its
     // blows and calls for it. The host sets it when the fight begins and whenever the player switches lead; it
     // stays across begin (a party fact, not a fight's), except that a begin moves it off a lead not in the fight.
-    // A fall of the controlled lead moves it too (see above). False (unchanged) for a non-lead, a lead not in this
-    // fight or a lead that is down.
+    // A fall of the controlled lead moves it too (see above). The switch is a request the step's close resolves
+    // (see above): true means "request taken", not "switched"; the last request in a step wins and an earlier one
+    // raises no event. activeLead() moves only at the close, which judges the request with leadSwitchReason and
+    // reports it (tick.switched, or tick.switchRefused and tick.switchRefusal). A request made before begin is
+    // applied by it (set-up, not a switch: no cooldown, no Lone refusal). False (nothing asked) for NotInFight:
+    // anything but the two leads (the third slot never takes control) or a lead not in this fight.
     bool setActiveLead(FighterId lead) {
-        if (!isLead(lead) || !inFight_[lead] || down_[lead]) return false;
-        activeLead_ = lead;
+        if (leadSwitchReason(lead) == LeadSwitch::NotInFight) return false;
+        switchReq_ = lead;
         return true;
     }
+    // What a switch to `lead` asked now gets at this step's close, unless a fall or rise lands on this step first
+    // (then the close's answer, judged after them, wins): the close calls this same function after its rises and
+    // falls. For the HUD's party menu. In order: NotInFight, FightOver (a defeat, or finish(true)), Down, Same,
+    // Lone (a Lone Carry is on and `lead` is not the Lone lead; the request never ends the carry), Cooldown
+    // (within def.leadSwitchCooldownSeconds of the last accepted switch), else Ok.
+    LeadSwitch leadSwitchReason(FighterId lead) const {
+        if (!isLead(lead) || !inFight_[lead]) return LeadSwitch::NotInFight;
+        if (defeated_ || won_) return LeadSwitch::FightOver;
+        if (down_[lead]) return LeadSwitch::Down;
+        if (lead == activeLead_) return LeadSwitch::Same;
+        if (lone_ && lead != def_.loneLead) return LeadSwitch::Lone;
+        if (now_ - switchAt_ < switchCooldown_) return LeadSwitch::Cooldown;
+        return LeadSwitch::Ok;
+    }
+    // Fight seconds until the switch cooldown is over (0: none runs).
+    double leadSwitchReadyIn() const {
+        const double left = switchAt_ + switchCooldown_ - now_;
+        return left > 0.0 ? left : 0.0;
+    }
+    FighterId switchRequested() const { return switchReq_; } // kNoFighter: no switch waits for the close
+    // A lead not in the fight (def.inFight: a fight begun with one lead, as a Lone Carry) comes in: the partner
+    // the player called. The host must end the carry (endLone(PartnerCalled)) when the join lands, if not
+    // before: the join never ends it, and while it is on a switch to the joiner is refused Lone. A request the
+    // step's close resolves after its rises and falls and before the switch, with leadJoinReason: Ok brings
+    // the lead in standing at `health` (the host's carried value, setLeadHealth's scale) and reports
+    // tick.joined; it is not the active lead (a switch to it is NotInFight until the close, so it can be
+    // switched to on a later step), and from then on both leads down is a defeat as in any two-lead fight. Else
+    // tick.joinRefused and tick.joinRefusal. The last request in a step wins. A checkpoint holds the leads in
+    // the fight and a join still waiting: a retry to one taken before the join starts with one lead again.
+    // False (nothing asked) for NotALead (the third slot, any non-lead) or a health not in (0, 1]. A join
+    // asked before begin is dropped by it (def.inFight sets the fight's leads).
+    bool joinFight(FighterId lead, float health) {
+        if (leadJoinReason(lead) == LeadJoin::NotALead) return false;
+        if (!(std::isfinite(health) && health > 0.f && health <= 1.f)) return false;
+        joinReq_ = lead;
+        joinHealth_ = health;
+        return true;
+    }
+    // What a join of `lead` asked now gets at this step's close, unless a fall lands on this step first (the
+    // close judges after it with this same function). In order: NotALead, FightOver (a defeat, or
+    // finish(true)), AlreadyIn, else Ok.
+    LeadJoin leadJoinReason(FighterId lead) const {
+        if (!isLead(lead)) return LeadJoin::NotALead;
+        if (defeated_ || won_) return LeadJoin::FightOver;
+        if (inFight_[lead]) return LeadJoin::AlreadyIn;
+        return LeadJoin::Ok;
+    }
+    FighterId joinRequested() const { return joinReq_; } // kNoFighter: no join waits for the close
     FighterId activeLead() const { return activeLead_; }
 
     // FNV-1a over every field that affects play (see above): replays compare it step by step.
@@ -637,7 +780,22 @@ public:
         h.add(loneReleases_).add(loneFolded_).add(lonePooled_);
         h.add(leadHealth_).add(won_).add(start_).add(inFight_).add(down_).add(stepDown_).add(defeated_);
         h.add(fellDue_).add(roseDue_).add(heldUpDue_).add(tookOverDue_).add(defeatedDue_).add(startDue_).add(cpDue_);
-        for (const FightCheckpoint* cp : {&startCp_, &phaseCp_}) h.add(cp->at).add(cp->phase).add(cp->now).add(cp->hostWritten);
+        h.add(switchReq_).add(switchedDue_).add(switchRefusedDue_).add(switchRefusalDue_);
+        h.add(switchAt_).add(switchCooldown_);
+        h.add(joinReq_).add(joinHealth_).add(joinedDue_).add(joinRefusedDue_).add(joinRefusalDue_);
+        for (const FightCheckpoint* cp : {&startCp_, &phaseCp_}) {
+            h.add(cp->at).add(cp->phase).add(cp->now).add(cp->hostWritten);
+            h.add(cp->activeLead).add(cp->switchRequested).add(cp->switchAt).add(cp->leadHealth).add(cp->down);
+            h.add(cp->inFight).add(cp->joinRequested).add(cp->joinHealth);
+            cp->gift.hashState(h);
+            for (const PlaceTable& p : cp->places) p.hashState(h);
+            h.add(cp->keptLoad).add(cp->keptDown).add(cp->lone).add(cp->loneEnded).add(cp->loneEndedBy);
+            h.add(cp->loneReleases).add(cp->lonePooled);
+            if (hasBoss_) cp->boss.hashState(h);
+            const FightHostCheckpoint& host = cp->host;
+            h.add(host.hp).add(host.load).add(host.draws).add(host.partner.hash()).add(host.order);
+            h.add(host.bossHp).add(host.bossPhase).add(host.currency);
+        }
         return h.value;
     }
 
@@ -732,7 +890,7 @@ public:
         lastStory_ = SetResult::Unchanged;
         // A slot with no giver (Vacant, Hostile) answers first: the slot refuses it (its own reason, its own
         // press counter); no charge, cooldown or gift tally, and the Lone Carry stays.
-        if (gift_.state() == SlotState::Companion && down(target) && inFight_[target]) { // a gift never stands a lead up
+        if (giftRefusedDown(target, down(target))) { // a gift never stands a lead up
             GiftResult refused;
             refused.gift = gift_.selected();
             refused.target = target;
@@ -904,6 +1062,46 @@ public:
     bool finishedWon() const { return won_; }
     double giftHealReadyIn() const { return gift_.readyIn(Gift::Heal, now_); }
     double giftGuardReadyIn() const { return gift_.readyIn(Gift::Guard, now_); }
+    // What a press of gift `g` at lead `target` would answer now (giveGift's slot press, reading only; GiftSlot::pressError),
+    // with the lead's health as the host would set it for that press (setLeadHealth).
+    // A lead who is down once that health is fed (downAfter, the fall feed's own rule) refuses it first
+    // (giftRefusedDown, giveGift's own test), then the slot.
+    GiftError giftCheck(Gift g, FighterId target, float targetHealth) const {
+        return giftRefusedDown(target, downAfter(target, targetHealth)) ? GiftError::Down
+                                                                         : gift_.pressError(g, target, now_, targetHealth);
+    }
+    // Whether giveGift refuses a gift at `target` Down before the slot sees it: a giving slot (Companion) and a lead
+    // in this fight who is down (`targetDown`: down(target) at the press).
+    bool giftRefusedDown(FighterId target, bool targetDown) const {
+        return gift_.state() == SlotState::Companion && targetDown && inFight_[target];
+    }
+    // Whether lead `lead` would be down once setLeadHealth(lead, f) fed the fall (fall's own rule, reading only):
+    // the feed changes nothing for a lead not in the fight, after a defeat, or for a value that is not finite;
+    // above 0 it stands; at 0 or below it is down, but for a lead that cannot fall.
+    bool downAfter(FighterId lead, float f) const {
+        if (!isLead(lead)) return false;
+        if (!inFight_[lead] || defeated_ || !std::isfinite(f)) return down_[lead];
+        if (f > 0.f) return false;
+        return down_[lead] || !def_.cannotFall[lead];
+    }
+    // The same, as a key prompt's reason: Absent with no gift in the slot (Vacant, None); Down (the lead is down);
+    // Cooldown, Empty (no Heals left this fight), Full (a Heal at a lead at full health); Refused (a Hostile slot, a
+    // target that is no lead, or the Count's own call); Ok: given.
+    PressReason giftReason(Gift g, FighterId target, float targetHealth) const {
+        switch (giftCheck(g, target, targetHealth)) {
+        case GiftError::None: return PressReason::Ok;
+        case GiftError::Vacant:
+        case GiftError::NoGift: return PressReason::Absent;
+        case GiftError::Cooling: return PressReason::Cooldown;
+        case GiftError::NoneLeft: return PressReason::Empty;
+        case GiftError::NotHurt: return PressReason::Full;
+        case GiftError::Down: return PressReason::Down;
+        case GiftError::Hostile:
+        case GiftError::BadTarget:
+        case GiftError::CountRefused: break;
+        }
+        return PressReason::Refused;
+    }
     const GiftSlot& giftSlot() const { return gift_; }
     GiftSlot& giftSlot() { return gift_; } // setState, save and load
     // The third slot's state now (def.thirdSlot at begin; a checkpoint holds it), and the reason any gift press
@@ -1026,22 +1224,65 @@ private:
         if (hasBoss_) boss_.onDeferred(now_);
         else if (def_.locked) lock_.onDeferred(now_);
     }
+    // The mark itself is downAfter's (the gift's Down asks the same rule); a rise or fall is settled at the step's
+    // close (settle). A lead that cannot fall, fed 0 or below while standing, is held up at 1 hp instead.
     void fall(FighterId lead, float f) {
-        if (!inFight_[lead] || defeated_ || !std::isfinite(f)) return;
-        const std::uint8_t bit = static_cast<std::uint8_t>(1u << lead);
-        if (f > 0.f) {
-            down_[lead] = false; // marked: settle reports the rise at the step's close
-            return;
-        }
-        if (down_[lead]) return;
-        if (def_.cannotFall[lead]) { // held up at 1 hp: never down in this fight
-            heldUpDue_ = static_cast<std::uint8_t>(heldUpDue_ | bit);
-            return;
-        }
-        down_[lead] = true; // marked: the step's close settles it (settle)
+        const bool was = down_[lead];
+        down_[lead] = downAfter(lead, f);
+        if (!was && !down_[lead] && inFight_[lead] && !defeated_ && std::isfinite(f) && f <= 0.f)
+            heldUpDue_ = static_cast<std::uint8_t>(heldUpDue_ | (1u << lead)); // never down in this fight
     }
     // Closes the step (see above): its rises, then its falls, against how each lead stood when the step opened.
+    // The step's close (a tick only): rises, then falls (defeat or takeover), then a join, then the player's
+    // switch against the result. A checkpoint between ticks settles the rises and falls only (settleFalls): the
+    // join and the switch stay asked.
     void settle() {
+        settleFalls();
+        settleJoin();
+        settleSwitch();
+    }
+    void settleJoin() {
+        const FighterId asked = joinReq_;
+        if (asked == kNoFighter) return;
+        joinReq_ = kNoFighter;
+        const LeadJoin why = leadJoinReason(asked); // the preview's own function, after the rises and falls
+        if (why != LeadJoin::Ok) {
+            joinRefusedDue_ = asked;
+            joinRefusalDue_ = why;
+            joinedDue_ = kNoFighter;
+            return;
+        }
+        enter(asked, joinHealth_);
+        joinedDue_ = asked;
+        joinRefusedDue_ = kNoFighter;
+        joinRefusalDue_ = LeadJoin::Ok;
+    }
+    // A lead comes into the fight standing at `health` (a join, or a retry's carried one).
+    void enter(FighterId lead, float health) {
+        inFight_[lead] = true;
+        down_[lead] = false;
+        stepDown_[lead] = false; // standing as the next step opens: no rise to report
+        leadHealth_[lead] = health;
+    }
+    void settleSwitch() {
+        const FighterId asked = switchReq_;
+        if (asked == kNoFighter) return;
+        switchReq_ = kNoFighter;
+        const LeadSwitch why = leadSwitchReason(asked); // the preview's own function, after the rises and falls
+        if (why == LeadSwitch::Same) return; // already in control (a takeover may have given it): nothing to report
+        if (why != LeadSwitch::Ok) {
+            switchRefusedDue_ = asked;
+            switchRefusalDue_ = why;
+            switchedDue_ = kNoFighter;
+            return;
+        }
+        activeLead_ = asked;
+        switchAt_ = now_; // the cooldown runs from here
+        switchedDue_ = asked;
+        switchRefusedDue_ = kNoFighter;
+        switchRefusalDue_ = LeadSwitch::Ok;
+    }
+    void settleFalls() {
         if (defeated_) {
             stepDown_ = down_;
             return;
@@ -1073,17 +1314,22 @@ private:
     // defeat none is taken (a retry is then a begin again at the fight's start).
     void takeStartIfDue() {
         if (!startDue_) return;
-        settle();
+        settleFalls();
         if (defeated_) return;
         startDue_ = false;
         takeCheckpoint(startCp_, CheckpointAt::FightStart, 0);
     }
     void takeCheckpoint(FightCheckpoint& cp, CheckpointAt at, std::uint8_t phase) {
-        settle(); // a checkpoint closes the step: it holds settled state only
+        settleFalls(); // a checkpoint holds settled rises and falls; a switch asked waits for the step's close
         cp.at = at;
         cp.phase = phase;
         cp.now = now_;
         cp.activeLead = activeLead_;
+        cp.switchRequested = switchReq_;
+        cp.switchAt = switchAt_;
+        cp.inFight = inFight_;
+        cp.joinRequested = joinReq_;
+        cp.joinHealth = joinHealth_;
         cp.leadHealth = leadHealth_;
         cp.down = down_;
         cp.gift = gift_;
@@ -1101,6 +1347,9 @@ private:
         cpDue_ = static_cast<std::uint8_t>(cpDue_ | (1u << static_cast<unsigned>(at)));
     }
 
+#ifdef FTCORE_TEST_ACCESS // defined by the test target only: shipped code gets no private access
+    friend struct FightSessionTestAccess; // edits one field alone (the stateHash table)
+#endif
     double now_ = 0.0;
     FightSessionDef def_{};
     StrikeCount count_{};
@@ -1157,6 +1406,17 @@ private:
     std::uint8_t roseDue_ = 0;
     std::uint8_t heldUpDue_ = 0;
     FighterId tookOverDue_ = kNoFighter;
+    FighterId switchReq_ = kNoFighter;       // setActiveLead's request, resolved at the step's close
+    FighterId switchedDue_ = kNoFighter;
+    FighterId switchRefusedDue_ = kNoFighter;
+    LeadSwitch switchRefusalDue_ = LeadSwitch::Ok;
+    double switchAt_ = kNeverSwitched;                   // the last accepted switch's fight time (or a retry's)
+    double switchCooldown_ = kLeadSwitchCooldownDefault; // def.leadSwitchCooldownSeconds, checked at begin
+    FighterId joinReq_ = kNoFighter; // joinFight's request, resolved at the step's close
+    float joinHealth_ = 0.f;         // and its health
+    FighterId joinedDue_ = kNoFighter;
+    FighterId joinRefusedDue_ = kNoFighter;
+    LeadJoin joinRefusalDue_ = LeadJoin::Ok;
     bool defeatedDue_ = false;
     bool startDue_ = false;
     std::uint8_t cpDue_ = 0; // bit (1 << CheckpointAt) per checkpoint taken and not written since the last tick

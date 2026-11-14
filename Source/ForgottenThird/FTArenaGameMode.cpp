@@ -725,15 +725,40 @@ void AFTArenaGameMode::Begin()
 	Setup.ZoneStyle = ZoneStyle;
 	Setup.KitId = KitId;
 	Setup.Lead = FindLead();
-	// The ally a carrying run shows (the runner spawns it only under its switches): the first other look in the party.
-	for (const FFTLeadLook& Member : GetDefault<AFTExploreCharacter>()->PartyLooks)
+	// The ally a carrying run shows (the runner spawns it only under its switches): the first other look in the party, or
+	// the one -ArenaAllyLook=<name> names (review stills of a given partner's mark; a review switch, so not in Shipping,
+	// where the ally is always the first other look).
+	const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
+	FString WantAlly;
+#if !UE_BUILD_SHIPPING
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaAllyLook="), WantAlly, false);
+#endif
+	for (const FFTLeadLook& Member : Party)
 	{
-		if (&Member != Setup.Lead)
+		if (&Member != Setup.Lead && (WantAlly.IsEmpty() || Member.Name.Equals(WantAlly, ESearchCase::IgnoreCase)))
 		{
 			Setup.Ally = &Member;
 			break;
 		}
 	}
+	// A look's seat is its place in PartyLooks (at most 2). The place is found by address, never by pointer subtraction: a
+	// look that is not in the party (none should be) takes seat 0, logged.
+	auto SeatOf = [&Party](const FFTLeadLook* Look) -> uint8
+	{
+		if (!Look)
+		{
+			return 0;
+		}
+		const int32 I = Party.IndexOfByPredicate([Look](const FFTLeadLook& Member) { return &Member == Look; });
+		if (I == INDEX_NONE)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: look %s is not in PartyLooks; it takes seat 0."), *Look->Name);
+			return 0;
+		}
+		return static_cast<uint8>(FMath::Min(I, 2));
+	};
+	Setup.LeadSeat = SeatOf(Setup.Lead);
+	Setup.AllySeat = SeatOf(Setup.Ally);
 	Setup.Seed = Seed;
 	Setup.bAutoPlay = bAutoPlay;
 	Setup.bIdle = bIdle;
@@ -1074,6 +1099,12 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 				return StrikeShot();
 			}
 		}
+	}
+	// A fight that ends before its middle views came (an idle defeat) still gets its result view, not a give-up.
+	if (ShotsTaken >= 1 && ShotsTaken < 5 && Runner->IsFinished() && Runner->GetResultAge() >= 0.8)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the fight ended after %d of 6 views; taking the result view."), ShotsTaken);
+		ShotsTaken = 5;
 	}
 	switch (ShotsTaken)
 	{

@@ -27,12 +27,13 @@
 //   Time is counted from the instant the condition holds, so the close lands within one step of the stated time at
 //   any step size. The offer ends as Refused with the held lead's own refusal cooldown (Counsel's cut only if that
 //   lead is Counsel). The fight's pull after pullSeconds still wins if it comes first. Once per offer.
-//   For an Escrow lead the first escrowDelaySeconds inside an offer build no hold (holdLevel stays 0, so the lead
-//   is not slowed; escrowWaiting() and escrowWaitLeft() show the wait); then the hold builds over holdSeconds.
-//   The wait pauses, it never resets: escrowWaiting() is true only on a step it counts down (the lead accepting,
-//   inside the wait, the clock moving; a hit-stop step keeps the last answer). Out of the offer it is false and
-//   escrowWaitLeft() holds its last value; back in, the wait goes on from there. Only the offer's end resets it.
-//   Stepping out before Held drops the wait and the hold back to nothing.
+//   For an Escrow lead the first escrowDelaySeconds of accepting inside an offer build no hold (holdLevel stays 0, so
+//   the lead is not slowed; escrowWaiting() and escrowWaitLeft() show the wait); then the hold builds over holdSeconds.
+//   The wait pauses, it never resets while the offer is open: escrowWaiting() is true only on a step that counts it down
+//   (in.accepting, the wait still not over after it, a step longer than 0; a 0 s step with in.accepting keeps the last
+//   step's answer). On a step without in.accepting it is false, escrowWaitLeft() holds its last value and the hold drops
+//   to nothing (the wait does not); with in.accepting again the wait goes on from there. escrowWaitLeft() is 0 before
+//   the wait began, once it is over, and once the offer is closed (any end resets the wait).
 // * The push: each blow the lead takes while the hold builds (inside the offer, not held, no Escrow wait running)
 //   adds holdPushPerHit seconds of hold at the step's start; pushed seconds are hold for the price below, and a
 //   push can carry the hold to holdSeconds and Held. It does not interrupt a refusal press under way. When the lead's
