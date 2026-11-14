@@ -81,6 +81,17 @@ TEST_CASE("evaluateWorldWave: the prelude runs 0.3 s before the front moves") {
     CHECK(moving.radius == doctest::Approx(15.f).epsilon(1e-4));
 }
 
+TEST_CASE("evaluateWorldWave: a huge finite time is a settled wave, not an overflowing cast") {
+    WorldWaveParams p;
+    p.startTime = -1.0e300;
+    const WorldWaveFrame far = evaluateWorldWave(p, 1.0e300);
+    CHECK(far.settled);
+    CHECK_FALSE(far.active);
+    CHECK(far.preludeProgress == doctest::Approx(1.f));
+    CHECK(far.radius == doctest::Approx(p.maxRadius));
+    CHECK(std::isfinite(far.bandWidth));
+}
+
 TEST_CASE("classifyWorldWave: old beyond the front, new inside the band, the band between") {
     WorldWaveParams p;
     p.origin = WaveVec3{10.f, -5.f, 2.f};

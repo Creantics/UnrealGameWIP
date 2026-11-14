@@ -9,6 +9,7 @@
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
 #include "FTText.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
@@ -427,6 +428,8 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads, U
 	Inputs->Roughness.Connect(2, Custom);
 	Inputs->Metallic.Connect(3, Custom);
 	Inputs->AmbientOcclusion.Connect(4, Custom);
+	// The world wave's second-world state behind its front (FTWorldWave.h); missing until FTBuildWaveMaterials has run.
+	FTWorldWave::AddState(TEXT("FTBuildGround"), Material, 300, -600);
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();

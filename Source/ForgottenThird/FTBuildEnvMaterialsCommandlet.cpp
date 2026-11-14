@@ -291,6 +291,7 @@ UMaterial* BuildClouds(UMaterialParameterCollection* Env)
 	}
 	UMaterial* Material = NewMaterial(FTScene::EnvCloudMaterial);
 	Material->MaterialDomain = MD_Volume;
+	Material->BlendMode = BLEND_Additive; // a volume material must be additive
 	Material->SetUsageByFlag(MATUSAGE_VolumetricCloud, true);
 
 	// The engine's cloud sample: its outputs are the altitude, the height in the layer and the share of the layer's depth.

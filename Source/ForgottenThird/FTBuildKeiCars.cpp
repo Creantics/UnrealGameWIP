@@ -1,4 +1,7 @@
 #include "FTBuildKeiCars.h"
+
+// Builder code: editor builds only (the commandlets that call it are editor-only).
+#if WITH_EDITOR
 #include "FTCellInstancer.h"
 
 #include "ForgottenThird.h"
@@ -121,3 +124,5 @@ void LogSummary(const FSet& Set)
 		Set.Placed, MeshName, Set.Fallback);
 }
 } // namespace FTBuildKeiCars
+
+#endif // WITH_EDITOR

@@ -154,6 +154,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+#if !UE_BUILD_SHIPPING // capture and check switches: not in a shipped game
 	{
 		// -LeadGo=<x,y> (plan frame of -WorldEyeSide, default 1000 m) [-LeadGoAfter=<s>] [-LeadGoJump] [-LeadGoQuit=<s>].
 		FString Go;
@@ -173,6 +174,7 @@ void AFTExploreCharacter::BeginPlay()
 		FParse::Value(FCommandLine::Get(), TEXT("LeadGoPace="), LeadGoPace);
 		LeadGoPace = FMath::Clamp(LeadGoPace, 0.1f, 1.f);
 	}
+#endif
 	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);

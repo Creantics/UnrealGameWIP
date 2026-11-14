@@ -173,6 +173,14 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 		{
 			FT_LOOK_SET(sunLux, SunLight->SetIntensity(Look.sunLux))
 			FT_LOOK_SET(sunKelvin, SunLight->SetUseTemperature(true); SunLight->SetTemperature(Look.sunKelvin))
+			// Under any cloud cover the clouds shade the ground (an overcast day's moving soft shadow).
+			const bool bCloudShadow = Look.cloudCover > 0.f;
+			if (static_cast<bool>(SunLight->bCastCloudShadows) != bCloudShadow)
+			{
+				SunLight->bCastCloudShadows = bCloudShadow;
+				SunLight->MarkRenderStateDirty();
+				++Written;
+			}
 			break;
 		}
 	}

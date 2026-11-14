@@ -18,10 +18,15 @@
 // is set it
 //   - writes the wave's parameters to MPC_Look (FTWorldWave.h has the names and units), the origin and the streak's tip
 //     (StreakHeightCm over it) projected through the first player's view;
-//   - keeps an unbound post-process volume on with PP_WorldWave_Ink as its blendable, and from the wave's start holds the
-//     auto exposure where it stands (speed 0.001 up and down), so the change reads as the world's, not the eye's;
-//   - thins every height fog's density by the camera's share of the second world (cameraInside for Forward, 1 - it for
-//     Reverse), back to the map's own when the wave ends; the post-process material whitens the sky by the same share;
+//   - keeps an unbound post-process volume on with PP_WorldWave as its blendable (the second world's grade, ground fog
+//     and the front's refraction, per pixel), and from the wave's start holds the auto exposure where it stands (speed
+//     0.001 up and down), so the change reads as the world's, not the eye's;
+//   - traces a 12 x 7 grid of view rays for the share of the view the second world has (ftcore::worldWaveViewShare),
+//     follows it at a limited rate (stepWaveCover) and blends the look actors' sun, sky light, fog and clouds from the
+//     first world's look to the Unwritten's (looks.json) by it, never ahead of the ground; the post-process's gains
+//     (waveGains) keep the unreached side in its own light. StopWave puts the first world's look back;
+//   - the surfaces behind the front take the second world's state in their own materials (MF_WorldWaveState: near grey,
+//     a stop down, damp, grimed and leak-stained, their light dead but for -WorldWaveKeep0/1=x,y,z,r cm spheres);
 //   - logs each cue (no sound yet);
 //   - steps every tracked thing (ftcore::updateWorldWaveThing): its visibility, its collision (collisionDelay after the
 //     front passes it) and a held arrival's own front (custom primitive data FTWorldWave::kLocalSlot). An arrival that
@@ -52,6 +57,7 @@
 #include "Engine/EngineTypes.h"
 #include "Subsystems/WorldSubsystem.h"
 
+#include "ftcore/SceneLook.h"
 #include "ftcore/WorldWave.h"
 
 #include "FTWorldWaveSubsystem.generated.h"
@@ -117,7 +123,7 @@ private:
 	// Binds or unbinds PostActorTick (each at most once).
 	void BindTick(bool bOn);
 	void Step(UWorld& World);
-	// The volume with the ink material and the exposure hold, spawned on the first wave.
+	// The volume with the wave's post-process material and the exposure hold, spawned on the first wave.
 	void EnsureVolume(UWorld& World);
 	void SetExposureHold(bool bHold);
 	void GatherPawns(UWorld& World);
@@ -130,6 +136,9 @@ private:
 	// The material a dressed prop's slot takes: a twin instance when its master is a prop master, else Material itself.
 	UMaterialInterface* CutMaterialFor(UMaterialInterface* Material);
 	void ClearCollection(UWorld& World);
+	// Loads MPC_Look on the first wave (once; a map with no wave never loads it).
+	void EnsureCollection();
+	bool bCollectionTried = false;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialParameterCollection> MpcLook;
@@ -168,7 +177,38 @@ private:
 	TArray<TWeakObjectPtr<APawn>> Pawns;
 	TArray<FFog> Fogs;
 
-	FName VectorParams[4];
-	FName ScalarParams[6];
+	// The second world's sky, light and air, crossing over in step with how much of the view the front has covered (a
+	// grid of view rays traced each step), never ahead of it: the first world's look while the front is far, the second's
+	// once it fills the view; the post-process makes the grade's change per pixel.
+	void StepLook(UWorld& World, const FVector& Eye, const FMatrix& ViewProjection, bool bView, double Time, const APawn* PlayerPawn);
+	// Puts the look actors back to the first world's look.
+	void RestoreLook(UWorld& World);
+	bool bLookBlend = false;
+	ftcore::SceneLook LookFrom;     // the first world's, as the look subsystem has it
+	ftcore::SceneLook LookStart;    // ftcore::waveSkyStart(LookFrom, LookTo)
+	ftcore::SceneLook LookTo;       // the second world's
+	ftcore::SceneLook LookOnActors; // what the look actors carry now
+	float Cover = 0.f;
+	float CoverShare = 0.f;
+	/** The cloud layer's own share (ftcore::stepWaveCloud): it changes only once the view is all one world. */
+	float CloudT = 0.f;
+	/** The post-process's own overcast over the second world's sky (WorldWaveGain.w): 1 until the cloud layer has changed,
+	 *  then down to 0 at kSkyCoverRate, so the reshaping layer is never seen. */
+	float SkyCover = 1.f;
+	double LastLookTime = -1.0;
+	/** LastLookTime is set (the held clock of a still's settle stands at -1, so -1 cannot mean unset). */
+	bool bLookTimed = false;
+	/** The wave clock at the last look line in the log (one every half second of the wave). */
+	double LastLookLog = -1.0;
+	double LastLookReal = -1.0;
+	/** The map's sky light captures the sky in real time (found at the wave's start): its fill is lifted by the sun lost. */
+	bool bSkyRealTime = false;
+	// The second world's kept lights (-WorldWaveKeep0=x,y,z,r and -WorldWaveKeep1=; cm): every other emissive dies.
+	// The front's look, WorldWaveOrigin.w (-WorldWaveFront=): 0 the refraction band, 1 ink in water, 2 blot dissolve.
+	float FrontStyle = 0.f;
+	FLinearColor Keeps[2] ={FLinearColor(0.f, 0.f, 0.f, 0.f), FLinearColor(0.f, 0.f, 0.f, 0.f)};
+
+	FName VectorParams[7];
+	FName ScalarParams[7];
 	FDelegateHandle PostTickHandle;
 };

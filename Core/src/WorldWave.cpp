@@ -117,8 +117,12 @@ WorldWaveParams streetWaveParams() {
 WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {
     WorldWaveFrame frame;
     frame.direction = params.direction;
-    const double since = time - params.startTime;
-    if (!std::isfinite(since) || since < 0.0 || checkWorldWaveParams(params) != WorldWaveRefusal::None) return frame;
+    const double sinceRaw = time - params.startTime;
+    if (!std::isfinite(sinceRaw) || sinceRaw < 0.0 || checkWorldWaveParams(params) != WorldWaveRefusal::None) return frame;
+    // A huge finite time would overflow the casts to float below (undefined): past kWaveTimeCap seconds every wave has
+    // long settled, so the time is held there.
+    constexpr double kWaveTimeCap = 1.0e6;
+    const double since = sinceRaw < kWaveTimeCap ? sinceRaw : kWaveTimeCap;
     frame.preludeProgress =
         params.prelude > 0.f ? waveClamp(static_cast<float>(since / static_cast<double>(params.prelude)), 0.f, 1.f) : 1.f;
     const float tau = static_cast<float>(since - static_cast<double>(params.prelude));
