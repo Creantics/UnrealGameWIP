@@ -70,14 +70,15 @@ TEST_CASE("input bindings: a file from before the gift keys moves its gift key o
     // The old default (gift on G, now gift_heal's): gift_heal keeps G, the heal takes H, the rest as the file says.
     InputBindings b = defaultInputBindings();
     REQUIRE(importInputBindings(
-        R"({"version": 1, "keys": {"gift": "G", "guard": "K", "release": "X"}, "pad": {"gift": "Gamepad_DPad_Up"}})", b, &error));
+        R"({"version": 1, "keys": {"gift": "G", "guard": "K", "release": "Z"}, "pad": {"gift": "Gamepad_DPad_Up"}})", b, &error));
     CHECK(std::string(inputKey(b, InputAction::GiftHeal, InputDevice::Keys)) == "G");
     CHECK(std::string(inputKey(b, InputAction::Gift, InputDevice::Keys)) == "H");
     CHECK(std::string(inputKey(b, InputAction::Guard, InputDevice::Keys)) == "K");
-    CHECK(std::string(inputKey(b, InputAction::Release, InputDevice::Keys)) == "X");
+    CHECK(std::string(inputKey(b, InputAction::Release, InputDevice::Keys)) == "Z");
     CHECK(std::string(inputKey(b, InputAction::Gift, InputDevice::Pad)) == "Gamepad_DPad_Up");
     CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Keys)) == "Y");
-    CHECK(std::string(inputKey(b, InputAction::PartnerOrder, InputDevice::Keys)) == "B");
+    CHECK(std::string(inputKey(b, InputAction::PartnerOrder, InputDevice::Keys)) == "X");
+    CHECK(std::string(inputKey(b, InputAction::Backlog, InputDevice::Keys)) == "B");
     // The player's own heal key stays the heal's.
     InputBindings own = defaultInputBindings();
     REQUIRE(importInputBindings(R"({"version": 1, "keys": {"gift": "N"}})", own, &error));
@@ -98,7 +99,9 @@ TEST_CASE("input bindings: a file from before the gift keys moves its gift key o
                           Case{R"({"version": 1, "keys": {"release": "T", "guard": "K"}})", InputAction::Release, "T", InputAction::TakeHalf},
                           // An older default works the same way: no entry for interact, its E given to guard.
                           Case{R"({"version": 1, "keys": {"guard": "E"}})", InputAction::Guard, "E", InputAction::Interact},
-                          Case{R"({"version": 1, "keys": {"interact": "B", "guard": "K"}})", InputAction::Interact, "B", InputAction::PartnerOrder}}) {
+                          Case{R"({"version": 1, "keys": {"interact": "X", "guard": "K"}})", InputAction::Interact, "X", InputAction::PartnerOrder},
+                          // The backlog's B, in the table since the partner order left it.
+                          Case{R"({"version": 1, "keys": {"interact": "B", "guard": "K"}})", InputAction::Interact, "B", InputAction::Backlog}}) {
         CAPTURE(c.text);
         InputBindings t = defaultInputBindings();
         InputUnbound unbound;
@@ -378,7 +381,7 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
 TEST_CASE("input hints: the lines follow a rebind and leave out what nothing reaches") {
     InputBindings b = defaultInputBindings();
     REQUIRE(rebindInput(b, InputAction::Guard, InputDevice::Keys, "K"));
-    REQUIRE(rebindInput(b, InputAction::TargetNext, InputDevice::Keys, "X"));
+    REQUIRE(rebindInput(b, InputAction::TargetNext, InputDevice::Keys, "Z")); // X is the partner order's;
     CHECK_FALSE(rebindInput(b, InputAction::Gift, InputDevice::Keys, "")); // no route: refused
     REQUIRE(rebindInput(b, InputAction::Party, InputDevice::Keys, ""));     // its route stays
     REQUIRE(rebindInput(b, InputAction::Jump, InputDevice::Pad, "Gamepad_FaceButton_Top")); // swaps with Count
@@ -386,7 +389,7 @@ TEST_CASE("input hints: the lines follow a rebind and leave out what nothing rea
     const std::string arena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr);
     CHECK(arena.find("K input.guard") != std::string::npos);
     CHECK(arena.find("Ctrl") == std::string::npos);
-    CHECK(arena.find("Mouse flick/X input.switch") != std::string::npos);
+    CHECK(arena.find("Mouse flick/Z input.switch") != std::string::npos);
     CHECK(arena.find("H input.heal") != std::string::npos);
     // A table with an action nothing reaches (only a hand-built one now) leaves its entry out.
     InputBindings stranded = b;
@@ -635,4 +638,79 @@ TEST_CASE("input hints: a key prompt whose action the import left unbound has NO
     const InputPromptKey back = inputPromptKey(b, InputAction::GiftHeal, InputDevice::Keys, &left);
     CHECK_FALSE(back.noKey);
     CHECK(back.keys == "J");
+}
+
+TEST_CASE("input bindings: the backlog's key is in the table, and no default on either device sits on it") {
+    const InputBindings b = defaultInputBindings();
+    REQUIRE(validateInputBindings(b));
+    const std::string backlog = inputKey(b, InputAction::Backlog, InputDevice::Keys);
+    CHECK(backlog == "B");
+    CHECK(std::string(inputKey(b, InputAction::Backlog, InputDevice::Pad)).empty()); // no pad button (inputPadPending)
+    CHECK(inputPadPending(InputAction::Backlog));
+    CHECK(inputActionScope(InputAction::Backlog) == InputScope::Any); // on in the field and in a fight alike
+    for (std::size_t i = 0; i < kInputActionCount; ++i) {
+        const InputAction a = static_cast<InputAction>(i);
+        if (a == InputAction::Backlog) continue;
+        CAPTURE(inputActionKey(a));
+        for (InputDevice d : {InputDevice::Keys, InputDevice::Pad}) CHECK(std::string(inputKey(b, a, d)) != backlog);
+    }
+    // The partner order left B for X, a key the table and the controller's own keys leave free.
+    CHECK(std::string(inputKey(b, InputAction::PartnerOrder, InputDevice::Keys)) == "X");
+    // Rebinding the partner order onto B finds the backlog there: the clash check names it, and a rebind swaps them.
+    InputAction clash = InputAction::Light;
+    CHECK(inputKeyClash(b, InputAction::PartnerOrder, InputDevice::Keys, "B", clash));
+    CHECK(clash == InputAction::Backlog);
+    InputBindings r = b;
+    InputAction swapped = InputAction::Light;
+    REQUIRE(rebindInput(r, InputAction::PartnerOrder, InputDevice::Keys, "B", &swapped));
+    CHECK(swapped == InputAction::Backlog);
+    CHECK(std::string(inputKey(r, InputAction::Backlog, InputDevice::Keys)) == "X");
+    CHECK(validateInputBindings(r));
+    // Saved and read back, the backlog's key round-trips like any other.
+    InputBindings back = defaultInputBindings();
+    std::string error;
+    REQUIRE_MESSAGE(importInputBindings(encodeInputBindings(r), back, &error), error);
+    CHECK(std::string(inputKey(back, InputAction::Backlog, InputDevice::Keys)) == "X");
+    CHECK(std::string(inputKey(back, InputAction::PartnerOrder, InputDevice::Keys)) == "B");
+}
+
+TEST_CASE("input bindings: no action of either context may take the backlog's key, and a file from before it keeps B on the backlog") {
+    std::string error;
+    const InputBindings b = defaultInputBindings();
+    // A Read-held action (another context) onto B: the clash check names the backlog, and the validator refuses it.
+    InputAction clash = InputAction::Light;
+    CHECK(inputKeyClash(b, InputAction::ReadPick1, InputDevice::Keys, "B", clash));
+    CHECK(clash == InputAction::Backlog);
+    CHECK(inputKeyClash(b, InputAction::Backlog, InputDevice::Keys, "One", clash)); // and the other way
+    CHECK(clash == InputAction::ReadPick1);
+    InputBindings hand = b;
+    hand.keys[0][static_cast<std::size_t>(InputAction::LineNext)] = hand.keys[0][static_cast<std::size_t>(InputAction::Backlog)];
+    CHECK_FALSE(validateInputBindings(hand));
+    // A file as encodeInputBindings wrote it before this table had the backlog: every action named, the partner order
+    // on B (its old default), no backlog entry. It imports with nothing left unbound: the backlog keeps B and the
+    // partner order takes its new key.
+    std::string old = encodeInputBindings(b);
+    const auto cut = [&old](const std::string& from, const std::string& to) {
+        const std::size_t at = old.find(from);
+        REQUIRE(at != std::string::npos);
+        old.replace(at, from.size(), to);
+    };
+    cut(R"("partner_order": "X", "backlog": "B")", R"("partner_order": "B")");
+    cut(R"("partner_order": "", "backlog": "")", R"("partner_order": "")");
+    CHECK(old.find("backlog") == std::string::npos);
+    InputBindings back = defaultInputBindings();
+    InputUnbound left;
+    REQUIRE_MESSAGE(importInputBindings(old, back, &error, &left), error);
+    CHECK(left.count == 0);
+    CHECK(std::string(inputKey(back, InputAction::Backlog, InputDevice::Keys)) == "B");
+    CHECK(std::string(inputKey(back, InputAction::PartnerOrder, InputDevice::Keys)) == "X");
+    CHECK(encodeInputBindings(back) == encodeInputBindings(b));
+    // The player's own partner order on another key stays theirs.
+    InputBindings mine = defaultInputBindings();
+    REQUIRE(importInputBindings(R"({"version": 2, "keys": {"partner_order": "N"}})", mine, &error));
+    CHECK(std::string(inputKey(mine, InputAction::PartnerOrder, InputDevice::Keys)) == "N");
+    CHECK(std::string(inputKey(mine, InputAction::Backlog, InputDevice::Keys)) == "B");
+    // A file that names both on B is the player's own doubling: refused whole.
+    InputBindings both = defaultInputBindings();
+    CHECK_FALSE(importInputBindings(R"({"version": 2, "keys": {"partner_order": "B", "backlog": "B"}})", both, &error));
 }

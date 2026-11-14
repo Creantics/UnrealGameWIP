@@ -920,6 +920,9 @@ struct ArenaFightImpl {
         if (what != Press::None && kitLacks(what)) return PressReason::Absent;
         if (p == ArenaPress::Heal && fight.healMax_ == 0) return PressReason::Absent;
         if (p == ArenaPress::Shot && fi.weapon != ArenaWeapon::Guns) return PressReason::Absent;
+        // No partner to answer the pair press: no ally body (a partner's, up or down, or a carried one) and none the
+        // host declared (setPairPartner).
+        if (p == ArenaPress::Pair && fight.allyMaxHp_ == 0 && !fight.pairPartner_) return PressReason::Absent;
         if (pl.hp <= 0 || pl.action == ArenaAction::Downed) return PressReason::Down;
         if (p == ArenaPress::Pair) return fight.pairOpen() ? PressReason::Ok : PressReason::Closed;
         if (pl.action == ArenaAction::GuardBreak) return PressReason::Broken; // canStart starts nothing until it ends
@@ -1637,7 +1640,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         foe.poise = def.enemies[i].poise;
         foe.breakHits = 0;
-        interrupt(i, ArenaBrain::Staggered);
+        interrupt(i, ArenaBrain::Staggered, by);
         ++stats.staggers;
         emit(ArenaEventType::Staggered, by, id(i), 0, 0, foe.pos);
     }
@@ -1823,10 +1826,10 @@ struct ArenaFightImpl {
         countBlow(i, dealt);
         poiseHit(i, dealt, b.striker);
         if (!alive(i) || !upright(foe)) return; // staggered (or the read counter it brought ended it)
-        if (tryBossBreak(i)) return;
-        if (breakOut(i)) return;
-        // Counted here, not inside flinch(): a flinch path that never fires then reads FAIL, not n/a.
-        if (couldFlinch(i, dealt)) ++stats.flinchChances;
+        if (tryBossBreak(i, b.striker)) return;
+        if (breakOut(i, b.striker)) return;
+        // Informational: every blow heavy enough. flinch() counts the chances its own rules leave (flinchChances).
+        if (couldFlinch(i, dealt)) ++stats.flinchBlows;
         flinch(i, dealt, b.striker);
     }
 
@@ -1939,7 +1942,8 @@ struct ArenaFightImpl {
 
     // The count reached breakAt: the break move starts at once, whatever its cooldown. A regular enemy needs a token
     // for it as for any attack, and the windup arc: without either it steps back instead (StepBack).
-    bool breakOut(std::size_t i) {
+    // `by`: whose blow brought it (kArenaPlayer or the partner's kArenaAlly), for interrupt's Read counter rule.
+    bool breakOut(std::size_t i, std::uint8_t by = kArenaPlayer) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (k.breakAt == 0 || !foe.flinchAllowed || foe.breakWeight + kArenaBreakWeightSlack < static_cast<float>(k.breakAt))
@@ -1957,11 +1961,11 @@ struct ArenaFightImpl {
                 ++stats.stepBacksBlocked; // no room any way: no step, the blow lands
                 return false;
             }
-            stepBack(i, plan);
+            stepBack(i, plan, by);
             return true;
         }
         const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
-        interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back (and a read move brings its counter)
+        interrupt(i, ArenaBrain::Approach, by); // a move cut short gives its token back (and a read move brings its counter)
         if (!alive(i) || foe.brain != ArenaBrain::Approach) {
             --stats.breakDue; // the counter put it down first: not due after all
             return true;
@@ -2026,10 +2030,10 @@ struct ArenaFightImpl {
         return p;
     }
 
-    void stepBack(std::size_t i, const StepPlan& plan) {
+    void stepBack(std::size_t i, const StepPlan& plan, std::uint8_t by = kArenaPlayer) {
         Enemy& foe = foes[i];
         // A move cut short gives its token back, and a read move brings its counter while it can still be hurt.
-        interrupt(i, ArenaBrain::Approach);
+        interrupt(i, ArenaBrain::Approach, by);
         if (!alive(i) || foe.brain != ArenaBrain::Approach) {
             --stats.breakDue; // the counter put it down first: not due after all
             return;
@@ -2103,7 +2107,8 @@ struct ArenaFightImpl {
 
     // The tell, then the break once it is due and upright: its break move, with its own windup and
     // recovery. True when it began (the blow that brought it then neither flinches nor counts).
-    bool tryBossBreak(std::size_t i) {
+    // `by`: whose blow brought it (the decay's own call: kArenaPlayer); the partner's never brings the Read counter.
+    bool tryBossBreak(std::size_t i, std::uint8_t by = kArenaPlayer) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (!k.boss || !alive(i)) return false;
@@ -2125,9 +2130,9 @@ struct ArenaFightImpl {
         const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
         // A read move cut short brings its Read counter: held back until the break move has begun, so it lands as a
         // Read counter in the windup (damage and poise, no value) and a stagger it brings cancels the break.
-        const bool counter = foe.readRight;
+        const bool counter = foe.readRight && by == kArenaPlayer;
         foe.readRight = false;
-        interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back
+        interrupt(i, ArenaBrain::Approach, by); // a move cut short gives its token back
         foe.token = true;
         ++stats.bossBreaks;
         emit(ArenaEventType::BrokeOut, id(i), kArenaPlayer, move, 0, foe.pos);
@@ -2182,7 +2187,9 @@ struct ArenaFightImpl {
             const ArenaPart part = arenaPartOf(own, foe.stateTime);
             if (part == ArenaPart::Active || (part == ArenaPart::Startup && own.armor > 0.f)) return;
         }
-        interrupt(i, ArenaBrain::Flinch);
+        // A chance the rules above left: counted before interrupt, so a flinch path that never fires reads FAIL.
+        ++stats.flinchChances;
+        interrupt(i, ArenaBrain::Flinch, by);
         if (!alive(i) || foe.brain != ArenaBrain::Flinch) return; // the read counter it brought ended it
         ++foe.flinchChain;
         ++stats.flinches;
@@ -2203,8 +2210,10 @@ struct ArenaFightImpl {
     }
 
     // Leaves the current state for `brain` (Staggered, Open): the attack stops and the token goes back.
-    // A read move cut short brings the partner's Read counter at once.
-    void interrupt(std::size_t i, ArenaBrain brain) {
+    // A read move cut short brings the Read counter at once, but only when the lead's own blow (or the fight, `by`
+    // kArenaPlayer) cut it: the counter belongs to whoever read the move. Cut by the partner's body (kArenaAlly) the
+    // read is spent with no counter, no read stack used and nothing credited to the lead.
+    void interrupt(std::size_t i, ArenaBrain brain, std::uint8_t by = kArenaPlayer) {
         Enemy& foe = foes[i];
         foe.brain = brain;
         if (!upright(foe)) { // Open, Down, Staggered, StepBack: the count starts again once it is up
@@ -2217,7 +2226,10 @@ struct ArenaFightImpl {
         foe.breakTimed = false;
         foe.unseen = false;
         releaseToken(i);
-        readCounter(i);
+        if (by == kArenaPlayer)
+            readCounter(i);
+        else
+            foe.readRight = false;
     }
 
     void flipStrafe(std::size_t i) {
@@ -3706,6 +3718,8 @@ void ArenaFight::setAlly(int maxHp, float radius) {
     allyHp_ = allyMaxHp_;
     allyRadius_ = std::isfinite(radius) && radius > 0.f ? radius : 0.4f;
 }
+void ArenaFight::setPairPartner(bool on) { pairPartner_ = on; }
+bool ArenaFight::pairPartner() const { return pairPartner_; }
 int ArenaFight::allyHp() const { return allyHp_; }
 int ArenaFight::allyMaxHp() const { return allyMaxHp_; }
 bool ArenaFight::allyAlive() const { return allyMaxHp_ > 0 && allyHp_ > 0; }

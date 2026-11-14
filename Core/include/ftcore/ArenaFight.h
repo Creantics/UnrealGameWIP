@@ -110,7 +110,8 @@
 //     startup; the cards go when its active part begins, or it ends, is cut short or the attacker dies,
 //     and only one deal is open at a time (a move starting while another is open deals nothing).
 //     Correct (Read): one Read stack more (up to kMaxReadStacks), and when that move's active part ends
-//     or a parry or stagger cuts it short, the partner strikes the attacker once (ReadCounter): readPower
+//     or a parry or stagger by the lead cuts it short, the partner strikes the attacker once (ReadCounter;
+//     a blow of the ally body's that cuts it short spends the read with no counter): readPower
 //     times light[0]'s damage, times 1 + readStackPower per stack past the first, plus readPoise poise
 //     damage (an upright enemy only). Wrong (Misread): the stacks go back to 0 and the attacker regains
 //     readWrongPoise poise, up to its kind's. A pick with nothing open, or a second one, does nothing.
@@ -976,8 +977,10 @@ struct ArenaStats {
     int heals = 0;
     int staggers = 0;  // enemy poise breaks
     int flinches = 0;  // enemy flinches
-    int flinchChances = 0; // blows of flinchPoise or more on an upright kind that flinches, host-allowed (a flinch
-                           // could show; the chain cap and an active or armoured attack may still stop it)
+    int flinchChances = 0; // blows that could flinch an upright kind after every rule (flinchPoise, host-allowed, not
+                           // break-guarded, under the chain cap, not into an active or armoured attack): the check's
+    int flinchBlows = 0;   // informational: blows of flinchPoise or more on an upright kind that flinches, host-allowed,
+                           // before the guard, chain-cap and active/armour rules (the old chance count)
     int breakOuts = 0; // enemy break-outs
     int breakDue = 0;      // blows that brought an upright enemy's count to its breakAt without staggering it (nor
                            // the read counter its cut move brought putting it down)
@@ -1233,7 +1236,8 @@ public:
     // no heal charges, no gun) or the fight has not begun or is won; Down: the player is down or the fight is lost;
     // Broken: the guard is broken; Busy: the press would wait in the buffer (an action not yet cut, a hit pause) and
     // may start when that ends; Overloaded, Stamina, Empty (no charge, no round, too little Load), Closed (Pair: no
-    // window open; a press now still waits pairWindow for a parry): refused. Ok: the press starts its action on the
+    // window open; a press now still waits pairWindow for a parry): refused. Pair is Absent when no partner can answer
+    // it (no ally body and no setPairPartner), whatever the window. Ok: the press starts its action on the
     // next tick (Guard: the guard is up, or goes up). The answer is the state's now: stamina coming back, or a reload
     // finishing, in that next tick's own first part lets a press through that reads Stamina or Empty here (and lets a
     // buffered press refused Stamina start ahead of a guard that reads Ok).
@@ -1392,6 +1396,12 @@ public:
     // takeHalfLoadShare is stored as Load (TookHalf, then LoadStored). A takeHalf chair heals the ally its share of
     // maxHp each time. A press no hit takes stays unused until its window passes.
     FTCORE_API void setAlly(int maxHp, float radius);
+    // A partner outside the fight's own bodies answers the pair press: a host script feeding ArenaInput::pair, or a
+    // held-out partner the Count press calls in. Read only by pressReason(Pair): with no ally body (setAlly) and none
+    // declared here, no partner can answer and Pair reads Absent. The tick never reads it: a pair press is taken as
+    // before either way (tryPair). Off by default; kept across begin and restart.
+    FTCORE_API void setPairPartner(bool on);
+    FTCORE_API bool pairPartner() const;
     FTCORE_API int allyHp() const;
     FTCORE_API int allyMaxHp() const;
     FTCORE_API bool allyAlive() const;
@@ -1659,6 +1669,7 @@ private:
     Vec2 allyPos_;
     ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
     bool lone_ = false;                     // setLone (kept across begin and restart)
+    bool pairPartner_ = false;              // setPairPartner (kept across begin and restart; pressReason only)
     float takenScale_ = 1.f;                // this tick's ArenaInput::takenScale, read as it says
     LoneTuning loneTuning_{};
     float loneBlowCap_ = 0.f;               // setLone's blowCap (0: none)

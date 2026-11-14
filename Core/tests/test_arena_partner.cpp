@@ -1467,3 +1467,297 @@ TEST_CASE("arena partner: the file's partner block is read into every fight, eac
     CHECK_FALSE(importArenaTable(with("\"partner\": { \"breakWeight\": -0.1 }"), t, &err));
     CHECK_FALSE(importArenaTable(with("\"partner\": 3"), t, &err));
 }
+
+namespace {
+
+// A biter whose bite has a long startup (so a blow lands inside it) and three tells, so every bite deals Read cards.
+ArenaEnemyKind readBiter(float startup, float flinchPoise) {
+    ArenaEnemyKind k = biterKind(1, 3.f, 0.5f);
+    k.poise = 1000.f;
+    k.moves[0].attack = swing(startup, 0.15f, 0.5f, 2.f, 1);
+    k.moveCount = 3;
+    k.moves[1] = k.moves[0];
+    k.moves[2] = k.moves[0];
+    k.moves[0].tell = ArenaTell::Thrust;
+    k.moves[1].tell = ArenaTell::Sweep;
+    k.moves[2].tell = ArenaTell::Slam;
+    k.flinchTime = 0.3f;
+    k.flinchPoise = flinchPoise;
+    return k;
+}
+
+ArenaFighter readFighter() {
+    ArenaFighter f = poiseFighter(20.f);
+    f.hp = 100000;
+    f.readPower = 1.5f;
+    f.readStackPower = 0.2f;
+    f.readPoise = 10.f;
+    return f;
+}
+
+struct ReadCut {
+    bool read = false; // the lead read the bite right
+    bool cut = false;  // a blow flinched the enemy inside that bite
+    std::uint8_t by = kArenaNobody;
+    int counters = 0;  // ReadCounter events in the whole run
+    ArenaStats stats;  // at the end
+    int stacks = -1;
+};
+
+// The lead reads a bite right; then the lead (partner false) or the partner cuts it short: with a flinch (an enemy of
+// 1000 poise), or with a stagger (5 poise: any blow breaks it, the partner's halved 10 too).
+ReadCut readThenCut(bool partner, bool stagger = false) {
+    PRig r(readFighter());
+    ArenaEnemyKind biter = readBiter(2.f, 5.f);
+    if (stagger) biter.poise = 5.f;
+    r.enemy(biter, Vec2{0.f, 0.f});
+    if (partner) {
+        r.bodies.player = Vec2{-1.5f, 0.f};
+        r.bodies.ally = Vec2{1.4f, 0.f};
+    } else {
+        r.bodies.player = Vec2{-1.4f, 0.f};
+        r.bodies.ally = Vec2{0.f, 10.f};
+    }
+    r.go(partner);
+    ReadCut c;
+    for (int k = 0; k < 600 && !c.cut; ++k) {
+        if (!c.read && r.fight.readOpen() && !r.fight.readCards().picked())
+            r.in.read = static_cast<std::int8_t>(r.fight.readCards().correct());
+        if (c.read && !partner) r.in.light = true;
+        const ArenaBrain was = r.out ? r.out->enemies[0].brain : ArenaBrain::Approach;
+        r.tick();
+        for (const ArenaEvent& e : r.out->events) {
+            if (e.type == ArenaEventType::Read) c.read = true;
+            const ArenaEventType cutBy = stagger ? ArenaEventType::Staggered : ArenaEventType::Flinched;
+            if (e.type == cutBy && c.read && was == ArenaBrain::Attack) {
+                c.cut = true;
+                c.by = e.source;
+            }
+        }
+    }
+    r.run(3.f); // the bite was cut, so its end never brings the counter later either
+    c.counters = r.count(ArenaEventType::ReadCounter);
+    c.stats = r.fight.stats();
+    c.stacks = r.fight.readStacks();
+    return c;
+}
+
+// A regular enemy that never asks to attack, with a break move and a count of 2 (two of the lead's units).
+ArenaEnemyKind breakDummy() {
+    ArenaEnemyKind k = biterKind(5, 3.f, 0.f);
+    k.attackDelay = 1000.f;
+    k.moves[0].attack = swing(0.25f, 0.2f, 0.4f, 3.f, 5);
+    k.moves[0].attack.armor = 1.f;
+    k.poise = 1000.f;
+    k.breakAt = 2;
+    k.breakDecay = 5.f;
+    k.breakMove = 0;
+    return k;
+}
+
+} // namespace
+
+TEST_CASE("arena partner: its blow cuts a read move short but brings no Read counter; the lead's same blow does") {
+    const ReadCut ally = readThenCut(true);
+    REQUIRE(ally.read);
+    REQUIRE(ally.cut); // the move cut short (Flinched inside the bite)
+    CHECK(ally.by == kArenaAlly);
+    CHECK(ally.counters == 0);
+    CHECK(ally.stacks == 1); // no read stack spent
+    CHECK(ally.stats.readCounters == 0);
+    CHECK(ally.stats.readDamage == 0);
+    CHECK(ally.stats.hits == 0);
+    CHECK(ally.stats.damageDealt == 0);
+    CHECK(ally.stats.punishUsed == 0);
+    CHECK(ally.stats.partnerBlows >= 1);
+    const ReadCut lead = readThenCut(false);
+    REQUIRE(lead.read);
+    REQUIRE(lead.cut);
+    CHECK(lead.by == kArenaPlayer);
+    CHECK(lead.counters == 1);
+    CHECK(lead.stats.readCounters == 1);
+    CHECK(lead.stats.readDamage > 0);
+    // The stagger route (staggerEnemy, then interrupt): the same rule.
+    const ReadCut allyStagger = readThenCut(true, true);
+    REQUIRE(allyStagger.read);
+    REQUIRE(allyStagger.cut);
+    CHECK(allyStagger.by == kArenaAlly);
+    CHECK(allyStagger.counters == 0);
+    CHECK(allyStagger.stacks == 1);
+    CHECK(allyStagger.stats.readCounters == 0);
+    CHECK(allyStagger.stats.hits == 0);
+    CHECK(allyStagger.stats.damageDealt == 0);
+    const ReadCut leadStagger = readThenCut(false, true);
+    REQUIRE(leadStagger.read);
+    REQUIRE(leadStagger.cut);
+    CHECK(leadStagger.by == kArenaPlayer);
+    CHECK(leadStagger.counters == 1);
+    CHECK(leadStagger.stats.readCounters == 1);
+}
+
+TEST_CASE("arena partner: armour takes the same share of its poise as of the lead's, after the partner's scale") {
+    // A bite with armour 0.5 and a 3 s startup: the first blow lands inside it.
+    ArenaEnemyKind k = biterKind(1, 3.f, 0.5f);
+    k.poise = 1000.f;
+    k.moves[0].attack = swing(3.f, 0.15f, 0.5f, 2.f, 1);
+    k.moves[0].attack.armor = 0.5f;
+    float lost[2] = {-1.f, -1.f};
+    for (int partner = 0; partner < 2; ++partner) {
+        CAPTURE(partner);
+        PRig r(poiseFighter(20.f));
+        r.enemy(k, Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{partner ? -1.5f : -1.4f, 0.f};
+        r.bodies.ally = partner ? Vec2{1.4f, 0.f} : Vec2{0.f, 10.f};
+        r.go(partner != 0);
+        for (int t = 0; t < 600 && lost[partner] < 0.f; ++t) {
+            const bool inStartup = r.out && r.out->enemies[0].brain == ArenaBrain::Attack &&
+                                   r.out->enemies[0].part == ArenaPart::Startup;
+            if (!partner && inStartup) r.in.light = true;
+            r.tick();
+            const int hit = partner ? r.findAllyHit() : r.find(ArenaEventType::Hit);
+            if (hit < 0) continue;
+            REQUIRE(inStartup);
+            lost[partner] = 1000.f - r.fight.enemyPoise(0);
+        }
+        REQUIRE(lost[partner] >= 0.f);
+    }
+    CHECK(lost[0] == doctest::Approx(20.f * 0.5f));        // the lead's 20, half ignored by the armour
+    CHECK(lost[1] == doctest::Approx(20.f * 0.5f * 0.5f)); // x the partner's poise scale, then the same armour
+}
+
+TEST_CASE("arena partner: its blows fill the break-out count at half the lead's weight; a step back is unhurt") {
+    {   // The lead: one blow of 20 poise weighs 2 units, the whole count.
+        PRig r(poiseFighter(20.f));
+        r.enemy(breakDummy(), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{-1.4f, 0.f};
+        r.bodies.ally = Vec2{0.f, 10.f};
+        r.go(false);
+        r.in.light = true;
+        for (int t = 0; t < 60 && r.find(ArenaEventType::Hit) < 0; ++t) r.tick();
+        REQUIRE(r.find(ArenaEventType::Hit) >= 0);
+        CHECK(r.fight.stats().breakUpright == 1);
+        CHECK(r.fight.stats().breakRunWeight == doctest::Approx(2.f));
+        CHECK(r.fight.stats().breakDue == 1);
+    }
+    // The partner behind the enemy, the lead 3 m off facing away from it (out of the windup arc): the partner's 10
+    // poise weighs 1 unit, so its second blow brings the count, and the enemy steps back.
+    PRig r(poiseFighter(20.f));
+    r.enemy(breakDummy(), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{3.f, 0.f};
+    r.bodies.ally = Vec2{-1.4f, 0.f};
+    r.go(true);
+    int blows = 0;
+    for (int t = 0; t < 600 && blows < 2; ++t) {
+        r.tick();
+        for (const ArenaEvent& e : r.out->events) {
+            if (!allyHit(e)) continue;
+            ++blows;
+            if (blows == 1) {
+                CHECK(r.fight.stats().breakUpright == 1);
+                CHECK(r.fight.stats().breakRunWeight == doctest::Approx(1.f));
+                CHECK(r.fight.stats().breakDue == 0);
+            }
+        }
+    }
+    REQUIRE(blows == 2);
+    CHECK(r.fight.stats().breakUpright == 2);
+    CHECK(r.fight.stats().breakDue == 1);
+    CHECK(r.fight.stats().stepBacks == 1);
+    CHECK(r.fight.stats().hits == 0);
+    REQUIRE(r.out->enemies[0].brain == ArenaBrain::StepBack);
+    // Unhurt while it steps (the host leaves the bodies where they are, in reach): the partner's string runs on and
+    // its active parts land nothing.
+    int activeTicks = 0, hitsInStep = 0;
+    for (int t = 0; t < 120; ++t) {
+        r.tick();
+        if (r.out->enemies[0].brain != ArenaBrain::StepBack) break;
+        if (r.out->ally.attacking && r.out->ally.part == ArenaPart::Active) ++activeTicks;
+        for (const ArenaEvent& e : r.out->events)
+            if (allyHit(e)) ++hitsInStep;
+    }
+    CHECK(activeTicks > 0);
+    CHECK(hitsInStep == 0);
+}
+
+TEST_CASE("arena partner: at a set table with a session's count, each blow is ruled once and taken once") {
+    // The host rules each partner blow through judgeBlow (lead B, the ally body's): the count gives every judged blow
+    // the next id, so a second pass would show as a gap. Both leads and both enemies sit at the table: only enemy
+    // blows are shared, so the partner's blows pass nothing on and take from their target exactly the Hit's hp.
+    struct Host {
+        FightSession s;
+        std::vector<std::uint16_t> ids;
+        int other = 0;
+    } host;
+    auto hook = [](void* user, const ArenaBlow& blow) {
+        Host& h = *static_cast<Host*>(user);
+        ArenaBlowRuling rl;
+        if (blow.source == kArenaAlly) {
+            const CountHit c = h.s.judgeBlow(kLeadB);
+            h.ids.push_back(c.blow);
+            rl.damage = c.multiplier;
+        } else {
+            ++h.other;
+        }
+        return rl;
+    };
+    REQUIRE(host.s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(host.s.setActiveLead(kLeadA));
+    PRig r(poiseFighter(20.f));
+    r.fight.setBlowHook(+hook, &host);
+    r.enemy(standDummy(false, 1000.f, 1000.f), Vec2{0.f, 0.f});
+    r.enemy(standDummy(false, 1000.f, 1000.f), Vec2{0.f, 6.f});
+    r.bodies.player = Vec2{-10.f, 0.f};
+    r.bodies.ally = Vec2{-1.4f, 0.f};
+    r.go(true);
+    ArenaTableSeats seats;
+    seats.player = true;
+    seats.ally = true;
+    seats.enemies = 0x3u;
+    seats.enemyShare[0] = seats.enemyShare[1] = 1.f;
+    r.fight.setTableSeats(seats);
+    const int hp0 = r.fight.enemyHp(0), hp1 = r.fight.enemyHp(1);
+    for (int k = 0; k < 240; ++k) {
+        r.tick();
+        host.s.tick(kDt);
+    }
+    const ArenaStats& s = r.fight.stats();
+    REQUIRE(s.partnerBlows >= 3);
+    CHECK(r.allyHits() == s.partnerBlows);
+    REQUIRE(host.ids.size() == static_cast<std::size_t>(s.partnerBlows));
+    for (std::size_t i = 0; i < host.ids.size(); ++i) CHECK(host.ids[i] == i + 1); // one judgment a blow, no gap
+    CHECK(host.other == 0);
+    int dealt = 0;
+    for (const Logged& l : r.log)
+        if (allyHit(l.e)) dealt += l.e.amount;
+    CHECK(s.partnerDamage == dealt);
+    CHECK((hp0 - r.fight.enemyHp(0)) + (hp1 - r.fight.enemyHp(1)) == dealt); // taken once, nothing passed on
+    CHECK(r.count(ArenaEventType::TableShare) == 0);
+    CHECK(s.hits == 0);
+    CHECK(s.damageDealt == 0);
+    CHECK(s.punishUsed == 0);
+}
+
+TEST_CASE("arena partner: PARTNER (the pair press) is Closed or Ok while it is in the fight, down included; Absent once it is out") {
+    PRig r;
+    r.enemy(biterKind(150, 3.f, 40.f), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{0.f, 2.8f}; // within the biter's pick, out of its bite
+    r.bodies.ally = Vec2{1.f, 0.f};    // within its bite
+    r.go(true, 100);
+    bool downSeen = false;
+    for (int k = 0; k < 240; ++k) {
+        const PressReason why = r.fight.pressReason(ArenaPress::Pair);
+        CHECK((why == PressReason::Closed || why == PressReason::Ok));
+        if (r.fight.allyMaxHp() > 0 && r.fight.allyHp() == 0) {
+            downSeen = true;
+            CHECK(why == PressReason::Closed); // down: its body is still in the fight, so today's answer, not Absent
+        }
+        r.tick();
+    }
+    CHECK(downSeen);
+    // Out of the fight (a retry of a fight begun Lone puts it out: no ally body), with nothing scripted: Absent.
+    r.fight.setPartner(nullptr, nullptr);
+    r.fight.setAlly(0, 0.4f);
+    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Absent);
+    r.fight.setPairPartner(true); // a held-out partner the Count press calls in
+    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Closed);
+}

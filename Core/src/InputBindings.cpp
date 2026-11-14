@@ -62,8 +62,13 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::GiftHeal, "gift_heal", InputContext::Foot, false, "G", "Gamepad_DPad_Left"},
     {InputAction::GiftGuard, "gift_guard", InputContext::Foot, false, "Y", "Gamepad_DPad_Right"},
     // The partner's order (StayClose, Spread). Pad: no free Foot button; unbound there until ruled (inputPadPending).
-    // No controls line names it until the host reads it (the hints_read check).
-    {InputAction::PartnerOrder, "partner_order", InputContext::Foot, false, "B", ""},
+    // No controls line names it until the host reads it (the hints_read check). X: free in this table and in the
+    // player controller's and HUDs' own keys (B is the backlog's, below).
+    {InputAction::PartnerOrder, "partner_order", InputContext::Foot, false, "X", ""},
+    // The dialogue backlog. The player controller maps it in the story context, which stays on under every screen,
+    // fights too, so its key is in this table for the validator to see: no other action, of either context, may take
+    // it (inputKeyClash). Pad: none (inputPadPending).
+    {InputAction::Backlog, "backlog", InputContext::Foot, false, "B", ""},
 }};
 
 const ActionRow& row(InputAction a) { return kRows[static_cast<std::size_t>(a) % kInputActionCount]; }
@@ -161,7 +166,9 @@ bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice d, std::st
     if (key.empty()) return false;
     const auto& keys = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount];
     for (const ActionRow& r : kRows) {
-        if (r.action == a || r.context != inputActionContext(a) || scopesApart(r.action, a)) continue;
+        // The backlog is read under every screen (the story context), so it clashes across contexts too.
+        const bool anyContext = r.action == InputAction::Backlog || a == InputAction::Backlog;
+        if (r.action == a || (!anyContext && r.context != inputActionContext(a)) || scopesApart(r.action, a)) continue;
         if (keys[static_cast<std::size_t>(r.action)].view() == key) {
             clash = r.action;
             return true;
@@ -204,18 +211,18 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     return nullptr;
 }
 
-bool inputPadPending(InputAction a) { return a == InputAction::PartnerOrder; }
+bool inputPadPending(InputAction a) { return a == InputAction::PartnerOrder || a == InputAction::Backlog; }
 
 namespace {
 
-// Whether two actions may not share a key on one device: the same context, or a Read-held action on Read's or Guard's
-// key (validateInputBindings' two rules).
+// Whether two actions may not share a key on one device: the same context, a Read-held action on Read's or Guard's
+// key (validateInputBindings' two rules), or the backlog's key, which every context shares (inputKeyClash).
 bool inputKeysConflict(InputAction a, InputAction b) {
     if (a == b || scopesApart(a, b)) return false;
     const InputContext ca = inputActionContext(a), cb = inputActionContext(b);
     if (ca == cb) return true;
     const InputAction foot = ca == InputContext::Foot ? a : b;
-    return foot == InputAction::Read || foot == InputAction::Guard;
+    return foot == InputAction::Read || foot == InputAction::Guard || foot == InputAction::Backlog;
 }
 
 bool reachableExcept(const InputBindings& b, const InputUnbound* skip, InputAction* missing) {
@@ -330,6 +337,15 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
         if (chosen[gi] && !chosen[hi] && !row[gi].empty() && row[gi].view() == row[hi].view()) {
             row[gi] = defaults.keys[d][gi];
             chosen[gi] = false;
+        }
+        // A file saved before the backlog joined the table names no backlog, and its partner order may sit on B, the
+        // partner order's old default and the backlog's key. That B moves back to the backlog: the partner order takes
+        // its new default, as if the player had never chosen it. A partner order on any other key stays.
+        const std::size_t poi = static_cast<std::size_t>(InputAction::PartnerOrder);
+        const std::size_t bli = static_cast<std::size_t>(InputAction::Backlog);
+        if (chosen[poi] && !chosen[bli] && !row[poi].empty() && row[poi].view() == defaults.keys[d][bli].view()) {
+            row[poi] = defaults.keys[d][poi];
+            chosen[poi] = false;
         }
         // An action the file has no entry for is new to it (added after the file was saved, or left out): it takes
         // its default, unless a key the file binds is that default, when the player's binding wins and the action is
@@ -469,7 +485,8 @@ constexpr InputHintEntry kFieldHint[] = {
 // shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares, and take half
 // plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
 // PartnerOrder: only -ArenaPartner has a partner to order (off by default), so no controls line names it yet.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::PartnerOrder};
+// Backlog: a reading screen's key, not a fight's or the field's, so neither controls line names it.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::PartnerOrder, A::Backlog};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {

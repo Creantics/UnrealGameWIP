@@ -64,6 +64,14 @@ constexpr const TCHAR* kStoneBearerVfx = TEXT("Data/Battle/arena_boss/stone_bear
 constexpr const TCHAR* kStoneBearerSplit = TEXT("Data/Battle/arena_boss/stone_bearer_split.json");
 // After the outcome, the autopilot (without -ArenaQuitOnFinish) fights again this much later (s), or kArenaDefeatTail after
 // the longest defeat clip of the bosses that died, when that is later: the clip plays out on the result screen.
+// The health share (0..1 of the body's hp) the held-out partner brings when it joins a fight begun Lone. There is
+// no carried-health source yet (party health between fights is owed to the save lane), so the partner joins at full
+// health. This is the one place the value comes from.
+float PartnerJoinHealth()
+{
+	return 1.f;
+}
+
 constexpr double kArenaAutoAgain = 4.0;
 constexpr double kArenaDefeatTail = 0.5;
 // A press to fight again counts only once the result has been up this long (s), so a held attack doesn't skip it.
@@ -555,6 +563,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 #endif
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
+	// PARTNER (the pair press) has someone to answer it with no ally body only when a script feeds the press (the
+	// autopilot's press after a parry, the shared count) or a held-out partner waits for the Count press to call it
+	// in. With neither and no ally body (a solo fight) the rules answer Absent and the HUD hides the row.
+	Fight.setPairPartner(bAutoPlay || bSharedCount || bPartnerHeldOut);
 	SessionLead = SessionLeadOf(Setup.Lead);
 	StartLead = SessionLead;
 	BeginSession();
@@ -2181,10 +2193,10 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 			LonePartnerEnds += Session->Get().endLone(ftcore::LoneEnd::PartnerCalled) ? 1 : 0;
 			MirrorLone();
 			// The partner held out of a fight begun Lone comes in on this call (and on no other end): the session's
-			// join resolves at the step's close and FeedSession brings it into the fight on tick.joined. Its carried
-			// health has no source in the runner yet, so it comes in whole (1.0, the body's full hp).
+			// join resolves at the step's close and FeedSession brings it into the fight on tick.joined, at
+			// PartnerJoinHealth() (full: no carried-health source yet).
 			if (bPartnerHeldOut && Session->Get().loneEndedBy() == ftcore::LoneEnd::PartnerCalled
-				&& Session->Get().joinFight(OtherLead(), 1.f))
+				&& Session->Get().joinFight(OtherLead(), PartnerJoinHealth()))
 			{
 				++PartnerJoinAsks;
 			}
@@ -4654,9 +4666,10 @@ void UFTArenaRunner::LogFeatureChecks() const
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: jump %s (%d started, %d landed)."), *Text(C.jumpCheck), S.jumps, S.landings);
 	}
 	// Flinch (ftcore::arenaFeatureChecks): n/a when no blow could flinch an upright enemy (a kit too light for the
-	// kinds' flinchPoise, poise breaking first, or no kind that flinches, as a boss).
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d of %d chances)."), *Text(C.flinchCheck), S.flinches,
-		S.flinchChances);
+	// kinds' flinchPoise, poise breaking first, or no kind that flinches, as a boss). The chances are counted after
+	// the break guard, chain cap and active/armoured-attack rules; the heavy-enough blows before them are shown too.
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: flinch %s (%d of %d chances; %d blows heavy enough before the guard, chain-cap and armour rules)."),
+		*Text(C.flinchCheck), S.flinches, S.flinchChances, S.flinchBlows);
 	// Break-out (ftcore::arenaFeatureChecks): FAIL when upright blows landed and the run never moved or it was due
 	// and free; barred when a mask or the host barred it; n/a when poise always broke first.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: break-out %s (%d; due %d, barred %d; %d upright blows; best run %d of %d)."),
@@ -6354,8 +6367,8 @@ void UFTArenaRunner::BeginPartner()
 	// Both leads play the one fighter kit here, so the partner's body has the lead fighter's max hp.
 	Fight.setAlly(Def.fighter.hp, Def.fighter.bodyRadius);
 	Fight.setPartner(&AllyBrain, &AllyTuning);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: the partner (-ArenaPartner): the other lead's body, %d hp, driven by the partner brain; order SPREAD (B: STAY CLOSE / SPREAD); attack budget %.1f x the lead's + %.1f s in any %.0f s; down %.0f s, then up at %.0f%%."),
-		Def.fighter.hp, AllyTuning.budgetShare, AllyTuning.budgetAllowanceSeconds, AllyTuning.budgetWindowSeconds, AllyTuning.downSeconds,
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: the partner (-ArenaPartner): the other lead's body, %d hp, driven by the partner brain; order SPREAD (%s: STAY CLOSE / SPREAD); attack budget %.1f x the lead's + %.1f s in any %.0f s; down %.0f s, then up at %.0f%%."),
+		Def.fighter.hp, *FTInputBindings::Key(ftcore::InputAction::PartnerOrder, ftcore::InputDevice::Keys).ToString(), AllyTuning.budgetShare, AllyTuning.budgetAllowanceSeconds, AllyTuning.budgetWindowSeconds, AllyTuning.downSeconds,
 		AllyTuning.riseHealth * 100.f);
 }
 

@@ -4124,6 +4124,7 @@ void checkPresses(const Rig& rig, PressTally& t) {
 // after the last; stops 20 ticks after the fight ends.
 template <class Script>
 void runChecked(Rig& rig, int ticks, PressTally& t, Script script) {
+    rig.fight.setPairPartner(true); // the probes feed the partner's press themselves: a scripted partner
     int over = 0;
     for (int k = 1; k <= ticks && over < 20; ++k) {
         script(rig, k);
@@ -4259,7 +4260,10 @@ TEST_CASE("arena pressReason: the fight's phase and the kit's moves") {
     CHECK(rig.fight.pressReason(ArenaPress::Heal) == PressReason::Ok); // at full health too: the heal never asks
     CHECK(rig.fight.pressReason(ArenaPress::Shot) == PressReason::Absent); // no gun
     CHECK(rig.fight.pressReason(ArenaPress::Release) == PressReason::Empty); // no Load yet
-    CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Closed);
+    CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Absent); // no partner to answer it
+    rig.fight.setPairPartner(true);
+    CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Closed); // a scripted one: the window is shut
+    rig.fight.setPairPartner(false);
     CHECK(rig.fight.pressReason(ArenaPress::Guard) == PressReason::Ok);
     rig.fight.giveLoad(kMaxLoad);
     rig.tick();
@@ -7430,21 +7434,27 @@ TEST_CASE("arena break-out: with no room behind or to either side it does not st
     rig.put(0, -1.5f, 0.f);
     int blockedTick = -1;
     ArenaEnemyOut before{};
+    int flinchesBefore = 0;
     for (int t = 0; t < 120 && blockedTick < 0; ++t) {
         before = rig.out().enemies[0];
+        flinchesBefore = rig.fight.stats().flinches;
         rig.in.light = true;
         rig.tick();
         if (rig.fight.stats().stepBacksBlocked > 0) blockedTick = rig.ticks;
     }
     REQUIRE(blockedTick >= 0);
-    // Nothing it was doing is cut short, as a real step would (interrupt: its clock to 0, its token back): the
-    // same brain and move, its clock running on, its token as it was.
+    // What the rule promises: no step (no StepBack state, the step count unchanged). The blow still lands, so it may
+    // flinch the enemy by the flinch rules; only when it did not is nothing cut short (no interrupt: the same move,
+    // its clock running on, its token as it was).
     const ArenaEnemyOut& after = rig.out().enemies[0];
-    REQUIRE(before.brain != ArenaBrain::Flinch);
-    CHECK(after.brain == before.brain);
-    CHECK(after.move == before.move);
-    CHECK(after.stateTime > before.stateTime);
-    CHECK(after.token == before.token);
+    CHECK(after.brain != ArenaBrain::StepBack);
+    if (rig.fight.stats().flinches == flinchesBefore) {
+        CHECK(after.move == before.move);
+        CHECK(after.stateTime > before.stateTime);
+        CHECK(after.token == before.token);
+    } else {
+        CHECK(after.brain == ArenaBrain::Flinch);
+    }
     CHECK(rig.fight.stats().stepBacksBlocked == 1);
     CHECK(rig.fight.stats().stepBacks == 0);
     CHECK(rig.fight.stats().breakOuts == 0);
@@ -9691,4 +9701,31 @@ TEST_CASE("arena hooks: hostHeal and hostHurt change the player's hp now and rep
     rig.tick();
     CHECK(rig.fight.phase() == ArenaPhase::Fighting);
     CHECK(rig.count(ArenaEventType::Downed) == 0);
+}
+
+TEST_CASE("arena pressReason: Pair is Absent at every tick of a fight no partner can answer, the press taken as before") {
+    // The brawl, solo: no ally body, no scripted partner. PARTNER is Absent at every tick the fight runs, and the
+    // partner's press (as the Count key feeds it) still does what it did: pressReason changes nothing.
+    Rig solo(ruleFighter(), {brawlHitter()});
+    Rig fed(ruleFighter(), {brawlHitter()});
+    solo.put(0, 1.5f, 0.f);
+    fed.put(0, 1.5f, 0.f);
+    fed.fight.setPairPartner(true);
+    int ticks = 0;
+    for (int k = 1; k <= 1500 && solo.fight.phase() == ArenaPhase::Fighting; ++k) {
+        brawlScript(solo, k);
+        brawlScript(fed, k);
+        solo.in.pair = fed.in.pair = k % 7 == 0;
+        CHECK(solo.fight.pressReason(ArenaPress::Pair) == PressReason::Absent);
+        CHECK(fed.fight.pressReason(ArenaPress::Pair) != PressReason::Absent);
+        solo.tick();
+        fed.tick();
+        ++ticks;
+    }
+    CHECK(ticks > 300);
+    CHECK(solo.fight.stats().counterStaggers == fed.fight.stats().counterStaggers); // the same presses, the same pairs
+    CHECK(solo.fight.hp() == fed.fight.hp());
+    // Kept across restart, like setLone.
+    fed.fight.restart();
+    CHECK(fed.fight.pairPartner());
 }
