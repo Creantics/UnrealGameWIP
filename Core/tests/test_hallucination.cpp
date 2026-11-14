@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -513,6 +514,33 @@ TEST_CASE("a held lead is blank to the fight: the guard feeds only the refusal, 
     CHECK(o.saw(Ev::Refused) == 1);
     CHECK_FALSE(o.h.refuseKept());
     CHECK(hallucinationArenaInput(o.h, raw).guard);
+
+    Rig p; // pulled back with the guard down (pressed under refuseSeconds before the pull): that press stays the refusal's
+    p.in.partnerPresent = true;
+    p.start();
+    p.in.accepting = true;
+    p.run(4.0);
+    REQUIRE(p.h.held());
+    p.in.accepting = false;
+    p.in.refuse = true;
+    p.step(0.1);
+    p.in.partnerPull = true;
+    p.step(0.1);
+    p.in.partnerPull = false;
+    CHECK(p.saw(Ev::PulledBack) == 1);
+    CHECK(p.saw(Ev::Refused) == 0);
+    CHECK_FALSE(p.h.active());
+    CHECK(p.h.refuseKept());
+    CHECK(same(hallucinationArenaInput(p.h, raw), kept));
+    p.step(0.25);
+    CHECK(same(hallucinationArenaInput(p.h, raw), kept)); // still down: still the refusal's
+    p.in.refuse = false;
+    p.step(0.25);
+    CHECK(same(hallucinationArenaInput(p.h, raw), raw)); // let go
+    p.in.refuse = true;
+    p.step(0.25);
+    CHECK_FALSE(p.h.refuseKept()); // a guard first pressed after the pull-back is a plain guard
+    CHECK(hallucinationArenaInput(p.h, raw).guard);
 }
 
 TEST_CASE("the refusal: held refuseSeconds it closes the offer; a wrong guess, the cooldown and a stale button") {
@@ -695,9 +723,110 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"actFloors":["none","none","none","low","max"]})",
         R"({"version":1,"gap":90})",
         R"({"holdSeconds":4})",
+        R"({"version":1,"lonePoolFloor":-1})",
+        R"({"version":1,"lonePoolFloor":2e9})",
     };
     for (const char* bad : badTuning) {
         CHECK_FALSE(importHallucinationTuning(bad, h, &err));
         CHECK(h.holdSeconds == d.holdSeconds);
+        CHECK(h.lonePoolFloor == d.lonePoolFloor);
     }
+}
+
+TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept; a fresh guard after it does") {
+    // What the runner probe's refuseheld counts (no block or parry in held or kept steps), in Core: the built-in fight,
+    // its enemies pinned in front of the lead, the lead standing still with the guard as the only button.
+    ArenaDef def = defaultArenaDef();
+    def.fighter.hp *= 50;
+    for (std::size_t i = 0; i < def.enemyCount; ++i) def.enemies[i].hp *= 50;
+    ArenaFight fight;
+    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 3);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    const Vec2 face = fight.playerStartFacing();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i)
+        bodies.enemies[i] = Vec2{bodies.player.x + face.x * 1.6f - face.y * (0.5f * static_cast<float>(i)),
+                                 bodies.player.y + face.y * 1.6f + face.x * (0.5f * static_cast<float>(i))};
+
+    TragedyTable table = makeTable(1);
+    TragedyPool pool(table);
+    pool.unlock(0);
+    HallucinationTuning tune;
+    tune.refuseSeconds = 12.f; // a long refusal, so the lead stands held with the guard down for a while
+    tune.expireSeconds = 1000.f;
+    Hallucination h(tune);
+    HallucinationInput hin; // alone: only the refusal ends the hold
+    std::uint32_t rng = 7;
+    h.tick(0.0, hin);
+    REQUIRE(h.start(pool, rng, 0u, IntensityBand::Low, false) == Start::Started);
+
+    // Phases by fight time: 0 holding (guard up), 1 held with the guard down, 2 kept (refused, guard still down),
+    // 3 let go, 4 a fresh guard.
+    std::array<int, 5> blocks{}, attacks{}, hpLost{};
+    const float dt = 1.f / 60.f;
+    bool refused = false;
+    while (fight.time() < 40.f && !fight.over()) {
+        const float t = fight.time();
+        hin.accepting = t < 4.5f;
+        hin.refuse = (t >= 5.f && t < 27.f) || t >= 28.f;
+        h.tick(dt, hin);
+        for (int i = 0; i < h.eventCount(); ++i) refused = refused || h.events()[i].type == Ev::Refused;
+        const int phase = t < 5.f ? 0 : !refused ? 1 : t < 27.f ? 2 : t < 28.f ? 3 : 4;
+        if (phase == 1) REQUIRE(h.held());
+        if (phase == 2) REQUIRE(h.refuseKept());
+        ArenaInput raw;
+        raw.view = face;
+        raw.guard = hin.refuse; // the host's guard button is the refusal
+        const int before = fight.hp();
+        const ArenaOutput& out = fight.tick(dt, hallucinationArenaInput(h, raw), bodies);
+        hpLost[static_cast<std::size_t>(phase)] += before - fight.hp();
+        for (const ArenaEvent& e : out.events) {
+            const std::size_t p = static_cast<std::size_t>(phase);
+            blocks[p] += (e.type == ArenaEventType::Blocked || e.type == ArenaEventType::Parried) ? 1 : 0;
+            attacks[p] += (e.type == ArenaEventType::AttackStarted && e.source < kMaxArenaEnemies) ? 1 : 0;
+        }
+    }
+    REQUIRE(refused);
+    for (const int p : {1, 2}) { // swung at with the guard down, and not once met
+        CHECK_MESSAGE(attacks[static_cast<std::size_t>(p)] > 0, "phase " << p);
+        CHECK_MESSAGE(hpLost[static_cast<std::size_t>(p)] > 0, "phase " << p);
+        CHECK_MESSAGE(blocks[static_cast<std::size_t>(p)] == 0, "phase " << p);
+    }
+    CHECK(attacks[4] > 0);
+    CHECK(blocks[4] > 0); // the same guard, pressed afresh, meets the same swings
+}
+
+TEST_CASE("the unlock order is saved by id: a restore into a reordered table keeps each lead's newest key") {
+    TragedyTable a = makeTable(2); // a0 a1 b0 b1
+    a.keys[0].caused = true;
+    TragedyPool pa(a);
+    for (const char* id : {"a1", "b1", "b0", "a0"}) REQUIRE(pa.unlock(tragedyKey(a, id)));
+    REQUIRE(pa.newest(kLeadA) == tragedyKey(a, "a0")); // unlocked last, though first in the table
+    const TragedySave s = captureTragedies(a, pa);
+    CHECK(s.unlocked == std::vector<std::string>{"a1", "b1", "b0", "a0"});
+
+    TragedyTable b; // the same keys, re-imported in another order
+    b.places = a.places;
+    for (const char* id : {"b1", "a0", "b0", "a1"}) b.keys.push_back(a.keys[static_cast<std::size_t>(tragedyKey(a, id))]);
+    TragedyPool pb(b);
+    CHECK(applyTragedies(s, b, pb) == 0);
+    CHECK(pb.newest(kLeadA) == tragedyKey(b, "a0"));
+    CHECK(pb.newest(kLeadB) == tragedyKey(b, "b0"));
+    for (const char* id : {"a0", "a1", "b0", "b1"})
+        CHECK_MESSAGE(pb.weight(tragedyKey(b, id)) == pa.weight(tragedyKey(a, id)), id);
+    CHECK(pb.weight(tragedyKey(b, "a0")) == 6u); // newest x3, caused x2
+    CHECK(captureTragedies(b, pb) == s);
+
+    // Restored as a set in table order instead, a1 would be the newest: the order is what the save keeps.
+    TragedyPool set(b);
+    for (int k = 0; k < static_cast<int>(b.keys.size()); ++k) set.unlock(k);
+    CHECK(set.newest(kLeadA) == tragedyKey(b, "a1"));
+
+    TragedyTable c = b; // a key gone from the table: skipped and counted, the rest keep their order
+    c.keys.erase(c.keys.begin() + tragedyKey(c, "a0"));
+    TragedyPool pc(c);
+    CHECK(applyTragedies(s, c, pc) == 1);
+    CHECK(pc.newest(kLeadA) == tragedyKey(c, "a1"));
+    CHECK(pc.newest(kLeadB) == tragedyKey(c, "b0"));
+    CHECK(applyTragedies(TragedySave{}, c, pc) == 0);
 }
