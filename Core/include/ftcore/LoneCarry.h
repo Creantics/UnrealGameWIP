@@ -1,7 +1,17 @@
 #pragma once
 
 // The Lone Carry: a stance a lead takes before a fight (or is put in when the third slot is Vacant or Hostile). It is
-// fixed for the fight, except that a gift actually given ends it for the rest of that fight.
+// fixed for the fight, except that any gift press at a lead ends it for the rest of that fight (given or refused as
+// cooling, none left or a count refused; a press refused as Vacant or Hostile leaves it, since that slot state is
+// what forces the stance). The host may also end it for the partner's call (FightSession::endLone), and the fight's
+// end ends it (finish).
+//
+// What the host shows (FightSession):
+//   - the bargain: loneBargain(), the gains and losses as data for a card, and FightTick::loneCarryBegan on the
+//     first tick after a Lone begin;
+//   - the end: FightTick::loneCarryEndedBy on the first tick after it ends (LoneEnd), and loneEndedBy() at any time;
+//   - the roll: loneRoll(save, poolTuning), the save's lone Releases and their Load plus this fight's, with the
+//     effect the pool will have on the last boss (lonePoolEffect). Core keeps counts only, no names.
 //
 // While Lone (FightSession::lone(), mirrored into ArenaFight::setLone):
 //   - the Load cap is `cap` whatever the chairs give, and every store (a parry, a block, take half) gains x`gain`
@@ -53,10 +63,93 @@ inline int loneScale(int d, float s) {
     return v >= static_cast<double>(kMaxLoneScaled) ? kMaxLoneScaled : static_cast<int>(v);
 }
 
-// The save-wide pool of Load spent by Releases made while Lone. Exposed for the save; nothing persists it yet.
+// The save-wide pool of Load spent by Releases made while Lone, and how many Releases put it there. Exposed for the
+// save; nothing persists it yet.
 struct LoneSave {
     std::uint32_t pooled = 0;
+    std::uint32_t releases = 0;
 };
+
+// Folds a kept fight's lone Releases into the save (both saturating). The host calls it where it calls
+// FightSession::finish(true) (the story step kept), never after a retried or dropped attempt.
+inline void addLoneFight(LoneSave& s, std::uint32_t releases, std::uint32_t pooled) {
+    s.releases = saturatingAdd(s.releases, releases);
+    s.pooled = saturatingAdd(s.pooled, pooled);
+}
+
+// What the Lone Carry gives and takes, as data for a card the host shows when it begins (no text here).
+struct LoneBargain {
+    float release = 1.f;     // x on a Release's hp damage
+    float loadGain = 1.f;    // x on every store
+    int loadCap = 0;         // the Load cap, whatever the chairs give
+    float damageTaken = 1.f; // x on an enemy blow's hp on the lead
+    bool noCount = true;     // nobody joins the count (called alone, it lands light)
+    bool noTable = true;     // the table is refused
+    bool noTakeHalf = true;  // take half is refused
+    bool anyGiftEnds = true; // any gift press ends it for the fight
+};
+inline LoneBargain loneBargain(const LoneTuning& t) {
+    LoneBargain b;
+    b.release = t.release;
+    b.loadGain = t.gain;
+    b.loadCap = t.cap;
+    b.damageTaken = t.taken;
+    return b;
+}
+
+// Why the Lone Carry ended this fight.
+enum class LoneEnd : std::uint8_t { None, Gift, PartnerCalled, FightEnded }; // append only
+
+// The pool's effect on the last boss (per boss). B = maxBonus x P / (P + halfPool) permille, in [0, maxBonus) for
+// every P; figures = min(maxFigures, B / figurePermille), each an extra figure of figurePermille of the boss's hp;
+// what is left of B adds to the boss's own hp.
+struct LonePoolTuning {
+    int maxBonus = 400;              // permille, the ceiling (never reached): 0..400
+    std::uint32_t halfPool = 2000;   // the pool that gives half the ceiling: 1..1e6
+    int figurePermille = 150;        // 50..400
+    int maxFigures = 2;              // 0..2
+};
+inline bool validLonePoolTuning(const LonePoolTuning& t) {
+    return t.maxBonus >= 0 && t.maxBonus <= 400 && t.halfPool >= 1u && t.halfPool <= 1000000u &&
+           t.figurePermille >= 50 && t.figurePermille <= 400 && t.maxFigures >= 0 && t.maxFigures <= 2;
+}
+struct LonePoolEffect {
+    int totalPermille = 0;   // B: the extra the pool adds, figures included
+    int ceilingPermille = 0; // maxBonus: B stays under it
+    int figures = 0;         // extra figures
+    int figurePermille = 0;  // each figure's share of the boss's hp
+    int hpPermille = 0;      // B less the figures: added to the boss's own hp
+};
+// Out-of-range tuning gives the defaults' effect.
+inline LonePoolEffect lonePoolEffect(std::uint32_t pooled, const LonePoolTuning& tuning) {
+    const LonePoolTuning t = validLonePoolTuning(tuning) ? tuning : LonePoolTuning{};
+    LonePoolEffect e;
+    const std::uint64_t p = pooled;
+    e.totalPermille = static_cast<int>(static_cast<std::uint64_t>(t.maxBonus) * p / (p + t.halfPool));
+    e.ceilingPermille = t.maxBonus;
+    const int f = e.totalPermille / t.figurePermille;
+    e.figures = f < t.maxFigures ? f : t.maxFigures;
+    e.figurePermille = t.figurePermille;
+    e.hpPermille = e.totalPermille - e.figures * t.figurePermille;
+    return e;
+}
+
+// The roll: the lone Releases and the Load they pooled, the save's plus a fight's, and the pool's effect. Empty
+// (shown() false) until the first lone Release.
+struct LoneRoll {
+    std::uint32_t releases = 0;
+    std::uint32_t pooled = 0;
+    LonePoolEffect effect{};
+    bool shown() const { return releases > 0; }
+};
+inline LoneRoll loneRoll(const LoneSave& save, std::uint32_t fightReleases, std::uint32_t fightPooled,
+                         const LonePoolTuning& tuning) {
+    LoneRoll r;
+    r.releases = saturatingAdd(save.releases, fightReleases);
+    r.pooled = saturatingAdd(save.pooled, fightPooled);
+    r.effect = lonePoolEffect(r.pooled, tuning);
+    return r;
+}
 
 // Adds a Release's spent Load (nothing for spent <= 0), saturating at the uint32 maximum. Returns the pool.
 inline std::uint32_t poolLoneRelease(LoneSave& s, int spent) {
