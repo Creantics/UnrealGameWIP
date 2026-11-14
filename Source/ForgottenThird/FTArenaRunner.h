@@ -20,6 +20,7 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/PartnerBrain.h"
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaCamera.h"
@@ -316,6 +317,11 @@ public:
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
+	// The lead the player does not control, and whether the session has it in this fight (def.inFight): the one
+	// source of truth for "a partner is here" (the hallucination's partnerPresent reads it; without a partner body
+	// the session fights one lead).
+	uint8 OtherLead() const { return SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA; }
+	bool PartnerInSession() const { return Session != nullptr && Session->Get().inFight(OtherLead()) && !Fight.lone(); }
 	// The third slot as the session holds it (a checkpoint keeps it), and why any gift press is refused in it now
 	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
 	ftcore::SlotState GetThirdSlot() const;
@@ -447,6 +453,18 @@ private:
 	ftcore::Vec2 AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
 	void MoveAlly();
 	void PlaceAlly(float Alpha);
+	// -ArenaPartner: the brain set on the fight (BeginPartner), the figures' swap on a takeover, the walk to the ally's
+	// goal, both leads' health for the session, and the 20 s report windows with the end's checks.
+	void BeginPartner();
+	void TakeOverBodies(const ftcore::ArenaOutput& Out);
+	void SwapLeadFigures();
+	void WalkPartner(const ftcore::ArenaOutput& Out);
+	void FeedLeadHealths();
+	void TrackPartner(const ftcore::ArenaOutput& Out);
+	void LogPartnerWindow();
+	void LogPartnerChecks(bool bWon, bool bLost);
+	void CheckPartnerRetry();
+	bool PartnerBody() const { return bPartner && !Fight.lone(); }
 	void LogCarry() const;
 	// Setting the table (-ArenaTable, a carrying run's): its switches, its reset (each attempt), its step after the
 	// fight's, its ring drawn, its log line and its ring's removal.
@@ -981,6 +999,32 @@ private:
 	const FFTLeadLook* AllyLook = nullptr;
 	double AllyHitTime = -1e9;
 	int32 CarrySharedOffers = 0;
+	// -ArenaPartner (outside Shipping; off by default, so ordinary play never has it): the other lead stands in the ring
+	// as the partner, its body driven by Core's PartnerBrain through the fight (ArenaFight::setPartner) with the tuning
+	// of Data/Battle/partner_brain.json. Unless the fight is Lone, both leads are then in the session's fight and both
+	// leads' health is fed every step before any press; the player's fall with the partner up is a takeover (bodies,
+	// figures, looks and the session lead swap), both down the defeat. B toggles the order: STAY CLOSE and SPREAD.
+	bool bPartner = false;
+	bool bPartnerSpread = true;          // the order: Spread (ArenaInput::partnerOrder 1) or StayClose (0)
+	bool bFiguresSwapped = false;        // PlayerFigure and AllyFigure have swapped an odd number of times this fight
+	uint8 StartLead = 0;                 // the session lead the fight began with (a restart goes back to it)
+	const FFTLeadLook* PlayerLook = nullptr; // the look PlayerFigure wears (swaps with AllyLook on a takeover)
+	ftcore::PartnerBrain AllyBrain;
+	ftcore::PartnerTuning AllyTuning;
+	// The report windows (TrackPartner): attack seconds this window, the totals at its start, its counts.
+	double PartnerPrevTime = 0.0;
+	double PartnerWinStart = 0.0;
+	double PartnerWinLead = 0.0;
+	double PartnerWinAlly = 0.0;
+	int32 PartnerWinDamage0 = 0, PartnerWinLeadDamage0 = 0, PartnerWinBoss0 = 0, PartnerWinAimed0 = 0;
+	int32 PartnerWinLeadFalls = 0, PartnerWinAllyFalls = 0, PartnerWinTakeovers = 0, PartnerWinRises = 0;
+	int32 PartnerWindows = 0, PartnerWindowsHeld = 0;
+	double PartnerWorstOver = -1e9;      // the most a window's partner attack time stood over (or under: < 0) its limit
+	// The fight's counts: falls of the player's body and of the partner's (a takeover's AllyDowned is the same fall),
+	// takeovers the host swapped, rises, the session's takeovers, steps where the session's controlled lead was not the
+	// runner's, and the order's presses.
+	int32 PartnerLeadFalls = 0, PartnerAllyFalls = 0, PartnerTakeovers = 0, PartnerRises = 0;
+	int32 PartnerSessionTookOver = 0, PartnerLeadMismatch = 0, PartnerOrders = 0;
 	// Setting the table (BeginTable): on, the autopilot sets it at full Load, the Load filled for a capture; the
 	// places it counts, its clock and ring, and the counts for the TABLE line.
 	bool bTable = false;

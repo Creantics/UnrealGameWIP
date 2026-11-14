@@ -77,6 +77,7 @@ TEST_CASE("input bindings: a file from before the gift keys moves its gift key o
     CHECK(std::string(inputKey(b, InputAction::Release, InputDevice::Keys)) == "X");
     CHECK(std::string(inputKey(b, InputAction::Gift, InputDevice::Pad)) == "Gamepad_DPad_Up");
     CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Keys)) == "Y");
+    CHECK(std::string(inputKey(b, InputAction::PartnerOrder, InputDevice::Keys)) == "B");
     // The player's own heal key stays the heal's.
     InputBindings own = defaultInputBindings();
     REQUIRE(importInputBindings(R"({"version": 1, "keys": {"gift": "N"}})", own, &error));
@@ -96,7 +97,8 @@ TEST_CASE("input bindings: a file from before the gift keys moves its gift key o
                           // A file from before take half (its default T added later) with T bound elsewhere.
                           Case{R"({"version": 1, "keys": {"release": "T", "guard": "K"}})", InputAction::Release, "T", InputAction::TakeHalf},
                           // An older default works the same way: no entry for interact, its E given to guard.
-                          Case{R"({"version": 1, "keys": {"guard": "E"}})", InputAction::Guard, "E", InputAction::Interact}}) {
+                          Case{R"({"version": 1, "keys": {"guard": "E"}})", InputAction::Guard, "E", InputAction::Interact},
+                          Case{R"({"version": 1, "keys": {"interact": "B", "guard": "K"}})", InputAction::Interact, "B", InputAction::PartnerOrder}}) {
         CAPTURE(c.text);
         InputBindings t = defaultInputBindings();
         InputUnbound unbound;

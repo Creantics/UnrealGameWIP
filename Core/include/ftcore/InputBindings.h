@@ -65,8 +65,9 @@ enum class InputAction : std::uint8_t {
     TakeHalf,
     GiftHeal, // the third slot's two gifts, each picked and given at once (Gift is the lead's own heal)
     GiftGuard,
+    PartnerOrder, // the partner's order: StayClose and Spread in turn (arena)
 };
-inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::GiftGuard) + 1;
+inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::PartnerOrder) + 1;
 
 enum class InputContext : std::uint8_t { Foot, ReadHeld };
 enum class InputDevice : std::uint8_t { Keys, Pad };

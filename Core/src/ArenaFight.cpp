@@ -2,6 +2,7 @@
 #include "ftcore/ArenaSoftTarget.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaLook.h"
+#include "ftcore/PartnerBrain.h"
 #include "ftcore/TableRing.h"
 
 #include "SeedMix.h"
@@ -13,6 +14,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <iterator>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -395,6 +397,13 @@ struct ArenaFightImpl {
         pl.rounds = fi.rounds;
         fight.allyHp_ = fight.allyMaxHp_;
         fight.tableSeats_ = ArenaTableSeats{};
+        fight.ally_ = ArenaFight::AllyState{};
+        fight.ally_.facing = fight.playerStartFacing_;
+        fight.ally_.goal = fight.allyPos_;
+        fight.swapped_ = false;
+        fight.aimStrings_ = 0;
+        fight.aimPartner_ = 0;
+        if (fight.partner_ && fight.partnerTuning_) fight.partner_->begin(*fight.partnerTuning_, fight.seed_);
         for (std::size_t i = 0; i < kMaxArenaEnemies; ++i) {
             Enemy& foe = foes[i];
             foe = Enemy{};
@@ -474,6 +483,23 @@ struct ArenaFightImpl {
                 eo.part = arenaPartOf(fight.enemyAttackNow(i), foe.stateTime);
                 eo.move = foe.move;
             }
+            eo.aim = i < n && foe.brain == ArenaBrain::Attack ? foe.aim : 0;
+        }
+        ArenaAllyOut& ao = out.ally;
+        ao = ArenaAllyOut{};
+        ao.goal = fight.allyPos_;
+        if (partnerOn()) {
+            const ArenaFight::AllyState& al = fight.ally_;
+            if (fighting) ao.goal = al.goal;
+            ao.facing = al.facing;
+            ao.attacking = al.attacking;
+            ao.blow = al.blow;
+            ao.stateTime = al.attacking ? al.blowTime : 0.f;
+            ao.part = al.attacking ? arenaPartOf(allyLight(al.blow), al.blowTime) : ArenaPart::None;
+            ao.guarding = al.guarding;
+            ao.target = al.target;
+            ao.act = al.act;
+            ao.partnerOn = true;
         }
     }
 
@@ -491,6 +517,7 @@ struct ArenaFightImpl {
         }
         pl.pos = bodies.player;
         for (std::size_t i = 0; i < n; ++i) foes[i].pos = bodies.enemies[i];
+        fight.ally_.moved = arenaDistance(fight.allyPos_, bodies.ally) > kArenaEps; // the host walked it
         fight.allyPos_ = bodies.ally;
         if (pl.giftLoad > 0 || pl.giftFilled) { // the host's giveLoad since the last tick
             reportGift(pl.giftLoad, pl.giftFilled);
@@ -525,6 +552,7 @@ struct ArenaFightImpl {
         camera = in.cameraFacing;
         applyHolds();
         stepPlayer(in);
+        stepAlly(in);
         stepEnemies();
         stepBossBreaks();
         if (fight.read_.dealt() && !readStillOpen()) closeRead(); // the active part began, or the move is gone
@@ -532,6 +560,7 @@ struct ArenaFightImpl {
     }
 
     void endTick() {
+        if (pl.hp <= 0 && partnerOn() && allyUp()) takeOver();
         maintainLock();
         pl.parryLeft = std::max(0.f, pl.parryLeft - playerOwn); // a hit pause holds it, as the buffer
         if (pl.buffered != Press::None) pl.bufferAge += playerOwn; // a hit pause holds it
@@ -1439,7 +1468,7 @@ struct ArenaFightImpl {
     }
 
     // `at`: the fight time it dies at (< 0: this tick's end).
-    void killEnemy(std::size_t i, bool report = true, float at = -1.f) {
+    void killEnemy(std::size_t i, bool report = true, float at = -1.f, std::uint8_t by = kArenaPlayer) {
         Enemy& foe = foes[i];
         if (at < 0.f) at = t1;
         ++stats.kills;
@@ -1456,7 +1485,7 @@ struct ArenaFightImpl {
         foe.breakTimed = false;
         foe.unseen = false;
         releaseToken(i);
-        if (report) emit(ArenaEventType::Downed, kArenaPlayer, id(i), 0, 0, foe.pos);
+        if (report) emit(ArenaEventType::Downed, by, id(i), 0, 0, foe.pos);
     }
 
     bool hostBlow(std::size_t i, int damage, std::uint8_t move, float breakScale = 1.f) {
@@ -2185,8 +2214,24 @@ struct ArenaFightImpl {
 
     // timed: a boss's break (Boss break), with its own windup and recovery. unseen: a regular string begun outside the
     // windup arc after kArenaUnseenWait, its windup kArenaUnseenWindup longer.
-    void beginMove(std::size_t i, std::uint8_t move, bool timed = false, bool unseen = false) {
+    // chained: the next move of a string under way (endMove), which keeps the string's aim.
+    void beginMove(std::size_t i, std::uint8_t move, bool timed = false, bool unseen = false, bool chained = false) {
         Enemy& foe = foes[i];
+        if (!chained) { // a string begins: whom it aims at, and a boss's count toward the partner's cap
+            const bool boss = def.enemies[i].boss;
+            const bool atPartner = boss && partnerAim(i);
+            foe.aim = atPartner ? 2 : 1;
+            if (boss) {
+                ++fight.aimStrings_;
+                ++stats.bossAttacks;
+                if (atPartner) {
+                    ++fight.aimPartner_;
+                    ++stats.bossAimedPartner;
+                }
+                stats.bossAimShareMax = std::max(stats.bossAimShareMax, static_cast<float>(fight.aimPartner_) /
+                                                                            static_cast<float>(fight.aimStrings_));
+            }
+        }
         foe.brain = ArenaBrain::Attack;
         foe.move = move;
         foe.stateTime = 0.f;
@@ -2219,7 +2264,7 @@ struct ArenaFightImpl {
         foe.unseen = false;
         const int chain = k.moves[foe.move].chain;
         if (chain >= 0 && chain < static_cast<int>(k.moveCount) && chain != static_cast<int>(foe.move)) {
-            beginMove(i, static_cast<std::uint8_t>(chain));
+            beginMove(i, static_cast<std::uint8_t>(chain), false, false, true);
             return;
         }
         releaseToken(i);
@@ -2456,6 +2501,243 @@ struct ArenaFightImpl {
 
     bool allyUp() const { return fight.allyMaxHp_ > 0 && fight.allyHp_ > 0; }
 
+    // ---- the partner (ArenaFight::setPartner) ----
+
+    bool partnerOn() const {
+        return fight.partner_ != nullptr && fight.partnerTuning_ != nullptr && fight.allyMaxHp_ > 0 && !fight.lone_;
+    }
+
+    // The partner's k-th blow: the lead fighter's light, wrapping at its chain's length.
+    const ArenaAttack& allyLight(std::uint8_t k) const {
+        return fi.light[static_cast<std::size_t>(k) % std::max<std::size_t>(fi.lightCount, 1u)];
+    }
+
+    // A boss string begun now would aim at the partner: it is up and nearer the boss than the lead (centre to
+    // centre), and one more partner-aimed string keeps the fight's share within kArenaBossAimShareTenths. No RNG.
+    bool partnerAim(std::size_t i) const {
+        if (!def.enemies[i].boss || !partnerOn() || !allyUp()) return false;
+        const Vec2 at = foes[i].pos;
+        if (!(arenaDistance(at, fight.allyPos_) < arenaDistance(at, pl.pos))) return false;
+        return (fight.aimPartner_ + 1) * 10 <= kArenaBossAimShareTenths * (fight.aimStrings_ + 1);
+    }
+
+    // The enemy the lead's attack this step is aimed at: its lock, else its soft target, else the nearest living one
+    // within the riposte's dot of its facing; -1 for none.
+    int leadAimed() const {
+        if (alive(pl.lock)) return pl.lock;
+        if (alive(pl.soft)) return pl.soft;
+        int best = -1;
+        float bestDist = 0.f;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!alive(i)) continue;
+            const Vec2 to = arenaSub(foes[i].pos, pl.pos);
+            const float d = arenaLength(to);
+            if (d > kArenaEps && arenaDot(pl.facing, arenaScaled(to, 1.f / d)) < kArenaRiposteDot) continue;
+            if (best < 0 || d < bestDist) {
+                best = static_cast<int>(i);
+                bestDist = d;
+            }
+        }
+        return best;
+    }
+
+    // The partner's string, guard and hitstun end; it stands where it is.
+    void clearAlly() {
+        ArenaFight::AllyState& al = fight.ally_;
+        al.attacking = false;
+        al.blowTime = 0.f;
+        al.landed = false;
+        al.target = -1;
+        al.guarding = false;
+        al.hurtLeft = 0.f;
+        al.goal = fight.allyPos_;
+    }
+
+    // The ally reached 0 hp.
+    void downAlly(std::uint8_t source, std::uint8_t move) {
+        fight.allyHp_ = 0;
+        clearAlly();
+        emit(ArenaEventType::AllyDowned, source, kArenaAlly, move, 0, fight.allyPos_);
+    }
+
+    // The brain's view of this step, its intent, and the ally body's blow. After the player's step, before the
+    // enemies'.
+    void stepAlly(const ArenaInput& in) {
+        ArenaFight::AllyState& al = fight.ally_;
+        if (!partnerOn()) {
+            al.attacking = false;
+            al.guarding = false;
+            al.hurtLeft = 0.f;
+            al.goal = fight.allyPos_;
+            return;
+        }
+        PartnerBrain& brain = *fight.partner_;
+        al.hurtLeft = std::max(0.f, al.hurtLeft - dt);
+        const bool leadOn = pl.action == ArenaAction::Light || pl.action == ArenaAction::Heavy;
+        const int leadAim = leadOn ? leadAimed() : -1;
+        std::array<PartnerEnemyView, kMaxArenaEnemies> views{};
+        for (std::size_t i = 0; i < n; ++i) {
+            const Enemy& foe = foes[i];
+            PartnerEnemyView& v = views[i];
+            v.pos = foe.pos;
+            v.radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
+            v.kind = def.enemies[i].boss ? PartnerEnemyView::Kind::Boss : PartnerEnemyView::Kind::Regular;
+            if (foe.brain == ArenaBrain::Dead) {
+                v.state = PartnerEnemyView::State::Down;
+            } else if (foe.brain == ArenaBrain::Staggered) {
+                v.state = PartnerEnemyView::State::Staggered;
+            } else if (foe.brain == ArenaBrain::Attack) {
+                const float startup = fight.enemyAttackNow(i).startup;
+                if (foe.stateTime < startup) {
+                    v.state = PartnerEnemyView::State::WindingUp;
+                    v.windupLeft = startup - foe.stateTime;
+                    v.aim = foe.aim == 2 ? PartnerEnemyView::Aim::Partner : PartnerEnemyView::Aim::Lead;
+                }
+            }
+            v.leadAttacking = static_cast<int>(i) == leadAim;
+        }
+        const bool hurt = al.hurtLeft > 0.f;
+        PartnerInput pin;
+        pin.order = in.partnerOrder == 0 ? PartnerOrder::StayClose : PartnerOrder::Spread;
+        pin.pos = fight.allyPos_;
+        pin.health = static_cast<float>(fight.allyHp_) / static_cast<float>(fight.allyMaxHp_);
+        pin.canAct = allyUp() && !hurt;
+        pin.doing = al.attacking ? PartnerDoing::Attacking
+                    : al.guarding ? PartnerDoing::Guarding
+                    : hurt        ? PartnerDoing::Hurt
+                    : al.moved    ? PartnerDoing::Moving
+                                  : PartnerDoing::Idle;
+        pin.leadPos = pl.pos;
+        pin.leadTarget = alive(pl.lock) ? static_cast<int>(pl.lock) : -1;
+        pin.leadAttacking = leadOn;
+        for (std::size_t k = 0; k < kMaxPartnerBlows; ++k) pin.blowSeconds[k] = allyLight(static_cast<std::uint8_t>(k)).total();
+        pin.enemies = std::span<const PartnerEnemyView>(views.data(), n);
+        const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
+        al.act = static_cast<std::uint8_t>(intent.act);
+        if (!allyUp()) { // down: it lies where it fell until the brain stands it
+            clearAlly();
+            if (!intent.rise) return;
+            const long want = std::lround(static_cast<double>(intent.riseHealth) * static_cast<double>(fight.allyMaxHp_));
+            fight.allyHp_ = static_cast<int>(std::clamp<long>(want, 1, fight.allyMaxHp_));
+            ++stats.partnerRises;
+            emit(ArenaEventType::AllyRose, kArenaNobody, kArenaAlly, 0, fight.allyHp_, fight.allyPos_);
+            return;
+        }
+        if (intent.act == PartnerAct::Attack && intent.newString) ++stats.partnerStrings;
+        if (intent.act == PartnerAct::Attack && intent.blowStart) { // the only step a blow starts on
+            al.attacking = true;
+            al.blow = static_cast<std::uint8_t>(std::clamp(intent.blowIndex, 0, static_cast<int>(kMaxPartnerBlows) - 1));
+            al.blows = static_cast<std::uint8_t>(std::clamp(intent.blows, 0, static_cast<int>(kMaxPartnerBlows)));
+            al.blowTime = 0.f;
+            al.landed = false;
+            al.target = intent.enemy;
+            const float total = allyLight(al.blow).total();
+            al.blowLength = total >= 0.1f && total <= 2.f ? total : fight.partnerTuning_->blowSeconds;
+        }
+        al.guarding = intent.act == PartnerAct::Guard && !al.attacking;
+        if (al.attacking) {
+            runAllyBlow();
+            return;
+        }
+        const bool walk = intent.act == PartnerAct::MoveTo || intent.act == PartnerAct::StepBack;
+        al.goal = walk ? intent.point : fight.allyPos_;
+        al.target = intent.enemy;
+        Vec2 look = al.facing;
+        if (intent.enemy >= 0 && alive(static_cast<std::size_t>(intent.enemy)))
+            look = arenaSub(foes[static_cast<std::size_t>(intent.enemy)].pos, fight.allyPos_);
+        else if (walk)
+            look = arenaSub(intent.point, fight.allyPos_);
+        al.facing = arenaTurn(al.facing, arenaUnit(look, al.facing), fi.turnRate * dt);
+    }
+
+    // The partner's running blow: the lead's light's tracking and lunge, and its one landing in the active part.
+    void runAllyBlow() {
+        ArenaFight::AllyState& al = fight.ally_;
+        const ArenaAttack& a = allyLight(al.blow);
+        const float a0 = al.blowTime;
+        const float a1 = a0 + dt;
+        const bool aimed = al.target >= 0 && alive(static_cast<std::size_t>(al.target));
+        if (aimed && a0 < a.startup) {
+            const Vec2 to = arenaSub(foes[static_cast<std::size_t>(al.target)].pos, fight.allyPos_);
+            al.facing = arenaTurn(al.facing, arenaUnit(to, al.facing), a.tracking * (std::min(a1, a.startup) - a0));
+        }
+        if (aimed && !al.landed && a1 > a.startup && a0 < a.startup + a.active)
+            allyStrike(static_cast<std::size_t>(al.target));
+        // The lunge, spread over startup and active as the lead's: this tick's part of it is in the goal.
+        const float span = a.startup + a.active;
+        float lunge = 0.f;
+        if (span > kArenaEps && a.lunge != 0.f) lunge = a.lunge / span * std::max(0.f, std::min(a1, span) - a0);
+        al.goal = arenaMadd(fight.allyPos_, al.facing, lunge);
+        al.blowTime = a1;
+        if (a1 + kArenaEps >= al.blowLength) { // it has run out
+            al.attacking = false;
+            al.blowTime = 0.f;
+            al.landed = false;
+        }
+    }
+
+    // The partner's blow reaches enemy i (its string's target): the blow hook, then partnerBlowDamage of the ruled
+    // damage. No poise, break value, flinch count, hit pause, punish credit, and nothing in the player's stats.
+    void allyStrike(std::size_t i) {
+        ArenaFight::AllyState& al = fight.ally_;
+        Enemy& foe = foes[i];
+        if (unhurt(foe)) return;
+        const ArenaAttack& a = allyLight(al.blow);
+        const float radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
+        if (!arenaReaches(fight.allyPos_, al.facing, a, foe.pos, radius)) return;
+        al.landed = true; // connected (or vetoed): spent
+        ArenaBlowRuling r;
+        if (!rule(ArenaEventType::Hit, kArenaAlly, id(i), al.blow, a.damage, 0.f, fight.allyPos_, al.facing, foe.pos, r))
+            return;
+        if (!alive(i) || unhurt(foe)) return; // the hook's own doing
+        const float raw = static_cast<float>(scaledDamage(a.damage, r.damage));
+        const float lead = static_cast<float>(fi.light[0].damage);
+        const int want = static_cast<int>(std::lround(partnerBlowDamage(raw, lead, *fight.partnerTuning_)));
+        const int amount = lose(i, want);
+        stats.partnerDamage += amount;
+        ++stats.partnerBlows;
+        emit(ArenaEventType::AllyStrike, kArenaAlly, id(i), al.blow, amount, foe.pos);
+        if (foe.hp <= 0) killEnemy(i, true, -1.f, kArenaAlly);
+    }
+
+    // The player fell with the partner up: the bodies swap (TookOver), and no Defeat. The player stands in the
+    // ally's place at its hp, Idle; the fallen body is the ally now, down where the player fell.
+    void takeOver() {
+        ArenaFight::AllyState& al = fight.ally_;
+        const Vec2 fellAt = pl.pos;
+        const Vec2 fellFacing = pl.facing;
+        pl.pos = fight.allyPos_;
+        pl.facing = al.facing;
+        pl.drawFacing = al.facing;
+        pl.hp = std::min(fight.allyHp_, std::max(fi.hp, 1));
+        pl.action = ArenaAction::Idle;
+        pl.actionTime = 0.f;
+        pl.velocity = Vec2{};
+        pl.attackWalk = Vec2{};
+        pl.buffered = Press::None;
+        pl.bufferAge = 0.f;
+        pl.parryLeft = 0.f;
+        pl.chainLive = false;
+        pl.hitMask = 0;
+        pl.soft = kArenaNobody;
+        pl.target = kArenaNobody;
+        pl.homeClose = 0.f;
+        pl.invulnerable = false;
+        pl.stopUntil = -1.0e9f;
+        pl.jumpTime = -1.f;
+        pl.airClear = false;
+        pl.airLightUsed = false;
+        pl.poise = fi.poise;
+        fight.allyPos_ = fellAt;
+        fight.allyHp_ = 0;
+        clearAlly();
+        al.facing = fellFacing;
+        fight.swapped_ = !fight.swapped_;
+        ++stats.takeovers;
+        emit(ArenaEventType::TookOver, kArenaAlly, kArenaPlayer, 0, pl.hp, pl.pos);
+        emit(ArenaEventType::AllyDowned, kArenaNobody, kArenaAlly, 0, 0, fight.allyPos_);
+    }
+
     // One of enemy i's attacks reaches the ally: the ruling, then take half if a press is waiting for it.
     void enemyStrikeAlly(std::size_t i) {
         Enemy& foe = foes[i];
@@ -2466,8 +2748,18 @@ struct ArenaFightImpl {
         if (!rule(ArenaEventType::Hit, source, kArenaAlly, foe.move, a.damage, a.poiseDamage, foe.pos, foe.facing,
                   fight.allyPos_, r))
             return;
+        // The partner's guard: a blow that is not unblockable is spent on it, no hp and no take half.
+        if (partnerOn() && fight.ally_.guarding && !def.enemies[i].moves[foe.move].unblockable) {
+            ++stats.partnerGuards;
+            emit(ArenaEventType::AllyBlocked, source, kArenaAlly, foe.move, 0, fight.allyPos_);
+            return;
+        }
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
+        if (partnerOn()) { // it lands: the partner is held in the lead fighter's hitstun (its running blow runs out)
+            fight.ally_.hurtLeft = std::max(fight.ally_.hurtLeft, fi.hitstun);
+            fight.ally_.guarding = false;
+        }
         int allyPart = damage;
         bool tookHalf = false; // the chair's heal follows take half, never a table share
         // Take half: a press within the window before this blow, the player near enough and free to take it. Not
@@ -2506,8 +2798,7 @@ struct ArenaFightImpl {
         fight.allyHp_ -= lost;
         if (lost > 0) emit(ArenaEventType::AllyHit, source, kArenaAlly, foe.move, lost, fight.allyPos_);
         if (fight.allyHp_ <= 0) {
-            fight.allyHp_ = 0;
-            emit(ArenaEventType::AllyDowned, source, kArenaAlly, foe.move, 0, fight.allyPos_);
+            downAlly(source, foe.move);
             return;
         }
         // A takeHalf chair heals the ally a share of its max hp each time the player takes half (never past it).
@@ -2541,10 +2832,7 @@ struct ArenaFightImpl {
             const int lost = std::min(split.each, fight.allyHp_);
             fight.allyHp_ -= lost;
             emit(ArenaEventType::TableShare, source, kArenaAlly, move, lost, fight.allyPos_);
-            if (fight.allyHp_ <= 0) {
-                fight.allyHp_ = 0;
-                emit(ArenaEventType::AllyDowned, source, kArenaAlly, move, 0, fight.allyPos_);
-            }
+            if (fight.allyHp_ <= 0) downAlly(source, move);
         }
         for (std::size_t i = 0; i < n; ++i) {
             if (!((s.enemies >> i) & 1u) || !alive(i) || unhurt(foes[i])) continue;
@@ -2698,7 +2986,14 @@ struct ArenaFightImpl {
             foe.velocity = Vec2{};
             return;
         }
-        const Vec2 toPlayer = arenaSub(pl.pos, foe.pos);
+        // A boss string aimed at the partner (aim 2) tracks the ally; one with the token about to begin a string that
+        // would aim at it picks its move by the distance to the ally and closes on it.
+        const bool towardAlly =
+            partnerOn() && (foe.brain == ArenaBrain::Attack
+                                ? foe.aim == 2
+                                : foe.token && (foe.brain == ArenaBrain::Approach || foe.brain == ArenaBrain::Strafe) &&
+                                      partnerAim(i));
+        const Vec2 toPlayer = arenaSub(towardAlly ? fight.allyPos_ : pl.pos, foe.pos);
         const float distance = arenaLength(toPlayer);
         const Vec2 dir = arenaUnit(toPlayer, foe.facing);
 
@@ -3226,6 +3521,20 @@ void ArenaFight::setAlly(int maxHp, float radius) {
 int ArenaFight::allyHp() const { return allyHp_; }
 int ArenaFight::allyMaxHp() const { return allyMaxHp_; }
 bool ArenaFight::allyAlive() const { return allyMaxHp_ > 0 && allyHp_ > 0; }
+
+void ArenaFight::setPartner(PartnerBrain* brain, const PartnerTuning* tuning) {
+    PartnerBrain* const b = brain && tuning ? brain : nullptr;
+    const PartnerTuning* const t = b ? tuning : nullptr;
+    if (inHook_.on || (b == partner_ && t == partnerTuning_)) return;
+    partner_ = b;
+    partnerTuning_ = t;
+    ally_ = AllyState{};
+    ally_.facing = player_.facing;
+    ally_.goal = allyPos_;
+    if (partner_ && phase_ != ArenaPhase::NotStarted) partner_->begin(*partnerTuning_, seed_);
+}
+
+bool ArenaFight::swapped() const { return swapped_; }
 Vec2 ArenaFight::allyPos() const { return allyPos_; }
 float ArenaFight::allyRadius() const { return allyRadius_; }
 void ArenaFight::setTableSeats(const ArenaTableSeats& seats) {

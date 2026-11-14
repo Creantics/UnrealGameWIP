@@ -360,6 +360,22 @@ chairs of `Data/Battle/chairs.json` (four seats; `none` names none, so the Load 
 blows aimed at the ally and `-ArenaAutoBlock` has it guard through every wind-up (blocks store a quarter of the blocked
 damage as Load). Any of the first four turns carrying on; the result is one `Arena: CARRY ...` line at the end.
 
+Partner (the arena host sets one only under `-ArenaPartner`, below): `ArenaFight::setPartner(brain, tuning)` hands the
+ally body to a `PartnerBrain` (null turns it off, the default; with no partner every fight plays exactly as before).
+It acts only with an ally on (`setAlly`) and never while Lone. Each tick the brain reads `ArenaInput::partnerOrder`
+(0 StayClose, 1 Spread; the `PartnerOrder` action, `B` on the keyboard and, like the gifts, no pad button yet) and
+the fight applies its intent:
+`ArenaOutput::ally` (`ArenaAllyOut`) gives the goal the host walks the body to, its facing, the light string it runs
+(blow, part, time), its guard, its target and the intent. Its blows are the lead fighter's lights, scaled by
+`partnerBlowDamage`; they send `AllyStrike`, a guarded blow sends `AllyBlocked`, and a downed ally stands again after
+the brain's `downSeconds` at its `riseHealth` (`AllyRose`). A boss aims a string at the partner (`ArenaEnemyOut::aim` 2)
+only when it is up and nearer than the lead, and at most 3 in 10 of its strings over the fight
+(`kArenaBossAimShareTenths`). When the player falls with the partner up there is no Defeat: `Downed`, then `TookOver`
+(the player stands in the ally's place at its hp) and `AllyDowned` for the fallen body; the host swaps
+`ArenaBodies::player` and `::ally` on `TookOver`, and `swapped()` says which lead the player now drives. Both down is
+the Defeat as before. The stats add `partnerDamage`, `partnerBlows`, `partnerStrings`, `partnerGuards`, `partnerRises`,
+`bossAttacks`, `bossAimedPartner`, `bossAimShareMax` and `takeovers`.
+
 Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBrief=bailiff` or `-ArenaBrief=notary` with
 `-ArenaLead=Duy` lays that Brief's kit from `Data/Battle/briefs.json` over the guns lead's own kit: a six-round cylinder
 with a 1.2 s reload (the shot spends a round instead of stamina; with none left a shot press is dropped and kicks still
@@ -527,7 +543,7 @@ The fight session judges every blow the player lands on an enemy in the fight's 
 the sub-hosts set (kind crits, the kite, the stone bearer): `judgeHeldBlow` on the damage they leave. A final outcome
 scales the blow (x1 when alone); a blow inside a count's window is Held, lands at base, and when its window is joined
 it settles at x2.5: after the session's tick the runner deals the extra through `ArenaFight::hostBlow` and logs
-`Arena: a held blow on the count adds <n> damage to <kind> (move <m>).` The arena has no partner body yet, so
+`Arena: a held blow on the count adds <n> damage to <kind> (move <m>).` Ordinary play drives no partner body (only `-ArenaPartner` does), so
 `-ArenaSharedCount` scripts one for the check line: the lead calls the count whenever it can, and the other lead
 joins the window the step a lead's blow is held. Core's host-mirror test plays the same run (seed 1: Devin 2 bonuses,
 +42 damage; Duy shooting 1 bonus, +26):
@@ -713,6 +729,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaBossCam` | Once the first enemy stands, the view moves to a camera fixed 9 m off that enemy's left side at half its height (field of view 40), so a capture shows the boss's own turns apart from the follow camera's. The log gets `ArenaBossCam: t <s> s yaw <deg>` each time the boss has turned 10 degrees. Review captures only; the fight runs the same. |
 | `-ArenaLoneGiftAt=S` | One press of the third slot's Heal at fight time S (Lone or not). The press hands the lead's health to the slot first (`setLeadHealth`), so at full health it is refused (`NotHurt`); the log's `Arena: probe self-check ok` line checks exactly that (a full-health press refused `NotHurt`, a hurt lead's not), `FAILED` otherwise. |
 | `-ArenaLone` | The lead takes the Lone Carry (`-ArenaThirdSlot=Vacant` or `Hostile` forces it). Calling the partner in, which is a Count press the session accepts, ends it as `PartnerCalled`; that press is the only place the host calls `endLone`. A press it refuses leaves the lead Lone. The run logs `Arena check: lone partner call PASS` when each accepted call while Lone ended it once with `PartnerCalled`, and `n/a` with no such call. The Lone save (`LoneSave`) lives only in the runner's memory; persisting it is the save lane's job. |
+| `-ArenaPartner` | The other lead stands in the ring as the partner (not in Shipping; ordinary play has none): `ArenaFight::setPartner` with Core's `PartnerBrain`, tuned by `Data/Battle/partner_brain.json`, its body at the lead fighter's max hp. The host walks it to `ArenaOutput::ally.goal` and draws its light string and guard. `B` toggles its order, STAY CLOSE and SPREAD (keyboard only, and no controls-line hint while the partner is off by default). Unless the fight is Lone, both leads are in the session's fight and both leads' health is fed every step before any press. The player at 0 with the partner up is a takeover: the bodies, the figures (the lead's weapons and the camera follow) and the session's lead swap, and the fallen lead's body is down until the brain stands it after 30 s at 25%. Both down is the defeat; the retry is the fight from its start (`Restart`), each lead back in its own figure. The run logs one `Arena: partner window` line per 20 s (attack time of the partner and of the lead against the budget, damage, boss strings at each, falls, takeovers, rises), then `Arena check: partner budget`, `partner aim` (at most 3 in 10 boss strings at the partner), `partner takeover` (the fight, the host and the session agree) and `partner defeat`, the `Arena: partner share` report (target 10-25% of the boss's hp) and, after a loss with `-ArenaQuitOnFinish`, `Arena check: partner retry`. |
 | `-ArenaThirdSlot=Companion\|Vacant\|Hostile` | Sets the fight's third slot, overriding the story's (not in Shipping). A story fight takes the slot from its gameplay beat's `third` param (`companion`, `vacant` or `hostile`; the story load refuses any other word); a fight with no carry is `Companion`. The session begins with it (`FightSessionDef::thirdSlot`). The runner reads it back through `GetThirdSlot` and `GetThirdSlotRefusal` (`None`, `Vacant` or `Hostile`), and logs `Arena check: third slot PASS` when the session holds the fight's slot with the matching refusal. `Vacant` and `Hostile` force the Lone Carry. |
 | `-ArenaStoryProbe` | Headless check of the story wiring (`-NullRHI` is fine): the fight is handed off as the story's with no step marked (as a reload into it), one gift press is counted, the arena restarts the fight, one more is counted; each stage logs `Arena: story probe <stage>: bound, presses, retries` (expected presses 0, 1, 0, 1 and one retry), then the game quits. |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |

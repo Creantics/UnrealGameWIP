@@ -514,11 +514,28 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	BeginNow = Now;
 	// The fitted zone's ring, and where the player starts in it.
 	BeginBrief();
+	PlayerLook = Setup.Lead;
 	BeginCarry(Setup.Ally);
+	BeginPartner();
 	PrepareStoneBearer();
 	PrepareKite();
+#if !UE_BUILD_SHIPPING
+	// The partner's proof runs: -ArenaPartnerFoeHp=N multiplies every enemy's hp (1-10) so an autopilot fight lasts
+	// long enough for several 20 s budget windows. With -ArenaPartner only.
+	int32 FoeHpScale = 1;
+	if (bPartner && FParse::Value(FCommandLine::Get(), TEXT("ArenaPartnerFoeHp="), FoeHpScale) && FoeHpScale > 1)
+	{
+		FoeHpScale = FMath::Min(FoeHpScale, 10);
+		for (size_t I = 0; I < Def.enemyCount; ++I)
+		{
+			Def.enemies[I].hp *= FoeHpScale;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaPartnerFoeHp: every enemy's hp x%d for this run."), FoeHpScale);
+	}
+#endif
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
 	SessionLead = SessionLeadOf(Setup.Lead);
+	StartLead = SessionLead;
 	BeginSession();
 	BeginStoneBearer();
 	BeginKite();
@@ -1535,6 +1552,13 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		}
 	}
 	bPressPair |= Pressed(InputAction::Count);
+	// B (keyboard only until the pad's layout is ruled): the partner's order, STAY CLOSE and SPREAD in turn.
+	if (bPartner && Pressed(InputAction::PartnerOrder))
+	{
+		bPartnerSpread = !bPartnerSpread;
+		++PartnerOrders;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the partner's order: %s."), Fight.time(), bPartnerSpread ? TEXT("SPREAD") : TEXT("STAY CLOSE"));
+	}
 	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
 	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
 	// Three presses, each its own key with no modifier: the lead's own heal (Gift's row), and the third slot's Gift
@@ -1743,6 +1767,14 @@ void UFTArenaRunner::BeginSession()
 	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = LonePartnerCalls = LonePartnerEnds = 0;
 	SessionTakeovers = SessionRises = 0;
 	bSessionDefeated = false;
+	PartnerPrevTime = PartnerWinStart = static_cast<double>(Fight.time());
+	PartnerWinLead = PartnerWinAlly = 0.0;
+	PartnerWinDamage0 = PartnerWinLeadDamage0 = PartnerWinBoss0 = PartnerWinAimed0 = 0;
+	PartnerWinLeadFalls = PartnerWinAllyFalls = PartnerWinTakeovers = PartnerWinRises = 0;
+	PartnerWindows = PartnerWindowsHeld = 0;
+	PartnerWorstOver = -1e9;
+	PartnerLeadFalls = PartnerAllyFalls = PartnerTakeovers = PartnerRises = 0;
+	PartnerSessionTookOver = PartnerLeadMismatch = 0;
 	bLoneGiftDone = false;
 	LoneGift = {};
 	PartnerLoadTime = -1e9;
@@ -1752,8 +1784,13 @@ void UFTArenaRunner::BeginSession()
 	{
 		ftcore::FightSessionDef SessionDef;
 		// Only the controlled lead stands in this ring (no partner body): the session's fall rules then make its 0 the
-		// fight's loss, as before them; no takeover to a body that is not there, no stand-up after 30 s.
+		// fight's loss, as before them; no takeover to a body that is not there, no stand-up after 30 s. With the
+		// partner's body (-ArenaPartner, not Lone) both leads are in it: a fall with the other up is a takeover.
 		SessionDef.inFight = {SessionLead == ftcore::kLeadA, SessionLead == ftcore::kLeadB};
+		if (PartnerBody())
+		{
+			SessionDef.inFight = {true, true};
+		}
 		if (bCountLift)
 		{
 			SessionDef.lift = true;
@@ -1828,6 +1865,10 @@ void UFTArenaRunner::BeginSession()
 		LoneBargainAt = -1.0;
 		SessionDef.thirdSlot = static_cast<ftcore::SlotState>(ThirdSlot);
 		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
+		if (PartnerBody())
+		{
+			Session->Get().setActiveLead(SessionLead); // a begin keeps the last fight's controlled lead: this one's
+		}
 		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
 		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
 		const UWorld* World = GetWorld();
@@ -2025,6 +2066,7 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	{
 		return;
 	}
+	FeedLeadHealths(); // with the partner's body: both leads' health before any press
 	// Probe: one gift press at -ArenaLoneGiftAt's fight time (the heal's own press otherwise).
 	const bool bProbeGift = LoneGiftAt >= 0.f && !bLoneGiftDone && Fight.time() >= LoneGiftAt;
 	if (bProbeGift)
@@ -2158,6 +2200,7 @@ void UFTArenaRunner::FeedSession()
 	{
 		return;
 	}
+	FeedLeadHealths(); // with the partner's body: both leads' health before the partner's press and the tick
 	if (bSessionPartnerDue)
 	{
 		bSessionPartnerDue = false;
@@ -2175,6 +2218,13 @@ void UFTArenaRunner::FeedSession()
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
 	SessionHeld = Held;
 	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
+	if (PartnerBody())
+	{
+		// The fight swapped the bodies on its TookOver (TakeOverBodies) and the session moves its control the same
+		// step: both name the same lead, step by step, until a defeat leaves the session's where it was.
+		PartnerSessionTookOver += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
+		PartnerLeadMismatch += (!Session->Get().defeated() && Session->Get().activeLead() != SessionLead) ? 1 : 0;
+	}
 	SessionRises += Tick.leadsRose != 0 ? 1 : 0;
 	bSessionDefeated = bSessionDefeated || Tick.defeated;
 	if (Tick.loneCarryBegan)
@@ -2540,8 +2590,20 @@ void UFTArenaRunner::StepFight()
 		// The gift Guard scales every blow the lead takes (1 unguarded).
 		In.takenScale = Session->Get().giftSlot().guardScaleFor(SessionLead, Session->Get().now());
 	}
+	if (bPartner)
+	{
+		In.partnerOrder = bPartnerSpread ? 1 : 0;
+	}
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
+	if (bPartner)
+	{
+		TakeOverBodies(Out); // before the step: the bodies are the host's (ArenaFight::setPartner)
+	}
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	if (bPartner)
+	{
+		WalkPartner(Out);
+	}
 	if (HallMode != 0)
 	{
 		AfterHallucinationStep(Out);
@@ -2608,6 +2670,7 @@ void UFTArenaRunner::StepFight()
 	// The lead's strike clips run on the held clock, so they stand still through its hit pauses as its action does.
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
 	FeedSession();
+	TrackPartner(Out);
 	// The events (this step's Released pooled), then a gift held while Lone: the order is Core's (LoneGiftHold::stepEnd).
 	LoneGift.stepEnd([this, &Out] { HandleEvents(Out.events); }, [this] { PressPendingLoneGift(); });
 	TickTable(Out);
@@ -2808,6 +2871,12 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			break;
 		case ftcore::ArenaEventType::AllyHit:
 			AllyHitTime = Now;
+			break;
+		case ftcore::ArenaEventType::AllyStrike: // the partner's blow (-ArenaPartner): the enemy flashes as hit
+			if (E.target < MaxEnemies)
+			{
+				EnemyHitTime[E.target] = Now;
+			}
 			break;
 		case ftcore::ArenaEventType::TableShare:
 			// A set table passed part of a blow on: the body that took it flashes as hit, and it joins the popups.
@@ -4332,8 +4401,12 @@ void UFTArenaRunner::Finish()
 		const bool bLost = Fight.phase() == ftcore::ArenaPhase::Defeat;
 		const bool bFateOk = SessionTakeovers == 0 && SessionRises == 0 && bSessionDefeated == bLost;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone lead down %s (fight %s, session defeat %d, takeovers %d, rises %d)."),
-			!bLost ? TEXT("n/a") : (bFateOk ? TEXT("PASS") : TEXT("FAIL")), bLost ? TEXT("lost") : (bWon ? TEXT("won") : TEXT("ended")),
+			!bLost || PartnerBody() ? TEXT("n/a") : (bFateOk ? TEXT("PASS") : TEXT("FAIL")), bLost ? TEXT("lost") : (bWon ? TEXT("won") : TEXT("ended")),
 			bSessionDefeated ? 1 : 0, SessionTakeovers, SessionRises);
+	}
+	if (bPartner)
+	{
+		LogPartnerChecks(bWon, Fight.phase() == ftcore::ArenaPhase::Defeat);
 	}
 	if (Session && !bWon)
 	{
@@ -4353,6 +4426,10 @@ void UFTArenaRunner::Finish()
 	}
 	LogStoneWalkCounts();
 	LogResult();
+	if (bPartner && !bWon && bQuitOnFinish && !bShots)
+	{
+		CheckPartnerRetry(); // both down: the retry from the fight's start, checked before the run ends
+	}
 	if (bQuitOnFinish && !bShots)
 	{
 		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bWon ? 0 : 1), TEXT("Arena"));
@@ -4680,8 +4757,9 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle is %.1f degrees."), Fight.time(), FightCameraHalf);
 			}
 		}
-		// A change the throttle kept back, then held kCameraHalfLogEvery: one more line with where it settled.
-		if (FightCameraHalf != LoggedCameraHalf && Now - CameraHalfChangedAt >= kCameraHalfLogEvery &&
+		// A change the throttle kept back (more than kCameraHalfLogStep from the last line), then held
+		// kCameraHalfLogEvery: one more line with where it settled.
+		if (FMath::Abs(FightCameraHalf - LoggedCameraHalf) > kCameraHalfLogStep && Now - CameraHalfChangedAt >= kCameraHalfLogEvery &&
 			Now - CameraHalfLoggedAt >= kCameraHalfLogEvery)
 		{
 			LoggedCameraHalf = FightCameraHalf;
@@ -4885,11 +4963,11 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 	ftcore::HallucinationInput H;
 	H.lead = SessionLead;
 	H.inFight = true;
-	H.partnerPresent = Session != nullptr && !Fight.lone(); // alone, only the refusal ends a hold
+	H.partnerPresent = PartnerInSession(); // the session's own word (inFight); alone, only the refusal ends a hold
 	H.accepting = (HallMode == 1 || HallMode == 4) && Hall.active();
 	H.brief = LeadBrief;
 	H.partnerBrief = ftcore::BriefId::Count; // the partner's kit takes no Brief yet
-	H.partnerAble = H.partnerPresent && (Fight.allyMaxHp() == 0 || Fight.allyHp() > 0);
+	H.partnerAble = H.partnerPresent && !Session->Get().down(OtherLead());
 	H.blowsTaken = HallBlowsTaken; // the last step's (AfterHallucinationStep)
 	HallBlowsTaken = 0;
 	// The refusal is the guard button. The autoplay bot guards for its own reasons, so there the probe presses it
@@ -4963,6 +5041,15 @@ void UFTArenaRunner::AfterHallucinationStep(const ftcore::ArenaOutput& Out)
 
 void UFTArenaRunner::Restart()
 {
+	if (bPartner)
+	{
+		// The fight as it began: each lead in its own figure, the first lead controlled (Fight.restart clears swapped()).
+		if (bFiguresSwapped)
+		{
+			SwapLeadFigures();
+		}
+		SessionLead = StartLead;
+	}
 	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
 	LoneGift = {}; // a press held from the last attempt is not this one's
 	bLoneGiftApply = false;
@@ -5997,7 +6084,7 @@ ftcore::Vec2 UFTArenaRunner::AllyHome(const ftcore::Vec2& Player, const ftcore::
 
 void UFTArenaRunner::MoveAlly()
 {
-	if (!bAllyOn || !Fight.allyAlive())
+	if (!bAllyOn || bPartner || !Fight.allyAlive()) // the partner walks to its own goal (WalkPartner)
 	{
 		return;
 	}
@@ -6030,12 +6117,305 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	Pose.Yaw = ArenaYaw(Speed > 0.05f ? Moved : PlayerDrawFacing(Fight.output().player));
 	Pose.Speed = Speed;
 	Pose.bLying = !Fight.allyAlive();
+	if (bPartner)
+	{
+		// The partner's own facing while it swings, guards or stands; its light string drawn as the lead's lights are.
+		const ftcore::ArenaAllyOut& A = Fight.output().ally;
+		if (A.attacking || A.guarding || Speed <= 0.05f)
+		{
+			Pose.Yaw = ArenaYaw(A.facing);
+		}
+		Pose.bGuard = A.guarding;
+		if (A.attacking)
+		{
+			const ftcore::ArenaFighter& F = Fight.def().fighter;
+			const int32 Lights = FMath::Max(1, static_cast<int32>(F.lightCount));
+			const int32 Blow = static_cast<int32>(A.blow) % Lights;
+			Pose.bAttacking = true;
+			Pose.Part = static_cast<uint8>(A.part);
+			Pose.PartFraction = ArenaPartFraction(F.light[static_cast<size_t>(Blow)], A.part, A.stateTime);
+			Pose.Swing = Blow + 1 >= Lights ? EFTArenaSwing::Overhead : ((Blow % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
+		}
+	}
 	Pose.Tint = AllyFigure->GetBaseColor();
 	if (Now - AllyHitTime < kArenaHitTint)
 	{
 		Pose.Tint = FLinearColor(1.f, 0.2f, 0.2f);
 	}
 	AllyFigure->ApplyPose(Pose);
+}
+
+// ---- The partner (-ArenaPartner): Core's PartnerBrain drives the other lead's body ----
+
+namespace
+{
+// s: a window's partner attack time is measured here step by step from the ally's output, the brain's own budget by
+// the lengths of the blows it starts, so the two can part by about a step at each end of a blow.
+constexpr double kPartnerBudgetSlack = 0.1;
+constexpr float kPartnerShareLow = 0.10f;  // the partner's damage over a fight: this share of the boss's hp ...
+constexpr float kPartnerShareHigh = 0.25f; // ... to this (a tuning target, reported, not a check)
+}
+
+void UFTArenaRunner::BeginPartner()
+{
+	bPartner = false;
+	bPartnerSpread = true;
+	bFiguresSwapped = false;
+	PartnerOrders = 0;
+#if !UE_BUILD_SHIPPING
+	bPartner = FParse::Param(FCommandLine::Get(), TEXT("ArenaPartner"));
+#endif
+	if (!bPartner)
+	{
+		return;
+	}
+	TArray<uint8> Bytes;
+	std::string Error;
+	const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/partner_brain.json");
+	if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importPartnerBrain(FT::BytesAsText(Bytes), AllyTuning, &Error)))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/partner_brain.json; the partner keeps its defaults.\n%s"), *FT::ToFString(Error));
+		AllyTuning = ftcore::PartnerTuning();
+	}
+	bAllyOn = true;
+	// Both leads play the one fighter kit here, so the partner's body has the lead fighter's max hp.
+	Fight.setAlly(Def.fighter.hp, Def.fighter.bodyRadius);
+	Fight.setPartner(&AllyBrain, &AllyTuning);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: the partner (-ArenaPartner): the other lead's body, %d hp, driven by the partner brain; order SPREAD (B: STAY CLOSE / SPREAD); attack budget %.1f x the lead's + %.1f s in any %.0f s; down %.0f s, then up at %.0f%%."),
+		Def.fighter.hp, AllyTuning.budgetShare, AllyTuning.budgetAllowanceSeconds, AllyTuning.budgetWindowSeconds, AllyTuning.downSeconds,
+		AllyTuning.riseHealth * 100.f);
+}
+
+void UFTArenaRunner::TakeOverBodies(const ftcore::ArenaOutput& Out)
+{
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		if (E.type != ftcore::ArenaEventType::TookOver)
+		{
+			continue;
+		}
+		// The player stands in the partner's place and the fallen lead lies where it fell: each figure keeps its body.
+		std::swap(Bodies.player, Bodies.ally);
+		std::swap(PrevBodies.player, PrevBodies.ally);
+		SwapLeadFigures();
+		SessionLead = OtherLead();
+		++PartnerTakeovers;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the lead fell with the partner up: control passes to lead %d at %d hp; the fallen lead's body is down (up again after %.0f s)."),
+			Fight.time(), static_cast<int32>(SessionLead), E.amount, AllyTuning.downSeconds);
+	}
+}
+
+void UFTArenaRunner::SwapLeadFigures()
+{
+	LeadWeapons.End();
+	Swap(PlayerFigure, AllyFigure);
+	Swap(PlayerLook, AllyLook);
+	bFiguresSwapped = !bFiguresSwapped;
+	if (PlayerFigure && PlayerLook)
+	{
+		LeadWeapons.Begin(PlayerFigure, *PlayerLook, Def.fighter);
+		PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLandLock);
+	}
+	if (PlayerFigure)
+	{
+		PlayerFigure->ResetFeet();
+	}
+	if (AllyFigure)
+	{
+		AllyFigure->ResetFeet();
+	}
+	PlayerStepAt = -1; // the legs start over from a stand
+	if (APlayerController* PC = GetPC())
+	{
+		if (PlayerFigure)
+		{
+			PC->SetViewTarget(PlayerFigure);
+		}
+	}
+}
+
+void UFTArenaRunner::WalkPartner(const ftcore::ArenaOutput& Out)
+{
+	if (!Out.ally.partnerOn)
+	{
+		return;
+	}
+	// To the fight's goal at the lead fighter's moveSpeed, off the living enemies' bodies, inside the ring.
+	const ftcore::Vec2 To{Out.ally.goal.x - Bodies.ally.x, Out.ally.goal.y - Bodies.ally.y};
+	const float Far = ArenaLength(To);
+	const float Most = Def.fighter.moveSpeed * StepSeconds;
+	if (Far > Most)
+	{
+		Bodies.ally.x += To.x * Most / Far;
+		Bodies.ally.y += To.y * Most / Far;
+	}
+	else
+	{
+		Bodies.ally = Out.ally.goal;
+	}
+	const float Radius = Fight.allyRadius();
+	for (size_t I = 0; I < Fight.enemyCount(); ++I)
+	{
+		if (Fight.enemyHp(I) <= 0)
+		{
+			continue;
+		}
+		const float Least = Radius + Fight.def().enemies[I].bodyRadius;
+		const ftcore::Vec2 Off{Bodies.ally.x - Bodies.enemies[I].x, Bodies.ally.y - Bodies.enemies[I].y};
+		const float Apart = ArenaLength(Off);
+		if (Apart >= Least)
+		{
+			continue;
+		}
+		const ftcore::Vec2 Dir = Apart > 1e-4f ? ftcore::Vec2{Off.x / Apart, Off.y / Apart} : ftcore::Vec2{1.f, 0.f};
+		Bodies.ally = ftcore::Vec2{Bodies.enemies[I].x + Dir.x * Least, Bodies.enemies[I].y + Dir.y * Least};
+	}
+	Bodies.ally = Fit.ring.clamp(Bodies.ally, Radius);
+}
+
+void UFTArenaRunner::FeedLeadHealths()
+{
+	if (!Session || !PartnerBody())
+	{
+		return;
+	}
+	// The session's fall feed for both leads: the player's body is the controlled lead's, the ally's the other's.
+	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
+	Session->Get().setLeadHealth(OtherLead(), static_cast<float>(Fight.allyHp()) / static_cast<float>(FMath::Max(Fight.allyMaxHp(), 1)));
+}
+
+void UFTArenaRunner::TrackPartner(const ftcore::ArenaOutput& Out)
+{
+	if (!PartnerBody())
+	{
+		return;
+	}
+	const double T = static_cast<double>(Fight.time());
+	const double Dt = FMath::Max(0.0, T - PartnerPrevTime);
+	PartnerPrevTime = T;
+	// The lead attacks as the brain reads it (ArenaFight's leadAttacking): in a light or a heavy, startup to recovery.
+	if (Out.player.action == ftcore::ArenaAction::Light || Out.player.action == ftcore::ArenaAction::Heavy)
+	{
+		PartnerWinLead += Dt;
+	}
+	if (Out.ally.attacking)
+	{
+		PartnerWinAlly += Dt;
+	}
+	bool bTook = false;
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		bTook = bTook || E.type == ftcore::ArenaEventType::TookOver;
+	}
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		if (E.type == ftcore::ArenaEventType::Downed && E.target == ftcore::kArenaPlayer)
+		{
+			++PartnerLeadFalls;
+			++PartnerWinLeadFalls;
+		}
+		else if (E.type == ftcore::ArenaEventType::AllyDowned && !bTook) // a takeover's AllyDowned is the lead's fall
+		{
+			++PartnerAllyFalls;
+			++PartnerWinAllyFalls;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the partner is down (up again after %.0f s)."), T, AllyTuning.downSeconds);
+		}
+		else if (E.type == ftcore::ArenaEventType::TookOver)
+		{
+			++PartnerWinTakeovers;
+		}
+		else if (E.type == ftcore::ArenaEventType::AllyRose)
+		{
+			++PartnerRises;
+			++PartnerWinRises;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the partner stands again at %d hp."), T, E.amount);
+		}
+	}
+	if (T - PartnerWinStart >= static_cast<double>(AllyTuning.budgetWindowSeconds) - 1e-6)
+	{
+		LogPartnerWindow();
+	}
+}
+
+void UFTArenaRunner::LogPartnerWindow()
+{
+	const ftcore::ArenaStats& S = Fight.stats();
+	const double T = static_cast<double>(Fight.time());
+	const double Limit = static_cast<double>(AllyTuning.budgetShare) * PartnerWinLead + static_cast<double>(AllyTuning.budgetAllowanceSeconds);
+	const bool bHeld = PartnerWinAlly <= Limit + kPartnerBudgetSlack;
+	++PartnerWindows;
+	PartnerWindowsHeld += bHeld ? 1 : 0;
+	PartnerWorstOver = FMath::Max(PartnerWorstOver, PartnerWinAlly - Limit);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner window %d (%.1f-%.1f s): attack time partner %.2f s, lead %.2f s: budget %s (at most %.2f s); damage partner %d, lead %d; boss strings %d, %d at the partner; falls lead %d, partner %d; takeovers %d; rises %d; order %s."),
+		PartnerWindows, PartnerWinStart, T, PartnerWinAlly, PartnerWinLead, bHeld ? TEXT("held") : TEXT("OVER"), Limit,
+		S.partnerDamage - PartnerWinDamage0, S.damageDealt - PartnerWinLeadDamage0, S.bossAttacks - PartnerWinBoss0,
+		S.bossAimedPartner - PartnerWinAimed0, PartnerWinLeadFalls, PartnerWinAllyFalls, PartnerWinTakeovers, PartnerWinRises,
+		bPartnerSpread ? TEXT("SPREAD") : TEXT("STAY CLOSE"));
+	PartnerWinStart = T;
+	PartnerWinLead = PartnerWinAlly = 0.0;
+	PartnerWinDamage0 = S.partnerDamage;
+	PartnerWinLeadDamage0 = S.damageDealt;
+	PartnerWinBoss0 = S.bossAttacks;
+	PartnerWinAimed0 = S.bossAimedPartner;
+	PartnerWinLeadFalls = PartnerWinAllyFalls = PartnerWinTakeovers = PartnerWinRises = 0;
+}
+
+void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
+{
+	if (!PartnerBody())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner n/a (the fight is Lone: the partner never acts and only the lead is in it)."));
+		return;
+	}
+	if (static_cast<double>(Fight.time()) - PartnerWinStart > 0.5)
+	{
+		LogPartnerWindow(); // the last, short window
+	}
+	const ftcore::ArenaStats& S = Fight.stats();
+	const ftcore::ArenaDef& D = Fight.def();
+	int32 BossHp = 0;
+	int32 AllHp = 0;
+	for (size_t I = 0; I < D.enemyCount; ++I)
+	{
+		AllHp += D.enemies[I].hp;
+		BossHp += D.enemies[I].boss ? D.enemies[I].hp : 0;
+	}
+	const int32 Pool = BossHp > 0 ? BossHp : AllHp;
+	const float ShareBoss = Pool > 0 ? static_cast<float>(S.partnerDamage) / static_cast<float>(Pool) : 0.f;
+	const int32 Dealt = S.partnerDamage + S.damageDealt;
+	const float ShareAll = Dealt > 0 ? static_cast<float>(S.partnerDamage) / static_cast<float>(Dealt) : 0.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner budget %s (%d windows, %d held; the most a window stood over its limit %+.2f s)."),
+		PartnerWindows > 0 && PartnerWindowsHeld == PartnerWindows ? TEXT("PASS") : TEXT("FAIL"), PartnerWindows, PartnerWindowsHeld, PartnerWorstOver);
+	const float AimCap = static_cast<float>(ftcore::kArenaBossAimShareTenths) / 10.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner aim %s (%d of %d boss strings at the partner, the highest share %.3f; at most %.1f)."),
+		S.bossAimShareMax <= AimCap + 1e-4f ? TEXT("PASS") : TEXT("FAIL"), S.bossAimedPartner, S.bossAttacks, S.bossAimShareMax, AimCap);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner share %s (the partner's %d hp: %.3f of the %s %d hp, %.3f of all %d damage dealt; target %.2f-%.2f of the boss's)."),
+		!bWon ? TEXT("n/a, not won") : (ShareBoss >= kPartnerShareLow && ShareBoss <= kPartnerShareHigh ? TEXT("in target") : TEXT("out of target")),
+		S.partnerDamage, ShareBoss, BossHp > 0 ? TEXT("boss's") : TEXT("enemies'"), Pool, ShareAll, Dealt, kPartnerShareLow, kPartnerShareHigh);
+	const bool bTakeoverOk = PartnerTakeovers == S.takeovers && PartnerSessionTookOver == PartnerTakeovers && PartnerLeadMismatch == 0
+		&& bFiguresSwapped == Fight.swapped() && (SessionLead != StartLead) == Fight.swapped();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner takeover %s (fight %d, host %d, session %d; steps the session's lead differed %d; swapped fight %d, figures %d)."),
+		bTakeoverOk ? TEXT("PASS") : TEXT("FAIL"), S.takeovers, PartnerTakeovers, PartnerSessionTookOver, PartnerLeadMismatch,
+		Fight.swapped() ? 1 : 0, bFiguresSwapped ? 1 : 0);
+	const bool bBothDown = Session && Session->Get().down(ftcore::kLeadA) && Session->Get().down(ftcore::kLeadB);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner defeat %s (session defeat %d, both leads down %d)."),
+		!bLost ? TEXT("n/a") : (bSessionDefeated && bBothDown ? TEXT("PASS") : TEXT("FAIL")), bSessionDefeated ? 1 : 0, bBothDown ? 1 : 0);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner fight: falls lead %d, partner %d; takeovers %d; rises %d (fight %d); partner blows %d, strings %d, guards %d; order presses %d."),
+		PartnerLeadFalls, PartnerAllyFalls, PartnerTakeovers, PartnerRises, S.partnerRises, S.partnerBlows, S.partnerStrings, S.partnerGuards, PartnerOrders);
+}
+
+void UFTArenaRunner::CheckPartnerRetry()
+{
+	const int32 WasSwapped = Fight.swapped() ? 1 : 0;
+	const int32 Takeovers = PartnerTakeovers;
+	Restart(); // the game mode's and the result screen's retry: the fight from its start
+	const bool bSessionOk = !Session || (Session->Get().activeLead() == StartLead && !Session->Get().down(ftcore::kLeadA)
+		&& !Session->Get().down(ftcore::kLeadB) && !Session->Get().defeated());
+	const bool bOk = !Fight.over() && !Fight.swapped() && !bFiguresSwapped && SessionLead == StartLead
+		&& Fight.hp() == Fight.def().fighter.hp && Fight.allyHp() == Fight.allyMaxHp() && bSessionOk;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner retry %s (from the fight's start after %d takeovers: swapped %d -> %d, lead %d, hp %d/%d, partner %d/%d, session %s)."),
+		bOk ? TEXT("PASS") : TEXT("FAIL"), Takeovers, WasSwapped, Fight.swapped() ? 1 : 0, static_cast<int32>(SessionLead), Fight.hp(),
+		Fight.def().fighter.hp, Fight.allyHp(), Fight.allyMaxHp(), bSessionOk ? TEXT("both up, first lead controlled") : TEXT("not reset"));
 }
 
 void UFTArenaRunner::BeginBrief()

@@ -7034,12 +7034,22 @@ TEST_CASE("arena break-out: with no room behind or to either side it does not st
     Rig rig(breakFighter(), {k}, 1, ring);
     rig.put(0, -1.5f, 0.f);
     int blockedTick = -1;
+    ArenaEnemyOut before{};
     for (int t = 0; t < 120 && blockedTick < 0; ++t) {
+        before = rig.out().enemies[0];
         rig.in.light = true;
         rig.tick();
         if (rig.fight.stats().stepBacksBlocked > 0) blockedTick = rig.ticks;
     }
     REQUIRE(blockedTick >= 0);
+    // Nothing it was doing is cut short, as a real step would (interrupt: its clock to 0, its token back): the
+    // same brain and move, its clock running on, its token as it was.
+    const ArenaEnemyOut& after = rig.out().enemies[0];
+    REQUIRE(before.brain != ArenaBrain::Flinch);
+    CHECK(after.brain == before.brain);
+    CHECK(after.move == before.move);
+    CHECK(after.stateTime > before.stateTime);
+    CHECK(after.token == before.token);
     CHECK(rig.fight.stats().stepBacksBlocked == 1);
     CHECK(rig.fight.stats().stepBacks == 0);
     CHECK(rig.fight.stats().breakOuts == 0);

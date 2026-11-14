@@ -59,6 +59,9 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     // (inputPadPending).
     {InputAction::GiftHeal, "gift_heal", InputContext::Foot, false, "G", ""},
     {InputAction::GiftGuard, "gift_guard", InputContext::Foot, false, "Y", ""},
+    // The partner's order (StayClose, Spread). Pad: no free Foot button; unbound there until ruled (inputPadPending).
+    // No controls line names it until the host reads it (the hints_read check).
+    {InputAction::PartnerOrder, "partner_order", InputContext::Foot, false, "B", ""},
 }};
 
 const ActionRow& row(InputAction a) { return kRows[static_cast<std::size_t>(a) % kInputActionCount]; }
@@ -176,7 +179,9 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     return nullptr;
 }
 
-bool inputPadPending(InputAction a) { return a == InputAction::GiftHeal || a == InputAction::GiftGuard; }
+bool inputPadPending(InputAction a) {
+    return a == InputAction::GiftHeal || a == InputAction::GiftGuard || a == InputAction::PartnerOrder;
+}
 
 namespace {
 
@@ -431,7 +436,8 @@ constexpr InputHintEntry kFieldHint[] = {
 // What the host reads but no controls line names, each on purpose (ctest hints_read checks both ways): the map key
 // shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares, and take half
 // plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf};
+// PartnerOrder: only -ArenaPartner has a partner to order (off by default), so no controls line names it yet.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::PartnerOrder};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {
