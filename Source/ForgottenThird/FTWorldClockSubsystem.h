@@ -7,32 +7,86 @@
 // -NoDayClock turns it off. A world-eye still (-WorldEyeShot) without -TimeOfDay leaves the map alone, so the world
 // eye's own -WorldEyeNight look stands.
 //
-// From the clock: the map's directional lights follow the sun (and, once it is down, a cool moon opposite it at
-// -NightMoon of their intensity, default 0.03), the sky lights fall to -NightSky of theirs (0.1; a real-time capture is
-// lifted by the moon's share, since it already dims with the sun), the height fog's inscattering darkens to -NightFog
-// of its colour (0.08), and the windows' Night (FTScene::WindowCollection) takes NightAmount. The street lamps and
+// From the clock: the map's directional lights follow the sun (and, once it is down, a cool moon opposite it), the sky
+// lights fall to the night fill and take its cool tint, the height fog keeps a share of its own colour and takes the
+// city's warm glow, the post-process volumes' white balance moves toward the night's, and from half night their auto
+// exposure is held to the night's range (centre +- range); all by the one
+// (and as the sun goes low, the dusk's magenta sky, warm sun, dim fill and lens flare under it: FTNight::FrameAt)
+// night spec the world eye's night still reads too (FTNightLook.h: ftcore::NightLook and its -Night* switches), blended
+// in by NightAmount (ftcore::nightFrame). The windows' Night (FTScene::WindowCollection) takes NightAmount. The street lamps and
 // shop lights the massing build placed (FTScene::NightLampTag, NightShopTag) switch on as NightAmount passes 0.5, each
 // at its own hashed point between 0.4 and 0.6 so a street doesn't light in one frame. The lights are touched only when
 // the clock has moved a step (1/240 h) or a lamp crosses its point; nothing allocates per tick.
 // On a map whose lights are data (AFTNightLights) there are no tagged lamps to switch: FTLampPoolSubsystem reads
 // NightAmount and moves its pool of lights instead.
+// A fresh clock (none fixed, set or loaded) starts at ftcore::kWorldClockStartHours, a low morning sun; the map builders
+// bake that same sun (FTClock::StartSunRotation) and the world eye's day stills use it too.
 //
 // The plan frame's north is the engine's -Y, east +X (the massing tables' frame, ftcore::massingEnginePoint).
 //
 // Story and cutscene code set, pause and resume it; the save holds it (UFTStorySaveGame).
+//
+// The day's shadow floor (FTDayShade, ftcore::DayShade): by full day the sky light is scaled up and the unbound priority-0
+// post-process volume's local exposure shadow contrast, Lumen diffuse colour boost and film toe move toward the day's,
+// so shaded lanes read at about a third of the sunlit value. So a shaded lane's far end keeps its colour, the day also
+// holds the auto exposure's floor (in a frame that is all shade the camera opens no further), pulls the highlights down
+// (local exposure highlight contrast), caps the height fog's opacity and dims the sky's share of its colour to a
+// grey-blue. Blended by ftcore::dayShadeAmount (0 at full night and full
+// dusk, which keep exactly what they had). Only in a world with a look (UFTLookSubsystem). Switches (read once):
+//   -NoDayShade  off;  -DayShadeSky=<scale>  -DayShadeContrast=<0..1>  -DayShadeBoost=<1..4>  -DayShadeToe=<0..1>
+//   -DayShadeHighlight=<0..1>  -DayShadeMinEV=<ev100>  -DayShadeFogCap=<0..1>  -DayShadeFogSky=<scale on the fog's sky share>
+// and r.FT.DayShade 0/1 at run time. A day world-eye still with no running clock gets the full day's (or
+// -WorldEyeSunHour's) shade from the look subsystem once the look is written (FTDayShade::StillAmount).
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
+#include "FTNightLook.h"
 
+#include "ftcore/DayShade.h"
+#include "ftcore/SceneLook.h"
 #include "ftcore/WorldClock.h"
 
 #include "FTWorldClockSubsystem.generated.h"
 
+class APostProcessVolume;
 class UExponentialHeightFogComponent;
 class UMaterialParameterCollectionInstance;
+class UWorld;
 class ULightComponent;
 class USkyLightComponent;
+
+namespace FTClock
+{
+// The map's directional light rotation for the sun (or, once it is down, the moon opposite it) at Hours.
+FORGOTTENTHIRD_API FRotator SunRotation(const ftcore::WorldClockSpec& Spec, double Hours);
+// The start hour's sun with the city's spec: what the builders bake and the day stills use.
+inline FRotator StartSunRotation()
+{
+	return SunRotation(ftcore::WorldClockSpec{}, ftcore::kWorldClockStartHours);
+}
+} // namespace FTClock
+
+namespace FTDayShade
+{
+// The day's values: ftcore::DayShadeLook's defaults with the -DayShade* switches over them.
+FORGOTTENTHIRD_API const ftcore::DayShadeLook& Look();
+// False with -NoDayShade or r.FT.DayShade 0.
+FORGOTTENTHIRD_API bool Enabled();
+// What the world look writes (the night keeps it).
+FORGOTTENTHIRD_API ftcore::DayShadeBase BaseFor(const ftcore::SceneLook& WorldLook);
+// The day amount at a sky frame (0 when off).
+FORGOTTENTHIRD_API float AmountAt(const FTNight::FSkyFrame& Sky);
+// Writes the frame's shadow and highlight contrast, diffuse colour boost and film toe into World's unbound priority-0
+// post-process volume (the look's), and with bExposure its auto exposure floor (left alone while the night's exposure
+// range holds it). False when there is none.
+FORGOTTENTHIRD_API bool WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame, bool bExposure = true);
+// Writes the frame's fog cap and the sky's share of the fog's colour into a height fog.
+FORGOTTENTHIRD_API void WriteFog(UExponentialHeightFogComponent& Fog, const ftcore::DayShadeFrame& Frame);
+// A world-eye day still with no running clock (-WorldEyeShot without -TimeOfDay, -WorldEyeNight or -WorldEyeDusk): the
+// day amount at the start hour or -WorldEyeSunHour. Negative when this run is no such still or the hour is not full day.
+FORGOTTENTHIRD_API float StillAmount();
+} // namespace FTDayShade
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTWorldClockSubsystem : public UTickableWorldSubsystem
@@ -83,6 +137,8 @@ public:
 private:
 	void Gather(UWorld& World);
 	void Apply(bool bForce);
+	// MPC_Look Wetness: the world look's wetness times the night frame's wetShare.
+	void WriteWetness();
 
 	struct FLit
 	{
@@ -94,7 +150,16 @@ private:
 	{
 		TWeakObjectPtr<USkyLightComponent> Light;
 		float Intensity = 0.f;
+		FLinearColor Color = FLinearColor::White;
 		bool bRealTime = false;
+	};
+	struct FExposure
+	{
+		TWeakObjectPtr<APostProcessVolume> Volume;
+		bool bMin = false, bMax = false;
+		float Min = 0.f, Max = 0.f;
+		bool bWhite = false;
+		float White = 6500.f;
 	};
 	struct FFog
 	{
@@ -116,11 +181,24 @@ private:
 	bool bActive = false;
 	double AppliedHours = -1.0;
 	float Night = 0.f;
-	float MoonShare = 0.03f, SkyShare = 0.1f, FogShare = 0.08f;
+	bool bExposureLocked = false;
+	float AppliedWhiteMix = 0.f;
+	bool bClockGiven = false;
 
 	TArray<FLit> Suns;
 	TArray<FSky> Skies;
 	TArray<FFog> Fogs;
+	TArray<FExposure> Exposures;
 	TArray<FLamp> Lamps;
 	TWeakObjectPtr<UMaterialParameterCollectionInstance> Windows;
+	TWeakObjectPtr<UMaterialParameterCollectionInstance> LookParams;
+	float WetShare = 1.f;
+	// Written again once the look subsystem has settled, so its own full-value write doesn't stand.
+	bool bWetPending = true;
+	// The dusk's sky and lens (FTNightLook.h), written as the sun goes low.
+	FTNight::FDuskScene DuskScene;
+	// The day's shadow floor last written to the post-process volume (-1: write on the next step).
+	float AppliedDayShade = -1.f;
+	// The lights' share last written to the proof bay's fixtures (FTNight::WriteBayLights; -1: write on the next step).
+	float AppliedBayLights = -1.f;
 };

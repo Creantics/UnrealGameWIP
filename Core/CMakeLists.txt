@@ -64,12 +64,31 @@ add_library(ftcore STATIC
     src/MassingLayout.cpp
     src/WindowInterior.cpp
     src/WindowFacade.cpp
+    src/BayCount.cpp
+    src/SurfaceWeather.cpp
+    src/SurfaceJoints.cpp
     src/FrameStats.cpp
     src/LightPicker.cpp
+    src/NightLook.cpp
+    src/GlassSurface.cpp
+    src/DayShade.cpp
+    src/Backdrop.cpp
+    src/StandIns.cpp
+    src/TreeMeshes.cpp
+    src/LawnSheet.cpp
+    src/BuildingLots.cpp
+    src/FacadeGrammar.cpp
+    src/BlockGen.cpp
+    src/BlockCheck.cpp
+    src/TerrainPocket.cpp
+    src/ParkedCarLook.cpp
+    src/RoadDecals.cpp
     src/ShopFront.cpp
     src/WorldClock.cpp
     src/WorldChecks.cpp
     src/Roads.cpp
+    src/WaterBodies.cpp
+    src/WetPrints.cpp
     src/RoadGraph.cpp
     src/CityPlacer.cpp
     src/OuterPlaces.cpp
@@ -91,6 +110,7 @@ add_library(ftcore STATIC
     src/DodgeRoll.cpp
     src/VehicleDrive.cpp
     src/VehicleRules.cpp
+    src/MiniMap.cpp
     src/LedgeHang.cpp
     src/Locomotion.cpp
     src/Mini.cpp
@@ -164,6 +184,7 @@ add_library(ftcore STATIC
     src/BeatMusicSynth.cpp
     src/BeatScreen.cpp
     src/TwistBake.cpp
+    src/WorldWave.cpp
 )
 target_include_directories(ftcore PUBLIC include)
 target_link_libraries(ftcore PRIVATE ftcore_warnings)
@@ -205,6 +226,36 @@ else()
     target_compile_options(ftcore_roadgraph PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_blockgen: the block generator and checker for a slice of the private massing tables (an offline build step).
+add_executable(ftcore_blockgen tools/ftcore_blockgen.cpp)
+target_link_libraries(ftcore_blockgen PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_blockgen PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_blockgen PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_blockgen PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
+# ftcore_pocketcheck: finds stuck pockets on a box table and its height field, before and after the plinths (offline).
+add_executable(ftcore_pocketcheck tools/ftcore_pocketcheck.cpp)
+target_link_libraries(ftcore_pocketcheck PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_pocketcheck PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_pocketcheck PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_pocketcheck PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
+# ftcore_standincheck: the stand-ins' corridor rule on the point and street tables (an offline build guard).
+add_executable(ftcore_standincheck tools/ftcore_standincheck.cpp)
+target_link_libraries(ftcore_standincheck PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_standincheck PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_standincheck PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_standincheck PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 # ftcore_frontcount: counts what a frontage table places on a map's boxes (an offline budget estimate).
 add_executable(ftcore_frontcount tools/ftcore_frontcount.cpp)
 target_link_libraries(ftcore_frontcount PRIVATE ftcore ftcore_warnings)
@@ -213,6 +264,26 @@ if(MSVC)
     target_compile_definitions(ftcore_frontcount PRIVATE _HAS_EXCEPTIONS=0)
 else()
     target_compile_options(ftcore_frontcount PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
+# ftcore_baycount: ground-floor shop bays per street (an offline planning aid).
+add_executable(ftcore_baycount tools/ftcore_baycount.cpp)
+target_link_libraries(ftcore_baycount PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_baycount PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_baycount PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_baycount PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
+# ftcore_lotplan: kit buildings on street frontage runs and the street-rule check (an offline planning aid).
+add_executable(ftcore_lotplan tools/ftcore_lotplan.cpp)
+target_link_libraries(ftcore_lotplan PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_lotplan PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_lotplan PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_lotplan PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
 # ftcore_storywalk: plays a story folder through the runner with the story state bound, headless (an offline check).
@@ -281,12 +352,31 @@ if(FTCORE_BUILD_TESTS)
         tests/test_massing_layout.cpp
         tests/test_window_interior.cpp
         tests/test_window_facade.cpp
+        tests/test_bay_count.cpp
+        tests/test_surface_weather.cpp
+        tests/test_surface_joints.cpp
         tests/test_frame_stats.cpp
         tests/test_light_picker.cpp
+        tests/test_night_look.cpp
+        tests/test_glass_surface.cpp
+        tests/test_backdrop_seat.cpp
+        tests/test_day_shade.cpp
         tests/test_shop_front.cpp
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp
         tests/test_roads.cpp
+        tests/test_water_bodies.cpp
+        tests/test_wet_prints.cpp
+        tests/test_water_exits.cpp
+        tests/test_road_decals.cpp
+        tests/test_stand_ins.cpp
+        tests/test_tree_meshes.cpp
+        tests/test_lawn_sheet.cpp
+        tests/test_building_lots.cpp
+        tests/test_block_gen.cpp
+        tests/test_block_check.cpp
+        tests/test_terrain_pocket.cpp
+        tests/test_parked_car_look.cpp
         tests/test_road_graph.cpp
         tests/test_road_net.cpp
         tests/test_city_placer.cpp
@@ -307,6 +397,7 @@ if(FTCORE_BUILD_TESTS)
     tests/test_dodge_roll.cpp
     tests/test_vehicle_drive.cpp
     tests/test_vehicle_rules.cpp
+    tests/test_mini_map.cpp
     tests/test_ledge_hang.cpp
         tests/test_locomotion.cpp
         tests/test_mini.cpp
@@ -380,6 +471,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_cine.cpp
         tests/test_beat_music.cpp
         tests/test_twist_bake.cpp
+        tests/test_world_wave.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).
@@ -387,7 +479,8 @@ if(FTCORE_BUILD_TESTS)
         "newengine assets folder (story script, face presets, golden data) for the real-data tests")
     target_compile_definitions(ftcore_tests PRIVATE FTCORE_TEST_ASSET_DIR="${FTCORE_NEWENGINE_ASSETS}"
         FTCORE_PROJECT_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Data"
-        FTCORE_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        FTCORE_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+        FTCORE_TEST_ACCESS) # FightSessionTestAccess: the test target alone may reach private fields
     if(MSVC)
         target_compile_options(ftcore_tests PRIVATE /EHsc)
     endif()

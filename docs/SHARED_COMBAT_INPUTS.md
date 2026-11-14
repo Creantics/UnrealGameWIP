@@ -326,7 +326,16 @@ the pieces.
 * **Active lead.** `setActiveLead(lead)` names the lead the player's figure fills (`kLeadA` until
   set; it stays across `begin`, except that a `begin` moves it off a lead not in the fight). The host
   sets it at fight start and on every lead switch, and aims its gift presses, count calls and blow
-  reports for the player at `activeLead()`. It refuses a lead that is down or not in the fight.
+  reports for the player at `activeLead()`. It refuses at once (false) a non-lead or a lead not in
+  the fight. Otherwise it is a request the step's close resolves, after the rises and falls (below):
+  honoured if that lead stands then (`tick.switched`; nothing when it already has control), else refused
+  (`tick.switchRefused`, with `tick.switchRefusal` Down, or Defeated on a defeat). True means the request
+  was taken, not that the lead switched. The last request in a step wins (an earlier one raises no event),
+  and `activeLead()` moves only at the close, which is the tick: a checkpoint taken between ticks settles
+  the rises and falls but leaves the switch waiting, and carries it (`FightCheckpoint::switchRequested`),
+  so a retry to it opens on that lead if it stands there. A switch to a lead who stands up in the same
+  step is honoured and one to a lead who falls in it is refused, whatever the call order (checkpoints
+  included), and `tookOver` is the same either way. A request made before `begin` is applied by it.
 * **Down, takeover and defeat.** `def.inFight` names the leads in the fight (both by default; at
   least one). `setLeadHealth` is also the fall feed, so the host calls it on every hp change: a lead
   in the fight at 0 or below (finite) is down, not dead; above 0 it stands again; NaN or an infinity
@@ -355,7 +364,9 @@ the pieces.
   that is a defeat (every lead fed 0 before it), none is taken and a retry is a begin again.
 * **A lead that cannot fall.** `def.cannotFall` (per fight, per lead; false by default) marks a lead
   who cannot go below 1 hp in that fight. The host works out its hp with `blowOnLead(lead, hp,
-  damage, maxHp)`, which returns hp − damage but at least 1 for a marked lead, and feeds
+  damage, maxHp)`, which returns hp − damage, with the damage first held to 0..hp (so extreme ints
+  never overflow, a negative blow heals nothing and the result never goes under 0), but at least 1 for
+  a marked lead, and feeds
   `setLeadHealth` itself. A blow that would have taken it to 0 or below raises `tick.heldUp` (one bit
   per lead, once, on the next tick). A marked lead fed 0 or below never goes down. With every lead in
   the fight marked, health never loses it: what ends such a fight (a round timer) is the host's.

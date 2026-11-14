@@ -7,20 +7,27 @@
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Texture2D.h"
+#include "FTBuildShopInteriors.h"
 #include "FTImportMaterials.h"
+#include "FTJointCollection.h"
 #include "FTText.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCameraVectorWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionOneMinus.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionTransform.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
@@ -35,7 +42,9 @@
 #include "UObject/SavePackage.h"
 
 #include "ftcore/MassingPlan.h"
+#include "ftcore/SurfaceJoints.h"
 #include "ftcore/SurfaceTable.h"
+#include "ftcore/SurfaceWeather.h"
 #include "ftcore/WindowFacade.h"
 #include "ftcore/WindowInterior.h"
 #endif
@@ -82,6 +91,7 @@ float TopDown = AxY.z > 0.0 ? -1.0 : 1.0;
 float2 UvX = float2(Q.y, SideDown * Q.z);
 float2 UvY = float2(Q.x, SideDown * Q.z);
 float2 UvZ = float2(Q.x, TopDown * Q.y);
+//FT_JOINT_PARALLAX
 // The engine's Texture2DSample, never Tex.Sample: a ray-tracing hit shader has no derivatives, and there it takes the
 // mip from the ray cone. A plain Sample fails that shader, and the whole material falls back to the default one.
 float3 Albedo = Blend.x * Texture2DSample(AlbedoTex, AlbedoTexSampler, UvX).rgb
@@ -133,6 +143,7 @@ MetalOut = Arm.b;
 AOOut = Arm.r;
 float3 Color = Albedo * Tint.rgb * (1.0 + Amount * (2.0 * Mottle[0] - 1.0)) * (1.0 + Macro * (2.0 * Mottle[2] - 1.0));
 Color *= min(1.0, 0.8 / max(max(Color.r, Color.g), max(Color.b, 1e-4)));
+//FT_JOINT_SHADE
 return max(Color, 0.03);
 )HLSL");
 
@@ -292,6 +303,7 @@ struct FSurfaceNode
 	UMaterialExpressionCustom* Custom = nullptr;
 	UMaterialExpressionVertexNormalWS* VertexNormal = nullptr;
 	UMaterialExpressionTransform* Axis[3] = {};
+	UMaterialExpressionWorldPosition* WorldPos = nullptr;
 };
 
 // A new master at Path that draws as the world's boxes do: instanced, its normal in world space.
@@ -305,6 +317,25 @@ UMaterial* NewMaster(const TCHAR* Path)
 	// The code bends the normal in world space.
 	Material->bTangentSpaceNormal = false;
 	return Material;
+}
+
+// The joint collection's JointDepth (FTJointCollection.h: the run-time switch on every surface's joint depth), or a constant 1.
+UMaterialExpression* AddJointSwitch(UMaterial* Material, int32 Y)
+{
+	UMaterialParameterCollection* Collection = FTJoint::LoadOrBuild();
+	if (Collection && Collection->GetParameterId(FTJoint::Depth).IsValid())
+	{
+		UMaterialExpressionCollectionParameter* Switch = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
+		Switch->Collection = Collection;
+		Switch->ParameterName = TEXT("JointDepth");
+		Switch->ParameterId = Collection->GetParameterId(TEXT("JointDepth"));
+		return Switch;
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildSurfaces: the joint collection could not be made; joint depth is always on in %s."),
+		*Material->GetName());
+	UMaterialExpressionConstant* One = AddExpression<UMaterialExpressionConstant>(Material, -900, Y);
+	One->R = 1.f;
+	return One;
 }
 
 // The photographed surface's parameters and its Custom node (kSurfaceCode), the textures' defaults Defaults. Output 0 is
@@ -339,7 +370,13 @@ FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Def
 	UMaterialExpressionCustom* Custom = AddExpression<UMaterialExpressionCustom>(Material, -450, 0);
 	Custom->Description = TEXT("FTWorldSurfaceTex");
 	Custom->OutputType = CMOT_Float3;
-	Custom->Code = kSurfaceCode;
+	// Joint depth (ftcore::surfaceJoint*Hlsl): the view ray marched through a height got from the AO map, then the
+	// joint's normal and cavity. JointDepthCm 0 (a surface with no joints) or the collection's JointDepth 0 leaves the
+	// surface as it was.
+	const ftcore::SurfaceJointSpec JointSpec;
+	Custom->Code = FString(kSurfaceCode)
+		.Replace(TEXT("//FT_JOINT_PARALLAX"), *FT::ToFString(ftcore::surfaceJointParallaxHlsl(JointSpec)))
+		.Replace(TEXT("//FT_JOINT_SHADE"), *FT::ToFString(ftcore::surfaceJointShadeHlsl(JointSpec)));
 	Custom->Inputs.Reset();
 	AddInput(Custom, TEXT("Tint"), Color);
 	AddInput(Custom, TEXT("AlbedoTex"), Albedo);
@@ -359,6 +396,22 @@ FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Def
 	AddInput(Custom, TEXT("AxisX"), AxisX);
 	AddInput(Custom, TEXT("AxisY"), AxisY);
 	AddInput(Custom, TEXT("AxisZ"), AxisZ);
+	UMaterialExpressionCameraPositionWS* CameraPos = AddExpression<UMaterialExpressionCameraPositionWS>(Material, -900, 1050);
+	UMaterialExpressionSubtract* ViewVec = AddExpression<UMaterialExpressionSubtract>(Material, -700, 1050);
+	ViewVec->A.Connect(0, CameraPos);
+	ViewVec->B.Connect(0, WorldPos);
+	AddInput(Custom, TEXT("ViewVec"), ViewVec);
+	AddInput(Custom, TEXT("JointDepth"), AddJointSwitch(Material, 1150));
+	UMaterialExpressionScalarParameter* JointDepthCm = AddScalar(Material, TEXT("JointDepthCm"), 0.f, 1250);
+	UMaterialExpressionScalarParameter* JointLo = AddScalar(Material, TEXT("JointLo"), 0.6f, 1350);
+	UMaterialExpressionScalarParameter* JointHi = AddScalar(Material, TEXT("JointHi"), 0.92f, 1450);
+	AddInput(Custom, TEXT("JointDepthCm"), JointDepthCm);
+	AddInput(Custom, TEXT("JointLo"), JointLo);
+	AddInput(Custom, TEXT("JointHi"), JointHi);
+	// The surface's units a tile (a per-unit tone; 0 none) and whether its courses run in bond.
+	AddInput(Custom, TEXT("JointUnitsU"), AddScalar(Material, TEXT("JointUnitsU"), 0.f, 1550));
+	AddInput(Custom, TEXT("JointUnitsV"), AddScalar(Material, TEXT("JointUnitsV"), 0.f, 1650));
+	AddInput(Custom, TEXT("JointBond"), AddScalar(Material, TEXT("JointBond"), 0.f, 1750));
 	AddOutput(Custom, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Custom, TEXT("MetalOut"), CMOT_Float1);
@@ -370,14 +423,78 @@ FSurfaceNode AddSurfaceNode(UMaterial* Material, TArrayView<UTexture* const> Def
 	Node.Axis[0] = AxisX;
 	Node.Axis[1] = AxisY;
 	Node.Axis[2] = AxisZ;
+	Node.WorldPos = WorldPos;
 	return Node;
 }
 
-// The master, with the first surface's textures as its defaults.
-UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
+void AddInputFrom(UMaterialExpressionCustom* Custom, FName Name, UMaterialExpression* From, int32 Output);
+
+// -Weather: the look's collection (FTScene::LookCollection), whose Wetness the weather node reads. Null, with the
+// reason logged, when it is missing; Who names the build in the log.
+UMaterialParameterCollection* LoadLookCollection(const TCHAR* Who)
+{
+	const FString Path = FString(FTScene::LookCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::LookCollection);
+	UMaterialParameterCollection* Look = LoadObject<UMaterialParameterCollection>(nullptr, *Path);
+	if (!Look)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("%s -Weather: %s is missing; build it first with FTBuildLookMaterials."), Who,
+			FTScene::LookCollection);
+	}
+	return Look;
+}
+
+// The weather node (ftcore::surfaceWeatherHlsl: wet up-facing ground, puddles favouring a cambered box's low edge,
+// contact grime and edge darkening) over the shading From gives: its output 0 the albedo, then NormalOut, RoughOut and
+// AOOut at the given outputs. Above (an output of AboveFrom) is the pixel's height over the street floor in metres, or
+// null to measure from the box's bottom. The node returns the albedo; NormalOut, RoughOut and AOOut follow, outputs 1-3.
+// "Weather" (group Weather, 1) scales it per instance; 0 leaves the surface dry and clean.
+UMaterialExpressionCustom* AddWeatherNode(UMaterial* Material, const FSurfaceNode& Wall, UMaterialExpression* From, int32 NormalOutput,
+	int32 RoughOutput, int32 AOOutput, UMaterialParameterCollection* Look, UMaterialExpression* AboveFrom, int32 AboveOutput)
+{
+	ftcore::SurfaceWeatherOptions Options;
+	Options.aboveInput = AboveFrom != nullptr;
+	UMaterialExpressionCollectionParameter* Wetness = AddExpression<UMaterialExpressionCollectionParameter>(Material, -300, -1000);
+	Wetness->Collection = Look;
+	Wetness->ParameterName = TEXT("Wetness");
+	Wetness->ParameterId = Look->GetParameterId(TEXT("Wetness"));
+	UMaterialExpressionScalarParameter* Amount = AddScalar(Material, TEXT("Weather"), 1.f, -1100);
+	Amount->Group = TEXT("Weather");
+	UMaterialExpressionLocalPosition* LocalPos = AddExpression<UMaterialExpressionLocalPosition>(Material, -300, -1200);
+
+	UMaterialExpressionCustom* Weather = AddExpression<UMaterialExpressionCustom>(Material, 300, 0);
+	Weather->Description = TEXT("FTSurfaceWeather");
+	Weather->OutputType = CMOT_Float3;
+	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(ftcore::SurfaceWeatherSpec{}, Options));
+	Weather->Inputs.Reset();
+	AddInputFrom(Weather, TEXT("Albedo"), From, 0);
+	AddInputFrom(Weather, TEXT("Normal"), From, NormalOutput);
+	AddInputFrom(Weather, TEXT("Rough"), From, RoughOutput);
+	AddInputFrom(Weather, TEXT("AO"), From, AOOutput);
+	AddInput(Weather, TEXT("WorldPos"), Wall.WorldPos);
+	AddInput(Weather, TEXT("VertexNormal"), Wall.VertexNormal);
+	AddInput(Weather, TEXT("Wetness"), Wetness);
+	AddInput(Weather, TEXT("Amount"), Amount);
+	AddInput(Weather, TEXT("LocalPos"), LocalPos);
+	AddInput(Weather, TEXT("AxisX"), Wall.Axis[0]);
+	AddInput(Weather, TEXT("AxisY"), Wall.Axis[1]);
+	AddInput(Weather, TEXT("AxisZ"), Wall.Axis[2]);
+	if (AboveFrom)
+	{
+		AddInputFrom(Weather, TEXT("Above"), AboveFrom, AboveOutput);
+	}
+	AddOutput(Weather, TEXT("NormalOut"), CMOT_Float3);
+	AddOutput(Weather, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Weather, TEXT("AOOut"), CMOT_Float1);
+	Weather->RebuildOutputs();
+	return Weather;
+}
+
+// The master, with the first surface's textures as its defaults. Look (-Weather): the weather node over the surface.
+UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults, UMaterialParameterCollection* Look)
 {
 	UMaterial* Material = NewMaster(FTScene::SurfaceTexMaterial);
-	UMaterialExpressionCustom* Custom = AddSurfaceNode(Material, Defaults).Custom;
+	const FSurfaceNode Surface = AddSurfaceNode(Material, Defaults);
+	UMaterialExpressionCustom* Custom = Surface.Custom;
 
 	// Output 0 is the code's return value (the albedo), then its additional outputs in order.
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
@@ -386,6 +503,14 @@ UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults)
 	Inputs->Roughness.Connect(2, Custom);
 	Inputs->Metallic.Connect(3, Custom);
 	Inputs->AmbientOcclusion.Connect(4, Custom);
+	if (Look)
+	{
+		UMaterialExpressionCustom* Weather = AddWeatherNode(Material, Surface, Custom, 1, 2, 4, Look, nullptr, 0);
+		Inputs->BaseColor.Connect(0, Weather);
+		Inputs->Normal.Connect(1, Weather);
+		Inputs->Roughness.Connect(2, Weather);
+		Inputs->AmbientOcclusion.Connect(3, Weather);
+	}
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
@@ -425,6 +550,18 @@ bool SetDefaults(UMaterial* Master, TArrayView<UTexture* const> Defaults, bool& 
 		Master->PostEditChange();
 	}
 	return Found == kMapCount;
+}
+
+// A surface instance's joints (ftcore::surfaceJointFor): depth, the AO levels of a joint's floor and a unit's face, the
+// units a tile and the bond.
+void SetJoint(UMaterialInstanceConstant* Mic, const ftcore::SurfaceJointSurface& Joint)
+{
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointDepthCm")), Joint.depthCm);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointLo")), Joint.aoLo);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointHi")), Joint.aoHi);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointUnitsU")), Joint.unitsU);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointUnitsV")), Joint.unitsV);
+	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("JointBond")), Joint.bond ? 1.f : 0.f);
 }
 
 UMaterialInstanceConstant* BuildInstance(const FString& Path, UMaterial* Master, TArrayView<UTexture* const> Maps, float TileCm,
@@ -520,6 +657,15 @@ constexpr const TCHAR* kWindowNight = TEXT("Night");
 // The collection's night glow: a multiplier on the windows' GlowScale and ShopGlow, 1 unless a look or the world eye
 // (-WorldEyeNightGlow) sets it.
 constexpr const TCHAR* kWindowNightGlow = TEXT("NightGlow");
+// Round 10: the rooms' parallax, 1 (the true view ray) or 0 (the room's picture flat at its back wall); a look or a
+// console may set it at run time, -WindowParallax=<0|1> sets its default.
+constexpr const TCHAR* kWindowParallax = TEXT("Parallax");
+constexpr const TCHAR* kWindowShopDayLevel = TEXT("ShopDayLevel");
+constexpr const TCHAR* kWindowShopNightLevel = TEXT("ShopNightLevel");
+// The glass system (ftcore/GlassSurface.h): the daylight reaching a room behind glass (1 by day, 0 at night; the clock and
+// the stills write it) and the proof front's interior light at night (a look sets it; the default is the shops' cap).
+constexpr const TCHAR* kWindowDaylight = TEXT("Daylight");
+constexpr const TCHAR* kWindowProofShopNight = TEXT("ProofShopNight");
 // The window widths a building finish may take (metres): each finish keeps one, so a building never mixes sizes.
 constexpr float kWindowWidths[] = {1.2f, 1.35f, 1.5f};
 
@@ -569,15 +715,16 @@ UTexture2D* ImportPng(const FString& File, const FString& Path, int32 SizeX, int
 	return Texture;
 }
 
-// The windows' collection: Night, 0 by day to 1 by night, and NightGlow, 1. Their ids come from their names, so a rebuild
-// changes no id.
-UMaterialParameterCollection* BuildWindowCollection()
+// The windows' collection: Night, 0 by day to 1 by night, NightGlow, 1, and round 10's Parallax (default Parallax). Their ids come
+// from their names, so a rebuild changes no id.
+UMaterialParameterCollection* BuildWindowCollection(float Parallax)
 {
 	UPackage* Package = CreatePackage(FTScene::WindowCollection);
 	UMaterialParameterCollection* Collection = NewObject<UMaterialParameterCollection>(Package,
 		FName(FPackageName::GetShortName(Package->GetName())), RF_Public | RF_Standalone | RF_Transactional);
-	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow};
-	const float Defaults[] = {0.f, 1.f};
+	const TCHAR* const Names[] = {kWindowNight, kWindowNightGlow, kWindowParallax, kWindowShopDayLevel, kWindowShopNightLevel, kWindowDaylight,
+		kWindowProofShopNight};
+	const float Defaults[] = {0.f, 1.f, Parallax, 1.f, 1.f, 1.f, ftcore::WindowFacadeSpec{}.shopGlowCap};
 	for (int32 P = 0; P < static_cast<int32>(UE_ARRAY_COUNT(Names)); ++P)
 	{
 		FCollectionScalarParameter& Scalar = Collection->ScalarParameters.AddDefaulted_GetRef();
@@ -590,12 +737,14 @@ UMaterialParameterCollection* BuildWindowCollection()
 	return Collection;
 }
 
-// Round 5: the face node's three more outputs (6 TOut, 7 NzOut, 8 TopOut), after r4's.
+// Round 5: the face node's more outputs (6 TOut, 7 NzOut, 8 TopOut, and round 10's 9 KerbOut, the face's kerbed street
+// bit), after r4's.
 void AddR5FaceOutputs(UMaterialExpressionCustom* Face)
 {
 	AddOutput(Face, TEXT("TOut"), CMOT_Float3);
 	AddOutput(Face, TEXT("NzOut"), CMOT_Float3);
 	AddOutput(Face, TEXT("TopOut"), CMOT_Float1);
+	AddOutput(Face, TEXT("KerbOut"), CMOT_Float1);
 }
 
 // Round 5: the compose node's inputs beyond r4's: the face's along and up axes, its top flag, the wall tint and the roof
@@ -610,14 +759,26 @@ void AddR5ComposeInputs(UMaterialExpressionCustom* Compose, UMaterialExpressionC
 	AddInput(Compose, TEXT("RoofFin"), RoofFinish);
 }
 
+// Round 11: the night light's soft caps (ftcore::windowGlowSoftCap; emissive luminance no window, shop glass or sign
+// passes), the spec's unless -WindowGlowCap=, -ShopGlowCap= or -SignGlowCap= set them.
+struct FWindowCaps
+{
+	float Glow = ftcore::WindowFacadeSpec{}.glowCap;
+	float Shop = ftcore::WindowFacadeSpec{}.shopGlowCap;
+	float Sign = ftcore::WindowFacadeSpec{}.signGlowCap;
+};
+
 // The window master: the photographed surface (its parameters as M_WorldSurfaceTex's, so an instance copies a surface's
 // values across) with WindowInterior's openings cut into its walls. bR5 (-FacadeR5): WindowFacade's nodes instead, which
 // read three more box values (type, wall tint, roof finish) and add the reveals, bands, shop kinds, tints and roof colour.
 // The box values come from each instance's custom data (the massing build lays the boxes as instances), falling back to
 // the custom primitive data a plain mesh component carries (same slots, FTScene::WindowData*). bPrimitiveData
 // (-WindowPrimitiveData): the earlier graph, custom primitive data only.
+// Look (-Weather): the weather node over the composed wall, its grime measured from each face's street floor.
+// bShopHoles (-ShopHoles, r5 only): the master is masked, the shop glass of a kerbed street face cut open (the Win node's
+// Hole) so the modelled interior behind it (FTShopInteriors) shows.
 UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Rooms, UTexture* Curtains, UMaterialParameterCollection* Collection,
-	bool bR5, bool bPrimitiveData)
+	bool bR5, bool bPrimitiveData, UMaterialParameterCollection* Look, bool bShopHoles, const FWindowCaps& Caps)
 {
 	UMaterial* Material = NewMaster(FTScene::WindowMaterial);
 	const FSurfaceNode Wall = AddSurfaceNode(Material, Defaults);
@@ -685,14 +846,14 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	// The windows' numbers (Group "Window"): the shares lit, curtained and shop-lit; a building finish's window width; a
 	// room's and a shop's own light by day and by night (the night ones times the collection's NightGlow); how opaque a
 	// curtain is, how much of the room's light it passes at night and how much it shows as cloth by day.
-	UMaterialExpressionScalarParameter* LitShare = AddWindowScalar(Material, TEXT("LitShare"), 0.35f, 1900);
+	UMaterialExpressionScalarParameter* LitShare = AddWindowScalar(Material, TEXT("LitShare"), ftcore::WindowFacadeSpec{}.litShare, 1900);
 	UMaterialExpressionScalarParameter* CurtainShare = AddWindowScalar(Material, TEXT("CurtainShare"), 0.35f, 2000);
 	UMaterialExpressionScalarParameter* ShopLit = AddWindowScalar(Material, TEXT("ShopLit"), 0.8f, 2100);
 	UMaterialExpressionScalarParameter* WindowWidth = AddWindowScalar(Material, TEXT("WindowWidth"), ftcore::WindowGridSpec{}.windowWidth, 2150);
 	UMaterialExpressionScalarParameter* RoomDay = AddWindowScalar(Material, TEXT("RoomDay"), 0.5f, 2200);
-	UMaterialExpressionScalarParameter* ShopDay = AddWindowScalar(Material, TEXT("ShopDay"), 0.9f, 2250);
-	UMaterialExpressionScalarParameter* GlowScale = AddWindowScalar(Material, TEXT("GlowScale"), 0.35f, 2300);
-	UMaterialExpressionScalarParameter* ShopGlow = AddWindowScalar(Material, TEXT("ShopGlow"), 0.55f, 2350);
+	UMaterialExpressionScalarParameter* ShopDay = AddWindowScalar(Material, TEXT("ShopDay"), ftcore::WindowFacadeSpec{}.shopDay, 2250);
+	UMaterialExpressionScalarParameter* GlowScale = AddWindowScalar(Material, TEXT("GlowScale"), ftcore::WindowFacadeSpec{}.glowScale, 2300);
+	UMaterialExpressionScalarParameter* ShopGlow = AddWindowScalar(Material, TEXT("ShopGlow"), ftcore::WindowFacadeSpec{}.shopGlow, 2350);
 	UMaterialExpressionScalarParameter* CurtainAlpha = AddWindowScalar(Material, TEXT("CurtainAlpha"), 0.85f, 2400);
 	UMaterialExpressionScalarParameter* CurtainGlow = AddWindowScalar(Material, TEXT("CurtainGlow"), 0.35f, 2450);
 	UMaterialExpressionCollectionParameter* Night = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 2500);
@@ -709,6 +870,25 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionMultiply* ShopNightGlow = AddExpression<UMaterialExpressionMultiply>(Material, -600, 2400);
 	ShopNightGlow->A.Connect(0, ShopGlow);
 	ShopNightGlow->B.Connect(0, NightGlow);
+	// Round 12: a shop's own light by day and by night times the collection's ShopDayLevel and ShopNightLevel (1), so
+	// a look sets them at run time (-ShopDayLevel=, -ShopNightLevel=).
+	UMaterialExpression* ShopDayIn = ShopDay;
+	UMaterialExpression* ShopNightIn = ShopNightGlow;
+	{
+		const TCHAR* const LevelNames[] = {kWindowShopDayLevel, kWindowShopNightLevel};
+		UMaterialExpression** const Ins[] = {&ShopDayIn, &ShopNightIn};
+		for (int32 L = 0; L < 2; ++L)
+		{
+			UMaterialExpressionCollectionParameter* Level = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 2850 + 50 * L);
+			Level->Collection = Collection;
+			Level->ParameterName = LevelNames[L];
+			Level->ParameterId = Collection->GetParameterId(LevelNames[L]);
+			UMaterialExpressionMultiply* Mul = AddExpression<UMaterialExpressionMultiply>(Material, -600, 2850 + 50 * L);
+			Mul->A.Connect(0, *Ins[L]);
+			Mul->B.Connect(0, Level);
+			*Ins[L] = Mul;
+		}
+	}
 	UMaterialExpressionTextureObjectParameter* RoomsTex = AddTexture(Material, TEXT("Rooms"), Rooms, SAMPLERTYPE_Color, 2600);
 	UMaterialExpressionTextureObjectParameter* CurtainsTex = AddTexture(Material, TEXT("Curtains"), Curtains, SAMPLERTYPE_Color, 2750);
 	RoomsTex->Group = TEXT("Window");
@@ -733,9 +913,9 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	AddInput(Win, TEXT("ShopLit"), ShopLit);
 	AddInput(Win, TEXT("Night"), Night);
 	AddInput(Win, TEXT("RoomDay"), RoomDay);
-	AddInput(Win, TEXT("ShopDay"), ShopDay);
+	AddInput(Win, TEXT("ShopDay"), ShopDayIn);
 	AddInput(Win, TEXT("GlowScale"), RoomGlow);
-	AddInput(Win, TEXT("ShopGlow"), ShopNightGlow);
+	AddInput(Win, TEXT("ShopGlow"), ShopNightIn);
 	AddInput(Win, TEXT("CurtainAlpha"), CurtainAlpha);
 	AddInput(Win, TEXT("CurtainGlow"), CurtainGlow);
 	AddInput(Win, TEXT("Rooms"), RoomsTex);
@@ -746,9 +926,39 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 		// Upper storeys light more often at night (ftcore::windowLitShare): the top storey at LitShare * (1 + UpperLit).
 		UMaterialExpressionScalarParameter* UpperLit = AddWindowScalar(Material, TEXT("UpperLit"), ftcore::WindowFacadeSpec{}.upperLit, 2500);
 		AddInput(Win, TEXT("UpperLit"), UpperLit);
+		// A lit shop's sign panel at night (ftcore::WindowFacadeSpec::signGlow), times the collection's NightGlow.
+		UMaterialExpressionScalarParameter* SignGlow = AddWindowScalar(Material, TEXT("SignGlow"), ftcore::WindowFacadeSpec{}.signGlow, 2560);
+		UMaterialExpressionMultiply* SignNightGlow = AddExpression<UMaterialExpressionMultiply>(Material, -600, 2560);
+		SignNightGlow->A.Connect(0, SignGlow);
+		SignNightGlow->B.Connect(0, NightGlow);
+		AddInput(Win, TEXT("SignGlow"), SignNightGlow);
+		// Round 10: the room's true parallax times the collection's Parallax; the shares of windows showing a room and
+		// of the covered ones frosted; a drawn screen's glow at night; the face's kerbed street bit (the shop holes).
+		UMaterialExpressionCollectionParameter* Parallax = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 2600);
+		Parallax->Collection = Collection;
+		Parallax->ParameterName = kWindowParallax;
+		Parallax->ParameterId = Collection->GetParameterId(kWindowParallax);
+		AddInput(Win, TEXT("Parallax"), Parallax);
+		const ftcore::WindowFacadeSpec Spec;
+		AddInput(Win, TEXT("RoomShare"), AddWindowScalar(Material, TEXT("RoomShare"), Spec.roomShare, 2620));
+		AddInput(Win, TEXT("FrostShare"), AddWindowScalar(Material, TEXT("FrostShare"), Spec.frostShare, 2640));
+		AddInput(Win, TEXT("ScreenGlow"), AddWindowScalar(Material, TEXT("ScreenGlow"), Spec.screenGlow, 2660));
+		AddInputFrom(Win, TEXT("Kerb"), Face, 9);
+		// Round 11: the night light's soft caps (after NightGlow, so no look lifts a window past them).
+		AddInput(Win, TEXT("GlowCap"), AddWindowScalar(Material, TEXT("GlowCap"), Caps.Glow, 2680));
+		AddInput(Win, TEXT("ShopGlowCap"), AddWindowScalar(Material, TEXT("ShopGlowCap"), Caps.Shop, 2700));
+		AddInput(Win, TEXT("SignGlowCap"), AddWindowScalar(Material, TEXT("SignGlowCap"), Caps.Sign, 2720));
 	}
 	AddOutput(Win, TEXT("Curtain"), CMOT_Float4);
 	AddOutput(Win, TEXT("Emit"), CMOT_Float3);
+	if (bR5)
+	{
+		AddOutput(Win, TEXT("Hole"), CMOT_Float1); // output 3
+		// The pane the glass point lies in (uv across and up it, its size in m) and its seed and age: the compose node's
+		// glass detail layer (ftcore::glassHlsl) reads them.
+		AddOutput(Win, TEXT("Pane"), CMOT_Float4); // output 4
+		AddOutput(Win, TEXT("PaneAge"), CMOT_Float2); // output 5
+	}
 	Win->RebuildOutputs();
 
 	// The glass is dark (GlassBase of the room as albedo, so the light is Emit's) and the curtain shows as cloth under the
@@ -774,7 +984,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionCustom* Compose = AddExpression<UMaterialExpressionCustom>(Material, 0, 0);
 	Compose->Description = TEXT("FTWindowCompose");
 	Compose->OutputType = CMOT_Float3;
-	Compose->Code = bR5 ? FT::ToFString(ftcore::windowFacadeComposeHlsl()) : FString(kWindowComposeCode);
+	Compose->Code = bR5 ? FT::ToFString(ftcore::windowFacadeComposeHlsl(true)) : FString(kWindowComposeCode);
 	Compose->Inputs.Reset();
 	AddInputFrom(Compose, TEXT("Win"), Win, 0);
 	AddInputFrom(Compose, TEXT("Curtain"), Win, 1);
@@ -797,12 +1007,35 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	if (bR5)
 	{
 		AddR5ComposeInputs(Compose, Face, Data[FTScene::WindowDataTint], Data[FTScene::WindowDataRoof]);
+		// The glass function's pass share reads the view's angle to the pane. GlassSpecular: 0.5 keeps the windows'
+		// mirror as it was (the city's night with it); 0.96 is a pane's two faces.
+		AddInput(Compose, TEXT("CamV"), Camera);
+		AddInput(Compose, TEXT("GlassSpec"), AddWindowScalar(Material, TEXT("GlassSpecular"), 0.5f, 3350));
+		AddInputFrom(Compose, TEXT("Pane"), Win, 4);
+		AddInputFrom(Compose, TEXT("PaneAge"), Win, 5);
+		// The look's Wetness for the glass's beads (none without the look's collection).
+		if (Look && Look->GetParameterId(TEXT("Wetness")).IsValid())
+		{
+			UMaterialExpressionCollectionParameter* Wet = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 3400);
+			Wet->Collection = Look;
+			Wet->ParameterName = TEXT("Wetness");
+			Wet->ParameterId = Look->GetParameterId(TEXT("Wetness"));
+			AddInput(Compose, TEXT("Wet"), Wet);
+		}
+		else
+		{
+			AddInput(Compose, TEXT("Wet"), AddWindowScalar(Material, TEXT("GlassWet"), 0.f, 3400));
+		}
 	}
 	AddOutput(Compose, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Compose, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Compose, TEXT("MetalOut"), CMOT_Float1);
 	AddOutput(Compose, TEXT("AOOut"), CMOT_Float1);
 	AddOutput(Compose, TEXT("EmissiveOut"), CMOT_Float3);
+	if (bR5)
+	{
+		AddOutput(Compose, TEXT("SpecOut"), CMOT_Float1); // output 6: the pane's two-face mirror share on glass
+	}
 	Compose->RebuildOutputs();
 
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
@@ -812,6 +1045,27 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	Inputs->Metallic.Connect(3, Compose);
 	Inputs->AmbientOcclusion.Connect(4, Compose);
 	Inputs->EmissiveColor.Connect(5, Compose);
+	if (bR5)
+	{
+		Inputs->Specular.Connect(6, Compose);
+	}
+	if (Look)
+	{
+		// The face's output 2 is UpOut, metres over the face's street floor.
+		UMaterialExpressionCustom* Weather = AddWeatherNode(Material, Wall, Compose, 1, 2, 4, Look, Face, 2);
+		Inputs->BaseColor.Connect(0, Weather);
+		Inputs->Normal.Connect(1, Weather);
+		Inputs->Roughness.Connect(2, Weather);
+		Inputs->AmbientOcclusion.Connect(3, Weather);
+	}
+	if (bR5 && bShopHoles)
+	{
+		Material->BlendMode = BLEND_Masked;
+		Material->OpacityMaskClipValue = 0.5f;
+		UMaterialExpressionOneMinus* Open = AddExpression<UMaterialExpressionOneMinus>(Material, 0, 400);
+		Open->Input.Connect(3, Win);
+		Inputs->OpacityMask.Connect(0, Open);
+	}
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
@@ -821,7 +1075,7 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 // An instance of the window master with the values Source (a surface's instance of M_WorldSurfaceTex) sets, and its
 // window width in metres (one a finish, so a building never mixes sizes).
 UMaterialInstanceConstant* BuildWindowInstance(const FString& Path, UMaterial* Master, const UMaterialInstanceConstant* Source,
-	float WindowWidth)
+	float WindowWidth, const ftcore::SurfaceJointSurface& Joint)
 {
 	UPackage* Package = CreatePackage(*Path);
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FPackageName::GetShortName(Path),
@@ -840,6 +1094,8 @@ UMaterialInstanceConstant* BuildWindowInstance(const FString& Path, UMaterial* M
 		Mic->SetVectorParameterValueEditorOnly(V.ParameterInfo, V.ParameterValue);
 	}
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WindowWidth")), WindowWidth);
+	// The wall's joints (ftcore::surfaceJointFor): their depth and the AO levels of a joint's floor and a unit's face.
+	FTSurfaceBuild::SetJoint(Mic, Joint);
 	Mic->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Mic);
 	return Mic;
@@ -882,6 +1138,189 @@ UMaterial* BuildNightLamp(UMaterialParameterCollection* Collection)
 	Inputs->BaseColor.Connect(0, Base);
 	Inputs->Roughness.Connect(0, Rough);
 	Inputs->EmissiveColor.Connect(0, Glow);
+	// The heads go on Nanite lamp meshes and instanced lenses: without these usages a Nanite mesh wearing it falls back
+	// to the default material (the same usages FT::AllowNanite gives an imported prop's master).
+	Material->SetUsageByFlag(MATUSAGE_Nanite, true);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	return Material;
+}
+
+UMaterialExpressionCollectionParameter* AddCollectionScalar(UMaterial* Material, UMaterialParameterCollection* Collection, const TCHAR* Name, int32 Y)
+{
+	UMaterialExpressionCollectionParameter* P = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
+	P->Collection = Collection;
+	P->ParameterName = Name;
+	P->ParameterId = Collection->GetParameterId(Name);
+	return P;
+}
+
+// A per-instance node whose class the engine's module doesn't export, found by name ("MaterialExpressionPerInstanceRandom"
+// or "MaterialExpressionPerInstanceCustomData"); null (logged) when the class isn't there.
+UMaterialExpression* AddPerInstanceNode(UMaterial* Material, const TCHAR* ClassName, int32 Y)
+{
+	UClass* const Class = FindObject<UClass>(FTopLevelAssetPath(TEXT("/Script/Engine"), ClassName));
+	if (!Class)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces: no %s node class."), ClassName);
+		return nullptr;
+	}
+	UMaterialExpression* Node = NewObject<UMaterialExpression>(Material, Class, NAME_None, RF_Transactional);
+	Material->GetExpressionCollection().AddExpression(Node);
+	Node->Material = Material;
+	Node->MaterialExpressionEditorX = -900;
+	Node->MaterialExpressionEditorY = Y;
+	Node->UpdateMaterialExpressionGuid(true, false);
+	return Node;
+}
+
+// Round 10 (-ShopHoles): the modelled shop interiors' master (FTShopInteriors::ShopMaterial), a flat painted surface:
+// Color and Roughness (each instance one of ftcore::windowShopColour). Round 11: its own light is
+// ftcore::windowShopModelGlowHlsl's: by day Color x ShopDay (a fixed interior ambient; the pieces stand in a shut box the
+// sky never reaches), by night (the window collection's Night) the lit bay's pieces in the bay's tint and level
+// (per-instance custom data slot 0, ftcore::windowShopLightCode) at ShopGlow x NightGlow, soft-capped at ShopGlowCap,
+// over Color x NightFloor.
+UMaterial* BuildShopInteriorMaster(UMaterialParameterCollection* Collection, const FWindowCaps& Caps)
+{
+	const ftcore::WindowFacadeSpec Spec;
+	UMaterial* Material = NewMaster(FTShopInteriors::ShopMaterial);
+	UMaterialExpressionVectorParameter* Color = AddExpression<UMaterialExpressionVectorParameter>(Material, -900, 0);
+	Color->ParameterName = TEXT("Color");
+	Color->DefaultValue = FLinearColor(0.6f, 0.58f, 0.54f);
+	Color->Group = TEXT("Shop");
+	Color->UpdateParameterGuid(true, false);
+	UMaterialExpressionScalarParameter* Rough = AddScalar(Material, TEXT("Roughness"), 0.6f, 100);
+	Rough->Group = TEXT("Shop");
+	auto ShopScalar = [Material](const TCHAR* Name, float Value, int32 Y)
+	{
+		UMaterialExpressionScalarParameter* P = AddScalar(Material, Name, Value, Y);
+		P->Group = TEXT("Shop");
+		return P;
+	};
+	UMaterialExpression* Code = AddPerInstanceNode(Material, TEXT("MaterialExpressionPerInstanceCustomData"), 300);
+	if (!Code)
+	{
+		return nullptr;
+	}
+	static_cast<UMaterialExpressionPerInstanceCustomData*>(Code)->DataIndex = 0;
+	UMaterialExpressionCustom* Glow = AddExpression<UMaterialExpressionCustom>(Material, -400, 200);
+	Glow->Description = TEXT("FTShopGlow");
+	Glow->OutputType = CMOT_Float3;
+	Glow->Code = FT::ToFString(ftcore::windowShopModelGlowHlsl());
+	Glow->Inputs.Reset();
+	AddInput(Glow, TEXT("Color"), Color);
+	AddInput(Glow, TEXT("Code"), Code);
+	AddInput(Glow, TEXT("Night"), AddCollectionScalar(Material, Collection, kWindowNight, 400));
+	AddInput(Glow, TEXT("NightGlow"), AddCollectionScalar(Material, Collection, kWindowNightGlow, 500));
+	AddInput(Glow, TEXT("ShopGlow"), ShopScalar(TEXT("ShopGlow"), Spec.shopGlow, 200));
+	AddInput(Glow, TEXT("ShopGlowCap"), ShopScalar(TEXT("ShopGlowCap"), Caps.Shop, 600));
+	AddInput(Glow, TEXT("DimLevel"), ShopScalar(TEXT("DimLevel"), Spec.shopDimLevel, 700));
+	AddInput(Glow, TEXT("ShopDay"), ShopScalar(TEXT("ShopDay"), Spec.shopModelDay, 800));
+	AddInput(Glow, TEXT("NightFloor"), ShopScalar(TEXT("NightFloor"), Spec.shopNightFloor, 900));
+
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(0, Color);
+	Inputs->Roughness.Connect(0, Rough);
+	Inputs->EmissiveColor.Connect(0, Glow);
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	return Material;
+}
+
+// Round 10 (-KitGlass): the building-kit modules' master (FTShopInteriors::KitGlassMaterial), the imported textured
+// master's parameters by name (BaseColorTexture, MetallicRoughnessTexture, NormalTexture, OcclusionTexture, BaseColor,
+// Roughness, Metallic), so a kit instance re-parented onto it keeps its maps. A kit's windows are baked into its maps as
+// dark smooth glass (base luminance under GlassLum and roughness under GlassRough); at night (the window collection's
+// Night times NightGlow) a module lit by its instance's random (under LitShare) lights that glass in one of the windows'
+// tints at GlowScale, soft-capped at GlowCap (round 11), so a kit facade keeps its share of lit windows.
+UMaterial* BuildKitGlassMaster(UMaterialParameterCollection* Collection, const FWindowCaps& Caps)
+{
+	const TCHAR* const SharedDir = TEXT("/Game/Characters/Shared/Materials/");
+	UTexture* White = LoadObject<UTexture>(nullptr, *(FString(SharedDir) + TEXT("T_FTWhite.T_FTWhite")));
+	UTexture* WhiteMasks = LoadObject<UTexture>(nullptr, *(FString(SharedDir) + TEXT("T_FTWhiteMasks.T_FTWhiteMasks")));
+	UTexture* FlatNormal = LoadObject<UTexture>(nullptr, *(FString(SharedDir) + TEXT("T_FTFlatNormal.T_FTFlatNormal")));
+	if (!White || !WhiteMasks || !FlatNormal)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -KitGlass: the textured master's default textures aren't in %s; import a kit first."), SharedDir);
+		return nullptr;
+	}
+	UMaterial* Material = NewMaster(FTShopInteriors::KitGlassMaterial);
+	// The kit's normal maps are tangent space (NewMaster sets world space for the surface masters).
+	Material->bTangentSpaceNormal = true;
+	auto Sampler = [Material](const TCHAR* Name, UTexture* Default, EMaterialSamplerType Type, int32 Y)
+	{
+		UMaterialExpressionTextureSampleParameter2D* S = AddExpression<UMaterialExpressionTextureSampleParameter2D>(Material, -900, Y);
+		S->ParameterName = Name;
+		S->Texture = Default;
+		S->SamplerType = Type;
+		S->UpdateParameterGuid(true, false);
+		return S;
+	};
+	// A texture sample's outputs: 0 RGB, 1 R, 2 G, 3 B. glTF packs occlusion in R, roughness in G, metallic in B.
+	UMaterialExpressionTextureSampleParameter2D* Base = Sampler(TEXT("BaseColorTexture"), White, SAMPLERTYPE_Color, 0);
+	UMaterialExpressionTextureSampleParameter2D* MetalRough = Sampler(TEXT("MetallicRoughnessTexture"), WhiteMasks, SAMPLERTYPE_Masks, 300);
+	UMaterialExpressionTextureSampleParameter2D* Normal = Sampler(TEXT("NormalTexture"), FlatNormal, SAMPLERTYPE_Normal, 600);
+	UMaterialExpressionTextureSampleParameter2D* Occlusion = Sampler(TEXT("OcclusionTexture"), WhiteMasks, SAMPLERTYPE_Masks, 900);
+	UMaterialExpressionVectorParameter* Color = AddExpression<UMaterialExpressionVectorParameter>(Material, -900, 1200);
+	Color->ParameterName = TEXT("BaseColor");
+	Color->DefaultValue = FLinearColor::White;
+	Color->UpdateParameterGuid(true, false);
+	UMaterialExpressionScalarParameter* Metallic = AddScalar(Material, TEXT("Metallic"), 1.f, 1300);
+	UMaterialExpressionScalarParameter* Roughness = AddScalar(Material, TEXT("Roughness"), 1.f, 1400);
+	UMaterialExpressionScalarParameter* LitShare = AddWindowScalar(Material, TEXT("LitShare"), ftcore::WindowFacadeSpec{}.litShare, 1500);
+	UMaterialExpressionScalarParameter* GlowScale = AddWindowScalar(Material, TEXT("GlowScale"), 0.4f, 1600);
+	UMaterialExpressionScalarParameter* GlowCap = AddWindowScalar(Material, TEXT("GlowCap"), Caps.Glow, 1650);
+	UMaterialExpressionScalarParameter* GlassLum = AddWindowScalar(Material, TEXT("GlassLum"), 0.12f, 1700);
+	UMaterialExpressionScalarParameter* GlassRough = AddWindowScalar(Material, TEXT("GlassRough"), 0.25f, 1800);
+	UMaterialExpression* Random = AddPerInstanceNode(Material, TEXT("MaterialExpressionPerInstanceRandom"), 1900);
+	if (!Random)
+	{
+		return nullptr;
+	}
+
+	UMaterialExpressionCustom* Kit = AddExpression<UMaterialExpressionCustom>(Material, -400, 0);
+	Kit->Description = TEXT("FTKitGlass");
+	Kit->OutputType = CMOT_Float3;
+	FString Code = TEXT("float3 base = Base.rgb * Color.rgb;\n"
+		"float r = MR.g * Rough;\n"
+		"RoughOut = r;\n"
+		"MetalOut = MR.b * Metal;\n"
+		"BaseOut = base;\n"
+		"bool glass = dot(base, float3(0.2126, 0.7152, 0.0722)) < GlassLum && r < GlassRough;\n"
+		"bool lit = frac(Random * 13.71) < LitShare;\n");
+	Code += FT::ToFString(ftcore::windowTintTableHlsl());
+	Code += FString::Printf(TEXT("uint tint = min((uint)(frac(Random * 57.13) * %u.0), %uu);\n"), ftcore::kWindowTints, ftcore::kWindowTints - 1);
+	Code += TEXT("float3 glow = (glass && lit) ? tints[tint] * Night * NightGlow * GlowScale : float3(0.0, 0.0, 0.0);\n"
+		"return glow / (1.0 + dot(glow, float3(0.2126, 0.7152, 0.0722)) / max(GlowCap, 1e-4));");
+	Kit->Code = Code;
+	Kit->Inputs.Reset();
+	AddInput(Kit, TEXT("Base"), Base);
+	AddInput(Kit, TEXT("MR"), MetalRough);
+	AddInput(Kit, TEXT("Color"), Color);
+	AddInput(Kit, TEXT("Rough"), Roughness);
+	AddInput(Kit, TEXT("Metal"), Metallic);
+	AddInput(Kit, TEXT("LitShare"), LitShare);
+	AddInput(Kit, TEXT("GlowScale"), GlowScale);
+	AddInput(Kit, TEXT("GlowCap"), GlowCap);
+	AddInput(Kit, TEXT("GlassLum"), GlassLum);
+	AddInput(Kit, TEXT("GlassRough"), GlassRough);
+	AddInput(Kit, TEXT("Random"), Random);
+	AddInput(Kit, TEXT("Night"), AddCollectionScalar(Material, Collection, kWindowNight, 2000));
+	AddInput(Kit, TEXT("NightGlow"), AddCollectionScalar(Material, Collection, kWindowNightGlow, 2100));
+	// Output 0 is the glow, then these in order.
+	AddOutput(Kit, TEXT("BaseOut"), CMOT_Float3);
+	AddOutput(Kit, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Kit, TEXT("MetalOut"), CMOT_Float1);
+	Kit->RebuildOutputs();
+
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	Inputs->BaseColor.Connect(1, Kit);
+	Inputs->Roughness.Connect(2, Kit);
+	Inputs->Metallic.Connect(3, Kit);
+	Inputs->Normal.Connect(0, Normal);
+	Inputs->AmbientOcclusion.Connect(1, Occlusion);
+	Inputs->EmissiveColor.Connect(0, Kit);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	return Material;
@@ -892,6 +1331,10 @@ UMaterial* BuildNightLamp(UMaterialParameterCollection* Collection)
 // each copying that surface's instance with one of kWindowWidths, and the street lamps' heads (FTScene::NightLampMaterial).
 // Only those packages are replaced. -FacadeR5 writes the round 5 master (ftcore/WindowFacade.h) at the same path; without
 // it the master is r4's, byte for byte.
+// Round 10: -WindowParallax=<0|1> the collection's Parallax default (0); -ShopHoles (with -FacadeR5) the masked master
+// with the kerbed shop glass cut open and the shop interiors' master (FTShopInteriors::ShopMaterial); -KitGlass the kit
+// modules' master with night glass (FTShopInteriors::KitGlassMaterial).
+// Round 11: -WindowGlowCap=, -ShopGlowCap=, -SignGlowCap= the night light's soft caps (FWindowCaps), on all three masters.
 int32 BuildWindows(const FString& Params)
 {
 	FString Atlas;
@@ -946,9 +1389,40 @@ int32 BuildWindows(const FString& Params)
 		}
 	}
 
+	// -Weather: the master reads the look's Wetness; its collection is found before anything is replaced.
+	UMaterialParameterCollection* Look = nullptr;
+	if (FParse::Param(*Params, TEXT("Weather")))
+	{
+		Look = LoadLookCollection(TEXT("FTBuildSurfaces -Windows"));
+		if (!Look)
+		{
+			return 1;
+		}
+	}
+
+	const bool bR5 = FParse::Param(*Params, TEXT("FacadeR5"));
+	const bool bShopHoles = FParse::Param(*Params, TEXT("ShopHoles"));
+	const bool bKitGlass = FParse::Param(*Params, TEXT("KitGlass"));
+	if (bShopHoles && !bR5)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: -ShopHoles needs -FacadeR5."));
+		return 1;
+	}
+	float Parallax = 0.f; // off by default: the user finds the still picture easier to watch; a player setting may turn it on
+	FParse::Value(*Params, TEXT("WindowParallax="), Parallax);
+	Parallax = FMath::Clamp(Parallax, 0.f, 1.f);
+
 	// Start from nothing: replace the windows' files up front, before anything loads the old assets.
 	TArray<FString> Packages = {FTScene::WindowMaterial, FTScene::WindowCollection, FTScene::WindowRoomsTexture, FTScene::WindowCurtainsTexture,
 		FTScene::NightLampMaterial};
+	if (bShopHoles)
+	{
+		Packages.Add(FTShopInteriors::ShopMaterial);
+	}
+	if (bKitGlass)
+	{
+		Packages.Add(FTShopInteriors::KitGlassMaterial);
+	}
 	for (const FString& Id : Ids)
 	{
 		Packages.Add(FTScene::WindowInstancePackage(Id));
@@ -970,35 +1444,59 @@ int32 BuildWindows(const FString& Params)
 	{
 		return 1;
 	}
-	UMaterialParameterCollection* Collection = BuildWindowCollection();
-	const bool bR5 = FParse::Param(*Params, TEXT("FacadeR5"));
+	UMaterialParameterCollection* Collection = BuildWindowCollection(Parallax);
 	// -WindowPrimitiveData: the master reads custom primitive data only (the graph before the boxes became instances).
 	const bool bPrimitiveData = FParse::Param(*Params, TEXT("WindowPrimitiveData"));
-	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5, bPrimitiveData);
+	FWindowCaps Caps;
+	FParse::Value(*Params, TEXT("WindowGlowCap="), Caps.Glow);
+	FParse::Value(*Params, TEXT("ShopGlowCap="), Caps.Shop);
+	FParse::Value(*Params, TEXT("SignGlowCap="), Caps.Sign);
+	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5, bPrimitiveData, Look, bShopHoles, Caps);
 	UMaterial* Lamp = BuildNightLamp(Collection);
+	UMaterial* ShopInterior = bShopHoles ? BuildShopInteriorMaster(Collection, Caps) : nullptr;
+	UMaterial* KitGlass = bKitGlass ? BuildKitGlassMaster(Collection, Caps) : nullptr;
+	if ((bShopHoles && !ShopInterior) || (bKitGlass && !KitGlass))
+	{
+		return 1;
+	}
 	// The finishes take the widths in turn, so neighbouring finishes differ and every width is used.
 	TArray<UMaterialInstanceConstant*> Instances;
 	TArray<FString> Widths;
 	for (int32 I = 0; I < Ids.Num(); ++I)
 	{
 		const float Width = kWindowWidths[I % static_cast<int32>(UE_ARRAY_COUNT(kWindowWidths))];
-		Instances.Add(BuildWindowInstance(FTScene::WindowInstancePackage(Ids[I]), Master, Sources[I], Width));
+		const FTCHARToUTF8 IdUtf8(*Ids[I]);
+		Instances.Add(BuildWindowInstance(FTScene::WindowInstancePackage(Ids[I]), Master, Sources[I], Width,
+			ftcore::surfaceJointFor(std::string_view(IdUtf8.Get(), static_cast<size_t>(IdUtf8.Length())))));
 		Widths.Add(FString::Printf(TEXT("%s %.2f m"), *Ids[I], Width));
 	}
 
 	FAssetCompilingManager::Get().FinishAllCompilation();
-	if (FT::CompileErrors(TEXT("FTBuildSurfaces -Windows"), Master) > 0 || FT::CompileErrors(TEXT("FTBuildSurfaces -Windows"), Lamp) > 0)
+	if (FT::CompileErrors(TEXT("FTBuildSurfaces -Windows"), Master) > 0 || FT::CompileErrors(TEXT("FTBuildSurfaces -Windows"), Lamp) > 0 ||
+		(ShopInterior && FT::CompileErrors(TEXT("FTBuildSurfaces -Windows"), ShopInterior) > 0) ||
+		(KitGlass && FT::CompileErrors(TEXT("FTBuildSurfaces -Windows"), KitGlass) > 0))
 	{
 		return 1;
 	}
 	FAssetRegistryModule::AssetCreated(Master);
 	FAssetRegistryModule::AssetCreated(Lamp);
+	for (UMaterial* Extra : {ShopInterior, KitGlass})
+	{
+		if (Extra)
+		{
+			FAssetRegistryModule::AssetCreated(Extra);
+		}
+	}
 	int64 Bytes = 0;
 	bool bSaved = SaveAsset(Rooms, Bytes);
 	bSaved = SaveAsset(Curtains, Bytes) && bSaved;
 	bSaved = SaveAsset(Collection, Bytes) && bSaved;
 	bSaved = SaveAsset(Master, Bytes) && bSaved;
 	bSaved = SaveAsset(Lamp, Bytes) && bSaved;
+	for (UMaterial* Extra : {ShopInterior, KitGlass})
+	{
+		bSaved = (!Extra || SaveAsset(Extra, Bytes)) && bSaved;
+	}
 	for (UMaterialInstanceConstant* Instance : Instances)
 	{
 		bSaved = SaveAsset(Instance, Bytes) && bSaved;
@@ -1010,6 +1508,89 @@ int32 BuildWindows(const FString& Params)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Windows: saved the atlases, %s, %s, %s and %d instances (%s) in %.1f MB."),
 		FTScene::WindowCollection, FTScene::WindowMaterial, FTScene::NightLampMaterial, Instances.Num(), *FString::Join(Widths, TEXT(", ")),
 		Bytes / (1024.0 * 1024.0));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Windows: night caps: windows %.2f, shop glass %.2f, signs %.2f; GlowScale %.2f, "
+		"ShopGlow %.2f, LitShare %.2f, UpperLit %.2f."), Caps.Glow, Caps.Shop, Caps.Sign, ftcore::WindowFacadeSpec{}.glowScale,
+		ftcore::WindowFacadeSpec{}.shopGlow, ftcore::WindowFacadeSpec{}.litShare, ftcore::WindowFacadeSpec{}.upperLit);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Windows: Parallax %.0f by default%s%s."), Parallax,
+		bShopHoles ? *FString::Printf(TEXT("; shop holes (masked master) and %s"), FTShopInteriors::ShopMaterial) : TEXT(""),
+		bKitGlass ? *FString::Printf(TEXT("; %s"), FTShopInteriors::KitGlassMaterial) : TEXT(""));
+	return 0;
+}
+
+// -Master [-Weather]: M_WorldSurfaceTex alone, rebuilt in place from the textures already built for the table's first
+// surface (its defaults). The surfaces' textures and instances stay as they are: an instance finds its parameters in the
+// new master by name.
+int32 BuildMasterOnly(const FString& Params)
+{
+	ftcore::SurfaceTable Table;
+	if (!FTScene::LoadSurfaceTable(Table) || Table.surfaces.empty())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Master: Data/Field/surfaces.json is missing or empty."));
+		return 1;
+	}
+	UMaterialParameterCollection* Look = nullptr;
+	if (FParse::Param(*Params, TEXT("Weather")))
+	{
+		Look = LoadLookCollection(TEXT("FTBuildSurfaces -Master"));
+		if (!Look)
+		{
+			return 1;
+		}
+	}
+	const FString FirstId = FT::ToFString(Table.surfaces[0].id);
+	UTexture* Defaults[kMapCount] = {};
+	for (int32 M = 0; M < kMapCount; ++M)
+	{
+		const FString Path = TexturePackage(FirstId, kMaps[M]);
+		Defaults[M] = LoadObject<UTexture>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)));
+		if (!Defaults[M])
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Master: %s is missing; build the surfaces first."), *Path);
+			return 1;
+		}
+	}
+	const FString File = PackageFile(FTScene::SurfaceTexMaterial);
+	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Master: couldn't replace %s."), *File);
+		return 1;
+	}
+	UMaterial* Master = BuildMaster(MakeArrayView(Defaults), Look);
+	FAssetCompilingManager::Get().FinishAllCompilation();
+	if (FT::CompileErrors(TEXT("FTBuildSurfaces -Master"), Master) > 0)
+	{
+		return 1;
+	}
+	FAssetRegistryModule::AssetCreated(Master);
+	int64 Bytes = 0;
+	if (!SaveAsset(Master, Bytes))
+	{
+		return 1;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Master: saved %s%s (%d expressions)."), FTScene::SurfaceTexMaterial,
+		Look ? TEXT(" with the weather node") : TEXT(""), Master->GetExpressionCollection().Expressions.Num());
+	// The built instances take their surface's joints (ftcore::surfaceJointFor), so a master-only build gives them depth.
+	int32 Jointed = 0;
+	for (const ftcore::SurfaceSpec& Spec : Table.surfaces)
+	{
+		const ftcore::SurfaceJointSurface Joint = ftcore::surfaceJointFor(Spec.id);
+		const FString Path = FTScene::SurfaceInstancePackage(FT::ToFString(Spec.id));
+		UMaterialInstanceConstant* Mic = Joint.depthCm > 0.f
+			? LoadObject<UMaterialInstanceConstant>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet)
+			: nullptr;
+		if (!Mic)
+		{
+			continue;
+		}
+		FTSurfaceBuild::SetJoint(Mic, Joint);
+		Mic->PostEditChange();
+		if (!SaveAsset(Mic, Bytes))
+		{
+			return 1;
+		}
+		++Jointed;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Master: joint depth set on %d surface instances."), Jointed);
 	return 0;
 }
 } // namespace FTSurfaceBuild
@@ -1029,6 +1610,10 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	if (FParse::Param(*Params, TEXT("Windows")))
 	{
 		return FTSurfaceBuild::BuildWindows(Params);
+	}
+	if (FParse::Param(*Params, TEXT("Master")))
+	{
+		return FTSurfaceBuild::BuildMasterOnly(Params);
 	}
 	FString Dir;
 	if (!FParse::Value(*Params, TEXT("Source="), Dir, false) || Dir.IsEmpty())
@@ -1144,6 +1729,17 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
+	// -Weather (a full build only; -Only keeps the master's graph): the weather node over the surface.
+	UMaterialParameterCollection* Look = nullptr;
+	if (!bOnly && FParse::Param(*Params, TEXT("Weather")))
+	{
+		Look = FTSurfaceBuild::LoadLookCollection(TEXT("FTBuildSurfaces"));
+		if (!Look)
+		{
+			return 1;
+		}
+	}
+
 	// Start from nothing: replace the files up front, before anything loads the old assets.
 	TArray<FString> Packages;
 	if (!bOnly)
@@ -1190,7 +1786,7 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	bool bMasterChanged = true;
 	if (!bOnly)
 	{
-		Master = FTSurfaceBuild::BuildMaster(MakeArrayView(Textures.GetData(), FTSurfaceBuild::kMapCount));
+		Master = FTSurfaceBuild::BuildMaster(MakeArrayView(Textures.GetData(), FTSurfaceBuild::kMapCount), Look);
 	}
 	else
 	{

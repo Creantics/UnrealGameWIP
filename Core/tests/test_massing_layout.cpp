@@ -421,7 +421,7 @@ TEST_CASE("massingYardFill fills the open ground with fenced yards, off the boxe
     REQUIRE(c.yards >= 4);
     CHECK(c.sheds == c.yards);
     CHECK(boxes.size() == 1 + c.sheds + c.fences);
-    std::size_t gates = 0;
+    std::size_t gates = 0, lows = 0;
     for (std::size_t i = 1; i < boxes.size(); ++i) {
         const MassingBox& b = boxes[i];
         INFO(b.id);
@@ -434,7 +434,16 @@ TEST_CASE("massingYardFill fills the open ground with fenced yards, off the boxe
         CHECK((b.cy - 0.5 * b.sy >= 66.0 - 1e-6 || b.cy + 0.5 * b.sy <= 54.0 + 1e-6));
         CHECK_FALSE((b.cx - 0.5 * b.sx < 46.0 && b.cy - 0.5 * b.sy < 46.0));
         CHECK_FALSE((b.cx + 0.5 * b.sx > 150.0 && b.cy - 0.5 * b.sy < 50.0));
-        if (b.kind == "wall") CHECK(b.z1 - b.z0 == doctest::Approx(1.9));
+        // A fence, or on the street's side a low wall in pieces no longer than frontPiece.
+        if (b.kind == "wall") {
+            const bool low = b.z1 - b.z0 == doctest::Approx(1.0);
+            CHECK((low || b.z1 - b.z0 == doctest::Approx(1.9)));
+            if (low) {
+                CHECK(std::max(b.sx, b.sy) <= opts.frontPiece + 1e-9);
+                CHECK(std::fabs(b.cy - 60.0) < 6.5); // on the side facing the street (24 m reach)
+                ++lows;
+            }
+        }
         if (b.kind == "kit") CHECK(b.z1 - b.z0 >= 7.0 - 1e-9);
         // No two of the new boxes overlap.
         for (std::size_t k = i + 1; k < boxes.size(); ++k) {
@@ -446,6 +455,7 @@ TEST_CASE("massingYardFill fills the open ground with fenced yards, off the boxe
         if (b.id.size() > 8 && b.id.find("-F") != std::string::npos) ++gates;
     }
     CHECK(gates == c.fences);
+    CHECK(lows >= 2);
     // Ground under groundMin (flat 0 here) takes none.
     std::vector<MassingBox> none;
     MassingYards wet = opts;

@@ -78,8 +78,12 @@ TEST_CASE("fight fate: the controlled lead's fall hands control to the standing 
     const FightTick& q = s.tick(kFrame);
     CHECK(q.leadsFell == 0);
     CHECK(q.tookOver == kNoFighter);
-    // The player cannot switch to a lead that is down.
-    CHECK_FALSE(s.setActiveLead(kLeadA));
+    // The player cannot switch to a lead that is down: asked, then refused at the close.
+    CHECK(s.setActiveLead(kLeadA));
+    const FightTick& no = s.tick(kFrame);
+    CHECK(no.switchRefused == kLeadA);
+    CHECK(no.switchRefusal == SwitchRefusal::Down);
+    CHECK(no.switched == kNoFighter);
     CHECK(s.activeLead() == kLeadB);
     // It stands again: control stays where it went.
     s.setLeadHealth(kLeadA, 0.25f);
@@ -89,9 +93,14 @@ TEST_CASE("fight fate: the controlled lead's fall hands control to the standing 
     CHECK(r.leadsFell == 0);
     CHECK(s.activeLead() == kLeadB);
     CHECK(s.tick(kFrame).leadsRose == 0);
-    // Only the player's switch moves it back.
+    // Only the player's switch moves it back, at the step's close.
     CHECK(s.setActiveLead(kLeadA));
+    CHECK(s.activeLead() == kLeadB);
+    const FightTick& back = s.tick(kFrame);
+    CHECK(back.switched == kLeadA);
+    CHECK(back.switchRefused == kNoFighter);
     CHECK(s.activeLead() == kLeadA);
+    CHECK(s.tick(kFrame).switched == kNoFighter); // once
 }
 
 TEST_CASE("fight fate: the partner's fall changes no control; both down is a defeat, reported once") {
@@ -132,14 +141,25 @@ namespace {
 // What one closed step showed.
 struct Closed {
     std::uint8_t fell = 0, rose = 0;
-    FighterId tookOver = kNoFighter, active = kNoFighter;
+    FighterId tookOver = kNoFighter, active = kNoFighter, switched = kNoFighter, switchRefused = kNoFighter;
+    SwitchRefusal refusal = SwitchRefusal::None;
     bool defeated = false, downA = false, downB = false;
     std::uint64_t hash = 0;
     bool operator==(const Closed&) const = default;
 };
-// A fight with kLeadA controlled (kLeadB down first when bDown), then one step's health feeds in the order given,
-// closed by a tick.
-Closed closeStep(bool bDown, std::initializer_list<std::pair<FighterId, float>> feeds) {
+// One call in a step: a health feed, (sw) the player's switch to that lead, or a checkpoint between ticks.
+enum class Cp : std::uint8_t { None, Phase, Host };
+struct Feed {
+    FighterId lead = kNoFighter;
+    float health = 0.f;
+    bool sw = false;
+    Cp cp = Cp::None;
+};
+Feed switchTo(FighterId lead) { return Feed{lead, 0.f, true}; }
+Feed checkpointBy(Cp how) { return Feed{kNoFighter, 0.f, false, how}; }
+// A fight with kLeadA controlled (kLeadB down first when bDown), then one step's calls in the order given, closed
+// by a tick.
+Closed closeStep(bool bDown, std::initializer_list<Feed> feeds) {
     FightSession s;
     REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
     REQUIRE(s.setActiveLead(kLeadA));
@@ -148,14 +168,30 @@ Closed closeStep(bool bDown, std::initializer_list<std::pair<FighterId, float>> 
         s.setLeadHealth(kLeadB, 0.f);
         REQUIRE(s.tick(kFrame).leadsFell == kBitB);
     }
-    for (const auto& f : feeds) s.setLeadHealth(f.first, f.second);
-    CHECK_FALSE(s.defeated()); // nothing settles before the step closes
-    CHECK(s.activeLead() == kLeadA);
+    bool cp = false;
+    for (const Feed& f : feeds) {
+        if (f.cp == Cp::Phase) {
+            REQUIRE(s.checkpointPhase(1));
+            cp = true;
+        } else if (f.cp == Cp::Host) {
+            REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart); // the start's part
+            cp = true;
+        } else if (f.sw) {
+            REQUIRE(s.setActiveLead(f.lead));
+        } else {
+            s.setLeadHealth(f.lead, f.health);
+        }
+    }
+    if (!cp) CHECK_FALSE(s.defeated()); // nothing settles before the step closes (a checkpoint settles falls)
+    CHECK(s.activeLead() == kLeadA);    // a switch never resolves before the tick, checkpoint or not
     const FightTick& t = s.tick(kFrame);
     Closed c;
     c.fell = t.leadsFell;
     c.rose = t.leadsRose;
     c.tookOver = t.tookOver;
+    c.switched = t.switched;
+    c.switchRefused = t.switchRefused;
+    c.refusal = t.switchRefusal;
     c.defeated = t.defeated;
     c.active = s.activeLead();
     c.downA = s.down(kLeadA);
@@ -188,6 +224,188 @@ TEST_CASE("fight fate: one lead falls on the step the other stands: control to t
     CHECK_FALSE(ab.defeated);
     CHECK(ab.downA);
     CHECK_FALSE(ab.downB);
+}
+
+TEST_CASE("fight fate: a switch to a lead who stands up on the same step is honoured, in either order") {
+    const Closed sr = closeStep(true, {switchTo(kLeadB), {kLeadB, 0.25f}});
+    const Closed rs = closeStep(true, {{kLeadB, 0.25f}, switchTo(kLeadB)});
+    CHECK(sr == rs);
+    CHECK(sr.rose == kBitB);
+    CHECK(sr.fell == 0);
+    CHECK(sr.switched == kLeadB);
+    CHECK(sr.switchRefused == kNoFighter);
+    CHECK(sr.tookOver == kNoFighter);
+    CHECK(sr.active == kLeadB);
+}
+
+TEST_CASE("fight fate: a switch to a lead who falls on the same step is refused Down, in either order") {
+    const Closed sf = closeStep(false, {switchTo(kLeadB), {kLeadB, 0.f}});
+    const Closed fs = closeStep(false, {{kLeadB, 0.f}, switchTo(kLeadB)});
+    CHECK(sf == fs);
+    CHECK(sf.fell == kBitB);
+    CHECK(sf.switched == kNoFighter);
+    CHECK(sf.switchRefused == kLeadB);
+    CHECK(sf.refusal == SwitchRefusal::Down);
+    CHECK(sf.tookOver == kNoFighter);
+    CHECK(sf.active == kLeadA);
+    CHECK_FALSE(sf.defeated);
+}
+
+TEST_CASE("fight fate: a switch on a quiet step, and beside the controlled lead's fall, in either order") {
+    const Closed quiet = closeStep(false, {switchTo(kLeadB)});
+    CHECK(quiet.switched == kLeadB);
+    CHECK(quiet.active == kLeadB);
+    CHECK(quiet.tookOver == kNoFighter);
+    // To the other lead as the controlled one falls: the takeover gives it control, so the switch reports nothing.
+    const Closed sf = closeStep(false, {switchTo(kLeadB), {kLeadA, 0.f}});
+    const Closed fs = closeStep(false, {{kLeadA, 0.f}, switchTo(kLeadB)});
+    CHECK(sf == fs);
+    CHECK(sf.tookOver == kLeadB);
+    CHECK(sf.switched == kNoFighter);
+    CHECK(sf.switchRefused == kNoFighter);
+    CHECK(sf.active == kLeadB);
+    // To the controlled lead as it falls: the takeover stands, the switch is refused Down.
+    const Closed kf = closeStep(false, {switchTo(kLeadA), {kLeadA, 0.f}});
+    const Closed fk = closeStep(false, {{kLeadA, 0.f}, switchTo(kLeadA)});
+    CHECK(kf == fk);
+    CHECK(kf.tookOver == kLeadB);
+    CHECK(kf.switchRefused == kLeadA);
+    CHECK(kf.refusal == SwitchRefusal::Down);
+    CHECK(kf.active == kLeadB);
+    // On a defeat: refused Defeated, control unchanged.
+    const Closed d1 = closeStep(false, {switchTo(kLeadB), {kLeadA, 0.f}, {kLeadB, 0.f}});
+    const Closed d2 = closeStep(false, {{kLeadB, 0.f}, {kLeadA, 0.f}, switchTo(kLeadB)});
+    CHECK(d1 == d2);
+    CHECK(d1.defeated);
+    CHECK(d1.switchRefused == kLeadB);
+    CHECK(d1.refusal == SwitchRefusal::Defeated);
+    CHECK(d1.tookOver == kNoFighter);
+    CHECK(d1.active == kLeadA);
+}
+
+TEST_CASE("fight fate: a checkpoint between ticks never resolves the switch: one to a lead who falls in that step is refused at the close, whatever the order") {
+    using L = std::initializer_list<Feed>;
+    const Feed sw = switchTo(kLeadB);
+    const Feed fall{kLeadB, 0.f};
+    for (const Cp how : {Cp::Phase, Cp::Host}) {
+        const Feed cp = checkpointBy(how);
+        const L orders[] = {{sw, cp, fall}, {sw, fall, cp}, {cp, sw, fall}, {fall, cp, sw}, {fall, sw, cp},
+                            {cp, fall, sw}};
+        for (const L& o : orders) {
+            const Closed c = closeStep(false, o);
+            CHECK(c.fell == kBitB);
+            CHECK(c.switched == kNoFighter);
+            CHECK(c.switchRefused == kLeadB);
+            CHECK(c.refusal == SwitchRefusal::Down);
+            CHECK(c.tookOver == kNoFighter);
+            CHECK(c.active == kLeadA);
+            CHECK_FALSE(c.defeated);
+            CHECK(c.downB);
+        }
+    }
+    // The request still waits after the checkpoint, and the close reports it once.
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.tick(kFrame);
+    REQUIRE(s.setActiveLead(kLeadB));
+    REQUIRE(s.checkpointPhase(1));
+    CHECK(s.switchRequested() == kLeadB);
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.tick(kFrame).switched == kLeadB);
+    CHECK(s.switchRequested() == kNoFighter);
+    CHECK(s.tick(kFrame).switched == kNoFighter);
+}
+
+TEST_CASE("fight fate: the start checkpoint the host writes at set-up never resolves the switch, whatever the order") {
+    using L = std::initializer_list<Feed>;
+    const Feed sw = switchTo(kLeadB);
+    const Feed fall{kLeadB, 0.f};
+    const Feed cp = checkpointBy(Cp::Host);
+    const L orders[] = {{sw, cp, fall}, {sw, fall, cp}, {cp, sw, fall}, {fall, cp, sw}, {fall, sw, cp}, {cp, fall, sw}};
+    for (const L& o : orders) {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok()); // no tick: the start checkpoint is still due
+        for (const Feed& f : o) {
+            if (f.cp == Cp::Host)
+                REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+            else if (f.sw)
+                REQUIRE(s.setActiveLead(f.lead));
+            else
+                s.setLeadHealth(f.lead, f.health);
+        }
+        CHECK(s.activeLead() == kLeadA);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.leadsFell == kBitB);
+        CHECK(t.switched == kNoFighter);
+        CHECK(t.switchRefused == kLeadB);
+        CHECK(t.switchRefusal == SwitchRefusal::Down);
+        CHECK(t.tookOver == kNoFighter);
+        CHECK(s.activeLead() == kLeadA);
+        CHECK_FALSE(s.defeated());
+    }
+}
+
+TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if that lead stands there") {
+    // The same lead after a retry whether the host's write or the first tick took the start checkpoint.
+    for (const bool hostFirst : {true, false}) {
+        CAPTURE(hostFirst);
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        REQUIRE(s.setActiveLead(kLeadB));
+        if (hostFirst) REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+        CHECK(s.tick(kFrame).switched == kLeadB);
+        REQUIRE(s.setActiveLead(kLeadA));
+        s.tick(kFrame);
+        REQUIRE(s.activeLead() == kLeadA);
+        CHECK(s.retry().at == CheckpointAt::FightStart);
+        CHECK(s.activeLead() == kLeadB);
+        CHECK(s.switchRequested() == kNoFighter);
+        CHECK(s.tick(kFrame).switched == kNoFighter); // applied by the retry: no event
+    }
+    // Waiting at a phase checkpoint: the retry opens on it.
+    {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().activeLead == kLeadA);
+        CHECK(s.checkpoint().switchRequested == kLeadB);
+        CHECK(s.tick(kFrame).switched == kLeadB);
+        REQUIRE(s.setActiveLead(kLeadA));
+        s.tick(kFrame);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.activeLead() == kLeadB);
+    }
+    // For a lead down in the checkpoint: dropped.
+    {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(kFrame);
+        s.setLeadHealth(kLeadB, 0.f);
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().down[kLeadB]);
+        CHECK(s.checkpoint().switchRequested == kLeadB);
+        CHECK(s.tick(kFrame).switchRefused == kLeadB);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.activeLead() == kLeadA);
+        CHECK(s.switchRequested() == kNoFighter);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.switched == kNoFighter);
+        CHECK(t.switchRefused == kNoFighter);
+    }
+}
+
+TEST_CASE("fight fate: of two switch requests in one step the last wins, and the earlier raises no event") {
+    const Closed c = closeStep(false, {switchTo(kLeadB), switchTo(kLeadA)});
+    CHECK(c.switched == kNoFighter); // the last asked for the lead already in control
+    CHECK(c.switchRefused == kNoFighter);
+    CHECK(c.active == kLeadA);
+    const Closed d = closeStep(true, {switchTo(kLeadB), switchTo(kLeadA)}); // the earlier would be refused Down
+    CHECK(d.switchRefused == kNoFighter);
+    CHECK(d.refusal == SwitchRefusal::None);
+    CHECK(d.active == kLeadA);
 }
 
 TEST_CASE("fight fate: a lead that falls and stands again within one step does neither; the partner's fall moves nothing") {
@@ -342,7 +560,8 @@ TEST_CASE("fight fate: the fight-start checkpoint is taken once, at the host's w
     host.currency = 12;
     s.setHostCheckpoint(host);
     CHECK(s.checkpoint().at == CheckpointAt::FightStart);
-    CHECK(s.checkpoint().activeLead == kLeadB);
+    CHECK(s.checkpoint().activeLead == kLeadA);      // the set-up's switch waits for the first tick
+    CHECK(s.checkpoint().switchRequested == kLeadB); // and the checkpoint carries it
     CHECK(s.checkpoint().leadHealth[kLeadA] == 0.5f);
     CHECK(s.checkpoint().host.currency == 12);
     CHECK(s.tick(kFrame).checkpoint == CheckpointAt::None);
@@ -893,10 +1112,10 @@ TEST_CASE("fight fate: a lead that cannot fall in this fight survives a lethal b
     CHECK_FALSE(s.down(kLeadA));
     CHECK_FALSE(s.defeated());
     CHECK(s.tick(kFrame).heldUp == kBitA);
-    // A non-lead is the plain sum; the flag is per fight: a fight without it lets the same lead fall.
-    CHECK(s.blowOnLead(kThirdSlot, 10, 30, 100) == -20);
+    // A non-lead is the plain sum (never under 0); the flag is per fight: a fight without it lets the same lead fall.
+    CHECK(s.blowOnLead(kThirdSlot, 10, 30, 100) == 0);
     REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
-    CHECK(s.blowOnLead(kLeadA, 40, 500, 100) == -460);
+    CHECK(s.blowOnLead(kLeadA, 40, 500, 100) == 0);
     CHECK(s.down(kLeadA));
     CHECK(s.tick(kFrame).heldUp == 0);
 }
@@ -925,8 +1144,8 @@ TEST_CASE("fight fate: with both leads unable to fall, health never loses the fi
     one.cannotFall = {false, true};
     REQUIRE(s.begin(one, 0.0).ok());
     CHECK_FALSE(s.cannotFall(kLeadB));
-    CHECK(s.blowOnLead(kLeadB, 10, 20, 100) == -10);
-    CHECK(s.blowOnLead(kLeadA, 10, 20, 100) == -10);
+    CHECK(s.blowOnLead(kLeadB, 10, 20, 100) == 0);
+    CHECK(s.blowOnLead(kLeadA, 10, 20, 100) == 0);
     const FightTick& end = s.tick(kFrame);
     CHECK(end.defeated);
     CHECK(end.heldUp == 0);
@@ -1205,4 +1424,29 @@ TEST_CASE("fight fate: stateHash moves with each play field the host can change 
         e(s);
         CHECK(s.stateHash() != h0);
     }
+}
+
+TEST_CASE("fight fate: blowOnLead holds the damage to 0..hp, so extreme ints never overflow and a blow never heals") {
+    constexpr int kMax = std::numeric_limits<int>::max();
+    constexpr int kMin = std::numeric_limits<int>::min();
+    FightSessionDef d;
+    d.cannotFall = {true, false};
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    // Huge blows: the plain lead goes to 0 and falls; the one that cannot fall stays at 1.
+    CHECK(s.blowOnLead(kLeadB, 40, kMax, 100) == 0);
+    CHECK(s.down(kLeadB));
+    CHECK(s.blowOnLead(kLeadA, 40, kMax, 100) == 1);
+    CHECK_FALSE(s.down(kLeadA));
+    CHECK(s.blowOnLead(kLeadA, kMax, kMax, 100) == 1);
+    CHECK(s.blowOnLead(kThirdSlot, kMax, kMax, 100) == 0);
+    CHECK(s.blowOnLead(kThirdSlot, kMin, kMax, 100) == kMin); // already under 0: no damage left to take
+    // Negative damage heals nothing.
+    CHECK(s.blowOnLead(kLeadA, 40, -5, 100) == 40);
+    CHECK(s.blowOnLead(kLeadA, 40, kMin, 100) == 40);
+    CHECK(s.blowOnLead(kThirdSlot, kMax, kMin, 100) == kMax);
+    CHECK(s.blowOnLead(kThirdSlot, kMin, kMin, 100) == kMin);
+    CHECK(s.leadHealth(kLeadA) == 0.4f);
+    // A blow of 0 at hp 0 is no blow: the lead that cannot fall is still held at 1.
+    CHECK(s.blowOnLead(kLeadA, 0, 0, 100) == 1);
 }

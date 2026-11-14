@@ -73,7 +73,38 @@ inline constexpr const TCHAR* GroundMaterial = TEXT("/Game/Rendering/M_WorldGrou
 // docs/PHOTOREAL_LOOK.md.
 inline constexpr const TCHAR* LookCollection = TEXT("/Game/Look/MPC_Look");
 inline constexpr const TCHAR* LookWaterMaterial = TEXT("/Game/Look/M_Look_Water");
+// A canal's running water and its walls and bed (FTBuildLookMaterials, alone with -Canal).
+inline constexpr const TCHAR* LookCanalWaterMaterial = TEXT("/Game/Look/M_Look_CanalWater");
+inline constexpr const TCHAR* LookCanalBedMaterial = TEXT("/Game/Look/M_Look_CanalBed");
+// The sea's bed near the shore: sand, stones and weed, on a skin over the ground there (FTBuildLookMaterials, with -Canal).
+inline constexpr const TCHAR* LookSeaBedMaterial = TEXT("/Game/Look/M_Look_SeaBed");
+// The view from under a water surface, a post-process (FTBuildLookMaterials, alone with -Underwater; FTWaterSubsystem.h).
+inline constexpr const TCHAR* LookUnderwaterMaterial = TEXT("/Game/Look/M_Look_Underwater");
+// What stirs the water and lights it from above: the rings, the lead's place and wake, the sun under water. Read by the
+// water surfaces and the underwater view, written each frame by the water subsystem (FTBuildLookMaterials, with -Water).
+inline constexpr const TCHAR* LookWaterCollection = TEXT("/Game/Look/MPC_Water");
+// A wet print on dry ground, a deferred decal (FTBuildLookMaterials, alone with -Prints; ftcore/WetPrints.h): the sole
+// drawn in the decal's middle, the drops round it, darker and glossier than the ground. The decal's colour carries the
+// print (r the foot, 0 left and 1 right; g the drops; b a seed; a the stamp) and the engine's fade its age.
+inline constexpr const TCHAR* LookWetPrintMaterial = TEXT("/Game/Look/M_Look_WetPrint");
+// The print decal's whole side, cm: the material's PrintSpan and twice the decal's half size across.
+inline constexpr double WetPrintSpan = 44.0;
 inline constexpr const TCHAR* LookGlassMaterial = TEXT("/Game/Look/M_Look_Glass");
+// The glass system's materials (FTBuildLookMaterials -Glass; ftcore/GlassSurface.h): the true pane (thin translucent,
+// coloured transmission, the scene mirrored in its front layer), the same pane as a mirror layer weighted by the
+// pane's own Fresnel share (the route for a renderer without thin translucency), glass over a picture (opaque), a lit
+// sign and the fully cut-out surface a kit piece's glass slot wears where a true pane stands in its place.
+inline constexpr const TCHAR* LookGlassPaneMaterial = TEXT("/Game/Look/M_Look_GlassPane");
+inline constexpr const TCHAR* LookGlassMirrorMaterial = TEXT("/Game/Look/M_Look_GlassMirror");
+inline constexpr const TCHAR* LookGlassOverMaterial = TEXT("/Game/Look/M_Look_GlassOver");
+inline constexpr const TCHAR* LookSignMaterial = TEXT("/Game/Look/M_Look_Sign");
+inline constexpr const TCHAR* LookGlassHoleMaterial = TEXT("/Game/Look/M_Look_GlassHole");
+// The surfaces of a real shop bay behind a true pane: a painted surface with the bay's own light (the window
+// collection's Daylight, Night and ProofShopNight), so the bay's level is the one glass over a picture draws.
+inline constexpr const TCHAR* LookGlassBayMaterial = TEXT("/Game/Look/M_Look_GlassBay");
+// The shelf-front picture the goods behind shop glass are cut from (ftcore::kGlassGoodsBands fronts stacked; imported
+// by FTBuildLookMaterials -Glass -Goods=<png>). Local only.
+inline constexpr const TCHAR* LookGoodsTexture = TEXT("/Game/Look/T_Look_Goods");
 inline constexpr const TCHAR* LookChromeMaterial = TEXT("/Game/Look/M_Look_Chrome");
 inline constexpr const TCHAR* LookWetStoneMaterial = TEXT("/Game/Look/M_Look_WetStone");
 inline constexpr const TCHAR* LookGlowMaterial = TEXT("/Game/Look/M_Look_Glow");

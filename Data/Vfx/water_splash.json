@@ -1,0 +1,84 @@
+{
+  "name": "water_splash",
+  "emitters": [
+    {
+      "name": "crown",
+      "bursts": [{"time": 0.0, "count": 46}],
+      "duration": 0.1,
+      "maxParticles": 56,
+      "lifetime": [0.45, 0.85],
+      "shape": "ring",
+      "radius": 0.26,
+      "innerRadius": 0.12,
+      "speed": [1.2, 2.6],
+      "velocityMin": [0.0, 2.2, 0.0],
+      "velocityMax": [0.0, 4.4, 0.0],
+      "gravity": [0.0, -9.8, 0.0],
+      "drag": 0.5,
+      "startSize": [0.035, 0.075],
+      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.5}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.82, 0.88, 0.9, 0.85]},
+        {"t": 0.7, "color": [0.75, 0.82, 0.85, 0.7]},
+        {"t": 1.0, "color": [0.7, 0.78, 0.8, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "spark",
+      "stretch": 0.035,
+      "stretchMax": 4.0,
+      "softness": 0.2
+    },
+    {
+      "name": "column",
+      "bursts": [{"time": 0.03, "count": 26}],
+      "duration": 0.15,
+      "maxParticles": 32,
+      "lifetime": [0.5, 0.9],
+      "shape": "sphere",
+      "radius": 0.14,
+      "speed": [0.3, 1.1],
+      "velocityMin": [0.0, 2.8, 0.0],
+      "velocityMax": [0.0, 5.6, 0.0],
+      "gravity": [0.0, -9.8, 0.0],
+      "drag": 0.4,
+      "startSize": [0.04, 0.1],
+      "sizeOverLife": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.45}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.85, 0.9, 0.92, 0.9]},
+        {"t": 0.75, "color": [0.78, 0.84, 0.86, 0.7]},
+        {"t": 1.0, "color": [0.72, 0.8, 0.82, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "soft",
+      "coreShade": 0.9,
+      "softness": 0.25
+    },
+    {
+      "name": "mist",
+      "bursts": [{"time": 0.0, "count": 12}],
+      "duration": 0.1,
+      "maxParticles": 16,
+      "lifetime": [0.5, 1.0],
+      "shape": "sphere",
+      "radius": 0.22,
+      "speed": [0.3, 0.9],
+      "velocityMin": [0.0, 0.5, 0.0],
+      "velocityMax": [0.0, 1.4, 0.0],
+      "gravity": [0.0, -1.2, 0.0],
+      "drag": 2.2,
+      "startSize": [0.35, 0.6],
+      "sizeOverLife": [{"t": 0.0, "v": 0.5}, {"t": 0.4, "v": 1.2}, {"t": 1.0, "v": 1.7}],
+      "startRotation": [0.0, 6.28],
+      "angularVelocity": [-1.0, 1.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.8, 0.86, 0.88, 0.0]},
+        {"t": 0.12, "color": [0.8, 0.86, 0.88, 0.3]},
+        {"t": 1.0, "color": [0.76, 0.82, 0.84, 0.0]}
+      ],
+      "blend": "alpha",
+      "sprite": "puff",
+      "coreShade": 0.85,
+      "softness": 0.9
+    }
+  ]
+}
