@@ -6,7 +6,8 @@
 // -LawnTex=<dir>: the lawn's maps (lawn_D.jpg, lawn_N.jpg as a DirectX normal, lawn_ARM.jpg; their low-frequency blotches
 // flattened out first, as the master supplies the large-scale colour) imported once into
 // FTLawn::TextureFolder (local only, never committed) and worn by the lawn surface; without it the lawn keeps the
-// project's grass surface.
+// project's grass surface. A public clone has neither the imported set nor the JPEGs: then -LawnTex logs one warning
+// and the lawn keeps the grass surface (the build goes on).
 
 #include "CoreMinimal.h"
 

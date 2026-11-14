@@ -1,5 +1,8 @@
 #include "FTMaterialCheck.h"
 
+// An audit for the editor-only build commandlet: compiled out of the game targets, Shipping included.
+#if WITH_EDITOR
+
 #include "ForgottenThird.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
@@ -118,3 +121,5 @@ bool FTMaterialCheck::Run(const UWorld* World)
 	}
 	return Count(World) == 0;
 }
+
+#endif // WITH_EDITOR

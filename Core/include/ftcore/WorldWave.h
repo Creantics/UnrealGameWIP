@@ -42,6 +42,21 @@
 // collisionDelay after that front passes the pivot. Collision that would come on while a pawn is in the footprint waits
 // until the pawn has left it.
 //
+// Bad input never runs a wave and never moves the clock back:
+//   beginWorldWave checks the parameters (checkWorldWaveParams) and refuses a wave with a non-finite origin or start time,
+//   a zero, negative or non-finite fastSpeed, slowSpeed or maxRadius, or any other non-finite or negative value; the
+//   state is then left not running and the reason is returned. updateWorldWave runs the same check and, on bad
+//   parameters, returns an inactive frame with no cues.
+//   Restart rule: beginWorldWave on a running state starts the wave over from zero (the old wave's cues, crossing and
+//   clock are dropped). The host puts its own things back first.
+//   Time: a non-finite time, or a time before the last step's, is taken as the last step's time (a step of 0); the
+//   wave's clock never runs backward once it has started. WorldWaveStep::time is the time the step used; pass it to
+//   updateWorldWaveThing.
+//   Viewer: a non-finite viewer is taken as the last finite one; with none yet, as the origin, so the cues fire by time
+//   alone (FrontPassedListener as soon as the front moves) and are never lost.
+//   A tracked thing with a non-finite pivot or radius is never reached: it keeps the state the side beyond the front
+//   gives it.
+//
 // Units: metres and seconds. Plain C++20, deterministic, no allocation.
 
 #include "ftcore/Api.h"
@@ -117,7 +132,23 @@ constexpr bool hasWorldWaveCue(std::uint8_t mask, WorldWaveCue cue) { return (ma
 // "Prelude", "FrontPassedListener", "Settled" (a log's name for the cue).
 FTCORE_API const char* worldWaveCueName(WorldWaveCue cue);
 
+// Why a wave did not start (None: it did).
+enum class WorldWaveRefusal : std::uint8_t {
+    None,
+    BadOrigin,     // a non-finite origin
+    BadStartTime,  // a non-finite start time
+    BadSpeed,      // fastSpeed or slowSpeed zero, negative or non-finite
+    BadMaxRadius,  // maxRadius zero, negative or non-finite
+    BadShape,      // another value (prelude, fastRadius, easeTime, the band, insideRamp, collisionDelay, tongueLead)
+                   // negative or non-finite
+};
+// "None", "BadOrigin", ... (a log's name for the reason).
+FTCORE_API const char* worldWaveRefusalName(WorldWaveRefusal refusal);
+// The first reason these parameters cannot run a wave, or None.
+FTCORE_API WorldWaveRefusal checkWorldWaveParams(const WorldWaveParams& params);
+
 struct WorldWaveState {
+    bool running = false;      // begun (beginWorldWave) and not refused; updateWorldWave does not need it
     bool preludeFired = false;
     bool frontFired = false;
     bool settledFired = false;
@@ -126,12 +157,20 @@ struct WorldWaveState {
     double crossTime = 0.0;
     double lastTime = 0.0;
     float lastMargin = 0.f;    // (r - w) - d at the last step: the inner edge's lead on the viewer
+    bool hasViewer = false;
+    WaveVec3 lastViewer;       // the last finite viewer
 };
 
 struct WorldWaveStep {
     WorldWaveFrame frame;
     std::uint8_t cues = 0;  // WorldWaveCue bits fired by this step
+    double time = 0.0;      // the time this step used (see the time rule above)
 };
+
+// Starts a wave on state: a fresh state, running, when the parameters pass checkWorldWaveParams; otherwise the state
+// is left not running (its old wave, if any, ended) and the reason is returned. On a running state it starts over from
+// zero (the restart rule).
+FTCORE_API WorldWaveRefusal beginWorldWave(WorldWaveState& state, const WorldWaveParams& params);
 
 // The radius at tau seconds after the prelude, clamped to [0, maxRadius].
 FTCORE_API float worldWaveRadiusAt(const WorldWaveParams& params, float tau);
@@ -139,8 +178,9 @@ FTCORE_API float worldWaveRadiusAt(const WorldWaveParams& params, float tau);
 FTCORE_API float worldWaveBandWidth(const WorldWaveParams& params, float radius);
 // The frame at time t (on the host's wave clock), without the viewer: cameraInside is 0.
 FTCORE_API WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time);
-// One step: the frame at time t with the viewer's cameraInside, and the cues that fired. Steps go forward in time; a
-// new wave starts from a fresh state (WorldWaveState{}).
+// One step: the frame at time t with the viewer's cameraInside, and the cues that fired. Steps go forward in time (an
+// earlier or non-finite time is held at the last step's); a new wave starts from a fresh state (beginWorldWave, or
+// WorldWaveState{}).
 FTCORE_API WorldWaveStep updateWorldWave(WorldWaveState& state, const WorldWaveParams& params, double time,
                                          const WaveVec3& viewer);
 // Which side of the front a point is on (see the note above).

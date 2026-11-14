@@ -326,13 +326,25 @@ void UFTWorldWaveSubsystem::Initialize(FSubsystemCollectionBase& InCollection)
 	}
 	Pawns.Reserve(16);
 	Fogs.Reserve(8);
-	PostTickHandle = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UFTWorldWaveSubsystem::PostActorTick);
+	// No tick bound yet: a map with no wave pays nothing (BindTick binds it for a boot switch or a wave).
+}
+
+void UFTWorldWaveSubsystem::BindTick(bool bOn)
+{
+	if (bOn && !PostTickHandle.IsValid())
+	{
+		PostTickHandle = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UFTWorldWaveSubsystem::PostActorTick);
+	}
+	else if (!bOn && PostTickHandle.IsValid())
+	{
+		FWorldDelegates::OnWorldPostActorTick.Remove(PostTickHandle);
+		PostTickHandle.Reset();
+	}
 }
 
 void UFTWorldWaveSubsystem::Deinitialize()
 {
-	FWorldDelegates::OnWorldPostActorTick.Remove(PostTickHandle);
-	PostTickHandle.Reset();
+	BindTick(false);
 	// The world is going: nothing to put back but the state.
 	bWave = false;
 	bBootPending = false;
@@ -362,6 +374,7 @@ void UFTWorldWaveSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	bBootPending = bBootDress || bBootWave;
 	if (bBootPending)
 	{
+		BindTick(true);
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: on the first frame%s%s."),
 			bBootDress ? *FString::Printf(TEXT(", the dressing round %s within %.0f cm"), *BootDressAt.ToString(), BootDressRadius) : TEXT(""),
 			bBootWave ? *FString::Printf(TEXT(", a %s wave from %s at %.3f s on the wave clock"), bBootReverse ? TEXT("reverse") : TEXT("forward"), *BootWaveAt.ToString(), BootWaveTime) : TEXT(""));
@@ -407,9 +420,13 @@ void UFTWorldWaveSubsystem::PostActorTick(UWorld* InWorld, ELevelTick, float)
 			StartWave(BootWaveAt, BootWaveTime, bBootReverse);
 		}
 	}
-	if (bWave)
+	if (bWave && bStepping)
 	{
 		Step(*InWorld);
+	}
+	if (!bWave || !bStepping)
+	{
+		BindTick(false); // no wave, or it has settled: nothing moves until the next one
 	}
 }
 
@@ -424,11 +441,21 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	{
 		StopWave();
 	}
-	Params = ftcore::streetWaveParams();
-	Params.origin = ToMetres(Origin);
-	Params.startTime = StartTime;
-	Params.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
-	State = ftcore::WorldWaveState{};
+	ftcore::WorldWaveParams Wanted = ftcore::streetWaveParams();
+	Wanted.origin = ToMetres(Origin);
+	Wanted.startTime = StartTime;
+	Wanted.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
+	// A wave already set is replaced (Core's restart rule: from zero), after StopWave above has put its things back.
+	const ftcore::WorldWaveRefusal Refusal = ftcore::beginWorldWave(State, Wanted);
+	if (Refusal != ftcore::WorldWaveRefusal::None)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no wave from %s at %f s: %s."), *Origin.ToString(), StartTime,
+			ANSI_TO_TCHAR(ftcore::worldWaveRefusalName(Refusal)));
+		return;
+	}
+	Params = Wanted;
+	bStepping = true;
+	SettledAt = -1.0;
 	Frame = ftcore::WorldWaveFrame{};
 	OriginCm = Origin;
 	// The prelude's streak stands on the road under the origin (the origin itself is over it).
@@ -457,6 +484,7 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 		Volume->bEnabled = true;
 	}
 	bWave = true;
+	BindTick(true);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: a %s wave from %s (cm) at %.3f s on the wave clock (now %.3f); %d things tracked, %d fogs, %d leads."),
 		bReverse ? TEXT("reverse") : TEXT("forward"), *Origin.ToString(), StartTime, GetClock(), Tracked.Num(), Fogs.Num(), Pawns.Num());
 }
@@ -465,6 +493,8 @@ void UFTWorldWaveSubsystem::StopWave()
 {
 	const bool bWas = bWave;
 	bWave = false;
+	bStepping = false;
+	BindTick(false);
 	SetExposureHold(false);
 	if (Volume)
 	{
@@ -494,7 +524,7 @@ void UFTWorldWaveSubsystem::StopWave()
 
 void UFTWorldWaveSubsystem::Step(UWorld& World)
 {
-	const double Time = GetClock();
+	double Time = GetClock();
 
 	// The eye: the first player's view as the renderer will draw it this frame (the cameras have updated).
 	APlayerController* Player = World.GetFirstPlayerController();
@@ -520,6 +550,10 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 
 	const ftcore::WorldWaveStep Result = ftcore::updateWorldWave(State, Params, Time, ToMetres(Eye));
 	Frame = Result.frame;
+	if (Time >= Params.startTime)
+	{
+		Time = Result.time; // Core's clock: never backward once started, never non-finite
+	}
 	static constexpr ftcore::WorldWaveCue kCues[] = {
 		ftcore::WorldWaveCue::Prelude, ftcore::WorldWaveCue::FrontPassedListener, ftcore::WorldWaveCue::Settled};
 	for (const ftcore::WorldWaveCue Cue : kCues)
@@ -588,6 +622,7 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 
 	// The tagged things: shown, solid and cut as the front has them.
 	const APawn* PlayerPawn = Player ? Player->GetPawn() : nullptr;
+	bool bThingsMoving = false;
 	for (FTracked& Item : Tracked)
 	{
 		UPrimitiveComponent* Component = Item.Component.Get();
@@ -619,6 +654,27 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s %s at %.3f s."), Cut.held ? TEXT("holds") : TEXT("releases"),
 				*Component->GetReadableName(), Time - Params.startTime);
 		}
+		// Still to change: held, cutting in on its own front, or its collision not yet past the delay.
+		const ftcore::WorldWaveThing& Thing = Item.Thing;
+		const double Delay = static_cast<double>(Params.collisionDelay);
+		if (Thing.held || Cut.localFront || (Thing.released && (!Thing.localPassed || Time < Thing.localPassTime + Delay)) ||
+			(Thing.passed && Time < Thing.passTime + Delay))
+		{
+			bThingsMoving = true;
+		}
+	}
+
+	// Settled: the radius at its end, the camera's ramp done and every thing at rest. The tick then unbinds
+	// (PostActorTick); the collection, the volume and the things keep the settled wave until StopWave or the next wave.
+	if (Frame.settled && SettledAt < 0.0)
+	{
+		SettledAt = Time;
+	}
+	const double Rest = static_cast<double>(Params.insideRamp) + static_cast<double>(Params.collisionDelay);
+	if (SettledAt >= 0.0 && Time >= SettledAt + Rest && !bThingsMoving)
+	{
+		bStepping = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: settled at %.3f s; the step stops until the next wave."), Time - Params.startTime);
 	}
 }
 

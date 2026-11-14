@@ -5,7 +5,9 @@
 #include "AllocCounter.h"
 
 #include <cmath>
+#include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <string>
 
 using namespace ftcore;
@@ -508,4 +510,166 @@ TEST_CASE("updateWorldWaveThing: the tongues' lead draws an arrival early and le
     CHECK(onLead == 0);
     CHECK(offLead == offNone);
     CHECK(offLead > 0);
+}
+
+// ---- Input guards ----
+
+TEST_CASE("beginWorldWave: refuses non-finite origin, start time, speeds, maxRadius and shape, with the reason") {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    WorldWaveState s;
+    WorldWaveParams good = streetWaveParams();
+    CHECK(beginWorldWave(s, good) == WorldWaveRefusal::None);
+    CHECK(s.running);
+
+    struct Bad {
+        WorldWaveParams p;
+        WorldWaveRefusal why;
+    };
+    Bad cases[13];
+    for (Bad& c : cases) c.p = good;
+    cases[0].p.origin.x = nan;            cases[0].why = WorldWaveRefusal::BadOrigin;
+    cases[1].p.origin.z = inf;            cases[1].why = WorldWaveRefusal::BadOrigin;
+    cases[2].p.startTime = std::numeric_limits<double>::quiet_NaN(); cases[2].why = WorldWaveRefusal::BadStartTime;
+    cases[3].p.fastSpeed = 0.f;           cases[3].why = WorldWaveRefusal::BadSpeed;
+    cases[4].p.slowSpeed = -1.f;          cases[4].why = WorldWaveRefusal::BadSpeed;
+    cases[5].p.fastSpeed = inf;           cases[5].why = WorldWaveRefusal::BadSpeed;
+    cases[6].p.maxRadius = 0.f;           cases[6].why = WorldWaveRefusal::BadMaxRadius;
+    cases[7].p.maxRadius = -5.f;          cases[7].why = WorldWaveRefusal::BadMaxRadius;
+    cases[8].p.maxRadius = nan;           cases[8].why = WorldWaveRefusal::BadMaxRadius;
+    cases[9].p.bandAtFar = nan;           cases[9].why = WorldWaveRefusal::BadShape;
+    cases[10].p.prelude = -0.1f;          cases[10].why = WorldWaveRefusal::BadShape;
+    cases[11].p.insideRamp = inf;         cases[11].why = WorldWaveRefusal::BadShape;
+    cases[12].p.tongueLead = -1.f;        cases[12].why = WorldWaveRefusal::BadShape;
+    for (const Bad& c : cases) {
+        WorldWaveState t;
+        REQUIRE(beginWorldWave(t, good) == WorldWaveRefusal::None);
+        CHECK(beginWorldWave(t, c.p) == c.why);
+        CHECK_FALSE(t.running); // the old wave ended, the new one never started
+        CHECK(checkWorldWaveParams(c.p) == c.why);
+        // Stepping bad parameters runs nothing: an inactive frame, no cues, at any time.
+        for (const double time : {0.0, 1.0, 5.0, 100.0}) {
+            const WorldWaveStep step = updateWorldWave(t, c.p, time, WaveVec3{});
+            CHECK(step.cues == 0);
+            CHECK_FALSE(step.frame.active);
+            CHECK(step.frame.radius == 0.f);
+            CHECK(std::isfinite(step.frame.radius));
+        }
+        CHECK_FALSE(evaluateWorldWave(c.p, 2.0).active);
+    }
+    CHECK(std::string(worldWaveRefusalName(WorldWaveRefusal::BadSpeed)) == "BadSpeed");
+}
+
+TEST_CASE("beginWorldWave: a restart while running starts over from zero") {
+    WorldWaveParams p;
+    const WaveVec3 viewer = offsetFrom(p.origin, 10.f);
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    std::uint8_t fired = 0;
+    for (int i = 0; i <= 60; ++i) fired |= updateWorldWave(s, p, i / 30.0, viewer).cues;
+    REQUIRE(hasWorldWaveCue(fired, WorldWaveCue::Prelude));
+    REQUIRE(hasWorldWaveCue(fired, WorldWaveCue::FrontPassedListener));
+    REQUIRE(s.crossed);
+    // Again from 5 s: every cue fires again, and the old wave's clock does not hold the new one back.
+    p.startTime = 5.0;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    CHECK(s.running);
+    CHECK_FALSE(s.preludeFired);
+    CHECK_FALSE(s.crossed);
+    CHECK_FALSE(s.hasLast);
+    const WorldWaveStep first = updateWorldWave(s, p, 5.0, viewer);
+    CHECK(hasWorldWaveCue(first.cues, WorldWaveCue::Prelude));
+    CHECK(first.time == doctest::Approx(5.0));
+}
+
+TEST_CASE("updateWorldWave: a non-finite or backward time is a step of 0; the clock never runs backward") {
+    WorldWaveParams p;
+    const WaveVec3 viewer = offsetFrom(p.origin, 200.f);
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    const WorldWaveStep at2 = updateWorldWave(s, p, 2.0, viewer);
+    REQUIRE(at2.frame.radius > 0.f);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const double bad : {nan, inf, -inf, 1.0, 0.0, -50.0}) {
+        const WorldWaveStep step = updateWorldWave(s, p, bad, viewer);
+        CHECK(step.time == doctest::Approx(2.0));
+        CHECK(step.frame.radius == doctest::Approx(at2.frame.radius));
+        CHECK(step.cues == 0);
+        CHECK(s.lastTime == doctest::Approx(2.0));
+    }
+    const WorldWaveStep at3 = updateWorldWave(s, p, 3.0, viewer);
+    CHECK(at3.time == doctest::Approx(3.0));
+    CHECK(at3.frame.radius > at2.frame.radius);
+    // Before the start nothing has run, so a NaN there is simply nothing.
+    WorldWaveState fresh;
+    p.startTime = 1.0;
+    const WorldWaveStep none = updateWorldWave(fresh, p, nan, viewer);
+    CHECK(none.cues == 0);
+    CHECK_FALSE(none.frame.active);
+    CHECK(std::isfinite(none.time));
+    CHECK(worldWaveRadiusAt(p, std::numeric_limits<float>::quiet_NaN()) == 0.f);
+    CHECK_FALSE(evaluateWorldWave(p, nan).active);
+}
+
+TEST_CASE("updateWorldWave: a NaN viewer does not eat the cues; they fire by time alone") {
+    WorldWaveParams p;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const WaveVec3 lost{nan, 0.f, nan};
+    // Never a finite viewer: the origin stands in, so the front passes it as soon as it moves.
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    std::uint8_t fired = 0;
+    double frontAt = -1.0;
+    for (int i = 0; i <= 30 * 20; ++i) {
+        const double t = i / 30.0;
+        const WorldWaveStep step = updateWorldWave(s, p, t, lost);
+        if (frontAt < 0.0 && hasWorldWaveCue(step.cues, WorldWaveCue::FrontPassedListener)) frontAt = t;
+        fired |= step.cues;
+        CHECK(std::isfinite(step.frame.cameraInside));
+    }
+    CHECK(hasWorldWaveCue(fired, WorldWaveCue::Prelude));
+    CHECK(hasWorldWaveCue(fired, WorldWaveCue::FrontPassedListener));
+    CHECK(hasWorldWaveCue(fired, WorldWaveCue::Settled));
+    CHECK(frontAt > 0.3);
+    CHECK(frontAt < 0.4);
+    // A viewer lost mid-wave keeps its last place: the cue fires when the front reaches it there.
+    WorldWaveState m;
+    REQUIRE(beginWorldWave(m, p) == WorldWaveRefusal::None);
+    const WaveVec3 at50 = offsetFrom(p.origin, 50.f);
+    updateWorldWave(m, p, 0.0, at50);
+    double lostAt = -1.0;
+    for (int i = 1; i <= 30 * 5; ++i) {
+        const double t = i / 30.0;
+        if (hasWorldWaveCue(updateWorldWave(m, p, t, lost).cues, WorldWaveCue::FrontPassedListener) && lostAt < 0.0) {
+            lostAt = t;
+        }
+    }
+    CHECK(lostAt > 1.5);
+    CHECK(lostAt < 1.7);
+}
+
+TEST_CASE("updateWorldWaveThing: a non-finite pivot or footprint is never reached and keeps its start state") {
+    WorldWaveParams p;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    WorldWaveThing a;
+    a.pivot = WaveVec3{nan, 0.f, 0.f};
+    a.tag = WorldTag::OldOnly;
+    WorldWaveThing b;
+    b.pivot = offsetFrom(p.origin, 5.f);
+    b.radius = nan;
+    b.tag = WorldTag::NewOnly;
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    for (int i = 0; i <= 30 * 20; ++i) {
+        const WorldWaveStep w = updateWorldWave(s, p, i / 30.0, WaveVec3{});
+        const WorldWaveThingStep sa = updateWorldWaveThing(a, p, w.frame, w.time, false);
+        const WorldWaveThingStep sb = updateWorldWaveThing(b, p, w.frame, w.time, false);
+        CHECK(sa.drawn);
+        CHECK(sa.collisionOn);
+        CHECK_FALSE(sb.drawn);
+        CHECK_FALSE(sb.collisionOn);
+    }
+    CHECK_FALSE(a.passed);
+    CHECK_FALSE(b.arrived);
 }

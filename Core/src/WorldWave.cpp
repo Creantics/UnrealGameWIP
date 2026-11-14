@@ -1,6 +1,7 @@
 #include "ftcore/WorldWave.h"
 
 #include <cmath>
+#include <limits>
 
 namespace ftcore {
 
@@ -15,6 +16,19 @@ float waveDistance(const WaveVec3& a, const WaveVec3& b) {
     const float dy = b.y - a.y;
     const float dz = b.z - a.z;
     return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+bool waveFinite(const WaveVec3& v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+// A value that may be zero but not negative or non-finite.
+bool waveNonNegative(float v) {
+    return std::isfinite(v) && v >= 0.f;
+}
+
+bool wavePositive(float v) {
+    return std::isfinite(v) && v > 0.f;
 }
 
 // tau1: the time the front takes to reach fastRadius.
@@ -33,8 +47,41 @@ const char* worldWaveCueName(WorldWaveCue cue) {
     return "Unknown";
 }
 
+const char* worldWaveRefusalName(WorldWaveRefusal refusal) {
+    switch (refusal) {
+    case WorldWaveRefusal::None: return "None";
+    case WorldWaveRefusal::BadOrigin: return "BadOrigin";
+    case WorldWaveRefusal::BadStartTime: return "BadStartTime";
+    case WorldWaveRefusal::BadSpeed: return "BadSpeed";
+    case WorldWaveRefusal::BadMaxRadius: return "BadMaxRadius";
+    case WorldWaveRefusal::BadShape: return "BadShape";
+    }
+    return "Unknown";
+}
+
+WorldWaveRefusal checkWorldWaveParams(const WorldWaveParams& params) {
+    if (!waveFinite(params.origin)) return WorldWaveRefusal::BadOrigin;
+    if (!std::isfinite(params.startTime)) return WorldWaveRefusal::BadStartTime;
+    if (!wavePositive(params.fastSpeed) || !wavePositive(params.slowSpeed)) return WorldWaveRefusal::BadSpeed;
+    if (!wavePositive(params.maxRadius)) return WorldWaveRefusal::BadMaxRadius;
+    const float shape[] = {params.prelude,       params.fastRadius, params.easeTime,       params.bandAtOrigin,
+                           params.bandAtFar,     params.bandFarRadius, params.insideRamp, params.collisionDelay,
+                           params.tongueLead};
+    for (const float v : shape) {
+        if (!waveNonNegative(v)) return WorldWaveRefusal::BadShape;
+    }
+    return WorldWaveRefusal::None;
+}
+
+WorldWaveRefusal beginWorldWave(WorldWaveState& state, const WorldWaveParams& params) {
+    state = WorldWaveState{};
+    const WorldWaveRefusal refusal = checkWorldWaveParams(params);
+    state.running = refusal == WorldWaveRefusal::None;
+    return refusal;
+}
+
 float worldWaveRadiusAt(const WorldWaveParams& params, float tau) {
-    if (tau <= 0.f) return 0.f;
+    if (!(tau > 0.f)) return 0.f; // also a non-finite tau
     const float tau1 = waveFastPhaseTime(params);
     float r = 0.f;
     if (tau <= tau1) {
@@ -71,7 +118,7 @@ WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {
     WorldWaveFrame frame;
     frame.direction = params.direction;
     const double since = time - params.startTime;
-    if (since < 0.0) return frame;
+    if (!std::isfinite(since) || since < 0.0 || checkWorldWaveParams(params) != WorldWaveRefusal::None) return frame;
     frame.preludeProgress =
         params.prelude > 0.f ? waveClamp(static_cast<float>(since / static_cast<double>(params.prelude)), 0.f, 1.f) : 1.f;
     const float tau = static_cast<float>(since - static_cast<double>(params.prelude));
@@ -85,11 +132,21 @@ WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {
 WorldWaveStep updateWorldWave(WorldWaveState& state, const WorldWaveParams& params, double time,
                               const WaveVec3& viewer) {
     WorldWaveStep step;
+    // The time rule: once started, a non-finite or earlier time is the last step's (a step of 0).
+    if (state.hasLast && (!std::isfinite(time) || time < state.lastTime)) time = state.lastTime;
+    step.time = std::isfinite(time) ? time : state.lastTime;
+    step.frame.direction = params.direction;
+    if (!std::isfinite(time) || checkWorldWaveParams(params) != WorldWaveRefusal::None) return step;
     step.frame = evaluateWorldWave(params, time);
     if (time < params.startTime) return step;
 
     const WorldWaveFrame& frame = step.frame;
-    const float d = waveDistance(params.origin, viewer);
+    // The viewer rule: a non-finite viewer is the last finite one, or the origin, so the cues still fire.
+    if (waveFinite(viewer)) {
+        state.hasViewer = true;
+        state.lastViewer = viewer;
+    }
+    const float d = waveDistance(params.origin, state.hasViewer ? state.lastViewer : params.origin);
     if (!state.preludeFired) {
         state.preludeFired = true;
         step.cues |= worldWaveCueBit(WorldWaveCue::Prelude);
@@ -187,8 +244,10 @@ WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWavePa
     const bool arriving = !before.drawn && after.drawn;
     const bool leaving = before.drawn && !after.drawn;
 
-    const float d = waveDistance(params.origin, thing.pivot);
-    const float r = time >= params.startTime ? frame.radius : 0.f;
+    // A non-finite pivot or footprint is never reached (NaN would compare false everywhere; this says so).
+    const bool placed = waveFinite(thing.pivot) && waveNonNegative(thing.radius);
+    const float d = placed ? waveDistance(params.origin, thing.pivot) : std::numeric_limits<float>::max();
+    const float r = std::isfinite(time) && time >= params.startTime && placed ? frame.radius : 0.f;
     const float reach = arriving && r > 0.f ? r + params.tongueLead * frame.bandWidth : r;
     if (!thing.arrived && r > 0.f && reach > d - thing.radius) {
         thing.arrived = true;

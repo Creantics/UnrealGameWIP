@@ -12,6 +12,9 @@
 #include "PrimitiveSceneProxy.h"
 #include "UObject/UObjectIterator.h"
 
+// A debug tool: compiled out of Shipping (no console command there).
+#if !UE_BUILD_SHIPPING
+
 namespace
 {
 struct FProxyTally
@@ -87,3 +90,5 @@ FAutoConsoleCommandWithWorldAndArgs GLumenProxyDump(TEXT("ft.LumenProxyDump"),
 	TEXT("ft.LumenProxyDump [name filter]: per class, how many primitive proxies the Lumen scene can take, and why not."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&DumpLumenProxies));
 } // namespace
+
+#endif // !UE_BUILD_SHIPPING

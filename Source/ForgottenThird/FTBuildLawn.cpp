@@ -98,6 +98,23 @@ UTexture2D* ImportMap(const FString& Dir, const FMap& Map)
 	return Texture;
 }
 
+// The scanned set is local only (never in the public repo): each map is either imported already (TextureFolder) or its
+// JPEG is in Dir. Without all three the lawn keeps the project's grass surface, said once, with no per-map errors.
+bool ScanAvailable(const FString& Dir)
+{
+	for (const FMap& Map : kMaps)
+	{
+		const FString Path = FString::Printf(TEXT("%s/T_LawnF_%s"), TextureFolder, Map.Suffix);
+		if (!FPackageName::DoesPackageExist(Path) && !FPaths::FileExists(Dir / Map.File))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -LawnTex: the scanned lawn set is not here (no %s and no %s; it is local-only content); the lawn wears the project's grass surface."),
+				*Path, *(Dir / Map.File));
+			return false;
+		}
+	}
+	return true;
+}
+
 UStaticMesh* SheetMesh(UPackage* Package, const FString& Name, const ftcore::LawnMesh& Source, double Side, const FVector& Pivot,
 	UMaterialInterface* Material)
 {
@@ -417,7 +434,8 @@ UMaterialInterface* FTLawn::LawnMaterial(UPackage* Package, UMaterialInterface* 
 {
 	using namespace FTLawn::Impl;
 	FString Dir;
-	if (FParse::Value(FCommandLine::Get(), TEXT("LawnTex="), Dir, false) && !Dir.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("LawnOneScale")))
+	const bool bScan = FParse::Value(FCommandLine::Get(), TEXT("LawnTex="), Dir, false) && !Dir.IsEmpty() && ScanAvailable(Dir);
+	if (bScan && !FParse::Param(FCommandLine::Get(), TEXT("LawnOneScale")))
 	{
 		// The scan on its own master: two scales blended by noise, a turned second sample and a macro colour shift.
 		UTexture* Maps[3] = {nullptr, nullptr, nullptr};
@@ -434,7 +452,7 @@ UMaterialInterface* FTLawn::LawnMaterial(UPackage* Package, UMaterialInterface* 
 	}
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Massing_Lawn"), RF_Public);
 	Mic->SetParentEditorOnly(Parent);
-	if (FParse::Value(FCommandLine::Get(), TEXT("LawnTex="), Dir, false) && !Dir.IsEmpty())
+	if (bScan)
 	{
 		static const TCHAR* const Params[] = {TEXT("AlbedoTex"), TEXT("NormalTex"), TEXT("ArmTex")};
 		for (int32 M = 0; M < UE_ARRAY_COUNT(kMaps); ++M)

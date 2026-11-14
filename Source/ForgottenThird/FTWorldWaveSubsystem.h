@@ -28,7 +28,10 @@
 //     would come in round the player or a lead (AFTExploreCharacter) waits, not drawn and not solid, until its footprint
 //     (its collision's box, else its bounds) is clear, then cuts in. Nothing is pushed.
 // No heap allocation in the frame's step: the dressing lists the tracked things, the wave's start the pawns and fogs
-// (into arrays reserved once).
+// (into arrays reserved once). The post-actor-tick delegate is bound only while there is work: from a boot switch or a
+// wave's start until the wave settles (the radius at its end, the camera's ramp done, every tracked thing at rest) or
+// ends. A map with no wave never binds it. A settled wave keeps its look until StopWave or the next wave. A wave whose
+// parameters Core refuses (ftcore::beginWorldWave: a non-finite origin or start) does not start and logs the reason.
 //
 // The proof dressing (Dress). Within the radius of the point: every street tree (a /Game/Props/TREE- mesh, not the
 // grate), TQ-04 lamp post and parked kei car (SM_KeiCar) is tagged OldOnly. One in a cell's instanced mesh is split off
@@ -111,6 +114,8 @@ private:
 	};
 
 	void PostActorTick(UWorld* InWorld, ELevelTick TickType, float DeltaSeconds);
+	// Binds or unbinds PostActorTick (each at most once).
+	void BindTick(bool bOn);
 	void Step(UWorld& World);
 	// The volume with the ink material and the exposure hold, spawned on the first wave.
 	void EnsureVolume(UWorld& World);
@@ -142,6 +147,8 @@ private:
 	// The ground under the origin (one trace at StartWave): the prelude streak's foot.
 	FVector StreakFootCm = FVector::ZeroVector;
 	bool bWave = false;
+	bool bStepping = false;   // a set wave still moving; false once it has settled
+	double SettledAt = -1.0;  // wave-clock time the radius reached its end, -1 before
 	bool bExposureHeld = false;
 	bool bHoldClock = false;
 	double HeldClock = 0.0;
