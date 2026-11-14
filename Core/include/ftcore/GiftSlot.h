@@ -15,6 +15,9 @@
 //   given.
 // * Every given gift leaves one thread on its target, forever, and starts its cooldown. A refused press
 //   does neither: it is only tallied.
+// * A Heal pressed at a lead at full health (press's targetHealth >= 1) is refused NotHurt: no charge, no
+//   cooldown, no thread, and it is not tallied (nothing happened). targetHealth < 0 (the default) is unknown
+//   and reads as hurt, as before the input existed.
 // * The tally and the threads survive save and load (GiftSave), and a new fight (beginFight). Counters
 //   saturate, never wrap. Cooldowns, guards and the fight's heal count are fight state.
 // * For the HUD: healsLeft(), readyIn(gift, t) (seconds until the cooldown is over; 0 when ready; a Heal
@@ -41,8 +44,10 @@ namespace ftcore {
 enum class Gift : std::uint8_t { Heal, Guard, Count, None }; // append only; None: no gift
 inline constexpr std::size_t kGiftKinds = 3;                 // Heal, Guard, Count
 enum class SlotState : std::uint8_t { Companion, Vacant, Hostile }; // append only
-// NoneLeft: the Heal's healsPerFight are given this fight.
-enum class GiftError : std::uint8_t { None, Vacant, Hostile, Cooling, BadTarget, CountRefused, NoGift, NoneLeft }; // append only
+// NoneLeft: the Heal's healsPerFight are given this fight. NotHurt: a Heal at a lead at full health (never tallied).
+enum class GiftError : std::uint8_t { None, Vacant, Hostile, Cooling, BadTarget, CountRefused, NoGift, NoneLeft, NotHurt }; // append only
+// press's targetHealth when the host does not say: read as hurt.
+inline constexpr float kHealthUnknown = -1.f;
 
 struct GiftTuning {
     std::array<double, kGiftKinds> cooldown{8.0, 12.0, 4.0}; // seconds, 0..60, per gift: from the press (Guard: from the guard's end)
@@ -204,8 +209,9 @@ public:
     }
     Gift selected() const { return selected_; }
 
-    // The button, aimed at lead `target`. `count` is needed for the Count gift.
-    GiftResult press(FighterId target, double t, StrikeCount* count = nullptr) {
+    // The button, aimed at lead `target`. `count` is needed for the Count gift. `targetHealth`: the target's
+    // health as a fraction of its max (kHealthUnknown when the host does not say).
+    GiftResult press(FighterId target, double t, StrikeCount* count = nullptr, float targetHealth = kHealthUnknown) {
         t = advance(t);
         GiftResult r;
         r.gift = selected_;
@@ -223,6 +229,10 @@ public:
         const std::size_t g = static_cast<std::size_t>(selected_);
         if (!isLead(target)) return refuse(r, GiftError::BadTarget);
         if (g >= kGiftKinds) return refuse(r, GiftError::NoGift);
+        if (selected_ == Gift::Heal && targetHealth >= 1.f) { // nothing to heal: not a press that did anything
+            r.error = GiftError::NotHurt;
+            return r;
+        }
         if (selected_ == Gift::Heal && healsLeft() <= 0) return refuse(r, GiftError::NoneLeft);
         if (t < readyAt_[g]) return refuse(r, GiftError::Cooling);
         if (selected_ == Gift::Count) {

@@ -111,7 +111,7 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
 * **States** (`SlotState`): `Companion` (gifts work), `Vacant` (button does nothing), `Hostile`
   (button does nothing; the boss uses the tallies). No press is ever discarded. The host sets it
   through `setState`.
-* `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr)`:
+* `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr, float targetHealth = kHealthUnknown)`:
   - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down (or,
     for the Heal, this fight's `healsPerFight` are given: `NoneLeft`). A
     pressed gift cannot be taken back: there is no cancel. Returns `GiftResult { given, gift, target,
@@ -123,7 +123,9 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
     `CountRefused` and the gift is not given). A refused press leaves the heal and guard fields at
     their neutral values (0, 0, 1, 0).
   - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
-    `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent).
+    `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent), `NotHurt` (a Heal at a
+    lead whose `targetHealth` is 1 or more: no charge, no cooldown, no thread, and unlike the others not
+    tallied; `FightSession` passes what the host gave `setLeadHealth`, unknown reading as hurt).
   - `Vacant`: nothing happens; `vacantPresses` goes up.
   - `Hostile`: nothing happens; `hostilePresses` goes up (the host reads the tallies).
 * **Threads and cooldowns** follow given gifts only: every given gift adds one thread to its target
