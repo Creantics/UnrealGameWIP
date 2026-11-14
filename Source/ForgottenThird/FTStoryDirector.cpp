@@ -529,11 +529,6 @@ void AFTStoryDirector::CacheBeat()
 	const StoryRunner& Runner = Story->GetRunner();
 	Text = FT::ToFString(Runner.text());
 	Speaker = FT::ToFString(Runner.speaker());
-	if (Runner.state() == StoryRunner::State::Line && !Runner.speaker().empty())
-	{
-		AnsweredModel = FT::ToFString(Speakers.modelFor(Runner.speaker(),
-			Runner.scene() ? Story->GetDatabase().view(Runner.scene()->id) : std::string_view{}));
-	}
 	Options.Reset();
 	const int32 Count = static_cast<int32>(Runner.optionCount());
 	HiddenOptions = FMath::Max(0, Count - MaxOptions);
@@ -1194,28 +1189,6 @@ void AFTStoryDirector::HandleVoiceLine(const FString& LineId, float Seconds)
 		bLoggedNoFace = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("Story: no face here for model %s (line %s); voiced lines play without a face."), *ModelId, *LineId);
 	}
-}
-
-bool AFTStoryDirector::GetAnsweredHead(FVector& Out) const
-{
-	const TObjectPtr<AFTCastMember>* Found = AnsweredModel.IsEmpty() ? nullptr : CastActors.Find(AnsweredModel);
-	const AActor* Who = Found && *Found && (*Found)->IsOnScreen() ? Found->Get() : nullptr;
-	const bool bHead = Who != nullptr;
-	if (!Who)
-	{
-		const AActor* Anchor = CastAnchor.Get();
-		Who = Anchor && !Anchor->IsHidden() ? Anchor : nullptr;
-	}
-	if (!Who)
-	{
-		return false;
-	}
-	FVector Origin;
-	FVector Extent;
-	Who->GetActorBounds(false, Origin, Extent); // all components: the stand-in face has no collision
-	// A body: about a head below its top. The stand-in is a face alone: its middle.
-	Out = bHead ? Origin + FVector(0.0, 0.0, FMath::Max(0.0, Extent.Z - 12.0)) : Origin;
-	return true;
 }
 
 void AFTStoryDirector::TickSpeakingShots()

@@ -41,6 +41,7 @@ enum class DefenceAssist : std::uint8_t { Off, Wide };
 struct Settings {
     static constexpr int kVersion = 1;
     static constexpr float kMinAutoDelay = 0.25f, kMaxAutoDelay = 5.f;
+    static constexpr int kMinHudScale = 80, kMaxHudScale = 130; // percent, in steps of 10
 
     TextSpeed textSpeed = TextSpeed::Normal;
     bool autoAdvance = false;
@@ -56,6 +57,8 @@ struct Settings {
     bool skipChoices = false;     // mirrored to its story flag only, for now
     bool stickFlicks = false;     // the Turns arrow combos also take the left stick's flicks (StickFlick.h)
     float cameraShake = 1.f;      // 0..1: how hard the arena camera kicks when a blow lands (0: not at all)
+    std::uint32_t uiFirstUse = 0; // what the fight HUD has taught this save, a bit per UiFirstUseItem (UiFirstUse.h)
+    int hudScale = 100;           // the fight HUD's size over the viewport's scale, margins included: percent
 
     // Characters per second the dialogue types out at (0: whole text at once).
     float textCharsPerSecond() const {
@@ -86,7 +89,8 @@ FTCORE_API void clampSettings(Settings& s);
 // ---- JSON text ----
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
 //  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"aimAssist":true,"subtitleSize":1,"reduceFlashes":false,
-//  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0}
+//  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0,
+//  "uiFirstUse":0,"hudScale":100}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
 // defenceAssist off/wide, subtitleSize small..large).
 FTCORE_API std::string encodeSettings(const Settings& s);
@@ -115,9 +119,10 @@ enum class SettingsRow : std::uint8_t {
     SkipChoices,
     StickFlicks,
     CameraShake,
+    HudScale,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 18;
+inline constexpr std::uint32_t kSettingsRowCount = 19;
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 

@@ -232,6 +232,7 @@ public:
 	// When enemy Index was last hit (far in the past when never).
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
+	double GetAllyHitTime() const { return AllyHitTime; }
 	double GetParryTime() const { return ParryTime; }
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
 	double GetReleaseTime() const { return ReleaseTime; }
@@ -305,6 +306,9 @@ public:
 	// The party places (0 to 2) of the lead and the carrying run's ally, for the HUD's marks.
 	uint8 GetLeadSeat() const { return LeadSeat; }
 	uint8 GetAllySeat() const { return AllySeat; }
+	// The lead's and the ally's look names (empty for the test human), the HUD's party rows' names.
+	const FString& GetLeadName() const { return LeadName; }
+	const FString& GetAllyName() const { return AllyName; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -578,6 +582,8 @@ private:
 	uint8 SessionLead = ftcore::kLeadA; // the lead slot the player's figure fills
 	uint8 LeadSeat = 0;
 	uint8 AllySeat = 0;
+	FString LeadName;
+	FString AllyName;
 	ftcore::ArenaBlowHook SessionInnerHook = nullptr; // the sub-hosts' hook the session's ruling chains after
 	void* SessionInnerUser = nullptr;
 	bool bSessionPartnerDue = false; // -ArenaSharedCount: a lead's blow is held, the scripted partner joins after the step

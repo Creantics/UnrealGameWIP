@@ -21,7 +21,6 @@ constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans",  "sans_b
                                                                  "serif_bold", "serif_sc", "serif_sc_bold"};
 constexpr std::array<std::string_view, 7> kShapeNames{"none", "diamond", "chevron", "circle", "square", "triangle", "ring"};
 constexpr std::array<std::string_view, kUiMeterShapeCount> kMeterNames{"line", "ring", "teeth", "stroke"};
-constexpr std::array<std::string_view, kUiLeadMarkCount> kLeadMarkNames{"none", "knuckles", "cylinder", "mask"};
 
 template <std::size_t N>
 bool findName(const std::array<std::string_view, N>& names, std::string_view key, std::size_t& out) {
@@ -86,7 +85,6 @@ std::string_view uiPaletteName(UiPalette p) { return kPaletteNames[static_cast<s
 std::string_view uiTokenName(UiToken t) { return kTokenNames[static_cast<std::size_t>(t)]; }
 std::string_view uiTextRoleName(UiTextRole r) { return kRoleNames[static_cast<std::size_t>(r)]; }
 std::string_view uiMeterShapeName(UiMeterShape m) { return kMeterNames[static_cast<std::size_t>(m) % kUiMeterShapeCount]; }
-std::string_view uiLeadMarkName(UiLeadMark m) { return kLeadMarkNames[static_cast<std::size_t>(m) % kUiLeadMarkCount]; }
 
 float uiEdgePx(const UiStyle& s, float height) { return std::max(1.f, s.edgePx * std::max(height, 1.f) / 1080.f); }
 
@@ -382,13 +380,13 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             std::size_t m = 0;
             if (v.type() != JsonType::String || !findName(kMeterNames, v.string(), m)) return bad("style", key);
             s.meter = static_cast<UiMeterShape>(m);
-        } else if (key == "lead_marks") {
-            if (v.type() != JsonType::Array || v.size() != s.leadMark.size()) return bad("style", key);
+        } else if (key == "load") {
+            if (v.type() != JsonType::Object) return bad("style", key);
             for (std::uint32_t j = 0; j < v.size(); ++j) {
-                const JsonValue mv = v[j];
-                std::size_t m = 0;
-                if (mv.type() != JsonType::String || !findName(kLeadMarkNames, mv.string(), m)) return bad("style", key);
-                s.leadMark[j] = static_cast<UiLeadMark>(m);
+                const std::string_view lk = v.key(j);
+                UiColor* dst = lk == "gold" ? &s.loadGold : lk == "bright" ? &s.loadBright : nullptr;
+                const JsonValue lv = v.value(j);
+                if (!dst || lv.type() != JsonType::String || !parseHex(lv.string(), *dst)) return bad(key, lk);
             }
         } else if (key == "fade") {
             if (v.type() != JsonType::Object) return bad("style", key);

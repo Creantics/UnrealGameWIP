@@ -33,8 +33,8 @@ UiBudgetInput busy(const ArenaHudFrame& f) {
     in.dt = 1.f / 60.f;
     in.activity = true;
     in.bossEvent = true;
-    in.verbsAvailable = uiVerbsAvailable(f);
-    in.want = uiMarkWants(f, in.verbsAvailable);
+    in.prompts = uiPromptsOpen(f, true);
+    in.want = uiMarkWants(f, in.prompts);
     return in;
 }
 
@@ -42,7 +42,7 @@ UiBudgetInput busy(const ArenaHudFrame& f) {
 
 TEST_CASE("ui budget: absent data asks for no mark") {
     ArenaHudFrame f; // nothing present
-    const auto w = uiMarkWants(f, uiVerbsAvailable(f));
+    const auto w = uiMarkWants(f, uiPromptsOpen(f, true));
     for (std::uint8_t n : w) CHECK(n == 0);
 
     // The third place with no data (planned) draws nothing, though it is "present".
@@ -65,33 +65,37 @@ TEST_CASE("ui budget: absent data asks for no mark") {
     CHECK(uiMarkWants(g, 0)[K(UiMarkKind::Target)] == 0);
 }
 
-TEST_CASE("ui budget: the partner's place shows only when hurt, down or holding Load; Heal only when it would heal") {
+TEST_CASE("ui budget: the partner's row shows whenever the fight has a partner") {
     ArenaHudFrame f = fullFrame();
     CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 1); // hurt
     f.partner.hp = f.partner.hpMax;
-    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 0); // full health: nothing to say
-    f.partner.load = 12;
-    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 1); // holding Load
-    f.partner.load = 0;
+    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 1); // full health too
     f.partner.down = true;
     CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 1);
-    CHECK((uiVerbsAvailable(f) & uiVerbBit(UiVerb::Heal)) != 0);
-    f.lead.hp = f.lead.hpMax;
-    CHECK((uiVerbsAvailable(f) & uiVerbBit(UiVerb::Heal)) == 0);
+    f.partner.present = false;
+    CHECK(uiMarkWants(f, 0)[K(UiMarkKind::Party)] == 0);
 }
 
-TEST_CASE("ui budget: verbs available come from the data") {
+TEST_CASE("ui budget: HEAL only while hurt with heals left, PARTNER only in its window with the partner up") {
     ArenaHudFrame f = fullFrame();
-    CHECK(uiVerbsAvailable(f) == 0xF);
-    f.lead.releaseReady = false;
+    CHECK(uiPromptsOpen(f, true) == (uiPromptBit(UiPrompt::Pair) | uiPromptBit(UiPrompt::Heal)));
+    CHECK(uiPromptsOpen(f, false) == uiPromptBit(UiPrompt::Heal));
+    f.lead.hp = f.lead.hpMax;
+    CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0); // a heal would do nothing
+    f.lead.hp = 10;
     f.lead.heals = 0;
+    CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0);
     f.partner.down = true;
-    CHECK(uiVerbsAvailable(f) == uiVerbBit(UiVerb::Guard));
-    f.lead.guardBroken = true;
-    CHECK(uiVerbsAvailable(f) == 0);
+    CHECK(uiPromptsOpen(f, true) == 0);
+    f.partner.down = false;
+    f.partner.present = false;
+    CHECK(uiPromptsOpen(f, true) == 0);
+    // At most four rows are asked for, however many are open.
+    CHECK(uiMarkWants(f, 0x3F)[K(UiMarkKind::Prompt)] == kUiPromptRows);
+    CHECK(uiMarkWants(f, uiPromptBit(UiPrompt::Dodge))[K(UiMarkKind::Prompt)] == 1);
 }
 
-TEST_CASE("ui budget: at rest only the lead and the party show") {
+TEST_CASE("ui budget: at rest only the lead, the party and the open prompts show") {
     const UiBudgetRules rules;
     UiBudgetState st;
     ArenaHudFrame f = fullFrame();
@@ -110,11 +114,10 @@ TEST_CASE("ui budget: at rest only the lead and the party show") {
     CHECK(o.rest);
     CHECK(o.allowed(UiMarkKind::Lead) == 1);
     CHECK(o.allowed(UiMarkKind::Party) == 1);
-    CHECK(o.marks == 2);
+    CHECK(o.allowed(UiMarkKind::Prompt) == 2); // a prompt stands for as long as its press is open
+    CHECK(o.promptsShown == in.prompts);
+    CHECK(o.marks == 4);
     CHECK(o.bossAlpha == 0.f);
-    CHECK(o.verbAlpha == 0.f);
-    CHECK(o.verbsShown == 0);
-    CHECK(o.keyRing == -1);
 
     // One change wakes it.
     in.changed = 1;
@@ -142,12 +145,11 @@ TEST_CASE("ui budget: at rest the marks fade out, they do not pop") {
     CHECK(o.actionAlpha < 1.f);
     CHECK(o.bossAlpha > 0.f);
     CHECK(o.bossAlpha < 1.f);
-    CHECK(o.verbAlpha > 0.f);
     CHECK(o.allowed(UiMarkKind::Event) == 1);
-    // After the fade-out only the lead and the party.
+    // After the fade-out only the lead, the party and the prompts.
     for (int i = 0; i < 60; ++i) uiBudgetStep(st, in, rules);
     CHECK(st.out.actionAlpha == 0.f);
-    CHECK(st.out.marks == 2);
+    CHECK(st.out.marks == 4);
 }
 
 TEST_CASE("ui budget: the boss line fades at rest and returns on a boss event") {
@@ -187,8 +189,8 @@ TEST_CASE("ui budget: never more than the mark cap in action, highest priority k
                     in.want[K(UiMarkKind::Cards)] = (extra & 1) ? 1 : 0;
                     in.want[K(UiMarkKind::Lock)] = (extra & 2) ? 1 : 0;
                     in.want[K(UiMarkKind::WeakPoint)] = (extra & 4) ? 1 : 0;
-                    in.want[K(UiMarkKind::Wall)] = 1;
-                    in.prompted = static_cast<std::int8_t>(UiVerb::Heal);
+                    in.prompts = 0x3F; // every prompt open: the controls of a first fight too
+                    in.want[K(UiMarkKind::Prompt)] = kUiPromptRows;
                     for (int t = 0; t < 20; ++t) uiBudgetStep(st, in, rules);
                     const UiBudgetOut& o = st.out;
                     CHECK(o.marks <= rules.marks);
@@ -197,13 +199,12 @@ TEST_CASE("ui budget: never more than the mark cap in action, highest priority k
                     int sum = 0;
                     for (std::uint8_t a : o.allow) sum += a;
                     CHECK(sum == o.marks);
-                    // The verbs drawn are as many as granted, available ones only.
+                    // The prompts drawn are as many as granted, the first ones in order.
                     int shown = 0;
-                    for (unsigned b = o.verbsShown; b; b &= b - 1) ++shown;
-                    CHECK(shown == o.allowed(UiMarkKind::Verb));
-                    CHECK((o.verbsShown & ~in.verbsAvailable) == 0);
-                    // The prompted verb carries the only key ring whenever any verb shows.
-                    if (shown > 0) CHECK(o.keyRing == static_cast<std::int8_t>(UiVerb::Heal));
+                    for (unsigned b = o.promptsShown; b; b &= b - 1) ++shown;
+                    CHECK(shown == o.allowed(UiMarkKind::Prompt));
+                    CHECK(shown <= kUiPromptRows);
+                    CHECK((o.promptsShown & ~((1u << shown) - 1u)) == 0);
                     CHECK(st.maxMarks <= rules.marks);
                 }
             }
@@ -211,18 +212,25 @@ TEST_CASE("ui budget: never more than the mark cap in action, highest priority k
     }
 }
 
-TEST_CASE("ui budget: a verb that cannot be used is not drawn, and no key ring without a prompt") {
+TEST_CASE("ui budget: HEAL claims the first row, then PARTNER, then the basic controls in order") {
     const UiBudgetRules rules;
     UiBudgetState st;
     ArenaHudFrame f = fullFrame();
-    f.lead.heals = 0;
-    f.lead.releaseReady = false;
     UiBudgetInput in = busy(f);
-    in.prompted = static_cast<std::int8_t>(UiVerb::Heal); // asked for, but none left
-    for (int i = 0; i < 20; ++i) uiBudgetStep(st, in, rules);
-    CHECK((st.out.verbsShown & uiVerbBit(UiVerb::Heal)) == 0);
-    CHECK((st.out.verbsShown & uiVerbBit(UiVerb::Release)) == 0);
-    CHECK(st.out.keyRing == -1);
+    in.prompts = uiPromptBit(UiPrompt::Heal) | uiPromptBit(UiPrompt::Guard) | uiPromptBit(UiPrompt::Dodge) |
+                 uiPromptBit(UiPrompt::Jump);
+    in.want = uiMarkWants(f, in.prompts);
+    uiBudgetStep(st, in, rules);
+    CHECK(st.out.promptsShown == in.prompts); // four rows: all four
+    in.prompts = static_cast<std::uint8_t>(in.prompts | uiPromptBit(UiPrompt::Pair));
+    in.want = uiMarkWants(f, in.prompts);
+    uiBudgetStep(st, in, rules);
+    CHECK(st.out.promptsShown ==
+          (uiPromptBit(UiPrompt::Heal) | uiPromptBit(UiPrompt::Pair) | uiPromptBit(UiPrompt::Guard) | uiPromptBit(UiPrompt::Dodge)));
+    in.prompts = 0;
+    in.want = uiMarkWants(f, 0);
+    uiBudgetStep(st, in, rules);
+    CHECK(st.out.promptsShown == 0);
 }
 
 TEST_CASE("ui budget: the result card stands alone") {

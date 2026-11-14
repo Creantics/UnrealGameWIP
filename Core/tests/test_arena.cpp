@@ -3960,6 +3960,30 @@ TEST_CASE("arena paired counter: the partner's press within pairWindow of a parr
     }
 }
 
+TEST_CASE("arena pairOpen: true after a tick exactly when the partner's press on the next tick pairs") {
+    Rig probe(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+    parryRun(probe, 40);
+    const Logged* parried = probe.find(ArenaEventType::Parried);
+    REQUIRE(parried);
+    const int p = parried->tick;
+    int open = 0;
+    for (int k = p + 1; k <= p + 12; ++k) {
+        Rig before(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(before, k - 1);
+        Rig pressed(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(pressed, k, k);
+        const bool pairs = pressed.count(ArenaEventType::CounterStagger) == 1;
+        CHECK(before.fight.pairOpen() == pairs);
+        CHECK_FALSE(pressed.fight.pairOpen()); // spent, or past the window
+        open += pairs ? 1 : 0;
+    }
+    CHECK(open >= 6);  // the window is 0.12 s at 60 Hz
+    CHECK(open <= 8);
+    Rig none(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+    parryRun(none, p - 1);
+    CHECK_FALSE(none.fight.pairOpen()); // before the parry
+}
+
 // ---- determinism ----
 
 namespace {

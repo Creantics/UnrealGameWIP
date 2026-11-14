@@ -133,9 +133,6 @@ public:
 	bool IsAutoAdvanceOn() const { return !bAutoPlay && AutoAdvance.enabled(); }
 	// Dialogue text size multiplier from the settings (1 in autoplay).
 	float GetSubtitleScale() const { return SubtitleScale; }
-	// Where a choice's options hang: the head of the person last heard (their cast member, when on screen), else the
-	// middle of the dialogue stand-in, in world space. False when neither is on screen.
-	bool GetAnsweredHead(FVector& Out) const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -282,7 +279,6 @@ private:
 	UPROPERTY(Transient)
 	TMap<FString, TObjectPtr<AFTCastMember>> CastActors; // by model id; null: the look didn't load
 	TWeakObjectPtr<AActor> CastAnchor;
-	FString AnsweredModel; // the model id of the last line's speaker (a choice answers them)
 	// Non-shipping diagnostics: -FaceDiag logs each cast face's peaks when the cast is cleared; -CastCost times
 	// frames by cast state (below) and logs them at EndPlay. Both off by default and compiled out of shipping.
 	bool bCastDiag = false;

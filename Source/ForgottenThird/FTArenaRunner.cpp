@@ -272,6 +272,8 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	Fit = Setup.Fit;
 	LeadSeat = Setup.LeadSeat;
 	AllySeat = Setup.AllySeat;
+	LeadName = Setup.Lead ? Setup.Lead->Name : FString();
+	AllyName = Setup.Ally ? Setup.Ally->Name : FString();
 #if !UE_BUILD_SHIPPING
 	// Review stills: start the player 1.2 m from the zone's wall, beside it, so the wall's cue shows.
 	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNearWall")))

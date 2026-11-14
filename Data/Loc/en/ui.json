@@ -68,6 +68,19 @@
     "arena.tell.sweep": "SWEEP",
     "arena.tell.slam": "SLAM",
     "arena.tell.shot": "SHOT",
+    "arena.read.strike": "Strike",
+    "arena.read.overhead": "Overhead",
+    "arena.read.backhand": "Backhand",
+    "arena.read.charge": "Charge",
+    "arena.read.thrust": "Thrust",
+    "arena.read.slash": "Slash",
+    "arena.read.sweep": "Sweep",
+    "arena.read.slam": "Slam",
+    "arena.read.shot": "Shot",
+    "arena.label.shared": "SHARED",
+    "arena.label.weak_point": "WEAK POINT",
+    "arena.debt": "DEBT",
+    "arena.prompt.attack": "attack",
 
     "banter.prompt": "Space / Enter: next    Backspace: skip",
 
@@ -209,6 +222,7 @@
     "story.log_title": "Backlog",
     "story.log_hint": "Up / Down or mouse wheel: scroll    B / Esc / Start: close",
     "story.log_empty": "Nothing yet",
+    "story.option.locked": "locked",
 
     "title.name": "Forgotten Third",
     "title.new_game": "New Game",

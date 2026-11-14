@@ -66,6 +66,11 @@ TEST_CASE("ui style: the built-in style and Data/UI/style.json pass the accessib
             CHECK(a.b == doctest::Approx(b.b).epsilon(0.003));
             CHECK(a.a == doctest::Approx(b.a).epsilon(0.003));
         }
+    for (const auto& [a, b] : {std::pair{s.loadGold, d.loadGold}, std::pair{s.loadBright, d.loadBright}}) {
+        CHECK(a.r == doctest::Approx(b.r).epsilon(0.003));
+        CHECK(a.g == doctest::Approx(b.g).epsilon(0.003));
+        CHECK(a.b == doctest::Approx(b.b).epsilon(0.003));
+    }
     CHECK(std::string_view(s.plate[0].data()) == "bronze");
     CHECK(s.layers.hairlines);
     CHECK_FALSE(s.layers.worldAnchored);
@@ -145,8 +150,8 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK(err.find("edge text") != std::string::npos);
     CHECK_FALSE(importUiStyle(R"({"backing_soft": {"hud": 1.5}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"meter": "dial"})", s, &err));
-    CHECK_FALSE(importUiStyle(R"({"lead_marks": ["knuckles", "mask"]})", s, &err));
-    CHECK_FALSE(importUiStyle(R"({"lead_marks": ["knuckles", "cylinder", "crown"]})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"load": {"gold": "amber"}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"load": {"silver": "#FFFFFF"}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"fade": {"rest_alpha": 2}})", s, &err));
     // Each key is optional; the pick swaps them in.
     s = defaultUiStyle();
@@ -159,13 +164,10 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK(defaultUiStyle().edgeText == doctest::Approx(0.6f));
     CHECK(s.fade.rest == doctest::Approx(4.f));
     CHECK(s.fade.in == doctest::Approx(defaultUiStyle().fade.in));
-    // Each lead's ring carries a drawn mark, not a letter; the table can reorder or blank them.
-    CHECK(defaultUiStyle().leadMark[0] == UiLeadMark::Knuckles);
-    CHECK(defaultUiStyle().leadMark[2] == UiLeadMark::Mask);
-    REQUIRE(importUiStyle(R"({"lead_marks": ["mask", "none", "cylinder"]})", s, &err));
-    CHECK(s.leadMark[0] == UiLeadMark::Mask);
-    CHECK(s.leadMark[1] == UiLeadMark::None);
-    CHECK(uiLeadMarkName(s.leadMark[2]) == "cylinder");
+    // The Load's two golds are their own entries, read like any colour.
+    REQUIRE(importUiStyle(R"({"load": {"bright": "#FFFFFF"}})", s, &err));
+    CHECK(s.loadBright.b == doctest::Approx(1.f));
+    CHECK(s.loadGold == defaultUiStyle().loadGold);
 }
 
 TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while, and a new change wakes it") {
@@ -506,4 +508,49 @@ TEST_CASE("ui style: the picture's brightest share, by luminance, with no alloca
     CHECK(top.r == doctest::Approx(0.95f));
     CHECK(top.b == doctest::Approx(0.8f));
     CHECK(uiLumaBrightest(h, 1.f).r == doctest::Approx(0.185f)); // the whole picture's mean
+}
+
+TEST_CASE("ui load name: the gold fills to the threshold, brightens to the cap, sweeps once and drains in 0.3 s") {
+    ArenaHudLead lead;
+    lead.loadCap = 9;
+    lead.releaseAt = 3;
+    UiLoadName s;
+    lead.load = 1;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.fill == doctest::Approx(1.f / 3.f));
+    CHECK(s.bright == 0.f);
+    CHECK(s.shimmer < 0.f);
+    lead.load = 4;
+    lead.releaseReady = true;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.fill == 1.f);
+    CHECK(s.bright == doctest::Approx(1.f / 6.f));
+    CHECK(s.shimmer == 0.f); // the crossing
+    for (int k = 0; k < 12; ++k) uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.shimmer == doctest::Approx(0.5f).epsilon(0.01));
+    for (int k = 0; k < 13; ++k) uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.shimmer < 0.f); // one sweep, then steady
+    lead.load = 9;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.bright == 1.f);
+    CHECK(s.shimmer < 0.f);
+    // The Release spends it all: the gold drains rather than vanishing, and is gone 0.3 s later.
+    lead.load = 0;
+    lead.releaseReady = false;
+    uiLoadNameStep(s, lead, 0.15f);
+    CHECK(s.fill == doctest::Approx(0.5f));
+    CHECK(s.bright == 0.f);
+    uiLoadNameStep(s, lead, 0.16f);
+    CHECK(s.fill == 0.f);
+    // A cap at the threshold: nothing to brighten toward, no divide by zero.
+    lead.loadCap = 3;
+    lead.load = 3;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.fill == 1.f);
+    CHECK(s.bright == 0.f);
+    // No Load at all.
+    UiLoadName none;
+    uiLoadNameStep(none, ArenaHudLead{}, 1.f / 60.f);
+    CHECK(none.fill == 0.f);
+    CHECK(none.bright == 0.f);
 }

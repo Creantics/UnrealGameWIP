@@ -2656,6 +2656,12 @@ bool ArenaFight::readOpen() const {
            foe.stateTime < def_.enemies[readFoe_].moves[readMove_].attack.startup;
 }
 int ArenaFight::readStacks() const { return player_.readStacks; }
+bool ArenaFight::pairOpen() const {
+    // time_ is the next tick's start, the time tryPair would stamp a press made now.
+    const std::uint8_t i = player_.pairFoe;
+    return i < enemyCount_ && enemy_[i].brain == ArenaBrain::Open &&
+           time_ - player_.pairParry <= def_.fighter.pairWindow + kArenaEps;
+}
 
 bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {
     if (phase_ != ArenaPhase::Fighting || !enemyAlive(i) ||

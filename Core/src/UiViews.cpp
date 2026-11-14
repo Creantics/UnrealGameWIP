@@ -137,4 +137,22 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
     return changed;
 }
 
+void uiLoadNameStep(UiLoadName& s, const ArenaHudLead& lead, float dt) {
+    const float fill = lead.releaseAt > 0 ? std::clamp(static_cast<float>(lead.load) / static_cast<float>(lead.releaseAt), 0.f, 1.f) : 0.f;
+    s.fill = fill >= s.fill ? fill : std::max(fill, s.fill - dt / kUiLoadDrain);
+    // A cap at or under the threshold leaves nothing to brighten toward.
+    s.bright = lead.loadCap > lead.releaseAt
+                   ? std::clamp(static_cast<float>(lead.load - lead.releaseAt) / static_cast<float>(lead.loadCap - lead.releaseAt), 0.f, 1.f)
+                   : 0.f;
+    if (!lead.releaseReady) {
+        s.shimmer = -1.f;
+    } else if (!s.ready) {
+        s.shimmer = 0.f; // the threshold just crossed
+    } else if (s.shimmer >= 0.f) {
+        s.shimmer += dt / kUiLoadShimmer;
+        if (s.shimmer > 1.f) s.shimmer = -1.f;
+    }
+    s.ready = lead.releaseReady;
+}
+
 } // namespace ftcore

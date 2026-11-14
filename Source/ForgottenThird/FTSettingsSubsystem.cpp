@@ -70,6 +70,16 @@ bool UFTSettingsSubsystem::Save() const
 	return true;
 }
 
+void UFTSettingsSubsystem::MarkUiFirstUse(uint32 Bits)
+{
+	if ((Values.uiFirstUse | Bits) == Values.uiFirstUse)
+	{
+		return;
+	}
+	Values.uiFirstUse |= Bits;
+	Save();
+}
+
 void UFTSettingsSubsystem::MarkChanged()
 {
 	++Revision;

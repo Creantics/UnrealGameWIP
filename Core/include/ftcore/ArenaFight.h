@@ -1008,6 +1008,8 @@ public:
     FTCORE_API std::uint8_t readMove() const;
     FTCORE_API bool readOpen() const;
     FTCORE_API int readStacks() const;
+    // The partner's press would pair now: a parry within pairWindow has opened an enemy still open and not yet paired.
+    FTCORE_API bool pairOpen() const;
 
     // ---- host hooks ----
     // Holds enemy i in `brain` (Open, Down or Staggered) for `seconds` (> 0; +infinity: until releaseEnemy), from the

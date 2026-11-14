@@ -50,6 +50,7 @@ struct ArenaHudLead {
     std::uint8_t rounds = 0;    // rounds left in the cylinder
     float reload01 = 0.f;       // reload progress 0..1 (0 when not reloading)
     bool down = false;
+    int debt = -1;              // the Lattice's Debt (-1: none reported; no world reports it yet, so none is drawn)
     bool operator==(const ArenaHudLead&) const = default;
 };
 
@@ -137,6 +138,19 @@ FTCORE_API void fillArenaHudPartner(const ArenaFight& fight, ArenaHudPartner& ou
 // Copies `f` into the view; bumps each changed section's revision. Returns a mask of the changed sections (bit i:
 // ArenaHudSection i).
 FTCORE_API std::uint32_t updateArenaHudView(ArenaHudView& view, const ArenaHudFrame& f);
+
+// The Load drawn in the lead's name: a left-to-right gold wipe that fills the name at the Release threshold, then
+// brightens the whole name toward the cap. Crossing the threshold sweeps one shimmer over it; a drop (a Release)
+// drains the gold right to left at the name's width per kUiLoadDrain rather than vanishing.
+inline constexpr float kUiLoadShimmer = 0.4f; // seconds the threshold's sweep takes
+inline constexpr float kUiLoadDrain = 0.3f;   // seconds a full name takes to drain
+struct UiLoadName {
+    float fill = 0.f;     // 0..1 of the name's width in gold (drawn)
+    float bright = 0.f;   // 0..1 from the gold toward the bright gold, the whole name
+    float shimmer = -1.f; // 0..1 the sweep's place across the name; below 0 none
+    bool ready = false;   // the Release is open (the last step's releaseReady)
+};
+FTCORE_API void uiLoadNameStep(UiLoadName& s, const ArenaHudLead& lead, float dt);
 
 // ---- Dialogue --------------------------------------------------------------------------------------------------
 

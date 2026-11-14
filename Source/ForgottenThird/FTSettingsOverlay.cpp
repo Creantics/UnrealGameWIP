@@ -38,7 +38,7 @@ void FT::DrawSettingsOverlay(AHUD& Hud, UCanvas* Canvas, UFTSettingsSubsystem& S
 	Hud.DrawRect(kBackdropSet, 0.f, 0.f, Canvas->ClipX, Canvas->ClipY);
 
 	const int32 N = UFTSettingsSubsystem::RowCount;
-	const float RowH = 50.f * S;
+	const float RowH = FMath::Min(50.f, 880.f / N) * S; // every row inside the frame, header and footer included
 	const float HeaderH = 96.f * S;
 	const float FooterH = 64.f * S;
 	const float PanelW = FMath::Min(Canvas->ClipX - 80.f * S, 1000.f * S);

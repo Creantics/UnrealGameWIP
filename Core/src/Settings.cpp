@@ -2,6 +2,7 @@
 
 #include "ftcore/Json.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -70,6 +71,7 @@ void clampSettings(Settings& s) {
     s.voice = clampFloat(s.voice, 0.f, 1.f, d.voice);
     s.sfx = clampFloat(s.sfx, 0.f, 1.f, d.sfx);
     s.cameraShake = clampFloat(s.cameraShake, 0.f, 1.f, d.cameraShake);
+    s.hudScale = (std::clamp(s.hudScale, Settings::kMinHudScale, Settings::kMaxHudScale) + 5) / 10 * 10; // the menu's steps
 }
 
 std::string encodeSettings(const Settings& in) {
@@ -80,14 +82,15 @@ std::string encodeSettings(const Settings& in) {
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"aimAssist\":%s,\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
-                  "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f}",
+                  "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f,\"uiFirstUse\":%u,\"hudScale\":%d}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
                   static_cast<int>(s.defenceAssist), s.aimAssist ? "true" : "false", static_cast<int>(s.subtitleSize),
                   s.reduceFlashes ? "true" : "false", s.qteAutoComplete ? "true" : "false",
                   s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
-                  s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake));
+                  s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake), static_cast<unsigned>(s.uiFirstUse),
+                  s.hudScale);
     return buf;
 }
 
@@ -140,6 +143,9 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.stickFlicks = boolField("stickFlicks", s.stickFlicks);
     s.aimAssist = boolField("aimAssist", s.aimAssist);
     s.cameraShake = floatField("cameraShake", s.cameraShake);
+    const std::int64_t taught = intField("uiFirstUse", 0); // a bit set, so anything outside 32 bits is no set at all
+    s.uiFirstUse = taught >= 0 && taught <= 0xFFFFFFFF ? static_cast<std::uint32_t>(taught) : 0u;
+    s.hudScale = static_cast<int>(std::clamp<std::int64_t>(intField("hudScale", s.hudScale), Settings::kMinHudScale, Settings::kMaxHudScale));
     clampSettings(s);
     out = s;
     return true;
@@ -164,6 +170,7 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::SkipChoices: return "Skip choices";
     case SettingsRow::StickFlicks: return "Stick flicks";
     case SettingsRow::CameraShake: return "Camera shake";
+    case SettingsRow::HudScale: return "HUD scale";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -197,6 +204,8 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
     int n = 0;
     if (word) {
         n = std::snprintf(buf, cap, "%s", word);
+    } else if (row == SettingsRow::HudScale) {
+        n = std::snprintf(buf, cap, "%d%%", s.hudScale);
     } else if (row == SettingsRow::AutoDelay) {
         n = std::snprintf(buf, cap, "%.2f s", static_cast<double>(s.autoDelay));
     } else {
@@ -234,6 +243,12 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     case SettingsRow::StickFlicks: return setBool(s.stickFlicks, dir, wrap);
     case SettingsRow::AimAssist: return setBool(s.aimAssist, dir, wrap);
     case SettingsRow::CameraShake: return stepFloat(s.cameraShake, stepTenth(s.cameraShake, step));
+    case SettingsRow::HudScale: {
+        const int next = std::clamp(s.hudScale + 10 * step, Settings::kMinHudScale, Settings::kMaxHudScale); // a slider: stops at its ends
+        if (next == s.hudScale) return false;
+        s.hudScale = next;
+        return true;
+    }
     case SettingsRow::Back: break;
     }
     return false;
