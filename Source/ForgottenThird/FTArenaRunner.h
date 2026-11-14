@@ -337,8 +337,9 @@ public:
 	uint8 GetLeadSeat() const { return LeadSeat; }
 	uint8 GetAllySeat() const { return AllySeat; }
 	// The lead's and the ally's look names (empty for the test human), the HUD's party rows' names.
-	const FString& GetLeadName() const { return LeadName; }
-	const FString& GetAllyName() const { return AllyName; }
+	// They follow the figures: a switch swaps them at once, a takeover when its camera move starts (0.3 s after the fall).
+	const FString& GetLeadName() const { return bNamesSwapped ? AllyName : LeadName; }
+	const FString& GetAllyName() const { return bNamesSwapped ? LeadName : AllyName; }
 	// The third slot as the session holds it (a checkpoint keeps it), and why any gift press is refused in it now
 	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
 	ftcore::SlotState GetThirdSlot() const;
@@ -474,7 +475,22 @@ private:
 	// goal, both leads' health for the session, and the 20 s report windows with the end's checks.
 	void BeginPartner();
 	void TakeOverBodies(const ftcore::ArenaOutput& Out);
-	void SwapLeadFigures();
+	// How the camera goes to the new lead: a cut (a retry), an ease (a switch: kSwitchEaseSeconds), or a takeover's
+	// hold on the fallen lead (kTakeoverHoldSeconds) then a move (kTakeoverMoveSeconds), its names and input with it.
+	enum class EHandoff : uint8 { Cut, Switch, Takeover };
+	static constexpr float kSwitchEaseSeconds = 0.35f;
+	static constexpr float kTakeoverHoldSeconds = 0.3f;
+	static constexpr float kTakeoverMoveSeconds = 0.5f;
+	void SwapLeadFigures(EHandoff Handoff = EHandoff::Cut);
+	void TickHandoff();
+	// After a switch: the partner's first intents on the left body, its first move, and when it leaves the view.
+	void TrackSwitchPartner();
+	void LogHandoffChecks() const;
+	// A partner blow's Hit: the lead's impact effect at kPartnerImpactScale at the partner's blow point, and the
+	// impact sound hook (both sources call it).
+	static constexpr float kPartnerImpactScale = 0.7f;
+	void PartnerImpact(const ftcore::ArenaEvent& E);
+	void ImpactSoundHook(uint8 Source, const FVector& At, float Scale);
 	void WalkPartner(const ftcore::ArenaOutput& Out);
 	void FeedLeadHealths();
 	void TrackPartner(const ftcore::ArenaOutput& Out);
@@ -1071,6 +1087,22 @@ private:
 	// the camera. Asked by the probe, switched by the session, swapped by the fight, refused by the fight.
 	float SwitchAt = -1.f;
 	bool bSwitchAsked = false;
+	// The hand-off (SwapLeadFigures): the HUD's names follow the figures (a takeover's at its move's start); the
+	// takeover's move is due at HandoffMoveAt (Now), its input ignored to TakeoverInputUntil (fight time).
+	bool bNamesSwapped = false;
+	double HandoffMoveAt = -1.0, HandoffFellAt = -1.0, TakeoverInputUntil = -1.0;
+	int32 HandoffTakeovers = 0, HandoffMovesOnTime = 0, HandoffSwitches = 0, TakeoverInputsIgnored = 0;
+	double HandoffWorstLate = 0.0;
+	float HandoffFrameDt = 0.f;
+	// After a switch: the fight time it happened, the left body's place then, the first step its brain moved it (or
+	// attacked), the first frame it stood out of the camera's view; -1: not yet. The intents logged each 0.25 s to 2 s.
+	double SwitchPartnerAt = -1.0, SwitchPartnerMoved = -1.0, SwitchPartnerOut = -1.0;
+	int32 SwitchPartnerLogs = 0;
+	FVector SwitchPartnerFrom = FVector::ZeroVector;
+	double SwitchWorstMoved = 0.0, SwitchWorstOut = 0.0;
+	int32 SwitchPartnerChecks = 0;
+	TWeakObjectPtr<class UFTVfxComponent> PartnerImpactFx;
+	bool bImpactHookLogged[2] = {false, false};
 	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0;
 	// The partner's blows: the session ruled them (RuleSessionBlow's partner path), their Hit events, their joins.
 	int32 PartnerBlowsRuled = 0, PartnerHitEvents = 0, PartnerJoins = 0;

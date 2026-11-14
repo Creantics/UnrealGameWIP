@@ -270,6 +270,8 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 		Body->SetVisibility(false);
 		Head->SetVisibility(false);
 		Visor->SetVisibility(false);
+		// The shapes' blade too: a worn body carries only real weapon meshes (the partner has none yet), never the placeholder cube.
+		Blade->SetVisibility(false);
 		Skin->SetVisibility(true);
 	}
 

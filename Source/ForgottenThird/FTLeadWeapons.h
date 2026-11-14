@@ -101,6 +101,11 @@ FORGOTTENTHIRD_API UStaticMesh* FindMesh(const FPiece& Piece);
 
 struct FFTLeadWeapons
 {
+	// The landed-blow effect of a weapon kit (an NS_ name under /Game/VFX): the lead's, and the partner's at its scale.
+	static const TCHAR* ImpactEffectOf(ftcore::ArenaWeapon W)
+	{
+		return W == ftcore::ArenaWeapon::Magic ? TEXT("spell_impact") : W == ftcore::ArenaWeapon::Guns ? TEXT("gun_impact") : TEXT("gauntlet_spark");
+	}
 	// The clips' fade-out once the attack is over or cut short (s).
 	static constexpr double kFadeOut = 0.15;
 

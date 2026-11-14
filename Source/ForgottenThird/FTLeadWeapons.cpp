@@ -410,9 +410,7 @@ void FFTLeadWeapons::SpawnEffects()
 	USceneComponent* Root = Figure->GetRootComponent();
 	FxName[Muzzle] = TEXT("muzzle_flash");
 	FxName[Travel] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_bolt") : TEXT("gun_tracer");
-	FxName[Impact] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_impact")
-		: Kit.weapon == ftcore::ArenaWeapon::Guns ? TEXT("gun_impact")
-		: TEXT("gauntlet_spark");
+	FxName[Impact] = ImpactEffectOf(Kit.weapon);
 	FxName[Ward] = TEXT("spell_ward");
 	switch (Kit.weapon)
 	{
