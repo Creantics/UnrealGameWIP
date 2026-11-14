@@ -75,7 +75,7 @@ const FScalarSpec kScalars[] = {
 	{TEXT("MottleRoughness"), 0.f},   // +- roughness of the mottle (0 = off)
 	{TEXT("MottleFadeNear"), 800.f},  // camera distance (cm) where the mottle starts to fade, and where it is gone
 	{TEXT("MottleFadeFar"), 1500.f},
-	{TEXT("Cloth"), 0.6f},           // cloth master only: fuzz amount
+	{TEXT("Cloth"), 0.6f},            // cloth master only: fuzz amount
 	{TEXT("DiffuseResponse"), 1.f},   // albedo ^ DiffuseResponse: above 1 a darker response for dark cloth, light stitching kept
 	{TEXT("SkyFill"), 1.f},           // share of sky and bounce light the surface takes (multiplies the occlusion output)
 	// Set at runtime by the water system (LEAD_WETNESS_INPUT_SPEC); names fixed by that spec, all 0 = dry.
@@ -240,7 +240,9 @@ c *= 1.0 + EdgeLighten * edge;
 c *= lerp(1.0, D.z, CavityDarken);
 c *= lerp(1.0, SoleTint.rgb, Sole);
 c *= lerp(1.0, WetDarken, Wet.x);
-c = min(lerp(c, SiltColor.rgb, Wet.z), c * SiltLiftMax); // silt film below the line; on leather a capped lift (still black)
+// silt film below the line; on leather a capped lift (still black). The 0.01 floor keeps the cap from vanishing where the
+// albedo is 0, so at the default (100) the cap is at least 1 and never binds.
+c = min(lerp(c, SiltColor.rgb, Wet.z), max(c, 0.01) * SiltLiftMax);
 c *= lerp(float3(1.0, 1.0, 1.0), TideTint.rgb, Wet.y); // tide line: a stain that darkens, never a lighter paint
 return lerp(c, MetalColor.rgb * lerp(0.55, 1.0, D.z), Metal); // grime in the metal's recesses
 )HLSL");
