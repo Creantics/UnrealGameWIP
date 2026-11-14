@@ -203,7 +203,7 @@ struct DialogueViewOption {
     std::string_view text;
     bool selectable = true;
     bool returns = false;
-    // Why a locked reply is locked: a key in the interface text table (empty: no reason, so the word "locked" is shown).
+    // Why a locked reply is locked: a key in the interface text table (empty: no reason, so the greyed reply stands alone).
     // The runner carries no reasons yet, so this stays empty.
     std::string_view lockReason;
 };

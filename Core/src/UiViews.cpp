@@ -105,7 +105,7 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
         if (shown && kind == DialogueViewKind::Choice) {
             view.optionCount = std::min<std::uint32_t>(r->optionCount(), kDialogueViewOptions);
             for (std::uint32_t i = 0; i < view.optionCount; ++i) {
-                // No reason yet: the runner's options carry none (the UI then shows the word "locked").
+                // No reason yet: the runner's options carry none (the UI then shows the greyed reply alone).
                 view.options[i] = DialogueViewOption{r->optionText(i), r->optionSelectable(i), r->optionReturns(i), std::string_view()};
             }
         }

@@ -49,6 +49,7 @@
     "arena.boss.lifted": "LIFTED",
     "arena.boss.release_on_call": "R on the call",
     "arena.load": "LOAD",
+    "arena.load_full": "LOAD FULL",
     "arena.load_plus": "LOAD",
     "arena.release_ready": "RELEASE READY",
     "arena.overloaded": "OVERLOADED",
@@ -56,6 +57,7 @@
     "arena.release": "RELEASE",
     "arena.counter": "COUNTER",
     "arena.read": "READ",
+    "arena.next_move": "NEXT MOVE",
     "arena.misread": "MISREAD",
     "arena.read_counter": "READ COUNTER",
     "arena.read_stacks": "READ",
@@ -225,7 +227,6 @@
     "story.log_title": "Backlog",
     "story.log_hint": "Up / Down or mouse wheel: scroll    B / Esc / Start: close",
     "story.log_empty": "Nothing yet",
-    "story.option.locked": "locked",
 
     "title.name": "Forgotten Third",
     "title.new_game": "New Game",

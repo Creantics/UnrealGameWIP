@@ -649,7 +649,7 @@ TEST_CASE("ui dialogue view: no reply cursor and no lock reason by default; a cu
     REQUIRE(v.optionCount == 2);
     CHECK(v.flags.cursor == -1);
     CHECK_FALSE(v.options[0].selectable);
-    CHECK(v.options[0].lockReason.empty()); // locked, with no reason: the word "locked" is shown
+    CHECK(v.options[0].lockReason.empty()); // locked, with no reason: the greyed reply stands alone
     CHECK(v.options[1].lockReason.empty());
 
     const std::uint32_t beat = v.beatRevision;
