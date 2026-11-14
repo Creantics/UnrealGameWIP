@@ -823,7 +823,8 @@ TEST_CASE("the unlock order is saved by id: a restore into a reordered table kee
     TragedyPool pa(a);
     for (const char* id : {"a1", "b1", "b0", "a0"}) REQUIRE(pa.unlock(tragedyKey(a, id)));
     REQUIRE(pa.newest(kLeadA) == tragedyKey(a, "a0")); // unlocked last, though first in the table
-    const TragedySave s = captureTragedies(a, pa);
+    TragedySave s;
+    CHECK(captureTragedies(a, pa, s) == 0);
     CHECK(s.unlocked == std::vector<std::string>{"a1", "b1", "b0", "a0"});
 
     TragedyTable b; // the same keys, re-imported in another order
@@ -836,7 +837,9 @@ TEST_CASE("the unlock order is saved by id: a restore into a reordered table kee
     for (const char* id : {"a0", "a1", "b0", "b1"})
         CHECK_MESSAGE(pb.weight(tragedyKey(b, id)) == pa.weight(tragedyKey(a, id)), id);
     CHECK(pb.weight(tragedyKey(b, "a0")) == 6u); // newest x3, caused x2
-    CHECK(captureTragedies(b, pb) == s);
+    TragedySave again;
+    CHECK(captureTragedies(b, pb, again) == 0);
+    CHECK(again == s);
 
     // Restored as a set in table order instead, a1 would be the newest: the order is what the save keeps.
     TragedyPool set(b);
@@ -929,4 +932,19 @@ TEST_CASE("place bleed: only a High band bleeds a place in, and only while its o
         REQUIRE(r.saw(Ev::Refused) == 1);
         CHECK_FALSE(r.h.bleeds()); // closed: the page is its own again
     }
+}
+
+TEST_CASE("a capture against a smaller table counts the pool keys it has no row for and leaves them out") {
+    TragedyTable big = makeTable(2); // a0 a1 b0 b1
+    TragedyPool pool(big);
+    for (const char* id : {"b1", "a0", "b0", "a1"}) REQUIRE(pool.unlock(tragedyKey(big, id)));
+    TragedyTable small = big;
+    small.keys.resize(2); // a0 a1: b0 and b1 (rows 2 and 3) are past its end
+    TragedySave s;
+    s.unlocked = {"stale"}; // a capture replaces what was there
+    CHECK(captureTragedies(small, pool, s) == 2);
+    CHECK(s.unlocked == std::vector<std::string>{"a0", "a1"});
+    TragedyPool locked(big);
+    CHECK(captureTragedies(small, locked, s) == 0); // a locked key past the end is not a dropped one
+    CHECK(s.unlocked.empty());
 }
