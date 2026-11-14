@@ -754,7 +754,8 @@ enum class ArenaEventType : std::uint8_t { // append only
     ReloadStarted,  // the player's empty cylinder began its reload: amount = its length in ms (0: it refills at once,
                     // and Reloaded follows in the same tick); move kArenaShotMove (appended)
     Reloaded,       // the player's cylinder refilled: amount = the rounds in it; move kArenaShotMove (appended). A
-                    // restart() refills it with no event, so a ReloadStarted may have no Reloaded
+                    // restart() refills it with no event, and the fight's end (Victory or Defeat) drops a reload under
+                    // way, so a ReloadStarted may have no Reloaded
     DryPress,       // a shot pressed on the player's empty cylinder was dropped: amount = the dry presses so far
                     // (stats().dryPresses); move kArenaShotMove (appended)
 };

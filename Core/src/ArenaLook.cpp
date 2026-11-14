@@ -8,6 +8,7 @@ namespace ftcore {
 namespace {
 
 constexpr float kDegToRad = 3.14159265358979f / 180.f;
+constexpr float kRadToDeg = 180.f / 3.14159265358979f;
 
 } // namespace
 
@@ -22,6 +23,74 @@ ArenaPitchSplit arenaSplitPitch(const ArenaLookLimits& limits, float viewPitch) 
     s.boom = view > limits.boomMax ? limits.boomMax : view;
     s.tilt = view - s.boom;
     return s;
+}
+
+float arenaFrameTurn(const ArenaFrameRules& rules, float side, float distance) {
+    if (!(side == side) || side == 0.f || !(distance == distance)) return 0.f;
+    const float cap = rules.maxTurn > 0.f ? (rules.maxTurn < 89.f ? rules.maxTurn : 89.f) : 0.f;
+    const float s = std::fabs(side);
+    const float turn = distance <= s ? 90.f : std::asin(s / distance) * kRadToDeg;
+    const float held = turn < cap ? turn : cap;
+    return side > 0.f ? -held : held;
+}
+
+float arenaFrameStep(const ArenaFrameRules& rules, float applied, float want, float dt) {
+    if (!(applied == applied)) applied = 0.f;
+    if (!(dt > 0.f) || !(want == want) || applied == want) return applied;
+    const float gap = want - applied;
+    const float ease = std::fabs(gap) * (1.f - std::exp(-rules.rate * dt));
+    const float least = rules.minRate * dt;
+    const float step = ease > least ? ease : least;
+    if (step >= std::fabs(gap)) return want;
+    return applied + (gap > 0.f ? step : -step);
+}
+
+namespace {
+
+float unwound(float deg) {
+    if (!(deg == deg)) return 0.f;
+    float a = std::fmod(deg, 360.f);
+    if (a > 180.f) a -= 360.f;
+    else if (a <= -180.f) a += 360.f;
+    return a;
+}
+
+} // namespace
+
+float arenaFrameViewYaw(const ArenaFrameYaw& yaw) {
+    return unwound(yaw.line + yaw.turn);
+}
+
+ArenaFrameYaw arenaFrameYawStep(const ArenaFrameRules& rules, ArenaFrameYaw now, const ArenaFrameScene& scene, float dt) {
+    if (scene.held || !(dt > 0.f)) return now;
+    ArenaFrameYaw out = now;
+    if (!(out.turn == out.turn)) out.turn = 0.f;
+    if (!scene.followed) {
+        out.line = unwound(out.line + out.turn);
+        out.turn = 0.f;
+        return out;
+    }
+    if (scene.hasLine) {
+        const float delta = unwound(scene.lineWant - out.line);
+        out.line = unwound(out.line + delta * std::min(1.f, scene.lineRate * dt));
+    }
+    const float want = scene.framing && !scene.aiming ? arenaFrameTurn(rules, scene.side, scene.distance) : 0.f;
+    out.turn = arenaFrameStep(rules, out.turn, want, dt);
+    return out;
+}
+
+Vec2 arenaStickToWorld(float viewYaw, float forward, float right) {
+    const float r = viewYaw * kDegToRad;
+    const float c = std::cos(r);
+    const float s = std::sin(r);
+    return Vec2{c * forward - s * right, s * forward + c * right};
+}
+
+float arenaFrameLockPitch(const ArenaLookLimits& limits, float pivot, float arm, float up, float lockPitch, float distance, float turn,
+                          float tall) {
+    if (!(tall >= kArenaLookTallBoss)) return lockPitch;
+    const float along = distance * std::cos(turn * kDegToRad);
+    return arenaLookUpPitch(limits, pivot, arm, up, along, tall * kArenaLookFaceShare, lockPitch);
 }
 
 float arenaEyeHeight(float pivot, float arm, float up, float boomPitch) {

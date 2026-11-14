@@ -80,14 +80,14 @@ std::string encodeSettings(const Settings& in) {
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"aimAssist\":%s,\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
-                  "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f}",
+                  "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f,\"lockFraming\":%s}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
                   static_cast<int>(s.defenceAssist), s.aimAssist ? "true" : "false", static_cast<int>(s.subtitleSize),
                   s.reduceFlashes ? "true" : "false", s.qteAutoComplete ? "true" : "false",
                   s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
-                  s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake));
+                  s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake), s.lockFraming ? "true" : "false");
     return buf;
 }
 
@@ -140,6 +140,7 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.stickFlicks = boolField("stickFlicks", s.stickFlicks);
     s.aimAssist = boolField("aimAssist", s.aimAssist);
     s.cameraShake = floatField("cameraShake", s.cameraShake);
+    s.lockFraming = boolField("lockFraming", s.lockFraming);
     clampSettings(s);
     out = s;
     return true;
@@ -164,6 +165,7 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::SkipChoices: return "Skip choices";
     case SettingsRow::StickFlicks: return "Stick flicks";
     case SettingsRow::CameraShake: return "Camera shake";
+    case SettingsRow::LockFraming: return "Lock framing";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -191,6 +193,7 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
     case SettingsRow::SkipChoices: word = s.skipChoices ? "On" : "Off"; break;
     case SettingsRow::StickFlicks: word = s.stickFlicks ? "On" : "Off"; break;
     case SettingsRow::AimAssist: word = s.aimAssist ? "On" : "Off"; break;
+    case SettingsRow::LockFraming: word = s.lockFraming ? "On" : "Off"; break;
     case SettingsRow::Back: word = ""; break;
     default: break;
     }
@@ -234,6 +237,7 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     case SettingsRow::StickFlicks: return setBool(s.stickFlicks, dir, wrap);
     case SettingsRow::AimAssist: return setBool(s.aimAssist, dir, wrap);
     case SettingsRow::CameraShake: return stepFloat(s.cameraShake, stepTenth(s.cameraShake, step));
+    case SettingsRow::LockFraming: return setBool(s.lockFraming, dir, wrap);
     case SettingsRow::Back: break;
     }
     return false;

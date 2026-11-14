@@ -1,4 +1,5 @@
 #include "ftcore/ArenaZone.h"
+#include "ftcore/ArenaLook.h"
 
 #include "ftcore/Json.h"
 
@@ -680,11 +681,28 @@ void findMouths(const ArenaZone& z, const WorldLayout& layout, ArenaZoneFit& out
     }
 }
 
-// The share of the wall where a player standing on it has the camera inside a building taller than the camera.
+// The share of the wall where a player standing on it, facing in, has the lens inside a building taller than the
+// camera. The lens sits as the view is drawn: the arm back along the view, the shoulder offset to its right, and the view
+// either on the lock's line or turned the lock framing's most (ftcore::arenaFrameTurn at the target's nearest); a sample
+// is blocked when either lens is.
 float cameraBlockedShare(const ArenaZone& z, const WorldLayout& layout, int district, const ZoneCamera& cam) {
     const float pitch = std::fabs(cam.lockPitch) / kDeg;
     const float armH = cam.arm * std::cos(pitch) + 0.5f;
     const float height = cam.pivot + cam.up + cam.arm * std::sin(pitch);
+    const float turns[2] = {0.f, arenaFrameTurn(kArenaFrame, cam.side, 0.f) / kDeg};
+    const auto lensBlocked = [&](Vec2 lens) {
+        for (std::size_t i = 0; i < layout.blockCount(); ++i) {
+            const WorldBlock& b = layout.block(i);
+            if (b.height <= height || lengthOf(minus(b.pos, lens)) > 20.f) continue;
+            const Vec2 l = rotated(minus(lens, b.pos), -b.yaw);
+            if (std::fabs(l.x) <= b.width * 0.5f + 0.5f && std::fabs(l.y) <= b.depth * 0.5f + 0.5f) return true;
+        }
+        if (district >= 0) {
+            const WorldDistrict& d = layout.district(static_cast<std::size_t>(district));
+            if (lengthOf(minus(lens, d.landmark)) <= WorldLayout::kLandmarkRadius + 0.5f) return true;
+        }
+        return false;
+    };
     constexpr int kSamples = 48;
     int blocked = 0;
     for (int k = 0; k < kSamples; ++k) {
@@ -695,17 +713,14 @@ float cameraBlockedShare(const ArenaZone& z, const WorldLayout& layout, int dist
             const float mid = 0.5f * (lo + hi);
             (z.contains(plus(z.centre, scaled(dir, mid)), 0.f) ? lo : hi) = mid;
         }
-        const Vec2 cam2 = plus(z.centre, scaled(dir, lo + armH));
+        const Vec2 at = plus(z.centre, scaled(dir, lo));
         bool hit = false;
-        for (std::size_t i = 0; i < layout.blockCount() && !hit; ++i) {
-            const WorldBlock& b = layout.block(i);
-            if (b.height <= height || lengthOf(minus(b.pos, cam2)) > 20.f) continue;
-            const Vec2 l = rotated(minus(cam2, b.pos), -b.yaw);
-            hit = std::fabs(l.x) <= b.width * 0.5f + 0.5f && std::fabs(l.y) <= b.depth * 0.5f + 0.5f;
-        }
-        if (!hit && district >= 0) {
-            const WorldDistrict& d = layout.district(static_cast<std::size_t>(district));
-            hit = lengthOf(minus(cam2, d.landmark)) <= WorldLayout::kLandmarkRadius + 0.5f;
+        for (const float turn : turns) {
+            // Facing in (the yaw of -dir) plus the turn; the view's right is its heading turned a quarter clockwise.
+            const float yaw = a + kPi + turn;
+            const Vec2 heading{std::cos(yaw), std::sin(yaw)};
+            const Vec2 right{-heading.y, heading.x};
+            hit = hit || lensBlocked(plus(at, plus(scaled(heading, -armH), scaled(right, cam.side))));
         }
         blocked += hit ? 1 : 0;
     }
