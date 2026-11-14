@@ -73,6 +73,8 @@ void clampSettings(Settings& s) {
     s.cameraShake = clampFloat(s.cameraShake, 0.f, 1.f, d.cameraShake);
     s.hudScale = (std::clamp(s.hudScale, Settings::kMinHudScale, Settings::kMaxHudScale) + 5) / 10 * 10; // the menu's steps
     s.hudSafeMargin = std::clamp(s.hudSafeMargin, Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin);
+    s.showBasicControls =
+        clampEnum(static_cast<std::int64_t>(s.showBasicControls), ShowBasicControls::Never, d.showBasicControls);
 }
 
 std::string encodeSettings(const Settings& in) {
@@ -84,7 +86,7 @@ std::string encodeSettings(const Settings& in) {
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"aimAssist\":%s,\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
                   "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f,\"lockFraming\":%s,\"uiFirstUse\":%u,"
-                  "\"hudScale\":%d,\"hudSafeMargin\":%d}",
+                  "\"hudScale\":%d,\"hudSafeMargin\":%d,\"showBasicControls\":%d}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
@@ -92,7 +94,8 @@ std::string encodeSettings(const Settings& in) {
                   s.reduceFlashes ? "true" : "false", s.qteAutoComplete ? "true" : "false",
                   s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
                   s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake), s.lockFraming ? "true" : "false",
-                  static_cast<unsigned>(s.uiFirstUse), s.hudScale, s.hudSafeMargin);
+                  static_cast<unsigned>(s.uiFirstUse), s.hudScale, s.hudSafeMargin,
+                  static_cast<int>(s.showBasicControls));
     return buf;
 }
 
@@ -151,6 +154,8 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.hudScale = static_cast<int>(std::clamp<std::int64_t>(intField("hudScale", s.hudScale), Settings::kMinHudScale, Settings::kMaxHudScale));
     s.hudSafeMargin = static_cast<int>(std::clamp<std::int64_t>(intField("hudSafeMargin", s.hudSafeMargin),
                                                                 Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin));
+    s.showBasicControls = clampEnum(intField("showBasicControls", static_cast<std::int64_t>(s.showBasicControls)),
+                                    ShowBasicControls::Never, s.showBasicControls);
     clampSettings(s);
     out = s;
     return true;
@@ -178,6 +183,7 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::LockFraming: return "Lock framing";
     case SettingsRow::HudScale: return "HUD scale";
     case SettingsRow::HudSafeMargin: return "HUD safe margin";
+    case SettingsRow::ShowBasicControls: return "Basic controls";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -206,6 +212,11 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
     case SettingsRow::StickFlicks: word = s.stickFlicks ? "On" : "Off"; break;
     case SettingsRow::AimAssist: word = s.aimAssist ? "On" : "Off"; break;
     case SettingsRow::LockFraming: word = s.lockFraming ? "On" : "Off"; break;
+    case SettingsRow::ShowBasicControls:
+        word = s.showBasicControls == ShowBasicControls::FirstFights ? "First fights"
+               : s.showBasicControls == ShowBasicControls::Always    ? "Always"
+                                                                     : "Never";
+        break;
     case SettingsRow::Back: word = ""; break;
     default: break;
     }
@@ -266,6 +277,7 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
         s.hudSafeMargin = next;
         return true;
     }
+    case SettingsRow::ShowBasicControls: return stepEnum(s.showBasicControls, dir, ShowBasicControls::Never, wrap);
     case SettingsRow::Back: break;
     }
     return false;

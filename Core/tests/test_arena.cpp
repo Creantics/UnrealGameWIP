@@ -4279,7 +4279,7 @@ TEST_CASE("ui prompts: each prompt asks the fight's own press, at every tick; HE
         REQUIRE(rig.fight.hp() == rig.def.fighter.hp);
         CHECK(at(why, UiPrompt::Heal) == PressReason::Ok);
         const UiPromptMask heal = uiPromptBit(UiPrompt::Heal);
-        CHECK((uiPromptsPresent(why, 0) & heal) != 0);
+        CHECK((uiPromptsPresent(why) & heal) != 0);
         CHECK((uiPromptsDimmed(why, 0) & heal) == 0);
         ArenaFight pressed = rig.fight;
         ArenaInput in;
@@ -4298,13 +4298,15 @@ TEST_CASE("ui prompts: each prompt asks the fight's own press, at every tick; HE
         CHECK(at(why, UiPrompt::Jump) == rig.fight.pressReason(ArenaPress::Jump));
         CHECK(at(why, UiPrompt::GiftHeal) == PressReason::Cooldown); // the host's, as passed
         CHECK(at(why, UiPrompt::GiftGuard) == PressReason::Ok);
-        CHECK(at(why, UiPrompt::Reload) == PressReason::Absent); // no reload press
-        CHECK(at(why, UiPrompt::Pair) == PressReason::Absent);   // no partner in this fight
+        // No partner in this fight: PARTNER still asks the rules (the Count key's paired counter works solo too), so
+        // it stands closed, never Absent.
+        CHECK(at(why, UiPrompt::Pair) == rig.fight.pressReason(ArenaPress::Pair));
+        CHECK(at(why, UiPrompt::Pair) != PressReason::Absent);
         const UiPromptMask dimmed = uiPromptsDimmed(why, 0);
         for (std::size_t p = 0; p < kUiPromptCount; ++p)
             CHECK((((dimmed >> p) & 1u) != 0) == pressRefused(why[p]));
         const UiPromptMask heal = uiPromptBit(UiPrompt::Heal);
-        if (uiPromptsPresent(why, 0) & heal) ((dimmed & heal) ? dim : lit) += 1;
+        if (uiPromptsPresent(why) & heal) ((dimmed & heal) ? dim : lit) += 1;
         rig.tick();
     }
     CHECK(rig.fight.phase() == ArenaPhase::Defeat);
@@ -4341,7 +4343,7 @@ TEST_CASE("ui prompts: the HUD's per-frame asks of the rules and its margins all
         brawlScript(rig, k);
         const auto before = ftcore_test::allocStats().count;
         const UiPromptReasons why = uiPromptReasons(rig.fight, PressReason::Ok, PressReason::Absent);
-        const UiPromptMask present = uiPromptsPresent(why, 0);
+        const UiPromptMask present = uiPromptsTaught(uiPromptsPresent(why), ShowBasicControls::FirstFights, 0);
         const UiPromptMask dimmed = uiPromptsDimmed(why, uiPromptBit(UiPrompt::GiftHeal));
         const UiPromptMask drawn = uiPromptsDrawable(present, static_cast<UiPromptMask>(~0u), below);
         const UiMargins wide = uiHudMargins(2560.f, 1080.f, 64.f, pad, 5);

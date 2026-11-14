@@ -34,6 +34,15 @@ inline constexpr float kUiFirstUseAfter = 1.f;  // a control's full-ink seconds 
 
 // The -FTUiFirstUse switch: Saved uses the save's counts, Fresh teaches everything again, Seen teaches nothing.
 enum class UiFirstUseMode : std::uint8_t { Saved, Fresh, Seen };
+
+// The teaching policy for the basic controls' prompts (Attack, Guard, Dodge, Jump): the player's choice
+// (Settings::showBasicControls), never a rule of the fight, whose presses work whatever it says. uiPromptsTaught
+// (UiBudget.h) applies it over the rules' answer.
+//   FirstFights  each control's row stands while the teaching holds it (until a second after its first use, once a save)
+//   Always       the rows always stand
+//   Never        the rows never stand, and the host shows no control (so nothing is counted as taught)
+enum class ShowBasicControls : std::uint8_t { FirstFights, Always, Never };
+
 // "fresh" or "seen"; false (and `out` untouched) for anything else.
 FTCORE_API bool uiFirstUseMode(std::string_view text, UiFirstUseMode& out);
 

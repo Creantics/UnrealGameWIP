@@ -35,9 +35,11 @@
 #include "HAL/FileManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
+#include "GenericPlatform/GenericApplication.h"
 #include "HAL/IConsoleManager.h"
 #include "Layout/Clipping.h"
 #include "Misc/CommandLine.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -58,9 +60,10 @@ extern CORE_API TFunction<void(int32)>* GGameThreadMallocHook;
 
 namespace
 {
-TAutoConsoleVariable<int32> CVarNewUi(TEXT("ft.NewUi"), 0,
-	TEXT("1: the new game UI (Slate, drawn from Core view-models) in place of the Canvas HUD's parts it replaces. ")
-	TEXT("-FTNewUi on the command line sets it. Read when a map's HUD begins: a change applies from the next map."));
+TAutoConsoleVariable<int32> CVarNewUi(TEXT("ft.NewUi"), 1,
+	TEXT("1 (the default): the new game UI (Slate, drawn from Core view-models) in place of the Canvas HUD's parts it ")
+	TEXT("replaces. 0: the old Canvas HUD, as -FTOldUi on the command line gives (which wins over this). ")
+	TEXT("Read when a map's HUD begins: a change applies from the next map."));
 
 using ftcore::UiTextRole;
 using ftcore::UiToken;
@@ -135,26 +138,25 @@ const FTUiText kReadMoveUi[9] = {kReadStrikeUi, kReadOverheadUi, kReadBackhandUi
 const FTUiText kHealUi(TEXT("input.heal"));
 const FTUiText kGiftHealUi(TEXT("arena.prompt.gift_heal"));
 const FTUiText kGiftGuardUi(TEXT("arena.prompt.gift_guard"));
-const FTUiText kReloadUi(TEXT("arena.prompt.reload"));
 const FTUiText kAttackUi(TEXT("arena.prompt.attack"));
 const FTUiText kDodgeUi(TEXT("input.dodge"));
 const FTUiText kJumpUi(TEXT("input.jump"));
-const FTUiText kPromptUi[] = {kHealUi, kGiftHealUi, kGiftGuardUi, kReloadUi, kPartnerUi, kAttackUi, kGuardUi, kDodgeUi, kJumpUi};
+const FTUiText kPromptUi[] = {kHealUi, kGiftHealUi, kGiftGuardUi, kPartnerUi, kAttackUi, kGuardUi, kDodgeUi, kJumpUi};
 static_assert(UE_ARRAY_COUNT(kPromptUi) == ftcore::kUiPromptCount, "one word per prompt, in UiPrompt order");
 // Each prompt's key: the controls line's entry with this label, or (no label) the entry that carries this action, else
 // that action's own keys (inputActionKeys). HEAL is the lead's own heal (input.heal: H, on a pad D-pad up). The gifts are
 // left out of the controls line, so they take their own keys: G and Y; on a pad they have no button or route until the
 // pad's layout is ruled (inputPadPending), so none there. A rebinding that puts two rows on one key
 // keeps the lowest (uiPromptsDrawable). An action the bindings import left unbound shows NO KEY in its key box, dimmed
-// (inputPromptKey on FTInputBindings::Unbound), and keeps its row. RELOAD has no action yet: no entry has its label, and
-// its answer from the rules is Absent, so it draws nothing.
+// (inputPromptKey on FTInputBindings::Unbound), and keeps its row. There is no RELOAD prompt: the rules have no reload
+// press (the reload is automatic), so the row comes back only with that press.
 struct FPromptKeyOf
 {
 	const char* Label;
 	ftcore::InputAction Action;
 };
 const FPromptKeyOf kPromptKeys[] = {{"input.heal", {}}, {nullptr, ftcore::InputAction::GiftHeal}, {nullptr, ftcore::InputAction::GiftGuard},
-	{"input.reload", {}}, {"input.count", {}}, {"input.light", {}}, {"input.guard", {}}, {"input.dodge", {}}, {"input.jump", {}}};
+	{"input.count", {}}, {"input.light", {}}, {"input.guard", {}}, {"input.dodge", {}}, {"input.jump", {}}};
 static_assert(UE_ARRAY_COUNT(kPromptKeys) == ftcore::kUiPromptCount, "one key per prompt, in UiPrompt order");
 // A prompt's NO KEY, in its key box; and the word after a prompt whose press would be refused now, by ftcore::PressReason
 // (Ok and Busy are taken and have none; Absent draws no prompt).
@@ -1493,6 +1495,14 @@ int32 HudSafeMarginFor(const UFTArenaRunner& Runner)
 	return Prefs ? Prefs->hudSafeMargin : 0;
 }
 
+// The player's teaching policy for the basic controls' prompts (the settings' Basic controls row; FirstFights, the
+// teaching's own rule, with no settings).
+ftcore::ShowBasicControls BasicControlsFor(const UFTArenaRunner& Runner)
+{
+	const ftcore::Settings* Prefs = Runner.GetSettings();
+	return Prefs ? Prefs->showBasicControls : ftcore::ShowBasicControls::FirstFights;
+}
+
 // A Read card's move name (kReadMoveUi), by the tell its action shows; -1 for a tell without one.
 int32 ReadMoveIndex(std::string_view Tell)
 {
@@ -1544,6 +1554,18 @@ public:
 			FontRelease = FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().AddLambda(
 				[Flush](const FSlateFontCache&) { Flush->store(true); });
 		}
+		// The title-safe padding is read again when it may have changed at the same viewport size: the engine's safe-frame
+		// change (a custom safe zone or its debug switches, a viewport resize) and the platform's display change (a monitor
+		// switch, a display's mode or layout). Both broadcast on the game thread; each only marks the padding stale, and
+		// the next Tick reads it (after Slate's own handler has cached the new display metrics).
+		SafeFrameChange = FCoreDelegates::OnSafeFrameChangedEvent.AddSP(this, &SFTArenaHud::MarkSafeStale);
+		if (FSlateApplication::IsInitialized())
+		{
+			if (const TSharedPtr<GenericApplication> Platform = FSlateApplication::Get().GetPlatformApplication())
+			{
+				DisplayChange = Platform->OnDisplayMetricsChanged().AddSP(this, &SFTArenaHud::MarkSafeStaleFor);
+			}
+		}
 	}
 
 	virtual ~SFTArenaHud() override
@@ -1551,6 +1573,14 @@ public:
 		if (FontRelease.IsValid() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
 		{
 			FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().Remove(FontRelease);
+		}
+		FCoreDelegates::OnSafeFrameChangedEvent.Remove(SafeFrameChange);
+		if (DisplayChange.IsValid() && FSlateApplication::IsInitialized())
+		{
+			if (const TSharedPtr<GenericApplication> Platform = FSlateApplication::Get().GetPlatformApplication())
+			{
+				Platform->OnDisplayMetricsChanged().Remove(DisplayChange);
+			}
 		}
 	}
 
@@ -1568,12 +1598,15 @@ public:
 #endif
 		HudScale = Runner ? HudScaleFor(*Runner) : HudScale;
 		HudSafePct = Runner ? HudSafeMarginFor(*Runner) : HudSafePct;
-		// The platform's title-safe padding, read when the viewport's size changes (never per frame): Slate's safe-zone
-		// ratio per side (the custom safe zone when one is set, else the display's title-safe padding over half the
-		// display). A display of no size gives no padding.
+		BasicPolicy = Runner ? BasicControlsFor(*Runner) : BasicPolicy;
+		// The platform's title-safe padding, read when the viewport's size changes or the safe frame or the display does at
+		// the same size (bSafeStale, set by the engine's safe-frame and the platform's display-change events; never per
+		// frame): Slate's safe-zone ratio per side (the custom safe zone when one is set, else the display's title-safe
+		// padding over half the display). A display of no size gives no padding.
 		const FVector2f ViewSize = Geometry.GetLocalSize();
-		if (ViewSize != SafeSize)
+		if (bSafeStale || ViewSize != SafeSize)
 		{
+			bSafeStale = false;
 			SafeSize = ViewSize;
 			SafeRatio = FMargin(0.f);
 			if (FSlateApplication::IsInitialized())
@@ -1627,16 +1660,16 @@ public:
 		ftcore::fillArenaHudPartner(Fight, Frame.partner); // the carrying runs' ally; zero (absent) otherwise
 		Frame.partner.load = Frame.partner.present ? Runner->GetPartnerLoad() : 0;
 		// The third place's gift prompts, from the session (without one there is no gift slot, and both are Absent): the
-		// Gift Heals left (GIFT HEAL n, cooling or not), the Gift Guard off its cooldown, and each gift's answer from the
-		// slot itself (GetGiftReason: would its press be taken now, and if not, why), so a cooling or spent gift stands
-		// dimmed with its word. A live Qte (Frame.lead.qte, which fillArenaHudLead leaves alone) would go here too; nothing
-		// reports one yet.
+		// Gift Heals left (GIFT HEAL n, cooling or not) and each gift's answer from the slot itself (GetGiftReason: would
+		// its press be taken now, and if not, why), so a cooling or spent gift stands dimmed with its word. The Gift Guard
+		// is ready when the slot answers Ok: the HUD reads the rules' reason, never a timer of its own (a figure, were one
+		// drawn, would come from GetGiftGuardReadyIn). A live Qte (Frame.lead.qte, which fillArenaHudLead leaves alone)
+		// would go here too; nothing reports one yet.
 		Frame.third = ftcore::ArenaHudThird{};
 		GiftWhy[0] = GiftWhy[1] = ftcore::PressReason::Absent;
 		if (Runner->GetSession())
 		{
 			Frame.third.giftHeals = Runner->GetGiftHealsLeft();
-			Frame.third.giftGuardReady = Runner->GetGiftGuardReadyIn() <= 0.0;
 			GiftWhy[0] = Runner->GetGiftReason(ftcore::Gift::Heal);
 			GiftWhy[1] = Runner->GetGiftReason(ftcore::Gift::Guard);
 		}
@@ -1644,13 +1677,13 @@ public:
 		if (Shot == EUiStateShot::Gift || Shot == EUiStateShot::NoKey)
 		{
 			Frame.third.giftHeals = FMath::Max(Frame.third.giftHeals, 2);
-			Frame.third.giftGuardReady = true;
 			GiftWhy[0] = GiftWhy[1] = ftcore::PressReason::Ok;
 			if (Frame.lead.hpMax > 0 && Frame.lead.hp >= Frame.lead.hpMax)
 			{
 				Frame.lead.hp = Frame.lead.hpMax * 7 / 10;
 			}
 		}
+		Frame.third.giftGuardReady = GiftWhy[1] == ftcore::PressReason::Ok;
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
 		const ftcore::ArenaHudLead& L = View.now.lead;
 		HpLost.Step(Frac(L.hp, L.hpMax), DeltaTime);
@@ -1674,12 +1707,15 @@ public:
 		}
 		TopLost.Step(Frac(B.present ? B.hp : T.hp, B.present ? B.hpMax : T.hpMax), DeltaTime);
 
-		// The prompts' keys on the device in use (built when the device changes); the counts that sit in their words.
+		// The prompts' keys on the device in use (built when the device changes, or the bindings do: their generation);
+		// the counts that sit in their words.
 		const APlayerController* PC = Runner->GetWorld() ? Runner->GetWorld()->GetFirstPlayerController() : nullptr;
 		const ftcore::InputDevice Device = FTInputBindings::NoteDevice(PC);
-		if (bRebuildNow || Device != KeyDevice)
+		const uint32 Bindings = FTInputBindings::Generation();
+		if (bRebuildNow || Device != KeyDevice || Bindings != KeyGeneration)
 		{
 			KeyDevice = Device;
+			KeyGeneration = Bindings;
 			BuildKeys(Device);
 		}
 		if (bRebuildNow || L.heals != HealShown)
@@ -1735,9 +1771,10 @@ public:
 		In.dt = DeltaTime;
 		In.changed = Changed;
 		// Each prompt's answer from the rules (Core's uiPromptReasons: the fight's own presses, and the gift slot's as the
-		// session gives them): a prompt whose action is not in this fight is not drawn; every other stands in its row, and
-		// one whose press would be refused now is dimmed with its reason. A first fight's controls stand while the teaching
-		// holds them and go when it ends.
+		// session gives them): a prompt whose action is not in this fight is not drawn (uiPromptsPresent, the rules' query);
+		// every other stands in its row, and one whose press would be refused now is dimmed with its reason. Over that the
+		// teaching policy, the player's Basic controls setting (uiPromptsTaught, not a rule): by default the controls stand
+		// while the first-use teaching holds them and go when it ends; Always keeps them, Never shows none.
 		Why = ftcore::uiPromptReasons(Fight, GiftWhy[0], GiftWhy[1]);
 		ftcore::UiPromptMask Teaching = 0;
 		for (int32 I = static_cast<int32>(ftcore::UiPrompt::Attack); I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
@@ -1751,7 +1788,8 @@ public:
 		}
 		// Before the budget: a row nothing reaches on the device (no key and no NO KEY), or on a key a lower row shows,
 		// would draw nothing, so it takes no row.
-		In.prompts = ftcore::uiPromptsDrawable(ftcore::uiPromptsPresent(Why, Teaching), PromptKeyed, PromptSameKeyBelow);
+		const ftcore::UiPromptMask Standing = ftcore::uiPromptsTaught(ftcore::uiPromptsPresent(Why), BasicPolicy, Teaching);
+		In.prompts = ftcore::uiPromptsDrawable(Standing, PromptKeyed, PromptSameKeyBelow);
 		PromptDimmed = ftcore::uiPromptsDimmed(Why, PromptNoKey);
 		In.resultOpen = bResult;
 		In.want = ftcore::uiMarkWants(Now, In.prompts);
@@ -1781,10 +1819,6 @@ public:
 		Want(UiMarkKind::WeakPoint, bWeakOn ? 1 : 0);
 		Want(UiMarkKind::Lock, bLockOn ? 1 : 0);
 		Want(UiMarkKind::Foe, FoeLines);
-		if (!B.present && !bNamed)
-		{
-			Want(UiMarkKind::Target, 0); // a target with no name has no line (never a bar without a name)
-		}
 		In.activity = bMarkNew || Tells > 0 || HitA > 0.f || ParryA > 0.f || AimA > 0.01f;
 		// The boss line returns when the boss acts (a windup or its hit), is hit, opens its weak point, or is locked on anew.
 		const uint8 LockNow = Fight.lock();
@@ -1927,6 +1961,11 @@ public:
 	}
 
 private:
+	// The safe frame or the display changed (FCoreDelegates::OnSafeFrameChangedEvent, the platform's
+	// OnDisplayMetricsChanged): the title-safe padding is read again at the next Tick, whatever the viewport's size.
+	void MarkSafeStale() { bSafeStale = true; }
+	void MarkSafeStaleFor(const FDisplayMetrics&) { bSafeStale = true; }
+
 	// The fonts and the words that need no fight, at this height.
 	void BuildFonts(float H)
 	{
@@ -2157,6 +2196,12 @@ private:
 			if (KeyOf(kPromptKeys[I], PromptKey[I], PromptKeyW[I])) PromptNoKey |= Bit;
 			if (!PromptKey[I].IsEmpty()) PromptKeyed |= Bit;
 		}
+		// The jump press reaches the fight only under the jump switch (UFTArenaRunner::JumpBound; never in Shipping):
+		// without it nothing reaches JUMP, so its row is not drawn, whatever the Basic controls setting.
+		if (!UFTArenaRunner::JumpBound())
+		{
+			PromptKeyed &= static_cast<ftcore::UiPromptMask>(~ftcore::uiPromptBit(ftcore::UiPrompt::Jump));
+		}
 		// The lower prompts on each prompt's key, so one key never shows two rows (uiPromptsDrawable keeps the lowest).
 		// NO KEY is no key: two unbound rows are not on one key.
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
@@ -2249,12 +2294,17 @@ private:
 			// Only a played fight under the save's own rule writes it (never a capture switch, autoplay or idle run).
 			bSaveTaught = FirstUseMode() == ftcore::UiFirstUseMode::Saved && !Runner.IsAutoPlay() && !Runner.IsIdle();
 			ftcore::uiFirstUseBegin(FirstUse, Saved, Mode);
-			Teach(Runner, UiFirstUseItem::Attack);
-			Teach(Runner, UiFirstUseItem::Guard);
-			Teach(Runner, UiFirstUseItem::Dodge);
-			if (UFTArenaRunner::JumpBound())
+			// The teaching policy: with Basic controls set to Never no control is shown, so none is taught or counted
+			// (a later fight under another setting still teaches them).
+			if (BasicControlsFor(Runner) != ftcore::ShowBasicControls::Never)
 			{
-				Teach(Runner, UiFirstUseItem::Jump);
+				Teach(Runner, UiFirstUseItem::Attack);
+				Teach(Runner, UiFirstUseItem::Guard);
+				Teach(Runner, UiFirstUseItem::Dodge);
+				if (UFTArenaRunner::JumpBound())
+				{
+					Teach(Runner, UiFirstUseItem::Jump);
+				}
 			}
 		}
 		switch (Fight.output().player.action)
@@ -2565,12 +2615,13 @@ private:
 	}
 
 	// The top line comes and goes with the boss (the budget's boss fade); a plain target's line goes at rest. A target with
-	// no display name has no line at all: never a bar without a name.
+	// no display name (a kind with no arena.name key) still has its line, drawn alone without a name: its body carries no
+	// hp block of its own (the foe marks leave the target to the top line), so without it its hp would show nowhere.
 	bool TopShown() const
 	{
 		const ftcore::ArenaHudBoss& B = View.now.boss;
 		return B.present ? Budget.out.allowed(ftcore::UiMarkKind::Boss) > 0
-						 : View.now.target.present && bNamed && Budget.out.allowed(ftcore::UiMarkKind::Target) > 0;
+						 : View.now.target.present && Budget.out.allowed(ftcore::UiMarkKind::Target) > 0;
 	}
 
 	void HLine(float X0, float X1, float Y, float From01, float To01, const ftcore::UiStrokeStyle& St, const FLinearColor& C) const
@@ -3189,9 +3240,10 @@ private:
 	}
 
 	// The prompts, bottom right: each in its own row counted up from the bottom margin, which it never leaves (Core's
-	// uiPromptRow: HEAL, GIFT, RELOAD, PARTNER, then a first fight's ATTACK, GUARD, DODGE and JUMP); right-aligned, its
-	// word and its key cap. Every prompt whose action is in this fight stands in its row (Core's uiPromptsPresent, then
-	// the grant); one is gone only when its action is not in this fight (no partner, no gift slot, no reload press). One
+	// uiPromptRow: HEAL, GIFT, PARTNER, then the basic controls ATTACK, GUARD, DODGE and JUMP); right-aligned, its word
+	// and its key cap. Every prompt whose action is in this fight stands in its row (Core's uiPromptsPresent, the basic
+	// controls as the player's teaching policy keeps them, uiPromptsTaught, then the grant); one is gone only when its
+	// action is not in this fight (no gift slot, a move the kit lacks) or, for a basic control, the policy hides it. One
 	// whose press would be refused now (Core's uiPromptsDimmed) is drawn at 40 percent ink, its key cap too, its reason
 	// word (the rules' PressReason: COOLDOWN, FULL, BROKEN...) after its word, before its key cap, at label size; one whose
 	// action the import left unbound shows NO KEY in its key box, dimmed the same. Nothing behind them but the bottom
@@ -3737,6 +3789,8 @@ private:
 	TFunction<const UFTArenaRunner*()> GetRunner;
 	mutable FTextRuns TextRuns;    // the words' kept glyph runs (FTextRuns), drawn from in OnPaint
 	FDelegateHandle FontRelease;   // Slate's font release, which drops them
+	FDelegateHandle SafeFrameChange; // the engine's safe-frame change (MarkSafeStale)
+	FDelegateHandle DisplayChange;   // the platform's display change (MarkSafeStaleFor)
 	ftcore::ArenaHudView View;
 	ftcore::UiFade LeadFade;
 	ftcore::UiFade TopFade;
@@ -3746,8 +3800,10 @@ private:
 	ftcore::UiLoadName LoadName;
 	float AimA = 0.f; // the aim stance's fade (the runner's): the aim dot and the cylinder
 	float HudScale = 1.f; // over the viewport's scale (the setting, or -FTHudScale)
+	ftcore::ShowBasicControls BasicPolicy = ftcore::ShowBasicControls::FirstFights; // the Basic controls setting
 	float LeadDip = 0.f, PartnerDip = 0.f; // a hit's name drop: 1 on the hit frame, 0 after 0.15 s
 	ftcore::InputDevice KeyDevice = ftcore::InputDevice::Keys;
+	uint32 KeyGeneration = 0; // the bindings' generation the keys were built from (FTInputBindings::Generation)
 	bool bRebuild = true;
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line; // the stroke being drawn (Core fills it, the mesh takes it)
@@ -3826,6 +3882,7 @@ private:
 	// it was read at, and the HUD safe margin setting in percent.
 	FMargin SafeRatio = FMargin(0.f);
 	FVector2f SafeSize = FVector2f(-1.f, -1.f);
+	bool bSafeStale = false; // the safe frame or the display changed since the padding was read
 	int32 HudSafePct = 0;
 	// A Qte in the call slot: its words (the four Tap words, HOLD, MASH), whether the budget drew it, and its line left.
 	FString QteWord[kQteWords];
@@ -4651,8 +4708,18 @@ namespace FT
 {
 bool NewUiEnabled()
 {
-	static const bool bFlag = FParse::Param(FCommandLine::Get(), TEXT("FTNewUi"));
-	return bFlag || CVarNewUi.GetValueOnGameThread() != 0;
+	// The one switch every HUD asks (FTArenaHUD, FTStoryHUD). The new UI is the default. -FTOldUi brings the old Canvas
+	// HUD back for one more round and wins over ft.NewUi. -FTNewUi, which turned the new UI on before it was the
+	// default, is a no-op now: it still parses (noted in the log once) and changes nothing.
+	static const bool bOldUi = []()
+	{
+		if (FParse::Param(FCommandLine::Get(), TEXT("FTNewUi")))
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("UI: -FTNewUi does nothing now: the new UI is the default (-FTOldUi gives the old HUD)."));
+		}
+		return FParse::Param(FCommandLine::Get(), TEXT("FTOldUi"));
+	}();
+	return !bOldUi && CVarNewUi.GetValueOnGameThread() != 0;
 }
 
 TSharedRef<SWidget> MakeArenaHudWidget(TFunction<const UFTArenaRunner*()> GetRunner)

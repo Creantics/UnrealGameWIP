@@ -108,7 +108,6 @@
     "arena.prompt.attack": "attack",
     "arena.prompt.gift_heal": "gift heal",
     "arena.prompt.gift_guard": "gift guard",
-    "arena.prompt.reload": "reload",
     "arena.prompt.no_key": "no key",
     "arena.prompt.why.down": "down",
     "arena.prompt.why.broken": "broken",
@@ -253,6 +252,11 @@
 
     "qte.hold": "HOLD",
     "qte.mash": "MASH",
+
+    "settings.basic_controls": "Basic controls",
+    "settings.basic_controls.first_fights": "First fights",
+    "settings.basic_controls.always": "Always",
+    "settings.basic_controls.never": "Never",
 
     "story.hint": "Space / Enter / pad A: continue    1-4 / d-pad: choose    B: log    Ctrl / S: skip    Esc / Start: pause",
     "story.end": "The End",

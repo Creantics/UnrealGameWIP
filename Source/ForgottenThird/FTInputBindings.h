@@ -42,11 +42,21 @@ inline ftcore::InputUnbound& UnboundStore()
 	return Unbound;
 }
 
+// The bindings' generation, their change signal: it moves each time the bindings change, so a reader that builds from
+// them (the fight HUD's prompt keys) rebuilds when it moves. The load at first use moves it; nothing rebinds at run time
+// yet (Get and Key load once), so a rebinding screen must reload both and then call NoteChanged. Game thread only.
+inline uint32& GenerationStore()
+{
+	static uint32 Gen = 0;
+	return Gen;
+}
+
 inline const ftcore::InputBindings& Get()
 {
 	static const ftcore::InputBindings Bindings = []
 	{
 		ftcore::InputBindings B = ftcore::defaultInputBindings();
+		++GenerationStore(); // loaded: a change from no bindings
 		FString Text;
 		if (FFileHelper::LoadFileToString(Text, *GetFilePath()))
 		{
@@ -72,6 +82,19 @@ inline const ftcore::InputBindings& Get()
 		return B;
 	}();
 	return Bindings;
+}
+
+// The bindings' generation now (after Get(), so the load has counted).
+inline uint32 Generation()
+{
+	Get();
+	return GenerationStore();
+}
+
+// The bindings changed (a rebinding, once one exists): readers rebuild what they built from them.
+inline void NoteChanged()
+{
+	++GenerationStore();
 }
 
 // The import's unbound list (after Get()).
