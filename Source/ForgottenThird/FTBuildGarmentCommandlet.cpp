@@ -80,6 +80,10 @@ const FScalarSpec kScalars[] = {
 	{TEXT("WetSilt"), 0.f},           // how dirty the water was: tide line and silt film, which stay after drying
 	{TEXT("WetDarken"), 0.85f},       // albedo x this when soaked (leather; cloth sets its own)
 	{TEXT("WetRoughness"), 0.15f},    // roughness pulled toward this when soaked (metal goes to 0.1)
+	{TEXT("TideStrength"), 0.7f},     // tide line weight = WetSilt x this (silt 0.6: about 15% darker on light cloth, gaps aside)
+	{TEXT("TideRoughness"), 0.2f},    // roughness lift on the tide line: a matte break in the sheen (all that shows on black)
+	{TEXT("SiltFilmMax"), 0.15f},     // silt film: at most this share toward SiltColor (spec: 0.15)
+	{TEXT("SiltFilmRoughness"), 0.1f}, // and roughness up by at most this once dry (spec: 0.1)
 	{TEXT("SoleHeight"), -1000.f},    // pre-skinned height (cm) below which a shoe is rubber sole; off by default
 	{TEXT("SoleBlend"), 0.6f},        // cm over which the sole fades into the upper
 	{TEXT("SoleSpecular"), 0.45f},
@@ -230,9 +234,11 @@ return saturate(lerp(r, lerp(WetRough, 0.1, Metal), Wet.x));
 )HLSL");
 
 // Wetness by world height: x soaked share (below the line; dries from open surfaces inward, creases and grooves last),
-// y tide line weight (uneven 3 cm band at the line, broken by noise, shows as the cloth dries; the colour code multiplies
-// by TideTint, so it is darker and browner on black leather and white cotton alike), z silt film share (toward SiltColor,
-// at most 0.15, heavier lower down and in creases), w the film's roughness lift (up to 0.1, once dry).
+// y tide line weight (a flat band 2 to 4 cm wide whose height wanders by up to 1.5 cm over about 20 cm of cloth, broken
+// into gaps: about three quarters of it drawn at full weight, the rest gone; weight WetSilt x TideStrength, shows as the
+// cloth dries; the colour code multiplies by TideTint, darker and browner, so on black leather only its roughness lift
+// shows), z silt film share (toward SiltColor, at most SiltFilmMax, heavier lower down and in creases), w the roughness
+// lift: the film's (up to SiltFilmRoughness, once dry) plus the tide line's (TideRoughness).
 // The line is tested on world height (P); the noise that breaks it is taken in pre-skinned space (PS), so it stays on the
 // cloth when the lead moves instead of crawling over it.
 const TCHAR* const kWetCode = TEXT(R"HLSL(float3 q = PS * 0.045;
@@ -240,13 +246,16 @@ float n = 0.5 + 0.5 * sin(q.x + 2.1 * sin(q.y * 1.3)) * sin(q.y * 1.1 + 1.7 * si
 float below = saturate((LineZ - P.z) / max(Soft, 1.0) + 0.5 + (n - 0.5) * 0.6);
 float fold = saturate(saturate((0.5 - Wear.r) * 2.0) + (1.0 - D.z) * 2.0);
 float soaked = below * saturate(Wetness * 2.0 - n * (1.0 - fold));
+float3 m = PS * 0.3;
+float wob = sin(m.x + 1.3 * sin(m.y * 0.8)) * sin(m.y * 0.9 + 1.1 * sin(m.z * 0.7));
+float hw = 1.5 + 0.5 * sin(m.z * 1.7 + m.x * 1.1);
+float band = 1.0 - smoothstep(hw - 0.4, hw + 0.4, abs(P.z - LineZ - wob * 1.5));
 float3 k = PS * 0.6;
 float grain = 0.5 + 0.5 * sin(k.x + 1.9 * sin(k.z * 0.8)) * sin(k.y + 1.4 * sin(k.x * 0.9));
-float band = 1.0 - saturate(abs(P.z - LineZ - (n - 0.5) * 3.0) / 1.5);
-float tide = Silt * (1.0 - Wetness) * band * saturate(0.2 + 0.9 * n) * saturate(grain * 1.6 - 0.2);
+float tide = saturate(Silt * TideStrength) * (1.0 - Wetness) * band * smoothstep(0.28, 0.36, grain);
 float low = lerp(0.45, 1.0, saturate((LineZ - P.z) / 60.0)) * (1.0 + 0.4 * fold);
-float film = min(below * Silt * 0.25 * low, 0.15);
-return float4(soaked, tide, film, film * (0.1 / 0.15) * (1.0 - soaked));
+float film = min(below * Silt * 0.25 * low, FilmMax);
+return float4(soaked, tide, film, film * FilmRough / max(FilmMax, 1e-3) * (1.0 - soaked) + tide * TideRough);
 )HLSL");
 
 const TCHAR* const kSpecularCode = TEXT("return lerp(Spec, SoleSpec, Sole) * lerp(CavitySpec, 1.0, D.z);");
@@ -511,7 +520,9 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 	UMaterialExpressionCustom* WetMask = Custom(Material, TEXT("GarmentWet"), CMOT_Float4, kWetCode,
 		{{TEXT("P"), WorldPos, 0}, {TEXT("PS"), Position, 0}, {TEXT("Wear"), Wear, 0}, {TEXT("D"), Detail, 0}, {TEXT("Wetness"), G.Scalar(TEXT("Wetness")), 0},
 			{TEXT("LineZ"), G.Scalar(TEXT("WetLineZ")), 0}, {TEXT("Soft"), G.Scalar(TEXT("WetLineSoft")), 0},
-			{TEXT("Silt"), G.Scalar(TEXT("WetSilt")), 0}},
+			{TEXT("Silt"), G.Scalar(TEXT("WetSilt")), 0}, {TEXT("TideStrength"), G.Scalar(TEXT("TideStrength")), 0},
+			{TEXT("TideRough"), G.Scalar(TEXT("TideRoughness")), 0}, {TEXT("FilmMax"), G.Scalar(TEXT("SiltFilmMax")), 0},
+			{TEXT("FilmRough"), G.Scalar(TEXT("SiltFilmRoughness")), 0}},
 		1000);
 	UMaterialExpressionCustom* Color = Custom(Material, TEXT("GarmentColor"), CMOT_Float3, kColorCode,
 		{{TEXT("Base"), Base, 0}, {TEXT("Tint"), G.Vector(TEXT("Tint")), 0}, {TEXT("Gain"), G.Scalar(TEXT("Gain")), 0}, {TEXT("Wear"), Wear, 0},
