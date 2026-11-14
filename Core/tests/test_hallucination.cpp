@@ -726,10 +726,15 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"lonePoolFloor":-1})",
         R"({"version":1,"lonePoolFloor":2e9})",
     };
-    for (const char* bad : badTuning) {
+    for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
+        h.lonePoolFloor = 777.f;
+        h.gapSeconds = 5.f;
+        REQUIRE(d.lonePoolFloor != 777.f);
+        REQUIRE(d.gapSeconds != 5.f);
         CHECK_FALSE(importHallucinationTuning(bad, h, &err));
         CHECK(h.holdSeconds == d.holdSeconds);
         CHECK(h.lonePoolFloor == d.lonePoolFloor);
+        CHECK(h.gapSeconds == d.gapSeconds);
     }
 }
 
@@ -740,7 +745,8 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
     def.fighter.hp *= 50;
     for (std::size_t i = 0; i < def.enemyCount; ++i) def.enemies[i].hp *= 50;
     ArenaFight fight;
-    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 3);
+    constexpr std::uint32_t kSeed = 3; // pinned: the preconditions below are this seed's, with the built-in tuning
+    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, kSeed);
     ArenaBodies bodies;
     bodies.player = fight.playerStart();
     const Vec2 face = fight.playerStartFacing();
@@ -765,6 +771,9 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
     std::array<int, 5> blocks{}, attacks{}, hpLost{};
     const float dt = 1.f / 60.f;
     bool refused = false;
+    ArenaAction atPress = ArenaAction::Idle; // the lead's action on the tick the fresh guard goes down
+    bool pressed = false;
+    int guardSteps4 = 0;                      // phase 4 ticks the lead stood in Guard
     while (fight.time() < 40.f && !fight.over()) {
         const float t = fight.time();
         hin.accepting = t < 4.5f;
@@ -777,9 +786,14 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
         ArenaInput raw;
         raw.view = face;
         raw.guard = hin.refuse; // the host's guard button is the refusal
+        if (phase == 4 && !pressed) {
+            pressed = true;
+            atPress = fight.output().player.action;
+        }
         const int before = fight.hp();
         const ArenaOutput& out = fight.tick(dt, hallucinationArenaInput(h, raw), bodies);
         hpLost[static_cast<std::size_t>(phase)] += before - fight.hp();
+        guardSteps4 += phase == 4 && out.player.action == ArenaAction::Guard ? 1 : 0;
         for (const ArenaEvent& e : out.events) {
             const std::size_t p = static_cast<std::size_t>(phase);
             blocks[p] += (e.type == ArenaEventType::Blocked || e.type == ArenaEventType::Parried) ? 1 : 0;
@@ -792,7 +806,12 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
         CHECK_MESSAGE(hpLost[static_cast<std::size_t>(p)] > 0, "phase " << p);
         CHECK_MESSAGE(blocks[static_cast<std::size_t>(p)] == 0, "phase " << p);
     }
-    CHECK(attacks[4] > 0);
+    // The control's preconditions, so a tuning change fails here by name instead of as a missing block.
+    REQUIRE_MESSAGE(pressed, "the fight ended before the fresh guard");
+    REQUIRE_MESSAGE((atPress != ArenaAction::Hitstun && atPress != ArenaAction::GuardBreak && atPress != ArenaAction::Downed),
+                    "the lead is staggered when the fresh guard goes down (action " << static_cast<int>(atPress) << ")");
+    REQUIRE_MESSAGE(attacks[4] > 0, "no enemy swings after the fresh guard");
+    REQUIRE_MESSAGE(guardSteps4 > 0, "the lead never stands in Guard after the fresh press");
     CHECK(blocks[4] > 0); // the same guard, pressed afresh, meets the same swings
 }
 
