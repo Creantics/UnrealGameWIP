@@ -273,6 +273,16 @@ void AFTExploreCharacter::BeginPlay()
 		Boom->TargetArmLength = Arm;
 		Boom->SocketOffset = FVector(0.0, 0.0, Height);
 		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
+#if !UE_BUILD_SHIPPING // review checks only, never in a shipped game
+		// Close material stills: -ExplorePortraitFov=<deg> narrows the lens so a panel fills the frame from a real
+		// distance, -ExplorePortraitSide=<cm> shifts the camera sideways (to frame a sleeve rather than the chest).
+		float Fov = 0.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFov="), Fov) && Fov > 0.f)
+		{
+			Camera->SetFieldOfView(FMath::Clamp(Fov, 5.f, 120.f));
+		}
+		FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitSide="), Boom->SocketOffset.Y);
+#endif
 		// -ExplorePortraitWalk: the body walks a slow circle (about 5.7 m across) so shots catch it mid-stride.
 		bPortraitWalk = bPortraitWalk || FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitWalk"));
 		// -ExplorePortraitMoveScale=<0..1>: the circle's input scale (0.5 walks, 1 runs); it implies the walk circle.
@@ -314,6 +324,31 @@ void AFTExploreCharacter::BeginPlay()
 		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreNight")))
 		{
 			Nightfall();
+		}
+		// -ExploreSun=<pitch>,<yaw>: every sun points this way, yaw taken from the lead's facing (0: the light travels the
+		// way the lead faces), so a low sun can rake across a panel for a grain still. A sun that is not movable can't turn.
+		FString SunAim;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreSun="), SunAim, false))
+		{
+			FString PitchText, YawText;
+			if (SunAim.Split(TEXT(","), &PitchText, &YawText))
+			{
+				const FRotator SunRot(FCString::Atof(*PitchText), GetActorRotation().Yaw + FCString::Atof(*YawText), 0.0);
+				int32 Turned = 0;
+				for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+				{
+					TInlineComponentArray<UDirectionalLightComponent*> Suns(*It);
+					for (UDirectionalLightComponent* Sun : Suns)
+					{
+						if (Sun->Mobility == EComponentMobility::Movable)
+						{
+							Sun->SetWorldRotation(SunRot);
+							++Turned;
+						}
+					}
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %d movable suns aimed at pitch %.1f, yaw %.1f."), Turned, SunRot.Pitch, SunRot.Yaw);
+			}
 		}
 		// Wetness proof for the lead materials: -ExploreWet=<Wetness>,<line cm above the feet>,<WetSilt> sets the garment
 		// wet inputs (Wetness, WetLineZ, WetSilt) on every slot that has them, once a second so the garments ApplyLook
@@ -477,7 +512,16 @@ void AFTExploreCharacter::StepPortraitShots()
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
 	{
-		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1400x1100 filename=\"%s\""), *File), *GLog);
+		int32 ShotW = 1400, ShotH = 1100;
+#if !UE_BUILD_SHIPPING // review checks only: -ExplorePortraitShotSize=<w>x<h>
+		FString Size, W, H;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotSize="), Size) && Size.Split(TEXT("x"), &W, &H))
+		{
+			ShotW = FMath::Clamp(FCString::Atoi(*W), 64, 7680);
+			ShotH = FMath::Clamp(FCString::Atoi(*H), 64, 4320);
+		}
+#endif
+		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot %dx%d filename=\"%s\""), ShotW, ShotH, *File), *GLog);
 	}
 	const FFindFloorResult& Floor = GetCharacterMovement()->CurrentFloor;
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait shot %s (floor dist %.3f cm, walkable %d, speed %.0f)."),

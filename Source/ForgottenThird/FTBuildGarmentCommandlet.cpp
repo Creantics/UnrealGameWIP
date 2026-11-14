@@ -70,6 +70,9 @@ const FScalarSpec kScalars[] = {
 	{TEXT("FadeFarA"), 250.f},
 	{TEXT("FadeNearB"), 200.f},
 	{TEXT("FadeFarB"), 1200.f},
+	{TEXT("GrainCrease"), 0.f},       // detail relief up by this share in creases and seams (wear map R below 0.5)
+	{TEXT("GrainWorn"), 0.f},         // and down by this share on rubbed edges (R above 0.5)
+	{TEXT("TileBreak"), 0.f},         // 0..1: scale A swaps to a turned copy of the tile over about 4 cm patches
 	{TEXT("MottleSize"), 3.f},        // centimetres per feature of the broad normal tilt (the roughness mottle is twice that)
 	{TEXT("MottleTilt"), 0.f},        // normal tilt of the mottle (0 = off; leather jackets set it per instance)
 	{TEXT("MottleRoughness"), 0.f},   // +- roughness of the mottle (0 = off)
@@ -133,11 +136,16 @@ TArray<FSubstance> Substances()
 	// Leather jacket: black, a tight highlight (not a broad grey sheen), pebbled grain, smoother on worn edges, rougher in
 	// creases; less sky fill and a darker diffuse response so it reads black, not grey-green, under an open sky. Roughness
 	// from a map median of 0.49 lands near 0.3 with the micro and cavity terms (was near 0.4: the broad lobe).
+	// Grain: scale A at 1.1 cm puts the tile's 22 cells at 0.5 mm (pores of 0.3 to 0.6 mm), gone by about 1.1 m, where
+	// it could only shimmer; scale B (4 mm) carries the pebble at play distance. The pores are rougher than the tops
+	// (CavityRoughness), deeper in creases and seams and rubbed flatter and shinier on worn edges (GrainCrease, GrainWorn,
+	// EdgeSmooth), with the tile break on.
 	Out.Add({TEXT("Leather"), false, GarmentTile::Leather,
 		{{TEXT("Specular"), 0.28f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.2f}, {TEXT("RoughnessOffset"), 0.12f},
-			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.18f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.1f},
-			{TEXT("EdgeLighten"), 0.12f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 2.6f}, {TEXT("DetailSizeB"), 9.f},
-			{TEXT("DetailStrengthA"), 0.25f}, {TEXT("DetailStrengthB"), 0.12f}, {TEXT("DiffuseResponse"), 1.06f},
+			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.28f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.15f},
+			{TEXT("EdgeLighten"), 0.12f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 1.1f}, {TEXT("DetailSizeB"), 9.f},
+			{TEXT("DetailStrengthA"), 0.35f}, {TEXT("DetailStrengthB"), 0.12f}, {TEXT("FadeNearA"), 30.f}, {TEXT("FadeFarA"), 110.f},
+			{TEXT("GrainCrease"), 0.8f}, {TEXT("GrainWorn"), 0.6f}, {TEXT("TileBreak"), 1.f}, {TEXT("DiffuseResponse"), 1.06f},
 			{TEXT("SkyFill"), 0.7f}, {TEXT("SiltLiftMax"), 1.15f}, {TEXT("SiltFilmRoughness"), 0.25f}},
 		FLinearColor::White, FLinearColor::White});
 	// Woven trousers: cloth shading, matte; the twill only shows within about a metre.
@@ -173,29 +181,52 @@ TArray<FSubstance> Substances()
 // The detail: the tile projected along the three pre-skinned axes and blended by the normal, at two scales that each
 // fade with camera distance. Returns xy the tangent tilt to add, z cavity (1 open, lower in the grooves), w micro
 // roughness variation in -1..1.
+// Leather's grain follows the wear map (R: 0.5 flat, lower in creases and seams, higher on rubbed edges): its relief is
+// up to 1 + GrainCrease in the creases and down to 1 - GrainWorn on the elbows, cuffs and collar edge. TileBreak swaps
+// scale A, the finest and most often repeated, for a quarter-turned, shifted copy of the tile over patches of about 4 cm,
+// so no repeat lines up across a panel. All three are 0 by default, which gives the plain two-scale detail.
 const TCHAR* const kDetailCode = TEXT(R"HLSL(float3 n = normalize(N);
 float3 w = pow(abs(n), 4.0);
 w /= max(w.x + w.y + w.z, 1e-4);
-float fade[2] = { saturate((FadeFarA - Depth) / max(FadeFarA - FadeNearA, 1.0)), saturate((FadeFarB - Depth) / max(FadeFarB - FadeNearB, 1.0)) };
-float size[2] = { max(SizeA, 0.01), max(SizeB, 0.01) };
-float strength[2] = { StrengthA, StrengthB };
+float fadeA = saturate((FadeFarA - Depth) / max(FadeFarA - FadeNearA, 1.0));
+float fadeB = saturate((FadeFarB - Depth) / max(FadeFarB - FadeNearB, 1.0));
+float relief = (1.0 + GrainCrease * saturate((0.5 - Wear.r) * 2.0)) * saturate(1.0 - GrainWorn * saturate((Wear.r - 0.5) * 2.0));
+float swap = TileBreak > 0.0 ? saturate(TileBreak) * smoothstep(-0.08, 0.08, GradientNoise3D_ALU(P * 0.25, false, 0.0)) : 0.0;
+float weight[3] = { fadeA * (1.0 - swap), fadeA * swap, fadeB }; // A, A turned (the tile break), B
+float size[3] = { max(SizeA, 0.01), max(SizeA, 0.01), max(SizeB, 0.01) };
+float strength[3] = { StrengthA, StrengthA, StrengthB };
+float offset[3] = { 0.0, 0.53, 0.371 };
+float share[3] = { 0.65, 0.65, 0.35 };
 float2 tilt = 0;
 float cavity = 0;
 float micro = 0;
-for (int i = 0; i < 2; ++i)
+for (int i = 0; i < 3; ++i)
 {
-	float3 p = P / size[i] + i * 0.371;
-	float2 nx = Texture2DSample(DetailN, DetailNSampler, p.yz).xy * 2.0 - 1.0;
-	float2 ny = Texture2DSample(DetailN, DetailNSampler, p.xz).xy * 2.0 - 1.0;
-	float2 nz = Texture2DSample(DetailN, DetailNSampler, p.xy).xy * 2.0 - 1.0;
-	float2 mx = Texture2DSample(DetailM, DetailMSampler, p.yz).rg;
-	float2 my = Texture2DSample(DetailM, DetailMSampler, p.xz).rg;
-	float2 mz = Texture2DSample(DetailM, DetailMSampler, p.xy).rg;
+	if (weight[i] <= 0.0)
+		continue;
+	float3 p = P / size[i] + offset[i];
+	float2 ux = p.yz;
+	float2 uy = p.xz;
+	float2 uz = p.xy;
+	if (i == 1)
+	{
+		ux = float2(-ux.y, ux.x);
+		uy = float2(-uy.y, uy.x);
+		uz = float2(-uz.y, uz.x);
+	}
+	float2 nx = Texture2DSample(DetailN, DetailNSampler, ux).xy * 2.0 - 1.0;
+	float2 ny = Texture2DSample(DetailN, DetailNSampler, uy).xy * 2.0 - 1.0;
+	float2 nz = Texture2DSample(DetailN, DetailNSampler, uz).xy * 2.0 - 1.0;
+	float2 mx = Texture2DSample(DetailM, DetailMSampler, ux).rg;
+	float2 my = Texture2DSample(DetailM, DetailMSampler, uy).rg;
+	float2 mz = Texture2DSample(DetailM, DetailMSampler, uz).rg;
 	float2 m = mx * w.x + my * w.y + mz * w.z;
-	tilt += (nx * w.x + ny * w.y + nz * w.z) * strength[i] * fade[i];
-	float share = i == 0 ? 0.65 : 0.35;
-	cavity += (m.x - 1.0) * fade[i] * share;
-	micro += (m.y * 2.0 - 1.0) * fade[i] * share;
+	float2 t = nx * w.x + ny * w.y + nz * w.z;
+	if (i == 1)
+		t = float2(t.y, -t.x); // the turned copy's slope, turned back
+	tilt += t * strength[i] * weight[i] * relief;
+	cavity += (m.x - 1.0) * weight[i] * share[i] * relief;
+	micro += (m.y * 2.0 - 1.0) * weight[i] * share[i];
 }
 return float4(tilt, saturate(1.0 + cavity), micro);
 )HLSL");
@@ -535,7 +566,9 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("DetailM"), DetailM, 0}, {TEXT("SizeA"), G.Scalar(TEXT("DetailSizeA")), 0}, {TEXT("SizeB"), G.Scalar(TEXT("DetailSizeB")), 0},
 			{TEXT("StrengthA"), G.Scalar(TEXT("DetailStrengthA")), 0}, {TEXT("StrengthB"), G.Scalar(TEXT("DetailStrengthB")), 0},
 			{TEXT("FadeNearA"), G.Scalar(TEXT("FadeNearA")), 0}, {TEXT("FadeFarA"), G.Scalar(TEXT("FadeFarA")), 0},
-			{TEXT("FadeNearB"), G.Scalar(TEXT("FadeNearB")), 0}, {TEXT("FadeFarB"), G.Scalar(TEXT("FadeFarB")), 0}},
+			{TEXT("FadeNearB"), G.Scalar(TEXT("FadeNearB")), 0}, {TEXT("FadeFarB"), G.Scalar(TEXT("FadeFarB")), 0},
+			{TEXT("Wear"), Wear, 0}, {TEXT("GrainCrease"), G.Scalar(TEXT("GrainCrease")), 0},
+			{TEXT("GrainWorn"), G.Scalar(TEXT("GrainWorn")), 0}, {TEXT("TileBreak"), G.Scalar(TEXT("TileBreak")), 0}},
 		600);
 	UMaterialExpressionCustom* Metal = Custom(Material, TEXT("GarmentMetal"), CMOT_Float1, kMetalCode,
 		{{TEXT("ORM"), Orm, 0}, {TEXT("MetalScale"), G.Scalar(TEXT("MetalScale")), 0}, {TEXT("MetalFloor"), G.Scalar(TEXT("MetalFloor")), 0},
