@@ -180,9 +180,15 @@ bool inputPadPending(InputAction a) { return a == InputAction::GiftHeal || a == 
 
 namespace {
 
-// Actions whose default key is newer than the first saved bindings files (Gift moved to H; the two gifts are new). A
-// file that binds one of their keys to something else chose that key before the default existed.
-bool inputDefaultIsNew(InputAction a) { return a == InputAction::Gift || a == InputAction::GiftHeal || a == InputAction::GiftGuard; }
+// Whether two actions may not share a key on one device: the same context, or a Read-held action on Read's or Guard's
+// key (validateInputBindings' two rules).
+bool inputKeysConflict(InputAction a, InputAction b) {
+    if (a == b) return false;
+    const InputContext ca = inputActionContext(a), cb = inputActionContext(b);
+    if (ca == cb) return true;
+    const InputAction foot = ca == InputContext::Foot ? a : b;
+    return foot == InputAction::Read || foot == InputAction::Guard;
+}
 
 bool reachableExcept(const InputBindings& b, const InputUnbound* skip, InputAction* missing) {
     for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
@@ -262,7 +268,10 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
     for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
         const char* dk = deviceKey(static_cast<InputDevice>(d));
         const JsonValue keys = root[dk];
-        if (keys.isAbsent()) continue;
+        if (keys.isAbsent()) {
+            b.keys[d] = defaults.keys[d]; // no entry for any action on this device: every one takes its default
+            continue;
+        }
         if (!keys.isObject()) return fail(std::string("bindings.") + dk + ": must be an object");
         std::array<bool, kInputActionCount> chosen{}; // the player's own bindings: they always win
         for (std::uint32_t i = 0; i < keys.size(); ++i) {
@@ -285,17 +294,21 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
             row[gi] = defaults.keys[d][gi];
             chosen[gi] = false;
         }
-        // A newer default the player never chose, on a key the player gave to something else: the player's binding
-        // wins and the newer action is left unbound (InputUnbound), never the file refused.
+        // An action the file has no entry for is new to it (added after the file was saved, or left out): it takes
+        // its default, unless a key the file binds is that default, when the player's binding wins and the action is
+        // left unbound (InputUnbound). Only two entries of the file's own on one key refuse it (validateInputBindings).
         for (const ActionRow& r : kRows) {
             const std::size_t ai = static_cast<std::size_t>(r.action);
-            if (chosen[ai] || !inputDefaultIsNew(r.action) || row[ai].empty()) continue;
-            InputAction other{};
-            if (inputKeyClash(b, r.action, static_cast<InputDevice>(d), row[ai].view(), other) &&
-                chosen[static_cast<std::size_t>(other)]) {
+            if (chosen[ai]) continue;
+            row[ai] = defaults.keys[d][ai];
+            if (row[ai].empty()) continue;
+            for (const ActionRow& o : kRows) {
+                const std::size_t oi = static_cast<std::size_t>(o.action);
+                if (!chosen[oi] || !inputKeysConflict(r.action, o.action) || row[oi].view() != row[ai].view()) continue;
                 row[ai] = InputKeyName{};
                 left.left[d][ai] = true;
                 ++left.count;
+                break;
             }
         }
     }
@@ -486,11 +499,16 @@ std::string_view inputRouteLabel(std::string_view route) {
     return std::string_view();
 }
 
-std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d) {
+std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d, const InputUnbound* unbound) {
     std::string keys;
     for (std::uint8_t i = 0; i < e.count && i < e.actions.size(); ++i) {
         const InputAction a = e.actions[i];
         const InputKeyName& n = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(a) % kInputActionCount];
+        if (n.empty() && unbound &&
+            unbound->left[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(a) % kInputActionCount]) {
+            addPiece(keys, kInputNoKey);
+            continue;
+        }
         if (!n.empty()) {
             addPiece(keys, e.held ? std::string(kInputHoldPrefix) + std::string(inputKeyLabel(n.view())) : std::string(inputKeyLabel(n.view())));
             continue;
@@ -507,17 +525,31 @@ std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, Input
     return keys;
 }
 
-std::string inputHintLine(const InputBindings& b, InputHintScreen screen, InputDevice d, InputHintText text, void* user) {
+std::string inputHintLine(const InputBindings& b, InputHintScreen screen, InputDevice d, InputHintText text, void* user,
+                          const InputUnbound* unbound) {
     const InputHintEntry* entries = nullptr;
     const std::size_t count = inputHintEntries(screen, entries);
     std::string line;
     for (std::size_t i = 0; i < count; ++i) {
-        const std::string keys = inputHintKeys(b, entries[i], d);
+        const std::string keys = inputHintKeys(b, entries[i], d, unbound);
         if (keys.empty()) continue; // nothing reaches it on this device: the line names no key for it
         if (!line.empty()) line += "  ";
         line += keys;
         line += ' ';
         line += text ? text(entries[i].label, user) : std::string(entries[i].label);
+    }
+    return line;
+}
+
+std::string inputUnboundLine(const InputUnbound& unbound) {
+    std::string line;
+    for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
+        for (std::size_t a = 0; a < kInputActionCount; ++a) {
+            if (!unbound.left[d][a]) continue;
+            line += line.empty() ? std::string(kInputNoKey) + ": " : std::string(", ");
+            line += inputActionKey(static_cast<InputAction>(a));
+            line += d == 0 ? " (keyboard)" : " (pad)";
+        }
     }
     return line;
 }

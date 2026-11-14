@@ -24,6 +24,8 @@ namespace
 {
 const FLinearColor kArenaWhite(1.f, 1.f, 1.f);
 const FLinearColor kArenaDim(0.6f, 0.62f, 0.68f);
+// How long the fight's start shows the unbound-actions line (seconds of fight time).
+constexpr float kUnboundNoticeTime = 8.f;
 const FLinearColor kArenaPanel(0.02f, 0.02f, 0.05f, 0.62f);
 const FLinearColor kArenaBack(0.1f, 0.1f, 0.13f, 0.85f);
 const FLinearColor kArenaHpBack(0.18f, 0.05f, 0.05f, 0.85f);
@@ -1191,5 +1193,10 @@ void AFTArenaHUD::DrawHUD()
 	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
 	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
 	DrawStrCentered(FTInputBindings::HintLine(UFTArenaRunner::JumpBound() ? ftcore::InputHintScreen::ArenaJump : ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	// At the fight's start, one line naming each action the saved bindings left with no key.
+	if (!FTInputBindings::UnboundLine().IsEmpty() && Fight.time() < kUnboundNoticeTime)
+	{
+		DrawStrCentered(FTInputBindings::UnboundLine(), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 70.f * S, GEngine->GetSmallFont(), 1.2f);
+	}
 	FT::DrawPauseOverlay(*this, Canvas);
 }

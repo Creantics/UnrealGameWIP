@@ -138,11 +138,15 @@
 //   [minRange, maxRange] holds the player's distance and whose cooldown is over (weighted by
 //   `weight`, from the seeded RNG), or closes in to the nearest move's maxRange when none fits.
 //   No blow from where the player can't see it: a regular (non-boss) token holder begins its string only within
-//   kArenaWindupArc degrees either side of the lead's facing or within kArenaCameraHalfAngle of the camera's facing
-//   (ArenaInput::cameraFacing; none given, the lead's facing alone), both seen from the lead. Outside them it
-//   circles round the lead toward its facing (Strafe, picking no move). After kArenaUnseenWait s holding the token
-//   it begins anyway: the string's first move kArenaUnseenWindup s longer in startup, ArenaEnemyOut::unseen raised
-//   for the HUD. A boss is not held by the arc.
+//   kArenaWindupArc degrees either side of the lead's facing or within the camera's half-angle of the camera's facing
+//   (ArenaInput::cameraFacing; none given, the lead's facing alone; the half-angle is setCameraHalfAngle's,
+//   kArenaCameraHalfAngle by default), both seen from the lead. Outside them it circles round the lead toward its
+//   facing (Strafe, picking no move). No starving the others meanwhile: a token holder out of sight that has not
+//   begun its string hands the token at once to a waiter in sight that is asking for one (the longest waiting, then
+//   the nearest), and asks again itself, its wait starting from 0; the tokens free go out first. While no waiter in
+//   sight asks it keeps the token, and after kArenaUnseenWait s holding it out of sight it begins anyway: the
+//   string's first move kArenaUnseenWindup s longer in startup, ArenaEnemyOut::unseen raised for the HUD. A boss is
+//   not held by the arc (and counts as in sight).
 //   Enemy poise works like the player's: poise damage beyond poise staggers, `armor` ignores a share
 //   of it during an attack's startup and active parts, and poise refills after poiseDelay.
 // * Hit pause. A blow that lands (a Hit on either side, not one the host vetoes) with hitStop > 0 pauses the
@@ -177,8 +181,9 @@
 //   it, starts its breakMove at once (BrokeOut, then AttackStarted): whatever its cooldown and the flinch, though
 //   never a move the host's move mask clears. That move should carry `armor`. It takes an attack token like any
 //   attack: with none free (another enemy holds the last of `attackers`), or outside the windup arc, it steps back
-//   instead (StepBack, no BrokeOut): straight away from the player over kArenaStepBackTime to kArenaStepBackClear
-//   beyond the lead's reach, no blow of the player's side landing on it, then walks again with no armour and its
+//   instead (StepBack and the SteppedBack event once as it begins, no BrokeOut): straight away from the player over
+//   kArenaStepBackTime to kArenaStepBackClear beyond the lead's reach, and never less than kArenaStepBackMin, so the
+//   blow is seen to miss, no blow of the player's side landing on it, then walks again with no armour and its
 //   count spent. So one sweeping string sets off at most the free tokens' break-outs. A stagger, Open or Down
 //   never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the count and the
 //   break-out too. Bosses never have a breakAt (Boss break).
@@ -324,15 +329,21 @@ inline constexpr float kArenaFlinchChainGap = 1.f;
 inline constexpr float kArenaBreakPoiseUnit = 10.f;
 inline constexpr float kArenaBreakWeightSlack = 1.0e-4f;
 // A regular enemy's break-out with no token free (see Break-out): it steps back (StepBack) for this long, unhurt, to
-// this far beyond the lead's reach (its longest light or heavy range plus lunge, and the enemy's body radius).
+// this far beyond the lead's reach (its longest light or heavy range plus lunge, and the enemy's body radius), and
+// never less than kArenaStepBackMin metres straight away from the lead.
 inline constexpr float kArenaStepBackTime = 0.5f;
 inline constexpr float kArenaStepBackClear = 0.5f;
+inline constexpr float kArenaStepBackMin = 1.5f;
 // No blow from where the player can't see it (see Enemies): a regular token holder begins its string only within
-// kArenaWindupArc degrees either side of the lead's facing or within kArenaCameraHalfAngle of the camera's facing
+// kArenaWindupArc degrees either side of the lead's facing or within the camera's half-angle of the camera's facing
 // (ArenaInput::cameraFacing), both measured from the lead; after kArenaUnseenWait s holding the token outside them
-// it attacks anyway, its windup kArenaUnseenWindup s longer and ArenaEnemyOut::unseen raised.
+// (and no waiter in sight to hand it to) it attacks anyway, its windup kArenaUnseenWindup s longer and
+// ArenaEnemyOut::unseen raised.
 inline constexpr float kArenaWindupArc = 100.f;
-inline constexpr float kArenaCameraHalfAngle = 39.f; // ArenaView's half-angle less its margin
+// The camera's half-angle when the host never sets one (ArenaFight::setCameraHalfAngle): ArenaView's less its margin.
+inline constexpr float kArenaCameraHalfAngle = 39.f;
+inline constexpr float kArenaCameraHalfAngleMin = 1.f;  // setCameraHalfAngle clamps to these
+inline constexpr float kArenaCameraHalfAngleMax = 89.f;
 inline constexpr float kArenaUnseenWait = 4.f;
 inline constexpr float kArenaUnseenWindup = 0.3f;
 // The boss break value (see Boss break): each blow's weight, ...
@@ -734,7 +745,7 @@ struct ArenaInput {
     // above 10 as 10. Never on hostHurt.
     float takenScale = 1.f;
     // The camera's facing on the ground, for the windup arc (see Enemies): a regular enemy may begin a string within
-    // kArenaCameraHalfAngle of it, seen from the lead. Need not be unit. Zero (the default, a host without a camera):
+    // the camera's half-angle (ArenaFight::setCameraHalfAngle) of it, seen from the lead. Need not be unit. Zero (the default, a host without a camera):
     // the lead's facing alone decides.
     Vec2 cameraFacing{};
 };
@@ -857,6 +868,8 @@ enum class ArenaEventType : std::uint8_t { // append only
                     // (stats().dryPresses); move kArenaShotMove (appended)
     BreakTell,      // a boss's break value rose to kArenaBossBreakTell of its threshold: source the boss, amount the
                     // value x 100, rounded (appended)
+    SteppedBack,    // source began a step back (StepBack) from the player (target kArenaPlayer): amount the metres it
+                    // will move, x 100, rounded; once as it begins (appended)
 };
 
 struct ArenaEvent {
@@ -1193,6 +1206,12 @@ public:
     // either way. Off, the default, for a body with no side-dash clips. begin() and restart() keep it.
     FTCORE_API void setSideDashes(bool on);
     FTCORE_API bool sideDashes() const;
+    // The camera's horizontal half-angle in degrees for the windup arc (see Enemies), set by the host whenever its lens
+    // changes: a regular enemy may begin a string within it of ArenaInput::cameraFacing, seen from the lead. Clamped
+    // to kArenaCameraHalfAngleMin..kArenaCameraHalfAngleMax; NaN sets kArenaCameraHalfAngle, the value when never
+    // set. It applies from the next tick; begin() and restart() keep it.
+    FTCORE_API void setCameraHalfAngle(float degrees);
+    FTCORE_API float cameraHalfAngle() const;
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
     // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
     // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they
@@ -1450,6 +1469,7 @@ private:
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
     ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
     bool sideDashes_ = false;               // setSideDashes (begin() and restart() keep it)
+    float cameraHalfAngle_ = kArenaCameraHalfAngle; // setCameraHalfAngle, degrees (begin() and restart() keep it)
     // The blow hook is running: tick, begin and restart do nothing. A copy starts clear (its hook isn't running),
     // and assigning to a fight keeps its own.
     struct HookFlag {

@@ -584,8 +584,8 @@ outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed
 | Guard (hold or toggle); parry (tap just before a hit) | Left Ctrl | LB |
 | Roll (backstep with no direction) | Left Alt | B |
 | Heal (the lead's own; uses a charge) | H | D-pad up |
-| Gift Heal (the third slot's: 2 a fight, a share of max health, instant) | G | none yet (pad layout to be ruled) |
-| Gift Guard (the third slot's: the lead's blows scaled down a while) | Y | none yet (pad layout to be ruled) |
+| Gift Heal (the third slot's: 2 a fight, a share of max health, instant) | G | none (see below) |
+| Gift Guard (the third slot's: the lead's blows scaled down a while) | Y | none (see below) |
 | Release (above a third of the Load) | R | D-pad down |
 | Partner (the second lead's press, paired with a parry; on Count's key for now) | F | Y |
 | Intercept a called blow (stone_bearer; hold or toggle) | V | L3 |
@@ -594,6 +594,16 @@ outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed
 | Switch lock target (locked) | flick the mouse sideways | flick the right stick |
 | Fight again (after the outcome) | Enter or Space | A |
 | Pause menu | Esc | Start |
+
+The two gifts have no pad button: D-pad left and right, the ruled choice, are crouch and switch lead in the one on-foot
+set that a fight in the field shares with the arena, and every other pad button is taken there too, so the pad gifts
+stay off until the pad's layout is ruled again.
+
+A saved `Saved/InputBindings.json` is read over the defaults. An action the file has no entry for (one added after the
+file was saved) takes its default key, unless a key the file binds is that default: then the player's binding wins and
+the action is left unbound. The controls line shows such an action as `NO KEY`, and a fight's first 8 s show one line
+naming each (`NO KEY: take_half (keyboard)`), which the log repeats. Only two of the file's own entries on one key
+refuse the file (the defaults then stand).
 
 A strike commits the body (`ftcore::attackMove`, `Data/Battle/attack_move.json`): each part of a move has its own
 share of the stick's walk (`startupScale`, `activeScale`, `recoveryScale`), and the full walk comes back at the cancel
@@ -701,6 +711,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaBossLoop=<clip>` | The boss's skin plays that clip of its table (by id, e.g. `idle`, `idle_p2`, `face_down`) looped from the fight's start, with the table's blend, whatever the fight does; the fight itself runs unchanged. A check of the clips' loops, not a way to play. One log line at each fight's start (`Arena: boss loop <clip> on enemy <n> from the fight's start (<len> s) (-ArenaBossLoop).`) and one at each wrap (`Arena: boss loop <clip> wraps (<n>) at <fight time> s (<len> s).`); the log's `[..][counter]` prefix (`GFrameCounter % 1000`) on a wrap line is the frame whose pose is the clip's first again, which is where a cutter finds the seam. An unknown clip (or no skinned boss) logs a warning and the flag does nothing. The boss is the Kite-Mother's slot, else the stone bearer's, else the first skinned enemy. |
 | `-ArenaNoKindFx` | No kind's crit effects (`arena_crit.json`: the tell, open, crit and hit) are made; the fight runs the same. The OFF half of an effects OFF/ON capture. |
 | `-ArenaBossCam` | Once the first enemy stands, the view moves to a camera fixed 9 m off that enemy's left side at half its height (field of view 40), so a capture shows the boss's own turns apart from the follow camera's. The log gets `ArenaBossCam: t <s> s yaw <deg>` each time the boss has turned 10 degrees. Review captures only; the fight runs the same. |
+| `-ArenaLoneGiftAt=S` | One press of the third slot's Heal at fight time S (Lone or not). The press hands the lead's health to the slot first (`setLeadHealth`), so at full health it is refused (`NotHurt`); the log's `Arena: probe self-check ok` line checks exactly that (a full-health press refused `NotHurt`, a hurt lead's not), `FAILED` otherwise. |
 | `-ArenaStoryProbe` | Headless check of the story wiring (`-NullRHI` is fine): the fight is handed off as the story's with no step marked (as a reload into it), one gift press is counted, the arena restarts the fight, one more is counted; each stage logs `Arena: story probe <stage>: bound, presses, retries` (expected presses 0, 1, 0, 1 and one retry), then the game quits. |
 | `-ArenaShot=<path prefix>` | Autoplay and save the views (`_1_ring`, `_2_tell` with the Read cards picked, `_3_impact`, `_4_load` with the gauge past a third, or the overload under `-ArenaHoldLoad`, `_5_release`, `_6_result` .png), then quit; a view the fight never reaches is skipped. Needs a renderer (`-RenderOffScreen`, not `-NullRHI`). |
 | `-ArenaShotDelay=S` | Seconds before the first screenshot (the fight waits for it). |

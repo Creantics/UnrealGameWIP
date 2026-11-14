@@ -159,7 +159,8 @@ inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 }
 
 // A screen's controls line on a device, built from the table (ftcore::inputHintLine) with the words from ui.json
-// ("input.light"), so it names only keys the player has. Built once per screen and device, then kept.
+// ("input.light"), so it names only keys the player has; an action the import left unbound shows NO KEY. Built once
+// per screen and device, then kept.
 inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevice Device)
 {
 	static TOptional<FString> Lines[ftcore::kInputHintScreenCount][ftcore::kInputDeviceCount];
@@ -167,10 +168,18 @@ inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevi
 	if (!Line.IsSet())
 	{
 		const std::string Text = ftcore::inputHintLine(Get(), Screen, Device,
-			[](const char* LabelKey, void*) { return FT::ToUtf8(FTUiText::Lookup(*FT::ToFString(LabelKey))); });
+			[](const char* LabelKey, void*) { return FT::ToUtf8(FTUiText::Lookup(*FT::ToFString(LabelKey))); }, nullptr, &Unbound());
 		Line = FT::ToFString(Text);
 	}
 	return Line.GetValue();
+}
+
+// One line naming each action the import left unbound ("NO KEY: gift_heal (keyboard)"); empty when none. A fight shows
+// it on screen at its start.
+inline const FString& UnboundLine()
+{
+	static const FString Line = FT::ToFString(ftcore::inputUnboundLine(Unbound()));
+	return Line;
 }
 
 // Whether the focus gate is off for this run: unattended, rendering off-screen or with no RHI (the demo and capture

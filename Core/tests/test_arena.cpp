@@ -6777,20 +6777,136 @@ TEST_CASE("arena break-out: out of the windup arc it steps back even with the to
     CHECK(seen.fight.stats().stepBacks == 0);
 }
 
-TEST_CASE("arena break-out: a boss's count is its blows, whatever their weight, and it never steps back") {
+TEST_CASE("arena break-out: every shipped boss kind has no count (breakAt 0)") {
+    const ArenaTable t = loadShipped();
+    int bosses = 0;
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e) {
+        if (!t.enemies[e].boss) continue;
+        CAPTURE(t.enemyIds[e]);
+        CHECK(t.enemies[e].breakAt == 0);
+        ++bosses;
+    }
+    CHECK(bosses > 0);
+}
+
+TEST_CASE("arena break-out: a boss with breakAt 0 never breaks out by count, however many blows land") {
     ArenaEnemyKind k = breakerKind();
     k.boss = true;
-    ArenaFighter f = breakFighter();
-    for (std::size_t m = 0; m < f.lightCount; ++m) f.light[m].poiseDamage = 1.f; // a tenth of a default light
-    Rig rig(f, {k});
-    rig.put(0, -1.5f, 0.f); // behind, unseen
+    k.breakAt = 0;
+    k.hp = 100000;
+    k.breakValueAt = {1000.f, 1000.f, 1000.f, 1000.f}; // its break value never breaks it here: only the count is tested
+    for (const float x : {1.5f, -1.5f}) { // in front, and behind (where a regular enemy would step back)
+        CAPTURE(x);
+        Rig rig(breakFighter(), {k});
+        rig.put(0, x, 0.f);
+        bool steppedBack = false;
+        for (int t = 0; t < 600; ++t) {
+            rig.in.light = true;
+            steppedBack = rig.tick().enemies[0].brain == ArenaBrain::StepBack || steppedBack;
+        }
+        CHECK(rig.count(ArenaEventType::Hit) >= 20);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+        CHECK(rig.count(ArenaEventType::SteppedBack) == 0);
+        CHECK_FALSE(steppedBack);
+        CHECK(rig.fight.stats().breakDue == 0);
+        CHECK(rig.fight.stats().stepBacks == 0);
+        CHECK(rig.fight.stats().bossBreaks == 0);
+    }
+}
+
+TEST_CASE("arena break-out: heavier blows count more, so fewer heavies than lights reach breakAt") {
+    ArenaEnemyKind k = breakerKind();
+    k.breakAt = 4;
+    ArenaFighter f = breakFighter();         // each light weighs 1
+    f.heavy.poiseDamage = 2.f * kArenaBreakPoiseUnit; // the heavy 2
+    const auto blowsToBreak = [&](bool heavy) {
+        Rig rig(f, {k});
+        rig.put(0, 1.5f, 0.f);
+        for (int t = 0; t < 600 && rig.count(ArenaEventType::BrokeOut) == 0; ++t) {
+            rig.in.light = !heavy;
+            rig.in.heavy = heavy;
+            rig.tick();
+        }
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 1);
+        return rig.count(ArenaEventType::Hit);
+    };
+    const int lights = blowsToBreak(false);
+    const int heavies = blowsToBreak(true);
+    CHECK(lights == 4);
+    CHECK(heavies == 2);
+    CHECK(heavies < lights);
+}
+
+TEST_CASE("arena break-out: a step back goes at least kArenaStepBackMin from the lead over kArenaStepBackTime, and "
+          "SteppedBack comes once as it begins") {
+    Rig rig(breakFighter(), {breakerKind()});
+    rig.put(0, -1.5f, 0.f); // behind, out of the windup arc: it steps back
+    for (int t = 0; t < 120 && !rig.find(ArenaEventType::SteppedBack); ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    const Logged* first = rig.find(ArenaEventType::SteppedBack);
+    REQUIRE(first);
+    const int stepTick = first->tick;
+    CHECK(first->event.source == 0);
+    CHECK(first->event.target == kArenaPlayer);
+    CHECK(first->event.amount >= static_cast<int>(std::lround(kArenaStepBackMin * 100.f)));
+    CHECK(rig.out().enemies[0].brain == ArenaBrain::StepBack);
+    CHECK(rig.fight.stats().stepBacks == 1);
+    // The lead stands still; the enemy moves at its output velocity over the step's ticks.
+    const float before = distanceOf(rig.bodies.player, rig.bodies.enemies[0]);
+    const int stepTicks = static_cast<int>(std::lround(kArenaStepBackTime / kDt));
+    for (int t = 0; t < stepTicks; ++t) {
+        const Vec2 v = rig.out().enemies[0].velocity;
+        rig.bodies.enemies[0].x += v.x * kDt;
+        rig.bodies.enemies[0].y += v.y * kDt;
+        if (t + 1 < stepTicks) {
+            rig.in.light = true; // the lights still swing; none lands on it
+            rig.tick();
+        }
+    }
+    const float moved = distanceOf(rig.bodies.player, rig.bodies.enemies[0]) - before;
+    CHECK(moved >= kArenaStepBackMin - 1e-3f);
+    CHECK(moved == doctest::Approx(static_cast<float>(first->event.amount) / 100.f).epsilon(0.01));
+    CHECK(rig.bodies.enemies[0].x < -1.5f); // straight away from the lead
+    CHECK(std::fabs(rig.bodies.enemies[0].y) < 1e-3f);
+    CHECK(hitsOn(rig, 0, stepTick) == 0);
+    rig.run(10);
+    CHECK(rig.out().enemies[0].brain != ArenaBrain::StepBack);
+    CHECK(rig.count(ArenaEventType::SteppedBack) == 1); // never again during it
+    CHECK(rig.fight.stats().stepBacks == 1);
+}
+
+TEST_CASE("arena break-out: the count starts again from 0 after a step back") {
+    ArenaEnemyKind k = breakerKind(); // breakAt 2, a decay of 5 s: no blow ages out here
+    Rig rig(breakFighter(), {k});
+    rig.put(0, -1.5f, 0.f); // behind: each break-out is a step back
     for (int t = 0; t < 120 && rig.fight.stats().breakDue == 0; ++t) {
         rig.in.light = true;
         rig.tick();
     }
-    CHECK(rig.count(ArenaEventType::Hit) == 2);
-    CHECK(rig.count(ArenaEventType::BrokeOut) == 1);
-    CHECK(rig.fight.stats().stepBacks == 0);
+    REQUIRE(rig.fight.stats().stepBacks == 1);
+    rig.put(0, -4.f, 0.f); // out of reach while the lights already pressed play out
+    rig.runFor(kArenaStepBackTime + 1.f);
+    REQUIRE(rig.out().enemies[0].brain != ArenaBrain::StepBack);
+    // Back in reach: one blow is 1 of 2 again, not a break-out; the second is.
+    rig.put(0, -1.5f, 0.f);
+    const int from = rig.ticks;
+    for (int t = 0; t < 120 && hitsOn(rig, 0, from) == 0; ++t) {
+        rig.in.light = t == 0;
+        rig.tick();
+    }
+    REQUIRE(hitsOn(rig, 0, from) == 1);
+    CHECK(rig.fight.stats().breakDue == 1);
+    CHECK(rig.fight.stats().stepBacks == 1);
+    for (int t = 0; t < 120 && hitsOn(rig, 0, from) < 2; ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    REQUIRE(hitsOn(rig, 0, from) == 2);
+    CHECK(rig.fight.stats().breakDue == 2);
+    CHECK(rig.fight.stats().stepBacks == 2);
+    CHECK(rig.count(ArenaEventType::SteppedBack) == 2);
 }
 
 TEST_CASE("arena break-out: each blow adds its poise over the default light's") {
@@ -6914,6 +7030,76 @@ TEST_CASE("arena windup arc: a string begun unseen chains its next move at the l
     CHECK_FALSE(rig.out().enemies[0].unseen);
     const int second = startupTicks(rig);
     CHECK(first - second == doctest::Approx(kArenaUnseenWindup / kDt).epsilon(0.1));
+}
+
+TEST_CASE("arena windup arc: a holder out of sight hands the token to a waiter in sight, which starts on time") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    ArenaEnemyKind front = hitterKind(bite);
+    front.attackDelay = 0.5f; // asks only after the one behind has taken the token
+    // Alone and in sight, it starts its string this many ticks in.
+    Rig lone(ruleFighter(), {front});
+    lone.put(0, 1.5f, 0.f);
+    const int loneAt = untilStarted(lone, 0, 120);
+    REQUIRE(loneAt > 0);
+    // One token: the one behind the lead, pinned in the ring's corner out of sight, takes it first.
+    Rig rig(ruleFighter(), {hitterKind(bite), front}, 1, ArenaRing{Vec2{1.f, 0.f}, 3.f});
+    rig.put(0, -1.5f, 0.f);
+    rig.put(1, 1.5f, 0.f);
+    rig.runFor(0.25f);
+    CHECK(rig.out().enemies[0].token);
+    CHECK_FALSE(rig.out().enemies[1].token);
+    CHECK(rig.count(ArenaEventType::AttackStarted) == 0);
+    for (int t = 0; t < 600 && !rig.find(ArenaEventType::AttackStarted); ++t) rig.tick();
+    const Logged* started = rig.find(ArenaEventType::AttackStarted);
+    REQUIRE(started);
+    const int at = started->tick;
+    CHECK(started->event.source == 1); // the one in sight, never the one behind first
+    CHECK(at <= loneAt + 1);           // within a lone enemy's time, not kArenaUnseenWait late
+    CHECK(rig.out().enemies[1].token);
+    CHECK_FALSE(rig.out().enemies[0].token); // it gave it up and waits again
+    CHECK_FALSE(rig.out().enemies[1].unseen);
+    CHECK(rig.fight.stats().unseenAttacks == 0);
+}
+
+TEST_CASE("arena windup arc: the camera's half-angle is the host's (setCameraHalfAngle), 39 degrees by default") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    constexpr float kRad = 3.14159265f / 180.f;
+    // 40 degrees off the camera, which looks behind the lead, and 140 off the lead's facing: outside its arc.
+    const auto startsAt = [&](float halfAngle, bool set) {
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        if (set) rig.fight.setCameraHalfAngle(halfAngle);
+        rig.put(0, 1.5f * std::cos(140.f * kRad), 1.5f * std::sin(140.f * kRad));
+        rig.in.cameraFacing = Vec2{-1.f, 0.f};
+        rig.runFor(1.f);
+        return rig.count(ArenaEventType::AttackStarted) > 0;
+    };
+    CHECK_FALSE(startsAt(30.f, true)); // out of sight at 30
+    CHECK(startsAt(50.f, true));       // in sight at 50
+    CHECK_FALSE(startsAt(0.f, false)); // never set: 39
+    {
+        ArenaFight fight;
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngle));
+        fight.setCameraHalfAngle(200.f);
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngleMax));
+        fight.setCameraHalfAngle(-5.f);
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngleMin));
+        fight.setCameraHalfAngle(std::numeric_limits<float>::quiet_NaN());
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngle));
+    }
+    {   // kept across restart() and begin()
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.fight.setCameraHalfAngle(50.f);
+        rig.runFor(0.2f);
+        rig.fight.restart();
+        CHECK(rig.fight.cameraHalfAngle() == doctest::Approx(50.f));
+        rig.fight.begin(rig.def, rig.fight.ring(), Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+        CHECK(rig.fight.cameraHalfAngle() == doctest::Approx(50.f));
+        rig.log.clear();
+        rig.put(0, 1.5f * std::cos(140.f * kRad), 1.5f * std::sin(140.f * kRad));
+        rig.in.cameraFacing = Vec2{-1.f, 0.f};
+        rig.runFor(1.f);
+        CHECK(rig.count(ArenaEventType::AttackStarted) > 0);
+    }
 }
 
 // The tuning (provisional, for the playtest): the break-out counts weight, so Devin's heavier lights fill it sooner.

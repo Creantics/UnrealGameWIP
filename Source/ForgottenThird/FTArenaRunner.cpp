@@ -304,6 +304,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot never locks (-ArenaNoLock): its attacks take soft targets."));
 	}
 	FTInputBindings::LogFocusGate(TEXT("Arena"));
+	if (!FTInputBindings::UnboundLine().IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s; choose a key for each in Saved/InputBindings.json."), *FTInputBindings::UnboundLine());
+	}
 	bAutoShoot = Setup.bAutoShoot && bAutoPlay;
 	Fight.setAutopilotShoots(bAutoShoot);
 	if (bAutoShoot)
@@ -1204,6 +1208,20 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		break;
 	}
+	case ftcore::ArenaBrain::StepBack:
+		// The break-out's step back: the walk clip played backward at the step's own speed, the figure still facing the
+		// lead, so the blow it dodges is seen to miss. No walk clip: the idle.
+		if (Skin.Walk >= 0 && !bStone)
+		{
+			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
+			const float Rate = Authored > 0.f ? FMath::Clamp(StepBackSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate) : 1.f;
+			const double Length = static_cast<double>(Skin.Sequences[Skin.Walk]->GetPlayLength());
+			const double Phase = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
+			Clip = Skin.Walk;
+			Time = Length > 0.0 ? Length - FMath::Fmod(Phase, Length) : 0.0;
+			bPhased = true;
+		}
+		break;
 	case ftcore::ArenaBrain::Flinch: // the light hit reaction StartFlinch began on the blow, else the idle (placeholder)
 	default:
 	{
@@ -1833,7 +1851,16 @@ void UFTArenaRunner::PressPendingLoneGift()
 	++LoneGiftPresses;
 	// The slot refuses a Heal at a lead at full health (NotHurt); it reads the lead's health as of this press.
 	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
+	if (bProbeAwaiting)
+	{
+		ProbeLeadHealth = static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1));
+	}
 	const ftcore::GiftResult Result = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift;
+	if (bProbeAwaiting)
+	{
+		bProbeAwaiting = false;
+		LogProbeCheck(Result);
+	}
 	if (bLoneGiftApply)
 	{
 		ApplyGift(Result);
@@ -1846,6 +1873,17 @@ void UFTArenaRunner::PressPendingLoneGift()
 		++LoneGiftsRefused;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: a gift pressed while Lone was refused at %.2f s; still Lone."), Fight.time());
 	}
+}
+
+void UFTArenaRunner::LogProbeCheck(const ftcore::GiftResult& Result)
+{
+	// The slot's NotHurt refusal is the proof the lead's health reached it before the press: at full health a Heal
+	// press must be refused NotHurt, and a hurt lead's must not be.
+	const bool bFull = ProbeLeadHealth >= 1.f;
+	const bool bNotHurt = !Result.given && Result.error == ftcore::GiftError::NotHurt;
+	const bool bOk = ProbeLeadHealth >= 0.f && bFull == bNotHurt;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: probe self-check %s: setLeadHealth %.2f before the press; the press %s (error %d)."),
+		bOk ? TEXT("ok") : TEXT("FAILED"), ProbeLeadHealth, Result.given ? TEXT("given") : TEXT("refused"), static_cast<int32>(Result.error));
 }
 
 bool UFTArenaRunner::IsLoneBargainDue() const
@@ -1971,9 +2009,17 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 		Session->Get().selectGift(bKeyGift ? Pick : ftcore::Gift::Heal);
 		// The slot refuses a Heal at a lead at full health (NotHurt); it reads the lead's health as of this press.
 		Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
+		if (bProbeGift)
+		{
+			ProbeLeadHealth = static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1));
+		}
 		if (LoneGift.press(Fight.lone())) // else pressed after the step (PressPendingLoneGift)
 		{
 			const ftcore::GiftResult Result = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift;
+			if (bProbeGift)
+			{
+				LogProbeCheck(Result);
+			}
 			if (bKeyGift)
 			{
 				ApplyGift(Result);
@@ -1982,6 +2028,7 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 		else
 		{
 			bLoneGiftApply = bLoneGiftApply || bKeyGift;
+			bProbeAwaiting = bProbeAwaiting || bProbeGift;
 		}
 	}
 	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
@@ -2808,6 +2855,14 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			OnLeadDryPress(E.amount);
 			PlayGunCue(E);
 			continue; // no popup
+		case ftcore::ArenaEventType::SteppedBack: // drawn as a backward step (DriveSkin); no popup
+			if (E.source < ftcore::kMaxArenaEnemies)
+			{
+				StepBackSpeed[E.source] = static_cast<float>(E.amount) / 100.f / ftcore::kArenaStepBackTime;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.3f: enemy %d steps back %.2f m from the lead over %.2f s (a break-out with no token or out of sight)."),
+				Fight.time(), static_cast<int32>(E.source), static_cast<float>(E.amount) / 100.f, ftcore::kArenaStepBackTime);
+			continue;
 		case ftcore::ArenaEventType::BreakTell: // the boss's own break move is its tell; no HUD of its own
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's break value tells (%.2f of %.2f)."), Fight.time(),
 				static_cast<int32>(E.source), static_cast<float>(E.amount) / 100.f,
@@ -4533,6 +4588,14 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 			CameraView.forward = ftcore::Vec2{static_cast<float>(Flat.X), static_cast<float>(Flat.Y)};
 		}
 		CameraView.halfAngle = FMath::Clamp(Camera->GetFOVAngle() * 0.5f, 5.f, 85.f);
+		// The windup arc's camera half (an enemy outside it circles round before it strikes): the real camera's
+		// horizontal half-angle, handed to the fight each time it changes (aiming, a close shot).
+		if (CameraView.halfAngle != FightCameraHalf)
+		{
+			FightCameraHalf = CameraView.halfAngle;
+			Fight.setCameraHalfAngle(FightCameraHalf);
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle is %.1f degrees."), Fight.time(), FightCameraHalf);
+		}
 		// The vertical half-angle from the horizontal one and the screen's shape, so a body wholly under or over the
 		// frame (a ground enemy while aiming high) is told too.
 		int32 SizeX = 0, SizeY = 0;

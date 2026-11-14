@@ -1779,7 +1779,8 @@ struct ArenaFightImpl {
     }
 
     // A break-out with no token free, or out of the windup arc: enemy i steps straight back, unhurt, to
-    // kArenaStepBackClear beyond the lead's reach over kArenaStepBackTime; its count is spent and it walks again after.
+    // kArenaStepBackClear beyond the lead's reach and at least kArenaStepBackMin over kArenaStepBackTime (SteppedBack,
+    // once); its count is spent and it walks again after.
     void stepBack(std::size_t i) {
         Enemy& foe = foes[i];
         // A move cut short gives its token back, and a read move brings its counter while it can still be hurt.
@@ -1791,12 +1792,15 @@ struct ArenaFightImpl {
         foe.brain = ArenaBrain::StepBack;
         const float radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
         const float clear = leadReach() + radius + kArenaStepBackClear;
-        foe.stepDistance = std::max(0.f, clear - arenaDistance(pl.pos, foe.pos));
+        foe.stepDistance = std::max(kArenaStepBackMin, clear - arenaDistance(pl.pos, foe.pos)); // the blow seen to miss
         ++stats.stepBacks;
+        emit(ArenaEventType::SteppedBack, id(i), kArenaPlayer, 0, static_cast<int>(std::lround(foe.stepDistance * 100.f)),
+             foe.pos);
     }
 
-    // Enemy i where the player can see a windup begin: within kArenaWindupArc of the lead's facing, or within
-    // kArenaCameraHalfAngle of the camera's (when the host gives one), seen from the lead. On top of it: seen.
+    // Enemy i where the player can see a windup begin: within kArenaWindupArc of the lead's facing, or within the
+    // camera's half-angle (setCameraHalfAngle) of the camera's facing (when the host gives one), seen from the lead.
+    // On top of it: seen.
     bool inWindupArc(std::size_t i) const {
         const Vec2 to = arenaSub(foes[i].pos, pl.pos);
         const float distance = arenaLength(to);
@@ -1806,8 +1810,11 @@ struct ArenaFightImpl {
         if (arenaDot(way, pl.facing) >= std::cos(kArenaWindupArc * kDegrees)) return true;
         const float camLength = arenaLength(camera);
         return camLength > kArenaEps &&
-               arenaDot(way, arenaScaled(camera, 1.f / camLength)) >= std::cos(kArenaCameraHalfAngle * kDegrees);
+               arenaDot(way, arenaScaled(camera, 1.f / camLength)) >= std::cos(fight.cameraHalfAngle_ * kDegrees);
     }
+
+    // Where a token holder may begin its string: a boss anywhere, a regular enemy in the windup arc.
+    bool inSight(std::size_t i) const { return def.enemies[i].boss || inWindupArc(i); }
 
     // ---- the boss break value (Boss break) ----
 
@@ -2006,7 +2013,8 @@ struct ArenaFightImpl {
     }
 
     // A strafing enemy whose attackDelay has passed asks for a token; the longest waiting (then the nearest) gets it,
-    // up to `attackers` held at once.
+    // up to `attackers` held at once. Then a holder out of sight that has not begun its string hands its token to the
+    // asker in sight waiting longest (then the nearest) and asks again from 0 itself; with none in sight it keeps it.
     void assignTokens() {
         std::size_t held = 0;
         std::array<bool, kMaxArenaEnemies> asking{};
@@ -2021,11 +2029,12 @@ struct ArenaFightImpl {
                         && t0 - foe.stringEnd >= def.enemies[i].attackDelay && ownTime(foe.stopUntil) > 0.f;
             foe.asked = asking[i] ? foe.asked + dt : 0.f;
         }
-        while (held < def.attackers) {
+        // The asker waiting longest, then the nearest (in sight only, when `sighted`); -1 for none.
+        const auto bestAsker = [&](bool sighted) {
             int best = -1;
             float bestDist = 0.f;
             for (std::size_t i = 0; i < n; ++i) {
-                if (!asking[i]) continue;
+                if (!asking[i] || (sighted && !inSight(i))) continue;
                 const float distance = arenaDistance(pl.pos, foes[i].pos);
                 const bool better = best < 0 || foes[i].asked > foes[static_cast<std::size_t>(best)].asked ||
                                     (foes[i].asked == foes[static_cast<std::size_t>(best)].asked && distance < bestDist);
@@ -2034,11 +2043,26 @@ struct ArenaFightImpl {
                     bestDist = distance;
                 }
             }
+            return best;
+        };
+        while (held < def.attackers) {
+            const int best = bestAsker(false);
             if (best < 0) break;
             const std::size_t winner = static_cast<std::size_t>(best);
             asking[winner] = false;
             takeToken(winner);
             ++held;
+        }
+        for (std::size_t h = 0; h < n; ++h) {
+            const Enemy& holder = foes[h];
+            if (!holder.token || (holder.brain != ArenaBrain::Approach && holder.brain != ArenaBrain::Strafe) || inSight(h))
+                continue;
+            const int best = bestAsker(true);
+            if (best < 0) continue;
+            const std::size_t winner = static_cast<std::size_t>(best);
+            asking[winner] = false;
+            releaseToken(h); // it asks again from the next tick, its wait from 0
+            takeToken(winner);
         }
     }
 
@@ -2610,7 +2634,7 @@ struct ArenaFightImpl {
         if (foe.token && (foe.brain == ArenaBrain::Approach || foe.brain == ArenaBrain::Strafe)) {
             // A regular enemy begins its string only where the player can see it; after kArenaUnseenWait it begins
             // anyway, unseen (a longer windup and the flag). The wait runs only while it holds the token out of sight.
-            const bool seen = def.enemies[i].boss || inWindupArc(i);
+            const bool seen = inSight(i);
             if (seen) foe.tokenSince = t0;
             const bool late = !seen && t0 - foe.tokenSince >= kArenaUnseenWait - kArenaEps;
             if (!seen && !late) {
@@ -3045,6 +3069,11 @@ void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
 ArenaBlowHook ArenaFight::blowHook() const { return blowHook_; }
 void ArenaFight::setSideDashes(bool on) { sideDashes_ = on; }
 bool ArenaFight::sideDashes() const { return sideDashes_; }
+void ArenaFight::setCameraHalfAngle(float degrees) {
+    cameraHalfAngle_ = std::isnan(degrees) ? kArenaCameraHalfAngle
+                                           : std::clamp(degrees, kArenaCameraHalfAngleMin, kArenaCameraHalfAngleMax);
+}
+float ArenaFight::cameraHalfAngle() const { return cameraHalfAngle_; }
 void* ArenaFight::blowHookUser() const { return blowUser_; }
 bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
     if (phase_ != ArenaPhase::Fighting) return false;
