@@ -1,5 +1,8 @@
 #include "FTBuildLawn.h"
 
+// Built by FTBuildMassingWorld (a commandlet) only: editor builds only, so the game targets, Shipping included, carry none of it.
+#if WITH_EDITOR
+
 #include "ForgottenThird.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/StaticMeshComponent.h"
@@ -555,3 +558,5 @@ bool FTLawn::Build(UWorld* World, const FActorSpawnParameters& Spawn, UPackage* 
 		static_cast<int32>(Table.regions.size()), static_cast<int32>(Table.paths.size()), Triangles, *File);
 	return true;
 }
+
+#endif // WITH_EDITOR

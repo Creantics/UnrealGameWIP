@@ -1,5 +1,8 @@
 #include "FTBuildShopInteriors.h"
 
+// Built by FTBuildMassingWorld (a commandlet) only: editor builds only, so the game targets, Shipping included, carry none of it.
+#if WITH_EDITOR
+
 #include "Engine/StaticMesh.h"
 #include "FTCellInstancer.h"
 #include "FTSceneLook.h"
@@ -149,3 +152,5 @@ void FPlacer::Log() const
 		Boxes, ModelShare, Flat, Faces, Pieces, LitPieces);
 }
 } // namespace FTShopInteriors
+
+#endif // WITH_EDITOR

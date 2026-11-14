@@ -1,5 +1,8 @@
 #include "FTBuildLots.h"
 
+// Built by FTBuildMassingWorld (a commandlet) only: editor builds only, so the game targets, Shipping included, carry none of it.
+#if WITH_EDITOR
+
 #include "ForgottenThird.h"
 #include "FTCellInstancer.h"
 #include "FTSceneLook.h"
@@ -1153,3 +1156,5 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 	return true;
 }
 } // namespace FTLots
+
+#endif // WITH_EDITOR

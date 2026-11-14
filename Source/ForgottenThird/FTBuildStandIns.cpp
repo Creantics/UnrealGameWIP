@@ -1,5 +1,8 @@
 #include "FTBuildStandIns.h"
 
+// Built by FTBuildMassingWorld (a commandlet) only: editor builds only, so the game targets, Shipping included, carry none of it.
+#if WITH_EDITOR
+
 #include "Engine/StaticMesh.h"
 #include "FTCellInstancer.h"
 #include "ForgottenThird.h"
@@ -670,3 +673,5 @@ bool FTStandIns::PlacePlants(FFTCellInstancer& Cells, const ftcore::HeightField&
 		Meshes.Num(), Triangles, *Census);
 	return true;
 }
+
+#endif // WITH_EDITOR

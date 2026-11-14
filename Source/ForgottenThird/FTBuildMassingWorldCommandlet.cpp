@@ -1420,7 +1420,7 @@ bool ReadBack(const ALandscape& Land, ULandscapeInfo& LandInfo, const FHeightFie
 	}
 	return bExact && bSurface;
 }
-#endif
+
 // Round 5 (-FacadeR5): a windowed box's type, wall tint and roof finish (ftcore::massingFacadeData) in its instance's
 // custom data 6..8, which the r5 window master (FTBuildSurfaces -Windows -FacadeR5) reads; the r4 master ignores them.
 void SetFacadeR5Data(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const ftcore::MassingBox& Box, const ftcore::MassingWindowData& Data,
@@ -1443,6 +1443,7 @@ void LogRoofLayouts(const ftcore::MassingRoofCounts& Counts)
 		static_cast<int32>(Counts.layouts[6]), static_cast<int32>(Counts.huts), static_cast<int32>(Counts.sheds),
 		static_cast<int32>(Counts.frames), static_cast<int32>(Counts.stands));
 }
+#endif // WITH_EDITOR
 
 } // namespace
 

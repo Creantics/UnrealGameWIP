@@ -1,5 +1,8 @@
 #include "FTKitGlass.h"
 
+// Built by FTBuildMassingWorld (a commandlet) only: editor builds only, so the game targets, Shipping included, carry none of it.
+#if WITH_EDITOR
+
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "FTBuildShopInteriors.h"
@@ -130,3 +133,5 @@ void FOverrides::Log() const
 	}
 }
 } // namespace FTKitGlass
+
+#endif // WITH_EDITOR

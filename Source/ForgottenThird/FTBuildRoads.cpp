@@ -1,4 +1,7 @@
 #include "FTBuildRoads.h"
+
+// Built by the world commandlets only: editor builds only, so the game targets, Shipping included, carry none of it.
+#if WITH_EDITOR
 #include "FTBuildKeiCars.h"
 #include "FTCellInstancer.h"
 #include "FTSceneLook.h"
@@ -900,3 +903,5 @@ bool Finish(const FFTRoadsHost& Host, const FOptions& Options, const std::vector
 	return true;
 }
 } // namespace FTBuildRoads
+
+#endif // WITH_EDITOR

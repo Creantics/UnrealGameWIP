@@ -1,5 +1,8 @@
 #include "FTBuildBackdrop.h"
 
+// Built by FTBuildMassingWorld (a commandlet) only: editor builds only, so the game targets, Shipping included, carry none of it.
+#if WITH_EDITOR
+
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/StaticMesh.h"
@@ -456,3 +459,5 @@ void FTBackdrop::Haze(UWorld* World)
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -Haze: a second fog layer at %.3f on %d height fogs."), Density, Fogs);
 }
+
+#endif // WITH_EDITOR
