@@ -45,6 +45,7 @@ UiEventMark uiEventMark(ArenaEventType type) {
     case ArenaEventType::ReloadStarted:
     case ArenaEventType::Reloaded:
     case ArenaEventType::DryPress:
+    case ArenaEventType::SteppedBack: // an enemy's step back: no HUD need
     case ArenaEventType::BreakTell: return UiEventMark::None;
     }
     return UiEventMark::None;

@@ -1284,6 +1284,44 @@ TEST_CASE("gifts: the defaults are 2 Heals a fight at 15% and 8 s apart, a Guard
     CHECK(validGiftTuning(t));
 }
 
+TEST_CASE("gifts: a Heal at a lead at full health is refused NotHurt: no charge, no cooldown, no thread, no tally") {
+    GiftSlot g;
+    const std::uint64_t before = g.allPresses();
+    GiftResult r = g.press(kLeadA, 0.0, nullptr, 1.0f);
+    CHECK_FALSE(r.given);
+    CHECK(r.error == GiftError::NotHurt);
+    CHECK(r.gift == Gift::Heal);
+    CHECK(r.healShare == 0.0f);
+    CHECK(r.healLoad == 0);
+    CHECK(g.healsLeft() == 2);
+    CHECK(g.readyIn(Gift::Heal, 0.0) == 0.0);
+    CHECK(g.threads(kLeadA) == 0u);
+    CHECK(g.tally().givenOf(Gift::Heal) == 0u);
+    CHECK(g.tally().refusedOf(Gift::Heal) == 0u);
+    CHECK(g.allPresses() == before);
+    // Over 1 reads full too; a hair under is hurt, and unknown (the default) reads as hurt.
+    CHECK(g.press(kLeadA, 0.0, nullptr, 1.5f).error == GiftError::NotHurt);
+    r = g.press(kLeadA, 0.0, nullptr, 0.99f);
+    REQUIRE(r.given);
+    CHECK(g.healsLeft() == 1);
+    CHECK(g.threads(kLeadA) == 1u);
+    CHECK(g.allPresses() == before + 1);
+    // At full health while cooling: NotHurt (nothing to heal comes first), and still not tallied.
+    CHECK(g.press(kLeadA, 1.0, nullptr, 1.0f).error == GiftError::NotHurt);
+    CHECK(g.allPresses() == before + 1);
+    CHECK(g.press(kLeadA, 1.0).error == GiftError::Cooling);
+    CHECK(g.allPresses() == before + 2);
+    // Only the Heal asks: a Guard at full health is given.
+    REQUIRE(g.select(Gift::Guard));
+    CHECK(g.press(kLeadB, 2.0, nullptr, 1.0f).given);
+    // A slot that does nothing still answers first.
+    REQUIRE(g.select(Gift::Heal));
+    g.setState(SlotState::Vacant);
+    CHECK(g.press(kLeadA, 20.0, nullptr, 1.0f).error == GiftError::Vacant);
+    g.setState(SlotState::Companion);
+    CHECK(g.press(kThirdSlot, 20.0, nullptr, 1.0f).error == GiftError::BadTarget);
+}
+
 TEST_CASE("gifts: at most 2 Heals a fight, 8 s apart; the third is refused NoneLeft and still counted") {
     GiftSlot g;
     CHECK(g.healsLeft() == 2);

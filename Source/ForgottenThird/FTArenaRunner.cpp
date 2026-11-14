@@ -322,6 +322,10 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the autopilot never locks (-ArenaNoLock): its attacks take soft targets."));
 	}
 	FTInputBindings::LogFocusGate(TEXT("Arena"));
+	if (!FTInputBindings::UnboundLine().IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s; choose a key for each in Saved/InputBindings.json."), *FTInputBindings::UnboundLine());
+	}
 	bAutoShoot = Setup.bAutoShoot && bAutoPlay;
 	Fight.setAutopilotShoots(bAutoShoot);
 	if (bAutoShoot)
@@ -966,7 +970,8 @@ void UFTArenaRunner::LoadSkin(int32 I)
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: enemy %d: %d of %d clips are missing (the first %s); those moves play the idle."), I, Missing,
 			static_cast<int32>(Skin.Clips->count), *FirstMissing);
 	}
-	Figure->SetupSkinned(Mesh, Kind.look.hover, Kind.look.scale, Kind.look.yawOffset, ftcore::arenaEnemyHeight(Kind));
+	Figure->SetupSkinned(Mesh, Kind.look.hover, Kind.look.scale, Kind.look.yawOffset, ftcore::arenaEnemyHeight(Kind),
+		Kind.boss && Kind.breakMove >= 0); // only a boss that breaks out gets the break tell's pulse
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d is skinned: %s, hover %.1f m, scale %.2f, %d clips."), I, *Mesh->GetName(), Kind.look.hover,
 		Kind.look.scale, static_cast<int32>(Skin.Clips->count) - Missing);
 }
@@ -1211,7 +1216,8 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			// The clip's impact lands at the end of the move's startup: Core's own clock for the move, at that rate.
 			const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(MoveClip)];
-			const float Startup = Kind.moves[Out.move].attack.startup;
+			// An unseen start (ArenaEnemyOut::unseen) has the longer windup: the impact still lands at its end.
+			const float Startup = Kind.moves[Out.move].attack.startup + (Out.unseen ? ftcore::kArenaUnseenWindup : 0.f);
 			const float Rate = (Row.impact > 0.0 && Startup > 0.f) ? FMath::Clamp(static_cast<float>(Row.impact) / Startup, kArenaMinClipRate, kArenaMaxClipRate) : 1.f;
 			Clip = MoveClip;
 			Time = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
@@ -1220,6 +1226,20 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		break;
 	}
+	case ftcore::ArenaBrain::StepBack:
+		// The break-out's step back: the walk clip played backward at the step's own speed, the figure still facing the
+		// lead, so the blow it dodges is seen to miss. No walk clip: the idle.
+		if (Skin.Walk >= 0 && !bStone)
+		{
+			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
+			const float Rate = Authored > 0.f ? FMath::Clamp(StepBackSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate) : 1.f;
+			const double Length = static_cast<double>(Skin.Sequences[Skin.Walk]->GetPlayLength());
+			const double Phase = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
+			Clip = Skin.Walk;
+			Time = Length > 0.0 ? Length - FMath::Fmod(Phase, Length) : 0.0;
+			bPhased = true;
+		}
+		break;
 	case ftcore::ArenaBrain::Flinch: // the light hit reaction StartFlinch began on the blow, else the idle (placeholder)
 	default:
 	{
@@ -1499,39 +1519,6 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		}
 		return false;
 	};
-	// Three presses: the lead's own heal (Gift's row), and the third slot's Gift Heal and Gift Guard. On a pad with
-	// those two unbound: Guard held plus the heal's button (that press is the gift's, not a heal) or Crouch's.
-	bool bPadGiftHeal = false;
-	bool bPadGiftGuard = false;
-	{
-		const FKey& PadGuard = FTInputBindings::Key(InputAction::Guard, ftcore::InputDevice::Pad);
-		if (PadGuard.IsValid() && PC->IsInputKeyDown(PadGuard))
-		{
-			const FKey& PadHeal = FTInputBindings::Key(InputAction::Gift, ftcore::InputDevice::Pad);
-			const FKey& PadCrouch = FTInputBindings::Key(InputAction::Crouch, ftcore::InputDevice::Pad);
-			bPadGiftHeal = !FTInputBindings::Key(InputAction::GiftHeal, ftcore::InputDevice::Pad).IsValid() && PadHeal.IsValid()
-				&& !Shadowed(InputAction::Gift, ftcore::InputDevice::Pad) && PC->WasInputKeyJustPressed(PadHeal);
-			bPadGiftGuard = !FTInputBindings::Key(InputAction::GiftGuard, ftcore::InputDevice::Pad).IsValid() && PadCrouch.IsValid()
-				&& PC->WasInputKeyJustPressed(PadCrouch);
-		}
-	}
-	if (bPadGiftHeal)
-	{
-		const FKey& KeysHeal = FTInputBindings::Key(InputAction::Gift, ftcore::InputDevice::Keys);
-		bPressHeal |= KeysHeal.IsValid() && !Shadowed(InputAction::Gift, ftcore::InputDevice::Keys) && PC->WasInputKeyJustPressed(KeysHeal);
-	}
-	else
-	{
-		bPressHeal |= Pressed(InputAction::Gift);
-	}
-	if (Pressed(InputAction::GiftHeal) || bPadGiftHeal)
-	{
-		GiftPick = ftcore::Gift::Heal;
-	}
-	else if (Pressed(InputAction::GiftGuard) || bPadGiftGuard)
-	{
-		GiftPick = ftcore::Gift::Guard;
-	}
 	bPressLock |= Pressed(InputAction::LockOn);
 	bPressRelease |= Pressed(InputAction::Release);
 	if (bTable)
@@ -1544,7 +1531,21 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		}
 	}
 	bPressPair |= Pressed(InputAction::Count);
-	// Take half: its key, and on a pad with none bound, Interact pressed while the guard is down (route "guard_interact").
+	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
+	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
+	// Three presses, each its own key with no modifier: the lead's own heal (Gift's row), and the third slot's Gift
+	// Heal and Gift Guard (no pad button yet: those two are keyboard only until the pad's layout is ruled).
+	bPressHeal |= Pressed(InputAction::Gift);
+	if (Pressed(InputAction::GiftHeal))
+	{
+		GiftPick = ftcore::Gift::Heal;
+	}
+	else if (Pressed(InputAction::GiftGuard))
+	{
+		GiftPick = ftcore::Gift::Guard;
+	}
+	// Take half: its key, and on a pad with none bound, Interact pressed while the pad's Guard button is down (route
+	// "guard_interact"; the button itself, so a toggled guard leaves Interact as it is).
 	bPressTakeHalf |= Pressed(InputAction::TakeHalf);
 	{
 		const FKey& PadTake = FTInputBindings::Key(InputAction::TakeHalf, ftcore::InputDevice::Pad);
@@ -1556,8 +1557,6 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 			bPressTakeHalf = true;
 		}
 	}
-	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
-	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
 	// A called-blow boss's Intercept (its Guard is the guard above), held or toggled.
 	bInterceptHeld = InterceptInput.tick(FTInputBindings::IsDown(*PC, InputAction::Intercept),
 		FTInputBindings::Toggles(World, InputAction::Intercept));
@@ -1639,6 +1638,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.move = Stick;
 	const float Yaw = FMath::DegreesToRadians(ViewYaw());
 	In.view = ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)};
+	In.cameraFacing = In.view; // a regular enemy's windup starts only where the camera or the lead faces
 	In.light = bPressLight;
 	In.heavy = bPressHeavy;
 	In.dodge = bPressDodge;
@@ -1867,7 +1867,18 @@ void UFTArenaRunner::PressPendingLoneGift()
 		return;
 	}
 	++LoneGiftPresses;
+	// The slot refuses a Heal at a lead at full health (NotHurt); it reads the lead's health as of this press.
+	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
+	if (bProbeAwaiting)
+	{
+		ProbeLeadHealth = static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1));
+	}
 	const ftcore::GiftResult Result = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift;
+	if (bProbeAwaiting)
+	{
+		bProbeAwaiting = false;
+		LogProbeCheck(Result);
+	}
 	if (bLoneGiftApply)
 	{
 		ApplyGift(Result);
@@ -1880,6 +1891,17 @@ void UFTArenaRunner::PressPendingLoneGift()
 		++LoneGiftsRefused;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: a gift pressed while Lone was refused at %.2f s; still Lone."), Fight.time());
 	}
+}
+
+void UFTArenaRunner::LogProbeCheck(const ftcore::GiftResult& Result)
+{
+	// The slot's NotHurt refusal is the proof the lead's health reached it before the press: at full health a Heal
+	// press must be refused NotHurt, and a hurt lead's must not be.
+	const bool bFull = ProbeLeadHealth >= 1.f;
+	const bool bNotHurt = !Result.given && Result.error == ftcore::GiftError::NotHurt;
+	const bool bOk = ProbeLeadHealth >= 0.f && bFull == bNotHurt;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: probe self-check %s: setLeadHealth %.2f before the press; the press %s (error %d)."),
+		bOk ? TEXT("ok") : TEXT("FAILED"), ProbeLeadHealth, Result.given ? TEXT("given") : TEXT("refused"), static_cast<int32>(Result.error));
 }
 
 bool UFTArenaRunner::IsLoneBargainDue() const
@@ -2003,9 +2025,19 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	if (bKeyGift || (In.heal && Fight.lone()) || bProbeGift)
 	{
 		Session->Get().selectGift(bKeyGift ? Pick : ftcore::Gift::Heal);
+		// The slot refuses a Heal at a lead at full health (NotHurt); it reads the lead's health as of this press.
+		Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
+		if (bProbeGift)
+		{
+			ProbeLeadHealth = static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1));
+		}
 		if (LoneGift.press(Fight.lone())) // else pressed after the step (PressPendingLoneGift)
 		{
 			const ftcore::GiftResult Result = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift;
+			if (bProbeGift)
+			{
+				LogProbeCheck(Result);
+			}
 			if (bKeyGift)
 			{
 				ApplyGift(Result);
@@ -2014,6 +2046,7 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 		else
 		{
 			bLoneGiftApply = bLoneGiftApply || bKeyGift;
+			bProbeAwaiting = bProbeAwaiting || bProbeGift;
 		}
 	}
 	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
@@ -2847,6 +2880,14 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			OnLeadDryPress(E.amount);
 			PlayGunCue(E);
 			continue; // no popup
+		case ftcore::ArenaEventType::SteppedBack: // drawn as a backward step (DriveSkin); no popup
+			if (E.source < ftcore::kMaxArenaEnemies)
+			{
+				StepBackSpeed[E.source] = static_cast<float>(E.amount) / 100.f / ftcore::kArenaStepBackTime;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.3f: enemy %d steps back %.2f m from the lead over %.2f s (a break-out with no token or out of sight)."),
+				Fight.time(), static_cast<int32>(E.source), static_cast<float>(E.amount) / 100.f, ftcore::kArenaStepBackTime);
+			continue;
 		case ftcore::ArenaEventType::BreakTell: // the boss's own break move is its tell; no HUD of its own
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's break value tells (%.2f of %.2f)."), Fight.time(),
 				static_cast<int32>(E.source), static_cast<float>(E.amount) / 100.f,
@@ -3399,7 +3440,9 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				const ftcore::ArenaEnemyMove& Move = Kind.moves[E.move];
 				Pose.bAttacking = true;
 				Pose.Part = static_cast<uint8>(E.part);
-				Pose.PartFraction = ArenaPartFraction(Move.attack, E.part, E.stateTime);
+				ftcore::ArenaAttack Timed = Move.attack;
+				Timed.startup += E.unseen ? ftcore::kArenaUnseenWindup : 0.f; // an unseen start's longer windup
+				Pose.PartFraction = ArenaPartFraction(Timed, E.part, E.stateTime);
 				Pose.Swing = (!Move.parryable || Move.unblockable) ? EFTArenaSwing::Overhead
 					: ((E.move % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 				const float Flash = ArenaModePulse(Now, ActiveSince[I], kArenaTellFlash);
@@ -4281,6 +4324,12 @@ void UFTArenaRunner::Finish()
 		PlayerFigure->ResetFeet(); // handed back (the story, the explore pawn, a result screen): nothing held carries over
 	}
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
+	if (Session && !bWon)
+	{
+		// A loss: a Lone Carry still on ends here (loneEndedBy reads FightEnded), nothing folds, and the next begin rolls
+		// the gift tally back. A story step that keeps the loss (its loss branch) calls finish(true) again after this.
+		Session->Get().finish(false);
+	}
 	if (bWon && Session)
 	{
 		Session->Get().finish(true); // the gift tally carries over a win; a retry's begin rolls it back
@@ -4588,6 +4637,14 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 			CameraView.forward = ftcore::Vec2{static_cast<float>(Flat.X), static_cast<float>(Flat.Y)};
 		}
 		CameraView.halfAngle = FMath::Clamp(Camera->GetFOVAngle() * 0.5f, 5.f, 85.f);
+		// The windup arc's camera half (an enemy outside it circles round before it strikes): the real camera's
+		// horizontal half-angle, handed to the fight each time it changes (aiming, a close shot).
+		if (CameraView.halfAngle != FightCameraHalf)
+		{
+			FightCameraHalf = CameraView.halfAngle;
+			Fight.setCameraHalfAngle(FightCameraHalf);
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle is %.1f degrees."), Fight.time(), FightCameraHalf);
+		}
 		// The vertical half-angle from the horizontal one and the screen's shape, so a body wholly under or over the
 		// frame (a ground enemy while aiming high) is told too.
 		int32 SizeX = 0, SizeY = 0;

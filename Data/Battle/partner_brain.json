@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "leashMeters": 4,
+  "returnMeters": 3,
+  "reachMeters": 1.8,
+  "standoffMeters": 0.8,
+  "blowsMin": 2,
+  "blowsMax": 3,
+  "blowSeconds": 0.65,
+  "pauseMin": 1.2,
+  "pauseMax": 2.0,
+  "guardWarning": 0.25,
+  "guardChance": 0.7,
+  "guardHold": 0.3,
+  "downSeconds": 30,
+  "riseHealth": 0.25,
+  "blowCapShare": 0.6,
+  "overScale": 0.5
+}

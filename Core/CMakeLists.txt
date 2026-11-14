@@ -137,6 +137,7 @@ add_library(ftcore STATIC
     src/Chairs.cpp
     src/CountLiftData.cpp
     src/LoneCarry.cpp
+    src/PartnerBrain.cpp
     src/GiftSlot.cpp
     src/Hallucination.cpp
     src/Brief.cpp
@@ -264,6 +265,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_load.cpp
         tests/test_strike_count.cpp
         tests/test_count_lift.cpp
+        tests/test_partner_brain.cpp
         tests/test_combat_inputs.cpp
         tests/test_table_ring.cpp
         tests/test_boss_script.cpp

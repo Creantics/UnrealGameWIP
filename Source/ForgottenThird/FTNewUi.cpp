@@ -121,8 +121,8 @@ const FTUiText kPromptUi[] = {kHealUi, kGiftHealUi, kGiftGuardUi, kReloadUi, kPa
 static_assert(UE_ARRAY_COUNT(kPromptUi) == ftcore::kUiPromptCount, "one word per prompt, in UiPrompt order");
 // Each prompt's key: the controls line's entry with this label, or (no label) the entry that carries this action, else
 // that action's own keys (inputActionKeys). HEAL is the lead's own heal (input.heal: H, on a pad D-pad up). The gifts are
-// left out of the controls line, so they take their own keys: G and Y, and on a pad, with no button of their own, Guard
-// held plus the heal's button or Crouch's ("LB+D-pad up", "LB+D-pad left"). A rebinding that puts two rows on one key
+// left out of the controls line, so they take their own keys: G and Y; on a pad they have no button or route until the
+// pad's layout is ruled (inputPadPending), so none there. A rebinding that puts two rows on one key
 // keeps the lowest (uiPromptsDrawable). RELOAD has no action yet: no entry has its label, so it has no key and draws
 // nothing.
 struct FPromptKeyOf

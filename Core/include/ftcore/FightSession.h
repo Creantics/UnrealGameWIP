@@ -238,6 +238,7 @@ public:
         keptDown_ = false;
         c.lone = def_.loneLead == kNoFighter || loneStanceAccepted(def_.loneLead, def_.loneTuning);
         lone_ = c.lone && def_.loneLead != kNoFighter;
+        leadHealth_ = {kHealthUnknown, kHealthUnknown};
         loneEnded_ = false;
         loneEndedBy_ = LoneEnd::None;
         loneBeganDue_ = lone_;
@@ -433,13 +434,20 @@ public:
     void cancelFalseCount() { count_.cancelFalse(now_); }
 
     bool selectGift(Gift g) { return gift_.select(g); }
+    // The host's word on a lead's health (a fraction of its max), for the gift Heal: at 1 or over a Heal is
+    // refused NotHurt. Unknown (kHealthUnknown, the default from begin) reads as hurt.
+    void setLeadHealth(FighterId lead, float fraction) {
+        if (isLead(lead)) leadHealth_[lead] = fraction;
+    }
+    float leadHealth(FighterId lead) const { return isLead(lead) ? leadHealth_[lead] : kHealthUnknown; }
     GiftResult giveGift(FighterId target) {
-        const GiftResult r = gift_.press(target, now_, &count_);
+        const GiftResult r = gift_.press(target, now_, &count_, leadHealth(target));
         // A gift given ends the Lone Carry for the rest of the fight; a press refused for any reason did nothing
         // and leaves it.
         if (lone_ && r.given) endLoneFor(LoneEnd::Gift);
         lastStory_ = SetResult::Unchanged;
-        if (story_ && isLead(r.target) && r.gift != Gift::None) // the slot never selects None
+        // A NotHurt press is no press anywhere (the slot does not tally it), so the story does not count it either.
+        if (story_ && isLead(r.target) && r.gift != Gift::None && r.error != GiftError::NotHurt)
             lastStory_ = storyCountPress(*story_, *reg_, r.target, static_cast<std::uint8_t>(r.gift));
         return r;
     }
@@ -758,6 +766,7 @@ private:
     bool loneEndDue_ = false;
     std::uint32_t loneReleases_ = 0;
     bool loneFolded_ = false; // foldLone put this fight in the save
+    std::array<float, 2> leadHealth_{kHealthUnknown, kHealthUnknown}; // setLeadHealth, per lead
     bool won_ = false; // finish(true) since the last begin
     std::uint32_t lonePooled_ = 0;
     // The empty buffers a tick points at before the first tick and when there is no boss script.

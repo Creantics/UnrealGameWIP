@@ -257,6 +257,7 @@ struct ArenaFightImpl {
     float attackTurn = 0.f;
     float t1 = 0.f; // ... and its end
     float playerOwn = 0.f; // the player's own time this tick: dt less any hit pause
+    Vec2 camera{};         // ArenaInput::cameraFacing this tick (zero: none)
 
     explicit ArenaFightImpl(ArenaFight& f)
         : fight(f), pl(f.player_), foes(f.enemy_), def(f.def_), fi(f.def_.fighter), out(f.out_), stats(f.stats_),
@@ -444,6 +445,7 @@ struct ArenaFightImpl {
             eo.stateTime = foe.stateTime;
             eo.stateLength = i < n ? recoverLength(i) : 0.f;
             eo.token = foe.token;
+            eo.unseen = i < n && foe.brain == ArenaBrain::Attack && foe.unseen;
             eo.stopLeft = fighting && i < n && foe.brain != ArenaBrain::Dead
                               ? std::max(0.f, foe.stopUntil - fight.time_)
                               : 0.f;
@@ -499,6 +501,7 @@ struct ArenaFightImpl {
         dt = step;
         t0 = fight.time_;
         t1 = t0 + dt;
+        camera = in.cameraFacing;
         applyHolds();
         stepPlayer(in);
         stepEnemies();
@@ -522,7 +525,7 @@ struct ArenaFightImpl {
         // Punish windows: a run of Staggered, Open and Down counts once, from the tick it starts in.
         for (std::size_t i = 0; i < n; ++i) {
             Enemy& foe = foes[i];
-            const bool down = alive(i) && !upright(foe);
+            const bool down = alive(i) && !upright(foe) && foe.brain != ArenaBrain::StepBack;
             if (down && !foe.punishOpen) {
                 foe.punishHit = false;
                 ++stats.punishWindows;
@@ -1430,12 +1433,13 @@ struct ArenaFightImpl {
         foe.readRight = false;
         foe.holdFor = -1.f;
         foe.breakTimed = false;
+        foe.unseen = false;
         releaseToken(i);
         if (report) emit(ArenaEventType::Downed, kArenaPlayer, id(i), 0, 0, foe.pos);
     }
 
     bool hostBlow(std::size_t i, int damage, std::uint8_t move, float breakScale = 1.f) {
-        if (i >= n || !alive(i) || damage <= 0) return false;
+        if (i >= n || !alive(i) || damage <= 0 || unhurt(foes[i])) return false;
         Enemy& foe = foes[i];
         const int amount = lose(i, damage);
         stats.damageDealt += amount;
@@ -1565,7 +1569,7 @@ struct ArenaFightImpl {
     int hitEnemy(std::size_t i, int damage, float poise, ArenaEventType type, std::uint8_t move, float breakWeight) {
         Enemy& foe = foes[i];
         ArenaBlowRuling r;
-        if (!rule(type, kArenaPlayer, id(i), move, damage, poise, pl.pos, pl.facing, foe.pos, r)) return -1;
+        if (unhurt(foe) || !rule(type, kArenaPlayer, id(i), move, damage, poise, pl.pos, pl.facing, foe.pos, r)) return -1;
         poise = scaledPoise(poise, r.poise);
         const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
@@ -1606,7 +1610,7 @@ struct ArenaFightImpl {
             std::array<bool, kMaxArenaEnemies> standing{};
             for (std::size_t i = 0; i < n; ++i) {
                 at[i] = foes[i].pos;
-                standing[i] = foes[i].brain != ArenaBrain::Dead;
+                standing[i] = foes[i].brain != ArenaBrain::Dead && !unhurt(foes[i]);
             }
             float distance = 0.f;
             const std::uint8_t first = arenaShotFirst(a, pl.pos, pl.facing, pl.shotPitch, def.enemies.data(), at.data(),
@@ -1614,7 +1618,7 @@ struct ArenaFightImpl {
             if (first != kArenaNobody) reached[count++] = first;
         } else {
             for (std::size_t i = 0; i < n; ++i) {
-                if (foes[i].brain == ArenaBrain::Dead || (pl.hitMask & (1u << i)) != 0u) continue;
+                if (foes[i].brain == ArenaBrain::Dead || unhurt(foes[i]) || (pl.hitMask & (1u << i)) != 0u) continue;
                 // Every blow and the shot's flat lane take the body as drawn (bodyRadius times a skinned look's
                 // scale), as the pitched round does.
                 const float radius = arenaBodyCylinder(def.enemies[i], foes[i].pos, 0.f).radius;
@@ -1679,7 +1683,7 @@ struct ArenaFightImpl {
                 continue;
             }
             const float dealt = scaledPoise(poise, r.poise);
-            countBlow(i);
+            countBlow(i, dealt);
             poiseHit(i, dealt);
             if (!alive(i) || !upright(foe)) continue; // staggered (or the read counter it brought ended it)
             if (tryBossBreak(i)) continue;
@@ -1696,8 +1700,12 @@ struct ArenaFightImpl {
                foe.brain == ArenaBrain::Flinch;
     }
 
-    // A player's blow landed on enemy i: one more toward its break-out, while it is upright and not in that move.
-    void countBlow(std::size_t i) {
+    // Stepping back from a break-out (StepBack): no blow lands on it.
+    static bool unhurt(const Enemy& foe) { return foe.brain == ArenaBrain::StepBack; }
+
+    // A player's blow of `poise` ruled poise damage landed on enemy i: its weight toward the break-out (poise over
+    // kArenaBreakPoiseUnit; a boss's blow 1), while it is upright and not in that move.
+    void countBlow(std::size_t i, float poise) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (k.breakAt == 0 || !upright(foe)) return;
@@ -1707,36 +1715,106 @@ struct ArenaFightImpl {
             ++stats.breakVetoed;
             return;
         }
-        if (t1 - foe.lastBreakHit > k.breakDecay) foe.breakHits = 0;
+        if (t1 - foe.lastBreakHit > k.breakDecay) {
+            foe.breakHits = 0;
+            foe.breakWeight = 0.f;
+        }
         if (foe.breakHits < 255) ++foe.breakHits;
+        foe.breakWeight += k.boss ? 1.f : std::max(0.f, poise) / kArenaBreakPoiseUnit;
         foe.lastBreakHit = t1;
         // The best run so far, compared as a share of each kind's breakAt.
-        if (stats.breakRunNeed == 0 || foe.breakHits * stats.breakRunNeed > stats.breakRunBest * k.breakAt) {
+        if (stats.breakRunNeed == 0 ||
+            foe.breakWeight * static_cast<float>(stats.breakRunNeed) > stats.breakRunWeight * static_cast<float>(k.breakAt)) {
             stats.breakRunBest = foe.breakHits;
             stats.breakRunNeed = k.breakAt;
+            stats.breakRunWeight = foe.breakWeight;
         }
     }
 
-    // The count reached breakAt: the break move starts at once, whatever the tokens and its cooldown.
+    // The tokens enemies other than i hold.
+    std::size_t tokensBesides(std::size_t i) const {
+        std::size_t held = 0;
+        for (std::size_t j = 0; j < n; ++j)
+            if (j != i && foes[j].brain != ArenaBrain::Dead && foes[j].token) ++held;
+        return held;
+    }
+
+    // The count reached breakAt: the break move starts at once, whatever its cooldown. A regular enemy needs a token
+    // for it as for any attack, and the windup arc: without either it steps back instead (StepBack).
     bool breakOut(std::size_t i) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        if (k.breakAt == 0 || !foe.flinchAllowed || foe.breakHits < k.breakAt) return false;
+        if (k.breakAt == 0 || !foe.flinchAllowed || foe.breakWeight + kArenaBreakWeightSlack < static_cast<float>(k.breakAt))
+            return false;
         ++stats.breakDue;
         foe.breakHits = 0; // spent, even when the move is barred
+        foe.breakWeight = 0.f;
         if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u) {
             ++stats.breakBarred;
             return false;
         }
+        if (!k.boss && ((!foe.token && tokensBesides(i) >= def.attackers) || !inWindupArc(i))) {
+            stepBack(i);
+            return true;
+        }
         const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
         interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back (and a read move brings its counter)
-        if (!alive(i) || foe.brain != ArenaBrain::Approach) return true;
-        foe.token = true;
+        if (!alive(i) || foe.brain != ArenaBrain::Approach) {
+            --stats.breakDue; // the counter put it down first: not due after all
+            return true;
+        }
+        takeToken(i);
         ++stats.breakOuts;
         emit(ArenaEventType::BrokeOut, id(i), kArenaPlayer, move, 0, foe.pos);
         beginMove(i, move);
         return true;
     }
+
+    // The lead's reach: its longest light or heavy range plus lunge (homing aside).
+    float leadReach() const {
+        float reach = fi.heavy.range + std::max(0.f, fi.heavy.lunge);
+        const std::size_t lights = std::min<std::size_t>(fi.lightCount, fi.light.size());
+        for (std::size_t m = 0; m < lights; ++m) reach = std::max(reach, fi.light[m].range + std::max(0.f, fi.light[m].lunge));
+        return reach;
+    }
+
+    // A break-out with no token free, or out of the windup arc: enemy i steps straight back, unhurt, to
+    // kArenaStepBackClear beyond the lead's reach and at least kArenaStepBackMin over kArenaStepBackTime (SteppedBack,
+    // once); its count is spent and it walks again after.
+    void stepBack(std::size_t i) {
+        Enemy& foe = foes[i];
+        // A move cut short gives its token back, and a read move brings its counter while it can still be hurt.
+        interrupt(i, ArenaBrain::Approach);
+        if (!alive(i) || foe.brain != ArenaBrain::Approach) {
+            --stats.breakDue; // the counter put it down first: not due after all
+            return;
+        }
+        foe.brain = ArenaBrain::StepBack;
+        const float radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
+        const float clear = leadReach() + radius + kArenaStepBackClear;
+        foe.stepDistance = std::max(kArenaStepBackMin, clear - arenaDistance(pl.pos, foe.pos)); // the blow seen to miss
+        ++stats.stepBacks;
+        emit(ArenaEventType::SteppedBack, id(i), kArenaPlayer, 0, static_cast<int>(std::lround(foe.stepDistance * 100.f)),
+             foe.pos);
+    }
+
+    // Enemy i where the player can see a windup begin: within kArenaWindupArc of the lead's facing, or within the
+    // camera's half-angle (setCameraHalfAngle) of the camera's facing (when the host gives one), seen from the lead.
+    // On top of it: seen.
+    bool inWindupArc(std::size_t i) const {
+        const Vec2 to = arenaSub(foes[i].pos, pl.pos);
+        const float distance = arenaLength(to);
+        if (distance <= kArenaEps) return true;
+        const Vec2 way = arenaScaled(to, 1.f / distance);
+        constexpr float kDegrees = 3.14159265358979f / 180.f;
+        if (arenaDot(way, pl.facing) >= std::cos(kArenaWindupArc * kDegrees)) return true;
+        const float camLength = arenaLength(camera);
+        return camLength > kArenaEps &&
+               arenaDot(way, arenaScaled(camera, 1.f / camLength)) >= std::cos(fight.cameraHalfAngle_ * kDegrees);
+    }
+
+    // Where a token holder may begin its string: a boss anywhere, a regular enemy in the windup arc.
+    bool inSight(std::size_t i) const { return def.enemies[i].boss || inWindupArc(i); }
 
     // ---- the boss break value (Boss break) ----
 
@@ -1874,16 +1952,26 @@ struct ArenaFightImpl {
         foes[i].asked = 0.f;
     }
 
+    void takeToken(std::size_t i) {
+        foes[i].token = true;
+        foes[i].asked = 0.f;
+        foes[i].tokenSince = t0;
+    }
+
     // Leaves the current state for `brain` (Staggered, Open): the attack stops and the token goes back.
     // A read move cut short brings the partner's Read counter at once.
     void interrupt(std::size_t i, ArenaBrain brain) {
         Enemy& foe = foes[i];
         foe.brain = brain;
-        if (!upright(foe)) foe.breakHits = 0; // Open, Down, Staggered: the count starts again once it is up
+        if (!upright(foe)) { // Open, Down, Staggered, StepBack: the count starts again once it is up
+            foe.breakHits = 0;
+            foe.breakWeight = 0.f;
+        }
         foe.stateTime = 0.f;
         foe.stringEnd = t1;
         foe.holdFor = -1.f;
         foe.breakTimed = false;
+        foe.unseen = false;
         releaseToken(i);
         readCounter(i);
     }
@@ -1925,7 +2013,8 @@ struct ArenaFightImpl {
     }
 
     // A strafing enemy whose attackDelay has passed asks for a token; the longest waiting (then the nearest) gets it,
-    // up to `attackers` held at once.
+    // up to `attackers` held at once. Then a holder out of sight that has not begun its string hands its token to the
+    // asker in sight waiting longest (then the nearest) and asks again from 0 itself; with none in sight it keeps it.
     void assignTokens() {
         std::size_t held = 0;
         std::array<bool, kMaxArenaEnemies> asking{};
@@ -1940,11 +2029,12 @@ struct ArenaFightImpl {
                         && t0 - foe.stringEnd >= def.enemies[i].attackDelay && ownTime(foe.stopUntil) > 0.f;
             foe.asked = asking[i] ? foe.asked + dt : 0.f;
         }
-        while (held < def.attackers) {
+        // The asker waiting longest, then the nearest (in sight only, when `sighted`); -1 for none.
+        const auto bestAsker = [&](bool sighted) {
             int best = -1;
             float bestDist = 0.f;
             for (std::size_t i = 0; i < n; ++i) {
-                if (!asking[i]) continue;
+                if (!asking[i] || (sighted && !inSight(i))) continue;
                 const float distance = arenaDistance(pl.pos, foes[i].pos);
                 const bool better = best < 0 || foes[i].asked > foes[static_cast<std::size_t>(best)].asked ||
                                     (foes[i].asked == foes[static_cast<std::size_t>(best)].asked && distance < bestDist);
@@ -1953,12 +2043,26 @@ struct ArenaFightImpl {
                     bestDist = distance;
                 }
             }
+            return best;
+        };
+        while (held < def.attackers) {
+            const int best = bestAsker(false);
             if (best < 0) break;
             const std::size_t winner = static_cast<std::size_t>(best);
             asking[winner] = false;
-            foes[winner].token = true;
-            foes[winner].asked = 0.f;
+            takeToken(winner);
             ++held;
+        }
+        for (std::size_t h = 0; h < n; ++h) {
+            const Enemy& holder = foes[h];
+            if (!holder.token || (holder.brain != ArenaBrain::Approach && holder.brain != ArenaBrain::Strafe) || inSight(h))
+                continue;
+            const int best = bestAsker(true);
+            if (best < 0) continue;
+            const std::size_t winner = static_cast<std::size_t>(best);
+            asking[winner] = false;
+            releaseToken(h); // it asks again from the next tick, its wait from 0
+            takeToken(winner);
         }
     }
 
@@ -2006,8 +2110,9 @@ struct ArenaFightImpl {
         return pick;
     }
 
-    // timed: a boss's break (Boss break), with its own windup and recovery.
-    void beginMove(std::size_t i, std::uint8_t move, bool timed = false) {
+    // timed: a boss's break (Boss break), with its own windup and recovery. unseen: a regular string begun outside the
+    // windup arc after kArenaUnseenWait, its windup kArenaUnseenWindup longer.
+    void beginMove(std::size_t i, std::uint8_t move, bool timed = false, bool unseen = false) {
         Enemy& foe = foes[i];
         foe.brain = ArenaBrain::Attack;
         foe.move = move;
@@ -2023,6 +2128,12 @@ struct ArenaFightImpl {
             foe.breakAttack.startup = kArenaBossBreakWindup;
             foe.breakAttack.recovery = kArenaBossBreakRecovery;
         }
+        foe.unseen = unseen && !timed;
+        if (foe.unseen) {
+            foe.unseenAttack = def.enemies[i].moves[move].attack;
+            foe.unseenAttack.startup += kArenaUnseenWindup;
+            ++stats.unseenAttacks;
+        }
         emit(ArenaEventType::AttackStarted, id(i), kArenaNobody, move, 0, foe.pos);
         dealRead(i, move);
     }
@@ -2032,6 +2143,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         foe.breakTimed = false;
+        foe.unseen = false;
         const int chain = k.moves[foe.move].chain;
         if (chain >= 0 && chain < static_cast<int>(k.moveCount) && chain != static_cast<int>(foe.move)) {
             beginMove(i, static_cast<std::uint8_t>(chain));
@@ -2362,7 +2474,7 @@ struct ArenaFightImpl {
             }
         }
         for (std::size_t i = 0; i < n; ++i) {
-            if (!((s.enemies >> i) & 1u) || !alive(i)) continue;
+            if (!((s.enemies >> i) & 1u) || !alive(i) || unhurt(foes[i])) continue;
             const int part = tableEnemyPart(split.each, s.enemyShare[i]);
             if (part <= 0) continue;
             const int amount = lose(i, part);
@@ -2463,12 +2575,32 @@ struct ArenaFightImpl {
         return arenaClampLength(want, k.strafeSpeed);
     }
 
+    // Out of the windup arc with the token: it circles round the lead toward its facing (Strafe, at the faster of
+    // walkSpeed and strafeSpeed), pulled to the preferred range as a strafe is. No RNG.
+    Vec2 reposition(std::size_t i, Vec2 dir) {
+        Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        foe.stateTime += dt;
+        if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, k.turnRate * dt);
+        const Vec2 outward = arenaUnit(arenaSub(foe.pos, pl.pos), Vec2{-dir.x, -dir.y});
+        // Counter-clockwise of the lead's facing: round clockwise toward it, else counter-clockwise.
+        const float side = pl.facing.x * outward.y - pl.facing.y * outward.x;
+        foe.strafeDir = side > 0.f ? static_cast<std::int8_t>(-1) : static_cast<std::int8_t>(1);
+        const float speed = std::max(k.walkSpeed, k.strafeSpeed);
+        const float radius = std::max(k.preferredRange, kArenaEps);
+        const float step = static_cast<float>(foe.strafeDir) * speed * dt / radius;
+        const Vec2 target = arenaMadd(pl.pos, arenaRotate(outward, step), radius);
+        const Vec2 want = arenaScaled(arenaSub(target, foe.pos), 1.f / dt);
+        return arenaClampLength(want, speed);
+    }
+
     // How long enemy i's Staggered, Open or Down lasts in all: the host's hold while one runs, else the kind's time;
-    // a Flinch, flinchTime. 0 in any other state.
+    // a Flinch, flinchTime; a StepBack, kArenaStepBackTime. 0 in any other state.
     float recoverLength(std::size_t i) const {
         const Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (foe.brain == ArenaBrain::Flinch) return k.flinchTime;
+        if (foe.brain == ArenaBrain::StepBack) return kArenaStepBackTime;
         if (foe.brain != ArenaBrain::Staggered && foe.brain != ArenaBrain::Open && foe.brain != ArenaBrain::Down) return 0.f;
         return foe.holdFor >= 0.f                ? foe.holdFor // the host's hold
                : foe.brain == ArenaBrain::Staggered ? k.staggerTime
@@ -2498,10 +2630,21 @@ struct ArenaFightImpl {
         const Vec2 dir = arenaUnit(toPlayer, foe.facing);
 
         Pick pick;
+        bool circling = false; // repositioning into the windup arc
         if (foe.token && (foe.brain == ArenaBrain::Approach || foe.brain == ArenaBrain::Strafe)) {
-            pick = pickMove(i, distance);
-            if (pick.move >= 0) {
-                beginMove(i, static_cast<std::uint8_t>(pick.move));
+            // A regular enemy begins its string only where the player can see it; after kArenaUnseenWait it begins
+            // anyway, unseen (a longer windup and the flag). The wait runs only while it holds the token out of sight.
+            const bool seen = inSight(i);
+            if (seen) foe.tokenSince = t0;
+            const bool late = !seen && t0 - foe.tokenSince >= kArenaUnseenWait - kArenaEps;
+            if (!seen && !late) {
+                circling = true;
+                if (foe.brain != ArenaBrain::Strafe) {
+                    foe.brain = ArenaBrain::Strafe;
+                    foe.stateTime = 0.f;
+                }
+            } else if (pick = pickMove(i, distance); pick.move >= 0) {
+                beginMove(i, static_cast<std::uint8_t>(pick.move), false, late);
             } else if (pick.hold) {
                 if (foe.brain != ArenaBrain::Strafe) enterStrafe(i);
             } else if (foe.brain != ArenaBrain::Approach) {
@@ -2516,7 +2659,9 @@ struct ArenaFightImpl {
         case ArenaBrain::Approach:
             vel = arenaRamp(foe.velocity, approach(i, dir, distance, pick), def.enemies[i].accel, dt);
             break;
-        case ArenaBrain::Strafe: vel = arenaRamp(foe.velocity, strafe(i, dir), def.enemies[i].accel, dt); break;
+        case ArenaBrain::Strafe:
+            vel = arenaRamp(foe.velocity, circling ? reposition(i, dir) : strafe(i, dir), def.enemies[i].accel, dt);
+            break;
         case ArenaBrain::Staggered:
         case ArenaBrain::Open:
         case ArenaBrain::Down: recover(i); break;
@@ -2526,6 +2671,14 @@ struct ArenaFightImpl {
             const float length = std::max(k.flinchTime, kArenaEps);
             const float moving = std::max(0.f, std::min(foe.stateTime + dt, length) - foe.stateTime);
             vel = arenaScaled(Vec2{-dir.x, -dir.y}, k.flinchPush / length * moving / dt);
+            recover(i);
+            break;
+        }
+        case ArenaBrain::StepBack: {
+            // Straight back from the player over the step, unhurt, still facing it.
+            if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, def.enemies[i].turnRate * dt);
+            const float moving = std::max(0.f, std::min(foe.stateTime + dt, kArenaStepBackTime) - foe.stateTime);
+            vel = arenaScaled(Vec2{-dir.x, -dir.y}, foe.stepDistance / kArenaStepBackTime * moving / dt);
             recover(i);
             break;
         }
@@ -2909,7 +3062,8 @@ bool ArenaFight::enemyBreakMoveOn(std::size_t i) const {
 }
 const ArenaAttack& ArenaFight::enemyAttackOf(std::size_t i, std::uint8_t move) const {
     const EnemyState& foe = enemy_[i];
-    return foe.breakTimed && foe.move == move ? foe.breakAttack : def_.enemies[i].moves[move].attack;
+    if (foe.move != move) return def_.enemies[i].moves[move].attack;
+    return foe.breakTimed ? foe.breakAttack : foe.unseen ? foe.unseenAttack : def_.enemies[i].moves[move].attack;
 }
 void ArenaFight::setEnemyFacing(std::size_t i, Vec2 facing) {
     if (i < enemyCount_ && arenaLength(facing) > kArenaEps) enemy_[i].facing = arenaUnit(facing, enemy_[i].facing);
@@ -2921,6 +3075,11 @@ void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
 ArenaBlowHook ArenaFight::blowHook() const { return blowHook_; }
 void ArenaFight::setSideDashes(bool on) { sideDashes_ = on; }
 bool ArenaFight::sideDashes() const { return sideDashes_; }
+void ArenaFight::setCameraHalfAngle(float degrees) {
+    cameraHalfAngle_ = std::isnan(degrees) ? kArenaCameraHalfAngle
+                                           : std::clamp(degrees, kArenaCameraHalfAngleMin, kArenaCameraHalfAngleMax);
+}
+float ArenaFight::cameraHalfAngle() const { return cameraHalfAngle_; }
 void* ArenaFight::blowHookUser() const { return blowUser_; }
 bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
     if (phase_ != ArenaPhase::Fighting) return false;
@@ -2929,7 +3088,8 @@ bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
 bool ArenaFight::ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move, ArenaBlowHook hook, void* user) {
     if (phase_ != ArenaPhase::Fighting) return false;
     ArenaFightImpl impl(*this);
-    if (!hook || !impl.alive(enemy) || damage <= 0) return impl.hostBlow(enemy, damage, move);
+    if (!hook || !impl.alive(enemy) || damage <= 0 || ArenaFightImpl::unhurt(enemy_[enemy]))
+        return impl.hostBlow(enemy, damage, move);
     ArenaBlow b;
     b.type = ArenaEventType::HostHit;
     b.source = kArenaPlayer;
@@ -3149,6 +3309,7 @@ const char* arenaBrainName(ArenaBrain b) {
     case ArenaBrain::Down: return "Down";
     case ArenaBrain::Dead: return "Dead";
     case ArenaBrain::Flinch: return "Flinch";
+    case ArenaBrain::StepBack: return "StepBack";
     }
     return "";
 }
@@ -3238,9 +3399,10 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.jumpCheck = verdict(stats.jumps > 0, stats.landings > 0);
     if (stats.breakOuts > 0)
         c.breakOutCheck = ArenaCheck::Pass;
-    else if (stats.breakDue > stats.breakBarred)
+    else if (stats.breakDue > stats.breakBarred + stats.stepBacks)
         c.breakOutCheck = ArenaCheck::Fail; // due, the move free, and still none
-    else if (stats.breakBarred > 0 || (stats.breakUpright > 0 && stats.breakVetoed == stats.breakUpright))
+    else if (stats.breakBarred > 0 || stats.stepBacks > 0 ||
+             (stats.breakUpright > 0 && stats.breakVetoed == stats.breakUpright))
         c.breakOutCheck = ArenaCheck::Barred;
     else if (stats.breakUpright > 0 && stats.breakRunBest == 0)
         c.breakOutCheck = ArenaCheck::Fail; // blows landed upright and the run never moved
