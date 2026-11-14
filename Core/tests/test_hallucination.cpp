@@ -97,16 +97,14 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
            a.attackTurn == b.attackTurn && a.takeHalf == b.takeHalf;
 }
 
-// A new tuning field must be added to the helpers below. Two tripwires: the size, and a structured binding of exactly
-// the current 14 members, which fails to compile when a member is added or removed (padding cannot hide it).
-static_assert(sizeof(HallucinationTuning) == 13 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
-void tuningHasFourteenFields(const HallucinationTuning& t) {
-    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = t;
-}
+// A new tuning field must be added to the three helpers below. Two tripwires: the size, and in each helper's own body
+// a structured binding of exactly the current 14 members, which fails to compile when a member is added or removed
+// (padding cannot hide it).
+static_assert(sizeof(HallucinationTuning) == 13 * sizeof(float) + 8, "add the new field to the tuning helpers");
 
 // Every tuning field away from its default.
 void dirtyAll(HallucinationTuning& t) {
-    tuningHasFourteenFields(t);
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = t; // 14 members
     t.holdSeconds = 1.25f;
     t.expireSeconds = 11.f;
     t.gapSeconds = 5.f;
@@ -124,7 +122,7 @@ void dirtyAll(HallucinationTuning& t) {
 }
 
 bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
-    tuningHasFourteenFields(a);
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = a; // 14 members
     return a.holdSeconds == b.holdSeconds && a.expireSeconds == b.expireSeconds && a.gapSeconds == b.gapSeconds &&
            a.switchSeconds == b.switchSeconds && a.refuseSeconds == b.refuseSeconds &&
            a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
@@ -136,6 +134,7 @@ bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
 
 // Each field of `a` differs from `b`'s.
 bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = a; // 14 members
     bool floorsDiffer = true;
     for (std::size_t i = 0; i < a.actFloors.size(); ++i) floorsDiffer = floorsDiffer && a.actFloors[i] != b.actFloors[i];
     return a.holdSeconds != b.holdSeconds && a.expireSeconds != b.expireSeconds && a.gapSeconds != b.gapSeconds &&
@@ -1046,11 +1045,9 @@ TEST_CASE("a Proxy partner refuses for a held lead: react, press, Refused; the f
 
     Rig b; // unable until 13 s: the press starts then, Refused at 13.5 s
     heldAt10(b, BriefId::Proxy, false);
-    b.run(2.75);
+    b.run(3.0);
     CHECK(b.h.held());
     b.in.partnerAble = true;
-    b.step(0.25);
-    CHECK(b.h.held());
     b.step(0.25);
     CHECK(b.h.held());
     b.step(0.25);
@@ -1076,19 +1073,18 @@ TEST_CASE("a Proxy partner refuses for a held lead: react, press, Refused; the f
         CHECK(n.saw(Ev::Refused) == 0);
     }
 
-    Rig e; // losing the ability mid-press drops the press; it starts again when able
+    Rig e; // losing the ability mid-press drops the press; a fresh one starts when able
     heldAt10(e, BriefId::Proxy, true);
-    e.run(1.25); // the press started at 11 s
+    e.run(1.25); // pressing since 11 s
     e.in.partnerAble = false;
-    e.step(0.25); // 11.5 s: no close
+    e.step(0.25); // unable 11.25 to 11.5 s: no close
     CHECK(e.h.held());
     e.in.partnerAble = true;
-    e.step(0.25); // 11.75 s: a new press starts
-    e.step(0.25);
+    e.step(0.25); // a fresh press from 11.5 s
     CHECK(e.h.held());
     e.step(0.25);
     CHECK(e.saw(Ev::Refused) == 1);
-    CHECK(e.h.now() == doctest::Approx(12.25));
+    CHECK(e.h.now() == doctest::Approx(12.0));
 
     Rig g; // a held Counsel lead's cooldown is cut
     g.in.brief = BriefId::Counsel;
@@ -1188,4 +1184,166 @@ TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at
 
     const HallucinationTuning d;
     CHECK(d.escrowDelaySeconds == 5.f);
+}
+
+TEST_CASE("a Proxy press broken by the partner leaving, losing Proxy or being unable starts afresh: Refused at 12.1 s") {
+    // Held at 10 s; the partner presses from 11.0 s, breaks from 11.2 s to 11.6 s, and is back at 11.6 s.
+    enum class Break { Absent, BriefChanged, Unable };
+    for (const Break how : {Break::Absent, Break::BriefChanged, Break::Unable}) {
+        CAPTURE(static_cast<int>(how));
+        Rig r;
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        REQUIRE(r.start() == Start::Started);
+        r.run(6.0);
+        r.in.accepting = true;
+        r.run(4.0);
+        REQUIRE(r.h.held());
+        r.in.accepting = false;
+        for (int i = 0; i < 12; ++i) r.step(0.1); // to 11.2 s: pressing since 11.0 s
+        REQUIRE(r.h.held());
+        if (how == Break::Absent) r.in.partnerPresent = false;
+        if (how == Break::BriefChanged) r.in.partnerBrief = BriefId::Count;
+        if (how == Break::Unable) r.in.partnerAble = false;
+        for (int i = 0; i < 4; ++i) r.step(0.1); // 11.2 to 11.6 s
+        REQUIRE(r.h.held());
+        r.in.partnerPresent = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        for (int i = 0; i < 4; ++i) r.step(0.1); // 11.9 s would be the frozen press's close
+        CHECK(r.h.held());
+        r.step(0.1);
+        CHECK(r.saw(Ev::Refused) == 1);
+        CHECK(r.h.now() == doctest::Approx(12.1));
+    }
+}
+
+TEST_CASE("Proxy timing: Refused lands within one step of Held + 1.5 s at 1/30, 1/60 and 1/120 s steps") {
+    for (const double dt : {1.0 / 30.0, 1.0 / 60.0, 1.0 / 120.0}) {
+        CAPTURE(dt);
+        Rig r;
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        REQUIRE(r.start() == Start::Started);
+        r.in.accepting = true;
+        for (int i = 0; i < 2000 && !r.h.held(); ++i) r.step(dt);
+        REQUIRE(r.h.held());
+        const double heldAt = r.h.now();
+        r.in.accepting = false;
+        for (int i = 0; i < 2000 && r.saw(Ev::Refused) == 0; ++i) r.step(dt);
+        REQUIRE(r.saw(Ev::Refused) == 1);
+        CHECK(r.saw(Ev::PulledBack) == 0);
+        const double err = r.h.now() - (heldAt + 1.5);
+        CAPTURE(err);
+        CHECK(std::abs(err) <= dt + 1e-9);
+    }
+}
+
+TEST_CASE("the lead's own refusal and the partner's press closing in one step count one Refused") {
+    Rig r;
+    r.in.partnerPresent = true;
+    r.in.inFight = true;
+    r.in.partnerBrief = BriefId::Proxy;
+    r.in.partnerAble = true;
+    REQUIRE(r.start() == Start::Started);
+    r.run(6.0);
+    r.in.accepting = true;
+    r.run(4.0);
+    REQUIRE(r.h.held());
+    r.in.accepting = false;
+    r.run(1.0); // 11 s: the partner's press starts
+    r.in.refuse = true; // the lead's own press from 11 s
+    r.step(0.25);
+    CHECK(r.h.held());
+    r.step(0.25); // 11.5 s: both would close here
+    CHECK(r.saw(Ev::Refused) == 1);
+    CHECK(r.h.eventCount() == 1);
+    CHECK(r.h.now() == doctest::Approx(11.5));
+    r.step(0.25);
+    CHECK(r.saw(Ev::Refused) == 1);
+}
+
+TEST_CASE("Counsel's cut is the refusing lead's own: a Counsel partner leaves a lead's full cooldown") {
+    Rig r;
+    r.in.brief = BriefId::Count;
+    r.in.partnerPresent = true;
+    r.in.partnerBrief = BriefId::Counsel;
+    r.in.partnerAble = true;
+    REQUIRE(r.start() == Start::Started);
+    r.in.refuse = true;
+    r.run(0.5);
+    REQUIRE(r.saw(Ev::Refused) == 1);
+    CHECK(r.h.refusalCooldown() == doctest::Approx(4.0));
+}
+
+TEST_CASE("Escrow with escrowDelaySeconds 0 is no Escrow at all, step for step") {
+    HallucinationTuning t;
+    t.escrowDelaySeconds = 0.f;
+    Rig e;
+    e.h = Hallucination(t);
+    e.in.brief = BriefId::Escrow;
+    e.step(0.0);
+    Rig n;
+    n.step(0.0);
+    REQUIRE(e.start() == Start::Started);
+    REQUIRE(n.start() == Start::Started);
+    e.in.accepting = n.in.accepting = true;
+    for (int i = 0; i < 20; ++i) {
+        CAPTURE(i);
+        e.step(0.25);
+        n.step(0.25);
+        CHECK(e.h.holdLevel() == n.h.holdLevel());
+        CHECK(e.h.held() == n.h.held());
+        CHECK(e.saw(Ev::HoldBegan) == n.saw(Ev::HoldBegan));
+        CHECK(e.saw(Ev::Held) == n.saw(Ev::Held));
+        CHECK_FALSE(e.h.escrowWaiting());
+    }
+    CHECK(e.saw(Ev::Held) == 1);
+}
+
+TEST_CASE("Escrow's wait is shown: waiting with the seconds left from entry to 5 s, and not after") {
+    Rig r;
+    r.in.brief = BriefId::Escrow;
+    r.step(0.0);
+    REQUIRE(r.start() == Start::Started);
+    CHECK_FALSE(r.h.escrowWaiting()); // not inside the offer yet
+    r.in.accepting = true;
+    for (int i = 1; i < 20; ++i) {
+        CAPTURE(i);
+        r.step(0.25);
+        CHECK(r.h.escrowWaiting());
+        CHECK(r.h.escrowWaitLeft() == doctest::Approx(5.0 - 0.25 * i));
+        CHECK(r.h.holdLevel() == 0.f);
+    }
+    r.step(0.25); // 5 s: the wait is over
+    CHECK_FALSE(r.h.escrowWaiting());
+    CHECK(r.h.escrowWaitLeft() == 0.f);
+    r.step(0.25);
+    CHECK_FALSE(r.h.escrowWaiting());
+    CHECK(r.h.holdLevel() > 0.f);
+    r.in.accepting = false; // out: no wait shown
+    r.step(0.25);
+    CHECK_FALSE(r.h.escrowWaiting());
+
+    Rig n; // no Escrow: never waiting
+    n.step(0.0);
+    REQUIRE(n.start() == Start::Started);
+    n.in.accepting = true;
+    n.step(0.25);
+    CHECK_FALSE(n.h.escrowWaiting());
+}
+
+TEST_CASE("a tuning file without the Brief link fields keeps their defaults") {
+    HallucinationTuning h;
+    std::string err;
+    REQUIRE(importHallucinationTuning(R"({"version":1,"holdSeconds":3,"refusalCooldownSeconds":5})", h, &err));
+    const HallucinationTuning d;
+    CHECK(h.holdSeconds == 3.f);
+    CHECK(h.counselCooldownSeconds == d.counselCooldownSeconds);
+    CHECK(h.proxyReactSeconds == d.proxyReactSeconds);
+    CHECK(h.escrowDelaySeconds == d.escrowDelaySeconds);
 }

@@ -19,14 +19,16 @@
 // * In a fight the partner pulls a held lead back after pullSeconds held; elsewhere the host says when (partnerPull).
 //   With no partner present only the refusal ends a hold.
 // * Brief links (the lead's Brief on the tick, none by default): Counsel cuts the refusal cooldown to
-//   min(refusalCooldownSeconds, counselCooldownSeconds). A present partner whose Brief is Proxy refuses for a held
-//   lead: it starts the press proxyReactSeconds after Held, on the first step it is able to act from then (the host
-//   says: not downed, in hitstun or guard break), and the press takes refuseSeconds while it stays able (losing the
-//   ability drops the press; it starts again when able). The offer ends as Refused with the held lead's own refusal
-//   cooldown (Counsel's cut only if that lead is Counsel). The fight's pull after pullSeconds still wins if it comes
-//   first. Once per offer. For an Escrow lead the first escrowDelaySeconds inside an offer build no hold (holdLevel
-//   stays 0, so the lead is not slowed); then the hold builds over holdSeconds. Stepping out before Held drops the
-//   wait and the hold back to nothing.
+//   min(refusalCooldownSeconds, counselCooldownSeconds), for a close and a wrong guess alike. A present partner whose
+//   Brief is Proxy refuses for a held lead: its press runs from proxyReactSeconds after Held, over the steps the
+//   partner is present, still Proxy and able to act (the host says: not downed, in hitstun or guard break), and takes
+//   refuseSeconds. Any break (unable, absent, Brief changed) drops the press; it starts afresh when all hold again.
+//   Time is counted from the instant the condition holds, so the close lands within one step of the stated time at
+//   any step size. The offer ends as Refused with the held lead's own refusal cooldown (Counsel's cut only if that
+//   lead is Counsel). The fight's pull after pullSeconds still wins if it comes first. Once per offer.
+//   For an Escrow lead the first escrowDelaySeconds inside an offer build no hold (holdLevel stays 0, so the lead
+//   is not slowed; escrowWaiting() and escrowWaitLeft() show the wait); then the hold builds over holdSeconds.
+//   Stepping out before Held drops the wait and the hold back to nothing.
 // * The intensity band is authored: max(the page's place band, the act's floor). Nothing accumulates.
 // * The pick is the pool's, weighted (TragedyPool.h); the lone key weighs x2 once the lead's lone Releases have
 //   pooled lonePoolFloor Load (loneWeighs).
@@ -163,9 +165,10 @@ public:
         heldFor_ = 0.f;
         refuseHeld_ = 0.f;
         refusal_.offer();
-        proxyPress_ = -1.f;
+        proxyPress_ = 0.f;
         proxyDone_ = false;
         delay_ = 0.f;
+        waiting_ = false;
         pool.shown(k, now_);
         scareForm_ = s.scripted && s.flaggedAsScare && pacer ? pacer->hallucination(true, s.scare) : ScareForm::Unpaced;
         emit(HallucinationEventType::Started);
@@ -198,6 +201,9 @@ public:
     IntensityBand band() const { return active() ? band_ : IntensityBand::None; }
     bool bleeds() const { return placeBleeds(band()); } // an open offer of a High band: the host bleeds the place in
     float holdLevel() const { return hold_; } // the host slows the lead by it and stills them at 1
+    // An Escrow lead inside an offer, in the wait, with no hold building yet; and the seconds of it left.
+    bool escrowWaiting() const { return waiting_; }
+    float escrowWaitLeft() const { return waiting_ ? tuning_.escrowDelaySeconds - delay_ : 0.f; }
     ScareForm scareForm() const { return scareForm_; } // the last start's scare beat: Unpaced, not a scare
     float refusalCooldown() const { return cooldown_; }
     double now() const { return now_; }
@@ -208,6 +214,7 @@ private:
     void rules(double dt, const HallucinationInput& in) {
         if (!(dt > 0.0 && std::isfinite(dt))) dt = 0.0;
         eventCount_ = 0;
+        waiting_ = false;
         now_ += dt;
         cooldown_ = std::max(0.f, cooldown_ - static_cast<float>(dt));
         if (lead_ == kNoFighter) {
@@ -255,6 +262,7 @@ private:
                 delay_ += wait;
                 build -= wait;
                 waiting = !(build > 0.f);
+                waiting_ = delay_ < tuning_.escrowDelaySeconds;
             }
             if (!waiting) {
                 if (hold_ == 0.f) emit(HallucinationEventType::HoldBegan);
@@ -278,16 +286,14 @@ private:
 
     // A Proxy partner's refusal for the held lead; true once it has closed the offer.
     bool proxyRefuses(double dt, const HallucinationInput& in) {
-        if (proxyDone_ || !in.partnerPresent || in.partnerBrief != BriefId::Proxy) return false;
-        if (!in.partnerAble) {
-            proxyPress_ = -1.f; // a press under way is dropped
+        if (proxyDone_) return false;
+        if (!in.partnerPresent || in.partnerBrief != BriefId::Proxy || !in.partnerAble) {
+            proxyPress_ = 0.f; // any break drops a press under way
             return false;
         }
-        if (proxyPress_ < 0.f) {
-            if (heldFor_ >= tuning_.proxyReactSeconds) proxyPress_ = 0.f; // the press starts on this step
-            return false;
-        }
-        proxyPress_ += static_cast<float>(dt);
+        if (heldFor_ < tuning_.proxyReactSeconds) return false;
+        // This step's share from the instant the press could start: the react time's crossing, or the step's start.
+        proxyPress_ += std::min(static_cast<float>(dt), heldFor_ - tuning_.proxyReactSeconds);
         if (proxyPress_ < tuning_.refuseSeconds) return false;
         proxyDone_ = true;
         refusal_.offerEnded();
@@ -308,6 +314,9 @@ private:
         key_ = -1;
         hold_ = 0.f;
         delay_ = 0.f;
+        waiting_ = false;
+        proxyPress_ = 0.f;
+        proxyDone_ = false;
         endedAt_ = now_;
     }
 
@@ -328,9 +337,10 @@ private:
     float heldFor_ = 0.f;
     float refuseHeld_ = 0.f;
     float cooldown_ = 0.f;
-    float proxyPress_ = -1.f; // a Proxy partner's press: -1 not started
+    float proxyPress_ = 0.f;  // a Proxy partner's press so far
     float delay_ = 0.f;       // an Escrow lead's wait inside this offer so far
     bool proxyDone_ = false;
+    bool waiting_ = false; // escrowWaiting()
     bool refuseDown_ = false;
     bool refuseCounts_ = false; // this hold was pressed on an open offer, not while cooling
     bool refuseKept_ = false;
