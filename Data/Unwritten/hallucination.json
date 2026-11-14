@@ -20,5 +20,6 @@
   "heldHealthCost": 0.25,
   "heldShutSeconds": 10,
   "refuseOpenLockSeconds": 8,
+  "holdPushPerHit": 0.5,
   "actFloors": ["none", "none", "none", "low", "mid"]
 }

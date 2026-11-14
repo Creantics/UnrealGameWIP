@@ -242,7 +242,11 @@ public:
             keptCap_ = cap < kMaxLoad ? cap : kMaxLoad;
         }
         if (keptOn_) count_.setLoad(def_.keptLead, 0);
-        c.gift = gift_.beginFight(def_.gift, now_); // the save-wide tally and threads carry over
+        // The save-wide gift tally and threads carry over from a won fight; after one not finished as won (a
+        // lost or abandoned attempt, retried) they go back to how that fight began.
+        if (!won_) gift_.restoreFightStart();
+        won_ = false;
+        c.gift = gift_.beginFight(def_.gift, now_);
         for (PlaceTable& p : places_) {
             if (!p.reset(def_.seats, def_.places)) {
                 c.places = false;
@@ -543,6 +547,10 @@ public:
     const StrikeCount& strikeCount() const { return count_; }
     // For the HUD: Heals still to give this fight, and seconds until the Heal and the Guard are ready (0: ready).
     int giftHealsLeft() const { return gift_.healsLeft(); }
+    // The host calls this when the fight ends: won, the next begin keeps this fight's gift presses; not won
+    // (or never called), the next begin puts the tally and threads back to this fight's start.
+    void finish(bool won) { won_ = won; }
+    bool finishedWon() const { return won_; }
     double giftHealReadyIn() const { return gift_.readyIn(Gift::Heal, now_); }
     double giftGuardReadyIn() const { return gift_.readyIn(Gift::Guard, now_); }
     const GiftSlot& giftSlot() const { return gift_; }
@@ -693,6 +701,7 @@ private:
     float blowCap_ = 0.f;
     bool lone_ = false;
     bool loneEnded_ = false;
+    bool won_ = false; // finish(true) since the last begin
     std::uint32_t lonePooled_ = 0;
     // The empty buffers a tick points at before the first tick and when there is no boss script.
     static inline const CountEvents kNoCount{};

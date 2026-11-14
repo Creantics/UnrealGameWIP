@@ -45,7 +45,7 @@ enum class SlotState : std::uint8_t { Companion, Vacant, Hostile }; // append on
 enum class GiftError : std::uint8_t { None, Vacant, Hostile, Cooling, BadTarget, CountRefused, NoGift, NoneLeft }; // append only
 
 struct GiftTuning {
-    std::array<double, kGiftKinds> cooldown{8.0, 12.0, 4.0}; // seconds from the press, 0..60, per gift
+    std::array<double, kGiftKinds> cooldown{8.0, 12.0, 4.0}; // seconds, 0..60, per gift: from the press (Guard: from the guard's end)
     float healShare = 0.15f; // of the target's max HP: 0..1
     int healLoad = 20;       // Load moved off the target: 0..kMaxLoad
     int healsPerFight = 2;   // Heals given a fight: 0..20
@@ -151,6 +151,7 @@ public:
         selected_ = Gift::Heal;
         state_ = SlotState::Companion;
         resetFight(t);
+        fightStart_ = save();
         return ok;
     }
     // New tuning, keeping the save-wide tally and the fight state. Returns false (unchanged) on bad tuning.
@@ -160,14 +161,25 @@ public:
         return true;
     }
     // A new fight: the tuning (defaults, and false, on bad tuning), the fight state cleared, Heal selected
-    // and the slot a Companion; the save-wide tally, threads and Vacant and Hostile presses are kept.
+    // and the slot a Companion; the save-wide tally, threads and Vacant and Hostile presses are kept, and
+    // recorded as the fight's start (restoreFightStart).
     bool beginFight(const GiftTuning& tuning, double t) {
         const bool ok = validGiftTuning(tuning);
         tuning_ = ok ? tuning : GiftTuning{};
         selected_ = Gift::Heal;
         state_ = SlotState::Companion;
         resetFight(t);
+        fightStart_ = save();
         return ok;
+    }
+    // Puts the tally, the refused presses, the Vacant and Hostile presses and the threads back as they were
+    // at the last beginFight, reset or load (an abandoned attempt's presses do not count). Nothing else.
+    void restoreFightStart() {
+        tally_.given = fightStart_.given;
+        tally_.refused = fightStart_.refused;
+        vacantPresses_ = fightStart_.vacantPresses;
+        hostilePresses_ = fightStart_.hostilePresses;
+        threads_ = fightStart_.threads;
     }
     // Clears the fight state only (cooldowns, guards, the heal count) and sets the clock to the fight's start t.
     void resetFight(double t) {
@@ -227,7 +239,8 @@ public:
             r.guardScale = tuning_.guardScale;
             r.guardUntil = guardUntil_[target];
         }
-        readyAt_[g] = t + tuning_.cooldown[g];
+        // The Guard's cooldown starts when its guard ends (guardSeconds + cooldown from the press); the others' at the press.
+        readyAt_[g] = t + tuning_.cooldown[g] + (selected_ == Gift::Guard ? tuning_.guardSeconds : 0.0);
         tally_.given[g] = saturatingAdd(tally_.given[g], 1);
         threads_[target] = saturatingAdd(threads_[target], 1);
         r.given = true;
@@ -277,7 +290,7 @@ public:
     }
     // False, and nothing changed, for version 0, a newer version or an out-of-range enum. A version 1
     // save has no refused presses (they read as 0). The fight state is cleared (a load is never
-    // mid-fight); the clock is kept.
+    // mid-fight); the clock is kept. The loaded state is the fight's start for restoreFightStart.
     bool load(const GiftSave& s) {
         if (s.version == 0 || s.version > kGiftSaveVersion) return false;
         if (s.selected >= kGiftKinds) return false;
@@ -291,6 +304,7 @@ public:
         selected_ = static_cast<Gift>(s.selected);
         state_ = static_cast<SlotState>(s.state);
         resetFight(now_); // the clock stays where it was
+        fightStart_ = save();
         return true;
     }
 
@@ -320,6 +334,7 @@ private:
     std::array<double, kGiftKinds> readyAt_{};
     std::array<double, 2> guardUntil_{};
     int healsGiven_ = 0; // this fight
+    GiftSave fightStart_{}; // the save-wide state at the last beginFight, reset or load
 };
 
 // Reads Data/Battle/gifts.json: {"version":1, "healCooldown", "guardCooldown", "countCooldown" (0..60 s),

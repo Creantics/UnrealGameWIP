@@ -140,6 +140,7 @@ bool importHallucinationTuning(std::string_view json, HallucinationTuning& out, 
         {"heldHealthCost", &t.heldHealthCost, 0.0, 1.0},
         {"heldShutSeconds", &t.heldShutSeconds, 0.0, 120.0},
         {"refuseOpenLockSeconds", &t.refuseOpenLockSeconds, 0.0, 30.0},
+        {"holdPushPerHit", &t.holdPushPerHit, 0.0, 2.0},
     };
     for (const Field& f : fields) {
         const JsonValue v = root[f.key];

@@ -1321,7 +1321,7 @@ TEST_CASE("gifts: at most 2 Heals a fight, 8 s apart; the third is refused NoneL
     CHECK(g.press(kLeadA, 100.0).given);
 }
 
-TEST_CASE("gifts: a Guard is x0.25 damage for 1.2 s, then cools until 12 s after the press") {
+TEST_CASE("gifts: a Guard is x0.25 damage for 1.2 s, then cools 12 s from the guard's end (13.2 s press to press)") {
     GiftSlot g;
     REQUIRE(g.select(Gift::Guard));
     CHECK(g.readyIn(Gift::Guard, 0.0) == 0.0);
@@ -1335,15 +1335,17 @@ TEST_CASE("gifts: a Guard is x0.25 damage for 1.2 s, then cools until 12 s after
     CHECK(g.guardScaleFor(kLeadB, 10.5) == doctest::Approx(1.0f)); // only the target
     // 100 damage on the guarded lead is 25.
     CHECK(100.0f * g.guardScaleFor(kLeadA, 10.5) == doctest::Approx(25.0f));
-    CHECK(g.readyIn(Gift::Guard, 10.0) == doctest::Approx(12.0));
-    CHECK(g.readyIn(Gift::Guard, 16.0) == doctest::Approx(6.0));
-    CHECK(g.press(kLeadA, 21.9).error == GiftError::Cooling);
-    CHECK(g.readyIn(Gift::Guard, 21.9) == doctest::Approx(0.1));
-    CHECK(g.press(kLeadA, 22.0).given);
-    CHECK(g.readyIn(Gift::Guard, 22.0) == doctest::Approx(12.0));
+    CHECK(g.readyIn(Gift::Guard, 10.0) == doctest::Approx(13.2));
+    CHECK(g.readyIn(Gift::Guard, 11.2) == doctest::Approx(12.0)); // the guard ends: 12 s from here
+    CHECK(g.readyIn(Gift::Guard, 16.0) == doctest::Approx(7.2));
+    CHECK(g.press(kLeadA, 22.0).error == GiftError::Cooling); // 12 s from the press is not enough
+    CHECK(g.press(kLeadA, 23.1).error == GiftError::Cooling);
+    CHECK(g.readyIn(Gift::Guard, 23.1) == doctest::Approx(0.1));
+    CHECK(g.press(kLeadA, 23.2).given);
+    CHECK(g.readyIn(Gift::Guard, 23.2) == doctest::Approx(13.2));
     // The Guard has no per-fight count.
     CHECK(g.healsLeft() == 2);
-    CHECK(g.readyIn(Gift::None, 22.0) == 0.0);
+    CHECK(g.readyIn(Gift::None, 23.2) == 0.0);
 }
 
 TEST_CASE("gifts: beginFight resets the fight's Heals, cooldowns and guards but keeps the save-wide tally") {

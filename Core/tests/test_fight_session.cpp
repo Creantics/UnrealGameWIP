@@ -597,6 +597,7 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     FightSession s;
     FightSessionDef d;
     d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0; // Guards back to back: the Guard's cooldown starts when its guard ends
     REQUIRE(s.begin(d, 0.0).ok());
     REQUIRE(s.selectGift(Gift::Heal));
     CHECK(s.giveGift(kLeadA).given); // unbound: nothing written
@@ -871,9 +872,9 @@ TEST_CASE("fight session: the gift HUD reads, and a new fight resets the Heals b
     CHECK(s.giftHealReadyIn() == doctest::Approx(8.0));
     REQUIRE(s.selectGift(Gift::Guard));
     CHECK(s.giveGift(kLeadA).given);
-    CHECK(s.giftGuardReadyIn() == doctest::Approx(12.0));
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(13.2)); // 1.2 s of guard, then 12 s
     CHECK(tickUntil(s, [&] { return s.giftHealReadyIn() == 0.0; }));
-    CHECK(s.giftGuardReadyIn() == doctest::Approx(4.0).epsilon(0.02));
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(5.2).epsilon(0.02));
     REQUIRE(s.selectGift(Gift::Heal));
     CHECK(s.giveGift(kLeadB).given);
     CHECK(s.giftHealsLeft() == 0);
@@ -883,7 +884,8 @@ TEST_CASE("fight session: the gift HUD reads, and a new fight resets the Heals b
     CHECK(third.error == GiftError::NoneLeft);
     CHECK(s.giftSlot().allPresses() == 4);
 
-    // The next fight: two Heals again, cooldowns clear, the save-wide total kept.
+    // The fight is won; the next fight: two Heals again, cooldowns clear, the save-wide total kept.
+    s.finish(true);
     REQUIRE(s.begin(d, s.now() + 1.0).ok());
     CHECK(s.giftHealsLeft() == 2);
     CHECK(s.giftHealReadyIn() == 0.0);
@@ -894,4 +896,54 @@ TEST_CASE("fight session: the gift HUD reads, and a new fight resets the Heals b
     CHECK(s.giftSlot().threads(kLeadA) == 2);
     CHECK(s.giveGift(kLeadA).given);
     CHECK(s.giftSlot().allPresses() == 5);
+}
+
+TEST_CASE("fight session: a retry (begin after a fight not finished as won) puts the gift tally and threads back") {
+    FightSession s;
+    FightSessionDef d;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given); // a fight won with one press
+    s.finish(true);
+    REQUIRE(s.begin(d, 1.0).ok());
+    REQUIRE(s.giftSlot().allPresses() == 1);
+    // The attempt: two gifts pressed, then lost (no finish, or finish(false)): the retry is back at the start.
+    for (const int how : {0, 1}) {
+        CAPTURE(how);
+        CHECK(s.giveGift(kLeadA).given);
+        REQUIRE(s.selectGift(Gift::Guard));
+        CHECK(s.giveGift(kLeadB).given);
+        CHECK(s.giftSlot().allPresses() == 3);
+        CHECK(s.giftHealsLeft() == 1);
+        if (how == 1) s.finish(false);
+        CHECK_FALSE(s.finishedWon());
+        REQUIRE(s.begin(d, s.now() + 1.0).ok());
+        CHECK(s.giftSlot().allPresses() == 1);
+        CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+        CHECK(s.giftSlot().tally().givenOf(Gift::Guard) == 0);
+        CHECK(s.giftSlot().threads(kLeadA) == 1);
+        CHECK(s.giftSlot().threads(kLeadB) == 0);
+        CHECK(s.giftHealsLeft() == 2); // the per-fight heal count resets
+        CHECK(s.giftGuardReadyIn() == 0.0);
+    }
+    // Two gifts pressed and the fight won: the next fight keeps them, with two Heals again.
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadB).given);
+    s.finish(true);
+    CHECK(s.finishedWon());
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK_FALSE(s.finishedWon()); // a begin clears the win
+    CHECK(s.giftSlot().allPresses() == 3);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
+    CHECK(s.giftSlot().threads(kLeadB) == 1);
+    CHECK(s.giftHealsLeft() == 2);
+    // A checkpoint loaded mid-fight is the start a retry goes back to.
+    GiftSave cp = s.giftSlot().save();
+    cp.threads[kLeadB] = 7;
+    REQUIRE(s.giftSlot().load(cp));
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK(s.giftSlot().threads(kLeadB) == 7);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
 }

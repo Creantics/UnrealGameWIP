@@ -144,10 +144,12 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   is never mid-fight); `load` and `resetFight()` clear them. `beginFight(tuning, t)` (what
   `FightSession::begin` calls) sets the tuning, clears the fight state, selects Heal and makes the
   slot a Companion, and keeps the save data: the save-wide tally, threads and Vacant and Hostile
-  presses carry from fight to fight. `reset()` wipes the save data too; `setTuning()` changes the
-  tuning and keeps it.
+  presses carry from fight to fight, and are recorded as the fight's start. `restoreFightStart()` puts
+  them back to that record (the last `beginFight`, `reset` or `load`). `reset()` wipes the save data
+  too; `setTuning()` changes the tuning and keeps it.
 * Tuning (`GiftTuning`, file `Data/Battle/gifts.json` via `importGiftTuning`): per-gift `cooldown`
-  from the press (heal 8 s, guard 12 s, count 4 s), `healShare` 0.15, `healLoad` 20,
+  (heal 8 s and count 4 s from the press; guard 12 s from the guard's end, so 13.2 s press to press),
+  `healShare` 0.15, `healLoad` 20,
   `healsPerFight` 2, `guardScale` 0.25 (the guarded lead takes x0.25), `guardSeconds` 1.2.
 * HUD: `healsLeft()`, `readyIn(gift, t)` (seconds to ready, 0 when ready); on the session
   `giftHealsLeft()`, `giftHealReadyIn()`, `giftGuardReadyIn()`.
@@ -263,11 +265,14 @@ own copy of the boss def) and moves them all on one fight clock. It is what a ho
 the pieces.
 
 * **One clock.** `begin(def, start)` resets every piece at `start` (the gift slot through
-  `beginFight`: its save-wide tally and threads carry from fight to fight; a host retrying a fight
-  loads its checkpoint `GiftSave` after `begin`), clamped to +-`kMaxFightStart`
+  `beginFight`), clamped to +-`kMaxFightStart`
   (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
   NaN starts at 0; `FightSessionCheck::start` reports either move, and the fight begins anyway, so `ok()`
-  leaves it out). `tick(fightDt)`
+  leaves it out). The gift slot's save-wide tally and threads carry over only from a won fight: the
+  host calls `finish(true)` at victory, and a `begin` after a fight not finished as won (lost,
+  abandoned, `finish(false)` or never called) first puts them back to how that fight began
+  (`restoreFightStart`; a `GiftSave` loaded mid-fight is that start), so an abandoned attempt's
+  presses do not count. The fight's Heal count resets either way. `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
