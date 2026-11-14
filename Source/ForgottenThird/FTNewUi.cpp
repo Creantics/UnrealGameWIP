@@ -69,10 +69,10 @@ const FTUiText kLeadUi(TEXT("input.lead"));     // a party row's name without a 
 const FTUiText kPartnerUi(TEXT("input.count")); // "partner": the second row's fallback name and the paired counter's prompt
 const FTUiText kGuardUi(TEXT("input.guard")); // the guard row's word and the guard prompt's
 const FTUiText kLoadUi(TEXT("arena.load"));   // the lead's state slot while some Load is held
-const FTUiText kPoiseUi(TEXT("arena.poise"));
+const FTUiText kPoiseUi(TEXT("arena.poise")); // always beside the poise line, whenever the line is drawn
 const FTUiText kWeakPointUi(TEXT("arena.label.weak_point"));
 // The first-use labels' words, by UiFirstUseItem (the controls teach by their prompts and have none here).
-const FTUiText* const kFirstUseUi[ftcore::kUiFirstUseCount] = {&kPoiseUi, &kWeakPointUi, nullptr, nullptr, nullptr, nullptr};
+const FTUiText* const kFirstUseUi[ftcore::kUiFirstUseCount] = {&kWeakPointUi, nullptr, nullptr, nullptr, nullptr};
 // The Read row's move names, by the tell the move shows (arenaTellName).
 const char* const kReadTells[9] = {"strike", "overhead", "backhand", "charge", "thrust", "slash", "sweep", "slam", "shot"};
 const FTUiText kReadStrikeUi(TEXT("arena.read.strike"));
@@ -955,7 +955,6 @@ constexpr float PartnerLine = 200.f; // the partner's hp line
 constexpr float FoeLine = 90.f;      // a minor enemy's hp line over its body
 constexpr float CallLine = 160.f;    // the windup line under the call word
 constexpr float LowHp = 0.25f;       // under it an hp or guard line turns danger red
-constexpr float PromptStep = 40.f;   // a prompt row (a 28 px key cap) and the 12 px between rows
 // Lines, px at their thickest. A line that carries a value (an amount or the time left) is nowhere thinner than
 // MinValueLine, its tapered ends included; a track or a mark may be. A value line holds its full width along 90 percent
 // of its drawn length (ValueTaper at each end).
@@ -975,7 +974,7 @@ constexpr float BottomShade = 0.25f;
 constexpr float BottomShadeH = 220.f;
 // Text, px to the em (Slate's size is points at 96 dpi). Every word the HUD sets in these sizes is in true capitals,
 // which measure CapK of the em in both serif faces (cap height 660 of 1000 units; the small-caps face's small caps are
-// 560). Nothing a player reads in a fight is under MinTextPx type but a key cap's letters.
+// 560). Nothing a player reads in a fight is under MinTextPx type.
 constexpr float CapK = 0.66f;
 constexpr float MinTextPx = 22.f;
 constexpr float LeadPx = 38.f;    // capitals 25.1 px (floor 24)
@@ -986,10 +985,18 @@ constexpr float PrefixPx = 26.f;  // the Read row's NEXT MOVE: 17.2 px (floor 16
 constexpr float NotePx = 26.f;    // the labels and the state slots (LOAD, RELEASE, GUARD, POISE, SHARED, WEAK POINT,
                                   // WEIGHT, the Debt): 17.2 px (floor 16)
 constexpr float FoePx = 22.f;     // a minor enemy's name over its body
-constexpr float KeyPx = 18.f;     // a key cap's letters: the one text under MinTextPx
-constexpr float KeyCapH = 28.f;   // every key cap's height (the prompts', the Read row's, the Release's, a Qte's)
+// A key cap's letters, set for 14 px capitals on screen: 15.8 px by the file's cap height, and rendered small text
+// measures about 0.61 of its px to the capital (11 px at 18), so 14.6 px. The cap box keeps the proportion it had round
+// 18 px letters (28 px high, 12 px wider than the letters, 5 px corners), scaled by KeyPx / 18.
+constexpr float KeyPx = 24.f;
+constexpr float KeyScale = KeyPx / 18.f;
+constexpr float KeyCapH = 28.f * KeyScale;   // every key cap's height (the prompts', the Read row's, the Release's, a Qte's): 37.3
+constexpr float KeyCapPad = 12.f * KeyScale; // the cap's width over its letters': 16
+constexpr float KeyCapCorner = 5.f * KeyScale;
+constexpr float PromptStep = KeyCapH + 12.f; // a prompt row (a key cap) and the 12 px between rows: 49.3
+static_assert(KeyPx * 0.61f >= 14.5f, "key letters at 14 px capitals on screen, half a pixel to spare");
 static_assert(LeadPx >= MinTextPx && PartnerPx >= MinTextPx && SmallPx >= MinTextPx && RowPx >= MinTextPx && PrefixPx >= MinTextPx
-	&& NotePx >= MinTextPx && FoePx >= MinTextPx, "no fight text under the floor but the key letters");
+	&& NotePx >= MinTextPx && FoePx >= MinTextPx && KeyPx >= MinTextPx, "no fight text under the floor");
 static_assert(LeadPx * CapK >= 25.f && PartnerPx * CapK >= 19.f && RowPx * CapK >= 19.f && PrefixPx * CapK >= 17.f && NotePx * CapK >= 17.f,
 	"capitals at least a pixel over their floors: lead 24, partner and prompts 18, labels 16");
 // Ink, 0..1.
@@ -1525,6 +1532,7 @@ private:
 		ReleaseWordW = TextWidth(ReleaseWord, NoteFont);
 		GuardWord = kGuardUi.Get().ToUpper();
 		GuardWordW = TextWidth(GuardWord, NoteFont);
+		PoiseWord = kPoiseUi.Get().ToUpper();
 		WeightWord = kWeightUi.Get().ToUpper();
 		WeightW = TextWidth(WeightWord, NoteFont);
 		DebtWord = kDebtUi.Get().ToUpper();
@@ -1689,18 +1697,12 @@ private:
 	}
 
 	// The labels show as their element starts to be drawn, the first three times a save (after the grants, so a label
-	// never stands beside nothing). Every label is cued every tick, so each sees its element's rise. The Load and the
-	// guard need none: the lead's state slot names the Load every time, and the guard row carries its own word.
+	// never stands beside nothing). Every label is cued every tick, so each sees its element's rise. The Load, the guard
+	// and the poise need none: the lead's state slot names the Load every time, and the guard and poise lines carry their
+	// own words whenever they are drawn.
 	void TickLabels(const UFTArenaRunner& Runner)
 	{
-		using ftcore::UiFirstUseItem;
-		if (!bTeaching)
-		{
-			return;
-		}
-		bool bCounted = ftcore::uiFirstUseCue(FirstUse, UiFirstUseItem::PoiseLabel, PoiseShown());
-		bCounted |= ftcore::uiFirstUseCue(FirstUse, UiFirstUseItem::WeakPointLabel, bWeakOn);
-		if (bCounted)
+		if (bTeaching && ftcore::uiFirstUseCue(FirstUse, ftcore::UiFirstUseItem::WeakPointLabel, bWeakOn))
 		{
 			SaveTaught(Runner);
 		}
@@ -1821,12 +1823,12 @@ private:
 		}
 	}
 
-	static float KeyCapW(float KeyW, float S) { return FMath::Max(Hud::KeyCapH * S, KeyW + 12.f * S); }
+	static float KeyCapW(float KeyW, float S) { return FMath::Max(Hud::KeyCapH * S, KeyW + Hud::KeyCapPad * S); }
 
 	// A key cap: a 1 px rounded outline round its letters, centred on (CX, MidY). Every key on the HUD is this one cap.
 	void KeyCap(const FPainter& P, float CX, float MidY, float W, const FString& Key, float KeyW, const FLinearColor& C) const
 	{
-		KeyCapStroke(Line, CX, MidY, W, Hud::KeyCapH * P.S, 0.5f * P.S, 5.f * P.S);
+		KeyCapStroke(Line, CX, MidY, W, Hud::KeyCapH * P.S, 0.5f * P.S, Hud::KeyCapCorner * P.S);
 		Mesh.Stroke(Line, C, true);
 		P.Text(CX - KeyW * 0.5f, CapTop(MidY, KeyAsc), Key, KeyFont, C);
 	}
@@ -1872,12 +1874,13 @@ private:
 		const float X0 = Hud::Margin * S;
 		const float Len = Hud::LeadLine * S;
 		// The rows' own places, from the bottom margin up: the guard row's foot on the margin, 8 px over its capitals the
-		// lead's hp line, 8 px over that the name's foot, and the partner's line 22 px over the name's capitals. On a lead
-		// switch the two rows trade places over kUiRowSwap (the lead's row comes down from the partner's place, the
-		// partner's goes up from the lead's), so the eye follows each name to its new seat.
+		// lead's hp line, 12 px over that the name's foot (so the RELEASE key cap, centred on its word's capitals, clears the
+		// line), and the partner's line 22 px over the name's capitals. On a lead switch the two rows trade places over
+		// kUiRowSwap (the lead's row comes down from the partner's place, the partner's goes up from the lead's), so the eye
+		// follows each name to its new seat.
 		const float GuardBase0 = Size.Y - Hud::Margin * S;
 		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (8.f + 0.5f * Hud::LeadHpW) * S;
-		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 8.f) * S;
+		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
 		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
 		const float SwapDy = FMath::SmoothStep(0.f, 1.f, RowSwap.left01) * (PY0 - HpY0);
 		const float GuardBase = GuardBase0 + SwapDy;
@@ -2058,8 +2061,9 @@ private:
 		}
 		if (PoiseShown())
 		{
+			// POISE beside its line whenever the line is drawn, at the labels' ink.
 			ValueLine(X0, X0 + Len, Y + 12.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), Hud::PoiseW, 103, S, Tok(UiToken::Ink, 0.7f * A));
-			Note(P, ftcore::UiFirstUseItem::PoiseLabel, X0 + Len + 12.f * S, Y + 12.f * S, TA);
+			P.Text(X0 + Len + 12.f * S, CapTop(Y + 12.f * S, NoteAsc), PoiseWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * TA));
 		}
 	}
 
@@ -2724,7 +2728,7 @@ private:
 	float PartnerNameAsc = 0.f;
 	FString LeadNameSeen, LeadName, PartnerNameSeen, PartnerName;
 	float LeadNameW = 0.f, PartnerNameW = 0.f;
-	FString LoadWord, ReleaseWord, ReleaseKey, GuardWord, WeightWord, DebtWord, DebtText;
+	FString LoadWord, ReleaseWord, ReleaseKey, GuardWord, PoiseWord, WeightWord, DebtWord, DebtText;
 	float ReleaseWordW = 0.f, ReleaseKeyW = 0.f, GuardWordW = 0.f, WeightW = 0.f;
 	int32 DebtShown = -2;
 	// The top line's name, and the call word under it (a called zone, the answer the boss's move needs, or STAGGERED).
@@ -2933,8 +2937,8 @@ public:
 			for (int32 I = 0; I < OptionRows; ++I)
 			{
 				OptionTextW[I] = TextWidth(OptionText(*D, I), OptionFont);
-				// A locked reply says why when the data has a reason (an interface text key), else nothing: its half ink is
-				// the lock. Built here, once per set of options.
+				// A locked reply says why after its padlock when the data has a reason (an interface text key), else the
+				// padlock stands alone. Built here, once per set of options.
 				const std::string_view Reason = bFakeOptions || I >= static_cast<int32>(View.optionCount)
 					? std::string_view() : View.options[static_cast<size_t>(I)].lockReason;
 				LockText[I] = Reason.empty() ? FString() : FTUiText::Lookup(*FT::ToFString(Reason));
@@ -3032,10 +3036,11 @@ public:
 		}
 		else if (OptionRows > 0)
 		{
-			// The numbered replies over the subtitle, at its left edge, in its face: one that can be taken in full ink, one
-			// that cannot at half ink with its reason after it when the data gives one, or a small drawn padlock when it
-			// gives none. The selected reply gets a short underline in the boss line's stroke: the one under the host's
-			// cursor, and until a cursor is sent (picking is by number today) the first reply that can be taken.
+			// The numbered replies over the subtitle, at its left edge, in its face. The selected reply is full ink with a
+			// short underline in the boss line's stroke: the one under the host's cursor, and until a cursor is sent
+			// (picking is by number today) the first reply that can be taken. Every other reply that can be taken is ink at
+			// 70 percent; one that cannot is at half ink with a small drawn padlock after it, then its reason when the data
+			// gives one.
 			const float RowH = LineH * 1.05f;
 			const float OptTop = Top - LineH * 0.4f - RowH * OptionRows;
 			float X0 = CX;
@@ -3053,15 +3058,16 @@ public:
 			{
 				const float Y = OptTop + RowH * I;
 				const bool bPick = ((Takeable >> I) & 1u) != 0u;
-				const FLinearColor C = Tok(UiToken::Ink, (bPick || I == Selected) ? 1.f : 0.5f);
+				const FLinearColor C = Tok(UiToken::Ink, I == Selected ? 1.f : bPick ? 0.7f : 0.5f);
 				P.Text(X0, Y, OptionText(*D, I), OptionFont, C);
-				if (!bPick && !LockText[I].IsEmpty())
+				if (!bPick)
 				{
-					P.Text(X0 + OptionTextW[I] + 16.f * S, Y, LockText[I], OptionFont, C);
-				}
-				else if (!bPick)
-				{
-					PaintPadlock(X0 + OptionTextW[I] + 16.f * S, Y + OptionAsc, C);
+					const float LockX = X0 + OptionTextW[I] + 16.f * S;
+					PaintPadlock(LockX, Y + OptionAsc, C);
+					if (!LockText[I].IsEmpty())
+					{
+						P.Text(LockX + PadlockW() + 12.f * S, Y, LockText[I], OptionFont, C);
+					}
 				}
 				if (I == Selected)
 				{
@@ -3169,12 +3175,13 @@ private:
 		return bFakeOptions ? I < OptionRows - 1 : D.IsOptionSelectable(I);
 	}
 
-	// A locked reply's padlock when the data gives no reason, standing on the reply's baseline from LeftX and as tall as
-	// its capitals: two ink strokes, the shackle (an arch on two legs) and the body (a rounded box under it), no asset.
+	// A locked reply's padlock, standing on the reply's baseline from LeftX and as tall as its capitals: two ink strokes,
+	// the shackle (an arch on two legs) and the body (a rounded box under it), no asset. PadlockW wide.
+	float PadlockW() const { return 0.78f * 0.62f * OptionAsc; }
 	void PaintPadlock(float LeftX, float Base, const FLinearColor& C) const
 	{
 		const float CapH = 0.62f * OptionAsc;
-		const float BodyW = 0.78f * CapH;
+		const float BodyW = PadlockW();
 		const float BodyH = 0.56f * CapH;
 		const float Half = FMath::Max(0.75f, 0.075f * CapH); // the strokes' half width, about a stem's
 		const float MidX = LeftX + 0.5f * BodyW;
