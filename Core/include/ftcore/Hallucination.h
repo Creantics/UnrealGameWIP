@@ -75,6 +75,11 @@ inline IntensityBand intensityBand(IntensityBand place, int act, const Hallucina
     return std::max(place, actFloor);
 }
 
+// Place bleed: of the bands, only High bleeds a place in (none shows nothing; low, a voice; mid, a figure; high, a
+// figure plus a place bleeding in). The host draws it: a piece of the lead's home scene replacing part of the page,
+// growing from the edges, never over the path.
+inline bool placeBleeds(IntensityBand band) { return band == IntensityBand::High; }
+
 // Lone Carry weighs the lone key once the lead's lone Releases have pooled lonePoolFloor Load (and some at all).
 inline bool loneWeighs(std::uint32_t loneLoadPool, const HallucinationTuning& t = {}) {
     return loneLoadPool > 0 && static_cast<double>(loneLoadPool) >= static_cast<double>(t.lonePoolFloor);
@@ -170,6 +175,7 @@ public:
     bool refuseKept() const { return refuseKept_; }
     int key() const { return key_; }
     IntensityBand band() const { return active() ? band_ : IntensityBand::None; }
+    bool bleeds() const { return placeBleeds(band()); } // an open offer of a High band: the host bleeds the place in
     float holdLevel() const { return hold_; } // the host slows the lead by it and stills them at 1
     ScareForm scareForm() const { return scareForm_; } // the last start's scare beat: Unpaced, not a scare
     float refusalCooldown() const { return cooldown_; }

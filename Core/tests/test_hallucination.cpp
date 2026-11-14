@@ -906,3 +906,27 @@ TEST_CASE("an emptied chair stays emptied: refusing its key, held or not, change
     REQUIRE(away.saw(Ev::Refused) == 1);
     unchanged("turned away");
 }
+
+TEST_CASE("place bleed: only a High band bleeds a place in, and only while its offer is open") {
+    CHECK_FALSE(placeBleeds(IntensityBand::None));
+    CHECK_FALSE(placeBleeds(IntensityBand::Low));
+    CHECK_FALSE(placeBleeds(IntensityBand::Mid));
+    CHECK(placeBleeds(IntensityBand::High));
+    CHECK(placeBleeds(intensityBand(IntensityBand::High, 0))); // the place's own High, under any act floor
+    CHECK_FALSE(placeBleeds(intensityBand(IntensityBand::Low, kMaxAct))); // the act floors stop at Mid
+    for (const IntensityBand b : {IntensityBand::Low, IntensityBand::Mid, IntensityBand::High}) {
+        Rig r;
+        CHECK_FALSE(r.h.bleeds());
+        REQUIRE(r.start(false, -1, b) == Start::Started);
+        CHECK(r.h.bleeds() == (b == IntensityBand::High));
+        r.in.accepting = true;
+        r.run(4.0);
+        REQUIRE(r.h.held());
+        CHECK(r.h.bleeds() == (b == IntensityBand::High)); // held, it still bleeds
+        r.in.accepting = false;
+        r.in.refuse = true;
+        r.run(0.5);
+        REQUIRE(r.saw(Ev::Refused) == 1);
+        CHECK_FALSE(r.h.bleeds()); // closed: the page is its own again
+    }
+}
