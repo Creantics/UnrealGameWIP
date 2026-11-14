@@ -70,7 +70,12 @@ const FScalarSpec kScalars[] = {
 	{TEXT("FadeFarA"), 250.f},
 	{TEXT("FadeNearB"), 200.f},
 	{TEXT("FadeFarB"), 1200.f},
-	{TEXT("Cloth"), 0.6f},            // cloth master only: fuzz amount
+	{TEXT("MottleSize"), 3.f},        // centimetres per feature of the broad normal tilt (the roughness mottle is twice that)
+	{TEXT("MottleTilt"), 0.f},        // normal tilt of the mottle (0 = off; leather jackets set it per instance)
+	{TEXT("MottleRoughness"), 0.f},   // +- roughness of the mottle (0 = off)
+	{TEXT("MottleFadeNear"), 800.f},  // camera distance (cm) where the mottle starts to fade, and where it is gone
+	{TEXT("MottleFadeFar"), 1500.f},
+	{TEXT("Cloth"), 0.6f},           // cloth master only: fuzz amount
 	{TEXT("DiffuseResponse"), 1.f},   // albedo ^ DiffuseResponse: above 1 a darker response for dark cloth, light stitching kept
 	{TEXT("SkyFill"), 1.f},           // share of sky and bounce light the surface takes (multiplies the occlusion output)
 	// Set at runtime by the water system (LEAD_WETNESS_INPUT_SPEC); names fixed by that spec, all 0 = dry.
@@ -195,7 +200,24 @@ for (int i = 0; i < 2; ++i)
 return float4(tilt, saturate(1.0 + cavity), micro);
 )HLSL");
 
-const TCHAR* const kNormalCode = TEXT("return normalize(float3(Base.xy + D.xy, Base.z));");
+// Mottle: a broad, centimetre-scale breakup that cuts a long specular streak (a leather sleeve) into pieces, which the
+// millimetre grain tiles above are too small to do. xy a normal tilt from two decorrelated gradient-noise fields at
+// MottleSize cm (plus a half-weight octave at 0.43x), z a zero-mean roughness change at twice that size. Taken in
+// pre-skinned space so it stays on the garment, faded out with camera distance (MottleFadeNear..Far) where it would only
+// alias, no tilt on metal. Off by default (MottleTilt and MottleRoughness 0): the early out keeps other garments' cost.
+const TCHAR* const kMottleCode = TEXT(R"HLSL(float fade = saturate((FadeFar - Depth) / max(FadeFar - FadeNear, 1.0));
+if (fade <= 0.0 || (Tilt == 0.0 && Rough == 0.0))
+	return float3(0.0, 0.0, 0.0);
+float3 p = P / max(Size, 0.1);
+float3 o = float3(17.3, 5.1, 9.7);
+float2 t = float2(GradientNoise3D_ALU(p, false, 0.0), GradientNoise3D_ALU(p + o, false, 0.0));
+float3 p2 = p * 2.31 + float3(3.7, 11.2, 7.9);
+t += 0.5 * float2(GradientNoise3D_ALU(p2, false, 0.0), GradientNoise3D_ALU(p2 + o, false, 0.0));
+float r = GradientNoise3D_ALU(p * 0.5 + float3(31.1, 2.9, 13.3), false, 0.0);
+return float3(t * Tilt * (1.0 - Metal), r * Rough) * fade;
+)HLSL");
+
+const TCHAR* const kNormalCode = TEXT("return normalize(float3(Base.xy + D.xy + M.xy, Base.z));");
 
 // A shoe's rubber sole, split from the upper by pre-skinned height (the rigid foot pieces stand on z = 0).
 const TCHAR* const kSoleCode = TEXT("return saturate((SoleHeight - P.z) / max(SoleBlend, 0.01) + 0.5);");
@@ -228,6 +250,7 @@ float crease = saturate((0.5 - Wear.r) * 2.0);
 float r = ORM.g * RoughScale + RoughOffset;
 r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
 r += crease * CreaseRough - edge * EdgeSmooth;
+r += M.z; // centimetre mottle (0 unless MottleRoughness is set)
 r = lerp(r, SoleRough + D.w * MicroRough, Sole);
 r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
 r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
@@ -534,15 +557,20 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0},
 			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}, {TEXT("SiltLiftMax"), G.Scalar(TEXT("SiltLiftMax")), 0}},
 		-900);
+	UMaterialExpressionCustom* Mottle = Custom(Material, TEXT("GarmentMottle"), CMOT_Float3, kMottleCode,
+		{{TEXT("P"), Position, 0}, {TEXT("Depth"), Depth, 0}, {TEXT("Metal"), Metal, 0}, {TEXT("Size"), G.Scalar(TEXT("MottleSize")), 0},
+			{TEXT("Tilt"), G.Scalar(TEXT("MottleTilt")), 0}, {TEXT("Rough"), G.Scalar(TEXT("MottleRoughness")), 0},
+			{TEXT("FadeNear"), G.Scalar(TEXT("MottleFadeNear")), 0}, {TEXT("FadeFar"), G.Scalar(TEXT("MottleFadeFar")), 0}},
+		800);
 	UMaterialExpressionCustom* NormalOut = Custom(Material, TEXT("GarmentNormal"), CMOT_Float3, kNormalCode,
-		{{TEXT("Base"), Normal, 0}, {TEXT("D"), Detail, 0}}, -300);
+		{{TEXT("Base"), Normal, 0}, {TEXT("D"), Detail, 0}, {TEXT("M"), Mottle, 0}}, -300);
 	UMaterialExpressionCustom* Roughness = Custom(Material, TEXT("GarmentRoughness"), CMOT_Float1, kRoughnessCode,
 		{{TEXT("ORM"), Orm, 0}, {TEXT("Wear"), Wear, 0}, {TEXT("D"), Detail, 0}, {TEXT("RoughScale"), G.Scalar(TEXT("RoughnessScale")), 0},
 			{TEXT("RoughOffset"), G.Scalar(TEXT("RoughnessOffset")), 0}, {TEXT("MicroRough"), G.Scalar(TEXT("MicroRoughness")), 0},
 			{TEXT("CavityRough"), G.Scalar(TEXT("CavityRoughness")), 0}, {TEXT("CreaseRough"), G.Scalar(TEXT("CreaseRoughness")), 0},
 			{TEXT("EdgeSmooth"), G.Scalar(TEXT("EdgeSmooth")), 0}, {TEXT("MetalRough"), G.Scalar(TEXT("MetalRoughness")), 0},
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0},
-			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}},
+			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0}},
 		0);
 	UMaterialExpressionCustom* Specular = Custom(Material, TEXT("GarmentSpecular"), CMOT_Float1, kSpecularCode,
 		{{TEXT("Spec"), G.Scalar(TEXT("Specular")), 0}, {TEXT("CavitySpec"), G.Scalar(TEXT("CavitySpecular")), 0}, {TEXT("D"), Detail, 0},
