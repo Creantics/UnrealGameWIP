@@ -362,7 +362,7 @@ namespace {
 
 // One frame's input to the replay host.
 struct Act {
-    enum class Kind : std::uint8_t { Switch, Heal, Guard, Count, Held, Mark, Hit, EndLone, Pool, Parry, Place };
+    enum class Kind : std::uint8_t { Switch, Heal, Guard, Count, Held, Mark, Hit, EndLone, Pool, Parry, Place, BossHit, Guard2 };
     int frame;
     Kind kind;
     FighterId lead;
@@ -387,6 +387,11 @@ struct Seen {
     PartnerAct act;
     PartnerWhy why;
     bool newString, rise;
+    std::uint32_t bossEvents = 0; // bit per BossEventType on this tick
+    std::size_t bossPhase = 0;
+    int bossHp = 0;
+    bool weakOpen = false, lone = false, loneEnded = false;
+    std::uint32_t pooled = 0, releases = 0;
     bool operator==(const Seen&) const = default;
 };
 
@@ -407,15 +412,18 @@ struct Host {
         enemies[1].pos = {3.f, 1.f};
         s.setLeadHealth(kLeadA, 1.f);
         s.setLeadHealth(kLeadB, 1.f);
+        writeHost();
+    }
+    void writeHost() {
         FightHostCheckpoint h;
         h.hp = hp;
         h.draws = 1234;
         h.partner = brain;
         s.setHostCheckpoint(h);
     }
-    void retry() {
+    void retry(CheckpointAt want = CheckpointAt::FightStart) {
         const FightCheckpoint& cp = s.retry();
-        REQUIRE(cp.at == CheckpointAt::FightStart);
+        REQUIRE(cp.at == want);
         hp = cp.host.hp;
         brain = cp.host.partner;
     }
@@ -455,6 +463,8 @@ struct Host {
                 case Act::Kind::Pool: s.poolRelease(a.lead, a.amount); break;
                 case Act::Kind::Parry: s.keptParried(a.amount); break;
                 case Act::Kind::Place: s.layPlace(a.lead, static_cast<PersonId>(a.amount)); break;
+                case Act::Kind::BossHit: s.bossHit(a.amount, false); break;
+                case Act::Kind::Guard2: s.counter(BossCounter::Guard, a.lead); break;
                 }
             }
             const FighterId body = s.activeLead() == kLeadA ? kLeadB : kLeadA;
@@ -472,11 +482,17 @@ struct Host {
                 s.setLeadHealth(body, it.riseHealth);
             }
             const FightTick& t = s.tick(kFrame);
+            const CheckpointAt taken = t.checkpoint;
+            std::uint32_t bossBits = 0;
+            for (const BossEvent& e : *t.boss) bossBits |= 1u << static_cast<unsigned>(e.type);
             out.push_back(Seen{t.now, t.leadsFell, t.leadsRose, t.tookOver, s.activeLead(), t.defeated,
                                s.down(kLeadA), s.down(kLeadB), t.loneCarryBegan, s.strikeCount().open(s.now()),
                                t.loneCarryEndedBy, t.checkpoint, t.bonuses.size(), t.heldExpired,
                                s.giftSlot().allPresses(), hp[kLeadA], hp[kLeadB], s.keptLoad(), given, giftError,
-                               countError, it.act, it.why, it.newString, it.rise});
+                               countError, it.act, it.why, it.newString, it.rise, bossBits,
+                               s.hasBoss() ? s.boss().phase() : 0, s.hasBoss() ? s.boss().hp() : 0,
+                               s.weakPointOpen(), s.lone(), s.loneEnded(), s.lonePooled(), s.loneReleases()});
+            if (taken != CheckpointAt::None) writeHost(); // the host's part, right after the tick that took one
         }
         return out;
     }
@@ -665,4 +681,74 @@ TEST_CASE("fight fate: falls, checkpoints and retries allocate nothing") {
     s.retry();
     s.tick(kFrame);
     CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("fight fate: a fight replayed from a phase checkpoint with the same inputs and seed gives the same result") {
+    using K = Act::Kind;
+    FightSessionDef d = replayDef();
+    d.hasBoss = true;
+    d.boss = twoPhaseBoss(true);
+    // Up to the phase change: a place, a Lone release, the controlled lead felled (the partner takes over).
+    const std::vector<Act> before = {
+        {1, K::Place, kLeadB, 5}, {10, K::Pool, kLeadB, 2}, {20, K::Parry, kLeadB, 30}, {40, K::Hit, kLeadA, 100},
+        {60, K::Guard2, kLeadB},  {100, K::BossHit, kLeadB, 60},
+    };
+    // After it: the boss's rotation, counters, hits, another release and the Lone Carry's end, a Heal, and the
+    // fallen lead standing through the brain.
+    const std::vector<Act> after = {
+        {5, K::Pool, kLeadB, 3},     {30, K::Guard2, kLeadB},     {90, K::BossHit, kLeadB, 5},
+        {150, K::Count, kLeadB},     {160, K::Held, kLeadB},      {200, K::EndLone, kLeadB},
+        {300, K::Hit, kLeadB, 30},   {320, K::Heal, kLeadB},      {400, K::Guard2, kLeadB},
+        {600, K::Parry, kLeadB, 20}, {1800, K::Switch, kLeadA},   {1850, K::BossHit, kLeadA, 3},
+    };
+    const int frames = 1900;
+    Host fresh;
+    fresh.setUp(d);
+    const std::vector<Seen> pre = fresh.run(before, 101);
+    REQUIRE(pre.back().cp == CheckpointAt::Phase);
+    REQUIRE(fresh.s.checkpoint().at == CheckpointAt::Phase);
+    REQUIRE(fresh.s.checkpoint().down[kLeadA]); // a lead down at the checkpoint: the brain's copy matters
+    REQUIRE(fresh.s.checkpoint().lonePooled == 2);
+    const std::vector<Seen> want = fresh.run(after, frames);
+    bool rose = false, ended = false, events = false;
+    for (const Seen& x : want) {
+        rose = rose || x.rose != 0;
+        ended = ended || x.loneEnd != LoneEnd::None;
+        events = events || x.bossEvents != 0;
+        REQUIRE_FALSE(x.defeated);
+        REQUIRE(x.cp == CheckpointAt::None); // no later phase
+    }
+    REQUIRE(rose);
+    REQUIRE(ended);
+    REQUIRE(events);
+
+    // The same fight to its phase change, then an attempt that dirties every piece and is lost.
+    Host again;
+    again.setUp(d);
+    REQUIRE(again.run(before, 101).back().cp == CheckpointAt::Phase);
+    const FightCheckpoint taken = again.s.checkpoint();
+    const std::vector<Act> lost = {
+        {2, K::Heal, kLeadB},       {3, K::Guard, kLeadB},      {5, K::Guard2, kLeadB},  {8, K::Count, kLeadB},
+        {9, K::Held, kLeadB},       {10, K::Mark, kLeadB},      {11, K::Place, kLeadB, 9}, {12, K::Parry, kLeadB, 40},
+        {20, K::BossHit, kLeadB, 30}, {50, K::Hit, kLeadB, 100},
+    };
+    again.run(lost, 60);
+    REQUIRE(again.s.defeated());
+    again.retry(CheckpointAt::Phase);
+    const std::vector<Seen> got = again.run(after, frames);
+    REQUIRE(got.size() == want.size());
+    std::size_t firstDiff = want.size();
+    for (std::size_t i = 0; i < want.size(); ++i)
+        if (!(got[i] == want[i])) {
+            firstDiff = i;
+            break;
+        }
+    CHECK(firstDiff == want.size());
+    CHECK(got.front().bossEvents == want.front().bossEvents); // no phase change delivered again
+    CHECK(got.front().cp == CheckpointAt::None);
+    // The checkpoint itself is untouched by the replay.
+    CHECK(again.s.checkpoint().at == CheckpointAt::Phase);
+    CHECK(again.s.checkpoint().now == taken.now);
+    CHECK(again.s.checkpoint().host.hp == taken.host.hp);
+    CHECK(again.s.checkpoint().lonePooled == taken.lonePooled);
 }
