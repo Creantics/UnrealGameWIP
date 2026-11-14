@@ -1291,16 +1291,15 @@ constexpr float LoneColGap = 48.f;
 constexpr float LoneLineGap = 6.f;
 constexpr float LoneShadeK = 1.5f; // the bottom shade's height while the card shows, over the card's top from the bottom edge
 // The party screen, opened in place over the party block (no panel): each name rises PartyLift px over its hp line (the
-// lines stay, the live read-out) to take the cursor, the dialogue's reply underline, PartyUnder px under the name's
-// foot; the Third's row stands PartyRowGap px over the partner's capitals. The other lead's row at PartyOtherInk off the
-// cursor, a refused lead row at PartyRefusedInk with its word, the Third at PartyThirdInk; never gold. It opens and
-// shuts over PartyOpenTime s.
+// lines stay, the live read-out); the Third's row stands PartyRowGap px over the partner's capitals. Each row's ink and
+// marks are Core's (ftcore::uiPartyRowView): the cursor's name at full ink with the reply underline across the whole
+// name, PartyUnder px under its foot; every other lead row at kUiPartyOtherInk, a refused one at PartyRefusedInk with
+// its word, the Third at kUiPartyThirdInk; never gold. The controlled lead's name has a dot hung before it
+// (uiPartyDot). It opens and shuts over PartyOpenTime s.
 constexpr float PartyLift = 10.f;
 constexpr float PartyUnder = 8.f;
 constexpr float PartyRowGap = 22.f;
-constexpr float PartyOtherInk = 0.7f;
-constexpr float PartyRefusedInk = 0.4f;
-constexpr float PartyThirdInk = 0.7f;
+constexpr float PartyRefusedInk = ftcore::kUiPartyRefusedInk;
 constexpr float PartyOpenTime = 0.1f;
 } // namespace Hud
 
@@ -1342,12 +1341,17 @@ ftcore::UiStrokeStyle StrokeStyle(float Width, std::uint32_t Seed, float S, floa
 	return St;
 }
 
-// The cursor's mark: the selected reply's short underline (the dialogue's and the party screen's), left-aligned at X0.
+// The cursor's mark, left-aligned at X0: the party screen's runs W px (its name's measured width), the dialogue's
+// selected reply's is the short one.
+void CursorUnderline(FLineMesh& Mesh, ftcore::UiStroke& Line, float X0, float Y, float W, float S, const FLinearColor& C)
+{
+	ftcore::uiStrokeLine(Line, X0, Y, X0 + W, Y, StrokeStyle(7.f, 101, S, 0.1f), 0.f, 1.f);
+	Mesh.Stroke(Line, C);
+}
 constexpr float kReplyUnderline = 48.f; // px at 1080 ("short")
 void ReplyUnderline(FLineMesh& Mesh, ftcore::UiStroke& Line, float X0, float Y, float S, const FLinearColor& C)
 {
-	ftcore::uiStrokeLine(Line, X0, Y, X0 + kReplyUnderline * S, Y, StrokeStyle(7.f, 101, S, 0.1f), 0.f, 1.f);
-	Mesh.Stroke(Line, C);
+	CursorUnderline(Mesh, Line, X0, Y, kReplyUnderline * S, S, C);
 }
 
 // A line that carries a value: straight (no drift across it, so its width reads true), the brush's taper only at its two
@@ -1370,6 +1374,23 @@ float Frac(int32 Value, int32 Max) { return Max > 0 ? FMath::Clamp(static_cast<f
 // capitals on a baseline.
 float CapTop(float MidY, float Asc) { return MidY - 0.69f * Asc; }
 float CapMid(float Base, float Asc) { return Base - 0.31f * Asc; }
+
+// The party screen's row marks from Core's view: the cursor's underline under the name's foot at Base and, on the
+// controlled lead's row, the dot before the name, both at full ink times K (the opening's ease) and A.
+void PartyMarks(FLineMesh& Mesh, ftcore::UiStroke& Line, const ftcore::UiPartyRowView& V, float X0, float Base, float NameAsc,
+	float S, float K, float A)
+{
+	const FLinearColor C = Tok(UiToken::Ink, K * A);
+	if (V.underlineW > 0.f)
+	{
+		CursorUnderline(Mesh, Line, X0, Base + Hud::PartyUnder * S, V.underlineW, S, C);
+	}
+	if (V.dot)
+	{
+		const ftcore::UiPartyDot D = ftcore::uiPartyDot(X0, CapMid(Base, NameAsc), 0.62f * NameAsc);
+		Mesh.Dot(D.x, D.y, D.r, C);
+	}
+}
 
 // Elements made inside Fn are clipped to the rectangle (local units).
 template <typename FnT>
@@ -2495,6 +2516,10 @@ private:
 			SwitchLeft = 0.f;
 		}
 		PartyOpenK = bShot ? 1.f : FMath::Clamp(PartyOpenK + (PartyShown.open ? DeltaTime : -DeltaTime) / Hud::PartyOpenTime, 0.f, 1.f);
+		if (PartyShown.open)
+		{
+			PartyDrawn = PartyShown; // a closing screen fades with the rows it had
+		}
 
 		// The Third's row: drawn only with a gift slot (a session). The slot refused is one word; else GIFT HEAL n (its
 		// reason word after the count when refused) and GIFT GUARD READY (its reason word, or its seconds while it cools,
@@ -2818,9 +2843,13 @@ private:
 			P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, LowTok(L.debt >= 80, 0.7f * A));
 		}
 
-		// The Load fills the name in gold from the left. Past the Release threshold the whole name brightens.
+		// The Load fills the name in gold from the left. Past the Release threshold the whole name brightens. On the party
+		// screen the name takes its row's ink (full on the cursor, kUiPartyOtherInk off it); its hp line, the Load's gold and
+		// the state slot stay as they are, the live read-out.
+		const float K = Rows.Open;
+		const ftcore::UiPartyRowView LeadView = ftcore::uiPartyRowView(PartyDrawn, ftcore::UiPartyRow::Lead, ftcore::UiPartyWhy::Ok, LeadNameW);
 		const float NameTop = NameBase - LeadNameAsc;
-		P.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Ink, A));
+		P.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Ink, FMath::Lerp(1.f, LeadView.ink, K) * A));
 		const FLinearColor Gold0 = LinOf(St.loadGold, A);
 		const FLinearColor Bright = LinOf(St.loadBright, A);
 		const FLinearColor Gold = Gold0 + (Bright - Gold0) * LoadName.bright;
@@ -2882,26 +2911,25 @@ private:
 		case ftcore::UiLeadWord::None:
 			break;
 		}
-		// The party screen's cursor: the reply underline under the name it rests on, in full ink. The controlled lead's row
-		// keeps full ink.
-		const float K = Rows.Open;
-		const bool bOpen = PartyShown.open;
-		if (bOpen && PartyShown.cursor == ftcore::UiPartyRow::Lead)
+		// The party screen's marks on the controlled lead's row: the cursor's underline across the name when it rests
+		// there, and the dot before the name always.
+		if (K > 0.f)
 		{
-			ReplyUnderline(Mesh, Line, X0, NameBase + Hud::PartyUnder * S, S, Tok(UiToken::Ink, K * A));
+			PartyMarks(Mesh, Line, LeadView, X0, NameBase, LeadNameAsc, S, K, A);
 		}
 
-		// The partner's row, whenever the fight has a partner, and on the party screen always. Open, it is at
-		// PartyOtherInk off the cursor and full ink on it; a switch the rules would refuse now dims the row to
-		// PartyRefusedInk with the reason after the name at label size (NOT HERE with no partner at all). Never gold.
+		// The partner's row, whenever the fight has a partner, and on the party screen always. Open, it takes its row's
+		// ink (Core's): full on the cursor with the underline across the name, kUiPartyOtherInk off it; a switch the rules
+		// would refuse now dims the row to PartyRefusedInk with the reason after the name at label size (NOT HERE with no
+		// partner at all), the cursor's underline still under the name. Never gold.
 		if (!bPartner)
 		{
 			return;
 		}
 		const ftcore::UiPartyWhy PWhy = Pa.present ? PartnerWhy : ftcore::UiPartyWhy::NotHere;
 		const bool bPRefused = K > 0.f && ftcore::uiPartyRefused(PWhy);
-		const bool bPCursor = bOpen && PartyShown.cursor == ftcore::UiPartyRow::Partner;
-		const float PInk = FMath::Lerp(Hud::PartnerInk, bPRefused ? Hud::PartyRefusedInk : (bPCursor ? 1.f : Hud::PartyOtherInk), K);
+		const ftcore::UiPartyRowView PView = ftcore::uiPartyRowView(PartyDrawn, ftcore::UiPartyRow::Partner, PWhy, PartnerNameW);
+		const float PInk = FMath::Lerp(Hud::PartnerInk, PView.ink, K);
 		if (Pa.present)
 		{
 			HpLine(X0, PLen, PY, Frac(Pa.hp, Pa.hpMax), PartnerLost.Was, Hud::PartnerHpW, 211, S,
@@ -2915,9 +2943,9 @@ private:
 			P.Text(PSlotX, PBase - NoteAsc, PartyWhyWord[Wi], NoteFont, Tok(UiToken::Ink, Hud::PartyRefusedInk * K * A));
 			PSlotX += PartyWhyW[Wi] + 16.f * S;
 		}
-		if (bPCursor)
+		if (K > 0.f)
 		{
-			ReplyUnderline(Mesh, Line, X0, PBase + Hud::PartyUnder * S, S, Tok(UiToken::Ink, K * A));
+			PartyMarks(Mesh, Line, PView, X0, PBase, PartnerNameAsc, S, K, A);
 		}
 		// A shared blow: SHARED in the partner's slot, right of the name (and of a refused row's word) on its baseline, for
 		// a second, then fading.
@@ -2931,11 +2959,12 @@ private:
 			}
 		});
 
-		// The Third's row, on the party screen with a gift slot: its name at the partner's size at PartyThirdInk, no hp
+		// The Third's row, on the party screen with a gift slot: its name at the partner's size at kUiPartyThirdInk, no hp
 		// line, never the cursor; its gift line after it at label size.
 		if (Rows.bThird)
 		{
-			const FLinearColor TC = Tok(UiToken::Ink, Hud::PartyThirdInk * K * A);
+			const ftcore::UiPartyRowView TView = ftcore::uiPartyRowView(PartyDrawn, ftcore::UiPartyRow::Third, ftcore::UiPartyWhy::Unknown, ThirdNameW);
+			const FLinearColor TC = Tok(UiToken::Ink, TView.ink * K * A);
 			P.Text(X0, Rows.TBase - PartnerNameAsc, ThirdName, PartnerNameFont, TC);
 			if (!ThirdText.IsEmpty())
 			{
@@ -3902,6 +3931,7 @@ private:
 	// refusal shown, its text and ink middle in the call face, its time left, the runner's count as of the last tick and
 	// whether the budget drew it).
 	ftcore::UiPartyScreen PartyShown;
+	ftcore::UiPartyScreen PartyDrawn; // the screen as last open: its rows' inks and marks while it fades shut
 	ftcore::UiPartyWhy PartnerWhy = ftcore::UiPartyWhy::Unknown;
 	float PartyOpenK = 0.f;
 	FString PartyWhyWord[ftcore::kUiPartyWhyCount];
@@ -4525,12 +4555,12 @@ private:
 
 // The party screen in explore (the new UI, FT::NewUiEnabled): explore has no new-UI party block to open in place, so
 // the fight HUD's party rows stand alone, bottom left, while the explore character's screen is open, in the same
-// fonts, inks, shade and underline (PaintParty's), fading over PartyOpenTime. From the bottom margin up: FOLLOW or
-// WAIT HERE (what picking the row does to the followers) at label size; the lead's name at the lead's size in full
-// ink; the partner's at the partner's size (PartyOtherInk, full ink on the cursor; with no other playable look
-// PARTNER at PartyRefusedInk with NOT HERE); the Third's name alone at PartyThirdInk (no gift slot out of a fight),
-// not drawn without one. Each row stands PartyRowGap px over the capitals of the one under it; the cursor's has the
-// reply underline under its name.
+// fonts, shade and marks, each row's ink and marks from Core's uiPartyRowView as PaintParty's, fading over
+// PartyOpenTime. From the bottom margin up: FOLLOW or WAIT HERE (what picking the row does to the followers) at label
+// size; the lead's name at the lead's size with the current lead's dot before it; the partner's at the partner's size
+// (with no other playable look PARTNER at PartyRefusedInk with NOT HERE); the Third's name alone at kUiPartyThirdInk
+// (no gift slot out of a fight), not drawn without one. The cursor's row at full ink with the underline across its name
+// or word, the others at kUiPartyOtherInk. Each row stands PartyRowGap px over the capitals of the one under it.
 class SFTExploreParty : public SLeafWidget
 {
 public:
@@ -4575,7 +4605,7 @@ public:
 			BuiltHeight = H;
 			BuildFonts(H);
 		}
-		Cursor = C->GetPartyScreen().cursor;
+		ScreenShown = C->GetPartyScreen();
 		const TArray<FFTLeadLook>& Looks = C->PartyLooks;
 		const auto LookName = [&Looks](int32 I) -> const FString& { return Looks.IsValidIndex(I) ? Looks[I].Name : NoName(); };
 		bPartnerHere = Looks.IsValidIndex(C->GetPartnerIndex());
@@ -4608,33 +4638,29 @@ public:
 		const float LeadBase = FollowBase - 0.62f * NoteAsc - Gap;
 		const float PartnerBase = LeadBase - 0.62f * LeadNameAsc - Gap;
 		const float ThirdBase = PartnerBase - 0.62f * PartnerNameAsc - Gap;
-		const auto Ink = [K](float A) { return Tok(UiToken::Ink, A * K); };
-		const auto Under = [&](ftcore::UiPartyRow Row, float Base)
-		{
-			if (Cursor == Row)
-			{
-				ReplyUnderline(Mesh, Line, X0, Base + Hud::PartyUnder * S, S, Ink(1.f));
-			}
-		};
+		const auto Ink = [K](float Alpha) { return Tok(UiToken::Ink, Alpha * K); };
+		const auto RowView = [this](ftcore::UiPartyRow Row, ftcore::UiPartyWhy Why, float W) { return ftcore::uiPartyRowView(ScreenShown, Row, Why, W); };
 		Mesh.Begin(Geometry, S);
 		// The fight HUD's one shade under the party.
 		Mesh.Band(0.f, Size.Y - Hud::BottomShadeH * S, Size.X, Size.Y, true, true, 1.f, Hud::BottomShade * K, Tok(UiToken::Backing, 1.f));
-		const ftcore::UiPartyRow Follow = ftcore::UiPartyRow::Follow;
-		P.Text(X0, FollowBase - NoteAsc, bFollowing ? WaitHereWord : FollowWord, NoteFont, Ink(Cursor == Follow ? 1.f : Hud::PartyOtherInk));
-		Under(Follow, FollowBase);
-		P.Text(X0, LeadBase - LeadNameAsc, LeadRow.Text, LeadNameFont, Ink(1.f));
-		Under(ftcore::UiPartyRow::Lead, LeadBase);
-		const ftcore::UiPartyRow Partner = ftcore::UiPartyRow::Partner;
-		const float PInk = !bPartnerHere ? Hud::PartyRefusedInk : Cursor == Partner ? 1.f : Hud::PartyOtherInk;
-		P.Text(X0, PartnerBase - PartnerNameAsc, PartnerRow.Text, PartnerNameFont, Ink(PInk));
+		const ftcore::UiPartyRowView FView = RowView(ftcore::UiPartyRow::Follow, ftcore::UiPartyWhy::Unknown, bFollowing ? WaitHereW : FollowW);
+		P.Text(X0, FollowBase - NoteAsc, bFollowing ? WaitHereWord : FollowWord, NoteFont, Ink(FView.ink));
+		PartyMarks(Mesh, Line, FView, X0, FollowBase, NoteAsc, S, K, 1.f);
+		const ftcore::UiPartyRowView LView = RowView(ftcore::UiPartyRow::Lead, ftcore::UiPartyWhy::Ok, LeadRow.W);
+		P.Text(X0, LeadBase - LeadNameAsc, LeadRow.Text, LeadNameFont, Ink(LView.ink));
+		PartyMarks(Mesh, Line, LView, X0, LeadBase, LeadNameAsc, S, K, 1.f);
+		const ftcore::UiPartyWhy PWhy = bPartnerHere ? ftcore::UiPartyWhy::Unknown : ftcore::UiPartyWhy::NotHere;
+		const ftcore::UiPartyRowView PView = RowView(ftcore::UiPartyRow::Partner, PWhy, PartnerRow.W);
+		P.Text(X0, PartnerBase - PartnerNameAsc, PartnerRow.Text, PartnerNameFont, Ink(PView.ink));
 		if (!bPartnerHere)
 		{
 			P.Text(X0 + PartnerRow.W + 16.f * S, PartnerBase - NoteAsc, NotHereWord, NoteFont, Ink(Hud::PartyRefusedInk));
 		}
-		Under(Partner, PartnerBase);
+		PartyMarks(Mesh, Line, PView, X0, PartnerBase, PartnerNameAsc, S, K, 1.f);
 		if (bThirdHere)
 		{
-			P.Text(X0, ThirdBase - PartnerNameAsc, ThirdRow.Text, PartnerNameFont, Ink(Hud::PartyThirdInk));
+			const ftcore::UiPartyRowView TView = RowView(ftcore::UiPartyRow::Third, ftcore::UiPartyWhy::Unknown, ThirdRow.W);
+			P.Text(X0, ThirdBase - PartnerNameAsc, ThirdRow.Text, PartnerNameFont, Ink(TView.ink));
 		}
 		Mesh.Flush(Out, Layer + 1);
 		return Layer + 5;
@@ -4685,12 +4711,14 @@ private:
 		FollowWord = kFollowUi.Get().ToUpper();
 		WaitHereWord = kWaitHereUi.Get().ToUpper();
 		NotHereWord = kNotHereUi.Get().ToUpper();
+		FollowW = TextWidth(FollowWord, NoteFont);
+		WaitHereW = TextWidth(WaitHereWord, NoteFont);
 	}
 
 	TFunction<const AFTExploreCharacter*()> GetLead;
 	float OpenK = 0.f;
 	float BuiltHeight = 0.f;
-	ftcore::UiPartyRow Cursor = ftcore::UiPartyRow::Lead;
+	ftcore::UiPartyScreen ScreenShown; // as of the last tick it stood open: a closing screen fades with the rows it had
 	bool bPartnerHere = false;
 	bool bThirdHere = false;
 	bool bFollowing = true;
@@ -4698,6 +4726,7 @@ private:
 	FSlateFontInfo LeadNameFont, PartnerNameFont, NoteFont;
 	float LeadNameAsc = 0.f, PartnerNameAsc = 0.f, NoteAsc = 0.f;
 	FString FollowWord, WaitHereWord, NotHereWord;
+	float FollowW = 0.f, WaitHereW = 0.f;
 	mutable FTextRuns TextRuns;
 	FDelegateHandle FontRelease;
 	mutable FLineMesh Mesh;

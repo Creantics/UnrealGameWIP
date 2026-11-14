@@ -6,7 +6,8 @@
 //   each tick: const UiPartyOut out = uiPartyScreenStep(s, in, dt);
 //              out.map: explore's short press of the map key, let go (the map itself)
 //              out.closed: the screen shut this tick; out.picked(): with a row other than the controlled lead's
-//   draw: while s.open, the rows (Third, partner, lead, then Follow in explore), s.cursor's row underlined
+//   draw: while s.open, the rows (Third, partner, lead, then Follow in explore), each as uiPartyRowView says: the
+//         cursor's row at full ink underlined across its name, the others dimmer, a dot before the current lead's name
 //
 // Open: Party's own key down opens at once. The map key (the pad's only way to Party, route map_hold) opens at once
 // in a fight, which has no map; in explore it opens once held kUiPartyHold, and a shorter press is the map.
@@ -90,5 +91,35 @@ FTCORE_API bool uiPartyRefused(UiPartyWhy w);
 // NotInFight and Lone NOT HERE, FightOver FIGHT OVER, Cooldown WAIT. Each answer has its case, so a new one fails
 // the Core build (-Wswitch) until it has a word.
 FTCORE_API UiPartyWhy uiPartyWhyOf(LeadSwitch r);
+
+// The open screen's rows as drawn (the HUD measures the names and draws; the closed block keeps its own inks, and the
+// HUD eases from those to these as the screen opens).
+inline constexpr float kUiPartyOtherInk = 0.7f;   // a lead row (or Follow) off the cursor
+inline constexpr float kUiPartyRefusedInk = 0.4f; // a refused lead row, its word too, on the cursor or off it
+inline constexpr float kUiPartyThirdInk = 0.7f;   // the Third's row, never the cursor
+// The current lead's dot: a filled circle kUiPartyDotCap of the name's cap height across, centred on its capitals,
+// hung kUiPartyDotGap of the cap height before the name's left (in the margin: the name keeps its place over its line).
+inline constexpr float kUiPartyDotCap = 0.35f;
+inline constexpr float kUiPartyDotGap = 0.35f;
+
+struct UiPartyRowView {
+    float ink = 1.f;        // the name's
+    float underlineW = 0.f; // the cursor's underline from the name's left, as long as the name (0: none)
+    bool dot = false;       // the current lead's dot before the name
+};
+
+// A row of the open screen: the cursor's row at full ink with the underline across its measured name (nameW px); a
+// refused lead row at kUiPartyRefusedInk, the cursor's or not (the cursor still underlines it); every other lead row
+// and Follow at kUiPartyOtherInk; the Third at kUiPartyThirdInk, never underlined. The dot marks the controlled lead's
+// row (Lead) whether the cursor is on it or not. `why` counts on the partner's and the lead's rows only. Closed: the
+// plain row (full ink, nothing marked).
+FTCORE_API UiPartyRowView uiPartyRowView(const UiPartyScreen& s, UiPartyRow r, UiPartyWhy why, float nameW);
+
+struct UiPartyDot {
+    float x = 0.f, y = 0.f; // centre, px
+    float r = 0.f;
+};
+// The dot's place for a name drawn from nameX whose capitals are capH px tall, their middle at capMid.
+FTCORE_API UiPartyDot uiPartyDot(float nameX, float capMid, float capH);
 
 } // namespace ftcore

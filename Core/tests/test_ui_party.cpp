@@ -465,3 +465,110 @@ TEST_CASE("ui party: stepping allocates nothing") {
     if (counting) CHECK(ftcore_test::allocStats().count == before);
     CHECK_FALSE(s.open);
 }
+
+namespace {
+
+UiPartyScreen openOn(UiPartyRow cursor, bool explore = false) {
+    UiPartyScreen s;
+    s.open = true;
+    s.explore = explore;
+    s.cursor = cursor;
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("ui party view: the cursor on the partner (the party still)") {
+    const UiPartyScreen s = openOn(UiPartyRow::Partner);
+    const UiPartyRowView p = uiPartyRowView(s, UiPartyRow::Partner, UiPartyWhy::Ok, 132.f);
+    CHECK(p.ink == doctest::Approx(1.f));
+    CHECK(p.underlineW == doctest::Approx(132.f)); // the whole name, not a stub
+    CHECK_FALSE(p.dot);
+    const UiPartyRowView l = uiPartyRowView(s, UiPartyRow::Lead, UiPartyWhy::Ok, 180.f);
+    CHECK(l.ink == doctest::Approx(kUiPartyOtherInk)); // the controlled lead's name off the cursor dims
+    CHECK(l.underlineW == 0.f);
+    CHECK(l.dot); // and keeps its dot
+    const UiPartyRowView t = uiPartyRowView(s, UiPartyRow::Third, UiPartyWhy::Unknown, 90.f);
+    CHECK(t.ink == doctest::Approx(kUiPartyThirdInk));
+    CHECK(t.underlineW == 0.f);
+    CHECK_FALSE(t.dot);
+}
+
+TEST_CASE("ui party view: a refused partner under the cursor stays dim and is still underlined (party_refused)") {
+    const UiPartyScreen s = openOn(UiPartyRow::Partner);
+    const UiPartyRowView p = uiPartyRowView(s, UiPartyRow::Partner, UiPartyWhy::Down, 132.f);
+    CHECK(p.ink == doctest::Approx(kUiPartyRefusedInk));
+    CHECK(p.underlineW == doctest::Approx(132.f)); // the name's width only, not its word
+    CHECK_FALSE(p.dot);
+    const UiPartyRowView off = uiPartyRowView(openOn(UiPartyRow::Lead), UiPartyRow::Partner, UiPartyWhy::Wait, 132.f);
+    CHECK(off.ink == doctest::Approx(kUiPartyRefusedInk));
+    CHECK(off.underlineW == 0.f);
+    const UiPartyRowView l = uiPartyRowView(s, UiPartyRow::Lead, UiPartyWhy::Ok, 180.f);
+    CHECK(l.ink == doctest::Approx(kUiPartyOtherInk));
+    CHECK(l.dot);
+}
+
+TEST_CASE("ui party view: the cursor on the lead, the partner not here (party_lone)") {
+    const UiPartyScreen s = openOn(UiPartyRow::Lead);
+    const UiPartyRowView l = uiPartyRowView(s, UiPartyRow::Lead, UiPartyWhy::Ok, 180.f);
+    CHECK(l.ink == doctest::Approx(1.f));
+    CHECK(l.underlineW == doctest::Approx(180.f));
+    CHECK(l.dot); // cursor and dot together
+    const UiPartyRowView p = uiPartyRowView(s, UiPartyRow::Partner, UiPartyWhy::NotHere, 132.f);
+    CHECK(p.ink == doctest::Approx(kUiPartyRefusedInk));
+    CHECK(p.underlineW == 0.f);
+    // Unknown (no session to ask) stands undimmed: the other-row ink, not the refused one.
+    CHECK(uiPartyRowView(s, UiPartyRow::Partner, UiPartyWhy::Unknown, 132.f).ink == doctest::Approx(kUiPartyOtherInk));
+}
+
+TEST_CASE("ui party view: explore's Follow row takes the cursor like a lead row, a reason does not dim it") {
+    const UiPartyScreen on = openOn(UiPartyRow::Follow, true);
+    const UiPartyRowView f = uiPartyRowView(on, UiPartyRow::Follow, UiPartyWhy::Down, 120.f);
+    CHECK(f.ink == doctest::Approx(1.f));
+    CHECK(f.underlineW == doctest::Approx(120.f));
+    CHECK_FALSE(f.dot);
+    const UiPartyRowView l = uiPartyRowView(on, UiPartyRow::Lead, UiPartyWhy::Unknown, 180.f);
+    CHECK(l.ink == doctest::Approx(kUiPartyOtherInk));
+    CHECK(l.dot);
+    CHECK(uiPartyRowView(openOn(UiPartyRow::Lead, true), UiPartyRow::Follow, UiPartyWhy::Unknown, 120.f).ink ==
+          doctest::Approx(kUiPartyOtherInk));
+}
+
+TEST_CASE("ui party view: the Third never takes the cursor's marks, and a closed screen marks nothing") {
+    UiPartyScreen s = openOn(UiPartyRow::Third); // not a place the step puts it
+    const UiPartyRowView t = uiPartyRowView(s, UiPartyRow::Third, UiPartyWhy::Ok, 90.f);
+    CHECK(t.ink == doctest::Approx(kUiPartyThirdInk));
+    CHECK(t.underlineW == 0.f);
+    CHECK_FALSE(t.dot);
+    s = openOn(UiPartyRow::Lead);
+    CHECK(uiPartyRowView(s, UiPartyRow::Lead, UiPartyWhy::Ok, 0.f).underlineW == 0.f); // no measured name, no line
+    s.open = false;
+    for (const UiPartyRow r : {UiPartyRow::Third, UiPartyRow::Partner, UiPartyRow::Lead, UiPartyRow::Follow}) {
+        const UiPartyRowView v = uiPartyRowView(s, r, UiPartyWhy::Down, 100.f);
+        CHECK(v.ink == doctest::Approx(1.f));
+        CHECK(v.underlineW == 0.f);
+        CHECK_FALSE(v.dot);
+    }
+}
+
+TEST_CASE("ui party view: the dot hangs before the name, centred on its capitals") {
+    const UiPartyDot d = uiPartyDot(64.f, 900.f, 25.f);
+    CHECK(d.r == doctest::Approx(0.5f * kUiPartyDotCap * 25.f));
+    CHECK(d.y == doctest::Approx(900.f));
+    CHECK(d.x + d.r == doctest::Approx(64.f - kUiPartyDotGap * 25.f)); // its right edge a gap short of the name
+    CHECK(d.x - d.r > 0.f);                                             // inside a 64 px margin
+    CHECK(uiPartyDot(64.f, 900.f, -3.f).r == 0.f);
+}
+
+TEST_CASE("ui party view: allocates nothing") {
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    float sum = 0.f;
+    for (int i = 0; i < 100; ++i) {
+        const UiPartyScreen s = openOn(i % 2 ? UiPartyRow::Lead : UiPartyRow::Partner);
+        sum += uiPartyRowView(s, UiPartyRow::Partner, UiPartyWhy::Down, 100.f).underlineW;
+        sum += uiPartyDot(64.f, 900.f, 25.f).r;
+    }
+    if (counting) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(sum > 0.f);
+}

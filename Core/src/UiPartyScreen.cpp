@@ -147,4 +147,28 @@ UiPartyWhy uiPartyWhyOf(LeadSwitch r) {
     return UiPartyWhy::Unknown;
 }
 
+UiPartyRowView uiPartyRowView(const UiPartyScreen& s, UiPartyRow r, UiPartyWhy why, float nameW) {
+    UiPartyRowView v;
+    if (!s.open) return v;
+    if (r == UiPartyRow::Third) {
+        v.ink = kUiPartyThirdInk;
+        return v;
+    }
+    const bool leadRow = r == UiPartyRow::Partner || r == UiPartyRow::Lead;
+    const bool cursor = s.cursor == r && uiPartyRowSelectable(r, s.explore);
+    v.ink = leadRow && uiPartyRefused(why) ? kUiPartyRefusedInk : cursor ? 1.f : kUiPartyOtherInk;
+    v.underlineW = cursor && nameW > 0.f ? nameW : 0.f;
+    v.dot = r == UiPartyRow::Lead;
+    return v;
+}
+
+UiPartyDot uiPartyDot(float nameX, float capMid, float capH) {
+    UiPartyDot d;
+    const float h = capH > 0.f ? capH : 0.f;
+    d.r = 0.5f * kUiPartyDotCap * h;
+    d.x = nameX - kUiPartyDotGap * h - d.r;
+    d.y = capMid;
+    return d;
+}
+
 } // namespace ftcore
