@@ -38,7 +38,7 @@ namespace
 {
 const TCHAR* const kTag = TEXT("FTBuildWaveMaterials");
 
-FString PackageFile(const FString& Package)
+FString WavePackageFile(const FString& Package)
 {
 	return FPackageName::LongPackageNameToFilename(Package, FPackageName::GetAssetPackageExtension());
 }
@@ -310,7 +310,7 @@ bool Save(UObject* Asset)
 	FSavePackageArgs Args;
 	Args.TopLevelFlags = RF_Public | RF_Standalone;
 	Args.SaveFlags = SAVE_NoError;
-	const FString File = PackageFile(Package->GetName());
+	const FString File = WavePackageFile(Package->GetName());
 	if (!UPackage::SavePackage(Package, Asset, *File, Args))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("%s: couldn't save %s."), kTag, *File);
@@ -436,14 +436,14 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	}
 	for (const FString& Package : Packages)
 	{
-		const FString File = PackageFile(Package);
+		const FString File = WavePackageFile(Package);
 		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("%s: couldn't replace %s."), kTag, *File);
 			return 1;
 		}
 	}
-	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(FTWorldWave::InkMaterialPath)), true);
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(WavePackageFile(FTWorldWave::InkMaterialPath)), true);
 
 	UMaterialParameterCollection* Look = FTWorldWave::LoadOrBuild();
 	if (!Look)

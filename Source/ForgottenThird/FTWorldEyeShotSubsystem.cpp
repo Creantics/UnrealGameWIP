@@ -303,6 +303,15 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	// The same name again only proves the new still landed once the old one is gone.
 	IFileManager::Get().Delete(*File, false, true, true);
 	bActive = true;
+	// A fixed-step capture holds the world wave's clock from the first frame on (Tick keeps it at -1 until the walk), so a
+	// boot wave (-WorldWaveAt) never sees game time and never starts early.
+	if (bWalk)
+	{
+		if (UFTWorldWaveSubsystem* WaveClock = InWorld.GetSubsystem<UFTWorldWaveSubsystem>())
+		{
+			WaveClock->SetClock(-1.0);
+		}
+	}
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("WorldEyeShot: eye (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f) in the plan frame, %.1f mm (%.1f degrees across), "
 			 "engine eye %s, yaw %.2f, pitch %.2f; %s to %s after %.1f s."),

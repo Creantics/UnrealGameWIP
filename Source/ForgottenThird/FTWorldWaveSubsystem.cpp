@@ -501,6 +501,11 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 	{
 		SetExposureHold(true);
 	}
+	else if (bExposureHeld && Time < Params.startTime)
+	{
+		// A held clock set back before the start (a capture's settle): the eye adapts freely again until it starts.
+		SetExposureHold(false);
+	}
 
 	if (UMaterialParameterCollectionInstance* Mpc = MpcLook ? World.GetParameterCollectionInstance(MpcLook) : nullptr)
 	{

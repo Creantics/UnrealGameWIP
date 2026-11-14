@@ -225,7 +225,7 @@ int32 WriteTestMap(const FString& MapPath, const FBoxSample& Box, const AWorldSe
 	const FVector Size = Box.Size;
 	const double Width = Size.X * 100.0, Depth = Size.Y * 100.0, Height = Size.Z * 100.0;
 	const double Pitch = Width + 2000.0; // 20 m between neighbours
-	const int32 Ways = 5;
+	const int32 Ways = 6;
 	const auto Place = [&](int32 I) { return FTransform(FRotator::ZeroRotator, FVector(I * Pitch, 0.0, Height * 0.5), Size); };
 	const int32 Floats = Source.NumCustomDataFloats;
 	TArray<float> Custom;
@@ -255,7 +255,7 @@ int32 WriteTestMap(const FString& MapPath, const FBoxSample& Box, const AWorldSe
 	Materials(*Plain->GetStaticMeshComponent());
 	Plain->SetActorLabel(TEXT("CardTest_a_actor"));
 
-	const auto MakeHism = [&](int32 Way, const TCHAR* Label, bool bOurFlags, int32 GroupId, bool bTwo)
+	const auto MakeHism = [&](int32 Way, const TCHAR* Label, bool bOurFlags, int32 GroupId, bool bTwo, bool bHierarchical)
 	{
 		AActor* Holder = World->SpawnActor<AActor>(FVector(Way * Pitch, 0.0, 0.0), FRotator::ZeroRotator, Spawn);
 		USceneComponent* Root = NewObject<USceneComponent>(Holder, TEXT("Root"));
@@ -264,7 +264,9 @@ int32 WriteTestMap(const FString& MapPath, const FBoxSample& Box, const AWorldSe
 		Holder->AddInstanceComponent(Root);
 		Root->RegisterComponent();
 		Holder->SetActorLabel(Label);
-		UHierarchicalInstancedStaticMeshComponent* Component = NewObject<UHierarchicalInstancedStaticMeshComponent>(Holder, TEXT("Box"));
+		UInstancedStaticMeshComponent* Component = bHierarchical
+			? NewObject<UHierarchicalInstancedStaticMeshComponent>(Holder, TEXT("Box"))
+			: NewObject<UInstancedStaticMeshComponent>(Holder, TEXT("Box"));
 		Component->CreationMethod = EComponentCreationMethod::Instance;
 		Component->SetStaticMesh(Cube);
 		Materials(*Component);
@@ -281,7 +283,10 @@ int32 WriteTestMap(const FString& MapPath, const FBoxSample& Box, const AWorldSe
 			Component->SetAffectDistanceFieldLighting(Source.bAffectDistanceFieldLighting);
 			Component->SetAffectDynamicIndirectLighting(Source.bAffectDynamicIndirectLighting);
 			Component->SetNumCustomDataFloats(Floats);
-			Component->bAutoRebuildTreeOnInstanceChanges = Source.bAutoRebuildTreeOnInstanceChanges;
+			if (UHierarchicalInstancedStaticMeshComponent* Tree = Cast<UHierarchicalInstancedStaticMeshComponent>(Component))
+			{
+				Tree->bAutoRebuildTreeOnInstanceChanges = Source.bAutoRebuildTreeOnInstanceChanges;
+			}
 			Component->ComponentTags = Source.ComponentTags;
 		}
 		Component->RayTracingGroupId = GroupId;
@@ -302,13 +307,18 @@ int32 WriteTestMap(const FString& MapPath, const FBoxSample& Box, const AWorldSe
 				Component->SetCustomData(Id, Custom);
 			}
 		}
-		Component->BuildTreeIfOutdated(false, true);
+		if (UHierarchicalInstancedStaticMeshComponent* Tree = Cast<UHierarchicalInstancedStaticMeshComponent>(Component))
+		{
+			Tree->BuildTreeIfOutdated(false, true);
+		}
 		Component->MarkRenderStateDirty();
 	};
-	MakeHism(1, TEXT("CardTest_b_hism_default_1"), false, -1, false);
-	MakeHism(2, TEXT("CardTest_c_hism_ours_2"), true, -1, true);
-	MakeHism(3, TEXT("CardTest_d_hism_default_2"), false, -1, true);
-	MakeHism(4, TEXT("CardTest_e_hism_ours_2_rtgroup"), true, 7001, true);
+	MakeHism(1, TEXT("CardTest_b_hism_default_1"), false, -1, false, true);
+	MakeHism(2, TEXT("CardTest_c_hism_ours_2"), true, -1, true, true);
+	MakeHism(3, TEXT("CardTest_d_hism_default_2"), false, -1, true, true);
+	MakeHism(4, TEXT("CardTest_e_hism_ours_2_rtgroup"), true, 7001, true, true);
+	// (f) a plain instanced static mesh component (not hierarchical), our flags, two instances.
+	MakeHism(5, TEXT("CardTest_f_ism_ours_2"), true, -1, true, false);
 
 	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-35, 150, 0));
 	APlayerStart* Start = World->SpawnActor<APlayerStart>(FVector(-3000.0, -3000.0, 100.0), FRotator::ZeroRotator, Spawn);
