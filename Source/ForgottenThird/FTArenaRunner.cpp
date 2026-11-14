@@ -1729,6 +1729,8 @@ void UFTArenaRunner::BeginSession()
 	CappedBlows = 0;
 	LoneEndedAt = -1.0;
 	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = LonePartnerCalls = LonePartnerEnds = 0;
+	SessionTakeovers = SessionRises = 0;
+	bSessionDefeated = false;
 	bLoneGiftDone = false;
 	LoneGift = {};
 	PartnerLoadTime = -1e9;
@@ -1737,6 +1739,9 @@ void UFTArenaRunner::BeginSession()
 	if (Session)
 	{
 		ftcore::FightSessionDef SessionDef;
+		// Only the controlled lead stands in this ring (no partner body): the session's fall rules then make its 0 the
+		// fight's loss, as before them; no takeover to a body that is not there, no stand-up after 30 s.
+		SessionDef.inFight = {SessionLead == ftcore::kLeadA, SessionLead == ftcore::kLeadB};
 		if (bCountLift)
 		{
 			SessionDef.lift = true;
@@ -2146,8 +2151,13 @@ void UFTArenaRunner::FeedSession()
 		}
 	}
 	const float Held = Fight.heldTime();
+	// The lead's health every step: the session's fall feed (0 is down) and the gift Heal's NotHurt.
+	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
 	SessionHeld = Held;
+	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
+	SessionRises += Tick.leadsRose != 0 ? 1 : 0;
+	bSessionDefeated = bSessionDefeated || Tick.defeated;
 	if (Tick.loneCarryBegan)
 	{
 		LoneBargainAt = static_cast<double>(Fight.time());
@@ -4296,6 +4306,16 @@ void UFTArenaRunner::Finish()
 		PlayerFigure->ResetFeet(); // handed back (the story, the explore pawn, a result screen): nothing held carries over
 	}
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
+	if (Session)
+	{
+		// With no partner body the lead's 0 is the old loss: the session calls it a defeat too, never a takeover or a
+		// stand-up. n/a for a win.
+		const bool bLost = Fight.phase() == ftcore::ArenaPhase::Defeat;
+		const bool bFateOk = SessionTakeovers == 0 && SessionRises == 0 && bSessionDefeated == bLost;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone lead down %s (fight %s, session defeat %d, takeovers %d, rises %d)."),
+			!bLost ? TEXT("n/a") : (bFateOk ? TEXT("PASS") : TEXT("FAIL")), bLost ? TEXT("lost") : (bWon ? TEXT("won") : TEXT("ended")),
+			bSessionDefeated ? 1 : 0, SessionTakeovers, SessionRises);
+	}
 	if (Session && !bWon)
 	{
 		// A loss: a Lone Carry still on ends here (loneEndedBy reads FightEnded), nothing folds, and the next begin rolls
