@@ -95,7 +95,22 @@ GlassDetail glassDetail(float u, float v, float width, float height, float seed,
     d.bead = w * (br > 0.8f ? 1.f : 0.f) * (1.f - gsSmoothstep(0.15f, 0.35f, bd));
     d.rough = gsSaturate(0.02f + 0.30f * d.dust + 0.30f * d.streak + 0.35f * d.hand + 0.10f * d.bead);
     d.veil = gsSaturate(0.30f * d.dust + 0.05f * d.streak + 0.25f * d.hand);
+    d.mask = gsSmoothstep(0.035f, 0.10f, 0.30f * d.dust + 0.25f * d.hand + 0.5f * d.streak);
+    d.cover = kGlassDirtCover * d.mask;
+    for (int c = 0; c < 3; ++c) d.dim[static_cast<size_t>(c)] = 1.f + (kGlassDirtDim[static_cast<size_t>(c)] - 1.f) * d.mask;
     return d;
+}
+
+float glassMaskShare(float width, float height, float seed, float age, float handleU, float handleV, int n) {
+    if (n < 1) return 0.f;
+    int in = 0;
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            const float u = (static_cast<float>(i) + 0.5f) / static_cast<float>(n);
+            const float v = (static_cast<float>(j) + 0.5f) / static_cast<float>(n);
+            if (glassDetail(u, v, width, height, seed, age, 0.f, handleU, handleV).mask > 0.5f) ++in;
+        }
+    return static_cast<float>(in) / static_cast<float>(n * n);
 }
 
 std::string glassHlsl() {
@@ -149,6 +164,10 @@ float gBr = frac(sin((floor(gB.x) + gSeed * 7.0) * 127.1 + floor(gB.y) * 311.7) 
 float gBead = saturate(gWet) * step(0.8, gBr) * (1.0 - smoothstep(0.15, 0.35, length(frac(gB) - 0.5)));
 float gRough = saturate(0.02 + 0.30 * gDust + 0.30 * gStreak + 0.35 * gHand + 0.10 * gBead);
 float gVeil = saturate(0.30 * gDust + 0.05 * gStreak + 0.25 * gHand);
+float gMask = smoothstep(0.035, 0.10, 0.30 * gDust + 0.25 * gHand + 0.5 * gStreak);
+float gCover = 0.35 * gMask;
+float3 gDim = lerp(float3(1.0, 1.0, 1.0), float3(0.90, 0.85, 0.76), gMask);
+float3 gFilm = float3(0.085, 0.080, 0.068);
 float2 gWave = gA * 0.015 * float2(sin(gP.x * 5.1 + gSeed * 40.0), sin(gP.y * 4.3 + gSeed * 23.0));
 )HLSL";
 }

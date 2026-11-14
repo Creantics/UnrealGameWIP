@@ -948,14 +948,14 @@ std::string windowFacadeComposeHlsl(bool glass) {
         h += "float2 gUV = Pane.xy;\nfloat2 gSize = Pane.zw;\nfloat gSeed = PaneAge.x;\nfloat gAge = PaneAge.y;\n"
              "float gWet = Wet;\nfloat gCos = gCosV;\nfloat2 gHandle = float2(-1.0, 0.0);\nfloat gThick = 0.006;\n";
         h += glassHlsl();
-        h += "float gKeep = Glass ? (1.0 - gVeil) * (1.0 - gSeal) : 1.0;\n";
+        h += "float gKeep = Glass ? (1.0 - gCover) * (1.0 - gSeal) : 1.0;\n";
         h += "float3 gEdgeTint = lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), Glass ? gEdge : 0.0);\n";
-        h += "EmissiveOut = Glass ? Emit * gPass * float3(0.95, 0.99, 0.97) * gKeep * gEdgeTint : Emit;\n";
+        h += "EmissiveOut = Glass ? Emit * gPass * float3(0.95, 0.99, 0.97) * gDim * gKeep * gEdgeTint : Emit;\n";
         h += "SpecOut = Glass ? lerp(GlassSpec, 0.3, gSeal) : 0.5;\n";
         h += "RoughOut = Glass ? lerp(max(GlassRough, gRough), 0.6, gSeal) : RoughOut;\n";
         h += "NormalOut = Glass ? normalize(normalize(VertexNormal) + T * gWave.x + Nz * gWave.y) : NormalOut;\n";
         h += "float3 GlassAlbedo = lerp((Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo) * gPass * gEdgeTint + "
-             "float3(0.60, 0.58, 0.53) * gVeil, float3(0.02, 0.02, 0.02), gSeal);\n";
+             "gFilm * gCover, float3(0.02, 0.02, 0.02), gSeal);\n";
     } else {
         h += "EmissiveOut = Emit;\n";
         h += "float3 GlassAlbedo = Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo;\n";

@@ -113,6 +113,34 @@ TEST_CASE("glass: dirt gathers at the bottom edge and the corners, streaks hang 
     }
 }
 
+TEST_CASE("glass: only the dirt mask carries a diffuse film, on a small share of the pane, dark enough not to bloom") {
+    const auto before = ftcore_test::allocStats().count;
+    const float w = 1.8f, h = 2.6f;
+    // A clean shop front (age 0.15), with and without a door handle: at most 5% of the pane under the mask.
+    CHECK(glassMaskShare(w, h, 0.37f, 0.15f, -1.f, 0.f) <= kGlassMaskShareClean);
+    CHECK(glassMaskShare(w, h, 0.37f, 0.15f, 0.12f, 0.42f) <= kGlassMaskShareClean);
+    CHECK(glassMaskShare(w, h, 0.81f, 0.f, 0.12f, 0.42f) <= kGlassMaskShareClean);
+    // A neglected pane: dirtier, still at most 15%.
+    const float old = glassMaskShare(w, h, 0.37f, 1.f, 0.12f, 0.42f);
+    CHECK(old <= kGlassMaskShareOld);
+    CHECK(old > glassMaskShare(w, h, 0.37f, 0.15f, 0.12f, 0.42f));
+    CHECK(glassMaskShare(w, h, 0.37f, 0.15f, -1.f, 0.f, 0) == 0.f);
+    // The film's albedo stays under 0.1; off the mask nothing stops or tints the light passed.
+    for (float a : kGlassFilmAlbedo) CHECK(a < 0.1f);
+    const GlassDetail open = glassDetail(0.5f, 0.55f, w, h, 0.37f, 0.15f, 0.f, -1.f, 0.f);
+    CHECK(open.mask == 0.f);
+    CHECK(open.cover == 0.f);
+    for (float c : open.dim) CHECK(c == doctest::Approx(1.f));
+    // On the mask: darker and warmer (red passes more than blue), the dirt rougher.
+    const GlassDetail low = glassDetail(0.02f, 0.01f, w, h, 0.37f, 1.f, 0.f, -1.f, 0.f);
+    CHECK(low.mask > 0.5f);
+    CHECK(low.cover <= kGlassDirtCover);
+    CHECK(low.dim[0] < 1.f);
+    CHECK(low.dim[0] > low.dim[2]);
+    CHECK(low.rough > open.rough);
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+}
+
 TEST_CASE("glass: the maths allocates nothing; the shader block names what the materials read") {
     const auto before = ftcore_test::allocStats().count;
     float sum = 0.f;
@@ -125,7 +153,7 @@ TEST_CASE("glass: the maths allocates nothing; the shader block names what the m
     CHECK(sum > 0.f);
     if (ftcore_test::allocHookInstalled()) CHECK(after == before);
     const std::string code = glassHlsl();
-    for (const char* name : {"gMirror", "gTint", "gDust", "gStreak", "gHand", "gBead", "gSeal", "gEdge", "gRough", "gVeil", "gWave"})
+    for (const char* name : {"gMirror", "gTint", "gDust", "gStreak", "gHand", "gBead", "gSeal", "gEdge", "gRough", "gVeil", "gMask", "gCover", "gDim", "gFilm", "gWave"})
         CHECK(code.find(name) != std::string::npos);
     // No function definitions and no return: the block sits inside a Custom node's body.
     CHECK(code.find("return") == std::string::npos);

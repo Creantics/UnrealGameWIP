@@ -60,7 +60,22 @@ struct GlassDetail {
     float edge = 0.f;     // 1 on the dark edge of the pane just inside the seal
     float rough = 0.f;    // the surface's roughness with all of the above
     float veil = 0.f;     // the pale film the dirt lays over what is seen (0..1)
+    // Round 3 rebuild: real window glass has almost no diffuse term, so only the dirt mask carries any. `mask` 0..1 is
+    // where dust, streaks and hand marks lie (at most kGlassMaskShareClean of a clean shop pane's area, at most
+    // kGlassMaskShareOld of a neglected one's); `cover` the share of light the dirt there stops (kGlassDirtCover * mask);
+    // `dim` what the dirt leaves of the light passed (darker and warmer, 1 off the mask). The film's albedo is
+    // kGlassFilmAlbedo (under 0.1, so coarse lighting cannot bloom it).
+    float mask = 0.f;
+    float cover = 0.f;
+    std::array<float, 3> dim{1.f, 1.f, 1.f};
 };
+inline constexpr float kGlassMaskShareClean = 0.05f;  // a clean shop front (age <= 0.15)
+inline constexpr float kGlassMaskShareOld = 0.15f;    // a neglected pane (age 1)
+inline constexpr float kGlassDirtCover = 0.35f;
+inline constexpr std::array<float, 3> kGlassFilmAlbedo{0.085f, 0.080f, 0.068f};
+inline constexpr std::array<float, 3> kGlassDirtDim{0.90f, 0.85f, 0.76f};
+// The share of a pane's area under its dirt mask (mask over 0.5), sampled on an n x n grid. No allocation.
+FTCORE_API float glassMaskShare(float width, float height, float seed, float age, float handleU, float handleV, int n = 64);
 FTCORE_API GlassDetail glassDetail(float u, float v, float width, float height, float seed, float age, float wet,
                                    float handleU, float handleV);
 
@@ -68,7 +83,8 @@ FTCORE_API GlassDetail glassDetail(float u, float v, float width, float height, 
 //   float2 gUV (0..1 across and up the pane), float2 gSize (m), float gSeed (0..1), float gAge (0..1), float gWet (0..1),
 //   float gCos (view . normal), float2 gHandle (the handle's uv, x < 0 for none), float gThick (m)
 // and leaves: float gMirror (the pane's mirror share), float3 gTint, float gDust, gStreak, gHand, gBead, gSeal, gEdge,
-// gRough, gVeil, float2 gWave (a slope to bend the normal by, old panes only). Allocates: build time only.
+// gRough, gVeil, gMask, gCover, float3 gDim, float3 gFilm (the dirt film's albedo), float2 gWave (a slope to bend the
+// normal by, old panes only). A pane's lit diffuse is gFilm * gCover and nothing off the mask. Allocates: build time only.
 FTCORE_API std::string glassHlsl();
 
 // The pane a point x (metres along a glazed front) falls in, when the front's panes are cut at `cuts` (rising; the

@@ -196,10 +196,10 @@ const TCHAR* const kKitCodeB = TEXT(R"(	float px0 = PaneRect.x;
 	bool doorPane = hasPanes && !overDoor && (abs(lo - PaneDoor.x) < 0.02 || abs(lo - PaneDoor.y) < 0.02);
 	float2 gHandle = doorPane ? PaneDoor.zw : float2(-1.0, 0.0);
 )");
-const TCHAR* const kKitCodeC = TEXT(R"(	glow = iCol * (1.0 - gMirror) * gTint * (1.0 - gVeil) * (1.0 - gSeal) * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge);
+const TCHAR* const kKitCodeC = TEXT(R"(	glow = iCol * (1.0 - gMirror) * gTint * gDim * (1.0 - gCover) * (1.0 - gSeal) * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge);
 	// No point of any front's interior over the city's cap (the lamps' panels and pale goods included), the proof front too.
 	glow *= min(1.0, cap / max(dot(glow, float3(0.2126, 0.7152, 0.0722)), 1e-4));
-	base = lerp(float3(0.60, 0.58, 0.53) * gVeil, float3(0.02, 0.02, 0.02), gSeal);
+	base = lerp(gFilm * gCover, float3(0.02, 0.02, 0.02), gSeal);
 	rough = lerp(gRough, 0.6, gSeal);
 	metal = 0.0;
 	spec = lerp(0.96, 0.3, gSeal);

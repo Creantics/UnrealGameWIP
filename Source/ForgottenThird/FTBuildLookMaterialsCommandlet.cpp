@@ -1306,14 +1306,15 @@ FString GlassPaneCode()
 		"float gCos = abs(dot(normalize(VNormal), normalize(CamV)));\n"
 		"float2 gHandle = Handle.xy;\n");
 	Code += FT::ToFString(ftcore::glassHlsl());
-	Code += TEXT("float3 dirt = float3(0.60, 0.58, 0.53);\n"
-		"TintOut = gTint * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge) * (1.0 - gSeal);\n"
+	// Round 3 rebuild: no lit diffuse off the dirt mask (gCover 0 there); the dirt shows as roughness, a darker warmer
+	// passed light (gDim) and a film of albedo under 0.1 (gFilm) over at most a few percent of the pane.
+	Code += TEXT("TintOut = gTint * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge) * (1.0 - gSeal) * gDim;\n"
 		"RoughOut = lerp(gRough, 0.6, gSeal);\n"
 		"NormalOut = normalize(float3(gWave.x, gWave.y, 1.0));\n"
-		"OpacityOut = Mode > 0.5 ? saturate(gMirror + gVeil + gSeal) : saturate(gVeil + gSeal);\n"
-		"MetalOut = Mode > 0.5 ? (1.0 - saturate(gVeil + gSeal)) : 0.0;\n"
+		"OpacityOut = Mode > 0.5 ? saturate(gMirror + gCover + gSeal) : saturate(gCover + gSeal);\n"
+		"MetalOut = Mode > 0.5 ? (1.0 - saturate(gCover + gSeal)) : 0.0;\n"
 		"SpecOut = lerp(0.96, 0.3, gSeal) * SpecScale;\n"
-		"return Mode > 0.5 ? lerp(float3(1.0, 1.0, 1.0), lerp(dirt, float3(0.02, 0.02, 0.02), gSeal), saturate(gVeil + gSeal)) : lerp(dirt, float3(0.02, 0.02, 0.02), gSeal);\n");
+		"return Mode > 0.5 ? lerp(float3(1.0, 1.0, 1.0), lerp(gFilm, float3(0.02, 0.02, 0.02), gSeal), saturate(gCover + gSeal)) : lerp(gFilm, float3(0.02, 0.02, 0.02), gSeal);\n");
 	return Code;
 }
 
@@ -1428,11 +1429,11 @@ UMaterial* BuildGlassOver(UMaterialParameterCollection* Look, UTexture* Goods)
 		"float gCos = abs(dot(n, V));\n"
 		"float2 gHandle = Handle.xy;\n");
 	Code += FT::ToFString(ftcore::glassHlsl());
-	Code += TEXT("EmissiveOut = iCol * (1.0 - gMirror) * gTint * (1.0 - gVeil) * (1.0 - gSeal) * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge);\n"
+	Code += TEXT("EmissiveOut = iCol * (1.0 - gMirror) * gTint * gDim * (1.0 - gCover) * (1.0 - gSeal) * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge);\n"
 		"RoughOut = lerp(gRough, 0.6, gSeal);\n"
 		"SpecOut = lerp(0.96, 0.3, gSeal);\n"
 		"NormalOut = normalize(n + hx * gWave.x + float3(0.0, 0.0, 1.0) * gWave.y);\n"
-		"return lerp(float3(0.60, 0.58, 0.53) * gVeil, float3(0.02, 0.02, 0.02), gSeal);\n");
+		"return lerp(gFilm * gCover, float3(0.02, 0.02, 0.02), gSeal);\n");
 	UMaterialExpressionCustom* Over = AddCustom(Material, TEXT("FTGlassOver"), *Code, CMOT_Float3, 0);
 	AddInput(Over, TEXT("LocalPos"), AddExpression<UMaterialExpressionLocalPosition>(Material, -900, -400));
 	AddInput(Over, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, -300));

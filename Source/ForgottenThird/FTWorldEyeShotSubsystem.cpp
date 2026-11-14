@@ -512,6 +512,21 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		bShot = true;
 		return;
 	}
+	// -WorldEyeExecAtShot="cmd;cmd": console commands run on the settled frame of every still (a one-frame diagnostic
+	// such as r.LumenScene.DumpStats, which -ExecCmds would fire on the first frame after the map's load).
+	{
+		FString AtShot;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeExecAtShot="), AtShot, false) && !AtShot.IsEmpty())
+		{
+			TArray<FString> Cmds;
+			AtShot.TrimQuotes().ParseIntoArray(Cmds, TEXT(";"), true);
+			for (const FString& Cmd : Cmds)
+			{
+				Viewport->Exec(World, *Cmd.TrimStartAndEnd(), *GLog);
+				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: at the shot, ran '%s'."), *Cmd.TrimStartAndEnd());
+			}
+		}
+	}
 	Viewport->Exec(World, *FString::Printf(TEXT("HighResShot %s filename=\"%s\""), *Size, *File), *GLog);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: shooting after %.1f s settled."), Waited);
 	bShot = true;
