@@ -37,12 +37,14 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::Jump, "jump", InputContext::Foot, false, "SpaceBar", "Gamepad_FaceButton_Bottom"},
     {InputAction::Interact, "interact", InputContext::Foot, false, "E", "Gamepad_FaceButton_Left"},
     {InputAction::Run, "run", InputContext::Foot, true, "LeftShift", ""},
-    {InputAction::Crouch, "crouch", InputContext::Foot, true, "C", "Gamepad_DPad_Left"},
+    // Pad (ruled 2026-11-14): the left stick click, which a fight reads as Intercept (inputActionScope).
+    {InputAction::Crouch, "crouch", InputContext::Foot, true, "C", "Gamepad_LeftThumbstick"},
     {InputAction::Intercept, "intercept", InputContext::Foot, true, "V", "Gamepad_LeftThumbstick"},
     {InputAction::LockOn, "lock_on", InputContext::Foot, false, "MiddleMouseButton", "Gamepad_RightThumbstick"},
     {InputAction::TargetPrev, "target_prev", InputContext::Foot, false, "", ""},
     {InputAction::TargetNext, "target_next", InputContext::Foot, false, "", ""},
-    {InputAction::SwitchLead, "switch_lead", InputContext::Foot, false, "Tab", "Gamepad_DPad_Right"},
+    // Pad: no button (ruled 2026-11-14); the party menu switches the lead (route "party_menu").
+    {InputAction::SwitchLead, "switch_lead", InputContext::Foot, false, "Tab", ""},
     {InputAction::Party, "party", InputContext::Foot, false, "P", ""},
     {InputAction::Map, "map", InputContext::Foot, false, "M", "Gamepad_Special_Left"},
     {InputAction::Pause, "pause", InputContext::Foot, false, "Escape", "Gamepad_Special_Right"},
@@ -55,10 +57,10 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::LineNext, "line_next", InputContext::ReadHeld, false, "S", "Gamepad_LeftStick_Down"},
     // Pad: no free Foot button; take half is Guard held plus Interact (route "guard_interact").
     {InputAction::TakeHalf, "take_half", InputContext::Foot, false, "T", ""},
-    // Pad: no free Foot button either, and no modifier chord; unbound there until the pad's layout is ruled
-    // (inputPadPending).
-    {InputAction::GiftHeal, "gift_heal", InputContext::Foot, false, "G", ""},
-    {InputAction::GiftGuard, "gift_guard", InputContext::Foot, false, "Y", ""},
+    // Pad (ruled 2026-11-14): D-pad left and right, freed by crouch's move to the stick click and switch lead's to
+    // the party menu.
+    {InputAction::GiftHeal, "gift_heal", InputContext::Foot, false, "G", "Gamepad_DPad_Left"},
+    {InputAction::GiftGuard, "gift_guard", InputContext::Foot, false, "Y", "Gamepad_DPad_Right"},
     // The partner's order (StayClose, Spread). Pad: no free Foot button; unbound there until ruled (inputPadPending).
     // No controls line names it until the host reads it (the hints_read check).
     {InputAction::PartnerOrder, "partner_order", InputContext::Foot, false, "B", ""},
@@ -99,6 +101,28 @@ bool parseInputAction(std::string_view key, InputAction& out) {
 InputContext inputActionContext(InputAction a) { return row(a).context; }
 bool inputActionHeld(InputAction a) { return row(a).held; }
 
+InputScope inputActionScope(InputAction a) {
+    switch (a) {
+    case InputAction::Crouch: return InputScope::Field;
+    case InputAction::Intercept: return InputScope::Fight;
+    default: break;
+    }
+    return InputScope::Any;
+}
+
+bool inputActionLive(InputAction a, bool inFight) {
+    const InputScope s = inputActionScope(a);
+    return s == InputScope::Any || (s == InputScope::Fight) == inFight;
+}
+
+namespace {
+// A Field action and a Fight action are never read in one place, so they may share a key.
+bool scopesApart(InputAction a, InputAction b) {
+    const InputScope sa = inputActionScope(a), sb = inputActionScope(b);
+    return sa != InputScope::Any && sb != InputScope::Any && sa != sb;
+}
+} // namespace
+
 InputBindings defaultInputBindings() {
     InputBindings b;
     for (const ActionRow& r : kRows) {
@@ -137,7 +161,7 @@ bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice d, std::st
     if (key.empty()) return false;
     const auto& keys = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount];
     for (const ActionRow& r : kRows) {
-        if (r.action == a || r.context != inputActionContext(a)) continue;
+        if (r.action == a || r.context != inputActionContext(a) || scopesApart(r.action, a)) continue;
         if (keys[static_cast<std::size_t>(r.action)].view() == key) {
             clash = r.action;
             return true;
@@ -174,21 +198,20 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     case InputAction::TargetNext: return pad ? "right_stick_flick" : "mouse_flick";
     case InputAction::Party: return "map_hold";
     case InputAction::TakeHalf: return pad ? "guard_interact" : nullptr;
+    case InputAction::SwitchLead: return pad ? "party_menu" : nullptr;
     default: break;
     }
     return nullptr;
 }
 
-bool inputPadPending(InputAction a) {
-    return a == InputAction::GiftHeal || a == InputAction::GiftGuard || a == InputAction::PartnerOrder;
-}
+bool inputPadPending(InputAction a) { return a == InputAction::PartnerOrder; }
 
 namespace {
 
 // Whether two actions may not share a key on one device: the same context, or a Read-held action on Read's or Guard's
 // key (validateInputBindings' two rules).
 bool inputKeysConflict(InputAction a, InputAction b) {
-    if (a == b) return false;
+    if (a == b || scopesApart(a, b)) return false;
     const InputContext ca = inputActionContext(a), cb = inputActionContext(b);
     if (ca == cb) return true;
     const InputAction foot = ca == InputContext::Foot ? a : b;
@@ -201,6 +224,8 @@ bool reachableExcept(const InputBindings& b, const InputUnbound* skip, InputActi
         for (const ActionRow& r : kRows) {
             if (!b.keys[d][static_cast<std::size_t>(r.action)].empty()) continue;
             if (device == InputDevice::Pad && inputPadPending(r.action)) continue;
+            // A pad gift may stay unbound: a version-1 file's NO KEY gifts, saved again, read back as the player's "".
+            if (device == InputDevice::Pad && (r.action == InputAction::GiftHeal || r.action == InputAction::GiftGuard)) continue;
             if (skip && skip->left[d][static_cast<std::size_t>(r.action)]) continue;
             const char* route = inputActionRoute(r.action, device);
             // The party route rides the map button, so it needs one.
@@ -262,7 +287,10 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
     if (!doc.parse(text, &parseError)) return fail("bindings are not valid JSON: " + parseError);
     const JsonValue root = doc.root();
     if (!root.isObject()) return fail("bindings: the top level must be an object");
-    if (!root["version"].isInteger() || root["version"].integer() != 1) return fail("bindings: \"version\" must be 1");
+    const JsonValue version = root["version"];
+    if (!version.isInteger() || version.integer() < 1 || version.integer() > kInputBindingsVersion)
+        return fail("bindings: \"version\" must be 1 or 2");
+    const bool beforePadGifts = version.integer() == 1;
     InputBindings b = out;
     const InputBindings defaults = defaultInputBindings();
     InputUnbound left;
@@ -286,6 +314,10 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
             const JsonValue v = keys.value(i);
             if (!v.isString() || (!v.string().empty() && !validInputKeyName(v.string())))
                 return fail(where + ": must be a key name or \"\"");
+            // A version-1 file could only hold "" for a pad gift (no button then): that is no choice of the player's.
+            if (beforePadGifts && d == static_cast<std::size_t>(InputDevice::Pad) && v.string().empty() &&
+                (a == InputAction::GiftHeal || a == InputAction::GiftGuard))
+                continue;
             setName(b.keys[d][static_cast<std::size_t>(a)], v.string());
             chosen[static_cast<std::size_t>(a)] = true;
         }
@@ -344,7 +376,7 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
 }
 
 std::string encodeInputBindings(const InputBindings& b) {
-    std::string s = "{\"version\": 1";
+    std::string s = "{\"version\": " + std::to_string(kInputBindingsVersion);
     for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
         s += ", \"";
         s += deviceKey(static_cast<InputDevice>(d));
@@ -502,7 +534,7 @@ std::string_view inputRouteLabel(std::string_view route) {
     if (route == "mouse_flick") return "Mouse flick";
     if (route == "right_stick_flick") return "RS flick";
     if (route == "guard_interact") return "Guard+Interact";
-    return std::string_view();
+    return std::string_view(); // party_menu too: the menu, not a key, so the pad's line leaves switch lead out
 }
 
 std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d, const InputUnbound* unbound) {

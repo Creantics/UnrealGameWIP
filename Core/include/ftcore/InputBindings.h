@@ -7,7 +7,9 @@
 //
 // Two contexts: Foot (exploring and fighting, one set, so a fight in the field and in the arena answer to the same
 // keys) and ReadHeld (only while Read is held: those keys stand in for whatever Foot gives them). Within a context
-// and a device no key does two things; validateInputBindings checks it and rebindInput swaps on a clash.
+// and a device no key does two things; validateInputBindings checks it and rebindInput swaps on a clash. One pair is
+// the exception: Crouch is read only outside a fight and Intercept only inside one (inputActionScope), so the two may
+// share a key, and by default they share the pad's left stick click.
 //
 // The quick-time and mini-game prompts keep their own four action buttons (ActionButton.h); menus, dialogue and the
 // van keep theirs. Nothing here allocates except import, encode and the error text.
@@ -70,6 +72,9 @@ enum class InputAction : std::uint8_t {
 inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::PartnerOrder) + 1;
 
 enum class InputContext : std::uint8_t { Foot, ReadHeld };
+// Where a Foot action is read: anywhere, only outside a fight (Field), or only inside one (Fight). A Field action and a
+// Fight action never fire in the same place, so they may share a key (inputKeyClash).
+enum class InputScope : std::uint8_t { Any, Field, Fight };
 enum class InputDevice : std::uint8_t { Keys, Pad };
 inline constexpr std::size_t kInputDeviceCount = 2;
 
@@ -94,6 +99,11 @@ FTCORE_API bool parseInputAction(std::string_view key, InputAction& out);
 FTCORE_API InputContext inputActionContext(InputAction a);
 // Whether the action is held (Aim, Guard, Read, Run, Crouch, Intercept): the ones with a hold-to-toggle option.
 FTCORE_API bool inputActionHeld(InputAction a);
+// Crouch is Field and Intercept is Fight; every other action is Any.
+FTCORE_API InputScope inputActionScope(InputAction a);
+// Whether the host reads the action there: false for a Field action in a fight and a Fight action outside one. A host
+// that reads a shared key asks this first, so the one button does one thing in each place.
+FTCORE_API bool inputActionLive(InputAction a, bool inFight);
 
 FTCORE_API InputBindings defaultInputBindings();
 FTCORE_API const char* inputKey(const InputBindings& b, InputAction a, InputDevice d);
@@ -112,7 +122,8 @@ FTCORE_API bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std:
 // How an action with no key on that device is still reached: "left_stick" (moving), "left_stick_full" (the stick
 // pushed all the way runs), "mouse_flick" / "right_stick_flick" (locked on, a flick switches the target),
 // "map_hold" (holding the map button shows or hides the party), "guard_interact" (take half on a pad: the pad's Guard
-// button down plus Interact). Null when the action has no such route.
+// button down plus Interact), "party_menu" (switch lead on a pad, ruled 2026-11-14: the party menu does it, so no
+// controls line names a pad key for it). Null when the action has no such route.
 FTCORE_API const char* inputActionRoute(InputAction a, InputDevice d);
 // Holding the map button this long, on either device, is the party toggle (inputActionRoute "map_hold").
 inline constexpr float kInputMapHoldForParty = 0.6f;
@@ -122,20 +133,25 @@ FTCORE_API bool inputAllReachable(const InputBindings& b, InputAction* missing =
 // refusal is a held Guard, so Guard must keep working while Read is held). The first problem in `error`.
 FTCORE_API bool validateInputBindings(const InputBindings& b, std::string* error = nullptr);
 
-// {"version": 1, "keys": {"guard": "LeftControl"}, "pad": {"guard": "Gamepad_LeftShoulder"}, "hold": {"guard": "toggle"}}
+// {"version": 2, "keys": {"guard": "LeftControl"}, "pad": {"guard": "Gamepad_LeftShoulder"}, "hold": {"guard": "toggle"}}
 // read over `out`: a key the file names wins, every other key is the table's default, and a hold mode left out keeps
 // its value. Unknown actions, bad names,
 // "hold" on a press action and two of the file's own entries on one key are refused, and `out` is left as it was.
 // An action the file has no entry for takes its default; when a key the file binds is that default, the player's
 // binding wins and the action is left unbound (InputUnbound): the host shows it as NO KEY and says so at a fight's start.
+// Version 1 is a file saved before the pad gifts had buttons: its pad entry "" for gift_heal or gift_guard (the only
+// value it could hold) reads as no entry, so the gift takes its D-pad default or, on a key the file keeps for crouch
+// or switch lead, NO KEY. encodeInputBindings writes kInputBindingsVersion.
+inline constexpr int kInputBindingsVersion = 2;
 struct InputUnbound {
     std::array<std::array<bool, kInputActionCount>, kInputDeviceCount> left{};
     std::uint32_t count = 0;
 };
 FTCORE_API bool importInputBindings(std::string_view text, InputBindings& out, std::string* error = nullptr,
                                     InputUnbound* unbound = nullptr);
-// Gift Heal and Gift Guard have no pad button and no route until the pad's layout is ruled: inputAllReachable lets
-// them go unbound on the pad.
+// The partner's order has no pad button and no route until the pad's layout is ruled for it: inputAllReachable lets
+// it go unbound on the pad. The two gifts have D-pad buttons (ruled 2026-11-14) but may still go unbound there, so a
+// version-1 file's NO KEY gifts, saved again, read back.
 FTCORE_API bool inputPadPending(InputAction a);
 // Every binding and every held action's mode; importInputBindings reads it back.
 FTCORE_API std::string encodeInputBindings(const InputBindings& b);

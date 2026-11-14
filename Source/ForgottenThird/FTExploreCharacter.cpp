@@ -1001,7 +1001,10 @@ void AFTExploreCharacter::TickHeldKeys(float DeltaSeconds)
 	}
 	// Crouch: the press crouches (or slides in a sprint, or lets go of a ledge); held, letting go stands up; toggled,
 	// the next press does.
-	const bool bCrouchKey = FTInputBindings::IsDown(*PC, InputAction::Crouch);
+	// Field only (the pad's stick click is Intercept in a fight). This body takes no input in a fight: the arena host
+	// possesses the fighter figure, so here is always outside one.
+	constexpr bool bInFight = false;
+	const bool bCrouchKey = ftcore::inputActionLive(InputAction::Crouch, bInFight) && FTInputBindings::IsDown(*PC, InputAction::Crouch);
 	if (bCrouchKey && !bCrouchKeyWas)
 	{
 		HandleCrouch();

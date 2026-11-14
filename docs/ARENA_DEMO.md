@@ -363,7 +363,7 @@ damage as Load). Any of the first four turns carrying on; the result is one `Are
 Partner (the arena host sets one only under `-ArenaPartner`, below): `ArenaFight::setPartner(brain, tuning)` hands the
 ally body to a `PartnerBrain` (null turns it off, the default; with no partner every fight plays exactly as before).
 It acts only with an ally on (`setAlly`) and never while Lone. Each tick the brain reads `ArenaInput::partnerOrder`
-(0 StayClose, 1 Spread; the `PartnerOrder` action, `B` on the keyboard and, like the gifts, no pad button yet) and
+(0 StayClose, 1 Spread; the `PartnerOrder` action, `B` on the keyboard and no pad button yet) and
 the fight applies its intent:
 `ArenaOutput::ally` (`ArenaAllyOut`) gives the goal the host walks the body to, its facing, the light string it runs
 (blow, part, time), its guard, its target and the intent. Its blows are the lead fighter's lights, scaled by
@@ -600,20 +600,22 @@ outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed
 | Guard (hold or toggle); parry (tap just before a hit) | Left Ctrl | LB |
 | Roll (backstep with no direction) | Left Alt | B |
 | Heal (the lead's own; uses a charge) | H | D-pad up |
-| Gift Heal (the third slot's: 2 a fight, a share of max health, instant) | G | none (see below) |
-| Gift Guard (the third slot's: the lead's blows scaled down a while) | Y | none (see below) |
+| Gift Heal (the third slot's: 2 a fight, a share of max health, instant) | G | D-pad left |
+| Gift Guard (the third slot's: the lead's blows scaled down a while) | Y | D-pad right |
 | Release (above a third of the Load) | R | D-pad down |
 | Partner (the second lead's press, paired with a parry; on Count's key for now) | F | Y |
-| Intercept a called blow (stone_bearer; hold or toggle) | V | L3 |
+| Intercept a called blow (stone_bearer; hold or toggle) | V | L3 (crouch outside a fight) |
 | Read (the second lead's pick, while the cards are up; those keys are the picks only then) | 1 / 2 / 3 | D-pad left / up / right |
 | Lock on / off | Middle mouse | R3 |
 | Switch lock target (locked) | flick the mouse sideways | flick the right stick |
 | Fight again (after the outcome) | Enter or Space | A |
 | Pause menu | Esc | Start |
 
-The two gifts have no pad button: D-pad left and right, the ruled choice, are crouch and switch lead in the one on-foot
-set that a fight in the field shares with the arena, and every other pad button is taken there too, so the pad gifts
-stay off until the pad's layout is ruled again.
+On a pad the two gifts are D-pad left and right (ruled 2026-11-14). Crouch moved to the left stick click, which only
+a fight reads as Intercept and only the field as crouch (`inputActionScope`: the one pair that may share a key), and
+switch lead has no pad button (the party menu will do it; Tab stays on the keyboard). A bindings file saved before
+(version 1) keeps D-pad left and right on crouch and switch lead if it has them there, and the pad gifts then show
+`NO KEY`.
 
 A saved `Saved/InputBindings.json` is read over the defaults. An action the file has no entry for (one added after the
 file was saved) takes its default key, unless a key the file binds is that default: then the player's binding wins and

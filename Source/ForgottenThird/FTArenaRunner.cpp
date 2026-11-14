@@ -1586,7 +1586,8 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		}
 	}
 	// A called-blow boss's Intercept (its Guard is the guard above), held or toggled.
-	bInterceptHeld = InterceptInput.tick(FTInputBindings::IsDown(*PC, InputAction::Intercept),
+	// Fight only: the pad's stick click is Crouch outside a fight (one button, two places).
+	bInterceptHeld = InterceptInput.tick(ftcore::inputActionLive(InputAction::Intercept, true) && FTInputBindings::IsDown(*PC, InputAction::Intercept),
 		FTInputBindings::Toggles(World, InputAction::Intercept));
 	// Target switch: its keys when bound (none by default), else a flick of the mouse or the right stick while locked
 	// (below).

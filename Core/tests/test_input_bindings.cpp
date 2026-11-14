@@ -142,7 +142,8 @@ TEST_CASE("input bindings: a bad file is refused whole and changes nothing") {
     const char* bad[] = {
         "not json",
         R"({"keys": {"guard": "Z"}})",                       // no version
-        R"({"version": 2})",                                   // unknown version
+        R"({"version": 3})",                                   // unknown version
+        R"({"version": 0})",                                   // unknown version
         R"({"version": 1, "extra": {}})",                      // unknown member
         R"({"version": 1, "keys": {"heal": "H"}})",            // unknown action
         R"({"version": 1, "keys": {"guard": "Left Ctrl"}})",   // not a key name
@@ -251,8 +252,11 @@ TEST_CASE("input bindings: in every mode no key does two things, and every actio
                     const InputContext cj = inputActionContext(act(j));
                     if (b.keys[d][j].view() != b.keys[d][i].view() || (!readHeld && cj == InputContext::ReadHeld)) continue;
                     // The same key in both contexts is the overlay's shadow, not a double: allowed only while one
-                    // is the Foot action it stands in for.
-                    CHECK_MESSAGE(ci != cj, inputActionKey(a), " and ", inputActionKey(act(j)));
+                    // is the Foot action it stands in for. Crouch and Intercept share the pad's stick click: never
+                    // read in one place (inputActionLive).
+                    const bool apart = inputActionLive(a, true) != inputActionLive(act(j), true) &&
+                                       inputActionLive(a, false) != inputActionLive(act(j), false);
+                    CHECK_MESSAGE((ci != cj || apart), inputActionKey(a), " and ", inputActionKey(act(j)));
                 }
             }
         }
@@ -351,13 +355,16 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
           "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  H input.heal  "
           "G input.gift_heal  Y input.gift_guard  R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  "
           "V input.intercept");
-    // On a pad the two gifts have no button yet, so the pad's line leaves them out.
+    // On a pad the two gifts are D-pad left and right, and the stick click is intercept in the arena's line.
     const std::string padArena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr);
-    CHECK(padArena.find("input.gift_") == std::string::npos);
+    CHECK(padArena.find("D-pad left input.gift_heal  D-pad right input.gift_guard") != std::string::npos);
+    CHECK(padArena.find("LS click input.intercept") != std::string::npos);
+    CHECK(padArena.find("input.crouch") == std::string::npos);
     CHECK(inputAllReachable(b));
+    // The field's: crouch on the stick click, and switch lead left out (the party menu does it on a pad).
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
-          "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  D-pad left input.crouch  "
-          "B input.dodge  X input.use  D-pad right input.lead  "
+          "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  LS click input.crouch  "
+          "B input.dodge  X input.use  "
           "Hold View input.party");
     // None of the retired keys shows on the keyboard lines (H came back as the heal's).
     const std::string keys = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) + "  " +
@@ -457,4 +464,88 @@ TEST_CASE("input hints: key labels") {
     CHECK(inputKeyLabel("Z") == "Z");
     CHECK(inputRouteLabel("right_stick_flick") == "RS flick");
     CHECK(inputRouteLabel("map_hold").empty());
+}
+
+TEST_CASE("input bindings: the pad's stick click crouches outside a fight and intercepts in one, never both") {
+    const InputBindings b = defaultInputBindings();
+    CHECK(std::string(inputKey(b, InputAction::Crouch, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+    CHECK(std::string(inputKey(b, InputAction::Intercept, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+    CHECK(std::string(inputKey(b, InputAction::LockOn, InputDevice::Pad)) == "Gamepad_RightThumbstick");
+    CHECK(validateInputBindings(b));
+    // Neither fires in the other's place.
+    CHECK(inputActionLive(InputAction::Crouch, false));
+    CHECK_FALSE(inputActionLive(InputAction::Crouch, true));
+    CHECK(inputActionLive(InputAction::Intercept, true));
+    CHECK_FALSE(inputActionLive(InputAction::Intercept, false));
+    for (std::size_t i = 0; i < kInputActionCount; ++i) {
+        const InputAction a = act(i);
+        if (a == InputAction::Crouch || a == InputAction::Intercept) continue;
+        CAPTURE(inputActionKey(a));
+        CHECK(inputActionScope(a) == InputScope::Any);
+        CHECK(inputActionLive(a, true));
+        CHECK(inputActionLive(a, false));
+    }
+    // The pair shares a key without a clash; any other action on that key still clashes.
+    InputAction clash{};
+    CHECK_FALSE(inputKeyClash(b, InputAction::Crouch, InputDevice::Pad, "Gamepad_LeftThumbstick", clash));
+    CHECK(inputKeyClash(b, InputAction::Jump, InputDevice::Pad, "Gamepad_LeftThumbstick", clash));
+    // Switch lead has no pad button: the party menu's route keeps it reachable and the pad's line names no key for it.
+    CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Pad)).empty());
+    CHECK(std::string(inputActionRoute(InputAction::SwitchLead, InputDevice::Pad)) == "party_menu");
+    CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Keys)) == "Tab");
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr).find("input.lead") == std::string::npos);
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr).find("Tab input.lead") != std::string::npos);
+}
+
+TEST_CASE("input bindings: a fresh profile takes the ruled pad defaults; a version-1 file keeps its D-pad and loses the gifts") {
+    std::string error;
+    // A fresh profile: no file, or one that names nothing on the pad.
+    for (const char* text : {static_cast<const char*>(nullptr), R"({"version": 2, "keys": {"guard": "K"}})"}) {
+        InputBindings b = defaultInputBindings();
+        InputUnbound left;
+        if (text) REQUIRE(importInputBindings(text, b, &error, &left));
+        CHECK(left.count == 0);
+        CHECK(std::string(inputKey(b, InputAction::GiftHeal, InputDevice::Pad)) == "Gamepad_DPad_Left");
+        CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Pad)) == "Gamepad_DPad_Right");
+        CHECK(std::string(inputKey(b, InputAction::Crouch, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+        CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Pad)).empty());
+    }
+    // A file saved before the ruling, as encodeInputBindings wrote it then: crouch and switch lead on D-pad left and
+    // right, the pad gifts "" (they had no button), version 1. The player's D-pad stays theirs; the gifts are NO KEY.
+    const char* old = R"({"version": 1, "keys": {"guard": "LeftControl"}, "pad": {"light": "Gamepad_RightTrigger", )"
+                      R"("crouch": "Gamepad_DPad_Left", "intercept": "Gamepad_LeftThumbstick", "switch_lead": "Gamepad_DPad_Right", )"
+                      R"("gift_heal": "", "gift_guard": "", "partner_order": ""}})";
+    InputBindings b = defaultInputBindings();
+    InputUnbound left;
+    REQUIRE_MESSAGE(importInputBindings(old, b, &error, &left), error);
+    CHECK(std::string(inputKey(b, InputAction::Crouch, InputDevice::Pad)) == "Gamepad_DPad_Left");
+    CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Pad)) == "Gamepad_DPad_Right");
+    CHECK(std::string(inputKey(b, InputAction::Intercept, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+    CHECK(std::string(inputKey(b, InputAction::GiftHeal, InputDevice::Pad)).empty());
+    CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Pad)).empty());
+    CHECK(left.left[1][static_cast<std::size_t>(InputAction::GiftHeal)]);
+    CHECK(left.left[1][static_cast<std::size_t>(InputAction::GiftGuard)]);
+    CHECK(left.count == 2);
+    CHECK(inputUnboundLine(left) == "NO KEY: gift_heal (pad), gift_guard (pad)");
+    CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr, nullptr, &left).find("NO KEY input.gift_heal") !=
+          std::string::npos);
+    // Saved again it is a version-2 file, and the gifts' "" is then the player's own: read back unchanged.
+    const std::string again = encodeInputBindings(b);
+    CHECK(again.rfind("{\"version\": 2", 0) == 0);
+    InputBindings back = defaultInputBindings();
+    InputUnbound backLeft;
+    REQUIRE(importInputBindings(again, back, &error, &backLeft));
+    CHECK(encodeInputBindings(back) == again);
+    CHECK(backLeft.count == 0);
+    // A version-2 file's "" on a pad gift is the player's unbinding, kept.
+    InputBindings mine = defaultInputBindings();
+    REQUIRE(importInputBindings(R"({"version": 2, "pad": {"gift_heal": ""}})", mine, &error));
+    CHECK(std::string(inputKey(mine, InputAction::GiftHeal, InputDevice::Pad)).empty());
+    // A version-1 file that never touched crouch or switch lead takes the new defaults, gifts included.
+    InputBindings fresh = defaultInputBindings();
+    InputUnbound freshLeft;
+    REQUIRE(importInputBindings(R"({"version": 1, "pad": {"gift_heal": "", "gift_guard": ""}})", fresh, &error, &freshLeft));
+    CHECK(freshLeft.count == 0);
+    CHECK(std::string(inputKey(fresh, InputAction::GiftHeal, InputDevice::Pad)) == "Gamepad_DPad_Left");
+    CHECK(std::string(inputKey(fresh, InputAction::GiftGuard, InputDevice::Pad)) == "Gamepad_DPad_Right");
 }

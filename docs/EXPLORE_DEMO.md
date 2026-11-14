@@ -35,10 +35,10 @@ spots say which objective they wait for.
 | Look | Mouse | Right stick |
 | Run (hold or toggle) | Left Shift | Left stick pushed all the way |
 | Jump | Space | A |
-| Crouch (hold or toggle; while sprinting: slide) | C | D-pad left |
+| Crouch (hold or toggle; while sprinting: slide) | C | Left stick click (in a fight it is Intercept) |
 | Roll (dodge) | Left Alt | B |
 | Use (talk, pick up, open) | E | X |
-| Switch lead (with a party in config) | Tab | D-pad right |
+| Switch lead (with a party in config) | Tab | none: the party menu (to come) |
 | Show or hide the followers | P, or hold M | hold View |
 | Weapon, light attack (chain) | Left mouse (tap) | RT (tap) |
 | Weapon, heavy attack | Left mouse held 0.25 s | RT held 0.25 s |
@@ -47,7 +47,7 @@ spots say which objective they wait for.
 
 Every key here comes from the binding table (`ftcore/InputBindings.h`, one set for the field and the arena; the
 defaults are provisional). Override any of them in `Saved/InputBindings.json`, read once at start, e.g.
-`{"version": 1, "keys": {"guard": "Z"}, "pad": {"read": "Gamepad_RightShoulder"}, "hold": {"guard": "toggle"}}`
+`{"version": 2, "keys": {"guard": "Z"}, "pad": {"read": "Gamepad_RightShoulder"}, "hold": {"guard": "toggle"}}`
 (engine key names; `""` unbinds; a key twice in one context, or a Read-held key on Read's or Guard's, refuses the
 whole file). Each held action (Aim, Guard, Read, Run, Crouch, Intercept) is held, or pressed once to toggle when
 the game's hold-toggle setting is on or its own `"hold"` mode says `"toggle"`.
