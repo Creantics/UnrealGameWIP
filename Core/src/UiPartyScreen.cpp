@@ -134,11 +134,15 @@ bool uiPartyRefused(UiPartyWhy w) {
     return false;
 }
 
-UiPartyWhy uiPartyWhyOf(SwitchRefusal r) {
+UiPartyWhy uiPartyWhyOf(LeadSwitch r) {
     switch (r) {
-    case SwitchRefusal::None: return UiPartyWhy::Unknown;
-    case SwitchRefusal::Down: return UiPartyWhy::Down;
-    case SwitchRefusal::Defeated: return UiPartyWhy::FightOver;
+    case LeadSwitch::Ok:
+    case LeadSwitch::Same: return UiPartyWhy::Ok;
+    case LeadSwitch::NotInFight:
+    case LeadSwitch::Lone: return UiPartyWhy::NotHere;
+    case LeadSwitch::Down: return UiPartyWhy::Down;
+    case LeadSwitch::FightOver: return UiPartyWhy::FightOver;
+    case LeadSwitch::Cooldown: return UiPartyWhy::Wait;
     }
     return UiPartyWhy::Unknown;
 }

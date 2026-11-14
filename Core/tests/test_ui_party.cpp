@@ -1,4 +1,5 @@
 #include "ftcore/UiPartyScreen.h"
+#include "ftcore/FightSession.h"
 
 #include "AllocCounter.h"
 
@@ -368,9 +369,55 @@ TEST_CASE("ui party: the reasons and the session's refusals") {
     CHECK(uiPartyRefused(UiPartyWhy::NotHere));
     CHECK(uiPartyRefused(UiPartyWhy::FightOver));
     CHECK(uiPartyRefused(UiPartyWhy::Wait));
-    CHECK(uiPartyWhyOf(SwitchRefusal::None) == UiPartyWhy::Unknown);
-    CHECK(uiPartyWhyOf(SwitchRefusal::Down) == UiPartyWhy::Down);
-    CHECK(uiPartyWhyOf(SwitchRefusal::Defeated) == UiPartyWhy::FightOver);
+    CHECK(uiPartyWhyOf(LeadSwitch::Ok) == UiPartyWhy::Ok);
+    CHECK(uiPartyWhyOf(LeadSwitch::Same) == UiPartyWhy::Ok);
+    CHECK(uiPartyWhyOf(LeadSwitch::NotInFight) == UiPartyWhy::NotHere);
+    CHECK(uiPartyWhyOf(LeadSwitch::Down) == UiPartyWhy::Down);
+    CHECK(uiPartyWhyOf(LeadSwitch::FightOver) == UiPartyWhy::FightOver);
+    CHECK(uiPartyWhyOf(LeadSwitch::Cooldown) == UiPartyWhy::Wait);
+    CHECK(uiPartyWhyOf(LeadSwitch::Lone) == UiPartyWhy::NotHere);
+}
+
+TEST_CASE("ui party: a lead not in this fight reads NOT HERE, and its switch is not taken") {
+    FightSessionDef d;
+    d.inFight = {true, false};
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(uiPartyWhyOf(s.leadSwitchReason(kLeadB)) == UiPartyWhy::NotHere);
+    CHECK(uiPartyWhyOf(s.leadSwitchReason(kLeadA)) == UiPartyWhy::Ok);
+    CHECK_FALSE(s.setActiveLead(kLeadB)); // nothing asked: no tick refuses it, so the host shows the call itself
+}
+
+TEST_CASE("ui party: a Lone Carry's partner reads NOT HERE; the refused switch says so and leaves the carry on") {
+    constexpr double frame = 1.0 / 60.0;
+    FightSessionDef d;
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.tick(frame);
+    CHECK(uiPartyWhyOf(s.leadSwitchReason(kLeadB)) == UiPartyWhy::NotHere);
+    REQUIRE(s.setActiveLead(kLeadB));
+    const FightTick& t = s.tick(frame);
+    CHECK(t.switchRefused == kLeadB);
+    CHECK(uiPartyWhyOf(t.switchRefusal) == UiPartyWhy::NotHere);
+    CHECK(s.lone());
+    CHECK(s.activeLead() == kLeadA);
+}
+
+TEST_CASE("ui party: a second switch inside the cooldown reads WAIT, row and call alike, then clears") {
+    constexpr double frame = 1.0 / 60.0;
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.tick(frame);
+    REQUIRE(s.setActiveLead(kLeadB));
+    CHECK(s.tick(frame).switched == kLeadB);
+    CHECK(uiPartyWhyOf(s.leadSwitchReason(kLeadA)) == UiPartyWhy::Wait);
+    REQUIRE(s.setActiveLead(kLeadA));
+    const FightTick& t = s.tick(frame);
+    CHECK(t.switchRefused == kLeadA);
+    CHECK(uiPartyWhyOf(t.switchRefusal) == UiPartyWhy::Wait);
+    for (int i = 0; i < 70; ++i) s.tick(frame);
+    CHECK(uiPartyWhyOf(s.leadSwitchReason(kLeadA)) == UiPartyWhy::Ok);
 }
 
 TEST_CASE("ui party: a switch to a downed lead, refused at the close, reads DOWN") {

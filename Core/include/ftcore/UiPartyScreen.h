@@ -22,7 +22,7 @@
 // Pure, no allocation. A refused row (UiPartyWhy) still takes the cursor and still picks: the rules refuse the
 // request at the step's close, and the HUD says why.
 #include "ftcore/Api.h"
-#include "ftcore/FightSession.h"
+#include "ftcore/LeadSwitch.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -80,14 +80,15 @@ FTCORE_API UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in
 // Whether the cursor may rest on a row: the partner and the lead, and Follow in explore; never the Third.
 FTCORE_API bool uiPartyRowSelectable(UiPartyRow r, bool explore);
 
-// Why a lead row's switch would be refused now: its word after the name, the row at 40% ink. Unknown: the rules have
-// not said (the row stands undimmed, no word); Ok: taken.
+// Why a lead row's switch would be refused now: its word after the name, the row at 40% ink. Unknown: no session to
+// ask (the row stands undimmed, no word); Ok: taken.
 enum class UiPartyWhy : std::uint8_t { Unknown, Ok, Down, NotHere, FightOver, Wait };
 inline constexpr std::size_t kUiPartyWhyCount = 6;
 FTCORE_API bool uiPartyRefused(UiPartyWhy w);
-// A switch the session refused at a step's close (FightTick::switchRefusal), as the row's word: Down DOWN, Defeated
-// FIGHT OVER; None Unknown. Each refusal has its case, so a new one fails the Core build (-Wswitch) until it has
-// a word.
-FTCORE_API UiPartyWhy uiPartyWhyOf(SwitchRefusal r);
+// The session's answer for a lead (FightSession::leadSwitchReason, the preview, or FightTick::switchRefusal, the
+// close's refusal) as the row's word: Ok and Same Ok (no word: Same is the controlled lead's own row), Down DOWN,
+// NotInFight and Lone NOT HERE, FightOver FIGHT OVER, Cooldown WAIT. Each answer has its case, so a new one fails
+// the Core build (-Wswitch) until it has a word.
+FTCORE_API UiPartyWhy uiPartyWhyOf(LeadSwitch r);
 
 } // namespace ftcore
