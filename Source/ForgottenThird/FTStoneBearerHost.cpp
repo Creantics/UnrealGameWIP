@@ -201,9 +201,9 @@ bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::A
 	}
 	Out.moveCount = static_cast<std::uint8_t>(Count);
 	// The break move (ArenaFight's boss break) was an index into the arena kind's moves: here it is the boss file's
-	// single-impact move of the same clip. When none matches, the first single-impact move a dodge answers (else the
-	// first such chain's head), with BreakError set; with no such move either, -1 and a break that comes due is spent
-	// unthrown (bossBreakBarred).
+	// single-impact move of the same clip. When none matches, the first single-impact move a dodge answers (never a
+	// chain's head: beginMove would throw the chain after it), with BreakError set; with no such move either, -1 and a
+	// break that comes due is spent unthrown (bossBreakBarred).
 	Out.breakMove = -1;
 	const auto Head = [&Out](std::size_t M) { return M == 0 || Out.moves[M - 1].chain != static_cast<std::int8_t>(M); };
 	std::string_view BreakClip;
@@ -220,22 +220,19 @@ bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::A
 	}
 	if (Out.breakMove < 0)
 	{
-		for (int Pass = 0; Pass < 2 && Out.breakMove < 0; ++Pass)
+		for (std::size_t M = 0; M < Count && Out.breakMove < 0; ++M)
 		{
-			for (std::size_t M = 0; M < Count && Out.breakMove < 0; ++M)
+			if (Head(M) && Dodged[M] && Out.moves[M].chain < 0)
 			{
-				if (Head(M) && Dodged[M] && (Pass == 1 || Out.moves[M].chain < 0))
-				{
-					Out.breakMove = static_cast<int>(M);
-				}
+				Out.breakMove = static_cast<int>(M);
 			}
 		}
 		if (BreakError)
 		{
 			*BreakError = "stone_bearer: no single-impact move of the break move's clip '" + std::string(BreakClip) +
-				"'; " + (Out.breakMove >= 0 ? "breaks with the first move a dodge answers ('" +
+				"'; " + (Out.breakMove >= 0 ? "breaks with the first single-impact move a dodge answers ('" +
 					std::string(Out.moves[static_cast<std::size_t>(Out.breakMove)].clip()) + "')"
-					: std::string("no move a dodge answers either, so every break is spent unthrown"));
+					: std::string("no single-impact move a dodge answers either, so every break is spent unthrown"));
 		}
 	}
 	Kind = Out;
