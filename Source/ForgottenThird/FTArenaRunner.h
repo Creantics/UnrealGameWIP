@@ -23,6 +23,7 @@
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaCamera.h"
+#include "ftcore/ArenaGun.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
@@ -393,6 +394,8 @@ private:
 	// and their sounds attach once they exist. For now they only log.
 	void OnLeadReload(bool bStarted, int32 Amount);
 	void OnLeadDryPress(int32 Presses);
+	// The cylinder event's sound (ftcore::arenaGunCue) through UFTAudioSubsystem.
+	void PlayGunCue(const ftcore::ArenaEvent& E);
 	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
 	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
 	void KickJolt(const ftcore::ArenaEvent& E);

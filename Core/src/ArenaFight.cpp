@@ -2756,6 +2756,9 @@ const ArenaChairs& ArenaFight::chairs() const { return chairs_; }
 std::uint8_t ArenaFight::healChargesMax() const { return healMax_; }
 std::uint8_t ArenaFight::roundsMax() const { return def_.fighter.rounds; }
 std::uint8_t ArenaFight::rounds() const { return def_.fighter.rounds > 0 ? player_.rounds : static_cast<std::uint8_t>(0); }
+bool ArenaFight::reloading() const {
+    return def_.fighter.rounds > 0 && player_.rounds == 0 && player_.reloadLeft > 0.f && def_.fighter.reload > 0.f;
+}
 float ArenaFight::reloadProgress() const {
     const float r = def_.fighter.reload;
     if (def_.fighter.rounds == 0 || player_.rounds > 0 || player_.reloadLeft <= 0.f || !(r > 0.f)) return 0.f;

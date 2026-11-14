@@ -1126,6 +1126,7 @@ public:
     FTCORE_API std::uint8_t roundsMax() const;    // the kit's cylinder (ArenaFighter::rounds); 0: none
     FTCORE_API std::uint8_t rounds() const;       // rounds still loaded, 0..roundsMax()
     FTCORE_API float reloadProgress() const;      // 0..1 while a reload runs, else 0
+    FTCORE_API bool reloading() const;            // a reload runs (its progress may still read 0 on its first tick)
     FTCORE_API std::uint8_t healChargesMax() const; // the kit's charges plus the chairs' at the last begin or restart
     // One ally body (ArenaBodies::ally): maxHp > 0 turns it on with full hp, 0 or less turns it off (the default).
     // restart() fills its hp again. Every enemy attack's active part tests it as it tests the player (the move's

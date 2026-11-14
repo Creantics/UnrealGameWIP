@@ -155,6 +155,7 @@ add_library(ftcore STATIC
     src/ArenaImpact.cpp
     src/ArenaLook.cpp
     src/ArenaCamera.cpp
+    src/ArenaGun.cpp
     src/StoneBearer.cpp
     src/BeatChoreo.cpp
     src/BeatMusic.cpp

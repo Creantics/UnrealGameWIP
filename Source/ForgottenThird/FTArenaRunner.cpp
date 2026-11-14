@@ -14,6 +14,7 @@
 #include "Engine/World.h"
 #include "FTActionButtons.h"
 #include "FTArenaFighter.h"
+#include "FTAudioSubsystem.h"
 #include "FTArenaJoltModifier.h"
 #include "FTBeatBossMetronome.h"
 #include "FTSettingsSubsystem.h"
@@ -2612,9 +2613,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::ReloadStarted:
 		case ftcore::ArenaEventType::Reloaded:
 			OnLeadReload(E.type == ftcore::ArenaEventType::ReloadStarted, E.amount);
+			PlayGunCue(E);
 			continue; // no popup
 		case ftcore::ArenaEventType::DryPress:
 			OnLeadDryPress(E.amount);
+			PlayGunCue(E);
 			continue; // no popup
 		case ftcore::ArenaEventType::CardsDealt: // the cards themselves are the display
 		case ftcore::ArenaEventType::LockChanged:
@@ -3094,7 +3097,9 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		}
 		Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.2f, 0.15f), ArenaModePulse(Now, PlayerHitTime, kArenaHitTint));
 		PlayerFigure->ApplyPose(Pose);
-		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last).
+		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last), and
+		// the gun's reload overlay by the fight's own progress.
+		LeadWeapons.SetReload(Fight.reloading(), Fight.reloadProgress());
 		LeadWeapons.Paint(DrawnTime);
 	}
 	PlaceAlly(Alpha);
@@ -4230,9 +4235,22 @@ float UFTArenaRunner::ShakeScale() const
 	return Settings ? Settings->cameraShake : 1.f;
 }
 
+void UFTArenaRunner::PlayGunCue(const ftcore::ArenaEvent& E)
+{
+	// The sfx cue (Data/Audio/cues.json): silent, logged once, until its sound is imported.
+	const char* Cue = ftcore::arenaGunCue(E);
+	UWorld* World = GetWorld();
+	UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	if (UFTAudioSubsystem* Audio = Cue && GI ? GI->GetSubsystem<UFTAudioSubsystem>() : nullptr)
+	{
+		Audio->HandleCue(FString(UTF8_TO_TCHAR(Cue)), EFTCueAction::Play);
+	}
+}
+
 void UFTArenaRunner::OnLeadReload(bool bStarted, int32 Amount)
 {
-	// The reload clip (cylinder out, eject, load, close) and its sounds start here and should span Amount ms.
+	// The reload clip (lead_reload) is posed each frame by the fight's reload progress (FFTLeadWeapons::SetReload), so
+	// it spans Amount ms whatever its length; its sound is the cue PlayGunCue fires.
 	if (bStarted)
 	{
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: reload begins (%d ms)."), Fight.time(), Amount);
@@ -4245,7 +4263,8 @@ void UFTArenaRunner::OnLeadReload(bool bStarted, int32 Amount)
 
 void UFTArenaRunner::OnLeadDryPress(int32 Presses)
 {
-	// The dry click and a small flinch on the gun arm go here.
+	// The flinch on the gun arm (lead_dry_flinch); the dry click is the cue PlayGunCue fires.
+	LeadWeapons.DryPressed(static_cast<double>(Fight.heldTime()));
 	UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: dry press (%d so far)."), Fight.time(), Presses);
 }
 
