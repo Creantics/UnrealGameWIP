@@ -1525,7 +1525,22 @@ public:
 			SafeRatio = FMargin(0.f);
 			if (FSlateApplication::IsInitialized())
 			{
-				FSlateApplication::Get().GetSafeZoneRatio(SafeRatio);
+				// The ratio itself is protected; the public size is the ratio times half a container: the override
+				// (2 x 2, so the ratio back) in editor builds, the primary display in game builds.
+				FSlateApplication& App = FSlateApplication::Get();
+				FMargin Px(0.f);
+				App.GetSafeZoneSize(Px, FVector2f(2.f, 2.f));
+#if WITH_EDITOR
+				SafeRatio = Px;
+#else
+				const FDisplayMetrics& Metrics = App.GetCachedDisplayMetricsByRef();
+				const float HalfW = static_cast<float>(Metrics.PrimaryDisplayWidth) * 0.5f;
+				const float HalfH = static_cast<float>(Metrics.PrimaryDisplayHeight) * 0.5f;
+				if (HalfW > 0.f && HalfH > 0.f)
+				{
+					SafeRatio = FMargin(Px.Left / HalfW, Px.Top / HalfH, Px.Right / HalfW, Px.Bottom / HalfH);
+				}
+#endif
 			}
 			const auto Clean = [](float& R) { R = FMath::IsFinite(R) ? FMath::Clamp(R, 0.f, 0.5f) : 0.f; };
 			Clean(SafeRatio.Left);
