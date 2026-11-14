@@ -41,6 +41,223 @@ std::uint32_t mix(std::uint32_t h) {
 // In float, as the tuning is held (so 0.01 in the data is at its 0.01 bound). NaN is out.
 bool pbWithin(float v, float lo, float hi) { return v >= lo && v <= hi; }
 
+// --- Stationing (rules 8-12), on the ground plane. No allocation: every search is a fixed set of samples. ---
+constexpr float kStDeg = 3.14159265358979f / 180.f;
+constexpr float kStFar = 1e30f; // no limit
+Vec2 stSub(Vec2 a, Vec2 b) { return {a.x - b.x, a.y - b.y}; }
+Vec2 stAlong(Vec2 p, Vec2 d, float k) { return {p.x + d.x * k, p.y + d.y * k}; }
+float stDot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
+float stCross(Vec2 a, Vec2 b) { return a.x * b.y - a.y * b.x; }
+bool stFinite(Vec2 a) { return std::isfinite(a.x) && std::isfinite(a.y); }
+Vec2 stUnit(Vec2 a, Vec2 fallback) {
+    const float l = std::hypot(a.x, a.y);
+    return l > 1e-4f ? Vec2{a.x / l, a.y / l} : fallback;
+}
+// v turned `degrees` counter-clockwise.
+Vec2 stTurn(Vec2 v, float degrees) {
+    const float r = degrees * kStDeg, c = std::cos(r), s = std::sin(r);
+    return {v.x * c - v.y * s, v.x * s + v.y * c};
+}
+
+// One step's ground: the wedge, the lead, the arena, and rules 8 and 9's tests and moves.
+struct Ground {
+    const PartnerTuning* t = nullptr;
+    Vec2 cam{}, axis{}; // the wedge: from cam along axis (unit) to `length` (the lead + wedgeBeyondMeters)
+    float length = 0.f;
+    bool wedge = false;
+    float sinH = 0.f, cosH = 1.f;
+    Vec2 lead{}, facing{1.f, 0.f};
+    bool reviving = false;
+    Vec2 centre{};
+    float radius = 0.f; // 0: unbounded
+
+    // Inside the wedge grown by `margin` (on its sides and far end; not behind the camera).
+    bool inWedge(Vec2 p, float margin) const {
+        if (!wedge) return false;
+        const Vec2 d = stSub(p, cam);
+        const float along = stDot(d, axis);
+        if (along <= 0.f || along >= length + margin) return false;
+        return std::fabs(stCross(axis, d)) * cosH - along * sinH < margin;
+    }
+    bool arenaOk(Vec2 p) const { return radius <= 0.f || dist(p, centre) <= radius + 1e-4f; }
+    bool roomOk(Vec2 p) const { return reviving || dist(p, lead) >= t->personalSpaceMeters - 1e-4f; }
+    bool legal(Vec2 p) const { return arenaOk(p) && roomOk(p) && !inWedge(p, t->wedgeClearMeters); }
+    Vec2 intoArena(Vec2 p) const { return radius > 0.f && dist(p, centre) > radius ? toward(centre, p, radius) : p; }
+    Vec2 outOfRoom(Vec2 p) const {
+        return reviving || dist(p, lead) >= t->personalSpaceMeters ? p : toward(lead, p, t->personalSpaceMeters + 1e-3f);
+    }
+    // Rule 9: onto the nearer wedge edge, then the clearance out from it.
+    Vec2 outToEdge(Vec2 p) const {
+        const Vec2 d = stSub(p, cam);
+        const float side = stCross(axis, d) >= 0.f ? 1.f : -1.f;
+        const Vec2 e{axis.x * cosH - side * axis.y * sinH, side * axis.x * sinH + axis.y * cosH};
+        const Vec2 n{-e.y * side, e.x * side}; // the edge's normal, away from the axis
+        return stAlong(stAlong(cam, e, std::max(0.f, stDot(d, e))), n, t->wedgeClearMeters + 1e-3f);
+    }
+    // The wedge's other way out: past its far end.
+    Vec2 outPastEnd(Vec2 p) const {
+        return stAlong(p, axis, length + t->wedgeClearMeters + 1e-3f - stDot(stSub(p, cam), axis));
+    }
+    // p when it is legal and within maxLead of the lead; else the best of a fixed set of candidates (p moved out
+    // of the wedge, out of personal space and into the arena, and rings round the lead): legal within maxLead, the
+    // nearest p; legal, the least past maxLead; clear of the wedge in the arena but crowding the lead (the arena
+    // leaves no other room), the furthest from the lead; then in the arena, the nearest p.
+    Vec2 resolve(Vec2 p, float maxLead) const {
+        if (legal(p) && dist(p, lead) <= maxLead + 1e-4f) return p;
+        Vec2 best = intoArena(p);
+        int bt = 9;
+        float ba = kStFar, bb = kStFar;
+        const auto consider = [&](Vec2 q) {
+            if (!stFinite(q) || !arenaOk(q)) return;
+            const bool clear = !inWedge(q, t->wedgeClearMeters), room = roomOk(q);
+            const float toLead = dist(q, lead), toP = dist(q, p);
+            int tier = 3;
+            float a = toP;
+            if (clear && room && toLead <= maxLead + 1e-4f) tier = 0;
+            else if (clear && room) {
+                tier = 1;
+                a = toLead - maxLead;
+            } else if (clear) {
+                tier = 2;
+                a = -toLead;
+            }
+            if (tier < bt || (tier == bt && (a < ba - 1e-5f || (a <= ba + 1e-5f && toP < bb)))) {
+                best = q;
+                bt = tier;
+                ba = a;
+                bb = toP;
+            }
+        };
+        consider(p);
+        Vec2 q = p;
+        for (int i = 0; i < 3; ++i) {
+            if (inWedge(q, t->wedgeClearMeters)) q = outToEdge(q);
+            q = intoArena(outOfRoom(q));
+            consider(q);
+        }
+        consider(intoArena(outOfRoom(outPastEnd(p))));
+        const float ps = t->personalSpaceMeters;
+        const float radii[] = {ps + 0.05f, ps + 0.5f, ps + 1.f, ps + 1.6f, ps + 2.4f};
+        for (const float r : radii)
+            for (int k = 0; k < 32; ++k)
+                consider(intoArena(stAlong(lead, stTurn(Vec2{1.f, 0.f}, 11.25f * static_cast<float>(k)), r)));
+        return best;
+    }
+};
+
+// The station view, whole and finite, or no stationing.
+bool makeGround(const PartnerInput& in, const PartnerTuning& t, Ground& g) {
+    const PartnerStationView& v = in.station;
+    if (!v.on || !stFinite(v.cameraPos) || !stFinite(v.cameraForward) || !stFinite(v.leadFacing) ||
+        !stFinite(v.arenaCentre) || !std::isfinite(v.arenaRadius) || v.arenaRadius < 0.f || !stFinite(in.pos) ||
+        !stFinite(in.leadPos))
+        return false;
+    const Vec2 toLead = stSub(in.leadPos, v.cameraPos);
+    const float l = std::hypot(toLead.x, toLead.y);
+    if (!std::isfinite(l) || !std::isfinite(dist(in.pos, in.leadPos)) || !std::isfinite(dist(in.pos, v.arenaCentre)))
+        return false;
+    g.t = &t;
+    g.cam = v.cameraPos;
+    g.lead = in.leadPos;
+    g.reviving = v.reviving;
+    g.centre = v.arenaCentre;
+    g.radius = v.arenaRadius;
+    g.axis = stUnit(toLead, stUnit(v.cameraForward, Vec2{}));
+    g.wedge = g.axis.x != 0.f || g.axis.y != 0.f;
+    g.length = (l > 1e-4f ? l : 0.f) + t.wedgeBeyondMeters;
+    g.sinH = std::sin(t.wedgeHalfDegrees * kStDeg);
+    g.cosH = std::cos(t.wedgeHalfDegrees * kStDeg);
+    g.facing = stUnit(v.leadFacing, g.wedge ? g.axis : Vec2{1.f, 0.f});
+    return true;
+}
+
+// A candidate goal: tier 0 in the arc (and, StayClose, within closeLeadMeters), 1 in the arc only, 2 elsewhere on
+// the circle, 3 resolved off it; lower first, then score.
+struct Spot {
+    Vec2 p{};
+    int tier = 9;
+    float score = kStFar;
+};
+bool better(const Spot& a, const Spot& b) { return a.tier < b.tier || (a.tier == b.tier && a.score < b.score); }
+
+// Rule 10: the best station on side s (+1: counter-clockwise from the lead, seen at the target).
+Spot stationOn(const Ground& g, const PartnerTuning& t, const PartnerEnemyView& e, PartnerOrder order, Vec2 pos,
+               float s) {
+    const bool close = order == PartnerOrder::StayClose;
+    const float lo = close ? t.closeArcMin : t.spreadArcMin, hi = close ? t.closeArcMax : t.spreadArcMax;
+    const float cap = std::min(t.closeLeadMeters, t.leashMeters);
+    const float ring = e.radius + 0.5f * t.reachMeters;
+    const Vec2 u = stUnit(stSub(g.lead, e.pos), stUnit(stSub(g.cam, e.pos), Vec2{1.f, 0.f}));
+    Spot best;
+    const auto at = [&](float deg) {
+        const Vec2 q = stAlong(e.pos, stTurn(u, s * deg), ring);
+        if (!g.legal(q)) return;
+        const float toLead = dist(q, g.lead);
+        if (close && toLead > t.leashMeters) return; // the leash still rules
+        Spot c{q, 2, 0.f};
+        if (deg >= lo - 1e-3f && deg <= hi + 1e-3f) {
+            c.tier = close && toLead > cap ? 1 : 0;
+            c.score = dist(q, pos);
+        } else {
+            c.score = std::max(lo - deg, deg - hi) + 1e-3f * dist(q, pos);
+        }
+        if (better(c, best)) best = c;
+    };
+    for (int k = 0; k <= 36; ++k) at(5.f * static_cast<float>(k));
+    at(lo);
+    at(hi);
+    at(0.5f * (lo + hi));
+    if (best.tier < 9) return best;
+    best.p = g.resolve(stAlong(e.pos, stTurn(u, s * 0.5f * (lo + hi)), ring), close ? t.leashMeters : kStFar);
+    best.tier = 3;
+    best.score = dist(best.p, pos);
+    return best;
+}
+
+// Rule 11: behind the lead and to a side (110..160 degrees from its facing) on side s, followMin..followMax out.
+Spot followOn(const Ground& g, const PartnerTuning& t, Vec2 pos, float s) {
+    const float lo = std::max(t.followMin, t.personalSpaceMeters + 0.05f), hi = std::max(t.followMax, lo);
+    const float radii[] = {lo, 0.5f * (lo + hi), hi};
+    Spot best;
+    for (const float r : radii)
+        for (int k = 0; k < 6; ++k) {
+            const Vec2 q = stAlong(g.lead, stTurn(g.facing, s * (110.f + 10.f * static_cast<float>(k))), r);
+            if (!g.legal(q)) continue;
+            const Spot c{q, 0, dist(q, pos)};
+            if (better(c, best)) best = c;
+        }
+    if (best.tier < 9) return best;
+    best.p = g.resolve(stAlong(g.lead, stTurn(g.facing, s * 135.f), 0.5f * (lo + hi)), hi);
+    best.tier = 3;
+    best.score = dist(best.p, pos);
+    return best;
+}
+
+// Rule 10's side (and 11's): the side with a station in its arc; both, the nearer the partner. Chosen afresh for a new
+// key (target and order, or no target); else held sideHoldSeconds unless its own side has none and the other has.
+Vec2 pickSide(PartnerBrainSave& s, int key, const Spot& minus, const Spot& plus) {
+    const auto ok = [](const Spot& x) { return x.tier <= 1; };
+    const auto prefer = [&]() -> std::int8_t {
+        if (ok(minus) != ok(plus)) return ok(minus) ? std::int8_t{-1} : std::int8_t{1};
+        return better(minus, plus) ? std::int8_t{-1} : std::int8_t{1};
+    };
+    if (s.side == 0 || s.sideKey != key) {
+        s.side = prefer();
+        s.sideKey = key;
+        s.sideFor = 0.0;
+    } else {
+        const bool forced = !ok(s.side < 0 ? minus : plus) && ok(s.side < 0 ? plus : minus);
+        if (forced || s.sideFor + 1e-9 >= static_cast<double>(s.t.sideHoldSeconds)) {
+            const std::int8_t p = prefer();
+            if (p != s.side) {
+                s.side = p;
+                s.sideFor = 0.0;
+            }
+        }
+    }
+    return (s.side < 0 ? minus : plus).p;
+}
+
 } // namespace
 
 bool validPartnerTuning(const PartnerTuning& t) {
@@ -52,7 +269,13 @@ bool validPartnerTuning(const PartnerTuning& t) {
            pbWithin(t.downSeconds, 1.f, 600.f) && pbWithin(t.riseHealth, 0.01f, 1.f) &&
            pbWithin(t.blowCapShare, 0.f, 1.f) && pbWithin(t.overScale, 0.f, 1.f) &&
            pbWithin(t.budgetWindowSeconds, 5.f, 30.f) && pbWithin(t.budgetShare, 0.f, 1.f) &&
-           pbWithin(t.budgetAllowanceSeconds, 0.f, 10.f);
+           pbWithin(t.budgetAllowanceSeconds, 0.f, 10.f) && pbWithin(t.personalSpaceMeters, 0.5f, 4.f) &&
+           pbWithin(t.wedgeHalfDegrees, 5.f, 60.f) && pbWithin(t.wedgeBeyondMeters, 0.f, 5.f) &&
+           pbWithin(t.wedgeClearMeters, 0.f, 2.f) && pbWithin(t.closeArcMin, 0.f, 180.f) &&
+           pbWithin(t.closeArcMax, t.closeArcMin, 180.f) && pbWithin(t.closeLeadMeters, 1.f, 10.f) &&
+           pbWithin(t.spreadArcMin, 0.f, 180.f) && pbWithin(t.spreadArcMax, t.spreadArcMin, 180.f) &&
+           pbWithin(t.sideHoldSeconds, 0.f, 10.f) && pbWithin(t.followMin, 0.5f, 10.f) &&
+           pbWithin(t.followMax, t.followMin, 10.f) && pbWithin(t.stationTolerance, 0.05f, 2.f);
 }
 
 static_assert(kMaxPartnerStep == kMaxFightStep, "the brain's step bound is the fight's");
@@ -73,13 +296,16 @@ std::uint64_t PartnerBrainSave::hash() const {
     h.add(t.blowSeconds).add(t.pauseMin).add(t.pauseMax).add(t.guardWarning).add(t.guardChance).add(t.guardHold);
     h.add(t.downSeconds).add(t.riseHealth).add(t.blowCapShare).add(t.overScale).add(t.budgetWindowSeconds);
     h.add(t.budgetShare).add(t.budgetAllowanceSeconds);
+    h.add(t.personalSpaceMeters).add(t.wedgeHalfDegrees).add(t.wedgeBeyondMeters).add(t.wedgeClearMeters);
+    h.add(t.closeArcMin).add(t.closeArcMax).add(t.closeLeadMeters).add(t.spreadArcMin).add(t.spreadArcMax);
+    h.add(t.sideHoldSeconds).add(t.followMin).add(t.followMax).add(t.stationTolerance);
     h.add(rhythm).add(defence).add(rhythmDraws).add(defenceDraws).add(phase).add(target).add(blows).add(pause);
     h.add(clock).add(returning).add(drawn).add(lengths).add(begunBlows).add(committedEnd);
     h.add(spentPartner).add(spentLead).add(slot).add(now).add(down).add(downFor);
     for (const Watch& w : watch) h.add(w.winding).add(w.left).add(w.guard).add(w.hold);
     h.add(out.act).add(out.why).add(out.point.x).add(out.point.y).add(out.enemy).add(out.blows).add(out.newString).add(out.blowStart).add(out.blowIndex);
     h.add(out.partnerBlow).add(out.breakValue).add(out.extendsStagger).add(out.punish).add(out.rise).add(out.riseHealth);
-    h.add(begun);
+    h.add(out.stationed).add(begun).add(side).add(sideKey).add(sideFor);
     return h.value;
 }
 
@@ -198,6 +424,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             s_.target = -1;
             s_.returning = false;
             s_.watch = {};
+            s_.side = 0;
+            s_.sideFor = 0.0;
         } else {
             s_.downFor += dt;
         }
@@ -210,6 +438,17 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     }
     s_.down = false;
     s_.downFor = 0.0;
+
+    // Rules 8-12: the ground for this step, when the host feeds a whole station view.
+    if (s_.side != 0) s_.sideFor += dt;
+    Ground g;
+    const bool st = makeGround(in, t, g);
+    out.stationed = st;
+    const auto stationFor = [&](int tgt) {
+        const View& v = in.enemies[static_cast<std::size_t>(tgt)];
+        const int key = (tgt + 1) * 2 + (in.order == PartnerOrder::Spread ? 1 : 0);
+        return pickSide(s_, key, stationOn(g, t, v, in.order, in.pos, -1.f), stationOn(g, t, v, in.order, in.pos, 1.f));
+    };
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
     bool guard = false;
@@ -277,13 +516,17 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // Rule 1, StayClose: past the leash, back to the lead until within returnMeters.
     if (in.order == PartnerOrder::StayClose) {
         const float d = dist(in.pos, in.leadPos);
+        // Stationing: the return ends within max(returnMeters, personal space + 0.5), at a resolved point.
+        const float back = st ? std::max(t.returnMeters, t.personalSpaceMeters + 0.5f) : t.returnMeters;
         if (d > t.leashMeters) s_.returning = true;
-        else if (d <= t.returnMeters) s_.returning = false;
+        else if (d <= back) s_.returning = false;
         if (s_.returning) {
             if (s_.phase == Phase::String) endString(staggered);
             out.act = PartnerAct::MoveTo;
             out.why = PartnerWhy::Leash;
-            out.point = in.leadPos;
+            out.point = st ? g.resolve(toward(in.leadPos, in.pos, std::max(t.personalSpaceMeters + 0.05f, back - 0.5f)),
+                                       back - 0.05f)
+                           : in.leadPos;
             return out;
         }
     } else {
@@ -324,7 +567,14 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (s_.phase == Phase::Pause) {
         out.why = PartnerWhy::Pause;
         const View& e = in.enemies[static_cast<std::size_t>(s_.target)];
-        if (edge(in.pos, e) < t.standoffMeters) {
+        if (st) { // rule 12: back to the station
+            const Vec2 p = stationFor(s_.target);
+            if (dist(in.pos, p) > t.stationTolerance) {
+                out.act = edge(in.pos, e) < t.standoffMeters ? PartnerAct::StepBack : PartnerAct::MoveTo;
+                out.enemy = s_.target;
+                out.point = p;
+            }
+        } else if (edge(in.pos, e) < t.standoffMeters) {
             out.act = PartnerAct::StepBack;
             out.enemy = s_.target;
             out.point = toward(e.pos, in.pos, e.radius + t.standoffMeters);
@@ -337,10 +587,32 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     s_.target = tgt;
     if (tgt < 0) {
         out.why = PartnerWhy::NoTarget;
+        if (st) { // rule 11
+            const Vec2 p = pickSide(s_, 1, followOn(g, t, in.pos, -1.f), followOn(g, t, in.pos, 1.f));
+            if (dist(in.pos, p) > t.stationTolerance) {
+                out.act = PartnerAct::MoveTo;
+                out.point = p;
+            }
+        }
         return out;
     }
     const View& e = in.enemies[static_cast<std::size_t>(tgt)];
-    if (edge(in.pos, e) > t.reachMeters) {
+    if (st) { // rule 12: a string starts only from its station
+        const Vec2 p = stationFor(tgt);
+        if (dist(in.pos, p) > t.stationTolerance) {
+            out.act = PartnerAct::MoveTo;
+            out.why = PartnerWhy::Approach;
+            out.enemy = tgt;
+            out.point = p;
+            return out;
+        }
+        if (edge(in.pos, e) > t.reachMeters) { // no station in reach: wait at the resolved point
+            out.why = PartnerWhy::Approach;
+            out.enemy = tgt;
+            out.point = p;
+            return out;
+        }
+    } else if (edge(in.pos, e) > t.reachMeters) {
         Vec2 p = toward(e.pos, in.pos, e.radius + 0.5f * t.reachMeters);
         if (in.order == PartnerOrder::StayClose && dist(in.leadPos, p) > t.returnMeters)
             p = toward(in.leadPos, p, t.returnMeters);
@@ -442,7 +714,10 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
                                             "blowsMin",    "blowsMax",    "blowSeconds",  "pauseMin",     "pauseMax",
                                             "guardWarning", "guardChance", "guardHold",   "downSeconds",  "riseHealth",
                                             "blowCapShare", "overScale",  "budgetWindowSeconds", "budgetShare",
-                                            "budgetAllowanceSeconds"};
+                                            "budgetAllowanceSeconds", "personalSpaceMeters", "wedgeHalfDegrees",
+                                            "wedgeBeyondMeters", "wedgeClearMeters", "closeArcMin", "closeArcMax",
+                                            "closeLeadMeters", "spreadArcMin", "spreadArcMax", "sideHoldSeconds",
+                                            "followMin", "followMax", "stationTolerance"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -462,6 +737,19 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("budgetWindowSeconds", t.budgetWindowSeconds, 5, 30);
     real("budgetShare", t.budgetShare, 0, 1);
     real("budgetAllowanceSeconds", t.budgetAllowanceSeconds, 0, 10);
+    real("personalSpaceMeters", t.personalSpaceMeters, 0.5, 4);
+    real("wedgeHalfDegrees", t.wedgeHalfDegrees, 5, 60);
+    real("wedgeBeyondMeters", t.wedgeBeyondMeters, 0, 5);
+    real("wedgeClearMeters", t.wedgeClearMeters, 0, 2);
+    real("closeArcMin", t.closeArcMin, 0, 180);
+    real("closeArcMax", t.closeArcMax, 0, 180);
+    real("closeLeadMeters", t.closeLeadMeters, 1, 10);
+    real("spreadArcMin", t.spreadArcMin, 0, 180);
+    real("spreadArcMax", t.spreadArcMax, 0, 180);
+    real("sideHoldSeconds", t.sideHoldSeconds, 0, 10);
+    real("followMin", t.followMin, 0.5, 10);
+    real("followMax", t.followMax, 0.5, 10);
+    real("stationTolerance", t.stationTolerance, 0.05, 2);
 
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);

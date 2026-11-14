@@ -49,6 +49,31 @@
 // never drawn for, and a target that turns absent is dropped as if Down. Views past kMaxPartnerEnemies are ignored.
 // StepBack (this module's choice of trigger): during a pause, closer than standoffMeters to its target's edge, it
 // steps back to standoffMeters. It is never a dodge.
+// Stationing (rules 8-12): where the partner stands, so its blows are seen from the side and it never crowds the lead
+// or blocks the camera. Opt-in: only while the host sets PartnerInput::station.on with a whole finite view (camera,
+// lead facing, arena); off, every rule above is as it was (intent.stationed false). All on the ground plane.
+//   8. Personal space: no goal is within personalSpaceMeters (1.6) of the lead, centre to centre, except while the
+//      host says it revives the lead, or when the arena leaves no other room (then as far from the lead as it can get).
+//   9. Camera wedge: no goal is inside the wedge from the camera to wedgeBeyondMeters (1.0) past the lead,
+//      wedgeHalfDegrees (25) either side of the camera-to-lead line (the camera on the lead: its forward; neither:
+//      no wedge). A goal inside it moves to the nearer wedge edge plus wedgeClearMeters (0.5); every goal stationing
+//      emits keeps that clearance. A goal outside the arena (arenaCentre, arenaRadius; 0: unbounded) is pulled in.
+//  10. Stations, on the circle round the target at its radius + half the reach (in reach), by the angle at the
+//      target between the lead and the station: StayClose closeArcMin..Max (60-90) and within closeLeadMeters (3.5,
+//      at most leashMeters) of the lead; Spread spreadArcMin..Max (120-180), any distance. Of the two sides, the one
+//      with a station outside the wedge (and personal space and the arena); both: the one nearer the partner. A side
+//      once chosen is kept sideHoldSeconds (2.0) unless the wedge (or 8, or the arena) leaves it no station in its
+//      arc. No station in the arc: the nearest legal point of the circle on that side; none on the circle: the arc's
+//      middle, resolved by 8 and 9 (and if that is out of reach, it waits there and never starts a string).
+//      StayClose's leash still rules (a station is never past leashMeters from the lead), and stationing replaces
+//      the old returnMeters clamp on the approach; the leash's own goal is a resolved point on the partner's side
+//      of the lead, within max(returnMeters, personal space + 0.5).
+//  11. No target: stand followMin..followMax (2.0-2.5) behind the lead (by its facing; zero facing: the camera's
+//      line) and to one side, outside the wedge, the side kept as in 10.
+//  12. A string starts only within stationTolerance (0.5) of its station (blows are seen from the side, not from
+//      behind the lead); out of it the intent is MoveTo the station (Approach). During a pause it goes back to the
+//      station (StepBack when nearer than standoffMeters to the target's edge, else MoveTo). Later blows of a string
+//      are not held to it; guarding, the budget and the rest are unchanged.
 // Two seeded streams (rhythm, defence), drawn at events only: the same seed and script give the same draws at any step.
 // A step that is negative or not a finite number counts as 0, and one step is at most kMaxPartnerStep (the fight's
 // kMaxFightStep), as in FightSession.
@@ -58,7 +83,10 @@
 //   { "version": 1, "leashMeters": 4, "returnMeters": 3, "reachMeters": 1.8, "standoffMeters": 0.8, "blowsMin": 2,
 //     "blowsMax": 3, "blowSeconds": 0.65, "pauseMin": 1.2, "pauseMax": 2.0, "guardWarning": 0.25, "guardChance": 0.7,
 //     "guardHold": 0.3, "downSeconds": 30, "riseHealth": 0.25, "blowCapShare": 0.6, "overScale": 0.5,
-//     "budgetWindowSeconds": 20, "budgetShare": 0.6, "budgetAllowanceSeconds": 2.0 }
+//     "budgetWindowSeconds": 20, "budgetShare": 0.6, "budgetAllowanceSeconds": 2.0, "personalSpaceMeters": 1.6,
+//     "wedgeHalfDegrees": 25, "wedgeBeyondMeters": 1.0, "wedgeClearMeters": 0.5, "closeArcMin": 60, "closeArcMax": 90,
+//     "closeLeadMeters": 3.5, "spreadArcMin": 120, "spreadArcMax": 180, "sideHoldSeconds": 2.0, "followMin": 2.0,
+//     "followMax": 2.5, "stationTolerance": 0.5 }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -95,6 +123,19 @@ struct PartnerEnemyView {
     bool leadAttacking = false;
 };
 
+// Stationing's view (rules 8-12), on the ground plane, fed by the host each step. Off (the default), or any field not
+// a finite number, or arenaRadius under 0, or the partner's or the lead's position not finite: no stationing.
+// The target's position is its enemy view's.
+struct PartnerStationView {
+    bool on = false;
+    Vec2 cameraPos{};
+    Vec2 cameraForward{};    // need not be unit; the wedge's axis when the camera stands on the lead
+    Vec2 leadFacing{};       // need not be unit; zero: the camera-to-lead line (the lead faces away from the camera)
+    bool reviving = false;   // the partner is reviving the lead: personal space is off
+    Vec2 arenaCentre{};
+    float arenaRadius = 0.f; // where the partner may stand (its body's margin taken off); 0: unbounded
+};
+
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
 struct PartnerInput {
     PartnerOrder order = PartnerOrder::Spread;
@@ -112,6 +153,7 @@ struct PartnerInput {
     // when a string starts.
     std::array<float, kMaxPartnerBlows> blowSeconds{};
     std::span<const PartnerEnemyView> enemies;
+    PartnerStationView station{}; // rules 8-12; off by default
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
@@ -138,6 +180,7 @@ struct PartnerIntent {
     bool punish = false;      // Attack on a staggered target: no pause after it (rule 6)
     bool rise = false;        // Wait while Down past downSeconds: stand now
     float riseHealth = 0.f;   // with rise: the health to stand at (fraction of max)
+    bool stationed = false;   // stationing (rules 8-12) ran this step: point, when set, obeys them
 };
 
 struct PartnerTuning {
@@ -160,6 +203,21 @@ struct PartnerTuning {
     float budgetWindowSeconds = 20.f;  // rule 2's budget: any rolling window this long (5..30)
     float budgetShare = 0.6f;          // its attack time at most this x the lead's in the window (0..1)
     float budgetAllowanceSeconds = 2.f; // plus this (0..10)
+    // Stationing (rules 8-12). Cross-field limits are applied where used: closeLeadMeters at most leashMeters, the
+    // follow distances at least personal space.
+    float personalSpaceMeters = 1.6f; // rule 8 (0.5..4)
+    float wedgeHalfDegrees = 25.f;    // rule 9 (5..60)
+    float wedgeBeyondMeters = 1.f;    // rule 9: the wedge runs this far past the lead (0..5)
+    float wedgeClearMeters = 0.5f;    // rule 9: a goal moved out keeps this from the edge (0..2)
+    float closeArcMin = 60.f;         // rule 10, StayClose, degrees at the target from the lead (0..180)
+    float closeArcMax = 90.f;         // (closeArcMin..180)
+    float closeLeadMeters = 3.5f;     // rule 10, StayClose: a station within this of the lead (1..10)
+    float spreadArcMin = 120.f;       // rule 10, Spread (0..180)
+    float spreadArcMax = 180.f;       // (spreadArcMin..180)
+    float sideHoldSeconds = 2.f;      // rule 10: a side is kept at least this long (0..10)
+    float followMin = 2.f;            // rule 11, no target: behind the lead (0.5..10)
+    float followMax = 2.5f;           // (followMin..10)
+    float stationTolerance = 0.5f;    // rule 12: a string starts within this of its station (0.05..2)
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
@@ -210,6 +268,11 @@ struct PartnerBrainSave {
     std::array<Watch, kMaxPartnerEnemies> watch{};
     PartnerIntent out{};
     bool begun = false;
+    // Stationing's side (rule 10, 11): -1 or +1 (0: none chosen), what it was chosen for (the target and the order,
+    // or no target), and how long it has been held.
+    std::int8_t side = 0;
+    int sideKey = 0;
+    double sideFor = 0.0;
 
     // FNV-1a over every field (StateHash.h): two brains with the same hash do the same from here.
     FTCORE_API std::uint64_t hash() const;
