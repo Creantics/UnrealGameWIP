@@ -1,8 +1,14 @@
 #pragma once
 
 // The player's walking and fighting bindings (ftcore::InputBindings): the defaults, with the player's overrides from
-// Saved/InputBindings.json read over them once (a refused file is logged and the defaults stand). Readers ask for the
-// key of an action on each device and whether a held action is pressed once to toggle.
+// Saved/InputBindings.json read over them (a refused file is logged and the defaults stand). Readers ask for the key of
+// an action on each device and whether a held action is pressed once to toggle.
+//
+// The file is read at first use and again whenever ReloadIfChanged finds it added, removed or edited: the player
+// controller asks as its input is set up (each map), when the game window gets the focus back and as the pause menu
+// closes. A reload rebuilds everything built from the bindings in place and moves Generation(), so a reader that keeps
+// something it built from them (the fight HUD's prompt keys, the explore pawn's and the controller's mapping contexts)
+// rebuilds when it moves.
 //
 // The arena, the explore character and the pause key read it; the quick-time and Beat screens keep their action
 // buttons (FTActionButtons.h), menus their own keys.
@@ -15,9 +21,11 @@
 #include "FTUiText.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/FileManager.h"
 #include "InputCoreTypes.h"
 #include "Misc/App.h"
 #include "Misc/CommandLine.h"
+#include "Misc/DateTime.h"
 #include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -34,98 +42,152 @@ inline FString GetFilePath()
 	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("InputBindings.json"));
 }
 
-// What the saved file's import left unbound (a newer default on a key the player gave to something else); a settings
-// screen shows each as "unbound: choose a key". Filled by Get().
-inline ftcore::InputUnbound& UnboundStore()
+// Everything built from the bindings. One instance (BindingsStore), rewritten in place by Reload, so the addresses
+// readers hold (Get(), Unbound(), a Key()) stay good across a reload. Game thread only.
+struct FBindingsStore
 {
-	static ftcore::InputUnbound Unbound;
-	return Unbound;
+	ftcore::InputBindings Bindings = ftcore::defaultInputBindings();
+	// What the saved file's import left unbound (a newer default on a key the player gave to something else); a
+	// settings screen shows each as "unbound: choose a key".
+	ftcore::InputUnbound Unbound;
+	// The engine key for each action on each device; EKeys::Invalid when unbound.
+	std::array<std::array<FKey, ftcore::kInputActionCount>, ftcore::kInputDeviceCount> Keys;
+	// The bindings' generation, their change signal: each load moves it, so it is never 0 once loaded.
+	uint32 Generation = 0;
+	bool bLoaded = false;
+	// The file as the last load found it (bFileThere false: there was none), for ReloadIfChanged.
+	bool bFileThere = false;
+	FDateTime FileTime;
+	int64 FileSize = -1;
+};
+
+inline FBindingsStore& BindingsStore()
+{
+	static FBindingsStore Store;
+	return Store;
 }
 
-// The bindings' generation, their change signal: it moves each time the bindings change, so a reader that builds from
-// them (the fight HUD's prompt keys) rebuilds when it moves. The load at first use moves it; nothing rebinds at run time
-// yet (Get and Key load once), so a rebinding screen must reload both and then call NoteChanged. Game thread only.
-inline uint32& GenerationStore()
+// The bindings changed: readers rebuild what they built from them. Reload calls it; on its own it rebuilds nothing
+// here, so a change to the bindings goes through Reload.
+inline void NoteChanged()
 {
-	static uint32 Gen = 0;
-	return Gen;
+	++BindingsStore().Generation;
+}
+
+// (Re)reads Saved/InputBindings.json over the defaults, rebuilds the key table, and moves the generation (which drops
+// the controls lines HintLine and UnboundLine keep). The hook for a rebinding screen: it writes the file, then calls
+// this. Reads the file: never per frame.
+inline void Reload()
+{
+	FBindingsStore& Store = BindingsStore();
+	const FString Path = GetFilePath();
+	// The stat first, so a refused file is not re-read (and re-logged) at every check.
+	const FFileStatData Stat = IFileManager::Get().GetStatData(*Path);
+	Store.bFileThere = Stat.bIsValid && !Stat.bIsDirectory;
+	Store.FileTime = Store.bFileThere ? Stat.ModificationTime : FDateTime::MinValue();
+	Store.FileSize = Store.bFileThere ? Stat.FileSize : -1;
+	const bool bWasLoaded = Store.bLoaded;
+	Store.bLoaded = true;
+	Store.Bindings = ftcore::defaultInputBindings();
+	Store.Unbound = ftcore::InputUnbound();
+	FString Text;
+	if (FFileHelper::LoadFileToString(Text, *Path))
+	{
+		std::string Error;
+		if (!ftcore::importInputBindings(FT::ToUtf8(Text), Store.Bindings, &Error, &Store.Unbound))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s refused (%s); using the defaults."), *Path, *FT::ToFString(Error));
+			Store.Bindings = ftcore::defaultInputBindings();
+			Store.Unbound = ftcore::InputUnbound();
+		}
+		const ftcore::InputUnbound& Left = Store.Unbound;
+		for (size_t D = 0; D < ftcore::kInputDeviceCount && Left.count > 0; ++D)
+		{
+			for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
+			{
+				if (Left.left[D][A])
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s unbound on the %s: your own key sits on its default; choose a key."),
+						*FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))), D == 0 ? TEXT("keyboard") : TEXT("pad"));
+				}
+			}
+		}
+	}
+	for (size_t D = 0; D < ftcore::kInputDeviceCount; ++D)
+	{
+		for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
+		{
+			const char* Name = ftcore::inputKey(Store.Bindings, static_cast<ftcore::InputAction>(A), static_cast<ftcore::InputDevice>(D));
+			FKey& Slot = Store.Keys[D][A];
+			Slot = Name[0] ? FKey(FName(Name)) : EKeys::Invalid;
+			if (Name[0] && !Slot.IsValid())
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s is not a key the engine knows; %s is unbound there."),
+					*FT::ToFString(Name), *FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))));
+			}
+		}
+	}
+	if (bWasLoaded)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("InputBindings: %s %s; the bindings are read again."), *Path,
+			Store.bFileThere ? TEXT("changed") : TEXT("is gone"));
+	}
+	NoteChanged();
+}
+
+// The store, loaded (the first use reads the file). Per frame this is one flag check.
+inline const FBindingsStore& Loaded()
+{
+	const FBindingsStore& Store = BindingsStore();
+	if (!Store.bLoaded)
+	{
+		Reload();
+	}
+	return Store;
+}
+
+// Reloads when the file was added, removed or edited (its time stamp or size moved) since the last load; true when it
+// did. One stat of the file: call it at a map's start or on a focus change, never per frame.
+inline bool ReloadIfChanged()
+{
+	const FBindingsStore& Store = BindingsStore();
+	if (!Store.bLoaded)
+	{
+		Reload();
+		return true;
+	}
+	const FFileStatData Stat = IFileManager::Get().GetStatData(*GetFilePath());
+	const bool bThere = Stat.bIsValid && !Stat.bIsDirectory;
+	if (bThere == Store.bFileThere && (!bThere || (Stat.ModificationTime == Store.FileTime && Stat.FileSize == Store.FileSize)))
+	{
+		return false;
+	}
+	Reload();
+	return true;
 }
 
 inline const ftcore::InputBindings& Get()
 {
-	static const ftcore::InputBindings Bindings = []
-	{
-		ftcore::InputBindings B = ftcore::defaultInputBindings();
-		++GenerationStore(); // loaded: a change from no bindings
-		FString Text;
-		if (FFileHelper::LoadFileToString(Text, *GetFilePath()))
-		{
-			std::string Error;
-			if (!ftcore::importInputBindings(FT::ToUtf8(Text), B, &Error, &UnboundStore()))
-			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s refused (%s); using the defaults."), *GetFilePath(),
-					*FT::ToFString(Error));
-			}
-			const ftcore::InputUnbound& Left = UnboundStore();
-			for (size_t D = 0; D < ftcore::kInputDeviceCount && Left.count > 0; ++D)
-			{
-				for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
-				{
-					if (Left.left[D][A])
-					{
-						UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s unbound on the %s: your own key sits on its default; choose a key."),
-							*FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))), D == 0 ? TEXT("keyboard") : TEXT("pad"));
-					}
-				}
-			}
-		}
-		return B;
-	}();
-	return Bindings;
+	return Loaded().Bindings;
 }
 
-// The bindings' generation now (after Get(), so the load has counted).
+// The bindings' generation now (after the first load, so it is not 0).
 inline uint32 Generation()
 {
-	Get();
-	return GenerationStore();
+	return Loaded().Generation;
 }
 
-// The bindings changed (a rebinding, once one exists): readers rebuild what they built from them.
-inline void NoteChanged()
-{
-	++GenerationStore();
-}
-
-// The import's unbound list (after Get()).
+// The import's unbound list.
 inline const ftcore::InputUnbound& Unbound()
 {
-	Get();
-	return UnboundStore();
+	return Loaded().Unbound;
 }
 
-// The engine key for the action on that device; EKeys::Invalid when unbound. Built once with Get().
+// The engine key for the action on that device; EKeys::Invalid when unbound. Read from the table the last load built:
+// no file access or allocation here.
 inline const FKey& Key(ftcore::InputAction Action, ftcore::InputDevice Device)
 {
-	static const std::array<std::array<FKey, ftcore::kInputActionCount>, ftcore::kInputDeviceCount> Keys = []
-	{
-		std::array<std::array<FKey, ftcore::kInputActionCount>, ftcore::kInputDeviceCount> K;
-		for (size_t D = 0; D < ftcore::kInputDeviceCount; ++D)
-		{
-			for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
-			{
-				const char* Name = ftcore::inputKey(Get(), static_cast<ftcore::InputAction>(A), static_cast<ftcore::InputDevice>(D));
-				K[D][A] = Name[0] ? FKey(FName(Name)) : EKeys::Invalid;
-				if (Name[0] && !K[D][A].IsValid())
-				{
-					UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s is not a key the engine knows; %s is unbound there."),
-						*FT::ToFString(Name), *FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))));
-				}
-			}
-		}
-		return K;
-	}();
-	return Keys[static_cast<size_t>(Device) % ftcore::kInputDeviceCount][static_cast<size_t>(Action) % ftcore::kInputActionCount];
+	return Loaded().Keys[static_cast<size_t>(Device) % ftcore::kInputDeviceCount][static_cast<size_t>(Action) % ftcore::kInputActionCount];
 }
 
 // Whether the action's key is down on either device.
@@ -182,26 +244,37 @@ inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 }
 
 // A screen's controls line on a device, built from the table (ftcore::inputHintLine) with the words from ui.json
-// ("input.light"), so it names only keys the player has; an action the import left unbound shows NO KEY. Built once
-// per screen and device, then kept.
+// ("input.light"), so it names only keys the player has; an action the import left unbound shows NO KEY. Built per
+// screen and device and kept until the bindings' generation moves (a reload); per frame an int compare.
 inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevice Device)
 {
-	static TOptional<FString> Lines[ftcore::kInputHintScreenCount][ftcore::kInputDeviceCount];
-	TOptional<FString>& Line = Lines[static_cast<size_t>(Screen) % ftcore::kInputHintScreenCount][static_cast<size_t>(Device) % ftcore::kInputDeviceCount];
-	if (!Line.IsSet())
+	static FString Lines[ftcore::kInputHintScreenCount][ftcore::kInputDeviceCount];
+	static uint32 BuiltFrom[ftcore::kInputHintScreenCount][ftcore::kInputDeviceCount] = {}; // 0: not built yet
+	const size_t ScreenIx = static_cast<size_t>(Screen) % ftcore::kInputHintScreenCount;
+	const size_t DeviceIx = static_cast<size_t>(Device) % ftcore::kInputDeviceCount;
+	const FBindingsStore& Store = Loaded();
+	if (BuiltFrom[ScreenIx][DeviceIx] != Store.Generation)
 	{
-		const std::string Text = ftcore::inputHintLine(Get(), Screen, Device,
-			[](const char* LabelKey, void*) { return FT::ToUtf8(FTUiText::Lookup(*FT::ToFString(LabelKey))); }, nullptr, &Unbound());
-		Line = FT::ToFString(Text);
+		const std::string Text = ftcore::inputHintLine(Store.Bindings, Screen, Device,
+			[](const char* LabelKey, void*) { return FT::ToUtf8(FTUiText::Lookup(*FT::ToFString(LabelKey))); }, nullptr, &Store.Unbound);
+		Lines[ScreenIx][DeviceIx] = FT::ToFString(Text);
+		BuiltFrom[ScreenIx][DeviceIx] = Store.Generation;
 	}
-	return Line.GetValue();
+	return Lines[ScreenIx][DeviceIx];
 }
 
 // One line naming each action the import left unbound ("NO KEY: gift_heal (keyboard)"); empty when none. A fight shows
-// it on screen at its start.
+// it on screen at its start. Rebuilt when the generation moves.
 inline const FString& UnboundLine()
 {
-	static const FString Line = FT::ToFString(ftcore::inputUnboundLine(Unbound()));
+	static FString Line;
+	static uint32 BuiltFrom = 0; // 0: not built yet
+	const FBindingsStore& Store = Loaded();
+	if (BuiltFrom != Store.Generation)
+	{
+		Line = FT::ToFString(ftcore::inputUnboundLine(Store.Unbound));
+		BuiltFrom = Store.Generation;
+	}
 	return Line;
 }
 

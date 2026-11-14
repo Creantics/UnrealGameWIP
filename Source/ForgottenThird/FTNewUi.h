@@ -2,8 +2,9 @@
 
 // The new game UI (production/ui plan): Slate widgets built in code, painted from Core view-models (ftcore/UiViews.h)
 // in the style table (Data/UI/style.json, ftcore/UiStyle.h), added to the game viewport by the screen's HUD actor.
-// On by default: -FTOldUi on the command line (which wins) or the console variable ft.NewUi 0 turns it off, back to the
-// old Canvas HUD, for one more round. -FTNewUi still parses but does nothing. Each HUD reads it once, at BeginPlay
+// On by default: the console variable ft.NewUi 0 turns it off, back to the old Canvas HUD, for one more round, and so does
+// -FTOldUi on the command line (which wins) outside Shipping; a Shipping build does not parse -FTOldUi or -FTNewUi.
+// -FTNewUi still parses outside Shipping but does nothing. Each HUD reads it once, at BeginPlay
 // (NewUiEnabled, the one switch): with it on the HUD adds its widget and skips only the Canvas parts that widget
 // replaces (it checks the widget, not the flag, so a change mid-map does nothing until the next map); with it off every
 // HUD draws as before.
@@ -20,8 +21,8 @@ class AFTStoryDirector;
 
 namespace FT
 {
-// True when the new UI is on: the default, unless -FTOldUi is on the command line or ft.NewUi is 0. Read by the HUDs
-// at BeginPlay only.
+// True when the new UI is on: the default, unless ft.NewUi is 0 or (outside Shipping only) -FTOldUi is on the command
+// line. Read by the HUDs at BeginPlay only.
 bool NewUiEnabled();
 
 // The arena HUD's Slate layer (the lead's block, the partner, the third place's reserved slot, the target and the boss

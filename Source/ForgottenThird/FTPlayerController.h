@@ -162,6 +162,8 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
+	// Reloads the bindings when the game window gets the focus back, and remaps Pause when they changed.
+	virtual void PlayerTick(float DeltaTime) override;
 
 private:
 	// Creates the actions and the mapping context once.
@@ -203,6 +205,8 @@ private:
 	// Pause: Esc / pad Start. Backs out of the topmost layer first (the settings overlay, the pause menu
 	// itself, then OnBack's listeners), else opens the pause menu.
 	void CreatePauseInput();
+	// Maps Pause's keys from FTInputBindings (unmapping the old ones first) and notes their generation.
+	void MapPauseKeys();
 	void BindPauseInput(UEnhancedInputComponent& Input);
 	void HandlePause();
 
@@ -242,6 +246,8 @@ private:
 	TObjectPtr<UInputAction> PauseAction;
 	bool bPauseInput = false;
 	bool bPauseMenuInput = false;
+	uint32 PauseKeyGeneration = 0; // the bindings' generation Pause's keys were mapped from (FTInputBindings::Generation)
+	bool bHadFocus = true;         // the app's focus at the last PlayerTick, for the regain edge
 	bool bBackClaimed = false;
 
 	UPROPERTY(Transient)

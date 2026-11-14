@@ -1458,8 +1458,23 @@ void AFTExploreCharacter::CreateInputObjects()
 		return;
 	}
 	Context = NewObject<UInputMappingContext>(this, TEXT("IMC_Explore"));
-
 	MoveAction = MakeAction(TEXT("IA_ExploreMove"), true);
+	LookAction = MakeAction(TEXT("IA_ExploreLook"), true);
+	JumpAction = MakeAction(TEXT("IA_ExploreJump"), false);
+	RollAction = MakeAction(TEXT("IA_ExploreRoll"), false);
+	InteractAction = MakeAction(TEXT("IA_ExploreInteract"), false);
+	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
+	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
+	MapBoundKeys();
+	// Run, Crouch, Aim, Light and the map button's party hold are polled (TickHeldKeys, TickAim): held or toggled.
+}
+
+void AFTExploreCharacter::MapBoundKeys()
+{
+	// From scratch each time: the actions stay (their BindActions with them), the keys are mapped again. UnmapAll and
+	// MapKey ask Enhanced Input to rebuild the mappings of every player using the context.
+	Context->UnmapAll();
+	KeyGeneration = FTInputBindings::Generation();
 	// Keys give X = right, Y = forward. W and S swizzle their 1D value into Y.
 	auto MapMove = [this](const FKey& Key, bool bSwizzle, bool bNegate)
 	{
@@ -1501,26 +1516,13 @@ void AFTExploreCharacter::CreateInputObjects()
 			}
 		}
 	};
-
-	LookAction = MakeAction(TEXT("IA_ExploreLook"), true);
 	Context->MapKey(LookAction, EKeys::Mouse2D);
 	Context->MapKey(LookAction, EKeys::Gamepad_Right2D);
-
-	JumpAction = MakeAction(TEXT("IA_ExploreJump"), false);
 	Both(JumpAction, ftcore::InputAction::Jump);
-
-	RollAction = MakeAction(TEXT("IA_ExploreRoll"), false);
 	Both(RollAction, ftcore::InputAction::Roll);
-
-	InteractAction = MakeAction(TEXT("IA_ExploreInteract"), false);
 	Both(InteractAction, ftcore::InputAction::Interact);
-
-	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
 	Both(SwitchLeadAction, ftcore::InputAction::SwitchLead);
-
-	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
 	Both(PartyAction, ftcore::InputAction::Party);
-	// Run, Crouch, Aim, Light and the map button's party hold are polled (TickHeldKeys, TickAim): held or toggled.
 }
 
 UInputAction* AFTExploreCharacter::MakeAction(const TCHAR* Name, bool bAxis2D)
@@ -2636,6 +2638,11 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	// The bindings were read again (a changed file, a rebinding): the context's keys follow. Per frame an int compare.
+	if (Context && FTInputBindings::Generation() != KeyGeneration)
+	{
+		MapBoundKeys();
+	}
 	TickHeldKeys(DeltaSeconds);
 	// A frame after a traversal or slide hands back: how far CharacterMovement moved the capsule (a pop if not ~0).
 	if (bHandBackPending)
