@@ -1165,20 +1165,22 @@ void AFTArenaHUD::DrawHUD()
 	{
 		bStatsBuilt = false; // the next result gets its own counts
 	}
+	if (NewUiWidget.IsValid())
+	{
+		// The Slate layer draws all of the fight's HUD, the wall's cue included. The aim reticle is shared with the other
+		// modes: it stays on the canvas.
+		FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
+		FT::DrawPauseOverlay(*this, Canvas);
+		return;
+	}
 
 	DrawEdgeCue(*Mode);
 	DrawFlashes(*Mode);
 	DrawEnemies(*Mode);
 	DrawLock(*Mode);
-	if (!NewUiWidget.IsValid()) // the Slate layer draws the lead's block and the target bar
-	{
-		DrawTargetBar(*Mode);
-	}
-	DrawBossPanel(*Mode); // kept: the called zone and the answer words have no view fields yet
-	if (!NewUiWidget.IsValid())
-	{
-		DrawPlayerPanel(*Mode);
-	}
+	DrawTargetBar(*Mode);
+	DrawBossPanel(*Mode);
+	DrawPlayerPanel(*Mode);
 	DrawPopups(*Mode);
 	DrawBanners(*Mode);
 	if (Mode->IsAutoPlay() || Mode->IsIdle())

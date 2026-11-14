@@ -549,3 +549,90 @@ TEST_CASE("input bindings: a fresh profile takes the ruled pad defaults; a versi
     CHECK(std::string(inputKey(fresh, InputAction::GiftHeal, InputDevice::Pad)) == "Gamepad_DPad_Left");
     CHECK(std::string(inputKey(fresh, InputAction::GiftGuard, InputDevice::Pad)) == "Gamepad_DPad_Right");
 }
+
+TEST_CASE("input hints: one action's keys, for a key prompt") {
+    InputBindings b = defaultInputBindings();
+    CHECK(inputActionKeys(b, InputAction::Gift, InputDevice::Keys) == "H");
+    CHECK(inputActionKeys(b, InputAction::Gift, InputDevice::Pad) == "D-pad up");
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Keys) == "G");
+    CHECK(inputActionKeys(b, InputAction::GiftGuard, InputDevice::Keys) == "Y");
+    // The pad as ruled: the gifts on D-pad left and right.
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Pad) == "D-pad left");
+    CHECK(inputActionKeys(b, InputAction::GiftGuard, InputDevice::Pad) == "D-pad right");
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Pad) == "LB+X");
+    CHECK(inputActionKeys(b, InputAction::MoveForward, InputDevice::Pad) == "LS");
+    CHECK(inputActionKeys(b, InputAction::Party, InputDevice::Keys) == "P");
+    InputBindings mapOnly = b; // with no key of its own, the party toggle is the map button held
+    mapOnly.keys[static_cast<std::size_t>(InputDevice::Keys)][static_cast<std::size_t>(InputAction::Party)] = InputKeyName{};
+    CHECK(inputActionKeys(mapOnly, InputAction::Party, InputDevice::Keys) == "Hold M");
+    // A pad key of its own wins over the route.
+    REQUIRE(rebindInput(b, InputAction::GiftHeal, InputDevice::Pad, "Gamepad_LeftStick_Left"));
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Pad) == "LS left");
+    // The route's second button unbound: nothing reaches it, so no key.
+    b.keys[static_cast<std::size_t>(InputDevice::Pad)][static_cast<std::size_t>(InputAction::Interact)] = InputKeyName{};
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Pad).empty());
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Keys) == "T");
+}
+
+TEST_CASE("input hints: a key prompt whose action the import left unbound has NO KEY, as its own result") {
+    const InputHintEntry* entries = nullptr;
+    const std::size_t count = inputHintEntries(InputHintScreen::ArenaJump, entries);
+    const auto entryOf = [&](InputAction a) -> const InputHintEntry* {
+        for (std::size_t i = 0; i < count; ++i)
+            for (std::uint8_t j = 0; j < entries[i].count; ++j)
+                if (entries[i].actions[j] == a) return &entries[i];
+        return nullptr;
+    };
+    // The defaults: every prompt has its key, none is NO KEY, with or without a list.
+    InputBindings b = defaultInputBindings();
+    const InputUnbound none;
+    for (std::size_t i = 0; i < count; ++i) {
+        for (const InputDevice d : {InputDevice::Keys, InputDevice::Pad}) {
+            const InputPromptKey k = inputPromptKey(b, entries[i], d, &none);
+            CHECK_FALSE(k.noKey);
+            CHECK(k.keys == inputHintKeys(b, entries[i], d));
+        }
+    }
+    const InputPromptKey heal = inputPromptKey(b, InputAction::Gift, InputDevice::Keys, nullptr);
+    CHECK_FALSE(heal.noKey);
+    CHECK(heal.keys == "H");
+    // A newer default on a key the player gave to something else: the gifts are left unbound on the keyboard.
+    InputUnbound left;
+    std::string error;
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"release": "G", "count": "Y"}})", b, &error, &left));
+    for (const InputAction a : {InputAction::GiftHeal, InputAction::GiftGuard}) {
+        CAPTURE(static_cast<int>(a));
+        CHECK(inputNoKey(b, a, InputDevice::Keys, &left));
+        CHECK_FALSE(inputNoKey(b, a, InputDevice::Keys, nullptr)); // no list: no NO KEY
+        CHECK_FALSE(inputNoKey(b, a, InputDevice::Pad, &left));    // nothing left unbound on the pad
+        const InputPromptKey own = inputPromptKey(b, a, InputDevice::Keys, &left);
+        CHECK(own.noKey);
+        CHECK(own.keys == kInputNoKey);
+        const InputHintEntry* e = entryOf(a);
+        REQUIRE(e != nullptr);
+        const InputPromptKey line = inputPromptKey(b, *e, InputDevice::Keys, &left);
+        CHECK(line.noKey);
+        CHECK(line.keys == kInputNoKey);
+        // Without the list the prompt is one nothing reaches: empty and not NO KEY (the old answer).
+        const InputPromptKey bare = inputPromptKey(b, a, InputDevice::Keys, nullptr);
+        CHECK_FALSE(bare.noKey);
+        CHECK(bare.keys.empty());
+        // On the pad the gifts keep their ruled D-pad keys (nothing left unbound there): not NO KEY.
+        const InputPromptKey pad = inputPromptKey(b, a, InputDevice::Pad, &left);
+        CHECK_FALSE(pad.noKey);
+        CHECK(pad.keys == (a == InputAction::GiftHeal ? "D-pad left" : "D-pad right"));
+    }
+    // The actions that took their keys show them.
+    const InputPromptKey release = inputPromptKey(b, InputAction::Release, InputDevice::Keys, &left);
+    CHECK_FALSE(release.noKey);
+    CHECK(release.keys == "G");
+    // A key put back on a marked action wins: it is no longer NO KEY. (Set in place: rebindInput refuses any rebind
+    // while an action stays left unbound, since inputAllReachable takes no list.)
+    InputKeyName& healKey = b.keys[static_cast<std::size_t>(InputDevice::Keys)][static_cast<std::size_t>(InputAction::GiftHeal)];
+    healKey.text[0] = 'J';
+    healKey.text[1] = '\0';
+    CHECK_FALSE(inputNoKey(b, InputAction::GiftHeal, InputDevice::Keys, &left));
+    const InputPromptKey back = inputPromptKey(b, InputAction::GiftHeal, InputDevice::Keys, &left);
+    CHECK_FALSE(back.noKey);
+    CHECK(back.keys == "J");
+}

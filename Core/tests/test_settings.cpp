@@ -30,6 +30,9 @@ TEST_CASE("settings defaults") {
     CHECK_FALSE(s.skipChoices);
     CHECK_FALSE(s.stickFlicks);
     CHECK(s.aimAssist);
+    CHECK(s.uiFirstUse == 0u);
+    CHECK(s.hudScale == 100);
+    CHECK(s.hudSafeMargin == 0); // on a PC the screen's edge is all there is
 
     Settings t;
     t.textSpeed = TextSpeed::Instant;
@@ -62,6 +65,9 @@ TEST_CASE("settings round-trip through JSON") {
     s.skipChoices = true;
     s.stickFlicks = true;
     s.aimAssist = false;
+    s.uiFirstUse = 0xA5u;
+    s.hudScale = 120;
+    s.hudSafeMargin = 7;
     const std::string text = encodeSettings(s);
     CHECK(text.find("\"version\":1") != std::string::npos);
 
@@ -309,8 +315,8 @@ TEST_CASE("settings menu: stick flicks are off by default and the row toggles th
     out.stickFlicks = true;
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK_FALSE(out.stickFlicks);
-    // The row sits above Camera shake and Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 4u == kSettingsRowCount);
+    // The row sits above Camera shake, Lock framing, HUD scale, HUD safe margin and Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 6u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down to 0, and saves") {
@@ -338,7 +344,108 @@ TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down
     CHECK(out.cameraShake == 1.f);
     REQUIRE(decodeSettings(R"({"version":1,"cameraShake":-2})", out, nullptr));
     CHECK(out.cameraShake == 0.f);
-    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 3u == kSettingsRowCount);
+    // The row sits above Lock framing, HUD scale, HUD safe margin and Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 5u == kSettingsRowCount);
+}
+
+TEST_CASE("settings menu: HUD scale runs 80% to 130% in tens, 100% by default, and saves") {
+    Settings s;
+    SettingsMenu m;
+    char value[32];
+    CHECK(std::string(settingsRowLabel(SettingsRow::HudScale)) == "HUD scale");
+    settingsRowValue(s, SettingsRow::HudScale, value, sizeof value);
+    CHECK(std::string(value) == "100%");
+    for (int i = 0; i < 3; ++i) CHECK(m.click(s, SettingsRow::HudScale, 1) == SettingsAction::Changed);
+    CHECK(s.hudScale == 130);
+    CHECK(m.click(s, SettingsRow::HudScale, 1) == SettingsAction::None); // a slider stops at its end
+    CHECK(m.press(s, SettingsKey::Confirm) == SettingsAction::None);    // and never wraps
+    for (int i = 0; i < 5; ++i) CHECK(m.click(s, SettingsRow::HudScale, -1) == SettingsAction::Changed);
+    CHECK(s.hudScale == 80);
+    CHECK(m.click(s, SettingsRow::HudScale, -1) == SettingsAction::None);
+    settingsRowValue(s, SettingsRow::HudScale, value, sizeof value);
+    CHECK(std::string(value) == "80%");
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK(out.hudScale == 80);
+    CHECK(out == s);
+    // An old file reads 100%; out of range clamps; between the steps rounds to the nearest.
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.hudScale == 100);
+    REQUIRE(decodeSettings(R"({"version":1,"hudScale":400})", out, nullptr));
+    CHECK(out.hudScale == 130);
+    REQUIRE(decodeSettings(R"({"version":1,"hudScale":-9000000000})", out, nullptr));
+    CHECK(out.hudScale == 80);
+    REQUIRE(decodeSettings(R"({"version":1,"hudScale":96})", out, nullptr));
+    CHECK(out.hudScale == 100);
+    // The row sits under Lock framing and above HUD safe margin and Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) == static_cast<std::uint32_t>(SettingsRow::LockFraming) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) + 3u == kSettingsRowCount);
+}
+
+TEST_CASE("settings menu: HUD safe margin runs 0% to 10% in ones, 0% by default, and saves") {
+    Settings s;
+    CHECK(s.hudSafeMargin == 0);
+    SettingsMenu m;
+    char value[32];
+    CHECK(std::string(settingsRowLabel(SettingsRow::HudSafeMargin)) == "HUD safe margin");
+    settingsRowValue(s, SettingsRow::HudSafeMargin, value, sizeof value);
+    CHECK(std::string(value) == "0%");
+    CHECK(m.click(s, SettingsRow::HudSafeMargin, -1) == SettingsAction::None); // a slider stops at its end
+    for (int i = 1; i <= 10; ++i) {
+        CHECK(m.click(s, SettingsRow::HudSafeMargin, 1) == SettingsAction::Changed);
+        CHECK(s.hudSafeMargin == i); // steps of 1%
+    }
+    CHECK(m.click(s, SettingsRow::HudSafeMargin, 1) == SettingsAction::None);
+    m.select(SettingsRow::HudSafeMargin);
+    CHECK(m.press(s, SettingsKey::Confirm) == SettingsAction::None); // and never wraps back to 0
+    CHECK(s.hudSafeMargin == 10);
+    settingsRowValue(s, SettingsRow::HudSafeMargin, value, sizeof value);
+    CHECK(std::string(value) == "10%");
+    CHECK(m.press(s, SettingsKey::Left) == SettingsAction::Changed);
+    CHECK(s.hudSafeMargin == 9);
+    // Saved: the value comes back from the text.
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK(out.hudSafeMargin == 9);
+    CHECK(out == s);
+    CHECK(encodeSettings(s).find("\"hudSafeMargin\":9") != std::string::npos);
+    // An old file reads 0%; out of range clamps, in the file and in the struct.
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.hudSafeMargin == 0);
+    REQUIRE(decodeSettings(R"({"version":1,"hudSafeMargin":25})", out, nullptr));
+    CHECK(out.hudSafeMargin == 10);
+    REQUIRE(decodeSettings(R"({"version":1,"hudSafeMargin":-3})", out, nullptr));
+    CHECK(out.hudSafeMargin == 0);
+    REQUIRE(decodeSettings(R"({"version":1,"hudSafeMargin":9000000000})", out, nullptr));
+    CHECK(out.hudSafeMargin == 10);
+    REQUIRE(decodeSettings(R"({"version":1,"hudSafeMargin":"5"})", out, nullptr)); // wrong type keeps the default
+    CHECK(out.hudSafeMargin == 0);
+    Settings wild;
+    wild.hudSafeMargin = 40;
+    clampSettings(wild);
+    CHECK(wild.hudSafeMargin == 10);
+    wild.hudSafeMargin = -1;
+    clampSettings(wild);
+    CHECK(wild.hudSafeMargin == 0);
+    // The row sits under HUD scale, the last above Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudSafeMargin) == static_cast<std::uint32_t>(SettingsRow::HudScale) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudSafeMargin) + 2u == kSettingsRowCount);
+}
+
+TEST_CASE("settings: the fight HUD's first-use bits survive a save; a bad value reads as nothing taught") {
+    Settings s;
+    s.uiFirstUse = 0xFFFFFFFFu;
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK(out.uiFirstUse == 0xFFFFFFFFu);
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.uiFirstUse == 0u);
+    REQUIRE(decodeSettings(R"({"version":1,"uiFirstUse":-3})", out, nullptr));
+    CHECK(out.uiFirstUse == 0u);
+    REQUIRE(decodeSettings(R"({"version":1,"uiFirstUse":4294967296})", out, nullptr));
+    CHECK(out.uiFirstUse == 0u);
+    REQUIRE(decodeSettings(R"({"version":1,"uiFirstUse":"all"})", out, nullptr));
+    CHECK(out.uiFirstUse == 0u);
 }
 
 TEST_CASE("settings: option flags mirror the assist switches") {
@@ -416,7 +523,7 @@ TEST_CASE("settings menu: aim assist is on by default, sits under Defence window
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK(out.aimAssist);
     CHECK(static_cast<std::uint32_t>(SettingsRow::AimAssist) == static_cast<std::uint32_t>(SettingsRow::DefenceAssist) + 1u);
-    CHECK(kSettingsRowCount == 19u);
+    CHECK(kSettingsRowCount == 21u);
 }
 
 TEST_CASE("settings menu: lock framing is on by default, sits under Camera shake, toggles and saves") {

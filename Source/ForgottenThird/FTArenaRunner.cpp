@@ -279,6 +279,24 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 	Def = Setup.Def;
 	Fit = Setup.Fit;
+	LeadSeat = Setup.LeadSeat;
+	AllySeat = Setup.AllySeat;
+	LeadName = Setup.Lead ? Setup.Lead->Name : FString();
+	AllyName = Setup.Ally ? Setup.Ally->Name : FString();
+#if !UE_BUILD_SHIPPING
+	// Review stills: start the player 1.2 m from the zone's wall, beside it, so the wall's cue shows.
+	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNearWall")))
+	{
+		const ftcore::Vec2 Side{Fit.playerFacing.y, -Fit.playerFacing.x};
+		ftcore::Vec2 P = Fit.playerStart;
+		for (int32 I = 0; I < 400 && Fit.zone.wallDistance(P) > 1.2f; ++I)
+		{
+			P = ftcore::Vec2{P.x + Side.x * 0.1f, P.y + Side.y * 0.1f};
+		}
+		Fit.playerStart = P;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the player starts %.1f m from the wall (-ArenaNearWall)."), Fit.zone.wallDistance(P));
+	}
+#endif
 	ZoneId = Setup.ZoneId;
 	ZoneZ = Setup.ZoneZ;
 	ZoneStyle = Setup.ZoneStyle;
@@ -2043,6 +2061,16 @@ double UFTArenaRunner::GetGiftGuardReadyIn() const
 	return Session ? Session->Get().giftGuardReadyIn() : 0.0;
 }
 
+ftcore::PressReason UFTArenaRunner::GetGiftReason(const ftcore::Gift G) const
+{
+	if (!Session)
+	{
+		return ftcore::PressReason::Absent;
+	}
+	const float Health = static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1));
+	return Session->Get().giftReason(G, SessionLead, Health);
+}
+
 bool UFTArenaRunner::IsRefusedTooEarly() const
 {
 	return HallMode != 0 && HallTooEarlyAt >= 0.0 && static_cast<double>(Fight.time()) - HallTooEarlyAt < kRefusedTooEarlyShow;
@@ -2562,6 +2590,13 @@ void UFTArenaRunner::StepFight()
 		if (bHoldLoad && !Fight.overloaded())
 		{
 			In.release = false;
+		}
+		if (bTableOpen && TableClock.state() == ftcore::TableState::Set)
+		{
+			// -ArenaTableOpen: the autopilot stands still and open while the table is set, so a blow lands on a seated
+			// lead and the share shows (a review switch for the HUD's SHARED popup, not a way to play).
+			In.move = ftcore::Vec2{};
+			In.light = In.heavy = In.dodge = In.guard = In.release = In.pair = In.jump = In.heal = false;
 		}
 		if (bTableKey)
 		{
@@ -3317,6 +3352,30 @@ FVector UFTArenaRunner::BossFlashPoint() const
 		Toward = (PC->PlayerCameraManager->GetCameraLocation() - Weak).GetSafeNormal();
 	}
 	return Weak + FVector(0.0, 0.0, T.FlashUp * 100.0) + Toward * (T.FlashToCamera * 100.0);
+}
+
+bool UFTArenaRunner::GetBossWeakPoint(int32 Slot, FVector& Out) const
+{
+	if (Slot < 0 || Slot >= MaxEnemies)
+	{
+		return false;
+	}
+	if (Slot == StoneBearerSlot)
+	{
+		Out = BossWeakPoint();
+		return true;
+	}
+	const AFTArenaFighter* Figure = EnemyFigures[Slot].Get();
+	if (Slot != KiteSlot || !Figure)
+	{
+		return false;
+	}
+	static const FName Socket(FFTKiteHost::WeakPointSocket);
+	if (!Figure->GetSkinPoint(Socket, Out))
+	{
+		Out = Figure->GetChest();
+	}
+	return true;
 }
 
 FVector UFTArenaRunner::BossWeakPoint() const
@@ -6883,14 +6942,15 @@ const TCHAR* TableStateName(ftcore::TableState S)
 
 void UFTArenaRunner::BeginTable(const ftcore::PlaceTable& Places, bool bCapArg)
 {
-	bTable = bTableAuto = bTableFill = bTableKey = false;
+	bTable = bTableAuto = bTableFill = bTableKey = bTableOpen = false;
 	TablePlaces = Places;
 #if !UE_BUILD_SHIPPING
 	const TCHAR* Cmd = FCommandLine::Get();
 	bTableAuto = FParse::Param(Cmd, TEXT("ArenaTableAuto"));
 	bTableFill = FParse::Param(Cmd, TEXT("ArenaTableFill"));
 	bTableKey = FParse::Param(Cmd, TEXT("ArenaTableKey"));
-	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill || bTableKey;
+	bTableOpen = FParse::Param(Cmd, TEXT("ArenaTableOpen"));
+	bTable = FParse::Param(Cmd, TEXT("ArenaTable")) || bTableAuto || bTableFill || bTableKey || bTableOpen;
 	if (!bTable)
 	{
 		return;

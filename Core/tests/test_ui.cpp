@@ -3,6 +3,7 @@
 #include "ftcore/InputBindings.h"
 #include "ftcore/Load.h"
 #include "ftcore/ReadCards.h"
+#include "ftcore/Settings.h"
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryRunner.h"
 #include "ftcore/UiGlyphs.h"
@@ -12,6 +13,7 @@
 #include "AllocCounter.h"
 #include "TestAssets.h"
 
+#include <cmath>
 #include <ostream>
 #include <doctest/doctest.h>
 
@@ -66,6 +68,11 @@ TEST_CASE("ui style: the built-in style and Data/UI/style.json pass the accessib
             CHECK(a.b == doctest::Approx(b.b).epsilon(0.003));
             CHECK(a.a == doctest::Approx(b.a).epsilon(0.003));
         }
+    for (const auto& [a, b] : {std::pair{s.loadGold, d.loadGold}, std::pair{s.loadBright, d.loadBright}}) {
+        CHECK(a.r == doctest::Approx(b.r).epsilon(0.003));
+        CHECK(a.g == doctest::Approx(b.g).epsilon(0.003));
+        CHECK(a.b == doctest::Approx(b.b).epsilon(0.003));
+    }
     CHECK(std::string_view(s.plate[0].data()) == "bronze");
     CHECK(s.layers.hairlines);
     CHECK_FALSE(s.layers.worldAnchored);
@@ -112,6 +119,67 @@ TEST_CASE("ui style: contrast is measured on the backing over the worst picture;
     CHECK_FALSE(importUiStyle(R"({"text": {"label": {"font": "comic"}}})", s, &err));
 }
 
+TEST_CASE("ui style: the serif faces parse by name; the verbs and numbers default to the small caps") {
+    std::string err;
+    UiStyle s = defaultUiStyle();
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Verb)].font == UiFont::SerifScBold);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Verb)].upper); // one even height, as on the sheet
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Verb)].tracking >= 0.2f); // wide tracked
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Value)].font == UiFont::SerifScBold);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Subtitle)].font == UiFont::Serif);
+    REQUIRE(importUiStyle(R"({"text": {"label": {"font": "serif_sc"}, "title": {"font": "serif_bold"},
+                                       "prompt": {"font": "sans_bold"}}})", s, &err));
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Label)].font == UiFont::SerifSc);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Title)].font == UiFont::SerifBold);
+    CHECK(s.text[static_cast<std::size_t>(UiTextRole::Prompt)].font == UiFont::SansBold);
+    CHECK_FALSE(importUiStyle(R"({"text": {"label": {"font": "serif_caps"}}})", s, &err));
+}
+
+TEST_CASE("ui style: the HUD's margins are its own, the platform's safe padding and the player's percent, per side") {
+    const UiMargins none;
+    // A PC at 1080p with no padding and 0%: the HUD's own 64 px on every side.
+    UiMargins m = uiHudMargins(1920.f, 1080.f, 64.f, none, 0);
+    CHECK(m.left == doctest::Approx(64.f));
+    CHECK(m.right == doctest::Approx(64.f));
+    CHECK(m.top == doctest::Approx(64.f));
+    CHECK(m.bottom == doctest::Approx(64.f));
+    // 5% at 16:9: 96 px of the width at the sides, 54 px of the height at the top and bottom.
+    m = uiHudMargins(1920.f, 1080.f, 64.f, none, 5);
+    CHECK(m.left == doctest::Approx(64.f + 96.f));
+    CHECK(m.right == doctest::Approx(64.f + 96.f));
+    CHECK(m.top == doctest::Approx(64.f + 54.f));
+    CHECK(m.bottom == doctest::Approx(64.f + 54.f));
+    // 5% at 21:9 (2560x1080): the sides take 5% of the wider width, the top and bottom the same as 16:9.
+    m = uiHudMargins(2560.f, 1080.f, 64.f, none, 5);
+    CHECK(m.left == doctest::Approx(64.f + 128.f));
+    CHECK(m.right == doctest::Approx(64.f + 128.f));
+    CHECK(m.top == doctest::Approx(64.f + 54.f));
+    CHECK(m.bottom == doctest::Approx(64.f + 54.f));
+    // The platform's padding goes under the percent on its own side only.
+    UiMargins pad;
+    pad.left = 10.f;
+    pad.top = 20.f;
+    pad.right = 30.f;
+    pad.bottom = 40.f;
+    m = uiHudMargins(2560.f, 1080.f, 64.f, pad, 5);
+    CHECK(m.left == doctest::Approx(64.f + 10.f + 128.f));
+    CHECK(m.top == doctest::Approx(64.f + 20.f + 54.f));
+    CHECK(m.right == doctest::Approx(64.f + 30.f + 128.f));
+    CHECK(m.bottom == doctest::Approx(64.f + 40.f + 54.f));
+    // The percent clamps to 0..10; bad input counts as nothing.
+    CHECK(uiHudMargins(1920.f, 1080.f, 64.f, none, 40).left == doctest::Approx(64.f + 192.f));
+    CHECK(uiHudMargins(1920.f, 1080.f, 64.f, none, -5).left == doctest::Approx(64.f));
+    pad.left = -50.f;
+    pad.top = std::nanf("");
+    m = uiHudMargins(-1.f, 1080.f, 64.f, pad, 5);
+    CHECK(m.left == doctest::Approx(64.f));
+    CHECK(m.top == doctest::Approx(64.f + 54.f));
+    CHECK(uiHudMargins(1920.f, 1080.f, std::nanf(""), none, 0).left == doctest::Approx(0.f));
+    // The settings' own range is the one the HUD clamps to.
+    CHECK(Settings::kMinHudSafeMargin == 0);
+    CHECK(Settings::kMaxHudSafeMargin == 10);
+}
+
 TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is refused; new keys are optional") {
     std::string err;
     UiStyle s = defaultUiStyle();
@@ -125,8 +193,12 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK_FALSE(importUiStyle(R"({"edge": {"color": "#0A090840"}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"edge": {"px": 0.5}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"edge": {"width": 1}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"edge": {"text": 0.3}})", s, &err)); // a glyph edge that faint loses bright sky
+    CHECK(err.find("edge text") != std::string::npos);
     CHECK_FALSE(importUiStyle(R"({"backing_soft": {"hud": 1.5}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"meter": "dial"})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"load": {"gold": "amber"}})", s, &err));
+    CHECK_FALSE(importUiStyle(R"({"load": {"silver": "#FFFFFF"}})", s, &err));
     CHECK_FALSE(importUiStyle(R"({"fade": {"rest_alpha": 2}})", s, &err));
     // Each key is optional; the pick swaps them in.
     s = defaultUiStyle();
@@ -136,8 +208,13 @@ TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is r
     CHECK(s.backingSoftHud == doctest::Approx(0.3f));
     CHECK(s.backingSoftDialogue == doctest::Approx(defaultUiStyle().backingSoftDialogue));
     CHECK(s.edgePx == doctest::Approx(2.f));
+    CHECK(defaultUiStyle().edgeText == doctest::Approx(0.6f));
     CHECK(s.fade.rest == doctest::Approx(4.f));
     CHECK(s.fade.in == doctest::Approx(defaultUiStyle().fade.in));
+    // The Load's two golds are their own entries, read like any colour.
+    REQUIRE(importUiStyle(R"({"load": {"bright": "#FFFFFF"}})", s, &err));
+    CHECK(s.loadBright.b == doctest::Approx(1.f));
+    CHECK(s.loadGold == defaultUiStyle().loadGold);
 }
 
 TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while, and a new change wakes it") {
@@ -293,6 +370,19 @@ TEST_CASE("ui arena view: the lead and target sections come from the fight; revi
     CHECK((mask2 & (1u << static_cast<std::uint32_t>(ArenaHudSection::Lead))) != 0u);
     CHECK((mask2 & (1u << static_cast<std::uint32_t>(ArenaHudSection::Boss))) != 0u);
     CHECK(view.now.boss.weakPoint == UiWeakPoint::Open);
+
+    // A called zone, the lead stepping into it, and a new answer note each wake the boss section, and only it.
+    constexpr std::uint32_t bossBit = 1u << static_cast<std::uint32_t>(ArenaHudSection::Boss);
+    fillArenaHudTarget(fight, f.target);
+    updateArenaHudView(view, f);
+    f.boss.call = UiCalledZone::Left;
+    CHECK(updateArenaHudView(view, f) == bossBit);
+    f.boss.callIn = true;
+    CHECK(updateArenaHudView(view, f) == bossBit);
+    f.boss.noteSerial = 0;
+    CHECK(updateArenaHudView(view, f) == bossBit);
+    CHECK(updateArenaHudView(view, f) == 0u);
+    CHECK(view.now.boss.rank == 0); // no rank data: nothing drawn
 }
 
 TEST_CASE("ui arena view: the carry fields (cap, Release mark, chairs, heal places, the ally) follow the fight") {
@@ -427,4 +517,230 @@ TEST_CASE("ui dialogue view: speaker on every line, text by reveal, prompt once 
     DialogueView hidden;
     updateDialogueView(hidden, none, flags);
     CHECK(hidden.kind == DialogueViewKind::Hidden);
+}
+
+TEST_CASE("ui style: the dim behind dialogue options is measured: none on a dark picture, just enough on a bright one") {
+    const UiStyle s = defaultUiStyle();
+    const UiColor ink{0.953f, 0.933f, 0.902f, 1.f};
+    const UiColor back{0.039f, 0.031f, 0.024f, 1.f};
+    CHECK(uiOptionDim(s, ink, back, UiColor{0.1f, 0.1f, 0.1f, 1.f}) == 0.f);
+    const UiColor grey{0.6f, 0.6f, 0.6f, 1.f};
+    const float a = uiOptionDim(s, ink, back, grey);
+    CHECK(a > 0.05f);
+    CHECK(a < s.optionsDimMax);
+    CHECK(uiContrast(ink, UiColor{back.r, back.g, back.b, a}, grey) >= s.optionsDimContrast - 0.01f);
+    CHECK(uiContrast(ink, UiColor{back.r, back.g, back.b, a - 0.03f}, grey) < s.optionsDimContrast); // no stronger than needed
+    const float onWhite = uiOptionDim(s, ink, back, UiColor{1.f, 1.f, 1.f, 1.f});
+    CHECK(onWhite > a); // a brighter picture, a stronger dim
+    CHECK(onWhite <= s.optionsDimMax);
+    UiStyle strict = s;
+    strict.optionsDimContrast = 15.f;
+    CHECK(uiOptionDim(strict, ink, back, UiColor{1.f, 1.f, 1.f, 1.f}) == doctest::Approx(s.optionsDimMax)); // capped
+    UiStyle loose = s;
+    std::string err;
+    REQUIRE(importUiStyle(R"({"backing_soft": {"options_contrast": 2, "options_max": 0.4}})", loose, &err));
+    CHECK(loose.optionsDimContrast == doctest::Approx(2.f));
+    CHECK(loose.optionsDimMax == doctest::Approx(0.4f));
+    CHECK(uiOptionDim(loose, ink, back, grey) < a);
+    CHECK_FALSE(importUiStyle(R"({"backing_soft": {"options_max": 1.5}})", loose, &err));
+}
+
+TEST_CASE("ui style: the picture's brightest share, by luminance, with no allocation") {
+    UiLumaHistogram h;
+    CHECK(uiLumaBrightest(h, 0.1f).r == 0.f); // nothing measured: black, so no dim
+    for (int i = 0; i < 90; ++i) uiLumaAdd(h, UiColor{0.1f, 0.1f, 0.1f, 1.f});
+    for (int i = 0; i < 10; ++i) uiLumaAdd(h, UiColor{0.95f, 0.9f, 0.8f, 1.f});
+    CHECK(h.total == 100);
+    const UiColor top = uiLumaBrightest(h, 0.1f);
+    CHECK(top.r == doctest::Approx(0.95f));
+    CHECK(top.b == doctest::Approx(0.8f));
+    CHECK(uiLumaBrightest(h, 1.f).r == doctest::Approx(0.185f)); // the whole picture's mean
+}
+
+TEST_CASE("ui load name: the gold fills to the threshold, brightens to the cap, sweeps once and drains in 0.3 s") {
+    ArenaHudLead lead;
+    lead.loadCap = 9;
+    lead.releaseAt = 3;
+    UiLoadName s;
+    lead.load = 1;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.fill == doctest::Approx(1.f / 3.f));
+    CHECK(s.bright == 0.f);
+    CHECK(s.shimmer < 0.f);
+    lead.load = 4;
+    lead.releaseReady = true;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.fill == 1.f);
+    CHECK(s.bright == doctest::Approx(1.f / 6.f));
+    CHECK(s.shimmer == 0.f); // the crossing
+    for (int k = 0; k < 12; ++k) uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.shimmer == doctest::Approx(0.5f).epsilon(0.01));
+    for (int k = 0; k < 13; ++k) uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.shimmer < 0.f); // one sweep, then steady
+    lead.load = 9;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.bright == 1.f);
+    CHECK(s.shimmer < 0.f);
+    // The Release spends it all: the gold drains rather than vanishing, and is gone 0.3 s later.
+    lead.load = 0;
+    lead.releaseReady = false;
+    uiLoadNameStep(s, lead, 0.15f);
+    CHECK(s.fill == doctest::Approx(0.5f));
+    CHECK(s.bright == 0.f);
+    uiLoadNameStep(s, lead, 0.16f);
+    CHECK(s.fill == 0.f);
+    // A cap at the threshold: nothing to brighten toward, no divide by zero.
+    lead.loadCap = 3;
+    lead.load = 3;
+    uiLoadNameStep(s, lead, 1.f / 60.f);
+    CHECK(s.fill == 1.f);
+    CHECK(s.bright == 0.f);
+    // No Load at all.
+    UiLoadName none;
+    uiLoadNameStep(none, ArenaHudLead{}, 1.f / 60.f);
+    CHECK(none.fill == 0.f);
+    CHECK(none.bright == 0.f);
+}
+
+TEST_CASE("ui lead slot: LOAD while some is held short of the Release, RELEASE once it opens, else nothing") {
+    ArenaHudLead lead;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // no gauge
+    lead.loadMax = 9;
+    lead.loadCap = 9;
+    lead.releaseAt = 3;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // a gauge, nothing held
+    lead.load = 1;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Load);
+    lead.load = 3; // the name is full of gold here, but the Release opens only above it
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Load);
+    lead.load = 4;
+    lead.releaseReady = true;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Release);
+    lead.load = 9;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Release);
+    lead.load = 0;
+    lead.releaseReady = false;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // spent
+    lead.loadMax = 0;
+    lead.load = 4;
+    lead.releaseReady = true;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // a kit without the gauge says nothing
+}
+
+TEST_CASE("ui selected reply: the host's cursor, else the first reply that can be taken") {
+    CHECK(uiSelectedReply(-1, 0b111u, 3) == 0);
+    CHECK(uiSelectedReply(-1, 0b110u, 3) == 1); // the first is locked
+    CHECK(uiSelectedReply(-1, 0b100u, 3) == 2);
+    CHECK(uiSelectedReply(-1, 0u, 3) == -1);    // all locked: none drawn as selected
+    CHECK(uiSelectedReply(-1, 0b1000u, 3) == -1); // a takeable bit past the replies counts for nothing
+    CHECK(uiSelectedReply(2, 0b001u, 3) == 2);  // a cursor wins, even on a locked reply
+    CHECK(uiSelectedReply(3, 0b010u, 3) == 1);  // a cursor past the replies is no cursor
+    CHECK(uiSelectedReply(-1, 0b1u, 0) == -1);
+}
+
+TEST_CASE("ui arena view: the R11 hooks default to nothing drawn (Qte, gift data, the row swap)") {
+    // Each hook's null: nothing reported, nothing drawn.
+    const ArenaHudLead lead;
+    CHECK_FALSE(lead.qte.live);
+    CHECK(uiQteLeft01(lead.qte, 0.f) == 0.f);
+    CHECK(uiQteLeft01(lead.qte, 5.f) == 0.f);
+    const ArenaHudThird third;
+    CHECK(third.giftHeals == -1);
+    CHECK_FALSE(third.giftGuardReady);
+    UiRowSwap swap;
+    CHECK(swap.left01 == 0.f);
+
+    // A live Qte's line runs out evenly over its window, and is gone at its end.
+    ArenaHudQte q;
+    q.live = true;
+    q.kind = QteKind::Hold;
+    q.input = ActionButton::Guard;
+    q.from = 1.f;
+    q.to = 3.f;
+    CHECK(uiQteLeft01(q, 0.5f) == 1.f); // before the window: full
+    CHECK(uiQteLeft01(q, 1.f) == 1.f);
+    CHECK(uiQteLeft01(q, 2.f) == doctest::Approx(0.5f));
+    CHECK(uiQteLeft01(q, 3.f) == 0.f);
+    CHECK(uiQteLeft01(q, 4.f) == 0.f);
+    ArenaHudQte empty = q;
+    empty.to = empty.from; // an empty window: no line, no divide by zero
+    CHECK(uiQteLeft01(empty, 1.f) == 0.f);
+
+    // The Qte sits in the lead's section: its start and end move that revision, the frames between do not.
+    ArenaHudView view;
+    ArenaHudFrame f;
+    f.lead.hp = f.lead.hpMax = 10;
+    updateArenaHudView(view, f);
+    const std::uint32_t rev = view.revisionOf(ArenaHudSection::Lead);
+    f.lead.qte = q;
+    CHECK(updateArenaHudView(view, f) == 1u);
+    CHECK(updateArenaHudView(view, f) == 0u);
+    f.lead.qte = ArenaHudQte{};
+    CHECK(updateArenaHudView(view, f) == 1u);
+    CHECK(view.revisionOf(ArenaHudSection::Lead) == rev + 2);
+    // The gift data sits in the third place's section.
+    f.third.giftHeals = 3;
+    CHECK(updateArenaHudView(view, f) == (1u << static_cast<unsigned>(ArenaHudSection::Third)));
+}
+
+TEST_CASE("ui row swap: the rows trade places over 0.2 s only when the lead's seat changes under a partner row") {
+    ArenaHudFrame f;
+    f.lead.lead = 0;
+    f.partner.present = true;
+    f.partner.lead = 1;
+    UiRowSwap s;
+    uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 0.f); // the first seats seen are no switch
+    for (int k = 0; k < 30; ++k) uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 0.f); // seats that never change never swap
+
+    // The switch: the leads trade seats.
+    f.lead.lead = 1;
+    f.partner.lead = 0;
+    uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 1.f);
+    uiRowSwapStep(s, f, 0.1f);
+    CHECK(s.left01 == doctest::Approx(0.5f));
+    uiRowSwapStep(s, f, 0.1f);
+    CHECK(s.left01 == 0.f);
+    uiRowSwapStep(s, f, 0.1f);
+    CHECK(s.left01 == 0.f);
+
+    // No partner row: a change of seat just shows.
+    f.partner.present = false;
+    f.lead.lead = 2;
+    uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 0.f);
+}
+
+TEST_CASE("ui dialogue view: no reply cursor and no lock reason by default; a cursor moves only the prompt section") {
+    CHECK(DialogueViewFlags{}.cursor == -1);
+    CHECK(DialogueViewOption{}.lockReason.empty());
+
+    Script s;
+    StoryRunner r(&s.db);
+    REQUIRE(r.start());
+    DialoguePresenter p(&r);
+    p.setRevealRate(10.f);
+    DialogueView v;
+    DialogueViewFlags flags;
+    REQUIRE(r.advance()); // the line
+    REQUIRE(r.advance()); // the choice
+    p.update(5.f);
+    updateDialogueView(v, p, flags);
+    REQUIRE(v.kind == DialogueViewKind::Choice);
+    REQUIRE(v.optionCount == 2);
+    CHECK(v.flags.cursor == -1);
+    CHECK_FALSE(v.options[0].selectable);
+    CHECK(v.options[0].lockReason.empty()); // locked, with no reason: the greyed reply stands alone
+    CHECK(v.options[1].lockReason.empty());
+
+    const std::uint32_t beat = v.beatRevision;
+    const std::uint32_t prompt = v.promptRevision;
+    flags.cursor = 1;
+    CHECK(updateDialogueView(v, p, flags));
+    CHECK(v.flags.cursor == 1);
+    CHECK(v.promptRevision == prompt + 1);
+    CHECK(v.beatRevision == beat);
+    CHECK_FALSE(updateDialogueView(v, p, flags));
 }
