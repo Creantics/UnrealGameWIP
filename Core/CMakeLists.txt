@@ -136,6 +136,7 @@ add_library(ftcore STATIC
     src/Chairs.cpp
     src/CountLiftData.cpp
     src/LoneCarry.cpp
+    src/GiftSlot.cpp
     src/Hallucination.cpp
     src/Brief.cpp
     src/BriefKit.cpp
@@ -158,6 +159,8 @@ add_library(ftcore STATIC
     src/ArenaSoftTarget.cpp
     src/ArenaImpact.cpp
     src/ArenaLook.cpp
+    src/ArenaCamera.cpp
+    src/ArenaGun.cpp
     src/StoneBearer.cpp
     src/BeatChoreo.cpp
     src/BeatMusic.cpp
@@ -375,6 +378,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena_soft.cpp
         tests/test_arena_impact.cpp
         tests/test_arena_look.cpp
+        tests/test_arena_boss_break.cpp
         tests/test_stone_bearer.cpp
         tests/test_beat_choreo.cpp
         tests/test_beat_cine.cpp

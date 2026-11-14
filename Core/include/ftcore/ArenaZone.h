@@ -39,6 +39,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaLook.h"
 #include "ftcore/StylePack.h"
 #include "ftcore/WorldLayout.h"
 
@@ -140,6 +141,7 @@ struct ArenaZoneSpec {
     std::vector<std::string> bosses;   // the enemy kinds it hosts: the default line-up
     float ring = 0.f;                  // 0: from the enemies' size; else the size asked for (6..80 m)
     float spawn = 0.f;                 // 0: from the ring
+    float frameTurnCapDeg = -1.f;      // below 0: the global lock framing cap; else this zone's (0..the global), degrees
     int attackers = 0;                 // 0: leave the fight's own
     std::uint32_t seed = 1;
 };
@@ -183,6 +185,9 @@ struct ZoneCamera {
     float up = 0.7f;
     float fov = 70.f;
     float lockPitch = -20.f;
+    // The lock framing's most turn in this zone (degrees, the cap ftcore::arenaFrameTurn holds the orbit to): the
+    // global one unless the zone asks less, as one whose lens would sit in a building turned that far does.
+    float frameTurnCapDeg = kArenaFrame.maxTurn;
 };
 
 FTCORE_API ArenaZoneSizing arenaZoneSizing(const ArenaDef& def);

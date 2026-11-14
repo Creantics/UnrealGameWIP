@@ -1,4 +1,6 @@
 #include "ftcore/ArenaZone.h"
+#include "ftcore/ArenaCamera.h"
+#include "ftcore/ArenaLook.h"
 
 #include "ftcore/Json.h"
 
@@ -680,11 +682,42 @@ void findMouths(const ArenaZone& z, const WorldLayout& layout, ArenaZoneFit& out
     }
 }
 
-// The share of the wall where a player standing on it has the camera inside a building taller than the camera.
+// A lens closer than this to a building's footprint (or the landmark's circle) counts as inside it: the spring arm's
+// probe and the lens's near plane would already clip the face there, and the blocks are the layout's footprints, not
+// the drawn walls with their trim.
+constexpr float kLensClearance = 0.5f;
+// Along the view axis the lens is checked kArenaLensViewClearance further back than the boom puts it (ArenaCamera.h:
+// the near clip plane plus the boom's probe radius, the same values the host's camera reads), so a wall that would make
+// the spring arm pull the camera in counts as blocked.
+
+// The share of the wall where a player standing on it, facing in, has the lens inside a building taller than the lens.
+// The lens is the one the host draws, from Core's pose and lens (arenaCameraPose, arenaCameraLens) at the zone's lock
+// pitch: on the lock's line, turned the zone's framing cap (ftcore::arenaFrameTurn at the target's nearest), and fully
+// aimed (the aim's rig, where the framing holds the turn at 0); a sample is blocked when any of the three lenses is.
 float cameraBlockedShare(const ArenaZone& z, const WorldLayout& layout, int district, const ZoneCamera& cam) {
-    const float pitch = std::fabs(cam.lockPitch) / kDeg;
-    const float armH = cam.arm * std::cos(pitch) + 0.5f;
-    const float height = cam.pivot + cam.up + cam.arm * std::sin(pitch);
+    ArenaFrameRules frame = kArenaFrame;
+    frame.maxTurn = cam.frameTurnCapDeg; // the zone's own cap
+    AimStance aimed;
+    aimed.tick(aimed.rules().blendIn + 1.f, true, FieldBody::Free); // fully aimed
+    struct View {
+        const AimStance* aim;
+        float turn; // degrees
+    };
+    const AimStance off;
+    const View views[3] = {{&off, 0.f}, {&off, arenaFrameTurn(frame, cam.side, 0.f)}, {&aimed, 0.f}};
+    const auto lensBlocked = [&](Vec2 lens, float height) {
+        for (std::size_t i = 0; i < layout.blockCount(); ++i) {
+            const WorldBlock& b = layout.block(i);
+            if (b.height <= height || lengthOf(minus(b.pos, lens)) > 20.f) continue;
+            const Vec2 l = rotated(minus(lens, b.pos), -b.yaw);
+            if (std::fabs(l.x) <= b.width * 0.5f + kLensClearance && std::fabs(l.y) <= b.depth * 0.5f + kLensClearance) return true;
+        }
+        if (district >= 0) {
+            const WorldDistrict& d = layout.district(static_cast<std::size_t>(district));
+            if (lengthOf(minus(lens, d.landmark)) <= WorldLayout::kLandmarkRadius + kLensClearance) return true;
+        }
+        return false;
+    };
     constexpr int kSamples = 48;
     int blocked = 0;
     for (int k = 0; k < kSamples; ++k) {
@@ -695,17 +728,14 @@ float cameraBlockedShare(const ArenaZone& z, const WorldLayout& layout, int dist
             const float mid = 0.5f * (lo + hi);
             (z.contains(plus(z.centre, scaled(dir, mid)), 0.f) ? lo : hi) = mid;
         }
-        const Vec2 cam2 = plus(z.centre, scaled(dir, lo + armH));
+        const Vec2 at = plus(z.centre, scaled(dir, lo));
         bool hit = false;
-        for (std::size_t i = 0; i < layout.blockCount() && !hit; ++i) {
-            const WorldBlock& b = layout.block(i);
-            if (b.height <= height || lengthOf(minus(b.pos, cam2)) > 20.f) continue;
-            const Vec2 l = rotated(minus(cam2, b.pos), -b.yaw);
-            hit = std::fabs(l.x) <= b.width * 0.5f + 0.5f && std::fabs(l.y) <= b.depth * 0.5f + 0.5f;
-        }
-        if (!hit && district >= 0) {
-            const WorldDistrict& d = layout.district(static_cast<std::size_t>(district));
-            hit = lengthOf(minus(cam2, d.landmark)) <= WorldLayout::kLandmarkRadius + 0.5f;
+        for (const View& v : views) {
+            // Facing in (the lock's line is the yaw of -dir), plus the view's turn; the lens over the feet at `at`.
+            ArenaCameraPose pose = arenaCameraPose(cam, *v.aim, ArenaFrameYaw{(a + kPi) * kDeg, v.turn}, cam.lockPitch);
+            pose.arm += kArenaLensViewClearance; // the view-axis clearance, back along the boom
+            const ArenaLensAt lens = arenaCameraLens(pose);
+            hit = hit || lensBlocked(plus(at, Vec2{lens.x, lens.y}), pose.pivot + lens.z);
         }
         blocked += hit ? 1 : 0;
     }
@@ -720,6 +750,7 @@ bool fitArenaZone(const ArenaZoneSpec& spec, const WorldLayout* layout, const Ar
     out.id = spec.id;
     out.sizing = arenaZoneSizing(def);
     out.camera = arenaZoneCamera(out.sizing);
+    if (spec.frameTurnCapDeg >= 0.f) out.camera.frameTurnCapDeg = spec.frameTurnCapDeg;
     const float asked = arenaZoneAskedRing(spec, def);
     out.askedRing = asked;
     const Anchor anchor = anchorOf(spec, layout);
@@ -939,7 +970,7 @@ bool importArenaZoneTable(std::string_view json, const ArenaTable& arena, const 
         }
         unknownKeys(j, path,
                     {"id", "world", "scene", "district", "at", "offset", "yaw", "shape", "bosses", "ring", "spawn", "attackers", "seed",
-                     "water", "cover"},
+                     "water", "cover", "frameTurnCapDeg"},
                     warnings);
         ArenaZoneSpec s;
         s.id = std::string(j["id"].string());
@@ -1063,6 +1094,7 @@ bool importArenaZoneTable(std::string_view json, const ArenaTable& arena, const 
         if (s.ring != 0.f && s.ring < kMinPinnedRing)
             errors.push_back(path + ".ring: expected 0 (from the enemies' size) or " + fmtNum(kMinPinnedRing) + ".." + fmtNum(kMaxPinnedRing));
         readNum(j, "spawn", s.spawn, 0, kMaxSpawn, path, errors);
+        readNum(j, "frameTurnCapDeg", s.frameTurnCapDeg, 0, kArenaFrame.maxTurn, path, errors);
         readInt(j, "attackers", s.attackers, 0, static_cast<int>(kMaxArenaEnemies), path, errors);
         int seed = 1;
         readInt(j, "seed", seed, 0, 1000000, path, errors);

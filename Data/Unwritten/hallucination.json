@@ -9,5 +9,17 @@
   "pullSeconds": 6,
   "recentSeconds": 1800,
   "fewerGapScale": 2,
+  "lonePoolFloor": 300,
+  "counselCooldownSeconds": 2,
+  "proxyReactSeconds": 1,
+  "escrowDelaySeconds": 5,
+  "refuseOpenMinHold": 1,
+  "refuseOpenBase": 2,
+  "refuseOpenPerSecond": 1.5,
+  "refuseOpenHoldCap": 3.5,
+  "heldHealthCost": 0.25,
+  "heldShutSeconds": 10,
+  "refuseOpenLockSeconds": 8,
+  "holdPushPerHit": 0.5,
   "actFloors": ["none", "none", "none", "low", "mid"]
 }

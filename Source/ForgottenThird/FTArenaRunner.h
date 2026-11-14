@@ -20,8 +20,10 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
-#include "ftcore/Hallucination.h"
+#include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaCamera.h"
+#include "ftcore/ArenaGun.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
@@ -386,7 +388,8 @@ private:
 	// impact at the end of the startup; stagger; face down while open; the hit reaction between moves; defeat; idle.
 	void DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha);
 	// Whether a blow makes slot I flinch: not on its knees (the go-down is its reaction), nor while it gets up from them.
-	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I]; }
+	// Not in a boss's break move's windup or active part (Core's enemyBreakGuard): blows there never flinch it.
+	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I] && !Fight.enemyBreakGuard(static_cast<size_t>(I)); }
 	void PutBodiesAtStart();
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
@@ -406,6 +409,8 @@ private:
 	// and their sounds attach once they exist. For now they only log.
 	void OnLeadReload(bool bStarted, int32 Amount);
 	void OnLeadDryPress(int32 Presses);
+	// The cylinder event's sound (ftcore::arenaGunCue) through UFTAudioSubsystem.
+	void PlayGunCue(const ftcore::ArenaEvent& E);
 	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
 	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
 	void KickJolt(const ftcore::ArenaEvent& E);
@@ -628,7 +633,9 @@ private:
 	void PressPendingLoneGift();
 	// -ArenaHallucination=accept|refuse|expire (a probe; off by default): offers of the lead's tragedies by the Core
 	// rules (ftcore/Hallucination.h). The hold slows the lead's stick and a full one stills the lead; the enemies go on.
-	int32 HallMode = 0;            // 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire
+	// 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire, 4 accept, then refuse with
+	// the guard a second into the hold and keep it down a second after
+	int32 HallMode = 0;
 	float HallAt = 5.f;            // no offer before this fight time (-ArenaHallucinationAt=S)
 	ftcore::HallucinationTuning HallTuning{};
 	ftcore::TragedyTable HallTable;
@@ -639,6 +646,12 @@ private:
 	int32 HallSeen[8] = {};        // events by ftcore::HallucinationEventType
 	int32 HallHeldSteps = 0;       // steps the lead stood held
 	int32 HallEnemyActs = 0;       // enemy attacks begun while the lead stood held
+	int32 HallGuardHeld = 0;       // held steps the guard button was down (the refusal's, never the fight's)
+	int32 HallGuardKept = 0;       // steps after a hold the guard from it stayed down (still the refusal's)
+	int32 HallBlocksHeld = 0;      // blocks and parries the fight gave in those steps: 0, the guard never reaches it
+	double HallHeldAt = -1.0;      // the Hallucination's clock at the last Held, and at the last Refused
+	double HallRefusedAt = -1.0;
+	bool bHallKeptStep = false;
 	float HallHeldDrift = 0.f;     // metres the lead's body moved while held (knocks included)
 	float HallMaxHold = 0.f;
 	bool bHallHeldStep = false;
@@ -819,6 +832,8 @@ private:
 	bool bMouseFlicked = false;
 
 	double Now = 0.0;
+	double TellSince[6] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)
+	bool bTellShown[6] = {};
 	double Accumulator = 0.0;
 	double DrawnTime = 0.0;
 	double ActiveSince[ftcore::kMaxArenaEnemies];
@@ -834,6 +849,38 @@ private:
 
 	float CameraYaw = 0.f;
 	float CameraPitch = -16.f;
+	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurn) on top of CameraYaw, which stays on the lock's
+	// line. It goes into CameraYaw once nothing is followed (ftcore::arenaFrameYawStep), so the view never jumps.
+	float FrameTurn = 0.f;
+	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read.
+	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}); }
+	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
+	ftcore::ArenaFrameRules FrameRules() const
+	{
+		ftcore::ArenaFrameRules Rules = ftcore::kArenaFrame;
+		Rules.maxTurn = Fit.camera.frameTurnCapDeg;
+		return Rules;
+	}
+#if !UE_BUILD_SHIPPING
+	// -ArenaFrameCheck: the framing as the rendered camera shows it, sampled on each followed frame and logged by
+	// LogFeatureChecks ("Arena check: framing"). -ArenaNoFrame holds the framing at 0, for a side-by-side.
+	bool bFrameCheck = false;
+	bool bNoFrame = false;
+	int32 FrameFrames = 0;
+	int32 FrameSettled = 0;
+	int32 FrameInThird = 0;
+	float FrameLeadWorst = 0.f;
+	float FrameFoeWorst = 0.f;
+	float FrameTurnMost = 0.f;
+	float FrameRateMost = 0.f;
+	float FrameLensMost = 0.f;
+	float FrameArmMost = 0.f;
+	float FramePrev = 0.f;
+	int32 FrameBandN[4] = {};
+	float FrameBandFoe[4] = {};
+	float FrameBandGap[4] = {};
+	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
+#endif
 
 	// Impact feedback. The jolt, the camera shake the run forces (-ArenaCameraShake=<0..1>; below 0: the setting), the
 	// blows that asked for a kick and the largest offset handed to the camera (degrees). The view the off-frame test

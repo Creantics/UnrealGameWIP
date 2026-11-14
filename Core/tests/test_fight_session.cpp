@@ -84,6 +84,7 @@ const char* kPressJson = R"({
 GiftTuning freeGifts() {
     GiftTuning g;
     g.cooldown = {0.0, 0.0, 0.0};
+    g.healsPerFight = 20;
     return g;
 }
 
@@ -596,6 +597,7 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     FightSession s;
     FightSessionDef d;
     d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0; // Guards back to back: the Guard's cooldown starts when its guard ends
     REQUIRE(s.begin(d, 0.0).ok());
     REQUIRE(s.selectGift(Gift::Heal));
     CHECK(s.giveGift(kLeadA).given); // unbound: nothing written
@@ -649,6 +651,50 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     s.unbindStory();
     CHECK(s.giveGift(kLeadB).given);
     CHECK(wide("w_b0") == 0);
+}
+
+TEST_CASE("fight session: a retry puts the gift tally and the story's press counters back together") {
+    // The host's two calls agree: a retried step (storyEndStep Retry) with no finish(true) rolls back the story's
+    // per-kind counters and, at the next begin, the slot's tally; a kept step (finish(true), then storyEndStep
+    // Keep) keeps both.
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    const auto wide = [&](const char* id) {
+        for (std::uint8_t w = 0; w < kWideSlots; ++w)
+            if (reg.wide[w].id() == id) return storyWide(story, w);
+        return 0xFFFFFFFFu;
+    };
+    FightSession s;
+    FightSessionDef d;
+    d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0;
+    StoryStepMark mark;
+    const auto attempt = [&](int heals) {
+        REQUIRE(s.begin(d, 0.0).ok());
+        REQUIRE(storyMarkStep(story, mark));
+        REQUIRE(s.bindStory(story, reg, mark));
+        REQUIRE(s.selectGift(Gift::Heal));
+        for (int i = 0; i < heals; ++i) CHECK(s.giveGift(kLeadA).given);
+    };
+    attempt(2);
+    CHECK(wide("w_a0") == 2);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 2);
+    // Lost and retried: the story rolls the step back, the next begin the tally.
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    CHECK(wide("w_a0") == 0);
+    attempt(1);
+    CHECK(wide("w_a0") == 1);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+    // Won: both keep this attempt's presses into the next fight.
+    s.finish(true);
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Keep));
+    attempt(0);
+    CHECK(wide("w_a0") == 1);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
 }
 
 TEST_CASE("fight session: refused gift presses at a lead count in the story state too") {
@@ -855,4 +901,93 @@ TEST_CASE("fight session: a held blow whose settle is dropped expires at base") 
     CHECK(t.heldExpired == static_cast<int>(kMaxHeldBlows));
     CHECK(t.bonuses.empty());
     CHECK(s.tick(kFrame).heldExpired == 0);
+}
+
+TEST_CASE("fight session: the gift HUD reads, and a new fight resets the Heals but not the save-wide total") {
+    FightSession s;
+    FightSessionDef d;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.giftHealsLeft() == 2);
+    CHECK(s.giftHealReadyIn() == 0.0);
+    CHECK(s.giftGuardReadyIn() == 0.0);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.press(SharedAction::Gift, kThirdSlot, kLeadA).accepted);
+    CHECK(s.giftHealsLeft() == 1);
+    CHECK(s.giftHealReadyIn() == doctest::Approx(8.0));
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(13.2)); // 1.2 s of guard, then 12 s
+    CHECK(tickUntil(s, [&] { return s.giftHealReadyIn() == 0.0; }));
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(5.2).epsilon(0.02));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadB).given);
+    CHECK(s.giftHealsLeft() == 0);
+    CHECK(tickUntil(s, [&] { return s.giftHealReadyIn() == 0.0; }));
+    const GiftResult third = s.giveGift(kLeadA);
+    CHECK_FALSE(third.given);
+    CHECK(third.error == GiftError::NoneLeft);
+    CHECK(s.giftSlot().allPresses() == 4);
+
+    // The fight is won; the next fight: two Heals again, cooldowns clear, the save-wide total kept.
+    s.finish(true);
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK(s.giftHealsLeft() == 2);
+    CHECK(s.giftHealReadyIn() == 0.0);
+    CHECK(s.giftGuardReadyIn() == 0.0);
+    CHECK(s.giftSlot().allPresses() == 4);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 2);
+    CHECK(s.giftSlot().tally().refusedOf(Gift::Heal) == 1);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.giftSlot().allPresses() == 5);
+}
+
+TEST_CASE("fight session: a retry (begin after a fight not finished as won) puts the gift tally and threads back") {
+    FightSession s;
+    FightSessionDef d;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given); // a fight won with one press
+    s.finish(true);
+    REQUIRE(s.begin(d, 1.0).ok());
+    REQUIRE(s.giftSlot().allPresses() == 1);
+    // The attempt: two gifts pressed, then lost (no finish, or finish(false)): the retry is back at the start.
+    for (const int how : {0, 1}) {
+        CAPTURE(how);
+        CHECK(s.giveGift(kLeadA).given);
+        REQUIRE(s.selectGift(Gift::Guard));
+        CHECK(s.giveGift(kLeadB).given);
+        CHECK(s.giftSlot().allPresses() == 3);
+        CHECK(s.giftHealsLeft() == 1);
+        if (how == 1) s.finish(false);
+        CHECK_FALSE(s.finishedWon());
+        REQUIRE(s.begin(d, s.now() + 1.0).ok());
+        CHECK(s.giftSlot().allPresses() == 1);
+        CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+        CHECK(s.giftSlot().tally().givenOf(Gift::Guard) == 0);
+        CHECK(s.giftSlot().threads(kLeadA) == 1);
+        CHECK(s.giftSlot().threads(kLeadB) == 0);
+        CHECK(s.giftHealsLeft() == 2); // the per-fight heal count resets
+        CHECK(s.giftGuardReadyIn() == 0.0);
+    }
+    // Two gifts pressed and the fight won: the next fight keeps them, with two Heals again.
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadB).given);
+    s.finish(true);
+    CHECK(s.finishedWon());
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK_FALSE(s.finishedWon()); // a begin clears the win
+    CHECK(s.giftSlot().allPresses() == 3);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
+    CHECK(s.giftSlot().threads(kLeadB) == 1);
+    CHECK(s.giftHealsLeft() == 2);
+    // A checkpoint loaded mid-fight is the start a retry goes back to.
+    GiftSave cp = s.giftSlot().save();
+    cp.threads[kLeadB] = 7;
+    REQUIRE(s.giftSlot().load(cp));
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK(s.giftSlot().threads(kLeadB) == 7);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
 }

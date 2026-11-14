@@ -112,7 +112,8 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   (button does nothing; the boss uses the tallies). No press is ever discarded. The host sets it
   through `setState`.
 * `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr)`:
-  - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down. A
+  - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down (or,
+    for the Heal, this fight's `healsPerFight` are given: `NoneLeft`). A
     pressed gift cannot be taken back: there is no cancel. Returns `GiftResult { given, gift, target,
     error, healShare, healLoad, guardScale, guardUntil }`, everything the host needs to apply it:
     `Heal` (heal `healShare` of max HP and move `healLoad` Load off the target), `Guard` (the target
@@ -122,7 +123,7 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
     `CountRefused` and the gift is not given). A refused press leaves the heal and guard fields at
     their neutral values (0, 0, 1, 0).
   - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
-    `CountRefused`, `NoGift`.
+    `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent).
   - `Vacant`: nothing happens; `vacantPresses` goes up.
   - `Hostile`: nothing happens; `hostilePresses` goes up (the host reads the tallies).
 * **Threads and cooldowns** follow given gifts only: every given gift adds one thread to its target
@@ -139,11 +140,19 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   rejects (returns false, changes nothing) version 0, a newer version or an out-of-range enum. A
   version 1 save (no refused counts) loads with `refused` all 0, and its old per-gift tally loads as
   `given` (version 1 counted given presses only). `SlotState` keeps its stored
-  integers (`Vacant` is 1). Cooldowns and live guards are not saved (a load is never mid-fight);
-  `load` and `resetFight()` clear them. `reset()` wipes the save data too; `setTuning()` changes
-  the tuning and keeps it.
-* Tuning (`GiftTuning`): per-gift `cooldown` (heal 8 s, guard 6 s, count 4 s), `healShare` 0.15,
-  `healLoad` 20, `guardScale` 0 (the guarded lead takes x0), `guardSeconds` 1.2.
+  integers (`Vacant` is 1). Cooldowns, live guards and the fight's Heal count are not saved (a load
+  is never mid-fight); `load` and `resetFight()` clear them. `beginFight(tuning, t)` (what
+  `FightSession::begin` calls) sets the tuning, clears the fight state, selects Heal and makes the
+  slot a Companion, and keeps the save data: the save-wide tally, threads and Vacant and Hostile
+  presses carry from fight to fight, and are recorded as the fight's start. `restoreFightStart()` puts
+  them back to that record (the last `beginFight`, `reset` or `load`). `reset()` wipes the save data
+  too; `setTuning()` changes the tuning and keeps it.
+* Tuning (`GiftTuning`, file `Data/Battle/gifts.json` via `importGiftTuning`): per-gift `cooldown`
+  (heal 8 s and count 4 s from the press; guard 12 s from the guard's end, so 13.2 s press to press),
+  `healShare` 0.15, `healLoad` 20,
+  `healsPerFight` 2, `guardScale` 0.25 (the guarded lead takes x0.25), `guardSeconds` 1.2.
+* HUD: `healsLeft()`, `readyIn(gift, t)` (seconds to ready, 0 when ready); on the session
+  `giftHealsLeft()`, `giftHealReadyIn()`, `giftGuardReadyIn()`.
 
 ## 3. Laying a place (`PlaceTable`)
 
@@ -255,10 +264,18 @@ fighter, the table, the held refusal, its own `WeakPointLock`, and an optional `
 own copy of the boss def) and moves them all on one fight clock. It is what a host holds instead of
 the pieces.
 
-* **One clock.** `begin(def, start)` resets every piece at `start`, clamped to +-`kMaxFightStart`
+* **One clock.** `begin(def, start)` resets every piece at `start` (the gift slot through
+  `beginFight`), clamped to +-`kMaxFightStart`
   (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
   NaN starts at 0; `FightSessionCheck::start` reports either move, and the fight begins anyway, so `ok()`
-  leaves it out). `tick(fightDt)`
+  leaves it out). The gift slot's save-wide tally and threads carry over only from a won fight: the
+  host calls `finish(true)` at victory, and a `begin` after a fight not finished as won (lost,
+  abandoned, `finish(false)` or never called) first puts them back to how that fight began
+  (`restoreFightStart`; a `GiftSave` loaded mid-fight is that start), so an abandoned attempt's
+  presses do not count. The story's per-kind press counters follow the same rule through the story step
+  (`storyEndStep`), so the host pairs the two: `finish(true)` wherever the step ends `Keep` (a win, or a
+  loss branch the story keeps), and no `finish(true)` when it ends `Retry` or `Drop`. The story's RAW
+  press total is kept across a retry by design, like the retries counter. The fight's Heal count resets either way. `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`

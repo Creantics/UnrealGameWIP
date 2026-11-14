@@ -44,7 +44,8 @@ UiEventMark uiEventMark(ArenaEventType type) {
     case ArenaEventType::AllyDowned:
     case ArenaEventType::ReloadStarted:
     case ArenaEventType::Reloaded:
-    case ArenaEventType::DryPress: return UiEventMark::None;
+    case ArenaEventType::DryPress:
+    case ArenaEventType::BreakTell: return UiEventMark::None;
     }
     return UiEventMark::None;
 }

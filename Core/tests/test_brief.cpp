@@ -1,6 +1,7 @@
 // Briefs (Data/Battle/briefs.json) laid over the guns lead's kit, and the pistol's cylinder (rounds, reload).
 #include "ftcore/AimStance.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaGun.h"
 #include "ftcore/Brief.h"
 #include "ftcore/BriefKit.h"
 #include "ftcore/UiViews.h"
@@ -294,6 +295,74 @@ ArenaFighter notaryKit() {
 }
 
 } // namespace
+
+TEST_CASE("cylinder: the gun overlay: the reload clip spans the reload by its progress, the flinch, each event's cue") {
+    const ArenaTable arena = shippedArena();
+    BriefTable t;
+    std::string err;
+    REQUIRE_MESSAGE(shippedBriefs(arena.fighter("duy"), t, err), err);
+    const ArenaFighter kit = buildBriefKit(*t.find(BriefId::Notary), LicenceStats{}).fighter;
+    Range r(kit);
+    CHECK_FALSE(r.fight.reloading());
+    // Fire the cylinder empty; the reload then runs on the player's own time.
+    while (r.fight.rounds() > 0 && r.time() < 20.f) r.tick(true);
+    while (!r.fight.reloading() && r.time() < 20.f) r.tick(false);
+    REQUIRE(r.fight.reloading());
+    const float clip = 1.5f; // longer than the 1.2 s reload: the clip is posed by progress, not played at its rate
+    float lastTime = -1.f, most = 0.f;
+    int ticks = 0;
+    while (r.fight.reloading() && ticks < 600) {
+        const ArenaGunLayer l = arenaReloadLayer(kArenaGun, r.fight.reloading(), r.fight.reloadProgress(), clip);
+        CHECK(l.time >= lastTime);
+        CHECK(l.time <= clip);
+        CHECK(l.weight >= 0.f);
+        CHECK(l.weight <= 1.f);
+        lastTime = l.time;
+        most = std::max(most, l.weight);
+        r.tick(false);
+        ++ticks;
+    }
+    CHECK(most == doctest::Approx(1.f));
+    CHECK(lastTime > 0.9f * clip);
+    CHECK(ticks * kDt == doctest::Approx(kit.reload).epsilon(0.05));
+    CHECK(r.fight.rounds() == 6);
+    // Not reloading, no clip, or a non-finite progress: nothing posed.
+    CHECK(arenaReloadLayer(kArenaGun, false, 0.5f, clip).weight == 0.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, 0.5f, 0.f).weight == 0.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, std::numeric_limits<float>::quiet_NaN(), clip).weight == 0.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, 0.5f, clip).weight == 1.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, 0.5f, clip).time == doctest::Approx(0.75f));
+    // A restart refills with no event: the overlay clears.
+    while (r.fight.rounds() > 0 && r.time() < 40.f) r.tick(true);
+    while (!r.fight.reloading() && r.time() < 40.f) r.tick(false);
+    REQUIRE(r.fight.reloading());
+    r.fight.restart();
+    CHECK_FALSE(r.fight.reloading());
+    CHECK(arenaReloadLayer(kArenaGun, r.fight.reloading(), r.fight.reloadProgress(), clip).weight == 0.f);
+
+    // The flinch: from the press to its clip's end, fading out over its last 50 ms; none before any press.
+    const float flinch = 0.15f;
+    CHECK(arenaFlinchLayer(kArenaGun, -1.f, flinch).weight == 0.f);
+    CHECK(arenaFlinchLayer(kArenaGun, 0.f, flinch).weight == 1.f);
+    CHECK(arenaFlinchLayer(kArenaGun, 0.125f, flinch).weight == doctest::Approx(0.5f));
+    CHECK(arenaFlinchLayer(kArenaGun, 0.125f, flinch).time == doctest::Approx(0.125f));
+    CHECK(arenaFlinchLayer(kArenaGun, flinch, flinch).weight == 0.f);
+    CHECK(arenaFlinchLayer(kArenaGun, 0.05f, 0.f).weight == 0.f);
+
+    // The cues: one per cylinder event, none for an instant reload or any other event.
+    ArenaEvent e;
+    e.type = ArenaEventType::ReloadStarted;
+    e.amount = 1200;
+    CHECK(std::string(arenaGunCue(e)) == "SFX-GUN-RELOAD");
+    e.amount = 0;
+    CHECK(arenaGunCue(e) == nullptr);
+    e.type = ArenaEventType::Reloaded;
+    CHECK(std::string(arenaGunCue(e)) == "SFX-GUN-LOADED");
+    e.type = ArenaEventType::DryPress;
+    CHECK(std::string(arenaGunCue(e)) == "SFX-GUN-DRY");
+    e.type = ArenaEventType::Hit;
+    CHECK(arenaGunCue(e) == nullptr);
+}
 
 TEST_CASE("cylinder: a dodge during the reload rolls, and the reload runs on to its full time") {
     const ArenaFighter kit = notaryKit();

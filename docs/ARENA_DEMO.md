@@ -123,10 +123,26 @@ fit lists these mouths) the host puts a row of crates across it, just outside, s
 ### Camera
 
 The camera stays on the boss: the lock turns it, never to show the wall. It may leave the zone but not pass through the
-scene: the spring arm now probes the world (`ECC_Camera`) and is pulled in. `cameraBlocked` (a fit result, logged as a
-warning when above 0) is the share of the zone's edge where a player standing on it would have the camera inside a building
-taller than the camera, so a bad spot is known before it is played: a giant at a tower plaza is 67% (`lat_plaza_a` with
-`-ArenaLineup=titan`), a giant's climax zone 0 to 15%, the human-sized facades 27%.
+scene: the spring arm now probes the world (`ECC_Camera`) and is pulled in. Locked (or following, under the autopilot),
+the view also orbits round the lead (`ftcore::arenaFrameTurn`, `ArenaLook.h`) so the target sits on the view's centre line
+and the lead keeps its place left of it, rather than the lead hiding a close target; the turn is at most 30 degrees,
+eases in and out, is 0 while aiming, and goes into the free camera's yaw when the lock ends. The arm, the pivot and the
+shoulder are never touched, so it never pulls the camera out, and the hit pause holds the turn where it is. The stick, the
+crosshair and the fight's view all read the view as drawn (the lock's line plus the turn, `ftcore::arenaFrameYawStep`),
+so the lead goes where the stick points on the screen, and a release, which folds the turn into the free camera's yaw,
+leaves a held stick's heading where it was. The settings menu's **Lock framing** row (on by default, `lockFraming` in the
+settings file) turns the orbit off. A zone may hold the turn lower with `frameTurnCapDeg` in `Data/Battle/arenas.json`
+(degrees, 0 to 30; left out, the global 30): `lat_facade_a` sets 0, so its view stays on the lock's line, because turned
+its lens would sit in a building (the fit reads 16/48 of its edge blocked at the default cap). The host's camera (yaw,
+boom, tilt, arm, pivot, shoulder, height, fov) is `ftcore::arenaCameraPose`, from the start of the fight on.
+`cameraBlocked` (a fit result, logged as a warning when above 0) is the share of the zone's edge where a player standing
+on it, facing in, would have the lens inside a building taller than the lens, so a bad spot is known before it is played.
+The lens is Core's (`arenaCameraPose`, `arenaCameraLens`) at the zone's lock pitch, in three views: on the lock's line, at
+the zone's framing cap, and fully aimed; a spot counts when any of them, checked 0.22 m further back along the view (the
+engine's 10 cm near clip plus the boom's 12 cm probe), is within 0.5 m of a building's footprint. The human-sized facades
+are 27% (`sol_facade_a`, 13/48, under the 30% bar) and 31% (`lat_facade_a`, 15/48 with its cap of 0, the one exception
+over the bar and a layout follow-up for the zone's owner), both pinned in the zone test; the tower plaza with a giant (`lat_plaza_a` with `-ArenaLineup=titan`) is 0 at its
+25.8 m ring.
 
 **Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:
 the player's blows by their move's `jolt`, an enemy's blow on the lead by its move's `jolt` (the kit's `hurtJolt` when it
@@ -349,9 +365,30 @@ Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBri
 with a 1.2 s reload (the shot spends a round instead of stamina; with none left a shot press is dropped and kicks still
 go), plus the Brief's kit changes. The cylinder sends three fight events for the host's clip and sound: `ReloadStarted`
 (the reload's length in ms), `Reloaded` (the rounds) and `DryPress` (a press dropped on the empty cylinder); the arena
-logs each one, and the reload clip, the dry click and a gun-arm flinch attach there once they exist. Any other lead is
+logs each one and plays its sfx cue (`SFX-GUN-RELOAD`, `SFX-GUN-LOADED`, `SFX-GUN-DRY` in `Data/Audio/cues.json`;
+silent until the sounds are imported; an instant reload plays only `SFX-GUN-LOADED`). The reload clip `lead_reload` is
+posed each frame by the fight's reload progress, so it spans the reload whatever its length, and `lead_dry_flinch` plays
+from a dry press; both sit in the look's clip folder, play on the upper body under a strike's share, and are skipped
+(logged at Display) until they exist (`ftcore::arenaReloadLayer`, `arenaFlinchLayer`, `arenaGunCue`). Any other lead is
 left alone with a warning. `-ArenaAutoShoot` has the autopilot use
 the pistol; `-ArenaLineup=dummy,maw_pup` is the test line-up. The result is one `Arena: BRIEF ...` line at the end.
+
+### Boss break pace (watch in play)
+
+A boss's break value adds nothing through its whole break move (windup, active part and recovery) and adds from 0 once
+the move is over, so the fastest break to break is the move plus the blows that refill the phase's threshold. The
+shortest, with the fastest sequence a lead can throw (Core's `arena boss break: the shortest break to break` pins them):
+
+| Blows | Phase 1 (10) | Phase 2 (8) | Phase 3 (6.5) |
+|---|---|---|---|
+| no joined or Lift multiplier | 6.23 s | 5.25 s | 4.85 s |
+| each at the 3.0 cap (the shared count played perfectly) | 3.57 s | 3.07 s | 3.07 s |
+
+The capped 3.07 s (three capped blows in a row) is accepted with no lock, and is to be watched in play: if a boss under
+full pressure seems to do little but throw its break move, flag it for a ruling.
+
+A phase whose threshold is at or below the value when it begins (the blow that drops the boss past a phase end left it
+there) breaks the boss at once if it is upright, else the tick it stands. Ruled accepted as built.
 
 ### The leads' weapons
 
@@ -646,6 +683,8 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. Not in shipping builds. |
 | `-ArenaAssistCheck` | With `-ArenaAimCheck`: after its shot, four steps with aim assist on, each capped at 6 s: a half-way right stick sweeps the view off the body and back (a lock from before is let go), a lock is pressed on and let go, aim is let go and held again, and the target is killed by a host blow. Each change of the stick's share is logged with its cause (`aim assist look scale 0.60 -> 1.00 (locked on; ...)`). The `aim assist` check line compares the sweep's turn rate over a body with the rate off it and says whether the share came back to 1 as the crosshair left, on lock-on, as aim let go and as the target died (PASS: ratio 0.60 within 0.05 and all four). Not in shipping builds. |
 | `-ArenaCoverCheck` | Once, a second into the fight: a synthetic crosshair line (not the camera's) from 0.5 m over the floor through the cover drum nearest a standing enemy to its body's middle, picked as the reticle picks (the world's first hit clips the line). The `reticle behind cover` check line gives the world hit, the body's distance on the same line with the world left out (the control) and the pick: PASS when the drum is hit first and no body is picked, so aim assist has no body to slow over and the round's aim body is none. Needs a zone with cover drums (`stone_ring`); with `-ArenaQuitOnFinish` the run ends after it. Not in shipping builds. |
+| `-ArenaFrameCheck` | Samples the lock's framing as the rendered camera shows it on every followed frame: the lead's and the target's place across the screen, the turn and its rate, the boom's arm and the lens's distance from the pivot. The `framing` check line passes when every settled frame (the lock's line within 5 degrees, the turn within 1 of its want) has both bodies in the middle third (not in a zone whose framing cap is 0, where only the turn staying 0 and the line settling on the target are checked), the turn never passes its cap and the arm never passes the rig's; the bands under it give the target's mean place and the least edge gap by distance. Not in shipping builds. |
+| `-ArenaNoFrame` | Holds the lock's framing at 0, for a side-by-side with `-ArenaFrameCheck`, whatever the **Lock framing** setting says (players turn it off there). Not in shipping builds. |
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |

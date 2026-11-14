@@ -18,6 +18,7 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
+#include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaFight.h"
 
 namespace
@@ -151,7 +152,7 @@ AFTArenaFighter::AFTArenaFighter()
 	Boom->bUsePawnControlRotation = true;
 	// The camera may leave the zone's walls but not pass through the scene: the arm probes the world and is pulled in.
 	Boom->bDoCollisionTest = true;
-	Boom->ProbeSize = 12.f;
+	Boom->ProbeSize = ftcore::kArenaBoomProbe * 100.f; // the probe the zone's lens clearance counts (ArenaCamera.h)
 	Boom->ProbeChannel = ECC_Camera;
 	Boom->bEnableCameraLag = true;
 	Boom->CameraLagSpeed = 9.f;
@@ -187,6 +188,12 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 
 	SkinKind = ESkin::Shapes;
 	bPlayerFigure = bPlayer;
+	if (bPlayer && !FMath::IsNearlyEqual(GNearClippingPlane, ftcore::kArenaLensNearClip * 100.f, 0.01f))
+	{
+		// The zone's lens clearance counts this near plane; a changed one leaves the walls' lens checks short.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: the near clip plane is %.2f cm, but the lens clearance counts %.2f cm (ArenaCamera.h)."),
+			GNearClippingPlane, ftcore::kArenaLensNearClip * 100.f);
+	}
 	bool bLead = false;
 	if (bPlayer)
 	{
@@ -321,6 +328,10 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	Visor->SetVisibility(false);
 	Blade->SetVisibility(false);
 	Skin->SetSkeletalMesh(Mesh);
+	PulseMaterials.Reset(); // a new mesh: its own materials, made dynamic on its first glow
+	PulseBase.Reset();
+	PulseGlow = 0.f;
+	bPulseMade = false;
 	Skin->SetAnimInstanceClass(UFTBeatFighterAnimInstance::StaticClass());
 	Skin->SetRelativeLocation(FVector(0.0, 0.0, SkinHover));
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));
@@ -419,6 +430,45 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 		MakeCarried(Mesh, Split, true);
 	}
 	return true;
+}
+
+void AFTArenaFighter::SetBodyPulse(float Glow)
+{
+	Glow = FMath::Max(Glow, 0.f);
+	if (SkinKind != ESkin::Creature || (Glow == 0.f && PulseGlow == 0.f))
+	{
+		return;
+	}
+	if (!bPulseMade)
+	{
+		bPulseMade = true;
+		const int32 Count = Skin->GetNumMaterials();
+		for (int32 M = 0; M < Count; ++M)
+		{
+			UMaterialInterface* Material = Skin->GetMaterial(M);
+			FLinearColor Base = FLinearColor::Black;
+			if (!Material || !Material->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Emissive")), Base))
+			{
+				continue;
+			}
+			if (UMaterialInstanceDynamic* Dynamic = Skin->CreateDynamicMaterialInstance(M))
+			{
+				PulseMaterials.Add(Dynamic);
+				PulseBase.Add(Base);
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s: the break tell glows on %d of %d materials (Emissive)."),
+			Skin->GetSkeletalMeshAsset() ? *Skin->GetSkeletalMeshAsset()->GetName() : TEXT("?"), PulseMaterials.Num(), Count);
+	}
+	PulseGlow = Glow;
+	const FLinearColor Warm(1.f, 0.86f, 0.7f);
+	for (int32 M = 0; M < PulseMaterials.Num(); ++M)
+	{
+		if (PulseMaterials[M])
+		{
+			PulseMaterials[M]->SetVectorParameterValue(TEXT("Emissive"), PulseBase[M] + Warm * Glow);
+		}
+	}
 }
 
 void AFTArenaFighter::ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow)

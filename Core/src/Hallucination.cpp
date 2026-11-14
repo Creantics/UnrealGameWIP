@@ -89,9 +89,15 @@ bool importTragedies(std::string_view json, TragedyTable& out, std::string* erro
             d.voice = std::string(k["voice"].string());
             d.figure = std::string(k["figure"].string());
             if (d.voice.empty() || d.figure.empty()) errors.push_back(at + ": expected a voice and a figure id");
+            const JsonValue caused = k["caused"], lone = k["lone"];
+            if (!(caused.isAbsent() || caused.isBool()) || !(lone.isAbsent() || lone.isBool()))
+                errors.push_back(at + ": caused and lone are true or false");
+            d.caused = caused.boolean();
+            d.lone = lone.boolean();
             for (std::uint32_t j = 0; j < k.size(); ++j) {
                 const std::string_view f = k.key(j);
-                if (f != "id" && f != "lead" && f != "places" && f != "voice" && f != "figure")
+                if (f != "id" && f != "lead" && f != "places" && f != "voice" && f != "figure" && f != "caused" &&
+                    f != "lone")
                     errors.push_back(at + "." + std::string(f) + ": unknown field");
             }
             t.keys.push_back(std::move(d));
@@ -123,7 +129,18 @@ bool importHallucinationTuning(std::string_view json, HallucinationTuning& out, 
         {"gapSeconds", &t.gapSeconds, 0.0, 3600.0},       {"switchSeconds", &t.switchSeconds, 0.0, 600.0},
         {"refuseSeconds", &t.refuseSeconds, 0.0, 5.0},    {"refusalCooldownSeconds", &t.refusalCooldownSeconds, 0.0, 60.0},
         {"pullSeconds", &t.pullSeconds, 0.5, 60.0},       {"recentSeconds", &t.recentSeconds, 0.0, 36000.0},
-        {"fewerGapScale", &t.fewerGapScale, 1.0, 10.0},
+        {"fewerGapScale", &t.fewerGapScale, 1.0, 10.0},     {"lonePoolFloor", &t.lonePoolFloor, 0.0, 1.0e9},
+        {"counselCooldownSeconds", &t.counselCooldownSeconds, 0.0, 60.0}, // 0 to refusalCooldownSeconds' own maximum
+        {"proxyReactSeconds", &t.proxyReactSeconds, 0.0, 6.0},
+        {"escrowDelaySeconds", &t.escrowDelaySeconds, 0.0, 30.0},
+        {"refuseOpenMinHold", &t.refuseOpenMinHold, 0.0, 30.0},
+        {"refuseOpenBase", &t.refuseOpenBase, 0.0, 30.0},
+        {"refuseOpenPerSecond", &t.refuseOpenPerSecond, 0.0, 10.0},
+        {"refuseOpenHoldCap", &t.refuseOpenHoldCap, 0.0, 30.0},
+        {"heldHealthCost", &t.heldHealthCost, 0.0, 1.0},
+        {"heldShutSeconds", &t.heldShutSeconds, 0.0, 120.0},
+        {"refuseOpenLockSeconds", &t.refuseOpenLockSeconds, 0.0, 30.0},
+        {"holdPushPerHit", &t.holdPushPerHit, 0.0, 2.0},
     };
     for (const Field& f : fields) {
         const JsonValue v = root[f.key];
@@ -132,6 +149,7 @@ bool importHallucinationTuning(std::string_view json, HallucinationTuning& out, 
             errors.push_back(std::string(f.key) + ": expected a number in its range");
         else *f.to = static_cast<float>(v.number());
     }
+    if (t.refuseOpenHoldCap < t.refuseOpenMinHold) errors.push_back("refuseOpenHoldCap: expected at least refuseOpenMinHold");
     if (const JsonValue v = root["actFloors"]; !v.isAbsent()) {
         if (!v.isArray() || v.size() != kMaxAct + 1) {
             errors.push_back("actFloors: expected 5 bands (acts 0 to 4)");

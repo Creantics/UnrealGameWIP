@@ -404,7 +404,7 @@ public:
 	// frame clears the actions and adds the ones playing, each a slot, a time into its clip and a weight (summing to
 	// at most 1; the locomotion keeps the rest, and the bends and the air pose give way by the same share). At most
 	// MaxActions a frame (more are ignored); a slot without a clip adds nothing. Game thread.
-	static constexpr int32 MaxActionClips = 20;
+	static constexpr int32 MaxActionClips = 22; // a slot per ftcore::FightClip, then the gun's reload and dry flinch
 	static constexpr int32 MaxActions = 4;
 	// Sets (or with nullptr clears) the clip in Slot (0..MaxActionClips-1); false for a slot out of range.
 	bool SetActionClip(int32 Slot, UAnimSequence* Clip);

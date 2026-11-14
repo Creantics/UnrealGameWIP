@@ -47,11 +47,11 @@ TEST_CASE("gifts: each gift is given to a lead, counted, and leaves a thread") {
     REQUIRE(g.select(Gift::Guard));
     r = g.press(kLeadB, 1.0);
     CHECK(r.given);
-    CHECK(r.guardScale == doctest::Approx(0.0f));
+    CHECK(r.guardScale == doctest::Approx(0.25f));
     CHECK(r.guardUntil == doctest::Approx(2.2));
     CHECK(r.healLoad == 0);
     CHECK(g.guarded(kLeadB, 1.5));
-    CHECK(g.guardScaleFor(kLeadB, 1.5) == doctest::Approx(0.0f));
+    CHECK(g.guardScaleFor(kLeadB, 1.5) == doctest::Approx(0.25f));
     CHECK(g.guardScaleFor(kLeadA, 1.5) == doctest::Approx(1.0f));
     CHECK(g.guardScaleFor(kLeadB, 2.2) == doctest::Approx(1.0f)); // guardSeconds 1.2 ran out
     CHECK_FALSE(g.guarded(kLeadB, 2.2));
@@ -227,6 +227,9 @@ TEST_CASE("gifts: counters saturate instead of wrapping") {
 
 TEST_CASE("gifts: the tally, threads, choice and state survive save and load; the fight state does not") {
     GiftSlot a;
+    GiftTuning quickGuard; // the second Guard at 10 s needs a cooldown under 10 s
+    quickGuard.cooldown[1] = 6.0;
+    REQUIRE(a.reset(quickGuard, 0.0));
     StrikeCount count;
     REQUIRE(count.reset(tempo60(), 0.0));
     a.press(kLeadA, 0.0);
@@ -311,7 +314,7 @@ TEST_CASE("gifts: tuning is validated; NaN and earlier times read as the latest"
     GiftTuning bad;
     bad.cooldown[1] = -1.0;
     CHECK_FALSE(g.reset(bad, 0.0));
-    CHECK(g.tuning().cooldown[1] == doctest::Approx(6.0));
+    CHECK(g.tuning().cooldown[1] == doctest::Approx(12.0));
     GiftTuning nanGuard;
     nanGuard.guardSeconds = kNaN;
     CHECK_FALSE(validGiftTuning(nanGuard));
@@ -1265,4 +1268,148 @@ TEST_CASE("gifts: a load keeps the slot's clock, so a slot loaded late keeps wor
     CHECK(a.ready(Gift::Heal, 7201.0)); // cooldowns cleared by the load
     REQUIRE(a.press(kLeadA, 7202.0).given);
     CHECK(a.readyAt(Gift::Heal) == doctest::Approx(7210.0));
+}
+
+// ---- Gift limits -----------------------------------------------------------------------------------
+
+TEST_CASE("gifts: the defaults are 2 Heals a fight at 15% and 8 s apart, a Guard of x0.25 for 1.2 s on 12 s") {
+    const GiftTuning t;
+    CHECK(t.healsPerFight == 2);
+    CHECK(t.healShare == doctest::Approx(0.15f));
+    CHECK(t.cooldown[0] == doctest::Approx(8.0));
+    CHECK(t.guardScale == doctest::Approx(0.25f));
+    CHECK(t.guardSeconds == doctest::Approx(1.2));
+    CHECK(t.cooldown[1] == doctest::Approx(12.0));
+    CHECK(t.cooldown[2] == doctest::Approx(4.0)); // the Count is unchanged
+    CHECK(validGiftTuning(t));
+}
+
+TEST_CASE("gifts: at most 2 Heals a fight, 8 s apart; the third is refused NoneLeft and still counted") {
+    GiftSlot g;
+    CHECK(g.healsLeft() == 2);
+    CHECK(g.readyIn(Gift::Heal, 0.0) == 0.0);
+    GiftResult r = g.press(kLeadA, 0.0);
+    REQUIRE(r.given);
+    CHECK(r.healShare == doctest::Approx(0.15f));
+    CHECK(g.healsLeft() == 1);
+    CHECK(g.readyIn(Gift::Heal, 0.0) == doctest::Approx(8.0));
+    CHECK(g.readyIn(Gift::Heal, 5.0) == doctest::Approx(3.0));
+    // The spacing: 7.9 s is too soon, 8 s is not.
+    r = g.press(kLeadB, 7.9);
+    CHECK_FALSE(r.given);
+    CHECK(r.error == GiftError::Cooling);
+    CHECK(r.healShare == 0.0f);
+    CHECK(g.healsLeft() == 1);
+    r = g.press(kLeadB, 8.0);
+    REQUIRE(r.given);
+    CHECK(g.healsLeft() == 0);
+    // The count: none left, however long the wait; nothing given, no thread, no cooldown restarted.
+    r = g.press(kLeadA, 100.0);
+    CHECK_FALSE(r.given);
+    CHECK(r.error == GiftError::NoneLeft);
+    CHECK(r.healShare == 0.0f);
+    CHECK(g.healsLeft() == 0);
+    CHECK(g.threads(kLeadA) == 1);
+    CHECK(g.readyAt(Gift::Heal) == doctest::Approx(16.0));
+    CHECK(g.readyIn(Gift::Heal, 100.0) == 0.0); // the cooldown is over; healsLeft says none are left
+    // Every press counts toward the save-wide total.
+    CHECK(g.tally().givenOf(Gift::Heal) == 2);
+    CHECK(g.tally().refusedOf(Gift::Heal) == 2);
+    CHECK(g.tally().total() == 4);
+    // The other gifts are not limited by the Heal's count.
+    REQUIRE(g.select(Gift::Guard));
+    CHECK(g.press(kLeadA, 100.0).given);
+}
+
+TEST_CASE("gifts: a Guard is x0.25 damage for 1.2 s, then cools 12 s from the guard's end (13.2 s press to press)") {
+    GiftSlot g;
+    REQUIRE(g.select(Gift::Guard));
+    CHECK(g.readyIn(Gift::Guard, 0.0) == 0.0);
+    const GiftResult r = g.press(kLeadA, 10.0);
+    REQUIRE(r.given);
+    CHECK(r.guardScale == doctest::Approx(0.25f));
+    CHECK(r.guardUntil == doctest::Approx(11.2));
+    CHECK(g.guardScaleFor(kLeadA, 10.0) == doctest::Approx(0.25f));
+    CHECK(g.guardScaleFor(kLeadA, 11.1) == doctest::Approx(0.25f));
+    CHECK(g.guardScaleFor(kLeadA, 11.2) == doctest::Approx(1.0f));
+    CHECK(g.guardScaleFor(kLeadB, 10.5) == doctest::Approx(1.0f)); // only the target
+    // 100 damage on the guarded lead is 25.
+    CHECK(100.0f * g.guardScaleFor(kLeadA, 10.5) == doctest::Approx(25.0f));
+    CHECK(g.readyIn(Gift::Guard, 10.0) == doctest::Approx(13.2));
+    CHECK(g.readyIn(Gift::Guard, 11.2) == doctest::Approx(12.0)); // the guard ends: 12 s from here
+    CHECK(g.readyIn(Gift::Guard, 16.0) == doctest::Approx(7.2));
+    CHECK(g.press(kLeadA, 22.0).error == GiftError::Cooling); // 12 s from the press is not enough
+    CHECK(g.press(kLeadA, 23.1).error == GiftError::Cooling);
+    CHECK(g.readyIn(Gift::Guard, 23.1) == doctest::Approx(0.1));
+    CHECK(g.press(kLeadA, 23.2).given);
+    CHECK(g.readyIn(Gift::Guard, 23.2) == doctest::Approx(13.2));
+    // The Guard has no per-fight count.
+    CHECK(g.healsLeft() == 2);
+    CHECK(g.readyIn(Gift::None, 23.2) == 0.0);
+}
+
+TEST_CASE("gifts: beginFight resets the fight's Heals, cooldowns and guards but keeps the save-wide tally") {
+    GiftSlot g;
+    g.press(kLeadA, 0.0);
+    g.press(kLeadA, 8.0);
+    g.press(kLeadA, 16.0); // refused: none left
+    REQUIRE(g.select(Gift::Guard));
+    g.press(kLeadB, 16.0);
+    g.setState(SlotState::Vacant);
+    g.press(kLeadB, 17.0);
+    REQUIRE(g.healsLeft() == 0);
+    const std::uint64_t before = g.allPresses();
+    REQUIRE(before == 5);
+
+    CHECK(g.beginFight(GiftTuning{}, 100.0));
+    CHECK(g.healsLeft() == 2);
+    CHECK(g.readyIn(Gift::Heal, 100.0) == 0.0);
+    CHECK(g.readyIn(Gift::Guard, 100.0) == 0.0);
+    CHECK_FALSE(g.guarded(kLeadB, 100.0));
+    CHECK(g.selected() == Gift::Heal);
+    CHECK(g.state() == SlotState::Companion);
+    CHECK(g.allPresses() == before);
+    CHECK(g.tally().givenOf(Gift::Heal) == 2);
+    CHECK(g.tally().refusedOf(Gift::Heal) == 1);
+    CHECK(g.vacantPresses() == 1);
+    CHECK(g.threads(kLeadA) == 2);
+    CHECK(g.press(kLeadA, 100.0).given);
+    CHECK(g.allPresses() == before + 1);
+    // Bad tuning: the defaults, false, and the tally still kept.
+    GiftTuning bad;
+    bad.healsPerFight = 21;
+    CHECK_FALSE(validGiftTuning(bad));
+    CHECK_FALSE(g.beginFight(bad, 200.0));
+    CHECK(g.tuning().healsPerFight == 2);
+    CHECK(g.allPresses() == before + 1);
+    // reset() still wipes everything.
+    CHECK(g.reset({}, 300.0));
+    CHECK(g.allPresses() == 0);
+}
+
+TEST_CASE("gifts: healsPerFight 0 gives no Heal; a load keeps the fight's Heal count cleared") {
+    GiftTuning none;
+    none.healsPerFight = 0;
+    GiftSlot g;
+    REQUIRE(g.reset(none, 0.0));
+    CHECK(g.healsLeft() == 0);
+    CHECK(g.press(kLeadA, 0.0).error == GiftError::NoneLeft);
+    GiftSlot h;
+    h.press(kLeadA, 0.0);
+    h.press(kLeadA, 8.0);
+    REQUIRE(h.healsLeft() == 0);
+    REQUIRE(h.load(h.save())); // a load is never mid-fight
+    CHECK(h.healsLeft() == 2);
+}
+
+TEST_CASE("gifts: pressing and the HUD reads allocate nothing") {
+    GiftSlot g;
+    const auto before = ftcore_test::allocStats().count;
+    for (int i = 0; i < 40; ++i) {
+        g.press(kLeadA, 0.5 * i);
+        (void)g.healsLeft();
+        (void)g.readyIn(Gift::Heal, 0.5 * i);
+        (void)g.readyIn(Gift::Guard, 0.5 * i);
+    }
+    CHECK(ftcore_test::allocStats().count - before == 0);
 }

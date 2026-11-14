@@ -2,6 +2,9 @@
 #include "ftcore/Chairs.h"
 #include "ftcore/CountLiftData.h"
 #include "ftcore/FightSession.h"
+#include "ftcore/GiftSlot.h"
+
+#include "TestAssets.h"
 
 #include <doctest/doctest.h>
 
@@ -664,6 +667,10 @@ TEST_CASE("lone carry: the session's stance starts Lone, refuses the table and e
     s.giftSlot().setState(SlotState::Hostile);
     CHECK_FALSE(s.giveGift(kLeadA).given);
     CHECK(s.lone());
+    // A press at no lead leaves it Lone.
+    s.giftSlot().setState(SlotState::Companion);
+    CHECK(s.giveGift(kThirdSlot).error == GiftError::BadTarget);
+    CHECK(s.lone());
     // Given: the gift lands, and the stance is over for the fight.
     s.giftSlot().setState(SlotState::Companion);
     const GiftResult g = s.giveGift(kLeadA);
@@ -694,6 +701,51 @@ TEST_CASE("lone carry: a Count gift refused while a count is live leaves it Lone
     CHECK(r.error == GiftError::CountRefused);
     CHECK(s.lone());
     CHECK_FALSE(s.loneEnded());
+    CHECK(s.loneEndedBy() == LoneEnd::None);
+}
+
+TEST_CASE("lone carry: every refused press leaves it Lone; only a gift received ends it") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    d.gift.healsPerFight = 0;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    const auto refused = [&](FighterId target, GiftError want) {
+        CAPTURE(static_cast<int>(want));
+        const GiftResult r = s.giveGift(target);
+        CHECK_FALSE(r.given);
+        CHECK(r.error == want);
+        CHECK(s.lone());
+        CHECK_FALSE(s.loneEnded());
+        CHECK(s.loneEndedBy() == LoneEnd::None);
+    };
+    s.giftSlot().setState(SlotState::Vacant);
+    refused(kLeadA, GiftError::Vacant);
+    s.giftSlot().setState(SlotState::Hostile);
+    refused(kLeadA, GiftError::Hostile);
+    s.giftSlot().setState(SlotState::Companion);
+    refused(kThirdSlot, GiftError::BadTarget);
+    REQUIRE(s.selectGift(Gift::Heal));
+    refused(kLeadA, GiftError::NoneLeft); // no heals this fight
+    // Cooling: the slot's own press (not through the session) puts the Guard on its cooldown.
+    REQUIRE(s.selectGift(Gift::Guard));
+    REQUIRE(s.giftSlot().press(kLeadB, s.now()).given);
+    refused(kLeadA, GiftError::Cooling);
+    REQUIRE(s.callCount(kLeadA) == CountError::None);
+    REQUIRE(s.selectGift(Gift::Count));
+    refused(kLeadA, GiftError::CountRefused);
+    // NoGift needs None selected, which the session never allows: the slot keeps the gift it had.
+    CHECK_FALSE(s.selectGift(Gift::None));
+    CHECK(s.giftSlot().selected() == Gift::Count);
+    CHECK(s.tick(0.1).loneCarryEndedBy == LoneEnd::None);
+    // A gift received ends it.
+    tickTo(s, 40.0);
+    REQUIRE(s.selectGift(Gift::Guard));
+    const GiftResult g = s.giveGift(kLeadA);
+    CHECK(g.given);
+    CHECK_FALSE(s.lone());
+    CHECK(s.loneEndedBy() == LoneEnd::Gift);
+    CHECK(s.tick(0.1).loneCarryEndedBy == LoneEnd::Gift);
 }
 
 TEST_CASE("lone carry: a refused stance is nobody Lone") {
@@ -767,6 +819,202 @@ TEST_CASE("lone carry: Releases pool while Lone, saturating; none after a gift e
     CHECK(s.lonePooled() == 0u);
 }
 
+TEST_CASE("lone carry: the bargain as data, and loneCarryBegan on the first tick only") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    const LoneBargain b = s.loneBargain();
+    CHECK(b.release == doctest::Approx(1.3f));
+    CHECK(b.loadGain == doctest::Approx(1.5f));
+    CHECK(b.loadCap == 100);
+    CHECK(b.damageTaken == doctest::Approx(1.15f));
+    CHECK(b.noCount);
+    CHECK(b.noTable);
+    CHECK(b.noTakeHalf);
+    CHECK(b.giftReceivedEnds);
+    // From the fight's tuning.
+    d.loneTuning.release = 1.6f;
+    d.loneTuning.cap = 80;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.loneBargain().release == doctest::Approx(1.6f));
+    CHECK(s.loneBargain().loadCap == 80);
+    const FightTick& t1 = s.tick(0.1);
+    CHECK(t1.loneCarryBegan);
+    CHECK(t1.loneCarryEndedBy == LoneEnd::None);
+    CHECK_FALSE(s.tick(0.1).loneCarryBegan);
+    // A second begin shows it again.
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.tick(0.1).loneCarryBegan);
+}
+
+TEST_CASE("lone carry: the pool's effect on the last boss, at the ruled hooks and the ceiling") {
+    const LonePoolTuning t;
+    CHECK(validLonePoolTuning(t));
+    LonePoolEffect e = lonePoolEffect(0u, t);
+    CHECK(e.totalPermille == 0);
+    CHECK(e.figures == 0);
+    CHECK(e.hpPermille == 0);
+    CHECK(e.ceilingPermille == 400);
+    e = lonePoolEffect(2000u, t);
+    CHECK(e.totalPermille == 200);
+    CHECK(e.figures == 1);
+    CHECK(e.hpPermille == 50);
+    CHECK(e.figurePermille == 150);
+    e = lonePoolEffect(6000u, t);
+    CHECK(e.totalPermille == 300);
+    CHECK(e.figures == 2);
+    CHECK(e.hpPermille == 0);
+    e = lonePoolEffect(4294967295u, t);
+    CHECK(e.totalPermille == 399); // under the ceiling, never on it
+    CHECK(e.figures == 2);
+    CHECK(e.hpPermille == 99);
+    // Out-of-range tuning gives the defaults' effect.
+    LonePoolTuning bad;
+    bad.maxBonus = 500;
+    CHECK_FALSE(validLonePoolTuning(bad));
+    CHECK(lonePoolEffect(2000u, bad).totalPermille == 200);
+    bad = LonePoolTuning{};
+    bad.halfPool = 0;
+    CHECK_FALSE(validLonePoolTuning(bad));
+    // No figures allowed: all of B goes on the boss's hp.
+    LonePoolTuning flat;
+    flat.maxFigures = 0;
+    e = lonePoolEffect(6000u, flat);
+    CHECK(e.figures == 0);
+    CHECK(e.hpPermille == 300);
+}
+
+TEST_CASE("lone carry: the roll grows from the first lone Release and carries through the save") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    LoneSave save;
+    LoneRoll r = s.loneRoll(save);
+    CHECK_FALSE(r.shown());
+    CHECK(r.pooled == 0u);
+    CHECK(r.effect.totalPermille == 0);
+    REQUIRE(s.poolRelease(kLeadA, 100));
+    r = s.loneRoll(save);
+    CHECK(r.shown());
+    CHECK(r.releases == 1u);
+    CHECK(r.pooled == 100u);
+    CHECK(r.effect.totalPermille == 19); // 400 x 100 / 2100
+    REQUIRE(s.poolRelease(kLeadA, 300));
+    r = s.loneRoll(save);
+    CHECK(r.releases == 2u);
+    CHECK(r.pooled == 400u);
+    CHECK(r.effect.totalPermille == 66); // 400 x 400 / 2400
+    CHECK(r.effect.ceilingPermille == 400);
+    // Not kept: nothing to fold.
+    CHECK_FALSE(s.foldLone(save));
+    // Kept: right before and after the fold, and until the next begin, the roll counts the fight once.
+    s.finish(true);
+    r = s.loneRoll(save);
+    CHECK(r.releases == 2u);
+    CHECK(r.pooled == 400u);
+    REQUIRE(s.foldLone(save));
+    CHECK(save.releases == 2u);
+    CHECK(save.pooled == 400u);
+    r = s.loneRoll(save);
+    CHECK(r.releases == 2u);
+    CHECK(r.pooled == 400u);
+    CHECK(r.effect.totalPermille == 66);
+    CHECK_FALSE(s.foldLone(save)); // once
+    CHECK(save.pooled == 400u);
+    CHECK(s.loneReleases() == 2u); // the fight's own still read
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.loneReleases() == 0u);
+    r = s.loneRoll(save);
+    CHECK(r.shown());
+    CHECK(r.releases == 2u);
+    CHECK(r.pooled == 400u);
+    REQUIRE(s.poolRelease(kLeadA, 1600));
+    r = s.loneRoll(save);
+    CHECK(r.releases == 3u);
+    CHECK(r.effect.totalPermille == 200);
+    CHECK(r.effect.figures == 1);
+    // A lost fight folds nothing.
+    s.finish(false);
+    CHECK_FALSE(s.foldLone(save));
+    CHECK(save.releases == 2u);
+    // The fold saturates.
+    LoneSave full;
+    full.releases = 4294967295u;
+    full.pooled = 4294967200u;
+    addLoneFight(full, 3u, 100u);
+    CHECK(full.releases == 4294967295u);
+    CHECK(full.pooled == 4294967295u);
+}
+
+TEST_CASE("lone carry: why it ended, once on the tick and at any time after") {
+    FightSessionDef d = liftDef();
+    d.loneLead = kLeadA;
+    FightSession s;
+    // A gift press.
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.tick(0.1);
+    CHECK(s.loneEndedBy() == LoneEnd::None);
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given);
+    CHECK(s.loneEndedBy() == LoneEnd::Gift);
+    CHECK(s.tick(0.1).loneCarryEndedBy == LoneEnd::Gift);
+    CHECK(s.tick(0.1).loneCarryEndedBy == LoneEnd::None);
+    CHECK(s.loneEndedBy() == LoneEnd::Gift);
+    CHECK_FALSE(s.endLone(LoneEnd::PartnerCalled)); // already over
+    s.finish(true);
+    CHECK(s.loneEndedBy() == LoneEnd::Gift);         // the fight's end keeps the first reason
+    // The partner called (the host's word).
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.loneEndedBy() == LoneEnd::None);
+    CHECK_FALSE(s.endLone(LoneEnd::None));
+    CHECK_FALSE(s.endLone(LoneEnd::Gift)); // giveGift's alone
+    CHECK(s.lone());
+    CHECK(s.endLone(LoneEnd::PartnerCalled));
+    CHECK_FALSE(s.lone());
+    CHECK(s.loneEnded());
+    const FightTick& t = s.tick(0.1);
+    CHECK(t.loneCarryBegan); // the begin's, still owed: both on one tick
+    CHECK(t.loneCarryEndedBy == LoneEnd::PartnerCalled);
+    CHECK(s.loneEndedBy() == LoneEnd::PartnerCalled);
+    CHECK_FALSE(s.poolRelease(kLeadA, 50));
+    // The fight's end, still Lone (read at once: the host may not tick again).
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.tick(0.1);
+    s.finish(false);
+    CHECK_FALSE(s.lone());
+    CHECK(s.loneEndedBy() == LoneEnd::FightEnded);
+    CHECK(s.tick(0.1).loneCarryEndedBy == LoneEnd::FightEnded);
+    // begin clears it.
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.loneEndedBy() == LoneEnd::None);
+    CHECK_FALSE(s.loneEnded());
+}
+
+TEST_CASE("lone carry: a lead not carrying alone sees none of it") {
+    FightSession s;
+    REQUIRE(s.begin(liftDef(), 0.0).ok());
+    CHECK_FALSE(s.lone());
+    for (int k = 0; k < 3; ++k) {
+        const FightTick& t = s.tick(0.1);
+        CHECK_FALSE(t.loneCarryBegan);
+        CHECK(t.loneCarryEndedBy == LoneEnd::None);
+    }
+    CHECK_FALSE(s.endLone(LoneEnd::PartnerCalled));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK_FALSE(s.poolRelease(kLeadA, 100));
+    const LoneRoll r = s.loneRoll(LoneSave{});
+    CHECK_FALSE(r.shown());
+    CHECK(r.pooled == 0u);
+    CHECK(r.effect.totalPermille == 0);
+    s.finish(true);
+    CHECK(s.loneEndedBy() == LoneEnd::None);
+    CHECK_FALSE(s.loneEnded());
+    CHECK(s.tick(0.1).loneCarryEndedBy == LoneEnd::None);
+}
+
 TEST_CASE("lone carry: forced when the third slot is Vacant or Hostile; the worst Lone blow fits the cap") {
     CHECK_FALSE(loneForced(SlotState::Companion));
     CHECK(loneForced(SlotState::Vacant));
@@ -798,6 +1046,54 @@ TEST_CASE("lone carry: lone_carry.json reads, keeps defaults for missing fields 
     CHECK(t.cap == 100); // refused: the defaults
 }
 
+TEST_CASE("lone carry: lone_pool.json is the defaults; the importer keeps defaults for missing fields and refuses bad ones") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/lone_pool.json", text));
+    LonePoolTuning t;
+    t.maxBonus = 7;
+    std::string err;
+    REQUIRE(importLonePool(text, t, &err));
+    const LonePoolTuning d;
+    CHECK(t.maxBonus == d.maxBonus);
+    CHECK(t.halfPool == d.halfPool);
+    CHECK(t.figurePermille == d.figurePermille);
+    CHECK(t.maxFigures == d.maxFigures);
+    CHECK(lonePoolEffect(2000u, t).totalPermille == 200);
+
+    REQUIRE(importLonePool(R"({"version":1,"maxBonus":300,"maxFigures":0})", t, &err));
+    CHECK(t.maxBonus == 300);
+    CHECK(t.maxFigures == 0);
+    CHECK(t.halfPool == d.halfPool);
+    REQUIRE(importLonePool(R"({"version":1,"maxBonus":0,"halfPool":1000000,"figurePermille":400,"maxFigures":2})", t,
+                           &err));
+    CHECK(t.halfPool == 1000000u);
+    CHECK(t.figurePermille == 400);
+    REQUIRE(importLonePool(R"({"version":1,"halfPool":1,"figurePermille":50})", t, &err));
+    CHECK(t.halfPool == 1u);
+
+    for (const char* bad : {
+             R"({"version":2})",
+             R"({})",
+             R"([])",
+             R"({"version":1,"extra":1})",
+             R"({"version":1,"maxBonus":-1})",
+             R"({"version":1,"maxBonus":401})",
+             R"({"version":1,"maxBonus":200.5})",
+             R"({"version":1,"halfPool":0})",
+             R"({"version":1,"halfPool":1000001})",
+             R"({"version":1,"figurePermille":49})",
+             R"({"version":1,"figurePermille":401})",
+             R"({"version":1,"maxFigures":3})",
+             R"({"version":1,"maxFigures":"2"})",
+         }) {
+        CAPTURE(bad);
+        t.maxBonus = 7;
+        CHECK_FALSE(importLonePool(bad, t, &err));
+        CHECK_FALSE(err.empty());
+        CHECK(t.maxBonus == d.maxBonus); // refused: the defaults
+    }
+}
+
 TEST_CASE("lone carry: a host can ask before begin whether the stance will be accepted") {
     CHECK(loneStanceAccepted(kLeadA, LoneTuning{}));
     CHECK(loneStanceAccepted(kLeadB, LoneTuning{}));
@@ -812,5 +1108,66 @@ TEST_CASE("lone carry: a host can ask before begin whether the stance will be ac
         FightSession s;
         s.begin(d, 0.0);
         CHECK(s.lone() == loneStanceAccepted(lead, d.loneTuning));
+    }
+}
+
+TEST_CASE("gifts: gifts.json is the defaults; the importer keeps defaults for missing fields and refuses bad ones") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/gifts.json", text));
+    GiftTuning t;
+    t.healsPerFight = 9;
+    std::string err;
+    REQUIRE(importGiftTuning(text, t, &err));
+    const GiftTuning d;
+    CHECK(t.cooldown == d.cooldown);
+    CHECK(t.healShare == d.healShare);
+    CHECK(t.healLoad == d.healLoad);
+    CHECK(t.healsPerFight == d.healsPerFight);
+    CHECK(t.guardScale == d.guardScale);
+    CHECK(t.guardSeconds == d.guardSeconds);
+
+    REQUIRE(importGiftTuning(R"({"version":1,"healsPerFight":3,"guardCooldown":10})", t, &err));
+    CHECK(t.healsPerFight == 3);
+    CHECK(t.cooldown[1] == 10.0);
+    CHECK(t.cooldown[0] == d.cooldown[0]);
+    CHECK(t.guardScale == d.guardScale);
+    REQUIRE(importGiftTuning(R"({"version":1,"healCooldown":60,"guardCooldown":0,"countCooldown":0,"healShare":1,
+        "healLoad":0,"healsPerFight":20,"guardScale":0,"guardSeconds":10})", t, &err));
+    CHECK(t.cooldown[0] == 60.0);
+    CHECK(t.healShare == 1.f);
+    CHECK(t.healsPerFight == 20);
+    CHECK(t.guardScale == 0.f);
+    CHECK(t.guardSeconds == 10.0);
+
+    for (const char* bad : {
+             R"({"version":2})",
+             R"({})",
+             R"([])",
+             R"({"version":1,"extra":1})",
+             R"({"version":1,"healCooldown":-1})",
+             R"({"version":1,"healCooldown":61})",
+             R"({"version":1,"guardCooldown":-1})",
+             R"({"version":1,"guardCooldown":61})",
+             R"({"version":1,"countCooldown":-1})",
+             R"({"version":1,"countCooldown":61})",
+             R"({"version":1,"healShare":-0.1})",
+             R"({"version":1,"healShare":1.1})",
+             R"({"version":1,"healLoad":-1})",
+             R"({"version":1,"healLoad":101})",
+             R"({"version":1,"healLoad":2.5})",
+             R"({"version":1,"healsPerFight":-1})",
+             R"({"version":1,"healsPerFight":21})",
+             R"({"version":1,"healsPerFight":1.5})",
+             R"({"version":1,"guardScale":-0.1})",
+             R"({"version":1,"guardScale":1.1})",
+             R"({"version":1,"guardSeconds":-1})",
+             R"({"version":1,"guardSeconds":11})",
+             R"({"version":1,"guardSeconds":"x"})",
+         }) {
+        CAPTURE(bad);
+        t.healsPerFight = 9;
+        CHECK_FALSE(importGiftTuning(bad, t, &err));
+        CHECK_FALSE(err.empty());
+        CHECK(t.healsPerFight == d.healsPerFight); // refused: the defaults
     }
 }
