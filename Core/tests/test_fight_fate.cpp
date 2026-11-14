@@ -1059,3 +1059,150 @@ TEST_CASE("fight fate: a gift at a lead who is down is refused Down: no charge, 
     CHECK_FALSE(s.down(kLeadA));
     CHECK(s.tick(kFrame).leadsRose == kBitA);
 }
+
+TEST_CASE("fight fate: a start checkpoint is never taken in a defeat; a fall before it is settled into it") {
+    // Both leads at 0 before the first tick: a defeat, and no start checkpoint.
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.defeated);
+    CHECK(t.checkpoints == 0);
+    CHECK(s.checkpoint(CheckpointAt::FightStart).at == CheckpointAt::None);
+    CHECK(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::None);
+    // The retry is a begin again: both stand, the start checkpoint is taken on the next tick, and the fight can
+    // be lost again.
+    CHECK(s.retry().at == CheckpointAt::None);
+    CHECK_FALSE(s.defeated());
+    CHECK_FALSE(s.down(kLeadA));
+    CHECK_FALSE(s.down(kLeadB));
+    CHECK(s.tick(kFrame).checkpoint == CheckpointAt::FightStart);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    CHECK(s.tick(kFrame).defeated);
+    // The same through setHostCheckpoint before any tick: none taken.
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    CHECK(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::None);
+    CHECK(s.defeated());
+    CHECK(s.checkpoint(CheckpointAt::FightStart).at == CheckpointAt::None);
+    // One lead fed 0, then setHostCheckpoint before the first tick: the checkpoint holds the settled fall and
+    // takeover, the tick reports them once, and a retry comes back to that state with nothing to report.
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(s.setActiveLead(kLeadA));
+    s.setLeadHealth(kLeadA, 0.f);
+    REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+    CHECK(s.checkpoint().down[kLeadA]);
+    CHECK_FALSE(s.checkpoint().down[kLeadB]);
+    CHECK(s.checkpoint().activeLead == kLeadB);
+    CHECK(s.activeLead() == kLeadB);
+    const FightTick& u = s.tick(kFrame);
+    CHECK(u.leadsFell == kBitA);
+    CHECK(u.tookOver == kLeadB);
+    CHECK_FALSE(u.defeated);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(kFrame).defeated);
+    const FightCheckpoint& cp = s.retry();
+    REQUIRE(cp.at == CheckpointAt::FightStart);
+    CHECK(s.down(kLeadA));
+    CHECK_FALSE(s.down(kLeadB));
+    CHECK(s.activeLead() == kLeadB);
+    const FightTick& v = s.tick(kFrame);
+    CHECK(v.leadsFell == 0);
+    CHECK(v.tookOver == kNoFighter);
+    CHECK_FALSE(v.defeated);
+}
+
+TEST_CASE("fight fate: the third slot: a Vacant or Hostile one gives no gift, refused with its own reason, and the checkpoint holds it") {
+    for (const SlotState st : {SlotState::Companion, SlotState::Vacant, SlotState::Hostile}) {
+        CAPTURE(static_cast<int>(st));
+        FightSessionDef d;
+        d.thirdSlot = st;
+        d.loneLead = kLeadA;
+        d.inFight = {true, false};
+        FightSession s;
+        REQUIRE(s.begin(d, 0.0).ok());
+        CHECK(s.thirdSlot() == st);
+        const GiftError want = st == SlotState::Vacant ? GiftError::Vacant : st == SlotState::Hostile ? GiftError::Hostile : GiftError::None;
+        CHECK(s.thirdSlotRefusal() == want);
+        s.tick(kFrame);
+        REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+        const std::uint64_t given = s.giftSlot().tally().givenOf(Gift::Heal);
+        const int heals = s.giftHealsLeft();
+        REQUIRE(s.selectGift(Gift::Heal));
+        s.setLeadHealth(kLeadA, 0.5f);
+        const GiftResult r = s.giveGift(kLeadA);
+        if (st == SlotState::Companion) {
+            CHECK(r.given);
+            CHECK_FALSE(s.lone()); // a gift given ends the Lone Carry
+            continue;
+        }
+        CHECK_FALSE(r.given);
+        CHECK(r.error == want);
+        CHECK(s.giftHealsLeft() == heals);                       // no charge
+        CHECK(s.giftHealReadyIn() == 0.0);                       // no cooldown
+        CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == given); // no gift tally
+        CHECK(s.lone());                                         // the Lone Carry stays
+        // At a down lead the slot still answers first.
+        s.setLeadHealth(kLeadA, 0.f);
+        CHECK(s.giveGift(kLeadA).error == want);
+        // The state is in the hash, and the checkpoint brings it back.
+        const std::uint64_t h = s.stateHash();
+        s.giftSlot().setState(SlotState::Companion);
+        CHECK(s.stateHash() != h);
+        REQUIRE(s.tick(kFrame).defeated);
+        s.retry();
+        CHECK(s.thirdSlot() == st);
+    }
+    // A host that sets the state after begin (as before) still holds over the def, and the start checkpoint keeps it.
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.giftSlot().setState(SlotState::Vacant);
+    s.tick(kFrame);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(kFrame).defeated);
+    s.retry();
+    CHECK(s.thirdSlot() == SlotState::Vacant);
+    // An out-of-range def value is a Companion.
+    FightSessionDef bad;
+    bad.thirdSlot = static_cast<SlotState>(9);
+    REQUIRE(s.begin(bad, 0.0).ok());
+    CHECK(s.thirdSlot() == SlotState::Companion);
+}
+
+TEST_CASE("fight fate: stateHash moves with each play field the host can change alone") {
+    FightSessionDef d;
+    d.lift = true;
+    d.keptLead = kLeadA;
+    const auto fresh = [&](FightSession& s) {
+        REQUIRE(s.begin(d, 0.0).ok());
+        s.tick(kFrame);
+    };
+    FightSession base;
+    fresh(base);
+    const std::uint64_t h0 = base.stateHash();
+    using Edit = void (*)(FightSession&);
+    const Edit edits[] = {
+        [](FightSession& s) { s.tick(kFrame); },                         // the clock
+        [](FightSession& s) { s.setLoad(kLeadA, 3); },                    // the kept gauge
+        [](FightSession& s) { s.setLeadHealth(kLeadB, 0.5f); },           // a lead's health
+        [](FightSession& s) { s.setLeadHealth(kLeadB, 0.f); },            // a fall, marked (the step still open)
+        [](FightSession& s) { REQUIRE(s.setActiveLead(kLeadB)); },        // control
+        [](FightSession& s) { s.giftSlot().setState(SlotState::Hostile); }, // the third slot
+        [](FightSession& s) { REQUIRE(s.selectGift(Gift::Guard)); },      // the gift chosen
+        [](FightSession& s) { REQUIRE(s.checkpointPhase(1)); },           // a checkpoint taken
+        [](FightSession& s) { REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) != CheckpointAt::None); }, // written
+    };
+    int i = 0;
+    for (const Edit e : edits) {
+        CAPTURE(i++);
+        FightSession s;
+        fresh(s);
+        REQUIRE(s.stateHash() == h0); // the same set-up hashes the same
+        e(s);
+        CHECK(s.stateHash() != h0);
+    }
+}

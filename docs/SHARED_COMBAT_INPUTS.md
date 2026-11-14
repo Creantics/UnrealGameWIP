@@ -344,6 +344,15 @@ the pieces.
   falls or stands until `retry` or `begin`. Each fall and rise is reported once, on the next tick
   (`leadsFell`, `leadsRose`, one bit per lead). A down lead stands only by time (the rise) or at a
   retry.
+* **The third slot.** `def.thirdSlot` (Companion, Vacant or Hostile; Companion by default) is set on
+  the slot at `begin` and at each retry, before the checkpoint's own state goes back (the checkpoint and
+  `stateHash()` hold it; a host that sets `giftSlot().setState` after `begin` still wins). A Vacant or
+  Hostile slot gives no gift: a press is refused `Vacant` or `Hostile` before any other check, `Down`
+  included, with no charge, cooldown or gift tally (only the slot's own Vacant or Hostile press count),
+  and the Lone Carry stays. `thirdSlot()` and `thirdSlotRefusal()` let the HUD read the state and the
+  reason.
+* **A start checkpoint is never a defeat.** The step closes before the start checkpoint is taken; if
+  that is a defeat (every lead fed 0 before it), none is taken and a retry is a begin again.
 * **A lead that cannot fall.** `def.cannotFall` (per fight, per lead; false by default) marks a lead
   who cannot go below 1 hp in that fight. The host works out its hp with `blowOnLead(lead, hp,
   damage, maxHp)`, which returns hp − damage but at least 1 for a marked lead, and feeds

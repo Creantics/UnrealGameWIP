@@ -176,6 +176,9 @@ struct FightSessionDef {
     std::array<bool, 2> inFight{true, true};
     // The leads that cannot fall in this fight, by lead: a blow leaves them at 1 hp and raises tick.heldUp.
     std::array<bool, 2> cannotFall{false, false};
+    // The third slot as the fight begins (and at each retry, before the checkpoint's own state goes back):
+    // Companion gives gifts; Vacant or Hostile gives none (a press is refused Vacant or Hostile).
+    SlotState thirdSlot = SlotState::Companion;
 };
 
 inline bool validKeptGauge(const FightSessionDef& d) {
@@ -464,6 +467,7 @@ private:
         if (!won_) gift_.restoreFightStart();
         won_ = false;
         c.gift = gift_.beginFight(def_.gift, now_);
+        gift_.setState(def_.thirdSlot <= SlotState::Hostile ? def_.thirdSlot : SlotState::Companion);
         for (PlaceTable& p : places_) {
             if (!p.reset(def_.seats, def_.places)) {
                 c.places = false;
@@ -726,7 +730,9 @@ public:
     float leadHealth(FighterId lead) const { return isLead(lead) ? leadHealth_[lead] : kHealthUnknown; }
     GiftResult giveGift(FighterId target) {
         lastStory_ = SetResult::Unchanged;
-        if (down(target) && inFight_[target]) { // a gift never stands a lead up: no press anywhere
+        // A slot with no giver (Vacant, Hostile) answers first: the slot refuses it (its own reason, its own
+        // press counter); no charge, cooldown or gift tally, and the Lone Carry stays.
+        if (gift_.state() == SlotState::Companion && down(target) && inFight_[target]) { // a gift never stands a lead up
             GiftResult refused;
             refused.gift = gift_.selected();
             refused.target = target;
@@ -900,6 +906,14 @@ public:
     double giftGuardReadyIn() const { return gift_.readyIn(Gift::Guard, now_); }
     const GiftSlot& giftSlot() const { return gift_; }
     GiftSlot& giftSlot() { return gift_; } // setState, save and load
+    // The third slot's state now (def.thirdSlot at begin; a checkpoint holds it), and the reason any gift press
+    // is refused while it holds (Vacant or Hostile; None for a Companion): for the HUD.
+    SlotState thirdSlot() const { return gift_.state(); }
+    GiftError thirdSlotRefusal() const {
+        return gift_.state() == SlotState::Vacant    ? GiftError::Vacant
+               : gift_.state() == SlotState::Hostile ? GiftError::Hostile
+                                                     : GiftError::None;
+    }
     // A fighter's places (kLeadA's for an id that is not a fighter). The mutable one is for loads: call recheckTable after.
     const PlaceTable& places(FighterId who) const { return places_[isFighter(who) ? who : 0]; }
     PlaceTable& places(FighterId who) { return places_[isFighter(who) ? who : 0]; }
@@ -1055,8 +1069,12 @@ private:
             tookOverDue_ = activeLead_;
         }
     }
+    // A start checkpoint is never taken in a state that is already a defeat: the step closes first, and on a
+    // defeat none is taken (a retry is then a begin again at the fight's start).
     void takeStartIfDue() {
         if (!startDue_) return;
+        settle();
+        if (defeated_) return;
         startDue_ = false;
         takeCheckpoint(startCp_, CheckpointAt::FightStart, 0);
     }

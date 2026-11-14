@@ -1555,3 +1555,85 @@ TEST_CASE("partner brain: a guard cuts a string on a staggered target: the blow 
     CHECK(h.overlaps == 0);
     CHECK(worstExcess(mine, lead, 1200) <= 1e-3);
 }
+
+TEST_CASE("partner brain: every field of its save moves the hash: a change to any one of them is seen") {
+    PartnerBrain b;
+    REQUIRE(b.begin(PartnerTuning{}, 7));
+    const PartnerBrainSave base = b.save();
+    using Edit = void (*)(PartnerBrainSave&);
+    const Edit edits[] = {
+        [](PartnerBrainSave& s) { s.t.leashMeters += 1.f; },
+        [](PartnerBrainSave& s) { s.t.returnMeters += 1.f; },
+        [](PartnerBrainSave& s) { s.t.reachMeters += 1.f; },
+        [](PartnerBrainSave& s) { s.t.standoffMeters += 1.f; },
+        [](PartnerBrainSave& s) { s.t.blowsMin += 1; },
+        [](PartnerBrainSave& s) { s.t.blowsMax += 1; },
+        [](PartnerBrainSave& s) { s.t.blowSeconds += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.pauseMin += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.pauseMax += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.guardWarning += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.guardChance -= 0.1f; },
+        [](PartnerBrainSave& s) { s.t.guardHold += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.downSeconds += 1.f; },
+        [](PartnerBrainSave& s) { s.t.riseHealth += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.blowCapShare += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.overScale += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.budgetWindowSeconds += 1.f; },
+        [](PartnerBrainSave& s) { s.t.budgetShare -= 0.1f; },
+        [](PartnerBrainSave& s) { s.t.budgetAllowanceSeconds += 1.f; },
+        [](PartnerBrainSave& s) { s.rhythm += 1; },
+        [](PartnerBrainSave& s) { s.defence += 1; },
+        [](PartnerBrainSave& s) { s.rhythmDraws += 1; },
+        [](PartnerBrainSave& s) { s.defenceDraws += 1; },
+        [](PartnerBrainSave& s) { s.phase = PartnerBrainSave::Phase::Pause; },
+        [](PartnerBrainSave& s) { s.target += 2; },
+        [](PartnerBrainSave& s) { s.blows += 1; },
+        [](PartnerBrainSave& s) { s.pause += 1.0; },
+        [](PartnerBrainSave& s) { s.clock += 1.0; },
+        [](PartnerBrainSave& s) { s.returning = !s.returning; },
+        [](PartnerBrainSave& s) { s.drawn = !s.drawn; },
+        [](PartnerBrainSave& s) { s.lengths[kMaxPartnerBlows - 1] += 0.5; },
+        [](PartnerBrainSave& s) { s.begunBlows += 1; },
+        [](PartnerBrainSave& s) { s.committedEnd += 0.5; },
+        [](PartnerBrainSave& s) { s.spentPartner[PartnerBrainSave::kSlots - 1] += 0.05f; },
+        [](PartnerBrainSave& s) { s.spentLead[3] += 0.05f; },
+        [](PartnerBrainSave& s) { s.slot += 1; },
+        [](PartnerBrainSave& s) { s.now += 1.0; },
+        [](PartnerBrainSave& s) { s.down = !s.down; },
+        [](PartnerBrainSave& s) { s.downFor += 1.0; },
+        [](PartnerBrainSave& s) { s.watch[kMaxPartnerEnemies - 1].winding = true; },
+        [](PartnerBrainSave& s) { s.watch[0].left += 0.5f; },
+        [](PartnerBrainSave& s) { s.watch[1].guard = true; },
+        [](PartnerBrainSave& s) { s.watch[2].hold += 0.5; },
+        [](PartnerBrainSave& s) { s.out.act = PartnerAct::Attack; },
+        [](PartnerBrainSave& s) { s.out.why = PartnerWhy::Committed; },
+        [](PartnerBrainSave& s) { s.out.point.x += 1.f; },
+        [](PartnerBrainSave& s) { s.out.point.y += 1.f; },
+        [](PartnerBrainSave& s) { s.out.enemy += 2; },
+        [](PartnerBrainSave& s) { s.out.blows += 1; },
+        [](PartnerBrainSave& s) { s.out.newString = !s.out.newString; },
+        [](PartnerBrainSave& s) { s.out.blowStart = !s.out.blowStart; },
+        [](PartnerBrainSave& s) { s.out.blowIndex += 2; },
+        [](PartnerBrainSave& s) { s.out.partnerBlow = !s.out.partnerBlow; },
+        [](PartnerBrainSave& s) { s.out.breakValue += 1.f; },
+        [](PartnerBrainSave& s) { s.out.extendsStagger = !s.out.extendsStagger; },
+        [](PartnerBrainSave& s) { s.out.punish = !s.out.punish; },
+        [](PartnerBrainSave& s) { s.out.rise = !s.out.rise; },
+        [](PartnerBrainSave& s) { s.out.riseHealth += 0.25f; },
+        [](PartnerBrainSave& s) { s.begun = !s.begun; },
+    };
+    int i = 0;
+    for (const Edit e : edits) {
+        CAPTURE(i++);
+        PartnerBrainSave s = base;
+        e(s);
+        CHECK(s.hash() != base.hash());
+        PartnerBrain c;
+        c.load(s);
+        CHECK(c.hash() == s.hash());
+    }
+    // -0 and +0 are one state.
+    PartnerBrainSave z = base;
+    z.now = -0.0;
+    CHECK(z.hash() == base.hash());
+}

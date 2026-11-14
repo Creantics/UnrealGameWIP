@@ -1129,14 +1129,22 @@ TEST_CASE("fight session: a gift refused Down at a lead is no press in the story
 TEST_CASE("fight session: a defeat costs only the attempt: currency, Load, gift tally and story counters come back, and nothing else moved") {
     FactRegistry reg;
     std::string err;
-    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    // The press registry with a retry counter bound, so the retry's +1 shows.
+    const std::string csv = std::string(kPressCsv) + "6,w_retry,CTR,65535,0,-,any,-,-,-,-\n";
+    std::string json(kPressJson);
+    json.replace(json.find("\"roles\": {"), 10, "\"roles\": {\n    \"retries\": \"w_retry\",");
+    REQUIRE_MESSAGE(importStoryRegistry(csv, json, reg, &err), err);
     StoryState story;
     storyReset(story);
     REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
     std::uint8_t a0 = 0xFF;
     for (std::uint8_t w = 0; w < kWideSlots; ++w)
         if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    std::uint8_t retries = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_retry")) retries = w;
     REQUIRE(a0 != 0xFF);
+    REQUIRE(retries != 0xFF);
     FightSessionDef d;
     d.gift = freeGifts();
     d.gift.guardSeconds = 0.0;
@@ -1206,9 +1214,25 @@ TEST_CASE("fight session: a defeat costs only the attempt: currency, Load, gift 
     CHECK(s.giftSlot().allPresses() == tallyAt);
     CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
     CHECK(storyWide(story, a0) == 1);
+    // The whole story state as it was, but the retry counter (exactly +1) and the event ring (the rollback's
+    // event, which the host's log reads).
     CHECK(story.facts == storyAt.facts);
-    CHECK(story.wide == storyAt.wide);
+    CHECK(story.factsEntry == storyAt.factsEntry);
+    CHECK(story.stamp == storyAt.stamp);
+    CHECK(story.stampEntry == storyAt.stampEntry);
+    CHECK(story.wideEntry == storyAt.wideEntry);
+    CHECK(story.extension == storyAt.extension);
+    CHECK(story.extensionLength == storyAt.extensionLength);
+    CHECK(story.extensionRaw == storyAt.extensionRaw);
     CHECK(story.openScene == storyAt.openScene);
+    CHECK(story.lastCommitted == storyAt.lastCommitted);
+    CHECK(story.flags == storyAt.flags);
+    CHECK(story.saveSerial == storyAt.saveSerial);
+    CHECK(story.registryHash == storyAt.registryHash);
+    for (std::uint8_t w = 0; w < kWideSlots; ++w) {
+        CAPTURE(static_cast<int>(w));
+        CHECK(story.wide[w] == storyAt.wide[w] + (w == retries ? 1u : 0u));
+    }
     // Nothing of the session differs from before the fight: every play field hashes the same.
     CHECK(s.stateHash() == hashAt);
 }
