@@ -92,6 +92,9 @@ const FScalarSpec kScalars[] = {
 	{TEXT("WornRelief"), 0.3f},       // grain relief x this in a fully rubbed patch
 	{TEXT("WornSmooth"), 0.15f},      // roughness taken off in a fully rubbed patch
 	{TEXT("WornLighten"), 0.3f},      // albedo x (1 + WornLighten) in a fully rubbed patch
+	{TEXT("WornCap"), 1.f},           // with WornColor on: a patch's brightness relative to WornColor, at most this
+	{TEXT("Desaturate"), 0.f},        // albedo pulled to grey by this share (a bake's colour cast); 0 = off
+	{TEXT("FadeRoughPay"), 0.f},      // roughness added where scale A has faded out (pays back its micro-shadowing)
 	{TEXT("TapeMask"), 0.f},          // share of (1 - wear map A), the zip tape: matt woven band, no grain, never metal
 	{TEXT("TapeRoughness"), 0.7f},
 	{TEXT("TapeWeave"), 0.15f},       // normal tilt of the tape's fine basket weave (0.5 mm), gone once a pixel spans it
@@ -139,6 +142,7 @@ const FVectorSpec kVectors[] = {
 	{TEXT("SoleTint"), FLinearColor::White},  // albedo x SoleTint on the sole
 	{TEXT("SiltColor"), FLinearColor(0.085f, 0.08f, 0.062f)}, // silt film: a grey-green-brown dulling, not a paint
 	{TEXT("TideTint"), FLinearColor(0.55f, 0.45f, 0.33f)}, // tide line multiplies the cloth: darker and browner on any colour
+	{TEXT("WornColor"), FLinearColor(0.f, 0.f, 0.f, 0.f)}, // a rubbed patch's colour (linear albedo); black = off
 };
 
 struct FValue
@@ -185,7 +189,7 @@ TArray<FSubstance> Substances()
 			{TEXT("CreaseSize"), ftcore::garmentTileCentimetres(GarmentTile::Crease)}, {TEXT("CreaseStrength"), 0.35f},
 			{TEXT("CreaseFadeNear"), 150.f}, {TEXT("CreaseFadeFar"), 300.f}, {TEXT("CreaseCavity"), 0.5f},
 			{TEXT("StretchSleeveX"), 22.f}, {TEXT("ArmAngle"), 55.f}, {TEXT("ArmForward"), 38.f}, {TEXT("IslandFrame"), 1.f},
-			{TEXT("IslandYSign"), 1.f},
+			{TEXT("IslandYSign"), 1.f}, {TEXT("FadeRoughPay"), 0.12f}, {TEXT("WornRelief"), 0.33f}, {TEXT("WornLighten"), 0.05f},
 			{TEXT("DiffuseResponse"), 1.06f}, {TEXT("SkyFill"), 0.7f}, {TEXT("SiltLiftMax"), 1.15f}, {TEXT("SiltFilmRoughness"), 0.25f}},
 		FLinearColor::White, FLinearColor::White});
 	// Woven trousers: cloth shading, matte; the twill only shows within about a metre.
@@ -382,7 +386,7 @@ if (ToeCreaseStrength > 0.0 && island)
 		float dwob = 0.245 * cos(P.x * 0.7 + phase) + 0.285 * cos(P.x * 1.9 + phase * 1.7);
 		float sk = ToeBreakY + (kk - 0.5 * (cnt - 1.0)) * ToeCreaseSpacing + wob;
 		float wid = ToeCreaseWidth * (1.0 + 0.3 * sin(P.x * 1.3 + phase * 0.6));
-		float d = (P.y - sk) / wid;
+		float d = (abs(P.y) - sk) / wid; // abs: the toe lies at +Y or -Y depending on the import's handedness
 		float t2 = d * d;
 		if (t2 >= 1.0)
 			continue;
@@ -390,7 +394,7 @@ if (ToeCreaseStrength > 0.0 && island)
 		float len = smoothstep(0.0, 0.4, 0.5 + 0.5 * sin(P.x * 0.45 + phase * 2.3)); // breaks along its length
 		float h = -(1.0 - t2) * (1.0 - t2) * depthK * len;
 		float dhn = 4.0 * d * (1.0 - t2) * depthK * len; // dh/dd
-		tg -= dhn * float3(-dwob, 1.0, 0.0);
+		tg -= dhn * float3(-dwob, P.y < 0.0 ? -1.0 : 1.0, 0.0); // d(abs y)/dy = sign(y); x is unchanged
 		tc += h;
 	}
 	tg -= n * dot(tg, n);
@@ -508,6 +512,7 @@ const TCHAR* const kMetalCodeLit =
 const TCHAR* const kColorCode = TEXT(R"HLSL(float3 b = Base * Tint.rgb;
 float3 c = b * Gain / (1.0 + b * (Gain - 1.0));
 c = pow(max(c, 1e-5), DiffResp);
+c = lerp(c, dot(c, float3(0.3333, 0.3333, 0.3334)).xxx, Desaturate); // a bake's colour cast taken out (0 by default)
 float edge = saturate((Wear.r - 0.5) * 2.0);
 // Rubbed, not outlined: the edge wear comes and goes along an edge (a smooth noise of about 8 cm in pre-skinned space).
 float3 q = P * 0.8;
@@ -515,7 +520,13 @@ float rub = sin(q.x + 1.7 * sin(q.y * 0.6)) * sin(q.y * 0.9 + 1.3 * sin(q.z * 0.
 edge *= saturate(0.35 + 1.6 * rub);
 c *= 1.0 + EdgeLighten * edge;
 c *= 1.0 - CreaseDarken * saturate((0.5 - Wear.r) * 2.0); // wear-map creases a little darker (0 by default)
-c *= 1.0 + WornLighten * saturate(Wear.b * WornMask); // rubbed patches a little lighter (WornMask 0 by default)
+// Rubbed patches (WornMask 0 by default) a little lighter. With WornColor set (not black) a patch takes the panel's own
+// colour instead of the bake's: WornColor x the bake's brightness relative to it, capped at WornCap, then the lift; so a
+// patch where the bake is lighter or bluer stays the same leather.
+float worn = saturate(Wear.b * WornMask);
+float lumW = max(dot(WornColor.rgb, float3(0.3333, 0.3333, 0.3334)), 1e-5);
+float rel = min(dot(c, float3(0.3333, 0.3333, 0.3334)) / lumW, WornCap);
+c = lumW > 1e-4 ? lerp(c, WornColor.rgb * rel * (1.0 + WornLighten), worn) : c * (1.0 + WornLighten * worn);
 c *= lerp(1.0, D.z, CavityDarken);
 c *= lerp(1.0, SoleTint.rgb, Sole);
 c *= lerp(1.0, WetDarken, Wet.x);
@@ -532,6 +543,9 @@ float r = ORM.g * RoughScale + RoughOffset;
 r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
 r += crease * CreaseRough - edge * EdgeSmooth;
 r += M.z; // centimetre mottle (0 unless MottleRoughness is set)
+// As scale A's pits fade out with distance their micro-shadowing goes too: paid back as roughness (0 by default), so far
+// away the surface keeps a broad satin sheen instead of one smooth highlight.
+r += FadeRoughPay * (1.0 - saturate((FadeFarA - Depth) / max(FadeFarA - FadeNearA, 1.0)));
 r -= saturate(Wear.b * WornMask) * WornSmooth; // rubbed patches smoother (WornMask 0 by default)
 r = RoughFloor > 0.0 ? lerp(r, max(r, RoughFloor), 1.0 - Metal) : r; // worn edges never polished past the floor; not on metal
 r = lerp(r, TapeRough + D.w * MicroRough, T.z * (1.0 - Metal)); // the zip tape: a matt woven band
@@ -906,7 +920,9 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0},
 			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}, {TEXT("SiltLiftMax"), G.Scalar(TEXT("SiltLiftMax")), 0},
 			{TEXT("CreaseDarken"), G.Scalar(TEXT("CreaseDarken")), 0}, {TEXT("WornMask"), G.Scalar(TEXT("WornMask")), 0},
-			{TEXT("WornLighten"), G.Scalar(TEXT("WornLighten")), 0}},
+			{TEXT("WornLighten"), G.Scalar(TEXT("WornLighten")), 0}, {TEXT("WornCap"), G.Scalar(TEXT("WornCap")), 0},
+			{TEXT("WornColor"), G.Vector(TEXT("WornColor")), 0},
+			{TEXT("Desaturate"), G.Scalar(TEXT("Desaturate")), 0}},
 		-900);
 	UMaterialExpressionCustom* Mottle = Custom(Material, TEXT("GarmentMottle"), CMOT_Float3, *MottleCode,
 		{{TEXT("P"), Position, 0}, {TEXT("Depth"), Depth, 0}, {TEXT("Metal"), Metal, 0}, {TEXT("Size"), G.Scalar(TEXT("MottleSize")), 0},
@@ -928,6 +944,8 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0},
 			{TEXT("RoughFloor"), G.Scalar(TEXT("RoughnessFloor")), 0}, {TEXT("WornMask"), G.Scalar(TEXT("WornMask")), 0},
 			{TEXT("WornSmooth"), G.Scalar(TEXT("WornSmooth")), 0}, {TEXT("TapeRough"), G.Scalar(TEXT("TapeRoughness")), 0},
+			{TEXT("Depth"), Depth, 0}, {TEXT("FadeNearA"), G.Scalar(TEXT("FadeNearA")), 0}, {TEXT("FadeFarA"), G.Scalar(TEXT("FadeFarA")), 0},
+			{TEXT("FadeRoughPay"), G.Scalar(TEXT("FadeRoughPay")), 0},
 			{TEXT("T"), bCloth ? static_cast<UMaterialExpression*>(Detail) : Tape, 0}},
 		0);
 	UMaterialExpressionCustom* Specular = Custom(Material, TEXT("GarmentSpecular"), CMOT_Float1, kSpecularCode,
