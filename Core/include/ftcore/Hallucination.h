@@ -36,6 +36,9 @@
 //   own refusal press completes on a step, Refused wins, even if the hold would fill on that step too (a tie is
 //   Refused's); Held wins only when the hold fills on an earlier step, or by a push at that step's start. Once Held
 //   wins, a press of the lead's under way is spent: a new press is needed (the pull and Proxy apply as usual).
+//   Against the old behaviour: a press begun after 3.5 s of hold and kept down now leaves the lead Held until a
+//   new press, the pull or Proxy (it used to complete as a refusal of the held lead).
+//   Both lengths count complete within 1e-4 s, so the outcome does not depend on the step size.
 // * The price: refusing pays in exposure, so the hold must be let build first. The lead's own refusal that closes an
 //   offer before Held, with h seconds of real hold built in it (counted to the closing instant; an Escrow wait is
 //   not hold), opens the boss's weak point for refuseOpenBase + refuseOpenPerSecond x (min(h, refuseOpenHoldCap) -
@@ -301,11 +304,11 @@ private:
             if (hold_ == 0.f) emit(HallucinationEventType::HoldBegan);
             hold_ = std::min(1.f, hold_ + push / tuning_.holdSeconds);
             built_ = std::min(tuning_.holdSeconds, built_ + push);
-            if (hold_ >= 1.f) becomeHeld(); // Held at the step's start: before any press completes in it
+            if (holdFull()) becomeHeld(); // Held at the step's start: before any press completes in it
         }
         if (refuseCounts_ && refusal_.holding()) {
             refuseHeld_ += static_cast<float>(dt);
-            if (refuseHeld_ >= tuning_.refuseSeconds) {
+            if (refuseHeld_ + kStepSlack >= tuning_.refuseSeconds) {
                 // The press completes on this step: Refused, even when the hold would fill on it too (a tie is
                 // Refused's). Held wins only from an earlier step, or from a push at this step's start (above).
                 refusal_.offerEnded();
@@ -342,7 +345,7 @@ private:
                 if (hold_ == 0.f) emit(HallucinationEventType::HoldBegan);
                 hold_ = std::min(1.f, hold_ + build / tuning_.holdSeconds);
                 built_ = std::min(tuning_.holdSeconds, built_ + build);
-                if (hold_ >= 1.f) {
+                if (holdFull()) {
                     becomeHeld();
                     return;
                 }
@@ -369,13 +372,17 @@ private:
         if (heldFor_ < tuning_.proxyReactSeconds) return false;
         // This step's share from the instant the press could start: the react time's crossing, or the step's start.
         proxyPress_ += std::min(static_cast<float>(dt), heldFor_ - tuning_.proxyReactSeconds);
-        if (proxyPress_ < tuning_.refuseSeconds) return false;
+        if (proxyPress_ + kStepSlack < tuning_.refuseSeconds) return false;
         proxyDone_ = true;
         refusal_.offerEnded();
         cooldown_ = refusalCooldownFor(in.brief);
         end(HallucinationEventType::Refused);
         return true;
     }
+    // Float rounding only: a press or a hold summed from steps (1/30 s, say) may land a hair short of its length;
+    // within kStepSlack it is complete, so an exact tie stays a tie at any step size.
+    static constexpr float kStepSlack = 1e-4f;
+    bool holdFull() const { return hold_ >= 1.f || built_ + kStepSlack >= tuning_.holdSeconds; }
     void becomeHeld() {
         // A press of the lead's own under way is spent: a new press is needed to refuse the held lead.
         refuseCounts_ = false;
