@@ -75,6 +75,13 @@ const LookTable::RenderTier* LookTable::findTier(std::string_view name) const {
     return nullptr;
 }
 
+bool LookTable::tiersOnMap(std::string_view mapName) const {
+    if (renderTiers.empty()) return false;
+    for (const std::string& m : tierMaps)
+        if (containsNoCase(mapName, m)) return true;
+    return false;
+}
+
 std::string_view lookWorldForMap(std::string_view mapName) {
     for (const std::string_view world : {std::string_view("solhaven"), std::string_view("lattice"),
                                          std::string_view("unwritten")})
@@ -158,6 +165,20 @@ bool importLookTable(std::string_view json, LookTable& out, std::string* error, 
             const std::string name(tiers.key(k));
             const JsonValue v = tiers.value(k);
             if (name == "about") continue;
+            if (name == "maps") {
+                if (!v.isArray()) {
+                    errors.push_back("renderTiers.maps: expected an array of map names");
+                    continue;
+                }
+                for (std::uint32_t m = 0; m < v.size(); ++m) {
+                    const JsonValue s = v[m];
+                    if (!s.isString() || s.string().empty())
+                        errors.push_back("renderTiers.maps[" + std::to_string(m) + "]: expected a map name");
+                    else
+                        table.tierMaps.emplace_back(s.string());
+                }
+                continue;
+            }
             if (name == "play" || name == "cutscene") {
                 if (!v.isString() || v.string().empty()) {
                     errors.push_back("renderTiers." + name + ": expected a tier name");

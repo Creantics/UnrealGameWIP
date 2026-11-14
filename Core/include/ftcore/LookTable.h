@@ -32,6 +32,9 @@
 //   Each other key is a tier (lower-case letters, digits and '_') with console variables as in `render`. Every tier
 //   sets the same console variables (so a switch leaves none behind); `play` and `cutscene` name tiers. `about` is a
 //   note. A bad tier, a missing pick or tiers that set different variables is an error and the table is refused.
+//   `maps` (optional, an array of non-empty strings) scopes the tiers: a map takes the play tier only when its name
+//   contains one of them (case-insensitive, so "World_Solhaven" covers World_Solhaven_Strip and a PIE prefix); every
+//   other map keeps the settings it had before any tier. Without `maps` no map takes a tier.
 
 #include "ftcore/Api.h"
 #include "ftcore/NightLook.h"
@@ -73,6 +76,7 @@ struct LookTable {
     std::vector<RenderTier> renderTiers;
     std::string playTier;     // the tier the game starts in; empty when there are no tiers
     std::string cutsceneTier; // the tier a cutscene runs in
+    std::vector<std::string> tierMaps; // renderTiers.maps: the map names the tiers apply on
 
     // The world with this id (case-insensitive), or null. No allocation.
     FTCORE_API const SceneLook* find(std::string_view id) const;
@@ -82,6 +86,9 @@ struct LookTable {
     FTCORE_API float glassValue(std::string_view name, float fallback) const;
     // The render tier of this name (case-insensitive), or null. No allocation.
     FTCORE_API const RenderTier* findTier(std::string_view name) const;
+    // True when the map of this name takes the tiers: there are tiers and its name contains one of tierMaps
+    // (case-insensitive). No allocation.
+    FTCORE_API bool tiersOnMap(std::string_view mapName) const;
 };
 
 // On failure `out` is empty and *error lists each problem with its path, one per line.

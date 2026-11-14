@@ -75,6 +75,54 @@ const ftcore::LookTable& FTLook::Table()
 namespace
 {
 void SetRenderSettings(const std::vector<ftcore::LookTable::RenderSetting>& Settings, const TCHAR* From);
+
+// The tier variables' values before the run's first tier, so a map off renderTiers.maps gets them back.
+struct FTierBaseline
+{
+	FString Name;
+	FString Value;
+};
+TArray<FTierBaseline> GTierBaseline;
+bool GTierCaptured = false;
+bool GTierSet = false;
+
+void CaptureTierBaseline()
+{
+	const ftcore::LookTable& T = FTLook::Table();
+	if (GTierCaptured || T.renderTiers.empty())
+	{
+		return;
+	}
+	GTierCaptured = true;
+	for (const ftcore::LookTable::RenderSetting& Setting : T.renderTiers[0].settings)
+	{
+		const FString Name = FT::ToFString(Setting.name);
+		if (const IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Name))
+		{
+			GTierBaseline.Add({Name, Variable->GetString()});
+		}
+	}
+}
+
+// Back to the values before any tier (nothing when no tier was set this run).
+void RestoreTierBaseline(const FString& Map)
+{
+	if (!GTierSet)
+	{
+		return;
+	}
+	GTierSet = false;
+	for (const FTierBaseline& Base : GTierBaseline)
+	{
+		if (IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Base.Name))
+		{
+			const FString Before = Variable->GetString();
+			Variable->Set(*Base.Value, ECVF_SetByGameSetting);
+			UE_LOG(LogForgottenThird, Display, TEXT("Look: %s %s -> %s (map %s takes no tier)."), *Base.Name, *Before,
+				*Variable->GetString(), *Map);
+		}
+	}
+}
 }
 
 bool FTLook::ApplyRenderTier(const FString& Tier)
@@ -85,7 +133,9 @@ bool FTLook::ApplyRenderTier(const FString& Tier)
 		UE_LOG(LogForgottenThird, Warning, TEXT("Look: no render tier '%s' in Data/Look/looks.json."), *Tier);
 		return false;
 	}
+	CaptureTierBaseline();
 	SetRenderSettings(Found->settings, *FString::Printf(TEXT("tier %s"), *FT::ToFString(Found->name)));
+	GTierSet = true;
 	return true;
 }
 
@@ -127,9 +177,10 @@ void SetRenderSettings(const std::vector<ftcore::LookTable::RenderSetting>& Sett
 	}
 }
 
-// Data/Look/looks.json's render settings once per run; the play tier at every map (a cutscene map's game mode then
-// sets the cutscene tier at its start).
-void ApplyRenderSettings()
+// Data/Look/looks.json's render settings once per run; the play tier on a map renderTiers.maps names (or on any map
+// with -LookTier=, a review's), and on every other map the values from before any tier, so an arena, cutscene or demo
+// map renders as it did before the tiers.
+void ApplyRenderSettings(const UWorld& World)
 {
 	static bool bApplied = false;
 	if (!bApplied)
@@ -137,7 +188,18 @@ void ApplyRenderSettings()
 		bApplied = true;
 		SetRenderSettings(LookTable().render, TEXT("render"));
 	}
-	FTLook::ApplyRenderTierFor(TEXT("play"));
+	const FString Map = World.GetMapName();
+	const FTCHARToUTF8 MapUtf8(*Map);
+	FString Forced;
+	const bool bForced = FParse::Value(FCommandLine::Get(), TEXT("LookTier="), Forced) && !Forced.IsEmpty();
+	if (bForced || LookTable().tiersOnMap(std::string_view(MapUtf8.Get(), static_cast<size_t>(MapUtf8.Length()))))
+	{
+		FTLook::ApplyRenderTierFor(TEXT("play"));
+	}
+	else
+	{
+		RestoreTierBaseline(Map);
+	}
 }
 
 // ft.LookTier <low|standard|high>: sets a render tier from looks.json.
@@ -192,7 +254,7 @@ void UFTLookSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Grade = FSceneViewExtensions::NewExtension<FFTLookGradeExtension>(World);
 	if (!FParse::Param(FCommandLine::Get(), TEXT("LookOff")) && CVarLook.GetValueOnGameThread() != 0)
 	{
-		ApplyRenderSettings();
+		ApplyRenderSettings(*World);
 	}
 
 	// -Look=<world> picks it; otherwise the map's name does. -LookOff (or r.FT.Look 0) keeps the shared look.

@@ -41,14 +41,17 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     CHECK(*t.find("solhaven") != *t.find("lattice"));
     CHECK(*t.find("lattice") != *t.find("unwritten"));
     // The engine's ray-traced reflections are on for every world.
-    // Ray-traced sun and moon shadows are the default where the card traces rays (shadow maps otherwise).
-    REQUIRE(t.render.size() == 3);
+    REQUIRE(t.render.size() == 2);
     CHECK(t.render[0].name == "r.Lumen.HardwareRayTracing");
     CHECK(t.render[0].value == 1.f);
-    CHECK(t.render[1].name == "r.RayTracing.Shadows");
+    CHECK(t.render[1].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
     CHECK(t.render[1].value == 1.f);
-    CHECK(t.render[2].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
-    CHECK(t.render[2].value == 1.f);
+    // The tiers are for the world maps only: an arena, a cutscene or a demo map keeps the settings it had before them.
+    CHECK(t.tiersOnMap("World_Solhaven_Strip"));
+    CHECK(t.tiersOnMap("World_Lattice"));
+    CHECK_FALSE(t.tiersOnMap("Demo_Arena"));
+    CHECK_FALSE(t.tiersOnMap("BattleDemo"));
+    CHECK_FALSE(t.tiersOnMap("Cutscene"));
     // The render tiers (ruled 2026-11-14): play is standard, hit lighting for reflections (LightingMode 2, so a lead,
     // who has no surface cache, shows in a shop pane) traced at half resolution; cutscenes are high, full resolution;
     // low is the surface cache. LightingMode 1 is no tier.
@@ -69,6 +72,10 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     CHECK(tierValue("high", "r.Lumen.Reflections.DownsampleFactor") == 1.f);
     for (const LookTable::RenderTier& tier : t.renderTiers)
         CHECK(tierValue(tier.name.c_str(), "r.Lumen.HardwareRayTracing.LightingMode") != 1.f);
+    // Ray-traced sun and moon shadows in the standard and high tiers; low keeps shadow maps.
+    CHECK(tierValue("low", "r.RayTracing.Shadows") == 0.f);
+    CHECK(tierValue("standard", "r.RayTracing.Shadows") == 1.f);
+    CHECK(tierValue("high", "r.RayTracing.Shadows") == 1.f);
     // Water, wetness, fog albedo, practical lights and glow are set per world.
     CHECK(t.find("solhaven")->wetness > 0.f);
     CHECK(t.find("lattice")->glowStrength > 0.f);
@@ -142,6 +149,34 @@ TEST_CASE("looks: render tiers parse with their picks; a bad pick, tier or uneve
     CHECK(contains(error, "renderTiers.play"));
     CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":[],"worlds":{"w":{}}})", t, &error));
     CHECK(contains(error, "renderTiers"));
+}
+
+TEST_CASE("looks: render tiers apply only on the maps renderTiers.maps names") {
+    LookTable t;
+    std::string error;
+    REQUIRE_MESSAGE(importLookTable(R"({"version":1,"renderTiers":{"maps":["World_Solhaven","Look_Lab"],"play":"a",
+        "cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error), error);
+    REQUIRE(t.tierMaps.size() == 2);
+    CHECK(t.tiersOnMap("World_Solhaven"));
+    CHECK(t.tiersOnMap("UEDPIE_0_world_solhaven_strip"));
+    CHECK(t.tiersOnMap("Look_Lab"));
+    CHECK_FALSE(t.tiersOnMap("Demo_Arena"));
+    CHECK_FALSE(t.tiersOnMap("Cutscene"));
+    CHECK_FALSE(t.tiersOnMap(""));
+
+    // Without maps, no map takes a tier; without tiers, maps alone apply nothing.
+    REQUIRE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK_FALSE(t.tiersOnMap("World_Solhaven"));
+    REQUIRE(importLookTable(R"({"version":1,"worlds":{"w":{}}})", t, &error));
+    CHECK_FALSE(t.tiersOnMap("World_Solhaven"));
+
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"maps":"World","play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.maps"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"maps":["World",""],"play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.maps[1]"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"maps":[3],"play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.maps[0]"));
+    CHECK(t.tierMaps.empty());
 }
 
 TEST_CASE("looks: a bad render key or value refuses the table, naming render.<key>") {

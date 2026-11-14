@@ -2,16 +2,16 @@
   "version": 1,
   "render": {
     "r.Lumen.HardwareRayTracing": 1,
-    "r.RayTracing.Shadows": 1,
     "r.Lumen.TranslucencyReflections.FrontLayer.Enable": 1
   },
   "renderTiers": {
-    "about": "Reflections that show characters get a budget of 2.0 ms average over mode 0 (about 10.4 ms) at 1920x1080 on the close glass eyes. low: LightingMode 0, reflections lit from the Lumen surface cache. standard (play): LightingMode 2, hit lighting for reflections, traced at half resolution (DownsampleFactor 2), +1.9 to +2.0 ms on the close glass eye, the lead reflected about as well as at full mode 2. high and cutscenes: LightingMode 2 at full resolution, +3.7 to +6.1 ms. LightingMode 1 is never a play setting; a review still may use it only when labelled.",
+    "about": "Reflections that show characters get a budget of 2.0 ms average over mode 0 (about 10.4 ms) at 1920x1080 on the close glass eyes. low: LightingMode 0, reflections lit from the Lumen surface cache. standard (play): LightingMode 2, hit lighting for reflections, traced at half resolution (DownsampleFactor 2), +1.9 to +2.0 ms on the close glass eye, the lead reflected about as well as at full mode 2. high and cutscenes: LightingMode 2 at full resolution, +3.7 to +6.1 ms. LightingMode 1 is never a play setting; a review still may use it only when labelled. standard and high also trace the sun's and moon's shadows (r.RayTracing.Shadows 1), low keeps shadow maps. The tiers apply only on the maps listed in maps (a name contained in the map's); an arena, cutscene or demo map keeps the project's settings until its frame times with a tier on are ruled.",
+    "maps": ["World_Solhaven", "World_Lattice", "World_Unwritten", "Look_Lab"],
     "play": "standard",
     "cutscene": "high",
-    "low": { "r.Lumen.HardwareRayTracing.LightingMode": 0, "r.Lumen.Reflections.DownsampleFactor": 1 },
-    "standard": { "r.Lumen.HardwareRayTracing.LightingMode": 2, "r.Lumen.Reflections.DownsampleFactor": 2 },
-    "high": { "r.Lumen.HardwareRayTracing.LightingMode": 2, "r.Lumen.Reflections.DownsampleFactor": 1 }
+    "low": { "r.Lumen.HardwareRayTracing.LightingMode": 0, "r.Lumen.Reflections.DownsampleFactor": 1, "r.RayTracing.Shadows": 0 },
+    "standard": { "r.Lumen.HardwareRayTracing.LightingMode": 2, "r.Lumen.Reflections.DownsampleFactor": 2, "r.RayTracing.Shadows": 1 },
+    "high": { "r.Lumen.HardwareRayTracing.LightingMode": 2, "r.Lumen.Reflections.DownsampleFactor": 1, "r.RayTracing.Shadows": 1 }
   },
   "dusk": {
     "solhaven": {
