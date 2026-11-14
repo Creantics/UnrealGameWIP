@@ -89,6 +89,9 @@ TEST_CASE("ui budget: HEAL only while hurt with heals left, PARTNER only in its 
     CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0);
     f.lead.overloaded = false;
     CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) != 0);
+    f.lead.guardBroken = true; // a guard break starts nothing, a heal included
+    CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0);
+    f.lead.guardBroken = false;
     f.lead.heals = 0;
     CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0);
     f.partner.down = true;
@@ -112,9 +115,11 @@ TEST_CASE("ui budget: a basic control's row stands only while the control can be
     CHECK(uiControlUsable(l, UiPrompt::Guard));
     CHECK(uiControlUsable(l, UiPrompt::Dodge));
     l.overloaded = false;
-    l.guardBroken = true;
-    CHECK_FALSE(uiControlUsable(l, UiPrompt::Guard));
-    CHECK(uiControlUsable(l, UiPrompt::Attack));
+    l.guardBroken = true; // the fight starts nothing until the break ends
+    for (UiPrompt p : {UiPrompt::Attack, UiPrompt::Guard, UiPrompt::Dodge, UiPrompt::Jump}) {
+        CAPTURE(static_cast<int>(p));
+        CHECK_FALSE(uiControlUsable(l, p));
+    }
     l.guardBroken = false;
     l.down = true;
     for (UiPrompt p : {UiPrompt::Attack, UiPrompt::Guard, UiPrompt::Dodge, UiPrompt::Jump}) {

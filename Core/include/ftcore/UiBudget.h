@@ -104,7 +104,8 @@ struct UiBudgetState {
 FTCORE_API std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, UiPromptMask prompts);
 
 // The prompts the data opens (the first four never while the lead is down):
-//   Heal       hurt with heals left, and not overloaded (the fight refuses a heal until a Release)
+//   Heal       hurt with heals left, not overloaded (the fight refuses a heal until a Release) and the guard not
+//              broken (a guard break refuses every start while it lasts)
 //   GiftHeal   hurt with Gift Heals left (the third place's giftHeals; -1, not reported, opens nothing)
 //   GiftGuard  the Gift Guard off its cooldown (giftGuardReady)
 //   Reload     the gun empty (a cylinder with no rounds) and not already reloading
@@ -113,8 +114,8 @@ FTCORE_API std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHud
 FTCORE_API UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen);
 
 // Whether a basic control (Attack, Guard, Dodge, Jump) can be used now, so its first-use row may stand: none while the
-// lead is down, no Attack while overloaded (the fight refuses light, heavy and shot until a Release), no Guard while the
-// guard is broken. A prompt that cannot be used is not drawn, never greyed. The data's rows answer true: uiPromptsOpen
+// lead is down or the guard is broken (the fight starts nothing until the break ends), no Attack while overloaded (the
+// fight refuses light, heavy and shot until a Release). A prompt that cannot be used is not drawn, never greyed. The data's rows answer true: uiPromptsOpen
 // already opens them only when usable.
 FTCORE_API bool uiControlUsable(const ArenaHudLead& lead, UiPrompt p);
 
