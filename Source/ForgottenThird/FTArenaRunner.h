@@ -374,7 +374,8 @@ private:
 	// impact at the end of the startup; stagger; face down while open; the hit reaction between moves; defeat; idle.
 	void DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha);
 	// Whether a blow makes slot I flinch: not on its knees (the go-down is its reaction), nor while it gets up from them.
-	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I]; }
+	// Not in a boss's break move's windup or active part (Core's enemyBreakGuard): blows there never flinch it.
+	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I] && !Fight.enemyBreakGuard(static_cast<size_t>(I)); }
 	void PutBodiesAtStart();
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);

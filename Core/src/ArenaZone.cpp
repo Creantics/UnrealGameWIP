@@ -686,10 +686,9 @@ void findMouths(const ArenaZone& z, const WorldLayout& layout, ArenaZoneFit& out
 // probe and the lens's near plane would already clip the face there, and the blocks are the layout's footprints, not
 // the drawn walls with their trim.
 constexpr float kLensClearance = 0.5f;
-// Along the view axis the lens is checked this much further back than the boom puts it: the engine's near clip plane
-// (10 cm, the project keeps the engine default) plus the boom's collision probe radius (FTArenaFighter, ProbeSize 12 cm).
-// A wall closer than that behind the lens makes the spring arm pull the camera in, so it counts as blocked.
-constexpr float kLensViewClearance = 0.10f + 0.12f;
+// Along the view axis the lens is checked kArenaLensViewClearance further back than the boom puts it (ArenaCamera.h:
+// the near clip plane plus the boom's probe radius, the same values the host's camera reads), so a wall that would make
+// the spring arm pull the camera in counts as blocked.
 
 // The share of the wall where a player standing on it, facing in, has the lens inside a building taller than the lens.
 // The lens is the one the host draws, from Core's pose and lens (arenaCameraPose, arenaCameraLens) at the zone's lock
@@ -734,7 +733,7 @@ float cameraBlockedShare(const ArenaZone& z, const WorldLayout& layout, int dist
         for (const View& v : views) {
             // Facing in (the lock's line is the yaw of -dir), plus the view's turn; the lens over the feet at `at`.
             ArenaCameraPose pose = arenaCameraPose(cam, *v.aim, ArenaFrameYaw{(a + kPi) * kDeg, v.turn}, cam.lockPitch);
-            pose.arm += kLensViewClearance; // the view-axis clearance, back along the boom
+            pose.arm += kArenaLensViewClearance; // the view-axis clearance, back along the boom
             const ArenaLensAt lens = arenaCameraLens(pose);
             hit = hit || lensBlocked(plus(at, Vec2{lens.x, lens.y}), pose.pivot + lens.z);
         }

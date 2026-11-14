@@ -489,7 +489,8 @@ TEST_CASE("arena boss break: the tell at 75% of the threshold, once as it rises 
     CHECK_FALSE(r.fight.enemyBreakTell(0));
 }
 
-TEST_CASE("arena boss break: the break resets the value, winds up 0.5 s, leaves a 1.2 s punish window and locks 6 s") {
+TEST_CASE("arena boss break: the break resets the value; its windup and active part add nothing, its recovery adds from "
+          "0, and a second break comes as soon as the threshold is reached again") {
     const ArenaTable t = shippedTable();
     const ArenaDef def = bossDef(t, "stone_bearer", true);
     const int move = def.enemies[0].breakMove;
@@ -501,31 +502,189 @@ TEST_CASE("arena boss break: the break resets the value, winds up 0.5 s, leaves 
     REQUIRE(hostBlowsToBreak(r) == 7);
     const float broke = r.fight.time();
     CHECK(r.value() == 0.f);
-    CHECK(r.fight.enemyBreakLock(0) == doctest::Approx(6.f));
+    CHECK(r.fight.enemyBreakGuard(0));
     REQUIRE(r.out->enemies[0].brain == ArenaBrain::Attack);
     REQUIRE(r.out->enemies[0].move == move);
-    // The parts as the host and the autopilot see them: 0.5 s of startup, the move's own active part, 1.2 s of recovery.
-    int startup = 0, active = 0, recovery = 0;
-    while (r.out->enemies[0].brain == ArenaBrain::Attack && r.fight.time() < broke + 5.f) {
+    // A blow on every tick of the windup and the active part adds nothing.
+    int startup = 0, active = 0;
+    while (r.out->enemies[0].part != ArenaPart::Recovery && r.fight.time() < broke + 5.f) {
         const ArenaPart part = r.out->enemies[0].part;
         startup += part == ArenaPart::Startup ? 1 : 0;
         active += part == ArenaPart::Active ? 1 : 0;
-        recovery += part == ArenaPart::Recovery ? 1 : 0;
+        CHECK(r.fight.enemyBreakGuard(0));
+        REQUIRE(r.fight.hostBlow(0, 1, 0));
+        CHECK(r.value() == 0.f);
         r.step();
     }
     CHECK(static_cast<float>(startup) * kDt == doctest::Approx(0.5f).epsilon(0.05));
     CHECK(static_cast<float>(active) * kDt == doctest::Approx(data.active).epsilon(0.15));
-    CHECK(static_cast<float>(recovery) * kDt == doctest::Approx(1.2f).epsilon(0.05));
-    // The lock: the value fills past the threshold (two blows a second) but no break begins before 6 s.
-    long tick = 0;
-    while (r.fight.time() < broke + 5.9f) {
-        if (tick++ % 30 == 0) REQUIRE(r.fight.hostBlow(0, 1, 0));
+    CHECK(r.breaks() == 1);
+    // The recovery: blows add from 0, and the seventh, inside its 1.2 s, begins the second break at once.
+    CHECK_FALSE(r.fight.enemyBreakGuard(0));
+    REQUIRE(r.out->enemies[0].brain == ArenaBrain::Attack);
+    REQUIRE(r.fight.hostBlow(0, 1, 0));
+    CHECK(r.value() == doctest::Approx(1.5f));
+    r.step();
+    for (int blow = 2; blow <= 7; ++blow) {
+        CHECK(r.breaks() == 1);
+        REQUIRE(r.out->enemies[0].part == ArenaPart::Recovery);
+        REQUIRE(r.fight.hostBlow(0, 1, 0));
         r.step();
     }
-    CHECK(r.value() >= 10.f);
-    CHECK(r.breaks() == 1);
-    while (r.fight.time() < broke + 6.1f) r.step();
     CHECK(r.breaks() == 2);
+    CHECK(r.had(ArenaEventType::BrokeOut, move));
+    CHECK(r.value() == 0.f);
+    CHECK(r.fight.enemyBreakGuard(0));
+    // Left alone, the recovery is the 1.2 s punish window.
+    const float second = r.fight.time();
+    while (r.out->enemies[0].part != ArenaPart::Recovery && r.fight.time() < second + 5.f) r.step();
+    int recovery = 0;
+    while (r.out->enemies[0].brain == ArenaBrain::Attack && r.fight.time() < second + 5.f) {
+        ++recovery;
+        r.step();
+    }
+    CHECK(static_cast<float>(recovery) * kDt == doctest::Approx(1.2f).epsilon(0.05));
+}
+
+TEST_CASE("arena boss break: every stagger that ends with the value at or over the threshold ends in a break") {
+    const ArenaTable t = shippedTable();
+    int ends = 0;
+    {
+        // A hold's stagger lands before the tick's break step: the value (10.5) waits for the boss to stand.
+        Rig r(bossDef(t, "kite_boss", true));
+        r.step();
+        for (int blow = 0; blow < 7; ++blow) REQUIRE(r.fight.hostBlow(0, 1, 0));
+        REQUIRE(r.fight.holdEnemy(0, ArenaBrain::Staggered, 2.f));
+        r.step();
+        REQUIRE(r.out->enemies[0].brain == ArenaBrain::Staggered);
+        CHECK(r.breaks() == 0);
+        CHECK(r.value() == doctest::Approx(10.5f));
+        while (r.out->enemies[0].brain == ArenaBrain::Staggered && r.fight.time() < 5.f) r.step();
+        CHECK(r.breaks() == 1);
+        CHECK(r.had(ArenaEventType::BrokeOut));
+        ++ends;
+    }
+    // The autopilot (and the pair press) on each boss with a thin poise, so its blows stagger it often.
+    for (const char* id : {"kite_boss", "stone_bearer", "white_glove"}) {
+        CAPTURE(id);
+        ArenaDef def = bossDef(t, id, true);
+        def.enemies[0].hp = 100000;
+        def.enemies[0].poise = 25.f;
+        Rig r(def);
+        r.step();
+        bool pairNext = false;
+        int staggers = 0;
+        while (r.fight.time() < 120.f && !r.fight.over()) {
+            const bool was = r.out->enemies[0].brain == ArenaBrain::Staggered;
+            const bool full = r.value() >= r.fight.enemyBreakAt(0);
+            const int before = r.breaks() + r.fight.stats().bossBreakBarred;
+            ArenaInput in = r.fight.autopilot();
+            in.pair = pairNext;
+            pairNext = false;
+            r.step(in);
+            for (const ArenaEvent& e : r.out->events)
+                if (e.type == ArenaEventType::Parried) pairNext = true;
+            if (!was || r.out->enemies[0].brain == ArenaBrain::Staggered) continue;
+            ++staggers;
+            if (!full) continue;
+            ++ends;
+            CHECK(r.breaks() + r.fight.stats().bossBreakBarred == before + 1);
+        }
+        CHECK(staggers > 3);
+    }
+    MESSAGE("staggers ending at or over the threshold: " << ends);
+    CHECK(ends > 1);
+}
+
+TEST_CASE("arena boss break: the riposte's reach is measured to the body's edge (a 2.5 m body from 2.2 m, not 2.4)") {
+    const ArenaTable t = shippedTable();
+    const ArenaDef def = bossDef(t, "kite_boss", true);
+    REQUIRE(def.enemies[0].bodyRadius == doctest::Approx(2.5f));
+    REQUIRE(def.fighter.riposteReach == doctest::Approx(2.2f));
+    for (const float gap : {2.2f, 2.4f}) {
+        CAPTURE(gap);
+        Rig r(def);
+        const Vec2 boss{def.enemies[0].bodyRadius + gap, 0.f};
+        const auto place = [&] {
+            r.bodies.player = Vec2{0.f, 0.f};
+            r.bodies.enemies[0] = boss;
+        };
+        place();
+        r.step();
+        REQUIRE(r.fight.holdEnemy(0, ArenaBrain::Open, 3.f));
+        place();
+        r.step();
+        REQUIRE(r.out->enemies[0].brain == ArenaBrain::Open);
+        ArenaInput press;
+        press.light = true;
+        place();
+        r.step(press);
+        for (int k = 0; k < 60; ++k) {
+            place();
+            r.step();
+        }
+        const bool lands = gap < 2.3f;
+        CHECK(r.fight.stats().ripostes == (lands ? 1 : 0));
+        CHECK((r.out->enemies[0].brain == ArenaBrain::Down) == lands);
+    }
+}
+
+namespace {
+// The boss's blows on the lead are vetoed, so the lead's sequence is never cut.
+ArenaBlowRuling leadUntouched(void*, const ArenaBlow& b) {
+    ArenaBlowRuling r;
+    r.veto = b.target == kArenaPlayer;
+    return r;
+}
+} // namespace
+
+// The shortest time between two breaks, per phase: the lead stands in reach (put back each tick 1 m off the body's
+// edge, facing it) and throws one sequence as fast as the kit allows; the boss's blows are vetoed and its poise is too
+// deep to stagger. Scale 1: no joined or Lift multiplier (with them each blow can add the 3.0 cap).
+TEST_CASE("arena boss break: the shortest break to break by phase, the fastest sequence the lead can throw") {
+    const ArenaTable t = shippedTable();
+    const float thresholds[] = {10.f, 8.f, 6.5f};
+    for (int phase = 0; phase < 3; ++phase) {
+        float best = 1.0e9f;
+        std::string bestOf;
+        for (const char* kit : {"default", "devin", "duy"}) {
+            for (int pattern = 0; pattern < 3; ++pattern) { // lights, heavies, a light chain closed by a heavy
+                ArenaDef def = bossDef(t, "stone_bearer", true);
+                def.fighter = t.fighter(kit);
+                def.enemies[0].hp = 1000000;
+                def.enemies[0].poise = 1.0e6f;
+                def.enemies[0].breakValueAt = {thresholds[phase], thresholds[phase], thresholds[phase],
+                                               thresholds[phase]};
+                Rig r(def);
+                r.fight.setBlowHook(leadUntouched, nullptr);
+                const Vec2 boss{def.enemies[0].bodyRadius + 1.f, 0.f};
+                std::array<float, 4> at{};
+                std::size_t seen = 0;
+                const std::uint8_t lastLight = static_cast<std::uint8_t>(def.fighter.lightCount - 1);
+                while (seen < at.size() && r.fight.time() < 60.f) {
+                    r.bodies.player = Vec2{0.f, 0.f};
+                    r.bodies.enemies[0] = boss;
+                    const ArenaPlayerOut& p = r.fight.output().player;
+                    const bool heavyTurn =
+                        pattern == 1 || (pattern == 2 && p.action == ArenaAction::Light && p.move == lastLight);
+                    ArenaInput in;
+                    in.heavy = heavyTurn;
+                    in.light = !heavyTurn;
+                    r.step(in);
+                    if (r.had(ArenaEventType::BrokeOut)) at[seen++] = r.fight.time();
+                }
+                REQUIRE(seen == at.size());
+                const float gap = std::min(at[2] - at[1], at[3] - at[2]);
+                if (gap < best) {
+                    best = gap;
+                    bestOf = std::string(kit) + (pattern == 0 ? " lights" : pattern == 1 ? " heavies" : " chain + heavy");
+                }
+            }
+        }
+        MESSAGE("phase " << phase + 1 << " (" << thresholds[phase] << "): shortest break to break " << best << " s, "
+                         << bestOf);
+        CHECK(best > 0.5f + 0.1f); // never inside the windup and an active part
+    }
 }
 
 TEST_CASE("arena boss break: a set table's split onto a seated boss adds 3") {

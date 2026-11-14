@@ -83,7 +83,7 @@
 //     parryWindow, unless the previous press was less than parryRearm ago (mashing guard opens no
 //     window). A parryable enemy attack that connects inside the window, from inside the guard arc,
 //     is parried: no damage, no stamina cost, and the enemy is Open for openTime.
-//   - Riposte: a light press with an Open enemy within riposteReach and in front (dot >= 0.5)
+//   - Riposte: a light press with an Open enemy within riposteReach of its body's edge and in front (dot >= 0.5)
 //     performs the riposte attack instead of a light, aimed at that enemy and invulnerable throughout.
 //     When it connects, the enemy goes Down for downTime.
 //   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. A parry
@@ -179,14 +179,16 @@
 //   neither rises nor falls; otherwise, from kArenaBossBreakDecayDelay s after the last blow that added, it falls at
 //   kArenaBossBreakDecayRate a second until it is 0 or another blow adds (it never goes below 0). The
 //   threshold is the phase's breakValueAt; the phase comes from the boss's hp share (breakPhaseEnds: each phase
-//   ends where the share now falls to it). At kArenaBossBreakTell of the threshold the value
-//   tells (enemyBreakTell, the BreakTell event once each time it rises there). At the threshold the boss breaks as
-//   soon as it is upright (not Staggered,
-//   Open or Down; a blow that staggers it keeps the break for after) and no break began in the last
-//   kArenaBossBreakLock s: its move is cut, the value goes to 0 and it begins its breakMove (BrokeOut, then
-//   AttackStarted) with a windup of kArenaBossBreakWindup s and a recovery of kArenaBossBreakRecovery s in place of
-//   the move's own, whatever the token count and its cooldown, unless the host's move mask clears it (spent, no
-//   lock). A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
+//   ends where the share now falls to it; the stone bearer's are 0.5 and 0.25, three phases, the last from its
+//   pedestal at a quarter, apart from its move script's two). At kArenaBossBreakTell of the threshold the value
+//   tells (enemyBreakTell, the BreakTell event once each time it rises there). The blow that brings it to the
+//   threshold breaks the boss at once if it is upright (not Staggered, Open or Down; a blow that staggers it keeps
+//   the value, and the break comes the tick it is upright again): its move is cut, the value goes to 0 and it begins
+//   its breakMove (BrokeOut, then AttackStarted) with a windup of kArenaBossBreakWindup s and a recovery of
+//   kArenaBossBreakRecovery s in place of the move's own, whatever the token count and its cooldown, unless the
+//   host's move mask clears it (spent). From the first frame of that windup to the end of its active part
+//   (enemyBreakGuard) blows add nothing and never flinch it; in the recovery they add from 0 as ever, and the next
+//   break comes whenever the threshold is reached again, with no other limit. A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
 //   poise (times the ruling's poise scale) and staggers it only when that empties it; else it stays Open.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
@@ -314,7 +316,6 @@ inline constexpr float kArenaBossBreakDecayRate = 1.f;   // what it then falls b
 inline constexpr float kArenaBossBreakTell = 0.75f;    // the share of the threshold that tells
 inline constexpr float kArenaBossBreakWindup = 0.5f;   // the break move's startup
 inline constexpr float kArenaBossBreakRecovery = 1.2f; // the break move's recovery: the punish window
-inline constexpr float kArenaBossBreakLock = 6.f;      // s from a break's start before another may begin
 inline constexpr float kArenaBossPairPoise = 0.6f;     // the share of a boss's max poise the paired counter takes
 inline constexpr std::size_t kMaxArenaBreakPhases = 4;
 
@@ -1110,12 +1111,13 @@ public:
     FTCORE_API void setEnemyFlinch(std::size_t i, bool allowed);
     FTCORE_API bool enemyFlinch(std::size_t i) const;
     // A boss's break value (Boss break): the value now, the threshold of its phase now (0: not a boss), its phase
-    // (0-based), whether it tells, and the seconds before another break may begin. 0 / false for others.
+    // (0-based), whether it tells, and whether it is in its break move's windup or active part (blows add nothing
+    // and never flinch it). 0 / false for others.
     FTCORE_API float enemyBreakValue(std::size_t i) const;
     FTCORE_API float enemyBreakAt(std::size_t i) const;
     FTCORE_API int enemyBreakPhase(std::size_t i) const;
     FTCORE_API bool enemyBreakTell(std::size_t i) const;
-    FTCORE_API float enemyBreakLock(std::size_t i) const;
+    FTCORE_API bool enemyBreakGuard(std::size_t i) const;
     // Turns enemy i to `facing` (made unit) now; the next tick works from it and reports it. Nothing for a zero
     // vector or an enemy out of range.
     FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);
@@ -1340,7 +1342,6 @@ private:
         // The boss break value (Boss break).
         float breakValue = 0.f;
         float breakQuiet = 0.f;             // s since the last blow that added (still while Staggered)
-        float breakLock = 0.f;              // s before another break may begin
         bool breakFresh = false;            // a blow added since the last break step: its quiet starts there
         bool breakTell = false;
         bool breakTimed = false;            // this move is the break: breakAttack's windup and recovery

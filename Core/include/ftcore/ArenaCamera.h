@@ -16,6 +16,14 @@
 
 namespace ftcore {
 
+// The lens's view-axis clearance, in its two parts, read by the host's camera setup and the zone's lens checks alike:
+// the near clip plane the host's camera draws with (the engine's, which the project keeps at its 10 cm default; the
+// host warns when it is not this) and the boom's collision probe radius (the host's spring-arm ProbeSize). A wall
+// closer than their sum behind the lens makes the spring arm pull the camera in.
+inline constexpr float kArenaLensNearClip = 0.10f; // m
+inline constexpr float kArenaBoomProbe = 0.12f;    // m
+inline constexpr float kArenaLensViewClearance = kArenaLensNearClip + kArenaBoomProbe;
+
 struct ArenaCameraPose {
     float yaw = 0.f;       // degrees, the view as drawn
     float boomPitch = 0.f; // degrees, the arm's
