@@ -3875,11 +3875,9 @@ void UFTArenaRunner::ApplyAimCamera()
 		return;
 	}
 	bAimCamera = A > 0.f;
-	// The fight's camera pulled in over the right shoulder by the aim stance.
-	const ftcore::ZoneCamera& Rig = Fit.camera;
-	const ftcore::AimRules& Rules = ArenaAim.rules();
-	Figure->SetCameraRig(ArenaAim.blend(Rig.arm, Rig.arm * Rules.armScale), Rig.pivot, ArenaAim.blend(Rig.side, Rules.shoulderRight / 100.f),
-		Rig.up, ArenaAim.blend(Rig.fov, Rules.fov));
+	// The fight's camera pulled in over the right shoulder by the aim stance (ftcore::arenaCameraPose's rig).
+	const ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
+	Figure->SetCameraRig(Pose.arm, Pose.pivot, Pose.side, Pose.up, Pose.fov);
 }
 
 void UFTArenaRunner::SteerCamera(float DeltaSeconds)
@@ -3894,7 +3892,7 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	{
 		ftcore::ArenaFrameScene Held;
 		Held.held = true;
-		const ftcore::ArenaFrameYaw Kept = ftcore::arenaFrameYawStep(ftcore::kArenaFrame, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, Held, DeltaSeconds);
+		const ftcore::ArenaFrameYaw Kept = ftcore::arenaFrameYawStep(FrameRules(), ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, Held, DeltaSeconds);
 		CameraYaw = Kept.line;
 		FrameTurn = Kept.turn;
 		return;
@@ -3964,11 +3962,11 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		Scene.lineWant = ArenaYaw(To);
 		Scene.distance = ArenaLength(To);
 	}
-	const ftcore::ArenaFrameYaw Yaw = ftcore::arenaFrameYawStep(ftcore::kArenaFrame, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, Scene, DeltaSeconds);
+	const ftcore::ArenaFrameYaw Yaw = ftcore::arenaFrameYawStep(FrameRules(), ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, Scene, DeltaSeconds);
 	CameraYaw = Yaw.line;
 	FrameTurn = Yaw.turn;
 #if !UE_BUILD_SHIPPING
-	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming ? ftcore::arenaFrameTurn(ftcore::kArenaFrame, Scene.side, Scene.distance) : 0.f;
+	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming ? ftcore::arenaFrameTurn(FrameRules(), Scene.side, Scene.distance) : 0.f;
 #endif
 	if (bFollowed)
 	{
@@ -3996,9 +3994,10 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	CameraYaw = FMath::UnwindDegrees(CameraYaw);
 	// The boom swings up to its limit, the lens tilts the rest: a steep look keeps the lens over the floor and the arm
 	// its length.
+	// The pose (ftcore::arenaCameraPose): the drawn yaw, the boom and the lens tilt; the rig is the zone's and the aim's.
 	CameraPitch = ftcore::arenaClampViewPitch(ftcore::kArenaLook, CameraPitch);
-	const ftcore::ArenaPitchSplit Split = ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch);
-	PC->SetControlRotation(FRotator(Split.boom, ViewYaw(), 0.0));
+	const ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
+	PC->SetControlRotation(FRotator(Pose.boomPitch, Pose.yaw, 0.0));
 #if !UE_BUILD_SHIPPING
 	if (bFrameCheck)
 	{
@@ -4007,7 +4006,7 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 #endif
 	if (AFTArenaFighter* Lead = PlayerFigure.Get())
 	{
-		Lead->SetCameraTilt(Split.tilt);
+		Lead->SetCameraTilt(Pose.tilt);
 	}
 }
 
@@ -4122,12 +4121,12 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		const ftcore::ZoneCamera& Rig = Fit.camera;
 		const float FreeLens = FMath::Sqrt(Rig.arm * Rig.arm + Rig.side * Rig.side + Rig.up * Rig.up);
-		const bool bPass = FrameSettled > 0 && FrameInThird == FrameSettled && FrameTurnMost <= ftcore::kArenaFrame.maxTurn + 0.01f &&
+		const bool bPass = FrameSettled > 0 && FrameInThird == FrameSettled && FrameTurnMost <= FrameRules().maxTurn + 0.01f &&
 			FrameArmMost <= Rig.arm + 0.001f;
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("Arena check: framing %s%s (%d frames followed, %d settled, %d with both bodies in the middle third; worst |x| lead %.3f, target %.3f; turn most %.1f deg (cap %.0f), its rate most %.0f deg/s; boom arm most %.2f m (rig %.2f); lens to pivot most %.2f m (rig %.2f, camera lag aside))."),
 			bPass ? TEXT("PASS") : TEXT("FAIL"), bNoFrame ? TEXT(" [framing off]") : TEXT(""), FrameFrames, FrameSettled, FrameInThird,
-			FrameLeadWorst, FrameFoeWorst, FrameTurnMost, ftcore::kArenaFrame.maxTurn, FrameRateMost, FrameArmMost, Rig.arm, FrameLensMost,
+			FrameLeadWorst, FrameFoeWorst, FrameTurnMost, FrameRules().maxTurn, FrameRateMost, FrameArmMost, Rig.arm, FrameLensMost,
 			FreeLens);
 		const TCHAR* Bands[4] = {TEXT("under 3"), TEXT("3-6"), TEXT("6-10"), TEXT("10 and over")};
 		for (int32 I = 0; I < 4; ++I)

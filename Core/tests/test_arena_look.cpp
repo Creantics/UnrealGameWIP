@@ -1,4 +1,5 @@
 #include "ftcore/AimStance.h"
+#include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaLook.h"
 #include "ftcore/ArenaZone.h"
@@ -118,19 +119,17 @@ struct Seen {
 
 // The point (px, py, pz) through the arena rig's lens: the lock's line along +x from the lead's feet at the origin, the
 // view at viewPitch (the boom and the lens split it) and turned `turn` degrees off that line (UE: + turns right, +y is
-// the right at 0). `lens` gets the lens's place.
+// the right at 0). The lens is where Core's pose puts it (arenaCameraPose, arenaCameraLens); `lens` gets its place.
 Seen seenFromLens(const ZoneCamera& cam, float viewPitch, float turn, float px, float py, float pz, float lens[3]) {
     const float k = 3.14159265358979f / 180.f;
-    const ArenaPitchSplit split = arenaSplitPitch(kArenaLook, viewPitch);
-    const float b = split.boom * k;
     const float v = arenaClampViewPitch(kArenaLook, viewPitch) * k;
     const float y = turn * k;
-    const float fb[3] = {std::cos(b) * std::cos(y), std::cos(b) * std::sin(y), std::sin(b)};
-    const float ub[3] = {-std::sin(b) * std::cos(y), -std::sin(b) * std::sin(y), std::cos(b)};
     const float r[3] = {-std::sin(y), std::cos(y), 0.f};
     const float fv[3] = {std::cos(v) * std::cos(y), std::cos(v) * std::sin(y), std::sin(v)};
-    const float pivot[3] = {0.f, 0.f, cam.pivot};
-    for (int i = 0; i < 3; ++i) lens[i] = pivot[i] - fb[i] * cam.arm + r[i] * cam.side + ub[i] * cam.up;
+    const ArenaLensAt at = arenaCameraLens(arenaCameraPose(cam, AimStance{}, ArenaFrameYaw{0.f, turn}, viewPitch));
+    lens[0] = at.x;
+    lens[1] = at.y;
+    lens[2] = cam.pivot + at.z;
     const float d[3] = {px - lens[0], py - lens[1], pz - lens[2]};
     Seen s;
     s.ahead = d[0] * fv[0] + d[1] * fv[1] + d[2] * fv[2];
@@ -228,9 +227,8 @@ TEST_CASE("arena frame: for each rig, the target centred clear of the lead, the 
             CHECK(sgn * (foe.x - lead.x) > 0.f);
             CHECK(sgn * (foe.x - lead.x) >= sgn * (foe0.x - lead0.x) - 1e-5f);
             if (d >= centred) CHECK(std::fabs(foe.x) < 1e-3f);
-            // The lens exactly the rig's own distance from the pivot at the pitch the host eases to: the turn is an orbit
-            // round the pivot and the framing never writes the arm, the side, the up or the pivot (an invariant of what
-            // the framing leaves alone, not of a clamp).
+            // Core's lens (arenaCameraPose, arenaCameraLens) exactly the rig's own distance from the pivot at the pitch
+            // the host eases to; the pose test pins that the turn feeds only the yaw.
             const float lp[3] = {lens1[0], lens1[1], lens1[2] - cam.pivot};
             const float rig = std::sqrt(cam.arm * cam.arm + cam.side * cam.side + cam.up * cam.up);
             CHECK(std::sqrt(lp[0] * lp[0] + lp[1] * lp[1] + lp[2] * lp[2]) == doctest::Approx(rig).epsilon(1e-5));
@@ -239,6 +237,55 @@ TEST_CASE("arena frame: for each rig, the target centred clear of the lead, the 
     }
     CHECK(checked > 500);
     CHECK(thirds > 100);
+}
+
+TEST_CASE("arena camera pose: the turn moves only the drawn yaw; the rig the host applies is the zone's and the aim's, for each rig") {
+    const float k = 3.14159265358979f / 180.f;
+    const float dt = 1.f / 60.f;
+    const AimRules aimRules{};
+    const AimStance off;
+    AimStance aimed;
+    for (int i = 0; i < 60; ++i) aimed.tick(dt, true, FieldBody::Free);
+    REQUIRE(aimed.alpha() == doctest::Approx(1.f));
+    int checked = 0;
+    for (const ZoneCamera& cam : kRigs)
+    for (int a = 0; a < 2; ++a)
+    for (float share : {0.f, 0.5f, 1.f})
+    for (float pitch : {cam.lockPitch, 0.f, 45.f}) {
+        CAPTURE(cam.side);
+        CAPTURE(cam.arm);
+        CAPTURE(cam.fov);
+        CAPTURE(a);
+        CAPTURE(share);
+        CAPTURE(pitch);
+        const AimStance& aim = a ? aimed : off;
+        // 0, half the cap and the cap, on the side the framing turns for this shoulder.
+        const float turn = (cam.side >= 0.f ? -1.f : 1.f) * kArenaFrame.maxTurn * share;
+        const ArenaFrameYaw yaw{40.f, turn};
+        const ArenaCameraPose p = arenaCameraPose(cam, aim, yaw, pitch);
+        const ArenaCameraPose p0 = arenaCameraPose(cam, aim, ArenaFrameYaw{40.f, 0.f}, pitch);
+        const float arm = a ? cam.arm * aimRules.armScale : cam.arm;
+        const float side = a ? aimRules.shoulderRight / 100.f : cam.side;
+        const float fov = a ? aimRules.fov : cam.fov;
+        CHECK(std::fabs(p.yaw - arenaFrameViewYaw(yaw)) < 1e-4f);
+        CHECK(std::fabs(p.arm - arm) < 1e-3f);
+        CHECK(std::fabs(p.side - side) < 1e-3f);
+        CHECK(std::fabs(p.fov - fov) < 1e-3f);
+        CHECK(p.pivot == cam.pivot);
+        CHECK(p.up == cam.up);
+        CHECK(p.boomPitch == p0.boomPitch);
+        CHECK(p.tilt == p0.tilt);
+        // The lens Core gives: the arm's length back along the boom, and the rig's whole reach from the pivot.
+        const ArenaLensAt at = arenaCameraLens(p);
+        const float b = p.boomPitch * k;
+        const float y = p.yaw * k;
+        const float back = -(at.x * std::cos(b) * std::cos(y) + at.y * std::cos(b) * std::sin(y) + at.z * std::sin(b));
+        CHECK(std::fabs(back - arm) < 1e-3f);
+        const float reach = std::sqrt(at.x * at.x + at.y * at.y + at.z * at.z);
+        CHECK(std::fabs(reach - std::sqrt(arm * arm + side * side + cam.up * cam.up)) < 1e-3f);
+        ++checked;
+    }
+    CHECK(checked == 5 * 2 * 3 * 3);
 }
 
 TEST_CASE("arena frame: the look up at a tall boss goes through its face in the turned view, for each rig") {
@@ -337,59 +384,68 @@ TEST_CASE("arena frame: the stick moves the lead along the drawn view, and a rel
 TEST_CASE("arena frame: the yaw step: no turn while aiming or with framing off, a fold when nothing is followed, held in a hit pause") {
     const ArenaFrameRules& F = kArenaFrame;
     const float dt = 1.f / 60.f;
-    ArenaFrameScene s;
-    s.followed = true;
-    s.hasLine = true;
-    s.lineWant = 0.f;
-    s.side = 1.2f;
-    s.distance = 1.5f;
-    // Followed: the turn goes to the cap and the line onto the target.
-    ArenaFrameYaw yaw{30.f, 0.f};
-    for (int i = 0; i < 180; ++i) yaw = arenaFrameYawStep(F, yaw, s, dt);
-    CHECK(yaw.turn == doctest::Approx(-F.maxTurn));
-    CHECK(std::fabs(yaw.line) < 1e-3f);
-    // Aiming, and framing off: the turn eases to exactly 0 with no jump, and stays 0.
-    for (int mode = 0; mode < 2; ++mode) {
-        CAPTURE(mode);
-        ArenaFrameScene a = s;
-        a.aiming = mode == 0;
-        a.framing = mode == 0;
-        ArenaFrameYaw y = yaw;
-        const float most = F.maxTurn * (1.f - std::exp(-F.rate * dt)) + 1e-4f;
-        int steps = 0;
-        while (y.turn != 0.f && steps < 600) {
-            const ArenaFrameYaw next = arenaFrameYawStep(F, y, a, dt);
-            CHECK(std::fabs(next.turn - y.turn) <= most);
-            y = next;
-            ++steps;
+    // Each rig the centring test runs on (its shoulder sets the turn's side and the distance it caps at).
+    for (const ZoneCamera& cam : kRigs) {
+        CAPTURE(cam.side);
+        CAPTURE(cam.arm);
+        CAPTURE(cam.fov);
+        ArenaFrameScene s;
+        s.followed = true;
+        s.hasLine = true;
+        s.lineWant = 0.f;
+        s.side = cam.side;
+        s.distance = std::fabs(cam.side); // as near as the shoulder: the want is the cap
+        // Followed: the turn goes to the cap and the line onto the target.
+        ArenaFrameYaw yaw{30.f, 0.f};
+        for (int i = 0; i < 180; ++i) yaw = arenaFrameYawStep(F, yaw, s, dt);
+        CHECK(yaw.turn == doctest::Approx(cam.side > 0.f ? -F.maxTurn : F.maxTurn));
+        CHECK(std::fabs(yaw.line) < 1e-3f);
+        // Aiming, and framing off: the turn eases to exactly 0 with no jump, and stays 0.
+        for (int mode = 0; mode < 2; ++mode) {
+            CAPTURE(mode);
+            ArenaFrameScene a = s;
+            a.aiming = mode == 0;
+            a.framing = mode == 0;
+            ArenaFrameYaw y = yaw;
+            const float most = F.maxTurn * (1.f - std::exp(-F.rate * dt)) + 1e-4f;
+            int steps = 0;
+            while (y.turn != 0.f && steps < 600) {
+                const ArenaFrameYaw next = arenaFrameYawStep(F, y, a, dt);
+                CHECK(std::fabs(next.turn - y.turn) <= most);
+                y = next;
+                ++steps;
+            }
+            CHECK(y.turn == 0.f);
+            CHECK(steps * dt < 1.5f);
+            for (int i = 0; i < 60; ++i) y = arenaFrameYawStep(F, y, a, dt);
+            CHECK(y.turn == 0.f);
         }
-        CHECK(y.turn == 0.f);
-        CHECK(steps * dt < 1.5f);
-        for (int i = 0; i < 60; ++i) y = arenaFrameYawStep(F, y, a, dt);
-        CHECK(y.turn == 0.f);
+        // Nothing followed: the turn goes into the line and the drawn yaw holds.
+        ArenaFrameScene free = s;
+        free.followed = false;
+        const ArenaFrameYaw folded = arenaFrameYawStep(F, yaw, free, dt);
+        CHECK(folded.turn == 0.f);
+        CHECK(std::fabs(arenaFrameViewYaw(folded) - arenaFrameViewYaw(yaw)) < 1e-4f);
+        // The hit pause: nothing moves, followed or not, aiming or not, line and turn bit-identical.
+        for (int c = 0; c < 4; ++c) {
+            ArenaFrameScene h = s;
+            h.followed = (c & 1) != 0;
+            h.aiming = (c & 2) != 0;
+            h.lineWant = 90.f;
+            h.held = true;
+            const ArenaFrameYaw kept = arenaFrameYawStep(F, ArenaFrameYaw{12.5f, -17.25f}, h, dt);
+            CHECK(kept.line == 12.5f);
+            CHECK(kept.turn == -17.25f);
+        }
+        // dt 0 holds too, and a NaN turn counts as 0.
+        const ArenaFrameYaw z = arenaFrameYawStep(F, ArenaFrameYaw{5.f, -3.f}, s, 0.f);
+        CHECK(z.line == 5.f);
+        CHECK(z.turn == -3.f);
+        CHECK(arenaFrameYawStep(F, ArenaFrameYaw{5.f, std::numeric_limits<float>::quiet_NaN()}, free, dt).turn == 0.f);
     }
-    // Nothing followed: the turn goes into the line and the drawn yaw holds.
-    ArenaFrameScene free = s;
-    free.followed = false;
-    const ArenaFrameYaw folded = arenaFrameYawStep(F, yaw, free, dt);
-    CHECK(folded.turn == 0.f);
-    CHECK(std::fabs(arenaFrameViewYaw(folded) - arenaFrameViewYaw(yaw)) < 1e-4f);
-    // The hit pause: nothing moves, followed or not, aiming or not, line and turn bit-identical.
-    for (int c = 0; c < 4; ++c) {
-        ArenaFrameScene h = s;
-        h.followed = (c & 1) != 0;
-        h.aiming = (c & 2) != 0;
-        h.lineWant = 90.f;
-        h.held = true;
-        const ArenaFrameYaw kept = arenaFrameYawStep(F, ArenaFrameYaw{12.5f, -17.25f}, h, dt);
-        CHECK(kept.line == 12.5f);
-        CHECK(kept.turn == -17.25f);
-    }
-    // dt 0 holds too, and a NaN turn counts as 0.
-    const ArenaFrameYaw z = arenaFrameYawStep(F, ArenaFrameYaw{5.f, -3.f}, s, 0.f);
-    CHECK(z.line == 5.f);
-    CHECK(z.turn == -3.f);
-    CHECK(arenaFrameYawStep(F, ArenaFrameYaw{5.f, std::numeric_limits<float>::quiet_NaN()}, free, dt).turn == 0.f);
+    // A non-finite yaw counts as 0 (the drawn yaw never carries an infinity into the view).
+    CHECK(arenaFrameViewYaw(ArenaFrameYaw{std::numeric_limits<float>::infinity(), 0.f}) == 0.f);
+    CHECK(arenaFrameViewYaw(ArenaFrameYaw{0.f, -std::numeric_limits<float>::infinity()}) == 0.f);
 }
 
 TEST_CASE("arena frame: aiming in and out under a lock, the target's place on screen swings back no more than 1% of the width") {

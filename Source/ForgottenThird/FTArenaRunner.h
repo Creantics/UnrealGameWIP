@@ -22,6 +22,7 @@
 #include "ftcore/ArenaFight.h"
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
@@ -829,6 +830,13 @@ private:
 	float FrameTurn = 0.f;
 	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read.
 	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}); }
+	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
+	ftcore::ArenaFrameRules FrameRules() const
+	{
+		ftcore::ArenaFrameRules Rules = ftcore::kArenaFrame;
+		Rules.maxTurn = Fit.camera.frameTurnCapDeg;
+		return Rules;
+	}
 #if !UE_BUILD_SHIPPING
 	// -ArenaFrameCheck: the framing as the rendered camera shows it, sampled on each followed frame and logged by
 	// LogFeatureChecks ("Arena check: framing"). -ArenaNoFrame holds the framing at 0, for a side-by-side.
