@@ -14,6 +14,17 @@
 // - Twill: a 2/1 twill, diagonal wales of yarn floats; `repeats` is the number of yarns along a side.
 // - Knit: single jersey, columns of V-shaped loops; `repeats` is the number of columns along a side
 //   (rows are 1.3 times as many, so a loop is taller than wide).
+// - Pore: a near-flat skin with small pits pressed into it (grain read as dimples, not as cells with walls
+//   between them). One pit per cell of a `repeats` x `repeats` grid at most: jittered, some cells empty, a
+//   random radius and depth, a slightly elliptical, turned outline and a soft rounded bowl, the lookup
+//   domain-warped so no two neighbours match; a radius never reaches past 0.38 of the way to the nearest
+//   neighbour, so pits never merge. A very faint undulation keeps the skin between them from being dead
+//   flat. Made for garmentTileCentimetres(Pore) = 1.6 cm per repeat: with the default 24 cells, pits of
+//   0.3 to 0.6 mm across about 0.67 mm apart.
+// - Crease: a sparse net of fine crease lines running along the tile's v axis (down the image), `repeats`
+//   lines across a side, spaced unevenly (2.1 to 3.9 mm at the intended 2.4 cm), each wandering a little,
+//   broken by gaps, varying in depth and width (about 0.15 to 0.25 mm), plus a few short connectors at a
+//   shallow angle between neighbouring lines. `repeats` must be even.
 //
 // Every tile wraps at its edges. The same settings always give the same tile. Building a tile
 // allocates (load time only).
@@ -25,7 +36,7 @@
 
 namespace ftcore {
 
-enum class GarmentTile : uint8_t { Leather, Twill, Knit };
+enum class GarmentTile : uint8_t { Leather, Twill, Knit, Pore, Crease };
 
 struct GarmentTileSettings {
     uint32_t size = 512;        // pixels per side; a power of two from 32 up
@@ -36,6 +47,10 @@ struct GarmentTileSettings {
 
 // The settings each tile is built with for the garment masters.
 FTCORE_API GarmentTileSettings garmentTileDefaults(GarmentTile tile);
+
+// Centimetres per repeat the tile is drawn for (its features have their stated real sizes there): Pore 1.6,
+// Crease 2.4; 0 for tiles drawn without a fixed size (Leather, Twill, Knit), which each substance scales.
+FTCORE_API float garmentTileCentimetres(GarmentTile tile);
 
 // Fills height with size * size values in [0, 1], row-major. Returns false (height empty) when the
 // settings are out of range.

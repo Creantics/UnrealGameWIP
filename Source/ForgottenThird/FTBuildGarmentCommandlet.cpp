@@ -15,6 +15,7 @@
 #include "Materials/MaterialExpressionPreSkinnedNormal.h"
 #include "Materials/MaterialExpressionPreSkinnedPosition.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
@@ -73,6 +74,18 @@ const FScalarSpec kScalars[] = {
 	{TEXT("GrainCrease"), 0.f},       // detail relief up by this share in creases and seams (wear map R below 0.5)
 	{TEXT("GrainWorn"), 0.f},         // and down by this share on rubbed edges (R above 0.5)
 	{TEXT("TileBreak"), 0.f},         // 0..1: scale A swaps to a turned copy of the tile over about 4 cm patches
+	{TEXT("CreaseSize"), 2.4f},       // centimetres per repeat of the crease tile (CreaseNormal / CreaseMask)
+	{TEXT("CreaseStrength"), 0.f},    // normal tilt of the crease pass; 0 = pass skipped
+	{TEXT("CreaseFadeNear"), 150.f},  // camera distance (cm) where the crease pass starts to fade, and where it is gone
+	{TEXT("CreaseFadeFar"), 300.f},
+	{TEXT("CreaseCavity"), 0.5f},     // share of the crease lines' depth that goes into the cavity (darker, rougher)
+	{TEXT("StretchSleeveX"), 22.f},   // pre-skinned |x| (cm) beyond which the crease lines follow the arm, not +Z (2 cm blend)
+	{TEXT("ArmAngle"), 45.f},         // degrees the bind-pose arm points below horizontal
+	{TEXT("ArmForward"), 0.f},        // degrees the bind-pose arm swings toward pre-skinned +Y (the leads' front)
+	{TEXT("CreaseDarken"), 0.f},      // albedo x (1 - CreaseDarken) in the wear map's creases (R below 0.5)
+	{TEXT("RoughnessFloor"), 0.f},    // roughness at least this after the wear terms (not on metal); 0 = off
+	{TEXT("IslandFrame"), 0.f},       // 1: the detail, crease and mottle tilts go through each UV island's own frame
+	{TEXT("IslandYSign"), 1.f},       // tangent y = IslandYSign x (tilt . +V direction) under IslandFrame
 	{TEXT("MottleSize"), 3.f},        // centimetres per feature of the broad normal tilt (the roughness mottle is twice that)
 	{TEXT("MottleTilt"), 0.f},        // normal tilt of the mottle (0 = off; leather jackets set it per instance)
 	{TEXT("MottleRoughness"), 0.f},   // +- roughness of the mottle (0 = off)
@@ -133,20 +146,29 @@ TArray<FSubstance> Substances()
 {
 	using ftcore::GarmentTile;
 	TArray<FSubstance> Out;
-	// Leather jacket: black, a tight highlight (not a broad grey sheen), pebbled grain, smoother on worn edges, rougher in
-	// creases; less sky fill and a darker diffuse response so it reads black, not grey-green, under an open sky. Roughness
-	// from a map median of 0.49 lands near 0.3 with the micro and cavity terms (was near 0.4: the broad lobe).
-	// Grain: scale A at 1.1 cm puts the tile's 22 cells at 0.5 mm (pores of 0.3 to 0.6 mm), gone by about 1.1 m, where
-	// it could only shimmer; scale B (4 mm) carries the pebble at play distance. The pores are rougher than the tops
-	// (CavityRoughness), deeper in creases and seams and rubbed flatter and shinier on worn edges (GrainCrease, GrainWorn,
-	// EdgeSmooth), with the tile break on.
-	Out.Add({TEXT("Leather"), false, GarmentTile::Leather,
-		{{TEXT("Specular"), 0.28f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.2f}, {TEXT("RoughnessOffset"), 0.12f},
-			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.28f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.15f},
-			{TEXT("EdgeLighten"), 0.12f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 1.1f}, {TEXT("DetailSizeB"), 9.f},
-			{TEXT("DetailStrengthA"), 0.35f}, {TEXT("DetailStrengthB"), 0.12f}, {TEXT("FadeNearA"), 30.f}, {TEXT("FadeFarA"), 110.f},
-			{TEXT("GrainCrease"), 0.8f}, {TEXT("GrainWorn"), 0.6f}, {TEXT("TileBreak"), 1.f}, {TEXT("DiffuseResponse"), 1.06f},
-			{TEXT("SkyFill"), 0.7f}, {TEXT("SiltLiftMax"), 1.15f}, {TEXT("SiltFilmRoughness"), 0.25f}},
+	// Leather jacket: black, a satin highlight (no clear coat: the lit master is Default Lit), less sky fill and a darker
+	// diffuse response so it reads black, not grey-green, under an open sky.
+	// Grain: a smooth skin with pores pressed into it (the Pore tile at its true 1.6 cm: pits of 0.3 to 0.6 mm), not
+	// walled cells; gone between 80 and 150 cm, where it could only shimmer. No second scale. Over it a sparse net of fine
+	// crease lines 2 to 4 mm apart (the Crease tile at 2.4 cm), running down the torso and along each sleeve (the bind
+	// pose's arm: 55 degrees down, 38 forward), gone by 3 m. Pores deeper in creases and seams (x1.5) and nearly rubbed out
+	// on worn edges (x0.3), with the tile break on. Both tilts go through each UV island's frame (the jackets' atlas
+	// islands are each turned differently).
+	// Roughness: the map's median 0.49 x 0.25 + 0.36 puts the skin near 0.48, pit floors about 0.08 rougher, creases
+	// 0.1 rougher, worn edges 0.15 smoother but never under 0.3. Worn edges a little lighter, wear-map creases a little
+	// darker.
+	Out.Add({TEXT("Leather"), false, GarmentTile::Pore,
+		{{TEXT("Specular"), 0.28f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.25f}, {TEXT("RoughnessOffset"), 0.36f},
+			{TEXT("MicroRoughness"), 0.02f}, {TEXT("CavityRoughness"), 0.12f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.15f},
+			{TEXT("RoughnessFloor"), 0.3f}, {TEXT("EdgeLighten"), 0.12f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("CreaseDarken"), 0.12f},
+			{TEXT("DetailSizeA"), ftcore::garmentTileCentimetres(GarmentTile::Pore)}, {TEXT("DetailStrengthA"), 0.35f},
+			{TEXT("FadeNearA"), 80.f}, {TEXT("FadeFarA"), 150.f}, {TEXT("DetailStrengthB"), 0.f}, {TEXT("FadeNearB"), 0.f},
+			{TEXT("FadeFarB"), 0.f}, {TEXT("GrainCrease"), 0.5f}, {TEXT("GrainWorn"), 0.7f}, {TEXT("TileBreak"), 1.f},
+			{TEXT("CreaseSize"), ftcore::garmentTileCentimetres(GarmentTile::Crease)}, {TEXT("CreaseStrength"), 0.25f},
+			{TEXT("CreaseFadeNear"), 150.f}, {TEXT("CreaseFadeFar"), 300.f}, {TEXT("CreaseCavity"), 0.5f},
+			{TEXT("StretchSleeveX"), 22.f}, {TEXT("ArmAngle"), 55.f}, {TEXT("ArmForward"), 38.f}, {TEXT("IslandFrame"), 1.f},
+			{TEXT("IslandYSign"), 1.f}, {TEXT("DiffuseResponse"), 1.06f}, {TEXT("SkyFill"), 0.7f}, {TEXT("SiltLiftMax"), 1.15f},
+			{TEXT("SiltFilmRoughness"), 0.25f}},
 		FLinearColor::White, FLinearColor::White});
 	// Woven trousers: cloth shading, matte; the twill only shows within about a metre.
 	Out.Add({TEXT("Woven"), true, GarmentTile::Twill,
@@ -178,6 +200,24 @@ TArray<FSubstance> Substances()
 	return Out;
 }
 
+// Each UV island's own frame, for IslandFrame: T along +U and B along +V on the surface, from the screen derivatives of
+// pre-skinned P and UV0 (a cotangent frame), so a tilt worked out in pre-skinned space can be written in tangent space
+// whatever way the island is turned in the atlas. Taken before any branch (derivatives must be); zero where the UVs
+// don't change (no tilt there), and zero in ray tracing, which has no derivatives.
+const TCHAR* const kFrameCode = TEXT(R"HLSL(float3 frN = normalize(N);
+float3 frPx = ddx(P);
+float3 frPy = ddy(P);
+float2 frUx = ddx(UV);
+float2 frUy = ddy(UV);
+float3 frC1 = cross(frPy, frN);
+float3 frC2 = cross(frN, frPx);
+float3 frT = frC1 * frUx.x + frC2 * frUy.x;
+float3 frB = frC1 * frUx.y + frC2 * frUy.y;
+frT *= rsqrt(max(dot(frT, frT), 1e-30));
+frB *= rsqrt(max(dot(frB, frB), 1e-30)) * (IslandYSign < 0.0 ? -1.0 : 1.0);
+bool island = IslandFrame > 0.5;
+)HLSL");
+
 // The detail: the tile projected along the three pre-skinned axes and blended by the normal, at two scales that each
 // fade with camera distance. Returns xy the tangent tilt to add, z cavity (1 open, lower in the grooves), w micro
 // roughness variation in -1..1.
@@ -185,6 +225,13 @@ TArray<FSubstance> Substances()
 // up to 1 + GrainCrease in the creases and down to 1 - GrainWorn on the elbows, cuffs and collar edge. TileBreak swaps
 // scale A, the finest and most often repeated, for a quarter-turned, shifted copy of the tile over patches of about 4 cm,
 // so no repeat lines up across a panel. All three are 0 by default, which gives the plain two-scale detail.
+// The crease pass (CreaseStrength above 0) adds the crease tile at CreaseSize, faded by CreaseFadeNear..Far, its lines
+// laid along the panel's stretch axis: pre-skinned +Z on the torso, the bind-pose arm (ArmAngle down, ArmForward toward
+// +Y, mirrored in x) beyond StretchSleeveX. In each projection plane the tile is turned so its v runs along that axis
+// projected into the plane (a constant turn per region, so nothing swims; torso and sleeve are two samples blended over
+// 2 cm), and the slope read back is turned back. It samples with explicit gradients, so its branches are safe.
+// IslandFrame 0 adds the plane slopes straight into tangent xy (the old way); 1 builds each slope into a pre-skinned
+// vector (plane axes x slope) and writes that in the island's frame (kFrameCode).
 const TCHAR* const kDetailCode = TEXT(R"HLSL(float3 n = normalize(N);
 float3 w = pow(abs(n), 4.0);
 w /= max(w.x + w.y + w.z, 1e-4);
@@ -200,6 +247,7 @@ float share[3] = { 0.65, 0.65, 0.35 };
 float2 tilt = 0;
 float cavity = 0;
 float micro = 0;
+float3 g = 0; // the same tilt as a pre-skinned vector, for the island frame
 for (int i = 0; i < 3; ++i)
 {
 	if (weight[i] <= 0.0)
@@ -227,7 +275,67 @@ for (int i = 0; i < 3; ++i)
 	tilt += t * strength[i] * weight[i] * relief;
 	cavity += (m.x - 1.0) * weight[i] * share[i] * relief;
 	micro += (m.y * 2.0 - 1.0) * weight[i] * share[i];
+	if (island)
+	{
+		if (i == 1)
+		{
+			nx = float2(nx.y, -nx.x);
+			ny = float2(ny.y, -ny.x);
+			nz = float2(nz.y, -nz.x);
+		}
+		g += (float3(0.0, nx) * w.x + float3(ny.x, 0.0, ny.y) * w.y + float3(nz, 0.0) * w.z) * (strength[i] * weight[i] * relief);
+	}
 }
+float fadeC = CreaseStrength > 0.0 ? saturate((CreaseFadeFar - Depth) / max(CreaseFadeFar - CreaseFadeNear, 1.0)) : 0.0;
+if (fadeC > 0.0)
+{
+	float cs = max(CreaseSize, 0.01);
+	float3 q = P / cs;
+	float3 qx = frPx / cs;
+	float3 qy = frPy / cs;
+	float sleeve = smoothstep(StretchSleeveX - 2.0, StretchSleeveX + 2.0, abs(P.x));
+	float down = radians(ArmAngle);
+	float fwd = radians(ArmForward);
+	float3 arm = float3((P.x < 0.0 ? -1.0 : 1.0) * cos(down) * cos(fwd), cos(down) * sin(fwd), -sin(down));
+	float regionW[2] = { 1.0 - sleeve, sleeve };
+	float3 axis[2] = { float3(0.0, 0.0, 1.0), arm };
+	float2 ct = 0;
+	float3 cg = 0;
+	float cc = 0;
+	for (int r = 0; r < 2; ++r)
+	{
+		if (regionW[r] <= 0.0)
+			continue;
+		for (int k = 0; k < 3; ++k)
+		{
+			float wk = w[k] * regionW[r];
+			if (wk < 0.002)
+				continue;
+			// Projection along x reads (y, z), along y (x, z), along z (x, y), as above.
+			float2 c = k == 0 ? q.yz : (k == 1 ? q.xz : q.xy);
+			float2 cx = k == 0 ? qx.yz : (k == 1 ? qx.xz : qx.xy);
+			float2 cy = k == 0 ? qy.yz : (k == 1 ? qy.xz : qy.xy);
+			float2 a = k == 0 ? axis[r].yz : (k == 1 ? axis[r].xz : axis[r].xy);
+			float la = length(a);
+			a = la > 1e-3 ? a / la : float2(0.0, 1.0); // the axis seen end-on (torso tops): any fixed direction
+			float2 b = float2(a.y, -a.x);
+			float2 uv = float2(dot(c, b), dot(c, a));
+			float2 gx = float2(dot(cx, b), dot(cx, a));
+			float2 gy = float2(dot(cy, b), dot(cy, a));
+			float2 sl = Texture2DSampleGrad(CreaseN, CreaseNSampler, uv, gx, gy).xy * 2.0 - 1.0;
+			float cm = Texture2DSampleGrad(CreaseM, CreaseMSampler, uv, gx, gy).r;
+			float2 sp = sl.x * b + sl.y * a; // the slope back in the plane's axes
+			ct += sp * wk;
+			cg += (k == 0 ? float3(0.0, sp) : (k == 1 ? float3(sp.x, 0.0, sp.y) : float3(sp, 0.0))) * wk;
+			cc += (cm - 1.0) * wk;
+		}
+	}
+	tilt += ct * (CreaseStrength * fadeC);
+	g += cg * (CreaseStrength * fadeC);
+	cavity += cc * (CreaseCavity * fadeC);
+}
+if (island)
+	tilt = float2(dot(g, frT), dot(g, frB));
 return float4(tilt, saturate(1.0 + cavity), micro);
 )HLSL");
 
@@ -236,6 +344,8 @@ return float4(tilt, saturate(1.0 + cavity), micro);
 // MottleSize cm (plus a half-weight octave at 0.43x), z a zero-mean roughness change at twice that size. Taken in
 // pre-skinned space so it stays on the garment, faded out with camera distance (MottleFadeNear..Far) where it would only
 // alias, no tilt on metal. Off by default (MottleTilt and MottleRoughness 0): the early out keeps other garments' cost.
+// With IslandFrame the tilt is a pre-skinned vector (a third noise field for z), laid flat on the surface and written in
+// the island's frame (kFrameCode, which comes first, before the early out).
 const TCHAR* const kMottleCode = TEXT(R"HLSL(float fade = saturate((FadeFar - Depth) / max(FadeFar - FadeNear, 1.0));
 if (fade <= 0.0 || (Tilt == 0.0 && Rough == 0.0))
 	return float3(0.0, 0.0, 0.0);
@@ -245,6 +355,13 @@ float2 t = float2(GradientNoise3D_ALU(p, false, 0.0), GradientNoise3D_ALU(p + o,
 float3 p2 = p * 2.31 + float3(3.7, 11.2, 7.9);
 t += 0.5 * float2(GradientNoise3D_ALU(p2, false, 0.0), GradientNoise3D_ALU(p2 + o, false, 0.0));
 float r = GradientNoise3D_ALU(p * 0.5 + float3(31.1, 2.9, 13.3), false, 0.0);
+if (island)
+{
+	float3 o3 = float3(4.3, 21.7, 2.9);
+	float3 v = float3(t, GradientNoise3D_ALU(p + o3, false, 0.0) + 0.5 * GradientNoise3D_ALU(p2 + o3, false, 0.0));
+	v -= frN * dot(v, frN);
+	t = float2(dot(v, frT), dot(v, frB));
+}
 return float3(t * Tilt * (1.0 - Metal), r * Rough) * fade;
 )HLSL");
 
@@ -268,6 +385,7 @@ float3 q = P * 0.8;
 float rub = sin(q.x + 1.7 * sin(q.y * 0.6)) * sin(q.y * 0.9 + 1.3 * sin(q.z * 0.7)) * sin(q.z * 0.8 + 1.1 * sin(q.x * 0.5));
 edge *= saturate(0.35 + 1.6 * rub);
 c *= 1.0 + EdgeLighten * edge;
+c *= 1.0 - CreaseDarken * saturate((0.5 - Wear.r) * 2.0); // wear-map creases a little darker (0 by default)
 c *= lerp(1.0, D.z, CavityDarken);
 c *= lerp(1.0, SoleTint.rgb, Sole);
 c *= lerp(1.0, WetDarken, Wet.x);
@@ -284,6 +402,7 @@ float r = ORM.g * RoughScale + RoughOffset;
 r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
 r += crease * CreaseRough - edge * EdgeSmooth;
 r += M.z; // centimetre mottle (0 unless MottleRoughness is set)
+r = RoughFloor > 0.0 ? lerp(r, max(r, RoughFloor), 1.0 - Metal) : r; // worn edges never polished past the floor; not on metal
 r = lerp(r, SoleRough + D.w * MicroRough, Sole);
 r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
 r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
@@ -531,6 +650,8 @@ struct FDefaults
 	UTexture* Wear = nullptr;
 	UTexture* DetailN = nullptr;
 	UTexture* DetailM = nullptr;
+	UTexture* CreaseN = nullptr;
+	UTexture* CreaseM = nullptr;
 };
 
 UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
@@ -554,6 +675,9 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 	UMaterialExpressionTextureSampleParameter2D* Wear = Sampler(Material, TEXT("WearTexture"), Tex.Wear, SAMPLERTYPE_Masks, 0);
 	UMaterialExpressionTextureObjectParameter* DetailN = TextureObject(Material, TEXT("DetailNormal"), Tex.DetailN, SAMPLERTYPE_Normal, 300);
 	UMaterialExpressionTextureObjectParameter* DetailM = TextureObject(Material, TEXT("DetailMask"), Tex.DetailM, SAMPLERTYPE_Masks, 500);
+	UMaterialExpressionTextureObjectParameter* CreaseN = TextureObject(Material, TEXT("CreaseNormal"), Tex.CreaseN, SAMPLERTYPE_Normal, 550);
+	UMaterialExpressionTextureObjectParameter* CreaseM = TextureObject(Material, TEXT("CreaseMask"), Tex.CreaseM, SAMPLERTYPE_Masks, 650);
+	UMaterialExpressionTextureCoordinate* Uv0 = AddExpression<UMaterialExpressionTextureCoordinate>(Material, -1900, 1100);
 
 	UMaterialExpressionVertexInterpolator* Position =
 		Interpolated(Material, AddExpression<UMaterialExpressionPreSkinnedPosition>(Material, -1900, 700), 700);
@@ -561,14 +685,22 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 		Interpolated(Material, AddExpression<UMaterialExpressionPreSkinnedNormal>(Material, -1900, 800), 800);
 	UMaterialExpressionPixelDepth* Depth = AddExpression<UMaterialExpressionPixelDepth>(Material, -1600, 900);
 
-	UMaterialExpressionCustom* Detail = Custom(Material, TEXT("GarmentDetail"), CMOT_Float4, kDetailCode,
+	const FString DetailCode = FString(kFrameCode) + kDetailCode;
+	const FString MottleCode = FString(kFrameCode) + kMottleCode;
+	UMaterialExpressionCustom* Detail = Custom(Material, TEXT("GarmentDetail"), CMOT_Float4, *DetailCode,
 		{{TEXT("P"), Position, 0}, {TEXT("N"), SurfaceNormal, 0}, {TEXT("Depth"), Depth, 0}, {TEXT("DetailN"), DetailN, 0},
 			{TEXT("DetailM"), DetailM, 0}, {TEXT("SizeA"), G.Scalar(TEXT("DetailSizeA")), 0}, {TEXT("SizeB"), G.Scalar(TEXT("DetailSizeB")), 0},
 			{TEXT("StrengthA"), G.Scalar(TEXT("DetailStrengthA")), 0}, {TEXT("StrengthB"), G.Scalar(TEXT("DetailStrengthB")), 0},
 			{TEXT("FadeNearA"), G.Scalar(TEXT("FadeNearA")), 0}, {TEXT("FadeFarA"), G.Scalar(TEXT("FadeFarA")), 0},
 			{TEXT("FadeNearB"), G.Scalar(TEXT("FadeNearB")), 0}, {TEXT("FadeFarB"), G.Scalar(TEXT("FadeFarB")), 0},
 			{TEXT("Wear"), Wear, 0}, {TEXT("GrainCrease"), G.Scalar(TEXT("GrainCrease")), 0},
-			{TEXT("GrainWorn"), G.Scalar(TEXT("GrainWorn")), 0}, {TEXT("TileBreak"), G.Scalar(TEXT("TileBreak")), 0}},
+			{TEXT("GrainWorn"), G.Scalar(TEXT("GrainWorn")), 0}, {TEXT("TileBreak"), G.Scalar(TEXT("TileBreak")), 0},
+			{TEXT("UV"), Uv0, 0}, {TEXT("IslandFrame"), G.Scalar(TEXT("IslandFrame")), 0},
+			{TEXT("IslandYSign"), G.Scalar(TEXT("IslandYSign")), 0}, {TEXT("CreaseN"), CreaseN, 0}, {TEXT("CreaseM"), CreaseM, 0},
+			{TEXT("CreaseSize"), G.Scalar(TEXT("CreaseSize")), 0}, {TEXT("CreaseStrength"), G.Scalar(TEXT("CreaseStrength")), 0},
+			{TEXT("CreaseFadeNear"), G.Scalar(TEXT("CreaseFadeNear")), 0}, {TEXT("CreaseFadeFar"), G.Scalar(TEXT("CreaseFadeFar")), 0},
+			{TEXT("CreaseCavity"), G.Scalar(TEXT("CreaseCavity")), 0}, {TEXT("StretchSleeveX"), G.Scalar(TEXT("StretchSleeveX")), 0},
+			{TEXT("ArmAngle"), G.Scalar(TEXT("ArmAngle")), 0}, {TEXT("ArmForward"), G.Scalar(TEXT("ArmForward")), 0}},
 		600);
 	UMaterialExpressionCustom* Metal = Custom(Material, TEXT("GarmentMetal"), CMOT_Float1, kMetalCode,
 		{{TEXT("ORM"), Orm, 0}, {TEXT("MetalScale"), G.Scalar(TEXT("MetalScale")), 0}, {TEXT("MetalFloor"), G.Scalar(TEXT("MetalFloor")), 0},
@@ -590,12 +722,15 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0},
 			{TEXT("P"), Position, 0}, {TEXT("DiffResp"), G.Scalar(TEXT("DiffuseResponse")), 0},
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0},
-			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}, {TEXT("SiltLiftMax"), G.Scalar(TEXT("SiltLiftMax")), 0}},
+			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}, {TEXT("SiltLiftMax"), G.Scalar(TEXT("SiltLiftMax")), 0},
+			{TEXT("CreaseDarken"), G.Scalar(TEXT("CreaseDarken")), 0}},
 		-900);
-	UMaterialExpressionCustom* Mottle = Custom(Material, TEXT("GarmentMottle"), CMOT_Float3, kMottleCode,
+	UMaterialExpressionCustom* Mottle = Custom(Material, TEXT("GarmentMottle"), CMOT_Float3, *MottleCode,
 		{{TEXT("P"), Position, 0}, {TEXT("Depth"), Depth, 0}, {TEXT("Metal"), Metal, 0}, {TEXT("Size"), G.Scalar(TEXT("MottleSize")), 0},
 			{TEXT("Tilt"), G.Scalar(TEXT("MottleTilt")), 0}, {TEXT("Rough"), G.Scalar(TEXT("MottleRoughness")), 0},
-			{TEXT("FadeNear"), G.Scalar(TEXT("MottleFadeNear")), 0}, {TEXT("FadeFar"), G.Scalar(TEXT("MottleFadeFar")), 0}},
+			{TEXT("FadeNear"), G.Scalar(TEXT("MottleFadeNear")), 0}, {TEXT("FadeFar"), G.Scalar(TEXT("MottleFadeFar")), 0},
+			{TEXT("N"), SurfaceNormal, 0}, {TEXT("UV"), Uv0, 0}, {TEXT("IslandFrame"), G.Scalar(TEXT("IslandFrame")), 0},
+			{TEXT("IslandYSign"), G.Scalar(TEXT("IslandYSign")), 0}},
 		800);
 	UMaterialExpressionCustom* NormalOut = Custom(Material, TEXT("GarmentNormal"), CMOT_Float3, kNormalCode,
 		{{TEXT("Base"), Normal, 0}, {TEXT("D"), Detail, 0}, {TEXT("M"), Mottle, 0}}, -300);
@@ -605,7 +740,8 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("CavityRough"), G.Scalar(TEXT("CavityRoughness")), 0}, {TEXT("CreaseRough"), G.Scalar(TEXT("CreaseRoughness")), 0},
 			{TEXT("EdgeSmooth"), G.Scalar(TEXT("EdgeSmooth")), 0}, {TEXT("MetalRough"), G.Scalar(TEXT("MetalRoughness")), 0},
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0},
-			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0}},
+			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0},
+			{TEXT("RoughFloor"), G.Scalar(TEXT("RoughnessFloor")), 0}},
 		0);
 	UMaterialExpressionCustom* Specular = Custom(Material, TEXT("GarmentSpecular"), CMOT_Float1, kSpecularCode,
 		{{TEXT("Spec"), G.Scalar(TEXT("Specular")), 0}, {TEXT("CavitySpec"), G.Scalar(TEXT("CavitySpecular")), 0}, {TEXT("D"), Detail, 0},
@@ -716,6 +852,10 @@ const TCHAR* TileName(ftcore::GarmentTile Tile)
 		return TEXT("Twill");
 	case ftcore::GarmentTile::Knit:
 		return TEXT("Knit");
+	case ftcore::GarmentTile::Pore:
+		return TEXT("Pore");
+	case ftcore::GarmentTile::Crease:
+		return TEXT("Crease");
 	}
 	return TEXT("Unknown");
 }
@@ -736,13 +876,26 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 	using namespace FTGarmentBuild;
 	FString DumpDir;
 	FParse::Value(*Params, TEXT("DumpDir="), DumpDir);
+	// -Folder=/Game/... builds the whole set (masters, instances, tiles) in another package folder, e.g. a scratch one to
+	// compile-check a change without touching the live garment assets.
+	FString Folder = kFolder;
+	FParse::Value(*Params, TEXT("Folder="), Folder);
+	if (!Folder.EndsWith(TEXT("/")))
+	{
+		Folder += TEXT("/");
+	}
+	if (!Folder.StartsWith(TEXT("/Game/")))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: -Folder must be under /Game/ (got %s)."), *Folder);
+		return 1;
+	}
 	if (!FApp::CanEverRender())
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: run with -AllowCommandletRendering, so the masters compile and are checked."));
 		return 1;
 	}
-	const FString Folder = kFolder;
-	const ftcore::GarmentTile Tiles[] = {ftcore::GarmentTile::Leather, ftcore::GarmentTile::Twill, ftcore::GarmentTile::Knit};
+	const ftcore::GarmentTile Tiles[] = {ftcore::GarmentTile::Leather, ftcore::GarmentTile::Twill, ftcore::GarmentTile::Knit,
+		ftcore::GarmentTile::Pore, ftcore::GarmentTile::Crease};
 	const TArray<FSubstance> All = Substances();
 
 	// Start the shared assets from nothing, before anything loads the old ones. The old files are set aside, not
@@ -808,6 +961,8 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 	Defaults.Wear = Solid(Folder + TEXT("T_FTGarmentWear"), 0, 128, 128, TC_Masks); // R curvature 0.5: flat
 	Defaults.DetailN = TileTextures[ftcore::GarmentTile::Leather].Key;
 	Defaults.DetailM = TileTextures[ftcore::GarmentTile::Leather].Value;
+	Defaults.CreaseN = TileTextures[ftcore::GarmentTile::Crease].Key;
+	Defaults.CreaseM = TileTextures[ftcore::GarmentTile::Crease].Value;
 	ToSave.Add(Defaults.White);
 	ToSave.Add(Defaults.Orm);
 	ToSave.Add(Defaults.FlatNormal);
@@ -838,8 +993,8 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	Old.Commit();
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildGarment: built 2 masters (%d expressions each), %d substances, %d detail tiles."),
-		Lit->GetExpressionCollection().Expressions.Num(), All.Num(), static_cast<int32>(UE_ARRAY_COUNT(Tiles)));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildGarment: built 2 masters (%d expressions each), %d substances, %d detail tiles in %s."),
+		Lit->GetExpressionCollection().Expressions.Num(), All.Num(), static_cast<int32>(UE_ARRAY_COUNT(Tiles)), *Folder);
 	return 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment needs an editor build."));
