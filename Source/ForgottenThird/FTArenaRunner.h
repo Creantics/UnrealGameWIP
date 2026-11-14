@@ -525,8 +525,13 @@ private:
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
 	// A step back's ground speed (m/s), from its SteppedBack event: the walk clip plays backward at it.
 	float StepBackSpeed[ftcore::kMaxArenaEnemies] = {};
+	// Its way, from the event's move: 0 back, 1 a sidestep to the enemy's left, 2 to its right (no room behind it).
+	uint8 StepBackWay[ftcore::kMaxArenaEnemies] = {};
 	// The camera's horizontal half-angle last handed to the fight (ArenaFight::setCameraHalfAngle); -1 none yet.
 	float FightCameraHalf = -1.f;
+	// The half-angle the log last named and when (real time): a zoom's every frame is not a line.
+	float LoggedCameraHalf = -1.f;
+	double CameraHalfLoggedAt = -1e9;
 	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when, how
 	// far into its get-up it was last drawn (s), and until when a get-up cut short by the spell's end is still owed.
 	bool bKneeling[ftcore::kMaxArenaEnemies] = {};

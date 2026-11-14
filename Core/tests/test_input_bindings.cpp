@@ -391,6 +391,32 @@ TEST_CASE("input hints: the lines follow a rebind and leave out what nothing rea
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, +word).find("Space <input.jump>") != std::string::npos);
 }
 
+TEST_CASE("input bindings: an action the file binds to \"\" is unbound by choice, not listed as left by a collision") {
+    InputBindings b = defaultInputBindings();
+    InputUnbound left;
+    std::string error;
+    // The file unbinds party's P itself (the map hold still reaches it); G given to release leaves gift_heal unbound by
+    // the collision.
+    const bool ok = importInputBindings(R"({"version": 1, "keys": {"party": "", "release": "G"}})", b, &error, &left);
+    INFO(error);
+    REQUIRE(ok);
+    CHECK(std::string(inputKey(b, InputAction::Party, InputDevice::Keys)).empty());
+    CHECK_FALSE(left.left[0][static_cast<std::size_t>(InputAction::Party)]);
+    CHECK(left.left[0][static_cast<std::size_t>(InputAction::GiftHeal)]);
+    CHECK(left.count == 1);
+    CHECK(inputUnboundLine(left) == "NO KEY: gift_heal (keyboard)");
+    // The controls lines: the choice shows its route, never NO KEY; the collision shows NO KEY.
+    const std::string field = inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr, nullptr, &left);
+    CHECK(field.find("Hold M input.party") != std::string::npos);
+    CHECK(field.find("NO KEY input.party") == std::string::npos);
+    const std::string arena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr, nullptr, &left);
+    CHECK(arena.find("NO KEY input.gift_heal") != std::string::npos);
+    // With no route an action can't be unbound by choice: the file is refused, nothing listed.
+    InputBindings refused = defaultInputBindings();
+    InputUnbound none;
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"take_half": ""}})", refused, &error, &none));
+}
+
 TEST_CASE("input hints: an action the import left unbound shows NO KEY, and the fight's notice names each") {
     InputBindings b = defaultInputBindings();
     InputUnbound left;
