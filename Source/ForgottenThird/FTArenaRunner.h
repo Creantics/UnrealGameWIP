@@ -523,6 +523,10 @@ private:
 	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
 	bool bWalking[ftcore::kMaxArenaEnemies] = {};
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
+	// A step back's ground speed (m/s), from its SteppedBack event: the walk clip plays backward at it.
+	float StepBackSpeed[ftcore::kMaxArenaEnemies] = {};
+	// The camera's horizontal half-angle last handed to the fight (ArenaFight::setCameraHalfAngle); -1 none yet.
+	float FightCameraHalf = -1.f;
 	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when, how
 	// far into its get-up it was last drawn (s), and until when a get-up cut short by the spell's end is still owed.
 	bool bKneeling[ftcore::kMaxArenaEnemies] = {};
@@ -625,6 +629,11 @@ private:
 	int32 LoneBreaches = 0;             // while Lone: a join, a table begun, or a Release not pooled (the check: 0)
 	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
 	bool bLoneGiftDone = false;
+	// The probe's self-check: the lead's health handed to the slot just before the probe's press (setLeadHealth), and
+	// whether the press waits for the step's end. At full health the probe's Heal must come back refused NotHurt.
+	float ProbeLeadHealth = -1.f;
+	bool bProbeAwaiting = false;
+	void LogProbeCheck(const ftcore::GiftResult& Result);
 	// The stance this fight begins in: chosen, or forced by the third slot.
 	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
 	// The stance the session will accept for this lead (asked before the fight begins, so a refused one changes

@@ -317,7 +317,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	return true;
 }
 
-bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters)
+bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters, bool bBreakPulse)
 {
 	if (!Mesh)
 	{
@@ -332,7 +332,13 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	Visor->SetVisibility(false);
 	Blade->SetVisibility(false);
 	Skin->SetSkeletalMesh(Mesh);
-	MakePulseMaterials(); // a new mesh: its own materials
+	PulseMaterials.Reset(); // a new mesh: its own materials, made dynamic only for a break tell
+	PulseBase.Reset();
+	PulseGlow = 0.f;
+	if (bBreakPulse)
+	{
+		MakePulseMaterials();
+	}
 	Skin->SetAnimInstanceClass(UFTBeatFighterAnimInstance::StaticClass());
 	Skin->SetRelativeLocation(FVector(0.0, 0.0, SkinHover));
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));

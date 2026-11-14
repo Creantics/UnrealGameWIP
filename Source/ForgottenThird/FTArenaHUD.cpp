@@ -24,6 +24,8 @@ namespace
 {
 const FLinearColor kArenaWhite(1.f, 1.f, 1.f);
 const FLinearColor kArenaDim(0.6f, 0.62f, 0.68f);
+// How long the fight's start shows the unbound-actions line (seconds of fight time).
+constexpr float kUnboundNoticeTime = 8.f;
 const FLinearColor kArenaPanel(0.02f, 0.02f, 0.05f, 0.62f);
 const FLinearColor kArenaBack(0.1f, 0.1f, 0.13f, 0.85f);
 const FLinearColor kArenaHpBack(0.18f, 0.05f, 0.05f, 0.85f);
@@ -38,7 +40,7 @@ const FLinearColor kArenaGold(1.f, 0.84f, 0.3f);
 const FLinearColor kArenaLoad(1.f, 0.5f, 0.12f);
 // The tell's colours: the answer it asks for.
 const FLinearColor kArenaTellParry(1.f, 0.84f, 0.3f);
-const FLinearColor kArenaTellBlock(1.f, 0.55f, 0.15f);
+const FLinearColor kArenaTellBlock(0.63f, 0.615f, 0.575f); // the floor's blockable tell (AFTArenaFighter): pale ink
 const FLinearColor kArenaTellDodge(1.f, 0.16f, 0.12f);
 
 const FTUiText kHpArena(TEXT("arena.hp"));
@@ -458,12 +460,13 @@ void AFTArenaHUD::DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVecto
 	{
 		return;
 	}
-	const float Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup, 0.01f), 0.f, 1.f) : 1.f;
+	const float Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup + (E.unseen ? ftcore::kArenaUnseenWindup : 0.f), 0.01f), 0.f, 1.f) : 1.f;
 
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
 	const bool bCards = bStartup && Fight.readFoe() == static_cast<uint8>(Enemy) && Fight.readCards().dealt();
 	// Out of the camera's view (the runner's off-frame test, the one the stinger answers to), or off the screen.
-	const bool bOffFrame = bStartup && Mode.IsOffFrame(Enemy);
+	// An unseen start (a regular enemy that waited out of sight, ArenaEnemyOut::unseen) is always marked at the edge.
+	const bool bOffFrame = bStartup && (Mode.IsOffFrame(Enemy) || E.unseen);
 	if (!bOnScreen || bOffFrame)
 	{
 		if (bCards)
@@ -1190,5 +1193,10 @@ void AFTArenaHUD::DrawHUD()
 	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
 	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
 	DrawStrCentered(FTInputBindings::HintLine(UFTArenaRunner::JumpBound() ? ftcore::InputHintScreen::ArenaJump : ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	// At the fight's start, one line naming each action the saved bindings left with no key.
+	if (!FTInputBindings::UnboundLine().IsEmpty() && Fight.time() < kUnboundNoticeTime)
+	{
+		DrawStrCentered(FTInputBindings::UnboundLine(), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 70.f * S, GEngine->GetSmallFont(), 1.2f);
+	}
 	FT::DrawPauseOverlay(*this, Canvas);
 }

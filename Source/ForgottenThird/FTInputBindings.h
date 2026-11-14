@@ -34,6 +34,14 @@ inline FString GetFilePath()
 	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("InputBindings.json"));
 }
 
+// What the saved file's import left unbound (a newer default on a key the player gave to something else); a settings
+// screen shows each as "unbound: choose a key". Filled by Get().
+inline ftcore::InputUnbound& UnboundStore()
+{
+	static ftcore::InputUnbound Unbound;
+	return Unbound;
+}
+
 inline const ftcore::InputBindings& Get()
 {
 	static const ftcore::InputBindings Bindings = []
@@ -43,15 +51,34 @@ inline const ftcore::InputBindings& Get()
 		if (FFileHelper::LoadFileToString(Text, *GetFilePath()))
 		{
 			std::string Error;
-			if (!ftcore::importInputBindings(FT::ToUtf8(Text), B, &Error))
+			if (!ftcore::importInputBindings(FT::ToUtf8(Text), B, &Error, &UnboundStore()))
 			{
 				UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s refused (%s); using the defaults."), *GetFilePath(),
 					*FT::ToFString(Error));
+			}
+			const ftcore::InputUnbound& Left = UnboundStore();
+			for (size_t D = 0; D < ftcore::kInputDeviceCount && Left.count > 0; ++D)
+			{
+				for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
+				{
+					if (Left.left[D][A])
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s unbound on the %s: your own key sits on its default; choose a key."),
+							*FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))), D == 0 ? TEXT("keyboard") : TEXT("pad"));
+					}
+				}
 			}
 		}
 		return B;
 	}();
 	return Bindings;
+}
+
+// The import's unbound list (after Get()).
+inline const ftcore::InputUnbound& Unbound()
+{
+	Get();
+	return UnboundStore();
 }
 
 // The engine key for the action on that device; EKeys::Invalid when unbound. Built once with Get().
@@ -132,7 +159,8 @@ inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 }
 
 // A screen's controls line on a device, built from the table (ftcore::inputHintLine) with the words from ui.json
-// ("input.light"), so it names only keys the player has. Built once per screen and device, then kept.
+// ("input.light"), so it names only keys the player has; an action the import left unbound shows NO KEY. Built once
+// per screen and device, then kept.
 inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevice Device)
 {
 	static TOptional<FString> Lines[ftcore::kInputHintScreenCount][ftcore::kInputDeviceCount];
@@ -140,10 +168,18 @@ inline const FString& HintLine(ftcore::InputHintScreen Screen, ftcore::InputDevi
 	if (!Line.IsSet())
 	{
 		const std::string Text = ftcore::inputHintLine(Get(), Screen, Device,
-			[](const char* LabelKey, void*) { return FT::ToUtf8(FTUiText::Lookup(*FT::ToFString(LabelKey))); });
+			[](const char* LabelKey, void*) { return FT::ToUtf8(FTUiText::Lookup(*FT::ToFString(LabelKey))); }, nullptr, &Unbound());
 		Line = FT::ToFString(Text);
 	}
 	return Line.GetValue();
+}
+
+// One line naming each action the import left unbound ("NO KEY: gift_heal (keyboard)"); empty when none. A fight shows
+// it on screen at its start.
+inline const FString& UnboundLine()
+{
+	static const FString Line = FT::ToFString(ftcore::inputUnboundLine(Unbound()));
+	return Line;
 }
 
 // Whether the focus gate is off for this run: unattended, rendering off-screen or with no RHI (the demo and capture

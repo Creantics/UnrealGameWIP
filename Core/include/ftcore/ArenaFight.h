@@ -137,6 +137,16 @@
 //   string ends or it is staggered, parried or killed. Holding a token, it picks a move whose
 //   [minRange, maxRange] holds the player's distance and whose cooldown is over (weighted by
 //   `weight`, from the seeded RNG), or closes in to the nearest move's maxRange when none fits.
+//   No blow from where the player can't see it: a regular (non-boss) token holder begins its string only within
+//   kArenaWindupArc degrees either side of the lead's facing or within the camera's half-angle of the camera's facing
+//   (ArenaInput::cameraFacing; none given, the lead's facing alone; the half-angle is setCameraHalfAngle's,
+//   kArenaCameraHalfAngle by default), both seen from the lead. Outside them it circles round the lead toward its
+//   facing (Strafe, picking no move). No starving the others meanwhile: a token holder out of sight that has not
+//   begun its string hands the token at once to a waiter in sight that is asking for one (the longest waiting, then
+//   the nearest), and asks again itself, its wait starting from 0; the tokens free go out first. While no waiter in
+//   sight asks it keeps the token, and after kArenaUnseenWait s holding it out of sight it begins anyway: the
+//   string's first move kArenaUnseenWindup s longer in startup, ArenaEnemyOut::unseen raised for the HUD. A boss is
+//   not held by the arc (and counts as in sight).
 //   Enemy poise works like the player's: poise damage beyond poise staggers, `armor` ignores a share
 //   of it during an attack's startup and active parts, and poise refills after poiseDelay.
 // * Hit pause. A blow that lands (a Hit on either side, not one the host vetoes) with hitStop > 0 pauses the
@@ -164,13 +174,19 @@
 //   some phases; a restart allows it again, so the host sets it after restart()); bosses leave flinchTime at 0.
 //   No stunlock: after kArenaMaxFlinchChain flinches in a run, blows land on it without a flinch until
 //   kArenaFlinchChainGap passes with no blow of flinchPoise or more (every kind's poise still breaks).
-// * Break-out. An enemy kind with breakAt > 0 counts the player's blows that land on it while it is
-//   upright (Approach, Strafe, Attack, Flinch), the count going back to 0 after breakDecay with none, when
-//   it goes down (Staggered, Open, Down) and on a break-out. The blow that reaches breakAt, if it
-//   doesn't stagger it, starts its breakMove at once (BrokeOut, then AttackStarted): whatever the token count, its cooldown and the
-//   flinch, though never a move the host's move mask clears. That move should carry `armor`. A stagger,
-//   Open or Down never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the
-//   count and the break-out too.
+// * Break-out. An enemy kind with breakAt > 0 counts the weight of the player's blows that land on it while it
+//   is upright (Approach, Strafe, Attack, Flinch): each adds its ruled poise damage over kArenaBreakPoiseUnit (the
+//   default fighter's light adds 1), the count going back to 0 after breakDecay with none, when it goes down
+//   (Staggered, Open, Down, StepBack) and on a break-out. The blow that brings it to breakAt, if it doesn't stagger
+//   it, starts its breakMove at once (BrokeOut, then AttackStarted): whatever its cooldown and the flinch, though
+//   never a move the host's move mask clears. That move should carry `armor`. It takes an attack token like any
+//   attack: with none free (another enemy holds the last of `attackers`), or outside the windup arc, it steps back
+//   instead (StepBack and the SteppedBack event once as it begins, no BrokeOut): straight away from the player over
+//   kArenaStepBackTime to kArenaStepBackClear beyond the lead's reach, and never less than kArenaStepBackMin, so the
+//   blow is seen to miss, no blow of the player's side landing on it, then walks again with no armour and its
+//   count spent. So one sweeping string sets off at most the free tokens' break-outs. A stagger, Open or Down
+//   never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the count and the
+//   break-out too. Bosses never have a breakAt (Boss break).
 // * Boss break. A boss kind (arena.json's `boss`) has, beside its poise, a break value with no HUD of its own; it
 //   never has a breakAt. Each blow of the player's side that lands on it adds its weight (kArenaBreak*: a light or
 //   an aimed or air shot 1, a heavy 2, a Release, the finisher, 3, a riposte 1.5, the paired counter 3, the Read
@@ -308,6 +324,28 @@ inline constexpr float kArenaMaxStop = 0.3f;
 // No flinch stunlock: at most this many flinches in a run; the run ends after kArenaFlinchChainGap s with no blow.
 inline constexpr std::uint8_t kArenaMaxFlinchChain = 3;
 inline constexpr float kArenaFlinchChainGap = 1.f;
+// A regular enemy's break-out counts weight, not blows: each blow adds its ruled poise damage over this (the default
+// fighter's first light, so a default light adds 1); the count is full within kArenaBreakWeightSlack of breakAt.
+inline constexpr float kArenaBreakPoiseUnit = 10.f;
+inline constexpr float kArenaBreakWeightSlack = 1.0e-4f;
+// A regular enemy's break-out with no token free (see Break-out): it steps back (StepBack) for this long, unhurt, to
+// this far beyond the lead's reach (its longest light or heavy range plus lunge, and the enemy's body radius), and
+// never less than kArenaStepBackMin metres straight away from the lead.
+inline constexpr float kArenaStepBackTime = 0.5f;
+inline constexpr float kArenaStepBackClear = 0.5f;
+inline constexpr float kArenaStepBackMin = 1.5f;
+// No blow from where the player can't see it (see Enemies): a regular token holder begins its string only within
+// kArenaWindupArc degrees either side of the lead's facing or within the camera's half-angle of the camera's facing
+// (ArenaInput::cameraFacing), both measured from the lead; after kArenaUnseenWait s holding the token outside them
+// (and no waiter in sight to hand it to) it attacks anyway, its windup kArenaUnseenWindup s longer and
+// ArenaEnemyOut::unseen raised.
+inline constexpr float kArenaWindupArc = 100.f;
+// The camera's half-angle when the host never sets one (ArenaFight::setCameraHalfAngle): ArenaView's less its margin.
+inline constexpr float kArenaCameraHalfAngle = 39.f;
+inline constexpr float kArenaCameraHalfAngleMin = 1.f;  // setCameraHalfAngle clamps to these
+inline constexpr float kArenaCameraHalfAngleMax = 89.f;
+inline constexpr float kArenaUnseenWait = 4.f;
+inline constexpr float kArenaUnseenWindup = 0.3f;
 // The boss break value (see Boss break): each blow's weight, ...
 inline constexpr float kArenaBreakLight = 1.f;   // a light, an aimed shot, an air light
 inline constexpr float kArenaBreakHeavy = 2.f;
@@ -568,7 +606,7 @@ struct ArenaEnemyKind {
     float flinchTime = 0.f;   // > 0: a landed blow flinches it this long (see Flinch); 0: it never flinches
     float flinchPoise = 0.f;  // the least poise damage a blow needs to flinch it
     float flinchPush = 0.f;   // metres a flinch pushes it back
-    std::uint8_t breakAt = 0; // > 0: the blows in a row that make it break out (see Break-out); 0: never
+    std::uint8_t breakAt = 0; // > 0: the weight of blows in a row that makes it break out (see Break-out); 0: never
     float breakDecay = 1.5f;  // s without a blow after which the count goes back to 0
     int breakMove = -1;       // the move it breaks out with (a boss: its break move, required); -1: none
     // The boss break value (see Boss break): only a boss has one. arena.json: "boss": true, "breakMove",
@@ -706,6 +744,10 @@ struct ArenaInput {
     // stores (a parry, a block, take half) read the blow's own damage. 1: as without it. NaN or below 0 count as 1;
     // above 10 as 10. Never on hostHurt.
     float takenScale = 1.f;
+    // The camera's facing on the ground, for the windup arc (see Enemies): a regular enemy may begin a string within
+    // the camera's half-angle (ArenaFight::setCameraHalfAngle) of it, seen from the lead. Need not be unit. Zero (the default, a host without a camera):
+    // the lead's facing alone decides.
+    Vec2 cameraFacing{};
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -722,7 +764,11 @@ enum class ArenaAction : std::uint8_t {
     Jump,    // appended: take-off, air and landing (an air light is Light with kArenaAirMove)
 };
 // An enemy's brain state (append only).
-enum class ArenaBrain : std::uint8_t { Approach, Strafe, Attack, Staggered, Open, Down, Dead, Flinch /* appended */ };
+enum class ArenaBrain : std::uint8_t {
+    Approach, Strafe, Attack, Staggered, Open, Down, Dead,
+    Flinch,   // appended
+    StepBack, // appended: a regular enemy's break-out with no token free (see Break-out)
+};
 // Where an attack is.
 enum class ArenaPart : std::uint8_t { None, Startup, Active, Recovery };
 
@@ -773,9 +819,12 @@ struct ArenaEnemyOut {
     std::uint8_t move = 0;            // Attack: the move index
     float stateTime = 0.f;            // seconds in this brain state (Attack: in this move)
     float stateLength = 0.f;          // Staggered, Open, Down: the state's whole length, s (the host's hold while one
-                                      // runs; +infinity until a release); Flinch: flinchTime; 0 in any other state
+                                      // runs; +infinity until a release); Flinch: flinchTime; StepBack:
+                                      // kArenaStepBackTime; 0 in any other state
     bool token = false;               // holds an attack token
     float stopLeft = 0.f;             // s left in a hit pause (0: none); its state time and velocity stand still
+    bool unseen = false;              // Attack: this move began outside the windup arc after kArenaUnseenWait (its
+                                      // windup kArenaUnseenWindup longer); the HUD marks it
 };
 
 enum class ArenaEventType : std::uint8_t { // append only
@@ -819,6 +868,8 @@ enum class ArenaEventType : std::uint8_t { // append only
                     // (stats().dryPresses); move kArenaShotMove (appended)
     BreakTell,      // a boss's break value rose to kArenaBossBreakTell of its threshold: source the boss, amount the
                     // value x 100, rounded (appended)
+    SteppedBack,    // source began a step back (StepBack) from the player (target kArenaPlayer): amount the metres it
+                    // will move, x 100, rounded; once as it begins (appended)
 };
 
 struct ArenaEvent {
@@ -864,9 +915,14 @@ struct ArenaStats {
     int flinchChances = 0; // blows of flinchPoise or more on an upright kind that flinches, host-allowed (a flinch
                            // could show; the chain cap and an active or armoured attack may still stop it)
     int breakOuts = 0; // enemy break-outs
-    int breakDue = 0;      // blows that brought an upright enemy's count to its breakAt without staggering it
-    int breakRunBest = 0;  // the longest run toward a break-out (relative to its breakAt), counted as each blow lands
+    int breakDue = 0;      // blows that brought an upright enemy's count to its breakAt without staggering it (nor
+                           // the read counter its cut move brought putting it down)
+    int breakRunBest = 0;  // the blows in the longest run toward a break-out (its weight relative to its breakAt),
+                           // counted as each blow lands
     int breakRunNeed = 0;  // that run's breakAt (0: no blow counted)
+    float breakRunWeight = 0.f; // that run's weight (a boss's blows weigh 1)
+    int stepBacks = 0;     // breakDue that stepped back (StepBack) for want of a token or out of the windup arc
+    int unseenAttacks = 0; // regular strings begun outside the windup arc after kArenaUnseenWait (ArenaEnemyOut::unseen)
     int breakUpright = 0;  // the player's blows landed on an upright enemy whose kind has a breakAt
     int breakVetoed = 0;   // ... of them the host barred (as it bars a flinch), so none counted
     int breakBarred = 0;   // breakDue whose break move the enemy's move mask barred
@@ -1150,6 +1206,12 @@ public:
     // either way. Off, the default, for a body with no side-dash clips. begin() and restart() keep it.
     FTCORE_API void setSideDashes(bool on);
     FTCORE_API bool sideDashes() const;
+    // The camera's horizontal half-angle in degrees for the windup arc (see Enemies), set by the host whenever its lens
+    // changes: a regular enemy may begin a string within it of ArenaInput::cameraFacing, seen from the lead. Clamped
+    // to kArenaCameraHalfAngleMin..kArenaCameraHalfAngleMax; NaN sets kArenaCameraHalfAngle, the value when never
+    // set. It applies from the next tick; begin() and restart() keep it.
+    FTCORE_API void setCameraHalfAngle(float degrees);
+    FTCORE_API float cameraHalfAngle() const;
     // Stores `amount` Load in the player's gauge now, as a parry would (never past kMaxLoad; amount <= 0: nothing),
     // and returns what was stored. The same event types a parry raises report it: LoadStored (source kArenaNobody,
     // move 0) and, if the gauge filled, Overloaded. Inside the blow hook they join this tick's events; otherwise they
@@ -1357,7 +1419,12 @@ private:
         bool turnHeld = false;              // the host's hold: Approach and Strafe keep the facing (the host turns it)
         bool flinchAllowed = true;          // the host's: false, it never flinches
         float stopUntil = -1.0e9f;          // fight time a hit pause ends
-        std::uint8_t breakHits = 0;         // the player's blows in a row toward a break-out
+        std::uint8_t breakHits = 0;         // the player's blows in a row toward a break-out ...
+        float breakWeight = 0.f;            // ... and their weight (poise over kArenaBreakPoiseUnit; a boss's 1 each)
+        float stepDistance = 0.f;           // StepBack: metres it moves back over kArenaStepBackTime
+        float tokenSince = 0.f;             // fight time it took the token, or last held it in the windup arc
+        bool unseen = false;                // this move is an unseen start: unseenAttack's longer windup
+        ArenaAttack unseenAttack;           // that move's attack with it
         std::uint8_t flinchChain = 0;       // flinches in a row (see Flinch)
         float lastFlinch = -1.0e9f;         // fight time of the last blow that could flinch it
         float lastBreakHit = -1.0e9f;       // fight time of the last of them
@@ -1402,6 +1469,7 @@ private:
     std::uint32_t readDeals_ = 0;           // deals since begin() / restart(): seeds the next deal
     ArenaBlowHook blowHook_ = nullptr;      // the host's (begin() and restart() keep it)
     bool sideDashes_ = false;               // setSideDashes (begin() and restart() keep it)
+    float cameraHalfAngle_ = kArenaCameraHalfAngle; // setCameraHalfAngle, degrees (begin() and restart() keep it)
     // The blow hook is running: tick, begin and restart do nothing. A copy starts clear (its hook isn't running),
     // and assigning to a fight keeps its own.
     struct HookFlag {

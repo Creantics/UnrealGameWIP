@@ -1738,6 +1738,7 @@ TEST_CASE("arena guard: a block takes damage * (1 - guardAbsorb) and stamina, th
     {   // the arc: the guard covers the front half
         Rig rig(ruleFighter(), {hitterKind(bite)});
         rig.put(0, -1.5f, 0.f); // behind the player, who faces +x
+        rig.in.cameraFacing = Vec2{-1.f, 0.f}; // the camera sees it, so it may start
         rig.in.guard = true;
         rig.runFor(0.7f);
         CHECK(rig.count(ArenaEventType::Blocked) == 0);
@@ -1826,6 +1827,7 @@ TEST_CASE("arena parry: a window after the press, no window on a mashed press, a
     {   // the attacker has to be inside the guard arc
         Rig rig(ruleFighter(), {hitterKind(bite)});
         rig.put(0, -1.5f, 0.f);
+        rig.in.cameraFacing = Vec2{-1.f, 0.f}; // the camera sees it, so it may start
         rig.run(18);
         rig.in.guard = true;
         rig.run(20);
@@ -4109,6 +4111,7 @@ const Logged* untilCounter(Rig& rig, int nth, int most = 120) {
 TEST_CASE("arena Read: every enemy move deals three cards as it starts, and the right card is always that move") {
     Rig rig(sturdyFighter(), {readKind(), readKind()});
     rig.put(1, -1.5f, 0.f);
+    rig.in.cameraFacing = Vec2{-1.f, 0.f}; // the camera sees the one behind
     int starts = 0, deals = 0;
     bool at[kReadCards] = {};
     for (int t = 0; t < 1800; ++t) { // 30 s: both enemies, every move, many times
@@ -6573,16 +6576,24 @@ TEST_CASE("arena stamina: a light that costs 0 starts with none and never holds 
     CHECK(heavy.first != ArenaAction::Heavy);            // a heavy that costs still needs some
 }
 
+// The rule fighter with each light weighing 1 toward a break-out (kArenaBreakPoiseUnit of poise damage).
+ArenaFighter breakFighter() {
+    ArenaFighter f = ruleFighter();
+    for (std::size_t m = 0; m < f.lightCount; ++m) f.light[m].poiseDamage = kArenaBreakPoiseUnit;
+    return f;
+}
+
 TEST_CASE("arena break-out: blows in a row make an upright enemy start its break move; decay, stagger and mask") {
     ArenaAttack burst = swing(0.25f, 0.2f, 0.4f, 3.f, 5);
     burst.armor = 1.f;
     ArenaEnemyKind k = hitterKind(burst);
     k.attackDelay = 1000.f; // never asks: only the break-out starts the move
+    k.poise = 1000.f;       // the lights never stagger it
     k.breakAt = 3;
     k.breakDecay = 1.5f;
     k.breakMove = 0;
     {
-        Rig rig(ruleFighter(), {k});
+        Rig rig(breakFighter(), {k});
         rig.put(0, 1.5f, 0.f);
         mash(rig, 1.6f);
         REQUIRE(rig.count(ArenaEventType::BrokeOut) == 1);
@@ -6600,7 +6611,7 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
     {   // hits too far apart: the count decays
         ArenaEnemyKind quick = k;
         quick.breakDecay = 0.3f;
-        Rig rig(ruleFighter(), {quick});
+        Rig rig(breakFighter(), {quick});
         rig.put(0, 1.5f, 0.f);
         for (int hit = 0; hit < 4; ++hit) {
             rig.in.light = true;
@@ -6610,7 +6621,7 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
         CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
     }
     {   // the host's move mask clears it: no break-out
-        Rig rig(ruleFighter(), {k});
+        Rig rig(breakFighter(), {k});
         rig.put(0, 1.5f, 0.f);
         rig.fight.setEnemyMoveMask(0, 0u);
         mash(rig, 1.6f);
@@ -6619,9 +6630,10 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
     }
     {   // a stagger starts the count again: with breakAt 2 and a decay longer than the whole run, hit, the hit that
         // staggers, the recovery, then one more hit, which would be the third in a row without the reset
-        ArenaFighter f = ruleFighter();
+        ArenaFighter f = breakFighter();
         f.light[1].poiseDamage = 40.f; // the second hit staggers
         ArenaEnemyKind two = k;
+        two.poise = 30.f;
         two.breakAt = 2;
         two.breakDecay = 30.f;
         Rig rig(f, {two});
@@ -6642,7 +6654,7 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
         CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
     }
     {   // the host's flinch veto bars the break-out too
-        Rig rig(ruleFighter(), {k});
+        Rig rig(breakFighter(), {k});
         rig.put(0, 1.5f, 0.f);
         rig.fight.setEnemyFlinch(0, false);
         mash(rig, 1.6f);
@@ -6652,23 +6664,479 @@ TEST_CASE("arena break-out: blows in a row make an upright enemy start its break
     }
 }
 
-// The tuning (provisional, for the playtest): Devin's heavier light string staggers every kind with a break-out
-// before its breakAt-th blow; Duy's lighter one leaves it upright, so it breaks out on him. A count reset always comes
-// with a poise refill (breakDecay equal to poiseDelay), so every run starts from full poise.
+namespace {
+
+// A kind that never asks and breaks out on the 2nd default-weight blow in a row; its poise never breaks.
+ArenaEnemyKind breakerKind() {
+    ArenaAttack burst = swing(0.25f, 0.2f, 0.4f, 3.f, 5);
+    burst.armor = 1.f;
+    ArenaEnemyKind k = hitterKind(burst);
+    k.attackDelay = 1000.f;
+    k.poise = 1000.f;
+    k.breakAt = 2;
+    k.breakDecay = 5.f;
+    k.breakMove = 0;
+    return k;
+}
+
+int hitsOn(const Rig& rig, std::size_t target, int fromTick = 0) {
+    int n = 0;
+    for (const Logged& l : rig.log)
+        if (l.tick > fromTick && l.event.type == ArenaEventType::Hit && l.event.source == kArenaPlayer &&
+            l.event.target == target)
+            ++n;
+    return n;
+}
+
+// Ticks until enemy 0's nth AttackStarted, at most `most` ticks: the tick it came on, or -1.
+int untilStarted(Rig& rig, int nth, int most) {
+    for (int t = 0; t < most && !rig.find(ArenaEventType::AttackStarted, nth); ++t) rig.tick();
+    const Logged* l = rig.find(ArenaEventType::AttackStarted, nth);
+    return l ? l->tick : -1;
+}
+
+// From the tick a move started: the ticks enemy 0 stays in its startup.
+int startupTicks(Rig& rig) {
+    int n = 1;
+    while (n < 600 && rig.tick().enemies[0].part == ArenaPart::Startup) ++n;
+    return n;
+}
+
+} // namespace
+
+TEST_CASE("arena break-out: one sweep fills three counts at once, one breaks out with the token, the rest step back") {
+    Rig rig(breakFighter(), {breakerKind(), breakerKind(), breakerKind()}); // one token
+    rig.put(0, 1.5f, 0.f);
+    rig.put(1, 0.f, 1.5f);
+    rig.put(2, 0.f, -1.5f);
+    for (int t = 0; t < 120 && rig.fight.stats().breakDue == 0; ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    REQUIRE(rig.fight.stats().breakDue == 3); // the same swing's blow filled all three
+    CHECK(rig.count(ArenaEventType::BrokeOut) == 1);
+    CHECK(rig.find(ArenaEventType::BrokeOut)->event.source == 0); // index order: the first takes the free token
+    CHECK(rig.fight.stats().breakOuts == 1);
+    CHECK(rig.fight.stats().stepBacks == 2);
+    CHECK(rig.out().enemies[0].brain == ArenaBrain::Attack);
+    CHECK(rig.out().enemies[0].token);
+    const int stepTick = rig.ticks;
+    for (std::size_t i = 1; i <= 2; ++i) {
+        CAPTURE(i);
+        const ArenaEnemyOut& e = rig.out().enemies[i];
+        CHECK(e.brain == ArenaBrain::StepBack);
+        CHECK_FALSE(e.token);
+        CHECK(e.stateLength == doctest::Approx(kArenaStepBackTime));
+    }
+    // Stepping back it moves straight away from the lead, and no blow lands on it.
+    rig.tick();
+    CHECK(rig.out().enemies[1].velocity.y > 0.f);
+    CHECK(rig.out().enemies[2].velocity.y < 0.f);
+    CHECK(std::fabs(rig.out().enemies[1].velocity.x) < 1e-3f);
+    const int stepTicks = static_cast<int>(kArenaStepBackTime / kDt);
+    while (rig.ticks < stepTick + stepTicks - 1) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    CHECK(rig.out().enemies[1].brain == ArenaBrain::StepBack);
+    CHECK(hitsOn(rig, 0, stepTick) > 0); // the swings still landed on the one breaking out
+    CHECK(hitsOn(rig, 1, stepTick) == 0);
+    CHECK(hitsOn(rig, 2, stepTick) == 0);
+    CHECK(rig.fight.stats().breakDue == 3); // nothing counted while it stepped back
+    // After it, it walks again: no armoured move, no token.
+    rig.run(3);
+    for (std::size_t i = 1; i <= 2; ++i) {
+        CAPTURE(i);
+        const ArenaBrain b = rig.out().enemies[i].brain;
+        CHECK((b == ArenaBrain::Approach || b == ArenaBrain::Strafe));
+        CHECK_FALSE(rig.out().enemies[i].token);
+    }
+}
+
+TEST_CASE("arena break-out: out of the windup arc it steps back even with the token free") {
+    Rig rig(breakFighter(), {breakerKind()});
+    rig.put(0, -1.5f, 0.f); // behind the lead, who faces +x; the lights sweep all round
+    for (int t = 0; t < 120 && rig.fight.stats().breakDue == 0; ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    REQUIRE(rig.fight.stats().breakDue == 1);
+    CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+    CHECK(rig.fight.stats().stepBacks == 1);
+    CHECK(rig.out().enemies[0].brain == ArenaBrain::StepBack);
+    CHECK(arenaFeatureChecks(rig.fight.stats()).breakOutCheck == ArenaCheck::Barred);
+    // The camera on it: seen, so it breaks out.
+    Rig seen(breakFighter(), {breakerKind()});
+    seen.put(0, -1.5f, 0.f);
+    seen.in.cameraFacing = Vec2{-2.f, 0.f}; // need not be unit
+    for (int t = 0; t < 120 && seen.fight.stats().breakDue == 0; ++t) {
+        seen.in.light = true;
+        seen.tick();
+    }
+    CHECK(seen.count(ArenaEventType::BrokeOut) == 1);
+    CHECK(seen.fight.stats().stepBacks == 0);
+}
+
+TEST_CASE("arena break-out: every shipped boss kind has no count (breakAt 0)") {
+    const ArenaTable t = loadShipped();
+    int bosses = 0;
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e) {
+        if (!t.enemies[e].boss) continue;
+        CAPTURE(t.enemyIds[e]);
+        CHECK(t.enemies[e].breakAt == 0);
+        ++bosses;
+    }
+    CHECK(bosses > 0);
+}
+
+TEST_CASE("arena break-out: a boss with breakAt 0 never breaks out by count, however many blows land") {
+    ArenaEnemyKind k = breakerKind();
+    k.boss = true;
+    k.breakAt = 0;
+    k.hp = 100000;
+    k.breakValueAt = {1000.f, 1000.f, 1000.f, 1000.f}; // its break value never breaks it here: only the count is tested
+    for (const float x : {1.5f, -1.5f}) { // in front, and behind (where a regular enemy would step back)
+        CAPTURE(x);
+        Rig rig(breakFighter(), {k});
+        rig.put(0, x, 0.f);
+        bool steppedBack = false;
+        for (int t = 0; t < 600; ++t) {
+            rig.in.light = true;
+            steppedBack = rig.tick().enemies[0].brain == ArenaBrain::StepBack || steppedBack;
+        }
+        CHECK(rig.count(ArenaEventType::Hit) >= 20);
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 0);
+        CHECK(rig.count(ArenaEventType::SteppedBack) == 0);
+        CHECK_FALSE(steppedBack);
+        CHECK(rig.fight.stats().breakDue == 0);
+        CHECK(rig.fight.stats().stepBacks == 0);
+        CHECK(rig.fight.stats().bossBreaks == 0);
+    }
+}
+
+TEST_CASE("arena break-out: heavier blows count more, so fewer heavies than lights reach breakAt") {
+    ArenaEnemyKind k = breakerKind();
+    k.breakAt = 4;
+    ArenaFighter f = breakFighter();         // each light weighs 1
+    f.heavy.poiseDamage = 2.f * kArenaBreakPoiseUnit; // the heavy 2
+    const auto blowsToBreak = [&](bool heavy) {
+        Rig rig(f, {k});
+        rig.put(0, 1.5f, 0.f);
+        for (int t = 0; t < 600 && rig.count(ArenaEventType::BrokeOut) == 0; ++t) {
+            rig.in.light = !heavy;
+            rig.in.heavy = heavy;
+            rig.tick();
+        }
+        CHECK(rig.count(ArenaEventType::BrokeOut) == 1);
+        return rig.count(ArenaEventType::Hit);
+    };
+    const int lights = blowsToBreak(false);
+    const int heavies = blowsToBreak(true);
+    CHECK(lights == 4);
+    CHECK(heavies == 2);
+    CHECK(heavies < lights);
+}
+
+TEST_CASE("arena break-out: a step back goes at least kArenaStepBackMin from the lead over kArenaStepBackTime, and "
+          "SteppedBack comes once as it begins") {
+    Rig rig(breakFighter(), {breakerKind()});
+    rig.put(0, -1.5f, 0.f); // behind, out of the windup arc: it steps back
+    for (int t = 0; t < 120 && !rig.find(ArenaEventType::SteppedBack); ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    const Logged* first = rig.find(ArenaEventType::SteppedBack);
+    REQUIRE(first);
+    const int stepTick = first->tick;
+    CHECK(first->event.source == 0);
+    CHECK(first->event.target == kArenaPlayer);
+    CHECK(first->event.amount >= static_cast<int>(std::lround(kArenaStepBackMin * 100.f)));
+    CHECK(rig.out().enemies[0].brain == ArenaBrain::StepBack);
+    CHECK(rig.fight.stats().stepBacks == 1);
+    // The lead stands still; the enemy moves at its output velocity over the step's ticks.
+    const float before = distanceOf(rig.bodies.player, rig.bodies.enemies[0]);
+    const int stepTicks = static_cast<int>(std::lround(kArenaStepBackTime / kDt));
+    for (int t = 0; t < stepTicks; ++t) {
+        const Vec2 v = rig.out().enemies[0].velocity;
+        rig.bodies.enemies[0].x += v.x * kDt;
+        rig.bodies.enemies[0].y += v.y * kDt;
+        if (t + 1 < stepTicks) {
+            rig.in.light = true; // the lights still swing; none lands on it
+            rig.tick();
+        }
+    }
+    const float moved = distanceOf(rig.bodies.player, rig.bodies.enemies[0]) - before;
+    CHECK(moved >= kArenaStepBackMin - 1e-3f);
+    CHECK(moved == doctest::Approx(static_cast<float>(first->event.amount) / 100.f).epsilon(0.01));
+    CHECK(rig.bodies.enemies[0].x < -1.5f); // straight away from the lead
+    CHECK(std::fabs(rig.bodies.enemies[0].y) < 1e-3f);
+    CHECK(hitsOn(rig, 0, stepTick) == 0);
+    rig.run(10);
+    CHECK(rig.out().enemies[0].brain != ArenaBrain::StepBack);
+    CHECK(rig.count(ArenaEventType::SteppedBack) == 1); // never again during it
+    CHECK(rig.fight.stats().stepBacks == 1);
+}
+
+TEST_CASE("arena break-out: the count starts again from 0 after a step back") {
+    ArenaEnemyKind k = breakerKind(); // breakAt 2, a decay of 5 s: no blow ages out here
+    Rig rig(breakFighter(), {k});
+    rig.put(0, -1.5f, 0.f); // behind: each break-out is a step back
+    for (int t = 0; t < 120 && rig.fight.stats().breakDue == 0; ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    REQUIRE(rig.fight.stats().stepBacks == 1);
+    rig.put(0, -4.f, 0.f); // out of reach while the lights already pressed play out
+    rig.runFor(kArenaStepBackTime + 1.f);
+    REQUIRE(rig.out().enemies[0].brain != ArenaBrain::StepBack);
+    // Back in reach: one blow is 1 of 2 again, not a break-out; the second is.
+    rig.put(0, -1.5f, 0.f);
+    const int from = rig.ticks;
+    for (int t = 0; t < 120 && hitsOn(rig, 0, from) == 0; ++t) {
+        rig.in.light = t == 0;
+        rig.tick();
+    }
+    REQUIRE(hitsOn(rig, 0, from) == 1);
+    CHECK(rig.fight.stats().breakDue == 1);
+    CHECK(rig.fight.stats().stepBacks == 1);
+    for (int t = 0; t < 120 && hitsOn(rig, 0, from) < 2; ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    REQUIRE(hitsOn(rig, 0, from) == 2);
+    CHECK(rig.fight.stats().breakDue == 2);
+    CHECK(rig.fight.stats().stepBacks == 2);
+    CHECK(rig.count(ArenaEventType::SteppedBack) == 2);
+}
+
+TEST_CASE("arena break-out: each blow adds its poise over the default light's") {
+    ArenaEnemyKind k = breakerKind();
+    k.breakAt = 3;
+    ArenaFighter f = breakFighter();
+    f.light[0].poiseDamage = 5.f;  // 0.5
+    f.light[1].poiseDamage = 15.f; // 1.5
+    f.light[2].poiseDamage = 0.f;  // nothing
+    Rig rig(f, {k});
+    rig.put(0, 1.5f, 0.f);
+    for (int t = 0; t < 300 && rig.count(ArenaEventType::BrokeOut) == 0; ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    // 0.5 + 1.5 + 0 + 0.5 = 2.5, then the 5th blow's 1.5 makes 4 >= 3.
+    CHECK(rig.count(ArenaEventType::BrokeOut) == 1);
+    CHECK(rig.count(ArenaEventType::Hit) == 5);
+}
+
+TEST_CASE("arena windup arc: a token holder out of sight circles; after kArenaUnseenWait it starts, its windup longer") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    const int unseenWait = static_cast<int>(std::lround(kArenaUnseenWait / kDt));
+    const int added = static_cast<int>(std::lround(kArenaUnseenWindup / kDt));
+    int seenStartup = 0;
+    {   // in front: it starts at once, its startup as written
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        const int at = untilStarted(rig, 0, 60);
+        REQUIRE(at > 0);
+        CHECK(at < 30);
+        CHECK_FALSE(rig.out().enemies[0].unseen);
+        seenStartup = startupTicks(rig);
+        CHECK(seenStartup == doctest::Approx(0.3f / kDt).epsilon(0.1));
+        CHECK(rig.fight.stats().unseenAttacks == 0);
+    }
+    {   // behind, no camera: it holds the token, circles toward the lead's facing and waits
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, -1.5f, 0.f);
+        rig.runFor(1.f);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 0);
+        CHECK(rig.out().enemies[0].token);
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Strafe);
+        CHECK(std::hypot(rig.out().enemies[0].velocity.x, rig.out().enemies[0].velocity.y) > 0.f);
+        const int at = untilStarted(rig, 0, 2 * unseenWait);
+        REQUIRE(at > 0);
+        CHECK(at >= unseenWait);
+        CHECK(at <= unseenWait + 30);
+        CHECK(rig.out().enemies[0].unseen); // the HUD flag
+        CHECK(rig.out().enemies[0].brain == ArenaBrain::Attack);
+        CHECK(rig.fight.stats().unseenAttacks == 1);
+        const int startup = startupTicks(rig);
+        CHECK(startup == doctest::Approx(seenStartup + added).epsilon(0.05));
+        CHECK(rig.out().enemies[0].unseen); // still this move (its active part)
+        rig.runFor(1.f);
+        CHECK_FALSE(rig.out().enemies[0].unseen); // over: the flag goes with it
+    }
+    {   // the camera turned on it: seen, so it starts at once
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, -1.5f, 0.f);
+        rig.in.cameraFacing = Vec2{-1.f, 0.f};
+        const int at = untilStarted(rig, 0, 60);
+        REQUIRE(at > 0);
+        CHECK(at < 30);
+        CHECK_FALSE(rig.out().enemies[0].unseen);
+        // The camera's own arc is narrow: 50 degrees off it is not seen.
+        Rig off(ruleFighter(), {hitterKind(bite)});
+        off.put(0, -1.5f, 0.f);
+        off.in.cameraFacing = Vec2{-std::cos(0.87f), std::sin(0.87f)};
+        off.runFor(1.f);
+        CHECK(off.count(ArenaEventType::AttackStarted) == 0);
+    }
+    {   // the lead's arc: 98 degrees off its facing is seen, 102 is not
+        Rig in(ruleFighter(), {hitterKind(bite)});
+        in.put(0, 1.5f * std::cos(1.71f), 1.5f * std::sin(1.71f));
+        CHECK(untilStarted(in, 0, 60) > 0);
+        Rig out(ruleFighter(), {hitterKind(bite)});
+        out.put(0, 1.5f * std::cos(1.78f), 1.5f * std::sin(1.78f));
+        out.runFor(1.f);
+        CHECK(out.count(ArenaEventType::AttackStarted) == 0);
+    }
+    {   // the wait counts only time out of sight: a holder that waited in view past it still circles first
+        Rig rig(ruleFighter(), {hitterKind(bite, 2.f)});
+        rig.put(0, 3.f, 0.f); // in front, near enough to ask, out of its move's range
+        rig.runFor(kArenaUnseenWait + 1.f);
+        REQUIRE(rig.out().enemies[0].token);
+        CHECK(rig.count(ArenaEventType::AttackStarted) == 0);
+        const int behind = rig.ticks;
+        rig.put(0, -1.5f, 0.f);
+        const int at = untilStarted(rig, 0, 2 * unseenWait);
+        REQUIRE(at > 0);
+        CHECK(at - behind >= unseenWait - 1);
+        CHECK(at - behind <= unseenWait + 30);
+        CHECK(rig.out().enemies[0].unseen);
+    }
+    {   // a boss is not held to the arc
+        ArenaEnemyKind k = hitterKind(bite);
+        k.boss = true;
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, -1.5f, 0.f);
+        const int at = untilStarted(rig, 0, 60);
+        REQUIRE(at > 0);
+        CHECK(at < 30);
+        CHECK_FALSE(rig.out().enemies[0].unseen);
+    }
+}
+
+TEST_CASE("arena windup arc: a string begun unseen chains its next move at the length as written") {
+    ArenaEnemyKind k = hitterKind(swing(0.3f, 0.1f, 0.3f, 3.f, 5));
+    k.moveCount = 2;
+    k.moves[1] = k.moves[0];
+    k.moves[1].weight = 0.f; // only as the chain
+    k.moves[0].chain = 1;
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, -1.5f, 0.f);
+    REQUIRE(untilStarted(rig, 0, 2 * static_cast<int>(kArenaUnseenWait / kDt)) > 0);
+    CHECK(rig.find(ArenaEventType::AttackStarted, 0)->event.move == 0);
+    const int first = startupTicks(rig);
+    REQUIRE(untilStarted(rig, 1, 120) > 0);
+    CHECK(rig.find(ArenaEventType::AttackStarted, 1)->event.move == 1);
+    CHECK_FALSE(rig.out().enemies[0].unseen);
+    const int second = startupTicks(rig);
+    CHECK(first - second == doctest::Approx(kArenaUnseenWindup / kDt).epsilon(0.1));
+}
+
+TEST_CASE("arena windup arc: a holder out of sight hands the token to a waiter in sight, which starts on time") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    ArenaEnemyKind front = hitterKind(bite);
+    front.attackDelay = 0.5f; // asks only after the one behind has taken the token
+    // Alone and in sight, it starts its string this many ticks in.
+    Rig lone(ruleFighter(), {front});
+    lone.put(0, 1.5f, 0.f);
+    const int loneAt = untilStarted(lone, 0, 120);
+    REQUIRE(loneAt > 0);
+    // One token: the one behind the lead, pinned in the ring's corner out of sight, takes it first.
+    Rig rig(ruleFighter(), {hitterKind(bite), front}, 1, ArenaRing{Vec2{1.f, 0.f}, 3.f});
+    rig.put(0, -1.5f, 0.f);
+    rig.put(1, 1.5f, 0.f);
+    rig.runFor(0.25f);
+    CHECK(rig.out().enemies[0].token);
+    CHECK_FALSE(rig.out().enemies[1].token);
+    CHECK(rig.count(ArenaEventType::AttackStarted) == 0);
+    for (int t = 0; t < 600 && !rig.find(ArenaEventType::AttackStarted); ++t) rig.tick();
+    const Logged* started = rig.find(ArenaEventType::AttackStarted);
+    REQUIRE(started);
+    const int at = started->tick;
+    CHECK(started->event.source == 1); // the one in sight, never the one behind first
+    CHECK(at <= loneAt + 1);           // within a lone enemy's time, not kArenaUnseenWait late
+    CHECK(rig.out().enemies[1].token);
+    CHECK_FALSE(rig.out().enemies[0].token); // it gave it up and waits again
+    CHECK_FALSE(rig.out().enemies[1].unseen);
+    CHECK(rig.fight.stats().unseenAttacks == 0);
+}
+
+TEST_CASE("arena windup arc: the camera's half-angle is the host's (setCameraHalfAngle), 39 degrees by default") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    constexpr float kRad = 3.14159265f / 180.f;
+    // 40 degrees off the camera, which looks behind the lead, and 140 off the lead's facing: outside its arc.
+    const auto startsAt = [&](float halfAngle, bool set) {
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        if (set) rig.fight.setCameraHalfAngle(halfAngle);
+        rig.put(0, 1.5f * std::cos(140.f * kRad), 1.5f * std::sin(140.f * kRad));
+        rig.in.cameraFacing = Vec2{-1.f, 0.f};
+        rig.runFor(1.f);
+        return rig.count(ArenaEventType::AttackStarted) > 0;
+    };
+    CHECK_FALSE(startsAt(30.f, true)); // out of sight at 30
+    CHECK(startsAt(50.f, true));       // in sight at 50
+    CHECK_FALSE(startsAt(0.f, false)); // never set: 39
+    {
+        ArenaFight fight;
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngle));
+        fight.setCameraHalfAngle(200.f);
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngleMax));
+        fight.setCameraHalfAngle(-5.f);
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngleMin));
+        fight.setCameraHalfAngle(std::numeric_limits<float>::quiet_NaN());
+        CHECK(fight.cameraHalfAngle() == doctest::Approx(kArenaCameraHalfAngle));
+    }
+    {   // kept across restart() and begin()
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.fight.setCameraHalfAngle(50.f);
+        rig.runFor(0.2f);
+        rig.fight.restart();
+        CHECK(rig.fight.cameraHalfAngle() == doctest::Approx(50.f));
+        rig.fight.begin(rig.def, rig.fight.ring(), Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+        CHECK(rig.fight.cameraHalfAngle() == doctest::Approx(50.f));
+        rig.log.clear();
+        rig.put(0, 1.5f * std::cos(140.f * kRad), 1.5f * std::sin(140.f * kRad));
+        rig.in.cameraFacing = Vec2{-1.f, 0.f};
+        rig.runFor(1.f);
+        CHECK(rig.count(ArenaEventType::AttackStarted) > 0);
+    }
+}
+
+// The tuning (provisional, for the playtest): the break-out counts weight, so Devin's heavier lights fill it sooner.
+// His string still staggers the light kinds and the breaker first (the blow that staggers counts, but a stagger comes
+// before a break-out), while the duelist and the hulk break out on him; Duy's lighter one leaves every kind upright,
+// so each breaks out on him. A count reset always comes with a poise refill (breakDecay equal to poiseDelay), so
+// every run starts from full poise. breakBlows and staggerBlows are the blows in a row each needs.
 struct BreakCase {
     const char* kind;
     bool devinStaggersFirst;
     bool duyBrokenOut;
+    int devinBlows; // the blow the stagger or the break-out comes on
+    int duyBlows;
 };
 const BreakCase kBreakCases[] = {
-    {"skirmisher", true, true}, {"breaker", true, true}, {"duelist", true, true}, {"hulk", true, true}, {"spitter", true, true},
+    {"skirmisher", true, true, 2, 2}, {"breaker", true, true, 4, 4}, {"duelist", false, true, 3, 3},
+    {"hulk", false, true, 4, 6},      {"spitter", true, true, 2, 2},
 };
 
-// The poise n light blows in a row deal from the string's start (the string loops after its last blow).
-float stringPoise(const ArenaFighter& f, int n) {
+// The n-th light blow in a row from the string's start (the string loops after its last blow).
+const ArenaAttack& stringLight(const ArenaFighter& f, int n) { return f.light[static_cast<std::size_t>(n % f.lightCount)]; }
+
+// The light blows in a row whose poise breaks `poise`.
+int staggerBlows(const ArenaFighter& f, float poise) {
     float sum = 0.f;
-    for (int i = 0; i < n; ++i) sum += f.light[static_cast<std::size_t>(i % f.lightCount)].poiseDamage;
-    return sum;
+    int n = 0;
+    while (sum < poise && n < 100) sum += stringLight(f, n++).poiseDamage;
+    return n;
+}
+
+// The light blows in a row whose weight (poise over kArenaBreakPoiseUnit) reaches breakAt.
+int breakBlows(const ArenaFighter& f, int breakAt) {
+    float sum = 0.f;
+    int n = 0;
+    while (sum + kArenaBreakWeightSlack < static_cast<float>(breakAt) && n < 100)
+        sum += stringLight(f, n++).poiseDamage / kArenaBreakPoiseUnit;
+    return n;
 }
 
 const ArenaEnemyKind& shippedKind(const ArenaTable& t, const char* id) {
@@ -6678,7 +7146,29 @@ const ArenaEnemyKind& shippedKind(const ArenaTable& t, const char* id) {
     return t.enemies[0];
 }
 
-TEST_CASE("arena break-out tuning: per kind, Devin's string staggers first and Duy's gets broken out on (data)") {
+TEST_CASE("arena break-out tuning: the weight unit is the default fighter's light (data)") {
+    const ArenaTable t = loadShipped();
+    const ArenaFighter& base = t.fighter("default");
+    CHECK(base.light[0].poiseDamage == doctest::Approx(kArenaBreakPoiseUnit)); // a default light adds 1.0
+    CHECK(base.light[1].poiseDamage == doctest::Approx(kArenaBreakPoiseUnit));
+    // The leads' lights: Devin 1.5, 1.5, 1.8, 3.2; Duy 1, 1, 2.
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaFighter& duy = t.fighter("duy");
+    REQUIRE(devin.lightCount == 4);
+    REQUIRE(duy.lightCount == 3);
+    const float devinWeights[] = {1.5f, 1.5f, 1.8f, 3.2f};
+    const float duyWeights[] = {1.f, 1.f, 2.f};
+    for (int m = 0; m < 4; ++m) CHECK(stringLight(devin, m).poiseDamage / kArenaBreakPoiseUnit == doctest::Approx(devinWeights[m]));
+    for (int m = 0; m < 3; ++m) CHECK(stringLight(duy, m).poiseDamage / kArenaBreakPoiseUnit == doctest::Approx(duyWeights[m]));
+    // The thresholds stay where they were set in blows.
+    CHECK(shippedKind(t, "skirmisher").breakAt == 2);
+    CHECK(shippedKind(t, "spitter").breakAt == 2);
+    CHECK(shippedKind(t, "duelist").breakAt == 4);
+    CHECK(shippedKind(t, "breaker").breakAt == 5);
+    CHECK(shippedKind(t, "hulk").breakAt == 7);
+}
+
+TEST_CASE("arena break-out tuning: per kind, which comes first on each lead's string (data)") {
     const ArenaTable t = loadShipped();
     const ArenaFighter& devin = t.fighter("devin");
     const ArenaFighter& duy = t.fighter("duy");
@@ -6690,9 +7180,13 @@ TEST_CASE("arena break-out tuning: per kind, Devin's string staggers first and D
         const ArenaEnemyKind& k = shippedKind(t, c.kind);
         REQUIRE(k.breakAt > 0);
         CHECK(k.breakDecay == doctest::Approx(k.poiseDelay)); // the count resets with the poise refill: none carried across
-        // The breakAt-th blow breaks out only on an enemy it leaves upright (poise above 0).
-        CHECK((stringPoise(devin, k.breakAt) >= k.poise) == c.devinStaggersFirst);
-        CHECK((stringPoise(duy, k.breakAt) < k.poise) == c.duyBrokenOut);
+        // The stagger wins a tie: the blow that fills the count and breaks the poise staggers.
+        const int devinStagger = staggerBlows(devin, k.poise), devinBreak = breakBlows(devin, k.breakAt);
+        const int duyStagger = staggerBlows(duy, k.poise), duyBreak = breakBlows(duy, k.breakAt);
+        CHECK((devinStagger <= devinBreak) == c.devinStaggersFirst);
+        CHECK((duyBreak < duyStagger) == c.duyBrokenOut);
+        CHECK(std::min(devinStagger, devinBreak) == c.devinBlows);
+        CHECK(std::min(duyStagger, duyBreak) == c.duyBlows);
     }
 }
 
@@ -6715,13 +7209,8 @@ TEST_CASE("arena break-out tuning: per kind and lead, mashing lights on an uprig
             const bool brokeOut = rig.count(ArenaEventType::BrokeOut) == 1;
             const bool staggered = rig.count(ArenaEventType::Staggered) == 1;
             CHECK(brokeOut != staggered); // one of them came first
-            if (devin) {
-                CHECK(staggered == c.devinStaggersFirst);
-                CHECK(rig.count(ArenaEventType::Hit) <= k.breakAt); // the stagger came by the breakAt-th blow
-            } else {
-                CHECK(brokeOut == c.duyBrokenOut);
-                CHECK(rig.count(ArenaEventType::Hit) == k.breakAt);
-            }
+            CHECK(staggered == (devin ? c.devinStaggersFirst : !c.duyBrokenOut));
+            CHECK(rig.count(ArenaEventType::Hit) == (devin ? c.devinBlows : c.duyBlows));
         }
 }
 
@@ -6956,21 +7445,23 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
     // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 22.6 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 93/150, 26 hits, 3 taken, 0 blocks, 2 parries, 0 ripostes, 3 evades, 0 guard breaks, "
-          "4 staggers, 1 heals, 0 releases, 0 overloads, 5/6 reads right, dealt 520, took 102, 0 restarts.");
+          "Arena: VICTORY at standalone beat 0 step 0 after 17.4 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 82/150, 22 hits, 2 taken, 0 blocks, 3 parries, 0 ripostes, 2 evades, 0 guard breaks, "
+          "4 staggers, 0 heals, 1 releases, 0 overloads, 5/6 reads right, dealt 520, took 68, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
-    CHECK(r.hitsOn[1] == 21);
-    // The best run is the skirmisher's 2 of 2: Devin's 2nd blow reaches its breakAt and breaks its poise with it.
+    CHECK(r.hitsOn[1] == 17);
+    // The best run is the skirmisher's 2 of 2 (weight 3): Devin's 2nd blow fills its count and breaks its poise with
+    // it. The hulk's count (weight, 7) fills on his 4th blow, before its poise breaks: it breaks out once.
     CHECK(r.stats.breakRunBest == 2);
     CHECK(r.stats.breakRunNeed == 2);
-    CHECK(r.stats.breakDue == 0);
-    CHECK(r.stats.breakOuts == 0);
+    CHECK(r.stats.breakDue == 1);
+    CHECK(r.stats.breakOuts == 1);
+    CHECK(r.stats.stepBacks == 0);
 }
 
-TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-out (poise breaks first)") {
-    // Not a short fight: every seed runs past 15 s, yet each blow that reaches breakAt also staggers, so the check
-    // line is n/a. By design: Devin's string staggers every kind before it can break out.
+TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's break-out (weight fills it first)") {
+    // Every seed runs past 15 s. The skirmisher still staggers on the blow that fills its count, but Devin's heavy
+    // lights fill the hulk's count of 7 in 4 blows while its poise holds, so it breaks out every seed.
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
         CAPTURE(seed);
@@ -6978,27 +7469,29 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin can't show a break-
         CHECK(r.stats.time > 15.f);
         CHECK(r.stats.flinches > 0);
         CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
-        CHECK(r.stats.breakOuts == 0);
-        CHECK(r.stats.breakDue == 0);
-        CHECK_FALSE(arenaFeatureChecks(r.stats).breakOutDue);
-        CHECK(r.stats.breakUpright > 0); // the run moved (2 of 2), so n/a, not FAIL
-        CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::NotShown);
+        CHECK(r.stats.breakOuts == 1);
+        CHECK(r.stats.breakDue == r.stats.breakOuts + r.stats.stepBacks);
+        CHECK(arenaFeatureChecks(r.stats).breakOutDue);
+        CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::Pass);
     }
 }
 
-TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
+TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out with the token taken steps back") {
     // The headless -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoShoot line: his shots and light string leave
-    // an enemy upright at its breakAt, so it breaks out (once a fight, with his attacks unrooted). Unaimed, the
-    // autopilot's parries cut his runs short (n/a).
+    // an enemy upright at its breakAt, but the other holds the one token, so it steps back (barred) on most seeds;
+    // never a FAIL. Unaimed, the autopilot's parries cut his runs short (n/a).
+    int breaks = 0, steps = 0;
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true);
         CAPTURE(seed);
         CHECK(r.phase == ArenaPhase::Victory);
-        CHECK(r.stats.breakOuts >= 1);
+        CHECK(r.stats.breakDue >= 1);
+        CHECK(r.stats.breakDue == r.stats.breakOuts + r.stats.stepBacks);
         const ArenaFeatureChecks c = arenaFeatureChecks(r.stats);
         CHECK(c.breakOutDue);
-        CHECK(c.breakOut);
-        CHECK(c.breakOutCheck == ArenaCheck::Pass);
+        CHECK(c.breakOutCheck == (r.stats.breakOuts > 0 ? ArenaCheck::Pass : ArenaCheck::Barred));
+        breaks += r.stats.breakOuts > 0 ? 1 : 0;
+        steps += r.stats.stepBacks > 0 ? 1 : 0;
         // No flinch chance: his lights (10) are under the skirmisher's flinchPoise (12), its second breaks it out,
         // the third (20) meets 2 poise and staggers it, a shot (6) is too light; the hulk never flinches. n/a.
         CHECK(r.stats.flinches == 0);
@@ -7010,11 +7503,14 @@ TEST_CASE("arena host mirror: skirmisher and hulk break out on Duy shooting") {
         CHECK(plain.stats.flinchChances == 0);
         CHECK(arenaFeatureChecks(plain.stats).flinchCheck == ArenaCheck::NotShown);
     }
+    CHECK(breaks == 1); // of 12 seeds (seed 10)
+    CHECK(steps == 12);
 }
 
 TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out always on Duy") {
     // The demo's feature check lines read arenaFeatureChecks over this fight. Duy leaves both kinds upright, so they
-    // break out on him every seed; Devin's string, slowed (AttackMove), staggers first on some seeds (n/a) and not on others.
+    // break out on him every seed; Devin's heavier blows fill the duelist's count on his 3rd blow, before its poise
+    // breaks, so it breaks out on him too.
     int devinBreaks = 0;
     for (const char* kit : {"devin", "duy"})
         for (std::uint32_t seed = 1; seed <= 12; ++seed) {
@@ -7033,7 +7529,7 @@ TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the bre
             if (!devin) CHECK(c.breakOutCheck == ArenaCheck::Pass);
             devinBreaks += devin && c.breakOut ? 1 : 0;
         }
-    CHECK(devinBreaks == 8); // of 12 seeds
+    CHECK(devinBreaks == 12); // of 12 seeds
 }
 
 TEST_CASE("arena host mirror: duelist and skirmisher flinch on either lead and always break out on Duy") {
@@ -7318,14 +7814,14 @@ TEST_CASE("arena host mirror: a shared count's held blows get their bonus throug
     CHECK(devin.phase == ArenaPhase::Victory);
     CHECK(devin.held == 3);
     CHECK(devin.joins == 2);
-    CHECK(devin.bonuses == 3);
-    CHECK(devin.bonusDamage == 78);
+    CHECK(devin.bonuses == 2);
+    CHECK(devin.bonusDamage == 42);
     CHECK(devin.hostHits >= 1);
     const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
     CHECK(duy.phase == ArenaPhase::Victory);
-    CHECK(duy.joins == 2);
+    CHECK(duy.joins == 1);
     CHECK(duy.bonuses == 1);
-    CHECK(duy.bonusDamage == 17);
+    CHECK(duy.bonusDamage == 26);
     for (std::uint32_t seed = 1; seed <= 6; ++seed) {
         const HostRun shared = hostRun({"duelist", "skirmisher"}, "devin", seed, false, true);
         const HostRun alone = hostRun({"duelist", "skirmisher"}, "devin", seed, false, false);
