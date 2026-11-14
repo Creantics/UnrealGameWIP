@@ -4620,6 +4620,7 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 		if (CameraView.halfAngle != FightCameraHalf)
 		{
 			FightCameraHalf = CameraView.halfAngle;
+			CameraHalfChangedAt = Now;
 			Fight.setCameraHalfAngle(FightCameraHalf);
 			// Logged when it moved more than kCameraHalfLogStep from the last line, at most once every kCameraHalfLogEvery.
 			if (FMath::Abs(FightCameraHalf - LoggedCameraHalf) > kCameraHalfLogStep && Now - CameraHalfLoggedAt >= kCameraHalfLogEvery)
@@ -4628,6 +4629,14 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 				CameraHalfLoggedAt = Now;
 				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle is %.1f degrees."), Fight.time(), FightCameraHalf);
 			}
+		}
+		// A change the throttle kept back, then held kCameraHalfLogEvery: one more line with where it settled.
+		if (FightCameraHalf != LoggedCameraHalf && Now - CameraHalfChangedAt >= kCameraHalfLogEvery &&
+			Now - CameraHalfLoggedAt >= kCameraHalfLogEvery)
+		{
+			LoggedCameraHalf = FightCameraHalf;
+			CameraHalfLoggedAt = Now;
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle settled at %.1f degrees."), Fight.time(), FightCameraHalf);
 		}
 		// The vertical half-angle from the horizontal one and the screen's shape, so a body wholly under or over the
 		// frame (a ground enemy while aiming high) is told too.

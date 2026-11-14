@@ -532,6 +532,7 @@ private:
 	// The half-angle the log last named and when (real time): a zoom's every frame is not a line.
 	float LoggedCameraHalf = -1.f;
 	double CameraHalfLoggedAt = -1e9;
+	double CameraHalfChangedAt = -1e9; // when it last changed: a change the throttle kept back is logged once it holds 1 s
 	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when, how
 	// far into its get-up it was last drawn (s), and until when a get-up cut short by the spell's end is still owed.
 	bool bKneeling[ftcore::kMaxArenaEnemies] = {};
