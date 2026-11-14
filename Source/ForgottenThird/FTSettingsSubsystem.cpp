@@ -10,6 +10,8 @@
 #include "FTStorySubsystem.h"
 #include "FTText.h"
 
+#include "ftcore/UiFirstUse.h"
+
 #include <string>
 
 void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -70,13 +72,14 @@ bool UFTSettingsSubsystem::Save() const
 	return true;
 }
 
-void UFTSettingsSubsystem::MarkUiFirstUse(uint32 Bits)
+void UFTSettingsSubsystem::MarkUiFirstUse(uint32 Counts)
 {
-	if ((Values.uiFirstUse | Bits) == Values.uiFirstUse)
+	const uint32 Joined = ftcore::uiFirstUseMerge(Values.uiFirstUse, Counts);
+	if (Joined == Values.uiFirstUse)
 	{
 		return;
 	}
-	Values.uiFirstUse |= Bits;
+	Values.uiFirstUse = Joined;
 	Save();
 }
 

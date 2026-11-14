@@ -143,7 +143,7 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.stickFlicks = boolField("stickFlicks", s.stickFlicks);
     s.aimAssist = boolField("aimAssist", s.aimAssist);
     s.cameraShake = floatField("cameraShake", s.cameraShake);
-    const std::int64_t taught = intField("uiFirstUse", 0); // a bit set, so anything outside 32 bits is no set at all
+    const std::int64_t taught = intField("uiFirstUse", 0); // 32 packed bits, so anything outside them is nothing taught
     s.uiFirstUse = taught >= 0 && taught <= 0xFFFFFFFF ? static_cast<std::uint32_t>(taught) : 0u;
     s.hudScale = static_cast<int>(std::clamp<std::int64_t>(intField("hudScale", s.hudScale), Settings::kMinHudScale, Settings::kMaxHudScale));
     clampSettings(s);

@@ -57,7 +57,7 @@ struct Settings {
     bool skipChoices = false;     // mirrored to its story flag only, for now
     bool stickFlicks = false;     // the Turns arrow combos also take the left stick's flicks (StickFlick.h)
     float cameraShake = 1.f;      // 0..1: how hard the arena camera kicks when a blow lands (0: not at all)
-    std::uint32_t uiFirstUse = 0; // what the fight HUD has taught this save, a bit per UiFirstUseItem (UiFirstUse.h)
+    std::uint32_t uiFirstUse = 0; // what the fight HUD has taught this save: its counts, packed by uiFirstUseSaved (UiFirstUse.h)
     int hudScale = 100;           // the fight HUD's size over the viewport's scale, margins included: percent
 
     // Characters per second the dialogue types out at (0: whole text at once).

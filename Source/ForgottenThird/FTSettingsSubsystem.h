@@ -45,9 +45,10 @@ public:
 	static FString GetFilePath();
 	// Writes the file. False when the write failed.
 	bool Save() const;
-	// The fight HUD's first-use teaching (ftcore::UiFirstUse) ORs its taught bits in; the file is written only when
-	// they add any, so a fight that teaches nothing new writes nothing.
-	void MarkUiFirstUse(uint32 Bits);
+	// The fight HUD's first-use teaching (ftcore::UiFirstUse) joins its packed counts in (ftcore::uiFirstUseMerge: per
+	// item the higher count, so nothing is lowered); the file is written only when that changes the value, so a fight
+	// that teaches nothing new writes nothing.
+	void MarkUiFirstUse(uint32 Counts);
 
 	// ---- the overlay ----
 	bool IsOpen() const { return bOpen; }

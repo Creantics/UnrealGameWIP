@@ -32,11 +32,15 @@ UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen) {
 
 UiPromptMask uiPromptsDrawable(UiPromptMask open, UiPromptMask keyed, const std::array<UiPromptMask, kUiPromptCount>& sameKeyBelow) {
     UiPromptMask out = 0;
+    std::uint32_t rows = 0;
     for (std::size_t p = 0; p < kUiPromptCount; ++p) {
         const UiPromptMask b = static_cast<UiPromptMask>(1u << p);
+        const std::uint32_t row = 1u << uiPromptRow(static_cast<UiPrompt>(p));
         if ((open & keyed & b) == 0) continue;
         if ((out & sameKeyBelow[p]) != 0) continue; // a lower row already shows this key
+        if (rows & row) continue;                   // a lower prompt holds this row
         out = static_cast<UiPromptMask>(out | b);
+        rows |= row;
     }
     return out;
 }
@@ -93,7 +97,7 @@ const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, cons
     for (std::uint8_t a : o.allow) o.marks = static_cast<std::uint8_t>(o.marks + a);
 
     o.bossAlpha = o.allowed(UiMarkKind::Boss) ? st.boss.alpha : 0.f;
-    // Only open prompts, in their order, as many as were granted.
+    // Only open prompts, in their order (so from the lowest row up), as many as were granted; a row not granted is empty.
     std::uint8_t room = std::min(o.allowed(UiMarkKind::Prompt), kUiPromptRows);
     for (std::size_t p = 0; p < kUiPromptCount && room > 0; ++p) {
         const UiPromptMask b = static_cast<UiPromptMask>(1u << p);
