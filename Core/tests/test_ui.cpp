@@ -3,6 +3,7 @@
 #include "ftcore/InputBindings.h"
 #include "ftcore/Load.h"
 #include "ftcore/ReadCards.h"
+#include "ftcore/Settings.h"
 #include "ftcore/StoryDatabase.h"
 #include "ftcore/StoryRunner.h"
 #include "ftcore/UiGlyphs.h"
@@ -12,6 +13,7 @@
 #include "AllocCounter.h"
 #include "TestAssets.h"
 
+#include <cmath>
 #include <ostream>
 #include <doctest/doctest.h>
 
@@ -131,6 +133,51 @@ TEST_CASE("ui style: the serif faces parse by name; the verbs and numbers defaul
     CHECK(s.text[static_cast<std::size_t>(UiTextRole::Title)].font == UiFont::SerifBold);
     CHECK(s.text[static_cast<std::size_t>(UiTextRole::Prompt)].font == UiFont::SansBold);
     CHECK_FALSE(importUiStyle(R"({"text": {"label": {"font": "serif_caps"}}})", s, &err));
+}
+
+TEST_CASE("ui style: the HUD's margins are its own, the platform's safe padding and the player's percent, per side") {
+    const UiMargins none;
+    // A PC at 1080p with no padding and 0%: the HUD's own 64 px on every side.
+    UiMargins m = uiHudMargins(1920.f, 1080.f, 64.f, none, 0);
+    CHECK(m.left == doctest::Approx(64.f));
+    CHECK(m.right == doctest::Approx(64.f));
+    CHECK(m.top == doctest::Approx(64.f));
+    CHECK(m.bottom == doctest::Approx(64.f));
+    // 5% at 16:9: 96 px of the width at the sides, 54 px of the height at the top and bottom.
+    m = uiHudMargins(1920.f, 1080.f, 64.f, none, 5);
+    CHECK(m.left == doctest::Approx(64.f + 96.f));
+    CHECK(m.right == doctest::Approx(64.f + 96.f));
+    CHECK(m.top == doctest::Approx(64.f + 54.f));
+    CHECK(m.bottom == doctest::Approx(64.f + 54.f));
+    // 5% at 21:9 (2560x1080): the sides take 5% of the wider width, the top and bottom the same as 16:9.
+    m = uiHudMargins(2560.f, 1080.f, 64.f, none, 5);
+    CHECK(m.left == doctest::Approx(64.f + 128.f));
+    CHECK(m.right == doctest::Approx(64.f + 128.f));
+    CHECK(m.top == doctest::Approx(64.f + 54.f));
+    CHECK(m.bottom == doctest::Approx(64.f + 54.f));
+    // The platform's padding goes under the percent on its own side only.
+    UiMargins pad;
+    pad.left = 10.f;
+    pad.top = 20.f;
+    pad.right = 30.f;
+    pad.bottom = 40.f;
+    m = uiHudMargins(2560.f, 1080.f, 64.f, pad, 5);
+    CHECK(m.left == doctest::Approx(64.f + 10.f + 128.f));
+    CHECK(m.top == doctest::Approx(64.f + 20.f + 54.f));
+    CHECK(m.right == doctest::Approx(64.f + 30.f + 128.f));
+    CHECK(m.bottom == doctest::Approx(64.f + 40.f + 54.f));
+    // The percent clamps to 0..10; bad input counts as nothing.
+    CHECK(uiHudMargins(1920.f, 1080.f, 64.f, none, 40).left == doctest::Approx(64.f + 192.f));
+    CHECK(uiHudMargins(1920.f, 1080.f, 64.f, none, -5).left == doctest::Approx(64.f));
+    pad.left = -50.f;
+    pad.top = std::nanf("");
+    m = uiHudMargins(-1.f, 1080.f, 64.f, pad, 5);
+    CHECK(m.left == doctest::Approx(64.f));
+    CHECK(m.top == doctest::Approx(64.f + 54.f));
+    CHECK(uiHudMargins(1920.f, 1080.f, std::nanf(""), none, 0).left == doctest::Approx(0.f));
+    // The settings' own range is the one the HUD clamps to.
+    CHECK(Settings::kMinHudSafeMargin == 0);
+    CHECK(Settings::kMaxHudSafeMargin == 10);
 }
 
 TEST_CASE("ui style: text keeps a hairline dark edge; a faint or light edge is refused; new keys are optional") {

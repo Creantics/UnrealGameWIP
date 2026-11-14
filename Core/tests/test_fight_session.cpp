@@ -2,6 +2,7 @@
 
 #include "AllocCounter.h"
 
+#include <array>
 #include <cmath>
 #include <doctest/doctest.h>
 
@@ -947,6 +948,44 @@ TEST_CASE("fight session: the gift HUD reads, and a new fight resets the Heals b
     CHECK(s.giftSlot().threads(kLeadA) == 2);
     CHECK(s.giveGift(kLeadA).given);
     CHECK(s.giftSlot().allPresses() == 5);
+}
+
+TEST_CASE("fight session: giftReason is what the gift press then answers, at every press of a scripted fight") {
+    FightSession s;
+    FightSessionDef d;
+    REQUIRE(s.begin(d, 0.0).ok());
+    const Gift gifts[] = {Gift::Heal, Gift::Guard};
+    const float healths[] = {kHealthUnknown, 0.5f, 1.f};
+    std::array<int, kPressReasonCount> seen{};
+    for (int k = 0; k < 2400; ++k) {
+        if (k == 1500) s.giftSlot().setState(SlotState::Vacant);
+        if (k == 1600) s.giftSlot().setState(SlotState::Hostile);
+        if (k == 1700) s.giftSlot().setState(SlotState::Companion);
+        if (k % 20 == 0) {
+            const Gift g = gifts[(k / 20) % 2];
+            const float h = healths[(k / 60) % 3];
+            const FighterId who = (k / 40) % 5 == 4 ? kThirdSlot : kLeadA; // now and then a target that is no lead
+            const PressReason asked = s.giftReason(g, who, h);
+            const GiftError checked = s.giftCheck(g, who, h);
+            REQUIRE(s.selectGift(g));
+            s.setLeadHealth(who, h); // as the host does before the press
+            const GiftResult r = s.giveGift(who);
+            INFO("k " << k << ", gift " << static_cast<int>(g) << ", reason " << static_cast<int>(asked));
+            CHECK(r.error == checked);
+            CHECK(r.given == (asked == PressReason::Ok));
+            ++seen[static_cast<std::size_t>(asked)];
+        }
+        s.tick(kFrame);
+    }
+    for (PressReason r : {PressReason::Ok, PressReason::Cooldown, PressReason::Empty, PressReason::Full, PressReason::Absent,
+                          PressReason::Refused}) {
+        INFO("reason " << static_cast<int>(r));
+        CHECK(seen[static_cast<std::size_t>(r)] > 0);
+    }
+    // Asking allocates nothing.
+    const auto before = ftcore_test::allocStats().count;
+    for (int i = 0; i < 40; ++i) (void)s.giftReason(Gift::Heal, kLeadA, 0.5f);
+    CHECK(ftcore_test::allocStats().count - before == 0);
 }
 
 TEST_CASE("fight session: a retry (begin after a fight not finished as won) puts the gift tally and threads back") {

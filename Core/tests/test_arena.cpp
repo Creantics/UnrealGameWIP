@@ -4,6 +4,7 @@
 #include "ftcore/BeatChoreo.h" // the skinned boss's clip table
 #include "ftcore/ComboSequence.h" // comboSequencesBuilt: the fence test
 #include "ftcore/FightSession.h" // the host mirror's shared count
+#include "ftcore/UiBudget.h" // the key prompts ask pressReason
 #include "ftcore/WorldLayout.h" // the zone table names its worlds
 
 #include "AllocCounter.h"
@@ -13,6 +14,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
@@ -3984,6 +3986,375 @@ TEST_CASE("arena pairOpen: true after a tick exactly when the partner's press on
     Rig none(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
     parryRun(none, p - 1);
     CHECK_FALSE(none.fight.pairOpen()); // before the parry
+}
+
+// ---- pressReason: the rules' own answer for a key prompt ----
+
+namespace {
+
+// The rig's next tick with only press `p` made (the rig's held stick, view and guard kept), on a copy, so the rig's
+// own fight goes on untouched. `idle`: no press at all.
+struct ProbeSeen {
+    int attackMove = -1; // the player's AttackStarted move (-1: none)
+    bool counter = false; // a CounterStagger (the partner's press paired)
+    bool guarded = false; // the player's guard stopped a blow (Blocked, GuardBroken or Parried)
+    bool parried = false; // ... a parry among them
+    bool staminaEmptied = false; // the player spent the last stamina (so it had some)
+};
+
+ArenaFight probeTick(const Rig& rig, ArenaPress p, bool idle, ArenaPlayerOut& before, ProbeSeen& seen,
+                     bool guard = true) {
+    ArenaFight copy = rig.fight;
+    ArenaInput in = rig.in;
+    in.light = in.heavy = in.dodge = in.jump = in.heal = in.lock = in.release = in.pair = in.takeHalf = false;
+    in.lockSwitch = 0;
+    in.read = -1;
+    if (!guard) in.guard = false;
+    if (!idle) {
+        switch (p) {
+        case ArenaPress::Light: in.light = true; in.aim = false; break; // unaimed: a light, not a shot
+        case ArenaPress::Heavy: in.heavy = true; in.aim = false; break;
+        case ArenaPress::Shot: in.light = true; in.aim = true; break;
+        case ArenaPress::Dodge: in.dodge = true; break;
+        case ArenaPress::Jump: in.jump = true; break;
+        case ArenaPress::Heal: in.heal = true; break;
+        case ArenaPress::Release: in.release = true; break;
+        case ArenaPress::Guard: in.guard = true; break;
+        case ArenaPress::Pair: in.pair = true; break;
+        }
+    }
+    before = copy.output().player;
+    const ArenaOutput& out = copy.tick(kDt, in, rig.bodies);
+    seen = ProbeSeen{};
+    for (const ArenaEvent& e : out.events) {
+        if (e.type == ArenaEventType::AttackStarted && e.source == kArenaPlayer) seen.attackMove = e.move;
+        if (e.type == ArenaEventType::CounterStagger) seen.counter = true;
+        if (e.type == ArenaEventType::Blocked || e.type == ArenaEventType::GuardBroken || e.type == ArenaEventType::Parried)
+            seen.guarded = true;
+        if (e.type == ArenaEventType::Parried) seen.parried = true;
+        if (e.type == ArenaEventType::StaminaEmpty) seen.staminaEmptied = true;
+    }
+    return copy;
+}
+
+// Whether press `p` made on the rig's next tick starts its action there.
+bool pressStarts(const Rig& rig, ArenaPress p, ProbeSeen& seen) {
+    ArenaPlayerOut before;
+    const ArenaFight after = probeTick(rig, p, false, before, seen);
+    const ArenaPlayerOut& now = after.output().player;
+    const int m = seen.attackMove;
+    switch (p) {
+    case ArenaPress::Light: return m >= 0 && m != kArenaHeavyMove && m != kArenaShotMove && m != kArenaReleaseMove;
+    case ArenaPress::Heavy: return m == kArenaHeavyMove;
+    case ArenaPress::Shot: return m == kArenaShotMove;
+    case ArenaPress::Release: return m == kArenaReleaseMove;
+    case ArenaPress::Dodge:
+        return now.action == ArenaAction::Dodge && (before.action != ArenaAction::Dodge || now.actionTime < before.actionTime);
+    case ArenaPress::Jump: return after.stats().jumps > rig.fight.stats().jumps;
+    case ArenaPress::Heal: return now.action == ArenaAction::Heal && before.action != ArenaAction::Heal;
+    case ArenaPress::Guard: return now.action == ArenaAction::Guard || seen.guarded;
+    case ArenaPress::Pair: return seen.counter;
+    }
+    return false;
+}
+
+struct PressTally {
+    std::array<int, kPressReasonCount> seen{};
+    int pairOk = 0;
+    int edges = 0; // refused now, taken because the next tick's own regen or reload came first
+    int checked = 0;
+};
+
+// Whether a no-press tick from the rig starts an action of the player's own (a press waiting in the buffer).
+bool bufferStarts(const Rig& rig) {
+    ArenaPlayerOut before;
+    ProbeSeen seen;
+    const ArenaFight idle = probeTick(rig, ArenaPress::Light, true, before, seen);
+    const ArenaPlayerOut& now = idle.output().player;
+    switch (now.action) {
+    case ArenaAction::Light:
+    case ArenaAction::Heavy:
+    case ArenaAction::Riposte:
+    case ArenaAction::Dodge:
+    case ArenaAction::Heal:
+    case ArenaAction::Release:
+    case ArenaAction::Jump: return now.action != before.action || now.actionTime < before.actionTime;
+    default: return false;
+    }
+}
+
+// At the rig's state: every press's answer against what that press does on the next tick. Ok must start it; a refusal
+// (or Absent) must not, but for the tick's own first part: stamina coming back (refused Stamina at none left) or a
+// reload finishing (a shot refused Empty), which a no-press tick shows; and the partner's press, which waits pairWindow
+// for a parry, pairs with one in that tick. Busy may go either way (it waits in the buffer). The same first part lets a
+// buffered press refused Stamina start ahead of a guard that read Ok.
+void checkPresses(const Rig& rig, PressTally& t) {
+    for (std::size_t i = 0; i < kArenaPressCount; ++i) {
+        const ArenaPress p = static_cast<ArenaPress>(i);
+        const PressReason r = rig.fight.pressReason(p);
+        ++t.seen[static_cast<std::size_t>(r)];
+        ++t.checked;
+        ProbeSeen pressed;
+        const bool started = pressStarts(rig, p, pressed);
+        INFO("tick " << rig.ticks << ", press " << i << ", reason " << static_cast<int>(r));
+        if (r == PressReason::Ok) {
+            if (!started && p == ArenaPress::Guard && rig.fight.stamina() <= 0.f && bufferStarts(rig)) {
+                ++t.edges; // stamina came back first, and the buffered press took the tick
+                continue;
+            }
+            CHECK(started);
+            if (p == ArenaPress::Pair) ++t.pairOk;
+        } else if (r != PressReason::Busy && started) {
+            // An idle tick with the guard down too: nothing blocked, so nothing drains the stamina regen gave back.
+            ArenaPlayerOut before;
+            ProbeSeen idleSeen;
+            const ArenaFight idle = probeTick(rig, p, true, before, idleSeen, false);
+            const bool regen = r == PressReason::Stamina && rig.fight.stamina() <= 0.f &&
+                               (idle.stamina() > 0.f || idleSeen.staminaEmptied);
+            const bool reload = r == PressReason::Empty && p == ArenaPress::Shot && rig.fight.rounds() == 0 && idle.rounds() > 0;
+            // The partner's press waits pairWindow for a parry: one in that tick pairs it.
+            const bool parry = r == PressReason::Closed && p == ArenaPress::Pair && pressed.parried;
+            CHECK((regen || reload || parry));
+            ++t.edges;
+        }
+    }
+}
+
+// Runs `ticks` ticks of `script` (which sets the rig's input for tick k), checking every press before each tick and
+// after the last; stops 20 ticks after the fight ends.
+template <class Script>
+void runChecked(Rig& rig, int ticks, PressTally& t, Script script) {
+    int over = 0;
+    for (int k = 1; k <= ticks && over < 20; ++k) {
+        script(rig, k);
+        checkPresses(rig, t);
+        rig.tick();
+        if (rig.fight.phase() != ArenaPhase::Fighting) ++over;
+    }
+    checkPresses(rig, t);
+}
+
+// A brawl: lights, heavies, dodges, jumps, heals, Releases and the partner's presses on their own beats, the guard held
+// in stretches against a hitter whose blocked blows drain stamina, and the gauge filled to the cap once, until the
+// player goes down.
+void brawlScript(Rig& rig, int k) {
+    rig.in.light = k % 7 == 0;
+    rig.in.dodge = k % 17 == 0;
+    rig.in.heavy = k % 29 == 0;
+    rig.in.jump = k % 43 == 0;
+    rig.in.release = k % 47 == 0;
+    rig.in.heal = k % 61 == 0;
+    rig.in.pair = k % 13 == 0;
+    rig.in.guard = (k / 90) % 3 == 1;
+    if (k == 150) rig.fight.giveLoad(kMaxLoad);
+}
+
+ArenaEnemyKind brawlHitter() {
+    ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 10);
+    bite.guardDamage = 45.f;
+    ArenaEnemyKind k = hitterKind(bite);
+    k.hp = 100000; // the player's blows never end it: the fight ends at the player's defeat
+    return k;
+}
+
+} // namespace
+
+TEST_CASE("arena pressReason: at every tick each press's answer is what that press does on the next tick") {
+    PressTally t;
+    {   // the brawl, to the player's defeat
+        Rig rig(ruleFighter(), {brawlHitter()});
+        rig.put(0, 1.5f, 0.f);
+        runChecked(rig, 4000, t, brawlScript);
+        CHECK(rig.fight.phase() == ArenaPhase::Defeat);
+    }
+    {   // a parry the partner's press pairs with (PARTNER's window)
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        rig.put(0, 1.5f, 0.f);
+        runChecked(rig, 70, t, [](Rig& r, int k) { r.in.guard = k >= 19; });
+    }
+    {   // a guard broken by one block
+        ArenaAttack crush = swing(0.4f, 0.15f, 0.5f, 2.f, 5);
+        crush.guardDamage = 150.f;
+        Rig rig(ruleFighter(), {hitterKind(crush)});
+        rig.put(0, 1.5f, 0.f);
+        runChecked(rig, 150, t, [](Rig& r, int) { r.in.guard = true; });
+        CHECK(rig.fight.stats().guardBreaks >= 1);
+    }
+    {   // a gun kit: aimed shots empty the cylinder, which reloads
+        ArenaFighter f = ruleFighter();
+        f.weapon = ArenaWeapon::Guns;
+        f.rounds = 2;
+        f.reload = 0.4f;
+        f.shot = swing(0.1f, 0.05f, 0.2f, 10.f, 8, 0.f);
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 4.f, 0.f);
+        runChecked(rig, 400, t, [](Rig& r, int k) {
+            r.in.aim = true;
+            r.in.light = k % 6 == 0;
+        });
+        CHECK(rig.fight.stats().reloads >= 1);
+        CHECK(rig.fight.stats().dryPresses >= 1);
+    }
+    {   // a kit with no attacks, no jump and no heals: only the dodge and the guard are there
+        ArenaFighter f = ruleFighter();
+        f.attacks = false;
+        f.jumpAir = 0.f;
+        f.healCharges = 0;
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 4.f, 0.f);
+        runChecked(rig, 200, t, [](Rig& r, int k) {
+            r.in.dodge = k % 9 == 0;
+            r.in.light = k % 5 == 0;
+        });
+        for (ArenaPress p : {ArenaPress::Light, ArenaPress::Heavy, ArenaPress::Shot, ArenaPress::Release, ArenaPress::Jump,
+                             ArenaPress::Heal})
+            CHECK(rig.fight.pressReason(p) == PressReason::Absent);
+    }
+    CHECK(t.checked > 15000);
+    for (PressReason r : {PressReason::Ok, PressReason::Busy, PressReason::Absent, PressReason::Down, PressReason::Broken,
+                          PressReason::Overloaded, PressReason::Stamina, PressReason::Empty, PressReason::Closed}) {
+        INFO("reason " << static_cast<int>(r));
+        CHECK(t.seen[static_cast<std::size_t>(r)] > 0);
+    }
+    CHECK(t.seen[static_cast<std::size_t>(PressReason::Cooldown)] == 0); // the fight has no cooldowns; the gift slot does
+    CHECK(t.pairOk > 0);
+    CHECK(t.edges * 50 < t.checked); // the tick's own regen and reload are rare edges
+}
+
+TEST_CASE("arena pressReason: asking changes nothing") {
+    Rig asked(ruleFighter(), {brawlHitter()});
+    Rig plain(ruleFighter(), {brawlHitter()});
+    asked.put(0, 1.5f, 0.f);
+    plain.put(0, 1.5f, 0.f);
+    int answers = 0;
+    for (int k = 1; k <= 1500; ++k) {
+        brawlScript(asked, k);
+        brawlScript(plain, k);
+        for (std::size_t i = 0; i < kArenaPressCount; ++i)
+            answers += asked.fight.pressReason(static_cast<ArenaPress>(i)) == PressReason::Ok ? 1 : 0;
+        asked.tick();
+        plain.tick();
+    }
+    CHECK(answers > 0);
+    CHECK(asked.fight.hp() == plain.fight.hp());
+    CHECK(asked.fight.stamina() == plain.fight.stamina());
+    CHECK(asked.fight.time() == plain.fight.time());
+    CHECK(asked.fight.load() == plain.fight.load());
+    CHECK(asked.fight.stats().lights == plain.fight.stats().lights);
+    CHECK(asked.fight.stats().dryPresses == plain.fight.stats().dryPresses);
+    REQUIRE(asked.log.size() == plain.log.size());
+    for (std::size_t i = 0; i < asked.log.size(); ++i) {
+        CHECK(asked.log[i].tick == plain.log[i].tick);
+        CHECK(asked.log[i].event.type == plain.log[i].event.type);
+        CHECK(asked.log[i].event.amount == plain.log[i].event.amount);
+    }
+}
+
+TEST_CASE("arena pressReason: the fight's phase and the kit's moves") {
+    ArenaFight idle;
+    for (std::size_t i = 0; i < kArenaPressCount; ++i) CHECK(idle.pressReason(static_cast<ArenaPress>(i)) == PressReason::Absent);
+    Rig rig(ruleFighter(), {dummyKind()});
+    rig.put(0, 4.f, 0.f);
+    CHECK(rig.fight.pressReason(ArenaPress::Light) == PressReason::Ok);
+    CHECK(rig.fight.pressReason(ArenaPress::Heal) == PressReason::Ok); // at full health too: the heal never asks
+    CHECK(rig.fight.pressReason(ArenaPress::Shot) == PressReason::Absent); // no gun
+    CHECK(rig.fight.pressReason(ArenaPress::Release) == PressReason::Empty); // no Load yet
+    CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Closed);
+    CHECK(rig.fight.pressReason(ArenaPress::Guard) == PressReason::Ok);
+    rig.fight.giveLoad(kMaxLoad);
+    rig.tick();
+    CHECK(rig.fight.pressReason(ArenaPress::Light) == PressReason::Overloaded);
+    CHECK(rig.fight.pressReason(ArenaPress::Heal) == PressReason::Overloaded);
+    CHECK(rig.fight.pressReason(ArenaPress::Release) == PressReason::Ok);
+    CHECK(rig.fight.pressReason(ArenaPress::Dodge) == PressReason::Ok);
+}
+
+TEST_CASE("ui prompts: each prompt asks the fight's own press, at every tick; HEAL stands lit at full health") {
+    const auto at = [](const UiPromptReasons& w, UiPrompt p) { return w[static_cast<std::size_t>(p)]; };
+    Rig rig(ruleFighter(), {brawlHitter()});
+    rig.put(0, 1.5f, 0.f);
+    {   // Full health with heals left: the rules take the heal (they never ask whether the lead is hurt), so HEAL
+        // stands undimmed, and the press starts the heal.
+        const UiPromptReasons why = uiPromptReasons(rig.fight, PressReason::Absent, PressReason::Absent);
+        REQUIRE(rig.fight.hp() == rig.def.fighter.hp);
+        CHECK(at(why, UiPrompt::Heal) == PressReason::Ok);
+        const UiPromptMask heal = uiPromptBit(UiPrompt::Heal);
+        CHECK((uiPromptsPresent(why, 0) & heal) != 0);
+        CHECK((uiPromptsDimmed(why, 0) & heal) == 0);
+        ArenaFight pressed = rig.fight;
+        ArenaInput in;
+        in.heal = true;
+        pressed.tick(kDt, in, rig.bodies);
+        CHECK(pressed.output().player.action == ArenaAction::Heal);
+    }
+    int lit = 0, dim = 0;
+    for (int k = 0; k < 4000 && rig.fight.phase() == ArenaPhase::Fighting; ++k) {
+        brawlScript(rig, k);
+        const UiPromptReasons why = uiPromptReasons(rig.fight, PressReason::Cooldown, PressReason::Ok);
+        CHECK(at(why, UiPrompt::Heal) == rig.fight.pressReason(ArenaPress::Heal));
+        CHECK(at(why, UiPrompt::Attack) == rig.fight.pressReason(ArenaPress::Light));
+        CHECK(at(why, UiPrompt::Guard) == rig.fight.pressReason(ArenaPress::Guard));
+        CHECK(at(why, UiPrompt::Dodge) == rig.fight.pressReason(ArenaPress::Dodge));
+        CHECK(at(why, UiPrompt::Jump) == rig.fight.pressReason(ArenaPress::Jump));
+        CHECK(at(why, UiPrompt::GiftHeal) == PressReason::Cooldown); // the host's, as passed
+        CHECK(at(why, UiPrompt::GiftGuard) == PressReason::Ok);
+        CHECK(at(why, UiPrompt::Reload) == PressReason::Absent); // no reload press
+        CHECK(at(why, UiPrompt::Pair) == PressReason::Absent);   // no partner in this fight
+        const UiPromptMask dimmed = uiPromptsDimmed(why, 0);
+        for (std::size_t p = 0; p < kUiPromptCount; ++p)
+            CHECK((((dimmed >> p) & 1u) != 0) == pressRefused(why[p]));
+        const UiPromptMask heal = uiPromptBit(UiPrompt::Heal);
+        if (uiPromptsPresent(why, 0) & heal) ((dimmed & heal) ? dim : lit) += 1;
+        rig.tick();
+    }
+    CHECK(rig.fight.phase() == ArenaPhase::Defeat);
+    CHECK(lit > 0);
+    CHECK(dim > 0); // overloaded, broken, out of charges: HEAL stays in its row, dimmed
+
+    // With a partner, PARTNER asks the fight's own pair press: closed, then open after a parry.
+    Rig duo(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+    duo.fight.setAlly(80, 0.4f);
+    duo.put(0, 1.5f, 0.f);
+    int open = 0, closed = 0;
+    for (int k = 0; k < 70; ++k) {
+        duo.in.guard = k >= 19;
+        const PressReason pair = at(uiPromptReasons(duo.fight, PressReason::Absent, PressReason::Absent), UiPrompt::Pair);
+        CHECK(pair == duo.fight.pressReason(ArenaPress::Pair));
+        open += pair == PressReason::Ok ? 1 : 0;
+        closed += pair == PressReason::Closed ? 1 : 0;
+        duo.tick();
+    }
+    CHECK(open > 0);
+    CHECK(closed > 0);
+}
+
+TEST_CASE("ui prompts: the HUD's per-frame asks of the rules and its margins allocate nothing") {
+    Rig rig(ruleFighter(), {brawlHitter()});
+    rig.put(0, 1.5f, 0.f);
+    const bool counting = ftcore_test::allocHookInstalled();
+    const std::array<UiPromptMask, kUiPromptCount> below{};
+    const UiMargins pad{12.f, 8.f, 12.f, 8.f};
+    UiPromptMask seen = 0;
+    float edges = 0.f;
+    int ticks = 0;
+    for (int k = 0; k < 4000 && rig.fight.phase() == ArenaPhase::Fighting; ++k) {
+        brawlScript(rig, k);
+        const auto before = ftcore_test::allocStats().count;
+        const UiPromptReasons why = uiPromptReasons(rig.fight, PressReason::Ok, PressReason::Absent);
+        const UiPromptMask present = uiPromptsPresent(why, 0);
+        const UiPromptMask dimmed = uiPromptsDimmed(why, uiPromptBit(UiPrompt::GiftHeal));
+        const UiPromptMask drawn = uiPromptsDrawable(present, static_cast<UiPromptMask>(~0u), below);
+        const UiMargins wide = uiHudMargins(2560.f, 1080.f, 64.f, pad, 5);
+        const auto allocs = ftcore_test::allocStats().count - before;
+        if (counting) CHECK(allocs == 0);
+        seen = static_cast<UiPromptMask>(seen | drawn | dimmed);
+        edges += wide.left;
+        rig.tick();
+        ++ticks;
+    }
+    CHECK(ticks > 100);
+    CHECK(seen != 0);
+    CHECK(edges > 0.f);
 }
 
 // ---- determinism ----

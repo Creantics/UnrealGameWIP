@@ -42,6 +42,7 @@ struct Settings {
     static constexpr int kVersion = 1;
     static constexpr float kMinAutoDelay = 0.25f, kMaxAutoDelay = 5.f;
     static constexpr int kMinHudScale = 80, kMaxHudScale = 130; // percent, in steps of 10
+    static constexpr int kMinHudSafeMargin = 0, kMaxHudSafeMargin = 10; // percent of the viewport, in steps of 1
 
     TextSpeed textSpeed = TextSpeed::Normal;
     bool autoAdvance = false;
@@ -60,6 +61,8 @@ struct Settings {
     bool lockFraming = true;      // the followed arena view orbits to put the target on its centre line (ArenaLook.h)
     std::uint32_t uiFirstUse = 0; // what the fight HUD has taught this save: its counts, packed by uiFirstUseSaved (UiFirstUse.h)
     int hudScale = 100;           // the fight HUD's size over the viewport's scale, margins included: percent
+    int hudSafeMargin = 0;        // more room at the fight HUD's edges: percent of the viewport's width (left and right)
+                                  // and height (top and bottom), on top of the platform's title-safe padding (uiHudMargins)
 
     // Characters per second the dialogue types out at (0: whole text at once).
     float textCharsPerSecond() const {
@@ -91,7 +94,7 @@ FTCORE_API void clampSettings(Settings& s);
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
 //  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"aimAssist":true,"subtitleSize":1,"reduceFlashes":false,
 //  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0,
-//  "lockFraming":true,"uiFirstUse":0,"hudScale":100}
+//  "lockFraming":true,"uiFirstUse":0,"hudScale":100,"hudSafeMargin":0}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
 // defenceAssist off/wide, subtitleSize small..large).
 FTCORE_API std::string encodeSettings(const Settings& s);
@@ -122,9 +125,10 @@ enum class SettingsRow : std::uint8_t {
     CameraShake,
     LockFraming,
     HudScale,
+    HudSafeMargin,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 20;
+inline constexpr std::uint32_t kSettingsRowCount = 21;
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 

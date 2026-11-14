@@ -279,6 +279,7 @@
 #include "ftcore/FightAnimator.h" // FightClip
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
+#include "ftcore/PressReason.h"
 #include "ftcore/ReadCards.h"
 
 #include <array>
@@ -1055,6 +1056,11 @@ struct ArenaTableSeats {
 // (a copy made inside the hook ticks as any other).
 using ArenaBlowHook = ArenaBlowRuling (*)(void* user, const ArenaBlow& blow);
 
+// A press the HUD asks about (ArenaFight::pressReason): the player's light (unaimed), heavy, shot (a gun kit's aimed
+// light), dodge, jump, heal and Release, the guard held, and the partner's press that pairs with a parry.
+enum class ArenaPress : std::uint8_t { Light, Heavy, Shot, Dodge, Jump, Heal, Release, Guard, Pair };
+inline constexpr std::size_t kArenaPressCount = 9;
+
 class ArenaFight {
 public:
     // Starts `def`: the player at playerPos facing playerFacing (unit), the enemies spread on an arc
@@ -1140,6 +1146,17 @@ public:
     FTCORE_API int readStacks() const;
     // The partner's press would pair now: a parry within pairWindow has opened an enemy still open and not yet paired.
     FTCORE_API bool pairOpen() const;
+    // Whether press `p` made now would be taken by the next tick, and if not why: the rules' own answer, read from the
+    // predicate the press runs (the refusal startAction applies, canStart, the hit pause, pairOpen), so a key prompt
+    // asks the rules instead of copying them. Nothing changes. Absent: the kit has no such move (no attacks, no jump,
+    // no heal charges, no gun) or the fight has not begun or is won; Down: the player is down or the fight is lost;
+    // Broken: the guard is broken; Busy: the press would wait in the buffer (an action not yet cut, a hit pause) and
+    // may start when that ends; Overloaded, Stamina, Empty (no charge, no round, too little Load), Closed (Pair: no
+    // window open; a press now still waits pairWindow for a parry): refused. Ok: the press starts its action on the
+    // next tick (Guard: the guard is up, or goes up). The answer is the state's now: stamina coming back, or a reload
+    // finishing, in that next tick's own first part lets a press through that reads Stamina or Empty here (and lets a
+    // buffered press refused Stamina start ahead of a guard that reads Ok).
+    FTCORE_API PressReason pressReason(ArenaPress p) const;
 
     // ---- host hooks ----
     // Holds enemy i in `brain` (Open, Down or Staggered) for `seconds` (> 0; +infinity: until releaseEnemy), from the

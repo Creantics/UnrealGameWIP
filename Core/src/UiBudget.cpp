@@ -1,5 +1,7 @@
 #include "ftcore/UiBudget.h"
 
+#include "ftcore/ArenaFight.h"
+
 #include <algorithm>
 
 namespace ftcore {
@@ -20,33 +22,39 @@ std::uint8_t uiPromptRowsOf(UiPromptMask m) {
     return n;
 }
 
-UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen) {
+UiPromptReasons uiPromptReasons(const ArenaFight& fight, PressReason giftHeal, PressReason giftGuard) {
+    UiPromptReasons why{};
+    const auto set = [&why](UiPrompt p, PressReason r) { why[static_cast<std::size_t>(p)] = r; };
+    set(UiPrompt::Heal, fight.pressReason(ArenaPress::Heal));
+    set(UiPrompt::GiftHeal, giftHeal);
+    set(UiPrompt::GiftGuard, giftGuard);
+    set(UiPrompt::Reload, PressReason::Absent);
+    set(UiPrompt::Pair, fight.allyMaxHp() > 0 ? fight.pressReason(ArenaPress::Pair) : PressReason::Absent);
+    set(UiPrompt::Attack, fight.pressReason(ArenaPress::Light));
+    set(UiPrompt::Guard, fight.pressReason(ArenaPress::Guard));
+    set(UiPrompt::Dodge, fight.pressReason(ArenaPress::Dodge));
+    set(UiPrompt::Jump, fight.pressReason(ArenaPress::Jump));
+    return why;
+}
+
+UiPromptMask uiPromptsPresent(const UiPromptReasons& why, UiPromptMask teaching) {
     UiPromptMask m = 0;
-    const ArenaHudLead& l = f.lead;
-    const bool up = !l.down;
-    const bool hurt = l.hp < l.hpMax; // at full HP a heal (or a Gift Heal) would do nothing
-    if (pairOpen && f.partner.present && !f.partner.down) m |= uiPromptBit(UiPrompt::Pair);
-    if (l.heals > 0 && up && hurt && !l.overloaded && !l.guardBroken) m |= uiPromptBit(UiPrompt::Heal);
-    if (f.third.giftHeals > 0 && up && hurt) m |= uiPromptBit(UiPrompt::GiftHeal);
-    if (f.third.giftGuardReady && up) m |= uiPromptBit(UiPrompt::GiftGuard);
-    // Mid-reload the press is already made: the cylinder shows the reload filling, so the row would repeat it.
-    if (l.roundsMax > 0 && l.rounds == 0 && l.reload01 <= 0.f && up) m |= uiPromptBit(UiPrompt::Reload);
+    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
+        const UiPrompt q = static_cast<UiPrompt>(p);
+        const bool basic = p >= static_cast<std::size_t>(UiPrompt::Attack);
+        if (why[p] == PressReason::Absent) continue;
+        if (basic && (teaching & uiPromptBit(q)) == 0) continue;
+        m = static_cast<UiPromptMask>(m | uiPromptBit(q));
+    }
     return m;
 }
 
-bool uiControlUsable(const ArenaHudLead& lead, UiPrompt p) {
-    switch (p) {
-    case UiPrompt::Attack: return !lead.down && !lead.guardBroken && !lead.overloaded;
-    case UiPrompt::Guard:
-    case UiPrompt::Dodge:
-    case UiPrompt::Jump: return !lead.down && !lead.guardBroken;
-    case UiPrompt::Heal:
-    case UiPrompt::GiftHeal:
-    case UiPrompt::GiftGuard:
-    case UiPrompt::Reload:
-    case UiPrompt::Pair: return true;
+UiPromptMask uiPromptsDimmed(const UiPromptReasons& why, UiPromptMask noKey) {
+    UiPromptMask m = static_cast<UiPromptMask>(noKey & ((1u << kUiPromptCount) - 1u));
+    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
+        if (pressRefused(why[p])) m = static_cast<UiPromptMask>(m | uiPromptBit(static_cast<UiPrompt>(p)));
     }
-    return true;
+    return m;
 }
 
 UiPromptMask uiPromptsDrawable(UiPromptMask open, UiPromptMask keyed, const std::array<UiPromptMask, kUiPromptCount>& sameKeyBelow) {
@@ -105,8 +113,13 @@ const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, cons
     for (std::size_t k = 0; k < kUiMarkKindCount; ++k) {
         const UiMarkKind kind = static_cast<UiMarkKind>(k);
         std::uint8_t want = in.want[k];
-        // At rest the in-action marks keep their place only while they fade out; a prompt stands while it is open.
-        const bool stays = kind == UiMarkKind::Lead || kind == UiMarkKind::Party || kind == UiMarkKind::Prompt;
+        // The prompt rows are fixed and a present prompt is never dropped: every row it fills is granted, outside the cap.
+        if (kind == UiMarkKind::Prompt) {
+            o.allow[k] = std::min(want, kUiPromptRows);
+            continue;
+        }
+        // At rest the in-action marks keep their place only while they fade out.
+        const bool stays = kind == UiMarkKind::Lead || kind == UiMarkKind::Party;
         if (o.rest && !stays && st.action.alpha <= 0.f) want = 0;
         if (kind == UiMarkKind::Boss && st.boss.alpha <= 0.f) want = 0;
         const std::uint8_t give = std::min(want, left);
@@ -116,22 +129,9 @@ const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, cons
     for (std::uint8_t a : o.allow) o.marks = static_cast<std::uint8_t>(o.marks + a);
 
     o.bossAlpha = o.allowed(UiMarkKind::Boss) ? st.boss.alpha : 0.f;
-    // Only open prompts, in their order (so from the lowest row up), in as many rows as were granted; a row not granted
-    // is empty. A prompt in a row already granted (the second gift) costs nothing more.
-    std::uint8_t room = std::min(o.allowed(UiMarkKind::Prompt), kUiPromptRows);
-    std::uint32_t granted = 0;
-    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
-        const UiPromptMask b = static_cast<UiPromptMask>(1u << p);
-        const std::uint32_t row = 1u << uiPromptRow(static_cast<UiPrompt>(p));
-        if ((in.prompts & b) == 0) continue;
-        if ((granted & row) == 0) {
-            if (room == 0) break;
-            granted |= row;
-            --room;
-        }
-        o.promptsShown = static_cast<UiPromptMask>(o.promptsShown | b);
-    }
-    st.maxMarks = std::max(st.maxMarks, o.marks);
+    // Every prompt the input draws, in its own fixed row (the GIFT row's two in one).
+    o.promptsShown = static_cast<UiPromptMask>(in.prompts & ((1u << kUiPromptCount) - 1u));
+    st.maxMarks = std::max(st.maxMarks, static_cast<std::uint8_t>(o.marks - o.allowed(UiMarkKind::Prompt)));
     return o;
 }
 

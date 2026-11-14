@@ -310,6 +310,9 @@ public:
 	int32 GetGiftHealsLeft() const;
 	double GetGiftHealReadyIn() const;
 	double GetGiftGuardReadyIn() const;
+	// For the GIFT row's prompts: what a press of gift `G` at the lead would answer now (the session's giftReason, the
+	// press's own slot check, with the lead's health as the press sets it); Absent with no session.
+	ftcore::PressReason GetGiftReason(ftcore::Gift G) const;
 	bool IsRefusedTooEarly() const;
 	bool IsEscrowWaiting() const;
 	float GetEscrowWaitLeft() const;

@@ -1956,6 +1956,16 @@ double UFTArenaRunner::GetGiftGuardReadyIn() const
 	return Session ? Session->Get().giftGuardReadyIn() : 0.0;
 }
 
+ftcore::PressReason UFTArenaRunner::GetGiftReason(const ftcore::Gift G) const
+{
+	if (!Session)
+	{
+		return ftcore::PressReason::Absent;
+	}
+	const float Health = static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1));
+	return Session->Get().giftReason(G, SessionLead, Health);
+}
+
 bool UFTArenaRunner::IsRefusedTooEarly() const
 {
 	return HallMode != 0 && HallTooEarlyAt >= 0.0 && static_cast<double>(Fight.time()) - HallTooEarlyAt < kRefusedTooEarlyShow;

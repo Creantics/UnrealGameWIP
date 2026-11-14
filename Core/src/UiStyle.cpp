@@ -1,6 +1,7 @@
 #include "ftcore/UiStyle.h"
 
 #include "ftcore/Json.h"
+#include "ftcore/Settings.h" // the HUD safe margin's range
 
 #include <algorithm>
 #include <cmath>
@@ -87,6 +88,20 @@ std::string_view uiTextRoleName(UiTextRole r) { return kRoleNames[static_cast<st
 std::string_view uiMeterShapeName(UiMeterShape m) { return kMeterNames[static_cast<std::size_t>(m) % kUiMeterShapeCount]; }
 
 float uiEdgePx(const UiStyle& s, float height) { return std::max(1.f, s.edgePx * std::max(height, 1.f) / 1080.f); }
+
+UiMargins uiHudMargins(float width, float height, float basePx, const UiMargins& padding, int safePercent) {
+    const auto pos = [](float v) { return v > 0.f ? v : 0.f; }; // NaN fails the test too
+    const float pct = static_cast<float>(std::clamp(safePercent, Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin)) / 100.f;
+    const float base = pos(basePx);
+    const float w = pos(width) * pct;
+    const float h = pos(height) * pct;
+    UiMargins m;
+    m.left = base + pos(padding.left) + w;
+    m.right = base + pos(padding.right) + w;
+    m.top = base + pos(padding.top) + h;
+    m.bottom = base + pos(padding.bottom) + h;
+    return m;
+}
 
 void uiFadeStep(UiFade& f, bool changed, float dt, const UiFadeTimes& t) {
     const float step = std::max(dt, 0.f);

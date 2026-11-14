@@ -99,6 +99,16 @@
     "arena.prompt.gift_heal": "gift heal",
     "arena.prompt.gift_guard": "gift guard",
     "arena.prompt.reload": "reload",
+    "arena.prompt.no_key": "no key",
+    "arena.prompt.why.down": "down",
+    "arena.prompt.why.broken": "broken",
+    "arena.prompt.why.overloaded": "overloaded",
+    "arena.prompt.why.stamina": "stamina",
+    "arena.prompt.why.empty": "empty",
+    "arena.prompt.why.cooldown": "cooldown",
+    "arena.prompt.why.full": "full",
+    "arena.prompt.why.closed": "closed",
+    "arena.prompt.why.refused": "refused",
 
     "banter.prompt": "Space / Enter: next    Backspace: skip",
 

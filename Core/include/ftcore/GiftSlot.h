@@ -209,6 +209,21 @@ public:
     }
     Gift selected() const { return selected_; }
 
+    // What press would answer for gift `g` (selected or not) aimed at `target` at t, reading only: the one rule press
+    // runs, so a HUD asks it instead of copying it. None: press would give it, but for the Count gift, whose own call
+    // (StrikeCount::call) press makes after this and may still refuse (CountRefused).
+    GiftError pressError(Gift g, FighterId target, double t, float targetHealth = kHealthUnknown) const {
+        if (state_ == SlotState::Hostile) return GiftError::Hostile;
+        if (state_ == SlotState::Vacant) return GiftError::Vacant;
+        const std::size_t i = static_cast<std::size_t>(g);
+        if (!isLead(target)) return GiftError::BadTarget;
+        if (i >= kGiftKinds) return GiftError::NoGift;
+        if (g == Gift::Heal && targetHealth >= 1.f) return GiftError::NotHurt; // nothing to heal
+        if (g == Gift::Heal && healsLeft() <= 0) return GiftError::NoneLeft;
+        if (inputTime(now_, t) < readyAt_[i]) return GiftError::Cooling;
+        return GiftError::None;
+    }
+
     // The button, aimed at lead `target`. `count` is needed for the Count gift. `targetHealth`: the target's
     // health as a fraction of its max (kHealthUnknown when the host does not say).
     GiftResult press(FighterId target, double t, StrikeCount* count = nullptr, float targetHealth = kHealthUnknown) {
@@ -216,25 +231,26 @@ public:
         GiftResult r;
         r.gift = selected_;
         r.target = target;
-        if (state_ == SlotState::Hostile) {
+        switch (const GiftError e = pressError(selected_, target, t, targetHealth)) {
+        case GiftError::None: break;
+        case GiftError::Hostile:
             hostilePresses_ = saturatingAdd(hostilePresses_, 1);
-            r.error = GiftError::Hostile;
+            r.error = e;
             return r;
-        }
-        if (state_ == SlotState::Vacant) {
+        case GiftError::Vacant:
             vacantPresses_ = saturatingAdd(vacantPresses_, 1);
-            r.error = GiftError::Vacant;
+            r.error = e;
             return r;
+        case GiftError::NotHurt: // nothing to heal: not a press that did anything
+            r.error = e;
+            return r;
+        case GiftError::Cooling:
+        case GiftError::BadTarget:
+        case GiftError::CountRefused:
+        case GiftError::NoGift:
+        case GiftError::NoneLeft: return refuse(r, e);
         }
         const std::size_t g = static_cast<std::size_t>(selected_);
-        if (!isLead(target)) return refuse(r, GiftError::BadTarget);
-        if (g >= kGiftKinds) return refuse(r, GiftError::NoGift);
-        if (selected_ == Gift::Heal && targetHealth >= 1.f) { // nothing to heal: not a press that did anything
-            r.error = GiftError::NotHurt;
-            return r;
-        }
-        if (selected_ == Gift::Heal && healsLeft() <= 0) return refuse(r, GiftError::NoneLeft);
-        if (t < readyAt_[g]) return refuse(r, GiftError::Cooling);
         if (selected_ == Gift::Count) {
             if (count == nullptr || count->call(kThirdSlot, t) != CountError::None)
                 return refuse(r, GiftError::CountRefused);

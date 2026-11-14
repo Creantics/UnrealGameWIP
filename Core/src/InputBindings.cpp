@@ -504,8 +504,7 @@ std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, Input
     for (std::uint8_t i = 0; i < e.count && i < e.actions.size(); ++i) {
         const InputAction a = e.actions[i];
         const InputKeyName& n = b.keys[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(a) % kInputActionCount];
-        if (n.empty() && unbound &&
-            unbound->left[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(a) % kInputActionCount]) {
+        if (inputNoKey(b, a, d, unbound)) {
             addPiece(keys, kInputNoKey);
             continue;
         }
@@ -549,6 +548,28 @@ std::string inputActionKeys(const InputBindings& b, InputAction a, InputDevice d
     keys += '+';
     keys += inputKeyLabel(other);
     return keys;
+}
+
+bool inputNoKey(const InputBindings& b, InputAction a, InputDevice d, const InputUnbound* unbound) {
+    const std::size_t di = static_cast<std::size_t>(d) % kInputDeviceCount;
+    const std::size_t ai = static_cast<std::size_t>(a) % kInputActionCount;
+    return unbound != nullptr && unbound->left[di][ai] && b.keys[di][ai].empty();
+}
+
+InputPromptKey inputPromptKey(const InputBindings& b, const InputHintEntry& e, InputDevice d, const InputUnbound* unbound) {
+    InputPromptKey k;
+    bool none = e.count > 0;
+    for (std::uint8_t i = 0; i < e.count && i < e.actions.size(); ++i) none = none && inputNoKey(b, e.actions[i], d, unbound);
+    k.noKey = none;
+    k.keys = inputHintKeys(b, e, d, unbound); // every action NO KEY: kInputNoKey, once
+    return k;
+}
+
+InputPromptKey inputPromptKey(const InputBindings& b, InputAction a, InputDevice d, const InputUnbound* unbound) {
+    InputPromptKey k;
+    k.noKey = inputNoKey(b, a, d, unbound);
+    k.keys = k.noKey ? std::string(kInputNoKey) : inputActionKeys(b, a, d);
+    return k;
 }
 
 std::string inputHintLine(const InputBindings& b, InputHintScreen screen, InputDevice d, InputHintText text, void* user,

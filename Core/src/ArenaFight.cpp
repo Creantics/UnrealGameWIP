@@ -769,10 +769,131 @@ struct ArenaFightImpl {
         return a && pl.actionTime < a->startup + a->active + a->cancel * a->recovery;
     }
 
-    bool startLight(const ArenaInput& in) {
-        const int riposteAt = riposteTarget();
+    // What a light press performs now: the riposte on riposteTarget() (riposteAt >= 0), else the chain's next light
+    // (`index`) when it starts during the previous light's recovery or within chainGap after it, else the first.
+    const ArenaAttack& lightPick(int& riposteAt, std::uint8_t& index) const {
+        riposteAt = riposteTarget();
+        index = 0;
+        if (riposteAt >= 0) return fi.riposte;
+        const bool chained = pl.chainLive && (pl.action == ArenaAction::Light || t0 - pl.lightEnd <= fi.chainGap);
+        if (chained) index = pl.chainNext;
+        return fi.light[index];
+    }
+
+    // In the air: a jump past its take-off and short of touch-down (canStart lets only the air light through).
+    bool inAir() const {
+        return pl.action == ArenaAction::Jump && pl.jumpTime >= 0.f && pl.actionTime < fi.jumpStartup + fi.jumpAir;
+    }
+
+    // A dodge or a jump needs some stamina when the dodge costs any.
+    bool outOfStamina() const { return fi.dodgeStamina > 0.f && pl.stamina <= 0.f; }
+
+    // Why startAction would not start `what` now, once canStart lets it (Ok: it starts it). The one rule the press runs
+    // (startAction) and the HUD asks (ArenaFight::pressReason), so the two cannot drift: in the air only a light or
+    // shot press (the air light); an attack press of a kit with no attacks is Absent; overloaded, light (and so the
+    // riposte), heavy, shot and heal are refused until a Release; an attack that costs stamina needs some; a shot needs
+    // a round; a dodge or a jump needs stamina when the dodge costs any; a heal needs a charge; a Release needs more
+    // than a third of the cap's Load; a kit with jumpAir 0 has no jump.
+    PressReason refusal(Press what) const {
+        const bool light = what == Press::Light || what == Press::Shot;
+        const bool locked = overloadedNow();
+        if (inAir()) {
+            if (!light) return PressReason::Busy;
+            if (kitLacks(what)) return PressReason::Absent;
+            if (locked) return PressReason::Overloaded;
+            return affords(fi.jumpLight) ? PressReason::Ok : PressReason::Stamina;
+        }
+        switch (what) {
+        case Press::Light:
+        case Press::Heavy:
+        case Press::Shot: {
+            if (kitLacks(what)) return PressReason::Absent;
+            if (locked) return PressReason::Overloaded;
+            if (what == Press::Shot && fi.rounds > 0 && pl.rounds == 0) return PressReason::Empty;
+            int riposteAt = -1;
+            std::uint8_t index = 0;
+            const ArenaAttack& a = what == Press::Heavy  ? fi.heavy
+                                   : what == Press::Shot ? fi.shot
+                                                         : lightPick(riposteAt, index);
+            return affords(a) ? PressReason::Ok : PressReason::Stamina;
+        }
+        case Press::Dodge: return outOfStamina() ? PressReason::Stamina : PressReason::Ok;
+        case Press::Jump:
+            if (kitLacks(what)) return PressReason::Absent;
+            return outOfStamina() ? PressReason::Stamina : PressReason::Ok;
+        case Press::Heal:
+            if (locked) return PressReason::Overloaded;
+            return pl.charges == 0 ? PressReason::Empty : PressReason::Ok;
+        case Press::Release:
+            if (kitLacks(what)) return PressReason::Absent;
+            return pl.gauge.value <= fight.capNow() / 3 ? PressReason::Empty : PressReason::Ok;
+        case Press::None: break;
+        }
+        return PressReason::Absent;
+    }
+
+    // The kit has no such move at all: no attacks of its own (ArenaFighter::attacks: light, heavy, shot and Release),
+    // or jumpAir 0 (no jump).
+    bool kitLacks(Press what) const {
+        switch (what) {
+        case Press::Light:
+        case Press::Heavy:
+        case Press::Shot:
+        case Press::Release: return !fi.attacks;
+        case Press::Jump: return !(fi.jumpAir > kArenaEps);
+        case Press::Dodge:
+        case Press::Heal:
+        case Press::None: break;
+        }
+        return false;
+    }
+
+    // ArenaFight::pressReason, at t0 = the fight's time (the next tick's start): the order stepPlayer takes a press in,
+    // from the same rules, reading only.
+    PressReason pressReason(ArenaPress p) const {
+        if (fight.phase_ == ArenaPhase::Defeat) return PressReason::Down;
+        if (fight.phase_ != ArenaPhase::Fighting) return PressReason::Absent;
+        Press what = Press::None;
+        switch (p) {
+        case ArenaPress::Light: what = Press::Light; break;
+        case ArenaPress::Heavy: what = Press::Heavy; break;
+        case ArenaPress::Shot: what = Press::Shot; break;
+        case ArenaPress::Dodge: what = Press::Dodge; break;
+        case ArenaPress::Jump: what = Press::Jump; break;
+        case ArenaPress::Heal: what = Press::Heal; break;
+        case ArenaPress::Release: what = Press::Release; break;
+        case ArenaPress::Guard:
+        case ArenaPress::Pair: break;
+        }
+        // A move the kit lacks is absent whatever the state: no heal charges at the start, a shot without a gun (a light
+        // press is only a shot aimed with one).
+        if (what != Press::None && kitLacks(what)) return PressReason::Absent;
+        if (p == ArenaPress::Heal && fight.healMax_ == 0) return PressReason::Absent;
+        if (p == ArenaPress::Shot && fi.weapon != ArenaWeapon::Guns) return PressReason::Absent;
+        if (pl.hp <= 0 || pl.action == ArenaAction::Downed) return PressReason::Down;
+        if (p == ArenaPress::Pair) return fight.pairOpen() ? PressReason::Ok : PressReason::Closed;
+        if (pl.action == ArenaAction::GuardBreak) return PressReason::Broken; // canStart starts nothing until it ends
+        // A hit pause over the tick's start: the press waits in the buffer (it starts in the tick the pause ends).
+        const bool paused = pl.stopUntil > t0;
+        if (p == ArenaPress::Guard) {
+            if (pl.action == ArenaAction::Guard) return PressReason::Ok;
+            // A buffered press that starts first takes the tick (the guard goes up once its action lets it).
+            const bool first = pl.buffered != Press::None && !(pl.bufferAge > fi.bufferTime) &&
+                               canStart(pl, fi, cutOf(pl.buffered)) && refusal(pl.buffered) == PressReason::Ok;
+            if (paused || first) return PressReason::Busy;
+            return canStart(pl, fi, Cut::Guard) ? PressReason::Ok : PressReason::Busy;
+        }
+        const PressReason r = refusal(what);
+        if (r != PressReason::Ok) return r;
+        return paused || !canStart(pl, fi, cutOf(what)) ? PressReason::Busy : PressReason::Ok;
+    }
+
+    // The start functions run only once refusal() is Ok.
+    void startLight(const ArenaInput& in) {
+        int riposteAt = -1;
+        std::uint8_t index = 0;
+        lightPick(riposteAt, index);
         if (riposteAt >= 0) {
-            if (!affords(fi.riposte)) return false;
             pl.chainLive = false;
             pl.soft = kArenaNobody;
             pl.homeClose = 0.f;
@@ -781,29 +902,25 @@ struct ArenaFightImpl {
             if (fi.riposte.startup <= kArenaEps)
                 pl.facing = arenaUnit(arenaSub(foes[static_cast<std::size_t>(riposteAt)].pos, pl.pos), pl.facing);
             beginAttack(ArenaAction::Riposte, kArenaRiposteMove, fi.riposte);
-            return true;
+            return;
         }
-        // The chain's next attack when it starts during the previous light's recovery or within chainGap after it.
-        const bool chained = pl.chainLive && (pl.action == ArenaAction::Light || t0 - pl.lightEnd <= fi.chainGap);
-        const std::uint8_t index = chained ? pl.chainNext : static_cast<std::uint8_t>(0);
-        if (!affords(fi.light[index])) return false;
         pl.chainNext = static_cast<std::uint8_t>((index + 1u) % fi.lightCount);
         pl.chainLive = true;
         faceAtStart(in, fi.light[index]);
         ++stats.lights;
         stats.lightStamina += std::max(0.f, fi.light[index].stamina);
         beginAttack(ArenaAction::Light, index, fi.light[index]);
-        return true;
+    }
+
+    // A shot press with the cylinder empty: counted, and dropped from the buffer.
+    bool dryPress() {
+        ++stats.dryPresses;
+        emit(ArenaEventType::DryPress, kArenaPlayer, kArenaPlayer, kArenaShotMove, stats.dryPresses, pl.pos);
+        return dropPress();
     }
 
     // A gun kit's aimed light: one round at the aim, no riposte (that stays the unaimed light's), and it ends a chain.
-    bool startShot(const ArenaInput& in) {
-        if (fi.rounds > 0 && pl.rounds == 0) { // the cylinder is empty: the press is dropped
-            ++stats.dryPresses;
-            emit(ArenaEventType::DryPress, kArenaPlayer, kArenaPlayer, kArenaShotMove, stats.dryPresses, pl.pos);
-            return dropPress();
-        }
-        if (!affords(fi.shot)) return false;
+    void startShot(const ArenaInput& in) {
         if (fi.rounds > 0) --pl.rounds;
         pl.chainLive = false;
         ++stats.shots;
@@ -812,19 +929,15 @@ struct ArenaFightImpl {
         pl.shotPitched = in.aimPitched;
         pl.shotPitch = in.aimPitch;
         pl.shotBody = in.aimBody;
-        return true;
     }
 
-    bool startHeavy(const ArenaInput& in) {
-        if (!affords(fi.heavy)) return false;
+    void startHeavy(const ArenaInput& in) {
         pl.chainLive = false;
         faceAtStart(in, fi.heavy);
         beginAttack(ArenaAction::Heavy, kArenaHeavyMove, fi.heavy);
-        return true;
     }
 
-    bool startDodge(const ArenaInput& in) {
-        if (fi.dodgeStamina > 0.f && pl.stamina <= 0.f) return false;
+    void startDodge(const ArenaInput& in) {
         const Vec2 stick = arenaClampLength(in.move, 1.f);
         if (arenaLength(stick) > kArenaEps) {
             pl.dodgeDir = arenaUnit(stick, pl.facing);
@@ -848,13 +961,11 @@ struct ArenaFightImpl {
         pl.chainLive = false;
         pl.action = ArenaAction::Dodge;
         pl.actionTime = 0.f;
-        return true;
     }
 
     // The jump, from the ground: kArenaJumpStaminaShare of a dodge's stamina, refused as a dodge is (with none left).
     // The velocity carries the take-off's (no faster than a run).
-    bool startJump() {
-        if (fi.dodgeStamina > 0.f && pl.stamina <= 0.f) return false;
+    void startJump() {
         spend(kArenaJumpStaminaShare * fi.dodgeStamina);
         pl.chainLive = false;
         pl.action = ArenaAction::Jump;
@@ -863,27 +974,22 @@ struct ArenaFightImpl {
         pl.jumpVel = arenaClampLength(pl.velocity, fi.moveSpeed);
         pl.airLightUsed = false;
         ++stats.jumps;
-        return true;
     }
 
     // The one light a jump may strike in the air (a shot press there is one too): no riposte, no chain.
-    bool startAirLight(const ArenaInput& in) {
-        if (!affords(fi.jumpLight)) return false;
+    void startAirLight(const ArenaInput& in) {
         pl.chainLive = false;
         pl.airLightUsed = true;
         ++stats.airLights;
         faceAtStart(in, fi.jumpLight);
         beginAttack(ArenaAction::Light, kArenaAirMove, fi.jumpLight);
-        return true;
     }
 
-    bool startHeal() {
-        if (pl.charges == 0) return false;
+    void startHeal() {
         pl.chainLive = false;
         pl.action = ArenaAction::Heal;
         pl.actionTime = 0.f;
         pl.healApplied = false;
-        return true;
     }
 
     void startGuard() {
@@ -894,8 +1000,7 @@ struct ArenaFightImpl {
 
     // The Release: open only above a third of the cap (kArenaReleaseOpenLoad at the full cap), whatever the stamina
     // (the two gauges are apart). All the Load goes at once; the strike's hits turn it into poise damage.
-    bool startRelease(const ArenaInput& in) {
-        if (pl.gauge.value <= fight.capNow() / 3) return false;
+    void startRelease(const ArenaInput& in) {
         pl.chainLive = false;
         faceAtStart(in, fi.release);
         pl.releaseSpent = pl.gauge.release();
@@ -903,7 +1008,6 @@ struct ArenaFightImpl {
         ++stats.releases;
         beginAttack(ArenaAction::Release, kArenaReleaseMove, fi.release);
         emit(ArenaEventType::Released, kArenaPlayer, kArenaNobody, kArenaReleaseMove, pl.releaseSpent, pl.pos);
-        return true;
     }
 
     // A refused attack press of a kit with no attacks: cleared from the buffer at once, so it can't wait there and
@@ -913,25 +1017,31 @@ struct ArenaFightImpl {
         return false;
     }
 
+    // Starts the buffered press when refusal() lets it. An Absent one (a kit without the move) is dropped from the
+    // buffer at once, so it can't wait there and start nothing in place of a later press; so is a shot on an empty
+    // cylinder (a dry press). Any other refusal leaves it in the buffer, where it may yet start before it expires.
     bool startAction(Press what, const ArenaInput& in) {
-        // Overloaded: light (and so the riposte), heavy and heal are refused until a Release.
-        // A kit with no attacks of its own (ArenaFighter::attacks) starts none: the press is dropped.
-        const bool locked = overloadedNow();
-        if (pl.action == ArenaAction::Jump && pl.jumpTime >= 0.f &&
-            pl.actionTime < fi.jumpStartup + fi.jumpAir) { // in the air (canStart let only a light through)
-            if (what != Press::Light && what != Press::Shot) return false;
-            return fi.attacks ? !locked && startAirLight(in) : dropPress();
-        }
-        switch (what) {
-        case Press::Light: return fi.attacks ? !locked && startLight(in) : dropPress();
-        case Press::Heavy: return fi.attacks ? !locked && startHeavy(in) : dropPress();
-        case Press::Shot: return fi.attacks ? !locked && startShot(in) : dropPress();
-        case Press::Dodge: return startDodge(in);
-        case Press::Jump: return fi.jumpAir > kArenaEps ? startJump() : dropPress();
-        case Press::Heal: return !locked && startHeal();
-        case Press::Release: return fi.attacks ? startRelease(in) : dropPress();
+        switch (refusal(what)) {
+        case PressReason::Ok: break;
+        case PressReason::Absent: return dropPress();
+        case PressReason::Empty: return what == Press::Shot ? dryPress() : false;
         default: return false;
         }
+        if (inAir()) {
+            startAirLight(in);
+            return true;
+        }
+        switch (what) {
+        case Press::Light: startLight(in); break;
+        case Press::Heavy: startHeavy(in); break;
+        case Press::Shot: startShot(in); break;
+        case Press::Dodge: startDodge(in); break;
+        case Press::Jump: startJump(); break;
+        case Press::Heal: startHeal(); break;
+        case Press::Release: startRelease(in); break;
+        case Press::None: return false;
+        }
+        return true;
     }
 
     // ---- the paired counter ----
@@ -3005,6 +3115,13 @@ bool ArenaFight::pairOpen() const {
     const std::uint8_t i = player_.pairFoe;
     return i < enemyCount_ && enemy_[i].brain == ArenaBrain::Open &&
            time_ - player_.pairParry <= def_.fighter.pairWindow + kArenaEps;
+}
+
+PressReason ArenaFight::pressReason(ArenaPress p) const {
+    // Reading only: the rules bind the state by reference, and pressReason calls nothing but their const members.
+    ArenaFightImpl impl(const_cast<ArenaFight&>(*this));
+    impl.t0 = time_; // the next tick's start, the time a press made now is taken at
+    return impl.pressReason(p);
 }
 
 bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {

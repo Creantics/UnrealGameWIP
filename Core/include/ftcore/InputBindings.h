@@ -180,6 +180,21 @@ FTCORE_API std::string inputHintKeys(const InputBindings& b, const InputHintEntr
 // route's label ("LS", or kInputHoldPrefix and the map key); empty when nothing reaches it. Allocates: build it when
 // the device or the bindings change, not every frame.
 FTCORE_API std::string inputActionKeys(const InputBindings& b, InputAction a, InputDevice d);
+// Whether the import left `a` unbound on that device (`unbound` marks it) and it still has no key there: what it
+// shows in place of a key is kInputNoKey. False with no list. inputHintKeys and inputPromptKey both ask this.
+FTCORE_API bool inputNoKey(const InputBindings& b, InputAction a, InputDevice d, const InputUnbound* unbound);
+// A key prompt's key on a device. `keys`: the controls line's entry as the line shows it (inputHintKeys), or with no
+// entry the action's own keys (inputActionKeys). `noKey`: every action the prompt names was left unbound there by the
+// import (inputNoKey), so `keys` is kInputNoKey: the prompt stands dimmed with NO KEY in its key box, and never
+// vanishes. Empty `keys` (and no noKey): nothing reaches the prompt on that device. Allocates: build it when the device
+// or the bindings change, not every frame.
+struct InputPromptKey {
+    std::string keys;
+    bool noKey = false;
+};
+FTCORE_API InputPromptKey inputPromptKey(const InputBindings& b, const InputHintEntry& e, InputDevice d,
+                                         const InputUnbound* unbound);
+FTCORE_API InputPromptKey inputPromptKey(const InputBindings& b, InputAction a, InputDevice d, const InputUnbound* unbound);
 // The word for a label key (the host's localised text); null shows the key itself.
 using InputHintText = std::string (*)(const char* labelKey, void* user);
 // The whole line: "<keys> <word>" per entry, two spaces apart. Allocates: build it when the device or the

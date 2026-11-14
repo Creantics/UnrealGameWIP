@@ -60,6 +60,7 @@
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
 #include "ftcore/Places.h"
+#include "ftcore/PressReason.h"
 #include "ftcore/StoryState.h"
 #include "ftcore/StrikeCount.h"
 #include "ftcore/TableSet.h"
@@ -607,6 +608,26 @@ public:
     bool finishedWon() const { return won_; }
     double giftHealReadyIn() const { return gift_.readyIn(Gift::Heal, now_); }
     double giftGuardReadyIn() const { return gift_.readyIn(Gift::Guard, now_); }
+    // What a press of gift `g` at lead `target` would answer now (giveGift's slot press, reading only; GiftSlot::pressError),
+    // with the lead's health as the host would set it for that press (setLeadHealth).
+    GiftError giftCheck(Gift g, FighterId target, float targetHealth) const { return gift_.pressError(g, target, now_, targetHealth); }
+    // The same, as a key prompt's reason: Absent with no gift in the slot (Vacant, None); Cooldown, Empty (no Heals
+    // left this fight), Full (a Heal at a lead at full health); Refused (a Hostile slot, a target that is no lead, or
+    // the Count's own call); Ok: given.
+    PressReason giftReason(Gift g, FighterId target, float targetHealth) const {
+        switch (giftCheck(g, target, targetHealth)) {
+        case GiftError::None: return PressReason::Ok;
+        case GiftError::Vacant:
+        case GiftError::NoGift: return PressReason::Absent;
+        case GiftError::Cooling: return PressReason::Cooldown;
+        case GiftError::NoneLeft: return PressReason::Empty;
+        case GiftError::NotHurt: return PressReason::Full;
+        case GiftError::Hostile:
+        case GiftError::BadTarget:
+        case GiftError::CountRefused: break;
+        }
+        return PressReason::Refused;
+    }
     const GiftSlot& giftSlot() const { return gift_; }
     GiftSlot& giftSlot() { return gift_; } // setState, save and load
     // A fighter's places (kLeadA's for an id that is not a fighter). The mutable one is for loads: call recheckTable after.

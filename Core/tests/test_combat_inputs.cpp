@@ -11,6 +11,7 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <limits>
 
 using namespace ftcore;
@@ -1448,6 +1449,62 @@ TEST_CASE("gifts: pressing and the HUD reads allocate nothing") {
         (void)g.healsLeft();
         (void)g.readyIn(Gift::Heal, 0.5 * i);
         (void)g.readyIn(Gift::Guard, 0.5 * i);
+        (void)g.pressError(Gift::Heal, kLeadA, 0.5 * i, 0.5f);
     }
     CHECK(ftcore_test::allocStats().count - before == 0);
+}
+
+TEST_CASE("gifts: pressError answers what press does, for every gift, target, health and time, at every step of a fight") {
+    GiftSlot g;
+    StrikeCount count;
+    REQUIRE(count.reset(tempo60(), 0.0));
+    const Gift gifts[] = {Gift::Heal, Gift::Guard, Gift::Count};
+    const FighterId targets[] = {kLeadA, kLeadB, kThirdSlot};
+    const float healths[] = {kHealthUnknown, 0.4f, 0.99f, 1.f, 1.5f};
+    std::array<int, 9> seen{}; // per GiftError
+    int asked = 0;
+    for (int k = 0; k <= 900; ++k) {
+        const double t = 0.1 * k;
+        if (k == 300) g.setState(SlotState::Vacant);
+        if (k == 330) g.setState(SlotState::Hostile);
+        if (k == 360) g.setState(SlotState::Companion);
+        if (k == 600) g.beginFight(GiftTuning{}, t); // the Heals and cooldowns start over
+        g.update(t);
+        // A time a little on, one past kMaxTimeJump (read as the slot's clock) and NaN (the same) ask what press does.
+        const double times[] = {t, t + 0.05, t + 2.0 * kMaxTimeJump, kNaN};
+        for (Gift gift : gifts)
+            for (FighterId who : targets)
+                for (float h : healths)
+                    for (double at : times) {
+                        const GiftError e = g.pressError(gift, who, at, h);
+                        GiftSlot copy = g;
+                        StrikeCount countCopy = count;
+                        REQUIRE(copy.select(gift));
+                        const GiftResult r = copy.press(who, at, &countCopy, h);
+                        INFO("k " << k << ", gift " << static_cast<int>(gift) << ", target " << static_cast<int>(who)
+                                  << ", health " << h << ", pressError " << static_cast<int>(e));
+                        if (gift == Gift::Count && e == GiftError::None)
+                            CHECK((r.error == GiftError::None || r.error == GiftError::CountRefused)); // its own call
+                        else
+                            CHECK(r.error == e);
+                        CHECK(r.given == (r.error == GiftError::None));
+                        ++seen[static_cast<std::size_t>(e)];
+                        ++asked;
+                    }
+        const SlotState st = g.state();
+        CHECK(g.pressError(Gift::None, kLeadA, t) == (st == SlotState::Vacant    ? GiftError::Vacant
+                                                 : st == SlotState::Hostile ? GiftError::Hostile
+                                                                            : GiftError::NoGift));
+        // The fight's own presses: every gift in turn at either lead, hurt or not.
+        if (k % 7 == 0) {
+            REQUIRE(g.select(gifts[(k / 7) % 3]));
+            g.press(targets[(k / 7) % 2], t, &count, healths[(k / 11) % 4]);
+        }
+    }
+    CHECK(asked > 100000);
+    for (GiftError e : {GiftError::None, GiftError::Vacant, GiftError::Hostile, GiftError::Cooling, GiftError::BadTarget,
+                        GiftError::NoneLeft, GiftError::NotHurt}) {
+        INFO("error " << static_cast<int>(e));
+        CHECK(seen[static_cast<std::size_t>(e)] > 0);
+    }
 }

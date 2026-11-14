@@ -7,16 +7,20 @@
 // cylinder each count once. Text inside a mark is part of it.
 //
 // At rest (nothing changed for `rules.rest` seconds) the other marks fade out (`actionAlpha`), then only the party
-// rows and the prompts show: a prompt stands for as long as its press is open. In action the marks are granted in
-// priority order up to `rules.marks`; what does not fit is not drawn.
+// rows and the prompts show: a prompt stands for as long as its action is in the fight. In action the marks are
+// granted in priority order up to `rules.marks`; what does not fit is not drawn. The prompt rows are fixed and never
+// dropped, so they sit outside the cap: every row the prompts fill is granted.
 //
 //   UiBudgetState st;
-//   each tick:  UiBudgetInput in = ...; in.prompts = uiPromptsOpen(view.now, fight.pairOpen()) | the first-use controls;
+//   each tick:  const UiPromptReasons why = uiPromptReasons(fight, giftHealWhy, giftGuardWhy);
+//               UiBudgetInput in = ...; in.prompts = uiPromptsDrawable(uiPromptsPresent(why, teaching), keyed, below);
 //               in.want = uiMarkWants(view.now, in.prompts);  (plus the widget's own wants)
 //               const UiBudgetOut& out = uiBudgetStep(st, in, rules);
+//               dimmed = uiPromptsDimmed(why, noKey);
 //
 // Zero allocation.
 #include "ftcore/Api.h"
+#include "ftcore/PressReason.h"
 #include "ftcore/UiStyle.h"
 #include "ftcore/UiViews.h"
 
@@ -80,7 +84,7 @@ struct UiBudgetInput {
     bool activity = false;        // an input, an event mark, a tell or a hit this tick
     std::uint32_t changed = 0;    // updateArenaHudView's mask of changed sections
     bool bossEvent = false;       // the boss acted (a tell began), was hit, or was locked on anew
-    UiPromptMask prompts = 0;     // UiPrompt bits open right now (and drawable: uiPromptsDrawable)
+    UiPromptMask prompts = 0;     // UiPrompt bits drawn this tick (present and drawable: uiPromptsDrawable)
     bool resultOpen = false;
     std::array<std::uint8_t, kUiMarkKindCount> want{}; // how many of each the data asks for this tick
 };
@@ -89,9 +93,9 @@ struct UiBudgetOut {
     bool rest = false;            // nothing changed for the rest time: the in-action marks are fading out (or gone)
     float actionAlpha = 0.f;      // the in-action marks' show level: 1 in action, fading to 0 over the fade-out at rest
     std::array<std::uint8_t, kUiMarkKindCount> allow{}; // how many of each may be drawn
-    std::uint8_t marks = 0;       // the total allowed
+    std::uint8_t marks = 0;       // the total allowed (the prompt rows' included; the cap holds for the others)
     float bossAlpha = 0.f;        // the boss line's show level (0 at rest)
-    UiPromptMask promptsShown = 0; // UiPrompt bits drawn: the open ones, first in order, in as many rows as granted
+    UiPromptMask promptsShown = 0; // UiPrompt bits drawn: `prompts`, every row granted
     std::uint8_t allowed(UiMarkKind k) const { return allow[static_cast<std::size_t>(k)]; }
 };
 
@@ -100,7 +104,7 @@ struct UiBudgetState {
     float sinceBoss = 1e9f;       // since the boss last acted, was hit or locked anew
     UiFade boss;
     UiFade action;                // the in-action marks (all but the lead's ring and the party places)
-    std::uint8_t maxMarks = 0;    // the most marks allowed in any tick so far (the widget logs it)
+    std::uint8_t maxMarks = 0;    // the most marks allowed in any tick so far, the prompt rows aside (the widget logs it)
     UiBudgetOut out;
 };
 
@@ -108,27 +112,32 @@ struct UiBudgetState {
 // `prompts` is the UiPrompt mask; the widget adds its own wants (event marks, tells, the Read row, lock, foes).
 FTCORE_API std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, UiPromptMask prompts);
 
-// The prompts the data opens (the first four never while the lead is down):
-//   Heal       hurt with heals left, not overloaded (the fight refuses a heal until a Release) and the guard not
-//              broken (a guard break refuses every start while it lasts)
-//   GiftHeal   hurt with Gift Heals left (the third place's giftHeals; -1, not reported, opens nothing)
-//   GiftGuard  the Gift Guard off its cooldown (giftGuardReady)
-//   Reload     the gun empty (a cylinder with no rounds) and not already reloading
-//   Pair       the fight's paired window open (`pairOpen`, ArenaFight::pairOpen) with the partner up
-// The basic controls are the first-use teaching's (UiFirstUse.h).
-FTCORE_API UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen);
+// Each prompt's answer from the rules (PressReason.h): would its press be taken now, and if not, why. The HUD asks the
+// rules; it never copies them, so a hint cannot say other than its press does.
+//   Heal       the fight's own heal (ArenaFight::pressReason(ArenaPress::Heal)): Absent with no heal charges in the kit
+//   GiftHeal   the session's gift slot (FightSession::giftReason(Gift::Heal, lead, lead health)), from the host:
+//   GiftGuard  Absent with no session or no third place, as the host passes it
+//   Reload     Absent: the reload is automatic, there is no reload press (no InputAction) to ask about
+//   Pair       Absent with no partner in the fight (allyMaxHp 0: the press is the partner's); else ArenaPress::Pair
+//   Attack     ArenaPress::Light; Guard, Dodge, Jump their own presses (Absent where the kit has none)
+using UiPromptReasons = std::array<PressReason, kUiPromptCount>;
+FTCORE_API UiPromptReasons uiPromptReasons(const ArenaFight& fight, PressReason giftHeal, PressReason giftGuard);
 
-// Whether a basic control (Attack, Guard, Dodge, Jump) can be used now, so its first-use row may stand: none while the
-// lead is down or the guard is broken (the fight starts nothing until the break ends), no Attack while overloaded (the
-// fight refuses light, heavy and shot until a Release). A prompt that cannot be used is not drawn, never greyed. The data's rows answer true: uiPromptsOpen
-// already opens them only when usable.
-FTCORE_API bool uiControlUsable(const ArenaHudLead& lead, UiPrompt p);
+// The prompts the fight has: each whose action is in this fight (its answer is not Absent), the basic controls (Attack,
+// Guard, Dodge, Jump) only while the first-use teaching holds them (`teaching`, UiPrompt bits; UiFirstUse.h). A prompt
+// not present is not drawn; every other stands in its row whether its press is taken now or not.
+FTCORE_API UiPromptMask uiPromptsPresent(const UiPromptReasons& why, UiPromptMask teaching);
 
-// One prompt per row (two in the GIFT row), one row per key, and only rows that have a key. A prompt with no key on the
-// device (not in `keyed`) is dropped. So is one whose key a lower open prompt already shows (`sameKeyBelow[p]`: the
-// lower prompts bound to p's key): the one left is the lowest, because a shared key does what the lowest live row says
-// (the heal before a gift). So is one whose row a lower prompt already holds, but for the GIFT row, which holds both
-// gifts. This runs before the budget, so a prompt that would draw nothing takes no mark.
+// The prompts drawn dimmed (ink at 40 percent, the key cap too): each whose press would be refused now (pressRefused:
+// its reason word stands after it), and each with no key on the device (`noKey`: the import left its action unbound,
+// so its key box says NO KEY). Busy is not dimmed: that press waits in the buffer and is taken.
+FTCORE_API UiPromptMask uiPromptsDimmed(const UiPromptReasons& why, UiPromptMask noKey);
+
+// One prompt per row (two in the GIFT row), one row per key, and only rows something reaches on the device. A prompt
+// nothing reaches on the device (not in `keyed`: no key, no route, and not an unbound action's NO KEY) is dropped. So is
+// one whose key a lower present prompt already shows (`sameKeyBelow[p]`: the lower prompts bound to p's key; NO KEY is
+// no key, so never shared): the one left is the lowest, because a shared key does what the lowest row says (the heal
+// before a gift). So is one whose row a lower prompt already holds, but for the GIFT row, which holds both gifts.
 FTCORE_API UiPromptMask uiPromptsDrawable(UiPromptMask open, UiPromptMask keyed,
                                           const std::array<UiPromptMask, kUiPromptCount>& sameKeyBelow);
 

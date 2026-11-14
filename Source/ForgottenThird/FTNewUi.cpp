@@ -45,7 +45,14 @@
 #include "UnrealClient.h"
 #include "Widgets/SLeafWidget.h"
 
+#include <atomic>
 #include <string>
+
+// Core's game-thread heap hook (HAL/UnrealMemory.cpp, not in a public header), for the HUD's one-frame allocation count.
+#define FT_UI_ALLOC_COUNT (!UE_BUILD_SHIPPING && MALLOC_GT_HOOKS)
+#if FT_UI_ALLOC_COUNT
+extern CORE_API TFunction<void(int32)>* GGameThreadMallocHook;
+#endif
 
 namespace
 {
@@ -123,8 +130,9 @@ static_assert(UE_ARRAY_COUNT(kPromptUi) == ftcore::kUiPromptCount, "one word per
 // that action's own keys (inputActionKeys). HEAL is the lead's own heal (input.heal: H, on a pad D-pad up). The gifts are
 // left out of the controls line, so they take their own keys: G and Y; on a pad they have no button or route until the
 // pad's layout is ruled (inputPadPending), so none there. A rebinding that puts two rows on one key
-// keeps the lowest (uiPromptsDrawable). RELOAD has no action yet: no entry has its label, so it has no key and draws
-// nothing.
+// keeps the lowest (uiPromptsDrawable). An action the bindings import left unbound shows NO KEY in its key box, dimmed
+// (inputPromptKey on FTInputBindings::Unbound), and keeps its row. RELOAD has no action yet: no entry has its label, and
+// its answer from the rules is Absent, so it draws nothing.
 struct FPromptKeyOf
 {
 	const char* Label;
@@ -133,6 +141,23 @@ struct FPromptKeyOf
 const FPromptKeyOf kPromptKeys[] = {{"input.heal", {}}, {nullptr, ftcore::InputAction::GiftHeal}, {nullptr, ftcore::InputAction::GiftGuard},
 	{"input.reload", {}}, {"input.count", {}}, {"input.light", {}}, {"input.guard", {}}, {"input.dodge", {}}, {"input.jump", {}}};
 static_assert(UE_ARRAY_COUNT(kPromptKeys) == ftcore::kUiPromptCount, "one key per prompt, in UiPrompt order");
+// A prompt's NO KEY, in its key box; and the word after a prompt whose press would be refused now, by ftcore::PressReason
+// (Ok and Busy are taken and have none; Absent draws no prompt).
+const FTUiText kNoKeyUi(TEXT("arena.prompt.no_key"));
+const FTUiText kWhyDownUi(TEXT("arena.prompt.why.down"));
+const FTUiText kWhyBrokenUi(TEXT("arena.prompt.why.broken"));
+const FTUiText kWhyOverloadedUi(TEXT("arena.prompt.why.overloaded"));
+const FTUiText kWhyStaminaUi(TEXT("arena.prompt.why.stamina"));
+const FTUiText kWhyEmptyUi(TEXT("arena.prompt.why.empty"));
+const FTUiText kWhyCooldownUi(TEXT("arena.prompt.why.cooldown"));
+const FTUiText kWhyFullUi(TEXT("arena.prompt.why.full"));
+const FTUiText kWhyClosedUi(TEXT("arena.prompt.why.closed"));
+const FTUiText kWhyRefusedUi(TEXT("arena.prompt.why.refused"));
+const FTUiText* const kWhyUi[] = {nullptr, nullptr, nullptr, &kWhyDownUi, &kWhyBrokenUi, &kWhyOverloadedUi, &kWhyStaminaUi,
+	&kWhyEmptyUi, &kWhyCooldownUi, &kWhyFullUi, &kWhyClosedUi, &kWhyRefusedUi};
+static_assert(UE_ARRAY_COUNT(kWhyUi) == ftcore::kPressReasonCount, "one word per PressReason, in its order");
+static_assert(static_cast<int>(ftcore::PressReason::Down) == 3 && static_cast<int>(ftcore::PressReason::Refused) == 11,
+	"the words follow PressReason's order");
 // A Qte's word in the call slot: a Tap shows its button's word (the basic controls', by ActionButton), a Hold HOLD, a
 // Mash MASH. Its key cap is that button's prompt key, so the basic controls must follow ActionButton's order.
 const FTUiText kQteHoldUi(TEXT("qte.hold"));
@@ -318,6 +343,188 @@ TSharedRef<FSlateFontMeasure> FontMeasure()
 	return FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 }
 
+// ---- the fight HUD's laid-out words ----------------------------------------------------------------------------------
+
+// A word drawn by MakeText is copied into its element on every pass of every frame (the shadow's four and the face). The
+// fight HUD shapes each word once per pass instead and keeps the glyph runs while its string, font, size and scale stay
+// (MakeShapedText holds a reference to the run: nothing is copied per frame). A slot is found by the word's hash among
+// kTextProbe neighbours; a new word takes the least recently drawn of them. A pass shaped while one of its faces was still
+// loading is shaped again when next drawn, and all are dropped when Slate releases its font resources.
+constexpr int32 kTextPasses = 7; // the shadow's glyph pass, its three outline passes, the soft contour, the face, the faded face
+constexpr int32 kTextSlots = 256;
+constexpr int32 kTextProbe = 8;
+static_assert((kTextSlots & (kTextSlots - 1)) == 0, "the slot index is the hash masked");
+static_assert(kTextPasses <= 8, "Stale holds one bit per pass");
+
+struct FTextRun
+{
+	FString Str;          // the word (the range drawn)
+	FSlateFontInfo Font;  // its font as passed (each pass's font is made from it)
+	float Scale = 0.f;    // the geometry's scale: the glyphs' pixel size
+	float Unit = 0.f;     // the shadow's outline step
+	uint32 Hash = 0;
+	uint32 Drawn = 0;     // the frame it was last drawn in (0: empty)
+	uint8 Stale = 0;      // the passes shaped while a face was loading
+	FShapedGlyphSequencePtr Pass[kTextPasses];
+};
+
+struct FTextRuns
+{
+	FTextRun Slot[kTextSlots];
+	uint32 Frame = 1;
+	std::atomic<bool> bFlush{false}; // set by Slate's font release (from either thread), taken at the next frame
+
+	void BeginFrame()
+	{
+		if (bFlush.exchange(false))
+		{
+			for (FTextRun& R : Slot)
+			{
+				R = FTextRun();
+			}
+		}
+		++Frame;
+	}
+
+	FTextRun& Find(const TCHAR* Chars, int32 Len, const FSlateFontInfo& Font, float Scale, float Unit)
+	{
+		const uint32 H = HashCombine(FCrc::MemCrc32(Chars, Len * static_cast<int32>(sizeof(TCHAR))),
+			HashCombine(HashCombine(GetTypeHash(Font.Size), GetTypeHash(Font.TypefaceFontName)), HashCombine(GetTypeHash(Scale), GetTypeHash(Unit))));
+		FTextRun* Oldest = nullptr;
+		for (int32 I = 0; I < kTextProbe; ++I)
+		{
+			FTextRun& R = Slot[(H + static_cast<uint32>(I)) & static_cast<uint32>(kTextSlots - 1)];
+			if (R.Drawn != 0 && R.Hash == H && R.Scale == Scale && R.Unit == Unit && R.Str.Len() == Len
+				&& FMemory::Memcmp(*R.Str, Chars, static_cast<SIZE_T>(Len) * sizeof(TCHAR)) == 0 && R.Font.IsIdenticalTo(Font))
+			{
+				R.Drawn = Frame;
+				return R;
+			}
+			if (!Oldest || R.Drawn < Oldest->Drawn)
+			{
+				Oldest = &R;
+			}
+		}
+		FTextRun& R = *Oldest;
+		R.Str.Reset();
+		R.Str.AppendChars(Chars, Len);
+		R.Font = Font;
+		R.Scale = Scale;
+		R.Unit = Unit;
+		R.Hash = H;
+		R.Drawn = Frame;
+		R.Stale = 0;
+		for (FShapedGlyphSequencePtr& P : R.Pass)
+		{
+			P.Reset();
+		}
+		return R;
+	}
+
+	// The pass's glyph run in its font, shaped on its first draw (and again after a draw with a face still loading).
+	static FShapedGlyphSequenceRef Shaped(FTextRun& R, int32 Pass, const FSlateFontInfo& F)
+	{
+		const uint8 Bit = static_cast<uint8>(1u << Pass);
+		if (!R.Pass[Pass].IsValid() || (R.Stale & Bit) != 0)
+		{
+			TArray<TWeakPtr<FFreeTypeFace>> Loading;
+			R.Pass[Pass] = FSlateApplication::Get().GetRenderer()->GetFontCache()->ShapeUnidirectionalText(R.Str, F, R.Scale,
+				TextBiDi::ETextDirection::LeftToRight, ETextShapingMethod::KerningOnly, &Loading);
+			R.Stale = Loading.Num() > 0 ? static_cast<uint8>(R.Stale | Bit) : static_cast<uint8>(R.Stale & ~Bit);
+		}
+		return R.Pass[Pass].ToSharedRef();
+	}
+};
+
+// The fight HUD keeps its laid-out words but under -FTUiTextNoCache (a check, never in shipping): every pass lays out
+// its string again, as MakeText does.
+bool UiTextCacheOn()
+{
+#if !UE_BUILD_SHIPPING
+	static const bool bOff = FParse::Param(FCommandLine::Get(), TEXT("FTUiTextNoCache"));
+	return !bOff;
+#else
+	return true;
+#endif
+}
+
+// The fight HUD's heap use over one frame (a check, compiled out of shipping and off by default): -FTUiAllocCount counts
+// the game thread's heap calls (malloc, realloc, free) inside the HUD's Tick and OnPaint on the 120th frame of a fight
+// (-FTUiAllocCount=N: the Nth) and logs them once after that paint.
+#if FT_UI_ALLOC_COUNT
+struct FUiAllocCount
+{
+	int32 Frame = 0;          // the live frame counted (0: off)
+	int32 Seen = 0;           // live frames so far
+	int32 Bucket = 0;         // 0 Tick, 1 OnPaint
+	uint32 Calls[2][3] = {};  // per bucket: malloc, realloc, free
+	bool bDone = false;
+	TFunction<void(int32)> Hook;
+
+	bool Counting() const { return Frame > 0 && !bDone && Seen == Frame; }
+};
+
+FUiAllocCount& UiAllocCount()
+{
+	static FUiAllocCount Count;
+	static bool bInit = false;
+	if (!bInit)
+	{
+		bInit = true;
+		int32 N = 0;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-FTUiAllocCount="), N))
+		{
+			Count.Frame = FMath::Max(1, N);
+		}
+		else if (FParse::Param(FCommandLine::Get(), TEXT("FTUiAllocCount")))
+		{
+			Count.Frame = 120;
+		}
+		if (Count.Frame > 0)
+		{
+			FUiAllocCount* C = &Count;
+			Count.Hook = [C](int32 Index) { ++C->Calls[C->Bucket][FMath::Clamp(Index, 0, 2)]; }; // made before any counting
+		}
+	}
+	return Count;
+}
+
+// Hooks the game thread's heap calls for its life when bOn; after the paint's, logs the frame's counts once.
+struct FUiAllocScope
+{
+	FUiAllocCount& C;
+	const bool bOn;
+
+	FUiAllocScope(FUiAllocCount& InC, int32 InBucket, bool bInOn)
+		: C(InC)
+		, bOn(bInOn && GGameThreadMallocHook == nullptr)
+	{
+		if (bOn)
+		{
+			C.Bucket = InBucket;
+			GGameThreadMallocHook = &C.Hook;
+		}
+	}
+
+	~FUiAllocScope()
+	{
+		if (!bOn)
+		{
+			return;
+		}
+		GGameThreadMallocHook = nullptr;
+		if (C.Bucket == 1)
+		{
+			C.bDone = true;
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("FTUiAllocCount: fight HUD frame %d, text cache %s: Tick %u malloc, %u realloc, %u free; OnPaint %u malloc, %u realloc, %u free."),
+				C.Frame, UiTextCacheOn() ? TEXT("on") : TEXT("off"), C.Calls[0][0], C.Calls[0][1], C.Calls[0][2], C.Calls[1][0], C.Calls[1][1],
+				C.Calls[1][2]);
+		}
+	}
+};
+#endif
+
 // ---- painting helpers (boxes only: no per-frame arrays) ------------------------------------------------------------
 
 struct FPainter
@@ -327,6 +534,7 @@ struct FPainter
 	int32 Layer;
 	float S; // 1080p units to local
 	bool bShadow = false; // the fight HUD's words: a soft drop shadow under each glyph (Text), drawn on the base layer
+	FTextRuns* Runs = nullptr; // the fight HUD's kept glyph runs (FTextRuns); null: each pass lays its string out (MakeText)
 
 	const FSlateBrush* White() const { return FCoreStyle::Get().GetBrush(TEXT("WhiteBrush")); }
 
@@ -422,8 +630,27 @@ struct FPainter
 		{
 			return;
 		}
-		const auto Draw = [&](const FSlateFontInfo& F, const FLinearColor& Tint, float Back, float Drop = 0.f, int32 L = 3)
+		const float Unit = static_cast<float>(FMath::Max(1, FMath::RoundToInt(S))); // the shadow's outline step
+		const int32 From = End < 0 ? 0 : FMath::Clamp(Start, 0, Str.Len());
+		const int32 To = End < 0 ? Str.Len() : FMath::Clamp(End, From, Str.Len());
+		FTextRun* Run = Runs && To > From ? &Runs->Find(*Str + From, To - From, Font, Geometry.Scale, Unit) : nullptr;
+		// Each pass by its index in the run (FTextRuns): the shadow's glyphs 0, its outlines 1 to 3, the soft contour 4, the
+		// face 5 (6 faded: its edge kept out of the letter).
+		const auto Draw = [&](int32 Pass, const FSlateFontInfo& F, const FLinearColor& Tint, float Back, float Drop = 0.f, int32 L = 3)
 		{
+			if (Run)
+			{
+				// A shaped run's box leaves the outline out and a laid-out string's takes it in: set down by it, so both
+				// stand alike.
+				const float Fix = Geometry.Scale > 0.f
+					? FMath::FloorToFloat(static_cast<float>(F.OutlineSettings.OutlineSize) * Geometry.Scale) / Geometry.Scale
+					: 0.f;
+				const FPaintGeometry RunGeo = Geometry.ToPaintGeometry(FVector2f(4096.f, 512.f),
+					FSlateLayoutTransform(FVector2f(X - Back, Y - Back + Drop + Fix)));
+				FSlateDrawElement::MakeShapedText(Out, Layer + L, RunGeo, FTextRuns::Shaped(*Run, Pass, F), ESlateDrawEffect::None, Tint,
+					F.OutlineSettings.OutlineColor);
+				return;
+			}
 			const FPaintGeometry Geo = Geometry.ToPaintGeometry(FVector2f(4096.f, 512.f), FSlateLayoutTransform(FVector2f(X - Back, Y - Back + Drop)));
 			if (End < 0)
 			{
@@ -447,18 +674,17 @@ struct FPainter
 			// a fifth black, so they stack to 60 percent inside the letter and fall to nothing over 3 to 4 px round it. Slate
 			// sets an outlined glyph down and right by its outline's width, so each pass is set back by that width less the
 			// main pass's, and lies under the letter itself. It takes the place of the soft outer contour pixel.
-			const float Unit = static_cast<float>(FMath::Max(1, FMath::RoundToInt(S)));
 			const float Drop = 2.f * S;
 			const float A = kShadowEach * ContourK(C.A);
 			FSlateFontInfo ShadeF = Font;
 			ShadeF.OutlineSettings.OutlineSize = 0;
-			Draw(ShadeF, FLinearColor(0.f, 0.f, 0.f, A), -static_cast<float>(Edge), Drop, 0);
+			Draw(0, ShadeF, FLinearColor(0.f, 0.f, 0.f, A), -static_cast<float>(Edge), Drop, 0);
 			ShadeF.OutlineSettings.bSeparateFillAlpha = false;
 			ShadeF.OutlineSettings.OutlineColor = FLinearColor(0.f, 0.f, 0.f, A);
 			for (int32 K = 1; K <= 3; ++K)
 			{
 				ShadeF.OutlineSettings.OutlineSize = K * static_cast<int32>(Unit);
-				Draw(ShadeF, FLinearColor(0.f, 0.f, 0.f, 0.004f), K * Unit - static_cast<float>(Edge), Drop, 0);
+				Draw(K, ShadeF, FLinearColor(0.f, 0.f, 0.f, 0.004f), K * Unit - static_cast<float>(Edge), Drop, 0);
 			}
 		}
 		else if (Edge > 0)
@@ -469,9 +695,9 @@ struct FPainter
 			OuterF.OutlineSettings.bSeparateFillAlpha = true;
 			// Slate sets an outlined glyph down and right by the outline's growth (measured: 1 px); set the wider pass back so it rings
 			// the letter evenly instead of reading as a drop shadow.
-			Draw(OuterF, FLinearColor(C.R, C.G, C.B, 0.004f), 1.f); // a near-zero face: Slate culls a fully clear one
+			Draw(4, OuterF, FLinearColor(C.R, C.G, C.B, 0.004f), 1.f); // a near-zero face: Slate culls a fully clear one
 		}
-		Draw(InnerF, C, 0.f);
+		Draw(InnerF.OutlineSettings.bSeparateFillAlpha ? 6 : 5, InnerF, C, 0.f);
 	}
 
 	// A meter in the style's painter. Ring and Stroke are drawn as Line until their painters land with the pick.
@@ -1137,9 +1363,11 @@ ftcore::UiFirstUseMode FirstUseMode()
 // -UiStateShot=<name>, honoured only with -ArenaShotUi and out of shipping builds: one HUD state held for a still, on
 // test data where the fight has none. lone_card: the Lone Carry's card in full (the runner's terms while the lead is
 // Lone, else the default tuning's) and ALONE in the state slot; lone_alone: ALONE alone; lone_ended: ENDED: GIFT;
-// gift: both gifts ready (GIFT HEAL 2 at least) and the lead hurt (70 percent if at full), so the GIFT row holds both;
-// too_soon: TOO SOON in the call slot; wait: WAIT with its line at 60 percent. A held state never counts a showing or
-// writes the save.
+// gift: both gifts ready (GIFT HEAL 2 at least, both taken as the slot would answer a ready gift) and the lead hurt (70
+// percent if at full), so the GIFT row holds both; no_key: the gift shot with Gift Heal left unbound on the device in use,
+// as the bindings import leaves a new action whose default key the player gave to something else, so GIFT HEAL stands
+// dimmed with NO KEY in its key box beside a lit GIFT GUARD; too_soon: TOO SOON in the call slot; wait: WAIT with its line
+// at 60 percent. A held state never counts a showing or writes the save.
 enum class EUiStateShot : uint8
 {
 	None,
@@ -1147,6 +1375,7 @@ enum class EUiStateShot : uint8
 	LoneAlone,
 	LoneEnded,
 	Gift,
+	NoKey,
 	TooSoon,
 	Wait,
 };
@@ -1166,6 +1395,7 @@ EUiStateShot UiStateShot()
 			: V == TEXT("lone_alone")                 ? EUiStateShot::LoneAlone
 			: V == TEXT("lone_ended")                 ? EUiStateShot::LoneEnded
 			: V == TEXT("gift")                       ? EUiStateShot::Gift
+			: V == TEXT("no_key")                     ? EUiStateShot::NoKey
 			: V == TEXT("too_soon")                   ? EUiStateShot::TooSoon
 			: V == TEXT("wait")                       ? EUiStateShot::Wait
 													  : EUiStateShot::None;
@@ -1192,6 +1422,22 @@ float HudScaleFor(const UFTArenaRunner& Runner)
 #endif
 	const ftcore::Settings* Prefs = Runner.GetSettings();
 	return Prefs ? Prefs->hudScale / 100.f : 1.f;
+}
+
+// The player's HUD safe margin, percent of the viewport on each side over the platform's title-safe padding: the
+// settings' (0-10, 0 by default on PC), or the -FTHudSafeMargin=5 switch for captures (out of shipping builds).
+int32 HudSafeMarginFor(const UFTArenaRunner& Runner)
+{
+#if !UE_BUILD_SHIPPING
+	static int32 Forced = 0;
+	static const bool bForced = FParse::Value(FCommandLine::Get(), TEXT("-FTHudSafeMargin="), Forced);
+	if (bForced)
+	{
+		return FMath::Clamp(Forced, ftcore::Settings::kMinHudSafeMargin, ftcore::Settings::kMaxHudSafeMargin);
+	}
+#endif
+	const ftcore::Settings* Prefs = Runner.GetSettings();
+	return Prefs ? Prefs->hudSafeMargin : 0;
 }
 
 // A Read card's move name (kReadMoveUi), by the tell its action shows; -1 for a tell without one.
@@ -1238,6 +1484,21 @@ public:
 	{
 		GetRunner = MoveTemp(InGetRunner);
 		SetVisibility(EVisibility::HitTestInvisible); // never takes a click from the world
+		// The kept glyph runs go when Slate releases its font resources (it may say so from either thread: a flag only).
+		if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			std::atomic<bool>* Flush = &TextRuns.bFlush;
+			FontRelease = FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().AddLambda(
+				[Flush](const FSlateFontCache&) { Flush->store(true); });
+		}
+	}
+
+	virtual ~SFTArenaHud() override
+	{
+		if (FontRelease.IsValid() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().Remove(FontRelease);
+		}
 	}
 
 	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1920.0, 1080.0); }
@@ -1247,7 +1508,31 @@ public:
 		Time += DeltaTime;
 		const UFTArenaRunner* Runner = GetRunner ? GetRunner() : nullptr;
 		bLive = Runner && Runner->IsBegun();
+#if FT_UI_ALLOC_COUNT
+		FUiAllocCount& Count = UiAllocCount();
+		Count.Seen += bLive && Count.Frame > 0 && !Count.bDone ? 1 : 0;
+		const FUiAllocScope Counting(Count, 0, bLive && Count.Counting()); // this Tick's heap calls, on the frame counted
+#endif
 		HudScale = Runner ? HudScaleFor(*Runner) : HudScale;
+		HudSafePct = Runner ? HudSafeMarginFor(*Runner) : HudSafePct;
+		// The platform's title-safe padding, read when the viewport's size changes (never per frame): Slate's safe-zone
+		// ratio per side (the custom safe zone when one is set, else the display's title-safe padding over half the
+		// display). A display of no size gives no padding.
+		const FVector2f ViewSize = Geometry.GetLocalSize();
+		if (ViewSize != SafeSize)
+		{
+			SafeSize = ViewSize;
+			SafeRatio = FMargin(0.f);
+			if (FSlateApplication::IsInitialized())
+			{
+				FSlateApplication::Get().GetSafeZoneRatio(SafeRatio);
+			}
+			const auto Clean = [](float& R) { R = FMath::IsFinite(R) ? FMath::Clamp(R, 0.f, 0.5f) : 0.f; };
+			Clean(SafeRatio.Left);
+			Clean(SafeRatio.Top);
+			Clean(SafeRatio.Right);
+			Clean(SafeRatio.Bottom);
+		}
 		const float H = Geometry.GetLocalSize().Y * HudScale; // the fonts' height: the viewport's, times the HUD scale
 		if (H != BuiltHeight)
 		{
@@ -1273,20 +1558,26 @@ public:
 		Frame.partner.lead = Runner->GetAllySeat();
 		ftcore::fillArenaHudPartner(Fight, Frame.partner); // the carrying runs' ally; zero (absent) otherwise
 		Frame.partner.load = Frame.partner.present ? Runner->GetPartnerLoad() : 0;
-		// The third place's gift prompts, from the session (without one their defaults draw nothing): the Gift Heals left
-		// while one is ready (0 while it cools down, so GIFT HEAL opens only when a press would give it; uiPromptsOpen also
-		// wants the lead hurt), and the Gift Guard off its cooldown. A live Qte (Frame.lead.qte, which fillArenaHudLead leaves
-		// alone) would go here too; nothing reports one yet.
+		// The third place's gift prompts, from the session (without one there is no gift slot, and both are Absent): the
+		// Gift Heals left (GIFT HEAL n, cooling or not), the Gift Guard off its cooldown, and each gift's answer from the
+		// slot itself (GetGiftReason: would its press be taken now, and if not, why), so a cooling or spent gift stands
+		// dimmed with its word. A live Qte (Frame.lead.qte, which fillArenaHudLead leaves alone) would go here too; nothing
+		// reports one yet.
 		Frame.third = ftcore::ArenaHudThird{};
+		GiftWhy[0] = GiftWhy[1] = ftcore::PressReason::Absent;
 		if (Runner->GetSession())
 		{
-			Frame.third.giftHeals = Runner->GetGiftHealReadyIn() <= 0.0 ? Runner->GetGiftHealsLeft() : 0;
+			Frame.third.giftHeals = Runner->GetGiftHealsLeft();
 			Frame.third.giftGuardReady = Runner->GetGiftGuardReadyIn() <= 0.0;
+			GiftWhy[0] = Runner->GetGiftReason(ftcore::Gift::Heal);
+			GiftWhy[1] = Runner->GetGiftReason(ftcore::Gift::Guard);
 		}
-		if (UiStateShot() == EUiStateShot::Gift)
+		const EUiStateShot Shot = UiStateShot();
+		if (Shot == EUiStateShot::Gift || Shot == EUiStateShot::NoKey)
 		{
 			Frame.third.giftHeals = FMath::Max(Frame.third.giftHeals, 2);
 			Frame.third.giftGuardReady = true;
+			GiftWhy[0] = GiftWhy[1] = ftcore::PressReason::Ok;
 			if (Frame.lead.hpMax > 0 && Frame.lead.hp >= Frame.lead.hpMax)
 			{
 				Frame.lead.hp = Frame.lead.hpMax * 7 / 10;
@@ -1365,7 +1656,7 @@ public:
 	}
 
 	// The element budget (Core): the data asks for marks, the budget grants them in priority order, and what is not granted
-	// is not drawn. At rest only the party rows and the open prompts; never more than the cap in action.
+	// is not drawn. At rest only the party rows and the prompts; never more than the cap in action.
 	void TickBudget(const ftcore::ArenaFight& Fight, uint32 Changed, float DeltaTime)
 	{
 		using ftcore::UiMarkKind;
@@ -1374,21 +1665,25 @@ public:
 		ftcore::UiBudgetInput In;
 		In.dt = DeltaTime;
 		In.changed = Changed;
-		ftcore::UiPromptMask Open = ftcore::uiPromptsOpen(Now, Fight.pairOpen());
+		// Each prompt's answer from the rules (Core's uiPromptReasons: the fight's own presses, and the gift slot's as the
+		// session gives them): a prompt whose action is not in this fight is not drawn; every other stands in its row, and
+		// one whose press would be refused now is dimmed with its reason. A first fight's controls stand while the teaching
+		// holds them and go when it ends.
+		Why = ftcore::uiPromptReasons(Fight, GiftWhy[0], GiftWhy[1]);
+		ftcore::UiPromptMask Teaching = 0;
 		for (int32 I = static_cast<int32>(ftcore::UiPrompt::Attack); I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
 		{
-			// A first fight's control: its row stands at full ink while the teaching holds it and the control can be used
-			// now, and goes at once (never a greyed row) when either ends.
-			const auto Prompt = static_cast<ftcore::UiPrompt>(I);
 			const auto Item = static_cast<ftcore::UiFirstUseItem>(static_cast<int32>(ftcore::UiFirstUseItem::Attack) + I
 				- static_cast<int32>(ftcore::UiPrompt::Attack));
-			if (ftcore::uiFirstUseAlpha(FirstUse, Item) >= 1.f && ftcore::uiControlUsable(Now.lead, Prompt))
+			if (ftcore::uiFirstUseAlpha(FirstUse, Item) >= 1.f)
 			{
-				Open |= ftcore::uiPromptBit(Prompt);
+				Teaching |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I));
 			}
 		}
-		// Before the budget: a row with no key, or on a key a lower row shows, would draw nothing, so it takes no row.
-		In.prompts = ftcore::uiPromptsDrawable(Open, PromptKeyed, PromptSameKeyBelow);
+		// Before the budget: a row nothing reaches on the device (no key and no NO KEY), or on a key a lower row shows,
+		// would draw nothing, so it takes no row.
+		In.prompts = ftcore::uiPromptsDrawable(ftcore::uiPromptsPresent(Why, Teaching), PromptKeyed, PromptSameKeyBelow);
+		PromptDimmed = ftcore::uiPromptsDimmed(Why, PromptNoKey);
 		In.resultOpen = bResult;
 		In.want = ftcore::uiMarkWants(Now, In.prompts);
 		// A live Qte is a timed press like a windup: it counts as a tell, so the budget never drops it. So does TOO SOON while
@@ -1517,8 +1812,18 @@ public:
 		{
 			return Layer;
 		}
+#if FT_UI_ALLOC_COUNT
+		FUiAllocCount& Count = UiAllocCount();
+		const FUiAllocScope Counting(Count, 1, Count.Counting()); // this paint's heap calls, on the frame counted; logged after
+#endif
+		FTextRuns* Runs = UiTextCacheOn() ? &TextRuns : nullptr;
+		if (Runs)
+		{
+			Runs->BeginFrame();
+		}
 		const FVector2f Size = Geometry.GetLocalSize();
-		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f * HudScale), true}; // every word with its shadow
+		// Every word with its shadow, from the kept glyph runs.
+		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f * HudScale), true, Runs};
 		Mesh.Begin(Geometry, P.S);
 		// The one shade: the subtitles' gradient across the screen's whole bottom while the party stands, darkest at the
 		// bottom edge and gone by BottomShadeH up. Nothing else stands behind a word.
@@ -1527,7 +1832,7 @@ public:
 			// The Lone Carry's card stands over the party block, above the shade's 220 px: while it shows, the shade rises
 			// under it (to LoneShadeK of the card's height from the bottom edge) with the card's ink, and comes back down as it
 			// fades.
-			float ShadeH = Hud::BottomShadeH * P.S;
+			float ShadeH = Hud::BottomShadeH * P.S + (EdgesAt(Size, P.S).bottom - Hud::Margin * P.S); // up with the bottom edge
 			const float CardA = ftcore::uiLoneCardAlpha(Lone);
 			if (CardA > 0.f)
 			{
@@ -1596,6 +1901,13 @@ private:
 		KeyAsc = Asc(KeyFont);
 		NoteFont = FontPx(UiTextRole::Label, H, Hud::NotePx);
 		NoteAsc = Asc(NoteFont);
+		// NO KEY for the key box, and the reason words a refused prompt carries, at label size.
+		NoKeyWord = kNoKeyUi.Get().ToUpper();
+		for (int32 I = 0; I < static_cast<int32>(ftcore::kPressReasonCount); ++I)
+		{
+			WhyWord[I] = kWhyUi[I] ? kWhyUi[I]->Get().ToUpper() : FString();
+			WhyW[I] = TextWidth(WhyWord[I], NoteFont);
+		}
 		ResultFont = FontFor(UiTextRole::Subtitle, H);
 		ResultLineH = FM->GetMaxCharacterHeight(ResultFont) * 1.15f; // the subtitle's line
 		NameSlot = -2; // measured again in the new fonts
@@ -1679,9 +1991,30 @@ private:
 		DefeatW = TextWidth(DefeatWord, ResultFont);
 	}
 
-	// The prompts' keys and Release's, as bound on the device: Ctrl, R. A prompt with no key on the device is not drawn.
+	// The prompts' keys and Release's, as bound on the device: Ctrl, R. An action the bindings import left unbound there
+	// (FTInputBindings::Unbound) shows NO KEY in its key box and keeps its row, dimmed; a prompt nothing reaches on the
+	// device (no key and no route) is not drawn. The no_key capture leaves Gift Heal unbound on the device in use.
 	void BuildKeys(ftcore::InputDevice Device)
 	{
+		const ftcore::InputBindings* Bound = &FTInputBindings::Get();
+		const ftcore::InputUnbound* Left = &FTInputBindings::Unbound();
+		ftcore::InputBindings ShotBound;
+		ftcore::InputUnbound ShotLeft;
+		if (UiStateShot() == EUiStateShot::NoKey)
+		{
+			ShotBound = *Bound;
+			ShotLeft = *Left;
+			const size_t D = static_cast<size_t>(Device) % ftcore::kInputDeviceCount;
+			const size_t A = static_cast<size_t>(ftcore::InputAction::GiftHeal) % ftcore::kInputActionCount;
+			ShotBound.keys[D][A] = ftcore::InputKeyName{};
+			if (!ShotLeft.left[D][A])
+			{
+				ShotLeft.left[D][A] = true;
+				++ShotLeft.count;
+			}
+			Bound = &ShotBound;
+			Left = &ShotLeft;
+		}
 		const ftcore::InputHintEntry* Entries = nullptr;
 		const size_t Count = ftcore::inputHintEntries(ftcore::InputHintScreen::ArenaJump, Entries); // the arena's line and the jump
 		// The entry with this label, or (no label) the first that carries this action; null when the line has none.
@@ -1702,32 +2035,45 @@ private:
 			}
 			return nullptr;
 		};
-		const auto KeyOf = [&](const FPromptKeyOf& Of, FString& Out, float& W)
+		// A prompt's key (inputPromptKey): true when it is NO KEY (every action it names left unbound on the device). NO KEY
+		// is the loc word, alone or beside another action's key in a mixed entry.
+		const FString CoreNoKey = FT::ToFString(ftcore::kInputNoKey);
+		const auto KeyOf = [&](const FPromptKeyOf& Of, FString& Out, float& W) -> bool
 		{
 			Out.Reset();
+			ftcore::InputPromptKey K;
 			if (const ftcore::InputHintEntry* E = EntryOf(Of))
 			{
-				Out = FT::ToFString(ftcore::inputHintKeys(FTInputBindings::Get(), *E, Device));
+				K = ftcore::inputPromptKey(*Bound, *E, Device, Left);
 			}
 			else if (!Of.Label)
 			{
-				Out = FT::ToFString(ftcore::inputActionKeys(FTInputBindings::Get(), Of.Action, Device)); // the line leaves it out
+				K = ftcore::inputPromptKey(*Bound, Of.Action, Device, Left); // the line leaves it out
 			}
+			Out = K.noKey ? NoKeyWord : FT::ToFString(K.keys).Replace(*CoreNoKey, *NoKeyWord, ESearchCase::CaseSensitive);
 			W = TextWidth(Out, KeyFont);
+			return K.noKey;
 		};
 		PromptKeyed = 0;
+		PromptNoKey = 0;
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
 		{
-			KeyOf(kPromptKeys[I], PromptKey[I], PromptKeyW[I]);
-			if (!PromptKey[I].IsEmpty()) PromptKeyed |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I));
+			const ftcore::UiPromptMask Bit = ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I));
+			if (KeyOf(kPromptKeys[I], PromptKey[I], PromptKeyW[I])) PromptNoKey |= Bit;
+			if (!PromptKey[I].IsEmpty()) PromptKeyed |= Bit;
 		}
 		// The lower prompts on each prompt's key, so one key never shows two rows (uiPromptsDrawable keeps the lowest).
+		// NO KEY is no key: two unbound rows are not on one key.
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
 		{
 			PromptSameKeyBelow[I] = 0;
+			if (((PromptNoKey >> I) & 1u) || PromptKey[I].IsEmpty())
+			{
+				continue;
+			}
 			for (int32 J = 0; J < I; ++J)
 			{
-				if (!PromptKey[I].IsEmpty() && PromptKey[J].Equals(PromptKey[I], ESearchCase::CaseSensitive))
+				if (!((PromptNoKey >> J) & 1u) && PromptKey[J].Equals(PromptKey[I], ESearchCase::CaseSensitive))
 				{
 					PromptSameKeyBelow[I] |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(J));
 				}
@@ -1910,6 +2256,7 @@ private:
 			break;
 		case EUiStateShot::None:
 		case EUiStateShot::Gift:
+		case EUiStateShot::NoKey:
 		case EUiStateShot::TooSoon:
 		case EUiStateShot::Wait:
 			break;
@@ -2140,7 +2487,7 @@ private:
 	FPartyRows PartyRows(const FVector2f& Size, float S) const
 	{
 		FPartyRows R;
-		const float GuardBase0 = Size.Y - Hud::Margin * S;
+		const float GuardBase0 = Size.Y - EdgesAt(Size, S).bottom;
 		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (8.f + 0.5f * Hud::LeadHpW) * S;
 		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
 		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
@@ -2172,7 +2519,7 @@ private:
 		const ftcore::UiStyle& St = Table().Style;
 		const float S = P.S;
 		const float A = TextAlpha(LeadFade.alpha); // full ink at rest; fades only as the HUD goes
-		const float X0 = Hud::Margin * S;
+		const float X0 = EdgesAt(Size, S).left;
 		const float Len = Hud::LeadLine * S;
 		const FPartyRows Rows = PartyRows(Size, S);
 		const float GuardBase = Rows.GuardBase;
@@ -2305,7 +2652,7 @@ private:
 		}
 		const float S = P.S;
 		const float A = CardA * TextAlpha(LeadFade.alpha);
-		const float X0 = Hud::Margin * S;
+		const float X0 = EdgesAt(Size, S).left;
 		const float TitleTop = LoneCardTop(Size, S);
 		P.Text(X0, TitleTop, LoneTitle, LeadNameFont, Tok(UiToken::Ink, A));
 		if (!Lone.full)
@@ -2343,7 +2690,7 @@ private:
 		const float A = B.present ? Budget.out.bossAlpha : TopFade.alpha * RestA;
 		const float TA = B.present ? A : TextAlpha(TopFade.alpha) * RestA;
 		const float CX = Size.X * 0.5f;
-		const float Y = Hud::TopLine * S;
+		const float Y = Hud::TopLine * S + (EdgesAt(Size, S).top - Hud::Margin * S); // down with the top edge
 		const float Len = Hud::TopLen * S;
 		const float X0 = CX - Len * 0.5f;
 		const float Hp = B.present ? Frac(B.hp, B.hpMax) : Frac(T.hp, T.hpMax);
@@ -2436,7 +2783,7 @@ private:
 		const ftcore::ArenaHudBoss& B = View.now.boss;
 		const float S = P.S;
 		const float CX = Size.X * 0.5f;
-		const float Top = (Hud::TopLine + 40.f) * S;
+		const float Top = (Hud::TopLine + 40.f) * S + (EdgesAt(Size, S).top - Hud::Margin * S);
 		const FFoeMark* BM = SlotFoe >= 0 ? &Foes[SlotFoe] : nullptr;
 		// A boss's word comes and goes with its line; a target's is a tell, never at rest: full ink while it stands.
 		const float TA = B.present ? (Budget.out.allowed(ftcore::UiMarkKind::Boss) > 0 ? Budget.out.bossAlpha : 0.f)
@@ -2561,7 +2908,7 @@ private:
 		}
 		const float S = P.S;
 		const float A = TopFade.alpha * RestA;
-		const float OY = (Hud::TopLine + 96.f) * S;
+		const float OY = (Hud::TopLine + 96.f) * S + (EdgesAt(Size, S).top - Hud::Margin * S);
 		const float OLen = 300.f * S;
 		const float OX = Size.X * 0.5f - OLen * 0.5f;
 		const float OHp = Frac(T.hp, T.hpMax);
@@ -2573,41 +2920,73 @@ private:
 
 	// The prompts, bottom right: each in its own row counted up from the bottom margin, which it never leaves (Core's
 	// uiPromptRow: HEAL, GIFT, RELOAD, PARTNER, then a first fight's ATTACK, GUARD, DODGE and JUMP); right-aligned, its
-	// word and its key cap; only the ones usable now (Core's grant), at full ink: a prompt that cannot be used is not
-	// drawn, never greyed. A row with nothing open stays empty. Nothing behind them but the bottom shade. A gift row is
-	// ink like the rest: gold is the lead's own power and a gift is not. The GIFT row is the one that may hold two: with
-	// both gifts ready GIFT GUARD keeps the margin and GIFT HEAL stands to its left, GiftGap px from GIFT GUARD's word;
-	// either alone takes the margin.
+	// word and its key cap. Every prompt whose action is in this fight stands in its row (Core's uiPromptsPresent, then
+	// the grant); one is gone only when its action is not in this fight (no partner, no gift slot, no reload press). One
+	// whose press would be refused now (Core's uiPromptsDimmed) is drawn at 40 percent ink, its key cap too, its reason
+	// word (the rules' PressReason: COOLDOWN, FULL, BROKEN...) after its word, before its key cap, at label size; one whose
+	// action the import left unbound shows NO KEY in its key box, dimmed the same. Nothing behind them but the bottom
+	// shade. A gift row is ink like the rest: gold is the lead's own power and a gift is not. The GIFT row is the one that
+	// may hold two: with both gifts GIFT GUARD keeps the margin and GIFT HEAL stands to its left, GiftGap px from GIFT
+	// GUARD's word (or its reason); either alone takes the margin.
 	void PaintPrompts(const FPainter& P, const FVector2f& Size) const
 	{
 		const ftcore::UiPromptMask Shown = Budget.out.promptsShown;
 		const float S = P.S;
-		const float RX = Size.X - Hud::Margin * S;
-		const FLinearColor C = Tok(UiToken::Ink);
+		const ftcore::UiMargins E = EdgesAt(Size, S);
+		const float RX = Size.X - E.right;
+		const float Gap = 10.f * S;
+		// The reason word a prompt carries (its PressReason's index), or -1: a press that would be taken has none.
+		const auto WhyOf = [this](int32 Of) -> int32
+		{
+			const ftcore::PressReason Answer = Why[static_cast<size_t>(Of)];
+			const int32 R = static_cast<int32>(Answer);
+			return ftcore::pressRefused(Answer) && !WhyWord[R].IsEmpty() ? R : -1;
+		};
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount) && Shown != 0; ++I)
 		{
 			if (!((Shown >> I) & 1u) || PromptKey[I].IsEmpty())
 			{
-				continue; // no key on this device: not drawn
+				continue; // nothing reaches it on this device: not drawn
 			}
+			const FLinearColor C = ((PromptDimmed >> I) & 1u) ? Tok(UiToken::Ink, 0.4f) : Tok(UiToken::Ink);
 			const float Row = static_cast<float>(ftcore::uiPromptRow(static_cast<ftcore::UiPrompt>(I)));
-			const float MidY = Size.Y - (Hud::Margin + 0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
+			const float MidY = Size.Y - E.bottom - (0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
 			const float CapW = KeyCapW(PromptKeyW[I], S);
 			float At = RX;
 			constexpr int32 GG = static_cast<int32>(ftcore::UiPrompt::GiftGuard);
 			if (I == static_cast<int32>(ftcore::UiPrompt::GiftHeal) && ((Shown >> GG) & 1u) && !PromptKey[GG].IsEmpty())
 			{
-				At -= KeyCapW(PromptKeyW[GG], S) + 10.f * S + PromptWordW[GG] + Hud::GiftGap * S;
+				const int32 GuardWhy = WhyOf(GG);
+				At -= KeyCapW(PromptKeyW[GG], S) + Gap + PromptWordW[GG] + (GuardWhy >= 0 ? WhyW[GuardWhy] + Gap : 0.f)
+					+ Hud::GiftGap * S;
 			}
 			KeyCap(P, At - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyW[I], C);
+			float WX = At - CapW - Gap;
+			const int32 WhyAt = WhyOf(I);
+			if (WhyAt >= 0)
+			{
+				WX -= WhyW[WhyAt];
+				P.Text(WX, CapTop(MidY, NoteAsc), WhyWord[WhyAt], NoteFont, C);
+				WX -= Gap;
+			}
 			// The two rows with a count carry it in their word (built when it changes).
 			const bool bHeal = I == static_cast<int32>(ftcore::UiPrompt::Heal);
 			const bool bGiftHeal = I == static_cast<int32>(ftcore::UiPrompt::GiftHeal);
 			const float WW = bHeal ? HealW : bGiftHeal ? GiftHealW : PromptWordW[I];
 			const FString& Word = bHeal ? HealText : bGiftHeal ? GiftHealText : PromptWord[I];
-			const float WX = At - CapW - 10.f * S - WW;
-			P.Text(WX, CapTop(MidY, PromptAsc), Word, PromptFont, C);
+			P.Text(WX - WW, CapTop(MidY, PromptAsc), Word, PromptFont, C);
 		}
+	}
+
+	// The HUD's edges, px: its own margin (Hud::Margin at 1080p, by S), plus the platform's title-safe padding (SafeRatio,
+	// read when the viewport's size changes: a ratio of half the viewport on each side), plus the HUD safe margin setting
+	// (a percent of the viewport's width at the sides, of its height at the top and bottom), per side (Core's
+	// uiHudMargins). Edge marks sit on these; centred marks keep the viewport's centre.
+	ftcore::UiMargins EdgesAt(const FVector2f& Size, float S) const
+	{
+		const ftcore::UiMargins Pad{SafeRatio.Left * Size.X * 0.5f, SafeRatio.Top * Size.Y * 0.5f, SafeRatio.Right * Size.X * 0.5f,
+			SafeRatio.Bottom * Size.Y * 0.5f};
+		return ftcore::uiHudMargins(Size.X, Size.Y, Hud::Margin * S, Pad, HudSafePct);
 	}
 
 	// The lock: four static corner arcs round the locked body. Without a lock, a dot at the centre while aiming a gun. The
@@ -3015,15 +3394,17 @@ private:
 		}
 	}
 
-	// An off-frame tell: a chevron 64 px inside the screen's edge pointing at the enemy, the answer word beside it while it
-	// winds up (a minor enemy's; the boss's stands under its name). At the hit, the chevron fades.
+	// An off-frame tell: a chevron on the HUD's edge (EdgesAt: 64 px inside the screen's, plus the safe zone) pointing at
+	// the enemy, the answer word beside it while it winds up (a minor enemy's; the boss's stands under its name). At the
+	// hit, the chevron fades.
 	void PaintEdge(const FPainter& P, const FVector2f& Size, const FFoeMark& M, bool bWord) const
 	{
 		const float S = P.S;
 		const float CX = Size.X * 0.5f;
 		const float CY = Size.Y * 0.5f;
-		const float HalfW = CX - Hud::Margin * S;
-		const float HalfH = CY - Hud::Margin * S;
+		const ftcore::UiMargins E = EdgesAt(Size, S); // each side its own: the way out picks the side
+		const float HalfW = FMath::Max(0.f, CX - (M.Dir.X < 0.f ? E.left : E.right));
+		const float HalfH = FMath::Max(0.f, CY - (M.Dir.Y < 0.f ? E.top : E.bottom));
 		const float T = FMath::Min(M.Dir.X != 0.f ? HalfW / FMath::Abs(M.Dir.X) : 1e9f, M.Dir.Y != 0.f ? HalfH / FMath::Abs(M.Dir.Y) : 1e9f);
 		const FVector2f Tip(CX + M.Dir.X * T, CY + M.Dir.Y * T);
 		const bool bWind = M.Tell == 1;
@@ -3062,24 +3443,30 @@ private:
 			Mesh.Vignette(Size.X, Size.Y * 0.5f, D, Size.Y * 0.7f, Pk, &C);
 		}
 		// The result: the word in the subtitle's face at the subtitle's place, and how to fight again in the key hint's.
+		// Both up, and the tag in, by what the safe zone adds to the HUD's own margin.
+		const ftcore::UiMargins E = EdgesAt(Size, S);
 		if (bResult && ResultA > 0.f)
 		{
 			PaintLowGradient(Mesh, Size, Table().Style.backingSoftDialogue * ResultA);
 			const float WordW = bWon ? VictoryW : DefeatW;
-			P.Text(CX - WordW * 0.5f, Size.Y - 96.f * S - ResultLineH, bWon ? VictoryWord : DefeatWord, ResultFont,
+			const float Up = E.bottom - Hud::Margin * S;
+			P.Text(CX - WordW * 0.5f, Size.Y - 96.f * S - Up - ResultLineH, bWon ? VictoryWord : DefeatWord, ResultFont,
 				Tok(bWon ? UiToken::Ink : UiToken::Danger, ResultA));
 			if (bAgain)
 			{
-				P.Text(CX - AgainW * 0.5f, Size.Y - 50.f * S, AgainWord, LabelFont, Tok(UiToken::InkDim, ResultA));
+				P.Text(CX - AgainW * 0.5f, Size.Y - 50.f * S - Up, AgainWord, LabelFont, Tok(UiToken::InkDim, ResultA));
 			}
 		}
 		if (TagMode > 0)
 		{
-			P.Text(40.f * S, 30.f * S, TagWord[TagMode - 1], LabelFont, Tok(UiToken::InkDim));
+			P.Text(40.f * S + (E.left - Hud::Margin * S), 30.f * S + (E.top - Hud::Margin * S), TagWord[TagMode - 1], LabelFont,
+				Tok(UiToken::InkDim));
 		}
 	}
 
 	TFunction<const UFTArenaRunner*()> GetRunner;
+	mutable FTextRuns TextRuns;    // the words' kept glyph runs (FTextRuns), drawn from in OnPaint
+	FDelegateHandle FontRelease;   // Slate's font release, which drops them
 	ftcore::ArenaHudView View;
 	ftcore::UiFade LeadFade;
 	ftcore::UiFade TopFade;
@@ -3156,8 +3543,20 @@ private:
 	FString GiftHealText; // GIFT HEAL n, built when the count changes (empty while none is reported)
 	float GiftHealW = 0.f;
 	int32 GiftHealShown = -2;
-	ftcore::UiPromptMask PromptKeyed = 0; // the prompts with a key on the device in use
+	ftcore::UiPromptMask PromptKeyed = 0; // the prompts something reaches on the device in use (a key, a route, NO KEY)
+	ftcore::UiPromptMask PromptNoKey = 0; // the prompts whose action the import left unbound on the device: NO KEY
+	ftcore::UiPromptMask PromptDimmed = 0; // the prompts drawn dimmed this tick (Core's uiPromptsDimmed)
 	std::array<ftcore::UiPromptMask, ftcore::kUiPromptCount> PromptSameKeyBelow{}; // per prompt, the lower ones on its key
+	ftcore::UiPromptReasons Why{};    // each prompt's answer from the rules this tick
+	ftcore::PressReason GiftWhy[2] = {ftcore::PressReason::Absent, ftcore::PressReason::Absent}; // Gift Heal's, Gift Guard's
+	FString NoKeyWord;                // NO KEY, in the key box
+	FString WhyWord[ftcore::kPressReasonCount]; // a refused prompt's reason word, by PressReason (empty: none)
+	float WhyW[ftcore::kPressReasonCount] = {};
+	// The HUD's edges: the platform's title-safe padding as Slate's ratio of half the viewport per side, the viewport size
+	// it was read at, and the HUD safe margin setting in percent.
+	FMargin SafeRatio = FMargin(0.f);
+	FVector2f SafeSize = FVector2f(-1.f, -1.f);
+	int32 HudSafePct = 0;
 	// A Qte in the call slot: its words (the four Tap words, HOLD, MASH), whether the budget drew it, and its line left.
 	FString QteWord[kQteWords];
 	float QteWordW[kQteWords] = {}, QteMid[kQteWords] = {};

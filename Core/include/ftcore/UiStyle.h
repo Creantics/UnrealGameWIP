@@ -180,6 +180,17 @@ FTCORE_API UiCueShape uiCueShape(const UiStyle& s, UiToken token);
 // The glyph edge's width in pixels at `height`, at least 1.
 FTCORE_API float uiEdgePx(const UiStyle& s, float height);
 
+// The fight HUD's margin on each side, px. Each side is the HUD's own margin (`basePx`: its 1080p margin at the frame's
+// scale), plus the platform's title-safe padding on that side (`padding`, px in the same units), plus the player's HUD
+// safe margin (Settings::hudSafeMargin, clamped to 0..10) as a percent of the viewport's `width` on the left and right
+// and of its `height` at the top and bottom. A negative or NaN input counts as 0. Edge marks sit on these; a centred mark
+// stays on the viewport's centre whatever the sides are, so a wide screen (21:9) widens the gap between them, not the
+// marks' places from the middle.
+struct UiMargins {
+    float left = 0.f, top = 0.f, right = 0.f, bottom = 0.f;
+};
+FTCORE_API UiMargins uiHudMargins(float width, float height, float basePx, const UiMargins& padding, int safePercent);
+
 // A fading block's state. Call uiFadeStep each frame with whether its values changed this frame.
 struct UiFade {
     float alpha = 0.f;
