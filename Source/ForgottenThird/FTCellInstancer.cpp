@@ -107,7 +107,9 @@ AActor* FFTCellInstancer::CellAt(const FVector& At)
 	Holder->SetRootComponent(Root);
 	Holder->AddInstanceComponent(Root);
 	Root->RegisterComponent();
+#if WITH_EDITOR
 	Holder->SetActorLabel(FString::Printf(TEXT("Cell_%d_%d"), Cell.X, Cell.Y));
+#endif
 	Holders.Add(Cell, Holder);
 	++Totals.Cells;
 	return Holder;
@@ -127,7 +129,9 @@ bool FFTCellInstancer::AllowInstanced(UMaterialInterface* Material)
 		return false;
 	}
 	Base->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+#if WITH_EDITOR
 	Base->PostEditChange();
+#endif
 	Base->MarkPackageDirty();
 	UsageSaves.Add(Base->GetOutermost());
 	return Material->GetUsageByFlag(MATUSAGE_InstancedStaticMeshes);
@@ -179,10 +183,12 @@ UStaticMeshComponent* FFTCellInstancer::SpawnActor(UStaticMesh* Mesh, TArrayView
 		Actor->Tags.Add(Options.Tag);
 	}
 	Actor->SetActorScale3D(Transform.GetScale3D());
+#if WITH_EDITOR
 	if (!Options.Label.IsEmpty())
 	{
 		Actor->SetActorLabel(Options.Label);
 	}
+#endif
 	++Totals.FallbackActors;
 	return Comp;
 }

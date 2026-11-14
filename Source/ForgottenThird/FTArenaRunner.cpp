@@ -733,8 +733,9 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		// has both side clips; without them they stay rolls.
 		Fight.setSideDashes(PlayerFigure->CanSideDash());
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: side dashes %s"), Fight.sideDashes() ? TEXT("on") : TEXT("off"));
-		const ftcore::ZoneCamera& Rig = Fit.camera;
-		PlayerFigure->SetCameraRig(Rig.arm, Rig.pivot, Rig.side, Rig.up, Rig.fov);
+		// The rig from Core's pose (ftcore::arenaCameraPose: the zone's, blended by the aim stance), as every frame sets it.
+		const ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
+		PlayerFigure->SetCameraRig(Pose.arm, Pose.pivot, Pose.side, Pose.up, Pose.fov);
 		// The kit's weapon on the lead's body: its strike clips, props and effects.
 		if (Lead)
 		{
@@ -4126,11 +4127,14 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		const ftcore::ZoneCamera& Rig = Fit.camera;
 		const float FreeLens = FMath::Sqrt(Rig.arm * Rig.arm + Rig.side * Rig.side + Rig.up * Rig.up);
-		const bool bPass = FrameSettled > 0 && FrameInThird == FrameSettled && FrameTurnMost <= FrameRules().maxTurn + 0.01f &&
+		// A zone whose framing cap is 0 cannot centre the target: there the check is only that the turn stays 0 and the
+		// lock's line eases onto the target (settled frames), not the middle third.
+		const bool bNoTurn = FrameRules().maxTurn <= 0.f;
+		const bool bPass = FrameSettled > 0 && (bNoTurn || FrameInThird == FrameSettled) && FrameTurnMost <= FrameRules().maxTurn + 0.01f &&
 			FrameArmMost <= Rig.arm + 0.001f;
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("Arena check: framing %s%s (%d frames followed, %d settled, %d with both bodies in the middle third; worst |x| lead %.3f, target %.3f; turn most %.1f deg (cap %.0f), its rate most %.0f deg/s; boom arm most %.2f m (rig %.2f); lens to pivot most %.2f m (rig %.2f, camera lag aside))."),
-			bPass ? TEXT("PASS") : TEXT("FAIL"), bNoFrame ? TEXT(" [framing off]") : TEXT(""), FrameFrames, FrameSettled, FrameInThird,
+			bPass ? TEXT("PASS") : TEXT("FAIL"), bNoFrame ? TEXT(" [framing off]") : (bNoTurn ? TEXT(" [zone cap 0: turn and line only]") : TEXT("")), FrameFrames, FrameSettled, FrameInThird,
 			FrameLeadWorst, FrameFoeWorst, FrameTurnMost, FrameRules().maxTurn, FrameRateMost, FrameArmMost, Rig.arm, FrameLensMost,
 			FreeLens);
 		const TCHAR* Bands[4] = {TEXT("under 3"), TEXT("3-6"), TEXT("6-10"), TEXT("10 and over")};

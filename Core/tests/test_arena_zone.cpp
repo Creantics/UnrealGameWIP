@@ -738,14 +738,11 @@ TEST_CASE("arena zone fit: the camera room: the human rig stays clear of the bui
     const ArenaTable arena = loadArena();
     const WorldTable worlds = loadWorlds();
     const ArenaZoneTable zones = loadZones(arena, worlds);
-    // Every shipped zone keeps the camera clear of the buildings for most of its edge, the lens measured as the view is
-    // drawn (the shoulder offset, on the lock's line and at the zone's framing cap). The two facades are pinned exactly,
-    // so neither gets worse unseen.
-    // The one exception, lat_facade_a, 15/48 (31%) over the 30% bar: the shoulder alone at turn 0 (the lock's line,
-    // framing off) already puts its lens inside a building along 15/48 of its edge (the old measure, no shoulder, read
-    // 13/48), so framing is not the cause; its framing cap is 0 (arenas.json), so its only view is that turn-0 one.
-    // sol_facade_a gives 11/48 at either single view (turn 0 or its 30-degree cap), 14/48 with both; it stays under the
-    // bar. The tower facade's layout rework belongs to the zone's owner.
+    // Every shipped zone keeps the camera clear of the buildings for most of its edge (at most 30%), the lens the one the
+    // host draws (Core's pose and lens: on the lock's line, at the zone's framing cap and fully aimed). The two facades
+    // are pinned exactly, so neither gets worse unseen: sol_facade_a 13/48, lat_facade_a 14/48. lat_facade_a holds the
+    // bar only with its framing cap of 0 (arenas.json): at the default 30-degree cap it reads 16/48 (pinned below), so its
+    // layout rework belongs to the zone's owner.
     int capped = 0;
     for (const ArenaZoneSpec& spec : zones.zones) {
         Fitted f;
@@ -754,13 +751,21 @@ TEST_CASE("arena zone fit: the camera room: the human rig stays clear of the bui
         const bool tower = spec.id == "lat_facade_a";
         CHECK(f.fit.camera.frameTurnCapDeg == (tower ? 0.f : kArenaFrame.maxTurn));
         if (f.fit.camera.frameTurnCapDeg != kArenaFrame.maxTurn) ++capped;
-        if (tower) CHECK(f.fit.cameraBlocked == doctest::Approx(15.f / 48.f));
-        if (spec.id == "sol_facade_a") CHECK(f.fit.cameraBlocked == doctest::Approx(14.f / 48.f));
-        const float bar = tower ? 15.f / 48.f : 0.3f; // the one pinned exception
-        CHECK_MESSAGE(f.fit.cameraBlocked <= bar + 1e-6f, spec.id << " camera blocked " << f.fit.cameraBlocked);
+        if (tower) CHECK(f.fit.cameraBlocked == doctest::Approx(14.f / 48.f));
+        if (spec.id == "sol_facade_a") CHECK(f.fit.cameraBlocked == doctest::Approx(13.f / 48.f));
+        CHECK_MESSAGE(f.fit.cameraBlocked <= 0.3f, spec.id << " camera blocked " << f.fit.cameraBlocked);
     }
     CHECK(capped == 1);
     CHECK(kArenaFrame.maxTurn == 30.f); // the default cap every other zone keeps
+    {
+        // Why the tower facade's cap is 0: with the default cap its turned lens sits in a building along 16/48.
+        ArenaZoneSpec tower = *zones.find("lat_facade_a");
+        tower.frameTurnCapDeg = -1.f; // the default
+        Fitted t;
+        fitShipped(arena, worlds, tower, t);
+        CHECK(t.fit.camera.frameTurnCapDeg == kArenaFrame.maxTurn);
+        CHECK(t.fit.cameraBlocked == doctest::Approx(16.f / 48.f));
+    }
     // The same plaza with the giant, in the tower world: the camera does not pull out, so it stays clear,
     // and a warning is given exactly when some of the edge is blocked.
     ArenaZoneSpec spec = *zones.find("lat_plaza_a");

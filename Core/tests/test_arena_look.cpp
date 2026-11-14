@@ -117,19 +117,33 @@ struct Seen {
     float ahead = 0.f; // m along the view
 };
 
+// The test's own lens, built from first principles and not from Core's: from the pivot (`pivot` m over the feet at the
+// origin), the boom's forward f at its yaw and pitch, its right r (a quarter turn right of f, level) and its up u (f
+// pitched a quarter up); the lens is the pivot, back the arm along f, then side along r and up along u (UE: + yaw turns
+// right, +y is the right at yaw 0, + pitch looks up).
+void oracleLens(float pivot, float arm, float side, float up, float yawDeg, float boomDeg, float out[3]) {
+    const float k = 3.14159265358979f / 180.f;
+    const float y = yawDeg * k;
+    const float b = boomDeg * k;
+    const float f[3] = {std::cos(b) * std::cos(y), std::cos(b) * std::sin(y), std::sin(b)};
+    const float r[3] = {-std::sin(y), std::cos(y), 0.f};
+    const float u[3] = {-std::sin(b) * std::cos(y), -std::sin(b) * std::sin(y), std::cos(b)};
+    const float p[3] = {0.f, 0.f, pivot};
+    for (int i = 0; i < 3; ++i) out[i] = p[i] - arm * f[i] + side * r[i] + up * u[i];
+}
+
 // The point (px, py, pz) through the arena rig's lens: the lock's line along +x from the lead's feet at the origin, the
-// view at viewPitch (the boom and the lens split it) and turned `turn` degrees off that line (UE: + turns right, +y is
-// the right at 0). The lens is where Core's pose puts it (arenaCameraPose, arenaCameraLens); `lens` gets its place.
+// view at viewPitch (the boom and the lens split it, arenaSplitPitch) and turned `turn` degrees off that line. The lens
+// is the test's own (oracleLens on the zone's rig, aim off), so the centring tests do not lean on arenaCameraLens; `lens`
+// gets its place.
 Seen seenFromLens(const ZoneCamera& cam, float viewPitch, float turn, float px, float py, float pz, float lens[3]) {
     const float k = 3.14159265358979f / 180.f;
-    const float v = arenaClampViewPitch(kArenaLook, viewPitch) * k;
+    const float clamped = arenaClampViewPitch(kArenaLook, viewPitch);
+    const float v = clamped * k;
     const float y = turn * k;
     const float r[3] = {-std::sin(y), std::cos(y), 0.f};
     const float fv[3] = {std::cos(v) * std::cos(y), std::cos(v) * std::sin(y), std::sin(v)};
-    const ArenaLensAt at = arenaCameraLens(arenaCameraPose(cam, AimStance{}, ArenaFrameYaw{0.f, turn}, viewPitch));
-    lens[0] = at.x;
-    lens[1] = at.y;
-    lens[2] = cam.pivot + at.z;
+    oracleLens(cam.pivot, cam.arm, cam.side, cam.up, turn, arenaSplitPitch(kArenaLook, clamped).boom, lens);
     const float d[3] = {px - lens[0], py - lens[1], pz - lens[2]};
     Seen s;
     s.ahead = d[0] * fv[0] + d[1] * fv[1] + d[2] * fv[2];
@@ -286,6 +300,71 @@ TEST_CASE("arena camera pose: the turn moves only the drawn yaw; the rig the hos
         ++checked;
     }
     CHECK(checked == 5 * 2 * 3 * 3);
+}
+
+TEST_CASE("arena camera lens: Core's lens is the test's own, a sign slip in the shoulder or the height is caught, and a half-blended aim") {
+    const float pivot = 1.5f, arm = 6.4f, side = 1.2f, up = 0.7f;
+    float o[3];
+    // Worked by hand. Yaw 90 (the view along +y), boom level: back the arm along -y, the right is -x, the height +z.
+    oracleLens(pivot, arm, side, up, 90.f, 0.f, o);
+    CHECK(o[0] == doctest::Approx(-1.2f).epsilon(1e-4));
+    CHECK(o[1] == doctest::Approx(-6.4f).epsilon(1e-4));
+    CHECK(o[2] == doctest::Approx(2.2f).epsilon(1e-4));
+    // Yaw 0, boom 30 down: f = (cos 30, 0, -sin 30), u = (sin 30, 0, cos 30); the lens is up and back, the shoulder +y.
+    oracleLens(pivot, arm, side, up, 0.f, -30.f, o);
+    CHECK(o[0] == doctest::Approx(-6.4f * 0.8660254f + 0.7f * 0.5f).epsilon(1e-4));
+    CHECK(o[1] == doctest::Approx(1.2f).epsilon(1e-4));
+    CHECK(o[2] == doctest::Approx(1.5f + 6.4f * 0.5f + 0.7f * 0.8660254f).epsilon(1e-4));
+    // Core's lens matches the oracle for each rig, at three yaws (one not a multiple of 90) and three boom pitches. The
+    // positions are asymmetric (side and up both non-zero), so a flipped sign on either term moves the lens by twice it
+    // and fails.
+    for (const ZoneCamera& cam : kRigs)
+    for (float yaw : {0.f, 37.f, -120.f})
+    for (float boom : {-20.f, 0.f, 25.f}) {
+        CAPTURE(cam.side);
+        CAPTURE(yaw);
+        CAPTURE(boom);
+        ArenaCameraPose p;
+        p.yaw = yaw;
+        p.boomPitch = boom;
+        p.arm = cam.arm;
+        p.pivot = cam.pivot;
+        p.side = cam.side;
+        p.up = cam.up;
+        const ArenaLensAt at = arenaCameraLens(p);
+        oracleLens(cam.pivot, cam.arm, cam.side, cam.up, yaw, boom, o);
+        CHECK(std::fabs(at.x - o[0]) < 1e-3f);
+        CHECK(std::fabs(at.y - o[1]) < 1e-3f);
+        CHECK(std::fabs(cam.pivot + at.z - o[2]) < 1e-3f);
+        // The slips the check catches: each term's sign flipped moves the oracle off Core's by 2 x side or 2 x up.
+        float slipSide[3], slipUp[3];
+        oracleLens(cam.pivot, cam.arm, -cam.side, cam.up, yaw, boom, slipSide);
+        oracleLens(cam.pivot, cam.arm, cam.side, -cam.up, yaw, boom, slipUp);
+        const auto off = [&](const float s[3]) {
+            return std::sqrt((at.x - s[0]) * (at.x - s[0]) + (at.y - s[1]) * (at.y - s[1]) + (cam.pivot + at.z - s[2]) * (cam.pivot + at.z - s[2]));
+        };
+        CHECK(off(slipSide) == doctest::Approx(2.f * std::fabs(cam.side)).epsilon(1e-3));
+        CHECK(off(slipUp) == doctest::Approx(2.f * cam.up).epsilon(1e-3));
+    }
+    // Half aimed (the stance at half its blend-in: smoothstep(0.5) = 0.5): each rig value half way to its aimed one, and
+    // the lens where the oracle puts that half-way rig.
+    const AimRules rules{};
+    AimStance half;
+    half.tick(rules.blendIn * 0.5f, true, FieldBody::Free);
+    REQUIRE(half.alpha() == doctest::Approx(0.5f).epsilon(1e-4));
+    const ZoneCamera cam{};
+    const ArenaCameraPose p = arenaCameraPose(cam, half, ArenaFrameYaw{20.f, -10.f}, cam.lockPitch);
+    const float halfArm = cam.arm * (1.f + rules.armScale) * 0.5f;
+    const float halfSide = (cam.side + rules.shoulderRight / 100.f) * 0.5f;
+    CHECK(p.arm == doctest::Approx(halfArm).epsilon(1e-4));
+    CHECK(p.side == doctest::Approx(halfSide).epsilon(1e-4));
+    CHECK(p.fov == doctest::Approx((cam.fov + rules.fov) * 0.5f).epsilon(1e-4));
+    CHECK(p.yaw == doctest::Approx(10.f));
+    const ArenaLensAt at = arenaCameraLens(p);
+    oracleLens(cam.pivot, halfArm, halfSide, cam.up, 10.f, p.boomPitch, o);
+    CHECK(std::fabs(at.x - o[0]) < 1e-3f);
+    CHECK(std::fabs(at.y - o[1]) < 1e-3f);
+    CHECK(std::fabs(cam.pivot + at.z - o[2]) < 1e-3f);
 }
 
 TEST_CASE("arena frame: the look up at a tall boss goes through its face in the turned view, for each rig") {
