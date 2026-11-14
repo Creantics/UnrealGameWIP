@@ -174,6 +174,7 @@ TEST_CASE("ui first use: every item keeps the slot older saves wrote it in; the 
     CHECK(uiFirstUseSlot(UiFirstUseItem::Guard) == 5u);
     CHECK(uiFirstUseSlot(UiFirstUseItem::Dodge) == 6u);
     CHECK(uiFirstUseSlot(UiFirstUseItem::Jump) == 7u);
+    CHECK(uiFirstUseSlot(UiFirstUseItem::LoneCard) == 9u);
     // No two items share a slot, and none sits in a retired one (0, 1, 2, 8) or past the top.
     for (std::size_t i = 0; i < kUiFirstUseCount; ++i) {
         CAPTURE(i);
@@ -241,4 +242,38 @@ TEST_CASE("ui first use: fresh ignores the save, seen teaches nothing") {
     uiFirstUseBegin(s, all, UiFirstUseMode::Saved);
     CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::Guard));
     CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::WeakPointLabel));
+}
+
+TEST_CASE("ui first use: the Lone Carry's card counts its first three showings in its own slot") {
+    const UiFirstUseItem c = UiFirstUseItem::LoneCard;
+    CHECK_FALSE(uiFirstUseControl(c));
+    CHECK(uiFirstUseTimes(c) == kUiFirstUseLabelTimes);
+    // Saves from before the card never showed it: a counted one with every other item at its most, and the old one-bit
+    // layout with every bit it ever had.
+    const std::uint32_t before =
+        kUiFirstUseCounted | (3u << 6) | (1u << 8) | (1u << 10) | (1u << 12) | (1u << 14) | (3u << 16);
+    CHECK(uiFirstUseSavedCount(before, c) == 0);
+    CHECK(uiFirstUseSavedCount(0x1FFu, c) == 0);
+    UiFirstUse s;
+    uiFirstUseBegin(s, before, UiFirstUseMode::Saved);
+    for (std::uint8_t time = 1; time <= kUiFirstUseLabelTimes; ++time) {
+        CAPTURE(time);
+        CHECK(uiFirstUseShow(s, c)); // counted on showing: the host saves now
+        CHECK(s.count[at(c)] == time);
+        CHECK_FALSE(uiFirstUseShow(s, c)); // not again while it stands
+        uiFirstUseEnd(s);
+    }
+    CHECK_FALSE(uiFirstUseShow(s, c)); // a fourth time: the title alone
+    const std::uint32_t saved = uiFirstUseSaved(s);
+    CHECK(((saved >> 18) & 3u) == 3u); // slot 9
+    CHECK(uiFirstUseSavedCount(saved, c) == 3);
+    CHECK(uiFirstUseSavedCount(saved, UiFirstUseItem::WeakPointLabel) == 3); // the rest kept
+    CHECK(uiFirstUseSavedCount(uiFirstUseMerge(before, saved), c) == 3);
+    // Fresh shows it again; seen never.
+    UiFirstUse fresh;
+    uiFirstUseBegin(fresh, saved, UiFirstUseMode::Fresh);
+    CHECK(uiFirstUseShow(fresh, c));
+    UiFirstUse seen;
+    uiFirstUseBegin(seen, 0u, UiFirstUseMode::Seen);
+    CHECK_FALSE(uiFirstUseShow(seen, c));
 }

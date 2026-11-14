@@ -24,8 +24,9 @@ namespace ftcore {
 enum class UiFirstUseItem : std::uint8_t {
     WeakPointLabel,             // a label: holds, then fades
     Attack, Guard, Dodge, Jump, // controls: until a second after the first use, then fade
+    LoneCard,                   // the Lone Carry's card in full (UiLone.h, which times it): counted as a label is
 };
-inline constexpr std::size_t kUiFirstUseCount = 5;
+inline constexpr std::size_t kUiFirstUseCount = 6;
 inline constexpr std::uint8_t kUiFirstUseLabelTimes = 3; // a label shows the first three times in a save
 inline constexpr float kUiFirstUseHold = 4.f;   // a label's full-ink seconds
 inline constexpr float kUiFirstUseFade = 1.f;   // a label's or a control's fade
@@ -64,11 +65,12 @@ constexpr unsigned uiFirstUseSlot(UiFirstUseItem item) {
     case UiFirstUseItem::Guard: return 5;
     case UiFirstUseItem::Dodge: return 6;
     case UiFirstUseItem::Jump: return 7;
+    case UiFirstUseItem::LoneCard: return 9;
     }
     return 0; // a retired slot: nothing
 }
-inline constexpr unsigned kUiFirstUseTopSlot = 8; // the highest slot any save has written, a retired one included
-static_assert(kUiFirstUseCount == 5, "a new item takes a slot past kUiFirstUseTopSlot in uiFirstUseSlot");
+inline constexpr unsigned kUiFirstUseTopSlot = 9; // the highest slot any save has written, a retired one included
+static_assert(kUiFirstUseCount == 6, "a new item takes a slot past kUiFirstUseTopSlot in uiFirstUseSlot");
 static_assert(2 * kUiFirstUseTopSlot + 1 < 31, "two bits per slot below the layout bit");
 // The item's count in a saved value of either layout.
 FTCORE_API std::uint8_t uiFirstUseSavedCount(std::uint32_t saved, UiFirstUseItem item);

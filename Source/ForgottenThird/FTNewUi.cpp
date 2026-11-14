@@ -13,6 +13,7 @@
 #include "ftcore/UiBudget.h"
 #include "ftcore/UiEventMarks.h"
 #include "ftcore/UiFirstUse.h"
+#include "ftcore/UiLone.h"
 #include "ftcore/Settings.h"
 #include "ftcore/InputBindings.h"
 #include "ftcore/UiStroke.h"
@@ -72,7 +73,25 @@ const FTUiText kLoadUi(TEXT("arena.load"));   // the lead's state slot while som
 const FTUiText kPoiseUi(TEXT("arena.poise")); // always beside the poise line, whenever the line is drawn
 const FTUiText kWeakPointUi(TEXT("arena.label.weak_point"));
 // The first-use labels' words, by UiFirstUseItem (the controls teach by their prompts and have none here).
-const FTUiText* const kFirstUseUi[ftcore::kUiFirstUseCount] = {&kWeakPointUi, nullptr, nullptr, nullptr, nullptr};
+// (The Lone Carry's card is timed by UiLone and drawn as its own block: no label either.)
+const FTUiText* const kFirstUseUi[ftcore::kUiFirstUseCount] = {&kWeakPointUi, nullptr, nullptr, nullptr, nullptr, nullptr};
+// The Lone Carry's card: its title, its two heads and each line's words (by ftcore::UiLoneLine; the figures are Core's),
+// and its words in the lead's state slot.
+const FTUiText kLoneTitleUi(TEXT("arena.lone.title"));
+const FTUiText kLoneGainUi(TEXT("arena.lone.gain"));
+const FTUiText kLoneGiveUpUi(TEXT("arena.lone.give_up"));
+const FTUiText kLoneLoadCapUi(TEXT("arena.lone.load_cap"));
+const FTUiText kLoneDamageTakenUi(TEXT("arena.lone.damage_taken"));
+const FTUiText kLoneNoCountUi(TEXT("arena.lone.no_count"));
+const FTUiText kLoneNoTableUi(TEXT("arena.lone.no_table"));
+const FTUiText kLoneNoTakeHalfUi(TEXT("arena.lone.no_take_half"));
+const FTUiText kLoneGiftEndsUi(TEXT("arena.lone.gift_ends"));
+const FTUiText* const kLoneLineUi[] = {&kReleaseUi, &kLoadUi, &kLoneLoadCapUi, &kLoneDamageTakenUi, &kLoneNoCountUi, &kLoneNoTableUi,
+	&kLoneNoTakeHalfUi, &kLoneGiftEndsUi};
+static_assert(UE_ARRAY_COUNT(kLoneLineUi) == ftcore::kUiLoneLineKinds, "one line's words per UiLoneLine, in its order");
+const FTUiText kLoneAloneUi(TEXT("arena.lone.alone"));
+const FTUiText kLoneEndedGiftUi(TEXT("arena.lone.ended_gift"));
+const FTUiText kLoneEndedPartnerUi(TEXT("arena.lone.ended_partner"));
 // The Read row's move names, by the tell the move shows (arenaTellName).
 const char* const kReadTells[9] = {"strike", "overhead", "backhand", "charge", "thrust", "slash", "sweep", "slam", "shot"};
 const FTUiText kReadStrikeUi(TEXT("arena.read.strike"));
@@ -1003,7 +1022,15 @@ static_assert(LeadPx * CapK >= 25.f && PartnerPx * CapK >= 19.f && RowPx * CapK 
 constexpr float PartnerInk = 0.85f; // the partner's name
 constexpr float NoteInk = 0.8f;     // the labels
 constexpr float PrefixInk = 0.7f;   // NEXT MOVE
-constexpr float SlotInk = 0.7f;     // LOAD in the lead's state slot
+constexpr float SlotInk = 0.7f;     // LOAD (and ALONE, ENDED) in the lead's state slot
+constexpr float LoneHeadInk = 0.7f; // the Lone Carry card's heads, YOU GAIN and YOU GIVE UP
+// The Lone Carry's card over the party block, left-aligned on its margin, no panel: px from its last line's foot to the
+// block's top, from the title's foot to the heads, between the columns, and between lines over their ascent.
+constexpr float LoneGap = 24.f;
+constexpr float LoneTitleGap = 14.f;
+constexpr float LoneColGap = 48.f;
+constexpr float LoneLineGap = 6.f;
+constexpr float LoneShadeK = 1.5f; // the bottom shade's height while the card shows, over the card's top from the bottom edge
 } // namespace Hud
 
 // What was just lost: held a moment, then rubbed away toward the value (a hit rubs the line, it does not snap).
@@ -1094,6 +1121,41 @@ ftcore::UiFirstUseMode FirstUseMode()
 		return M;
 	}();
 	return Mode;
+}
+
+// -UiStateShot=<name>, honoured only with -ArenaShotUi and out of shipping builds: one HUD state held for a still, on
+// test data where the fight has none. lone_card: the Lone Carry's card in full (the runner's terms while the lead is
+// Lone, else the default tuning's) and ALONE in the state slot; lone_alone: ALONE alone; lone_ended: ENDED: GIFT. A
+// held state never counts a showing or writes the save.
+enum class EUiStateShot : uint8
+{
+	None,
+	LoneCard,
+	LoneAlone,
+	LoneEnded,
+};
+
+EUiStateShot UiStateShot()
+{
+#if !UE_BUILD_SHIPPING
+	static const EUiStateShot Shot = []
+	{
+		FString V;
+		if (!FParse::Param(FCommandLine::Get(), TEXT("ArenaShotUi")) || !FParse::Value(FCommandLine::Get(), TEXT("-UiStateShot="), V))
+		{
+			return EUiStateShot::None;
+		}
+		const EUiStateShot S = V == TEXT("lone_card") ? EUiStateShot::LoneCard
+			: V == TEXT("lone_alone")                 ? EUiStateShot::LoneAlone
+			: V == TEXT("lone_ended")                 ? EUiStateShot::LoneEnded
+													  : EUiStateShot::None;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena UI: -UiStateShot=%s %s."), *V, S == EUiStateShot::None ? TEXT("is not a state; ignored") : TEXT("held"));
+		return S;
+	}();
+	return Shot;
+#else
+	return EUiStateShot::None;
+#endif
 }
 
 // The HUD's size over the viewport's scale, margins included: the settings' HUD scale (80-130 percent), or the
@@ -1261,6 +1323,7 @@ public:
 		TickWorld(*Runner, Fight, PC, Geometry.GetLocalSize());
 		TickEvents(*Runner, Fight, DeltaTime);
 		TickFirstUse(*Runner, Fight, DeltaTime);
+		TickLone(*Runner, Fight, DeltaTime);
 		TickBudget(Fight, Changed, DeltaTime);
 		TickLabels(*Runner);
 	}
@@ -1422,12 +1485,22 @@ public:
 		// bottom edge and gone by BottomShadeH up. Nothing else stands behind a word.
 		if (!bResult && Budget.out.allowed(ftcore::UiMarkKind::Lead) > 0 && View.now.lead.hpMax > 0)
 		{
-			Mesh.Band(0.f, Size.Y - Hud::BottomShadeH * P.S, Size.X, Size.Y, true, true, 1.f, Hud::BottomShade * TextAlpha(LeadFade.alpha),
+			// The Lone Carry's card stands over the party block, above the shade's 220 px: while it shows, the shade rises
+			// under it (to LoneShadeK of the card's height from the bottom edge) with the card's ink, and comes back down as it
+			// fades.
+			float ShadeH = Hud::BottomShadeH * P.S;
+			const float CardA = ftcore::uiLoneCardAlpha(Lone);
+			if (CardA > 0.f)
+			{
+				ShadeH = FMath::Lerp(ShadeH, FMath::Max(ShadeH, (Size.Y - LoneCardTop(Size, P.S)) * Hud::LoneShadeK), CardA);
+			}
+			Mesh.Band(0.f, Size.Y - ShadeH, Size.X, Size.Y, true, true, 1.f, Hud::BottomShade * TextAlpha(LeadFade.alpha),
 				Tok(UiToken::Backing, 1.f));
 		}
 		PaintWorld(P, Size);
 		PaintAim(P, Size);
 		PaintParty(P, Size);
+		PaintLone(P, Size);
 		PaintTop(P, Size);
 		PaintCall(P, Size);
 		PaintSecondLine(P, Size);
@@ -1536,6 +1609,18 @@ private:
 		WeightWord = kWeightUi.Get().ToUpper();
 		WeightW = TextWidth(WeightWord, NoteFont);
 		DebtWord = kDebtUi.Get().ToUpper();
+		LoneAloneWord = kLoneAloneUi.Get().ToUpper();
+		LoneEndedWord[0] = kLoneEndedGiftUi.Get().ToUpper();
+		LoneEndedWord[1] = kLoneEndedPartnerUi.Get().ToUpper();
+		// The Lone Carry's card: the title in the lead name's size, the heads and lines in the labels'.
+		LoneTitle = kLoneTitleUi.Get().ToUpper();
+		LoneGainHead = kLoneGainUi.Get().ToUpper();
+		LoneGiveHead = kLoneGiveUpUi.Get().ToUpper();
+		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiLoneLineKinds); ++I)
+		{
+			LoneLineWord[I] = kLoneLineUi[I]->Get().ToUpper();
+		}
+		bLoneCardBuilt = false; // its lines measured again in the new fonts
 		for (int32 I = 0; I < static_cast<int32>(UE_ARRAY_COUNT(kFirstUseUi)); ++I)
 		{
 			NoteWord[I] = kFirstUseUi[I] ? kFirstUseUi[I]->Get().ToUpper() : FString();
@@ -1708,6 +1793,104 @@ private:
 		}
 	}
 
+	static bool IsAttack(ftcore::ArenaAction Act)
+	{
+		return Act == ftcore::ArenaAction::Light || Act == ftcore::ArenaAction::Heavy || Act == ftcore::ArenaAction::Riposte
+			|| Act == ftcore::ArenaAction::Release;
+	}
+
+	// The Lone Carry (Core's UiLone): its card as the runner's bargain comes due, in full the first three times a save
+	// shows it (a first-use count) and its title alone after; its word in the lead's state slot while it lasts, and the
+	// end's word as the session reports it ended (a gift's or the partner's; the fight's own end shows nothing).
+	void TickLone(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, float DeltaTime)
+	{
+		const bool bFight = !Fight.over();
+		const bool bDue = bFight && Runner.IsLoneBargainDue();
+		const ftcore::ArenaAction Act = Fight.output().player.action;
+		ftcore::UiLoneInput In;
+		In.fight = bFight;
+		In.alone = bFight && Fight.lone();
+		In.began = bDue && !bLoneDueWas;
+		In.attack = IsAttack(Act) && Act != LoneActWas; // an attack's first tick: the press, not the swing held
+		const UFTFightSession* Session = Runner.GetSession();
+		In.endedBy = Session ? Session->Get().loneEndedBy() : ftcore::LoneEnd::None;
+		bLoneDueWas = bDue;
+		LoneActWas = Act;
+		const EUiStateShot Shot = UiStateShot();
+		if (In.began && Shot == EUiStateShot::None)
+		{
+			In.full = bTeaching && ftcore::uiFirstUseShow(FirstUse, ftcore::UiFirstUseItem::LoneCard);
+			if (In.full)
+			{
+				SaveTaught(Runner); // counted as it shows, once
+			}
+			LoneShown = Runner.GetLoneBargain();
+			bLoneCardBuilt = false;
+		}
+		ftcore::uiLoneStep(Lone, In, DeltaTime);
+		if (bFight && Shot != EUiStateShot::None)
+		{
+			HoldLoneShot(Runner, Fight, Shot);
+		}
+		if (Lone.card && !bLoneCardBuilt)
+		{
+			BuildLoneCard();
+		}
+	}
+
+	// A -UiStateShot still's Lone Carry, held each tick (never counted or saved).
+	void HoldLoneShot(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, EUiStateShot Shot)
+	{
+		Lone = ftcore::UiLone{};
+		switch (Shot)
+		{
+		case EUiStateShot::LoneCard:
+			if (!bLoneShotTerms)
+			{
+				bLoneShotTerms = true;
+				LoneShown = Runner.GetSession() && Fight.lone() ? Runner.GetLoneBargain() : ftcore::loneBargain(ftcore::LoneTuning{});
+				bLoneCardBuilt = false;
+			}
+			Lone.card = Lone.full = Lone.holding = true;
+			Lone.alone = true;
+			break;
+		case EUiStateShot::LoneAlone:
+			Lone.alone = true;
+			break;
+		case EUiStateShot::LoneEnded:
+			Lone.ended = ftcore::UiLoneWord::EndedGift;
+			Lone.endedLeft = ftcore::kUiLoneEndedShow;
+			break;
+		case EUiStateShot::None:
+			break;
+		}
+	}
+
+	// The card's lines from the terms it shows: each line's words and Core's figure, the left column's width. Built as the
+	// card begins and when the fonts change, never per frame.
+	void BuildLoneCard()
+	{
+		bLoneCardBuilt = true;
+		const ftcore::UiLoneCard Card = ftcore::uiLoneCard(LoneShown);
+		const auto LineText = [this](const ftcore::UiLoneCardLine& Of) -> FString
+		{
+			const FString& Words = LoneLineWord[static_cast<int32>(Of.kind)];
+			return Of.figure.empty() ? Words : Words + TEXT(" ") + FString(UTF8_TO_TCHAR(Of.figure.text));
+		};
+		LoneGainN = FMath::Min<int32>(Card.gainCount, static_cast<int32>(ftcore::kUiLoneGainMax));
+		LoneGiveN = FMath::Min<int32>(Card.giveCount, static_cast<int32>(ftcore::kUiLoneGiveMax));
+		LoneGainColW = TextWidth(LoneGainHead, NoteFont);
+		for (int32 I = 0; I < LoneGainN; ++I)
+		{
+			LoneGainText[I] = LineText(Card.gain[static_cast<size_t>(I)]);
+			LoneGainColW = FMath::Max(LoneGainColW, TextWidth(LoneGainText[I], NoteFont));
+		}
+		for (int32 I = 0; I < LoneGiveN; ++I)
+		{
+			LoneGiveText[I] = LineText(Card.give[static_cast<size_t>(I)]);
+		}
+	}
+
 	// Shows a control; the save is written only when that counted something.
 	void Teach(const UFTArenaRunner& Runner, ftcore::UiFirstUseItem Item)
 	{
@@ -1861,6 +2044,43 @@ private:
 	// is always kept, so nothing over it moves when it comes), the lead's hp line (the Debt beside it once a world reports
 	// one), the lead's name with the Load in it as gold and its state slot to the right, and the partner's row above.
 	// Under each name one line, its hp. No numbers. A hit drops the struck one's name 3 px, back over 0.15 s.
+	// The party rows' places (PaintParty draws them; the Lone Carry's card stands over them), from the bottom margin up:
+	// the guard row's foot on the margin, 8 px over its capitals the lead's hp line, 12 px over that the name's foot (so
+	// the RELEASE key cap, centred on its word's capitals, clears the line), and the partner's line 22 px over the name's
+	// capitals. On a lead switch the two rows trade places over kUiRowSwap (the lead's row comes down from the partner's
+	// place, the partner's goes up from the lead's), so the eye follows each name to its new seat.
+	struct FPartyRows
+	{
+		float GuardBase = 0.f, HpY = 0.f, NameBase = 0.f, PY = 0.f, PBase = 0.f;
+		bool bPartner = false;
+		float Top = 0.f; // the block's top, without a hit's dip: the higher name's box
+	};
+
+	FPartyRows PartyRows(const FVector2f& Size, float S) const
+	{
+		FPartyRows R;
+		const float GuardBase0 = Size.Y - Hud::Margin * S;
+		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (8.f + 0.5f * Hud::LeadHpW) * S;
+		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
+		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
+		const float SwapDy = FMath::SmoothStep(0.f, 1.f, RowSwap.left01) * (PY0 - HpY0);
+		R.GuardBase = GuardBase0 + SwapDy;
+		R.HpY = HpY0 + SwapDy;
+		const float NameRest = NameBase0 + SwapDy;
+		R.NameBase = NameRest + 3.f * S * LeadDip; // a hit drops the name, and its slot with it
+		const ftcore::ArenaHudPartner& Pa = View.now.partner;
+		R.bPartner = Pa.present && Budget.out.allowed(ftcore::UiMarkKind::Party) > 0;
+		R.PY = PY0 - SwapDy; // 22 px over the lead's name at rest (the lead's dip does not move it)
+		const float PRest = R.PY - (0.5f * Hud::PartnerHpW + 8.f) * S; // the partner's name, 8 px over its line
+		R.PBase = PRest + 3.f * S * PartnerDip;
+		R.Top = NameRest - LeadNameAsc;
+		if (R.bPartner)
+		{
+			R.Top = FMath::Min(R.Top, PRest - PartnerNameAsc);
+		}
+		return R;
+	}
+
 	void PaintParty(const FPainter& P, const FVector2f& Size) const
 	{
 		const ftcore::ArenaHudLead& L = View.now.lead;
@@ -1873,24 +2093,15 @@ private:
 		const float A = TextAlpha(LeadFade.alpha); // full ink at rest; fades only as the HUD goes
 		const float X0 = Hud::Margin * S;
 		const float Len = Hud::LeadLine * S;
-		// The rows' own places, from the bottom margin up: the guard row's foot on the margin, 8 px over its capitals the
-		// lead's hp line, 12 px over that the name's foot (so the RELEASE key cap, centred on its word's capitals, clears the
-		// line), and the partner's line 22 px over the name's capitals. On a lead switch the two rows trade places over
-		// kUiRowSwap (the lead's row comes down from the partner's place, the partner's goes up from the lead's), so the eye
-		// follows each name to its new seat.
-		const float GuardBase0 = Size.Y - Hud::Margin * S;
-		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (8.f + 0.5f * Hud::LeadHpW) * S;
-		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
-		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
-		const float SwapDy = FMath::SmoothStep(0.f, 1.f, RowSwap.left01) * (PY0 - HpY0);
-		const float GuardBase = GuardBase0 + SwapDy;
-		const float HpY = HpY0 + SwapDy;
-		const float NameBase = NameBase0 + SwapDy + 3.f * S * LeadDip; // a hit drops the name, and its slot with it
+		const FPartyRows Rows = PartyRows(Size, S);
+		const float GuardBase = Rows.GuardBase;
+		const float HpY = Rows.HpY;
+		const float NameBase = Rows.NameBase;
 		const ftcore::ArenaHudPartner& Pa = View.now.partner;
-		const bool bPartner = Pa.present && Budget.out.allowed(ftcore::UiMarkKind::Party) > 0;
+		const bool bPartner = Rows.bPartner;
 		const float PLen = Hud::PartnerLine * S;
-		const float PY = PY0 - SwapDy; // 22 px over the lead's name at rest (the lead's dip does not move it)
-		const float PBase = PY - (0.5f * Hud::PartnerHpW + 8.f) * S + 3.f * S * PartnerDip; // the partner's name, 8 px over its line
+		const float PY = Rows.PY;
+		const float PBase = Rows.PBase;
 
 		HpLine(X0, Len, HpY, Frac(L.hp, L.hpMax), HpLost.Was, Hud::LeadHpW, 201, S, A);
 		if (GuardShown())
@@ -1931,15 +2142,18 @@ private:
 				Clipped(E, BX, ClipTop, BandW, ClipH, [&] { E.Text(X0, NameTop, LeadName, GoldFont, Bright); });
 			}
 		}
-		// The state slot, right of the name on its baseline, one word that teaches the gauge every time: LOAD while some is
-		// held, RELEASE and its key once the Release is open, else nothing.
+		// The state slot, right of the name on its baseline, one word (Core's uiLeadWord): RELEASE and its key once the
+		// Release is open, else LOAD while some is held, else ALONE while the lead carries alone (or, for a moment after a
+		// gift or the partner ends it, ENDED: GIFT or ENDED: PARTNER in its place), else nothing.
 		const float SlotX = X0 + LeadNameW + 16.f * S;
-		switch (ftcore::uiLeadSlot(L))
+		const FLinearColor SlotC = Tok(UiToken::Ink, Hud::SlotInk * A);
+		const ftcore::UiLeadWord SlotWord = ftcore::uiLeadWord(ftcore::uiLeadSlot(L), ftcore::uiLoneWord(Lone));
+		switch (SlotWord)
 		{
-		case ftcore::UiLeadSlot::Load:
-			P.Text(SlotX, NameBase - NoteAsc, LoadWord, NoteFont, Tok(UiToken::Ink, Hud::SlotInk * A));
+		case ftcore::UiLeadWord::Load:
+			P.Text(SlotX, NameBase - NoteAsc, LoadWord, NoteFont, SlotC);
 			break;
-		case ftcore::UiLeadSlot::Release:
+		case ftcore::UiLeadWord::Release:
 			P.Text(SlotX, NameBase - NoteAsc, ReleaseWord, NoteFont, Gold);
 			if (!ReleaseKey.IsEmpty())
 			{
@@ -1947,7 +2161,14 @@ private:
 				KeyCap(P, SlotX + ReleaseWordW + 8.f * S + CapW * 0.5f, CapMid(NameBase, NoteAsc), CapW, ReleaseKey, ReleaseKeyW, Gold);
 			}
 			break;
-		case ftcore::UiLeadSlot::None:
+		case ftcore::UiLeadWord::Alone:
+			P.Text(SlotX, NameBase - NoteAsc, LoneAloneWord, NoteFont, SlotC);
+			break;
+		case ftcore::UiLeadWord::EndedGift:
+		case ftcore::UiLeadWord::EndedPartner:
+			P.Text(SlotX, NameBase - NoteAsc, LoneEndedWord[SlotWord == ftcore::UiLeadWord::EndedGift ? 0 : 1], NoteFont, SlotC);
+			break;
+		case ftcore::UiLeadWord::None:
 			break;
 		}
 
@@ -1968,6 +2189,54 @@ private:
 				P.Text(X0 + PartnerNameW + 16.f * S, PBase - NoteAsc, SharedWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * Po.alpha * A));
 			}
 		});
+	}
+
+	// The Lone Carry card's rows under its title: the heads and the longer column's lines (none for the title alone).
+	int32 LoneCardRows() const { return Lone.full ? 1 + FMath::Max(LoneGainN, LoneGiveN) : 0; }
+	float LoneLineStep(float S) const { return NoteAsc + Hud::LoneLineGap * S; }
+
+	// The card's top: its last line's foot LoneGap px over the party block.
+	float LoneCardTop(const FVector2f& Size, float S) const
+	{
+		const int32 N = LoneCardRows();
+		const float H = N > 0 ? LeadNameAsc + Hud::LoneTitleGap * S + static_cast<float>(N - 1) * LoneLineStep(S) + NoteAsc : LeadNameAsc;
+		return PartyRows(Size, S).Top - Hud::LoneGap * S - H;
+	}
+
+	// The Lone Carry's card as it begins: over the party block, left-aligned on its margin, no panel (the bottom shade
+	// rises under it). CARRYING ALONE in the lead name's size; in full, YOU GAIN and YOU GIVE UP over their columns, all in
+	// the labels' size: the gains from the bargain's fields, then what is given up, the gift's end last.
+	void PaintLone(const FPainter& P, const FVector2f& Size) const
+	{
+		const float CardA = ftcore::uiLoneCardAlpha(Lone);
+		if (CardA <= 0.f || !bLoneCardBuilt || Budget.out.allowed(ftcore::UiMarkKind::Lead) == 0 || View.now.lead.hpMax <= 0)
+		{
+			return;
+		}
+		const float S = P.S;
+		const float A = CardA * TextAlpha(LeadFade.alpha);
+		const float X0 = Hud::Margin * S;
+		const float TitleTop = LoneCardTop(Size, S);
+		P.Text(X0, TitleTop, LoneTitle, LeadNameFont, Tok(UiToken::Ink, A));
+		if (!Lone.full)
+		{
+			return;
+		}
+		const float Step = LoneLineStep(S);
+		const float HeadTop = TitleTop + LeadNameAsc + Hud::LoneTitleGap * S;
+		const float GiveX = X0 + LoneGainColW + Hud::LoneColGap * S;
+		const FLinearColor HeadC = Tok(UiToken::Ink, Hud::LoneHeadInk * A);
+		const FLinearColor LineC = Tok(UiToken::Ink, A);
+		P.Text(X0, HeadTop, LoneGainHead, NoteFont, HeadC);
+		P.Text(GiveX, HeadTop, LoneGiveHead, NoteFont, HeadC);
+		for (int32 I = 0; I < LoneGainN; ++I)
+		{
+			P.Text(X0, HeadTop + static_cast<float>(I + 1) * Step, LoneGainText[I], NoteFont, LineC);
+		}
+		for (int32 I = 0; I < LoneGiveN; ++I)
+		{
+			P.Text(GiveX, HeadTop + static_cast<float>(I + 1) * Step, LoneGiveText[I], NoteFont, LineC);
+		}
 	}
 
 	// The top: the boss as one line from a small oval, its hp over a hairline track with phase notches, the stagger's break
@@ -2795,6 +3064,20 @@ private:
 	bool bTeaching = false;   // a fight's teaching begun and not yet ended
 	bool bTaughtOnce = false; // this run has begun one
 	bool bSaveTaught = false; // what this fight teaches is written to the save
+	// The Lone Carry: Core's timing, the terms the card shows, the runner's bargain edge and the lead's action as of the
+	// last tick, and the card's words (built with the fonts) and lines (built from the terms).
+	ftcore::UiLone Lone;
+	ftcore::LoneBargain LoneShown;
+	bool bLoneDueWas = false;
+	ftcore::ArenaAction LoneActWas = ftcore::ArenaAction::Idle;
+	bool bLoneShotTerms = false; // a -UiStateShot card's terms taken
+	FString LoneAloneWord, LoneEndedWord[2]; // ALONE; ENDED: GIFT, ENDED: PARTNER
+	FString LoneTitle, LoneGainHead, LoneGiveHead;
+	FString LoneLineWord[ftcore::kUiLoneLineKinds];
+	FString LoneGainText[ftcore::kUiLoneGainMax], LoneGiveText[ftcore::kUiLoneGiveMax];
+	int32 LoneGainN = 0, LoneGiveN = 0;
+	float LoneGainColW = 0.f; // the left column: its head's width or its widest line's
+	bool bLoneCardBuilt = false;
 
 	FFoeMark Foes[UFTArenaRunner::MaxEnemies];
 	bool bLockOn = false;
