@@ -64,9 +64,17 @@ void AFTPlayerController::CreateInputObjects()
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_RightShoulder);
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_FaceButton_Left);
 
-	// Reading keys: the backlog, the mouse wheel, and skip (held).
+	// Reading keys: the backlog, the mouse wheel, and skip (held). The backlog's key comes from the binding table
+	// (B by default), so the table's validator keeps every other action off it.
 	BacklogAction = MakeAction(TEXT("IA_Backlog"));
-	MappingContext->MapKey(BacklogAction, EKeys::B);
+	for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+	{
+		const FKey& Key = FTInputBindings::Key(ftcore::InputAction::Backlog, Device);
+		if (Key.IsValid())
+		{
+			MappingContext->MapKey(BacklogAction, Key);
+		}
+	}
 	WheelUpAction = MakeAction(TEXT("IA_WheelUp"));
 	MappingContext->MapKey(WheelUpAction, EKeys::MouseScrollUp);
 	WheelDownAction = MakeAction(TEXT("IA_WheelDown"));

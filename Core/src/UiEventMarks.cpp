@@ -46,6 +46,10 @@ UiEventMark uiEventMark(ArenaEventType type) {
     case ArenaEventType::Reloaded:
     case ArenaEventType::DryPress:
     case ArenaEventType::SteppedBack: // an enemy's step back: no HUD need
+    case ArenaEventType::AllyStrike:  // the partner's (setPartner): no mark of their own
+    case ArenaEventType::AllyBlocked:
+    case ArenaEventType::AllyRose:
+    case ArenaEventType::TookOver:
     case ArenaEventType::BreakTell: return UiEventMark::None;
     }
     return UiEventMark::None;
