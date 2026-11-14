@@ -40,6 +40,7 @@
 #if !UE_BUILD_SHIPPING
 #include "ColorManagement/ColorSpace.h"
 #include "Components/SkyAtmosphereComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
 #include "HAL/IConsoleManager.h"
 #include "Materials/Material.h"
 #include "SceneInterface.h"
@@ -459,6 +460,11 @@ void AFTExploreCharacter::BeginPlay()
 			else
 			{
 				BuildStage(Arm, Boom->SocketOffset.Y);
+				// -ExploreNeutral (with -ExploreStage): a white studio for colour checks (before the fill, which copies the key).
+				if (FParse::Param(FCommandLine::Get(), TEXT("ExploreNeutral")))
+				{
+					NeutralStage();
+				}
 			}
 		}
 		// -ExploreFill=<ratio>: a soft shadowless fill opposite the sun, from the camera's elevation over the lead.
@@ -773,6 +779,82 @@ void AFTExploreCharacter::BuildStage(float Arm, float Side)
 	StageHidden = HideSceneryForStage();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: stage on (%s grey 0.18, roughness 0.9; backdrop %.0f cm behind, %.0f m wide, %.0f m tall; %d map primitives hidden)."),
 		bSurface ? TEXT("world surface") : TEXT("basic shape"), kBack, 2.0 * HalfWidth / 100.0, Top / 100.0, StageHidden);
+}
+
+void AFTExploreCharacter::NeutralStage()
+{
+	// Colour-true stills: every sun pure white (no temperature, the same lux) and out of the sky atmosphere, so it is
+	// neither warmed nor dimmed on its way down and lights no blue sky; the sky lights, the sky atmosphere and the height
+	// fog off, so nothing coloured fills the lead; and the camera's grade cleared (no white balance shift, tint, LUT,
+	// saturation, contrast, gamma or gain change), over every post-process volume. What is left is the white key, the
+	// white -ExploreFill and the grey stage's neutral bounce.
+	int32 Suns = 0, Skies = 0, Others = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UDirectionalLightComponent*> Lights(*It);
+		for (UDirectionalLightComponent* Sun : Lights)
+		{
+			if (!Sun || !Sun->IsVisible())
+			{
+				continue;
+			}
+			Sun->bUseTemperature = false;
+			Sun->SetLightColor(FLinearColor::White);
+			Sun->SetAtmosphereSunLight(false);
+			Sun->bCastCloudShadows = false;
+			Sun->MarkRenderStateDirty();
+			++Suns;
+		}
+		TInlineComponentArray<USkyLightComponent*> SkyLights(*It);
+		for (USkyLightComponent* Sky : SkyLights)
+		{
+			if (Sky && Sky->IsVisible())
+			{
+				Sky->SetVisibility(false);
+				++Skies;
+			}
+		}
+		TInlineComponentArray<USkyAtmosphereComponent*> Atmospheres(*It);
+		for (USkyAtmosphereComponent* Atmosphere : Atmospheres)
+		{
+			if (Atmosphere && Atmosphere->IsVisible())
+			{
+				Atmosphere->SetVisibility(false);
+				++Others;
+			}
+		}
+		TInlineComponentArray<UExponentialHeightFogComponent*> Fogs(*It);
+		for (UExponentialHeightFogComponent* Fog : Fogs)
+		{
+			if (Fog && Fog->IsVisible())
+			{
+				Fog->SetVisibility(false);
+				++Others;
+			}
+		}
+	}
+	FPostProcessSettings& Post = Camera->PostProcessSettings;
+	Post.bOverride_WhiteTemp = true;
+	Post.WhiteTemp = 6500.f;
+	Post.bOverride_WhiteTint = true;
+	Post.WhiteTint = 0.f;
+	Post.bOverride_ColorSaturation = true;
+	Post.ColorSaturation = FVector4(1.0, 1.0, 1.0, 1.0);
+	Post.bOverride_ColorContrast = true;
+	Post.ColorContrast = FVector4(1.0, 1.0, 1.0, 1.0);
+	Post.bOverride_ColorGamma = true;
+	Post.ColorGamma = FVector4(1.0, 1.0, 1.0, 1.0);
+	Post.bOverride_ColorGain = true;
+	Post.ColorGain = FVector4(1.0, 1.0, 1.0, 1.0);
+	Post.bOverride_ColorOffset = true;
+	Post.ColorOffset = FVector4(0.0, 0.0, 0.0, 0.0);
+	Post.bOverride_SceneColorTint = true;
+	Post.SceneColorTint = FLinearColor::White;
+	Post.bOverride_ColorGradingIntensity = true;
+	Post.ColorGradingIntensity = 0.f;
+	Camera->PostProcessBlendWeight = 1.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: neutral stage (%d suns white, out of the atmosphere; %d sky lights and %d atmospheres/fogs off; grade cleared)."),
+		Suns, Skies, Others);
 }
 
 int32 AFTExploreCharacter::HideSceneryForStage()

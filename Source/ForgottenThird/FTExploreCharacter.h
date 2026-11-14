@@ -293,6 +293,7 @@ private:
 	// -ExploreStage: a 0.18 grey floor, sweep and backdrop round the lead, the map's geometry hidden (see the .cpp).
 	void BuildStage(float Arm, float Side);
 	int32 HideSceneryForStage();
+	void NeutralStage();
 	void PlaceStage(USceneComponent& Stage);
 	// -ExploreFill=<ratio>: a shadowless directional fill at ratio x the key sun's illuminance on the ground.
 	void AddFill(float Ratio, float Pitch);

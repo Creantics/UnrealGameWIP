@@ -14,17 +14,16 @@
 // - Twill: a 2/1 twill, diagonal wales of yarn floats; `repeats` is the number of yarns along a side.
 // - Knit: single jersey, columns of V-shaped loops; `repeats` is the number of columns along a side
 //   (rows are 1.3 times as many, so a loop is taller than wide).
-// - Pore: a near-flat skin with small pits pressed into it (grain read as dimples, not as cells with walls
-//   between them). One pit per cell of a `repeats` x `repeats` grid at most: jittered, some cells empty, a
-//   random radius and depth, a slightly elliptical, turned outline and a soft rounded bowl, the lookup
-//   domain-warped so no two neighbours match; a radius never reaches past 0.38 of the way to the nearest
-//   neighbour, so pits never merge. A very faint undulation keeps the skin between them from being dead
-//   flat. Made for garmentTileCentimetres(Pore) = 1.6 cm per repeat: with the default 24 cells, pits of
-//   0.3 to 0.6 mm across about 0.67 mm apart.
-// - Crease: a sparse net of fine crease lines running along the tile's v axis (down the image), `repeats`
-//   lines across a side, spaced unevenly (2.1 to 3.9 mm at the intended 2.4 cm), each wandering a little,
-//   broken by gaps, varying in depth and width (about 0.15 to 0.25 mm), plus a few short connectors at a
-//   shallow angle between neighbouring lines. `repeats` must be even.
+// - Pore: a skin with dense pits pressed into it, so the skin between them reads as pebbles. The pits are a
+//   Poisson-disk set (no two centres closer than 0.75 of the mean spacing, gaps filled), `repeats` mean
+//   spacings along a side; radius 0.25 to 0.375 of the mean spacing, one pit in five 0.4 to 0.45, a slightly
+//   wobbly outline, a rounded bowl, and any two rims kept apart so pits never merge. The skin domes a little
+//   between them. Made for garmentTileCentimetres(Pore) = 1.6 cm: with the default 20, centres 0.6 to 1.0 mm
+//   apart and pits of 0.4 to 0.9 mm across.
+// - Crease: `repeats` short fold creases on a 6 cm tile, each 5 to 30 mm long, running along the tile's u axis
+//   (across the image) and wandering within +-30 degrees of it, about a third with a branch at 25 to 40 degrees;
+//   grooves 0.3 to 0.6 mm wide, tapered at both ends. Each crease has a rank in [0, 1) (garmentCreaseRank), so
+//   a master can show only the creases whose rank is under a local fold density.
 //
 // Every tile wraps at its edges. The same settings always give the same tile. Building a tile
 // allocates (load time only).
@@ -48,12 +47,36 @@ struct GarmentTileSettings {
 // The settings each tile is built with for the garment masters.
 FTCORE_API GarmentTileSettings garmentTileDefaults(GarmentTile tile);
 
-// Centimetres per repeat the tile is drawn for (its features have their stated real sizes there): Pore 1.6,
-// Crease 2.4; 0 for tiles drawn without a fixed size (Leather, Twill, Knit), which each substance scales.
+// Centimetres per tile the tile is drawn for (its features have their stated real sizes there): Pore 1.6,
+// Crease 6; 0 for tiles drawn without a fixed size (Leather, Twill, Knit), which each substance scales.
 FTCORE_API float garmentTileCentimetres(GarmentTile tile);
 
 // Fills height with size * size values in [0, 1], row-major. Returns false (height empty) when the
 // settings are out of range.
 FTCORE_API bool makeGarmentHeight(GarmentTile tile, const GarmentTileSettings& settings, std::vector<float>& height);
+
+// A pit of the Pore tile, in millimetres on the tile drawn at garmentTileCentimetres(Pore).
+struct GarmentPore {
+    float x = 0.f, y = 0.f;
+    float radius = 0.f;  // before the outline wobble (at most 15 %)
+    bool large = false;  // one of the larger one-in-five
+};
+
+// A crease of the Crease tile: its length (mm), its largest turn from the tile's u axis (degrees) and whether it
+// is a branch off another crease.
+struct GarmentCrease {
+    float length = 0.f;
+    float maxAngle = 0.f;
+    bool branch = false;
+};
+
+// The Pore tile's pits and the Crease tile's creases, for checks. Return false (empty) when the settings are out
+// of range.
+FTCORE_API bool garmentPores(const GarmentTileSettings& settings, std::vector<GarmentPore>& pores);
+FTCORE_API bool garmentCreases(const GarmentTileSettings& settings, std::vector<GarmentCrease>& creases);
+
+// Per pixel of the Crease tile (size * size, row-major): the rank of the deepest crease there, 1 where there is
+// none. The master stores it beside the height so it can fade creases in by local fold density.
+FTCORE_API bool garmentCreaseRank(const GarmentTileSettings& settings, std::vector<float>& rank);
 
 } // namespace ftcore

@@ -214,113 +214,150 @@ TEST_CASE("garment tiles go through the skin texture packers") {
     CHECK(mask.size() == normal.size());
 }
 
-TEST_CASE("pore grain is dimples in one skin, where the old leather grain is walled cells") {
-    // Thresholded at mid-height, the pore tile's low set is many small separate pits and its high set (the skin) one
-    // region, wrapping. The old Leather tile is the other way round: its grooves wall the high set off into cells
-    // (the closed-cell crackle the pore tile replaces).
+TEST_CASE("pore pits are dense: 0.6 to 1.0 mm apart, one in five larger") {
+    const GarmentTileSettings s = garmentTileDefaults(GarmentTile::Pore);
+    std::vector<GarmentPore> pores;
+    REQUIRE(garmentPores(s, pores));
+    const double tile = 10.0 * garmentTileCentimetres(GarmentTile::Pore);
+    REQUIRE(pores.size() > 200);
+    size_t inBand = 0, large = 0;
+    double rLarge = 0.0, rSmall = 0.0;
+    for (size_t i = 0; i < pores.size(); ++i) {
+        double nearest = 1e9;
+        for (size_t j = 0; j < pores.size(); ++j) {
+            if (i == j) {
+                continue;
+            }
+            double dx = std::fabs(pores[i].x - pores[j].x), dy = std::fabs(pores[i].y - pores[j].y);
+            dx = std::min(dx, tile - dx);  // the tile wraps
+            dy = std::min(dy, tile - dy);
+            nearest = std::min(nearest, std::sqrt(dx * dx + dy * dy));
+        }
+        inBand += nearest >= 0.6 - 1e-4 && nearest <= 1.0 ? 1 : 0;
+        if (pores[i].large) {
+            ++large;
+            rLarge += pores[i].radius;
+        } else {
+            rSmall += pores[i].radius;
+        }
+    }
+    const double n = static_cast<double>(pores.size());
+    rLarge /= std::max(static_cast<double>(large), 1.0);
+    rSmall /= std::max(n - static_cast<double>(large), 1.0);
+    MESSAGE("pore tile: " << pores.size() << " pits, " << inBand / n << " with the nearest 0.6 to 1.0 mm away, "
+                          << large / n << " large (mean radius " << rLarge << " mm against " << rSmall << " mm)");
+    CHECK(inBand / n >= 0.9);
+    CHECK(large / n >= 0.15);
+    CHECK(large / n <= 0.25);
+    CHECK(rLarge > 1.15 * rSmall);
+}
+
+TEST_CASE("pore pits are separate dimples in one skin") {
+    // Thresholded at mid-height, every pit is its own low region (no two merge, none lost) and the skin between
+    // them one high region, wrapping. The old Leather tile is the other way round: its grooves wall the high set
+    // off into cells.
     const GarmentTileSettings s = garmentTileDefaults(GarmentTile::Pore);
     REQUIRE(s.size == 512);
     std::vector<float> h;
     REQUIRE(makeGarmentHeight(GarmentTile::Pore, s, h));
+    std::vector<GarmentPore> pores;
+    REQUIRE(garmentPores(s, pores));
     const std::vector<size_t> pits = regions(below(h, 0.5f, true), s.size);
     const std::vector<size_t> skin = regions(below(h, 0.5f, false), s.size);
-    // The largest pit outline: radius 0.45 cells, 1.2 times that on its long axis.
-    const double cell = static_cast<double>(s.size) / s.repeats;
-    const double maxPitArea = 3.14159265 * (0.45 * 1.2 * cell) * (0.45 / 1.2 * cell);
-    const size_t largest = *std::max_element(pits.begin(), pits.end());
-    MESSAGE("pore tile: " << pits.size() << " pits at mid-height, largest " << largest << " px (cap " << maxPitArea
-                          << "), skin regions " << skin.size());
-    CHECK(pits.size() > 100);
-    CHECK(static_cast<double>(largest) <= maxPitArea);
+    size_t low = 0;
+    for (float v : h) {
+        low += v < 0.5f ? 1 : 0;
+    }
+    const double lowShare = static_cast<double>(low) / static_cast<double>(h.size());
+    MESSAGE("pore tile: " << pits.size() << " pits at mid-height of " << pores.size() << " sites, skin regions "
+                          << skin.size() << ", " << lowShare << " of the tile below mid-height");
+    CHECK(static_cast<double>(pits.size()) >= 0.95 * static_cast<double>(pores.size()));
+    CHECK(static_cast<double>(pits.size()) <= 1.02 * static_cast<double>(pores.size()));
     CHECK(skin.size() == 1);
+    CHECK(lowShare > 0.04);  // dense enough that the skin between pits reads as pebbles
+    CHECK(lowShare < 0.3);
 
     const GarmentTileSettings old = garmentTileDefaults(GarmentTile::Leather);
     std::vector<float> l;
     REQUIRE(makeGarmentHeight(GarmentTile::Leather, old, l));
     const std::vector<size_t> cells = regions(below(l, 0.5f, false), old.size);
-    MESSAGE("old leather tile: high set in " << cells.size() << " separate regions");
     CHECK(cells.size() > 20);
 }
 
-TEST_CASE("pore pits are sparse and the skin between them stays near the top") {
-    const GarmentTileSettings s = garmentTileDefaults(GarmentTile::Pore);
-    std::vector<float> h;
-    REQUIRE(makeGarmentHeight(GarmentTile::Pore, s, h));
-    size_t skin = 0, low = 0;
-    for (float v : h) {
-        skin += v > 0.85f ? 1 : 0;
-        low += v < 0.5f ? 1 : 0;
+TEST_CASE("creases are 5 to 30 mm long, within 30 degrees of u, some branching") {
+    const GarmentTileSettings s = garmentTileDefaults(GarmentTile::Crease);
+    std::vector<GarmentCrease> creases;
+    REQUIRE(garmentCreases(s, creases));
+    size_t mains = 0, branches = 0, shortOnes = 0;
+    float longest = 0.f, shortest = 1e9f, widest = 0.f;
+    for (const GarmentCrease& c : creases) {
+        if (c.branch) {
+            ++branches;
+            continue;
+        }
+        ++mains;
+        longest = std::max(longest, c.length);
+        shortest = std::min(shortest, c.length);
+        widest = std::max(widest, c.maxAngle);
+        shortOnes += c.length < 15.f ? 1 : 0;
     }
-    const double n = static_cast<double>(h.size());
-    CHECK(skin / n > 0.6);  // mostly skin: dimples, not a cratered field
-    CHECK(low / n > 0.01);
-    CHECK(low / n < 0.15);
+    MESSAGE("crease tile: " << mains << " creases, " << branches << " branches, " << shortest << " to " << longest
+                            << " mm, widest turn " << widest << " degrees");
+    CHECK(mains == s.repeats);
+    CHECK(shortest >= 5.f);
+    CHECK(longest <= 30.f);
+    CHECK(widest <= 30.f + 1e-3f);
+    CHECK(shortOnes > mains / 2);  // more short than long
+    CHECK(branches > mains / 5);
+    CHECK(branches < mains / 2);
 }
 
-TEST_CASE("crease lines run along v, 2 to 4 mm apart, broken by gaps") {
+TEST_CASE("crease tile: grooves run along u, sparse, each pixel ranked") {
     const GarmentTileSettings s = garmentTileDefaults(GarmentTile::Crease);
-    REQUIRE(s.size == 512);
-    std::vector<float> h;
+    REQUIRE(s.size == 1024);
+    std::vector<float> h, rank;
     REQUIRE(makeGarmentHeight(GarmentTile::Crease, s, h));
+    REQUIRE(garmentCreaseRank(s, rank));
+    REQUIRE(rank.size() == h.size());
     const uint32_t n = s.size;
-    // Along v the height barely changes; across u it steps at every line.
+    // Across v the height steps at every groove; along u it barely changes.
     double du = 0.0, dv = 0.0;
     for (uint32_t i = 0; i < n; ++i) {
         du += columnStep(h, n, i) / n;
         dv += rowStep(h, n, i) / n;
     }
-    CHECK(du > 4.0 * dv);
-    // Lines cut below 0.7 in each row: how many, and how far apart (mm, the tile drawn at 2.4 cm).
-    const double mmPerPx = 10.0 * garmentTileCentimetres(GarmentTile::Crease) / n;
-    std::vector<double> spacing;
-    double lines = 0.0;
-    size_t cut = 0;
-    for (uint32_t y = 0; y < n; ++y) {
-        std::vector<double> centres;
-        uint32_t start = 0;
-        while (start < n && h[y * n + start] < 0.7f) {
-            ++start;  // begin outside a line, so no run is split by the tile edge
-        }
-        REQUIRE(start < n);
-        for (uint32_t k = 0; k < n; ++k) {
-            const uint32_t x = (start + k) % n;
-            if (h[y * n + x] >= 0.7f) {
-                continue;
-            }
-            uint32_t len = 0;
-            while (k < n && h[y * n + (start + k) % n] < 0.7f) {
-                ++len;
-                ++k;
-            }
-            cut += len;
-            centres.push_back(static_cast<double>(start + k) - 0.5 * (len + 1));
-        }
-        lines += static_cast<double>(centres.size());
-        for (size_t c = 0; c < centres.size(); ++c) {
-            const double next = c + 1 < centres.size() ? centres[c + 1] : centres[0] + n;
-            spacing.push_back((next - centres[c]) * mmPerPx);
+    size_t cut = 0, rankedCut = 0, ranked = 0;
+    for (size_t i = 0; i < h.size(); ++i) {
+        CHECK_FALSE(rank[i] < 0.f);
+        CHECK_FALSE(rank[i] > 1.f);
+        ranked += rank[i] < 1.f ? 1 : 0;
+        if (h[i] < 0.7f) {
+            ++cut;
+            rankedCut += rank[i] < 1.f ? 1 : 0;
         }
     }
-    lines /= n;
-    std::sort(spacing.begin(), spacing.end());
-    const double median = spacing[spacing.size() / 2];
     const double share = static_cast<double>(cut) / static_cast<double>(h.size());
-    MESSAGE("crease tile: " << lines << " lines a row of " << s.repeats << ", median spacing " << median << " mm, "
-                            << share << " of the tile cut");
-    CHECK(lines > 0.5 * s.repeats);  // the gaps take some lines out of a row
-    CHECK(lines <= s.repeats + 1.0);  // a connector adds at most one
-    CHECK(median >= 2.0);
-    CHECK(median <= 5.0);
-    CHECK(share > 0.01);
-    CHECK(share < 0.1);  // sparse: fine lines, not a grid
+    MESSAGE("crease tile: step across v " << dv << " against along u " << du << ", " << share << " of the tile cut");
+    CHECK(dv > 1.5 * du);
+    CHECK(share > 0.005);
+    CHECK(share < 0.12);  // every crease shown, as at the elbow; the fold map hides most of them elsewhere
+    CHECK(rankedCut == cut);
+    // the rank reaches past each groove (its soft edge keeps its crease's rank) but leaves most of the skin unranked
+    CHECK(ranked > cut + cut / 2);
+    CHECK(static_cast<double>(ranked) < 0.5 * static_cast<double>(h.size()));
 }
 
-TEST_CASE("crease tiles need an even line count") {
-    GarmentTileSettings s = garmentTileDefaults(GarmentTile::Crease);
+TEST_CASE("crease tiles take any count; the tile sizes") {
+    GarmentTileSettings s = small(GarmentTile::Crease);
     s.repeats = 7;
     std::vector<float> h;
+    CHECK(makeGarmentHeight(GarmentTile::Crease, s, h));
+    s.repeats = 0;
     CHECK_FALSE(makeGarmentHeight(GarmentTile::Crease, s, h));
+    std::vector<float> rank;
+    CHECK_FALSE(garmentCreaseRank(s, rank));
+    CHECK(rank.empty());
     CHECK(garmentTileCentimetres(GarmentTile::Pore) == doctest::Approx(1.6f));
-    CHECK(garmentTileCentimetres(GarmentTile::Crease) == doctest::Approx(2.4f));
+    CHECK(garmentTileCentimetres(GarmentTile::Crease) == doctest::Approx(6.f));
     CHECK(garmentTileCentimetres(GarmentTile::Leather) == 0.f);
 }

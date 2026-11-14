@@ -120,211 +120,297 @@ float knitAt(const GarmentTileSettings& s, float u, float v) {
 }
 
 // --- Pore -------------------------------------------------------------------------------------------------
-// Pit sizes in cell units, for the intended tile (1.6 cm, 24 cells: 0.667 mm a cell): radius 0.225 to 0.45 is a
-// pit of 0.3 to 0.6 mm across.
-constexpr float kPoreRadiusMin = 0.225f;
-constexpr float kPoreRadiusMax = 0.45f;
-constexpr float kPoreNeighbourShare = 0.38f;  // a radius reaches at most this share of the way to the nearest pit
-constexpr float kPoreJitter = 0.7f;           // site offset range across a cell (+-0.35)
-constexpr float kPorePresence = 0.84f;        // share of cells with a pit
+// Pits on the tile (a torus) as a Poisson-disk set: no two centres closer than kPoreMinSpacing of the mean
+// spacing (tile / repeats). Darts first, then a fill pass over a fine jittered lattice, so the set is close to
+// maximal and every pit has a neighbour within about 1.25 of the mean spacing. Sizes are in mean-spacing units,
+// so the tile scales with `repeats`: radius 0.25 to 0.375 (0.2 to 0.3 mm at the intended 0.8 mm spacing), one pit
+// in five 0.4 to 0.45 (0.32 to 0.36 mm), and any two pits shrunk together until their rims keep kPoreRimGap apart.
+constexpr float kPoreMinSpacing = 0.75f;  // closest two centres may be, of the mean spacing (0.6 mm at 0.8)
+constexpr float kPoreRimGap = 0.075f;     // skin kept between two rims, of the mean spacing
+constexpr float kPoreLargeShare = 0.2f;   // one pit in five is larger
+constexpr float kPoreWobbleMax = 0.15f;   // outline wobble at most this share of the radius
 
 struct PoreSite {
-    float x = 0.f, y = 0.f;  // offset inside its cell, 0..1
-    float radius = 0.f;      // cell units; 0 = no pit in this cell
+    float x = 0.f, y = 0.f;  // tile units, 0..1
+    float radius = 0.f;      // tile units, before the wobble
     float depth = 0.f;
-    float cosA = 1.f, sinA = 0.f, stretch = 1.f;  // the outline: an ellipse turned by A, axes r * stretch and r / stretch
+    float a1 = 0.f, p1 = 0.f, a2 = 0.f, p2 = 0.f;  // outline r (1 + a1 sin(2 theta + p1) + a2 sin(3 theta + p2))
+    bool large = false;
 };
 
-// One site per cell of an n x n grid that wraps; radii trimmed so no pit reaches a neighbour.
-std::vector<PoreSite> poreSites(const GarmentTileSettings& s) {
-    const uint32_t n = s.repeats;
-    std::vector<PoreSite> sites(static_cast<size_t>(n) * n);
-    for (uint32_t j = 0; j < n; ++j) {
-        for (uint32_t i = 0; i < n; ++i) {
-            PoreSite& p = sites[static_cast<size_t>(j) * n + i];
-            p.x = 0.5f + (hash01(s.seed, 101, i, j) - 0.5f) * kPoreJitter;
-            p.y = 0.5f + (hash01(s.seed, 102, i, j) - 0.5f) * kPoreJitter;
-            if (hash01(s.seed, 103, i, j) >= kPorePresence) {
-                continue;
-            }
-            const float r = hash01(s.seed, 104, i, j);
-            p.radius = kPoreRadiusMin + (kPoreRadiusMax - kPoreRadiusMin) * r * r;  // more small pits than big ones
-            p.depth = 0.6f + 0.4f * hash01(s.seed, 105, i, j);
-            const float a = kPi * hash01(s.seed, 106, i, j);
-            p.cosA = std::cos(a);
-            p.sinA = std::sin(a);
-            p.stretch = 1.f + 0.2f * hash01(s.seed, 107, i, j);
-        }
+float wrapSigned(float d) { return d - std::round(d); }
+
+// Buckets of site indices on a g x g grid that wraps.
+struct PoreBuckets {
+    uint32_t g = 1;
+    std::vector<std::vector<uint32_t>> cells;
+    explicit PoreBuckets(float cellSize)
+        : g(std::max(1u, static_cast<uint32_t>(1.f / cellSize))), cells(static_cast<size_t>(g) * g) {}
+    uint32_t cellOf(float c) const {
+        const float w = c - std::floor(c);
+        return std::min(static_cast<uint32_t>(w * static_cast<float>(g)), g - 1);
     }
-    const int ni = static_cast<int>(n);
-    std::vector<float> trimmed(sites.size(), 0.f);
-    for (int j = 0; j < ni; ++j) {
-        for (int i = 0; i < ni; ++i) {
-            const PoreSite& p = sites[static_cast<size_t>(j) * n + static_cast<size_t>(i)];
-            if (p.radius <= 0.f) {
-                continue;
-            }
-            float nearest = 9.f;
-            for (int dy = -2; dy <= 2; ++dy) {
-                for (int dx = -2; dx <= 2; ++dx) {
-                    if (dx == 0 && dy == 0) {
-                        continue;
+    const std::vector<uint32_t>& at(int cx, int cy) const {
+        const int gi = static_cast<int>(g);
+        return cells[static_cast<size_t>((cy % gi + gi) % gi) * g + static_cast<size_t>((cx % gi + gi) % gi)];
+    }
+    void add(const PoreSite& p, uint32_t index) { cells[static_cast<size_t>(cellOf(p.y)) * g + cellOf(p.x)].push_back(index); }
+};
+
+std::vector<PoreSite> poreSites(const GarmentTileSettings& s, PoreBuckets& buckets) {
+    const float fn = static_cast<float>(s.repeats);
+    const float dmin = kPoreMinSpacing / fn;
+    std::vector<PoreSite> sites;
+    const auto fits = [&](float x, float y) {
+        const int cx = static_cast<int>(buckets.cellOf(x)), cy = static_cast<int>(buckets.cellOf(y));
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (uint32_t k : buckets.at(cx + dx, cy + dy)) {
+                    const float ex = wrapSigned(x - sites[k].x), ey = wrapSigned(y - sites[k].y);
+                    if (ex * ex + ey * ey < dmin * dmin) {
+                        return false;
                     }
-                    const int gx = i + dx, gy = j + dy;
-                    const PoreSite& q = sites[static_cast<size_t>((gy % ni + ni) % ni) * n + static_cast<size_t>((gx % ni + ni) % ni)];
-                    if (q.radius <= 0.f) {
-                        continue;
-                    }
-                    const float ex = static_cast<float>(dx) + q.x - p.x, ey = static_cast<float>(dy) + q.y - p.y;
-                    nearest = std::min(nearest, std::sqrt(ex * ex + ey * ey));
                 }
             }
-            // The outline's long axis is r * stretch: trim that, not r.
-            const float r = std::min(p.radius, kPoreNeighbourShare * nearest / p.stretch);
-            trimmed[static_cast<size_t>(j) * n + static_cast<size_t>(i)] = r < 0.8f * kPoreRadiusMin ? 0.f : r;
+        }
+        return true;
+    };
+    const auto place = [&](float x, float y) {
+        if (!fits(x, y)) {
+            return;
+        }
+        PoreSite p;
+        p.x = x;
+        p.y = y;
+        buckets.add(p, static_cast<uint32_t>(sites.size()));
+        sites.push_back(p);
+    };
+    const uint32_t darts = 40u * s.repeats * s.repeats;
+    for (uint32_t k = 0; k < darts; ++k) {
+        place(hash01(s.seed, 101, k, 0), hash01(s.seed, 102, k, 0));
+    }
+    const uint32_t lattice = 8u * s.repeats;  // the fill pass: every gap that still holds a pit gets one
+    for (uint32_t j = 0; j < lattice; ++j) {
+        for (uint32_t i = 0; i < lattice; ++i) {
+            place((static_cast<float>(i) + hash01(s.seed, 103, i, j)) / static_cast<float>(lattice),
+                  (static_cast<float>(j) + hash01(s.seed, 104, i, j)) / static_cast<float>(lattice));
         }
     }
-    for (size_t k = 0; k < sites.size(); ++k) {
-        sites[k].radius = trimmed[k];  // trimmed against the untrimmed set, so a dropped pit only frees room
+    for (uint32_t k = 0; k < sites.size(); ++k) {
+        PoreSite& p = sites[k];
+        p.large = hash01(s.seed, 105, k, 0) < kPoreLargeShare;
+        const float r = hash01(s.seed, 106, k, 0);
+        p.radius = (p.large ? 0.4f + 0.05f * r : 0.25f + 0.125f * r) / fn;
+        p.depth = p.large ? 0.85f + 0.15f * hash01(s.seed, 107, k, 0) : 0.6f + 0.3f * hash01(s.seed, 107, k, 0);
+        p.a1 = 0.6f * kPoreWobbleMax * hash01(s.seed, 108, k, 0);
+        p.a2 = 0.4f * kPoreWobbleMax * hash01(s.seed, 109, k, 0);
+        p.p1 = 2.f * kPi * hash01(s.seed, 110, k, 0);
+        p.p2 = 2.f * kPi * hash01(s.seed, 111, k, 0);
+    }
+    // Any two pits whose outlines (at their widest) would come within the rim gap shrink together, in proportion,
+    // so the large ones stay larger.
+    const float gap = kPoreRimGap / fn;
+    for (uint32_t k = 0; k < sites.size(); ++k) {
+        const int cx = static_cast<int>(buckets.cellOf(sites[k].x)), cy = static_cast<int>(buckets.cellOf(sites[k].y));
+        for (int dy = -2; dy <= 2; ++dy) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                for (uint32_t m : buckets.at(cx + dx, cy + dy)) {
+                    if (m <= k) {
+                        continue;
+                    }
+                    PoreSite& p = sites[k];
+                    PoreSite& q = sites[m];
+                    const float ex = wrapSigned(p.x - q.x), ey = wrapSigned(p.y - q.y);
+                    const float d = std::sqrt(ex * ex + ey * ey);
+                    const float rp = p.radius * (1.f + p.a1 + p.a2), rq = q.radius * (1.f + q.a1 + q.a2);
+                    if (rp + rq + gap > d) {
+                        const float scale = std::max(d - gap, 0.f) / (rp + rq);
+                        p.radius *= scale;
+                        q.radius *= scale;
+                    }
+                }
+            }
+        }
     }
     return sites;
 }
 
-float poreAt(const GarmentTileSettings& s, const std::vector<PoreSite>& sites, float u, float v) {
-    const uint32_t n = s.repeats;
-    const float fn = static_cast<float>(n);
-    // Warp the lookup (periodic noise, so the tile still wraps): pits drift off the grid and their outlines go
-    // irregular, a coarse sway plus a finer wobble.
-    const uint32_t coarse = std::max(n / 4, 1u), fine = std::max(n / 2, 1u);
-    const float x = u * fn + 0.5f * (tileNoise(s.seed, 110, coarse, u, v) - 0.5f) + 0.25f * (tileNoise(s.seed, 112, fine, u, v) - 0.5f);
-    const float y = v * fn + 0.5f * (tileNoise(s.seed, 111, coarse, u, v) - 0.5f) + 0.25f * (tileNoise(s.seed, 113, fine, u, v) - 0.5f);
-    const int cx = static_cast<int>(std::floor(x)), cy = static_cast<int>(std::floor(y));
-    const int ni = static_cast<int>(n);
+// Height at (u, v): 1 on the skin, which domes a little toward the middle of each patch between pits (the
+// pebbles), less a paraboloid bowl in each pit, with a hard rim so the pit's outline reads.
+float poreAt(const GarmentTileSettings& s, const std::vector<PoreSite>& sites, const PoreBuckets& buckets, float u, float v) {
+    const float fn = static_cast<float>(s.repeats);
+    const uint32_t warp = std::max(s.repeats / 2, 1u);
+    const float x = u + 0.04f / fn * (tileNoise(s.seed, 112, warp, u, v) - 0.5f);
+    const float y = v + 0.04f / fn * (tileNoise(s.seed, 113, warp, u, v) - 0.5f);
+    const int cx = static_cast<int>(buckets.cellOf(x)), cy = static_cast<int>(buckets.cellOf(y));
     float pit = 0.f;
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-            const int gx = cx + dx, gy = cy + dy;
-            const PoreSite& p = sites[static_cast<size_t>((gy % ni + ni) % ni) * n + static_cast<size_t>((gx % ni + ni) % ni)];
-            if (p.radius <= 0.f) {
-                continue;
-            }
-            const float ex = x - (static_cast<float>(gx) + p.x), ey = y - (static_cast<float>(gy) + p.y);
-            const float a = (ex * p.cosA + ey * p.sinA) / (p.radius * p.stretch);
-            const float b = (ey * p.cosA - ex * p.sinA) * p.stretch / p.radius;
-            const float t2 = a * a + b * b;
-            if (t2 < 1.f) {
-                const float bowl = (1.f - t2) * (1.f - t2);  // soft at the rim, rounded at the floor
-                pit = std::max(pit, p.depth * bowl);
+    float edge = 9.f;  // distance to the nearest rim, mean-spacing units (negative inside a pit)
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            for (uint32_t k : buckets.at(cx + dx, cy + dy)) {
+                const PoreSite& p = sites[k];
+                const float ex = wrapSigned(x - p.x), ey = wrapSigned(y - p.y);
+                const float dist = std::sqrt(ex * ex + ey * ey);
+                if (dist > 1.2f / fn || p.radius <= 0.f) {
+                    continue;
+                }
+                const float theta = std::atan2(ey, ex);
+                const float r = p.radius * (1.f + p.a1 * std::sin(2.f * theta + p.p1) + p.a2 * std::sin(3.f * theta + p.p2));
+                edge = std::min(edge, (dist - r) * fn);
+                const float t = dist / r;
+                if (t < 1.f) {
+                    pit = std::max(pit, p.depth * (1.f - t * t));
+                }
             }
         }
     }
-    // The skin between: a very faint, broad undulation and a finer one.
-    const float skin = 0.05f * (tileNoise(s.seed, 120, std::max(n / 8, 1u), u, v) - 0.5f) +
-                       0.03f * (tileNoise(s.seed, 121, std::max(n / 2, 1u), u, v) - 0.5f) +
-                       0.015f * (tileNoise(s.seed, 122, n * 3, u, v) - 0.5f);
-    return 1.f + skin - pit;
+    const float dome = 0.15f * smoothstep01(0.f, 0.3f, edge);
+    const float fine = 0.012f * (tileNoise(s.seed, 120, s.repeats * 3, u, v) - 0.5f);
+    return 1.f + dome + fine - 0.85f * pit;
 }
 
 // --- Crease -----------------------------------------------------------------------------------------------
-constexpr float kCreaseTileMm = 24.f;  // the intended tile: 2.4 cm
+// Short fold creases, `repeats` of them on the tile, each 5 to 30 mm long (more short than long), its direction
+// wandering within +-30 degrees of the tile's u axis, about a third of them with one branch splitting off at 25
+// to 40 degrees. Grooves 0.3 to 0.6 mm wide and tapered at both ends. Each crease has a rank in [0, 1) that the
+// master compares against the fold map: a crease shows where the fold density is above its rank.
+constexpr float kCreaseTileMm = 60.f;  // the intended tile: 6 cm
+constexpr float kCreaseStepMm = 0.3f;
+constexpr float kCreaseWander = 30.f * kPi / 180.f;
+constexpr float kCreaseBranchShare = 0.35f;
 
-struct CreaseLine {
-    float u = 0.f;  // where the line crosses the tile, 0..1
-};
-struct CreaseLink {
-    uint32_t line = 0;             // runs from this line to the next one (wrapping)
-    float v0 = 0.f, length = 0.f;  // start and extent along v, tile units
-    float depth = 0.f;
+struct CreaseSeg {
+    float ax = 0.f, ay = 0.f, bx = 0.f, by = 0.f;  // mm, unwrapped
+    float wa = 0.f, wb = 0.f;                      // half-width at each end, mm
+    float da = 0.f, db = 0.f;                      // depth at each end
+    float rank = 0.f;
 };
 
-void creaseLayout(const GarmentTileSettings& s, std::vector<CreaseLine>& lines, std::vector<CreaseLink>& links) {
-    const uint32_t k = s.repeats;
-    // Gaps of (1 + d) / k with the d in +- pairs, shuffled: each gap between 0.7 and 1.3 of the mean (2.1 to 3.9 mm
-    // at 8 lines on 2.4 cm) and the sum exactly one tile, so the gap that closes around the tile edge is in range too.
-    std::vector<float> d(k, 0.f);
-    for (uint32_t i = 0; i + 1 < k; i += 2) {
-        const float e = 0.3f * hash01(s.seed, 200, i, 0);
-        d[i] = e;
-        d[i + 1] = -e;
+struct CreaseWalk {
+    float x = 0.f, y = 0.f, theta = 0.f, length = 0.f, depth = 0.f, width = 0.f, rank = 0.f;
+    float centre = 0.f, range = 0.f;  // the direction stays within centre +- range
+};
+
+// Lays out one crease as segments; maxAngle gets the largest turn from the u axis (degrees).
+void walkCrease(const GarmentTileSettings& s, const CreaseWalk& w, uint32_t id, uint32_t layer, std::vector<CreaseSeg>& out,
+                float& maxAngle) {
+    const uint32_t steps = std::max(2u, static_cast<uint32_t>(std::ceil(w.length / kCreaseStepMm)));
+    const float step = w.length / static_cast<float>(steps);
+    float x = w.x, y = w.y, theta = w.theta;
+    const auto envelope = [](float t) { return std::sqrt(std::max(std::sin(kPi * t), 0.f)); };
+    for (uint32_t k = 0; k < steps; ++k) {
+        theta += (hash01(s.seed, layer, id, k) - 0.5f) * 0.3f;
+        theta = std::clamp(theta, w.centre - w.range, w.centre + w.range);
+        maxAngle = std::max(maxAngle, std::fabs(theta) * 180.f / kPi);
+        const float t0 = static_cast<float>(k) / static_cast<float>(steps);
+        const float t1 = static_cast<float>(k + 1) / static_cast<float>(steps);
+        CreaseSeg g;
+        g.ax = x;
+        g.ay = y;
+        x += std::cos(theta) * step;
+        y += std::sin(theta) * step;
+        g.bx = x;
+        g.by = y;
+        g.wa = w.width * (0.35f + 0.65f * envelope(t0));
+        g.wb = w.width * (0.35f + 0.65f * envelope(t1));
+        g.da = w.depth * envelope(t0);
+        g.db = w.depth * envelope(t1);
+        g.rank = w.rank;
+        out.push_back(g);
     }
-    for (uint32_t i = k; i > 1; --i) {
-        const uint32_t j = static_cast<uint32_t>(hash01(s.seed, 201, i, 0) * static_cast<float>(i)) % i;
-        std::swap(d[i - 1], d[j]);
-    }
-    lines.assign(k, CreaseLine{});
-    float u = hash01(s.seed, 202, 0, 0);
-    for (uint32_t i = 0; i < k; ++i) {
-        lines[i].u = u - std::floor(u);
-        u += (1.f + d[i]) / static_cast<float>(k);
-    }
-    // About one connector per line: from line i at v0 to line i + 1, 6 to 10 mm further along v (a shallow angle,
-    // about 15 to 30 degrees off the lines).
-    links.clear();
-    for (uint32_t i = 0; i < k; ++i) {
-        for (uint32_t c = 0; c < 2; ++c) {
-            if (hash01(s.seed, 203, i, c) >= 0.5f) {
-                continue;
-            }
-            CreaseLink l;
-            l.line = i;
-            l.v0 = hash01(s.seed, 204, i, c);
-            l.length = (6.f + 4.f * hash01(s.seed, 205, i, c)) / kCreaseTileMm;
-            l.depth = 0.35f + 0.3f * hash01(s.seed, 206, i, c);
-            links.push_back(l);
+}
+
+void creaseSegments(const GarmentTileSettings& s, std::vector<CreaseSeg>& segs, std::vector<GarmentCrease>* info) {
+    segs.clear();
+    for (uint32_t c = 0; c < s.repeats; ++c) {
+        CreaseWalk w;
+        w.rank = hash01(s.seed, 400, c, 0);
+        w.x = hash01(s.seed, 401, c, 0) * kCreaseTileMm;
+        w.y = hash01(s.seed, 402, c, 0) * kCreaseTileMm;
+        const float l = hash01(s.seed, 403, c, 0);
+        w.length = 5.f + 25.f * l * l;
+        w.theta = (hash01(s.seed, 404, c, 0) - 0.5f) * (40.f * kPi / 180.f);
+        w.depth = 0.5f + 0.5f * hash01(s.seed, 405, c, 0);
+        w.width = 0.15f + 0.15f * hash01(s.seed, 406, c, 0);
+        w.range = kCreaseWander;
+        float angle = 0.f;
+        const size_t first = segs.size();
+        walkCrease(s, w, c, 420, segs, angle);
+        if (info) {
+            info->push_back({w.length, angle, false});
         }
-    }
-}
-
-// Where line i sits at v (tile units): its crossing plus a slow wander of up to about +-0.6 mm and a fine wobble
-// of about +-0.06 mm, periodic in v.
-float creaseLineU(const GarmentTileSettings& s, const CreaseLine& line, uint32_t i, float v) {
-    const float w = 0.7f * (tileNoise(s.seed, 210 + i, 3, line.u, v) - 0.5f) + 0.3f * (tileNoise(s.seed, 230 + i, 8, line.u, v) - 0.5f);
-    const float wobble = tileNoise(s.seed, 240 + i, 24, line.u, v) - 0.5f;
-    return line.u + (1.2f * w + 0.12f * wobble) / kCreaseTileMm;
-}
-
-float wrapSigned(float d) { return d - std::round(d); }
-
-// The groove profile, t = distance / extent: deepest on the line, soft at its edges.
-float groove(float t) { return t < 1.f ? (1.f - t * t) * (1.f - t * t) : 0.f; }
-
-float creaseAt(const GarmentTileSettings& s, const std::vector<CreaseLine>& lines, const std::vector<CreaseLink>& links,
-               float u, float v) {
-    const uint32_t k = s.repeats;
-    float cut = 0.f;
-    for (uint32_t i = 0; i < k; ++i) {
-        const float du = wrapSigned(u - creaseLineU(s, lines[i], i, v)) * kCreaseTileMm;  // mm
-        const float extent = 0.15f + 0.1f * tileNoise(s.seed, 250 + i, 6, lines[i].u, v); // 0.15 to 0.25 mm
-        if (std::fabs(du) >= extent) {
+        if (hash01(s.seed, 407, c, 0) >= kCreaseBranchShare) {
             continue;
         }
-        const float present = smoothstep01(0.4f, 0.52f, tileNoise(s.seed, 270 + i, 5, lines[i].u, v));  // the gaps
-        const float depth = 0.3f + 0.7f * tileNoise(s.seed, 290 + i, 7, lines[i].u, v);
-        cut = std::max(cut, depth * present * groove(std::fabs(du) / extent));
-    }
-    for (const CreaseLink& l : links) {
-        const uint32_t next = (l.line + 1) % k;
-        const float v1 = l.v0 + l.length;
-        // The two ends in mm, the far one unwrapped so the segment is the short way across.
-        const float ax = creaseLineU(s, lines[l.line], l.line, l.v0) * kCreaseTileMm, ay = l.v0 * kCreaseTileMm;
-        float bx = creaseLineU(s, lines[next], next, v1 - std::floor(v1)) * kCreaseTileMm;
-        bx = ax + wrapSigned((bx - ax) / kCreaseTileMm) * kCreaseTileMm;
-        const float by = v1 * kCreaseTileMm;
-        // The pixel's copy nearest the segment's middle.
-        const float mx = 0.5f * (ax + bx), my = 0.5f * (ay + by);
-        const float px = mx + wrapSigned((u * kCreaseTileMm - mx) / kCreaseTileMm) * kCreaseTileMm;
-        const float py = my + wrapSigned((v * kCreaseTileMm - my) / kCreaseTileMm) * kCreaseTileMm;
-        const float sx = bx - ax, sy = by - ay;
-        const float t = std::clamp(((px - ax) * sx + (py - ay) * sy) / (sx * sx + sy * sy), 0.f, 1.f);
-        const float ex = px - (ax + sx * t), ey = py - (ay + sy * t);
-        const float dist = std::sqrt(ex * ex + ey * ey);
-        constexpr float kLinkExtent = 0.13f;
-        if (dist < kLinkExtent) {
-            cut = std::max(cut, l.depth * std::sin(kPi * t) * groove(dist / kLinkExtent));  // fades into both lines
+        // The branch leaves from a point 30 to 70 % along, at 25 to 40 degrees off the crease there.
+        const size_t n = segs.size() - first;
+        const CreaseSeg at = segs[first + static_cast<size_t>((0.3f + 0.4f * hash01(s.seed, 408, c, 0)) * static_cast<float>(n - 1))];
+        CreaseWalk b = w;
+        b.x = at.bx;
+        b.y = at.by;
+        const float side = hash01(s.seed, 409, c, 0) < 0.5f ? -1.f : 1.f;
+        b.theta = std::atan2(at.by - at.ay, at.bx - at.ax) + side * (25.f + 15.f * hash01(s.seed, 410, c, 0)) * kPi / 180.f;
+        b.centre = b.theta;
+        b.range = 15.f * kPi / 180.f;
+        b.length = w.length * (0.3f + 0.3f * hash01(s.seed, 411, c, 0));
+        b.depth = 0.7f * w.depth;
+        b.width = 0.8f * w.width;
+        float branchAngle = 0.f;
+        walkCrease(s, b, c, 430, segs, branchAngle);
+        if (info) {
+            info->push_back({b.length, branchAngle, true});
         }
     }
-    const float skin = 0.02f * (tileNoise(s.seed, 310, std::max(k / 2, 1u), u, v) - 0.5f);
-    return 1.f + skin - cut;
+}
+
+// The groove profile, t = distance / half-width: deepest on the line, soft at its edges.
+float groove(float t) { return t < 1.f ? (1.f - t * t) * (1.f - t * t) : 0.f; }
+
+// Stamps every segment into cut (0..1, deepest wins) and rank: the rank of the deepest crease inside a groove, and
+// around it, out to twice its half-width plus two pixels, the rank of the nearest crease (so bilinear filtering and the
+// smaller mips keep a crease's rank on its soft edges instead of fading it toward 1); 1 further out.
+void stampCreases(const GarmentTileSettings& s, const std::vector<CreaseSeg>& segs, std::vector<float>& cut, std::vector<float>& rank) {
+    const uint32_t n = s.size;
+    const int ni = static_cast<int>(n);
+    const float mmPerPx = kCreaseTileMm / static_cast<float>(n);
+    const float minHalf = 0.75f * mmPerPx;  // a groove always covers a pixel, at any tile size
+    cut.assign(static_cast<size_t>(n) * n, 0.f);
+    rank.assign(static_cast<size_t>(n) * n, 1.f);
+    std::vector<float> nearest(static_cast<size_t>(n) * n, 1e9f);  // mm to the nearest crease line, outside every groove
+    for (const CreaseSeg& g : segs) {
+        const float reach = 2.f * std::max(std::max(g.wa, g.wb), minHalf) + 2.f * mmPerPx;
+        const int x0 = static_cast<int>(std::floor((std::min(g.ax, g.bx) - reach) / mmPerPx - 0.5f));
+        const int x1 = static_cast<int>(std::ceil((std::max(g.ax, g.bx) + reach) / mmPerPx - 0.5f));
+        const int y0 = static_cast<int>(std::floor((std::min(g.ay, g.by) - reach) / mmPerPx - 0.5f));
+        const int y1 = static_cast<int>(std::ceil((std::max(g.ay, g.by) + reach) / mmPerPx - 0.5f));
+        const float sx = g.bx - g.ax, sy = g.by - g.ay;
+        const float ss = std::max(sx * sx + sy * sy, 1e-8f);
+        for (int py = y0; py <= y1; ++py) {
+            for (int px = x0; px <= x1; ++px) {
+                const float mx = (static_cast<float>(px) + 0.5f) * mmPerPx, my = (static_cast<float>(py) + 0.5f) * mmPerPx;
+                const float t = std::clamp(((mx - g.ax) * sx + (my - g.ay) * sy) / ss, 0.f, 1.f);
+                const float ex = mx - (g.ax + sx * t), ey = my - (g.ay + sy * t);
+                const float half = std::max(g.wa + (g.wb - g.wa) * t, minHalf);
+                const float e = std::sqrt(ex * ex + ey * ey);
+                const float c = (g.da + (g.db - g.da) * t) * groove(e / half);
+                const size_t i = static_cast<size_t>((py % ni + ni) % ni) * n + static_cast<size_t>((px % ni + ni) % ni);
+                if (c > cut[i]) {
+                    cut[i] = c;
+                    rank[i] = g.rank;
+                } else if (cut[i] <= 0.f && e <= 2.f * half + 2.f * mmPerPx && e < nearest[i]) {
+                    nearest[i] = e;
+                    rank[i] = g.rank;
+                }
+            }
+        }
+    }
+}
+
+bool validSettings(GarmentTile tile, const GarmentTileSettings& s) {
+    if (!isPowerOfTwo(s.size) || s.size < 32 || s.repeats == 0 || s.repeats > s.size / 4) {
+        return false;
+    }
+    return tile != GarmentTile::Twill || s.repeats % 3 == 0;  // the 2/1 repeat is three yarns: else a seam at the edge
 }
 
 } // namespace
@@ -348,12 +434,13 @@ GarmentTileSettings garmentTileDefaults(GarmentTile tile) {
         s.seed = 13;
         break;
     case GarmentTile::Pore:
-        s.repeats = 24;
-        s.normalStrength = 4.f;
+        s.repeats = 20;  // 0.8 mm mean spacing on the 1.6 cm tile
+        s.normalStrength = 5.f;
         s.seed = 14;
         break;
     case GarmentTile::Crease:
-        s.repeats = 8;
+        s.size = 1024;    // 0.06 mm a pixel: the narrowest groove still spans several
+        s.repeats = 110;  // creases on the 6 cm tile
         s.normalStrength = 2.f;
         s.seed = 15;
         break;
@@ -375,26 +462,71 @@ float garmentTileCentimetres(GarmentTile tile) {
     return 0.f;
 }
 
-bool makeGarmentHeight(GarmentTile tile, const GarmentTileSettings& s, std::vector<float>& height) {
-    height.clear();
-    if (!isPowerOfTwo(s.size) || s.size < 32 || s.repeats == 0 || s.repeats > s.size / 4) {
+bool garmentPores(const GarmentTileSettings& s, std::vector<GarmentPore>& pores) {
+    pores.clear();
+    if (!validSettings(GarmentTile::Pore, s)) {
         return false;
     }
-    if (tile == GarmentTile::Twill && s.repeats % 3 != 0) {
-        return false;  // the 2/1 repeat is three yarns: anything else leaves a seam at the tile edge
+    PoreBuckets buckets(kPoreMinSpacing / static_cast<float>(s.repeats));
+    const float mm = garmentTileCentimetres(GarmentTile::Pore) * 10.f;
+    for (const PoreSite& p : poreSites(s, buckets)) {
+        pores.push_back({p.x * mm, p.y * mm, p.radius * mm, p.large});
     }
-    if (tile == GarmentTile::Crease && s.repeats % 2 != 0) {
-        return false;  // the line gaps come in +- pairs so they add up to one tile
+    return true;
+}
+
+bool garmentCreases(const GarmentTileSettings& s, std::vector<GarmentCrease>& creases) {
+    creases.clear();
+    if (!validSettings(GarmentTile::Crease, s)) {
+        return false;
     }
-    std::vector<PoreSite> sites;
-    std::vector<CreaseLine> lines;
-    std::vector<CreaseLink> links;
-    if (tile == GarmentTile::Pore) {
-        sites = poreSites(s);
-    } else if (tile == GarmentTile::Crease) {
-        creaseLayout(s, lines, links);
+    std::vector<CreaseSeg> segs;
+    creaseSegments(s, segs, &creases);
+    return true;
+}
+
+bool garmentCreaseRank(const GarmentTileSettings& s, std::vector<float>& rank) {
+    rank.clear();
+    if (!validSettings(GarmentTile::Crease, s)) {
+        return false;
+    }
+    std::vector<CreaseSeg> segs;
+    std::vector<float> cut;
+    creaseSegments(s, segs, nullptr);
+    stampCreases(s, segs, cut, rank);
+    return true;
+}
+
+bool makeGarmentHeight(GarmentTile tile, const GarmentTileSettings& s, std::vector<float>& height) {
+    height.clear();
+    if (!validSettings(tile, s)) {
+        return false;
     }
     const uint32_t n = s.size;
+    if (tile == GarmentTile::Crease) {
+        std::vector<CreaseSeg> segs;
+        std::vector<float> rank;
+        creaseSegments(s, segs, nullptr);
+        stampCreases(s, segs, height, rank);
+        float lo = 1e9f, hi = -1e9f;
+        for (size_t i = 0; i < height.size(); ++i) {
+            const uint32_t x = static_cast<uint32_t>(i % n), y = static_cast<uint32_t>(i / n);
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(n), v = (static_cast<float>(y) + 0.5f) / static_cast<float>(n);
+            height[i] = 1.f - height[i] + 0.02f * (tileNoise(s.seed, 310, 24, u, v) - 0.5f);
+            lo = std::min(lo, height[i]);
+            hi = std::max(hi, height[i]);
+        }
+        const float scale = hi > lo ? 1.f / (hi - lo) : 0.f;
+        for (float& h : height) {
+            h = (h - lo) * scale;
+        }
+        return true;
+    }
+    std::vector<PoreSite> sites;
+    PoreBuckets buckets(tile == GarmentTile::Pore ? kPoreMinSpacing / static_cast<float>(s.repeats) : 1.f);
+    if (tile == GarmentTile::Pore) {
+        sites = poreSites(s, buckets);
+    }
     const float inv = 1.f / static_cast<float>(n);
     height.assign(static_cast<size_t>(n) * n, 0.f);
     float lo = 1e9f, hi = -1e9f;
@@ -414,10 +546,9 @@ bool makeGarmentHeight(GarmentTile tile, const GarmentTileSettings& s, std::vect
                 h = knitAt(s, u, v);
                 break;
             case GarmentTile::Pore:
-                h = poreAt(s, sites, u, v);
+                h = poreAt(s, sites, buckets, u, v);
                 break;
             case GarmentTile::Crease:
-                h = creaseAt(s, lines, links, u, v);
                 break;
             }
             height[static_cast<size_t>(y) * n + x] = h;
