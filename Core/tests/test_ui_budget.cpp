@@ -85,6 +85,10 @@ TEST_CASE("ui budget: HEAL only while hurt with heals left, PARTNER only in its 
     f.lead.hp = f.lead.hpMax;
     CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0); // a heal would do nothing
     f.lead.hp = 10;
+    f.lead.overloaded = true; // the fight refuses a heal until a Release
+    CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0);
+    f.lead.overloaded = false;
+    CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) != 0);
     f.lead.heals = 0;
     CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Heal)) == 0);
     f.partner.down = true;
@@ -95,6 +99,29 @@ TEST_CASE("ui budget: HEAL only while hurt with heals left, PARTNER only in its 
     // At most one per row is asked for, however many are open.
     CHECK(uiMarkWants(f, kAllPrompts)[K(UiMarkKind::Prompt)] == kUiPromptRows);
     CHECK(uiMarkWants(f, uiPromptBit(UiPrompt::Dodge))[K(UiMarkKind::Prompt)] == 1);
+}
+
+TEST_CASE("ui budget: a basic control's row stands only while the control can be used") {
+    ArenaHudLead l;
+    for (UiPrompt p : {UiPrompt::Attack, UiPrompt::Guard, UiPrompt::Dodge, UiPrompt::Jump}) {
+        CAPTURE(static_cast<int>(p));
+        CHECK(uiControlUsable(l, p));
+    }
+    l.overloaded = true;
+    CHECK_FALSE(uiControlUsable(l, UiPrompt::Attack));
+    CHECK(uiControlUsable(l, UiPrompt::Guard));
+    CHECK(uiControlUsable(l, UiPrompt::Dodge));
+    l.overloaded = false;
+    l.guardBroken = true;
+    CHECK_FALSE(uiControlUsable(l, UiPrompt::Guard));
+    CHECK(uiControlUsable(l, UiPrompt::Attack));
+    l.guardBroken = false;
+    l.down = true;
+    for (UiPrompt p : {UiPrompt::Attack, UiPrompt::Guard, UiPrompt::Dodge, UiPrompt::Jump}) {
+        CAPTURE(static_cast<int>(p));
+        CHECK_FALSE(uiControlUsable(l, p));
+    }
+    CHECK(uiControlUsable(l, UiPrompt::Heal)); // the data's rows: uiPromptsOpen decides
 }
 
 TEST_CASE("ui budget: at rest only the lead, the party and the open prompts show") {

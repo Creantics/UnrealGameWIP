@@ -104,13 +104,19 @@ struct UiBudgetState {
 FTCORE_API std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, UiPromptMask prompts);
 
 // The prompts the data opens (the first four never while the lead is down):
-//   Heal       hurt with heals left
+//   Heal       hurt with heals left, and not overloaded (the fight refuses a heal until a Release)
 //   GiftHeal   hurt with Gift Heals left (the third place's giftHeals; -1, not reported, opens nothing)
 //   GiftGuard  the Gift Guard off its cooldown (giftGuardReady)
 //   Reload     the gun empty (a cylinder with no rounds) and not already reloading
 //   Pair       the fight's paired window open (`pairOpen`, ArenaFight::pairOpen) with the partner up
 // The basic controls are the first-use teaching's (UiFirstUse.h).
 FTCORE_API UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen);
+
+// Whether a basic control (Attack, Guard, Dodge, Jump) can be used now, so its first-use row may stand: none while the
+// lead is down, no Attack while overloaded (the fight refuses light, heavy and shot until a Release), no Guard while the
+// guard is broken. A prompt that cannot be used is not drawn, never greyed. The data's rows answer true: uiPromptsOpen
+// already opens them only when usable.
+FTCORE_API bool uiControlUsable(const ArenaHudLead& lead, UiPrompt p);
 
 // One prompt per row, one row per key, and only rows that have a key. A prompt with no key on the device (not in
 // `keyed`) is dropped. So is one whose key a lower open prompt already shows (`sameKeyBelow[p]`: the lower prompts bound

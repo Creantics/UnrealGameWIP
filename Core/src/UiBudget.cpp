@@ -22,12 +22,27 @@ UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen) {
     const bool up = !l.down;
     const bool hurt = l.hp < l.hpMax; // at full HP a heal (or a Gift Heal) would do nothing
     if (pairOpen && f.partner.present && !f.partner.down) m |= uiPromptBit(UiPrompt::Pair);
-    if (l.heals > 0 && up && hurt) m |= uiPromptBit(UiPrompt::Heal);
+    if (l.heals > 0 && up && hurt && !l.overloaded) m |= uiPromptBit(UiPrompt::Heal);
     if (f.third.giftHeals > 0 && up && hurt) m |= uiPromptBit(UiPrompt::GiftHeal);
     if (f.third.giftGuardReady && up) m |= uiPromptBit(UiPrompt::GiftGuard);
     // Mid-reload the press is already made: the cylinder shows the reload filling, so the row would repeat it.
     if (l.roundsMax > 0 && l.rounds == 0 && l.reload01 <= 0.f && up) m |= uiPromptBit(UiPrompt::Reload);
     return m;
+}
+
+bool uiControlUsable(const ArenaHudLead& lead, UiPrompt p) {
+    switch (p) {
+    case UiPrompt::Attack: return !lead.down && !lead.overloaded;
+    case UiPrompt::Guard: return !lead.down && !lead.guardBroken;
+    case UiPrompt::Dodge:
+    case UiPrompt::Jump: return !lead.down;
+    case UiPrompt::Heal:
+    case UiPrompt::GiftHeal:
+    case UiPrompt::GiftGuard:
+    case UiPrompt::Reload:
+    case UiPrompt::Pair: return true;
+    }
+    return true;
 }
 
 UiPromptMask uiPromptsDrawable(UiPromptMask open, UiPromptMask keyed, const std::array<UiPromptMask, kUiPromptCount>& sameKeyBelow) {
