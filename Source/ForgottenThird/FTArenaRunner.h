@@ -817,8 +817,10 @@ private:
 	float CameraYaw = 0.f;
 	float CameraPitch = -16.f;
 	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurn) on top of CameraYaw, which stays on the lock's
-	// line (the stick and the fight's view read it). It goes into CameraYaw once nothing is followed, so the view never jumps.
+	// line. It goes into CameraYaw once nothing is followed (ftcore::arenaFrameYawStep), so the view never jumps.
 	float FrameTurn = 0.f;
+	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read.
+	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}); }
 #if !UE_BUILD_SHIPPING
 	// -ArenaFrameCheck: the framing as the rendered camera shows it, sampled on each followed frame and logged by
 	// LogFeatureChecks ("Arena check: framing"). -ArenaNoFrame holds the framing at 0, for a side-by-side.

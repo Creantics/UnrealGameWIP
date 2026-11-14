@@ -72,8 +72,8 @@ constexpr double kArenaHitTint = 0.16;
 constexpr double kArenaTellFlash = 0.3;
 // A boss at least this tall (m) is looked up at: the camera's pitch rises toward its face, at this share of its height
 // (hover included), by ftcore::arenaLookUpPitch (the boom held at its limit, the lens tilting the rest).
-constexpr float kArenaTallBoss = 4.f;
-constexpr float kArenaFaceHeight = 0.7f;
+constexpr float kArenaTallBoss = ftcore::kArenaLookTallBoss;
+constexpr float kArenaFaceHeight = ftcore::kArenaLookFaceShare;
 // A skinned enemy's hit reactions and playing rates: the rate that lands a clip's impact at the end of its startup is held
 // to these.
 constexpr float kArenaMinClipRate = 0.25f;
@@ -1523,10 +1523,8 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	{
 		Forward = Right = 0.f;
 	}
-	const float Yaw = FMath::DegreesToRadians(CameraYaw);
-	const float C = FMath::Cos(Yaw);
-	const float S = FMath::Sin(Yaw);
-	Stick = ftcore::Vec2{C * Forward - S * Right, S * Forward + C * Right};
+	// Along the view as drawn (the lock's framing turn included), so the lead goes where the stick points on the screen.
+	Stick = ftcore::arenaStickToWorld(ViewYaw(), Forward, Right);
 
 	// The view: the mouse and the right stick turn the camera unless something is locked; locked, a flick of
 	// the right stick switches the target.
@@ -1574,7 +1572,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 {
 	ftcore::ArenaInput In;
 	In.move = Stick;
-	const float Yaw = FMath::DegreesToRadians(CameraYaw);
+	const float Yaw = FMath::DegreesToRadians(ViewYaw());
 	In.view = ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)};
 	In.light = bPressLight;
 	In.heavy = bPressHeavy;
@@ -3282,7 +3280,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		// Locked on, the round goes at the lock, not the crosshair, so the crosshair says nothing about its reach.
 		if (Fight.lock() == ftcore::kArenaNobody && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns && ReticlePitch(Pitch))
 		{
-			const float Yaw = FMath::DegreesToRadians(CameraYaw);
+			const float Yaw = FMath::DegreesToRadians(ViewYaw());
 			const ftcore::Vec2 Dir = ReticleAimDir(ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)});
 			// The round's own rule: the crosshair's body wins within kArenaShotGraze of another met first (a graze where
 			// the two bodies' edges cross on the muzzle's line), so blocked here is blocked for the round.
@@ -3709,7 +3707,7 @@ void UFTArenaRunner::StepAimCheck(ftcore::ArenaInput& In)
 	if (AimCheckPhase == 5)
 	{
 		// The assist check: stand, aim along the view (unless step 2 let it go), and press lock when StepAssistCheck asks.
-		const float Yaw = FMath::DegreesToRadians(CameraYaw);
+		const float Yaw = FMath::DegreesToRadians(ViewYaw());
 		const ftcore::Vec2 View{FMath::Cos(Yaw), FMath::Sin(Yaw)};
 		In = ftcore::ArenaInput();
 		In.view = View;
@@ -3893,6 +3891,11 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	// The player's hit pause holds the camera where it is (no turn, and never a pull-out: the arm is not touched).
 	if (Fight.hitStopLeft() > 0.f)
 	{
+		ftcore::ArenaFrameScene Held;
+		Held.held = true;
+		const ftcore::ArenaFrameYaw Kept = ftcore::arenaFrameYawStep(ftcore::kArenaFrame, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, Held, DeltaSeconds);
+		CameraYaw = Kept.line;
+		FrameTurn = Kept.turn;
 		return;
 	}
 	// Locked: turn to look from the player at the target. The autopilot and an idle run with nothing locked
@@ -3932,74 +3935,69 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		Target = AimCheckSlot;
 	}
 #endif
-	float FrameWant = 0.f;
-	if (Target >= 0 && Target < static_cast<int32>(Fight.enemyCount()))
+	// The yaw: the lock's line (CameraYaw, eased onto the target) and the framing's orbit on it (FrameTurn), both stepped
+	// by ftcore::arenaFrameYawStep. The view is drawn at their sum (ViewYaw), and the stick, the crosshair and the fight's
+	// view read that, so the lead goes where the stick points on the screen, and a release (the turn folded into the line)
+	// leaves the stick's basis where it was.
+	ftcore::ArenaFrameScene Scene;
+	const ftcore::Settings* Prefs = GetSettings();
+	Scene.framing = !Prefs || Prefs->lockFraming;
+	Scene.aiming = ArenaAim.aiming(); // the aim camera frames the shot over the shoulder
+	Scene.side = Fit.camera.side;
+	Scene.lineRate = kArenaLockTurn;
+#if !UE_BUILD_SHIPPING
+	if (bNoFrame || AimCheckPhase == 2 || AimCheckPhase == 3)
+	{
+		Scene.framing = false;
+		FrameTurn = AimCheckPhase == 2 || AimCheckPhase == 3 ? 0.f : FrameTurn; // -ArenaAimCheck measures the plain lock view
+	}
+#endif
+	const bool bFollowed = Target >= 0 && Target < static_cast<int32>(Fight.enemyCount());
+	ftcore::Vec2 To{};
+	if (bFollowed)
 	{
 		const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
-		const ftcore::Vec2 To{E.x - Bodies.player.x, E.y - Bodies.player.y};
-		if (ArenaLength(To) > 0.3f)
-		{
-			const float Want = ArenaYaw(To);
-			const float Delta = FMath::FindDeltaAngleDegrees(CameraYaw, Want);
-			CameraYaw += Delta * FMath::Min(1.f, kArenaLockTurn * DeltaSeconds);
-		}
-		// The framing: an orbit turn round the lead that brings the target to the view's centre line, clear of the lead
-		// (ftcore::arenaFrameTurn). Not while aiming: the aim camera frames the shot over the shoulder.
-		if (!ArenaAim.aiming())
-		{
-			FrameWant = ftcore::arenaFrameTurn(ftcore::kArenaFrame, Fit.camera.side, ArenaLength(To));
-		}
+		To = ftcore::Vec2{E.x - Bodies.player.x, E.y - Bodies.player.y};
+		Scene.followed = true;
+		Scene.hasLine = ArenaLength(To) > 0.3f;
+		Scene.lineWant = ArenaYaw(To);
+		Scene.distance = ArenaLength(To);
+	}
+	const ftcore::ArenaFrameYaw Yaw = ftcore::arenaFrameYawStep(ftcore::kArenaFrame, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, Scene, DeltaSeconds);
+	CameraYaw = Yaw.line;
+	FrameTurn = Yaw.turn;
 #if !UE_BUILD_SHIPPING
-		if (bNoFrame || AimCheckPhase == 2 || AimCheckPhase == 3)
-		{
-			FrameWant = 0.f;
-			FrameTurn = AimCheckPhase == 2 || AimCheckPhase == 3 ? 0.f : FrameTurn; // -ArenaAimCheck measures the plain lock view
-		}
+	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming ? ftcore::arenaFrameTurn(ftcore::kArenaFrame, Scene.side, Scene.distance) : 0.f;
 #endif
-		FrameTurn = ftcore::arenaFrameStep(ftcore::kArenaFrame, FrameTurn, FrameWant, DeltaSeconds);
-		// The target stands this far ahead along the turned view: the look-up solve's distance.
-		const float Along = ArenaLength(To) * FMath::Cos(FMath::DegreesToRadians(FrameTurn));
+	if (bFollowed)
+	{
 		// A tall boss (a hanging one, hover included) is looked up at: the pitch that sends the view through its face from
-		// where the arm puts the camera (the pivot and shoulder height over the feet, the boom swung back along the pitch),
-		// no higher than the free camera may look.
-		float WantPitch = Fit.camera.lockPitch;
+		// where the arm puts the camera, the target as far ahead as it stands along the turned view
+		// (ftcore::arenaFrameLockPitch), no higher than the free camera may look.
 		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(Target)];
 		const float Hover = Foe.look.skinned() ? Foe.look.hover : 0.f;
 		const float Tall = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + Hover;
 		const ftcore::ZoneCamera& Rig = Fit.camera;
+		float WantPitch = ftcore::arenaFrameLockPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, Rig.lockPitch, ArenaLength(To), FrameTurn, Tall);
 #if !UE_BUILD_SHIPPING
 		if (AimCheckPhase == 2 || AimCheckPhase == 3)
 		{
-			// The top itself, less a little so the line meets the body rather than grazing over it.
-			AimCheckPitch = ftcore::arenaLookUpPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, Along, Tall * 0.95f, Rig.lockPitch);
+			// The top itself, less a little so the line meets the body rather than grazing over it (the turn is 0 here).
+			AimCheckPitch = ftcore::arenaLookUpPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall * 0.95f, Rig.lockPitch);
 			WantPitch = AimCheckPitch;
 		}
-		else
-#endif
-		if (Tall >= kArenaTallBoss)
-		{
-			WantPitch = ftcore::arenaLookUpPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, Along, Tall * kArenaFaceHeight,
-				Rig.lockPitch);
-		}
-#if !UE_BUILD_SHIPPING
 		const float PitchRate = AimCheckPhase == 2 ? 12.f : 4.f; // -ArenaAimCheck settles faster
 #else
 		const float PitchRate = 4.f;
 #endif
 		CameraPitch = FMath::FInterpTo(CameraPitch, WantPitch, DeltaSeconds, PitchRate);
 	}
-	else if (FrameTurn != 0.f)
-	{
-		// Nothing followed: the turn goes into CameraYaw, so the free camera starts where the view is.
-		CameraYaw += FrameTurn;
-		FrameTurn = 0.f;
-	}
 	CameraYaw = FMath::UnwindDegrees(CameraYaw);
 	// The boom swings up to its limit, the lens tilts the rest: a steep look keeps the lens over the floor and the arm
 	// its length.
 	CameraPitch = ftcore::arenaClampViewPitch(ftcore::kArenaLook, CameraPitch);
 	const ftcore::ArenaPitchSplit Split = ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch);
-	PC->SetControlRotation(FRotator(Split.boom, FrameTurn != 0.f ? CameraYaw + FrameTurn : CameraYaw, 0.0));
+	PC->SetControlRotation(FRotator(Split.boom, ViewYaw(), 0.0));
 #if !UE_BUILD_SHIPPING
 	if (bFrameCheck)
 	{
