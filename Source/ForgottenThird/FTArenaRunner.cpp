@@ -1867,7 +1867,9 @@ void UFTArenaRunner::BeginSession()
 		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
 		if (PartnerBody())
 		{
-			Session->Get().setActiveLead(SessionLead); // a begin keeps the last fight's controlled lead: this one's
+			// A begin keeps the last fight's controlled lead, so ask for this one's. That is a request: the first tick's
+			// close resolves it (activeLead moves there, reported as tick.switched), before anything reads the lead.
+			Session->Get().setActiveLead(SessionLead);
 		}
 		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
 		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
@@ -2223,7 +2225,9 @@ void UFTArenaRunner::FeedSession()
 		// The fight swapped the bodies on its TookOver (TakeOverBodies) and the session moves its control the same
 		// step: both name the same lead, step by step, until a defeat leaves the session's where it was.
 		PartnerSessionTookOver += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
+		// Read after the tick (the switch resolves at its close). A refused switch counts too: none is asked but the begin's.
 		PartnerLeadMismatch += (!Session->Get().defeated() && Session->Get().activeLead() != SessionLead) ? 1 : 0;
+		PartnerLeadMismatch += Tick.switchRefused != ftcore::kNoFighter ? 1 : 0;
 	}
 	SessionRises += Tick.leadsRose != 0 ? 1 : 0;
 	bSessionDefeated = bSessionDefeated || Tick.defeated;
@@ -6389,7 +6393,7 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	const float AimCap = static_cast<float>(ftcore::kArenaBossAimShareTenths) / 10.f;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner aim %s (%d of %d boss strings at the partner, the highest share %.3f; at most %.1f)."),
 		S.bossAimShareMax <= AimCap + 1e-4f ? TEXT("PASS") : TEXT("FAIL"), S.bossAimedPartner, S.bossAttacks, S.bossAimShareMax, AimCap);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner share %s (the partner's %d hp: %.3f of the %s %d hp, %.3f of all %d damage dealt; target %.2f-%.2f of the boss's)."),
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner share %s (the partner's %d damage: %.3f of the %s %d hp, %.3f of all %d damage dealt; target %.2f-%.2f of the boss's)."),
 		!bWon ? TEXT("n/a, not won") : (ShareBoss >= kPartnerShareLow && ShareBoss <= kPartnerShareHigh ? TEXT("in target") : TEXT("out of target")),
 		S.partnerDamage, ShareBoss, BossHp > 0 ? TEXT("boss's") : TEXT("enemies'"), Pool, ShareAll, Dealt, kPartnerShareLow, kPartnerShareHigh);
 	const bool bTakeoverOk = PartnerTakeovers == S.takeovers && PartnerSessionTookOver == PartnerTakeovers && PartnerLeadMismatch == 0
@@ -6409,7 +6413,10 @@ void UFTArenaRunner::CheckPartnerRetry()
 	const int32 WasSwapped = Fight.swapped() ? 1 : 0;
 	const int32 Takeovers = PartnerTakeovers;
 	Restart(); // the game mode's and the result screen's retry: the fight from its start
-	const bool bSessionOk = !Session || (Session->Get().activeLead() == StartLead && !Session->Get().down(ftcore::kLeadA)
+	// No tick has run since the retry's begin, so the switch back to the first lead may still wait for the first close.
+	const bool bFirstLead = Session && (Session->Get().switchRequested() == StartLead
+		|| (Session->Get().switchRequested() == ftcore::kNoFighter && Session->Get().activeLead() == StartLead));
+	const bool bSessionOk = !Session || (bFirstLead && !Session->Get().down(ftcore::kLeadA)
 		&& !Session->Get().down(ftcore::kLeadB) && !Session->Get().defeated());
 	const bool bOk = !Fight.over() && !Fight.swapped() && !bFiguresSwapped && SessionLead == StartLead
 		&& Fight.hp() == Fight.def().fighter.hp && Fight.allyHp() == Fight.allyMaxHp() && bSessionOk;
