@@ -322,8 +322,28 @@ the pieces.
   counters (counter wides) roll back with a scene restart, so a retried fight counts afresh; a raw
   total does not.
 * **Active lead.** `setActiveLead(lead)` names the lead the player's figure fills (`kLeadA` until
-  set; it stays across `begin`). The host sets it at fight start and on every lead switch, and aims
-  its gift presses, count calls and blow reports for the player at `activeLead()`.
+  set; it stays across `begin`, except that a `begin` moves it off a lead not in the fight). The host
+  sets it at fight start and on every lead switch, and aims its gift presses, count calls and blow
+  reports for the player at `activeLead()`. It refuses a lead that is down or not in the fight.
+* **Down, takeover and defeat.** `def.inFight` names the leads in the fight (both by default; at
+  least one). `setLeadHealth` is also the fall feed, so the host calls it on every hp change: a lead
+  in the fight at 0 or below (finite) is down, not dead; above 0 it stands again; NaN or an infinity
+  changes nothing. When the controlled lead falls and the other stands, control passes to the other
+  at once (`tick.tookOver`) and never back by itself: only the player's switch moves it. The fallen
+  lead is then the uncontrolled body, so the partner's brain drives it: after its `downSeconds` (30)
+  the intent carries `rise` at `riseHealth` (25%), and the host stands the body and feeds that
+  health. Every lead in the fight down at once is a defeat (`tick.defeated`, once); after it nothing
+  falls or stands until `retry` or `begin`. Each fall and rise is reported once, on the next tick
+  (`leadsFell`, `leadsRose`, one bit per lead).
+* **Checkpoints and retry.** The fight-start checkpoint is taken by the first `setHostCheckpoint`
+  or, failing that, the first tick after a `begin` (`tick.checkpoint`). A boss script whose def has
+  `checkpointAtPhase` (default false) takes another at the end of the tick that changes its phase;
+  for a boss the host runs itself, `checkpointPhase(phase)` does it. The host writes its own part
+  (`FightHostCheckpoint`: each lead's hp and Load, the draw state, the partner's brain, the order
+  button, its own boss's hp and phase, the currency carried) when one is taken. `retry()` goes back
+  to the latest: every piece starts clean at the checkpoint's clock, then the checkpoint's fields
+  (`FightCheckpoint`) are put back exactly, and the host applies its part from the one returned. A
+  defeat costs nothing but the attempt. A retry unbinds the story, as `begin` does.
 * **Boss counters.** `counter(kind, who, shared)`: `shared` is the host's word that the counter carries
   the shared input (a blow judged a shared outcome, or a hit the lead took half of). An open count
   window alone is not it; a shared counter kind without it is refused (`NeedsShared`).

@@ -116,6 +116,9 @@ struct BossScriptDef {
     BossMoveDef offer{};
     std::array<BossPhaseDef, kMaxScriptPhases> phases{};
     std::uint8_t phaseCount = 0;
+    // A retry after a defeat starts at the phase the boss had reached (FightSession's phase checkpoint), not at
+    // the fight's start. Off by default: per boss, in its data.
+    bool checkpointAtPhase = false;
 
     std::string_view id() const { return std::string_view(idChars.data()); }
     void setId(std::string_view id) {

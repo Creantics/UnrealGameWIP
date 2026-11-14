@@ -49,6 +49,26 @@
 //   Retry), mark the step again and bind anew, or the new attempt writes nothing. Each attempt thrown away counts
 //   one story retry, whoever retries it: a screen's own "fight again" adds 1 (its Retry), and a lost fight the
 //   story retries adds 1 more (the director's Retry verdict).
+// * Down, takeover and defeat (def.inFight: the leads in this fight, both by default). setLeadHealth is also the
+//   fall feed: a lead in the fight at 0 or below (a finite value: an overkill under 0 counts, though it is stored
+//   as unknown for the gift Heal) is down, and above 0 it stands again; NaN or an infinity changes nothing. A lead
+//   at 0 is down, not dead: while the other lead in the fight stands, the fight goes on. When the controlled lead
+//   (activeLead) falls and the other stands, control passes to it at once (tick.tookOver). It never passes back
+//   by itself: only setActiveLead (the player's switch) moves it, and that refuses a lead that is down or not in
+//   the fight. The fallen lead stands again by itself after the partner's downSeconds (30 s) at its riseHealth
+//   (25%): the partner's brain drives the uncontrolled body, which a fallen lead always is, so it times the fall
+//   and asks for the rise (PartnerBrain rule 5) and the host stands the body and feeds its health. Every lead in
+//   the fight down at once is a defeat (tick.defeated, once); after it nothing falls or stands until a retry or a
+//   begin. Each fall and rise comes once, on the next tick (leadsFell, leadsRose).
+// * Checkpoints (FightCheckpoint lists every field). The fight-start checkpoint is the state once the host has
+//   set the fight up: the first setHostCheckpoint or the first tick after a begin takes it, whichever comes
+//   first. With a boss script whose def says checkpointAtPhase, the end of a tick that changed its phase takes a
+//   phase checkpoint; checkpointPhase() takes one for a boss the host runs itself (its def's checkpointAtPhase).
+//   The host writes its own part (setHostCheckpoint) right after the call or tick that reports one
+//   (tick.checkpoint). retry() goes back to the latest: every piece starts clean, as at a begin, at the
+//   checkpoint's clock, and then the checkpoint's fields are put back exactly. A defeat costs nothing but the
+//   attempt: the Load, the currency and the gift tally come back as the checkpoint has them. A retry unbinds the
+//   story, as a begin does.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
@@ -59,6 +79,7 @@
 #include "ftcore/HeldRefusal.h"
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
+#include "ftcore/PartnerBrain.h"
 #include "ftcore/Places.h"
 #include "ftcore/StoryState.h"
 #include "ftcore/StrikeCount.h"
@@ -114,6 +135,8 @@ struct FightSessionDef {
     // The Lone Carry's lead (kNoFighter: nobody Lone) and its tuning (LoneCarry.h).
     FighterId loneLead = kNoFighter;
     LoneTuning loneTuning{};
+    // The leads in this fight, by lead (kLeadA, kLeadB): a fight with one lead has only that one. At least one.
+    std::array<bool, 2> inFight{true, true};
 };
 
 inline bool validKeptGauge(const FightSessionDef& d) {
@@ -135,8 +158,9 @@ struct FightSessionCheck {
     bool cap = true;   // false: the blow cap was refused (no cap)
     bool lone = true;  // false: the Lone Carry was refused (not a lead, or its tuning out of range): nobody Lone
     bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
+    bool party = true; // false: no lead in the fight (both are then)
     // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
-    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap && lone; }
+    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap && lone && party; }
 };
 
 // A Load change the count asks of a lead's gauge (def.lift): the host applies it, store or spend. Append only.
@@ -169,6 +193,44 @@ struct HeldBonus {
 // Held blows the session can wait on at once (judgeHeldBlow); one more lands at base with no bonus.
 inline constexpr std::size_t kMaxHeldBlows = 16;
 
+// Which checkpoint a tick or call took (None: none).
+enum class CheckpointAt : std::uint8_t { None, FightStart, Phase };
+
+// The host's part of a checkpoint: what a retry must put back that the session does not own. The host writes it
+// (setHostCheckpoint) when a checkpoint is taken and applies it from retry()'s checkpoint.
+struct FightHostCheckpoint {
+    std::array<int, 2> hp{};         // each lead's hp, by lead (the host's own scale)
+    std::array<int, 2> load{};       // each lead's Load gauge (the kept lead's is the session's: keptLoad)
+    std::uint64_t draws = 0;         // the fight's draw state (at the fight's start: its seed)
+    PartnerBrain partner{};          // the partner's brain as it stood (a fallen lead's down time is in it)
+    PartnerOrder order = PartnerOrder::StayClose; // the order button
+    int bossHp = 0;                  // a boss the host runs itself (not a boss script): its hp; 0 when none
+    std::uint8_t bossPhase = 0;      // and its phase
+    std::int64_t currency = 0;       // what the party carries (a defeat costs none of it)
+};
+
+// A checkpoint: everything a retry puts back. The rest of the session (the count and its windows, the table, the
+// held refusal, the session's own lock, marks, held blows, the story binding) starts clean, as at a begin.
+struct FightCheckpoint {
+    CheckpointAt at = CheckpointAt::None; // None: not taken yet (a retry then is a begin again)
+    std::uint8_t phase = 0;               // the boss's phase (0 at the fight's start)
+    double now = 0.0;                     // the fight clock
+    FighterId activeLead = kLeadA;        // the controlled lead
+    std::array<float, 2> leadHealth{kHealthUnknown, kHealthUnknown}; // setLeadHealth's stored values
+    std::array<bool, 2> down{};           // which leads were down
+    GiftSlot gift{};                      // the whole slot: tally, threads, cooldowns, heals given, its state
+    std::array<PlaceTable, kMaxFighters> places{}; // each fighter's places
+    int keptLoad = 0;                     // the kept gauge's Load
+    bool keptDown = false;
+    bool lone = false;                    // the Lone Carry: on, ended, why, and this fight's lone Releases
+    bool loneEnded = false;
+    LoneEnd loneEndedBy = LoneEnd::None;
+    std::uint32_t loneReleases = 0;
+    std::uint32_t lonePooled = 0;
+    BossScript boss{};                    // with a boss script: as it stood (phase, hp, rotation, its lock)
+    FightHostCheckpoint host{};           // the host's part
+};
+
 // One tick's results. The event buffers are the pieces' own (no copy): read them before the next session call,
 // which may refill them; the pointers stay valid until the next tick or begin.
 struct FightTick {
@@ -185,6 +247,11 @@ struct FightTick {
     int loadsDropped = 0;                   // changes with no room in the buffer (never with two joiners a tick)
     bool loneCarryBegan = false;            // the first tick after a begin with a lead Lone (show the bargain)
     LoneEnd loneCarryEndedBy = LoneEnd::None; // the first tick after the Lone Carry ended, and why
+    std::uint8_t leadsFell = 0;             // since the last tick: bit (1 << lead) for each lead that fell
+    std::uint8_t leadsRose = 0;             // and for each that stood again
+    FighterId tookOver = kNoFighter;        // the lead that took control when the controlled lead fell
+    bool defeated = false;                  // once: every lead in the fight down at once
+    CheckpointAt checkpoint = CheckpointAt::None; // taken since the last tick: write the host's part now
 };
 
 // What a press did, for the generic press(); the typed calls return the pieces' own results.
@@ -219,10 +286,70 @@ public:
     // Starts a fight at `start` on the fight clock (not bound by kMaxTimeJump). A start past +-kMaxFightStart, or
     // an infinite one, is clamped to +-kMaxFightStart; a NaN start is 0. Either way the fight begins (check.start).
     FightSessionCheck begin(const FightSessionDef& def, double start) {
+        def_ = def;
+        const FightSessionCheck c = restart(start);
+        start_ = now_;
+        startCp_.at = CheckpointAt::None;
+        phaseCp_.at = CheckpointAt::None;
+        startDue_ = true;
+        return c;
+    }
+
+    // ---- Down, takeover, defeat and checkpoints (see above) ----
+    bool inFight(FighterId lead) const { return isLead(lead) && inFight_[lead]; }
+    bool down(FighterId lead) const { return isLead(lead) && down_[lead]; }
+    bool defeated() const { return defeated_; }
+    // The checkpoint a retry would go back to now.
+    const FightCheckpoint& checkpoint() const { return phaseCp_.at == CheckpointAt::Phase ? phaseCp_ : startCp_; }
+    // A phase checkpoint for a boss the host runs itself, when its def says checkpointAtPhase: call it on the
+    // step its phase changes (`phase`, the new one), then setHostCheckpoint. False (none taken) after a defeat.
+    bool checkpointPhase(std::uint8_t phase) {
+        if (defeated_) return false;
+        takeStartIfDue();
+        takeCheckpoint(phaseCp_, CheckpointAt::Phase, phase);
+        return true;
+    }
+    // The host's part of the latest checkpoint (taking the fight-start one first if it is due: call it once the
+    // fight is set up, before the first tick, or right after a tick or call that reports one).
+    void setHostCheckpoint(const FightHostCheckpoint& host) {
+        takeStartIfDue();
+        (phaseCp_.at == CheckpointAt::Phase ? phaseCp_ : startCp_).host = host;
+        cpDue_ = CheckpointAt::None; // written: the next tick does not ask for it again
+    }
+    // Back to the latest checkpoint (see above); the host applies its part from the one returned. Before any
+    // checkpoint was taken it is a begin again at the fight's start (the returned one is at None).
+    const FightCheckpoint& retry() {
+        won_ = false; // an attempt thrown away: the gift tally goes back
+        const bool atPhase = phaseCp_.at == CheckpointAt::Phase;
+        const FightCheckpoint& cp = atPhase ? phaseCp_ : startCp_;
+        restart(cp.at == CheckpointAt::None ? start_ : cp.now);
+        if (cp.at == CheckpointAt::None) {
+            startDue_ = true;
+            return cp;
+        }
+        activeLead_ = cp.activeLead;
+        leadHealth_ = cp.leadHealth;
+        down_ = cp.down;
+        gift_ = cp.gift;
+        places_ = cp.places;
+        kept_ = cp.keptLoad;
+        keptDown_ = cp.keptDown;
+        if (keptOn_) count_.setLoad(def_.keptLead, keptDown_ ? 0 : kept_);
+        lone_ = cp.lone;
+        loneEnded_ = cp.loneEnded;
+        loneEndedBy_ = cp.loneEndedBy;
+        loneReleases_ = cp.loneReleases;
+        lonePooled_ = cp.lonePooled;
+        loneBeganDue_ = !atPhase && lone_;
+        if (hasBoss_) boss_ = cp.boss;
+        return cp;
+    }
+
+private:
+    FightSessionCheck restart(double start) {
         FightSessionCheck c;
         c.start = std::isfinite(start) && start >= -kMaxFightStart && start <= kMaxFightStart;
         now_ = startTime(start < -kMaxFightStart ? -kMaxFightStart : (start > kMaxFightStart ? kMaxFightStart : start));
-        def_ = def;
         c.count = count_.reset(def_.count, now_);
         if (!c.count) count_.reset(CountTuning{}, now_);
         c.lift = count_.setLift(def_.lift, def_.liftTuning);
@@ -281,8 +408,22 @@ public:
         tick_.count = &kNoCount;
         tick_.table = &kNoTable;
         tick_.boss = &kNoBoss;
+        c.party = def_.inFight[kLeadA] || def_.inFight[kLeadB];
+        inFight_ = c.party ? def_.inFight : std::array<bool, 2>{true, true};
+        // A lead not in this fight is never the controlled one.
+        if (!inFight_[activeLead_]) activeLead_ = inFight_[kLeadA] ? kLeadA : kLeadB;
+        down_ = {false, false};
+        defeated_ = false;
+        fellDue_ = 0;
+        roseDue_ = 0;
+        tookOverDue_ = kNoFighter;
+        defeatedDue_ = false;
+        cpDue_ = CheckpointAt::None;
+        startDue_ = false;
         return c;
     }
+
+public:
 
     // The story state presses are written to, from now until the next begin. Bind only a fight the story handed off
     // (fightTakesStory); a standalone, demo or practice fight stays unbound and writes nothing. False (and unbound)
@@ -304,6 +445,7 @@ public:
 
     // Moves the fight clock by `fightDt` (0 during hit-stop) and every piece with it.
     const FightTick& tick(double fightDt) {
+        takeStartIfDue();
         const double step = std::isfinite(fightDt) && fightDt > 0.0 ? (fightDt < kMaxFightStep ? fightDt : kMaxFightStep) : 0.0;
         now_ += step;
         tick_.now = now_;
@@ -342,6 +484,24 @@ public:
         tick_.loneCarryEndedBy = loneEndDue_ ? loneEndedBy_ : LoneEnd::None;
         loneBeganDue_ = false;
         loneEndDue_ = false;
+        if (hasBoss_ && def_.boss.checkpointAtPhase && !defeated_) {
+            for (const BossEvent& e : *tick_.boss) {
+                if (e.type == BossEventType::PhaseChanged) {
+                    takeCheckpoint(phaseCp_, CheckpointAt::Phase, static_cast<std::uint8_t>(boss_.phase()));
+                    break;
+                }
+            }
+        }
+        tick_.leadsFell = fellDue_;
+        tick_.leadsRose = roseDue_;
+        tick_.tookOver = tookOverDue_;
+        tick_.defeated = defeatedDue_;
+        tick_.checkpoint = cpDue_;
+        fellDue_ = 0;
+        roseDue_ = 0;
+        tookOverDue_ = kNoFighter;
+        defeatedDue_ = false;
+        cpDue_ = CheckpointAt::None;
         return tick_;
     }
 
@@ -349,9 +509,11 @@ public:
 
     // The lead the player's figure fills (kLeadA until set): the host aims its gift presses at it and reports its
     // blows and calls for it. The host sets it when the fight begins and whenever the player switches lead; it
-    // stays across begin (a party fact, not a fight's). False (unchanged) for a non-lead.
+    // stays across begin (a party fact, not a fight's), except that a begin moves it off a lead not in the fight.
+    // A fall of the controlled lead moves it too (see above). False (unchanged) for a non-lead, a lead not in this
+    // fight or a lead that is down.
     bool setActiveLead(FighterId lead) {
-        if (!isLead(lead)) return false;
+        if (!isLead(lead) || !inFight_[lead] || down_[lead]) return false;
         activeLead_ = lead;
         return true;
     }
@@ -436,10 +598,12 @@ public:
     bool selectGift(Gift g) { return gift_.select(g); }
     // The host's word on a lead's health (a fraction of its max), for the gift Heal: at exactly 1 a Heal is
     // refused NotHurt. Anything that is not a number in 0..1 (NaN, an infinity, under 0, over 1) is stored as
-    // unknown (kHealthUnknown, also the default from begin), and unknown reads as hurt.
+    // unknown (kHealthUnknown, also the default from begin), and unknown reads as hurt. It is also the fall feed
+    // (see above): feed it whenever a lead's hp changes.
     void setLeadHealth(FighterId lead, float fraction) {
-        if (isLead(lead))
-            leadHealth_[lead] = std::isfinite(fraction) && fraction >= 0.f && fraction <= 1.f ? fraction : kHealthUnknown;
+        if (!isLead(lead)) return;
+        leadHealth_[lead] = std::isfinite(fraction) && fraction >= 0.f && fraction <= 1.f ? fraction : kHealthUnknown;
+        fall(lead, fraction);
     }
     float leadHealth(FighterId lead) const { return isLead(lead) ? leadHealth_[lead] : kHealthUnknown; }
     GiftResult giveGift(FighterId target) {
@@ -723,6 +887,55 @@ private:
         if (hasBoss_) boss_.onDeferred(now_);
         else if (def_.locked) lock_.onDeferred(now_);
     }
+    void fall(FighterId lead, float f) {
+        if (!inFight_[lead] || defeated_ || !std::isfinite(f)) return;
+        const std::uint8_t bit = static_cast<std::uint8_t>(1u << lead);
+        if (f > 0.f) {
+            if (down_[lead]) {
+                down_[lead] = false;
+                roseDue_ = static_cast<std::uint8_t>(roseDue_ | bit);
+            }
+            return;
+        }
+        if (down_[lead]) return;
+        down_[lead] = true;
+        fellDue_ = static_cast<std::uint8_t>(fellDue_ | bit);
+        const FighterId other = lead == kLeadA ? kLeadB : kLeadA;
+        if (!inFight_[other] || down_[other]) {
+            defeated_ = true;
+            defeatedDue_ = true;
+            return;
+        }
+        if (lead == activeLead_) {
+            activeLead_ = other;
+            tookOverDue_ = other;
+        }
+    }
+    void takeStartIfDue() {
+        if (!startDue_) return;
+        startDue_ = false;
+        takeCheckpoint(startCp_, CheckpointAt::FightStart, 0);
+    }
+    void takeCheckpoint(FightCheckpoint& cp, CheckpointAt at, std::uint8_t phase) {
+        cp.at = at;
+        cp.phase = phase;
+        cp.now = now_;
+        cp.activeLead = activeLead_;
+        cp.leadHealth = leadHealth_;
+        cp.down = down_;
+        cp.gift = gift_;
+        cp.places = places_;
+        cp.keptLoad = kept_;
+        cp.keptDown = keptDown_;
+        cp.lone = lone_;
+        cp.loneEnded = loneEnded_;
+        cp.loneEndedBy = loneEndedBy_;
+        cp.loneReleases = loneReleases_;
+        cp.lonePooled = lonePooled_;
+        if (hasBoss_) cp.boss = boss_;
+        cp.host = FightHostCheckpoint{};
+        cpDue_ = at;
+    }
 
     double now_ = 0.0;
     FightSessionDef def_{};
@@ -771,6 +984,18 @@ private:
     std::array<float, 2> leadHealth_{kHealthUnknown, kHealthUnknown}; // setLeadHealth, per lead
     bool won_ = false; // finish(true) since the last begin
     std::uint32_t lonePooled_ = 0;
+    double start_ = 0.0; // the fight's start (begin's, clamped)
+    std::array<bool, 2> inFight_{true, true};
+    std::array<bool, 2> down_{};
+    bool defeated_ = false;
+    std::uint8_t fellDue_ = 0;
+    std::uint8_t roseDue_ = 0;
+    FighterId tookOverDue_ = kNoFighter;
+    bool defeatedDue_ = false;
+    bool startDue_ = false;
+    CheckpointAt cpDue_ = CheckpointAt::None;
+    FightCheckpoint startCp_{};
+    FightCheckpoint phaseCp_{};
     // The empty buffers a tick points at before the first tick and when there is no boss script.
     static inline const CountEvents kNoCount{};
     static inline const TableEvents kNoTable{};
