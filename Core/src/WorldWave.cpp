@@ -53,6 +53,20 @@ float worldWaveBandWidth(const WorldWaveParams& params, float radius) {
     return params.bandAtOrigin + (params.bandAtFar - params.bandAtOrigin) * share;
 }
 
+WorldWaveParams streetWaveParams() {
+    WorldWaveParams p;
+    p.prelude = 0.3f;
+    p.fastSpeed = 40.f;
+    p.fastRadius = 20.f;
+    p.slowSpeed = 17.5f;
+    p.easeTime = 0.5f;
+    p.bandAtOrigin = 2.f;
+    p.bandAtFar = 5.f;
+    p.bandFarRadius = 60.f;
+    p.tongueLead = 1.f;
+    return p;
+}
+
 WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {
     WorldWaveFrame frame;
     frame.direction = params.direction;
@@ -175,7 +189,8 @@ WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWavePa
 
     const float d = waveDistance(params.origin, thing.pivot);
     const float r = time >= params.startTime ? frame.radius : 0.f;
-    if (!thing.arrived && r > 0.f && r > d - thing.radius) {
+    const float reach = arriving && r > 0.f ? r + params.tongueLead * frame.bandWidth : r;
+    if (!thing.arrived && r > 0.f && reach > d - thing.radius) {
         thing.arrived = true;
         if (arriving && pawnInFootprint) thing.held = true;
     }

@@ -139,6 +139,8 @@ private:
 	ftcore::WorldWaveState State;
 	ftcore::WorldWaveFrame Frame;
 	FVector OriginCm = FVector::ZeroVector;
+	// The ground under the origin (one trace at StartWave): the prelude streak's foot.
+	FVector StreakFootCm = FVector::ZeroVector;
 	bool bWave = false;
 	bool bExposureHeld = false;
 	bool bHoldClock = false;

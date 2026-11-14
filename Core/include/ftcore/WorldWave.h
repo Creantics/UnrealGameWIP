@@ -75,8 +75,17 @@ struct WorldWaveParams {
     float maxRadius = 400.f;
     float insideRamp = 0.25f;                     // cameraInside's ramp once the inner edge has passed the viewer
     float collisionDelay = 0.2f;                  // a tagged thing's collision follows its tag this long after the front
+    // The front's ragged tongues reach ahead of the outer edge by up to this share of the band's width: a thing the
+    // wave brings in is drawn once the tongues' reach (r + tongueLead * w) meets its near side, so the material's tear
+    // can reach it. The classification and the cues keep the outer edge r.
+    float tongueLead = 0.f;
     WaveDirection direction = WaveDirection::Forward;
 };
+
+// The street preset: the wave run through a street at walking scale, a front that rises up the buildings it meets, the
+// change reaching 60 m about 2.2 s after the prelude (2.5 s after the start), with a wide ragged band whose tongues
+// reach a band's width ahead. Origin, start time and direction are the host's.
+FTCORE_API WorldWaveParams streetWaveParams();
 
 struct WorldWaveFrame {
     float radius = 0.f;           // the outer edge, metres

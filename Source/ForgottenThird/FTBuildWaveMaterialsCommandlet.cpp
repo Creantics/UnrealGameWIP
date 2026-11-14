@@ -11,6 +11,7 @@
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionAdd.h"
+#include "Materials/MaterialExpressionAtmosphericLightVector.h"
 #include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
@@ -203,6 +204,9 @@ UMaterial* BuildInkMaterial(UPackage* Package, UMaterialParameterCollection* Loo
 	AddScene(TEXT("SceneDepthIn"), PPI_SceneDepth, -700);
 	AddScene(TEXT("SceneNormalIn"), PPI_WorldNormal, -600);
 	AddInput(Custom, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -1300, -500));
+	AddInput(Custom, TEXT("CamPos"), AddExpression<UMaterialExpressionCameraPositionWS>(Material, -1300, -460));
+	// Toward the sun (the view's first atmosphere light): the hatch's shading on the second world's faces.
+	AddInput(Custom, TEXT("SunDir"), AddExpression<UMaterialExpressionAtmosphericLightVector>(Material, -1300, -430));
 
 	struct FCollectionInput
 	{
@@ -237,12 +241,12 @@ UMaterial* BuildInkMaterial(UPackage* Package, UMaterialParameterCollection* Loo
 	const FScalarSpec Scalars[] = {
 		{TEXT("SceneKeep"), 0.15f},  // the scene's colour kept inside the front
 		{TEXT("DisplacePx"), 12.f},  // the band's displacement of the lookup, pixels at 1080p
-		{TEXT("SmearMinPx"), 20.f},  // the band's outward smear, pixels at 1080p
-		{TEXT("SmearMaxPx"), 40.f},
-		{TEXT("LinePx"), 1.5f},      // the ink lines' sampling ring
+		{TEXT("SmearMinPx"), 40.f},  // the band's outward smear, pixels at 1080p
+		{TEXT("SmearMaxPx"), 90.f},
+		{TEXT("LinePx"), 1.5f},      // the ink lines' sampling ring (the silhouettes' is twice it)
 		{TEXT("HatchPx"), 7.f},      // the hatch's spacing on screen
-		{TEXT("Tooth"), 0.12f},      // the paper's grain
-		{TEXT("StreakPx"), 1.6f},    // the prelude streak's half width at its foot
+		{TEXT("Tooth"), 0.2f},       // the paper's grain
+		{TEXT("StreakPx"), 5.f},     // the prelude streak's half width at its foot
 	};
 	UMaterialExpressionScalarParameter* Sky = AddExpression<UMaterialExpressionScalarParameter>(Material, -1000, 300);
 	Sky->ParameterName = FTStyle::SkyDepthName();
@@ -462,10 +466,12 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	TArray<UMaterial*> Built = {Ink};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
 	{
+		// A missing twin is not fatal: the dressing leaves that master's props uncut (it finds no twin) and the rest build.
 		UMaterial* Twin = BuildTwin(Master);
 		if (!Twin)
 		{
-			return 1;
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: no twin for %s; its props stay uncut."), kTag, Master);
+			continue;
 		}
 		Built.Add(Twin);
 	}

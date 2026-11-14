@@ -1,5 +1,6 @@
 #include "FTWorldWaveSubsystem.h"
 
+#include "FTCellInstancer.h"
 #include "FTClockTower.h"
 #include "FTExploreCharacter.h"
 #include "FTSceneLook.h"
@@ -49,9 +50,47 @@ enum class EPick : uint8
 	Lamp, // the TQ-04 street lamp
 	Lens, // a lamp's night lens (the night lights' instanced mesh tagged FTScene::NightLampHeadTag)
 	Car,  // the parked kei car
+	Road, // road furniture standing on the street: signal masts and heads, their lenses, sign posts, stand-in vehicles
 };
-constexpr int32 kPickCount = 5;
-const TCHAR* const kPickNames[kPickCount] = {TEXT("none"), TEXT("street trees"), TEXT("lamp posts"), TEXT("lamp lenses"), TEXT("kei cars")};
+constexpr int32 kPickCount = 6;
+const TCHAR* const kPickNames[kPickCount] = {
+	TEXT("none"), TEXT("street trees"), TEXT("lamp posts"), TEXT("lamp lenses"), TEXT("kei cars"), TEXT("road furniture")};
+
+// Road furniture (FTBuildRoads): a cell's instanced mesh drawn to the props' or the cars' distance (the ground and the
+// markings are drawn at any distance) carrying a road tag. Its instances are taken one by one when they stand up off the
+// street (their top RoadMinRiseCm over the ground at the origin), so grates, tactile strips and wires stay with the
+// ground while a mast's arm, head and lenses go with it.
+constexpr double RoadMinRiseCm = 40.0;
+
+// The ground under a point: one trace straight down (50 m); FallbackDrop under it when nothing is hit.
+double GroundUnder(const UWorld& World, const FVector& At, double FallbackDrop)
+{
+	FHitResult Hit;
+	FCollisionQueryParams Query(TEXT("FTWorldWaveGround"), true);
+	if (World.LineTraceSingleByChannel(Hit, At, At - FVector(0.0, 0.0, 5000.0), ECC_Visibility, Query))
+	{
+		return Hit.ImpactPoint.Z;
+	}
+	return At.Z - FallbackDrop;
+}
+
+bool IsRoadFurniture(const UInstancedStaticMeshComponent& Ism)
+{
+	if (Ism.InstanceEndCullDistance != FTCells::PropCull && Ism.InstanceEndCullDistance != FTCells::CarCull)
+	{
+		return false;
+	}
+	for (const FName& Tag : Ism.ComponentTags)
+	{
+		const FString Name = Tag.ToString();
+		if (Name.StartsWith(TEXT("FTRoad")) || Name.StartsWith(TEXT("FTSignal_")) || Name.StartsWith(TEXT("FTPedSignal_")) ||
+			Name.StartsWith(TEXT("FTVehicle_")))
+		{
+			return true;
+		}
+	}
+	return false;
+}
 
 EPick PickOf(const UStaticMesh& Mesh)
 {
@@ -385,13 +424,15 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	{
 		StopWave();
 	}
-	Params = ftcore::WorldWaveParams{};
+	Params = ftcore::streetWaveParams();
 	Params.origin = ToMetres(Origin);
 	Params.startTime = StartTime;
 	Params.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
 	State = ftcore::WorldWaveState{};
 	Frame = ftcore::WorldWaveFrame{};
 	OriginCm = Origin;
+	// The prelude's streak stands on the road under the origin (the origin itself is over it).
+	StreakFootCm = FVector(Origin.X, Origin.Y, GroundUnder(*World, Origin, 0.0));
 	// The fogs at the map's own density (StopWave above has put back any a last wave thinned).
 	Fogs.Reset();
 	for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
@@ -513,16 +554,19 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 		FScreenPoint Tip;
 		if (bView)
 		{
-			Foot = Project(ViewProjection, OriginCm);
-			Tip = Project(ViewProjection, OriginCm + FVector(0.0, 0.0, FTWorldWave::StreakHeightCm));
+			Foot = Project(ViewProjection, StreakFootCm);
+			Tip = Project(ViewProjection, StreakFootCm + FVector(0.0, 0.0, FTWorldWave::StreakHeightCm));
 		}
 		const float Drawable = bView && Foot.Depth > 10.f && Tip.Depth > 10.f ? 1.f : 0.f;
 		Mpc->SetVectorParameterValue(VectorParams[0], FLinearColor(static_cast<float>(OriginCm.X), static_cast<float>(OriginCm.Y), static_cast<float>(OriginCm.Z), 0.f));
 		Mpc->SetVectorParameterValue(VectorParams[1], FLinearColor(Foot.U, Foot.V, Foot.Side, 1.f));
 		Mpc->SetVectorParameterValue(VectorParams[2], FLinearColor(Foot.U, Foot.V, Drawable, Foot.Depth));
 		Mpc->SetVectorParameterValue(VectorParams[3], FLinearColor(Tip.U, Tip.V, Drawable, Tip.Depth));
-		Mpc->SetScalarParameterValue(ScalarParams[0], Frame.radius * 100.f);
-		Mpc->SetScalarParameterValue(ScalarParams[1], Frame.bandWidth * 100.f);
+		// The materials' band runs from the inner edge (r - w) to the tongues' reach (r + lead w): the collection's radius
+		// is the reach and its band the whole span, so the tear's tongues can run ahead of the outer edge the cues use.
+		const float Lead = Frame.radius > 0.f ? Params.tongueLead * Frame.bandWidth : 0.f;
+		Mpc->SetScalarParameterValue(ScalarParams[0], (Frame.radius + Lead) * 100.f);
+		Mpc->SetScalarParameterValue(ScalarParams[1], (Frame.bandWidth + Lead) * 100.f);
 		Mpc->SetScalarParameterValue(ScalarParams[2], Frame.preludeProgress);
 		Mpc->SetScalarParameterValue(ScalarParams[3], Frame.direction == ftcore::WaveDirection::Reverse ? 1.f : 0.f);
 		Mpc->SetScalarParameterValue(ScalarParams[4], Frame.cameraInside);
@@ -773,6 +817,7 @@ int32 UFTWorldWaveSubsystem::Dress(const FVector& Origin, double Radius)
 	}
 	const double RadiusSq = Radius * Radius;
 	const FName LensTag(FTScene::NightLampHeadTag);
+	const double RoadTopMin = GroundUnder(*World, Origin, 150.0) + RoadMinRiseCm;
 
 	// What lies within the radius: instances of a cell's instanced meshes, and fallback actors' meshes.
 	struct FSplit
@@ -813,9 +858,15 @@ int32 UFTWorldWaveSubsystem::Dress(const FVector& Origin, double Radius)
 				continue;
 			}
 			EPick Pick = EPick::None;
+			UInstancedStaticMeshComponent* AsIsm = Cast<UInstancedStaticMeshComponent>(MeshComponent);
 			if (MeshComponent->ComponentHasTag(LensTag))
 			{
 				Pick = EPick::Lens;
+			}
+			else if (AsIsm && IsRoadFurniture(*AsIsm))
+			{
+				// Per component: the road's engine shapes are shared with every other builder's.
+				Pick = EPick::Road;
 			}
 			else if (const EPick* Cached = Picks.Find(Mesh))
 			{
@@ -829,7 +880,7 @@ int32 UFTWorldWaveSubsystem::Dress(const FVector& Origin, double Radius)
 			{
 				continue;
 			}
-			if (UInstancedStaticMeshComponent* Ism = Cast<UInstancedStaticMeshComponent>(MeshComponent))
+			if (UInstancedStaticMeshComponent* Ism = AsIsm)
 			{
 				FSplit* Split = nullptr;
 				for (int32 Index = 0; Index < Ism->GetInstanceCount(); ++Index)
@@ -837,6 +888,10 @@ int32 UFTWorldWaveSubsystem::Dress(const FVector& Origin, double Radius)
 					FTransform Placed;
 					if (Ism->GetInstanceTransform(Index, Placed, true) && FVector::DistSquared(Placed.GetLocation(), Origin) <= RadiusSq)
 					{
+						if (Pick == EPick::Road && Mesh->GetBounds().TransformBy(Placed).GetBox().Max.Z < RoadTopMin)
+						{
+							continue;
+						}
 						if (!Split)
 						{
 							Split = &Splits.AddDefaulted_GetRef();

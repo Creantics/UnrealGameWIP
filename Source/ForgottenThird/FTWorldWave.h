@@ -54,11 +54,14 @@ inline constexpr const TCHAR* CollectionPath = TEXT("/Game/Look/MPC_Look"); // F
 inline constexpr const TCHAR* InkMaterialPath = TEXT("/Game/Look/Wave/PP_WorldWave_Ink");
 inline constexpr const TCHAR* CutFunctionPath = TEXT("/Game/Look/Wave/MF_WorldWaveCut");
 // A prop master's twin with the cut wired in: /Game/Look/Wave/<master name><TwinSuffix> (M_FTCharacter_WaveCut and
-// M_FTCharacterTex_WaveCut). The dressing moves a tagged prop's slots onto MIDs of the twin.
+// M_FTCharacterTex_WaveCut; the road furniture's M_WorldSurface_WaveCut and its lenses' M_NightLamp_WaveCut). The
+// dressing moves a tagged prop's slots onto MIDs of the twin.
 inline constexpr const TCHAR* TwinSuffix = TEXT("_WaveCut");
 inline constexpr const TCHAR* PropMasters[] = {
 	TEXT("/Game/Characters/Shared/Materials/M_FTCharacter"),
 	TEXT("/Game/Characters/Shared/Materials/M_FTCharacterTex"),
+	TEXT("/Game/Rendering/M_WorldSurface"),
+	TEXT("/Game/Rendering/Windows/M_NightLamp"),
 };
 
 // The collection's parameters.

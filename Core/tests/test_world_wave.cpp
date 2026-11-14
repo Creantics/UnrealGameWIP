@@ -452,3 +452,60 @@ TEST_CASE("evaluateWorldWave: the radius stops at maxRadius and the wave settles
     CHECK_FALSE(before.settled);
     CHECK(before.active);
 }
+
+TEST_CASE("streetWaveParams: 12 m at 0.6 s, 60 m by 2.5 s, a 2 to 5 m band with tongues a band ahead") {
+    const WorldWaveParams p = streetWaveParams();
+    CHECK(WorldWaveParams{}.tongueLead == 0.f);
+    CHECK(p.tongueLead == doctest::Approx(1.f));
+    CHECK(evaluateWorldWave(p, 0.3).radius == doctest::Approx(0.f));
+    CHECK(evaluateWorldWave(p, 0.6).radius == doctest::Approx(12.f));
+    CHECK(evaluateWorldWave(p, 0.8).radius == doctest::Approx(20.f));  // the fast phase ends at 20 m
+    const float at25 = evaluateWorldWave(p, 2.5).radius;
+    CHECK(at25 > 60.f);
+    CHECK(at25 < 61.5f);
+    CHECK(evaluateWorldWave(p, 2.4).radius < 60.f);
+    CHECK(worldWaveBandWidth(p, 0.f) == doctest::Approx(2.f));
+    CHECK(worldWaveBandWidth(p, 60.f) == doctest::Approx(5.f));
+    CHECK(worldWaveBandWidth(p, 200.f) == doctest::Approx(5.f));
+}
+
+namespace {
+
+// The first step (120 fps) a thing 20 m out with a 1.5 m footprint is drawn, and the first it is not.
+void firstDrawnSteps(const WorldWaveParams& p, WorldTag tag, int& firstOn, int& firstOff) {
+    WorldWaveThing thing;
+    thing.pivot = offsetFrom(p.origin, 20.f);
+    thing.radius = 1.5f;
+    thing.tag = tag;
+    WorldWaveState s;
+    firstOn = -1;
+    firstOff = -1;
+    for (int i = 0; i <= 480; ++i) {
+        const double t = i / 120.0;
+        const WorldWaveStep w = updateWorldWave(s, p, t, WaveVec3{});
+        const WorldWaveThingStep step = updateWorldWaveThing(thing, p, w.frame, t, false);
+        if (step.drawn && firstOn < 0) firstOn = i;
+        if (!step.drawn && firstOff < 0) firstOff = i;
+    }
+}
+
+} // namespace
+
+TEST_CASE("updateWorldWaveThing: the tongues' lead draws an arrival early and leaves a departure as it was") {
+    WorldWaveParams lead = streetWaveParams();
+    WorldWaveParams none = lead;
+    none.tongueLead = 0.f;
+    int onLead = 0, offLead = 0, onNone = 0, offNone = 0;
+    firstDrawnSteps(lead, WorldTag::NewOnly, onLead, offLead);
+    firstDrawnSteps(none, WorldTag::NewOnly, onNone, offNone);
+    // r + w > 18.5 m with w = 2 + 3 r / 60: r > 15.71 m, t > 0.693 s; without the lead r > 18.5 m, t > 0.7625 s.
+    CHECK(onLead == 84);
+    CHECK(onNone == 92);
+    CHECK(offLead == 0);  // not drawn before it arrives
+    // A departure ends when the inner edge passes its far side either way: r - w > 21.5 m.
+    firstDrawnSteps(lead, WorldTag::OldOnly, onLead, offLead);
+    firstDrawnSteps(none, WorldTag::OldOnly, onNone, offNone);
+    CHECK(onLead == 0);
+    CHECK(offLead == offNone);
+    CHECK(offLead > 0);
+}
