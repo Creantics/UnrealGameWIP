@@ -53,6 +53,7 @@ private:
 	TObjectPtr<UFTMiniMap> MiniMap;
 	bool bMiniMapTried = false;
 
-	// The new UI's party screen (FT::MakeExplorePartyWidget), added at BeginPlay under -FTNewUi (null otherwise).
+	// The new UI's party screen (FT::MakeExplorePartyWidget), added at BeginPlay when FT::NewUiEnabled (null under
+	// -FTOldUi).
 	TSharedPtr<class SWidget> NewUiWidget;
 };

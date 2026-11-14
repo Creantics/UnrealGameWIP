@@ -1624,10 +1624,11 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	float MouseY = 0.f;
 	PC->GetInputMouseDelta(MouseX, MouseY);
 
-	// The party screen (-FTNewUi): Party's key, or on the pad the map key (Party's route there), opens it; a vertical
-	// flick of the right stick or the mouse moves its cursor, and letting go confirms (ftcore::uiPartyScreenStep).
-	// While it stands the look and the target flick are held; the left stick still moves the lead. Tab (SwitchLead,
-	// the keyboard's only) asks the same switch in one press.
+	// The party screen (the new UI, FT::NewUiEnabled): Party's key, or on the pad the map key (Party's route there),
+	// opens it; a vertical flick of the right stick or the mouse moves its cursor, and letting go confirms
+	// (ftcore::uiPartyScreenStep). While it stands the look and the target flick are held; the left stick still moves
+	// the lead. Tab (SwitchLead, the keyboard's only) asks the same switch in one press. Under -FTOldUi neither is
+	// read, as before the party screen.
 	if (bPartyScreenOn)
 	{
 		ftcore::UiPartyInput PartyIn;
@@ -1646,7 +1647,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	}
 	{
 		const FKey& Tab = FTInputBindings::Key(InputAction::SwitchLead, ftcore::InputDevice::Keys);
-		if (!PartyScreen.open && Tab.IsValid() && PC->WasInputKeyJustPressed(Tab))
+		if (bPartyScreenOn && !PartyScreen.open && Tab.IsValid() && PC->WasInputKeyJustPressed(Tab))
 		{
 			AskLeadSwitch(TEXT("SwitchLead"));
 		}

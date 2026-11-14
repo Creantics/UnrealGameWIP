@@ -4523,13 +4523,14 @@ private:
 	mutable ftcore::UiStroke Line; // the underline being drawn (Core fills it, the mesh takes it)
 };
 
-// The party screen in explore (-FTNewUi): explore has no new-UI party block to open in place, so the fight HUD's party
-// rows stand alone, bottom left, while the explore character's screen is open, in the same fonts, inks, shade and
-// underline (PaintParty's), fading over PartyOpenTime. From the bottom margin up: FOLLOW or WAIT HERE (what picking the
-// row does to the followers) at label size; the lead's name at the lead's size in full ink; the partner's at the
-// partner's size (PartyOtherInk, full ink on the cursor; with no other playable look PARTNER at PartyRefusedInk with
-// NOT HERE); the Third's name alone at PartyThirdInk (no gift slot out of a fight), not drawn without one. Each row
-// stands PartyRowGap px over the capitals of the one under it; the cursor's has the reply underline under its name.
+// The party screen in explore (the new UI, FT::NewUiEnabled): explore has no new-UI party block to open in place, so
+// the fight HUD's party rows stand alone, bottom left, while the explore character's screen is open, in the same
+// fonts, inks, shade and underline (PaintParty's), fading over PartyOpenTime. From the bottom margin up: FOLLOW or
+// WAIT HERE (what picking the row does to the followers) at label size; the lead's name at the lead's size in full
+// ink; the partner's at the partner's size (PartyOtherInk, full ink on the cursor; with no other playable look
+// PARTNER at PartyRefusedInk with NOT HERE); the Third's name alone at PartyThirdInk (no gift slot out of a fight),
+// not drawn without one. Each row stands PartyRowGap px over the capitals of the one under it; the cursor's has the
+// reply underline under its name.
 class SFTExploreParty : public SLeafWidget
 {
 public:
@@ -4708,9 +4709,10 @@ namespace FT
 {
 bool NewUiEnabled()
 {
-	// The one switch every HUD asks (FTArenaHUD, FTStoryHUD). The new UI is the default. -FTOldUi brings the old Canvas
-	// HUD back for one more round and wins over ft.NewUi. -FTNewUi, which turned the new UI on before it was the
-	// default, is a no-op now: it still parses (noted in the log once) and changes nothing.
+	// The one switch every HUD asks (FTArenaHUD, FTStoryHUD, FTExploreHUD) and the party screen's input
+	// (FTArenaRunner, FTExploreCharacter). The new UI is the default. -FTOldUi brings the old Canvas HUD back for one
+	// more round and wins over ft.NewUi. -FTNewUi, which turned the new UI on before it was the default, is a no-op
+	// now: it still parses (noted in the log once) and changes nothing.
 	static const bool bOldUi = []()
 	{
 		if (FParse::Param(FCommandLine::Get(), TEXT("FTNewUi")))

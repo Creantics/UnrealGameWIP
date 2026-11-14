@@ -338,8 +338,9 @@ public:
 	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
 	ftcore::SlotState GetThirdSlot() const;
 	ftcore::GiftError GetThirdSlotRefusal() const;
-	// The party screen (-FTNewUi): Party down opens it on the fight's party block; a flick moves the cursor, the release
-	// confirms. Open: the look and the target flick are held, the left stick still moves the lead.
+	// The party screen (the new UI, FT::NewUiEnabled): Party down opens it on the fight's party block; a flick moves
+	// the cursor, the release confirms. Open: the look and the target flick are held, the left stick still moves the
+	// lead.
 	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
 	// Why a switch to session lead Lead would be refused now, the party row's word (FightSession::leadSwitchReason).
 	ftcore::UiPartyWhy GetLeadSwitchReason(uint8 Lead) const;
@@ -915,7 +916,7 @@ private:
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 	bool bMouseFlicked = false;
-	// The party screen's state (bPartyScreenOn: -FTNewUi, read at Begin), and the last refused switch (see
+	// The party screen's state (bPartyScreenOn: FT::NewUiEnabled, read at Begin), and the last refused switch (see
 	// GetSwitchRefusedSerial).
 	bool bPartyScreenOn = false;
 	ftcore::UiPartyScreen PartyScreen;

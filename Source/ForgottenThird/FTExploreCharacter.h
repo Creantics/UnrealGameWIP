@@ -20,9 +20,9 @@
 // (leader pose) and face shapes; grooms bind to the piece they were built for (see FTLook.h).
 //
 // With a party in config (PartyLooks) the pawn wears one member's look and the rest follow it
-// (AFTExploreDirector): Tab or RB switches to the next member, P or LB hides or shows the followers. Under the new UI
-// (-FTNewUi) the party screen takes P and the map key's hold instead (its last row shows or hides the followers), and
-// Tab alone switches.
+// (AFTExploreDirector). Under the new UI (FT::NewUiEnabled, the default) the party screen takes P and the map key's
+// hold (its last row shows or hides the followers), and Tab alone switches. Under -FTOldUi, as before: Tab or RB
+// switches to the next member, P or LB (or the map key held) hides or shows the followers.
 // StartLead and bStartSolo set the start (-ExploreLead=<Name> and -ExploreSolo for -game runs); the
 // player's last choice is kept across a fight (UFTGameInstance).
 //
@@ -181,9 +181,9 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
-	// The party screen under the new UI (-FTNewUi; its explore layer draws it while open) and its rows' PartyLooks
-	// entries as of its opening (-1: none): the partner is the first other playable look, the Third the first look the
-	// player may not play.
+	// The party screen under the new UI (FT::NewUiEnabled; its explore layer draws it while open) and its rows'
+	// PartyLooks entries as of its opening (-1: none): the partner is the first other playable look, the Third the
+	// first look the player may not play.
 	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
 	int32 GetPartnerIndex() const { return PartnerIndex; }
 	int32 GetThirdIndex() const { return ThirdIndex; }
