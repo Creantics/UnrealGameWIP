@@ -563,10 +563,6 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 #endif
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
-	// PARTNER (the pair press) has someone to answer it with no ally body only when a script feeds the press (the
-	// autopilot's press after a parry, the shared count) or a held-out partner waits for the Count press to call it
-	// in. With neither and no ally body (a solo fight) the rules answer Absent and the HUD hides the row.
-	Fight.setPairPartner(bAutoPlay || bSharedCount || bPartnerHeldOut);
 	SessionLead = SessionLeadOf(Setup.Lead);
 	StartLead = SessionLead;
 	BeginSession();

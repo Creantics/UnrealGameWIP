@@ -1737,7 +1737,7 @@ TEST_CASE("arena partner: at a set table with a session's count, each blow is ru
     CHECK(s.punishUsed == 0);
 }
 
-TEST_CASE("arena partner: PARTNER (the pair press) is Closed or Ok while it is in the fight, down included; Absent once it is out") {
+TEST_CASE("arena partner: PARTNER (the pair press) is Closed or Ok while it is in the fight, down included, and once it is out") {
     PRig r;
     r.enemy(biterKind(150, 3.f, 40.f), Vec2{0.f, 0.f});
     r.bodies.player = Vec2{0.f, 2.8f}; // within the biter's pick, out of its bite
@@ -1754,10 +1754,9 @@ TEST_CASE("arena partner: PARTNER (the pair press) is Closed or Ok while it is i
         r.tick();
     }
     CHECK(downSeen);
-    // Out of the fight (a retry of a fight begun Lone puts it out: no ally body), with nothing scripted: Absent.
+    // Out of the fight (a retry of a fight begun Lone puts it out: no ally body): the press still pairs with a parry,
+    // so the answer stays the window's, never Absent.
     r.fight.setPartner(nullptr, nullptr);
     r.fight.setAlly(0, 0.4f);
-    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Absent);
-    r.fight.setPairPartner(true); // a held-out partner the Count press calls in
-    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Closed);
+    CHECK(r.fight.pressReason(ArenaPress::Pair) != PressReason::Absent);
 }

@@ -1236,8 +1236,9 @@ public:
     // no heal charges, no gun) or the fight has not begun or is won; Down: the player is down or the fight is lost;
     // Broken: the guard is broken; Busy: the press would wait in the buffer (an action not yet cut, a hit pause) and
     // may start when that ends; Overloaded, Stamina, Empty (no charge, no round, too little Load), Closed (Pair: no
-    // window open; a press now still waits pairWindow for a parry): refused. Pair is Absent when no partner can answer
-    // it (no ally body and no setPairPartner), whatever the window. Ok: the press starts its action on the
+    // window open; a press now still waits pairWindow for a parry): refused. Pair is never Absent while the fight runs:
+    // the press pairs with a parry whoever feeds it (a partner's host, a script, the Count key in a solo or Lone fight),
+    // so PARTNER reads Closed or Ok there, the window's answer. Ok: the press starts its action on the
     // next tick (Guard: the guard is up, or goes up). The answer is the state's now: stamina coming back, or a reload
     // finishing, in that next tick's own first part lets a press through that reads Stamina or Empty here (and lets a
     // buffered press refused Stamina start ahead of a guard that reads Ok).
@@ -1396,12 +1397,6 @@ public:
     // takeHalfLoadShare is stored as Load (TookHalf, then LoadStored). A takeHalf chair heals the ally its share of
     // maxHp each time. A press no hit takes stays unused until its window passes.
     FTCORE_API void setAlly(int maxHp, float radius);
-    // A partner outside the fight's own bodies answers the pair press: a host script feeding ArenaInput::pair, or a
-    // held-out partner the Count press calls in. Read only by pressReason(Pair): with no ally body (setAlly) and none
-    // declared here, no partner can answer and Pair reads Absent. The tick never reads it: a pair press is taken as
-    // before either way (tryPair). Off by default; kept across begin and restart.
-    FTCORE_API void setPairPartner(bool on);
-    FTCORE_API bool pairPartner() const;
     FTCORE_API int allyHp() const;
     FTCORE_API int allyMaxHp() const;
     FTCORE_API bool allyAlive() const;
@@ -1669,7 +1664,6 @@ private:
     Vec2 allyPos_;
     ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
     bool lone_ = false;                     // setLone (kept across begin and restart)
-    bool pairPartner_ = false;              // setPairPartner (kept across begin and restart; pressReason only)
     float takenScale_ = 1.f;                // this tick's ArenaInput::takenScale, read as it says
     LoneTuning loneTuning_{};
     float loneBlowCap_ = 0.f;               // setLone's blowCap (0: none)

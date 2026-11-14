@@ -920,9 +920,6 @@ struct ArenaFightImpl {
         if (what != Press::None && kitLacks(what)) return PressReason::Absent;
         if (p == ArenaPress::Heal && fight.healMax_ == 0) return PressReason::Absent;
         if (p == ArenaPress::Shot && fi.weapon != ArenaWeapon::Guns) return PressReason::Absent;
-        // No partner to answer the pair press: no ally body (a partner's, up or down, or a carried one) and none the
-        // host declared (setPairPartner).
-        if (p == ArenaPress::Pair && fight.allyMaxHp_ == 0 && !fight.pairPartner_) return PressReason::Absent;
         if (pl.hp <= 0 || pl.action == ArenaAction::Downed) return PressReason::Down;
         if (p == ArenaPress::Pair) return fight.pairOpen() ? PressReason::Ok : PressReason::Closed;
         if (pl.action == ArenaAction::GuardBreak) return PressReason::Broken; // canStart starts nothing until it ends
@@ -3718,8 +3715,6 @@ void ArenaFight::setAlly(int maxHp, float radius) {
     allyHp_ = allyMaxHp_;
     allyRadius_ = std::isfinite(radius) && radius > 0.f ? radius : 0.4f;
 }
-void ArenaFight::setPairPartner(bool on) { pairPartner_ = on; }
-bool ArenaFight::pairPartner() const { return pairPartner_; }
 int ArenaFight::allyHp() const { return allyHp_; }
 int ArenaFight::allyMaxHp() const { return allyMaxHp_; }
 bool ArenaFight::allyAlive() const { return allyMaxHp_ > 0 && allyHp_ > 0; }

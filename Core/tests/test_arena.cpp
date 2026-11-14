@@ -4124,7 +4124,6 @@ void checkPresses(const Rig& rig, PressTally& t) {
 // after the last; stops 20 ticks after the fight ends.
 template <class Script>
 void runChecked(Rig& rig, int ticks, PressTally& t, Script script) {
-    rig.fight.setPairPartner(true); // the probes feed the partner's press themselves: a scripted partner
     int over = 0;
     for (int k = 1; k <= ticks && over < 20; ++k) {
         script(rig, k);
@@ -4260,10 +4259,7 @@ TEST_CASE("arena pressReason: the fight's phase and the kit's moves") {
     CHECK(rig.fight.pressReason(ArenaPress::Heal) == PressReason::Ok); // at full health too: the heal never asks
     CHECK(rig.fight.pressReason(ArenaPress::Shot) == PressReason::Absent); // no gun
     CHECK(rig.fight.pressReason(ArenaPress::Release) == PressReason::Empty); // no Load yet
-    CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Absent); // no partner to answer it
-    rig.fight.setPairPartner(true);
-    CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Closed); // a scripted one: the window is shut
-    rig.fight.setPairPartner(false);
+    CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Closed); // solo too: no parry, the window is shut
     CHECK(rig.fight.pressReason(ArenaPress::Guard) == PressReason::Ok);
     rig.fight.giveLoad(kMaxLoad);
     rig.tick();
@@ -9703,29 +9699,53 @@ TEST_CASE("arena hooks: hostHeal and hostHurt change the player's hp now and rep
     CHECK(rig.count(ArenaEventType::Downed) == 0);
 }
 
-TEST_CASE("arena pressReason: Pair is Absent at every tick of a fight no partner can answer, the press taken as before") {
-    // The brawl, solo: no ally body, no scripted partner. PARTNER is Absent at every tick the fight runs, and the
-    // partner's press (as the Count key feeds it) still does what it did: pressReason changes nothing.
-    Rig solo(ruleFighter(), {brawlHitter()});
-    Rig fed(ruleFighter(), {brawlHitter()});
-    solo.put(0, 1.5f, 0.f);
-    fed.put(0, 1.5f, 0.f);
-    fed.fight.setPairPartner(true);
-    int ticks = 0;
-    for (int k = 1; k <= 1500 && solo.fight.phase() == ArenaPhase::Fighting; ++k) {
-        brawlScript(solo, k);
-        brawlScript(fed, k);
-        solo.in.pair = fed.in.pair = k % 7 == 0;
-        CHECK(solo.fight.pressReason(ArenaPress::Pair) == PressReason::Absent);
-        CHECK(fed.fight.pressReason(ArenaPress::Pair) != PressReason::Absent);
-        solo.tick();
-        fed.tick();
-        ++ticks;
+TEST_CASE("arena pressReason: Pair at every tick of a solo fight, a Lone Carry and a fight with an ally body is what the press does") {
+    // Whoever feeds the pair press (a partner's host, a script, the Count key with nobody beside the lead) it pairs with
+    // a parry in its window: tryPair asks for no partner. So PARTNER is never Absent while the fight runs, and the
+    // every-tick check holds its answer to what the press does, in each of the three fight states.
+    for (int state = 0; state < 3; ++state) {
+        CAPTURE(state); // 0 solo, 1 Lone, 2 an ally body beside the lead
+        PressTally t;
+        int pairAbsent = 0;
+        auto setUp = [state](Rig& r) {
+            if (state == 1) r.fight.setLone(true);
+            if (state == 2) r.fight.setAlly(80, 0.4f);
+        };
+        {   // the brawl, to the fight's end
+            Rig rig(ruleFighter(), {brawlHitter()});
+            rig.put(0, 1.5f, 0.f);
+            setUp(rig);
+            CHECK(rig.fight.lone() == (state == 1));
+            CHECK(rig.fight.allyMaxHp() == (state == 2 ? 80 : 0));
+            runChecked(rig, 4000, t, [&pairAbsent](Rig& r, int k) {
+                brawlScript(r, k);
+                if (r.fight.pressReason(ArenaPress::Pair) == PressReason::Absent) ++pairAbsent;
+            });
+        }
+        {   // a parry the pair press pairs with (PARTNER's window)
+            Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+            rig.put(0, 1.5f, 0.f);
+            setUp(rig);
+            runChecked(rig, 70, t, [&pairAbsent](Rig& r, int k) {
+                r.in.guard = k >= 19;
+                if (r.fight.pressReason(ArenaPress::Pair) == PressReason::Absent) ++pairAbsent;
+            });
+        }
+        {   // the rig's own press (as the Count key feeds it) after a parry: it pairs in this state too
+            Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+            rig.put(0, 1.5f, 0.f);
+            setUp(rig);
+            for (int k = 1; k <= 70; ++k) {
+                rig.in.guard = k >= 19;
+                rig.in.pair = k >= 19;
+                if (rig.fight.pressReason(ArenaPress::Pair) == PressReason::Absent) ++pairAbsent;
+                rig.tick();
+            }
+            CHECK(rig.fight.stats().counterStaggers > 0);
+        }
+        CHECK(t.checked > 3000);
+        CHECK(pairAbsent == 0);
+        CHECK(t.pairOk > 0); // PARTNER read Ok and the press paired
+        CHECK(t.seen[static_cast<std::size_t>(PressReason::Closed)] > 0);
     }
-    CHECK(ticks > 300);
-    CHECK(solo.fight.stats().counterStaggers == fed.fight.stats().counterStaggers); // the same presses, the same pairs
-    CHECK(solo.fight.hp() == fed.fight.hp());
-    // Kept across restart, like setLone.
-    fed.fight.restart();
-    CHECK(fed.fight.pairPartner());
 }
