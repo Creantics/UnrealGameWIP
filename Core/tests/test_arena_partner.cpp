@@ -3,6 +3,7 @@
 // fight without one is unchanged.
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/FightSession.h"
 #include "ftcore/PartnerBrain.h"
 #include "TestAssets.h"
 #include <ostream>
@@ -165,6 +166,10 @@ ArenaEnemyKind bossKind(int damage) {
     return k;
 }
 
+// A partner's blow: a Hit with source kArenaAlly (AllyStrike is no longer emitted).
+bool allyHit(const ArenaEvent& e) { return e.type == ArenaEventType::Hit && e.source == kArenaAlly; }
+bool leadHit(const ArenaEvent& e) { return e.type == ArenaEventType::Hit && e.source == kArenaPlayer; }
+
 struct Logged {
     ArenaEvent e;
     float t = 0.f;         // fight time at the end of its tick
@@ -260,6 +265,17 @@ struct PRig {
         for (const Logged& l : log)
             if (l.e.type == type) ++n;
         return n;
+    }
+    int allyHits() const {
+        int n = 0;
+        for (const Logged& l : log)
+            if (allyHit(l.e)) ++n;
+        return n;
+    }
+    int findAllyHit() const {
+        for (std::size_t i = 0; i < log.size(); ++i)
+            if (allyHit(log[i].e)) return static_cast<int>(i);
+        return -1;
     }
     // The first such event after `after` (s), or -1; read it with log[i] (the log grows, so keep indices).
     int find(ArenaEventType type, float after = -1.f) const {
@@ -480,17 +496,17 @@ TEST_CASE("arena partner: with no partner set, or a null one, a fight is unchang
     }
 }
 
-TEST_CASE("arena partner: a string lands its blows for partnerBlowDamage and nothing else") {
+TEST_CASE("arena partner: a string lands its blows for partnerBlowDamage, as Hits of its own, nothing of the player's") {
     PRig r;
     stringRig(r, true);
     r.run(3.f);
     const ArenaStats& s = r.fight.stats();
     REQUIRE(s.partnerStrings >= 1);
-    REQUIRE(r.count(ArenaEventType::AllyStrike) >= 2);
-    CHECK(r.count(ArenaEventType::AllyStrike) == s.partnerBlows);
+    REQUIRE(r.allyHits() >= 2);
+    CHECK(r.allyHits() == s.partnerBlows);
     int sum = 0;
     for (const Logged& l : r.log) {
-        if (l.e.type != ArenaEventType::AllyStrike) continue;
+        if (!allyHit(l.e)) continue;
         CHECK(l.e.source == kArenaAlly);
         CHECK(l.e.target == 0);
         const int raw = r.def.fighter.light[l.e.move % 3].damage;
@@ -498,19 +514,19 @@ TEST_CASE("arena partner: a string lands its blows for partnerBlowDamage and not
         sum += l.e.amount;
     }
     // 10, 11 and 12 raw against a lead light of 10: 6 + the rest halved, 8, 9 (8.5 rounds up) and 9.
-    CHECK(r.log[static_cast<std::size_t>(r.find(ArenaEventType::AllyStrike))].e.amount == 8);
+    CHECK(r.log[static_cast<std::size_t>(r.findAllyHit())].e.amount == 8);
     CHECK(r.fight.enemyHp(0) == 1000 - sum);
     CHECK(s.partnerDamage == sum);
-    // No poise, no break count, nothing of the player's.
+    // These lights carry no poise damage: no poise lost, no stagger. Nothing of the player's.
     CHECK(r.fight.enemyPoise(0) == doctest::Approx(30.f));
     CHECK(s.damageDealt == 0);
     CHECK(s.hits == 0);
     CHECK(s.staggers == 0);
     CHECK(s.breakOuts == 0);
-    CHECK(s.breakUpright == 0);
-    CHECK(s.flinchChances == 0);
+    CHECK(s.punishUsed == 0);
     CHECK(r.fight.load() == 0);
-    CHECK(r.count(ArenaEventType::Hit) == 0);
+    CHECK(r.count(ArenaEventType::Hit) == s.partnerBlows); // every Hit is the partner's
+    CHECK(r.count(ArenaEventType::AllyStrike) == 0);
     CHECK(r.count(ArenaEventType::Staggered) == 0);
     CHECK(r.count(ArenaEventType::Flinched) == 0);
     CHECK(r.count(ArenaEventType::LoadStored) == 0);
@@ -533,7 +549,7 @@ TEST_CASE("arena partner: its blows on a held stagger never lengthen it") {
                 break;
             }
         }
-        if (partner == 1) strikes = r.count(ArenaEventType::AllyStrike);
+        if (partner == 1) strikes = r.allyHits();
     }
     CHECK(ends[0] > 0);
     CHECK(ends[1] == ends[0]);
@@ -550,17 +566,17 @@ TEST_CASE("arena partner: the part of a blow over 60% of the lead's light is hal
         h.scale = 2.f;
         stringRig(r, true);
         r.run(3.f);
-        REQUIRE(r.count(ArenaEventType::AllyStrike) >= 2);
-        CHECK(h.calls == r.count(ArenaEventType::AllyStrike));
+        REQUIRE(r.allyHits() >= 2);
+        CHECK(h.calls == r.allyHits());
         CHECK(h.type == ArenaEventType::Hit);
         CHECK(h.target == 0);
-        CHECK(h.poise == 0.f);
+        CHECK(h.poise == 0.f); // the light's 0 x the partner's poise scale
         CHECK(h.firstRaw == 10);
         // 20 raw: 6 + 14 / 2.
-        CHECK(r.log[static_cast<std::size_t>(r.find(ArenaEventType::AllyStrike))].e.amount == 13);
+        CHECK(r.log[static_cast<std::size_t>(r.findAllyHit())].e.amount == 13);
         int sum = 0;
         for (const Logged& l : r.log) {
-            if (l.e.type != ArenaEventType::AllyStrike) continue;
+            if (!allyHit(l.e)) continue;
             const int raw = 2 * r.def.fighter.light[l.e.move % 3].damage;
             CHECK(l.e.amount == static_cast<int>(std::lround(partnerBlowDamage(static_cast<float>(raw), 10.f))));
             sum += l.e.amount;
@@ -573,7 +589,7 @@ TEST_CASE("arena partner: the part of a blow over 60% of the lead's light is hal
         r.run(3.f);
         CHECK(h.calls >= 1);
         CHECK(r.fight.stats().partnerStrings >= 1);
-        CHECK(r.count(ArenaEventType::AllyStrike) == 0);
+        CHECK(r.allyHits() == 0);
         CHECK(r.fight.stats().partnerDamage == 0);
         CHECK(r.fight.stats().partnerBlows == 0);
         CHECK(r.fight.enemyHp(0) == 1000);
@@ -718,7 +734,7 @@ TEST_CASE("arena partner: Spread takes an enemy the lead is not attacking; StayC
         }
         CHECK(target == (order == 0 ? 0 : 1));
         r.run(1.f);
-        const int strike = r.find(ArenaEventType::AllyStrike);
+        const int strike = r.findAllyHit();
         REQUIRE(strike >= 0);
         CHECK(static_cast<int>(r.log[static_cast<std::size_t>(strike)].e.target) == (order == 0 ? 0 : 1));
     }
@@ -952,4 +968,356 @@ TEST_CASE("arena partner: 60 s against each shipped boss with the shipped brain 
         CHECK(s.bossAimShareMax <= 0.3f + 1e-6f);
         CHECK(s.partnerStrings >= 1);
     }
+}
+
+namespace {
+
+// A dummy at the origin that never attacks; the striker 1.4 m from it on -x, facing it.
+struct BlowSample {
+    int amount = -1;     // the first Hit's hp
+    float poiseLeft = -1.f;
+    float breakValue = -1.f;
+    int flinchChances = -1;
+    int staggers = -1;
+    std::uint8_t source = kArenaNobody;
+    ArenaStats stats;
+    int load = -1;
+    bool leadIdle = true; // the player's body never left Idle
+};
+
+ArenaFighter poiseFighter(float poise) {
+    ArenaFighter f = ruleFighter();
+    for (std::size_t k = 0; k < 3; ++k) f.light[k].poiseDamage = poise;
+    return f;
+}
+
+ArenaEnemyKind standDummy(bool boss, float poise, float flinchPoise) {
+    ArenaEnemyKind k = dummyKind(1000);
+    k.poise = poise;
+    k.boss = boss;
+    k.breakMove = -1;
+    k.flinchTime = 0.3f;
+    k.flinchPoise = flinchPoise;
+    return k;
+}
+
+// The first blow of light[0] on the dummy, by the player (partner false) or by the partner.
+BlowSample firstBlow(bool partner, bool boss) {
+    PRig r(poiseFighter(20.f));
+    r.enemy(standDummy(boss, 30.f, 5.f), Vec2{0.f, 0.f});
+    if (partner) {
+        r.bodies.player = Vec2{-10.f, 0.f};
+        r.bodies.ally = Vec2{-1.4f, 0.f};
+    } else {
+        r.bodies.player = Vec2{-1.4f, 0.f};
+        r.bodies.ally = Vec2{0.f, 10.f}; // an ally body, no partner: it does nothing
+    }
+    r.go(partner);
+    BlowSample b;
+    for (int k = 0; k < 180; ++k) {
+        if (!partner) r.in.light = k == 0;
+        r.tick();
+        if (r.out->player.action != ArenaAction::Idle && partner) b.leadIdle = false;
+        const int hit = partner ? r.findAllyHit() : r.find(ArenaEventType::Hit);
+        if (hit < 0) continue;
+        const Logged& l = r.log[static_cast<std::size_t>(hit)];
+        b.amount = l.e.amount;
+        b.source = l.e.source;
+        b.poiseLeft = r.fight.enemyPoise(0);
+        b.breakValue = r.fight.enemyBreakValue(0);
+        b.stats = r.fight.stats();
+        b.flinchChances = b.stats.flinchChances;
+        b.staggers = b.stats.staggers;
+        b.load = r.fight.load();
+        break;
+    }
+    return b;
+}
+
+} // namespace
+
+TEST_CASE("arena partner: the same blow by the lead and by the partner differs only by the partner's scales") {
+    const ArenaPartnerScales scales{};
+    REQUIRE(scales.poise == 0.5f);
+    REQUIRE(scales.breakWeight == 0.5f);
+    const ArenaTable t = shippedTable();
+    CHECK(t.partner.poise == 0.5f);
+    CHECK(t.partner.breakWeight == 0.5f);
+    CHECK(t.fallback.partner.poise == 0.5f);
+    for (bool boss : {false, true}) {
+        CAPTURE(boss);
+        const BlowSample lead = firstBlow(false, boss);
+        const BlowSample ally = firstBlow(true, boss);
+        REQUIRE(lead.amount == 10);
+        REQUIRE(ally.amount >= 0);
+        CHECK(lead.source == kArenaPlayer);
+        CHECK(ally.source == kArenaAlly);
+        // hp: partnerBlowDamage of the same ruled damage.
+        CHECK(ally.amount == static_cast<int>(std::lround(partnerBlowDamage(10.f, 10.f))));
+        // poise: 20 by the lead, 20 x 0.5 by the partner.
+        CHECK(lead.poiseLeft == doctest::Approx(10.f));
+        CHECK(ally.poiseLeft == doctest::Approx(20.f));
+        // A boss's break value: kArenaBreakLight by the lead, x 0.5 by the partner; none on a regular enemy.
+        CHECK(lead.breakValue == doctest::Approx(boss ? kArenaBreakLight : 0.f));
+        CHECK(ally.breakValue == doctest::Approx(boss ? kArenaBreakLight * 0.5f : 0.f));
+        // Both blows could flinch it (5 poise needed), each counted the same way.
+        CHECK(lead.flinchChances == 1);
+        CHECK(ally.flinchChances == 1);
+        // Only the lead's blow is the player's.
+        CHECK(lead.stats.hits == 1);
+        CHECK(lead.stats.damageDealt == 10);
+        CHECK(lead.stats.partnerDamage == 0);
+        CHECK(ally.stats.hits == 0);
+        CHECK(ally.stats.damageDealt == 0);
+        CHECK(ally.stats.shotHits == 0);
+        CHECK(ally.stats.partnerDamage == ally.amount);
+        CHECK(ally.stats.partnerBlows == 1);
+        CHECK(ally.load == 0);
+        CHECK(ally.leadIdle);
+    }
+}
+
+TEST_CASE("arena partner: its blows stagger and flinch an enemy, named as the striker") {
+    SUBCASE("stagger") {
+        PRig r(poiseFighter(30.f)); // 15 a blow at the partner's scale: the second blow breaks 30 poise
+        r.enemy(standDummy(false, 30.f, 1000.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{-10.f, 0.f};
+        r.bodies.ally = Vec2{-1.4f, 0.f};
+        r.go(true);
+        r.run(3.f);
+        const int st = r.find(ArenaEventType::Staggered);
+        REQUIRE(st >= 0);
+        CHECK(r.log[static_cast<std::size_t>(st)].e.source == kArenaAlly);
+        CHECK(r.fight.stats().staggers >= 1);
+        CHECK(r.fight.stats().hits == 0);
+    }
+    SUBCASE("flinch") {
+        PRig r(poiseFighter(10.f));
+        r.enemy(standDummy(false, 1000.f, 5.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{-10.f, 0.f};
+        r.bodies.ally = Vec2{-1.4f, 0.f};
+        r.go(true);
+        r.run(3.f);
+        const int fl = r.find(ArenaEventType::Flinched);
+        REQUIRE(fl >= 0);
+        CHECK(r.log[static_cast<std::size_t>(fl)].e.source == kArenaAlly);
+        CHECK(r.fight.stats().flinchChances >= 1);
+    }
+    SUBCASE("a boss's break value: half a light's for each blow") {
+        PRig r(poiseFighter(0.f));
+        r.enemy(standDummy(true, 1000.f, 1000.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{-10.f, 0.f};
+        r.bodies.ally = Vec2{-1.4f, 0.f};
+        r.go(true);
+        r.run(3.f);
+        const int blows = r.allyHits();
+        REQUIRE(blows >= 2);
+        CHECK(r.fight.stats().bossBreakAdded == doctest::Approx(0.5f * kArenaBreakLight * static_cast<float>(blows)));
+    }
+}
+
+TEST_CASE("arena partner: its blow is ruled once by the hook, never counts as the player's, adds no table share") {
+    PRig r(poiseFighter(20.f));
+    HookLog h;
+    r.fight.setBlowHook(&allyHook, &h);
+    ArenaTableSeats seats;
+    seats.player = true;
+    seats.ally = true;
+    r.fight.setTableSeats(seats);
+    r.enemy(standDummy(false, 1000.f, 1000.f), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{-10.f, 0.f};
+    r.bodies.ally = Vec2{-1.4f, 0.f};
+    r.go(true);
+    r.run(4.f);
+    const ArenaStats& s = r.fight.stats();
+    REQUIRE(s.partnerBlows >= 3);
+    CHECK(h.calls == s.partnerBlows); // one ruling a blow (no second pass for the poise or the break)
+    CHECK(r.allyHits() == s.partnerBlows);
+    CHECK(h.otherSources == 0);
+    CHECK(h.poise == doctest::Approx(10.f)); // 20 x 0.5, what the hook is asked to rule
+    CHECK(r.count(ArenaEventType::TableShare) == 0);
+    CHECK(s.hits == 0);
+    CHECK(s.damageDealt == 0);
+    CHECK(s.punishUsed == 0);
+    CHECK(r.fight.load() == 0);
+}
+
+TEST_CASE("arena partner: a boss string aimed at it re-aims at the lead from the next blow once it is down") {
+    PRig r;
+    r.tuning.guardChance = 0.f;
+    r.tuning.budgetShare = 0.f;
+    r.tuning.budgetAllowanceSeconds = 0.f;
+    REQUIRE(validPartnerTuning(r.tuning));
+    // Two narrow bites in a string: the first downs whoever it is aimed at.
+    ArenaEnemyKind k = bossKind(150);
+    k.moveCount = 2;
+    k.moves[1] = k.moves[0];
+    k.moves[0].chain = 1;
+    k.moves[1].chain = -1;
+    k.moves[1].minRange = 1000.f; // never begun on its own: only as the string's second blow
+    for (std::size_t m = 0; m < 2; ++m) {
+        k.moves[m].attack.arcCos = 0.5f;
+        k.moves[m].attack.tracking = 40.f; // the windup turns onto whom it aims at
+        k.moves[m].attack.damage = m == 0 ? 150 : 20;
+    }
+    k.turnRate = 40.f;
+    r.enemy(k, Vec2{0.f, 0.f});
+    r.def.fighter.hp = 100000;
+    r.bodies.player = Vec2{-1.5f, 0.f};
+    r.bodies.ally = Vec2{1.2f, 0.f};
+    r.go(true, 100, 1, Vec2{1.f, 0.f});
+    int downedAt = -1;
+    std::uint8_t aimAtDown = 0;
+    bool secondSeen = false;
+    std::uint8_t secondAim = 0;
+    int leadHitsBefore = 0;
+    for (int f = 0; f < 120 * 60 && !secondSeen; ++f) {
+        r.tick();
+        if (downedAt < 0) {
+            const int d = r.find(ArenaEventType::AllyDowned);
+            if (d >= 0) {
+                downedAt = d;
+                aimAtDown = r.log[static_cast<std::size_t>(d)].aim;
+                leadHitsBefore = 0;
+                for (const Logged& l : r.log)
+                    if (l.e.type == ArenaEventType::Hit && l.e.target == kArenaPlayer) ++leadHitsBefore;
+            }
+            continue;
+        }
+        const ArenaEnemyOut& e = r.out->enemies[0];
+        if (e.brain == ArenaBrain::Attack && e.move == 1) {
+            secondSeen = true;
+            secondAim = e.aim;
+        }
+    }
+    REQUIRE(downedAt >= 0);
+    CHECK(aimAtDown == 2); // the blow under way finished where it was aimed
+    REQUIRE(secondSeen);
+    CHECK(secondAim == 1); // the string's next blow aims at the standing lead
+    r.run(1.f);
+    int leadHitsAfter = 0;
+    for (const Logged& l : r.log)
+        if (l.e.type == ArenaEventType::Hit && l.e.target == kArenaPlayer) ++leadHitsAfter;
+    CHECK(leadHitsAfter > leadHitsBefore); // the re-aimed blow reached the lead
+    CHECK(r.fight.stats().bossAimedPartner >= 1);
+}
+
+TEST_CASE("arena partner: one fight with a two-lead session: blows ruled, takeover on the tick, defeat, retry") {
+    // The host's part: lead A drives the player's body at first, lead B the ally body; the session rules every
+    // partner blow through judgeBlow(the ally body's lead) and takes both leads' health each step.
+    struct Host {
+        FightSession s;
+        FighterId playerLead = kLeadA;
+        int partnerJudged = 0;
+        int leadJudged = 0;
+        FighterId lastStriker = kNoFighter;
+    } host;
+    auto hook = [](void* user, const ArenaBlow& blow) {
+        Host& h = *static_cast<Host*>(user);
+        ArenaBlowRuling rl;
+        if (blow.source == kArenaAlly) {
+            const FighterId other = h.playerLead == kLeadA ? kLeadB : kLeadA;
+            const CountHit c = h.s.judgeBlow(other);
+            ++h.partnerJudged;
+            h.lastStriker = other;
+            rl.damage = c.outcome == CountOutcome::Held ? 1.f : c.multiplier;
+        } else if (blow.source == kArenaPlayer) {
+            ++h.leadJudged;
+            rl.damage = h.s.judgeBlow(h.playerLead).multiplier;
+        }
+        return rl;
+    };
+    REQUIRE(host.s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(host.s.setActiveLead(kLeadA));
+    PRig r;
+    r.fight.setBlowHook(+hook, &host);
+    r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{8.f, 0.f}; // out of the biter's pick: no bites yet
+    r.bodies.ally = Vec2{-1.4f, 0.f};
+    r.go(true, 100, 1, Vec2{-1.f, 0.f});
+    int sessionTookOverAt = -1;
+    int fightTookOverAt = -1;
+    bool defeatSeen = false;
+    int frame = 0;
+    auto step = [&]() {
+        r.tick();
+        for (const ArenaEvent& e : r.out->events)
+            if (e.type == ArenaEventType::TookOver) {
+                fightTookOverAt = frame;
+                host.playerLead = host.playerLead == kLeadA ? kLeadB : kLeadA; // the bodies swapped
+            }
+        const FighterId other = host.playerLead == kLeadA ? kLeadB : kLeadA;
+        host.s.setLeadHealth(host.playerLead, static_cast<float>(r.fight.hp()) / 100.f);
+        host.s.setLeadHealth(other, static_cast<float>(r.fight.allyHp()) / 100.f);
+        const FightTick& t = host.s.tick(kDt);
+        if (t.tookOver != kNoFighter) {
+            sessionTookOverAt = frame;
+            CHECK(t.tookOver == kLeadB);
+        }
+        if (t.defeated) defeatSeen = true;
+        ++frame;
+    };
+    // 1. The partner strikes; the session rules each of its blows as lead B's.
+    for (int k = 0; k < 120; ++k) step();
+    REQUIRE(r.allyHits() >= 1);
+    CHECK(host.partnerJudged == r.allyHits());
+    CHECK(host.lastStriker == kLeadB);
+    CHECK(host.leadJudged == 0);
+    // 2. The player's body steps into the bite (the ally's out of it): lead A falls, B takes over on that tick.
+    r.bodies.player = Vec2{1.f, 0.f};
+    r.bodies.ally = Vec2{0.f, 3.5f};
+    for (int k = 0; k < 120 && fightTookOverAt < 0; ++k) step();
+    REQUIRE(fightTookOverAt >= 0);
+    CHECK(sessionTookOverAt == fightTookOverAt);
+    CHECK(host.s.activeLead() == kLeadB);
+    CHECK(host.playerLead == kLeadB);
+    CHECK(host.s.down(kLeadA));
+    CHECK_FALSE(host.s.down(kLeadB));
+    // 3. B, the last standing, falls (A is still down): the fight's Defeat and the session's, the same step.
+    r.bodies.player = Vec2{-1.f, 0.f};
+    for (int k = 0; k < 15 * 60 && !r.fight.over(); ++k) step();
+    REQUIRE(r.fight.phase() == ArenaPhase::Defeat);
+    step();
+    CHECK(defeatSeen);
+    CHECK(host.s.defeated());
+    // 4. Retry: both up from the fight-start checkpoint, and the host re-reads the controlled lead.
+    const FightCheckpoint& cp = host.s.retry();
+    CHECK(cp.at == CheckpointAt::FightStart);
+    CHECK(cp.activeLead == kLeadA);
+    r.fight.restart();
+    host.playerLead = host.s.activeLead();
+    CHECK(host.playerLead == kLeadA);
+    CHECK_FALSE(host.s.down(kLeadA));
+    CHECK_FALSE(host.s.down(kLeadB));
+    CHECK_FALSE(host.s.defeated());
+    CHECK_FALSE(r.fight.swapped());
+    CHECK(r.fight.hp() == 100);
+    CHECK(r.fight.allyHp() == 100);
+    CHECK(r.fight.phase() == ArenaPhase::Fighting);
+}
+
+TEST_CASE("arena partner: the file's partner block is read into every fight, each scale in [0, 1]") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    const std::string shipped = "\"partner\": { \"poise\": 0.5, \"breakWeight\": 0.5 }";
+    const std::size_t at = text.find(shipped);
+    REQUIRE(at != std::string::npos);
+    auto with = [&](const char* block) {
+        std::string t = text;
+        t.replace(at, shipped.size(), block);
+        return t;
+    };
+    ArenaTable t;
+    std::string err;
+    REQUIRE_MESSAGE(importArenaTable(with("\"partner\": { \"poise\": 0.25, \"breakWeight\": 1 }"), t, &err), err);
+    CHECK(t.partner.poise == 0.25f);
+    CHECK(t.partner.breakWeight == 1.f);
+    CHECK(t.fallback.partner.poise == 0.25f);
+    for (const ArenaFightEntry& e : t.entries) {
+        CHECK(e.def.partner.poise == 0.25f);
+        CHECK(e.def.partner.breakWeight == 1.f);
+    }
+    CHECK_FALSE(importArenaTable(with("\"partner\": { \"poise\": 1.5 }"), t, &err));
+    CHECK_FALSE(importArenaTable(with("\"partner\": { \"breakWeight\": -0.1 }"), t, &err));
+    CHECK_FALSE(importArenaTable(with("\"partner\": 3"), t, &err));
 }

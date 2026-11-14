@@ -464,7 +464,12 @@ private:
 	void LogPartnerWindow();
 	void LogPartnerChecks(bool bWon, bool bLost);
 	void CheckPartnerRetry();
-	bool PartnerBody() const { return bPartner && !Fight.lone(); }
+	// The partner's body acts: -ArenaPartner, not held out (a fight begun Lone keeps it out to its end, the session
+	// with one lead too, until Core can bring a lead into a running fight), and the fight not Lone.
+	bool PartnerBody() const { return bPartner && !bPartnerHeldOut && !Fight.lone(); }
+	void ArmSwapCheck();
+	void TrackSwapCheck(const ftcore::ArenaInput& In);
+	void CheckSwapInput();
 	void LogCarry() const;
 	// Setting the table (-ArenaTable, a carrying run's): its switches, its reset (each attempt), its step after the
 	// fight's, its ring drawn, its log line and its ring's removal.
@@ -1025,6 +1030,19 @@ private:
 	// runner's, and the order's presses.
 	int32 PartnerLeadFalls = 0, PartnerAllyFalls = 0, PartnerTakeovers = 0, PartnerRises = 0;
 	int32 PartnerSessionTookOver = 0, PartnerLeadMismatch = 0, PartnerOrders = 0;
+	// A fight begun Lone with -ArenaPartner: the partner stays out of it to its end (no setPartner, no ally body, one
+	// lead in the session), across retries; steps where Core's partner acted all the same (a leak).
+	bool bPartnerHeldOut = false;
+	int32 PartnerHeldLeaks = 0;
+	// The partner's blows: the session ruled them (RuleSessionBlow's partner path), their Hit events, their joins.
+	int32 PartnerBlowsRuled = 0, PartnerHitEvents = 0, PartnerJoins = 0;
+	// After a takeover: the figures' places once drawn, the steps since with a move input, the check's counts. The
+	// controller reads the input (FTInputBindings on the PlayerController), the fight moves Bodies.player, and
+	// PlayerFigure (swapped to the partner's actor) is drawn there: the move must show on the new body, not the old.
+	bool bSwapCheckArmed = false, bSwapCheckPlaced = false;
+	FVector SwapNewAt = FVector::ZeroVector, SwapOldAt = FVector::ZeroVector;
+	int32 SwapMoveSteps = 0, SwapSteps = 0, SwapChecks = 0, SwapChecksPassed = 0;
+	double SwapWorstNew = 1e9, SwapWorstOld = 0.0;
 	// Setting the table (BeginTable): on, the autopilot sets it at full Load, the Load filled for a capture; the
 	// places it counts, its clock and ring, and the counts for the TABLE line.
 	bool bTable = false;
