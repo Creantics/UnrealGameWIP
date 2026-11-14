@@ -1865,6 +1865,11 @@ ftcore::ArenaBlowRuling UFTArenaRunner::RuleSessionBlow(void* User, const ftcore
 	{
 		Ruling.damage = Want;
 	}
+	// A boss's break value takes the count's joined and Lift multipliers only (a held blow's bonus comes as a hostBlow).
+	if (Hit.outcome != ftcore::CountOutcome::Held)
+	{
+		Ruling.breakScale *= Hit.multiplier;
+	}
 	return Ruling;
 }
 
@@ -2619,6 +2624,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 		case ftcore::ArenaEventType::DryPress:
 			OnLeadDryPress(E.amount);
 			PlayGunCue(E);
+			continue; // no popup
+		case ftcore::ArenaEventType::BreakTell: // the boss's own break move is its tell; no HUD of its own
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's break value tells (%.2f of %.2f)."), Fight.time(),
+				static_cast<int32>(E.source), static_cast<float>(E.amount) / 100.f,
+				E.source < Fight.enemyCount() ? Fight.enemyBreakAt(E.source) : 0.f);
 			continue; // no popup
 		case ftcore::ArenaEventType::CardsDealt: // the cards themselves are the display
 		case ftcore::ArenaEventType::LockChanged:

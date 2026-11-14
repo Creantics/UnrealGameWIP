@@ -170,6 +170,24 @@
 //   flinch, though never a move the host's move mask clears. That move should carry `armor`. A stagger,
 //   Open or Down never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the
 //   count and the break-out too.
+// * Boss break. A boss kind (arena.json's `boss`) has, beside its poise, a break value with no HUD of its own; it
+//   never has a breakAt. Each blow of the player's side that lands on it adds its weight (kArenaBreak*: a light or
+//   an aimed or air shot 1, a heavy 2, a Release, the finisher, 3, a riposte 1.5, the paired counter 3, the Read
+//   counter 1.5, a hostBlow, a held blow's bonus, 1.5, a set table's split 3) times the ruling's breakScale (the
+//   count's joined and Lift multipliers, which the host's hook passes through), at most kArenaBossBreakBlowCap. A
+//   vetoed blow adds 0; nothing else adds (a guard, a gift, a partner's own blows). While it is Staggered the value
+//   neither rises nor decays; otherwise it goes back to 0 kArenaBossBreakDecay s after the last blow that added. The
+//   threshold is the phase's breakValueAt; the phase comes from the boss's hp share (breakPhaseEnds: each phase
+//   ends where the share now falls to it). At kArenaBossBreakTell of the threshold the value
+//   tells (enemyBreakTell, the BreakTell event once each time it rises there). At the threshold, or forced (the
+//   value above 0 without a gap for kArenaBossBreakForced s, Staggered time counted, with at least
+//   kArenaBossBreakForcedBlows blows that added in it), the boss breaks as soon as it is upright (not Staggered,
+//   Open or Down; a blow that staggers it keeps the break for after) and no break began in the last
+//   kArenaBossBreakLock s: its move is cut, the value goes to 0 and it begins its breakMove (BrokeOut, then
+//   AttackStarted) with a windup of kArenaBossBreakWindup s and a recovery of kArenaBossBreakRecovery s in place of
+//   the move's own, whatever the token count and its cooldown, unless the host's move mask clears it (spent, no
+//   lock). A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
+//   poise (times the ruling's poise scale) and staggers it only when that empties it; else it stays Open.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
 //   lets go when already locked. lockSwitch moves the lock to the next living enemy in range to the
@@ -280,6 +298,26 @@ inline constexpr float kArenaMaxStop = 0.3f;
 // No flinch stunlock: at most this many flinches in a run; the run ends after kArenaFlinchChainGap s with no blow.
 inline constexpr std::uint8_t kArenaMaxFlinchChain = 3;
 inline constexpr float kArenaFlinchChainGap = 1.f;
+// The boss break value (see Boss break): each blow's weight, ...
+inline constexpr float kArenaBreakLight = 1.f;   // a light, an aimed shot, an air light
+inline constexpr float kArenaBreakHeavy = 2.f;
+inline constexpr float kArenaBreakRelease = 3.f; // a Release (the finisher)
+inline constexpr float kArenaBreakRiposte = 1.5f;
+inline constexpr float kArenaBreakPair = 3.f;    // the paired counter
+inline constexpr float kArenaBreakRead = 1.5f;   // the Read counter
+inline constexpr float kArenaBreakHost = 1.5f;   // a hostBlow (a held blow's bonus)
+inline constexpr float kArenaBreakTable = 3.f;   // a set table's split onto a seated boss
+// ... and its rules.
+inline constexpr float kArenaBossBreakBlowCap = 3.f;   // the most one blow adds, after breakScale
+inline constexpr float kArenaBossBreakDecay = 2.5f;    // s without a blow that adds: back to 0
+inline constexpr float kArenaBossBreakTell = 0.75f;    // the share of the threshold that tells
+inline constexpr float kArenaBossBreakWindup = 0.5f;   // the break move's startup
+inline constexpr float kArenaBossBreakRecovery = 1.2f; // the break move's recovery: the punish window
+inline constexpr float kArenaBossBreakLock = 6.f;      // s from a break's start before another may begin
+inline constexpr float kArenaBossBreakForced = 20.f;   // s above 0 without a gap that force a break ...
+inline constexpr int kArenaBossBreakForcedBlows = 3;   // ... with at least this many blows in them
+inline constexpr float kArenaBossPairPoise = 0.6f;     // the share of a boss's max poise the paired counter takes
+inline constexpr std::size_t kMaxArenaBreakPhases = 4;
 
 // How many whole beats of `bpm` `seconds` lasts (1 or more, within kArenaBeatTolerance), else -1 (also
 // for bpm <= 0). A host counts an attack in from it: the impact is that many beats after AttackStarted.
@@ -523,7 +561,14 @@ struct ArenaEnemyKind {
     float flinchPush = 0.f;   // metres a flinch pushes it back
     std::uint8_t breakAt = 0; // > 0: the blows in a row that make it break out (see Break-out); 0: never
     float breakDecay = 1.5f;  // s without a blow after which the count goes back to 0
-    int breakMove = -1;       // the move it breaks out with; -1: none
+    int breakMove = -1;       // the move it breaks out with (a boss: its break move, required); -1: none
+    // The boss break value (see Boss break): only a boss has one. arena.json: "boss": true, "breakMove",
+    // "breakValueAt" (1..kMaxArenaBreakPhases thresholds, 0.5..1000; default 10, 8, 6.5) and "breakPhaseEnds"
+    // (one hp share per phase but the last, strictly falling in (0, 1); default thirds).
+    bool boss = false;
+    std::uint8_t breakPhases = 3;
+    std::array<float, kMaxArenaBreakPhases> breakValueAt{10.f, 8.f, 6.5f, 6.5f};
+    std::array<float, kMaxArenaBreakPhases - 1> breakPhaseEnds{2.f / 3.f, 1.f / 3.f, 0.f};
     // A set table (TableRing.h). Only a set table reads them: the fight's own rules never do.
     std::uint8_t carry = 0;   // carry grade: a seated one's share of a blow halves for each grade past the table's seats
     bool seatable = true;     // whether it may be seated at a table at all
@@ -758,6 +803,8 @@ enum class ArenaEventType : std::uint8_t { // append only
                     // way, so a ReloadStarted may have no Reloaded
     DryPress,       // a shot pressed on the player's empty cylinder was dropped: amount = the dry presses so far
                     // (stats().dryPresses); move kArenaShotMove (appended)
+    BreakTell,      // a boss's break value rose to kArenaBossBreakTell of its threshold: source the boss, amount the
+                    // value x 100, rounded (appended)
 };
 
 struct ArenaEvent {
@@ -809,6 +856,11 @@ struct ArenaStats {
     int breakUpright = 0;  // the player's blows landed on an upright enemy whose kind has a breakAt
     int breakVetoed = 0;   // ... of them the host barred (as it bars a flinch), so none counted
     int breakBarred = 0;   // breakDue whose break move the enemy's move mask barred
+    int bossBreaks = 0;       // bosses' break moves begun (Boss break) ...
+    int bossBreaksForced = 0; // ... of them forced (kArenaBossBreakForced) below the threshold
+    int bossBreakBarred = 0;  // breaks due whose move the move mask barred
+    int bossBreakTells = 0;   // times a boss's value rose to its tell
+    float bossBreakAdded = 0.f; // the break value blows added, in all
     int cancels = 0;          // actions the player started inside an attack (its recovery or cancel window)
     int cancelChances = 0;    // attacks in whose cut window a press or a guard waited (a cancel could show)
     int lights = 0;           // light attacks started (not ripostes or shots)
@@ -889,7 +941,8 @@ struct ArenaBlow {
     std::uint8_t move = 0;                     // as the event's
     int damage = 0;                            // hp, before the ruling (and before a guard)
     float poise = 0.f;                         // poise damage, before the ruling (and before armor). A counter-stagger:
-                                               // the enemy kind's whole poise, as it breaks it
+                                               // the enemy kind's whole poise, as it breaks it (a boss:
+                                               // kArenaBossPairPoise of it)
     Vec2 from;                                 // the source's position (the partner's counters: the player's) ...
     Vec2 facing{1.f, 0.f};                     // ... and facing
     Vec2 at;                                   // the target's position
@@ -904,10 +957,14 @@ struct ArenaBlow {
 //   player's blow on an enemy on its feet. A counter-stagger breaks the whole poise or nothing: it staggers only with
 //   a poise scale of 1 or more. A guarded blow deals none (its stamina cost, guardDamage, is the attack's own), and
 //   a riposte on an open enemy downs it whatever the scale.
+// * breakScale: a boss's break value from the blow is its weight times this (the count's joined and Lift
+//   multipliers, which the host's session hook passes through; crits and other scales stay out of it). NaN or below
+//   0 count as 0. Regular enemies never read it.
 struct ArenaBlowRuling {
     float damage = 1.f;
     float poise = 1.f;
     bool veto = false;
+    float breakScale = 1.f;
 };
 
 // Who sits at a set table (TableRing.h). All off by default: nothing is shared.
@@ -1054,6 +1111,13 @@ public:
     // begin() and restart() set it again. Nothing for an enemy out of range; enemyFlinch is then false.
     FTCORE_API void setEnemyFlinch(std::size_t i, bool allowed);
     FTCORE_API bool enemyFlinch(std::size_t i) const;
+    // A boss's break value (Boss break): the value now, the threshold of its phase now (0: not a boss), its phase
+    // (0-based), whether it tells, and the seconds before another break may begin. 0 / false for others.
+    FTCORE_API float enemyBreakValue(std::size_t i) const;
+    FTCORE_API float enemyBreakAt(std::size_t i) const;
+    FTCORE_API int enemyBreakPhase(std::size_t i) const;
+    FTCORE_API bool enemyBreakTell(std::size_t i) const;
+    FTCORE_API float enemyBreakLock(std::size_t i) const;
     // Turns enemy i to `facing` (made unit) now; the next tick works from it and reports it. Nothing for a zero
     // vector or an enemy out of range.
     FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);
@@ -1167,6 +1231,10 @@ private:
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
     friend struct ArenaFightImpl;
 
+    // Enemy i's attack in `move` as it plays now: a boss's break move (Boss break) has its own windup and recovery.
+    const ArenaAttack& enemyAttackOf(std::size_t i, std::uint8_t move) const;
+    const ArenaAttack& enemyAttackNow(std::size_t i) const { return enemyAttackOf(i, enemy_[i].move); }
+
     enum class Press : std::uint8_t { None, Light, Heavy, Dodge, Heal, Release, Shot, Jump }; // an action waiting in the input buffer
     enum class HoldAsk : std::uint8_t { None, Hold, Release };                     // a host's hold request
 
@@ -1271,6 +1339,17 @@ private:
         bool punishOpen = false;            // in a punish window (Staggered, Open or Down) ...
         bool punishHit = false;             // ... that a blow of the player's side has landed in
         bool hitAlly = false;               // this attack has connected with the ally
+        // The boss break value (Boss break).
+        float breakValue = 0.f;
+        float breakQuiet = 0.f;             // s since the last blow that added (still while Staggered)
+        float breakRun = 0.f;               // s the value has been above 0 without a gap
+        int breakRunBlows = 0;              // blows that added in that run
+        float breakLock = 0.f;              // s before another break may begin
+        bool breakFresh = false;            // a blow added since the last break step: its quiet starts there
+        bool breakTell = false;
+        bool breakForced = false;           // the forced break is due
+        bool breakTimed = false;            // this move is the break: breakAttack's windup and recovery
+        ArenaAttack breakAttack;            // the break move's attack with them
     };
 
     ArenaDef def_;

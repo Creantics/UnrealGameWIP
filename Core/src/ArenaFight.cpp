@@ -206,6 +206,18 @@ ArenaPart arenaPartOf(const ArenaAttack& a, float time) {
     return ArenaPart::Recovery;
 }
 
+// The boss break value's clocks (decay, the forced run) add a tick at a time: this much short of a length counts.
+constexpr float kArenaBreakClockEps = 1.0e-3f;
+
+// A boss's break phase (0-based) at `hp`: each phase but the last ends where the hp share falls to its end.
+int arenaBreakPhaseOf(const ArenaEnemyKind& k, int hp) {
+    const float share = static_cast<float>(hp) / static_cast<float>(std::max(k.hp, 1));
+    const int last = std::clamp(static_cast<int>(k.breakPhases), 1, static_cast<int>(kMaxArenaBreakPhases)) - 1;
+    int p = 0;
+    while (p < last && share <= k.breakPhaseEnds[static_cast<std::size_t>(p)]) ++p;
+    return p;
+}
+
 } // namespace
 
 // The fight's rules. ArenaFight's state is private; this is its friend, so the rules read and write it directly.
@@ -430,7 +442,7 @@ struct ArenaFightImpl {
                               ? std::max(0.f, foe.stopUntil - fight.time_)
                               : 0.f;
             if (i < n && foe.brain == ArenaBrain::Attack) {
-                eo.part = arenaPartOf(def.enemies[i].moves[foe.move].attack, foe.stateTime);
+                eo.part = arenaPartOf(fight.enemyAttackNow(i), foe.stateTime);
                 eo.move = foe.move;
             }
         }
@@ -475,6 +487,7 @@ struct ArenaFightImpl {
         applyHolds();
         stepPlayer(in);
         stepEnemies();
+        stepBossBreaks();
         if (fight.read_.dealt() && !readStillOpen()) closeRead(); // the active part began, or the move is gone
         endTick();
     }
@@ -913,18 +926,28 @@ struct ArenaFightImpl {
         pl.pairPress = -1.0e9f;
         if (!alive(i) || foes[i].brain != ArenaBrain::Open) return;
         Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
         const int damage = static_cast<int>(fi.pairHits) * fi.light[0].damage;
+        const float pairPoise = k.boss ? kArenaBossPairPoise * k.poise : k.poise; // a boss: a share of its poise
         ArenaBlowRuling r;
-        if (!rule(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, damage, def.enemies[i].poise, pl.pos,
-                  pl.facing, foe.pos, r))
+        if (!rule(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, damage, pairPoise, pl.pos, pl.facing, foe.pos,
+                  r))
             return;
         const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
         ++stats.counterStaggers;
         notePlayerBlow(i, t1);
         emit(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, amount, foe.pos);
-        if (foe.hp <= 0) killEnemy(i);
-        else if (r.poise >= 1.f) staggerEnemy(i); // it breaks the whole poise or nothing (NaN: nothing)
+        if (foe.hp <= 0) {
+            killEnemy(i);
+        } else if (k.boss) { // its share of the poise, as ruled: staggered only when that empties it, else still Open
+            accrueBreak(i, kArenaBreakPair, r.breakScale);
+            foe.poise -= scaledPoise(pairPoise, r.poise);
+            foe.lastPoiseHit = t1;
+            if (foe.poise <= 0.f) staggerEnemy(i);
+        } else if (r.poise >= 1.f) {
+            staggerEnemy(i); // it breaks the whole poise or nothing (NaN: nothing)
+        }
     }
 
     // ---- Read ----
@@ -935,7 +958,7 @@ struct ArenaFightImpl {
         if (!fight.read_.dealt() || !alive(i)) return false;
         const Enemy& foe = foes[i];
         return foe.brain == ArenaBrain::Attack && foe.move == fight.readMove_ &&
-               foe.stateTime < def.enemies[i].moves[foe.move].attack.startup;
+               foe.stateTime < fight.enemyAttackNow(i).startup;
     }
 
     void closeRead() {
@@ -1000,8 +1023,8 @@ struct ArenaFightImpl {
         const float stacks = static_cast<float>(std::max(0, pl.readStacks - 1));
         const float power = fi.readPower * (1.f + std::max(0.f, fi.readStackPower) * stacks);
         const int damage = std::max(0, static_cast<int>(std::lround(power * static_cast<float>(fi.light[0].damage))));
-        const int dealt =
-            hitEnemy(i, damage, fi.readPoise, ArenaEventType::ReadCounter, static_cast<std::uint8_t>(pl.readStacks));
+        const int dealt = hitEnemy(i, damage, fi.readPoise, ArenaEventType::ReadCounter,
+                                   static_cast<std::uint8_t>(pl.readStacks), kArenaBreakRead);
         if (dealt < 0) return; // vetoed
         ++stats.readCounters;
         stats.readDamage += dealt;
@@ -1389,16 +1412,18 @@ struct ArenaFightImpl {
         foe.velocity = Vec2{};
         foe.readRight = false;
         foe.holdFor = -1.f;
+        foe.breakTimed = false;
         releaseToken(i);
         if (report) emit(ArenaEventType::Downed, kArenaPlayer, id(i), 0, 0, foe.pos);
     }
 
-    bool hostBlow(std::size_t i, int damage, std::uint8_t move) {
+    bool hostBlow(std::size_t i, int damage, std::uint8_t move, float breakScale = 1.f) {
         if (i >= n || !alive(i) || damage <= 0) return false;
         Enemy& foe = foes[i];
         const int amount = lose(i, damage);
         stats.damageDealt += amount;
         const bool killed = foe.hp <= 0;
+        if (!killed) accrueBreak(i, kArenaBreakHost, breakScale); // a break it brings waits for the next tick
         notePlayerBlow(i, fight.time_); // its own Impl, outside the tick's: the fight's clock
         if (fight.inHook_.on) {
             emit(ArenaEventType::HostHit, kArenaPlayer, id(i), move, amount, foe.pos);
@@ -1511,7 +1536,8 @@ struct ArenaFightImpl {
 
     // Enemy i loses `damage` hp (Downed at 0; never below its floor), then `poise` poise (poiseHit), as the host
     // rules. Reports `type` with the hp it lost and returns that, or -1 when the host vetoes it.
-    int hitEnemy(std::size_t i, int damage, float poise, ArenaEventType type, std::uint8_t move) {
+    // A boss also gains breakWeight of break value (Boss break; a break it brings waits for the tick's break step).
+    int hitEnemy(std::size_t i, int damage, float poise, ArenaEventType type, std::uint8_t move, float breakWeight) {
         Enemy& foe = foes[i];
         ArenaBlowRuling r;
         if (!rule(type, kArenaPlayer, id(i), move, damage, poise, pl.pos, pl.facing, foe.pos, r)) return -1;
@@ -1520,8 +1546,12 @@ struct ArenaFightImpl {
         stats.damageDealt += amount;
         notePlayerBlow(i, t1);
         emit(type, kArenaPlayer, id(i), move, amount, foe.pos);
-        if (foe.hp <= 0) killEnemy(i);
-        else poiseHit(i, poise);
+        if (foe.hp <= 0) {
+            killEnemy(i);
+        } else {
+            accrueBreak(i, breakWeight, r.breakScale);
+            poiseHit(i, poise);
+        }
         return amount;
     }
 
@@ -1532,7 +1562,7 @@ struct ArenaFightImpl {
         if (poise <= 0.f || !upright(foe)) return;
         float share = 0.f;
         if (foe.brain == ArenaBrain::Attack) {
-            const ArenaAttack& own = def.enemies[i].moves[foe.move].attack;
+            const ArenaAttack& own = fight.enemyAttackNow(i);
             if (foe.stateTime < own.startup + own.active) share = std::clamp(own.armor, 0.f, 1.f);
         }
         foe.poise -= poise * (1.f - share);
@@ -1615,6 +1645,7 @@ struct ArenaFightImpl {
                 killEnemy(i);
                 continue;
             }
+            accrueBreak(i, strikeBreakWeight(pl.action), r.breakScale); // a boss's (Boss break)
             if (riposte && foe.brain == ArenaBrain::Open) { // the riposte punishes the open enemy (and ends a hold)
                 foe.brain = ArenaBrain::Down;
                 foe.stateTime = 0.f;
@@ -1626,6 +1657,7 @@ struct ArenaFightImpl {
             countBlow(i);
             poiseHit(i, dealt);
             if (!alive(i) || !upright(foe)) continue; // staggered (or the read counter it brought ended it)
+            if (tryBossBreak(i)) continue;
             if (breakOut(i)) continue;
             // Counted here, not inside flinch(): a flinch path that never fires then reads FAIL, not n/a.
             if (couldFlinch(i, dealt)) ++stats.flinchChances;
@@ -1681,6 +1713,102 @@ struct ArenaFightImpl {
         return true;
     }
 
+    // ---- the boss break value (Boss break) ----
+
+    // A player's strike's weight, by the action it is (a shot and an air light are lights).
+    static float strikeBreakWeight(ArenaAction a) {
+        switch (a) {
+        case ArenaAction::Heavy: return kArenaBreakHeavy;
+        case ArenaAction::Release: return kArenaBreakRelease;
+        case ArenaAction::Riposte: return kArenaBreakRiposte;
+        default: return kArenaBreakLight;
+        }
+    }
+
+    static void clearBreak(Enemy& foe) {
+        foe.breakValue = 0.f;
+        foe.breakQuiet = 0.f;
+        foe.breakRun = 0.f;
+        foe.breakRunBlows = 0;
+        foe.breakFresh = false;
+        foe.breakTell = false;
+        foe.breakForced = false;
+    }
+
+    // A blow of the player's side landed on boss i (after its ruling): weight x scale, at most the blow cap. Not while
+    // it is Staggered.
+    void accrueBreak(std::size_t i, float weight, float scale) {
+        Enemy& foe = foes[i];
+        if (!def.enemies[i].boss || !alive(i) || foe.brain == ArenaBrain::Staggered) return;
+        const float add = std::min(weight * (scale > 0.f ? scale : 0.f), kArenaBossBreakBlowCap); // NaN: 0
+        if (!(add > 0.f)) return;
+        if (!(foe.breakValue > 0.f)) { // a new run
+            foe.breakRun = 0.f;
+            foe.breakRunBlows = 0;
+        }
+        foe.breakValue += add;
+        foe.breakQuiet = 0.f;
+        foe.breakFresh = true;
+        ++foe.breakRunBlows;
+        stats.bossBreakAdded += add;
+    }
+
+    // The tell, then the break once it is due, upright and not locked: its break move, with its own windup and
+    // recovery. True when it began (the blow that brought it then neither flinches nor counts).
+    bool tryBossBreak(std::size_t i) {
+        Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        if (!k.boss || !alive(i)) return false;
+        const float at = k.breakValueAt[static_cast<std::size_t>(arenaBreakPhaseOf(k, foe.hp))];
+        const bool tell = foe.breakValue > 0.f && foe.breakValue >= kArenaBossBreakTell * at;
+        if (tell && !foe.breakTell) {
+            ++stats.bossBreakTells;
+            emit(ArenaEventType::BreakTell, id(i), kArenaPlayer, 0, static_cast<int>(std::lround(foe.breakValue * 100.f)),
+                 foe.pos);
+        }
+        foe.breakTell = tell;
+        const bool full = foe.breakValue >= at;
+        if (!(full || foe.breakForced) || foe.breakLock > 0.f || !upright(foe)) return false;
+        clearBreak(foe);
+        if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u) {
+            ++stats.bossBreakBarred; // spent, no lock
+            return false;
+        }
+        const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
+        foe.breakLock = kArenaBossBreakLock;
+        interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back (and a read move brings its counter)
+        clearBreak(foe);                    // that counter's blow is spent in the break too
+        if (!alive(i) || foe.brain != ArenaBrain::Approach) return true;
+        foe.token = true;
+        ++stats.bossBreaks;
+        if (!full) ++stats.bossBreaksForced;
+        emit(ArenaEventType::BrokeOut, id(i), kArenaPlayer, move, 0, foe.pos);
+        beginMove(i, move, true);
+        return true;
+    }
+
+    // Each tick, after the enemies: the lock, the decay (not while Staggered), the forced run, then tryBossBreak.
+    void stepBossBreaks() {
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!def.enemies[i].boss || !alive(i)) continue;
+            Enemy& foe = foes[i];
+            foe.breakLock = std::max(0.f, foe.breakLock - dt);
+            if (foe.breakValue > 0.f) {
+                const bool fresh = foe.breakFresh; // a blow added this tick: its clocks start at the next
+                foe.breakFresh = false;
+                if (!(fresh && foe.breakRunBlows == 1)) foe.breakRun += dt;
+                if (!fresh && foe.brain != ArenaBrain::Staggered) foe.breakQuiet += dt;
+                if (foe.breakQuiet >= kArenaBossBreakDecay - kArenaBreakClockEps) {
+                    clearBreak(foe);
+                } else {
+                    foe.breakForced = foe.breakRun >= kArenaBossBreakForced - kArenaBreakClockEps &&
+                                      foe.breakRunBlows >= kArenaBossBreakForcedBlows;
+                }
+            }
+            tryBossBreak(i);
+        }
+    }
+
     // A blow that could flinch enemy i: a kind that flinches, the host allows it, and the blow carries flinchPoise.
     bool couldFlinch(std::size_t i, float poise) const {
         const ArenaEnemyKind& k = def.enemies[i];
@@ -1690,14 +1818,13 @@ struct ArenaFightImpl {
     // A landed blow of at least flinchPoise flinches enemy i, unless its attack is active or armoured.
     void flinch(std::size_t i, float poise) {
         Enemy& foe = foes[i];
-        const ArenaEnemyKind& k = def.enemies[i];
         if (!couldFlinch(i, poise)) return;
         // No stunlock: the run of flinches starts again only after a gap with no blow that could flinch it.
         if (t1 - foe.lastFlinch > kArenaFlinchChainGap) foe.flinchChain = 0;
         foe.lastFlinch = t1;
         if (foe.flinchChain >= kArenaMaxFlinchChain) return; // the blow lands, the enemy fights on
         if (foe.brain == ArenaBrain::Attack) {
-            const ArenaAttack& own = k.moves[foe.move].attack;
+            const ArenaAttack& own = fight.enemyAttackNow(i);
             const ArenaPart part = arenaPartOf(own, foe.stateTime);
             if (part == ArenaPart::Active || (part == ArenaPart::Startup && own.armor > 0.f)) return;
         }
@@ -1724,6 +1851,7 @@ struct ArenaFightImpl {
         foe.stateTime = 0.f;
         foe.stringEnd = t1;
         foe.holdFor = -1.f;
+        foe.breakTimed = false;
         releaseToken(i);
         readCounter(i);
     }
@@ -1846,7 +1974,8 @@ struct ArenaFightImpl {
         return pick;
     }
 
-    void beginMove(std::size_t i, std::uint8_t move) {
+    // timed: a boss's break (Boss break), with its own windup and recovery.
+    void beginMove(std::size_t i, std::uint8_t move, bool timed = false) {
         Enemy& foe = foes[i];
         foe.brain = ArenaBrain::Attack;
         foe.move = move;
@@ -1856,6 +1985,12 @@ struct ArenaFightImpl {
         foe.evaded = false;
         foe.cooldown[move] = def.enemies[i].moves[move].cooldown;
         foe.readRight = false;
+        foe.breakTimed = timed;
+        if (timed) {
+            foe.breakAttack = def.enemies[i].moves[move].attack;
+            foe.breakAttack.startup = kArenaBossBreakWindup;
+            foe.breakAttack.recovery = kArenaBossBreakRecovery;
+        }
         emit(ArenaEventType::AttackStarted, id(i), kArenaNobody, move, 0, foe.pos);
         dealRead(i, move);
     }
@@ -1864,6 +1999,7 @@ struct ArenaFightImpl {
     void endMove(std::size_t i) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
+        foe.breakTimed = false;
         const int chain = k.moves[foe.move].chain;
         if (chain >= 0 && chain < static_cast<int>(k.moveCount) && chain != static_cast<int>(foe.move)) {
             beginMove(i, static_cast<std::uint8_t>(chain));
@@ -1879,7 +2015,7 @@ struct ArenaFightImpl {
     void enemyStrike(std::size_t i) {
         Enemy& foe = foes[i];
         const ArenaEnemyMove& mv = def.enemies[i].moves[foe.move];
-        const ArenaAttack& a = mv.attack;
+        const ArenaAttack& a = fight.enemyAttackNow(i);
         const std::uint8_t source = id(i);
         // Invulnerable (dodge frames, a riposte): it passes through, and that is told once per attack.
         if (pl.invulnerable) {
@@ -2087,7 +2223,7 @@ struct ArenaFightImpl {
     // One of enemy i's attacks reaches the ally: the ruling, then take half if a press is waiting for it.
     void enemyStrikeAlly(std::size_t i) {
         Enemy& foe = foes[i];
-        const ArenaAttack& a = def.enemies[i].moves[foe.move].attack;
+        const ArenaAttack& a = fight.enemyAttackNow(i);
         const std::uint8_t source = id(i);
         foe.hitAlly = true; // connected (or vetoed): spent on the ally
         ArenaBlowRuling r;
@@ -2182,6 +2318,7 @@ struct ArenaFightImpl {
             if (amount <= 0) continue;
             emit(ArenaEventType::TableShare, source, id(i), move, amount, foes[i].pos);
             if (foes[i].hp <= 0) killEnemy(i);
+            else accrueBreak(i, kArenaBreakTable, 1.f);
         }
         return split.struck;
     }
@@ -2215,7 +2352,7 @@ struct ArenaFightImpl {
 
     Vec2 enemyAttack(std::size_t i, Vec2 dir) {
         Enemy& foe = foes[i];
-        const ArenaAttack& a = def.enemies[i].moves[foe.move].attack;
+        const ArenaAttack& a = fight.enemyAttackNow(i);
         const float a0 = foe.stateTime;
         const float a1 = a0 + dt;
         if (a0 < a.startup && !foe.facingHeld)
@@ -2415,7 +2552,7 @@ struct ArenaFightImpl {
         // The partner reads the open deal: the right card, a moment into the startup.
         if (self.read_.dealt() && !self.read_.picked() && self.readFoe_ < count) {
             const ArenaFight::EnemyState& foe = self.enemy_[self.readFoe_];
-            const float startup = self.def_.enemies[self.readFoe_].moves[self.readMove_].attack.startup;
+            const float startup = self.enemyAttackOf(self.readFoe_, self.readMove_).startup;
             if (foe.brain == ArenaBrain::Attack && foe.move == self.readMove_ && foe.stateTime < startup &&
                 foe.stateTime >= std::min(kArenaAutoReadDelay, 0.5f * startup))
                 in.read = static_cast<std::int8_t>(self.read_.correct());
@@ -2432,7 +2569,7 @@ struct ArenaFightImpl {
             if (!living(i)) continue;
             const ArenaFight::EnemyState& foe = self.enemy_[i];
             if (foe.brain != ArenaBrain::Attack || foe.hitPlayer) continue;
-            const ArenaAttack& a = self.def_.enemies[i].moves[foe.move].attack;
+            const ArenaAttack& a = self.enemyAttackNow(i);
             if (foe.stateTime >= a.startup + a.active) continue; // already recovering
             windingUp = true;
             if (arenaDistance(p.pos, foe.pos) > a.range + a.lunge + f.bodyRadius) continue; // can't reach
@@ -2653,7 +2790,7 @@ bool ArenaFight::readOpen() const {
     if (!read_.dealt() || read_.picked() || readFoe_ >= enemyCount_) return false;
     const EnemyState& foe = enemy_[readFoe_];
     return foe.brain == ArenaBrain::Attack && foe.move == readMove_ &&
-           foe.stateTime < def_.enemies[readFoe_].moves[readMove_].attack.startup;
+           foe.stateTime < enemyAttackOf(readFoe_, readMove_).startup;
 }
 int ArenaFight::readStacks() const { return player_.readStacks; }
 
@@ -2692,6 +2829,27 @@ void ArenaFight::setEnemyFlinch(std::size_t i, bool allowed) {
     if (i < enemyCount_) enemy_[i].flinchAllowed = allowed;
 }
 bool ArenaFight::enemyFlinch(std::size_t i) const { return i < enemyCount_ && enemy_[i].flinchAllowed; }
+float ArenaFight::enemyBreakValue(std::size_t i) const {
+    return i < enemyCount_ && def_.enemies[i].boss ? enemy_[i].breakValue : 0.f;
+}
+int ArenaFight::enemyBreakPhase(std::size_t i) const {
+    return i < enemyCount_ && def_.enemies[i].boss ? arenaBreakPhaseOf(def_.enemies[i], enemy_[i].hp) : 0;
+}
+float ArenaFight::enemyBreakAt(std::size_t i) const {
+    return i < enemyCount_ && def_.enemies[i].boss
+               ? def_.enemies[i].breakValueAt[static_cast<std::size_t>(enemyBreakPhase(i))]
+               : 0.f;
+}
+bool ArenaFight::enemyBreakTell(std::size_t i) const {
+    return i < enemyCount_ && def_.enemies[i].boss && enemy_[i].breakTell;
+}
+float ArenaFight::enemyBreakLock(std::size_t i) const {
+    return i < enemyCount_ && def_.enemies[i].boss ? enemy_[i].breakLock : 0.f;
+}
+const ArenaAttack& ArenaFight::enemyAttackOf(std::size_t i, std::uint8_t move) const {
+    const EnemyState& foe = enemy_[i];
+    return foe.breakTimed && foe.move == move ? foe.breakAttack : def_.enemies[i].moves[move].attack;
+}
 void ArenaFight::setEnemyFacing(std::size_t i, Vec2 facing) {
     if (i < enemyCount_ && arenaLength(facing) > kArenaEps) enemy_[i].facing = arenaUnit(facing, enemy_[i].facing);
 }
@@ -2728,7 +2886,7 @@ bool ArenaFight::ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move,
     inHook_.on = wasIn;
     if (r.veto || phase_ != ArenaPhase::Fighting) return false;
     const int scaled = ArenaFightImpl::scaledDamage(damage, r.damage);
-    return scaled > 0 && impl.hostBlow(enemy, scaled, move);
+    return scaled > 0 && impl.hostBlow(enemy, scaled, move, r.breakScale);
 }
 int ArenaFight::giveLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting) return 0;
@@ -2785,7 +2943,7 @@ bool ArenaFight::takeHalfDue(float lead) const {
     for (std::size_t i = 0; i < enemyCount_; ++i) {
         const EnemyState& foe = enemy_[i];
         if (foe.brain != ArenaBrain::Attack) continue;
-        const float left = def_.enemies[i].moves[foe.move].attack.startup - foe.stateTime;
+        const float left = enemyAttackNow(i).startup - foe.stateTime;
         if (left >= 0.f && left <= lead) return true;
     }
     return false;
@@ -3429,7 +3587,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
                       "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
-                      "breakDecay", "breakMove", "carry", "seatable"},
+                      "breakDecay", "breakMove", "carry", "seatable", "boss", "breakValueAt", "breakPhaseEnds"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
     arenaBool(j, "passive", k.passive, path, errors);
@@ -3455,6 +3613,44 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaByte(j, "breakAt", k.breakAt, 0, 255, path, errors);
     arenaNum(j, "breakDecay", k.breakDecay, 0, 60, false, path, errors);
     arenaInt(j, "breakMove", k.breakMove, -1, static_cast<int>(kMaxArenaMoves) - 1, path, errors);
+    arenaBool(j, "boss", k.boss, path, errors);
+    const JsonValue breakAtList = j["breakValueAt"];
+    if (!breakAtList.isAbsent()) {
+        if (!breakAtList.isArray() || breakAtList.size() == 0 || breakAtList.size() > kMaxArenaBreakPhases) {
+            errors.push_back(path + ".breakValueAt: expected an array of 1.." + std::to_string(kMaxArenaBreakPhases) +
+                             " numbers");
+        } else {
+            k.breakPhases = static_cast<std::uint8_t>(breakAtList.size());
+            for (std::uint32_t p = 0; p < breakAtList.size(); ++p) {
+                const double d = breakAtList[p].number(-1.0);
+                if (!breakAtList[p].isNumber() || !std::isfinite(d) || d < 0.5 || d > 1000.0)
+                    errors.push_back(path + ".breakValueAt[" + std::to_string(p) + "]: expected a number in [0.5, 1000]");
+                else
+                    k.breakValueAt[p] = static_cast<float>(d);
+            }
+            for (std::uint32_t p = 0; p + 1 < k.breakPhases; ++p) // even shares unless breakPhaseEnds says
+                k.breakPhaseEnds[p] = 1.f - static_cast<float>(p + 1) / static_cast<float>(k.breakPhases);
+        }
+    }
+    const JsonValue breakEndList = j["breakPhaseEnds"];
+    if (!breakEndList.isAbsent()) {
+        if (!breakEndList.isArray() || breakEndList.size() + 1 != k.breakPhases) {
+            errors.push_back(path + ".breakPhaseEnds: expected one hp share per break phase but the last (" +
+                             std::to_string(k.breakPhases - 1) + ")");
+        } else {
+            double before = 1.0;
+            for (std::uint32_t p = 0; p < breakEndList.size(); ++p) {
+                const double d = breakEndList[p].number(-1.0);
+                if (!breakEndList[p].isNumber() || !std::isfinite(d) || !(d > 0.0) || !(d < before)) {
+                    errors.push_back(path + ".breakPhaseEnds[" + std::to_string(p) +
+                                     "]: expected a share in (0, 1) below the one before");
+                    break;
+                }
+                k.breakPhaseEnds[p] = static_cast<float>(d);
+                before = d;
+            }
+        }
+    }
     arenaByte(j, "carry", k.carry, 0, 255, path, errors);
     arenaBool(j, "seatable", k.seatable, path, errors);
     arenaParseLook(j["look"], path + ".look", k.look, errors, warnings);
@@ -3543,6 +3739,15 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     if (k.breakAt > 0 && k.breakMove < 0) errors.push_back(path + ".breakMove: breakAt needs a move to break out with");
     if (k.breakAt > 1 && !(k.breakDecay > 0.f))
         errors.push_back(path + ".breakDecay: breakAt above 1 needs a decay above 0 to count blows across ticks");
+    if (k.boss) { // Boss break: its break move is what the value fills toward
+        if (k.breakAt > 0) errors.push_back(path + ".breakAt: a boss breaks by its break value, not by a count");
+        if (k.breakMove < 0)
+            errors.push_back(path + ".breakMove: a boss needs the move it breaks out with");
+        else if (k.breakMove < static_cast<int>(k.moveCount) && k.moves[static_cast<std::size_t>(k.breakMove)].chain >= 0)
+            errors.push_back(path + ".breakMove: a boss's break move may not chain");
+    } else if (!breakAtList.isAbsent() || !breakEndList.isAbsent()) {
+        errors.push_back(path + ": breakValueAt and breakPhaseEnds are a boss's (\"boss\": true)");
+    }
     // A string may not loop: following the chain from any move must end within moveCount steps.
     for (std::uint32_t m = 0; m < k.moveCount; ++m) {
         const std::uint32_t most = k.moveCount;
