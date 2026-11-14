@@ -369,3 +369,61 @@ TEST_CASE("aim assist: over a body the look turns slower, the stick more than th
         }
     }
 }
+
+namespace {
+
+// The unlocked look as the host turned it before aim assist, in its own literals (not the moved constants): yaw by the
+// mouse at 2.5 degrees a unit and the stick at 140 degrees a second, pitch the same with the stick at 0.6 of that, held
+// to [-50, 85] the way FMath::Clamp holds it.
+void plainLook(float& yaw, float& pitch, float mouseX, float mouseY, float lookX, float lookY, float dt) {
+    yaw += mouseX * 2.5f + lookX * 140.f * dt;
+    const float p = pitch + mouseY * 2.5f + lookY * 140.f * 0.6f * dt;
+    pitch = p < -50.f ? -50.f : (p < 85.f ? p : 85.f);
+}
+
+bool sameBits(float a, float b) { return std::memcmp(&a, &b, sizeof a) == 0; }
+
+} // namespace
+
+TEST_CASE("aim assist: a whole look step with assist off, or off a body, is the plain look's to the bit") {
+    REQUIRE(kArenaLook.viewMin == -50.f);
+    REQUIRE(kArenaLook.viewMax == 85.f);
+    const float axes[] = {0.f, -0.f, 1e-7f, 0.013f, -0.37f, 0.5f, -1.f, 1.f, 3.75f, -12.5f};
+    const float dts[] = {0.f, 1.f / 240.f, 1.f / 60.f, 0.0333f, 0.1f};
+    const float yaws[] = {0.f, 179.9f, -721.3f};
+    const float pitches[] = {-50.f, -49.99f, 0.f, 12.3f, 84.99f, 85.f};
+    // {assist, overBody}: off over a body, off off one, on off one. Each gives both shares 1.
+    const bool cases[3][2] = {{false, true}, {false, false}, {true, false}};
+    int steps = 0;
+    int differ = 0;
+    int clamped = 0;
+    for (const auto& c : cases)
+        for (const float yaw : yaws)
+            for (const float pitch : pitches)
+                for (const float dt : dts)
+                    for (const float mx : axes)
+                        for (const float my : axes)
+                            for (const float lx : axes)
+                                for (const float ly : axes) {
+                                    float y = yaw;
+                                    float p = pitch;
+                                    plainLook(y, p, mx, my, lx, ly, dt);
+                                    const ArenaLookTurn t = arenaLookStep(yaw, pitch, mx, my, lx, ly, dt, c[0], c[1]);
+                                    ++steps;
+                                    differ += sameBits(t.yaw, y) && sameBits(t.pitch, p) && t.stickKeep == 1.f ? 0 : 1;
+                                    clamped += p == -50.f || p == 85.f ? 1 : 0;
+                                }
+    CHECK(steps == 3 * 3 * 6 * 5 * 10000);
+    CHECK(differ == 0);
+    CHECK(clamped > 0); // the clamp's edges were met
+    // On and over a body, the same step turns less: the mouse by kAimAssistMouse, the stick by kAimAssistPad.
+    float plainYaw = 10.f;
+    float plainPitch = 0.f;
+    plainLook(plainYaw, plainPitch, 1.f, 1.f, 1.f, 1.f, 1.f / 60.f);
+    const ArenaLookTurn slow = arenaLookStep(10.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f / 60.f, true, true);
+    CHECK(!sameBits(slow.yaw, plainYaw));
+    CHECK(!sameBits(slow.pitch, plainPitch));
+    CHECK(slow.yaw - 10.f == doctest::Approx(2.5f * kAimAssistMouse + 140.f / 60.f * kAimAssistPad));
+    CHECK(slow.pitch == doctest::Approx(2.5f * kAimAssistMouse + 140.f * 0.6f / 60.f * kAimAssistPad));
+    CHECK(slow.stickKeep == kAimAssistPad);
+}

@@ -56,6 +56,7 @@ struct Settings;
 
 class AFTArenaFighter;
 class AStaticMeshActor;
+struct FHitResult;
 class UStaticMeshComponent;
 class APlayerController;
 class UWorld;
@@ -387,6 +388,10 @@ private:
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// The lead's cylinder (Core's ReloadStarted, Reloaded and DryPress events): where the reload clip, the dry-press flinch
+	// and their sounds attach once they exist. For now they only log.
+	void OnLeadReload(bool bStarted, int32 Amount);
+	void OnLeadDryPress(int32 Presses);
 	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
 	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
 	void KickJolt(const ftcore::ArenaEvent& E);
@@ -712,6 +717,7 @@ private:
 	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
 	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
 	bool bReticleBlocked = false;    // see IsReticleBlocked
+	bool bReticleTakes = false;      // a round fired now would take the crosshair's body (this frame's, not held as blocked is)
 	// The blocked crosshair's display hold: another body blocks by the round's own rule (Core's kArenaShotGraze), and
 	// the shown state changes once the new one has held kBlockHoldFrames.
 	static constexpr int32 kBlockHoldFrames = 4;
@@ -721,9 +727,18 @@ private:
 	// line From -> To (cm) nearer than T on entry (0..1 of the line): its slot, and T then the share along the line. The
 	// figures carry no collision, so the reticle's trace meets them by this.
 	int32 ReticleBody(const FVector& From, const FVector& To, double& T) const;
+	// The crosshair's pick along From -> To (cm): the world's first hit on the visibility channel (the lead's figure not
+	// counted) clips the line, and the body ReticleBody meets before it is picked (-1: none, as for a body behind cover).
+	// T: the share along the line of the pick, else of the world hit, else 1.
+	int32 PickReticle(const FVector& From, const FVector& To, FHitResult& Hit, bool& bWorldHit, double& T) const;
+	// Aim assist's condition: aimed (not blending out), not locked on, a guns kit, and the crosshair on a standing body a
+	// round fired now would take (bReticleTakes).
+	bool AssistOverBody() const;
+#if !UE_BUILD_SHIPPING
 	// -ArenaAimCheck (autopilot, a guns kit): once in the fight, the camera aims at the tallest standing enemy's top
 	// (its height and hover) by ftcore::arenaLookUpPitch, the reticle is traced and one aimed shot is pressed; the
-	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done.
+	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done,
+	// 5 the -ArenaAssistCheck sweep.
 	int32 AimCheckPhase = 0;
 	int32 AimCheckSlot = -1;
 	int32 AimCheckPresses = 0;
@@ -739,6 +754,39 @@ private:
 	float AimCheckHpBefore = 0.f;
 	float AimCheckRendered = 0.f;  // the view pitch the camera rendered as the shot was pressed
 	bool bAimCheckFire = false;
+	// -ArenaAssistCheck (with -ArenaAimCheck): after the aimed shot (phase 5), four steps, each capped at 6 s: 0 a
+	// half-way right stick sweeps the view off the body and back through TurnLook with aim assist on (a lock from before
+	// is let go: the view does not turn while one is on); 1 a lock is pressed on and let go; 2 aim is let go and held
+	// again; 3 the target is killed by a host blow. The view's pitch, and from step 1 its yaw, are kept on the body's
+	// middle. Each change of the stick's share is logged with its cause; the check line compares the turn rate over a
+	// body and off it and says whether the share went back to 1 on each of the four.
+	bool bAssistCheck = false;
+	int32 AssistStep = 0;
+	int32 AssistSub = 0;           // the step's own progress
+	double AssistStepAt = 0.0;     // when the step began
+	double AssistMarkAt = -1e9;    // when the step last acted (a lock press, the aim let go)
+	double AssistSince = 0.0;      // when the share last changed
+	float AssistSweep = 1.f;
+	float AssistKeep = 1.f;        // the share as last logged
+	bool bAssistAimOff = false;    // step 2: the aim let go
+	bool bAssistLockPress = false; // StepAimCheck presses lock on its next input
+	uint8 AssistReturns = 0;       // the share back at 1, bits: 1 the crosshair left, 2 lock-on, 4 aim let go, 8 the target died
+	FString AssistFail;            // the step that ran out of time
+	int32 AssistEnters = 0;
+	int32 AssistExits = 0;
+	float AssistTime[2] = {0.f, 0.f};   // seconds swept off a body [0] and over one [1]
+	float AssistTurned[2] = {0.f, 0.f}; // degrees swept off a body [0] and over one [1]
+	void StepAssistCheck(float DeltaSeconds);
+	// -ArenaCoverCheck: once, a second into the fight, a synthetic crosshair line (not the camera's) from 0.5 m over the
+	// floor through the cover drum nearest a standing enemy to its body's middle, picked by PickReticle as the reticle is, and the same
+	// line with the world left out as the control. Logs "Arena check: reticle behind cover" and, with
+	// -ArenaQuitOnFinish, ends the run.
+	bool bCoverCheck = false;
+	void StepCoverCheck();
+#endif
+	// The unlocked look: the mouse and the right stick turn the view, by aim assist's share (ftcore::aimAssistTurn) while
+	// AssistOverBody (last frame's readout), by ftcore::arenaLookStep. Returns the stick's share.
+	float TurnLook(float MouseX, float MouseY, float LookX, float LookY, float DeltaSeconds, bool bAssist);
 	// The tallest standing enemy's slot (-1: none) and its top over the floor (m).
 	int32 TallestStanding(float& OutTop) const;
 	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
@@ -752,8 +800,10 @@ private:
 	bool BodyPitch(int32 Slot, float& OutPitch) const;
 	// The rendered view's rotation without the impact jolt (the camera's own, as the reticle and the tells read it).
 	FRotator ViewRotation(const APlayerCameraManager& Camera) const;
+#if !UE_BUILD_SHIPPING
 	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
 	void StepAimCheck(ftcore::ArenaInput& In);
+#endif
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 	bool bMouseFlicked = false;
