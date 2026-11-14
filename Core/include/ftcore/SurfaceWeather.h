@@ -89,8 +89,19 @@ struct StreetSurfaceSpec {
     // Asphalt detail tile (SurfaceWeatherOptions::streetDetail): a baked 1 m tile of stones and binder, world-mapped on
     // the asphalt; it replaces the procedural aggregate near by (the mips carry it to its mean far off).
     float detailTileM = 1.0f;            // the tile's side in the world
-    float detailAlbedoMean = 0.11f;      // the albedo map's linear luminance mean (the tile adds grain, not tone)
-    float detailRoughMean = 0.833f;      // the roughness channel's mean
+    float detailAlbedoMean = 0.104f;     // the albedo map's linear luminance mean (the tile adds grain, not tone)
+    float detailRoughMean = 0.848f;      // the roughness channel's mean
+    // With the tile, a wheel path polishes the exposed stone tops (the tile's blue channel) toward wheelTopRough and the
+    // binder only by wheelPolishBinder (the dense binder stays matt; wheelPolish is the tile-less road's).
+    float wheelTopRough = 0.55f;
+    float wheelPolishBinder = 0.1f;
+    float wheelRunM = 4.0f;              // a wheel path's strength wanders along it on this cell (0.75-1)
+    // Kerb litter (asphalt, a cambered half): pale silt and fallen blossom petals in from the gutter.
+    float litterM = 0.5f;                // the litter's band from the gutter edge
+    float litterDust = 0.25f;            // albedo gained at full silt
+    float petalCellM = 0.035f;           // one petal at most per cell this size
+    float petalShare = 0.35f;            // the share of cells at the gutter holding one (falling to 0 across the band)
+    float petalR = 0.68f, petalG = 0.5f, petalB = 0.52f; // a fresh petal's albedo (aged ones brown toward the road)
     float detailTone = 1.0f;             // share of the tile's albedo ratio taken into the tone
     float detailSlope = 0.5f;            // share of the tile's true slope taken into the normal
     float detailRough = 0.6f;            // share of the tile's roughness ratio taken

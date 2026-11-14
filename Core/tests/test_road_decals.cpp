@@ -211,11 +211,19 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
     REQUIRE(code != nullptr);
     for (const char* name : {"LocalPos", "Kind", "Seed", "SizeU", "SizeW", "Wetness", "WorldPos", "RoughOut", "MaskOut",
                              "return C;", "C = lerp(Under, C, Blend);", "WSoak", "Kd == 6", "Kd == 7", "Kd == 10", "Kd == 11",
-                             "NormalOut = Nrm;", "AxisX", "AxisY", "VN", "KindAll >= 16;", "Mask = Left * (1.0 - Crack);"}) {
+                             "NormalOut = Nrm;", "AxisX", "AxisY", "VN", "KindAll >= 16;",
+                             "Mask = max(Body * Left, Spray) * (1.0 - Crack);",
+                             // The paint reads the road's own tile at the same place (exposed tops, cavity), else means.
+                             "HasDetail > 0.5 ? Texture2DSample(DetRA, DetRASampler, Pw / 1.000000).rgb", "float LE = Edge - 0.012000;",
+                             // A cut patch: square edge, tar seal all round.
+                             "bool Cut = Pick < 0.85;", "Mask = 0.5 + In * 400.0;"}) {
         CHECK_MESSAGE(std::strstr(code, name) != nullptr, name);
     }
+    // No chip ellipses and no wobbled edge any more: the wear follows the tile.
+    CHECK(std::strstr(code, "Pw / 0.05 + 9.0") == nullptr);
+    CHECK(std::strstr(code, "Pw / 0.03 + 2.0") == nullptr);
     // Spliced once: the gutter width and the street numbers are numbers, and the same pointer comes back.
-    for (const char* key : {"GUTTER_M", "PAVED_K", "LANE_M", "WHEEL_OFF_M", "CRACK_M", "AGG_M", "AGG_SLOPE", "LATTICE_FN"}) {
+    for (const char* key : {"GUTTER_M", "PAVED_K", "LANE_M", "WHEEL_OFF_M", "CRACK_M", "PAINT_PAD", "DETAIL_M", "LATTICE_FN"}) {
         CHECK_MESSAGE(std::strstr(code, key) == nullptr, key);
     }
     // The noise's corners are the street layer's integer lattice hash (no torn cell edges), matching the road under it.
@@ -286,11 +294,12 @@ TEST_CASE("road paint: every marking box becomes a flat decal over the road, bet
     for (const RoadSolid& s : b.solids) {
         if (!roadPaintSolid(s)) continue;
         const RoadDecal& d = paint[i++];
-        // The box's own footprint and grade, its top kRoadPaintLift over the road (the box stood 6 mm over it).
+        // The box's own footprint plus the overspray pad each side, its grade, its top kRoadPaintLift over the road (the
+        // box stood 6 mm over it).
         CHECK(d.cx == doctest::Approx(s.box.cx));
         CHECK(d.cy == doctest::Approx(s.box.cy));
-        CHECK(d.sx == doctest::Approx(s.box.sx));
-        CHECK(d.sy == doctest::Approx(s.box.sy));
+        CHECK(d.sx == doctest::Approx(s.box.sx + 2.0 * kRoadPaintPad));
+        CHECK(d.sy == doctest::Approx(s.box.sy + 2.0 * kRoadPaintPad));
         CHECK(d.rot == doctest::Approx(s.box.rot));
         CHECK(d.riseW == doctest::Approx(s.box.riseW));
         CHECK(d.top == doctest::Approx(s.box.z1 - kRoadMarkLift + kRoadPaintLift));
@@ -298,9 +307,9 @@ TEST_CASE("road paint: every marking box becomes a flat decal over the road, bet
         CHECK(d.seed >= 0.f);
         CHECK(d.seed < 1.f);
         if (d.kind == RoadDecalKind::LineWhite || d.kind == RoadDecalKind::LineYellow) {
-            CHECK(std::min(d.sx, d.sy) == doctest::Approx(kRoadLine));
+            CHECK(std::min(d.sx, d.sy) - 2.0 * kRoadPaintPad == doctest::Approx(kRoadLine));
         } else {
-            CHECK(std::min(d.sx, d.sy) == doctest::Approx(kRoadStopLine).epsilon(0.12));
+            CHECK(std::min(d.sx, d.sy) - 2.0 * kRoadPaintPad == doctest::Approx(kRoadStopLine).epsilon(0.12));
         }
         float data[kRoadDecalData] = {};
         roadDecalData(d, data);

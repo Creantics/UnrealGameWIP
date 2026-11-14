@@ -47,6 +47,8 @@ inline constexpr int kRoadDecalPaved = 16;
 // (2-4 mm; the grime fades to asphalt and must not hide an edge line), under oil, tactile strips and drain grates (4.5 mm
 // and up; a grate is never painted). The road's own cracks carry across the paint in its material.
 inline constexpr double kRoadPaintLift = 0.00425;
+// A paint plate reaches this far past its marking on every side: the overspray's soft 5-10 mm fringe lies on it.
+inline constexpr double kRoadPaintPad = 0.012;
 
 // A decal's top stands about this far over its slab's top (each kind half a millimetre apart), under the markings'
 // 6 mm.
@@ -73,7 +75,7 @@ struct RoadDecalSpec {
     double crackAsphalt = 0.5, crackPavement = 0.25;
     double stainAsphalt = 0.35, stainPavement = 0.0; // none on the pavements: their tiles carry their own stains, and a
                                                      // plate hides the tile joints under it
-    double patchAsphalt = 0.12;
+    double patchAsphalt = 0.6;     // about one cut-edge repair per 30-50 m of a lane
     double manholePer100m = 1.6;
     double grimeChance = 0.5;
     double bayOil = 0.7;           // the chance a parking bay has an oil-drip cluster
@@ -115,7 +117,8 @@ FTCORE_API void roadDecals(const RoadBuild& build, const RoadDecalSpec& spec, st
 
 // A road marking box (kind "mark", white or yellow): laid as paint (roadMarkingDecals), not as a box.
 FTCORE_API bool roadPaintSolid(const RoadSolid& solid);
-// The paint decal for a marking box: its footprint, its grade, its top kRoadPaintLift over the road (the box's top less
+// The paint decal for a marking box: its footprint grown by kRoadPaintPad on every side (the plate; the marking's edge
+// lies kRoadPaintPad in from the plate's), its grade, its top kRoadPaintLift over the road (the box's top less
 // kRoadMarkLift), and its kind: LineYellow for yellow; StopLine for a white 0.45 m piece along the road at least 1.5 m
 // across it; ZebraBar for any other white piece 0.45 m on its short side; LineWhite for the rest. False for any other
 // solid.
@@ -137,13 +140,15 @@ FTCORE_API void roadDecalData(const RoadDecal& decal, float out[kRoadDecalData])
 
 // The material's Custom node (HLSL): returns the base colour (float3), with RoughOut, MaskOut (the opacity mask) and
 // NormalOut (a world-space normal) as its further outputs. Inputs: LocalPos (the 1 m plate's local position, cm), Kind,
-// Seed, SizeU, SizeW (the instance's custom data), Wetness (0..1), WorldPos (cm), VN (the vertex normal, world) and
-// AxisX, AxisY (the plate's local x and y in world space). Soft kinds (stains, patches, kerb grime, oil) fade to the
-// ground's colour over their outer 10-15 cm, so the mask's clip doesn't show; wet, they darken and smooth as the
-// surface master's weather does at the same place (surfaceWetHlsl). Paint is clipped where it has worn through (the
-// road shows), along the road's own sealed cracks (the master's noise, same place), and wears in the wheel paths; the
-// road's aggregate and hairlines read through it, and its edge has a 2 mm lip in the normal only. The wear kinds return
-// VN as their normal.
+// Seed, SizeU, SizeW (the instance's custom data), Wetness (0..1), WorldPos (cm), VN (the vertex normal, world),
+// AxisX, AxisY (the plate's local x and y in world space), DetRA (the asphalt detail tile's roughness/AO/stone-top map,
+// a texture object) and HasDetail (1 when DetRA is that tile, 0 for a stand-in). Soft kinds (stains, kerb grime, oil)
+// fade to the ground's colour over their outer 10-15 cm, so the mask's clip doesn't show; most patches are cut square
+// with a tar-sealed edge; wet, they darken and smooth as the surface master's weather does at the same place
+// (surfaceWetHlsl). Paint (opacity, not clipped): aged thermoplastic, its edge straight with a soft 5-10 mm overspray
+// on the plate's pad, worn off the tile's exposed stone tops first (so it breaks along the stones' outlines), more in
+// the wheel paths and where it has faded, darker in the tile's cavities; fine dirty cracks across it every 20-40 cm,
+// and the road's own sealed cracks (the master's noise, same place) cut it. The wear kinds return VN as their normal.
 FTCORE_API const char* roadDecalHlsl();
 
 } // namespace ftcore

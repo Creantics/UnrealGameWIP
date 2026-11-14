@@ -6,6 +6,7 @@
 
 #if WITH_EDITOR
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture2D.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
@@ -14,6 +15,7 @@
 #include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionTextureObject.h"
 #include "Materials/MaterialExpressionTransform.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
@@ -166,6 +168,20 @@ UMaterial* BuildMaterial(UPackage* Package, bool bPaint)
 	AddCustomInput(Custom, TEXT("VN"), VertexNormal);
 	AddCustomInput(Custom, TEXT("AxisX"), Axis(FLinearColor(1.f, 0.f, 0.f), 900));
 	AddCustomInput(Custom, TEXT("AxisY"), Axis(FLinearColor(0.f, 1.f, 0.f), 1000));
+	// The asphalt detail tile's roughness/AO/stone-top map (FTBuildWorldMaterials -StreetDetail), which the paint wears
+	// against; without it the engine's default texture stands in and HasDetail 0 has the node use the tile's means.
+	UTexture2D* DetailRA = LoadObject<UTexture2D>(nullptr, TEXT("/Game/Look/T_StreetDetail_RA.T_StreetDetail_RA"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	UMaterialExpressionTextureObject* DetTex = AddNode<UMaterialExpressionTextureObject>(Material, -900, 1100);
+	DetTex->Texture = DetailRA ? DetailRA : LoadObject<UTexture2D>(nullptr, TEXT("/Engine/EngineResources/DefaultTexture.DefaultTexture"));
+	DetTex->SamplerType = DetailRA ? SAMPLERTYPE_Masks : SAMPLERTYPE_Color;
+	AddCustomInput(Custom, TEXT("DetRA"), DetTex);
+	UMaterialExpressionConstant* HasDetail = AddNode<UMaterialExpressionConstant>(Material, -900, 1200);
+	HasDetail->R = DetailRA ? 1.f : 0.f;
+	AddCustomInput(Custom, TEXT("HasDetail"), HasDetail);
+	if (!DetailRA)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -RoadDecals: no /Game/Look/T_StreetDetail_RA; the paint wears on the tile's means."));
+	}
 	// Output 0 is the colour, then these in order.
 	AddCustomOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
 	AddCustomOutput(Custom, TEXT("MaskOut"), CMOT_Float1);
@@ -177,11 +193,11 @@ UMaterial* BuildMaterial(UPackage* Package, bool bPaint)
 	Inputs->Roughness.Connect(1, Custom);
 	if (bPaint)
 	{
-		// The mask's 0.5 is the paint's edge: a decal blends, so the mask is sharpened to a ~1 mm soft edge, not clipped.
+		// The paint's mask is its opacity already (a straight ~3 mm edge and the overspray's mist are drawn in the node).
 		UMaterialExpressionCustom* Edge = AddNode<UMaterialExpressionCustom>(Material, -150, 300);
 		Edge->Description = TEXT("FTRoadPaintEdge");
 		Edge->OutputType = CMOT_Float1;
-		Edge->Code = TEXT("return saturate((M - 0.5) * 12.0 + 0.5);");
+		Edge->Code = TEXT("return saturate(M);");
 		Edge->Inputs.Reset();
 		FCustomInput& In = Edge->Inputs.AddDefaulted_GetRef();
 		In.InputName = TEXT("M");

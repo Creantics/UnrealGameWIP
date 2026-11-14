@@ -315,8 +315,19 @@ TEST_CASE("HLSL: the asphalt detail tile is its own option and replaces the aggr
     const std::string det = surfaceWeatherHlsl(spec, on);
     for (const char* name : {"float DetAO = 1.0;", "float AgF = 0.0;", "Texture2DSample(DetAlb, DetAlbSampler, DUv)",
                              "UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv))",
-                             "Texture2DSample(DetRA, DetRASampler, DUv)", "A *= DetAO;"})
+                             "Texture2DSample(DetRA, DetRASampler, DUv)", "A *= DetAO;", "DTop = DRa.b;",
+                             // Polished stone tops in the wheel paths, the binder left matt.
+                             "PolishTop = DTop * Wheel;", "RoughMul *= (1.0 - 0.100000001 * Wheel)"})
         CHECK(det.find(name) != std::string::npos);
+    // Without the tile: no tops to polish (DTop stays 0), the wheel path polishes the whole road as before.
+    CHECK(off.find("RoughMul *= (1.0 - 0.25 * Wheel)") != std::string::npos);
+    CHECK(off.find("DTop = DRa.b;") == std::string::npos);
+    // Repairs are the decals' cut patches now, not noise blots; kerb litter (silt, petals) on a cambered half either way.
+    for (const std::string* s : {&off, &det}) {
+        CHECK(s->find("float Fix") == std::string::npos);
+        CHECK(s->find("float PtOn = step(SNz.L(PtI + int2(211, 7))") != std::string::npos);
+        CHECK(s->find("Alb = lerp(Alb, LitC, LitW);") != std::string::npos);
+    }
     // Declared once before the street block, multiplied into the AO once, sampled in the asphalt kind only.
     CHECK(countOf(det, "float DetAO") == 1);
     CHECK(countOf(det, "A *= DetAO;") == 1);

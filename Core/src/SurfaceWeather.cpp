@@ -329,6 +329,9 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\tfloat2 SlopeB = float2(0.0, 0.0);\n";  // the same in the box's own x and y
     h += "\tfloat FaceW = TopF;\n";
     h += "\tfloat Mid = 1.0 - smoothstep(" + num(kMidFrom) + ", " + num(kMidTo) + ", Foot);\n";
+    h += "\tfloat PolishTop = 0.0;\n";             // share of the way to wheelTopRough (polished stone tops)
+    h += "\tfloat LitW = 0.0;\n";                  // kerb litter's cover and colour, over the tone
+    h += "\tfloat3 LitC = float3(0.0, 0.0, 0.0);\n";
     if (relief) {
         // The joint relief: the switch, the view (metres, unit, its cosine to the face) and the parallax weight; RlG and
         // RlF take each FTRelief.Z's gradient and floor share, RlFl and RlMean the piece's floor share and its mean.
@@ -363,6 +366,7 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Chip = smoothstep(0.62, 0.8, 0.6 * A0 + 0.4 * SNz.N(Pw / " + num(st.aggregateM * 0.45f) + " + 5.0));\n";
     h += "\t\tTone *= 1.0 + 0.3 * (A0 - 0.5) * AgF + lerp(0.25, 1.4 * Chip, AgF) * 0.5;\n";
     h += "\t\tRoughMul *= 1.0 + 0.1 * Chip * AgF;\n";
+    h += "\t\tfloat DTop = 0.0;\n";  // the tile's exposed stone top
     if (detail) {
         // The baked tile on the world's plan (image-down along world +y): albedo ratio to its mean, true slope from a
         // DirectX map (x = -dh/du, y = +dh/dv), roughness ratio and cavity AO. Texture2DSample, so a ray-tracing hit
@@ -373,32 +377,51 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
              num(st.detailTone) + ");\n";
         h += "\t\tfloat3 DNm = UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv)).xyz;\n";
         h += "\t\tSlopeW += float2(-DNm.x, DNm.y) / max(DNm.z, 0.2) * " + num(st.detailSlope) + ";\n";
-        h += "\t\tfloat2 DRa = Texture2DSample(DetRA, DetRASampler, DUv).rg;\n";
+        h += "\t\tfloat3 DRa = Texture2DSample(DetRA, DetRASampler, DUv).rgb;\n";
         h += "\t\tRoughMul *= lerp(1.0, DRa.r / " + num(st.detailRoughMean) + ", " + num(st.detailRough) + ");\n";
         h += "\t\tDetAO = lerp(1.0, DRa.g, " + num(st.detailAO) + ");\n";
+        h += "\t\tDTop = DRa.b;\n";
     }
-    // Ravelled blotches and old patches, 0.3-2 m: what is left of the grain beyond a few metres.
+    // Ravelled blotches, 0.3-2 m: what is left of the grain beyond a few metres. (Repairs are the decals' cut-edge
+    // patches, not blots in the layer.)
     h += "\t\tfloat Blot = SNz.N(Pw / 0.6 + 11.0);\n";
     h += "\t\tTone *= 1.0 + 0.22 * (Blot - 0.5) * Mid;\n";
-    h += "\t\tfloat Fix = smoothstep(0.7, 0.72, SNz.N(Pw / 5.0 + 61.0));\n";
-    h += "\t\tTone *= lerp(1.0, 0.72, Fix);\n";
-    h += "\t\tRoughMul *= lerp(1.0, 0.92, Fix);\n";
     // Wheel paths: a cambered half from its gutter, a long flat slab across its short side (none on a squarish fill).
     h += "\t\tfloat Wd = Tilted ? Sy : (max(Sx, Sy) > 2.0 * min(Sx, Sy) ? min(Sx, Sy) : 0.0);\n";
     h += "\t\tfloat Across = Tilted ? GutD : (Sx >= Sy ? Lm.y : Lm.x) + 0.5 * Wd;\n";
     h += "\t\tfloat Lanes = max(1.0, round(Wd / " + num(st.laneM) + "));\n";
     h += "\t\tfloat Lw = Wd / Lanes;\n";
     h += "\t\tfloat Q = (frac(Across / max(Lw, 0.01)) - 0.5) * Lw;\n";
+    // Two wheel paths a lane, darker and polished, their strength wandering along them; the lane's centre between paler.
     h += "\t\tfloat Wheel = Lw > 2.0 ? exp(-pow((abs(Q) - " + num(st.wheelOffM) + ") / " + num(st.wheelWideM) + ", 2.0)) : 0.0;\n";
+    h += "\t\tWheel *= 0.75 + 0.25 * SNz.N(Pw / " + num(st.wheelRunM) + " + 13.0);\n";
     h += "\t\tfloat Centre = Lw > 2.0 ? exp(-pow(Q / 0.35, 2.0)) : 0.0;\n";
     h += "\t\tfloat Oil = Centre * smoothstep(0.5, 0.8, SNz.N(Pw * 0.9 + 23.0));\n";
     h += "\t\tTone *= (1.0 - " + num(st.wheelDarken) + " * 1.6 * Wheel) * (1.0 + " + num(st.wornCentre) + " * Centre) * (1.0 - 0.3 * Oil);\n";
-    h += "\t\tRoughMul *= (1.0 - " + num(st.wheelPolish) + " * Wheel) * (1.0 - 0.3 * Oil);\n";
+    h += "\t\tRoughMul *= (1.0 - " + num(detail ? st.wheelPolishBinder : st.wheelPolish) + " * Wheel) * (1.0 - 0.3 * Oil);\n";
+    h += "\t\tPolishTop = DTop * Wheel;\n";
     h += "\t\tif (Tilted)\n\t\t{\n";
     h += "\t\t\tfloat EdgeBand = smoothstep(0.3, 0.45, GutD) * (1.0 - smoothstep(0.8, 1.0, GutD)) + (1.0 - smoothstep(0.0, 0.4, Sy - GutD));\n";
     h += "\t\t\tTone *= 1.0 + " + num(st.wornEdge) + " * EdgeBand;\n";
     h += "\t\t\tRoughMul *= 1.0 - " + num(st.gutterDampPolish) + " * (1.0 - smoothstep(" + num(st.gutterDampM * 0.6f) + ", " +
          num(st.gutterDampM) + ", GutD));\n";
+    // Kerb litter: pale silt drifted against the kerb, and blossom petals (one at most a cell, an ellipse turned at
+    // random, fresh pink or aged brown); far off, their mean cover.
+    h += "\t\t\tfloat LitB = 1.0 - smoothstep(0.0, " + num(st.litterM) + ", GutD);\n";
+    h += "\t\t\tTone *= 1.0 + " + num(st.litterDust) + " * LitB * smoothstep(0.3, 0.7, SNz.N(Pw / 0.7 + 19.0));\n";
+    h += "\t\t\tfloat2 PtC = Pw / " + num(st.petalCellM) + ";\n";
+    h += "\t\t\tint2 PtI = int2(floor(PtC));\n";
+    h += "\t\t\tfloat PtH = SNz.L(PtI);\n";
+    h += "\t\t\tfloat PtH2 = SNz.L(PtI + int2(57, 113));\n";
+    h += "\t\t\tfloat PtA = PtH2 * 6.2832;\n";
+    h += "\t\t\tfloat2 PtD = frac(PtC) - (0.3 + 0.4 * float2(PtH, frac(PtH * 7.7)));\n";
+    h += "\t\t\tPtD = float2(PtD.x * cos(PtA) + PtD.y * sin(PtA), -PtD.x * sin(PtA) + PtD.y * cos(PtA));\n";
+    h += "\t\t\tfloat PtIn = 1.0 - smoothstep(0.8, 1.0, length(PtD / float2(0.2, 0.13)));\n";
+    h += "\t\t\tfloat PtOn = step(SNz.L(PtI + int2(211, 7)), " + num(st.petalShare) + " * LitB * LitB);\n";
+    h += "\t\t\tfloat PtFine = 1.0 - smoothstep(" + num(st.petalCellM * 0.08f) + ", " + num(st.petalCellM * 0.3f) + ", Foot);\n";
+    h += "\t\t\tLitW = lerp(" + num(st.petalShare * 0.1f) + " * LitB * LitB, PtIn * PtOn, PtFine);\n";
+    h += "\t\t\tLitC = lerp(float3(" + num(st.petalR) + ", " + num(st.petalG) + ", " + num(st.petalB) +
+         "), float3(0.2, 0.15, 0.11), smoothstep(0.4, 0.9, frac(PtH * 13.1)));\n";
     h += "\t\t}\n";
     h += "\t\tfloat Run = Lm.x + 0.5 * Sx + (SNz.N(Pw * 0.8 + 3.0) - 0.5) * 0.12;\n";
     h += "\t\tfloat JCell = floor(Run / " + num(st.jointEveryM) + ");\n";
@@ -570,7 +593,7 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\t\tLeft = 1.0;\n";
     h += "\t\t\tPaint = Alb * (0.6 / Mx) * lerp(0.9, 1.0, Fade);\n";
     h += "\t\t}\n";
-    h += "\t\tAlb = lerp(float3(0.045, 0.045, 0.05), Paint, Left);\n";
+    h += "\t\tAlb = lerp(float3(0.093, 0.092, 0.09), Paint, Left);\n";
     h += "\t\tRgh = lerp(0.85, Rgh, Left);\n";
     h += "\t}\n";
     if (relief) {
@@ -592,6 +615,9 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     }
     h += "\tAlb *= Tone;\n";
     h += "\tRgh = saturate(Rgh * RoughMul);\n";
+    h += "\tRgh = lerp(Rgh, " + num(st.wheelTopRough) + ", saturate(PolishTop));\n";
+    h += "\tAlb = lerp(Alb, LitC, LitW);\n";
+    h += "\tRgh = lerp(Rgh, 0.7, LitW);\n";
     if (relief) h += "\tRgh = lerp(Rgh, max(Rgh, RlRw), RlC);\n";
     h += "\tNrm = normalize(Nrm - FaceW * (SlopeB.x * Ux + SlopeB.y * Uy + float3(SlopeW, 0.0)));\n";
     h += "}\n";

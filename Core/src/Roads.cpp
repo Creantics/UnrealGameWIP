@@ -446,8 +446,10 @@ bool spotFree(const std::vector<SideSpan>& spans, double s, double margin) {
 
 RoadColor roadTint(RoadTint tint) {
     switch (tint) {
-    case RoadTint::Asphalt: return {0.045f, 0.045f, 0.05f, 0.85f};
-    case RoadTint::AsphaltPatch: return {0.07f, 0.07f, 0.075f, 0.8f};
+    // Aged dense asphalt, neutral grey: with the street layer's far lift (x1.125) and the detail tile's ratio its binder
+    // lands at 0.085 and its exposed stone tops at 0.155 (linear albedo).
+    case RoadTint::Asphalt: return {0.093f, 0.092f, 0.09f, 0.85f};
+    case RoadTint::AsphaltPatch: return {0.105f, 0.104f, 0.102f, 0.8f};
     case RoadTint::Pavement: return {0.32f, 0.31f, 0.29f, 0.8f};
     case RoadTint::Kerb: return {0.46f, 0.45f, 0.43f, 0.75f};
     case RoadTint::LineWhite: return {0.78f, 0.78f, 0.76f, 0.6f};

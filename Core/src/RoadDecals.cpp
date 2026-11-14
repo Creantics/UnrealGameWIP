@@ -315,8 +315,8 @@ bool roadMarkingDecal(const RoadSolid& solid, RoadDecal& out) {
     }
     d.cx = b.cx;
     d.cy = b.cy;
-    d.sx = b.sx;
-    d.sy = b.sy;
+    d.sx = b.sx + 2.0 * kRoadPaintPad;
+    d.sy = b.sy + 2.0 * kRoadPaintPad;
     d.rot = b.rot;
     d.riseU = b.riseU;
     d.riseW = b.riseW;
@@ -363,8 +363,9 @@ void roadDecalData(const RoadDecal& decal, float out[kRoadDecalData]) {
 }
 
 // M: metres from the plate's centre along its u and w (LocalPos is the 1 m plate's, in cm; its local y is -w). Every
-// pattern is noise and distance from M, so nothing samples a texture. The return value is the colour, RoughOut the
-// roughness and MaskOut the opacity mask (clipped at 0.5). The soft kinds converge on the ground's own colour and
+// pattern is noise and distance from M; only the paint samples a texture (the asphalt tile, DetRA, on the world's plan
+// as the road does). The return value is the colour, RoughOut the roughness and MaskOut the opacity mask (clipped at
+// 0.5 on the wear kinds; the paint's opacity). The soft kinds converge on the ground's own colour and
 // roughness over their outer band (Blend), so the clip lands where the decal already matches the ground. Wetness then
 // darkens and smooths as the surface master does at the same place (surfaceWetHlsl).
 const char* roadDecalHlsl() {
@@ -400,7 +401,7 @@ int Kd = Paved ? KindAll - PAVED_K : KindAll;
 float Foot = max(length(fwidth(WorldPos.xyz)) / 100.0, 1e-4);
 float2 Pw = WorldPos.xy / 100.0;
 float3 Nrm = normalize(VN);
-float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(0.045, 0.045, 0.05);
+float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(0.104, 0.103, 0.101);
 float UnderR = Paved ? 0.8 : 0.85;
 float Grain = D.N(M * 23.0 + O);
 float3 C = Under;
@@ -435,7 +436,7 @@ else if (Kd == 1)
 	float Inner = D.F(M * 4.0 + O + 11.0);
 	// On a pavement never oil, and never darker than a damp patch of the paving itself.
 	bool Oil = !Paved && D.H(O + 7.7) < 0.66;
-	C = Oil ? float3(0.018, 0.018, 0.02) * (0.7 + 0.6 * Inner) : float3(0.07, 0.062, 0.05) * (0.8 + 0.4 * Inner);
+	C = Oil ? float3(0.03, 0.03, 0.031) * (0.7 + 0.6 * Inner) : float3(0.12, 0.108, 0.088) * (0.8 + 0.4 * Inner);
 	if (Paved) { C = Under * float3(0.78, 0.75, 0.7) * (0.85 + 0.15 * Inner); }
 	R = Oil ? lerp(0.25, 0.5, Inner) : 0.95;
 }
@@ -457,34 +458,57 @@ else if (Kd == 2)
 }
 else if (Kd == 3)
 {
-	// A patch of newer (a little darker) or older (a little paler) asphalt, within about 15% of the road's, in one of
-	// four shapes: a rectangle, a rectangle with a corner cut out, a rounded blob or a trench strip along u. Its edge is
-	// ragged at two scales and fades into the road, with a broken tar seal along part of it.
+	// A repair. Most (85%) are saw-cut: a rectangle, or one with a corner cut out, or a trench strip along u, square
+	// edged, the cut sealed with a 1-2 cm tar band all round and the patch a millimetre proud of the road; newer (darker,
+	// smoother, its stone still coated) or older (paler). The rest are ragged blobs that fade into the road.
 	float Pick = D.H(O + 6.1);
 	float Dd = Edge;
-	if (Pick >= 0.35 && Pick < 0.6)
+	bool Cut = Pick < 0.85;
+	if (Pick >= 0.4 && Pick < 0.7)
 	{
 		float2 Sg = sign(float2(D.H(O + 2.2), D.H(O + 3.3)) - 0.5 + 1e-3);
 		float2 Notch = (float2(D.H(O + 8.3), D.H(O + 9.1)) * 0.3 + 0.05) * Size * Sg;
 		Dd = min(Edge, max(Sg.x * (Notch.x - M.x), Sg.y * (Notch.y - M.y)));
 	}
-	else if (Pick >= 0.6 && Pick < 0.8)
-	{
-		Dd = 0.5 * min(Size.x, Size.y) * (1.0 - length(M / (0.5 * Size)));
-	}
-	else if (Pick >= 0.8)
+	else if (Pick >= 0.7 && Pick < 0.85)
 	{
 		Dd = min(E.x, min(0.25, 0.5 * Size.y) - abs(M.y));
 	}
-	float In = Dd + (D.F(M * 1.1 + O) - 0.5) * 0.16 + (D.N(M * 7.0 + O) - 0.5) * 0.03 - 0.02;
-	Mask = 0.5 + In * 60.0;
-	Blend = smoothstep(0.0, 0.15, In);
+	else if (Pick >= 0.85)
+	{
+		Dd = 0.5 * min(Size.x, Size.y) * (1.0 - length(M / (0.5 * Size)));
+	}
 	bool Newer = D.H(O + 4.4) < 0.6;
-	float3 Body = Newer ? float3(0.038, 0.038, 0.041) : float3(0.052, 0.051, 0.054);
-	C = Body * (0.9 + 0.2 * Grain) * (0.94 + 0.12 * D.F(M * 1.3 + O));
-	float Seal = (1.0 - smoothstep(0.0, 0.035, In)) * step(0.55, D.N(M * 1.8 + O + 4.0)) * smoothstep(0.005, 0.02, In);
-	C *= 1.0 - 0.3 * Seal;
-	R = lerp(Newer ? 0.78 : 0.9, 0.6, Seal);
+	float3 Body = Newer ? float3(0.078, 0.077, 0.076) : float3(0.112, 0.11, 0.107);
+	if (Cut)
+	{
+		float In = Dd - 0.01;
+		Mask = 0.5 + In * 400.0;
+		Blend = 1.0;
+		float SealW = 0.006 + 0.008 * D.N(M * 3.0 + O + 4.0);
+		float Seal = 1.0 - smoothstep(SealW, SealW + 0.003, In);
+		C = Body * (0.92 + 0.16 * Grain) * (0.95 + 0.1 * D.F(M * 1.3 + O));
+		C = lerp(C, float3(0.03, 0.029, 0.028) * (0.85 + 0.3 * Grain), Seal);
+		R = lerp(Newer ? 0.8 : 0.9, 0.55, Seal);
+		// The cut's step: the patch stands a millimetre proud, falling over its outer 4 mm.
+		float Lt = saturate(In / 0.004);
+		float2 G = E.x < E.y ? float2(-sign(M.x), 0.0) : float2(0.0, -sign(M.y));
+		float3 Ua3 = normalize(AxisX);
+		float3 Wa3 = -normalize(AxisY);
+		float3 Slope = (1.0 - Lt) * 0.25 * (G.x * Ua3 + G.y * Wa3);
+		Slope -= dot(Slope, Nrm) * Nrm;
+		Nrm = normalize(Nrm - Slope); // G points inwards: the face tilts out, over the fall
+	}
+	else
+	{
+		float In = Dd + (D.F(M * 1.1 + O) - 0.5) * 0.16 + (D.N(M * 7.0 + O) - 0.5) * 0.03 - 0.02;
+		Mask = 0.5 + In * 60.0;
+		Blend = smoothstep(0.0, 0.15, In);
+		C = Body * (0.9 + 0.2 * Grain) * (0.94 + 0.12 * D.F(M * 1.3 + O));
+		float Seal = (1.0 - smoothstep(0.0, 0.035, In)) * step(0.55, D.N(M * 1.8 + O + 4.0)) * smoothstep(0.005, 0.02, In);
+		C *= 1.0 - 0.3 * Seal;
+		R = lerp(Newer ? 0.78 : 0.9, 0.6, Seal);
+	}
 }
 else if (Kd == 4)
 {
@@ -536,14 +560,15 @@ else if (Kd == 7)
 }
 else
 {
-	// Paint: 8 white line, 9 yellow line, 10 stop line, 11 zebra bar. A thin coat on the road: where it has worn
-	// through, along the road's sealed cracks and off its ragged edge it is clipped, so the road itself shows there.
+	// Paint: 8 white line, 9 yellow line, 10 stop line, 11 zebra bar. Aged thermoplastic on the road (a DBuffer decal:
+	// its opacity blends it, the road's own normal stays). Its edge is straight, PAINT_PAD in from the plate's, with a
+	// soft overspray on the pad; it wears off the asphalt tile's exposed stone tops first (the road's own tile at the same
+	// place), so it breaks along the stones' outlines, and lower down as the wear grows.
 	float Fine = 1.0 - smoothstep(0.004, 0.03, Foot);
 	float3 Ua = normalize(AxisX);
 	float3 Wa = -normalize(AxisY);
 	float Age = D.H(O + 12.7);
 	float Fade = D.F(Pw / 1.2 + 5.0);
-	float Chip = lerp(0.5, D.N(Pw / 0.05 + 9.0), Fine);
 	// Wheel wear: a stop line where each lane's wheels cross it; a zebra bar in bands across the traffic (its long
 	// side runs with the traffic: the bands lie along its short side, in the world, so neighbouring bars share them).
 	float MW = 0.0;
@@ -560,11 +585,39 @@ else
 		float Q = (frac(dot(WorldPos.xyz / 100.0, Over) / 1.7 + 0.37) - 0.5) * 1.7;
 		MW = exp(-pow(Q / 0.3, 2.0));
 	}
-	// Worn, not gone: far off (Chip 0.5) a line clips only where fade, wheels and age are all at their worst; near, the
-	// chips break through where it is worn. The rest of the wear shows in the colour (Wear below).
-	float Left = smoothstep(-0.06, 0.06, 1.15 - 0.3 * Fade - 0.25 * MW - 0.15 * Age - Chip);
-	float ME = Edge - 0.02 * D.N(Pw / 0.03 + 2.0);
-	Left *= lerp(1.0, smoothstep(0.0, 0.012, ME), Fine);
+	// The tile under it: exposed stone top (b) and cavity (from the AO in g); a stand-in without the tile: its means.
+	float3 Tl = HasDetail > 0.5 ? Texture2DSample(DetRA, DetRASampler, Pw / DETAIL_M).rgb : float3(0.85, 0.9, 0.22);
+	float Cav = saturate((0.97 - Tl.g) / 0.2);
+	float Expo = saturate(0.85 * Tl.b + 0.15 * (1.0 - Cav));
+	// Wear: the line's age, a slow fade along it, the wheel paths. It takes the tops first: the more wear, the lower the
+	// exposure it reaches (binder only where it is at its worst). Far off the mips' mean exposure keeps most of it.
+	float Wear = saturate(0.1 + 0.3 * Age + 0.4 * (1.0 - Fade) + 0.55 * MW);
+	float Thr = 1.02 - 0.8 * Wear;
+	float Left = 1.0 - smoothstep(Thr - 0.06, Thr + 0.06, Expo);
+	// The edge: straight; the line's own edge PAINT_PAD in from the plate's, a ~3 mm transition (wider far off, so it
+	// never aliases), then the overspray: a faint speckled mist falling to nothing over 5-10 mm.
+	float LE = Edge - PAINT_PAD;
+	float EdgeW = max(0.0015, 0.7 * Foot);
+	float Body = smoothstep(-EdgeW, EdgeW, LE);
+	float SprayW = lerp(0.005, 0.01, D.N(Pw / 0.5 + 2.0));
+	float Spray = 0.3 * (1.0 - smoothstep(0.0, SprayW, -LE)) * lerp(0.7, 0.4 + 0.6 * D.N(Pw / 0.0015 + 7.0), Fine);
+	// Fine cracks across the line every 20-40 cm (one per 0.3 m cell, jittered, a little slanted and wandering), with
+	// dirt in them; a third run only part way across from one edge.
+	bool LongU = Size.x >= Size.y;
+	float Lo = LongU ? M.x : M.y;
+	float Cr = LongU ? M.y : M.x;
+	float CrW = 0.5 * (LongU ? Size.y : Size.x) - PAINT_PAD;
+	float TC = 0.0;
+	float Lc = floor(Lo / 0.3);
+	for (int Ck = -1; Ck <= 1; ++Ck)
+	{
+		float2 Ks = float2(Lc + Ck, O.x);
+		float At = (Lc + Ck + 0.5 + (D.H(Ks) - 0.5) * 0.33) * 0.3 + (D.H(Ks + 3.1) - 0.5) * 0.25 * Cr +
+			(D.N(float2(Cr / 0.012, Lc + Ck) + O) - 0.5) * 0.004;
+		float Part = D.H(Ks + 5.7) < 0.33 ? step(Cr * sign(D.H(Ks + 6.1) - 0.5), (D.H(Ks + 7.3) - 0.3) * CrW) : 1.0;
+		float CW = 0.0004 + 0.0004 * D.H(Ks + 8.9);
+		TC = max(TC, (1.0 - smoothstep(CW, CW + Foot, abs(Lo - At))) * saturate(2.0 * CW / (2.0 * CW + Foot)) * Part);
+	}
 	// The road's sealed cracks and hairlines, as the surface master draws them on the asphalt at the same place.
 	float CrackV = D.N(Pw / CRACK_M + 41.0);
 	float CrackGate = smoothstep(0.5, 0.62, D.N(Pw / (3.0 * CRACK_M) + 3.1));
@@ -574,24 +627,15 @@ else
 	float HairF = Foot / 0.9;
 	float Hair = (1.0 - smoothstep(0.004, 0.004 + HairF, abs(HairV - 0.5))) * saturate(0.008 / (0.008 + HairF)) *
 		smoothstep(0.55, 0.7, D.N(Pw / 7.0 + 9.0));
-	Mask = Left * (1.0 - Crack);
-	// Colour: 0.65 fresh to 0.45 worn (brightest channel), white or a muted yellow, over the road's aggregate.
-	float Wear = saturate(0.55 * Age + 0.45 * MW + 0.25 * (1.0 - Fade));
-	float3 Tint = Kd == 9 ? float3(1.0, 0.79, 0.28) : float3(1.0, 1.0, 0.97);
-	float2 Ag = Pw / AGG_M;
-	float A0 = D.N(Ag);
-	float Ax = D.N(Ag + float2(0.35, 0.0));
-	float Ay = D.N(Ag + float2(0.0, 0.35));
-	C = Tint * lerp(0.65, 0.45, Wear) * lerp(1.0, 0.86 + 0.28 * A0, Fine) * (0.94 + 0.06 * Fade) * (1.0 - 0.6 * Hair);
-	R = lerp(0.55, 0.72, Wear) * (1.0 + 0.1 * (A0 - 0.5) * Fine);
-	// The normal: the aggregate's relief through the coat, and a soft 2 mm lip over the 8 mm in from its edge.
-	float LipF = 1.0 - smoothstep(0.002, 0.012, Foot);
-	float Lt = saturate(ME / 0.008);
-	float DH = 0.002 * 6.0 * Lt * (1.0 - Lt) / 0.008 * LipF;
-	float2 G = E.x < E.y ? float2(-sign(M.x), 0.0) : float2(0.0, -sign(M.y));
-	float3 Slope = DH * (G.x * Ua + G.y * Wa) + float3(float2(Ax - A0, Ay - A0) / 0.35 * AGG_SLOPE * 0.7 * Fine, 0.0);
-	Slope -= dot(Slope, Nrm) * Nrm;
-	Nrm = normalize(Nrm - Slope);
+	Mask = max(Body * Left, Spray) * (1.0 - Crack);
+	// Colour: aged thermoplastic, 0.55-0.65 (luminance) and a little warm, never pure white, or a muted yellow; grime in
+	// the tile's cavities, tyre grey in the wheel paths, dirt in its own cracks and the road's hairlines.
+	float3 Tint = Kd == 9 ? float3(1.0, 0.77, 0.3) : float3(1.0, 0.975, 0.93);
+	C = Tint * lerp(0.65, 0.57, Wear) * (1.0 - 0.3 * Cav) * (1.0 - 0.15 * MW) * (0.96 + 0.04 * Fade) * (1.0 - 0.6 * Hair);
+	C = lerp(C, float3(0.06, 0.055, 0.05), TC);
+	R = lerp(0.58, 0.64, Wear) + 0.08 * Cav;
+	R = lerp(R, 0.85, TC);
+	// No normal of its own (the road's comes through the DBuffer); a ground's normal for the masked path.
 }
 C = lerp(Under, C, Blend);
 R = lerp(UnderR, R, Blend);
@@ -609,8 +653,8 @@ float WetIn = saturate(Wetness);
                       {"LANE_M", static_cast<double>(street.laneM)},
                       {"WHEEL_OFF_M", static_cast<double>(street.wheelOffM)},
                       {"CRACK_M", static_cast<double>(street.crackScaleM)},
-                      {"AGG_SLOPE", static_cast<double>(street.aggregateSlope)},
-                      {"AGG_M", static_cast<double>(street.aggregateM)}};
+                      {"PAINT_PAD", kRoadPaintPad},
+                      {"DETAIL_M", static_cast<double>(street.detailTileM)}};
         for (const auto& s : splice) {
             const std::string key = s.key;
             char buf[32];
