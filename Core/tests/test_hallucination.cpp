@@ -98,7 +98,7 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
 }
 
 // A new tuning field must be added to both helpers below; this size check fails until it is.
-static_assert(sizeof(HallucinationTuning) == 10 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
+static_assert(sizeof(HallucinationTuning) == 11 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
 
 // Every tuning field away from its default.
 void dirtyAll(HallucinationTuning& t) {
@@ -112,6 +112,7 @@ void dirtyAll(HallucinationTuning& t) {
     t.recentSeconds = 60.f;
     t.fewerGapScale = 7.f;
     t.lonePoolFloor = 777.f;
+    t.counselCooldownSeconds = 0.25f;
     t.actFloors.fill(IntensityBand::High);
 }
 
@@ -120,7 +121,8 @@ bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.switchSeconds == b.switchSeconds && a.refuseSeconds == b.refuseSeconds &&
            a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
            a.recentSeconds == b.recentSeconds && a.fewerGapScale == b.fewerGapScale &&
-           a.lonePoolFloor == b.lonePoolFloor && a.actFloors == b.actFloors;
+           a.lonePoolFloor == b.lonePoolFloor && a.counselCooldownSeconds == b.counselCooldownSeconds &&
+           a.actFloors == b.actFloors;
 }
 
 // Each field of `a` differs from `b`'s.
@@ -131,7 +133,7 @@ bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.switchSeconds != b.switchSeconds && a.refuseSeconds != b.refuseSeconds &&
            a.refusalCooldownSeconds != b.refusalCooldownSeconds && a.pullSeconds != b.pullSeconds &&
            a.recentSeconds != b.recentSeconds && a.fewerGapScale != b.fewerGapScale &&
-           a.lonePoolFloor != b.lonePoolFloor && floorsDiffer;
+           a.lonePoolFloor != b.lonePoolFloor && a.counselCooldownSeconds != b.counselCooldownSeconds && floorsDiffer;
 }
 
 } // namespace
@@ -703,13 +705,14 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(h.refuseSeconds == d.refuseSeconds);
     CHECK(h.actFloors == d.actFloors);
     CHECK(h.lonePoolFloor == d.lonePoolFloor);
+    CHECK(sameTuning(h, d)); // the shipped file is the defaults
     CHECK(t.keys[0].caused == false);
     CHECK(t.keys[1].lone == false);
 
     HallucinationTuning o;
     CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
         "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,"lonePoolFloor":50,
-        "actFloors":["low","low","mid","mid","high"]})", o, &err));
+        "counselCooldownSeconds":1,"actFloors":["low","low","mid","mid","high"]})", o, &err));
     CHECK(o.holdSeconds == 2.f);
     CHECK(o.expireSeconds == 40.f);
     CHECK(o.gapSeconds == 60.f);
@@ -720,6 +723,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(o.recentSeconds == 600.f);
     CHECK(o.fewerGapScale == 3.f);
     CHECK(o.lonePoolFloor == 50.f);
+    CHECK(o.counselCooldownSeconds == 1.f);
     CHECK(o.actFloors[0] == IntensityBand::Low);
     CHECK(o.actFloors[2] == IntensityBand::Mid);
     CHECK(o.actFloors[4] == IntensityBand::High);
@@ -762,6 +766,8 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"holdSeconds":4})",
         R"({"version":1,"lonePoolFloor":-1})",
         R"({"version":1,"lonePoolFloor":2e9})",
+        R"({"version":1,"counselCooldownSeconds":-1})",
+        R"({"version":1,"counselCooldownSeconds":61})",
     };
     for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
         dirtyAll(h);
@@ -963,4 +969,32 @@ TEST_CASE("a capture against a smaller table counts the pool keys it has no row 
     TragedyPool locked(big);
     CHECK(captureTragedies(small, locked, s) == 0); // a locked key past the end is not a dropped one
     CHECK(s.unlocked.empty());
+}
+
+TEST_CASE("Counsel cuts the refusal cooldown to min(tuned, counselCooldownSeconds) and never lengthens it") {
+    const auto cooldownAfter = [](float tuned, BriefId brief, bool wrongGuess) {
+        HallucinationTuning t;
+        t.refusalCooldownSeconds = tuned;
+        Rig r;
+        r.h = Hallucination(t);
+        r.in.brief = brief;
+        r.step(0.0);
+        if (!wrongGuess) REQUIRE(r.start() == Start::Started);
+        r.in.refuse = true;
+        r.step(0.25);
+        if (!wrongGuess) {
+            r.step(0.25);
+            REQUIRE(r.saw(Ev::Refused) == 1);
+        }
+        return r.h.refusalCooldown();
+    };
+    for (const bool wrongGuess : {false, true}) {
+        CAPTURE(wrongGuess);
+        CHECK(cooldownAfter(4.f, BriefId::Counsel, wrongGuess) == doctest::Approx(2.0)); // the default 4 s gives 2 s
+        CHECK(cooldownAfter(1.5f, BriefId::Counsel, wrongGuess) == doctest::Approx(1.5)); // a tuned 1.5 s stays
+        CHECK(cooldownAfter(4.f, BriefId::Count, wrongGuess) == doctest::Approx(4.0));   // no Brief: unchanged
+        CHECK(cooldownAfter(4.f, BriefId::Proxy, wrongGuess) == doctest::Approx(4.0));   // another Brief: unchanged
+    }
+    const HallucinationTuning d;
+    CHECK(d.counselCooldownSeconds == 2.f);
 }

@@ -18,6 +18,8 @@
 //   press as its own.
 // * In a fight the partner pulls a held lead back after pullSeconds held; elsewhere the host says when (partnerPull).
 //   With no partner present only the refusal ends a hold.
+// * Brief links (the lead's Brief on the tick, none by default): Counsel cuts the refusal cooldown to
+//   min(refusalCooldownSeconds, counselCooldownSeconds).
 // * The intensity band is authored: max(the page's place band, the act's floor). Nothing accumulates.
 // * The pick is the pool's, weighted (TragedyPool.h); the lone key weighs x2 once the lead's lone Releases have
 //   pooled lonePoolFloor Load (loneWeighs).
@@ -27,10 +29,12 @@
 //
 // Data/Unwritten/hallucination.json: { "version": 1, "holdSeconds": 4, "expireSeconds": 30, "gapSeconds": 90,
 //   "switchSeconds": 20, "refuseSeconds": 0.5, "refusalCooldownSeconds": 4, "pullSeconds": 6, "recentSeconds": 1800,
-//   "fewerGapScale": 2, "lonePoolFloor": 300, "actFloors": ["none", "none", "none", "low", "mid"] }
+//   "fewerGapScale": 2, "lonePoolFloor": 300, "counselCooldownSeconds": 2,
+//   "actFloors": ["none", "none", "none", "low", "mid"] }
 //   (every field but version optional)
 
 #include "ftcore/Api.h"
+#include "ftcore/Brief.h"
 #include "ftcore/CombatInputs.h"
 #include "ftcore/HeldRefusal.h"
 #include "ftcore/ScarePacer.h"
@@ -63,6 +67,7 @@ struct HallucinationTuning {
     float recentSeconds = 1800.f;
     float fewerGapScale = 2.f;
     float lonePoolFloor = 300.f; // Load pooled in lone Releases (LoneSave::pooled) from which the lone key weighs x2
+    float counselCooldownSeconds = 2.f; // a Counsel lead's refusal cooldown: min(refusalCooldownSeconds, this)
     std::array<IntensityBand, kMaxAct + 1> actFloors{IntensityBand::None, IntensityBand::None, IntensityBand::None,
                                                      IntensityBand::Low, IntensityBand::Mid};
 };
@@ -104,6 +109,7 @@ struct HallucinationInput {
     bool partnerPresent = false; // the other lead is here
     bool partnerPull = false;    // the other lead has reached a held lead and taken their arm
     bool inFight = false;        // the partner pulls on its own after pullSeconds held
+    BriefId brief = BriefId::Count; // the active lead's Brief; Count for none
 };
 
 struct HallucinationEvent {
@@ -202,7 +208,7 @@ private:
             const bool cooling = cooldown_ > 0.f;
             refuseCounts_ = refusal_.holdDown() == RefusalInput::Holding && active() && !cooling;
             refuseHeld_ = 0.f;
-            if (!active() && !cooling) cooldown_ = tuning_.refusalCooldownSeconds; // a wrong guess
+            if (!active() && !cooling) cooldown_ = refusalCooldownFor(in.brief); // a wrong guess
         } else if (!in.refuse && refuseDown_) {
             refusal_.holdUp();
             refuseCounts_ = false;
@@ -213,7 +219,7 @@ private:
             refuseHeld_ += static_cast<float>(dt);
             if (refuseHeld_ >= tuning_.refuseSeconds) {
                 refusal_.offerEnded();
-                cooldown_ = tuning_.refusalCooldownSeconds;
+                cooldown_ = refusalCooldownFor(in.brief);
                 end(HallucinationEventType::Refused);
                 return;
             }
@@ -243,6 +249,11 @@ private:
         if (now_ - shownAt_ >= tuning_.expireSeconds) end(HallucinationEventType::Expired);
     }
 
+    // The refusal cooldown for a lead of Brief `b`: Counsel cuts it, never lengthens it.
+    float refusalCooldownFor(BriefId b) const {
+        return b == BriefId::Counsel ? std::min(tuning_.refusalCooldownSeconds, tuning_.counselCooldownSeconds)
+                                     : tuning_.refusalCooldownSeconds;
+    }
     void emit(HallucinationEventType type) {
         if (eventCount_ < static_cast<int>(events_.size())) events_[static_cast<std::size_t>(eventCount_++)] = {type, key_};
     }
