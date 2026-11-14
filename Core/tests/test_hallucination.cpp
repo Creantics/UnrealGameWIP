@@ -1465,21 +1465,19 @@ TEST_CASE("the price: a refusal opens the weak point 2 s at 1 s of hold, 1.5 s m
     o.step(0.25);
     CHECK(o.h.weakPointOpenFor() == 0.f);
 
-    Rig t; // a refusal completing at the instant the hold fills: Held wins (the tie is Held's), then the press
-    REQUIRE(t.start(true) == Start::Started); // closes the held lead's offer on the next step, opening nothing
+    Rig t; // no blows: a press begun at 3.5 s completes at the instant the hold would fill. The tie is Refused's,
+    REQUIRE(t.start(true) == Start::Started); // with the full hold counted: 5.75 s open, no Held and no cost
     t.in.accepting = true;
     t.run(3.5);
     t.in.refuse = true;
     t.step(0.25);
     t.step(0.25);
-    CHECK(t.h.held());
-    CHECK(t.saw(Ev::Held) == 1);
-    CHECK(t.saw(Ev::Refused) == 0);
-    CHECK(t.h.heldCost() == doctest::Approx(0.25));
-    CHECK(t.h.weakPointShutFor() == doctest::Approx(10.0));
-    t.step(0.25);
+    CHECK_FALSE(t.h.active());
+    CHECK(t.saw(Ev::Held) == 0);
     CHECK(t.saw(Ev::Refused) == 1);
-    CHECK(t.h.weakPointOpenFor() == 0.f);
+    CHECK(t.h.heldCost() == 0.f);
+    CHECK(t.h.weakPointShutFor() == 0.f);
+    CHECK(t.h.weakPointOpenFor() == doctest::Approx(5.75));
     CHECK_FALSE(t.h.refusedTooEarly());
 
     Rig w; // a turn away is a Refused that opens nothing
@@ -1920,9 +1918,9 @@ TEST_CASE("the push: each blow taken while the hold builds adds holdPushPerHit (
     CHECK(n.h.holdLevel() == doctest::Approx(0.25));
 }
 
-TEST_CASE("the push and a press: a blow does not stop the press; Held first wins, a tie is Held's") {
-    // A press begun at 3.0 s with a blow at 3.2 s: the hold reaches 4.0 s at 3.5 s, the instant the press would
-    // complete. The tie is Held's: Held with its cost; the press then closes the held lead's offer, opening nothing.
+TEST_CASE("the push and a press: a blow does not stop the press; a tie is Refused's; Held from earlier wins") {
+    // A press begun at 3.0 s with a blow at 3.2 s: the hold reaches 4.0 s at 3.5 s, the instant the press completes.
+    // The tie is Refused's, with the full hold counted (5.75 s open); no Held and no cost.
     for (const double dt : {0.1, 0.05}) {
         CAPTURE(dt);
         Rig r;
@@ -1939,17 +1937,15 @@ TEST_CASE("the push and a press: a blow does not stop the press; Held first wins
         r.step(dt);
         t += dt;
         r.in.blowsTaken = 0;
-        while (!r.h.held() && r.saw(Ev::Refused) == 0 && t < 4.0) {
+        while (r.h.active() && t < 4.0) {
             r.step(dt);
             t += dt;
         }
-        CHECK(r.h.held());
-        CHECK(r.saw(Ev::Refused) == 0);
-        CHECK(r.h.now() == doctest::Approx(3.5));
-        CHECK(r.h.heldCost() == doctest::Approx(0.25));
-        r.step(dt);
         CHECK(r.saw(Ev::Refused) == 1);
-        CHECK(r.h.weakPointOpenFor() == 0.f);
+        CHECK(r.saw(Ev::Held) == 0);
+        CHECK(r.h.now() == doctest::Approx(3.5));
+        CHECK(r.h.heldCost() == 0.f);
+        CHECK(r.h.weakPointOpenFor() == doctest::Approx(5.75));
     }
     // A press begun at 2.5 s with a blow at 2.6 s completes at 3.0 s of clock with 3.5 s of hold: 5.75 s open.
     Rig o;
@@ -1969,19 +1965,75 @@ TEST_CASE("the push and a press: a blow does not stop the press; Held first wins
     CHECK(o.saw(Ev::Held) == 0);
     CHECK(o.h.now() == doctest::Approx(3.0));
     CHECK(o.h.weakPointOpenFor() == doctest::Approx(5.75));
-    // A press under way when a blow fills the hold: Held at the blow, the press closes the held offer after.
+    // Two blows at 3.2 s on a press begun at 3.0 s: the hold reaches 4.0 s at 3.2 s, before the press completes.
+    // Held wins, and the press is spent: holding on to 3.5 s and past refuses nothing.
     Rig p;
     REQUIRE(p.start(true) == Start::Started);
     p.in.accepting = true;
-    p.run(3.5);
+    p.run(3.0);
     p.in.refuse = true;
     p.step(0.1);
-    p.in.blowsTaken = 1;
+    p.step(0.1);
+    p.in.blowsTaken = 2;
     p.step(0.1);
     CHECK(p.h.held());
     CHECK(p.saw(Ev::Held) == 1);
+    CHECK(p.h.heldCost() == doctest::Approx(0.25));
     p.in.blowsTaken = 0;
-    p.run(0.5);
-    CHECK(p.saw(Ev::Refused) == 1);
-    CHECK(p.h.weakPointOpenFor() == 0.f);
+    p.run(1.0);
+    CHECK(p.h.held());
+    CHECK(p.saw(Ev::Refused) == 0);
+}
+
+TEST_CASE("the push and a press: once Held wins, the press under way is spent; a new press refuses the held lead") {
+    // A press begun at 3.0 s would complete on the step 3.4 to 3.5 s; two blows on that step fill the hold at its
+    // start, so Held wins there. The button is let go on that same step: nothing is refused, no window opens.
+    Rig q;
+    REQUIRE(q.start(true) == Start::Started);
+    q.in.accepting = true;
+    q.run(3.0);
+    q.in.refuse = true;
+    for (int i = 0; i < 4; ++i) q.step(0.1);
+    REQUIRE(q.saw(Ev::Refused) == 0);
+    q.in.blowsTaken = 2;
+    q.in.refuse = false; // let go on the step Held wins
+    q.step(0.1);
+    CHECK(q.h.held());
+    CHECK(q.saw(Ev::Held) == 1);
+    CHECK(q.saw(Ev::Refused) == 0);
+    CHECK(q.h.weakPointOpenFor() == 0.f);
+    q.in.blowsTaken = 0;
+    q.step(0.1);
+    CHECK(q.saw(Ev::Refused) == 0);
+    // A new full press refuses the held lead, opening nothing; under refuseSeconds it does not.
+    q.in.refuse = true;
+    for (int i = 0; i < 4; ++i) q.step(0.1);
+    CHECK(q.saw(Ev::Refused) == 0);
+    q.step(0.1);
+    CHECK(q.saw(Ev::Refused) == 1);
+    CHECK(q.h.weakPointOpenFor() == 0.f);
+    CHECK_FALSE(q.h.refusedTooEarly());
+
+    // The same press kept down through Held: no free Refused a step later, and the fight's pull comes as usual
+    // (pullSeconds after Held).
+    Rig k;
+    REQUIRE(k.start(true) == Start::Started);
+    k.in.accepting = true;
+    k.in.partnerPresent = true;
+    k.in.inFight = true;
+    k.run(3.0);
+    k.in.refuse = true;
+    for (int i = 0; i < 4; ++i) k.step(0.1);
+    k.in.blowsTaken = 2;
+    k.step(0.1);
+    REQUIRE(k.h.held());
+    k.in.blowsTaken = 0;
+    k.step(0.1);
+    CHECK(k.saw(Ev::Refused) == 0);
+    k.run(5.5); // 5.6 s held
+    CHECK(k.h.held());
+    CHECK(k.saw(Ev::Refused) == 0);
+    k.run(0.5);
+    CHECK(k.saw(Ev::PulledBack) == 1);
+    CHECK(k.saw(Ev::Refused) == 0);
 }

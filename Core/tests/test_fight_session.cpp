@@ -653,6 +653,50 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     CHECK(wide("w_b0") == 0);
 }
 
+TEST_CASE("fight session: a retry puts the gift tally and the story's press counters back together") {
+    // The host's two calls agree: a retried step (storyEndStep Retry) with no finish(true) rolls back the story's
+    // per-kind counters and, at the next begin, the slot's tally; a kept step (finish(true), then storyEndStep
+    // Keep) keeps both.
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    const auto wide = [&](const char* id) {
+        for (std::uint8_t w = 0; w < kWideSlots; ++w)
+            if (reg.wide[w].id() == id) return storyWide(story, w);
+        return 0xFFFFFFFFu;
+    };
+    FightSession s;
+    FightSessionDef d;
+    d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0;
+    StoryStepMark mark;
+    const auto attempt = [&](int heals) {
+        REQUIRE(s.begin(d, 0.0).ok());
+        REQUIRE(storyMarkStep(story, mark));
+        REQUIRE(s.bindStory(story, reg, mark));
+        REQUIRE(s.selectGift(Gift::Heal));
+        for (int i = 0; i < heals; ++i) CHECK(s.giveGift(kLeadA).given);
+    };
+    attempt(2);
+    CHECK(wide("w_a0") == 2);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 2);
+    // Lost and retried: the story rolls the step back, the next begin the tally.
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    CHECK(wide("w_a0") == 0);
+    attempt(1);
+    CHECK(wide("w_a0") == 1);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+    // Won: both keep this attempt's presses into the next fight.
+    s.finish(true);
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Keep));
+    attempt(0);
+    CHECK(wide("w_a0") == 1);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+}
+
 TEST_CASE("fight session: refused gift presses at a lead count in the story state too") {
     FactRegistry reg;
     std::string err;

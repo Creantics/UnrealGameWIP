@@ -32,9 +32,10 @@
 //   Stepping out before Held drops the wait and the hold back to nothing.
 // * The push: each blow the lead takes while the hold builds (inside the offer, not held, no Escrow wait running)
 //   adds holdPushPerHit seconds of hold at the step's start; pushed seconds are hold for the price below, and a
-//   push can carry the hold to holdSeconds and Held. It does not interrupt a refusal press under way. When the hold
-//   fills and the lead's own refusal press completes in one step, the earlier instant wins; a tie goes to Held (the
-//   press then completes as a refusal of a held lead, opening nothing).
+//   push can carry the hold to holdSeconds and Held. It does not interrupt a refusal press under way. When the lead's
+//   own refusal press completes on a step, Refused wins, even if the hold would fill on that step too (a tie is
+//   Refused's); Held wins only when the hold fills on an earlier step, or by a push at that step's start. Once Held
+//   wins, a press of the lead's under way is spent: a new press is needed (the pull and Proxy apply as usual).
 // * The price: refusing pays in exposure, so the hold must be let build first. The lead's own refusal that closes an
 //   offer before Held, with h seconds of real hold built in it (counted to the closing instant; an Escrow wait is
 //   not hold), opens the boss's weak point for refuseOpenBase + refuseOpenPerSecond x (min(h, refuseOpenHoldCap) -
@@ -303,18 +304,10 @@ private:
             if (hold_ >= 1.f) becomeHeld(); // Held at the step's start: before any press completes in it
         }
         if (refuseCounts_ && refusal_.holding()) {
-            const float pressLeft = tuning_.refuseSeconds - refuseHeld_; // from the step's start
             refuseHeld_ += static_cast<float>(dt);
             if (refuseHeld_ >= tuning_.refuseSeconds) {
-                // Held first: the hold fills at or before the instant the press completes (a tie is Held's, within
-                // float rounding). The press, complete, then closes the held lead's offer on the next step.
-                constexpr float kTie = 1e-4f;
-                const float heldAt = heldWithin(dt, in);
-                if (heldAt >= 0.f && heldAt <= pressLeft + kTie) {
-                    built_ = tuning_.holdSeconds;
-                    becomeHeld();
-                    return;
-                }
+                // The press completes on this step: Refused, even when the hold would fill on it too (a tie is
+                // Refused's). Held wins only from an earlier step, or from a push at this step's start (above).
                 refusal_.offerEnded();
                 cooldown_ = refusalCooldownFor(in.brief);
                 // The hold to the closing instant: this step's real hold counts too (it never reaches Held now).
@@ -384,6 +377,9 @@ private:
         return true;
     }
     void becomeHeld() {
+        // A press of the lead's own under way is spent: a new press is needed to refuse the held lead.
+        refuseCounts_ = false;
+        refuseHeld_ = 0.f;
         hold_ = 1.f;
         heldFor_ = 0.f;
         heldCost_ = tuning_.heldHealthCost; // the price of a full hold, once
@@ -391,13 +387,6 @@ private:
         if (openFor_ > 0.f) lockFor_ = tuning_.refuseOpenLockSeconds; // an open window ends here
         openFor_ = 0.f;
         emit(HallucinationEventType::Held);
-    }
-    // The instant from this step's start the hold would fill, for a lead inside the offer and not held (an Escrow
-    // lead's wait first); -1 for one who is out of it or held.
-    float heldWithin(double dt, const HallucinationInput& in) const {
-        if (held() || !in.accepting) return -1.f;
-        const float wait = static_cast<float>(dt) - stepBuild(dt, in);
-        return wait + (1.f - hold_) * tuning_.holdSeconds;
     }
     // The real hold this step builds for a lead inside the offer (an Escrow lead's wait taken first); 0 outside it.
     float stepBuild(double dt, const HallucinationInput& in) const {

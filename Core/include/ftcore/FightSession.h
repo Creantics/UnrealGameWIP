@@ -548,7 +548,9 @@ public:
     // For the HUD: Heals still to give this fight, and seconds until the Heal and the Guard are ready (0: ready).
     int giftHealsLeft() const { return gift_.healsLeft(); }
     // The host calls this when the fight ends: won, the next begin keeps this fight's gift presses; not won
-    // (or never called), the next begin puts the tally and threads back to this fight's start.
+    // (or never called), the next begin puts the tally and threads back to this fight's start. To agree with the
+    // story's press counters: true wherever the story step ends Keep (a win, or a loss branch it keeps), never
+    // when it ends Retry or Drop.
     void finish(bool won) { won_ = won; }
     bool finishedWon() const { return won_; }
     double giftHealReadyIn() const { return gift_.readyIn(Gift::Heal, now_); }

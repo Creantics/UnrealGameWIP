@@ -272,7 +272,10 @@ the pieces.
   host calls `finish(true)` at victory, and a `begin` after a fight not finished as won (lost,
   abandoned, `finish(false)` or never called) first puts them back to how that fight began
   (`restoreFightStart`; a `GiftSave` loaded mid-fight is that start), so an abandoned attempt's
-  presses do not count. The fight's Heal count resets either way. `tick(fightDt)`
+  presses do not count. The story's per-kind press counters follow the same rule through the story step
+  (`storyEndStep`), so the host pairs the two: `finish(true)` wherever the step ends `Keep` (a win, or a
+  loss branch the story keeps), and no `finish(true)` when it ends `Retry` or `Drop`. The story's RAW
+  press total is kept across a retry by design, like the retries counter. The fight's Heal count resets either way. `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
