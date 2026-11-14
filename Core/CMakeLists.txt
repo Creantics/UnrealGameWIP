@@ -132,6 +132,7 @@ add_library(ftcore STATIC
     src/Chairs.cpp
     src/CountLiftData.cpp
     src/LoneCarry.cpp
+    src/GiftSlot.cpp
     src/Hallucination.cpp
     src/Brief.cpp
     src/BriefKit.cpp

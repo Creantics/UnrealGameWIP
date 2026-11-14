@@ -2,6 +2,9 @@
 #include "ftcore/Chairs.h"
 #include "ftcore/CountLiftData.h"
 #include "ftcore/FightSession.h"
+#include "ftcore/GiftSlot.h"
+
+#include "TestAssets.h"
 
 #include <doctest/doctest.h>
 
@@ -812,5 +815,66 @@ TEST_CASE("lone carry: a host can ask before begin whether the stance will be ac
         FightSession s;
         s.begin(d, 0.0);
         CHECK(s.lone() == loneStanceAccepted(lead, d.loneTuning));
+    }
+}
+
+TEST_CASE("gifts: gifts.json is the defaults; the importer keeps defaults for missing fields and refuses bad ones") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/gifts.json", text));
+    GiftTuning t;
+    t.healsPerFight = 9;
+    std::string err;
+    REQUIRE(importGiftTuning(text, t, &err));
+    const GiftTuning d;
+    CHECK(t.cooldown == d.cooldown);
+    CHECK(t.healShare == d.healShare);
+    CHECK(t.healLoad == d.healLoad);
+    CHECK(t.healsPerFight == d.healsPerFight);
+    CHECK(t.guardScale == d.guardScale);
+    CHECK(t.guardSeconds == d.guardSeconds);
+
+    REQUIRE(importGiftTuning(R"({"version":1,"healsPerFight":3,"guardCooldown":10})", t, &err));
+    CHECK(t.healsPerFight == 3);
+    CHECK(t.cooldown[1] == 10.0);
+    CHECK(t.cooldown[0] == d.cooldown[0]);
+    CHECK(t.guardScale == d.guardScale);
+    REQUIRE(importGiftTuning(R"({"version":1,"healCooldown":60,"guardCooldown":0,"countCooldown":0,"healShare":1,
+        "healLoad":0,"healsPerFight":20,"guardScale":0,"guardSeconds":10})", t, &err));
+    CHECK(t.cooldown[0] == 60.0);
+    CHECK(t.healShare == 1.f);
+    CHECK(t.healsPerFight == 20);
+    CHECK(t.guardScale == 0.f);
+    CHECK(t.guardSeconds == 10.0);
+
+    for (const char* bad : {
+             R"({"version":2})",
+             R"({})",
+             R"([])",
+             R"({"version":1,"extra":1})",
+             R"({"version":1,"healCooldown":-1})",
+             R"({"version":1,"healCooldown":61})",
+             R"({"version":1,"guardCooldown":-1})",
+             R"({"version":1,"guardCooldown":61})",
+             R"({"version":1,"countCooldown":-1})",
+             R"({"version":1,"countCooldown":61})",
+             R"({"version":1,"healShare":-0.1})",
+             R"({"version":1,"healShare":1.1})",
+             R"({"version":1,"healLoad":-1})",
+             R"({"version":1,"healLoad":101})",
+             R"({"version":1,"healLoad":2.5})",
+             R"({"version":1,"healsPerFight":-1})",
+             R"({"version":1,"healsPerFight":21})",
+             R"({"version":1,"healsPerFight":1.5})",
+             R"({"version":1,"guardScale":-0.1})",
+             R"({"version":1,"guardScale":1.1})",
+             R"({"version":1,"guardSeconds":-1})",
+             R"({"version":1,"guardSeconds":11})",
+             R"({"version":1,"guardSeconds":"x"})",
+         }) {
+        CAPTURE(bad);
+        t.healsPerFight = 9;
+        CHECK_FALSE(importGiftTuning(bad, t, &err));
+        CHECK_FALSE(err.empty());
+        CHECK(t.healsPerFight == d.healsPerFight); // refused: the defaults
     }
 }

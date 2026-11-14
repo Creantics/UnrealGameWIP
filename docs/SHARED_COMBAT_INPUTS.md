@@ -112,7 +112,8 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   (button does nothing; the boss uses the tallies). No press is ever discarded. The host sets it
   through `setState`.
 * `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr)`:
-  - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down. A
+  - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down (or,
+    for the Heal, this fight's `healsPerFight` are given: `NoneLeft`). A
     pressed gift cannot be taken back: there is no cancel. Returns `GiftResult { given, gift, target,
     error, healShare, healLoad, guardScale, guardUntil }`, everything the host needs to apply it:
     `Heal` (heal `healShare` of max HP and move `healLoad` Load off the target), `Guard` (the target
@@ -122,7 +123,7 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
     `CountRefused` and the gift is not given). A refused press leaves the heal and guard fields at
     their neutral values (0, 0, 1, 0).
   - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
-    `CountRefused`, `NoGift`.
+    `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent).
   - `Vacant`: nothing happens; `vacantPresses` goes up.
   - `Hostile`: nothing happens; `hostilePresses` goes up (the host reads the tallies).
 * **Threads and cooldowns** follow given gifts only: every given gift adds one thread to its target
@@ -139,11 +140,17 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   rejects (returns false, changes nothing) version 0, a newer version or an out-of-range enum. A
   version 1 save (no refused counts) loads with `refused` all 0, and its old per-gift tally loads as
   `given` (version 1 counted given presses only). `SlotState` keeps its stored
-  integers (`Vacant` is 1). Cooldowns and live guards are not saved (a load is never mid-fight);
-  `load` and `resetFight()` clear them. `reset()` wipes the save data too; `setTuning()` changes
-  the tuning and keeps it.
-* Tuning (`GiftTuning`): per-gift `cooldown` (heal 8 s, guard 6 s, count 4 s), `healShare` 0.15,
-  `healLoad` 20, `guardScale` 0 (the guarded lead takes x0), `guardSeconds` 1.2.
+  integers (`Vacant` is 1). Cooldowns, live guards and the fight's Heal count are not saved (a load
+  is never mid-fight); `load` and `resetFight()` clear them. `beginFight(tuning, t)` (what
+  `FightSession::begin` calls) sets the tuning, clears the fight state, selects Heal and makes the
+  slot a Companion, and keeps the save data: the save-wide tally, threads and Vacant and Hostile
+  presses carry from fight to fight. `reset()` wipes the save data too; `setTuning()` changes the
+  tuning and keeps it.
+* Tuning (`GiftTuning`, file `Data/Battle/gifts.json` via `importGiftTuning`): per-gift `cooldown`
+  from the press (heal 8 s, guard 12 s, count 4 s), `healShare` 0.15, `healLoad` 20,
+  `healsPerFight` 2, `guardScale` 0.25 (the guarded lead takes x0.25), `guardSeconds` 1.2.
+* HUD: `healsLeft()`, `readyIn(gift, t)` (seconds to ready, 0 when ready); on the session
+  `giftHealsLeft()`, `giftHealReadyIn()`, `giftGuardReadyIn()`.
 
 ## 3. Laying a place (`PlaceTable`)
 

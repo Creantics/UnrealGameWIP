@@ -84,6 +84,7 @@ const char* kPressJson = R"({
 GiftTuning freeGifts() {
     GiftTuning g;
     g.cooldown = {0.0, 0.0, 0.0};
+    g.healsPerFight = 20;
     return g;
 }
 
@@ -855,4 +856,42 @@ TEST_CASE("fight session: a held blow whose settle is dropped expires at base") 
     CHECK(t.heldExpired == static_cast<int>(kMaxHeldBlows));
     CHECK(t.bonuses.empty());
     CHECK(s.tick(kFrame).heldExpired == 0);
+}
+
+TEST_CASE("fight session: the gift HUD reads, and a new fight resets the Heals but not the save-wide total") {
+    FightSession s;
+    FightSessionDef d;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.giftHealsLeft() == 2);
+    CHECK(s.giftHealReadyIn() == 0.0);
+    CHECK(s.giftGuardReadyIn() == 0.0);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.press(SharedAction::Gift, kThirdSlot, kLeadA).accepted);
+    CHECK(s.giftHealsLeft() == 1);
+    CHECK(s.giftHealReadyIn() == doctest::Approx(8.0));
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(12.0));
+    CHECK(tickUntil(s, [&] { return s.giftHealReadyIn() == 0.0; }));
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(4.0).epsilon(0.02));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadB).given);
+    CHECK(s.giftHealsLeft() == 0);
+    CHECK(tickUntil(s, [&] { return s.giftHealReadyIn() == 0.0; }));
+    const GiftResult third = s.giveGift(kLeadA);
+    CHECK_FALSE(third.given);
+    CHECK(third.error == GiftError::NoneLeft);
+    CHECK(s.giftSlot().allPresses() == 4);
+
+    // The next fight: two Heals again, cooldowns clear, the save-wide total kept.
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK(s.giftHealsLeft() == 2);
+    CHECK(s.giftHealReadyIn() == 0.0);
+    CHECK(s.giftGuardReadyIn() == 0.0);
+    CHECK(s.giftSlot().allPresses() == 4);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 2);
+    CHECK(s.giftSlot().tally().refusedOf(Gift::Heal) == 1);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.giftSlot().allPresses() == 5);
 }

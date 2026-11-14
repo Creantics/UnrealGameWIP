@@ -242,8 +242,7 @@ public:
             keptCap_ = cap < kMaxLoad ? cap : kMaxLoad;
         }
         if (keptOn_) count_.setLoad(def_.keptLead, 0);
-        c.gift = gift_.reset(def_.gift, now_);
-        if (!c.gift) gift_.reset(GiftTuning{}, now_);
+        c.gift = gift_.beginFight(def_.gift, now_); // the save-wide tally and threads carry over
         for (PlaceTable& p : places_) {
             if (!p.reset(def_.seats, def_.places)) {
                 c.places = false;
@@ -542,6 +541,10 @@ public:
     // ---- Reads ----
 
     const StrikeCount& strikeCount() const { return count_; }
+    // For the HUD: Heals still to give this fight, and seconds until the Heal and the Guard are ready (0: ready).
+    int giftHealsLeft() const { return gift_.healsLeft(); }
+    double giftHealReadyIn() const { return gift_.readyIn(Gift::Heal, now_); }
+    double giftGuardReadyIn() const { return gift_.readyIn(Gift::Guard, now_); }
     const GiftSlot& giftSlot() const { return gift_; }
     GiftSlot& giftSlot() { return gift_; } // setState, save and load
     // A fighter's places (kLeadA's for an id that is not a fighter). The mutable one is for loads: call recheckTable after.
