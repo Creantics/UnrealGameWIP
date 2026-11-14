@@ -13,6 +13,7 @@
 #include "ForgottenThird.h"
 
 #include "ftcore/PartyShore.h"
+#include "FTWaterSubsystem.h"
 #include "ftcore/PartyTrail.h"
 
 namespace
@@ -620,7 +621,10 @@ FVector2D AFTPartyFollower::KeepAshore(const FVector2D& Spot, const FVector& Was
 	// at the spot (Place keeps its height there) and no footing on the way out (it stands short of that too).
 	const double Above = FMath::Max(static_cast<double>(LeadFeetZ), Was.Z) + 150.0;
 	const double Below = FMath::Min(static_cast<double>(LeadFeetZ), Was.Z) - 300.0;
-	auto Footing = [this, World, Above, Below](const FVector2D& At, bool bSolidIsFooting)
+	// Ground under a canal's or a pool's surface is no footing either (the map's water bodies): it stays on the bank.
+	const UFTWaterSubsystem* const WaterSystem = World->GetSubsystem<UFTWaterSubsystem>();
+	const ftcore::WaterBodies* const Bodies = WaterSystem && WaterSystem->HasBodies() ? &WaterSystem->Bodies() : nullptr;
+	auto Footing = [this, World, Above, Below, Bodies](const FVector2D& At, bool bSolidIsFooting)
 	{
 		FHitResult Hit;
 		if (!World->LineTraceSingleByChannel(Hit, FVector(At.X, At.Y, Above), FVector(At.X, At.Y, Below), ECC_Visibility, TraceParams))
@@ -631,7 +635,34 @@ FVector2D AFTPartyFollower::KeepAshore(const FVector2D& Spot, const FVector& Was
 		{
 			return bSolidIsFooting;
 		}
+		const ftcore::Vec2 Plan{static_cast<float>(At.X * 0.01), static_cast<float>(At.Y * 0.01)};
+		if (Bodies && Bodies->overWater(Plan, static_cast<float>(Hit.ImpactPoint.Z * 0.01), static_cast<float>(kShoreMargin * 0.01)))
+		{
+			return false;
+		}
+		// Nor is a flight of steps down a canal's wall, dry treads and all: it waits at the bank's top while the lead
+		// goes down to the water.
+		if (Bodies && Bodies->onSteps(Plan, static_cast<float>(Hit.ImpactPoint.Z * 0.01)))
+		{
+			return false;
+		}
 		return ftcore::shoreFooting(true, Hit.ImpactPoint.Z, Hit.ImpactNormal.Z, ShoreLevel, kShoreMargin, ShoreWalkableZ);
+	};
+	// The bank beside a spot that is in a canal: the point level with it on the line along the wall through the top of
+	// the nearest way out (a ladder's or a flight's), or that top itself where the line has no footing there.
+	auto BankBeside = [&Footing, Bodies, &Spot](FVector2D& Beside)
+	{
+		const int32 Exit = Bodies ? Bodies->nearestExit(ftcore::Vec2{static_cast<float>(Spot.X * 0.01), static_cast<float>(Spot.Y * 0.01)}, 40.f) : -1;
+		if (Exit < 0)
+		{
+			return false;
+		}
+		const ftcore::WaterExit& Out = Bodies->exit(static_cast<std::size_t>(Exit));
+		const FVector2D Top(Out.top.x * 100.0, Out.top.y * 100.0);
+		const FVector2D Along(-Out.out.y, Out.out.x);
+		const FVector2D Level = Top + Along * FVector2D::DotProduct(Spot - Top, Along);
+		Beside = Footing(Level, false) ? Level : Top;
+		return true;
 	};
 	if (Footing(Spot, true))
 	{
@@ -651,17 +682,66 @@ FVector2D AFTPartyFollower::KeepAshore(const FVector2D& Spot, const FVector& Was
 		[&Footing](ftcore::Vec2 P) { return Footing(FVector2D(P.x * 100.0, P.y * 100.0), false); });
 	FVector2D At = Spot;
 	const TCHAR* How = TEXT("stands short of it");
+	constexpr double kBankReach = 4000.0; // cm: further than this from its last footing, the lead was set down elsewhere
 	if (Stand.dry)
 	{
 		At = FVector2D(Stand.at.x * 100.0, Stand.at.y * 100.0);
 		LastDry = At;
 		bHasLastDry = true;
 	}
+	else if (bHasLastDry && Bodies)
+	{
+		// The lead itself is in the water (a canal, a pool, the sea): it keeps beside the lead along the bank. Of the two
+		// ways from where it last had footing that hold one of that point's coordinates, it takes the one that ends
+		// nearer its spot, as far as the footing goes and no more than a stride a call; with neither nearer, or the lead
+		// far off (set down somewhere else), it waits.
+		constexpr double kBankStride = 25.0;  // cm a call
+		FVector2D Best = LastDry;
+		double BestGap = FVector2D::Distance(LastDry, Spot);
+		const bool bNear = BestGap <= kBankReach;
+		for (const FVector2D& Target : {FVector2D(Spot.X, LastDry.Y), FVector2D(LastDry.X, Spot.Y)})
+		{
+			const FVector2D Way = Target - LastDry;
+			if (!bNear || Way.IsNearlyZero(1.0))
+			{
+				continue;
+			}
+			const FVector2D Along = LastDry + Way.GetSafeNormal() * FMath::Min(Way.Size(), kBankStride);
+			const ftcore::ShoreStand Bank = ftcore::standShortOfSea(ftcore::Vec2{static_cast<float>(LastDry.X * 0.01), static_cast<float>(LastDry.Y * 0.01)},
+				ftcore::Vec2{static_cast<float>(Along.X * 0.01), static_cast<float>(Along.Y * 0.01)},
+				[&Footing](ftcore::Vec2 P) { return Footing(FVector2D(P.x * 100.0, P.y * 100.0), false); });
+			const FVector2D To(Bank.at.x * 100.0, Bank.at.y * 100.0);
+			const double Gap = FVector2D::Distance(To, Spot);
+			if (Bank.dry && Gap < BestGap - 1.0)
+			{
+				Best = To;
+				BestGap = Gap;
+			}
+		}
+		At = Best;
+		LastDry = Best;
+		How = TEXT("keeps to the bank beside the lead");
+		// The lead was set down in a canal far from where this one last stood: the bank beside it.
+		if (FVector2D Beside; !bNear && BankBeside(Beside))
+		{
+			At = Beside;
+			LastDry = At;
+			How = TEXT("stands on the bank beside the lead, by the nearest way out");
+		}
+	}
 	else if (bHasLastDry && FVector2D::Distance(LastDry, Spot) <= kShoreLeash)
 	{
 		// Nowhere dry on the way (the lead itself is off the land): it waits where it last stood on it.
 		At = LastDry;
 		How = TEXT("waits where it last had footing");
+	}
+	else if (FVector2D Beside; BankBeside(Beside))
+	{
+		// It has stood nowhere yet and the lead was set down in a canal: the bank beside it.
+		At = Beside;
+		LastDry = At;
+		bHasLastDry = true;
+		How = TEXT("stands on the bank beside the lead, by the nearest way out");
 	}
 	else
 	{

@@ -1,18 +1,25 @@
 #include "FTWorldClockSubsystem.h"
 
+#include "FTJointCollection.h"
+#include "FTSeason.h"
+
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Engine/PostProcessVolume.h"
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FTNightLightData.h"
+#include "FTLookSubsystem.h"
+#include "FTNightLook.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
 #include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/CommandLine.h"
@@ -30,8 +37,126 @@ namespace
 {
 // The clock's step between light updates: 15 game seconds (half a real second on the 48-minute day).
 constexpr double kStepHours = 1.0 / 240.0;
-const FLinearColor MoonColor(0.65f, 0.75f, 1.f);
+// The white balance is rewritten when the night's share of it moves by this much.
+constexpr float kWhiteStep = 0.01f;
+// The day's shadow floor is rewritten when its amount moves by this much.
+constexpr float kDayShadeStep = 0.01f;
+
+TAutoConsoleVariable<int32> CVarDayShade(TEXT("r.FT.DayShade"), 1,
+	TEXT("The day's shadow floor (FTWorldClockSubsystem.h): 1 lifts the shade by day, 0 leaves the world look's own values."),
+	ECVF_Default);
+
+ftcore::DayShadeLook ReadDayShade()
+{
+	ftcore::DayShadeLook Look;
+	const TCHAR* Cmd = FCommandLine::Get();
+	FParse::Value(Cmd, TEXT("DayShadeSky="), Look.skyScale);
+	FParse::Value(Cmd, TEXT("DayShadeContrast="), Look.shadowContrast);
+	FParse::Value(Cmd, TEXT("DayShadeBoost="), Look.diffuseBoost);
+	FParse::Value(Cmd, TEXT("DayShadeToe="), Look.filmToe);
+	FParse::Value(Cmd, TEXT("DayShadeHighlight="), Look.highlightContrast);
+	FParse::Value(Cmd, TEXT("DayShadeMinEV="), Look.minEV100);
+	FParse::Value(Cmd, TEXT("DayShadeFogCap="), Look.fogMaxOpacity);
+	float FogSky = 1.f;
+	if (FParse::Value(Cmd, TEXT("DayShadeFogSky="), FogSky))
+	{
+		for (float& Channel : Look.fogSky)
+		{
+			Channel *= FMath::Max(FogSky, 0.f);
+		}
+	}
+	return Look;
+}
 } // namespace
+
+const ftcore::DayShadeLook& FTDayShade::Look()
+{
+	static const ftcore::DayShadeLook Spec = ReadDayShade();
+	return Spec;
+}
+
+bool FTDayShade::Enabled()
+{
+	static const bool bOff = FParse::Param(FCommandLine::Get(), TEXT("NoDayShade"));
+	return !bOff && CVarDayShade.GetValueOnGameThread() != 0;
+}
+
+ftcore::DayShadeBase FTDayShade::BaseFor(const ftcore::SceneLook& WorldLook)
+{
+	ftcore::DayShadeBase Base;
+	Base.shadowContrast = WorldLook.localShadowContrast;
+	Base.diffuseBoost = 1.f;
+	Base.filmToe = WorldLook.filmToe;
+	Base.highlightContrast = WorldLook.localHighlightContrast;
+	Base.minEV100 = WorldLook.exposureMinEV100;
+	return Base;
+}
+
+float FTDayShade::AmountAt(const FTNight::FSkyFrame& Sky)
+{
+	return Enabled() ? ftcore::dayShadeAmount(Sky.NightAmount, Sky.Dusk.amount) : 0.f;
+}
+
+void FTDayShade::WriteFog(UExponentialHeightFogComponent& Fog, const ftcore::DayShadeFrame& Frame)
+{
+	Fog.SetFogMaxOpacity(Frame.fogMaxOpacity);
+	Fog.SetSkyAtmosphereAmbientContributionColorScale(FLinearColor(Frame.fogSky[0], Frame.fogSky[1], Frame.fogSky[2]));
+}
+
+bool FTDayShade::WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame, bool bExposure)
+{
+	for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
+	{
+		if (It->bUnbound && It->Priority == 0.f)
+		{
+			FPostProcessSettings& S = It->Settings;
+			S.bOverride_LocalExposureShadowContrastScale = true;
+			S.LocalExposureShadowContrastScale = Frame.shadowContrast;
+			S.bOverride_LumenDiffuseColorBoost = true;
+			S.LumenDiffuseColorBoost = Frame.diffuseBoost;
+			S.bOverride_FilmToe = true;
+			S.FilmToe = Frame.filmToe;
+			S.bOverride_LocalExposureHighlightContrastScale = true;
+			S.LocalExposureHighlightContrastScale = Frame.highlightContrast;
+			if (bExposure)
+			{
+				S.bOverride_AutoExposureMinBrightness = true;
+				S.AutoExposureMinBrightness = Frame.minEV100;
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+float FTDayShade::StillAmount()
+{
+	const TCHAR* Cmd = FCommandLine::Get();
+	FString Shot;
+	float Ignored = 0.f;
+	if (!FParse::Value(Cmd, TEXT("WorldEyeShot="), Shot) || Shot.IsEmpty() || FParse::Value(Cmd, TEXT("TimeOfDay="), Ignored) ||
+		FParse::Param(Cmd, TEXT("WorldEyeNight")) || FParse::Param(Cmd, TEXT("WorldEyeDusk")))
+	{
+		return -1.f;
+	}
+	float Hours = static_cast<float>(ftcore::kWorldClockStartHours);
+	FParse::Value(Cmd, TEXT("WorldEyeSunHour="), Hours);
+	// Only a full-day hour: a dusk or night hour's still (FTNight::ApplyStill) keeps exactly what it had.
+	const float Amount = AmountAt(FTNight::FrameAt(ftcore::WorldClockSpec{}, Hours));
+	return Amount >= 0.999f ? Amount : -1.f;
+}
+
+FRotator FTClock::SunRotation(const ftcore::WorldClockSpec& Spec, double Hours)
+{
+	const ftcore::SunDirection Sun = ftcore::sunDirection(Spec, Hours);
+	// Towards the sun in engine axes (east +X, north -Y); the moon stands opposite once the sun is down.
+	FVector Toward(Sun.east, -Sun.north, Sun.up);
+	if (Sun.up < 0.f)
+	{
+		Toward = -Toward;
+	}
+	return (-Toward).Rotation();
+}
 
 bool UFTWorldClockSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
@@ -43,6 +168,10 @@ bool UFTWorldClockSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
+	// -JointDepth=<0..1>: the surfaces' joint depth (parallax, joint normals and cavities), in any world, still or played.
+	FTJoint::ApplyCommandLine(InWorld);
+	// -Season=<0..3 or spring, summer, autumn, winter>: the plants' season (FTSeason.h).
+	FTSeason::ApplyCommandLine(InWorld);
 	const TCHAR* Cmd = FCommandLine::Get();
 	float Fixed = -1.f;
 	const bool bFixed = FParse::Value(Cmd, TEXT("TimeOfDay="), Fixed);
@@ -71,17 +200,16 @@ void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		ftcore::worldClockSetDayMinutes(Clock, Minutes);
 	}
+	if (!bFixed && !bClockGiven)
+	{
+		ftcore::worldClockSet(Clock, ftcore::kWorldClockStartHours);
+	}
 	if (bFixed)
 	{
 		ftcore::worldClockSet(Clock, Fixed);
 		ftcore::worldClockPause(Clock);
 		bFixedByCommandLine = true;
 	}
-	FParse::Value(Cmd, TEXT("NightMoon="), MoonShare);
-	FParse::Value(Cmd, TEXT("NightSky="), SkyShare);
-	FParse::Value(Cmd, TEXT("NightFog="), FogShare);
-	MoonShare = FMath::Max(MoonShare, 1e-4f);
-
 	Gather(InWorld);
 	bActive = true;
 	Apply(true);
@@ -95,6 +223,10 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 	UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(
 		nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	Windows = Collection ? World.GetParameterCollectionInstance(Collection) : nullptr;
+	const FString LookPath = FTScene::LookCollection;
+	UMaterialParameterCollection* LookCollection = LoadObject<UMaterialParameterCollection>(
+		nullptr, *(LookPath + TEXT(".") + FPackageName::GetShortName(LookPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	LookParams = LookCollection ? World.GetParameterCollectionInstance(LookCollection) : nullptr;
 	for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 	{
 		if (ULightComponent* Light = It->GetLightComponent())
@@ -107,7 +239,7 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 	{
 		if (USkyLightComponent* Light = It->GetLightComponent())
 		{
-			Skies.Add({Light, Light->Intensity, Light->bRealTimeCapture});
+			Skies.Add({Light, Light->Intensity, Light->GetLightColor(), Light->bRealTimeCapture});
 		}
 	}
 	for (TActorIterator<AExponentialHeightFog> It(&World); It; ++It)
@@ -116,6 +248,12 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 		{
 			Fogs.Add({Fog, Fog->FogInscatteringLuminance});
 		}
+	}
+	for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
+	{
+		const FPostProcessSettings& S = It->Settings;
+		Exposures.Add({*It, S.bOverride_AutoExposureMinBrightness != 0, S.bOverride_AutoExposureMaxBrightness != 0, S.AutoExposureMinBrightness,
+			S.AutoExposureMaxBrightness, S.bOverride_WhiteTemp != 0, S.WhiteTemp});
 	}
 	// A map whose lights are data (AFTNightLights) leaves them to FTLampPoolSubsystem's pool; only older maps' tagged
 	// light actors are gathered here.
@@ -150,43 +288,150 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	}
 	AppliedHours = Clock.hours;
 	Night = ftcore::nightAmount(Spec, Clock.hours);
-	const ftcore::SunDirection Sun = ftcore::sunDirection(Spec, Clock.hours);
-	// Towards the sun in engine axes (east +X, north -Y); the moon stands opposite once the sun is down.
-	FVector Toward(Sun.east, -Sun.north, Sun.up);
-	if (Sun.up < 0.f)
-	{
-		Toward = -Toward;
-	}
-	const FRotator Rotation = (-Toward).Rotation();
-	const float Day = 1.f - Night;
+	const FRotator Rotation = FTClock::SunRotation(Spec, Clock.hours);
+	const FTNight::FSkyFrame Sky = FTNight::FrameAt(Spec, Clock.hours);
+	const ftcore::NightFrame& Frame = Sky.Night;
+	// The day's shadow floor (0 by night and dusk, so those keep their own); only in a world with a look.
+	const UWorld* ShadeWorld = GetWorld();
+	const UFTLookSubsystem* ShadeLook = ShadeWorld ? ShadeWorld->GetSubsystem<UFTLookSubsystem>() : nullptr;
+	const bool bShade = ShadeLook && !ShadeLook->GetWorldLook().IsEmpty();
+	const float ShadeAmount = bShade ? FTDayShade::AmountAt(Sky) : 0.f;
+	const ftcore::DayShadeFrame Shade = ftcore::dayShadeFrame(FTDayShade::Look(),
+		FTDayShade::BaseFor(bShade ? ShadeLook->GetLook() : ftcore::SceneLook{}), ShadeAmount);
 	for (const FLit& S : Suns)
 	{
 		if (ULightComponent* Light = S.Light.Get())
 		{
 			Light->SetWorldRotation(Rotation);
-			Light->SetIntensity(S.Intensity * (Day + Night * MoonShare));
-			Light->SetLightColor(FMath::Lerp(S.Color, MoonColor, Night), false);
+			Light->SetIntensity(S.Intensity * Frame.sunScale);
+			Light->SetLightColor(FTNight::SunColor(S.Color, Sky), false);
 		}
 	}
 	for (const FSky& S : Skies)
 	{
 		if (USkyLightComponent* Light = S.Light.Get())
 		{
-			const float NightFactor = S.bRealTime ? SkyShare / MoonShare : SkyShare;
-			Light->SetIntensity(S.Intensity * FMath::Lerp(1.f, NightFactor, Night));
+			Light->SetIntensity(S.Intensity * FTNight::SkyScale(Sky, S.bRealTime) * Shade.skyScale);
+			Light->SetLightColor(FTNight::SkyColor(S.Color, Sky));
 		}
 	}
 	for (const FFog& F : Fogs)
 	{
 		if (UExponentialHeightFogComponent* Fog = F.Fog.Get())
 		{
-			Fog->SetFogInscatteringColor(F.Color * FMath::Lerp(1.f, FogShare, Night));
+			Fog->SetFogInscatteringColor(FTNight::FogColor(F.Color, Sky));
+		}
+	}
+	// The night's exposure range from half night on (as the night still's), the volumes' own settings back by day;
+	// written only when that changes.
+	bool bExposureWritten = false;
+	if (Frame.lockExposure != bExposureLocked || bForce)
+	{
+		bExposureWritten = true;
+		bExposureLocked = Frame.lockExposure;
+		for (const FExposure& E : Exposures)
+		{
+			if (APostProcessVolume* Volume = E.Volume.Get())
+			{
+				FPostProcessSettings& S = Volume->Settings;
+				S.bOverride_AutoExposureMinBrightness = bExposureLocked || E.bMin;
+				S.bOverride_AutoExposureMaxBrightness = bExposureLocked || E.bMax;
+				S.AutoExposureMinBrightness = bExposureLocked ? Frame.exposureMinEV100 : E.Min;
+				S.AutoExposureMaxBrightness = bExposureLocked ? Frame.exposureMaxEV100 : E.Max;
+			}
+		}
+	}
+	if (UWorld* World = GetWorld())
+	{
+		DuskScene.Apply(*World, Sky.Dusk, false);
+		// The proof bay's ceiling fixtures with the shop lights, written when the share moves a step or reaches an end.
+		if (bForce || AppliedBayLights < 0.f || FMath::Abs(Sky.Lights - AppliedBayLights) >= 0.01f ||
+			(Sky.Lights != AppliedBayLights && (Sky.Lights == 0.f || Sky.Lights == 1.f)))
+		{
+			FTNight::WriteBayLights(*World, Sky.Lights);
+			AppliedBayLights = Sky.Lights;
+		}
+		// The day's shadow floor in the look's volume and the fogs: written when its amount has moved a step or reached
+		// an end, and after the exposure range above has been written (the day's exposure floor goes over the volume's
+		// own, never over the night's range).
+		if (bShade && (bForce || bExposureWritten || AppliedDayShade < 0.f || FMath::Abs(ShadeAmount - AppliedDayShade) >= kDayShadeStep ||
+			(ShadeAmount != AppliedDayShade && (ShadeAmount == 0.f || ShadeAmount == 1.f))))
+		{
+			for (const FFog& F : Fogs)
+			{
+				if (UExponentialHeightFogComponent* Fog = F.Fog.Get())
+				{
+					FTDayShade::WriteFog(*Fog, Shade);
+				}
+			}
+			if (FTDayShade::WritePost(*World, Shade, !bExposureLocked))
+			{
+				AppliedDayShade = ShadeAmount;
+			}
+		}
+	}
+	// The white balance toward the night's by NightAmount (the volume's own by day); written when it has moved a step,
+	// never by full day, so the world look's own white balance stands. The day's is read again as dusk starts, after
+	// the look has written it.
+	if (FMath::Abs(Frame.whiteMix - AppliedWhiteMix) >= kWhiteStep || (Frame.whiteMix == 0.f && AppliedWhiteMix != 0.f))
+	{
+		const bool bDusk = AppliedWhiteMix == 0.f;
+		AppliedWhiteMix = Frame.whiteMix;
+		for (FExposure& E : Exposures)
+		{
+			if (APostProcessVolume* Volume = E.Volume.Get())
+			{
+				FPostProcessSettings& S = Volume->Settings;
+				if (bDusk)
+				{
+					E.bWhite = S.bOverride_WhiteTemp != 0;
+					E.White = S.WhiteTemp;
+				}
+				S.bOverride_WhiteTemp = E.bWhite || Frame.whiteMix > 0.f;
+				S.WhiteTemp = FMath::Lerp(E.bWhite ? E.White : 6500.f, Frame.whiteKelvin, Frame.whiteMix);
+			}
 		}
 	}
 	if (UMaterialParameterCollectionInstance* WindowParams = Windows.Get())
 	{
-		WindowParams->SetScalarParameterValue(TEXT("Night"), Night);
+		// The shop and window lights come on with the dusk row's lights (or the night, if more); the rooms' daylight
+		// falls with the sun.
+		WindowParams->SetScalarParameterValue(TEXT("Night"), Sky.Lights);
+		WindowParams->SetScalarParameterValue(TEXT("Daylight"), Sky.Daylight * FTNight::InteriorDay());
+		if (FTNight::ProofShopNight() >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("ProofShopNight"), FTNight::ProofShopNight());
+		}
+		// -WindowParallax=<0..1> at run time: 0 shows every room and shop display case flat (no movement behind glass).
+		static const float Parallax = []
+		{
+			float Value = -1.f;
+			FParse::Value(FCommandLine::Get(), TEXT("WindowParallax="), Value);
+			return Value;
+		}();
+		if (Parallax >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("Parallax"), FMath::Clamp(Parallax, 0.f, 1.f));
+		}
+		// -ShopDayLevel=<scale>  -ShopNightLevel=<scale>: a shop's own light by day and by night, times the built one.
+		static const FVector2f ShopLevels = []
+		{
+			FVector2f Value(-1.f, -1.f);
+			FParse::Value(FCommandLine::Get(), TEXT("ShopDayLevel="), Value.X);
+			FParse::Value(FCommandLine::Get(), TEXT("ShopNightLevel="), Value.Y);
+			return Value;
+		}();
+		if (ShopLevels.X >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("ShopDayLevel"), ShopLevels.X);
+		}
+		if (ShopLevels.Y >= 0.f)
+		{
+			WindowParams->SetScalarParameterValue(TEXT("ShopNightLevel"), ShopLevels.Y);
+		}
 	}
+	WetShare = Frame.wetShare;
+	WriteWetness();
 	for (FLamp& L : Lamps)
 	{
 		const bool bOn = Night >= L.OnAt;
@@ -203,9 +448,38 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	}
 }
 
+void UFTWorldClockSubsystem::WriteWetness()
+{
+	UMaterialParameterCollectionInstance* Params = LookParams.Get();
+	const UWorld* World = GetWorld();
+	const UFTLookSubsystem* Look = World ? World->GetSubsystem<UFTLookSubsystem>() : nullptr;
+	if (Params && Look)
+	{
+		Params->SetScalarParameterValue(TEXT("Wetness"), Look->GetLook().wetness * WetShare);
+	}
+}
+
 void UFTWorldClockSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	if (bWetPending)
+	{
+		const UWorld* World = GetWorld();
+		const UFTLookSubsystem* Look = World ? World->GetSubsystem<UFTLookSubsystem>() : nullptr;
+		if (!Look || Look->IsSettled())
+		{
+			bWetPending = false;
+			WriteWetness();
+			if (UWorld* DuskWorld = GetWorld())
+			{
+				DuskScene.Settled(*DuskWorld, FTNight::FrameAt(Spec, Clock.hours).Dusk);
+			}
+			// The look has just written its own sky light and volume over the clock's: light them again on this tick,
+			// even under a paused -TimeOfDay, with the day's shadow floor over the look's values.
+			AppliedHours = -1.0;
+			AppliedDayShade = -1.f;
+		}
+	}
 	ftcore::worldClockTick(Clock, DeltaTime);
 	Apply(false);
 }
@@ -217,6 +491,7 @@ TStatId UFTWorldClockSubsystem::GetStatId() const
 
 void UFTWorldClockSubsystem::SetTimeOfDay(float Hours)
 {
+	bClockGiven = true;
 	ftcore::worldClockSet(Clock, Hours);
 	if (bActive)
 	{
@@ -226,6 +501,7 @@ void UFTWorldClockSubsystem::SetTimeOfDay(float Hours)
 
 void UFTWorldClockSubsystem::AdvanceTo(float Hours)
 {
+	bClockGiven = true;
 	ftcore::worldClockAdvanceTo(Clock, Hours);
 	if (bActive)
 	{
@@ -261,6 +537,7 @@ float UFTWorldClockSubsystem::GetDanger() const
 void UFTWorldClockSubsystem::SetClock(const ftcore::WorldClock& InClock)
 {
 	Clock = ftcore::worldClockSanitized(InClock);
+	bClockGiven = true;
 	if (bActive)
 	{
 		Apply(true);

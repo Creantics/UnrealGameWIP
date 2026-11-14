@@ -35,3 +35,9 @@ __pycache__/
 
 # Local config overrides (e.g. which private character the explore pawn wears)
 Config/User*.ini
+
+# Marketplace content claimed by the user: local only, never committed
+Content/Fab/
+
+# The Solhaven strip is built by FTBuildMassingWorld from the plan's tables (docs/WORLDS.md): a build product
+Content/Maps/World_Solhaven_Strip.umap

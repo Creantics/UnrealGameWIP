@@ -277,6 +277,17 @@ A cover plate (a named cliff box with `cover` set, `ftcore::massingNavObstacle`)
 
 With `-Strict`, a mismatch on either line fails the run.
 
+### The Solhaven strip
+
+`Content/Maps/World_Solhaven_Strip.umap` is a build product and is not in git (`.gitignore` lists it): build it on each machine with `FTBuildMassingWorld -World=solhaven -Map=World_Solhaven_Strip`, the massing switches above and the dressing switches the commandlet's header lists (`-Surfaces -Streets -Kit -Roads -RoadDecals -Lawn -LawnTex -TreeMeshes -Lots -KeiCars -Backdrop`, and so on). The plan's tables and the full command line stay with the production plan outside the repo. Build the world materials, surfaces and look lab first (`FTBuildWorldMaterials`, `FTBuildSurfaces`, `FTBuildLookLabWorld`; the road decals' materials are built by the strip run itself under `-RoadDecals`); `Content/Maps/Look_Lab.umap` is `FTBuildLookLabWorld`'s output.
+
+The strip also wears content that a public clone doesn't have, all local only and never committed:
+- `/Game/Fab/Lawn` (`-LawnTex`): the lawn's scanned maps. Without them the build logs one warning and the lawn wears the project's grass surface.
+- `/Game/Fab/...` marketplace meshes and textures named by the kit and tree tables (`-Kit`, `-KitTable`, `-TreeMeshes`).
+- `Content/Props/` (street furniture, trees, lamps, the clock tower's pieces) and `Content/Vehicles/` (the kei cars), imported with `FTImportProp` from the production plan's meshes.
+
+A `-Kit` row whose mesh is missing fails the run and names it.
+
 ### Stills from a fixed eye
 
 A look-lock frame, or any review frame named by its eye, is taken off-screen from the built map (`FTWorldEyeShotSubsystem.h`):

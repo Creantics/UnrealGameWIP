@@ -5,7 +5,10 @@
 // engine's cube and cylinder in flat tints, its street lamps as TQ-04 props (so -NightLamps lights them), and hides the
 // deck and pier rows over it. -Vehicles parks stand-in cars in its bays and puts scooters and bicycles along it and in
 // the lanes (-RoadDoors=<csv> keeps them off the doors). -LaneLamps=<x0,y0,x1,y1> adds lane lamps in that plan box so
-// the night pools overlap. Without -Roads nothing here runs, so earlier rounds rebuild as they were.
+// the night pools overlap. -Footways kerbs every vehicle street of the -Streets= table that is not a road's own row
+// (ftcore::roadFootways: a raised footway, kerb, gutter and drains, drop kerbs at mouths) and paves its alleys with
+// bollards at their mouths, all into Builds[0]; -FootwaySkip=<kind,kind> leaves those kinds out. Without -Roads nothing
+// here runs, so earlier rounds rebuild as they were.
 
 #include "CoreMinimal.h"
 #include "Templates/Function.h"
@@ -31,6 +34,7 @@ struct FFTRoadsHost
 	const FActorSpawnParameters* Spawn = nullptr;
 	UPackage* Package = nullptr;
 	UMaterialInterface* Base = nullptr; // the world surface master (its Color and Roughness parameters)
+	UMaterialInterface* Lawn = nullptr; // a planted median's top (kind median_lawn); null keeps its tint
 	UStaticMesh* Cube = nullptr;
 	double Side = 0.0;
 	std::vector<ftcore::MassingFoot>* Taken = nullptr; // the props' room: the roads add theirs
@@ -53,7 +57,14 @@ struct FOptions
 	FString RoadsFile;  // -Roads=
 	FString DoorsFile;  // -RoadDoors=
 	bool bVehicles = false; // -Vehicles
+	// -SeaSlip=<edge x>,<y>,<width>,<top z>[,<pen y0>,<pen y1>,<buoy x>]: a slip from the quay's edge into the sea and
+	// the buoy lines round the water off it (ftcore::roadSeaSlipBuild; plan metres).
+	bool bSeaSlip = false;
+	double SeaSlip[7] = {0, 0, 0, 0, 0, 0, 0};
 	bool bLaneLamps = false; // -LaneLamps=x0,y0,x1,y1
+	bool bFootways = false;  // -Footways
+	FString StreetsFile;     // -Streets= (read for -Footways; -PropStreets= without it)
+	TArray<FString> FootwaySkip; // -FootwaySkip=kind,kind
 	double LaneBox[4] = {0, 0, 0, 0};
 	uint32 Seed = 1110;
 };
@@ -61,7 +72,8 @@ FOptions ParseOptions(const TCHAR* Params);
 
 // Reads and builds the roads (Core only) and hides the rows of Boxes they clear (kind set to "underpass"). False,
 // logged, on a bad table. A road network table (ftcore::roadNetTable) is built whole on Ground into Builds[0]; Roads
-// then holds one stand-in per network street (kind "net", its id only, an empty build each) for DropRoadStreets.
+// then holds one stand-in per network street (kind "net", its id only, an empty build each) for DropRoadStreets. With
+// -Footways the streets table's footways and alley paving go into Builds[0] last (clear of every road's band).
 bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::vector<ftcore::MassingBox>& Boxes,
 	std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::RoadBuild>& Builds);
 

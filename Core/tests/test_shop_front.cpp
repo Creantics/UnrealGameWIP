@@ -201,4 +201,6 @@ TEST_CASE("shop fronts: the HLSL fragments keep their contract") {
     CHECK(shopFrontPreHlsl(ShopFrontSpec{}) == pre);
     // No sign word is spelt out in the HLSL (packed only), and no fragment names a real shop.
     CHECK(main.find("NOODLES") == std::string::npos);
+    // The panel reads from 1 - u (the face's u runs to the viewer's left), so its words aren't mirrored.
+    CHECK(main.find("float sfX = (1.0 - u) * bw - 0.12 * bw;") != std::string::npos);
 }

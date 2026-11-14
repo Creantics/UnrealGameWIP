@@ -46,6 +46,36 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     CHECK(t.render[0].value == 1.f);
     CHECK(t.render[1].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
     CHECK(t.render[1].value == 1.f);
+    // The tiers are for the world maps only: an arena, a cutscene or a demo map keeps the settings it had before them.
+    CHECK(t.tiersOnMap("World_Solhaven_Strip"));
+    CHECK(t.tiersOnMap("World_Lattice"));
+    CHECK_FALSE(t.tiersOnMap("Demo_Arena"));
+    CHECK_FALSE(t.tiersOnMap("BattleDemo"));
+    CHECK_FALSE(t.tiersOnMap("Cutscene"));
+    // The render tiers (ruled 2026-11-14): play is standard, hit lighting for reflections (LightingMode 2, so a lead,
+    // who has no surface cache, shows in a shop pane) traced at half resolution; cutscenes are high, full resolution;
+    // low is the surface cache. LightingMode 1 is no tier.
+    REQUIRE(t.findTier(t.playTier));
+    REQUIRE(t.findTier(t.cutsceneTier));
+    CHECK(t.playTier == "standard");
+    CHECK(t.cutsceneTier == "high");
+    const auto tierValue = [&](const char* tier, const char* name) {
+        for (const LookTable::RenderSetting& s : t.findTier(tier)->settings)
+            if (s.name == name) return s.value;
+        return -99.f;
+    };
+    REQUIRE(t.findTier("low"));
+    CHECK(tierValue("low", "r.Lumen.HardwareRayTracing.LightingMode") == 0.f);
+    CHECK(tierValue("standard", "r.Lumen.HardwareRayTracing.LightingMode") == 2.f);
+    CHECK(tierValue("standard", "r.Lumen.Reflections.DownsampleFactor") == 2.f);
+    CHECK(tierValue("high", "r.Lumen.HardwareRayTracing.LightingMode") == 2.f);
+    CHECK(tierValue("high", "r.Lumen.Reflections.DownsampleFactor") == 1.f);
+    for (const LookTable::RenderTier& tier : t.renderTiers)
+        CHECK(tierValue(tier.name.c_str(), "r.Lumen.HardwareRayTracing.LightingMode") != 1.f);
+    // Ray-traced sun and moon shadows in the standard and high tiers; low keeps shadow maps.
+    CHECK(tierValue("low", "r.RayTracing.Shadows") == 0.f);
+    CHECK(tierValue("standard", "r.RayTracing.Shadows") == 1.f);
+    CHECK(tierValue("high", "r.RayTracing.Shadows") == 1.f);
     // Water, wetness, fog albedo, practical lights and glow are set per world.
     CHECK(t.find("solhaven")->wetness > 0.f);
     CHECK(t.find("lattice")->glowStrength > 0.f);
@@ -79,6 +109,74 @@ TEST_CASE("looks: a render block parses in order, and no block means none, with 
     REQUIRE(importLookTable(R"({"version":1,"worlds":{"w":{}}})", t, &error, &warnings));
     CHECK(t.render.empty());
     CHECK(warnings.empty());
+}
+
+TEST_CASE("looks: render tiers parse with their picks; a bad pick, tier or uneven tiers refuse the table") {
+    LookTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importLookTable(R"({"version":1,"renderTiers":{"about":"x","play":"mid","cutscene":"top",
+        "mid":{"r.A":1,"r.B":2},"top":{"r.B":4,"r.A":3}},"worlds":{"w":{}}})", t, &error, &warnings), error);
+    CHECK(warnings.empty());
+    REQUIRE(t.renderTiers.size() == 2);
+    CHECK(t.findTier("MID") == &t.renderTiers[0]);
+    CHECK(t.renderTiers[1].settings[0].name == "r.B");
+    CHECK(t.renderTiers[1].settings[0].value == 4.f);
+    CHECK(t.playTier == "mid");
+    CHECK(t.cutsceneTier == "top");
+    CHECK(t.findTier("none") == nullptr);
+
+    // No tiers: none, and no picks.
+    REQUIRE(importLookTable(R"({"version":1,"worlds":{"w":{}}})", t, &error));
+    CHECK(t.renderTiers.empty());
+    CHECK(t.playTier.empty());
+
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"mid","cutscene":"gone","mid":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.cutscene"));
+    CHECK(t.renderTiers.empty());
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"cutscene":"mid","mid":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.play"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"r.A":1},"b":{"r.B":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.b"));
+    CHECK(contains(error, "same console variables"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"r.A":1},"b":{"r.A":1,"r.B":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.b"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"A","cutscene":"A","A":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.A"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"bad":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.a.bad"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":2,"cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.play"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":[],"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers"));
+}
+
+TEST_CASE("looks: render tiers apply only on the maps renderTiers.maps names") {
+    LookTable t;
+    std::string error;
+    REQUIRE_MESSAGE(importLookTable(R"({"version":1,"renderTiers":{"maps":["World_Solhaven","Look_Lab"],"play":"a",
+        "cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error), error);
+    REQUIRE(t.tierMaps.size() == 2);
+    CHECK(t.tiersOnMap("World_Solhaven"));
+    CHECK(t.tiersOnMap("UEDPIE_0_world_solhaven_strip"));
+    CHECK(t.tiersOnMap("Look_Lab"));
+    CHECK_FALSE(t.tiersOnMap("Demo_Arena"));
+    CHECK_FALSE(t.tiersOnMap("Cutscene"));
+    CHECK_FALSE(t.tiersOnMap(""));
+
+    // Without maps, no map takes a tier; without tiers, maps alone apply nothing.
+    REQUIRE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK_FALSE(t.tiersOnMap("World_Solhaven"));
+    REQUIRE(importLookTable(R"({"version":1,"worlds":{"w":{}}})", t, &error));
+    CHECK_FALSE(t.tiersOnMap("World_Solhaven"));
+
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"maps":"World","play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.maps"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"maps":["World",""],"play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.maps[1]"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"maps":[3],"play":"a","cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.maps[0]"));
+    CHECK(t.tierMaps.empty());
 }
 
 TEST_CASE("looks: a bad render key or value refuses the table, naming render.<key>") {
@@ -205,4 +303,48 @@ TEST_CASE("looks: lookWorldForMap names the world a map belongs to") {
     for (int i = 0; i < 100; ++i) hits += lookWorldForMap("/Game/Maps/World_Unwritten").empty() ? 0 : 1;
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(hits == 100);
+}
+
+TEST_CASE("looks: the dusk row and the glass values load; a bad one refuses the table") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Look/looks.json", text));
+    LookTable t;
+    std::string error;
+    REQUIRE_MESSAGE(importLookTable(text, t, &error), error);
+    const LookTable::DuskRow* row = t.findDusk("solhaven");
+    REQUIRE(row != nullptr);
+    CHECK(contains(row->status, "unruled"));
+    CHECK(row->look.startDeg > row->look.peakDeg);
+    CHECK(row->look.peakDeg > row->look.endDeg);
+    CHECK(row->look.stillDeg <= row->look.startDeg);
+    CHECK(row->look.stillDeg >= row->look.endDeg);
+    // At the still's hour the lights are part on and the rooms still have some daylight: the half-way state.
+    const float lights = duskLights(row->look, row->look.stillDeg);
+    const float day = duskDaylight(row->look, row->look.stillDeg);
+    CHECK(lights > 0.01f);
+    CHECK(lights < 1.f);
+    CHECK(day > 0.f);
+    CHECK(day < 1.f);
+    CHECK(t.findDusk("lattice") == nullptr);
+    // The proof front has no level of its own at night: it stays under the city's shop cap like every front.
+    CHECK(t.glassValue("proofShopNight", -1.f) == -1.f);
+    CHECK(t.glassValue("interiorDay", -1.f) > 0.f);
+    CHECK(t.glassValue("interiorDay", -1.f) <= 1.f);
+    CHECK(t.glassValue("noSuchValue", -7.f) == -7.f);
+    CHECK(contains(t.glassStatus, "unruled"));
+
+    const char* head = R"({"version": 1, "worlds": {"solhaven": {"sunKelvin": 6000}}, )";
+    LookTable bad;
+    CHECK(!importLookTable(std::string(head) + R"("dusk": {"solhaven": {"stillDeg": 99}}})", bad, &error));
+    CHECK(contains(error, "dusk.solhaven.stillDeg"));
+    CHECK(!importLookTable(std::string(head) + R"("dusk": {"solhaven": {"startDeg": 1, "peakDeg": 2}}})", bad, &error));
+    CHECK(!importLookTable(std::string(head) + R"("glass": {"proof shop": 1}})", bad, &error));
+    CHECK(!importLookTable(std::string(head) + R"("glass": {"proofShopNight": "bright"}})", bad, &error));
+    std::vector<std::string> warnings;
+    CHECK(importLookTable(std::string(head) + R"("dusk": {"solhaven": {"status": "x", "moonDeg": 1}}})", bad, &error, &warnings));
+    CHECK(warnings.size() == 1);
+    // A table without either keeps the defaults.
+    CHECK(importLookTable(std::string(head) + R"("render": {}})", bad, &error));
+    CHECK(bad.dusk.empty());
+    CHECK(bad.glass.empty());
 }
