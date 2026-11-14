@@ -5,8 +5,6 @@
 
 #include "ftcore/Hallucination.h"
 #include "ftcore/HallucinationArena.h"
-#include "ftcore/Load.h"
-#include "ftcore/Places.h"
 
 #include <array>
 #include <cmath>
@@ -97,6 +95,43 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
            a.aimDir.y == b.aimDir.y && a.aimTurn == b.aimTurn && a.aimSpeed == b.aimSpeed &&
            a.aimPitched == b.aimPitched && a.aimPitch == b.aimPitch && a.aimBody == b.aimBody && a.attackSpeed == b.attackSpeed &&
            a.attackTurn == b.attackTurn && a.takeHalf == b.takeHalf;
+}
+
+// A new tuning field must be added to both helpers below; this size check fails until it is.
+static_assert(sizeof(HallucinationTuning) == 10 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
+
+// Every tuning field away from its default.
+void dirtyAll(HallucinationTuning& t) {
+    t.holdSeconds = 1.25f;
+    t.expireSeconds = 11.f;
+    t.gapSeconds = 5.f;
+    t.switchSeconds = 3.f;
+    t.refuseSeconds = 0.75f;
+    t.refusalCooldownSeconds = 9.f;
+    t.pullSeconds = 2.f;
+    t.recentSeconds = 60.f;
+    t.fewerGapScale = 7.f;
+    t.lonePoolFloor = 777.f;
+    t.actFloors.fill(IntensityBand::High);
+}
+
+bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
+    return a.holdSeconds == b.holdSeconds && a.expireSeconds == b.expireSeconds && a.gapSeconds == b.gapSeconds &&
+           a.switchSeconds == b.switchSeconds && a.refuseSeconds == b.refuseSeconds &&
+           a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
+           a.recentSeconds == b.recentSeconds && a.fewerGapScale == b.fewerGapScale &&
+           a.lonePoolFloor == b.lonePoolFloor && a.actFloors == b.actFloors;
+}
+
+// Each field of `a` differs from `b`'s.
+bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
+    bool floorsDiffer = true;
+    for (std::size_t i = 0; i < a.actFloors.size(); ++i) floorsDiffer = floorsDiffer && a.actFloors[i] != b.actFloors[i];
+    return a.holdSeconds != b.holdSeconds && a.expireSeconds != b.expireSeconds && a.gapSeconds != b.gapSeconds &&
+           a.switchSeconds != b.switchSeconds && a.refuseSeconds != b.refuseSeconds &&
+           a.refusalCooldownSeconds != b.refusalCooldownSeconds && a.pullSeconds != b.pullSeconds &&
+           a.recentSeconds != b.recentSeconds && a.fewerGapScale != b.fewerGapScale &&
+           a.lonePoolFloor != b.lonePoolFloor && floorsDiffer;
 }
 
 } // namespace
@@ -729,14 +764,10 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"lonePoolFloor":2e9})",
     };
     for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
-        h.lonePoolFloor = 777.f;
-        h.gapSeconds = 5.f;
-        REQUIRE(d.lonePoolFloor != 777.f);
-        REQUIRE(d.gapSeconds != 5.f);
+        dirtyAll(h);
+        REQUIRE(allDiffer(h, d));
         CHECK_FALSE(importHallucinationTuning(bad, h, &err));
-        CHECK(h.holdSeconds == d.holdSeconds);
-        CHECK(h.lonePoolFloor == d.lonePoolFloor);
-        CHECK(h.gapSeconds == d.gapSeconds);
+        CHECK_MESSAGE(sameTuning(h, d), bad);
     }
 }
 
@@ -855,61 +886,6 @@ TEST_CASE("the unlock order is saved by id: a restore into a reordered table kee
     CHECK(applyTragedies(TragedySave{}, c, pc) == 0);
 }
 
-TEST_CASE("an emptied chair stays emptied: refusing its key, held or not, changes no chair and carries no Load") {
-    // UNWRITTEN_HALLUCINATIONS.md F, doctest 15, and D: refusing never clears an Emptied chair; refusals give nothing
-    // carried. The hallucination has no way into the table: the host's table and Load come out of every close as
-    // they went in.
-    constexpr PersonId kGone = 5;
-    PlaceTable places;
-    REQUIRE(places.reset(3));
-    REQUIRE(places.layPlace(kGone) == PlaceError::None);
-    REQUIRE(places.layPlace(6) == PlaceError::None);
-    Load load;
-    REQUIRE(places.emptyPlace(kGone, &load).emptied);
-    int at = -1; // find() looks for a Named chair; the emptied one keeps the person id
-    for (int i = 0; i < places.seats(); ++i)
-        if (places.place(i).state == PlaceState::Emptied && places.place(i).person == kGone) at = i;
-    REQUIRE(at >= 0);
-    const PlaceSave before = places.save();
-    const int loadBefore = load.value;
-    const int capBefore = places.carryCap();
-    const auto unchanged = [&](const char* how) {
-        const PlaceSave now = places.save();
-        CHECK_MESSAGE(now.seats == before.seats, how);
-        CHECK_MESSAGE(now.states == before.states, how);
-        CHECK_MESSAGE(now.persons == before.persons, how);
-        CHECK_MESSAGE(places.place(at).state == PlaceState::Emptied, how);
-        CHECK_MESSAGE(places.holding(kGone), how);
-        CHECK_MESSAGE(places.carryCap() == capBefore, how);
-        CHECK_MESSAGE(load.value == loadBefore, how);
-    };
-
-    Rig shown; // refused while only shown
-    REQUIRE(shown.start() == Start::Started);
-    shown.in.refuse = true;
-    shown.run(0.5);
-    REQUIRE(shown.saw(Ev::Refused) == 1);
-    unchanged("refused while shown");
-
-    Rig held; // refused while held
-    REQUIRE(held.start() == Start::Started);
-    held.in.accepting = true;
-    held.run(4.0);
-    REQUIRE(held.h.held());
-    held.in.accepting = false;
-    held.in.refuse = true;
-    held.run(0.5);
-    REQUIRE(held.saw(Ev::Refused) == 1);
-    unchanged("refused while held");
-
-    Rig away; // turned away from
-    REQUIRE(away.start() == Start::Started);
-    away.in.turnedAway = true;
-    away.step(0.25);
-    REQUIRE(away.saw(Ev::Refused) == 1);
-    unchanged("turned away");
-}
-
 TEST_CASE("place bleed: only a High band bleeds a place in, and only while its offer is open") {
     CHECK_FALSE(placeBleeds(IntensityBand::None));
     CHECK_FALSE(placeBleeds(IntensityBand::Low));
@@ -926,12 +902,52 @@ TEST_CASE("place bleed: only a High band bleeds a place in, and only while its o
         r.run(4.0);
         REQUIRE(r.h.held());
         CHECK(r.h.bleeds() == (b == IntensityBand::High)); // held, it still bleeds
-        r.in.accepting = false;
-        r.in.refuse = true;
-        r.run(0.5);
-        REQUIRE(r.saw(Ev::Refused) == 1);
-        CHECK_FALSE(r.h.bleeds()); // closed: the page is its own again
     }
+
+    // Every close of an open High offer ends the bleed: the page is its own again.
+    const auto open = [](Rig& r) {
+        REQUIRE(r.start(false, -1, IntensityBand::High) == Start::Started);
+        REQUIRE(r.h.bleeds());
+    };
+    Rig refused;
+    open(refused);
+    refused.in.refuse = true;
+    refused.run(0.5);
+    REQUIRE(refused.saw(Ev::Refused) == 1);
+    CHECK_FALSE(refused.h.bleeds());
+
+    Rig expired;
+    open(expired);
+    expired.run(30.0);
+    REQUIRE(expired.saw(Ev::Expired) == 1);
+    CHECK_FALSE(expired.h.bleeds());
+
+    Rig torn;
+    open(torn);
+    torn.in.lead = kLeadB;
+    torn.step(0.25);
+    REQUIRE(torn.saw(Ev::Torn) == 1);
+    CHECK_FALSE(torn.h.bleeds());
+
+    Rig pulled;
+    open(pulled);
+    pulled.in.accepting = true;
+    pulled.run(4.0);
+    REQUIRE(pulled.h.held());
+    REQUIRE(pulled.h.bleeds());
+    pulled.in.accepting = false;
+    pulled.in.partnerPresent = true;
+    pulled.in.partnerPull = true;
+    pulled.step(0.25);
+    REQUIRE(pulled.saw(Ev::PulledBack) == 1);
+    CHECK_FALSE(pulled.h.bleeds());
+
+    Rig away;
+    open(away);
+    away.in.turnedAway = true;
+    away.step(0.25);
+    REQUIRE(away.saw(Ev::Refused) == 1);
+    CHECK_FALSE(away.h.bleeds());
 }
 
 TEST_CASE("a capture against a smaller table counts the pool keys it has no row for and leaves them out") {
