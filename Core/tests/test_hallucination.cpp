@@ -5,6 +5,8 @@
 
 #include "ftcore/Hallucination.h"
 #include "ftcore/HallucinationArena.h"
+#include "ftcore/Load.h"
+#include "ftcore/Places.h"
 
 #include <array>
 #include <cmath>
@@ -848,4 +850,59 @@ TEST_CASE("the unlock order is saved by id: a restore into a reordered table kee
     CHECK(pc.newest(kLeadA) == tragedyKey(c, "a1"));
     CHECK(pc.newest(kLeadB) == tragedyKey(c, "b0"));
     CHECK(applyTragedies(TragedySave{}, c, pc) == 0);
+}
+
+TEST_CASE("an emptied chair stays emptied: refusing its key, held or not, changes no chair and carries no Load") {
+    // UNWRITTEN_HALLUCINATIONS.md F, doctest 15, and D: refusing never clears an Emptied chair; refusals give nothing
+    // carried. The hallucination has no way into the table: the host's table and Load come out of every close as
+    // they went in.
+    constexpr PersonId kGone = 5;
+    PlaceTable places;
+    REQUIRE(places.reset(3));
+    REQUIRE(places.layPlace(kGone) == PlaceError::None);
+    REQUIRE(places.layPlace(6) == PlaceError::None);
+    Load load;
+    REQUIRE(places.emptyPlace(kGone, &load).emptied);
+    int at = -1; // find() looks for a Named chair; the emptied one keeps the person id
+    for (int i = 0; i < places.seats(); ++i)
+        if (places.place(i).state == PlaceState::Emptied && places.place(i).person == kGone) at = i;
+    REQUIRE(at >= 0);
+    const PlaceSave before = places.save();
+    const int loadBefore = load.value;
+    const int capBefore = places.carryCap();
+    const auto unchanged = [&](const char* how) {
+        const PlaceSave now = places.save();
+        CHECK_MESSAGE(now.seats == before.seats, how);
+        CHECK_MESSAGE(now.states == before.states, how);
+        CHECK_MESSAGE(now.persons == before.persons, how);
+        CHECK_MESSAGE(places.place(at).state == PlaceState::Emptied, how);
+        CHECK_MESSAGE(places.holding(kGone), how);
+        CHECK_MESSAGE(places.carryCap() == capBefore, how);
+        CHECK_MESSAGE(load.value == loadBefore, how);
+    };
+
+    Rig shown; // refused while only shown
+    REQUIRE(shown.start() == Start::Started);
+    shown.in.refuse = true;
+    shown.run(0.5);
+    REQUIRE(shown.saw(Ev::Refused) == 1);
+    unchanged("refused while shown");
+
+    Rig held; // refused while held
+    REQUIRE(held.start() == Start::Started);
+    held.in.accepting = true;
+    held.run(4.0);
+    REQUIRE(held.h.held());
+    held.in.accepting = false;
+    held.in.refuse = true;
+    held.run(0.5);
+    REQUIRE(held.saw(Ev::Refused) == 1);
+    unchanged("refused while held");
+
+    Rig away; // turned away from
+    REQUIRE(away.start() == Start::Started);
+    away.in.turnedAway = true;
+    away.step(0.25);
+    REQUIRE(away.saw(Ev::Refused) == 1);
+    unchanged("turned away");
 }
