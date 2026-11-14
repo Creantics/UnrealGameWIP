@@ -84,6 +84,7 @@ const FScalarSpec kScalars[] = {
 	{TEXT("TideRoughness"), 0.2f},    // roughness lift on the tide line: a matte break in the sheen (all that shows on black)
 	{TEXT("SiltFilmMax"), 0.15f},     // silt film: at most this share toward SiltColor (spec: 0.15)
 	{TEXT("SiltFilmRoughness"), 0.1f}, // and roughness up by at most this once dry (spec: 0.1)
+	{TEXT("SiltLiftMax"), 100.f},     // the film lifts the albedo by at most this factor per channel (100: no cap; leather 1.15)
 	{TEXT("SoleHeight"), -1000.f},    // pre-skinned height (cm) below which a shoe is rubber sole; off by default
 	{TEXT("SoleBlend"), 0.6f},        // cm over which the sole fades into the upper
 	{TEXT("SoleSpecular"), 0.45f},
@@ -132,7 +133,7 @@ TArray<FSubstance> Substances()
 			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.18f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.1f},
 			{TEXT("EdgeLighten"), 0.12f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 2.6f}, {TEXT("DetailSizeB"), 9.f},
 			{TEXT("DetailStrengthA"), 0.25f}, {TEXT("DetailStrengthB"), 0.12f}, {TEXT("DiffuseResponse"), 1.06f},
-			{TEXT("SkyFill"), 0.7f}},
+			{TEXT("SkyFill"), 0.7f}, {TEXT("SiltLiftMax"), 1.15f}, {TEXT("SiltFilmRoughness"), 0.25f}},
 		FLinearColor::White, FLinearColor::White});
 	// Woven trousers: cloth shading, matte; the twill only shows within about a metre.
 	Out.Add({TEXT("Woven"), true, GarmentTile::Twill,
@@ -217,7 +218,7 @@ c *= 1.0 + EdgeLighten * edge;
 c *= lerp(1.0, D.z, CavityDarken);
 c *= lerp(1.0, SoleTint.rgb, Sole);
 c *= lerp(1.0, WetDarken, Wet.x);
-c = lerp(c, SiltColor.rgb, Wet.z); // silt film below the line
+c = min(lerp(c, SiltColor.rgb, Wet.z), c * SiltLiftMax); // silt film below the line; on leather a capped lift (still black)
 c *= lerp(float3(1.0, 1.0, 1.0), TideTint.rgb, Wet.y); // tide line: a stain that darkens, never a lighter paint
 return lerp(c, MetalColor.rgb * lerp(0.55, 1.0, D.z), Metal); // grime in the metal's recesses
 )HLSL");
@@ -531,7 +532,7 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0},
 			{TEXT("P"), Position, 0}, {TEXT("DiffResp"), G.Scalar(TEXT("DiffuseResponse")), 0},
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0},
-			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}},
+			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}, {TEXT("SiltLiftMax"), G.Scalar(TEXT("SiltLiftMax")), 0}},
 		-900);
 	UMaterialExpressionCustom* NormalOut = Custom(Material, TEXT("GarmentNormal"), CMOT_Float3, kNormalCode,
 		{{TEXT("Base"), Normal, 0}, {TEXT("D"), Detail, 0}}, -300);
