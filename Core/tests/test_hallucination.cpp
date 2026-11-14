@@ -1232,6 +1232,37 @@ TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at
     CHECK(d.escrowDelaySeconds == 5.f);
 }
 
+TEST_CASE("a Proxy press completes on the step it reaches refuseSeconds, at 1/30, 1/60 and 1/120 s steps") {
+    // Held at exactly 4.0 s (whole steps), the press runs from 5.0 s and completes at 5.5 s: Refused on the step
+    // that reaches 5.5 s, never one later from float rounding.
+    for (const int hz : {30, 60, 120}) {
+        CAPTURE(hz);
+        const double dt = 1.0 / hz;
+        const auto steps = [&](Rig& r, double seconds) {
+            const int n = static_cast<int>(seconds * hz + 0.5);
+            for (int i = 0; i < n && r.h.active(); ++i) r.step(dt);
+        };
+        Rig r;
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        REQUIRE(r.start(true) == Start::Started);
+        r.in.accepting = true;
+        steps(r, 4.0);
+        REQUIRE(r.h.held());
+        CHECK(r.h.now() == doctest::Approx(4.0));
+        r.in.accepting = false;
+        steps(r, 1.5 - dt);
+        CHECK(r.h.held());
+        CHECK(r.saw(Ev::Refused) == 0);
+        r.step(dt);
+        CHECK(r.saw(Ev::Refused) == 1);
+        CHECK(r.h.now() == doctest::Approx(5.5));
+        CHECK_FALSE(r.h.active());
+    }
+}
+
 TEST_CASE("a Proxy press broken by the partner leaving, losing Proxy or being unable starts afresh: Refused at 12.1 s") {
     // Held at 10 s; the partner presses from 11.0 s, breaks from 11.2 s to 11.6 s, and is back at 11.6 s.
     enum class Break { Absent, BriefChanged, Unable };

@@ -36,8 +36,9 @@
 //   own refusal press completes on a step, Refused wins, even if the hold would fill on that step too (a tie is
 //   Refused's); Held wins only when the hold fills on an earlier step, or by a push at that step's start. Once Held
 //   wins, a press of the lead's under way is spent: a new press is needed (the pull and Proxy apply as usual).
-//   Against the old behaviour: a press begun after 3.5 s of hold and kept down now leaves the lead Held until a
-//   new press, the pull or Proxy (it used to complete as a refusal of the held lead).
+//   Against the old behaviour: a press begun strictly after 3.5 s of hold and kept down now leaves the lead Held
+//   until a new press, the pull or Proxy (it used to complete as a refusal of the held lead); one begun at exactly
+//   3.5 s ties and is Refused.
 //   Both lengths count complete within 1e-4 s, so the outcome does not depend on the step size.
 // * The price: refusing pays in exposure, so the hold must be let build first. The lead's own refusal that closes an
 //   offer before Held, with h seconds of real hold built in it (counted to the closing instant; an Escrow wait is

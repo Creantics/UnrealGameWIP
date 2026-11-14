@@ -1,17 +1,18 @@
 #pragma once
 
 // The Lone Carry: a stance a lead takes before a fight (or is put in when the third slot is Vacant or Hostile). It is
-// fixed for the fight, except that any gift press at a lead ends it for the rest of that fight (given or refused as
-// cooling, none left or a count refused; a press refused as Vacant or Hostile leaves it, since that slot state is
-// what forces the stance). The host may also end it for the partner's call (FightSession::endLone), and the fight's
-// end ends it (finish).
+// fixed for the fight, except that a gift received (given) ends it for the rest of that fight; a press refused for
+// any reason did nothing and leaves it. The host may also end it for the partner's call (FightSession::endLone),
+// and the fight's end ends it (finish).
 //
 // What the host shows (FightSession):
 //   - the bargain: loneBargain(), the gains and losses as data for a card, and FightTick::loneCarryBegan on the
 //     first tick after a Lone begin;
-//   - the end: FightTick::loneCarryEndedBy on the first tick after it ends (LoneEnd), and loneEndedBy() at any time;
-//   - the roll: loneRoll(save, poolTuning), the save's lone Releases and their Load plus this fight's, with the
-//     effect the pool will have on the last boss (lonePoolEffect). Core keeps counts only, no names.
+//   - the end: FightTick::loneCarryEndedBy on the first tick after it ends (LoneEnd), and loneEndedBy() at any time
+//     (read it at the fight's end: finish ends a Lone still on, and the host may not tick after it);
+//   - the roll: loneRoll(save, poolTuning), the save's lone Releases and their Load plus this fight's until
+//     foldLone puts the fight in the save, with the effect the pool will have on the last boss (lonePoolEffect).
+//     Core keeps counts only, no names.
 //
 // While Lone (FightSession::lone(), mirrored into ArenaFight::setLone):
 //   - the Load cap is `cap` whatever the chairs give, and every store (a parry, a block, take half) gains x`gain`
@@ -27,6 +28,8 @@
 //
 // Data/Battle/lone_carry.json: { "version": 1, "cap": 100, "gain": 1.5, "release": 1.3, "taken": 1.15 }
 // Every field but version may be left out (its default stays).
+// Data/Battle/lone_pool.json (the pool's effect on the last boss, LonePoolTuning):
+//   { "version": 1, "maxBonus": 400, "halfPool": 2000, "figurePermille": 150, "maxFigures": 2 }
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatInputs.h"
@@ -70,8 +73,8 @@ struct LoneSave {
     std::uint32_t releases = 0;
 };
 
-// Folds a kept fight's lone Releases into the save (both saturating). The host calls it where it calls
-// FightSession::finish(true) (the story step kept), never after a retried or dropped attempt.
+// Adds a fight's lone Releases to the save (both saturating). The host does not call it itself: FightSession::foldLone
+// calls it once after finish(true) and stops the roll counting that fight twice.
 inline void addLoneFight(LoneSave& s, std::uint32_t releases, std::uint32_t pooled) {
     s.releases = saturatingAdd(s.releases, releases);
     s.pooled = saturatingAdd(s.pooled, pooled);
@@ -86,7 +89,7 @@ struct LoneBargain {
     bool noCount = true;     // nobody joins the count (called alone, it lands light)
     bool noTable = true;     // the table is refused
     bool noTakeHalf = true;  // take half is refused
-    bool anyGiftEnds = true; // any gift press ends it for the fight
+    bool giftReceivedEnds = true; // a gift received ends it for the fight (a refused press does not)
 };
 inline LoneBargain loneBargain(const LoneTuning& t) {
     LoneBargain b;
@@ -102,7 +105,8 @@ enum class LoneEnd : std::uint8_t { None, Gift, PartnerCalled, FightEnded }; // 
 
 // The pool's effect on the last boss (per boss). B = maxBonus x P / (P + halfPool) permille, in [0, maxBonus) for
 // every P; figures = min(maxFigures, B / figurePermille), each an extra figure of figurePermille of the boss's hp;
-// what is left of B adds to the boss's own hp.
+// what is left of B adds to the boss's own hp. lonePoolEffect is the one formula: the last boss must call it (with
+// the tuning from Data/Battle/lone_pool.json, importLonePool) and no other, so what the roll shows is what it does.
 struct LonePoolTuning {
     int maxBonus = 400;              // permille, the ceiling (never reached): 0..400
     std::uint32_t halfPool = 2000;   // the pool that gives half the ceiling: 1..1e6
@@ -209,5 +213,7 @@ inline bool loneForced(SlotState third) { return third == SlotState::Vacant || t
 // False on a refused file: `out` keeps the defaults and *error names each problem, one per line. Refused: a wrong
 // version, a field of the wrong type or out of its range, a non-whole cap, an unknown field.
 FTCORE_API bool importLoneCarry(std::string_view json, LoneTuning& out, std::string* error = nullptr);
+// Reads Data/Battle/lone_pool.json the same way (whole numbers only, each in its LonePoolTuning range).
+FTCORE_API bool importLonePool(std::string_view json, LonePoolTuning& out, std::string* error = nullptr);
 
 } // namespace ftcore
