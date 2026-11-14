@@ -9,5 +9,6 @@
   "pullSeconds": 6,
   "recentSeconds": 1800,
   "fewerGapScale": 2,
+  "lonePoolFloor": 300,
   "actFloors": ["none", "none", "none", "low", "mid"]
 }

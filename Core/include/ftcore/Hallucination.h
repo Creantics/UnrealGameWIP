@@ -19,15 +19,21 @@
 // * In a fight the partner pulls a held lead back after pullSeconds held; elsewhere the host says when (partnerPull).
 //   With no partner present only the refusal ends a hold.
 // * The intensity band is authored: max(the page's place band, the act's floor). Nothing accumulates.
+// * The pick is the pool's, weighted (TragedyPool.h); the lone key weighs x2 once the lead's lone Releases have
+//   pooled lonePoolFloor Load (loneWeighs).
+// * Only a scripted start flagged as a scare reaches the ScarePacer, once, when it starts (scareForm()); every other
+//   start leaves the pacer alone and its scare form is Unpaced. The host completes the scare beat on the pacer.
 // * The host draws, voices and closes it (the pen stroke, the tear); Core keeps the rules. No allocation.
 //
 // Data/Unwritten/hallucination.json: { "version": 1, "holdSeconds": 4, "expireSeconds": 30, "gapSeconds": 90,
 //   "switchSeconds": 20, "refuseSeconds": 0.5, "refusalCooldownSeconds": 4, "pullSeconds": 6, "recentSeconds": 1800,
-//   "fewerGapScale": 2, "actFloors": ["none", "none", "none", "low", "mid"] }   (every field but version optional)
+//   "fewerGapScale": 2, "lonePoolFloor": 300, "actFloors": ["none", "none", "none", "low", "mid"] }
+//   (every field but version optional)
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatInputs.h"
 #include "ftcore/HeldRefusal.h"
+#include "ftcore/ScarePacer.h"
 #include "ftcore/TragedyPool.h"
 
 #include <algorithm>
@@ -56,6 +62,7 @@ struct HallucinationTuning {
     float pullSeconds = 6.f;
     float recentSeconds = 1800.f;
     float fewerGapScale = 2.f;
+    float lonePoolFloor = 300.f; // Load pooled in lone Releases (LoneSave::pooled) from which the lone key weighs x2
     std::array<IntensityBand, kMaxAct + 1> actFloors{IntensityBand::None, IntensityBand::None, IntensityBand::None,
                                                      IntensityBand::Low, IntensityBand::Mid};
 };
@@ -67,6 +74,22 @@ inline IntensityBand intensityBand(IntensityBand place, int act, const Hallucina
     const IntensityBand actFloor = t.actFloors[static_cast<std::size_t>(std::clamp(act, 0, kMaxAct))];
     return std::max(place, actFloor);
 }
+
+// Lone Carry weighs the lone key once the lead's lone Releases have pooled lonePoolFloor Load (and some at all).
+inline bool loneWeighs(std::uint32_t loneLoadPool, const HallucinationTuning& t = {}) {
+    return loneLoadPool > 0 && static_cast<double>(loneLoadPool) >= static_cast<double>(t.lonePoolFloor);
+}
+
+// What a start asks for.
+struct HallucinationStartIn {
+    std::uint32_t place = 0;                  // the page's place type bits; 0 for any
+    IntensityBand band = IntensityBand::None; // intensityBand(); None refuses the start
+    bool scripted = false;                    // authored: no gap, no switch delay, and it runs under StoryOnly
+    int named = -1;                           // a scripted one naming its key
+    std::uint32_t loneLoadPool = 0;           // the Load the lead's lone Releases have pooled (LoneSave::pooled)
+    bool flaggedAsScare = false;              // an authored moment flagged as a scare (scripted ones only)
+    ScareMoment scare{};                      // that moment
+};
 
 struct HallucinationInput {
     FighterId lead = kLeadA;     // the active lead
@@ -90,32 +113,47 @@ public:
 
     void setFrequency(HallucinationFrequency f) { frequency_ = f; }
 
-    // Starts one of the active lead's keys, picked by `pool` with `rng` for a page of place type `place` (bits; 0 for
-    // any), or `named` itself for a scripted one that names it. Started: shown, and marked in the pool. The host ticks
-    // once first (the active lead comes from the tick).
-    HallucinationStart start(TragedyPool& pool, std::uint32_t& rng, std::uint32_t place, IntensityBand band,
-                             bool scripted, int named = -1) {
+    // Starts one of the active lead's keys for a page of place type `s.place` (bits; 0 for any), picked by `pool`
+    // with `rng` (the lone key x2 when loneWeighs(s.loneLoadPool)), or `s.named` itself for a scripted one that names
+    // it. Started: shown, and marked in the pool; a scripted one flagged as a scare is then played once on `pacer`
+    // (ScarePacer::hallucination; scareForm() says how its scare beat plays, Calm when the pacer holds it back). The
+    // host ticks once first (the active lead comes from the tick).
+    HallucinationStart start(TragedyPool& pool, std::uint32_t& rng, const HallucinationStartIn& s,
+                             ScarePacer* pacer = nullptr) {
         if (active()) return HallucinationStart::Busy;
-        if (band == IntensityBand::None) return HallucinationStart::NoBand;
-        if (!scripted) {
+        if (s.band == IntensityBand::None) return HallucinationStart::NoBand;
+        if (!s.scripted) {
             if (frequency_ == HallucinationFrequency::StoryOnly) return HallucinationStart::StoryOnly;
             const float gap = tuning_.gapSeconds * (frequency_ == HallucinationFrequency::Fewer ? tuning_.fewerGapScale : 1.f);
             if (now_ - endedAt_ < gap) return HallucinationStart::Gap;
             if (now_ - switchedAt_ < tuning_.switchSeconds) return HallucinationStart::SwitchDelay;
         }
-        const int k = scripted && named >= 0 ? (pool.has(named) && pool.lead(named) == lead_ ? named : -1)
-                                           : pool.pick(rng, lead_, place, now_, tuning_.recentSeconds);
+        const int k = s.scripted && s.named >= 0
+                          ? (pool.has(s.named) && pool.lead(s.named) == lead_ ? s.named : -1)
+                          : pool.pick(rng, lead_, s.place, now_, tuning_.recentSeconds,
+                                      loneWeighs(s.loneLoadPool, tuning_));
         if (k < 0) return HallucinationStart::NoKey;
         key_ = k;
-        band_ = band;
+        band_ = s.band;
         shownAt_ = now_;
         hold_ = 0.f;
         heldFor_ = 0.f;
         refuseHeld_ = 0.f;
         refusal_.offer();
         pool.shown(k, now_);
+        scareForm_ = s.scripted && s.flaggedAsScare && pacer ? pacer->hallucination(true, s.scare) : ScareForm::Unpaced;
         emit(HallucinationEventType::Started);
         return HallucinationStart::Started;
+    }
+    // The same by its parts: no Lone Carry weight and no scare.
+    HallucinationStart start(TragedyPool& pool, std::uint32_t& rng, std::uint32_t place, IntensityBand band,
+                             bool scripted, int named = -1) {
+        HallucinationStartIn s;
+        s.place = place;
+        s.band = band;
+        s.scripted = scripted;
+        s.named = named;
+        return start(pool, rng, s);
     }
 
     // One step of `dt` seconds (a negative, NaN or infinite step counts as 0, so the clock stays sound). events()
@@ -133,6 +171,7 @@ public:
     int key() const { return key_; }
     IntensityBand band() const { return active() ? band_ : IntensityBand::None; }
     float holdLevel() const { return hold_; } // the host slows the lead by it and stills them at 1
+    ScareForm scareForm() const { return scareForm_; } // the last start's scare beat: Unpaced, not a scare
     float refusalCooldown() const { return cooldown_; }
     double now() const { return now_; }
     const HallucinationEvent* events() const { return events_.data(); }
@@ -228,6 +267,7 @@ private:
     bool refuseDown_ = false;
     bool refuseCounts_ = false; // this hold was pressed on an open offer, not while cooling
     bool refuseKept_ = false;
+    ScareForm scareForm_ = ScareForm::Unpaced;
 };
 
 } // namespace ftcore
