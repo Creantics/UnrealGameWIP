@@ -121,8 +121,12 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     hashFight(h, t.fallback, 1);
     MESSAGE("regular golden: " << fights << " fights, hash " << h.h);
     CHECK(fights > 5);
-    CHECK(h.h == 12022742029920829981ull); // measured on the code before the boss break value; the riposte reach
-                                           // change left it as it was
+    // Measured on the code before the boss break value; the riposte reach change left it as it was. Re-measured when
+    // the regular break-out came to count weight: the default fighter's third light (22 poise) weighs 2.2, so the
+    // breaker (seeds 1-3) counts one more upright blow, the duelist (seeds 1-3) breaks out sooner (10.3 s to 8.8 s)
+    // and the hulk (seed 2) breaks out once where it broke out never (16.6 s to 15.5 s). No
+    // fight here steps back or starts unseen (one enemy, one token, the autopilot facing it).
+    CHECK(h.h == 5845169181718845176ull);
 }
 
 // ---- the boss break value ----

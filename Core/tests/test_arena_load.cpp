@@ -514,6 +514,7 @@ TEST_CASE("arena take half: refused inside a dodge's i-frames and while hurt; a 
         rig.fight.begin(rig.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
         placeAlly(rig, s);
         rig.bodies.enemies[1] = Vec2{-1.5f, 0.f};
+        rig.in.cameraFacing = Vec2{-1.f, 0.f}; // the camera sees the quick biter behind
         ArenaAction atLand = ArenaAction::Idle;
         int allyLand = -1;
         for (int k = 1; k <= 120 && allyLand < 0; ++k) {

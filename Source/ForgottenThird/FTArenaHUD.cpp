@@ -458,12 +458,13 @@ void AFTArenaHUD::DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVecto
 	{
 		return;
 	}
-	const float Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup, 0.01f), 0.f, 1.f) : 1.f;
+	const float Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup + (E.unseen ? ftcore::kArenaUnseenWindup : 0.f), 0.01f), 0.f, 1.f) : 1.f;
 
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
 	const bool bCards = bStartup && Fight.readFoe() == static_cast<uint8>(Enemy) && Fight.readCards().dealt();
 	// Out of the camera's view (the runner's off-frame test, the one the stinger answers to), or off the screen.
-	const bool bOffFrame = bStartup && Mode.IsOffFrame(Enemy);
+	// An unseen start (a regular enemy that waited out of sight, ArenaEnemyOut::unseen) is always marked at the edge.
+	const bool bOffFrame = bStartup && (Mode.IsOffFrame(Enemy) || E.unseen);
 	if (!bOnScreen || bOffFrame)
 	{
 		if (bCards)

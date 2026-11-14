@@ -488,30 +488,30 @@ out; his third (20) then meets 2 poise and staggers it, a shot (6) is too light 
 hulk has no `flinchTime`. So `skirmisher,hulk` on Duy gives no flinch chance and reads n/a; Duy flinches a duelist
 (`flinchPoise` 10).
 
-The break-out is tuned by lead (provisional, for the playtest). On paper Devin's light string (poise 15, 15, 18, 32)
-staggers every kind with a `breakAt` by the blow that reaches it; in a fight his strikes slow him but don't stop him
-(the autopilot steers them as a player does), so a count can build across strings and some seeds still break out on
-him.
-Duy's (10, 10, 20, and 6 a shot) leaves it upright, so he has to hit and move. Each kind's `breakDecay` equals
+The break-out is tuned by lead (provisional, for the playtest). A regular kind's count adds each blow's poise
+damage over the default light's 10 (`kArenaBreakPoiseUnit`), so Devin's light string (poise 15, 15, 18, 32: weight
+1.5, 1.5, 1.8, 3.2) fills it sooner than Duy's (10, 10, 20: weight 1, 1, 2; a shot 0.6). The blow that fills it and
+breaks the poise staggers. A break-out takes the attack token like any attack: with the token held by another
+enemy, or out of the windup arc, the enemy steps back (StepBack) unhurt instead. Each kind's `breakDecay` equals
 its `poiseDelay`, so a count reset always comes with a poise refill. Core pins this per kind and lead
-(`arena break-out tuning`):
+(`arena break-out tuning`): the blow in a row that staggers or breaks out first.
 
-| kind | poise | `breakAt` | Devin's poise at `breakAt` | Duy's |
+| kind | poise | `breakAt` | Devin | Duy |
 |---|---|---|---|---|
-| skirmisher | 22 | 2 | 30, staggers | 20, breaks out |
-| breaker | 80 | 5 | 95, staggers | 60, breaks out |
-| duelist | 65 | 4 | 80, staggers | 50, breaks out |
-| hulk | 110 | 7 | 128, staggers | 90, breaks out |
-| spitter | 25 | 2 | 30, staggers | 20, breaks out |
+| skirmisher | 22 | 2 | 2, staggers | 2, breaks out |
+| breaker | 80 | 5 | 4, staggers | 4, breaks out |
+| duelist | 65 | 4 | 3, breaks out | 3, breaks out |
+| hulk | 110 | 7 | 4, breaks out | 6, breaks out |
+| spitter | 25 | 2 | 2, staggers | 2, breaks out |
 
 Core's host-mirror tests play the host's own fight (the fallback fight with one attacker, fitted to `sand_ring`, the
 lock never pressed, the partner's press on the step after a parry); seed 1 of a skirmisher and a hulk with Devin
 gives the host's result line to the letter. The autopilot fills each attack's steer and turn from the attack-move
-table, as the player's input does. With Devin no seed from 1 to 12 of a skirmisher and a hulk shows a break-out (n/a;
-the best run reaches `breakAt` only with the blow that staggers); against a duelist and a skirmisher 8 of the 12
-break out once (seed 1 among them), the rest read n/a. Duy shooting against a skirmisher and a hulk shows one on every
-seed, and against a duelist and a skirmisher two or three (shooting or not); unaimed against the hulk the
-autopilot's parries cut his runs short (n/a). Five runs cover every line:
+table, as the player's input does. With Devin every seed from 1 to 12 of a skirmisher and a hulk shows the hulk's break-out
+(his weight fills its count before its poise breaks); against a duelist and a skirmisher all 12 break out. Duy
+shooting against a skirmisher and a hulk fills a count on every seed, but the other enemy holds the one token, so
+it steps back (barred) on 11 of 12 (seed 10 breaks out); against a duelist and a skirmisher he sees one on every seed
+(shooting or not); unaimed against the hulk the autopilot's parries cut his runs short (n/a). Five runs cover every line:
 Devin against the stone bearer, each lead against a skirmisher and a hulk, then each against a duelist and a
 skirmisher:
 
@@ -529,8 +529,8 @@ scales the blow (x1 when alone); a blow inside a count's window is Held, lands a
 it settles at x2.5: after the session's tick the runner deals the extra through `ArenaFight::hostBlow` and logs
 `Arena: a held blow on the count adds <n> damage to <kind> (move <m>).` The arena has no partner body yet, so
 `-ArenaSharedCount` scripts one for the check line: the lead calls the count whenever it can, and the other lead
-joins the window the step a lead's blow is held. Core's host-mirror test plays the same run (seed 1: Devin 3 bonuses,
-+78 damage; Duy shooting 1 bonus, +17):
+joins the window the step a lead's blow is held. Core's host-mirror test plays the same run (seed 1: Devin 2 bonuses,
++42 damage; Duy shooting 1 bonus, +26):
 
 ```
 UnrealEditor-Cmd.exe ForgottenThird.uproject Demo_Arena -game -NullRHI -ArenaLineup=duelist,skirmisher -ArenaLead=Devin -ArenaAutoPlay -ArenaNoLock -ArenaSharedCount -ArenaQuitOnFinish -unattended -nosplash -nosound -stdout

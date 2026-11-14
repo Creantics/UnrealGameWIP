@@ -1194,7 +1194,8 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			// The clip's impact lands at the end of the move's startup: Core's own clock for the move, at that rate.
 			const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(MoveClip)];
-			const float Startup = Kind.moves[Out.move].attack.startup;
+			// An unseen start (ArenaEnemyOut::unseen) has the longer windup: the impact still lands at its end.
+			const float Startup = Kind.moves[Out.move].attack.startup + (Out.unseen ? ftcore::kArenaUnseenWindup : 0.f);
 			const float Rate = (Row.impact > 0.0 && Startup > 0.f) ? FMath::Clamp(static_cast<float>(Row.impact) / Startup, kArenaMinClipRate, kArenaMaxClipRate) : 1.f;
 			Clip = MoveClip;
 			Time = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
@@ -1601,6 +1602,7 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	In.move = Stick;
 	const float Yaw = FMath::DegreesToRadians(ViewYaw());
 	In.view = ftcore::Vec2{FMath::Cos(Yaw), FMath::Sin(Yaw)};
+	In.cameraFacing = In.view; // a regular enemy's windup starts only where the camera or the lead faces
 	In.light = bPressLight;
 	In.heavy = bPressHeavy;
 	In.dodge = bPressDodge;
@@ -3334,7 +3336,9 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				const ftcore::ArenaEnemyMove& Move = Kind.moves[E.move];
 				Pose.bAttacking = true;
 				Pose.Part = static_cast<uint8>(E.part);
-				Pose.PartFraction = ArenaPartFraction(Move.attack, E.part, E.stateTime);
+				ftcore::ArenaAttack Timed = Move.attack;
+				Timed.startup += E.unseen ? ftcore::kArenaUnseenWindup : 0.f; // an unseen start's longer windup
+				Pose.PartFraction = ArenaPartFraction(Timed, E.part, E.stateTime);
 				Pose.Swing = (!Move.parryable || Move.unblockable) ? EFTArenaSwing::Overhead
 					: ((E.move % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 				const float Flash = ArenaModePulse(Now, ActiveSince[I], kArenaTellFlash);
