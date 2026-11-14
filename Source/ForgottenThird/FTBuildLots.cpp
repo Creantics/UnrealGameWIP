@@ -1056,6 +1056,12 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			{
 				const double Lx = BayX0 + BayW * (0.5 + L) / 3.0;
 				LotBox(Lx - 0.6, BayMidY - 0.15, BayZ1 - 0.07, Lx + 0.6, BayMidY + 0.15, BayZ1 - 0.04, PanelPaint, Data, EFTCellKind::NoCollide, BayTag);
+				// Its fixture: a rect light just under the panel, facing down, its width along the front (its local y,
+				// which a yaw of -Yaw - 90 lays along the cube's x above).
+				double Lpx = 0.0, Lpy = 0.0;
+				Proof.ToPlan(Lx, BayMidY, Lpx, Lpy);
+				const ftcore::MassingVec Le = ftcore::massingEnginePoint(Side, Lpx, Lpy, BayZ1 - 0.075);
+				Build.BayLights.Add({FVector(Le.x, Le.y, Le.z) * 100.0, FRotator(-90.0, -Proof.Yaw - 90.0, 0.0), 120.f, 30.f});
 			}
 			// Shelving along the back wall and a free-standing run in the middle of the bay, each row's goods a card cut from
 			// the shelf-front picture (a band per row, ftcore::glassGoodsRow), kept at its shape by the row's height.
@@ -1092,37 +1098,51 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					}
 				}
 			}
-			// Kit pieces as the shop's stock by the glass: planters and a bicycle (only those the build has loaded).
-			struct FStock
-			{
-				const char* Id;
-				double X, Y, Turn;
-			};
-			const FStock Stock[] = {{"PLANTERS", BayX0 + 0.5, BayY0 + 0.75, 180.0}, {"BICYCLE", BayX0 + 0.42 * BayW, BayY0 + 0.45, 90.0},
-				{"PLANTERS", BayX1 - 2.1, BayY0 + 0.75, 180.0}};
+			// The shop's stock by the glass: real meshes of the local interior models (/Game/Props/Goods/<id>, local-only
+			// imports; one that is missing is left out with whatever stands on it), laid out by ftcore::glassBayStock.
+			ftcore::GlassBayItem Stock[ftcore::kGlassBayStockMax];
+			const bool bDoor = T.Door.G > T.Door.R + 0.1f;
+			const int32 StockPlanned = ftcore::glassBayStock(static_cast<float>(BayW), bDoor ? T.Door.R - 0.30f : 1.f, bDoor ? T.Door.G - 0.30f : 0.f,
+				Stock, ftcore::kGlassBayStockMax);
+			double StockTop[ftcore::kGlassBayStockMax];
 			int32 StockCount = 0;
-			for (const FStock& Item : Stock)
+			for (int32 I = 0; I < StockPlanned; ++I)
 			{
-				const int32 K = Build.Kit.find(Item.Id);
-				if (K < 0 || !Uses[K].Mesh)
+				StockTop[I] = -1.0;
+				const ftcore::GlassBayItem& Item = Stock[I];
+				if (Item.on >= 0 && StockTop[Item.on] < 0.0)
 				{
 					continue;
 				}
-				ftcore::KitPlacement Q;
-				Q.piece = K;
-				Q.lot = P.lot;
-				Proof.ToPlan(Item.X, Item.Y, Q.x, Q.y);
-				Q.z = BayZ0 + 0.04;
-				Q.yaw = Proof.Yaw + Item.Turn;
+				const FString Id = UTF8_TO_TCHAR(Item.id);
+				UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Props/Goods/%s/%s.%s"), *Id, *Id, *Id), nullptr, LOAD_NoWarn | LOAD_Quiet);
+				if (!Mesh)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -Lots: the proof bay's stock %s isn't imported (/Game/Props/Goods/%s); left out."), *Id, *Id);
+					continue;
+				}
+				// The import keeps the model's origin at its bottom centre (goods\stock_to_glb.py), so its top is its height.
+				const FBox Box = Mesh->GetBoundingBox();
+				const double Z = Item.on >= 0 ? StockTop[Item.on] : BayZ0 + 0.04;
+				StockTop[I] = Z + Box.Max.Z / 100.0;
+				double Px = 0.0, Py = 0.0;
+				Proof.ToPlan(BayX0 + Item.x, BayY0 + Item.y, Px, Py);
+				const ftcore::MassingVec E = ftcore::massingEnginePoint(Side, Px, Py, Z);
+				TArray<UMaterialInterface*> StockMats;
+				for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
+				{
+					StockMats.Add(Slot.MaterialInterface);
+				}
 				FFTCellOptions StockOpts;
 				StockOpts.Label = Opts.Label;
-				StockOpts.bCastShadow = false;
+				StockOpts.bCastShadow = true;
 				StockOpts.Tag = BayTag;
-				Cells.Add(Uses[K].Mesh, Uses[K].Materials, PieceTransform(Q, Uses[K].Fit, Side), Data, EFTCellKind::NoCollide, StockOpts);
+				Cells.Add(Mesh, StockMats, FTransform(FRotator(0.0, -Proof.Yaw + Item.turn, 0.0), FVector(E.x, E.y, E.z) * 100.0), Data,
+					EFTCellKind::NoCollide, StockOpts);
 				++StockCount;
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front: %d true panes, the bay's shell, %d goods on its shelves, "
-				"%d kit pieces as stock; %d boxes in all."), PaneCount, GoodsCount, StockCount, ProofBoxes);
+				"%d of %d stock meshes; %d boxes in all."), PaneCount, GoodsCount, StockCount, StockPlanned, ProofBoxes);
 			continue;
 		}
 		Cells.Add(Use.Mesh, Use.Materials, PieceTransform(P, Use.Fit, Side), Data,

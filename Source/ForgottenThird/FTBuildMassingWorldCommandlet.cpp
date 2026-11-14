@@ -22,11 +22,13 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
+#include "Components/RectLightComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EditorWorldUtils.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/Polys.h"
+#include "Engine/RectLight.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Texture2D.h"
@@ -59,6 +61,7 @@
 
 #include "FTExploreDirector.h"
 #include "FTExploreGameMode.h"
+#include "FTNightLook.h"
 #include "FTNavIslands.h"
 #include "FTPlateNavNull.h"
 #include "FTSceneLook.h"
@@ -2505,6 +2508,35 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (!FTLots::Place(LotBuild, Cells, Package, Cube, Side))
 	{
 		return 1;
+	}
+	// The proof bay's ceiling fixtures: movable rect lights, warm white, their output written at run time by the lights'
+	// share (FTNight::WriteBayLights); the build leaves them at the day's.
+	int32 BayLightsSpawned = 0;
+	for (const FTLots::FBuild::FBayLight& Fixture : LotBuild.BayLights)
+	{
+		ARectLight* Lamp = World->SpawnActor<ARectLight>(Fixture.At, Fixture.Turn, Spawn);
+		URectLightComponent* Light = Lamp ? Lamp->RectLightComponent.Get() : nullptr;
+		if (!Light)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -Lots: couldn't spawn a proof bay fixture at %s."), *Fixture.At.ToString());
+			continue;
+		}
+		Lamp->SetActorLabel(FString::Printf(TEXT("GlassProofBayLight_%d"), BayLightsSpawned));
+		Lamp->Tags.Add(FTNight::BayLightTag);
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetIntensityUnits(ELightUnits::Lumens);
+		Light->SetIntensity(FTNight::BayLampAt(0.f));
+		Light->SetSourceWidth(Fixture.WidthCm);
+		Light->SetSourceHeight(Fixture.HeightCm);
+		Light->SetAttenuationRadius(500.f);
+		Light->SetUseTemperature(true);
+		Light->SetTemperature(3800.f);
+		++BayLightsSpawned;
+	}
+	if (LotBuild.BayLights.Num() > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: %d of %d proof bay fixtures (rect lights, 3800 K; %.0f lm each by day, %.0f by night)."),
+			BayLightsSpawned, LotBuild.BayLights.Num(), FTNight::BayLampAt(0.f), FTNight::BayLampAt(1.f));
 	}
 	TMap<int32, int32> KitOnBox;
 	TMap<FString, int32> KitPerAsset;

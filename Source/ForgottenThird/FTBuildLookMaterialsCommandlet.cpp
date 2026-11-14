@@ -1312,7 +1312,7 @@ FString GlassPaneCode()
 		"NormalOut = normalize(float3(gWave.x, gWave.y, 1.0));\n"
 		"OpacityOut = Mode > 0.5 ? saturate(gMirror + gVeil + gSeal) : saturate(gVeil + gSeal);\n"
 		"MetalOut = Mode > 0.5 ? (1.0 - saturate(gVeil + gSeal)) : 0.0;\n"
-		"SpecOut = lerp(0.96, 0.3, gSeal);\n"
+		"SpecOut = lerp(0.96, 0.3, gSeal) * SpecScale;\n"
 		"return Mode > 0.5 ? lerp(float3(1.0, 1.0, 1.0), lerp(dirt, float3(0.02, 0.02, 0.02), gSeal), saturate(gVeil + gSeal)) : lerp(dirt, float3(0.02, 0.02, 0.02), gSeal);\n");
 	return Code;
 }
@@ -1341,6 +1341,8 @@ UMaterial* BuildGlassPane(UMaterialParameterCollection* Look, bool bMirror)
 	AddInput(Pane, TEXT("Thick"), AddScalar(Material, TEXT("ThicknessM"), 0.008f, 400));
 	AddInput(Pane, TEXT("Wet"), AddLook(Material, Look, TEXT("Wetness"), 500));
 	AddInput(Pane, TEXT("Mode"), AddScalar(Material, TEXT("MirrorLayer"), bMirror ? 1.f : 0.f, 600));
+	// 1 in play; 0 only for a diagnostic still of the pane with no reflection (-WorldEyeGlassNoSpec).
+	AddInput(Pane, TEXT("SpecScale"), AddScalar(Material, TEXT("SpecScale"), 1.f, 700));
 	AddOutput(Pane, TEXT("TintOut"), CMOT_Float3);
 	AddOutput(Pane, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Pane, TEXT("NormalOut"), CMOT_Float3);
@@ -1500,9 +1502,10 @@ UMaterial* BuildGlassHole()
 	return Material;
 }
 
-// A real bay's surfaces behind a true pane: Color under the scene's light (by day only the daylight that comes in
-// through the pane), plus the shop's lamps from dusk (the window collection's Night): Color x ProofShopNight, held
-// under the city's shop cap like every front; LampPanel 1 is a ceiling light panel. GoodsMix 1 cuts the colour from the
+// A real bay's surfaces behind a true pane: Color under the scene's light only (by day the daylight that comes in
+// through the pane; from dusk the bay's own ceiling fixtures, real rect lights with their falloff, FTNight::WriteBayLights;
+// round 3: a flat glow on every surface was an even level, no light from anywhere). LampPanel 1 is a ceiling light
+// panel, the one surface that glows: ProofShopNight x Night, held under the city's shop cap. GoodsMix 1 cuts the colour from the
 // shelf-front picture instead: band GoodsBand, from GoodsStart along it, up the box from its shelf. A collection
 // without those values (built before the glass system) gives plain parameters instead.
 UMaterial* BuildGlassBay(UTexture* Goods)
@@ -1526,7 +1529,7 @@ UMaterial* BuildGlassBay(UTexture* Goods)
 			 "float3 base = lerp(Color.rgb, goods, saturate(GoodsMix));\n"
 			 "float3 lamp = float3(1.0, 0.9, 0.76) * ProofNight * Night;\n"
 			 "lamp *= min(1.0, ShopCap / max(dot(lamp, float3(0.2126, 0.7152, 0.0722)), 1e-4));\n"
-			 "EmissiveOut = base * lamp * 1.3 + LampPanel * lamp * 4.0;\n"
+			 "EmissiveOut = LampPanel * lamp * 4.0;\n"
 			 "EmissiveOut *= min(1.0, ShopCap / max(dot(EmissiveOut, float3(0.2126, 0.7152, 0.0722)), 1e-4));\n"
 			 "return base;\n"),
 			static_cast<double>(ftcore::kGlassGoodsBands)),

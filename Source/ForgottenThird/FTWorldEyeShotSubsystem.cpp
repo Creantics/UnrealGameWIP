@@ -12,6 +12,7 @@
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Components/StaticMeshComponent.h"
 #include "DynamicRHI.h"
 #include "Engine/DirectionalLight.h"
@@ -413,8 +414,13 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	if (GpuFrames > 0 && GpuSampled < GpuFrames + 1)
 	{
 		const double Ms = FPlatformTime::ToMilliseconds64(RHIGetGPUFrameCycles(0));
+		if (GpuSampled == 0)
+		{
+			GpuSamples.Reset(GpuFrames);
+		}
 		if (GpuSampled > 0)
 		{
+			GpuSamples.Add(static_cast<float>(Ms));
 			GpuSumMs += Ms;
 			GpuMinMs = GpuSampled == 1 ? Ms : FMath::Min(GpuMinMs, Ms);
 			GpuMaxMs = GpuSampled == 1 ? Ms : FMath::Max(GpuMaxMs, Ms);
@@ -426,6 +432,20 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		const FIntPoint ViewSize = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: GPU %.3f ms a frame on average over %d frames (%.3f to %.3f) at %d x %d for %s."),
 			GpuSumMs / GpuFrames, GpuFrames, GpuMinMs, GpuMaxMs, ViewSize.X, ViewSize.Y, *FPaths::GetBaseFilename(File));
+		// The spread: one slow frame (a spike) against a view that costs more throughout.
+		if (GpuSamples.Num() > 0)
+		{
+			GpuSamples.Sort();
+			const float Median = GpuSamples[GpuSamples.Num() / 2];
+			const float P95 = GpuSamples[FMath::Min(GpuSamples.Num() - 1, (GpuSamples.Num() * 95) / 100)];
+			int32 Spikes = 0;
+			for (const float S : GpuSamples)
+			{
+				Spikes += S > Median + 2.f ? 1 : 0;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: GPU spread median %.3f ms, p95 %.3f ms, %d frames over median + 2 ms, for %s."),
+				Median, P95, Spikes, *FPaths::GetBaseFilename(File));
+		}
 	}
 	// The walk: one step and one frame a tick, then the still from the far end.
 	if (bWalk && Eye && WalkFrame < WalkFrames)
@@ -555,6 +575,7 @@ bool UFTWorldEyeShotSubsystem::StartNextEye()
 	PendingTicks = 0;
 	GpuSampled = 0;
 	GpuSumMs = 0.0;
+	GpuSamples.Reset();
 	return true;
 }
 
@@ -862,7 +883,16 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 				}
 			}
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: glass over a picture on the proof front: %d pane and bay components hidden, %d cut-out slots back on %s."),
+		// The bay's ceiling fixtures go with it.
+		for (TActorIterator<AActor> It(&World); It; ++It)
+		{
+			if (It->ActorHasTag(FTNight::BayLightTag))
+			{
+				It->Destroy();
+				++Hidden;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: glass over a picture on the proof front: %d pane, bay and fixture parts hidden, %d cut-out slots back on %s."),
 			Hidden, Swapped, KitGlass ? *KitGlass->GetName() : TEXT("nothing (no kit glass in the map)"));
 	}
 	// -WorldEyeGlassNoPane: the proof front's true panes hidden (its bay stays), for a still that measures the bay as
@@ -879,6 +909,28 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: the proof front's panes hidden: %d components."), Hidden);
+	}
+	// -WorldEyeGlassNoSpec: the proof front's true panes kept, their specular forced to 0 (SpecScale), for a diagnostic
+	// still that shows what the pane's reflection lays over the bay.
+	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeGlassNoSpec")))
+	{
+		int32 Set = 0;
+		for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+		{
+			if (It->GetWorld() != &World || !It->ComponentHasTag(TEXT("GlassProofPane")))
+			{
+				continue;
+			}
+			for (int32 Slot = 0; Slot < It->GetNumMaterials(); ++Slot)
+			{
+				if (UMaterialInstanceDynamic* Dynamic = It->CreateAndSetMaterialInstanceDynamic(Slot))
+				{
+					Dynamic->SetScalarParameterValue(TEXT("SpecScale"), 0.f);
+					++Set;
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: the proof front's panes with no specular: %d slots."), Set);
 	}
 	// -WorldEyeDayEV=<ev>: a day or dusk still at one fixed exposure, so two stills' levels compare.
 	float DayEv = 0.f;

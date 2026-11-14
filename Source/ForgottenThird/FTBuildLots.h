@@ -45,6 +45,16 @@ struct FBuild
 	std::vector<bool> Replaced; // by box: a lot stands in its place (no box, no windows, no frontage, no roof dressing)
 	int32 GlassProofLot = -1;   // -GlassProofLot=<lot>: the one front whose shop glass takes the look's own night level
 	bool bGlassProofPane = false; // -GlassProofPane: that front's glass is true panes over a real bay (else glass over a picture)
+	// Set by Place: the proof bay's ceiling fixtures (engine cm, a rotation facing down, the source's size in cm), which the
+	// massing build spawns as rect lights tagged FTNight::BayLightTag.
+	struct FBayLight
+	{
+		FVector At = FVector::ZeroVector;
+		FRotator Turn = FRotator::ZeroRotator;
+		float WidthCm = 0.f;
+		float HeightCm = 0.f;
+	};
+	TArray<FBayLight> BayLights;
 };
 
 // Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces. True with bOn false without

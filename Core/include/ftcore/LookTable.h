@@ -26,6 +26,12 @@
 //   row leaves out keeps the DuskLook default; `status` and `about` are notes (strings) and are kept as read.
 //   `glass` is optional: name -> number, the glass system's values a look may set (letters and digits, 2..64
 //   characters); `status` and `about` are notes. A bad key or value in either is an error and the table is refused.
+//   `renderTiers` is optional: the render quality tiers, set over `render`:
+//     { "about": "...", "play": "standard", "cutscene": "high",
+//       "low": { "r.X": 0 }, "standard": { "r.X": 2 }, "high": { "r.X": 2 } }
+//   Each other key is a tier (lower-case letters, digits and '_') with console variables as in `render`. Every tier
+//   sets the same console variables (so a switch leaves none behind); `play` and `cutscene` name tiers. `about` is a
+//   note. A bad tier, a missing pick or tiers that set different variables is an error and the table is refused.
 
 #include "ftcore/Api.h"
 #include "ftcore/NightLook.h"
@@ -60,6 +66,13 @@ struct LookTable {
     std::vector<DuskRow> dusk;
     std::vector<GlassValue> glass;
     std::string glassStatus;
+    struct RenderTier {
+        std::string name;
+        std::vector<RenderSetting> settings; // in file order
+    };
+    std::vector<RenderTier> renderTiers;
+    std::string playTier;     // the tier the game starts in; empty when there are no tiers
+    std::string cutsceneTier; // the tier a cutscene runs in
 
     // The world with this id (case-insensitive), or null. No allocation.
     FTCORE_API const SceneLook* find(std::string_view id) const;
@@ -67,6 +80,8 @@ struct LookTable {
     FTCORE_API const DuskRow* findDusk(std::string_view world) const;
     // The glass value of this name, or `fallback`. No allocation.
     FTCORE_API float glassValue(std::string_view name, float fallback) const;
+    // The render tier of this name (case-insensitive), or null. No allocation.
+    FTCORE_API const RenderTier* findTier(std::string_view name) const;
 };
 
 // On failure `out` is empty and *error lists each problem with its path, one per line.

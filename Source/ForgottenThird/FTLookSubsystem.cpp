@@ -74,31 +74,85 @@ const ftcore::LookTable& FTLook::Table()
 
 namespace
 {
+void SetRenderSettings(const std::vector<ftcore::LookTable::RenderSetting>& Settings, const TCHAR* From);
+}
 
-// Data/Look/looks.json's render settings, once per run: each console variable set at the game-setting priority, under
-// the project's ini and the command line (-dpcvars=), which keep theirs.
-void ApplyRenderSettings()
+bool FTLook::ApplyRenderTier(const FString& Tier)
 {
-	static bool bApplied = false;
-	if (bApplied)
+	const ftcore::LookTable::RenderTier* Found = Table().findTier(FT::ToUtf8(Tier));
+	if (!Found)
 	{
-		return;
+		UE_LOG(LogForgottenThird, Warning, TEXT("Look: no render tier '%s' in Data/Look/looks.json."), *Tier);
+		return false;
 	}
-	bApplied = true;
-	for (const ftcore::LookTable::RenderSetting& Setting : LookTable().render)
+	SetRenderSettings(Found->settings, *FString::Printf(TEXT("tier %s"), *FT::ToFString(Found->name)));
+	return true;
+}
+
+bool FTLook::ApplyRenderTierFor(const TCHAR* Use)
+{
+	FString Tier;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("LookTier="), Tier) || Tier.IsEmpty())
+	{
+		const ftcore::LookTable& T = Table();
+		Tier = FT::ToFString(FCString::Stricmp(Use, TEXT("cutscene")) == 0 ? T.cutsceneTier : T.playTier);
+	}
+	if (Tier.IsEmpty())
+	{
+		return false; // looks.json has no tiers
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Look: render tier %s for %s."), *Tier, Use);
+	return ApplyRenderTier(Tier);
+}
+
+namespace
+{
+
+// Each console variable set at the game-setting priority, under the project's ini and the command line (-dpcvars=),
+// which keep theirs.
+void SetRenderSettings(const std::vector<ftcore::LookTable::RenderSetting>& Settings, const TCHAR* From)
+{
+	for (const ftcore::LookTable::RenderSetting& Setting : Settings)
 	{
 		const FString Name = FT::ToFString(Setting.name);
 		IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Name);
 		if (!Variable)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("Look: no console variable %s; its render setting is skipped."), *Name);
+			UE_LOG(LogForgottenThird, Warning, TEXT("Look: no console variable %s; its render setting (%s) is skipped."), *Name, From);
 			continue;
 		}
 		const FString Before = Variable->GetString();
 		Variable->Set(*FString::SanitizeFloat(Setting.value), ECVF_SetByGameSetting);
-		UE_LOG(LogForgottenThird, Display, TEXT("Look: %s %s -> %s."), *Name, *Before, *Variable->GetString());
+		UE_LOG(LogForgottenThird, Display, TEXT("Look: %s %s -> %s (%s)."), *Name, *Before, *Variable->GetString(), From);
 	}
 }
+
+// Data/Look/looks.json's render settings once per run; the play tier at every map (a cutscene map's game mode then
+// sets the cutscene tier at its start).
+void ApplyRenderSettings()
+{
+	static bool bApplied = false;
+	if (!bApplied)
+	{
+		bApplied = true;
+		SetRenderSettings(LookTable().render, TEXT("render"));
+	}
+	FTLook::ApplyRenderTierFor(TEXT("play"));
+}
+
+// ft.LookTier <low|standard|high>: sets a render tier from looks.json.
+void LookTierCommand(const TArray<FString>& Args)
+{
+	if (Args.Num() == 0 || !FTLook::ApplyRenderTier(Args[0]))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("ft.LookTier <tier>: one of looks.json's renderTiers (play %s, cutscene %s)."),
+			*FT::ToFString(LookTable().playTier), *FT::ToFString(LookTable().cutsceneTier));
+	}
+}
+
+FAutoConsoleCommand GLookTierCommand(TEXT("ft.LookTier"),
+	TEXT("Sets a render tier from Data/Look/looks.json's renderTiers: ft.LookTier low|standard|high."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&LookTierCommand));
 
 // ft.Look <world|off>: switches the look of the world the console is in.
 void LookCommand(const TArray<FString>& Args, UWorld* World)

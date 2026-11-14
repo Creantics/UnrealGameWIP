@@ -108,4 +108,20 @@ struct GlassGoodsRow {
 FTCORE_API GlassGoodsRow glassGoodsRow(int row, float seed);
 FTCORE_API float glassGoodsV(int band, float up);
 
+// The shop's stock by the glass (real meshes, ids of the local interior models under /Game/Props/Goods): a fixed display
+// plan along a bay `bayW` m wide, in metres from the bay's left wall (x) and its front, the glass side (y). An item with
+// `on` >= 0 stands on that earlier item (the wrapper puts it on the base's top). Items within 0.3 m of the door span
+// [doorX0, doorX1] (bay metres; doorX1 < doorX0 for no door) are left out with whatever stands on them; nothing sits
+// nearer the glass than 0.3 m or a wall than 0.25 m. Writes at most `max` items to `out`; returns the count. No
+// allocation.
+struct GlassBayItem {
+    const char* id = "";
+    float x = 0.f;
+    float y = 0.f;
+    float turn = 0.f; // degrees about up
+    int on = -1;
+};
+constexpr int kGlassBayStockMax = 16;
+FTCORE_API int glassBayStock(float bayW, float doorX0, float doorX1, GlassBayItem* out, int max);
+
 } // namespace ftcore

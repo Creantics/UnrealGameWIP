@@ -30,6 +30,11 @@ namespace FTLook
 {
 // Data/Look/looks.json, read once (empty when it is missing or refused; the problems are logged).
 FORGOTTENTHIRD_API const ftcore::LookTable& Table();
+// Sets looks.json's render tier for this use ("play" or "cutscene": the table's pick for it), or the tier named by
+// -LookTier= when given, at the game-setting priority (a -dpcvars= value keeps its own). False when there's no such tier.
+FORGOTTENTHIRD_API bool ApplyRenderTierFor(const TCHAR* Use);
+// Sets the render tier of this name; false when looks.json has no such tier.
+FORGOTTENTHIRD_API bool ApplyRenderTier(const FString& Tier);
 } // namespace FTLook
 
 UCLASS()

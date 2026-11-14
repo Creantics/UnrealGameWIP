@@ -65,6 +65,19 @@ FORGOTTENTHIRD_API bool WriteWindowLights(UWorld& World, float Lights, float Day
 FORGOTTENTHIRD_API float ProofShopNight();
 FORGOTTENTHIRD_API float InteriorDay();
 
+// The proof bay's ceiling fixtures (rect lights the massing build spawns under its light panels, tagged BayLightTag):
+// real lights with their own falloff in place of a flat glow on every surface. Each gives BayLampAt(the lights' share):
+// by day BayLampDayLumens() (the look table's glass "bayLampDayLumens", -GlassBayDayLumens=<lm> over it; a shop is lit by
+// day, so the goods hold against the mirrored street), at night BayLampLumens() ("bayLampLumens", -GlassBayLumens=<lm>:
+// set so the brightest bay surface in a night still stays under the city's shop cap), between them geometrically, so
+// dusk is a middle state. Off at 0 lm. Returns the lights written. Iterates the world's rect lights: call it when the
+// share moves, not every frame.
+inline constexpr const TCHAR* BayLightTag = TEXT("GlassProofBayLight");
+FORGOTTENTHIRD_API float BayLampLumens();
+FORGOTTENTHIRD_API float BayLampDayLumens();
+FORGOTTENTHIRD_API float BayLampAt(float Lights);
+FORGOTTENTHIRD_API int32 WriteBayLights(UWorld& World, float Lights);
+
 inline FLinearColor Tint(const FLinearColor& C, const std::array<float, 3>& M)
 {
 	return FLinearColor(C.R * M[0], C.G * M[1], C.B * M[2], C.A);

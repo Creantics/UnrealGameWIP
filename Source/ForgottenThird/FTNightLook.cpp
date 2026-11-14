@@ -2,11 +2,13 @@
 
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/RectLightComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/PostProcessVolume.h"
+#include "Engine/RectLight.h"
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -134,8 +136,58 @@ float FTNight::InteriorDay()
 	return Value;
 }
 
+float FTNight::BayLampLumens()
+{
+	static const float Value = []
+	{
+		float Level = FTLook::Table().glassValue("bayLampLumens", 40.f);
+		FParse::Value(FCommandLine::Get(), TEXT("GlassBayLumens="), Level);
+		return FMath::Max(Level, 0.f);
+	}();
+	return Value;
+}
+
+float FTNight::BayLampDayLumens()
+{
+	static const float Value = []
+	{
+		float Level = FTLook::Table().glassValue("bayLampDayLumens", 3000.f);
+		FParse::Value(FCommandLine::Get(), TEXT("GlassBayDayLumens="), Level);
+		return FMath::Max(Level, 0.f);
+	}();
+	return Value;
+}
+
+float FTNight::BayLampAt(float Lights)
+{
+	const float Share = FMath::Clamp(Lights, 0.f, 1.f);
+	const float Day = BayLampDayLumens(), Night = BayLampLumens();
+	// Geometric between the two, so dusk sits between them as the exposure does (a straight blend would hold the day's
+	// output most of the way into the night).
+	return Day > 0.f && Night > 0.f ? Day * FMath::Pow(Night / Day, Share) : FMath::Lerp(Day, Night, Share);
+}
+
+int32 FTNight::WriteBayLights(UWorld& World, float Lights)
+{
+	const float Lumens = BayLampAt(Lights);
+	int32 Written = 0;
+	for (TActorIterator<ARectLight> It(&World); It; ++It)
+	{
+		URectLightComponent* Light = It->ActorHasTag(BayLightTag) ? It->RectLightComponent.Get() : nullptr;
+		if (!Light)
+		{
+			continue;
+		}
+		Light->SetIntensity(Lumens);
+		Light->SetVisibility(Lumens > 0.f);
+		++Written;
+	}
+	return Written;
+}
+
 bool FTNight::WriteWindowLights(UWorld& World, float Lights, float Daylight)
 {
+	WriteBayLights(World, Lights);
 	const FString Path = FTScene::WindowCollection;
 	UMaterialParameterCollection* Collection =
 		LoadObject<UMaterialParameterCollection>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);

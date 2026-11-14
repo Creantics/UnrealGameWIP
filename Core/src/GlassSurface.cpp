@@ -69,16 +69,20 @@ GlassDetail glassDetail(float u, float v, float width, float height, float seed,
     d.edge = (1.f - gsSmoothstep(0.010f, 0.030f, ed)) * (1.f - d.seal);
     const float n1 = gsNoise(x * 7.f + seed * 31.f, y * 7.f + seed * 17.f);
     const float n2 = gsNoise(x * 23.f + seed * 57.f, y * 5.f + seed * 9.f);
-    const float bottom = std::exp(-y / 0.30f);
-    const float corner = std::exp(-std::sqrt(ex * ex + ey * ey) / 0.12f);
-    d.dust = gsSaturate((0.06f + 0.55f * bottom + 0.45f * corner) * (0.55f + 0.9f * n1) * (0.45f + 0.75f * a));
-    const float cx = x * 45.f + seed * 13.f;
+    // Dust only where it gathers: a band hugging the bottom edge and the corners, none across the open pane (round 3: a
+    // dust floor over the whole pane, lit by the sun, was a milky film as bright as the shop seen through it).
+    const float bottom = std::exp(-y / 0.12f);
+    const float corner = std::exp(-std::sqrt(ex * ex + ey * ey) / 0.08f);
+    d.dust = gsSaturate((0.55f * bottom + 0.45f * corner) * (0.55f + 0.9f * n1) * (0.45f + 0.75f * a));
+    // Dried runs: about 6 cm wide with soft sides (2 cm columns read as hanging threads at 2 m); mostly a rougher
+    // reflection, barely a film.
+    const float cx = x * 16.f + seed * 13.f;
     const float col = std::floor(cx);
     const float ch = gsHash1(col), ch2 = gsHash1(col + 17.3f);
     const float len = (0.15f + 0.85f * ch * ch) * height * 0.7f;
     const float top = (1.f - v) * height;
-    const float across = 1.f - std::abs(gsFrac(cx) - 0.5f) * 2.f;
-    d.streak = (ch2 > 0.78f ? 0.6f : 0.f) * (1.f - gsSmoothstep(0.6f * len, len, top)) * across * across * (0.35f + 0.65f * n2) *
+    const float across = gsSmoothstep(0.f, 1.f, 1.f - std::abs(gsFrac(cx) - 0.5f) * 2.f);
+    d.streak = (ch2 > 0.78f ? 0.6f : 0.f) * (1.f - gsSmoothstep(0.6f * len, len, top)) * across * (0.35f + 0.65f * n2) *
                (0.35f + 0.65f * a);
     if (handleU >= 0.f) {
         const float hx = (u - handleU) * width, hy = (v - handleV) * height;
@@ -89,8 +93,8 @@ GlassDetail glassDetail(float u, float v, float width, float height, float seed,
     const float br = gsHash2(std::floor(bx) + seed * 7.f, std::floor(by));
     const float bd = std::sqrt((gsFrac(bx) - 0.5f) * (gsFrac(bx) - 0.5f) + (gsFrac(by) - 0.5f) * (gsFrac(by) - 0.5f));
     d.bead = w * (br > 0.8f ? 1.f : 0.f) * (1.f - gsSmoothstep(0.15f, 0.35f, bd));
-    d.rough = gsSaturate(0.02f + 0.30f * d.dust + 0.20f * d.streak + 0.35f * d.hand + 0.10f * d.bead);
-    d.veil = gsSaturate(0.55f * d.dust + 0.30f * d.streak + 0.25f * d.hand);
+    d.rough = gsSaturate(0.02f + 0.30f * d.dust + 0.30f * d.streak + 0.35f * d.hand + 0.10f * d.bead);
+    d.veil = gsSaturate(0.30f * d.dust + 0.05f * d.streak + 0.25f * d.hand);
     return d;
 }
 
@@ -120,18 +124,18 @@ float2 gF2 = frac(gQ2);
 gF2 = gF2 * gF2 * (3.0 - 2.0 * gF2);
 float gN2 = lerp(lerp(frac(sin(gI2.x * 127.1 + gI2.y * 311.7) * 43758.5453), frac(sin((gI2.x + 1.0) * 127.1 + gI2.y * 311.7) * 43758.5453), gF2.x),
 	lerp(frac(sin(gI2.x * 127.1 + (gI2.y + 1.0) * 311.7) * 43758.5453), frac(sin((gI2.x + 1.0) * 127.1 + (gI2.y + 1.0) * 311.7) * 43758.5453), gF2.x), gF2.y);
-float gBottom = exp(-gP.y / 0.30);
-float gCorner = exp(-length(gE2) / 0.12);
+float gBottom = exp(-gP.y / 0.12);
+float gCorner = exp(-length(gE2) / 0.08);
 float gA = saturate(gAge);
-float gDust = saturate((0.06 + 0.55 * gBottom + 0.45 * gCorner) * (0.55 + 0.9 * gN1) * (0.45 + 0.75 * gA));
-float gCx = gP.x * 45.0 + gSeed * 13.0;
+float gDust = saturate((0.55 * gBottom + 0.45 * gCorner) * (0.55 + 0.9 * gN1) * (0.45 + 0.75 * gA));
+float gCx = gP.x * 16.0 + gSeed * 13.0;
 float gCol = floor(gCx);
 float gCh = frac(sin(gCol * 127.1 + 311.7) * 43758.5453);
 float gCh2 = frac(sin((gCol + 17.3) * 127.1 + 311.7) * 43758.5453);
 float gLen = (0.15 + 0.85 * gCh * gCh) * gSize.y * 0.7;
 float gTop = (1.0 - gUV.y) * gSize.y;
-float gAcross = 1.0 - abs(frac(gCx) - 0.5) * 2.0;
-float gStreak = 0.6 * step(0.78, gCh2) * (1.0 - smoothstep(0.6 * gLen, gLen, gTop)) * gAcross * gAcross * (0.35 + 0.65 * gN2) * (0.35 + 0.65 * gA);
+float gAcross = smoothstep(0.0, 1.0, 1.0 - abs(frac(gCx) - 0.5) * 2.0);
+float gStreak = 0.6 * step(0.78, gCh2) * (1.0 - smoothstep(0.6 * gLen, gLen, gTop)) * gAcross * (0.35 + 0.65 * gN2) * (0.35 + 0.65 * gA);
 float2 gHd = (gUV - gHandle) * gSize;
 float2 gQ3 = float2(gP.x * 18.0 + gSeed * 91.0, gP.y * 18.0 + gSeed * 3.0);
 float2 gI3 = floor(gQ3);
@@ -143,8 +147,8 @@ float gHand = gHandle.x >= 0.0 ? exp(-dot(gHd, gHd) / 0.045) * smoothstep(0.35, 
 float2 gB = gP * 90.0;
 float gBr = frac(sin((floor(gB.x) + gSeed * 7.0) * 127.1 + floor(gB.y) * 311.7) * 43758.5453);
 float gBead = saturate(gWet) * step(0.8, gBr) * (1.0 - smoothstep(0.15, 0.35, length(frac(gB) - 0.5)));
-float gRough = saturate(0.02 + 0.30 * gDust + 0.20 * gStreak + 0.35 * gHand + 0.10 * gBead);
-float gVeil = saturate(0.55 * gDust + 0.30 * gStreak + 0.25 * gHand);
+float gRough = saturate(0.02 + 0.30 * gDust + 0.30 * gStreak + 0.35 * gHand + 0.10 * gBead);
+float gVeil = saturate(0.30 * gDust + 0.05 * gStreak + 0.25 * gHand);
 float2 gWave = gA * 0.015 * float2(sin(gP.x * 5.1 + gSeed * 40.0), sin(gP.y * 4.3 + gSeed * 23.0));
 )HLSL";
 }
@@ -160,6 +164,44 @@ GlassPane glassPaneAt(float x, const float* cuts, int count) {
     p.left = lo;
     p.width = std::max(hi - lo, 1e-3f);
     return p;
+}
+
+int glassBayStock(float bayW, float doorX0, float doorX1, GlassBayItem* out, int max) {
+    // A small general store's window: a plant at each end, a tea table, a stack of crates under a basket, boxes under
+    // a brass pot, a jerrycan by them. (share of the width, metres added, metres from the glass, turn, base index)
+    struct Plan {
+        const char* id;
+        float share, dx, y, turn;
+        int on;
+    };
+    static const Plan kPlan[] = {
+        {"potted_plant_02", 0.f, 0.35f, 0.45f, 0.f, -1},     {"round_wooden_table_01", 0.17f, 0.f, 0.65f, 0.f, -1},
+        {"tea_set_01", 0.17f, -0.10f, 0.62f, 20.f, 1},       {"ceramic_vase_01", 0.17f, 0.22f, 0.72f, 0.f, 1},
+        {"plastic_crate_02", 0.40f, 0.f, 0.50f, 0.f, -1},    {"plastic_crate_02", 0.40f, 0.f, 0.50f, 6.f, 4},
+        {"wicker_basket_01", 0.40f, 0.f, 0.50f, -10.f, 5},   {"plastic_crate_03", 0.40f, 0.58f, 0.52f, -4.f, -1},
+        {"cardboard_box_01", 0.63f, 0.f, 0.50f, 12.f, -1},   {"cardboard_box_01", 0.63f, 0.f, 0.50f, -8.f, 8},
+        {"brass_pot_01", 0.63f, 0.f, 0.50f, 0.f, 9},         {"metal_jerrycan", 0.63f, 0.55f, 0.45f, 75.f, -1},
+        {"potted_plant_01", 1.f, -0.35f, 0.45f, 30.f, -1},
+    };
+    constexpr int kPlanCount = static_cast<int>(sizeof(kPlan) / sizeof(kPlan[0]));
+    static_assert(kPlanCount <= kGlassBayStockMax, "the plan fits the stock array");
+    int kept[kPlanCount];
+    int n = 0;
+    for (int i = 0; i < kPlanCount && n < max && out; ++i) {
+        const Plan& p = kPlan[i];
+        kept[i] = -1;
+        if (p.on >= 0 && kept[p.on] < 0) continue;
+        const float x = std::clamp(p.share * bayW + p.dx, 0.25f, std::max(bayW - 0.25f, 0.25f));
+        if (doorX1 >= doorX0 && x > doorX0 - 0.3f && x < doorX1 + 0.3f) continue;
+        GlassBayItem& item = out[n];
+        item.id = p.id;
+        item.x = x;
+        item.y = std::max(p.y, 0.3f);
+        item.turn = p.turn;
+        item.on = p.on >= 0 ? kept[p.on] : -1;
+        kept[i] = n++;
+    }
+    return n;
 }
 
 GlassGoodsRow glassGoodsRow(int row, float seed) {

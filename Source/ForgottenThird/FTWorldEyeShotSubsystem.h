@@ -85,6 +85,7 @@ private:
 	double GpuSumMs = 0.0;
 	double GpuMinMs = 0.0;
 	double GpuMaxMs = 0.0;
+	TArray<float> GpuSamples; // the sampled frames' GPU ms, for the median, p95 and spikes (reserved once)
 	bool bLookApplied = false;
 	bool bActive = false;
 	bool bShot = false;

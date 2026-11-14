@@ -199,4 +199,6 @@ private:
 	FTNight::FDuskScene DuskScene;
 	// The day's shadow floor last written to the post-process volume (-1: write on the next step).
 	float AppliedDayShade = -1.f;
+	// The lights' share last written to the proof bay's fixtures (FTNight::WriteBayLights; -1: write on the next step).
+	float AppliedBayLights = -1.f;
 };

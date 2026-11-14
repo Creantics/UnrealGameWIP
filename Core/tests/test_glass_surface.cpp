@@ -4,6 +4,8 @@
 #include "ftcore/GlassSurface.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <string>
 
 using namespace ftcore;
@@ -70,6 +72,20 @@ TEST_CASE("glass: dirt gathers at the bottom edge and the corners, streaks hang 
     CHECK(streakTop > streakLow);
     cornerDust = glassDetail(0.02f, 0.5f * 0.03f, w, h, 0.37f, 0.5f, 0.f, -1.f, 0.f).dust;
     CHECK(cornerDust > glassDetail(0.5f, 0.5f, w, h, 0.37f, 0.5f, 0.f, -1.f, 0.f).dust);
+    // The open pane carries no film (round 3: a dust floor of about 2% across the whole pane, sunlit, was a milky layer
+    // twice as bright as the shop behind it). Streak runs leave at most a trace; their mark is in the roughness.
+    float openVeil = 0.f, openMax = 0.f, streakRough = 0.f;
+    for (int k = 0; k < 400; ++k) {
+        const float u = 0.2f + 0.6f * static_cast<float>(k % 20) / 19.f, v = 0.3f + 0.4f * static_cast<float>(k / 20) / 19.f;
+        const GlassDetail d = glassDetail(u, v, w, h, 0.37f, 1.f, 0.f, -1.f, 0.f);
+        openVeil += d.veil / 400.f;
+        openMax = std::max(openMax, d.veil);
+        const GlassDetail t = glassDetail(u, 0.97f - 0.3f * static_cast<float>(k / 20) / 19.f, w, h, 0.37f, 1.f, 0.f, -1.f, 0.f);
+        if (t.streak > 0.2f) streakRough = std::max(streakRough, t.rough - 0.02f - 0.30f * t.dust);
+    }
+    CHECK(openVeil < 0.005f);
+    CHECK(openMax < 0.035f);
+    CHECK(streakRough >= 0.06f);
     // The seal at the rim, the dark edge just inside it, clear glass past 3 cm.
     CHECK(glassDetail(0.001f, 0.5f, w, h, 0.f, 0.f, 0.f, -1.f, 0.f).seal == doctest::Approx(1.f));
     CHECK(glassDetail(0.012f, 0.5f, w, h, 0.f, 0.f, 0.f, -1.f, 0.f).edge > 0.3f);
@@ -162,5 +178,30 @@ TEST_CASE("glass: each shelf row takes a band of the goods picture, rows differ,
     CHECK(glassGoodsV(0, 1.f) == doctest::Approx(0.f));
     CHECK(glassGoodsV(3, 0.f) == doctest::Approx(1.f));
     CHECK(glassGoodsV(9, 2.f) == doctest::Approx(0.75f));
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("glass: the bay's stock stands clear of the glass, the walls and the door, stacked items on kept bases") {
+    const auto before = ftcore_test::allocStats().count;
+    GlassBayItem items[kGlassBayStockMax];
+    const int all = glassBayStock(7.5f, 1.f, 0.f, items, kGlassBayStockMax);
+    CHECK(all >= 10);
+    for (int i = 0; i < all; ++i) {
+        CHECK(items[i].x >= 0.25f);
+        CHECK(items[i].x <= 7.5f - 0.25f);
+        CHECK(items[i].y >= 0.3f);
+        CHECK(items[i].on < i);
+        if (items[i].on >= 0) CHECK(std::abs(items[i].x - items[items[i].on].x) < 0.3f);
+    }
+    // A door over the crates (share 0.4 of 7.5 m = 3 m): they and the basket on them go, nothing left inside the span.
+    const int withDoor = glassBayStock(7.5f, 2.6f, 3.6f, items, kGlassBayStockMax);
+    CHECK(withDoor < all);
+    for (int i = 0; i < withDoor; ++i) {
+        CHECK((items[i].x <= 2.3f || items[i].x >= 3.9f));
+        CHECK(std::strcmp(items[i].id, "wicker_basket_01") != 0);
+        if (items[i].on >= 0) CHECK(items[i].on < i);
+    }
+    CHECK(glassBayStock(7.5f, 1.f, 0.f, items, 3) == 3);
+    CHECK(glassBayStock(7.5f, 1.f, 0.f, nullptr, 8) == 0);
     if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
 }

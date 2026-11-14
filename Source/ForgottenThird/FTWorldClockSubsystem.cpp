@@ -344,6 +344,13 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	if (UWorld* World = GetWorld())
 	{
 		DuskScene.Apply(*World, Sky.Dusk, false);
+		// The proof bay's ceiling fixtures with the shop lights, written when the share moves a step or reaches an end.
+		if (bForce || AppliedBayLights < 0.f || FMath::Abs(Sky.Lights - AppliedBayLights) >= 0.01f ||
+			(Sky.Lights != AppliedBayLights && (Sky.Lights == 0.f || Sky.Lights == 1.f)))
+		{
+			FTNight::WriteBayLights(*World, Sky.Lights);
+			AppliedBayLights = Sky.Lights;
+		}
 		// The day's shadow floor in the look's volume and the fogs: written when its amount has moved a step or reached
 		// an end, and after the exposure range above has been written (the day's exposure floor goes over the volume's
 		// own, never over the night's range).

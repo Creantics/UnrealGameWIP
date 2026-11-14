@@ -42,17 +42,33 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     CHECK(*t.find("lattice") != *t.find("unwritten"));
     // The engine's ray-traced reflections are on for every world.
     // Ray-traced sun and moon shadows are the default where the card traces rays (shadow maps otherwise).
-    // Hit lighting for the ray-traced reflections (a proposal in the glass block's note): a reflection hit is lit from
-    // its own material, so a lead, who has no surface cache, shows in a shop pane.
-    REQUIRE(t.render.size() == 4);
+    REQUIRE(t.render.size() == 3);
     CHECK(t.render[0].name == "r.Lumen.HardwareRayTracing");
     CHECK(t.render[0].value == 1.f);
     CHECK(t.render[1].name == "r.RayTracing.Shadows");
     CHECK(t.render[1].value == 1.f);
     CHECK(t.render[2].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
     CHECK(t.render[2].value == 1.f);
-    CHECK(t.render[3].name == "r.Lumen.HardwareRayTracing.LightingMode");
-    CHECK(t.render[3].value == 2.f);
+    // The render tiers (ruled 2026-11-14): play is standard, hit lighting for reflections (LightingMode 2, so a lead,
+    // who has no surface cache, shows in a shop pane) traced at half resolution; cutscenes are high, full resolution;
+    // low is the surface cache. LightingMode 1 is no tier.
+    REQUIRE(t.findTier(t.playTier));
+    REQUIRE(t.findTier(t.cutsceneTier));
+    CHECK(t.playTier == "standard");
+    CHECK(t.cutsceneTier == "high");
+    const auto tierValue = [&](const char* tier, const char* name) {
+        for (const LookTable::RenderSetting& s : t.findTier(tier)->settings)
+            if (s.name == name) return s.value;
+        return -99.f;
+    };
+    REQUIRE(t.findTier("low"));
+    CHECK(tierValue("low", "r.Lumen.HardwareRayTracing.LightingMode") == 0.f);
+    CHECK(tierValue("standard", "r.Lumen.HardwareRayTracing.LightingMode") == 2.f);
+    CHECK(tierValue("standard", "r.Lumen.Reflections.DownsampleFactor") == 2.f);
+    CHECK(tierValue("high", "r.Lumen.HardwareRayTracing.LightingMode") == 2.f);
+    CHECK(tierValue("high", "r.Lumen.Reflections.DownsampleFactor") == 1.f);
+    for (const LookTable::RenderTier& tier : t.renderTiers)
+        CHECK(tierValue(tier.name.c_str(), "r.Lumen.HardwareRayTracing.LightingMode") != 1.f);
     // Water, wetness, fog albedo, practical lights and glow are set per world.
     CHECK(t.find("solhaven")->wetness > 0.f);
     CHECK(t.find("lattice")->glowStrength > 0.f);
@@ -86,6 +102,46 @@ TEST_CASE("looks: a render block parses in order, and no block means none, with 
     REQUIRE(importLookTable(R"({"version":1,"worlds":{"w":{}}})", t, &error, &warnings));
     CHECK(t.render.empty());
     CHECK(warnings.empty());
+}
+
+TEST_CASE("looks: render tiers parse with their picks; a bad pick, tier or uneven tiers refuse the table") {
+    LookTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importLookTable(R"({"version":1,"renderTiers":{"about":"x","play":"mid","cutscene":"top",
+        "mid":{"r.A":1,"r.B":2},"top":{"r.B":4,"r.A":3}},"worlds":{"w":{}}})", t, &error, &warnings), error);
+    CHECK(warnings.empty());
+    REQUIRE(t.renderTiers.size() == 2);
+    CHECK(t.findTier("MID") == &t.renderTiers[0]);
+    CHECK(t.renderTiers[1].settings[0].name == "r.B");
+    CHECK(t.renderTiers[1].settings[0].value == 4.f);
+    CHECK(t.playTier == "mid");
+    CHECK(t.cutsceneTier == "top");
+    CHECK(t.findTier("none") == nullptr);
+
+    // No tiers: none, and no picks.
+    REQUIRE(importLookTable(R"({"version":1,"worlds":{"w":{}}})", t, &error));
+    CHECK(t.renderTiers.empty());
+    CHECK(t.playTier.empty());
+
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"mid","cutscene":"gone","mid":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.cutscene"));
+    CHECK(t.renderTiers.empty());
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"cutscene":"mid","mid":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.play"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"r.A":1},"b":{"r.B":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.b"));
+    CHECK(contains(error, "same console variables"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"r.A":1},"b":{"r.A":1,"r.B":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.b"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"A","cutscene":"A","A":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.A"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":"a","cutscene":"a","a":{"bad":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.a.bad"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":{"play":2,"cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers.play"));
+    CHECK_FALSE(importLookTable(R"({"version":1,"renderTiers":[],"worlds":{"w":{}}})", t, &error));
+    CHECK(contains(error, "renderTiers"));
 }
 
 TEST_CASE("looks: a bad render key or value refuses the table, naming render.<key>") {

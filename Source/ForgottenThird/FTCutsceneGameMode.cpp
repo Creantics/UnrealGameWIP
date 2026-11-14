@@ -4,6 +4,9 @@
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneHUD.h"
 #include "FTGameInstance.h"
+#include "FTLookSubsystem.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 AFTCutsceneGameMode::AFTCutsceneGameMode()
 {
@@ -16,6 +19,11 @@ void AFTCutsceneGameMode::StartPlay()
 	// Skips AFTGameMode::StartPlay on purpose, as the stub, battle and exploration modes do: the story
 	// must not start here. This also begins play for the map's actors (the director among them).
 	AGameModeBase::StartPlay();
+	// Cutscenes render at looks.json's cutscene tier (the next map's look sets the play tier again).
+	if (!FParse::Param(FCommandLine::Get(), TEXT("LookOff")))
+	{
+		FTLook::ApplyRenderTierFor(TEXT("cutscene"));
+	}
 
 	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	bHasStep = GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone;

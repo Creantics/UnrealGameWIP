@@ -69,6 +69,12 @@ float LookTable::glassValue(std::string_view name, float fallback) const {
     return fallback;
 }
 
+const LookTable::RenderTier* LookTable::findTier(std::string_view name) const {
+    for (const RenderTier& t : renderTiers)
+        if (equalsNoCase(t.name, name)) return &t;
+    return nullptr;
+}
+
 std::string_view lookWorldForMap(std::string_view mapName) {
     for (const std::string_view world : {std::string_view("solhaven"), std::string_view("lattice"),
                                          std::string_view("unwritten")})
@@ -109,37 +115,85 @@ bool importLookTable(std::string_view json, LookTable& out, std::string* error, 
         errors.push_back("version: expected 1");
     for (std::uint32_t k = 0; k < root.size(); ++k) {
         const std::string_view key = root.key(k);
-        if (key != "version" && key != "worlds" && key != "render" && key != "dusk" && key != "glass")
+        if (key != "version" && key != "worlds" && key != "render" && key != "renderTiers" && key != "dusk" &&
+            key != "glass")
             warn("unknown key: " + std::string(key));
     }
 
     LookTable table;
-    if (root.has("render")) {
-        const JsonValue render = root["render"];
-        if (!render.isObject()) {
-            errors.push_back("render: expected an object");
-        } else {
-            for (std::uint32_t k = 0; k < render.size(); ++k) {
-                const std::string name(render.key(k));
-                const std::string at = "render." + name;
-                if (!cvarName(name)) {
-                    errors.push_back(at + ": expected a console variable name: r. then letters, digits, . and _ (3..128 chars)");
+    // An object of console variables (name -> number) at `path` into `out`, in file order.
+    const auto cvars = [&](const JsonValue& obj, const std::string& path, std::vector<LookTable::RenderSetting>& out) {
+        if (!obj.isObject()) {
+            errors.push_back(path + ": expected an object");
+            return;
+        }
+        for (std::uint32_t k = 0; k < obj.size(); ++k) {
+            const std::string name(obj.key(k));
+            const std::string at = path + "." + name;
+            if (!cvarName(name)) {
+                errors.push_back(at + ": expected a console variable name: r. then letters, digits, . and _ (3..128 chars)");
+                continue;
+            }
+            bool duplicate = false;
+            for (const LookTable::RenderSetting& r : out)
+                if (equalsNoCase(r.name, name)) duplicate = true;
+            if (duplicate) {
+                errors.push_back(at + ": duplicate console variable");
+                continue;
+            }
+            const JsonValue v = obj.value(k);
+            const double d = v.number(0.0);
+            if (!v.isNumber() || !std::isfinite(d) || d > 3e38 || d < -3e38) {
+                errors.push_back(at + ": " + std::string(v.raw()) + " is not a number a float holds");
+                continue;
+            }
+            out.push_back({name, static_cast<float>(d)});
+        }
+    };
+    if (root.has("render")) cvars(root["render"], "render", table.render);
+    if (root.has("renderTiers")) {
+        const JsonValue tiers = root["renderTiers"];
+        if (!tiers.isObject()) errors.push_back("renderTiers: expected an object");
+        for (std::uint32_t k = 0; k < tiers.size() && tiers.isObject(); ++k) {
+            const std::string name(tiers.key(k));
+            const JsonValue v = tiers.value(k);
+            if (name == "about") continue;
+            if (name == "play" || name == "cutscene") {
+                if (!v.isString() || v.string().empty()) {
+                    errors.push_back("renderTiers." + name + ": expected a tier name");
                     continue;
                 }
-                bool duplicate = false;
-                for (const LookTable::RenderSetting& r : table.render)
-                    if (equalsNoCase(r.name, name)) duplicate = true;
-                if (duplicate) {
-                    errors.push_back(at + ": duplicate console variable");
-                    continue;
+                (name == "play" ? table.playTier : table.cutsceneTier) = std::string(v.string());
+                continue;
+            }
+            if (!worldName(name) || table.findTier(name)) {
+                errors.push_back("renderTiers." + name + ": expected one tier name of lower-case letters, digits and _");
+                continue;
+            }
+            LookTable::RenderTier tier;
+            tier.name = name;
+            cvars(v, "renderTiers." + name, tier.settings);
+            table.renderTiers.push_back(std::move(tier));
+        }
+        if (tiers.isObject()) {
+            if (table.renderTiers.empty()) errors.push_back("renderTiers: expected at least one tier");
+            for (const std::string* pick : {&table.playTier, &table.cutsceneTier})
+                if (!table.renderTiers.empty() && !table.findTier(*pick))
+                    errors.push_back("renderTiers." + std::string(pick == &table.playTier ? "play" : "cutscene") +
+                                     ": '" + *pick + "' is not a tier");
+            // Every tier sets the same console variables, so switching tiers leaves none of another tier's behind.
+            for (std::size_t t = 1; t < table.renderTiers.size(); ++t) {
+                const auto& a = table.renderTiers[0].settings;
+                const auto& b = table.renderTiers[t].settings;
+                bool same = a.size() == b.size();
+                for (const LookTable::RenderSetting& s : a) {
+                    bool found = false;
+                    for (const LookTable::RenderSetting& r : b) found = found || equalsNoCase(r.name, s.name);
+                    same = same && found;
                 }
-                const JsonValue v = render.value(k);
-                const double d = v.number(0.0);
-                if (!v.isNumber() || !std::isfinite(d) || d > 3e38 || d < -3e38) {
-                    errors.push_back(at + ": " + std::string(v.raw()) + " is not a number a float holds");
-                    continue;
-                }
-                table.render.push_back({name, static_cast<float>(d)});
+                if (!same)
+                    errors.push_back("renderTiers." + table.renderTiers[t].name + ": expected the same console variables as " +
+                                     table.renderTiers[0].name);
             }
         }
     }
