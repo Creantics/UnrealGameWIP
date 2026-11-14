@@ -16,6 +16,7 @@
   "riseHealth": 0.25,
   "blowCapShare": 0.6,
   "overScale": 0.5,
-  "leadIdleSeconds": 1.0,
-  "idlePauseScale": 2.0
+  "budgetWindowSeconds": 20,
+  "budgetShare": 0.6,
+  "budgetAllowanceSeconds": 2.0
 }

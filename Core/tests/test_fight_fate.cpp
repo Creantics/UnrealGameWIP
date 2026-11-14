@@ -474,7 +474,7 @@ struct Host {
             in.leadPos = {0.f, -2.f};
             in.health = static_cast<float>(hp[body]) / 100.f;
             in.canAct = !s.down(body);
-            in.leadSinceBlow = static_cast<float>(f % 120) / 60.f;
+            in.leadAttacking = f % 120 < 60;
             in.enemies = std::span<const PartnerEnemyView>(enemies.data(), enemies.size());
             const PartnerIntent& it = brain.step(kFrame, in);
             if (it.rise) {

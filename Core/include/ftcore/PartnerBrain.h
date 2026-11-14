@@ -15,10 +15,16 @@
 //      when the string starts. The host's `doing` is the string's clock: the string is over on the first step the host
 //      no longer reports Attacking after it did (blows x blowSeconds when the host never reports it, 2 x that when it
 //      never stops). It never starts a string while its target winds up a blow aimed at it.
-//      It waits for the lead's lead: once the host says, on any step of a pause, that the lead has gone
-//      leadIdleSeconds (1.0) or more without landing a blow (leadSinceBlow), that pause lasts idlePauseScale (2) x its
-//      draw, to its end (the lead landing again does not shorten it; the next pause starts at its draw). So its
-//      attack time stays at most 0.60 of the lead's when the lead is held off. Strings are never cut for it.
+//      Budget (a partner never out-fights the player, and a lead pinned down defending does not freeze it): over any
+//      rolling budgetWindowSeconds (20) window, its attack time is at most budgetShare (0.60) x the lead's attack
+//      time in that window plus budgetAllowanceSeconds (2.0). The host says each step whether the lead is attacking
+//      (leadAttacking); the partner's own attack time is every step its intent is Attack or the host reports
+//      Attacking. A string starts only if its drawn blows x blowSeconds fit every window that would hold any of it
+//      with the lead attacking no more, so the rule holds whatever the lead does next. When it does not fit, the
+//      intent is Wait (why Budget) on its target, in reach and facing it; it guards as rule 3 says; the string,
+//      already drawn, starts on the first step it fits (no new draw). Mid-string, a step that would break the
+//      budget ends the string (Budget; its pause follows, or none on a staggered target). The budget is kept in
+//      0.05 s slots, counted against it: the partner's part slot in, the lead's out.
 //   3. Defence. When a windup aimed at the partner is first seen (a new one: the enemy entered WindingUp, or its
 //      windupLeft rose) with at least guardWarning s left, one seeded draw: guard with guardChance, else take the blow.
 //      It guards from then until guardHold s after the windup ends. With less warning it is hit. It never parries,
@@ -43,7 +49,7 @@
 //   { "version": 1, "leashMeters": 4, "returnMeters": 3, "reachMeters": 1.8, "standoffMeters": 0.8, "blowsMin": 2,
 //     "blowsMax": 3, "blowSeconds": 0.65, "pauseMin": 1.2, "pauseMax": 2.0, "guardWarning": 0.25, "guardChance": 0.7,
 //     "guardHold": 0.3, "downSeconds": 30, "riseHealth": 0.25, "blowCapShare": 0.6, "overScale": 0.5,
-//     "leadIdleSeconds": 1.0, "idlePauseScale": 2.0 }
+//     "budgetWindowSeconds": 20, "budgetShare": 0.6, "budgetAllowanceSeconds": 2.0 }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -86,15 +92,16 @@ struct PartnerInput {
     PartnerDoing doing = PartnerDoing::Idle;
     Vec2 leadPos{};
     int leadTarget = -1; // an index into enemies, or -1
-    // Seconds since the lead last landed a blow (0: just now, or the host does not say; NaN or an infinity reads as 0).
-    float leadSinceBlow = 0.f;
+    // The lead is attacking this step (rule 2's budget counts its time). A host that never says gets the budget of
+    // a lead who never attacks: budgetAllowanceSeconds per window.
+    bool leadAttacking = false;
     std::span<const PartnerEnemyView> enemies;
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
 // Why this intent (for logs and tests).
 enum class PartnerWhy : std::uint8_t {
-    NotBegun, Down, CannotAct, Guard, Leash, String, Pause, NoTarget, Approach, HeldOff, Start
+    NotBegun, Down, CannotAct, Guard, Leash, String, Pause, NoTarget, Approach, HeldOff, Start, Budget
 };
 
 struct PartnerIntent {
@@ -129,8 +136,9 @@ struct PartnerTuning {
     float riseHealth = 0.25f;   // (0.01..1)
     float blowCapShare = 0.6f;  // rule 7's share (0..1): see partnerBlowDamage
     float overScale = 0.5f;     // rule 7's scale over it (0..1)
-    float leadIdleSeconds = 1.f; // the lead this long without landing a blow: the pause stretches (0.1..10)
-    float idlePauseScale = 2.f;  // by this (1..10)
+    float budgetWindowSeconds = 20.f;  // rule 2's budget: any rolling window this long (5..30)
+    float budgetShare = 0.6f;          // its attack time at most this x the lead's in the window (0..1)
+    float budgetAllowanceSeconds = 2.f; // plus this (0..10)
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
@@ -155,7 +163,10 @@ public:
     double downFor() const { return downFor_; }
     bool stringing() const { return phase_ == Phase::String; }
     bool pausing() const { return phase_ == Phase::Pause; }
-    bool stretched() const { return phase_ == Phase::Pause && stretched_; }
+    // Rule 2's budget: whether `seconds` more of its attack, from now, would keep every window within it.
+    bool budgetFits(double seconds) const;
+    // A string drawn and held for the budget, not yet started (its draws are made).
+    bool drawnAhead() const { return drawn_; }
     int target() const { return target_; }
     // Draw counts (tests: draws happen at events only).
     std::uint32_t rhythmDraws() const { return rhythmDraws_; }
@@ -171,7 +182,11 @@ private:
         bool guard = false;   // this windup's draw said guard
         double hold = 0.0;    // guard kept after it ends
     };
+    static constexpr double kSlot = 0.05;          // the budget's slot (s)
+    static constexpr std::size_t kSlots = 604;     // 30 s of slots, and room either side
     float draw(std::uint32_t& s, std::uint32_t& n);
+    const PartnerIntent& decide(double dt, const PartnerInput& in);
+    void account(double dt, bool partner, bool lead);
     void endString(bool staggered);
     int chooseTarget(const PartnerInput& in) const;
 
@@ -187,8 +202,12 @@ private:
     double clock_ = 0.0; // in the current string or pause
     bool seenAttacking_ = false;
     bool returning_ = false;
-    bool stretched_ = false; // this pause saw the lead idle: idlePauseScale x
-    bool leadIdle_ = false;  // this step: the lead leadIdleSeconds or more without landing a blow
+    bool drawn_ = false;     // blows_ and pause_ drawn for a string the budget holds
+    // Rule 2's budget: attack seconds per slot (the slot `slot_ % kSlots` is the current one), both sides.
+    std::array<float, kSlots> spentPartner_{};
+    std::array<float, kSlots> spentLead_{};
+    std::int64_t slot_ = 0;
+    double now_ = 0.0;
     bool down_ = false;
     double downFor_ = 0.0;
     std::array<Watch, kMaxPartnerEnemies> watch_{};

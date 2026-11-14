@@ -49,7 +49,8 @@ bool validPartnerTuning(const PartnerTuning& t) {
            pbWithin(t.guardWarning, 0.f, 2.f) && pbWithin(t.guardChance, 0.f, 1.f) && pbWithin(t.guardHold, 0.f, 2.f) &&
            pbWithin(t.downSeconds, 1.f, 600.f) && pbWithin(t.riseHealth, 0.01f, 1.f) &&
            pbWithin(t.blowCapShare, 0.f, 1.f) && pbWithin(t.overScale, 0.f, 1.f) &&
-           pbWithin(t.leadIdleSeconds, 0.1f, 10.f) && pbWithin(t.idlePauseScale, 1.f, 10.f);
+           pbWithin(t.budgetWindowSeconds, 5.f, 30.f) && pbWithin(t.budgetShare, 0.f, 1.f) &&
+           pbWithin(t.budgetAllowanceSeconds, 0.f, 10.f);
 }
 
 bool PartnerBrain::begin(const PartnerTuning& t, std::uint32_t seed) {
@@ -66,8 +67,11 @@ bool PartnerBrain::begin(const PartnerTuning& t, std::uint32_t seed) {
     clock_ = 0.0;
     seenAttacking_ = false;
     returning_ = false;
-    stretched_ = false;
-    leadIdle_ = false;
+    drawn_ = false;
+    spentPartner_.fill(0.f);
+    spentLead_.fill(0.f);
+    slot_ = 0;
+    now_ = 0.0;
     down_ = false;
     downFor_ = 0.0;
     watch_ = {};
@@ -87,7 +91,6 @@ float PartnerBrain::draw(std::uint32_t& s, std::uint32_t& n) {
 
 void PartnerBrain::endString(bool staggered) {
     clock_ = 0.0;
-    stretched_ = leadIdle_; // a pause that starts with the lead idle is stretched from its first step
     seenAttacking_ = false;
     phase_ = staggered ? Phase::Ready : Phase::Pause; // rule 6: no pause on a staggered target
 }
@@ -118,10 +121,65 @@ int PartnerBrain::chooseTarget(const PartnerInput& in) const {
     return free >= 0 ? free : all; // the lead on every standing enemy: the nearest
 }
 
+// Every window [T - W, T] that would hold any of `seconds` more attack from now, the lead attacking no more. For the
+// windows whose past part starts in slot b_i (the current slot is b_0): the partner's time is at most its sum over
+// b_0..b_i, the lead's at least its sum over b_0..b_(i-1), and the new attack in the window at most
+// min(seconds, W - s), s the length of b_0..b_(i-1). Slots before the fight hold nothing.
+bool PartnerBrain::budgetFits(double seconds) const {
+    const double w = static_cast<double>(t_.budgetWindowSeconds);
+    const double share = static_cast<double>(t_.budgetShare);
+    const double allow = static_cast<double>(t_.budgetAllowanceSeconds);
+    double partner = 0.0, lead = 0.0, past = 0.0;
+    for (std::size_t i = 0; i < kSlots && past < w; ++i) {
+        const std::int64_t b = slot_ - static_cast<std::int64_t>(i);
+        if (b < 0) break;
+        const std::size_t k = static_cast<std::size_t>(b % static_cast<std::int64_t>(kSlots));
+        partner += static_cast<double>(spentPartner_[k]);
+        if (partner + std::min(seconds, w - past) > share * lead + allow + 1e-9) return false;
+        lead += static_cast<double>(spentLead_[k]);
+        past = now_ - static_cast<double>(b) * kSlot;
+    }
+    return true;
+}
+
+void PartnerBrain::account(double dt, bool partner, bool lead) {
+    double left = dt;
+    // A step longer than any window: only its last stretch can still be in one.
+    const double skip = left - (static_cast<double>(t_.budgetWindowSeconds) + 2.0 * kSlot);
+    if (skip > 0.0) {
+        spentPartner_.fill(0.f);
+        spentLead_.fill(0.f);
+        now_ += skip;
+        slot_ = static_cast<std::int64_t>(std::floor(now_ / kSlot));
+        left -= skip;
+    }
+    while (left > 1e-12) {
+        const double end = static_cast<double>(slot_ + 1) * kSlot;
+        const double part = std::min(left, std::max(0.0, end - now_));
+        const std::size_t k = static_cast<std::size_t>(slot_ % static_cast<std::int64_t>(kSlots));
+        if (partner) spentPartner_[k] += static_cast<float>(part);
+        if (lead) spentLead_[k] += static_cast<float>(part);
+        now_ += part;
+        left -= part;
+        if (now_ >= end - 1e-12) {
+            ++slot_;
+            const std::size_t next = static_cast<std::size_t>(slot_ % static_cast<std::int64_t>(kSlots));
+            spentPartner_[next] = 0.f;
+            spentLead_[next] = 0.f;
+        }
+    }
+}
+
 const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
+    if (!(dt > 0.0)) dt = 0.0;
+    decide(dt, in);
+    if (begun_) account(dt, out_.act == PartnerAct::Attack || in.doing == PartnerDoing::Attacking, in.leadAttacking);
+    return out_;
+}
+
+const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     out_ = PartnerIntent{};
     if (!begun_) return out_;
-    if (!(dt > 0.0)) dt = 0.0;
     const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
 
     // Rule 5: down at zero, waits, rises after downSeconds (every step until the host stands it).
@@ -145,7 +203,6 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     }
     down_ = false;
     downFor_ = 0.0;
-    leadIdle_ = std::isfinite(in.leadSinceBlow) && in.leadSinceBlow >= t_.leadIdleSeconds;
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
     bool guard = false;
@@ -194,10 +251,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
             endString(staggered);
         }
     } else if (phase_ == Phase::Pause) {
-        // It waits for the lead's lead: the lead held off past leadIdleSeconds on any step stretches this pause.
-        if (leadIdle_) stretched_ = true;
-        const double pause = stretched_ ? pause_ * static_cast<double>(t_.idlePauseScale) : pause_;
-        if (clock_ + 1e-9 >= pause || staggered || !haveTarget) {
+        if (clock_ + 1e-9 >= pause_ || staggered || !haveTarget) {
             phase_ = Phase::Ready;
             clock_ = 0.0;
         }
@@ -243,6 +297,12 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     };
 
     if (phase_ == Phase::String) {
+        if (!budgetFits(dt)) { // rule 2's budget: this step would break it
+            endString(staggered);
+            out_.why = PartnerWhy::Budget;
+            out_.enemy = target_;
+            return out_;
+        }
         attack(target_, false);
         out_.why = PartnerWhy::String;
         return out_;
@@ -281,10 +341,20 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
         out_.enemy = tgt;
         return out_;
     }
-    const int span = t_.blowsMax - t_.blowsMin + 1;
-    blows_ = std::min(t_.blowsMax, t_.blowsMin + static_cast<int>(draw(rhythm_, rhythmDraws_) * static_cast<float>(span)));
-    pause_ = static_cast<double>(t_.pauseMin) +
-             static_cast<double>(draw(rhythm_, rhythmDraws_)) * static_cast<double>(t_.pauseMax - t_.pauseMin);
+    if (!drawn_) {
+        const int span = t_.blowsMax - t_.blowsMin + 1;
+        blows_ = std::min(t_.blowsMax,
+                          t_.blowsMin + static_cast<int>(draw(rhythm_, rhythmDraws_) * static_cast<float>(span)));
+        pause_ = static_cast<double>(t_.pauseMin) +
+                 static_cast<double>(draw(rhythm_, rhythmDraws_)) * static_cast<double>(t_.pauseMax - t_.pauseMin);
+        drawn_ = true;
+    }
+    if (!budgetFits(static_cast<double>(blows_) * static_cast<double>(t_.blowSeconds))) { // rule 2's budget: hold
+        out_.why = PartnerWhy::Budget;
+        out_.enemy = tgt;
+        return out_;
+    }
+    drawn_ = false;
     phase_ = Phase::String;
     clock_ = 0.0;
     seenAttacking_ = false;
@@ -344,7 +414,8 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     static constexpr const char* kKeys[] = {"version",     "leashMeters", "returnMeters", "reachMeters",  "standoffMeters",
                                             "blowsMin",    "blowsMax",    "blowSeconds",  "pauseMin",     "pauseMax",
                                             "guardWarning", "guardChance", "guardHold",   "downSeconds",  "riseHealth",
-                                            "blowCapShare", "overScale",  "leadIdleSeconds", "idlePauseScale"};
+                                            "blowCapShare", "overScale",  "budgetWindowSeconds", "budgetShare",
+                                            "budgetAllowanceSeconds"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -361,8 +432,9 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("riseHealth", t.riseHealth, 0.01, 1);
     real("blowCapShare", t.blowCapShare, 0, 1);
     real("overScale", t.overScale, 0, 1);
-    real("leadIdleSeconds", t.leadIdleSeconds, 0.1, 10);
-    real("idlePauseScale", t.idlePauseScale, 1, 10);
+    real("budgetWindowSeconds", t.budgetWindowSeconds, 5, 30);
+    real("budgetShare", t.budgetShare, 0, 1);
+    real("budgetAllowanceSeconds", t.budgetAllowanceSeconds, 0, 10);
 
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);

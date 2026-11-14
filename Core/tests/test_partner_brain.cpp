@@ -20,8 +20,14 @@ struct Scene {
     PartnerInput in;
     std::array<V, kMaxPartnerEnemies> e{};
     std::size_t n = 1;
-    explicit Scene(std::uint32_t seed = 7, PartnerTuning t = PartnerTuning{}) {
+    // The lead attacks every step; the budget (rule 2) is out of the way unless `budget` asks for the ruled one.
+    explicit Scene(std::uint32_t seed = 7, PartnerTuning t = PartnerTuning{}, bool budget = false) {
+        if (!budget) {
+            t.budgetShare = 1.f;
+            t.budgetAllowanceSeconds = 10.f;
+        }
         REQUIRE(b.begin(t, seed));
+        in.leadAttacking = true;
         in.pos = {0.f, 2.f};
         in.leadPos = {0.f, -2.f};
         e[0].pos = {0.f, 0.f};
@@ -33,10 +39,8 @@ struct Scene {
     }
 };
 
-// The default fighter's light chain (Data/Battle/arena.json: startup + active + recovery), both sides' strings, and
-// each light's startup (its blow lands there).
+// The default fighter's light chain (Data/Battle/arena.json: startup + active + recovery), both sides' strings.
 constexpr double kLight[3] = {0.65, 0.63, 0.91};
-constexpr double kStartup[3] = {0.18, 0.16, 0.22};
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
 bool same(const PartnerIntent& x, const PartnerIntent& y) {
@@ -80,7 +84,7 @@ struct Host {
     }
     void apply(const PartnerIntent& it, const PartnerBrain& b, PartnerInput& in, double dt) {
         guarding = it.act == PartnerAct::Guard;
-        if (guarding) attackLeft = 0.0;
+        if (it.act != PartnerAct::Attack) attackLeft = 0.0; // any other intent ends the chain at once
         if (it.act == PartnerAct::Attack && it.newString) {
             attackLeft = chainSeconds(it.blows);
             ++strings;
@@ -114,8 +118,8 @@ struct Host {
 };
 
 // A 60 s scripted fight against a boss (radius 1 at the origin); the lead (1.8 m from its centre, never moving) chains
-// the default fighter's lights back to back (the chain wraps; chainGap is a window, not a rest), each blow landing at
-// its light's startup, and the host feeds the time since the last one. The dummy never winds up. With windups: 1.0 s
+// the default fighter's lights back to back (the chain wraps; chainGap is a window, not a rest), and the host says
+// each step whether it is attacking. The dummy never winds up. With windups: 1.0 s
 // every 5 s from 3 s, aimed at the partner on 3 of each 10 (under the fight's 30% ceiling) and at the lead otherwise;
 // the lead guards from a windup aimed at it until 0.4 s after the blow, and starts its chain again after.
 struct Fight {
@@ -126,11 +130,16 @@ struct Fight {
     std::vector<PartnerIntent> intents; // every step's
     double period = 5.0;      // a windup every this many seconds
     bool partnerAims = true;  // 3 of each 10 at the partner (false: every one at the lead)
+    bool leadFights = true;   // false: the lead never attacks
+    bool staggered = false;   // the boss staggered throughout (no windups)
+    std::vector<double> partnerStep, leadStep; // each step's attack seconds
     void clear() {
         leadAttack = 0.0;
         host = Host{};
         guardDraws.clear();
         intents.clear();
+        partnerStep.clear();
+        leadStep.clear();
     }
     bool run(double dt, PartnerOrder order, std::uint32_t seed, bool windups = true, double seconds = 60.0) {
         if (!brain.begin(PartnerTuning{}, seed)) return false;
@@ -143,7 +152,7 @@ struct Fight {
         in.leadPos = {1.8f, 0.f};
         in.leadTarget = 0;
         in.enemies = std::span<const V>(boss.data(), 1);
-        double leadGuard = 0.0, leadInto = 0.0, leadSince = 0.0;
+        double leadGuard = 0.0, leadInto = 0.0;
         int leadLight = 0;
         const int steps = static_cast<int>(std::lround(seconds / dt));
         for (int k = 0; k < steps; ++k) {
@@ -154,19 +163,15 @@ struct Fight {
             const double into = w >= 0 ? since - period * w : -1.0;
             const bool atPartner = partnerAims && w >= 0 && (w % 10 == 2 || w % 10 == 5 || w % 10 == 9);
             const bool winding = windups && w >= 0 && into < 1.0 - 1e-9;
-            boss[0].state = winding ? V::State::WindingUp : V::State::Idle;
+            boss[0].state = winding ? V::State::WindingUp : staggered ? V::State::Staggered : V::State::Idle;
             boss[0].windupLeft = winding ? static_cast<float>(1.0 - into) : 0.f;
             boss[0].aim = winding ? (atPartner ? V::Aim::Partner : V::Aim::Lead) : V::Aim::None;
             // The lead.
             if (winding && !atPartner) leadGuard = 1.4 - into;
-            const bool leadOn = !(leadGuard > 0.0);
-            leadSince += dt;
+            const bool leadOn = leadFights && !(leadGuard > 0.0);
             if (leadOn) {
                 leadAttack += dt;
-                const double before = leadInto;
                 leadInto += dt;
-                const double at = kStartup[leadLight];
-                if (before < at && leadInto >= at) leadSince = leadInto - at; // the blow lands
                 if (leadInto >= kLight[leadLight]) {
                     leadInto -= kLight[leadLight];
                     leadLight = (leadLight + 1) % 3;
@@ -177,11 +182,14 @@ struct Fight {
                 leadInto = 0.0;
             }
             boss[0].leadAttacking = leadOn;
-            in.leadSinceBlow = static_cast<float>(leadSince);
+            in.leadAttacking = leadOn;
             host.feed(in);
             const PartnerIntent& it = brain.step(dt, in);
             intents.push_back(it);
+            const double was = host.attackTime;
             host.apply(it, brain, in, dt);
+            partnerStep.push_back(host.attackTime - was);
+            leadStep.push_back(leadOn ? dt : 0.0);
             // The blow lands on the windup's last step.
             if (winding && atPartner && into + dt >= 1.0 - 1e-9) {
                 guardDraws.push_back(host.guarding ? 1 : 0);
@@ -191,6 +199,26 @@ struct Fight {
         return true;
     }
 };
+
+// Rule 2's budget over every window of `w` steps (those running past the end too): the largest excess of the
+// partner's attack time over share x the lead's plus allow (at most 0 when every window holds).
+double worstExcess(const std::vector<double>& partner, const std::vector<double>& lead, std::size_t w,
+                   double share = 0.6, double allow = 2.0) {
+    double p = 0.0, l = 0.0, worst = -1e9;
+    const std::size_t n = partner.size();
+    for (std::size_t k = 0; k < n + w; ++k) {
+        if (k < n) {
+            p += partner[k];
+            l += lead[k];
+        }
+        if (k >= w && k - w < n) {
+            p -= partner[k - w];
+            l -= lead[k - w];
+        }
+        worst = std::max(worst, p - share * l - allow);
+    }
+    return worst;
+}
 
 } // namespace
 
@@ -218,10 +246,12 @@ TEST_CASE("partner brain: partner_brain.json is the defaults; the importer keeps
     CHECK(t.riseHealth == doctest::Approx(d.riseHealth));
     CHECK(t.blowCapShare == doctest::Approx(d.blowCapShare));
     CHECK(t.overScale == doctest::Approx(d.overScale));
-    CHECK(t.leadIdleSeconds == doctest::Approx(d.leadIdleSeconds));
-    CHECK(t.idlePauseScale == doctest::Approx(d.idlePauseScale));
-    CHECK(d.leadIdleSeconds == 1.f);
-    CHECK(d.idlePauseScale == 2.f);
+    CHECK(t.budgetWindowSeconds == d.budgetWindowSeconds);
+    CHECK(t.budgetShare == doctest::Approx(d.budgetShare));
+    CHECK(t.budgetAllowanceSeconds == doctest::Approx(d.budgetAllowanceSeconds));
+    CHECK(d.budgetWindowSeconds == 20.f);
+    CHECK(d.budgetShare == 0.6f);
+    CHECK(d.budgetAllowanceSeconds == 2.f);
     CHECK(validPartnerTuning(d));
 
     REQUIRE(importPartnerBrain(R"({"version":1,"leashMeters":6,"blowsMax":4,"guardChance":1})", t, &err));
@@ -689,8 +719,8 @@ TEST_CASE("partner brain: the same seed gives the same sequence; draws happen at
     CHECK(firstDiff(a.intents, c.intents) != kSame);
     // At half the step: the same draws (one rhythm pair per string, one defence draw per windup aimed at it).
     REQUIRE(d.run(1.0 / 120.0, PartnerOrder::Spread, 42));
-    CHECK(a.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(a.host.strings));
-    CHECK(d.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(d.host.strings));
+    CHECK(a.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(a.host.strings + (a.brain.drawnAhead() ? 1 : 0)));
+    CHECK(d.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(d.host.strings + (d.brain.drawnAhead() ? 1 : 0)));
     CHECK(a.brain.defenceDraws() == 3u); // 12 windups, 3 at it
     CHECK(a.brain.defenceDraws() == d.brain.defenceDraws());
     CHECK(a.guardDraws == d.guardDraws);
@@ -719,8 +749,9 @@ TEST_CASE("partner brain: over a 60 s scripted fight against a dummy boss its at
     }
 }
 
-TEST_CASE("partner brain: over a 60 s fight with windups, the lead held off, its attack time is 35..60% of the lead's") {
+TEST_CASE("partner brain: over a 60 s fight with windups, the lead held off, its attack time is 35% of the lead's or more, within the budget") {
     // Both with 3 of each 10 windups at the partner and with every one at the lead (the lead held off 12.6 s of 60).
+    // The budget allows 0.60 of the lead's plus 2.0 s in each 20 s window, so over three windows at most 6 s past 0.60.
     for (const bool partnerAims : {true, false}) {
       for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
         for (const std::uint32_t seed : {1u, 42u, 2026u, 7u, 99u}) {
@@ -734,91 +765,176 @@ TEST_CASE("partner brain: over a 60 s fight with windups, the lead held off, its
             MESSAGE("windups: partner ", f.host.attackTime, " s, lead ", f.leadAttack, " s, share ", share,
                     ", strings ", f.host.strings, ", guards ", f.host.guards, ", hits ", f.host.hits);
             CHECK(share >= 0.35);
-            CHECK(share <= 0.60);
+            CHECK(f.host.attackTime <= 0.60 * f.leadAttack + 3 * 2.0 + 1e-6);
             const int atIt = partnerAims ? 3 : 0;
             CHECK(f.brain.defenceDraws() == static_cast<std::uint32_t>(atIt));
             CHECK(f.host.guards + f.host.hits == atIt);
             CHECK(f.host.strings > 10);
-            CHECK(f.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(f.host.strings));
+            CHECK(f.brain.rhythmDraws() ==
+                  2u * static_cast<std::uint32_t>(f.host.strings + (f.brain.drawnAhead() ? 1 : 0)));
         }
       }
     }
 }
 
-TEST_CASE("partner brain: the lead 1.0 s or more without landing a blow doubles the pause it is in, to its end") {
-    const double dt = 0.05;
-    for (const float since : {0.f, 0.99f, 1.0f, 3.f, kNaN, std::numeric_limits<float>::infinity()}) {
-        CAPTURE(since);
-        Scene s(11);
-        s.in.pos = {0.f, 1.5f};
-        REQUIRE(s.step(dt).newString);
-        const double drawn = s.b.lastPause();
-        s.in.doing = PartnerDoing::Attacking;
-        s.step(dt);
-        s.in.doing = PartnerDoing::Idle;
-        s.in.leadSinceBlow = since;
-        double paused = 0.0;
-        while (s.step(dt).why == PartnerWhy::Pause) {
-            paused += dt;
-            REQUIRE(paused < 10.0);
+TEST_CASE("partner brain: rule 2's budget holds in every 20 s window: dummy, windups, and windups every 4 s and 2 s at the lead") {
+    struct Case {
+        const char* name;
+        bool windups;
+        bool partnerAims;
+        double period;
+    };
+    const Case cases[] = {
+        {"dummy", false, true, 5.0},         {"windups", true, true, 5.0}, {"windups at the lead", true, false, 5.0},
+        {"every 4 s at the lead", true, false, 4.0}, {"every 2 s at the lead", true, false, 2.0},
+    };
+    for (const Case& c : cases) {
+        for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+            for (const std::uint32_t seed : {1u, 42u, 2026u, 7u, 99u}) {
+                CAPTURE(c.name);
+                CAPTURE(static_cast<int>(order));
+                CAPTURE(seed);
+                Fight f;
+                f.partnerAims = c.partnerAims;
+                f.period = c.period;
+                REQUIRE(f.run(1.0 / 60.0, order, seed, c.windups));
+                const double worst = worstExcess(f.partnerStep, f.leadStep, 1200);
+                MESSAGE(std::string(c.name), ": partner ", f.host.attackTime, " s, lead ", f.leadAttack, " s, worst window ", worst);
+                CHECK(worst <= 1e-3);
+                CHECK(f.host.strings > 5); // it still fights
+            }
         }
-        const double want = std::isfinite(since) && since >= 1.f ? 2.0 * drawn : drawn;
-        CHECK(paused >= want - dt - 1e-6);
-        CHECK(paused <= want + dt + 1e-6);
-        CHECK(s.b.stringing()); // the step that ends it starts the next string
     }
-    // The lead idle on one step mid-pause, then landing again: the pause still runs to 2 x its draw; the next pause
-    // starts at its own draw.
-    Scene s(11);
+    // At half the step, the same.
+    Fight h;
+    h.period = 2.0;
+    h.partnerAims = false;
+    REQUIRE(h.run(1.0 / 120.0, PartnerOrder::Spread, 42, true));
+    CHECK(worstExcess(h.partnerStep, h.leadStep, 2400) <= 1e-3);
+}
+
+TEST_CASE("partner brain: a lead who never attacks gives the partner at most 2.0 s of attack per 20 s") {
+    for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+        for (const std::uint32_t seed : {1u, 42u, 2026u}) {
+            CAPTURE(static_cast<int>(order));
+            CAPTURE(seed);
+            Fight f;
+            f.leadFights = false;
+            REQUIRE(f.run(1.0 / 60.0, order, seed, false));
+            CHECK(f.leadAttack == 0.0);
+            CHECK(worstExcess(f.partnerStep, f.leadStep, 1200, 0.6, 2.0) <= 1e-3);
+            CHECK(f.host.attackTime >= 3.0); // 60 s: it attacks in each window, a string at a time
+            bool held = false;
+            for (const PartnerIntent& it : f.intents)
+                if (it.why == PartnerWhy::Budget) {
+                    held = true;
+                    CHECK(it.act == PartnerAct::Wait);
+                    CHECK(it.enemy == 0);
+                }
+            CHECK(held);
+        }
+    }
+    // A host that never says (leadAttacking left false) is that lead.
+    Scene s(5, PartnerTuning{}, true);
+    s.in = PartnerInput{};
     s.in.pos = {0.f, 1.5f};
-    REQUIRE(s.step(dt).newString);
-    const double drawn = s.b.lastPause();
-    s.in.doing = PartnerDoing::Attacking;
-    s.step(dt);
-    s.in.doing = PartnerDoing::Idle;
-    REQUIRE(s.step(dt).why == PartnerWhy::Pause);
-    CHECK_FALSE(s.b.stretched());
-    s.in.leadSinceBlow = 1.f;
-    REQUIRE(s.step(dt).why == PartnerWhy::Pause);
-    CHECK(s.b.stretched());
-    s.in.leadSinceBlow = 0.f;
-    double paused = 2 * dt;
-    while (s.step(dt).why == PartnerWhy::Pause) {
-        paused += dt;
-        REQUIRE(paused < 10.0);
+    double attack = 0.0;
+    for (int k = 0; k < 1200; ++k) {
+        const PartnerIntent& it = s.step(1.0 / 60.0);
+        s.in.doing = it.act == PartnerAct::Attack ? PartnerDoing::Attacking : PartnerDoing::Idle;
+        if (it.act == PartnerAct::Attack) attack += 1.0 / 60.0;
     }
-    CHECK(paused >= 2.0 * drawn - dt - 1e-6);
-    CHECK(paused <= 2.0 * drawn + dt + 1e-6);
-    REQUIRE(s.b.stringing());
-    const double next = s.b.lastPause();
-    s.in.doing = PartnerDoing::Attacking;
-    s.step(dt);
-    s.in.doing = PartnerDoing::Idle;
-    paused = 0.0;
-    while (s.step(dt).why == PartnerWhy::Pause) {
-        paused += dt;
-        REQUIRE(paused < 10.0);
+    CHECK(attack <= 2.0 + 1e-6);
+    CHECK(attack >= 1.0);
+}
+
+TEST_CASE("partner brain: the staggered rule (strings without pauses) is still bounded by the budget") {
+    for (const bool leadFights : {true, false}) {
+        for (const std::uint32_t seed : {1u, 42u, 2026u}) {
+            CAPTURE(leadFights);
+            CAPTURE(seed);
+            Fight f;
+            f.staggered = true;
+            f.leadFights = leadFights;
+            REQUIRE(f.run(1.0 / 60.0, PartnerOrder::Spread, seed, false));
+            const double worst = worstExcess(f.partnerStep, f.leadStep, 1200);
+            MESSAGE("staggered, lead fights ", leadFights, ": partner ", f.host.attackTime, " s, worst ", worst);
+            CHECK(worst <= 1e-3);
+            bool held = false, paused = false;
+            for (const PartnerIntent& it : f.intents) {
+                held = held || it.why == PartnerWhy::Budget;
+                paused = paused || it.why == PartnerWhy::Pause;
+                if (it.act == PartnerAct::Attack) CHECK(it.punish);
+            }
+            CHECK(held);
+            CHECK_FALSE(paused); // rule 6 still: no pause on a staggered target
+            if (leadFights) CHECK(f.host.attackTime > 0.5 * 0.6 * f.leadAttack);
+        }
     }
-    CHECK(paused <= next + dt + 1e-6);
-    // A stagger still cuts a stretched pause (rule 6).
-    Scene g(11);
-    g.in.pos = {0.f, 1.5f};
-    REQUIRE(g.step(dt).newString);
-    g.in.doing = PartnerDoing::Attacking;
-    g.step(dt);
-    g.in.doing = PartnerDoing::Idle;
-    g.in.leadSinceBlow = 3.f;
-    REQUIRE(g.step(dt).why == PartnerWhy::Pause);
-    REQUIRE(g.b.stretched());
-    g.e[0].state = V::State::Staggered;
-    CHECK(g.step(dt).newString);
-    // It only stretches pauses: a string is not cut, and a Ready partner starts as before.
-    Scene r(11);
-    r.in.pos = {0.f, 1.5f};
-    r.in.leadSinceBlow = 5.f;
-    CHECK(r.step(dt).newString);
-    r.in.doing = PartnerDoing::Attacking;
-    CHECK(r.step(dt).why == PartnerWhy::String);
+}
+
+TEST_CASE("partner brain: held by the budget it waits on its target, still guards, and starts the drawn string once it fits") {
+    PartnerTuning t;
+    t.guardChance = 1.f;
+    Scene s(5, t, true);
+    s.in.leadAttacking = false;
+    s.in.pos = {0.f, 1.5f};
+    const double dt = 0.05;
+    double now = 0.0, spent = 0.0;
+    const auto step = [&]() -> const PartnerIntent& {
+        const PartnerIntent& it = s.step(dt);
+        now += dt;
+        if (it.act == PartnerAct::Attack) spent += dt;
+        return it;
+    };
+    REQUIRE(step().newString);
+    // The string runs on the fallback clock (the host never reports Attacking), then its pause.
+    while (s.b.stringing() || s.b.pausing()) {
+        step();
+        REQUIRE(now < 6.0);
+    }
+    const double first = spent;
+    CHECK(first <= 2.0 + 1e-6);
+    // Ready, in reach, no windup: held.
+    const PartnerIntent& held = step();
+    REQUIRE(held.why == PartnerWhy::Budget);
+    CHECK(held.act == PartnerAct::Wait);
+    CHECK(held.enemy == 0);
+    CHECK(s.b.drawnAhead());
+    const int blows = s.b.lastBlows();
+    const std::uint32_t draws = s.b.rhythmDraws();
+    CHECK(draws == 4u);
+    CHECK_FALSE(s.b.budgetFits(blows * 0.65));
+    // A windup at it while held: it guards, then holds again.
+    s.e[0].state = V::State::WindingUp;
+    s.e[0].aim = V::Aim::Partner;
+    s.e[0].windupLeft = 0.8f;
+    CHECK(step().act == PartnerAct::Guard);
+    for (int k = 0; k < 15; ++k) {
+        s.e[0].windupLeft = std::max(0.f, s.e[0].windupLeft - static_cast<float>(dt));
+        CHECK(step().act == PartnerAct::Guard);
+    }
+    s.e[0].state = V::State::Idle;
+    s.e[0].aim = V::Aim::None;
+    for (int k = 0; k < 6; ++k) CHECK(step().act == PartnerAct::Guard); // guardHold 0.3 s
+    CHECK(step().why == PartnerWhy::Budget);
+    // It starts as soon as the first string has slid far enough out: at 18 s + its length, its draws already made.
+    double startedAt = -1.0;
+    while (startedAt < 0.0) {
+        const PartnerIntent& it = step();
+        if (it.act == PartnerAct::Attack) {
+            CHECK(it.newString);
+            CHECK(it.blows == blows);
+            startedAt = now - dt;
+        } else {
+            CHECK(it.why == PartnerWhy::Budget);
+        }
+        REQUIRE(now < 30.0);
+    }
+    CHECK(s.b.rhythmDraws() == draws);
+    CHECK_FALSE(s.b.drawnAhead());
+    CHECK(startedAt >= 18.0 + first - 1e-6);
+    CHECK(startedAt <= 18.0 + first + 0.2);
 }
 
 TEST_CASE("partner brain: while it cannot act it waits, ends a string, and still draws for a windup at it") {
@@ -1049,7 +1165,8 @@ TEST_CASE("partner brain: the importer refuses each field just past either bound
         {"blowSeconds", "0.09", "2.01"},    {"pauseMin", "-0.01", "10.01"},    {"pauseMax", "-0.01", "10.01"},
         {"guardWarning", "-0.01", "2.01"},  {"guardChance", "-0.01", "1.01"},  {"guardHold", "-0.01", "2.01"},
         {"downSeconds", "0.99", "600.01"},  {"riseHealth", "0.009", "1.01"},   {"blowCapShare", "-0.01", "1.01"},
-        {"overScale", "-0.01", "1.01"},     {"leadIdleSeconds", "0.09", "10.01"}, {"idlePauseScale", "0.99", "10.01"},
+        {"overScale", "-0.01", "1.01"},     {"budgetWindowSeconds", "4.99", "30.01"}, {"budgetShare", "-0.01", "1.01"},
+        {"budgetAllowanceSeconds", "-0.01", "10.01"},
     };
     const PartnerTuning d;
     PartnerTuning t;
@@ -1072,9 +1189,10 @@ TEST_CASE("partner brain: the importer refuses each field just past either bound
              R"({"version":1,"downSeconds":600})",    R"({"version":1,"riseHealth":0.01})",
              R"({"version":1,"riseHealth":1})",       R"({"version":1,"blowCapShare":0})",
              R"({"version":1,"blowCapShare":1})",     R"({"version":1,"overScale":0})",
-             R"({"version":1,"overScale":1})",        R"({"version":1,"leadIdleSeconds":0.1})",
-             R"({"version":1,"leadIdleSeconds":10})", R"({"version":1,"idlePauseScale":1})",
-             R"({"version":1,"idlePauseScale":10})",  R"({"version":1,"standoffMeters":0})",
+             R"({"version":1,"overScale":1})",        R"({"version":1,"budgetWindowSeconds":5})",
+             R"({"version":1,"budgetWindowSeconds":30})", R"({"version":1,"budgetShare":0})",
+             R"({"version":1,"budgetShare":1})",      R"({"version":1,"budgetAllowanceSeconds":0})",
+             R"({"version":1,"budgetAllowanceSeconds":10})", R"({"version":1,"standoffMeters":0})",
              R"({"version":1,"blowSeconds":0.1})",    R"({"version":1,"blowSeconds":2})",
              R"({"version":1,"leashMeters":10})",     R"({"version":1,"reachMeters":4})",
          }) {
@@ -1085,12 +1203,12 @@ TEST_CASE("partner brain: the importer refuses each field just past either bound
     for (const char* blank : {"", "   ", "\n"}) {
         CAPTURE(blank);
         t.leashMeters = 9.f;
-        t.idlePauseScale = 5.f;
+        t.budgetShare = 0.3f;
         err.clear();
         CHECK_FALSE(importPartnerBrain(blank, t, &err));
         CHECK_FALSE(err.empty());
         CHECK(t.leashMeters == d.leashMeters);
-        CHECK(t.idlePauseScale == d.idlePauseScale);
+        CHECK(t.budgetShare == d.budgetShare);
     }
 }
 
