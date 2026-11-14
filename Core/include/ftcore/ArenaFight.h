@@ -701,6 +701,11 @@ struct ArenaInput {
     float attackSpeed = 0.f;
     float attackTurn = 0.f;
     bool takeHalf = false;      // take half (ArenaFight::setAlly): the next blow to land on the ally within the window
+    // The host's scale on the hp every enemy blow takes from the player this tick (a gift's guard: 0.25): a hit's hp,
+    // a guard's chip and the player's half of a take half, after the blow hook and the Lone taken, rounded. Load
+    // stores (a parry, a block, take half) read the blow's own damage. 1: as without it. NaN or below 0 count as 1;
+    // above 10 as 10. Never on hostHurt.
+    float takenScale = 1.f;
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -1019,6 +1024,9 @@ public:
     // arena.json within 120 s of fight time, and with no input every fight must be lost within 120 s
     // (the tests tick at a fixed 1/60 s and move the bodies with arenaStep).
     FTCORE_API ArenaInput autopilot() const;
+    // As autopilot(), with the heal the host's own (a gift slot's Heal): it heals by the same rule only while
+    // hostHealReady, whatever the fight's heal charges say.
+    FTCORE_API ArenaInput autopilot(bool hostHealReady) const;
 
     // The standing enemy a pitched shot from the player's place (as of the last tick) along `dir` (unit, on the ground)
     // at `pitch` would meet first, by the rule ArenaInput::aimPitched gives; kArenaNobody for none or a kit without a
@@ -1167,6 +1175,15 @@ public:
     // fight's own hook is not called. Inside the call, tick, begin and restart do nothing, as inside the blow hook.
     // False (nothing) when vetoed, scaled to 0, or as hostBlow.
     FTCORE_API bool ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move, ArenaBlowHook hook, void* user);
+    // The host's own change to the player's hp, outside any blow (a gift's heal, a hallucination's price). hostHeal
+    // adds min(amount, max hp - hp) and reports Healed (source kArenaNobody, on kArenaPlayer, amount = what it added).
+    // hostHurt takes min(amount, hp - 1), a price and never a kill, unscaled (no Lone taken, no takenScale), and
+    // reports HostHit (source kArenaNobody, on kArenaPlayer, amount = what it took; never a Hit, so a host counting
+    // the blows the player took does not count it), counted in damageTaken. No hitstun, poise, hit pause or hook
+    // call. Both change hp() at once and return what changed; the event opens the next tick's output (at once inside
+    // the blow hook). 0, and nothing, for amount <= 0, full hp (heal) or 1 hp (hurt), or outside Fighting.
+    FTCORE_API int hostHeal(int amount);
+    FTCORE_API int hostHurt(int amount);
 
     // ---- carrying (Load by chairs) ----
     // Every setter here is kept across begin() and restart(), as the blow hook is; a fight that never calls them
@@ -1302,6 +1319,8 @@ private:
         float takeHalfPress = -1.0e9f;      // fight time of the last unused take half press that opened a window
         float lastTakeHalfPress = -1.0e9f;  // fight time of the last take half press (every press counts)
         int spentLoad = 0;                  // Load spendLoad removed since the last tick, not yet reported
+        int hostHealed = 0;                 // hp hostHeal added since the last tick, not yet reported ...
+        int hostHurt = 0;                   // ... and hp hostHurt took
         bool capFilled = false;             // setLoadCap overloaded the gauge since the last tick, not yet reported
         std::uint8_t rounds = 0;            // the cylinder's loaded rounds
         float reloadLeft = 0.f;             // > 0: a reload is running, this many seconds left
@@ -1406,6 +1425,7 @@ private:
     Vec2 allyPos_;
     ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
     bool lone_ = false;                     // setLone (kept across begin and restart)
+    float takenScale_ = 1.f;                // this tick's ArenaInput::takenScale, read as it says
     LoneTuning loneTuning_{};
     float loneBlowCap_ = 0.f;               // setLone's blowCap (0: none)
     // The cap in force: the Lone tuning's while Lone, else setLoadCap's.

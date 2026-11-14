@@ -692,6 +692,22 @@ void FFTStoneBearerHost::OnAttackStarted(std::uint8_t Move, float StateTime, con
 	}
 }
 
+void FFTStoneBearerHost::OpenWeakPointFor(float Seconds)
+{
+	if (IsActive())
+	{
+		Absorb(Boss.openCrit(static_cast<double>(FightPtr->time()), static_cast<double>(Seconds)));
+	}
+}
+
+void FFTStoneBearerHost::SetWeakPointShut(bool bShut)
+{
+	if (IsActive() && Boss.run().critShut() != bShut)
+	{
+		Absorb(Boss.shutCrit(bShut, static_cast<double>(FightPtr->time())));
+	}
+}
+
 void FFTStoneBearerHost::Absorb(const ftcore::ArenaBossEvents& Events)
 {
 	ftcore::ArenaFight& Fight = *FightPtr;

@@ -152,6 +152,11 @@ public:
 	ftcore::CalledZone CalledSideOf(std::uint8_t Move) const;
 	// The weak points are open (from CritOpened until CritClosed).
 	bool CritOpen() const { return IsActive() && Boss.run().crit().isOpen(static_cast<double>(FightPtr->time())); }
+	// The host's own opening (a refusal's): the weak points open now for Seconds (a longer one open is kept), as the
+	// run's openCrit, held Open like any opening; nothing while shut.
+	void OpenWeakPointFor(float Seconds);
+	// Shut: nothing opens the weak points and an open window closes now (the run's shutCrit). Begin unshuts.
+	void SetWeakPointShut(bool bShut);
 
 	// A move's clip contact (ArenaBossMove::contact*) is its strike point and reach when it lies outside the body
 	// (planar distance from the root above BodyRadius) and the move is neither a lane nor a tile move.

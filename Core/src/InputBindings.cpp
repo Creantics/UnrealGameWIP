@@ -29,7 +29,8 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::Aim, "aim", InputContext::Foot, true, "RightMouseButton", "Gamepad_LeftTrigger"},
     {InputAction::Guard, "guard", InputContext::Foot, true, "LeftControl", "Gamepad_LeftShoulder"},
     {InputAction::Read, "read", InputContext::Foot, true, "Q", "Gamepad_RightShoulder"},
-    {InputAction::Gift, "gift", InputContext::Foot, false, "G", "Gamepad_DPad_Up"},
+    // The lead's own heal (its id stays "gift" for saved bindings; the third slot's gifts are GiftHeal and GiftGuard).
+    {InputAction::Gift, "gift", InputContext::Foot, false, "H", "Gamepad_DPad_Up"},
     {InputAction::Count, "count", InputContext::Foot, false, "F", "Gamepad_FaceButton_Top"},
     {InputAction::Release, "release", InputContext::Foot, false, "R", "Gamepad_DPad_Down"},
     {InputAction::Roll, "roll", InputContext::Foot, false, "LeftAlt", "Gamepad_FaceButton_Right"},
@@ -54,6 +55,10 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::LineNext, "line_next", InputContext::ReadHeld, false, "S", "Gamepad_LeftStick_Down"},
     // Pad: no free Foot button; take half is Guard held plus Interact (route "guard_interact").
     {InputAction::TakeHalf, "take_half", InputContext::Foot, false, "T", ""},
+    // Pad: no free Foot button either; Guard held plus the heal's button (route "guard_heal") and plus Crouch's,
+    // which a fight never reads (route "guard_crouch").
+    {InputAction::GiftHeal, "gift_heal", InputContext::Foot, false, "G", ""},
+    {InputAction::GiftGuard, "gift_guard", InputContext::Foot, false, "Y", ""},
 }};
 
 const ActionRow& row(InputAction a) { return kRows[static_cast<std::size_t>(a) % kInputActionCount]; }
@@ -166,6 +171,8 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     case InputAction::TargetNext: return pad ? "right_stick_flick" : "mouse_flick";
     case InputAction::Party: return "map_hold";
     case InputAction::TakeHalf: return pad ? "guard_interact" : nullptr;
+    case InputAction::GiftHeal: return pad ? "guard_heal" : nullptr;
+    case InputAction::GiftGuard: return pad ? "guard_crouch" : nullptr;
     default: break;
     }
     return nullptr;
@@ -364,8 +371,9 @@ constexpr InputHintEntry kFieldHint[] = {
 
 // What the host reads but no controls line names, each on purpose (ctest hints_read checks both ways): the map key
 // shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares, and take half
-// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf};
+// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was; the
+// two gift keys are the Gift key's own picks, which the line's Gift entry covers.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::GiftHeal, A::GiftGuard};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {
@@ -430,6 +438,8 @@ std::string_view inputRouteLabel(std::string_view route) {
     if (route == "mouse_flick") return "Mouse flick";
     if (route == "right_stick_flick") return "RS flick";
     if (route == "guard_interact") return "Guard+Interact";
+    if (route == "guard_heal") return "Guard+Heal";
+    if (route == "guard_crouch") return "Guard+Crouch";
     return std::string_view();
 }
 

@@ -180,7 +180,7 @@ public:
 	void SetBladeShown(bool bShown);
 	// A skinned figure's body glow (the boss break's tell): Glow of warm white added to the Emissive of each of its
 	// materials that has one (the shared character masters, M_FTCharacter and M_FTCharacterTex: emissive = its texture
-	// x Emissive x EmissiveStrength); 0 puts each back. Materials are made dynamic on the first glow, once a mesh.
+	// x Emissive x EmissiveStrength); 0 puts each back. SetupSkinned makes those materials dynamic (MakePulseMaterials).
 	void SetBodyPulse(float Glow);
 
 private:
@@ -258,7 +258,7 @@ private:
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> PulseMaterials;
 	TArray<FLinearColor> PulseBase;
 	float PulseGlow = 0.f;
-	bool bPulseMade = false;
+	void MakePulseMaterials();
 
 	FLinearColor BaseColor = FLinearColor::White;
 	float Height = 180.f; // cm
