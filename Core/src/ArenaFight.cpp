@@ -1775,7 +1775,12 @@ struct ArenaFightImpl {
             return false;
         }
         if (!k.boss && ((!foe.token && tokensBesides(i) >= def.attackers) || !inWindupArc(i))) {
-            stepBack(i);
+            const StepPlan plan = planStep(i);
+            if (plan.moves < kArenaStepBackNone) {
+                ++stats.stepBacksBlocked; // no room any way: no step, the blow lands
+                return false;
+            }
+            stepBack(i, plan);
             return true;
         }
         const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
@@ -1804,7 +1809,47 @@ struct ArenaFightImpl {
     // once); its count is spent and it walks again after. Only as far as the ring lets it: with less than
     // kArenaStepBackRoom behind, it steps to the side with more room instead, if that has more (SteppedBack's move
     // says which: 0 back, 1 its left, 2 its right, as it faces the lead).
-    void stepBack(std::size_t i) {
+    // Where enemy i's step would go, from where it stands now: the unit way, the distance it tries over
+    // kArenaStepBackTime, how far it gets (the ring's room) and SteppedBack's move.
+    struct StepPlan {
+        Vec2 way{-1.f, 0.f};
+        float distance = 0.f;
+        float moves = 0.f;
+        std::uint8_t wayId = 0;
+    };
+    StepPlan planStep(std::size_t i) const {
+        const Enemy& foe = foes[i];
+        StepPlan p;
+        const float radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
+        const float clear = leadReach() + radius + kArenaStepBackClear;
+        const float want = std::max(kArenaStepBackMin, clear - arenaDistance(pl.pos, foe.pos)); // the blow seen to miss
+        // The ring keeps the body as the velocity cut does: its own bodyRadius in from the edge.
+        const float body = def.enemies[i].bodyRadius;
+        const Vec2 toLead = arenaUnit(arenaSub(pl.pos, foe.pos), foe.facing);
+        const Vec2 back{-toLead.x, -toLead.y};
+        p.way = back;
+        p.distance = std::min(want, arenaRoomAlong(fight.ring_, foe.pos, back, body)); // it stops at the edge
+        p.moves = p.distance;
+        if (p.distance < kArenaStepBackRoom) {
+            // Square to the way to the lead; y is to the right on the ground, so its right is (-y, x) of that way.
+            const Vec2 left{toLead.y, -toLead.x};
+            const Vec2 right{-toLead.y, toLead.x};
+            const float leftRoom = arenaRoomSliding(fight.ring_, foe.pos, left, want, body);
+            const float rightRoom = arenaRoomSliding(fight.ring_, foe.pos, right, want, body);
+            const bool toRight = rightRoom > leftRoom; // a tie goes left
+            const float side = std::min(want, toRight ? rightRoom : leftRoom);
+            if (side > p.distance) {
+                p.wayId = toRight ? 2 : 1;
+                p.way = toRight ? right : left;
+                // It tries the whole step at the same pace; the ring's slide leaves it `side` from where it was.
+                p.distance = want;
+                p.moves = side;
+            }
+        }
+        return p;
+    }
+
+    void stepBack(std::size_t i, const StepPlan& plan) {
         Enemy& foe = foes[i];
         // A move cut short gives its token back, and a read move brings its counter while it can still be hurt.
         interrupt(i, ArenaBrain::Approach);
@@ -1813,35 +1858,11 @@ struct ArenaFightImpl {
             return;
         }
         foe.brain = ArenaBrain::StepBack;
-        const float radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
-        const float clear = leadReach() + radius + kArenaStepBackClear;
-        const float want = std::max(kArenaStepBackMin, clear - arenaDistance(pl.pos, foe.pos)); // the blow seen to miss
-        // The ring keeps the body as the velocity cut does: its own bodyRadius in from the edge.
-        const float body = def.enemies[i].bodyRadius;
-        const Vec2 toLead = arenaUnit(arenaSub(pl.pos, foe.pos), foe.facing);
-        const Vec2 back{-toLead.x, -toLead.y};
-        std::uint8_t way = 0;
-        foe.stepWay = back;
-        foe.stepDistance = std::min(want, arenaRoomAlong(fight.ring_, foe.pos, back, body)); // it stops at the edge
-        float moves = foe.stepDistance;
-        if (foe.stepDistance < kArenaStepBackRoom) {
-            // Square to the way to the lead; y is to the right on the ground, so its right is (-y, x) of that way.
-            const Vec2 left{toLead.y, -toLead.x};
-            const Vec2 right{-toLead.y, toLead.x};
-            const float leftRoom = arenaRoomSliding(fight.ring_, foe.pos, left, want, body);
-            const float rightRoom = arenaRoomSliding(fight.ring_, foe.pos, right, want, body);
-            const bool toRight = rightRoom > leftRoom; // a tie goes left
-            const float side = std::min(want, toRight ? rightRoom : leftRoom);
-            if (side > foe.stepDistance) {
-                way = toRight ? 2 : 1;
-                foe.stepWay = toRight ? right : left;
-                // It tries the whole step at the same pace; the ring's slide leaves it `side` from where it was.
-                foe.stepDistance = want;
-                moves = side;
-            }
-        }
+        foe.stepWay = plan.way;
+        foe.stepDistance = plan.distance;
         ++stats.stepBacks;
-        emit(ArenaEventType::SteppedBack, id(i), kArenaPlayer, way, static_cast<int>(std::lround(moves * 100.f)), foe.pos);
+        emit(ArenaEventType::SteppedBack, id(i), kArenaPlayer, plan.wayId, static_cast<int>(std::lround(plan.moves * 100.f)),
+             foe.pos);
     }
 
     // Enemy i where the player can see a windup begin: within kArenaWindupArc of the lead's facing, or within the
@@ -3445,9 +3466,9 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.jumpCheck = verdict(stats.jumps > 0, stats.landings > 0);
     if (stats.breakOuts > 0)
         c.breakOutCheck = ArenaCheck::Pass;
-    else if (stats.breakDue > stats.breakBarred + stats.stepBacks)
+    else if (stats.breakDue > stats.breakBarred + stats.stepBacks + stats.stepBacksBlocked)
         c.breakOutCheck = ArenaCheck::Fail; // due, the move free, and still none
-    else if (stats.breakBarred > 0 || stats.stepBacks > 0 ||
+    else if (stats.breakBarred > 0 || stats.stepBacks > 0 || stats.stepBacksBlocked > 0 ||
              (stats.breakUpright > 0 && stats.breakVetoed == stats.breakUpright))
         c.breakOutCheck = ArenaCheck::Barred;
     else if (stats.breakUpright > 0 && stats.breakRunBest == 0)

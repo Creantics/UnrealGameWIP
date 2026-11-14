@@ -188,7 +188,9 @@
 //   blow is seen to miss, no blow of the player's side landing on it, then walks again with no armour and its
 //   count spent. The ring has the last word: straight back it goes only as far as the ring lets its body, and with
 //   less than kArenaStepBackRoom there it steps to the side (square to the way to the lead) with more room instead,
-//   as far as that side lets it (sliding along the edge) up to the same distance, if that is more than behind. So one sweeping string sets off at most the free tokens' break-outs. A stagger, Open or Down
+//   as far as that side lets it (sliding along the edge) up to the same distance, if that is more than behind. With
+//   less than kArenaStepBackNone of room every way it does not step at all: no StepBack, no event, the count spent
+//   and the blow landing as on any upright enemy (its flinch). So one sweeping string sets off at most the free tokens' break-outs. A stagger, Open or Down
 //   never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the count and the
 //   break-out too. Bosses never have a breakAt (Boss break).
 // * Boss break. A boss kind (arena.json's `boss`) has, beside its poise, a break value with no HUD of its own; it
@@ -340,6 +342,7 @@ inline constexpr float kArenaStepBackTime = 0.5f;
 inline constexpr float kArenaStepBackClear = 0.5f;
 inline constexpr float kArenaStepBackMin = 1.5f;
 inline constexpr float kArenaStepBackRoom = 0.75f;
+inline constexpr float kArenaStepBackNone = 0.05f; // less room than this every way: no step at all
 // One handed an attack token by a holder out of sight keeps it at least this long (see Enemies).
 inline constexpr float kArenaTokenHandHold = 1.0f;
 // No blow from where the player can't see it (see Enemies): a regular token holder begins its string only within
@@ -975,6 +978,7 @@ struct ArenaStats {
     int airLights = 0;     // air lights started
     int airEvades = 0;     // enemy moves that passed under a jump (also in evades)
     int tokenHandOvers = 0; // attack tokens a holder out of sight handed to a waiter in sight
+    int stepBacksBlocked = 0; // breakDue that would have stepped back with no room any way: the blow landed instead
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
