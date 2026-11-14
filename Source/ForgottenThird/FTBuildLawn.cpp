@@ -149,9 +149,14 @@ UStaticMesh* SheetMesh(UPackage* Package, const FString& Name, const ftcore::Law
 	Model.BuildSettings.bRecomputeNormals = true;
 	Model.BuildSettings.bRecomputeTangents = true;
 	Model.BuildSettings.bGenerateLightmapUVs = false;
-	Mesh->bGenerateMeshDistanceField = true; // else 0 Lumen cards, as the massing meshes
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
+	// A new mesh keeps an empty section map through its build, and the card task then sees no sections: 0 Lumen
+	// cards (FTLumenCardsReport -Fresh). One entry per material slot.
+	for (int32 S = 0; S < Mesh->GetStaticMaterials().Num(); ++S)
+	{
+		Mesh->GetSectionInfoMap().Set(0, S, FMeshSectionInfo(S));
+	}
 	Mesh->CreateBodySetup();
 	Mesh->GetBodySetup()->CollisionTraceFlag = CTF_UseComplexAsSimple;
 	Mesh->Build(true);

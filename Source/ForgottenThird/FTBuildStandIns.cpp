@@ -150,9 +150,14 @@ UStaticMesh* BuiltMesh(UPackage* Package, const FString& Name, const ftcore::Sta
 	Model.BuildSettings.bRecomputeNormals = false;
 	Model.BuildSettings.bRecomputeTangents = true;
 	Model.BuildSettings.bGenerateLightmapUVs = false;
-	Mesh->bGenerateMeshDistanceField = true; // else 0 Lumen cards, as the massing meshes
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
+	// A new mesh keeps an empty section map through its build, and the card task then sees no sections: 0 Lumen
+	// cards (FTLumenCardsReport -Fresh). One entry per material slot.
+	for (int32 S = 0; S < Mesh->GetStaticMaterials().Num(); ++S)
+	{
+		Mesh->GetSectionInfoMap().Set(0, S, FMeshSectionInfo(S));
+	}
 	Mesh->CreateBodySetup(); // as the sloped boxes' meshes; these meshes' cell groups take no collision
 	Mesh->Build(true);
 	Mesh->PostEditChange();

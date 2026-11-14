@@ -956,10 +956,14 @@ UStaticMesh* SlopedMesh(UPackage* Package, const FString& Id, const ftcore::Mass
 	Source.BuildSettings.bRecomputeTangents = true;
 	// Lit by the shared look's dynamic lights (as the builders' cubes are), so no lightmap channel.
 	Source.BuildSettings.bGenerateLightmapUVs = false;
-	// The mesh's own DF flag on: built with it off, the card task left these meshes 0 Lumen cards (FTLumenCardsReport).
-	Mesh->bGenerateMeshDistanceField = true;
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
+	// A new mesh keeps an empty section map through its build, and the card task then sees no sections: 0 Lumen
+	// cards (FTLumenCardsReport -Fresh). One entry per material slot.
+	for (int32 S = 0; S < Mesh->GetStaticMaterials().Num(); ++S)
+	{
+		Mesh->GetSectionInfoMap().Set(0, S, FMeshSectionInfo(S));
+	}
 	Mesh->CreateBodySetup();
 	Mesh->GetBodySetup()->CollisionTraceFlag = CTF_UseComplexAsSimple;
 	Mesh->Build(true);
@@ -1044,10 +1048,14 @@ UStaticMesh* SeaBedMesh(UPackage* Package, const ftcore::MassingGround& Ground, 
 	Source.BuildSettings.bRecomputeNormals = false;
 	Source.BuildSettings.bRecomputeTangents = true;
 	Source.BuildSettings.bGenerateLightmapUVs = false;
-	// The mesh's own DF flag on: built with it off, the card task left these meshes 0 Lumen cards (FTLumenCardsReport).
-	Mesh->bGenerateMeshDistanceField = true;
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
+	// A new mesh keeps an empty section map through its build, and the card task then sees no sections: 0 Lumen
+	// cards (FTLumenCardsReport -Fresh). One entry per material slot.
+	for (int32 S = 0; S < Mesh->GetStaticMaterials().Num(); ++S)
+	{
+		Mesh->GetSectionInfoMap().Set(0, S, FMeshSectionInfo(S));
+	}
 	Mesh->Build(true);
 	Mesh->PostEditChange();
 	return Mesh;

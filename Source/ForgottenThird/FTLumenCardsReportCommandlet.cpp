@@ -343,6 +343,48 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 			*RebuildMesh->GetPathName(), *FamilyOf(*RebuildMesh), RebuildMesh->GetNumSourceModels(),
 			RebuildMesh->GetRenderData() ? RebuildMesh->GetRenderData()->LODResources.Num() : 0, bBefore, CardsBefore, bDfBefore,
 			bAsBuilt ? TEXT("as the massing builder builds (own DF flag, silent)") : TEXT("with the DF forced on"), bAfter, CardsAfter, *Bounds.GetSize().ToString(), bDfAfter);
+
+		// -Fresh: a new mesh made from the same mesh description the way the builders make theirs (NewObject,
+		// CreateMeshDescription, Commit, Build(true), PostEditChange), once as they do and once with the section map
+		// set before the build.
+		if (FParse::Param(*Params, TEXT("Fresh")) && RebuildMesh->GetMeshDescription(0))
+		{
+			for (int32 Pass = 0; Pass < 2; ++Pass)
+			{
+				const bool bSections = Pass == 1;
+				UStaticMesh* Fresh = NewObject<UStaticMesh>(GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), UStaticMesh::StaticClass(), TEXT("FTCardsFresh")));
+				Fresh->GetStaticMaterials() = RebuildMesh->GetStaticMaterials();
+				FStaticMeshSourceModel& Model = Fresh->AddSourceModel();
+				Model.BuildSettings = RebuildMesh->GetSourceModel(0).BuildSettings;
+				Fresh->bGenerateMeshDistanceField = RebuildMesh->bGenerateMeshDistanceField;
+				FMeshDescription Desc = *RebuildMesh->GetMeshDescription(0);
+				Fresh->CreateMeshDescription(0, MoveTemp(Desc));
+				Fresh->CommitMeshDescription(0);
+				const int32 SectionsBefore = Fresh->GetSectionInfoMap().GetSectionNumber(0);
+				if (bSections)
+				{
+					for (int32 S = 0; S < Fresh->GetStaticMaterials().Num(); ++S)
+					{
+						FMeshSectionInfo Info(S);
+						Fresh->GetSectionInfoMap().Set(0, S, Info);
+					}
+				}
+				Fresh->Build(true);
+				Fresh->PostEditChange();
+				FAssetCompilingManager::Get().FinishAllCompilation();
+				if (GCardRepresentationAsyncQueue)
+				{
+					GCardRepresentationAsyncQueue->BlockUntilAllBuildsComplete();
+				}
+				bool bFreshCards = false, bFreshDf = false;
+				int32 FreshCards = 0;
+				ReadMesh(*Fresh, bFreshCards, bFreshDf, &FreshCards, nullptr);
+				UE_LOG(LogForgottenThird, Display,
+					TEXT("FTLumenCardsReport fresh %s: section map %d before the build, %d after; card data %d (%d cards), DF %d."),
+					bSections ? TEXT("with the section map set first") : TEXT("as the builders make it"), SectionsBefore,
+					Fresh->GetSectionInfoMap().GetSectionNumber(0), bFreshCards, FreshCards, bFreshDf);
+			}
+		}
 	}
 	return 0;
 #else
