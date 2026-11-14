@@ -406,9 +406,11 @@ TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if th
         CHECK(s.retry().at == CheckpointAt::Phase);
         CHECK(s.activeLead() == kLeadA);
         CHECK(s.switchRequested() == kNoFighter);
-        const FightTick& t = s.tick(kFrame);
+        const FightTick& t = s.tick(kFrame); // refused again, as the close would
         CHECK(t.switched == kNoFighter);
-        CHECK(t.switchRefused == kNoFighter);
+        CHECK(t.switchRefused == kLeadB);
+        CHECK(t.switchRefusal == LeadSwitch::Down);
+        CHECK(s.tick(kFrame).switchRefused == kNoFighter); // once
     }
 }
 
@@ -1976,4 +1978,73 @@ TEST_CASE("fight fate: a checkpoint holds the leads in the fight and a waiting j
         CHECK(s.tick(kFrame).joined == kLeadB); // reported once, on the first tick after the retry
         CHECK(s.tick(kFrame).joined == kNoFighter);
     }
+}
+
+TEST_CASE("fight fate: a retry's carried switch refused Cooldown or Lone is reported on the first tick, then dropped") {
+    {
+        FightSession s; // the default 1 s cooldown
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.tick(kFrame).switched == kLeadB);
+        REQUIRE(s.setActiveLead(kLeadA));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().switchRequested == kLeadA);
+        const FightTick& r = s.tick(kFrame);
+        CHECK(r.switchRefused == kLeadA);
+        CHECK(r.switchRefusal == LeadSwitch::Cooldown);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.activeLead() == kLeadB);
+        CHECK(s.switchRequested() == kNoFighter);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.switched == kNoFighter);
+        CHECK(t.switchRefused == kLeadA);
+        CHECK(t.switchRefusal == LeadSwitch::Cooldown);
+        const FightTick& u = s.tick(kFrame);
+        CHECK(u.switchRefused == kNoFighter);
+        CHECK(u.switchRefusal == LeadSwitch::Ok);
+        CHECK(s.activeLead() == kLeadB);
+    }
+    {
+        FightSessionDef d; // Lone: the carry stays on
+        d.loneLead = kLeadA;
+        FightSession s;
+        REQUIRE(s.begin(d, 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.tick(kFrame).switchRefusal == LeadSwitch::Lone);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.switchRefused == kLeadB);
+        CHECK(t.switchRefusal == LeadSwitch::Lone);
+        CHECK(t.loneCarryEndedBy == LoneEnd::None);
+        CHECK(s.lone());
+        CHECK(s.activeLead() == kLeadA);
+        CHECK(s.tick(kFrame).switchRefused == kNoFighter);
+    }
+}
+
+TEST_CASE("fight fate: a join while Lone leaves the carry on (switch refused Lone) until the host calls endLone") {
+    FightSession s;
+    REQUIRE(s.begin(oneLead(), 0.0).ok());
+    s.tick(kFrame);
+    REQUIRE(s.lone());
+    REQUIRE(s.joinFight(kLeadB, 0.5f));
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.joined == kLeadB);
+    CHECK(t.loneCarryEndedBy == LoneEnd::None);
+    CHECK(s.lone()); // the join never ends it
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::Lone);
+    REQUIRE(s.setActiveLead(kLeadB));
+    const FightTick& u = s.tick(kFrame);
+    CHECK(u.switchRefused == kLeadB);
+    CHECK(u.switchRefusal == LeadSwitch::Lone);
+    REQUIRE(s.endLone(LoneEnd::PartnerCalled));
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::Ok);
+    REQUIRE(s.setActiveLead(kLeadB));
+    const FightTick& v = s.tick(kFrame);
+    CHECK(v.switched == kLeadB);
+    CHECK(v.loneCarryEndedBy == LoneEnd::PartnerCalled);
+    CHECK(s.activeLead() == kLeadB);
 }
