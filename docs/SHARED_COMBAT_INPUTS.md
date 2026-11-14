@@ -333,7 +333,9 @@ the pieces.
   was taken, not that the lead switched. The last request in a step wins (an earlier one raises no event),
   and `activeLead()` moves only at the close, which is the tick: a checkpoint taken between ticks settles
   the rises and falls but leaves the switch waiting, and carries it (`FightCheckpoint::switchRequested`),
-  so a retry to it opens on that lead if it stands there. A switch to a lead who stands up in the same
+  so a retry to it opens on that lead if it stands there (the first tick after reports `tick.switched`
+  when that moves control off the checkpoint's `activeLead`). The host reads `activeLead()` after a
+  retry, never the checkpoint's field. A switch to a lead who stands up in the same
   step is honoured and one to a lead who falls in it is refused, whatever the call order (checkpoints
   included), and `tookOver` is the same either way. A request made before `begin` is applied by it.
 * **Down, takeover and defeat.** `def.inFight` names the leads in the fight (both by default; at

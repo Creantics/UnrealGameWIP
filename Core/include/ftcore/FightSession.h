@@ -75,7 +75,7 @@
 //   control), else refused (tick.switchRefused, tick.switchRefusal: Down, or Defeated on a defeat). So a switch to a
 //   lead who stands up in the same step is honoured, a switch to a lead who falls in it is refused, and tookOver is
 //   the same, whatever the call order. A checkpoint carries a switch still waiting (switchRequested), and a retry
-//   to it opens on that lead if it stands there.
+//   to it opens on that lead if it stands there, reported by tick.switched on the first tick after the retry.
 //   A lead the def marks cannotFall (per fight, per lead; false by default) never goes down in that fight: a
 //   blow that would take it to 0 or below leaves it at 1 hp (blowOnLead does the sum for the host) and raises
 //   tick.heldUp once, on the next tick. With every lead in the fight marked, health never loses the fight: what
@@ -91,10 +91,12 @@
 //   on one tick) and the latest (tick.checkpoint). setHostCheckpoint(host) fills the oldest one not written yet,
 //   so the host writes once per bit, the start first; setHostCheckpoint(host, at) names one. A checkpoint whose
 //   host part was never written says so (hostWritten false): retry() returns it as is, and its host part (an
-//   unbegun brain's save among it) is not the fight's. retry() goes back to the latest: every piece starts clean, as at a begin, at the
-//   checkpoint's clock, and then the checkpoint's fields are put back exactly. A defeat costs nothing but the
-//   attempt: the Load, the currency and the gift tally come back as the checkpoint has them. A checkpoint holds
-//   the fight's state only. A retry to the fight start unbinds the story, as a begin does (the host rolls the
+//   unbegun brain's save among it) is not the fight's. retry() goes back to the latest: every piece starts
+//   clean, as at a begin, at the checkpoint's clock, and then the checkpoint's fields are put back exactly, with
+//   one exception: a switch the checkpoint carried (switchRequested) is applied, so activeLead() may differ from
+//   the checkpoint's activeLead (the next tick reports it, tick.switched). The host reads activeLead() after a
+//   retry, never the checkpoint's field. A defeat costs nothing but the attempt: the Load, the currency and the
+//   gift tally come back as the checkpoint has them. A checkpoint holds the fight's state only. A retry to the fight start unbinds the story, as a begin does (the host rolls the
 //   step back and binds anew); a phase retry leaves the binding and the story state exactly as they are.
 //   Not in a checkpoint, by design (each starts clean at a retry, as at a begin): the count and its windows, the
 //   table, the held refusal, the session's own lock, marks, held blows and their bonuses, Load changes not yet
@@ -104,17 +106,18 @@
 //   the currency, and all of a boss the host runs itself (its hp and phase there; any other state it has, such
 //   as timers or a rotation, the host keeps beside it). The arena's hallucination state is the host fight's
 //   (ArenaFight), never the session's: the host keeps it too.
-// * stateHash(): FNV-1a over every field of the session that affects play (each piece's state, the gift slot with its
-//   cooldowns, threads and charges, places, the table, the refusal, the lock, a boss script's hp, phase, break,
+// * stateHash(): FNV-1a over every field of the session that affects play (each piece's state, the gift slot with
+//   its cooldowns, threads and charges, places, the table, the refusal, the lock, a boss script's hp, phase, break,
 //   poise, rotation and lock, held blows, pending Load changes, marks, the kept gauge, the Lone Carry and its pool,
-//   both leads' health, down marks and the step's opening marks, defeat, every due flag, and both checkpoints whole:
-//   clock, phase, written flag, active lead, lead health, down marks, the gift slot, places, the kept Load, the Lone
-//   fields, a boss script and the host's part as written). Left out: the last tick's output buffers (tick, its loads
-//   and bonuses: outputs, rebuilt every tick), the slots of the held-blow and pending-Load buffers past their counts
-//   (stale), the def (fixed from begin), the story pointer's address (only whether one is bound), the fact registry
-//   pointer (bound with the story) and the hallucination state, which is the host's (ArenaFight), not the session's,
-//   so this hash says nothing about it. Two sessions begun with the same def and with one hash do the same from
-//   there on the same calls, a retry included.
+//   both leads' health, down marks and the step's opening marks, defeat, the waiting switch request (switchReq),
+//   every due flag (the switch's results among them), and both checkpoints whole: clock, phase, written flag,
+//   active lead, the switch it carries (switchRequested), lead health, down marks, the gift slot, places, the kept
+//   Load, the Lone fields, a boss script and the host's part as written). Left out: the last tick's output buffers
+//   (tick, its loads and bonuses: outputs, rebuilt every tick), the slots of the held-blow and pending-Load buffers
+//   past their counts (stale), the def (fixed from begin), the story pointer's address (only whether one is bound),
+//   the fact registry pointer (bound with the story) and the hallucination state, which is the host's (ArenaFight),
+//   not the session's, so this hash says nothing about it. Two sessions begun with the same def and with one hash
+//   do the same from there on the same calls, a retry included.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
@@ -437,10 +440,13 @@ public:
         activeLead_ = cp.activeLead;
         leadHealth_ = cp.leadHealth;
         down_ = cp.down;
-        // A switch that was waiting: the retry opens on it, as begin does on one asked before it (no event), if
-        // that lead stands in the checkpoint; else it is dropped.
-        if (isLead(cp.switchRequested) && inFight_[cp.switchRequested] && !down_[cp.switchRequested])
+        // A switch that was waiting: the retry opens on it if that lead stands in the checkpoint (the next tick
+        // reports tick.switched when that moves control off the checkpoint's activeLead); else it is dropped.
+        if (isLead(cp.switchRequested) && inFight_[cp.switchRequested] && !down_[cp.switchRequested] &&
+            cp.switchRequested != activeLead_) {
             activeLead_ = cp.switchRequested;
+            switchedDue_ = cp.switchRequested;
+        }
         stepDown_ = cp.down; // the step opens as the checkpoint stood
         gift_ = cp.gift;
         places_ = cp.places;

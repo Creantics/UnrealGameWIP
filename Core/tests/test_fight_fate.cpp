@@ -357,10 +357,15 @@ TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if th
         REQUIRE(s.setActiveLead(kLeadA));
         s.tick(kFrame);
         REQUIRE(s.activeLead() == kLeadA);
-        CHECK(s.retry().at == CheckpointAt::FightStart);
-        CHECK(s.activeLead() == kLeadB);
+        const FightCheckpoint& cp = s.retry();
+        CHECK(cp.at == CheckpointAt::FightStart);
+        CHECK(s.activeLead() == kLeadB); // the host reads this after a retry, not cp.activeLead
         CHECK(s.switchRequested() == kNoFighter);
-        CHECK(s.tick(kFrame).switched == kNoFighter); // applied by the retry: no event
+        // The host's write took it with the switch waiting (cp.activeLead A): the retry moves control, and the
+        // first tick reports it once. The first tick's checkpoint already held B: nothing to report.
+        CHECK(cp.activeLead == (hostFirst ? kLeadA : kLeadB));
+        CHECK(s.tick(kFrame).switched == (hostFirst ? kLeadB : kNoFighter));
+        CHECK(s.tick(kFrame).switched == kNoFighter);
     }
     // Waiting at a phase checkpoint: the retry opens on it.
     {
@@ -376,6 +381,7 @@ TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if th
         s.tick(kFrame);
         CHECK(s.retry().at == CheckpointAt::Phase);
         CHECK(s.activeLead() == kLeadB);
+        CHECK(s.tick(kFrame).switched == kLeadB);
     }
     // For a lead down in the checkpoint: dropped.
     {
