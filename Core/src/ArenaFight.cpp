@@ -512,6 +512,8 @@ struct ArenaFightImpl {
             fight.phase_ = ArenaPhase::Victory;
             emit(ArenaEventType::Victory, kArenaNobody, kArenaNobody, 0, 0, pl.pos);
         }
+        // The fight's end drops a reload under way: it never completes (no Reloaded), and reloadProgress reads 0.
+        if (fight.phase_ != ArenaPhase::Fighting) pl.reloadLeft = 0.f;
         // A jump ends with any action that isn't its own (a blow, a stagger, a defeat), or with the fight.
         if ((pl.action != ArenaAction::Jump && !(pl.action == ArenaAction::Light && pl.move == kArenaAirMove)) ||
             fight.phase_ != ArenaPhase::Fighting) {

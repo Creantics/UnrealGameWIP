@@ -726,6 +726,7 @@ private:
 	// Aim assist's condition: aimed (not blending out), not locked on, a guns kit, and the crosshair on a standing body a
 	// round fired now would take (bReticleTakes).
 	bool AssistOverBody() const;
+#if !UE_BUILD_SHIPPING
 	// -ArenaAimCheck (autopilot, a guns kit): once in the fight, the camera aims at the tallest standing enemy's top
 	// (its height and hover) by ftcore::arenaLookUpPitch, the reticle is traced and one aimed shot is pressed; the
 	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done,
@@ -774,6 +775,7 @@ private:
 	// -ArenaQuitOnFinish, ends the run.
 	bool bCoverCheck = false;
 	void StepCoverCheck();
+#endif
 	// The unlocked look: the mouse and the right stick turn the view, by aim assist's share (ftcore::aimAssistTurn) while
 	// AssistOverBody (last frame's readout), by ftcore::arenaLookStep. Returns the stick's share.
 	float TurnLook(float MouseX, float MouseY, float LookX, float LookY, float DeltaSeconds, bool bAssist);
@@ -790,8 +792,10 @@ private:
 	bool BodyPitch(int32 Slot, float& OutPitch) const;
 	// The rendered view's rotation without the impact jolt (the camera's own, as the reticle and the tells read it).
 	FRotator ViewRotation(const APlayerCameraManager& Camera) const;
+#if !UE_BUILD_SHIPPING
 	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
 	void StepAimCheck(ftcore::ArenaInput& In);
+#endif
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 	bool bMouseFlicked = false;

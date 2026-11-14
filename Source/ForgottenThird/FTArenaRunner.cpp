@@ -335,6 +335,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 #endif
 	Glide.Begin(GlideStick >= 0);
+#if !UE_BUILD_SHIPPING
 	AimCheckPhase = 0;
 	AimCheckSlot = -1;
 	AimCheckPresses = 0;
@@ -368,6 +369,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: aim assist check on (-ArenaAssistCheck): after the shot the stick sweeps the view off the body and back, then a lock, the aim let go and the target's death each must bring the look scale back to 1."));
 		}
 	}
+#endif
 	Jolt = ftcore::ArenaJolt();
 	JoltAsks = 0;
 	JoltApplied = 0.f;
@@ -2188,7 +2190,9 @@ void UFTArenaRunner::StepFight()
 		}
 		// The boss's own buttons, which the autopilot knows nothing of.
 		StoneBearer.Assist(In, bIntercept, Bodies);
+#if !UE_BUILD_SHIPPING
 		StepAimCheck(In);
+#endif
 		if (bPilotHeavy && In.heavy)
 		{
 			StonePilotHeavyAt = Fight.time();
@@ -3199,12 +3203,17 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 		}
 		AttackMoveTable = Moves;
 	}
+#if !UE_BUILD_SHIPPING
 	if (bCoverCheck && !Fight.over() && Fight.time() >= 1.f)
 	{
 		StepCoverCheck();
 	}
-	ArenaAim.tick(DeltaSeconds, ((bAimHeld && !bAutoPlay && !bIdle) || AimCheckPhase == 2 || AimCheckPhase == 3 || (AimCheckPhase == 5 && !bAssistAimOff)) && !Fight.over(),
-		ftcore::FieldBody::Free);
+	// -ArenaAimCheck holds aim while it aims and fires, and through the assist sweep until that lets aim go.
+	const bool bProbeAim = AimCheckPhase == 2 || AimCheckPhase == 3 || (AimCheckPhase == 5 && !bAssistAimOff);
+#else
+	const bool bProbeAim = false;
+#endif
+	ArenaAim.tick(DeltaSeconds, ((bAimHeld && !bAutoPlay && !bIdle) || bProbeAim) && !Fight.over(), ftcore::FieldBody::Free);
 	// The reticle: the camera's line to the first thing it meets within reticleRange, the lead's figure not counted.
 	const APlayerController* PC = GetPC();
 	if (ArenaAim.alpha() > 0.f && PC && PC->PlayerCameraManager)
@@ -3285,6 +3294,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 			bReticleBlocked = false;
 			BlockedRun = 0;
 		}
+#if !UE_BUILD_SHIPPING
 		if (AimCheckPhase == 2 && Now - AimCheckSince >= 1.0)
 		{
 			// The view has settled on the top: what the crosshair meets, then one aimed shot.
@@ -3313,6 +3323,7 @@ void UFTArenaRunner::TickAim(float DeltaSeconds)
 			AimCheckSince = Now;
 			bAimCheckFire = true;
 		}
+#endif
 	}
 	else
 	{
@@ -3357,6 +3368,7 @@ int32 UFTArenaRunner::PickReticle(const FVector& From, const FVector& To, FHitRe
 	return ReticleBody(From, To, T); // only a body entered before the world's hit
 }
 
+#if !UE_BUILD_SHIPPING
 void UFTArenaRunner::StepCoverCheck()
 {
 	bCoverCheck = false; // once
@@ -3419,6 +3431,7 @@ void UFTArenaRunner::StepCoverCheck()
 		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bPass ? 0 : 1), TEXT("Arena"));
 	}
 }
+#endif
 
 FRotator UFTArenaRunner::ViewRotation(const APlayerCameraManager& Camera) const
 {
@@ -3507,6 +3520,7 @@ float UFTArenaRunner::TurnLook(float MouseX, float MouseY, float LookX, float Lo
 	return Turn.stickKeep;
 }
 
+#if !UE_BUILD_SHIPPING
 void UFTArenaRunner::StepAssistCheck(float DeltaSeconds)
 {
 	static const TCHAR* const StepNames[] = {TEXT("the sweep off the body and back"), TEXT("lock on and off"), TEXT("aim let go and held again"),
@@ -3780,6 +3794,7 @@ void UFTArenaRunner::StepAimCheck(ftcore::ArenaInput& In)
 		AimCheckPhase = 4;
 	}
 }
+#endif
 
 void UFTArenaRunner::ApplyAimCamera()
 {
@@ -3829,19 +3844,23 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			}
 		}
 	}
+#if !UE_BUILD_SHIPPING
 	if (AimCheckPhase == 5)
 	{
 		StepAssistCheck(DeltaSeconds); // the sweep turns the view itself: nothing is followed
 		Target = -1;
 	}
+#endif
 	const AFTArenaFighter* Figure = PlayerFigure.Get();
 	// The boom's length now (the aim pulls it in), for the look-up solve.
 	const float ArmNow = Figure && Figure->GetBoom() ? Figure->GetBoom()->TargetArmLength / 100.f : Fit.camera.arm;
+#if !UE_BUILD_SHIPPING
 	if (AimCheckPhase == 2 || AimCheckPhase == 3)
 	{
 		// -ArenaAimCheck: straight at the tallest standing enemy's top, from where the boom puts the lens.
 		Target = AimCheckSlot;
 	}
+#endif
 	if (Target >= 0 && Target < static_cast<int32>(Fight.enemyCount()))
 	{
 		const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
@@ -3860,18 +3879,26 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		const float Hover = Foe.look.skinned() ? Foe.look.hover : 0.f;
 		const float Tall = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + Hover;
 		const ftcore::ZoneCamera& Rig = Fit.camera;
+#if !UE_BUILD_SHIPPING
 		if (AimCheckPhase == 2 || AimCheckPhase == 3)
 		{
 			// The top itself, less a little so the line meets the body rather than grazing over it.
 			AimCheckPitch = ftcore::arenaLookUpPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall * 0.95f, Rig.lockPitch);
 			WantPitch = AimCheckPitch;
 		}
-		else if (Tall >= kArenaTallBoss)
+		else
+#endif
+		if (Tall >= kArenaTallBoss)
 		{
 			WantPitch = ftcore::arenaLookUpPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall * kArenaFaceHeight,
 				Rig.lockPitch);
 		}
-		CameraPitch = FMath::FInterpTo(CameraPitch, WantPitch, DeltaSeconds, AimCheckPhase == 2 ? 12.f : 4.f);
+#if !UE_BUILD_SHIPPING
+		const float PitchRate = AimCheckPhase == 2 ? 12.f : 4.f; // -ArenaAimCheck settles faster
+#else
+		const float PitchRate = 4.f;
+#endif
+		CameraPitch = FMath::FInterpTo(CameraPitch, WantPitch, DeltaSeconds, PitchRate);
 	}
 	CameraYaw = FMath::UnwindDegrees(CameraYaw);
 	// The boom swings up to its limit, the lens tilts the rest: a steep look keeps the lens over the floor and the arm
@@ -3991,6 +4018,7 @@ void UFTArenaRunner::LogFeatureChecks() const
 		Fight.def().fighter.softRange > 0.f ? *Text(C.softTargetCheck) : TEXT("n/a"), S.softTargets, S.softChances);
 	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).
 	const bool bGuns = Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns;
+#if !UE_BUILD_SHIPPING
 	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaAimCheck")))
 	{
 		float Top = 0.f;
@@ -4017,6 +4045,7 @@ void UFTArenaRunner::LogFeatureChecks() const
 			AssistTime[0], Ratio, AssistEnters, AssistExits, Back(1), Back(2), Back(4), Back(8),
 			*(AssistFail.IsEmpty() ? FString() : FString::Printf(TEXT("; ran out of time at %s"), *AssistFail)));
 	}
+#endif
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: shots %s (%d fired, %d hit)."), Verdict(C.shots, bGuns && (bAutoShoot || S.shots > 0)),
 		S.shots, S.shotHits);
 	// Two leads on one count (the partner scripted under -ArenaSharedCount): a held blow's bonus landed.
