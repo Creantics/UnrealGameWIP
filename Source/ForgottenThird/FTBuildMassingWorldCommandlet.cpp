@@ -956,6 +956,8 @@ UStaticMesh* SlopedMesh(UPackage* Package, const FString& Id, const ftcore::Mass
 	Source.BuildSettings.bRecomputeTangents = true;
 	// Lit by the shared look's dynamic lights (as the builders' cubes are), so no lightmap channel.
 	Source.BuildSettings.bGenerateLightmapUVs = false;
+	// The mesh's own DF flag on: built with it off, the card task left these meshes 0 Lumen cards (FTLumenCardsReport).
+	Mesh->bGenerateMeshDistanceField = true;
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
 	Mesh->CreateBodySetup();
@@ -1042,6 +1044,8 @@ UStaticMesh* SeaBedMesh(UPackage* Package, const ftcore::MassingGround& Ground, 
 	Source.BuildSettings.bRecomputeNormals = false;
 	Source.BuildSettings.bRecomputeTangents = true;
 	Source.BuildSettings.bGenerateLightmapUVs = false;
+	// The mesh's own DF flag on: built with it off, the card task left these meshes 0 Lumen cards (FTLumenCardsReport).
+	Mesh->bGenerateMeshDistanceField = true;
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
 	Mesh->Build(true);

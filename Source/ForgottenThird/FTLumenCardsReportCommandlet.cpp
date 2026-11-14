@@ -117,6 +117,9 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 	FString CsvPath, Rebuild;
 	FParse::Value(*Params, TEXT("Csv="), CsvPath);
 	FParse::Value(*Params, TEXT("Rebuild="), Rebuild);
+	// -AsBuilt: rebuild the copy as the massing builder builds its meshes (its own DF flag, Build(true)) rather than
+	// with the DF forced on, to tell the flag from the build path.
+	const bool bAsBuilt = FParse::Param(*Params, TEXT("AsBuilt"));
 
 	const IConsoleVariable* GenDf = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GenerateMeshDistanceFields"));
 	const IConsoleVariable* MinSize = IConsoleManager::Get().FindConsoleVariable(TEXT("r.LumenScene.SurfaceCache.MeshCardsMinSize"));
@@ -133,6 +136,12 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 	}
 
 	TMap<UStaticMesh*, FMeshRow> Rows;
+	struct FShapeCensus
+	{
+		int64 Total = 0, NoFace = 0, SidesCulled = 0, Thin10 = 0, NonUniform20 = 0, NonOrtho = 0, Thick50 = 0;
+		TMap<FString, int64> ThickByMat;
+	} Shapes;
+	const double MinShapeArea = MinArea;
 	for (AActor* Actor : World->PersistentLevel->Actors)
 	{
 		if (!Actor)
@@ -155,6 +164,37 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 			const bool bA = Component->bAffectDistanceFieldLighting && Component->bAffectDynamicIndirectLighting;
 			const bool bB = !bA && Component->bVisibleInRayTracing;
 			(bA ? Row.InstancesA : bB ? Row.InstancesB : Row.InstancesC) += Count;
+			// Engine shapes in state A, per instance: their world size against the card minimum, and the big thick ones.
+			if (bA && Mesh->GetPathName().StartsWith(TEXT("/Engine/BasicShapes/")))
+			{
+				const FVector Unit = Mesh->GetBounds().BoxExtent * 2.0;
+				const UMaterialInterface* Mat = Component->GetMaterial(0);
+				for (int64 I = 0; I < Count; ++I)
+				{
+					FTransform At = Component->GetComponentTransform();
+					if (Ism)
+					{
+						Ism->GetInstanceTransform(static_cast<int32>(I), At, true);
+					}
+					const FMatrix M = At.ToMatrixWithScale();
+					const FVector S = M.GetScaleVector().GetAbs();
+					FVector W = Unit * S;
+					if (W.X > W.Y) Swap(W.X, W.Y);
+					if (W.Y > W.Z) Swap(W.Y, W.Z);
+					if (W.X > W.Y) Swap(W.X, W.Y);
+					++Shapes.Total;
+					Shapes.NoFace += W.Y * W.Z <= MinShapeArea;
+					Shapes.SidesCulled += W.Y * W.Z > MinShapeArea && W.X * W.Z <= MinShapeArea;
+					Shapes.Thin10 += W.X < 10.0;
+					Shapes.NonUniform20 += S.GetMin() > 0.0 && S.GetMax() / S.GetMin() > 20.0;
+					Shapes.NonOrtho += !IsOrthogonal(M);
+					if (W.X >= 50.0 && W.Y * W.Z >= 1e4)
+					{
+						++Shapes.Thick50;
+						Shapes.ThickByMat.FindOrAdd(Mat ? Mat->GetName() : FString(TEXT("none"))) += 1;
+					}
+				}
+			}
 			if (bA && !Row.bSample && Count > 0)
 			{
 				FTransform At = Component->GetComponentTransform();
@@ -234,6 +274,21 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 			RebuildMesh = Row.Mesh;
 		}
 	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTLumenCardsReport engine shapes in state A: %lld instances; every face under the card minimum %lld; only the big ")
+		TEXT("faces kept (sides culled) %lld; thinnest side under 10 cm %lld; scale ratio over 20 %lld; non-orthogonal %lld; ")
+		TEXT("at least 50 cm thick with a face of 1 m2 or more %lld."),
+		Shapes.Total, Shapes.NoFace, Shapes.SidesCulled, Shapes.Thin10, Shapes.NonUniform20, Shapes.NonOrtho, Shapes.Thick50);
+	Shapes.ThickByMat.ValueSort([](int64 A, int64 B) { return A > B; });
+	int32 Shown = 0;
+	for (const TPair<FString, int64>& Pair : Shapes.ThickByMat)
+	{
+		if (++Shown > 15)
+		{
+			break;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTLumenCardsReport engine shapes 50 cm+ thick on %s: %lld."), *Pair.Key, Pair.Value);
+	}
 	for (const TPair<FString, FFamily>& Pair : Families)
 	{
 		const FFamily& F = Pair.Value;
@@ -260,12 +315,15 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 		int32 CardsBefore = 0;
 		ReadMesh(*RebuildMesh, bBefore, bDfBefore, &CardsBefore, nullptr);
 		UStaticMesh* Copy = DuplicateObject<UStaticMesh>(RebuildMesh, GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), UStaticMesh::StaticClass(), TEXT("FTCardsAB")));
-		Copy->bGenerateMeshDistanceField = true;
-		for (int32 L = 0; L < Copy->GetNumSourceModels(); ++L)
+		if (!bAsBuilt)
 		{
-			Copy->GetSourceModel(L).BuildSettings.DistanceFieldResolutionScale = FMath::Max(1.f, Copy->GetSourceModel(L).BuildSettings.DistanceFieldResolutionScale);
+			Copy->bGenerateMeshDistanceField = true;
+			for (int32 L = 0; L < Copy->GetNumSourceModels(); ++L)
+			{
+				Copy->GetSourceModel(L).BuildSettings.DistanceFieldResolutionScale = FMath::Max(1.f, Copy->GetSourceModel(L).BuildSettings.DistanceFieldResolutionScale);
+			}
 		}
-		Copy->Build(false);
+		Copy->Build(bAsBuilt);
 		FAssetCompilingManager::Get().FinishAllCompilation();
 		if (GCardRepresentationAsyncQueue)
 		{
@@ -281,10 +339,10 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 		ReadMesh(*Copy, bAfter, bDfAfter, &CardsAfter, &Bounds);
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("FTLumenCardsReport A/B %s (%s, %d source models, %d LODs): before card data %d (%d cards), DF %d; ")
-			TEXT("after a full build with the DF forced on: card data %d (%d cards, bounds %s), DF %d."),
+			TEXT("after a full build %s: card data %d (%d cards, bounds %s), DF %d."),
 			*RebuildMesh->GetPathName(), *FamilyOf(*RebuildMesh), RebuildMesh->GetNumSourceModels(),
 			RebuildMesh->GetRenderData() ? RebuildMesh->GetRenderData()->LODResources.Num() : 0, bBefore, CardsBefore, bDfBefore,
-			bAfter, CardsAfter, *Bounds.GetSize().ToString(), bDfAfter);
+			bAsBuilt ? TEXT("as the massing builder builds (own DF flag, silent)") : TEXT("with the DF forced on"), bAfter, CardsAfter, *Bounds.GetSize().ToString(), bDfAfter);
 	}
 	return 0;
 #else

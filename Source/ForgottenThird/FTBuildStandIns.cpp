@@ -150,6 +150,7 @@ UStaticMesh* BuiltMesh(UPackage* Package, const FString& Name, const ftcore::Sta
 	Model.BuildSettings.bRecomputeNormals = false;
 	Model.BuildSettings.bRecomputeTangents = true;
 	Model.BuildSettings.bGenerateLightmapUVs = false;
+	Mesh->bGenerateMeshDistanceField = true; // else 0 Lumen cards, as the massing meshes
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
 	Mesh->CreateBodySetup(); // as the sloped boxes' meshes; these meshes' cell groups take no collision

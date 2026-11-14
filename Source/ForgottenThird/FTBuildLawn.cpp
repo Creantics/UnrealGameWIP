@@ -149,6 +149,7 @@ UStaticMesh* SheetMesh(UPackage* Package, const FString& Name, const ftcore::Law
 	Model.BuildSettings.bRecomputeNormals = true;
 	Model.BuildSettings.bRecomputeTangents = true;
 	Model.BuildSettings.bGenerateLightmapUVs = false;
+	Mesh->bGenerateMeshDistanceField = true; // else 0 Lumen cards, as the massing meshes
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
 	Mesh->CreateBodySetup();
