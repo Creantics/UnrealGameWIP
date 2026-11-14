@@ -85,7 +85,8 @@ inline bool loneAtBegin(bool wanted, bool session, FighterId lead, const LoneTun
 }
 
 // A host's gift press while Lone waits for the end of the step: a Release resolved on that tick pools first (with its
-// x`release`), then the gift ends the stance. Not Lone, the press goes through at once.
+// x`release`), then the gift ends the stance. Not Lone, the press goes through at once. The host ends each step with
+// stepEnd(), which keeps that order.
 struct LoneGiftHold {
     bool pending = false;
     // A press before the step; true: press the gift now.
@@ -98,6 +99,14 @@ struct LoneGiftHold {
         const bool held = pending;
         pending = false;
         return held;
+    }
+    // The end of a step: `events()` (the host's handling of the step's events, a Released pooled among them), then
+    // `gift()` once if a press was held. The other way round the gift would end Lone first and the pool refuse the
+    // Release.
+    template <class Events, class Gift>
+    void stepEnd(Events&& events, Gift&& gift) {
+        events();
+        if (take()) gift();
     }
 };
 

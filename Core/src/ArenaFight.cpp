@@ -512,6 +512,8 @@ struct ArenaFightImpl {
             fight.phase_ = ArenaPhase::Victory;
             emit(ArenaEventType::Victory, kArenaNobody, kArenaNobody, 0, 0, pl.pos);
         }
+        // The fight's end drops a reload under way: it never completes (no Reloaded), and reloadProgress reads 0.
+        if (fight.phase_ != ArenaPhase::Fighting) pl.reloadLeft = 0.f;
         // A jump ends with any action that isn't its own (a blow, a stagger, a defeat), or with the fight.
         if ((pl.action != ArenaAction::Jump && !(pl.action == ArenaAction::Light && pl.move == kArenaAirMove)) ||
             fight.phase_ != ArenaPhase::Fighting) {
@@ -765,6 +767,7 @@ struct ArenaFightImpl {
     bool startShot(const ArenaInput& in) {
         if (fi.rounds > 0 && pl.rounds == 0) { // the cylinder is empty: the press is dropped
             ++stats.dryPresses;
+            emit(ArenaEventType::DryPress, kArenaPlayer, kArenaPlayer, kArenaShotMove, stats.dryPresses, pl.pos);
             return dropPress();
         }
         if (!affords(fi.shot)) return false;
@@ -1110,11 +1113,16 @@ struct ArenaFightImpl {
             return; // the last round's shot is still under way
         } else if (fi.reload > kArenaEps) {
             pl.reloadLeft = fi.reload;
+            emit(ArenaEventType::ReloadStarted, kArenaPlayer, kArenaPlayer, kArenaShotMove,
+                 static_cast<int>(fi.reload * 1000.f + 0.5f), pl.pos);
             return;
+        } else {
+            emit(ArenaEventType::ReloadStarted, kArenaPlayer, kArenaPlayer, kArenaShotMove, 0, pl.pos);
         }
         pl.reloadLeft = 0.f;
         pl.rounds = fi.rounds;
         ++stats.reloads;
+        emit(ArenaEventType::Reloaded, kArenaPlayer, kArenaPlayer, kArenaShotMove, static_cast<int>(pl.rounds), pl.pos);
     }
 
     // ---- the hit pause ----

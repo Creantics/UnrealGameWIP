@@ -89,9 +89,15 @@ bool importTragedies(std::string_view json, TragedyTable& out, std::string* erro
             d.voice = std::string(k["voice"].string());
             d.figure = std::string(k["figure"].string());
             if (d.voice.empty() || d.figure.empty()) errors.push_back(at + ": expected a voice and a figure id");
+            const JsonValue caused = k["caused"], lone = k["lone"];
+            if (!(caused.isAbsent() || caused.isBool()) || !(lone.isAbsent() || lone.isBool()))
+                errors.push_back(at + ": caused and lone are true or false");
+            d.caused = caused.boolean();
+            d.lone = lone.boolean();
             for (std::uint32_t j = 0; j < k.size(); ++j) {
                 const std::string_view f = k.key(j);
-                if (f != "id" && f != "lead" && f != "places" && f != "voice" && f != "figure")
+                if (f != "id" && f != "lead" && f != "places" && f != "voice" && f != "figure" && f != "caused" &&
+                    f != "lone")
                     errors.push_back(at + "." + std::string(f) + ": unknown field");
             }
             t.keys.push_back(std::move(d));
@@ -123,7 +129,7 @@ bool importHallucinationTuning(std::string_view json, HallucinationTuning& out, 
         {"gapSeconds", &t.gapSeconds, 0.0, 3600.0},       {"switchSeconds", &t.switchSeconds, 0.0, 600.0},
         {"refuseSeconds", &t.refuseSeconds, 0.0, 5.0},    {"refusalCooldownSeconds", &t.refusalCooldownSeconds, 0.0, 60.0},
         {"pullSeconds", &t.pullSeconds, 0.5, 60.0},       {"recentSeconds", &t.recentSeconds, 0.0, 36000.0},
-        {"fewerGapScale", &t.fewerGapScale, 1.0, 10.0},
+        {"fewerGapScale", &t.fewerGapScale, 1.0, 10.0},     {"lonePoolFloor", &t.lonePoolFloor, 0.0, 1.0e9},
     };
     for (const Field& f : fields) {
         const JsonValue v = root[f.key];

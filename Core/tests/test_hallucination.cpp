@@ -4,6 +4,7 @@
 #include "doctest/doctest.h"
 
 #include "ftcore/Hallucination.h"
+#include "ftcore/HallucinationArena.h"
 
 #include <array>
 #include <cmath>
@@ -64,6 +65,36 @@ struct Rig {
     }
     int saw(Ev e) const { return seen[static_cast<std::size_t>(e)]; }
 };
+
+// Every field of an arena input away from its default.
+ArenaInput everyInput() {
+    ArenaInput a;
+    a.move = Vec2{0.6f, -0.8f};
+    a.view = Vec2{0.f, 1.f};
+    a.light = a.heavy = a.dodge = a.jump = a.heal = a.guard = a.lock = a.release = a.pair = a.aim = true;
+    a.lockSwitch = 1;
+    a.read = 2;
+    a.aimDir = Vec2{0.f, -1.f};
+    a.aimTurn = 3.f;
+    a.aimSpeed = 0.5f;
+    a.aimPitched = true;
+    a.aimPitch = 0.3f;
+    a.aimBody = 1;
+    a.attackSpeed = 0.7f;
+    a.attackTurn = 4.f;
+    a.takeHalf = true;
+    return a;
+}
+
+bool same(const ArenaInput& a, const ArenaInput& b) {
+    return a.move.x == b.move.x && a.move.y == b.move.y && a.view.x == b.view.x && a.view.y == b.view.y &&
+           a.light == b.light && a.heavy == b.heavy && a.dodge == b.dodge && a.jump == b.jump && a.heal == b.heal &&
+           a.guard == b.guard && a.lock == b.lock && a.lockSwitch == b.lockSwitch && a.release == b.release &&
+           a.pair == b.pair && a.read == b.read && a.aim == b.aim && a.aimDir.x == b.aimDir.x &&
+           a.aimDir.y == b.aimDir.y && a.aimTurn == b.aimTurn && a.aimSpeed == b.aimSpeed &&
+           a.aimPitched == b.aimPitched && a.aimPitch == b.aimPitch && a.aimBody == b.aimBody && a.attackSpeed == b.attackSpeed &&
+           a.attackTurn == b.attackTurn && a.takeHalf == b.takeHalf;
+}
 
 } // namespace
 
@@ -131,24 +162,146 @@ TEST_CASE("the same seed picks the same keys") {
     }
     CHECK(distinct > 1);
 
-    // Uniform: three keys, a first pick from each of 3000 seeds, and 3000 picks from one stream, each key 1000 +- 10%.
-    TragedyPool three(makeTable(3));
-    for (int k = 0; k < 3; ++k) three.unlock(k);
-    std::array<int, 3> bySeed{}, byStream{};
-    std::uint32_t stream = 99;
-    for (std::uint32_t i = 0; i < 3000; ++i) {
-        std::uint32_t seed = i * 2654435761u + 1u;
-        ++bySeed[static_cast<std::size_t>(three.pick(seed, kLeadA, 0, 0.0, 0.0))];
-        ++byStream[static_cast<std::size_t>(three.pick(stream, kLeadA, 0, 0.0, 0.0))];
-    }
-    for (int k = 0; k < 3; ++k) {
-        CHECK(bySeed[static_cast<std::size_t>(k)] > 900);
-        CHECK(bySeed[static_cast<std::size_t>(k)] < 1100);
-        CHECK(byStream[static_cast<std::size_t>(k)] > 900);
-        CHECK(byStream[static_cast<std::size_t>(k)] < 1100);
-    }
     std::uint32_t zero = 0;
     CHECK(tragedyRng(zero) != 0u);
+}
+
+// Over 10 000 picks, each key's share (first picks from 10 000 seeds, and picks from one stream) within 2 points.
+void checkShares(const TragedyPool& pool, bool loneWeighted, double now, const std::array<double, 3>& want) {
+    std::array<int, 3> bySeed{}, byStream{};
+    std::uint32_t stream = 99;
+    for (std::uint32_t i = 0; i < 10000; ++i) {
+        std::uint32_t seed = i * 2654435761u + 1u;
+        const int a = pool.pick(seed, kLeadA, 0, now, 1800.0, loneWeighted);
+        const int b = pool.pick(stream, kLeadA, 0, now, 1800.0, loneWeighted);
+        REQUIRE((a >= 0 && a < 3 && b >= 0 && b < 3));
+        ++bySeed[static_cast<std::size_t>(a)];
+        ++byStream[static_cast<std::size_t>(b)];
+    }
+    for (std::size_t k = 0; k < 3; ++k) {
+        CHECK(std::abs(bySeed[k] / 10000.0 - want[k]) < 0.02);
+        CHECK(std::abs(byStream[k] / 10000.0 - want[k]) < 0.02);
+    }
+}
+
+TEST_CASE("picks are weighted: the newest x3, a caused key x2, the lone key x2 while Lone Carry weighs it; they multiply") {
+    TragedyTable t = makeTable(3); // a0 a1 a2, b0 b1 b2
+    t.keys[0].caused = t.keys[1].caused = true;
+    t.keys[2].lone = true;
+    TragedyPool pool(t);
+    CHECK(pool.newest(kLeadA) == -1);
+    pool.unlock(2);
+    pool.unlock(1);
+    pool.unlock(0); // a0: the newest, and caused
+    pool.unlock(1); // again: it keeps its place
+    CHECK(pool.newest(kLeadA) == 0);
+    CHECK(pool.newest(kLeadB) == -1);
+    pool.unlock(3);
+    CHECK(pool.newest(kLeadB) == 3); // each lead its own
+    CHECK(pool.newest(kLeadA) == 0);
+    CHECK(pool.weight(0) == 6u);
+    CHECK(pool.weight(1) == 2u);
+    CHECK(pool.weight(2) == 1u);
+    CHECK(pool.weight(2, true) == 2u);
+    CHECK(pool.weight(0, true) == 6u);
+    CHECK(pool.weight(4) == 0u); // not unlocked
+    CHECK(pool.weight(3) == 3u);
+
+    checkShares(pool, false, 0.0, {6.0 / 9.0, 2.0 / 9.0, 1.0 / 9.0});
+    checkShares(pool, true, 0.0, {6.0 / 10.0, 2.0 / 10.0, 2.0 / 10.0});
+    pool.shown(0, 100.0); // the newest shown lately: passed over, and its x3 is not handed on
+    checkShares(pool, false, 200.0, {0.0, 2.0 / 3.0, 1.0 / 3.0});
+
+    HallucinationTuning tune;
+    CHECK(tune.lonePoolFloor == 300.f);
+    CHECK_FALSE(loneWeighs(0, tune));
+    CHECK_FALSE(loneWeighs(299, tune));
+    CHECK(loneWeighs(300, tune));
+    tune.lonePoolFloor = 0.f;
+    CHECK_FALSE(loneWeighs(0, tune)); // no lone Releases at all
+    CHECK(loneWeighs(1, tune));
+}
+
+TEST_CASE("a start weighs the lone key by the pooled Load it is given") {
+    TragedyTable t = makeTable(2); // a0 a1
+    t.keys[0].lone = true;
+    int differ = 0;
+    for (std::uint32_t seed = 1; seed <= 200; ++seed) {
+        for (const std::uint32_t pooled : {0u, 299u, 300u}) {
+            TragedyPool pool(t);
+            pool.unlock(0);
+            pool.unlock(1);
+            const TragedyPool before = pool; // nothing shown yet
+            Hallucination h;
+            h.tick(0.0, HallucinationInput{});
+            std::uint32_t mine = seed, theirs = seed;
+            HallucinationStartIn s;
+            s.band = IntensityBand::Low;
+            s.loneLoadPool = pooled;
+            REQUIRE(h.start(pool, mine, s) == Start::Started);
+            const int want = before.pick(theirs, kLeadA, 0, 0.0, 1800.0, pooled >= 300u);
+            CHECK(h.key() == want);
+            CHECK(mine == theirs);
+            if (pooled == 300u) {
+                std::uint32_t plain = seed;
+                differ += before.pick(plain, kLeadA, 0, 0.0, 1800.0, false) != want ? 1 : 0;
+            }
+        }
+    }
+    CHECK(differ > 0); // the weight changed some picks
+}
+
+TEST_CASE("only a scripted start flagged as a scare reaches the ScarePacer, and only once") {
+    ScareMoment m;
+    REQUIRE(scareMomentFromId("scare_001", m));
+    ScarePacer pacer;
+    pacer.advance(200.0); // past a new pacer's quiet
+
+    Rig r;
+    HallucinationStartIn s;
+    s.band = IntensityBand::Low;
+    s.scripted = true;
+    s.named = 0;
+    s.scare = m; // the moment, but not flagged
+    CHECK(r.h.start(r.pool, r.rng, s, &pacer) == Start::Started);
+    CHECK(r.h.scareForm() == ScareForm::Unpaced);
+    CHECK(pacer.inWindow() == 0);
+    CHECK(pacer.lastTime() < 0.0);
+    r.in.turnedAway = true;
+    r.step(0.25);
+    REQUIRE_FALSE(r.h.active());
+    r.in.turnedAway = false;
+
+    Rig u; // flagged but not scripted: an ambient start is never a scare
+    HallucinationStartIn a = s;
+    a.scripted = false;
+    a.named = -1;
+    a.flaggedAsScare = true;
+    CHECK(u.h.start(u.pool, u.rng, a, &pacer) == Start::Started);
+    CHECK(u.h.scareForm() == ScareForm::Unpaced);
+    CHECK(pacer.inWindow() == 0);
+
+    s.flaggedAsScare = true;
+    CHECK(r.h.start(r.pool, r.rng, s, &pacer) == Start::Started);
+    CHECK(r.h.scareForm() == ScareForm::Full);
+    CHECK(pacer.inWindow() == 1);
+    CHECK(pacer.lastKind() == ScareKind::Hallucination);
+    CHECK(r.h.start(r.pool, r.rng, s, &pacer) == Start::Busy); // refused starts reach nothing
+    r.in.accepting = true;
+    r.run(10.0);
+    CHECK(pacer.inWindow() == 1); // ticks add nothing
+    pacer.complete(m);
+    CHECK(pacer.seen(m));
+
+    Rig n(2, false); // no key: nothing reaches the pacer
+    CHECK(n.h.start(n.pool, n.rng, s, &pacer) == Start::NoKey);
+    CHECK(pacer.inWindow() == 1);
+
+    ScarePacer quiet; // a new pacer is quiet: the offer still starts, its scare beat calm, nothing recorded
+    Rig q;
+    CHECK(q.h.start(q.pool, q.rng, s, &quiet) == Start::Started);
+    CHECK(q.h.scareForm() == ScareForm::Calm);
+    CHECK(quiet.inWindow() == 0);
 }
 
 TEST_CASE("one at a time, then the gap; a scripted one skips the gap but not a running one") {
@@ -292,6 +445,76 @@ TEST_CASE("a held lead stays held past the expiry until refused or pulled back")
     CHECK(g.saw(Ev::Refused) == 1);
 }
 
+TEST_CASE("a held lead is blank to the fight: the guard feeds only the refusal, and a partial hold slows the stick") {
+    const ArenaInput raw = everyInput();
+    Rig r;
+    CHECK(same(hallucinationArenaInput(r.h, raw), raw)); // no offer: all of it goes through
+    r.start();
+    CHECK(same(hallucinationArenaInput(r.h, raw), raw)); // shown, not taken: all of it
+
+    r.in.accepting = true;
+    r.run(1.0); // a quarter of the hold: the stick at three quarters, the rest untouched
+    REQUIRE(r.h.holdLevel() == doctest::Approx(0.25f));
+    ArenaInput slowed = raw;
+    slowed.move = Vec2{raw.move.x * 0.75f, raw.move.y * 0.75f};
+    CHECK(same(hallucinationArenaInput(r.h, raw), slowed));
+
+    r.run(3.0);
+    REQUIRE(r.h.held());
+    ArenaInput blank;
+    blank.view = raw.view; // the camera's forward only
+    CHECK(same(hallucinationArenaInput(r.h, raw), blank));
+
+    // The host sends the raw guard to the refusal: held refuseSeconds it refuses, and not once does the fight see it.
+    r.in.accepting = false;
+    int guarded = 0, steps = 0;
+    while (r.h.held() && steps < 8) {
+        r.in.refuse = raw.guard;
+        r.step(0.25);
+        ++steps;
+        if (r.h.held()) guarded += hallucinationArenaInput(r.h, raw).guard ? 1 : 0;
+    }
+    CHECK(r.saw(Ev::Refused) == 1);
+    CHECK(steps == 2); // 0.5 s
+    CHECK(guarded == 0);
+    ArenaInput kept = raw; // refused with the guard still down: the press stays the refusal's, no guard and no parry
+    kept.guard = false;
+    CHECK(same(hallucinationArenaInput(r.h, raw), kept));
+    r.step(0.25);
+    CHECK(same(hallucinationArenaInput(r.h, raw), kept));
+    r.in.refuse = false;
+    r.step(0.25);
+    CHECK(same(hallucinationArenaInput(r.h, raw), raw)); // let go: the next press is a guard
+
+    Rig t; // torn by a switch with the guard down: that press stays the refusal's too
+    t.start();
+    t.in.accepting = true;
+    t.run(4.0);
+    REQUIRE(t.h.held());
+    t.in.refuse = true;
+    t.step(0.25);
+    t.in.lead = kLeadB;
+    t.step(0.25);
+    CHECK(t.saw(Ev::Torn) == 1);
+    CHECK(t.saw(Ev::Refused) == 0);
+    CHECK_FALSE(hallucinationArenaInput(t.h, raw).guard);
+    t.in.refuse = false;
+    t.step(0.25);
+    CHECK(hallucinationArenaInput(t.h, raw).guard);
+
+    Rig o; // a guard down on an offer only shown or holding is the fight's as well as the refusal's
+    o.start();
+    o.in.refuse = true;
+    o.step(0.25);
+    CHECK(o.h.active());
+    CHECK_FALSE(o.h.refuseKept());
+    CHECK(hallucinationArenaInput(o.h, raw).guard);
+    o.step(0.25);
+    CHECK(o.saw(Ev::Refused) == 1);
+    CHECK_FALSE(o.h.refuseKept());
+    CHECK(hallucinationArenaInput(o.h, raw).guard);
+}
+
 TEST_CASE("the refusal: held refuseSeconds it closes the offer; a wrong guess, the cooldown and a stale button") {
     Rig r;
     r.start();
@@ -414,10 +637,13 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(h.holdSeconds == d.holdSeconds);
     CHECK(h.refuseSeconds == d.refuseSeconds);
     CHECK(h.actFloors == d.actFloors);
+    CHECK(h.lonePoolFloor == d.lonePoolFloor);
+    CHECK(t.keys[0].caused == false);
+    CHECK(t.keys[1].lone == false);
 
     HallucinationTuning o;
     CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
-        "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,
+        "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,"lonePoolFloor":50,
         "actFloors":["low","low","mid","mid","high"]})", o, &err));
     CHECK(o.holdSeconds == 2.f);
     CHECK(o.expireSeconds == 40.f);
@@ -428,6 +654,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(o.pullSeconds == 8.f);
     CHECK(o.recentSeconds == 600.f);
     CHECK(o.fewerGapScale == 3.f);
+    CHECK(o.lonePoolFloor == 50.f);
     CHECK(o.actFloors[0] == IntensityBand::Low);
     CHECK(o.actFloors[2] == IntensityBand::Mid);
     CHECK(o.actFloors[4] == IntensityBand::High);
@@ -440,6 +667,8 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"places":["p"],"keys":[{"id":"x","lead":"a","places":["q"],"voice":"v","figure":"f"}]})",
         R"({"version":1,"places":["p"],"keys":[{"id":"x","lead":"a","places":["p"],"figure":"f"}]})",
         R"({"version":1,"places":["p"],"keys":[{"id":"x","lead":"a","places":["p"],"voice":"v","figure":"f","line":"t"}]})",
+        R"({"version":1,"places":["p"],"keys":[{"id":"x","lead":"a","places":["p"],"voice":"v","figure":"f","caused":1}]})",
+        R"({"version":1,"places":["p"],"keys":[{"id":"x","lead":"a","places":["p"],"voice":"v","figure":"f","lone":"yes"}]})",
         R"({"version":1,"places":["p"],"keys":[{"id":"x","lead":"a","places":["p"],"voice":"v","figure":"f"},
                                               {"id":"x","lead":"b","places":["p"],"voice":"v","figure":"f"}]})",
     };
@@ -452,6 +681,13 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     for (int i = 0; i < 65; ++i)
         many += std::string(i ? "," : "") + R"({"id":"k)" + std::to_string(i) + R"(","lead":"a","places":["p"],"voice":"v","figure":"f"})";
     CHECK_FALSE(importTragedies(many + "]}", t, &err));
+    REQUIRE(importTragedies(R"({"version":1,"places":["p"],"keys":[{"id":"x","lead":"a","places":["p"],"voice":"v",
+        "figure":"f","caused":true,"lone":true},{"id":"y","lead":"b","places":["p"],"voice":"v","figure":"f","caused":false}]})",
+                            t, &err));
+    CHECK(t.keys[0].caused);
+    CHECK(t.keys[0].lone);
+    CHECK_FALSE(t.keys[1].caused);
+    CHECK_FALSE(t.keys[1].lone);
 
     const char* const badTuning[] = {
         R"({"version":1,"holdSeconds":-1})",
