@@ -4,6 +4,7 @@
 #include "ftcore/Backdrop.h"
 #include "ftcore/RoadDecals.h"
 #include "ftcore/Roads.h"
+#include "ftcore/SurfaceWeather.h"
 
 #include <ostream>
 #include <doctest/doctest.h>
@@ -214,9 +215,12 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
         CHECK_MESSAGE(std::strstr(code, name) != nullptr, name);
     }
     // Spliced once: the gutter width and the street numbers are numbers, and the same pointer comes back.
-    for (const char* key : {"GUTTER_M", "PAVED_K", "LANE_M", "WHEEL_OFF_M", "CRACK_M", "AGG_M", "AGG_SLOPE"}) {
+    for (const char* key : {"GUTTER_M", "PAVED_K", "LANE_M", "WHEEL_OFF_M", "CRACK_M", "AGG_M", "AGG_SLOPE", "LATTICE_FN"}) {
         CHECK_MESSAGE(std::strstr(code, key) == nullptr, key);
     }
+    // The noise's corners are the street layer's integer lattice hash (no torn cell edges), matching the road under it.
+    CHECK(std::strstr(code, streetLatticeHlsl()) != nullptr);
+    CHECK(std::strstr(code, "L(i + int2(1, 1))") != nullptr);
     // The paint's crack field is the surface master's, cell for cell.
     CHECK(std::strstr(code, "D.N(Pw / 3.000000 + 41.0)") != nullptr);
     CHECK(roadDecalHlsl() == code);

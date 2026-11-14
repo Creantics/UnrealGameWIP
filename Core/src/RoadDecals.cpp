@@ -372,13 +372,18 @@ const char* roadDecalHlsl() {
         std::string h = R"HLSL(
 struct FTRoadDecalNoise
 {
+	// A decal's own draws (O: its seed): the same in each of its pixels.
 	float H(float2 p) { p = frac(p * float2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return frac((p.x + p.y) * p.x); }
+	// The value noise's corners: the street layer's integer lattice hash, so they match the road under the decal and no
+	// cell edge tears.
+	LATTICE_FN
 	float N(float2 p)
 	{
-		float2 i = floor(p);
-		float2 f = frac(p);
+		float2 b = floor(p);
+		int2 i = int2(b);
+		float2 f = p - b;
 		float2 u = f * f * (3.0 - 2.0 * f);
-		return lerp(lerp(H(i), H(i + float2(1.0, 0.0)), u.x), lerp(H(i + float2(0.0, 1.0)), H(i + float2(1.0, 1.0)), u.x), u.y);
+		return lerp(lerp(L(i), L(i + int2(1, 0)), u.x), lerp(L(i + int2(0, 1)), L(i + int2(1, 1)), u.x), u.y);
 	}
 	float F(float2 p) { return 0.5 * N(p) + 0.3 * N(p * 2.03 + 17.1) + 0.2 * N(p * 4.01 + 31.7); }
 };
@@ -592,6 +597,8 @@ C = lerp(Under, C, Blend);
 R = lerp(UnderR, R, Blend);
 float WetIn = saturate(Wetness);
 )HLSL";
+        const std::string lattice = "LATTICE_FN";
+        h.replace(h.find(lattice), lattice.size(), streetLatticeHlsl());
         const SurfaceWeatherSpec spec{};
         const StreetSurfaceSpec street{};
         const struct {

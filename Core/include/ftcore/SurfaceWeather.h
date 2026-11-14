@@ -263,4 +263,14 @@ FTCORE_API std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const 
 // band), declares Noise, WSoak and WPud, and darkens float3 C and smooths float R, which the caller has declared.
 FTCORE_API std::string surfaceWetHlsl(const SurfaceWeatherSpec& spec);
 
+// The lattice hash under the street layer's and the road decals' value noise (FTStreetNoise, FTRoadDecalNoise N): integer
+// mixing on a cell's corner, so a corner reads the same from each of the four cells round it at any distance from the
+// origin. (A float hash of the corner's coordinate amplifies one rounding step into a new value, and the shader compiler
+// rounds a corner differently from its two sides: the cells' edges then tear.) 0..1, in 2^-24 steps.
+FTCORE_API float streetLatticeValue(int x, int y);
+// The value noise on it at p (cells): the corners blended by smoothstep, as the HLSL N.
+FTCORE_API float streetNoise(float x, float y);
+// The hash as an HLSL member function, "float L(int2 c) { ... }", one line.
+FTCORE_API const char* streetLatticeHlsl();
+
 }  // namespace ftcore

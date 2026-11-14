@@ -191,6 +191,43 @@ TEST_CASE("street: wheel paths, joints, paint wear and tiles") {
     CHECK(streetTileHeight(st.tileJointM + st.tileBevelM, st) == doctest::Approx(1.f));
 }
 
+TEST_CASE("street noise: an integer lattice hash, so no cell edge tears anywhere in the city") {
+    // At the city's own coordinates (the RD1 spot, 811 m by 644 m, on the asphalt's 2.5 cm aggregate cells) and at the
+    // origin: either side of each of 2000 cell edges reads the same, the corners spread over 0..1 and are repeatable.
+    const StreetSurfaceSpec st;
+    for (const float x0 : {811.f, 0.5f}) {
+        const float cx = std::floor(x0 / st.aggregateM), cy = std::floor((x0 * 0.79f) / st.aggregateM);
+        double sum = 0.0;
+        float lo = 1.f, hi = 0.f, worst = 0.f;
+        for (int k = 0; k < 2000; ++k) {
+            const float ex = cx + static_cast<float>(k), y = cy + 0.37f;
+            // 1e-3 of a cell either side of the edge: the noise is C1, so the two may differ by its slope times 2e-3.
+            worst = std::max(worst, std::fabs(streetNoise(ex - 1e-3f, y) - streetNoise(ex + 1e-3f, y)));
+            const float v = streetLatticeValue(static_cast<int>(ex), static_cast<int>(cy));
+            sum += v;
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+            CHECK(streetLatticeValue(static_cast<int>(ex), static_cast<int>(cy)) == v);
+        }
+        CHECK(worst < 0.01f);
+        CHECK(lo >= 0.f);
+        CHECK(hi <= 1.f);
+        CHECK(hi - lo > 0.95f);
+        CHECK(sum / 2000.0 == doctest::Approx(0.5).epsilon(0.1));
+    }
+    // At a corner the noise is the corner's hash, from any of the four cells round it.
+    CHECK(streetNoise(32440.f, 25760.f) == doctest::Approx(streetLatticeValue(32440, 25760)));
+    CHECK(streetLatticeValue(-3, 7) != streetLatticeValue(3, 7));
+    // Both masters draw it, not the float hash.
+    SurfaceWeatherOptions o;
+    o.grime = false;
+    o.street = true;
+    const std::string road = surfaceWeatherHlsl(SurfaceWeatherSpec{}, o);
+    CHECK(road.find(streetLatticeHlsl()) != std::string::npos);
+    CHECK(road.find("L(i + int2(1, 1))") != std::string::npos);
+    CHECK(road.find("0.1031") == std::string::npos);
+}
+
 TEST_CASE("HLSL: the street layer is an option, branches on Street and keeps the normal at Street 0") {
     const SurfaceWeatherSpec spec;
     SurfaceWeatherOptions plain;

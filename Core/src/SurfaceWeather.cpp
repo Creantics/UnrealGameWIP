@@ -758,6 +758,28 @@ StreetPoint streetReliefShift(float x, float y, float viewX, float viewY, float 
     return p;
 }
 
+float streetLatticeValue(int x, int y) {
+    std::uint32_t h = (static_cast<std::uint32_t>(x) * 73856093u) ^ (static_cast<std::uint32_t>(y) * 19349663u);
+    h ^= h >> 13;
+    h *= 1274126177u;
+    h ^= h >> 16;
+    return static_cast<float>(h & 0xFFFFFFu) / 16777215.f;
+}
+
+float streetNoise(float x, float y) {
+    const float fx = std::floor(x), fy = std::floor(y);
+    const int ix = static_cast<int>(fx), iy = static_cast<int>(fy);
+    const float tx = x - fx, ty = y - fy;
+    const float ux = tx * tx * (3.f - 2.f * tx), uy = ty * ty * (3.f - 2.f * ty);
+    return lerp(lerp(streetLatticeValue(ix, iy), streetLatticeValue(ix + 1, iy), ux),
+                lerp(streetLatticeValue(ix, iy + 1), streetLatticeValue(ix + 1, iy + 1), ux), uy);
+}
+
+const char* streetLatticeHlsl() {
+    return "float L(int2 c) { uint h = (uint(c.x) * 73856093u) ^ (uint(c.y) * 19349663u); h ^= h >> 13; h *= 1274126177u; "
+           "h ^= h >> 16; return float(h & 0xFFFFFFu) / 16777215.0; }";
+}
+
 std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeatherOptions& options,
                                const StreetSurfaceSpec& street) {
     const bool box = options.boxFrame;
@@ -769,14 +791,17 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
     h.reserve(16384);
     if (relief) reliefStructHlsl(h, street);
     if (streets) {
-        // A 2D value noise for the street layer (the lattice hash the decals use).
+        // A 2D value noise for the street layer, on the integer lattice hash the decals use (streetLatticeHlsl).
         h += "struct FTStreetNoise\n{\n";
-        h += "\tfloat H(float2 p) { p = frac(p * float2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return frac((p.x + p.y) * p.x); }\n";
+        h += "\t";
+        h += streetLatticeHlsl();
+        h += "\n";
         h += "\tfloat N(float2 p)\n\t{\n";
-        h += "\t\tfloat2 i = floor(p);\n";
-        h += "\t\tfloat2 f = frac(p);\n";
+        h += "\t\tfloat2 b = floor(p);\n";
+        h += "\t\tint2 i = int2(b);\n";
+        h += "\t\tfloat2 f = p - b;\n";
         h += "\t\tfloat2 u = f * f * (3.0 - 2.0 * f);\n";
-        h += "\t\treturn lerp(lerp(H(i), H(i + float2(1.0, 0.0)), u.x), lerp(H(i + float2(0.0, 1.0)), H(i + float2(1.0, 1.0)), u.x), u.y);\n";
+        h += "\t\treturn lerp(lerp(L(i), L(i + int2(1, 0)), u.x), lerp(L(i + int2(0, 1)), L(i + int2(1, 1)), u.x), u.y);\n";
         h += "\t}\n";
         h += "\tfloat F(float2 p) { return 0.5 * N(p) + 0.3 * N(p * 2.03 + 17.1) + 0.2 * N(p * 4.01 + 31.7); }\n";
         h += "};\n";
