@@ -178,6 +178,10 @@ public:
 	USkeletalMeshComponent* GetLeadSkin() const { return WearsLook() ? Skin.Get() : nullptr; }
 	// Shows or hides the shapes' blade (a lead whose own clips strike hides it).
 	void SetBladeShown(bool bShown);
+	// A skinned figure's body glow (the boss break's tell): Glow of warm white added to the Emissive of each of its
+	// materials that has one (the shared character masters, M_FTCharacter and M_FTCharacterTex: emissive = its texture
+	// x Emissive x EmissiveStrength); 0 puts each back. Materials are made dynamic on the first glow, once a mesh.
+	void SetBodyPulse(float Glow);
 
 private:
 	void SetTellVisible(bool bVisible);
@@ -249,6 +253,12 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> ShieldMaterial;
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> TellMaterial;
+	// SetBodyPulse's materials and each one's own Emissive.
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> PulseMaterials;
+	TArray<FLinearColor> PulseBase;
+	float PulseGlow = 0.f;
+	bool bPulseMade = false;
 
 	FLinearColor BaseColor = FLinearColor::White;
 	float Height = 180.f; // cm

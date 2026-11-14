@@ -814,6 +814,8 @@ private:
 	bool bMouseFlicked = false;
 
 	double Now = 0.0;
+	double TellSince[6] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)
+	bool bTellShown[6] = {};
 	double Accumulator = 0.0;
 	double DrawnTime = 0.0;
 	double ActiveSince[ftcore::kMaxArenaEnemies];

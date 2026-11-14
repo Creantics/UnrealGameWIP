@@ -67,6 +67,10 @@ constexpr double kArenaAutoAgain = 4.0;
 constexpr double kArenaDefeatTail = 0.5;
 // A press to fight again counts only once the result has been up this long (s), so a held attack doesn't skip it.
 constexpr double kArenaAgainDelay = 0.6;
+// The boss break's tell on the body (Core's enemyBreakTell): a warm white glow added to its materials' Emissive, pulsing
+// at this rate (Hz) from 0 up to this much and back, from the tick the tell rises; off the tick the break fires.
+constexpr double kBreakTellPulseHz = 1.0;
+constexpr float kBreakTellGlow = 3.f;
 // How long a hit tints a body (s).
 constexpr double kArenaHitTint = 0.16;
 // The floor tell's flash after a move goes active (s).
@@ -957,6 +961,13 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		return;
 	}
+	const bool bTell = Kind.boss && Out.brain != ftcore::ArenaBrain::Dead && Fight.enemyBreakTell(static_cast<size_t>(I));
+	if (bTell && !bTellShown[I])
+	{
+		TellSince[I] = Now;
+	}
+	bTellShown[I] = bTell;
+	Figure->SetBodyPulse(bTell ? kBreakTellGlow * 0.5f * (1.f - static_cast<float>(FMath::Cos(UE_DOUBLE_TWO_PI * kBreakTellPulseHz * (Now - TellSince[I])))) : 0.f);
 	// A hit pause holds the figure: HoldPausedEnemies moved its stamps on by the paused part of each step; the walk's
 	// phase and the crossfade wait leave out what of this frame was paused.
 	const float ClipDelta = FMath::Max(0.f, FrameDelta - FMath::Min(FrameDelta, PausedThisFrame[I]));
@@ -4615,8 +4626,10 @@ void UFTArenaRunner::PrepareStoneBearer()
 		}
 		StoneBearerSlot = -1;
 	}
-	if (!BreakError.empty())
+	static bool bBreakErrorLogged = false; // once a process: every fight's prepare builds the same kind again
+	if (!BreakError.empty() && !bBreakErrorLogged)
 	{
+		bBreakErrorLogged = true;
 		UE_LOG(LogForgottenThird, Error, TEXT("Arena: %s"), *FT::ToFString(BreakError));
 	}
 }
