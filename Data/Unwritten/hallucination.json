@@ -19,5 +19,6 @@
   "refuseOpenHoldCap": 3.5,
   "heldHealthCost": 0.25,
   "heldShutSeconds": 10,
+  "refuseOpenLockSeconds": 8,
   "actFloors": ["none", "none", "none", "low", "mid"]
 }

@@ -34,9 +34,10 @@
 //   not hold), opens the boss's weak point for refuseOpenBase + refuseOpenPerSecond x (min(h, refuseOpenHoldCap) -
 //   refuseOpenMinHold) seconds when h >= refuseOpenMinHold (2 s at 1 s of hold, 5.75 s at 3.5 s or more), and
 //   nothing below it. A refusal of a held lead (the lead's or a Proxy partner's), a turn away and a refusal while
-//   the weak point is shut open nothing. Held costs the lead heldHealthCost of max health once (heldCost(), on that
+//   the weak point is shut open nothing; nor does one within refuseOpenLockSeconds of an opened window's end (the
+//   lock: the refusal still closes the offer and starts its cooldown). Held costs the lead heldHealthCost of max health once (heldCost(), on that
 //   step only), shuts the weak point for heldShutSeconds (an open one closes) and the fight goes on: no restart.
-//   weakPointOpenFor() and weakPointShutFor() count down on every step, offer or none. Core keeps only these numbers;
+//   weakPointOpenFor(), weakPointShutFor() and weakPointLockFor() count down on every step, offer or none. Core keeps only these numbers;
 //   the host opens and shuts the boss's weak point and takes the health.
 // * The intensity band is authored: max(the page's place band, the act's floor). Nothing accumulates.
 // * The pick is the pool's, weighted (TragedyPool.h); the lone key weighs x2 once the lead's lone Releases have
@@ -49,7 +50,7 @@
 //   "switchSeconds": 20, "refuseSeconds": 0.5, "refusalCooldownSeconds": 4, "pullSeconds": 6, "recentSeconds": 1800,
 //   "fewerGapScale": 2, "lonePoolFloor": 300, "counselCooldownSeconds": 2, "proxyReactSeconds": 1,
 //   "escrowDelaySeconds": 5, "refuseOpenMinHold": 1, "refuseOpenBase": 2, "refuseOpenPerSecond": 1.5,
-//   "refuseOpenHoldCap": 3.5, "heldHealthCost": 0.25, "heldShutSeconds": 10,
+//   "refuseOpenHoldCap": 3.5, "refuseOpenLockSeconds": 8, "heldHealthCost": 0.25, "heldShutSeconds": 10,
 //   "actFloors": ["none", "none", "none", "low", "mid"] }
 //   (every field but version optional; refuseOpenHoldCap at least refuseOpenMinHold)
 
@@ -94,6 +95,7 @@ struct HallucinationTuning {
     float refuseOpenBase = 2.f;         // seconds it opens at refuseOpenMinHold of hold ...
     float refuseOpenPerSecond = 1.5f;   // ... plus this for each further second of hold ...
     float refuseOpenHoldCap = 3.5f;     // ... counted up to this much hold
+    float refuseOpenLockSeconds = 8.f;  // after an opened window ends, no refusal opens one for this long
     float heldHealthCost = 0.25f;       // Held costs the lead this share of max health, once
     float heldShutSeconds = 10.f;       // and shuts the weak point this long from Held
     std::array<IntensityBand, kMaxAct + 1> actFloors{IntensityBand::None, IntensityBand::None, IntensityBand::None,
@@ -226,6 +228,8 @@ public:
     // a share of the lead's max health, on the step Held began only (0 on every other).
     float weakPointOpenFor() const { return openFor_; }
     float weakPointShutFor() const { return shutFor_; }
+    // The seconds left of the lock after a refusal's window ended (by running out or by Held), counting down.
+    float weakPointLockFor() const { return lockFor_; }
     float heldCost() const { return heldCost_; }
     // The weak point time a refusal closing with `hold` seconds of hold built would open (0: none).
     float refusalOpens(float hold) const {
@@ -247,6 +251,9 @@ private:
         waiting_ = false;
         now_ += dt;
         cooldown_ = std::max(0.f, cooldown_ - static_cast<float>(dt));
+        lockFor_ = std::max(0.f, lockFor_ - static_cast<float>(dt));
+        if (openFor_ > 0.f && openFor_ <= static_cast<float>(dt)) // the window ends inside this step: lock from then
+            lockFor_ = std::max(0.f, tuning_.refuseOpenLockSeconds - (static_cast<float>(dt) - openFor_));
         openFor_ = std::max(0.f, openFor_ - static_cast<float>(dt));
         shutFor_ = std::max(0.f, shutFor_ - static_cast<float>(dt));
         heldCost_ = 0.f;
@@ -276,7 +283,8 @@ private:
                 refusal_.offerEnded();
                 cooldown_ = refusalCooldownFor(in.brief);
                 // The hold to the closing instant: this step's real hold counts too (it never reaches Held now).
-                if (!held() && !(shutFor_ > 0.f))
+                constexpr float kLockSlack = 1e-4f; // a lock summed from steps may be a hair over 0 at its end
+                if (!held() && !(shutFor_ > 0.f) && !(lockFor_ > kLockSlack))
                     openFor_ = refusalOpens(std::min(tuning_.holdSeconds, built_ + stepBuild(dt, in)));
                 end(HallucinationEventType::Refused);
                 return;
@@ -308,6 +316,7 @@ private:
                     heldFor_ = 0.f;
                     heldCost_ = tuning_.heldHealthCost; // the price of a full hold, once
                     shutFor_ = tuning_.heldShutSeconds;
+                    if (openFor_ > 0.f) lockFor_ = tuning_.refuseOpenLockSeconds; // an open window ends here
                     openFor_ = 0.f;
                     emit(HallucinationEventType::Held);
                     return;
@@ -387,6 +396,7 @@ private:
     float built_ = 0.f; // seconds of real hold built in this offer (hold_ in seconds, summed exactly)
     float openFor_ = 0.f;
     float shutFor_ = 0.f;
+    float lockFor_ = 0.f;
     float heldCost_ = 0.f;
     float heldFor_ = 0.f;
     float refuseHeld_ = 0.f;

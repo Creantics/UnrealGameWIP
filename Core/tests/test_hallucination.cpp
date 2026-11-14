@@ -98,14 +98,14 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
 }
 
 // A new tuning field must be added to the three helpers below. Two tripwires: the size, and in each helper's own body
-// a structured binding of exactly the current 20 members, which fails to compile when a member is added or removed
+// a structured binding of exactly the current 21 members, which fails to compile when a member is added or removed
 // (padding cannot hide it).
-static_assert(sizeof(HallucinationTuning) == 19 * sizeof(float) + 8, "add the new field to the tuning helpers");
+static_assert(sizeof(HallucinationTuning) == 20 * sizeof(float) + 8, "add the new field to the tuning helpers");
 
 // Every tuning field away from its default.
 void dirtyAll(HallucinationTuning& t) {
-    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19] =
-        t; // 20 members
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19, f20] =
+        t; // 21 members
     t.holdSeconds = 1.25f;
     t.expireSeconds = 11.f;
     t.gapSeconds = 5.f;
@@ -125,12 +125,13 @@ void dirtyAll(HallucinationTuning& t) {
     t.refuseOpenHoldCap = 9.f;
     t.heldHealthCost = 0.6f;
     t.heldShutSeconds = 33.f;
+    t.refuseOpenLockSeconds = 21.f;
     t.actFloors.fill(IntensityBand::High);
 }
 
 bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
-    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19] =
-        a; // 20 members
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19, f20] =
+        a; // 21 members
     return a.holdSeconds == b.holdSeconds && a.expireSeconds == b.expireSeconds && a.gapSeconds == b.gapSeconds &&
            a.switchSeconds == b.switchSeconds && a.refuseSeconds == b.refuseSeconds &&
            a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
@@ -139,13 +140,14 @@ bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.proxyReactSeconds == b.proxyReactSeconds && a.escrowDelaySeconds == b.escrowDelaySeconds &&
            a.refuseOpenMinHold == b.refuseOpenMinHold && a.refuseOpenBase == b.refuseOpenBase &&
            a.refuseOpenPerSecond == b.refuseOpenPerSecond && a.refuseOpenHoldCap == b.refuseOpenHoldCap &&
-           a.heldHealthCost == b.heldHealthCost && a.heldShutSeconds == b.heldShutSeconds && a.actFloors == b.actFloors;
+           a.heldHealthCost == b.heldHealthCost && a.heldShutSeconds == b.heldShutSeconds &&
+           a.refuseOpenLockSeconds == b.refuseOpenLockSeconds && a.actFloors == b.actFloors;
 }
 
 // Each field of `a` differs from `b`'s.
 bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
-    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19] =
-        a; // 20 members
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19, f20] =
+        a; // 21 members
     bool floorsDiffer = true;
     for (std::size_t i = 0; i < a.actFloors.size(); ++i) floorsDiffer = floorsDiffer && a.actFloors[i] != b.actFloors[i];
     return a.holdSeconds != b.holdSeconds && a.expireSeconds != b.expireSeconds && a.gapSeconds != b.gapSeconds &&
@@ -156,7 +158,8 @@ bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.proxyReactSeconds != b.proxyReactSeconds && a.escrowDelaySeconds != b.escrowDelaySeconds &&
            a.refuseOpenMinHold != b.refuseOpenMinHold && a.refuseOpenBase != b.refuseOpenBase &&
            a.refuseOpenPerSecond != b.refuseOpenPerSecond && a.refuseOpenHoldCap != b.refuseOpenHoldCap &&
-           a.heldHealthCost != b.heldHealthCost && a.heldShutSeconds != b.heldShutSeconds && floorsDiffer;
+           a.heldHealthCost != b.heldHealthCost && a.heldShutSeconds != b.heldShutSeconds &&
+           a.refuseOpenLockSeconds != b.refuseOpenLockSeconds && floorsDiffer;
 }
 
 } // namespace
@@ -736,7 +739,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
         "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,"lonePoolFloor":50,
         "counselCooldownSeconds":1,"proxyReactSeconds":6,"escrowDelaySeconds":30,"refuseOpenMinHold":0.5,"refuseOpenBase":3,"refuseOpenPerSecond":2,
-        "refuseOpenHoldCap":4,"heldHealthCost":0.5,"heldShutSeconds":20,"actFloors":["low","low","mid","mid","high"]})", o, &err));
+        "refuseOpenHoldCap":4,"heldHealthCost":0.5,"heldShutSeconds":20,"refuseOpenLockSeconds":3,"actFloors":["low","low","mid","mid","high"]})", o, &err));
     CHECK(o.holdSeconds == 2.f);
     CHECK(o.expireSeconds == 40.f);
     CHECK(o.gapSeconds == 60.f);
@@ -756,6 +759,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(o.refuseOpenHoldCap == 4.f);
     CHECK(o.heldHealthCost == 0.5f);
     CHECK(o.heldShutSeconds == 20.f);
+    CHECK(o.refuseOpenLockSeconds == 3.f);
     CHECK(o.actFloors[0] == IntensityBand::Low);
     CHECK(o.actFloors[2] == IntensityBand::Mid);
     CHECK(o.actFloors[4] == IntensityBand::High);
@@ -818,6 +822,8 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"heldHealthCost":1.5})",
         R"({"version":1,"heldShutSeconds":-1})",
         R"({"version":1,"heldShutSeconds":121})",
+        R"({"version":1,"refuseOpenLockSeconds":-1})",
+        R"({"version":1,"refuseOpenLockSeconds":31})",
     };
     for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
         dirtyAll(h);
@@ -1387,6 +1393,8 @@ TEST_CASE("a tuning file without the Brief link or price fields keeps their defa
     CHECK(h.refuseOpenHoldCap == d.refuseOpenHoldCap);
     CHECK(h.heldHealthCost == d.heldHealthCost);
     CHECK(h.heldShutSeconds == d.heldShutSeconds);
+    CHECK(h.refuseOpenLockSeconds == d.refuseOpenLockSeconds);
+    CHECK(d.refuseOpenLockSeconds == 8.f);
     CHECK(d.refuseOpenMinHold == 1.f);
     CHECK(d.refuseOpenBase == 2.f);
     CHECK(d.refuseOpenPerSecond == 1.5f);
@@ -1671,4 +1679,85 @@ TEST_CASE("a host pull and a Proxy partner's close in the same step: Refused win
     CHECK(r.saw(Ev::Refused) == 1);
     CHECK(r.saw(Ev::PulledBack) == 0);
     CHECK(r.h.eventCount() == 1);
+}
+
+namespace {
+// A scripted offer accepted for 1.5 s, then refused over 0.5 s at 0.25 s steps: 2 s of hold, 3.5 s open.
+// Returns what it opened.
+float refuseAtTwo(Rig& r) {
+    REQUIRE(r.start(true) == Start::Started);
+    r.in.accepting = true;
+    r.run(1.5);
+    r.in.refuse = true;
+    r.run(0.5);
+    REQUIRE(r.saw(Ev::Refused) >= 1);
+    r.in.refuse = false;
+    r.in.accepting = false;
+    return r.h.weakPointOpenFor();
+}
+} // namespace
+
+TEST_CASE("the lock: after a refusal's window ends, a refusal opens nothing for 8 s; at 8 s it opens as ruled") {
+    for (const double after : {5.0, 7.75, 8.0, 9.0}) {
+        CAPTURE(after);
+        Rig r;
+        r.step(0.0);
+        REQUIRE(refuseAtTwo(r) == doctest::Approx(3.5)); // at 2 s
+        CHECK(r.h.weakPointLockFor() == 0.f);
+        r.run(3.5); // the window ends at 5.5 s
+        REQUIRE(r.h.weakPointOpenFor() == 0.f);
+        CHECK(r.h.weakPointLockFor() == doctest::Approx(8.0));
+        // The refusal cooldown (4 s) is long over; the next offer is refused to close `after` s after the end.
+        r.run(after - 2.0);
+        CHECK(r.h.weakPointLockFor() == doctest::Approx(std::max(0.0, 8.0 - (after - 2.0))));
+        const int before = r.saw(Ev::Refused);
+        const float opened = refuseAtTwo(r);
+        CHECK(r.saw(Ev::Refused) == before + 1); // it still closes the offer ...
+        CHECK(r.h.refusalCooldown() == doctest::Approx(4.0)); // ... and starts its cooldown
+        CHECK(r.h.now() == doctest::Approx(5.5 + after));
+        if (after < 8.0) CHECK(opened == 0.f);
+        else CHECK(opened == doctest::Approx(3.5));
+    }
+}
+
+TEST_CASE("the lock runs from the instant the window ends, at any step; Held ends an open window and locks too") {
+    for (const double dt : {0.1, 0.3, 1.0 / 60.0}) {
+        CAPTURE(dt);
+        Rig r;
+        r.step(0.0);
+        REQUIRE(refuseAtTwo(r) == doctest::Approx(3.5));
+        double t = 0.0;
+        while (r.h.weakPointOpenFor() > 0.f) {
+            r.step(dt);
+            t += dt;
+        }
+        // It ended within this step: the lock already ran for the part of the step after the end.
+        CHECK(r.h.weakPointLockFor() == doctest::Approx(8.0 - (t - 3.5)).epsilon(1e-4));
+        CHECK(r.h.weakPointLockFor() <= 8.f);
+    }
+    HallucinationTuning t;
+    t.heldShutSeconds = 2.f;
+    t.holdSeconds = 2.f; // the first refusal closes on the Held step (Refused wins): 2 s of hold
+    Rig h;
+    h.h = Hallucination(t);
+    h.step(0.0);
+    REQUIRE(refuseAtTwo(h) == doctest::Approx(3.5));
+    REQUIRE(h.start(true) == Start::Started); // a scripted one at once, held at 4 s with the window open to 5.5 s
+    h.in.accepting = true;
+    h.run(2.0);
+    REQUIRE(h.h.held());
+    CHECK(h.h.weakPointOpenFor() == 0.f);
+    CHECK(h.h.weakPointLockFor() == doctest::Approx(8.0));
+    CHECK(h.h.weakPointShutFor() == doctest::Approx(2.0));
+    // A lock of 0 is no lock.
+    HallucinationTuning z;
+    z.refuseOpenLockSeconds = 0.f;
+    Rig n;
+    n.h = Hallucination(z);
+    n.step(0.0);
+    REQUIRE(refuseAtTwo(n) == doctest::Approx(3.5));
+    n.run(3.5);
+    CHECK(n.h.weakPointLockFor() == 0.f);
+    n.run(2.0);
+    CHECK(refuseAtTwo(n) == doctest::Approx(3.5));
 }
