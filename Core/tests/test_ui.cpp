@@ -555,6 +555,42 @@ TEST_CASE("ui load name: the gold fills to the threshold, brightens to the cap, 
     CHECK(none.bright == 0.f);
 }
 
+TEST_CASE("ui lead slot: LOAD while some is held short of the Release, RELEASE once it opens, else nothing") {
+    ArenaHudLead lead;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // no gauge
+    lead.loadMax = 9;
+    lead.loadCap = 9;
+    lead.releaseAt = 3;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // a gauge, nothing held
+    lead.load = 1;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Load);
+    lead.load = 3; // the name is full of gold here, but the Release opens only above it
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Load);
+    lead.load = 4;
+    lead.releaseReady = true;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Release);
+    lead.load = 9;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::Release);
+    lead.load = 0;
+    lead.releaseReady = false;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // spent
+    lead.loadMax = 0;
+    lead.load = 4;
+    lead.releaseReady = true;
+    CHECK(uiLeadSlot(lead) == UiLeadSlot::None); // a kit without the gauge says nothing
+}
+
+TEST_CASE("ui selected reply: the host's cursor, else the first reply that can be taken") {
+    CHECK(uiSelectedReply(-1, 0b111u, 3) == 0);
+    CHECK(uiSelectedReply(-1, 0b110u, 3) == 1); // the first is locked
+    CHECK(uiSelectedReply(-1, 0b100u, 3) == 2);
+    CHECK(uiSelectedReply(-1, 0u, 3) == -1);    // all locked: none drawn as selected
+    CHECK(uiSelectedReply(-1, 0b1000u, 3) == -1); // a takeable bit past the replies counts for nothing
+    CHECK(uiSelectedReply(2, 0b001u, 3) == 2);  // a cursor wins, even on a locked reply
+    CHECK(uiSelectedReply(3, 0b010u, 3) == 1);  // a cursor past the replies is no cursor
+    CHECK(uiSelectedReply(-1, 0b1u, 0) == -1);
+}
+
 TEST_CASE("ui arena view: the R11 hooks default to nothing drawn (Qte, gift data, the row swap)") {
     // Each hook's null: nothing reported, nothing drawn.
     const ArenaHudLead lead;

@@ -22,11 +22,10 @@
 namespace ftcore {
 
 enum class UiFirstUseItem : std::uint8_t {
-    GuardLabel, LoadLabel, PoiseLabel, WeakPointLabel, // labels: hold, then fade
-    Attack, Guard, Dodge, Jump,                        // controls: until a second after the first use, then fade
-    LoadFullLabel,                                     // the label LOAD FULL (after the controls: an old save's bits keep their items)
+    PoiseLabel, WeakPointLabel, // labels: hold, then fade
+    Attack, Guard, Dodge, Jump, // controls: until a second after the first use, then fade
 };
-inline constexpr std::size_t kUiFirstUseCount = 9;
+inline constexpr std::size_t kUiFirstUseCount = 6;
 inline constexpr std::uint8_t kUiFirstUseLabelTimes = 3; // a label shows the first three times in a save
 inline constexpr float kUiFirstUseHold = 4.f;   // a label's full-ink seconds
 inline constexpr float kUiFirstUseFade = 1.f;   // a label's or a control's fade
@@ -52,10 +51,15 @@ constexpr bool uiFirstUseControl(UiFirstUseItem item) {
 // How many times a save shows the item: a label three, a control once.
 constexpr std::uint8_t uiFirstUseTimes(UiFirstUseItem item) { return uiFirstUseControl(item) ? 1 : kUiFirstUseLabelTimes; }
 
-// Settings::uiFirstUse. With this bit set, two bits per item (item i at bits 2i and 2i+1) count its showings. Without
-// it (a save from before the counts), one bit per item, a set bit read as shown once.
+// Settings::uiFirstUse. With this bit set, two bits per slot (slot n at bits 2n and 2n+1) count an item's showings.
+// Without it (a save from before the counts), one bit per slot, a set bit read as shown once.
 inline constexpr std::uint32_t kUiFirstUseCounted = 1u << 31;
-static_assert(2 * kUiFirstUseCount < 31, "two bits per item below the layout bit");
+// The item's slot in a saved value. Slots 0, 1 and 8 held labels since retired: they are read as nothing and written
+// as zero, and every remaining item keeps the slot an older save wrote it in.
+constexpr unsigned uiFirstUseSlot(UiFirstUseItem item) { return static_cast<unsigned>(item) + 2u; }
+inline constexpr unsigned kUiFirstUseTopSlot = 8; // the highest slot any save has written, a retired one included
+static_assert(kUiFirstUseCount == 6, "a new item takes a slot past kUiFirstUseTopSlot: change uiFirstUseSlot");
+static_assert(2 * kUiFirstUseTopSlot + 1 < 31, "two bits per slot below the layout bit");
 // The item's count in a saved value of either layout.
 FTCORE_API std::uint8_t uiFirstUseSavedCount(std::uint32_t saved, UiFirstUseItem item);
 // The counts packed for the save (always the counted layout).

@@ -17,23 +17,24 @@ bool uiFirstUseMode(std::string_view text, UiFirstUseMode& out) {
 }
 
 std::uint8_t uiFirstUseSavedCount(std::uint32_t saved, UiFirstUseItem item) {
-    const unsigned i = static_cast<unsigned>(item);
-    if (saved & kUiFirstUseCounted) return static_cast<std::uint8_t>((saved >> (2u * i)) & 3u);
-    return static_cast<std::uint8_t>((saved >> i) & 1u);
+    const unsigned slot = uiFirstUseSlot(item);
+    if (saved & kUiFirstUseCounted) return static_cast<std::uint8_t>((saved >> (2u * slot)) & 3u);
+    return static_cast<std::uint8_t>((saved >> slot) & 1u);
 }
 
 std::uint32_t uiFirstUseSaved(const UiFirstUse& s) {
     std::uint32_t out = kUiFirstUseCounted;
     for (std::size_t i = 0; i < kUiFirstUseCount; ++i)
-        out |= static_cast<std::uint32_t>(std::min<std::uint8_t>(s.count[i], 3)) << (2u * i);
+        out |= static_cast<std::uint32_t>(std::min<std::uint8_t>(s.count[i], 3)) << (2u * uiFirstUseSlot(itemAt(i)));
     return out;
 }
 
 std::uint32_t uiFirstUseMerge(std::uint32_t a, std::uint32_t b) {
     std::uint32_t out = kUiFirstUseCounted;
     for (std::size_t i = 0; i < kUiFirstUseCount; ++i) {
-        const std::uint8_t c = std::max(uiFirstUseSavedCount(a, itemAt(i)), uiFirstUseSavedCount(b, itemAt(i)));
-        out |= static_cast<std::uint32_t>(c) << (2u * i);
+        const UiFirstUseItem item = itemAt(i);
+        const std::uint8_t c = std::max(uiFirstUseSavedCount(a, item), uiFirstUseSavedCount(b, item));
+        out |= static_cast<std::uint32_t>(c) << (2u * uiFirstUseSlot(item));
     }
     return out;
 }

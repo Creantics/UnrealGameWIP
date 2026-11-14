@@ -28,27 +28,26 @@ TEST_CASE("ui first use: the switch reads fresh and seen only") {
 TEST_CASE("ui first use: a label holds 4 s, fades over 1 s, and shows the first three times in a save") {
     UiFirstUse s;
     uiFirstUseBegin(s, 0u, UiFirstUseMode::Saved);
-    CHECK(uiFirstUseAlpha(s, UiFirstUseItem::LoadLabel) == 0.f);
+    CHECK(uiFirstUseAlpha(s, UiFirstUseItem::WeakPointLabel) == 0.f);
     for (int time = 1; time <= 3; ++time) {
         CAPTURE(time);
-        CHECK(uiFirstUseShow(s, UiFirstUseItem::LoadLabel)); // counted on showing: the host saves now
-        CHECK(s.count[at(UiFirstUseItem::LoadLabel)] == time);
+        CHECK(uiFirstUseShow(s, UiFirstUseItem::WeakPointLabel)); // counted on showing: the host saves now
+        CHECK(s.count[at(UiFirstUseItem::WeakPointLabel)] == time);
         run(s, 3.9f);
-        CHECK(uiFirstUseAlpha(s, UiFirstUseItem::LoadLabel) == 1.f);
+        CHECK(uiFirstUseAlpha(s, UiFirstUseItem::WeakPointLabel) == 1.f);
         run(s, 0.6f);
-        CHECK(uiFirstUseAlpha(s, UiFirstUseItem::LoadLabel) == doctest::Approx(0.5f).epsilon(0.05));
+        CHECK(uiFirstUseAlpha(s, UiFirstUseItem::WeakPointLabel) == doctest::Approx(0.5f).epsilon(0.05));
         run(s, 0.6f);
-        CHECK(uiFirstUseAlpha(s, UiFirstUseItem::LoadLabel) == 0.f);
+        CHECK(uiFirstUseAlpha(s, UiFirstUseItem::WeakPointLabel) == 0.f);
         CHECK(s.live == 0u);
     }
-    CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::LoadLabel)); // a fourth time: no
-    CHECK(s.count[at(UiFirstUseItem::LoadLabel)] == kUiFirstUseLabelTimes);
-    CHECK(uiFirstUseAlpha(s, UiFirstUseItem::LoadLabel) == 0.f);
-    uiFirstUseUsed(s, UiFirstUseItem::LoadLabel); // labels are not used
+    CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::WeakPointLabel)); // a fourth time: no
+    CHECK(s.count[at(UiFirstUseItem::WeakPointLabel)] == kUiFirstUseLabelTimes);
+    CHECK(uiFirstUseAlpha(s, UiFirstUseItem::WeakPointLabel) == 0.f);
+    uiFirstUseUsed(s, UiFirstUseItem::WeakPointLabel); // labels are not used
     CHECK(s.used == 0u);
-    // LOAD FULL is a label like the rest.
-    CHECK(uiFirstUseTimes(UiFirstUseItem::LoadFullLabel) == kUiFirstUseLabelTimes);
-    CHECK_FALSE(uiFirstUseControl(UiFirstUseItem::LoadFullLabel));
+    CHECK(uiFirstUseTimes(UiFirstUseItem::PoiseLabel) == kUiFirstUseLabelTimes);
+    CHECK_FALSE(uiFirstUseControl(UiFirstUseItem::PoiseLabel));
 }
 
 TEST_CASE("ui first use: a label does not restart while it is live") {
@@ -69,9 +68,9 @@ TEST_CASE("ui first use: a label does not restart while it is live") {
 TEST_CASE("ui first use: a label shows when its element starts to be drawn, not on every tick it stays") {
     UiFirstUse s;
     uiFirstUseBegin(s, 0u, UiFirstUseMode::Saved);
-    const UiFirstUseItem g = UiFirstUseItem::GuardLabel;
+    const UiFirstUseItem g = UiFirstUseItem::PoiseLabel;
     CHECK_FALSE(uiFirstUseCue(s, g, false));
-    CHECK(uiFirstUseCue(s, g, true)); // the guard line appears
+    CHECK(uiFirstUseCue(s, g, true)); // the poise line appears
     for (int i = 0; i < 200; ++i) {   // and stays well past the label's 5 s
         CHECK_FALSE(uiFirstUseCue(s, g, true));
         uiFirstUseTick(s, 0.05f);
@@ -92,29 +91,6 @@ TEST_CASE("ui first use: a label shows when its element starts to be drawn, not 
     uiFirstUseEnd(s);
     CHECK(uiFirstUseCue(s, g, true));
     CHECK(s.count[at(g)] == 3);
-}
-
-TEST_CASE("ui first use: the rise that fills the name shows LOAD FULL, not LOAD as well") {
-    UiFirstUse s;
-    uiFirstUseBegin(s, 0u, UiFirstUseMode::Saved);
-    // The host's order: LOAD FULL first, then LOAD only while LOAD FULL is off screen.
-    const auto cue = [&s](bool load, bool full) {
-        uiFirstUseCue(s, UiFirstUseItem::LoadFullLabel, full);
-        uiFirstUseCue(s, UiFirstUseItem::LoadLabel, load, uiFirstUseAlpha(s, UiFirstUseItem::LoadFullLabel) <= 0.f);
-    };
-    cue(true, true); // one blow from empty to full
-    CHECK(s.count[at(UiFirstUseItem::LoadFullLabel)] == 1);
-    CHECK(s.count[at(UiFirstUseItem::LoadLabel)] == 0);
-    cue(false, false); // spent
-    cue(true, false);  // a rise while LOAD FULL is still up: not shown behind it, not counted
-    CHECK(s.count[at(UiFirstUseItem::LoadLabel)] == 0);
-    run(s, 5.1f);
-    cue(true, false); // the same rise: no new start
-    CHECK(s.count[at(UiFirstUseItem::LoadLabel)] == 0);
-    cue(false, false);
-    cue(true, false); // a new rise
-    CHECK(s.count[at(UiFirstUseItem::LoadLabel)] == 1);
-    CHECK(uiFirstUseAlpha(s, UiFirstUseItem::LoadLabel) == 1.f);
 }
 
 TEST_CASE("ui first use: a control stays until a second after its first use, then fades over 1 s, once a save") {
@@ -140,12 +116,12 @@ TEST_CASE("ui first use: the fight's end clears the screen and keeps the counts"
     UiFirstUse s;
     uiFirstUseBegin(s, 0u, UiFirstUseMode::Saved);
     uiFirstUseShow(s, UiFirstUseItem::Attack);
-    uiFirstUseShow(s, UiFirstUseItem::GuardLabel);
+    uiFirstUseShow(s, UiFirstUseItem::PoiseLabel);
     uiFirstUseEnd(s);
     CHECK(uiFirstUseAlpha(s, UiFirstUseItem::Attack) == 0.f);
-    CHECK(uiFirstUseAlpha(s, UiFirstUseItem::GuardLabel) == 0.f);
+    CHECK(uiFirstUseAlpha(s, UiFirstUseItem::PoiseLabel) == 0.f);
     CHECK(s.count[at(UiFirstUseItem::Attack)] == 1);
-    CHECK(s.count[at(UiFirstUseItem::GuardLabel)] == 1);
+    CHECK(s.count[at(UiFirstUseItem::PoiseLabel)] == 1);
 }
 
 TEST_CASE("ui first use: the counts round-trip through the save, and a save is never lowered") {
@@ -158,11 +134,13 @@ TEST_CASE("ui first use: the counts round-trip through the save, and a save is n
         uiFirstUseEnd(s);
     }
     for (int i = 0; i < 3; ++i) {
-        uiFirstUseShow(s, UiFirstUseItem::LoadFullLabel);
+        uiFirstUseShow(s, UiFirstUseItem::PoiseLabel);
         uiFirstUseEnd(s);
     }
     const std::uint32_t saved = uiFirstUseSaved(s);
     CHECK((saved & kUiFirstUseCounted) != 0u);
+    CHECK((saved & 0xFu) == 0u);          // the retired slots 0 and 1 are written as zero
+    CHECK((saved & (3u << 16)) == 0u);    // and slot 8
     UiFirstUse next; // the next fight of the same save
     uiFirstUseBegin(next, saved, UiFirstUseMode::Saved);
     for (std::size_t i = 0; i < kUiFirstUseCount; ++i) {
@@ -172,7 +150,7 @@ TEST_CASE("ui first use: the counts round-trip through the save, and a save is n
     }
     CHECK(uiFirstUseSaved(next) == saved);
     CHECK_FALSE(uiFirstUseShow(next, UiFirstUseItem::Guard));
-    CHECK_FALSE(uiFirstUseShow(next, UiFirstUseItem::LoadFullLabel));
+    CHECK_FALSE(uiFirstUseShow(next, UiFirstUseItem::PoiseLabel));
     CHECK(uiFirstUseShow(next, UiFirstUseItem::WeakPointLabel)); // its third time
     CHECK(uiFirstUseShow(next, UiFirstUseItem::Attack)); // never taught: shows
 
@@ -180,38 +158,63 @@ TEST_CASE("ui first use: the counts round-trip through the save, and a save is n
     UiFirstUse other;
     uiFirstUseBegin(other, 0u, UiFirstUseMode::Saved);
     for (int i = 0; i < 3; ++i) {
-        uiFirstUseShow(other, UiFirstUseItem::PoiseLabel);
+        uiFirstUseShow(other, UiFirstUseItem::WeakPointLabel);
         uiFirstUseEnd(other);
     }
     const std::uint32_t joined = uiFirstUseMerge(saved, uiFirstUseSaved(other));
     CHECK(uiFirstUseMerge(uiFirstUseSaved(other), saved) == joined);
     CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::PoiseLabel) == 3);
-    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::WeakPointLabel) == 2);
-    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::LoadFullLabel) == 3);
+    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::WeakPointLabel) == 3);
     CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::Guard) == 1);
-    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::LoadLabel) == 0);
+    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::Dodge) == 0);
     CHECK(uiFirstUseMerge(joined, kUiFirstUseCounted) == joined); // a fresh run's empty counts lower nothing
 }
 
+TEST_CASE("ui first use: every item keeps the slot older saves wrote it in; the retired slots read as nothing") {
+    CHECK(uiFirstUseSlot(UiFirstUseItem::PoiseLabel) == 2u);
+    CHECK(uiFirstUseSlot(UiFirstUseItem::WeakPointLabel) == 3u);
+    CHECK(uiFirstUseSlot(UiFirstUseItem::Attack) == 4u);
+    CHECK(uiFirstUseSlot(UiFirstUseItem::Jump) == 7u);
+    // A counted save from the round with the GUARD, LOAD and LOAD FULL labels: slot 0 = 3, slot 1 = 2, slot 2 (poise)
+    // = 1, slot 6 (dodge) = 1, slot 8 = 3.
+    const std::uint32_t before = kUiFirstUseCounted | 3u | (2u << 2) | (1u << 4) | (1u << 12) | (3u << 16);
+    CHECK(uiFirstUseSavedCount(before, UiFirstUseItem::PoiseLabel) == 1);
+    CHECK(uiFirstUseSavedCount(before, UiFirstUseItem::Dodge) == 1);
+    CHECK(uiFirstUseSavedCount(before, UiFirstUseItem::WeakPointLabel) == 0);
+    CHECK(uiFirstUseSavedCount(before, UiFirstUseItem::Attack) == 0);
+    CHECK(uiFirstUseSavedCount(before, UiFirstUseItem::Jump) == 0);
+    UiFirstUse s;
+    uiFirstUseBegin(s, before, UiFirstUseMode::Saved);
+    CHECK(s.count[at(UiFirstUseItem::PoiseLabel)] == 1);
+    CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::Dodge));
+    CHECK(uiFirstUseShow(s, UiFirstUseItem::Jump));
+    // Joined with anything, the retired slots are dropped and the rest kept.
+    const std::uint32_t joined = uiFirstUseMerge(before, kUiFirstUseCounted);
+    CHECK(joined == (kUiFirstUseCounted | (1u << 4) | (1u << 12)));
+}
+
 TEST_CASE("ui first use: a save from before the counts reads each set bit as shown once") {
-    // The old layout: one bit per item, GuardLabel..Jump at bits 0..7.
-    const std::uint32_t old = uiFirstUseBit(UiFirstUseItem::LoadLabel) | uiFirstUseBit(UiFirstUseItem::Dodge);
+    // The old layout: one bit per slot, bits 0..7 (bits 0 and 1 were the GUARD and LOAD labels, now retired).
+    const std::uint32_t old = (1u << 1) | (1u << 2) | (1u << 6); // LOAD label, POISE label, Dodge
     CHECK((old & kUiFirstUseCounted) == 0u);
-    CHECK(uiFirstUseSavedCount(old, UiFirstUseItem::LoadLabel) == 1);
+    CHECK(uiFirstUseSavedCount(old, UiFirstUseItem::PoiseLabel) == 1);
     CHECK(uiFirstUseSavedCount(old, UiFirstUseItem::Dodge) == 1);
-    CHECK(uiFirstUseSavedCount(old, UiFirstUseItem::GuardLabel) == 0);
-    CHECK(uiFirstUseSavedCount(old, UiFirstUseItem::LoadFullLabel) == 0);
+    CHECK(uiFirstUseSavedCount(old, UiFirstUseItem::WeakPointLabel) == 0);
+    CHECK(uiFirstUseSavedCount(old, UiFirstUseItem::Attack) == 0);
     UiFirstUse s;
     uiFirstUseBegin(s, old, UiFirstUseMode::Saved);
     CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::Dodge)); // a control already taught
-    CHECK(uiFirstUseShow(s, UiFirstUseItem::LoadLabel));    // a label: two showings left
-    CHECK(s.count[at(UiFirstUseItem::LoadLabel)] == 2);
-    // All eight old bits: every control taught, every label once.
+    CHECK(uiFirstUseShow(s, UiFirstUseItem::PoiseLabel));  // a label: two showings left
+    CHECK(s.count[at(UiFirstUseItem::PoiseLabel)] == 2);
+    // All eight old bits: every control taught, every label once; the retired bits lend nothing.
     const std::uint32_t all = 0xFFu;
     const std::uint32_t joined = uiFirstUseMerge(all, 0u);
     CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::Jump) == 1);
+    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::Attack) == 1);
     CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::PoiseLabel) == 1);
-    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::LoadFullLabel) == 0);
+    CHECK(uiFirstUseSavedCount(joined, UiFirstUseItem::WeakPointLabel) == 1);
+    CHECK((joined & 0xFu) == 0u);
+    CHECK(uiFirstUseSavedCount(1u | 2u | (1u << 8), UiFirstUseItem::PoiseLabel) == 0); // only retired bits
 }
 
 TEST_CASE("ui first use: fresh ignores the save, seen teaches nothing") {
@@ -221,7 +224,7 @@ TEST_CASE("ui first use: fresh ignores the save, seen teaches nothing") {
     UiFirstUse s;
     uiFirstUseBegin(s, all, UiFirstUseMode::Fresh);
     CHECK(uiFirstUseShow(s, UiFirstUseItem::WeakPointLabel));
-    CHECK(uiFirstUseShow(s, UiFirstUseItem::LoadFullLabel));
+    CHECK(uiFirstUseShow(s, UiFirstUseItem::PoiseLabel));
     uiFirstUseBegin(s, 0u, UiFirstUseMode::Seen);
     CHECK(s.live == 0u);
     for (std::size_t i = 0; i < kUiFirstUseCount; ++i) {
@@ -231,5 +234,5 @@ TEST_CASE("ui first use: fresh ignores the save, seen teaches nothing") {
     }
     uiFirstUseBegin(s, all, UiFirstUseMode::Saved);
     CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::Guard));
-    CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::LoadLabel));
+    CHECK_FALSE(uiFirstUseShow(s, UiFirstUseItem::WeakPointLabel));
 }

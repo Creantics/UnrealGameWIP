@@ -170,6 +170,11 @@ struct UiLoadName {
 };
 FTCORE_API void uiLoadNameStep(UiLoadName& s, const ArenaHudLead& lead, float dt);
 
+// The one word in the slot right of the lead's name: LOAD while some Load is held and the Release is not open yet,
+// RELEASE once it is (with its key), nothing without a gauge or with none held.
+enum class UiLeadSlot : std::uint8_t { None, Load, Release };
+FTCORE_API UiLeadSlot uiLeadSlot(const ArenaHudLead& lead);
+
 // The party rows trading places on a switch of lead. The host's seats are the signal: when the lead's place changes
 // while a partner row stands, the new lead's row starts where the partner row was and the old lead's where the lead row
 // was. Both reach their own places over kUiRowSwap. There is no field of its own, so seats that never change never
@@ -195,7 +200,8 @@ struct DialogueViewFlags {
     bool autoOn = false;
     bool skipOn = false;
     bool logAvailable = false; // the backlog has lines
-    // The reply a cursor rests on (-1: none). Replies are picked by number today, with no cursor, so none is underlined.
+    // The reply a cursor rests on (-1: none sent). Replies are picked by number today, with no cursor; until one is sent
+    // the first reply that can be taken is drawn as selected (uiSelectedReply).
     int cursor = -1;
 };
 
@@ -229,6 +235,10 @@ struct DialogueView {
 
     std::uint32_t epoch = 0xFFFFFFFFu; // the presenter's beat epoch last seen
 };
+
+// The reply drawn as selected among `count` replies: the cursor's when the host sent one (0 <= cursor < count), else the
+// first that can be taken (bit i of `takeable`: reply i), else -1.
+FTCORE_API int uiSelectedReply(int cursor, std::uint32_t takeable, int count);
 
 // Updates `view` from the presenter (and its runner). Returns true when anything changed.
 FTCORE_API bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const DialogueViewFlags& flags);

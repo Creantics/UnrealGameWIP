@@ -156,6 +156,19 @@ void uiLoadNameStep(UiLoadName& s, const ArenaHudLead& lead, float dt) {
     s.ready = lead.releaseReady;
 }
 
+UiLeadSlot uiLeadSlot(const ArenaHudLead& lead) {
+    if (lead.loadMax <= 0) return UiLeadSlot::None;
+    if (lead.releaseReady) return UiLeadSlot::Release;
+    return lead.load > 0 ? UiLeadSlot::Load : UiLeadSlot::None;
+}
+
+int uiSelectedReply(int cursor, std::uint32_t takeable, int count) {
+    if (cursor >= 0 && cursor < count) return cursor;
+    for (int i = 0; i < count && i < 32; ++i)
+        if (takeable & (1u << i)) return i;
+    return -1;
+}
+
 void uiRowSwapStep(UiRowSwap& s, const ArenaHudFrame& f, float dt) {
     // Without a partner row there is nothing to trade places with, so a change of seat just shows.
     if (s.lead != 0xFF && f.lead.lead != s.lead && f.partner.present) {
