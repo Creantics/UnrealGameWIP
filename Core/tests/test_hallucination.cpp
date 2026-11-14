@@ -98,7 +98,7 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
 }
 
 // A new tuning field must be added to both helpers below; this size check fails until it is.
-static_assert(sizeof(HallucinationTuning) == 12 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
+static_assert(sizeof(HallucinationTuning) == 13 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
 
 // Every tuning field away from its default.
 void dirtyAll(HallucinationTuning& t) {
@@ -114,6 +114,7 @@ void dirtyAll(HallucinationTuning& t) {
     t.lonePoolFloor = 777.f;
     t.counselCooldownSeconds = 0.25f;
     t.proxyReactSeconds = 4.5f;
+    t.escrowDelaySeconds = 12.f;
     t.actFloors.fill(IntensityBand::High);
 }
 
@@ -123,7 +124,8 @@ bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
            a.recentSeconds == b.recentSeconds && a.fewerGapScale == b.fewerGapScale &&
            a.lonePoolFloor == b.lonePoolFloor && a.counselCooldownSeconds == b.counselCooldownSeconds &&
-           a.proxyReactSeconds == b.proxyReactSeconds && a.actFloors == b.actFloors;
+           a.proxyReactSeconds == b.proxyReactSeconds && a.escrowDelaySeconds == b.escrowDelaySeconds &&
+           a.actFloors == b.actFloors;
 }
 
 // Each field of `a` differs from `b`'s.
@@ -135,7 +137,7 @@ bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.refusalCooldownSeconds != b.refusalCooldownSeconds && a.pullSeconds != b.pullSeconds &&
            a.recentSeconds != b.recentSeconds && a.fewerGapScale != b.fewerGapScale &&
            a.lonePoolFloor != b.lonePoolFloor && a.counselCooldownSeconds != b.counselCooldownSeconds &&
-           a.proxyReactSeconds != b.proxyReactSeconds && floorsDiffer;
+           a.proxyReactSeconds != b.proxyReactSeconds && a.escrowDelaySeconds != b.escrowDelaySeconds && floorsDiffer;
 }
 
 } // namespace
@@ -714,7 +716,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     HallucinationTuning o;
     CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
         "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,"lonePoolFloor":50,
-        "counselCooldownSeconds":1,"proxyReactSeconds":6,"actFloors":["low","low","mid","mid","high"]})", o, &err));
+        "counselCooldownSeconds":1,"proxyReactSeconds":6,"escrowDelaySeconds":30,"actFloors":["low","low","mid","mid","high"]})", o, &err));
     CHECK(o.holdSeconds == 2.f);
     CHECK(o.expireSeconds == 40.f);
     CHECK(o.gapSeconds == 60.f);
@@ -727,6 +729,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(o.lonePoolFloor == 50.f);
     CHECK(o.counselCooldownSeconds == 1.f);
     CHECK(o.proxyReactSeconds == 6.f);
+    CHECK(o.escrowDelaySeconds == 30.f);
     CHECK(o.actFloors[0] == IntensityBand::Low);
     CHECK(o.actFloors[2] == IntensityBand::Mid);
     CHECK(o.actFloors[4] == IntensityBand::High);
@@ -773,6 +776,8 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"counselCooldownSeconds":61})",
         R"({"version":1,"proxyReactSeconds":-1})",
         R"({"version":1,"proxyReactSeconds":6.5})",
+        R"({"version":1,"escrowDelaySeconds":-1})",
+        R"({"version":1,"escrowDelaySeconds":31})",
     };
     for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
         dirtyAll(h);
@@ -1095,4 +1100,86 @@ TEST_CASE("a Proxy partner refuses for a held lead: react, press, Refused; the f
 
     const HallucinationTuning d;
     CHECK(d.proxyReactSeconds == 1.f);
+}
+
+TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at 9 s; stepping out drops both") {
+    Rig a; // staying in from 0 s
+    a.in.brief = BriefId::Escrow;
+    a.step(0.0);
+    REQUIRE(a.start() == Start::Started);
+    a.in.accepting = true;
+    a.run(5.0);
+    CHECK(a.h.holdLevel() == 0.f); // the lead is not slowed during the wait
+    CHECK(a.saw(Ev::HoldBegan) == 0);
+    a.run(3.75);
+    CHECK_FALSE(a.h.held());
+    CHECK(a.saw(Ev::HoldBegan) == 1);
+    a.step(0.25);
+    CHECK(a.h.held());
+    CHECK(a.saw(Ev::Held) == 1);
+    CHECK(a.h.now() == doctest::Approx(9.0));
+
+    Rig b; // out at 4.9 s and back in: the 5 s start again
+    b.in.brief = BriefId::Escrow;
+    b.step(0.0);
+    REQUIRE(b.start() == Start::Started);
+    b.in.accepting = true;
+    b.step(4.9);
+    b.in.accepting = false;
+    b.step(0.1);
+    b.in.accepting = true;
+    b.step(4.9);
+    CHECK(b.h.holdLevel() == 0.f); // without the restart 3.8 s of hold would be built here
+    b.step(0.1);
+    b.run(3.75);
+    CHECK_FALSE(b.h.held());
+    b.run(0.5);
+    CHECK(b.h.held());
+
+    Rig c; // out at 7 s, with 2 s of hold built: both drop to nothing, and the next entry waits 5 s again
+    c.in.brief = BriefId::Escrow;
+    c.step(0.0);
+    REQUIRE(c.start() == Start::Started);
+    c.in.accepting = true;
+    c.run(7.0);
+    CHECK(c.h.holdLevel() == doctest::Approx(0.5));
+    c.in.accepting = false;
+    c.step(0.25);
+    CHECK(c.h.holdLevel() == 0.f);
+    c.in.accepting = true;
+    c.run(5.0);
+    CHECK(c.h.holdLevel() == 0.f);
+    c.run(3.75);
+    CHECK_FALSE(c.h.held());
+    c.step(0.25);
+    CHECK(c.h.held());
+
+    for (const BriefId other : {BriefId::Count, BriefId::Counsel, BriefId::Proxy}) { // without Escrow: Held at 4 s
+        Rig n;
+        n.in.brief = other;
+        n.step(0.0);
+        REQUIRE(n.start() == Start::Started);
+        n.in.accepting = true;
+        n.run(3.75);
+        CHECK_FALSE(n.h.held());
+        n.step(0.25);
+        CHECK(n.h.held());
+        CHECK(n.h.now() == doctest::Approx(4.0));
+    }
+
+    Rig e; // an offer ending during the wait leaves nothing for the next one
+    e.in.brief = BriefId::Escrow;
+    e.step(0.0);
+    REQUIRE(e.start(true) == Start::Started);
+    e.in.accepting = true;
+    e.run(3.0);
+    e.in.lead = kLeadB; // torn
+    e.step(0.25);
+    REQUIRE(e.saw(Ev::Torn) == 1);
+    REQUIRE(e.start(true) == Start::Started);
+    e.run(4.75);
+    CHECK(e.h.holdLevel() == 0.f);
+
+    const HallucinationTuning d;
+    CHECK(d.escrowDelaySeconds == 5.f);
 }
