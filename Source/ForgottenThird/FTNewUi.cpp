@@ -92,6 +92,10 @@ static_assert(UE_ARRAY_COUNT(kLoneLineUi) == ftcore::kUiLoneLineKinds, "one line
 const FTUiText kLoneAloneUi(TEXT("arena.lone.alone"));
 const FTUiText kLoneEndedGiftUi(TEXT("arena.lone.ended_gift"));
 const FTUiText kLoneEndedPartnerUi(TEXT("arena.lone.ended_partner"));
+// The hallucination's read-outs: TOO SOON in the call slot (a refusal made too early), WAIT in the lead's state slot (an
+// Escrow wait running).
+const FTUiText kTooSoonUi(TEXT("arena.call.too_soon"));
+const FTUiText kWaitUi(TEXT("arena.wait"));
 // The Read row's move names, by the tell the move shows (arenaTellName).
 const char* const kReadTells[9] = {"strike", "overhead", "backhand", "charge", "thrust", "slash", "sweep", "slam", "shot"};
 const FTUiText kReadStrikeUi(TEXT("arena.read.strike"));
@@ -115,16 +119,18 @@ const FTUiText kDodgeUi(TEXT("input.dodge"));
 const FTUiText kJumpUi(TEXT("input.jump"));
 const FTUiText kPromptUi[] = {kHealUi, kGiftHealUi, kGiftGuardUi, kReloadUi, kPartnerUi, kAttackUi, kGuardUi, kDodgeUi, kJumpUi};
 static_assert(UE_ARRAY_COUNT(kPromptUi) == ftcore::kUiPromptCount, "one word per prompt, in UiPrompt order");
-// Each prompt's key: the controls line's entry with this label, or (no label) the entry that carries this action. The gift
-// rows go by the Gift action, so while that action also carries the heal (its label is input.heal) they share the heal's
-// key, and one row per key keeps the heal's (uiPromptsDrawable). RELOAD has no action yet: no entry has its label, so it
-// has no key and draws nothing.
+// Each prompt's key: the controls line's entry with this label, or (no label) the entry that carries this action, else
+// that action's own keys (inputActionKeys). HEAL is the lead's own heal (input.heal: H, on a pad D-pad up). The gifts are
+// left out of the controls line, so they take their own keys: G and Y, and on a pad, with no button of their own, Guard
+// held plus the heal's button or Crouch's ("LB+D-pad up", "LB+D-pad left"). A rebinding that puts two rows on one key
+// keeps the lowest (uiPromptsDrawable). RELOAD has no action yet: no entry has its label, so it has no key and draws
+// nothing.
 struct FPromptKeyOf
 {
 	const char* Label;
 	ftcore::InputAction Action;
 };
-const FPromptKeyOf kPromptKeys[] = {{"input.heal", {}}, {nullptr, ftcore::InputAction::Gift}, {nullptr, ftcore::InputAction::Gift},
+const FPromptKeyOf kPromptKeys[] = {{"input.heal", {}}, {nullptr, ftcore::InputAction::GiftHeal}, {nullptr, ftcore::InputAction::GiftGuard},
 	{"input.reload", {}}, {"input.count", {}}, {"input.light", {}}, {"input.guard", {}}, {"input.dodge", {}}, {"input.jump", {}}};
 static_assert(UE_ARRAY_COUNT(kPromptKeys) == ftcore::kUiPromptCount, "one key per prompt, in UiPrompt order");
 // A Qte's word in the call slot: a Tap shows its button's word (the basic controls', by ActionButton), a Hold HOLD, a
@@ -1023,6 +1029,11 @@ constexpr float PartnerInk = 0.85f; // the partner's name
 constexpr float NoteInk = 0.8f;     // the labels
 constexpr float PrefixInk = 0.7f;   // NEXT MOVE
 constexpr float SlotInk = 0.7f;     // LOAD (and ALONE, ENDED) in the lead's state slot
+// WAIT's line in the state slot: px after the word and long at the wait's start (a TimerW line, as a Qte's).
+constexpr float WaitGap = 10.f;
+constexpr float WaitLen = 80.f;
+constexpr float TooSoonShow = 1.f; // seconds TOO SOON stands in the call slot
+constexpr float GiftGap = 24.f;    // px between GIFT HEAL's cap and GIFT GUARD's word when the GIFT row holds both
 constexpr float LoneHeadInk = 0.7f; // the Lone Carry card's heads, YOU GAIN and YOU GIVE UP
 // The Lone Carry's card over the party block, left-aligned on its margin, no panel: px from its last line's foot to the
 // block's top, from the title's foot to the heads, between the columns, and between lines over their ascent.
@@ -1125,15 +1136,21 @@ ftcore::UiFirstUseMode FirstUseMode()
 
 // -UiStateShot=<name>, honoured only with -ArenaShotUi and out of shipping builds: one HUD state held for a still, on
 // test data where the fight has none. lone_card: the Lone Carry's card in full (the runner's terms while the lead is
-// Lone, else the default tuning's) and ALONE in the state slot; lone_alone: ALONE alone; lone_ended: ENDED: GIFT. A
-// held state never counts a showing or writes the save.
+// Lone, else the default tuning's) and ALONE in the state slot; lone_alone: ALONE alone; lone_ended: ENDED: GIFT;
+// gift: both gifts ready (GIFT HEAL 2 at least) and the lead hurt (70 percent if at full), so the GIFT row holds both;
+// too_soon: TOO SOON in the call slot; wait: WAIT with its line at 60 percent. A held state never counts a showing or
+// writes the save.
 enum class EUiStateShot : uint8
 {
 	None,
 	LoneCard,
 	LoneAlone,
 	LoneEnded,
+	Gift,
+	TooSoon,
+	Wait,
 };
+bool IsLoneShot(EUiStateShot S) { return S == EUiStateShot::LoneCard || S == EUiStateShot::LoneAlone || S == EUiStateShot::LoneEnded; }
 
 EUiStateShot UiStateShot()
 {
@@ -1148,6 +1165,9 @@ EUiStateShot UiStateShot()
 		const EUiStateShot S = V == TEXT("lone_card") ? EUiStateShot::LoneCard
 			: V == TEXT("lone_alone")                 ? EUiStateShot::LoneAlone
 			: V == TEXT("lone_ended")                 ? EUiStateShot::LoneEnded
+			: V == TEXT("gift")                       ? EUiStateShot::Gift
+			: V == TEXT("too_soon")                   ? EUiStateShot::TooSoon
+			: V == TEXT("wait")                       ? EUiStateShot::Wait
 													  : EUiStateShot::None;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena UI: -UiStateShot=%s %s."), *V, S == EUiStateShot::None ? TEXT("is not a state; ignored") : TEXT("held"));
 		return S;
@@ -1253,10 +1273,25 @@ public:
 		Frame.partner.lead = Runner->GetAllySeat();
 		ftcore::fillArenaHudPartner(Fight, Frame.partner); // the carrying runs' ally; zero (absent) otherwise
 		Frame.partner.load = Frame.partner.present ? Runner->GetPartnerLoad() : 0;
-		// Nothing reports the third place yet. The Gift Heals left (giftHeals) and the Gift Guard's cooldown (giftGuardReady)
-		// go here, after this reset; so does a live Qte (Frame.lead.qte, which fillArenaHudLead leaves alone). Until then
-		// their defaults draw nothing.
+		// The third place's gift prompts, from the session (without one their defaults draw nothing): the Gift Heals left
+		// while one is ready (0 while it cools down, so GIFT HEAL opens only when a press would give it; uiPromptsOpen also
+		// wants the lead hurt), and the Gift Guard off its cooldown. A live Qte (Frame.lead.qte, which fillArenaHudLead leaves
+		// alone) would go here too; nothing reports one yet.
 		Frame.third = ftcore::ArenaHudThird{};
+		if (Runner->GetSession())
+		{
+			Frame.third.giftHeals = Runner->GetGiftHealReadyIn() <= 0.0 ? Runner->GetGiftHealsLeft() : 0;
+			Frame.third.giftGuardReady = Runner->GetGiftGuardReadyIn() <= 0.0;
+		}
+		if (UiStateShot() == EUiStateShot::Gift)
+		{
+			Frame.third.giftHeals = FMath::Max(Frame.third.giftHeals, 2);
+			Frame.third.giftGuardReady = true;
+			if (Frame.lead.hpMax > 0 && Frame.lead.hp >= Frame.lead.hpMax)
+			{
+				Frame.lead.hp = Frame.lead.hpMax * 7 / 10;
+			}
+		}
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
 		const ftcore::ArenaHudLead& L = View.now.lead;
 		HpLost.Step(Frac(L.hp, L.hpMax), DeltaTime);
@@ -1324,6 +1359,7 @@ public:
 		TickEvents(*Runner, Fight, DeltaTime);
 		TickFirstUse(*Runner, Fight, DeltaTime);
 		TickLone(*Runner, Fight, DeltaTime);
+		TickHall(*Runner, Fight, DeltaTime);
 		TickBudget(Fight, Changed, DeltaTime);
 		TickLabels(*Runner);
 	}
@@ -1355,9 +1391,11 @@ public:
 		In.prompts = ftcore::uiPromptsDrawable(Open, PromptKeyed, PromptSameKeyBelow);
 		In.resultOpen = bResult;
 		In.want = ftcore::uiMarkWants(Now, In.prompts);
-		// A live Qte is a timed press like a windup: it counts as a tell, so the budget never drops it.
+		// A live Qte is a timed press like a windup: it counts as a tell, so the budget never drops it. So does TOO SOON while
+		// it stands, the call slot's other word of the player's own.
 		const bool bQteLive = Now.lead.qte.live;
-		uint8 Tells = static_cast<uint8>(bQteLive ? 1 : 0);
+		const bool bTooSoonLive = TooSoonLeft > 0.f;
+		uint8 Tells = static_cast<uint8>((bQteLive ? 1 : 0) + (bTooSoonLive ? 1 : 0));
 		uint8 FoeLines = 0;
 		bool bBossActs = false;
 		for (int32 I = 0; I < UFTArenaRunner::MaxEnemies; ++I)
@@ -1452,6 +1490,7 @@ public:
 				}
 			}
 		}
+		bTooSoonOn = bTooSoonLive && TellsLeft > 0; // after the windups: a foe's blow outranks a word about the player's timing
 		if (G.allowed(UiMarkKind::Cards) == 0)
 		{
 			ReadN = 0;
@@ -1612,6 +1651,10 @@ private:
 		LoneAloneWord = kLoneAloneUi.Get().ToUpper();
 		LoneEndedWord[0] = kLoneEndedGiftUi.Get().ToUpper();
 		LoneEndedWord[1] = kLoneEndedPartnerUi.Get().ToUpper();
+		WaitWord = kWaitUi.Get().ToUpper();
+		WaitWordW = TextWidth(WaitWord, NoteFont);
+		TooSoonWord = kTooSoonUi.Get().ToUpper();
+		TooSoonMid = InkMid(TooSoonWord, CallFont);
 		// The Lone Carry's card: the title in the lead name's size, the heads and lines in the labels'.
 		LoneTitle = kLoneTitleUi.Get().ToUpper();
 		LoneGainHead = kLoneGainUi.Get().ToUpper();
@@ -1665,6 +1708,10 @@ private:
 			if (const ftcore::InputHintEntry* E = EntryOf(Of))
 			{
 				Out = FT::ToFString(ftcore::inputHintKeys(FTInputBindings::Get(), *E, Device));
+			}
+			else if (!Of.Label)
+			{
+				Out = FT::ToFString(ftcore::inputActionKeys(FTInputBindings::Get(), Of.Action, Device)); // the line leaves it out
 			}
 			W = TextWidth(Out, KeyFont);
 		};
@@ -1828,7 +1875,7 @@ private:
 			bLoneCardBuilt = false;
 		}
 		ftcore::uiLoneStep(Lone, In, DeltaTime);
-		if (bFight && Shot != EUiStateShot::None)
+		if (bFight && IsLoneShot(Shot))
 		{
 			HoldLoneShot(Runner, Fight, Shot);
 		}
@@ -1862,6 +1909,40 @@ private:
 			Lone.endedLeft = ftcore::kUiLoneEndedShow;
 			break;
 		case EUiStateShot::None:
+		case EUiStateShot::Gift:
+		case EUiStateShot::TooSoon:
+		case EUiStateShot::Wait:
+			break;
+		}
+	}
+
+	// The hallucination's read-outs (the runner's, live only in a hallucination run): TOO SOON stands in the call slot for
+	// a second from the moment a refusal comes too early (the runner reports it longer; its rising edge starts the HUD's
+	// own second), and the Escrow wait gives the state slot WAIT and its shrinking line (Core's uiWaitLineStep). The weak
+	// point's lock (GetWeakPointLockFor) draws nothing.
+	void TickHall(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, float DeltaTime)
+	{
+		const bool bFight = !Fight.over();
+		const bool bTooEarly = bFight && Runner.IsRefusedTooEarly();
+		TooSoonLeft = bTooEarly && !bTooEarlyWas ? Hud::TooSoonShow : FMath::Max(0.f, TooSoonLeft - DeltaTime);
+		bTooEarlyWas = bTooEarly;
+		bWaiting = bFight && Runner.IsEscrowWaiting();
+		Wait01 = ftcore::uiWaitLineStep(WaitLine, bWaiting, Runner.GetEscrowWaitLeft());
+		if (!bFight)
+		{
+			TooSoonLeft = 0.f;
+			return;
+		}
+		switch (UiStateShot())
+		{
+		case EUiStateShot::TooSoon:
+			TooSoonLeft = Hud::TooSoonShow;
+			break;
+		case EUiStateShot::Wait:
+			bWaiting = true;
+			Wait01 = 0.6f;
+			break;
+		default:
 			break;
 		}
 	}
@@ -2143,13 +2224,22 @@ private:
 			}
 		}
 		// The state slot, right of the name on its baseline, one word (Core's uiLeadWord): RELEASE and its key once the
-		// Release is open, else LOAD while some is held, else ALONE while the lead carries alone (or, for a moment after a
-		// gift or the partner ends it, ENDED: GIFT or ENDED: PARTNER in its place), else nothing.
+		// Release is open, else WAIT while an Escrow wait runs (in full ink, its line after it shrinking over the wait),
+		// else LOAD while some is held, else ALONE while the lead carries alone (or, for a moment after a gift or the
+		// partner ends it, ENDED: GIFT or ENDED: PARTNER in its place), else nothing.
 		const float SlotX = X0 + LeadNameW + 16.f * S;
 		const FLinearColor SlotC = Tok(UiToken::Ink, Hud::SlotInk * A);
-		const ftcore::UiLeadWord SlotWord = ftcore::uiLeadWord(ftcore::uiLeadSlot(L), ftcore::uiLoneWord(Lone));
+		const ftcore::UiLeadWord SlotWord = ftcore::uiLeadWord(ftcore::uiLeadSlot(L), bWaiting, ftcore::uiLoneWord(Lone));
 		switch (SlotWord)
 		{
+		case ftcore::UiLeadWord::Wait:
+		{
+			const FLinearColor WaitC = Tok(UiToken::Ink, A);
+			P.Text(SlotX, NameBase - NoteAsc, WaitWord, NoteFont, WaitC);
+			const float LX = SlotX + WaitWordW + Hud::WaitGap * S;
+			ValueLine(LX, LX + Hud::WaitLen * S, CapMid(NameBase, NoteAsc), 0.f, Wait01, Hud::TimerW, 91, S, WaitC, 0.f);
+			break;
+		}
 		case ftcore::UiLeadWord::Load:
 			P.Text(SlotX, NameBase - NoteAsc, LoadWord, NoteFont, SlotC);
 			break;
@@ -2405,8 +2495,18 @@ private:
 			}
 			SlotTop += CallAsc + 42.f * S;
 		}
+		// TOO SOON: a refusal made too early, in ink as a call word, for a second. It goes under whatever the slot holds
+		// (the call word, a Qte, the Read row), so nothing live moves for it.
+		const auto TooSoon = [&](float At)
+		{
+			if (bTooSoonOn)
+			{
+				P.Text(CX - TooSoonMid, At, TooSoonWord, CallFont, Tok(UiToken::Ink));
+			}
+		};
 		if (ReadN <= 0)
 		{
+			TooSoon(SlotTop);
 			return;
 		}
 		// NEXT MOVE (and xN on a streak of two or more), then each card's key cap and then its move (only the picked card
@@ -2446,6 +2546,7 @@ private:
 				X += ReadMoveW[ReadCard[I]];
 			}
 		}
+		TooSoon(MidY + (0.5f * Hud::KeyCapH + 34.f) * S); // 34 px under the row's key caps, as a row under a call line
 	}
 
 	// The second hp line under the boss's: the target, when it is not the boss. Its own grant and fade (the boss line may be
@@ -2474,7 +2575,9 @@ private:
 	// uiPromptRow: HEAL, GIFT, RELOAD, PARTNER, then a first fight's ATTACK, GUARD, DODGE and JUMP); right-aligned, its
 	// word and its key cap; only the ones usable now (Core's grant), at full ink: a prompt that cannot be used is not
 	// drawn, never greyed. A row with nothing open stays empty. Nothing behind them but the bottom shade. A gift row is
-	// ink like the rest: gold is the lead's own power and a gift is not.
+	// ink like the rest: gold is the lead's own power and a gift is not. The GIFT row is the one that may hold two: with
+	// both gifts ready GIFT GUARD keeps the margin and GIFT HEAL stands to its left, GiftGap px from GIFT GUARD's word;
+	// either alone takes the margin.
 	void PaintPrompts(const FPainter& P, const FVector2f& Size) const
 	{
 		const ftcore::UiPromptMask Shown = Budget.out.promptsShown;
@@ -2490,13 +2593,19 @@ private:
 			const float Row = static_cast<float>(ftcore::uiPromptRow(static_cast<ftcore::UiPrompt>(I)));
 			const float MidY = Size.Y - (Hud::Margin + 0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
 			const float CapW = KeyCapW(PromptKeyW[I], S);
-			KeyCap(P, RX - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyW[I], C);
+			float At = RX;
+			constexpr int32 GG = static_cast<int32>(ftcore::UiPrompt::GiftGuard);
+			if (I == static_cast<int32>(ftcore::UiPrompt::GiftHeal) && ((Shown >> GG) & 1u) && !PromptKey[GG].IsEmpty())
+			{
+				At -= KeyCapW(PromptKeyW[GG], S) + 10.f * S + PromptWordW[GG] + Hud::GiftGap * S;
+			}
+			KeyCap(P, At - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyW[I], C);
 			// The two rows with a count carry it in their word (built when it changes).
 			const bool bHeal = I == static_cast<int32>(ftcore::UiPrompt::Heal);
 			const bool bGiftHeal = I == static_cast<int32>(ftcore::UiPrompt::GiftHeal);
 			const float WW = bHeal ? HealW : bGiftHeal ? GiftHealW : PromptWordW[I];
 			const FString& Word = bHeal ? HealText : bGiftHeal ? GiftHealText : PromptWord[I];
-			const float WX = RX - CapW - 10.f * S - WW;
+			const float WX = At - CapW - 10.f * S - WW;
 			P.Text(WX, CapTop(MidY, PromptAsc), Word, PromptFont, C);
 		}
 	}
@@ -3054,6 +3163,16 @@ private:
 	float QteWordW[kQteWords] = {}, QteMid[kQteWords] = {};
 	bool bQteOn = false;
 	float QteLeft = 0.f;
+	// The hallucination's read-outs: TOO SOON's word and second (and whether the budget drew it), the runner's too-early
+	// flag as of the last tick, and the Escrow wait's WAIT, its line's state and what is left of it.
+	FString TooSoonWord, WaitWord;
+	float TooSoonMid = 0.f, WaitWordW = 0.f;
+	float TooSoonLeft = 0.f;
+	bool bTooEarlyWas = false;
+	bool bTooSoonOn = false;
+	bool bWaiting = false;
+	ftcore::UiWaitLine WaitLine;
+	float Wait01 = 0.f;
 	// The rows' trade of places on a lead switch.
 	ftcore::UiRowSwap RowSwap;
 	// The first-use labels and SHARED.

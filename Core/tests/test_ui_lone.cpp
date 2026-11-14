@@ -211,14 +211,38 @@ TEST_CASE("ui lone: never alone, nothing shows") {
     CHECK(uiLoneCardAlpha(s) == 0.f);
 }
 
-TEST_CASE("ui lone: the state slot's priority is RELEASE, LOAD, then the Lone Carry's word") {
-    CHECK(uiLeadWord(UiLeadSlot::Release, UiLoneWord::Alone) == UiLeadWord::Release);
-    CHECK(uiLeadWord(UiLeadSlot::Load, UiLoneWord::Alone) == UiLeadWord::Load);
-    CHECK(uiLeadWord(UiLeadSlot::None, UiLoneWord::Alone) == UiLeadWord::Alone);
-    CHECK(uiLeadWord(UiLeadSlot::None, UiLoneWord::EndedGift) == UiLeadWord::EndedGift);
-    CHECK(uiLeadWord(UiLeadSlot::Load, UiLoneWord::EndedPartner) == UiLeadWord::Load);
-    CHECK(uiLeadWord(UiLeadSlot::None, UiLoneWord::EndedPartner) == UiLeadWord::EndedPartner);
-    CHECK(uiLeadWord(UiLeadSlot::None, UiLoneWord::None) == UiLeadWord::None);
+TEST_CASE("ui lone: the state slot's priority is RELEASE, WAIT, LOAD, then the Lone Carry's word") {
+    CHECK(uiLeadWord(UiLeadSlot::Release, false, UiLoneWord::Alone) == UiLeadWord::Release);
+    CHECK(uiLeadWord(UiLeadSlot::Load, false, UiLoneWord::Alone) == UiLeadWord::Load);
+    CHECK(uiLeadWord(UiLeadSlot::None, false, UiLoneWord::Alone) == UiLeadWord::Alone);
+    CHECK(uiLeadWord(UiLeadSlot::None, false, UiLoneWord::EndedGift) == UiLeadWord::EndedGift);
+    CHECK(uiLeadWord(UiLeadSlot::Load, false, UiLoneWord::EndedPartner) == UiLeadWord::Load);
+    CHECK(uiLeadWord(UiLeadSlot::None, false, UiLoneWord::EndedPartner) == UiLeadWord::EndedPartner);
+    CHECK(uiLeadWord(UiLeadSlot::None, false, UiLoneWord::None) == UiLeadWord::None);
+    // WAIT: under RELEASE, over LOAD and the Lone Carry's words.
+    CHECK(uiLeadWord(UiLeadSlot::Release, true, UiLoneWord::Alone) == UiLeadWord::Release);
+    CHECK(uiLeadWord(UiLeadSlot::Load, true, UiLoneWord::Alone) == UiLeadWord::Wait);
+    CHECK(uiLeadWord(UiLeadSlot::None, true, UiLoneWord::Alone) == UiLeadWord::Wait);
+    CHECK(uiLeadWord(UiLeadSlot::None, true, UiLoneWord::EndedGift) == UiLeadWord::Wait);
+    CHECK(uiLeadWord(UiLeadSlot::None, true, UiLoneWord::None) == UiLeadWord::Wait);
+}
+
+TEST_CASE("ui lone: WAIT's line shrinks over the wait and starts over with it") {
+    UiWaitLine w;
+    CHECK(uiWaitLineStep(w, false, 0.f) == 0.f);
+    CHECK(uiWaitLineStep(w, true, 5.f) == doctest::Approx(1.f));
+    CHECK(uiWaitLineStep(w, true, 4.f) == doctest::Approx(0.8f));
+    CHECK(uiWaitLineStep(w, true, 1.25f) == doctest::Approx(0.25f));
+    // The offer left and taken again: the time left rises, so the line starts full from there.
+    CHECK(uiWaitLineStep(w, true, 5.f) == doctest::Approx(1.f));
+    CHECK(uiWaitLineStep(w, true, 2.5f) == doctest::Approx(0.5f));
+    // The wait over: no line, and the next wait measures afresh.
+    CHECK(uiWaitLineStep(w, false, 2.5f) == 0.f);
+    CHECK(w.full == 0.f);
+    CHECK(uiWaitLineStep(w, true, 0.f) == 0.f);
+    // First seen part-way through (the HUD came up mid-wait): full from there.
+    CHECK(uiWaitLineStep(w, true, 3.f) == doctest::Approx(1.f));
+    CHECK(uiWaitLineStep(w, true, 1.5f) == doctest::Approx(0.5f));
 }
 
 TEST_CASE("ui lone: building and stepping allocate nothing") {

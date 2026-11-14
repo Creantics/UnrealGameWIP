@@ -335,3 +335,27 @@ TEST_CASE("input hints: key labels") {
     CHECK(inputRouteLabel("right_stick_flick") == "RS flick");
     CHECK(inputRouteLabel("map_hold").empty());
 }
+
+TEST_CASE("input hints: one action's keys, for a key prompt") {
+    InputBindings b = defaultInputBindings();
+    CHECK(inputActionKeys(b, InputAction::Gift, InputDevice::Keys) == "H");
+    CHECK(inputActionKeys(b, InputAction::Gift, InputDevice::Pad) == "D-pad up");
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Keys) == "G");
+    CHECK(inputActionKeys(b, InputAction::GiftGuard, InputDevice::Keys) == "Y");
+    // No pad key of their own: Guard held plus the heal's button, or plus Crouch's.
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Pad) == "LB+D-pad up");
+    CHECK(inputActionKeys(b, InputAction::GiftGuard, InputDevice::Pad) == "LB+D-pad left");
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Pad) == "LB+X");
+    CHECK(inputActionKeys(b, InputAction::MoveForward, InputDevice::Pad) == "LS");
+    CHECK(inputActionKeys(b, InputAction::Party, InputDevice::Keys) == "P");
+    InputBindings mapOnly = b; // with no key of its own, the party toggle is the map button held
+    mapOnly.keys[static_cast<std::size_t>(InputDevice::Keys)][static_cast<std::size_t>(InputAction::Party)] = InputKeyName{};
+    CHECK(inputActionKeys(mapOnly, InputAction::Party, InputDevice::Keys) == "Hold M");
+    // A pad key of its own wins over the route.
+    REQUIRE(rebindInput(b, InputAction::GiftHeal, InputDevice::Pad, "Gamepad_LeftStick_Left"));
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Pad) == "LS left");
+    // The route's second button unbound: nothing reaches it, so no key.
+    b.keys[static_cast<std::size_t>(InputDevice::Pad)][static_cast<std::size_t>(InputAction::Crouch)] = InputKeyName{};
+    CHECK(inputActionKeys(b, InputAction::GiftGuard, InputDevice::Pad).empty());
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Keys) == "T");
+}

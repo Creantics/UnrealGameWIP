@@ -159,6 +159,11 @@ FTCORE_API std::string_view inputKeyLabel(std::string_view key);
 FTCORE_API std::string_view inputRouteLabel(std::string_view route);
 // The keys one entry shows on a device, '/' between them, each once; empty when none of its actions is reachable.
 FTCORE_API std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d);
+// The keys that reach one action on a device, as a key prompt shows them: its own key's label; else, for a route of
+// Guard held plus a second button ("guard_interact", "guard_heal", "guard_crouch"), the two keys' labels with '+'
+// between ("LB+D-pad up"); else the route's label ("LS", or kInputHoldPrefix and the map key); empty when nothing
+// reaches it. Allocates: build it when the device or the bindings change, not every frame.
+FTCORE_API std::string inputActionKeys(const InputBindings& b, InputAction a, InputDevice d);
 // The word for a label key (the host's localised text); null shows the key itself.
 using InputHintText = std::string (*)(const char* labelKey, void* user);
 // The whole line: "<keys> <word>" per entry, two spaces apart. Allocates: build it when the device or the

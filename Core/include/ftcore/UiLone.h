@@ -5,7 +5,8 @@
 //   UiLone s;
 //   each tick: uiLoneStep(s, {fight live, alone, began, full, attack, endedBy}, dt)
 //   draw: the card at uiLoneCardAlpha(s) (s.full: the columns, else the title alone), its lines from uiLoneCard(bargain)
-//         (built when the bargain changes); the slot's word by uiLeadWord(gauge slot, uiLoneWord(s))
+//         (built when the bargain changes); the slot's word by uiLeadWord(gauge slot, escrow waiting, uiLoneWord(s)),
+//         WAIT's line by uiWaitLineStep
 //
 // Pure: the host feeds what the fight and the session report. Lines are kinds with their figures; the HUD maps each
 // kind to its words. No allocation.
@@ -117,9 +118,20 @@ FTCORE_API float uiLoneCardAlpha(const UiLone& s);
 // ALONE while it lasts, else the end's word while it shows, else none.
 FTCORE_API UiLoneWord uiLoneWord(const UiLone& s);
 
-// The lead's state slot, right of the name: one word, by priority RELEASE, LOAD, then the Lone Carry's word (ALONE,
-// or the end's in its place).
-enum class UiLeadWord : std::uint8_t { None, Release, Load, Alone, EndedGift, EndedPartner };
-FTCORE_API UiLeadWord uiLeadWord(UiLeadSlot gauge, UiLoneWord lone);
+// The lead's state slot, right of the name: one word, by priority RELEASE, WAIT, LOAD, then the Lone Carry's word
+// (ALONE, or the end's in its place). WAIT (`wait`: an Escrow wait running inside an offer) stands under RELEASE, the
+// one press that cannot wait, and over LOAD, which the name's fill still shows, and over ALONE, which lasts the fight:
+// the wait is short and asks for nothing but patience.
+enum class UiLeadWord : std::uint8_t { None, Release, Wait, Load, Alone, EndedGift, EndedPartner };
+FTCORE_API UiLeadWord uiLeadWord(UiLeadSlot gauge, bool wait, UiLoneWord lone);
+
+// WAIT's line, shrinking over the wait. The host reports only the time left, so the wait's length is the time left
+// when it began, or began again (the time left rose: the offer was left and the wait starts over).
+struct UiWaitLine {
+    float full = 0.f; // the wait's length (0: no wait)
+    float left = 0.f; // the time left last step
+};
+// What is left of the line, 1 down to 0; 0 (and the state cleared) when no wait runs.
+FTCORE_API float uiWaitLineStep(UiWaitLine& s, bool waiting, float left);
 
 } // namespace ftcore

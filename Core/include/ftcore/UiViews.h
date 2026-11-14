@@ -85,7 +85,8 @@ struct ArenaHudThird {
     std::uint8_t count = 0, countMax = 0; // the shared count
     // The gift prompts' data. They have their own nulls, apart from `planned`, because the prompts ask only for these two:
     // nothing is drawn until the host reports them.
-    int giftHeals = -1;            // Gift Heals left this fight (-1: none reported), shown in GIFT HEAL n
+    int giftHeals = -1;            // Gift Heals left this fight (-1: none reported), shown in GIFT HEAL n; the host
+                                   // reports 0 while the Gift Heal cools down, so its prompt opens only when it is ready
     bool giftGuardReady = false;   // the Gift Guard is off its cooldown (false also when none is reported)
     bool operator==(const ArenaHudThird&) const = default;
 };

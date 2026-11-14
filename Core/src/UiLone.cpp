@@ -170,8 +170,9 @@ float uiLoneCardAlpha(const UiLone& s) {
 
 UiLoneWord uiLoneWord(const UiLone& s) { return s.alone ? UiLoneWord::Alone : s.ended; }
 
-UiLeadWord uiLeadWord(UiLeadSlot gauge, UiLoneWord lone) {
+UiLeadWord uiLeadWord(UiLeadSlot gauge, bool wait, UiLoneWord lone) {
     if (gauge == UiLeadSlot::Release) return UiLeadWord::Release;
+    if (wait) return UiLeadWord::Wait;
     if (gauge == UiLeadSlot::Load) return UiLeadWord::Load;
     switch (lone) {
     case UiLoneWord::Alone: return UiLeadWord::Alone;
@@ -180,6 +181,17 @@ UiLeadWord uiLeadWord(UiLeadSlot gauge, UiLoneWord lone) {
     case UiLoneWord::None: break;
     }
     return UiLeadWord::None;
+}
+
+float uiWaitLineStep(UiWaitLine& s, bool waiting, float left) {
+    if (!waiting || !(left > 0.f)) {
+        s = UiWaitLine{};
+        return 0.f;
+    }
+    constexpr float kRise = 1e-3f; // a step's rounding is not a new wait
+    if (!(s.full > 0.f) || left > s.left + kRise) s.full = left;
+    s.left = left;
+    return std::clamp(left / s.full, 0.f, 1.f);
 }
 
 } // namespace ftcore

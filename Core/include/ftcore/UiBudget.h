@@ -36,7 +36,7 @@ enum class UiMarkKind : std::uint8_t {
     Boss,       // the boss line
     Party,      // one other party row
     Rounds,     // the cylinder by the lock mark or the aim dot
-    Prompt,     // one key prompt
+    Prompt,     // one row of key prompts (one prompt, or in the GIFT row both gifts)
     Target,     // a second hp line (the target when it is not the boss)
     Foe,        // a thin hp line over a body the top lines do not carry
 };
@@ -51,7 +51,8 @@ static_assert(kUiPromptCount <= 16, "UiPromptMask holds one bit per prompt");
 inline constexpr UiPromptMask uiPromptBit(UiPrompt p) { return static_cast<UiPromptMask>(1u << static_cast<unsigned>(p)); }
 
 // Each prompt owns a fixed row, counted up from the bottom margin (0 is the lowest), and never moves when others open or
-// close; an empty row stays empty. Row 1 HEAL, row 2 GIFT (GIFT HEAL and GIFT GUARD share it), row 3 RELOAD, row 4
+// close; an empty row stays empty. Row 1 HEAL, row 2 GIFT (GIFT HEAL and GIFT GUARD share it: with both ready both
+// stand, GIFT GUARD at the margin and GIFT HEAL to its left, and either alone takes the margin), row 3 RELOAD, row 4
 // PARTNER, rows 5 to 7 ATTACK, GUARD and DODGE, row 8 JUMP (when it is bound).
 constexpr std::uint8_t uiPromptRow(UiPrompt p) {
     switch (p) {
@@ -67,8 +68,12 @@ constexpr std::uint8_t uiPromptRow(UiPrompt p) {
     }
     return 0;
 }
-inline constexpr std::uint8_t kUiPromptRows = 8; // the rows there are, so at most this many at once
+inline constexpr std::uint8_t kUiPromptRows = 8; // the rows there are, so at most this many rows at once
 static_assert(uiPromptRow(UiPrompt::Jump) + 1 == kUiPromptRows, "the top row is JUMP's");
+// The one row two prompts may hold at once: the two gifts'. Every other row holds one.
+constexpr bool uiPromptSharesRow(UiPrompt p) { return p == UiPrompt::GiftHeal || p == UiPrompt::GiftGuard; }
+// The rows a prompt mask fills (a prompt mark is a row: the GIFT row costs one with one gift or two).
+FTCORE_API std::uint8_t uiPromptRowsOf(UiPromptMask m);
 
 struct UiBudgetInput {
     float dt = 0.f;
@@ -86,7 +91,7 @@ struct UiBudgetOut {
     std::array<std::uint8_t, kUiMarkKindCount> allow{}; // how many of each may be drawn
     std::uint8_t marks = 0;       // the total allowed
     float bossAlpha = 0.f;        // the boss line's show level (0 at rest)
-    UiPromptMask promptsShown = 0; // UiPrompt bits drawn: the open ones, first in order, as many as granted
+    UiPromptMask promptsShown = 0; // UiPrompt bits drawn: the open ones, first in order, in as many rows as granted
     std::uint8_t allowed(UiMarkKind k) const { return allow[static_cast<std::size_t>(k)]; }
 };
 
@@ -119,11 +124,11 @@ FTCORE_API UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen);
 // already opens them only when usable.
 FTCORE_API bool uiControlUsable(const ArenaHudLead& lead, UiPrompt p);
 
-// One prompt per row, one row per key, and only rows that have a key. A prompt with no key on the device (not in
-// `keyed`) is dropped. So is one whose key a lower open prompt already shows (`sameKeyBelow[p]`: the lower prompts bound
-// to p's key): the one left is the lowest, because a shared key does what the lowest live row says (the heal before a
-// gift). So is one whose row a lower prompt already holds (GIFT HEAL keeps the GIFT row over GIFT GUARD). This runs
-// before the budget, so a prompt that would draw nothing takes no mark.
+// One prompt per row (two in the GIFT row), one row per key, and only rows that have a key. A prompt with no key on the
+// device (not in `keyed`) is dropped. So is one whose key a lower open prompt already shows (`sameKeyBelow[p]`: the
+// lower prompts bound to p's key): the one left is the lowest, because a shared key does what the lowest live row says
+// (the heal before a gift). So is one whose row a lower prompt already holds, but for the GIFT row, which holds both
+// gifts. This runs before the budget, so a prompt that would draw nothing takes no mark.
 FTCORE_API UiPromptMask uiPromptsDrawable(UiPromptMask open, UiPromptMask keyed,
                                           const std::array<UiPromptMask, kUiPromptCount>& sameKeyBelow);
 

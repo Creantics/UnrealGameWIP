@@ -464,6 +464,34 @@ std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, Input
     return keys;
 }
 
+std::string inputActionKeys(const InputBindings& b, InputAction a, InputDevice d) {
+    const auto keyOf = [&b, d](InputAction x) {
+        return b.keys[static_cast<std::size_t>(d) % kInputDeviceCount][static_cast<std::size_t>(x) % kInputActionCount].view();
+    };
+    const std::string_view own = keyOf(a);
+    if (!own.empty()) return std::string(inputKeyLabel(own));
+    const char* route = inputActionRoute(a, d);
+    if (!route) return std::string();
+    const std::string_view r(route);
+    if (r == "map_hold") {
+        const std::string_view map = keyOf(InputAction::Map);
+        return map.empty() ? std::string() : std::string(kInputHoldPrefix) + std::string(inputKeyLabel(map));
+    }
+    // Guard held plus a second button: the second is the one the route names.
+    InputAction second = InputAction::Guard;
+    if (r == "guard_interact") second = InputAction::Interact;
+    else if (r == "guard_heal") second = InputAction::Gift;
+    else if (r == "guard_crouch") second = InputAction::Crouch;
+    if (second == InputAction::Guard) return std::string(inputRouteLabel(r));
+    const std::string_view guard = keyOf(InputAction::Guard);
+    const std::string_view other = keyOf(second);
+    if (guard.empty() || other.empty()) return std::string();
+    std::string keys(inputKeyLabel(guard));
+    keys += '+';
+    keys += inputKeyLabel(other);
+    return keys;
+}
+
 std::string inputHintLine(const InputBindings& b, InputHintScreen screen, InputDevice d, InputHintText text, void* user) {
     const InputHintEntry* entries = nullptr;
     const std::size_t count = inputHintEntries(screen, entries);

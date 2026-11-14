@@ -233,11 +233,12 @@ TEST_CASE("ui budget: never more than the mark cap in action, highest priority k
                     int sum = 0;
                     for (std::uint8_t a : o.allow) sum += a;
                     CHECK(sum == o.marks);
-                    // The prompts drawn are as many as granted, the first ones in order.
+                    // The prompts drawn fill as many rows as granted, the first ones in order (the GIFT row's two
+                    // prompts in one row).
                     int shown = 0;
                     for (unsigned b = o.promptsShown; b; b &= b - 1) ++shown;
-                    CHECK(shown == o.allowed(UiMarkKind::Prompt));
-                    CHECK(shown <= kUiPromptRows);
+                    CHECK(uiPromptRowsOf(o.promptsShown) == o.allowed(UiMarkKind::Prompt));
+                    CHECK(uiPromptRowsOf(o.promptsShown) <= kUiPromptRows);
                     CHECK((o.promptsShown & ~((1u << shown) - 1u)) == 0);
                     CHECK(st.maxMarks <= rules.marks);
                 }
@@ -299,9 +300,7 @@ TEST_CASE("ui budget: a first fight's call word, Read row and lock come before i
     CHECK(o.allowed(UiMarkKind::Lock) == 1);
     CHECK(o.allowed(UiMarkKind::Boss) == 1);
     // What the prompts are granted goes to the lowest rows; the rows above are simply empty.
-    int shown = 0;
-    for (unsigned b = o.promptsShown; b; b &= b - 1) ++shown;
-    CHECK(shown == o.allowed(UiMarkKind::Prompt));
+    CHECK(uiPromptRowsOf(o.promptsShown) == o.allowed(UiMarkKind::Prompt));
     CHECK((o.promptsShown & uiPromptBit(UiPrompt::Heal)) != 0);
 }
 
@@ -343,7 +342,7 @@ TEST_CASE("ui budget: the gift and reload rows open only on reported data") {
     CHECK((uiPromptsOpen(f, false) & uiPromptBit(UiPrompt::Reload)) == 0);
 }
 
-TEST_CASE("ui budget: HEAL, GIFT, RELOAD and PARTNER all draw, each in its own row") {
+TEST_CASE("ui budget: HEAL, the GIFT row, RELOAD and PARTNER all draw, each row its own mark") {
     const UiBudgetRules rules;
     ArenaHudFrame f = fullFrame();
     f.third.giftHeals = 3;
@@ -354,14 +353,26 @@ TEST_CASE("ui budget: HEAL, GIFT, RELOAD and PARTNER all draw, each in its own r
                          uiPromptBit(UiPrompt::Pair)));
     uiBudgetStep(st, in, rules);
     CHECK(st.out.promptsShown == in.prompts);
-    // GIFT GUARD open as well: it shares the GIFT row, which GIFT HEAL holds; PARTNER keeps its row.
+    // GIFT GUARD open as well: the GIFT row holds both gifts, and costs one row's mark, so PARTNER keeps its row.
     f.third.giftGuardReady = true;
     in = busy(f);
     in.prompts = uiPromptsDrawable(in.prompts, kAllPrompts, {});
     in.want = uiMarkWants(f, in.prompts);
+    CHECK(in.want[K(UiMarkKind::Prompt)] == 4);
     uiBudgetStep(st, in, rules);
-    CHECK(st.out.promptsShown == (uiPromptBit(UiPrompt::Heal) | uiPromptBit(UiPrompt::GiftHeal) | uiPromptBit(UiPrompt::Reload) |
-                                  uiPromptBit(UiPrompt::Pair)));
+    CHECK(st.out.promptsShown == (uiPromptBit(UiPrompt::Heal) | uiPromptBit(UiPrompt::GiftHeal) | uiPromptBit(UiPrompt::GiftGuard) |
+                                  uiPromptBit(UiPrompt::Reload) | uiPromptBit(UiPrompt::Pair)));
+    CHECK(st.out.allowed(UiMarkKind::Prompt) == 4);
+    // One row's grant: HEAL alone. Two: HEAL and the whole GIFT row, never one gift of the two.
+    for (std::uint8_t g = 1; g <= 2; ++g) {
+        UiBudgetState few;
+        UiBudgetInput one = in;
+        one.want[K(UiMarkKind::Prompt)] = g;
+        uiBudgetStep(few, one, rules);
+        const UiPromptMask gifts = static_cast<UiPromptMask>(uiPromptBit(UiPrompt::GiftHeal) | uiPromptBit(UiPrompt::GiftGuard));
+        CHECK(uiPromptRowsOf(few.out.promptsShown) == g);
+        CHECK((few.out.promptsShown & gifts) == (g == 2 ? gifts : 0));
+    }
     // Unhurt: no heal, no Gift Heal, so GIFT GUARD has the GIFT row; HEAL's row stays empty.
     f.lead.hp = f.lead.hpMax;
     in = busy(f);
@@ -379,7 +390,7 @@ TEST_CASE("ui budget: one row per key, and none without a key") {
     CHECK(uiPromptsDrawable(heal | reload, kAllPrompts, none) == (heal | reload));
     // No key on the device: no row (so it takes no row and no mark in the budget).
     CHECK(uiPromptsDrawable(heal | reload, static_cast<UiPromptMask>(kAllPrompts & ~reload), none) == heal);
-    // Today's binding: the heal and both gifts on the one key. The lowest live row is the one drawn.
+    // A binding with the heal and both gifts on the one key: the lowest live row is the one drawn.
     std::array<UiPromptMask, kUiPromptCount> shared{};
     shared[static_cast<std::size_t>(UiPrompt::GiftHeal)] = heal;
     shared[static_cast<std::size_t>(UiPrompt::GiftGuard)] = heal | giftHeal;
@@ -387,9 +398,16 @@ TEST_CASE("ui budget: one row per key, and none without a key") {
     CHECK(uiPromptsDrawable(giftHeal | giftGuard, kAllPrompts, shared) == giftHeal);
     CHECK(uiPromptsDrawable(giftGuard | reload, kAllPrompts, shared) == (giftGuard | reload));
     CHECK(uiPromptsDrawable(0, kAllPrompts, shared) == 0);
-    // Keys apart: the two gifts still share one row, GIFT HEAL's; with no key for it, GIFT GUARD has the row.
-    CHECK(uiPromptsDrawable(giftHeal | giftGuard, kAllPrompts, none) == giftHeal);
+    // Keys apart (today's binding): the GIFT row holds both gifts; with no key for one, the other has it alone.
+    CHECK(uiPromptsDrawable(giftHeal | giftGuard, kAllPrompts, none) == (giftHeal | giftGuard));
     CHECK(uiPromptsDrawable(giftHeal | giftGuard, static_cast<UiPromptMask>(kAllPrompts & ~giftHeal), none) == giftGuard);
+    CHECK(uiPromptRowsOf(static_cast<UiPromptMask>(heal | giftHeal | giftGuard | reload)) == 3);
+    CHECK(uiPromptRowsOf(0) == 0);
+    // Only the GIFT row is shared: every other row still holds one prompt.
+    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
+        const UiPrompt q = static_cast<UiPrompt>(p);
+        CHECK(uiPromptSharesRow(q) == (uiPromptRow(q) == uiPromptRow(UiPrompt::GiftHeal)));
+    }
 }
 
 TEST_CASE("ui budget: the result card stands alone") {
