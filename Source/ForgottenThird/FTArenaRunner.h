@@ -333,6 +333,10 @@ public:
 	// The lead's and the ally's look names (empty for the test human), the HUD's party rows' names.
 	const FString& GetLeadName() const { return LeadName; }
 	const FString& GetAllyName() const { return AllyName; }
+	// The third slot as the session holds it (a checkpoint keeps it), and why any gift press is refused in it now
+	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
+	ftcore::SlotState GetThirdSlot() const;
+	ftcore::GiftError GetThirdSlotRefusal() const;
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -549,6 +553,7 @@ private:
 	// The half-angle the log last named and when (real time): a zoom's every frame is not a line.
 	float LoggedCameraHalf = -1.f;
 	double CameraHalfLoggedAt = -1e9;
+	double CameraHalfChangedAt = -1e9; // when it last changed: a change the throttle kept back is logged once it holds 1 s
 	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when, how
 	// far into its get-up it was last drawn (s), and until when a get-up cut short by the spell's end is still owed.
 	bool bKneeling[ftcore::kMaxArenaEnemies] = {};
@@ -643,9 +648,11 @@ private:
 	int32 Marks = 0;
 	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
 	int32 CappedBlows = 0; // blows the blow cap kept down this fight (-ArenaCountLift)
-	// -ArenaLone (or -ArenaThirdSlot=Vacant|Hostile, which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
+	// -ArenaLone, or a third slot that is not Companion (which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
 	bool bLone = false;
-	uint8 LoneSlot = 0;                 // ftcore::SlotState set on the third slot after the session begins
+	// The fight's third slot (ftcore::SlotState), the session's def.thirdSlot at begin: the story carry's (Companion with
+	// no carry); -ArenaThirdSlot=Companion|Vacant|Hostile overrides it outside Shipping.
+	uint8 ThirdSlot = 0;
 	ftcore::LoneTuning LoneTuning{};
 	bool bLoneAtStart = false;
 	double LoneEndedAt = -1.0;          // the fight time a given gift ended it (-1: it did not)
@@ -653,6 +660,11 @@ private:
 	int32 LoneGiftPresses = 0;          // gift presses while Lone, given or refused
 	int32 LoneGiftsRefused = 0;         // of those, refused (still Lone)
 	int32 LoneBreaches = 0;             // while Lone: a join, a table begun, or a Release not pooled (the check: 0)
+	// The session's own fall rules, seen from a fight with no partner body: takeovers and rises it reported (the check:
+	// none) and whether it called the defeat the fight's loss is.
+	int32 SessionTakeovers = 0;
+	int32 SessionRises = 0;
+	bool bSessionDefeated = false;
 	int32 LonePartnerCalls = 0;         // Count presses the session accepted while Lone: the lead calling the partner in
 	int32 LonePartnerEnds = 0;          // endLone(PartnerCalled) calls that ended it (the check: one per call, at most one)
 	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
@@ -663,7 +675,7 @@ private:
 	bool bProbeAwaiting = false;
 	void LogProbeCheck(const ftcore::GiftResult& Result);
 	// The stance this fight begins in: chosen, or forced by the third slot.
-	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
+	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(ThirdSlot)); }
 	// The stance the session will accept for this lead (asked before the fight begins, so a refused one changes
 	// nothing: the chairs' heal charges stay).
 	bool LoneAccepted(uint8 Lead) const { return ftcore::loneAtBegin(LoneWanted(), Session != nullptr, Lead, LoneTuning); }

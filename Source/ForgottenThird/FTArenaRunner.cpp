@@ -448,18 +448,30 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		LoneGiftAt = -1.f;
 	}
-	LoneSlot = static_cast<uint8>(ftcore::SlotState::Companion);
+#else
+	bLone = false;
+#endif
+	// The third slot: the story carry's while it is a fight the story handed off and not yet settled (Companion with no
+	// carry), then -ArenaThirdSlot outside Shipping.
+	ThirdSlot = static_cast<uint8>(ftcore::SlotState::Companion);
+	{
+		const UWorld* SlotWorld = GetWorld();
+		const UFTGameInstance* SlotInstance = SlotWorld ? SlotWorld->GetGameInstance<UFTGameInstance>() : nullptr;
+		if (SlotInstance && SlotInstance->StoryCarry.bValid && !SlotInstance->StoryCarry.bDone && SlotInstance->StoryCarry.ThirdSlot <= static_cast<uint8>(ftcore::SlotState::Hostile))
+		{
+			ThirdSlot = SlotInstance->StoryCarry.ThirdSlot;
+		}
+	}
+#if !UE_BUILD_SHIPPING
 	{
 		FString Slot;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaThirdSlot="), Slot))
 		{
-			if (Slot.Equals(TEXT("Vacant"), ESearchCase::IgnoreCase)) LoneSlot = static_cast<uint8>(ftcore::SlotState::Vacant);
-			else if (Slot.Equals(TEXT("Hostile"), ESearchCase::IgnoreCase)) LoneSlot = static_cast<uint8>(ftcore::SlotState::Hostile);
+			if (Slot.Equals(TEXT("Companion"), ESearchCase::IgnoreCase)) ThirdSlot = static_cast<uint8>(ftcore::SlotState::Companion);
+			else if (Slot.Equals(TEXT("Vacant"), ESearchCase::IgnoreCase)) ThirdSlot = static_cast<uint8>(ftcore::SlotState::Vacant);
+			else if (Slot.Equals(TEXT("Hostile"), ESearchCase::IgnoreCase)) ThirdSlot = static_cast<uint8>(ftcore::SlotState::Hostile);
 		}
 	}
-#else
-	bLone = false;
-	LoneSlot = 0;
 #endif
 	LoneTuning = ftcore::LoneTuning();
 	if (LoneWanted())
@@ -1747,6 +1759,8 @@ void UFTArenaRunner::BeginSession()
 	CappedBlows = 0;
 	LoneEndedAt = -1.0;
 	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = LonePartnerCalls = LonePartnerEnds = 0;
+	SessionTakeovers = SessionRises = 0;
+	bSessionDefeated = false;
 	bLoneGiftDone = false;
 	LoneGift = {};
 	PartnerLoadTime = -1e9;
@@ -1755,6 +1769,9 @@ void UFTArenaRunner::BeginSession()
 	if (Session)
 	{
 		ftcore::FightSessionDef SessionDef;
+		// Only the controlled lead stands in this ring (no partner body): the session's fall rules then make its 0 the
+		// fight's loss, as before them; no takeover to a body that is not there, no stand-up after 30 s.
+		SessionDef.inFight = {SessionLead == ftcore::kLeadA, SessionLead == ftcore::kLeadB};
 		if (bCountLift)
 		{
 			SessionDef.lift = true;
@@ -1827,11 +1844,8 @@ void UFTArenaRunner::BeginSession()
 			}
 		}
 		LoneBargainAt = -1.0;
+		SessionDef.thirdSlot = static_cast<ftcore::SlotState>(ThirdSlot);
 		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
-		if (LoneSlot != static_cast<uint8>(ftcore::SlotState::Companion))
-		{
-			Session->Get().giftSlot().setState(static_cast<ftcore::SlotState>(LoneSlot)); // begin set it Companion
-		}
 		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
 		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
 		const UWorld* World = GetWorld();
@@ -1917,6 +1931,16 @@ void UFTArenaRunner::LogProbeCheck(const ftcore::GiftResult& Result)
 bool UFTArenaRunner::IsLoneBargainDue() const
 {
 	return LoneBargainAt >= 0.0 && static_cast<double>(Fight.time()) - LoneBargainAt < kLoneBargainShow;
+}
+
+ftcore::SlotState UFTArenaRunner::GetThirdSlot() const
+{
+	return Session ? Session->Get().thirdSlot() : static_cast<ftcore::SlotState>(ThirdSlot);
+}
+
+ftcore::GiftError UFTArenaRunner::GetThirdSlotRefusal() const
+{
+	return Session ? Session->Get().thirdSlotRefusal() : ftcore::GiftError::None;
 }
 
 ftcore::LoneBargain UFTArenaRunner::GetLoneBargain() const
@@ -2174,8 +2198,13 @@ void UFTArenaRunner::FeedSession()
 		}
 	}
 	const float Held = Fight.heldTime();
+	// The lead's health every step: the session's fall feed (0 is down) and the gift Heal's NotHurt.
+	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
 	SessionHeld = Held;
+	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
+	SessionRises += Tick.leadsRose != 0 ? 1 : 0;
+	bSessionDefeated = bSessionDefeated || Tick.defeated;
 	if (Tick.loneCarryBegan)
 	{
 		LoneBargainAt = static_cast<double>(Fight.time());
@@ -4355,6 +4384,16 @@ void UFTArenaRunner::Finish()
 		PlayerFigure->ResetFeet(); // handed back (the story, the explore pawn, a result screen): nothing held carries over
 	}
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
+	if (Session)
+	{
+		// With no partner body the lead's 0 is the old loss: the session calls it a defeat too, never a takeover or a
+		// stand-up. n/a for a win.
+		const bool bLost = Fight.phase() == ftcore::ArenaPhase::Defeat;
+		const bool bFateOk = SessionTakeovers == 0 && SessionRises == 0 && bSessionDefeated == bLost;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone lead down %s (fight %s, session defeat %d, takeovers %d, rises %d)."),
+			!bLost ? TEXT("n/a") : (bFateOk ? TEXT("PASS") : TEXT("FAIL")), bLost ? TEXT("lost") : (bWon ? TEXT("won") : TEXT("ended")),
+			bSessionDefeated ? 1 : 0, SessionTakeovers, SessionRises);
+	}
 	if (Session && !bWon)
 	{
 		// A loss: a Lone Carry still on ends here (loneEndedBy reads FightEnded), nothing folds, and the next begin rolls
@@ -4536,7 +4575,7 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: LONE start %d end %d endedAt %.2f endedBy %s releases %d pooled %u giftPresses %d refused %d slot %d (pool exposed, not persisted)."),
 			bLoneAtStart ? 1 : 0, Fight.lone() ? 1 : 0, LoneEndedAt, Session ? LoneEndWord(Session->Get().loneEndedBy()) : TEXT("none"), LoneReleases,
-			Session ? Session->Get().lonePooled() : 0u, LoneGiftPresses, LoneGiftsRefused, static_cast<int32>(LoneSlot));
+			Session ? Session->Get().lonePooled() : 0u, LoneGiftPresses, LoneGiftsRefused, static_cast<int32>(ThirdSlot));
 		// The glue: while Lone nobody joined, no table began and every Release pooled (a refused gift is on the LONE line).
 		const bool bLoneOk = LoneBreaches == 0;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone %s (%d breaches, %d of %d gift presses refused)."),
@@ -4547,6 +4586,17 @@ void UFTArenaRunner::LogFeatureChecks() const
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone partner call %s (%d accepted calls while Lone, %d ended it; ended by %s)."),
 			Verdict(bCallOk, bLoneAtStart && LonePartnerCalls > 0), LonePartnerCalls, LonePartnerEnds,
 			Session ? LoneEndWord(Session->Get().loneEndedBy()) : TEXT("none"));
+	}
+	// The third slot: the session holds the fight's (carry or -ArenaThirdSlot) and its refusal matches it.
+	if (Session)
+	{
+		const ftcore::SlotState Want = static_cast<ftcore::SlotState>(ThirdSlot);
+		const ftcore::GiftError Why = GetThirdSlotRefusal();
+		const ftcore::GiftError WantWhy = Want == ftcore::SlotState::Vacant ? ftcore::GiftError::Vacant
+			: Want == ftcore::SlotState::Hostile ? ftcore::GiftError::Hostile : ftcore::GiftError::None;
+		const bool bSlotOk = GetThirdSlot() == Want && Why == WantWhy;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: third slot %s (fight %d, session %d, refusal %d)."),
+			bSlotOk ? TEXT("PASS") : TEXT("FAIL"), static_cast<int32>(Want), static_cast<int32>(GetThirdSlot()), static_cast<int32>(Why));
 	}
 	if (HallMode != 0)
 	{
@@ -4679,6 +4729,7 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 		if (CameraView.halfAngle != FightCameraHalf)
 		{
 			FightCameraHalf = CameraView.halfAngle;
+			CameraHalfChangedAt = Now;
 			Fight.setCameraHalfAngle(FightCameraHalf);
 			// Logged when it moved more than kCameraHalfLogStep from the last line, at most once every kCameraHalfLogEvery.
 			if (FMath::Abs(FightCameraHalf - LoggedCameraHalf) > kCameraHalfLogStep && Now - CameraHalfLoggedAt >= kCameraHalfLogEvery)
@@ -4687,6 +4738,14 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 				CameraHalfLoggedAt = Now;
 				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle is %.1f degrees."), Fight.time(), FightCameraHalf);
 			}
+		}
+		// A change the throttle kept back, then held kCameraHalfLogEvery: one more line with where it settled.
+		if (FightCameraHalf != LoggedCameraHalf && Now - CameraHalfChangedAt >= kCameraHalfLogEvery &&
+			Now - CameraHalfLoggedAt >= kCameraHalfLogEvery)
+		{
+			LoggedCameraHalf = FightCameraHalf;
+			CameraHalfLoggedAt = Now;
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle settled at %.1f degrees."), Fight.time(), FightCameraHalf);
 		}
 		// The vertical half-angle from the horizontal one and the screen's shape, so a body wholly under or over the
 		// frame (a ground enemy while aiming high) is told too.

@@ -7242,6 +7242,8 @@ TEST_CASE("arena break-out: a step back goes at least kArenaStepBackMin from the
     constexpr float kAt = 2.2f;
     const float natural = std::max(f.heavy.range, f.light[0].range) + k.bodyRadius + kArenaStepBackClear - kAt;
     REQUIRE(natural < 1.0f);
+    REQUIRE(f.heavy.lunge == 0.f); // no lunge anywhere in the lead's reach: the step is the minimum exactly
+    for (std::size_t m = 0; m < std::min<std::size_t>(f.lightCount, f.light.size()); ++m) REQUIRE(f.light[m].lunge == 0.f);
     Rig rig(f, {k});
     rig.put(0, -kAt, 0.f);
     for (int t = 0; t < 120 && !rig.find(ArenaEventType::SteppedBack); ++t) {
@@ -7255,7 +7257,7 @@ TEST_CASE("arena break-out: a step back goes at least kArenaStepBackMin from the
     CHECK(first->event.source == 0);
     CHECK(first->event.target == kArenaPlayer);
     CHECK(first->event.move == 0); // straight back: the ring (30 m) is far
-    CHECK(first->event.amount >= static_cast<int>(std::lround(kArenaStepBackMin * 100.f)));
+    CHECK(first->event.amount == static_cast<int>(std::lround(kArenaStepBackMin * 100.f)));
     CHECK(rig.out().enemies[0].brain == ArenaBrain::StepBack);
     CHECK(rig.fight.stats().stepBacks == 1);
     // The lead stands still; the enemy moves at its output velocity over the step's ticks.
@@ -7271,7 +7273,7 @@ TEST_CASE("arena break-out: a step back goes at least kArenaStepBackMin from the
         }
     }
     const float moved = distanceOf(rig.bodies.player, rig.bodies.enemies[0]) - before;
-    CHECK(moved >= kArenaStepBackMin - 1e-3f);
+    CHECK(moved == doctest::Approx(kArenaStepBackMin).epsilon(0.005));
     CHECK(moved > natural + 0.5f);
     CHECK(moved == doctest::Approx(static_cast<float>(first->event.amount) / 100.f).epsilon(0.01));
     CHECK(rig.bodies.enemies[0].x < -kAt - kArenaStepBackMin + 1e-3f); // straight away from the lead
@@ -7418,6 +7420,32 @@ TEST_CASE("arena break-out: with no room behind it the step goes to the side wit
         CHECK(r.to.y == doctest::Approx(-kArenaStepBackMin).epsilon(0.01));
         CHECK(r.outside <= 1e-3f);
     }
+}
+
+TEST_CASE("arena break-out: with no room behind or to either side it does not step: no StepBack, the blow lands") {
+    // A ring no bigger than the enemy's own body round where it stands: it may go nowhere, back or to a side.
+    const ArenaEnemyKind k = breakerKind();
+    const ArenaRing ring{Vec2{-1.5f, 0.f}, k.bodyRadius};
+    Rig rig(breakFighter(), {k}, 1, ring);
+    rig.put(0, -1.5f, 0.f);
+    int blockedTick = -1;
+    for (int t = 0; t < 120 && blockedTick < 0; ++t) {
+        rig.in.light = true;
+        rig.tick();
+        if (rig.fight.stats().stepBacksBlocked > 0) blockedTick = rig.ticks;
+    }
+    REQUIRE(blockedTick >= 0);
+    CHECK(rig.fight.stats().stepBacksBlocked == 1);
+    CHECK(rig.fight.stats().stepBacks == 0);
+    CHECK(rig.fight.stats().breakOuts == 0);
+    CHECK_FALSE(rig.find(ArenaEventType::SteppedBack));
+    CHECK_FALSE(rig.find(ArenaEventType::BrokeOut));
+    CHECK(hitsOn(rig, 0, blockedTick - 1) >= 1); // the blow that filled the count landed on it
+    for (int t = 0; t < 30; ++t) {
+        CHECK(rig.out().enemies[0].brain != ArenaBrain::StepBack);
+        rig.tick();
+    }
+    CHECK_FALSE(rig.find(ArenaEventType::SteppedBack));
 }
 
 TEST_CASE("arena break-out: each blow adds its poise over the default light's") {
