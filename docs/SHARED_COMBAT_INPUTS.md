@@ -346,6 +346,21 @@ the pieces.
   (within `def.leadSwitchCooldownSeconds`, 0..5, default 1, of the last accepted switch; a takeover is
   never blocked by it and does not start it; `leadSwitchReadyIn()` gives the time left). The tuning is
   `Data/Battle/lead_switch.json` (`importLeadSwitchTuning`). Checkpoints hold the last switch's time.
+* **Partner joins (host hook).** A fight begun with one lead (`def.inFight`, as a Lone Carry) takes
+  the partner in when the player calls it: the host ends the carry (`endLone(PartnerCalled)`) and
+  calls `joinFight(lead, health)` with the partner's carried health (setLeadHealth's 0..1 scale, above 0).
+  It is a request the step's close resolves after the rises and falls and before the switch, judged by
+  `leadJoinReason(lead)` (the HUD's preview, the same function): Ok brings the lead in standing at that
+  health (`tick.joined`, once); it is not the active lead, and a switch to it is NotInFight until that
+  close, so the player switches on a later step. From then on both leads down is a defeat, one down a
+  takeover, as in any two-lead fight. Refused at the close with `tick.joinRefused` and
+  `tick.joinRefusal` (`LeadJoin`): AlreadyIn, or FightOver (a defeat, including the lone lead's fall on
+  the same step, or `finish(true)`). `joinFight` returns false, asking nothing, for NotALead (the third
+  slot, any non-lead) or a health not in (0, 1]. The last request in a step wins; a join asked before
+  `begin` is dropped. Checkpoints hold the leads in the fight and a waiting join
+  (`FightCheckpoint::inFight`, `joinRequested`, `joinHealth`): a retry to one taken before the join
+  starts with one lead again; one taken with a join waiting brings that lead in (the first tick after
+  reports `tick.joined`). The host reads `inFight()` after a retry.
 * **Down, takeover and defeat.** `def.inFight` names the leads in the fight (both by default; at
   least one). `setLeadHealth` is also the fall feed, so the host calls it on every hp change: a lead
   in the fight at 0 or below (finite) is down, not dead; above 0 it stands again; NaN or an infinity

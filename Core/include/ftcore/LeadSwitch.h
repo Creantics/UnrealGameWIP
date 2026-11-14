@@ -23,6 +23,15 @@ enum class LeadSwitch : std::uint8_t {
     Lone,       // a Lone Carry is on and that lead is not the Lone one
 };
 
+// What a join (FightSession::joinFight: a lead not in the fight comes in) gets at the step's close
+// (FightSession::leadJoinReason previews it; the close uses the same function).
+enum class LeadJoin : std::uint8_t {
+    Ok,
+    AlreadyIn, // that lead is in the fight already
+    FightOver, // the fight is lost (a defeat) or finished as won
+    NotALead,  // not one of the two leads (the third slot never joins as one)
+};
+
 inline constexpr double kLeadSwitchCooldownMax = 5.0; // seconds
 inline constexpr double kLeadSwitchCooldownDefault = 1.0;
 

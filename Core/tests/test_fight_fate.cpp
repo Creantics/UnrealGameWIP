@@ -1770,3 +1770,210 @@ TEST_CASE("fight fate: lead_switch.json is the defaults; the importer keeps defa
         CHECK_FALSE(err.empty());
     }
 }
+
+namespace {
+
+// A fight begun with lead A alone, carrying (a Lone Carry), lead B out of it.
+FightSessionDef oneLead() {
+    FightSessionDef d;
+    d.inFight = {true, false};
+    d.loneLead = kLeadA;
+    return d;
+}
+
+} // namespace
+
+TEST_CASE("fight fate: joinFight brings the partner in at the step's close, at its health, not in control") {
+    FightSession s;
+    REQUIRE(s.begin(oneLead(), 0.0).ok());
+    s.setLeadHealth(kLeadA, 0.4f);
+    s.tick(kFrame);
+    REQUIRE(s.lone());
+    CHECK_FALSE(s.inFight(kLeadB));
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotInFight);
+    CHECK(s.leadJoinReason(kLeadB) == LeadJoin::Ok);
+    REQUIRE(s.endLone(LoneEnd::PartnerCalled));
+    REQUIRE(s.joinFight(kLeadB, 0.6f));
+    CHECK(s.joinRequested() == kLeadB);
+    CHECK_FALSE(s.inFight(kLeadB));         // only at the close
+    CHECK_FALSE(s.setActiveLead(kLeadB));   // so a switch to it this step is NotInFight, refused at once
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.joined == kLeadB);
+    CHECK(t.joinRefused == kNoFighter);
+    CHECK(t.joinRefusal == LeadJoin::Ok);
+    CHECK(t.leadsRose == 0);
+    CHECK(t.leadsFell == 0);
+    CHECK(t.switched == kNoFighter);
+    CHECK(s.inFight(kLeadB));
+    CHECK(s.joinRequested() == kNoFighter);
+    CHECK(s.leadHealth(kLeadB) == 0.6f);
+    CHECK_FALSE(s.down(kLeadB));
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.tick(kFrame).joined == kNoFighter); // once
+    // A later step: a switch to it is honoured.
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::Ok);
+    REQUIRE(s.setActiveLead(kLeadB));
+    CHECK(s.tick(kFrame).switched == kLeadB);
+    CHECK(s.leadJoinReason(kLeadB) == LeadJoin::AlreadyIn);
+}
+
+TEST_CASE("fight fate: after a join the fight is a two-lead one: one down is a takeover, both down a defeat") {
+    FightSession s;
+    REQUIRE(s.begin(oneLead(), 0.0).ok());
+    s.tick(kFrame);
+    REQUIRE(s.joinFight(kLeadB, 0.5f));
+    s.tick(kFrame);
+    s.setLeadHealth(kLeadA, 0.f);
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.leadsFell == kBitA);
+    CHECK(t.tookOver == kLeadB);
+    CHECK_FALSE(t.defeated);
+    CHECK(s.activeLead() == kLeadB);
+    s.setLeadHealth(kLeadB, 0.f);
+    const FightTick& u = s.tick(kFrame);
+    CHECK(u.leadsFell == kBitB);
+    CHECK(u.defeated);
+    CHECK(s.defeated());
+    // Without the join the lone lead's fall alone is the defeat.
+    FightSession v;
+    REQUIRE(v.begin(oneLead(), 0.0).ok());
+    v.tick(kFrame);
+    v.setLeadHealth(kLeadA, 0.f);
+    CHECK(v.tick(kFrame).defeated);
+}
+
+TEST_CASE("fight fate: a join is judged after the step's falls: the lone lead's fall on that step is a defeat first") {
+    for (const bool fallFirst : {true, false}) {
+        CAPTURE(fallFirst);
+        FightSession s;
+        REQUIRE(s.begin(oneLead(), 0.0).ok());
+        s.tick(kFrame);
+        if (fallFirst) s.setLeadHealth(kLeadA, 0.f);
+        CHECK(s.leadJoinReason(kLeadB) == LeadJoin::Ok); // the preview: the fall lands on this step, the close wins
+        REQUIRE(s.joinFight(kLeadB, 0.5f));
+        if (!fallFirst) s.setLeadHealth(kLeadA, 0.f);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.defeated);
+        CHECK(t.joined == kNoFighter);
+        CHECK(t.joinRefused == kLeadB);
+        CHECK(t.joinRefusal == LeadJoin::FightOver);
+        CHECK_FALSE(s.inFight(kLeadB));
+    }
+}
+
+TEST_CASE("fight fate: joinFight is refused AlreadyIn, FightOver, or at once for the third slot and a bad health") {
+    {
+        FightSession s; // both leads in by default
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(kFrame);
+        for (const FighterId lead : {kLeadA, kLeadB}) {
+            CAPTURE(int(lead));
+            CHECK(s.leadJoinReason(lead) == LeadJoin::AlreadyIn);
+            REQUIRE(s.joinFight(lead, 0.5f));
+            const FightTick& t = s.tick(kFrame);
+            CHECK(t.joinRefused == lead);
+            CHECK(t.joinRefusal == LeadJoin::AlreadyIn);
+            CHECK(t.joined == kNoFighter);
+        }
+        CHECK(s.leadHealth(kLeadB) == kHealthUnknown); // a refused join feeds nothing
+    }
+    {
+        FightSession s; // a lost fight
+        REQUIRE(s.begin(oneLead(), 0.0).ok());
+        s.tick(kFrame);
+        s.setLeadHealth(kLeadA, 0.f);
+        REQUIRE(s.tick(kFrame).defeated);
+        CHECK(s.leadJoinReason(kLeadB) == LeadJoin::FightOver);
+        REQUIRE(s.joinFight(kLeadB, 0.5f));
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.joinRefused == kLeadB);
+        CHECK(t.joinRefusal == LeadJoin::FightOver);
+    }
+    {
+        FightSession s; // finished as won
+        REQUIRE(s.begin(oneLead(), 0.0).ok());
+        s.tick(kFrame);
+        s.finish(true);
+        CHECK(s.leadJoinReason(kLeadB) == LeadJoin::FightOver);
+    }
+    FightSession s;
+    REQUIRE(s.begin(oneLead(), 0.0).ok());
+    s.tick(kFrame);
+    for (const FighterId who : {kThirdSlot, kNoFighter, FighterId(7)}) {
+        CAPTURE(int(who));
+        CHECK(s.leadJoinReason(who) == LeadJoin::NotALead);
+        CHECK_FALSE(s.joinFight(who, 0.5f));
+        CHECK(s.joinRequested() == kNoFighter);
+    }
+    for (const float bad : {0.f, -0.5f, 1.5f, std::numeric_limits<float>::quiet_NaN(),
+                            std::numeric_limits<float>::infinity()}) {
+        CAPTURE(bad);
+        CHECK_FALSE(s.joinFight(kLeadB, bad));
+        CHECK(s.joinRequested() == kNoFighter);
+    }
+    CHECK(s.joinFight(kLeadB, 1.f));
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.joined == kLeadB);
+    CHECK(t.joinRefused == kNoFighter);
+    // A join asked before begin is dropped by it.
+    FightSession u;
+    REQUIRE(u.joinFight(kLeadB, 0.5f));
+    REQUIRE(u.begin(oneLead(), 0.0).ok());
+    CHECK(u.joinRequested() == kNoFighter);
+    const FightTick& w = u.tick(kFrame);
+    CHECK(w.joined == kNoFighter);
+    CHECK(w.joinRefused == kNoFighter);
+    CHECK_FALSE(u.inFight(kLeadB));
+}
+
+TEST_CASE("fight fate: a checkpoint holds the leads in the fight and a waiting join; a retry from before the join is one-lead") {
+    {
+        FightSession s; // the start checkpoint is taken before the join
+        REQUIRE(s.begin(oneLead(), 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.checkpoint().at == CheckpointAt::FightStart);
+        CHECK(s.checkpoint().inFight == std::array<bool, 2>{true, false});
+        REQUIRE(s.joinFight(kLeadB, 0.5f));
+        REQUIRE(s.tick(kFrame).joined == kLeadB);
+        CHECK(s.retry().at == CheckpointAt::FightStart);
+        CHECK_FALSE(s.inFight(kLeadB));
+        CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotInFight);
+        CHECK(s.leadJoinReason(kLeadB) == LeadJoin::Ok);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.joined == kNoFighter);
+        s.setLeadHealth(kLeadA, 0.f);
+        CHECK(s.tick(kFrame).defeated); // one lead again
+    }
+    {
+        FightSession s; // a phase checkpoint after the join keeps both
+        REQUIRE(s.begin(oneLead(), 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.joinFight(kLeadB, 0.5f));
+        s.tick(kFrame);
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().inFight == std::array<bool, 2>{true, true});
+        s.setLeadHealth(kLeadB, 0.f);
+        s.tick(kFrame);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.inFight(kLeadB));
+        CHECK(s.leadHealth(kLeadB) == 0.5f);
+        CHECK(s.tick(kFrame).joined == kNoFighter);
+    }
+    {
+        FightSession s; // a join waiting when the phase checkpoint is taken: the retry brings that lead in again
+        REQUIRE(s.begin(oneLead(), 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.joinFight(kLeadB, 0.7f));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().inFight == std::array<bool, 2>{true, false});
+        CHECK(s.checkpoint().joinRequested == kLeadB);
+        CHECK(s.checkpoint().joinHealth == 0.7f);
+        CHECK(s.tick(kFrame).joined == kLeadB);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.inFight(kLeadB));
+        CHECK(s.leadHealth(kLeadB) == 0.7f);
+        CHECK(s.joinRequested() == kNoFighter);
+        CHECK(s.tick(kFrame).joined == kLeadB); // reported once, on the first tick after the retry
+        CHECK(s.tick(kFrame).joined == kNoFighter);
+    }
+}
