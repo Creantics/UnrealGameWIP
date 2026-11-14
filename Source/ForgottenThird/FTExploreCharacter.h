@@ -68,7 +68,10 @@
 //
 // -ExplorePortrait puts the camera in front of the face and keeps it there, for checking a look;
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
-// -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
+// -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body. Review stills only (not in
+// shipping): -ExploreStage stands the lead on a neutral grey stage with the map hidden, -ExploreFill=<ratio> adds a soft
+// shadowless fill at that share of the sun's illuminance, -ExploreExposure=<EV100> fixes the exposure (else the auto
+// exposure is logged as an EV100 that flag takes).
 //
 // The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse (a tap), J or pad RT throws the kit's light attack (its
 // chain), left mouse held ftcore::AimRules::heavyHold, K or pad Y its heavy. Right mouse held aims (ftcore::AimStance,
@@ -95,10 +98,12 @@
 #include "ftcore/LedgeHang.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
+#include "UObject/StrongObjectPtr.h"
 
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class FFTExposureProbe;
 class UAnimSequence;
 class AFTPartyVan;
 class UCameraComponent;
@@ -284,6 +289,36 @@ private:
 #if !UE_BUILD_SHIPPING
 	void Nightfall(); // -ExploreNight
 	void SoakForReview(); // -ExploreWet
+	void HoldBodyAt(float Time); // -ExplorePortraitBodyClip
+	// -ExploreStage: a 0.18 grey floor, sweep and backdrop round the lead, the map's geometry hidden (see the .cpp).
+	void BuildStage(float Arm, float Side);
+	int32 HideSceneryForStage();
+	void PlaceStage(USceneComponent& Stage);
+	// -ExploreFill=<ratio>: a shadowless directional fill at ratio x the key sun's illuminance on the ground.
+	void AddFill(float Ratio, float Pitch);
+	// -ExploreExposure=<EV100>: a fixed exposure for every still; otherwise the auto exposure is logged.
+	void SetExposureEV100(float EV100);
+	float ProbedEV100(float& OutScale) const;
+	void LogExposure(bool bAlways);
+	void ReviewEverySecond();
+
+	// -ExplorePortraitBodyClip=<anim> with -ExplorePortraitBodyTimes=<s,s,..>: each shot holds the whole body (and every
+	// leader-posed piece with it) on that clip at its time, so garments are judged posed in the game (a crouch, an arm
+	// raise), not in a Blender render. Not with a face clip; the walk circle is off while a pose is held. (UHT allows no
+	// UPROPERTY in this block, so a strong pointer keeps the clip loaded.)
+	TStrongObjectPtr<UAnimSequence> BodyClip;
+	TArray<float> BodyTimes;
+	// The stage's root (a registered component, so the actor keeps it), the floor height it sits at, and how many of
+	// the map's primitives it has hidden.
+	TWeakObjectPtr<USceneComponent> StagePivot;
+	double StageZ = 0.0;
+	bool bStagePlaced = false;
+	int32 StageHidden = 0;
+	// Reads the game view's last eye-adaptation exposure (FFTExposureProbe, in the .cpp).
+	TSharedPtr<FFTExposureProbe, ESPMode::ThreadSafe> ExposureProbe;
+	float LoggedEV100 = -1000.f;
+	bool bExposureFixed = false;
+	FTimerHandle ReviewTimer;
 #endif
 	// -ExploreWet=<Wetness>,<wet line cm above the feet>,<WetSilt>: review only (see the .cpp); unused in shipping builds.
 	FVector WetReview = FVector::ZeroVector;
@@ -291,7 +326,6 @@ private:
 	int32 WetSlots = -1;
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
-	void HoldBodyAt(float Time);
 
 	AFTExploreDirector* GetDirector();
 
@@ -344,12 +378,6 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> FaceClip;
 	TArray<float> FaceTimes;
-	// -ExplorePortraitBodyClip=<anim> with -ExplorePortraitBodyTimes=<s,s,..>: each shot holds the whole body (and every
-	// leader-posed piece with it) on that clip at its time, so garments are judged posed in the game (a crouch, an arm
-	// raise), not in a Blender render. Not with a face clip; the walk circle is off while a pose is held.
-	UPROPERTY(Transient)
-	TObjectPtr<UAnimSequence> BodyClip;
-	TArray<float> BodyTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	TWeakObjectPtr<AFTPartyVan> Van;

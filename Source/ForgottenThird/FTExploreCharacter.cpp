@@ -37,6 +37,16 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "UObject/ConstructorHelpers.h"
+#if !UE_BUILD_SHIPPING
+#include "ColorManagement/ColorSpace.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "HAL/IConsoleManager.h"
+#include "Materials/Material.h"
+#include "SceneInterface.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
+#include "SceneViewExtension.h"
+#endif
 
 #include "FTExploreDirector.h"
 #include "FTExploreHUD.h"
@@ -88,6 +98,66 @@ constexpr float kSlideHeadOn = 0.7f;
 const TCHAR* const SlideOutNames[] = {TEXT("a stand"), TEXT("a crouch"), TEXT("a walk"), TEXT("a run"), TEXT("a sprint"), TEXT("a crouch walk")};
 static_assert(UE_ARRAY_COUNT(SlideOutNames) == ftcore::kSlideOuts, "one name per get-up");
 } // namespace
+
+#if !UE_BUILD_SHIPPING
+// Review stills only: keeps the game view's last eye-adaptation exposure (the scale the renderer multiplies scene
+// light by, read back from the GPU a frame or two late), so a still's auto exposure can be logged and pinned.
+class FFTExposureProbe : public FSceneViewExtensionBase
+{
+public:
+	FFTExposureProbe(const FAutoRegister& AutoRegister, UWorld* InWorld)
+		: FSceneViewExtensionBase(AutoRegister)
+		, World(InWorld)
+	{
+	}
+
+	// Game thread, once per view.
+	virtual void SetupView(FSceneViewFamily& Family, FSceneView& View) override
+	{
+		if (View.bIsGameView && !View.bIsSceneCapture && View.State && Family.Scene && Family.Scene->GetWorld() == World.Get())
+		{
+			const float Scale = View.State->GetLastEyeAdaptationExposure();
+			Exposure = Scale > 0.f ? Scale : Exposure;
+		}
+	}
+
+	float Exposure = 0.f;
+
+private:
+	TWeakObjectPtr<UWorld> World;
+};
+
+namespace
+{
+// The luminance that saturates the sensor at EV100 0, as the renderer's eye adaptation takes it (1 unless the
+// extended luminance range is on; then 0.78 over the lens attenuation, 1 at its default).
+float ExposureLuminanceMax()
+{
+	const IConsoleVariable* Extended = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"));
+	const IConsoleVariable* Lens = IConsoleManager::Get().FindConsoleVariable(TEXT("r.EyeAdaptation.LensAttenuation"));
+	if (!Extended || Extended->GetInt() == 0)
+	{
+		return 1.f;
+	}
+	return 0.78f / FMath::Max(Lens ? Lens->GetFloat() : 0.78f, 0.01f);
+}
+
+// A mesh drawn as the sky (a sky dome) stays when the stage hides the map.
+bool IsSkyPrimitive(UPrimitiveComponent& Primitive)
+{
+	for (int32 Slot = 0; Slot < Primitive.GetNumMaterials(); ++Slot)
+	{
+		UMaterialInterface* Material = Primitive.GetMaterial(Slot);
+		const UMaterial* Base = Material ? Material->GetMaterial() : nullptr;
+		if (Base && Base->bIsSky)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+} // namespace
+#endif
 
 AFTExploreCharacter::AFTExploreCharacter()
 {
@@ -378,6 +448,35 @@ void AFTExploreCharacter::BeginPlay()
 					Post.AutoExposureMinBrightness, Post.AutoExposureMaxBrightness);
 			}
 		}
+		// Material stills against a neutral surround (after the sun is aimed): -ExploreStage puts the lead on a grey stage
+		// with the map's geometry hidden (not with -ExploreLookDev, which hides everything already).
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreStage")))
+		{
+			if (FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDev")))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: -ExploreStage ignored under -ExploreLookDev."));
+			}
+			else
+			{
+				BuildStage(Arm, Boom->SocketOffset.Y);
+			}
+		}
+		// -ExploreFill=<ratio>: a soft shadowless fill opposite the sun, from the camera's elevation over the lead.
+		float FillRatio = 0.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreFill="), FillRatio) && FillRatio > 0.f)
+		{
+			const float FillPitch = -FMath::Clamp(FMath::RadiansToDegrees(FMath::Atan2(Height, FMath::Max(Arm, 1.f))), 0.f, 60.f);
+			AddFill(FillRatio, FillPitch);
+		}
+		// -ExploreExposure=<EV100>: one fixed exposure for every still (over -ExploreFixedExposure and -ExploreExposureRange).
+		// Either way the exposure the view ends up with is logged at each shot and whenever it moves.
+		float FixedEV100 = 0.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposure="), FixedEV100))
+		{
+			SetExposureEV100(FixedEV100);
+		}
+		ExposureProbe = FSceneViewExtensions::NewExtension<FFTExposureProbe>(GetWorld());
+		GetWorldTimerManager().SetTimer(ReviewTimer, this, &AFTExploreCharacter::ReviewEverySecond, 1.f, true, 1.f);
 #endif
 		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
@@ -426,10 +525,11 @@ void AFTExploreCharacter::BeginPlay()
 					}
 				}
 			}
+#if !UE_BUILD_SHIPPING
 			if (!FaceClip && FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyClip="), ClipPath)
 				&& FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyTimes="), TimeList, false))
 			{
-				BodyClip = LoadObject<UAnimSequence>(nullptr, *ClipPath);
+				BodyClip.Reset(LoadObject<UAnimSequence>(nullptr, *ClipPath));
 				TArray<FString> Parts;
 				TimeList.ParseIntoArray(Parts, TEXT(","));
 				for (const FString& Part : Parts)
@@ -439,7 +539,7 @@ void AFTExploreCharacter::BeginPlay()
 				if (!BodyClip || BodyTimes.IsEmpty())
 				{
 					UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: body clip %s not loaded or no times; body poses off."), *ClipPath);
-					BodyClip = nullptr;
+					BodyClip.Reset();
 					BodyTimes.Reset();
 				}
 				else
@@ -455,6 +555,7 @@ void AFTExploreCharacter::BeginPlay()
 					bPortraitJump = false;
 				}
 			}
+#endif
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
 			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotDelay="), Delay);
@@ -496,18 +597,32 @@ void AFTExploreCharacter::StepPortraitShots()
 		{
 			HoldFaceAt(FaceTimes[ShotIndex]);
 		}
+#if !UE_BUILD_SHIPPING
 		else if (BodyClip)
 		{
 			HoldBodyAt(BodyTimes[ShotIndex]);
 		}
+#endif
 		bShotAimed = true;
 		return;
 	}
 	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
-	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
-		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
-		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
-								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
+	const int32 ShotYaw = FMath::RoundToInt(Yaw);
+	FString File = FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, ShotYaw);
+	if (FaceClip)
+	{
+		File = FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, ShotYaw, ShotIndex);
+	}
+#if !UE_BUILD_SHIPPING
+	else if (BodyClip)
+	{
+		File = FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, ShotYaw, ShotIndex);
+	}
+#endif
+	else if (LookDevSpin != 0.f)
+	{
+		File = FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, ShotYaw, ShotIndex);
+	}
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
@@ -526,6 +641,9 @@ void AFTExploreCharacter::StepPortraitShots()
 	const FFindFloorResult& Floor = GetCharacterMovement()->CurrentFloor;
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait shot %s (floor dist %.3f cm, walkable %d, speed %.0f)."),
 		*File, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0, GetVelocity().Size2D());
+#if !UE_BUILD_SHIPPING
+	LogExposure(true);
+#endif
 	bShotAimed = false;
 	++ShotIndex;
 }
@@ -552,6 +670,7 @@ void AFTExploreCharacter::HoldFaceAt(float Time)
 	UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no FaceMesh piece to hold the face clip on."));
 }
 
+#if !UE_BUILD_SHIPPING
 void AFTExploreCharacter::HoldBodyAt(float Time)
 {
 	// The body leaves its anim blueprint and holds the clip's frame; the leader-posed pieces (garments, shoes, face)
@@ -561,11 +680,273 @@ void AFTExploreCharacter::HoldBodyAt(float Time)
 	{
 		return;
 	}
-	Body->PlayAnimation(BodyClip, false);
+	Body->PlayAnimation(BodyClip.Get(), false);
 	Body->SetPosition(FMath::Clamp(Time, 0.f, BodyClip->GetPlayLength()), false);
 	Body->Stop();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body held on %s at %.2f s."), *BodyClip->GetName(), Time);
 }
+
+void AFTExploreCharacter::BuildStage(float Arm, float Side)
+{
+	// A photographer's stage for material stills: a 0.18 grey floor under the feet, a quarter-round sweep and a backdrop
+	// behind the lead as the camera sees it (the stage turns with the boom, so it is behind the lead at every yaw), all
+	// one matte surface (roughness 0.9). Stage space: x from the camera through the lead (the lead at 0), z up from the
+	// soles. The backdrop stands kBack behind the lead and the sweep rises over the last kSweep of the floor. The parts
+	// cast no shadow (a sun behind the backdrop still reaches the lead), take no decals or collision, and the sweep and
+	// backdrop stay out of the distance fields and the dynamic GI scene, so they don't take the sky off the lead; the
+	// floor bounces like real ground.
+	constexpr double kBack = 400.0;
+	constexpr double kSweep = 150.0;
+	constexpr int32 kSweepSteps = 12;
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Rendering/M_WorldSurface.M_WorldSurface"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	const bool bSurface = Base != nullptr;
+	if (!Base)
+	{
+		Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	}
+	if (!Cube || !Base)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no engine cube or surface material; no stage."));
+		return;
+	}
+	UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, this);
+	Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+	Grey->SetScalarParameterValue(TEXT("Roughness"), 0.9f);
+	Grey->SetScalarParameterValue(TEXT("Metallic"), 0.f);
+	Grey->SetScalarParameterValue(TEXT("Variation"), 0.f); // the world surface's mottle off: one flat grey
+
+	// Big enough for the widest framing asked: the frame's half-width at the backdrop, doubled for tall shots and
+	// sideways shifts, plus margin (24 m across at the default arm and lens).
+	const double HalfFov = FMath::DegreesToRadians(FMath::Clamp(Camera->FieldOfView, 5.f, 150.f) * 0.5);
+	const double Reach = (FMath::Max(Arm, 0.f) + kBack) * FMath::Tan(HalfFov);
+	const double HalfWidth = 2.0 * Reach + FMath::Abs(Side) + 500.0;
+	const double Top = HalfWidth + 300.0;
+	const double FloorFrom = -(FMath::Max(Arm, 0.f) + HalfWidth);
+
+	USceneComponent* Pivot = NewObject<USceneComponent>(this);
+	Pivot->SetupAttachment(GetRootComponent());
+	Pivot->SetUsingAbsoluteLocation(true);
+	Pivot->SetUsingAbsoluteRotation(true);
+	Pivot->SetUsingAbsoluteScale(true);
+	Pivot->RegisterComponent();
+	StagePivot = Pivot;
+	const auto AddPart = [&](const FVector& Centre, const FRotator& Turn, const FVector& SizeCm, bool bLightsOthers)
+	{
+		UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(this);
+		Part->SetStaticMesh(Cube);
+		Part->SetMobility(EComponentMobility::Movable);
+		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Part->SetCastShadow(false);
+		Part->SetReceivesDecals(false);
+		if (!bLightsOthers)
+		{
+			Part->SetAffectDynamicIndirectLighting(false);
+			Part->SetAffectDistanceFieldLighting(false);
+		}
+		Part->SetMaterial(0, Grey);
+		Part->SetupAttachment(Pivot);
+		Part->SetRelativeLocationAndRotation(Centre, Turn);
+		Part->SetRelativeScale3D(SizeCm / 100.0); // the engine cube is 100 cm a side, centred
+		Part->RegisterComponent();
+	};
+	// The floor, 1 cm thick with its top at the soles, from behind the camera to the sweep.
+	const double FloorTo = kBack - kSweep;
+	AddPart(FVector(0.5 * (FloorFrom + FloorTo), 0.0, -0.5), FRotator::ZeroRotator, FVector(FloorTo - FloorFrom, 2.0 * HalfWidth, 1.0), true);
+	// The sweep: chords of the quarter circle from the floor's end up to the backdrop's foot, each laid along its chord
+	// (pitch = the chord's angle) with its inner face on the arc.
+	for (int32 Step = 0; Step < kSweepSteps; ++Step)
+	{
+		const double A0 = UE_DOUBLE_HALF_PI * Step / kSweepSteps;
+		const double A1 = UE_DOUBLE_HALF_PI * (Step + 1) / kSweepSteps;
+		const double Mid = 0.5 * (A0 + A1);
+		const FVector P0(FloorTo + kSweep * FMath::Sin(A0), 0.0, kSweep - kSweep * FMath::Cos(A0));
+		const FVector P1(FloorTo + kSweep * FMath::Sin(A1), 0.0, kSweep - kSweep * FMath::Cos(A1));
+		const FVector Outward(FMath::Sin(Mid), 0.0, -FMath::Cos(Mid));
+		AddPart(0.5 * (P0 + P1) + 0.5 * Outward, FRotator(FMath::RadiansToDegrees(Mid), 0.0, 0.0),
+			FVector((P1 - P0).Size() + 1.0, 2.0 * HalfWidth, 1.0), false);
+	}
+	// The backdrop, its front face kBack behind the lead, from the sweep's top up past the frame.
+	AddPart(FVector(kBack + 0.5, 0.0, 0.5 * (kSweep + Top)), FRotator::ZeroRotator, FVector(1.0, 2.0 * HalfWidth, Top - kSweep + 1.0), false);
+	bStagePlaced = false;
+	PlaceStage(*Pivot);
+	StageHidden = HideSceneryForStage();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: stage on (%s grey 0.18, roughness 0.9; backdrop %.0f cm behind, %.0f m wide, %.0f m tall; %d map primitives hidden)."),
+		bSurface ? TEXT("world surface") : TEXT("basic shape"), kBack, 2.0 * HalfWidth / 100.0, Top / 100.0, StageHidden);
+}
+
+int32 AFTExploreCharacter::HideSceneryForStage()
+{
+	// Every visible primitive of every other actor (static meshes, foliage, landscape, water, effects, other characters)
+	// goes; lights, the sky light, the sky atmosphere, clouds and fog are not primitives and stay, and a sky dome mesh
+	// stays too. The lead's own pieces and anything attached to it are kept. Hidden primitives leave the scene, so they
+	// neither show, shadow nor bounce light; collision stays, so the lead still stands on the map's floor.
+	int32 Hidden = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (Actor == this || Actor->GetOwner() == this)
+		{
+			continue;
+		}
+		bool bOurs = false;
+		for (const AActor* Parent = Actor->GetAttachParentActor(); Parent && !bOurs; Parent = Parent->GetAttachParentActor())
+		{
+			bOurs = Parent == this;
+		}
+		if (bOurs)
+		{
+			continue;
+		}
+		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
+		for (UPrimitiveComponent* Primitive : Primitives)
+		{
+			if (Primitive && Primitive->IsVisible() && !IsSkyPrimitive(*Primitive))
+			{
+				Primitive->SetVisibility(false, false);
+				++Hidden;
+			}
+		}
+	}
+	return Hidden;
+}
+
+void AFTExploreCharacter::PlaceStage(USceneComponent& Stage)
+{
+	// Under the lead and turned with the boom (the camera looks along its +X); the floor height follows the soles while
+	// the lead is on the ground and holds through a jump.
+	if (!bStagePlaced || GetCharacterMovement()->IsMovingOnGround())
+	{
+		StageZ = FeetLocation().Z;
+		bStagePlaced = true;
+	}
+	const FVector Origin = Boom->GetComponentLocation();
+	Stage.SetWorldLocationAndRotation(FVector(Origin.X, Origin.Y, StageZ), FRotator(0.0, Boom->GetComponentRotation().Yaw, 0.0));
+}
+
+void AFTExploreCharacter::AddFill(float Ratio, float Pitch)
+{
+	// The key is the brightest sun. Its illuminance on the ground is its intensity (lux) times the sky atmosphere's
+	// transmittance along its direction when it is the atmosphere's sun (which dims and warms a low sun), luminance-
+	// weighted. The fill is a second directional light outside the atmosphere, so it arrives undimmed: its intensity is
+	// Ratio x that ground illuminance, the exact lux ratio on surfaces facing each light. It comes from the side opposite
+	// the key's yaw at the camera's elevation (Pitch), in the key's colour, with no shadows and a wide (30 degree) source.
+	USkyAtmosphereComponent* Atmosphere = nullptr;
+	UDirectionalLightComponent* Key = nullptr;
+	float KeyLux = 0.f;
+	float KeyTransmittance = 1.f;
+	for (TActorIterator<AActor> It(GetWorld()); It && !Atmosphere; ++It)
+	{
+		Atmosphere = It->FindComponentByClass<USkyAtmosphereComponent>();
+	}
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UDirectionalLightComponent*> Suns(*It);
+		for (UDirectionalLightComponent* Sun : Suns)
+		{
+			if (!Sun || !Sun->IsVisible() || Sun->Intensity <= 0.f)
+			{
+				continue;
+			}
+			const FLinearColor Through = Atmosphere && Sun->IsUsedAsAtmosphereSunLight()
+				? Atmosphere->GetAtmosphereTransmitanceOnGroundAtPlanetTop(Sun) : FLinearColor::White;
+			const float Transmittance = static_cast<float>(UE::Color::FColorSpace::GetWorking().GetLuminance(Through));
+			if (Sun->Intensity * Transmittance > KeyLux)
+			{
+				Key = Sun;
+				KeyLux = Sun->Intensity * Transmittance;
+				KeyTransmittance = Transmittance;
+			}
+		}
+	}
+	if (!Key)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no lit sun to fill against; no fill."));
+		return;
+	}
+	UDirectionalLightComponent* Fill = NewObject<UDirectionalLightComponent>(this);
+	Fill->SetupAttachment(GetRootComponent());
+	Fill->SetUsingAbsoluteRotation(true);
+	Fill->SetMobility(EComponentMobility::Movable);
+	Fill->CastShadows = false;
+	Fill->bCastVolumetricShadow = false;
+	Fill->bCastCloudShadows = false;
+	Fill->bAtmosphereSunLight = false;
+	Fill->VolumetricScatteringIntensity = 0.f;
+	Fill->LightSourceAngle = 30.f;
+	Fill->Intensity = Ratio * KeyLux;
+	Fill->LightColor = Key->LightColor;
+	Fill->bUseTemperature = Key->bUseTemperature;
+	Fill->Temperature = Key->Temperature;
+	Fill->RegisterComponent();
+	const FRotator KeyRot = Key->GetComponentRotation();
+	Fill->SetWorldRotation(FRotator(Pitch, KeyRot.Yaw + 180.0, 0.0));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: fill %.3f lux = %.3f x key %.3f lux on the ground (sun %.3f lux x transmittance %.3f); key pitch %.1f yaw %.1f, fill pitch %.1f yaw %.1f."),
+		Fill->Intensity, Ratio, KeyLux, Key->Intensity, KeyTransmittance, KeyRot.Pitch, KeyRot.Yaw, Pitch, KeyRot.Yaw + 180.0);
+}
+
+void AFTExploreCharacter::SetExposureEV100(float EV100)
+{
+	// Auto exposure pinned: min = max brightness (in EV100 with the extended luminance range on, as this project has it;
+	// else as the white point luminance 2^EV100) makes the renderer go straight to it, and the compensation and its curve
+	// are cleared so the map's look adds nothing. The camera's settings blend over every post-process volume.
+	const IConsoleVariable* Extended = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"));
+	const float Brightness = (Extended && Extended->GetInt() != 0) ? EV100 : FMath::Exp2(EV100);
+	FPostProcessSettings& Post = Camera->PostProcessSettings;
+	Post.bOverride_AutoExposureMethod = true;
+	Post.AutoExposureMethod = AEM_Histogram;
+	Post.bOverride_AutoExposureMinBrightness = true;
+	Post.AutoExposureMinBrightness = Brightness;
+	Post.bOverride_AutoExposureMaxBrightness = true;
+	Post.AutoExposureMaxBrightness = Brightness;
+	Post.bOverride_AutoExposureBias = true;
+	Post.AutoExposureBias = 0.f;
+	Post.bOverride_AutoExposureBiasCurve = true;
+	Post.AutoExposureBiasCurve = nullptr;
+	Camera->PostProcessBlendWeight = 1.f;
+	bExposureFixed = true;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: exposure fixed at EV100 %.2f (min = max brightness %.4f, compensation 0)."), EV100, Brightness);
+}
+
+float AFTExploreCharacter::ProbedEV100(float& OutScale) const
+{
+	// The renderer's exposure scale is compensation / (LuminanceMax x 2^EV100); with no compensation (as
+	// -ExploreExposure sets it) the same scale is EV100 = -log2(scale x LuminanceMax), so the value logged, map
+	// compensation folded in, is the one that flag takes to give the same image.
+	OutScale = ExposureProbe ? ExposureProbe->Exposure : 0.f;
+	return OutScale > 0.f ? -FMath::Log2(OutScale * ExposureLuminanceMax()) : 0.f;
+}
+
+void AFTExploreCharacter::LogExposure(bool bAlways)
+{
+	float Scale = 0.f;
+	const float EV100 = ProbedEV100(Scale);
+	if (Scale <= 0.f || (!bAlways && FMath::Abs(EV100 - LoggedEV100) < 0.05f))
+	{
+		return;
+	}
+	LoggedEV100 = EV100;
+	const FPostProcessSettings& Post = Camera->PostProcessSettings;
+	const bool bFixed = bExposureFixed || (Post.bOverride_AutoExposureMethod && Post.AutoExposureMethod == AEM_Manual);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: exposure %s EV100 %.2f (scale %.6f); -ExploreExposure=%.2f gives this image."),
+		bFixed ? TEXT("fixed") : TEXT("auto"), EV100, Scale, EV100);
+}
+
+void AFTExploreCharacter::ReviewEverySecond()
+{
+	// Map cells, followers and props that arrive after the stage went up are hidden too.
+	if (StagePivot.IsValid())
+	{
+		const int32 More = HideSceneryForStage();
+		if (More > 0)
+		{
+			StageHidden += More;
+			UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: stage hid %d more map primitives (%d in all)."), More, StageHidden);
+		}
+	}
+	LogExposure(false);
+}
+#endif
 
 void AFTExploreCharacter::AddPortraitLights()
 {
@@ -2648,6 +3029,12 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		LookDevPivot->AddWorldRotation(FRotator(0.0, LookDevSpin * DeltaSeconds, 0.0));
 	}
+#if !UE_BUILD_SHIPPING
+	if (USceneComponent* Stage = StagePivot.Get())
+	{
+		PlaceStage(*Stage); // -ExploreStage follows the lead and the camera's yaw
+	}
+#endif
 	if (bPortraitWalk)
 	{
 		const double Turn = GetWorld()->GetTimeSeconds() * (2.0 * UE_DOUBLE_PI / 8.0);
