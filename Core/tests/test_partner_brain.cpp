@@ -47,7 +47,7 @@ bool same(const PartnerIntent& x, const PartnerIntent& y) {
     return x.act == y.act && x.why == y.why && x.point.x == y.point.x && x.point.y == y.point.y && x.enemy == y.enemy &&
            x.blows == y.blows && x.newString == y.newString && x.partnerBlow == y.partnerBlow &&
            x.breakValue == y.breakValue && x.extendsStagger == y.extendsStagger && x.punish == y.punish &&
-           x.rise == y.rise && x.riseHealth == y.riseHealth;
+           x.rise == y.rise && x.riseHealth == y.riseHealth && x.blowStart == y.blowStart && x.blowIndex == y.blowIndex;
 }
 constexpr std::size_t kSame = static_cast<std::size_t>(-1);
 // The first step where two whole intent streams differ (kSame when every step matches).
@@ -57,39 +57,41 @@ std::size_t firstDiff(const std::vector<PartnerIntent>& a, const std::vector<Par
         if (!same(a[i], b[i])) return i;
     return a.size() == b.size() ? kSame : n;
 }
-double chainSeconds(int blows) {
-    double s = 0.0;
-    for (int i = 0; i < blows; ++i) s += kLight[i % 3];
-    return s;
-}
-
-// A scripted host: the ally runs the brain's strings for the light chain's time, guards on Guard, moves at 4.5 m/s,
-// and a blow aimed at it that lands unguarded hurts it for 0.5 s (no act).
+// A scripted host: it starts a blow on each step the brain says (blowStart) and runs it for its length (0.9 s unless
+// set), and a blow once started always runs out whatever the brain says after it (no host can cancel one); only
+// being hurt cuts it short. It guards on Guard when no blow runs, moves at 4.5 m/s, and a blow aimed at it that lands
+// unguarded hurts it for 0.5 s (no act).
 struct Host {
-    double attackLeft = 0.0;
+    std::array<float, kMaxPartnerBlows> lengths{0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
+    double blowLeft = 0.0;
     double hurtLeft = 0.0;
     bool guarding = false;
     double attackTime = 0.0;
     int strings = 0;
     int hits = 0;
     int guards = 0;
+    int overlaps = 0; // a blow started while one still ran (never)
     std::vector<int> blows;
     std::vector<double> pauses;
+    bool running() const { return blowLeft > 1e-6; }
     void feed(PartnerInput& in) const {
+        in.blowSeconds = lengths;
         in.canAct = hurtLeft <= 0.0;
         in.doing = hurtLeft > 0.0 ? PartnerDoing::Hurt
-                   : attackLeft > 0.0 ? PartnerDoing::Attacking
-                   : guarding          ? PartnerDoing::Guarding
-                                       : PartnerDoing::Idle;
+                   : running()     ? PartnerDoing::Attacking
+                   : guarding      ? PartnerDoing::Guarding
+                                   : PartnerDoing::Idle;
     }
     void apply(const PartnerIntent& it, const PartnerBrain& b, PartnerInput& in, double dt) {
-        guarding = it.act == PartnerAct::Guard;
-        if (it.act != PartnerAct::Attack) attackLeft = 0.0; // any other intent ends the chain at once
-        if (it.act == PartnerAct::Attack && it.newString) {
-            attackLeft = chainSeconds(it.blows);
-            ++strings;
-            blows.push_back(b.lastBlows());
-            pauses.push_back(b.lastPause());
+        guarding = it.act == PartnerAct::Guard && !running();
+        if (it.act == PartnerAct::Attack && it.blowStart) {
+            if (running()) ++overlaps;
+            blowLeft = lengths[static_cast<std::size_t>(it.blowIndex)];
+            if (it.newString) {
+                ++strings;
+                blows.push_back(b.lastBlows());
+                pauses.push_back(b.lastPause());
+            }
         }
         if (it.act == PartnerAct::MoveTo || it.act == PartnerAct::StepBack) {
             const float dx = it.point.x - in.pos.x, dy = it.point.y - in.pos.y;
@@ -100,9 +102,9 @@ struct Host {
                 in.pos.y += dy / l * s;
             }
         }
-        if (attackLeft > 0.0) {
-            attackTime += std::min(dt, attackLeft);
-            attackLeft -= dt;
+        if (blowLeft > 0.0) {
+            attackTime += std::min(dt, blowLeft);
+            blowLeft -= dt;
         }
         if (hurtLeft > 0.0) hurtLeft -= dt;
     }
@@ -112,10 +114,19 @@ struct Host {
         } else {
             ++hits;
             hurtLeft = 0.5;
-            attackLeft = 0.0;
+            blowLeft = 0.0;
         }
     }
 };
+
+// A tuning under which the budget never binds (a 5 s window and 10 s allowance): what the brain would do without it.
+PartnerTuning unbound() {
+    PartnerTuning t;
+    t.budgetWindowSeconds = 5.f;
+    t.budgetShare = 1.f;
+    t.budgetAllowanceSeconds = 10.f;
+    return t;
+}
 
 // A 60 s scripted fight against a boss (radius 1 at the origin); the lead (1.8 m from its centre, never moving) chains
 // the default fighter's lights back to back (the chain wraps; chainGap is a window, not a rest), and the host says
@@ -141,8 +152,9 @@ struct Fight {
         partnerStep.clear();
         leadStep.clear();
     }
-    bool run(double dt, PartnerOrder order, std::uint32_t seed, bool windups = true, double seconds = 60.0) {
-        if (!brain.begin(PartnerTuning{}, seed)) return false;
+    bool run(double dt, PartnerOrder order, std::uint32_t seed, bool windups = true, double seconds = 60.0,
+             const PartnerTuning& tuning = PartnerTuning{}) {
+        if (!brain.begin(tuning, seed)) return false;
         std::array<V, 1> boss{};
         boss[0].kind = V::Kind::Boss;
         boss[0].radius = 1.f;
@@ -444,16 +456,20 @@ TEST_CASE("partner brain: rule 1, StayClose takes the lead's target and is pulle
     CHECK(sp.step().act == PartnerAct::Attack);
 }
 
-TEST_CASE("partner brain: rule 2, strings of 2 or 3 blows, a 1.2..2.0 s pause after, on the host's clock") {
+TEST_CASE("partner brain: rule 2, strings of 2 or 3 blows on the host's blow lengths, a 1.2..2.0 s pause after") {
     Scene s(11);
     s.in.order = PartnerOrder::Spread;
     s.in.pos = {0.f, 1.5f};
+    s.in.blowSeconds = {0.65f, 0.63f, 0.91f}; // the default fighter's light chain
     const double dt = 0.05;
     int twos = 0, threes = 0;
+    double now = 0.0;
     PartnerIntent a = s.step(dt);
     for (int k = 0; k < 40; ++k) {
         REQUIRE(a.act == PartnerAct::Attack);
         REQUIRE(a.newString);
+        CHECK(a.blowStart);
+        CHECK(a.blowIndex == 0);
         CHECK(a.partnerBlow);
         CHECK(a.breakValue == 0.f);
         CHECK_FALSE(a.extendsStagger);
@@ -464,19 +480,41 @@ TEST_CASE("partner brain: rule 2, strings of 2 or 3 blows, a 1.2..2.0 s pause af
         const double pause = s.b.lastPause();
         CHECK(pause >= 1.2 - 1e-6);
         CHECK(pause <= 2.0 + 1e-6);
-        // The host reports Attacking for 2.0 s, past blows x blowSeconds (1.3 / 1.95 s): the string lasts as long.
-        s.in.doing = PartnerDoing::Attacking;
-        double t = dt;
-        for (; t < 2.0 - 1e-9; t += dt) {
+        // What the host says it does changes nothing: the blows' lengths are the string's clock.
+        s.in.doing = k % 2 == 0 ? PartnerDoing::Attacking : PartnerDoing::Idle;
+        std::array<double, kMaxPartnerBlows> starts{};
+        starts[0] = now;
+        int begun = 1;
+        for (;;) {
+            now += dt;
             const PartnerIntent& c = s.step(dt);
+            if (c.why != PartnerWhy::String) {
+                a = c;
+                break;
+            }
             REQUIRE(c.act == PartnerAct::Attack);
             CHECK_FALSE(c.newString);
-            CHECK(c.why == PartnerWhy::String);
+            if (c.blowStart) {
+                REQUIRE(begun < blows);
+                CHECK(c.blowIndex == begun);
+                starts[static_cast<std::size_t>(begun++)] = now;
+            }
+            REQUIRE(now - starts[0] < 5.0);
         }
-        s.in.doing = PartnerDoing::Idle;
-        // The pause runs from the first step the host stops reporting it.
-        double paused = 0.0;
+        CHECK(begun == blows);
+        // Each blow starts on the first step at or after the one before it ends; the string ends on the first step
+        // at or after its last blow ends.
+        for (int i = 1; i <= blows; ++i) {
+            const double end = starts[static_cast<std::size_t>(i - 1)] + kLight[i - 1];
+            const double next = i < blows ? starts[static_cast<std::size_t>(i)] : now;
+            CHECK(next >= end - 1e-9);
+            CHECK(next < end + dt - 1e-9);
+        }
+        // The pause runs from that step.
+        REQUIRE(a.why == PartnerWhy::Pause);
+        double paused = dt;
         for (;;) {
+            now += dt;
             const PartnerIntent& p = s.step(dt);
             if (p.why != PartnerWhy::Pause) {
                 a = p; // the step that ends the pause starts the next string
@@ -486,40 +524,47 @@ TEST_CASE("partner brain: rule 2, strings of 2 or 3 blows, a 1.2..2.0 s pause af
             paused += dt;
             REQUIRE(paused < 3.0);
         }
-        CHECK(paused >= pause - dt - 1e-6);
+        CHECK(paused >= pause - 1e-6);
         CHECK(paused <= pause + dt + 1e-6);
         REQUIRE(s.b.stringing());
     }
     CHECK(twos > 5);
     CHECK(threes > 5);
 
-    // A host that never reports Attacking: the fallback clock, blows x blowSeconds.
-    Scene f(3);
-    f.in.order = PartnerOrder::Spread;
-    f.in.pos = {0.f, 1.5f};
-    const PartnerIntent& fa = f.step(0.01);
-    REQUIRE(fa.newString);
-    const double full = fa.blows * 0.65;
-    double t = 0.0;
-    while (f.b.stringing()) {
-        f.step(0.01);
-        t += 0.01;
-        REQUIRE(t < 5.0);
+    // No lengths from the host, or lengths out of 0.1..2 (or not numbers): each blow is the tuning's blowSeconds,
+    // and a host that reports Attacking throughout makes the string no longer.
+    for (int k = 0; k < 3; ++k) {
+        CAPTURE(k);
+        Scene f(3);
+        f.in.order = PartnerOrder::Spread;
+        f.in.pos = {0.f, 1.5f};
+        if (k == 1) f.in.blowSeconds = {0.05f, 2.5f, kNaN, -1.f, 0.f, 9.f};
+        if (k == 2) f.in.doing = PartnerDoing::Attacking;
+        const PartnerIntent& fa = f.step(0.01);
+        REQUIRE(fa.newString);
+        const double full = fa.blows * 0.65;
+        double t = 0.0;
+        while (f.b.stringing()) {
+            f.step(0.01);
+            t += 0.01;
+            REQUIRE(t < 5.0);
+        }
+        CHECK(t == doctest::Approx(full).epsilon(0.02));
     }
-    CHECK(t == doctest::Approx(full).epsilon(0.02));
-    // A host that never stops: 2 x that.
-    Scene g(3);
-    g.in.order = PartnerOrder::Spread;
-    g.in.pos = {0.f, 1.5f};
-    REQUIRE(g.step(0.01).newString);
-    g.in.doing = PartnerDoing::Attacking;
-    t = 0.0;
-    while (g.b.stringing()) {
-        g.step(0.01);
+    // The lengths are read when the string starts: changed mid-string, they wait for the next.
+    Scene r(3);
+    r.in.order = PartnerOrder::Spread;
+    r.in.pos = {0.f, 1.5f};
+    r.in.blowSeconds = {0.3f, 0.3f, 0.3f};
+    REQUIRE(r.step(0.01).newString);
+    r.in.blowSeconds = {2.f, 2.f, 2.f};
+    double t = 0.0;
+    while (r.b.stringing()) {
+        r.step(0.01);
         t += 0.01;
         REQUIRE(t < 10.0);
     }
-    CHECK(t == doctest::Approx(2.0 * full).epsilon(0.02));
+    CHECK(t == doctest::Approx(r.b.lastBlows() * 0.3).epsilon(0.05));
 }
 
 TEST_CASE("partner brain: rule 2, it never starts a string into a windup aimed at it") {
@@ -692,9 +737,8 @@ TEST_CASE("partner brain: in a pause it steps back from a target closer than 0.8
     Scene s;
     s.in.pos = {0.f, 1.5f};
     REQUIRE(s.step(0.05).newString);
-    s.in.doing = PartnerDoing::Attacking;
-    s.step(0.05);
-    s.in.doing = PartnerDoing::Idle;
+    for (int k = 0; k < 100 && !s.b.pausing(); ++k) s.step(0.05);
+    REQUIRE(s.b.pausing());
     s.in.pos = {0.f, 0.9f}; // 0.4 m to the edge after the lunges
     const PartnerIntent& b = s.step(0.05);
     REQUIRE(s.b.pausing());
@@ -777,16 +821,18 @@ TEST_CASE("partner brain: over a 60 s fight with windups, the lead held off, its
     }
 }
 
-TEST_CASE("partner brain: rule 2's budget holds in every 20 s window: dummy, windups, and windups every 4 s and 2 s at the lead") {
+TEST_CASE("partner brain: rule 2's budget binds and holds in every 20 s window: windups, at the lead, every 4 s and 2 s") {
+    // Each case holds the lead off enough for the budget to bite: the same fight unbound (a tuning where it never
+    // binds) breaks some window, and the bound one holds Budget at least once and keeps every window. (The dummy
+    // fight, the lead always attacking, never needs it: its share is the 35..60% test's.)
     struct Case {
         const char* name;
-        bool windups;
         bool partnerAims;
         double period;
     };
     const Case cases[] = {
-        {"dummy", false, true, 5.0},         {"windups", true, true, 5.0}, {"windups at the lead", true, false, 5.0},
-        {"every 4 s at the lead", true, false, 4.0}, {"every 2 s at the lead", true, false, 2.0},
+        {"windups", true, 5.0}, {"windups at the lead", false, 5.0}, {"every 4 s at the lead", false, 4.0},
+        {"every 2 s at the lead", false, 2.0},
     };
     for (const Case& c : cases) {
         for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
@@ -794,23 +840,36 @@ TEST_CASE("partner brain: rule 2's budget holds in every 20 s window: dummy, win
                 CAPTURE(c.name);
                 CAPTURE(static_cast<int>(order));
                 CAPTURE(seed);
-                Fight f;
-                f.partnerAims = c.partnerAims;
-                f.period = c.period;
-                REQUIRE(f.run(1.0 / 60.0, order, seed, c.windups));
+                Fight f, u;
+                f.partnerAims = u.partnerAims = c.partnerAims;
+                f.period = u.period = c.period;
+                REQUIRE(f.run(1.0 / 60.0, order, seed, true));
+                REQUIRE(u.run(1.0 / 60.0, order, seed, true, 60.0, unbound()));
                 const double worst = worstExcess(f.partnerStep, f.leadStep, 1200);
-                MESSAGE(std::string(c.name), ": partner ", f.host.attackTime, " s, lead ", f.leadAttack, " s, worst window ", worst);
+                const double without = worstExcess(u.partnerStep, u.leadStep, 1200);
+                int held = 0;
+                for (const PartnerIntent& it : f.intents) held += it.why == PartnerWhy::Budget ? 1 : 0;
+                int heldUnbound = 0;
+                for (const PartnerIntent& it : u.intents) heldUnbound += it.why == PartnerWhy::Budget ? 1 : 0;
+                MESSAGE(std::string(c.name), ": partner ", f.host.attackTime, " s, lead ", f.leadAttack,
+                        " s, worst window ", worst, ", unbound ", without, ", held ", held);
                 CHECK(worst <= 1e-3);
-                CHECK(f.host.strings > 5); // it still fights
+                CHECK(without > 0.1); // it bites
+                CHECK(held > 0);
+                CHECK(heldUnbound == 0);
+                CHECK(f.host.overlaps == 0); // every blow it began ran out before the next
+                CHECK(f.host.strings > 5);   // it still fights
             }
         }
     }
     // At half the step, the same.
-    Fight h;
-    h.period = 2.0;
-    h.partnerAims = false;
+    Fight h, hu;
+    h.period = hu.period = 2.0;
+    h.partnerAims = hu.partnerAims = false;
     REQUIRE(h.run(1.0 / 120.0, PartnerOrder::Spread, 42, true));
+    REQUIRE(hu.run(1.0 / 120.0, PartnerOrder::Spread, 42, true, 60.0, unbound()));
     CHECK(worstExcess(h.partnerStep, h.leadStep, 2400) <= 1e-3);
+    CHECK(worstExcess(hu.partnerStep, hu.leadStep, 2400) > 0.1);
 }
 
 TEST_CASE("partner brain: a lead who never attacks gives the partner at most 2.0 s of attack per 20 s") {
@@ -823,6 +882,10 @@ TEST_CASE("partner brain: a lead who never attacks gives the partner at most 2.0
             REQUIRE(f.run(1.0 / 60.0, order, seed, false));
             CHECK(f.leadAttack == 0.0);
             CHECK(worstExcess(f.partnerStep, f.leadStep, 1200, 0.6, 2.0) <= 1e-3);
+            Fight u;
+            u.leadFights = false;
+            REQUIRE(u.run(1.0 / 60.0, order, seed, false, 60.0, unbound()));
+            CHECK(worstExcess(u.partnerStep, u.leadStep, 1200, 0.6, 2.0) > 0.1); // it bites
             CHECK(f.host.attackTime >= 3.0); // 60 s: it attacks in each window, a string at a time
             bool held = false;
             for (const PartnerIntent& it : f.intents)
@@ -858,6 +921,11 @@ TEST_CASE("partner brain: the staggered rule (strings without pauses) is still b
             f.leadFights = leadFights;
             REQUIRE(f.run(1.0 / 60.0, PartnerOrder::Spread, seed, false));
             const double worst = worstExcess(f.partnerStep, f.leadStep, 1200);
+            Fight u;
+            u.staggered = true;
+            u.leadFights = leadFights;
+            REQUIRE(u.run(1.0 / 60.0, PartnerOrder::Spread, seed, false, 60.0, unbound()));
+            CHECK(worstExcess(u.partnerStep, u.leadStep, 1200) > 0.1); // it bites
             MESSAGE("staggered, lead fights ", leadFights, ": partner ", f.host.attackTime, " s, worst ", worst);
             CHECK(worst <= 1e-3);
             bool held = false, paused = false;
@@ -876,6 +944,7 @@ TEST_CASE("partner brain: the staggered rule (strings without pauses) is still b
 TEST_CASE("partner brain: held by the budget it waits on its target, still guards, and starts the drawn string once it fits") {
     PartnerTuning t;
     t.guardChance = 1.f;
+    t.blowsMin = t.blowsMax = 3; // the first string 1.95 s of the 2.0 s allowance
     Scene s(5, t, true);
     s.in.leadAttacking = false;
     s.in.pos = {0.f, 1.5f};
@@ -888,7 +957,7 @@ TEST_CASE("partner brain: held by the budget it waits on its target, still guard
         return it;
     };
     REQUIRE(step().newString);
-    // The string runs on the fallback clock (the host never reports Attacking), then its pause.
+    // The string runs on the tuning's blowSeconds (the host gives no lengths), then its pause.
     while (s.b.stringing() || s.b.pausing()) {
         step();
         REQUIRE(now < 6.0);
@@ -904,7 +973,7 @@ TEST_CASE("partner brain: held by the budget it waits on its target, still guard
     const int blows = s.b.lastBlows();
     const std::uint32_t draws = s.b.rhythmDraws();
     CHECK(draws == 4u);
-    CHECK_FALSE(s.b.budgetFits(blows * 0.65));
+    CHECK_FALSE(s.b.budgetFits(0.65)); // its first blow would not fit
     // A windup at it while held: it guards, then holds again.
     s.e[0].state = V::State::WindingUp;
     s.e[0].aim = V::Aim::Partner;
@@ -918,7 +987,8 @@ TEST_CASE("partner brain: held by the budget it waits on its target, still guard
     s.e[0].aim = V::Aim::None;
     for (int k = 0; k < 6; ++k) CHECK(step().act == PartnerAct::Guard); // guardHold 0.3 s
     CHECK(step().why == PartnerWhy::Budget);
-    // It starts as soon as the first string has slid far enough out: at 18 s + its length, its draws already made.
+    // It starts as soon as the first string has slid far enough out for one blow (0.65 + 1.95 - 2.0 = 0.6 s of it out
+    // of the window that would hold the new blow): at 18 s + its length, its draws already made.
     double startedAt = -1.0;
     while (startedAt < 0.0) {
         const PartnerIntent& it = step();
@@ -1124,10 +1194,23 @@ TEST_CASE("partner brain: a view whose position or radius is not a number is abs
     CHECK(m.step(0.05).why == PartnerWhy::NoTarget);
     CHECK_FALSE(m.b.stringing());
     CHECK_FALSE(m.b.pausing());
-    // Back to a number: a target again.
+    // Back to a number: a target again, once the blow it was in has run out (0.65 s from its start).
     m.e[0].pos.x = 0.f;
     m.in.doing = PartnerDoing::Idle;
-    CHECK(m.step(0.05).newString);
+    double t = 0.15;
+    for (;;) {
+        const PartnerIntent& w = m.step(0.05);
+        if (w.why != PartnerWhy::Committed) {
+            CHECK(w.newString);
+            break;
+        }
+        CHECK(w.act == PartnerAct::Wait);
+        CHECK(w.enemy == 0);
+        t += 0.05;
+        REQUIRE(t < 1.0);
+    }
+    CHECK(t >= 0.65 - 1e-6);
+    CHECK(t < 0.7 + 1e-6);
 }
 
 TEST_CASE("partner brain: begin() reused across two fights gives the same stream as a fresh brain") {
@@ -1137,7 +1220,7 @@ TEST_CASE("partner brain: begin() reused across two fights gives the same stream
     PartnerInput down;
     down.health = 0.f;
     reused.brain.step(0.1, down);
-    reused.brain.step(40.0, down);
+    for (int k = 0; k < 160; ++k) reused.brain.step(0.25, down);
     REQUIRE(reused.brain.down());
     REQUIRE(reused.brain.intent().rise);
     reused.clear();
@@ -1235,10 +1318,7 @@ TEST_CASE("partner brain: a target that leaves the span mid-string or mid-pause 
     p.e[0].pos = {3.f, 0.f};
     p.e[1].pos = {1.f, 0.f};
     REQUIRE(p.step(0.05).enemy == 1);
-    p.in.doing = PartnerDoing::Attacking;
-    p.step(0.05);
-    p.in.doing = PartnerDoing::Idle;
-    p.step(0.05);
+    for (int k = 0; k < 100 && !p.b.pausing(); ++k) p.step(0.05);
     REQUIRE(p.b.pausing());
     p.n = 1;
     CHECK(p.step(0.05).why == PartnerWhy::Approach);
@@ -1280,4 +1360,198 @@ TEST_CASE("partner brain: a long run of every branch allocates nothing per step"
     const auto allocs = ftcore_test::allocStats().count - before;
     if (counting) CHECK(allocs == 0);
     for (int a : acts) CHECK(a > 0);
+}
+
+namespace {
+// A scripted scene through the run-out host, the ruled budget on: `bad` replaces step `at`'s time. Every step's intent
+// and brain hash.
+struct Stream {
+    std::vector<PartnerIntent> intents;
+    std::vector<std::uint64_t> hashes;
+};
+void script(Scene& s, int k) {
+    s.in.leadAttacking = (k / 240) % 3 != 2; // held off a third of the time: the budget binds
+    const bool winding = (k / 300) % 4 == 3;
+    s.e[0].state = winding ? V::State::WindingUp : V::State::Idle;
+    s.e[0].aim = winding ? V::Aim::Partner : V::Aim::None;
+    s.e[0].windupLeft = winding ? 1.f - static_cast<float>(k % 300) / 300.f : 0.f;
+}
+Scene& setUp(Scene& s) {
+    s.n = 2;
+    s.in.order = PartnerOrder::Spread;
+    s.in.pos = {0.f, 1.5f};
+    s.e[1].pos = {2.f, 1.5f};
+    return s;
+}
+Stream streamWith(double bad, int at) {
+    Stream out;
+    Scene s(31, PartnerTuning{}, true);
+    setUp(s);
+    Host h;
+    for (int k = 0; k < 1500; ++k) {
+        const double dt = k == at ? bad : 1.0 / 60.0;
+        script(s, k);
+        h.feed(s.in);
+        const PartnerIntent& it = s.step(dt);
+        out.intents.push_back(it);
+        out.hashes.push_back(s.b.hash());
+        h.apply(it, s.b, s.in, std::isfinite(dt) && dt > 0.0 ? std::min(dt, kMaxPartnerStep) : 0.0);
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("partner brain: a step of inf, 1e30, NaN or under 0 returns, and goes on as the step it counts as") {
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    struct Case {
+        double bad;
+        double as;
+    };
+    const Case cases[] = {{inf, 0.0},  {1e30, kMaxPartnerStep}, {nan, 0.0},
+                          {-1.0, 0.0}, {-inf, 0.0},             {0.9, kMaxPartnerStep}};
+    for (const int at : {7, 400, 1000}) { // in a string, held, wherever the script has it
+        for (const Case& c : cases) {
+            CAPTURE(at);
+            CAPTURE(c.bad);
+            const Stream got = streamWith(c.bad, at);
+            const Stream want = streamWith(c.as, at);
+            REQUIRE(got.intents.size() == 1500u);
+            CHECK(firstDiff(got.intents, want.intents) == kSame);
+            CHECK(got.hashes == want.hashes);
+        }
+    }
+    // The script does differ by its steps (the comparison can fail).
+    CHECK(streamWith(kMaxPartnerStep, 400).hashes != streamWith(0.0, 400).hashes);
+    // Huge steps on their own: each returns, the clock moved by kMaxPartnerStep.
+    PartnerBrain b;
+    REQUIRE(b.begin(PartnerTuning{}, 3));
+    PartnerInput in;
+    b.step(1e300, in);
+    b.step(inf, in);
+    CHECK(b.save().now == doctest::Approx(kMaxPartnerStep));
+    CHECK(b.save().slot == 5);
+}
+
+TEST_CASE("partner brain: load(save()) mid-string goes on exactly as the brain it came from") {
+    const Stream whole = streamWith(1.0 / 60.0, 0);
+    // The same script, saved at step 333 and loaded into a second brain that takes over from there.
+    Scene s(31, PartnerTuning{}, true);
+    setUp(s);
+    Host h;
+    PartnerBrainSave kept{};
+    bool stringing = false;
+    std::vector<std::uint64_t> hashes;
+    PartnerBrain other;
+    for (int k = 0; k < 1500; ++k) {
+        script(s, k);
+        h.feed(s.in);
+        s.in.enemies = std::span<const V>(s.e.data(), s.n);
+        if (k == 333) {
+            kept = s.b.save();
+            stringing = s.b.stringing();
+            other.load(kept);
+            CHECK(other.hash() == s.b.hash());
+        }
+        PartnerBrain& b = k >= 333 ? other : s.b;
+        const PartnerIntent& it = b.step(1.0 / 60.0, s.in);
+        hashes.push_back(b.hash());
+        h.apply(it, b, s.in, 1.0 / 60.0);
+    }
+    CHECK(stringing);
+    CHECK(hashes == whole.hashes);
+    // A save is its state: one step on, the hash differs.
+    PartnerBrain moved;
+    moved.load(kept);
+    PartnerInput in;
+    moved.step(1.0 / 60.0, in);
+    CHECK(moved.hash() != kept.hash());
+}
+
+TEST_CASE("partner brain: a blow begun runs out: its target felled mid-blow, it waits (Committed), then strings on the next") {
+    Scene s(5, PartnerTuning{}, true);
+    setUp(s); // the second enemy 1.5 m from its edge: in reach
+    Host h;
+    const double dt = 1.0 / 60.0;
+    std::vector<double> mine, lead;
+    double now = 0.0, startedNext = -1.0;
+    bool committed = false;
+    for (int k = 0; k < 600 && startedNext < 0.0; ++k) {
+        if (k == 20) s.e[0].state = V::State::Down; // 0.33 s into its first 0.9 s blow
+        h.feed(s.in);
+        const double left = s.b.committedLeft(); // before the step: the blow still to run
+        const PartnerIntent& it = s.step(dt);
+        if (k == 0) {
+            REQUIRE(it.newString);
+            REQUIRE(it.enemy == 0);
+        }
+        if (k >= 20 && it.why == PartnerWhy::Committed) {
+            committed = true;
+            CHECK(it.act == PartnerAct::Wait);
+            CHECK(it.enemy == 1);
+            CHECK(left > 0.0);
+            CHECK(h.running());
+        }
+        if (k > 0 && it.newString) {
+            CHECK(it.enemy == 1);
+            CHECK_FALSE(h.running());
+            startedNext = now;
+        }
+        const double was = h.attackTime;
+        h.apply(it, s.b, s.in, dt);
+        mine.push_back(h.attackTime - was);
+        lead.push_back(dt);
+        now += dt;
+    }
+    CHECK(committed);
+    CHECK(startedNext >= 0.9 - 1e-9);
+    CHECK(startedNext < 0.9 + dt + 1e-9);
+    CHECK(h.overlaps == 0);
+    CHECK(worstExcess(mine, lead, 1200) <= 1e-3);
+}
+
+TEST_CASE("partner brain: a guard cuts a string on a staggered target: the blow runs out, no pause, then the next string") {
+    PartnerTuning t;
+    t.guardChance = 1.f;
+    Scene s(5, t, true);
+    s.n = 2;
+    s.in.order = PartnerOrder::Spread;
+    s.in.pos = {0.f, 1.5f};
+    s.e[0].state = V::State::Staggered;
+    s.e[1].pos = {6.f, 1.5f}; // out of reach: it only winds up at the partner
+    Host h;
+    const double dt = 1.0 / 60.0;
+    std::vector<double> mine, lead;
+    double now = 0.0, next = -1.0;
+    bool guarded = false, committed = false, paused = false;
+    for (int k = 0; k < 600 && next < 0.0; ++k) {
+        const bool winding = k >= 3 && k < 21; // 0.3 s of warning from 0.05 s
+        s.e[1].state = winding ? V::State::WindingUp : V::State::Idle;
+        s.e[1].aim = winding ? V::Aim::Partner : V::Aim::None;
+        s.e[1].windupLeft = winding ? static_cast<float>(21 - k) * static_cast<float>(dt) : 0.f;
+        h.feed(s.in);
+        const PartnerIntent& it = s.step(dt);
+        guarded = guarded || it.act == PartnerAct::Guard;
+        committed = committed || it.why == PartnerWhy::Committed;
+        paused = paused || it.why == PartnerWhy::Pause;
+        if (it.act == PartnerAct::Guard) CHECK(h.running()); // the host cannot guard yet: its blow runs out
+        if (k > 0 && it.newString) {
+            CHECK(it.punish);
+            CHECK_FALSE(h.running());
+            next = now;
+        }
+        const double was = h.attackTime;
+        h.apply(it, s.b, s.in, dt);
+        mine.push_back(h.attackTime - was);
+        lead.push_back(dt);
+        now += dt;
+    }
+    CHECK(guarded);
+    CHECK(committed); // the guard (0.3 s, then 0.3 s held) ends before the 0.9 s blow
+    CHECK_FALSE(paused);
+    CHECK(next >= 0.9 - 1e-9);
+    CHECK(next < 0.9 + dt + 1e-9);
+    CHECK(h.attackTime == doctest::Approx(0.9 + dt).epsilon(0.05)); // the first blow whole, and the next one's first step
+    CHECK(h.overlaps == 0);
+    CHECK(worstExcess(mine, lead, 1200) <= 1e-3);
 }

@@ -28,6 +28,7 @@
 // Deterministic; no allocation.
 
 #include "ftcore/CombatInputs.h"
+#include "ftcore/StateHash.h"
 #include "ftcore/WeakPointLock.h"
 
 #include <array>
@@ -561,6 +562,22 @@ private:
         }
     }
 
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(valid_).add(now_).add(clock_).add(state_).add(stepAt_).add(phase_).add(rot_).add(current_).add(hp_);
+        h.add(resource_).add(ward_).add(carriers_).add(answered_).add(watched_).add(exposedOpen_).add(exposedUntil_);
+        lock_.hashState(h);
+        for (const BossEvents* b : {&pending_, &out_}) {
+            h.add(b->count).add(b->dropped);
+            for (std::size_t i = 0; i < b->count && i < b->items.size(); ++i) {
+                const BossEvent& e = b->items[i];
+                h.add(e.type).add(e.move).add(e.value).add(e.amount).add(e.at).add(e.until);
+            }
+        }
+    }
+
+private:
     const BossScriptDef* def_ = nullptr;
     bool valid_ = false;
     double now_ = 0.0;

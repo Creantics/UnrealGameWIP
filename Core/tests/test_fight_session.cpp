@@ -1071,6 +1071,7 @@ TEST_CASE("fight session: a phase retry keeps the story bound and leaves its cou
     REQUIRE(storyWide(story, a0) == 2);
     s.setLeadHealth(kLeadA, 0.f);
     s.setLeadHealth(kLeadB, 0.f);
+    s.tick(1.0 / 60.0); // the step closes: the defeat
     REQUIRE(s.defeated());
     const StoryState before = story;
     CHECK(s.retry().at == CheckpointAt::Phase);
@@ -1123,4 +1124,91 @@ TEST_CASE("fight session: a gift refused Down at a lead is no press in the story
     CHECK(s.giveGift(kLeadA).error == GiftError::Down);
     CHECK(s.lastStoryWrite() == SetResult::Unchanged);
     CHECK(storyWide(story, a0) == 0);
+}
+
+TEST_CASE("fight session: a defeat costs only the attempt: currency, Load, gift tally and story counters come back, and nothing else moved") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    REQUIRE(a0 != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0;
+    d.lift = true;
+    d.keptLead = kLeadA;
+    FightSession s;
+    StoryStepMark mark;
+    // A fight won with one Heal: the tally and story counter the next fight starts from.
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given);
+    s.finish(true);
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Keep));
+    // The fight, set up with known values; the host's part written.
+    struct Party {
+        std::int64_t currency = 250;
+        std::array<int, 2> load{0, 7};
+        std::array<int, 2> hp{80, 100};
+    } party;
+    REQUIRE(s.begin(d, 4.0).ok());
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
+    s.setLoad(kLeadA, 3); // the kept gauge
+    REQUIRE(s.keptLoad() == 3);
+    FightHostCheckpoint host;
+    host.currency = party.currency;
+    host.load = party.load;
+    host.hp = party.hp;
+    REQUIRE(s.setHostCheckpoint(host) == CheckpointAt::FightStart);
+    const std::uint64_t tallyAt = s.giftSlot().allPresses();
+    REQUIRE(tallyAt == 1);
+    REQUIRE(storyWide(story, a0) == 1);
+    const StoryState storyAt = story;
+    const std::uint64_t hashAt = s.stateHash();
+    // The attempt changes each of them, then is lost.
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given);
+    party.currency += 75;
+    party.load = {0, 2};
+    party.hp = {0, 0};
+    s.setLoad(kLeadA, 1);
+    s.keptParried(10);
+    for (int i = 0; i < 30; ++i) s.tick(1.0 / 60.0);
+    CHECK(s.keptLoad() != 3);
+    CHECK(s.giftSlot().allPresses() == tallyAt + 1);
+    CHECK(storyWide(story, a0) == 2);
+    CHECK(s.stateHash() != hashAt);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(1.0 / 60.0).defeated);
+    // The retry: the host applies its part, the story rolls the step back (a fight-start retry) and binds anew.
+    const FightCheckpoint& cp = s.retry();
+    REQUIRE(cp.at == CheckpointAt::FightStart);
+    REQUIRE(cp.hostWritten);
+    party.currency = cp.host.currency;
+    party.load = cp.host.load;
+    party.hp = cp.host.hp;
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
+    CHECK(party.currency == 250);
+    CHECK(party.load[kLeadB] == 7);
+    CHECK(party.hp[kLeadA] == 80);
+    CHECK(s.keptLoad() == 3);
+    CHECK(s.giftSlot().allPresses() == tallyAt);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+    CHECK(storyWide(story, a0) == 1);
+    CHECK(story.facts == storyAt.facts);
+    CHECK(story.wide == storyAt.wide);
+    CHECK(story.openScene == storyAt.openScene);
+    // Nothing of the session differs from before the fight: every play field hashes the same.
+    CHECK(s.stateHash() == hashAt);
 }

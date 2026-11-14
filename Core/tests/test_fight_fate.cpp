@@ -5,7 +5,9 @@
 
 #include <doctest/doctest.h>
 
+#include <initializer_list>
 #include <limits>
+#include <utility>
 #include <vector>
 
 using namespace ftcore;
@@ -64,8 +66,9 @@ TEST_CASE("fight fate: the controlled lead's fall hands control to the standing 
     CHECK_FALSE(s.down(kLeadA));
     s.setLeadHealth(kLeadA, 0.0f);
     CHECK(s.down(kLeadA));
-    CHECK(s.activeLead() == kLeadB); // at once
+    CHECK(s.activeLead() == kLeadA); // until the step closes
     const FightTick& t = s.tick(kFrame);
+    CHECK(s.activeLead() == kLeadB);
     CHECK(t.leadsFell == kBitA);
     CHECK(t.tookOver == kLeadB);
     CHECK_FALSE(t.defeated);
@@ -105,7 +108,7 @@ TEST_CASE("fight fate: the partner's fall changes no control; both down is a def
     CHECK_FALSE(t.defeated);
     // The last standing lead falls: a defeat.
     s.setLeadHealth(kLeadA, 0.0f);
-    CHECK(s.defeated());
+    CHECK_FALSE(s.defeated()); // at the step's close
     CHECK(s.activeLead() == kLeadA); // nobody to take over
     const FightTick& d = s.tick(kFrame);
     CHECK(d.defeated);
@@ -124,16 +127,107 @@ TEST_CASE("fight fate: the partner's fall changes no control; both down is a def
     CHECK_FALSE(s.down(kLeadB));
 }
 
-TEST_CASE("fight fate: both leads falling on one step is a defeat, after the takeover") {
+namespace {
+
+// What one closed step showed.
+struct Closed {
+    std::uint8_t fell = 0, rose = 0;
+    FighterId tookOver = kNoFighter, active = kNoFighter;
+    bool defeated = false, downA = false, downB = false;
+    std::uint64_t hash = 0;
+    bool operator==(const Closed&) const = default;
+};
+// A fight with kLeadA controlled (kLeadB down first when bDown), then one step's health feeds in the order given,
+// closed by a tick.
+Closed closeStep(bool bDown, std::initializer_list<std::pair<FighterId, float>> feeds) {
     FightSession s;
     REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
     REQUIRE(s.setActiveLead(kLeadA));
-    s.setLeadHealth(kLeadA, 0.0f);
-    s.setLeadHealth(kLeadB, 0.0f);
+    s.tick(kFrame);
+    if (bDown) {
+        s.setLeadHealth(kLeadB, 0.f);
+        REQUIRE(s.tick(kFrame).leadsFell == kBitB);
+    }
+    for (const auto& f : feeds) s.setLeadHealth(f.first, f.second);
+    CHECK_FALSE(s.defeated()); // nothing settles before the step closes
+    CHECK(s.activeLead() == kLeadA);
     const FightTick& t = s.tick(kFrame);
-    CHECK(t.leadsFell == (kBitA | kBitB));
+    Closed c;
+    c.fell = t.leadsFell;
+    c.rose = t.leadsRose;
+    c.tookOver = t.tookOver;
+    c.defeated = t.defeated;
+    c.active = s.activeLead();
+    c.downA = s.down(kLeadA);
+    c.downB = s.down(kLeadB);
+    c.hash = s.stateHash();
+    return c;
+}
+
+} // namespace
+
+TEST_CASE("fight fate: both leads falling on one step is a defeat, no takeover, control unchanged, in either order") {
+    const Closed ab = closeStep(false, {{kLeadA, 0.f}, {kLeadB, 0.f}});
+    const Closed ba = closeStep(false, {{kLeadB, 0.f}, {kLeadA, 0.f}});
+    CHECK(ab == ba);
+    CHECK(ab.fell == (kBitA | kBitB));
+    CHECK(ab.rose == 0);
+    CHECK(ab.tookOver == kNoFighter);
+    CHECK(ab.active == kLeadA);
+    CHECK(ab.defeated);
+}
+
+TEST_CASE("fight fate: one lead falls on the step the other stands: control to the one that stood, no defeat") {
+    const Closed ab = closeStep(true, {{kLeadA, 0.f}, {kLeadB, 0.25f}});
+    const Closed ba = closeStep(true, {{kLeadB, 0.25f}, {kLeadA, 0.f}});
+    CHECK(ab == ba);
+    CHECK(ab.fell == kBitA);
+    CHECK(ab.rose == kBitB);
+    CHECK(ab.tookOver == kLeadB);
+    CHECK(ab.active == kLeadB);
+    CHECK_FALSE(ab.defeated);
+    CHECK(ab.downA);
+    CHECK_FALSE(ab.downB);
+}
+
+TEST_CASE("fight fate: a lead that falls and stands again within one step does neither; the partner's fall moves nothing") {
+    const Closed up = closeStep(false, {{kLeadA, 0.f}, {kLeadA, 0.5f}});
+    CHECK(up.fell == 0);
+    CHECK(up.rose == 0);
+    CHECK(up.tookOver == kNoFighter);
+    CHECK(up.active == kLeadA);
+    CHECK_FALSE(up.downA);
+    const Closed back = closeStep(true, {{kLeadB, 0.3f}, {kLeadB, 0.f}});
+    CHECK(back.fell == 0);
+    CHECK(back.rose == 0);
+    CHECK(back.downB);
+    CHECK_FALSE(back.defeated);
+    const Closed partner = closeStep(false, {{kLeadB, 0.f}});
+    CHECK(partner.fell == kBitB);
+    CHECK(partner.tookOver == kNoFighter);
+    CHECK(partner.active == kLeadA);
+    // Where the end state differs, so does the hash.
+    CHECK(up.hash != partner.hash);
+}
+
+TEST_CASE("fight fate: a checkpoint between ticks closes the step: it holds the settled fall and takeover") {
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(s.setActiveLead(kLeadA));
+    s.tick(kFrame);
+    s.setLeadHealth(kLeadA, 0.f);
+    CHECK(s.activeLead() == kLeadA);
+    REQUIRE(s.checkpointPhase(1));
+    CHECK(s.activeLead() == kLeadB);
+    CHECK(s.checkpoint().down[kLeadA]);
+    CHECK(s.checkpoint().activeLead == kLeadB);
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.leadsFell == kBitA);
     CHECK(t.tookOver == kLeadB);
-    CHECK(t.defeated);
+    CHECK(t.checkpoint == CheckpointAt::Phase);
+    const FightTick& q = s.tick(kFrame);
+    CHECK(q.leadsFell == 0);
+    CHECK(q.tookOver == kNoFighter);
 }
 
 TEST_CASE("fight fate: NaN and infinities change nothing; above 0 stands; non-leads are ignored") {
@@ -392,6 +486,7 @@ struct Seen {
     int bossHp = 0;
     bool weakOpen = false, lone = false, loneEnded = false;
     std::uint32_t pooled = 0, releases = 0;
+    std::uint64_t sessionHash = 0, brainHash = 0; // every play field of the session and of the brain
     bool operator==(const Seen&) const = default;
 };
 
@@ -418,14 +513,15 @@ struct Host {
         FightHostCheckpoint h;
         h.hp = hp;
         h.draws = 1234;
-        h.partner = brain;
-        s.setHostCheckpoint(h);
+        h.partner = brain.save();
+        REQUIRE(s.setHostCheckpoint(h) != CheckpointAt::None);
     }
     void retry(CheckpointAt want = CheckpointAt::FightStart) {
         const FightCheckpoint& cp = s.retry();
         REQUIRE(cp.at == want);
+        REQUIRE(cp.hostWritten);
         hp = cp.host.hp;
-        brain = cp.host.partner;
+        brain.load(cp.host.partner);
     }
     void damage(FighterId lead, int n) {
         hp[lead] = hp[lead] - n < 0 ? 0 : hp[lead] - n;
@@ -482,7 +578,7 @@ struct Host {
                 s.setLeadHealth(body, it.riseHealth);
             }
             const FightTick& t = s.tick(kFrame);
-            const CheckpointAt taken = t.checkpoint;
+            const std::uint8_t taken = t.checkpoints;
             std::uint32_t bossBits = 0;
             for (const BossEvent& e : *t.boss) bossBits |= 1u << static_cast<unsigned>(e.type);
             out.push_back(Seen{t.now, t.leadsFell, t.leadsRose, t.tookOver, s.activeLead(), t.defeated,
@@ -491,8 +587,10 @@ struct Host {
                                s.giftSlot().allPresses(), hp[kLeadA], hp[kLeadB], s.keptLoad(), given, giftError,
                                countError, it.act, it.why, it.newString, it.rise, bossBits,
                                s.hasBoss() ? s.boss().phase() : 0, s.hasBoss() ? s.boss().hp() : 0,
-                               s.weakPointOpen(), s.lone(), s.loneEnded(), s.lonePooled(), s.loneReleases()});
-            if (taken != CheckpointAt::None) writeHost(); // the host's part, right after the tick that took one
+                               s.weakPointOpen(), s.lone(), s.loneEnded(), s.lonePooled(), s.loneReleases(),
+                               s.stateHash(), brain.hash()});
+            // The host's part, right after the tick that took one: once per checkpoint taken, the start first.
+            for (std::uint8_t b = taken; b != 0; b = static_cast<std::uint8_t>(b & (b - 1))) writeHost();
         }
         return out;
     }
@@ -571,9 +669,13 @@ TEST_CASE("fight fate: a fight replayed from its checkpoint with the same inputs
     stale.setUp(replayDef());
     stale.run(lost, 210);
     const std::vector<Seen> wrong = stale.run(replayActs(), frames);
-    bool differs = false;
+    bool differs = false, hashDiffers = false;
     for (std::size_t i = 0; i < want.size() && !differs; ++i) differs = !(wrong[i] == want[i]);
+    for (std::size_t i = 0; i < want.size(); ++i) hashDiffers = hashDiffers || wrong[i].sessionHash != want[i].sessionHash;
     CHECK(differs);
+    CHECK(hashDiffers);
+    CHECK(got.front().sessionHash == want.front().sessionHash);
+    CHECK(got.front().brainHash == want.front().brainHash);
 }
 
 TEST_CASE("fight fate: a boss whose def says checkpointAtPhase checkpoints at its phase change; by default it does not") {
@@ -634,6 +736,7 @@ TEST_CASE("fight fate: a boss the host runs takes its phase checkpoint by call, 
     FightSession s;
     REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
     s.tick(kFrame);
+    REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart); // the start's part first
     for (int i = 0; i < 10; ++i) s.tick(kFrame);
     const double at = s.now();
     CHECK(s.checkpointPhase(2));
@@ -651,8 +754,9 @@ TEST_CASE("fight fate: a boss the host runs takes its phase checkpoint by call, 
     CHECK(s.tick(kFrame).checkpoint == CheckpointAt::Phase);
     s.setLeadHealth(kLeadA, 0.0f);
     s.setLeadHealth(kLeadB, 0.0f);
+    CHECK_FALSE(s.defeated()); // the step is still open
+    CHECK_FALSE(s.checkpointPhase(3)); // the call closes it first: a defeat, so none is taken
     REQUIRE(s.defeated());
-    CHECK_FALSE(s.checkpointPhase(3));
     const FightCheckpoint& cp = s.retry();
     CHECK(cp.at == CheckpointAt::Phase);
     CHECK(cp.phase == 2);
@@ -823,9 +927,85 @@ TEST_CASE("fight fate: with both leads unable to fall, health never loses the fi
     CHECK_FALSE(s.cannotFall(kLeadB));
     CHECK(s.blowOnLead(kLeadB, 10, 20, 100) == -10);
     CHECK(s.blowOnLead(kLeadA, 10, 20, 100) == -10);
+    const FightTick& end = s.tick(kFrame);
+    CHECK(end.defeated);
+    CHECK(end.heldUp == 0);
     CHECK(s.defeated());
-    CHECK(s.tick(kFrame).heldUp == 0);
 }
+TEST_CASE("fight fate: a checkpoint the host never wrote says so at the retry; a written one does not") {
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(s.tick(kFrame).checkpoint == CheckpointAt::FightStart); // taken; the host writes nothing
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(kFrame).defeated);
+    const FightCheckpoint& empty = s.retry();
+    CHECK(empty.at == CheckpointAt::FightStart);
+    CHECK_FALSE(empty.hostWritten);
+    CHECK_FALSE(empty.host.partner.begun); // an unbegun brain's save: not the fight's
+    // Written, it says so, and the brain comes back exactly.
+    PartnerBrain b;
+    REQUIRE(b.begin(PartnerTuning{}, 9));
+    FightHostCheckpoint h;
+    h.partner = b.save();
+    h.currency = 40;
+    REQUIRE(s.setHostCheckpoint(h) == CheckpointAt::FightStart);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(kFrame).defeated);
+    const FightCheckpoint& full = s.retry();
+    CHECK(full.hostWritten);
+    CHECK(full.host.partner.begun);
+    CHECK(full.host.currency == 40);
+    PartnerBrain c;
+    c.load(full.host.partner);
+    CHECK(c.hash() == b.hash());
+    // A new checkpoint starts unwritten.
+    REQUIRE(s.checkpointPhase(1));
+    CHECK_FALSE(s.checkpoint().hostWritten);
+    CHECK(s.checkpoint(CheckpointAt::FightStart).hostWritten);
+}
+
+TEST_CASE("fight fate: a phase checkpoint on the tick that takes the start one asks for both, and the host writes the start first") {
+    constexpr std::uint8_t kBoth = (1u << static_cast<unsigned>(CheckpointAt::FightStart)) |
+                                   (1u << static_cast<unsigned>(CheckpointAt::Phase));
+    FightSession s;
+    FightSessionDef d;
+    d.hasBoss = true;
+    d.boss = twoPhaseBoss(true);
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.bossHit(60, false); // the phase changes on the first tick: the one that takes the start checkpoint
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.checkpoints == kBoth);
+    CHECK(t.checkpoint == CheckpointAt::Phase);
+    REQUIRE(s.checkpoint(CheckpointAt::FightStart).at == CheckpointAt::FightStart);
+    REQUIRE(s.checkpoint(CheckpointAt::Phase).at == CheckpointAt::Phase);
+    FightHostCheckpoint a, b;
+    a.currency = 1;
+    b.currency = 2;
+    CHECK(s.setHostCheckpoint(a) == CheckpointAt::FightStart);
+    CHECK(s.setHostCheckpoint(b) == CheckpointAt::Phase);
+    CHECK(s.checkpoint(CheckpointAt::FightStart).hostWritten);
+    CHECK(s.checkpoint(CheckpointAt::FightStart).host.currency == 1);
+    CHECK(s.checkpoint(CheckpointAt::Phase).hostWritten);
+    CHECK(s.checkpoint(CheckpointAt::Phase).host.currency == 2);
+    CHECK(s.tick(kFrame).checkpoints == 0);
+    // checkpointPhase before the first tick: both, reported by the next tick; a named write and a bad name.
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(s.checkpointPhase(1));
+    const FightTick& u = s.tick(kFrame);
+    CHECK(u.checkpoints == kBoth);
+    CHECK(u.checkpoint == CheckpointAt::Phase);
+    CHECK(s.setHostCheckpoint(b, CheckpointAt::Phase));
+    CHECK_FALSE(s.checkpoint(CheckpointAt::FightStart).hostWritten);
+    CHECK_FALSE(s.setHostCheckpoint(a, CheckpointAt::None));
+    CHECK(s.setHostCheckpoint(a) == CheckpointAt::FightStart);
+    CHECK(s.checkpoint(CheckpointAt::FightStart).host.currency == 1);
+    // A tick that took only a phase checkpoint asks for that one alone.
+    REQUIRE(s.checkpointPhase(2));
+    CHECK(s.tick(kFrame).checkpoints == (1u << static_cast<unsigned>(CheckpointAt::Phase)));
+}
+
 
 TEST_CASE("fight fate: a gift at a lead who is down is refused Down: no charge, cooldown, thread or tally") {
     FightSessionDef d;
@@ -874,6 +1054,7 @@ TEST_CASE("fight fate: a gift at a lead who is down is refused Down: no charge, 
     CHECK(s.giveGift(kLeadA).given);
     s.setLeadHealth(kLeadA, 0.f);
     REQUIRE(s.down(kLeadA));
+    REQUIRE(s.tick(kFrame).leadsFell == kBitA);
     s.setLeadHealth(kLeadA, 0.25f);
     CHECK_FALSE(s.down(kLeadA));
     CHECK(s.tick(kFrame).leadsRose == kBitA);

@@ -1,6 +1,8 @@
 #include "ftcore/PartnerBrain.h"
 
+#include "ftcore/FightSession.h"
 #include "ftcore/Json.h"
+#include "ftcore/StateHash.h"
 
 #include <algorithm>
 #include <cmath>
@@ -53,31 +55,32 @@ bool validPartnerTuning(const PartnerTuning& t) {
            pbWithin(t.budgetAllowanceSeconds, 0.f, 10.f);
 }
 
+static_assert(kMaxPartnerStep == kMaxFightStep, "the brain's step bound is the fight's");
+
 bool PartnerBrain::begin(const PartnerTuning& t, std::uint32_t seed) {
     const bool ok = validPartnerTuning(t);
-    t_ = ok ? t : PartnerTuning{};
-    rhythm_ = mix(seed);
-    defence_ = mix(seed ^ 0xA5C3F00Du);
-    rhythmDraws_ = 0;
-    defenceDraws_ = 0;
-    phase_ = Phase::Ready;
-    target_ = -1;
-    blows_ = 0;
-    pause_ = 0.0;
-    clock_ = 0.0;
-    seenAttacking_ = false;
-    returning_ = false;
-    drawn_ = false;
-    spentPartner_.fill(0.f);
-    spentLead_.fill(0.f);
-    slot_ = 0;
-    now_ = 0.0;
-    down_ = false;
-    downFor_ = 0.0;
-    watch_ = {};
-    out_ = PartnerIntent{};
-    begun_ = true;
+    s_ = PartnerBrainSave{};
+    s_.t = ok ? t : PartnerTuning{};
+    s_.rhythm = mix(seed);
+    s_.defence = mix(seed ^ 0xA5C3F00Du);
+    s_.begun = true;
     return ok;
+}
+
+std::uint64_t PartnerBrainSave::hash() const {
+    StateHash h;
+    h.add(t.leashMeters).add(t.returnMeters).add(t.reachMeters).add(t.standoffMeters).add(t.blowsMin).add(t.blowsMax);
+    h.add(t.blowSeconds).add(t.pauseMin).add(t.pauseMax).add(t.guardWarning).add(t.guardChance).add(t.guardHold);
+    h.add(t.downSeconds).add(t.riseHealth).add(t.blowCapShare).add(t.overScale).add(t.budgetWindowSeconds);
+    h.add(t.budgetShare).add(t.budgetAllowanceSeconds);
+    h.add(rhythm).add(defence).add(rhythmDraws).add(defenceDraws).add(phase).add(target).add(blows).add(pause);
+    h.add(clock).add(returning).add(drawn).add(lengths).add(begunBlows).add(committedEnd);
+    h.add(spentPartner).add(spentLead).add(slot).add(now).add(down).add(downFor);
+    for (const Watch& w : watch) h.add(w.winding).add(w.left).add(w.guard).add(w.hold);
+    h.add(out.act).add(out.why).add(out.point.x).add(out.point.y).add(out.enemy).add(out.blows).add(out.newString).add(out.blowStart).add(out.blowIndex);
+    h.add(out.partnerBlow).add(out.breakValue).add(out.extendsStagger).add(out.punish).add(out.rise).add(out.riseHealth);
+    h.add(begun);
+    return h.value;
 }
 
 // xorshift32, one value in [0, 1).
@@ -90,9 +93,9 @@ float PartnerBrain::draw(std::uint32_t& s, std::uint32_t& n) {
 }
 
 void PartnerBrain::endString(bool staggered) {
-    clock_ = 0.0;
-    seenAttacking_ = false;
-    phase_ = staggered ? Phase::Ready : Phase::Pause; // rule 6: no pause on a staggered target
+    s_.clock = 0.0;
+    s_.begunBlows = s_.blows; // no more blows: one still running runs out (committedEnd)
+    s_.phase = staggered ? Phase::Ready : Phase::Pause; // rule 6: no pause on a staggered target
 }
 
 int PartnerBrain::chooseTarget(const PartnerInput& in) const {
@@ -126,93 +129,97 @@ int PartnerBrain::chooseTarget(const PartnerInput& in) const {
 // b_0..b_i, the lead's at least its sum over b_0..b_(i-1), and the new attack in the window at most
 // min(seconds, W - s), s the length of b_0..b_(i-1). Slots before the fight hold nothing.
 bool PartnerBrain::budgetFits(double seconds) const {
-    const double w = static_cast<double>(t_.budgetWindowSeconds);
-    const double share = static_cast<double>(t_.budgetShare);
-    const double allow = static_cast<double>(t_.budgetAllowanceSeconds);
+    const double w = static_cast<double>(s_.t.budgetWindowSeconds);
+    const double share = static_cast<double>(s_.t.budgetShare);
+    const double allow = static_cast<double>(s_.t.budgetAllowanceSeconds);
     double partner = 0.0, lead = 0.0, past = 0.0;
     for (std::size_t i = 0; i < kSlots && past < w; ++i) {
-        const std::int64_t b = slot_ - static_cast<std::int64_t>(i);
+        const std::int64_t b = s_.slot - static_cast<std::int64_t>(i);
         if (b < 0) break;
         const std::size_t k = static_cast<std::size_t>(b % static_cast<std::int64_t>(kSlots));
-        partner += static_cast<double>(spentPartner_[k]);
+        partner += static_cast<double>(s_.spentPartner[k]);
         if (partner + std::min(seconds, w - past) > share * lead + allow + 1e-9) return false;
-        lead += static_cast<double>(spentLead_[k]);
-        past = now_ - static_cast<double>(b) * kSlot;
+        lead += static_cast<double>(s_.spentLead[k]);
+        past = s_.now - static_cast<double>(b) * kSlot;
     }
     return true;
 }
 
-void PartnerBrain::account(double dt, bool partner, bool lead) {
+// `dt` from now: the partner's `partner` seconds of it are its first stretch (a blow begun runs from the step's start).
+void PartnerBrain::account(double dt, double partner, bool lead) {
     double left = dt;
-    // A step longer than any window: only its last stretch can still be in one.
-    const double skip = left - (static_cast<double>(t_.budgetWindowSeconds) + 2.0 * kSlot);
-    if (skip > 0.0) {
-        spentPartner_.fill(0.f);
-        spentLead_.fill(0.f);
-        now_ += skip;
-        slot_ = static_cast<std::int64_t>(std::floor(now_ / kSlot));
-        left -= skip;
-    }
+    double mine = partner;
     while (left > 1e-12) {
-        const double end = static_cast<double>(slot_ + 1) * kSlot;
-        const double part = std::min(left, std::max(0.0, end - now_));
-        const std::size_t k = static_cast<std::size_t>(slot_ % static_cast<std::int64_t>(kSlots));
-        if (partner) spentPartner_[k] += static_cast<float>(part);
-        if (lead) spentLead_[k] += static_cast<float>(part);
-        now_ += part;
+        const double end = static_cast<double>(s_.slot + 1) * kSlot;
+        const double part = std::min(left, std::max(0.0, end - s_.now));
+        const std::size_t k = static_cast<std::size_t>(s_.slot % static_cast<std::int64_t>(kSlots));
+        const double p = std::min(part, mine);
+        if (p > 0.0) s_.spentPartner[k] += static_cast<float>(p);
+        if (lead) s_.spentLead[k] += static_cast<float>(part);
+        mine -= p;
+        s_.now += part;
         left -= part;
-        if (now_ >= end - 1e-12) {
-            ++slot_;
-            const std::size_t next = static_cast<std::size_t>(slot_ % static_cast<std::int64_t>(kSlots));
-            spentPartner_[next] = 0.f;
-            spentLead_[next] = 0.f;
+        if (s_.now >= end - 1e-12) {
+            ++s_.slot;
+            const std::size_t next = static_cast<std::size_t>(s_.slot % static_cast<std::int64_t>(kSlots));
+            s_.spentPartner[next] = 0.f;
+            s_.spentLead[next] = 0.f;
         }
     }
 }
 
 const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
-    if (!(dt > 0.0)) dt = 0.0;
+    // As FightSession's tick: not a finite number or under 0 is 0; a long step counts as kMaxPartnerStep.
+    dt = std::isfinite(dt) && dt > 0.0 ? std::min(dt, kMaxPartnerStep) : 0.0;
     decide(dt, in);
-    if (begun_) account(dt, out_.act == PartnerAct::Attack || in.doing == PartnerDoing::Attacking, in.leadAttacking);
-    return out_;
+    if (s_.begun) {
+        // Its attack this step: what runs of the blows it began, or, with none running, the whole step when the host
+        // says it attacks anyway.
+        const double running = std::clamp(s_.committedEnd - s_.now, 0.0, dt);
+        const double mine = running > 0.0 ? running : (in.doing == PartnerDoing::Attacking ? dt : 0.0);
+        account(dt, mine, in.leadAttacking);
+    }
+    return s_.out;
 }
 
 const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
-    out_ = PartnerIntent{};
-    if (!begun_) return out_;
+    PartnerIntent& out = s_.out;
+    out = PartnerIntent{};
+    if (!s_.begun) return out;
+    const PartnerTuning& t = s_.t;
     const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
 
     // Rule 5: down at zero, waits, rises after downSeconds (every step until the host stands it).
     if (!(in.health > 0.f)) {
-        if (!down_) {
-            down_ = true;
-            downFor_ = 0.0;
-            phase_ = Phase::Ready;
-            target_ = -1;
-            returning_ = false;
-            watch_ = {};
+        if (!s_.down) {
+            s_.down = true;
+            s_.downFor = 0.0;
+            s_.phase = Phase::Ready;
+            s_.target = -1;
+            s_.returning = false;
+            s_.watch = {};
         } else {
-            downFor_ += dt;
+            s_.downFor += dt;
         }
-        out_.why = PartnerWhy::Down;
-        if (downFor_ + 1e-9 >= static_cast<double>(t_.downSeconds)) {
-            out_.rise = true;
-            out_.riseHealth = t_.riseHealth;
+        out.why = PartnerWhy::Down;
+        if (s_.downFor + 1e-9 >= static_cast<double>(t.downSeconds)) {
+            out.rise = true;
+            out.riseHealth = t.riseHealth;
         }
-        return out_;
+        return out;
     }
-    down_ = false;
-    downFor_ = 0.0;
+    s_.down = false;
+    s_.downFor = 0.0;
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
     bool guard = false;
     for (std::size_t i = 0; i < kMaxPartnerEnemies; ++i) {
-        Watch& w = watch_[i];
+        Watch& w = s_.watch[i];
         if (i < n && windingAt(in.enemies[i])) {
             const float left = in.enemies[i].windupLeft;
             if (!w.winding || left > w.left + 1e-4f) { // a new windup
-                w.guard = left >= t_.guardWarning && draw(defence_, defenceDraws_) < t_.guardChance;
-                w.hold = t_.guardHold;
+                w.guard = left >= t.guardWarning && draw(s_.defence, s_.defenceDraws) < t.guardChance;
+                w.hold = t.guardHold;
             }
             w.winding = true;
             w.left = left;
@@ -231,136 +238,156 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         }
     }
 
-    const bool haveTarget = target_ >= 0 && static_cast<std::size_t>(target_) < n &&
-                            standing(in.enemies[static_cast<std::size_t>(target_)]);
+    const bool haveTarget = s_.target >= 0 && static_cast<std::size_t>(s_.target) < n &&
+                            standing(in.enemies[static_cast<std::size_t>(s_.target)]);
     const bool staggered =
-        haveTarget && in.enemies[static_cast<std::size_t>(target_)].state == View::State::Staggered;
+        haveTarget && in.enemies[static_cast<std::size_t>(s_.target)].state == View::State::Staggered;
+    // The blows begun have run out (a blow begun counts to its end, whatever follows).
+    const bool blowOver = s_.now + 1e-9 >= s_.committedEnd;
 
-    // The string's clock is the host's `doing`; the pause's is the brain's.
-    if (phase_ != Phase::Ready) clock_ += dt;
-    if (phase_ == Phase::String) {
-        if (in.doing == PartnerDoing::Attacking) seenAttacking_ = true;
-        const double full = static_cast<double>(blows_) * static_cast<double>(t_.blowSeconds);
-        const bool over = !haveTarget || (seenAttacking_ ? (in.doing != PartnerDoing::Attacking || clock_ >= 2.0 * full)
-                                                         : clock_ + 1e-9 >= full);
-        if (over && !haveTarget) { // gone (down, or past the span): pick again, no pause on nothing
-            phase_ = Phase::Ready;
-            clock_ = 0.0;
-            seenAttacking_ = false;
-        } else if (over) {
+    // The string's clock is its blows' lengths; the pause's is the brain's.
+    if (s_.phase == Phase::String) {
+        if (!haveTarget) { // gone (down, or past the span): pick again, no pause on nothing
+            s_.phase = Phase::Ready;
+            s_.clock = 0.0;
+            s_.begunBlows = s_.blows;
+        } else if (blowOver && s_.begunBlows >= s_.blows) {
             endString(staggered);
         }
-    } else if (phase_ == Phase::Pause) {
-        if (clock_ + 1e-9 >= pause_ || staggered || !haveTarget) {
-            phase_ = Phase::Ready;
-            clock_ = 0.0;
+    } else if (s_.phase == Phase::Pause) {
+        s_.clock += dt;
+        if (s_.clock + 1e-9 >= s_.pause || staggered || !haveTarget) {
+            s_.phase = Phase::Ready;
+            s_.clock = 0.0;
         }
     }
 
     if (!in.canAct) {
-        if (phase_ == Phase::String) endString(staggered);
-        out_.why = PartnerWhy::CannotAct;
-        return out_;
+        if (s_.phase == Phase::String) endString(staggered);
+        out.why = PartnerWhy::CannotAct;
+        return out;
     }
     if (guard) {
-        if (phase_ == Phase::String) endString(staggered);
-        out_.act = PartnerAct::Guard;
-        out_.why = PartnerWhy::Guard;
-        return out_;
+        if (s_.phase == Phase::String) endString(staggered);
+        out.act = PartnerAct::Guard;
+        out.why = PartnerWhy::Guard;
+        return out;
     }
 
     // Rule 1, StayClose: past the leash, back to the lead until within returnMeters.
     if (in.order == PartnerOrder::StayClose) {
         const float d = dist(in.pos, in.leadPos);
-        if (d > t_.leashMeters) returning_ = true;
-        else if (d <= t_.returnMeters) returning_ = false;
-        if (returning_) {
-            if (phase_ == Phase::String) endString(staggered);
-            out_.act = PartnerAct::MoveTo;
-            out_.why = PartnerWhy::Leash;
-            out_.point = in.leadPos;
-            return out_;
+        if (d > t.leashMeters) s_.returning = true;
+        else if (d <= t.returnMeters) s_.returning = false;
+        if (s_.returning) {
+            if (s_.phase == Phase::String) endString(staggered);
+            out.act = PartnerAct::MoveTo;
+            out.why = PartnerWhy::Leash;
+            out.point = in.leadPos;
+            return out;
         }
     } else {
-        returning_ = false;
+        s_.returning = false;
     }
 
     const auto attack = [&](int enemy, bool fresh) {
-        out_.act = PartnerAct::Attack;
-        out_.enemy = enemy;
-        out_.blows = blows_;
-        out_.newString = fresh;
-        out_.partnerBlow = true;
-        out_.breakValue = 0.f;
-        out_.extendsStagger = false;
-        out_.punish = in.enemies[static_cast<std::size_t>(enemy)].state == View::State::Staggered;
+        out.act = PartnerAct::Attack;
+        out.enemy = enemy;
+        out.blows = s_.blows;
+        out.newString = fresh;
+        out.partnerBlow = true;
+        out.breakValue = 0.f;
+        out.extendsStagger = false;
+        out.punish = in.enemies[static_cast<std::size_t>(enemy)].state == View::State::Staggered;
     };
+    // What is left of the blows begun: every budget check counts it with the blow it decides.
+    const double running = blowOver ? 0.0 : s_.committedEnd - s_.now;
 
-    if (phase_ == Phase::String) {
-        if (!budgetFits(dt)) { // rule 2's budget: this step would break it
-            endString(staggered);
-            out_.why = PartnerWhy::Budget;
-            out_.enemy = target_;
-            return out_;
+    if (s_.phase == Phase::String) {
+        if (blowOver) { // the next blow, decided before it starts on its whole length
+            const double len = s_.lengths[static_cast<std::size_t>(s_.begunBlows)];
+            if (!budgetFits(running + len)) { // rule 2's budget: it would break it
+                endString(staggered);
+                out.why = PartnerWhy::Budget;
+                out.enemy = s_.target;
+                return out;
+            }
+            out.blowStart = true;
+            out.blowIndex = s_.begunBlows;
+            ++s_.begunBlows;
+            s_.committedEnd = s_.now + len;
         }
-        attack(target_, false);
-        out_.why = PartnerWhy::String;
-        return out_;
+        attack(s_.target, false);
+        out.why = PartnerWhy::String;
+        return out;
     }
-    if (phase_ == Phase::Pause) {
-        out_.why = PartnerWhy::Pause;
-        const View& e = in.enemies[static_cast<std::size_t>(target_)];
-        if (edge(in.pos, e) < t_.standoffMeters) {
-            out_.act = PartnerAct::StepBack;
-            out_.enemy = target_;
-            out_.point = toward(e.pos, in.pos, e.radius + t_.standoffMeters);
+    if (s_.phase == Phase::Pause) {
+        out.why = PartnerWhy::Pause;
+        const View& e = in.enemies[static_cast<std::size_t>(s_.target)];
+        if (edge(in.pos, e) < t.standoffMeters) {
+            out.act = PartnerAct::StepBack;
+            out.enemy = s_.target;
+            out.point = toward(e.pos, in.pos, e.radius + t.standoffMeters);
         }
-        return out_;
+        return out;
     }
 
     // Ready: pick, close in, or start a string.
     const int tgt = chooseTarget(in);
-    target_ = tgt;
+    s_.target = tgt;
     if (tgt < 0) {
-        out_.why = PartnerWhy::NoTarget;
-        return out_;
+        out.why = PartnerWhy::NoTarget;
+        return out;
     }
     const View& e = in.enemies[static_cast<std::size_t>(tgt)];
-    if (edge(in.pos, e) > t_.reachMeters) {
-        Vec2 p = toward(e.pos, in.pos, e.radius + 0.5f * t_.reachMeters);
-        if (in.order == PartnerOrder::StayClose && dist(in.leadPos, p) > t_.returnMeters)
-            p = toward(in.leadPos, p, t_.returnMeters);
-        out_.act = PartnerAct::MoveTo;
-        out_.why = PartnerWhy::Approach;
-        out_.enemy = tgt;
-        out_.point = p;
-        return out_;
+    if (edge(in.pos, e) > t.reachMeters) {
+        Vec2 p = toward(e.pos, in.pos, e.radius + 0.5f * t.reachMeters);
+        if (in.order == PartnerOrder::StayClose && dist(in.leadPos, p) > t.returnMeters)
+            p = toward(in.leadPos, p, t.returnMeters);
+        out.act = PartnerAct::MoveTo;
+        out.why = PartnerWhy::Approach;
+        out.enemy = tgt;
+        out.point = p;
+        return out;
     }
     if (windingAt(e)) { // rule 2: never into a windup aimed at it
-        out_.why = PartnerWhy::HeldOff;
-        out_.enemy = tgt;
-        return out_;
+        out.why = PartnerWhy::HeldOff;
+        out.enemy = tgt;
+        return out;
     }
-    if (!drawn_) {
-        const int span = t_.blowsMax - t_.blowsMin + 1;
-        blows_ = std::min(t_.blowsMax,
-                          t_.blowsMin + static_cast<int>(draw(rhythm_, rhythmDraws_) * static_cast<float>(span)));
-        pause_ = static_cast<double>(t_.pauseMin) +
-                 static_cast<double>(draw(rhythm_, rhythmDraws_)) * static_cast<double>(t_.pauseMax - t_.pauseMin);
-        drawn_ = true;
+    if (!blowOver) { // a blow begun before its string ended still runs out
+        out.why = PartnerWhy::Committed;
+        out.enemy = tgt;
+        return out;
     }
-    if (!budgetFits(static_cast<double>(blows_) * static_cast<double>(t_.blowSeconds))) { // rule 2's budget: hold
-        out_.why = PartnerWhy::Budget;
-        out_.enemy = tgt;
-        return out_;
+    if (!s_.drawn) {
+        const int span = t.blowsMax - t.blowsMin + 1;
+        s_.blows = std::min(t.blowsMax,
+                            t.blowsMin + static_cast<int>(draw(s_.rhythm, s_.rhythmDraws) * static_cast<float>(span)));
+        s_.pause = static_cast<double>(t.pauseMin) +
+                   static_cast<double>(draw(s_.rhythm, s_.rhythmDraws)) * static_cast<double>(t.pauseMax - t.pauseMin);
+        s_.drawn = true;
+        // The lengths the host will run (read once, so a held string keeps them).
+        for (std::size_t i = 0; i < kMaxPartnerBlows; ++i) {
+            const float l = in.blowSeconds[i];
+            s_.lengths[i] = static_cast<double>(l >= 0.1f && l <= 2.f ? l : t.blowSeconds);
+        }
     }
-    drawn_ = false;
-    phase_ = Phase::String;
-    clock_ = 0.0;
-    seenAttacking_ = false;
+    if (!budgetFits(running + s_.lengths[0])) { // rule 2's budget: hold (each later blow is decided as it starts)
+        out.why = PartnerWhy::Budget;
+        out.enemy = tgt;
+        return out;
+    }
+    s_.drawn = false;
+    s_.phase = Phase::String;
+    s_.clock = 0.0;
+    s_.begunBlows = 1;
+    s_.committedEnd = s_.now + s_.lengths[0];
     attack(tgt, true);
-    out_.why = PartnerWhy::Start;
-    return out_;
+    out.blowStart = true;
+    out.blowIndex = 0;
+    out.why = PartnerWhy::Start;
+    return out;
 }
 
 bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* error) {

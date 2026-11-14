@@ -28,6 +28,7 @@
 // (already called). Times as CombatInputs.h (queries included). No allocation. Tuning file:
 // Data/Battle/gifts.json, read by importGiftTuning.
 
+#include "ftcore/StateHash.h"
 #include "ftcore/Api.h"
 #include "ftcore/CombatInputs.h"
 #include "ftcore/StrikeCount.h"
@@ -334,6 +335,17 @@ private:
         return r;
     }
 
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(tally_.given).add(tally_.refused).add(vacantPresses_).add(hostilePresses_).add(threads_).add(selected_);
+        h.add(state_).add(now_).add(readyAt_).add(guardUntil_).add(healsGiven_);
+        const GiftSave& f = fightStart_;
+        h.add(f.version).add(f.given).add(f.refused).add(f.vacantPresses).add(f.hostilePresses).add(f.threads);
+        h.add(f.selected).add(f.state);
+    }
+
+private:
     GiftTuning tuning_{};
     GiftTally tally_{};
     std::uint32_t vacantPresses_ = 0;
