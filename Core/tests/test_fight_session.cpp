@@ -1360,7 +1360,9 @@ struct FightSessionTestAccess {
             {"switchReq", [](FightSession& s) { s.switchReq_ = kLeadB; }},
             {"switchedDue", [](FightSession& s) { s.switchedDue_ = kLeadB; }},
             {"switchRefusedDue", [](FightSession& s) { s.switchRefusedDue_ = kLeadB; }},
-            {"switchRefusalDue", [](FightSession& s) { s.switchRefusalDue_ = SwitchRefusal::Down; }},
+            {"switchRefusalDue", [](FightSession& s) { s.switchRefusalDue_ = LeadSwitch::Down; }},
+            {"switchAt", [](FightSession& s) { s.switchAt_ = 5.0; }},
+            {"switchCooldown", [](FightSession& s) { s.switchCooldown_ = 2.0; }},
         };
         const CpRow cpRows[] = {
             {"at", [](FightSession&, FightCheckpoint& c) { c.at = CheckpointAt::None; }},
@@ -1369,6 +1371,7 @@ struct FightSessionTestAccess {
             {"hostWritten", [](FightSession&, FightCheckpoint& c) { c.hostWritten = !c.hostWritten; }},
             {"activeLead", [](FightSession&, FightCheckpoint& c) { c.activeLead = kLeadB; }},
             {"switchRequested", [](FightSession&, FightCheckpoint& c) { c.switchRequested = kLeadB; }},
+            {"switchAt", [](FightSession&, FightCheckpoint& c) { c.switchAt = 5.0; }},
             {"leadHealth A", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadA] = 0.3f; }},
             {"leadHealth B", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadB] = 0.3f; }},
             {"down A", [](FightSession&, FightCheckpoint& c) { c.down[kLeadA] = !c.down[kLeadA]; }},

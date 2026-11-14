@@ -154,6 +154,7 @@ add_library(ftcore STATIC
     src/LoneCarry.cpp
     src/PartnerBrain.cpp
     src/GiftSlot.cpp
+    src/LeadSwitch.cpp
     src/Hallucination.cpp
     src/Brief.cpp
     src/BriefKit.cpp

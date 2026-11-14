@@ -2,11 +2,13 @@
 #include "ftcore/FightSession.h"
 
 #include "AllocCounter.h"
+#include "TestAssets.h"
 
 #include <doctest/doctest.h>
 
 #include <initializer_list>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -17,6 +19,13 @@ namespace {
 constexpr double kFrame = 1.0 / 60.0;
 constexpr std::uint8_t kBitA = 1u << kLeadA;
 constexpr std::uint8_t kBitB = 1u << kLeadB;
+
+// Switches back and forth within a second: no cooldown, for the tests not about it.
+FightSessionDef noSwitchCooldown() {
+    FightSessionDef d;
+    d.leadSwitchCooldownSeconds = 0.0;
+    return d;
+}
 
 GiftTuning freeGifts() {
     GiftTuning g;
@@ -82,7 +91,7 @@ TEST_CASE("fight fate: the controlled lead's fall hands control to the standing 
     CHECK(s.setActiveLead(kLeadA));
     const FightTick& no = s.tick(kFrame);
     CHECK(no.switchRefused == kLeadA);
-    CHECK(no.switchRefusal == SwitchRefusal::Down);
+    CHECK(no.switchRefusal == LeadSwitch::Down);
     CHECK(no.switched == kNoFighter);
     CHECK(s.activeLead() == kLeadB);
     // It stands again: control stays where it went.
@@ -142,7 +151,7 @@ namespace {
 struct Closed {
     std::uint8_t fell = 0, rose = 0;
     FighterId tookOver = kNoFighter, active = kNoFighter, switched = kNoFighter, switchRefused = kNoFighter;
-    SwitchRefusal refusal = SwitchRefusal::None;
+    LeadSwitch refusal = LeadSwitch::Ok;
     bool defeated = false, downA = false, downB = false;
     std::uint64_t hash = 0;
     bool operator==(const Closed&) const = default;
@@ -245,7 +254,7 @@ TEST_CASE("fight fate: a switch to a lead who falls on the same step is refused 
     CHECK(sf.fell == kBitB);
     CHECK(sf.switched == kNoFighter);
     CHECK(sf.switchRefused == kLeadB);
-    CHECK(sf.refusal == SwitchRefusal::Down);
+    CHECK(sf.refusal == LeadSwitch::Down);
     CHECK(sf.tookOver == kNoFighter);
     CHECK(sf.active == kLeadA);
     CHECK_FALSE(sf.defeated);
@@ -270,7 +279,7 @@ TEST_CASE("fight fate: a switch on a quiet step, and beside the controlled lead'
     CHECK(kf == fk);
     CHECK(kf.tookOver == kLeadB);
     CHECK(kf.switchRefused == kLeadA);
-    CHECK(kf.refusal == SwitchRefusal::Down);
+    CHECK(kf.refusal == LeadSwitch::Down);
     CHECK(kf.active == kLeadB);
     // On a defeat: refused Defeated, control unchanged.
     const Closed d1 = closeStep(false, {switchTo(kLeadB), {kLeadA, 0.f}, {kLeadB, 0.f}});
@@ -278,7 +287,7 @@ TEST_CASE("fight fate: a switch on a quiet step, and beside the controlled lead'
     CHECK(d1 == d2);
     CHECK(d1.defeated);
     CHECK(d1.switchRefused == kLeadB);
-    CHECK(d1.refusal == SwitchRefusal::Defeated);
+    CHECK(d1.refusal == LeadSwitch::FightOver);
     CHECK(d1.tookOver == kNoFighter);
     CHECK(d1.active == kLeadA);
 }
@@ -296,7 +305,7 @@ TEST_CASE("fight fate: a checkpoint between ticks never resolves the switch: one
             CHECK(c.fell == kBitB);
             CHECK(c.switched == kNoFighter);
             CHECK(c.switchRefused == kLeadB);
-            CHECK(c.refusal == SwitchRefusal::Down);
+            CHECK(c.refusal == LeadSwitch::Down);
             CHECK(c.tookOver == kNoFighter);
             CHECK(c.active == kLeadA);
             CHECK_FALSE(c.defeated);
@@ -338,7 +347,7 @@ TEST_CASE("fight fate: the start checkpoint the host writes at set-up never reso
         CHECK(t.leadsFell == kBitB);
         CHECK(t.switched == kNoFighter);
         CHECK(t.switchRefused == kLeadB);
-        CHECK(t.switchRefusal == SwitchRefusal::Down);
+        CHECK(t.switchRefusal == LeadSwitch::Down);
         CHECK(t.tookOver == kNoFighter);
         CHECK(s.activeLead() == kLeadA);
         CHECK_FALSE(s.defeated());
@@ -350,7 +359,7 @@ TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if th
     for (const bool hostFirst : {true, false}) {
         CAPTURE(hostFirst);
         FightSession s;
-        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        REQUIRE(s.begin(noSwitchCooldown(), 0.0).ok());
         REQUIRE(s.setActiveLead(kLeadB));
         if (hostFirst) REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
         CHECK(s.tick(kFrame).switched == kLeadB);
@@ -370,7 +379,7 @@ TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if th
     // Waiting at a phase checkpoint: the retry opens on it.
     {
         FightSession s;
-        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        REQUIRE(s.begin(noSwitchCooldown(), 0.0).ok());
         s.tick(kFrame);
         REQUIRE(s.setActiveLead(kLeadB));
         REQUIRE(s.checkpointPhase(1));
@@ -386,7 +395,7 @@ TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if th
     // For a lead down in the checkpoint: dropped.
     {
         FightSession s;
-        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        REQUIRE(s.begin(noSwitchCooldown(), 0.0).ok());
         s.tick(kFrame);
         s.setLeadHealth(kLeadB, 0.f);
         REQUIRE(s.setActiveLead(kLeadB));
@@ -410,7 +419,7 @@ TEST_CASE("fight fate: of two switch requests in one step the last wins, and the
     CHECK(c.active == kLeadA);
     const Closed d = closeStep(true, {switchTo(kLeadB), switchTo(kLeadA)}); // the earlier would be refused Down
     CHECK(d.switchRefused == kNoFighter);
-    CHECK(d.refusal == SwitchRefusal::None);
+    CHECK(d.refusal == LeadSwitch::Ok);
     CHECK(d.active == kLeadA);
 }
 
@@ -1455,4 +1464,309 @@ TEST_CASE("fight fate: blowOnLead holds the damage to 0..hp, so extreme ints nev
     CHECK(s.leadHealth(kLeadA) == 0.4f);
     // A blow of 0 at hp 0 is no blow: the lead that cannot fall is still held at 1.
     CHECK(s.blowOnLead(kLeadA, 0, 0, 100) == 1);
+}
+
+namespace {
+
+// The scripted two-lead fight for the switch preview: each step's health feed (kNoFighter: none) and the
+// script's own switch, closed by a tick of kScriptStep.
+constexpr double kScriptStep = 0.25;
+struct ScriptStep {
+    const char* name;
+    FighterId fed = kNoFighter;
+    float health = 0.f;
+    FighterId sw = kNoFighter;
+};
+constexpr ScriptStep kScript[] = {
+    {"quiet"},
+    {"switch to B", kNoFighter, 0.f, kLeadB},
+    {"in the cooldown"},
+    {"B falls: takeover to A", kLeadB, 0.f},
+    {"B down"},
+    {"B still down"},
+    {"B stands", kLeadB, 0.5f},
+    {"quiet again"},
+    {"switch to B again", kNoFighter, 0.f, kLeadB},
+    {"A falls", kLeadA, 0.f},
+    {"A down"},
+    {"B falls: defeat", kLeadB, 0.f},
+    {"after the defeat"},
+};
+constexpr std::size_t kScriptSteps = sizeof(kScript) / sizeof(kScript[0]);
+
+struct Probe {
+    LeadSwitch preview = LeadSwitch::Ok; // leadSwitchReason at the step's opening
+    LeadSwitch close = LeadSwitch::Ok;   // what a request made then got at the close
+};
+// The script to step k, then at step k a request for `lead` (in place of the script's own switch, if any), the
+// step's feed, and its close.
+Probe probeAt(std::size_t k, FighterId lead) {
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    for (std::size_t i = 0; i < k; ++i) {
+        const ScriptStep& st = kScript[i];
+        if (st.sw != kNoFighter) REQUIRE(s.setActiveLead(st.sw));
+        if (st.fed != kNoFighter) s.setLeadHealth(st.fed, st.health);
+        s.tick(kScriptStep);
+    }
+    Probe p;
+    p.preview = s.leadSwitchReason(lead);
+    REQUIRE(s.setActiveLead(lead)); // taken whatever the reason: only NotInFight is refused at once
+    if (kScript[k].fed != kNoFighter) s.setLeadHealth(kScript[k].fed, kScript[k].health);
+    const FightTick& t = s.tick(kScriptStep);
+    p.close = t.switched == lead ? LeadSwitch::Ok : t.switchRefused == lead ? t.switchRefusal : LeadSwitch::Same;
+    if (p.close == LeadSwitch::Same) {
+        CHECK(t.switched == kNoFighter);
+        CHECK(t.switchRefused == kNoFighter);
+    }
+    return p;
+}
+
+} // namespace
+
+TEST_CASE("fight fate: leadSwitchReason previews the close's answer at every step, but where a fall or rise lands") {
+    struct Named {
+        std::size_t step;
+        FighterId lead;
+        Probe want;
+    };
+    // A fall or rise on the probe's own step: the close judges after it, so its answer wins.
+    const Named named[] = {
+        {3, kLeadA, {LeadSwitch::Cooldown, LeadSwitch::Same}}, // B's fall hands A control (a takeover)
+        {3, kLeadB, {LeadSwitch::Same, LeadSwitch::Down}},
+        {6, kLeadA, {LeadSwitch::Same, LeadSwitch::Same}},
+        {6, kLeadB, {LeadSwitch::Down, LeadSwitch::Ok}}, // stood: Ok, as the takeover started no cooldown
+        {9, kLeadA, {LeadSwitch::Cooldown, LeadSwitch::Down}},
+        {9, kLeadB, {LeadSwitch::Same, LeadSwitch::Same}},
+        {11, kLeadA, {LeadSwitch::Down, LeadSwitch::FightOver}},
+        {11, kLeadB, {LeadSwitch::Same, LeadSwitch::FightOver}},
+    };
+    // Where nothing lands: what the preview says (checked below to equal the close).
+    const LeadSwitch quiet[kScriptSteps][2] = {
+        {LeadSwitch::Same, LeadSwitch::Ok},             // quiet
+        {LeadSwitch::Same, LeadSwitch::Ok},             // switch to B (the probe stands in for it)
+        {LeadSwitch::Cooldown, LeadSwitch::Same},       // in the cooldown
+        {LeadSwitch::Ok, LeadSwitch::Ok},               // (named)
+        {LeadSwitch::Same, LeadSwitch::Down},           // B down; the cooldown over
+        {LeadSwitch::Same, LeadSwitch::Down},           // B still down
+        {LeadSwitch::Ok, LeadSwitch::Ok},               // (named)
+        {LeadSwitch::Same, LeadSwitch::Ok},             // quiet again
+        {LeadSwitch::Same, LeadSwitch::Ok},             // switch to B again (the probe stands in for it)
+        {LeadSwitch::Ok, LeadSwitch::Ok},               // (named)
+        {LeadSwitch::Down, LeadSwitch::Same},           // A down
+        {LeadSwitch::Ok, LeadSwitch::Ok},               // (named)
+        {LeadSwitch::FightOver, LeadSwitch::FightOver}, // after the defeat
+    };
+    for (std::size_t k = 0; k < kScriptSteps; ++k) {
+        for (const FighterId lead : {kLeadA, kLeadB}) {
+            const std::string step = kScript[k].name;
+            CAPTURE(step);
+            CAPTURE(int(lead));
+            const Probe p = probeAt(k, lead);
+            const bool landed = kScript[k].fed != kNoFighter;
+            if (!landed) {
+                CHECK(p.preview == p.close);
+                CHECK(p.preview == quiet[k][lead]);
+                continue;
+            }
+            bool found = false;
+            for (const Named& n : named) {
+                if (n.step != k || n.lead != lead) continue;
+                found = true;
+                CHECK(p.preview == n.want.preview);
+                CHECK(p.close == n.want.close);
+            }
+            CHECK(found);
+        }
+    }
+    // Each landed step is named, and on each one the answer moved for at least one lead.
+    for (const std::size_t k : {std::size_t{3}, std::size_t{6}, std::size_t{9}, std::size_t{11}}) {
+        CHECK(kScript[k].fed != kNoFighter);
+        const Probe a = probeAt(k, kLeadA);
+        const Probe b = probeAt(k, kLeadB);
+        CHECK((a.preview != a.close || b.preview != b.close));
+    }
+}
+
+TEST_CASE("fight fate: a switch within the cooldown is refused Cooldown; a takeover is never blocked and starts none") {
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.tick(kFrame);
+    CHECK(s.leadSwitchReadyIn() == 0.0);
+    REQUIRE(s.setActiveLead(kLeadB));
+    CHECK(s.tick(kFrame).switched == kLeadB);
+    CHECK(s.leadSwitchReadyIn() == doctest::Approx(1.0 - kFrame));
+    CHECK(s.leadSwitchReason(kLeadA) == LeadSwitch::Cooldown);
+    REQUIRE(s.setActiveLead(kLeadA));
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.switchRefused == kLeadA);
+    CHECK(t.switchRefusal == LeadSwitch::Cooldown);
+    CHECK(s.activeLead() == kLeadB);
+    // The controlled lead falls inside the cooldown: control passes all the same, and no cooldown starts.
+    for (int i = 0; i < 70; ++i) s.tick(kFrame);
+    REQUIRE(s.leadSwitchReadyIn() == 0.0);
+    s.setLeadHealth(kLeadB, 0.f);
+    CHECK(s.tick(kFrame).tookOver == kLeadA);
+    CHECK(s.leadSwitchReadyIn() == 0.0);
+    s.setLeadHealth(kLeadB, 0.5f);
+    s.tick(kFrame);
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::Ok);
+    // A takeover inside a running cooldown.
+    REQUIRE(s.setActiveLead(kLeadB));
+    CHECK(s.tick(kFrame).switched == kLeadB);
+    s.setLeadHealth(kLeadB, 0.f);
+    CHECK(s.tick(kFrame).tookOver == kLeadA);
+    CHECK(s.activeLead() == kLeadA);
+}
+
+TEST_CASE("fight fate: the switch cooldown is the def's (0..5), checked at begin, and a checkpoint holds its clock") {
+    {
+        FightSessionDef d;
+        d.leadSwitchCooldownSeconds = 0.0;
+        FightSession s;
+        REQUIRE(s.begin(d, 0.0).ok());
+        REQUIRE(s.setActiveLead(kLeadB));
+        CHECK(s.tick(kFrame).switched == kLeadB);
+        REQUIRE(s.setActiveLead(kLeadA));
+        CHECK(s.tick(kFrame).switched == kLeadA);
+    }
+    for (const double bad : {5.5, -0.1, std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity()}) {
+        CAPTURE(bad);
+        FightSessionDef d;
+        d.leadSwitchCooldownSeconds = bad;
+        FightSession s;
+        const FightSessionCheck c = s.begin(d, 0.0);
+        CHECK_FALSE(c.leadSwitch);
+        CHECK_FALSE(c.ok());
+        REQUIRE(s.setActiveLead(kLeadB));
+        CHECK(s.tick(kFrame).switched == kLeadB);
+        CHECK(s.leadSwitchReadyIn() == doctest::Approx(kLeadSwitchCooldownDefault - kFrame)); // the default
+    }
+    {
+        FightSessionDef d;
+        d.leadSwitchCooldownSeconds = 5.0;
+        FightSession s;
+        REQUIRE(s.begin(d, 0.0).ok());
+        REQUIRE(s.setActiveLead(kLeadB));
+        s.tick(kFrame);
+        for (int i = 0; i < 4 * 60; ++i) s.tick(kFrame);
+        CHECK(s.leadSwitchReason(kLeadA) == LeadSwitch::Cooldown);
+    }
+    // A retry puts the clock and the last switch back: the cooldown runs again from where the checkpoint held it.
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.tick(kFrame);
+    REQUIRE(s.setActiveLead(kLeadB));
+    s.tick(kFrame);
+    REQUIRE(s.checkpointPhase(1));
+    CHECK(s.checkpoint().switchAt == s.now() - kFrame);
+    for (int i = 0; i < 90; ++i) s.tick(kFrame);
+    REQUIRE(s.leadSwitchReason(kLeadA) == LeadSwitch::Ok);
+    CHECK(s.retry().at == CheckpointAt::Phase);
+    CHECK(s.leadSwitchReason(kLeadA) == LeadSwitch::Cooldown);
+    CHECK(s.leadSwitchReadyIn() == doctest::Approx(1.0 - kFrame));
+    // A fresh begin starts with no cooldown.
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    CHECK(s.leadSwitchReason(kLeadA) == LeadSwitch::Ok);
+}
+
+TEST_CASE("fight fate: while a Lone Carry is on a switch away from the Lone lead is refused Lone; the carry stays") {
+    FightSessionDef d;
+    d.loneLead = kLeadA;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.lone());
+    s.tick(kFrame);
+    CHECK(s.leadSwitchReason(kLeadA) == LeadSwitch::Same);
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::Lone);
+    REQUIRE(s.setActiveLead(kLeadB)); // taken: the close refuses it
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.switchRefused == kLeadB);
+    CHECK(t.switchRefusal == LeadSwitch::Lone);
+    CHECK(t.loneCarryEndedBy == LoneEnd::None);
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.lone());
+    CHECK(s.loneEndedBy() == LoneEnd::None);
+    CHECK(s.leadSwitchReadyIn() == 0.0); // a refused switch starts no cooldown
+    // Once the carry ends, the same switch is honoured.
+    REQUIRE(s.endLone(LoneEnd::PartnerCalled));
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::Ok);
+    REQUIRE(s.setActiveLead(kLeadB));
+    CHECK(s.tick(kFrame).switched == kLeadB);
+    // To the Lone lead from the other: honoured (the player takes the lead who carries alone).
+    FightSessionDef e;
+    e.loneLead = kLeadB;
+    FightSession u;
+    REQUIRE(u.begin(e, 0.0).ok());
+    u.tick(kFrame);
+    REQUIRE(u.activeLead() == kLeadA);
+    CHECK(u.leadSwitchReason(kLeadB) == LeadSwitch::Ok);
+    REQUIRE(u.setActiveLead(kLeadB));
+    CHECK(u.tick(kFrame).switched == kLeadB);
+    CHECK(u.leadSwitchReason(kLeadA) == LeadSwitch::Lone);
+    CHECK(u.lone());
+}
+
+TEST_CASE("fight fate: the third slot, or anything but the two leads in the fight, is NotInFight and never asked") {
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.tick(kFrame);
+    for (const FighterId who : {kThirdSlot, kNoFighter, FighterId(7)}) {
+        CAPTURE(int(who));
+        CHECK(s.leadSwitchReason(who) == LeadSwitch::NotInFight);
+        CHECK_FALSE(s.setActiveLead(who));
+        CHECK(s.switchRequested() == kNoFighter);
+    }
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.switched == kNoFighter);
+    CHECK(t.switchRefused == kNoFighter);
+    CHECK(s.activeLead() == kLeadA);
+    // A lead not in this fight.
+    FightSessionDef d;
+    d.inFight = {true, false};
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotInFight);
+    CHECK_FALSE(s.setActiveLead(kLeadB));
+    CHECK(s.switchRequested() == kNoFighter);
+    // A request already waiting is kept when a later one is refused at once.
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    REQUIRE(s.setActiveLead(kLeadB));
+    CHECK_FALSE(s.setActiveLead(kThirdSlot));
+    CHECK(s.switchRequested() == kLeadB);
+}
+
+TEST_CASE("fight fate: lead_switch.json is the defaults; the importer keeps defaults for a missing field, refuses bad ones") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/lead_switch.json", text));
+    LeadSwitchTuning t;
+    t.cooldownSeconds = 3.0;
+    std::string err;
+    REQUIRE(importLeadSwitchTuning(text, t, &err));
+    CHECK(t.cooldownSeconds == kLeadSwitchCooldownDefault);
+    REQUIRE(importLeadSwitchTuning(R"({"version":1})", t, &err));
+    CHECK(t.cooldownSeconds == kLeadSwitchCooldownDefault);
+    for (const double ok : {0.0, 2.5, 5.0}) {
+        const std::string json = "{\"version\":1,\"leadSwitchCooldownSeconds\":" + std::to_string(ok) + "}";
+        REQUIRE(importLeadSwitchTuning(json, t, &err));
+        CHECK(t.cooldownSeconds == doctest::Approx(ok));
+    }
+    for (const char* bad : {
+             R"({"version":2})",
+             R"({})",
+             R"([])",
+             R"(nope)",
+             R"({"version":1,"extra":1})",
+             R"({"version":1,"leadSwitchCooldownSeconds":5.5})",
+             R"({"version":1,"leadSwitchCooldownSeconds":-1})",
+             R"({"version":1,"leadSwitchCooldownSeconds":"1"})",
+         }) {
+        const std::string json = bad;
+        CAPTURE(json);
+        t.cooldownSeconds = 3.0;
+        err.clear();
+        CHECK_FALSE(importLeadSwitchTuning(bad, t, &err));
+        CHECK(t.cooldownSeconds == kLeadSwitchCooldownDefault);
+        CHECK_FALSE(err.empty());
+    }
 }
