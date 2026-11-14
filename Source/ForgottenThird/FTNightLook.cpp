@@ -180,6 +180,8 @@ int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 		}
 		Light->SetIntensity(Lumens);
 		Light->SetVisibility(Lumens > 0.f);
+		// A shop lamp lights the goods, not fog inside the shop (11-14 haze ruling).
+		Light->SetVolumetricScatteringIntensity(0.f);
 		++Written;
 	}
 	return Written;

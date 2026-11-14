@@ -107,6 +107,11 @@ void UFTLampPoolSubsystem::ApplyValues(USpotLightComponent& Light, bool bLamp) c
 	Light.SetSourceRadius(bLamp ? Look.lampSourceCm : D.ShopSource);
 	Light.SetSpecularScale(1.f);
 	Light.SetCastShadows(false);
+	// Shop lights stand inside the bays: no fog lit there (11-14 haze ruling). Street lamps keep the engine's default.
+	if (!bLamp)
+	{
+		Light.SetVolumetricScatteringIntensity(0.f);
+	}
 }
 
 void UFTLampPoolSubsystem::CreatePool()

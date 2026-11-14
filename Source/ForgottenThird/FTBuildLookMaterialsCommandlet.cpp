@@ -1282,6 +1282,7 @@ UMaterial* BuildGlass()
 	Material->RefractionMethod = RM_IndexOfRefraction;
 	Material->bAllowFrontLayerTranslucency = true;
 	Material->bScreenSpaceReflections = true;
+	Material->bUseTranslucencyVertexFog = false; // thin glass adds no fog of its own (11-14 haze ruling)
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, AddVector(Material, TEXT("Color"), FLinearColor(0.01f, 0.012f, 0.012f), 0));
 	Inputs->Opacity.Connect(0, AddScalar(Material, TEXT("Opacity"), 0.08f, 100));
@@ -1326,6 +1327,9 @@ UMaterial* BuildGlassPane(UMaterialParameterCollection* Look, bool bMirror)
 	Material->bAllowFrontLayerTranslucency = true;
 	Material->bScreenSpaceReflections = true;
 	Material->bTangentSpaceNormal = true;
+	// What is behind a window is already fogged by its own depth; thin glass adds none (11-14 haze ruling).
+	Material->bUseTranslucencyVertexFog = false;
+	Material->bComputeFogPerPixel = false;
 	if (!bMirror)
 	{
 		Material->SetShadingModel(MSM_ThinTranslucent);
