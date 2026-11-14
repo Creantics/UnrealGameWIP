@@ -572,3 +572,111 @@ TEST_CASE("ui party view: allocates nothing") {
     if (counting) CHECK(ftcore_test::allocStats().count == before);
     CHECK(sum > 0.f);
 }
+
+TEST_CASE("ui party: with no partner in the fight its row never takes the cursor, so nothing is picked") {
+    CHECK_FALSE(uiPartyRowSelectable(UiPartyRow::Partner, false, false));
+    CHECK_FALSE(uiPartyRowSelectable(UiPartyRow::Partner, true, false));
+    CHECK(uiPartyRowSelectable(UiPartyRow::Lead, false, false));
+    CHECK(uiPartyRowSelectable(UiPartyRow::Follow, true, false));
+    for (int key = 0; key < 2; ++key) {
+        Pad p;
+        UiPartyScreen s = fresh(p);
+        const auto stepAlone = [&s, &p] {
+            UiPartyInput i = p.in();
+            i.partnerHere = false;
+            return uiPartyScreenStep(s, i, kDt);
+        };
+        (key == 0 ? p.party : p.map) = true;
+        CHECK(stepAlone().opened);
+        // A flick up: the partner's row is passed over and the Third's never takes it, so the cursor stays on the lead.
+        p.stick = 0.9f;
+        stepAlone();
+        CHECK(s.cursor == UiPartyRow::Lead);
+        p.stick = 0.f;
+        stepAlone();
+        p.mouse = 20.f;
+        stepAlone();
+        CHECK(s.cursor == UiPartyRow::Lead);
+        p.mouse = 0.f;
+        // Drawn: the partner's row has no underline and the lead's keeps it (and the dot).
+        const UiPartyRowView partner = uiPartyRowView(s, UiPartyRow::Partner, UiPartyWhy::NotHere, 100.f);
+        CHECK(partner.underlineW == 0.f);
+        CHECK(partner.ink == doctest::Approx(kUiPartyRefusedInk));
+        const UiPartyRowView lead = uiPartyRowView(s, UiPartyRow::Lead, UiPartyWhy::Ok, 80.f);
+        CHECK(lead.underlineW == doctest::Approx(80.f));
+        CHECK(lead.dot);
+        (key == 0 ? p.party : p.map) = false;
+        const UiPartyOut o = stepAlone();
+        CHECK(o.closed);
+        CHECK_FALSE(o.picked());
+    }
+}
+
+TEST_CASE("ui party: the partner leaving the fight while the cursor is on its row puts it back on the lead") {
+    Pad p;
+    UiPartyScreen s = fresh(p);
+    p.party = true;
+    step(s, p);
+    p.stick = 0.9f;
+    step(s, p);
+    REQUIRE(s.cursor == UiPartyRow::Partner);
+    p.stick = 0.f;
+    UiPartyInput gone = p.in();
+    gone.partnerHere = false;
+    uiPartyScreenStep(s, gone, kDt);
+    CHECK(s.cursor == UiPartyRow::Lead);
+    CHECK(uiPartyRowView(s, UiPartyRow::Partner, UiPartyWhy::NotHere, 100.f).underlineW == 0.f);
+    gone.partyDown = false;
+    const UiPartyOut o = uiPartyScreenStep(s, gone, kDt);
+    CHECK(o.closed);
+    CHECK_FALSE(o.picked());
+    // Back in the fight, the row takes the cursor again (a refused row that is here still picks: the close refuses it).
+    p.party = true;
+    step(s, p);
+    p.stick = 0.9f;
+    step(s, p);
+    CHECK(s.cursor == UiPartyRow::Partner);
+}
+
+TEST_CASE("ui party: the probe's script picks the partner once from a screen that had no input, then reopens on the lead") {
+    for (const float dt : {1.f / 120.f, 1.f / 60.f, 1.f / 30.f}) {
+        for (const bool here : {true, false}) {
+            CAPTURE(dt);
+            CAPTURE(here);
+            UiPartyScreen s; // as a fight begins under the autopilot: no input yet
+            int picks = 0, opens = 0, closes = 0;
+            UiPartyRow pick = UiPartyRow::Lead;
+            float pickedAt = -10.f;
+            bool openOnLeadAtOne = false;
+            const int steps = static_cast<int>(5.f / dt);
+            for (int i = 0; i < steps; ++i) {
+                const float t = -2.5f + static_cast<float>(i) * dt;
+                UiPartyInput in; // the autopilot's: not live
+                in.partnerHere = here;
+                const bool scripted = uiPartyProbeInput(t, in);
+                CHECK(scripted == (t >= kUiPartyProbeFrom && t < kUiPartyProbeTo));
+                const UiPartyOut o = uiPartyScreenStep(s, in, dt);
+                opens += o.opened ? 1 : 0;
+                closes += o.closed ? 1 : 0;
+                if (o.picked()) {
+                    ++picks;
+                    pick = o.pick;
+                    pickedAt = t;
+                }
+                if (t >= 1.f && t < 1.f + dt) openOnLeadAtOne = s.open && s.cursor == UiPartyRow::Lead;
+            }
+            CHECK(opens == 2);
+            CHECK(closes == 2);
+            CHECK(openOnLeadAtOne);
+            CHECK_FALSE(s.open);
+            if (here) {
+                CHECK(picks == 1);
+                CHECK(pick == UiPartyRow::Partner);
+                CHECK(pickedAt >= 0.f);
+                CHECK(pickedAt < dt + 1e-4f);
+            } else {
+                CHECK(picks == 0);
+            }
+        }
+    }
+}

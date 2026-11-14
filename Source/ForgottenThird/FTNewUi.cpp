@@ -145,8 +145,8 @@ const FTUiText kPromptUi[] = {kHealUi, kGiftHealUi, kGiftGuardUi, kPartnerUi, kA
 static_assert(UE_ARRAY_COUNT(kPromptUi) == ftcore::kUiPromptCount, "one word per prompt, in UiPrompt order");
 // Each prompt's key: the controls line's entry with this label, or (no label) the entry that carries this action, else
 // that action's own keys (inputActionKeys). HEAL is the lead's own heal (input.heal: H, on a pad D-pad up). The gifts are
-// left out of the controls line, so they take their own keys: G and Y; on a pad they have no button or route until the
-// pad's layout is ruled (inputPadPending), so none there. A rebinding that puts two rows on one key
+// left out of the controls line, so they take their own keys: G and Y; on a pad D-pad left and right (a version-1
+// bindings file leaves them NO KEY where its D-pad keeps crouch or switch lead). A rebinding that puts two rows on one key
 // keeps the lowest (uiPromptsDrawable). An action the bindings import left unbound shows NO KEY in its key box, dimmed
 // (inputPromptKey on FTInputBindings::Unbound), and keeps its row. There is no RELOAD prompt: the rules have no reload
 // press (the reload is automatic), so the row comes back only with that press.
@@ -1431,7 +1431,8 @@ ftcore::UiFirstUseMode FirstUseMode()
 // as the bindings import leaves a new action whose default key the player gave to something else, so GIFT HEAL stands
 // dimmed with NO KEY in its key box beside a lit GIFT GUARD; too_soon: TOO SOON in the call slot; wait: WAIT with its line
 // at 60 percent; party: the party screen open with its cursor on the partner, the partner row taken as the rules would
-// take it (a fight today holds the controlled lead alone, so in play it reads NOT HERE); party_refused: the partner row
+// take it (ordinary play holds the controlled lead alone, so there it reads NOT HERE and never takes the cursor; with
+// -ArenaPartner, -ArenaSwitchAt shows the real screen and switch); party_refused: the partner row
 // DOWN under the cursor and SWITCH: DOWN in the call slot; party_lone: the screen open on a Lone Carry (ALONE in the state
 // slot), the partner row NOT HERE. A held state never counts a showing or writes the save.
 enum class EUiStateShot : uint8
@@ -1667,10 +1668,25 @@ public:
 			RowSwap = ftcore::UiRowSwap{}; // a new fight's first seats are where the rows start, not a switch
 			return;
 		}
+		const ftcore::ArenaFight& Fight = Runner->GetFight();
+		// A retry puts each lead back in its own figure (the runner's Restart): its first seats, not a switch.
+		if (Fight.stats().restarts != RestartsSeen)
+		{
+			RestartsSeen = Fight.stats().restarts;
+			RowSwap = ftcore::UiRowSwap{};
+			bRebuild = true;
+		}
+		// A lead switch or a takeover traded the seats (the runner's SwapLeadFigures): each hp trail follows its lead to
+		// its new row, and every string built from the controlled lead (its name, its prompts' keys and words) is built
+		// again for the new one.
+		if (RowSwap.lead != 0xFF && Runner->GetLeadSeat() != RowSwap.lead)
+		{
+			Swap(HpLost, PartnerLost);
+			bRebuild = true;
+		}
 		const bool bRebuildNow = bRebuild;
 		bRebuild = false;
 		AimA = Runner->GetAimAlpha();
-		const ftcore::ArenaFight& Fight = Runner->GetFight();
 		ftcore::ArenaHudFrame Frame = View.now;
 		Frame.lead.lead = Runner->GetLeadSeat();
 		ftcore::fillArenaHudLead(Fight, Frame.lead);
@@ -2493,6 +2509,7 @@ private:
 			PartyShown.explore = false;
 			PartyShown.cursor = Shot == EUiStateShot::PartyLone ? ftcore::UiPartyRow::Lead : ftcore::UiPartyRow::Partner;
 			PartnerWhy = Shot == EUiStateShot::Party ? UiPartyWhy::Ok : Shot == EUiStateShot::PartyRefused ? UiPartyWhy::Down : UiPartyWhy::NotHere;
+			PartyShown.partnerHere = PartnerWhy != UiPartyWhy::NotHere; // the held state's partner, as the screen would take it
 			if (Shot == EUiStateShot::PartyRefused)
 			{
 				Refused = UiPartyWhy::Down;
@@ -3946,6 +3963,7 @@ private:
 	float SwitchMid = 0.f;
 	float SwitchLeft = 0.f;
 	uint32 SwitchSerialSeen = 0;
+	int RestartsSeen = 0; // ArenaStats::restarts at the last live frame: a retry's seats are no switch
 	bool bSwitchOn = false;
 	bool bWaiting = false;
 	ftcore::UiWaitLine WaitLine;

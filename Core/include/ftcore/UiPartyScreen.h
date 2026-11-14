@@ -11,8 +11,9 @@
 //
 // Open: Party's own key down opens at once. The map key (the pad's only way to Party, route map_hold) opens at once
 // in a fight, which has no map; in explore it opens once held kUiPartyHold, and a shorter press is the map.
-// Move: one row per flick of the right stick or the mouse, up or down; the Third's row never takes the cursor, and a
-// flick past the first or last row stays. A flick counts only after the stick or the mouse has come back to rest, so
+// Move: one row per flick of the right stick or the mouse, up or down; the Third's row never takes the cursor, nor the
+// partner's while no partner is in the fight (`partnerHere` false: the row reads NOT HERE), and a flick past the first
+// or last row it may take stays. A cursor on the partner's row when the partner goes goes back to the lead's. A flick counts only after the stick or the mouse has come back to rest, so
 // a stick already pushed as the screen opens moves nothing.
 // Confirm: letting go of Party (both keys up) shuts the screen on the cursor's row; under the Toggle hold mode the
 // opening press's release does nothing and the next press shuts it. The cursor opens on the controlled lead, so
@@ -20,8 +21,9 @@
 // Cancel: `live` false (a pause, a menu, a scene, the focus lost, the fight over) shuts it with no pick, and a key
 // still held when input comes back is no press (nor, on its release, the map).
 //
-// Pure, no allocation. A refused row (UiPartyWhy) still takes the cursor and still picks: the rules refuse the
-// request at the step's close, and the HUD says why.
+// Pure, no allocation. A refused row (UiPartyWhy Down, Wait, FightOver) still takes the cursor and still picks: the
+// rules refuse the request at the step's close, and the HUD says why. NOT HERE is the one refusal that never picks: the
+// host passes it as `partnerHere` false, so the cursor never rests there (no body to send a switch to).
 #include "ftcore/Api.h"
 #include "ftcore/LeadSwitch.h"
 
@@ -53,6 +55,7 @@ struct UiPartyInput {
     bool toggle = false;    // the Toggle hold mode: a press opens, the next press confirms
     float stickY = 0.f;     // the right stick's vertical, up positive
     float mouseY = 0.f;     // the mouse's vertical move this tick, up positive
+    bool partnerHere = true; // false: no partner in this fight (its row NOT HERE), so its row never takes the cursor
 };
 
 struct UiPartyScreen {
@@ -66,6 +69,7 @@ struct UiPartyScreen {
     bool opening = false;           // the press that opened it is still down (Toggle waits for its release)
     bool stickArmed = false;        // the stick is back at rest: its next push past kUiPartyStickOut is a flick
     bool mouseArmed = false;
+    bool partnerHere = true;        // as of the last step (UiPartyInput::partnerHere)
 };
 
 struct UiPartyOut {
@@ -78,8 +82,24 @@ struct UiPartyOut {
 
 FTCORE_API UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in, float dt);
 
-// Whether the cursor may rest on a row: the partner and the lead, and Follow in explore; never the Third.
-FTCORE_API bool uiPartyRowSelectable(UiPartyRow r, bool explore);
+// A scripted pick of the partner's row, as the player would make it (a dev probe of the lead switch), t seconds from the
+// pick: from kUiPartyProbeFrom the input is live with the keys up (a key already down when input returns is no press),
+// Party held from kUiPartyProbeHold, the stick flicked up over [kUiPartyProbeFlick, kUiPartyProbeFlickEnd), let go at 0
+// (the pick); held again over [kUiPartyProbeReopen, kUiPartyProbeReopenEnd) so the screen stands open on the new lead,
+// then up until kUiPartyProbeTo, when the release has shut it on the lead's row (no pick). Fills `in` and returns true
+// inside [kUiPartyProbeFrom, kUiPartyProbeTo); outside, leaves it and returns false.
+inline constexpr float kUiPartyProbeFrom = -1.2f;
+inline constexpr float kUiPartyProbeHold = -1.f;
+inline constexpr float kUiPartyProbeFlick = -0.6f;
+inline constexpr float kUiPartyProbeFlickEnd = -0.4f;
+inline constexpr float kUiPartyProbeReopen = 0.4f;
+inline constexpr float kUiPartyProbeReopenEnd = 1.6f;
+inline constexpr float kUiPartyProbeTo = 1.8f;
+FTCORE_API bool uiPartyProbeInput(float t, UiPartyInput& in);
+
+// Whether the cursor may rest on a row: the lead, the partner while one is in the fight (partnerHere), and Follow in
+// explore; never the Third.
+FTCORE_API bool uiPartyRowSelectable(UiPartyRow r, bool explore, bool partnerHere = true);
 
 // Why a lead row's switch would be refused now: its word after the name, the row at 40% ink. Unknown: no session to
 // ask (the row stands undimmed, no word); Ok: taken.
