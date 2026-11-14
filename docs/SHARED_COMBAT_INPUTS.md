@@ -334,7 +334,8 @@ the pieces.
   and `activeLead()` moves only at the close, which is the tick: a checkpoint taken between ticks settles
   the rises and falls but leaves the switch waiting, and carries it (`FightCheckpoint::switchRequested`),
   so a retry to it opens on that lead if it stands there (the first tick after reports `tick.switched`
-  when that moves control off the checkpoint's `activeLead`). The host reads `activeLead()` after a
+  when that moves control off the checkpoint's `activeLead`). If it is refused there (Down, Cooldown, Lone), the first tick after
+  reports `tick.switchRefused` and `tick.switchRefusal`, as the close would, and drops it. The host reads `activeLead()` after a
   retry, never the checkpoint's field. A switch to a lead who stands up in the same
   step is honoured and one to a lead who falls in it is refused, whatever the call order (checkpoints
   included), and `tookOver` is the same either way. A request made before `begin` is applied by it.
@@ -347,7 +348,8 @@ the pieces.
   never blocked by it and does not start it; `leadSwitchReadyIn()` gives the time left). The tuning is
   `Data/Battle/lead_switch.json` (`importLeadSwitchTuning`). Checkpoints hold the last switch's time.
 * **Partner joins (host hook).** A fight begun with one lead (`def.inFight`, as a Lone Carry) takes
-  the partner in when the player calls it: the host ends the carry (`endLone(PartnerCalled)`) and
+  the partner in when the player calls it: the host must end the carry (`endLone(PartnerCalled)`;
+  the join never ends it, and while it is on a switch to the joiner is refused Lone) and
   calls `joinFight(lead, health)` with the partner's carried health (setLeadHealth's 0..1 scale, above 0).
   It is a request the step's close resolves after the rises and falls and before the switch, judged by
   `leadJoinReason(lead)` (the HUD's preview, the same function): Ok brings the lead in standing at that

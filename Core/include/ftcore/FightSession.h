@@ -100,8 +100,9 @@
 //   one exception: a switch the checkpoint carried (switchRequested) is applied, so activeLead() may differ from
 //   the checkpoint's activeLead (the next tick reports it, tick.switched). The host reads activeLead() after a
 //   retry, never the checkpoint's field. A defeat costs nothing but the attempt: the Load, the currency and the
-//   gift tally come back as the checkpoint has them. A checkpoint holds the fight's state only. A retry to the fight start unbinds the story, as a begin does (the host rolls the
-//   step back and binds anew); a phase retry leaves the binding and the story state exactly as they are.
+//   gift tally come back as the checkpoint has them. A checkpoint holds the fight's state only. A retry to the
+//   fight start unbinds the story, as a begin does (the host rolls the step back and binds anew); a phase retry
+//   leaves the binding and the story state exactly as they are.
 //   Not in a checkpoint, by design (each starts clean at a retry, as at a begin): the count and its windows, the
 //   table, the held refusal, the session's own lock, marks, held blows and their bonuses, Load changes not yet
 //   reported, the per-lead store timers, the Lone Carry's due flags, and (at a fight-start retry) the story
@@ -477,11 +478,19 @@ public:
             joinedDue_ = cp.joinRequested;
         }
         // A switch that was waiting: judged now, as the close would (leadSwitchReason, on the checkpoint's state):
-        // Ok opens the retry on it, starts its cooldown and the next tick reports tick.switched; else it is dropped.
-        if (cp.switchRequested != kNoFighter && leadSwitchReason(cp.switchRequested) == LeadSwitch::Ok) {
-            activeLead_ = cp.switchRequested;
-            switchAt_ = now_;
-            switchedDue_ = cp.switchRequested;
+        // Ok opens the retry on it, starts its cooldown and the next tick reports tick.switched; any refusal
+        // (Down, Cooldown, Lone ...) is reported by the next tick as the close would (tick.switchRefused and
+        // tick.switchRefusal) and the request is dropped; Same reports nothing.
+        if (cp.switchRequested != kNoFighter) {
+            const LeadSwitch why = leadSwitchReason(cp.switchRequested);
+            if (why == LeadSwitch::Ok) {
+                activeLead_ = cp.switchRequested;
+                switchAt_ = now_;
+                switchedDue_ = cp.switchRequested;
+            } else if (why != LeadSwitch::Same) {
+                switchRefusedDue_ = cp.switchRequested;
+                switchRefusalDue_ = why;
+            }
         }
         return cp;
     }
@@ -716,7 +725,8 @@ public:
     }
     FighterId switchRequested() const { return switchReq_; } // kNoFighter: no switch waits for the close
     // A lead not in the fight (def.inFight: a fight begun with one lead, as a Lone Carry) comes in: the partner
-    // the player called (the host ends the carry with endLone(PartnerCalled) and calls this). A request the
+    // the player called. The host must end the carry (endLone(PartnerCalled)) when the join lands, if not
+    // before: the join never ends it, and while it is on a switch to the joiner is refused Lone. A request the
     // step's close resolves after its rises and falls and before the switch, with leadJoinReason: Ok brings
     // the lead in standing at `health` (the host's carried value, setLeadHealth's scale) and reports
     // tick.joined; it is not the active lead (a switch to it is NotInFight until the close, so it can be
