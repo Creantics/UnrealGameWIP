@@ -38,7 +38,9 @@
 //   aim (hold)     right mouse (ftcore::AimStance: the camera over the shoulder, a reticle, the lead faces the aim and strafes)
 //   guard (hold)   I / Left Ctrl / pad Y / pad LB  (a fresh press opens the parry window)
 //   dodge          L / Space / pad B
-//   heal           H / pad d-pad up (not while Read cards are up)
+//   heal           H / pad d-pad up (not while Read cards are up): the lead's own, its charges and pose
+//   gift heal      G / pad guard held + d-pad up: the third slot's Heal (2 a fight, instant)
+//   gift guard     Y / pad guard held + d-pad left: the third slot's Guard (the lead's blows scaled down)
 //   lock on / off  Tab / middle mouse / pad right stick press
 //   switch lock    Q / E / pad d-pad left / right (not while Read cards are up) / a flick of the right stick
 //                  while locked

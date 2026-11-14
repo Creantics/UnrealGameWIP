@@ -307,6 +307,12 @@ public:
 	float GetEscrowWaitLeft() const;
 	float GetWeakPointLockFor() const;
 	static constexpr float kRefusedTooEarlyShow = 1.5f;
+	// The Lone Carry's bargain card: true for kLoneBargainShow s from the step it began; its terms (the session's
+	// tuning) and the roll as it stands (the save's lone Releases plus this fight's, until a win folds them in).
+	bool IsLoneBargainDue() const;
+	ftcore::LoneBargain GetLoneBargain() const;
+	ftcore::LoneRoll GetLoneRoll() const;
+	static constexpr float kLoneBargainShow = 4.f;
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
@@ -404,10 +410,6 @@ private:
 	// The gift slot's press result, applied: a Heal's share of the lead's max hp and its Load moved off the lead (a
 	// Guard's scale is read on every step instead, ArenaInput::takenScale; a Count is already called).
 	void ApplyGift(const ftcore::GiftResult& Result);
-	// The Gift key's pick: Heal when it is ready (GiftHealReady) and the lead is hurt, else Guard.
-	ftcore::Gift AutoGift() const;
-	// The gift slot would give a Heal now: a companion in it, a Heal left and off its cooldown.
-	bool GiftHealReady() const;
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
@@ -632,7 +634,13 @@ private:
 	void MirrorLone();
 	// While Lone a gift press waits until after the step (a same-tick Release pools first).
 	ftcore::LoneGiftHold LoneGift;
+	bool bLoneGiftApply = false; // the waiting press came from a gift key (applied), not the heal's (as before)
 	void PressPendingLoneGift();
+	// The save's pool of lone Releases (the runner's life: nothing persists it yet), the pool's tuning
+	// (Data/Battle/lone_pool.json) and the fight time the Lone Carry began (the bargain's card; -1 none).
+	ftcore::LoneSave LoneSaved{};
+	ftcore::LonePoolTuning LonePool{};
+	double LoneBargainAt = -1.0;
 	// -ArenaHallucination=accept|refuse|expire (a probe; off by default): offers of the lead's tragedies by the Core
 	// rules (ftcore/Hallucination.h). The hold slows the lead's stick and a full one stills the lead; the enemies go on.
 	// 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire, 4 accept, then refuse with
@@ -722,8 +730,7 @@ private:
 	bool bReleaseDown = false;
 	bool bPressPair = false;
 	bool bPressTakeHalf = false;
-	// The gift the last gift key picked (GiftHeal, GiftGuard; None: the Gift key, AutoGift picks), until the step's
-	// PressSession reads it.
+	// The gift the last gift key pressed (Gift Heal, Gift Guard; None: none), until the step's PressSession reads it.
 	ftcore::Gift GiftPick = ftcore::Gift::None;
 	// Autoplay's partner: a parry came, so press the pair on the next step.
 	bool bPartnerDue = false;

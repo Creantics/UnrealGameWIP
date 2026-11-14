@@ -202,7 +202,7 @@ TEST_CASE("ui glyphs: one table for every screen, keys and pad, rebuilt only whe
     CHECK(jump.part == 0);
     const UiGlyph& gift = uiGlyph(t, InputAction::Gift, InputDevice::Keys);
     CHECK(gift.shape == UiGlyphShape::KeyCap);
-    CHECK(gift.text() == "G");
+    CHECK(gift.text() == "H");
     CHECK(uiGlyph(t, InputAction::FocusNext, InputDevice::Pad).shape == UiGlyphShape::Stick);
     CHECK(uiGlyph(t, InputAction::FocusNext, InputDevice::Pad).dir == 2);
 
@@ -210,13 +210,13 @@ TEST_CASE("ui glyphs: one table for every screen, keys and pad, rebuilt only whe
     CHECK_FALSE(buildUiGlyphTable(b, t));
     CHECK(t.revision == 1);
     // A rebind shows on the next build.
-    REQUIRE(rebindInput(b, InputAction::Gift, InputDevice::Keys, "H"));
+    REQUIRE(rebindInput(b, InputAction::Gift, InputDevice::Keys, "N"));
     const bool counting = ftcore_test::allocHookInstalled();
     const auto before = ftcore_test::allocStats().count;
     CHECK(buildUiGlyphTable(b, t));
     if (counting) CHECK(ftcore_test::allocStats().count == before);
     CHECK(t.revision == 2);
-    CHECK(uiGlyph(t, InputAction::Gift, InputDevice::Keys).text() == "H");
+    CHECK(uiGlyph(t, InputAction::Gift, InputDevice::Keys).text() == "N");
     CHECK(uiGlyphForKey("").shape == UiGlyphShape::None);
 }
 

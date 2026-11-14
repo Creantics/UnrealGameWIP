@@ -40,8 +40,9 @@ constexpr float kArenaLeadMaxHeight = 210.f;
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
 const FLinearColor kArenaShieldParry(1.f, 0.85f, 0.3f);
-// The danger red of the lead's hit glow (was orange 1, 0.55, 0.1, too near the HUD's gold); same peak brightness.
-const FLinearColor kFighterTellBlock(1.f, 0.2f, 0.15f);
+// Pale ink-white at the old orange's luminance (about 0.61): the blockable tell, apart from the dodge's red and the
+// gold kept for the lead's Load.
+const FLinearColor kFighterTellBlock(0.63f, 0.615f, 0.575f);
 // The parameter SetBodyPulse drives on the character masters.
 const FName kFighterEmissive(TEXT("Emissive"));
 const FLinearColor kFighterTellDodge(1.f, 0.12f, 0.08f);

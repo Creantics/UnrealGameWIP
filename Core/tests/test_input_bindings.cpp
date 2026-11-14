@@ -272,16 +272,16 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
     const InputBindings b = defaultInputBindings();
     checkLines(b);
     CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) ==
-          "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  G input.heal  "
+          "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  H input.heal  "
           "R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  V input.intercept");
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
           "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  D-pad left input.crouch  "
           "B input.dodge  X input.use  D-pad right input.lead  "
           "Hold View input.party");
-    // None of the retired keys shows on the keyboard lines.
+    // None of the retired keys shows on the keyboard lines (H came back as the heal's).
     const std::string keys = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) + "  " +
                              inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr);
-    for (const char* old : {"J ", "K ", "I/", "L/", "H ", "U ", "Q/E", "LMB/J"}) {
+    for (const char* old : {"J ", "K ", "I/", "L/", "U ", "Q/E", "LMB/J"}) {
         CAPTURE(old);
         CHECK(keys.find(old) == std::string::npos);
     }
@@ -299,7 +299,7 @@ TEST_CASE("input hints: the lines follow a rebind and leave out what nothing rea
     CHECK(arena.find("K input.guard") != std::string::npos);
     CHECK(arena.find("Ctrl") == std::string::npos);
     CHECK(arena.find("Mouse flick/X input.switch") != std::string::npos);
-    CHECK(arena.find("G input.heal") != std::string::npos);
+    CHECK(arena.find("H input.heal") != std::string::npos);
     // A table with an action nothing reaches (only a hand-built one now) leaves its entry out.
     InputBindings stranded = b;
     stranded.keys[0][static_cast<std::size_t>(InputAction::Gift)] = InputKeyName{};
