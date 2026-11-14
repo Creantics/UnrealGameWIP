@@ -17,6 +17,8 @@
 #include <string>
 #include <string_view>
 
+#include "ftcore/RoadDecals.h"
+
 namespace
 {
 constexpr const TCHAR* kRoadLampMesh = TEXT("/Game/Props/TQ-04/sodium_lamp_TQ-04_import/StaticMeshes/sodium_lamp_TQ-04_import.sodium_lamp_TQ-04_import");
@@ -67,6 +69,7 @@ struct FRoadPainter
 	UStaticMesh* Cylinder = nullptr;
 	UMaterialInterface* Tints[static_cast<int32>(ftcore::RoadTint::Count)] = {};
 	int32 Laid = 0; // solids and vehicles given to the instancer
+	int32 PaintSkipped = 0; // marking boxes left to FTBuildDecals' flat paint
 	FTBuildKeiCars::FSet* KeiCars = nullptr; // -KeiCars (FTBuildKeiCars.h); null lays the stand-ins
 	// The canals' water (ftcore::RoadWater, by canal id) and what it and its channel wear; without the materials or the
 	// plane the channel keeps its flat tints.
@@ -692,6 +695,12 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		}
 		for (const ftcore::RoadSolid& Solid : Build.solids)
 		{
+			// Lines, stop lines and zebra bars are paint, flat on the road (FTBuildDecals lays them), not boxes.
+			if (ftcore::roadPaintSolid(Solid))
+			{
+				++Paint.PaintSkipped;
+				continue;
+			}
 			if (!Paint.Lay(Solid))
 			{
 				return false;
@@ -748,7 +757,8 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canals: %d water planes on %s, %d wall and floor pieces on %s."), Paint.WaterPlanes,
 			Paint.CanalWater ? *Paint.CanalWater->GetName() : TEXT("the flat tint"), Paint.BedPieces, Paint.CanalBed ? *Paint.CanalBed->GetName() : TEXT("the flat tint"));
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids and vehicles laid as instances of their cells."), Paint.Laid);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids and vehicles laid as instances of their cells; %d marking boxes "
+		"left out (laid as flat paint)."), Paint.Laid, Paint.PaintSkipped);
 	return true;
 }
 

@@ -9,10 +9,13 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionTransform.h"
+#include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -33,7 +36,8 @@ constexpr double kPoseDepth = 0.02;
 // The instance custom data's parameter names, for the custom primitive data a fallback actor carries (same slots).
 const TCHAR* const kDataNames[ftcore::kRoadDecalData] = {TEXT("DecalKind"), TEXT("DecalSeed"), TEXT("DecalSizeU"), TEXT("DecalSizeW")};
 const TCHAR* const kKindNames[ftcore::kRoadDecalKinds] = {TEXT("cracks"), TEXT("stains"), TEXT("manholes"), TEXT("patches"),
-	TEXT("kerb grime"), TEXT("oil drips"), TEXT("tactile strips"), TEXT("drain grates")};
+	TEXT("kerb grime"), TEXT("oil drips"), TEXT("tactile strips"), TEXT("drain grates"), TEXT("white lines"), TEXT("yellow lines"),
+	TEXT("stop lines"), TEXT("zebra bars")};
 
 template <typename T>
 T* AddNode(UMaterial* Material, int32 X, int32 Y)
@@ -124,6 +128,17 @@ UMaterial* BuildMaterial(UPackage* Package)
 	}
 	UMaterialExpressionLocalPosition* LocalPos = AddNode<UMaterialExpressionLocalPosition>(Material, -900, 600);
 	UMaterialExpressionWorldPosition* WorldPos = AddNode<UMaterialExpressionWorldPosition>(Material, -900, 700);
+	UMaterialExpressionVertexNormalWS* VertexNormal = AddNode<UMaterialExpressionVertexNormalWS>(Material, -900, 800);
+	// The plate's local x and y in world space (the instance's transform): the paint's lip turns with its plate.
+	const auto Axis = [Material](const FLinearColor& Local, int32 Y) {
+		UMaterialExpressionConstant3Vector* Along = AddNode<UMaterialExpressionConstant3Vector>(Material, -1200, Y);
+		Along->Constant = Local;
+		UMaterialExpressionTransform* World = AddNode<UMaterialExpressionTransform>(Material, -900, Y);
+		World->Input.Connect(0, Along);
+		World->TransformSourceType = TRANSFORMSOURCE_Instance;
+		World->TransformType = TRANSFORM_World;
+		return World;
+	};
 
 	UMaterialExpressionCustom* Custom = AddNode<UMaterialExpressionCustom>(Material, -400, 200);
 	Custom->Description = TEXT("FTRoadDecal");
@@ -137,15 +152,22 @@ UMaterial* BuildMaterial(UPackage* Package)
 	AddCustomInput(Custom, TEXT("SizeW"), Data[3]);
 	AddCustomInput(Custom, TEXT("Wetness"), Wetness);
 	AddCustomInput(Custom, TEXT("WorldPos"), WorldPos);
+	AddCustomInput(Custom, TEXT("VN"), VertexNormal);
+	AddCustomInput(Custom, TEXT("AxisX"), Axis(FLinearColor(1.f, 0.f, 0.f), 900));
+	AddCustomInput(Custom, TEXT("AxisY"), Axis(FLinearColor(0.f, 1.f, 0.f), 1000));
 	// Output 0 is the colour, then these in order.
 	AddCustomOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
 	AddCustomOutput(Custom, TEXT("MaskOut"), CMOT_Float1);
+	AddCustomOutput(Custom, TEXT("NormalOut"), CMOT_Float3);
 	Custom->RebuildOutputs();
 
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Custom);
 	Inputs->Roughness.Connect(1, Custom);
 	Inputs->OpacityMask.Connect(2, Custom);
+	// The normal is world space (the wear kinds pass the vertex normal through).
+	Material->bTangentSpaceNormal = false;
+	Inputs->Normal.Connect(3, Custom);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	return Material;
@@ -196,17 +218,22 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road tints given a street layer: %d."), StampStreetKinds(Package));
 	}
+	if (Builds.empty())
+	{
+		return;
+	}
+	if (!Package)
+	{
+		// FTBuildRoads lays no marking boxes, so without this the roads would have no lines at all.
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: no package for the road paint; %d roads are laid without their markings."),
+			static_cast<int32>(Builds.size()));
+		return;
+	}
 	double Density = 1.0;
-	if (!Wanted(Density) || Builds.empty())
-	{
-		return;
-	}
-	UStaticMesh* Plate = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"), nullptr, LOAD_NoWarn | LOAD_Quiet);
-	if (!Plate || !Package)
-	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -RoadDecals: the engine's plane mesh is missing; no decals."));
-		return;
-	}
+	const bool bWear = Wanted(Density);
+	// The paint always: every marking box (FTBuildRoads lays none of them) as a flat plate on the road.
+	std::vector<ftcore::RoadDecal> Paint;
+	ftcore::RoadDecalCounts PaintCounts;
 	ftcore::RoadDecalSpec Spec;
 	Spec.density = Density;
 	std::vector<ftcore::RoadDecal> Decals;
@@ -217,23 +244,31 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 		{
 			continue; // a network street's stand-in: the network is all in Builds[0]
 		}
-		ftcore::roadDecals(Builds[R], Spec, Decals, Counts);
+		ftcore::roadMarkingDecals(Builds[R], Paint, PaintCounts);
+		if (bWear)
+		{
+			ftcore::roadDecals(Builds[R], Spec, Decals, Counts);
+		}
 	}
-	if (Decals.empty())
+	if (Paint.empty() && Decals.empty())
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -RoadDecals: no slab takes a decal."));
+		if (bWear)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -RoadDecals: no slab takes a decal, and no road has a marking."));
+		}
+		return;
+	}
+	UStaticMesh* Plate = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Plate)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: the engine's plane mesh is missing; no road paint (%d markings) and no decals."),
+			static_cast<int32>(Paint.size()));
 		return;
 	}
 
 	UMaterialInterface* const Mats[1] = {BuildMaterial(Package)};
-	FFTCellOptions Options;
-	Options.Cull = EFTCellCull::Prop;
-	Options.bCastShadow = false;
-	Options.Tag = TEXT("FTRoadDecal");
-	Options.Label = TEXT("RoadDecal");
 	float Data[ftcore::kRoadDecalData] = {};
-	for (const ftcore::RoadDecal& D : Decals)
-	{
+	const auto Place = [&](const ftcore::RoadDecal& D, const FFTCellOptions& Options) {
 		// The plane lies on the decal's top face: its centre over (cx, cy) at top, turned to its grade as the road's
 		// cubes are (massingCubePose), 1 m stretched to its size along the slope.
 		const ftcore::MassingBox Box = ftcore::roadDecalBox(D, kPoseDepth);
@@ -243,6 +278,45 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 			FVector(Pose.scale.x, Pose.scale.y, 1.0));
 		ftcore::roadDecalData(D, Data);
 		Cells.Add(Plate, Mats, Transform, TArrayView<const float>(Data, static_cast<int32>(ftcore::kRoadDecalData)), EFTCellKind::NoCollide, Options);
+	};
+	// Paint is drawn at any distance and stays in the ray-traced scene (a reflected road shows its lines), as the boxes
+	// were; flat, it casts no shadow.
+	FFTCellOptions PaintOptions;
+	PaintOptions.Cull = EFTCellCull::None;
+	PaintOptions.bCastShadow = false;
+	PaintOptions.bRayTraced = true;
+	PaintOptions.Tag = TEXT("FTRoadPaint");
+	PaintOptions.Label = TEXT("RoadPaint");
+	for (const ftcore::RoadDecal& D : Paint)
+	{
+		Place(D, PaintOptions);
+	}
+	using ftcore::RoadDecalKind;
+	const auto PaintOf = [&PaintCounts](RoadDecalKind K) { return static_cast<int32>(PaintCounts.perKind[static_cast<size_t>(K)]); };
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road paint: %d flat plates (%d triangles; as boxes they were %d): %d %s, %d %s, "
+		"%d %s, %d %s. No arrows or words: the roads paint none."),
+		static_cast<int32>(Paint.size()), static_cast<int32>(Paint.size()) * 2, static_cast<int32>(Paint.size()) * 12,
+		PaintOf(RoadDecalKind::LineWhite), kKindNames[static_cast<size_t>(RoadDecalKind::LineWhite)],
+		PaintOf(RoadDecalKind::LineYellow), kKindNames[static_cast<size_t>(RoadDecalKind::LineYellow)],
+		PaintOf(RoadDecalKind::StopLine), kKindNames[static_cast<size_t>(RoadDecalKind::StopLine)],
+		PaintOf(RoadDecalKind::ZebraBar), kKindNames[static_cast<size_t>(RoadDecalKind::ZebraBar)]);
+	if (!bWear)
+	{
+		return;
+	}
+	if (Decals.empty())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -RoadDecals: no slab takes a decal."));
+		return;
+	}
+	FFTCellOptions Options;
+	Options.Cull = EFTCellCull::Prop;
+	Options.bCastShadow = false;
+	Options.Tag = TEXT("FTRoadDecal");
+	Options.Label = TEXT("RoadDecal");
+	for (const ftcore::RoadDecal& D : Decals)
+	{
+		Place(D, Options);
 	}
 	const double Area = Counts.asphaltM2 + Counts.pavementM2;
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -RoadDecals=%.2f: %d decals on %d slabs (%.0f m2 carriageway, %.0f m2 pavement, "

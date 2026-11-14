@@ -1,6 +1,7 @@
 // Road networks (ftcore/Roads.h roadNetBuild): the network table, junction fills and corners, the carriageway kept
 // clear, bays, steps, grades, decks and the junction ids the road graph shares. Made-up tables only.
 
+#include "ftcore/RoadDecals.h"
 #include "ftcore/RoadGraph.h"
 #include "ftcore/Roads.h"
 #include "ftcore/SurfaceWeather.h"
@@ -1242,6 +1243,38 @@ TEST_CASE("road net: a built network's markings never lie over each other") {
     RoadBuild b;
     roadNetBuild(s, MassingGround{}, b);
     CHECK(roadCrossingOverlaps(b).empty());
+}
+
+TEST_CASE("road net: every white or yellow solid on a network is paint, laid flat in place of its box") {
+    // Parking streets, a T, a four-lane boulevard with its median: every line, bay, stop line and zebra bar.
+    const char* const csvs[] = {"id,kind,width_m,pts,pavement_m,parking\n"
+                                "ST-H,street,18,0:0;240:0,3.6,1\n"
+                                "ST-V,street,14,120:-150;120:150,2.8,0\n"
+                                "ST-B,street,14,0:0;-60:60;-60:200,2.8,0\n",
+                                kTee,
+                                "id,kind,width_m,pts,pavement_m,lanes,median_m\n"
+                                "BV,street,25,0:0;300:0,3.5,4,4\n"
+                                "ST-W,street,14,0:-100;0:100,2.8,,\n"
+                                "ST-E,street,14,300:-100;300:100,2.8,,\n"};
+    for (const char* csv : csvs) {
+        RoadBuild b;
+        roadNetBuild(net(csv), MassingGround{}, b);
+        std::size_t lines = 0, paint = 0;
+        for (const RoadSolid& sd : b.solids) {
+            if (sd.tint != RoadTint::LineWhite && sd.tint != RoadTint::LineYellow) continue;
+            ++lines;
+            CHECK_MESSAGE(roadPaintSolid(sd), sd.box.id);
+            paint += roadPaintSolid(sd) ? 1u : 0u;
+        }
+        CHECK(lines > 0);
+        CHECK(paint == lines);
+        CHECK(paint == b.counts.markings);
+        std::vector<RoadDecal> out;
+        RoadDecalCounts counts;
+        roadMarkingDecals(b, out, counts);
+        CHECK(out.size() == paint);
+        CHECK(counts.total() == paint);
+    }
 }
 
 namespace {

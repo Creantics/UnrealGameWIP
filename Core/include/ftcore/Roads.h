@@ -42,6 +42,7 @@ inline constexpr double kRoadApronLap = 0.4;        // m: how far an apron reach
 inline constexpr double kRoadApronSquare = 0.26;    // |cos| of the angle between the arms under which a corner gets one
 inline constexpr double kRoadMouthFlare = 3.0;      // m: a lane mouth's dropped kerb runs this far past each lane edge
 inline constexpr double kRoadLine = 0.15;           // m: centre, edge and bay lines
+inline constexpr double kRoadMarkLift = 0.006;      // m: a "mark" box's top over the surface under it
 inline constexpr double kRoadCentreDash = 5.0;      // m: centre line dash and gap
 inline constexpr double kRoadStopLine = 0.45;       // m: a stop line's width
 inline constexpr double kRoadStopBack = 2.0;        // m: a stop line stands this far before its zebra

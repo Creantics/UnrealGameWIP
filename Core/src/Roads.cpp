@@ -15,7 +15,7 @@ namespace ftcore {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kMarkLift = 0.006;  // m: a marking's top over its surface
+constexpr double kMarkLift = kRoadMarkLift; // m: a marking's top over its surface
 constexpr double kCentreGap = 0.1;  // m: between a four-lane street's double centre lines
 constexpr double kStopEdge = 0.4;   // m: a stop line stops this far short of the kerb, inside the edge line (0.25 m off the kerb, 0.15 wide)
 constexpr double kMarkDeep = 0.008;  // m: a marking's thickness (its underside 2 mm under the surface)

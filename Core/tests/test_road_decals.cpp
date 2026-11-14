@@ -75,6 +75,10 @@ TEST_CASE("road decals: slabs only, every kind, each inside its slab and just ov
     CHECK(counts.pavementM2 > 300.0);
     for (std::size_t k = 0; k < kRoadDecalKinds; ++k) {
         if (k == static_cast<std::size_t>(RoadDecalKind::Tactile)) continue; // off by default: the builder lays them
+        if (k >= static_cast<std::size_t>(kRoadFirstPaint)) {
+            CHECK_MESSAGE(counts.perKind[k] == 0, "kind ", k); // paint is roadMarkingDecals'
+            continue;
+        }
         CHECK_MESSAGE(counts.perKind[k] > 0, "kind ", k);
     }
     std::size_t outside = 0;
@@ -196,7 +200,7 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
     CHECK(data[0] == doctest::Approx(2.0));
     d.pavement = true;
     roadDecalData(d, data);
-    CHECK(data[0] == doctest::Approx(10.0)); // kind plus 8 on a pavement
+    CHECK(data[0] == doctest::Approx(18.0)); // kind plus 16 on a pavement
     d.pavement = false;
     CHECK(data[1] == doctest::Approx(0.25));
     CHECK(data[2] == doctest::Approx(0.7));
@@ -205,11 +209,16 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
     const char* code = roadDecalHlsl();
     REQUIRE(code != nullptr);
     for (const char* name : {"LocalPos", "Kind", "Seed", "SizeU", "SizeW", "Wetness", "WorldPos", "RoughOut", "MaskOut",
-                             "return C;", "C = lerp(Under, C, Blend);", "WSoak", "Kd == 6"}) {
+                             "return C;", "C = lerp(Under, C, Blend);", "WSoak", "Kd == 6", "Kd == 7", "Kd == 10", "Kd == 11",
+                             "NormalOut = Nrm;", "AxisX", "AxisY", "VN", "KindAll >= 16;", "Mask = Left * (1.0 - Crack);"}) {
         CHECK_MESSAGE(std::strstr(code, name) != nullptr, name);
     }
-    // Spliced once: the gutter width is a number, and the same pointer comes back.
-    CHECK(std::strstr(code, "GUTTER_M") == nullptr);
+    // Spliced once: the gutter width and the street numbers are numbers, and the same pointer comes back.
+    for (const char* key : {"GUTTER_M", "PAVED_K", "LANE_M", "WHEEL_OFF_M", "CRACK_M", "AGG_M", "AGG_SLOPE"}) {
+        CHECK_MESSAGE(std::strstr(code, key) == nullptr, key);
+    }
+    // The paint's crack field is the surface master's, cell for cell.
+    CHECK(std::strstr(code, "D.N(Pw / 3.000000 + 41.0)") != nullptr);
     CHECK(roadDecalHlsl() == code);
 }
 
@@ -238,6 +247,105 @@ TEST_CASE("road decals: bays get oil, gutters get drains, street kinds by tint")
     CHECK(roadStreetKind(RoadTint::LineWhite) == 4);
     CHECK(roadStreetKind(RoadTint::LineYellow) == 4);
     CHECK(roadStreetKind(RoadTint::Steel) == 0);
+}
+
+TEST_CASE("road paint: every marking box becomes a flat decal over the road, between the wear kinds, kinds by size and tint") {
+    const RoadBuild b = theBuild();
+    std::vector<RoadDecal> paint;
+    RoadDecalCounts counts;
+    roadMarkingDecals(b, paint, counts);
+    std::size_t marks = 0, white = 0, yellow = 0, stops = 0;
+    for (const RoadSolid& s : b.solids) {
+        if (!roadPaintSolid(s)) {
+            RoadDecal none;
+            CHECK(!roadMarkingDecal(s, none));
+            continue;
+        }
+        ++marks;
+        CHECK(s.box.kind == "mark");
+        if (s.tint == RoadTint::LineYellow) ++yellow;
+        if (s.tint == RoadTint::LineWhite) ++white;
+        if (s.tint == RoadTint::LineWhite && std::fabs(s.box.sx - kRoadStopLine) < 0.05 && s.box.sy >= 1.5) ++stops;
+    }
+    REQUIRE(marks > 0);
+    CHECK(marks == b.counts.markings);
+    CHECK(paint.size() == marks);
+    CHECK(counts.total() == marks);
+    const auto n = [&](RoadDecalKind k) { return counts.perKind[static_cast<std::size_t>(k)]; };
+    CHECK(n(RoadDecalKind::LineYellow) == yellow);
+    CHECK(n(RoadDecalKind::LineWhite) + n(RoadDecalKind::StopLine) + n(RoadDecalKind::ZebraBar) == white);
+    CHECK(n(RoadDecalKind::StopLine) == stops);
+    CHECK(n(RoadDecalKind::LineWhite) > 0);
+    for (std::size_t k = 0; k < static_cast<std::size_t>(kRoadFirstPaint); ++k) CHECK(counts.perKind[k] == 0);
+
+    std::size_t i = 0;
+    for (const RoadSolid& s : b.solids) {
+        if (!roadPaintSolid(s)) continue;
+        const RoadDecal& d = paint[i++];
+        // The box's own footprint and grade, its top kRoadPaintLift over the road (the box stood 6 mm over it).
+        CHECK(d.cx == doctest::Approx(s.box.cx));
+        CHECK(d.cy == doctest::Approx(s.box.cy));
+        CHECK(d.sx == doctest::Approx(s.box.sx));
+        CHECK(d.sy == doctest::Approx(s.box.sy));
+        CHECK(d.rot == doctest::Approx(s.box.rot));
+        CHECK(d.riseW == doctest::Approx(s.box.riseW));
+        CHECK(d.top == doctest::Approx(s.box.z1 - kRoadMarkLift + kRoadPaintLift));
+        CHECK(!d.pavement);
+        CHECK(d.seed >= 0.f);
+        CHECK(d.seed < 1.f);
+        if (d.kind == RoadDecalKind::LineWhite || d.kind == RoadDecalKind::LineYellow) {
+            CHECK(std::min(d.sx, d.sy) == doctest::Approx(kRoadLine));
+        } else {
+            CHECK(std::min(d.sx, d.sy) == doctest::Approx(kRoadStopLine).epsilon(0.12));
+        }
+        float data[kRoadDecalData] = {};
+        roadDecalData(d, data);
+        CHECK(data[0] == doctest::Approx(static_cast<double>(static_cast<int>(d.kind))));
+        CHECK(data[0] < static_cast<float>(kRoadDecalPaved));
+    }
+    // Over cracks, stains, manholes, patches and kerb grime (2-4 mm: the grime's fade must not cover an edge line), under
+    // oil, tactile strips and drain grates (4.5 mm and up: a grate is never painted over).
+    CHECK(kRoadPaintLift > kRoadDecalLift + 0.0005 * 2.0 + 1e-6);
+    CHECK(kRoadPaintLift < kRoadDecalLift + 0.0005 * 3.0 - 1e-6);
+    // Repeatable.
+    std::vector<RoadDecal> again;
+    RoadDecalCounts c2;
+    roadMarkingDecals(b, again, c2);
+    REQUIRE(again.size() == paint.size());
+    for (std::size_t k = 0; k < paint.size(); ++k) CHECK(again[k].seed == paint[k].seed);
+}
+
+TEST_CASE("road paint: a white 0.45 m piece is a stop line along the road and a zebra bar otherwise") {
+    RoadSolid s;
+    s.tint = RoadTint::LineWhite;
+    s.box.kind = "mark";
+    s.box.z1 = 4.006;
+    RoadDecal d;
+    s.box.sx = kRoadStopLine;
+    s.box.sy = 3.1;
+    REQUIRE(roadMarkingDecal(s, d));
+    CHECK(d.kind == RoadDecalKind::StopLine);
+    CHECK(d.top == doctest::Approx(4.0 + kRoadPaintLift));
+    s.box.sx = kRoadZebraWide;
+    s.box.sy = kRoadZebraBar;
+    REQUIRE(roadMarkingDecal(s, d));
+    CHECK(d.kind == RoadDecalKind::ZebraBar);
+    s.box.sx = kRoadZebraBar; // a scramble's 1 m piece
+    s.box.sy = 1.0;
+    REQUIRE(roadMarkingDecal(s, d));
+    CHECK(d.kind == RoadDecalKind::ZebraBar);
+    s.box.sx = 5.0;
+    s.box.sy = kRoadLine;
+    REQUIRE(roadMarkingDecal(s, d));
+    CHECK(d.kind == RoadDecalKind::LineWhite);
+    s.tint = RoadTint::LineYellow;
+    REQUIRE(roadMarkingDecal(s, d));
+    CHECK(d.kind == RoadDecalKind::LineYellow);
+    s.tint = RoadTint::Tactile; // raised: stays a box
+    CHECK(!roadMarkingDecal(s, d));
+    s.tint = RoadTint::LineWhite;
+    s.box.kind = "tactile";
+    CHECK(!roadMarkingDecal(s, d));
 }
 
 TEST_CASE("backdrop: rock faces and the steep share") {

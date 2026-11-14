@@ -294,6 +294,49 @@ void roadDecals(const RoadBuild& build, const RoadDecalSpec& spec, std::vector<R
     }
 }
 
+bool roadPaintSolid(const RoadSolid& solid) {
+    return solid.shape == RoadShape::Cube && solid.box.kind == "mark" &&
+           (solid.tint == RoadTint::LineWhite || solid.tint == RoadTint::LineYellow);
+}
+
+bool roadMarkingDecal(const RoadSolid& solid, RoadDecal& out) {
+    if (!roadPaintSolid(solid)) return false;
+    const MassingBox& b = solid.box;
+    RoadDecal d;
+    const bool special = std::fabs(std::min(b.sx, b.sy) - kRoadStopLine) < 0.05;
+    if (solid.tint == RoadTint::LineYellow) {
+        d.kind = RoadDecalKind::LineYellow;
+    } else if (special && std::fabs(b.sx - kRoadStopLine) < 0.05 && b.sy >= 1.5) {
+        d.kind = RoadDecalKind::StopLine;
+    } else if (special) {
+        d.kind = RoadDecalKind::ZebraBar;
+    } else {
+        d.kind = RoadDecalKind::LineWhite;
+    }
+    d.cx = b.cx;
+    d.cy = b.cy;
+    d.sx = b.sx;
+    d.sy = b.sy;
+    d.rot = b.rot;
+    d.riseU = b.riseU;
+    d.riseW = b.riseW;
+    d.top = b.z1 - kRoadMarkLift + kRoadPaintLift;
+    Draws draw{slabSeed(0x9a1a7e5u, b)};
+    d.seed = static_cast<float>(draw.next());
+    d.pavement = false;
+    out = d;
+    return true;
+}
+
+void roadMarkingDecals(const RoadBuild& build, std::vector<RoadDecal>& out, RoadDecalCounts& counts) {
+    RoadDecal d;
+    for (const RoadSolid& solid : build.solids) {
+        if (!roadMarkingDecal(solid, d)) continue;
+        out.push_back(d);
+        ++counts.perKind[static_cast<std::size_t>(d.kind)];
+    }
+}
+
 int roadStreetKind(RoadTint tint) { return roadTintStreet(tint); }
 
 MassingBox roadDecalBox(const RoadDecal& decal, double height) {
@@ -313,7 +356,7 @@ MassingBox roadDecalBox(const RoadDecal& decal, double height) {
 }
 
 void roadDecalData(const RoadDecal& decal, float out[kRoadDecalData]) {
-    out[0] = static_cast<float>(static_cast<int>(decal.kind) + (decal.pavement ? 8 : 0));
+    out[0] = static_cast<float>(static_cast<int>(decal.kind) + (decal.pavement ? kRoadDecalPaved : 0));
     out[1] = decal.seed;
     out[2] = static_cast<float>(decal.sx);
     out[3] = static_cast<float>(decal.sy);
@@ -346,8 +389,12 @@ float2 E = 0.5 * Size - abs(M);
 float Edge = min(E.x, E.y);
 float2 O = float2(Seed * 91.7, Seed * 53.3) + 3.0;
 int KindAll = (int)round(Kind);
-bool Paved = KindAll >= 8;
-int Kd = Paved ? KindAll - 8 : KindAll;
+bool Paved = KindAll >= PAVED_K;
+int Kd = Paved ? KindAll - PAVED_K : KindAll;
+// The pixel's footprint in metres and the world plan position (the master's Pw), outside any branch.
+float Foot = max(length(fwidth(WorldPos.xyz)) / 100.0, 1e-4);
+float2 Pw = WorldPos.xy / 100.0;
+float3 Nrm = normalize(VN);
 float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(0.045, 0.045, 0.05);
 float UnderR = Paved ? 0.8 : 0.85;
 float Grain = D.N(M * 23.0 + O);
@@ -472,7 +519,7 @@ else if (Kd == 6)
 	C = float3(0.58, 0.43, 0.05) * (0.9 + 0.15 * Grain) * (0.85 + 0.15 * Dome) * (0.9 + 0.1 * D.F(M * 2.0 + O));
 	R = lerp(0.7, 0.5, Dome);
 }
-else
+else if (Kd == 7)
 {
 	// A drain grate: an iron frame, slots across it, silt in the slots.
 	Mask = 0.5 + (Edge - 0.005) * 200.0;
@@ -482,17 +529,96 @@ else
 	R = lerp(0.55, 0.9, Slot);
 	GutIn = 1.0 - smoothstep(0.0, GUTTER_M, FromKerb);
 }
+else
+{
+	// Paint: 8 white line, 9 yellow line, 10 stop line, 11 zebra bar. A thin coat on the road: where it has worn
+	// through, along the road's sealed cracks and off its ragged edge it is clipped, so the road itself shows there.
+	float Fine = 1.0 - smoothstep(0.004, 0.03, Foot);
+	float3 Ua = normalize(AxisX);
+	float3 Wa = -normalize(AxisY);
+	float Age = D.H(O + 12.7);
+	float Fade = D.F(Pw / 1.2 + 5.0);
+	float Chip = lerp(0.5, D.N(Pw / 0.05 + 9.0), Fine);
+	// Wheel wear: a stop line where each lane's wheels cross it; a zebra bar in bands across the traffic (its long
+	// side runs with the traffic: the bands lie along its short side, in the world, so neighbouring bars share them).
+	float MW = 0.0;
+	if (Kd == 10)
+	{
+		float Lanes = max(1.0, round(Size.y / LANE_M));
+		float Lw = Size.y / Lanes;
+		float Q = (frac((M.y + 0.5 * Size.y) / Lw) - 0.5) * Lw;
+		MW = exp(-pow((abs(Q) - WHEEL_OFF_M) / 0.3, 2.0));
+	}
+	else if (Kd == 11)
+	{
+		float3 Over = Size.x >= Size.y ? Wa : Ua;
+		float Q = (frac(dot(WorldPos.xyz / 100.0, Over) / 1.7 + 0.37) - 0.5) * 1.7;
+		MW = exp(-pow(Q / 0.3, 2.0));
+	}
+	// Worn, not gone: far off (Chip 0.5) a line clips only where fade, wheels and age are all at their worst; near, the
+	// chips break through where it is worn. The rest of the wear shows in the colour (Wear below).
+	float Left = smoothstep(-0.06, 0.06, 1.15 - 0.3 * Fade - 0.25 * MW - 0.15 * Age - Chip);
+	float ME = Edge - 0.02 * D.N(Pw / 0.03 + 2.0);
+	Left *= lerp(1.0, smoothstep(0.0, 0.012, ME), Fine);
+	// The road's sealed cracks and hairlines, as the surface master draws them on the asphalt at the same place.
+	float CrackV = D.N(Pw / CRACK_M + 41.0);
+	float CrackGate = smoothstep(0.5, 0.62, D.N(Pw / (3.0 * CRACK_M) + 3.1));
+	float CrackF = Foot / CRACK_M;
+	float Crack = (1.0 - smoothstep(0.006, 0.006 + CrackF, abs(CrackV - 0.5))) * saturate(0.012 / (0.012 + CrackF)) * CrackGate;
+	float HairV = D.N(Pw / 0.9 + 77.0);
+	float HairF = Foot / 0.9;
+	float Hair = (1.0 - smoothstep(0.004, 0.004 + HairF, abs(HairV - 0.5))) * saturate(0.008 / (0.008 + HairF)) *
+		smoothstep(0.55, 0.7, D.N(Pw / 7.0 + 9.0));
+	Mask = Left * (1.0 - Crack);
+	// Colour: 0.65 fresh to 0.45 worn (brightest channel), white or a muted yellow, over the road's aggregate.
+	float Wear = saturate(0.55 * Age + 0.45 * MW + 0.25 * (1.0 - Fade));
+	float3 Tint = Kd == 9 ? float3(1.0, 0.79, 0.28) : float3(1.0, 1.0, 0.97);
+	float2 Ag = Pw / AGG_M;
+	float A0 = D.N(Ag);
+	float Ax = D.N(Ag + float2(0.35, 0.0));
+	float Ay = D.N(Ag + float2(0.0, 0.35));
+	C = Tint * lerp(0.65, 0.45, Wear) * lerp(1.0, 0.86 + 0.28 * A0, Fine) * (0.94 + 0.06 * Fade) * (1.0 - 0.6 * Hair);
+	R = lerp(0.55, 0.72, Wear) * (1.0 + 0.1 * (A0 - 0.5) * Fine);
+	// The normal: the aggregate's relief through the coat, and a soft 2 mm lip over the 8 mm in from its edge.
+	float LipF = 1.0 - smoothstep(0.002, 0.012, Foot);
+	float Lt = saturate(ME / 0.008);
+	float DH = 0.002 * 6.0 * Lt * (1.0 - Lt) / 0.008 * LipF;
+	float2 G = E.x < E.y ? float2(-sign(M.x), 0.0) : float2(0.0, -sign(M.y));
+	float3 Slope = DH * (G.x * Ua + G.y * Wa) + float3(float2(Ax - A0, Ay - A0) / 0.35 * AGG_SLOPE * 0.7 * Fine, 0.0);
+	Slope -= dot(Slope, Nrm) * Nrm;
+	Nrm = normalize(Nrm - Slope);
+}
 C = lerp(Under, C, Blend);
 R = lerp(UnderR, R, Blend);
 float WetIn = saturate(Wetness);
 )HLSL";
         const SurfaceWeatherSpec spec{};
-        const std::string key = "GUTTER_M";
-        char buf[32];
-        std::snprintf(buf, sizeof buf, "%.6f", static_cast<double>(spec.gutterM));
-        for (std::size_t at = h.find(key); at != std::string::npos; at = h.find(key, at)) h.replace(at, key.size(), buf);
+        const StreetSurfaceSpec street{};
+        const struct {
+            const char* key;
+            double value;
+        } splice[] = {{"GUTTER_M", static_cast<double>(spec.gutterM)},
+                      {"PAVED_K", static_cast<double>(kRoadDecalPaved)},
+                      {"LANE_M", static_cast<double>(street.laneM)},
+                      {"WHEEL_OFF_M", static_cast<double>(street.wheelOffM)},
+                      {"CRACK_M", static_cast<double>(street.crackScaleM)},
+                      {"AGG_SLOPE", static_cast<double>(street.aggregateSlope)},
+                      {"AGG_M", static_cast<double>(street.aggregateM)}};
+        for (const auto& s : splice) {
+            const std::string key = s.key;
+            char buf[32];
+            // The kind's offset is an int (it is compared and subtracted with ints).
+            if (key == "PAVED_K") {
+                std::snprintf(buf, sizeof buf, "%d", kRoadDecalPaved);
+            } else {
+                std::snprintf(buf, sizeof buf, "%.6f", s.value);
+            }
+            for (std::size_t at = h.find(key); at != std::string::npos; at = h.find(key, at)) h.replace(at, key.size(), buf);
+        }
         h += surfaceWetHlsl(spec);
-        h += "RoughOut = saturate(R);\nMaskOut = saturate(Mask);\nreturn C;\n";
+        // A puddle is a flat mirror: the paint's relief goes under it.
+        h += "Nrm = normalize(lerp(Nrm, normalize(VN), saturate(WPud)));\n";
+        h += "RoughOut = saturate(R);\nMaskOut = saturate(Mask);\nNormalOut = Nrm;\nreturn C;\n";
         return h;
     }();
     return full.c_str();

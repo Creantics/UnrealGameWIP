@@ -22,8 +22,31 @@
 
 namespace ftcore {
 
-enum class RoadDecalKind : std::uint8_t { Crack, Stain, Manhole, Patch, KerbGrime, Oil, Tactile, Drain, Count };
+// The wear kinds, then the paint: the road's white and yellow lines (0.15 m), its stop lines and its zebra bars (0.45 m;
+// a scramble's 1 m pieces too). Paint is laid flat on the road (roadMarkingDecals), in place of the "mark" boxes.
+enum class RoadDecalKind : std::uint8_t {
+    Crack,
+    Stain,
+    Manhole,
+    Patch,
+    KerbGrime,
+    Oil,
+    Tactile,
+    Drain,
+    LineWhite,
+    LineYellow,
+    StopLine,
+    ZebraBar,
+    Count
+};
 inline constexpr std::size_t kRoadDecalKinds = static_cast<std::size_t>(RoadDecalKind::Count);
+inline constexpr RoadDecalKind kRoadFirstPaint = RoadDecalKind::LineWhite;
+// The custom data's kind carries this added on a pavement.
+inline constexpr int kRoadDecalPaved = 16;
+// Paint's top over the road under it, between the wear kinds: over cracks, stains, manholes, patches and kerb grime
+// (2-4 mm; the grime fades to asphalt and must not hide an edge line), under oil, tactile strips and drain grates (4.5 mm
+// and up; a grate is never painted). The road's own cracks carry across the paint in its material.
+inline constexpr double kRoadPaintLift = 0.00425;
 
 // A decal's top stands about this far over its slab's top (each kind half a millimetre apart), under the markings'
 // 6 mm.
@@ -90,6 +113,17 @@ FTCORE_API void roadDecals(const RoadSolid* solids, std::size_t count, const Roa
 // carriageway slab under them, and a tactile strip on the pavement past each end of each crossing.
 FTCORE_API void roadDecals(const RoadBuild& build, const RoadDecalSpec& spec, std::vector<RoadDecal>& out, RoadDecalCounts& counts);
 
+// A road marking box (kind "mark", white or yellow): laid as paint (roadMarkingDecals), not as a box.
+FTCORE_API bool roadPaintSolid(const RoadSolid& solid);
+// The paint decal for a marking box: its footprint, its grade, its top kRoadPaintLift over the road (the box's top less
+// kRoadMarkLift), and its kind: LineYellow for yellow; StopLine for a white 0.45 m piece along the road at least 1.5 m
+// across it; ZebraBar for any other white piece 0.45 m on its short side; LineWhite for the rest. False for any other
+// solid.
+FTCORE_API bool roadMarkingDecal(const RoadSolid& solid, RoadDecal& out);
+// Appends the paint decals of build.solids (in their order) to out and adds them to counts.perKind. There are no arrows
+// or words among the markings: the roads paint none.
+FTCORE_API void roadMarkingDecals(const RoadBuild& build, std::vector<RoadDecal>& out, RoadDecalCounts& counts);
+
 // The surface master's "Street" value (StreetKind in SurfaceWeather.h) for a road tint: asphalt 1, pavement 2, kerb 3,
 // markings 4, the rest 0.
 FTCORE_API int roadStreetKind(RoadTint tint);
@@ -97,15 +131,19 @@ FTCORE_API int roadStreetKind(RoadTint tint);
 // The decal as a box (kind "decal"), z1 its top and z0 under it by height, for massingCubePose and roadCubeCentre.
 FTCORE_API MassingBox roadDecalBox(const RoadDecal& decal, double height);
 
-// The instance's custom data the material reads: kind (plus 8 on a pavement), seed, size along u and w (m).
+// The instance's custom data the material reads: kind (plus kRoadDecalPaved on a pavement), seed, size along u and w (m).
 inline constexpr std::size_t kRoadDecalData = 4;
 FTCORE_API void roadDecalData(const RoadDecal& decal, float out[kRoadDecalData]);
 
-// The material's Custom node (HLSL): returns the base colour (float3), with RoughOut and MaskOut (the opacity mask)
-// as its two further outputs. Inputs: LocalPos (the 1 m plate's local position, cm), Kind, Seed, SizeU, SizeW (the
-// instance's custom data), Wetness (0..1) and WorldPos (cm). Soft kinds (stains, patches, kerb grime, oil) fade to the
+// The material's Custom node (HLSL): returns the base colour (float3), with RoughOut, MaskOut (the opacity mask) and
+// NormalOut (a world-space normal) as its further outputs. Inputs: LocalPos (the 1 m plate's local position, cm), Kind,
+// Seed, SizeU, SizeW (the instance's custom data), Wetness (0..1), WorldPos (cm), VN (the vertex normal, world) and
+// AxisX, AxisY (the plate's local x and y in world space). Soft kinds (stains, patches, kerb grime, oil) fade to the
 // ground's colour over their outer 10-15 cm, so the mask's clip doesn't show; wet, they darken and smooth as the
-// surface master's weather does at the same place (surfaceWetHlsl).
+// surface master's weather does at the same place (surfaceWetHlsl). Paint is clipped where it has worn through (the
+// road shows), along the road's own sealed cracks (the master's noise, same place), and wears in the wheel paths; the
+// road's aggregate and hairlines read through it, and its edge has a 2 mm lip in the normal only. The wear kinds return
+// VN as their normal.
 FTCORE_API const char* roadDecalHlsl();
 
 } // namespace ftcore
