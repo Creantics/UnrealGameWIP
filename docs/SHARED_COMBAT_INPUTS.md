@@ -262,7 +262,9 @@ fighter, the table, the held refusal, its own `WeakPointLock`, and an optional `
 own copy of the boss def) and moves them all on one fight clock. It is what a host holds instead of
 the pieces.
 
-* **One clock.** `begin(def, start)` resets every piece at `start`, clamped to +-`kMaxFightStart`
+* **One clock.** `begin(def, start)` resets every piece at `start` (the gift slot through
+  `beginFight`: its save-wide tally and threads carry from fight to fight; a host retrying a fight
+  loads its checkpoint `GiftSave` after `begin`), clamped to +-`kMaxFightStart`
   (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
   NaN starts at 0; `FightSessionCheck::start` reports either move, and the fight begins anyway, so `ok()`
   leaves it out). `tick(fightDt)`
