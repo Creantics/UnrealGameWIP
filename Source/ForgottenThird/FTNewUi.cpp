@@ -2030,9 +2030,9 @@ private:
 
 	// The call word in its one slot on the screen's middle under the top line: a called zone (its in or out mark beside
 	// it) or the answer the windup needs, over a 160 px line that shrinks evenly from both ends to nothing on the hit
-	// frame; STAGGERED in the same slot with no line. The slot is the boss's while there is one, else the target's (named
-	// or not: a call needs no name), so the word never stands off the axis over a body. The Read row stands in the slot,
-	// a row lower under a word.
+	// frame; STAGGERED in the same slot with no line. The slot is the boss's while there is one, else the foe's whose
+	// windup dealt the Read cards, else the target's (named or not: a call needs no name), so the word never stands off
+	// the axis over a body. The Read row stands in the slot, a row lower under a word.
 	void PaintCall(const FPainter& P, const FVector2f& Size) const
 	{
 		const ftcore::ArenaHudBoss& B = View.now.boss;
@@ -2296,6 +2296,7 @@ private:
 		const ftcore::ArenaHudTarget& T = View.now.target;
 		ReadN = 0;
 		ReadPicked = -1;
+		int32 ReadSlot = -1; // the foe whose windup dealt the Read cards on show
 		for (int32 I = 0; I < UFTArenaRunner::MaxEnemies; ++I)
 		{
 			// A minor enemy's name by its kind, built when the kind changes (most kinds have none).
@@ -2341,6 +2342,7 @@ private:
 			{
 				const ftcore::ReadCards& Cards = Fight.readCards();
 				ReadN = FMath::Min(static_cast<int32>(Cards.size()), 3);
+				ReadSlot = I;
 				ReadPicked = Cards.picked() ? static_cast<int32>(Cards.pickedIndex()) : -1;
 				for (int32 C = 0; C < ReadN; ++C)
 				{
@@ -2380,8 +2382,10 @@ private:
 			const AFTArenaFighter* Figure = Runner.GetEnemyFigure(static_cast<int32>(Lock));
 			bLockOn = Figure && Project(PC, Figure->GetChest(), Size, LockAt) && OnScreen(LockAt);
 		}
-		// The call slot's foe: the boss, else the target. Its word: a called zone, else the answer its winding-up move needs.
+		// The call slot's foe: the boss; else the foe whose windup dealt the Read cards (the row stands under its word);
+		// else the target. Its word: a called zone, else the answer its winding-up move needs.
 		SlotFoe = B.present ? (B.slot < UFTArenaRunner::MaxEnemies ? static_cast<int32>(B.slot) : -1)
+			: ReadSlot >= 0 ? ReadSlot
 							: (T.present && T.enemy < UFTArenaRunner::MaxEnemies ? static_cast<int32>(T.enemy) : -1);
 		CallKind = -1;
 		if (B.present && !B.invulnerable && !B.down && B.call != ftcore::UiCalledZone::None)
@@ -2536,12 +2540,11 @@ private:
 	}
 
 	// The world's marks, under everything else: a minor enemy's name and hp line over its body once hit or winding up, the
-	// call word under it (the boss's or the target's stands in the slot on the screen's middle instead), a hit's corner
-	// arcs, the off-frame chevrons and the weak point.
+	// call word under it (the call slot's foe's stands in the slot on the screen's middle instead), a hit's corner arcs,
+	// the off-frame chevrons and the weak point.
 	void PaintWorld(const FPainter& P, const FVector2f& Size) const
 	{
 		const float S = P.S;
-		const ftcore::ArenaHudBoss& B = View.now.boss;
 		for (int32 I = 0; I < UFTArenaRunner::MaxEnemies; ++I)
 		{
 			const FFoeMark& M = Foes[I];
@@ -2713,7 +2716,7 @@ private:
 	FString ZoneWord[3], AnswerWord[3], StaggerWord;
 	float ZoneW[3] = {}, AnswerW[3] = {}, AnswerSW[3] = {}, StaggerW = 0.f, StaggerSW = 0.f;
 	int32 CallKind = -1; // -1 none, 0..2 a called zone, 3 + the answer the slot foe's windup needs
-	int32 SlotFoe = -1;  // the foe whose word stands in the call slot: the boss, else the target (-1 none)
+	int32 SlotFoe = -1;  // the foe whose word stands in the call slot: the boss, else the Read cards' foe, else the target
 	// A minor enemy's name over its body.
 	FSlateFontInfo FoeNameFont;
 	float FoeNameAsc = 0.f;
