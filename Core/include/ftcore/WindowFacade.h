@@ -335,12 +335,16 @@ FTCORE_API std::uint32_t windowWallTintFor(std::uint32_t seed, bool plainFinish)
 // fronts a kerbed street). windowFacadeHlsl: WindowInterior's inputs plus Type (the WindowType as a float), UpperLit,
 // SignGlow, Kerb, Parallax (the collection's switch), RoomShare, FrostShare and ScreenGlow; returns float4 (rgb: the room
 // seen, or a part's own albedo for Band, Fascia and parts 10 on; a: the part) and writes Curtain, Emit (the glass's
-// light, a lantern's and a lit sign's) and Hole (1 on a kerbed street face's shop glass: the opacity mask's cut).
+// light, a lantern's and a lit sign's), Hole (1 on a kerbed street face's shop glass: the opacity mask's cut), Pane (the
+// glass point's pane, cut at a mullion and a transom: uv across and up it, its width and height in m) and PaneAge (its
+// seed, its age: a shop's glass 0.15, a home's 0.3 to 0.8).
 // windowFacadeComposeHlsl: r4's compose plus inputs T, Nz, Top, Tint and RoofFin; it tints the wall, shades the reveal
 // with its own normals and colours the roof. With `glass` (ftcore/GlassSurface.h: glass over a picture) it reads CamV
 // too and writes SpecOut: the room's light reaches the eye times the pane's pass share at the view's angle (as a share
 // of a square-on view's, so a window seen square-on keeps its light) and its faint green; the surface's specular is
-// GlassSpec (0.5 mirrors as one glass face does, as before; 0.96 as a pane's two faces). Allocates: build time only.
+// GlassSpec (0.5 mirrors as one glass face does, as before; 0.96 as a pane's two faces). It also lays the glass
+// function's detail layer (glassHlsl) on the pane from inputs Pane, PaneAge and Wet: the dust film toward the bottom edge
+// and corners, dried streaks, the dark pane edge and the rubber seal, beads when wet. Allocates: build time only.
 FTCORE_API std::string windowFacadeFaceHlsl();
 FTCORE_API std::string windowFacadeHlsl(const WindowFacadeSpec& spec);
 FTCORE_API std::string windowFacadeComposeHlsl(bool glass = false);

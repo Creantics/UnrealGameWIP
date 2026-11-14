@@ -1,6 +1,7 @@
 // Round 5 facades (ftcore/WindowFacade.h): types, the side clamp that ends the grazing smear, reveals, shop kinds,
 // tints and the HLSL written from the same numbers.
 
+#include "ftcore/GlassSurface.h"
 #include "ftcore/WindowFacade.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
@@ -723,4 +724,18 @@ TEST_CASE("facade r5: the compose node with the glass function weighs the room's
     CHECK(glass.find("GlassSpec") != std::string::npos);
     // Nothing in the compose reads the hour: the flip is the room's light against the mirrored street.
     CHECK(glass.find("Night") == std::string::npos);
+}
+
+TEST_CASE("facade r5: the window glass wears the glass function's detail layer, pane by pane") {
+    const std::string win = windowFacadeHlsl(WindowFacadeSpec{});
+    const std::string glass = windowFacadeComposeHlsl(true);
+    // The window node cuts the glass into panes at a mullion and a transom and hands each its uv, size, seed and age.
+    for (const char* name : {"Pane = float4(", "PaneAge = float2(", "wpSplit"})
+        CHECK_MESSAGE(win.find(name) != std::string::npos, name);
+    // The compose node runs the same detail block the kit's glass does, and uses its film, seal, edge and roughness.
+    CHECK(glass.find(glassHlsl()) != std::string::npos);
+    for (const char* name : {"float2 gUV = Pane.xy;", "float gWet = Wet;", "gKeep", "gEdgeTint", "max(GlassRough, gRough)", "gSeal"})
+        CHECK_MESSAGE(glass.find(name) != std::string::npos, name);
+    // The plain compose (no glass function) stays without it.
+    CHECK(windowFacadeComposeHlsl().find("gUV") == std::string::npos);
 }

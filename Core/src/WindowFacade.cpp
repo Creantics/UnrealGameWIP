@@ -1,5 +1,6 @@
 #include "ftcore/WindowFacade.h"
 
+#include "ftcore/GlassSurface.h"
 #include "ftcore/ShopFront.h"
 
 #include <algorithm>
@@ -888,6 +889,16 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "own = part == 17.0 ? float3(0.05, 0.05, 0.055) : (part == 18.0 ? float3(0.14, 0.14, 0.15) : own);\n";
     h += "float3 rgbOut = glass ? seen * hs : (part == 3.0 ? bandRgb : (part == 4.0 || part == 16.0 ? fasciaRgb : (part == "
          "12.0 ? float3(0.75, 0.12, 0.06) : (part == 9.0 || part == 15.0 ? float3(0.62, 0.6, 0.56) : own))));\n";
+    // The pane the glass point lies in (cut at a mullion and a transom), across and up it 0..1, its size in metres, and
+    // its seed and age (a shop's glass kept new, a home's older): the glass function's detail layer reads them.
+    h += "float wpU0 = u0 + fu;\nfloat wpU1 = u1 - fu;\nbool wpSplit = !shop && (sty == 1u || loggia);\n";
+    h += "wpU1 = wpSplit && gu < 0.5 ? 0.5 - 0.5 * fu : wpU1;\nwpU0 = wpSplit && gu >= 0.5 ? 0.5 + 0.5 * fu : wpU0;\n";
+    h += "float wpV0 = v0 + fv;\nfloat wpV1 = v1 - fv;\nfloat wpT = v1 - 0.3 * (v1 - v0);\n";
+    h += "wpV1 = sty == 1u && gv < wpT ? wpT - 0.5 * fv : wpV1;\nwpV0 = sty == 1u && gv >= wpT ? wpT + 0.5 * fv : wpV0;\n";
+    h += "float wpW = max((wpU1 - wpU0) * bw, 0.05);\nfloat wpH = max((wpV1 - wpV0) * sh, 0.05);\n";
+    h += "Pane = float4(saturate((gu - wpU0) * bw / wpW), saturate((gv - wpV0) * sh / wpH), wpW, wpH);\n";
+    h += "float wpSeed = float(W.H(hh ^ " + unum(0x3c6ef372u) + ") & 0xFFFFu) / 65536.0;\n";
+    h += "PaneAge = float2(wpSeed, shop ? 0.15 : 0.3 + 0.5 * frac(wpSeed * 7.31));\n";
     h += "return float4(rgbOut, part);\n";
     return h;
 }
@@ -931,9 +942,20 @@ std::string windowFacadeComposeHlsl(bool glass) {
         h += "float gCosV = saturate(abs(dot(normalize(VertexNormal), normalize(CamV))));\n";
         h += "float gFace = 0.04 + 0.96 * pow(1.0 - gCosV, 5.0);\n";
         h += "float gPass = (1.0 - 2.0 * gFace / (1.0 + gFace)) / 0.9231;\n";
-        h += "EmissiveOut = Glass ? Emit * gPass * float3(0.95, 0.99, 0.97) : Emit;\n";
-        h += "SpecOut = Glass ? GlassSpec : 0.5;\n";
-        h += "float3 GlassAlbedo = (Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo) * gPass;\n";
+        // The detail layer (glassHlsl, as on the kit's glass): the dust film toward the bottom edge and the corners, dried
+        // streaks from the top, the dark edge of the pane and its rubber seal, beads when wet. Pane (uv, size) and
+        // PaneAge (seed, age) are the window node's; Wet the look's.
+        h += "float2 gUV = Pane.xy;\nfloat2 gSize = Pane.zw;\nfloat gSeed = PaneAge.x;\nfloat gAge = PaneAge.y;\n"
+             "float gWet = Wet;\nfloat gCos = gCosV;\nfloat2 gHandle = float2(-1.0, 0.0);\nfloat gThick = 0.006;\n";
+        h += glassHlsl();
+        h += "float gKeep = Glass ? (1.0 - gVeil) * (1.0 - gSeal) : 1.0;\n";
+        h += "float3 gEdgeTint = lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), Glass ? gEdge : 0.0);\n";
+        h += "EmissiveOut = Glass ? Emit * gPass * float3(0.95, 0.99, 0.97) * gKeep * gEdgeTint : Emit;\n";
+        h += "SpecOut = Glass ? lerp(GlassSpec, 0.3, gSeal) : 0.5;\n";
+        h += "RoughOut = Glass ? lerp(max(GlassRough, gRough), 0.6, gSeal) : RoughOut;\n";
+        h += "NormalOut = Glass ? normalize(normalize(VertexNormal) + T * gWave.x + Nz * gWave.y) : NormalOut;\n";
+        h += "float3 GlassAlbedo = lerp((Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo) * gPass * gEdgeTint + "
+             "float3(0.60, 0.58, 0.53) * gVeil, float3(0.02, 0.02, 0.02), gSeal);\n";
     } else {
         h += "EmissiveOut = Emit;\n";
         h += "float3 GlassAlbedo = Win.rgb * GlassBase + Curtain.rgb * Curtain.a * CurtainAlbedo;\n";

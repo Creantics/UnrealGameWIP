@@ -954,6 +954,10 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	if (bR5)
 	{
 		AddOutput(Win, TEXT("Hole"), CMOT_Float1); // output 3
+		// The pane the glass point lies in (uv across and up it, its size in m) and its seed and age: the compose node's
+		// glass detail layer (ftcore::glassHlsl) reads them.
+		AddOutput(Win, TEXT("Pane"), CMOT_Float4); // output 4
+		AddOutput(Win, TEXT("PaneAge"), CMOT_Float2); // output 5
 	}
 	Win->RebuildOutputs();
 
@@ -1007,6 +1011,21 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 		// mirror as it was (the city's night with it); 0.96 is a pane's two faces.
 		AddInput(Compose, TEXT("CamV"), Camera);
 		AddInput(Compose, TEXT("GlassSpec"), AddWindowScalar(Material, TEXT("GlassSpecular"), 0.5f, 3350));
+		AddInputFrom(Compose, TEXT("Pane"), Win, 4);
+		AddInputFrom(Compose, TEXT("PaneAge"), Win, 5);
+		// The look's Wetness for the glass's beads (none without the look's collection).
+		if (Look && Look->GetParameterId(TEXT("Wetness")).IsValid())
+		{
+			UMaterialExpressionCollectionParameter* Wet = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 3400);
+			Wet->Collection = Look;
+			Wet->ParameterName = TEXT("Wetness");
+			Wet->ParameterId = Look->GetParameterId(TEXT("Wetness"));
+			AddInput(Compose, TEXT("Wet"), Wet);
+		}
+		else
+		{
+			AddInput(Compose, TEXT("Wet"), AddWindowScalar(Material, TEXT("GlassWet"), 0.f, 3400));
+		}
 	}
 	AddOutput(Compose, TEXT("NormalOut"), CMOT_Float3);
 	AddOutput(Compose, TEXT("RoughOut"), CMOT_Float1);
