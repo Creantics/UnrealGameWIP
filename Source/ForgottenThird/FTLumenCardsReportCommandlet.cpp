@@ -1,12 +1,18 @@
 #include "FTLumenCardsReportCommandlet.h"
 
 #include "AssetCompilingManager.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DistanceFieldAtlas.h"
 #include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerStart.h"
+#include "GameFramework/WorldSettings.h"
+#include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "MeshCardBuild.h"
 #include "MeshCardRepresentation.h"
@@ -15,7 +21,10 @@
 #include "StaticMeshCompiler.h"
 #include "StaticMeshResources.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+#include "UObject/UnrealType.h"
 
+#include "FTSceneLook.h"
 #include "ForgottenThird.h"
 
 namespace
@@ -95,6 +104,247 @@ float LargestFace(const FBox3f& Bounds, const FVector& Scale)
 	const FVector3f S = FVector3f(Bounds.GetSize()) * FVector3f(Scale);
 	return FMath::Max3(S.Y * S.Z, S.X * S.Z, S.X * S.Y);
 }
+
+#if WITH_EDITOR
+// -TestMap (the header's note): the building box, its component and its index there.
+struct FBoxSample
+{
+	UHierarchicalInstancedStaticMeshComponent* Source = nullptr;
+	int32 Instance = INDEX_NONE;
+	FVector Size = FVector::ZeroVector; // cube scale (the engine cube is 1 m a side)
+	double Volume = 0.0;
+};
+
+// The biggest building-sized engine-cube instance in a state-A, ray-traced, drawn HISM of two or more instances: every
+// side 3 m or more, 6 m tall or more, no side over 40 m (the quay blocks and ground slabs are bigger).
+FBoxSample FindBuildingBox(const UWorld& World)
+{
+	FBoxSample Best;
+	for (AActor* Actor : World.PersistentLevel->Actors)
+	{
+		if (!Actor)
+		{
+			continue;
+		}
+		TInlineComponentArray<UHierarchicalInstancedStaticMeshComponent*> Components(Actor);
+		for (UHierarchicalInstancedStaticMeshComponent* Component : Components)
+		{
+			const UStaticMesh* Mesh = Component ? Component->GetStaticMesh() : nullptr;
+			if (!Mesh || Mesh->GetPathName() != TEXT("/Engine/BasicShapes/Cube.Cube") || !Component->bAffectDistanceFieldLighting ||
+				!Component->bAffectDynamicIndirectLighting || !Component->bVisibleInRayTracing || Component->bHiddenInGame ||
+				Component->GetInstanceCount() < 2)
+			{
+				continue;
+			}
+			for (int32 I = 0; I < Component->GetInstanceCount(); ++I)
+			{
+				FTransform At;
+				Component->GetInstanceTransform(I, At, true);
+				const FVector Scale = At.GetScale3D().GetAbs();
+				const FVector Cm = Scale * 100.0;
+				if (Cm.GetMin() < 300.0 || Cm.Z < 600.0 || Cm.GetMax() > 4000.0)
+				{
+					continue;
+				}
+				const double Volume = Cm.X * Cm.Y * Cm.Z;
+				if (Volume > Best.Volume)
+				{
+					Best.Source = Component;
+					Best.Instance = I;
+					Best.Size = Scale;
+					Best.Volume = Volume;
+				}
+			}
+		}
+	}
+	return Best;
+}
+
+// Every plain property of Source that differs from a new HISM's (arrays and object references left out; materials
+// logged on their own).
+void LogFlagDiff(const UHierarchicalInstancedStaticMeshComponent& Source)
+{
+	const UObject* Defaults = UHierarchicalInstancedStaticMeshComponent::StaticClass()->GetDefaultObject();
+	int32 Count = 0;
+	for (TFieldIterator<FProperty> It(UHierarchicalInstancedStaticMeshComponent::StaticClass()); It; ++It)
+	{
+		const FProperty* Property = *It;
+		if (Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated) || CastField<FArrayProperty>(Property) ||
+			CastField<FObjectPropertyBase>(Property) || CastField<FMapProperty>(Property) || CastField<FSetProperty>(Property))
+		{
+			continue;
+		}
+		const void* Ours = Property->ContainerPtrToValuePtr<void>(&Source);
+		const void* Engine = Property->ContainerPtrToValuePtr<void>(Defaults);
+		if (Property->Identical(Ours, Engine, PPF_None))
+		{
+			continue;
+		}
+		FString OursText, EngineText;
+		Property->ExportTextItem_Direct(OursText, Ours, nullptr, nullptr, PPF_None);
+		Property->ExportTextItem_Direct(EngineText, Engine, nullptr, nullptr, PPF_None);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTLumenCardsReport test flags: %s = %s (new HISM: %s)"), *Property->GetName(),
+			*OursText.Left(200), *EngineText.Left(200));
+		++Count;
+	}
+	for (int32 S = 0; S < Source.GetNumMaterials(); ++S)
+	{
+		const UMaterialInterface* Material = Source.GetMaterial(S);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTLumenCardsReport test flags: material %d = %s"), S,
+			Material ? *Material->GetPathName() : TEXT("none"));
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTLumenCardsReport test flags: %d properties differ from a new HISM's."), Count);
+}
+
+// The test map (the header's note). Returns 0 once it is saved.
+int32 WriteTestMap(const FString& MapPath, const FBoxSample& Box, const AWorldSettings* SourceSettings)
+{
+	UHierarchicalInstancedStaticMeshComponent& Source = *Box.Source;
+	UStaticMesh* Cube = Source.GetStaticMesh();
+	const FString File = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
+	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTLumenCardsReport: couldn't replace %s."), *File);
+		return 1;
+	}
+	UPackage* Package = CreatePackage(*MapPath);
+	UWorld* World = UWorld::CreateWorld(EWorldType::Inactive, false, *FPackageName::GetShortName(MapPath), Package);
+	if (!World)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTLumenCardsReport: couldn't create the test world."));
+		return 1;
+	}
+	World->SetFlags(RF_Public | RF_Standalone);
+	if (AWorldSettings* Settings = World->GetWorldSettings(); Settings && SourceSettings)
+	{
+		Settings->DefaultGameMode = SourceSettings->DefaultGameMode;
+	}
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	const FVector Size = Box.Size;
+	const double Width = Size.X * 100.0, Depth = Size.Y * 100.0, Height = Size.Z * 100.0;
+	const double Pitch = Width + 2000.0; // 20 m between neighbours
+	const int32 Ways = 5;
+	const auto Place = [&](int32 I) { return FTransform(FRotator::ZeroRotator, FVector(I * Pitch, 0.0, Height * 0.5), Size); };
+	const int32 Floats = Source.NumCustomDataFloats;
+	TArray<float> Custom;
+	for (int32 F = 0; F < Floats; ++F)
+	{
+		const int32 At = Box.Instance * Floats + F;
+		Custom.Add(Source.PerInstanceSMCustomData.IsValidIndex(At) ? Source.PerInstanceSMCustomData[At] : 0.f);
+	}
+	const auto Materials = [&](UStaticMeshComponent& Component)
+	{
+		for (int32 S = 0; S < Source.GetNumMaterials(); ++S)
+		{
+			Component.SetMaterial(S, Source.GetMaterial(S));
+		}
+	};
+
+	AStaticMeshActor* Ground = World->SpawnActor<AStaticMeshActor>(FVector((Ways - 1) * Pitch * 0.5, 0.0, -10.0), FRotator::ZeroRotator, Spawn);
+	Ground->GetStaticMeshComponent()->SetStaticMesh(Cube);
+	Ground->SetActorScale3D(FVector(((Ways - 1) * Pitch + Width + 6000.0) / 100.0, (Depth + 10000.0) / 100.0, 0.2));
+	Materials(*Ground->GetStaticMeshComponent());
+	Ground->SetActorLabel(TEXT("CardTest_ground"));
+
+	// (a) a static mesh actor, engine defaults.
+	AStaticMeshActor* Plain = World->SpawnActor<AStaticMeshActor>(Place(0).GetLocation(), FRotator::ZeroRotator, Spawn);
+	Plain->GetStaticMeshComponent()->SetStaticMesh(Cube);
+	Plain->SetActorScale3D(Size);
+	Materials(*Plain->GetStaticMeshComponent());
+	Plain->SetActorLabel(TEXT("CardTest_a_actor"));
+
+	const auto MakeHism = [&](int32 Way, const TCHAR* Label, bool bOurFlags, int32 GroupId, bool bTwo)
+	{
+		AActor* Holder = World->SpawnActor<AActor>(FVector(Way * Pitch, 0.0, 0.0), FRotator::ZeroRotator, Spawn);
+		USceneComponent* Root = NewObject<USceneComponent>(Holder, TEXT("Root"));
+		Root->SetMobility(EComponentMobility::Static);
+		Holder->SetRootComponent(Root);
+		Holder->AddInstanceComponent(Root);
+		Root->RegisterComponent();
+		Holder->SetActorLabel(Label);
+		UHierarchicalInstancedStaticMeshComponent* Component = NewObject<UHierarchicalInstancedStaticMeshComponent>(Holder, TEXT("Box"));
+		Component->CreationMethod = EComponentCreationMethod::Instance;
+		Component->SetStaticMesh(Cube);
+		Materials(*Component);
+		if (bOurFlags)
+		{
+			Component->SetMobility(Source.Mobility);
+			Component->SetGenerateOverlapEvents(Source.GetGenerateOverlapEvents());
+			Component->SetCollisionProfileName(Source.GetCollisionProfileName());
+			Component->SetCanEverAffectNavigation(Source.CanEverAffectNavigation());
+			Component->SetHiddenInGame(Source.bHiddenInGame);
+			Component->SetCastShadow(Source.CastShadow);
+			Component->SetCullDistances(Source.InstanceStartCullDistance, Source.InstanceEndCullDistance);
+			Component->SetVisibleInRayTracing(Source.bVisibleInRayTracing);
+			Component->SetAffectDistanceFieldLighting(Source.bAffectDistanceFieldLighting);
+			Component->SetAffectDynamicIndirectLighting(Source.bAffectDynamicIndirectLighting);
+			Component->SetNumCustomDataFloats(Floats);
+			Component->bAutoRebuildTreeOnInstanceChanges = Source.bAutoRebuildTreeOnInstanceChanges;
+			Component->ComponentTags = Source.ComponentTags;
+		}
+		Component->RayTracingGroupId = GroupId;
+		Component->SetupAttachment(Root);
+		Holder->AddInstanceComponent(Component);
+		Component->RegisterComponent();
+		TArray<FTransform> Transforms = {Place(Way)};
+		if (bTwo)
+		{
+			// A 1 m cube under the ground slab: never seen, but it makes the component a many-instance one.
+			Transforms.Add(FTransform(FRotator::ZeroRotator, FVector(Way * Pitch, 0.0, -400.0), FVector::OneVector));
+		}
+		const TArray<int32> Ids = Component->AddInstances(Transforms, true, true);
+		if (bOurFlags && Floats > 0)
+		{
+			for (const int32 Id : Ids)
+			{
+				Component->SetCustomData(Id, Custom);
+			}
+		}
+		Component->BuildTreeIfOutdated(false, true);
+		Component->MarkRenderStateDirty();
+	};
+	MakeHism(1, TEXT("CardTest_b_hism_default_1"), false, -1, false);
+	MakeHism(2, TEXT("CardTest_c_hism_ours_2"), true, -1, true);
+	MakeHism(3, TEXT("CardTest_d_hism_default_2"), false, -1, true);
+	MakeHism(4, TEXT("CardTest_e_hism_ours_2_rtgroup"), true, 7001, true);
+
+	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, FRotator(-35, 150, 0));
+	APlayerStart* Start = World->SpawnActor<APlayerStart>(FVector(-3000.0, -3000.0, 100.0), FRotator::ZeroRotator, Spawn);
+	Start->SetActorLabel(TEXT("PlayerStart"));
+
+	FAssetRegistryModule::AssetCreated(World);
+	Package->MarkPackageDirty();
+	FSavePackageArgs Save;
+	Save.TopLevelFlags = RF_Public | RF_Standalone;
+	Save.SaveFlags = SAVE_NoError;
+	const bool bSaved = UPackage::SavePackage(Package, World, *File, Save);
+	World->DestroyWorld(false);
+	if (!bSaved)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTLumenCardsReport: couldn't save %s."), *File);
+		return 1;
+	}
+
+	// Eyes in the plan frame of a 1000 m square (engine metres X, Y to plan x = X + 500, y = 500 - Y).
+	const auto Plan = [](const FVector& Cm) { return FString::Printf(TEXT("%.1f,%.1f,%.1f"), Cm.X / 100.0 + 500.0, 500.0 - Cm.Y / 100.0, Cm.Z / 100.0); };
+	const double Row = (Ways - 1) * Pitch + Width;
+	const FVector Mid((Ways - 1) * Pitch * 0.5, 0.0, Height * 0.5);
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTLumenCardsReport test map %s saved: box %s instance %d of %d (owner %s), %.0f x %.0f x %.0f cm, %d custom floats, ")
+		TEXT("pitch %.0f cm. Wide eye %s at %s (35 mm)."),
+		*MapPath, *Source.GetName(), Box.Instance, Source.GetInstanceCount(), *GetNameSafe(Source.GetOwner()), Width, Depth, Height,
+		Floats, Pitch, *Plan(Mid + FVector(0.0, -Row * 1.05, Height * 0.3)), *Plan(Mid));
+	for (int32 Way = 0; Way < Ways; ++Way)
+	{
+		const FVector Face(Way * Pitch, -Depth * 0.5, 800.0);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTLumenCardsReport test map way %c: close eye %s at %s (35 mm)."), TCHAR('a' + Way),
+			*Plan(Face + FVector(-600.0, -2500.0, -630.0)), *Plan(Face));
+	}
+	return 0;
+}
+#endif
 } // namespace
 
 UFTLumenCardsReportCommandlet::UFTLumenCardsReportCommandlet()
@@ -302,6 +552,27 @@ int32 UFTLumenCardsReportCommandlet::Main(const FString& Params)
 	{
 		FFileHelper::SaveStringArrayToFile(Lines, *CsvPath);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTLumenCardsReport: %d meshes written to %s."), Lines.Num() - 1, *CsvPath);
+	}
+
+	FString TestMap;
+	if (FParse::Value(*Params, TEXT("TestMap="), TestMap))
+	{
+		if (!FPackageName::IsValidLongPackageName(TestMap) || TestMap == MapPath)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTLumenCardsReport: -TestMap needs a new /Game/Maps/<map>."));
+			return 1;
+		}
+		const FBoxSample Box = FindBuildingBox(*World);
+		if (!Box.Source)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTLumenCardsReport: no building box found for -TestMap."));
+			return 1;
+		}
+		LogFlagDiff(*Box.Source);
+		if (WriteTestMap(TestMap, Box, World->GetWorldSettings()) != 0)
+		{
+			return 1;
+		}
 	}
 
 	if (!Rebuild.IsEmpty())

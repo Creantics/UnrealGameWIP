@@ -308,7 +308,7 @@ void unitSwingHlsl(std::string& h, const StreetSurfaceSpec& st, const std::strin
 // The street layer's body (inside the node, after the box frame): reads Street, Pw, Foot, VN, Lm, Sx, Sy, Sz, Ux, Uy,
 // Uy.z, GutD (with relief also ViewVec, JointDepth, Wet, Up); changes Alb, Rgh and Nrm (with relief declares RlCav and
 // RlWet for the AO and the wet roughness after it).
-void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurfaceSpec& st, bool relief) {
+void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurfaceSpec& st, bool relief, bool detail) {
     const StreetJointGrid paveG = streetJointGrid(StreetKind::Pavement, st);
     const StreetJointGrid paverG = streetJointGrid(StreetKind::Lane, st);
     const StreetJointGrid kerbG = streetJointGrid(StreetKind::Kerb, st);
@@ -356,11 +356,27 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat A0 = SNz.N(Ag);\n";
     h += "\t\tfloat Ax = SNz.N(Ag + float2(0.35, 0.0));\n";
     h += "\t\tfloat Ay = SNz.N(Ag + float2(0.0, 0.35));\n";
-    h += "\t\tSlopeW += float2(Ax - A0, Ay - A0) / 0.35 * " + num(st.aggregateSlope) + " * Fine;\n";
+    // With the detail tile the aggregate's near terms (AgF) give way to the tile; its far tone lift stays.
+    h += std::string("\t\tfloat AgF = ") + (detail ? "0.0" : "Fine") + ";\n";
+    h += "\t\tSlopeW += float2(Ax - A0, Ay - A0) / 0.35 * " + num(st.aggregateSlope) + " * AgF;\n";
     // Exposed stone chips: light flecks where the binder wore off (rougher), fading to their mean further out.
     h += "\t\tfloat Chip = smoothstep(0.62, 0.8, 0.6 * A0 + 0.4 * SNz.N(Pw / " + num(st.aggregateM * 0.45f) + " + 5.0));\n";
-    h += "\t\tTone *= 1.0 + 0.3 * (A0 - 0.5) * Fine + lerp(0.25, 1.4 * Chip, Fine) * 0.5;\n";
-    h += "\t\tRoughMul *= 1.0 + 0.1 * Chip * Fine;\n";
+    h += "\t\tTone *= 1.0 + 0.3 * (A0 - 0.5) * AgF + lerp(0.25, 1.4 * Chip, AgF) * 0.5;\n";
+    h += "\t\tRoughMul *= 1.0 + 0.1 * Chip * AgF;\n";
+    if (detail) {
+        // The baked tile on the world's plan (image-down along world +y): albedo ratio to its mean, true slope from a
+        // DirectX map (x = -dh/du, y = +dh/dv), roughness ratio and cavity AO. Texture2DSample, so a ray-tracing hit
+        // takes its mip from the ray cone.
+        h += "\t\tfloat2 DUv = Pw / " + num(st.detailTileM) + ";\n";
+        h += "\t\tfloat3 DAl = Texture2DSample(DetAlb, DetAlbSampler, DUv).rgb;\n";
+        h += "\t\tTone *= lerp(1.0, dot(DAl, float3(0.2126, 0.7152, 0.0722)) / " + num(st.detailAlbedoMean) + ", " +
+             num(st.detailTone) + ");\n";
+        h += "\t\tfloat3 DNm = UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv)).xyz;\n";
+        h += "\t\tSlopeW += float2(-DNm.x, DNm.y) / max(DNm.z, 0.2) * " + num(st.detailSlope) + ";\n";
+        h += "\t\tfloat2 DRa = Texture2DSample(DetRA, DetRASampler, DUv).rg;\n";
+        h += "\t\tRoughMul *= lerp(1.0, DRa.r / " + num(st.detailRoughMean) + ", " + num(st.detailRough) + ");\n";
+        h += "\t\tDetAO = lerp(1.0, DRa.g, " + num(st.detailAO) + ");\n";
+    }
     // Ravelled blotches and old patches, 0.3-2 m: what is left of the grain beyond a few metres.
     h += "\t\tfloat Blot = SNz.N(Pw / 0.6 + 11.0);\n";
     h += "\t\tTone *= 1.0 + 0.22 * (Blot - 0.5) * Mid;\n";
@@ -787,6 +803,7 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
     const bool top = box && options.topGrime;
     const bool streets = box && options.street;
     const bool relief = streets && options.jointDepth;
+    const bool detail = streets && options.streetDetail;
     std::string h;
     h.reserve(16384);
     if (relief) reliefStructHlsl(h, street);
@@ -833,7 +850,8 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
         h += "float GutD = 0.5 * Sy + (Uy.z > 0.0 ? Lm.y : -Lm.y);\n";
         h += "Gut = abs(Uy.z) > " + num(spec.tiltMin) + " ? 1.0 - smoothstep(0.0, " + num(spec.gutterM) + ", GutD) : 0.0;\n";
     }
-    if (streets) streetHlsl(h, spec, street, relief);
+    if (detail) h += "float DetAO = 1.0;\n";
+    if (streets) streetHlsl(h, spec, street, relief, detail);
     h += "float Pud = Up * saturate(Wet * " + num(kWetRamp) + ") * smoothstep(0.0, " + num(spec.puddleEdge) + ", Noise[0] + " +
          num(spec.gutterBias) + " * Gut - (1.0 - " + num(spec.puddleCover) + " * Wet));\n";
     h += "float3 C = Alb * (lerp(1.0, " + num(spec.soakDarken) + ", Soak) * lerp(1.0, " + num(spec.puddleDarken) +
@@ -845,6 +863,7 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
     if (relief) h += "R = lerp(R, max(R, RlRw), RlWet * (1.0 - Pud));\n";
     h += "float A = AO;\n";
     if (relief) h += "A *= 1.0 - RlCav;\n";
+    if (detail) h += "A *= DetAO;\n";
     const std::string tint = "float3(" + num(spec.dirtR) + ", " + num(spec.dirtG) + ", " + num(spec.dirtB) + ")";
     if (dirt) {
         h += "float Side = 1.0 - smoothstep(" + num(kSideFrom) + ", " + num(kSideTo) + ", abs(VN.z));\n";

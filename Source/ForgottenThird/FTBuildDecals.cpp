@@ -65,15 +65,26 @@ void AddCustomOutput(UMaterialExpressionCustom* Custom, FName Name, ECustomMater
 	Out.OutputType = Type;
 }
 
-// The decals' one material, M_RoadDecal in Package: masked, drawn instanced, its Custom node fed the plate's local
-// position, the instance's four custom data floats (falling back to custom primitive data) and the look's Wetness (0 when
-// the collection is missing).
-UMaterial* BuildMaterial(UPackage* Package)
+// The decals' material, drawn instanced, its Custom node fed the plate's local position, the instance's four custom
+// data floats (falling back to custom primitive data) and the look's Wetness (0 when the collection is missing).
+//   M_RoadDecal (the wear kinds): a masked surface on its plate, with its own normal (manhole rims, patch edges).
+//   M_RoadPaint (lines, stop lines, zebra bars; bPaint): a mesh decal. The plate is drawn into the DBuffer, colour and
+//   roughness only, so the road under it keeps its own normal and its grain reads through the paint: no surface of its
+//   own, no lip, no step.
+UMaterial* BuildMaterial(UPackage* Package, bool bPaint)
 {
-	UMaterial* Material = NewObject<UMaterial>(Package, TEXT("M_RoadDecal"), RF_Public | RF_Transactional);
+	UMaterial* Material = NewObject<UMaterial>(Package, bPaint ? TEXT("M_RoadPaint") : TEXT("M_RoadDecal"), RF_Public | RF_Transactional);
 	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
-	Material->BlendMode = BLEND_Masked;
-	Material->OpacityMaskClipValue = 0.5f;
+	if (bPaint)
+	{
+		Material->MaterialDomain = MD_DeferredDecal;
+		Material->BlendMode = BLEND_Translucent;
+	}
+	else
+	{
+		Material->BlendMode = BLEND_Masked;
+		Material->OpacityMaskClipValue = 0.5f;
+	}
 
 	UMaterialExpression* Data[ftcore::kRoadDecalData] = {};
 	// The per-instance node's class isn't exported from the engine's module, so it is found by name.
@@ -164,6 +175,22 @@ UMaterial* BuildMaterial(UPackage* Package)
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Custom);
 	Inputs->Roughness.Connect(1, Custom);
+	if (bPaint)
+	{
+		// The mask's 0.5 is the paint's edge: a decal blends, so the mask is sharpened to a ~1 mm soft edge, not clipped.
+		UMaterialExpressionCustom* Edge = AddNode<UMaterialExpressionCustom>(Material, -150, 300);
+		Edge->Description = TEXT("FTRoadPaintEdge");
+		Edge->OutputType = CMOT_Float1;
+		Edge->Code = TEXT("return saturate((M - 0.5) * 12.0 + 0.5);");
+		Edge->Inputs.Reset();
+		FCustomInput& In = Edge->Inputs.AddDefaulted_GetRef();
+		In.InputName = TEXT("M");
+		In.Input.Connect(2, Custom);
+		Inputs->Opacity.Connect(0, Edge);
+		Material->PreEditChange(nullptr);
+		Material->PostEditChange();
+		return Material;
+	}
 	Inputs->OpacityMask.Connect(2, Custom);
 	// The normal is world space (the wear kinds pass the vertex normal through).
 	Material->bTangentSpaceNormal = false;
@@ -266,9 +293,10 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 		return;
 	}
 
-	UMaterialInterface* const Mats[1] = {BuildMaterial(Package)};
+	UMaterialInterface* const PaintMats[1] = {BuildMaterial(Package, true)};
+	UMaterialInterface* const WearMats[1] = {BuildMaterial(Package, false)};
 	float Data[ftcore::kRoadDecalData] = {};
-	const auto Place = [&](const ftcore::RoadDecal& D, const FFTCellOptions& Options) {
+	const auto Place = [&](const ftcore::RoadDecal& D, TArrayView<UMaterialInterface* const> Mats, const FFTCellOptions& Options) {
 		// The plane lies on the decal's top face: its centre over (cx, cy) at top, turned to its grade as the road's
 		// cubes are (massingCubePose), 1 m stretched to its size along the slope.
 		const ftcore::MassingBox Box = ftcore::roadDecalBox(D, kPoseDepth);
@@ -279,21 +307,21 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 		ftcore::roadDecalData(D, Data);
 		Cells.Add(Plate, Mats, Transform, TArrayView<const float>(Data, static_cast<int32>(ftcore::kRoadDecalData)), EFTCellKind::NoCollide, Options);
 	};
-	// Paint is drawn at any distance and stays in the ray-traced scene (a reflected road shows its lines), as the boxes
-	// were; flat, it casts no shadow.
+	// Paint is a mesh decal drawn at any distance. A decal has no surface of its own, so it casts no shadow and stays
+	// out of the ray-traced scene (a road seen in a ray-traced reflection shows no lines).
 	FFTCellOptions PaintOptions;
 	PaintOptions.Cull = EFTCellCull::None;
 	PaintOptions.bCastShadow = false;
-	PaintOptions.bRayTraced = true;
+	PaintOptions.bRayTraced = false;
 	PaintOptions.Tag = TEXT("FTRoadPaint");
 	PaintOptions.Label = TEXT("RoadPaint");
 	for (const ftcore::RoadDecal& D : Paint)
 	{
-		Place(D, PaintOptions);
+		Place(D, PaintMats, PaintOptions);
 	}
 	using ftcore::RoadDecalKind;
 	const auto PaintOf = [&PaintCounts](RoadDecalKind K) { return static_cast<int32>(PaintCounts.perKind[static_cast<size_t>(K)]); };
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road paint: %d flat plates (%d triangles; as boxes they were %d): %d %s, %d %s, "
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road paint: %d mesh-decal plates (%d triangles; as boxes they were %d): %d %s, %d %s, "
 		"%d %s, %d %s. No arrows or words: the roads paint none."),
 		static_cast<int32>(Paint.size()), static_cast<int32>(Paint.size()) * 2, static_cast<int32>(Paint.size()) * 12,
 		PaintOf(RoadDecalKind::LineWhite), kKindNames[static_cast<size_t>(RoadDecalKind::LineWhite)],
@@ -316,7 +344,7 @@ void FTBuildDecals::Lay(UPackage* Package, FFTCellInstancer& Cells, const std::v
 	Options.Label = TEXT("RoadDecal");
 	for (const ftcore::RoadDecal& D : Decals)
 	{
-		Place(D, Options);
+		Place(D, WearMats, Options);
 	}
 	const double Area = Counts.asphaltM2 + Counts.pavementM2;
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -RoadDecals=%.2f: %d decals on %d slabs (%.0f m2 carriageway, %.0f m2 pavement, "

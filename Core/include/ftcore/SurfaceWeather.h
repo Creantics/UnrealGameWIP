@@ -86,6 +86,15 @@ struct StreetSurfaceSpec {
     float jointWideM = 0.02f;
     float sealDarken = 0.5f;             // albedo multiplier on tar seal (joints and cracks)
     float crackScaleM = 3.0f;            // sealed-crack noise cell
+    // Asphalt detail tile (SurfaceWeatherOptions::streetDetail): a baked 1 m tile of stones and binder, world-mapped on
+    // the asphalt; it replaces the procedural aggregate near by (the mips carry it to its mean far off).
+    float detailTileM = 1.0f;            // the tile's side in the world
+    float detailAlbedoMean = 0.11f;      // the albedo map's linear luminance mean (the tile adds grain, not tone)
+    float detailRoughMean = 0.833f;      // the roughness channel's mean
+    float detailTone = 1.0f;             // share of the tile's albedo ratio taken into the tone
+    float detailSlope = 0.5f;            // share of the tile's true slope taken into the normal
+    float detailRough = 0.6f;            // share of the tile's roughness ratio taken
+    float detailAO = 0.7f;               // share of the tile's cavity AO taken
     float tileM = 0.4f;                  // pavement tile
     float tileJointM = 0.005f;           // half a joint
     float tileBevelM = 0.008f;
@@ -217,6 +226,7 @@ struct SurfaceWeatherOptions {
     bool topGrime = true;    // dirt along a ground slab's top edges (needs boxFrame)
     bool street = false;     // the street layer, by a Street input (needs boxFrame)
     bool jointDepth = false; // the street's joints as real recesses, by ViewVec and JointDepth inputs (needs street)
+    bool streetDetail = false; // the asphalt's baked detail tile, by DetAlb, DetNrm and DetRA texture inputs (needs street)
 };
 
 // 0..1, how up-facing a pixel is from its vertex normal's world z.
@@ -244,6 +254,11 @@ FTCORE_API float weatherAlbedoScale(int channel, float soak, float puddle, float
 // cm, from the pixel to the camera, not normalised) and JointDepth (0..1, a run-time switch). Returns the albedo;
 // outputs NormalOut, RoughOut, AOOut. At Street 0 and Wetness 0, NormalOut is the Normal input, so a mesh's own normal
 // stays as it was; at JointDepth 0 every output is what the node gives without jointDepth.
+//
+// streetDetail: texture-object inputs DetAlb (sRGB albedo), DetNrm (DirectX normal map) and DetRA (linear: roughness in
+// red, AO in green), all on a detailTileM tile mapped on the world's plan. On asphalt (Street 1) the tile's albedo over
+// detailAlbedoMean scales the tone, its slope (detailSlope of it) joins the normal, its roughness over detailRoughMean
+// the roughness, and its AO the AO; the procedural aggregate's near terms are left out.
 //
 // jointDepth: pavement tiles, lane pavers and kerb stones get joints paveJointDepthM, paverJointDepthM and
 // kerbJointDepthM deep (each joint's width and depth varied by its hash and a noise along it) with wide, convex

@@ -6,7 +6,11 @@
 #if WITH_EDITOR
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
+#include "ImageUtils.h"
+#include "Materials/MaterialExpressionTextureObject.h"
+#include "Misc/FileHelper.h"
 #include "FTJointCollection.h"
 #include "FTText.h"
 #include "HAL/FileManager.h"
@@ -136,13 +140,79 @@ void AddWeatherInput(UMaterialExpressionCustom* Custom, FName Name, UMaterialExp
 // "Street" (group Weather, 0; the road tints set it, StreetKind) turns on the node's street layer: aggregate, wheel paths,
 // joints, tiles, kerb stones, worn paint. The node's normal (world space) is the master's: the mesh's vertex normal
 // wherever Street is 0 and the ground is dry, so everything else looks as before. Its AO is the node's.
+// The asphalt detail tile's maps (-StreetDetail): albedo, normal, roughness/AO, in the street node's input order.
+struct FDetailMap
+{
+	const TCHAR* File;
+	const TCHAR* Asset;
+	const TCHAR* Input;
+	bool bSRGB;
+	TextureCompressionSettings Compression;
+	EMaterialSamplerType Sampler;
+};
+const FDetailMap kDetailMaps[] = {
+	{TEXT("street_detail_D.jpg"), TEXT("/Game/Look/T_StreetDetail_D"), TEXT("DetAlb"), true, TC_Default, SAMPLERTYPE_Color},
+	{TEXT("street_detail_N.jpg"), TEXT("/Game/Look/T_StreetDetail_N"), TEXT("DetNrm"), false, TC_Normalmap, SAMPLERTYPE_Normal},
+	{TEXT("street_detail_RA.jpg"), TEXT("/Game/Look/T_StreetDetail_RA"), TEXT("DetRA"), false, TC_Masks, SAMPLERTYPE_Masks},
+};
+constexpr int32 kDetailMapCount = UE_ARRAY_COUNT(kDetailMaps);
+
+UTexture2D* LoadDetail(const FDetailMap& Map)
+{
+	return LoadObject<UTexture2D>(nullptr, *(FString(Map.Asset) + TEXT(".") + FPackageName::GetShortName(Map.Asset)), nullptr,
+		LOAD_NoWarn | LOAD_Quiet);
+}
+
+// Imports one map from Dir, replacing an earlier import in place. Null (and an error) if it can't be read or saved.
+UTexture2D* ImportDetail(const FString& Dir, const FDetailMap& Map)
+{
+	const FString File = Dir / Map.File;
+	TArray<uint8> Bytes;
+	FImage Image;
+	if (!FFileHelper::LoadFileToArray(Bytes, *File) || !FImageUtils::DecompressImage(Bytes.GetData(), Bytes.Num(), Image) ||
+		Image.Format != ERawImageFormat::BGRA8)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildWorldMaterials -StreetDetail: couldn't read %s as an 8-bit colour JPEG."), *File);
+		return nullptr;
+	}
+	UPackage* Package = CreatePackage(Map.Asset);
+	const FString Name = FPackageName::GetShortName(Map.Asset);
+	UTexture2D* Texture = FindObject<UTexture2D>(Package, *Name);
+	if (!Texture)
+	{
+		Texture = NewObject<UTexture2D>(Package, *Name, RF_Public | RF_Standalone);
+	}
+	Texture->PreEditChange(nullptr);
+	Texture->Source.InitWithCompressedSourceData(Image.SizeX, Image.SizeY, 1, TSF_BGRA8,
+		TArrayView64<uint8>(Bytes.GetData(), Bytes.Num()), ETextureSourceCompressionFormat::TSCF_JPEG);
+	Texture->SRGB = Map.bSRGB;
+	Texture->CompressionSettings = Map.Compression;
+	Texture->LODGroup = TEXTUREGROUP_World;
+	// A world projection doesn't use the mesh's UVs, which the streamer judges a texture's need by: load it whole.
+	Texture->NeverStream = true;
+	Texture->PostEditChange();
+	FAssetRegistryModule::AssetCreated(Texture);
+	FSavePackageArgs Save;
+	Save.TopLevelFlags = RF_Public | RF_Standalone;
+	const FString Out = FPackageName::LongPackageNameToFilename(Map.Asset, FPackageName::GetAssetPackageExtension());
+	if (!UPackage::SavePackage(Package, Texture, *Out, Save))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildWorldMaterials -StreetDetail: couldn't save %s."), *Out);
+		return nullptr;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildWorldMaterials -StreetDetail: imported %s (%d x %d)."), Map.Asset, Image.SizeX,
+		Image.SizeY);
+	return Texture;
+}
+
 void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMaterialExpressionWorldPosition* WorldPos,
-	UMaterialParameterCollection* Look)
+	UMaterialParameterCollection* Look, UTexture2D* const* Detail)
 {
 	ftcore::SurfaceWeatherOptions Options;
 	Options.grime = false;
 	Options.street = true;
 	Options.jointDepth = true;
+	Options.streetDetail = Detail != nullptr;
 	UMaterialExpressionCollectionParameter* Wetness = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 600);
 	Wetness->Collection = Look;
 	Wetness->ParameterName = TEXT("Wetness");
@@ -197,6 +267,14 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 		One->R = 1.f;
 		AddWeatherInput(Weather, TEXT("JointDepth"), One, 0);
 	}
+	// The asphalt detail tile: texture objects, so the node samples them itself (Texture2DSample, ray-tracing safe).
+	for (int32 M = 0; Detail && M < kDetailMapCount; ++M)
+	{
+		UMaterialExpressionTextureObject* Tex = AddExpression<UMaterialExpressionTextureObject>(Material, -900, 1700 + 100 * M);
+		Tex->Texture = Detail[M];
+		Tex->SamplerType = kDetailMaps[M].Sampler;
+		AddWeatherInput(Weather, kDetailMaps[M].Input, Tex, 0);
+	}
 	const TCHAR* const Outputs[] = {TEXT("NormalOut"), TEXT("RoughOut"), TEXT("AOOut")};
 	const ECustomMaterialOutputType Types[] = {CMOT_Float3, CMOT_Float1, CMOT_Float1};
 	for (int32 O = 0; O < 3; ++O)
@@ -217,7 +295,7 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 }
 
 // Look (-Weather): the weather node over the surface.
-UMaterial* BuildSurfaceMaterial(UPackage* Package, UMaterialParameterCollection* Look)
+UMaterial* BuildSurfaceMaterial(UPackage* Package, UMaterialParameterCollection* Look, UTexture2D* const* Detail)
 {
 	UMaterial* Material = NewObject<UMaterial>(Package, FName(FPackageName::GetShortName(Package->GetName())),
 		RF_Public | RF_Standalone | RF_Transactional);
@@ -257,7 +335,7 @@ UMaterial* BuildSurfaceMaterial(UPackage* Package, UMaterialParameterCollection*
 	Inputs->Metallic.Connect(0, Metallic);
 	if (Look)
 	{
-		AddWeather(Material, Custom, WorldPos, Look);
+		AddWeather(Material, Custom, WorldPos, Look, Detail);
 	}
 
 	Material->PreEditChange(nullptr);
@@ -291,6 +369,25 @@ int32 UFTBuildWorldMaterialsCommandlet::Main(const FString& Params)
 			return 1;
 		}
 	}
+	// The asphalt detail tile: -StreetDetail=<dir> (re)imports it; with -Weather it is used whenever all three are in Content.
+	UTexture2D* DetailMaps[FTWorldMaterialsBuild::kDetailMapCount] = {};
+	bool bDetail = Look != nullptr;
+	FString DetailDir;
+	const bool bImport = FParse::Value(*Params, TEXT("StreetDetail="), DetailDir);
+	for (int32 M = 0; M < FTWorldMaterialsBuild::kDetailMapCount; ++M)
+	{
+		const FTWorldMaterialsBuild::FDetailMap& Map = FTWorldMaterialsBuild::kDetailMaps[M];
+		DetailMaps[M] = bImport ? FTWorldMaterialsBuild::ImportDetail(DetailDir, Map) : FTWorldMaterialsBuild::LoadDetail(Map);
+		if (bImport && !DetailMaps[M])
+		{
+			return 1;
+		}
+		bDetail = bDetail && DetailMaps[M] != nullptr;
+	}
+	if (Look)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildWorldMaterials: asphalt detail tile %s."), bDetail ? TEXT("on") : TEXT("off (not imported)"));
+	}
 	// Start from nothing: replace the file up front, before anything loads the old asset.
 	const FString File = FTWorldMaterialsBuild::PackageFile(FTScene::SurfaceMaterial);
 	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
@@ -301,7 +398,7 @@ int32 UFTBuildWorldMaterialsCommandlet::Main(const FString& Params)
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(File), true);
 
 	UPackage* Package = CreatePackage(FTScene::SurfaceMaterial);
-	UMaterial* Material = FTWorldMaterialsBuild::BuildSurfaceMaterial(Package, Look);
+	UMaterial* Material = FTWorldMaterialsBuild::BuildSurfaceMaterial(Package, Look, bDetail ? DetailMaps : nullptr);
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	if (FT::CompileErrors(TEXT("FTBuildWorldMaterials"), Material) > 0)
 	{

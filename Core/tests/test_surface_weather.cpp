@@ -297,6 +297,35 @@ TEST_CASE("HLSL: joint depth is its own option; off, the node is as it was") {
     }
 }
 
+TEST_CASE("HLSL: the asphalt detail tile is its own option and replaces the aggregate's near terms") {
+    const SurfaceWeatherSpec spec;
+    SurfaceWeatherOptions plain;
+    plain.grime = false;
+    plain.street = true;
+    const std::string off = surfaceWeatherHlsl(spec, plain);
+    for (const char* name : {"DetAlb", "DetNrm", "DetRA", "DetAO", "DUv"}) CHECK(off.find(name) == std::string::npos);
+    CHECK(off.find("float AgF = Fine;") != std::string::npos);
+    // Without the street layer the option changes nothing.
+    SurfaceWeatherOptions noStreet;
+    noStreet.streetDetail = true;
+    CHECK(surfaceWeatherHlsl(spec, noStreet) == surfaceWeatherHlsl(spec, SurfaceWeatherOptions{}));
+
+    SurfaceWeatherOptions on = plain;
+    on.streetDetail = true;
+    const std::string det = surfaceWeatherHlsl(spec, on);
+    for (const char* name : {"float DetAO = 1.0;", "float AgF = 0.0;", "Texture2DSample(DetAlb, DetAlbSampler, DUv)",
+                             "UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv))",
+                             "Texture2DSample(DetRA, DetRASampler, DUv)", "A *= DetAO;"})
+        CHECK(det.find(name) != std::string::npos);
+    // Declared once before the street block, multiplied into the AO once, sampled in the asphalt kind only.
+    CHECK(countOf(det, "float DetAO") == 1);
+    CHECK(countOf(det, "A *= DetAO;") == 1);
+    CHECK(countOf(det, "Texture2DSample(DetAlb") == 1);
+    // Ray-tracing safe: no screen derivatives added.
+    CHECK(countOf(det, "fwidth") == countOf(off, "fwidth"));
+    for (const char* name : {"ddx", "ddy"}) CHECK(det.find(name) == std::string::npos);
+}
+
 TEST_CASE("joint depth: depths, an imperfect grid and its shares") {
     const StreetSurfaceSpec st;
     CHECK(st.paveJointDepthM >= 0.005f);
