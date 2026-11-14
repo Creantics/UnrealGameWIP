@@ -98,13 +98,14 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
 }
 
 // A new tuning field must be added to the three helpers below. Two tripwires: the size, and in each helper's own body
-// a structured binding of exactly the current 14 members, which fails to compile when a member is added or removed
+// a structured binding of exactly the current 20 members, which fails to compile when a member is added or removed
 // (padding cannot hide it).
-static_assert(sizeof(HallucinationTuning) == 13 * sizeof(float) + 8, "add the new field to the tuning helpers");
+static_assert(sizeof(HallucinationTuning) == 19 * sizeof(float) + 8, "add the new field to the tuning helpers");
 
 // Every tuning field away from its default.
 void dirtyAll(HallucinationTuning& t) {
-    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = t; // 14 members
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19] =
+        t; // 20 members
     t.holdSeconds = 1.25f;
     t.expireSeconds = 11.f;
     t.gapSeconds = 5.f;
@@ -118,23 +119,33 @@ void dirtyAll(HallucinationTuning& t) {
     t.counselCooldownSeconds = 0.25f;
     t.proxyReactSeconds = 4.5f;
     t.escrowDelaySeconds = 12.f;
+    t.refuseOpenMinHold = 0.5f;
+    t.refuseOpenBase = 7.f;
+    t.refuseOpenPerSecond = 0.75f;
+    t.refuseOpenHoldCap = 9.f;
+    t.heldHealthCost = 0.6f;
+    t.heldShutSeconds = 33.f;
     t.actFloors.fill(IntensityBand::High);
 }
 
 bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
-    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = a; // 14 members
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19] =
+        a; // 20 members
     return a.holdSeconds == b.holdSeconds && a.expireSeconds == b.expireSeconds && a.gapSeconds == b.gapSeconds &&
            a.switchSeconds == b.switchSeconds && a.refuseSeconds == b.refuseSeconds &&
            a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
            a.recentSeconds == b.recentSeconds && a.fewerGapScale == b.fewerGapScale &&
            a.lonePoolFloor == b.lonePoolFloor && a.counselCooldownSeconds == b.counselCooldownSeconds &&
            a.proxyReactSeconds == b.proxyReactSeconds && a.escrowDelaySeconds == b.escrowDelaySeconds &&
-           a.actFloors == b.actFloors;
+           a.refuseOpenMinHold == b.refuseOpenMinHold && a.refuseOpenBase == b.refuseOpenBase &&
+           a.refuseOpenPerSecond == b.refuseOpenPerSecond && a.refuseOpenHoldCap == b.refuseOpenHoldCap &&
+           a.heldHealthCost == b.heldHealthCost && a.heldShutSeconds == b.heldShutSeconds && a.actFloors == b.actFloors;
 }
 
 // Each field of `a` differs from `b`'s.
 bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
-    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = a; // 14 members
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15, f16, f17, f18, f19] =
+        a; // 20 members
     bool floorsDiffer = true;
     for (std::size_t i = 0; i < a.actFloors.size(); ++i) floorsDiffer = floorsDiffer && a.actFloors[i] != b.actFloors[i];
     return a.holdSeconds != b.holdSeconds && a.expireSeconds != b.expireSeconds && a.gapSeconds != b.gapSeconds &&
@@ -142,7 +153,10 @@ bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.refusalCooldownSeconds != b.refusalCooldownSeconds && a.pullSeconds != b.pullSeconds &&
            a.recentSeconds != b.recentSeconds && a.fewerGapScale != b.fewerGapScale &&
            a.lonePoolFloor != b.lonePoolFloor && a.counselCooldownSeconds != b.counselCooldownSeconds &&
-           a.proxyReactSeconds != b.proxyReactSeconds && a.escrowDelaySeconds != b.escrowDelaySeconds && floorsDiffer;
+           a.proxyReactSeconds != b.proxyReactSeconds && a.escrowDelaySeconds != b.escrowDelaySeconds &&
+           a.refuseOpenMinHold != b.refuseOpenMinHold && a.refuseOpenBase != b.refuseOpenBase &&
+           a.refuseOpenPerSecond != b.refuseOpenPerSecond && a.refuseOpenHoldCap != b.refuseOpenHoldCap &&
+           a.heldHealthCost != b.heldHealthCost && a.heldShutSeconds != b.heldShutSeconds && floorsDiffer;
 }
 
 } // namespace
@@ -721,7 +735,8 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     HallucinationTuning o;
     CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
         "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,"lonePoolFloor":50,
-        "counselCooldownSeconds":1,"proxyReactSeconds":6,"escrowDelaySeconds":30,"actFloors":["low","low","mid","mid","high"]})", o, &err));
+        "counselCooldownSeconds":1,"proxyReactSeconds":6,"escrowDelaySeconds":30,"refuseOpenMinHold":0.5,"refuseOpenBase":3,"refuseOpenPerSecond":2,
+        "refuseOpenHoldCap":4,"heldHealthCost":0.5,"heldShutSeconds":20,"actFloors":["low","low","mid","mid","high"]})", o, &err));
     CHECK(o.holdSeconds == 2.f);
     CHECK(o.expireSeconds == 40.f);
     CHECK(o.gapSeconds == 60.f);
@@ -735,6 +750,12 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(o.counselCooldownSeconds == 1.f);
     CHECK(o.proxyReactSeconds == 6.f);
     CHECK(o.escrowDelaySeconds == 30.f);
+    CHECK(o.refuseOpenMinHold == 0.5f);
+    CHECK(o.refuseOpenBase == 3.f);
+    CHECK(o.refuseOpenPerSecond == 2.f);
+    CHECK(o.refuseOpenHoldCap == 4.f);
+    CHECK(o.heldHealthCost == 0.5f);
+    CHECK(o.heldShutSeconds == 20.f);
     CHECK(o.actFloors[0] == IntensityBand::Low);
     CHECK(o.actFloors[2] == IntensityBand::Mid);
     CHECK(o.actFloors[4] == IntensityBand::High);
@@ -783,6 +804,20 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"proxyReactSeconds":6.5})",
         R"({"version":1,"escrowDelaySeconds":-1})",
         R"({"version":1,"escrowDelaySeconds":31})",
+        R"({"version":1,"refuseOpenMinHold":-1})",
+        R"({"version":1,"refuseOpenMinHold":31})",
+        R"({"version":1,"refuseOpenBase":-1})",
+        R"({"version":1,"refuseOpenBase":31})",
+        R"({"version":1,"refuseOpenPerSecond":-1})",
+        R"({"version":1,"refuseOpenPerSecond":11})",
+        R"({"version":1,"refuseOpenHoldCap":-1})",
+        R"({"version":1,"refuseOpenHoldCap":31})",
+        R"({"version":1,"refuseOpenHoldCap":0.5})",
+        R"({"version":1,"refuseOpenMinHold":2,"refuseOpenHoldCap":1.5})",
+        R"({"version":1,"heldHealthCost":-0.1})",
+        R"({"version":1,"heldHealthCost":1.5})",
+        R"({"version":1,"heldShutSeconds":-1})",
+        R"({"version":1,"heldShutSeconds":121})",
     };
     for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
         dirtyAll(h);
@@ -1337,7 +1372,7 @@ TEST_CASE("Escrow's wait is shown: waiting with the seconds left from entry to 5
     CHECK_FALSE(n.h.escrowWaiting());
 }
 
-TEST_CASE("a tuning file without the Brief link fields keeps their defaults") {
+TEST_CASE("a tuning file without the Brief link or price fields keeps their defaults") {
     HallucinationTuning h;
     std::string err;
     REQUIRE(importHallucinationTuning(R"({"version":1,"holdSeconds":3,"refusalCooldownSeconds":5})", h, &err));
@@ -1346,4 +1381,294 @@ TEST_CASE("a tuning file without the Brief link fields keeps their defaults") {
     CHECK(h.counselCooldownSeconds == d.counselCooldownSeconds);
     CHECK(h.proxyReactSeconds == d.proxyReactSeconds);
     CHECK(h.escrowDelaySeconds == d.escrowDelaySeconds);
+    CHECK(h.refuseOpenMinHold == d.refuseOpenMinHold);
+    CHECK(h.refuseOpenBase == d.refuseOpenBase);
+    CHECK(h.refuseOpenPerSecond == d.refuseOpenPerSecond);
+    CHECK(h.refuseOpenHoldCap == d.refuseOpenHoldCap);
+    CHECK(h.heldHealthCost == d.heldHealthCost);
+    CHECK(h.heldShutSeconds == d.heldShutSeconds);
+    CHECK(d.refuseOpenMinHold == 1.f);
+    CHECK(d.refuseOpenBase == 2.f);
+    CHECK(d.refuseOpenPerSecond == 1.5f);
+    CHECK(d.refuseOpenHoldCap == 3.5f);
+    CHECK(d.heldHealthCost == 0.25f);
+    CHECK(d.heldShutSeconds == 10.f);
+}
+
+namespace {
+// Accepting from the start, the steps `dt` long, then the refusal pressed for 0.5 s (two steps of 0.25 s) while
+// still inside the offer: it closes with `hold` seconds of hold built. Returns the weak point time it opened.
+float opensAfter(double hold, double dt, Rig& r) {
+    REQUIRE(r.start(true) == Start::Started);
+    r.in.accepting = true;
+    const int n = static_cast<int>(std::lround((hold - 0.5) / dt));
+    for (int i = 0; i < n; ++i) r.step(dt);
+    const int refusedBefore = r.saw(Ev::Refused);
+    const int heldBefore = r.saw(Ev::Held);
+    r.in.refuse = true;
+    r.step(0.25);
+    CHECK(r.saw(Ev::Refused) == refusedBefore);
+    r.step(0.25);
+    REQUIRE(r.saw(Ev::Refused) == refusedBefore + 1);
+    CHECK(r.saw(Ev::Held) == heldBefore);
+    CHECK(r.h.heldCost() == 0.f);
+    return r.h.weakPointOpenFor();
+}
+} // namespace
+
+TEST_CASE("the price: a refusal opens the weak point 2 s at 1 s of hold, 1.5 s more a second, to 5.75 s at 3.5 s") {
+    struct Case {
+        double hold, dt;
+        float opens;
+    };
+    for (const Case c : {Case{0.9, 0.1, 0.f}, Case{1.0, 0.25, 2.f}, Case{2.0, 0.25, 3.5f}, Case{3.5, 0.25, 5.75f},
+                         Case{3.9, 0.1, 5.75f}}) {
+        CAPTURE(c.hold);
+        Rig r;
+        CHECK(opensAfter(c.hold, c.dt, r) == doctest::Approx(c.opens));
+        CHECK(r.h.now() == doctest::Approx(c.hold));
+        CHECK(r.h.weakPointShutFor() == 0.f);
+    }
+    const Hallucination h; // linear in between, no steps
+    CHECK(h.refusalOpens(0.99f) == 0.f);
+    CHECK(h.refusalOpens(1.f) == doctest::Approx(2.0));
+    CHECK(h.refusalOpens(1.5f) == doctest::Approx(2.75));
+    CHECK(h.refusalOpens(2.5f) == doctest::Approx(4.25));
+    CHECK(h.refusalOpens(3.25f) == doctest::Approx(5.375));
+    CHECK(h.refusalOpens(4.f) == doctest::Approx(5.75));
+
+    Rig o; // the open time counts down on every step, the offer over or not
+    REQUIRE(opensAfter(2.0, 0.25, o) == doctest::Approx(3.5));
+    o.in.refuse = false;
+    o.in.accepting = false;
+    o.step(0.25);
+    CHECK(o.h.weakPointOpenFor() == doctest::Approx(3.25));
+    o.run(3.25);
+    CHECK(o.h.weakPointOpenFor() == 0.f);
+    o.step(0.25);
+    CHECK(o.h.weakPointOpenFor() == 0.f);
+
+    Rig t; // a refusal closing on the step the hold would fill: Refused wins, no Held, no cost, 5.75 s open
+    CHECK(opensAfter(4.0, 0.25, t) == doctest::Approx(5.75));
+    CHECK(t.h.weakPointShutFor() == 0.f);
+
+    Rig w; // a turn away is a Refused that opens nothing
+    REQUIRE(w.start() == Start::Started);
+    w.in.accepting = true;
+    w.run(2.0);
+    w.in.accepting = false;
+    w.in.turnedAway = true;
+    w.step(0.25);
+    REQUIRE(w.saw(Ev::Refused) == 1);
+    CHECK(w.h.weakPointOpenFor() == 0.f);
+
+    Rig s; // stepping out drops the hold built: a refusal after it counts only the hold since
+    REQUIRE(s.start() == Start::Started);
+    s.in.accepting = true;
+    s.run(3.0);
+    s.in.accepting = false;
+    s.step(0.25);
+    s.in.accepting = true;
+    s.run(0.5);
+    s.in.refuse = true;
+    s.run(0.5);
+    REQUIRE(s.saw(Ev::Refused) == 1);
+    CHECK(s.h.weakPointOpenFor() == doctest::Approx(2.0));
+}
+
+TEST_CASE("the price: Held costs 25% of max health once and shuts the weak point 10 s; refusing a held lead opens nothing") {
+    Rig r; // in a fight with a Proxy partner: Held at 4 s, the partner's refusal at 5.5 s
+    r.in.partnerPresent = true;
+    r.in.inFight = true;
+    r.in.partnerBrief = BriefId::Proxy;
+    r.in.partnerAble = true;
+    REQUIRE(r.start() == Start::Started);
+    r.in.accepting = true;
+    r.run(3.75);
+    CHECK(r.h.heldCost() == 0.f);
+    r.step(0.25);
+    REQUIRE(r.h.held());
+    CHECK(r.h.heldCost() == doctest::Approx(0.25));
+    CHECK(r.h.weakPointShutFor() == doctest::Approx(10.0));
+    CHECK(r.h.weakPointOpenFor() == 0.f);
+    CHECK(hallucinationHeldDamage(r.h, 144) == 36);
+    CHECK(hallucinationHeldDamage(r.h, 0) == 0);
+    float cost = r.h.heldCost();
+    r.in.accepting = false;
+    for (int i = 0; i < 6 && r.saw(Ev::Refused) == 0; ++i) {
+        r.step(0.25);
+        cost += r.h.heldCost();
+        CHECK(hallucinationHeldDamage(r.h, 144) == 0);
+    }
+    REQUIRE(r.saw(Ev::Refused) == 1); // the Proxy partner's, at 5.5 s
+    CHECK(r.h.now() == doctest::Approx(5.5));
+    CHECK(cost == doctest::Approx(0.25)); // once
+    CHECK(r.h.weakPointOpenFor() == 0.f);
+    CHECK(r.h.weakPointShutFor() == doctest::Approx(8.5));
+    r.run(8.5);
+    CHECK(r.h.weakPointShutFor() == 0.f);
+    CHECK(r.saw(Ev::Held) == 1);
+
+    // The shut lapsed while the lead is still held (no partner, 2 s shut): the lead's own refusal opens nothing.
+    HallucinationTuning t;
+    t.heldShutSeconds = 2.f;
+    Rig h;
+    h.h = Hallucination(t);
+    h.step(0.0);
+    REQUIRE(h.start() == Start::Started);
+    h.in.accepting = true;
+    h.run(4.0);
+    REQUIRE(h.h.held());
+    h.in.accepting = false;
+    h.run(3.0);
+    REQUIRE(h.h.held());
+    REQUIRE(h.h.weakPointShutFor() == 0.f);
+    h.in.refuse = true;
+    h.run(0.5);
+    REQUIRE(h.saw(Ev::Refused) == 1);
+    CHECK(h.h.weakPointOpenFor() == 0.f);
+    CHECK(h.saw(Ev::Held) == 1);
+}
+
+TEST_CASE("the price: a shut weak point stays shut through a later refusal; Held closes an open one") {
+    Rig r; // Held at 4 s, pulled at 5 s; a scripted offer refused at 7 s while shut (until 14 s) opens nothing
+    r.in.partnerPresent = true;
+    REQUIRE(r.start() == Start::Started);
+    r.in.accepting = true;
+    r.run(4.0);
+    REQUIRE(r.h.held());
+    r.in.accepting = false;
+    r.run(0.75);
+    r.in.partnerPull = true;
+    r.step(0.25);
+    REQUIRE(r.saw(Ev::PulledBack) == 1);
+    r.in.partnerPull = false;
+    REQUIRE(r.start(true) == Start::Started);
+    r.in.accepting = true;
+    r.run(1.5);
+    r.in.refuse = true;
+    r.run(0.5); // 2 s of hold
+    REQUIRE(r.saw(Ev::Refused) == 1);
+    CHECK(r.h.weakPointOpenFor() == 0.f);
+    CHECK(r.h.weakPointShutFor() == doctest::Approx(7.0));
+    r.in.refuse = false;
+    r.in.accepting = false;
+    r.run(7.25); // the shut is over at 14 s
+    CHECK(r.h.weakPointShutFor() == 0.f);
+    REQUIRE(r.start(true) == Start::Started);
+    r.in.accepting = true;
+    r.run(1.5);
+    r.in.refuse = true;
+    r.run(0.5);
+    REQUIRE(r.saw(Ev::Refused) == 2);
+    CHECK(r.h.weakPointOpenFor() == doctest::Approx(3.5));
+
+    Rig o; // opened 5.75 s at 3.5 s; a scripted offer held 4 s later closes it with 1.75 s still to run
+    REQUIRE(opensAfter(3.5, 0.25, o) == doctest::Approx(5.75));
+    o.in.refuse = false;
+    REQUIRE(o.start(true) == Start::Started);
+    o.in.accepting = true;
+    o.run(3.75);
+    CHECK(o.h.weakPointOpenFor() == doctest::Approx(2.0));
+    o.step(0.25);
+    REQUIRE(o.h.held());
+    CHECK(o.h.weakPointOpenFor() == 0.f);
+    CHECK(o.h.weakPointShutFor() == doctest::Approx(10.0));
+}
+
+TEST_CASE("the price with Escrow: the wait is not hold, so entry at 0 and a refusal at 6.5 s count 1.5 s (2.75 s open)") {
+    Rig r;
+    r.in.brief = BriefId::Escrow;
+    r.step(0.0);
+    REQUIRE(r.start() == Start::Started);
+    r.in.accepting = true;
+    r.run(6.0);
+    r.in.refuse = true;
+    r.run(0.5);
+    REQUIRE(r.saw(Ev::Refused) == 1);
+    CHECK(r.h.now() == doctest::Approx(6.5));
+    CHECK(r.h.weakPointOpenFor() == doctest::Approx(2.75));
+
+    Rig w; // a refusal closing inside the wait has built no hold: nothing
+    w.in.brief = BriefId::Escrow;
+    w.step(0.0);
+    REQUIRE(w.start() == Start::Started);
+    w.in.accepting = true;
+    w.run(4.0);
+    w.in.refuse = true;
+    w.run(0.5);
+    REQUIRE(w.saw(Ev::Refused) == 1);
+    CHECK(w.h.weakPointOpenFor() == 0.f);
+
+    Rig m; // a refusal closing 0.25 s past the wait: 0.25 s of hold, under the minimum
+    m.in.brief = BriefId::Escrow;
+    m.step(0.0);
+    REQUIRE(m.start() == Start::Started);
+    m.in.accepting = true;
+    m.run(4.75);
+    m.in.refuse = true;
+    m.run(0.5);
+    REQUIRE(m.saw(Ev::Refused) == 1);
+    CHECK(m.h.weakPointOpenFor() == 0.f);
+}
+
+TEST_CASE("the price is outputs only: with it tuned to nothing, every event, hold, cooldown and kept press is the same") {
+    HallucinationTuning none;
+    none.refuseOpenBase = 0.f;
+    none.refuseOpenPerSecond = 0.f;
+    none.heldHealthCost = 0.f;
+    none.heldShutSeconds = 0.f;
+    Rig a;
+    Rig b;
+    b.h = Hallucination(none);
+    b.step(0.0);
+    for (Rig* r : {&a, &b}) {
+        r->in.partnerPresent = true;
+        r->in.inFight = true;
+        r->in.partnerAble = true;
+    }
+    // 0-12 s: an offer held at 4 s, then the Proxy partner's refusal; 12-20 s: a scripted one the lead refuses at
+    // 2 s of hold; 20-40 s: one held at 24 s and pulled back at 30 s, then a wrong guess at 31 s.
+    for (int i = 0; i < 160; ++i) {
+        const double t = i * 0.25;
+        for (Rig* r : {&a, &b}) {
+            if (i == 0 || i == 48 || i == 80) REQUIRE(r->start(i != 0) == Start::Started);
+            r->in.accepting = (t < 4.0) || (t >= 12.0 && t < 14.0) || (t >= 20.0 && t < 24.0);
+            r->in.refuse = (t >= 13.5 && t < 14.0) || (t >= 31.0 && t < 33.0);
+            r->in.partnerBrief = t < 20.0 ? BriefId::Proxy : BriefId::Count;
+            r->step(0.25);
+        }
+        CAPTURE(i);
+        REQUIRE(a.h.eventCount() == b.h.eventCount());
+        for (int e = 0; e < a.h.eventCount(); ++e) CHECK(a.h.events()[e].type == b.h.events()[e].type);
+        CHECK(a.h.holdLevel() == b.h.holdLevel());
+        CHECK(a.h.held() == b.h.held());
+        CHECK(a.h.refusalCooldown() == b.h.refusalCooldown());
+        CHECK(a.h.refuseKept() == b.h.refuseKept());
+        CHECK(b.h.weakPointOpenFor() == 0.f);
+        CHECK(b.h.weakPointShutFor() == 0.f);
+        CHECK(b.h.heldCost() == 0.f);
+    }
+    CHECK(a.saw(Ev::Held) == 2);
+    CHECK(a.saw(Ev::Refused) == 2);
+    CHECK(a.saw(Ev::PulledBack) == 1);
+}
+
+TEST_CASE("a host pull and a Proxy partner's close in the same step: Refused wins") {
+    Rig r;
+    r.in.partnerPresent = true;
+    r.in.partnerBrief = BriefId::Proxy;
+    r.in.partnerAble = true;
+    REQUIRE(r.start() == Start::Started);
+    r.in.accepting = true;
+    r.run(4.0);
+    REQUIRE(r.h.held());
+    r.in.accepting = false;
+    r.run(1.25); // the press runs from 5 s
+    REQUIRE(r.h.held());
+    r.in.partnerPull = true;
+    r.step(0.25); // 5.5 s: the press closes and the host's pull arrives
+    CHECK(r.saw(Ev::Refused) == 1);
+    CHECK(r.saw(Ev::PulledBack) == 0);
+    CHECK(r.h.eventCount() == 1);
 }

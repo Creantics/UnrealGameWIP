@@ -29,6 +29,15 @@
 //   For an Escrow lead the first escrowDelaySeconds inside an offer build no hold (holdLevel stays 0, so the lead
 //   is not slowed; escrowWaiting() and escrowWaitLeft() show the wait); then the hold builds over holdSeconds.
 //   Stepping out before Held drops the wait and the hold back to nothing.
+// * The price: refusing pays in exposure, so the hold must be let build first. The lead's own refusal that closes an
+//   offer before Held, with h seconds of real hold built in it (counted to the closing instant; an Escrow wait is
+//   not hold), opens the boss's weak point for refuseOpenBase + refuseOpenPerSecond x (min(h, refuseOpenHoldCap) -
+//   refuseOpenMinHold) seconds when h >= refuseOpenMinHold (2 s at 1 s of hold, 5.75 s at 3.5 s or more), and
+//   nothing below it. A refusal of a held lead (the lead's or a Proxy partner's), a turn away and a refusal while
+//   the weak point is shut open nothing. Held costs the lead heldHealthCost of max health once (heldCost(), on that
+//   step only), shuts the weak point for heldShutSeconds (an open one closes) and the fight goes on: no restart.
+//   weakPointOpenFor() and weakPointShutFor() count down on every step, offer or none. Core keeps only these numbers;
+//   the host opens and shuts the boss's weak point and takes the health.
 // * The intensity band is authored: max(the page's place band, the act's floor). Nothing accumulates.
 // * The pick is the pool's, weighted (TragedyPool.h); the lone key weighs x2 once the lead's lone Releases have
 //   pooled lonePoolFloor Load (loneWeighs).
@@ -39,9 +48,10 @@
 // Data/Unwritten/hallucination.json: { "version": 1, "holdSeconds": 4, "expireSeconds": 30, "gapSeconds": 90,
 //   "switchSeconds": 20, "refuseSeconds": 0.5, "refusalCooldownSeconds": 4, "pullSeconds": 6, "recentSeconds": 1800,
 //   "fewerGapScale": 2, "lonePoolFloor": 300, "counselCooldownSeconds": 2, "proxyReactSeconds": 1,
-//   "escrowDelaySeconds": 5,
+//   "escrowDelaySeconds": 5, "refuseOpenMinHold": 1, "refuseOpenBase": 2, "refuseOpenPerSecond": 1.5,
+//   "refuseOpenHoldCap": 3.5, "heldHealthCost": 0.25, "heldShutSeconds": 10,
 //   "actFloors": ["none", "none", "none", "low", "mid"] }
-//   (every field but version optional)
+//   (every field but version optional; refuseOpenHoldCap at least refuseOpenMinHold)
 
 #include "ftcore/Api.h"
 #include "ftcore/Brief.h"
@@ -80,6 +90,12 @@ struct HallucinationTuning {
     float counselCooldownSeconds = 2.f; // a Counsel lead's refusal cooldown: min(refusalCooldownSeconds, this)
     float proxyReactSeconds = 1.f;      // a Proxy partner starts its refusal for a held lead this long after Held
     float escrowDelaySeconds = 5.f;     // an Escrow lead's first seconds inside an offer build no hold
+    float refuseOpenMinHold = 1.f;      // seconds of hold a refusal needs to open the weak point at all
+    float refuseOpenBase = 2.f;         // seconds it opens at refuseOpenMinHold of hold ...
+    float refuseOpenPerSecond = 1.5f;   // ... plus this for each further second of hold ...
+    float refuseOpenHoldCap = 3.5f;     // ... counted up to this much hold
+    float heldHealthCost = 0.25f;       // Held costs the lead this share of max health, once
+    float heldShutSeconds = 10.f;       // and shuts the weak point this long from Held
     std::array<IntensityBand, kMaxAct + 1> actFloors{IntensityBand::None, IntensityBand::None, IntensityBand::None,
                                                      IntensityBand::Low, IntensityBand::Mid};
 };
@@ -162,6 +178,7 @@ public:
         band_ = s.band;
         shownAt_ = now_;
         hold_ = 0.f;
+        built_ = 0.f;
         heldFor_ = 0.f;
         refuseHeld_ = 0.f;
         refusal_.offer();
@@ -204,6 +221,19 @@ public:
     // An Escrow lead inside an offer, in the wait, with no hold building yet; and the seconds of it left.
     bool escrowWaiting() const { return waiting_; }
     float escrowWaitLeft() const { return waiting_ ? tuning_.escrowDelaySeconds - delay_ : 0.f; }
+    // The price. The seconds the boss's weak point stays open from a refusal, counting down (it opened on the step
+    // whose Refused left this above 0); the seconds it stays shut from Held, counting down; and Held's health cost,
+    // a share of the lead's max health, on the step Held began only (0 on every other).
+    float weakPointOpenFor() const { return openFor_; }
+    float weakPointShutFor() const { return shutFor_; }
+    float heldCost() const { return heldCost_; }
+    // The weak point time a refusal closing with `hold` seconds of hold built would open (0: none).
+    float refusalOpens(float hold) const {
+        constexpr float kSlack = 1e-4f; // a sum of steps that should be refuseOpenMinHold may fall a hair short
+        if (!(hold + kSlack >= tuning_.refuseOpenMinHold)) return 0.f;
+        const float over = std::max(0.f, std::min(hold, tuning_.refuseOpenHoldCap) - tuning_.refuseOpenMinHold);
+        return tuning_.refuseOpenBase + tuning_.refuseOpenPerSecond * over;
+    }
     ScareForm scareForm() const { return scareForm_; } // the last start's scare beat: Unpaced, not a scare
     float refusalCooldown() const { return cooldown_; }
     double now() const { return now_; }
@@ -217,6 +247,9 @@ private:
         waiting_ = false;
         now_ += dt;
         cooldown_ = std::max(0.f, cooldown_ - static_cast<float>(dt));
+        openFor_ = std::max(0.f, openFor_ - static_cast<float>(dt));
+        shutFor_ = std::max(0.f, shutFor_ - static_cast<float>(dt));
+        heldCost_ = 0.f;
         if (lead_ == kNoFighter) {
             lead_ = in.lead;
         } else if (in.lead != lead_) {
@@ -242,6 +275,9 @@ private:
             if (refuseHeld_ >= tuning_.refuseSeconds) {
                 refusal_.offerEnded();
                 cooldown_ = refusalCooldownFor(in.brief);
+                // The hold to the closing instant: this step's real hold counts too (it never reaches Held now).
+                if (!held() && !(shutFor_ > 0.f))
+                    openFor_ = refusalOpens(std::min(tuning_.holdSeconds, built_ + stepBuild(dt, in)));
                 end(HallucinationEventType::Refused);
                 return;
             }
@@ -267,14 +303,19 @@ private:
             if (!waiting) {
                 if (hold_ == 0.f) emit(HallucinationEventType::HoldBegan);
                 hold_ = std::min(1.f, hold_ + build / tuning_.holdSeconds);
+                built_ += build;
                 if (hold_ >= 1.f) {
                     heldFor_ = 0.f;
+                    heldCost_ = tuning_.heldHealthCost; // the price of a full hold, once
+                    shutFor_ = tuning_.heldShutSeconds;
+                    openFor_ = 0.f;
                     emit(HallucinationEventType::Held);
                     return;
                 }
             }
         } else {
             hold_ = 0.f;
+            built_ = 0.f;
             delay_ = 0.f;
             if (in.turnedAway) {
                 end(HallucinationEventType::Refused);
@@ -301,6 +342,14 @@ private:
         end(HallucinationEventType::Refused);
         return true;
     }
+    // The real hold this step builds for a lead inside the offer (an Escrow lead's wait taken first); 0 outside it.
+    float stepBuild(double dt, const HallucinationInput& in) const {
+        if (!in.accepting) return 0.f;
+        const float d = static_cast<float>(dt);
+        if (in.brief == BriefId::Escrow && delay_ < tuning_.escrowDelaySeconds)
+            return std::max(0.f, d - (tuning_.escrowDelaySeconds - delay_));
+        return d;
+    }
     // The refusal cooldown for a lead of Brief `b`: Counsel cuts it, never lengthens it.
     float refusalCooldownFor(BriefId b) const {
         return b == BriefId::Counsel ? std::min(tuning_.refusalCooldownSeconds, tuning_.counselCooldownSeconds)
@@ -313,6 +362,7 @@ private:
         emit(why);
         key_ = -1;
         hold_ = 0.f;
+        built_ = 0.f;
         delay_ = 0.f;
         waiting_ = false;
         proxyPress_ = 0.f;
@@ -334,6 +384,10 @@ private:
     int key_ = -1;
     IntensityBand band_ = IntensityBand::None;
     float hold_ = 0.f;
+    float built_ = 0.f; // seconds of real hold built in this offer (hold_ in seconds, summed exactly)
+    float openFor_ = 0.f;
+    float shutFor_ = 0.f;
+    float heldCost_ = 0.f;
     float heldFor_ = 0.f;
     float refuseHeld_ = 0.f;
     float cooldown_ = 0.f;
