@@ -430,18 +430,30 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	{
 		LoneGiftAt = -1.f;
 	}
-	LoneSlot = static_cast<uint8>(ftcore::SlotState::Companion);
+#else
+	bLone = false;
+#endif
+	// The third slot: the story carry's while it is a fight the story handed off and not yet settled (Companion with no
+	// carry), then -ArenaThirdSlot outside Shipping.
+	ThirdSlot = static_cast<uint8>(ftcore::SlotState::Companion);
+	{
+		const UWorld* SlotWorld = GetWorld();
+		const UFTGameInstance* SlotInstance = SlotWorld ? SlotWorld->GetGameInstance<UFTGameInstance>() : nullptr;
+		if (SlotInstance && SlotInstance->StoryCarry.bValid && !SlotInstance->StoryCarry.bDone && SlotInstance->StoryCarry.ThirdSlot <= static_cast<uint8>(ftcore::SlotState::Hostile))
+		{
+			ThirdSlot = SlotInstance->StoryCarry.ThirdSlot;
+		}
+	}
+#if !UE_BUILD_SHIPPING
 	{
 		FString Slot;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaThirdSlot="), Slot))
 		{
-			if (Slot.Equals(TEXT("Vacant"), ESearchCase::IgnoreCase)) LoneSlot = static_cast<uint8>(ftcore::SlotState::Vacant);
-			else if (Slot.Equals(TEXT("Hostile"), ESearchCase::IgnoreCase)) LoneSlot = static_cast<uint8>(ftcore::SlotState::Hostile);
+			if (Slot.Equals(TEXT("Companion"), ESearchCase::IgnoreCase)) ThirdSlot = static_cast<uint8>(ftcore::SlotState::Companion);
+			else if (Slot.Equals(TEXT("Vacant"), ESearchCase::IgnoreCase)) ThirdSlot = static_cast<uint8>(ftcore::SlotState::Vacant);
+			else if (Slot.Equals(TEXT("Hostile"), ESearchCase::IgnoreCase)) ThirdSlot = static_cast<uint8>(ftcore::SlotState::Hostile);
 		}
 	}
-#else
-	bLone = false;
-	LoneSlot = 0;
 #endif
 	LoneTuning = ftcore::LoneTuning();
 	if (LoneWanted())
@@ -1814,11 +1826,8 @@ void UFTArenaRunner::BeginSession()
 			}
 		}
 		LoneBargainAt = -1.0;
+		SessionDef.thirdSlot = static_cast<ftcore::SlotState>(ThirdSlot);
 		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
-		if (LoneSlot != static_cast<uint8>(ftcore::SlotState::Companion))
-		{
-			Session->Get().giftSlot().setState(static_cast<ftcore::SlotState>(LoneSlot)); // begin set it Companion
-		}
 		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
 		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
 		const UWorld* World = GetWorld();
@@ -1904,6 +1913,16 @@ void UFTArenaRunner::LogProbeCheck(const ftcore::GiftResult& Result)
 bool UFTArenaRunner::IsLoneBargainDue() const
 {
 	return LoneBargainAt >= 0.0 && static_cast<double>(Fight.time()) - LoneBargainAt < kLoneBargainShow;
+}
+
+ftcore::SlotState UFTArenaRunner::GetThirdSlot() const
+{
+	return Session ? Session->Get().thirdSlot() : static_cast<ftcore::SlotState>(ThirdSlot);
+}
+
+ftcore::GiftError UFTArenaRunner::GetThirdSlotRefusal() const
+{
+	return Session ? Session->Get().thirdSlotRefusal() : ftcore::GiftError::None;
 }
 
 ftcore::LoneBargain UFTArenaRunner::GetLoneBargain() const
@@ -4497,7 +4516,7 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: LONE start %d end %d endedAt %.2f endedBy %s releases %d pooled %u giftPresses %d refused %d slot %d (pool exposed, not persisted)."),
 			bLoneAtStart ? 1 : 0, Fight.lone() ? 1 : 0, LoneEndedAt, Session ? LoneEndWord(Session->Get().loneEndedBy()) : TEXT("none"), LoneReleases,
-			Session ? Session->Get().lonePooled() : 0u, LoneGiftPresses, LoneGiftsRefused, static_cast<int32>(LoneSlot));
+			Session ? Session->Get().lonePooled() : 0u, LoneGiftPresses, LoneGiftsRefused, static_cast<int32>(ThirdSlot));
 		// The glue: while Lone nobody joined, no table began and every Release pooled (a refused gift is on the LONE line).
 		const bool bLoneOk = LoneBreaches == 0;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone %s (%d breaches, %d of %d gift presses refused)."),
@@ -4508,6 +4527,17 @@ void UFTArenaRunner::LogFeatureChecks() const
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone partner call %s (%d accepted calls while Lone, %d ended it; ended by %s)."),
 			Verdict(bCallOk, bLoneAtStart && LonePartnerCalls > 0), LonePartnerCalls, LonePartnerEnds,
 			Session ? LoneEndWord(Session->Get().loneEndedBy()) : TEXT("none"));
+	}
+	// The third slot: the session holds the fight's (carry or -ArenaThirdSlot) and its refusal matches it.
+	if (Session)
+	{
+		const ftcore::SlotState Want = static_cast<ftcore::SlotState>(ThirdSlot);
+		const ftcore::GiftError Why = GetThirdSlotRefusal();
+		const ftcore::GiftError WantWhy = Want == ftcore::SlotState::Vacant ? ftcore::GiftError::Vacant
+			: Want == ftcore::SlotState::Hostile ? ftcore::GiftError::Hostile : ftcore::GiftError::None;
+		const bool bSlotOk = GetThirdSlot() == Want && Why == WantWhy;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: third slot %s (fight %d, session %d, refusal %d)."),
+			bSlotOk ? TEXT("PASS") : TEXT("FAIL"), static_cast<int32>(Want), static_cast<int32>(GetThirdSlot()), static_cast<int32>(Why));
 	}
 	if (HallMode != 0)
 	{

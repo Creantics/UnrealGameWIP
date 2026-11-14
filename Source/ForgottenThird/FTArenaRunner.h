@@ -316,6 +316,10 @@ public:
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
+	// The third slot as the session holds it (a checkpoint keeps it), and why any gift press is refused in it now
+	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
+	ftcore::SlotState GetThirdSlot() const;
+	ftcore::GiftError GetThirdSlotRefusal() const;
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -623,9 +627,11 @@ private:
 	int32 Marks = 0;
 	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
 	int32 CappedBlows = 0; // blows the blow cap kept down this fight (-ArenaCountLift)
-	// -ArenaLone (or -ArenaThirdSlot=Vacant|Hostile, which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
+	// -ArenaLone, or a third slot that is not Companion (which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
 	bool bLone = false;
-	uint8 LoneSlot = 0;                 // ftcore::SlotState set on the third slot after the session begins
+	// The fight's third slot (ftcore::SlotState), the session's def.thirdSlot at begin: the story carry's (Companion with
+	// no carry); -ArenaThirdSlot=Companion|Vacant|Hostile overrides it outside Shipping.
+	uint8 ThirdSlot = 0;
 	ftcore::LoneTuning LoneTuning{};
 	bool bLoneAtStart = false;
 	double LoneEndedAt = -1.0;          // the fight time a given gift ended it (-1: it did not)
@@ -648,7 +654,7 @@ private:
 	bool bProbeAwaiting = false;
 	void LogProbeCheck(const ftcore::GiftResult& Result);
 	// The stance this fight begins in: chosen, or forced by the third slot.
-	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
+	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(ThirdSlot)); }
 	// The stance the session will accept for this lead (asked before the fight begins, so a refused one changes
 	// nothing: the chairs' heal charges stay).
 	bool LoneAccepted(uint8 Lead) const { return ftcore::loneAtBegin(LoneWanted(), Session != nullptr, Lead, LoneTuning); }
