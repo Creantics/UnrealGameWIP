@@ -1728,7 +1728,7 @@ void UFTArenaRunner::BeginSession()
 	CountLoadStored = CountLoadStores = Lifts = LiftSpent = Marks = KiteUnlocks = MaxJoinLoad = PartnerLoadStored = 0;
 	CappedBlows = 0;
 	LoneEndedAt = -1.0;
-	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = 0;
+	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = LonePartnerCalls = LonePartnerEnds = 0;
 	bLoneGiftDone = false;
 	LoneGift = {};
 	PartnerLoadTime = -1e9;
@@ -2043,7 +2043,16 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	}
 	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
 	{
-		Session->Press(EFTSharedAction::Count, SessionLead);
+		// The Count press is the lead calling the partner in: accepted while Lone, it ends the Lone Carry (PartnerCalled),
+		// here and nowhere else. A refused press leaves it Lone.
+		const bool bWasLone = Session->Get().lone();
+		const ftcore::SharedReply Reply = Session->Press(EFTSharedAction::Count, SessionLead);
+		if (bWasLone && Reply.accepted)
+		{
+			++LonePartnerCalls;
+			LonePartnerEnds += Session->Get().endLone(ftcore::LoneEnd::PartnerCalled) ? 1 : 0;
+			MirrorLone();
+		}
 	}
 	if (In.guard != bSessionGuard)
 	{
@@ -4473,6 +4482,12 @@ void UFTArenaRunner::LogFeatureChecks() const
 		const bool bLoneOk = LoneBreaches == 0;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone %s (%d breaches, %d of %d gift presses refused)."),
 			Verdict(bLoneOk, bLoneAtStart), LoneBreaches, LoneGiftsRefused, LoneGiftPresses);
+		// The partner's call: an accepted Count press while Lone ended it, once, with PartnerCalled. n/a with no such press.
+		const bool bCallOk = LonePartnerCalls <= 1 && LonePartnerEnds == LonePartnerCalls &&
+			(LonePartnerCalls == 0 || (Session && Session->Get().loneEndedBy() == ftcore::LoneEnd::PartnerCalled));
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone partner call %s (%d accepted calls while Lone, %d ended it; ended by %s)."),
+			Verdict(bCallOk, bLoneAtStart && LonePartnerCalls > 0), LonePartnerCalls, LonePartnerEnds,
+			Session ? LoneEndWord(Session->Get().loneEndedBy()) : TEXT("none"));
 	}
 	if (HallMode != 0)
 	{
