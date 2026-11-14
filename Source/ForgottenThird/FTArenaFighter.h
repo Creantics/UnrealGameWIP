@@ -123,7 +123,9 @@ public:
 	// Draws an enemy as Mesh instead of the shapes: lifted HoverMeters off the ground, scaled, turned YawOffset degrees
 	// from the mesh's own facing. Its height (for the HUD's markers) is HeightMeters x Scale over the hover. Call after
 	// Setup. False when the mesh is null.
-	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters);
+	// bBreakPulse: the body can glow (SetBodyPulse; a boss with a break move), its materials made dynamic here;
+	// otherwise they are left as they are and SetBodyPulse does nothing.
+	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters, bool bBreakPulse = false);
 	// A skinned figure shows Clip at Time (seconds into it; looping wraps) over a short crossfade from the clip before it.
 	// bHoldRoot false lets the clip's root travel through (a fall). Call every frame; a null clip changes nothing.
 	// Blend: the crossfade into a new clip, seconds; 0 the anim instance's own. bAdditiveIn: a new clip fades in additively
@@ -180,7 +182,7 @@ public:
 	void SetBladeShown(bool bShown);
 	// A skinned figure's body glow (the boss break's tell): Glow of warm white added to the Emissive of each of its
 	// materials that has one (the shared character masters, M_FTCharacter and M_FTCharacterTex: emissive = its texture
-	// x Emissive x EmissiveStrength); 0 puts each back. SetupSkinned makes those materials dynamic (MakePulseMaterials).
+	// x Emissive x EmissiveStrength); 0 puts each back. SetupSkinned makes them dynamic for a break-move boss only (bBreakPulse).
 	void SetBodyPulse(float Glow);
 
 private:

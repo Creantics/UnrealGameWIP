@@ -584,8 +584,8 @@ outside a blow (a held blow's settle): the hp at once, a `HostHit` (then `Downed
 | Guard (hold or toggle); parry (tap just before a hit) | Left Ctrl | LB |
 | Roll (backstep with no direction) | Left Alt | B |
 | Heal (the lead's own; uses a charge) | H | D-pad up |
-| Gift Heal (the third slot's: 2 a fight, a share of max health, instant) | G | Guard held + D-pad up |
-| Gift Guard (the third slot's: the lead's blows scaled down a while) | Y | Guard held + D-pad left |
+| Gift Heal (the third slot's: 2 a fight, a share of max health, instant) | G | Guard up (held or toggled) + D-pad up |
+| Gift Guard (the third slot's: the lead's blows scaled down a while) | Y | Guard up (held or toggled) + D-pad left |
 | Release (above a third of the Load) | R | D-pad down |
 | Partner (the second lead's press, paired with a parry; on Count's key for now) | F | Y |
 | Intercept a called blow (stone_bearer; hold or toggle) | V | L3 |

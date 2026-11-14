@@ -948,7 +948,8 @@ void UFTArenaRunner::LoadSkin(int32 I)
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: enemy %d: %d of %d clips are missing (the first %s); those moves play the idle."), I, Missing,
 			static_cast<int32>(Skin.Clips->count), *FirstMissing);
 	}
-	Figure->SetupSkinned(Mesh, Kind.look.hover, Kind.look.scale, Kind.look.yawOffset, ftcore::arenaEnemyHeight(Kind));
+	Figure->SetupSkinned(Mesh, Kind.look.hover, Kind.look.scale, Kind.look.yawOffset, ftcore::arenaEnemyHeight(Kind),
+		Kind.boss && Kind.breakMove >= 0); // only a boss that breaks out gets the break tell's pulse
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d is skinned: %s, hover %.1f m, scale %.2f, %d clips."), I, *Mesh->GetName(), Kind.look.hover,
 		Kind.look.scale, static_cast<int32>(Skin.Clips->count) - Missing);
 }
@@ -1481,13 +1482,27 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		}
 		return false;
 	};
+	bPressLock |= Pressed(InputAction::LockOn);
+	bPressRelease |= Pressed(InputAction::Release);
+	if (bTable)
+	{
+		bReleaseDown = false;
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& K = FTInputBindings::Key(InputAction::Release, Device);
+			bReleaseDown |= K.IsValid() && !Shadowed(InputAction::Release, Device) && PC->IsInputKeyDown(K);
+		}
+	}
+	bPressPair |= Pressed(InputAction::Count);
+	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
+	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
 	// Three presses: the lead's own heal (Gift's row), and the third slot's Gift Heal and Gift Guard. On a pad with
-	// those two unbound: Guard held plus the heal's button (that press is the gift's, not a heal) or Crouch's.
+	// those two unbound: with the guard up (its state: held, or toggled on) the heal's button (that press is the
+	// gift's, not a heal) or Crouch's.
 	bool bPadGiftHeal = false;
 	bool bPadGiftGuard = false;
 	{
-		const FKey& PadGuard = FTInputBindings::Key(InputAction::Guard, ftcore::InputDevice::Pad);
-		if (PadGuard.IsValid() && PC->IsInputKeyDown(PadGuard))
+		if (bGuardHeld)
 		{
 			const FKey& PadHeal = FTInputBindings::Key(InputAction::Gift, ftcore::InputDevice::Pad);
 			const FKey& PadCrouch = FTInputBindings::Key(InputAction::Crouch, ftcore::InputDevice::Pad);
@@ -1514,32 +1529,17 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	{
 		GiftPick = ftcore::Gift::Guard;
 	}
-	bPressLock |= Pressed(InputAction::LockOn);
-	bPressRelease |= Pressed(InputAction::Release);
-	if (bTable)
-	{
-		bReleaseDown = false;
-		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
-		{
-			const FKey& K = FTInputBindings::Key(InputAction::Release, Device);
-			bReleaseDown |= K.IsValid() && !Shadowed(InputAction::Release, Device) && PC->IsInputKeyDown(K);
-		}
-	}
-	bPressPair |= Pressed(InputAction::Count);
-	// Take half: its key, and on a pad with none bound, Interact pressed while the guard is down (route "guard_interact").
+	// Take half: its key, and on a pad with none bound, Interact pressed while the guard is up, held or toggled (route
+	// "guard_interact").
 	bPressTakeHalf |= Pressed(InputAction::TakeHalf);
 	{
 		const FKey& PadTake = FTInputBindings::Key(InputAction::TakeHalf, ftcore::InputDevice::Pad);
-		const FKey& PadGuard = FTInputBindings::Key(InputAction::Guard, ftcore::InputDevice::Pad);
 		const FKey& PadInteract = FTInputBindings::Key(InputAction::Interact, ftcore::InputDevice::Pad);
-		if (!PadTake.IsValid() && PadGuard.IsValid() && PadInteract.IsValid() && PC->IsInputKeyDown(PadGuard)
-			&& PC->WasInputKeyJustPressed(PadInteract))
+		if (!PadTake.IsValid() && PadInteract.IsValid() && bGuardHeld && PC->WasInputKeyJustPressed(PadInteract))
 		{
 			bPressTakeHalf = true;
 		}
 	}
-	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
-	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
 	// A called-blow boss's Intercept (its Guard is the guard above), held or toggled.
 	bInterceptHeld = InterceptInput.tick(FTInputBindings::IsDown(*PC, InputAction::Intercept),
 		FTInputBindings::Toggles(World, InputAction::Intercept));
@@ -4232,6 +4232,12 @@ void UFTArenaRunner::Finish()
 		PlayerFigure->ResetFeet(); // handed back (the story, the explore pawn, a result screen): nothing held carries over
 	}
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
+	if (Session && !bWon)
+	{
+		// A loss: a Lone Carry still on ends here (loneEndedBy reads FightEnded), nothing folds, and the next begin rolls
+		// the gift tally back. A story step that keeps the loss (its loss branch) calls finish(true) again after this.
+		Session->Get().finish(false);
+	}
 	if (bWon && Session)
 	{
 		Session->Get().finish(true); // the gift tally carries over a win; a retry's begin rolls it back

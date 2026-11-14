@@ -65,6 +65,30 @@ TEST_CASE("input bindings: import reads over the defaults and encode reads back"
     CHECK(back.hold == b.hold);
 }
 
+TEST_CASE("input bindings: a file from before the gift keys moves its gift key over and keeps every other binding") {
+    std::string error;
+    // The old default (gift on G, now gift_heal's): gift_heal keeps G, the heal takes H, the rest as the file says.
+    InputBindings b = defaultInputBindings();
+    REQUIRE(importInputBindings(
+        R"({"version": 1, "keys": {"gift": "G", "guard": "K", "release": "X"}, "pad": {"gift": "Gamepad_DPad_Up"}})", b, &error));
+    CHECK(std::string(inputKey(b, InputAction::GiftHeal, InputDevice::Keys)) == "G");
+    CHECK(std::string(inputKey(b, InputAction::Gift, InputDevice::Keys)) == "H");
+    CHECK(std::string(inputKey(b, InputAction::Guard, InputDevice::Keys)) == "K");
+    CHECK(std::string(inputKey(b, InputAction::Release, InputDevice::Keys)) == "X");
+    CHECK(std::string(inputKey(b, InputAction::Gift, InputDevice::Pad)) == "Gamepad_DPad_Up");
+    CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Keys)) == "Y");
+    // The player's own heal key stays the heal's.
+    InputBindings own = defaultInputBindings();
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"gift": "N"}})", own, &error));
+    CHECK(std::string(inputKey(own, InputAction::Gift, InputDevice::Keys)) == "N");
+    CHECK(std::string(inputKey(own, InputAction::GiftHeal, InputDevice::Keys)) == "G");
+    // A file that names gift_heal is a new one: a doubled key there is still refused whole.
+    InputBindings now = defaultInputBindings();
+    const std::string before = encodeInputBindings(now);
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"gift": "G", "gift_heal": "G"}})", now, &error));
+    CHECK(encodeInputBindings(now) == before);
+}
+
 TEST_CASE("input bindings: a bad file is refused whole and changes nothing") {
     const InputBindings start = defaultInputBindings();
     const std::string before = encodeInputBindings(start);
@@ -273,7 +297,11 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
     checkLines(b);
     CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) ==
           "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  H input.heal  "
-          "R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  V input.intercept");
+          "G input.gift_heal  Y input.gift_guard  R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  "
+          "V input.intercept");
+    // On a pad the two gifts are reached through the guard (routes guard_heal and guard_crouch).
+    const std::string padArena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr);
+    CHECK(padArena.find("Guard+Heal input.gift_heal  Guard+Crouch input.gift_guard") != std::string::npos);
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
           "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  D-pad left input.crouch  "
           "B input.dodge  X input.use  D-pad right input.lead  "

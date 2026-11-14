@@ -248,6 +248,8 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
         const JsonValue keys = root[dk];
         if (keys.isAbsent()) continue;
         if (!keys.isObject()) return fail(std::string("bindings.") + dk + ": must be an object");
+        bool fileGift = false;
+        bool fileGiftHeal = false;
         for (std::uint32_t i = 0; i < keys.size(); ++i) {
             InputAction a{};
             const std::string where = std::string("bindings.") + dk + "." + std::string(keys.key(i));
@@ -256,7 +258,16 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
             if (!v.isString() || (!v.string().empty() && !validInputKeyName(v.string())))
                 return fail(where + ": must be a key name or \"\"");
             setName(b.keys[d][static_cast<std::size_t>(a)], v.string());
+            fileGift |= a == InputAction::Gift;
+            fileGiftHeal |= a == InputAction::GiftHeal;
         }
+        // A file saved before the gift slot had keys of its own names no gift_heal. Its gift key on gift_heal's
+        // key (the old default, G) moves there: gift_heal keeps it and the heal's row takes the table's own key, so
+        // nothing doubles and every other binding stays. A gift on any other key stays the heal's.
+        auto& row = b.keys[d];
+        InputKeyName& gift = row[static_cast<std::size_t>(InputAction::Gift)];
+        if (fileGift && !fileGiftHeal && !gift.empty() && gift.view() == row[static_cast<std::size_t>(InputAction::GiftHeal)].view())
+            gift = out.keys[d][static_cast<std::size_t>(InputAction::Gift)];
     }
     const JsonValue hold = root["hold"];
     if (!hold.isAbsent()) {
@@ -330,6 +341,8 @@ constexpr InputHintEntry kArenaHint[] = {
     {{A::Guard}, 1, "input.guard", false},
     {{A::Roll}, 1, "input.dodge", false},
     {{A::Gift}, 1, "input.heal", false},
+    {{A::GiftHeal}, 1, "input.gift_heal", false},
+    {{A::GiftGuard}, 1, "input.gift_guard", false},
     {{A::Release}, 1, "input.release", false},
     {{A::Count}, 1, "input.count", false},
     {{A::ReadPick1, A::ReadPick2, A::ReadPick3}, 3, "input.pick", false},
@@ -347,6 +360,8 @@ constexpr InputHintEntry kArenaJumpHint[] = {
     {{A::Roll}, 1, "input.dodge", false},
     {{A::Jump}, 1, "input.jump", false},
     {{A::Gift}, 1, "input.heal", false},
+    {{A::GiftHeal}, 1, "input.gift_heal", false},
+    {{A::GiftGuard}, 1, "input.gift_guard", false},
     {{A::Release}, 1, "input.release", false},
     {{A::Count}, 1, "input.count", false},
     {{A::ReadPick1, A::ReadPick2, A::ReadPick3}, 3, "input.pick", false},
@@ -371,9 +386,8 @@ constexpr InputHintEntry kFieldHint[] = {
 
 // What the host reads but no controls line names, each on purpose (ctest hints_read checks both ways): the map key
 // shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares, and take half
-// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was; the
-// two gift keys are the Gift key's own picks, which the line's Gift entry covers.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::GiftHeal, A::GiftGuard};
+// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {

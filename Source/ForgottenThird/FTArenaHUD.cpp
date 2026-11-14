@@ -38,7 +38,7 @@ const FLinearColor kArenaGold(1.f, 0.84f, 0.3f);
 const FLinearColor kArenaLoad(1.f, 0.5f, 0.12f);
 // The tell's colours: the answer it asks for.
 const FLinearColor kArenaTellParry(1.f, 0.84f, 0.3f);
-const FLinearColor kArenaTellBlock(1.f, 0.55f, 0.15f);
+const FLinearColor kArenaTellBlock(0.63f, 0.615f, 0.575f); // the floor's blockable tell (AFTArenaFighter): pale ink
 const FLinearColor kArenaTellDodge(1.f, 0.16f, 0.12f);
 
 const FTUiText kHpArena(TEXT("arena.hp"));
