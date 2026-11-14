@@ -772,12 +772,30 @@ TEST_CASE("fight session: the active lead is a lead, kept across begin") {
     FightSession s;
     CHECK(s.activeLead() == kLeadA);
     CHECK(s.setActiveLead(kLeadB));
+    CHECK(s.activeLead() == kLeadA); // asked: the step's close moves it
+    CHECK(s.switchRequested() == kLeadB);
+    CHECK(s.tick(kFrame).switched == kLeadB);
     CHECK(s.activeLead() == kLeadB);
+    CHECK(s.switchRequested() == kNoFighter);
     CHECK(!s.setActiveLead(kThirdSlot));
     CHECK(!s.setActiveLead(kNoFighter));
+    CHECK(s.switchRequested() == kNoFighter);
     CHECK(s.activeLead() == kLeadB);
     REQUIRE(s.begin(FightSessionDef{}, 10.0).ok());
     CHECK(s.activeLead() == kLeadB);
+    // A switch asked before a begin: the fight opens on it.
+    CHECK(s.setActiveLead(kLeadA));
+    REQUIRE(s.begin(FightSessionDef{}, 20.0).ok());
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.switchRequested() == kNoFighter);
+    CHECK(s.tick(kFrame).switched == kNoFighter);
+    // The last ask in a step wins; one for the lead in control reports nothing.
+    CHECK(s.setActiveLead(kLeadB));
+    CHECK(s.setActiveLead(kLeadA));
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.switched == kNoFighter);
+    CHECK(t.switchRefused == kNoFighter);
+    CHECK(s.activeLead() == kLeadA);
 }
 
 TEST_CASE("fight session: a fight's frames allocate nothing") {
@@ -1285,4 +1303,203 @@ TEST_CASE("fight session: a defeat costs only the attempt: currency, Load, gift 
     }
     // Nothing of the session differs from before the fight: every play field hashes the same.
     CHECK(s.stateHash() == hashAt);
+}
+
+// Tests only: reaches the session's fields so each edit below changes one alone (FightSession's friend, declared
+// only where the test target defines FTCORE_TEST_ACCESS).
+#ifndef FTCORE_TEST_ACCESS
+#error "the test target defines FTCORE_TEST_ACCESS (Core/CMakeLists.txt)"
+#endif
+namespace ftcore {
+struct FightSessionTestAccess {
+    using Edit = void (*)(FightSession&);
+    using CpEdit = void (*)(FightSession&, FightCheckpoint&);
+    struct Row {
+        const char* name;
+        Edit edit;
+    };
+    struct CpRow {
+        const char* name;
+        CpEdit edit;
+    };
+
+    // Each row edits one hashed field alone and must move the hash, so dropping a term from stateHash fails here.
+    // Three terms are framing that no single edit can isolate: hasBoss_, heldCount_ and pendingLoads_ each also
+    // change how many fixed-width items are hashed after them, so the hash moves with or without the term.
+    // A session where every hashed line has something to read: a boss script, a held blow and a pending Load in
+    // their buffers, both checkpoints taken and written.
+    static void fresh(FightSession& s) {
+        FightSessionDef d;
+        d.lift = true;
+        d.keptLead = kLeadA;
+        d.hasBoss = true;
+        d.boss = oneMoveBoss();
+        REQUIRE(s.begin(d, 0.0).ok());
+        s.tick(1.0 / 60.0);
+        REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+        s.phaseCp_ = s.startCp_;
+        s.phaseCp_.at = CheckpointAt::Phase;
+        s.heldCount_ = 1;
+        s.pendingLoads_ = 1;
+    }
+
+    static void run() {
+        static StoryState story;
+        const Row rows[] = {
+            {"now", [](FightSession& s) { s.now_ += 1.0; }},
+            {"count", [](FightSession& s) { s.count_.reset(CountTuning{}, s.now_ + 5.0); }},
+            {"gift", [](FightSession& s) { s.gift_.setState(SlotState::Hostile); }},
+            {"table", [](FightSession& s) { s.table_.reset(TableTuning{}, s.now_ + 5.0); }},
+            {"refusal", [](FightSession& s) { s.refusal_.offer(); }},
+            {"lock", [](FightSession& s) { s.lock_.reset(LockTuning{}, s.now_ + 5.0); }},
+            {"hasBoss", [](FightSession& s) { s.hasBoss_ = false; }},
+            {"boss", [](FightSession& s) { s.boss_.update(s.now_ + 3.0); }},
+            {"activeLead", [](FightSession& s) { s.activeLead_ = kLeadB; }},
+            {"story bound", [](FightSession& s) { s.story_ = &story; }},
+            {"lastStory", [](FightSession& s) { s.lastStory_ = SetResult::Ok; }},
+            {"heldCount", [](FightSession& s) { s.heldCount_ = 2; }},
+            {"heldDropped", [](FightSession& s) { ++s.heldDropped_; }},
+            {"held blow", [](FightSession& s) { s.held_[0].blow = 7; }},
+            {"held enemy", [](FightSession& s) { s.held_[0].enemy = 3; }},
+            {"held move", [](FightSession& s) { s.held_[0].move = 2; }},
+            {"held baseDamage", [](FightSession& s) { s.held_[0].baseDamage = 9; }},
+            {"held landed", [](FightSession& s) { s.held_[0].landed = 2.f; }},
+            {"lastStore A", [](FightSession& s) { s.lastStore_[kLeadA] = 5.0; }},
+            {"lastStore B", [](FightSession& s) { s.lastStore_[kLeadB] = 5.0; }},
+            {"pendingLoads", [](FightSession& s) { s.pendingLoads_ = 2; }},
+            {"pendingLoadsDropped", [](FightSession& s) { ++s.pendingLoadsDropped_; }},
+            {"load lead", [](FightSession& s) { s.loadsIn_[0].lead = kLeadB; }},
+            {"load amount", [](FightSession& s) { s.loadsIn_[0].amount = 3; }},
+            {"load kind", [](FightSession& s) { s.loadsIn_[0].kind = CountLoadKind::LiftSpend; }},
+            {"load kept", [](FightSession& s) { s.loadsIn_[0].kept = true; }},
+            {"mark bonus", [](FightSession& s) { s.marks_[0].bonus = 0.5f; }},
+            {"mark until", [](FightSession& s) { s.marks_[0].until = 1.0; }},
+            {"mark used", [](FightSession& s) { s.marks_[0].used = true; }},
+            {"last mark", [](FightSession& s) { s.marks_[kMaxMarkedEnemies - 1].bonus = 0.5f; }},
+            {"keptOn", [](FightSession& s) { s.keptOn_ = !s.keptOn_; }},
+            {"kept", [](FightSession& s) { ++s.kept_; }},
+            {"keptDown", [](FightSession& s) { s.keptDown_ = !s.keptDown_; }},
+            {"keptCap", [](FightSession& s) { ++s.keptCap_; }},
+            {"blowCap", [](FightSession& s) { s.blowCap_ += 1.f; }},
+            {"lone", [](FightSession& s) { s.lone_ = !s.lone_; }},
+            {"loneEnded", [](FightSession& s) { s.loneEnded_ = !s.loneEnded_; }},
+            {"loneEndedBy", [](FightSession& s) { s.loneEndedBy_ = LoneEnd::Gift; }},
+            {"loneBeganDue", [](FightSession& s) { s.loneBeganDue_ = !s.loneBeganDue_; }},
+            {"loneEndDue", [](FightSession& s) { s.loneEndDue_ = !s.loneEndDue_; }},
+            {"loneReleases", [](FightSession& s) { ++s.loneReleases_; }},
+            {"loneFolded", [](FightSession& s) { s.loneFolded_ = !s.loneFolded_; }},
+            {"lonePooled", [](FightSession& s) { ++s.lonePooled_; }},
+            {"leadHealth A", [](FightSession& s) { s.leadHealth_[kLeadA] = 0.3f; }},
+            {"leadHealth B", [](FightSession& s) { s.leadHealth_[kLeadB] = 0.3f; }},
+            {"won", [](FightSession& s) { s.won_ = !s.won_; }},
+            {"start", [](FightSession& s) { s.start_ += 1.0; }},
+            {"inFight A", [](FightSession& s) { s.inFight_[kLeadA] = !s.inFight_[kLeadA]; }},
+            {"inFight B", [](FightSession& s) { s.inFight_[kLeadB] = !s.inFight_[kLeadB]; }},
+            {"down A", [](FightSession& s) { s.down_[kLeadA] = !s.down_[kLeadA]; }},
+            {"down B", [](FightSession& s) { s.down_[kLeadB] = !s.down_[kLeadB]; }},
+            {"stepDown A", [](FightSession& s) { s.stepDown_[kLeadA] = !s.stepDown_[kLeadA]; }},
+            {"stepDown B", [](FightSession& s) { s.stepDown_[kLeadB] = !s.stepDown_[kLeadB]; }},
+            {"defeated", [](FightSession& s) { s.defeated_ = !s.defeated_; }},
+            {"fellDue", [](FightSession& s) { s.fellDue_ ^= 1; }},
+            {"roseDue", [](FightSession& s) { s.roseDue_ ^= 1; }},
+            {"heldUpDue", [](FightSession& s) { s.heldUpDue_ ^= 1; }},
+            {"tookOverDue", [](FightSession& s) { s.tookOverDue_ = kLeadB; }},
+            {"defeatedDue", [](FightSession& s) { s.defeatedDue_ = !s.defeatedDue_; }},
+            {"startDue", [](FightSession& s) { s.startDue_ = !s.startDue_; }},
+            {"cpDue", [](FightSession& s) { s.cpDue_ ^= 1; }},
+            {"switchReq", [](FightSession& s) { s.switchReq_ = kLeadB; }},
+            {"switchedDue", [](FightSession& s) { s.switchedDue_ = kLeadB; }},
+            {"switchRefusedDue", [](FightSession& s) { s.switchRefusedDue_ = kLeadB; }},
+            {"switchRefusalDue", [](FightSession& s) { s.switchRefusalDue_ = SwitchRefusal::Down; }},
+        };
+        const CpRow cpRows[] = {
+            {"at", [](FightSession&, FightCheckpoint& c) { c.at = CheckpointAt::None; }},
+            {"phase", [](FightSession&, FightCheckpoint& c) { ++c.phase; }},
+            {"now", [](FightSession&, FightCheckpoint& c) { c.now += 1.0; }},
+            {"hostWritten", [](FightSession&, FightCheckpoint& c) { c.hostWritten = !c.hostWritten; }},
+            {"activeLead", [](FightSession&, FightCheckpoint& c) { c.activeLead = kLeadB; }},
+            {"switchRequested", [](FightSession&, FightCheckpoint& c) { c.switchRequested = kLeadB; }},
+            {"leadHealth A", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadA] = 0.3f; }},
+            {"leadHealth B", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadB] = 0.3f; }},
+            {"down A", [](FightSession&, FightCheckpoint& c) { c.down[kLeadA] = !c.down[kLeadA]; }},
+            {"down B", [](FightSession&, FightCheckpoint& c) { c.down[kLeadB] = !c.down[kLeadB]; }},
+            {"gift", [](FightSession&, FightCheckpoint& c) { c.gift.setState(SlotState::Hostile); }},
+            {"keptLoad", [](FightSession&, FightCheckpoint& c) { ++c.keptLoad; }},
+            {"keptDown", [](FightSession&, FightCheckpoint& c) { c.keptDown = !c.keptDown; }},
+            {"lone", [](FightSession&, FightCheckpoint& c) { c.lone = !c.lone; }},
+            {"loneEnded", [](FightSession&, FightCheckpoint& c) { c.loneEnded = !c.loneEnded; }},
+            {"loneEndedBy", [](FightSession&, FightCheckpoint& c) { c.loneEndedBy = LoneEnd::Gift; }},
+            {"loneReleases", [](FightSession&, FightCheckpoint& c) { ++c.loneReleases; }},
+            {"lonePooled", [](FightSession&, FightCheckpoint& c) { ++c.lonePooled; }},
+            {"boss",
+             [](FightSession& s, FightCheckpoint& c) {
+                 BossScript b = s.boss_;
+                 b.update(s.now_ + 3.0);
+                 c.boss = b;
+             }},
+            {"host hp A", [](FightSession&, FightCheckpoint& c) { ++c.host.hp[kLeadA]; }},
+            {"host hp B", [](FightSession&, FightCheckpoint& c) { ++c.host.hp[kLeadB]; }},
+            {"host load A", [](FightSession&, FightCheckpoint& c) { ++c.host.load[kLeadA]; }},
+            {"host load B", [](FightSession&, FightCheckpoint& c) { ++c.host.load[kLeadB]; }},
+            {"host draws", [](FightSession&, FightCheckpoint& c) { ++c.host.draws; }},
+            {"host partner", [](FightSession&, FightCheckpoint& c) { ++c.host.partner.rhythm; }},
+            {"host order", [](FightSession&, FightCheckpoint& c) { c.host.order = PartnerOrder::Spread; }},
+            {"host bossHp", [](FightSession&, FightCheckpoint& c) { ++c.host.bossHp; }},
+            {"host bossPhase", [](FightSession&, FightCheckpoint& c) { ++c.host.bossPhase; }},
+            {"host currency", [](FightSession&, FightCheckpoint& c) { ++c.host.currency; }},
+        };
+
+        FightSession base;
+        fresh(base);
+        const std::uint64_t h0 = base.stateHash();
+        std::size_t moved = 0;
+        const auto check = [&](const char* what, auto&& edit) {
+            const std::string name = what;
+            CAPTURE(name);
+            FightSession s;
+            fresh(s);
+            REQUIRE(s.stateHash() == h0); // the same set-up hashes the same
+            edit(s);
+            CHECK(s.stateHash() != h0);
+            ++moved;
+        };
+        for (const Row& r : rows) check(r.name, r.edit);
+        for (std::size_t i = 0; i < kMaxFighters; ++i) {
+            CAPTURE(i);
+            check("places", [i](FightSession& s) { CHECK(s.places_[i].leaveOpen() == PlaceError::None); });
+        }
+        for (const bool phase : {false, true}) {
+            CAPTURE(phase);
+            for (const CpRow& r : cpRows)
+                check(r.name, [&](FightSession& s) { r.edit(s, phase ? s.phaseCp_ : s.startCp_); });
+            for (std::size_t i = 0; i < kMaxFighters; ++i) {
+                CAPTURE(i);
+                check("checkpoint places", [&](FightSession& s) {
+                    CHECK((phase ? s.phaseCp_ : s.startCp_).places[i].leaveOpen() == PlaceError::None);
+                });
+            }
+        }
+        CHECK(moved == std::size(rows) + kMaxFighters * 3 + 2 * std::size(cpRows));
+
+        // What is left out (see the header) moves nothing: the tick's outputs and stale buffer slots.
+        const Edit left[] = {
+            [](FightSession& s) { s.tick_.tookOver = kLeadB; },
+            [](FightSession& s) { s.bonuses_[0].extraDamage = 5; },
+            [](FightSession& s) { s.loadsOut_[0].amount = 5; },
+            [](FightSession& s) { s.tickLoads_ = 3; },
+            [](FightSession& s) { s.held_[1].blow = 5; },
+            [](FightSession& s) { s.loadsIn_[1].amount = 5; },
+        };
+        for (const Edit e : left) {
+            FightSession s;
+            fresh(s);
+            e(s);
+            CHECK(s.stateHash() == h0);
+        }
+    }
+};
+} // namespace ftcore
+
+TEST_CASE("fight session: stateHash moves with every hashed field alone, the checkpoints' payloads among them") {
+    FightSessionTestAccess::run();
 }

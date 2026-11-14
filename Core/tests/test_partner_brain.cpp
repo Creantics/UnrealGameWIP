@@ -795,7 +795,7 @@ TEST_CASE("partner brain: over a 60 s scripted fight against a dummy boss its at
 
 TEST_CASE("partner brain: over a 60 s fight with windups, the lead held off, its attack time is 35% of the lead's or more, within the budget") {
     // Both with 3 of each 10 windups at the partner and with every one at the lead (the lead held off 12.6 s of 60).
-    // The budget allows 0.60 of the lead's plus 2.0 s in each 20 s window, so over three windows at most 6 s past 0.60.
+    // The budget allows 0.60 of the lead's plus 2.0 s in each 20 s window: held in every sliding window, not summed.
     for (const bool partnerAims : {true, false}) {
       for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
         for (const std::uint32_t seed : {1u, 42u, 2026u, 7u, 99u}) {
@@ -809,7 +809,7 @@ TEST_CASE("partner brain: over a 60 s fight with windups, the lead held off, its
             MESSAGE("windups: partner ", f.host.attackTime, " s, lead ", f.leadAttack, " s, share ", share,
                     ", strings ", f.host.strings, ", guards ", f.host.guards, ", hits ", f.host.hits);
             CHECK(share >= 0.35);
-            CHECK(f.host.attackTime <= 0.60 * f.leadAttack + 3 * 2.0 + 1e-6);
+            CHECK(worstExcess(f.partnerStep, f.leadStep, 1200) <= 1e-3);
             const int atIt = partnerAims ? 3 : 0;
             CHECK(f.brain.defenceDraws() == static_cast<std::uint32_t>(atIt));
             CHECK(f.host.guards + f.host.hits == atIt);
