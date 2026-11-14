@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "swimSpeed": 2.2,
+  "sprintSpeed": 3.2,
+  "buoyancy": 0.2,
+  "bedClearance": 0.3,
+  "diveDepth": 1.0,
+  "breathSeconds": 45,
+  "sprintBreathRate": 2,
+  "warningSeconds": 10,
+  "drainPerSecond": 0.05,
+  "refillSeconds": 2,
+  "rescueVitality": 0.25,
+  "edgeRampMetres": 8,
+  "edgePushSpeed": 4
+}
