@@ -421,14 +421,19 @@ struct FTextRuns
 		return R;
 	}
 
-	// The pass's glyph run in its font, shaped on its first draw (and again after a draw with a face still loading).
+	// The pass's glyph run in its font, shaped on its first draw (and again after a draw with a face still loading). It is
+	// shaped as MakeText lays the string out, so it lands where the HUD measured it: Slate's MakeText and its font measure
+	// (which places every word) never apply the font's LetterSpacing, and its shaper does, so the run is shaped without it
+	// (with it, every gap between letters grew by it and a word ran past its measured end, into its key cap).
 	static FShapedGlyphSequenceRef Shaped(FTextRun& R, int32 Pass, const FSlateFontInfo& F)
 	{
 		const uint8 Bit = static_cast<uint8>(1u << Pass);
 		if (!R.Pass[Pass].IsValid() || (R.Stale & Bit) != 0)
 		{
+			FSlateFontInfo AsLaidOut = F;
+			AsLaidOut.LetterSpacing = 0;
 			TArray<TWeakPtr<FFreeTypeFace>> Loading;
-			R.Pass[Pass] = FSlateApplication::Get().GetRenderer()->GetFontCache()->ShapeUnidirectionalText(R.Str, F, R.Scale,
+			R.Pass[Pass] = FSlateApplication::Get().GetRenderer()->GetFontCache()->ShapeUnidirectionalText(R.Str, AsLaidOut, R.Scale,
 				TextBiDi::ETextDirection::LeftToRight, ETextShapingMethod::KerningOnly, &Loading);
 			R.Stale = Loading.Num() > 0 ? static_cast<uint8>(R.Stale | Bit) : static_cast<uint8>(R.Stale & ~Bit);
 		}
