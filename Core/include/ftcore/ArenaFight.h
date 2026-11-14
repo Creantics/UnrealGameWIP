@@ -176,12 +176,12 @@
 //   counter 1.5, a hostBlow, a held blow's bonus, 1.5, a set table's split 3) times the ruling's breakScale (the
 //   count's joined and Lift multipliers, which the host's hook passes through), at most kArenaBossBreakBlowCap. A
 //   vetoed blow adds 0; nothing else adds (a guard, a gift, a partner's own blows). While it is Staggered the value
-//   neither rises nor decays; otherwise it goes back to 0 kArenaBossBreakDecay s after the last blow that added. The
+//   neither rises nor falls; otherwise, from kArenaBossBreakDecayDelay s after the last blow that added, it falls at
+//   kArenaBossBreakDecayRate a second until it is 0 or another blow adds (it never goes below 0). The
 //   threshold is the phase's breakValueAt; the phase comes from the boss's hp share (breakPhaseEnds: each phase
 //   ends where the share now falls to it). At kArenaBossBreakTell of the threshold the value
-//   tells (enemyBreakTell, the BreakTell event once each time it rises there). At the threshold, or forced (the
-//   value above 0 without a gap for kArenaBossBreakForced s, Staggered time counted, with at least
-//   kArenaBossBreakForcedBlows blows that added in it), the boss breaks as soon as it is upright (not Staggered,
+//   tells (enemyBreakTell, the BreakTell event once each time it rises there). At the threshold the boss breaks as
+//   soon as it is upright (not Staggered,
 //   Open or Down; a blow that staggers it keeps the break for after) and no break began in the last
 //   kArenaBossBreakLock s: its move is cut, the value goes to 0 and it begins its breakMove (BrokeOut, then
 //   AttackStarted) with a windup of kArenaBossBreakWindup s and a recovery of kArenaBossBreakRecovery s in place of
@@ -309,13 +309,12 @@ inline constexpr float kArenaBreakHost = 1.5f;   // a hostBlow (a held blow's bo
 inline constexpr float kArenaBreakTable = 3.f;   // a set table's split onto a seated boss
 // ... and its rules.
 inline constexpr float kArenaBossBreakBlowCap = 3.f;   // the most one blow adds, after breakScale
-inline constexpr float kArenaBossBreakDecay = 2.5f;    // s without a blow that adds: back to 0
+inline constexpr float kArenaBossBreakDecayDelay = 1.5f; // s after the last blow that added before the value falls
+inline constexpr float kArenaBossBreakDecayRate = 1.f;   // what it then falls by a second
 inline constexpr float kArenaBossBreakTell = 0.75f;    // the share of the threshold that tells
 inline constexpr float kArenaBossBreakWindup = 0.5f;   // the break move's startup
 inline constexpr float kArenaBossBreakRecovery = 1.2f; // the break move's recovery: the punish window
 inline constexpr float kArenaBossBreakLock = 6.f;      // s from a break's start before another may begin
-inline constexpr float kArenaBossBreakForced = 20.f;   // s above 0 without a gap that force a break ...
-inline constexpr int kArenaBossBreakForcedBlows = 3;   // ... with at least this many blows in them
 inline constexpr float kArenaBossPairPoise = 0.6f;     // the share of a boss's max poise the paired counter takes
 inline constexpr std::size_t kMaxArenaBreakPhases = 4;
 
@@ -857,7 +856,6 @@ struct ArenaStats {
     int breakVetoed = 0;   // ... of them the host barred (as it bars a flinch), so none counted
     int breakBarred = 0;   // breakDue whose break move the enemy's move mask barred
     int bossBreaks = 0;       // bosses' break moves begun (Boss break) ...
-    int bossBreaksForced = 0; // ... of them forced (kArenaBossBreakForced) below the threshold
     int bossBreakBarred = 0;  // breaks due whose move the move mask barred
     int bossBreakTells = 0;   // times a boss's value rose to its tell
     float bossBreakAdded = 0.f; // the break value blows added, in all
@@ -1342,12 +1340,9 @@ private:
         // The boss break value (Boss break).
         float breakValue = 0.f;
         float breakQuiet = 0.f;             // s since the last blow that added (still while Staggered)
-        float breakRun = 0.f;               // s the value has been above 0 without a gap
-        int breakRunBlows = 0;              // blows that added in that run
         float breakLock = 0.f;              // s before another break may begin
         bool breakFresh = false;            // a blow added since the last break step: its quiet starts there
         bool breakTell = false;
-        bool breakForced = false;           // the forced break is due
         bool breakTimed = false;            // this move is the break: breakAttack's windup and recovery
         ArenaAttack breakAttack;            // the break move's attack with them
     };

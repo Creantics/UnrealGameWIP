@@ -207,7 +207,6 @@ ArenaPart arenaPartOf(const ArenaAttack& a, float time) {
 }
 
 // The boss break value's clocks (decay, the forced run) add a tick at a time: this much short of a length counts.
-constexpr float kArenaBreakClockEps = 1.0e-3f;
 
 // A boss's break phase (0-based) at `hp`: each phase but the last ends where the hp share falls to its end.
 int arenaBreakPhaseOf(const ArenaEnemyKind& k, int hp) {
@@ -1423,7 +1422,8 @@ struct ArenaFightImpl {
         const int amount = lose(i, damage);
         stats.damageDealt += amount;
         const bool killed = foe.hp <= 0;
-        if (!killed) accrueBreak(i, kArenaBreakHost, breakScale); // a break it brings waits for the next tick
+        // A break it brings waits for the next tick; it lands before that tick, so the tick's whole dt is quiet after it.
+        if (!killed) accrueBreak(i, kArenaBreakHost, breakScale, false);
         notePlayerBlow(i, fight.time_); // its own Impl, outside the tick's: the fight's clock
         if (fight.inHook_.on) {
             emit(ArenaEventType::HostHit, kArenaPlayer, id(i), move, amount, foe.pos);
@@ -1728,28 +1728,20 @@ struct ArenaFightImpl {
     static void clearBreak(Enemy& foe) {
         foe.breakValue = 0.f;
         foe.breakQuiet = 0.f;
-        foe.breakRun = 0.f;
-        foe.breakRunBlows = 0;
         foe.breakFresh = false;
         foe.breakTell = false;
-        foe.breakForced = false;
     }
 
     // A blow of the player's side landed on boss i (after its ruling): weight x scale, at most the blow cap. Not while
     // it is Staggered.
-    void accrueBreak(std::size_t i, float weight, float scale) {
+    void accrueBreak(std::size_t i, float weight, float scale, bool inTick = true) {
         Enemy& foe = foes[i];
         if (!def.enemies[i].boss || !alive(i) || foe.brain == ArenaBrain::Staggered) return;
         const float add = std::min(weight * (scale > 0.f ? scale : 0.f), kArenaBossBreakBlowCap); // NaN: 0
         if (!(add > 0.f)) return;
-        if (!(foe.breakValue > 0.f)) { // a new run
-            foe.breakRun = 0.f;
-            foe.breakRunBlows = 0;
-        }
         foe.breakValue += add;
         foe.breakQuiet = 0.f;
-        foe.breakFresh = true;
-        ++foe.breakRunBlows;
+        foe.breakFresh = inTick; // a blow inside a tick lands at its end: that tick's dt is not quiet
         stats.bossBreakAdded += add;
     }
 
@@ -1768,7 +1760,7 @@ struct ArenaFightImpl {
         }
         foe.breakTell = tell;
         const bool full = foe.breakValue >= at;
-        if (!(full || foe.breakForced) || foe.breakLock > 0.f || !upright(foe)) return false;
+        if (!full || foe.breakLock > 0.f || !upright(foe)) return false;
         clearBreak(foe);
         if (k.breakMove < 0 || k.breakMove >= static_cast<int>(k.moveCount) || ((foe.moveMask >> k.breakMove) & 1u) == 0u) {
             ++stats.bossBreakBarred; // spent, no lock
@@ -1781,28 +1773,27 @@ struct ArenaFightImpl {
         if (!alive(i) || foe.brain != ArenaBrain::Approach) return true;
         foe.token = true;
         ++stats.bossBreaks;
-        if (!full) ++stats.bossBreaksForced;
         emit(ArenaEventType::BrokeOut, id(i), kArenaPlayer, move, 0, foe.pos);
         beginMove(i, move, true);
         return true;
     }
 
-    // Each tick, after the enemies: the lock, the decay (not while Staggered), the forced run, then tryBossBreak.
+    // Each tick, after the enemies: the lock, the decay (not while Staggered), then tryBossBreak.
     void stepBossBreaks() {
         for (std::size_t i = 0; i < n; ++i) {
             if (!def.enemies[i].boss || !alive(i)) continue;
             Enemy& foe = foes[i];
             foe.breakLock = std::max(0.f, foe.breakLock - dt);
             if (foe.breakValue > 0.f) {
-                const bool fresh = foe.breakFresh; // a blow added this tick: its clocks start at the next
+                const bool fresh = foe.breakFresh; // a blow added this tick: its quiet starts at the next
                 foe.breakFresh = false;
-                if (!(fresh && foe.breakRunBlows == 1)) foe.breakRun += dt;
-                if (!fresh && foe.brain != ArenaBrain::Staggered) foe.breakQuiet += dt;
-                if (foe.breakQuiet >= kArenaBossBreakDecay - kArenaBreakClockEps) {
-                    clearBreak(foe);
-                } else {
-                    foe.breakForced = foe.breakRun >= kArenaBossBreakForced - kArenaBreakClockEps &&
-                                      foe.breakRunBlows >= kArenaBossBreakForcedBlows;
+                if (!fresh && foe.brain != ArenaBrain::Staggered) {
+                    // Only the part of this tick's quiet past the delay falls.
+                    const float was = std::max(foe.breakQuiet - kArenaBossBreakDecayDelay, 0.f);
+                    foe.breakQuiet += dt;
+                    const float now = std::max(foe.breakQuiet - kArenaBossBreakDecayDelay, 0.f);
+                    foe.breakValue -= (now - was) * kArenaBossBreakDecayRate;
+                    if (!(foe.breakValue > 0.f)) clearBreak(foe); // never below 0
                 }
             }
             tryBossBreak(i);

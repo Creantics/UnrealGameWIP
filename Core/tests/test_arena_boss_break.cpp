@@ -239,6 +239,7 @@ OracleRun playOracle(const ArenaTable& t, float scale) {
     ArenaDef def = bossDef(t, "stone_bearer", true); // a body the riposte reaches round (the kite's is too wide)
     def.enemies[0].hp = 100000;
     def.enemies[0].breakValueAt = {1000.f, 1000.f, 1000.f, 1000.f};
+    def.enemies[0].poise = 10000.f; // no stagger: each pair (6000) leaves it Open, and no tick is skipped for one
     const float maxPoise = def.enemies[0].poise;
     Rig r(def);
     Oracle o;
@@ -339,23 +340,69 @@ TEST_CASE("arena boss break: every weight, each capped at 3, through the autopil
     }
 }
 
-TEST_CASE("arena boss break: a hostBlow adds 1.5, and the value goes back to 0 2.5 s after the last blow") {
+namespace {
+// Host blows ruled to a light's weight: 1.5 x 2/3 = 1.0 (a light, landed between ticks so the clock is exact).
+ArenaBlowRuling lightWeightHook(void*, const ArenaBlow& b) {
+    ArenaBlowRuling r;
+    if (b.type == ArenaEventType::HostHit) r.breakScale = 2.f / 3.f;
+    return r;
+}
+} // namespace
+
+TEST_CASE("arena boss break: a hostBlow adds 1.5; 1.5 s after the last blow the value falls 1.0 a second") {
     const ArenaTable t = shippedTable();
     Rig r(bossDef(t, "stone_bearer", true));
     r.step();
     CHECK(r.value() == 0.f);
     REQUIRE(r.fight.hostBlow(0, 1, 0));
-    CHECK(r.value() == doctest::Approx(1.5f));
-    r.step(); // the blow's tick
-    r.run(2.f);
-    REQUIRE(r.fight.hostBlow(0, 1, 0)); // a second blow starts the 2.5 s again
+    REQUIRE(r.fight.hostBlow(0, 1, 0));
     CHECK(r.value() == doctest::Approx(3.f));
-    r.step();
-    r.run(2.4f);
-    CHECK(r.value() == doctest::Approx(3.f));
-    r.run(0.2f);
-    CHECK(r.value() == 0.f);
+    r.run(1.5f);
+    CHECK(r.value() == doctest::Approx(3.f)); // unchanged 1.5 s after the blow
+    r.run(1.f);
+    CHECK(r.value() == doctest::Approx(2.f)); // 1.0 lower at 2.5 s
+    REQUIRE(r.fight.hostBlow(0, 1, 0));       // another blow stops the fall and starts the 1.5 s again
+    CHECK(r.value() == doctest::Approx(3.5f));
+    r.run(1.4f);
+    CHECK(r.value() == doctest::Approx(3.5f));
+    r.run(1.1f);
+    CHECK(r.value() == doctest::Approx(2.5f));
     CHECK(r.breaks() == 0);
+}
+
+TEST_CASE("arena boss break: the decay never takes the value below 0") {
+    const ArenaTable t = shippedTable();
+    Rig r(bossDef(t, "stone_bearer", true));
+    r.step();
+    REQUIRE(r.fight.hostBlow(0, 1, 0));
+    r.run(2.9f);
+    CHECK(r.value() == doctest::Approx(0.1f).epsilon(0.05));
+    bool belowZero = false;
+    for (int k = 0; k < 600; ++k) {
+        r.step();
+        belowZero = belowZero || r.value() < 0.f;
+    }
+    CHECK_FALSE(belowZero);
+    CHECK(r.value() == 0.f);
+    REQUIRE(r.fight.hostBlow(0, 1, 0)); // a blow after it emptied adds its whole weight
+    CHECK(r.value() == doctest::Approx(1.5f));
+}
+
+TEST_CASE("arena boss break: one light-weight blow every 2.4 s nets +0.1 a blow, and has not broken at 60 s") {
+    const ArenaTable t = shippedTable();
+    Rig r(bossDef(t, "kite_boss", true));
+    r.step();
+    const float start = r.fight.time();
+    for (int blows = 1; blows <= 25; ++blows) { // 25 x 2.4 s: 60 s
+        const float before = r.value();
+        REQUIRE(r.fight.ruledHostBlow(0, 1, 0, lightWeightHook, nullptr));
+        CHECK(r.value() == doctest::Approx(before + 1.f));
+        r.run(2.4f);
+        CHECK(r.value() == doctest::Approx(0.1f * static_cast<float>(blows)).epsilon(0.01)); // +1.0, then -0.9
+    }
+    CHECK(r.fight.time() >= start + 60.f - 1e-3f);
+    CHECK(r.breaks() == 0);
+    CHECK(r.value() == doctest::Approx(2.5f).epsilon(0.01)); // the 91st blow, at 216 s, first reaches the phase's 10
 }
 
 TEST_CASE("arena boss break: while the boss is Staggered the value neither rises nor decays") {
@@ -368,15 +415,16 @@ TEST_CASE("arena boss break: while the boss is Staggered the value neither rises
     r.step();
     REQUIRE(r.out->enemies[0].brain == ArenaBrain::Staggered);
     r.run(4.5f);
-    CHECK(r.value() == doctest::Approx(3.f)); // no decay
+    CHECK(r.value() == doctest::Approx(3.f)); // no fall
     REQUIRE(r.fight.hostBlow(0, 1, 0));
     CHECK(r.value() == doctest::Approx(3.f)); // no rise
     r.run(0.6f);
     REQUIRE(r.out->enemies[0].brain != ArenaBrain::Staggered);
-    r.run(2.2f); // the decay counts again only from the hold's end
+    r.run(1.3f); // the quiet counts again only from the hold's end
     CHECK(r.value() == doctest::Approx(3.f));
-    r.run(0.5f);
-    CHECK(r.value() == 0.f);
+    r.run(1.f);
+    CHECK(r.value() < 3.f);
+    CHECK(r.value() > 1.5f);
 }
 
 TEST_CASE("arena boss break: each threshold by phase (10, 8, 6.5 by default; the stone bearer's phases at half and a quarter)") {
@@ -402,7 +450,7 @@ TEST_CASE("arena boss break: each threshold by phase (10, 8, 6.5 by default; the
         const int down = def.enemies[0].hp - static_cast<int>(c.share * static_cast<float>(def.enemies[0].hp));
         if (down > 0) {
             REQUIRE(r.fight.hostBlow(0, down, 0));
-            r.run(3.f); // that blow's value decays
+            r.run(4.f); // that blow's value decays
         }
         REQUIRE(r.value() == 0.f);
         CHECK(r.fight.enemyBreakPhase(0) == c.phase);
@@ -410,7 +458,6 @@ TEST_CASE("arena boss break: each threshold by phase (10, 8, 6.5 by default; the
         CHECK(hostBlowsToBreak(r) == c.blows);
         CHECK(r.had(ArenaEventType::BrokeOut, def.enemies[0].breakMove));
         CHECK(r.had(ArenaEventType::AttackStarted, def.enemies[0].breakMove));
-        CHECK(r.fight.stats().bossBreaksForced == 0);
     }
 }
 
@@ -479,44 +526,6 @@ TEST_CASE("arena boss break: the break resets the value, winds up 0.5 s, leaves 
     CHECK(r.breaks() == 1);
     while (r.fight.time() < broke + 6.1f) r.step();
     CHECK(r.breaks() == 2);
-}
-
-TEST_CASE("arena boss break: forced after 20 s above 0 with 3 blows, not with 2") {
-    const ArenaTable t = shippedTable();
-    ArenaDef def = bossDef(t, "stone_bearer", true);
-    def.enemies[0].breakValueAt = {1000.f, 1000.f, 1000.f, 1000.f}; // the threshold is out of reach
-    SUBCASE("a blow every 2 s: forced at 20 s") {
-        Rig r(def);
-        r.step();
-        const float first = r.fight.time();
-        long tick = 0;
-        while (r.fight.time() < first + 19.8f) {
-            if (tick++ % 120 == 0) REQUIRE(r.fight.hostBlow(0, 1, 0));
-            r.step();
-        }
-        CHECK(r.breaks() == 0);
-        while (r.fight.time() < first + 20.2f) r.step();
-        CHECK(r.breaks() == 1);
-        CHECK(r.fight.stats().bossBreaksForced == 1);
-        CHECK(r.value() == 0.f);
-    }
-    SUBCASE("held Staggered past 20 s: 3 blows break it once it is up, 2 do not") {
-        for (int blows : {2, 3}) {
-            CAPTURE(blows);
-            Rig r(def);
-            r.step();
-            for (int b = 0; b < blows; ++b) REQUIRE(r.fight.hostBlow(0, 1, 0));
-            REQUIRE(r.fight.holdEnemy(0, ArenaBrain::Staggered, 22.f));
-            r.run(21.5f); // the run passes 20 s while it is held: due, but not upright
-            CHECK(r.breaks() == 0);
-            CHECK(r.value() == doctest::Approx(1.5f * static_cast<float>(blows)));
-            r.run(1.f);
-            CHECK(r.breaks() == (blows >= 3 ? 1 : 0));
-            r.run(3.f);
-            CHECK(r.value() == 0.f);
-            CHECK(r.breaks() == (blows >= 3 ? 1 : 0));
-        }
-    }
 }
 
 TEST_CASE("arena boss break: a set table's split onto a seated boss adds 3") {
