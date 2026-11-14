@@ -30,11 +30,19 @@ inline constexpr double kRoadKerbWide = 0.15;       // m: the kerb stone's top
 inline constexpr double kRoadCrossfall = 0.02;      // the carriageway falls this much per m from its crown to each kerb
 inline constexpr double kRoadSurfaceLift = 0.03;    // m: the gutter over the road's ground (no z-fighting)
 inline constexpr double kRoadSlabDepth = 0.3;       // m: every surface slab's depth under its top
+// A junction corner's pavement pieces (the ring behind a rounded kerb, a bend's outer ring, the apron) are this deep:
+// the surface master tells them by it and lays their tiles on the world's grid, so the pieces of a fan share one square
+// grid (StreetSurfaceSpec::cornerSlabM). No straight pavement is within 8 mm of it.
+inline constexpr double kRoadCornerPaveDeep = kRoadSlabDepth + 0.011;
 inline constexpr double kRoadMaxGrade = 0.08;       // the steepest grade along a road
 inline constexpr double kRoadKerbClear = 0.5;       // m: nothing stands nearer the kerb face than this
 inline constexpr double kRoadCornerRadius = 6.0;    // m: a road-to-road corner's kerb radius, at least
+inline constexpr double kRoadCornerApron = 6.0;     // m: a junction corner's apron, the pavement on into the block's corner
+inline constexpr double kRoadApronLap = 0.4;        // m: how far an apron reaches back under the pavements
+inline constexpr double kRoadApronSquare = 0.26;    // |cos| of the angle between the arms under which a corner gets one
 inline constexpr double kRoadMouthFlare = 3.0;      // m: a lane mouth's dropped kerb runs this far past each lane edge
 inline constexpr double kRoadLine = 0.15;           // m: centre, edge and bay lines
+inline constexpr double kRoadMarkLift = 0.006;      // m: a "mark" box's top over the surface under it
 inline constexpr double kRoadCentreDash = 5.0;      // m: centre line dash and gap
 inline constexpr double kRoadStopLine = 0.45;       // m: a stop line's width
 inline constexpr double kRoadStopBack = 2.0;        // m: a stop line stands this far before its zebra
@@ -140,6 +148,12 @@ enum class RoadTint : std::uint8_t {
     CarCream,
     TaxiYellow,
     BusGreen,
+    Tactile,    // the ramps' tactile paving (yellow, domed)
+    Footway,    // a lane's raised footway and an alley's paving (light concrete pavers; Street 5)
+    Water,      // a canal's water (a stand-in plane)
+    Gutter,     // the dark gutter strip at a lane kerb's foot
+    Drain,      // a gutter's drain grate
+    Verge,      // a median island's planted top (green-brown ground; its piece's kind median_lawn)
     Count
 };
 struct RoadColor {
@@ -147,6 +161,10 @@ struct RoadColor {
 };
 FTCORE_API RoadColor roadTint(RoadTint tint);
 FTCORE_API const char* roadTintName(RoadTint tint);
+// The world surface master's "Street" value for a tint (its street layer): asphalt and patches 1, pavement 2, kerb 3,
+// lines 4, footway 5, tactile kRoadStreetTactile; the rest (Verge among them) 0 (none).
+inline constexpr int kRoadStreetTactile = 6;
+FTCORE_API int roadTintStreet(RoadTint tint);
 
 enum class RoadVehicleKind : std::uint8_t { Kei, Sedan, Taxi, Van, KeiTruck, Bus, Scooter, Bicycle, Count };
 FTCORE_API const char* roadVehicleName(RoadVehicleKind kind); // "kei", "sedan", ..., the tag's suffix
@@ -215,7 +233,42 @@ struct RoadCounts {
 };
 
 // Everything a road builds.
+// A canal's water surface (roadCanalBuild): the plan rectangle between its walls at its level, and how it runs. Its
+// canal_water solid (row = id) is the same rectangle; the drawn surface reads the flow from here.
+struct RoadWater {
+    std::string id;                 // the canal's
+    double cx = 0.0, cy = 0.0;      // m: the rectangle's centre
+    double sx = 0.0, sy = 0.0;      // m: its sides along x and y
+    double z = 0.0;                 // m: the surface
+    double depth = 0.0;             // m: down to the floor
+    double flowX = 0.0, flowY = 0.0; // plan unit vector
+    double flow = 0.0;              // m/s mid-channel
+    double halfWidth = 0.0;         // m: from the channel's middle line to a wall, across the flow
+    // The bed across the channel (waterSectionDepth): `depth` is the water at each long wall, on a shelf `shelf` m
+    // wide; from there the bed batters down over `batter` m to `deep` m of water, which the middle holds. deep <= depth
+    // or batter 0: a flat bed.
+    double shelf = 0.0, batter = 0.0, deep = 0.0;
+    bool alongY = false;            // the long walls run along y (else along x)
+};
+
+// A way out of a canal's water, built on a quay wall (roadCanalBuild): a ladder (rungs set in the wall, climbed) or a
+// flight of steps down the wall's face (walked). foot: the place in the water at it, on the surface; top: where a
+// body stands on the bank once out (topZ the bank's top); out: the unit way from the water to the bank. gap: the
+// stretch of that bank's edge (two plan points along the rail's line) the rail leaves open for it.
+enum class RoadExitKind : std::uint8_t { Ladder, Steps };
+struct RoadWaterExit {
+    std::string id;                 // <canal>-EXIT-<n>
+    std::string canal;
+    RoadExitKind kind = RoadExitKind::Ladder;
+    double footX = 0.0, footY = 0.0;
+    double topX = 0.0, topY = 0.0, topZ = 0.0;
+    double outX = 0.0, outY = 0.0;
+    double gapX0 = 0.0, gapY0 = 0.0, gapX1 = 0.0, gapY1 = 0.0;
+};
+
 struct RoadBuild {
+    std::vector<RoadWater> waters;       // one per canal built (roadCanalBuild)
+    std::vector<RoadWaterExit> exits;    // the ways out of the canals' water (roadCanalBuild)
     std::vector<RoadSolid> solids;
     std::vector<MassingProp> lamps;      // a TQ-04 street lamp each (face: towards the road's centre line)
     std::vector<RoadBay> bays;
@@ -225,6 +278,11 @@ struct RoadBuild {
     std::vector<MassingFoot> keepOut;    // where nothing parks: the junction boxes, crossings, stop lines and bus stops
     std::vector<MassingFoot> furniture;  // poles, signs, the shelter, the rail: the props keep off them
     std::vector<MassingFoot> band;       // wall to wall: the road's, a stub's, a mouth's dropped kerb
+    // roadFootways: the walked tops it laid (footway slabs, drop-kerb ramps, alley paving; riseU set) and the lanes'
+    // carriageways (a rectangle per segment). Neither joins band or carriageway, so the props, the clash and clearing
+    // passes and the decals don't see them.
+    std::vector<MassingBox> footways;
+    std::vector<MassingFoot> laneWays;
     RoadCounts counts;
 };
 
@@ -235,6 +293,12 @@ struct RoadBuild {
 // pole at each far-left corner and pedestrian signals at each zebra's ends. Bays (kRoadBayLong by kRoadBayDeep, cut
 // into the pavement) fill each parking side's runs clear of the junctions, crossings, mouths, bus stops and ends.
 FTCORE_API void roadBuild(const RoadSpec& road, RoadBuild& out);
+
+// Where a tilted road cube's centre goes (plan x, y and z, m) so its top face is centred over the box's (cx, cy) on its
+// plane: massingCubePose turns the cube, and its top's middle then stands off the plumb line by half its height times
+// the tilt, which opens a slit between a crowned carriageway's two halves and a seam between pieces of unequal depth.
+// A level box: (cx, cy, z0 + height / 2).
+FTCORE_API MassingVec roadCubeCentre(const MassingBox& box, double height);
 
 // Whether a foot comes nearer than `clear` to a carriageway rectangle (massingFeetOverlap with gap `clear`).
 FTCORE_API bool roadInCarriageway(const RoadBuild& build, const MassingFoot& foot, double clear);
@@ -267,6 +331,9 @@ struct RoadTwoWheelOptions {
     double spacing = 9.0;
     double edgeIn = 0.6;
     std::uint32_t seed = 0;
+    // roadFootways' build: a spot on a footway stands on its top (roadFootwayTop), not the ground; a spot on a lane's
+    // carriageway (its laneWays) is skipped.
+    const RoadBuild* footways = nullptr;
 };
 FTCORE_API std::size_t roadTwoWheelers(const std::vector<MassingStreet>& lanes, const RoadTwoWheelOptions& opts,
                                        const RoadBuild* road, const RoadSpec* spec, const MassingGround& ground,
@@ -284,6 +351,10 @@ struct RoadLaneLampOptions {
     double edgeIn = 0.9;
     double keep = 7.0;
     double footX = 0.6, footY = 0.48;
+    // roadFootways' build: on a kerbed or paved street (roadFootClass not None) a spot must stand wholly on a footway
+    // (its foot's corners and centre, roadFootwayTop) and stands on the highest top there; spots off the footways (a
+    // carriageway, a lane's kerbless side) are skipped. A stair's lamps stand on the ground as before.
+    const RoadBuild* footways = nullptr;
 };
 FTCORE_API std::size_t roadLaneLamps(const std::vector<MassingStreet>& lanes, const RoadLaneLampOptions& opts,
                                      const MassingGround& ground, const std::vector<RoadPoint>& existing,
@@ -320,7 +391,15 @@ struct RoadFace {
 //   - step: it overlaps another kerb or pavement piece by more than 15 cm with their tops more than kRoadFaceMax (and
 //     less than 2 m) apart there.
 // One row per piece and fault. Junction mouths and lane mouths cut the kerbs and pavements, so a built road has none.
+// Then roadCrossingOverlaps' rows, so the road check rejects them with the faces.
 FTCORE_API std::vector<RoadFace> roadKerbFaces(const RoadBuild& build, const RoadGraph* graph);
+// Two faults, one row each. Crossings (build.crossings) whose quads overlap in plan by more than 5 cm: piece the first's
+// id, fault "crossing <the other's id>", the point between their centres (a scramble's diagonals are no exception: the
+// builder lays a second one only where its band clears the first's). Marking solids tinted LineWhite or LineYellow whose
+// plan rectangles overlap by more than 2 cm on every edge normal of both: piece the first's id, fault "marking <the
+// other's id>", the point between their centres. Pieces that abut (the bars and chunks of one run) share an edge and
+// are no pair. Found through a uniform grid, so a whole network's solids check in a moment.
+FTCORE_API std::vector<RoadFace> roadCrossingOverlaps(const RoadBuild& build);
 // The boxes of `kerbs` (massingKerbs' pieces of the other streets) with a lane or carriageway fault against `build`:
 // -Kerbs leaves them out where those streets cross a road. Indices, in order.
 FTCORE_API std::vector<std::size_t> roadKerbsInCarriageway(const RoadBuild& build, const RoadGraph* graph,
@@ -343,10 +422,27 @@ struct RoadNetStreet {
     double mouthBack = 0.0;      // m: a mouth's dropped kerb runs this far behind the pavement
     double mouthZ = 0.0;         // m: the lane's surface at the mouth's back; 0: the pavement's
     bool poleLeft = false, poleRight = false; // utility poles and wires along that side (left: of its points' way)
+    std::vector<RoadPoint> scramble; // its junctions run as scrambles: an all-walk phase W and diagonal zebras (a point
+                                     // within kRoadGraphSnap of the junction's centre names it)
+    int lanes = 2;               // 2 (one each way, or one way) or 4 (two each way)
+    double median = 0.0;         // m: a four-lane street's planted median island between its halves (0 none)
 };
+// A four-lane street's lanes and median (RoadNetStreet): each half (carriageway - median) / 2 holds two lanes of at
+// least kRoadNetLaneMin; a median, when there is one, is at least kRoadNetMedianMin wide.
+inline constexpr double kRoadNetLaneMin = 2.75;    // m
+inline constexpr double kRoadNetMedianMin = 1.5;   // m
+inline constexpr double kRoadNetIslandGap = 1.5;   // m: a median island stops this far past its zebra (see roadNetBuild)
+// The centre of a four-lane street's lane k (0: next to the median, 1: by the kerb) to the left of its way's centre
+// line: median / 2 + lane width * (k + 0.5), the lane width (carriageway - median) / 4. The markings and the road
+// graph's lanes (roadGraphNetLanes) both use it.
+FTCORE_API double roadNetLaneOffset(const RoadNetStreet& street, int k);
 // Whether a roads table is a network table: its header names pts but no ground_z (the ground is the world's).
 FTCORE_API bool roadNetTable(std::string_view csv);
-// Reads a network table (CSV, a header row; '#' comment rows). Columns:
+// Reads a network table (CSV, a header row; '#' comment rows). A row of kind canal is a canal (RoadCanal), not a
+// street: pts its two plan corners "x0:y0;x1:y1", optional column canal "floor_z:water_z[:bridge_at]", optional column
+// flow "speed_mps[:heading_deg]" (0 to kCanalFlowMax; the heading plan degrees from +x toward +y; without one the
+// water runs along the long side toward +; without the column kCanalFlow); it goes to `canals` (skipped when that is
+// null). Columns:
 //   id, kind      as importRoads
 //   width_m       wall to wall
 //   pts           "x:y;x:y;...", at least two points, plan frame
@@ -358,8 +454,13 @@ FTCORE_API bool roadNetTable(std::string_view csv);
 //   mouths        optional: "lane@at@width@L|R;..." as importRoads, with no stub
 //   mouth_back_m, mouth_z  optional, as importRoads
 //   poles         optional: L, R or LR, utility poles with wires along that side (left of the way its points run)
+//   scramble      optional: "x:y;..." the junctions on it that run as scrambles (roadNetBuild)
+//   lanes         optional: 2 or 4 (empty: 2); a four-lane street is two way, each lane at least kRoadNetLaneMin
+//   median_m      optional: >= 0 (empty: 0); four lanes only, kRoadNetMedianMin at least when not 0
 // `out` is cleared first. False, with the reason naming the line, on any error.
-FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr);
+struct RoadCanal;
+FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr,
+                              std::vector<RoadCanal>* canals = nullptr);
 // As a massing street (z 0), for the road graph.
 FTCORE_API MassingStreet roadNetStreet(const RoadNetStreet& street);
 
@@ -371,9 +472,11 @@ struct RoadNetReport {
     std::size_t tight = 0;   // junction arms too short for their zebra and stop line (signals only)
     std::size_t piers = 0;
     std::size_t pruned = 0;  // kerb and pavement pieces left out: a lane across them or a carriageway under them
+    std::size_t aprons = 0;  // near-square junction corners whose pavement carries on into the block's corner
+    std::size_t scrambles = 0; // signalised junctions run as scrambles
     double maxGrade = 0.0;   // along any piece
     std::string maxGradeAt;  // the steepest piece: "<edge> (x, y)"
-    double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's level fill
+    double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's fill (crowned too: 0)
     double maxPoke = 0.0;    // m: the most the ground stands over a road's top
     std::size_t pokesOver = 0; // pokes of more than 0.3 m (noted; the rest are a crown's skin, counted only)
     std::vector<std::string> notes; // one line each: steep pieces, pokes, floats and tight arms (the first few of each)
@@ -388,9 +491,234 @@ struct RoadNetReport {
 // roadGraphJunctions) and B; ids JN-0001... numbered as roadGraphJunctions numbers them. Bays on parking streets clear
 // of the corners and zebras; lamps every kRoadLampSpacing each side, staggered; a deck's piers every 30 m down to the
 // ground and a rail along each back edge. Lane mouths as roadBuild's. Slabs deepen where the ground falls away (to 3 m).
+// A near-square corner (kRoadApronSquare) carries its pavement kRoadCornerApron on into the block's corner where the
+// ground lets the slab sit (report: aprons).
+// A scramble (a signalised junction a street's `scramble` names): its pedestrian signals on phase W (all-walk) and up
+// to two diagonal zebras (ids <junction>-ZD<n>, kRoadZebraWide wide) between its corners and straight kerbs across the
+// fill, each 25-65 degrees to every arm, in pieces tilted to the fill and 6 mm over it. The diagonals are laid once the
+// arms' markings are down: a candidate whose band would cross one already laid is skipped for the next pair, so a
+// junction has one diagonal, or two that do not cross; a bar row is laid whole or not at all, never over an arm's edge,
+// lane or stop line or zebra bar; the rows on the fill must be one unbroken run covering kScrambleRun (80%) of the diagonal's rows
+// (the marking test trims its ends only), else none of it is laid; its crossing quad spans exactly the bars laid.
+// Kerbs as any junction's.
+// A four-lane street: two lanes each half, a dashed lane line inside each half (roadNetLaneOffset) and, with no median,
+// a double solid centre line; with a median, a raised island between the halves (kerbs all round kRoadKerbRise over the
+// road beside it, kind kerb; its planted top level with the kerbs' tops, tinted Verge, kind median_lawn) that stops kRoadZebraOff + kRoadZebraWide + kRoadNetIslandGap past
+// each end's corners, so the zebras cross the gap; the carriageway rectangles leave the island out. Its stop lines
+// cover the inbound half from the island's kerb.
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
 // junctions close together) are left out (report: pruned).
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
                              RoadNetReport* report = nullptr);
+
+// ---- Canal edge: railing, mast and footbridge points (placed by the stand-in builder, not modelled here) ----
+
+inline constexpr double kQuayRailHigh = 1.1;   // m: a railing span's top over its foot
+inline constexpr double kQuaySpanMax = 2.0;    // m: a railing span's length, at most
+inline constexpr double kQuayRailIn = 0.15;    // m: the rail's line back from the water's edge
+inline constexpr double kQuayPost = 0.08;      // m: a run's closing post (a bridge_pier row) side
+inline constexpr double kQuayMastHigh = 8.0;   // m
+inline constexpr double kQuayMastPlate = 0.3;  // m: a mast's base plate side; the rail breaks round it
+inline constexpr double kQuayMastClear = 1.0;  // m a mast keeps from the road's furniture feet
+inline constexpr double kQuayBridgeWide = 2.4; // m: the footbridge's walking width
+inline constexpr double kQuayBridgeRise = 0.45; // m: its middle deck over the higher bank
+inline constexpr double kQuayBridgeDeck = 2.2;  // m: its level middle's length
+inline constexpr double kQuaySlab = 0.35;       // m: a deck's, landing's or ramp's thickness
+inline constexpr double kCanalFlow = 0.25;      // m/s: a canal's flow mid-channel when its row gives none
+inline constexpr double kCanalFlowMax = 3.0;    // m/s: the fastest a row may ask for
+
+// A canal between two roads: an axis-aligned plan rectangle (bank back to bank), the banks along its long side, each a
+// coping `bank` wide before the water.
+struct RoadCanal {
+    std::string id = "CN-01";
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    double bank = 0.4;       // m: each bank's coping, inside the rectangle
+    double bridgeAt = 0.0;   // plan coordinate along the long side of the footbridge's centre line; <= 0: none
+    double mastGap = 25.0;   // m between masts along each bank, about (the two banks staggered by half)
+    double floorZ = 1.5;     // m: the channel's floor top
+    double waterZ = 2.5;     // m: the water's surface
+    double wall = 1.0;       // m: each quay wall's thickness, from the rectangle's edge in (sides and ends)
+    double coping = 0.25;    // m: the coping slab on each wall's top
+    double flow = kCanalFlow; // m/s: the water's speed mid-channel (0: still)
+    double flowX = 0.0, flowY = 0.0; // plan unit vector the water runs along; (0, 0): the long side, toward +x or +y
+    double deep = 2.0;       // m of water mid-channel (the floor there is cut this far under the surface); the row's
+                             // floor is the shelf's along each long wall. No more than the row's own depth: a flat bed
+    double shelf = 0.6;      // m: the shelf's width along each long wall
+    double batter = 1.5;     // m: the run of the slope from the shelf down to the deep floor
+    double exitEvery = 40.0; // m between the ways out along each long wall, about (30 where the water is over 12 m wide,
+                             // which also gets a ladder on each end wall); 0: none
+};
+// The way a canal's water runs (plan unit vector): its own flowX, flowY when set, else along its long side toward +.
+FTCORE_API RoadPoint roadCanalFlowDir(const RoadCanal& canal);
+// One row of the point table (kinds railing_span, lamp_mast, bridge_deck, bridge_landing, bridge_stair, bridge_pier).
+struct RoadQuayPoint {
+    std::string kind, id, group, deck;
+    double x = 0.0, y = 0.0, z0 = 0.0, z1 = 0.0;
+    double rot = 0.0;    // plan degrees, the long axis u
+    double length = 0.0, width = 0.0;
+    double slope = 0.0;  // rise per m along +u
+};
+struct RoadQuayCounts {
+    std::size_t spans = 0, posts = 0, masts = 0, bridge = 0;
+    std::size_t mastsMoved = 0;  // masts nudged along the bank off the road's furniture
+    std::size_t roadInWater = 0; // road band feet (carriageway, kerb, pavement) reaching into the water
+    double railed = 0.0;         // m of railing
+    double bridgeAt = 0.0;       // where the footbridge went (moved off the furniture), 0: none
+};
+// The canal's points: each bank's top is the road pavement's top just behind it in `build` (else the ground); a rail
+// line kQuayRailIn back from each water edge, broken round the footbridge and each mast, cut into runs of equal spans of
+// kQuaySpanMax at most (rot along the run, z0 the bank top, z1 = z0 + kQuayRailHigh) and a closing post (a bridge_pier
+// row kQuayPost square, rail high) at each run's +u end; a lamp mast every mastGap on each bank, the second staggered
+// by half, each nudged up to 6 m along the bank to keep kQuayMastClear off `build.furniture` (its head facing the
+// road behind it); the footbridge FB-01 across at bridgeAt (moved up to 10 m to clear the furniture by 0.5 m): a
+// landing on each coping, a ramp up kQuayBridgeRise from each water edge (bridge_stair, rot uphill) and a level deck
+// kQuayBridgeDeck long, railed along both sides. Ids <canal>-<kind>-<n>; groups QR-<canal>-W|E-<n> and FB-01; deck is
+// the canal's id. `out` is cleared first. Allocates: build time only.
+FTCORE_API void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, const MassingGround& ground,
+                               std::vector<RoadQuayPoint>& out, RoadQuayCounts* counts = nullptr);
+// The channel as road solids, appended to `build` (ids <canal>-<part>-<n>, kinds canal_*): a quay wall along each side
+// and across each end, `wall` thick from the rectangle's edge in, from 0.3 m under the floor up to the bank top less
+// `coping`, in pieces of 10 m at most along the banks (each bank's top as roadQuayPoints reads it); a coping slab
+// (Kerb, walked on) over each wall piece up to the bank top; the floor (PoleConcrete, walked on) between the walls,
+// 0.3 m deep; the water (Water, no collision) a 5 cm plate up to waterZ between the walls, and its surface and flow as
+// a RoadWater in build.waters. The floor's section (roadCanalSection): where the water between the walls is at least
+// 2 (shelf + batter) + 1 m wide and `deep` is more than the row's own depth, the floor lies `deep` under the surface,
+// a shelf (canal_floor, its top floorZ) runs along each long wall and a slope (canal_floor, tilted, walked on) joins
+// the two; else the floor is flat at floorZ. The ways out (exitEvery): on each long wall one every exitEvery m at
+// most, evenly spaced, a ladder and a flight of steps in turn (the low wall begins with a ladder, the high wall with
+// steps), moved 3.5 m clear of the footbridge; a ladder stands in a flight's place where something built before the
+// channel (a road's deck) stands over the flight, and none is set where that stands over the ladder's own foot or the
+// bank's top is no higher than 0.3 m over the water; water over 12 m wide gets a ladder on each end wall too. A
+// ladder (canal_ladder, Steel, no collision): two stringers off the wall's face from the shelf to a metre over the
+// bank, a rung every 0.3 m, ties into the wall and a hoop back onto the coping. Steps (canal_steps, walked on): a
+// flight 0.9 m wide down the wall's face from the bank's top to the shelf, risers of 0.18 m at most, treads of 0.28 m,
+// its top toward -u. Each is a RoadWaterExit in build.exits. The ground stays as it is: under ground higher than the
+// floor the channel is buried until the height field is cut. Returns the solids added (0 for a rectangle under
+// 4 x (2 wall + 1) m).
+FTCORE_API std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build);
+// The section roadCanalBuild gives a canal's floor: the water at the long walls (the row's own), the shelf, the
+// batter and the water mid-channel, as RoadWater carries them (shelf and batter 0 and deep = depth for a flat bed).
+struct RoadCanalSection {
+    double depth = 0.0, shelf = 0.0, batter = 0.0, deep = 0.0;
+};
+FTCORE_API RoadCanalSection roadCanalSection(const RoadCanal& canal);
+// The exits as CSV: '#' comment rows, then id,canal,kind,foot_x,foot_y,top_x,top_y,top_z,out_x,out_y,gap_x0,gap_y0,gap_x1,gap_y1.
+FTCORE_API std::string roadExitCsv(const std::vector<RoadWaterExit>& exits);
+
+// ---- A way into the sea from a quay: a slip, and the roped swimming water off it ----
+
+// A slip from a quay's edge down into the sea, and the buoy lines round the water off it. The quay's edge runs along
+// y at edgeX with the sea toward +x. The slip is `width` m wide about y, its top at topZ on the edge, falling `fall`
+// m per m out to endZ (under the sea's level). The pen: a line of buoys along x = buoyX from penY0 to penY1 and one
+// along each of those two sides from the slip's reach out to it.
+struct RoadSeaSlip {
+    std::string id = "SLIP-01";
+    double edgeX = 0.0, y = 0.0, width = 5.0;
+    double topZ = 4.0, endZ = -1.8, fall = 0.5;
+    double seaZ = 0.0;
+    double buoyX = 0.0, penY0 = 0.0, penY1 = 0.0; // penY1 <= penY0: no buoys
+};
+// The slip and its buoys as road solids appended to `build` (ids <id>-<part>-<n>): the ramp (sea_slip, tilted, walked
+// on) 0.5 m thick; under it a pier of fill every metre out (sea_slip_fill, solid) up to its underside; a kerb along
+// each side (sea_slip_kerb); the buoys (sea_buoy: a float 0.55 m across standing 0.3 m out of the water, a mast and a
+// top mark, every 10 m, no collision) and between them the line's small floats (sea_float, every 2 m). Returns the
+// solids added.
+FTCORE_API std::size_t roadSeaSlipBuild(const RoadSeaSlip& slip, RoadBuild& build);
+// The point table as CSV: '#' comment rows, then kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck.
+FTCORE_API std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points);
+
+// ---- Footways: a raised, kerbed pavement on every street a vehicle uses outside the road network ----
+
+inline constexpr double kFootLaneCarriage = 3.0;  // m: a lane's one-way carriageway (lanes 4 to 6 m)
+inline constexpr double kFootLaneMin = 1.0;       // m: a lane footway, kerb stone included, at least
+inline constexpr double kFootLaneMax = 1.5;       // m: ... at most
+inline constexpr double kFootRoadMin = 2.0;       // m: a street of 7 m or more: each footway, at least
+inline constexpr double kFootRoadMax = 3.0;       // m: ... at most (0.2 of the width between)
+inline constexpr double kFootAlleyUpTo = 3.0;     // m: a street no wider is an alley: pedestrians only
+inline constexpr double kFootGutter = 0.3;        // m: the dark gutter strip at the kerb's foot, in the carriageway
+inline constexpr double kFootDrainEvery = 12.0;   // m: a drain grate in the gutter
+inline constexpr double kFootRamp = 1.2;          // m: a drop kerb's ramp each side of a mouth
+inline constexpr double kFootTactile = 0.6;       // m: the tactile strip at a ramp's foot
+inline constexpr double kFootLaneUpTo = 6.0;      // m: a vehicle street this wide or narrower is a one-way lane
+inline constexpr double kFootStep = 1.0;          // m: the footway's line is read at most this far apart
+inline constexpr double kFootFit = 0.03;          // m: a piece's top keeps this near its samples' tops
+inline constexpr double kFootLongest = 12.0;      // m: the longest piece
+inline constexpr double kFootShortest = 0.6;      // m: a shorter run is left out
+inline constexpr double kFootDryAbove = 0.5;      // m: no footway where the ground is this low or lower (the sea)
+inline constexpr double kFootBollardDia = 0.15;   // m
+inline constexpr double kFootBollardHigh = 0.9;   // m
+inline constexpr double kFootBollardGap = 1.3;    // m: the widest gap between an alley mouth's bollards (and walls)
+
+// What a streets-table row is to the footways: a vehicle street (kerbed footways), a pedestrian way (an alley or a
+// market arcade: paved, bollards at its mouths) or neither (stairs; no row).
+enum class RoadFootClass : std::uint8_t { None, Vehicle, Pedestrian };
+// Vehicle: width over kFootAlleyUpTo and kind not stair, link_stair, alley or market_arcade. Pedestrian: kind alley or
+// market_arcade, or any other non-stair row kFootAlleyUpTo wide or less. None: stair and link_stair.
+FTCORE_API RoadFootClass roadFootClass(const MassingStreet& street);
+
+// A vehicle street's section across its polyline (t: to its left, looking along its points).
+struct RoadFootSection {
+    double cwLo = 0.0, cwHi = 0.0;     // the carriageway, kerb face to kerb face
+    double footLeft = 0.0;              // m: the left footway, kerb stone included (0 none)
+    double footRight = 0.0;             // m: the right one
+};
+// Lanes (width up to 6 m): a kFootLaneCarriage carriageway and the rest as footways of kFootLaneMin to kFootLaneMax:
+// both sides when each gets kFootLaneMin, else one side (the left), the carriageway beside it. Wider streets: footways
+// of 0.2 of the width clamped to kFootRoadMin..kFootRoadMax both sides, or the street's own pavement_m when it has one.
+// So 6 m: 1.5 + 3.0 + 1.5; 5 m: 1.0 + 3.0 + 1.0; 4 m: 1.0 (left) + 3.0; 8 m: 2.0 + 4.0 + 2.0; 10 m: 2.0 + 6.0 + 2.0;
+// 14 m: 2.8 + 8.4 + 2.8. A street too narrow for that (under kFootLaneCarriage + kFootLaneMin) gets none.
+FTCORE_API RoadFootSection roadFootSection(const MassingStreet& street);
+
+// One alley mouth: an alley end meeting a vehicle street or a road's band.
+struct RoadAlleyMouth {
+    std::string alley, street; // street: the vehicle street's id, or "road" for the road network's band
+    RoadPoint at;              // the alley's end
+    std::size_t bollards = 0;
+};
+struct RoadFootStreet {
+    std::string id;
+    double length = 0.0;
+    double kerbed[2] = {0.0, 0.0}; // m of kerb laid along the left [0] and right [1] side
+    bool wantLeft = false, wantRight = false;
+};
+struct RoadFootReport {
+    std::size_t vehicle = 0, pedestrian = 0, skipped = 0; // skipped: no-class rows and the road network's own rows
+    std::size_t pieces = 0;      // footway pieces (each with a kerb)
+    std::size_t gutters = 0;     // gutter strips: one runs on under several pieces where the ground lets it
+    std::size_t hidden = 0;      // pieces whose slab is left out, the ground standing over all of it (the kerb stays)
+    std::size_t ramps = 0, tactiles = 0, drains = 0, bollards = 0, paving = 0;
+    std::size_t mouths = 0;      // gaps where another vehicle street's carriageway meets one (drop kerbs both sides)
+    std::size_t buried = 0;      // footway pieces whose wall-side ground stands over their top by 5 cm or more
+    std::size_t floating = 0;    // pieces deepened by more than 0.5 m over falling ground
+    double kerbM = 0.0, footM2 = 0.0;
+    std::vector<RoadFootStreet> streets;  // one per vehicle street, in table order
+    std::vector<RoadAlleyMouth> alleyMouths;
+};
+// Builds the footways (appends to `out`: solids, footways, laneWays, furniture for the bollards). `streets` is the
+// massing streets table; rows named in `skipIds` (the road network's own streets) are skipped; `net` (or null) is the
+// road network's build, whose bands the footways stop short of. Each vehicle street, segment by segment: on each side
+// with a footway (roadFootSection), a kerb stone kRoadKerbRise + kRoadSurfaceLift over the ground (kinds kerb), the footway slab level
+// with the kerb's top back to the wall line (kind footway, tint Footway), a gutter strip kFootGutter wide in the
+// carriageway flush with it (12 mm over the ground under it; kind gutter, tint Gutter, matt) with a drain grate every
+// kFootDrainEvery on its line,
+// all following the ground read along the kerb line every kFootStep in pieces fitted within kFootFit (kFootLongest at
+// most), outer corners of bends lapped, inner ones cut back. A sample is left out within another vehicle street's
+// carriageway (a mouth: the last kFootRamp of footway each side becomes a drop-kerb ramp down to the gutter, with a
+// kFootTactile tactile strip at its foot), where this street ends inside another's band, inside the network's bands,
+// and over the sea (ground at or under kFootDryAbove). Each pedestrian way: a paving slab wall to wall, 5 cm over the
+// ground; at each end meeting a vehicle street or the network's band, a row of bollards across it (gaps no wider than
+// kFootBollardGap) 0.4 m inside the other's wall line. The vehicle street's footway runs on across an alley mouth, so
+// the alley meets it at a kerb-high step. Allocates: build time only.
+FTCORE_API void roadFootways(const std::vector<MassingStreet>& streets, const std::vector<std::string>& skipIds,
+                             const MassingGround& ground, const RoadBuild* net, RoadBuild& out,
+                             RoadFootReport* report = nullptr);
+// The top of the highest footway piece (build.footways) whose footprint holds the plan point; false when none does.
+FTCORE_API bool roadFootwayTop(const RoadBuild& build, double x, double y, double& top);
+
+// The footway check's rejects, one line each: a vehicle street that wants a footway on a side (RoadFootStreet) and has
+// kerb along less than `share` of its length on every such side ("no kerbed footway"), and an alley mouth with no
+// bollard and no footway piece within 1.5 m of its end ("open alley mouth").
+FTCORE_API std::vector<std::string> roadFootRejects(const RoadFootReport& report, const RoadBuild& build,
+                                                    double share = 0.4);
 
 } // namespace ftcore

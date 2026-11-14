@@ -53,7 +53,8 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     const Expect files[] = {{"ember_swirl", 1}, {"falling_leaves", 1}, {"fireworks", 3}, {"flipbook_fire", 1},
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
-                            {"dealer_deal_tell", 3}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 3}, {"ink_hit", 3}};
+                            {"dealer_deal_tell", 3}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 3}, {"ink_hit", 3},
+                            {"water_splash", 3}, {"water_drips", 1}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -488,6 +489,32 @@ TEST_CASE("vfx: Niagara plan stretches and lays flat") {
     CHECK(m.acceleration.z == doctest::Approx(90.f).epsilon(0.01)); // mean of 1.4 -> 0.4 m/s^2
     CHECK(anyGap(m, "limitVelocity"));
     CHECK(anyGap(m, "octaves"));
+}
+
+TEST_CASE("vfx: the water's drips are lit streaks, not glowing beads") {
+    VfxEffect e;
+    REQUIRE(loadEffect("water_drips", e));
+    REQUIRE(e.emitters.size() == 1);
+    const VfxEmitter& drops = e.emitters[0];
+    // Lit by the scene and laid over it, so they do not glow at night; drawn out along their fall.
+    CHECK(drops.lit);
+    CHECK(drops.blend == VfxBlend::Alpha);
+    CHECK(drops.stretch > 0.03f);
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, plan);
+    REQUIRE(plan.emitters.size() == 1);
+    CHECK(plan.emitters[0].lit);
+    CHECK_FALSE(plan.emitters[0].additive);
+    CHECK(plan.emitters[0].facing == VfxNiagaraFacing::VelocityAligned);
+    // An additive emitter is never lit, whatever its spec says; the splash keeps its own colour.
+    VfxEffect glow;
+    REQUIRE(importVfxEffect(R"({"name":"g","emitters":[{"name":"a","rate":1,"lifetime":1,"blend":"additive","lit":true}]})", glow));
+    planVfxNiagara(glow, plan);
+    CHECK_FALSE(plan.emitters[0].lit);
+    VfxEffect splash;
+    REQUIRE(loadEffect("water_splash", splash));
+    planVfxNiagara(splash, plan);
+    for (const VfxNiagaraEmitter& p : plan.emitters) CHECK_FALSE(p.lit);
 }
 
 TEST_CASE("vfx: one-shot plans report their duration") {

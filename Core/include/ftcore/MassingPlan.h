@@ -301,8 +301,9 @@ enum class MassingLookSurface : std::uint8_t {
     BuildingRender, // render: the pole concrete
     BuildingTile, // ceramic tile
     BuildingBoard, // board-formed concrete
+    Lawn,          // grass: a lawn box (kind "lawn")
 };
-inline constexpr std::size_t kMassingLookSurfaceCount = 11;
+inline constexpr std::size_t kMassingLookSurfaceCount = 12;
 // Decided from the box's src, kind, id prefix and row alone. No allocation.
 FTCORE_API MassingLookSurface massingLookSurface(const MassingBox& box);
 // The surface is one of the building finishes (BuildingA .. BuildingBoard). No allocation.

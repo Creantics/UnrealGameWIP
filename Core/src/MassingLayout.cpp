@@ -1132,9 +1132,25 @@ MassingYardCounts massingYardFill(std::vector<MassingBox>& boxes, const std::vec
                         runs[0] = {s0, m - opts.gateWide * 0.5};
                         runs[1] = {m + opts.gateWide * 0.5, s1};
                     }
+                    const bool low = side == gate && best < (1 << 30) && opts.frontHigh > 0.0 && opts.frontPiece > 0.0;
                     for (const auto& run : runs) {
                         const double r0 = run.first, r1 = run.second;
                         if (r1 - r0 < 0.5) continue;
+                        if (low) {
+                            // From the gate outward: a piece, a gap, a piece ... (the last piece no shorter than 0.5 m).
+                            const bool fromHi = r1 <= (s0 + s1) * 0.5 + 1e-9; // the run before the gate ends at it
+                            for (double a = 0.0; a + 0.5 <= r1 - r0 + 1e-9; a += opts.frontPiece + opts.frontGap) {
+                                const double b = std::min(a + opts.frontPiece, r1 - r0);
+                                const double a0 = fromHi ? r1 - b : r0 + a, a1 = fromHi ? r1 - a : r0 + b;
+                                std::snprintf(buf, sizeof buf, "-F%d", ++piece);
+                                if (alongX)
+                                    addBox(id + buf, "wall", a0, line, a1, line + t, opts.frontHigh);
+                                else
+                                    addBox(id + buf, "wall", line, a0, line + t, a1, opts.frontHigh);
+                                ++n.fences;
+                            }
+                            continue;
+                        }
                         const int pieces = std::max(1, static_cast<int>(std::ceil((r1 - r0) / opts.fencePiece)));
                         const double step = (r1 - r0) / pieces;
                         for (int k = 0; k < pieces; ++k) {

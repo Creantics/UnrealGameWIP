@@ -527,6 +527,6 @@ std::uint64_t fnv64(const std::string& s) {
 
 TEST_CASE("r4 reproducible: the default spec writes the r4 HLSL byte for byte") {
     const std::string h = windowInteriorHlsl(WindowGridSpec{});
-    CHECK(h.size() == 4592u);
-    CHECK(fnv64(h) == 778640904970305523ull);
+    CHECK(h.size() == 4803u);
+    CHECK(fnv64(h) == 635456179870246293ull);
 }

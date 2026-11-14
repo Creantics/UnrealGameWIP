@@ -99,6 +99,7 @@ UMaterial* NewMaster(const TCHAR* Path, TArray<UPackage*>& Dirty)
 	Material->SetUsageByFlag(MATUSAGE_SkeletalMesh, true);
 	Material->SetUsageByFlag(MATUSAGE_MorphTargets, true);
 	Material->SetUsageByFlag(MATUSAGE_Clothing, true);
+	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true); // props drawn by the cell instancer
 	Material->TwoSided = true;
 	Dirty.AddUnique(Package);
 	return Material;

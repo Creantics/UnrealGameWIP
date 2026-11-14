@@ -204,6 +204,19 @@ TEST_CASE("roads: parked cars stay in their bays, off doors and the carriageway"
         CHECK(s.tag == std::string("FTVehicle_") + roadVehicleName(cars.front().kind));
         if (s.shape == RoadShape::Cylinder) CHECK(!s.collide);
     }
+    // Stand-ins: dark neutral bodies (no bright paint), a glass band, a steel disc on each wheel.
+    for (const RoadVehicle& v : cars)
+        CHECK((v.body == RoadTint::CarSilver || v.body == RoadTint::CarBlack || v.body == RoadTint::CarBlue ||
+               v.body == RoadTint::CarGreen || v.body == RoadTint::CarWhite));
+    std::size_t discs = 0, tyres = 0, glass = 0;
+    for (const RoadSolid& s : parts) {
+        if (s.shape == RoadShape::Cylinder && s.tint == RoadTint::Steel) ++discs;
+        if (s.shape == RoadShape::Cylinder && s.tint == RoadTint::Tyre) ++tyres;
+        if (s.tint == RoadTint::Glass) ++glass;
+    }
+    CHECK(tyres == 4);
+    CHECK(discs == 4);
+    CHECK(glass == 1);
 }
 
 TEST_CASE("roads: doors table reads door rows, skips rooms") {
