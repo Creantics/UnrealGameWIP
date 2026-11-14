@@ -7,13 +7,15 @@
 // cylinder each count once. Text inside a mark is part of it.
 //
 // At rest (nothing changed for `rules.rest` seconds) the other marks fade out (`actionAlpha`), then only the party
-// rows and the prompts show: a prompt stands for as long as its action is in the fight. In action the marks are
+// rows and the prompts show: a prompt stands for as long as its action is in the fight (and, for a basic control, the
+// teaching policy keeps it). In action the marks are
 // granted in priority order up to `rules.marks`; what does not fit is not drawn. The prompt rows are fixed and never
 // dropped, so they sit outside the cap: every row the prompts fill is granted.
 //
 //   UiBudgetState st;
 //   each tick:  const UiPromptReasons why = uiPromptReasons(fight, giftHealWhy, giftGuardWhy);
-//               UiBudgetInput in = ...; in.prompts = uiPromptsDrawable(uiPromptsPresent(why, teaching), keyed, below);
+//               const UiPromptMask open = uiPromptsTaught(uiPromptsPresent(why), settings.showBasicControls, teaching);
+//               UiBudgetInput in = ...; in.prompts = uiPromptsDrawable(open, keyed, below);
 //               in.want = uiMarkWants(view.now, in.prompts);  (plus the widget's own wants)
 //               const UiBudgetOut& out = uiBudgetStep(st, in, rules);
 //               dimmed = uiPromptsDimmed(why, noKey);
@@ -21,6 +23,7 @@
 // Zero allocation.
 #include "ftcore/Api.h"
 #include "ftcore/PressReason.h"
+#include "ftcore/UiFirstUse.h"
 #include "ftcore/UiStyle.h"
 #include "ftcore/UiViews.h"
 
@@ -46,33 +49,35 @@ enum class UiMarkKind : std::uint8_t {
 };
 inline constexpr std::size_t kUiMarkKindCount = 12;
 
-// The key prompts, bottom right: HEAL, the two GIFT prompts, RELOAD, PARTNER (the paired counter's short window), then
-// the first fight's basic controls.
-enum class UiPrompt : std::uint8_t { Heal, GiftHeal, GiftGuard, Reload, Pair, Attack, Guard, Dodge, Jump };
-inline constexpr std::size_t kUiPromptCount = 9;
+// The key prompts, bottom right: HEAL, the two GIFT prompts, PARTNER (the paired counter's short window), then the basic
+// controls. No RELOAD: the reload is automatic and the rules have no reload press, so the row comes back with that press.
+enum class UiPrompt : std::uint8_t { Heal, GiftHeal, GiftGuard, Pair, Attack, Guard, Dodge, Jump };
+inline constexpr std::size_t kUiPromptCount = 8;
 using UiPromptMask = std::uint16_t;              // UiPrompt bits
 static_assert(kUiPromptCount <= 16, "UiPromptMask holds one bit per prompt");
 inline constexpr UiPromptMask uiPromptBit(UiPrompt p) { return static_cast<UiPromptMask>(1u << static_cast<unsigned>(p)); }
+// The basic controls' prompts (Attack, Guard, Dodge, Jump): the ones the teaching policy decides (uiPromptsTaught).
+inline constexpr UiPromptMask kUiBasicPrompts = static_cast<UiPromptMask>(
+    uiPromptBit(UiPrompt::Attack) | uiPromptBit(UiPrompt::Guard) | uiPromptBit(UiPrompt::Dodge) | uiPromptBit(UiPrompt::Jump));
 
 // Each prompt owns a fixed row, counted up from the bottom margin (0 is the lowest), and never moves when others open or
 // close; an empty row stays empty. Row 1 HEAL, row 2 GIFT (GIFT HEAL and GIFT GUARD share it: with both ready both
-// stand, GIFT GUARD at the margin and GIFT HEAL to its left, and either alone takes the margin), row 3 RELOAD, row 4
-// PARTNER, rows 5 to 7 ATTACK, GUARD and DODGE, row 8 JUMP (when it is bound).
+// stand, GIFT GUARD at the margin and GIFT HEAL to its left, and either alone takes the margin), row 3 PARTNER, rows 4
+// to 6 ATTACK, GUARD and DODGE, row 7 JUMP (when it is bound).
 constexpr std::uint8_t uiPromptRow(UiPrompt p) {
     switch (p) {
     case UiPrompt::Heal: return 0;
     case UiPrompt::GiftHeal:
     case UiPrompt::GiftGuard: return 1;
-    case UiPrompt::Reload: return 2;
-    case UiPrompt::Pair: return 3;
-    case UiPrompt::Attack: return 4;
-    case UiPrompt::Guard: return 5;
-    case UiPrompt::Dodge: return 6;
-    case UiPrompt::Jump: return 7;
+    case UiPrompt::Pair: return 2;
+    case UiPrompt::Attack: return 3;
+    case UiPrompt::Guard: return 4;
+    case UiPrompt::Dodge: return 5;
+    case UiPrompt::Jump: return 6;
     }
     return 0;
 }
-inline constexpr std::uint8_t kUiPromptRows = 8; // the rows there are, so at most this many rows at once
+inline constexpr std::uint8_t kUiPromptRows = 7; // the rows there are, so at most this many rows at once
 static_assert(uiPromptRow(UiPrompt::Jump) + 1 == kUiPromptRows, "the top row is JUMP's");
 // The one row two prompts may hold at once: the two gifts'. Every other row holds one.
 constexpr bool uiPromptSharesRow(UiPrompt p) { return p == UiPrompt::GiftHeal || p == UiPrompt::GiftGuard; }
@@ -117,16 +122,20 @@ FTCORE_API std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHud
 //   Heal       the fight's own heal (ArenaFight::pressReason(ArenaPress::Heal)): Absent with no heal charges in the kit
 //   GiftHeal   the session's gift slot (FightSession::giftReason(Gift::Heal, lead, lead health)), from the host:
 //   GiftGuard  Absent with no session or no third place, as the host passes it
-//   Reload     Absent: the reload is automatic, there is no reload press (no InputAction) to ask about
-//   Pair       Absent with no partner in the fight (allyMaxHp 0: the press is the partner's); else ArenaPress::Pair
+//   Pair       ArenaPress::Pair as the rules answer it: Ok while the paired counter's window is open, else Closed (a
+//              fight without a partner included: the press is the Count key's, and tryPair takes it there too)
 //   Attack     ArenaPress::Light; Guard, Dodge, Jump their own presses (Absent where the kit has none)
 using UiPromptReasons = std::array<PressReason, kUiPromptCount>;
 FTCORE_API UiPromptReasons uiPromptReasons(const ArenaFight& fight, PressReason giftHeal, PressReason giftGuard);
 
-// The prompts the fight has: each whose action is in this fight (its answer is not Absent), the basic controls (Attack,
-// Guard, Dodge, Jump) only while the first-use teaching holds them (`teaching`, UiPrompt bits; UiFirstUse.h). A prompt
-// not present is not drawn; every other stands in its row whether its press is taken now or not.
-FTCORE_API UiPromptMask uiPromptsPresent(const UiPromptReasons& why, UiPromptMask teaching);
+// The rules' query: the prompts whose action is in this fight (its answer is not Absent). A prompt not present is not
+// drawn; every other may stand in its row whether its press is taken now or not.
+FTCORE_API UiPromptMask uiPromptsPresent(const UiPromptReasons& why);
+
+// The teaching policy over the rules' answer (not a rule: the presses work whatever it says). The basic controls'
+// prompts in `present` stand as `policy` says: FirstFights while the first-use teaching holds them (`teaching`, UiPrompt
+// bits of the controls live in UiFirstUse), Always all, Never none. Every other prompt passes as the rules gave it.
+FTCORE_API UiPromptMask uiPromptsTaught(UiPromptMask present, ShowBasicControls policy, UiPromptMask teaching);
 
 // The prompts drawn dimmed (ink at 40 percent, the key cap too): each whose press would be refused now (pressRefused:
 // its reason word stands after it), and each with no key on the device (`noKey`: the import left its action unbound,

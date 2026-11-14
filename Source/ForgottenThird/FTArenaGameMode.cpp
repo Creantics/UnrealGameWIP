@@ -726,10 +726,13 @@ void AFTArenaGameMode::Begin()
 	Setup.KitId = KitId;
 	Setup.Lead = FindLead();
 	// The ally a carrying run shows (the runner spawns it only under its switches): the first other look in the party, or
-	// the one -ArenaAllyLook=<name> names (review stills of a given partner's mark).
+	// the one -ArenaAllyLook=<name> names (review stills of a given partner's mark; a review switch, so not in Shipping,
+	// where the ally is always the first other look).
 	const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
 	FString WantAlly;
+#if !UE_BUILD_SHIPPING
 	FParse::Value(FCommandLine::Get(), TEXT("ArenaAllyLook="), WantAlly, false);
+#endif
 	for (const FFTLeadLook& Member : Party)
 	{
 		if (&Member != Setup.Lead && (WantAlly.IsEmpty() || Member.Name.Equals(WantAlly, ESearchCase::IgnoreCase)))
@@ -738,10 +741,21 @@ void AFTArenaGameMode::Begin()
 			break;
 		}
 	}
+	// A look's seat is its place in PartyLooks (at most 2). The place is found by address, never by pointer subtraction: a
+	// look that is not in the party (none should be) takes seat 0, logged.
 	auto SeatOf = [&Party](const FFTLeadLook* Look) -> uint8
 	{
-		const int32 I = Look ? static_cast<int32>(Look - Party.GetData()) : 0;
-		return static_cast<uint8>(Party.IsValidIndex(I) ? FMath::Min(I, 2) : 0);
+		if (!Look)
+		{
+			return 0;
+		}
+		const int32 I = Party.IndexOfByPredicate([Look](const FFTLeadLook& Member) { return &Member == Look; });
+		if (I == INDEX_NONE)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: look %s is not in PartyLooks; it takes seat 0."), *Look->Name);
+			return 0;
+		}
+		return static_cast<uint8>(FMath::Min(I, 2));
 	};
 	Setup.LeadSeat = SeatOf(Setup.Lead);
 	Setup.AllySeat = SeatOf(Setup.Ally);

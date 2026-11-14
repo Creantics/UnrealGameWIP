@@ -86,7 +86,8 @@ struct ArenaHudThird {
     // The gift prompts' figures, with their own nulls apart from `planned`. Whether a gift's prompt stands, lit or dimmed,
     // is the slot's own answer (FightSession::giftReason, passed to uiPromptReasons), never these.
     int giftHeals = -1;            // Gift Heals left this fight (-1: none reported), shown in GIFT HEAL n, cooling or not
-    bool giftGuardReady = false;   // the Gift Guard is off its cooldown (false also when none is reported)
+    bool giftGuardReady = false;   // the slot answers Ok for the Gift Guard (FightSession::giftReason; false also when none
+                                   // is reported): the host copies the rules' answer, it never works it out from a timer
     bool operator==(const ArenaHudThird&) const = default;
 };
 
