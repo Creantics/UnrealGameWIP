@@ -4325,9 +4325,12 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 		: HallMode == 2 ? Hall.active() && Hall.now() - HallShownAt >= 1.0 : bProbeGuard;
 	Hall.tick(static_cast<double>(StepSeconds), H);
 	Count();
-	if (!Hall.active() && Fight.time() >= HallAt
-		&& Hall.start(HallPool, HallRng, 0u, ftcore::intensityBand(ftcore::IntensityBand::Low, 0, HallTuning), false)
-			== ftcore::HallucinationStart::Started)
+	// The weighted pick (newest x3, caused x2; the lone key x2 once this fight's lone Releases pool lonePoolFloor).
+	// Unscripted, so no scare flag: the arena has no authored moment and no ScarePacer.
+	ftcore::HallucinationStartIn Offer;
+	Offer.band = ftcore::intensityBand(ftcore::IntensityBand::Low, 0, HallTuning);
+	Offer.loneLoadPool = Session ? Session->Get().lonePooled() : 0u;
+	if (!Hall.active() && Fight.time() >= HallAt && Hall.start(HallPool, HallRng, Offer) == ftcore::HallucinationStart::Started)
 	{
 		HallShownAt = Hall.now();
 		Count();

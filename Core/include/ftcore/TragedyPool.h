@@ -21,6 +21,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/CombatInputs.h"
 
+#include <algorithm>
 #include <array>
 #include <bitset>
 #include <cstddef>
@@ -28,6 +29,7 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ftcore {
@@ -113,6 +115,8 @@ public:
         const std::size_t i = static_cast<std::size_t>(k);
         return weightOf(i, newest(lead_[i]), loneWeighted);
     }
+    // Key `k`'s place in the unlock order, from 1 (0: locked or no such key).
+    std::uint32_t unlockOrder(int k) const { return has(k) ? order_[static_cast<std::size_t>(k)] : 0u; }
     bool has(int k) const { return defined(k) && unlocked_.test(static_cast<std::size_t>(k)); }
     FighterId lead(int k) const { return defined(k) ? lead_[static_cast<std::size_t>(k)] : kNoFighter; }
 
@@ -167,5 +171,34 @@ private:
     std::array<std::uint32_t, kMaxTragedyKeys> places_{};
     std::array<double, kMaxTragedyKeys> shownAt_{};
 };
+
+// The pool as a save keeps it: the unlocked keys by id, oldest unlock first, so a restore gives back which key is each
+// lead's newest. Ids rather than indices, so a save survives a re-import that reorders the table. The shown stamps
+// are not kept (they are on the Hallucination's clock, which a save does not keep either): a restored pool has shown
+// nothing yet. Capture and apply allocate (they copy text): call them on save and load, not per frame.
+struct TragedySave {
+    std::vector<std::string> unlocked;
+    bool operator==(const TragedySave&) const = default;
+};
+
+inline TragedySave captureTragedies(const TragedyTable& t, const TragedyPool& p) {
+    TragedySave s;
+    std::vector<std::pair<std::uint32_t, std::size_t>> byOrder;
+    for (std::size_t i = 0; i < t.keys.size() && i < kMaxTragedyKeys; ++i)
+        if (const std::uint32_t o = p.unlockOrder(static_cast<int>(i))) byOrder.emplace_back(o, i);
+    std::sort(byOrder.begin(), byOrder.end());
+    s.unlocked.reserve(byOrder.size());
+    for (const auto& [order, i] : byOrder) s.unlocked.push_back(t.keys[i].id);
+    return s;
+}
+
+// Unlocks the save's keys, in its order, into `p` (a fresh pool of `t`: a key already unlocked there keeps its own
+// place). Returns how many of the save's ids `t` no longer has; those are skipped.
+inline int applyTragedies(const TragedySave& s, const TragedyTable& t, TragedyPool& p) {
+    int missing = 0;
+    for (const std::string& id : s.unlocked)
+        missing += p.unlock(tragedyKey(t, id)) ? 0 : 1;
+    return missing;
+}
 
 } // namespace ftcore
