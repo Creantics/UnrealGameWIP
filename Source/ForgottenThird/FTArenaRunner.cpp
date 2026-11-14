@@ -444,6 +444,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 #if !UE_BUILD_SHIPPING
 	bLone = FParse::Param(FCommandLine::Get(), TEXT("ArenaLone"));
+	bNoLoneCall = bLone && FParse::Param(FCommandLine::Get(), TEXT("ArenaNoLoneCall"));
 	LoneGiftAt = -1.f;
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaLoneGiftAt="), LoneGiftAt) && !(LoneGiftAt >= 0.f))
 	{
@@ -451,6 +452,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 #else
 	bLone = false;
+	bNoLoneCall = false;
 #endif
 	// The third slot: the story carry's while it is a fight the story handed off and not yet settled (Companion with no
 	// carry), then -ArenaThirdSlot outside Shipping.
@@ -1808,6 +1810,8 @@ void UFTArenaRunner::BeginSession()
 	SwapMoveSteps = SwapSteps = SwapChecks = SwapChecksPassed = 0;
 	SwapWorstNew = 1e9;
 	SwapWorstOld = 0.0;
+	SwapWorstAlign = 1.0;
+	SwapSwitchChecks = 0;
 	bLoneGiftDone = false;
 	LoneGift = {};
 	PartnerLoadTime = -1e9;
@@ -2579,7 +2583,8 @@ void UFTArenaRunner::StepFight()
 			}
 		}
 		// The partner's press, one step after the parry (well inside the pair window).
-		In.pair = bPartnerDue;
+		// -ArenaNoLoneCall: none while Lone, so a fight begun Lone with -ArenaPartner keeps the partner out.
+		In.pair = bPartnerDue && !(bNoLoneCall && Fight.lone());
 		bPartnerDue = false;
 		if (ParryHold > 0.f && Now - ParryTime < static_cast<double>(ParryHold))
 		{
@@ -2702,7 +2707,7 @@ void UFTArenaRunner::StepFight()
 	}
 	if (bPartner)
 	{
-		TrackSwapCheck(In); // the input this step takes, after a takeover
+		TrackSwapCheck(In); // the input this step takes, after a takeover or a switch
 	}
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	if (bPartner && Session)
@@ -6400,7 +6405,7 @@ void UFTArenaRunner::SwitchLeadBodies()
 	SwapLeadFigures();
 	SessionLead = OtherLead();
 	++SwitchesDone;
-	ArmSwapCheck();
+	ArmSwapCheck(true);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the lead switch: control passes to lead %d at %d hp; the other lead's body at %d hp, driven by the partner brain."),
 		Fight.time(), static_cast<int32>(SessionLead), Fight.hp(), Fight.allyHp());
 }
@@ -6674,9 +6679,9 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner blows ruled once %s (fight %d blows, %d Hit events, the session ruled %d, %d joined)."),
 		!Session ? TEXT("n/a, no session") : (PartnerBlowsRuled == S.partnerBlows && PartnerHitEvents == S.partnerBlows ? TEXT("PASS") : TEXT("FAIL")),
 		S.partnerBlows, PartnerHitEvents, PartnerBlowsRuled, PartnerJoins);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner swap input %s (%d takeovers, %d checked, %d passed; the new body moved at least %.0f cm with a move input, the old at most %.0f cm)."),
-		SwapChecks == 0 ? TEXT("n/a") : (SwapChecksPassed == SwapChecks ? TEXT("PASS") : TEXT("FAIL")), PartnerTakeovers, SwapChecks, SwapChecksPassed,
-		SwapChecks > 0 ? SwapWorstNew : 0.0, SwapWorstOld);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner swap input %s (%d takeovers, %d switches, %d checked (%d after a switch), %d passed; the new body moved at least %.0f cm with a move input, the fallen one at most %.0f cm, a switched one along the input at least %.2f)."),
+		SwapChecks == 0 ? TEXT("n/a") : (SwapChecksPassed == SwapChecks ? TEXT("PASS") : TEXT("FAIL")), PartnerTakeovers, SwitchesDone, SwapChecks,
+		SwapSwitchChecks, SwapChecksPassed, SwapChecks > 0 ? SwapWorstNew : 0.0, SwapWorstOld, SwapSwitchChecks > 0 ? SwapWorstAlign : 0.0);
 	const bool bBothDown = Session && Session->Get().down(ftcore::kLeadA) && Session->Get().down(ftcore::kLeadB);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner defeat %s (session defeat %d, both leads down %d)."),
 		!bLost ? TEXT("n/a") : (bSessionDefeated && bBothDown ? TEXT("PASS") : TEXT("FAIL")), bSessionDefeated ? 1 : 0, bBothDown ? 1 : 0);
@@ -6689,14 +6694,17 @@ namespace
 constexpr int32 kSwapCheckMoves = 20;   // steps with a move input after a takeover before the figures are compared
 constexpr int32 kSwapCheckSteps = 600;  // steps after it with too few move inputs: that takeover goes unchecked
 constexpr double kSwapNewMoved = 20.0;  // cm: the controlled figure moves at least this ...
-constexpr double kSwapOldStill = 5.0;   // ... and the fallen one (lying, down) at most this
+constexpr double kSwapOldStill = 5.0;   // ... and, after a takeover, the fallen one (lying, down) at most this
+constexpr double kSwapAlign = 0.7;      // after a switch: the cosine between the new body's way and the summed input
 }
 
-void UFTArenaRunner::ArmSwapCheck()
+void UFTArenaRunner::ArmSwapCheck(bool bSwitch)
 {
 	bSwapCheckArmed = true;
 	bSwapCheckPlaced = false; // the places are read once the figures are drawn after the swap
+	bSwapIsSwitch = bSwitch;
 	SwapMoveSteps = SwapSteps = 0;
+	SwapMoveSum = FVector2D::ZeroVector;
 }
 
 void UFTArenaRunner::TrackSwapCheck(const ftcore::ArenaInput& In)
@@ -6706,7 +6714,11 @@ void UFTArenaRunner::TrackSwapCheck(const ftcore::ArenaInput& In)
 		return;
 	}
 	++SwapSteps;
-	SwapMoveSteps += In.move.x * In.move.x + In.move.y * In.move.y > 0.04f ? 1 : 0;
+	if (In.move.x * In.move.x + In.move.y * In.move.y > 0.04f)
+	{
+		++SwapMoveSteps;
+		SwapMoveSum += FVector2D(In.move.x, In.move.y); // ToWorld maps the fight's x, y onto the world's X, Y
+	}
 	if (SwapSteps > kSwapCheckSteps)
 	{
 		bSwapCheckArmed = false; // the lead stood: nothing to compare
@@ -6731,16 +6743,30 @@ void UFTArenaRunner::CheckSwapInput()
 		return;
 	}
 	bSwapCheckArmed = false;
-	// The fallen body stays down for downSeconds, longer than the moves counted here, so it lies still throughout.
-	const double NewMoved = FVector::Dist2D(PlayerFigure->GetActorLocation(), SwapNewAt);
+	// After a takeover the fallen body stays down for downSeconds, longer than the moves counted here, so it lies
+	// still throughout. After a switch the partner brain walks the old body, so the new body's way must follow the
+	// input: the cosine between its move and the summed move input.
+	const FVector NewDelta = PlayerFigure->GetActorLocation() - SwapNewAt;
+	const double NewMoved = FVector2D(NewDelta.X, NewDelta.Y).Size();
 	const double OldMoved = FVector::Dist2D(AllyFigure->GetActorLocation(), SwapOldAt);
-	const bool bOk = NewMoved >= kSwapNewMoved && OldMoved <= kSwapOldStill;
+	const double SumLen = SwapMoveSum.Size();
+	const double Align = NewMoved > 0.0 && SumLen > 0.0 ? (NewDelta.X * SwapMoveSum.X + NewDelta.Y * SwapMoveSum.Y) / (NewMoved * SumLen) : -1.0;
+	const bool bOk = NewMoved >= kSwapNewMoved && (bSwapIsSwitch ? Align >= kSwapAlign : OldMoved <= kSwapOldStill);
 	++SwapChecks;
 	SwapChecksPassed += bOk ? 1 : 0;
 	SwapWorstNew = FMath::Min(SwapWorstNew, NewMoved);
-	SwapWorstOld = FMath::Max(SwapWorstOld, OldMoved);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: after the takeover, %d steps with a move input: the controlled figure moved %.0f cm, the fallen one %.0f cm (%s)."),
-		Fight.time(), SwapMoveSteps, NewMoved, OldMoved, bOk ? TEXT("input on the new body") : TEXT("NOT on the new body"));
+	if (bSwapIsSwitch)
+	{
+		++SwapSwitchChecks;
+		SwapWorstAlign = FMath::Min(SwapWorstAlign, Align);
+	}
+	else
+	{
+		SwapWorstOld = FMath::Max(SwapWorstOld, OldMoved);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: after the %s, %d steps with a move input: the controlled figure moved %.0f cm (along the input %.2f), the other one %.0f cm (%s)."),
+		Fight.time(), bSwapIsSwitch ? TEXT("switch") : TEXT("takeover"), SwapMoveSteps, NewMoved, Align, OldMoved,
+		bOk ? TEXT("input on the new body") : TEXT("NOT on the new body"));
 }
 
 void UFTArenaRunner::CheckPartnerRetry()

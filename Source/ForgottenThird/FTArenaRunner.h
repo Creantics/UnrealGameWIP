@@ -487,7 +487,7 @@ private:
 	// The partner's body acts: -ArenaPartner, not held out (a fight begun Lone keeps it out, the session with one lead
 	// too, until the partner call brings it in), and the fight not Lone.
 	bool PartnerBody() const { return bPartner && !bPartnerHeldOut && !Fight.lone(); }
-	void ArmSwapCheck();
+	void ArmSwapCheck(bool bSwitch = false);
 	void TrackSwapCheck(const ftcore::ArenaInput& In);
 	void CheckSwapInput();
 	void LogCarry() const;
@@ -693,6 +693,7 @@ private:
 	bool bSessionDefeated = false;
 	int32 LonePartnerCalls = 0;         // Count presses the session accepted while Lone: the lead calling the partner in
 	int32 LonePartnerEnds = 0;          // endLone(PartnerCalled) calls that ended it (the check: one per call, at most one)
+	bool bNoLoneCall = false;          // probe (-ArenaNoLoneCall): the autopilot never presses the Count while Lone
 	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
 	bool bLoneGiftDone = false;
 	// The probe's self-check: the lead's health handed to the slot just before the probe's press (setLeadHealth), and
@@ -1073,13 +1074,16 @@ private:
 	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0;
 	// The partner's blows: the session ruled them (RuleSessionBlow's partner path), their Hit events, their joins.
 	int32 PartnerBlowsRuled = 0, PartnerHitEvents = 0, PartnerJoins = 0;
-	// After a takeover: the figures' places once drawn, the steps since with a move input, the check's counts. The
-	// controller reads the input (FTInputBindings on the PlayerController), the fight moves Bodies.player, and
-	// PlayerFigure (swapped to the partner's actor) is drawn there: the move must show on the new body, not the old.
-	bool bSwapCheckArmed = false, bSwapCheckPlaced = false;
+	// After a takeover or a lead switch: the figures' places once drawn, the steps since with a move input (and the
+	// sum of those moves), the check's counts. The controller reads the input (FTInputBindings on the
+	// PlayerController), the fight moves Bodies.player, and PlayerFigure (swapped to the partner's actor) is drawn
+	// there: the move must show on the new body. After a takeover the old body lies still; after a switch the partner
+	// brain walks it, so there the new body's way must follow the summed input instead (SwapWorstAlign, the cosine).
+	bool bSwapCheckArmed = false, bSwapCheckPlaced = false, bSwapIsSwitch = false;
 	FVector SwapNewAt = FVector::ZeroVector, SwapOldAt = FVector::ZeroVector;
-	int32 SwapMoveSteps = 0, SwapSteps = 0, SwapChecks = 0, SwapChecksPassed = 0;
-	double SwapWorstNew = 1e9, SwapWorstOld = 0.0;
+	FVector2D SwapMoveSum = FVector2D::ZeroVector;
+	int32 SwapMoveSteps = 0, SwapSteps = 0, SwapChecks = 0, SwapChecksPassed = 0, SwapSwitchChecks = 0;
+	double SwapWorstNew = 1e9, SwapWorstOld = 0.0, SwapWorstAlign = 1.0;
 	// Setting the table (BeginTable): on, the autopilot sets it at full Load, the Load filled for a capture; the
 	// places it counts, its clock and ring, and the counts for the TABLE line.
 	bool bTable = false;
