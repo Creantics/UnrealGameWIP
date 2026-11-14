@@ -98,7 +98,7 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
 }
 
 // A new tuning field must be added to both helpers below; this size check fails until it is.
-static_assert(sizeof(HallucinationTuning) == 11 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
+static_assert(sizeof(HallucinationTuning) == 12 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
 
 // Every tuning field away from its default.
 void dirtyAll(HallucinationTuning& t) {
@@ -113,6 +113,7 @@ void dirtyAll(HallucinationTuning& t) {
     t.fewerGapScale = 7.f;
     t.lonePoolFloor = 777.f;
     t.counselCooldownSeconds = 0.25f;
+    t.proxyReactSeconds = 4.5f;
     t.actFloors.fill(IntensityBand::High);
 }
 
@@ -122,7 +123,7 @@ bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
            a.recentSeconds == b.recentSeconds && a.fewerGapScale == b.fewerGapScale &&
            a.lonePoolFloor == b.lonePoolFloor && a.counselCooldownSeconds == b.counselCooldownSeconds &&
-           a.actFloors == b.actFloors;
+           a.proxyReactSeconds == b.proxyReactSeconds && a.actFloors == b.actFloors;
 }
 
 // Each field of `a` differs from `b`'s.
@@ -133,7 +134,8 @@ bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
            a.switchSeconds != b.switchSeconds && a.refuseSeconds != b.refuseSeconds &&
            a.refusalCooldownSeconds != b.refusalCooldownSeconds && a.pullSeconds != b.pullSeconds &&
            a.recentSeconds != b.recentSeconds && a.fewerGapScale != b.fewerGapScale &&
-           a.lonePoolFloor != b.lonePoolFloor && a.counselCooldownSeconds != b.counselCooldownSeconds && floorsDiffer;
+           a.lonePoolFloor != b.lonePoolFloor && a.counselCooldownSeconds != b.counselCooldownSeconds &&
+           a.proxyReactSeconds != b.proxyReactSeconds && floorsDiffer;
 }
 
 } // namespace
@@ -712,7 +714,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     HallucinationTuning o;
     CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
         "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,"lonePoolFloor":50,
-        "counselCooldownSeconds":1,"actFloors":["low","low","mid","mid","high"]})", o, &err));
+        "counselCooldownSeconds":1,"proxyReactSeconds":6,"actFloors":["low","low","mid","mid","high"]})", o, &err));
     CHECK(o.holdSeconds == 2.f);
     CHECK(o.expireSeconds == 40.f);
     CHECK(o.gapSeconds == 60.f);
@@ -724,6 +726,7 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(o.fewerGapScale == 3.f);
     CHECK(o.lonePoolFloor == 50.f);
     CHECK(o.counselCooldownSeconds == 1.f);
+    CHECK(o.proxyReactSeconds == 6.f);
     CHECK(o.actFloors[0] == IntensityBand::Low);
     CHECK(o.actFloors[2] == IntensityBand::Mid);
     CHECK(o.actFloors[4] == IntensityBand::High);
@@ -768,6 +771,8 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"version":1,"lonePoolFloor":2e9})",
         R"({"version":1,"counselCooldownSeconds":-1})",
         R"({"version":1,"counselCooldownSeconds":61})",
+        R"({"version":1,"proxyReactSeconds":-1})",
+        R"({"version":1,"proxyReactSeconds":6.5})",
     };
     for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
         dirtyAll(h);
@@ -997,4 +1002,97 @@ TEST_CASE("Counsel cuts the refusal cooldown to min(tuned, counselCooldownSecond
     }
     const HallucinationTuning d;
     CHECK(d.counselCooldownSeconds == 2.f);
+}
+
+TEST_CASE("a Proxy partner refuses for a held lead: react, press, Refused; the fight's pull wins if it comes first") {
+    // Held at 10 s in a fight with the partner present.
+    const auto heldAt10 = [](Rig& r, BriefId partner, bool able) {
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = partner;
+        r.in.partnerAble = able;
+        REQUIRE(r.start() == Start::Started);
+        r.run(6.0);
+        r.in.accepting = true;
+        r.run(4.0);
+        REQUIRE(r.h.held());
+        REQUIRE(r.h.now() == doctest::Approx(10.0));
+        r.in.accepting = false;
+    };
+
+    Rig a; // able throughout: the press starts at 11 s and closes the offer at 11.5 s
+    heldAt10(a, BriefId::Proxy, true);
+    a.run(1.25);
+    CHECK(a.h.held());
+    a.step(0.25);
+    CHECK(a.saw(Ev::Refused) == 1);
+    CHECK(a.saw(Ev::PulledBack) == 0);
+    CHECK(a.h.now() == doctest::Approx(11.5));
+    CHECK_FALSE(a.h.active());
+    CHECK(a.h.refusalCooldown() == doctest::Approx(4.0)); // the refusal cooldown runs from the close
+    a.step(0.25);
+    CHECK(a.h.refusalCooldown() == doctest::Approx(3.75));
+
+    Rig b; // unable until 13 s: the press starts then, Refused at 13.5 s
+    heldAt10(b, BriefId::Proxy, false);
+    b.run(2.75);
+    CHECK(b.h.held());
+    b.in.partnerAble = true;
+    b.step(0.25);
+    CHECK(b.h.held());
+    b.step(0.25);
+    CHECK(b.h.held());
+    b.step(0.25);
+    CHECK(b.saw(Ev::Refused) == 1);
+    CHECK(b.h.now() == doctest::Approx(13.5));
+
+    Rig c; // unable throughout: the pull at 6 s held wins
+    heldAt10(c, BriefId::Proxy, false);
+    c.run(5.75);
+    CHECK(c.h.held());
+    c.step(0.25);
+    CHECK(c.saw(Ev::PulledBack) == 1);
+    CHECK(c.saw(Ev::Refused) == 0);
+    CHECK(c.h.now() == doctest::Approx(16.0));
+
+    for (const BriefId other : {BriefId::Count, BriefId::Counsel, BriefId::Escrow}) { // no Proxy: today's behaviour
+        Rig n;
+        heldAt10(n, other, true);
+        n.run(5.75);
+        CHECK(n.h.held());
+        n.step(0.25);
+        CHECK(n.saw(Ev::PulledBack) == 1);
+        CHECK(n.saw(Ev::Refused) == 0);
+    }
+
+    Rig e; // losing the ability mid-press drops the press; it starts again when able
+    heldAt10(e, BriefId::Proxy, true);
+    e.run(1.25); // the press started at 11 s
+    e.in.partnerAble = false;
+    e.step(0.25); // 11.5 s: no close
+    CHECK(e.h.held());
+    e.in.partnerAble = true;
+    e.step(0.25); // 11.75 s: a new press starts
+    e.step(0.25);
+    CHECK(e.h.held());
+    e.step(0.25);
+    CHECK(e.saw(Ev::Refused) == 1);
+    CHECK(e.h.now() == doctest::Approx(12.25));
+
+    Rig g; // a held Counsel lead's cooldown is cut
+    g.in.brief = BriefId::Counsel;
+    heldAt10(g, BriefId::Proxy, true);
+    g.run(1.5);
+    REQUIRE(g.saw(Ev::Refused) == 1);
+    CHECK(g.h.refusalCooldown() == doctest::Approx(2.0));
+
+    Rig s; // a partner not present does nothing
+    heldAt10(s, BriefId::Proxy, true);
+    s.in.partnerPresent = false;
+    s.run(10.0);
+    CHECK(s.h.held());
+    CHECK(s.saw(Ev::Refused) == 0);
+
+    const HallucinationTuning d;
+    CHECK(d.proxyReactSeconds == 1.f);
 }

@@ -11,5 +11,6 @@
   "fewerGapScale": 2,
   "lonePoolFloor": 300,
   "counselCooldownSeconds": 2,
+  "proxyReactSeconds": 1,
   "actFloors": ["none", "none", "none", "low", "mid"]
 }

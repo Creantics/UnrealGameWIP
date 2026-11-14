@@ -131,6 +131,7 @@ bool importHallucinationTuning(std::string_view json, HallucinationTuning& out, 
         {"pullSeconds", &t.pullSeconds, 0.5, 60.0},       {"recentSeconds", &t.recentSeconds, 0.0, 36000.0},
         {"fewerGapScale", &t.fewerGapScale, 1.0, 10.0},     {"lonePoolFloor", &t.lonePoolFloor, 0.0, 1.0e9},
         {"counselCooldownSeconds", &t.counselCooldownSeconds, 0.0, 60.0}, // 0 to refusalCooldownSeconds' own maximum
+        {"proxyReactSeconds", &t.proxyReactSeconds, 0.0, 6.0},
     };
     for (const Field& f : fields) {
         const JsonValue v = root[f.key];
