@@ -97,6 +97,54 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
            a.attackTurn == b.attackTurn && a.takeHalf == b.takeHalf;
 }
 
+// A new tuning field must be added to the three helpers below. Two tripwires: the size, and in each helper's own body
+// a structured binding of exactly the current 14 members, which fails to compile when a member is added or removed
+// (padding cannot hide it).
+static_assert(sizeof(HallucinationTuning) == 13 * sizeof(float) + 8, "add the new field to the tuning helpers");
+
+// Every tuning field away from its default.
+void dirtyAll(HallucinationTuning& t) {
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = t; // 14 members
+    t.holdSeconds = 1.25f;
+    t.expireSeconds = 11.f;
+    t.gapSeconds = 5.f;
+    t.switchSeconds = 3.f;
+    t.refuseSeconds = 0.75f;
+    t.refusalCooldownSeconds = 9.f;
+    t.pullSeconds = 2.f;
+    t.recentSeconds = 60.f;
+    t.fewerGapScale = 7.f;
+    t.lonePoolFloor = 777.f;
+    t.counselCooldownSeconds = 0.25f;
+    t.proxyReactSeconds = 4.5f;
+    t.escrowDelaySeconds = 12.f;
+    t.actFloors.fill(IntensityBand::High);
+}
+
+bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = a; // 14 members
+    return a.holdSeconds == b.holdSeconds && a.expireSeconds == b.expireSeconds && a.gapSeconds == b.gapSeconds &&
+           a.switchSeconds == b.switchSeconds && a.refuseSeconds == b.refuseSeconds &&
+           a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
+           a.recentSeconds == b.recentSeconds && a.fewerGapScale == b.fewerGapScale &&
+           a.lonePoolFloor == b.lonePoolFloor && a.counselCooldownSeconds == b.counselCooldownSeconds &&
+           a.proxyReactSeconds == b.proxyReactSeconds && a.escrowDelaySeconds == b.escrowDelaySeconds &&
+           a.actFloors == b.actFloors;
+}
+
+// Each field of `a` differs from `b`'s.
+bool allDiffer(const HallucinationTuning& a, const HallucinationTuning& b) {
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = a; // 14 members
+    bool floorsDiffer = true;
+    for (std::size_t i = 0; i < a.actFloors.size(); ++i) floorsDiffer = floorsDiffer && a.actFloors[i] != b.actFloors[i];
+    return a.holdSeconds != b.holdSeconds && a.expireSeconds != b.expireSeconds && a.gapSeconds != b.gapSeconds &&
+           a.switchSeconds != b.switchSeconds && a.refuseSeconds != b.refuseSeconds &&
+           a.refusalCooldownSeconds != b.refusalCooldownSeconds && a.pullSeconds != b.pullSeconds &&
+           a.recentSeconds != b.recentSeconds && a.fewerGapScale != b.fewerGapScale &&
+           a.lonePoolFloor != b.lonePoolFloor && a.counselCooldownSeconds != b.counselCooldownSeconds &&
+           a.proxyReactSeconds != b.proxyReactSeconds && a.escrowDelaySeconds != b.escrowDelaySeconds && floorsDiffer;
+}
+
 } // namespace
 
 TEST_CASE("a tragedy key is never picked before it is unlocked, and only for its own lead") {
@@ -666,13 +714,14 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(h.refuseSeconds == d.refuseSeconds);
     CHECK(h.actFloors == d.actFloors);
     CHECK(h.lonePoolFloor == d.lonePoolFloor);
+    CHECK(sameTuning(h, d)); // the shipped file is the defaults
     CHECK(t.keys[0].caused == false);
     CHECK(t.keys[1].lone == false);
 
     HallucinationTuning o;
     CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
         "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,"lonePoolFloor":50,
-        "actFloors":["low","low","mid","mid","high"]})", o, &err));
+        "counselCooldownSeconds":1,"proxyReactSeconds":6,"escrowDelaySeconds":30,"actFloors":["low","low","mid","mid","high"]})", o, &err));
     CHECK(o.holdSeconds == 2.f);
     CHECK(o.expireSeconds == 40.f);
     CHECK(o.gapSeconds == 60.f);
@@ -683,6 +732,9 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(o.recentSeconds == 600.f);
     CHECK(o.fewerGapScale == 3.f);
     CHECK(o.lonePoolFloor == 50.f);
+    CHECK(o.counselCooldownSeconds == 1.f);
+    CHECK(o.proxyReactSeconds == 6.f);
+    CHECK(o.escrowDelaySeconds == 30.f);
     CHECK(o.actFloors[0] == IntensityBand::Low);
     CHECK(o.actFloors[2] == IntensityBand::Mid);
     CHECK(o.actFloors[4] == IntensityBand::High);
@@ -725,11 +777,18 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
         R"({"holdSeconds":4})",
         R"({"version":1,"lonePoolFloor":-1})",
         R"({"version":1,"lonePoolFloor":2e9})",
+        R"({"version":1,"counselCooldownSeconds":-1})",
+        R"({"version":1,"counselCooldownSeconds":61})",
+        R"({"version":1,"proxyReactSeconds":-1})",
+        R"({"version":1,"proxyReactSeconds":6.5})",
+        R"({"version":1,"escrowDelaySeconds":-1})",
+        R"({"version":1,"escrowDelaySeconds":31})",
     };
-    for (const char* bad : badTuning) {
+    for (const char* bad : badTuning) { // a refused import resets `out` to the defaults, never half-applied
+        dirtyAll(h);
+        REQUIRE(allDiffer(h, d));
         CHECK_FALSE(importHallucinationTuning(bad, h, &err));
-        CHECK(h.holdSeconds == d.holdSeconds);
-        CHECK(h.lonePoolFloor == d.lonePoolFloor);
+        CHECK_MESSAGE(sameTuning(h, d), bad);
     }
 }
 
@@ -740,7 +799,8 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
     def.fighter.hp *= 50;
     for (std::size_t i = 0; i < def.enemyCount; ++i) def.enemies[i].hp *= 50;
     ArenaFight fight;
-    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 3);
+    constexpr std::uint32_t kSeed = 3; // pinned: the preconditions below are this seed's, with the built-in tuning
+    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, kSeed);
     ArenaBodies bodies;
     bodies.player = fight.playerStart();
     const Vec2 face = fight.playerStartFacing();
@@ -765,6 +825,9 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
     std::array<int, 5> blocks{}, attacks{}, hpLost{};
     const float dt = 1.f / 60.f;
     bool refused = false;
+    ArenaAction atPress = ArenaAction::Idle; // the lead's action on the tick the fresh guard goes down
+    bool pressed = false;
+    int guardSteps4 = 0;                      // phase 4 ticks the lead stood in Guard
     while (fight.time() < 40.f && !fight.over()) {
         const float t = fight.time();
         hin.accepting = t < 4.5f;
@@ -777,9 +840,14 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
         ArenaInput raw;
         raw.view = face;
         raw.guard = hin.refuse; // the host's guard button is the refusal
+        if (phase == 4 && !pressed) {
+            pressed = true;
+            atPress = fight.output().player.action;
+        }
         const int before = fight.hp();
         const ArenaOutput& out = fight.tick(dt, hallucinationArenaInput(h, raw), bodies);
         hpLost[static_cast<std::size_t>(phase)] += before - fight.hp();
+        guardSteps4 += phase == 4 && out.player.action == ArenaAction::Guard ? 1 : 0;
         for (const ArenaEvent& e : out.events) {
             const std::size_t p = static_cast<std::size_t>(phase);
             blocks[p] += (e.type == ArenaEventType::Blocked || e.type == ArenaEventType::Parried) ? 1 : 0;
@@ -792,7 +860,12 @@ TEST_CASE("a fight fed a held lead's input never blocks or parries, held or kept
         CHECK_MESSAGE(hpLost[static_cast<std::size_t>(p)] > 0, "phase " << p);
         CHECK_MESSAGE(blocks[static_cast<std::size_t>(p)] == 0, "phase " << p);
     }
-    CHECK(attacks[4] > 0);
+    // The control's preconditions, so a tuning change fails here by name instead of as a missing block.
+    REQUIRE_MESSAGE(pressed, "the fight ended before the fresh guard");
+    REQUIRE_MESSAGE((atPress != ArenaAction::Hitstun && atPress != ArenaAction::GuardBreak && atPress != ArenaAction::Downed),
+                    "the lead is staggered when the fresh guard goes down (action " << static_cast<int>(atPress) << ")");
+    REQUIRE_MESSAGE(attacks[4] > 0, "no enemy swings after the fresh guard");
+    REQUIRE_MESSAGE(guardSteps4 > 0, "the lead never stands in Guard after the fresh press");
     CHECK(blocks[4] > 0); // the same guard, pressed afresh, meets the same swings
 }
 
@@ -802,7 +875,8 @@ TEST_CASE("the unlock order is saved by id: a restore into a reordered table kee
     TragedyPool pa(a);
     for (const char* id : {"a1", "b1", "b0", "a0"}) REQUIRE(pa.unlock(tragedyKey(a, id)));
     REQUIRE(pa.newest(kLeadA) == tragedyKey(a, "a0")); // unlocked last, though first in the table
-    const TragedySave s = captureTragedies(a, pa);
+    TragedySave s;
+    CHECK(captureTragedies(a, pa, s) == 0);
     CHECK(s.unlocked == std::vector<std::string>{"a1", "b1", "b0", "a0"});
 
     TragedyTable b; // the same keys, re-imported in another order
@@ -815,7 +889,9 @@ TEST_CASE("the unlock order is saved by id: a restore into a reordered table kee
     for (const char* id : {"a0", "a1", "b0", "b1"})
         CHECK_MESSAGE(pb.weight(tragedyKey(b, id)) == pa.weight(tragedyKey(a, id)), id);
     CHECK(pb.weight(tragedyKey(b, "a0")) == 6u); // newest x3, caused x2
-    CHECK(captureTragedies(b, pb) == s);
+    TragedySave again;
+    CHECK(captureTragedies(b, pb, again) == 0);
+    CHECK(again == s);
 
     // Restored as a set in table order instead, a1 would be the newest: the order is what the save keeps.
     TragedyPool set(b);
@@ -829,4 +905,445 @@ TEST_CASE("the unlock order is saved by id: a restore into a reordered table kee
     CHECK(pc.newest(kLeadA) == tragedyKey(c, "a1"));
     CHECK(pc.newest(kLeadB) == tragedyKey(c, "b0"));
     CHECK(applyTragedies(TragedySave{}, c, pc) == 0);
+}
+
+TEST_CASE("place bleed: only a High band bleeds a place in, and only while its offer is open") {
+    CHECK_FALSE(placeBleeds(IntensityBand::None));
+    CHECK_FALSE(placeBleeds(IntensityBand::Low));
+    CHECK_FALSE(placeBleeds(IntensityBand::Mid));
+    CHECK(placeBleeds(IntensityBand::High));
+    CHECK(placeBleeds(intensityBand(IntensityBand::High, 0))); // the place's own High, under any act floor
+    CHECK_FALSE(placeBleeds(intensityBand(IntensityBand::Low, kMaxAct))); // the act floors stop at Mid
+    for (const IntensityBand b : {IntensityBand::Low, IntensityBand::Mid, IntensityBand::High}) {
+        Rig r;
+        CHECK_FALSE(r.h.bleeds());
+        REQUIRE(r.start(false, -1, b) == Start::Started);
+        CHECK(r.h.bleeds() == (b == IntensityBand::High));
+        r.in.accepting = true;
+        r.run(4.0);
+        REQUIRE(r.h.held());
+        CHECK(r.h.bleeds() == (b == IntensityBand::High)); // held, it still bleeds
+    }
+
+    // Every close of an open High offer ends the bleed: the page is its own again.
+    const auto open = [](Rig& r) {
+        REQUIRE(r.start(false, -1, IntensityBand::High) == Start::Started);
+        REQUIRE(r.h.bleeds());
+    };
+    Rig refused;
+    open(refused);
+    refused.in.refuse = true;
+    refused.run(0.5);
+    REQUIRE(refused.saw(Ev::Refused) == 1);
+    CHECK_FALSE(refused.h.bleeds());
+
+    Rig expired;
+    open(expired);
+    expired.run(30.0);
+    REQUIRE(expired.saw(Ev::Expired) == 1);
+    CHECK_FALSE(expired.h.bleeds());
+
+    Rig torn;
+    open(torn);
+    torn.in.lead = kLeadB;
+    torn.step(0.25);
+    REQUIRE(torn.saw(Ev::Torn) == 1);
+    CHECK_FALSE(torn.h.bleeds());
+
+    Rig pulled;
+    open(pulled);
+    pulled.in.accepting = true;
+    pulled.run(4.0);
+    REQUIRE(pulled.h.held());
+    REQUIRE(pulled.h.bleeds());
+    pulled.in.accepting = false;
+    pulled.in.partnerPresent = true;
+    pulled.in.partnerPull = true;
+    pulled.step(0.25);
+    REQUIRE(pulled.saw(Ev::PulledBack) == 1);
+    CHECK_FALSE(pulled.h.bleeds());
+
+    Rig away;
+    open(away);
+    away.in.turnedAway = true;
+    away.step(0.25);
+    REQUIRE(away.saw(Ev::Refused) == 1);
+    CHECK_FALSE(away.h.bleeds());
+}
+
+TEST_CASE("a capture against a smaller table counts the pool keys it has no row for and leaves them out") {
+    TragedyTable big = makeTable(2); // a0 a1 b0 b1
+    TragedyPool pool(big);
+    for (const char* id : {"b1", "a0", "b0", "a1"}) REQUIRE(pool.unlock(tragedyKey(big, id)));
+    TragedyTable small = big;
+    small.keys.resize(2); // a0 a1: b0 and b1 (rows 2 and 3) are past its end
+    TragedySave s;
+    s.unlocked = {"stale"}; // a capture replaces what was there
+    CHECK(captureTragedies(small, pool, s) == 2);
+    CHECK(s.unlocked == std::vector<std::string>{"a0", "a1"});
+    TragedyPool locked(big);
+    CHECK(captureTragedies(small, locked, s) == 0); // a locked key past the end is not a dropped one
+    CHECK(s.unlocked.empty());
+}
+
+TEST_CASE("Counsel cuts the refusal cooldown to min(tuned, counselCooldownSeconds) and never lengthens it") {
+    const auto cooldownAfter = [](float tuned, BriefId brief, bool wrongGuess) {
+        HallucinationTuning t;
+        t.refusalCooldownSeconds = tuned;
+        Rig r;
+        r.h = Hallucination(t);
+        r.in.brief = brief;
+        r.step(0.0);
+        if (!wrongGuess) REQUIRE(r.start() == Start::Started);
+        r.in.refuse = true;
+        r.step(0.25);
+        if (!wrongGuess) {
+            r.step(0.25);
+            REQUIRE(r.saw(Ev::Refused) == 1);
+        }
+        return r.h.refusalCooldown();
+    };
+    for (const bool wrongGuess : {false, true}) {
+        CAPTURE(wrongGuess);
+        CHECK(cooldownAfter(4.f, BriefId::Counsel, wrongGuess) == doctest::Approx(2.0)); // the default 4 s gives 2 s
+        CHECK(cooldownAfter(1.5f, BriefId::Counsel, wrongGuess) == doctest::Approx(1.5)); // a tuned 1.5 s stays
+        CHECK(cooldownAfter(4.f, BriefId::Count, wrongGuess) == doctest::Approx(4.0));   // no Brief: unchanged
+        CHECK(cooldownAfter(4.f, BriefId::Proxy, wrongGuess) == doctest::Approx(4.0));   // another Brief: unchanged
+    }
+    const HallucinationTuning d;
+    CHECK(d.counselCooldownSeconds == 2.f);
+}
+
+TEST_CASE("a Proxy partner refuses for a held lead: react, press, Refused; the fight's pull wins if it comes first") {
+    // Held at 10 s in a fight with the partner present.
+    const auto heldAt10 = [](Rig& r, BriefId partner, bool able) {
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = partner;
+        r.in.partnerAble = able;
+        REQUIRE(r.start() == Start::Started);
+        r.run(6.0);
+        r.in.accepting = true;
+        r.run(4.0);
+        REQUIRE(r.h.held());
+        REQUIRE(r.h.now() == doctest::Approx(10.0));
+        r.in.accepting = false;
+    };
+
+    Rig a; // able throughout: the press starts at 11 s and closes the offer at 11.5 s
+    heldAt10(a, BriefId::Proxy, true);
+    a.run(1.25);
+    CHECK(a.h.held());
+    a.step(0.25);
+    CHECK(a.saw(Ev::Refused) == 1);
+    CHECK(a.saw(Ev::PulledBack) == 0);
+    CHECK(a.h.now() == doctest::Approx(11.5));
+    CHECK_FALSE(a.h.active());
+    CHECK(a.h.refusalCooldown() == doctest::Approx(4.0)); // the refusal cooldown runs from the close
+    a.step(0.25);
+    CHECK(a.h.refusalCooldown() == doctest::Approx(3.75));
+
+    Rig b; // unable until 13 s: the press starts then, Refused at 13.5 s
+    heldAt10(b, BriefId::Proxy, false);
+    b.run(3.0);
+    CHECK(b.h.held());
+    b.in.partnerAble = true;
+    b.step(0.25);
+    CHECK(b.h.held());
+    b.step(0.25);
+    CHECK(b.saw(Ev::Refused) == 1);
+    CHECK(b.h.now() == doctest::Approx(13.5));
+
+    Rig c; // unable throughout: the pull at 6 s held wins
+    heldAt10(c, BriefId::Proxy, false);
+    c.run(5.75);
+    CHECK(c.h.held());
+    c.step(0.25);
+    CHECK(c.saw(Ev::PulledBack) == 1);
+    CHECK(c.saw(Ev::Refused) == 0);
+    CHECK(c.h.now() == doctest::Approx(16.0));
+
+    for (const BriefId other : {BriefId::Count, BriefId::Counsel, BriefId::Escrow}) { // no Proxy: today's behaviour
+        Rig n;
+        heldAt10(n, other, true);
+        n.run(5.75);
+        CHECK(n.h.held());
+        n.step(0.25);
+        CHECK(n.saw(Ev::PulledBack) == 1);
+        CHECK(n.saw(Ev::Refused) == 0);
+    }
+
+    Rig e; // losing the ability mid-press drops the press; a fresh one starts when able
+    heldAt10(e, BriefId::Proxy, true);
+    e.run(1.25); // pressing since 11 s
+    e.in.partnerAble = false;
+    e.step(0.25); // unable 11.25 to 11.5 s: no close
+    CHECK(e.h.held());
+    e.in.partnerAble = true;
+    e.step(0.25); // a fresh press from 11.5 s
+    CHECK(e.h.held());
+    e.step(0.25);
+    CHECK(e.saw(Ev::Refused) == 1);
+    CHECK(e.h.now() == doctest::Approx(12.0));
+
+    Rig g; // a held Counsel lead's cooldown is cut
+    g.in.brief = BriefId::Counsel;
+    heldAt10(g, BriefId::Proxy, true);
+    g.run(1.5);
+    REQUIRE(g.saw(Ev::Refused) == 1);
+    CHECK(g.h.refusalCooldown() == doctest::Approx(2.0));
+
+    Rig s; // a partner not present does nothing
+    heldAt10(s, BriefId::Proxy, true);
+    s.in.partnerPresent = false;
+    s.run(10.0);
+    CHECK(s.h.held());
+    CHECK(s.saw(Ev::Refused) == 0);
+
+    const HallucinationTuning d;
+    CHECK(d.proxyReactSeconds == 1.f);
+}
+
+TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at 9 s; stepping out drops both") {
+    Rig a; // staying in from 0 s
+    a.in.brief = BriefId::Escrow;
+    a.step(0.0);
+    REQUIRE(a.start() == Start::Started);
+    a.in.accepting = true;
+    a.run(5.0);
+    CHECK(a.h.holdLevel() == 0.f); // the lead is not slowed during the wait
+    CHECK(a.saw(Ev::HoldBegan) == 0);
+    a.run(3.75);
+    CHECK_FALSE(a.h.held());
+    CHECK(a.saw(Ev::HoldBegan) == 1);
+    a.step(0.25);
+    CHECK(a.h.held());
+    CHECK(a.saw(Ev::Held) == 1);
+    CHECK(a.h.now() == doctest::Approx(9.0));
+
+    Rig b; // out at 4.9 s and back in: the 5 s start again
+    b.in.brief = BriefId::Escrow;
+    b.step(0.0);
+    REQUIRE(b.start() == Start::Started);
+    b.in.accepting = true;
+    b.step(4.9);
+    b.in.accepting = false;
+    b.step(0.1);
+    b.in.accepting = true;
+    b.step(4.9);
+    CHECK(b.h.holdLevel() == 0.f); // without the restart 3.8 s of hold would be built here
+    b.step(0.1);
+    b.run(3.75);
+    CHECK_FALSE(b.h.held());
+    b.run(0.5);
+    CHECK(b.h.held());
+
+    Rig c; // out at 7 s, with 2 s of hold built: both drop to nothing, and the next entry waits 5 s again
+    c.in.brief = BriefId::Escrow;
+    c.step(0.0);
+    REQUIRE(c.start() == Start::Started);
+    c.in.accepting = true;
+    c.run(7.0);
+    CHECK(c.h.holdLevel() == doctest::Approx(0.5));
+    c.in.accepting = false;
+    c.step(0.25);
+    CHECK(c.h.holdLevel() == 0.f);
+    c.in.accepting = true;
+    c.run(5.0);
+    CHECK(c.h.holdLevel() == 0.f);
+    c.run(3.75);
+    CHECK_FALSE(c.h.held());
+    c.step(0.25);
+    CHECK(c.h.held());
+
+    for (const BriefId other : {BriefId::Count, BriefId::Counsel, BriefId::Proxy}) { // without Escrow: Held at 4 s
+        Rig n;
+        n.in.brief = other;
+        n.step(0.0);
+        REQUIRE(n.start() == Start::Started);
+        n.in.accepting = true;
+        n.run(3.75);
+        CHECK_FALSE(n.h.held());
+        n.step(0.25);
+        CHECK(n.h.held());
+        CHECK(n.h.now() == doctest::Approx(4.0));
+    }
+
+    Rig e; // an offer ending during the wait leaves nothing for the next one
+    e.in.brief = BriefId::Escrow;
+    e.step(0.0);
+    REQUIRE(e.start(true) == Start::Started);
+    e.in.accepting = true;
+    e.run(3.0);
+    e.in.lead = kLeadB; // torn
+    e.step(0.25);
+    REQUIRE(e.saw(Ev::Torn) == 1);
+    REQUIRE(e.start(true) == Start::Started);
+    e.run(4.75);
+    CHECK(e.h.holdLevel() == 0.f);
+
+    const HallucinationTuning d;
+    CHECK(d.escrowDelaySeconds == 5.f);
+}
+
+TEST_CASE("a Proxy press broken by the partner leaving, losing Proxy or being unable starts afresh: Refused at 12.1 s") {
+    // Held at 10 s; the partner presses from 11.0 s, breaks from 11.2 s to 11.6 s, and is back at 11.6 s.
+    enum class Break { Absent, BriefChanged, Unable };
+    for (const Break how : {Break::Absent, Break::BriefChanged, Break::Unable}) {
+        CAPTURE(static_cast<int>(how));
+        Rig r;
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        REQUIRE(r.start() == Start::Started);
+        r.run(6.0);
+        r.in.accepting = true;
+        r.run(4.0);
+        REQUIRE(r.h.held());
+        r.in.accepting = false;
+        for (int i = 0; i < 12; ++i) r.step(0.1); // to 11.2 s: pressing since 11.0 s
+        REQUIRE(r.h.held());
+        if (how == Break::Absent) r.in.partnerPresent = false;
+        if (how == Break::BriefChanged) r.in.partnerBrief = BriefId::Count;
+        if (how == Break::Unable) r.in.partnerAble = false;
+        for (int i = 0; i < 4; ++i) r.step(0.1); // 11.2 to 11.6 s
+        REQUIRE(r.h.held());
+        r.in.partnerPresent = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        for (int i = 0; i < 4; ++i) r.step(0.1); // 11.9 s would be the frozen press's close
+        CHECK(r.h.held());
+        r.step(0.1);
+        CHECK(r.saw(Ev::Refused) == 1);
+        CHECK(r.h.now() == doctest::Approx(12.1));
+    }
+}
+
+TEST_CASE("Proxy timing: Refused lands within one step of Held + 1.5 s at 1/30, 1/60 and 1/120 s steps") {
+    for (const double dt : {1.0 / 30.0, 1.0 / 60.0, 1.0 / 120.0}) {
+        CAPTURE(dt);
+        Rig r;
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        REQUIRE(r.start() == Start::Started);
+        r.in.accepting = true;
+        for (int i = 0; i < 2000 && !r.h.held(); ++i) r.step(dt);
+        REQUIRE(r.h.held());
+        const double heldAt = r.h.now();
+        r.in.accepting = false;
+        for (int i = 0; i < 2000 && r.saw(Ev::Refused) == 0; ++i) r.step(dt);
+        REQUIRE(r.saw(Ev::Refused) == 1);
+        CHECK(r.saw(Ev::PulledBack) == 0);
+        const double err = r.h.now() - (heldAt + 1.5);
+        CAPTURE(err);
+        CHECK(std::abs(err) <= dt + 1e-9);
+    }
+}
+
+TEST_CASE("the lead's own refusal and the partner's press closing in one step count one Refused") {
+    Rig r;
+    r.in.partnerPresent = true;
+    r.in.inFight = true;
+    r.in.partnerBrief = BriefId::Proxy;
+    r.in.partnerAble = true;
+    REQUIRE(r.start() == Start::Started);
+    r.run(6.0);
+    r.in.accepting = true;
+    r.run(4.0);
+    REQUIRE(r.h.held());
+    r.in.accepting = false;
+    r.run(1.0); // 11 s: the partner's press starts
+    r.in.refuse = true; // the lead's own press from 11 s
+    r.step(0.25);
+    CHECK(r.h.held());
+    r.step(0.25); // 11.5 s: both would close here
+    CHECK(r.saw(Ev::Refused) == 1);
+    CHECK(r.h.eventCount() == 1);
+    CHECK(r.h.now() == doctest::Approx(11.5));
+    r.step(0.25);
+    CHECK(r.saw(Ev::Refused) == 1);
+}
+
+TEST_CASE("Counsel's cut is the refusing lead's own: a Counsel partner leaves a lead's full cooldown") {
+    Rig r;
+    r.in.brief = BriefId::Count;
+    r.in.partnerPresent = true;
+    r.in.partnerBrief = BriefId::Counsel;
+    r.in.partnerAble = true;
+    REQUIRE(r.start() == Start::Started);
+    r.in.refuse = true;
+    r.run(0.5);
+    REQUIRE(r.saw(Ev::Refused) == 1);
+    CHECK(r.h.refusalCooldown() == doctest::Approx(4.0));
+}
+
+TEST_CASE("Escrow with escrowDelaySeconds 0 is no Escrow at all, step for step") {
+    HallucinationTuning t;
+    t.escrowDelaySeconds = 0.f;
+    Rig e;
+    e.h = Hallucination(t);
+    e.in.brief = BriefId::Escrow;
+    e.step(0.0);
+    Rig n;
+    n.step(0.0);
+    REQUIRE(e.start() == Start::Started);
+    REQUIRE(n.start() == Start::Started);
+    e.in.accepting = n.in.accepting = true;
+    for (int i = 0; i < 20; ++i) {
+        CAPTURE(i);
+        e.step(0.25);
+        n.step(0.25);
+        CHECK(e.h.holdLevel() == n.h.holdLevel());
+        CHECK(e.h.held() == n.h.held());
+        CHECK(e.saw(Ev::HoldBegan) == n.saw(Ev::HoldBegan));
+        CHECK(e.saw(Ev::Held) == n.saw(Ev::Held));
+        CHECK_FALSE(e.h.escrowWaiting());
+    }
+    CHECK(e.saw(Ev::Held) == 1);
+}
+
+TEST_CASE("Escrow's wait is shown: waiting with the seconds left from entry to 5 s, and not after") {
+    Rig r;
+    r.in.brief = BriefId::Escrow;
+    r.step(0.0);
+    REQUIRE(r.start() == Start::Started);
+    CHECK_FALSE(r.h.escrowWaiting()); // not inside the offer yet
+    r.in.accepting = true;
+    for (int i = 1; i < 20; ++i) {
+        CAPTURE(i);
+        r.step(0.25);
+        CHECK(r.h.escrowWaiting());
+        CHECK(r.h.escrowWaitLeft() == doctest::Approx(5.0 - 0.25 * i));
+        CHECK(r.h.holdLevel() == 0.f);
+    }
+    r.step(0.25); // 5 s: the wait is over
+    CHECK_FALSE(r.h.escrowWaiting());
+    CHECK(r.h.escrowWaitLeft() == 0.f);
+    r.step(0.25);
+    CHECK_FALSE(r.h.escrowWaiting());
+    CHECK(r.h.holdLevel() > 0.f);
+    r.in.accepting = false; // out: no wait shown
+    r.step(0.25);
+    CHECK_FALSE(r.h.escrowWaiting());
+
+    Rig n; // no Escrow: never waiting
+    n.step(0.0);
+    REQUIRE(n.start() == Start::Started);
+    n.in.accepting = true;
+    n.step(0.25);
+    CHECK_FALSE(n.h.escrowWaiting());
+}
+
+TEST_CASE("a tuning file without the Brief link fields keeps their defaults") {
+    HallucinationTuning h;
+    std::string err;
+    REQUIRE(importHallucinationTuning(R"({"version":1,"holdSeconds":3,"refusalCooldownSeconds":5})", h, &err));
+    const HallucinationTuning d;
+    CHECK(h.holdSeconds == 3.f);
+    CHECK(h.counselCooldownSeconds == d.counselCooldownSeconds);
+    CHECK(h.proxyReactSeconds == d.proxyReactSeconds);
+    CHECK(h.escrowDelaySeconds == d.escrowDelaySeconds);
 }

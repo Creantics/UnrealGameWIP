@@ -18,6 +18,17 @@
 //   press as its own.
 // * In a fight the partner pulls a held lead back after pullSeconds held; elsewhere the host says when (partnerPull).
 //   With no partner present only the refusal ends a hold.
+// * Brief links (the lead's Brief on the tick, none by default): Counsel cuts the refusal cooldown to
+//   min(refusalCooldownSeconds, counselCooldownSeconds), for a close and a wrong guess alike. A present partner whose
+//   Brief is Proxy refuses for a held lead: its press runs from proxyReactSeconds after Held, over the steps the
+//   partner is present, still Proxy and able to act (the host says: not downed, in hitstun or guard break), and takes
+//   refuseSeconds. Any break (unable, absent, Brief changed) drops the press; it starts afresh when all hold again.
+//   Time is counted from the instant the condition holds, so the close lands within one step of the stated time at
+//   any step size. The offer ends as Refused with the held lead's own refusal cooldown (Counsel's cut only if that
+//   lead is Counsel). The fight's pull after pullSeconds still wins if it comes first. Once per offer.
+//   For an Escrow lead the first escrowDelaySeconds inside an offer build no hold (holdLevel stays 0, so the lead
+//   is not slowed; escrowWaiting() and escrowWaitLeft() show the wait); then the hold builds over holdSeconds.
+//   Stepping out before Held drops the wait and the hold back to nothing.
 // * The intensity band is authored: max(the page's place band, the act's floor). Nothing accumulates.
 // * The pick is the pool's, weighted (TragedyPool.h); the lone key weighs x2 once the lead's lone Releases have
 //   pooled lonePoolFloor Load (loneWeighs).
@@ -27,10 +38,13 @@
 //
 // Data/Unwritten/hallucination.json: { "version": 1, "holdSeconds": 4, "expireSeconds": 30, "gapSeconds": 90,
 //   "switchSeconds": 20, "refuseSeconds": 0.5, "refusalCooldownSeconds": 4, "pullSeconds": 6, "recentSeconds": 1800,
-//   "fewerGapScale": 2, "lonePoolFloor": 300, "actFloors": ["none", "none", "none", "low", "mid"] }
+//   "fewerGapScale": 2, "lonePoolFloor": 300, "counselCooldownSeconds": 2, "proxyReactSeconds": 1,
+//   "escrowDelaySeconds": 5,
+//   "actFloors": ["none", "none", "none", "low", "mid"] }
 //   (every field but version optional)
 
 #include "ftcore/Api.h"
+#include "ftcore/Brief.h"
 #include "ftcore/CombatInputs.h"
 #include "ftcore/HeldRefusal.h"
 #include "ftcore/ScarePacer.h"
@@ -63,6 +77,9 @@ struct HallucinationTuning {
     float recentSeconds = 1800.f;
     float fewerGapScale = 2.f;
     float lonePoolFloor = 300.f; // Load pooled in lone Releases (LoneSave::pooled) from which the lone key weighs x2
+    float counselCooldownSeconds = 2.f; // a Counsel lead's refusal cooldown: min(refusalCooldownSeconds, this)
+    float proxyReactSeconds = 1.f;      // a Proxy partner starts its refusal for a held lead this long after Held
+    float escrowDelaySeconds = 5.f;     // an Escrow lead's first seconds inside an offer build no hold
     std::array<IntensityBand, kMaxAct + 1> actFloors{IntensityBand::None, IntensityBand::None, IntensityBand::None,
                                                      IntensityBand::Low, IntensityBand::Mid};
 };
@@ -74,6 +91,11 @@ inline IntensityBand intensityBand(IntensityBand place, int act, const Hallucina
     const IntensityBand actFloor = t.actFloors[static_cast<std::size_t>(std::clamp(act, 0, kMaxAct))];
     return std::max(place, actFloor);
 }
+
+// Place bleed: of the bands, only High bleeds a place in (none shows nothing; low, a voice; mid, a figure; high, a
+// figure plus a place bleeding in). The host draws it: a piece of the lead's home scene replacing part of the page,
+// growing from the edges, never over the path.
+inline bool placeBleeds(IntensityBand band) { return band == IntensityBand::High; }
 
 // Lone Carry weighs the lone key once the lead's lone Releases have pooled lonePoolFloor Load (and some at all).
 inline bool loneWeighs(std::uint32_t loneLoadPool, const HallucinationTuning& t = {}) {
@@ -99,6 +121,9 @@ struct HallucinationInput {
     bool partnerPresent = false; // the other lead is here
     bool partnerPull = false;    // the other lead has reached a held lead and taken their arm
     bool inFight = false;        // the partner pulls on its own after pullSeconds held
+    BriefId brief = BriefId::Count; // the active lead's Brief; Count for none
+    BriefId partnerBrief = BriefId::Count; // the partner's Brief; Count for none
+    bool partnerAble = false;              // the partner can act: not downed, in hitstun or guard break
 };
 
 struct HallucinationEvent {
@@ -140,6 +165,10 @@ public:
         heldFor_ = 0.f;
         refuseHeld_ = 0.f;
         refusal_.offer();
+        proxyPress_ = 0.f;
+        proxyDone_ = false;
+        delay_ = 0.f;
+        waiting_ = false;
         pool.shown(k, now_);
         scareForm_ = s.scripted && s.flaggedAsScare && pacer ? pacer->hallucination(true, s.scare) : ScareForm::Unpaced;
         emit(HallucinationEventType::Started);
@@ -170,7 +199,11 @@ public:
     bool refuseKept() const { return refuseKept_; }
     int key() const { return key_; }
     IntensityBand band() const { return active() ? band_ : IntensityBand::None; }
+    bool bleeds() const { return placeBleeds(band()); } // an open offer of a High band: the host bleeds the place in
     float holdLevel() const { return hold_; } // the host slows the lead by it and stills them at 1
+    // An Escrow lead inside an offer, in the wait, with no hold building yet; and the seconds of it left.
+    bool escrowWaiting() const { return waiting_; }
+    float escrowWaitLeft() const { return waiting_ ? tuning_.escrowDelaySeconds - delay_ : 0.f; }
     ScareForm scareForm() const { return scareForm_; } // the last start's scare beat: Unpaced, not a scare
     float refusalCooldown() const { return cooldown_; }
     double now() const { return now_; }
@@ -181,6 +214,7 @@ private:
     void rules(double dt, const HallucinationInput& in) {
         if (!(dt > 0.0 && std::isfinite(dt))) dt = 0.0;
         eventCount_ = 0;
+        waiting_ = false;
         now_ += dt;
         cooldown_ = std::max(0.f, cooldown_ - static_cast<float>(dt));
         if (lead_ == kNoFighter) {
@@ -196,7 +230,7 @@ private:
             const bool cooling = cooldown_ > 0.f;
             refuseCounts_ = refusal_.holdDown() == RefusalInput::Holding && active() && !cooling;
             refuseHeld_ = 0.f;
-            if (!active() && !cooling) cooldown_ = tuning_.refusalCooldownSeconds; // a wrong guess
+            if (!active() && !cooling) cooldown_ = refusalCooldownFor(in.brief); // a wrong guess
         } else if (!in.refuse && refuseDown_) {
             refusal_.holdUp();
             refuseCounts_ = false;
@@ -207,7 +241,7 @@ private:
             refuseHeld_ += static_cast<float>(dt);
             if (refuseHeld_ >= tuning_.refuseSeconds) {
                 refusal_.offerEnded();
-                cooldown_ = tuning_.refusalCooldownSeconds;
+                cooldown_ = refusalCooldownFor(in.brief);
                 end(HallucinationEventType::Refused);
                 return;
             }
@@ -215,20 +249,33 @@ private:
 
         if (held()) {
             heldFor_ += static_cast<float>(dt);
+            if (proxyRefuses(dt, in)) return;
             if (in.partnerPresent && (in.partnerPull || (in.inFight && heldFor_ >= tuning_.pullSeconds)))
                 end(HallucinationEventType::PulledBack);
             return;
         }
         if (in.accepting) {
-            if (hold_ == 0.f) emit(HallucinationEventType::HoldBegan);
-            hold_ = std::min(1.f, hold_ + static_cast<float>(dt) / tuning_.holdSeconds);
-            if (hold_ >= 1.f) {
-                heldFor_ = 0.f;
-                emit(HallucinationEventType::Held);
-                return;
+            float build = static_cast<float>(dt);
+            bool waiting = false;
+            if (in.brief == BriefId::Escrow && delay_ < tuning_.escrowDelaySeconds) { // the wait comes first
+                const float wait = std::min(build, tuning_.escrowDelaySeconds - delay_);
+                delay_ += wait;
+                build -= wait;
+                waiting = !(build > 0.f);
+                waiting_ = delay_ < tuning_.escrowDelaySeconds;
+            }
+            if (!waiting) {
+                if (hold_ == 0.f) emit(HallucinationEventType::HoldBegan);
+                hold_ = std::min(1.f, hold_ + build / tuning_.holdSeconds);
+                if (hold_ >= 1.f) {
+                    heldFor_ = 0.f;
+                    emit(HallucinationEventType::Held);
+                    return;
+                }
             }
         } else {
             hold_ = 0.f;
+            delay_ = 0.f;
             if (in.turnedAway) {
                 end(HallucinationEventType::Refused);
                 return;
@@ -237,6 +284,28 @@ private:
         if (now_ - shownAt_ >= tuning_.expireSeconds) end(HallucinationEventType::Expired);
     }
 
+    // A Proxy partner's refusal for the held lead; true once it has closed the offer.
+    bool proxyRefuses(double dt, const HallucinationInput& in) {
+        if (proxyDone_) return false;
+        if (!in.partnerPresent || in.partnerBrief != BriefId::Proxy || !in.partnerAble) {
+            proxyPress_ = 0.f; // any break drops a press under way
+            return false;
+        }
+        if (heldFor_ < tuning_.proxyReactSeconds) return false;
+        // This step's share from the instant the press could start: the react time's crossing, or the step's start.
+        proxyPress_ += std::min(static_cast<float>(dt), heldFor_ - tuning_.proxyReactSeconds);
+        if (proxyPress_ < tuning_.refuseSeconds) return false;
+        proxyDone_ = true;
+        refusal_.offerEnded();
+        cooldown_ = refusalCooldownFor(in.brief);
+        end(HallucinationEventType::Refused);
+        return true;
+    }
+    // The refusal cooldown for a lead of Brief `b`: Counsel cuts it, never lengthens it.
+    float refusalCooldownFor(BriefId b) const {
+        return b == BriefId::Counsel ? std::min(tuning_.refusalCooldownSeconds, tuning_.counselCooldownSeconds)
+                                     : tuning_.refusalCooldownSeconds;
+    }
     void emit(HallucinationEventType type) {
         if (eventCount_ < static_cast<int>(events_.size())) events_[static_cast<std::size_t>(eventCount_++)] = {type, key_};
     }
@@ -244,6 +313,10 @@ private:
         emit(why);
         key_ = -1;
         hold_ = 0.f;
+        delay_ = 0.f;
+        waiting_ = false;
+        proxyPress_ = 0.f;
+        proxyDone_ = false;
         endedAt_ = now_;
     }
 
@@ -264,6 +337,10 @@ private:
     float heldFor_ = 0.f;
     float refuseHeld_ = 0.f;
     float cooldown_ = 0.f;
+    float proxyPress_ = 0.f;  // a Proxy partner's press so far
+    float delay_ = 0.f;       // an Escrow lead's wait inside this offer so far
+    bool proxyDone_ = false;
+    bool waiting_ = false; // escrowWaiting()
     bool refuseDown_ = false;
     bool refuseCounts_ = false; // this hold was pressed on an open offer, not while cooling
     bool refuseKept_ = false;
