@@ -41,6 +41,7 @@ add_library(ftcore STATIC
     src/UiEventMarks.cpp
     src/UiFirstUse.cpp
     src/UiLone.cpp
+    src/UiPartyScreen.cpp
     src/Banter.cpp
     src/Battle.cpp
     src/BattleCamera.cpp
@@ -326,6 +327,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_ui_event_marks.cpp
         tests/test_ui_first_use.cpp
         tests/test_ui_lone.cpp
+        tests/test_ui_party.cpp
         tests/test_ui_stroke.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
