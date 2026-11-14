@@ -816,6 +816,29 @@ private:
 
 	float CameraYaw = 0.f;
 	float CameraPitch = -16.f;
+	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurn) on top of CameraYaw, which stays on the lock's
+	// line (the stick and the fight's view read it). It goes into CameraYaw once nothing is followed, so the view never jumps.
+	float FrameTurn = 0.f;
+#if !UE_BUILD_SHIPPING
+	// -ArenaFrameCheck: the framing as the rendered camera shows it, sampled on each followed frame and logged by
+	// LogFeatureChecks ("Arena check: framing"). -ArenaNoFrame holds the framing at 0, for a side-by-side.
+	bool bFrameCheck = false;
+	bool bNoFrame = false;
+	int32 FrameFrames = 0;
+	int32 FrameSettled = 0;
+	int32 FrameInThird = 0;
+	float FrameLeadWorst = 0.f;
+	float FrameFoeWorst = 0.f;
+	float FrameTurnMost = 0.f;
+	float FrameRateMost = 0.f;
+	float FrameLensMost = 0.f;
+	float FrameArmMost = 0.f;
+	float FramePrev = 0.f;
+	int32 FrameBandN[4] = {};
+	float FrameBandFoe[4] = {};
+	float FrameBandGap[4] = {};
+	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
+#endif
 
 	// Impact feedback. The jolt, the camera shake the run forces (-ArenaCameraShake=<0..1>; below 0: the setting), the
 	// blows that asked for a kick and the largest offset handed to the camera (degrees). The view the off-frame test

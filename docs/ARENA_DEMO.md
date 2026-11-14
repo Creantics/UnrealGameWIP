@@ -123,7 +123,11 @@ fit lists these mouths) the host puts a row of crates across it, just outside, s
 ### Camera
 
 The camera stays on the boss: the lock turns it, never to show the wall. It may leave the zone but not pass through the
-scene: the spring arm now probes the world (`ECC_Camera`) and is pulled in. `cameraBlocked` (a fit result, logged as a
+scene: the spring arm now probes the world (`ECC_Camera`) and is pulled in. Locked (or following, under the autopilot),
+the view also orbits round the lead (`ftcore::arenaFrameTurn`, `ArenaLook.h`) so the target sits on the view's centre line
+and the lead keeps its place left of it, rather than the lead hiding a close target; the turn is at most 30 degrees,
+eases in and out, is 0 while aiming, and goes into the free camera's yaw when the lock ends. The arm, the pivot and the
+shoulder are never touched, so it never pulls the camera out. The stick still reads along the lock's line. `cameraBlocked` (a fit result, logged as a
 warning when above 0) is the share of the zone's edge where a player standing on it would have the camera inside a building
 taller than the camera, so a bad spot is known before it is played: a giant at a tower plaza is 67% (`lat_plaza_a` with
 `-ArenaLineup=titan`), a giant's climax zone 0 to 15%, the human-sized facades 27%.
@@ -646,6 +650,8 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. Not in shipping builds. |
 | `-ArenaAssistCheck` | With `-ArenaAimCheck`: after its shot, four steps with aim assist on, each capped at 6 s: a half-way right stick sweeps the view off the body and back (a lock from before is let go), a lock is pressed on and let go, aim is let go and held again, and the target is killed by a host blow. Each change of the stick's share is logged with its cause (`aim assist look scale 0.60 -> 1.00 (locked on; ...)`). The `aim assist` check line compares the sweep's turn rate over a body with the rate off it and says whether the share came back to 1 as the crosshair left, on lock-on, as aim let go and as the target died (PASS: ratio 0.60 within 0.05 and all four). Not in shipping builds. |
 | `-ArenaCoverCheck` | Once, a second into the fight: a synthetic crosshair line (not the camera's) from 0.5 m over the floor through the cover drum nearest a standing enemy to its body's middle, picked as the reticle picks (the world's first hit clips the line). The `reticle behind cover` check line gives the world hit, the body's distance on the same line with the world left out (the control) and the pick: PASS when the drum is hit first and no body is picked, so aim assist has no body to slow over and the round's aim body is none. Needs a zone with cover drums (`stone_ring`); with `-ArenaQuitOnFinish` the run ends after it. Not in shipping builds. |
+| `-ArenaFrameCheck` | Samples the lock's framing as the rendered camera shows it on every followed frame: the lead's and the target's place across the screen, the turn and its rate, the boom's arm and the lens's distance from the pivot. The `framing` check line passes when every settled frame (the lock's line within 5 degrees, the turn within 1 of its want) has both bodies in the middle third, the turn never passes its cap and the arm never passes the rig's; the bands under it give the target's mean place and the least edge gap by distance. Not in shipping builds. |
+| `-ArenaNoFrame` | Holds the lock's framing at 0, for a side-by-side with `-ArenaFrameCheck`. Not in shipping builds. |
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |

@@ -72,4 +72,27 @@ FTCORE_API ArenaBodyCylinder arenaBodyCylinder(const ArenaEnemyKind& kind, Vec2 
 // enters past `to`, or starts inside the body (a lens inside a flanker's body sees through it, not into it).
 FTCORE_API bool arenaRayEntersBody(ArenaPoint3 from, ArenaPoint3 to, const ArenaBodyCylinder& body, float& t);
 
+// The locked camera's framing. The lock turns the view's heading onto the line from the lead to the target, and the
+// rig's shoulder (its side offset, + right) puts the lead off the view's centre; a target close behind that line is
+// hidden by the lead. The framing adds an orbit turn round the pivot over the lead (yaw, degrees, + turns the view
+// right) that brings the target onto the view's centre line: sin(turn) = -side / distance. The arm, the pivot and the
+// shoulder are never touched, so the lens stays exactly as far from the lead as the free camera's and the lead stays
+// where the free camera puts it on screen. The turn is held to maxTurn, so a stick read along the lock's line is never
+// more than maxTurn off the view; nearer than |side| / sin(maxTurn) the target sits between the lead and the centre.
+struct ArenaFrameRules {
+    float maxTurn = 30.f; // degrees
+    float rate = 6.f;     // 1/s: the applied turn eases toward the wanted one at this rate,
+    float minRate = 30.f; // deg/s: and never slower than this, so it arrives
+};
+
+inline constexpr ArenaFrameRules kArenaFrame{};
+
+// The wanted turn for a target `distance` m from the pivot along the lock's line, the shoulder `side` m (0 or NaN, or a
+// NaN distance: 0; a distance within |side|: the cap).
+FTCORE_API float arenaFrameTurn(const ArenaFrameRules& rules, float side, float distance);
+
+// One step of dt s of the applied turn toward `want`: eased, never past it, and unchanged when it is there already (an
+// applied 0 toward a want of 0 stays exactly 0). dt <= 0 or a NaN want: unchanged; a NaN applied counts as 0.
+FTCORE_API float arenaFrameStep(const ArenaFrameRules& rules, float applied, float want, float dt);
+
 } // namespace ftcore

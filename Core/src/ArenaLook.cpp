@@ -8,6 +8,7 @@ namespace ftcore {
 namespace {
 
 constexpr float kDegToRad = 3.14159265358979f / 180.f;
+constexpr float kRadToDeg = 180.f / 3.14159265358979f;
 
 } // namespace
 
@@ -22,6 +23,26 @@ ArenaPitchSplit arenaSplitPitch(const ArenaLookLimits& limits, float viewPitch) 
     s.boom = view > limits.boomMax ? limits.boomMax : view;
     s.tilt = view - s.boom;
     return s;
+}
+
+float arenaFrameTurn(const ArenaFrameRules& rules, float side, float distance) {
+    if (!(side == side) || side == 0.f || !(distance == distance)) return 0.f;
+    const float cap = rules.maxTurn > 0.f ? (rules.maxTurn < 89.f ? rules.maxTurn : 89.f) : 0.f;
+    const float s = std::fabs(side);
+    const float turn = distance <= s ? 90.f : std::asin(s / distance) * kRadToDeg;
+    const float held = turn < cap ? turn : cap;
+    return side > 0.f ? -held : held;
+}
+
+float arenaFrameStep(const ArenaFrameRules& rules, float applied, float want, float dt) {
+    if (!(applied == applied)) applied = 0.f;
+    if (!(dt > 0.f) || !(want == want) || applied == want) return applied;
+    const float gap = want - applied;
+    const float ease = std::fabs(gap) * (1.f - std::exp(-rules.rate * dt));
+    const float least = rules.minRate * dt;
+    const float step = ease > least ? ease : least;
+    if (step >= std::fabs(gap)) return want;
+    return applied + (gap > 0.f ? step : -step);
 }
 
 float arenaEyeHeight(float pivot, float arm, float up, float boomPitch) {
