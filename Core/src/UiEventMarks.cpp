@@ -38,7 +38,8 @@ UiEventMark uiEventMark(ArenaEventType type) {
     case ArenaEventType::LoadStored: return UiEventMark::LoadTip;
     case ArenaEventType::Read: return UiEventMark::ReadTick;
     // Carried by the lines and states themselves: the hp lines' rub-out (hits, heals, downs), the stamina arc and the
-    // verbs (guard broken, stamina empty), the Load arc (overload, release, spent), the tells, the lock, the result card.
+    // verbs (guard broken, stamina empty), the Load arc (overload, release, spent), the tells, the lock, the result card,
+    // the cylinder by the reticle (reload, dry press).
     case ArenaEventType::AttackStarted:
     case ArenaEventType::Hit:
     case ArenaEventType::GuardBroken:
@@ -58,7 +59,10 @@ UiEventMark uiEventMark(ArenaEventType type) {
     case ArenaEventType::HostHit:
     case ArenaEventType::LoadSpent:
     case ArenaEventType::AllyHit:
-    case ArenaEventType::AllyDowned: return UiEventMark::None;
+    case ArenaEventType::AllyDowned:
+    case ArenaEventType::ReloadStarted:
+    case ArenaEventType::Reloaded:
+    case ArenaEventType::DryPress: return UiEventMark::None;
     }
     return UiEventMark::None;
 }
