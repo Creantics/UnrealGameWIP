@@ -478,6 +478,15 @@ struct ArenaFightImpl {
             emit(ArenaEventType::LoadSpent, kArenaNobody, kArenaPlayer, 0, pl.spentLoad, pl.pos);
             pl.spentLoad = 0;
         }
+        if (pl.hostHealed > 0) { // the host's hostHeal and hostHurt since the last tick
+            emit(ArenaEventType::Healed, kArenaNobody, kArenaPlayer, 0, pl.hostHealed, pl.pos);
+            pl.hostHealed = 0;
+        }
+        if (pl.hostHurt > 0) {
+            emit(ArenaEventType::HostHit, kArenaNobody, kArenaPlayer, 0, pl.hostHurt, pl.pos);
+            pl.hostHurt = 0;
+        }
+        fight.takenScale_ = in.takenScale >= 0.f ? std::min(in.takenScale, 10.f) : 1.f; // NaN, below 0: 1
         if (pl.capFilled) { // a lowered cap overloaded the gauge
             emit(ArenaEventType::Overloaded, kArenaPlayer, kArenaPlayer, 0, pl.gauge.value, pl.pos);
             pl.capFilled = false;
@@ -1493,7 +1502,14 @@ struct ArenaFightImpl {
     }
 
     // An enemy blow's hp on the player: x the Lone tuning's taken while Lone (Load stores read the damage itself).
-    int hpTaken(int damage) const { return fight.lone_ ? loneScale(damage, fight.loneTuning_.taken) : damage; }
+    // Then x the host's takenScale (rounded; 1 leaves it as it is).
+    int hpTaken(int damage) const {
+        return scaledTaken(fight.lone_ ? loneScale(damage, fight.loneTuning_.taken) : damage);
+    }
+    int scaledTaken(int hp) const {
+        if (fight.takenScale_ == 1.f || hp <= 0) return hp;
+        return static_cast<int>(std::lround(static_cast<double>(hp) * static_cast<double>(fight.takenScale_)));
+    }
 
     static int scaledDamage(int damage, float scale) {
         const float v = static_cast<float>(damage) * (scale > 0.f ? scale : 0.f); // NaN: 0
@@ -2190,6 +2206,25 @@ struct ArenaFightImpl {
         return stored;
     }
 
+    int hostHeal(int amount) {
+        const int room = std::max(std::max(fi.hp, 1) - pl.hp, 0);
+        const int added = pl.hp > 0 ? std::min(amount, room) : 0;
+        if (added <= 0) return 0;
+        pl.hp += added;
+        if (fight.inHook_.on) emit(ArenaEventType::Healed, kArenaNobody, kArenaPlayer, 0, added, pl.pos);
+        else pl.hostHealed += added;
+        return added;
+    }
+    int hostHurt(int amount) {
+        const int taken = std::min(amount, pl.hp - 1);
+        if (taken <= 0) return 0;
+        pl.hp -= taken;
+        stats.damageTaken += taken;
+        if (fight.inHook_.on) emit(ArenaEventType::HostHit, kArenaNobody, kArenaPlayer, 0, taken, pl.pos);
+        else pl.hostHurt += taken;
+        return taken;
+    }
+
     void reportGift(int stored, bool filled) {
         if (stored > 0) emit(ArenaEventType::LoadStored, kArenaNobody, kArenaPlayer, 0, stored, pl.pos);
         if (filled) emit(ArenaEventType::Overloaded, kArenaPlayer, kArenaPlayer, 0, pl.gauge.value, pl.pos);
@@ -2264,7 +2299,7 @@ struct ArenaFightImpl {
             tookHalf = true;
             const int lead = (damage + 1) / 2;
             allyPart = damage - lead;
-            const int taken = std::min(lead, pl.hp);
+            const int taken = std::min(scaledTaken(lead), pl.hp); // the Load below reads the blow's own half
             pl.hp -= taken;
             stats.damageTaken += taken;
             ++stats.takeHalves;
@@ -2535,7 +2570,8 @@ struct ArenaFightImpl {
         return first ? side : Vec2{-side.x, -side.y};
     }
 
-    static ArenaInput autopilot(const ArenaFight& self) {
+    // hostHeal: -1 the fight's own charges; 0 or 1 the host's heal, not ready or ready.
+    static ArenaInput autopilot(const ArenaFight& self, int hostHeal) {
         ArenaInput in;
         if (self.phase_ != ArenaPhase::Fighting) return in;
         const Player& p = self.player_;
@@ -2617,7 +2653,8 @@ struct ArenaFightImpl {
 
         // Heal when low, and nothing is near or winding up.
         const bool locked = p.gauge.value >= self.capNow(); // Overloaded: no heal, no attack but the Release
-        if (!locked && p.charges > 0 && p.hp * 100 < kArenaAutoHealPercent * f.hp && !windingUp) {
+        const bool canHeal = hostHeal < 0 ? p.charges > 0 : hostHeal > 0;
+        if (!locked && canHeal && p.hp * 100 < kArenaAutoHealPercent * f.hp && !windingUp) {
             bool crowded = false;
             for (std::size_t i = 0; i < count; ++i) {
                 if (!living(i) || down(i)) continue;
@@ -2752,7 +2789,8 @@ const ArenaOutput& ArenaFight::tick(float dt, const ArenaInput& input, const Are
     return out_;
 }
 
-ArenaInput ArenaFight::autopilot() const { return ArenaFightImpl::autopilot(*this); }
+ArenaInput ArenaFight::autopilot() const { return ArenaFightImpl::autopilot(*this, -1); }
+ArenaInput ArenaFight::autopilot(bool hostHealReady) const { return ArenaFightImpl::autopilot(*this, hostHealReady ? 1 : 0); }
 void ArenaFight::setAutopilotShoots(bool on) { autoShoot_ = on; }
 bool ArenaFight::autopilotShoots() const { return autoShoot_; }
 
@@ -2920,6 +2958,14 @@ bool ArenaFight::lone() const { return lone_; }
 int ArenaFight::spendLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
     return ArenaFightImpl(*this).spendLoad(amount);
+}
+int ArenaFight::hostHeal(int amount) {
+    if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
+    return ArenaFightImpl(*this).hostHeal(amount);
+}
+int ArenaFight::hostHurt(int amount) {
+    if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
+    return ArenaFightImpl(*this).hostHurt(amount);
 }
 void ArenaFight::setCarry(bool blocksStore) { carry_ = blocksStore; }
 bool ArenaFight::carry() const { return carry_; }

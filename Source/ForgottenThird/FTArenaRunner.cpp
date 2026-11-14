@@ -1480,7 +1480,17 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		}
 		return false;
 	};
-	bPressHeal |= Pressed(InputAction::Gift);
+	// The gift keys: Gift lets AutoGift pick; Gift Heal and Gift Guard pick their own (keys only; a pad's Gift picks).
+	if (Pressed(InputAction::Gift))
+	{
+		bPressHeal = true;
+		GiftPick = ftcore::Gift::None;
+	}
+	if (Pressed(InputAction::GiftHeal) || Pressed(InputAction::GiftGuard))
+	{
+		bPressHeal = true;
+		GiftPick = Pressed(InputAction::GiftHeal) ? ftcore::Gift::Heal : ftcore::Gift::Guard;
+	}
 	bPressLock |= Pressed(InputAction::LockOn);
 	bPressRelease |= Pressed(InputAction::Release);
 	if (bTable)
@@ -1731,6 +1741,18 @@ void UFTArenaRunner::BeginSession()
 			SessionDef.loneLead = SessionLead;
 			SessionDef.loneTuning = LoneTuning;
 		}
+		// The gift slot's tuning from Data/Battle/gifts.json (its defaults if the file is refused).
+		{
+			TArray<uint8> Bytes;
+			std::string Error;
+			const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/gifts.json");
+			if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importGiftTuning(FT::BytesAsText(Bytes), SessionDef.gift, &Error)))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/gifts.json; the gift slot keeps its defaults.\n%s"),
+					*FT::ToFString(Error));
+				SessionDef.gift = ftcore::GiftTuning{};
+			}
+		}
 		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
 		if (LoneSlot != static_cast<uint8>(ftcore::SlotState::Companion))
 		{
@@ -1781,13 +1803,87 @@ void UFTArenaRunner::PressPendingLoneGift()
 		return;
 	}
 	++LoneGiftPresses;
-	const bool bGiven = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift.given;
+	const ftcore::GiftResult Result = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift;
+	ApplyGift(Result);
+	const bool bGiven = Result.given;
 	MirrorLone();
 	if (!bGiven)
 	{
 		++LoneGiftsRefused;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: a gift pressed while Lone was refused at %.2f s; still Lone."), Fight.time());
 	}
+}
+
+bool UFTArenaRunner::GiftHealReady() const
+{
+	if (!Session)
+	{
+		return false;
+	}
+	const ftcore::FightSession& S = Session->Get();
+	return S.giftSlot().state() == ftcore::SlotState::Companion && S.giftHealsLeft() > 0 && S.giftHealReadyIn() <= 0.0;
+}
+
+ftcore::Gift UFTArenaRunner::AutoGift() const
+{
+	return GiftHealReady() && Fight.hp() < Fight.def().fighter.hp ? ftcore::Gift::Heal : ftcore::Gift::Guard;
+}
+
+void UFTArenaRunner::ApplyGift(const ftcore::GiftResult& Result)
+{
+	if (!Result.given)
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: a gift press refused (gift %d, error %d)."), Fight.time(),
+			static_cast<int32>(Result.gift), static_cast<int32>(Result.error));
+		return;
+	}
+	if (Result.gift == ftcore::Gift::Heal)
+	{
+		const int32 Healed = Fight.hostHeal(FMath::RoundToInt(Result.healShare * static_cast<float>(Fight.def().fighter.hp)));
+		const int32 Moved = Result.healLoad > 0 ? Fight.spendLoad(Result.healLoad) : 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: gift Heal: +%d hp, %d Load off the lead, %d Heals left."), Fight.time(), Healed,
+			Moved, Session ? Session->Get().giftHealsLeft() : 0);
+	}
+	else if (Result.gift == ftcore::Gift::Guard)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: gift Guard: x%.2f on the lead's blows until %.2f (session clock)."), Fight.time(),
+			Result.guardScale, Result.guardUntil);
+	}
+}
+
+int32 UFTArenaRunner::GetGiftHealsLeft() const
+{
+	return Session ? Session->Get().giftHealsLeft() : 0;
+}
+
+double UFTArenaRunner::GetGiftHealReadyIn() const
+{
+	return Session ? Session->Get().giftHealReadyIn() : 0.0;
+}
+
+double UFTArenaRunner::GetGiftGuardReadyIn() const
+{
+	return Session ? Session->Get().giftGuardReadyIn() : 0.0;
+}
+
+bool UFTArenaRunner::IsRefusedTooEarly() const
+{
+	return HallMode != 0 && HallTooEarlyAt >= 0.0 && static_cast<double>(Fight.time()) - HallTooEarlyAt < kRefusedTooEarlyShow;
+}
+
+bool UFTArenaRunner::IsEscrowWaiting() const
+{
+	return HallMode != 0 && Hall.escrowWaiting();
+}
+
+float UFTArenaRunner::GetEscrowWaitLeft() const
+{
+	return HallMode != 0 ? Hall.escrowWaitLeft() : 0.f;
+}
+
+float UFTArenaRunner::GetWeakPointLockFor() const
+{
+	return HallMode != 0 ? Hall.weakPointLockFor() : 0.f;
 }
 
 void UFTArenaRunner::MirrorLone()
@@ -1818,11 +1914,15 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 		bLoneGiftDone = true;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: probe gift press at %.2f s (-ArenaLoneGiftAt)."), Fight.time());
 	}
+	// The gift: the key's pick (else AutoGift's) selected now, so a press held past a Lone step gives the same gift.
+	const ftcore::Gift Pick = GiftPick;
+	GiftPick = ftcore::Gift::None;
 	if (In.heal || bProbeGift)
 	{
+		Session->Get().selectGift(Pick != ftcore::Gift::None ? Pick : AutoGift());
 		if (LoneGift.press(Fight.lone())) // else pressed after the step (PressPendingLoneGift)
 		{
-			Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead);
+			ApplyGift(Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift);
 		}
 	}
 	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
@@ -2065,7 +2165,7 @@ void UFTArenaRunner::StepFight()
 	bool bIntercept = false;
 	if (bAutoPlay)
 	{
-		In = Fight.autopilot();
+		In = Session ? Fight.autopilot(GiftHealReady()) : Fight.autopilot(); // the heal is the gift slot's
 		// Attacks walk and turn by the same rules as the player's, so an unattended check runs what a player gets.
 		ftcore::attackMoveInput(AttackMoveTable, Fight, In);
 		if (bNoLock)
@@ -2274,6 +2374,13 @@ void UFTArenaRunner::StepFight()
 		StepHallucination(In);
 	}
 	PressSession(In);
+	if (Session)
+	{
+		// The Gift key is the gift slot's (ApplyGift heals): the fight's own heal never takes it. The gift Guard scales
+		// every blow the lead takes (1 unguarded).
+		In.heal = false;
+		In.takenScale = Session->Get().giftSlot().guardScaleFor(SessionLead, Session->Get().now());
+	}
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
 	if (HallMode != 0)
@@ -4047,6 +4154,10 @@ void UFTArenaRunner::Finish()
 		PlayerFigure->ResetFeet(); // handed back (the story, the explore pawn, a result screen): nothing held carries over
 	}
 	const bool bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
+	if (bWon && Session)
+	{
+		Session->Get().finish(true); // the gift tally carries over a win; a retry's begin rolls it back
+	}
 	LogStoneWalkCounts();
 	LogResult();
 	if (bQuitOnFinish && !bShots)
@@ -4455,6 +4566,64 @@ void UFTArenaRunner::BeginHallucination()
 	bHallKeptStep = false;
 	HallHeldDrift = HallMaxHold = 0.f;
 	bHallHeldStep = false;
+	HallOpenLeft = 0.f;
+	HallBlowsTaken = 0;
+	HallTooEarlyAt = -1.0;
+	bHallNoWeakPointLogged = false;
+}
+
+// The refusal's weak point on every weak-point host the fight has (the kite, the stone bearer, a boss kind's crit):
+// shut while Hall.weakPointShutFor() > 0 (Held shuts it; an open one closes), and opened for weakPointOpenFor() on
+// the step that window rises (a refusal completed; Core opens none through the lock). The boss's own openings are
+// left as they are outside the shut.
+void UFTArenaRunner::HallWeakPoint()
+{
+	const float Open = Hall.weakPointOpenFor();
+	const bool bShut = Hall.weakPointShutFor() > 0.f;
+	const bool bRise = Open > HallOpenLeft + 1e-4f;
+	HallOpenLeft = Open;
+	const double T = static_cast<double>(Fight.time());
+	bool bAny = false;
+	if (Kite.IsActive())
+	{
+		bAny = true;
+		Kite.SetShut(bShut);
+		if (bRise)
+		{
+			Kite.OpenFor(T, Open);
+		}
+	}
+	if (StoneBearer.IsActive())
+	{
+		bAny = true;
+		StoneBearer.SetWeakPointShut(bShut);
+		if (bRise)
+		{
+			StoneBearer.OpenWeakPointFor(Open);
+		}
+	}
+	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
+	{
+		if (bKindCritSlot[I] && Fight.def().enemies[static_cast<size_t>(I)].boss)
+		{
+			bAny = true;
+			KindCrits[static_cast<size_t>(I)].setShut(bShut);
+			if (bRise)
+			{
+				KindCrits[static_cast<size_t>(I)].openFor(T, static_cast<double>(Open));
+			}
+		}
+	}
+	if (bRise)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the refusal opens the weak point for %.2f s%s."), Fight.time(), Open,
+			bAny ? TEXT("") : TEXT(" (no boss weak point here)"));
+	}
+	if (!bAny && (bRise || bShut) && !bHallNoWeakPointLogged)
+	{
+		bHallNoWeakPointLogged = true;
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: the refusal's weak-point window has no host in this fight (no kite, stone bearer or boss kind crit)."));
+	}
 }
 
 void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
@@ -4478,6 +4647,11 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 	H.inFight = true;
 	H.partnerPresent = Session != nullptr && !Fight.lone(); // alone, only the refusal ends a hold
 	H.accepting = (HallMode == 1 || HallMode == 4) && Hall.active();
+	H.brief = LeadBrief;
+	H.partnerBrief = ftcore::BriefId::Count; // the partner's kit takes no Brief yet
+	H.partnerAble = H.partnerPresent && (Fight.allyMaxHp() == 0 || Fight.allyHp() > 0);
+	H.blowsTaken = HallBlowsTaken; // the last step's (AfterHallucinationStep)
+	HallBlowsTaken = 0;
 	// The refusal is the guard button. The autoplay bot guards for its own reasons, so there the probe presses it
 	// instead: mode 2 as a bare refusal, mode 4 by holding the guard itself.
 	const bool bProbeGuard = HallMode == 4
@@ -4488,6 +4662,18 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 		: HallMode == 2 ? Hall.active() && Hall.now() - HallShownAt >= 1.0 : bProbeGuard;
 	Hall.tick(static_cast<double>(StepSeconds), H);
 	Count();
+	// Held's one cost: a share of the lead's max health on the step Held began (hostHurt never kills: 1 hp stays).
+	if (Hall.heldCost() > 0.f)
+	{
+		const int32 Cost = FMath::RoundToInt(Hall.heldCost() * static_cast<float>(Fight.def().fighter.hp));
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: Held costs the lead %d hp (%d asked)."), Fight.time(), Fight.hostHurt(Cost), Cost);
+	}
+	if (Hall.refusedTooEarly())
+	{
+		HallTooEarlyAt = static_cast<double>(Fight.time());
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: refused too early: no opening."), Fight.time());
+	}
+	HallWeakPoint();
 	// The weighted pick (newest x3, caused x2; the lone key x2 once this fight's lone Releases pool lonePoolFloor).
 	// Unscripted, so no scare flag: the arena has no authored moment and no ScarePacer.
 	ftcore::HallucinationStartIn Offer;
@@ -4515,6 +4701,10 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 
 void UFTArenaRunner::AfterHallucinationStep(const ftcore::ArenaOutput& Out)
 {
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		HallBlowsTaken += (E.type == ftcore::ArenaEventType::Hit && E.target == ftcore::kArenaPlayer) ? 1 : 0;
+	}
 	if (!bHallHeldStep && !bHallKeptStep)
 	{
 		return;
@@ -4626,10 +4816,11 @@ void UFTArenaRunner::PrepareStoneBearer()
 		}
 		StoneBearerSlot = -1;
 	}
-	static bool bBreakErrorLogged = false; // once a process: every fight's prepare builds the same kind again
-	if (!BreakError.empty() && !bBreakErrorLogged)
+	// Once a boss kind a play session (the runner's life): every fight's prepare builds the same kind again.
+	const FName BreakKind(*FT::ToFString(FFTStoneBearerHost::KindId));
+	if (!BreakError.empty() && !BreakErrorLogged.Contains(BreakKind))
 	{
-		bBreakErrorLogged = true;
+		BreakErrorLogged.Add(BreakKind);
 		UE_LOG(LogForgottenThird, Error, TEXT("Arena: %s"), *FT::ToFString(BreakError));
 	}
 }
@@ -5607,6 +5798,7 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 void UFTArenaRunner::BeginBrief()
 {
 	BriefId.Reset();
+	LeadBrief = ftcore::BriefId::Count;
 	BriefStats.Reset();
 	BriefRating = 0;
 #if !UE_BUILD_SHIPPING
@@ -5682,6 +5874,7 @@ void UFTArenaRunner::BeginBrief()
 	const ftcore::LicenceStats Stats = BriefRating > 0 ? ftcore::LicenceRating{}.statsFor(*Brief, BriefRating) : ftcore::LicenceStats{};
 	Def.fighter = ftcore::buildBriefKit(*Brief, Stats).fighter;
 	BriefId = Want;
+	LeadBrief = Id;
 	BriefStats = FString::Printf(TEXT("%d/%d/%d/%d/%d"), Stats.v[0], Stats.v[1], Stats.v[2], Stats.v[3], Stats.v[4]);
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("Arena: Brief %s on the %s kit (-ArenaBrief): Rating %d, stats %s, hp %d, rounds %d, reload %.2f s, shot %d damage %.0f m startup %.2f s, kicks %d/%d/%d, heavy %d, poise %.2f, guard absorb %.4f, parry %.4f."),

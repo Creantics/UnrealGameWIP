@@ -54,6 +54,9 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::LineNext, "line_next", InputContext::ReadHeld, false, "S", "Gamepad_LeftStick_Down"},
     // Pad: no free Foot button; take half is Guard held plus Interact (route "guard_interact").
     {InputAction::TakeHalf, "take_half", InputContext::Foot, false, "T", ""},
+    // Pad: no free Foot button either; the Gift button picks (route "gift_pick").
+    {InputAction::GiftHeal, "gift_heal", InputContext::Foot, false, "H", ""},
+    {InputAction::GiftGuard, "gift_guard", InputContext::Foot, false, "Y", ""},
 }};
 
 const ActionRow& row(InputAction a) { return kRows[static_cast<std::size_t>(a) % kInputActionCount]; }
@@ -166,6 +169,8 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     case InputAction::TargetNext: return pad ? "right_stick_flick" : "mouse_flick";
     case InputAction::Party: return "map_hold";
     case InputAction::TakeHalf: return pad ? "guard_interact" : nullptr;
+    case InputAction::GiftHeal:
+    case InputAction::GiftGuard: return pad ? "gift_pick" : nullptr;
     default: break;
     }
     return nullptr;
@@ -364,8 +369,9 @@ constexpr InputHintEntry kFieldHint[] = {
 
 // What the host reads but no controls line names, each on purpose (ctest hints_read checks both ways): the map key
 // shows only as the party hold's route ("Hold M"), the pause key is the menu key every screen shares, and take half
-// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf};
+// plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was; the
+// two gift keys are the Gift key's own picks, which the line's Gift entry covers.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::GiftHeal, A::GiftGuard};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {
@@ -430,6 +436,7 @@ std::string_view inputRouteLabel(std::string_view route) {
     if (route == "mouse_flick") return "Mouse flick";
     if (route == "right_stick_flick") return "RS flick";
     if (route == "guard_interact") return "Guard+Interact";
+    if (route == "gift_pick") return "Gift";
     return std::string_view();
 }
 

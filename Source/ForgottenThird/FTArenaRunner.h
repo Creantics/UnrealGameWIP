@@ -294,6 +294,19 @@ public:
 	// The fight session (the shared combat inputs) the runner owns and ticks on the held clock, and its lead slot (the
 	// one the player's figure fills: SessionLeadOf the lead's look, set at Begin).
 	UFTFightSession* GetSession() const { return Session; }
+	// For the HUD, each 0 (false) with no session or, for the refusal's, without -ArenaHallucination: the gift slot's
+	// Heals left this fight and the seconds until the Heal and the Guard are ready (0 = ready; the Guard's time runs
+	// from press to press, its guard included); a refusal that closed an offer too early to open anything (true for
+	// kRefusedTooEarlyShow s from that step); the Escrow Brief's wait before a hold builds, and its seconds left; the
+	// lock's seconds left, through which a refusal opens nothing.
+	int32 GetGiftHealsLeft() const;
+	double GetGiftHealReadyIn() const;
+	double GetGiftGuardReadyIn() const;
+	bool IsRefusedTooEarly() const;
+	bool IsEscrowWaiting() const;
+	float GetEscrowWaitLeft() const;
+	float GetWeakPointLockFor() const;
+	static constexpr float kRefusedTooEarlyShow = 1.5f;
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
@@ -388,6 +401,13 @@ private:
 	void PressSession(const ftcore::ArenaInput& In);
 	void FeedSession();
 	void BeginSession();
+	// The gift slot's press result, applied: a Heal's share of the lead's max hp and its Load moved off the lead (a
+	// Guard's scale is read on every step instead, ArenaInput::takenScale; a Count is already called).
+	void ApplyGift(const ftcore::GiftResult& Result);
+	// The Gift key's pick: Heal when it is ready (GiftHealReady) and the lead is hurt, else Guard.
+	ftcore::Gift AutoGift() const;
+	// The gift slot would give a Heal now: a companion in it, a Heal left and off its cooldown.
+	bool GiftHealReady() const;
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
@@ -638,6 +658,15 @@ private:
 	float HallMaxHold = 0.f;
 	bool bHallHeldStep = false;
 	ftcore::Vec2 HallHeldFrom{};
+	// The refusal's weak point: the window's seconds left after the last step (a rise is a new opening), the blows the
+	// lead took last step (the hold's push), the fight time a refusal last closed an offer too early, and the lead's
+	// Brief (BeginBrief's; Count for none).
+	float HallOpenLeft = 0.f;
+	int32 HallBlowsTaken = 0;
+	double HallTooEarlyAt = -1.0;
+	bool bHallNoWeakPointLogged = false;
+	ftcore::BriefId LeadBrief = ftcore::BriefId::Count;
+	void HallWeakPoint();
 	void BeginHallucination();
 	void StepHallucination(ftcore::ArenaInput& In);
 	void AfterHallucinationStep(const ftcore::ArenaOutput& Out);
@@ -693,6 +722,9 @@ private:
 	bool bReleaseDown = false;
 	bool bPressPair = false;
 	bool bPressTakeHalf = false;
+	// The gift the last gift key picked (GiftHeal, GiftGuard; None: the Gift key, AutoGift picks), until the step's
+	// PressSession reads it.
+	ftcore::Gift GiftPick = ftcore::Gift::None;
 	// Autoplay's partner: a parry came, so press the pair on the next step.
 	bool bPartnerDue = false;
 	int8 PressSwitch = 0;
@@ -814,8 +846,8 @@ private:
 	bool bMouseFlicked = false;
 
 	double Now = 0.0;
-	double TellSince[6] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)
-	bool bTellShown[6] = {};
+	double TellSince[ftcore::kMaxArenaEnemies] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)
+	bool bTellShown[ftcore::kMaxArenaEnemies] = {};
 	double Accumulator = 0.0;
 	double DrawnTime = 0.0;
 	double ActiveSince[ftcore::kMaxArenaEnemies];
@@ -974,6 +1006,8 @@ private:
 	// notes logged so far (its plinth and keep-out disc are with the figures above).
 	FFTStoneBearerHost StoneBearer;
 	int32 StoneBearerSlot = -1;
+	// The boss kinds whose break fallback error was logged (PrepareStoneBearer): once a kind a play session.
+	TSet<FName> BreakErrorLogged;
 	float ZoneYaw = 0.f;
 	int32 StoneBearerLogged = 0;
 	mutable bool bWeakPointWarned = false; // the mesh has no weak-point bone (warned once)

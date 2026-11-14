@@ -1453,3 +1453,48 @@ TEST_CASE("locked weak point: a count-driven fight allocates nothing") {
     CHECK(run.lock().opens() > 0);
     CHECK(run.lock().deferrals() > 0);
 }
+
+TEST_CASE("arena boss run: the host's own opening, and a shut that bars every opening but the lock's own") {
+    const ArenaBossDef def = lockedBoss(R"({ "keys": ["shared_blow"] })");
+    ArenaBossRun run;
+    run.begin(def, 0.0);
+    const ArenaBossEvents& op = run.openCrit(2.0, 3.0);
+    REQUIRE(op.size() == 1);
+    CHECK(op[0].type == ArenaBossEventType::CritOpened);
+    CHECK(op[0].until == doctest::Approx(5.0));
+    CHECK(run.crit().isOpen(4.9));
+    CHECK(run.openCrit(3.0, 1.0).empty()); // the longer one stays
+    CHECK(run.crit().closesAt() == doctest::Approx(5.0));
+    CHECK(run.openCrit(3.0, 0.0).empty());
+
+    const ArenaBossEvents& sh = run.shutCrit(true, 3.5);
+    REQUIRE(sh.size() == 1);
+    CHECK(sh[0].type == ArenaBossEventType::CritClosed);
+    CHECK(run.critShut());
+    CHECK_FALSE(run.crit().isOpen(3.6));
+    CHECK(run.openCrit(4.0, 3.0).empty());
+
+    // A full intercept opens nothing while shut ...
+    run.startMove(def.find("fist"), 10.0, CalledZone::Left);
+    run.interceptDown(CalledZone::Left, 11.4);
+    CHECK_FALSE(has(run.update(11.6, 1.0f), ArenaBossEventType::CritOpened));
+    run.interceptUp(11.7);
+    CHECK_FALSE(run.crit().isOpen(12.0));
+    // ... and an unlock opens the lock but not the weak points.
+    UnlockResult u = UnlockResult::BadKey;
+    const ArenaBossEvents& ev = run.offerUnlock(kUnlockSharedBlow, 12.2, 0, &u);
+    CHECK(u == UnlockResult::Unlocked);
+    REQUIRE(ev.size() == 1);
+    CHECK(ev[0].type == ArenaBossEventType::Unlocked);
+    CHECK(run.weakPointOpen());
+    CHECK_FALSE(run.crit().isOpen(12.5));
+
+    // Unshut: nothing reopens; a new opening opens.
+    CHECK_FALSE(has(run.shutCrit(false, 13.0), ArenaBossEventType::CritOpened));
+    CHECK_FALSE(run.critShut());
+    CHECK_FALSE(run.crit().isOpen(13.0));
+    CHECK(has(run.openCrit(13.0, 2.0), ArenaBossEventType::CritOpened));
+    CHECK(run.crit().isOpen(14.0));
+    run.begin(def, 20.0);
+    CHECK_FALSE(run.critShut());
+}

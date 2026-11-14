@@ -8454,3 +8454,89 @@ TEST_CASE("arena attack: Duy's pitched round takes the crosshair's body within k
         }
     }
 }
+
+TEST_CASE("arena hooks: takenScale scales the hp an enemy blow takes from the player, not its Load") {
+    const ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20); // hits at 0.4 .. 0.55 s
+    {   // a hit: 20 x 0.25
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.takenScale = 0.25f;
+        rig.runFor(0.7f);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.find(ArenaEventType::Hit)->event.amount == 5);
+        CHECK(rig.fight.hp() == 95);
+    }
+    {   // a guard's chip: 20 x 0.25 = 5, then x (1 - 0.75), rounded
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.guard = true;
+        rig.in.takenScale = 0.25f;
+        rig.runFor(0.7f);
+        CHECK(rig.count(ArenaEventType::Blocked) == 1);
+        CHECK(rig.fight.hp() == 99);
+    }
+    for (const float odd : {std::numeric_limits<float>::quiet_NaN(), -1.f}) { // read as 1
+        Rig rig(ruleFighter(), {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.takenScale = odd;
+        rig.runFor(0.7f);
+        CHECK(rig.fight.hp() == 80);
+    }
+    {   // above 10 reads as 10
+        ArenaFighter f = ruleFighter();
+        f.hp = 1000;
+        Rig rig(f, {hitterKind(bite)});
+        rig.put(0, 1.5f, 0.f);
+        rig.in.takenScale = 50.f;
+        rig.runFor(0.7f);
+        CHECK(rig.fight.hp() == 800);
+    }
+}
+
+TEST_CASE("arena autopilot: a host-owned heal heals only while the host says it is ready") {
+    Rig rig(ruleFighter(), {dummyKind()});
+    REQUIRE(rig.fight.hostHurt(90) == 90); // 10 hp: under the autopilot's heal line
+    const ArenaInput own = rig.fight.autopilot();
+    REQUIRE(own.heal); // the fight's own charges
+    CHECK_FALSE(rig.fight.autopilot(false).heal);
+    CHECK(rig.fight.autopilot(true).heal);
+    REQUIRE(rig.fight.hostHeal(100) == 90); // full: no heal either way
+    CHECK_FALSE(rig.fight.autopilot(true).heal);
+}
+
+TEST_CASE("arena hooks: hostHeal and hostHurt change the player's hp now and report once on the next tick") {
+    {   // before begin(): nothing
+        ArenaFight fight;
+        CHECK(fight.hostHeal(10) == 0);
+        CHECK(fight.hostHurt(10) == 0);
+    }
+    Rig rig(ruleFighter(), {dummyKind()});
+    CHECK(rig.fight.hostHeal(10) == 0); // full
+    CHECK(rig.fight.hostHurt(30) == 30);
+    CHECK(rig.fight.hp() == 70);
+    CHECK(rig.fight.stats().damageTaken == 30);
+    CHECK(rig.fight.stats().hitsTaken == 0);
+    CHECK(rig.fight.hostHeal(50) == 30); // never past max hp
+    CHECK(rig.fight.hp() == 100);
+    CHECK(rig.fight.hostHurt(0) == 0);
+    CHECK(rig.fight.hostHeal(-5) == 0);
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Hit) == 0); // a price is not a blow
+    REQUIRE(rig.count(ArenaEventType::HostHit) == 1);
+    const ArenaEvent& hurt = rig.find(ArenaEventType::HostHit)->event;
+    CHECK(hurt.source == kArenaNobody);
+    CHECK(hurt.target == kArenaPlayer);
+    CHECK(hurt.amount == 30);
+    REQUIRE(rig.count(ArenaEventType::Healed) == 1);
+    CHECK(rig.find(ArenaEventType::Healed)->event.amount == 30);
+    rig.run(3);
+    CHECK(rig.count(ArenaEventType::HostHit) == 1); // reported once
+    // never a kill: it stops at 1 hp, unscaled by takenScale or the Lone taken
+    rig.in.takenScale = 0.25f;
+    CHECK(rig.fight.hostHurt(1000) == 99);
+    CHECK(rig.fight.hp() == 1);
+    CHECK(rig.fight.hostHurt(5) == 0);
+    rig.tick();
+    CHECK(rig.fight.phase() == ArenaPhase::Fighting);
+    CHECK(rig.count(ArenaEventType::Downed) == 0);
+}

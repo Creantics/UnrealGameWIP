@@ -40,7 +40,10 @@ constexpr float kArenaLeadMaxHeight = 210.f;
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
 const FLinearColor kArenaShieldParry(1.f, 0.85f, 0.3f);
-const FLinearColor kFighterTellBlock(1.f, 0.55f, 0.1f);
+// The danger red of the lead's hit glow (was orange 1, 0.55, 0.1, too near the HUD's gold); same peak brightness.
+const FLinearColor kFighterTellBlock(1.f, 0.2f, 0.15f);
+// The parameter SetBodyPulse drives on the character masters.
+const FName kFighterEmissive(TEXT("Emissive"));
 const FLinearColor kFighterTellDodge(1.f, 0.12f, 0.08f);
 const FLinearColor kFighterTellFlash(1.f, 1.f, 0.85f);
 
@@ -328,10 +331,7 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	Visor->SetVisibility(false);
 	Blade->SetVisibility(false);
 	Skin->SetSkeletalMesh(Mesh);
-	PulseMaterials.Reset(); // a new mesh: its own materials, made dynamic on its first glow
-	PulseBase.Reset();
-	PulseGlow = 0.f;
-	bPulseMade = false;
+	MakePulseMaterials(); // a new mesh: its own materials
 	Skin->SetAnimInstanceClass(UFTBeatFighterAnimInstance::StaticClass());
 	Skin->SetRelativeLocation(FVector(0.0, 0.0, SkinHover));
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));
@@ -432,6 +432,31 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 	return true;
 }
 
+void AFTArenaFighter::MakePulseMaterials()
+{
+	PulseMaterials.Reset();
+	PulseBase.Reset();
+	PulseGlow = 0.f;
+	const FHashedMaterialParameterInfo Info(kFighterEmissive);
+	const int32 Count = Skin->GetNumMaterials();
+	for (int32 M = 0; M < Count; ++M)
+	{
+		UMaterialInterface* Material = Skin->GetMaterial(M);
+		FLinearColor Base = FLinearColor::Black;
+		if (!Material || !Material->GetVectorParameterValue(Info, Base))
+		{
+			continue;
+		}
+		if (UMaterialInstanceDynamic* Dynamic = Skin->CreateDynamicMaterialInstance(M))
+		{
+			PulseMaterials.Add(Dynamic);
+			PulseBase.Add(Base);
+		}
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: %s: the break tell can glow on %d of %d materials (Emissive)."),
+		Skin->GetSkeletalMeshAsset() ? *Skin->GetSkeletalMeshAsset()->GetName() : TEXT("?"), PulseMaterials.Num(), Count);
+}
+
 void AFTArenaFighter::SetBodyPulse(float Glow)
 {
 	Glow = FMath::Max(Glow, 0.f);
@@ -439,34 +464,13 @@ void AFTArenaFighter::SetBodyPulse(float Glow)
 	{
 		return;
 	}
-	if (!bPulseMade)
-	{
-		bPulseMade = true;
-		const int32 Count = Skin->GetNumMaterials();
-		for (int32 M = 0; M < Count; ++M)
-		{
-			UMaterialInterface* Material = Skin->GetMaterial(M);
-			FLinearColor Base = FLinearColor::Black;
-			if (!Material || !Material->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Emissive")), Base))
-			{
-				continue;
-			}
-			if (UMaterialInstanceDynamic* Dynamic = Skin->CreateDynamicMaterialInstance(M))
-			{
-				PulseMaterials.Add(Dynamic);
-				PulseBase.Add(Base);
-			}
-		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %s: the break tell glows on %d of %d materials (Emissive)."),
-			Skin->GetSkeletalMeshAsset() ? *Skin->GetSkeletalMeshAsset()->GetName() : TEXT("?"), PulseMaterials.Num(), Count);
-	}
 	PulseGlow = Glow;
 	const FLinearColor Warm(1.f, 0.86f, 0.7f);
 	for (int32 M = 0; M < PulseMaterials.Num(); ++M)
 	{
 		if (PulseMaterials[M])
 		{
-			PulseMaterials[M]->SetVectorParameterValue(TEXT("Emissive"), PulseBase[M] + Warm * Glow);
+			PulseMaterials[M]->SetVectorParameterValue(kFighterEmissive, PulseBase[M] + Warm * Glow);
 		}
 	}
 }

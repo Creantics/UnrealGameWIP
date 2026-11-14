@@ -63,8 +63,10 @@ enum class InputAction : std::uint8_t {
     LineNext,
     // Foot (appended)
     TakeHalf,
+    GiftHeal, // the gift slot's two gifts, each picked and given at once (Gift itself picks: Heal when it can mend)
+    GiftGuard,
 };
-inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::TakeHalf) + 1;
+inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::GiftGuard) + 1;
 
 enum class InputContext : std::uint8_t { Foot, ReadHeld };
 enum class InputDevice : std::uint8_t { Keys, Pad };
@@ -108,7 +110,8 @@ FTCORE_API bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice
 FTCORE_API bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction* swapped = nullptr);
 // How an action with no key on that device is still reached: "left_stick" (moving), "left_stick_full" (the stick
 // pushed all the way runs), "mouse_flick" / "right_stick_flick" (locked on, a flick switches the target),
-// "map_hold" (holding the map button shows or hides the party). Null when the action has no such route.
+// "map_hold" (holding the map button shows or hides the party), "guard_interact" (take half on a pad), "gift_pick"
+// (a gift on a pad: the Gift button picks it). Null when the action has no such route.
 FTCORE_API const char* inputActionRoute(InputAction a, InputDevice d);
 // Holding the map button this long, on either device, is the party toggle (inputActionRoute "map_hold").
 inline constexpr float kInputMapHoldForParty = 0.6f;

@@ -694,6 +694,14 @@ public:
                                                   UnlockResult* result = nullptr);
     FTCORE_API const ArenaBossEvents& onDeferred(double t);
     FTCORE_API const ArenaBossEvents& relock(double t);
+    // The host's own opening (a refusal's): the weak points open from t for `seconds` (one open now that closes
+    // later is kept), reporting CritOpened (no move). Nothing while shut, or for seconds <= 0 or not finite.
+    FTCORE_API const ArenaBossEvents& openCrit(double t, double seconds);
+    // Shut: nothing opens the weak points (a turned move's opening, an unlock's: the lock itself still opens, and
+    // Unlocked is still reported) and a window open now closes at t (CritClosed). Unshut lets openings through again;
+    // nothing reopens. begin() unshuts.
+    FTCORE_API const ArenaBossEvents& shutCrit(bool shut, double t);
+    bool critShut() const { return critShut_; }
     bool weakPointLocked() const { return lock_.locked(); }
     // The lock is open now (always true for a boss whose points are not locked).
     bool weakPointOpen() const { return lock_.open(now_); }
@@ -740,6 +748,7 @@ private:
     std::uint8_t cueCount_ = 0;
     std::uint8_t cueNext_ = 0;
     bool critWasOpen_ = false;
+    bool critShut_ = false; // shutCrit
     bool missed_ = false; // the live use has had its first miss
 };
 
