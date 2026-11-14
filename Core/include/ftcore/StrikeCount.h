@@ -58,6 +58,7 @@
 // and a time more than kMaxTimeJump ahead is ignored (not stored). No allocation.
 
 #include "ftcore/CombatInputs.h"
+#include "ftcore/StateHash.h"
 
 #include <array>
 #include <cmath>
@@ -589,6 +590,26 @@ private:
         return e;
     }
 
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(now_).add(readyAt_).add(joined_).add(pendingHead_).add(nextBlow_).add(liftOn_).add(lifted_).add(joinFresh_);
+        for (const Run* r : {&true_, &false_})
+            h.add(r->active).add(r->isFalse).add(r->start).add(r->nowAt).add(r->lo).add(r->hi).add(r->caller).add(r->voice).add(r->step);
+        h.add(held_.striker).add(held_.first).add(held_.count);
+        h.add(loads_);
+        h.add(join_.first).add(join_.second).add(join_.lift).add(join_.loadSum).add(join_.at);
+        for (const CountEvents* b : {&pending_, &events_}) {
+            h.add(b->count).add(b->dropped).add(b->droppedSettles);
+            for (std::size_t i = 0; i < b->count && i < b->items.size(); ++i) {
+                const CountEvent& e = b->items[i];
+                h.add(e.type).add(e.index).add(e.isNow).add(e.isFalse).add(e.voice).add(e.caller).add(e.at).add(e.blow);
+                h.add(e.striker).add(e.outcome).add(e.multiplier);
+            }
+        }
+    }
+
+private:
     CountTuning tuning_{};
     double now_ = 0.0;
     Run true_{};

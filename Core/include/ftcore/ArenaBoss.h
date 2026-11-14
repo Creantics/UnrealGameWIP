@@ -149,6 +149,7 @@
 //       reads it for its strike point and reach; absent: none (hasContact false).
 //   phases: 1..kMaxArenaBossPhases; endAt in [0, 1), strictly falling, the last 0. moves and brokenMoves
 //     (default: moves): 1..kMaxArenaPhaseMoves known move ids, no repeats.
+//   checkpointAtPhase (optional, default false): a retry after a defeat starts at the phase reached.
 //   An unknown key is a warning; anything else wrong is an error with its path, and `out` is left
 //   default.
 //
@@ -571,6 +572,9 @@ struct ArenaBossDef {
     std::uint8_t moveCount = 0;
     std::array<ArenaBossPhase, kMaxArenaBossPhases> phases{};
     std::uint8_t phaseCount = 0;
+    // A retry after a defeat starts at the phase reached (the host takes FightSession's phase checkpoint at each
+    // phase change). Off by default.
+    bool checkpointAtPhase = false;
 
     // Index of the move with that id, or kArenaBossNoMove.
     FTCORE_API std::uint8_t find(std::string_view id) const;

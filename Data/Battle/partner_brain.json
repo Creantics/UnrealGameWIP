@@ -15,5 +15,8 @@
   "downSeconds": 30,
   "riseHealth": 0.25,
   "blowCapShare": 0.6,
-  "overScale": 0.5
+  "overScale": 0.5,
+  "budgetWindowSeconds": 20,
+  "budgetShare": 0.6,
+  "budgetAllowanceSeconds": 2.0
 }

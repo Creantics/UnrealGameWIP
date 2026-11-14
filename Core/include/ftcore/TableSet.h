@@ -30,6 +30,7 @@
 //
 // Times as CombatInputs.h. No allocation.
 
+#include "ftcore/StateHash.h"
 #include "ftcore/CombatInputs.h"
 #include "ftcore/Places.h"
 
@@ -285,6 +286,18 @@ private:
         }
     }
 
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(state_).add(now_).add(until_).add(setter_).add(seated_).add(enemySeated_).add(failed_);
+        h.add(spot_.x).add(spot_.y).add(spot_.radius);
+        for (const TableEvents* b : {&pending_, &out_}) {
+            h.add(b->count).add(b->dropped);
+            for (std::size_t i = 0; i < b->count && i < b->items.size(); ++i) h.add(b->items[i].type).add(b->items[i].at);
+        }
+    }
+
+private:
     TableTuning tuning_{};
     TableState state_ = TableState::Ready;
     double now_ = 0.0;

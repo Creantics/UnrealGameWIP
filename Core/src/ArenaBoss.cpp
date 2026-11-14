@@ -654,8 +654,9 @@ bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* erro
             errors.push_back("version: expected 1");
         abUnknownKeys(root, "",
                       {"version", "bpm", "hp", "poise", "staggerTime", "openTime", "intercept", "guestCall",
-                       "weakPoints", "keepOut", "moves", "phases"},
+                       "weakPoints", "keepOut", "moves", "phases", "checkpointAtPhase"},
                       ownKeys, warnings);
+        abBool(root, "checkpointAtPhase", out.checkpointAtPhase, "", errors);
         abNum(root, "bpm", out.bpm, 40.0, 240.0, true, "", errors);
         abInt(root, "hp", out.hp, 1, 100000, true, "", errors);
         abNum(root, "poise", out.poise, 1.0, 10000.0, true, "", errors);
@@ -1094,8 +1095,9 @@ bool importBossScript(std::string_view json, BossScriptDef& out, std::string* er
             errors.push_back("version: expected 1");
         abUnknownKeys(root, "",
                       {"version", "id", "hp", "gauge", "resourceMax", "resourceStart", "wardLimit", "critMultiplier",
-                       "restSeconds", "lock", "key", "moves", "offer", "phases"},
+                       "restSeconds", "lock", "key", "moves", "offer", "phases", "checkpointAtPhase"},
                       {}, warnings);
+        abBool(root, "checkpointAtPhase", out.checkpointAtPhase, "", errors);
         const JsonValue id = root["id"];
         if (!id.isString() || !abId(id.string(), kBossIdCapacity - 1))
             errors.push_back("id: expected an id of a-z, 0-9 and _, up to " + std::to_string(kBossIdCapacity - 1) +
