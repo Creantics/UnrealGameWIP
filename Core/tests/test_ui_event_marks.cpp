@@ -6,7 +6,7 @@ using namespace ftcore;
 
 namespace {
 
-constexpr int kLastEvent = static_cast<int>(ArenaEventType::TableShare);
+constexpr int kLastEvent = static_cast<int>(ArenaEventType::TookOver); // the enum's last
 
 } // namespace
 
