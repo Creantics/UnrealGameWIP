@@ -614,6 +614,13 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     CHECK(s.press(SharedAction::Gift, kThirdSlot, kLeadA).accepted);
     CHECK(s.lastStoryWrite() == SetResult::Ok);
     CHECK(wide("w_a0") == 1);
+    // A Heal at a lead at full health did nothing: not a press in the story either.
+    s.setLeadHealth(kLeadA, 1.0f);
+    CHECK(s.leadHealth(kLeadA) == 1.0f);
+    CHECK(s.giveGift(kLeadA).error == GiftError::NotHurt);
+    CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+    CHECK(wide("w_a0") == 1);
+    s.setLeadHealth(kLeadA, 0.5f);
     REQUIRE(s.selectGift(Gift::Guard));
     CHECK(s.giveGift(kLeadA).given);
     CHECK(wide("w_a1") == 1);

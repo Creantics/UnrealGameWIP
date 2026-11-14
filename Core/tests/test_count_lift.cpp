@@ -727,6 +727,9 @@ TEST_CASE("lone carry: every refused press leaves it Lone; only a gift received 
     refused(kThirdSlot, GiftError::BadTarget);
     REQUIRE(s.selectGift(Gift::Heal));
     refused(kLeadA, GiftError::NoneLeft); // no heals this fight
+    s.setLeadHealth(kLeadA, 1.0f);
+    refused(kLeadA, GiftError::NotHurt); // at full health
+    s.setLeadHealth(kLeadA, 0.4f);
     // Cooling: the slot's own press (not through the session) puts the Guard on its cooldown.
     REQUIRE(s.selectGift(Gift::Guard));
     REQUIRE(s.giftSlot().press(kLeadB, s.now()).given);
@@ -738,6 +741,7 @@ TEST_CASE("lone carry: every refused press leaves it Lone; only a gift received 
     CHECK_FALSE(s.selectGift(Gift::None));
     CHECK(s.giftSlot().selected() == Gift::Count);
     CHECK(s.tick(0.1).loneCarryEndedBy == LoneEnd::None);
+    CHECK(s.leadHealth(kLeadA) == doctest::Approx(0.4f));
     // A gift received ends it.
     tickTo(s, 40.0);
     REQUIRE(s.selectGift(Gift::Guard));
