@@ -7234,17 +7234,27 @@ TEST_CASE("arena break-out: heavier blows count more, so fewer heavies than ligh
 
 TEST_CASE("arena break-out: a step back goes at least kArenaStepBackMin from the lead over kArenaStepBackTime, and "
           "SteppedBack comes once as it begins") {
-    Rig rig(breakFighter(), {breakerKind()});
-    rig.put(0, -1.5f, 0.f); // behind, out of the windup arc: it steps back
+    // Behind, out of the windup arc (it steps back), and already near the clear distance: the lead's reach (the rule
+    // fighter's lights and heavy reach 2 m, no lunge) plus its body and kArenaStepBackClear is 2.95 m, so stepping
+    // to it would be 0.75 m. The minimum takes over.
+    const ArenaFighter f = breakFighter();
+    const ArenaEnemyKind k = breakerKind();
+    constexpr float kAt = 2.2f;
+    const float natural = std::max(f.heavy.range, f.light[0].range) + k.bodyRadius + kArenaStepBackClear - kAt;
+    REQUIRE(natural < 1.0f);
+    Rig rig(f, {k});
+    rig.put(0, -kAt, 0.f);
     for (int t = 0; t < 120 && !rig.find(ArenaEventType::SteppedBack); ++t) {
         rig.in.light = true;
         rig.tick();
     }
+    REQUIRE(hitsOn(rig, 0) >= 2); // the lights still land this far out
     const Logged* first = rig.find(ArenaEventType::SteppedBack);
     REQUIRE(first);
     const int stepTick = first->tick;
     CHECK(first->event.source == 0);
     CHECK(first->event.target == kArenaPlayer);
+    CHECK(first->event.move == 0); // straight back: the ring (30 m) is far
     CHECK(first->event.amount >= static_cast<int>(std::lround(kArenaStepBackMin * 100.f)));
     CHECK(rig.out().enemies[0].brain == ArenaBrain::StepBack);
     CHECK(rig.fight.stats().stepBacks == 1);
@@ -7262,8 +7272,9 @@ TEST_CASE("arena break-out: a step back goes at least kArenaStepBackMin from the
     }
     const float moved = distanceOf(rig.bodies.player, rig.bodies.enemies[0]) - before;
     CHECK(moved >= kArenaStepBackMin - 1e-3f);
+    CHECK(moved > natural + 0.5f);
     CHECK(moved == doctest::Approx(static_cast<float>(first->event.amount) / 100.f).epsilon(0.01));
-    CHECK(rig.bodies.enemies[0].x < -1.5f); // straight away from the lead
+    CHECK(rig.bodies.enemies[0].x < -kAt - kArenaStepBackMin + 1e-3f); // straight away from the lead
     CHECK(std::fabs(rig.bodies.enemies[0].y) < 1e-3f);
     CHECK(hitsOn(rig, 0, stepTick) == 0);
     rig.run(10);
@@ -7302,6 +7313,111 @@ TEST_CASE("arena break-out: the count starts again from 0 after a step back") {
     CHECK(rig.fight.stats().breakDue == 2);
     CHECK(rig.fight.stats().stepBacks == 2);
     CHECK(rig.count(ArenaEventType::SteppedBack) == 2);
+}
+
+namespace {
+
+// A break-out step back from `at` (behind the lead at the centre's side, who faces +x) inside `ring`: its event, and
+// the enemy moved by hand at its output velocity, never through arenaStep's own clamp.
+struct StepRun {
+    bool stepped = false;
+    ArenaEvent event;
+    Vec2 from;
+    Vec2 to;               // where the step left it
+    float outside = -1.f;  // the most it went past the ring less its body, any tick of the step and 1 s after (m)
+};
+
+StepRun stepFrom(const ArenaRing& ring, Vec2 at) {
+    Rig rig(breakFighter(), {breakerKind()}, 1, ring);
+    rig.put(0, at.x, at.y);
+    for (int t = 0; t < 120 && !rig.find(ArenaEventType::SteppedBack); ++t) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    StepRun r;
+    const Logged* l = rig.find(ArenaEventType::SteppedBack);
+    if (!l) return r;
+    r.stepped = true;
+    r.event = l->event;
+    r.from = rig.bodies.enemies[0];
+    const float limit = ring.radius - rig.def.enemies[0].bodyRadius;
+    const int stepTicks = static_cast<int>(std::lround(kArenaStepBackTime / kDt));
+    for (int t = 0; t < stepTicks + 60; ++t) {
+        const Vec2 v = rig.out().enemies[0].velocity;
+        rig.bodies.enemies[0].x += v.x * kDt;
+        rig.bodies.enemies[0].y += v.y * kDt;
+        r.outside = std::max(r.outside, distanceOf(rig.bodies.enemies[0], ring.centre) - limit);
+        if (t + 1 == stepTicks) r.to = rig.bodies.enemies[0];
+        rig.tick();
+    }
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("arena break-out: at the ring's edge a step back goes only as far as the ring lets it, and says so") {
+    // The ring 3 m round the lead: the body (0.45 m) may reach 2.55 m from the centre, so 1.05 m is left behind it,
+    // not the 1.5 m it would step.
+    const ArenaRing ring{Vec2{0.f, 0.f}, 3.f};
+    const StepRun r = stepFrom(ring, Vec2{-1.5f, 0.f});
+    REQUIRE(r.stepped);
+    CHECK(r.event.move == 0); // more than kArenaStepBackRoom behind: still straight back
+    CHECK(r.event.amount == 105);
+    const float moved = distanceOf(r.from, r.to);
+    CHECK(moved == doctest::Approx(1.05f).epsilon(0.01));
+    CHECK(r.to.x == doctest::Approx(-2.55f).epsilon(0.005));
+    CHECK(std::fabs(r.to.y) < 1e-3f);
+    CHECK(r.outside <= 1e-3f);
+}
+
+TEST_CASE("arena break-out: with no room behind it the step goes to the side with more, sliding along the edge, and "
+          "never leaves the ring") {
+    const int least = static_cast<int>(std::lround(kArenaStepBackRoom * 100.f));
+    {   // Pinned on the edge, the lead at the centre: straight back is 0 and both sides run along the edge. A tie goes
+        // to its left: it faces the lead (+x) and y is to the right, so -y.
+        const ArenaRing ring{Vec2{0.f, 0.f}, 1.95f}; // the body reaches 1.5 m from the centre
+        const StepRun r = stepFrom(ring, Vec2{-1.5f, 0.f});
+        REQUIRE(r.stepped);
+        CHECK(r.event.move == 1);
+        CHECK(r.event.amount >= least); // the slide along the edge counts
+        CHECK(r.event.amount <= static_cast<int>(std::lround(kArenaStepBackMin * 100.f)));
+        const float moved = distanceOf(r.from, r.to);
+        CHECK(moved == doctest::Approx(static_cast<float>(r.event.amount) / 100.f).epsilon(0.02));
+        CHECK(r.to.y < -0.5f);                        // sideways ...
+        CHECK(r.to.x - r.from.x > -1e-3f);            // ... never further from the lead's side
+        CHECK(distanceOf(r.to, ring.centre) == doctest::Approx(1.5f).epsilon(0.01)); // along the edge
+        CHECK(r.outside <= 1e-3f);
+    }
+    {   // The ring's centre to the lead's right (+y): 0.07 m behind, its right has more room than its left.
+        const ArenaRing ring{Vec2{0.f, 0.3f}, 2.05f};
+        const StepRun r = stepFrom(ring, Vec2{-1.5f, 0.f});
+        REQUIRE(r.stepped);
+        CHECK(r.event.move == 2);
+        CHECK(r.event.amount >= least);
+        const float moved = distanceOf(r.from, r.to);
+        CHECK(moved == doctest::Approx(static_cast<float>(r.event.amount) / 100.f).epsilon(0.02));
+        CHECK(r.to.y > 0.5f);
+        CHECK(r.outside <= 1e-3f);
+    }
+    {   // ... and mirrored, its left.
+        const ArenaRing ring{Vec2{0.f, -0.3f}, 2.05f};
+        const StepRun r = stepFrom(ring, Vec2{-1.5f, 0.f});
+        REQUIRE(r.stepped);
+        CHECK(r.event.move == 1);
+        CHECK(r.to.y < -0.5f);
+        CHECK(r.outside <= 1e-3f);
+    }
+    {   // Room to the side for the whole step: the side's full kArenaStepBackMin, straight. A wide ring whose edge runs
+        // 0.05 m behind it: the body reaches 23 m from the centre, it stands 22.95 m out, 1.52 m clear to each side.
+        const ArenaRing ring{Vec2{21.45f, 0.f}, 23.45f};
+        const StepRun r = stepFrom(ring, Vec2{-1.5f, 0.f});
+        REQUIRE(r.stepped);
+        CHECK(r.event.move == 1);
+        CHECK(r.event.amount == static_cast<int>(std::lround(kArenaStepBackMin * 100.f)));
+        CHECK(r.to.x == doctest::Approx(-1.5f).epsilon(0.005));
+        CHECK(r.to.y == doctest::Approx(-kArenaStepBackMin).epsilon(0.01));
+        CHECK(r.outside <= 1e-3f);
+    }
 }
 
 TEST_CASE("arena break-out: each blow adds its poise over the default light's") {
@@ -7454,6 +7570,113 @@ TEST_CASE("arena windup arc: a holder out of sight hands the token to a waiter i
     CHECK_FALSE(rig.out().enemies[0].token); // it gave it up and waits again
     CHECK_FALSE(rig.out().enemies[1].unseen);
     CHECK(rig.fight.stats().unseenAttacks == 0);
+}
+
+TEST_CASE("arena windup arc: the token goes to the in-sight waiter waiting longest, then the nearest, never one out "
+          "of sight") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    // Enemy 0 behind the lead (who faces +x) takes the one token first and holds it, unable to start (its move mask
+    // clear), while the camera looks at it; the others ask meanwhile, from their own attackDelay. Then the camera
+    // looks away: 0 is out of sight and hands the token over. Which one gets it?
+    const auto handedTo = [&](Vec2 a, float delayA, Vec2 b, float delayB) {
+        ArenaEnemyKind holder = hitterKind(bite);
+        ArenaEnemyKind ka = hitterKind(bite);
+        ArenaEnemyKind kb = hitterKind(bite);
+        ka.attackDelay = delayA;
+        kb.attackDelay = delayB;
+        Rig rig(ruleFighter(), {holder, ka, kb});
+        rig.put(0, -1.2f, 0.f);
+        rig.put(1, a.x, a.y);
+        rig.put(2, b.x, b.y);
+        rig.fight.setEnemyMoveMask(0, 0u);
+        rig.in.cameraFacing = Vec2{-1.f, 0.f};
+        rig.runFor(1.f);
+        CHECK(rig.out().enemies[0].token);
+        CHECK(rig.fight.stats().tokenHandOvers == 0);
+        for (std::size_t i = 1; i <= 2; ++i) { // both asking: circling, no token
+            CAPTURE(i);
+            CHECK(rig.out().enemies[i].brain == ArenaBrain::Strafe);
+            CHECK_FALSE(rig.out().enemies[i].token);
+        }
+        rig.in.cameraFacing = Vec2{};
+        rig.tick();
+        CHECK_FALSE(rig.out().enemies[0].token);
+        CHECK(rig.fight.stats().tokenHandOvers == 1);
+        int to = -1;
+        for (std::size_t i = 1; i <= 2; ++i)
+            if (rig.out().enemies[i].token) to = static_cast<int>(i);
+        return to;
+    };
+    // The longest waiting, though farther.
+    CHECK(handedTo(Vec2{2.5f, 0.f}, 0.2f, Vec2{1.5f, 0.3f}, 0.5f) == 1);
+    CHECK(handedTo(Vec2{1.5f, 0.3f}, 0.5f, Vec2{2.5f, 0.f}, 0.2f) == 2);
+    // Waits the same: the nearest.
+    CHECK(handedTo(Vec2{2.5f, 0.f}, 0.2f, Vec2{1.5f, 0.3f}, 0.2f) == 2);
+    CHECK(handedTo(Vec2{1.5f, 0.3f}, 0.2f, Vec2{2.5f, 0.f}, 0.2f) == 1);
+    // One behind the lead (out of sight once the camera turns) waiting longest, and nearer: the one in sight still.
+    CHECK(handedTo(Vec2{-1.5f, 0.6f}, 0.1f, Vec2{2.5f, 0.f}, 0.5f) == 2);
+}
+
+TEST_CASE("arena windup arc: a holder already in its windup or active part keeps the token when it goes out of sight") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    ArenaEnemyKind waiter = hitterKind(bite);
+    waiter.attackDelay = 0.1f; // asks while the other is in its move
+    Rig rig(ruleFighter(), {hitterKind(bite), waiter});
+    rig.put(0, -1.5f, 0.f); // behind the lead: seen only while the camera looks at it
+    rig.put(1, 1.5f, 0.f);  // in front, always in sight
+    rig.in.cameraFacing = Vec2{-1.f, 0.f};
+    REQUIRE(untilStarted(rig, 0, 60) > 0);
+    REQUIRE(rig.find(ArenaEventType::AttackStarted)->event.source == 0);
+    rig.in.cameraFacing = Vec2{}; // the camera turns away in its windup
+    bool startup = false, active = false;
+    for (int t = 0; t < 120 && rig.out().enemies[0].brain == ArenaBrain::Attack; ++t) {
+        const ArenaOutput& out = rig.tick();
+        if (out.enemies[0].brain != ArenaBrain::Attack) break; // its string over: the token goes back as ever
+        CAPTURE(t);
+        startup = startup || out.enemies[0].part == ArenaPart::Startup;
+        active = active || out.enemies[0].part == ArenaPart::Active;
+        CHECK(out.enemies[0].token);
+        CHECK_FALSE(out.enemies[1].token);
+    }
+    CHECK(startup);
+    CHECK(active);
+    CHECK(rig.fight.stats().tokenHandOvers == 0);
+}
+
+TEST_CASE("arena windup arc: one handed the token keeps it kArenaTokenHandHold, so a camera swinging across the arc's "
+          "edge every tick hands it over at most once a second") {
+    const ArenaAttack bite = swing(0.3f, 0.1f, 0.3f, 3.f, 5);
+    constexpr float kRad = 3.14159265f / 180.f;
+    // Two behind the lead (135 degrees either side of its facing, outside its arc), neither able to start. The camera
+    // looks 170 degrees round one way, then the other: 35 degrees off one (in its 39) and 55 off the other, by turns.
+    Rig rig(ruleFighter(), {hitterKind(bite), hitterKind(bite)});
+    rig.put(0, 1.5f * std::cos(135.f * kRad), 1.5f * std::sin(135.f * kRad));
+    rig.put(1, 1.5f * std::cos(135.f * kRad), -1.5f * std::sin(135.f * kRad));
+    rig.fight.setEnemyMoveMask(0, 0u);
+    rig.fight.setEnemyMoveMask(1, 0u);
+    const Vec2 seeFirst{std::cos(170.f * kRad), std::sin(170.f * kRad)};
+    const Vec2 seeSecond{std::cos(170.f * kRad), -std::sin(170.f * kRad)};
+    rig.in.cameraFacing = seeFirst;
+    rig.runFor(0.25f);
+    REQUIRE((rig.out().enemies[0].token || rig.out().enemies[1].token));
+    const int from = rig.fight.stats().tokenHandOvers;
+    int last = -1000, fewestGap = 1000;
+    const int ticks = static_cast<int>(std::lround(5.f / kDt));
+    for (int t = 0; t < ticks; ++t) {
+        rig.in.cameraFacing = (t % 2 == 0) ? seeSecond : seeFirst;
+        const int before = rig.fight.stats().tokenHandOvers;
+        rig.tick();
+        CHECK((rig.out().enemies[0].token != rig.out().enemies[1].token)); // one token, always held
+        if (rig.fight.stats().tokenHandOvers > before) {
+            fewestGap = std::min(fewestGap, t - last);
+            last = t;
+        }
+    }
+    const int handOvers = rig.fight.stats().tokenHandOvers - from;
+    MESSAGE("hand-overs in 5 s: " << handOvers);
+    CHECK(handOvers >= 2); // it does change hands, ...
+    CHECK(handOvers <= 5); // ... at most once a second
+    CHECK(fewestGap >= static_cast<int>(std::lround(kArenaTokenHandHold / kDt)));
 }
 
 TEST_CASE("arena windup arc: the camera's half-angle is the host's (setCameraHalfAngle), 39 degrees by default") {

@@ -142,8 +142,10 @@
 //   (ArenaInput::cameraFacing; none given, the lead's facing alone; the half-angle is setCameraHalfAngle's,
 //   kArenaCameraHalfAngle by default), both seen from the lead. Outside them it circles round the lead toward its
 //   facing (Strafe, picking no move). No starving the others meanwhile: a token holder out of sight that has not
-//   begun its string hands the token at once to a waiter in sight that is asking for one (the longest waiting, then
-//   the nearest), and asks again itself, its wait starting from 0; the tokens free go out first. While no waiter in
+//   begun its string hands the token to a waiter in sight that is asking for one (the longest waiting, then the
+//   nearest), and asks again itself, its wait starting from 0; the tokens free go out first. No swapping at the arc's
+//   edge: one handed the token keeps it at least kArenaTokenHandHold s, in sight or not, and the one that handed it
+//   over takes none by hand-over for as long (ArenaStats::tokenHandOvers counts them). While no waiter in
 //   sight asks it keeps the token, and after kArenaUnseenWait s holding it out of sight it begins anyway: the
 //   string's first move kArenaUnseenWindup s longer in startup, ArenaEnemyOut::unseen raised for the HUD. A boss is
 //   not held by the arc (and counts as in sight).
@@ -184,7 +186,9 @@
 //   instead (StepBack and the SteppedBack event once as it begins, no BrokeOut): straight away from the player over
 //   kArenaStepBackTime to kArenaStepBackClear beyond the lead's reach, and never less than kArenaStepBackMin, so the
 //   blow is seen to miss, no blow of the player's side landing on it, then walks again with no armour and its
-//   count spent. So one sweeping string sets off at most the free tokens' break-outs. A stagger, Open or Down
+//   count spent. The ring has the last word: straight back it goes only as far as the ring lets its body, and with
+//   less than kArenaStepBackRoom there it steps to the side (square to the way to the lead) with more room instead,
+//   as far as that side lets it (sliding along the edge) up to the same distance, if that is more than behind. So one sweeping string sets off at most the free tokens' break-outs. A stagger, Open or Down
 //   never counts and never breaks out. The host's flinch veto (setEnemyFlinch false) bars the count and the
 //   break-out too. Bosses never have a breakAt (Boss break).
 // * Boss break. A boss kind (arena.json's `boss`) has, beside its poise, a break value with no HUD of its own; it
@@ -331,10 +335,14 @@ inline constexpr float kArenaBreakPoiseUnit = 10.f;
 inline constexpr float kArenaBreakWeightSlack = 1.0e-4f;
 // A regular enemy's break-out with no token free (see Break-out): it steps back (StepBack) for this long, unhurt, to
 // this far beyond the lead's reach (its longest light or heavy range plus lunge, and the enemy's body radius), and
-// never less than kArenaStepBackMin metres straight away from the lead.
+// never less than kArenaStepBackMin metres straight away from the lead; with less than kArenaStepBackRoom metres of the
+// ring behind it, to the side instead.
 inline constexpr float kArenaStepBackTime = 0.5f;
 inline constexpr float kArenaStepBackClear = 0.5f;
 inline constexpr float kArenaStepBackMin = 1.5f;
+inline constexpr float kArenaStepBackRoom = 0.75f;
+// One handed an attack token by a holder out of sight keeps it at least this long (see Enemies).
+inline constexpr float kArenaTokenHandHold = 1.0f;
 // No blow from where the player can't see it (see Enemies): a regular token holder begins its string only within
 // kArenaWindupArc degrees either side of the lead's facing or within the camera's half-angle of the camera's facing
 // (ArenaInput::cameraFacing), both measured from the lead; after kArenaUnseenWait s holding the token outside them
@@ -870,7 +878,8 @@ enum class ArenaEventType : std::uint8_t { // append only
     BreakTell,      // a boss's break value rose to kArenaBossBreakTell of its threshold: source the boss, amount the
                     // value x 100, rounded (appended)
     SteppedBack,    // source began a step back (StepBack) from the player (target kArenaPlayer): amount the metres it
-                    // will move, x 100, rounded; once as it begins (appended)
+                    // will move (what the ring allows), x 100, rounded; move the way: 0 straight back, 1 to its own
+                    // left, 2 to its right, as it faces the lead (no room behind); once as it begins (appended)
 };
 
 struct ArenaEvent {
@@ -966,6 +975,7 @@ struct ArenaStats {
     int landings = 0;      // ... that came down on their feet (not cut by a blow, a defeat or the fight's end)
     int airLights = 0;     // air lights started
     int airEvades = 0;     // enemy moves that passed under a jump (also in evades)
+    int tokenHandOvers = 0; // attack tokens a holder out of sight handed to a waiter in sight
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -1440,7 +1450,8 @@ private:
         float stopUntil = -1.0e9f;          // fight time a hit pause ends
         std::uint8_t breakHits = 0;         // the player's blows in a row toward a break-out ...
         float breakWeight = 0.f;            // ... and their weight (poise over kArenaBreakPoiseUnit; a boss's 1 each)
-        float stepDistance = 0.f;           // StepBack: metres it moves back over kArenaStepBackTime
+        float stepDistance = 0.f;           // StepBack: metres it moves along stepWay over kArenaStepBackTime (to a
+                                            // side: tries to, the ring's slide along the edge leaving it less)
         float tokenSince = 0.f;             // fight time it took the token, or last held it in the windup arc
         bool unseen = false;                // this move is an unseen start: unseenAttack's longer windup
         ArenaAttack unseenAttack;           // that move's attack with it
@@ -1461,6 +1472,9 @@ private:
         bool breakTell = false;
         bool breakTimed = false;            // this move is the break: breakAttack's windup and recovery
         ArenaAttack breakAttack;            // the break move's attack with them
+        Vec2 stepWay{-1.f, 0.f};            // StepBack: the unit way it moves, fixed as it begins (back or to a side)
+        float handedAt = -1.0e9f;           // fight time it was last handed a token by a holder out of sight
+        float handedAwayAt = -1.0e9f;       // fight time it last handed its token over
     };
 
     ArenaDef def_;

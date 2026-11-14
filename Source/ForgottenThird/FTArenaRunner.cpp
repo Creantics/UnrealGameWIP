@@ -91,6 +91,9 @@ constexpr float kArenaWalkStart = 0.35f;
 constexpr float kArenaWalkStop = 0.1f;
 constexpr float kArenaWalkSmooth = 0.15f;
 constexpr float kArenaMinWalkRate = 0.5f;
+// The camera half-angle's log line: only a change over this many degrees, at most once in this many seconds.
+constexpr float kCameraHalfLogStep = 1.f;
+constexpr double kCameraHalfLogEvery = 1.0;
 constexpr float kArenaMaxWalkRate = 1.6f;
 // The stone_bearer's walk (its slot only, when skinned): it plays at rate 1.0 and the body moves at the clip's authored
 // speed along Core's wanted direction while it plays; Core's speed only starts and stops it. Once begun it lasts at least
@@ -1228,8 +1231,15 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	}
 	case ftcore::ArenaBrain::StepBack:
 		// The break-out's step back: the walk clip played backward at the step's own speed, the figure still facing the
-		// lead, so the blow it dodges is seen to miss. No walk clip: the idle.
-		if (Skin.Walk >= 0 && !bStone)
+		// lead, so the blow it dodges is seen to miss. A sidestep (no room behind it at the ring's edge) plays the stepping
+		// turn to that side when the skin has one. No walk clip: the idle.
+		if (StepBackWay[I] != 0 && Skin.TurnL >= 0 && Skin.TurnR >= 0 && !bStone)
+		{
+			Clip = StepBackWay[I] == 1 ? Skin.TurnL : Skin.TurnR;
+			Time = static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds;
+			bPhased = true;
+		}
+		else if (Skin.Walk >= 0 && !bStone)
 		{
 			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
 			const float Rate = Authored > 0.f ? FMath::Clamp(StepBackSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate) : 1.f;
@@ -1736,7 +1746,7 @@ void UFTArenaRunner::BeginSession()
 	CountLoadStored = CountLoadStores = Lifts = LiftSpent = Marks = KiteUnlocks = MaxJoinLoad = PartnerLoadStored = 0;
 	CappedBlows = 0;
 	LoneEndedAt = -1.0;
-	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = 0;
+	LoneReleases = LoneGiftPresses = LoneGiftsRefused = LoneBreaches = LonePartnerCalls = LonePartnerEnds = 0;
 	bLoneGiftDone = false;
 	LoneGift = {};
 	PartnerLoadTime = -1e9;
@@ -2061,7 +2071,16 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	}
 	if (In.pair || bSharedCount) // under -ArenaSharedCount every step (refused while a count is live or cooling)
 	{
-		Session->Press(EFTSharedAction::Count, SessionLead);
+		// The Count press is the lead calling the partner in: accepted while Lone, it ends the Lone Carry (PartnerCalled),
+		// here and nowhere else. A refused press leaves it Lone.
+		const bool bWasLone = Session->Get().lone();
+		const ftcore::SharedReply Reply = Session->Press(EFTSharedAction::Count, SessionLead);
+		if (bWasLone && Reply.accepted)
+		{
+			++LonePartnerCalls;
+			LonePartnerEnds += Session->Get().endLone(ftcore::LoneEnd::PartnerCalled) ? 1 : 0;
+			MirrorLone();
+		}
 	}
 	if (In.guard != bSessionGuard)
 	{
@@ -2894,9 +2913,11 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			if (E.source < ftcore::kMaxArenaEnemies)
 			{
 				StepBackSpeed[E.source] = static_cast<float>(E.amount) / 100.f / ftcore::kArenaStepBackTime;
+				StepBackWay[E.source] = static_cast<uint8>(E.move);
 			}
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.3f: enemy %d steps back %.2f m from the lead over %.2f s (a break-out with no token or out of sight)."),
-				Fight.time(), static_cast<int32>(E.source), static_cast<float>(E.amount) / 100.f, ftcore::kArenaStepBackTime);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.3f: enemy %d steps %s %.2f m over %.2f s (a break-out with no token or out of sight)."),
+				Fight.time(), static_cast<int32>(E.source), E.move == 1 ? TEXT("to its left") : E.move == 2 ? TEXT("to its right") : TEXT("back from the lead"),
+				static_cast<float>(E.amount) / 100.f, ftcore::kArenaStepBackTime);
 			continue;
 		case ftcore::ArenaEventType::BreakTell: // the boss's own break move is its tell; no HUD of its own
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.3f: enemy %d's break value tells (%.2f of %.2f)."), Fight.time(),
@@ -4520,6 +4541,12 @@ void UFTArenaRunner::LogFeatureChecks() const
 		const bool bLoneOk = LoneBreaches == 0;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone %s (%d breaches, %d of %d gift presses refused)."),
 			Verdict(bLoneOk, bLoneAtStart), LoneBreaches, LoneGiftsRefused, LoneGiftPresses);
+		// The partner's call: an accepted Count press while Lone ended it, once, with PartnerCalled. n/a with no such press.
+		const bool bCallOk = LonePartnerCalls <= 1 && LonePartnerEnds == LonePartnerCalls &&
+			(LonePartnerCalls == 0 || (Session && Session->Get().loneEndedBy() == ftcore::LoneEnd::PartnerCalled));
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lone partner call %s (%d accepted calls while Lone, %d ended it; ended by %s)."),
+			Verdict(bCallOk, bLoneAtStart && LonePartnerCalls > 0), LonePartnerCalls, LonePartnerEnds,
+			Session ? LoneEndWord(Session->Get().loneEndedBy()) : TEXT("none"));
 	}
 	if (HallMode != 0)
 	{
@@ -4653,7 +4680,13 @@ void UFTArenaRunner::TickImpact(float DeltaSeconds)
 		{
 			FightCameraHalf = CameraView.halfAngle;
 			Fight.setCameraHalfAngle(FightCameraHalf);
-			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle is %.1f degrees."), Fight.time(), FightCameraHalf);
+			// Logged when it moved more than kCameraHalfLogStep from the last line, at most once every kCameraHalfLogEvery.
+			if (FMath::Abs(FightCameraHalf - LoggedCameraHalf) > kCameraHalfLogStep && Now - CameraHalfLoggedAt >= kCameraHalfLogEvery)
+			{
+				LoggedCameraHalf = FightCameraHalf;
+				CameraHalfLoggedAt = Now;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: the windup arc's camera half-angle is %.1f degrees."), Fight.time(), FightCameraHalf);
+			}
 		}
 		// The vertical half-angle from the horizontal one and the screen's shape, so a body wholly under or over the
 		// frame (a ground enemy while aiming high) is told too.

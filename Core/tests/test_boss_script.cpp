@@ -844,3 +844,16 @@ TEST_CASE("boss script: one update stops at the step cap and the next ones catch
     s.update(t + 700.0);
     CHECK(s.now() == t);
 }
+
+TEST_CASE("boss script: checkpointAtPhase is optional, false by default, and must be true or false") {
+    BossScriptDef d;
+    std::vector<std::string> warnings;
+    REQUIRE(importBossScript(kSmallBoss, d, nullptr, &warnings));
+    CHECK_FALSE(d.checkpointAtPhase);
+    warnings.clear();
+    REQUIRE(importBossScript(patchedBoss("\"hp\": 100", "\"hp\": 100, \"checkpointAtPhase\": true"), d, nullptr, &warnings));
+    CHECK(d.checkpointAtPhase);
+    CHECK(warnings.empty()); // a known key
+    CHECK(loadError(patchedBoss("\"hp\": 100", "\"hp\": 100, \"checkpointAtPhase\": \"yes\"")).find(
+              "checkpointAtPhase: expected true or false") != std::string::npos);
+}

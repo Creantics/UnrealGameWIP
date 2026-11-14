@@ -1300,8 +1300,12 @@ TEST_CASE("gifts: a Heal at a lead at full health is refused NotHurt: no charge,
     CHECK(g.tally().givenOf(Gift::Heal) == 0u);
     CHECK(g.tally().refusedOf(Gift::Heal) == 0u);
     CHECK(g.allPresses() == before);
-    // Over 1 reads full too; a hair under is hurt, and unknown (the default) reads as hurt.
-    CHECK(g.press(kLeadA, 0.0, nullptr, 1.5f).error == GiftError::NotHurt);
+    // Only exactly 1 is full: over 1, NaN and an infinity are not a health and read as hurt (a fresh slot each, so
+    // this slot's Heals stay); a hair under is hurt, and unknown (the default) reads as hurt.
+    for (const float odd : {1.5f, 2.f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        GiftSlot o;
+        CHECK(o.press(kLeadA, 0.0, nullptr, odd).given);
+    }
     r = g.press(kLeadA, 0.0, nullptr, 0.99f);
     REQUIRE(r.given);
     CHECK(g.healsLeft() == 1);

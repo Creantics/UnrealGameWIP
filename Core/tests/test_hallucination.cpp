@@ -1150,7 +1150,7 @@ TEST_CASE("a Proxy partner refuses for a held lead: react, press, Refused; the f
     CHECK(d.proxyReactSeconds == 1.f);
 }
 
-TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at 9 s; stepping out drops both") {
+TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at 9 s; stepping out drops the hold, the wait only pauses") {
     Rig a; // staying in from 0 s
     a.in.brief = BriefId::Escrow;
     a.step(0.0);
@@ -1167,7 +1167,7 @@ TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at
     CHECK(a.saw(Ev::Held) == 1);
     CHECK(a.h.now() == doctest::Approx(9.0));
 
-    Rig b; // out at 4.9 s and back in: the 5 s start again
+    Rig b; // out at 4.9 s and back in: the wait goes on from 0.1 s left, then the hold builds
     b.in.brief = BriefId::Escrow;
     b.step(0.0);
     REQUIRE(b.start() == Start::Started);
@@ -1175,16 +1175,17 @@ TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at
     b.step(4.9);
     b.in.accepting = false;
     b.step(0.1);
+    CHECK(b.h.escrowWaitLeft() == doctest::Approx(0.1).epsilon(1e-3));
     b.in.accepting = true;
-    b.step(4.9);
-    CHECK(b.h.holdLevel() == 0.f); // without the restart 3.8 s of hold would be built here
     b.step(0.1);
+    CHECK_FALSE(b.h.escrowWaiting());
     b.run(3.75);
     CHECK_FALSE(b.h.held());
+    CHECK(b.h.holdLevel() > 0.9f);
     b.run(0.5);
     CHECK(b.h.held());
 
-    Rig c; // out at 7 s, with 2 s of hold built: both drop to nothing, and the next entry waits 5 s again
+    Rig c; // out at 7 s, with 2 s of hold built: the hold drops to nothing; the wait is over, so it builds at once
     c.in.brief = BriefId::Escrow;
     c.step(0.0);
     REQUIRE(c.start() == Start::Started);
@@ -1195,8 +1196,6 @@ TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at
     c.step(0.25);
     CHECK(c.h.holdLevel() == 0.f);
     c.in.accepting = true;
-    c.run(5.0);
-    CHECK(c.h.holdLevel() == 0.f);
     c.run(3.75);
     CHECK_FALSE(c.h.held());
     c.step(0.25);
@@ -2136,4 +2135,51 @@ TEST_CASE("the push and a press: once Held wins, the press under way is spent; a
     k.run(0.5);
     CHECK(k.saw(Ev::PulledBack) == 1);
     CHECK(k.saw(Ev::Refused) == 0);
+}
+
+TEST_CASE("Escrow's wait: counting, paused out of the offer (held, then resumed), and reset only by the offer's end") {
+    Rig r;
+    r.in.brief = BriefId::Escrow;
+    r.step(0.0);
+    REQUIRE(r.start() == Start::Started);
+    CHECK(r.h.escrowWaitLeft() == 0.f); // not begun
+    r.in.accepting = true;
+    for (int i = 0; i < 8; ++i) r.step(0.25); // counting: 2 s of 5
+    CHECK(r.h.escrowWaiting());
+    CHECK(r.h.escrowWaitLeft() == doctest::Approx(3.0));
+    r.step(0.0); // a hit-stop step keeps the answer
+    CHECK(r.h.escrowWaiting());
+    CHECK(r.h.escrowWaitLeft() == doctest::Approx(3.0));
+    // Paused: out of the offer, not waiting, the seconds left held.
+    r.in.accepting = false;
+    for (int i = 0; i < 4; ++i) {
+        r.step(0.25);
+        CHECK_FALSE(r.h.escrowWaiting());
+        CHECK(r.h.escrowWaitLeft() == doctest::Approx(3.0));
+        CHECK(r.h.holdLevel() == 0.f);
+    }
+    // Back in: it resumes from 3 s, not from 5.
+    r.in.accepting = true;
+    r.step(0.25);
+    CHECK(r.h.escrowWaiting());
+    CHECK(r.h.escrowWaitLeft() == doctest::Approx(2.75));
+    for (int i = 0; i < 11; ++i) r.step(0.25);
+    CHECK_FALSE(r.h.escrowWaiting()); // 5 s inside in all: over
+    CHECK(r.h.escrowWaitLeft() == 0.f);
+    r.step(0.25);
+    CHECK(r.h.holdLevel() > 0.f);
+    // The offer's end resets it: a new offer waits the whole 5 s again.
+    Rig e;
+    e.in.brief = BriefId::Escrow;
+    e.step(0.0);
+    REQUIRE(e.start() == Start::Started);
+    e.in.accepting = true;
+    for (int i = 0; i < 8; ++i) e.step(0.25);
+    REQUIRE(e.h.escrowWaitLeft() == doctest::Approx(3.0));
+    e.in.accepting = false;
+    e.in.turnedAway = true; // ends the offer (Refused)
+    e.step(0.25);
+    CHECK(e.saw(Ev::Refused));
+    CHECK_FALSE(e.h.escrowWaiting());
+    CHECK(e.h.escrowWaitLeft() == 0.f);
 }

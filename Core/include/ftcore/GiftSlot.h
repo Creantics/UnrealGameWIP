@@ -15,9 +15,9 @@
 //   given.
 // * Every given gift leaves one thread on its target, forever, and starts its cooldown. A refused press
 //   does neither: it is only tallied.
-// * A Heal pressed at a lead at full health (press's targetHealth >= 1) is refused NotHurt: no charge, no
-//   cooldown, no thread, and it is not tallied (nothing happened). targetHealth < 0 (the default) is unknown
-//   and reads as hurt, as before the input existed.
+// * A Heal pressed at a lead at full health (press's targetHealth exactly 1) is refused NotHurt: no charge, no
+//   cooldown, no thread, and it is not tallied (nothing happened). Any other value (under 1, over 1, NaN, an
+//   infinity, or kHealthUnknown, the default) reads as hurt, as before the input existed.
 // * The tally and the threads survive save and load (GiftSave), and a new fight (beginFight). Counters
 //   saturate, never wrap. Cooldowns, guards and the fight's heal count are fight state.
 // * For the HUD: healsLeft(), readyIn(gift, t) (seconds until the cooldown is over; 0 when ready; a Heal
@@ -28,6 +28,7 @@
 // (already called). Times as CombatInputs.h (queries included). No allocation. Tuning file:
 // Data/Battle/gifts.json, read by importGiftTuning.
 
+#include "ftcore/StateHash.h"
 #include "ftcore/Api.h"
 #include "ftcore/CombatInputs.h"
 #include "ftcore/StrikeCount.h"
@@ -45,7 +46,8 @@ enum class Gift : std::uint8_t { Heal, Guard, Count, None }; // append only; Non
 inline constexpr std::size_t kGiftKinds = 3;                 // Heal, Guard, Count
 enum class SlotState : std::uint8_t { Companion, Vacant, Hostile }; // append only
 // NoneLeft: the Heal's healsPerFight are given this fight. NotHurt: a Heal at a lead at full health (never tallied).
-enum class GiftError : std::uint8_t { None, Vacant, Hostile, Cooling, BadTarget, CountRefused, NoGift, NoneLeft, NotHurt }; // append only
+// Down: FightSession's own refusal of any gift at a lead who is down (never reaches the slot, never tallied).
+enum class GiftError : std::uint8_t { None, Vacant, Hostile, Cooling, BadTarget, CountRefused, NoGift, NoneLeft, NotHurt, Down }; // append only
 // press's targetHealth when the host does not say: read as hurt.
 inline constexpr float kHealthUnknown = -1.f;
 
@@ -218,7 +220,7 @@ public:
         const std::size_t i = static_cast<std::size_t>(g);
         if (!isLead(target)) return GiftError::BadTarget;
         if (i >= kGiftKinds) return GiftError::NoGift;
-        if (g == Gift::Heal && targetHealth >= 1.f) return GiftError::NotHurt; // nothing to heal
+        if (g == Gift::Heal && targetHealth >= 1.f && targetHealth <= 1.f) return GiftError::NotHurt; // full: nothing to heal
         if (g == Gift::Heal && healsLeft() <= 0) return GiftError::NoneLeft;
         if (inputTime(now_, t) < readyAt_[i]) return GiftError::Cooling;
         return GiftError::None;
@@ -242,6 +244,7 @@ public:
             r.error = e;
             return r;
         case GiftError::NotHurt: // nothing to heal: not a press that did anything
+        case GiftError::Down:    // FightSession's own refusal, never the slot's: not a press either
             r.error = e;
             return r;
         case GiftError::Cooling:
@@ -349,6 +352,17 @@ private:
         return r;
     }
 
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(tally_.given).add(tally_.refused).add(vacantPresses_).add(hostilePresses_).add(threads_).add(selected_);
+        h.add(state_).add(now_).add(readyAt_).add(guardUntil_).add(healsGiven_);
+        const GiftSave& f = fightStart_;
+        h.add(f.version).add(f.given).add(f.refused).add(f.vacantPresses).add(f.hostilePresses).add(f.threads);
+        h.add(f.selected).add(f.state);
+    }
+
+private:
     GiftTuning tuning_{};
     GiftTally tally_{};
     std::uint32_t vacantPresses_ = 0;

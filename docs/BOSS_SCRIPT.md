@@ -53,6 +53,8 @@ The weak point goes through `LockedPoint` (`WeakPointLock.h`), the one adapter b
   optional `exposeSeconds`, `unlocksOnCounter`, `harmsWard`, `needsAnswer`, `needsWatch`, `resourceOnLand`,
   `resourceOnCounter` (-8..8).
 * `phases`: 1..3; the first has no `enterAt`; `moves` lists move ids.
+* `checkpointAtPhase` (optional, default `false`): a retry after a defeat starts at the phase the boss had
+  reached, not at the fight's start (`FightSession`'s phase checkpoint).
 * Across fields: each phase starts below the one before (hp: a share above 0; resource: a whole count), a move
   is listed once per phase, only the last phase may be empty, exposing or unlocking (or a `key` other than shared) needs the key's lock key in `lock.keys`,
   `wardLimit` needs a `harmsWard` move, and the offer never harms the ward. Each error names its path.

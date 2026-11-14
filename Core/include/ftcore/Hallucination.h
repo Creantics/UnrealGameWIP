@@ -29,6 +29,9 @@
 //   lead is Counsel). The fight's pull after pullSeconds still wins if it comes first. Once per offer.
 //   For an Escrow lead the first escrowDelaySeconds inside an offer build no hold (holdLevel stays 0, so the lead
 //   is not slowed; escrowWaiting() and escrowWaitLeft() show the wait); then the hold builds over holdSeconds.
+//   The wait pauses, it never resets: escrowWaiting() is true only on a step it counts down (the lead accepting,
+//   inside the wait, the clock moving; a hit-stop step keeps the last answer). Out of the offer it is false and
+//   escrowWaitLeft() holds its last value; back in, the wait goes on from there. Only the offer's end resets it.
 //   Stepping out before Held drops the wait and the hold back to nothing.
 // * The push: each blow the lead takes while the hold builds (inside the offer, not held, no Escrow wait running)
 //   adds holdPushPerHit seconds of hold at the step's start; pushed seconds are hold for the price below, and a
@@ -238,7 +241,10 @@ public:
     float holdLevel() const { return hold_; } // the host slows the lead by it and stills them at 1
     // An Escrow lead inside an offer, in the wait, with no hold building yet; and the seconds of it left.
     bool escrowWaiting() const { return waiting_; }
-    float escrowWaitLeft() const { return waiting_ ? tuning_.escrowDelaySeconds - delay_ : 0.f; }
+    // While paused it holds; 0 before the wait began, once it is over, or with no offer open.
+    float escrowWaitLeft() const {
+        return active() && delay_ > 0.f && delay_ < tuning_.escrowDelaySeconds ? tuning_.escrowDelaySeconds - delay_ : 0.f;
+    }
     // The price. The seconds the boss's weak point stays open from a refusal, counting down (it opened on the step
     // whose Refused left this above 0); the seconds it stays shut from Held, counting down; and Held's health cost,
     // a share of the lead's max health, on the step Held began only (0 on every other).
@@ -268,6 +274,7 @@ private:
     void rules(double dt, const HallucinationInput& in) {
         if (!(dt > 0.0 && std::isfinite(dt))) dt = 0.0;
         eventCount_ = 0;
+        const bool wasWaiting = waiting_;
         waiting_ = false;
         now_ += dt;
         cooldown_ = std::max(0.f, cooldown_ - static_cast<float>(dt));
@@ -340,7 +347,7 @@ private:
                 delay_ += wait;
                 build -= wait;
                 waiting = !(build > 0.f);
-                waiting_ = delay_ < tuning_.escrowDelaySeconds;
+                waiting_ = delay_ < tuning_.escrowDelaySeconds && (dt > 0.0 || wasWaiting);
             }
             if (!waiting) {
                 if (hold_ == 0.f) emit(HallucinationEventType::HoldBegan);
@@ -353,8 +360,7 @@ private:
             }
         } else {
             hold_ = 0.f;
-            built_ = 0.f;
-            delay_ = 0.f;
+            built_ = 0.f; // the hold drops; the Escrow wait (delay_) pauses where it is
             if (in.turnedAway) {
                 end(HallucinationEventType::Refused);
                 return;
