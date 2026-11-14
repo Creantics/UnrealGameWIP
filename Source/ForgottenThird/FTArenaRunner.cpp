@@ -454,7 +454,8 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		{
 			HallMode = Mode.Equals(TEXT("accept"), ESearchCase::IgnoreCase) ? 1
 				: Mode.Equals(TEXT("refuse"), ESearchCase::IgnoreCase) ? 2
-				: Mode.Equals(TEXT("expire"), ESearchCase::IgnoreCase) ? 3 : 0;
+				: Mode.Equals(TEXT("expire"), ESearchCase::IgnoreCase) ? 3
+				: Mode.Equals(TEXT("refuseheld"), ESearchCase::IgnoreCase) ? 4 : 0;
 		}
 		FParse::Value(FCommandLine::Get(), TEXT("ArenaHallucinationAt="), HallAt);
 	}
@@ -1762,7 +1763,7 @@ void UFTArenaRunner::BeginSession()
 
 void UFTArenaRunner::PressPendingLoneGift()
 {
-	if (!LoneGift.take() || !Session)
+	if (!Session)
 	{
 		return;
 	}
@@ -2323,8 +2324,8 @@ void UFTArenaRunner::StepFight()
 	// The lead's strike clips run on the held clock, so they stand still through its hit pauses as its action does.
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
 	FeedSession();
-	HandleEvents(Out.events);
-	PressPendingLoneGift(); // after this step's Released was pooled
+	// The events (this step's Released pooled), then a gift held while Lone: the order is Core's (LoneGiftHold::stepEnd).
+	LoneGift.stepEnd([this, &Out] { HandleEvents(Out.events); }, [this] { PressPendingLoneGift(); });
 	TickTable(Out);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
@@ -4191,11 +4192,14 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		using EV = ftcore::HallucinationEventType;
 		const auto N = [this](EV E) { return HallSeen[static_cast<int32>(E)]; };
-		const bool bOk = HallMode == 1 ? N(EV::Held) > 0 && N(EV::PulledBack) > 0
-			: HallMode == 2 ? N(EV::Refused) > 0 && N(EV::Held) == 0 : N(EV::Expired) > 0 && N(EV::Held) == 0;
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: hallucination %s (mode %d: %d started, %d held, %d refused, %d pulled back, %d expired, %d torn; max hold %.2f; %d steps held, %.2f m drift, %d enemy attacks begun meanwhile)."),
+		const bool bOk = (HallMode == 1 ? N(EV::Held) > 0 && N(EV::PulledBack) > 0
+			: HallMode == 2 ? N(EV::Refused) > 0 && N(EV::Held) == 0
+			: HallMode == 3 ? N(EV::Expired) > 0 && N(EV::Held) == 0
+			: N(EV::Held) > 0 && N(EV::Refused) > 0 && N(EV::PulledBack) == 0 && HallGuardHeld > 0 && HallGuardKept > 0)
+			&& HallBlocksHeld == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: hallucination %s (mode %d: %d started, %d held, %d refused, %d pulled back, %d expired, %d torn; max hold %.2f; %d steps held, %.2f m drift, %d enemy attacks begun meanwhile; guard down %d held steps and %d after, %d blocks or parries in them)."),
 			Verdict(bOk, true), HallMode, N(EV::Started), N(EV::Held), N(EV::Refused), N(EV::PulledBack), N(EV::Expired), N(EV::Torn),
-			HallMaxHold, HallHeldSteps, HallHeldDrift, HallEnemyActs);
+			HallMaxHold, HallHeldSteps, HallHeldDrift, HallEnemyActs, HallGuardHeld, HallGuardKept, HallBlocksHeld);
 	}
 	// Impact (ftcore/ArenaImpact.h): numbers only, no verdict. The jolt is rotation only (the arm and the field of view
 	// are never touched); the marker is the off-frame tell and the stinger only doubles it.
@@ -4402,7 +4406,9 @@ void UFTArenaRunner::BeginHallucination()
 	HallRng = 7u;
 	HallShownAt = 0.0;
 	FMemory::Memzero(HallSeen);
-	HallHeldSteps = HallEnemyActs = 0;
+	HallHeldSteps = HallEnemyActs = HallGuardHeld = HallGuardKept = HallBlocksHeld = 0;
+	HallHeldAt = HallRefusedAt = -1.0;
+	bHallKeptStep = false;
 	HallHeldDrift = HallMaxHold = 0.f;
 	bHallHeldStep = false;
 }
@@ -4418,6 +4424,8 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 			const ftcore::HallucinationEvent& E = Hall.events()[I];
 			const int32 T = static_cast<int32>(E.type);
 			++HallSeen[T];
+			HallHeldAt = E.type == ftcore::HallucinationEventType::Held ? Hall.now() : HallHeldAt;
+			HallRefusedAt = E.type == ftcore::HallucinationEventType::Refused ? Hall.now() : HallRefusedAt;
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: hallucination %s (key %d)."), Fight.time(), T < 7 ? Names[T] : TEXT("?"), E.key);
 		}
 	};
@@ -4425,13 +4433,23 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 	H.lead = SessionLead;
 	H.inFight = true;
 	H.partnerPresent = Session != nullptr && !Fight.lone(); // alone, only the refusal ends a hold
-	H.accepting = HallMode == 1 && Hall.active();
-	H.refuse = HallMode == 2 && Hall.active() && Hall.now() - HallShownAt >= 1.0;
+	H.accepting = (HallMode == 1 || HallMode == 4) && Hall.active();
+	// The refusal is the guard button. The autoplay bot guards for its own reasons, so there the probe presses it
+	// instead: mode 2 as a bare refusal, mode 4 by holding the guard itself.
+	const bool bProbeGuard = HallMode == 4
+		&& ((Hall.held() && HallHeldAt >= 0.0 && Hall.now() - HallHeldAt >= 1.0)
+			|| (HallRefusedAt >= 0.0 && Hall.now() - HallRefusedAt < 1.0));
+	In.guard = In.guard || bProbeGuard;
+	H.refuse = !bAutoPlay ? In.guard
+		: HallMode == 2 ? Hall.active() && Hall.now() - HallShownAt >= 1.0 : bProbeGuard;
 	Hall.tick(static_cast<double>(StepSeconds), H);
 	Count();
-	if (!Hall.active() && Fight.time() >= HallAt
-		&& Hall.start(HallPool, HallRng, 0u, ftcore::intensityBand(ftcore::IntensityBand::Low, 0, HallTuning), false)
-			== ftcore::HallucinationStart::Started)
+	// The weighted pick (newest x3, caused x2; the lone key x2 once this fight's lone Releases pool lonePoolFloor).
+	// Unscripted, so no scare flag: the arena has no authored moment and no ScarePacer.
+	ftcore::HallucinationStartIn Offer;
+	Offer.band = ftcore::intensityBand(ftcore::IntensityBand::Low, 0, HallTuning);
+	Offer.loneLoadPool = Session ? Session->Get().lonePooled() : 0u;
+	if (!Hall.active() && Fight.time() >= HallAt && Hall.start(HallPool, HallRng, Offer) == ftcore::HallucinationStart::Started)
 	{
 		HallShownAt = Hall.now();
 		Count();
@@ -4439,30 +4457,32 @@ void UFTArenaRunner::StepHallucination(ftcore::ArenaInput& In)
 	const float Hold = Hall.holdLevel();
 	HallMaxHold = FMath::Max(HallMaxHold, Hold);
 	bHallHeldStep = Hall.held();
+	bHallKeptStep = !bHallHeldStep && Hall.refuseKept();
 	if (bHallHeldStep)
 	{
-		// Still and blank: no stick and no buttons until the partner pulls the lead back or the lead refuses.
 		++HallHeldSteps;
 		HallHeldFrom = Bodies.player;
-		In.move = ftcore::Vec2{0.f, 0.f};
-		In.light = In.heavy = In.dodge = In.jump = In.heal = In.release = In.pair = false;
+		HallGuardHeld += In.guard ? 1 : 0;
 	}
-	else if (Hold > 0.f)
-	{
-		In.move = ftcore::Vec2{In.move.x * (1.f - Hold), In.move.y * (1.f - Hold)};
-	}
+	HallGuardKept += bHallKeptStep && In.guard ? 1 : 0;
+	// Held: still and blank (the guard went to the refusal) until pulled back or refused. Holding: the stick slows.
+	In = ftcore::hallucinationArenaInput(Hall, In);
 }
 
 void UFTArenaRunner::AfterHallucinationStep(const ftcore::ArenaOutput& Out)
 {
-	if (!bHallHeldStep)
+	if (!bHallHeldStep && !bHallKeptStep)
 	{
 		return;
 	}
-	HallHeldDrift += ArenaLength(ftcore::Vec2{Bodies.player.x - HallHeldFrom.x, Bodies.player.y - HallHeldFrom.y});
+	if (bHallHeldStep)
+	{
+		HallHeldDrift += ArenaLength(ftcore::Vec2{Bodies.player.x - HallHeldFrom.x, Bodies.player.y - HallHeldFrom.y});
+	}
 	for (const ftcore::ArenaEvent& E : Out.events)
 	{
-		HallEnemyActs += (E.type == ftcore::ArenaEventType::AttackStarted && E.source < ftcore::kMaxArenaEnemies) ? 1 : 0;
+		HallEnemyActs += (bHallHeldStep && E.type == ftcore::ArenaEventType::AttackStarted && E.source < ftcore::kMaxArenaEnemies) ? 1 : 0;
+		HallBlocksHeld += (E.type == ftcore::ArenaEventType::Blocked || E.type == ftcore::ArenaEventType::Parried) ? 1 : 0;
 	}
 }
 

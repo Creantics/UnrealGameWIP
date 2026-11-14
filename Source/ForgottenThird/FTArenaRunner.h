@@ -20,7 +20,7 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
-#include "ftcore/Hallucination.h"
+#include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
@@ -610,7 +610,9 @@ private:
 	void PressPendingLoneGift();
 	// -ArenaHallucination=accept|refuse|expire (a probe; off by default): offers of the lead's tragedies by the Core
 	// rules (ftcore/Hallucination.h). The hold slows the lead's stick and a full one stills the lead; the enemies go on.
-	int32 HallMode = 0;            // 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire
+	// 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire, 4 accept, then refuse with
+	// the guard a second into the hold and keep it down a second after
+	int32 HallMode = 0;
 	float HallAt = 5.f;            // no offer before this fight time (-ArenaHallucinationAt=S)
 	ftcore::HallucinationTuning HallTuning{};
 	ftcore::TragedyTable HallTable;
@@ -621,6 +623,12 @@ private:
 	int32 HallSeen[8] = {};        // events by ftcore::HallucinationEventType
 	int32 HallHeldSteps = 0;       // steps the lead stood held
 	int32 HallEnemyActs = 0;       // enemy attacks begun while the lead stood held
+	int32 HallGuardHeld = 0;       // held steps the guard button was down (the refusal's, never the fight's)
+	int32 HallGuardKept = 0;       // steps after a hold the guard from it stayed down (still the refusal's)
+	int32 HallBlocksHeld = 0;      // blocks and parries the fight gave in those steps: 0, the guard never reaches it
+	double HallHeldAt = -1.0;      // the Hallucination's clock at the last Held, and at the last Refused
+	double HallRefusedAt = -1.0;
+	bool bHallKeptStep = false;
 	float HallHeldDrift = 0.f;     // metres the lead's body moved while held (knocks included)
 	float HallMaxHold = 0.f;
 	bool bHallHeldStep = false;
