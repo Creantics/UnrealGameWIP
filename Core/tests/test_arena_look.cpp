@@ -443,6 +443,29 @@ TEST_CASE("arena frame: the yaw step: no turn while aiming or with framing off, 
         CHECK(z.turn == -3.f);
         CHECK(arenaFrameYawStep(F, ArenaFrameYaw{5.f, std::numeric_limits<float>::quiet_NaN()}, free, dt).turn == 0.f);
     }
+    // A zone's cap of 0 (arenas.json frameTurnCapDeg): followed, near and on either shoulder, the turn stays exactly 0
+    // while the line still eases onto the target.
+    {
+        ArenaFrameRules capped = F;
+        capped.maxTurn = 0.f;
+        for (const ZoneCamera& cam : kRigs) {
+            CAPTURE(cam.side);
+            ArenaFrameScene s;
+            s.followed = true;
+            s.hasLine = true;
+            s.lineWant = 0.f;
+            s.side = cam.side;
+            s.distance = std::fabs(cam.side);
+            ArenaFrameYaw yaw{30.f, 0.f};
+            for (int i = 0; i < 180; ++i) {
+                yaw = arenaFrameYawStep(capped, yaw, s, dt);
+                REQUIRE(yaw.turn == 0.f);
+                REQUIRE(std::isfinite(yaw.line));
+            }
+            CHECK(std::fabs(yaw.line) < 1e-3f);
+            CHECK(arenaFrameTurn(capped, cam.side, 0.f) == 0.f);
+        }
+    }
     // A non-finite yaw counts as 0 (the drawn yaw never carries an infinity into the view).
     CHECK(arenaFrameViewYaw(ArenaFrameYaw{std::numeric_limits<float>::infinity(), 0.f}) == 0.f);
     CHECK(arenaFrameViewYaw(ArenaFrameYaw{0.f, -std::numeric_limits<float>::infinity()}) == 0.f);
