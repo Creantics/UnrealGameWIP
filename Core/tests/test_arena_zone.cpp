@@ -737,8 +737,11 @@ TEST_CASE("arena zone fit: the camera room: the human rig stays clear of the bui
     const WorldTable worlds = loadWorlds();
     const ArenaZoneTable zones = loadZones(arena, worlds);
     // Every shipped zone keeps the camera clear of the buildings for most of its edge, the lens measured as the view is
-    // drawn (the shoulder offset, on the lock's line and at the framing's most turn). The two facades are pinned: dropping
-    // either view gives 15/48 and 11/48. The tower facade is over the bar (its layout is a known follow-up), so it is named.
+    // drawn (the shoulder offset, on the lock's line and at the framing's most turn). The two facades are pinned exactly,
+    // so neither gets worse unseen: either view alone gives 15/48 and 11/48, both together 17/48 and 14/48.
+    // The tower facade is named over the bar because the shoulder alone, framing off, already puts its lens inside a
+    // building along 15/48 (31%) of its edge: the old measure (no shoulder) read 13/48. Framing at its most turn is no
+    // worse on its own (15/48); the two views block different spots. Its layout is a follow-up for the zone's owner.
     for (const ArenaZoneSpec& spec : zones.zones) {
         Fitted f;
         fitShipped(arena, worlds, spec, f);
