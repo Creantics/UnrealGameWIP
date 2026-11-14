@@ -282,9 +282,15 @@ bool FFTCellInstancer::InLumenScene(const UStaticMesh& Mesh, const FTransform& T
 	{
 		return true; // buildings and the ground: roads, paving, kerbs, pads, however thin
 	}
+	if (Key.Cull == EFTCellCull::Tree)
+	{
+		// Modelled trees: their trunks bounce light and take it. One mesh holds trunk, crown and the billboard LOD, so the
+		// crown comes along; the plain component still picks each instance's LOD on the GPU (r.InstancedStaticMeshes.GpuLod).
+		return true;
+	}
 	if (Key.Cull != EFTCellCull::Prop && Key.Cull != EFTCellCull::Car)
 	{
-		return false; // plants keep the hierarchical component's culling
+		return false; // ground cover and grass keep the hierarchical component's culling
 	}
 	const FVector Size = Mesh.GetBoundingBox().GetSize() * Transform.GetScale3D().GetAbs();
 	return Size.GetMin() >= FTCells::LumenMinSide;

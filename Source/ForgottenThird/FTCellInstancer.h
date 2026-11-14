@@ -167,7 +167,8 @@ private:
 	// Small dressing: out of ray tracing, the distance fields and the indirect lighting's scene.
 	static bool IsLight(const FKey& Key);
 	// What should bounce light: not light, not hidden, and a building or ground piece, or a prop or car whose smallest
-	// side (scaled bounds) is FTCells::LumenMinSide or more. Plants and small dressing stay hierarchical.
+	// side (scaled bounds) is FTCells::LumenMinSide or more, or a modelled tree. Ground cover, grass and small dressing
+	// stay hierarchical.
 	static bool InLumenScene(const UStaticMesh& Mesh, const FTransform& Transform, const FKey& Key);
 	bool AllowInstanced(UMaterialInterface* Material);
 	bool CanInstance(UStaticMesh* Mesh, TArrayView<UMaterialInterface* const> Materials);
