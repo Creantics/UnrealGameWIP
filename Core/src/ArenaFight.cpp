@@ -181,6 +181,27 @@ Vec2 arenaCutVelocity(const ArenaRing& ring, Vec2 pos, Vec2 v, float dt, float r
     return Vec2{(got.x - pos.x) / dt, (got.y - pos.y) / dt};
 }
 
+// How far a body of `radius` at `pos` may go straight along `way` (unit) before the ring's cut stops it: the edge it
+// may reach is the one arenaCutVelocity keeps it to (the ring less its radius, or where it stands if already beyond).
+float arenaRoomAlong(const ArenaRing& ring, Vec2 pos, Vec2 way, float radius) {
+    const Vec2 w = arenaSub(pos, ring.centre);
+    const float limit = std::max(std::max(ring.radius - radius, 0.f), arenaLength(w));
+    const float b = arenaDot(w, way);
+    const float c = arenaDot(w, w) - limit * limit; // <= 0: inside or on the edge
+    return std::max(0.f, -b + std::sqrt(std::max(0.f, b * b - c)));
+}
+
+// How far a body of `radius` at `pos` gets in all trying `distance` along `way` (unit) over kArenaStepBackTime at a
+// steady pace, the ring cutting each 60th of a second as arenaCutVelocity does (so it slides along the edge).
+float arenaRoomSliding(const ArenaRing& ring, Vec2 pos, Vec2 way, float distance, float radius) {
+    constexpr int kSteps = 30; // kArenaStepBackTime at 60 ticks a second
+    const float dt = kArenaStepBackTime / static_cast<float>(kSteps);
+    const Vec2 v = arenaScaled(way, distance / kArenaStepBackTime);
+    Vec2 at = pos;
+    for (int s = 0; s < kSteps; ++s) at = arenaMadd(at, arenaCutVelocity(ring, at, v, dt, radius), dt);
+    return arenaDistance(at, pos);
+}
+
 // `current` moved toward `want` by at most rate * dt, as a vector, so a turn is braked and accelerated as one. A rate
 // of 0 or less snaps.
 Vec2 arenaRamp(Vec2 current, Vec2 want, float rate, float dt) {
@@ -1780,7 +1801,9 @@ struct ArenaFightImpl {
 
     // A break-out with no token free, or out of the windup arc: enemy i steps straight back, unhurt, to
     // kArenaStepBackClear beyond the lead's reach and at least kArenaStepBackMin over kArenaStepBackTime (SteppedBack,
-    // once); its count is spent and it walks again after.
+    // once); its count is spent and it walks again after. Only as far as the ring lets it: with less than
+    // kArenaStepBackRoom behind, it steps to the side with more room instead, if that has more (SteppedBack's move
+    // says which: 0 back, 1 its left, 2 its right, as it faces the lead).
     void stepBack(std::size_t i) {
         Enemy& foe = foes[i];
         // A move cut short gives its token back, and a read move brings its counter while it can still be hurt.
@@ -1792,10 +1815,33 @@ struct ArenaFightImpl {
         foe.brain = ArenaBrain::StepBack;
         const float radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
         const float clear = leadReach() + radius + kArenaStepBackClear;
-        foe.stepDistance = std::max(kArenaStepBackMin, clear - arenaDistance(pl.pos, foe.pos)); // the blow seen to miss
+        const float want = std::max(kArenaStepBackMin, clear - arenaDistance(pl.pos, foe.pos)); // the blow seen to miss
+        // The ring keeps the body as the velocity cut does: its own bodyRadius in from the edge.
+        const float body = def.enemies[i].bodyRadius;
+        const Vec2 toLead = arenaUnit(arenaSub(pl.pos, foe.pos), foe.facing);
+        const Vec2 back{-toLead.x, -toLead.y};
+        std::uint8_t way = 0;
+        foe.stepWay = back;
+        foe.stepDistance = std::min(want, arenaRoomAlong(fight.ring_, foe.pos, back, body)); // it stops at the edge
+        float moves = foe.stepDistance;
+        if (foe.stepDistance < kArenaStepBackRoom) {
+            // Square to the way to the lead; y is to the right on the ground, so its right is (-y, x) of that way.
+            const Vec2 left{toLead.y, -toLead.x};
+            const Vec2 right{-toLead.y, toLead.x};
+            const float leftRoom = arenaRoomSliding(fight.ring_, foe.pos, left, want, body);
+            const float rightRoom = arenaRoomSliding(fight.ring_, foe.pos, right, want, body);
+            const bool toRight = rightRoom > leftRoom; // a tie goes left
+            const float side = std::min(want, toRight ? rightRoom : leftRoom);
+            if (side > foe.stepDistance) {
+                way = toRight ? 2 : 1;
+                foe.stepWay = toRight ? right : left;
+                // It tries the whole step at the same pace; the ring's slide leaves it `side` from where it was.
+                foe.stepDistance = want;
+                moves = side;
+            }
+        }
         ++stats.stepBacks;
-        emit(ArenaEventType::SteppedBack, id(i), kArenaPlayer, 0, static_cast<int>(std::lround(foe.stepDistance * 100.f)),
-             foe.pos);
+        emit(ArenaEventType::SteppedBack, id(i), kArenaPlayer, way, static_cast<int>(std::lround(moves * 100.f)), foe.pos);
     }
 
     // Enemy i where the player can see a windup begin: within kArenaWindupArc of the lead's facing, or within the
@@ -2015,6 +2061,8 @@ struct ArenaFightImpl {
     // A strafing enemy whose attackDelay has passed asks for a token; the longest waiting (then the nearest) gets it,
     // up to `attackers` held at once. Then a holder out of sight that has not begun its string hands its token to the
     // asker in sight waiting longest (then the nearest) and asks again from 0 itself; with none in sight it keeps it.
+    // One handed a token keeps it kArenaTokenHandHold s, and one that handed its token over takes none by hand-over
+    // for as long, so a body at the arc's edge doesn't pass it back and forth.
     void assignTokens() {
         std::size_t held = 0;
         std::array<bool, kMaxArenaEnemies> asking{};
@@ -2034,7 +2082,7 @@ struct ArenaFightImpl {
             int best = -1;
             float bestDist = 0.f;
             for (std::size_t i = 0; i < n; ++i) {
-                if (!asking[i] || (sighted && !inSight(i))) continue;
+                if (!asking[i] || (sighted && (!inSight(i) || t0 - foes[i].handedAwayAt < kArenaTokenHandHold))) continue;
                 const float distance = arenaDistance(pl.pos, foes[i].pos);
                 const bool better = best < 0 || foes[i].asked > foes[static_cast<std::size_t>(best)].asked ||
                                     (foes[i].asked == foes[static_cast<std::size_t>(best)].asked && distance < bestDist);
@@ -2055,14 +2103,18 @@ struct ArenaFightImpl {
         }
         for (std::size_t h = 0; h < n; ++h) {
             const Enemy& holder = foes[h];
-            if (!holder.token || (holder.brain != ArenaBrain::Approach && holder.brain != ArenaBrain::Strafe) || inSight(h))
+            if (!holder.token || (holder.brain != ArenaBrain::Approach && holder.brain != ArenaBrain::Strafe) ||
+                t0 - holder.handedAt < kArenaTokenHandHold || inSight(h))
                 continue;
             const int best = bestAsker(true);
             if (best < 0) continue;
             const std::size_t winner = static_cast<std::size_t>(best);
             asking[winner] = false;
             releaseToken(h); // it asks again from the next tick, its wait from 0
+            foes[h].handedAwayAt = t0;
             takeToken(winner);
+            foes[winner].handedAt = t0;
+            ++stats.tokenHandOvers;
         }
     }
 
@@ -2675,10 +2727,10 @@ struct ArenaFightImpl {
             break;
         }
         case ArenaBrain::StepBack: {
-            // Straight back from the player over the step, unhurt, still facing it.
+            // Back from the player (or to the side it picked) over the step, unhurt, still facing it.
             if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, def.enemies[i].turnRate * dt);
             const float moving = std::max(0.f, std::min(foe.stateTime + dt, kArenaStepBackTime) - foe.stateTime);
-            vel = arenaScaled(Vec2{-dir.x, -dir.y}, foe.stepDistance / kArenaStepBackTime * moving / dt);
+            vel = arenaScaled(foe.stepWay, foe.stepDistance / kArenaStepBackTime * moving / dt);
             recover(i);
             break;
         }

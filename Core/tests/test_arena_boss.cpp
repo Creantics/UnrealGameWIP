@@ -1498,3 +1498,18 @@ TEST_CASE("arena boss run: the host's own opening, and a shut that bars every op
     run.begin(def, 20.0);
     CHECK_FALSE(run.critShut());
 }
+
+TEST_CASE("arena boss: checkpointAtPhase is optional, false by default, and must be true or false") {
+    ArenaBossDef def;
+    std::string error;
+    REQUIRE_MESSAGE(importArenaBoss(kTestBoss, def, &error), error);
+    CHECK_FALSE(def.checkpointAtPhase);
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importArenaBoss(patched("\"version\": 1", "\"version\": 1, \"checkpointAtPhase\": true"), def, &error,
+                                    &warnings),
+                    error);
+    CHECK(def.checkpointAtPhase);
+    CHECK(warnings.empty()); // a known key
+    CHECK(has(importError(patched("\"version\": 1", "\"version\": 1, \"checkpointAtPhase\": 1")),
+              "checkpointAtPhase: expected true or false"));
+}
