@@ -6,6 +6,7 @@
 #include "ftcore/Hallucination.h"
 
 #include <array>
+#include <cmath>
 #include <string>
 
 using namespace ftcore;
@@ -129,6 +130,23 @@ TEST_CASE("the same seed picks the same keys") {
         last = ka;
     }
     CHECK(distinct > 1);
+
+    // Uniform: three keys, a first pick from each of 3000 seeds, and 3000 picks from one stream, each key 1000 +- 10%.
+    TragedyPool three(makeTable(3));
+    for (int k = 0; k < 3; ++k) three.unlock(k);
+    std::array<int, 3> bySeed{}, byStream{};
+    std::uint32_t stream = 99;
+    for (std::uint32_t i = 0; i < 3000; ++i) {
+        std::uint32_t seed = i * 2654435761u + 1u;
+        ++bySeed[static_cast<std::size_t>(three.pick(seed, kLeadA, 0, 0.0, 0.0))];
+        ++byStream[static_cast<std::size_t>(three.pick(stream, kLeadA, 0, 0.0, 0.0))];
+    }
+    for (int k = 0; k < 3; ++k) {
+        CHECK(bySeed[static_cast<std::size_t>(k)] > 900);
+        CHECK(bySeed[static_cast<std::size_t>(k)] < 1100);
+        CHECK(byStream[static_cast<std::size_t>(k)] > 900);
+        CHECK(byStream[static_cast<std::size_t>(k)] < 1100);
+    }
     std::uint32_t zero = 0;
     CHECK(tragedyRng(zero) != 0u);
 }
@@ -175,6 +193,39 @@ TEST_CASE("a lead switch tears the open one, ends its hold, and holds off new on
     s.run(0.25);
     CHECK(s.start() == Start::Started);
     CHECK(s.pool.lead(s.h.key()) == kLeadB);
+
+    Rig c; // a scripted one does not wait for the switch delay
+    c.in.lead = kLeadB;
+    c.step(0.25);
+    CHECK(c.start() == Start::SwitchDelay);
+    CHECK(c.start(true) == Start::Started);
+    CHECK(c.pool.lead(c.h.key()) == kLeadB);
+
+    Rig h; // a switch while held tears it too, and the lead is free
+    h.start();
+    h.in.accepting = true;
+    h.run(4.0);
+    REQUIRE(h.h.held());
+    h.in.lead = kLeadB;
+    h.step(0.25);
+    CHECK(h.saw(Ev::Torn) == 1);
+    CHECK_FALSE(h.h.held());
+    CHECK_FALSE(h.h.active());
+    CHECK(h.h.holdLevel() == 0.f);
+}
+
+TEST_CASE("a bad step counts as no time at all") {
+    Rig r;
+    r.start();
+    const double t = r.h.now();
+    r.step(-5.0);
+    r.step(std::nan(""));
+    r.step(HUGE_VAL);
+    CHECK(r.h.now() == t);
+    CHECK(r.h.active());
+    r.run(30.0);
+    CHECK(r.saw(Ev::Expired) == 1);
+    CHECK(r.start() == Start::Gap);
 }
 
 TEST_CASE("only accepting builds the hold: holdSeconds to held, and stepping out drops it to nothing") {
@@ -351,6 +402,9 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(t.keys[1].lead == kLeadB);
     CHECK(t.keys[1].places == tragedyPlaceBit(t, "school"));
     CHECK(tragedyKey(t, "trag_b01") == 1);
+    CHECK(t.keys[0].places == tragedyPlaceBit(t, "playground"));
+    CHECK(t.keys[0].voice == "vo_trag_a02");
+    CHECK(t.keys[0].figure == "fig_trag_a02");
 
     REQUIRE(ftcore_test::readProjectData("Unwritten/hallucination.json", text));
     HallucinationTuning h;
@@ -360,6 +414,23 @@ TEST_CASE("the shipped hallucination tables load, and bad ones are refused") {
     CHECK(h.holdSeconds == d.holdSeconds);
     CHECK(h.refuseSeconds == d.refuseSeconds);
     CHECK(h.actFloors == d.actFloors);
+
+    HallucinationTuning o;
+    CHECK(importHallucinationTuning(R"({"version":1,"holdSeconds":2,"expireSeconds":40,"gapSeconds":60,"switchSeconds":10,
+        "refuseSeconds":0.75,"refusalCooldownSeconds":3,"pullSeconds":8,"recentSeconds":600,"fewerGapScale":3,
+        "actFloors":["low","low","mid","mid","high"]})", o, &err));
+    CHECK(o.holdSeconds == 2.f);
+    CHECK(o.expireSeconds == 40.f);
+    CHECK(o.gapSeconds == 60.f);
+    CHECK(o.switchSeconds == 10.f);
+    CHECK(o.refuseSeconds == 0.75f);
+    CHECK(o.refusalCooldownSeconds == 3.f);
+    CHECK(o.pullSeconds == 8.f);
+    CHECK(o.recentSeconds == 600.f);
+    CHECK(o.fewerGapScale == 3.f);
+    CHECK(o.actFloors[0] == IntensityBand::Low);
+    CHECK(o.actFloors[2] == IntensityBand::Mid);
+    CHECK(o.actFloors[4] == IntensityBand::High);
 
     const char* const badTables[] = {
         R"({"version":2,"places":["p"],"keys":[]})",

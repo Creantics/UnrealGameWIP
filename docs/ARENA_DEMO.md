@@ -347,7 +347,10 @@ damage as Load). Any of the first four turns carrying on; the result is one `Are
 Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBrief=bailiff` or `-ArenaBrief=notary` with
 `-ArenaLead=Duy` lays that Brief's kit from `Data/Battle/briefs.json` over the guns lead's own kit: a six-round cylinder
 with a 1.2 s reload (the shot spends a round instead of stamina; with none left a shot press is dropped and kicks still
-go), plus the Brief's kit changes. Any other lead is left alone with a warning. `-ArenaAutoShoot` has the autopilot use
+go), plus the Brief's kit changes. The cylinder sends three fight events for the host's clip and sound: `ReloadStarted`
+(the reload's length in ms), `Reloaded` (the rounds) and `DryPress` (a press dropped on the empty cylinder); the arena
+logs each one, and the reload clip, the dry click and a gun-arm flinch attach there once they exist. Any other lead is
+left alone with a warning. `-ArenaAutoShoot` has the autopilot use
 the pistol; `-ArenaLineup=dummy,maw_pup` is the test line-up. The result is one `Arena: BRIEF ...` line at the end.
 
 ### The leads' weapons
@@ -640,7 +643,9 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaAutoPlay` | The Core autopilot (`ArenaFight::autopilot`) plays the lead and picks the Read (the right card 0.2 s into a startup), releasing at 50 Load; the host presses the partner's pair on the step after each parry. |
 | `-ArenaNoLock` | The autopilot never presses lock, so its attacks take soft targets (see Feature checks). |
 | `-ArenaAutoShoot` | With a guns kit the autopilot aims and shoots on the way in (`ArenaFight::setAutopilotShoots`); off, it never aims. |
-| `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. |
+| `-ArenaAimCheck` | With the autopilot and a guns kit: 3 s in, the camera aims at the tallest standing enemy's top and one aimed shot is fired (the `aim up` check line: the view pitch, the lens's height and distance from the lead, what the crosshair meets, whether the shot hit; PASS needs the rendered pitch within 1.5 degrees of the solved one, the crosshair on that enemy and its hp down). Run it on `kite_ring` with `-ArenaLead=Duy`. Not in shipping builds. |
+| `-ArenaAssistCheck` | With `-ArenaAimCheck`: after its shot, four steps with aim assist on, each capped at 6 s: a half-way right stick sweeps the view off the body and back (a lock from before is let go), a lock is pressed on and let go, aim is let go and held again, and the target is killed by a host blow. Each change of the stick's share is logged with its cause (`aim assist look scale 0.60 -> 1.00 (locked on; ...)`). The `aim assist` check line compares the sweep's turn rate over a body with the rate off it and says whether the share came back to 1 as the crosshair left, on lock-on, as aim let go and as the target died (PASS: ratio 0.60 within 0.05 and all four). Not in shipping builds. |
+| `-ArenaCoverCheck` | Once, a second into the fight: a synthetic crosshair line (not the camera's) from 0.5 m over the floor through the cover drum nearest a standing enemy to its body's middle, picked as the reticle picks (the world's first hit clips the line). The `reticle behind cover` check line gives the world hit, the body's distance on the same line with the world left out (the control) and the pick: PASS when the drum is hit first and no body is picked, so aim assist has no body to slow over and the round's aim body is none. Needs a zone with cover drums (`stone_ring`); with `-ArenaQuitOnFinish` the run ends after it. Not in shipping builds. |
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
@@ -725,8 +730,12 @@ warning and quits with exit code 2, so an unattended run never hangs.
   aim go in the startup does not change it, and its climb follows the crosshair only until it fires. A
   crosshair on a body the round would not reach is drawn faint, without its dot; one where another body on the
   muzzle's line would take the round is dimmed, with a small cross for the dot (`ArenaFight::shotMeets`; neither while
-  locked on, when the round goes at the lock). Blocked needs the crosshair's own body 0.25 m or more further along the
-  round than the other, and the dimming changes only once the new state has held 4 frames, so an edge does not flicker. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
+  locked on, when the round goes at the lock). The round and the readout share one rule: the crosshair's body
+  (`ArenaInput::aimBody`) takes the round when it is met within 0.25 m (`kArenaShotGraze`) along the round of the body met
+  first, so blocked means the round goes elsewhere, and the dimming changes only once the new state has held 4 frames,
+  so an edge does not flicker. Aim assist (Settings, "Aim assist", on by default; `ftcore::aimAssistTurn`): while the
+  unlocked crosshair is over a body the round would take, the look turns at 0.8 of its rate with the mouse and 0.6 with
+  the stick; off, or under `-ArenaAutoPlay`, it is unchanged. The autopilot's shots, unpitched, stay a lane on the ground. The lead's aim pose is the arm's IK alone (no spine or head pitch): above
   about 45 degrees the arm lifts over the shoulder while the chest stays level. The arm probes the world (it may leave the zone's walls but never passes through a building or the
   ground) and is pulled in. Locked on, it turns toward the target and holds it; otherwise the mouse or right
   stick turns it (the autopilot and an idle run face the nearest enemy).

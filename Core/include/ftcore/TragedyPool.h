@@ -11,6 +11,9 @@
 //
 // Picks are uniform over the eligible keys for now (no weights yet). A key shown in the last `recentSeconds` is
 // passed over while any other key is eligible. No allocation after construction.
+//
+// The pool's times (shown(), pick()'s `now`) are the Hallucination's clock (Hallucination::now()), so a pool and the
+// Hallucination that feeds it share a lifetime: make them anew together, or a pool's stamps outlive their clock.
 
 #include "ftcore/Api.h"
 #include "ftcore/CombatInputs.h"
