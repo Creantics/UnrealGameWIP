@@ -865,6 +865,36 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: glass over a picture on the proof front: %d pane and bay components hidden, %d cut-out slots back on %s."),
 			Hidden, Swapped, KitGlass ? *KitGlass->GetName() : TEXT("nothing (no kit glass in the map)"));
 	}
+	// -WorldEyeGlassNoPane: the proof front's true panes hidden (its bay stays), for a still that measures the bay as
+	// seen without the glass against the same view through it.
+	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeGlassNoPane")))
+	{
+		int32 Hidden = 0;
+		for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+		{
+			if (It->GetWorld() == &World && It->ComponentHasTag(TEXT("GlassProofPane")))
+			{
+				It->SetVisibility(false);
+				++Hidden;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: the proof front's panes hidden: %d components."), Hidden);
+	}
+	// -WorldEyeDayEV=<ev>: a day or dusk still at one fixed exposure, so two stills' levels compare.
+	float DayEv = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeDayEV="), DayEv))
+	{
+		int32 Locked = 0;
+		for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
+		{
+			It->Settings.bOverride_AutoExposureMinBrightness = true;
+			It->Settings.AutoExposureMinBrightness = DayEv;
+			It->Settings.bOverride_AutoExposureMaxBrightness = true;
+			It->Settings.AutoExposureMaxBrightness = DayEv;
+			++Locked;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: exposure locked at EV %.2f in %d volumes."), DayEv, Locked);
+	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyePlainWalls")))
 	{
 		TMap<UMaterialInterface*, UMaterialInterface*> Plain;

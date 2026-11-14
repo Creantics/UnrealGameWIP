@@ -162,6 +162,21 @@ GlassPane glassPaneAt(float x, const float* cuts, int count) {
     return p;
 }
 
+GlassGoodsRow glassGoodsRow(int row, float seed) {
+    GlassGoodsRow r;
+    const float h = std::sin(static_cast<float>(row) * 7.31f + seed * 13.f) * 43758.5453f;
+    const float f = h - std::floor(h);
+    r.band = std::clamp(static_cast<int>(f * static_cast<float>(kGlassGoodsBands)), 0, kGlassGoodsBands - 1);
+    const float s = seed * 0.37f + static_cast<float>(row) * 0.29f;
+    r.start = s - std::floor(s);
+    return r;
+}
+
+float glassGoodsV(int band, float up) {
+    const int b = std::clamp(band, 0, kGlassGoodsBands - 1);
+    return (static_cast<float>(b) + 1.f - std::clamp(up, 0.f, 1.f)) / static_cast<float>(kGlassGoodsBands);
+}
+
 std::string glassPictureHlsl() {
     return R"HLSL(
 float3 iD = float3(iV.x, iV.y, max(iV.z, 0.03));
@@ -180,36 +195,36 @@ float iTx = iD.x < -1e-4 ? (iX0 - iA.x) / iD.x : (iD.x > 1e-4 ? (iX1 - iA.x) / i
 float iT = min(iTb, min(iTy, iTx));
 float3 iH = float3(iA.x, iA.y, 0.0) + iD * iT;
 float iUp = iH.y - iFloor;
-float3 iAlb = float3(0.7, 0.68, 0.63);
+float3 iAlb = float3(0.36, 0.35, 0.32);
 float iGlow = 0.0;
 float iShade = 1.0;
+// The goods: rows of the shelf-front picture (GoodsMap: four 2 m x 0.5 m shelf fronts stacked), a band per row by seed,
+// a band spanning four times its row's height so the goods keep their shape.
+float iMip = clamp(log2(max(iEyeM + iT, 0.1) * 0.66), 0.0, 8.0);
 if (iIsShop)
 {
 	if (iT == iTb)
 	{
 		float iRow = floor(iUp / 0.42);
 		float iRy = frac(iUp / 0.42);
-		float iColumn = floor(iH.x / 0.24);
-		float iCx = frac(iH.x / 0.24);
-		float iG = frac(sin(dot(float2(iColumn, iRow + iSeed * 13.0), float2(12.9898, 78.233))) * 43758.5453);
-		float3 iGoods = lerp(float3(0.82, 0.8, 0.74), float3(frac(iG * 7.1), frac(iG * 13.3), frac(iG * 29.7)), 0.65);
-		bool iBoard = iRy > 0.9;
-		bool iGap = iCx < 0.07 || iRy > 0.5 + 0.35 * frac(iG * 3.7);
-		iAlb = iUp > 2.1 ? (iUp > 2.3 && iUp < 2.75 ? lerp(float3(0.74, 0.2, 0.16), float3(0.16, 0.34, 0.6), step(0.5, frac(iSeed * 9.7))) : float3(0.8, 0.78, 0.72))
-			: (iBoard ? float3(0.5, 0.48, 0.44) : (iGap ? float3(0.1, 0.095, 0.09) : iGoods));
+		float iBand = floor(frac(sin(iRow * 7.31 + iSeed * 13.0 + iX0 * 0.11) * 43758.5453) * 3.99);
+		float2 iGuv = float2(frac(-iH.x / 1.68 + iSeed * 0.37 + iRow * 0.29), (iBand + 1.0 - iRy) / 4.0);
+		float3 iGoods = Texture2DSampleLevel(GoodsMap, GoodsMapSampler, iGuv, iMip).rgb;
+		iAlb = iUp > 2.1 ? (iUp > 2.3 && iUp < 2.75 ? lerp(float3(0.5, 0.12, 0.1), float3(0.1, 0.22, 0.42), step(0.5, frac(iSeed * 9.7))) : float3(0.38, 0.37, 0.34))
+			: iGoods;
 	}
 	else if (iT == iTy)
 	{
 		if (iD.y < 0.0)
 		{
 			bool iJoint = frac(iH.x / 0.6) < 0.03 || frac(iH.z / 0.6) < 0.03;
-			iAlb = float3(0.56, 0.55, 0.51) * (iJoint ? 0.7 : 1.0);
+			iAlb = float3(0.32, 0.31, 0.29) * (iJoint ? 0.7 : 1.0);
 		}
 		else
 		{
 			float2 iPn = float2(frac(iH.x / 1.8), frac(iH.z / 1.6));
 			bool iPanel = iPn.x > 0.2 && iPn.x < 0.8 && iPn.y > 0.35 && iPn.y < 0.65;
-			iAlb = float3(0.84, 0.84, 0.82);
+			iAlb = float3(0.4, 0.4, 0.39);
 			iGlow = iPanel ? 1.5 : 0.0;
 			iShade = 0.6;
 		}
@@ -221,10 +236,9 @@ if (iIsShop)
 	{
 		float iRow2 = floor(iGy / 0.34);
 		float iRy2 = frac(iGy / 0.34);
-		float iColumn2 = floor(iPg.x / 0.2);
-		float iG2 = frac(sin(dot(float2(iColumn2, iRow2 + iSeed * 29.0), float2(12.9898, 78.233))) * 43758.5453);
-		float3 iGoods2 = lerp(float3(0.8, 0.78, 0.72), float3(frac(iG2 * 5.3), frac(iG2 * 17.9), frac(iG2 * 23.1)), 0.7);
-		iAlb = iRy2 > 0.88 ? float3(0.55, 0.53, 0.5) : (frac(iPg.x / 0.2) < 0.08 || iRy2 > 0.55 + 0.3 * frac(iG2 * 3.1) ? float3(0.1, 0.095, 0.09) : iGoods2);
+		float iBand2 = floor(frac(sin(iRow2 * 3.7 + iSeed * 29.0 + floor(iPg.x / 3.4) * 1.3) * 43758.5453) * 3.99);
+		float2 iGuv2 = float2(frac(-iPg.x / 1.36 + iSeed * 0.53 + iRow2 * 0.41), (iBand2 + 1.0 - iRy2) / 4.0);
+		iAlb = Texture2DSampleLevel(GoodsMap, GoodsMapSampler, iGuv2, clamp(log2(max(iEyeM + iTg, 0.1) * 0.66), 0.0, 8.0)).rgb;
 		iH = float3(iPg.x, iPg.y, 1.3);
 		iGlow = 0.0;
 		iShade = 1.0;
@@ -236,7 +250,7 @@ if (iIsShop)
 		float iXt = iA.x + iD.x * iTt;
 		if (iTt > 0.0 && iTt < iT && iZt > 1.3 && iZt < 1.8 && frac(iXt / 3.4) < 0.72)
 		{
-			iAlb = float3(0.44, 0.42, 0.39);
+			iAlb = float3(0.36, 0.35, 0.33);
 			iH = float3(iXt, iFloor + 1.35, iZt);
 			iGlow = 0.0;
 		}
@@ -244,13 +258,13 @@ if (iIsShop)
 }
 else
 {
-	float3 iWall = lerp(float3(0.76, 0.73, 0.67), float3(0.55 + 0.4 * iRoom, 0.6 + 0.3 * iRoom2, 0.55 + 0.35 * frac(iRoom * 17.3)), 0.3);
+	float3 iWall = lerp(float3(0.4, 0.38, 0.35), float3(0.28 + 0.2 * iRoom, 0.3 + 0.15 * iRoom2, 0.28 + 0.18 * frac(iRoom * 17.3)), 0.3);
 	float iLx = iH.x - iX0;
 	if (iT == iTb)
 	{
 		bool iDoor = iLx > 0.5 && iLx < 1.35 && iUp < 2.02;
 		bool iPic = iLx > 2.2 && iLx < 2.95 && iUp > 1.15 && iUp < 1.7;
-		iAlb = iDoor ? float3(0.3, 0.22, 0.16) : (iPic ? float3(frac(iRoom * 3.3), frac(iRoom * 7.7), frac(iRoom * 11.1)) * 0.7 + 0.15 : iWall);
+		iAlb = iDoor ? float3(0.3, 0.22, 0.16) : (iPic ? float3(frac(iRoom * 3.3), frac(iRoom * 7.7), frac(iRoom * 11.1)) * 0.4 + 0.1 : iWall);
 	}
 	else if (iT == iTy)
 	{
@@ -261,7 +275,7 @@ else
 		else
 		{
 			float2 iLp = float2(iLx - 0.5 * iCellW, iH.z - 1.5);
-			iAlb = float3(0.82, 0.82, 0.8);
+			iAlb = float3(0.42, 0.42, 0.41);
 			iGlow = dot(iLp, iLp) < 0.035 ? 2.0 : 0.0;
 			iShade = 0.6;
 		}
@@ -283,13 +297,13 @@ if (!iIsShop)
 	{
 		float iBottom = iFloor + 0.9 + 1.1 * iRoom2;
 		iCover = step(iBottom, iA.y);
-		iCloth = float3(0.8, 0.78, 0.72) * (0.72 + 0.28 * step(0.5, frac(iA.y / 0.05)));
+		iCloth = float3(0.5, 0.49, 0.45) * (0.72 + 0.28 * step(0.5, frac(iA.y / 0.05)));
 	}
 	else if (iRoom < 0.55)
 	{
 		float iEdge = iCellW * (0.3 + 0.35 * iRoom2);
 		iCover = iRoom2 < 0.5 ? step(iLxA, iEdge) : step(iCellW - iEdge, iLxA);
-		iCloth = lerp(float3(0.72, 0.66, 0.56), float3(0.5 + 0.4 * iRoom2, 0.5, 0.45 + 0.4 * iRoom), 0.4) * (0.75 + 0.25 * sin(iA.x * 42.0));
+		iCloth = lerp(float3(0.45, 0.41, 0.35), float3(0.3 + 0.25 * iRoom2, 0.3, 0.28 + 0.25 * iRoom), 0.4) * (0.75 + 0.25 * sin(iA.x * 42.0));
 	}
 	float3 iClothLight = iDay * iDayLevel * 1.6 + iLit * iLamp * 0.45;
 	iCol = lerp(iCol, iCloth * iClothLight, iCover);

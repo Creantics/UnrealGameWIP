@@ -11,6 +11,7 @@
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionPerInstanceCustomData.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
@@ -26,6 +27,7 @@
 #include "UObject/SavePackage.h"
 
 #include "ftcore/GlassSurface.h"
+#include "ftcore/WindowFacade.h"
 
 #include <string>
 
@@ -133,11 +135,14 @@ else if (s == 7)
 	bool proof = CD8 > 1.5;
 	bool lit = proof || r < (shop ? 0.85 : LitShare);
 	float3 warm = r < 0.12 ? float3(0.75, 0.85, 1.0) : float3(1.0, 0.78, 0.52);
-	// The lamps' light: what the flat glow gave (GlassGlow, twice in a shop, under GlowCap), or the proof front's own level.
+	// The lamps' light: what the flat glow gave (GlassGlow, twice in a shop), soft-capped at the city's night cap (the
+	// window master's: ShopCap in a shop, WinCap upstairs), or the proof front's own level; then no front over that cap.
+	float cap = shop ? ShopCap : WinCap;
 	float3 lamp = warm * NightGlow * GlassGlow * (shop ? 2.0 : 1.0);
-	lamp = lamp / (1.0 + dot(lamp, float3(0.2126, 0.7152, 0.0722)) / max(GlowCap, 1e-4));
+	lamp = lamp / (1.0 + dot(lamp, float3(0.2126, 0.7152, 0.0722)) / max(cap, 1e-4));
 	if (proof)
 		lamp = float3(1.0, 0.9, 0.76) * ProofNight;
+	lamp = lamp * min(1.0, cap / max(dot(lamp, float3(0.2126, 0.7152, 0.0722)), 1e-4));
 	float3 V = -normalize(CamV);
 	float yLoc = 1.0 - UV.y;
 	float2 iA = float2(dot(WorldPos, h), WorldPos.z) / 100.0;
@@ -149,6 +154,7 @@ else if (s == 7)
 	float iDay = Daylight;
 	float iDayLevel = DayLevel;
 	float3 iLamp = lamp * 1.5;
+	float iEyeM = PixDepth / 100.0;
 )");
 const TCHAR* const kKitCodeB = TEXT(R"(	float px0 = PaneRect.x;
 	float px1 = PaneRect.z;
@@ -191,6 +197,8 @@ const TCHAR* const kKitCodeB = TEXT(R"(	float px0 = PaneRect.x;
 	float2 gHandle = doorPane ? PaneDoor.zw : float2(-1.0, 0.0);
 )");
 const TCHAR* const kKitCodeC = TEXT(R"(	glow = iCol * (1.0 - gMirror) * gTint * (1.0 - gVeil) * (1.0 - gSeal) * lerp(float3(1.0, 1.0, 1.0), float3(0.25, 0.45, 0.35), gEdge);
+	// No point of any front's interior over the city's cap (the lamps' panels and pale goods included), the proof front too.
+	glow *= min(1.0, cap / max(dot(glow, float3(0.2126, 0.7152, 0.0722)), 1e-4));
 	base = lerp(float3(0.60, 0.58, 0.53) * gVeil, float3(0.02, 0.02, 0.02), gSeal);
 	rough = lerp(gRough, 0.6, gSeal);
 	metal = 0.0;
@@ -326,6 +334,9 @@ UMaterial* BuildMaster(UPackage* Package, UTexture* White, UTexture* Masks, UTex
 	In(Code, TEXT("GlassGlow"), Scalar(Material, TEXT("GlassGlow"), 0.8f, 1200));
 	In(Code, TEXT("LitShare"), Scalar(Material, TEXT("LitShare"), 0.35f, 1300));
 	In(Code, TEXT("GlowCap"), Scalar(Material, TEXT("GlowCap"), 6.f, 1400));
+	// The glass slot's lamps under the city's night caps (the window master's own values).
+	In(Code, TEXT("ShopCap"), Scalar(Material, TEXT("ShopGlowCap"), ftcore::WindowFacadeSpec{}.shopGlowCap, 1410));
+	In(Code, TEXT("WinCap"), Scalar(Material, TEXT("WindowGlowCap"), ftcore::WindowFacadeSpec{}.glowCap, 1420));
 	In(Code, TEXT("Relief"), Scalar(Material, TEXT("Relief"), 1.f, 1450));
 	In(Code, TEXT("DirtAmount"), Scalar(Material, TEXT("DirtAmount"), 1.f, 1475));
 	In(Code, TEXT("Night"), Night(Material, Collection, TEXT("Night"), 0.f, 1500));
@@ -336,9 +347,15 @@ UMaterial* BuildMaster(UPackage* Package, UTexture* White, UTexture* Masks, UTex
 		*(FString(FTScene::LookCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::LookCollection)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	In(Code, TEXT("CamV"), AddNode<UMaterialExpressionCameraVectorWS>(Material, 2700));
 	In(Code, TEXT("Daylight"), Night(Material, Collection, TEXT("Daylight"), 1.f, 2800));
-	In(Code, TEXT("ProofNight"), Night(Material, Collection, TEXT("ProofShopNight"), 0.3f, 2900));
+	In(Code, TEXT("ProofNight"), Night(Material, Collection, TEXT("ProofShopNight"), ftcore::WindowFacadeSpec{}.shopGlowCap, 2900));
 	In(Code, TEXT("Wet"), Night(Material, LookParams, TEXT("Wetness"), 0.f, 3000));
 	In(Code, TEXT("DayLevel"), Scalar(Material, TEXT("GlassDayLevel"), 0.35f, 3100));
+	// The goods on a shop's shelves are cut from the shelf-front picture (white when it has not been imported); the eye's
+	// distance picks its mip (the Nanite slot takes no derivatives).
+	In(Code, TEXT("PixDepth"), AddNode<UMaterialExpressionPixelDepth>(Material, 3150));
+	UTexture* const Goods = LoadObject<UTexture>(nullptr, *(FString(FTScene::LookGoodsTexture) + TEXT(".") + FPackageName::GetShortName(FTScene::LookGoodsTexture)),
+		nullptr, LOAD_NoWarn | LOAD_Quiet);
+	In(Code, TEXT("GoodsMap"), Texture(TEXT("GoodsMap"), Goods ? Goods : White, SAMPLERTYPE_Color, 3180));
 	In(Code, TEXT("PaneTransom"), Scalar(Material, TEXT("PaneTransom"), 0.f, 3200));
 	const TCHAR* const PaneVectors[] = {TEXT("PaneRect"), TEXT("PaneColsA"), TEXT("PaneColsB"), TEXT("PaneColsC"), TEXT("PaneColsD"), TEXT("PaneDoor")};
 	for (int32 V = 0; V < 6; ++V)
@@ -1021,13 +1038,14 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					++PaneCount;
 				}
 			}
-			// The bay's shell: floor, ceiling with three light panels, back and side walls.
+			// The bay's shell (paint, tiles and ceiling of albedo 0.3 to 0.4, so by day the bay is dim beside the street): floor,
+			// ceiling with three light panels, back and side walls.
 			const TCHAR* const BayTag = TEXT("GlassProofBay");
-			UMaterialInterface* const WallPaint = BayMaterial(TEXT("MI_GlassProofBay_Wall"), FLinearColor(0.80f, 0.78f, 0.72f), 0.f);
-			UMaterialInterface* const FloorPaint = BayMaterial(TEXT("MI_GlassProofBay_Floor"), FLinearColor(0.56f, 0.55f, 0.51f), 0.f);
-			UMaterialInterface* const CeilPaint = BayMaterial(TEXT("MI_GlassProofBay_Ceiling"), FLinearColor(0.84f, 0.84f, 0.82f), 0.f);
+			UMaterialInterface* const WallPaint = BayMaterial(TEXT("MI_GlassProofBay_Wall"), FLinearColor(0.38f, 0.37f, 0.34f), 0.f);
+			UMaterialInterface* const FloorPaint = BayMaterial(TEXT("MI_GlassProofBay_Floor"), FLinearColor(0.32f, 0.31f, 0.29f), 0.f);
+			UMaterialInterface* const CeilPaint = BayMaterial(TEXT("MI_GlassProofBay_Ceiling"), FLinearColor(0.40f, 0.40f, 0.39f), 0.f);
 			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"), FLinearColor(0.9f, 0.9f, 0.88f), 1.f);
-			UMaterialInterface* const BoardPaint = BayMaterial(TEXT("MI_GlassProofBay_Board"), FLinearColor(0.5f, 0.48f, 0.44f), 0.f);
+			UMaterialInterface* const BoardPaint = BayMaterial(TEXT("MI_GlassProofBay_Board"), FLinearColor(0.36f, 0.35f, 0.33f), 0.f);
 			LotBox(BayX0, BayY0, BayZ0, BayX1, BayY1, BayZ0 + 0.04, FloorPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(BayX0, BayY0, BayZ1 - 0.04, BayX1, BayY1, BayZ1, CeilPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(BayX0, BayY1 - 0.04, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
@@ -1039,40 +1057,28 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				const double Lx = BayX0 + BayW * (0.5 + L) / 3.0;
 				LotBox(Lx - 0.6, BayMidY - 0.15, BayZ1 - 0.07, Lx + 0.6, BayMidY + 0.15, BayZ1 - 0.04, PanelPaint, Data, EFTCellKind::NoCollide, BayTag);
 			}
-			// Shelving along the back wall and a free-standing run in the middle of the bay, with goods (painted boxes).
-			const FLinearColor GoodsColours[6] = {FLinearColor(0.72f, 0.10f, 0.08f), FLinearColor(0.10f, 0.32f, 0.62f), FLinearColor(0.86f, 0.66f, 0.10f),
-				FLinearColor(0.12f, 0.46f, 0.22f), FLinearColor(0.82f, 0.80f, 0.74f), FLinearColor(0.80f, 0.36f, 0.10f)};
-			UMaterialInterface* GoodsPaint[6];
-			for (int32 G = 0; G < 6; ++G)
-			{
-				GoodsPaint[G] = BayMaterial(*FString::Printf(TEXT("MI_GlassProofBay_Goods%d"), G), GoodsColours[G], 0.f);
-			}
-			uint32 Hash = P.seed | 1u;
-			const auto Next = [&Hash]()
-			{
-				Hash = Hash * 1664525u + 1013904223u;
-				return static_cast<double>((Hash >> 8) & 0xFFFFu) / 65535.0;
-			};
+			// Shelving along the back wall and a free-standing run in the middle of the bay, each row's goods a card cut from
+			// the shelf-front picture (a band per row, ftcore::glassGoodsRow), kept at its shape by the row's height.
 			int32 GoodsCount = 0;
+			const float GoodsSeed = FMath::Frac(static_cast<float>(P.seed % 9973u) * 0.000731f + 0.37f);
 			const auto Shelf = [&](double X0, double X1, double Y0, double Y1, double Z, double RowH)
 			{
 				LotBox(X0, Y0, Z, X1, Y1, Z + 0.03, BoardPaint, Data, EFTCellKind::NoCollide, BayTag);
-				for (double X = X0 + 0.04; X + 0.12 < X1;)
-				{
-					const double W = 0.12 + 0.16 * Next();
-					const double H = RowH * (0.45 + 0.45 * Next());
-					if (Next() > 0.12)
-					{
-						LotBox(X, Y0 + 0.03, Z + 0.03, FMath::Min(X + W, X1 - 0.02), Y1 - 0.03, Z + 0.03 + H, GoodsPaint[static_cast<int32>(Next() * 5.99)], Data,
-							EFTCellKind::NoCollide, BayTag);
-						++GoodsCount;
-					}
-					X += W + 0.03;
-				}
+				const ftcore::GlassGoodsRow Row = ftcore::glassGoodsRow(GoodsCount, GoodsSeed);
+				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofBay_Goods%d"), GoodsCount), RF_Public);
+				Mic->SetParentEditorOnly(ProofBay);
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GoodsMix")), 1.f);
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GoodsBand")), static_cast<float>(Row.band));
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GoodsStart")), Row.start);
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GoodsWidthCm")),
+					100.f * ftcore::kGlassGoodsWidthM * static_cast<float>(RowH) / ftcore::kGlassGoodsBandM);
+				Mic->PostEditChange();
+				LotBox(X0 + 0.02, Y0 + 0.08, Z + 0.03, X1 - 0.02, Y0 + 0.10, Z + 0.03 + RowH, Mic, Data, EFTCellKind::NoCollide, BayTag);
+				++GoodsCount;
 			};
 			for (int32 R = 0; R < 5; ++R)
 			{
-				Shelf(BayX0 + 0.1, BayX1 - 0.1, BayY1 - 0.40, BayY1 - 0.05, BayZ0 + 0.25 + 0.42 * R, 0.36);
+				Shelf(BayX0 + 0.1, BayX1 - 0.1, BayY1 - 0.40, BayY1 - 0.05, BayZ0 + 0.25 + 0.42 * R, 0.39);
 			}
 			if (BayY1 - BayY0 > 1.6)
 			{
@@ -1082,7 +1088,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					LotBox(Sx0, BayMidY - 0.22, BayZ0 + 0.04, Sx1, BayMidY + 0.22, BayZ0 + 0.18, BoardPaint, Data, EFTCellKind::NoCollide, BayTag);
 					for (int32 R = 0; R < 3; ++R)
 					{
-						Shelf(Sx0, Sx1, BayMidY - 0.2, BayMidY + 0.2, BayZ0 + 0.18 + 0.38 * R, 0.32);
+						Shelf(Sx0, Sx1, BayMidY - 0.2, BayMidY + 0.2, BayZ0 + 0.18 + 0.38 * R, 0.35);
 					}
 				}
 			}

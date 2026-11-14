@@ -8,12 +8,15 @@
 #include "FTText.h"
 
 #include "ftcore/GlassSurface.h"
+#include "ftcore/WindowFacade.h"
 
 #if WITH_EDITOR
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "FTImportMaterials.h"
+#include "Engine/Texture2D.h"
 #include "HAL/FileManager.h"
+#include "ImageUtils.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionCameraPositionWS.h"
@@ -1365,7 +1368,46 @@ UMaterial* BuildGlassPane(UMaterialParameterCollection* Look, bool bMirror)
 // Glass over a picture: an opaque smooth surface (the engine mirrors the scene in it, with its own Fresnel), the room
 // behind it (ftcore::glassPictureHlsl, met by the true view ray) added as emitted light times what the pane passes.
 // The room's light is the daylight share (Daylight) and its lamps (Lights): no value here reads the hour.
-UMaterial* BuildGlassOver(UMaterialParameterCollection* Look)
+// The shelf-front picture the goods are cut from: imported from Png when one is given (sRGB colour, saved with the
+// glass materials), else the one imported before, else the engine's white (the goods then wear their shelf's colour).
+UTexture* LoadGoods(const FString& Png, bool& bImported)
+{
+	bImported = false;
+	const FString Name = FPackageName::GetShortName(FTScene::LookGoodsTexture);
+	UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *(FString(FTScene::LookGoodsTexture) + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Png.IsEmpty())
+	{
+		FImage Image;
+		if (!FImageUtils::LoadImage(*Png, Image))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookMaterials: couldn't read the goods picture %s."), *Png);
+			return nullptr;
+		}
+		if (!Texture)
+		{
+			UPackage* Package = CreatePackage(FTScene::LookGoodsTexture);
+			Texture = NewObject<UTexture2D>(Package, *Name, RF_Public | RF_Standalone | RF_Transactional);
+		}
+		Texture->PreEditChange(nullptr);
+		Texture->Source.Init(Image);
+		Texture->SRGB = true;
+		Texture->CompressionSettings = TC_Default;
+		Texture->VirtualTextureStreaming = false;
+		// Sampled in Custom nodes (no UV data for the streamer to size it by): kept whole, a few MB.
+		Texture->NeverStream = true;
+		Texture->PostEditChange();
+		bImported = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildLookMaterials: %s <- %s (%dx%d)."), FTScene::LookGoodsTexture, *Png, Image.SizeX, Image.SizeY);
+	}
+	if (Texture)
+	{
+		return Texture;
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildLookMaterials: no goods picture (%s); the goods wear plain white."), FTScene::LookGoodsTexture);
+	return LoadObject<UTexture>(nullptr, TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
+}
+
+UMaterial* BuildGlassOver(UMaterialParameterCollection* Look, UTexture* Goods)
 {
 	UMaterial* Material = NewMaterial(FTScene::LookGlassOverMaterial);
 	Material->bTangentSpaceNormal = false;
@@ -1376,7 +1418,7 @@ UMaterial* BuildGlassOver(UMaterialParameterCollection* Look)
 		"float iFloor = FloorCm / 100.0;\n"
 		"float3 iV = float3(dot(V, hx), V.z, dot(V, -n));\n"
 		"float iShop = Shop;\nfloat iSeed = Seed;\nfloat iLit = Lights;\nfloat iDay = Daylight;\nfloat iDayLevel = DayLevel;\n"
-		"float3 iLamp = Lamp.rgb;\n");
+		"float3 iLamp = Lamp.rgb;\nfloat iEyeM = EyeDepth / 100.0;\n");
 	Code += FT::ToFString(ftcore::glassPictureHlsl());
 	Code += TEXT("float2 gUV = saturate(LocalPos.yz / 100.0 + 0.5);\n"
 		"float2 gSize = max(PaneSize.xy, 0.05);\n"
@@ -1406,6 +1448,8 @@ UMaterial* BuildGlassOver(UMaterialParameterCollection* Look)
 	AddInput(Over, TEXT("Lights"), AddScalar(Material, TEXT("Lights"), 0.f, 800));
 	AddInput(Over, TEXT("Daylight"), AddScalar(Material, TEXT("Daylight"), 1.f, 900));
 	AddInput(Over, TEXT("DayLevel"), AddScalar(Material, TEXT("DayLevel"), 0.35f, 1000));
+	AddInput(Over, TEXT("EyeDepth"), AddExpression<UMaterialExpressionPixelDepth>(Material, -900, 1100));
+	AddInput(Over, TEXT("GoodsMap"), AddTexture(Material, TEXT("GoodsMap"), Goods, SAMPLERTYPE_Color, 1200));
 	AddOutput(Over, TEXT("EmissiveOut"), CMOT_Float3);
 	AddOutput(Over, TEXT("RoughOut"), CMOT_Float1);
 	AddOutput(Over, TEXT("SpecOut"), CMOT_Float1);
@@ -1456,11 +1500,12 @@ UMaterial* BuildGlassHole()
 	return Material;
 }
 
-// A real bay's surfaces behind a true pane: Color under the scene's light, plus the bay's own: a little by day (the
-// shop's lamps are on, the daylight comes in through the pane by itself) and, with the lights on (the window
-// collection's Night), Color x ProofShopNight; LampPanel 1 is a ceiling light panel. A collection without those values
-// (built before the glass system) gives plain parameters instead.
-UMaterial* BuildGlassBay()
+// A real bay's surfaces behind a true pane: Color under the scene's light (by day only the daylight that comes in
+// through the pane), plus the shop's lamps from dusk (the window collection's Night): Color x ProofShopNight, held
+// under the city's shop cap like every front; LampPanel 1 is a ceiling light panel. GoodsMix 1 cuts the colour from the
+// shelf-front picture instead: band GoodsBand, from GoodsStart along it, up the box from its shelf. A collection
+// without those values (built before the glass system) gives plain parameters instead.
+UMaterial* BuildGlassBay(UTexture* Goods)
 {
 	UMaterial* Material = NewMaterial(FTScene::LookGlassBayMaterial);
 	UMaterialParameterCollection* Windows = LoadObject<UMaterialParameterCollection>(nullptr,
@@ -1476,21 +1521,35 @@ UMaterial* BuildGlassBay()
 	};
 	UMaterialExpressionVectorParameter* Color = AddVector(Material, TEXT("Color"), FLinearColor(0.7f, 0.68f, 0.63f), 0);
 	UMaterialExpressionCustom* Glow = AddCustom(Material, TEXT("FTGlassBay"),
-		TEXT("float3 lamp = float3(1.0, 0.9, 0.76) * ProofNight * Night;\n"
-			 "float3 own = Color.rgb * (DayLamp * Daylight + lamp * 1.3);\n"
-			 "return own + LampPanel * (DayLamp * Daylight * 6.0 + lamp * 4.0);\n"),
+		*FString::Printf(TEXT("float2 uvR = float2(GoodsStart - WorldPos.x / max(GoodsWidth, 1.0), (GoodsBand + 1.0 - saturate(LocalPos.z / 100.0 + 0.5)) / %.1f);\n"
+			 "float3 goods = Texture2DSampleGrad(GoodsMap, GoodsMapSampler, float2(frac(uvR.x), clamp(uvR.y, 0.002, 0.998)), ddx(uvR), ddy(uvR)).rgb;\n"
+			 "float3 base = lerp(Color.rgb, goods, saturate(GoodsMix));\n"
+			 "float3 lamp = float3(1.0, 0.9, 0.76) * ProofNight * Night;\n"
+			 "lamp *= min(1.0, ShopCap / max(dot(lamp, float3(0.2126, 0.7152, 0.0722)), 1e-4));\n"
+			 "EmissiveOut = base * lamp * 1.3 + LampPanel * lamp * 4.0;\n"
+			 "EmissiveOut *= min(1.0, ShopCap / max(dot(EmissiveOut, float3(0.2126, 0.7152, 0.0722)), 1e-4));\n"
+			 "return base;\n"),
+			static_cast<double>(ftcore::kGlassGoodsBands)),
 		CMOT_Float3, 100);
 	AddInput(Glow, TEXT("Color"), Color);
 	AddInput(Glow, TEXT("Night"), Light(TEXT("Night"), 0.f, 200));
-	AddInput(Glow, TEXT("Daylight"), Light(TEXT("Daylight"), 1.f, 300));
-	AddInput(Glow, TEXT("ProofNight"), Light(TEXT("ProofShopNight"), 0.3f, 400));
-	AddInput(Glow, TEXT("DayLamp"), AddScalar(Material, TEXT("DayLamp"), 0.12f, 500));
+	AddInput(Glow, TEXT("ProofNight"), Light(TEXT("ProofShopNight"), ftcore::WindowFacadeSpec{}.shopGlowCap, 400));
+	AddInput(Glow, TEXT("ShopCap"), AddScalar(Material, TEXT("ShopGlowCap"), ftcore::WindowFacadeSpec{}.shopGlowCap, 450));
 	AddInput(Glow, TEXT("LampPanel"), AddScalar(Material, TEXT("LampPanel"), 0.f, 600));
+	AddInput(Glow, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, 650));
+	AddInput(Glow, TEXT("LocalPos"), AddExpression<UMaterialExpressionLocalPosition>(Material, -900, 700));
+	AddInput(Glow, TEXT("GoodsMap"), AddTexture(Material, TEXT("GoodsMap"), Goods, SAMPLERTYPE_Color, 750));
+	AddInput(Glow, TEXT("GoodsMix"), AddScalar(Material, TEXT("GoodsMix"), 0.f, 800));
+	AddInput(Glow, TEXT("GoodsBand"), AddScalar(Material, TEXT("GoodsBand"), 0.f, 850));
+	AddInput(Glow, TEXT("GoodsStart"), AddScalar(Material, TEXT("GoodsStart"), 0.f, 900));
+	// cm of the wall one band of the picture spans (its 2 m at the band's own height; less on a lower row, so the goods keep their shape).
+	AddInput(Glow, TEXT("GoodsWidth"), AddScalar(Material, TEXT("GoodsWidthCm"), 100.f * ftcore::kGlassGoodsWidthM, 950));
+	AddOutput(Glow, TEXT("EmissiveOut"), CMOT_Float3);
 	Glow->RebuildOutputs();
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
-	Inputs->BaseColor.Connect(0, Color);
+	Inputs->BaseColor.Connect(0, Glow);
 	Inputs->Roughness.Connect(0, AddScalar(Material, TEXT("Roughness"), 0.6f, 700));
-	Inputs->EmissiveColor.Connect(0, Glow);
+	Inputs->EmissiveColor.Connect(1, Glow);
 	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
 	Finish(Material);
 	return Material;
@@ -1697,8 +1756,17 @@ int32 UFTBuildLookMaterialsCommandlet::Main(const FString& Params)
 				return 1;
 			}
 		}
-		const FBuilt Built[] = {{BuildGlassPane(Look, false), Parts[0]}, {BuildGlassPane(Look, true), Parts[1]}, {BuildGlassOver(Look), Parts[2]},
-			{BuildSign(), Parts[3]}, {BuildGlassHole(), Parts[4]}, {BuildGlassBay(), Parts[5]}};
+		// -Goods=<png>: the shelf-front picture the goods behind the glass are cut from, imported first.
+		FString GoodsPng;
+		FParse::Value(*Params, TEXT("Goods="), GoodsPng);
+		bool bGoodsImported = false;
+		UTexture* Goods = LoadGoods(GoodsPng, bGoodsImported);
+		if (!Goods || (bGoodsImported && !Save(Goods, FTScene::LookGoodsTexture)))
+		{
+			return 1;
+		}
+		const FBuilt Built[] = {{BuildGlassPane(Look, false), Parts[0]}, {BuildGlassPane(Look, true), Parts[1]}, {BuildGlassOver(Look, Goods), Parts[2]},
+			{BuildSign(), Parts[3]}, {BuildGlassHole(), Parts[4]}, {BuildGlassBay(Goods), Parts[5]}};
 		FAssetCompilingManager::Get().FinishAllCompilation();
 		int32 Errors = 0;
 		for (const FBuilt& Each : Built)

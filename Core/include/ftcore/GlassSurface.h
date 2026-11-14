@@ -87,8 +87,25 @@ FTCORE_API GlassPane glassPaneAt(float x, const float* cuts, int count);
 // room (iDay * iDayLevel) plus its lamps (iLit * iLamp); nothing reads the hour. It reads, declared by the node first:
 //   float2 iA (m: along the wall, up), float iFloor (m up: the room's floor), float3 iV (the view ray: along, up, in,
 //   in > 0), float iShop (1 a shop, 0 a room), float iSeed, float iLit (0..1), float iDay (0..1), float iDayLevel,
-//   float3 iLamp (the lamps' light)
-// and leaves float3 iCol: the light the interior sends toward the eye, before the pane. Allocates: build time only.
+//   float3 iLamp (the lamps' light), float iEyeM (m from the eye to the pane, for the goods' mip), and a texture input
+//   GoodsMap (the shelf-front picture: kGlassGoodsBands fronts kGlassGoodsWidthM wide stacked, a shelf at each one's foot)
+// and leaves float3 iCol: the light the interior sends toward the eye, before the pane. Surfaces are albedo 0.3 to 0.4
+// (a shop's paint, floor and ceiling), so by day a room is dim beside the street. Allocates: build time only.
 FTCORE_API std::string glassPictureHlsl();
+
+// The shelf-front picture the goods are cut from: four fronts (pantry, kitchen, hardware, stationery), each 2 m wide
+// and 0.5 m high. A row lower than 0.5 m spans a band over width x its height / 0.5, so the goods keep their shape.
+constexpr int kGlassGoodsBands = 4;
+constexpr float kGlassGoodsWidthM = 2.f;
+constexpr float kGlassGoodsBandM = 0.5f;
+// A shelf row's cut of that picture: its band and where along the band it starts (0..1), by the row and a seed, so
+// neighbouring rows differ. The picture's v for a point a share `up` (0 at the shelf, 1 at the next) up the row is
+// (band + 1 - up) / kGlassGoodsBands. No allocation.
+struct GlassGoodsRow {
+    int band = 0;
+    float start = 0.f;
+};
+FTCORE_API GlassGoodsRow glassGoodsRow(int row, float seed);
+FTCORE_API float glassGoodsV(int band, float up);
 
 } // namespace ftcore

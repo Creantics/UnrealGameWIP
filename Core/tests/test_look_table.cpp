@@ -42,13 +42,17 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     CHECK(*t.find("lattice") != *t.find("unwritten"));
     // The engine's ray-traced reflections are on for every world.
     // Ray-traced sun and moon shadows are the default where the card traces rays (shadow maps otherwise).
-    REQUIRE(t.render.size() == 3);
+    // Hit lighting for the ray-traced reflections (a proposal in the glass block's note): a reflection hit is lit from
+    // its own material, so a lead, who has no surface cache, shows in a shop pane.
+    REQUIRE(t.render.size() == 4);
     CHECK(t.render[0].name == "r.Lumen.HardwareRayTracing");
     CHECK(t.render[0].value == 1.f);
     CHECK(t.render[1].name == "r.RayTracing.Shadows");
     CHECK(t.render[1].value == 1.f);
     CHECK(t.render[2].name == "r.Lumen.TranslucencyReflections.FrontLayer.Enable");
     CHECK(t.render[2].value == 1.f);
+    CHECK(t.render[3].name == "r.Lumen.HardwareRayTracing.LightingMode");
+    CHECK(t.render[3].value == 2.f);
     // Water, wetness, fog albedo, practical lights and glow are set per world.
     CHECK(t.find("solhaven")->wetness > 0.f);
     CHECK(t.find("lattice")->glowStrength > 0.f);
@@ -231,7 +235,10 @@ TEST_CASE("looks: the dusk row and the glass values load; a bad one refuses the 
     CHECK(day > 0.f);
     CHECK(day < 1.f);
     CHECK(t.findDusk("lattice") == nullptr);
-    CHECK(t.glassValue("proofShopNight", -1.f) > 0.f);
+    // The proof front has no level of its own at night: it stays under the city's shop cap like every front.
+    CHECK(t.glassValue("proofShopNight", -1.f) == -1.f);
+    CHECK(t.glassValue("interiorDay", -1.f) > 0.f);
+    CHECK(t.glassValue("interiorDay", -1.f) <= 1.f);
     CHECK(t.glassValue("noSuchValue", -7.f) == -7.f);
     CHECK(contains(t.glassStatus, "unruled"));
 

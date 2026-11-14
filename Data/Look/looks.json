@@ -3,7 +3,8 @@
   "render": {
     "r.Lumen.HardwareRayTracing": 1,
     "r.RayTracing.Shadows": 1,
-    "r.Lumen.TranslucencyReflections.FrontLayer.Enable": 1
+    "r.Lumen.TranslucencyReflections.FrontLayer.Enable": 1,
+    "r.Lumen.HardwareRayTracing.LightingMode": 2
   },
   "dusk": {
     "solhaven": {
@@ -35,9 +36,8 @@
   },
   "glass": {
     "status": "proposed, unruled",
-    "about": "proofShopNight: the glass proof front only, the level of its shop interior's own light at night (the city's shop glass stays under its cap of 0.3). interiorDay: the share of the built daylight level the rooms behind kit glass keep (1 = as built).",
-    "proofShopNight": 0.8,
-    "interiorDay": 0.35
+    "about": "interiorDay: the share of the built daylight level the rooms behind kit glass keep (1 = as built). Every shop front, the glass proof front too, keeps its interior at night under the city's shop cap of 0.3. Proposal, unruled: render r.Lumen.HardwareRayTracing.LightingMode 2 (hit lighting), so a pane's reflection lights what it hits from that surface's own material and the direct light instead of the surface cache, which has no skinned characters: without it a lead before a shop pane is missing from the reflection. Cost in principle: every reflection ray that hits evaluates its hit's material and direct lighting, so it grows with the reflecting pixels on screen and the materials they meet.",
+    "interiorDay": 1.0
   },
   "worlds": {
     "solhaven": {

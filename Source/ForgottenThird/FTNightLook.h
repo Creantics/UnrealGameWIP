@@ -56,10 +56,12 @@ struct FSkyFrame
 };
 FORGOTTENTHIRD_API FSkyFrame FrameAt(const ftcore::WorldClockSpec& Spec, double Hours);
 // The window collection's light values at a frame: Night (the lights' share), Daylight, and the glass values a look
-// sets (Data/Look/looks.json "glass": ProofShopNight, or -GlassProofNight=<level> over it). False without the collection.
+// sets (Data/Look/looks.json "glass": interiorDay; ProofShopNight only from -GlassProofNight=<level>, and every material
+// holds it under the city's shop cap). False without the collection.
 FORGOTTENTHIRD_API bool WriteWindowLights(UWorld& World, float Lights, float Daylight);
 // The look table's glass values (read once): the proof front's interior light at night (-GlassProofNight=<level> over it;
-// under 0: none set, the collection keeps its default) and the share of the rooms' daylight a look keeps (interiorDay).
+// under 0: none set, the collection keeps its default, the shop cap) and the share of the rooms' daylight a look keeps
+// (interiorDay; -GlassInteriorDay=<share> over it).
 FORGOTTENTHIRD_API float ProofShopNight();
 FORGOTTENTHIRD_API float InteriorDay();
 

@@ -124,7 +124,13 @@ float FTNight::ProofShopNight()
 
 float FTNight::InteriorDay()
 {
-	static const float Value = FMath::Max(FTLook::Table().glassValue("interiorDay", 1.f), 0.f);
+	// The look table's, or the switch's (a still that measures the pane's mirror alone sets 0).
+	static const float Value = []
+	{
+		float Level = FTLook::Table().glassValue("interiorDay", 1.f);
+		FParse::Value(FCommandLine::Get(), TEXT("GlassInteriorDay="), Level);
+		return FMath::Max(Level, 0.f);
+	}();
 	return Value;
 }
 

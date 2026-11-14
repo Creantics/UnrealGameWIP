@@ -102,6 +102,9 @@ inline constexpr const TCHAR* LookGlassHoleMaterial = TEXT("/Game/Look/M_Look_Gl
 // The surfaces of a real shop bay behind a true pane: a painted surface with the bay's own light (the window
 // collection's Daylight, Night and ProofShopNight), so the bay's level is the one glass over a picture draws.
 inline constexpr const TCHAR* LookGlassBayMaterial = TEXT("/Game/Look/M_Look_GlassBay");
+// The shelf-front picture the goods behind shop glass are cut from (ftcore::kGlassGoodsBands fronts stacked; imported
+// by FTBuildLookMaterials -Glass -Goods=<png>). Local only.
+inline constexpr const TCHAR* LookGoodsTexture = TEXT("/Game/Look/T_Look_Goods");
 inline constexpr const TCHAR* LookChromeMaterial = TEXT("/Game/Look/M_Look_Chrome");
 inline constexpr const TCHAR* LookWetStoneMaterial = TEXT("/Game/Look/M_Look_WetStone");
 inline constexpr const TCHAR* LookGlowMaterial = TEXT("/Game/Look/M_Look_Glow");

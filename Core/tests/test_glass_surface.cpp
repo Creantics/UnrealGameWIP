@@ -131,9 +131,36 @@ TEST_CASE("glass: a front's panes are cut at its mullions; the room behind is sh
     CHECK(glassPaneAt(9.f, cuts, 9).left == doctest::Approx(6.47f));
     CHECK(glassPaneAt(1.f, nullptr, 0).width == doctest::Approx(1.f));
     const std::string room = glassPictureHlsl();
-    for (const char* name : {"iA", "iFloor", "iV", "iShop", "iSeed", "iLit", "iDay", "iDayLevel", "iLamp", "iCol"})
+    for (const char* name : {"iA", "iFloor", "iV", "iShop", "iSeed", "iLit", "iDay", "iDayLevel", "iLamp", "iEyeM", "GoodsMap", "iCol"})
         CHECK(room.find(name) != std::string::npos);
+    // Goods are cut from the shelf-front picture, not painted blocks.
+    CHECK(room.find("frac(iG * 7.1)") == std::string::npos);
     // The room never reads the hour: its light is the daylight share and its lamps.
     CHECK(room.find("Night") == std::string::npos);
     CHECK(room.find("return") == std::string::npos);
+}
+
+TEST_CASE("glass: each shelf row takes a band of the goods picture, rows differ, v runs from the shelf up") {
+    const auto before = ftcore_test::allocStats().count;
+    int bands[kGlassGoodsBands] = {};
+    float lastStart = -1.f;
+    bool startsDiffer = false;
+    for (int row = 0; row < 40; ++row) {
+        const GlassGoodsRow r = glassGoodsRow(row, 0.37f);
+        REQUIRE(r.band >= 0);
+        REQUIRE(r.band < kGlassGoodsBands);
+        CHECK(r.start >= 0.f);
+        CHECK(r.start < 1.f);
+        ++bands[r.band];
+        if (lastStart >= 0.f && r.start != doctest::Approx(lastStart)) startsDiffer = true;
+        lastStart = r.start;
+    }
+    for (int b = 0; b < kGlassGoodsBands; ++b) CHECK(bands[b] > 0);
+    CHECK(startsDiffer);
+    // Band 0 is the picture's top front: its shelf (up 0) at v 0.25, its top (up 1) at v 0; band 3's shelf at v 1.
+    CHECK(glassGoodsV(0, 0.f) == doctest::Approx(0.25f));
+    CHECK(glassGoodsV(0, 1.f) == doctest::Approx(0.f));
+    CHECK(glassGoodsV(3, 0.f) == doctest::Approx(1.f));
+    CHECK(glassGoodsV(9, 2.f) == doctest::Approx(0.75f));
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
 }
