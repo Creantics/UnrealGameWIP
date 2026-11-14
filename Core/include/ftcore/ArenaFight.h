@@ -83,7 +83,8 @@
 //     parryWindow, unless the previous press was less than parryRearm ago (mashing guard opens no
 //     window). A parryable enemy attack that connects inside the window, from inside the guard arc,
 //     is parried: no damage, no stamina cost, and the enemy is Open for openTime.
-//   - Riposte: a light press with an Open enemy within riposteReach of its body's edge (not its centre) and in front (dot >= 0.5)
+//   - Riposte: a light press with an Open enemy within riposteReach of its drawn body's edge (arenaBodyCylinder's
+//     radius, as a blow's reach takes it; not its centre) and in front (dot >= 0.5)
 //     performs the riposte attack instead of a light, aimed at that enemy and invulnerable throughout.
 //     When it connects, the enemy goes Down for downTime.
 //   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. A parry
@@ -176,11 +177,14 @@
 //   counter 1.5, a hostBlow, a held blow's bonus, 1.5, a set table's split 3) times the ruling's breakScale (the
 //   count's joined and Lift multipliers, which the host's hook passes through), at most kArenaBossBreakBlowCap. A
 //   vetoed blow adds 0; nothing else adds (a guard, a gift, a partner's own blows). While it is Staggered the value
-//   neither rises nor falls; otherwise, from kArenaBossBreakDecayDelay s after the last blow that added, it falls at
+//   neither rises nor falls, and the decay's delay clock stands still too (a stagger never costs the player the
+//   count; the clock goes on from where it stood once the boss is up); otherwise, from kArenaBossBreakDecayDelay s after the last blow that added, it falls at
 //   kArenaBossBreakDecayRate a second until it is 0 or another blow adds (it never goes below 0). The
-//   threshold is the phase's breakValueAt; the phase comes from the boss's hp share (breakPhaseEnds: each phase
+//   threshold is the phase's breakValueAt (never below kArenaBossBreakFloor, the importer's floor: a code-built
+//   one under it, or not a number, is taken as the floor); the phase comes from the boss's hp share (breakPhaseEnds: each phase
 //   ends where the share now falls to it; the stone bearer's are 0.5 and 0.25, three phases, the last from its
-//   pedestal at a quarter, apart from its move script's two). At kArenaBossBreakTell of the threshold the value
+//   pedestal at a quarter, apart from its move script's two). When a phase begins with a threshold at or below the
+//   value, the boss breaks at once if it is upright, else the tick it stands. At kArenaBossBreakTell of the threshold the value
 //   tells (enemyBreakTell, the BreakTell event once each time it rises there). The blow that brings it to the
 //   threshold breaks the boss at once if it is upright (not Staggered, Open or Down; a blow that staggers it keeps
 //   the value, and the break comes the tick it is upright again): its move is cut, the value goes to 0 and it begins
@@ -190,7 +194,9 @@
 //   (enemyBreakGuard) blows add nothing and never flinch it; in its recovery (the punish window) they deal damage and
 //   poise as ever and may flinch it, but still add nothing (enemyBreakMoveOn: the whole break move). The value adds
 //   again from 0 once the break move is over and the boss acts as ever, and the next break comes whenever the
-//   threshold is reached again, with no other limit. A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
+//   threshold is reached again, with no other limit. A Read counter the break's cut brings lands as a Read counter
+//   once the break move has begun (its damage and poise, in the windup, so it adds no value); a stagger in the
+//   windup, by it or any blow, cancels that break and leaves the value at 0. A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
 //   poise (times the ruling's poise scale) and staggers it only when that empties it; else it stays Open.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
@@ -316,6 +322,7 @@ inline constexpr float kArenaBossBreakBlowCap = 3.f;   // the most one blow adds
 inline constexpr float kArenaBossBreakDecayDelay = 1.5f; // s after the last blow that added before the value falls
 inline constexpr float kArenaBossBreakDecayRate = 1.f;   // what it then falls by a second
 inline constexpr float kArenaBossBreakTell = 0.75f;    // the share of the threshold that tells
+inline constexpr float kArenaBossBreakFloor = 0.5f;    // the least threshold (arena.json's floor; the fight's too)
 inline constexpr float kArenaBossBreakWindup = 0.5f;   // the break move's startup
 inline constexpr float kArenaBossBreakRecovery = 1.2f; // the break move's recovery: the punish window
 inline constexpr float kArenaBossPairPoise = 0.6f;     // the share of a boss's max poise the paired counter takes

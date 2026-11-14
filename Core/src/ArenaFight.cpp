@@ -215,6 +215,15 @@ int arenaBreakPhaseOf(const ArenaEnemyKind& k, int hp) {
     return p;
 }
 
+// Its threshold at `hp`: the phase's breakValueAt, never below kArenaBossBreakFloor (NaN: the floor).
+float arenaBreakAtOf(const ArenaEnemyKind& k, int hp) {
+    const float at = k.breakValueAt[static_cast<std::size_t>(arenaBreakPhaseOf(k, hp))];
+    return at >= kArenaBossBreakFloor ? at : kArenaBossBreakFloor;
+}
+
+// Enemy kind k's body radius as drawn (a skinned look's scale), the one a blow's reach and the riposte's take.
+float arenaDrawnRadius(const ArenaEnemyKind& k) { return arenaBodyCylinder(k, Vec2{}, 0.f).radius; }
+
 } // namespace
 
 // The fight's rules. ArenaFight's state is private; this is its friend, so the rules read and write it directly.
@@ -717,7 +726,7 @@ struct ArenaFightImpl {
             if (foes[i].brain != ArenaBrain::Open) continue;
             const Vec2 d = arenaSub(foes[i].pos, pl.pos);
             const float distance = arenaLength(d);
-            const float edge = distance - def.enemies[i].bodyRadius;
+            const float edge = distance - arenaDrawnRadius(def.enemies[i]);
             if (edge > fi.riposteReach) continue;
             if (distance > kArenaEps && arenaDot(pl.facing, d) / distance < kArenaRiposteDot) continue;
             if (best < 0 || edge < bestDist) {
@@ -1760,7 +1769,7 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         if (!k.boss || !alive(i)) return false;
-        const float at = k.breakValueAt[static_cast<std::size_t>(arenaBreakPhaseOf(k, foe.hp))];
+        const float at = arenaBreakAtOf(k, foe.hp);
         const bool tell = foe.breakValue > 0.f && foe.breakValue >= kArenaBossBreakTell * at;
         if (tell && !foe.breakTell) {
             ++stats.bossBreakTells;
@@ -1776,17 +1785,26 @@ struct ArenaFightImpl {
             return false;
         }
         const std::uint8_t move = static_cast<std::uint8_t>(k.breakMove);
-        interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back (and a read move brings its counter)
-        clearBreak(foe);                    // that counter's blow is spent in the break too
-        if (!alive(i) || foe.brain != ArenaBrain::Approach) return true;
+        // A read move cut short brings its Read counter: held back until the break move has begun, so it lands as a
+        // Read counter in the windup (damage and poise, no value) and a stagger it brings cancels the break.
+        const bool counter = foe.readRight;
+        foe.readRight = false;
+        interrupt(i, ArenaBrain::Approach); // a move cut short gives its token back
         foe.token = true;
         ++stats.bossBreaks;
         emit(ArenaEventType::BrokeOut, id(i), kArenaPlayer, move, 0, foe.pos);
         beginMove(i, move, true);
+        if (counter) {
+            const bool own = foe.readRight; // a read on the break move itself, kept for when it is cut
+            foe.readRight = true;
+            readCounter(i);
+            foe.readRight = own && alive(i) && inBreakMove(foe);
+        }
         return true;
     }
 
-    // Each tick, after the enemies: the decay (not while Staggered), then tryBossBreak.
+    // Each tick, after the enemies: the decay, then tryBossBreak. While it is Staggered neither the value nor the
+    // decay's delay clock (breakQuiet) moves, so a stagger never costs the player the count.
     void stepBossBreaks() {
         for (std::size_t i = 0; i < n; ++i) {
             if (!def.enemies[i].boss || !alive(i)) continue;
@@ -2633,7 +2651,7 @@ struct ArenaFightImpl {
             const float d = arenaLength(to);
             const Vec2 dir = arenaUnit(to, p.facing);
             const bool front = d <= kArenaEps || arenaDot(p.facing, dir) >= kArenaRiposteDot;
-            if (d - self.def_.enemies[static_cast<std::size_t>(opened)].bodyRadius <= f.riposteReach && front) {
+            if (d - arenaDrawnRadius(self.def_.enemies[static_cast<std::size_t>(opened)]) <= f.riposteReach && front) {
                 in.light = true;
             } else {
                 in.move = dir;
@@ -2834,9 +2852,7 @@ int ArenaFight::enemyBreakPhase(std::size_t i) const {
     return i < enemyCount_ && def_.enemies[i].boss ? arenaBreakPhaseOf(def_.enemies[i], enemy_[i].hp) : 0;
 }
 float ArenaFight::enemyBreakAt(std::size_t i) const {
-    return i < enemyCount_ && def_.enemies[i].boss
-               ? def_.enemies[i].breakValueAt[static_cast<std::size_t>(enemyBreakPhase(i))]
-               : 0.f;
+    return i < enemyCount_ && def_.enemies[i].boss ? arenaBreakAtOf(def_.enemies[i], enemy_[i].hp) : 0.f;
 }
 bool ArenaFight::enemyBreakTell(std::size_t i) const {
     return i < enemyCount_ && def_.enemies[i].boss && enemy_[i].breakTell;

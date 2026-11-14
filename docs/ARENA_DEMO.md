@@ -387,6 +387,9 @@ shortest, with the fastest sequence a lead can throw (Core's `arena boss break: 
 The capped 3.07 s (three capped blows in a row) is accepted with no lock, and is to be watched in play: if a boss under
 full pressure seems to do little but throw its break move, flag it for a ruling.
 
+A phase whose threshold is at or below the value when it begins (the blow that drops the boss past a phase end left it
+there) breaks the boss at once if it is upright, else the tick it stands. Ruled accepted as built.
+
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips
