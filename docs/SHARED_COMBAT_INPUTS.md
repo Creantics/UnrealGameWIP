@@ -329,10 +329,13 @@ the pieces.
   reports for the player at `activeLead()`. It refuses at once (false) a non-lead or a lead not in
   the fight. Otherwise it is a request the step's close resolves, after the rises and falls (below):
   honoured if that lead stands then (`tick.switched`; nothing when it already has control), else refused
-  (`tick.switchRefused`, with `tick.switchRefusal` Down, or Defeated on a defeat). The last request in a
-  step wins, and `activeLead()` moves only at the close. A switch to a lead who stands up in the same step
-  is honoured and one to a lead who falls in it is refused, whatever the call order, and `tookOver` is the
-  same either way. A request made before `begin` is applied by it.
+  (`tick.switchRefused`, with `tick.switchRefusal` Down, or Defeated on a defeat). True means the request
+  was taken, not that the lead switched. The last request in a step wins (an earlier one raises no event),
+  and `activeLead()` moves only at the close, which is the tick: a checkpoint taken between ticks settles
+  the rises and falls but leaves the switch waiting, and carries it (`FightCheckpoint::switchRequested`),
+  so a retry to it opens on that lead if it stands there. A switch to a lead who stands up in the same
+  step is honoured and one to a lead who falls in it is refused, whatever the call order (checkpoints
+  included), and `tookOver` is the same either way. A request made before `begin` is applied by it.
 * **Down, takeover and defeat.** `def.inFight` names the leads in the fight (both by default; at
   least one). `setLeadHealth` is also the fall feed, so the host calls it on every hp change: a lead
   in the fight at 0 or below (finite) is down, not dead; above 0 it stands again; NaN or an infinity

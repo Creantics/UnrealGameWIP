@@ -386,7 +386,8 @@ if(FTCORE_BUILD_TESTS)
         "newengine assets folder (story script, face presets, golden data) for the real-data tests")
     target_compile_definitions(ftcore_tests PRIVATE FTCORE_TEST_ASSET_DIR="${FTCORE_NEWENGINE_ASSETS}"
         FTCORE_PROJECT_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Data"
-        FTCORE_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        FTCORE_CORE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+        FTCORE_TEST_ACCESS) # FightSessionTestAccess: the test target alone may reach private fields
     if(MSVC)
         target_compile_options(ftcore_tests PRIVATE /EHsc)
     endif()

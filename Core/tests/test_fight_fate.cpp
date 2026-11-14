@@ -147,13 +147,16 @@ struct Closed {
     std::uint64_t hash = 0;
     bool operator==(const Closed&) const = default;
 };
-// One call in a step: a health feed, or (sw) the player's switch to that lead.
+// One call in a step: a health feed, (sw) the player's switch to that lead, or a checkpoint between ticks.
+enum class Cp : std::uint8_t { None, Phase, Host };
 struct Feed {
     FighterId lead = kNoFighter;
     float health = 0.f;
     bool sw = false;
+    Cp cp = Cp::None;
 };
 Feed switchTo(FighterId lead) { return Feed{lead, 0.f, true}; }
+Feed checkpointBy(Cp how) { return Feed{kNoFighter, 0.f, false, how}; }
 // A fight with kLeadA controlled (kLeadB down first when bDown), then one step's calls in the order given, closed
 // by a tick.
 Closed closeStep(bool bDown, std::initializer_list<Feed> feeds) {
@@ -165,14 +168,22 @@ Closed closeStep(bool bDown, std::initializer_list<Feed> feeds) {
         s.setLeadHealth(kLeadB, 0.f);
         REQUIRE(s.tick(kFrame).leadsFell == kBitB);
     }
+    bool cp = false;
     for (const Feed& f : feeds) {
-        if (f.sw)
+        if (f.cp == Cp::Phase) {
+            REQUIRE(s.checkpointPhase(1));
+            cp = true;
+        } else if (f.cp == Cp::Host) {
+            REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart); // the start's part
+            cp = true;
+        } else if (f.sw) {
             REQUIRE(s.setActiveLead(f.lead));
-        else
+        } else {
             s.setLeadHealth(f.lead, f.health);
+        }
     }
-    CHECK_FALSE(s.defeated()); // nothing settles before the step closes
-    CHECK(s.activeLead() == kLeadA);
+    if (!cp) CHECK_FALSE(s.defeated()); // nothing settles before the step closes (a checkpoint settles falls)
+    CHECK(s.activeLead() == kLeadA);    // a switch never resolves before the tick, checkpoint or not
     const FightTick& t = s.tick(kFrame);
     Closed c;
     c.fell = t.leadsFell;
@@ -270,6 +281,131 @@ TEST_CASE("fight fate: a switch on a quiet step, and beside the controlled lead'
     CHECK(d1.refusal == SwitchRefusal::Defeated);
     CHECK(d1.tookOver == kNoFighter);
     CHECK(d1.active == kLeadA);
+}
+
+TEST_CASE("fight fate: a checkpoint between ticks never resolves the switch: one to a lead who falls in that step is refused at the close, whatever the order") {
+    using L = std::initializer_list<Feed>;
+    const Feed sw = switchTo(kLeadB);
+    const Feed fall{kLeadB, 0.f};
+    for (const Cp how : {Cp::Phase, Cp::Host}) {
+        const Feed cp = checkpointBy(how);
+        const L orders[] = {{sw, cp, fall}, {sw, fall, cp}, {cp, sw, fall}, {fall, cp, sw}, {fall, sw, cp},
+                            {cp, fall, sw}};
+        for (const L& o : orders) {
+            const Closed c = closeStep(false, o);
+            CHECK(c.fell == kBitB);
+            CHECK(c.switched == kNoFighter);
+            CHECK(c.switchRefused == kLeadB);
+            CHECK(c.refusal == SwitchRefusal::Down);
+            CHECK(c.tookOver == kNoFighter);
+            CHECK(c.active == kLeadA);
+            CHECK_FALSE(c.defeated);
+            CHECK(c.downB);
+        }
+    }
+    // The request still waits after the checkpoint, and the close reports it once.
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.tick(kFrame);
+    REQUIRE(s.setActiveLead(kLeadB));
+    REQUIRE(s.checkpointPhase(1));
+    CHECK(s.switchRequested() == kLeadB);
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.tick(kFrame).switched == kLeadB);
+    CHECK(s.switchRequested() == kNoFighter);
+    CHECK(s.tick(kFrame).switched == kNoFighter);
+}
+
+TEST_CASE("fight fate: the start checkpoint the host writes at set-up never resolves the switch, whatever the order") {
+    using L = std::initializer_list<Feed>;
+    const Feed sw = switchTo(kLeadB);
+    const Feed fall{kLeadB, 0.f};
+    const Feed cp = checkpointBy(Cp::Host);
+    const L orders[] = {{sw, cp, fall}, {sw, fall, cp}, {cp, sw, fall}, {fall, cp, sw}, {fall, sw, cp}, {cp, fall, sw}};
+    for (const L& o : orders) {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok()); // no tick: the start checkpoint is still due
+        for (const Feed& f : o) {
+            if (f.cp == Cp::Host)
+                REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+            else if (f.sw)
+                REQUIRE(s.setActiveLead(f.lead));
+            else
+                s.setLeadHealth(f.lead, f.health);
+        }
+        CHECK(s.activeLead() == kLeadA);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.leadsFell == kBitB);
+        CHECK(t.switched == kNoFighter);
+        CHECK(t.switchRefused == kLeadB);
+        CHECK(t.switchRefusal == SwitchRefusal::Down);
+        CHECK(t.tookOver == kNoFighter);
+        CHECK(s.activeLead() == kLeadA);
+        CHECK_FALSE(s.defeated());
+    }
+}
+
+TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if that lead stands there") {
+    // The same lead after a retry whether the host's write or the first tick took the start checkpoint.
+    for (const bool hostFirst : {true, false}) {
+        CAPTURE(hostFirst);
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        REQUIRE(s.setActiveLead(kLeadB));
+        if (hostFirst) REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+        CHECK(s.tick(kFrame).switched == kLeadB);
+        REQUIRE(s.setActiveLead(kLeadA));
+        s.tick(kFrame);
+        REQUIRE(s.activeLead() == kLeadA);
+        CHECK(s.retry().at == CheckpointAt::FightStart);
+        CHECK(s.activeLead() == kLeadB);
+        CHECK(s.switchRequested() == kNoFighter);
+        CHECK(s.tick(kFrame).switched == kNoFighter); // applied by the retry: no event
+    }
+    // Waiting at a phase checkpoint: the retry opens on it.
+    {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().activeLead == kLeadA);
+        CHECK(s.checkpoint().switchRequested == kLeadB);
+        CHECK(s.tick(kFrame).switched == kLeadB);
+        REQUIRE(s.setActiveLead(kLeadA));
+        s.tick(kFrame);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.activeLead() == kLeadB);
+    }
+    // For a lead down in the checkpoint: dropped.
+    {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(kFrame);
+        s.setLeadHealth(kLeadB, 0.f);
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().down[kLeadB]);
+        CHECK(s.checkpoint().switchRequested == kLeadB);
+        CHECK(s.tick(kFrame).switchRefused == kLeadB);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.activeLead() == kLeadA);
+        CHECK(s.switchRequested() == kNoFighter);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.switched == kNoFighter);
+        CHECK(t.switchRefused == kNoFighter);
+    }
+}
+
+TEST_CASE("fight fate: of two switch requests in one step the last wins, and the earlier raises no event") {
+    const Closed c = closeStep(false, {switchTo(kLeadB), switchTo(kLeadA)});
+    CHECK(c.switched == kNoFighter); // the last asked for the lead already in control
+    CHECK(c.switchRefused == kNoFighter);
+    CHECK(c.active == kLeadA);
+    const Closed d = closeStep(true, {switchTo(kLeadB), switchTo(kLeadA)}); // the earlier would be refused Down
+    CHECK(d.switchRefused == kNoFighter);
+    CHECK(d.refusal == SwitchRefusal::None);
+    CHECK(d.active == kLeadA);
 }
 
 TEST_CASE("fight fate: a lead that falls and stands again within one step does neither; the partner's fall moves nothing") {
@@ -424,7 +560,8 @@ TEST_CASE("fight fate: the fight-start checkpoint is taken once, at the host's w
     host.currency = 12;
     s.setHostCheckpoint(host);
     CHECK(s.checkpoint().at == CheckpointAt::FightStart);
-    CHECK(s.checkpoint().activeLead == kLeadB);
+    CHECK(s.checkpoint().activeLead == kLeadA);      // the set-up's switch waits for the first tick
+    CHECK(s.checkpoint().switchRequested == kLeadB); // and the checkpoint carries it
     CHECK(s.checkpoint().leadHealth[kLeadA] == 0.5f);
     CHECK(s.checkpoint().host.currency == 12);
     CHECK(s.tick(kFrame).checkpoint == CheckpointAt::None);

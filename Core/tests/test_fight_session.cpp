@@ -1255,7 +1255,11 @@ TEST_CASE("fight session: a defeat costs only the attempt: currency, Load, gift 
     CHECK(s.stateHash() == hashAt);
 }
 
-// Tests only: reaches the session's fields so each edit below changes one alone (FightSession's friend).
+// Tests only: reaches the session's fields so each edit below changes one alone (FightSession's friend, declared
+// only where the test target defines FTCORE_TEST_ACCESS).
+#ifndef FTCORE_TEST_ACCESS
+#error "the test target defines FTCORE_TEST_ACCESS (Core/CMakeLists.txt)"
+#endif
 namespace ftcore {
 struct FightSessionTestAccess {
     using Edit = void (*)(FightSession&);
@@ -1364,6 +1368,7 @@ struct FightSessionTestAccess {
             {"now", [](FightSession&, FightCheckpoint& c) { c.now += 1.0; }},
             {"hostWritten", [](FightSession&, FightCheckpoint& c) { c.hostWritten = !c.hostWritten; }},
             {"activeLead", [](FightSession&, FightCheckpoint& c) { c.activeLead = kLeadB; }},
+            {"switchRequested", [](FightSession&, FightCheckpoint& c) { c.switchRequested = kLeadB; }},
             {"leadHealth A", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadA] = 0.3f; }},
             {"leadHealth B", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadB] = 0.3f; }},
             {"down A", [](FightSession&, FightCheckpoint& c) { c.down[kLeadA] = !c.down[kLeadA]; }},
