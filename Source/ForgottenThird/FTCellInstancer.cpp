@@ -267,6 +267,29 @@ UStaticMeshComponent* FFTCellInstancer::SpawnActor(UStaticMesh* Mesh, TArrayView
 	return Comp;
 }
 
+bool FFTCellInstancer::IsLight(const FKey& Key)
+{
+	return Key.Cull == EFTCellCull::Dressing || Key.Cull == EFTCellCull::Interior || (Key.Kind == EFTCellKind::NoCollide && !Key.bCastShadow);
+}
+
+bool FFTCellInstancer::InLumenScene(const UStaticMesh& Mesh, const FTransform& Transform, const FKey& Key)
+{
+	if (IsLight(Key) || Key.Kind == EFTCellKind::Hidden)
+	{
+		return false;
+	}
+	if (Key.Cull == EFTCellCull::None)
+	{
+		return true; // buildings and the ground: roads, paving, kerbs, pads, however thin
+	}
+	if (Key.Cull != EFTCellCull::Prop && Key.Cull != EFTCellCull::Car)
+	{
+		return false; // plants keep the hierarchical component's culling
+	}
+	const FVector Size = Mesh.GetBoundingBox().GetSize() * Transform.GetScale3D().GetAbs();
+	return Size.GetMin() >= FTCells::LumenMinSide;
+}
+
 FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInterface* const> Materials, const FTransform& Transform,
 	TArrayView<const float> CustomData, EFTCellKind Kind, const FFTCellOptions& Options)
 {
@@ -302,6 +325,7 @@ FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInter
 		Key.bCastShadow = false;
 		++Totals.FlushNoShadow;
 	}
+	Key.bLumen = InLumenScene(*Mesh, Transform, Key);
 	int32* Found = GroupOf.Find(Key);
 	const int32 G = Found ? *Found : Groups.Num();
 	if (!Found)
@@ -372,7 +396,11 @@ void FFTCellInstancer::Flush()
 				continue;
 			}
 			const FName Name(*FString::Printf(TEXT("%s_%s_%d"), KindName(Key.Kind), *Key.Mesh->GetName(), G));
-			UHierarchicalInstancedStaticMeshComponent* Comp = NewObject<UHierarchicalInstancedStaticMeshComponent>(Holder, Name);
+			// A plain instanced component for what the bounce lighting needs (the engine's hierarchical proxy, without
+			// Nanite, leaves itself out of the Lumen scene: HierarchicalInstancedStaticMesh.cpp, bVisibleInLumenScene = false);
+			// the hierarchical one, with its cluster culling, for the rest.
+			UInstancedStaticMeshComponent* Comp = Key.bLumen ? NewObject<UInstancedStaticMeshComponent>(Holder, Name)
+				: NewObject<UHierarchicalInstancedStaticMeshComponent>(Holder, Name);
 			Comp->CreationMethod = EComponentCreationMethod::Instance;
 			Comp->SetMobility(EComponentMobility::Static);
 			Comp->SetStaticMesh(Key.Mesh);
@@ -390,8 +418,7 @@ void FFTCellInstancer::Flush()
 				Comp->SetCullDistances(FMath::RoundToInt32(CullTo * FTCells::CullFadeStart), CullTo);
 			}
 			// Small dressing: nothing a ray, a distance field or the bounce lighting needs to know of.
-			if (Key.Cull == EFTCellCull::Dressing || Key.Cull == EFTCellCull::Interior ||
-				(Key.Kind == EFTCellKind::NoCollide && !Key.bCastShadow))
+			if (IsLight(Key))
 			{
 				Comp->SetVisibleInRayTracing(Key.bRayTraced && Key.Cull != EFTCellCull::Dressing && Key.Cull != EFTCellCull::Interior);
 				Comp->SetAffectDistanceFieldLighting(false);
@@ -400,19 +427,26 @@ void FFTCellInstancer::Flush()
 			}
 			// Set before any instance goes in: setting it clears the instances' data.
 			Comp->SetNumCustomDataFloats(Floats);
-			Comp->bAutoRebuildTreeOnInstanceChanges = false;
+			if (UHierarchicalInstancedStaticMeshComponent* Tree = Cast<UHierarchicalInstancedStaticMeshComponent>(Comp))
+			{
+				Tree->bAutoRebuildTreeOnInstanceChanges = false;
+			}
 			Comp->SetupAttachment(Holder->GetRootComponent());
 			Holder->AddInstanceComponent(Comp);
 			Comp->RegisterComponent();
 			Group.Component = Comp;
 			++Totals.Components;
+			if (Key.bLumen)
+			{
+				++Totals.LumenComponents;
+			}
 		}
 		else if (Floats > Group.Component->NumCustomDataFloats)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: instancer: %s takes %d custom data floats after its first flush; %d kept."),
 				*Group.Component->GetName(), Floats, Group.Component->NumCustomDataFloats);
 		}
-		UHierarchicalInstancedStaticMeshComponent* Comp = Group.Component;
+		UInstancedStaticMeshComponent* Comp = Group.Component;
 		for (const FName& Tag : Group.Tags)
 		{
 			Comp->ComponentTags.AddUnique(Tag);
@@ -420,6 +454,10 @@ void FFTCellInstancer::Flush()
 		if (!Comp->bVisibleInRayTracing)
 		{
 			Totals.LightInstances += Count;
+		}
+		if (Group.Key.bLumen)
+		{
+			Totals.LumenInstances += Count;
 		}
 		const TArray<FTransform> Adding(Group.Transforms.GetData() + Group.Made, Count);
 		const TArray<int32> Indices = Comp->AddInstances(Adding, true, true);
@@ -438,7 +476,10 @@ void FFTCellInstancer::Flush()
 				Comp->SetCustomData(Indices[I], Values);
 			}
 		}
-		Comp->BuildTreeIfOutdated(false, true);
+		if (UHierarchicalInstancedStaticMeshComponent* Tree = Cast<UHierarchicalInstancedStaticMeshComponent>(Comp))
+		{
+			Tree->BuildTreeIfOutdated(false, true);
+		}
 		Comp->MarkRenderStateDirty();
 		Group.Made = Group.Transforms.Num();
 		Totals.Instances += Count;
@@ -446,8 +487,8 @@ void FFTCellInstancer::Flush()
 	Totals.UnmergedGroups = Unmerged.Num();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: instancer: %.0f m cells; %d components (%d before Solid/Walk and tags shared "
 		"groups); %d light components of %d instances (no ray tracing, distance field or indirect lighting scene); %d ground-flush walked "
-		"pieces cast no shadow."), CellSize / 100.0, Totals.Components, Totals.UnmergedGroups, Totals.LightComponents, Totals.LightInstances,
-		Totals.FlushNoShadow);
+		"pieces cast no shadow; %d plain (Lumen scene) components of %d instances, the rest hierarchical."), CellSize / 100.0, Totals.Components,
+		Totals.UnmergedGroups, Totals.LightComponents, Totals.LightInstances, Totals.FlushNoShadow, Totals.LumenComponents, Totals.LumenInstances);
 	// The census per cell: every instance and component made so far, one line a cell, west to east, then north to south.
 	{
 		TMap<FIntPoint, FIntPoint> PerCell; // X instances, Y components
