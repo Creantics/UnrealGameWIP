@@ -22,6 +22,7 @@ class FORGOTTENTHIRD_API AFTExploreHUD : public AHUD
 
 public:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void DrawHUD() override;
 	// M: the minimap's whole-map overlay on a world map (nothing elsewhere).
 	void ToggleMapOverlay();
@@ -51,4 +52,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UFTMiniMap> MiniMap;
 	bool bMiniMapTried = false;
+
+	// The new UI's party screen (FT::MakeExplorePartyWidget), added at BeginPlay under -FTNewUi (null otherwise).
+	TSharedPtr<class SWidget> NewUiWidget;
 };

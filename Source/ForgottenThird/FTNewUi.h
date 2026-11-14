@@ -14,6 +14,7 @@
 
 class SWidget;
 class UFTArenaRunner;
+class AFTExploreCharacter;
 class AFTStoryDirector;
 
 namespace FT
@@ -28,4 +29,8 @@ TSharedRef<SWidget> MakeArenaHudWidget(TFunction<const UFTArenaRunner*()> GetRun
 // The story's subtitle block (speaker inline, text revealed as the presenter types it, options, continue marker),
 // reading the given director each tick (null: nothing drawn).
 TSharedRef<SWidget> MakeDialogueWidget(TFunction<const AFTStoryDirector*()> GetDirector);
+
+// Explore's party screen (the fight HUD's party rows, standing alone while the character's screen is open), reading the
+// given character each tick (null: nothing drawn).
+TSharedRef<SWidget> MakeExplorePartyWidget(TFunction<const AFTExploreCharacter*()> GetLead);
 }

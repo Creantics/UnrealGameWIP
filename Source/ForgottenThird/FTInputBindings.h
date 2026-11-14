@@ -214,4 +214,17 @@ inline bool Toggles(const UWorld* World, ftcore::InputAction Action)
 	const UFTSettingsSubsystem* Settings = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
 	return ftcore::inputHoldToggles(Get(), Action, Settings && Settings->Get().holdToggle);
 }
+
+// Whether the party screen's opening press is a toggle (the next press confirms) rather than a hold: Party's own mode
+// once the table marks Party held, until then the game-wide hold-toggle setting.
+inline bool PartyToggles(const UWorld* World)
+{
+	if (ftcore::inputActionHeld(ftcore::InputAction::Party))
+	{
+		return Toggles(World, ftcore::InputAction::Party);
+	}
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	const UFTSettingsSubsystem* Settings = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	return Settings && Settings->Get().holdToggle;
+}
 } // namespace FTInputBindings

@@ -33,6 +33,7 @@
 #include "ftcore/TableSet.h"
 #include "ftcore/BeatChoreo.h"
 #include "ftcore/InputBindings.h"
+#include "ftcore/UiPartyScreen.h"
 
 #include "FTArenaBossVfx.h"
 #include "FTFightSession.h"
@@ -337,6 +338,15 @@ public:
 	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
 	ftcore::SlotState GetThirdSlot() const;
 	ftcore::GiftError GetThirdSlotRefusal() const;
+	// The party screen (-FTNewUi): Party down opens it on the fight's party block; a flick moves the cursor, the release
+	// confirms. Open: the look and the target flick are held, the left stick still moves the lead.
+	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
+	// Why a switch to session lead Lead would be refused now, the party row's word (FightSession::leadSwitchReason).
+	ftcore::UiPartyWhy GetLeadSwitchReason(uint8 Lead) const;
+	// The last switch the session refused at a step's close (FightTick::switchRefused), as a count that rises with each
+	// and its word: the HUD's SWITCH: <WORD> call.
+	uint32 GetSwitchRefusedSerial() const { return SwitchRefusedSerial; }
+	ftcore::UiPartyWhy GetSwitchRefusedWhy() const { return SwitchRefusedWhy; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -897,9 +907,20 @@ private:
 	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
 	void StepAimCheck(ftcore::ArenaInput& In);
 #endif
+	// The player's switch to the partner (the party screen's pick, or Tab): sent to the session only under
+	// -FTPartySwitchSend (off by default: nothing yet moves the bodies or the camera on tick.switched). A request the
+	// session does not take (the partner not in this fight) raises the HUD's call here; the session refuses the rest
+	// at the step's close, and a switch never ends a Lone Carry. From names the press for the log.
+	void AskLeadSwitch(const TCHAR* From);
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 	bool bMouseFlicked = false;
+	// The party screen's state (bPartyScreenOn: -FTNewUi, read at Begin), and the last refused switch (see
+	// GetSwitchRefusedSerial).
+	bool bPartyScreenOn = false;
+	ftcore::UiPartyScreen PartyScreen;
+	uint32 SwitchRefusedSerial = 0;
+	ftcore::UiPartyWhy SwitchRefusedWhy = ftcore::UiPartyWhy::Unknown;
 
 	double Now = 0.0;
 	double TellSince[ftcore::kMaxArenaEnemies] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)

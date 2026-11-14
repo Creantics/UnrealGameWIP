@@ -23,6 +23,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "FTGameInstance.h"
 #include "FTInputBindings.h"
+#include "FTNewUi.h"
 #include "FTPauseSubsystem.h"
 #include "FTStoryStateSubsystem.h"
 #include "FTText.h"
@@ -304,6 +305,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	ZoneYaw = Setup.ZoneYaw;
 	bAutoPlay = Setup.bAutoPlay;
 	bIdle = Setup.bIdle;
+	bPartyScreenOn = FT::NewUiEnabled(); // read once, as the HUD reads it at BeginPlay
 	bHoldLoad = Setup.bHoldLoad;
 	ParryHold = Setup.ParryHold;
 	if (ParryHold > 0.f)
@@ -1459,6 +1461,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CameraYaw = ArenaYaw(Fight.playerStartFacing());
 	CameraPitch = -16.f;
 	FrameTurn = 0.f;
+	PartyScreen = ftcore::UiPartyScreen{};
 }
 
 void UFTArenaRunner::PollInput(float DeltaSeconds)
@@ -1476,6 +1479,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		AimInput.reset();
 		AttackHold.reset();
 		Stick = ftcore::Vec2();
+		ftcore::uiPartyScreenStep(PartyScreen, ftcore::UiPartyInput{}, DeltaSeconds); // input taken away: shut, no pick
 		return;
 	}
 	// Every key here comes from the binding table (FTInputBindings, ftcore/InputBindings.h): one set for the field
@@ -1616,12 +1620,47 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	// the right stick switches the target.
 	const float LookX = PC->GetInputAnalogKeyState(EKeys::Gamepad_RightX);
 	const float LookY = PC->GetInputAnalogKeyState(EKeys::Gamepad_RightY);
+	float MouseX = 0.f;
+	float MouseY = 0.f;
+	PC->GetInputMouseDelta(MouseX, MouseY);
+
+	// The party screen (-FTNewUi): Party's key, or on the pad the map key (Party's route there), opens it; a vertical
+	// flick of the right stick or the mouse moves its cursor, and letting go confirms (ftcore::uiPartyScreenStep).
+	// While it stands the look and the target flick are held; the left stick still moves the lead. Tab (SwitchLead,
+	// the keyboard's only) asks the same switch in one press.
+	if (bPartyScreenOn)
+	{
+		ftcore::UiPartyInput PartyIn;
+		PartyIn.live = !FTInputBindings::LostFocus() && !Fight.over();
+		PartyIn.partyDown = FTInputBindings::IsDown(*PC, InputAction::Party);
+		const FKey& PadMap = FTInputBindings::Key(InputAction::Map, ftcore::InputDevice::Pad);
+		PartyIn.mapDown = PadMap.IsValid() && PC->IsInputKeyDown(PadMap);
+		PartyIn.toggle = FTInputBindings::PartyToggles(World);
+		PartyIn.stickY = LookY;
+		PartyIn.mouseY = MouseY;
+		const ftcore::UiPartyOut PartyOut = ftcore::uiPartyScreenStep(PartyScreen, PartyIn, DeltaSeconds);
+		if (PartyOut.picked() && PartyOut.pick == ftcore::UiPartyRow::Partner)
+		{
+			AskLeadSwitch(TEXT("the party screen"));
+		}
+	}
+	{
+		const FKey& Tab = FTInputBindings::Key(InputAction::SwitchLead, ftcore::InputDevice::Keys);
+		if (!PartyScreen.open && Tab.IsValid() && PC->WasInputKeyJustPressed(Tab))
+		{
+			AskLeadSwitch(TEXT("SwitchLead"));
+		}
+	}
+	if (PartyScreen.open)
+	{
+		bStickFlicked = true; // no target flick from a stick or a mouse still pushed as the screen shuts
+		bMouseFlicked = true;
+		return;
+	}
+
 	if (Fight.lock() != ftcore::kArenaNobody)
 	{
 		// The mouse: a sharp sideways move switches, and it re-arms once the mouse slows.
-		float MouseX = 0.f;
-		float MouseY = 0.f;
-		PC->GetInputMouseDelta(MouseX, MouseY);
 		if (!bMouseFlicked && FMath::Abs(MouseX) > kArenaMouseFlickOut)
 		{
 			bMouseFlicked = true;
@@ -1643,9 +1682,6 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	}
 	else
 	{
-		float MouseX = 0.f;
-		float MouseY = 0.f;
-		PC->GetInputMouseDelta(MouseX, MouseY);
 		// Aim assist: never under -ArenaAutoPlay (its -ArenaAssistCheck probe turns it on there); off, both shares are 1.
 		const ftcore::Settings* Prefs = GetSettings();
 		TurnLook(MouseX, MouseY, LookX, LookY, DeltaSeconds, !bAutoPlay && (!Prefs || Prefs->aimAssist));
@@ -1943,6 +1979,32 @@ ftcore::GiftError UFTArenaRunner::GetThirdSlotRefusal() const
 	return Session ? Session->Get().thirdSlotRefusal() : ftcore::GiftError::None;
 }
 
+ftcore::UiPartyWhy UFTArenaRunner::GetLeadSwitchReason(const uint8 Lead) const
+{
+	// ftcore::FightSession::leadSwitchReason(Lead), the close's own predicate, as the row's word (ftcore::uiPartyWhyOf).
+	return Session ? ftcore::uiPartyWhyOf(Session->Get().leadSwitchReason(Lead)) : ftcore::UiPartyWhy::Unknown;
+}
+
+void UFTArenaRunner::AskLeadSwitch(const TCHAR* From)
+{
+	static const bool bSend = FParse::Param(FCommandLine::Get(), TEXT("FTPartySwitchSend"));
+	const uint8 Partner = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+	if (!bSend)
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: a lead switch asked (%s); not sent (-FTPartySwitchSend is off)."), Fight.time(), From);
+		return;
+	}
+	// A lead not in this fight (NotInFight: the session holds one lead, as in a Lone Carry) is not taken, so no tick
+	// refuses it: the call is raised here, with the same word. Any other refusal comes at the step's close.
+	if (Session && !Session->Get().setActiveLead(Partner))
+	{
+		++SwitchRefusedSerial;
+		SwitchRefusedWhy = GetLeadSwitchReason(Partner);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a lead switch asked (%s); not taken: lead %d is not in this fight."),
+			Fight.time(), From, static_cast<int32>(Partner));
+	}
+}
+
 ftcore::LoneBargain UFTArenaRunner::GetLoneBargain() const
 {
 	return Session ? Session->Get().loneBargain() : ftcore::LoneBargain{};
@@ -2205,6 +2267,19 @@ void UFTArenaRunner::FeedSession()
 	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
 	SessionRises += Tick.leadsRose != 0 ? 1 : 0;
 	bSessionDefeated = bSessionDefeated || Tick.defeated;
+	if (Tick.switched != ftcore::kNoFighter)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the session gave control to lead %d; the bodies and the camera stay (no swap yet)."),
+			Fight.time(), static_cast<int32>(Tick.switched));
+	}
+	// A refused switch is the HUD's SWITCH: <WORD> call; never on a takeover's step (the takeover wins, no message).
+	if (Tick.switchRefused != ftcore::kNoFighter && Tick.tookOver == ftcore::kNoFighter)
+	{
+		++SwitchRefusedSerial;
+		SwitchRefusedWhy = ftcore::uiPartyWhyOf(Tick.switchRefusal);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the session refused the switch to lead %d (refusal %d)."), Fight.time(),
+			static_cast<int32>(Tick.switchRefused), static_cast<int32>(Tick.switchRefusal));
+	}
 	if (Tick.loneCarryBegan)
 	{
 		LoneBargainAt = static_cast<double>(Fight.time());

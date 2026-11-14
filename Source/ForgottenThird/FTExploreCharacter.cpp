@@ -48,6 +48,7 @@
 #include "FTInputBindings.h"
 #include "FTPauseSubsystem.h"
 #include "FTMeshFacing.h"
+#include "FTNewUi.h"
 #include "FTPartyFollower.h"
 #include "FTSceneLook.h"
 #include "Components/DecalComponent.h"
@@ -974,6 +975,10 @@ void AFTExploreCharacter::TickHeldKeys(float DeltaSeconds)
 		bCrouchKeyWas = true;
 		MapHeld = 0.f;
 		bMapHoldUsed = true;
+		if (bNewUiParty)
+		{
+			TickPartyScreen(nullptr, DeltaSeconds); // shuts the screen with no pick
+		}
 		if (bRunOn && !Van.IsValid())
 		{
 			bRunOn = false;
@@ -1012,6 +1017,13 @@ void AFTExploreCharacter::TickHeldKeys(float DeltaSeconds)
 		UnCrouch();
 	}
 	bCrouchKeyWas = bCrouchKey;
+	// Under the new UI the party screen takes the map button's hold (and Party's own key); its short press is still the
+	// map.
+	if (bNewUiParty)
+	{
+		TickPartyScreen(PC, DeltaSeconds);
+		return;
+	}
 	// The map button held shows or hides the party (the pad has no button of its own for it); a short press, on
 	// letting go, is the map.
 	if (FTInputBindings::IsDown(*PC, InputAction::Map))
@@ -1031,6 +1043,69 @@ void AFTExploreCharacter::TickHeldKeys(float DeltaSeconds)
 		}
 		MapHeld = 0.f;
 		bMapHoldUsed = false;
+	}
+}
+
+void AFTExploreCharacter::TickPartyScreen(const APlayerController* PC, float DeltaSeconds)
+{
+	using ftcore::InputAction;
+	ftcore::UiPartyInput In;
+	In.live = PC != nullptr && !FTInputBindings::LostFocus();
+	In.explore = true;
+	if (In.live)
+	{
+		In.partyDown = FTInputBindings::IsDown(*PC, InputAction::Party);
+		In.mapDown = FTInputBindings::IsDown(*PC, InputAction::Map);
+		In.toggle = FTInputBindings::PartyToggles(GetWorld());
+		In.stickY = PC->GetInputAnalogKeyState(EKeys::Gamepad_RightY);
+		float MouseDX = 0.f;
+		PC->GetInputMouseDelta(MouseDX, In.mouseY);
+	}
+	const ftcore::UiPartyOut Out = ftcore::uiPartyScreenStep(PartyScreen, In, DeltaSeconds);
+	if (Out.opened)
+	{
+		FindPartyRows();
+	}
+	if (Out.map)
+	{
+		HandleToggleMap();
+	}
+	if (!Out.picked())
+	{
+		return;
+	}
+	switch (Out.pick)
+	{
+	case ftcore::UiPartyRow::Partner:
+		SwitchLeadTo(PartnerIndex);
+		break;
+	case ftcore::UiPartyRow::Follow:
+		HandleToggleParty();
+		break;
+	case ftcore::UiPartyRow::Third:
+	case ftcore::UiPartyRow::Lead:
+		break;
+	}
+}
+
+void AFTExploreCharacter::FindPartyRows()
+{
+	PartnerIndex = -1;
+	ThirdIndex = -1;
+	for (int32 I = 0; I < PartyLooks.Num(); ++I)
+	{
+		if (I == LeadIndex)
+		{
+			continue;
+		}
+		if (IsPlayableLead(PartyLooks[I]))
+		{
+			PartnerIndex = PartnerIndex < 0 ? I : PartnerIndex;
+		}
+		else
+		{
+			ThirdIndex = ThirdIndex < 0 ? I : ThirdIndex;
+		}
 	}
 }
 
@@ -1515,12 +1590,26 @@ void AFTExploreCharacter::CreateInputObjects()
 	InteractAction = MakeAction(TEXT("IA_ExploreInteract"), false);
 	Both(InteractAction, ftcore::InputAction::Interact);
 
+	// Under the new UI the pad switches leads on the party screen only, so SwitchLead keeps its keyboard key alone.
+	bNewUiParty = FT::NewUiEnabled();
 	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
-	Both(SwitchLeadAction, ftcore::InputAction::SwitchLead);
+	if (bNewUiParty)
+	{
+		const FKey& SwitchKey = FTInputBindings::Key(ftcore::InputAction::SwitchLead, ftcore::InputDevice::Keys);
+		if (SwitchKey.IsValid())
+		{
+			Context->MapKey(SwitchLeadAction, SwitchKey);
+		}
+	}
+	else
+	{
+		Both(SwitchLeadAction, ftcore::InputAction::SwitchLead);
+	}
 
 	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
 	Both(PartyAction, ftcore::InputAction::Party);
-	// Run, Crouch, Aim, Light and the map button's party hold are polled (TickHeldKeys, TickAim): held or toggled.
+	// Run, Crouch, Aim, Light and the map button's party hold are polled (TickHeldKeys, TickAim): held or toggled; under
+	// the new UI so is Party (the party screen, TickPartyScreen).
 }
 
 UInputAction* AFTExploreCharacter::MakeAction(const TCHAR* Name, bool bAxis2D)
@@ -1560,7 +1649,10 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
 	Input->BindAction(InteractAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleInteractRelease);
 	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
-	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
+	if (!bNewUiParty)
+	{
+		Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
+	}
 }
 
 void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
@@ -1588,9 +1680,9 @@ void AFTExploreCharacter::HandleLook(const FInputActionValue& Value)
 		return;
 	}
 	const FVector2D Axis = Value.Get<FVector2D>();
-	if (bNoLook)
+	if (bNoLook || PartyScreen.open)
 	{
-		return;
+		return; // the party screen holds the camera: the stick and the mouse move its cursor
 	}
 	if (!Axis.IsNearlyZero())
 	{
@@ -2485,9 +2577,9 @@ void AFTExploreCharacter::HandleInteract()
 
 void AFTExploreCharacter::HandleSwitchLead()
 {
-	if (Van.IsValid())
+	if (Van.IsValid() || PartyScreen.open)
 	{
-		return;
+		return; // on the party screen its cursor picks
 	}
 	if (PartyLooks.Num() < 2)
 	{
@@ -2515,8 +2607,17 @@ void AFTExploreCharacter::HandleSwitchLead()
 		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: no other playable lead in PartyLooks."));
 		return;
 	}
+	SwitchLeadTo(Next);
+}
+
+void AFTExploreCharacter::SwitchLeadTo(int32 Index)
+{
+	if (Van.IsValid() || bTraversing || !PartyLooks.IsValidIndex(Index) || Index == LeadIndex)
+	{
+		return;
+	}
 	UnCrouch();
-	LeadIndex = Next;
+	LeadIndex = Index;
 	const FFTLeadLook& Look = PartyLooks[LeadIndex];
 	WearLook(Look);
 	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
