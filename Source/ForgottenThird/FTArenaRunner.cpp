@@ -2492,7 +2492,8 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				{
 					// Logged for the heavy reaction checks: whether the heavy reaction is what shows, else what holds it.
 					const ftcore::ArenaBrain Brain = Fight.output().enemies[E.target].brain;
-					const TCHAR* Shows = !bFlinches ? TEXT("no: on its knees or getting up")
+					const TCHAR* Shows = !bFlinches ? (Fight.enemyBreakGuard(static_cast<size_t>(E.target)) ? TEXT("no: its break move's windup or active part")
+							: TEXT("no: on its knees or getting up"))
 						: HitSince[E.target] == HitWas ? TEXT("no: a reaction is playing")
 						: Brain == ftcore::ArenaBrain::Attack ? TEXT("no: its move's clip plays")
 						: Brain == ftcore::ArenaBrain::Staggered ? TEXT("no: it staggers")

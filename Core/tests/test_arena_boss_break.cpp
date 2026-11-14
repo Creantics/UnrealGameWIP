@@ -546,6 +546,41 @@ TEST_CASE("arena boss break: the break resets the value; its windup and active p
     CHECK(static_cast<float>(recovery) * kDt == doctest::Approx(1.2f).epsilon(0.05));
 }
 
+TEST_CASE("arena boss break: a boss that may flinch never does in its break move's windup and active part, and does in "
+          "its recovery") {
+    const ArenaTable t = shippedTable();
+    ArenaDef def = bossDef(t, "stone_bearer", true);
+    def.enemies[0].flinchTime = 0.3f;
+    def.enemies[0].flinchPoise = 1.f;
+    ArenaAttack& data = def.enemies[0].moves[static_cast<std::size_t>(def.enemies[0].breakMove)].attack;
+    data.armor = 0.f;
+    // The lead's light, 1 m off the body's edge in front of it, on every tick it can start one.
+    Rig r(def);
+    r.step();
+    REQUIRE(hostBlowsToBreak(r) == 7);
+    const Vec2 boss{def.enemies[0].bodyRadius + 1.f, 0.f};
+    int guarded = 0, flinchedInGuard = 0, flinchedAfter = 0;
+    while (r.fight.time() < 6.f) {
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.enemies[0] = boss;
+        const bool guard = r.fight.enemyBreakGuard(0);
+        ArenaInput in;
+        in.light = true;
+        r.step(in);
+        guarded += guard ? 1 : 0;
+        const bool flinched = r.had(ArenaEventType::Flinched);
+        if (guard) {
+            flinchedInGuard += flinched ? 1 : 0;
+            CHECK(r.value() == 0.f);
+        } else if (flinched && r.breaks() == 1) {
+            ++flinchedAfter;
+        }
+    }
+    CHECK(guarded > 0);
+    CHECK(flinchedInGuard == 0);
+    CHECK(flinchedAfter > 0);
+}
+
 TEST_CASE("arena boss break: every stagger that ends with the value at or over the threshold ends in a break") {
     const ArenaTable t = shippedTable();
     int ends = 0;
@@ -630,25 +665,30 @@ TEST_CASE("arena boss break: the riposte's reach is measured to the body's edge 
 }
 
 namespace {
-// The boss's blows on the lead are vetoed, so the lead's sequence is never cut.
-ArenaBlowRuling leadUntouched(void*, const ArenaBlow& b) {
+// The boss's blows on the lead are vetoed, so the lead's sequence is never cut; the lead's carry *user as breakScale.
+ArenaBlowRuling leadUntouched(void* user, const ArenaBlow& b) {
     ArenaBlowRuling r;
     r.veto = b.target == kArenaPlayer;
+    r.breakScale = *static_cast<const float*>(user);
     return r;
 }
 } // namespace
 
 // The shortest time between two breaks, per phase: the lead stands in reach (put back each tick 1 m off the body's
 // edge, facing it) and throws one sequence as fast as the kit allows; the boss's blows are vetoed and its poise is too
-// deep to stagger. Scale 1: no joined or Lift multiplier (with them each blow can add the 3.0 cap).
+// deep to stagger. At scale 1 (no joined or Lift multiplier) and at 3 (each blow adds the 3.0 cap). Lights, heavies,
+// a light chain closed by a heavy, and a guns kit's aimed shots; not air lights, the pair, the Read, a held blow's bonus
+// or a table's split (each needs the boss's own move or a partner).
 TEST_CASE("arena boss break: the shortest break to break by phase, the fastest sequence the lead can throw") {
     const ArenaTable t = shippedTable();
     const float thresholds[] = {10.f, 8.f, 6.5f};
+    for (const float scale : {1.f, 3.f})
     for (int phase = 0; phase < 3; ++phase) {
         float best = 1.0e9f;
         std::string bestOf;
         for (const char* kit : {"default", "devin", "duy"}) {
-            for (int pattern = 0; pattern < 3; ++pattern) { // lights, heavies, a light chain closed by a heavy
+            for (int pattern = 0; pattern < 4; ++pattern) { // lights, heavies, a chain closed by a heavy, aimed shots
+                if (pattern == 3 && std::string(kit) != "duy") continue;
                 ArenaDef def = bossDef(t, "stone_bearer", true);
                 def.fighter = t.fighter(kit);
                 def.enemies[0].hp = 1000000;
@@ -656,7 +696,8 @@ TEST_CASE("arena boss break: the shortest break to break by phase, the fastest s
                 def.enemies[0].breakValueAt = {thresholds[phase], thresholds[phase], thresholds[phase],
                                                thresholds[phase]};
                 Rig r(def);
-                r.fight.setBlowHook(leadUntouched, nullptr);
+                float hookScale = scale;
+                r.fight.setBlowHook(leadUntouched, &hookScale);
                 const Vec2 boss{def.enemies[0].bodyRadius + 1.f, 0.f};
                 std::array<float, 4> at{};
                 std::size_t seen = 0;
@@ -670,6 +711,7 @@ TEST_CASE("arena boss break: the shortest break to break by phase, the fastest s
                     ArenaInput in;
                     in.heavy = heavyTurn;
                     in.light = !heavyTurn;
+                    in.aim = pattern == 3;
                     r.step(in);
                     if (r.had(ArenaEventType::BrokeOut)) at[seen++] = r.fight.time();
                 }
@@ -677,12 +719,15 @@ TEST_CASE("arena boss break: the shortest break to break by phase, the fastest s
                 const float gap = std::min(at[2] - at[1], at[3] - at[2]);
                 if (gap < best) {
                     best = gap;
-                    bestOf = std::string(kit) + (pattern == 0 ? " lights" : pattern == 1 ? " heavies" : " chain + heavy");
+                    bestOf = std::string(kit) + (pattern == 0   ? " lights"
+                                                 : pattern == 1 ? " heavies"
+                                                 : pattern == 2 ? " chain + heavy"
+                                                                : " aimed shots");
                 }
             }
         }
-        MESSAGE("phase " << phase + 1 << " (" << thresholds[phase] << "): shortest break to break " << best << " s, "
-                         << bestOf);
+        MESSAGE("scale " << scale << ", phase " << phase + 1 << " (" << thresholds[phase] << "): shortest break to break "
+                         << best << " s, " << bestOf);
         CHECK(best > 0.5f + 0.1f); // never inside the windup and an active part
     }
 }
