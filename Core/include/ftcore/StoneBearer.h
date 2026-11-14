@@ -244,6 +244,9 @@ public:
     FTCORE_API const ArenaBossEvents& onHit(Vec2 from, Vec2 pos, Vec2 facing, double t, const AimPoint* at,
                                             StoneBearerHit* hit);
     FTCORE_API const ArenaBossEvents& onRelease(double t, int load, PedestalRelease* result = nullptr);
+    // The run's openCrit and shutCrit (ArenaBoss.h): the host's own opening (a refusal's) and its shut.
+    FTCORE_API const ArenaBossEvents& openCrit(double t, double seconds);
+    FTCORE_API const ArenaBossEvents& shutCrit(bool shut, double t);
 
     int stacks() const { return weight_.stacks(); }
     float damageScale() const { return weight_.damageScale(); }

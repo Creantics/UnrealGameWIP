@@ -1512,6 +1512,7 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		}
 		NumLoco = Sum > 0.f ? NumLayers : 0;
 		UpperShare = NumLoco > 0 && UpperMask.Num() > 0 ? Instance->ActionUpper : 0.f;
+		LegSide = Instance->ActionLeg >= 0 && LegMask[Instance->ActionLeg].Num() > 0 ? Instance->ActionLeg : -1;
 		// Nothing under them: the actions are the whole pose.
 		const float Scale = Sum > 0.f ? 1.f : 1.f / ActSum;
 		float Added = 0.f;
@@ -1784,7 +1785,8 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 				// Per bone, the locomotion layers' running blend (no pose, curve or attribute containers made).
 				for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
 				{
-					if (B.GetInt() == 0 || UpperMask[B.GetInt()])
+					if (B.GetInt() == 0 || UpperMask[B.GetInt()]
+						|| (LegSide >= 0 && LegMask[LegSide].Num() == UpperMask.Num() && LegMask[LegSide][B.GetInt()]))
 					{
 						continue;
 					}
@@ -1911,6 +1913,24 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			{
 				const FCompactPoseBoneIndex Parent = Container.GetParentBoneIndex(B);
 				UpperMask[B.GetInt()] = B.GetInt() == Spine01 || (Parent.IsValid() && UpperMask[Parent.GetInt()]);
+			}
+		}
+		// Each leg: its thigh and every bone under it.
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			LegMask[Side].Reset();
+			FBoneReference Thigh;
+			Thigh.BoneName = Side == 0 ? TEXT("thigh_l") : TEXT("thigh_r");
+			Thigh.Initialize(Container);
+			if (UpperMask.Num() > 0 && Thigh.IsValidToEvaluate(Container))
+			{
+				LegMask[Side].Init(false, Output.Pose.GetNumBones());
+				const int32 Top = Thigh.GetCompactPoseIndex(Container).GetInt();
+				for (const FCompactPoseBoneIndex B : Output.Pose.ForEachBoneIndex())
+				{
+					const FCompactPoseBoneIndex Parent = Container.GetParentBoneIndex(B);
+					LegMask[Side][B.GetInt()] = B.GetInt() == Top || (Parent.IsValid() && LegMask[Side][Parent.GetInt()]);
+				}
 			}
 		}
 		for (int32 Side = 0; Side < 2; ++Side)

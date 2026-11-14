@@ -77,6 +77,7 @@ struct FFTArenaPose
 	float AirHeight = 0.f;  // cm the body is drawn over the floor (the jump's arc)
 	float AirRise = 0.f;    // cm/s the arc climbs (below 0: coming down)
 	float JumpClock = -1.f; // s on the jump's clock (Core's jumpTime; -1: not jumping), for -ArenaJumpFloor
+	float AirFraction = -1.f; // 0..1 through the arc from leaving the ground to touching down (-1: on the ground)
 
 	FLinearColor Tint = FLinearColor::White; // the body's colour this frame
 
@@ -122,7 +123,9 @@ public:
 	// Draws an enemy as Mesh instead of the shapes: lifted HoverMeters off the ground, scaled, turned YawOffset degrees
 	// from the mesh's own facing. Its height (for the HUD's markers) is HeightMeters x Scale over the hover. Call after
 	// Setup. False when the mesh is null.
-	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters);
+	// bBreakPulse: the body can glow (SetBodyPulse; a boss with a break move), its materials made dynamic here;
+	// otherwise they are left as they are and SetBodyPulse does nothing.
+	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters, bool bBreakPulse = false);
 	// A skinned figure shows Clip at Time (seconds into it; looping wraps) over a short crossfade from the clip before it.
 	// bHoldRoot false lets the clip's root travel through (a fall). Call every frame; a null clip changes nothing.
 	// Blend: the crossfade into a new clip, seconds; 0 the anim instance's own. bAdditiveIn: a new clip fades in additively
@@ -138,6 +141,10 @@ public:
 	// the boom may swing.
 	void SetCameraTilt(float Degrees);
 	void ApplyPose(const FFTArenaPose& Pose);
+	// The jump's clock from the fighter's kit (s), so a lead's take-off and landing clips fit Core's arc and landing.
+	void SetJumpTiming(float Startup, float Air, float LandLock) { JumpStartup = Startup; JumpAirTime = Air; JumpLandLock = LandLock; }
+	// How far the body is drawn lifted off its feet' floor for the jump (cm), for a view that follows it.
+	float GetJumpLift() const { return AirLift; }
 	// Drops the lead's held feet and sunk pelvis (UFTLocomotionAnimInstance::ResetFeet): the body was put somewhere
 	// else. ApplyPose does it itself when the body goes down.
 	void ResetFeet();
@@ -173,6 +180,10 @@ public:
 	USkeletalMeshComponent* GetLeadSkin() const { return WearsLook() ? Skin.Get() : nullptr; }
 	// Shows or hides the shapes' blade (a lead whose own clips strike hides it).
 	void SetBladeShown(bool bShown);
+	// A skinned figure's body glow (the boss break's tell): Glow of warm white added to the Emissive of each of its
+	// materials that has one (the shared character masters, M_FTCharacter and M_FTCharacterTex: emissive = its texture
+	// x Emissive x EmissiveStrength); 0 puts each back. SetupSkinned makes them dynamic for a break-move boss only (bBreakPulse).
+	void SetBodyPulse(float Glow);
 
 private:
 	void SetTellVisible(bool bVisible);
@@ -244,6 +255,12 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> ShieldMaterial;
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> TellMaterial;
+	// SetBodyPulse's materials and each one's own Emissive.
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> PulseMaterials;
+	TArray<FLinearColor> PulseBase;
+	float PulseGlow = 0.f;
+	void MakePulseMaterials();
 
 	FLinearColor BaseColor = FLinearColor::White;
 	float Height = 180.f; // cm
@@ -264,7 +281,15 @@ private:
 	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
 	float RollLift = 0.f;
 	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
-	float AirLift = 0.f;      // cm: the jump's height as drawn (eased down when a blow cuts the jump short)
+	float AirLift = 0.f;      // cm: the jump's lift as drawn (floor hold, the arc and the head kept on it; eased)
+	float LastFloorNeed = 0.f; // cm: last frame's floor hold, before its lead
+	// The jump's clock (Core's jumpStartup, jumpAir, jumpLandLock; SetJumpTiming), handed to the locomotion so its take-off
+	// and landing clips fit it. 0: not set, the clips keep their own timing.
+	float JumpStartup = 0.f;
+	float JumpAirTime = 0.f;
+	float JumpLandLock = 0.f;
+	float StandHead = 0.f; // the head bone's height in the reference pose (cm, unscaled; 0: not read yet)
+	void ReadFloorBones();
 	float JumpFloorAfter = 0.f; // s left to log after a jump (-ArenaJumpFloor)
 	// -ArenaRollFloor: how long the clip's fade-out after a roll or dash is still logged.
 	float RollFadeLog = 0.f;

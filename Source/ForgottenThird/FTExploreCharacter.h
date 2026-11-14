@@ -285,9 +285,17 @@ private:
 	void EnterLookDev();
 	void FixExposure(float Bias);
 	void GreyGround();
-	void Nightfall();
+#if !UE_BUILD_SHIPPING
+	void Nightfall(); // -ExploreNight
+	void SoakForReview(); // -ExploreWet
+#endif
+	// -ExploreWet=<Wetness>,<wet line cm above the feet>,<WetSilt>: review only (see the .cpp); unused in shipping builds.
+	FVector WetReview = FVector::ZeroVector;
+	FTimerHandle WetTimer;
+	int32 WetSlots = -1;
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
+	void HoldBodyAt(float Time);
 
 	AFTExploreDirector* GetDirector();
 
@@ -340,6 +348,12 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> FaceClip;
 	TArray<float> FaceTimes;
+	// -ExplorePortraitBodyClip=<anim> with -ExplorePortraitBodyTimes=<s,s,..>: each shot holds the whole body (and every
+	// leader-posed piece with it) on that clip at its time, so garments are judged posed in the game (a crouch, an arm
+	// raise), not in a Blender render. Not with a face clip; the walk circle is off while a pose is held.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> BodyClip;
+	TArray<float> BodyTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	TWeakObjectPtr<AFTPartyVan> Van;

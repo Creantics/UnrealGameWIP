@@ -87,8 +87,11 @@ public:
 	const ftcore::StoneBearerDef& GetDef() const { return Def; }
 
 	// Rewrites Kind (arena.json's stone_bearer) for a lead with Lead's kit: hp, poise, staggerTime and openTime from
-	// the boss file, and the moves as above. False, Kind untouched, when the moves don't fit kMaxArenaMoves.
-	bool BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::ArenaFighter& Lead, std::string* Error) const;
+	// the boss file, and the moves as above. False, Kind untouched, when the moves don't fit kMaxArenaMoves. When the
+	// break move's clip has no single-impact move of its own here, BreakError says so and the break falls back to the
+	// boss file's first move a dodge answers (or none: -1, every break spent unthrown).
+	bool BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::ArenaFighter& Lead, std::string* Error,
+		std::string* BreakError = nullptr) const;
 
 	// Starts the boss in a fight just begun (or restarted) with it in slot Slot, in a zone centred on Centre with yaw
 	// YawDegrees (the keep-out's frame). Fight must outlive the host's use of it (the blow hook points here).
@@ -149,6 +152,11 @@ public:
 	ftcore::CalledZone CalledSideOf(std::uint8_t Move) const;
 	// The weak points are open (from CritOpened until CritClosed).
 	bool CritOpen() const { return IsActive() && Boss.run().crit().isOpen(static_cast<double>(FightPtr->time())); }
+	// The host's own opening (a refusal's): the weak points open now for Seconds (a longer one open is kept), as the
+	// run's openCrit, held Open like any opening; nothing while shut.
+	void OpenWeakPointFor(float Seconds);
+	// Shut: nothing opens the weak points and an open window closes now (the run's shutCrit). Begin unshuts.
+	void SetWeakPointShut(bool bShut);
 
 	// A move's clip contact (ArenaBossMove::contact*) is its strike point and reach when it lies outside the body
 	// (planar distance from the root above BodyRadius) and the move is neither a lane nor a tile move.

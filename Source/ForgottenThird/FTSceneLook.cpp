@@ -42,7 +42,16 @@ void FTScene::SpawnLook(UWorld* World, const FActorSpawnParameters& Spawn, const
 {
 	// Light: the sun's colour comes from its temperature and the atmosphere it passes through.
 	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 1000), SunRotation, Spawn);
-	UDirectionalLightComponent* SunLight = Sun->GetComponent();
+#if WITH_EDITORONLY_DATA
+	UDirectionalLightComponent* SunLight = Sun ? Sun->GetComponent() : nullptr;
+#else
+	UDirectionalLightComponent* SunLight = Sun ? Cast<UDirectionalLightComponent>(Sun->GetLightComponent()) : nullptr;
+#endif
+	if (!SunLight)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Scene look: no sun light was spawned; the look is not applied."));
+		return;
+	}
 	SunLight->SetMobility(EComponentMobility::Movable);
 	SunLight->SetIntensity(Look.sunLux);
 	SunLight->SetUseTemperature(true);
@@ -155,7 +164,11 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 	// Light: the sun is the one the atmosphere takes as its sun.
 	for (TActorIterator<ADirectionalLight> It(World); It; ++It)
 	{
+#if WITH_EDITORONLY_DATA
 		UDirectionalLightComponent* SunLight = It->GetComponent();
+#else
+		UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(It->GetLightComponent());
+#endif
 		if (SunLight && SunLight->IsUsedAsAtmosphereSunLight())
 		{
 			FT_LOOK_SET(sunLux, SunLight->SetIntensity(Look.sunLux))

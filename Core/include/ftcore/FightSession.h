@@ -26,6 +26,15 @@
 //   partner that defends: the arena's scripted partner does not yet, so no host calls them. setKeptDown(true) (the
 //   partner is down): it stores and spends nothing and counts 0 toward a Lift, until the next begin. The session
 //   feeds it to the count itself; its changes still come in `loads`, marked kept (already applied).
+// * The Lone Carry (def.loneLead a lead; LoneCarry.h): that lead is Lone from begin until a gift is given (giveGift's
+//   given; a press refused for any reason leaves it Lone), endLone(PartnerCalled) or finish, then not for the rest
+//   of the fight; begin makes it Lone again. While Lone: setTable is refused (TableError::Lone, for any setter),
+//   nobody joins the count (another striker's blow is judged Alone at x1 without touching the count, so the lead's
+//   own call, unanswered, lands at callerAloneMultiplier), and poolRelease adds a Release's spent Load to the
+//   fight's lone pool (saturating). The host mirrors lone() into its fight (ArenaFight::setLone) and refuses take
+//   half itself; after finish(true) it calls foldLone(save) to put the fight's lone Releases in the save's
+//   LoneSave. The tick carries loneCarryBegan and loneCarryEndedBy once each; at the fight's end the host reads
+//   loneEndedBy(), since no tick may follow finish.
 // * Marks: markEnemy(enemy, bonus, seconds) marks an enemy slot (a Release's chair effect). The joined blows of the
 //   next joined window judged on that enemy (judgeHeldBlow, held ones at their settle) take x (1 + bonus); the mark
 //   is used up once that window is over, or ends unused at its time. begin clears every mark.
@@ -49,6 +58,7 @@
 #include "ftcore/GiftSlot.h"
 #include "ftcore/HeldRefusal.h"
 #include "ftcore/Load.h"
+#include "ftcore/LoneCarry.h"
 #include "ftcore/Places.h"
 #include "ftcore/StoryState.h"
 #include "ftcore/StrikeCount.h"
@@ -101,6 +111,9 @@ struct FightSessionDef {
     // One blow's multiplier from all sources kept to this (StrikeCount.h capBlowScale; 0: no cap, else 1..20). With a
     // cap, judgeHeldBlow takes the base before crits and the scale the blow landed at, and a settle stays under it.
     float blowCap = 0.f;
+    // The Lone Carry's lead (kNoFighter: nobody Lone) and its tuning (LoneCarry.h).
+    FighterId loneLead = kNoFighter;
+    LoneTuning loneTuning{};
 };
 
 inline bool validKeptGauge(const FightSessionDef& d) {
@@ -120,9 +133,10 @@ struct FightSessionCheck {
     bool lift = true;  // false: the lift tuning was refused (the Lift stays off)
     bool kept = true;  // false: the kept gauge was refused (no gauge kept)
     bool cap = true;   // false: the blow cap was refused (no cap)
+    bool lone = true;  // false: the Lone Carry was refused (not a lead, or its tuning out of range): nobody Lone
     bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
     // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
-    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap; }
+    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap && lone; }
 };
 
 // A Load change the count asks of a lead's gauge (def.lift): the host applies it, store or spend. Append only.
@@ -169,6 +183,8 @@ struct FightTick {
     int heldExpired = 0;  // held blows whose settle never came (a dropped settle): they stay at base
     std::span<const CountLoadChange> loads; // def.lift: the gauges' changes since the last tick (the session's own buffer)
     int loadsDropped = 0;                   // changes with no room in the buffer (never with two joiners a tick)
+    bool loneCarryBegan = false;            // the first tick after a begin with a lead Lone (show the bargain)
+    LoneEnd loneCarryEndedBy = LoneEnd::None; // the first tick after the Lone Carry ended, and why
 };
 
 // What a press did, for the generic press(); the typed calls return the pieces' own results.
@@ -220,14 +236,27 @@ public:
         keptOn_ = count_.liftOn() && c.kept && def_.keptLead != kNoFighter;
         kept_ = 0;
         keptDown_ = false;
+        c.lone = def_.loneLead == kNoFighter || loneStanceAccepted(def_.loneLead, def_.loneTuning);
+        lone_ = c.lone && def_.loneLead != kNoFighter;
+        leadHealth_ = {kHealthUnknown, kHealthUnknown};
+        loneEnded_ = false;
+        loneEndedBy_ = LoneEnd::None;
+        loneBeganDue_ = lone_;
+        loneEndDue_ = false;
+        lonePooled_ = 0;
+        loneReleases_ = 0;
+        loneFolded_ = false;
         {
             const PlaceTuning pt = validPlaceTuning(def_.places) ? def_.places : PlaceTuning{};
             const int cap = pt.baseCarry + pt.perPlace * (c.kept ? def_.keptNamed : 0);
             keptCap_ = cap < kMaxLoad ? cap : kMaxLoad;
         }
         if (keptOn_) count_.setLoad(def_.keptLead, 0);
-        c.gift = gift_.reset(def_.gift, now_);
-        if (!c.gift) gift_.reset(GiftTuning{}, now_);
+        // The save-wide gift tally and threads carry over from a won fight; after one not finished as won (a
+        // lost or abandoned attempt, retried) they go back to how that fight began.
+        if (!won_) gift_.restoreFightStart();
+        won_ = false;
+        c.gift = gift_.beginFight(def_.gift, now_);
         for (PlaceTable& p : places_) {
             if (!p.reset(def_.seats, def_.places)) {
                 c.places = false;
@@ -309,6 +338,10 @@ public:
         tick_.table = &table_.update(now_);
         lock_.update(now_);
         tick_.boss = hasBoss_ ? &boss_.update(now_) : &kNoBoss;
+        tick_.loneCarryBegan = loneBeganDue_;
+        tick_.loneCarryEndedBy = loneEndDue_ ? loneEndedBy_ : LoneEnd::None;
+        loneBeganDue_ = false;
+        loneEndDue_ = false;
         return tick_;
     }
 
@@ -323,6 +356,46 @@ public:
         return true;
     }
     FighterId activeLead() const { return activeLead_; }
+
+    // ---- the Lone Carry ----
+    bool lone() const { return lone_; }
+    FighterId loneLead() const { return lone_ ? def_.loneLead : kNoFighter; }
+    bool loneEnded() const { return loneEnded_; } // it ended this fight (loneEndedBy says why)
+    LoneEnd loneEndedBy() const { return loneEndedBy_; } // None while Lone or never Lone this fight
+    const LoneTuning& loneTuning() const { return def_.loneTuning; }
+    // The bargain for the card, from this fight's tuning (the host shows it on loneCarryBegan).
+    LoneBargain loneBargain() const { return ftcore::loneBargain(def_.loneTuning); }
+    // The host ends the Lone Carry for the partner's call (or any reason but None and Gift, which giveGift owns).
+    // False when nobody is Lone.
+    bool endLone(LoneEnd why) {
+        if (!lone_ || why == LoneEnd::None || why == LoneEnd::Gift) return false;
+        endLoneFor(why);
+        return true;
+    }
+    // A Release by `who` that spent `spent` Load: pooled while `who` is the Lone lead (true), else nothing.
+    bool poolRelease(FighterId who, int spent) {
+        if (!lone_ || who != def_.loneLead || spent <= 0) return false;
+        lonePooled_ = saturatingAdd(lonePooled_, static_cast<std::uint32_t>(spent));
+        loneReleases_ = saturatingAdd(loneReleases_, 1u);
+        return true;
+    }
+    std::uint32_t lonePooled() const { return lonePooled_; }     // this fight's
+    std::uint32_t loneReleases() const { return loneReleases_; } // this fight's lone Releases
+    // The roll as it stands: the save's lone Releases (as the host keeps them) plus this fight's, until foldLone
+    // has put this fight in the save (then the save's alone), so it never counts a fight twice.
+    LoneRoll loneRoll(const LoneSave& saved, const LonePoolTuning& pool = LonePoolTuning{}) const {
+        return loneFolded_ ? ftcore::loneRoll(saved, 0u, 0u, pool)
+                           : ftcore::loneRoll(saved, loneReleases_, lonePooled_, pool);
+    }
+    // After finish(true) (the story step kept), once: adds this fight's lone Releases to the save. False (nothing
+    // added) before finish(true), after finish(false) or a second time. loneReleases() and lonePooled() still read
+    // the fight's own until the next begin.
+    bool foldLone(LoneSave& save) {
+        if (!won_ || loneFolded_) return false;
+        addLoneFight(save, loneReleases_, lonePooled_);
+        loneFolded_ = true;
+        return true;
+    }
 
     // ---- Presses (stamped with now()) ----
 
@@ -361,10 +434,20 @@ public:
     void cancelFalseCount() { count_.cancelFalse(now_); }
 
     bool selectGift(Gift g) { return gift_.select(g); }
+    // The host's word on a lead's health (a fraction of its max), for the gift Heal: at 1 or over a Heal is
+    // refused NotHurt. Unknown (kHealthUnknown, the default from begin) reads as hurt.
+    void setLeadHealth(FighterId lead, float fraction) {
+        if (isLead(lead)) leadHealth_[lead] = fraction;
+    }
+    float leadHealth(FighterId lead) const { return isLead(lead) ? leadHealth_[lead] : kHealthUnknown; }
     GiftResult giveGift(FighterId target) {
-        const GiftResult r = gift_.press(target, now_, &count_);
+        const GiftResult r = gift_.press(target, now_, &count_, leadHealth(target));
+        // A gift given ends the Lone Carry for the rest of the fight; a press refused for any reason did nothing
+        // and leaves it.
+        if (lone_ && r.given) endLoneFor(LoneEnd::Gift);
         lastStory_ = SetResult::Unchanged;
-        if (story_ && isLead(r.target) && r.gift != Gift::None) // the slot never selects None
+        // A NotHurt press is no press anywhere (the slot does not tally it), so the story does not count it either.
+        if (story_ && isLead(r.target) && r.gift != Gift::None && r.error != GiftError::NotHurt)
             lastStory_ = storyCountPress(*story_, *reg_, r.target, static_cast<std::uint8_t>(r.gift));
         return r;
     }
@@ -381,6 +464,7 @@ public:
 
     TableError setTable(FighterId setter, Load& load, std::uint8_t seated) {
         if (!isFighter(setter)) return TableError::BadSetter;
+        if (lone_) return TableError::Lone;
         return table_.begin(setter, load, places_[setter], seated, now_);
     }
     bool interruptTable() { return table_.interrupt(now_); }
@@ -413,6 +497,7 @@ public:
 
     // A blow by `striker`, judged on the count before its damage; an OnCount (or Lift) blow is a shared blow at once.
     CountHit judgeBlow(FighterId striker) {
+        if (lone_ && striker != def_.loneLead) return CountHit{}; // nobody joins a Lone lead: Alone, x1
         if (keptOn_) count_.setLoad(def_.keptLead, keptDown_ ? 0 : kept_);
         const CountHit h = count_.judgeBlow(striker, now_);
         takeJoin();
@@ -507,6 +592,21 @@ public:
     // ---- Reads ----
 
     const StrikeCount& strikeCount() const { return count_; }
+    // For the HUD: Heals still to give this fight, and seconds until the Heal and the Guard are ready (0: ready).
+    int giftHealsLeft() const { return gift_.healsLeft(); }
+    // The host calls this when the fight ends: won, the next begin keeps this fight's gift presses; not won
+    // (or never called), the next begin puts the tally and threads back to this fight's start. To agree with the
+    // story's press counters: true wherever the story step ends Keep (a win, or a loss branch it keeps), never
+    // when it ends Retry or Drop.
+    // A Lone Carry still on ends here (LoneEnd::FightEnded); the host reads loneEndedBy() then, since no tick
+    // may follow to carry loneCarryEndedBy.
+    void finish(bool won) {
+        won_ = won;
+        if (lone_) endLoneFor(LoneEnd::FightEnded);
+    }
+    bool finishedWon() const { return won_; }
+    double giftHealReadyIn() const { return gift_.readyIn(Gift::Heal, now_); }
+    double giftGuardReadyIn() const { return gift_.readyIn(Gift::Guard, now_); }
     const GiftSlot& giftSlot() const { return gift_; }
     GiftSlot& giftSlot() { return gift_; } // setState, save and load
     // A fighter's places (kLeadA's for an id that is not a fighter). The mutable one is for loads: call recheckTable after.
@@ -653,6 +753,22 @@ private:
     bool keptDown_ = false;
     int keptCap_ = 0;
     float blowCap_ = 0.f;
+    void endLoneFor(LoneEnd why) {
+        lone_ = false;
+        loneEnded_ = true;
+        loneEndedBy_ = why;
+        loneEndDue_ = true;
+    }
+    bool lone_ = false;
+    bool loneEnded_ = false;
+    LoneEnd loneEndedBy_ = LoneEnd::None;
+    bool loneBeganDue_ = false;
+    bool loneEndDue_ = false;
+    std::uint32_t loneReleases_ = 0;
+    bool loneFolded_ = false; // foldLone put this fight in the save
+    std::array<float, 2> leadHealth_{kHealthUnknown, kHealthUnknown}; // setLeadHealth, per lead
+    bool won_ = false; // finish(true) since the last begin
+    std::uint32_t lonePooled_ = 0;
     // The empty buffers a tick points at before the first tick and when there is no boss script.
     static inline const CountEvents kNoCount{};
     static inline const TableEvents kNoTable{};

@@ -150,6 +150,8 @@
     "input.guard": "guard",
     "input.dodge": "dodge",
     "input.heal": "heal",
+    "input.gift_heal": "gift heal",
+    "input.gift_guard": "gift guard",
     "input.release": "release",
     "input.count": "partner",
     "input.pick": "pick (cards up)",

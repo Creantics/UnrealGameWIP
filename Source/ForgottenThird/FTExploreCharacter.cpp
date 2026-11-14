@@ -333,11 +333,24 @@ void AFTExploreCharacter::BeginPlay()
 				FixExposure(Bias);
 			}
 		}
+#if !UE_BUILD_SHIPPING // review checks only, never in a shipped game
 		// Exposure-range check: -ExploreNight dims the sun to moonlight and the sky to a night sky (the gate lamps stay
 		// lit); -ExploreExposureRange=<min>,<max> meters auto-exposure within that EV100 range instead of the map's.
 		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreNight")))
 		{
 			Nightfall();
+		}
+		// Wetness proof for the lead materials: -ExploreWet=<Wetness>,<line cm above the feet>,<WetSilt> sets the garment
+		// wet inputs (Wetness, WetLineZ, WetSilt) on every slot that has them, once a second so the garments ApplyLook
+		// makes later (and a look switch) take them too. The world drives these in play; this only shows a fixed state.
+		FString Wet;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreWet="), Wet, false))
+		{
+			TArray<FString> Parts;
+			Wet.ParseIntoArray(Parts, TEXT(","));
+			WetReview = FVector(Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 1.f, Parts.Num() > 1 ? FCString::Atof(*Parts[1]) : 130.f,
+				Parts.Num() > 2 ? FCString::Atof(*Parts[2]) : 0.f);
+			GetWorldTimerManager().SetTimer(WetTimer, this, &AFTExploreCharacter::SoakForReview, 1.f, true, 0.5f);
 		}
 		FString Range;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
@@ -355,6 +368,7 @@ void AFTExploreCharacter::BeginPlay()
 					Post.AutoExposureMinBrightness, Post.AutoExposureMaxBrightness);
 			}
 		}
+#endif
 		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
@@ -402,6 +416,35 @@ void AFTExploreCharacter::BeginPlay()
 					}
 				}
 			}
+			if (!FaceClip && FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyClip="), ClipPath)
+				&& FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyTimes="), TimeList, false))
+			{
+				BodyClip = LoadObject<UAnimSequence>(nullptr, *ClipPath);
+				TArray<FString> Parts;
+				TimeList.ParseIntoArray(Parts, TEXT(","));
+				for (const FString& Part : Parts)
+				{
+					BodyTimes.Add(FCString::Atof(*Part));
+				}
+				if (!BodyClip || BodyTimes.IsEmpty())
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: body clip %s not loaded or no times; body poses off."), *ClipPath);
+					BodyClip = nullptr;
+					BodyTimes.Reset();
+				}
+				else
+				{
+					// One shot per time; the yaw list repeats round them.
+					const TArray<float> Yaws = ShotYaws;
+					ShotYaws.Reset();
+					for (int32 Index = 0; Index < BodyTimes.Num(); ++Index)
+					{
+						ShotYaws.Add(Yaws[Index % Yaws.Num()]);
+					}
+					bPortraitWalk = false;
+					bPortraitJump = false;
+				}
+			}
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
 			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotDelay="), Delay);
@@ -443,11 +486,16 @@ void AFTExploreCharacter::StepPortraitShots()
 		{
 			HoldFaceAt(FaceTimes[ShotIndex]);
 		}
+		else if (BodyClip)
+		{
+			HoldBodyAt(BodyTimes[ShotIndex]);
+		}
 		bShotAimed = true;
 		return;
 	}
 	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
 	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
@@ -483,6 +531,21 @@ void AFTExploreCharacter::HoldFaceAt(float Time)
 		return;
 	}
 	UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no FaceMesh piece to hold the face clip on."));
+}
+
+void AFTExploreCharacter::HoldBodyAt(float Time)
+{
+	// The body leaves its anim blueprint and holds the clip's frame; the leader-posed pieces (garments, shoes, face)
+	// copy its bones, so the outfit is seen in that pose. The clip's root is not applied, so the capsule stays put.
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!Body || !BodyClip)
+	{
+		return;
+	}
+	Body->PlayAnimation(BodyClip, false);
+	Body->SetPosition(FMath::Clamp(Time, 0.f, BodyClip->GetPlayLength()), false);
+	Body->Stop();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body held on %s at %.2f s."), *BodyClip->GetName(), Time);
 }
 
 void AFTExploreCharacter::AddPortraitLights()
@@ -539,6 +602,37 @@ void AFTExploreCharacter::FixExposure(float Bias)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: fixed exposure, bias %.2f."), Bias);
 }
 
+#if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::SoakForReview()
+{
+	const float FeetZ = GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	int32 Slots = 0;
+	TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+	for (USkeletalMeshComponent* Skin : Meshes)
+	{
+		for (int32 Slot = 0; Slot < Skin->GetNumMaterials(); ++Slot)
+		{
+			UMaterialInterface* Material = Skin->GetMaterial(Slot);
+			float Unused = 0.f;
+			if (!Material || !Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Wetness")), Unused))
+			{
+				continue;
+			}
+			UMaterialInstanceDynamic* Dynamic = Skin->CreateAndSetMaterialInstanceDynamic(Slot);
+			Dynamic->SetScalarParameterValue(TEXT("Wetness"), WetReview.X);
+			Dynamic->SetScalarParameterValue(TEXT("WetLineZ"), FeetZ + WetReview.Y);
+			Dynamic->SetScalarParameterValue(TEXT("WetSilt"), WetReview.Z);
+			++Slots;
+		}
+	}
+	if (Slots != WetSlots)
+	{
+		WetSlots = Slots;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: wet review on %d garment slots (wetness %.2f, line %.0f cm above the feet, silt %.2f)."),
+			Slots, WetReview.X, WetReview.Y, WetReview.Z);
+	}
+}
+
 void AFTExploreCharacter::Nightfall()
 {
 	int32 Dimmed = 0;
@@ -560,6 +654,7 @@ void AFTExploreCharacter::Nightfall()
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: night (%d sun and sky lights dimmed)."), Dimmed);
 }
+#endif
 
 void AFTExploreCharacter::GreyGround()
 {

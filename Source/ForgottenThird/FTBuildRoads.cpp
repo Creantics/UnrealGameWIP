@@ -127,6 +127,7 @@ struct FRoadPainter
 	UMaterialInterface* Tint(ftcore::RoadTint Which)
 	{
 		UMaterialInterface*& Slot = Tints[static_cast<int32>(Which)];
+#if WITH_EDITOR // a build-time tint (editor-only material edits); outside the editor the solid takes the default material
 		if (!Slot && Host.Base)
 		{
 			const ftcore::RoadColor C = ftcore::roadTint(Which);
@@ -143,6 +144,7 @@ struct FRoadPainter
 			Mic->PostEditChange();
 			Slot = Mic;
 		}
+#endif
 		return Slot;
 	}
 

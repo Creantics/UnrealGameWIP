@@ -29,6 +29,7 @@ TEST_CASE("settings defaults") {
     CHECK_FALSE(s.holdToggle);
     CHECK_FALSE(s.skipChoices);
     CHECK_FALSE(s.stickFlicks);
+    CHECK(s.aimAssist);
 
     Settings t;
     t.textSpeed = TextSpeed::Instant;
@@ -60,6 +61,7 @@ TEST_CASE("settings round-trip through JSON") {
     s.holdToggle = true;
     s.skipChoices = true;
     s.stickFlicks = true;
+    s.aimAssist = false;
     const std::string text = encodeSettings(s);
     CHECK(text.find("\"version\":1") != std::string::npos);
 
@@ -308,7 +310,7 @@ TEST_CASE("settings menu: stick flicks are off by default and the row toggles th
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK_FALSE(out.stickFlicks);
     // The row sits above Camera shake and Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 3u == kSettingsRowCount);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 4u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down to 0, and saves") {
@@ -336,7 +338,7 @@ TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down
     CHECK(out.cameraShake == 1.f);
     REQUIRE(decodeSettings(R"({"version":1,"cameraShake":-2})", out, nullptr));
     CHECK(out.cameraShake == 0.f);
-    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 2u == kSettingsRowCount);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 3u == kSettingsRowCount);
 }
 
 TEST_CASE("settings: option flags mirror the assist switches") {
@@ -392,4 +394,50 @@ TEST_CASE("settings menu allocates nothing") {
     const auto after = ftcore_test::allocStats().count;
     CHECK(total > 0);
     if (counting) CHECK(after == before);
+}
+
+TEST_CASE("settings menu: aim assist is on by default, sits under Defence window assist, toggles and saves") {
+    Settings s;
+    CHECK(s.aimAssist);
+    SettingsMenu m;
+    char value[32];
+    CHECK(std::string(settingsRowLabel(SettingsRow::AimAssist)) == "Aim assist");
+    settingsRowValue(s, SettingsRow::AimAssist, value, sizeof value);
+    CHECK(std::string(value) == "On");
+    CHECK(m.click(s, SettingsRow::AimAssist, 1) == SettingsAction::Changed);
+    CHECK_FALSE(s.aimAssist);
+    settingsRowValue(s, SettingsRow::AimAssist, value, sizeof value);
+    CHECK(std::string(value) == "Off");
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK_FALSE(out.aimAssist);
+    CHECK(out == s);
+    // An old file without the field keeps it on.
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.aimAssist);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::AimAssist) == static_cast<std::uint32_t>(SettingsRow::DefenceAssist) + 1u);
+    CHECK(kSettingsRowCount == 19u);
+}
+
+TEST_CASE("settings menu: lock framing is on by default, sits under Camera shake, toggles and saves") {
+    Settings s;
+    CHECK(s.lockFraming);
+    SettingsMenu m;
+    char value[32];
+    CHECK(std::string(settingsRowLabel(SettingsRow::LockFraming)) == "Lock framing");
+    settingsRowValue(s, SettingsRow::LockFraming, value, sizeof value);
+    CHECK(std::string(value) == "On");
+    CHECK(m.click(s, SettingsRow::LockFraming, 1) == SettingsAction::Changed);
+    CHECK_FALSE(s.lockFraming);
+    settingsRowValue(s, SettingsRow::LockFraming, value, sizeof value);
+    CHECK(std::string(value) == "Off");
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK_FALSE(out.lockFraming);
+    CHECK(out == s);
+    // An old file without the field keeps it on.
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.lockFraming);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::LockFraming) == static_cast<std::uint32_t>(SettingsRow::CameraShake) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::Back) + 1u == kSettingsRowCount);
 }

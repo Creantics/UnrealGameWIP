@@ -48,6 +48,7 @@ struct Settings {
     SkipMode skipMode = SkipMode::Seen;
     float master = 1.f, music = 0.8f, voice = 1.f, sfx = 1.f; // 0..1
     DefenceAssist defenceAssist = DefenceAssist::Off;
+    bool aimAssist = true;        // the arena's aimed crosshair turns slower over a body (AimStance's aimAssistTurn)
     SubtitleSize subtitleSize = SubtitleSize::Medium;
     bool reduceFlashes = false;
     bool qteAutoComplete = false; // quick-time events play themselves
@@ -55,6 +56,7 @@ struct Settings {
     bool skipChoices = false;     // mirrored to its story flag only, for now
     bool stickFlicks = false;     // the Turns arrow combos also take the left stick's flicks (StickFlick.h)
     float cameraShake = 1.f;      // 0..1: how hard the arena camera kicks when a blow lands (0: not at all)
+    bool lockFraming = true;      // the followed arena view orbits to put the target on its centre line (ArenaLook.h)
 
     // Characters per second the dialogue types out at (0: whole text at once).
     float textCharsPerSecond() const {
@@ -84,8 +86,8 @@ FTCORE_API void clampSettings(Settings& s);
 
 // ---- JSON text ----
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
-//  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"subtitleSize":1,"reduceFlashes":false,
-//  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0}
+//  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"aimAssist":true,"subtitleSize":1,"reduceFlashes":false,
+//  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0,"lockFraming":true}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
 // defenceAssist off/wide, subtitleSize small..large).
 FTCORE_API std::string encodeSettings(const Settings& s);
@@ -106,6 +108,7 @@ enum class SettingsRow : std::uint8_t {
     Voice,
     Sfx,
     DefenceAssist,
+    AimAssist,
     SubtitleSize,
     ReduceFlashes,
     QteAutoComplete,
@@ -113,9 +116,10 @@ enum class SettingsRow : std::uint8_t {
     SkipChoices,
     StickFlicks,
     CameraShake,
+    LockFraming,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 17;
+inline constexpr std::uint32_t kSettingsRowCount = 19;
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 

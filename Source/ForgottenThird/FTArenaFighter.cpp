@@ -18,6 +18,7 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
+#include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaFight.h"
 
 namespace
@@ -39,7 +40,11 @@ constexpr float kArenaLeadMaxHeight = 210.f;
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
 const FLinearColor kArenaShieldParry(1.f, 0.85f, 0.3f);
-const FLinearColor kFighterTellBlock(1.f, 0.55f, 0.1f);
+// Pale ink-white at the old orange's luminance (about 0.61): the blockable tell, apart from the dodge's red and the
+// gold kept for the lead's Load.
+const FLinearColor kFighterTellBlock(0.63f, 0.615f, 0.575f);
+// The parameter SetBodyPulse drives on the character masters.
+const FName kFighterEmissive(TEXT("Emissive"));
 const FLinearColor kFighterTellDodge(1.f, 0.12f, 0.08f);
 const FLinearColor kFighterTellFlash(1.f, 1.f, 0.85f);
 
@@ -151,7 +156,7 @@ AFTArenaFighter::AFTArenaFighter()
 	Boom->bUsePawnControlRotation = true;
 	// The camera may leave the zone's walls but not pass through the scene: the arm probes the world and is pulled in.
 	Boom->bDoCollisionTest = true;
-	Boom->ProbeSize = 12.f;
+	Boom->ProbeSize = ftcore::kArenaBoomProbe * 100.f; // the probe the zone's lens clearance counts (ArenaCamera.h)
 	Boom->ProbeChannel = ECC_Camera;
 	Boom->bEnableCameraLag = true;
 	Boom->CameraLagSpeed = 9.f;
@@ -187,6 +192,12 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 
 	SkinKind = ESkin::Shapes;
 	bPlayerFigure = bPlayer;
+	if (bPlayer && !FMath::IsNearlyEqual(GNearClippingPlane, ftcore::kArenaLensNearClip * 100.f, 0.01f))
+	{
+		// The zone's lens clearance counts this near plane; a changed one leaves the walls' lens checks short.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: the near clip plane is %.2f cm, but the lens clearance counts %.2f cm (ArenaCamera.h)."),
+			GNearClippingPlane, ftcore::kArenaLensNearClip * 100.f);
+	}
 	bool bLead = false;
 	if (bPlayer)
 	{
@@ -306,7 +317,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	return true;
 }
 
-bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters)
+bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters, bool bBreakPulse)
 {
 	if (!Mesh)
 	{
@@ -321,6 +332,13 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	Visor->SetVisibility(false);
 	Blade->SetVisibility(false);
 	Skin->SetSkeletalMesh(Mesh);
+	PulseMaterials.Reset(); // a new mesh: its own materials, made dynamic only for a break tell
+	PulseBase.Reset();
+	PulseGlow = 0.f;
+	if (bBreakPulse)
+	{
+		MakePulseMaterials();
+	}
 	Skin->SetAnimInstanceClass(UFTBeatFighterAnimInstance::StaticClass());
 	Skin->SetRelativeLocation(FVector(0.0, 0.0, SkinHover));
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));
@@ -421,6 +439,49 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 	return true;
 }
 
+void AFTArenaFighter::MakePulseMaterials()
+{
+	PulseMaterials.Reset();
+	PulseBase.Reset();
+	PulseGlow = 0.f;
+	const FHashedMaterialParameterInfo Info(kFighterEmissive);
+	const int32 Count = Skin->GetNumMaterials();
+	for (int32 M = 0; M < Count; ++M)
+	{
+		UMaterialInterface* Material = Skin->GetMaterial(M);
+		FLinearColor Base = FLinearColor::Black;
+		if (!Material || !Material->GetVectorParameterValue(Info, Base))
+		{
+			continue;
+		}
+		if (UMaterialInstanceDynamic* Dynamic = Skin->CreateDynamicMaterialInstance(M))
+		{
+			PulseMaterials.Add(Dynamic);
+			PulseBase.Add(Base);
+		}
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: %s: the break tell can glow on %d of %d materials (Emissive)."),
+		Skin->GetSkeletalMeshAsset() ? *Skin->GetSkeletalMeshAsset()->GetName() : TEXT("?"), PulseMaterials.Num(), Count);
+}
+
+void AFTArenaFighter::SetBodyPulse(float Glow)
+{
+	Glow = FMath::Max(Glow, 0.f);
+	if (SkinKind != ESkin::Creature || (Glow == 0.f && PulseGlow == 0.f))
+	{
+		return;
+	}
+	PulseGlow = Glow;
+	const FLinearColor Warm(1.f, 0.86f, 0.7f);
+	for (int32 M = 0; M < PulseMaterials.Num(); ++M)
+	{
+		if (PulseMaterials[M])
+		{
+			PulseMaterials[M]->SetVectorParameterValue(kFighterEmissive, PulseBase[M] + Warm * Glow);
+		}
+	}
+}
+
 void AFTArenaFighter::ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow)
 {
 	// The whole piece: every LOD's sections drawn with its slot.
@@ -504,6 +565,7 @@ void AFTArenaFighter::MendCarried()
 
 void AFTArenaFighter::ResetFeet()
 {
+	AirLift = LastFloorNeed = 0.f; // a restart: no lift kept from a jump
 	if (UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()))
 	{
 		Anim->ResetFeet();
@@ -703,20 +765,7 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	// standing and of the head bone nearer the floor than the skull's back.
 	constexpr double kSkullCm = 9.0;
 	const FName BallL(TEXT("ball_l")), BallR(TEXT("ball_r")), HeadBone(TEXT("head"));
-	if (RollFloorBall >= 1e8f)
-	{
-		RollFloorBall = 0.f;
-		if (const USkinnedAsset* Asset = Skin->GetSkinnedAsset())
-		{
-			const FReferenceSkeleton& Ref = Asset->GetRefSkeleton();
-			const int32 L = Ref.FindBoneIndex(BallL), R = Ref.FindBoneIndex(BallR);
-			if (L != INDEX_NONE && R != INDEX_NONE)
-			{
-				RollFloorBall = static_cast<float>(FMath::Min(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, L).GetLocation().Z,
-					FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, R).GetLocation().Z));
-			}
-		}
-	}
+	ReadFloorBones();
 	{
 		const double Base = Skin->GetComponentLocation().Z;
 		const double Scale = Skin->GetComponentScale().Z;
@@ -769,6 +818,29 @@ bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 	return true;
 }
 
+void AFTArenaFighter::ReadFloorBones()
+{
+	if (RollFloorBall < 1e8f || !Skin)
+	{
+		return;
+	}
+	RollFloorBall = 0.f;
+	if (const USkinnedAsset* Asset = Skin->GetSkinnedAsset())
+	{
+		const FReferenceSkeleton& Ref = Asset->GetRefSkeleton();
+		const int32 L = Ref.FindBoneIndex(TEXT("ball_l")), R = Ref.FindBoneIndex(TEXT("ball_r")), H = Ref.FindBoneIndex(TEXT("head"));
+		if (L != INDEX_NONE && R != INDEX_NONE)
+		{
+			RollFloorBall = static_cast<float>(FMath::Min(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, L).GetLocation().Z,
+				FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, R).GetLocation().Z));
+		}
+		if (H != INDEX_NONE)
+		{
+			StandHead = static_cast<float>(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, H).GetLocation().Z);
+		}
+	}
+}
+
 void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 {
 	SetActorLocationAndRotation(Pose.Feet, FRotator(0.0, Pose.Yaw, 0.0));
@@ -787,6 +859,7 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	{
 		Lean.Pitch = 84.0;
 		Lift.Z = Radius * 0.7f;
+		AirLift = LastFloorNeed = 0.f; // down or dead in the air: no lift kept from the jump
 	}
 	else
 	{
@@ -794,11 +867,55 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 		Lean.Roll = Pose.Wobble;
 		// The roll's lift, and as its clip fades out, what is left of it coming down.
 		Lift.Z = RollLift;
-		// The jump's arc; cut short by a blow in the air (Core's height drops to 0), the body comes down at
-		// kAirLiftDrop rather than in one frame.
-		constexpr float kAirLiftDrop = 500.f; // cm/s; the arc's own fall is at most 4 * jumpHeight / jumpAir
+		// The jump: the arc's height, and on a lead's clips (from the last evaluated pose, over the skin's base, so the
+		// lift itself is not in them) the balls kept out of the floor through the push-off and the landing and, in the
+		// air, the head carried up the whole arc over its standing height (the clip's own air tucks the legs and drops
+		// the head: its root's rise is held). The head's share eases in over the first kHeadEase of the arc and out over
+		// its last, where the clip's legs reach for the floor. Eased toward at kAirLiftMove (a blow cutting the jump short
+		// brings the body down at that, not in one frame).
+		constexpr float kAirLiftMove = 500.f; // cm/s; the arc's own speed is at most 4 * jumpHeight / jumpAir
+		constexpr float kHeadEase = 0.3f;
 		const float AirDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
-		AirLift = Pose.AirHeight >= AirLift ? Pose.AirHeight : FMath::Max(Pose.AirHeight, AirLift - kAirLiftDrop * AirDt);
+		float AirWant = Pose.AirHeight;
+		float FloorNeed = 0.f; // the lift that keeps the lower ball on the floor: not eased (the feet never go under)
+		if (SkinKind == ESkin::Lead && Skin && Pose.JumpClock >= 0.f)
+		{
+			ReadFloorBones();
+			const FName BallL(TEXT("ball_l")), BallR(TEXT("ball_r")), HeadBone(TEXT("head"));
+			const double Base = Skin->GetComponentLocation().Z;
+			const double Scale = Skin->GetComponentScale().Z;
+			if (Skin->GetBoneIndex(BallL) != INDEX_NONE && Skin->GetBoneIndex(BallR) != INDEX_NONE)
+			{
+				const double Ball = FMath::Min(Skin->GetBoneLocation(BallL).Z, Skin->GetBoneLocation(BallR).Z) - Base;
+				// The pose read is last frame's: through the push-off a foot still dropping is led by its last frame's
+				// drop (not on the landing, where the crossfade to the ground clips would overshoot it).
+				const float Need = static_cast<float>(RollFloorBall * Scale - Ball);
+				FloorNeed = Need + (Pose.bAir ? FMath::Max(0.f, Need - LastFloorNeed) : 0.f);
+				LastFloorNeed = Need;
+				AirWant = FMath::Max(AirWant, FloorNeed);
+			}
+			if (Pose.AirFraction >= 0.f && StandHead > 0.f && Skin->GetBoneIndex(HeadBone) != INDEX_NONE)
+			{
+				const float U = Pose.AirFraction;
+				const float W = FMath::SmoothStep(0.f, kHeadEase, U) * FMath::SmoothStep(0.f, kHeadEase, 1.f - U);
+				const float Gap = static_cast<float>(StandHead * Scale - (Skin->GetBoneLocation(HeadBone).Z - Base));
+				AirWant = FMath::Max(AirWant, Pose.AirHeight + W * FMath::Max(0.f, Gap));
+			}
+		}
+		if (SkinKind == ESkin::Lead && Pose.JumpClock >= 0.f && !Pose.bAir)
+		{
+			// Landed: the landing's crossfades move the feet a few cm a frame, so the lift follows them smoothed
+			// (kGroundLiftTau), the balls let at most kGroundSink under the floor meanwhile; the stand-up eases.
+			constexpr float kGroundLiftTau = 0.04f; // s
+			constexpr float kGroundSink = 3.f;      // cm
+			AirLift += (FMath::Max(AirWant, FloorNeed) - AirLift) * FMath::Min(1.f, AirDt / kGroundLiftTau);
+			AirLift = FMath::Max(AirLift, FloorNeed - kGroundSink);
+		}
+		else
+		{
+			AirLift = AirWant >= AirLift ? FMath::Min(AirWant, AirLift + kAirLiftMove * AirDt) : FMath::Max(AirWant, AirLift - kAirLiftMove * AirDt);
+			AirLift = FMath::Max(AirLift, FloorNeed);
+		}
 		Lift.Z += AirLift;
 #if !UE_BUILD_SHIPPING
 		// -ArenaJumpFloor: each frame on the jump's clock and 0.4 s after it, the last evaluated pose's pelvis, head and
@@ -855,7 +972,22 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
 			}
 			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
-			// The jump's clips: take-off, rise and fall while in the air, the land clip at touch-down.
+			// The jump's clips: take-off, rise and fall while in the air, the land clip at touch-down, fitted to the
+			// kit's clock: the take-off's air span to Core's air time, entered for its push-off over the startup, and a
+			// standing landing's dip played fast and handed back to the idle kLandHandBack before the landing lock
+			// ends, so the idle's crossfade is mostly in by the first free frame (the body stands when it can act).
+			if (JumpAirTime > 0.f)
+			{
+				constexpr float kLandHandBack = 0.09f, kLandRate = 2.5f;
+				ftcore::LocoTuning& Tune = Anim->Tuning();
+				Tune.jumpAir = JumpAirTime;
+				Tune.jumpLead = JumpStartup;
+				Tune.landPlay = FMath::Max(0.05f, JumpLandLock - kLandHandBack);
+				Tune.landRate = kLandRate;
+				// A moving landing crouches about twice as deep: handed back at once, it rises over the crossfade
+				// instead of in the last frames before the lock ends.
+				Tune.landPlayMoving = 0.02f;
+			}
 			Anim->SetAir(Pose.bAir && !Pose.bLying, Pose.AirRise);
 			// Where the walk heads, so the legs start and stop with the clips made for it (in cm).
 			const bool bWalks = !Pose.bLying && !Pose.bDodging && Pose.WantSpeed >= 0.f;

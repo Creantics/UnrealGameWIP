@@ -151,6 +151,10 @@ add_library(ftcore STATIC
     src/ArenaFight.cpp
     src/Chairs.cpp
     src/CountLiftData.cpp
+    src/LoneCarry.cpp
+    src/PartnerBrain.cpp
+    src/GiftSlot.cpp
+    src/Hallucination.cpp
     src/Brief.cpp
     src/BriefKit.cpp
     src/LicenceRating.cpp
@@ -172,6 +176,8 @@ add_library(ftcore STATIC
     src/ArenaSoftTarget.cpp
     src/ArenaImpact.cpp
     src/ArenaLook.cpp
+    src/ArenaCamera.cpp
+    src/ArenaGun.cpp
     src/StoneBearer.cpp
     src/BeatChoreo.cpp
     src/BeatMusic.cpp
@@ -320,6 +326,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_load.cpp
         tests/test_strike_count.cpp
         tests/test_count_lift.cpp
+        tests/test_partner_brain.cpp
         tests/test_combat_inputs.cpp
         tests/test_table_ring.cpp
         tests/test_boss_script.cpp
@@ -433,6 +440,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_pause.cpp
         tests/test_arena.cpp
         tests/test_arena_load.cpp
+        tests/test_hallucination.cpp
         tests/test_chairs.cpp
         tests/test_brief.cpp
         tests/test_licence.cpp
@@ -455,6 +463,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena_soft.cpp
         tests/test_arena_impact.cpp
         tests/test_arena_look.cpp
+        tests/test_arena_boss_break.cpp
         tests/test_stone_bearer.cpp
         tests/test_beat_choreo.cpp
         tests/test_beat_cine.cpp

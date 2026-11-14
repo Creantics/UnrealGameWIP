@@ -1,5 +1,6 @@
 // Carrying in the arena: the Load cap from the chairs, block Load, take half for an ally, and the chairs' effects.
 #include "ftcore/ArenaFight.h"
+#include "ftcore/FightSession.h"
 #include "ftcore/Places.h"
 #include "ftcore/UiViews.h"
 
@@ -513,6 +514,7 @@ TEST_CASE("arena take half: refused inside a dodge's i-frames and while hurt; a 
         rig.fight.begin(rig.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
         placeAlly(rig, s);
         rig.bodies.enemies[1] = Vec2{-1.5f, 0.f};
+        rig.in.cameraFacing = Vec2{-1.f, 0.f}; // the camera sees the quick biter behind
         ArenaAction atLand = ArenaAction::Idle;
         int allyLand = -1;
         for (int k = 1; k <= 120 && allyLand < 0; ++k) {
@@ -736,4 +738,298 @@ TEST_CASE("arena take half: refused from the air (no one takes a blow for someon
         CHECK(rig.count(ArenaEventType::TookHalf) == 1);
         CHECK(rig.fight.allyHp() == 89);
     }
+}
+
+TEST_CASE("lone carry: a hit of 22 takes 25, a block's chip is from the scaled hp, a parry of 22 stores 33") {
+    CHECK(loneScale(22, 1.15f) == 25);
+    CHECK(loneScale(36, 1.3f) == 47);
+    CHECK(loneScale(0, 1.15f) == 0);
+    CHECK(loneScale(-5, 1.15f) == 0);
+    CHECK(loneScale(22, 0.5f) == 22); // a scale below 1 is not one
+    CHECK(loneScale(2000000, 2.f) == 3000000);
+    {   // a landed hit
+        Rig rig({biterKind(22)});
+        rig.fight.setLone(true);
+        CHECK(rig.fight.lone());
+        rig.run(42);
+        REQUIRE(rig.count(ArenaEventType::Hit) == 1);
+        CHECK(rig.fight.hp() == 75);
+        CHECK(rig.find(ArenaEventType::Hit)->amount == 25);
+    }
+    {   // not Lone (the default): 22
+        Rig rig({biterKind(22)});
+        CHECK_FALSE(rig.fight.lone());
+        rig.run(42);
+        CHECK(rig.fight.hp() == 78);
+    }
+    {   // a block's chip: 40 is 46 while Lone, 25% of it 12 (10 not Lone); the block's Load reads the 40
+        Rig rig({biterKind(40)});
+        rig.fight.setLone(true);
+        rig.fight.setCarry(true);
+        rig.in.guard = true;
+        rig.run(42);
+        REQUIRE(rig.count(ArenaEventType::Blocked) == 1);
+        CHECK(rig.fight.hp() == 88);
+        CHECK(rig.fight.load() == 15); // 40 x 0.25 x 1.5
+    }
+    {   // a parry of 22 stores 22 x 1.5 = 33, and takes no hp
+        Rig rig({biterKind(22)});
+        rig.fight.setLone(true);
+        rig.parry();
+        REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(rig.fight.load() == 33);
+        CHECK(rig.fight.hp() == 100);
+    }
+}
+
+TEST_CASE("lone carry: the cap is 100 whatever setLoadCap says; ending it at 80 under a cap of 40 overloads once") {
+    Rig rig({biterKind(22)});
+    rig.fight.setLoadCap(40);
+    rig.fight.setLone(true);
+    CHECK(rig.fight.loadCap() == 100);
+    CHECK(rig.fight.releaseOpenLoad() == 33);
+    rig.fight.giveLoad(80);
+    rig.tick();
+    CHECK(rig.fight.load() == 80);
+    CHECK_FALSE(rig.fight.overloaded());
+    CHECK(rig.count(ArenaEventType::Overloaded) == 0);
+    rig.fight.setLone(false); // a gift given: back to the chairs' cap
+    CHECK(rig.fight.loadCap() == 40);
+    CHECK(rig.fight.load() == 80);
+    CHECK(rig.fight.overloaded());
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+    CHECK(rig.fight.stats().overloads == 1);
+    // A refused tuning turns it off.
+    LoneTuning bad;
+    bad.gain = 4.f;
+    rig.fight.setLone(true, bad);
+    CHECK_FALSE(rig.fight.lone());
+}
+
+TEST_CASE("lone carry: stores gain the stance's x1.5 in place of the chairs'; giveLoad stays ungained") {
+    ArenaChairs chairs;
+    chairs.named[0] = ChairEffect{ChairKind::LoadGain, 0.25f, 15.f};
+    chairs.named[1] = ChairEffect{ChairKind::HealCharges, 2.f, 0.f};
+    chairs.count = 2;
+    Rig rig({biterKind(10)});
+    rig.fight.setAlly(100, 0.4f);
+    rig.bodies.ally = Vec2{0.f, 2.f};
+    rig.fight.setChairs(chairs);
+    rig.fight.setLone(true);
+    rig.fight.restart();
+    CHECK(rig.fight.healChargesMax() == ruleFighter().healCharges); // the chairs' charges are left out
+    rig.parry();
+    REQUIRE(rig.count(ArenaEventType::Parried) == 1);
+    CHECK(rig.fight.load() == 15); // 10 x 1.5, not x 1.25
+    rig.fight.giveLoad(10);
+    rig.tick();
+    CHECK(rig.fight.load() == 25);
+    rig.fight.setLone(false);
+    rig.fight.restart();
+    CHECK(rig.fight.healChargesMax() == ruleFighter().healCharges + 2);
+}
+
+TEST_CASE("lone carry: the Release's hp damage is x1.3 on its base") {
+    for (const bool lone : {false, true}) {
+        CAPTURE(lone);
+        Rig rig({dummyKind()});
+        rig.fight.setLone(lone);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        int dealt = -1;
+        for (const ArenaEvent& e : rig.log)
+            if (e.type == ArenaEventType::Hit && e.source == kArenaPlayer && e.move == kArenaReleaseMove) dealt = e.amount;
+        CHECK(dealt == (lone ? 26 : 20)); // 20 x 1.3
+    }
+}
+
+TEST_CASE("lone carry: take half never happens and takeHalfDue stays false") {
+    AllySetup s;
+    const int land = landTick(s);
+    REQUIRE(land > 6);
+    Rig rig({biterKind(s.damage, 10.f)});
+    rig.fight.setLone(true);
+    placeAlly(rig, s);
+    bool due = false;
+    for (int k = 1; k <= land + 2; ++k) {
+        due = due || rig.fight.takeHalfDue(0.2f);
+        if (k == land - 5) rig.in.takeHalf = true;
+        rig.tick();
+    }
+    CHECK_FALSE(due);
+    CHECK(rig.count(ArenaEventType::TookHalf) == 0);
+    CHECK(rig.fight.allyHp() == 100 - s.damage);
+    CHECK(rig.fight.hp() == 100);
+}
+
+namespace {
+// A crit hook: every player hit at x`scale`.
+struct ScaleHook {
+    float scale = 2.f;
+    static ArenaBlowRuling hook(void* user, const ArenaBlow& b) {
+        ArenaBlowRuling r;
+        if (b.source == kArenaPlayer) r.damage = static_cast<const ScaleHook*>(user)->scale;
+        return r;
+    }
+};
+
+// The Release's first hit on the dummy (-1: none).
+int releaseDealt(const Rig& rig) {
+    for (const ArenaEvent& e : rig.log)
+        if (e.type == ArenaEventType::Hit && e.source == kArenaPlayer && e.move == kArenaReleaseMove) return e.amount;
+    return -1;
+}
+} // namespace
+
+TEST_CASE("lone carry: a Release begun while Lone keeps its x1.3 when Lone ends mid-swing; one begun after does not") {
+    for (const bool lonePress : {true, false}) {
+        CAPTURE(lonePress);
+        Rig rig({dummyKind()});
+        rig.fight.setLone(lonePress);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        rig.in.release = true;
+        rig.tick(); // the Release begins (Released)
+        rig.in.release = false;
+        REQUIRE(rig.count(ArenaEventType::Released) == 1);
+        rig.fight.setLone(!lonePress); // the stance flips before the swing lands
+        rig.run(40);
+        CHECK(releaseDealt(rig) == (lonePress ? 26 : 20));
+    }
+}
+
+TEST_CASE("lone carry: the Release's x1.3 is one more factor under the single-blow cap") {
+    struct Case {
+        float cap;
+        int dealt;
+    };
+    // 20 base, a x2 crit: 52 with no cap; a cap of 2 keeps it to 40 (x2, not x2.6); a cap of 6 leaves 52; a cap
+    // under the hook's own ruling never lowers that ruling (the host's to apply).
+    for (const Case c : {Case{0.f, 52}, Case{2.f, 40}, Case{6.f, 52}, Case{1.5f, 40}}) {
+        CAPTURE(c.cap);
+        ScaleHook crit;
+        Rig rig({dummyKind()});
+        rig.fight.setBlowHook(&ScaleHook::hook, &crit);
+        rig.fight.setLone(true, LoneTuning{}, c.cap);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        CHECK(releaseDealt(rig) == c.dealt);
+    }
+    CHECK(loneReleaseScale(2.f, 1.3f, 0.f) == doctest::Approx(2.6f));
+    CHECK(loneReleaseScale(2.f, 1.3f, 2.2f) == doctest::Approx(2.2f));
+    CHECK(loneReleaseScale(3.f, 1.3f, 2.f) == doctest::Approx(3.f)); // over the cap already: left
+    CHECK(loneReleaseScale(0.f, 1.3f, 2.f) == 0.f);
+    CHECK(loneReleaseScale(2.f, 0.5f, 0.f) == doctest::Approx(2.f));
+}
+
+TEST_CASE("lone carry: a blow cap passed through setLone does nothing outside Lone") {
+    // 20 base, a x2 crit: 40 whatever the cap, when not Lone (the cap is the host's to apply).
+    for (const float cap : {0.f, 1.5f, 2.f, 6.f}) {
+        CAPTURE(cap);
+        ScaleHook crit;
+        Rig rig({dummyKind()});
+        rig.fight.setBlowHook(&ScaleHook::hook, &crit);
+        rig.fight.setLone(false, LoneTuning{}, cap);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        CHECK(releaseDealt(rig) == 40);
+    }
+}
+
+namespace {
+FightSessionDef loneSessionDef(FighterId lead, const LoneTuning& t) {
+    FightSessionDef d;
+    d.count.bpm = 60.0;
+    d.lift = true;
+    d.loneLead = lead;
+    d.loneTuning = t;
+    return d;
+}
+} // namespace
+
+TEST_CASE("lone carry: before begin the fight goes Lone only on a stance the session accepts; a refused one keeps the heal charges") {
+    LoneTuning bad;
+    bad.taken = 2.5f;
+    struct Case {
+        bool wanted;
+        bool session;
+        FighterId lead;
+        LoneTuning tuning;
+        bool lone;
+    };
+    for (const Case c : {Case{true, true, kLeadA, LoneTuning{}, true}, Case{true, true, kThirdSlot, LoneTuning{}, false},
+                         Case{true, true, kLeadB, bad, false}, Case{true, false, kLeadA, LoneTuning{}, false},
+                         Case{false, true, kLeadA, LoneTuning{}, false}}) {
+        CAPTURE(c.wanted);
+        CAPTURE(c.session);
+        CAPTURE(static_cast<int>(c.lead));
+        CHECK(loneAtBegin(c.wanted, c.session, c.lead, c.tuning) == c.lone);
+        ArenaChairs chairs;
+        chairs.named[0] = ChairEffect{ChairKind::HealCharges, 2.f, 0.f};
+        chairs.count = 1;
+        Rig rig({dummyKind()});
+        rig.fight.setChairs(chairs);
+        rig.fight.setLone(loneAtBegin(c.wanted, c.session, c.lead, c.tuning), c.tuning);
+        rig.fight.restart();
+        CHECK(rig.fight.lone() == c.lone);
+        CHECK(rig.fight.healChargesMax() == ruleFighter().healCharges + (c.lone ? 0 : 2));
+        if (c.wanted && c.session) {
+            // The session's own begin rules the same way.
+            FightSession s;
+            s.begin(loneSessionDef(c.lead, c.tuning), 0.0);
+            CHECK(s.lone() == c.lone);
+        }
+    }
+}
+
+TEST_CASE("lone carry: a gift pressed on a Release's tick is held; the Release pools with its x1.3, then the gift ends Lone") {
+    Rig rig({dummyKind()});
+    rig.fight.setLone(true);
+    FightSession s;
+    REQUIRE(s.begin(loneSessionDef(kLeadA, LoneTuning{}), 0.0).ok());
+    REQUIRE(s.lone());
+    REQUIRE(s.selectGift(Gift::Heal));
+    LoneGiftHold hold;
+    rig.fight.giveLoad(50);
+    rig.tick();
+    // One tick: the Release and the gift pressed together.
+    rig.in.release = true;
+    CHECK_FALSE(hold.press(rig.fight.lone())); // held
+    rig.tick();
+    REQUIRE(rig.find(ArenaEventType::Released) != nullptr);
+    const int spent = rig.find(ArenaEventType::Released)->amount; // the log grows: keep the value, not the pointer
+    // The step's end, as the host makes it: the events first (the Release pooled), then the held gift.
+    int order = 0, pooledAt = 0, giftAt = 0;
+    bool pooled = false, given = false;
+    hold.stepEnd(
+        [&] {
+            pooledAt = ++order;
+            pooled = s.poolRelease(kLeadA, spent);
+        },
+        [&] {
+            giftAt = ++order;
+            given = s.giveGift(kLeadA).given;
+        });
+    CHECK(pooledAt == 1);
+    CHECK(giftAt == 2);
+    CHECK(pooled);
+    CHECK(given);
+    CHECK_FALSE(s.lone());
+    hold.stepEnd([&] { ++order; }, [&] { giftAt = ++order; }); // once: the next step's end gives nothing
+    CHECK(order == 3);
+    CHECK(giftAt == 2);
+    rig.fight.setLone(s.lone());
+    rig.run(40);
+    CHECK(s.lonePooled() == static_cast<unsigned>(spent));
+    CHECK(releaseDealt(rig) == 26); // begun Lone: x1.3 for its whole swing
+    CHECK_FALSE(rig.fight.lone());
+    // Pressed the other way round, the gift would have ended Lone first and the pool would refuse the Release.
+    CHECK_FALSE(s.poolRelease(kLeadA, spent));
+    // Not Lone: a press goes through at once and nothing is held.
+    CHECK(hold.press(false));
+    CHECK_FALSE(hold.take());
 }

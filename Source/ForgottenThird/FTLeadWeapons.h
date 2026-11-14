@@ -123,6 +123,17 @@ struct FFTLeadWeapons
 	void SetAimHold(float Weight) { AimHold = FMath::Clamp(Weight, 0.f, 1.f); }
 	// The share of the strike clips played on the upper body only (ftcore::attackUpperShare), for Paint.
 	void SetActionUpper(float Share) { ActionUpper = Share; }
+	// The leg (0 left, 1 right; -1 none) that keeps the strike clip under that share, for Paint.
+	void SetActionLeg(int32 Side) { ActionLeg = Side; }
+	// The gun between shots (ftcore::arenaReloadLayer, arenaFlinchLayer): the reload overlay posed by the fight's reload
+	// (ArenaFight::reloading, reloadProgress), and the last dry press's fight time. Each a no-op without its clip
+	// (lead_reload, lead_dry_flinch in the look's clip folder; a guns kit only).
+	void SetReload(bool bOn, float Progress)
+	{
+		bReloading = bOn;
+		ReloadProgress = Progress;
+	}
+	void DryPressed(double T) { DryAt = T; }
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
@@ -187,6 +198,10 @@ private:
 	};
 
 	void LoadClips(const FFTLeadLook& Look);
+	// The gun's own clips (a guns kit): its length, or 0 when Folder has none that fits the body.
+	float LoadGunClip(const FString& Folder, const TCHAR* Name, int32 Slot);
+	// The reload and flinch layers after the strike's (StrikeWeight, 0..1, keeps its share of the arms).
+	void PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight);
 	void AttachProps();
 	UStaticMeshComponent* AttachProp(const FTWeaponProps::FPiece& Piece);
 	void SpawnEffects();
@@ -242,8 +257,17 @@ private:
 	bool bAimed = false;
 	float AimHold = 0.f;
 	float ActionUpper = 0.f;
+	int32 ActionLeg = -1;
 	int32 AimSide = -1;
 	double ImpactDue = -1.0;
+	// The gun's slots (after the fight clips'), its clips' lengths (0: none), the reload's state and the last dry press.
+	static constexpr int32 kReloadSlot = static_cast<int32>(ftcore::FightClip::Count);
+	static constexpr int32 kFlinchSlot = kReloadSlot + 1;
+	float ReloadClipLength = 0.f;
+	float FlinchClipLength = 0.f;
+	bool bReloading = false;
+	float ReloadProgress = 0.f;
+	double DryAt = -1.0;
 	FVector ImpactAt = FVector::ZeroVector;
 	double LastImpactTime = -1e9;
 	double AimCheckDue = -1.0;

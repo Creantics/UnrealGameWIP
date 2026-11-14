@@ -1,5 +1,7 @@
 // Briefs (Data/Battle/briefs.json) laid over the guns lead's kit, and the pistol's cylinder (rounds, reload).
+#include "ftcore/AimStance.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaGun.h"
 #include "ftcore/Brief.h"
 #include "ftcore/BriefKit.h"
 #include "ftcore/UiViews.h"
@@ -294,6 +296,74 @@ ArenaFighter notaryKit() {
 
 } // namespace
 
+TEST_CASE("cylinder: the gun overlay: the reload clip spans the reload by its progress, the flinch, each event's cue") {
+    const ArenaTable arena = shippedArena();
+    BriefTable t;
+    std::string err;
+    REQUIRE_MESSAGE(shippedBriefs(arena.fighter("duy"), t, err), err);
+    const ArenaFighter kit = buildBriefKit(*t.find(BriefId::Notary), LicenceStats{}).fighter;
+    Range r(kit);
+    CHECK_FALSE(r.fight.reloading());
+    // Fire the cylinder empty; the reload then runs on the player's own time.
+    while (r.fight.rounds() > 0 && r.time() < 20.f) r.tick(true);
+    while (!r.fight.reloading() && r.time() < 20.f) r.tick(false);
+    REQUIRE(r.fight.reloading());
+    const float clip = 1.5f; // longer than the 1.2 s reload: the clip is posed by progress, not played at its rate
+    float lastTime = -1.f, most = 0.f;
+    int ticks = 0;
+    while (r.fight.reloading() && ticks < 600) {
+        const ArenaGunLayer l = arenaReloadLayer(kArenaGun, r.fight.reloading(), r.fight.reloadProgress(), clip);
+        CHECK(l.time >= lastTime);
+        CHECK(l.time <= clip);
+        CHECK(l.weight >= 0.f);
+        CHECK(l.weight <= 1.f);
+        lastTime = l.time;
+        most = std::max(most, l.weight);
+        r.tick(false);
+        ++ticks;
+    }
+    CHECK(most == doctest::Approx(1.f));
+    CHECK(lastTime > 0.9f * clip);
+    CHECK(ticks * kDt == doctest::Approx(kit.reload).epsilon(0.05));
+    CHECK(r.fight.rounds() == 6);
+    // Not reloading, no clip, or a non-finite progress: nothing posed.
+    CHECK(arenaReloadLayer(kArenaGun, false, 0.5f, clip).weight == 0.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, 0.5f, 0.f).weight == 0.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, std::numeric_limits<float>::quiet_NaN(), clip).weight == 0.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, 0.5f, clip).weight == 1.f);
+    CHECK(arenaReloadLayer(kArenaGun, true, 0.5f, clip).time == doctest::Approx(0.75f));
+    // A restart refills with no event: the overlay clears.
+    while (r.fight.rounds() > 0 && r.time() < 40.f) r.tick(true);
+    while (!r.fight.reloading() && r.time() < 40.f) r.tick(false);
+    REQUIRE(r.fight.reloading());
+    r.fight.restart();
+    CHECK_FALSE(r.fight.reloading());
+    CHECK(arenaReloadLayer(kArenaGun, r.fight.reloading(), r.fight.reloadProgress(), clip).weight == 0.f);
+
+    // The flinch: from the press to its clip's end, fading out over its last 50 ms; none before any press.
+    const float flinch = 0.15f;
+    CHECK(arenaFlinchLayer(kArenaGun, -1.f, flinch).weight == 0.f);
+    CHECK(arenaFlinchLayer(kArenaGun, 0.f, flinch).weight == 1.f);
+    CHECK(arenaFlinchLayer(kArenaGun, 0.125f, flinch).weight == doctest::Approx(0.5f));
+    CHECK(arenaFlinchLayer(kArenaGun, 0.125f, flinch).time == doctest::Approx(0.125f));
+    CHECK(arenaFlinchLayer(kArenaGun, flinch, flinch).weight == 0.f);
+    CHECK(arenaFlinchLayer(kArenaGun, 0.05f, 0.f).weight == 0.f);
+
+    // The cues: one per cylinder event, none for an instant reload or any other event.
+    ArenaEvent e;
+    e.type = ArenaEventType::ReloadStarted;
+    e.amount = 1200;
+    CHECK(std::string(arenaGunCue(e)) == "SFX-GUN-RELOAD");
+    e.amount = 0;
+    CHECK(arenaGunCue(e) == nullptr);
+    e.type = ArenaEventType::Reloaded;
+    CHECK(std::string(arenaGunCue(e)) == "SFX-GUN-LOADED");
+    e.type = ArenaEventType::DryPress;
+    CHECK(std::string(arenaGunCue(e)) == "SFX-GUN-DRY");
+    e.type = ArenaEventType::Hit;
+    CHECK(arenaGunCue(e) == nullptr);
+}
+
 TEST_CASE("cylinder: a dodge during the reload rolls, and the reload runs on to its full time") {
     const ArenaFighter kit = notaryKit();
     REQUIRE(kit.rounds == 6);
@@ -387,4 +457,204 @@ TEST_CASE("cylinder: a reload of 0 refills as the last shot ends") {
     const int shots = r.fight.stats().shots;
     for (int i = 0; i < 3; ++i) r.tick(true);
     CHECK(r.fight.stats().shots == shots + 1);
+}
+
+namespace {
+
+struct CylinderEvents {
+    int starts = 0, ends = 0, dry = 0;
+};
+
+// The last tick's cylinder events, counted into `c`.
+void countCylinder(const ArenaFight& fight, CylinderEvents& c) {
+    for (const ArenaEvent& e : fight.output().events) {
+        const bool cylinder = e.type == ArenaEventType::ReloadStarted || e.type == ArenaEventType::Reloaded
+            || e.type == ArenaEventType::DryPress;
+        if (!cylinder) continue;
+        CHECK(e.source == kArenaPlayer);
+        CHECK(e.target == kArenaPlayer);
+        CHECK(e.move == kArenaShotMove);
+        c.starts += e.type == ArenaEventType::ReloadStarted;
+        c.ends += e.type == ArenaEventType::Reloaded;
+        c.dry += e.type == ArenaEventType::DryPress;
+    }
+}
+
+} // namespace
+
+TEST_CASE("cylinder: events mark each reload's start and end and each dry press, for the host's clip and sound") {
+    const ArenaFighter kit = notaryKit();
+    REQUIRE(kit.rounds == 6);
+    Range r(kit);
+    CylinderEvents c;
+    float startAt = -1.f;
+    int dryBefore = 0;
+    while (c.ends < 2 && r.time() < 20.f) {
+        const CylinderEvents was = c;
+        r.tick(true);
+        countCylinder(r.fight, c);
+        for (const ArenaEvent& e : r.fight.output().events) {
+            if (e.type == ArenaEventType::ReloadStarted) {
+                CHECK(e.amount == 1200); // kit.reload, 1.2 s, in ms
+                CHECK(r.fight.rounds() == 0);
+                startAt = r.time();
+            } else if (e.type == ArenaEventType::Reloaded) {
+                CHECK(e.amount == kit.rounds);
+                REQUIRE(startAt >= 0.f);
+                CHECK(r.time() - startAt >= kit.reload - 1.5f * kDt);
+                CHECK(r.time() - startAt <= kit.reload + 1.5f * kDt);
+            } else if (e.type == ArenaEventType::DryPress) {
+                CHECK(e.amount == r.fight.stats().dryPresses);
+                CHECK(e.amount == dryBefore + 1);
+                dryBefore = e.amount;
+            }
+        }
+        // One start, then its end; never two starts before an end.
+        CHECK(c.starts - c.ends >= 0);
+        CHECK(c.starts - c.ends <= 1);
+        CHECK(c.dry - was.dry <= 1);
+    }
+    CHECK(c.ends == 2);
+    CHECK(c.starts == 2);
+    CHECK(r.fight.stats().reloads == 2);
+    CHECK(c.dry == r.fight.stats().dryPresses);
+    CHECK(c.dry > 0);
+
+    // A reload of 0: the start (0 ms) and the end come in the same tick.
+    ArenaFighter instant = kit;
+    instant.reload = 0.f;
+    Range q(instant);
+    CylinderEvents d;
+    int startMs = -1;
+    while (d.ends < 1 && q.time() < 20.f) {
+        const CylinderEvents was = d;
+        q.tick(true);
+        countCylinder(q.fight, d);
+        for (const ArenaEvent& e : q.fight.output().events)
+            if (e.type == ArenaEventType::ReloadStarted) startMs = e.amount;
+        if (d.starts > was.starts) CHECK(d.ends == was.ends + 1);
+    }
+    CHECK(d.starts == 1);
+    CHECK(d.ends == 1);
+    CHECK(startMs == 0);
+
+    // A kit with no cylinder sends none of them.
+    const ArenaTable arena = shippedArena();
+    ArenaFighter plain = arena.fighter("duy");
+    plain.shot.stamina = 0.f;
+    Range p(plain);
+    CylinderEvents none;
+    for (int i = 0; i < 600; ++i) {
+        p.tick(true);
+        countCylinder(p.fight, none);
+    }
+    CHECK(p.fight.stats().shots > 6);
+    CHECK(none.starts == 0);
+    CHECK(none.ends == 0);
+    CHECK(none.dry == 0);
+}
+
+TEST_CASE("cylinder: the button held on an empty cylinder is one dry press, by the host's press edge") {
+    ArenaFighter kit = notaryKit();
+    REQUIRE(kit.rounds == 6);
+    kit.reload = 5.f; // so the cylinder stays empty while the button is held
+    Range r(kit);
+    while (r.fight.rounds() > 0 && r.time() < 20.f) r.tick(true);
+    REQUIRE(r.fight.rounds() == 0);
+    while (r.fight.output().player.action == ArenaAction::Light && r.time() < 20.f) r.tick(false); // the last shot ends
+    const int dryBefore = r.fight.stats().dryPresses;
+    // The host's attack button: PressHold in its aimed-gun mode (single), one tick per step, its light the step's press.
+    const float hold = AimRules{}.heavyHold;
+    PressHold button;
+    CylinderEvents c;
+    const auto step = [&](bool down) {
+        const PressHold::Out o = button.tick(kDt, down, hold, false, true);
+        CHECK_FALSE(o.heavy);
+        r.in.aim = true;
+        r.in.aimDir = Vec2{1.f, 0.f};
+        r.in.light = o.light;
+        r.fight.tick(kDt, r.in, r.bodies);
+        ++r.ticks;
+        countCylinder(r.fight, c);
+    };
+    for (int i = 0; i < 60; ++i) step(true);
+    CHECK(c.dry == 1);
+    for (int i = 0; i < 30; ++i) step(false); // the release gives nothing
+    CHECK(c.dry == 1);
+    for (int i = 0; i < 60; ++i) step(true); // a second press is a second dry press
+    CHECK(c.dry == 2);
+    CHECK(r.fight.stats().dryPresses == dryBefore + 2);
+    CHECK(r.fight.rounds() == 0);
+    CHECK(c.ends == 0);
+    // The edge is the host's: the same 60 ticks with the press raw (high every tick) count a dry press on each.
+    Range raw(kit);
+    while (raw.fight.rounds() > 0 && raw.time() < 20.f) raw.tick(true);
+    while (raw.fight.output().player.action == ArenaAction::Light && raw.time() < 20.f) raw.tick(false);
+    CylinderEvents d;
+    for (int i = 0; i < 60; ++i) {
+        raw.tick(true);
+        countCylinder(raw.fight, d);
+    }
+    CHECK(d.dry > 1);
+}
+
+TEST_CASE("cylinder: a reload cut short by a restart or the lead's fall never completes") {
+    const ArenaTable arena = shippedArena();
+    std::size_t pup = arena.enemyIds.size();
+    for (std::size_t i = 0; i < arena.enemyIds.size(); ++i)
+        if (arena.enemyIds[i] == "maw_pup") pup = i;
+    REQUIRE(pup < arena.enemies.size());
+    ArenaFighter kit = notaryKit();
+    REQUIRE(kit.rounds == 6);
+    kit.hp = 1;
+    kit.reload = 5.f; // the pup lands a blow long before it would end
+    Range r(kit);
+    r.def.enemies[0] = arena.enemies[pup];
+    r.def.enemies[0].hp = 100000;
+    r.def.enemies[0].poise = 100000.f;
+    r.fight.begin(r.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+    CylinderEvents c;
+    const auto run = [&](int ticks, bool shoot) {
+        for (int i = 0; i < ticks; ++i) {
+            r.tick(shoot);
+            countCylinder(r.fight, c);
+        }
+    };
+
+    // A restart halfway: the cylinder is full, the reload gone, and no Reloaded arrives for it.
+    while (c.starts == 0 && r.time() < 20.f) run(1, r.fight.rounds() > 0);
+    REQUIRE(c.starts == 1);
+    run(60, false);
+    REQUIRE(r.fight.reloadProgress() > 0.f);
+    REQUIRE(r.fight.phase() == ArenaPhase::Fighting);
+    r.fight.restart();
+    CHECK(r.fight.rounds() == 6);
+    CHECK(r.fight.reloadProgress() == doctest::Approx(0.f));
+    run(600, false); // past the reload's own time
+    CHECK(c.ends == 0);
+    CHECK(c.starts == 1);
+    CHECK(r.fight.stats().reloads == 0);
+    // The next empty cylinder reloads with a start of its own, then its end.
+    while (c.ends == 0 && r.time() < 60.f) run(1, r.fight.rounds() > 0);
+    CHECK(c.starts == 2);
+    CHECK(c.ends == 1);
+
+    // The lead falls mid-reload: the fight is over, the reload gone, and nothing more comes.
+    while (c.starts == 2 && r.time() < 90.f) run(1, r.fight.rounds() > 0);
+    REQUIRE(c.starts == 3);
+    run(30, false);
+    REQUIRE(r.fight.reloadProgress() > 0.f);
+    REQUIRE(r.fight.phase() == ArenaPhase::Fighting);
+    r.bodies.enemies[0] = Vec2{1.2f, 0.f}; // within the pup's thrust
+    while (r.fight.phase() == ArenaPhase::Fighting && r.time() < 120.f) run(1, false);
+    REQUIRE(r.fight.phase() == ArenaPhase::Defeat);
+    CHECK(r.fight.rounds() == 0);
+    CHECK(r.fight.reloadProgress() == doctest::Approx(0.f));
+    run(600, false);
+    CHECK(c.starts == 3);
+    CHECK(c.ends == 1);
+    CHECK(r.fight.stats().reloads == 1);
+    ArenaHudLead hud;
+    fillArenaHudLead(r.fight, hud);
+    CHECK(hud.reload01 == doctest::Approx(0.f));
 }

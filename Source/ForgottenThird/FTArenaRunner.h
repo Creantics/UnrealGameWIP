@@ -20,7 +20,10 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaCamera.h"
+#include "ftcore/ArenaGun.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
@@ -55,6 +58,7 @@ struct Settings;
 
 class AFTArenaFighter;
 class AStaticMeshActor;
+struct FHitResult;
 class UStaticMeshComponent;
 class APlayerController;
 class UWorld;
@@ -290,6 +294,25 @@ public:
 	// The fight session (the shared combat inputs) the runner owns and ticks on the held clock, and its lead slot (the
 	// one the player's figure fills: SessionLeadOf the lead's look, set at Begin).
 	UFTFightSession* GetSession() const { return Session; }
+	// For the HUD, each 0 (false) with no session or, for the refusal's, without -ArenaHallucination: the gift slot's
+	// Heals left this fight and the seconds until the Heal and the Guard are ready (0 = ready; the Guard's time runs
+	// from press to press, its guard included); a refusal that closed an offer too early to open anything (true for
+	// kRefusedTooEarlyShow s from that step); the Escrow Brief's wait before a hold builds, and its seconds left; the
+	// lock's seconds left, through which a refusal opens nothing.
+	int32 GetGiftHealsLeft() const;
+	double GetGiftHealReadyIn() const;
+	double GetGiftGuardReadyIn() const;
+	bool IsRefusedTooEarly() const;
+	bool IsEscrowWaiting() const;
+	float GetEscrowWaitLeft() const;
+	float GetWeakPointLockFor() const;
+	static constexpr float kRefusedTooEarlyShow = 1.5f;
+	// The Lone Carry's bargain card: true for kLoneBargainShow s from the step it began; its terms (the session's
+	// tuning) and the roll as it stands (the save's lone Releases plus this fight's, until a win folds them in).
+	bool IsLoneBargainDue() const;
+	ftcore::LoneBargain GetLoneBargain() const;
+	ftcore::LoneRoll GetLoneRoll() const;
+	static constexpr float kLoneBargainShow = 4.f;
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
@@ -370,7 +393,8 @@ private:
 	// impact at the end of the startup; stagger; face down while open; the hit reaction between moves; defeat; idle.
 	void DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const ftcore::ArenaEnemyKind& Kind, float Alpha);
 	// Whether a blow makes slot I flinch: not on its knees (the go-down is its reaction), nor while it gets up from them.
-	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I]; }
+	// Not in a boss's break move's windup or active part (Core's enemyBreakGuard): blows there never flinch it.
+	bool Flinches(int32 I) const { return !bKneeling[I] && Now >= UpOwedUntil[I] && !Fight.enemyBreakGuard(static_cast<size_t>(I)); }
 	void PutBodiesAtStart();
 	// This frame's presses (edges kept until a step takes them), the held guard, the stick and the camera.
 	void PollInput(float DeltaSeconds);
@@ -383,9 +407,18 @@ private:
 	void PressSession(const ftcore::ArenaInput& In);
 	void FeedSession();
 	void BeginSession();
+	// The gift slot's press result, applied: a Heal's share of the lead's max hp and its Load moved off the lead (a
+	// Guard's scale is read on every step instead, ArenaInput::takenScale; a Count is already called).
+	void ApplyGift(const ftcore::GiftResult& Result);
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// The lead's cylinder (Core's ReloadStarted, Reloaded and DryPress events): where the reload clip, the dry-press flinch
+	// and their sounds attach once they exist. For now they only log.
+	void OnLeadReload(bool bStarted, int32 Amount);
+	void OnLeadDryPress(int32 Presses);
+	// The cylinder event's sound (ftcore::arenaGunCue) through UFTAudioSubsystem.
+	void PlayGunCue(const ftcore::ArenaEvent& E);
 	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
 	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
 	void KickJolt(const ftcore::ArenaEvent& E);
@@ -490,6 +523,10 @@ private:
 	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
 	bool bWalking[ftcore::kMaxArenaEnemies] = {};
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
+	// A step back's ground speed (m/s), from its SteppedBack event: the walk clip plays backward at it.
+	float StepBackSpeed[ftcore::kMaxArenaEnemies] = {};
+	// The camera's horizontal half-angle last handed to the fight (ArenaFight::setCameraHalfAngle); -1 none yet.
+	float FightCameraHalf = -1.f;
 	// A skin on its knees (Down, or Open without a clip of its own; one spell however the states chain) and since when, how
 	// far into its get-up it was last drawn (s), and until when a get-up cut short by the spell's end is still owed.
 	bool bKneeling[ftcore::kMaxArenaEnemies] = {};
@@ -580,6 +617,76 @@ private:
 	int32 Marks = 0;
 	int32 MaxJoinLoad = 0;       // the most Load two joiners held at a join
 	int32 CappedBlows = 0; // blows the blow cap kept down this fight (-ArenaCountLift)
+	// -ArenaLone (or -ArenaThirdSlot=Vacant|Hostile, which forces it): the lead takes the Lone Carry (ftcore/LoneCarry.h).
+	bool bLone = false;
+	uint8 LoneSlot = 0;                 // ftcore::SlotState set on the third slot after the session begins
+	ftcore::LoneTuning LoneTuning{};
+	bool bLoneAtStart = false;
+	double LoneEndedAt = -1.0;          // the fight time a given gift ended it (-1: it did not)
+	int32 LoneReleases = 0;             // Releases made while Lone (each pooled)
+	int32 LoneGiftPresses = 0;          // gift presses while Lone, given or refused
+	int32 LoneGiftsRefused = 0;         // of those, refused (still Lone)
+	int32 LoneBreaches = 0;             // while Lone: a join, a table begun, or a Release not pooled (the check: 0)
+	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
+	bool bLoneGiftDone = false;
+	// The probe's self-check: the lead's health handed to the slot just before the probe's press (setLeadHealth), and
+	// whether the press waits for the step's end. At full health the probe's Heal must come back refused NotHurt.
+	float ProbeLeadHealth = -1.f;
+	bool bProbeAwaiting = false;
+	void LogProbeCheck(const ftcore::GiftResult& Result);
+	// The stance this fight begins in: chosen, or forced by the third slot.
+	bool LoneWanted() const { return bLone || ftcore::loneForced(static_cast<ftcore::SlotState>(LoneSlot)); }
+	// The stance the session will accept for this lead (asked before the fight begins, so a refused one changes
+	// nothing: the chairs' heal charges stay).
+	bool LoneAccepted(uint8 Lead) const { return ftcore::loneAtBegin(LoneWanted(), Session != nullptr, Lead, LoneTuning); }
+	// The fight follows the session's truth (a given gift ends it).
+	void MirrorLone();
+	// While Lone a gift press waits until after the step (a same-tick Release pools first).
+	ftcore::LoneGiftHold LoneGift;
+	bool bLoneGiftApply = false; // the waiting press came from a gift key (applied), not the heal's (as before)
+	void PressPendingLoneGift();
+	// The save's pool of lone Releases (the runner's life: nothing persists it yet), the pool's tuning
+	// (Data/Battle/lone_pool.json) and the fight time the Lone Carry began (the bargain's card; -1 none).
+	ftcore::LoneSave LoneSaved{};
+	ftcore::LonePoolTuning LonePool{};
+	double LoneBargainAt = -1.0;
+	// -ArenaHallucination=accept|refuse|expire (a probe; off by default): offers of the lead's tragedies by the Core
+	// rules (ftcore/Hallucination.h). The hold slows the lead's stick and a full one stills the lead; the enemies go on.
+	// 0 off, 1 accept (the partner pulls back), 2 refuse after a second, 3 let it expire, 4 accept, then refuse with
+	// the guard a second into the hold and keep it down a second after
+	int32 HallMode = 0;
+	float HallAt = 5.f;            // no offer before this fight time (-ArenaHallucinationAt=S)
+	ftcore::HallucinationTuning HallTuning{};
+	ftcore::TragedyTable HallTable;
+	ftcore::TragedyPool HallPool;
+	ftcore::Hallucination Hall;
+	uint32 HallRng = 7u;
+	double HallShownAt = 0.0;
+	int32 HallSeen[8] = {};        // events by ftcore::HallucinationEventType
+	int32 HallHeldSteps = 0;       // steps the lead stood held
+	int32 HallEnemyActs = 0;       // enemy attacks begun while the lead stood held
+	int32 HallGuardHeld = 0;       // held steps the guard button was down (the refusal's, never the fight's)
+	int32 HallGuardKept = 0;       // steps after a hold the guard from it stayed down (still the refusal's)
+	int32 HallBlocksHeld = 0;      // blocks and parries the fight gave in those steps: 0, the guard never reaches it
+	double HallHeldAt = -1.0;      // the Hallucination's clock at the last Held, and at the last Refused
+	double HallRefusedAt = -1.0;
+	bool bHallKeptStep = false;
+	float HallHeldDrift = 0.f;     // metres the lead's body moved while held (knocks included)
+	float HallMaxHold = 0.f;
+	bool bHallHeldStep = false;
+	ftcore::Vec2 HallHeldFrom{};
+	// The refusal's weak point: the window's seconds left after the last step (a rise is a new opening), the blows the
+	// lead took last step (the hold's push), the fight time a refusal last closed an offer too early, and the lead's
+	// Brief (BeginBrief's; Count for none).
+	float HallOpenLeft = 0.f;
+	int32 HallBlowsTaken = 0;
+	double HallTooEarlyAt = -1.0;
+	bool bHallNoWeakPointLogged = false;
+	ftcore::BriefId LeadBrief = ftcore::BriefId::Count;
+	void HallWeakPoint();
+	void BeginHallucination();
+	void StepHallucination(ftcore::ArenaInput& In);
+	void AfterHallucinationStep(const ftcore::ArenaOutput& Out);
 	int32 PartnerLoadStored = 0; // the partner's kept gauge: stored this fight, and the last change
 	double PartnerLoadTime = -1e9;
 	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)
@@ -632,6 +739,8 @@ private:
 	bool bReleaseDown = false;
 	bool bPressPair = false;
 	bool bPressTakeHalf = false;
+	// The gift the last gift key pressed (Gift Heal, Gift Guard; None: none), until the step's PressSession reads it.
+	ftcore::Gift GiftPick = ftcore::Gift::None;
 	// Autoplay's partner: a parry came, so press the pair on the next step.
 	bool bPartnerDue = false;
 	int8 PressSwitch = 0;
@@ -661,9 +770,9 @@ private:
 	int32 ReticleEnemy = -1; // the standing enemy whose body the reticle's line meets first (-1: none)
 	bool bReticleOutOfReach = false; // see IsReticleOutOfReach
 	bool bReticleBlocked = false;    // see IsReticleBlocked
-	// The blocked crosshair's hysteresis: another body blocks only when the crosshair's own is met more than
-	// kBlockMargin (m) further along the round, and the shown state changes once the new one has held kBlockHoldFrames.
-	static constexpr float kBlockMargin = 0.25f;
+	bool bReticleTakes = false;      // a round fired now would take the crosshair's body (this frame's, not held as blocked is)
+	// The blocked crosshair's display hold: another body blocks by the round's own rule (Core's kArenaShotGraze), and
+	// the shown state changes once the new one has held kBlockHoldFrames.
 	static constexpr int32 kBlockHoldFrames = 4;
 	int32 BlockedRun = 0;  // frames the unshown state has held
 	int32 BlockedFor = -1; // the crosshair's body that state is about (a new one starts clear)
@@ -671,9 +780,18 @@ private:
 	// line From -> To (cm) nearer than T on entry (0..1 of the line): its slot, and T then the share along the line. The
 	// figures carry no collision, so the reticle's trace meets them by this.
 	int32 ReticleBody(const FVector& From, const FVector& To, double& T) const;
+	// The crosshair's pick along From -> To (cm): the world's first hit on the visibility channel (the lead's figure not
+	// counted) clips the line, and the body ReticleBody meets before it is picked (-1: none, as for a body behind cover).
+	// T: the share along the line of the pick, else of the world hit, else 1.
+	int32 PickReticle(const FVector& From, const FVector& To, FHitResult& Hit, bool& bWorldHit, double& T) const;
+	// Aim assist's condition: aimed (not blending out), not locked on, a guns kit, and the crosshair on a standing body a
+	// round fired now would take (bReticleTakes).
+	bool AssistOverBody() const;
+#if !UE_BUILD_SHIPPING
 	// -ArenaAimCheck (autopilot, a guns kit): once in the fight, the camera aims at the tallest standing enemy's top
 	// (its height and hover) by ftcore::arenaLookUpPitch, the reticle is traced and one aimed shot is pressed; the
-	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done.
+	// check line says whether the view reached it and the shot connected. 0 off, 1 waiting, 2 aiming, 3 fired, 4 done,
+	// 5 the -ArenaAssistCheck sweep.
 	int32 AimCheckPhase = 0;
 	int32 AimCheckSlot = -1;
 	int32 AimCheckPresses = 0;
@@ -689,10 +807,45 @@ private:
 	float AimCheckHpBefore = 0.f;
 	float AimCheckRendered = 0.f;  // the view pitch the camera rendered as the shot was pressed
 	bool bAimCheckFire = false;
+	// -ArenaAssistCheck (with -ArenaAimCheck): after the aimed shot (phase 5), four steps, each capped at 6 s: 0 a
+	// half-way right stick sweeps the view off the body and back through TurnLook with aim assist on (a lock from before
+	// is let go: the view does not turn while one is on); 1 a lock is pressed on and let go; 2 aim is let go and held
+	// again; 3 the target is killed by a host blow. The view's pitch, and from step 1 its yaw, are kept on the body's
+	// middle. Each change of the stick's share is logged with its cause; the check line compares the turn rate over a
+	// body and off it and says whether the share went back to 1 on each of the four.
+	bool bAssistCheck = false;
+	int32 AssistStep = 0;
+	int32 AssistSub = 0;           // the step's own progress
+	double AssistStepAt = 0.0;     // when the step began
+	double AssistMarkAt = -1e9;    // when the step last acted (a lock press, the aim let go)
+	double AssistSince = 0.0;      // when the share last changed
+	float AssistSweep = 1.f;
+	float AssistKeep = 1.f;        // the share as last logged
+	bool bAssistAimOff = false;    // step 2: the aim let go
+	bool bAssistLockPress = false; // StepAimCheck presses lock on its next input
+	uint8 AssistReturns = 0;       // the share back at 1, bits: 1 the crosshair left, 2 lock-on, 4 aim let go, 8 the target died
+	FString AssistFail;            // the step that ran out of time
+	int32 AssistEnters = 0;
+	int32 AssistExits = 0;
+	float AssistTime[2] = {0.f, 0.f};   // seconds swept off a body [0] and over one [1]
+	float AssistTurned[2] = {0.f, 0.f}; // degrees swept off a body [0] and over one [1]
+	void StepAssistCheck(float DeltaSeconds);
+	// -ArenaCoverCheck: once, a second into the fight, a synthetic crosshair line (not the camera's) from 0.5 m over the
+	// floor through the cover drum nearest a standing enemy to its body's middle, picked by PickReticle as the reticle is, and the same
+	// line with the world left out as the control. Logs "Arena check: reticle behind cover" and, with
+	// -ArenaQuitOnFinish, ends the run.
+	bool bCoverCheck = false;
+	void StepCoverCheck();
+#endif
+	// The unlocked look: the mouse and the right stick turn the view, by aim assist's share (ftcore::aimAssistTurn) while
+	// AssistOverBody (last frame's readout), by ftcore::arenaLookStep. Returns the stick's share.
+	float TurnLook(float MouseX, float MouseY, float LookX, float LookY, float DeltaSeconds, bool bAssist);
 	// The tallest standing enemy's slot (-1: none) and its top over the floor (m).
 	int32 TallestStanding(float& OutTop) const;
 	// The aim's heading on the ground from the lead toward the reticle (Fallback when it lies on the lead).
 	ftcore::Vec2 ReticleAimDir(const ftcore::Vec2& Fallback) const;
+	// The body under the crosshair as the fight's ArenaInput::aimBody (kArenaNobody: none).
+	uint8 ReticleAimBody() const;
 	// The round's climb (rad) from the lead's muzzle (ftcore::kArenaShotHeight over its floor) to the reticle's heading
 	// point; false (and 0) with no reticle traced.
 	bool ReticlePitch(float& OutPitch) const;
@@ -700,13 +853,17 @@ private:
 	bool BodyPitch(int32 Slot, float& OutPitch) const;
 	// The rendered view's rotation without the impact jolt (the camera's own, as the reticle and the tells read it).
 	FRotator ViewRotation(const APlayerCameraManager& Camera) const;
+#if !UE_BUILD_SHIPPING
 	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
 	void StepAimCheck(ftcore::ArenaInput& In);
+#endif
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 	bool bMouseFlicked = false;
 
 	double Now = 0.0;
+	double TellSince[ftcore::kMaxArenaEnemies] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)
+	bool bTellShown[ftcore::kMaxArenaEnemies] = {};
 	double Accumulator = 0.0;
 	double DrawnTime = 0.0;
 	double ActiveSince[ftcore::kMaxArenaEnemies];
@@ -722,6 +879,38 @@ private:
 
 	float CameraYaw = 0.f;
 	float CameraPitch = -16.f;
+	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurn) on top of CameraYaw, which stays on the lock's
+	// line. It goes into CameraYaw once nothing is followed (ftcore::arenaFrameYawStep), so the view never jumps.
+	float FrameTurn = 0.f;
+	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read.
+	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}); }
+	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
+	ftcore::ArenaFrameRules FrameRules() const
+	{
+		ftcore::ArenaFrameRules Rules = ftcore::kArenaFrame;
+		Rules.maxTurn = Fit.camera.frameTurnCapDeg;
+		return Rules;
+	}
+#if !UE_BUILD_SHIPPING
+	// -ArenaFrameCheck: the framing as the rendered camera shows it, sampled on each followed frame and logged by
+	// LogFeatureChecks ("Arena check: framing"). -ArenaNoFrame holds the framing at 0, for a side-by-side.
+	bool bFrameCheck = false;
+	bool bNoFrame = false;
+	int32 FrameFrames = 0;
+	int32 FrameSettled = 0;
+	int32 FrameInThird = 0;
+	float FrameLeadWorst = 0.f;
+	float FrameFoeWorst = 0.f;
+	float FrameTurnMost = 0.f;
+	float FrameRateMost = 0.f;
+	float FrameLensMost = 0.f;
+	float FrameArmMost = 0.f;
+	float FramePrev = 0.f;
+	int32 FrameBandN[4] = {};
+	float FrameBandFoe[4] = {};
+	float FrameBandGap[4] = {};
+	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
+#endif
 
 	// Impact feedback. The jolt, the camera shake the run forces (-ArenaCameraShake=<0..1>; below 0: the setting), the
 	// blows that asked for a kick and the largest offset handed to the camera (degrees). The view the off-frame test
@@ -833,6 +1022,8 @@ private:
 	// notes logged so far (its plinth and keep-out disc are with the figures above).
 	FFTStoneBearerHost StoneBearer;
 	int32 StoneBearerSlot = -1;
+	// The boss kinds whose break fallback error was logged (PrepareStoneBearer): once a kind a play session.
+	TSet<FName> BreakErrorLogged;
 	float ZoneYaw = 0.f;
 	int32 StoneBearerLogged = 0;
 	mutable bool bWeakPointWarned = false; // the mesh has no weak-point bone (warned once)
