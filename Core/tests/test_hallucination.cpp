@@ -1232,6 +1232,37 @@ TEST_CASE("Escrow: the first 5 s inside an offer build no hold, so Held comes at
     CHECK(d.escrowDelaySeconds == 5.f);
 }
 
+TEST_CASE("a Proxy press completes on the step it reaches refuseSeconds, at 1/30, 1/60 and 1/120 s steps") {
+    // Held at exactly 4.0 s (whole steps), the press runs from 5.0 s and completes at 5.5 s: Refused on the step
+    // that reaches 5.5 s, never one later from float rounding.
+    for (const int hz : {30, 60, 120}) {
+        CAPTURE(hz);
+        const double dt = 1.0 / hz;
+        const auto steps = [&](Rig& r, double seconds) {
+            const int n = static_cast<int>(seconds * hz + 0.5);
+            for (int i = 0; i < n && r.h.active(); ++i) r.step(dt);
+        };
+        Rig r;
+        r.in.partnerPresent = true;
+        r.in.inFight = true;
+        r.in.partnerBrief = BriefId::Proxy;
+        r.in.partnerAble = true;
+        REQUIRE(r.start(true) == Start::Started);
+        r.in.accepting = true;
+        steps(r, 4.0);
+        REQUIRE(r.h.held());
+        CHECK(r.h.now() == doctest::Approx(4.0));
+        r.in.accepting = false;
+        steps(r, 1.5 - dt);
+        CHECK(r.h.held());
+        CHECK(r.saw(Ev::Refused) == 0);
+        r.step(dt);
+        CHECK(r.saw(Ev::Refused) == 1);
+        CHECK(r.h.now() == doctest::Approx(5.5));
+        CHECK_FALSE(r.h.active());
+    }
+}
+
 TEST_CASE("a Proxy press broken by the partner leaving, losing Proxy or being unable starts afresh: Refused at 12.1 s") {
     // Held at 10 s; the partner presses from 11.0 s, breaks from 11.2 s to 11.6 s, and is back at 11.6 s.
     enum class Break { Absent, BriefChanged, Unable };
@@ -1985,9 +2016,64 @@ TEST_CASE("the push and a press: a blow does not stop the press; a tie is Refuse
     CHECK(p.saw(Ev::Refused) == 0);
 }
 
+TEST_CASE("the push and a press: the three ruled cases give one outcome at 1/30, 1/60 and 1/120 s steps") {
+    // Whole steps, so the clock lands on 3.0, 3.2 and 3.5 s exactly; the press and the hold are float sums.
+    for (const int hz : {30, 60, 120}) {
+        CAPTURE(hz);
+        const double dt = 1.0 / hz;
+        const auto steps = [&](Rig& r, double seconds) {
+            const int n = static_cast<int>(seconds * hz + 0.5);
+            for (int i = 0; i < n && r.h.active(); ++i) r.step(dt);
+        };
+        // No blows, a press begun at 3.5 s: it completes as the hold would fill. Refused, 5.75 s open.
+        Rig a;
+        REQUIRE(a.start(true) == Start::Started);
+        a.in.accepting = true;
+        steps(a, 3.5);
+        a.in.refuse = true;
+        steps(a, 0.5);
+        CHECK(a.saw(Ev::Refused) == 1);
+        CHECK(a.saw(Ev::Held) == 0);
+        CHECK(a.h.now() == doctest::Approx(4.0));
+        CHECK(a.h.weakPointOpenFor() == doctest::Approx(5.75));
+        // A press begun at 3.0 s, one blow at 3.2 s: the hold would fill at 3.5 s, as the press completes. Refused.
+        Rig b;
+        REQUIRE(b.start(true) == Start::Started);
+        b.in.accepting = true;
+        steps(b, 3.0);
+        b.in.refuse = true;
+        steps(b, 0.2);
+        b.in.blowsTaken = 1;
+        b.step(dt);
+        b.in.blowsTaken = 0;
+        steps(b, 0.3 - dt);
+        CHECK(b.saw(Ev::Refused) == 1);
+        CHECK(b.saw(Ev::Held) == 0);
+        CHECK(b.h.now() == doctest::Approx(3.5));
+        CHECK(b.h.weakPointOpenFor() == doctest::Approx(5.75));
+        // Two blows at 3.2 s: the hold fills at that step's start, before the press completes. Held; the press spent.
+        Rig c;
+        REQUIRE(c.start(true) == Start::Started);
+        c.in.accepting = true;
+        steps(c, 3.0);
+        c.in.refuse = true;
+        steps(c, 0.2);
+        c.in.blowsTaken = 2;
+        c.step(dt);
+        c.in.blowsTaken = 0;
+        CHECK(c.h.held());
+        CHECK(c.saw(Ev::Held) == 1);
+        steps(c, 0.8);
+        CHECK(c.h.held());
+        CHECK(c.saw(Ev::Refused) == 0);
+        CHECK(c.h.weakPointOpenFor() == 0.f);
+    }
+}
+
 TEST_CASE("the push and a press: once Held wins, the press under way is spent; a new press refuses the held lead") {
     // A press begun at 3.0 s would complete on the step 3.4 to 3.5 s; two blows on that step fill the hold at its
-    // start, so Held wins there. The button is let go on that same step: nothing is refused, no window opens.
+    // start, so Held wins there. The button stays down past the instant the press would have completed: nothing is
+    // refused (the press is spent). Let go and pressed again, a new full press refuses the held lead.
     Rig q;
     REQUIRE(q.start(true) == Start::Started);
     q.in.accepting = true;
@@ -1996,15 +2082,15 @@ TEST_CASE("the push and a press: once Held wins, the press under way is spent; a
     for (int i = 0; i < 4; ++i) q.step(0.1);
     REQUIRE(q.saw(Ev::Refused) == 0);
     q.in.blowsTaken = 2;
-    q.in.refuse = false; // let go on the step Held wins
     q.step(0.1);
     CHECK(q.h.held());
     CHECK(q.saw(Ev::Held) == 1);
     CHECK(q.saw(Ev::Refused) == 0);
-    CHECK(q.h.weakPointOpenFor() == 0.f);
     q.in.blowsTaken = 0;
-    q.step(0.1);
+    for (int i = 0; i < 3; ++i) q.step(0.1);
     CHECK(q.saw(Ev::Refused) == 0);
+    q.in.refuse = false;
+    q.step(0.1);
     // A new full press refuses the held lead, opening nothing; under refuseSeconds it does not.
     q.in.refuse = true;
     for (int i = 0; i < 4; ++i) q.step(0.1);
@@ -2013,6 +2099,20 @@ TEST_CASE("the push and a press: once Held wins, the press under way is spent; a
     CHECK(q.saw(Ev::Refused) == 1);
     CHECK(q.h.weakPointOpenFor() == 0.f);
     CHECK_FALSE(q.h.refusedTooEarly());
+
+    // No push: a press begun at 3.8 s and kept down; the hold fills by itself at 4.0 s, before the press would
+    // complete (4.3 s). Held, and the press is spent: still held at 5.0 s with no Refused.
+    Rig f;
+    REQUIRE(f.start(true) == Start::Started);
+    f.in.accepting = true;
+    for (int i = 0; i < 38; ++i) f.step(0.1);
+    f.in.refuse = true;
+    for (int i = 0; i < 2; ++i) f.step(0.1);
+    CHECK(f.h.held());
+    CHECK(f.saw(Ev::Held) == 1);
+    for (int i = 0; i < 10; ++i) f.step(0.1);
+    CHECK(f.h.held());
+    CHECK(f.saw(Ev::Refused) == 0);
 
     // The same press kept down through Held: no free Refused a step later, and the fight's pull comes as usual
     // (pullSeconds after Held).
