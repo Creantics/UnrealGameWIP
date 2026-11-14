@@ -133,13 +133,6 @@ struct UiStyle {
     UiFadeTimes fade;
     UiBudgetRules budget;
     float wordLumaFloor = 0.45f; // a coloured word's relative luminance is lifted to at least this (uiLumaFloor)
-    // The HUD's two tones over the picture (uiToneFor, uiToneStep): a shown cluster switches only once the picture has
-    // asked for the other tone for toneHold seconds, through a dip of toneFade each way (alpha only, never a colour
-    // between); the other tone must read toneMargin times better before it is asked for.
-    float toneHold = 0.5f;
-    float toneFade = 0.1f;
-    float toneMargin = 1.15f;
-    float wordLumaCeiling = 0.1f; // in the dark tone a coloured word or mark is dropped to at most this luminance
     float minTextPx = 18.f;     // the floor at 1080p
     float minTextPxAbsolute = 14.f; // the floor at any height
 };
@@ -168,32 +161,6 @@ FTCORE_API float uiContrast(UiColor fg, UiColor bg, UiColor under);
 
 // `c` lifted toward white until its relative luminance is at least `floor` (alpha kept); unchanged when already there.
 FTCORE_API UiColor uiLumaFloor(UiColor c, float floor);
-
-// `c` dropped toward black until its relative luminance is at most `ceiling` (alpha kept); unchanged when already there.
-FTCORE_API UiColor uiLumaCeiling(UiColor c, float ceiling);
-
-// The HUD's tone for one cluster: pale ink on a dark edge (over a dark picture) or dark ink on a pale edge (over a
-// bright one).
-enum class UiTone : std::uint8_t { Pale, Dark };
-
-// Which tone reads over `picture` (the mean of the brightest half under the cluster): the other tone than `current`
-// only when its contrast beats current's by s.toneMargin, so a picture near the middle keeps what it has.
-FTCORE_API UiTone uiToneFor(const UiStyle& s, UiColor pale, UiColor dark, UiColor picture, UiTone current);
-
-struct UiToneState {
-    UiTone tone = UiTone::Pale; // drawn
-    UiTone want = UiTone::Pale; // asked for by the last read
-    bool read = false;          // a read has arrived
-    float asked = 0.f;          // seconds `want` has differed from `tone` while shown
-    float dip = -1.f;           // seconds into a switch (-1: none)
-    bool flipped = false;       // the switch has passed its midpoint
-    float alpha = 1.f;          // the drawn tone's alpha: 1 settled, down to 0 and back up in a switch
-};
-
-// One frame of a cluster's tone. `haveRead`: a picture was read this frame and asked for `wanted` (no read keeps the
-// last). The first read, and any read while the cluster is hidden, sets the tone at once, so a cluster appears already
-// in its tone; shown, it switches only after s.toneHold, fading out, flipping and fading in. True when it flipped.
-FTCORE_API bool uiToneStep(UiToneState& st, const UiStyle& s, bool shown, bool haveRead, UiTone wanted, float dt);
 
 // The dim behind the dialogue options: the least alpha of `backing` (0..s.optionsDimMax) under which `ink` reaches
 // s.optionsDimContrast over `picture`; 0 when it already does, the max when even that falls short.

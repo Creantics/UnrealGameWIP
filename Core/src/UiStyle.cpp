@@ -110,11 +110,11 @@ void uiFadeStep(UiFade& f, bool changed, float dt, const UiFadeTimes& t) {
 UiStyle defaultUiStyle() {
     UiStyle s;
     // ink, ink_dim, backing, track, accent, accent2, danger, ally, weak_point
-    s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0.3f), hex(0xE9B36B), hex(0xC9643C),
+    s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0.45f), hex(0xE9B36B), hex(0xC9643C),
         hex(0xFF7A5C), hex(0x8FD3B4), hex(0xFFE08A)};
-    s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.3f), hex(0x8FD6E8), hex(0xA88BE0),
+    s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.45f), hex(0x8FD6E8), hex(0xA88BE0),
         hex(0xFF7A86), hex(0x9BE3B0), hex(0xFFE08A)};
-    s.world[2] = {hex(0xF2ECE0), hex(0xD0C8B8), hex(0x0B0907), hex(0xFFFFFF, 0.3f), hex(0xE6DDCB), hex(0x9E3B2E),
+    s.world[2] = {hex(0xF2ECE0), hex(0xD0C8B8), hex(0x0B0907), hex(0xFFFFFF, 0.45f), hex(0xE6DDCB), hex(0x9E3B2E),
         hex(0xFF7A66), hex(0x9CC7A4), hex(0xF4D58A)};
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.
@@ -133,7 +133,7 @@ UiStyle defaultUiStyle() {
     cue(UiPalette::HighContrast, UiToken::Ink, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::InkDim, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::Backing, hex(0x000000));
-    cue(UiPalette::HighContrast, UiToken::Track, hex(0xFFFFFF, 0.45f));
+    cue(UiPalette::HighContrast, UiToken::Track, hex(0xFFFFFF, 0.6f));
     cue(UiPalette::HighContrast, UiToken::Danger, hex(0xFF8A00));
     cue(UiPalette::HighContrast, UiToken::Ally, hex(0x00E0FF));
     cue(UiPalette::HighContrast, UiToken::WeakPoint, hex(0xFFFF00));
@@ -183,70 +183,6 @@ UiColor uiLumaFloor(UiColor c, float floor) {
         (luminance(t) >= f ? hi : lo) = m;
     }
     return UiColor{c.r + (1.f - c.r) * hi, c.g + (1.f - c.g) * hi, c.b + (1.f - c.b) * hi, c.a};
-}
-
-UiColor uiLumaCeiling(UiColor c, float ceiling) {
-    const float f = std::clamp(ceiling, 0.f, 1.f);
-    if (luminance(c) <= f) return c;
-    // Luminance falls monotonically with the mix toward black: bisect the smallest mix that reaches the ceiling.
-    float lo = 0.f, hi = 1.f;
-    for (int i = 0; i < 20; ++i) {
-        const float m = 0.5f * (lo + hi);
-        const UiColor t{c.r * (1.f - m), c.g * (1.f - m), c.b * (1.f - m), c.a};
-        (luminance(t) <= f ? hi : lo) = m;
-    }
-    return UiColor{c.r * (1.f - hi), c.g * (1.f - hi), c.b * (1.f - hi), c.a};
-}
-
-UiTone uiToneFor(const UiStyle& s, UiColor pale, UiColor dark, UiColor picture, UiTone current) {
-    const UiColor pic{picture.r, picture.g, picture.b, 1.f};
-    const float cp = uiContrast(UiColor{pale.r, pale.g, pale.b, 1.f}, pic, pic);
-    const float cd = uiContrast(UiColor{dark.r, dark.g, dark.b, 1.f}, pic, pic);
-    const float m = std::max(s.toneMargin, 1.f);
-    if (current == UiTone::Pale) return cd > cp * m ? UiTone::Dark : UiTone::Pale;
-    return cp > cd * m ? UiTone::Pale : UiTone::Dark;
-}
-
-bool uiToneStep(UiToneState& st, const UiStyle& s, bool shown, bool haveRead, UiTone wanted, float dt) {
-    const UiTone was = st.tone;
-    const bool first = haveRead && !st.read;
-    if (haveRead) {
-        st.want = wanted;
-        st.read = true;
-    }
-    if (st.dip >= 0.f && shown) {
-        // A switch under way runs to its end: out, flip at the midpoint, in.
-        const float f = std::max(s.toneFade, 0.001f);
-        st.dip += dt;
-        if (!st.flipped && st.dip >= f) {
-            st.tone = st.tone == UiTone::Pale ? UiTone::Dark : UiTone::Pale;
-            st.flipped = true;
-        }
-        st.alpha = st.dip < f ? 1.f - st.dip / f : std::min(1.f, (st.dip - f) / f);
-        if (st.dip >= 2.f * f) {
-            st.dip = -1.f;
-            st.alpha = 1.f;
-            st.asked = 0.f;
-        }
-        return st.tone != was;
-    }
-    if (!shown || first) {
-        st.tone = st.want;
-        st.dip = -1.f;
-        st.alpha = 1.f;
-        st.asked = 0.f;
-        return st.tone != was;
-    }
-    if (st.want == st.tone) {
-        st.asked = 0.f;
-        return false;
-    }
-    st.asked += dt;
-    if (st.asked >= s.toneHold) {
-        st.dip = 0.f;
-        st.flipped = false;
-    }
-    return false;
 }
 
 float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture) {
@@ -465,22 +401,6 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             }
         } else if (key == "word_luma_floor") {
             if (!number(v, 0.f, 1.f, s.wordLumaFloor)) return bad("style", key);
-        } else if (key == "tone") {
-            if (v.type() != JsonType::Object) return bad("style", key);
-            for (std::uint32_t j = 0; j < v.size(); ++j) {
-                const std::string_view tk = v.key(j);
-                if (tk == "hold") {
-                    if (!number(v.value(j), 0.f, 5.f, s.toneHold)) return bad(key, tk);
-                } else if (tk == "fade") {
-                    if (!number(v.value(j), 0.f, 1.f, s.toneFade)) return bad(key, tk);
-                } else if (tk == "margin") {
-                    if (!number(v.value(j), 1.f, 4.f, s.toneMargin)) return bad(key, tk);
-                } else if (tk == "word_luma_ceiling") {
-                    if (!number(v.value(j), 0.f, 1.f, s.wordLumaCeiling)) return bad(key, tk);
-                } else {
-                    return bad(key, tk);
-                }
-            }
         } else if (key == "budget") {
             if (v.type() != JsonType::Object) return bad("style", key);
             for (std::uint32_t j = 0; j < v.size(); ++j) {

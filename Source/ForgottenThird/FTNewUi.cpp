@@ -58,21 +58,6 @@ const FTUiText kAnswerUi[3] = {FTUiText(TEXT("arena.parry")), FTUiText(TEXT("are
 const FTUiText kVictoryUi(TEXT("battle.victory"));
 const FTUiText kDefeatUi(TEXT("battle.defeat"));
 const FTUiText kAgainUi(TEXT("battle.again"));
-// The result's counts: the time, then each count with its word by number (one / other).
-const FTUiText kStatTimeUi(TEXT("arena.stat.time"));
-const FTUiText kStatHitsOne(TEXT("arena.stat.hits.one"));
-const FTUiText kStatHitsOther(TEXT("arena.stat.hits.other"));
-const FTUiText kStatParriesOne(TEXT("arena.stat.parries.one"));
-const FTUiText kStatParriesOther(TEXT("arena.stat.parries.other"));
-const FTUiText kStatRipostesOne(TEXT("arena.stat.ripostes.one"));
-const FTUiText kStatRipostesOther(TEXT("arena.stat.ripostes.other"));
-const FTUiText kStatEvadesOne(TEXT("arena.stat.evades.one"));
-const FTUiText kStatEvadesOther(TEXT("arena.stat.evades.other"));
-const FTUiText kStatBlocksOne(TEXT("arena.stat.blocks.one"));
-const FTUiText kStatBlocksOther(TEXT("arena.stat.blocks.other"));
-const FTUiText kStatHitsTakenOne(TEXT("arena.stat.hits_taken.one"));
-const FTUiText kStatHitsTakenOther(TEXT("arena.stat.hits_taken.other"));
-const FTUiText* const kStatUi[6][2] = {{&kStatHitsOne, &kStatHitsOther}, {&kStatParriesOne, &kStatParriesOther}, {&kStatRipostesOne, &kStatRipostesOther}, {&kStatEvadesOne, &kStatEvadesOther}, {&kStatBlocksOne, &kStatBlocksOther}, {&kStatHitsTakenOne, &kStatHitsTakenOther}};
 const FTUiText kAutoPlayUi(TEXT("arena.autoplay"));
 const FTUiText kIdleUi(TEXT("arena.idle"));
 const FTUiText kStoryHintUi(TEXT("story.hint"));
@@ -110,10 +95,6 @@ struct FUiTable
 	FLinearColor Token[ftcore::kUiTokenCount];
 	FLinearColor Word[ftcore::kUiTokenCount]; // a coloured word's colour: lifted to the style's luminance floor
 	FLinearColor Edge;
-	// The fight HUD's dark tone (a cluster over a bright picture): dark ink, the colours held under the luminance ceiling,
-	// the under-colour and the edge turned pale.
-	FLinearColor TokenDark[ftcore::kUiTokenCount];
-	FLinearColor EdgePale;
 };
 
 const FUiTable& Table()
@@ -140,57 +121,40 @@ const FUiTable& Table()
 			T.Word[I] = LinOf(ftcore::uiLumaFloor(C, T.Style.wordLumaFloor));
 		}
 		T.Edge = LinOf(T.Style.edge);
-		const ftcore::UiColor Ink = ftcore::uiColor(T.Style, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Ink);
-		const ftcore::UiColor Back = ftcore::uiColor(T.Style, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Backing);
-		for (size_t I = 0; I < ftcore::kUiTokenCount; ++I)
-		{
-			const UiToken K = static_cast<UiToken>(I);
-			const ftcore::UiColor C = ftcore::uiColor(T.Style, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, K);
-			ftcore::UiColor D = ftcore::uiLumaCeiling(C, T.Style.wordLumaCeiling);
-			if (K == UiToken::Ink || K == UiToken::Track)
-			{
-				D = ftcore::UiColor{Back.r, Back.g, Back.b, C.a};
-			}
-			else if (K == UiToken::InkDim)
-			{
-				D = ftcore::UiColor{Back.r + (C.r - Back.r) * 0.25f, Back.g + (C.g - Back.g) * 0.25f, Back.b + (C.b - Back.b) * 0.25f, C.a};
-			}
-			else if (K == UiToken::Backing)
-			{
-				D = ftcore::UiColor{Ink.r, Ink.g, Ink.b, C.a};
-			}
-			T.TokenDark[I] = LinOf(D);
-		}
-		T.EdgePale = LinOf(ftcore::UiColor{Ink.r, Ink.g, Ink.b, T.Style.edge.a});
 		return T;
 	}();
 	return Loaded;
 }
 
-// The fight HUD's tone for the cluster being painted (SFTArenaHud::Tone): the dark table and the cluster's cross-fade, and
-// whether the cluster drew anything this paint. Outside a cluster everything is pale at full alpha.
-bool GDark = false;
-float GToneA = 1.f;
-bool GDrew = false;
-
 FLinearColor Tok(UiToken T, float Alpha = 1.f)
 {
-	FLinearColor C = (GDark ? Table().TokenDark : Table().Token)[static_cast<size_t>(T)];
+	FLinearColor C = Table().Token[static_cast<size_t>(T)];
 	C.A *= Alpha;
-	GDrew |= C.A > 0.01f;
-	C.A *= GToneA;
 	return C;
 }
 
 // A word in a token's colour: the colour lifted to the luminance floor so a dark hue still reads over its dark edge.
 FLinearColor WordTok(UiToken T, float Alpha = 1.f)
 {
-	// The dark tone: the colour under the luminance ceiling instead, so it still reads over its pale edge.
-	FLinearColor C = (GDark ? Table().TokenDark : Table().Word)[static_cast<size_t>(T)];
+	FLinearColor C = Table().Word[static_cast<size_t>(T)];
 	C.A *= Alpha;
-	GDrew |= C.A > 0.01f;
-	C.A *= GToneA;
 	return C;
+}
+
+// Every mark and glyph is a pale core over a tight soft dark contour that follows its shape (no plate, nothing wider than
+// the mark). A dim or resting core lowers its own alpha or weight; the contour holds at full strength down to the rest
+// alpha and fades below it only as the mark goes away.
+constexpr float kContourGrow = 1.5f;    // px past the core's edge at 1080p where the contour is half gone
+constexpr float kContourFeather = 2.f;  // px over which it falls to nothing
+constexpr float kContourAlpha = 0.67f;  // of the edge colour's alpha (0.9): about 60 percent
+constexpr float kContourSoft = 0.5f;    // a word's outer contour pixel, of its inner one
+
+float ContourK(float CoreAlpha)
+{
+	const float Rest = Table().Style.fade.restAlpha;
+	// Full from the rest alpha up; below it, falls faster than the core so a fading mark never ends as a dark ghost.
+	const float K = Rest > 0.01f ? FMath::Min(1.f, CoreAlpha / Rest) : CoreAlpha;
+	return K * K;
 }
 
 // The UI's faces, read once from Content/UI/Fonts (OFL, each beside its licence): the serif and its small caps for
@@ -374,25 +338,34 @@ struct FPainter
 		{
 			return;
 		}
-		const FPaintGeometry Geo = Geometry.ToPaintGeometry(FVector2f(4096.f, 512.f), FSlateLayoutTransform(FVector2f(X, Y)));
-		// The hairline edge fades with the word: a faded word keeps its light face, never a dark hollow outline.
-		FSlateFontInfo Faded = Font;
-		Faded.OutlineSettings.OutlineColor.A *= C.A;
-		if (GDark)
+		const auto Draw = [&](const FSlateFontInfo& F, const FLinearColor& Tint, float Back)
 		{
-			// The dark tone: dark ink on a pale edge.
-			const FLinearColor& E = Table().EdgePale;
-			Faded.OutlineSettings.OutlineColor = FLinearColor(E.R, E.G, E.B, Faded.OutlineSettings.OutlineColor.A);
-		}
-		const FSlateFontInfo& Use = C.A < 0.999f || GDark ? Faded : Font;
-		if (End < 0)
+			const FPaintGeometry Geo = Geometry.ToPaintGeometry(FVector2f(4096.f, 512.f), FSlateLayoutTransform(FVector2f(X - Back, Y - Back)));
+			if (End < 0)
+			{
+				FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, F, ESlateDrawEffect::None, Tint);
+			}
+			else if (End > Start)
+			{
+				FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, Start, End, F, ESlateDrawEffect::None, Tint);
+			}
+		};
+		// The font's own 1 px edge is the contour's inner pixel; a second pass one pixel wider, fainter and with no face, its
+		// soft outer one. A faded face keeps its edge out of the letter (separate fill alpha), so it never greys.
+		FSlateFontInfo InnerF = Font;
+		InnerF.OutlineSettings.OutlineColor.A *= ContourK(C.A);
+		InnerF.OutlineSettings.bSeparateFillAlpha = C.A < 0.999f;
+		if (InnerF.OutlineSettings.OutlineSize > 0)
 		{
-			FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, Use, ESlateDrawEffect::None, C);
+			FSlateFontInfo OuterF = InnerF;
+			OuterF.OutlineSettings.OutlineSize += 1;
+			OuterF.OutlineSettings.OutlineColor.A *= kContourSoft;
+			OuterF.OutlineSettings.bSeparateFillAlpha = true;
+			// Slate sets an outlined glyph down and right by the outline's growth (measured: 1 px); set the wider pass back so it rings
+			// the letter evenly instead of reading as a drop shadow.
+			Draw(OuterF, FLinearColor(C.R, C.G, C.B, 0.004f), 1.f); // a near-zero face: Slate culls a fully clear one
 		}
-		else if (End > Start)
-		{
-			FSlateDrawElement::MakeText(Out, Layer + 3, Geo, Str, Start, End, Use, ESlateDrawEffect::None, C);
-		}
+		Draw(InnerF, C, 0.f);
 	}
 
 	// A meter in the style's painter. Ring and Stroke are drawn as Line until their painters land with the pick.
@@ -450,34 +423,28 @@ public:
 	}
 
 	// A line from Core. Closed: the first and last points are the same place (a ring), joined without a seam.
-	void Stroke(const ftcore::UiStroke& St, const FLinearColor& C, bool bEdge = true, bool bClosed = false)
+	void Stroke(const ftcore::UiStroke& St, const FLinearColor& C, bool bClosed = false)
 	{
 		if (St.count < 2 || C.A <= 0.f)
 		{
 			return;
 		}
-		if (bEdge)
-		{
-			Ribbon(Parts[Under], St, GDark ? Table().EdgePale : Table().Edge, 0.55f * C.A, 1.f * S, 1.6f, bClosed);
-		}
+		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S, kContourFeather * S, bClosed);
 		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, bClosed);
 	}
 
 	// A filled convex shape (a dot, a lozenge, a small triangle), edged like the lines.
-	void Fill(const FVector2f* Pts, int32 N, const FLinearColor& C, bool bEdge = true)
+	void Fill(const FVector2f* Pts, int32 N, const FLinearColor& C)
 	{
 		if (N < 3 || C.A <= 0.f)
 		{
 			return;
 		}
-		if (bEdge)
-		{
-			Convex(Parts[Under], Pts, N, GDark ? Table().EdgePale : Table().Edge, 0.5f * C.A, 1.f * S, 1.6f);
-		}
+		Convex(Parts[Under], Pts, N, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S, kContourFeather * S);
 		Convex(Parts[Core], Pts, N, C, 1.f, 0.f, 0.8f);
 	}
 
-	void Dot(float CX, float CY, float R, const FLinearColor& C, bool bEdge = true)
+	void Dot(float CX, float CY, float R, const FLinearColor& C)
 	{
 		FVector2f Pts[16];
 		for (int32 I = 0; I < 16; ++I)
@@ -485,7 +452,7 @@ public:
 			const float A = I * (2.f * UE_PI / 16.f);
 			Pts[I] = FVector2f(CX + R * FMath::Cos(A), CY + R * FMath::Sin(A));
 		}
-		Fill(Pts, 16, C, bEdge);
+		Fill(Pts, 16, C);
 	}
 
 	// A vignette with no edge at all: an ellipse centred on a screen corner or edge (most of it off the screen) whose alpha
@@ -981,10 +948,8 @@ public:
 			};
 			NameSlot = -2; // measured again in the new font
 			NoteSeen = -2;
-			// The call word under the boss name: one large word, near-white on its full dark edge. The result's words in the title
-			// at 1.8.
+			// The call word under the boss name: one large word, edged as every word. The result's words in the title at 1.8.
 			CallFont = FontFor(UiTextRole::Popup, H, 1.35f);
-			CallFont.OutlineSettings.OutlineColor = Table().Edge;
 			CallAsc = FontMeasure()->GetMaxCharacterHeight(CallFont) + FontMeasure()->GetBaseline(CallFont);
 			BigFont = FontFor(UiTextRole::Title, H, 1.8f);
 			BigAsc = FontMeasure()->GetMaxCharacterHeight(BigFont) + FontMeasure()->GetBaseline(BigFont);
@@ -1010,7 +975,6 @@ public:
 			Word(kIdleUi, TagWord[1], TagW[1], LabelFont);
 			RoleWord(UiTextRole::Title, kVictoryUi, VictoryWord, VictoryW, BigFont);
 			RoleWord(UiTextRole::Title, kDefeatUi, DefeatWord, DefeatW, BigFont);
-			bStatsBuilt = false;
 			for (FVerbSlot& V : Verbs)
 			{
 				const ftcore::UiTextStyle& VS = Table().Style.text[static_cast<size_t>(UiTextRole::Verb)];
@@ -1025,7 +989,6 @@ public:
 		}
 		const bool bRebuildNow = bRebuild;
 		bRebuild = false;
-		StepTones(DeltaTime, Geometry.GetLocalSize(), static_cast<double>(Runner->GetFight().time()));
 		AimA = Runner->GetAimAlpha();
 		const ftcore::ArenaFight& Fight = Runner->GetFight();
 		ftcore::ArenaHudFrame Frame = View.now;
@@ -1269,181 +1232,28 @@ public:
 		const FVector2f Size = Geometry.GetLocalSize();
 		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f)};
 		Mesh.Begin(Geometry, P.S);
-		// Each cluster in its own tone (dark ink over a bright picture, pale over a dark one); the hit flash has none.
-		Tone(ToneCentre, [&] { PaintWorld(P, Size); PaintReticle(P, Size); });
-		Tone(ToneLead, [&] { PaintLead(P, Size); });
-		Tone(ToneBoss, [&] { PaintTop(P, Size); PaintSecondLine(P, Size); });
-		Tone(ToneVerbs, [&] { PaintVerbs(P, Size); });
-		Tone(ToneCentre, [&] { PaintRounds(P, Size); });
+		PaintWorld(P, Size);
+		PaintReticle(P, Size);
+		PaintLead(P, Size);
+		PaintTop(P, Size);
+		PaintSecondLine(P, Size);
+		PaintVerbs(P, Size);
+		PaintRounds(P, Size);
 		PaintEvents(P, Size);
 		Mesh.Flush(Out, Layer + 1); // every line, mark and shade in one element under the words
 		return Layer + 3;
 	}
 
 private:
-	// ---- the clusters' tone: dark ink over a bright picture, pale over a dark one (Core uiToneFor / uiToneStep) ----
-	enum EToneCluster : int32 { ToneLead, ToneVerbs, ToneBoss, ToneCall, ToneResult, ToneCentre, ToneCount };
-
-	// Paints one cluster in its tone (the dark table and its cross-fade while Fn runs) and notes whether it drew.
-	template <typename FnType>
-	void Tone(int32 C, FnType&& Fn) const
-	{
-		const bool bWasDark = GDark;
-		const float WasA = GToneA;
-		const bool bWasDrew = GDrew;
-		GDark = Tones[C].tone == ftcore::UiTone::Dark;
-		GToneA = Tones[C].alpha;
-		GDrew = false;
-		Fn();
-		ToneDrew[C] |= GDrew;
-		GDark = bWasDark;
-		GToneA = WasA;
-		GDrew = bWasDrew;
-	}
-
-	void StepTones(float Dt, const FVector2f& Size, double FightTime)
-	{
-		if (!bToneBound && GEngine && GEngine->GameViewport)
-		{
-			GEngine->GameViewport->OnEndDraw().AddSP(this, &SFTArenaHud::MeasureToneAtEndDraw);
-			bToneBound = true;
-		}
-		ToneSize = Size;
-		ToneClock += Dt;
-		static const TCHAR* const kName[ToneCount] = {TEXT("lead"), TEXT("verbs"), TEXT("boss"), TEXT("call"), TEXT("result"), TEXT("centre")};
-		for (int32 C = 0; C < ToneCount; ++C)
-		{
-			const bool bShown = ToneDrew[C]; // drawn in the last paint
-			ToneDrew[C] = false;
-			if (ftcore::uiToneStep(Tones[C], Table().Style, bShown, bToneHave[C], ToneRead[C], Dt))
-			{
-				UE_LOG(LogForgottenThird, Log, TEXT("Arena UI: %s tone %s at %.2f s (%s)."), kName[C],
-					Tones[C].tone == ftcore::UiTone::Dark ? TEXT("dark") : TEXT("pale"), FightTime,
-					Tones[C].dip >= 0.f ? TEXT("cross-fade") : TEXT("set while hidden or on the first read"));
-			}
-			bToneHave[C] = false;
-		}
-	}
-
-	// At the end of the game viewport's draw (the only time its picture can be read; the HUD is not in it yet): each
-	// cluster's picture once before it is first shown, then one cluster each tenth of a second in turn. Never on a
-	// screenshot's frame.
-	void MeasureToneAtEndDraw()
-	{
-		if (!bLive || ToneSize.X <= 0.f || ToneSize.Y <= 0.f || FScreenshotRequest::IsScreenshotRequested())
-		{
-			return;
-		}
-		int32 Firsts = 0;
-		for (int32 C = 0; C < ToneCount && Firsts < 2; ++C)
-		{
-			if (!Tones[C].read && !bToneHave[C] && ToneTries[C] < 10)
-			{
-				++Firsts;
-				ReadTone(C);
-			}
-		}
-		if (Firsts > 0 || ToneClock < ToneNextAt)
-		{
-			return;
-		}
-		ToneNextAt = ToneClock + 0.1f;
-		ReadTone(ToneNext);
-		ToneNext = (ToneNext + 1) % ToneCount;
-	}
-
-	void ReadTone(int32 C)
-	{
-		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
-		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
-		if (VS.X <= 0 || VS.Y <= 0)
-		{
-			return;
-		}
-		FVector2f Lo;
-		FVector2f Hi;
-		ToneRect(C, ToneSize, Lo, Hi);
-		const float KX = VS.X / ToneSize.X;
-		const float KY = VS.Y / ToneSize.Y;
-		const FIntRect Rc(FMath::Clamp(FMath::FloorToInt(Lo.X * KX), 0, VS.X - 1), FMath::Clamp(FMath::FloorToInt(Lo.Y * KY), 0, VS.Y - 1),
-			FMath::Clamp(FMath::CeilToInt(Hi.X * KX), 1, VS.X), FMath::Clamp(FMath::CeilToInt(Hi.Y * KY), 1, VS.Y));
-		ftcore::UiLumaHistogram Hist;
-		if (Rc.Width() > 0 && Rc.Height() > 0 && VP->ReadPixels(TonePx, FReadSurfaceDataFlags(), Rc))
-		{
-			for (int32 I = 0; I < TonePx.Num(); I += 3)
-			{
-				const FColor& Px = TonePx[I];
-				ftcore::uiLumaAdd(Hist, ftcore::UiColor{Px.R / 255.f, Px.G / 255.f, Px.B / 255.f, 1.f});
-			}
-		}
-		const ftcore::UiColor Pic = ftcore::uiLumaBrightest(Hist, 0.5f);
-		if (Pic.r + Pic.g + Pic.b <= 0.f)
-		{
-			++ToneTries[C];
-			return; // no picture (or an all-black one): the tone stands
-		}
-		const ftcore::UiStyle& St = Table().Style;
-		const ftcore::UiColor Ink = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Ink);
-		const ftcore::UiColor Back = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Backing);
-		ToneRead[C] = ftcore::uiToneFor(St, Ink, Back, Pic, Tones[C].want);
-		bToneHave[C] = true;
-	}
-
-	// The picture each cluster stands on (widget units), read whether or not the cluster is shown.
-	void ToneRect(int32 C, const FVector2f& Size, FVector2f& Lo, FVector2f& Hi) const
-	{
-		const float S = FMath::Max(0.25f, Size.Y / 1080.f);
-		const float LS = S * Carry::LeadScale;
-		const float CX = Size.X * 0.5f;
-		const float Y = Carry::TopLine * S;
-		switch (C)
-		{
-		case ToneLead:
-		{
-			const float LX = Carry::LeadX * LS;
-			const float LY = Size.Y - Carry::LeadUp * LS;
-			Lo = FVector2f(LX - 110.f * LS, LY - 175.f * LS); // the partner's place above the ring to the numbers under it
-			Hi = FVector2f(LX + 110.f * LS, LY + 125.f * LS);
-			break;
-		}
-		case ToneVerbs:
-		{
-			const float RX = Size.X - Carry::VerbIn * S;
-			const float Y0 = Size.Y - Carry::VerbUp * S;
-			Lo = FVector2f(RX - 260.f * S, Y0 - 50.f * S);
-			Hi = FVector2f(RX + 80.f * S, Y0 + (3.f * Carry::VerbStep + 34.f) * S);
-			break;
-		}
-		case ToneBoss:
-			Lo = FVector2f(CX - (Carry::TopLen * 0.5f + 30.f) * S, Y - 80.f * S);
-			Hi = FVector2f(CX + (Carry::TopLen * 0.5f + 30.f) * S, Y + 30.f * S);
-			break;
-		case ToneCall:
-			Lo = FVector2f(CX - 220.f * S, Y + 40.f * S);
-			Hi = FVector2f(CX + 220.f * S, Y + 40.f * S + CallAsc);
-			break;
-		case ToneResult:
-			Lo = FVector2f(CX - 300.f * S, Size.Y * 0.42f - BigAsc);
-			Hi = FVector2f(CX + 300.f * S, Size.Y * 0.42f + 52.f * S + 2.f * LabelAsc);
-			break;
-		default:
-			Lo = FVector2f(Size.X * 0.35f, Size.Y * 0.32f);
-			Hi = FVector2f(Size.X * 0.65f, Size.Y * 0.68f);
-			break;
-		}
-		Lo = FVector2f(FMath::Max(Lo.X, 0.f), FMath::Max(Lo.Y, 0.f));
-		Hi = FVector2f(FMath::Min(Hi.X, Size.X), FMath::Min(Hi.Y, Size.Y));
-	}
-
 	// One arc of a track round the lead's ring (from01..to01 of the A0..A1 sweep).
-	void Arc(float CX, float CY, float R, float From01, float To01, const ftcore::UiStrokeStyle& St, const FLinearColor& C, bool bEdge = true) const
+	void Arc(float CX, float CY, float R, float From01, float To01, const ftcore::UiStrokeStyle& St, const FLinearColor& C) const
 	{
 		if (To01 - From01 < 0.002f || C.A <= 0.f)
 		{
 			return; // nothing to draw: an empty arc must not leave a stray stroke
 		}
 		ftcore::uiStrokeArc(Line, CX, CY, R, Carry::A0, Carry::A1, St, From01, To01);
-		Mesh.Stroke(Line, C, bEdge);
+		Mesh.Stroke(Line, C);
 	}
 
 	// A whole ring, joined without a seam.
@@ -1455,23 +1265,23 @@ private:
 			Line.pt[Line.count - 1].x = Line.pt[0].x;
 			Line.pt[Line.count - 1].y = Line.pt[0].y;
 		}
-		Mesh.Stroke(Line, C, true, true);
+		Mesh.Stroke(Line, C, true);
 	}
 
-	void HLine(float X0, float X1, float Y, float From01, float To01, const ftcore::UiStrokeStyle& St, const FLinearColor& C, bool bEdge = true) const
+	void HLine(float X0, float X1, float Y, float From01, float To01, const ftcore::UiStrokeStyle& St, const FLinearColor& C) const
 	{
 		if (To01 - From01 < 0.002f || C.A <= 0.f)
 		{
 			return;
 		}
 		ftcore::uiStrokeLine(Line, X0, Y, X1, Y, St, From01, To01);
-		Mesh.Stroke(Line, C, bEdge);
+		Mesh.Stroke(Line, C);
 	}
 
 	void Poly(const FVector2f* Pts, int32 N, float HalfWidth, const FLinearColor& C, bool bClosed = false) const
 	{
 		PolyStroke(Line, Pts, N, HalfWidth);
-		Mesh.Stroke(Line, C, true, bClosed);
+		Mesh.Stroke(Line, C, bClosed);
 	}
 
 	// A small V pointing down, turned clockwise by Deg (on an arc at angle Deg it points at the centre; -90 points right).
@@ -1537,7 +1347,7 @@ private:
 		else if (M == ftcore::UiLeadMark::Cylinder)
 		{
 			ftcore::uiStrokeArc(Line, X, Y, 12.f * U, 0.f, 360.f, Pen);
-			Mesh.Stroke(Line, C, true, true);
+			Mesh.Stroke(Line, C, true);
 			for (int32 I = 0; I < 6; ++I)
 			{
 				float DX = 0.f;
@@ -1572,31 +1382,32 @@ private:
 			return; // the result card stands alone
 		}
 		const float S = P.S * Carry::LeadScale; // the whole block at the sheet's share of the frame
-		const float A = LeadFade.alpha;
-		const float TA = TextAlpha(A);
+		const float FA = LeadFade.alpha;
+		// The marks keep full ink at rest and thin instead (a faded core reads mid-grey); they fade only as the HUD goes.
+		const float A = TextAlpha(FA);
+		const float TA = A;
 		const float DA = A * RestA;   // the details: gone at rest, the ring faded to its mark
 		const float DTA = TA * RestA;
 		const float CX = Carry::LeadX * S;
 		const float CY = Size.Y - Carry::LeadUp * S;
 		// In action the lines take the sheet's action weight; they thin back as the ring fades to rest.
-		const float Act = FMath::Clamp((A - St.fade.restAlpha) / FMath::Max(1.f - St.fade.restAlpha, 0.01f), 0.f, 1.f);
+		const float Act = FMath::Clamp((FA - St.fade.restAlpha) / FMath::Max(1.f - St.fade.restAlpha, 0.01f), 0.f, 1.f);
 		const auto W = [Act](float Rest, float Action) { return FMath::Lerp(Rest, Action, Act); };
-		// No shade behind the block: its tone (dark ink over a bright picture) carries it.
 
-		Ring(CX, CY, Carry::RingR * S, W(2.1f, 3.4f), 11, S, Tok(UiToken::Ink, 0.9f * A));
+		Ring(CX, CY, Carry::RingR * S, W(1.6f, 3.4f), 11, S, Tok(UiToken::Ink, 0.9f * A));
 		LeadMark(CX, CY + 8.f * S, 1.5f, L.lead, W(1.5f, 2.1f), S, Tok(UiToken::Ink, 0.9f * A));
 
 		const float Hp = L.hpMax > 0 ? FMath::Clamp(static_cast<float>(L.hp) / L.hpMax, 0.f, 1.f) : 0.f;
 		const bool bLow = Hp <= Carry::LowHp;
 		const FLinearColor HpC = bLow ? Tok(UiToken::Danger, A) : Tok(UiToken::Ink, A);
-		Arc(CX, CY, Carry::HpR * S, 0.f, Hp, StrokeStyle(W(5.6f, 7.6f), 21, S), HpC);
+		Arc(CX, CY, Carry::HpR * S, 0.f, Hp, StrokeStyle(W(4.f, 7.6f), 21, S), HpC);
 		if (HpLost.Was > Hp + 0.004f)
 		{
 			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 21, S, 0.f);
 			Rub.broken = true;
-			Arc(CX, CY, Carry::HpR * S, Hp, HpLost.Was, Rub, Tok(UiToken::Ink, 0.22f * A), false);
+			Arc(CX, CY, Carry::HpR * S, Hp, HpLost.Was, Rub, Tok(UiToken::Ink, 0.22f * A));
 		}
-		Arc(CX, CY, Carry::StaminaR * S, 0.f, FMath::Clamp(L.stamina01, 0.f, 1.f), StrokeStyle(W(1.6f, 2.4f), 23, S), Tok(UiToken::InkDim, 0.8f * DA), false);
+		Arc(CX, CY, Carry::StaminaR * S, 0.f, FMath::Clamp(L.stamina01, 0.f, 1.f), StrokeStyle(W(1.6f, 2.4f), 23, S), Tok(UiToken::InkDim, 0.8f * DA));
 
 		if (L.loadMax > 0)
 		{
@@ -1604,7 +1415,7 @@ private:
 			// The track runs to the cap (the named chairs' limit); past it the arc is not drawn, and a short cross-stroke
 			// closes it.
 			const float Cap = L.loadCap > 0 ? FMath::Clamp(static_cast<float>(L.loadCap) / L.loadMax, 0.f, 1.f) : 1.f;
-			Arc(CX, CY, Carry::LoadR * S, 0.f, Cap, StrokeStyle(W(1.f, 1.8f), 31, S, 0.f), Tok(UiToken::Ink, W(0.28f, 0.4f) * DA), false);
+			Arc(CX, CY, Carry::LoadR * S, 0.f, Cap, StrokeStyle(W(1.f, 1.8f), 31, S, 0.f), Tok(UiToken::Ink, W(0.28f, 0.4f) * DA));
 			if (Cap < 0.999f)
 			{
 				const float CapDeg = Carry::A0 + (Carry::A1 - Carry::A0) * Cap;
@@ -1706,8 +1517,8 @@ private:
 			// The partner's kept Load: a thin accent arc outside its HP (none without a cap), its tip flaring when Load is kept.
 			if (PartnerLoad01 >= 0.f)
 			{
-				Arc(PX, PY, 33.f * S, 0.f, 1.f, StrokeStyle(0.8f, 63, S, 0.f), Tok(UiToken::Ink, 0.25f * DA), false);
-				Arc(PX, PY, 33.f * S, 0.f, PartnerLoad01, StrokeStyle(W(1.6f, 2.2f), 64, S), Tok(UiToken::Accent, FMath::Max(DA, 0.6f * A)), false);
+				Arc(PX, PY, 33.f * S, 0.f, 1.f, StrokeStyle(0.8f, 63, S, 0.f), Tok(UiToken::Ink, 0.25f * DA));
+				Arc(PX, PY, 33.f * S, 0.f, PartnerLoad01, StrokeStyle(W(1.6f, 2.2f), 64, S), Tok(UiToken::Accent, FMath::Max(DA, 0.6f * A)));
 				const float Flare = PartnerTipAge >= 0.f && PartnerTipAge < 0.6f ? 1.f - PartnerTipAge / 0.6f : 0.f;
 				if (Flare > 0.f)
 				{
@@ -1793,7 +1604,7 @@ private:
 		{
 			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, 101, S, 0.f);
 			Rub.broken = true;
-			HLine(X0, X0 + Len, Y, Hp, TopLost.Was, Rub, Tok(UiToken::Ink, 0.4f * LA), false);
+			HLine(X0, X0 + Len, Y, Hp, TopLost.Was, Rub, Tok(UiToken::Ink, 0.4f * LA));
 		}
 		// The name over the line in spaced small caps. An unnamed target shows no name: the line alone.
 		if (bNamed)
@@ -1801,20 +1612,18 @@ private:
 			const float Base = Y - 22.f * S;
 			P.Text(CX - NameW * 0.5f, Base - NameAsc, NameText, NameFont, Tok(UiToken::Ink, TA));
 		}
-		// A notch across the line at each phase's floor, over a dark under-stroke so it holds on a bright sky; the phases
-		// already passed step back.
+		// A notch across the line at each phase's floor; the phases already passed step back.
 		for (int32 I = 0; B.present && I + 1 < B.phaseCount; ++I)
 		{
 			const float X = X0 + Len * B.phaseEnd[static_cast<size_t>(I)];
 			const FVector2f Pts[2] = {FVector2f(X, Y - 16.f * S), FVector2f(X, Y + 16.f * S)};
-			Poly(Pts, 2, 3.2f * S, Tok(UiToken::Backing, 0.35f * LA));
 			Poly(Pts, 2, 1.8f * S, Tok(I < B.phase ? UiToken::InkDim : UiToken::Ink, (I < B.phase ? 0.55f : 1.f) * LA));
 		}
 		// The target's poise under the line (the boss's own when the target is the boss), only once some is spent: whole, it
 		// ran the line's length and read as the line splitting.
 		if (T.present && (!B.present || T.enemy == B.slot) && T.poise01 < 0.98f)
 		{
-			HLine(X0, X0 + Len, Y + 12.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.4f, 103, S), Tok(UiToken::InkDim, A), false);
+			HLine(X0, X0 + Len, Y + 12.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.4f, 103, S), Tok(UiToken::InkDim, A));
 		}
 		if (B.present && B.weightMax > 0)
 		{
@@ -1848,7 +1657,7 @@ private:
 		{
 			Lozenge(MX, MY, 6.f * S, false, S, Tok(UiToken::Ink, A));
 		}
-		Tone(ToneCall, [&] { PaintCall(P, Size, Y + 54.f * S, TA); });
+		PaintCall(P, Size, Y + 54.f * S, TA);
 	}
 
 	// The call word: one large near-white word in one fixed place under the boss name, when the boss calls a move that needs
@@ -1903,9 +1712,9 @@ private:
 		const float OLen = 300.f * S;
 		const float OX = CX - OLen * 0.5f;
 		const float OHp = T.hpMax > 0 ? FMath::Clamp(static_cast<float>(T.hp) / T.hpMax, 0.f, 1.f) : 0.f;
-		HLine(OX, OX + OLen, OY, OHp, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A), false);
+		HLine(OX, OX + OLen, OY, OHp, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A));
 		HLine(OX, OX + OLen, OY, 0.f, OHp, StrokeStyle(2.4f, 106, S, 0.04f), Tok(UiToken::Ink, A));
-		HLine(OX, OX + OLen, OY + 9.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.2f, 107, S), Tok(UiToken::InkDim, A), false);
+		HLine(OX, OX + OLen, OY + 9.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), StrokeStyle(1.2f, 107, S), Tok(UiToken::InkDim, A));
 	}
 
 	// The verbs bottom right: only the verbs that can be used right now, stacked without gaps on a hairline rule; the one the
@@ -1955,7 +1764,7 @@ private:
 			if (bHot)
 			{
 				KeyCapStroke(Line, KX, KY, KW, 38.f * S, 0.75f * S, 7.f * S);
-				Mesh.Stroke(Line, Tok(UiToken::Accent, A), true, true);
+				Mesh.Stroke(Line, Tok(UiToken::Accent, A), true);
 				// Points out past the rule, as on the sheet.
 				const FVector2f Pts[3] = {FVector2f(RX + 11.f * S, Y - 16.f * S), FVector2f(RX + 19.f * S, Y - 8.f * S), FVector2f(RX + 11.f * S, Y)};
 				Poly(Pts, 3, 0.9f * S, Tok(UiToken::Accent, A));
@@ -1965,7 +1774,7 @@ private:
 				// Took half: a fine accent ring opens out from the Guard key and fades.
 				const float T = TakeHalfAge / 0.6f;
 				KeyCapStroke(Line, KX, KY, KW + 16.f * T * S, (38.f + 16.f * T) * S, 0.8f * S, (7.f + 8.f * T) * S);
-				Mesh.Stroke(Line, Tok(UiToken::Accent, (1.f - T) * A), true, true);
+				Mesh.Stroke(Line, Tok(UiToken::Accent, (1.f - T) * A), true);
 			}
 			// Centred on the cap height (the serif's capitals are 0.62 of its ascent), not on the line box.
 			P.Text(KX - V.KeysW * 0.5f, KY - LabelAsc * 0.69f, V.Keys, LabelFont, bHot ? WC : Tok(UiToken::InkDim, WA));
@@ -2218,26 +2027,8 @@ private:
 		HitA = Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
 		ParryA = Pulse(Now, Runner.GetParryTime(), kParryEdgeLife);
 		bResult = Fight.over();
-		if (!bResult)
+		if (bResult)
 		{
-			bStatsBuilt = false; // the next result gets its own counts
-		}
-		else
-		{
-			if (!bStatsBuilt)
-			{
-				const ftcore::ArenaStats& St = Fight.stats();
-				StatsText = FString::Format(*kStatTimeUi.Get(), {FString::Printf(TEXT("%.1f"), Fight.time())});
-				const int32 Counts[6] = {static_cast<int32>(St.hits), static_cast<int32>(St.parries), static_cast<int32>(St.ripostes),
-					static_cast<int32>(St.evades), static_cast<int32>(St.blocks), static_cast<int32>(St.hitsTaken)};
-				for (int32 I = 0; I < 6; ++I)
-				{
-					StatsText += TEXT("    ");
-					StatsText += FString::Format(*kStatUi[I][Counts[I] == 1 ? 0 : 1]->Get(), {Counts[I]}); // the word by the count
-				}
-				StatsW = TextWidth(StatsText, LabelFont);
-				bStatsBuilt = true;
-			}
 			bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
 			ResultA = FMath::Clamp(static_cast<float>(Runner.GetResultAge() / kResultFade), 0.f, 1.f);
 			bAgain = !Runner.IsAutoPlay() && Runner.CanFightAgain();
@@ -2331,7 +2122,7 @@ private:
 				const float W = 90.f * S;
 				if (M.bLine)
 				{
-					HLine(M.Over.X - W * 0.5f, M.Over.X + W * 0.5f, M.Over.Y, M.Hp01, 1.f, StrokeStyle(0.6f, 71, S, 0.f), Tok(UiToken::Track), false);
+					HLine(M.Over.X - W * 0.5f, M.Over.X + W * 0.5f, M.Over.Y, M.Hp01, 1.f, StrokeStyle(0.6f, 71, S, 0.f), Tok(UiToken::Track));
 					HLine(M.Over.X - W * 0.5f, M.Over.X + W * 0.5f, M.Over.Y, 0.f, M.Hp01, StrokeStyle(1.1f, 73, S, 0.f), Tok(UiToken::Ink, 0.9f));
 					// Its poise, a finer line under the hp in the second accent.
 					HLine(M.Over.X - W * 0.5f, M.Over.X + W * 0.5f, M.Over.Y + 5.f * S, 0.f, M.Poise01, StrokeStyle(0.7f, 75, S, 0.f), Tok(UiToken::Accent2, 0.85f));
@@ -2354,7 +2145,7 @@ private:
 			const float Y = FMath::Max(M.Over.Y - 30.f * S, (Carry::TopLine + 80.f) * S);
 			if (M.Tell == 1)
 			{
-				HLine(X0, X0 + W, Y, 0.f, 1.f, StrokeStyle(0.7f, 81, S, 0.f), Tok(UiToken::Track), false);
+				HLine(X0, X0 + W, Y, 0.f, 1.f, StrokeStyle(0.7f, 81, S, 0.f), Tok(UiToken::Track));
 				HLine(X0, X0 + W, Y, 0.f, M.Fill, StrokeStyle(1.8f, 83, S, 0.f), Tok(AT));
 				const FVector2f End[2] = {FVector2f(X0 + W, Y - 8.f * S), FVector2f(X0 + W, Y + 8.f * S)};
 				Poly(End, 2, 0.9f * S, Tok(UiToken::Ink));
@@ -2450,7 +2241,7 @@ private:
 		ftcore::uiArcPoint(X, Y, R, Toward, X0, Y0);
 		const FVector2f Dir = To.GetSafeNormal();
 		const FVector2f Pts[2] = {FVector2f(X0, Y0), WeakAt - Dir * (16.f * S)};
-		Poly(Pts, 2, 1.3f * S, Tok(UiToken::WeakPoint, A));
+		Poly(Pts, 2, 5.f * S, Tok(UiToken::WeakPoint, A)); // 10 px
 	}
 
 	// The reticle: the lock's ring round the locked body (the screen's centre without a lock), where a parry snaps it shut
@@ -2576,7 +2367,7 @@ private:
 		const FVector2f In = RingAt - FVector2f(M.Dir.X * (Len * 1.15f + 80.f * S), M.Dir.Y * (Len * 1.15f + 50.f * S));
 		AnswerMark(In.X, In.Y - 12.f * S, M.Answer, S, C);
 		const float BW = 96.f * S;
-		HLine(In.X - BW * 0.5f, In.X + BW * 0.5f, In.Y + 6.f * S, 0.f, 1.f, StrokeStyle(0.6f, 105, S, 0.f), Tok(UiToken::Track), false);
+		HLine(In.X - BW * 0.5f, In.X + BW * 0.5f, In.Y + 6.f * S, 0.f, 1.f, StrokeStyle(0.6f, 105, S, 0.f), Tok(UiToken::Track));
 		HLine(In.X - BW * 0.5f, In.X + BW * 0.5f, In.Y + 6.f * S, 0.f, M.Fill, StrokeStyle(1.5f, 107, S, 0.f), C);
 	}
 
@@ -2597,7 +2388,6 @@ private:
 			Mesh.Vignette(0.f, Size.Y * 0.5f, D, Size.Y * 0.7f, Pk, &C);
 			Mesh.Vignette(Size.X, Size.Y * 0.5f, D, Size.Y * 0.7f, Pk, &C);
 		}
-		Tone(ToneCentre, [&]
 		{
 			// The wrong side: a danger mark beside the reticle on the side that was called, fading.
 			const float WrongA = WrongAt < 0.0 ? 0.f : FMath::Clamp(1.f - static_cast<float>((FightNow - WrongAt) / kBossNoteLife), 0.f, 1.f);
@@ -2673,31 +2463,27 @@ private:
 					Ring(To.X, To.Y, (10.f + 16.f * (1.f - Po.rippleAlpha)) * S, 1.4f, 159, S, Tok(UiToken::Danger, Po.rippleAlpha));
 				}
 			});
-		});
-		Tone(ToneResult, [&]
+		}
 		{
-			// The result: the word, a hairline, the counts and how to fight again, in the result's tone (no dim).
+			// The result: the word and how to fight again (the counts wait for a later summary screen).
 			if (bResult && ResultA > 0.f)
 			{
 				const float A = ResultA;
 				const float Base = Size.Y * 0.42f;
 				const float WordW = bWon ? VictoryW : DefeatW;
 				P.Text(CX - WordW * 0.5f, Base - BigAsc, bWon ? VictoryWord : DefeatWord, BigFont, WordTok(bWon ? UiToken::Accent : UiToken::Danger, A));
-				HLine(CX - 220.f * S, CX + 220.f * S, Base + 16.f * S, 0.f, 1.f, StrokeStyle(1.1f, 125, S), Tok(UiToken::Ink, 0.8f * A));
-				P.Text(CX - StatsW * 0.5f, Base + 34.f * S, StatsText, LabelFont, Tok(UiToken::Ink, A));
 				if (bAgain)
 				{
-					P.Text(CX - AgainW * 0.5f, Base + 34.f * S + LabelAsc + 18.f * S, AgainWord, LabelFont, Tok(UiToken::InkDim, A));
+					P.Text(CX - AgainW * 0.5f, Base + 34.f * S, AgainWord, LabelFont, Tok(UiToken::InkDim, A));
 				}
 			}
-		});
-		Tone(ToneBoss, [&]
+		}
 		{
 			if (TagMode > 0)
 			{
 				P.Text(40.f * S, 30.f * S, TagWord[TagMode - 1], LabelFont, Tok(UiToken::InkDim));
 			}
-		});
+		}
 	}
 
 	// The cylinder, by the crosshair (a guns kit only): one mark per chamber on a short arc to the reticle's right, top
@@ -2734,7 +2520,7 @@ private:
 			else
 			{
 				ftcore::uiStrokeArc(Line, X, Y, 6.f * S, 0.f, 360.f, StrokeStyle(1.4f, 63u + static_cast<uint32>(I), S, 0.f));
-				Mesh.Stroke(Line, Tok(UiToken::InkDim, 0.7f * A), true, true);
+				Mesh.Stroke(Line, Tok(UiToken::InkDim, 0.7f * A), true);
 			}
 		}
 		if (L.reload01 > 0.f)
@@ -2837,25 +2623,10 @@ private:
 	bool bResult = false;
 	bool bWon = false;
 	bool bAgain = false;
-	bool bStatsBuilt = false;
 	float ResultA = 0.f;
-	FString StatsText;
-	float StatsW = 0.f;
 	int32 TagMode = 0; // 1 autoplay, 2 idle
 	FString TagWord[2];
 	float TagW[2] = {};
-	// The clusters' tone: read at the end of the viewport's draw, stepped in Tick, used in Paint.
-	ftcore::UiToneState Tones[ToneCount];
-	mutable bool ToneDrew[ToneCount] = {}; // drew anything in the last paint (shown)
-	bool bToneHave[ToneCount] = {};        // a read since the last tick, and the tone it asks for
-	ftcore::UiTone ToneRead[ToneCount] = {};
-	int32 ToneTries[ToneCount] = {};       // reads that found no picture before the first
-	int32 ToneNext = 0;
-	float ToneClock = 0.f;
-	float ToneNextAt = 0.f;
-	FVector2f ToneSize = FVector2f::ZeroVector;
-	bool bToneBound = false;
-	TArray<FColor> TonePx; // the read's pixels, reused
 };
 
 // ---- dialogue ---------------------------------------------------------------------------------------------------------
@@ -3102,7 +2873,7 @@ public:
 						Line.pt[Line.count - 1].x = Line.pt[0].x; // closed without a seam
 						Line.pt[Line.count - 1].y = Line.pt[0].y;
 					}
-					Mesh.Stroke(Line, Tok(UiToken::Ink), true, true);
+					Mesh.Stroke(Line, Tok(UiToken::Ink), true);
 				}
 				else
 				{

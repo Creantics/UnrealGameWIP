@@ -11,19 +11,18 @@
   "fade": { "in": 0.15, "rest": 2.5, "out": 0.6, "rest_alpha": 0.35 },
   "budget": { "rest": 3, "marks": 10, "hint": 3 },
   "word_luma_floor": 0.45,
-  "tone": { "hold": 0.5, "fade": 0.1, "margin": 1.15, "word_luma_ceiling": 0.1 },
   "min_text_px": 18,
   "min_text_px_absolute": 14,
   "worlds": {
-    "solhaven":  { "ink": "#F3EEE6", "ink_dim": "#D2CBBF", "backing": "#0A0806", "track": "#FFFFFF4D", "accent": "#E9B36B", "accent2": "#C9643C", "danger": "#FF7A5C", "ally": "#8FD3B4", "weak_point": "#FFE08A", "plate": "bronze" },
-    "lattice":   { "ink": "#EEF4F6", "ink_dim": "#C4D1D6", "backing": "#05090C", "track": "#FFFFFF4D", "accent": "#8FD6E8", "accent2": "#A88BE0", "danger": "#FF7A86", "ally": "#9BE3B0", "weak_point": "#FFE08A", "plate": "form_slip" },
-    "unwritten": { "ink": "#F2ECE0", "ink_dim": "#D0C8B8", "backing": "#0B0907", "track": "#FFFFFF4D", "accent": "#E6DDCB", "accent2": "#9E3B2E", "danger": "#FF7A66", "ally": "#9CC7A4", "weak_point": "#F4D58A", "plate": "torn_page" }
+    "solhaven":  { "ink": "#F3EEE6", "ink_dim": "#D2CBBF", "backing": "#0A0806", "track": "#FFFFFF73", "accent": "#E9B36B", "accent2": "#C9643C", "danger": "#FF7A5C", "ally": "#8FD3B4", "weak_point": "#FFE08A", "plate": "bronze" },
+    "lattice":   { "ink": "#EEF4F6", "ink_dim": "#C4D1D6", "backing": "#05090C", "track": "#FFFFFF73", "accent": "#8FD6E8", "accent2": "#A88BE0", "danger": "#FF7A86", "ally": "#9BE3B0", "weak_point": "#FFE08A", "plate": "form_slip" },
+    "unwritten": { "ink": "#F2ECE0", "ink_dim": "#D0C8B8", "backing": "#0B0907", "track": "#FFFFFF73", "accent": "#E6DDCB", "accent2": "#9E3B2E", "danger": "#FF7A66", "ally": "#9CC7A4", "weak_point": "#F4D58A", "plate": "torn_page" }
   },
   "palettes": {
     "protan":        { "danger": "#F0A030", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
     "deutan":        { "danger": "#F0A030", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
     "tritan":        { "danger": "#FF7A4A", "ally": "#40C8B0", "weak_point": "#F5A0C8" },
-    "high_contrast": { "ink": "#FFFFFF", "ink_dim": "#FFFFFF", "backing": "#000000", "track": "#FFFFFF73", "danger": "#FF8A00", "ally": "#00E0FF", "weak_point": "#FFFF00" }
+    "high_contrast": { "ink": "#FFFFFF", "ink_dim": "#FFFFFF", "backing": "#000000", "track": "#FFFFFF99", "danger": "#FF8A00", "ally": "#00E0FF", "weak_point": "#FFFF00" }
   },
   "text": {
     "title":    { "font": "serif_sc_bold", "px": 40, "tracking": 0.08, "upper": false },
