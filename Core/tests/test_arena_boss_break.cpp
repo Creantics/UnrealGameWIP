@@ -93,7 +93,10 @@ void hashFight(Fnv& h, const ArenaDef& def, std::uint32_t seed) {
 
 } // namespace
 
-TEST_CASE("arena boss break: regular enemies fight byte for byte as before (a golden trace of every shipped one)") {
+// Its hash held across the riposte reach change (centre to edge), so it cannot see how the reach is measured; the
+// riposte reach tests below pin that.
+TEST_CASE("arena boss break: the break value leaves regular enemies' fights untouched (a golden trace of every shipped "
+          "one)") {
     const ArenaTable t = shippedTable();
     Fnv h;
     int fights = 0;
@@ -118,7 +121,8 @@ TEST_CASE("arena boss break: regular enemies fight byte for byte as before (a go
     hashFight(h, t.fallback, 1);
     MESSAGE("regular golden: " << fights << " fights, hash " << h.h);
     CHECK(fights > 5);
-    CHECK(h.h == 12022742029920829981ull); // measured on the code before the boss break value
+    CHECK(h.h == 12022742029920829981ull); // measured on the code before the boss break value; the riposte reach
+                                           // change left it as it was
 }
 
 // ---- the boss break value ----
@@ -644,9 +648,9 @@ TEST_CASE("arena boss break: every stagger that ends with the value at or over t
 namespace {
 // Enemy `id` (its shipped body) held Open with its centre `centre` m in front of the lead, who presses light once:
 // true when a riposte lands (the enemy goes Down).
-bool riposteLands(const ArenaTable& t, const char* id, float centre) {
+bool riposteLands(const ArenaTable& t, const char* id, float centre, const char* kit = "default", float lookScale = 0.f) {
     ArenaDef def;
-    def.fighter = t.fighter("default");
+    def.fighter = t.fighter(kit);
     def.enemyCount = 1;
     def.attackers = 1;
     bool found = false;
@@ -657,6 +661,10 @@ bool riposteLands(const ArenaTable& t, const char* id, float centre) {
         }
     REQUIRE(found);
     def.enemies[0].hp = 100000;
+    if (lookScale > 0.f) { // a skinned look drawn at this scale
+        def.enemies[0].look.clipsText[0] = 'x';
+        def.enemies[0].look.scale = lookScale;
+    }
     Rig r(def);
     const auto place = [&] {
         r.bodies.player = Vec2{0.f, 0.f};
@@ -688,23 +696,41 @@ float bodyOf(const ArenaTable& t, const char* id) {
 }
 } // namespace
 
-// riposteReach is 1.8 m from the body's edge, so a 0.4 m body keeps the old 2.2 m from its centre. "From d" lands a
-// millimetre inside d (float slack at the exact reach); "not from" is 0.2 m further.
-TEST_CASE("arena boss break: the riposte's reach is 1.8 m to the body's edge (0.4 m body: 2.2 m centre to centre, "
-          "not 2.4; the kite, hulk and titan from 1.8 m outside their edges, not 2.0)") {
+// riposteReach is measured from the body's edge: the default kit's 1.8 m (a 0.4 m body keeps the old 2.2 m from its
+// centre) and Devin's 2.0 m. "From d" lands a millimetre inside d (float slack at the exact reach); "not from" is
+// 0.2 m further.
+TEST_CASE("arena boss break: the riposte's reach is 1.8 m (Devin 2.0) to the body's edge, for every body size") {
     const ArenaTable t = shippedTable();
     REQUIRE(t.fighter("default").riposteReach == doctest::Approx(1.8f));
+    REQUIRE(t.fighter("devin").riposteReach == doctest::Approx(2.0f));
     REQUIRE(bodyOf(t, "skirmisher") == doctest::Approx(0.4f));
     CHECK(riposteLands(t, "skirmisher", 2.2f - 0.001f));
     CHECK_FALSE(riposteLands(t, "skirmisher", 2.4f));
-    for (const char* id : {"kite_boss", "hulk", "titan"}) {
-        CAPTURE(id);
-        const float body = bodyOf(t, id);
-        REQUIRE(body > 1.f);
-        CHECK(riposteLands(t, id, body + 1.8f - 0.001f));
-        CHECK_FALSE(riposteLands(t, id, body + 2.0f));
-    }
     CHECK(bodyOf(t, "kite_boss") == doctest::Approx(2.5f));
+    CHECK(bodyOf(t, "maw_pup") == doctest::Approx(0.35f));
+    CHECK(bodyOf(t, "brute") == doctest::Approx(0.45f));
+    CHECK(bodyOf(t, "breaker") == doctest::Approx(0.5f));
+    for (const char* kit : {"default", "devin"}) {
+        const float reach = std::string(kit) == "devin" ? 2.0f : 1.8f;
+        for (const char* id : {"maw_pup", "skirmisher", "brute", "breaker", "kite_boss", "hulk", "titan"}) {
+            CAPTURE(kit);
+            CAPTURE(id);
+            const float body = bodyOf(t, id);
+            REQUIRE(body > 0.f);
+            CHECK(riposteLands(t, id, body + reach - 0.001f, kit));
+            CHECK_FALSE(riposteLands(t, id, body + reach + 0.2f, kit));
+        }
+    }
+}
+
+// The riposte takes the body as drawn, as the blow's own reach does: a skinned look at scale 1.5 makes a 0.4 m body
+// 0.6 m, so 2.35 m from its centre (1.95 m from the raw edge, 1.75 from the drawn) lands, and 2.6 m does not.
+TEST_CASE("arena boss break: the riposte's reach takes the drawn body (a look at scale 1.5)") {
+    const ArenaTable t = shippedTable();
+    CHECK_FALSE(riposteLands(t, "skirmisher", 2.35f));
+    CHECK(riposteLands(t, "skirmisher", 2.35f, "default", 1.5f));
+    CHECK(riposteLands(t, "skirmisher", 0.6f + 1.8f - 0.001f, "default", 1.5f));
+    CHECK_FALSE(riposteLands(t, "skirmisher", 0.6f + 2.0f, "default", 1.5f));
 }
 
 namespace {
@@ -834,4 +860,290 @@ TEST_CASE("arena boss break: arena.json refuses a boss without its break move, w
         CHECK(table.enemies[e].breakPhaseEnds[0] == doctest::Approx(0.5f));
     }
     CHECK(seen);
+}
+
+namespace {
+// Every blow on an enemy vetoed (the lead's untouched too); *user counts the vetoed ones.
+ArenaBlowRuling vetoAll(void* user, const ArenaBlow& b) {
+    ArenaBlowRuling r;
+    r.veto = true;
+    if (b.target != kArenaPlayer) ++*static_cast<int*>(user);
+    return r;
+}
+
+// A blow ruled to add no break value.
+ArenaBlowRuling noValue(void*, const ArenaBlow&) {
+    ArenaBlowRuling r;
+    r.breakScale = 0.f;
+    return r;
+}
+
+// Steps until boss 0's break move reaches its recovery (false after `most` s).
+bool untilRecovery(Rig& r, float most = 5.f) {
+    const float until = r.fight.time() + most;
+    while (r.fight.time() < until) {
+        if (r.out && r.fight.enemyBreakMoveOn(0) && r.out->enemies[0].part == ArenaPart::Recovery) return true;
+        r.step();
+    }
+    return false;
+}
+} // namespace
+
+TEST_CASE("arena boss break: a vetoed blow adds 0") {
+    const ArenaTable t = shippedTable();
+    ArenaDef def = bossDef(t, "stone_bearer", true);
+    Rig r(def);
+    int vetoed = 0;
+    r.fight.setBlowHook(vetoAll, &vetoed);
+    const Vec2 boss{def.enemies[0].bodyRadius + 1.f, 0.f};
+    while (r.fight.time() < 4.f) {
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.enemies[0] = boss;
+        ArenaInput in;
+        in.light = true;
+        r.step(in);
+        CHECK(r.value() == 0.f);
+    }
+    CHECK(vetoed > 5);
+    CHECK(r.fight.stats().bossBreakAdded == 0.f);
+    CHECK(r.breaks() == 0);
+}
+
+TEST_CASE("arena boss break: a stagger in the break move's windup leaves the value at 0, and no break follows at once") {
+    const ArenaTable t = shippedTable();
+    ArenaDef def = bossDef(t, "stone_bearer", true);
+    def.enemies[0].moves[static_cast<std::size_t>(def.enemies[0].breakMove)].attack.armor = 0.f;
+    Rig r(def);
+    r.step();
+    REQUIRE(hostBlowsToBreak(r) == 7);
+    REQUIRE(r.fight.enemyBreakGuard(0));
+    REQUIRE(r.out->enemies[0].part == ArenaPart::Startup);
+    REQUIRE(r.fight.holdEnemy(0, ArenaBrain::Staggered, 1.f));
+    r.step();
+    REQUIRE(r.out->enemies[0].brain == ArenaBrain::Staggered);
+    CHECK_FALSE(r.fight.enemyBreakMoveOn(0));
+    CHECK(r.value() == 0.f);
+    while (r.out->enemies[0].brain == ArenaBrain::Staggered && r.fight.time() < 5.f) {
+        CHECK(r.value() == 0.f);
+        r.step();
+    }
+    const float up = r.fight.time();
+    while (r.fight.time() < up + 2.f) {
+        CHECK_FALSE(r.had(ArenaEventType::BrokeOut));
+        r.step();
+    }
+    CHECK(r.breaks() == 1);
+    // Blows add again from 0.
+    REQUIRE(r.fight.hostBlow(0, 1, 0));
+    CHECK(r.value() == doctest::Approx(1.5f));
+}
+
+TEST_CASE("arena boss break: after a flinch cuts the recovery short, blows add value again") {
+    const ArenaTable t = shippedTable();
+    ArenaDef def = bossDef(t, "stone_bearer", true);
+    def.enemies[0].flinchTime = 0.3f;
+    def.enemies[0].flinchPoise = 1.f;
+    def.enemies[0].moves[static_cast<std::size_t>(def.enemies[0].breakMove)].attack.armor = 0.f;
+    Rig r(def);
+    r.step();
+    REQUIRE(hostBlowsToBreak(r) == 7);
+    REQUIRE(untilRecovery(r));
+    // The lead's light, 1 m off the body's edge, until one flinches it in the recovery.
+    const Vec2 boss{def.enemies[0].bodyRadius + 1.f, 0.f};
+    bool flinched = false;
+    while (!flinched && r.fight.time() < 10.f) {
+        REQUIRE(r.fight.enemyBreakMoveOn(0));
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.enemies[0] = boss;
+        ArenaInput in;
+        in.light = true;
+        r.step(in);
+        flinched = r.had(ArenaEventType::Flinched);
+    }
+    REQUIRE(flinched);
+    CHECK_FALSE(r.fight.enemyBreakMoveOn(0));
+    CHECK(r.value() == 0.f); // the flinching blow landed in the recovery: nothing
+    for (int blow = 1; blow <= 3; ++blow) {
+        REQUIRE(r.fight.hostBlow(0, 1, 0));
+        CHECK(r.value() == doctest::Approx(1.5f * static_cast<float>(blow)));
+        r.step();
+    }
+    CHECK(r.breaks() == 1);
+}
+
+TEST_CASE("arena boss break: a break move the host's move mask clears is spent unthrown") {
+    const ArenaTable t = shippedTable();
+    const ArenaDef def = bossDef(t, "stone_bearer", true);
+    const int move = def.enemies[0].breakMove;
+    Rig r(def);
+    r.step();
+    r.fight.setEnemyMoveMask(0, r.fight.enemyMoveMask(0) & ~(1u << static_cast<unsigned>(move)));
+    for (int blow = 0; blow < 7; ++blow) {
+        REQUIRE(r.fight.hostBlow(0, 1, 0));
+        r.step();
+        CHECK_FALSE(r.had(ArenaEventType::BrokeOut));
+    }
+    CHECK(r.breaks() == 0);
+    CHECK(r.fight.stats().bossBreakBarred == 1);
+    CHECK(r.value() == 0.f);
+    CHECK_FALSE(r.fight.enemyBreakMoveOn(0));
+}
+
+TEST_CASE("arena boss break: two bosses, and a boss with a regular enemy, each keep their own value") {
+    const ArenaTable t = shippedTable();
+    {
+        ArenaDef def = bossDef(t, "kite_boss", true);
+        def.enemyCount = 2;
+        def.enemies[1] = bossDef(t, "stone_bearer", true).enemies[0];
+        Rig r(def);
+        r.step();
+        for (int blow = 0; blow < 3; ++blow) REQUIRE(r.fight.hostBlow(0, 1, 0));
+        REQUIRE(r.fight.hostBlow(1, 1, 0));
+        CHECK(r.fight.enemyBreakValue(0) == doctest::Approx(4.5f));
+        CHECK(r.fight.enemyBreakValue(1) == doctest::Approx(1.5f));
+        r.step();
+        for (int blow = 0; blow < 4; ++blow) REQUIRE(r.fight.hostBlow(1, 1, 0));
+        r.step(); // 7.5 of stone's 10, 4.5 of the kite's 10
+        for (int blow = 0; blow < 2; ++blow) REQUIRE(r.fight.hostBlow(1, 1, 0));
+        r.step(); // the stone bearer's 10.5 breaks it; the kite keeps its own
+        CHECK(r.breaks() == 1);
+        CHECK(r.fight.enemyBreakMoveOn(1));
+        CHECK_FALSE(r.fight.enemyBreakMoveOn(0));
+        CHECK(r.fight.enemyBreakValue(1) == 0.f);
+        CHECK(r.fight.enemyBreakValue(0) == doctest::Approx(4.5f));
+    }
+    {
+        ArenaDef def = bossDef(t, "stone_bearer", true);
+        def.enemyCount = 2;
+        for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+            if (t.enemyIds[e] == "brute") def.enemies[1] = t.enemies[e];
+        REQUIRE_FALSE(def.enemies[1].boss);
+        def.enemies[1].hp = 100000;
+        Rig r(def);
+        r.step();
+        for (int blow = 0; blow < 5; ++blow) REQUIRE(r.fight.hostBlow(1, 1, 0));
+        REQUIRE(r.fight.hostBlow(0, 1, 0));
+        CHECK(r.fight.enemyBreakValue(1) == 0.f); // a regular enemy has none
+        CHECK(r.fight.enemyBreakAt(1) == 0.f);
+        CHECK(r.fight.enemyBreakValue(0) == doctest::Approx(1.5f));
+        r.step();
+        CHECK(r.breaks() == 0);
+    }
+}
+
+// Ruled: a phase that begins with its threshold at or below the value breaks the boss at once if it is upright,
+// else the tick it stands.
+TEST_CASE("arena boss break: a new phase whose threshold the value already meets breaks at once, or when it stands") {
+    const ArenaTable t = shippedTable();
+    for (const bool open : {false, true}) {
+        CAPTURE(open);
+        ArenaDef def = bossDef(t, "stone_bearer", true);
+        Rig r(def);
+        r.step();
+        for (int blow = 0; blow < 6; ++blow) REQUIRE(r.fight.hostBlow(0, 1, 0)); // 9.0: under phase 1's 10
+        r.step();
+        REQUIRE(r.fight.enemyBreakPhase(0) == 0);
+        CHECK(r.breaks() == 0);
+        if (open) {
+            REQUIRE(r.fight.holdEnemy(0, ArenaBrain::Open, 1.f));
+            r.step();
+        }
+        // Down past half its hp with a blow that adds nothing: phase 2, threshold 8, under the value.
+        const int half = def.enemies[0].hp / 2;
+        REQUIRE(r.fight.ruledHostBlow(0, r.fight.enemyHp(0) - half + 1, 0, noValue, nullptr));
+        CHECK(r.value() == doctest::Approx(9.f));
+        r.step();
+        REQUIRE(r.fight.enemyBreakPhase(0) == 1);
+        if (!open) {
+            CHECK(r.breaks() == 1);
+            CHECK(r.had(ArenaEventType::BrokeOut));
+            continue;
+        }
+        CHECK(r.breaks() == 0);
+        while (r.out->enemies[0].brain == ArenaBrain::Open && r.fight.time() < 5.f) {
+            CHECK(r.breaks() == 0);
+            r.step();
+        }
+        CHECK(r.breaks() == 1); // the tick it stands
+        CHECK(r.had(ArenaEventType::BrokeOut));
+    }
+}
+
+// Ruled: a Read counter the break's cut brings lands as a Read counter (damage, poise; in the windup, so no value),
+// and a stagger it brings cancels that break with the value at 0.
+TEST_CASE("arena boss break: a Read counter the break brings lands as one, and its stagger cancels the break") {
+    const ArenaTable t = shippedTable();
+    for (const bool staggers : {false, true}) {
+        CAPTURE(staggers);
+        ArenaDef def = bossDef(t, "stone_bearer", true);
+        def.enemies[0].moves[static_cast<std::size_t>(def.enemies[0].breakMove)].attack.armor = 0.f;
+        if (staggers) def.enemies[0].poise = 1.f;
+        Rig r(def);
+        // A right pick on the boss's first dealt move, then the break while that move runs.
+        bool dealt = false;
+        while (!dealt && r.fight.time() < 20.f) {
+            r.step();
+            dealt = r.had(ArenaEventType::CardsDealt) && r.fight.readFoe() == 0;
+        }
+        REQUIRE(dealt);
+        REQUIRE(r.fight.readOpen());
+        ArenaInput pick;
+        pick.read = static_cast<std::int8_t>(r.fight.readCards().correct());
+        r.step(pick);
+        REQUIRE(r.had(ArenaEventType::Read));
+        REQUIRE(r.out->enemies[0].brain == ArenaBrain::Attack);
+        REQUIRE(r.out->enemies[0].part == ArenaPart::Startup);
+        const int counters = r.fight.stats().readCounters;
+        const int hp = r.fight.enemyHp(0);
+        for (int blow = 0; blow < 7; ++blow) REQUIRE(r.fight.hostBlow(0, 1, 0));
+        r.step();
+        CHECK(r.had(ArenaEventType::BrokeOut));
+        CHECK(r.had(ArenaEventType::ReadCounter));
+        CHECK(r.fight.stats().readCounters == counters + 1);
+        CHECK(r.fight.enemyHp(0) < hp - 7); // the counter's damage on top of the seven host blows
+        CHECK(r.value() == 0.f);
+        if (!staggers) {
+            CHECK(r.fight.enemyBreakMoveOn(0));
+            CHECK(r.out->enemies[0].brain == ArenaBrain::Attack);
+            continue;
+        }
+        CHECK(r.out->enemies[0].brain == ArenaBrain::Staggered);
+        CHECK_FALSE(r.fight.enemyBreakMoveOn(0));
+        while (r.out->enemies[0].brain == ArenaBrain::Staggered && r.fight.time() < 30.f) {
+            CHECK(r.value() == 0.f);
+            r.step();
+        }
+        const float up = r.fight.time();
+        while (r.fight.time() < up + 1.f) {
+            CHECK_FALSE(r.had(ArenaEventType::BrokeOut));
+            r.step();
+        }
+    }
+}
+
+TEST_CASE("arena boss break: a code-built threshold under 0.5 (or not a number) is taken as 0.5, never a break a tick") {
+    const ArenaTable t = shippedTable();
+    for (const float at : {0.f, -3.f, std::nanf("")}) {
+        CAPTURE(at);
+        ArenaDef def = bossDef(t, "stone_bearer", true);
+        def.enemies[0].breakValueAt = {at, at, at, at};
+        Rig r(def);
+        r.run(3.f);
+        CHECK(r.breaks() == 0);
+        CHECK(r.fight.enemyBreakAt(0) == doctest::Approx(kArenaBossBreakFloor));
+        REQUIRE(r.fight.hostBlow(0, 1, 0));
+        r.step();
+        CHECK(r.breaks() == 1);
+        r.run(5.f);
+        CHECK(r.breaks() == 1);
+    }
+}
+
+TEST_CASE("arena boss break: the shipped bosses write their thresholds out (10, 8, 6.5)") {
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    const std::string written = "\"breakValueAt\": [10, 8, 6.5]";
+    int count = 0;
+    for (std::size_t at = text.find(written); at != std::string::npos; at = text.find(written, at + 1)) ++count;
+    CHECK(count == 3);
 }

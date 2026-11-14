@@ -4606,13 +4606,18 @@ void UFTArenaRunner::PrepareStoneBearer()
 		}
 	}
 	std::string Error;
-	if (!StoneBearer.IsLoaded() || !StoneBearer.BuildKind(Def.enemies[static_cast<size_t>(StoneBearerSlot)], Def.fighter, &Error))
+	std::string BreakError;
+	if (!StoneBearer.IsLoaded() || !StoneBearer.BuildKind(Def.enemies[static_cast<size_t>(StoneBearerSlot)], Def.fighter, &Error, &BreakError))
 	{
 		if (!Error.empty())
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(Error));
 		}
 		StoneBearerSlot = -1;
+	}
+	if (!BreakError.empty())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: %s"), *FT::ToFString(BreakError));
 	}
 }
 

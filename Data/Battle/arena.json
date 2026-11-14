@@ -134,7 +134,7 @@
       "hp": 1100, "poise": 120, "poiseDelay": 4, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
       "walkSpeed": 0.6, "runSpeed": 1, "strafeSpeed": 0.5, "accel": 2, "turnRate": 1.2,
       "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72, "carry": 3,
-      "boss": true, "breakMove": 7,
+      "boss": true, "breakMove": 7, "breakValueAt": [10, 8, 6.5],
       "look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": -90 },
       "moves": [
         { "clip": "mitten_drop", "tell": "slam", "hitsAir": true, "startup": 1.667, "active": 0.2, "recovery": 1.5, "range": 7, "arcCos": 0.3, "damage": 8, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
@@ -152,7 +152,7 @@
       "hp": 1400, "poise": 175, "poiseDelay": 8, "staggerTime": 2, "openTime": 3, "downTime": 3,
       "walkSpeed": 0.8, "runSpeed": 0.8, "strafeSpeed": 0.8, "accel": 2.5, "turnRate": 1.4,
       "preferredRange": 3.5, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 1.2, "height": 5.1, "bpm": 76,
-      "boss": true, "breakMove": 7, "breakPhaseEnds": [0.5, 0.25],
+      "boss": true, "breakMove": 7, "breakValueAt": [10, 8, 6.5], "breakPhaseEnds": [0.5, 0.25],
       "look": { "clips": "Data/Anim/stone_bearer_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
         { "clip": "called_fist", "tell": "strike", "startup": 2.368, "active": 0.2, "recovery": 1.2, "range": 3.8, "arcCos": 0.3, "damage": 17, "poiseDamage": 20, "guardDamage": 26, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 4.2, "weight": 1.2 },
@@ -170,7 +170,7 @@
       "hp": 1100, "poise": 100, "poiseDelay": 3, "staggerTime": 2, "openTime": 1.6, "downTime": 2.5,
       "walkSpeed": 0, "runSpeed": 0, "strafeSpeed": 0, "accel": 4, "turnRate": 2.2,
       "preferredRange": 11.5, "runRange": 11.5, "attackDelay": 0.8, "bodyRadius": 0.5, "height": 2.7, "bpm": 104,
-      "boss": true, "breakMove": 2,
+      "boss": true, "breakMove": 2, "breakValueAt": [10, 8, 6.5],
       "look": { "clips": "Data/Anim/white_glove_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
         { "clip": "deal", "tell": "shot", "startup": 2.308, "active": 0.2, "recovery": 1.6, "range": 12, "width": 0.5, "damage": 20, "poiseDamage": 24, "guardDamage": 0, "lunge": 0, "tracking": 0.4, "minRange": 0, "maxRange": 11.5, "cooldown": 8, "weight": 1.5, "unblockable": true, "parryable": false },
