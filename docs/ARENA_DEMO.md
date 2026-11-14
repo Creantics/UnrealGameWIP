@@ -359,7 +359,11 @@ Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBri
 with a 1.2 s reload (the shot spends a round instead of stamina; with none left a shot press is dropped and kicks still
 go), plus the Brief's kit changes. The cylinder sends three fight events for the host's clip and sound: `ReloadStarted`
 (the reload's length in ms), `Reloaded` (the rounds) and `DryPress` (a press dropped on the empty cylinder); the arena
-logs each one, and the reload clip, the dry click and a gun-arm flinch attach there once they exist. Any other lead is
+logs each one and plays its sfx cue (`SFX-GUN-RELOAD`, `SFX-GUN-LOADED`, `SFX-GUN-DRY` in `Data/Audio/cues.json`;
+silent until the sounds are imported; an instant reload plays only `SFX-GUN-LOADED`). The reload clip `lead_reload` is
+posed each frame by the fight's reload progress, so it spans the reload whatever its length, and `lead_dry_flinch` plays
+from a dry press; both sit in the look's clip folder, play on the upper body under a strike's share, and are skipped
+(logged at Display) until they exist (`ftcore::arenaReloadLayer`, `arenaFlinchLayer`, `arenaGunCue`). Any other lead is
 left alone with a warning. `-ArenaAutoShoot` has the autopilot use
 the pistol; `-ArenaLineup=dummy,maw_pup` is the test line-up. The result is one `Arena: BRIEF ...` line at the end.
 

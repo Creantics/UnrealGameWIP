@@ -22,6 +22,8 @@
 #include "ftcore/ArenaFight.h"
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaCamera.h"
+#include "ftcore/ArenaGun.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
@@ -392,6 +394,8 @@ private:
 	// and their sounds attach once they exist. For now they only log.
 	void OnLeadReload(bool bStarted, int32 Amount);
 	void OnLeadDryPress(int32 Presses);
+	// The cylinder event's sound (ftcore::arenaGunCue) through UFTAudioSubsystem.
+	void PlayGunCue(const ftcore::ArenaEvent& E);
 	// Impact feedback (ftcore/ArenaImpact.h): the jolt kicked by a blow's event, stepped on the frame's clock (so it plays
 	// through the hit pause) and handed to the camera modifier; the off-frame tells and their stinger.
 	void KickJolt(const ftcore::ArenaEvent& E);
@@ -829,6 +833,13 @@ private:
 	float FrameTurn = 0.f;
 	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read.
 	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}); }
+	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
+	ftcore::ArenaFrameRules FrameRules() const
+	{
+		ftcore::ArenaFrameRules Rules = ftcore::kArenaFrame;
+		Rules.maxTurn = Fit.camera.frameTurnCapDeg;
+		return Rules;
+	}
 #if !UE_BUILD_SHIPPING
 	// -ArenaFrameCheck: the framing as the rendered camera shows it, sampled on each followed frame and logged by
 	// LogFeatureChecks ("Arena check: framing"). -ArenaNoFrame holds the framing at 0, for a side-by-side.

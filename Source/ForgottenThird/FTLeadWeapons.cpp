@@ -23,13 +23,14 @@
 #include "Templates/UniquePtr.h"
 #include "UObject/SoftObjectPath.h"
 
+#include "ftcore/ArenaGun.h"
 #include "ftcore/BeatChoreo.h"
 
 #include <string>
 #include <vector>
 
-static_assert(static_cast<int32>(ftcore::FightClip::Count) <= UFTLocomotionAnimInstance::MaxActionClips,
-	"an action slot per fight clip");
+static_assert(static_cast<int32>(ftcore::FightClip::Count) + 2 <= UFTLocomotionAnimInstance::MaxActionClips,
+	"an action slot per fight clip, then the gun's reload and dry flinch");
 
 namespace
 {
@@ -285,11 +286,55 @@ void FFTLeadWeapons::LoadClips(const FFTLeadLook& Look)
 		}
 	}
 	bClips = Loaded > 0;
+	ReloadClipLength = FlinchClipLength = 0.f;
+	if (Kit.rounds > 0)
+	{
+		ReloadClipLength = LoadGunClip(Folder, TEXT("lead_reload"), kReloadSlot);
+		FlinchClipLength = LoadGunClip(Folder, TEXT("lead_dry_flinch"), kFlinchSlot);
+	}
 	if (!Missing.IsEmpty())
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: lead weapon: no %s for %s in %s (retarget them with FTBuildRig -Names=..., docs/ARENA_DEMO.md)%s."),
 			*Missing, *Body->GetName(), *Folder, bClips ? TEXT("; the strikes without one are thrown as the punch on their side") : TEXT("; the attacks play no clips"));
 	}
+}
+
+float FFTLeadWeapons::LoadGunClip(const FString& Folder, const TCHAR* Name, int32 Slot)
+{
+	UFTLocomotionAnimInstance* Instance = Anim.Get();
+	const USkeletalMesh* Body = Skin.IsValid() ? Skin->GetSkeletalMeshAsset() : nullptr;
+	const FString Package = Folder / Name;
+	UAnimSequence* Clip = Instance && Body && !Folder.IsEmpty() && FPackageName::DoesPackageExist(Package)
+		? LoadObject<UAnimSequence>(nullptr, *(Package + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet)
+		: nullptr;
+	if (!Clip || !UFTLocomotionAnimInstance::FitsBody(*Clip, *Body, TEXT("Arena: lead weapon")) || Clip->GetPlayLength() <= 0.f)
+	{
+		// Not made yet: the reload and the dry press play their sounds only.
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: no %s in %s; the gun plays no clip for it."), Name, *Folder);
+		return 0.f;
+	}
+	Instance->SetActionClip(Slot, Clip);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: the gun plays %s (%.2f s)."), Name, Clip->GetPlayLength());
+	return Clip->GetPlayLength();
+}
+
+void FFTLeadWeapons::PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight)
+{
+	const float Age = DryAt >= 0.0 && T >= DryAt ? static_cast<float>(T - DryAt) : -1.f;
+	const ftcore::ArenaGunLayer Flinch = ftcore::arenaFlinchLayer(ftcore::kArenaGun, Age, FlinchClipLength);
+	const ftcore::ArenaGunLayer Reload = ftcore::arenaReloadLayer(ftcore::kArenaGun, bReloading, ReloadProgress, ReloadClipLength);
+	// A strike's clip keeps its share of the arms; the flinch goes over the reload.
+	const float Room = 1.f - FMath::Clamp(StrikeWeight, 0.f, 1.f);
+	const float FlinchWeight = Flinch.weight * Room;
+	const float ReloadWeight = Reload.weight * Room * (1.f - Flinch.weight);
+	if (FlinchWeight + ReloadWeight <= 0.f)
+	{
+		return;
+	}
+	// The gun's clips play on the upper body only, over the locomotion's legs.
+	Instance.SetActionUpper(FMath::Max(ActionUpper, Room));
+	Instance.AddAction(kReloadSlot, Reload.time, ReloadWeight);
+	Instance.AddAction(kFlinchSlot, Flinch.time, FlinchWeight);
 }
 
 void FFTLeadWeapons::AttachProps()
@@ -1065,6 +1110,7 @@ void FFTLeadWeapons::Paint(double T)
 	Instance->SetActionUpper(ActionUpper);
 	Instance->SetActionLeg(ActionLeg);
 	float Fade = 1.f;
+	bool bStrikes = true;
 	if (FadeSince >= 0.0)
 	{
 		Fade = static_cast<float>(1.0 - (T - FadeSince) / kFadeOut);
@@ -1072,19 +1118,25 @@ void FFTLeadWeapons::Paint(double T)
 		{
 			Animator.reset();
 			FadeSince = -1.0;
-			return;
+			bStrikes = false;
 		}
 		Fade = FMath::Min(Fade, 1.f);
 	}
-	Animator.update(T);
-	for (std::size_t I = 0; I < Animator.layerCount(); ++I)
+	float StrikeWeight = 0.f;
+	if (bStrikes)
 	{
-		const ftcore::FightLayer& Layer = Animator.layer(I);
-		if (Layer.clip != FightClip::Stance)
+		Animator.update(T);
+		for (std::size_t I = 0; I < Animator.layerCount(); ++I)
 		{
-			Instance->AddAction(static_cast<int32>(Layer.clip), Layer.time, Layer.weight * Fade);
+			const ftcore::FightLayer& Layer = Animator.layer(I);
+			if (Layer.clip != FightClip::Stance)
+			{
+				Instance->AddAction(static_cast<int32>(Layer.clip), Layer.time, Layer.weight * Fade);
+				StrikeWeight += Layer.weight * Fade;
+			}
 		}
 	}
+	PaintGun(*Instance, T, StrikeWeight);
 }
 
 void FFTLeadWeapons::Restart()
@@ -1097,6 +1149,9 @@ void FFTLeadWeapons::Restart()
 	}
 	Animator.reset();
 	FadeSince = -1.0;
+	bReloading = false;
+	ReloadProgress = 0.f;
+	DryAt = -1.0;
 	Strike = FightClip::Stance;
 	LastAction = ftcore::ArenaAction::Idle;
 	LastPart = ftcore::ArenaPart::None;

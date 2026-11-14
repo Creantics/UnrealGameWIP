@@ -77,8 +77,9 @@ FTCORE_API bool arenaRayEntersBody(ArenaPoint3 from, ArenaPoint3 to, const Arena
 // hidden by the lead. The framing adds an orbit turn round the pivot over the lead (yaw, degrees, + turns the view
 // right) that brings the target onto the view's centre line: sin(turn) = -side / distance. The arm, the pivot and the
 // shoulder are never touched, so the lens stays exactly as far from the lead as the free camera's and the lead stays
-// where the free camera puts it on screen. The turn is held to maxTurn, so a stick read along the lock's line is never
-// more than maxTurn off the view; nearer than |side| / sin(maxTurn) the target sits between the lead and the centre.
+// where the free camera puts it on screen. The turn is held to maxTurn (the stick reads the view as drawn, so it is
+// no stick error, but it bounds how far the view leaves the lock's line); nearer than |side| / sin(maxTurn) the target
+// sits between the lead and the centre.
 struct ArenaFrameRules {
     float maxTurn = 30.f; // degrees
     float rate = 6.f;     // 1/s: the applied turn eases toward the wanted one at this rate,

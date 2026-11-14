@@ -48,7 +48,7 @@ float arenaFrameStep(const ArenaFrameRules& rules, float applied, float want, fl
 namespace {
 
 float unwound(float deg) {
-    if (!(deg == deg)) return 0.f;
+    if (!std::isfinite(deg)) return 0.f;
     float a = std::fmod(deg, 360.f);
     if (a > 180.f) a -= 360.f;
     else if (a <= -180.f) a += 360.f;
@@ -64,7 +64,7 @@ float arenaFrameViewYaw(const ArenaFrameYaw& yaw) {
 ArenaFrameYaw arenaFrameYawStep(const ArenaFrameRules& rules, ArenaFrameYaw now, const ArenaFrameScene& scene, float dt) {
     if (scene.held || !(dt > 0.f)) return now;
     ArenaFrameYaw out = now;
-    if (!(out.turn == out.turn)) out.turn = 0.f;
+    if (!std::isfinite(out.turn)) out.turn = 0.f;
     if (!scene.followed) {
         out.line = unwound(out.line + out.turn);
         out.turn = 0.f;

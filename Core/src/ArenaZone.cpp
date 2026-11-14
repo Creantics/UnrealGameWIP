@@ -683,13 +683,15 @@ void findMouths(const ArenaZone& z, const WorldLayout& layout, ArenaZoneFit& out
 
 // The share of the wall where a player standing on it, facing in, has the lens inside a building taller than the
 // camera. The lens sits as the view is drawn: the arm back along the view, the shoulder offset to its right, and the view
-// either on the lock's line or turned the lock framing's most (ftcore::arenaFrameTurn at the target's nearest); a sample
+// either on the lock's line or turned the zone's framing cap (ftcore::arenaFrameTurn at the target's nearest); a sample
 // is blocked when either lens is.
 float cameraBlockedShare(const ArenaZone& z, const WorldLayout& layout, int district, const ZoneCamera& cam) {
     const float pitch = std::fabs(cam.lockPitch) / kDeg;
     const float armH = cam.arm * std::cos(pitch) + 0.5f;
     const float height = cam.pivot + cam.up + cam.arm * std::sin(pitch);
-    const float turns[2] = {0.f, arenaFrameTurn(kArenaFrame, cam.side, 0.f) / kDeg};
+    ArenaFrameRules frame = kArenaFrame;
+    frame.maxTurn = cam.frameTurnCapDeg; // the zone's own cap
+    const float turns[2] = {0.f, arenaFrameTurn(frame, cam.side, 0.f) / kDeg};
     const auto lensBlocked = [&](Vec2 lens) {
         for (std::size_t i = 0; i < layout.blockCount(); ++i) {
             const WorldBlock& b = layout.block(i);
@@ -735,6 +737,7 @@ bool fitArenaZone(const ArenaZoneSpec& spec, const WorldLayout* layout, const Ar
     out.id = spec.id;
     out.sizing = arenaZoneSizing(def);
     out.camera = arenaZoneCamera(out.sizing);
+    if (spec.frameTurnCapDeg >= 0.f) out.camera.frameTurnCapDeg = spec.frameTurnCapDeg;
     const float asked = arenaZoneAskedRing(spec, def);
     out.askedRing = asked;
     const Anchor anchor = anchorOf(spec, layout);
@@ -954,7 +957,7 @@ bool importArenaZoneTable(std::string_view json, const ArenaTable& arena, const 
         }
         unknownKeys(j, path,
                     {"id", "world", "scene", "district", "at", "offset", "yaw", "shape", "bosses", "ring", "spawn", "attackers", "seed",
-                     "water", "cover"},
+                     "water", "cover", "frameTurnCapDeg"},
                     warnings);
         ArenaZoneSpec s;
         s.id = std::string(j["id"].string());
@@ -1078,6 +1081,7 @@ bool importArenaZoneTable(std::string_view json, const ArenaTable& arena, const 
         if (s.ring != 0.f && s.ring < kMinPinnedRing)
             errors.push_back(path + ".ring: expected 0 (from the enemies' size) or " + fmtNum(kMinPinnedRing) + ".." + fmtNum(kMaxPinnedRing));
         readNum(j, "spawn", s.spawn, 0, kMaxSpawn, path, errors);
+        readNum(j, "frameTurnCapDeg", s.frameTurnCapDeg, 0, kArenaFrame.maxTurn, path, errors);
         readInt(j, "attackers", s.attackers, 0, static_cast<int>(kMaxArenaEnemies), path, errors);
         int seed = 1;
         readInt(j, "seed", seed, 0, 1000000, path, errors);
