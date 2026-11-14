@@ -83,7 +83,7 @@
 //     parryWindow, unless the previous press was less than parryRearm ago (mashing guard opens no
 //     window). A parryable enemy attack that connects inside the window, from inside the guard arc,
 //     is parried: no damage, no stamina cost, and the enemy is Open for openTime.
-//   - Riposte: a light press with an Open enemy within riposteReach of its body's edge and in front (dot >= 0.5)
+//   - Riposte: a light press with an Open enemy within riposteReach of its body's edge (not its centre) and in front (dot >= 0.5)
 //     performs the riposte attack instead of a light, aimed at that enemy and invulnerable throughout.
 //     When it connects, the enemy goes Down for downTime.
 //   - Load (Load.h): a second gauge beside stamina, 0 to kMaxLoad, never a replacement for it. A parry
@@ -187,8 +187,10 @@
 //   its breakMove (BrokeOut, then AttackStarted) with a windup of kArenaBossBreakWindup s and a recovery of
 //   kArenaBossBreakRecovery s in place of the move's own, whatever the token count and its cooldown, unless the
 //   host's move mask clears it (spent). From the first frame of that windup to the end of its active part
-//   (enemyBreakGuard) blows add nothing and never flinch it; in the recovery they add from 0 as ever, and the next
-//   break comes whenever the threshold is reached again, with no other limit. A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
+//   (enemyBreakGuard) blows add nothing and never flinch it; in its recovery (the punish window) they deal damage and
+//   poise as ever and may flinch it, but still add nothing (enemyBreakMoveOn: the whole break move). The value adds
+//   again from 0 once the break move is over and the boss acts as ever, and the next break comes whenever the
+//   threshold is reached again, with no other limit. A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
 //   poise (times the ruling's poise scale) and staggers it only when that empties it; else it stays Open.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
@@ -423,7 +425,7 @@ struct ArenaFighter {
     float parryRearm = 0.5f;
     float parryStop = 0.f;      // s a parry pauses the player and the parried enemy (see Hit pause)
     float hurtJolt = 0.f;       // degrees the camera kicks when an enemy move with no jolt of its own hits the player
-    float riposteReach = 2.2f;
+    float riposteReach = 1.8f; // m from the target's body edge
 
     std::uint8_t healCharges = 3;
     int healAmount = 45;
@@ -1118,6 +1120,7 @@ public:
     FTCORE_API int enemyBreakPhase(std::size_t i) const;
     FTCORE_API bool enemyBreakTell(std::size_t i) const;
     FTCORE_API bool enemyBreakGuard(std::size_t i) const;
+    FTCORE_API bool enemyBreakMoveOn(std::size_t i) const;
     // Turns enemy i to `facing` (made unit) now; the next tick works from it and reports it. Nothing for a zero
     // vector or an enemy out of range.
     FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);

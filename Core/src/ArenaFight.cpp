@@ -1732,6 +1732,9 @@ struct ArenaFightImpl {
         foe.breakTell = false;
     }
 
+    // In its break move (windup, active part and recovery): blows add no value.
+    static bool inBreakMove(const Enemy& foe) { return foe.brain == ArenaBrain::Attack && foe.breakTimed; }
+
     // In its break move's windup or active part: blows add no value and never flinch it.
     static bool breakGuarded(const Enemy& foe) {
         return foe.brain == ArenaBrain::Attack && foe.breakTimed &&
@@ -1739,10 +1742,10 @@ struct ArenaFightImpl {
     }
 
     // A blow of the player's side landed on boss i (after its ruling): weight x scale, at most the blow cap. Not while
-    // it is Staggered, nor in its break move's windup and active part.
+    // it is Staggered, nor in any part of its break move.
     void accrueBreak(std::size_t i, float weight, float scale, bool inTick = true) {
         Enemy& foe = foes[i];
-        if (!def.enemies[i].boss || !alive(i) || foe.brain == ArenaBrain::Staggered || breakGuarded(foe)) return;
+        if (!def.enemies[i].boss || !alive(i) || foe.brain == ArenaBrain::Staggered || inBreakMove(foe)) return;
         const float add = std::min(weight * (scale > 0.f ? scale : 0.f), kArenaBossBreakBlowCap); // NaN: 0
         if (!(add > 0.f)) return;
         foe.breakValue += add;
@@ -2840,6 +2843,9 @@ bool ArenaFight::enemyBreakTell(std::size_t i) const {
 }
 bool ArenaFight::enemyBreakGuard(std::size_t i) const {
     return i < enemyCount_ && def_.enemies[i].boss && ArenaFightImpl::breakGuarded(enemy_[i]);
+}
+bool ArenaFight::enemyBreakMoveOn(std::size_t i) const {
+    return i < enemyCount_ && def_.enemies[i].boss && ArenaFightImpl::inBreakMove(enemy_[i]);
 }
 const ArenaAttack& ArenaFight::enemyAttackOf(std::size_t i, std::uint8_t move) const {
     const EnemyState& foe = enemy_[i];

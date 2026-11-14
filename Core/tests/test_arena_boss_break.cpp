@@ -489,8 +489,8 @@ TEST_CASE("arena boss break: the tell at 75% of the threshold, once as it rises 
     CHECK_FALSE(r.fight.enemyBreakTell(0));
 }
 
-TEST_CASE("arena boss break: the break resets the value; its windup and active part add nothing, its recovery adds from "
-          "0, and a second break comes as soon as the threshold is reached again") {
+TEST_CASE("arena boss break: the break resets the value; its windup, active part and recovery add nothing, and once it "
+          "is over the value adds from 0 and a second break comes as soon as the threshold is reached again") {
     const ArenaTable t = shippedTable();
     const ArenaDef def = bossDef(t, "stone_bearer", true);
     const int move = def.enemies[0].breakMove;
@@ -519,15 +519,31 @@ TEST_CASE("arena boss break: the break resets the value; its windup and active p
     CHECK(static_cast<float>(startup) * kDt == doctest::Approx(0.5f).epsilon(0.05));
     CHECK(static_cast<float>(active) * kDt == doctest::Approx(data.active).epsilon(0.15));
     CHECK(r.breaks() == 1);
-    // The recovery: blows add from 0, and the seventh, inside its 1.2 s, begins the second break at once.
+    // The recovery, the punish window: a blow on every tick of its 1.2 s lands but adds nothing.
     CHECK_FALSE(r.fight.enemyBreakGuard(0));
-    REQUIRE(r.out->enemies[0].brain == ArenaBrain::Attack);
+    int recovery = 0;
+    while (r.out->enemies[0].brain == ArenaBrain::Attack && r.out->enemies[0].move == move &&
+           r.fight.time() < broke + 5.f) {
+        REQUIRE(r.out->enemies[0].part == ArenaPart::Recovery);
+        CHECK(r.fight.enemyBreakMoveOn(0));
+        CHECK_FALSE(r.fight.enemyBreakGuard(0));
+        const int hp = r.fight.enemyHp(0);
+        REQUIRE(r.fight.hostBlow(0, 1, 0));
+        CHECK(r.fight.enemyHp(0) < hp); // it lands
+        CHECK(r.value() == 0.f);
+        ++recovery;
+        r.step();
+    }
+    CHECK(static_cast<float>(recovery) * kDt == doctest::Approx(1.2f).epsilon(0.05));
+    CHECK(r.breaks() == 1);
+    CHECK(r.value() == 0.f);
+    // Over, the boss acts as ever: blows add from 0, and the seventh (10.5) begins the second break at once.
+    CHECK_FALSE(r.fight.enemyBreakMoveOn(0));
     REQUIRE(r.fight.hostBlow(0, 1, 0));
     CHECK(r.value() == doctest::Approx(1.5f));
     r.step();
     for (int blow = 2; blow <= 7; ++blow) {
         CHECK(r.breaks() == 1);
-        REQUIRE(r.out->enemies[0].part == ArenaPart::Recovery);
         REQUIRE(r.fight.hostBlow(0, 1, 0));
         r.step();
     }
@@ -535,19 +551,11 @@ TEST_CASE("arena boss break: the break resets the value; its windup and active p
     CHECK(r.had(ArenaEventType::BrokeOut, move));
     CHECK(r.value() == 0.f);
     CHECK(r.fight.enemyBreakGuard(0));
-    // Left alone, the recovery is the 1.2 s punish window.
-    const float second = r.fight.time();
-    while (r.out->enemies[0].part != ArenaPart::Recovery && r.fight.time() < second + 5.f) r.step();
-    int recovery = 0;
-    while (r.out->enemies[0].brain == ArenaBrain::Attack && r.fight.time() < second + 5.f) {
-        ++recovery;
-        r.step();
-    }
-    CHECK(static_cast<float>(recovery) * kDt == doctest::Approx(1.2f).epsilon(0.05));
+    CHECK(r.fight.enemyBreakMoveOn(0));
 }
 
 TEST_CASE("arena boss break: a boss that may flinch never does in its break move's windup and active part, and does in "
-          "its recovery") {
+          "its recovery (with no value added)") {
     const ArenaTable t = shippedTable();
     ArenaDef def = bossDef(t, "stone_bearer", true);
     def.enemies[0].flinchTime = 0.3f;
@@ -564,6 +572,7 @@ TEST_CASE("arena boss break: a boss that may flinch never does in its break move
         r.bodies.player = Vec2{0.f, 0.f};
         r.bodies.enemies[0] = boss;
         const bool guard = r.fight.enemyBreakGuard(0);
+        const bool moveOn = r.fight.enemyBreakMoveOn(0);
         ArenaInput in;
         in.light = true;
         r.step(in);
@@ -574,6 +583,7 @@ TEST_CASE("arena boss break: a boss that may flinch never does in its break move
             CHECK(r.value() == 0.f);
         } else if (flinched && r.breaks() == 1) {
             ++flinchedAfter;
+            if (moveOn) CHECK(r.value() == 0.f); // a flinch in the recovery: the blow added nothing
         }
     }
     CHECK(guarded > 0);
@@ -631,37 +641,70 @@ TEST_CASE("arena boss break: every stagger that ends with the value at or over t
     CHECK(ends > 1);
 }
 
-TEST_CASE("arena boss break: the riposte's reach is measured to the body's edge (a 2.5 m body from 2.2 m, not 2.4)") {
-    const ArenaTable t = shippedTable();
-    const ArenaDef def = bossDef(t, "kite_boss", true);
-    REQUIRE(def.enemies[0].bodyRadius == doctest::Approx(2.5f));
-    REQUIRE(def.fighter.riposteReach == doctest::Approx(2.2f));
-    for (const float gap : {2.2f, 2.4f}) {
-        CAPTURE(gap);
-        Rig r(def);
-        const Vec2 boss{def.enemies[0].bodyRadius + gap, 0.f};
-        const auto place = [&] {
-            r.bodies.player = Vec2{0.f, 0.f};
-            r.bodies.enemies[0] = boss;
-        };
-        place();
-        r.step();
-        REQUIRE(r.fight.holdEnemy(0, ArenaBrain::Open, 3.f));
-        place();
-        r.step();
-        REQUIRE(r.out->enemies[0].brain == ArenaBrain::Open);
-        ArenaInput press;
-        press.light = true;
-        place();
-        r.step(press);
-        for (int k = 0; k < 60; ++k) {
-            place();
-            r.step();
+namespace {
+// Enemy `id` (its shipped body) held Open with its centre `centre` m in front of the lead, who presses light once:
+// true when a riposte lands (the enemy goes Down).
+bool riposteLands(const ArenaTable& t, const char* id, float centre) {
+    ArenaDef def;
+    def.fighter = t.fighter("default");
+    def.enemyCount = 1;
+    def.attackers = 1;
+    bool found = false;
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+        if (t.enemyIds[e] == id) {
+            def.enemies[0] = t.enemies[e];
+            found = true;
         }
-        const bool lands = gap < 2.3f;
-        CHECK(r.fight.stats().ripostes == (lands ? 1 : 0));
-        CHECK((r.out->enemies[0].brain == ArenaBrain::Down) == lands);
+    REQUIRE(found);
+    def.enemies[0].hp = 100000;
+    Rig r(def);
+    const auto place = [&] {
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.enemies[0] = Vec2{centre, 0.f};
+    };
+    place();
+    r.step();
+    REQUIRE(r.fight.holdEnemy(0, ArenaBrain::Open, 3.f));
+    place();
+    r.step();
+    REQUIRE(r.out->enemies[0].brain == ArenaBrain::Open);
+    ArenaInput press;
+    press.light = true;
+    place();
+    r.step(press);
+    for (int k = 0; k < 60; ++k) {
+        place();
+        r.step();
     }
+    const bool landed = r.fight.stats().ripostes == 1;
+    CHECK(landed == (r.out->enemies[0].brain == ArenaBrain::Down));
+    return landed;
+}
+
+float bodyOf(const ArenaTable& t, const char* id) {
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+        if (t.enemyIds[e] == id) return t.enemies[e].bodyRadius;
+    return -1.f;
+}
+} // namespace
+
+// riposteReach is 1.8 m from the body's edge, so a 0.4 m body keeps the old 2.2 m from its centre. "From d" lands a
+// millimetre inside d (float slack at the exact reach); "not from" is 0.2 m further.
+TEST_CASE("arena boss break: the riposte's reach is 1.8 m to the body's edge (0.4 m body: 2.2 m centre to centre, "
+          "not 2.4; the kite, hulk and titan from 1.8 m outside their edges, not 2.0)") {
+    const ArenaTable t = shippedTable();
+    REQUIRE(t.fighter("default").riposteReach == doctest::Approx(1.8f));
+    REQUIRE(bodyOf(t, "skirmisher") == doctest::Approx(0.4f));
+    CHECK(riposteLands(t, "skirmisher", 2.2f - 0.001f));
+    CHECK_FALSE(riposteLands(t, "skirmisher", 2.4f));
+    for (const char* id : {"kite_boss", "hulk", "titan"}) {
+        CAPTURE(id);
+        const float body = bodyOf(t, id);
+        REQUIRE(body > 1.f);
+        CHECK(riposteLands(t, id, body + 1.8f - 0.001f));
+        CHECK_FALSE(riposteLands(t, id, body + 2.0f));
+    }
+    CHECK(bodyOf(t, "kite_boss") == doctest::Approx(2.5f));
 }
 
 namespace {

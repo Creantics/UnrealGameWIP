@@ -18,7 +18,7 @@
       "riposte": { "startup": 0.12, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 48, "poiseDamage": 0, "lunge": 0.5, "tracking": 12, "stamina": 0, "cancel": 0.5, "maxTargets": 1, "hitStop": 0.12, "jolt": 2.2 },
       "release": { "startup": 0.2, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 30, "poiseDamage": 0, "lunge": 0.5, "tracking": 10, "stamina": 0, "cancel": 0.5, "maxTargets": 1, "jolt": 1.8 },
       "dodgeTime": 0.6, "dodgeDistance": 3.5, "dodgeInvulnStart": 0.05, "dodgeInvulnEnd": 0.4, "dodgeStamina": 20, "dodgeCancel": 0.75,
-      "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 2.2, "parryStop": 0.12, "hurtJolt": 1.4, "softRange": 3.5, "softArcCos": 0.6, "homingReach": 1.0,
+      "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 1.8, "parryStop": 0.12, "hurtJolt": 1.4, "softRange": 3.5, "softArcCos": 0.6, "homingReach": 1.0,
       "healCharges": 3, "healAmount": 45, "healTime": 0.9, "healRecovery": 0.4, "healMoveScale": 0.35,
       "lockRange": 15, "lockBreak": 20,
       "loadShare": 1, "releasePoise": 1, "pairWindow": 0.12, "pairHits": 3,
@@ -39,7 +39,7 @@
       "riposte": { "damage": 60, "range": 2.8, "jolt": 2.2 },
       "release": { "damage": 36, "jolt": 1.8 },
       "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.55, "guardBreakTime": 1.0,
-      "parryWindow": 0.2, "parryRearm": 0.4, "riposteReach": 2.4, "parryStop": 0.1, "softRange": 6, "softArcCos": 0.25, "homingReach": 2.5,
+      "parryWindow": 0.2, "parryRearm": 0.4, "riposteReach": 2.0, "parryStop": 0.1, "softRange": 6, "softArcCos": 0.25, "homingReach": 2.5,
       "dodgeStamina": 18
     },
     {
