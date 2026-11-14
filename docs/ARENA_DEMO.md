@@ -373,6 +373,20 @@ from a dry press; both sit in the look's clip folder, play on the upper body und
 left alone with a warning. `-ArenaAutoShoot` has the autopilot use
 the pistol; `-ArenaLineup=dummy,maw_pup` is the test line-up. The result is one `Arena: BRIEF ...` line at the end.
 
+### Boss break pace (watch in play)
+
+A boss's break value adds nothing through its whole break move (windup, active part and recovery) and adds from 0 once
+the move is over, so the fastest break to break is the move plus the blows that refill the phase's threshold. The
+shortest, with the fastest sequence a lead can throw (Core's `arena boss break: the shortest break to break` pins them):
+
+| Blows | Phase 1 (10) | Phase 2 (8) | Phase 3 (6.5) |
+|---|---|---|---|
+| no joined or Lift multiplier | 6.23 s | 5.25 s | 4.85 s |
+| each at the 3.0 cap (the shared count played perfectly) | 3.57 s | 3.07 s | 3.07 s |
+
+The capped 3.07 s (three capped blows in a row) is accepted with no lock, and is to be watched in play: if a boss under
+full pressure seems to do little but throw its break move, flag it for a ruling.
+
 ### The leads' weapons
 
 Each lead fights with its kit's weapon (`Source/ForgottenThird/FTLeadWeapons.h`): its light attacks play strike clips

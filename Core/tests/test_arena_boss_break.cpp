@@ -725,6 +725,8 @@ ArenaBlowRuling leadUntouched(void* user, const ArenaBlow& b) {
 TEST_CASE("arena boss break: the shortest break to break by phase, the fastest sequence the lead can throw") {
     const ArenaTable t = shippedTable();
     const float thresholds[] = {10.f, 8.f, 6.5f};
+    // Pinned (ruled 2026-11-14; ARENA_DEMO.md, Boss break pace): a tuning change that moves these shows up here.
+    const float pinned[2][3] = {{6.233f, 5.250f, 4.850f}, {3.567f, 3.067f, 3.067f}};
     for (const float scale : {1.f, 3.f})
     for (int phase = 0; phase < 3; ++phase) {
         float best = 1.0e9f;
@@ -772,6 +774,7 @@ TEST_CASE("arena boss break: the shortest break to break by phase, the fastest s
         MESSAGE("scale " << scale << ", phase " << phase + 1 << " (" << thresholds[phase] << "): shortest break to break "
                          << best << " s, " << bestOf);
         CHECK(best > 0.5f + 0.1f); // never inside the windup and an active part
+        CHECK(best == doctest::Approx(pinned[scale > 1.f ? 1 : 0][phase]).epsilon(0.01));
     }
 }
 
