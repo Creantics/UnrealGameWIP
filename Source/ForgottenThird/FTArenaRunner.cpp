@@ -48,6 +48,7 @@
 #include "ftcore/CountLiftData.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/Json.h"
+#include "ftcore/LeadSwitch.h"
 
 #include <cmath>
 #include <string>
@@ -1781,6 +1782,10 @@ void UFTArenaRunner::BeginSession()
 	PartnerLeadFalls = PartnerAllyFalls = PartnerTakeovers = PartnerRises = 0;
 	PartnerSessionTookOver = PartnerLeadMismatch = 0;
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
+	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
+	PartnerJoinedAt = -1.0;
+	bSwitchAsked = false;
+	SwitchAsks = SwitchesSeen = SwitchesDone = SwitchesRefused = 0;
 	bSwapCheckArmed = bSwapCheckPlaced = false;
 	SwapMoveSteps = SwapSteps = SwapChecks = SwapChecksPassed = 0;
 	SwapWorstNew = 1e9;
@@ -1793,6 +1798,19 @@ void UFTArenaRunner::BeginSession()
 	if (Session)
 	{
 		ftcore::FightSessionDef SessionDef;
+		// The lead switch's cooldown from Data/Battle/lead_switch.json (the default, 1 s, if it is refused).
+		{
+			ftcore::LeadSwitchTuning SwitchTuning;
+			TArray<uint8> Bytes;
+			std::string Error;
+			const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/lead_switch.json");
+			if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importLeadSwitchTuning(FT::BytesAsText(Bytes), SwitchTuning, &Error)))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/lead_switch.json; the lead switch keeps its defaults.\n%s"), *FT::ToFString(Error));
+				SwitchTuning = ftcore::LeadSwitchTuning();
+			}
+			SessionDef.leadSwitchCooldownSeconds = SwitchTuning.cooldownSeconds;
+		}
 		// Only the controlled lead stands in this ring (no partner body): the session's fall rules then make its 0 the
 		// fight's loss, as before them; no takeover to a body that is not there, no stand-up after 30 s. With the
 		// partner's body (-ArenaPartner, not Lone) both leads are in it: a fall with the other up is a takeover.
@@ -2130,7 +2148,23 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 			++LonePartnerCalls;
 			LonePartnerEnds += Session->Get().endLone(ftcore::LoneEnd::PartnerCalled) ? 1 : 0;
 			MirrorLone();
+			// The partner held out of a fight begun Lone comes in on this call (and on no other end): the session's
+			// join resolves at the step's close and FeedSession brings it into the fight on tick.joined. Its carried
+			// health has no source in the runner yet, so it comes in whole (1.0, the body's full hp).
+			if (bPartnerHeldOut && Session->Get().loneEndedBy() == ftcore::LoneEnd::PartnerCalled
+				&& Session->Get().joinFight(OtherLead(), 1.f))
+			{
+				++PartnerJoinAsks;
+			}
 		}
+	}
+	if (SwitchAt >= 0.f && !bSwitchAsked && PartnerBody() && Fight.time() >= SwitchAt)
+	{
+		// The probe's switch, as the party menu asks it: a request the step's close resolves (tick.switched).
+		bSwitchAsked = true;
+		SwitchAsks += Session->Get().setActiveLead(OtherLead()) ? 1 : 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: probe lead switch to lead %d at %.2f s (-ArenaSwitchAt): %s."), static_cast<int32>(OtherLead()),
+			Fight.time(), SwitchAsks > 0 ? TEXT("asked") : TEXT("not asked"));
 	}
 	if (In.guard != bSessionGuard)
 	{
@@ -2244,6 +2278,15 @@ void UFTArenaRunner::FeedSession()
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
 	SessionHeld = Held;
 	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
+	if (bPartnerHeldOut && Tick.joined == OtherLead())
+	{
+		BringPartnerIn(); // the session took the partner in at this close: the fight takes it before its next step
+	}
+	PartnerJoinsRefused += bPartner && Tick.joinRefused != ftcore::kNoFighter ? 1 : 0;
+	if (PartnerBody() && Tick.switched == OtherLead())
+	{
+		SwitchLeadBodies(); // a switch with both up resolved at this close (the begin's own request names SessionLead)
+	}
 	if (PartnerBody())
 	{
 		// The fight swapped the bodies on its TookOver (TakeOverBodies) and the session moves its control the same
@@ -2627,6 +2670,12 @@ void UFTArenaRunner::StepFight()
 		TrackSwapCheck(In); // the input this step takes, after a takeover
 	}
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
+	if (bPartner && Session)
+	{
+		// Who is in the fight, step by step: the session's word as of its last close against the fight's this step
+		// (a join lands at a close and the fight takes the partner before its next step).
+		PartnerJoinDisagree += Out.ally.partnerOn != Session->Get().inFight(OtherLead()) ? 1 : 0;
+	}
 	if (bPartner)
 	{
 		TakeOverBodies(Out); // before the step: the bodies are the host's (ArenaFight::setPartner)
@@ -4455,9 +4504,9 @@ void UFTArenaRunner::Finish()
 	}
 	LogStoneWalkCounts();
 	LogResult();
-	if (bPartner && !bPartnerHeldOut && !bWon && bQuitOnFinish && !bShots)
+	if (bPartner && !bWon && bQuitOnFinish && !bShots)
 	{
-		CheckPartnerRetry(); // both down: the retry from the fight's start, checked before the run ends
+		CheckPartnerRetry(); // a loss: the retry from the fight's start, checked before the run ends
 	}
 	if (bQuitOnFinish && !bShots)
 	{
@@ -5080,6 +5129,18 @@ void UFTArenaRunner::Restart()
 		SessionLead = StartLead;
 	}
 	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
+	if (bPartnerLoneStart)
+	{
+		// Begun Lone: Lone again, the partner is out again (a join on the last attempt is not this one's).
+		if (Fight.lone() && !bPartnerHeldOut)
+		{
+			PutPartnerOut();
+		}
+		else if (!Fight.lone() && bPartnerHeldOut)
+		{
+			BringPartnerIn(); // not Lone this time: both leads from the start, as a fight begun with both
+		}
+	}
 	LoneGift = {}; // a press held from the last attempt is not this one's
 	bLoneGiftApply = false;
 	GiftPick = ftcore::Gift::None;
@@ -6193,6 +6254,8 @@ void UFTArenaRunner::BeginPartner()
 	PartnerOrders = 0;
 #if !UE_BUILD_SHIPPING
 	bPartner = FParse::Param(FCommandLine::Get(), TEXT("ArenaPartner"));
+	SwitchAt = -1.f;
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaSwitchAt="), SwitchAt);
 #endif
 	if (!bPartner)
 	{
@@ -6207,14 +6270,6 @@ void UFTArenaRunner::BeginPartner()
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaPartner, but the setup gives the other lead no look: the partner is not spawned."));
 		return;
 	}
-	// A fight begun Lone: Core cannot yet bring a lead into a running fight, so the partner stays out of the whole
-	// fight (its retries too) when the Lone Carry ends: no partner brain or body here, one lead in the session.
-	bPartnerHeldOut = Fight.lone();
-	if (bPartnerHeldOut)
-	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaPartner in a fight begun Lone: the partner stays out of this fight to its end (the session has one lead)."));
-		return;
-	}
 	TArray<uint8> Bytes;
 	std::string Error;
 	const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/partner_brain.json");
@@ -6223,6 +6278,14 @@ void UFTArenaRunner::BeginPartner()
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/partner_brain.json; the partner keeps its defaults.\n%s"), *FT::ToFString(Error));
 		AllyTuning = ftcore::PartnerTuning();
 	}
+	// A fight begun Lone: the partner is out (no partner brain or body yet, one lead in the session) until the lead's
+	// partner call ends the carry and the session's join brings it in (BringPartnerIn); any other end keeps it out.
+	bPartnerLoneStart = bPartnerHeldOut = Fight.lone();
+	if (bPartnerHeldOut)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaPartner in a fight begun Lone: the partner is out until the partner call ends the carry (a Release keeps it out)."));
+		return;
+	}
 	bAllyOn = true;
 	// Both leads play the one fighter kit here, so the partner's body has the lead fighter's max hp.
 	Fight.setAlly(Def.fighter.hp, Def.fighter.bodyRadius);
@@ -6230,6 +6293,70 @@ void UFTArenaRunner::BeginPartner()
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: the partner (-ArenaPartner): the other lead's body, %d hp, driven by the partner brain; order SPREAD (B: STAY CLOSE / SPREAD); attack budget %.1f x the lead's + %.1f s in any %.0f s; down %.0f s, then up at %.0f%%."),
 		Def.fighter.hp, AllyTuning.budgetShare, AllyTuning.budgetAllowanceSeconds, AllyTuning.budgetWindowSeconds, AllyTuning.downSeconds,
 		AllyTuning.riseHealth * 100.f);
+}
+
+void UFTArenaRunner::BringPartnerIn()
+{
+	bPartnerHeldOut = false;
+	++PartnerJoinsLanded;
+	PartnerJoinedAt = static_cast<double>(Fight.time());
+	bAllyOn = true;
+	// Whole: the health fed to joinFight (1.0). setPartner begins the brain in a running fight.
+	Fight.setAlly(Def.fighter.hp, Def.fighter.bodyRadius);
+	Fight.setPartner(&AllyBrain, &AllyTuning);
+	Bodies.ally = PrevBodies.ally = AllyHome(Bodies.player, Fight.output().player.facing);
+	SpawnAlly(GetWorld());
+	if (AllyFigure)
+	{
+		AllyFigure->SetActorHiddenInGame(false);
+	}
+	// The budget's windows start at the join: the partner had no time in the fight before it.
+	const ftcore::ArenaStats& S = Fight.stats();
+	PartnerPrevTime = PartnerWinStart = PartnerJoinedAt;
+	PartnerWinLead = PartnerWinAlly = 0.0;
+	PartnerWinDamage0 = S.partnerDamage;
+	PartnerWinLeadDamage0 = S.damageDealt;
+	PartnerWinBoss0 = S.bossAttacks;
+	PartnerWinAimed0 = S.bossAimedPartner;
+	PartnerWinLeadFalls = PartnerWinAllyFalls = PartnerWinTakeovers = PartnerWinRises = 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the partner call brought lead %d into the fight (the session's join): its body at %d hp, driven by the partner brain."),
+		Fight.time(), static_cast<int32>(OtherLead()), Fight.allyHp());
+}
+
+void UFTArenaRunner::SwitchLeadBodies()
+{
+	++SwitchesSeen;
+	if (!Fight.switchLeads())
+	{
+		// The session switched and the fight could not (a body down, the fight over): the lead check counts it.
+		++SwitchesRefused;
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %.2f: the session switched to lead %d, the fight refused the switch."), Fight.time(),
+			static_cast<int32>(OtherLead()));
+		return;
+	}
+	// As on a takeover: the bodies, the figures (weapons, side dashes, the camera's view target) and the lead swap;
+	// the input stays on the controller and moves the new body (ArmSwapCheck proves it).
+	std::swap(Bodies.player, Bodies.ally);
+	std::swap(PrevBodies.player, PrevBodies.ally);
+	SwapLeadFigures();
+	SessionLead = OtherLead();
+	++SwitchesDone;
+	ArmSwapCheck();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the lead switch: control passes to lead %d at %d hp; the other lead's body at %d hp, driven by the partner brain."),
+		Fight.time(), static_cast<int32>(SessionLead), Fight.hp(), Fight.allyHp());
+}
+
+void UFTArenaRunner::PutPartnerOut()
+{
+	// A retry of a fight begun Lone: the partner is out again on the fight's side (the session's begin has one lead).
+	bPartnerHeldOut = true;
+	bAllyOn = false;
+	Fight.setPartner(nullptr, nullptr);
+	Fight.setAlly(0, Def.fighter.bodyRadius);
+	if (AllyFigure)
+	{
+		AllyFigure->SetActorHiddenInGame(true);
+	}
 }
 
 void UFTArenaRunner::TakeOverBodies(const ftcore::ArenaOutput& Out)
@@ -6420,9 +6547,30 @@ void UFTArenaRunner::LogPartnerWindow()
 
 void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 {
+	if (bPartner)
+	{
+		// Who is in the fight: a fight begun Lone takes the partner on the partner call only (one join asked and
+		// landed), else never; the session and the fight agree on it at every step.
+		const bool bCalled = Session && Session->Get().loneEndedBy() == ftcore::LoneEnd::PartnerCalled;
+		const bool bIn = Session && Session->Get().inFight(OtherLead());
+		const bool bWant = !bPartnerLoneStart || bCalled;
+		const bool bJoinOk = PartnerJoinDisagree == 0 && PartnerJoinsRefused == 0 && bIn == bWant && bPartnerHeldOut == !bWant
+			&& PartnerJoinAsks == (bPartnerLoneStart && bCalled ? 1 : 0) && PartnerJoinsLanded == PartnerJoinAsks;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner join %s (begun %s, the carry ended by %s: joins asked %d, landed %d at %.2f s, refused %d; the partner in the session %d, held out %d; steps the session and the fight disagreed %d)."),
+			bJoinOk ? TEXT("PASS") : TEXT("FAIL"), bPartnerLoneStart ? TEXT("Lone") : TEXT("with both"),
+			Session ? LoneEndWord(Session->Get().loneEndedBy()) : TEXT("none"), PartnerJoinAsks, PartnerJoinsLanded, PartnerJoinedAt,
+			PartnerJoinsRefused, bIn ? 1 : 0, bPartnerHeldOut ? 1 : 0, PartnerJoinDisagree);
+	}
+	if (bPartner && (SwitchAsks > 0 || SwitchesSeen > 0))
+	{
+		// A switch with both up: every one the session made, the fight made (bodies, figures, lead), none refused.
+		const bool bSwitchOk = SwitchesRefused == 0 && SwitchesDone == SwitchesSeen && SwitchesSeen >= SwitchAsks;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner switch %s (asked %d, the session switched %d, the fight swapped %d, refused %d; leadSwitches %d)."),
+			bSwitchOk ? TEXT("PASS") : TEXT("FAIL"), SwitchAsks, SwitchesSeen, SwitchesDone, SwitchesRefused, Fight.stats().leadSwitches);
+	}
 	if (bPartnerHeldOut)
 	{
-		// Begun Lone: out of the whole fight on both sides (the fight never had the partner, the session one lead).
+		// Begun Lone and not called in: out of the fight to its end on both sides (no partner, one lead in the session).
 		const bool bOneLead = !Session || !Session->Get().inFight(OtherLead());
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner held out %s (begun Lone; steps the partner acted %d, the session's other lead in the fight %d, Lone now %d)."),
 			PartnerHeldLeaks == 0 && bOneLead && !Fight.output().ally.partnerOn ? TEXT("PASS") : TEXT("FAIL"), PartnerHeldLeaks, bOneLead ? 0 : 1, Fight.lone() ? 1 : 0);
@@ -6546,8 +6694,11 @@ void UFTArenaRunner::CheckPartnerRetry()
 		|| (Session->Get().switchRequested() == ftcore::kNoFighter && Session->Get().activeLead() == StartLead));
 	const bool bSessionOk = !Session || (bFirstLead && !Session->Get().down(ftcore::kLeadA)
 		&& !Session->Get().down(ftcore::kLeadB) && !Session->Get().defeated());
+	// Begun Lone: Lone again, with one lead (the partner out on both sides, its body hidden) until another call.
+	const bool bOneLeadAgain = !bPartnerLoneStart || !Fight.lone()
+		|| (bPartnerHeldOut && !bAllyOn && Fight.allyMaxHp() == 0 && Session && !Session->Get().inFight(OtherLead()));
 	const bool bOk = !Fight.over() && !Fight.swapped() && !bFiguresSwapped && SessionLead == StartLead
-		&& Fight.hp() == Fight.def().fighter.hp && Fight.allyHp() == Fight.allyMaxHp() && bSessionOk;
+		&& Fight.hp() == Fight.def().fighter.hp && Fight.allyHp() == Fight.allyMaxHp() && bSessionOk && bOneLeadAgain;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner retry %s (from the fight's start after %d takeovers: swapped %d -> %d, lead %d, hp %d/%d, partner %d/%d, session %s)."),
 		bOk ? TEXT("PASS") : TEXT("FAIL"), Takeovers, WasSwapped, Fight.swapped() ? 1 : 0, static_cast<int32>(SessionLead), Fight.hp(),
 		Fight.def().fighter.hp, Fight.allyHp(), Fight.allyMaxHp(), bSessionOk ? TEXT("both up, first lead controlled") : TEXT("not reset"));

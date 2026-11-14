@@ -2746,6 +2746,39 @@ struct ArenaFightImpl {
         ArenaFight::AllyState& al = fight.ally_;
         const Vec2 fellAt = pl.pos;
         const Vec2 fellFacing = pl.facing;
+        standInAlly();
+        fight.allyPos_ = fellAt;
+        fight.allyHp_ = 0;
+        clearAlly();
+        al.facing = fellFacing;
+        fight.swapped_ = !fight.swapped_;
+        ++stats.takeovers;
+        emit(ArenaEventType::TookOver, kArenaAlly, kArenaPlayer, 0, pl.hp, pl.pos);
+        emit(ArenaEventType::AllyDowned, kArenaNobody, kArenaAlly, 0, 0, fight.allyPos_);
+    }
+
+    // The host's switchLeads: both up, the player takes the partner's body and the partner the player's.
+    bool switchLeads() {
+        if (fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting || !partnerOn() || !allyUp() || pl.hp <= 0)
+            return false;
+        ArenaFight::AllyState& al = fight.ally_;
+        const Vec2 wasAt = pl.pos;
+        const Vec2 wasFacing = pl.facing;
+        const int wasHp = pl.hp;
+        standInAlly();
+        fight.allyPos_ = wasAt;
+        fight.allyHp_ = std::min(wasHp, fight.allyMaxHp_);
+        clearAlly();
+        al.facing = wasFacing;
+        fight.swapped_ = !fight.swapped_;
+        ++stats.leadSwitches;
+        return true;
+    }
+
+    // The player stands in the ally's place at the ally's hp, Idle, its action and string, buffer, lock and poise
+    // as a fresh body's (a takeover's and a switch's).
+    void standInAlly() {
+        const ArenaFight::AllyState& al = fight.ally_;
         pl.pos = fight.allyPos_;
         pl.facing = al.facing;
         pl.drawFacing = al.facing;
@@ -2768,14 +2801,6 @@ struct ArenaFightImpl {
         pl.airClear = false;
         pl.airLightUsed = false;
         pl.poise = fi.poise;
-        fight.allyPos_ = fellAt;
-        fight.allyHp_ = 0;
-        clearAlly();
-        al.facing = fellFacing;
-        fight.swapped_ = !fight.swapped_;
-        ++stats.takeovers;
-        emit(ArenaEventType::TookOver, kArenaAlly, kArenaPlayer, 0, pl.hp, pl.pos);
-        emit(ArenaEventType::AllyDowned, kArenaNobody, kArenaAlly, 0, 0, fight.allyPos_);
     }
 
     // One of enemy i's attacks reaches the ally: the ruling, then take half if a press is waiting for it.
@@ -3575,6 +3600,7 @@ void ArenaFight::setPartner(PartnerBrain* brain, const PartnerTuning* tuning) {
 }
 
 bool ArenaFight::swapped() const { return swapped_; }
+bool ArenaFight::switchLeads() { return ArenaFightImpl(*this).switchLeads(); }
 Vec2 ArenaFight::allyPos() const { return allyPos_; }
 float ArenaFight::allyRadius() const { return allyRadius_; }
 void ArenaFight::setTableSeats(const ArenaTableSeats& seats) {

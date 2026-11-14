@@ -1296,6 +1296,152 @@ TEST_CASE("arena partner: one fight with a two-lead session: blows ruled, takeov
     CHECK(r.fight.phase() == ArenaPhase::Fighting);
 }
 
+TEST_CASE("arena partner: a fight begun Lone takes the partner on the call: joined, its blows ruled, takeover, retry Lone") {
+    // The host's part as the runner's: Lone with lead A only, no partner on the fight's side. The call ends the carry
+    // (endLone(PartnerCalled)) and asks the join; on tick.joined the host sets the ally and the partner. Each step the
+    // fight's word on the partner (partnerOn) and the session's (inFight(B)) agree.
+    struct Host {
+        FightSession s;
+        FighterId playerLead = kLeadA;
+        int partnerJudged = 0;
+    } host;
+    auto hook = [](void* user, const ArenaBlow& blow) {
+        Host& h = *static_cast<Host*>(user);
+        ArenaBlowRuling rl;
+        if (blow.source == kArenaAlly) {
+            ++h.partnerJudged;
+            rl.damage = h.s.judgeBlow(h.playerLead == kLeadA ? kLeadB : kLeadA).multiplier;
+        }
+        return rl;
+    };
+    FightSessionDef sd;
+    sd.loneLead = kLeadA;
+    sd.inFight = {true, false};
+    REQUIRE(host.s.begin(sd, 0.0).ok());
+    REQUIRE(host.s.lone());
+    PRig r;
+    r.fight.setBlowHook(+hook, &host);
+    r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{8.f, 0.f};
+    r.bodies.ally = Vec2{-1.4f, 0.f};
+    r.fight.setLone(true, LoneTuning{}, 0.f);
+    r.go(false, 0, 1, Vec2{-1.f, 0.f}); // no ally body, no partner
+    REQUIRE(r.fight.lone());
+    int disagree = 0;
+    int joinedAt = -1;
+    int frame = 0;
+    auto step = [&]() {
+        r.tick();
+        disagree += r.out->ally.partnerOn != host.s.inFight(kLeadB) ? 1 : 0;
+        for (const ArenaEvent& e : r.out->events)
+            if (e.type == ArenaEventType::TookOver) host.playerLead = host.playerLead == kLeadA ? kLeadB : kLeadA;
+        const FighterId other = host.playerLead == kLeadA ? kLeadB : kLeadA;
+        host.s.setLeadHealth(host.playerLead, static_cast<float>(r.fight.hp()) / 100.f);
+        if (host.s.inFight(other)) host.s.setLeadHealth(other, static_cast<float>(r.fight.allyHp()) / 100.f);
+        const FightTick& t = host.s.tick(kDt);
+        if (t.joined == kLeadB) { // the fight takes the partner before its next step
+            joinedAt = frame;
+            r.fight.setAlly(100, 0.4f);
+            r.fight.setPartner(&r.brain, &r.tuning);
+        }
+        ++frame;
+    };
+    for (int k = 0; k < 30; ++k) step();
+    CHECK_FALSE(r.out->ally.partnerOn);
+    CHECK_FALSE(host.s.inFight(kLeadB));
+    // 1. The call: the carry ends, the join waits for the close.
+    REQUIRE(host.s.endLone(LoneEnd::PartnerCalled));
+    r.fight.setLone(false, LoneTuning{}, 0.f);
+    REQUIRE(host.s.joinFight(kLeadB, 1.f));
+    step();
+    REQUIRE(joinedAt == 30);
+    CHECK(host.s.inFight(kLeadB));
+    CHECK(r.fight.allyHp() == 100);
+    // 2. Its blows land and the session rules each as lead B's.
+    for (int k = 0; k < 120; ++k) step();
+    REQUIRE(r.allyHits() >= 1);
+    CHECK(host.partnerJudged == r.allyHits());
+    // 3. Lead A falls with the partner up: B takes over, the session the same step.
+    r.bodies.player = Vec2{1.f, 0.f};
+    r.bodies.ally = Vec2{0.f, 3.5f};
+    for (int k = 0; k < 120 && host.playerLead == kLeadA; ++k) step();
+    REQUIRE(host.playerLead == kLeadB);
+    CHECK(host.s.activeLead() == kLeadB);
+    CHECK(host.s.down(kLeadA));
+    CHECK(disagree == 0);
+    // 4. Retry from the fight's start: Lone with one lead again; the host puts the partner out on its side.
+    const FightCheckpoint& cp = host.s.retry();
+    CHECK(cp.at == CheckpointAt::FightStart);
+    CHECK_FALSE(host.s.inFight(kLeadB));
+    CHECK(host.s.activeLead() == kLeadA);
+    CHECK(host.s.lone());
+    host.playerLead = kLeadA;
+    r.fight.setPartner(nullptr, nullptr);
+    r.fight.setAlly(0, 0.4f);
+    r.fight.setLone(true, LoneTuning{}, 0.f);
+    r.fight.restart();
+    r.bodies.player = Vec2{8.f, 0.f};
+    for (int k = 0; k < 30; ++k) step();
+    CHECK_FALSE(r.fight.swapped());
+    CHECK(r.fight.lone());
+    CHECK_FALSE(r.out->ally.partnerOn);
+    CHECK(disagree == 0);
+}
+
+TEST_CASE("arena partner: switchLeads swaps both standing bodies and their hp; refused with the partner down or Lone") {
+    PRig r;
+    r.enemy(biterKind(150, 3.f, 5.f), Vec2{20.f, 0.f}); // far: nothing lands
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.ally = Vec2{-2.f, 1.f};
+    CHECK_FALSE(r.fight.switchLeads()); // not begun
+    r.go(true, 100);
+    r.tick();
+    REQUIRE(r.fight.hostHurt(40) == 40); // the player's body at 60, the partner's at 100
+    REQUIRE(r.fight.hp() == 60);
+    REQUIRE(r.fight.allyHp() == 100);
+    const Vec2 playerWas = r.bodies.player;
+    const Vec2 allyWas = r.fight.allyPos();
+    REQUIRE(r.fight.switchLeads());
+    CHECK(r.fight.swapped());
+    CHECK(r.fight.stats().leadSwitches == 1);
+    CHECK(r.fight.stats().takeovers == 0);
+    CHECK(r.fight.hp() == 100);
+    CHECK(r.fight.allyHp() == 60);
+    CHECK(r.fight.allyPos().x == doctest::Approx(playerWas.x));
+    CHECK(r.fight.allyPos().y == doctest::Approx(playerWas.y));
+    // The host swaps the bodies before the next tick; the stick then moves the new body.
+    std::swap(r.bodies.player, r.bodies.ally);
+    CHECK(r.bodies.player.x == doctest::Approx(allyWas.x));
+    r.step = true;
+    for (int k = 0; k < 30; ++k) {
+        r.in.move = Vec2{0.f, 1.f};
+        r.tick();
+    }
+    CHECK(r.bodies.player.y > allyWas.y + 0.5f);
+    CHECK(r.fight.hp() == 100);
+    CHECK(r.fight.phase() == ArenaPhase::Fighting);
+    // Switched back: each body has its own hp again.
+    REQUIRE(r.fight.switchLeads());
+    CHECK_FALSE(r.fight.swapped());
+    CHECK(r.fight.hp() == 60);
+    CHECK(r.fight.allyHp() == 100);
+    std::swap(r.bodies.player, r.bodies.ally);
+    // Lone: no partner in the fight, no switch.
+    r.fight.setLone(true, LoneTuning{}, 0.f);
+    CHECK_FALSE(r.fight.switchLeads());
+    r.fight.setLone(false, LoneTuning{}, 0.f);
+    // The partner down: no switch (a fall's takeover is the fight's own).
+    r.fight.setAlly(0, 0.4f);
+    CHECK_FALSE(r.fight.switchLeads());
+    CHECK(r.fight.stats().leadSwitches == 2);
+    // No partner set: no switch.
+    PRig q;
+    q.enemy(biterKind(150, 3.f, 5.f), Vec2{20.f, 0.f});
+    q.go(false, 100);
+    q.tick();
+    CHECK_FALSE(q.fight.switchLeads());
+}
+
 TEST_CASE("arena partner: the file's partner block is read into every fight, each scale in [0, 1]") {
     std::string text;
     REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));

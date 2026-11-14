@@ -1044,6 +1044,7 @@ struct ArenaStats {
     float bossAimShareMax = 0.f; // the highest share of partner-aimed boss strings since begin() or restart(),
                                  // seen at a boss string's start (that string counted)
     int takeovers = 0;         // times the player fell with the partner up and took its body (TookOver)
+    int leadSwitches = 0;      // the host's switchLeads that swapped the bodies (both up)
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -1415,6 +1416,14 @@ public:
     // The bodies have swapped an odd number of times since begin() or restart() (TookOver): the player drives the
     // other lead.
     FTCORE_API bool swapped() const;
+    // The host's voluntary lead switch (the session's tick.switched after FightSession::setActiveLead): with the
+    // partner on (setPartner, an ally, not Lone), both bodies up and the fight Fighting, the bodies swap now, between
+    // ticks: the player stands in the partner's place at its hp, Idle (its action, string, buffer, lock and poise
+    // as after a takeover), the partner in the player's old place at the player's hp (its string, guard and
+    // hitstun cleared). Load, stamina and charges stay; swapped() flips; stats().leadSwitches. No event (the host
+    // asked); the host swaps ArenaBodies::player and ::ally before the next tick, as on TookOver. A boss string
+    // under way keeps its aim (the slot, not the body). False, and nothing changes, otherwise or inside the hook.
+    FTCORE_API bool switchLeads();
     // ---- a set table ----
     // The host's seats at a set table (TableRing.h; begin and restart clear them). While the player or the ally is
     // seated and two or more living bodies sit, the hp an enemy's blow takes from a seated lead (a hit, a guard's

@@ -464,8 +464,11 @@ private:
 	void LogPartnerWindow();
 	void LogPartnerChecks(bool bWon, bool bLost);
 	void CheckPartnerRetry();
-	// The partner's body acts: -ArenaPartner, not held out (a fight begun Lone keeps it out to its end, the session
-	// with one lead too, until Core can bring a lead into a running fight), and the fight not Lone.
+	void BringPartnerIn();
+	void SwitchLeadBodies();
+	void PutPartnerOut();
+	// The partner's body acts: -ArenaPartner, not held out (a fight begun Lone keeps it out, the session with one lead
+	// too, until the partner call brings it in), and the fight not Lone.
 	bool PartnerBody() const { return bPartner && !bPartnerHeldOut && !Fight.lone(); }
 	void ArmSwapCheck();
 	void TrackSwapCheck(const ftcore::ArenaInput& In);
@@ -1030,10 +1033,23 @@ private:
 	// runner's, and the order's presses.
 	int32 PartnerLeadFalls = 0, PartnerAllyFalls = 0, PartnerTakeovers = 0, PartnerRises = 0;
 	int32 PartnerSessionTookOver = 0, PartnerLeadMismatch = 0, PartnerOrders = 0;
-	// A fight begun Lone with -ArenaPartner: the partner stays out of it to its end (no setPartner, no ally body, one
-	// lead in the session), across retries; steps where Core's partner acted all the same (a leak).
+	// A fight begun Lone with -ArenaPartner (bPartnerLoneStart): the partner is out (bPartnerHeldOut: no setPartner, no
+	// ally body, one lead in the session) until the lead's partner call ends the carry; then the session's joinFight
+	// brings it in at the step's close and the fight takes it on tick.joined (BringPartnerIn). A Release (or any other)
+	// end keeps it out to the fight's end; a retry is Lone again, so it is out again (PutPartnerOut). Steps where
+	// Core's partner acted while out (a leak); joins asked, landed and refused; steps where the session's word on the
+	// partner (inFight(OtherLead())) and the fight's (Out.ally.partnerOn) disagreed.
+	bool bPartnerLoneStart = false;
 	bool bPartnerHeldOut = false;
 	int32 PartnerHeldLeaks = 0;
+	int32 PartnerJoinAsks = 0, PartnerJoinsLanded = 0, PartnerJoinsRefused = 0, PartnerJoinDisagree = 0;
+	double PartnerJoinedAt = -1.0;
+	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
+	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and
+	// the camera. Asked by the probe, switched by the session, swapped by the fight, refused by the fight.
+	float SwitchAt = -1.f;
+	bool bSwitchAsked = false;
+	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0;
 	// The partner's blows: the session ruled them (RuleSessionBlow's partner path), their Hit events, their joins.
 	int32 PartnerBlowsRuled = 0, PartnerHitEvents = 0, PartnerJoins = 0;
 	// After a takeover: the figures' places once drawn, the steps since with a move input, the check's counts. The
