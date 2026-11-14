@@ -554,3 +554,110 @@ TEST_CASE("ui load name: the gold fills to the threshold, brightens to the cap, 
     CHECK(none.fill == 0.f);
     CHECK(none.bright == 0.f);
 }
+
+TEST_CASE("ui arena view: the R11 hooks default to nothing drawn (Qte, gift data, the row swap)") {
+    // Each hook's null: nothing reported, nothing drawn.
+    const ArenaHudLead lead;
+    CHECK_FALSE(lead.qte.live);
+    CHECK(uiQteLeft01(lead.qte, 0.f) == 0.f);
+    CHECK(uiQteLeft01(lead.qte, 5.f) == 0.f);
+    const ArenaHudThird third;
+    CHECK(third.giftHeals == -1);
+    CHECK_FALSE(third.giftGuardReady);
+    UiRowSwap swap;
+    CHECK(swap.left01 == 0.f);
+
+    // A live Qte's line runs out evenly over its window, and is gone at its end.
+    ArenaHudQte q;
+    q.live = true;
+    q.kind = QteKind::Hold;
+    q.input = ActionButton::Guard;
+    q.from = 1.f;
+    q.to = 3.f;
+    CHECK(uiQteLeft01(q, 0.5f) == 1.f); // before the window: full
+    CHECK(uiQteLeft01(q, 1.f) == 1.f);
+    CHECK(uiQteLeft01(q, 2.f) == doctest::Approx(0.5f));
+    CHECK(uiQteLeft01(q, 3.f) == 0.f);
+    CHECK(uiQteLeft01(q, 4.f) == 0.f);
+    ArenaHudQte empty = q;
+    empty.to = empty.from; // an empty window: no line, no divide by zero
+    CHECK(uiQteLeft01(empty, 1.f) == 0.f);
+
+    // The Qte sits in the lead's section: its start and end move that revision, the frames between do not.
+    ArenaHudView view;
+    ArenaHudFrame f;
+    f.lead.hp = f.lead.hpMax = 10;
+    updateArenaHudView(view, f);
+    const std::uint32_t rev = view.revisionOf(ArenaHudSection::Lead);
+    f.lead.qte = q;
+    CHECK(updateArenaHudView(view, f) == 1u);
+    CHECK(updateArenaHudView(view, f) == 0u);
+    f.lead.qte = ArenaHudQte{};
+    CHECK(updateArenaHudView(view, f) == 1u);
+    CHECK(view.revisionOf(ArenaHudSection::Lead) == rev + 2);
+    // The gift data sits in the third place's section.
+    f.third.giftHeals = 3;
+    CHECK(updateArenaHudView(view, f) == (1u << static_cast<unsigned>(ArenaHudSection::Third)));
+}
+
+TEST_CASE("ui row swap: the rows trade places over 0.2 s only when the lead's seat changes under a partner row") {
+    ArenaHudFrame f;
+    f.lead.lead = 0;
+    f.partner.present = true;
+    f.partner.lead = 1;
+    UiRowSwap s;
+    uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 0.f); // the first seats seen are no switch
+    for (int k = 0; k < 30; ++k) uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 0.f); // seats that never change never swap
+
+    // The switch: the leads trade seats.
+    f.lead.lead = 1;
+    f.partner.lead = 0;
+    uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 1.f);
+    uiRowSwapStep(s, f, 0.1f);
+    CHECK(s.left01 == doctest::Approx(0.5f));
+    uiRowSwapStep(s, f, 0.1f);
+    CHECK(s.left01 == 0.f);
+    uiRowSwapStep(s, f, 0.1f);
+    CHECK(s.left01 == 0.f);
+
+    // No partner row: a change of seat just shows.
+    f.partner.present = false;
+    f.lead.lead = 2;
+    uiRowSwapStep(s, f, 1.f / 60.f);
+    CHECK(s.left01 == 0.f);
+}
+
+TEST_CASE("ui dialogue view: no reply cursor and no lock reason by default; a cursor moves only the prompt section") {
+    CHECK(DialogueViewFlags{}.cursor == -1);
+    CHECK(DialogueViewOption{}.lockReason.empty());
+
+    Script s;
+    StoryRunner r(&s.db);
+    REQUIRE(r.start());
+    DialoguePresenter p(&r);
+    p.setRevealRate(10.f);
+    DialogueView v;
+    DialogueViewFlags flags;
+    REQUIRE(r.advance()); // the line
+    REQUIRE(r.advance()); // the choice
+    p.update(5.f);
+    updateDialogueView(v, p, flags);
+    REQUIRE(v.kind == DialogueViewKind::Choice);
+    REQUIRE(v.optionCount == 2);
+    CHECK(v.flags.cursor == -1);
+    CHECK_FALSE(v.options[0].selectable);
+    CHECK(v.options[0].lockReason.empty()); // locked, with no reason: the word "locked" is shown
+    CHECK(v.options[1].lockReason.empty());
+
+    const std::uint32_t beat = v.beatRevision;
+    const std::uint32_t prompt = v.promptRevision;
+    flags.cursor = 1;
+    CHECK(updateDialogueView(v, p, flags));
+    CHECK(v.flags.cursor == 1);
+    CHECK(v.promptRevision == prompt + 1);
+    CHECK(v.beatRevision == beat);
+    CHECK_FALSE(updateDialogueView(v, p, flags));
+}

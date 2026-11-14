@@ -88,11 +88,35 @@ const FTUiText kReadMoveUi[9] = {kReadStrikeUi, kReadOverheadUi, kReadBackhandUi
 	kReadSweepUi, kReadSlamUi, kReadShotUi};
 // The prompts' words and their hint rows (the key as bound), by ftcore::UiPrompt.
 const FTUiText kHealUi(TEXT("input.heal"));
+const FTUiText kGiftHealUi(TEXT("arena.prompt.gift_heal"));
+const FTUiText kGiftGuardUi(TEXT("arena.prompt.gift_guard"));
+const FTUiText kReloadUi(TEXT("arena.prompt.reload"));
 const FTUiText kAttackUi(TEXT("arena.prompt.attack"));
 const FTUiText kDodgeUi(TEXT("input.dodge"));
 const FTUiText kJumpUi(TEXT("input.jump"));
-const FTUiText kPromptUi[6] = {kHealUi, kPartnerUi, kAttackUi, kGuardUi, kDodgeUi, kJumpUi};
-const char* const kPromptKeys[6] = {"input.heal", "input.count", "input.light", "input.guard", "input.dodge", "input.jump"};
+const FTUiText kPromptUi[] = {kHealUi, kGiftHealUi, kGiftGuardUi, kReloadUi, kPartnerUi, kAttackUi, kGuardUi, kDodgeUi, kJumpUi};
+static_assert(UE_ARRAY_COUNT(kPromptUi) == ftcore::kUiPromptCount, "one word per prompt, in UiPrompt order");
+// Each prompt's key: the controls line's entry with this label, or (no label) the entry that carries this action. The gift
+// rows go by the Gift action, so while that action also carries the heal (its label is input.heal) they share the heal's
+// key, and one row per key keeps the heal's (uiPromptsDrawable). RELOAD has no action yet: no entry has its label, so it
+// has no key and draws nothing.
+struct FPromptKeyOf
+{
+	const char* Label;
+	ftcore::InputAction Action;
+};
+const FPromptKeyOf kPromptKeys[] = {{"input.heal", {}}, {nullptr, ftcore::InputAction::Gift}, {nullptr, ftcore::InputAction::Gift},
+	{"input.reload", {}}, {"input.count", {}}, {"input.light", {}}, {"input.guard", {}}, {"input.dodge", {}}, {"input.jump", {}}};
+static_assert(UE_ARRAY_COUNT(kPromptKeys) == ftcore::kUiPromptCount, "one key per prompt, in UiPrompt order");
+// A Qte's word in the call slot: a Tap shows its button's word (the basic controls', by ActionButton), a Hold HOLD, a
+// Mash MASH. Its key cap is that button's prompt key, so the basic controls must follow ActionButton's order.
+const FTUiText kQteHoldUi(TEXT("qte.hold"));
+const FTUiText kQteMashUi(TEXT("qte.mash"));
+static_assert(static_cast<int>(ftcore::UiPrompt::Guard) - static_cast<int>(ftcore::UiPrompt::Attack) == static_cast<int>(ftcore::ActionButton::Guard)
+	&& static_cast<int>(ftcore::UiPrompt::Dodge) - static_cast<int>(ftcore::UiPrompt::Attack) == static_cast<int>(ftcore::ActionButton::Dodge)
+	&& static_cast<int>(ftcore::UiPrompt::Jump) - static_cast<int>(ftcore::UiPrompt::Attack) == static_cast<int>(ftcore::ActionButton::Jump),
+	"the basic controls' prompts follow ActionButton's order");
+constexpr int32 kQteWords = static_cast<int32>(ftcore::kActionButtonCount) + 2; // the four Tap words, HOLD, MASH
 const FTUiText kVictoryUi(TEXT("battle.victory"));
 const FTUiText kDefeatUi(TEXT("battle.defeat"));
 const FTUiText kAgainUi(TEXT("battle.again"));
@@ -1029,6 +1053,7 @@ public:
 		}
 		if (!bLive)
 		{
+			RowSwap = ftcore::UiRowSwap{}; // a new fight's first seats are where the rows start, not a switch
 			return;
 		}
 		const bool bRebuildNow = bRebuild;
@@ -1044,12 +1069,18 @@ public:
 		Frame.partner.lead = Runner->GetAllySeat();
 		ftcore::fillArenaHudPartner(Fight, Frame.partner); // the carrying runs' ally; zero (absent) otherwise
 		Frame.partner.load = Frame.partner.present ? Runner->GetPartnerLoad() : 0;
+		// Nothing reports the third place yet. The Gift Heals left (giftHeals) and the Gift Guard's cooldown (giftGuardReady)
+		// go here, after this reset; so does a live Qte (Frame.lead.qte, which fillArenaHudLead leaves alone). Until then
+		// their defaults draw nothing.
 		Frame.third = ftcore::ArenaHudThird{};
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
 		const ftcore::ArenaHudLead& L = View.now.lead;
 		HpLost.Step(Frac(L.hp, L.hpMax), DeltaTime);
 		PartnerLost.Step(Frac(View.now.partner.hp, View.now.partner.hpMax), DeltaTime);
 		ftcore::uiLoadNameStep(LoadName, L, DeltaTime);
+		// The rows trade places when the seats do (a lead switch): GetLeadSeat and GetAllySeat must swap on that tick.
+		ftcore::uiRowSwapStep(RowSwap, View.now, DeltaTime);
+		QteLeft = ftcore::uiQteLeft01(L.qte, Fight.time());
 		LeadDip = Pulse(Runner->GetNow(), Runner->GetPlayerHitTime(), 0.15f);
 		PartnerDip = Pulse(Runner->GetNow(), Runner->GetAllyHitTime(), 0.15f);
 		TickNames(*Runner, bRebuildNow);
@@ -1078,6 +1109,15 @@ public:
 			HealShown = L.heals;
 			HealText = PromptWord[static_cast<int32>(ftcore::UiPrompt::Heal)] + TEXT(" ") + FString::FromInt(L.heals);
 			HealW = TextWidth(HealText, PromptFont);
+		}
+		const int32 GiftHeals = View.now.third.giftHeals;
+		if (bRebuildNow || GiftHeals != GiftHealShown)
+		{
+			GiftHealShown = GiftHeals;
+			GiftHealText = GiftHeals >= 0
+				? PromptWord[static_cast<int32>(ftcore::UiPrompt::GiftHeal)] + TEXT(" ") + FString::FromInt(GiftHeals)
+				: FString();
+			GiftHealW = TextWidth(GiftHealText, PromptFont);
 		}
 		if (bRebuildNow || L.read != StackShown)
 		{
@@ -1113,17 +1153,21 @@ public:
 		ftcore::UiBudgetInput In;
 		In.dt = DeltaTime;
 		In.changed = Changed;
-		In.prompts = ftcore::uiPromptsOpen(Now, Fight.pairOpen());
+		ftcore::UiPromptMask Open = ftcore::uiPromptsOpen(Now, Fight.pairOpen());
 		for (int32 I = static_cast<int32>(ftcore::UiPrompt::Attack); I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
 		{
 			if (PromptAlpha(I) > 0.f)
 			{
-				In.prompts = static_cast<uint8>(In.prompts | (1u << I)); // a first fight's control, until it fades
+				Open |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I)); // a first fight's control, until it fades
 			}
 		}
+		// Before the budget: a row with no key, or on a key a lower row shows, would draw nothing, so it takes no row.
+		In.prompts = ftcore::uiPromptsDrawable(Open, PromptKeyed, PromptSameKeyBelow);
 		In.resultOpen = bResult;
 		In.want = ftcore::uiMarkWants(Now, In.prompts);
-		uint8 Tells = 0;
+		// A live Qte is a timed press like a windup: it counts as a tell, so the budget never drops it.
+		const bool bQteLive = Now.lead.qte.live;
+		uint8 Tells = static_cast<uint8>(bQteLive ? 1 : 0);
 		uint8 FoeLines = 0;
 		bool bBossActs = false;
 		for (int32 I = 0; I < UFTArenaRunner::MaxEnemies; ++I)
@@ -1182,6 +1226,8 @@ public:
 			}
 		}
 		uint8 TellsLeft = G.allowed(UiMarkKind::Tell);
+		bQteOn = bQteLive && TellsLeft > 0; // the Qte first: the player's own press outranks a foe's windup
+		TellsLeft = static_cast<uint8>(TellsLeft - (bQteOn ? 1 : 0));
 		uint8 LinesLeft = G.allowed(UiMarkKind::Foe);
 		for (FFoeMark& M : Foes)
 		{
@@ -1328,6 +1374,15 @@ private:
 			PromptWord[I] = Cased(UiTextRole::Verb, kPromptUi[I]);
 			PromptWordW[I] = TextWidth(PromptWord[I], PromptFont);
 		}
+		// A Qte's word is a call: the call slot's face and casing.
+		for (int32 I = 0; I < kQteWords; ++I)
+		{
+			const int32 Button = static_cast<int32>(ftcore::UiPrompt::Attack) + I;
+			const FTUiText& Src = I < static_cast<int32>(ftcore::kActionButtonCount) ? kPromptUi[Button]
+				: (I == static_cast<int32>(ftcore::kActionButtonCount) ? kQteHoldUi : kQteMashUi);
+			QteWord[I] = Cased(UiTextRole::Popup, Src);
+			QteWordW[I] = TextWidth(QteWord[I], CallFont);
+		}
 		ReleaseWord = Cased(UiTextRole::Verb, kReleaseUi);
 		ReleaseWordW = TextWidth(ReleaseWord, ReleaseFont);
 		WeightWord = Cased(UiTextRole::Verb, kWeightUi);
@@ -1353,24 +1408,52 @@ private:
 	{
 		const ftcore::InputHintEntry* Entries = nullptr;
 		const size_t Count = ftcore::inputHintEntries(ftcore::InputHintScreen::ArenaJump, Entries); // the arena's line and the jump
-		const auto KeyOf = [&](const char* Label, FString& Out, float& W)
+		// The entry with this label, or (no label) the first that carries this action; null when the line has none.
+		const auto EntryOf = [&](const FPromptKeyOf& Of) -> const ftcore::InputHintEntry*
 		{
-			Out.Reset();
 			for (size_t I = 0; I < Count; ++I)
 			{
-				if (FCStringAnsi::Strcmp(Entries[I].label, Label) == 0)
+				const ftcore::InputHintEntry& E = Entries[I];
+				if (Of.Label)
 				{
-					Out = FT::ToFString(ftcore::inputHintKeys(FTInputBindings::Get(), Entries[I], Device));
-					break;
+					if (FCStringAnsi::Strcmp(E.label, Of.Label) == 0) return &E;
+					continue;
 				}
+				for (uint8 A = 0; A < E.count; ++A)
+				{
+					if (E.actions[A] == Of.Action) return &E;
+				}
+			}
+			return nullptr;
+		};
+		const auto KeyOf = [&](const FPromptKeyOf& Of, FString& Out, float& W)
+		{
+			Out.Reset();
+			if (const ftcore::InputHintEntry* E = EntryOf(Of))
+			{
+				Out = FT::ToFString(ftcore::inputHintKeys(FTInputBindings::Get(), *E, Device));
 			}
 			W = TextWidth(Out, KeyFont);
 		};
+		PromptKeyed = 0;
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
 		{
 			KeyOf(kPromptKeys[I], PromptKey[I], PromptKeyW[I]);
+			if (!PromptKey[I].IsEmpty()) PromptKeyed |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I));
 		}
-		KeyOf("input.release", ReleaseKey, ReleaseKeyW);
+		// The lower prompts on each prompt's key, so one key never shows two rows (uiPromptsDrawable keeps the lowest).
+		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
+		{
+			PromptSameKeyBelow[I] = 0;
+			for (int32 J = 0; J < I; ++J)
+			{
+				if (!PromptKey[I].IsEmpty() && PromptKey[J].Equals(PromptKey[I], ESearchCase::CaseSensitive))
+				{
+					PromptSameKeyBelow[I] |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(J));
+				}
+			}
+		}
+		KeyOf(FPromptKeyOf{"input.release", {}}, ReleaseKey, ReleaseKeyW);
 	}
 
 	// The party rows' names: the looks' own, lowercase in the small-caps face; without a look, a plain word.
@@ -1505,7 +1588,8 @@ private:
 		}
 	}
 
-	// A prompt's show level: PARTNER and HEAL stand while open; a first fight's control fades out after its first use.
+	// A prompt's show level: the data's rows (HEAL to PARTNER) stand while open; a first fight's control fades out after
+	// its first use.
 	float PromptAlpha(int32 Prompt) const
 	{
 		const int32 First = static_cast<int32>(ftcore::UiPrompt::Attack);
@@ -1635,7 +1719,13 @@ private:
 		const float A = TextAlpha(LeadFade.alpha); // full ink at rest; fades only as the HUD goes
 		const float X0 = Hud::Margin * S;
 		const float Len = Hud::LeadLine * S;
-		const float GuardY = Size.Y - Hud::Margin * S;
+		// The rows' own places; on a lead switch the two rows trade them over kUiRowSwap (the lead's row comes down from the
+		// partner's place, the partner's goes up from the lead's), so the eye follows each name to its new seat.
+		const float GuardY0 = Size.Y - Hud::Margin * S;
+		const float HpY0 = GuardY0 - 7.5f * S;
+		const float PY0 = HpY0 - 11.5f * S - 0.62f * LeadNameAsc - 24.5f * S; // the partner's 5 px stroke's middle
+		const float SwapDy = FMath::SmoothStep(0.f, 1.f, RowSwap.left01) * (PY0 - HpY0);
+		const float GuardY = GuardY0 + SwapDy;
 		const float HpY = GuardY - 7.5f * S;    // the 7 px hp stroke, 4 px over the guard hairline
 		const float NameBase = HpY - 11.5f * S + 3.f * S * LeadDip; // 8 px over the hp stroke
 		HpLine(X0, Len, HpY, Frac(L.hp, L.hpMax), HpLost.Was, 7.f, 201, S, A);
@@ -1698,7 +1788,7 @@ private:
 			return;
 		}
 		const float PLen = Hud::PartnerLine * S;
-		const float PY = NameBase - 3.f * S * LeadDip - 0.62f * LeadNameAsc - 24.5f * S; // the 5 px stroke's middle
+		const float PY = PY0 - SwapDy; // 22 px over the lead's name at rest (the lead's dip does not move it)
 		HpLine(X0, PLen, PY, Frac(Pa.hp, Pa.hpMax), PartnerLost.Was, 5.f, 211, S, A);
 		P.Text(X0, PY - 10.5f * S + 3.f * S * PartnerDip - PartnerNameAsc, PartnerName, PartnerNameFont, Tok(UiToken::Ink, 0.7f * A));
 		// A shared blow: SHARED beside the partner's line for a second, then fading.
@@ -1846,6 +1936,30 @@ private:
 				HLine(CX - Half, CX + Half, Top + CallAsc + 8.f * S, 0.f, 1.f, StrokeStyle(2.f, 87, S, 0.f), Tok(UiToken::Ink, TA));
 			}
 		}
+		// A Qte is a call the player answers: its word and key cap in the slot, over the same 160 px line shrinking evenly
+		// to nothing at the window's end. It is the only prompt with a line. A live call word keeps the slot, so the Qte
+		// sits a row lower, as the Read row does; the Read row then goes under the Qte.
+		float SlotTop = bWord ? Top + CallAsc + 42.f * S : Top; // under a word: 34 px under its line
+		const ftcore::ArenaHudQte& Q = View.now.lead.qte;
+		const int32 QteButton = static_cast<int32>(ftcore::UiPrompt::Attack) + static_cast<int32>(Q.input);
+		if (bQteOn && QteButton < static_cast<int32>(ftcore::kUiPromptCount) && !PromptKey[QteButton].IsEmpty())
+		{
+			const int32 Wi = Q.kind == ftcore::QteKind::Tap ? static_cast<int32>(Q.input)
+				: static_cast<int32>(ftcore::kActionButtonCount) + (Q.kind == ftcore::QteKind::Hold ? 0 : 1);
+			const float CapW = KeyCapW(PromptKeyW[QteButton], S);
+			const float GroupW = QteWordW[Wi] + 10.f * S + CapW;
+			const float TX = CX - GroupW * 0.5f;
+			const FLinearColor C = Tok(UiToken::Ink);
+			P.Text(TX, SlotTop, QteWord[Wi], CallFont, C);
+			KeyCap(P, TX + QteWordW[Wi] + 10.f * S + CapW * 0.5f, CapMid(SlotTop + CallAsc, CallAsc), CapW, PromptKey[QteButton],
+				PromptKeyW[QteButton], C);
+			const float Half = 0.5f * Hud::CallLine * S * QteLeft;
+			if (Half > 0.5f * S)
+			{
+				HLine(CX - Half, CX + Half, SlotTop + CallAsc + 8.f * S, 0.f, 1.f, StrokeStyle(2.f, 89, S, 0.f), C);
+			}
+			SlotTop += CallAsc + 42.f * S;
+		}
 		if (ReadN <= 0)
 		{
 			return;
@@ -1860,7 +1974,7 @@ private:
 		{
 			W += Gap + CapW + (ReadCard[I] >= 0 ? 6.f * S + ReadMoveW[ReadCard[I]] : 0.f);
 		}
-		const float RowTop = bWord ? Top + CallAsc + 42.f * S : Top; // under a word: 34 px under its line
+		const float RowTop = SlotTop;
 		const float MidY = CapMid(RowTop + ReadAsc, ReadAsc);
 		const FLinearColor C = Tok(UiToken::Ink);
 		float X = CX - W * 0.5f;
@@ -1908,10 +2022,11 @@ private:
 	}
 
 	// The prompts, bottom right: right-aligned rows from the bottom up, each its word and its key cap; only the open ones
-	// (Core's grant), at most four, the heal at the bottom.
+	// (Core's grant), at most four, from the bottom HEAL, GIFT, RELOAD, PARTNER. A gift row is ink like the rest: gold is
+	// the lead's own power and a gift is not.
 	void PaintPrompts(const FPainter& P, const FVector2f& Size) const
 	{
-		const uint8 Shown = Budget.out.promptsShown;
+		const ftcore::UiPromptMask Shown = Budget.out.promptsShown;
 		const float S = P.S;
 		const float RX = Size.X - Hud::Margin * S;
 		int32 Row = 0;
@@ -1926,9 +2041,12 @@ private:
 			const FLinearColor C = Tok(UiToken::Ink, PromptAlpha(I));
 			const float CapW = KeyCapW(PromptKeyW[I], S);
 			KeyCap(P, RX - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyW[I], C);
+			// The two rows with a count carry it in their word (built when it changes).
 			const bool bHeal = I == static_cast<int32>(ftcore::UiPrompt::Heal);
-			const float WW = bHeal ? HealW : PromptWordW[I];
-			P.Text(RX - CapW - 10.f * S - WW, CapTop(MidY, PromptAsc), bHeal ? HealText : PromptWord[I], PromptFont, C);
+			const bool bGiftHeal = I == static_cast<int32>(ftcore::UiPrompt::GiftHeal);
+			const float WW = bHeal ? HealW : bGiftHeal ? GiftHealW : PromptWordW[I];
+			const FString& Word = bHeal ? HealText : bGiftHeal ? GiftHealText : PromptWord[I];
+			P.Text(RX - CapW - 10.f * S - WW, CapTop(MidY, PromptAsc), Word, PromptFont, C);
 		}
 	}
 
@@ -2464,6 +2582,18 @@ private:
 	FString PromptWord[ftcore::kUiPromptCount], PromptKey[ftcore::kUiPromptCount], HealText;
 	float PromptWordW[ftcore::kUiPromptCount] = {}, PromptKeyW[ftcore::kUiPromptCount] = {}, HealW = 0.f;
 	int32 HealShown = -1;
+	FString GiftHealText; // GIFT HEAL n, built when the count changes (empty while none is reported)
+	float GiftHealW = 0.f;
+	int32 GiftHealShown = -2;
+	ftcore::UiPromptMask PromptKeyed = 0; // the prompts with a key on the device in use
+	std::array<ftcore::UiPromptMask, ftcore::kUiPromptCount> PromptSameKeyBelow{}; // per prompt, the lower ones on its key
+	// A Qte in the call slot: its words (the four Tap words, HOLD, MASH), whether the budget drew it, and its line left.
+	FString QteWord[kQteWords];
+	float QteWordW[kQteWords] = {};
+	bool bQteOn = false;
+	float QteLeft = 0.f;
+	// The rows' trade of places on a lead switch.
+	ftcore::UiRowSwap RowSwap;
 	// The first-use labels and SHARED.
 	FSlateFontInfo NoteFont;
 	float NoteAsc = 0.f;
@@ -2614,6 +2744,11 @@ public:
 			for (int32 I = 0; I < OptionRows; ++I)
 			{
 				OptionTextW[I] = TextWidth(OptionText(*D, I), OptionFont);
+				// A locked reply says why when the data has a reason (an interface text key), else "locked". Built here, once
+				// per set of options; no reason exists yet, so this is always the word.
+				const std::string_view Reason = bFakeOptions || I >= static_cast<int32>(View.optionCount)
+					? std::string_view() : View.options[static_cast<size_t>(I)].lockReason;
+				LockText[I] = Reason.empty() ? LockedText : FTUiText::Lookup(*FT::ToFString(Reason));
 			}
 		}
 		// The conversation's gradient: its level read from the picture under the lower screen at each new beat (at the end
@@ -2691,7 +2826,8 @@ public:
 		else if (OptionRows > 0)
 		{
 			// The numbered replies over the subtitle, at its left edge, in its face: one that can be taken in full ink, one
-			// that cannot at half ink with "locked" after it (the data gives no reason yet).
+			// that cannot at half ink with its reason after it, or "locked" (the data gives no reason yet). The reply under
+			// a cursor gets a short underline in the boss line's stroke; picking is by number today, so there is no cursor.
 			const float RowH = LineH * 1.05f;
 			const float OptTop = Top - LineH * 0.4f - RowH * OptionRows;
 			float X0 = CX;
@@ -2707,7 +2843,13 @@ public:
 				P.Text(X0, Y, OptionText(*D, I), OptionFont, C);
 				if (!bPick)
 				{
-					P.Text(X0 + OptionTextW[I] + 16.f * S, Y, LockedText, OptionFont, C);
+					P.Text(X0 + OptionTextW[I] + 16.f * S, Y, LockText[I], OptionFont, C);
+				}
+				if (!bFakeOptions && View.flags.cursor == I)
+				{
+					const float UY = Y + LineH / 1.15f; // the glyph cell's foot, above the next row
+					ftcore::uiStrokeLine(Line, X0, UY, X0 + kReplyUnderline * S, UY, StrokeStyle(7.f, 101, S, 0.1f), 0.f, 1.f);
+					Mesh.Stroke(Line, C);
 				}
 			}
 		}
@@ -2964,6 +3106,8 @@ private:
 	uint32 OptionsFor = MAX_uint32;
 	float OptionTextW[ftcore::kDialogueViewOptions] = {}; // each reply's width, for the "locked" after it
 	FString LockedText;
+	FString LockText[ftcore::kDialogueViewOptions]; // each locked reply's reason, or LockedText
+	static constexpr float kReplyUnderline = 48.f;  // the selected reply's underline, px at 1080 ("short")
 	// The conversation's gradient.
 	float ConvDim = 0.f;      // its level now (eases up, never down, within a conversation)
 	float ConvNeed = 0.f;     // the highest level the conversation's pictures have asked for
@@ -2975,6 +3119,7 @@ private:
 	bool bDimBound = false;     // the end-of-draw read is bound to the game viewport
 	bool bHintUp = false;
 	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line; // the underline being drawn (Core fills it, the mesh takes it)
 };
 }
 

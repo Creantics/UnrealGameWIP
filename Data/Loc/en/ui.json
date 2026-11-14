@@ -81,6 +81,9 @@
     "arena.label.weak_point": "WEAK POINT",
     "arena.debt": "DEBT",
     "arena.prompt.attack": "attack",
+    "arena.prompt.gift_heal": "gift heal",
+    "arena.prompt.gift_guard": "gift guard",
+    "arena.prompt.reload": "reload",
 
     "banter.prompt": "Space / Enter: next    Backspace: skip",
 

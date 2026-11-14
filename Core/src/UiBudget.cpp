@@ -8,23 +8,40 @@ namespace {
 
 constexpr std::size_t idx(UiMarkKind k) { return static_cast<std::size_t>(k); }
 
-std::uint8_t bits(std::uint8_t m) {
+std::uint8_t bits(UiPromptMask m) {
     std::uint8_t n = 0;
-    for (; m; m = static_cast<std::uint8_t>(m & (m - 1))) ++n;
+    for (; m; m = static_cast<UiPromptMask>(m & (m - 1))) ++n;
     return n;
 }
 
 } // namespace
 
-std::uint8_t uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen) {
-    std::uint8_t m = 0;
+UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen) {
+    UiPromptMask m = 0;
     const ArenaHudLead& l = f.lead;
+    const bool up = !l.down;
+    const bool hurt = l.hp < l.hpMax; // at full HP a heal (or a Gift Heal) would do nothing
     if (pairOpen && f.partner.present && !f.partner.down) m |= uiPromptBit(UiPrompt::Pair);
-    if (l.heals > 0 && !l.down && l.hp < l.hpMax) m |= uiPromptBit(UiPrompt::Heal); // at full HP a heal would do nothing
+    if (l.heals > 0 && up && hurt) m |= uiPromptBit(UiPrompt::Heal);
+    if (f.third.giftHeals > 0 && up && hurt) m |= uiPromptBit(UiPrompt::GiftHeal);
+    if (f.third.giftGuardReady && up) m |= uiPromptBit(UiPrompt::GiftGuard);
+    // Mid-reload the press is already made: the cylinder shows the reload filling, so the row would repeat it.
+    if (l.roundsMax > 0 && l.rounds == 0 && l.reload01 <= 0.f && up) m |= uiPromptBit(UiPrompt::Reload);
     return m;
 }
 
-std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, std::uint8_t prompts) {
+UiPromptMask uiPromptsDrawable(UiPromptMask open, UiPromptMask keyed, const std::array<UiPromptMask, kUiPromptCount>& sameKeyBelow) {
+    UiPromptMask out = 0;
+    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
+        const UiPromptMask b = static_cast<UiPromptMask>(1u << p);
+        if ((open & keyed & b) == 0) continue;
+        if ((out & sameKeyBelow[p]) != 0) continue; // a lower row already shows this key
+        out = static_cast<UiPromptMask>(out | b);
+    }
+    return out;
+}
+
+std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, UiPromptMask prompts) {
     std::array<std::uint8_t, kUiMarkKindCount> w{};
     w[idx(UiMarkKind::Lead)] = f.lead.hpMax > 0 ? 1 : 0;
     // The partner's row whenever the fight has a partner: a party list that comes and goes is itself a puzzle.
@@ -79,9 +96,9 @@ const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, cons
     // Only open prompts, in their order, as many as were granted.
     std::uint8_t room = std::min(o.allowed(UiMarkKind::Prompt), kUiPromptRows);
     for (std::size_t p = 0; p < kUiPromptCount && room > 0; ++p) {
-        const std::uint8_t b = static_cast<std::uint8_t>(1u << p);
+        const UiPromptMask b = static_cast<UiPromptMask>(1u << p);
         if (in.prompts & b) {
-            o.promptsShown |= b;
+            o.promptsShown = static_cast<UiPromptMask>(o.promptsShown | b);
             --room;
         }
     }

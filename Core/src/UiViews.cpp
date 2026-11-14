@@ -105,7 +105,8 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
         if (shown && kind == DialogueViewKind::Choice) {
             view.optionCount = std::min<std::uint32_t>(r->optionCount(), kDialogueViewOptions);
             for (std::uint32_t i = 0; i < view.optionCount; ++i) {
-                view.options[i] = DialogueViewOption{r->optionText(i), r->optionSelectable(i), r->optionReturns(i)};
+                // No reason yet: the runner's options carry none (the UI then shows the word "locked").
+                view.options[i] = DialogueViewOption{r->optionText(i), r->optionSelectable(i), r->optionReturns(i), std::string_view()};
             }
         }
         view.text = std::string_view();
@@ -128,7 +129,7 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
 
     const bool prompt = complete && (kind == DialogueViewKind::Line || kind == DialogueViewKind::Direction);
     if (prompt != view.continuePrompt || flags.autoOn != view.flags.autoOn || flags.skipOn != view.flags.skipOn ||
-        flags.logAvailable != view.flags.logAvailable) {
+        flags.logAvailable != view.flags.logAvailable || flags.cursor != view.flags.cursor) {
         view.continuePrompt = prompt;
         view.flags = flags;
         ++view.promptRevision;
@@ -153,6 +154,21 @@ void uiLoadNameStep(UiLoadName& s, const ArenaHudLead& lead, float dt) {
         if (s.shimmer > 1.f) s.shimmer = -1.f;
     }
     s.ready = lead.releaseReady;
+}
+
+void uiRowSwapStep(UiRowSwap& s, const ArenaHudFrame& f, float dt) {
+    // Without a partner row there is nothing to trade places with, so a change of seat just shows.
+    if (s.lead != 0xFF && f.lead.lead != s.lead && f.partner.present) {
+        s.left01 = 1.f;
+    } else {
+        s.left01 = std::max(0.f, s.left01 - std::max(dt, 0.f) / kUiRowSwap);
+    }
+    s.lead = f.lead.lead;
+}
+
+float uiQteLeft01(const ArenaHudQte& q, float now) {
+    if (!q.live || !(q.to > q.from)) return 0.f;
+    return std::clamp((q.to - now) / (q.to - q.from), 0.f, 1.f);
 }
 
 } // namespace ftcore

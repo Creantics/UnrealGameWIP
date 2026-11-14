@@ -42,20 +42,21 @@ enum class UiMarkKind : std::uint8_t {
 };
 inline constexpr std::size_t kUiMarkKindCount = 12;
 
-// The key prompts, bottom right, in the order they claim a row and stack upward from the bottom: the heal, the paired
-// counter's short window, then the first fight's basic controls. (The ruled gift and reload rows sit between the heal
-// and the partner once their inputs exist.)
-enum class UiPrompt : std::uint8_t { Heal, Pair, Attack, Guard, Dodge, Jump };
-inline constexpr std::size_t kUiPromptCount = 6;
+// The key prompts, bottom right, in the order they claim a row and stack upward from the bottom: HEAL, the two GIFT rows,
+// RELOAD, PARTNER (the paired counter's short window), then the first fight's basic controls.
+enum class UiPrompt : std::uint8_t { Heal, GiftHeal, GiftGuard, Reload, Pair, Attack, Guard, Dodge, Jump };
+inline constexpr std::size_t kUiPromptCount = 9;
 inline constexpr std::uint8_t kUiPromptRows = 4; // at most this many at once
-inline constexpr std::uint8_t uiPromptBit(UiPrompt p) { return static_cast<std::uint8_t>(1u << static_cast<unsigned>(p)); }
+using UiPromptMask = std::uint16_t;              // UiPrompt bits
+static_assert(kUiPromptCount <= 16, "UiPromptMask holds one bit per prompt");
+inline constexpr UiPromptMask uiPromptBit(UiPrompt p) { return static_cast<UiPromptMask>(1u << static_cast<unsigned>(p)); }
 
 struct UiBudgetInput {
     float dt = 0.f;
     bool activity = false;        // an input, an event mark, a tell or a hit this tick
     std::uint32_t changed = 0;    // updateArenaHudView's mask of changed sections
     bool bossEvent = false;       // the boss acted (a tell began), was hit, or was locked on anew
-    std::uint8_t prompts = 0;     // UiPrompt bits open right now
+    UiPromptMask prompts = 0;     // UiPrompt bits open right now (and drawable: uiPromptsDrawable)
     bool resultOpen = false;
     std::array<std::uint8_t, kUiMarkKindCount> want{}; // how many of each the data asks for this tick
 };
@@ -66,7 +67,7 @@ struct UiBudgetOut {
     std::array<std::uint8_t, kUiMarkKindCount> allow{}; // how many of each may be drawn
     std::uint8_t marks = 0;       // the total allowed
     float bossAlpha = 0.f;        // the boss line's show level (0 at rest)
-    std::uint8_t promptsShown = 0; // UiPrompt bits drawn: the open ones, first in order, as many as granted
+    UiPromptMask promptsShown = 0; // UiPrompt bits drawn: the open ones, first in order, as many as granted
     std::uint8_t allowed(UiMarkKind k) const { return allow[static_cast<std::size_t>(k)]; }
 };
 
@@ -81,11 +82,23 @@ struct UiBudgetState {
 
 // What the view's data asks for: a mark only where its field is present (absent data asks for nothing).
 // `prompts` is the UiPrompt mask; the widget adds its own wants (event marks, tells, the Read row, lock, foes).
-FTCORE_API std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, std::uint8_t prompts);
+FTCORE_API std::array<std::uint8_t, kUiMarkKindCount> uiMarkWants(const ArenaHudFrame& f, UiPromptMask prompts);
 
-// The prompts the data opens: Heal while hurt with heals left, Pair while the fight's paired window is open (`pairOpen`,
-// ArenaFight::pairOpen) and the partner stands. The basic controls are the first-use teaching's (UiFirstUse.h).
-FTCORE_API std::uint8_t uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen);
+// The prompts the data opens (the first four never while the lead is down):
+//   Heal       hurt with heals left
+//   GiftHeal   hurt with Gift Heals left (the third place's giftHeals; -1, not reported, opens nothing)
+//   GiftGuard  the Gift Guard off its cooldown (giftGuardReady)
+//   Reload     the gun empty (a cylinder with no rounds) and not already reloading
+//   Pair       the fight's paired window open (`pairOpen`, ArenaFight::pairOpen) with the partner up
+// The basic controls are the first-use teaching's (UiFirstUse.h).
+FTCORE_API UiPromptMask uiPromptsOpen(const ArenaHudFrame& f, bool pairOpen);
+
+// One row per key, and only rows that have a key. A prompt with no key on the device (not in `keyed`) is dropped. So is
+// one whose key a lower open prompt already shows (`sameKeyBelow[p]`: the lower prompts bound to p's key): the one row
+// left is the lowest, because a shared key does what the lowest live row says (the heal before a gift). This runs
+// before the budget, so a row that would draw nothing takes no row and no mark.
+FTCORE_API UiPromptMask uiPromptsDrawable(UiPromptMask open, UiPromptMask keyed,
+                                          const std::array<UiPromptMask, kUiPromptCount>& sameKeyBelow);
 
 FTCORE_API const UiBudgetOut& uiBudgetStep(UiBudgetState& st, const UiBudgetInput& in, const UiBudgetRules& rules);
 

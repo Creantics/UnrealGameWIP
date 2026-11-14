@@ -14,9 +14,11 @@
 // UI draws a reserved, labelled slot and never invents values.
 //
 // Zero allocation.
+#include "ftcore/ActionButton.h"
 #include "ftcore/Api.h"
 #include "ftcore/Chairs.h"
 #include "ftcore/Places.h"
+#include "ftcore/Qte.h"
 #include "ftcore/StoryRunner.h"
 
 #include <array>
@@ -29,6 +31,17 @@ class ArenaFight;
 class DialoguePresenter;
 
 // ---- Arena HUD -------------------------------------------------------------------------------------------------
+
+// A timed prompt (a Qte) live in the fight. It is drawn in the call slot the way a call word is: the word (the button's for
+// a Tap, HOLD or MASH), the button's key cap, and the 160 px line running out at `to`. The times are fixed for the
+// prompt's life, so the lead's section changes only when a prompt starts or ends, never per frame.
+struct ArenaHudQte {
+    bool live = false;               // false: none (no arena fight runs a Qte yet, so none is drawn)
+    QteKind kind = QteKind::Tap;
+    ActionButton input = ActionButton::Attack;
+    float from = 0.f, to = 0.f;      // the prompt's window on the fight's clock (ArenaFight::time): line full at from, gone at to
+    bool operator==(const ArenaHudQte&) const = default;
+};
 
 struct ArenaHudLead {
     std::uint8_t lead = 0;     // index into the party (the lead's place, 0 to 2), for the name key and the portrait
@@ -51,6 +64,7 @@ struct ArenaHudLead {
     float reload01 = 0.f;       // reload progress 0..1 (0 when not reloading)
     bool down = false;
     int debt = -1;              // the Lattice's Debt (-1: none reported; no world reports it yet, so none is drawn)
+    ArenaHudQte qte;            // the host's (fillArenaHudLead leaves it, as it leaves debt)
     bool operator==(const ArenaHudLead&) const = default;
 };
 
@@ -69,6 +83,10 @@ struct ArenaHudThird {
     bool planned = true;           // true: no data yet, draw the reserved slot only
     std::uint8_t giftsLeft = 0, giftsMax = 0;
     std::uint8_t count = 0, countMax = 0; // the shared count
+    // The gift prompts' data. They have their own nulls, apart from `planned`, because the prompts ask only for these two:
+    // nothing is drawn until the host reports them.
+    int giftHeals = -1;            // Gift Heals left this fight (-1: none reported), shown in GIFT HEAL n
+    bool giftGuardReady = false;   // the Gift Guard is off its cooldown (false also when none is reported)
     bool operator==(const ArenaHudThird&) const = default;
 };
 
@@ -152,6 +170,21 @@ struct UiLoadName {
 };
 FTCORE_API void uiLoadNameStep(UiLoadName& s, const ArenaHudLead& lead, float dt);
 
+// The party rows trading places on a switch of lead. The host's seats are the signal: when the lead's place changes
+// while a partner row stands, the new lead's row starts where the partner row was and the old lead's where the lead row
+// was. Both reach their own places over kUiRowSwap. There is no field of its own, so seats that never change never
+// swap anything.
+inline constexpr float kUiRowSwap = 0.2f; // seconds the rows take to trade places
+struct UiRowSwap {
+    float left01 = 0.f;        // 1 on the switch's step, down to 0 over kUiRowSwap: how far each row still is from its place
+    std::uint8_t lead = 0xFF;  // the lead's place at the last step (0xFF: none seen yet; the first step never swaps)
+};
+FTCORE_API void uiRowSwapStep(UiRowSwap& s, const ArenaHudFrame& f, float dt);
+
+// How much of a live Qte's line is left at `now` (fight seconds): 1 at `from`, falling evenly to 0 at `to`. Returns 0 when
+// no Qte is live or its window is empty.
+FTCORE_API float uiQteLeft01(const ArenaHudQte& q, float now);
+
 // ---- Dialogue --------------------------------------------------------------------------------------------------
 
 inline constexpr std::size_t kDialogueViewOptions = 8;
@@ -162,12 +195,17 @@ struct DialogueViewFlags {
     bool autoOn = false;
     bool skipOn = false;
     bool logAvailable = false; // the backlog has lines
+    // The reply a cursor rests on (-1: none). Replies are picked by number today, with no cursor, so none is underlined.
+    int cursor = -1;
 };
 
 struct DialogueViewOption {
     std::string_view text;
     bool selectable = true;
     bool returns = false;
+    // Why a locked reply is locked: a key in the interface text table (empty: no reason, so the word "locked" is shown).
+    // The runner carries no reasons yet, so this stays empty.
+    std::string_view lockReason;
 };
 
 // Lifetime: the string_views (here and in DialogueViewOption) point into the presenter's storage. They are valid only
