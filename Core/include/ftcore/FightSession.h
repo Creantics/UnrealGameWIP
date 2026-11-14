@@ -434,10 +434,12 @@ public:
     void cancelFalseCount() { count_.cancelFalse(now_); }
 
     bool selectGift(Gift g) { return gift_.select(g); }
-    // The host's word on a lead's health (a fraction of its max), for the gift Heal: at 1 or over a Heal is
-    // refused NotHurt. Unknown (kHealthUnknown, the default from begin) reads as hurt.
+    // The host's word on a lead's health (a fraction of its max), for the gift Heal: at exactly 1 a Heal is
+    // refused NotHurt. Anything that is not a number in 0..1 (NaN, an infinity, under 0, over 1) is stored as
+    // unknown (kHealthUnknown, also the default from begin), and unknown reads as hurt.
     void setLeadHealth(FighterId lead, float fraction) {
-        if (isLead(lead)) leadHealth_[lead] = fraction;
+        if (isLead(lead))
+            leadHealth_[lead] = std::isfinite(fraction) && fraction >= 0.f && fraction <= 1.f ? fraction : kHealthUnknown;
     }
     float leadHealth(FighterId lead) const { return isLead(lead) ? leadHealth_[lead] : kHealthUnknown; }
     GiftResult giveGift(FighterId target) {

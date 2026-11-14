@@ -124,8 +124,9 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
     their neutral values (0, 0, 1, 0).
   - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
     `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent), `NotHurt` (a Heal at a
-    lead whose `targetHealth` is 1 or more: no charge, no cooldown, no thread, and unlike the others not
-    tallied; `FightSession` passes what the host gave `setLeadHealth`, unknown reading as hurt).
+    lead whose `targetHealth` is exactly 1: no charge, no cooldown, no thread, and unlike the others not
+    tallied; `FightSession` passes what the host gave `setLeadHealth`, which stores anything that is not a
+    number in 0..1 (NaN, an infinity, under 0, over 1) as unknown, and unknown reads as hurt).
   - `Vacant`: nothing happens; `vacantPresses` goes up.
   - `Hostile`: nothing happens; `hostilePresses` goes up (the host reads the tallies).
 * **Threads and cooldowns** follow given gifts only: every given gift adds one thread to its target

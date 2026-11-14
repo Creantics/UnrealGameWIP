@@ -998,3 +998,44 @@ TEST_CASE("fight session: a retry (begin after a fight not finished as won) puts
     CHECK(s.giftSlot().threads(kLeadB) == 7);
     CHECK(s.giftSlot().threads(kLeadA) == 2);
 }
+
+TEST_CASE("fight session: a lead's health that is not a number in 0..1 is stored as unknown and reads as hurt") {
+    struct Case {
+        float in;
+        float stored;
+        bool full;
+    };
+    const Case cases[] = {
+        {0.999f, 0.999f, false},
+        {1.0f, 1.0f, true},
+        {std::numeric_limits<float>::quiet_NaN(), kHealthUnknown, false},
+        {-0.5f, kHealthUnknown, false},
+        {2.0f, kHealthUnknown, false},
+        {std::numeric_limits<float>::infinity(), kHealthUnknown, false},
+        {-std::numeric_limits<float>::infinity(), kHealthUnknown, false},
+        {0.0f, 0.0f, false},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.in);
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        REQUIRE(s.selectGift(Gift::Heal));
+        s.setLeadHealth(kLeadA, c.in);
+        CHECK(s.leadHealth(kLeadA) == c.stored);
+        CHECK_FALSE(std::isnan(s.leadHealth(kLeadA)));
+        const GiftResult r = s.giveGift(kLeadA);
+        if (c.full) {
+            CHECK(r.error == GiftError::NotHurt);
+            CHECK_FALSE(r.given);
+        } else {
+            CHECK(r.given);
+        }
+    }
+    // A bad value after a good one replaces it with unknown, not the last good value.
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.setLeadHealth(kLeadB, 1.0f);
+    s.setLeadHealth(kLeadB, std::numeric_limits<float>::quiet_NaN());
+    CHECK(s.leadHealth(kLeadB) == kHealthUnknown);
+    CHECK(s.leadHealth(kLeadA) == kHealthUnknown);
+}

@@ -15,5 +15,7 @@
   "downSeconds": 30,
   "riseHealth": 0.25,
   "blowCapShare": 0.6,
-  "overScale": 0.5
+  "overScale": 0.5,
+  "leadIdleSeconds": 1.0,
+  "idlePauseScale": 2.0
 }

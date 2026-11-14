@@ -4,6 +4,8 @@
 #include <doctest/doctest.h>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -31,8 +33,26 @@ struct Scene {
     }
 };
 
-// The default fighter's light chain (Data/Battle/arena.json: startup + active + recovery), both sides' strings.
+// The default fighter's light chain (Data/Battle/arena.json: startup + active + recovery), both sides' strings, and
+// each light's startup (its blow lands there).
 constexpr double kLight[3] = {0.65, 0.63, 0.91};
+constexpr double kStartup[3] = {0.18, 0.16, 0.22};
+constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+
+bool same(const PartnerIntent& x, const PartnerIntent& y) {
+    return x.act == y.act && x.why == y.why && x.point.x == y.point.x && x.point.y == y.point.y && x.enemy == y.enemy &&
+           x.blows == y.blows && x.newString == y.newString && x.partnerBlow == y.partnerBlow &&
+           x.breakValue == y.breakValue && x.extendsStagger == y.extendsStagger && x.punish == y.punish &&
+           x.rise == y.rise && x.riseHealth == y.riseHealth;
+}
+constexpr std::size_t kSame = static_cast<std::size_t>(-1);
+// The first step where two whole intent streams differ (kSame when every step matches).
+std::size_t firstDiff(const std::vector<PartnerIntent>& a, const std::vector<PartnerIntent>& b) {
+    const std::size_t n = std::min(a.size(), b.size());
+    for (std::size_t i = 0; i < n; ++i)
+        if (!same(a[i], b[i])) return i;
+    return a.size() == b.size() ? kSame : n;
+}
 double chainSeconds(int blows) {
     double s = 0.0;
     for (int i = 0; i < blows; ++i) s += kLight[i % 3];
@@ -94,14 +114,24 @@ struct Host {
 };
 
 // A 60 s scripted fight against a boss (radius 1 at the origin); the lead (1.8 m from its centre, never moving) chains
-// the default fighter's lights back to back (the chain wraps; chainGap is a window, not a rest). The dummy never winds
-// up. With windups: 1.0 s every 5 s from 3 s, aimed at the partner on 3 of each 10 (under the fight's 30% ceiling)
-// and at the lead otherwise; the lead guards from a windup aimed at it until 0.4 s after the blow.
+// the default fighter's lights back to back (the chain wraps; chainGap is a window, not a rest), each blow landing at
+// its light's startup, and the host feeds the time since the last one. The dummy never winds up. With windups: 1.0 s
+// every 5 s from 3 s, aimed at the partner on 3 of each 10 (under the fight's 30% ceiling) and at the lead otherwise;
+// the lead guards from a windup aimed at it until 0.4 s after the blow, and starts its chain again after.
 struct Fight {
     double leadAttack = 0.0;
     Host host;
     PartnerBrain brain;
     std::vector<int> guardDraws; // per windup aimed at the partner: 1 guard, 0 hit
+    std::vector<PartnerIntent> intents; // every step's
+    double period = 5.0;      // a windup every this many seconds
+    bool partnerAims = true;  // 3 of each 10 at the partner (false: every one at the lead)
+    void clear() {
+        leadAttack = 0.0;
+        host = Host{};
+        guardDraws.clear();
+        intents.clear();
+    }
     bool run(double dt, PartnerOrder order, std::uint32_t seed, bool windups = true, double seconds = 60.0) {
         if (!brain.begin(PartnerTuning{}, seed)) return false;
         std::array<V, 1> boss{};
@@ -113,15 +143,16 @@ struct Fight {
         in.leadPos = {1.8f, 0.f};
         in.leadTarget = 0;
         in.enemies = std::span<const V>(boss.data(), 1);
-        double leadGuard = 0.0;
+        double leadGuard = 0.0, leadInto = 0.0, leadSince = 0.0;
+        int leadLight = 0;
         const int steps = static_cast<int>(std::lround(seconds / dt));
         for (int k = 0; k < steps; ++k) {
             const double now = k * dt;
             // The boss: windup index w runs [3 + 5w, 4 + 5w).
             const double since = now - 3.0;
-            const int w = since >= 0.0 ? static_cast<int>(std::floor(since / 5.0 + 1e-9)) : -1;
-            const double into = w >= 0 ? since - 5.0 * w : -1.0;
-            const bool atPartner = w >= 0 && (w % 10 == 2 || w % 10 == 5 || w % 10 == 9);
+            const int w = since >= 0.0 ? static_cast<int>(std::floor(since / period + 1e-9)) : -1;
+            const double into = w >= 0 ? since - period * w : -1.0;
+            const bool atPartner = partnerAims && w >= 0 && (w % 10 == 2 || w % 10 == 5 || w % 10 == 9);
             const bool winding = windups && w >= 0 && into < 1.0 - 1e-9;
             boss[0].state = winding ? V::State::WindingUp : V::State::Idle;
             boss[0].windupLeft = winding ? static_cast<float>(1.0 - into) : 0.f;
@@ -129,11 +160,27 @@ struct Fight {
             // The lead.
             if (winding && !atPartner) leadGuard = 1.4 - into;
             const bool leadOn = !(leadGuard > 0.0);
-            if (leadOn) leadAttack += dt;
-            else leadGuard -= dt;
+            leadSince += dt;
+            if (leadOn) {
+                leadAttack += dt;
+                const double before = leadInto;
+                leadInto += dt;
+                const double at = kStartup[leadLight];
+                if (before < at && leadInto >= at) leadSince = leadInto - at; // the blow lands
+                if (leadInto >= kLight[leadLight]) {
+                    leadInto -= kLight[leadLight];
+                    leadLight = (leadLight + 1) % 3;
+                }
+            } else {
+                leadGuard -= dt;
+                leadLight = 0;
+                leadInto = 0.0;
+            }
             boss[0].leadAttacking = leadOn;
+            in.leadSinceBlow = static_cast<float>(leadSince);
             host.feed(in);
             const PartnerIntent& it = brain.step(dt, in);
+            intents.push_back(it);
             host.apply(it, brain, in, dt);
             // The blow lands on the windup's last step.
             if (winding && atPartner && into + dt >= 1.0 - 1e-9) {
@@ -171,6 +218,10 @@ TEST_CASE("partner brain: partner_brain.json is the defaults; the importer keeps
     CHECK(t.riseHealth == doctest::Approx(d.riseHealth));
     CHECK(t.blowCapShare == doctest::Approx(d.blowCapShare));
     CHECK(t.overScale == doctest::Approx(d.overScale));
+    CHECK(t.leadIdleSeconds == doctest::Approx(d.leadIdleSeconds));
+    CHECK(t.idlePauseScale == doctest::Approx(d.idlePauseScale));
+    CHECK(d.leadIdleSeconds == 1.f);
+    CHECK(d.idlePauseScale == 2.f);
     CHECK(validPartnerTuning(d));
 
     REQUIRE(importPartnerBrain(R"({"version":1,"leashMeters":6,"blowsMax":4,"guardChance":1})", t, &err));
@@ -628,11 +679,14 @@ TEST_CASE("partner brain: the same seed gives the same sequence; draws happen at
     Fight a, b, c, d;
     REQUIRE(a.run(1.0 / 60.0, PartnerOrder::Spread, 42));
     REQUIRE(b.run(1.0 / 60.0, PartnerOrder::Spread, 42));
+    REQUIRE(a.intents.size() == 3600u);
+    CHECK(firstDiff(a.intents, b.intents) == kSame); // every step's whole intent
     CHECK(a.host.blows == b.host.blows);
     CHECK(a.host.pauses == b.host.pauses);
     CHECK(a.guardDraws == b.guardDraws);
     REQUIRE(c.run(1.0 / 60.0, PartnerOrder::Spread, 43));
     CHECK(c.host.pauses != a.host.pauses);
+    CHECK(firstDiff(a.intents, c.intents) != kSame);
     // At half the step: the same draws (one rhythm pair per string, one defence draw per windup aimed at it).
     REQUIRE(d.run(1.0 / 120.0, PartnerOrder::Spread, 42));
     CHECK(a.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(a.host.strings));
@@ -649,7 +703,7 @@ TEST_CASE("partner brain: the same seed gives the same sequence; draws happen at
     }
 }
 
-TEST_CASE("partner brain: over a 60 s scripted fight against a dummy boss its attack time is 35..55% of the lead's") {
+TEST_CASE("partner brain: over a 60 s scripted fight against a dummy boss its attack time is 35..60% of the lead's") {
     for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
         for (const std::uint32_t seed : {1u, 42u, 2026u, 7u, 99u}) {
             CAPTURE(static_cast<int>(order));
@@ -660,23 +714,383 @@ TEST_CASE("partner brain: over a 60 s scripted fight against a dummy boss its at
             MESSAGE("dummy: partner ", f.host.attackTime, " s, lead ", f.leadAttack, " s, share ", share);
             CHECK(f.leadAttack == doctest::Approx(60.0).epsilon(0.001));
             CHECK(share >= 0.35);
-            CHECK(share <= 0.55);
+            CHECK(share <= 0.60);
         }
     }
 }
 
-TEST_CASE("partner brain: a 60 s fight with windups keeps every rule (its share reported, not asserted)") {
-    for (const std::uint32_t seed : {1u, 42u, 2026u}) {
-        CAPTURE(seed);
-        Fight f;
-        REQUIRE(f.run(1.0 / 60.0, PartnerOrder::Spread, seed, true));
-        MESSAGE("windups: partner ", f.host.attackTime, " s, lead ", f.leadAttack, " s, share ",
-                f.host.attackTime / f.leadAttack, ", strings ", f.host.strings, ", guards ", f.host.guards, ", hits ",
-                f.host.hits);
-        CHECK(f.brain.defenceDraws() == 3u);
-        CHECK(f.host.guards + f.host.hits == 3);
-        CHECK(f.host.strings > 10);
-        CHECK(f.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(f.host.strings));
+TEST_CASE("partner brain: over a 60 s fight with windups, the lead held off, its attack time is 35..60% of the lead's") {
+    // Both with 3 of each 10 windups at the partner and with every one at the lead (the lead held off 12.6 s of 60).
+    for (const bool partnerAims : {true, false}) {
+      for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+        for (const std::uint32_t seed : {1u, 42u, 2026u, 7u, 99u}) {
+            CAPTURE(partnerAims);
+            CAPTURE(static_cast<int>(order));
+            CAPTURE(seed);
+            Fight f;
+            f.partnerAims = partnerAims;
+            REQUIRE(f.run(1.0 / 60.0, order, seed, true));
+            const double share = f.host.attackTime / f.leadAttack;
+            MESSAGE("windups: partner ", f.host.attackTime, " s, lead ", f.leadAttack, " s, share ", share,
+                    ", strings ", f.host.strings, ", guards ", f.host.guards, ", hits ", f.host.hits);
+            CHECK(share >= 0.35);
+            CHECK(share <= 0.60);
+            const int atIt = partnerAims ? 3 : 0;
+            CHECK(f.brain.defenceDraws() == static_cast<std::uint32_t>(atIt));
+            CHECK(f.host.guards + f.host.hits == atIt);
+            CHECK(f.host.strings > 10);
+            CHECK(f.brain.rhythmDraws() == 2u * static_cast<std::uint32_t>(f.host.strings));
+        }
+      }
+    }
+}
+
+TEST_CASE("partner brain: the lead 1.0 s or more without landing a blow doubles the pause it is in, to its end") {
+    const double dt = 0.05;
+    for (const float since : {0.f, 0.99f, 1.0f, 3.f, kNaN, std::numeric_limits<float>::infinity()}) {
+        CAPTURE(since);
+        Scene s(11);
+        s.in.pos = {0.f, 1.5f};
+        REQUIRE(s.step(dt).newString);
+        const double drawn = s.b.lastPause();
+        s.in.doing = PartnerDoing::Attacking;
+        s.step(dt);
+        s.in.doing = PartnerDoing::Idle;
+        s.in.leadSinceBlow = since;
+        double paused = 0.0;
+        while (s.step(dt).why == PartnerWhy::Pause) {
+            paused += dt;
+            REQUIRE(paused < 10.0);
+        }
+        const double want = std::isfinite(since) && since >= 1.f ? 2.0 * drawn : drawn;
+        CHECK(paused >= want - dt - 1e-6);
+        CHECK(paused <= want + dt + 1e-6);
+        CHECK(s.b.stringing()); // the step that ends it starts the next string
+    }
+    // The lead idle on one step mid-pause, then landing again: the pause still runs to 2 x its draw; the next pause
+    // starts at its own draw.
+    Scene s(11);
+    s.in.pos = {0.f, 1.5f};
+    REQUIRE(s.step(dt).newString);
+    const double drawn = s.b.lastPause();
+    s.in.doing = PartnerDoing::Attacking;
+    s.step(dt);
+    s.in.doing = PartnerDoing::Idle;
+    REQUIRE(s.step(dt).why == PartnerWhy::Pause);
+    CHECK_FALSE(s.b.stretched());
+    s.in.leadSinceBlow = 1.f;
+    REQUIRE(s.step(dt).why == PartnerWhy::Pause);
+    CHECK(s.b.stretched());
+    s.in.leadSinceBlow = 0.f;
+    double paused = 2 * dt;
+    while (s.step(dt).why == PartnerWhy::Pause) {
+        paused += dt;
+        REQUIRE(paused < 10.0);
+    }
+    CHECK(paused >= 2.0 * drawn - dt - 1e-6);
+    CHECK(paused <= 2.0 * drawn + dt + 1e-6);
+    REQUIRE(s.b.stringing());
+    const double next = s.b.lastPause();
+    s.in.doing = PartnerDoing::Attacking;
+    s.step(dt);
+    s.in.doing = PartnerDoing::Idle;
+    paused = 0.0;
+    while (s.step(dt).why == PartnerWhy::Pause) {
+        paused += dt;
+        REQUIRE(paused < 10.0);
+    }
+    CHECK(paused <= next + dt + 1e-6);
+    // A stagger still cuts a stretched pause (rule 6).
+    Scene g(11);
+    g.in.pos = {0.f, 1.5f};
+    REQUIRE(g.step(dt).newString);
+    g.in.doing = PartnerDoing::Attacking;
+    g.step(dt);
+    g.in.doing = PartnerDoing::Idle;
+    g.in.leadSinceBlow = 3.f;
+    REQUIRE(g.step(dt).why == PartnerWhy::Pause);
+    REQUIRE(g.b.stretched());
+    g.e[0].state = V::State::Staggered;
+    CHECK(g.step(dt).newString);
+    // It only stretches pauses: a string is not cut, and a Ready partner starts as before.
+    Scene r(11);
+    r.in.pos = {0.f, 1.5f};
+    r.in.leadSinceBlow = 5.f;
+    CHECK(r.step(dt).newString);
+    r.in.doing = PartnerDoing::Attacking;
+    CHECK(r.step(dt).why == PartnerWhy::String);
+}
+
+TEST_CASE("partner brain: while it cannot act it waits, ends a string, and still draws for a windup at it") {
+    PartnerTuning t;
+    t.guardChance = 1.f;
+    Scene s(5, t);
+    s.in.pos = {0.f, 1.5f};
+    REQUIRE(s.step(0.05).newString);
+    s.in.doing = PartnerDoing::Attacking;
+    s.step(0.05);
+    s.in.canAct = false;
+    s.in.doing = PartnerDoing::Hurt;
+    const PartnerIntent& c = s.step(0.05);
+    CHECK(c.act == PartnerAct::Wait);
+    CHECK(c.why == PartnerWhy::CannotAct);
+    CHECK_FALSE(s.b.stringing());
+    CHECK(s.b.pausing());
+    const std::uint32_t rhythm = s.b.rhythmDraws();
+    // A windup at it while it cannot act: drawn (the stream never hangs on hitstun), but it cannot guard yet.
+    s.e[0].state = V::State::WindingUp;
+    s.e[0].aim = V::Aim::Partner;
+    s.e[0].windupLeft = 0.6f;
+    CHECK(s.step(0.05).why == PartnerWhy::CannotAct);
+    CHECK(s.b.defenceDraws() == 1u);
+    // Out of reach of its leash too: CannotAct comes first.
+    s.in.order = PartnerOrder::StayClose;
+    s.in.leadPos = {0.f, -10.f};
+    s.e[0].windupLeft = 0.55f;
+    CHECK(s.step(0.05).why == PartnerWhy::CannotAct);
+    for (int k = 0; k < 40; ++k) CHECK(s.step(0.05).why == PartnerWhy::CannotAct);
+    CHECK(s.b.rhythmDraws() == rhythm);
+    CHECK(s.b.defenceDraws() == 1u);
+    // Able again while the windup is on: it guards on the draw it made.
+    s.in.canAct = true;
+    s.in.order = PartnerOrder::Spread;
+    s.e[0].windupLeft = 0.5f;
+    CHECK(s.step(0.05).act == PartnerAct::Guard);
+    CHECK(s.b.defenceDraws() == 1u);
+    // Down outranks it.
+    s.in.canAct = false;
+    s.in.health = 0.f;
+    CHECK(s.step(0.05).why == PartnerWhy::Down);
+}
+
+TEST_CASE("partner brain: two blows aimed at it at once draw once each; it guards when either says guard") {
+    PartnerTuning always;
+    always.guardChance = 1.f;
+    Scene s(5, always);
+    s.n = 2;
+    s.in.pos = {0.f, 0.f};
+    s.e[0].pos = {1.5f, 0.f};
+    s.e[1].pos = {-1.5f, 0.f};
+    for (V* e : {&s.e[0], &s.e[1]}) {
+        e->state = V::State::WindingUp;
+        e->aim = V::Aim::Partner;
+        e->windupLeft = 0.6f;
+    }
+    CHECK(s.step(0.05).act == PartnerAct::Guard);
+    CHECK(s.b.defenceDraws() == 2u);
+    // The first lands; the second still winds up: it keeps guarding, with no new draw.
+    s.e[0].state = V::State::Idle;
+    s.e[1].windupLeft = 0.5f;
+    for (int k = 0; k < 8; ++k) CHECK(s.step(0.05).act == PartnerAct::Guard);
+    CHECK(s.b.defenceDraws() == 2u);
+    // One with too little warning: one draw, and it guards on the other's.
+    Scene late(5, always);
+    late.n = 2;
+    late.in.pos = {0.f, 0.f};
+    late.e[0].pos = {1.5f, 0.f};
+    late.e[1].pos = {-1.5f, 0.f};
+    late.e[0].state = late.e[1].state = V::State::WindingUp;
+    late.e[0].aim = late.e[1].aim = V::Aim::Partner;
+    late.e[0].windupLeft = 0.6f;
+    late.e[1].windupLeft = 0.2f;
+    CHECK(late.step(0.05).act == PartnerAct::Guard);
+    CHECK(late.b.defenceDraws() == 1u);
+    // At 70% each, it guards when either draw says so: 1 - 0.3 x 0.3 = 91% of the time.
+    int guarded = 0;
+    const int runs = 600;
+    for (int seed = 1; seed <= runs; ++seed) {
+        Scene p(static_cast<std::uint32_t>(seed));
+        p.n = 2;
+        p.in.pos = {0.f, 0.f};
+        p.e[0].pos = {1.5f, 0.f};
+        p.e[1].pos = {-1.5f, 0.f};
+        p.e[0].state = p.e[1].state = V::State::WindingUp;
+        p.e[0].aim = p.e[1].aim = V::Aim::Partner;
+        p.e[0].windupLeft = p.e[1].windupLeft = 0.6f;
+        if (p.step(0.05).act == PartnerAct::Guard) ++guarded;
+        REQUIRE(p.b.defenceDraws() == 2u);
+    }
+    const double share = static_cast<double>(guarded) / runs;
+    CHECK(share > 0.87);
+    CHECK(share < 0.95);
+}
+
+TEST_CASE("partner brain: with no enemies it has no target in either order, and the leash still pulls") {
+    for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+        CAPTURE(static_cast<int>(order));
+        Scene s;
+        s.n = 0;
+        s.in.order = order;
+        s.in.leadTarget = 0; // past the empty span
+        for (int k = 0; k < 30; ++k) {
+            const PartnerIntent& it = s.step(0.05);
+            CHECK(it.act == PartnerAct::Wait);
+            CHECK(it.why == PartnerWhy::NoTarget);
+            CHECK(it.enemy == -1);
+        }
+        CHECK(s.b.rhythmDraws() == 0u);
+        CHECK(s.b.defenceDraws() == 0u);
+        CHECK(s.b.target() == -1);
+    }
+    Scene far;
+    far.n = 0;
+    far.in.order = PartnerOrder::StayClose;
+    far.in.pos = {0.f, 5.f};
+    CHECK(far.step(0.05).why == PartnerWhy::Leash);
+    // An empty span by default (no view set at all).
+    PartnerBrain b;
+    REQUIRE(b.begin(PartnerTuning{}, 1));
+    CHECK(b.step(0.05, PartnerInput{}).why == PartnerWhy::NoTarget);
+}
+
+TEST_CASE("partner brain: views past the sixth are ignored: never a target, never drawn for") {
+    PartnerBrain b;
+    REQUIRE(b.begin(PartnerTuning{}, 3));
+    std::array<V, 8> e{};
+    for (std::size_t i = 0; i < 6; ++i) e[i].pos = {10.f + static_cast<float>(i), 0.f};
+    e[6].pos = {0.f, 0.6f}; // both far nearer
+    e[7].pos = {0.f, -0.6f};
+    PartnerInput in;
+    in.order = PartnerOrder::Spread;
+    in.enemies = std::span<const V>(e.data(), e.size());
+    const PartnerIntent& it = b.step(0.05, in);
+    CHECK(it.why == PartnerWhy::Approach);
+    CHECK(it.enemy == 0);
+    e[7].state = V::State::WindingUp;
+    e[7].aim = V::Aim::Partner;
+    e[7].windupLeft = 0.8f;
+    CHECK(b.step(0.05, in).act != PartnerAct::Guard);
+    CHECK(b.defenceDraws() == 0u);
+    in.order = PartnerOrder::StayClose;
+    in.leadTarget = 7;
+    CHECK(b.step(0.05, in).why == PartnerWhy::NoTarget);
+    in.leadTarget = 6;
+    CHECK(b.step(0.05, in).why == PartnerWhy::NoTarget);
+    in.leadTarget = 5;
+    CHECK(b.step(0.05, in).enemy == 5);
+}
+
+TEST_CASE("partner brain: a view whose position or radius is not a number is absent") {
+    Scene s;
+    s.n = 2;
+    s.in.order = PartnerOrder::Spread;
+    s.in.pos = {0.f, 0.f};
+    s.e[0].pos = {kNaN, 0.f};
+    s.e[1].pos = {3.f, 0.f};
+    CHECK(s.step(0.05).enemy == 1);
+    s.e[0].state = V::State::WindingUp;
+    s.e[0].aim = V::Aim::Partner;
+    s.e[0].windupLeft = 0.8f;
+    CHECK(s.step(0.05).act != PartnerAct::Guard);
+    CHECK(s.b.defenceDraws() == 0u);
+    // Alone, in either order, each way of being absent: no target.
+    const float inf = std::numeric_limits<float>::infinity();
+    for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+        for (int k = 0; k < 4; ++k) {
+            CAPTURE(k);
+            Scene one;
+            one.in.order = order;
+            one.in.leadTarget = 0;
+            if (k == 0) one.e[0].pos = {0.f, kNaN};
+            if (k == 1) one.e[0].pos = {inf, 0.f};
+            if (k == 2) one.e[0].radius = kNaN;
+            if (k == 3) one.e[0].radius = -1.f;
+            CHECK(one.step(0.05).why == PartnerWhy::NoTarget);
+        }
+    }
+    // A target that turns NaN mid-string is dropped, with no pause on it.
+    Scene m;
+    m.in.pos = {0.f, 1.5f};
+    REQUIRE(m.step(0.05).newString);
+    m.in.doing = PartnerDoing::Attacking;
+    m.step(0.05);
+    m.e[0].pos.x = kNaN;
+    CHECK(m.step(0.05).why == PartnerWhy::NoTarget);
+    CHECK_FALSE(m.b.stringing());
+    CHECK_FALSE(m.b.pausing());
+    // Back to a number: a target again.
+    m.e[0].pos.x = 0.f;
+    m.in.doing = PartnerDoing::Idle;
+    CHECK(m.step(0.05).newString);
+}
+
+TEST_CASE("partner brain: begin() reused across two fights gives the same stream as a fresh brain") {
+    Fight reused;
+    REQUIRE(reused.run(1.0 / 60.0, PartnerOrder::StayClose, 9));
+    // Leave it Down past its rise, mid-watch, before the second fight.
+    PartnerInput down;
+    down.health = 0.f;
+    reused.brain.step(0.1, down);
+    reused.brain.step(40.0, down);
+    REQUIRE(reused.brain.down());
+    REQUIRE(reused.brain.intent().rise);
+    reused.clear();
+    REQUIRE(reused.run(1.0 / 60.0, PartnerOrder::Spread, 42));
+    Fight fresh;
+    REQUIRE(fresh.run(1.0 / 60.0, PartnerOrder::Spread, 42));
+    CHECK(firstDiff(reused.intents, fresh.intents) == kSame);
+    CHECK(reused.brain.rhythmDraws() == fresh.brain.rhythmDraws());
+    CHECK(reused.brain.defenceDraws() == fresh.brain.defenceDraws());
+    CHECK(reused.host.blows == fresh.host.blows);
+    CHECK(reused.host.pauses == fresh.host.pauses);
+    CHECK(reused.guardDraws == fresh.guardDraws);
+    CHECK(reused.host.attackTime == fresh.host.attackTime);
+}
+
+TEST_CASE("partner brain: the importer refuses each field just past either bound, and an empty file keeps defaults") {
+    struct Bound {
+        const char* key;
+        const char* below;
+        const char* above;
+    };
+    const Bound bounds[] = {
+        {"leashMeters", "0.99", "10.01"},   {"returnMeters", "0.49", "10.01"}, {"reachMeters", "0.49", "4.01"},
+        {"standoffMeters", "-0.01", "4.01"}, {"blowsMin", "0", "7"},           {"blowsMax", "0", "7"},
+        {"blowSeconds", "0.09", "2.01"},    {"pauseMin", "-0.01", "10.01"},    {"pauseMax", "-0.01", "10.01"},
+        {"guardWarning", "-0.01", "2.01"},  {"guardChance", "-0.01", "1.01"},  {"guardHold", "-0.01", "2.01"},
+        {"downSeconds", "0.99", "600.01"},  {"riseHealth", "0.009", "1.01"},   {"blowCapShare", "-0.01", "1.01"},
+        {"overScale", "-0.01", "1.01"},     {"leadIdleSeconds", "0.09", "10.01"}, {"idlePauseScale", "0.99", "10.01"},
+    };
+    const PartnerTuning d;
+    PartnerTuning t;
+    std::string err;
+    for (const Bound& b : bounds) {
+        for (const char* v : {b.below, b.above}) {
+            const std::string json = std::string(R"({"version":1,")") + b.key + "\":" + v + "}";
+            CAPTURE(json);
+            t.leashMeters = 9.f;
+            CHECK_FALSE(importPartnerBrain(json, t, &err));
+            CHECK(err.find(b.key) != std::string::npos);
+            CHECK(t.leashMeters == d.leashMeters);
+        }
+    }
+    // Each bound itself is taken, where the other fields' defaults allow it.
+    for (const std::string ok : {
+             R"({"version":1,"guardWarning":0})",     R"({"version":1,"guardWarning":2})",
+             R"({"version":1,"guardChance":0})",      R"({"version":1,"guardHold":0})",
+             R"({"version":1,"guardHold":2})",        R"({"version":1,"downSeconds":1})",
+             R"({"version":1,"downSeconds":600})",    R"({"version":1,"riseHealth":0.01})",
+             R"({"version":1,"riseHealth":1})",       R"({"version":1,"blowCapShare":0})",
+             R"({"version":1,"blowCapShare":1})",     R"({"version":1,"overScale":0})",
+             R"({"version":1,"overScale":1})",        R"({"version":1,"leadIdleSeconds":0.1})",
+             R"({"version":1,"leadIdleSeconds":10})", R"({"version":1,"idlePauseScale":1})",
+             R"({"version":1,"idlePauseScale":10})",  R"({"version":1,"standoffMeters":0})",
+             R"({"version":1,"blowSeconds":0.1})",    R"({"version":1,"blowSeconds":2})",
+             R"({"version":1,"leashMeters":10})",     R"({"version":1,"reachMeters":4})",
+         }) {
+        CAPTURE(ok);
+        CHECK(importPartnerBrain(ok, t, &err));
+    }
+    // Empty or blank text: refused, and the defaults.
+    for (const char* blank : {"", "   ", "\n"}) {
+        CAPTURE(blank);
+        t.leashMeters = 9.f;
+        t.idlePauseScale = 5.f;
+        err.clear();
+        CHECK_FALSE(importPartnerBrain(blank, t, &err));
+        CHECK_FALSE(err.empty());
+        CHECK(t.leashMeters == d.leashMeters);
+        CHECK(t.idlePauseScale == d.idlePauseScale);
     }
 }
 

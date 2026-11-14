@@ -15,6 +15,10 @@
 //      when the string starts. The host's `doing` is the string's clock: the string is over on the first step the host
 //      no longer reports Attacking after it did (blows x blowSeconds when the host never reports it, 2 x that when it
 //      never stops). It never starts a string while its target winds up a blow aimed at it.
+//      It waits for the lead's lead: once the host says, on any step of a pause, that the lead has gone
+//      leadIdleSeconds (1.0) or more without landing a blow (leadSinceBlow), that pause lasts idlePauseScale (2) x its
+//      draw, to its end (the lead landing again does not shorten it; the next pause starts at its draw). So its
+//      attack time stays at most 0.60 of the lead's when the lead is held off. Strings are never cut for it.
 //   3. Defence. When a windup aimed at the partner is first seen (a new one: the enemy entered WindingUp, or its
 //      windupLeft rose) with at least guardWarning s left, one seeded draw: guard with guardChance, else take the blow.
 //      It guards from then until guardHold s after the windup ends. With less warning it is hit. It never parries,
@@ -25,8 +29,12 @@
 //   6. On a staggered target it strings without pauses until the stagger ends (punish on the intent); its blows still
 //      add no break value and do not extend the stagger (breakValue 0, extendsStagger false). It does not switch to a
 //      staggered enemy: only its own target counts.
-//   7. Every Attack intent carries partnerBlow: the fight applies partnerBlowDamage (the part of its blow above
-//      blowCapShare of the lead's light is scaled by overScale) and zero break value.
+//   7. Every Attack intent carries partnerBlow: the fight applies partnerBlowDamage and zero break value.
+//      partnerBlowDamage is the single home of the ruled damage rule (the part of a partner blow above 60% of the
+//      lead's light is halved): the fight calls it and nothing else. blowCapShare (0.6) and overScale (0.5) are not
+//      tuning of their own; they are that rule's two numbers, kept in the data only so the rule has one home.
+// An enemy view whose pos or radius is not a finite number (or whose radius is under 0) is absent: never a target,
+// never drawn for, and a target that turns absent is dropped as if Down. Views past kMaxPartnerEnemies are ignored.
 // StepBack (this module's choice of trigger): during a pause, closer than standoffMeters to its target's edge, it
 // steps back to standoffMeters. It is never a dodge.
 // Two seeded streams (rhythm, defence), drawn at events only: the same seed and script give the same draws at any step.
@@ -34,7 +42,8 @@
 // Data/Battle/partner_brain.json (PartnerTuning; every field but version may be left out):
 //   { "version": 1, "leashMeters": 4, "returnMeters": 3, "reachMeters": 1.8, "standoffMeters": 0.8, "blowsMin": 2,
 //     "blowsMax": 3, "blowSeconds": 0.65, "pauseMin": 1.2, "pauseMax": 2.0, "guardWarning": 0.25, "guardChance": 0.7,
-//     "guardHold": 0.3, "downSeconds": 30, "riseHealth": 0.25, "blowCapShare": 0.6, "overScale": 0.5 }
+//     "guardHold": 0.3, "downSeconds": 30, "riseHealth": 0.25, "blowCapShare": 0.6, "overScale": 0.5,
+//     "leadIdleSeconds": 1.0, "idlePauseScale": 2.0 }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -77,6 +86,8 @@ struct PartnerInput {
     PartnerDoing doing = PartnerDoing::Idle;
     Vec2 leadPos{};
     int leadTarget = -1; // an index into enemies, or -1
+    // Seconds since the lead last landed a blow (0: just now, or the host does not say; NaN or an infinity reads as 0).
+    float leadSinceBlow = 0.f;
     std::span<const PartnerEnemyView> enemies;
 };
 
@@ -116,15 +127,18 @@ struct PartnerTuning {
     float guardHold = 0.3f;     // guard kept this long after the windup ends (0..2)
     float downSeconds = 30.f;   // Down this long, then rise (1..600)
     float riseHealth = 0.25f;   // (0.01..1)
-    float blowCapShare = 0.6f;  // partner blow damage over this share of the lead's light is scaled (0..1)
-    float overScale = 0.5f;     // (0..1)
+    float blowCapShare = 0.6f;  // rule 7's share (0..1): see partnerBlowDamage
+    float overScale = 0.5f;     // rule 7's scale over it (0..1)
+    float leadIdleSeconds = 1.f; // the lead this long without landing a blow: the pause stretches (0.1..10)
+    float idlePauseScale = 2.f;  // by this (1..10)
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
 // Reads Data/Battle/partner_brain.json; on any error `out` is the defaults and false.
 FTCORE_API bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* error = nullptr);
 
-// Rule 7: a partner blow's hp damage from its raw damage and the lead's light damage.
+// Rule 7, and its only home: a partner blow's hp damage from its raw damage and the lead's light damage (the part
+// over 60% of the lead's light is halved, with the default tuning).
 inline float partnerBlowDamage(float raw, float leadLight, const PartnerTuning& t = PartnerTuning{}) {
     const float cap = t.blowCapShare * leadLight;
     return raw <= cap ? raw : cap + (raw - cap) * t.overScale;
@@ -141,6 +155,7 @@ public:
     double downFor() const { return downFor_; }
     bool stringing() const { return phase_ == Phase::String; }
     bool pausing() const { return phase_ == Phase::Pause; }
+    bool stretched() const { return phase_ == Phase::Pause && stretched_; }
     int target() const { return target_; }
     // Draw counts (tests: draws happen at events only).
     std::uint32_t rhythmDraws() const { return rhythmDraws_; }
@@ -172,6 +187,8 @@ private:
     double clock_ = 0.0; // in the current string or pause
     bool seenAttacking_ = false;
     bool returning_ = false;
+    bool stretched_ = false; // this pause saw the lead idle: idlePauseScale x
+    bool leadIdle_ = false;  // this step: the lead leadIdleSeconds or more without landing a blow
     bool down_ = false;
     double downFor_ = 0.0;
     std::array<Watch, kMaxPartnerEnemies> watch_{};

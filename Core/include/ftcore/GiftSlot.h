@@ -15,9 +15,9 @@
 //   given.
 // * Every given gift leaves one thread on its target, forever, and starts its cooldown. A refused press
 //   does neither: it is only tallied.
-// * A Heal pressed at a lead at full health (press's targetHealth >= 1) is refused NotHurt: no charge, no
-//   cooldown, no thread, and it is not tallied (nothing happened). targetHealth < 0 (the default) is unknown
-//   and reads as hurt, as before the input existed.
+// * A Heal pressed at a lead at full health (press's targetHealth exactly 1) is refused NotHurt: no charge, no
+//   cooldown, no thread, and it is not tallied (nothing happened). Any other value (under 1, over 1, NaN, an
+//   infinity, or kHealthUnknown, the default) reads as hurt, as before the input existed.
 // * The tally and the threads survive save and load (GiftSave), and a new fight (beginFight). Counters
 //   saturate, never wrap. Cooldowns, guards and the fight's heal count are fight state.
 // * For the HUD: healsLeft(), readyIn(gift, t) (seconds until the cooldown is over; 0 when ready; a Heal
@@ -229,7 +229,7 @@ public:
         const std::size_t g = static_cast<std::size_t>(selected_);
         if (!isLead(target)) return refuse(r, GiftError::BadTarget);
         if (g >= kGiftKinds) return refuse(r, GiftError::NoGift);
-        if (selected_ == Gift::Heal && targetHealth >= 1.f) { // nothing to heal: not a press that did anything
+        if (selected_ == Gift::Heal && targetHealth >= 1.f && targetHealth <= 1.f) { // full: nothing to heal
             r.error = GiftError::NotHurt;
             return r;
         }

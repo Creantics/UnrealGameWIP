@@ -14,8 +14,14 @@ using View = PartnerEnemyView;
 float dist(Vec2 a, Vec2 b) { return std::hypot(a.x - b.x, a.y - b.y); }
 // From p to the enemy's edge (0 inside it).
 float edge(Vec2 p, const View& e) { return std::max(0.f, dist(p, e.pos) - e.radius); }
-bool standing(const View& e) { return e.state != View::State::Down; }
-bool windingAt(const View& e) { return e.state == View::State::WindingUp && e.aim == View::Aim::Partner; }
+// A view with a position and radius that are numbers (NaN or an infinity: absent, as if not there).
+bool present(const View& e) {
+    return std::isfinite(e.pos.x) && std::isfinite(e.pos.y) && std::isfinite(e.radius) && e.radius >= 0.f;
+}
+bool standing(const View& e) { return present(e) && e.state != View::State::Down; }
+bool windingAt(const View& e) {
+    return present(e) && e.state == View::State::WindingUp && e.aim == View::Aim::Partner;
+}
 // The point `d` from c toward p (along +x when p is on c).
 Vec2 toward(Vec2 c, Vec2 p, float d) {
     const float l = dist(c, p);
@@ -30,16 +36,20 @@ std::uint32_t mix(std::uint32_t h) {
     h ^= h >> 16;
     return h != 0 ? h : 1u;
 }
-bool in(double v, double lo, double hi) { return v >= lo && v <= hi; } // NaN is out
+// In float, as the tuning is held (so 0.01 in the data is at its 0.01 bound). NaN is out.
+bool pbWithin(float v, float lo, float hi) { return v >= lo && v <= hi; }
 
 } // namespace
 
 bool validPartnerTuning(const PartnerTuning& t) {
-    return in(t.leashMeters, 1, 10) && in(t.returnMeters, 0.5, t.leashMeters) && in(t.reachMeters, 0.5, 4) &&
-           in(t.standoffMeters, 0, t.reachMeters) && t.blowsMin >= 1 && t.blowsMin <= 6 && t.blowsMax >= t.blowsMin &&
-           t.blowsMax <= 6 && in(t.blowSeconds, 0.1, 2) && in(t.pauseMin, 0, 10) && in(t.pauseMax, t.pauseMin, 10) &&
-           in(t.guardWarning, 0, 2) && in(t.guardChance, 0, 1) && in(t.guardHold, 0, 2) && in(t.downSeconds, 1, 600) &&
-           in(t.riseHealth, 0.01, 1) && in(t.blowCapShare, 0, 1) && in(t.overScale, 0, 1);
+    return pbWithin(t.leashMeters, 1.f, 10.f) && pbWithin(t.returnMeters, 0.5f, t.leashMeters) &&
+           pbWithin(t.reachMeters, 0.5f, 4.f) && pbWithin(t.standoffMeters, 0.f, t.reachMeters) && t.blowsMin >= 1 &&
+           t.blowsMin <= 6 && t.blowsMax >= t.blowsMin && t.blowsMax <= 6 && pbWithin(t.blowSeconds, 0.1f, 2.f) &&
+           pbWithin(t.pauseMin, 0.f, 10.f) && pbWithin(t.pauseMax, t.pauseMin, 10.f) &&
+           pbWithin(t.guardWarning, 0.f, 2.f) && pbWithin(t.guardChance, 0.f, 1.f) && pbWithin(t.guardHold, 0.f, 2.f) &&
+           pbWithin(t.downSeconds, 1.f, 600.f) && pbWithin(t.riseHealth, 0.01f, 1.f) &&
+           pbWithin(t.blowCapShare, 0.f, 1.f) && pbWithin(t.overScale, 0.f, 1.f) &&
+           pbWithin(t.leadIdleSeconds, 0.1f, 10.f) && pbWithin(t.idlePauseScale, 1.f, 10.f);
 }
 
 bool PartnerBrain::begin(const PartnerTuning& t, std::uint32_t seed) {
@@ -56,6 +66,8 @@ bool PartnerBrain::begin(const PartnerTuning& t, std::uint32_t seed) {
     clock_ = 0.0;
     seenAttacking_ = false;
     returning_ = false;
+    stretched_ = false;
+    leadIdle_ = false;
     down_ = false;
     downFor_ = 0.0;
     watch_ = {};
@@ -75,6 +87,7 @@ float PartnerBrain::draw(std::uint32_t& s, std::uint32_t& n) {
 
 void PartnerBrain::endString(bool staggered) {
     clock_ = 0.0;
+    stretched_ = leadIdle_; // a pause that starts with the lead idle is stretched from its first step
     seenAttacking_ = false;
     phase_ = staggered ? Phase::Ready : Phase::Pause; // rule 6: no pause on a staggered target
 }
@@ -132,6 +145,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     }
     down_ = false;
     downFor_ = 0.0;
+    leadIdle_ = std::isfinite(in.leadSinceBlow) && in.leadSinceBlow >= t_.leadIdleSeconds;
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
     bool guard = false;
@@ -180,7 +194,10 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
             endString(staggered);
         }
     } else if (phase_ == Phase::Pause) {
-        if (clock_ + 1e-9 >= pause_ || staggered || !haveTarget) {
+        // It waits for the lead's lead: the lead held off past leadIdleSeconds on any step stretches this pause.
+        if (leadIdle_) stretched_ = true;
+        const double pause = stretched_ ? pause_ * static_cast<double>(t_.idlePauseScale) : pause_;
+        if (clock_ + 1e-9 >= pause || staggered || !haveTarget) {
             phase_ = Phase::Ready;
             clock_ = 0.0;
         }
@@ -327,7 +344,7 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     static constexpr const char* kKeys[] = {"version",     "leashMeters", "returnMeters", "reachMeters",  "standoffMeters",
                                             "blowsMin",    "blowsMax",    "blowSeconds",  "pauseMin",     "pauseMax",
                                             "guardWarning", "guardChance", "guardHold",   "downSeconds",  "riseHealth",
-                                            "blowCapShare", "overScale"};
+                                            "blowCapShare", "overScale",  "leadIdleSeconds", "idlePauseScale"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -344,6 +361,8 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("riseHealth", t.riseHealth, 0.01, 1);
     real("blowCapShare", t.blowCapShare, 0, 1);
     real("overScale", t.overScale, 0, 1);
+    real("leadIdleSeconds", t.leadIdleSeconds, 0.1, 10);
+    real("idlePauseScale", t.idlePauseScale, 1, 10);
 
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);
