@@ -1027,6 +1027,10 @@ TEST_CASE("fight session: a lead's health that is not a number in 0..1 is stored
         if (c.full) {
             CHECK(r.error == GiftError::NotHurt);
             CHECK_FALSE(r.given);
+        } else if (std::isfinite(c.in) && c.in <= 0.f) { // 0 and under (finite) is down: no gift stands it up
+            CHECK(s.down(kLeadA));
+            CHECK(r.error == GiftError::Down);
+            CHECK_FALSE(r.given);
         } else {
             CHECK(r.given);
         }
@@ -1038,4 +1042,85 @@ TEST_CASE("fight session: a lead's health that is not a number in 0..1 is stored
     s.setLeadHealth(kLeadB, std::numeric_limits<float>::quiet_NaN());
     CHECK(s.leadHealth(kLeadB) == kHealthUnknown);
     CHECK(s.leadHealth(kLeadA) == kHealthUnknown);
+}
+
+TEST_CASE("fight session: a phase retry keeps the story bound and leaves its counters exactly as they are") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    REQUIRE(a0 != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    StoryStepMark mark;
+    REQUIRE(storyMarkStep(story, mark));
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.bindStory(story, reg, mark));
+    s.setHostCheckpoint(FightHostCheckpoint{});
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.checkpointPhase(1));
+    s.setHostCheckpoint(FightHostCheckpoint{});
+    CHECK(s.giveGift(kLeadA).given); // in the attempt about to be lost
+    REQUIRE(storyWide(story, a0) == 2);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.defeated());
+    const StoryState before = story;
+    CHECK(s.retry().at == CheckpointAt::Phase);
+    // Nothing rolled back or forward: every fact, counter, entry copy, event and the retry count as they were.
+    CHECK(story.facts == before.facts);
+    CHECK(story.factsEntry == before.factsEntry);
+    CHECK(story.wide == before.wide);
+    CHECK(story.wideEntry == before.wideEntry);
+    CHECK(story.eventCount == before.eventCount);
+    CHECK(story.eventHead == before.eventHead);
+    CHECK(story.openScene == before.openScene);
+    CHECK(storyWide(story, a0) == 2);
+    // Still bound to the fight-start mark: the next press counts on.
+    CHECK(s.storyBound());
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.lastStoryWrite() == SetResult::Ok);
+    CHECK(storyWide(story, a0) == 3);
+    // A retry to the fight start unbinds, as a begin does.
+    FightSession t;
+    REQUIRE(t.begin(d, 0.0).ok());
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(t.bindStory(story, reg, mark));
+    t.setHostCheckpoint(FightHostCheckpoint{});
+    CHECK(t.retry().at == CheckpointAt::FightStart);
+    CHECK_FALSE(t.storyBound());
+}
+
+TEST_CASE("fight session: a gift refused Down at a lead is no press in the story state") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    REQUIRE(a0 != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    StoryStepMark mark;
+    REQUIRE(storyMarkStep(story, mark));
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.bindStory(story, reg, mark));
+    s.setLeadHealth(kLeadA, 0.f);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).error == GiftError::Down);
+    CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+    CHECK(storyWide(story, a0) == 0);
 }

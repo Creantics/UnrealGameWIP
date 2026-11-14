@@ -48,7 +48,9 @@
 //   step's mark, so a screen that retries a fight itself must roll the last attempt back (storyEndStep with
 //   Retry), mark the step again and bind anew, or the new attempt writes nothing. Each attempt thrown away counts
 //   one story retry, whoever retries it: a screen's own "fight again" adds 1 (its Retry), and a lost fight the
-//   story retries adds 1 more (the director's Retry verdict).
+//   story retries adds 1 more (the director's Retry verdict). A phase retry is not one: the story stays tied to
+//   the fight-start mark, so the binding stays and nothing rolls back or forward (see Checkpoints).
+//   A press refused Down (below) is no press anywhere, the same as NotHurt.
 // * Down, takeover and defeat (def.inFight: the leads in this fight, both by default). setLeadHealth is also the
 //   fall feed: a lead in the fight at 0 or below (a finite value: an overkill under 0 counts, though it is stored
 //   as unknown for the gift Heal) is down, and above 0 it stands again; NaN or an infinity changes nothing. A lead
@@ -60,6 +62,12 @@
 //   and asks for the rise (PartnerBrain rule 5) and the host stands the body and feeds its health. Every lead in
 //   the fight down at once is a defeat (tick.defeated, once); after it nothing falls or stands until a retry or a
 //   begin. Each fall and rise comes once, on the next tick (leadsFell, leadsRose).
+//   A lead the def marks cannotFall (per fight, per lead; false by default) never goes down in that fight: a
+//   blow that would take it to 0 or below leaves it at 1 hp (blowOnLead does the sum for the host) and raises
+//   tick.heldUp once, on the next tick. With every lead in the fight marked, health never loses the fight: what
+//   ends it then (a round timer, say) is the host's.
+//   A gift pressed at a lead who is down is refused Down before the slot sees it: no charge, no cooldown, no
+//   thread, no tally, no story press. A down lead stands only by time (the brain's rise) or at a retry.
 // * Checkpoints (FightCheckpoint lists every field). The fight-start checkpoint is the state once the host has
 //   set the fight up: the first setHostCheckpoint or the first tick after a begin takes it, whichever comes
 //   first. With a boss script whose def says checkpointAtPhase, the end of a tick that changed its phase takes a
@@ -67,8 +75,9 @@
 //   The host writes its own part (setHostCheckpoint) right after the call or tick that reports one
 //   (tick.checkpoint). retry() goes back to the latest: every piece starts clean, as at a begin, at the
 //   checkpoint's clock, and then the checkpoint's fields are put back exactly. A defeat costs nothing but the
-//   attempt: the Load, the currency and the gift tally come back as the checkpoint has them. A retry unbinds the
-//   story, as a begin does.
+//   attempt: the Load, the currency and the gift tally come back as the checkpoint has them. A checkpoint holds
+//   the fight's state only. A retry to the fight start unbinds the story, as a begin does (the host rolls the
+//   step back and binds anew); a phase retry leaves the binding and the story state exactly as they are.
 // * The session keeps its own copy of the boss def; it cannot be copied or moved (the script points into it).
 // * No allocation after construction (the UE wrapper allocates its session once, when it is made).
 
@@ -137,6 +146,8 @@ struct FightSessionDef {
     LoneTuning loneTuning{};
     // The leads in this fight, by lead (kLeadA, kLeadB): a fight with one lead has only that one. At least one.
     std::array<bool, 2> inFight{true, true};
+    // The leads that cannot fall in this fight, by lead: a blow leaves them at 1 hp and raises tick.heldUp.
+    std::array<bool, 2> cannotFall{false, false};
 };
 
 inline bool validKeptGauge(const FightSessionDef& d) {
@@ -249,6 +260,7 @@ struct FightTick {
     LoneEnd loneCarryEndedBy = LoneEnd::None; // the first tick after the Lone Carry ended, and why
     std::uint8_t leadsFell = 0;             // since the last tick: bit (1 << lead) for each lead that fell
     std::uint8_t leadsRose = 0;             // and for each that stood again
+    std::uint8_t heldUp = 0;                // and for each cannotFall lead a blow left at 1 hp
     FighterId tookOver = kNoFighter;        // the lead that took control when the controlled lead fell
     bool defeated = false;                  // once: every lead in the fight down at once
     CheckpointAt checkpoint = CheckpointAt::None; // taken since the last tick: write the host's part now
@@ -298,6 +310,20 @@ public:
     // ---- Down, takeover, defeat and checkpoints (see above) ----
     bool inFight(FighterId lead) const { return isLead(lead) && inFight_[lead]; }
     bool down(FighterId lead) const { return isLead(lead) && down_[lead]; }
+    bool cannotFall(FighterId lead) const { return inFight(lead) && def_.cannotFall[lead]; }
+    // The host's hp sum for a blow of `damage` on a lead at `hp` of `maxHp`: hp - damage, but at least 1 for a lead
+    // that cannot fall (raising heldUp when the blow would have taken it to 0 or below). It feeds setLeadHealth
+    // with the result over maxHp (when maxHp > 0), so the host needs no second call.
+    int blowOnLead(FighterId lead, int hp, int damage, int maxHp) {
+        if (!isLead(lead)) return hp - damage;
+        int left = hp - damage;
+        if (left < 1 && cannotFall(lead)) {
+            left = 1;
+            if (!defeated_) heldUpDue_ = static_cast<std::uint8_t>(heldUpDue_ | (1u << lead));
+        }
+        if (maxHp > 0) setLeadHealth(lead, static_cast<float>(left) / static_cast<float>(maxHp));
+        return left;
+    }
     bool defeated() const { return defeated_; }
     // The checkpoint a retry would go back to now.
     const FightCheckpoint& checkpoint() const { return phaseCp_.at == CheckpointAt::Phase ? phaseCp_ : startCp_; }
@@ -322,7 +348,13 @@ public:
         won_ = false; // an attempt thrown away: the gift tally goes back
         const bool atPhase = phaseCp_.at == CheckpointAt::Phase;
         const FightCheckpoint& cp = atPhase ? phaseCp_ : startCp_;
+        StoryState* const story = story_; // a phase retry keeps the story as it is: bound, never rolled back
+        const FactRegistry* const reg = reg_;
         restart(cp.at == CheckpointAt::None ? start_ : cp.now);
+        if (atPhase) {
+            story_ = story;
+            reg_ = reg;
+        }
         if (cp.at == CheckpointAt::None) {
             startDue_ = true;
             return cp;
@@ -416,6 +448,7 @@ private:
         defeated_ = false;
         fellDue_ = 0;
         roseDue_ = 0;
+        heldUpDue_ = 0;
         tookOverDue_ = kNoFighter;
         defeatedDue_ = false;
         cpDue_ = CheckpointAt::None;
@@ -494,11 +527,13 @@ public:
         }
         tick_.leadsFell = fellDue_;
         tick_.leadsRose = roseDue_;
+        tick_.heldUp = heldUpDue_;
         tick_.tookOver = tookOverDue_;
         tick_.defeated = defeatedDue_;
         tick_.checkpoint = cpDue_;
         fellDue_ = 0;
         roseDue_ = 0;
+        heldUpDue_ = 0;
         tookOverDue_ = kNoFighter;
         defeatedDue_ = false;
         cpDue_ = CheckpointAt::None;
@@ -607,11 +642,18 @@ public:
     }
     float leadHealth(FighterId lead) const { return isLead(lead) ? leadHealth_[lead] : kHealthUnknown; }
     GiftResult giveGift(FighterId target) {
+        lastStory_ = SetResult::Unchanged;
+        if (down(target) && inFight_[target]) { // a gift never stands a lead up: no press anywhere
+            GiftResult refused;
+            refused.gift = gift_.selected();
+            refused.target = target;
+            refused.error = GiftError::Down;
+            return refused;
+        }
         const GiftResult r = gift_.press(target, now_, &count_, leadHealth(target));
         // A gift given ends the Lone Carry for the rest of the fight; a press refused for any reason did nothing
         // and leaves it.
         if (lone_ && r.given) endLoneFor(LoneEnd::Gift);
-        lastStory_ = SetResult::Unchanged;
         // A NotHurt press is no press anywhere (the slot does not tally it), so the story does not count it either.
         if (story_ && isLead(r.target) && r.gift != Gift::None && r.error != GiftError::NotHurt)
             lastStory_ = storyCountPress(*story_, *reg_, r.target, static_cast<std::uint8_t>(r.gift));
@@ -898,6 +940,10 @@ private:
             return;
         }
         if (down_[lead]) return;
+        if (def_.cannotFall[lead]) { // held up at 1 hp: never down in this fight
+            heldUpDue_ = static_cast<std::uint8_t>(heldUpDue_ | bit);
+            return;
+        }
         down_[lead] = true;
         fellDue_ = static_cast<std::uint8_t>(fellDue_ | bit);
         const FighterId other = lead == kLeadA ? kLeadB : kLeadA;
@@ -990,6 +1036,7 @@ private:
     bool defeated_ = false;
     std::uint8_t fellDue_ = 0;
     std::uint8_t roseDue_ = 0;
+    std::uint8_t heldUpDue_ = 0;
     FighterId tookOverDue_ = kNoFighter;
     bool defeatedDue_ = false;
     bool startDue_ = false;

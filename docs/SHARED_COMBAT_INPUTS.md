@@ -123,7 +123,9 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
     `CountRefused` and the gift is not given). A refused press leaves the heal and guard fields at
     their neutral values (0, 0, 1, 0).
   - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
-    `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent), `NotHurt` (a Heal at a
+    `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent), `Down` (`FightSession`
+    refuses any gift at a lead who is down before the slot sees it: no charge, no cooldown, no thread, no
+    tally, no story press; a gift never stands a lead up), `NotHurt` (a Heal at a
     lead whose `targetHealth` is exactly 1: no charge, no cooldown, no thread, and unlike the others not
     tallied; `FightSession` passes what the host gave `setLeadHealth`, which stores anything that is not a
     number in 0..1 (NaN, an infinity, under 0, over 1) as unknown, and unknown reads as hurt).
@@ -334,7 +336,14 @@ the pieces.
   the intent carries `rise` at `riseHealth` (25%), and the host stands the body and feeds that
   health. Every lead in the fight down at once is a defeat (`tick.defeated`, once); after it nothing
   falls or stands until `retry` or `begin`. Each fall and rise is reported once, on the next tick
-  (`leadsFell`, `leadsRose`, one bit per lead).
+  (`leadsFell`, `leadsRose`, one bit per lead). A down lead stands only by time (the rise) or at a
+  retry.
+* **A lead that cannot fall.** `def.cannotFall` (per fight, per lead; false by default) marks a lead
+  who cannot go below 1 hp in that fight. The host works out its hp with `blowOnLead(lead, hp,
+  damage, maxHp)`, which returns hp − damage but at least 1 for a marked lead, and feeds
+  `setLeadHealth` itself. A blow that would have taken it to 0 or below raises `tick.heldUp` (one bit
+  per lead, once, on the next tick). A marked lead fed 0 or below never goes down. With every lead in
+  the fight marked, health never loses it: what ends such a fight (a round timer) is the host's.
 * **Checkpoints and retry.** The fight-start checkpoint is taken by the first `setHostCheckpoint`
   or, failing that, the first tick after a `begin` (`tick.checkpoint`). A boss script whose def has
   `checkpointAtPhase` (default false) takes another at the end of the tick that changes its phase;
@@ -343,7 +352,9 @@ the pieces.
   button, its own boss's hp and phase, the currency carried) when one is taken. `retry()` goes back
   to the latest: every piece starts clean at the checkpoint's clock, then the checkpoint's fields
   (`FightCheckpoint`) are put back exactly, and the host applies its part from the one returned. A
-  defeat costs nothing but the attempt. A retry unbinds the story, as `begin` does.
+  defeat costs nothing but the attempt. A checkpoint holds the fight's state only. A retry to the
+  fight start unbinds the story, as `begin` does (the host rolls the step back and binds again); a
+  phase retry keeps the binding and leaves the story state exactly as it is.
 * **Boss counters.** `counter(kind, who, shared)`: `shared` is the host's word that the counter carries
   the shared input (a blow judged a shared outcome, or a hit the lead took half of). An open count
   window alone is not it; a shared counter kind without it is refused (`NeedsShared`).

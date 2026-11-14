@@ -45,7 +45,8 @@ enum class Gift : std::uint8_t { Heal, Guard, Count, None }; // append only; Non
 inline constexpr std::size_t kGiftKinds = 3;                 // Heal, Guard, Count
 enum class SlotState : std::uint8_t { Companion, Vacant, Hostile }; // append only
 // NoneLeft: the Heal's healsPerFight are given this fight. NotHurt: a Heal at a lead at full health (never tallied).
-enum class GiftError : std::uint8_t { None, Vacant, Hostile, Cooling, BadTarget, CountRefused, NoGift, NoneLeft, NotHurt }; // append only
+// Down: FightSession's own refusal of any gift at a lead who is down (never reaches the slot, never tallied).
+enum class GiftError : std::uint8_t { None, Vacant, Hostile, Cooling, BadTarget, CountRefused, NoGift, NoneLeft, NotHurt, Down }; // append only
 // press's targetHealth when the host does not say: read as hurt.
 inline constexpr float kHealthUnknown = -1.f;
 

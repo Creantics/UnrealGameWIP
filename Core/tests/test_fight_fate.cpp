@@ -752,3 +752,129 @@ TEST_CASE("fight fate: a fight replayed from a phase checkpoint with the same in
     CHECK(again.s.checkpoint().host.hp == taken.host.hp);
     CHECK(again.s.checkpoint().lonePooled == taken.lonePooled);
 }
+
+TEST_CASE("fight fate: a lead that cannot fall in this fight survives a lethal blow at 1 hp; the other still falls") {
+    FightSessionDef d;
+    d.cannotFall[kLeadA] = true;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.setActiveLead(kLeadA));
+    CHECK(s.cannotFall(kLeadA));
+    CHECK_FALSE(s.cannotFall(kLeadB));
+    CHECK_FALSE(s.cannotFall(kThirdSlot));
+    // The host's sum: a blow far past 0 leaves the flagged lead at 1 and raises heldUp once.
+    CHECK(s.blowOnLead(kLeadA, 40, 500, 100) == 1);
+    CHECK_FALSE(s.down(kLeadA));
+    CHECK(s.leadHealth(kLeadA) == 0.01f);
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.heldUp == kBitA);
+    CHECK(t.leadsFell == 0);
+    CHECK(t.tookOver == kNoFighter);
+    CHECK(s.tick(kFrame).heldUp == 0); // once
+    // A blow that does not reach 0 raises nothing; a health fed as 0 holds it up the same.
+    CHECK(s.blowOnLead(kLeadA, 50, 10, 100) == 40);
+    CHECK(s.tick(kFrame).heldUp == 0);
+    s.setLeadHealth(kLeadA, 0.f);
+    CHECK_FALSE(s.down(kLeadA));
+    CHECK(s.tick(kFrame).heldUp == kBitA);
+    // The other lead falls as in any fight, and with the flagged lead standing the fight goes on.
+    CHECK(s.blowOnLead(kLeadB, 30, 30, 100) == 0);
+    CHECK(s.down(kLeadB));
+    const FightTick& f = s.tick(kFrame);
+    CHECK(f.leadsFell == kBitB);
+    CHECK(f.heldUp == 0);
+    CHECK_FALSE(f.defeated);
+    // The flagged lead alone: lethal blows still never make a defeat.
+    for (int i = 0; i < 5; ++i) CHECK(s.blowOnLead(kLeadA, 1, 90, 100) == 1);
+    CHECK_FALSE(s.down(kLeadA));
+    CHECK_FALSE(s.defeated());
+    CHECK(s.tick(kFrame).heldUp == kBitA);
+    // A non-lead is the plain sum; the flag is per fight: a fight without it lets the same lead fall.
+    CHECK(s.blowOnLead(kThirdSlot, 10, 30, 100) == -20);
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    CHECK(s.blowOnLead(kLeadA, 40, 500, 100) == -460);
+    CHECK(s.down(kLeadA));
+    CHECK(s.tick(kFrame).heldUp == 0);
+}
+
+TEST_CASE("fight fate: with both leads unable to fall, health never loses the fight") {
+    // What ends such a fight (a round timer, say) is the host's: Core has no end for it.
+    FightSessionDef d;
+    d.cannotFall = {true, true};
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    for (int i = 0; i < 60 * 60; ++i) {
+        const FighterId lead = (i & 1) ? kLeadA : kLeadB;
+        CHECK(s.blowOnLead(lead, 1, 1000, 100) == 1);
+        s.setLeadHealth(lead == kLeadA ? kLeadB : kLeadA, -0.5f); // an overkill fed straight in holds up too
+        const FightTick& t = s.tick(kFrame);
+        REQUIRE(t.heldUp == (kBitA | kBitB));
+        REQUIRE(t.leadsFell == 0);
+        REQUIRE_FALSE(t.defeated);
+    }
+    CHECK_FALSE(s.down(kLeadA));
+    CHECK_FALSE(s.down(kLeadB));
+    CHECK_FALSE(s.defeated());
+    // A lead not in the fight is never held up (and its flag changes nothing).
+    FightSessionDef one;
+    one.inFight = {true, false};
+    one.cannotFall = {false, true};
+    REQUIRE(s.begin(one, 0.0).ok());
+    CHECK_FALSE(s.cannotFall(kLeadB));
+    CHECK(s.blowOnLead(kLeadB, 10, 20, 100) == -10);
+    CHECK(s.blowOnLead(kLeadA, 10, 20, 100) == -10);
+    CHECK(s.defeated());
+    CHECK(s.tick(kFrame).heldUp == 0);
+}
+
+TEST_CASE("fight fate: a gift at a lead who is down is refused Down: no charge, cooldown, thread or tally") {
+    FightSessionDef d;
+    d.gift = freeGifts();
+    d.gift.cooldown = {5.0, 5.0, 5.0};
+    d.loneLead = kLeadB;
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.setActiveLead(kLeadB));
+    s.setHostCheckpoint(FightHostCheckpoint{});
+    s.setLeadHealth(kLeadA, 0.f);
+    REQUIRE(s.down(kLeadA));
+    s.tick(kFrame);
+    const GiftSlot& slot = s.giftSlot();
+    for (Gift g : {Gift::Heal, Gift::Guard, Gift::Count}) {
+        REQUIRE(s.selectGift(g));
+        const std::uint64_t presses = slot.allPresses();
+        const int heals = slot.healsLeft();
+        const double ready = slot.readyAt(g);
+        const std::uint32_t threads = slot.threads(kLeadA);
+        const GiftResult r = s.giveGift(kLeadA);
+        CHECK_FALSE(r.given);
+        CHECK(r.error == GiftError::Down);
+        CHECK(r.gift == g);
+        CHECK(r.target == kLeadA);
+        CHECK(r.healShare == 0.f);
+        CHECK(slot.allPresses() == presses); // no tally
+        CHECK(slot.healsLeft() == heals);    // no charge
+        CHECK(slot.readyAt(g) == ready);     // no cooldown
+        CHECK(slot.threads(kLeadA) == threads);
+        CHECK(s.down(kLeadA)); // a gift never stands a lead up
+        CHECK(s.lone());       // a refused press leaves the Lone Carry
+        // The shared press is the same call.
+        const SharedReply p = s.press(SharedAction::Gift, kThirdSlot, kLeadA);
+        CHECK_FALSE(p.accepted);
+        CHECK(p.gift.error == GiftError::Down);
+    }
+    // The standing lead takes gifts as ever.
+    REQUIRE(s.selectGift(Gift::Heal));
+    s.setLeadHealth(kLeadB, 0.5f);
+    CHECK(s.giveGift(kLeadB).given);
+    // The down lead stands only by time (the brain's rise, fed as health) or at a retry.
+    CHECK(s.retry().at == CheckpointAt::FightStart);
+    CHECK_FALSE(s.down(kLeadA));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    s.setLeadHealth(kLeadA, 0.f);
+    REQUIRE(s.down(kLeadA));
+    s.setLeadHealth(kLeadA, 0.25f);
+    CHECK_FALSE(s.down(kLeadA));
+    CHECK(s.tick(kFrame).leadsRose == kBitA);
+}
