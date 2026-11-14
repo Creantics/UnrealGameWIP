@@ -43,7 +43,7 @@ public class ForgottenThird : ModuleRules
 			PrivateIncludePaths.Add(Path.Combine(NiagaraSource, "NiagaraShader", "Internal"));
 		}
 
-		// Slate: the new game UI (FTNewUi.h; on unless -FTOldUi or ft.NewUi 0), drawn as viewport widgets built in code.
+		// Slate: the new game UI (FTNewUi.h; on unless ft.NewUi 0, or -FTOldUi outside Shipping), drawn as viewport widgets built in code.
 		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		
 		// Uncomment if you are using online features

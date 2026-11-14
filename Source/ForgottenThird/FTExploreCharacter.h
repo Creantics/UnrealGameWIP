@@ -218,6 +218,9 @@ protected:
 
 private:
 	void CreateInputObjects();
+	// Maps the context's keys from FTInputBindings (unmapping the old ones first) and notes their generation; Tick calls
+	// it again when the bindings' generation moves (a reload).
+	void MapBoundKeys();
 	UInputAction* MakeAction(const TCHAR* Name, bool bAxis2D);
 
 	void HandleMove(const FInputActionValue& Value);
@@ -337,6 +340,7 @@ private:
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
+	uint32 KeyGeneration = 0; // the bindings' generation Context's keys were mapped from (FTInputBindings::Generation)
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
