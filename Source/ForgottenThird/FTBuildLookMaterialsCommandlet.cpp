@@ -2,6 +2,7 @@
 
 #include "FTJointCollection.h"
 #include "FTSeason.h"
+#include "FTWorldWave.h"
 
 #include "ForgottenThird.h"
 #include "FTSceneLook.h"
@@ -897,6 +898,8 @@ UMaterialParameterCollection* BuildCollection()
 	FTJoint::AddScalarTo(*Collection);
 	// And the plants' season (FTSeason.h).
 	FTSeason::AddScalarTo(*Collection);
+	// And the world wave's (FTWorldWave.h).
+	FTWorldWave::AddParametersTo(*Collection);
 	Collection->PostEditChange();
 	return Collection;
 }

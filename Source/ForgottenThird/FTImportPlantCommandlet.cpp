@@ -12,6 +12,7 @@
 #include "FTImportMaterials.h"
 #include "FTSceneLook.h"
 #include "FTSeason.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "IAssetTools.h"
 #include "ImageCore.h"
@@ -88,7 +89,7 @@ const FMapSpec kMaps[MapCount] = {
 
 // The leaf cards, the billboard (BbMode 1: one picture, 2: the 2 x 2 atlas of leafy, bare and blossom) and the season.
 // Texture2DSample, never Tex.Sample: a ray-tracing hit shader has no derivatives.
-const TCHAR* const kLeafCode = TEXT(R"HLSL(float s = Season;
+const TCHAR* const kLeafCode = TEXT(R"HLSL(float s = lerp(Season, 3.2, saturate(Bare));
 float r = Rand;
 float v = 0.86 + 0.28 * frac(r * 7.13);
 float w = frac(r * 3.71) - 0.5;
@@ -474,6 +475,8 @@ UMaterial* BuildFoliage(UTexture2D* const* Maps, UMaterialParameterCollection* L
 	AddInput(Leaf, TEXT("AutumnB"), AddVector(Material, TEXT("AutumnB"), FLinearColor::FromSRGBColor(FColor(150, 48, 26)), 100));
 	AddInput(Leaf, TEXT("TwigColor"), AddVector(Material, TEXT("TwigColor"), FLinearColor::FromSRGBColor(FColor(78, 64, 52)), 200));
 	AddInput(Leaf, TEXT("Season"), AddCollectionScalar(Material, Look, FTSeason::Name, FTSeason::Default, 300));
+	// Bare 1: the leaves gone whatever the season (the world wave's bare arrivals, FTWorldWaveSubsystem).
+	AddInput(Leaf, TEXT("Bare"), AddScalar(Material, TEXT("Bare"), 0.f, 320));
 	AddInput(Leaf, TEXT("Rand"), Rand);
 	AddInput(Leaf, TEXT("Sign"), Sign);
 	AddInput(Leaf, TEXT("LeafDetail"), AddScalar(Material, TEXT("LeafDetail"), 0.f, 350));
@@ -496,6 +499,9 @@ UMaterial* BuildFoliage(UTexture2D* const* Maps, UMaterialParameterCollection* L
 	Inputs->Roughness.Connect(4, Leaf);
 	Inputs->Specular.Connect(0, AddScalar(Material, TEXT("Specular"), 0.35f, 500));
 	Inputs->WorldPositionOffset.Connect(0, Wind);
+	// The world wave's cut (FTWorldWave.h): a tagged plant is clipped on the front's ragged edge. MF_WorldWaveCut reads
+	// the look's collection, so with the environment's (the wind) the master reads two, the most a material may.
+	FTWorldWave::AddCut(kTag, Material, -700, 1700);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Material);
@@ -540,6 +546,9 @@ UMaterial* BuildBark(UTexture2D* Color, UTexture2D* Normal, UMaterialParameterCo
 	Inputs->Normal.Connect(1, Bark);
 	Inputs->Roughness.Connect(2, Bark);
 	Inputs->WorldPositionOffset.Connect(0, Wind);
+	// The world wave's cut (FTWorldWave.h): a tagged plant is clipped on the front's ragged edge. MF_WorldWaveCut reads
+	// the look's collection, so with the environment's (the wind) the master reads two, the most a material may.
+	FTWorldWave::AddCut(kTag, Material, -700, 1700);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Material);

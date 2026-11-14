@@ -31,6 +31,7 @@
 #include "FTNightLook.h"
 #include "FTSceneLook.h"
 #include "FTWorldClockSubsystem.h"
+#include "FTWorldWaveSubsystem.h"
 #include "ForgottenThird.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/Pawn.h"
@@ -183,17 +184,17 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	double WalkX = 0.0, WalkY = 0.0, WalkZ = 0.0;
 	if (ParseTriple(TEXT("WorldEyeWalkTo="), WalkX, WalkY, WalkZ))
 	{
-		float Speed = 1.4f, Fps = 60.f;
+		float Speed = 1.4f;
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkSpeed="), Speed);
-		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkFps="), Fps);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkFps="), WalkFps);
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeEvery="), WalkEvery);
 		WalkEvery = FMath::Max(WalkEvery, 1);
 		const ftcore::MassingVec WalkM = ftcore::massingEnginePoint(Side, WalkX, WalkY, WalkZ);
 		WalkFrom = From;
 		WalkTo = FVector(WalkM.x * 100.0, WalkM.y * 100.0, WalkM.z * 100.0);
-		WalkFrames = FMath::Clamp(FMath::CeilToInt32(FVector::Dist(WalkFrom, WalkTo) / 100.0 / FMath::Max(Speed, 0.05f) * FMath::Max(Fps, 1.f)), 1, 3600);
+		WalkFrames = FMath::Clamp(FMath::CeilToInt32(FVector::Dist(WalkFrom, WalkTo) / 100.0 / FMath::Max(Speed, 0.05f) * FMath::Max(WalkFps, 1.f)), 1, 3600);
 		bWalk = true;
-		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: walk to engine %s at %.2f m/s, %d frames at %.0f a second."), *WalkTo.ToString(), Speed, WalkFrames, Fps);
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: walk to engine %s at %.2f m/s, %d frames at %.0f a second."), *WalkTo.ToString(), Speed, WalkFrames, WalkFps);
 	}
 	// -WorldEyeLeadCam: the view stays on the lead's own camera (the eye's camera is not used), turned to
 	// -WorldEyeLeadYaw / -WorldEyeLeadPitch (control degrees; a positive pitch looks up, swinging the camera down behind
@@ -281,6 +282,7 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		int32 Frames = 0;
 		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeFrames="), Frames) && Frames > 0)
 		{
+			FParse::Value(FCommandLine::Get(), TEXT("WorldEyeWalkFps="), WalkFps);
 			bWalk = true;
 			WalkFrames = FMath::Min(Frames, 3600);
 			WalkFrom = WalkTo = From;
@@ -314,6 +316,14 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	UWorld* World = GetWorld();
+	// A fixed-step capture holds the world wave's clock: -1 (no wave yet) until the walk's first frame.
+	if (bWalk && WalkFrame == 0)
+	{
+		if (UFTWorldWaveSubsystem* WaveClock = World ? World->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr)
+		{
+			WaveClock->SetClock(-1.0);
+		}
+	}
 	APlayerController* Player = World ? World->GetFirstPlayerController() : nullptr;
 	if (Player && Eye)
 	{
@@ -451,6 +461,11 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 	if (bWalk && Eye && WalkFrame < WalkFrames)
 	{
 		++WalkFrame;
+		// The wave clock steps with the frames, not with game time: frame n is (n - 1) / WalkFps seconds in.
+		if (UFTWorldWaveSubsystem* WaveClock = World ? World->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr)
+		{
+			WaveClock->SetClock((WalkFrame - 1) / static_cast<double>(FMath::Max(WalkFps, 1.f)));
+		}
 		if (WalkFrame == 1)
 		{
 			// What ties the saved frames to lines logged with the engine's frame.

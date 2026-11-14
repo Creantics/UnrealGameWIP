@@ -95,6 +95,9 @@ private:
 	int32 WalkFrames = 0;
 	int32 WalkFrame = 0;
 	int32 WalkEvery = 1; // -WorldEyeEvery: a walk saves every n-th frame
+	// -WorldEyeWalkFps: a walk's steps a second, and the world wave's clock (UFTWorldWaveSubsystem::SetClock) during a
+	// walk: -1 until its first frame, (frame - 1) / WalkFps from then on.
+	float WalkFps = 60.f;
 	// -WorldEyeLeadCam and its script (the .cpp's note).
 	bool bLeadCam = false;
 	bool bDip = false;

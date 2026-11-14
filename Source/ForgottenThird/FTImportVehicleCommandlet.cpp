@@ -14,6 +14,7 @@
 #include "FTBuildKeiCars.h"
 #include "FTImportMaterials.h"
 #include "FTSceneLook.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "IAssetTools.h"
 #include "ImageCore.h"
@@ -318,6 +319,10 @@ UMaterial* BuildMaster(const FString& Path, EMaterialShadingModel Shading, EBlen
 		Inputs->ClearCoat.Connect(0, AddScalar(Material, TEXT("ClearCoat"), 0.35f, 700));
 		Inputs->ClearCoatRoughness.Connect(0, AddScalar(Material, TEXT("ClearCoatRoughness"), 0.08f, 800));
 	}
+	// The world wave's cut (FTWorldWave.h): a tagged car is clipped on the front's ragged edge (the body and coat turn
+	// masked, the glass multiplies its opacity). MF_WorldWaveCut reads the look's collection: with the window collection
+	// (Night) that is two, the most a material may.
+	FTWorldWave::AddCut(TEXT("FTImportVehicle"), Material, -700, 1000);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Material);
