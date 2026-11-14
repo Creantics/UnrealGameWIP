@@ -82,6 +82,35 @@ TEST_CASE("input bindings: a file from before the gift keys moves its gift key o
     REQUIRE(importInputBindings(R"({"version": 1, "keys": {"gift": "N"}})", own, &error));
     CHECK(std::string(inputKey(own, InputAction::Gift, InputDevice::Keys)) == "N");
     CHECK(std::string(inputKey(own, InputAction::GiftHeal, InputDevice::Keys)) == "G");
+    // A key the player gave to another action leaves the newer action unbound, and the file imports with every one
+    // of the player's bindings kept.
+    struct Case {
+        const char* text;
+        InputAction mine;
+        const char* key;
+        InputAction left;
+    };
+    for (const Case& c : {Case{R"({"version": 1, "keys": {"release": "Y", "guard": "K"}})", InputAction::Release, "Y", InputAction::GiftGuard},
+                          Case{R"({"version": 1, "keys": {"count": "H", "guard": "K"}})", InputAction::Count, "H", InputAction::Gift},
+                          Case{R"({"version": 1, "keys": {"release": "G", "gift": "N", "guard": "K"}})", InputAction::Release, "G", InputAction::GiftHeal}}) {
+        CAPTURE(c.text);
+        InputBindings t = defaultInputBindings();
+        InputUnbound unbound;
+        REQUIRE(importInputBindings(c.text, t, &error, &unbound));
+        CHECK(std::string(inputKey(t, c.mine, InputDevice::Keys)) == c.key);
+        CHECK(std::string(inputKey(t, InputAction::Guard, InputDevice::Keys)) == "K");
+        CHECK(std::string(inputKey(t, c.left, InputDevice::Keys)).empty());
+        CHECK(unbound.left[0][static_cast<std::size_t>(c.left)]);
+        CHECK(unbound.count == 1);
+    }
+    // The migrated heal key is the table's default, whatever the table imported over.
+    InputBindings moved = defaultInputBindings();
+    REQUIRE(rebindInput(moved, InputAction::Gift, InputDevice::Keys, "J"));
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"gift": "G"}})", moved, &error));
+    CHECK(std::string(inputKey(moved, InputAction::Gift, InputDevice::Keys)) == "H");
+    // A key doubled with an older default the player never chose is still refused (the old rule, unchanged).
+    InputBindings older = defaultInputBindings();
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"guard": "E"}})", older, &error));
     // A file that names gift_heal is a new one: a doubled key there is still refused whole.
     InputBindings now = defaultInputBindings();
     const std::string before = encodeInputBindings(now);
@@ -299,9 +328,10 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
           "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  H input.heal  "
           "G input.gift_heal  Y input.gift_guard  R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  "
           "V input.intercept");
-    // On a pad the two gifts are reached through the guard (routes guard_heal and guard_crouch).
+    // On a pad the two gifts have no button yet, so the pad's line leaves them out.
     const std::string padArena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr);
-    CHECK(padArena.find("Guard+Heal input.gift_heal  Guard+Crouch input.gift_guard") != std::string::npos);
+    CHECK(padArena.find("input.gift_") == std::string::npos);
+    CHECK(inputAllReachable(b));
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
           "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  D-pad left input.crouch  "
           "B input.dodge  X input.use  D-pad right input.lead  "

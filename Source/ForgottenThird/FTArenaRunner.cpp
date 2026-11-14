@@ -1496,46 +1496,26 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bPressPair |= Pressed(InputAction::Count);
 	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
 	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
-	// Three presses: the lead's own heal (Gift's row), and the third slot's Gift Heal and Gift Guard. On a pad with
-	// those two unbound: with the guard up (its state: held, or toggled on) the heal's button (that press is the
-	// gift's, not a heal) or Crouch's.
-	bool bPadGiftHeal = false;
-	bool bPadGiftGuard = false;
-	{
-		if (bGuardHeld)
-		{
-			const FKey& PadHeal = FTInputBindings::Key(InputAction::Gift, ftcore::InputDevice::Pad);
-			const FKey& PadCrouch = FTInputBindings::Key(InputAction::Crouch, ftcore::InputDevice::Pad);
-			bPadGiftHeal = !FTInputBindings::Key(InputAction::GiftHeal, ftcore::InputDevice::Pad).IsValid() && PadHeal.IsValid()
-				&& !Shadowed(InputAction::Gift, ftcore::InputDevice::Pad) && PC->WasInputKeyJustPressed(PadHeal);
-			bPadGiftGuard = !FTInputBindings::Key(InputAction::GiftGuard, ftcore::InputDevice::Pad).IsValid() && PadCrouch.IsValid()
-				&& PC->WasInputKeyJustPressed(PadCrouch);
-		}
-	}
-	if (bPadGiftHeal)
-	{
-		const FKey& KeysHeal = FTInputBindings::Key(InputAction::Gift, ftcore::InputDevice::Keys);
-		bPressHeal |= KeysHeal.IsValid() && !Shadowed(InputAction::Gift, ftcore::InputDevice::Keys) && PC->WasInputKeyJustPressed(KeysHeal);
-	}
-	else
-	{
-		bPressHeal |= Pressed(InputAction::Gift);
-	}
-	if (Pressed(InputAction::GiftHeal) || bPadGiftHeal)
+	// Three presses, each its own key with no modifier: the lead's own heal (Gift's row), and the third slot's Gift
+	// Heal and Gift Guard (no pad button yet: those two are keyboard only until the pad's layout is ruled).
+	bPressHeal |= Pressed(InputAction::Gift);
+	if (Pressed(InputAction::GiftHeal))
 	{
 		GiftPick = ftcore::Gift::Heal;
 	}
-	else if (Pressed(InputAction::GiftGuard) || bPadGiftGuard)
+	else if (Pressed(InputAction::GiftGuard))
 	{
 		GiftPick = ftcore::Gift::Guard;
 	}
-	// Take half: its key, and on a pad with none bound, Interact pressed while the guard is up, held or toggled (route
-	// "guard_interact").
+	// Take half: its key, and on a pad with none bound, Interact pressed while the pad's Guard button is down (route
+	// "guard_interact"; the button itself, so a toggled guard leaves Interact as it is).
 	bPressTakeHalf |= Pressed(InputAction::TakeHalf);
 	{
 		const FKey& PadTake = FTInputBindings::Key(InputAction::TakeHalf, ftcore::InputDevice::Pad);
+		const FKey& PadGuard = FTInputBindings::Key(InputAction::Guard, ftcore::InputDevice::Pad);
 		const FKey& PadInteract = FTInputBindings::Key(InputAction::Interact, ftcore::InputDevice::Pad);
-		if (!PadTake.IsValid() && PadInteract.IsValid() && bGuardHeld && PC->WasInputKeyJustPressed(PadInteract))
+		if (!PadTake.IsValid() && PadGuard.IsValid() && PadInteract.IsValid() && PC->IsInputKeyDown(PadGuard)
+			&& PC->WasInputKeyJustPressed(PadInteract))
 		{
 			bPressTakeHalf = true;
 		}
@@ -1849,6 +1829,8 @@ void UFTArenaRunner::PressPendingLoneGift()
 		return;
 	}
 	++LoneGiftPresses;
+	// The slot refuses a Heal at a lead at full health (NotHurt); it reads the lead's health as of this press.
+	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
 	const ftcore::GiftResult Result = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift;
 	if (bLoneGiftApply)
 	{
@@ -1985,6 +1967,8 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 	if (bKeyGift || (In.heal && Fight.lone()) || bProbeGift)
 	{
 		Session->Get().selectGift(bKeyGift ? Pick : ftcore::Gift::Heal);
+		// The slot refuses a Heal at a lead at full health (NotHurt); it reads the lead's health as of this press.
+		Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
 		if (LoneGift.press(Fight.lone())) // else pressed after the step (PressPendingLoneGift)
 		{
 			const ftcore::GiftResult Result = Session->Press(EFTSharedAction::Gift, ftcore::kThirdSlot, SessionLead).gift;

@@ -55,8 +55,8 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     {InputAction::LineNext, "line_next", InputContext::ReadHeld, false, "S", "Gamepad_LeftStick_Down"},
     // Pad: no free Foot button; take half is Guard held plus Interact (route "guard_interact").
     {InputAction::TakeHalf, "take_half", InputContext::Foot, false, "T", ""},
-    // Pad: no free Foot button either; Guard held plus the heal's button (route "guard_heal") and plus Crouch's,
-    // which a fight never reads (route "guard_crouch").
+    // Pad: no free Foot button either, and no modifier chord; unbound there until the pad's layout is ruled
+    // (inputPadPending).
     {InputAction::GiftHeal, "gift_heal", InputContext::Foot, false, "G", ""},
     {InputAction::GiftGuard, "gift_guard", InputContext::Foot, false, "Y", ""},
 }};
@@ -171,18 +171,26 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     case InputAction::TargetNext: return pad ? "right_stick_flick" : "mouse_flick";
     case InputAction::Party: return "map_hold";
     case InputAction::TakeHalf: return pad ? "guard_interact" : nullptr;
-    case InputAction::GiftHeal: return pad ? "guard_heal" : nullptr;
-    case InputAction::GiftGuard: return pad ? "guard_crouch" : nullptr;
     default: break;
     }
     return nullptr;
 }
 
-bool inputAllReachable(const InputBindings& b, InputAction* missing) {
+bool inputPadPending(InputAction a) { return a == InputAction::GiftHeal || a == InputAction::GiftGuard; }
+
+namespace {
+
+// Actions whose default key is newer than the first saved bindings files (Gift moved to H; the two gifts are new). A
+// file that binds one of their keys to something else chose that key before the default existed.
+bool inputDefaultIsNew(InputAction a) { return a == InputAction::Gift || a == InputAction::GiftHeal || a == InputAction::GiftGuard; }
+
+bool reachableExcept(const InputBindings& b, const InputUnbound* skip, InputAction* missing) {
     for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
         const InputDevice device = static_cast<InputDevice>(d);
         for (const ActionRow& r : kRows) {
             if (!b.keys[d][static_cast<std::size_t>(r.action)].empty()) continue;
+            if (device == InputDevice::Pad && inputPadPending(r.action)) continue;
+            if (skip && skip->left[d][static_cast<std::size_t>(r.action)]) continue;
             const char* route = inputActionRoute(r.action, device);
             // The party route rides the map button, so it needs one.
             const bool ok = route && (r.action != InputAction::Party || !b.keys[d][static_cast<std::size_t>(InputAction::Map)].empty());
@@ -193,6 +201,12 @@ bool inputAllReachable(const InputBindings& b, InputAction* missing) {
         }
     }
     return true;
+}
+
+} // namespace
+
+bool inputAllReachable(const InputBindings& b, InputAction* missing) {
+    return reachableExcept(b, nullptr, missing);
 }
 
 bool validateInputBindings(const InputBindings& b, std::string* error) {
@@ -227,7 +241,7 @@ bool validateInputBindings(const InputBindings& b, std::string* error) {
     return true;
 }
 
-bool importInputBindings(std::string_view text, InputBindings& out, std::string* error) {
+bool importInputBindings(std::string_view text, InputBindings& out, std::string* error, InputUnbound* unbound) {
     const auto fail = [error](std::string msg) {
         if (error) *error = std::move(msg);
         return false;
@@ -239,6 +253,8 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
     if (!root.isObject()) return fail("bindings: the top level must be an object");
     if (!root["version"].isInteger() || root["version"].integer() != 1) return fail("bindings: \"version\" must be 1");
     InputBindings b = out;
+    const InputBindings defaults = defaultInputBindings();
+    InputUnbound left;
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);
         if (k != "version" && k != "keys" && k != "pad" && k != "hold") return fail("bindings: unknown key \"" + std::string(k) + "\"");
@@ -248,8 +264,7 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
         const JsonValue keys = root[dk];
         if (keys.isAbsent()) continue;
         if (!keys.isObject()) return fail(std::string("bindings.") + dk + ": must be an object");
-        bool fileGift = false;
-        bool fileGiftHeal = false;
+        std::array<bool, kInputActionCount> chosen{}; // the player's own bindings: they always win
         for (std::uint32_t i = 0; i < keys.size(); ++i) {
             InputAction a{};
             const std::string where = std::string("bindings.") + dk + "." + std::string(keys.key(i));
@@ -258,16 +273,31 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
             if (!v.isString() || (!v.string().empty() && !validInputKeyName(v.string())))
                 return fail(where + ": must be a key name or \"\"");
             setName(b.keys[d][static_cast<std::size_t>(a)], v.string());
-            fileGift |= a == InputAction::Gift;
-            fileGiftHeal |= a == InputAction::GiftHeal;
+            chosen[static_cast<std::size_t>(a)] = true;
         }
-        // A file saved before the gift slot had keys of its own names no gift_heal. Its gift key on gift_heal's
-        // key (the old default, G) moves there: gift_heal keeps it and the heal's row takes the table's own key, so
-        // nothing doubles and every other binding stays. A gift on any other key stays the heal's.
         auto& row = b.keys[d];
-        InputKeyName& gift = row[static_cast<std::size_t>(InputAction::Gift)];
-        if (fileGift && !fileGiftHeal && !gift.empty() && gift.view() == row[static_cast<std::size_t>(InputAction::GiftHeal)].view())
-            gift = out.keys[d][static_cast<std::size_t>(InputAction::Gift)];
+        // A file saved before the gift slot had keys of its own names no gift_heal. Its gift key on gift_heal's
+        // key (the old default, G) moves there: gift_heal keeps it and the heal's row takes the table's default, as
+        // if the player had never chosen it. A gift on any other key stays the heal's.
+        const std::size_t gi = static_cast<std::size_t>(InputAction::Gift);
+        const std::size_t hi = static_cast<std::size_t>(InputAction::GiftHeal);
+        if (chosen[gi] && !chosen[hi] && !row[gi].empty() && row[gi].view() == row[hi].view()) {
+            row[gi] = defaults.keys[d][gi];
+            chosen[gi] = false;
+        }
+        // A newer default the player never chose, on a key the player gave to something else: the player's binding
+        // wins and the newer action is left unbound (InputUnbound), never the file refused.
+        for (const ActionRow& r : kRows) {
+            const std::size_t ai = static_cast<std::size_t>(r.action);
+            if (chosen[ai] || !inputDefaultIsNew(r.action) || row[ai].empty()) continue;
+            InputAction other{};
+            if (inputKeyClash(b, r.action, static_cast<InputDevice>(d), row[ai].view(), other) &&
+                chosen[static_cast<std::size_t>(other)]) {
+                row[ai] = InputKeyName{};
+                left.left[d][ai] = true;
+                ++left.count;
+            }
+        }
     }
     const JsonValue hold = root["hold"];
     if (!hold.isAbsent()) {
@@ -288,9 +318,10 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
     if (!validateInputBindings(b, &why)) return fail("bindings: " + why);
     // An override may unbind a key, not an action: every action keeps a key or a route on both devices.
     InputAction missing{};
-    if (!inputAllReachable(b, &missing))
+    if (!reachableExcept(b, &left, &missing))
         return fail(std::string("bindings: ") + inputActionKey(missing) + " has no key or route on one device");
     out = b;
+    if (unbound) *unbound = left;
     return true;
 }
 
@@ -452,8 +483,6 @@ std::string_view inputRouteLabel(std::string_view route) {
     if (route == "mouse_flick") return "Mouse flick";
     if (route == "right_stick_flick") return "RS flick";
     if (route == "guard_interact") return "Guard+Interact";
-    if (route == "guard_heal") return "Guard+Heal";
-    if (route == "guard_crouch") return "Guard+Crouch";
     return std::string_view();
 }
 

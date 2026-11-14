@@ -34,6 +34,14 @@ inline FString GetFilePath()
 	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("InputBindings.json"));
 }
 
+// What the saved file's import left unbound (a newer default on a key the player gave to something else); a settings
+// screen shows each as "unbound: choose a key". Filled by Get().
+inline ftcore::InputUnbound& UnboundStore()
+{
+	static ftcore::InputUnbound Unbound;
+	return Unbound;
+}
+
 inline const ftcore::InputBindings& Get()
 {
 	static const ftcore::InputBindings Bindings = []
@@ -43,15 +51,34 @@ inline const ftcore::InputBindings& Get()
 		if (FFileHelper::LoadFileToString(Text, *GetFilePath()))
 		{
 			std::string Error;
-			if (!ftcore::importInputBindings(FT::ToUtf8(Text), B, &Error))
+			if (!ftcore::importInputBindings(FT::ToUtf8(Text), B, &Error, &UnboundStore()))
 			{
 				UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s refused (%s); using the defaults."), *GetFilePath(),
 					*FT::ToFString(Error));
+			}
+			const ftcore::InputUnbound& Left = UnboundStore();
+			for (size_t D = 0; D < ftcore::kInputDeviceCount && Left.count > 0; ++D)
+			{
+				for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
+				{
+					if (Left.left[D][A])
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s unbound on the %s: your own key sits on its default; choose a key."),
+							*FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))), D == 0 ? TEXT("keyboard") : TEXT("pad"));
+					}
+				}
 			}
 		}
 		return B;
 	}();
 	return Bindings;
+}
+
+// The import's unbound list (after Get()).
+inline const ftcore::InputUnbound& Unbound()
+{
+	Get();
+	return UnboundStore();
 }
 
 // The engine key for the action on that device; EKeys::Invalid when unbound. Built once with Get().

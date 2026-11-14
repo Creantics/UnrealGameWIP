@@ -110,9 +110,8 @@ FTCORE_API bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice
 FTCORE_API bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction* swapped = nullptr);
 // How an action with no key on that device is still reached: "left_stick" (moving), "left_stick_full" (the stick
 // pushed all the way runs), "mouse_flick" / "right_stick_flick" (locked on, a flick switches the target),
-// "map_hold" (holding the map button shows or hides the party), "guard_interact" (take half on a pad: the guard up,
-// held or toggled, plus Interact), "guard_heal" / "guard_crouch" (Gift Heal / Gift Guard on a pad: the guard up plus
-// the heal's button / Crouch's). Null when the action has no such route.
+// "map_hold" (holding the map button shows or hides the party), "guard_interact" (take half on a pad: the pad's Guard
+// button down plus Interact). Null when the action has no such route.
 FTCORE_API const char* inputActionRoute(InputAction a, InputDevice d);
 // Holding the map button this long, on either device, is the party toggle (inputActionRoute "map_hold").
 inline constexpr float kInputMapHoldForParty = 0.6f;
@@ -125,7 +124,17 @@ FTCORE_API bool validateInputBindings(const InputBindings& b, std::string* error
 // {"version": 1, "keys": {"guard": "LeftControl"}, "pad": {"guard": "Gamepad_LeftShoulder"}, "hold": {"guard": "toggle"}}
 // read over `out` (start it from the defaults); a member left out keeps its value. Unknown actions, bad names,
 // "hold" on a press action and a doubled key are refused, and `out` is left as it was.
-FTCORE_API bool importInputBindings(std::string_view text, InputBindings& out, std::string* error = nullptr);
+// What an import left unbound: an action whose default is newer than the file (inputDefaultIsNew in the source) and
+// sits on a key the file gave to another action. The player's binding wins; the host says "unbound: choose a key".
+struct InputUnbound {
+    std::array<std::array<bool, kInputActionCount>, kInputDeviceCount> left{};
+    std::uint32_t count = 0;
+};
+FTCORE_API bool importInputBindings(std::string_view text, InputBindings& out, std::string* error = nullptr,
+                                    InputUnbound* unbound = nullptr);
+// Gift Heal and Gift Guard have no pad button and no route until the pad's layout is ruled: inputAllReachable lets
+// them go unbound on the pad.
+FTCORE_API bool inputPadPending(InputAction a);
 // Every binding and every held action's mode; importInputBindings reads it back.
 FTCORE_API std::string encodeInputBindings(const InputBindings& b);
 
