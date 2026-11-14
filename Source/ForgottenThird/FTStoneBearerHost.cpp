@@ -197,6 +197,21 @@ bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::A
 		}
 	}
 	Out.moveCount = static_cast<std::uint8_t>(Count);
+	// The break move (ArenaFight's boss break) was an index into the arena kind's moves: here it is the boss file's
+	// single-impact move of the same clip. None: -1, and a break that comes due is spent unthrown (bossBreakBarred).
+	Out.breakMove = -1;
+	if (Kind.breakMove >= 0 && Kind.breakMove < static_cast<int>(Kind.moveCount))
+	{
+		const std::string_view BreakClip = Kind.moves[static_cast<std::size_t>(Kind.breakMove)].clip();
+		for (std::size_t M = 0; M < Count && Out.breakMove < 0; ++M)
+		{
+			const bool bFirst = M == 0 || Out.moves[M - 1].chain != static_cast<std::int8_t>(M);
+			if (bFirst && Out.moves[M].chain < 0 && Out.moves[M].clip() == BreakClip)
+			{
+				Out.breakMove = static_cast<int>(M);
+			}
+		}
+	}
 	Kind = Out;
 	return true;
 }

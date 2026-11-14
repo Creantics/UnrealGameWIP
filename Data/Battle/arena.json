@@ -18,7 +18,7 @@
       "riposte": { "startup": 0.12, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 48, "poiseDamage": 0, "lunge": 0.5, "tracking": 12, "stamina": 0, "cancel": 0.5, "maxTargets": 1, "hitStop": 0.12, "jolt": 2.2 },
       "release": { "startup": 0.2, "active": 0.15, "recovery": 0.5, "range": 2.6, "arcCos": 0, "damage": 30, "poiseDamage": 0, "lunge": 0.5, "tracking": 10, "stamina": 0, "cancel": 0.5, "maxTargets": 1, "jolt": 1.8 },
       "dodgeTime": 0.6, "dodgeDistance": 3.5, "dodgeInvulnStart": 0.05, "dodgeInvulnEnd": 0.4, "dodgeStamina": 20, "dodgeCancel": 0.75,
-      "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 2.2, "parryStop": 0.12, "hurtJolt": 1.4, "softRange": 3.5, "softArcCos": 0.6, "homingReach": 1.0,
+      "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 1.8, "parryStop": 0.12, "hurtJolt": 1.4, "softRange": 3.5, "softArcCos": 0.6, "homingReach": 1.0,
       "healCharges": 3, "healAmount": 45, "healTime": 0.9, "healRecovery": 0.4, "healMoveScale": 0.35,
       "lockRange": 15, "lockBreak": 20,
       "loadShare": 1, "releasePoise": 1, "pairWindow": 0.12, "pairHits": 3,
@@ -39,7 +39,7 @@
       "riposte": { "damage": 60, "range": 2.8, "jolt": 2.2 },
       "release": { "damage": 36, "jolt": 1.8 },
       "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.55, "guardBreakTime": 1.0,
-      "parryWindow": 0.2, "parryRearm": 0.4, "riposteReach": 2.4, "parryStop": 0.1, "softRange": 6, "softArcCos": 0.25, "homingReach": 2.5,
+      "parryWindow": 0.2, "parryRearm": 0.4, "riposteReach": 2.0, "parryStop": 0.1, "softRange": 6, "softArcCos": 0.25, "homingReach": 2.5,
       "dodgeStamina": 18
     },
     {
@@ -134,6 +134,7 @@
       "hp": 1100, "poise": 120, "poiseDelay": 4, "staggerTime": 2, "openTime": 2, "downTime": 1.5,
       "walkSpeed": 0.6, "runSpeed": 1, "strafeSpeed": 0.5, "accel": 2, "turnRate": 1.2,
       "preferredRange": 6.5, "runRange": 11, "attackDelay": 0.8, "bodyRadius": 2.5, "height": 9.1, "bpm": 72, "carry": 3,
+      "boss": true, "breakMove": 7,
       "look": { "clips": "Data/Anim/kite_clips.json", "hover": 0.9, "scale": 1, "yawOffset": -90 },
       "moves": [
         { "clip": "mitten_drop", "tell": "slam", "hitsAir": true, "startup": 1.667, "active": 0.2, "recovery": 1.5, "range": 7, "arcCos": 0.3, "damage": 8, "poiseDamage": 10, "guardDamage": 14, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 7.6, "weight": 1.0, "parryable": false },
@@ -151,6 +152,7 @@
       "hp": 1400, "poise": 175, "poiseDelay": 8, "staggerTime": 2, "openTime": 3, "downTime": 3,
       "walkSpeed": 0.8, "runSpeed": 0.8, "strafeSpeed": 0.8, "accel": 2.5, "turnRate": 1.4,
       "preferredRange": 3.5, "runRange": 9, "attackDelay": 0.8, "bodyRadius": 1.2, "height": 5.1, "bpm": 76,
+      "boss": true, "breakMove": 7, "breakPhaseEnds": [0.5, 0.25],
       "look": { "clips": "Data/Anim/stone_bearer_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
         { "clip": "called_fist", "tell": "strike", "startup": 2.368, "active": 0.2, "recovery": 1.2, "range": 3.8, "arcCos": 0.3, "damage": 17, "poiseDamage": 20, "guardDamage": 26, "lunge": 0, "tracking": 1.5, "minRange": 0, "maxRange": 4.2, "weight": 1.2 },
@@ -168,6 +170,7 @@
       "hp": 1100, "poise": 100, "poiseDelay": 3, "staggerTime": 2, "openTime": 1.6, "downTime": 2.5,
       "walkSpeed": 0, "runSpeed": 0, "strafeSpeed": 0, "accel": 4, "turnRate": 2.2,
       "preferredRange": 11.5, "runRange": 11.5, "attackDelay": 0.8, "bodyRadius": 0.5, "height": 2.7, "bpm": 104,
+      "boss": true, "breakMove": 2,
       "look": { "clips": "Data/Anim/white_glove_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
         { "clip": "deal", "tell": "shot", "startup": 2.308, "active": 0.2, "recovery": 1.6, "range": 12, "width": 0.5, "damage": 20, "poiseDamage": 24, "guardDamage": 0, "lunge": 0, "tracking": 0.4, "minRange": 0, "maxRange": 11.5, "cooldown": 8, "weight": 1.5, "unblockable": true, "parryable": false },

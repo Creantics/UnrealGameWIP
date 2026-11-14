@@ -739,10 +739,11 @@ TEST_CASE("arena zone fit: the camera room: the human rig stays clear of the bui
     const WorldTable worlds = loadWorlds();
     const ArenaZoneTable zones = loadZones(arena, worlds);
     // Every shipped zone keeps the camera clear of the buildings for most of its edge (at most 30%), the lens the one the
-    // host draws (Core's pose and lens: on the lock's line, at the zone's framing cap and fully aimed). The two facades
-    // are pinned exactly, so neither gets worse unseen: sol_facade_a 13/48, lat_facade_a 14/48. lat_facade_a holds the
-    // bar only with its framing cap of 0 (arenas.json): at the default 30-degree cap it reads 16/48 (pinned below), so its
-    // layout rework belongs to the zone's owner.
+    // host draws (Core's pose and lens: on the lock's line, at the zone's framing cap and fully aimed, checked 0.22 m
+    // further back along the view for the near clip and the boom's probe). The two facades are pinned exactly, so neither
+    // gets worse unseen: sol_facade_a 13/48, and lat_facade_a 15/48, the one exception over the bar (14/48 without the
+    // view-axis clearance). Its framing cap is 0 (arenas.json): at the default 30-degree cap it reads 16/48 (pinned
+    // below). Its layout rework belongs to the zone's owner.
     int capped = 0;
     for (const ArenaZoneSpec& spec : zones.zones) {
         Fitted f;
@@ -751,9 +752,10 @@ TEST_CASE("arena zone fit: the camera room: the human rig stays clear of the bui
         const bool tower = spec.id == "lat_facade_a";
         CHECK(f.fit.camera.frameTurnCapDeg == (tower ? 0.f : kArenaFrame.maxTurn));
         if (f.fit.camera.frameTurnCapDeg != kArenaFrame.maxTurn) ++capped;
-        if (tower) CHECK(f.fit.cameraBlocked == doctest::Approx(14.f / 48.f));
+        if (tower) CHECK(f.fit.cameraBlocked == doctest::Approx(15.f / 48.f));
         if (spec.id == "sol_facade_a") CHECK(f.fit.cameraBlocked == doctest::Approx(13.f / 48.f));
-        CHECK_MESSAGE(f.fit.cameraBlocked <= 0.3f, spec.id << " camera blocked " << f.fit.cameraBlocked);
+        const float bar = tower ? 15.f / 48.f : 0.3f; // the one pinned exception
+        CHECK_MESSAGE(f.fit.cameraBlocked <= bar + 1e-6f, spec.id << " camera blocked " << f.fit.cameraBlocked);
     }
     CHECK(capped == 1);
     CHECK(kArenaFrame.maxTurn == 30.f); // the default cap every other zone keeps

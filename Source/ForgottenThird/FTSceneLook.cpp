@@ -43,10 +43,15 @@ void FTScene::SpawnLook(UWorld* World, const FActorSpawnParameters& Spawn, const
 	// Light: the sun's colour comes from its temperature and the atmosphere it passes through.
 	ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 1000), SunRotation, Spawn);
 #if WITH_EDITORONLY_DATA
-	UDirectionalLightComponent* SunLight = Sun->GetComponent();
+	UDirectionalLightComponent* SunLight = Sun ? Sun->GetComponent() : nullptr;
 #else
-	UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(Sun->GetLightComponent());
+	UDirectionalLightComponent* SunLight = Sun ? Cast<UDirectionalLightComponent>(Sun->GetLightComponent()) : nullptr;
 #endif
+	if (!SunLight)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Scene look: no sun light was spawned; the look is not applied."));
+		return;
+	}
 	SunLight->SetMobility(EComponentMobility::Movable);
 	SunLight->SetIntensity(Look.sunLux);
 	SunLight->SetUseTemperature(true);
