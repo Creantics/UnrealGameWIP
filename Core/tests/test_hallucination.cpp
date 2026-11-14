@@ -97,11 +97,16 @@ bool same(const ArenaInput& a, const ArenaInput& b) {
            a.attackTurn == b.attackTurn && a.takeHalf == b.takeHalf;
 }
 
-// A new tuning field must be added to both helpers below; this size check fails until it is.
+// A new tuning field must be added to the helpers below. Two tripwires: the size, and a structured binding of exactly
+// the current 14 members, which fails to compile when a member is added or removed (padding cannot hide it).
 static_assert(sizeof(HallucinationTuning) == 13 * sizeof(float) + 8, "add the new field to dirtyAll and sameTuning");
+void tuningHasFourteenFields(const HallucinationTuning& t) {
+    [[maybe_unused]] const auto& [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13] = t;
+}
 
 // Every tuning field away from its default.
 void dirtyAll(HallucinationTuning& t) {
+    tuningHasFourteenFields(t);
     t.holdSeconds = 1.25f;
     t.expireSeconds = 11.f;
     t.gapSeconds = 5.f;
@@ -119,6 +124,7 @@ void dirtyAll(HallucinationTuning& t) {
 }
 
 bool sameTuning(const HallucinationTuning& a, const HallucinationTuning& b) {
+    tuningHasFourteenFields(a);
     return a.holdSeconds == b.holdSeconds && a.expireSeconds == b.expireSeconds && a.gapSeconds == b.gapSeconds &&
            a.switchSeconds == b.switchSeconds && a.refuseSeconds == b.refuseSeconds &&
            a.refusalCooldownSeconds == b.refusalCooldownSeconds && a.pullSeconds == b.pullSeconds &&
