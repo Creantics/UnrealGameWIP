@@ -28,8 +28,7 @@ UiPromptReasons uiPromptReasons(const ArenaFight& fight, PressReason giftHeal, P
     set(UiPrompt::Heal, fight.pressReason(ArenaPress::Heal));
     set(UiPrompt::GiftHeal, giftHeal);
     set(UiPrompt::GiftGuard, giftGuard);
-    set(UiPrompt::Reload, PressReason::Absent);
-    set(UiPrompt::Pair, fight.allyMaxHp() > 0 ? fight.pressReason(ArenaPress::Pair) : PressReason::Absent);
+    set(UiPrompt::Pair, fight.pressReason(ArenaPress::Pair));
     set(UiPrompt::Attack, fight.pressReason(ArenaPress::Light));
     set(UiPrompt::Guard, fight.pressReason(ArenaPress::Guard));
     set(UiPrompt::Dodge, fight.pressReason(ArenaPress::Dodge));
@@ -37,16 +36,23 @@ UiPromptReasons uiPromptReasons(const ArenaFight& fight, PressReason giftHeal, P
     return why;
 }
 
-UiPromptMask uiPromptsPresent(const UiPromptReasons& why, UiPromptMask teaching) {
+UiPromptMask uiPromptsPresent(const UiPromptReasons& why) {
     UiPromptMask m = 0;
     for (std::size_t p = 0; p < kUiPromptCount; ++p) {
-        const UiPrompt q = static_cast<UiPrompt>(p);
-        const bool basic = p >= static_cast<std::size_t>(UiPrompt::Attack);
-        if (why[p] == PressReason::Absent) continue;
-        if (basic && (teaching & uiPromptBit(q)) == 0) continue;
-        m = static_cast<UiPromptMask>(m | uiPromptBit(q));
+        if (why[p] != PressReason::Absent) m = static_cast<UiPromptMask>(m | uiPromptBit(static_cast<UiPrompt>(p)));
     }
     return m;
+}
+
+UiPromptMask uiPromptsTaught(UiPromptMask present, ShowBasicControls policy, UiPromptMask teaching) {
+    UiPromptMask keep = 0; // the basic controls the policy lets stand
+    switch (policy) {
+    case ShowBasicControls::FirstFights: keep = teaching; break;
+    case ShowBasicControls::Always: keep = kUiBasicPrompts; break;
+    case ShowBasicControls::Never: keep = 0; break;
+    }
+    const UiPromptMask others = static_cast<UiPromptMask>(present & ~kUiBasicPrompts);
+    return static_cast<UiPromptMask>(others | (present & kUiBasicPrompts & keep));
 }
 
 UiPromptMask uiPromptsDimmed(const UiPromptReasons& why, UiPromptMask noKey) {
