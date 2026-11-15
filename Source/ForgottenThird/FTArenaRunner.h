@@ -1120,6 +1120,8 @@ private:
 	bool bPartnerHeldOut = false;
 	int32 PartnerHeldLeaks = 0;
 	int32 PartnerJoinAsks = 0, PartnerJoinsLanded = 0, PartnerJoinsRefused = 0, PartnerJoinDisagree = 0;
+	// Stationing: steps the partner was on (and fed the camera), and of them the steps stationing ran.
+	int32 PartnerOnSteps = 0, PartnerStationedSteps = 0, PartnerCameraSteps = 0;
 	double PartnerJoinedAt = -1.0;
 	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
 	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and

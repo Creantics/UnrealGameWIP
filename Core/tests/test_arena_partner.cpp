@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1759,4 +1760,83 @@ TEST_CASE("arena partner: PARTNER (the pair press) is Closed or Ok while it is i
     r.fight.setPartner(nullptr, nullptr);
     r.fight.setAlly(0, 0.4f);
     CHECK(r.fight.pressReason(ArenaPress::Pair) != PressReason::Absent);
+}
+
+TEST_CASE("arena partner: stationing runs only with the host's camera; off by default") {
+    for (const bool camera : {false, true}) {
+        CAPTURE(camera);
+        PRig r;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{6.f, 0.f});
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.ally = Vec2{-2.f, 1.f};
+        r.go(true, 100);
+        r.walk = true;
+        if (camera) {
+            r.in.cameraOn = true;
+            r.in.cameraPos = Vec2{-4.f, 0.f}; // behind the lead, looking along +x
+            r.in.cameraFacing = Vec2{1.f, 0.f};
+        }
+        int on = 0, ticks = 0;
+        for (int k = 0; k < 120; ++k) {
+            r.tick();
+            REQUIRE(r.out->ally.partnerOn);
+            on += r.out->ally.stationed ? 1 : 0;
+            ++ticks;
+        }
+        if (camera) CHECK(on == ticks);
+        else CHECK(on == 0);
+    }
+    {   // a camera not a finite number: no stationing, and the fight runs on
+        PRig r;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{6.f, 0.f});
+        r.bodies.ally = Vec2{-2.f, 1.f};
+        r.go(true, 100);
+        r.in.cameraOn = true;
+        r.in.cameraPos = Vec2{std::numeric_limits<float>::quiet_NaN(), 0.f};
+        r.tick();
+        CHECK_FALSE(r.out->ally.stationed);
+        CHECK(r.fight.phase() == ArenaPhase::Fighting);
+    }
+}
+
+TEST_CASE("arena partner: a switch and a takeover each tell the brain its body changed (rolesSwapped)") {
+    {   // switchLeads
+        PRig r;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{20.f, 0.f});
+        r.bodies.ally = Vec2{-2.f, 1.f};
+        r.go(true, 100);
+        r.tick();
+        REQUIRE(r.brain.swaps() == 0);
+        REQUIRE(r.fight.switchLeads());
+        CHECK(r.brain.swaps() == 1);
+        CHECK(r.fight.stats().partnerSwaps == 1);
+        std::swap(r.bodies.player, r.bodies.ally);
+        r.tick();
+        REQUIRE(r.fight.switchLeads());
+        CHECK(r.brain.swaps() == 2);
+        CHECK(r.fight.stats().partnerSwaps == 2);
+        CHECK(r.fight.stats().leadSwitches == 2);
+    }
+    {   // a refused switch tells it nothing
+        PRig r;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{20.f, 0.f});
+        r.go(true, 100);
+        r.tick();
+        r.fight.setLone(true, LoneTuning{}, 0.f); // Lone: no partner in the fight
+        CHECK_FALSE(r.fight.switchLeads());
+        CHECK(r.brain.swaps() == 0);
+        CHECK(r.fight.stats().partnerSwaps == 0);
+    }
+    {   // a takeover
+        PRig r;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{1.f, 0.f};
+        r.bodies.ally = Vec2{0.f, 3.5f};
+        r.go(true, 80, 1, Vec2{-1.f, 0.f});
+        r.run(2.f);
+        REQUIRE(r.fight.stats().takeovers == 1);
+        CHECK(r.brain.swaps() == 1);
+        CHECK(r.fight.stats().partnerSwaps == 1);
+        CHECK(r.fight.stats().leadSwitches == 0);
+    }
 }

@@ -500,6 +500,7 @@ struct ArenaFightImpl {
             ao.target = al.target;
             ao.act = al.act;
             ao.partnerOn = true;
+            ao.stationed = al.stationed;
         }
     }
 
@@ -2772,8 +2773,19 @@ struct ArenaFightImpl {
         pin.leadAttacking = leadOn;
         for (std::size_t k = 0; k < kMaxPartnerBlows; ++k) pin.blowSeconds[k] = allyLight(static_cast<std::uint8_t>(k)).total();
         pin.enemies = std::span<const PartnerEnemyView>(views.data(), n);
+        // Stationing (rules 8-12): only with the host's camera. The ring less the ally's body is where it may stand.
+        PartnerStationView& st = pin.station;
+        st.on = in.cameraOn;
+        if (st.on) {
+            st.cameraPos = in.cameraPos;
+            st.cameraForward = (in.cameraFacing.x != 0.f || in.cameraFacing.y != 0.f) ? in.cameraFacing : in.view;
+            st.leadFacing = pl.facing;
+            st.arenaCentre = fight.ring_.centre;
+            st.arenaRadius = std::max(1e-3f, fight.ring_.radius - fight.allyRadius_); // never 0 (unbounded)
+        }
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
+        al.stationed = intent.stationed;
         if (!allyUp()) { // down: it lies where it fell until the brain stands it
             clearAlly();
             if (!intent.rise) return;
@@ -2872,6 +2884,7 @@ struct ArenaFightImpl {
         al.facing = fellFacing;
         fight.swapped_ = !fight.swapped_;
         ++stats.takeovers;
+        partnerSwapped();
         emit(ArenaEventType::TookOver, kArenaAlly, kArenaPlayer, 0, pl.hp, pl.pos);
         emit(ArenaEventType::AllyDowned, kArenaNobody, kArenaAlly, 0, 0, fight.allyPos_);
     }
@@ -2891,7 +2904,16 @@ struct ArenaFightImpl {
         al.facing = wasFacing;
         fight.swapped_ = !fight.swapped_;
         ++stats.leadSwitches;
+        partnerSwapped();
         return true;
+    }
+
+    // The partner's brain drives the other body now (a switch, a takeover): what it knew of the old one goes.
+    void partnerSwapped() {
+        if (!fight.partner_ || !partnerOn()) return;
+        fight.partner_->rolesSwapped();
+        fight.ally_.stationed = false;
+        ++stats.partnerSwaps;
     }
 
     // The player stands in the ally's place at the ally's hp, Idle, its action and string, buffer, lock and poise

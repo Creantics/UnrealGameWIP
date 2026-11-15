@@ -1848,6 +1848,7 @@ void UFTArenaRunner::BeginSession()
 	PartnerSessionTookOver = PartnerLeadMismatch = 0;
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
+	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
 	PartnerJoinedAt = -1.0;
 	bSwitchAsked = bSwitchAskOpen = bSwitchAskedThisStep = false;
 	SwitchAsks = SwitchesSeen = SwitchesDone = SwitchesRefused = SwitchAsksRefused = SwitchAsksSame = 0;
@@ -2852,17 +2853,33 @@ void UFTArenaRunner::StepFight()
 	if (bPartner)
 	{
 		In.partnerOrder = bPartnerSpread ? 1 : 0;
+		// The partner's stationing (rules 8-12) from the player's camera on the ground (cm to m, as ToWorld); its
+		// forward is cameraFacing, else view. No camera manager (none yet): no stationing this step.
+		const APlayerController* CamPC = GetPC();
+		if (CamPC && CamPC->PlayerCameraManager)
+		{
+			const FVector Cam = CamPC->PlayerCameraManager->GetCameraLocation();
+			In.cameraOn = true;
+			In.cameraPos = ftcore::Vec2{static_cast<float>(Cam.X / 100.0), static_cast<float>(Cam.Y / 100.0)};
+		}
 	}
 	if (bPartner)
 	{
 		TrackSwapCheck(In); // the input this step takes, after a takeover or a switch
 	}
+	const bool bAllyWasUp = Fight.allyHp() > 0; // the brain stations only a body up before and after the step
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	if (bPartner && Session)
 	{
 		// Who is in the fight, step by step: the session's word as of its last close against the fight's this step
 		// (a join lands at a close and the fight takes the partner before its next step).
 		PartnerJoinDisagree += Out.ally.partnerOn != Session->Get().inFight(OtherLead()) ? 1 : 0;
+	}
+	if (bPartner && Out.ally.partnerOn && bAllyWasUp && Fight.allyHp() > 0)
+	{
+		++PartnerOnSteps;
+		PartnerCameraSteps += In.cameraOn ? 1 : 0;
+		PartnerStationedSteps += Out.ally.stationed ? 1 : 0;
 	}
 	if (bPartner)
 	{
@@ -7010,6 +7027,17 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner switch %s (asked %d, the session switched %d, refused by its rules %d, already there %d, the fight swapped %d, refused %d; leadSwitches %d)."),
 			bSwitchOk ? TEXT("PASS") : TEXT("FAIL"), SwitchAsks, SwitchesSeen, SwitchAsksRefused, SwitchAsksSame, SwitchesDone, SwitchesRefused,
 			Fight.stats().leadSwitches);
+	}
+	if (bPartner && PartnerOnSteps > 0)
+	{
+		// Stationing: every step the partner stood up with the camera fed ran it, and its brain was told of every
+		// body change (a switch or a takeover) exactly once.
+		const ftcore::ArenaStats& St = Fight.stats();
+		const bool bSwapsOk = St.partnerSwaps == St.leadSwitches + St.takeovers;
+		const bool bStationOk = PartnerCameraSteps > 0 && PartnerStationedSteps == PartnerCameraSteps;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner stationing %s (%d steps up, %d with the camera, %d stationed; brain swaps %d for %d switches and %d takeovers)."),
+			bSwapsOk && bStationOk ? TEXT("PASS") : TEXT("FAIL"), PartnerOnSteps, PartnerCameraSteps, PartnerStationedSteps,
+			St.partnerSwaps, St.leadSwitches, St.takeovers);
 	}
 	if (bPartnerHeldOut)
 	{
