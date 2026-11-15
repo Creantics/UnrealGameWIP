@@ -2164,6 +2164,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
     const ArenaTable t = shippedTable();
     const char* names[kPartnerIdleCount] = {"none", "noBudget", "noTarget", "moving",
                                             "staggered", "pause", "other"};
+    double todayShare[2] = {0, 0}; // on screen with the camera not given, per order
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}})
         for (const bool camera : {false, true}) {
             CAPTURE(order);
@@ -2193,7 +2194,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                 r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
                 const PartnerCameraView seen = behindLead(r.bodies.player, facing); // on-screen time, given or not
                 r.tick();
-                if (partnerInFrame(seen, 0.f, r.bodies.ally)) onScreen += kDt;
+                if (partnerInFrame(seen, kPartnerFrustumMargin, r.bodies.ally)) onScreen += kDt;
                 const PartnerIntent& pi = r.brain.intent();
                 if (pi.blowStart) {
                     longestGap = std::max(longestGap, double(r.fight.time()) - lastStart);
@@ -2237,12 +2238,17 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             MESSAGE("    on screen " << onScreen / T << ", goal jumps per 10 s " << 10.0 * goalJumps / T
                                      << ", off-frame starts " << r.brain.offFrameStarts());
             CHECK(r.brain.framed() == camera);
+            if (!camera) todayShare[order] = onScreen / T;
             if (camera) {
                 CHECK(s.partnerStrings >= 1);
-                // On screen at least 0.8 of the fight (measured 0.97 StayClose, 0.94 Spread), and its goal jumps
-                // under 35 times in 10 s (measured 28 StayClose, 21 Spread).
+                // On screen (inside the frame shrunk by kPartnerFrustumMargin) at least 0.8 of the fight (measured
+                // 0.97 StayClose, 0.90 Spread), above cameraOn's stationing by at least 0.02 (measured 0.93 and
+                // 0.85 without the camera: here cameraOn already looks from behind the lead), its goal jumps under
+                // 35 times in 10 s (measured 26 StayClose, 21 Spread), and no string from off the frame (measured 0).
                 CHECK(onScreen / T >= 0.8);
+                CHECK(onScreen / T - todayShare[order] >= 0.02);
                 CHECK(10.0 * goalJumps / T <= 35.0);
+                CHECK(r.brain.offFrameStarts() == 0);
             }
         }
 }

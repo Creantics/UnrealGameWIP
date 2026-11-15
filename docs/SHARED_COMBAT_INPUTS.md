@@ -449,10 +449,12 @@ the pieces.
   `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and outside the
   keep-outs round the camera's lines to the lead and to its target. With none valid it holds the last
   station it had for `frustumGiveUpSeconds` (3 s, counted from the last valid station whatever the
-  target), then falls back to rules 10-11's station and says so on every step it stays fallen back,
+  target, on every step: the held station is checked on string and guard steps too; sooner only when
+  the target's keep-out comes over the spot held), then falls back to rules 10-11's station and says so on every step it stays fallen back,
   strings, guards and repositions included (`PartnerIntent::frameFallback`,
   `PartnerBrain::fallbackSeconds()`). Rule 14's engage starts a string from where the partner stands only
-  inside the frame, unless no valid station was found that step; such a start is reported
+  inside the frame, unless no valid station was found that step (that step's search alone, with no
+  wait for one); such a start is reported
   (`PartnerIntent::offFrame`, `PartnerBrain::offFrameStarts()`). Every step the intent names why the
   partner is not acting (`PartnerIntent::idle`), and `idleSeconds(reason)` sums them over the fight.
   There is no "called" reason: ArenaFight never holds the partner for an action the player called.

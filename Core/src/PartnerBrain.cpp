@@ -816,6 +816,18 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (fm) {
         s_.framed = true;
         s_.noFrame += dt; // since a valid station was last found
+        // Rule 13's clock counts real time on every step, whatever it does: the station held is checked now too, so
+        // a string or guard neither ages a station still valid nor holds a dead one past frustumGiveUpSeconds.
+        if (!s_.fellBack && s_.frameRing != 0) {
+            const bool onTarget = s_.frameRing == 1 && s_.target >= 0 && static_cast<std::size_t>(s_.target) < n;
+            const View* e = onTarget ? &in.enemies[static_cast<std::size_t>(s_.target)] : nullptr;
+            Vec2 p{};
+            if (frameStation(g, fr, t, in.order, in.pos, e, onTarget ? s_.target : -1, 0.f, s_, p)) s_.noFrame = 0.0;
+            else if (s_.noFrame + 1e-9 >= static_cast<double>(t.frustumGiveUpSeconds)) {
+                s_.fellBack = true; // reported by step() from this step on
+                s_.frameRing = 0;
+            }
+        }
     }
     out.framed = fm;
     // Rule 13's goal for target tgt (-1: none): a valid station, else the one last held while noFrame is under
