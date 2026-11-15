@@ -66,6 +66,10 @@ TAutoConsoleVariable<int32> CVarNewUi(TEXT("ft.NewUi"), 1,
 	TEXT("1 (the default): the new game UI (Slate, drawn from Core view-models) in place of the Canvas HUD's parts it ")
 	TEXT("replaces. 0: the old Canvas HUD, as -FTOldUi on the command line also gives (which wins over this). Not in ")
 	TEXT("Shipping, which always has the new UI. Read when a map's HUD begins: a change applies from the next map."));
+TAutoConsoleVariable<int32> CVarNewUiWorld(TEXT("ft.NewUi.World"), 0,
+	TEXT("The world whose colours and mark rules the new UI wears: 0 Solhaven (the default), 1 the Lattice, 2 the ")
+	TEXT("Unwritten. For captures and review until the world's own flag reaches the HUD. Read every frame. Not in ")
+	TEXT("Shipping, which wears Solhaven's."));
 #endif
 
 using ftcore::UiTextRole;
@@ -215,12 +219,22 @@ FLinearColor LinOf(const ftcore::UiColor& C, float Alpha = 1.f)
 	return L;
 }
 
-// Data/UI/style.json once (the built-in style when it is missing or refused), and its colours for the world shown.
+// One world's colours, built once: its tokens, its non-text mark colour and how its danger words are drawn.
+struct FUiWorldRow
+{
+	FLinearColor Token[ftcore::kUiTokenCount];
+	FLinearColor Mark;       // a non-text mark (the Load, the current lead's dot, the weak point): uiMarkColor over ink
+	FLinearColor DangerWord; // a danger word's glyphs (uiDangerWord)
+	FLinearColor DangerLine; // its underline, drawn only where bDangerUnderline
+	bool bMarksAccent2 = false;    // the marks wear accent2: each carries a 1 px ink rim, and the Load is a line
+	bool bDangerUnderline = false; // a danger word is ink over a danger underline
+};
+
+// Data/UI/style.json once (the built-in style when it is missing or refused), and every world's colours.
 struct FUiTable
 {
 	ftcore::UiStyle Style;
-	FLinearColor Token[ftcore::kUiTokenCount];
-	FLinearColor Word[ftcore::kUiTokenCount]; // a coloured word's colour: lifted to the style's luminance floor
+	FUiWorldRow Row[ftcore::kUiWorldCount];
 	FLinearColor Edge;
 };
 
@@ -240,12 +254,23 @@ const FUiTable& Table()
 				UE_LOG(LogTemp, Warning, TEXT("FTNewUi: %s: %s (the built-in style is used)"), *File, *FT::ToFString(Error));
 			}
 		}
-		// The world's own colours arrive with the world flag on the screens; Solhaven until then.
-		for (size_t I = 0; I < ftcore::kUiTokenCount; ++I)
+		// Every world's row; the shown one is picked per frame (ShownWorld). The default palette: the player's choice of
+		// palette has no setting on the screens yet.
+		const ftcore::UiPalette Pal = ftcore::UiPalette::Default;
+		for (size_t W = 0; W < ftcore::kUiWorldCount; ++W)
 		{
-			const ftcore::UiColor C = ftcore::uiColor(T.Style, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, static_cast<UiToken>(I));
-			T.Token[I] = LinOf(C);
-			T.Word[I] = LinOf(ftcore::uiLumaFloor(C, T.Style.wordLumaFloor));
+			const ftcore::UiWorld World = static_cast<ftcore::UiWorld>(W);
+			FUiWorldRow& R = T.Row[W];
+			for (size_t I = 0; I < ftcore::kUiTokenCount; ++I)
+			{
+				R.Token[I] = LinOf(ftcore::uiColor(T.Style, World, Pal, static_cast<UiToken>(I)));
+			}
+			R.Mark = LinOf(ftcore::uiMarkColor(T.Style, World, Pal, ftcore::uiColor(T.Style, World, Pal, UiToken::Ink)));
+			const ftcore::UiDangerWord D = ftcore::uiDangerWord(T.Style, World, Pal);
+			R.DangerWord = LinOf(D.word);
+			R.DangerLine = LinOf(D.underline);
+			R.bMarksAccent2 = T.Style.rules[W].marksAccent2;
+			R.bDangerUnderline = D.underlined;
 		}
 		T.Edge = LinOf(T.Style.edge);
 		return T;
@@ -253,11 +278,44 @@ const FUiTable& Table()
 	return Loaded;
 }
 
+// The world the screens wear this frame: Solhaven, or outside Shipping the one ft.NewUi.World names.
+ftcore::UiWorld ShownWorld()
+{
+#if !UE_BUILD_SHIPPING
+	return static_cast<ftcore::UiWorld>(FMath::Clamp(CVarNewUiWorld.GetValueOnAnyThread(), 0, static_cast<int32>(ftcore::kUiWorldCount) - 1));
+#else
+	return ftcore::UiWorld::Solhaven;
+#endif
+}
+
+const FUiWorldRow& Shown() { return Table().Row[static_cast<size_t>(ShownWorld())]; }
+
 FLinearColor Tok(UiToken T, float Alpha = 1.f)
 {
-	FLinearColor C = Table().Token[static_cast<size_t>(T)];
+	FLinearColor C = Shown().Token[static_cast<size_t>(T)];
 	C.A *= Alpha;
 	return C;
+}
+
+// A non-text mark's colour in the shown world (ink where the marks keep it) and, where they wear accent2, the 1 px ink
+// rim that lets the dark red stand on the dark backing; both at Alpha.
+struct FMarkTok
+{
+	FLinearColor C;
+	FLinearColor Rim;
+	bool bRim = false;
+	const FLinearColor* RimOrNull() const { return bRim ? &Rim : nullptr; }
+};
+FMarkTok MarkTok(float Alpha)
+{
+	const FUiWorldRow& R = Shown();
+	FMarkTok M;
+	M.C = R.Mark;
+	M.C.A *= Alpha;
+	M.Rim = R.Token[static_cast<size_t>(UiToken::Ink)];
+	M.Rim.A *= Alpha;
+	M.bRim = R.bMarksAccent2;
+	return M;
 }
 
 // Every mark and glyph is a pale core over a tight soft dark contour that follows its shape (no plate, nothing wider than
@@ -267,6 +325,7 @@ constexpr float kContourGrow = 1.5f;    // px past the core's edge at 1080p wher
 constexpr float kContourFeather = 2.f;  // px over which it falls to nothing
 constexpr float kContourAlpha = 0.67f;  // of the edge colour's alpha (0.9): about 60 percent
 constexpr float kContourSoft = 0.5f;    // a word's outer contour pixel, of its inner one
+constexpr float kRimPx = 1.f;           // an accent2 mark's ink rim, px at 1080p
 constexpr float kShadowEach = 0.205f;   // each of a HUD glyph's four shadow passes: 1 - (1 - 0.205)^4 = 60 percent inside
 
 float ContourK(float CoreAlpha)
@@ -807,41 +866,58 @@ public:
 		}
 	}
 
-	// A line from Core. Closed: the first and last points are the same place (a ring), joined without a seam.
-	void Stroke(const ftcore::UiStroke& St, const FLinearColor& C, bool bClosed = false)
+	// A line from Core. Closed: the first and last points are the same place (a ring), joined without a seam. Rim: a mark
+	// that wears accent2 (MarkTok) carries a crisp 1 px rim in that colour between its core and its dark contour, which
+	// moves out by the rim's width.
+	void Stroke(const ftcore::UiStroke& St, const FLinearColor& C, bool bClosed = false, const FLinearColor* Rim = nullptr)
 	{
 		if (St.count < 2 || C.A <= 0.f)
 		{
 			return;
 		}
-		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S, kContourFeather * S, bClosed);
+		const float RimW = Rim ? kRimPx * S : 0.f;
+		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW, kContourFeather * S, bClosed);
+		if (Rim)
+		{
+			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, 0.8f * S, bClosed);
+		}
 		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, bClosed);
 	}
 
 	// A value line (health, guard, poise, a timer): its core with a crisp 1 px dark edge along both sides (about 60 percent,
 	// its fall under a pixel) in place of the soft contour, so the line's own width reads exactly.
-	void ValueStroke(const ftcore::UiStroke& St, const FLinearColor& C)
+	void ValueStroke(const ftcore::UiStroke& St, const FLinearColor& C, const FLinearColor* Rim = nullptr)
 	{
 		if (St.count < 2 || C.A <= 0.f)
 		{
 			return;
 		}
-		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), 1.f * S, 0.8f * S, false);
+		const float RimW = Rim ? kRimPx * S : 0.f;
+		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), 1.f * S + RimW, 0.8f * S, false);
+		if (Rim)
+		{
+			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, 0.8f * S, false);
+		}
 		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, false);
 	}
 
 	// A filled convex shape (a dot, a lozenge, a small triangle), edged like the lines.
-	void Fill(const FVector2f* Pts, int32 N, const FLinearColor& C)
+	void Fill(const FVector2f* Pts, int32 N, const FLinearColor& C, const FLinearColor* Rim = nullptr)
 	{
 		if (N < 3 || C.A <= 0.f)
 		{
 			return;
 		}
-		Convex(Parts[Under], Pts, N, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S, kContourFeather * S);
+		const float RimW = Rim ? kRimPx * S : 0.f;
+		Convex(Parts[Under], Pts, N, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW, kContourFeather * S);
+		if (Rim)
+		{
+			Convex(Parts[Under], Pts, N, *Rim, 1.f, RimW, 0.8f * S);
+		}
 		Convex(Parts[Core], Pts, N, C, 1.f, 0.f, 0.8f);
 	}
 
-	void Dot(float CX, float CY, float R, const FLinearColor& C)
+	void Dot(float CX, float CY, float R, const FLinearColor& C, const FLinearColor* Rim = nullptr)
 	{
 		FVector2f Pts[16];
 		for (int32 I = 0; I < 16; ++I)
@@ -849,7 +925,7 @@ public:
 			const float A = I * (2.f * UE_PI / 16.f);
 			Pts[I] = FVector2f(CX + R * FMath::Cos(A), CY + R * FMath::Sin(A));
 		}
-		Fill(Pts, 16, C);
+		Fill(Pts, 16, C, Rim);
 	}
 
 	// A vignette with no edge at all: an ellipse centred on a screen corner or edge (most of it off the screen) whose alpha
@@ -1239,6 +1315,8 @@ constexpr float ValueTaper = 0.05f;
 constexpr float LeadHpW = 6.f;
 constexpr float PartnerHpW = 4.f;
 constexpr float GuardW = 3.f;
+constexpr float LoadW = 3.f;        // the Load's line under the name, where the marks wear accent2 (else a gold fill)
+constexpr float DangerUnderW = 1.f; // a danger word's underline, where the world draws one
 constexpr float PoiseW = 4.f;
 constexpr float FoeHpW = 3.f; // a minor enemy's line, and the second target line under the boss's
 constexpr float TimerW = 3.f; // the windup's and a Qte's shrinking line
@@ -1383,15 +1461,16 @@ float CapMid(float Base, float Asc) { return Base - 0.31f * Asc; }
 void PartyMarks(FLineMesh& Mesh, ftcore::UiStroke& Line, const ftcore::UiPartyRowView& V, float X0, float Base, float NameAsc,
 	float S, float K, float A)
 {
-	const FLinearColor C = Tok(UiToken::Ink, K * A);
 	if (V.underlineW > 0.f)
 	{
-		CursorUnderline(Mesh, Line, X0, Base + Hud::PartyUnder * S, V.underlineW, S, C);
+		CursorUnderline(Mesh, Line, X0, Base + Hud::PartyUnder * S, V.underlineW, S, Tok(UiToken::Ink, K * A));
 	}
 	if (V.dot)
 	{
+		// The dot is a mark: the world's mark colour (accent2 with its rim where the marks wear it); the underline is ink.
 		const ftcore::UiPartyDot D = ftcore::uiPartyDot(X0, CapMid(Base, NameAsc), 0.62f * NameAsc);
-		Mesh.Dot(D.x, D.y, D.r, C);
+		const FMarkTok M = MarkTok(K * A);
+		Mesh.Dot(D.x, D.y, D.r, M.C, M.RimOrNull());
 	}
 }
 
@@ -1783,6 +1862,7 @@ public:
 		{
 			DebtShown = L.debt;
 			DebtText = L.debt >= 0 ? DebtWord + TEXT(" ") + FString::FromInt(L.debt) : FString();
+			DebtW = TextWidth(DebtText, NoteFont);
 		}
 
 		const ftcore::UiFadeTimes& Fade = Table().Style.fade;
@@ -2061,6 +2141,7 @@ private:
 		}
 		ResultFont = FontFor(UiTextRole::Subtitle, H);
 		ResultLineH = FM->GetMaxCharacterHeight(ResultFont) * 1.15f; // the subtitle's line
+		ResultAsc = Asc(ResultFont);
 		NameSlot = -2; // measured again in the new fonts
 		bFoeNames = false;
 		for (int32 I = 0; I < static_cast<int32>(UE_ARRAY_COUNT(kReadTells)); ++I)
@@ -2683,7 +2764,7 @@ private:
 	// A line that carries a value (ValueStyle, Width px at 1080p), its edges on whole pixels and the 1 px dark edge along
 	// both sides.
 	void ValueLine(float X0, float X1, float Y, float From01, float To01, float Width, std::uint32_t Seed, float S, const FLinearColor& C,
-		float Taper = Hud::ValueTaper) const
+		float Taper = Hud::ValueTaper, const FLinearColor* Rim = nullptr) const
 	{
 		if (To01 - From01 < 0.002f || C.A <= 0.f)
 		{
@@ -2691,11 +2772,11 @@ private:
 		}
 		const float YS = SnapLine(Y, Width * S);
 		ftcore::uiStrokeLine(Line, X0, YS, X1, YS, ValueStyle(Width, Seed, S, Taper), From01, To01);
-		Mesh.ValueStroke(Line, C);
+		Mesh.ValueStroke(Line, C, Rim);
 	}
 
 	// A whole ring, joined without a seam.
-	void Ring(float CX, float CY, float R, float Width, std::uint32_t Seed, float S, const FLinearColor& C) const
+	void Ring(float CX, float CY, float R, float Width, std::uint32_t Seed, float S, const FLinearColor& C, const FLinearColor* Rim = nullptr) const
 	{
 		ftcore::uiStrokeArc(Line, CX, CY, R, 0.f, 360.f, StrokeStyle(Width, Seed, S, 0.f));
 		if (Line.count > 1)
@@ -2703,7 +2784,7 @@ private:
 			Line.pt[Line.count - 1].x = Line.pt[0].x;
 			Line.pt[Line.count - 1].y = Line.pt[0].y;
 		}
-		Mesh.Stroke(Line, C, true);
+		Mesh.Stroke(Line, C, true, Rim);
 	}
 
 	void Poly(const FVector2f* Pts, int32 N, float HalfWidth, const FLinearColor& C, bool bClosed = false) const
@@ -2719,9 +2800,26 @@ private:
 	}
 
 	// Low is not told by colour alone: danger red, and a pulse between 60 and 100 percent at 1 Hz.
-	FLinearColor LowTok(bool bLow, float A) const
+	float LowPulse() const { return 0.8f + 0.2f * FMath::Cos(UE_TWO_PI * Time); }
+	FLinearColor LowTok(bool bLow, float A) const { return bLow ? Tok(UiToken::Danger, A * LowPulse()) : Tok(UiToken::Ink, A); }
+
+	// A danger word (uiDangerWord) with its top at Top (Asc its face's ascent, W its measured width), the glyphs at A. Where
+	// the world underlines danger words the glyphs are ink and a 1 px danger line runs under their width, just below the
+	// baseline; Pulse then moves from the glyphs onto that line. Elsewhere the glyphs are danger at A times Pulse.
+	void DangerText(const FPainter& P, float X, float Top, float Asc, float W, const FString& Text, const FSlateFontInfo& Font, float A,
+		float Pulse = 1.f) const
 	{
-		return bLow ? Tok(UiToken::Danger, A * (0.8f + 0.2f * FMath::Cos(UE_TWO_PI * Time))) : Tok(UiToken::Ink, A);
+		const FUiWorldRow& R = Shown();
+		FLinearColor C = R.DangerWord;
+		C.A *= A * (R.bDangerUnderline ? 1.f : Pulse);
+		P.Text(X, Top, Text, Font, C);
+		if (R.bDangerUnderline && W > 0.f)
+		{
+			FLinearColor L = R.DangerLine;
+			L.A *= A * Pulse;
+			const float Base = Top + Asc;
+			ValueLine(X, X + W, Base + FMath::Max(2.f * P.S, 0.12f * Asc), 0.f, 1.f, Hud::DangerUnderW, 151, P.S, L, 0.f);
+		}
 	}
 
 	// An hp line: the hp in the stroke over a hairline track (the track only where the hp is not, so it never reads as a
@@ -2861,7 +2959,14 @@ private:
 		}
 		if (L.debt >= 0)
 		{
-			P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, LowTok(L.debt >= 80, 0.7f * A));
+			if (L.debt >= 80)
+			{
+				DangerText(P, X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), NoteAsc, DebtW, DebtText, NoteFont, 0.7f * A, LowPulse());
+			}
+			else
+			{
+				P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, Tok(UiToken::Ink, 0.7f * A));
+			}
 		}
 
 		// The Load fills the name in gold from the left. Past the Release threshold the whole name brightens. On the party
@@ -2870,11 +2975,48 @@ private:
 		const float K = Rows.Open;
 		const ftcore::UiPartyRowView LeadView = ftcore::uiPartyRowView(PartyDrawn, ftcore::UiPartyRow::Lead, ftcore::UiPartyWhy::Ok, LeadNameW);
 		const float NameTop = NameBase - LeadNameAsc;
-		P.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Ink, FMath::Lerp(1.f, LeadView.ink, K) * A));
+		const float NameA = FMath::Lerp(1.f, LeadView.ink, K) * A;
+		if (Shown().bMarksAccent2)
+		{
+			// A world whose marks wear accent2 puts no colour on text: the name stays ink and brightens toward the accent
+			// past the threshold, and the Load is a value line under it in the mark colour, kept to the hp line (the live
+			// read-out stays when the party screen lifts the name). Its leading edge is a 2 px tick and the threshold's
+			// shimmer one sweep along it, both in the accent, never the gold.
+			const FLinearColor NameC = FMath::Lerp(Tok(UiToken::Ink, NameA), Tok(UiToken::Accent, NameA), LoadName.bright);
+			P.Text(X0, NameTop, LeadName, LeadNameFont, NameC);
+			if (LoadName.fill > 0.001f)
+			{
+				const float LoadY = HpY - (0.5f * Hud::LeadHpW + 4.f + 0.5f * Hud::LoadW) * S;
+				const float LoadX1 = X0 + LeadNameW;
+				const FMarkTok M = MarkTok(A);
+				ValueLine(X0, LoadX1, LoadY, 0.f, LoadName.fill, Hud::LoadW, 207, S, M.C, 0.f, M.RimOrNull());
+				const FLinearColor Acc = Tok(UiToken::Accent, A);
+				if (LoadName.fill < 0.999f)
+				{
+					const float TX = X0 + LeadNameW * LoadName.fill;
+					const float TH = (0.5f * Hud::LoadW + 3.f) * S;
+					const FVector2f Tick[4] = {FVector2f(TX - 2.f * S, LoadY - TH), FVector2f(TX, LoadY - TH), FVector2f(TX, LoadY + TH),
+						FVector2f(TX - 2.f * S, LoadY + TH)};
+					Mesh.Fill(Tick, 4, Acc);
+				}
+				if (LoadName.shimmer >= 0.f)
+				{
+					const float Band = 0.22f;
+					const float B0 = -Band + (1.f + Band) * LoadName.shimmer;
+					const float From = FMath::Clamp(B0, 0.f, LoadName.fill);
+					const float To = FMath::Clamp(B0 + Band, 0.f, LoadName.fill);
+					ValueLine(X0, LoadX1, LoadY, From, To, Hud::LoadW, 208, S, Acc, 0.f);
+				}
+			}
+		}
+		else
+		{
+			P.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Ink, NameA));
+		}
 		const FLinearColor Gold0 = LinOf(St.loadGold, A);
 		const FLinearColor Bright = LinOf(St.loadBright, A);
 		const FLinearColor Gold = Gold0 + (Bright - Gold0) * LoadName.bright;
-		if (LoadName.fill > 0.001f)
+		if (LoadName.fill > 0.001f && !Shown().bMarksAccent2)
 		{
 			const FPainter G{P.Geometry, P.Out, P.Layer + 1, S}; // over the ink name
 			const FPainter E{P.Geometry, P.Out, P.Layer + 2, S}; // over the gold
@@ -3757,11 +3899,11 @@ private:
 		{
 			// The weak point open on the body: a diamond in a ring, breathing.
 			const float Br = 0.5f + 0.5f * FMath::Sin(Time * 6.f);
-			const FLinearColor C = Tok(UiToken::Ink, 0.8f + 0.2f * Br);
+			const FMarkTok M = MarkTok(0.8f + 0.2f * Br); // a mark: the world's mark colour; its label stays ink
 			const FVector2f Pts[4] = {FVector2f(WeakAt.X, WeakAt.Y - 7.f * S), FVector2f(WeakAt.X + 7.f * S, WeakAt.Y), FVector2f(WeakAt.X, WeakAt.Y + 7.f * S),
 				FVector2f(WeakAt.X - 7.f * S, WeakAt.Y)};
-			Mesh.Fill(Pts, 4, C);
-			Ring(WeakAt.X, WeakAt.Y, (24.f + 4.f * Br) * S, 1.6f, 141, S, C);
+			Mesh.Fill(Pts, 4, M.C, M.RimOrNull());
+			Ring(WeakAt.X, WeakAt.Y, (24.f + 4.f * Br) * S, 1.6f, 141, S, M.C, M.RimOrNull());
 			Note(P, ftcore::UiFirstUseItem::WeakPointLabel, WeakAt.X + 40.f * S, WeakAt.Y, 1.f);
 		}
 	}
@@ -3822,8 +3964,15 @@ private:
 			PaintLowGradient(Mesh, Size, Table().Style.backingSoftDialogue * ResultA);
 			const float WordW = bWon ? VictoryW : DefeatW;
 			const float Up = E.bottom - Hud::Margin * S;
-			P.Text(CX - WordW * 0.5f, Size.Y - 96.f * S - Up - ResultLineH, bWon ? VictoryWord : DefeatWord, ResultFont,
-				Tok(bWon ? UiToken::Ink : UiToken::Danger, ResultA));
+			const float WordTop = Size.Y - 96.f * S - Up - ResultLineH;
+			if (bWon)
+			{
+				P.Text(CX - WordW * 0.5f, WordTop, VictoryWord, ResultFont, Tok(UiToken::Ink, ResultA));
+			}
+			else
+			{
+				DangerText(P, CX - WordW * 0.5f, WordTop, ResultAsc, DefeatW, DefeatWord, ResultFont, ResultA);
+			}
 			if (bAgain)
 			{
 				P.Text(CX - AgainW * 0.5f, Size.Y - 50.f * S - Up, AgainWord, LabelFont, Tok(UiToken::InkDim, ResultA));
@@ -3870,7 +4019,7 @@ private:
 	FString LeadNameSeen, LeadName, PartnerNameSeen, PartnerName;
 	float LeadNameW = 0.f, PartnerNameW = 0.f;
 	FString LoadWord, ReleaseWord, ReleaseKey, GuardWord, PoiseWord, WeightWord, DebtWord, DebtText;
-	float ReleaseWordW = 0.f, ReleaseKeyW = 0.f, GuardWordW = 0.f, WeightW = 0.f;
+	float ReleaseWordW = 0.f, ReleaseKeyW = 0.f, GuardWordW = 0.f, WeightW = 0.f, DebtW = 0.f;
 	int32 DebtShown = -2;
 	// The top line's name, and the call word under it (a called zone, the answer the boss's move needs, or STAGGERED).
 	FSlateFontInfo NameFont;
@@ -4022,7 +4171,7 @@ private:
 	uint8 LockSeen = ftcore::kArenaNobody;
 	float HitA = 0.f, ParryA = 0.f;
 	FSlateFontInfo ResultFont;
-	float ResultLineH = 0.f;
+	float ResultLineH = 0.f, ResultAsc = 0.f;
 	FString VictoryWord, DefeatWord, AgainWord;
 	float VictoryW = 0.f, DefeatW = 0.f, AgainW = 0.f;
 	bool bResult = false;
@@ -4348,8 +4497,8 @@ private:
 			return -1.f; // an all-black read is no picture yet: read again next frame
 		}
 		const ftcore::UiStyle& St = Table().Style;
-		const ftcore::UiColor Ink = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Ink);
-		const ftcore::UiColor Back = ftcore::uiColor(St, ftcore::UiWorld::Solhaven, ftcore::UiPalette::Default, UiToken::Backing);
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
+		const ftcore::UiColor Back = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Backing);
 		const float Need = ftcore::uiOptionDim(St, Ink, Back, Pic);
 		UE_LOG(LogForgottenThird, Display, TEXT("UI: conversation gradient %.2f (this beat needs %.2f over the lower screen's brightest tenth (%.2f, %.2f, %.2f), %dx%d px read)."),
 			FMath::Max(ConvTarget(), Need), Need, Pic.r, Pic.g, Pic.b, Rc.Width(), Rc.Height());
