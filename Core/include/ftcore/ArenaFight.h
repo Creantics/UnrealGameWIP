@@ -78,6 +78,9 @@
 //   - Guard (held): blocks attacks from within guardArcCos of the facing. A blocked hit deals
 //     damage * (1 - guardAbsorb) and costs the guard guardDamage stamina; if that empties stamina
 //     the guard breaks (GuardBroken, GuardBreak for guardBreakTime). Unblockable attacks ignore it.
+//     A BLOCK call (a move that can be blocked but not parried) met by a guard pressed inside its call window
+//     (from the move's start to its hit) costs only blockCallGuard of guardDamage (0 by default: nothing); a
+//     guard held from before the move began pays guardDamage. The chip and a block's Load are as any block's.
 //     Moving while guarding is scaled by guardMoveScale.
 //   - Parry: pressing guard (the held flag going from false to true) opens a parry window of
 //     parryWindow, unless the previous press was less than parryRearm ago (mashing guard opens no
@@ -528,6 +531,7 @@ struct ArenaFighter {
     float readWrongPoise = 10.f; // poise a misread gives the attacker back (up to its kind's poise)
     // Carrying (ArenaFight::setCarry, setAlly): Load from blocks and from taking half a blow aimed at the ally.
     float blockLoadShare = 0.25f;   // a block stores the blocked damage times this as Load (0..1)
+    float blockCallGuard = 0.f;     // the share of guardDamage a BLOCK call guarded inside its call window costs (0..1)
     float takeHalfWindow = 0.25f;   // s before a blow lands on the ally that a take half press still counts (0.05..0.6)
     float takeHalfReach = 4.f;      // m, centre to centre, the player may stand from the ally (1..10)
     float takeHalfLoadShare = 1.f;  // the hp the player takes, times this, is stored as Load (0..2)
@@ -980,6 +984,7 @@ struct ArenaStats {
     int hits = 0;      // the player's attacks that connected (per target)
     int hitsTaken = 0;
     int blocks = 0;
+    int blockCalls = 0; // blocks of a BLOCK call guarded inside its call window (blockCallGuard of the cost)
     int parries = 0;
     int ripostes = 0;
     int evades = 0;
@@ -1569,6 +1574,7 @@ private:
         bool token = false;
         bool hitPlayer = false;             // this attack has connected: landed, blocked or parried
         bool evaded = false;                // this attack's Evaded has been reported
+        float callFrom = -1.0e9f;           // fight time this move began: its call window opens (a BLOCK call)
         float stringEnd = 0.f;              // fight time the last string ended (0: the fight's start)
         float asked = 0.f;                  // seconds spent asking for a token
         std::int8_t strafeDir = 1;

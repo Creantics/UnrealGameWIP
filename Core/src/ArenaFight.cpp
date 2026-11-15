@@ -2414,6 +2414,7 @@ struct ArenaFightImpl {
         foe.hitPlayer = false;
         foe.hitAlly = false;
         foe.evaded = false;
+        foe.callFrom = t0;
         foe.cooldown[move] = def.enemies[i].moves[move].cooldown;
         foe.readRight = false;
         foe.breakTimed = timed;
@@ -2498,8 +2499,13 @@ struct ArenaFightImpl {
             return;
         }
         if (guarding && !mv.unblockable) {
+            // A BLOCK call (blockable, not parryable) met by a guard pressed since the move began: blockCallGuard of
+            // the cost. A guard held from before it pays the whole guardDamage, as does a PARRY call merely blocked.
+            const bool called = !mv.parryable && pl.lastGuardPress >= foe.callFrom - kArenaEps;
+            const float cost = called ? a.guardDamage * std::clamp(fi.blockCallGuard, 0.f, 1.f) : a.guardDamage;
+            if (called) ++stats.blockCalls;
             const float before = pl.stamina;
-            pl.stamina = std::max(0.f, before - a.guardDamage);
+            pl.stamina = std::max(0.f, before - cost);
             pl.lastSpend = t0;
             ++stats.blocks;
             emit(ArenaEventType::Blocked, source, kArenaPlayer, foe.move,
@@ -4108,7 +4114,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             softRange 0..100; softArcCos -1..1; homingReach 0..20; hurtJolt 0..kArenaMaxJolt;
 //             attacks a bool; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000;
-//             blockLoadShare 0..1; takeHalfWindow 0.05..0.6; takeHalfReach 1..10; takeHalfLoadShare 0..2;
+//             blockLoadShare 0..1; blockCallGuard 0..1; takeHalfWindow 0.05..0.6; takeHalfReach 1..10; takeHalfLoadShare 0..2;
 //             takeHalfRearm 0..2
 //   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
 //             kArenaBeatTolerance. An enemy may carry a bpm of its own, which its startups are checked against
@@ -4268,7 +4274,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "releasePoise", "pairWindow", "pairHits", "pairBossPoise", "pairCooldown", "pairPartnerSeconds",
                       "readPower", "readStackPower", "readPoise",
                       "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
-                      "hurtJolt", "blockLoadShare", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
+                      "hurtJolt", "blockLoadShare", "blockCallGuard", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
                       "takeHalfRearm", "rounds", "reload", "jumpStartup", "jumpAir", "jumpLand", "jumpLandLock",
                       "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight"},
                      false, warnings);
@@ -4333,6 +4339,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "readPoise", f.readPoise, 0, 100000, false, path, errors);
     arenaNum(j, "readWrongPoise", f.readWrongPoise, 0, 100000, false, path, errors);
     arenaNum(j, "blockLoadShare", f.blockLoadShare, 0, 1, false, path, errors);
+    arenaNum(j, "blockCallGuard", f.blockCallGuard, 0, 1, false, path, errors);
     arenaNum(j, "takeHalfWindow", f.takeHalfWindow, 0.05f, 0.6f, false, path, errors);
     arenaNum(j, "takeHalfReach", f.takeHalfReach, 1, 10, false, path, errors);
     arenaNum(j, "takeHalfLoadShare", f.takeHalfLoadShare, 0, 2, false, path, errors);

@@ -3429,6 +3429,55 @@ void parryRun(Rig& rig, int ticks, int pairAt = 0, int pairAgain = 0) {
 
 } // namespace
 
+TEST_CASE("arena guard: a BLOCK call guarded inside its call window costs blockCallGuard of guardDamage; held from before, all") {
+    ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
+    bite.guardDamage = 10.f;
+    CHECK(ArenaFighter{}.blockCallGuard == 0.f);
+    // `parryable`: PARRY (true) or BLOCK (false) on the tell. `pressAt`: the guard's press (1-based tick; the move
+    // begins on the first tick with the enemy at 1.5 m), or 0 for a guard held from before, the enemy at 10 m until
+    // tick 30. Returns the first Blocked event's stamina cost (-1: none).
+    const auto blockCost = [&](bool parryable, int pressAt, float share, int* calls = nullptr) {
+        ArenaFighter f = ruleFighter();
+        f.blockCallGuard = share;
+        ArenaEnemyKind k = hitterKind(bite);
+        k.moves[0].parryable = parryable;
+        Rig rig(f, {k});
+        if (pressAt == 0) {
+            rig.put(0, 10.f, 0.f);
+            rig.in.guard = true;
+            rig.run(30);
+            REQUIRE(rig.count(ArenaEventType::AttackStarted) == 0);
+        }
+        rig.put(0, 1.5f, 0.f);
+        for (int k2 = 1; k2 <= 40; ++k2) {
+            if (pressAt > 0 && k2 == pressAt) rig.in.guard = true;
+            rig.tick();
+        }
+        if (calls) *calls = rig.fight.stats().blockCalls;
+        const Logged* blocked = rig.find(ArenaEventType::Blocked);
+        return blocked ? blocked->event.amount : -1;
+    };
+    int calls = -1;
+    CHECK(blockCost(false, 5, 0.f, &calls) == 0); // pressed in the tell: free
+    CHECK(calls == 1);
+    CHECK(blockCost(false, 0, 0.f, &calls) == 10); // held from before the move began: the whole cost
+    CHECK(calls == 0);
+    CHECK(blockCost(false, 5, 0.5f) == 5);         // the share is data
+    CHECK(blockCost(false, 5, 1.f) == 10);
+    CHECK(blockCost(true, 5, 0.f, &calls) == 10);  // a PARRY call merely blocked (pressed too early to parry) pays
+    CHECK(calls == 0);
+    // The importer: in range, and refused outside it.
+    const auto with = [](const char* v) {
+        return tableJson(std::string(R"([ { "id": "default", "blockCallGuard": )") + v + " } ]", kEnemiesOk);
+    };
+    ArenaTable t;
+    REQUIRE(loadError(with("0.25"), &t).empty());
+    CHECK(t.fighters[0].blockCallGuard == doctest::Approx(0.25f));
+    CHECK(contains(loadError(with("1.5")), "blockCallGuard"));
+    CHECK(contains(loadError(with("-0.5")), "blockCallGuard"));
+    CHECK(loadShipped().fighters[0].blockCallGuard == 0.f);
+}
+
 TEST_CASE("arena Load: it never rises without a parry, and never refills or drains on its own") {
     ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
     bite.guardDamage = 10.f;
