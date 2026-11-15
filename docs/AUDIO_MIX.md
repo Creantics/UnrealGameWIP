@@ -16,12 +16,17 @@ Rules:
   `avoidLast` can raise this (up to 4, and at most N - 1). It can never lower it.
 - Shuffle bag: each round of N plays uses every variant exactly once, in a shuffled order, so use
   stays equal over a long run. The bag's head is picked so the rules above hold across rounds.
-- `roundRobin`: plays 0, 1, ..., N-1, 0, ... instead.
+- `roundRobin`: plays the variants in order (k, k+1, ..., wrapping) instead. The start k comes
+  from the cue's seed, so two round-robin cues do not run in lockstep.
 - Jitter: pitch uniform in +-`pitchCents` cents, volume uniform in +-`volumeDb` dB. Both are 0 by
   default. Every play draws the same count of random numbers, so changing a jitter range never
   changes the variant order.
 - Independence: each cue's state carries its own xorshift32 generator, seeded from a game-wide
   seed and a hash of the cue id. One cue's sequence never depends on how often other cues played.
+  `audioCueKey` is a 32-bit FNV-1a hash, so two ids can collide. Colliding ids seeded by id alone
+  would share a sequence. Use the seed overload that also takes the cue's index in
+  `AudioCueTable::cues`. It folds the index in through bijections, so two cues with colliding ids
+  still start from different generator states.
 
 API:
 
@@ -38,6 +43,8 @@ int audioPickAvoid(const AudioPickRule& rule);      // the effective no-repeat d
 std::uint32_t audioCueKey(std::string_view cueId);  // FNV-1a
 void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::uint32_t cueKey);
 void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::string_view cueId);
+void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::string_view cueId,
+                   std::uint32_t tableIndex);   // preferred where the table index is known
 AudioPickResult audioPick(const AudioPickRule& rule, AudioPickState& st);
 ```
 
@@ -95,13 +102,20 @@ class MixState {
     int voiceCap() const; int voiceCapFor(MixMode) const;
 };
 struct MixVoice { int priority = 0; float ageSeconds = 0.f; };
-struct MixVoiceStops { std::uint8_t index[32]; int count; };
+struct MixVoiceStops { std::uint32_t keep[32]; int keepCount; std::size_t count;
+                       bool stops(std::size_t i) const; };
 MixVoiceStops mixVoicesToStop(std::span<const MixVoice> voices, int cap);
 ```
 
-`mixVoicesToStop` returns which sounds to stop so that at most `cap` keep playing. It stops the
-lowest priority first, then the oldest, and breaks a full tie by the lower index. Only the first
-32 voices are considered. `priority` uses the cue's existing `prio` (0..100). The per-cue `max`
+`mixVoicesToStop` takes any number of voices and returns the ones that keep playing, so at most
+`cap` keep playing. Every other voice is to be stopped (`stops(i)`, `count` in all). It stops the
+lowest priority first, then the oldest, and breaks a full tie by the lower index. At most 32
+voices can be kept, so a cap above 32 counts as 32. It uses a fixed-capacity selection,
+O(n x cap), with no allocation.
+
+Gains: a table value of -infinity, or anything at or below -120 dB (`kMixFloorDb`), is a mute.
+The bus ramps to -120 dB, where its linear gain is exactly 0, and comes back as usual. NaN and
++infinity count as 0 dB. `priority` uses the cue's existing `prio` (0..100). The per-cue `max`
 still limits one cue's own voices. That limit is separate from the per-state cap.
 
 ## Data keys (Data/Audio/cues.json)
@@ -130,7 +144,7 @@ so the new keys go in through that tool's sheet when takes exist.
 
 - **Audio subsystem start**: keep one `AudioPickState` per cue next to the cue table, for example
   an array parallel to `AudioCueTable::cues`, sized at load. Seed each with
-  `audioPickSeed(state, gameSeed, cue.id)`. Keep `audioPickRuleFor(cue)` with it.
+  `audioPickSeed(state, gameSeed, cue.id, cueIndex)`. Keep `audioPickRuleFor(cue)` with it.
 - **Each play of a cue**: `audioPick(rule, state)`. Pick the imported take for `r.variant`, for
   example `/Game/Audio/<Bus>/<CueId>_<NN>`, with a single-take cue staying `<CueId>`. Set the
   component's pitch multiplier to `r.pitchRatio()` and its volume to
@@ -141,6 +155,6 @@ so the new keys go in through that tool's sheet when takes exist.
   Call `mix.step(mask, DeltaSeconds)`. Push `gains.linear[bus]` to each bus's Sound Class or
   Submix volume, in a Sound Class Mix or a submix's output volume, for example. Route each cue
   by `mixBusForCue(cue)`.
-- **Voice cap**: when a sound starts, or once per frame, fill a `MixVoice` array with up to 32
-  active voices (cue `prio`, seconds since start). Stop the indices that
-  `mixVoicesToStop(voices, mix.voiceCap())` returns, with a short fade.
+- **Voice cap**: when a sound starts, or once per frame, fill a `MixVoice` array with every
+  active voice (cue `prio`, seconds since start). Stop, with a short fade, each voice where the
+  result of `mixVoicesToStop(voices, mix.voiceCap())` gives `stops(i)`.

@@ -12,7 +12,8 @@
 //
 // Rules: never the same variant twice in a row when N >= 2; never one of the last two when N >= 4
 // (avoidLast can raise that, up to 4, never lower it); shuffle-bag order, so over every N plays
-// each variant is used once; or round robin (0, 1, 2, ... N-1, 0, ...) when roundRobin is set.
+// each variant is used once; or round robin (k, k+1, ... wrapping, from a seeded start k) when
+// roundRobin is set.
 // Pitch jitter is uniform in +-pitchCents cents, volume jitter uniform in +-volumeDb dB; both 0 by
 // default. Each cue's state carries its own generator, so a cue's sequence depends only on its seed
 // and on its own plays, never on other cues. Every play draws the same count of random numbers,
@@ -126,7 +127,8 @@ inline int audioPickAvoid(const AudioPickRule& rule) {
     return avoid;
 }
 
-// FNV-1a of a cue id; no allocation.
+// FNV-1a of a cue id; no allocation. A 32-bit hash: two ids that collide would share a sequence
+// when seeded by id alone, so seed with the cue's table index too where there is one.
 inline std::uint32_t audioCueKey(std::string_view cueId) {
     std::uint32_t h = 2166136261u;
     for (const char c : cueId) {
@@ -146,6 +148,17 @@ inline void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::uint32_t 
 
 inline void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::string_view cueId) {
     audioPickSeed(st, seed, audioCueKey(cueId));
+}
+
+// Seeds from the cue id and its index in the cue table (AudioCueTable::cues). Two cues whose ids
+// hash alike still start from different generator states, since the index is folded in through
+// bijections (a multiply by an odd constant, then an invertible mix).
+inline void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::string_view cueId, std::uint32_t tableIndex) {
+    namespace d = audio_pick_detail;
+    st = AudioPickState{};
+    const std::uint32_t base = d::mix(seed ^ d::mix(audioCueKey(cueId) + 0x9E3779B9u));
+    const std::uint32_t s = d::mix(base + tableIndex * 0x9E3779B9u);
+    st.rng = s ? s : 0x9E3779B9u;
 }
 
 // The next play of the cue. No allocation.
@@ -169,7 +182,10 @@ inline AudioPickResult audioPick(const AudioPickRule& rule, AudioPickState& st) 
     if (n == 1) {
         v = 0;
     } else if (rule.roundRobin) {
-        v = st.recentCount ? static_cast<std::uint8_t>((st.recent[0] + 1) % n) : 0;
+        // The first play starts at a seeded offset (read from the generator without advancing it),
+        // so two round-robin cues don't run in lockstep.
+        v = st.recentCount ? static_cast<std::uint8_t>((st.recent[0] + 1) % n)
+                           : static_cast<std::uint8_t>(d::mix(st.rng) % static_cast<std::uint32_t>(n));
     } else {
         if (st.bagPos >= n) {
             for (int i = 0; i < n; ++i) st.bag[i] = static_cast<std::uint8_t>(i);

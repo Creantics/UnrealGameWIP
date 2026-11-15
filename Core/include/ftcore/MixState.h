@@ -30,7 +30,8 @@ enum class MixBus : std::uint8_t { Music, Ambience, Sfx, Footsteps, Voice, Ui, C
 
 inline constexpr int kMixModes = static_cast<int>(MixMode::Count);
 inline constexpr int kMixBuses = static_cast<int>(MixBus::Count);
-inline constexpr int kMixMaxVoices = 32;
+inline constexpr int kMixMaxVoices = 32;     // the most voices a cap can keep
+inline constexpr float kMixFloorDb = -120.f; // a bus at or below this is silent (linear gain exactly 0)
 
 using MixRequests = std::uint8_t; // bit (1 << mode) per requested state
 
@@ -138,12 +139,13 @@ public:
 private:
     float target(MixMode m, int b) const {
         const float v = table_.gainDb[static_cast<int>(m)][b];
-        return std::isfinite(v) ? v : 0.f;
+        if (std::isnan(v) || v > 1e30f) return 0.f; // NaN and +infinity: unity
+        return v <= kMixFloorDb ? kMixFloorDb : v;   // -infinity and anything at or below the floor: silence
     }
     void fill() {
         for (int b = 0; b < kMixBuses; ++b) {
             gains_.db[b] = gainDb_[b];
-            gains_.linear[b] = std::pow(10.f, gainDb_[b] / 20.f);
+            gains_.linear[b] = gainDb_[b] <= kMixFloorDb ? 0.f : std::pow(10.f, gainDb_[b] / 20.f);
         }
     }
 
@@ -161,40 +163,49 @@ struct MixVoice {
     float ageSeconds = 0.f;  // time since it started
 };
 
+// The voices that keep playing; every other voice given is to be stopped.
 struct MixVoiceStops {
-    std::uint8_t index[kMixMaxVoices] = {}; // indices into the voices given, in stop order
-    int count = 0;
+    std::uint32_t keep[kMixMaxVoices] = {}; // indices into the voices given, best first
+    int keepCount = 0;
+    std::size_t count = 0;                  // voices to stop: the input length minus keepCount
+    bool stops(std::size_t i) const {
+        for (int k = 0; k < keepCount; ++k)
+            if (keep[k] == i) return false;
+        return true;
+    }
 };
 
-// Which sounds to stop so at most `cap` keep playing: the lowest priority first, then the oldest,
-// then (a full tie) the lower index. Only the first 32 voices are looked at; a cap below 0 counts as 0.
+// Which sounds to stop so at most `cap` keep playing, for any number of voices: the lowest
+// priority stops first, then the oldest, then (a full tie) the lower index. At most 32 voices are
+// kept (a cap above 32 counts as 32, below 0 as 0). Fixed-capacity selection, O(n * cap).
 inline MixVoiceStops mixVoicesToStop(std::span<const MixVoice> voices, int cap) {
     MixVoiceStops out;
-    const int n = voices.size() > static_cast<std::size_t>(kMixMaxVoices) ? kMixMaxVoices : static_cast<int>(voices.size());
     if (cap < 0) cap = 0;
-    if (n <= cap) return out;
-    std::uint8_t order[kMixMaxVoices];
-    for (int i = 0; i < n; ++i) order[i] = static_cast<std::uint8_t>(i);
-    const auto stopsFirst = [&](std::uint8_t a, std::uint8_t b) {
+    if (cap > kMixMaxVoices) cap = kMixMaxVoices;
+    const auto age = [](const MixVoice& v) { return std::isfinite(v.ageSeconds) ? v.ageSeconds : 0.f; };
+    // True when voice a is kept in preference to voice b.
+    const auto keptBefore = [&](std::size_t a, std::size_t b) {
         const MixVoice& va = voices[a];
         const MixVoice& vb = voices[b];
-        if (va.priority != vb.priority) return va.priority < vb.priority;
-        const float aa = std::isfinite(va.ageSeconds) ? va.ageSeconds : 0.f;
-        const float ab = std::isfinite(vb.ageSeconds) ? vb.ageSeconds : 0.f;
-        if (aa != ab) return aa > ab;
-        return a < b;
+        if (va.priority != vb.priority) return va.priority > vb.priority;
+        if (age(va) != age(vb)) return age(va) < age(vb);
+        return a > b;
     };
-    for (int i = 1; i < n; ++i) { // insertion sort: at most 32 entries
-        const std::uint8_t x = order[i];
-        int j = i;
-        while (j > 0 && stopsFirst(x, order[j - 1])) {
-            order[j] = order[j - 1];
-            --j;
+    for (std::size_t i = 0; i < voices.size() && cap > 0; ++i) {
+        int at = out.keepCount;
+        if (out.keepCount == cap) {
+            if (!keptBefore(i, out.keep[cap - 1])) continue; // no better than the worst kept
+            at = cap - 1;                                    // drop the worst
+        } else {
+            ++out.keepCount;
         }
-        order[j] = x;
+        while (at > 0 && keptBefore(i, out.keep[at - 1])) {
+            out.keep[at] = out.keep[at - 1];
+            --at;
+        }
+        out.keep[at] = static_cast<std::uint32_t>(i);
     }
-    out.count = n - cap;
-    for (int i = 0; i < out.count; ++i) out.index[i] = order[i];
+    out.count = voices.size() - static_cast<std::size_t>(out.keepCount);
     return out;
 }
 

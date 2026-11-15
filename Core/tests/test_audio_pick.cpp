@@ -99,12 +99,75 @@ TEST_CASE("audioPick: shuffled, not a fixed cycle") {
     CHECK(sameAsCycle < 40);
 }
 
-TEST_CASE("audioPick: round robin plays the variants in order") {
+TEST_CASE("audioPick: round robin plays the variants in order from a seeded start") {
     AudioPickRule rule = ruleOf(5);
     rule.roundRobin = true;
     AudioPickState st;
     audioPickSeed(st, 1u, "SFX-UI-TICK");
-    for (int i = 0; i < 20; ++i) CHECK(audioPick(rule, st).variant == i % 5);
+    const int start = audioPick(rule, st).variant;
+    for (int i = 1; i < 20; ++i) CHECK(audioPick(rule, st).variant == (start + i) % 5);
+
+    // Different cues start at different places, so they don't run in lockstep.
+    int starts[5] = {};
+    const char* ids[] = {"SFX-A", "SFX-B", "SFX-C", "SFX-D", "SFX-E", "SFX-F", "SFX-G", "SFX-H", "SFX-I", "SFX-J",
+                         "SFX-K", "SFX-L", "SFX-M", "SFX-N", "SFX-O", "SFX-P"};
+    for (const char* id : ids) {
+        AudioPickState s;
+        audioPickSeed(s, 1u, id);
+        ++starts[audioPick(rule, s).variant];
+    }
+    int used = 0;
+    for (const int c : starts) used += (c > 0);
+    CHECK(used >= 3);
+}
+
+TEST_CASE("audioPick: avoidLast over many plays at 2 and 3 variants") {
+    // Two variants: strict alternation.
+    AudioPickState two;
+    audioPickSeed(two, 6u, "SFX-TWO");
+    int prev = audioPick(ruleOf(2), two).variant;
+    for (int i = 0; i < kPlays; ++i) {
+        const int v = audioPick(ruleOf(2), two).variant;
+        CHECK(v == 1 - prev);
+        prev = v;
+    }
+    // Three variants avoiding two, and avoidLast raised past N - 1 (clamped to 2): a period-3 cycle.
+    for (const int avoid : {2, 4}) {
+        AudioPickRule rule = ruleOf(3);
+        rule.avoidLast = avoid;
+        CHECK(audioPickAvoid(rule) == 2);
+        AudioPickState st;
+        audioPickSeed(st, 9u, "SFX-THREE");
+        int seq[3] = {audioPick(rule, st).variant, audioPick(rule, st).variant, audioPick(rule, st).variant};
+        CHECK(seq[0] != seq[1]);
+        CHECK(seq[1] != seq[2]);
+        CHECK(seq[0] != seq[2]);
+        int bad = 0;
+        for (int i = 3; i < kPlays; ++i) {
+            const int v = audioPick(rule, st).variant;
+            bad += (v != seq[i % 3]);
+        }
+        CAPTURE(avoid);
+        CHECK(bad == 0);
+    }
+}
+
+TEST_CASE("audioPick: the table index separates two cues whose ids hash alike") {
+    // The same id stands in for a hash collision: equal keys, different table indices.
+    const AudioPickRule rule = ruleOf(6);
+    AudioPickState a, b, a2;
+    audioPickSeed(a, 3u, "SFX-STEP", 4u);
+    audioPickSeed(b, 3u, "SFX-STEP", 5u);
+    audioPickSeed(a2, 3u, "SFX-STEP", 4u);
+    CHECK(a.rng != b.rng);
+    int differ = 0, same = 0;
+    for (int i = 0; i < 500; ++i) {
+        const int va = audioPick(rule, a).variant;
+        differ += (va != audioPick(rule, b).variant);
+        same += (va == audioPick(rule, a2).variant);
+    }
+    CHECK(differ > 100);
+    CHECK(same == 500);
 }
 
 TEST_CASE("audioPick: the same seed replays the same sequence") {
@@ -218,7 +281,7 @@ TEST_CASE("audioPick: edge cases: one variant, out-of-range counts, a reload wit
 }
 
 TEST_CASE("audioPick: no allocation") {
-    if (!ftcore_test::allocHookInstalled()) return;
+    REQUIRE(ftcore_test::allocHookInstalled()); // AllocHook.cpp is linked into ftcore_tests
     AudioPickRule rule = ruleOf(7);
     rule.pitchCents = 20.f;
     AudioPickState st;

@@ -165,36 +165,99 @@ TEST_CASE("mixVoicesToStop: lowest priority first, then the oldest, then the low
     MixVoice v[6] = {{50, 1.0f}, {10, 0.2f}, {10, 3.0f}, {90, 9.0f}, {50, 4.0f}, {10, 3.0f}};
     MixVoiceStops s = mixVoicesToStop(v, 6);
     CHECK(s.count == 0);
-    s = mixVoicesToStop(v, 2);
-    REQUIRE(s.count == 4);
-    CHECK(s.index[0] == 2); // prio 10, age 3, lower index of the tie
-    CHECK(s.index[1] == 5);
-    CHECK(s.index[2] == 1); // prio 10, youngest
-    CHECK(s.index[3] == 4); // prio 50, older than index 0
+    for (std::size_t i = 0; i < 6; ++i) CHECK_FALSE(s.stops(i));
+    // Stop order: 2 (prio 10, age 3, lower index of the tie), 5, 1 (prio 10, youngest), 4, 0, 3.
+    const std::size_t order[6] = {2, 5, 1, 4, 0, 3};
+    for (int cap = 0; cap <= 6; ++cap) {
+        s = mixVoicesToStop(v, cap);
+        CAPTURE(cap);
+        CHECK(s.count == static_cast<std::size_t>(6 - cap));
+        CHECK(s.keepCount == cap);
+        for (int k = 0; k < 6; ++k) CHECK(s.stops(order[k]) == (k < 6 - cap));
+    }
+    CHECK(s.keep[0] == 3); // best first
     s = mixVoicesToStop(v, -4);
     CHECK(s.count == 6);
     s = mixVoicesToStop(std::span<const MixVoice>(), 0);
     CHECK(s.count == 0);
+}
 
-    // 40 voices: only the first 32 count. Combat's cap of 16 stops the 16 lowest.
+TEST_CASE("mixVoicesToStop: the cap holds for any number of voices") {
+    // 40 voices, priority i % 8, older with the index. The best voices sit past index 32 too.
     MixVoice many[40];
-    for (int i = 0; i < 40; ++i) many[i] = {i % 8, static_cast<float>(i)};
+    for (int i = 0; i < 40; ++i) many[i] = {i % 8, static_cast<float>(40 - i)};
+    for (const int cap : {0, 8, 16, 32, 40}) {
+        const MixVoiceStops s = mixVoicesToStop(many, cap);
+        const int kept = cap > kMixMaxVoices ? kMixMaxVoices : cap;
+        CAPTURE(cap);
+        CHECK(s.keepCount == kept);
+        CHECK(s.count == static_cast<std::size_t>(40 - kept));
+        int playing = 0;
+        for (std::size_t i = 0; i < 40; ++i) playing += s.stops(i) ? 0 : 1;
+        CHECK(playing == kept);
+        // Every kept voice outranks every stopped one.
+        for (int k = 0; k < s.keepCount; ++k)
+            for (std::size_t i = 0; i < 40; ++i)
+                if (s.stops(i)) {
+                    const MixVoice& a = many[s.keep[k]];
+                    const MixVoice& b = many[i];
+                    CHECK((a.priority > b.priority || (a.priority == b.priority && a.ageSeconds <= b.ageSeconds)));
+                }
+    }
+    // Cap 8 keeps the five priority-7 voices and the three youngest priority-6 voices (38, 30, 22).
+    const MixVoiceStops s8 = mixVoicesToStop(many, 8);
+    CHECK(s8.keep[0] == 39);
+    CHECK_FALSE(s8.stops(38));
+    CHECK_FALSE(s8.stops(30));
+    CHECK_FALSE(s8.stops(22));
+    CHECK(s8.stops(14));
     MixState mix;
     mix.step(kCombat, 0.f);
-    s = mixVoicesToStop(many, mix.voiceCap());
-    REQUIRE(s.count == 16);
-    for (int i = 0; i < s.count; ++i) {
-        CHECK(s.index[i] < 32);
-        CHECK(many[s.index[i]].priority <= 3); // 4 voices per priority: priorities 0..3
+    CHECK(mixVoicesToStop(many, mix.voiceCap()).count == 24);
+}
+
+TEST_CASE("MixState: a muted bus reaches exactly 0 and comes back") {
+    for (const float mute : {-std::numeric_limits<float>::infinity(), -120.f, -500.f}) {
+        MixTable t = defaultMixTable();
+        t.gainDb[static_cast<int>(MixMode::Cutscene)][bus(MixBus::Footsteps)] = mute;
+        t.gainDb[static_cast<int>(MixMode::Cutscene)][bus(MixBus::Ui)] = std::numeric_limits<float>::quiet_NaN();
+        t.gainDb[static_cast<int>(MixMode::Cutscene)][bus(MixBus::Voice)] = std::numeric_limits<float>::infinity();
+        MixState mix(t);
+        run(mix, mixRequest(MixMode::Cutscene), 0.5, 60);
+        CAPTURE(mute);
+        CHECK(mix.gainDb(MixBus::Footsteps) == kMixFloorDb);
+        CHECK(mix.gains()[MixBus::Footsteps] == 0.f);
+        CHECK(mix.gains()[MixBus::Ui] == 1.f);    // NaN: unity
+        CHECK(mix.gains()[MixBus::Voice] == 1.f); // +infinity: unity
+        run(mix, kExplore, 1.0, 60);
+        CHECK(mix.gainDb(MixBus::Footsteps) == 0.f);
+        CHECK(mix.gains()[MixBus::Footsteps] == 1.f);
     }
-    CHECK(s.index[0] == 24); // prio 0, the oldest of 0, 8, 16, 24
-    CHECK(s.index[3] == 0);
+}
+
+TEST_CASE("MixState: requests flipping every step stay bounded and settle when they stop") {
+    MixState mix;
+    for (int i = 0; i < 2000; ++i) {
+        mix.step(i % 2 ? kMenu : kExplore, 1.f / 60.f);
+        for (int b = 0; b < kMixBuses; ++b) {
+            CHECK(mix.gainDb(static_cast<MixBus>(b)) <= 0.f);
+            CHECK(mix.gainDb(static_cast<MixBus>(b)) >= -12.f);
+        }
+    }
+    for (int i = 0; i < 1000; ++i) {
+        mix.step(i % 3 ? kDialogue : kCombat, 1.f / 120.f);
+        for (int b = 0; b < kMixBuses; ++b) CHECK(std::isfinite(mix.gainDb(static_cast<MixBus>(b))));
+    }
+    run(mix, kDialogue, 0.7, 60);
+    CHECK(mix.gainDb(MixBus::Music) == -6.f);
+    CHECK(mix.gainDb(MixBus::Ambience) == -4.f);
+    CHECK(mix.gainDb(MixBus::Voice) == 0.f);
 }
 
 TEST_CASE("MixState and the voice cap: no allocation") {
-    if (!ftcore_test::allocHookInstalled()) return;
-    MixVoice v[32];
-    for (int i = 0; i < 32; ++i) v[i] = {i % 5, static_cast<float>(i) * 0.1f};
+    REQUIRE(ftcore_test::allocHookInstalled()); // AllocHook.cpp is linked into ftcore_tests
+    MixVoice v[40];
+    for (int i = 0; i < 40; ++i) v[i] = {i % 5, static_cast<float>(i) * 0.1f};
     const auto before = ftcore_test::allocStats().count;
     MixState mix;
     float sum = 0.f;
@@ -202,5 +265,5 @@ TEST_CASE("MixState and the voice cap: no allocation") {
     const MixVoiceStops s = mixVoicesToStop(v, mix.voiceCap());
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(sum > 0.f);
-    CHECK(s.count == 16);
+    CHECK(s.count == 24);
 }
