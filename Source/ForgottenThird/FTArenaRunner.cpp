@@ -87,7 +87,55 @@ constexpr double kArenaHitTint = 0.16;
 constexpr double kArenaTellFlash = 0.3;
 // A boss at least this tall (m) is looked up at: the camera's pitch rises toward its face, at this share of its height
 // (hover included), by ftcore::arenaLookUpPitch (the boom held at its limit, the lens tilting the rest).
+const TCHAR* PartnerActWord(ftcore::PartnerAct A)
+{
+	switch (A)
+	{
+	case ftcore::PartnerAct::Wait: return TEXT("Wait");
+	case ftcore::PartnerAct::MoveTo: return TEXT("MoveTo");
+	case ftcore::PartnerAct::Attack: return TEXT("Attack");
+	case ftcore::PartnerAct::Guard: return TEXT("Guard");
+	case ftcore::PartnerAct::StepBack: return TEXT("StepBack");
+	}
+	return TEXT("?");
+}
+
+const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
+{
+	static const TCHAR* const Words[] = {TEXT("NotBegun"), TEXT("Down"), TEXT("CannotAct"), TEXT("Guard"), TEXT("Leash"),
+		TEXT("String"), TEXT("Pause"), TEXT("NoTarget"), TEXT("Approach"), TEXT("HeldOff"), TEXT("Start"), TEXT("Budget"),
+		TEXT("Committed"), TEXT("Reposition")};
+	const size_t I = static_cast<size_t>(W);
+	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
+}
+
+// The brain's own word for why the partner is not acting (ftcore::PartnerIdle).
+const TCHAR* PartnerIdleWord(ftcore::PartnerIdle W)
+{
+	static const TCHAR* const Words[] = {TEXT("None"), TEXT("NoBudget"), TEXT("NoTarget"), TEXT("Moving"), TEXT("Staggered"),
+		TEXT("Pause"), TEXT("Other")};
+	static_assert(UE_ARRAY_COUNT(Words) == ftcore::kPartnerIdleCount, "one word per idle reason");
+	const size_t I = static_cast<size_t>(W);
+	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
+}
+
 constexpr float kArenaTallBoss = ftcore::kArenaLookTallBoss;
+// The low lens's shoulder crosses to its other side at this speed (m/s) when ftcore::arenaLowSide flips it.
+constexpr float kArenaLowSideRate = 2.4f;
+// The partner's soft turn eases at this rate (1/s) and stays off this long (s) after the player turns the view.
+constexpr float kPartnerYawRate = 3.f;
+constexpr float kPartnerYawQuiet = 1.5f;
+// "Arena check: partner in play": an act counts once it lasted this long (s) and was carried out.
+constexpr float kPartnerActMin = 0.25f;
+// A pose with its arm, shoulder and height scaled by `Share` (the boom's wall probe shortens all three alike).
+ftcore::ArenaCameraPose WallScaled(ftcore::ArenaCameraPose Pose, float Share)
+{
+	Pose.arm *= Share;
+	Pose.side *= Share;
+	Pose.up *= Share;
+	return Pose;
+}
+
 constexpr float kArenaFaceHeight = ftcore::kArenaLookFaceShare;
 // A skinned enemy's hit reactions and playing rates: the rate that lands a clip's impact at the end of its startup is held
 // to these.
@@ -399,6 +447,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bFrameCheck = FParse::Param(FCommandLine::Get(), TEXT("ArenaFrameCheck"));
 	bNoFrame = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoFrame"));
 	FrameFrames = FrameSettled = FrameInThird = 0;
+	ResetLeadFrameChecks();
 	FrameLeadWorst = FrameFoeWorst = FrameTurnMost = FrameRateMost = FrameLensMost = FrameArmMost = FramePrev = 0.f;
 	for (int32 I = 0; I < 4; ++I)
 	{
@@ -626,6 +675,12 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		}
 	}
 	HeldDelta = FMath::Max(0.f, Fight.heldTime() - HeldBefore);
+	// Over with a partner shot's or cast's impact still waiting: the held clock stands, so its wait runs on the frame's.
+	if (Fight.over() && !bHold && PartnerImpactDue >= 0.0)
+	{
+		PartnerImpactDue -= static_cast<double>(DeltaSeconds);
+		PlayWaitingPartnerImpact(static_cast<double>(Fight.heldTime()));
+	}
 	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
 	if (bPartner)
 	{
@@ -698,6 +753,7 @@ void UFTArenaRunner::End()
 		Skins[I] = FFTArenaSkin();
 	}
 	LeadWeapons.Reset(); // its components are the player's figure's
+	AllyWeapons.Reset(); // and these the ally's
 	if (AllyFigure)
 	{
 		AllyFigure->Destroy();
@@ -1485,6 +1541,14 @@ void UFTArenaRunner::PutBodiesAtStart()
 	StoneTurnsBegun = StoneTurnSteps = StoneTurnsCancelled = 0;
 	bStoneMoveLeft = false;
 	PlayerHitTime = -1e9;
+	LastHitFrom = FVector2D::ZeroVector;
+	LastHitAt = -1e9;
+	// The lock camera's eased state starts each fight at rest: no partner turn, no low lens.
+	PartnerYawNow = PartnerYawGoal = 0.f;
+	LockLow = 0.f;
+	LowSideNow = ftcore::kArenaLow.side;
+	bLowRig = false;
+	bShortArmLogged = false;
 	ParryTime = -1e9;
 	ReleaseTime = -1e9;
 	ReleaseSpent = 0;
@@ -1667,6 +1731,10 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	float MouseX = 0.f;
 	float MouseY = 0.f;
 	PC->GetInputMouseDelta(MouseX, MouseY);
+	if (FMath::Abs(LookX) > 0.2f || FMath::Abs(LookY) > 0.2f || MouseX != 0.f || MouseY != 0.f)
+	{
+		LastLookInputAt = Fight.time(); // the partner's soft turn stays off a while after (SteerCamera)
+	}
 
 	// The party screen (the new UI, FT::NewUiEnabled): Party's key, or on the pad the map key (Party's route there),
 	// opens it; a vertical flick of the right stick or the mouse moves its cursor, and letting go confirms
@@ -1849,6 +1917,14 @@ void UFTArenaRunner::BeginSession()
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
+	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = PartnerClearSteps = 0;
+	PartnerClipsStarted = PartnerClipsWhole = 0;
+	PartnerPlaySeconds = 0.f;
+	PartnerStillFor = PartnerStillLongest = 0.f;
+	bPartnerStillAt = false;
+	PartnerLastAct = PartnerIdleWhy = 0xFF;
+	PartnerActFrom = PartnerActTo = -1.f;
+	PartnerActDone = false;
 	PartnerSwapsBase = Fight.stats().partnerSwaps; // the brain's swaps start over with a restart (its begin)
 	PartnerJoinedAt = -1.0;
 	bSwitchAsked = bSwitchAskOpen = bSwitchAskedThisStep = bSwitchBackAsked = false;
@@ -3062,9 +3138,11 @@ void UFTArenaRunner::StepFight()
 		// switch's blend or the boom's lag is not where the player looks from. No pose drawn yet: no stationing.
 		if (bCameraPoseNow)
 		{
-			const ftcore::ArenaLensAt Lens = ftcore::arenaCameraLens(CameraPoseNow);
+			const ftcore::ArenaLensAt Lens = ftcore::arenaCameraLens(bFedCamera ? CameraLensNow : CameraPoseNow);
 			In.cameraOn = true;
 			In.cameraPos = ftcore::Vec2{Bodies.player.x + Lens.x, Bodies.player.y + Lens.y};
+			// ... and that camera in full, the lens over the floor (the brain's frame rules 13-16, the in-play count).
+			In.partnerCamera = bFedCamera ? FedCamera : ftcore::arenaPoseCamera(CameraPoseNow, Bodies.player, LockAspect(), PartnerHeight());
 		}
 	}
 	if (bPartner)
@@ -3085,6 +3163,84 @@ void UFTArenaRunner::StepFight()
 		++PartnerOnSteps;
 		PartnerCameraSteps += In.cameraOn ? 1 : 0;
 		PartnerStationedSteps += Out.ally.stationed ? 1 : 0;
+		// In play: the partner's feet, middle and head all in the frame the brain itself tests (ftcore::partnerInFrame
+		// at ftcore::kPartnerFrustumMargin on the camera it was fed), and its actions that lasted and were carried out.
+		if (ftcore::partnerCameraWhole(In.partnerCamera))
+		{
+			++PartnerFrustumSteps;
+			const bool bSeen = ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally);
+			PartnerSeenSteps += bSeen ? 1 : 0;
+			// On screen and not behind the locked target: hidden when the lines from the lens to its middle and to its
+			// head both pass through the target's drawn cylinder.
+			bool bHidden = false;
+			const std::uint8_t Locked = Fight.lock();
+			if (bSeen && Locked < Fight.def().enemies.size() && Locked < Bodies.enemies.size())
+			{
+				const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[Locked];
+				const float Scale = Foe.look.skinned() ? Foe.look.scale : 1.f;
+				const float Base = In.partnerCamera.groundZ + (Foe.look.skinned() ? Foe.look.hover : 0.f);
+				const float Top = Base + ftcore::arenaEnemyHeight(Foe) * Scale;
+				const ftcore::PartnerVec3& Eye = In.partnerCamera.pos;
+				const ftcore::ArenaPoint3 From{Eye.x, Eye.y, Eye.z};
+				const float Feet = In.partnerCamera.groundZ;
+				const float Tall = In.partnerCamera.bodyHeight;
+				const auto Behind = [&](float Z)
+				{
+					return ftcore::arenaHiddenBehind(From, {Bodies.ally.x, Bodies.ally.y, Feet + Z}, Bodies.enemies[Locked],
+						Foe.bodyRadius * Scale, Base, Top);
+				};
+				bHidden = Behind(Tall * 0.55f) && Behind(Tall * 0.95f);
+			}
+			PartnerClearSteps += bSeen && !bHidden ? 1 : 0;
+		}
+		PartnerPlaySeconds += StepSeconds;
+		// Standing still: not swinging or guarding and moved under 1 cm since the last step; the longest such run.
+		const bool bStill = bPartnerStillAt && !Out.ally.attacking && !Out.ally.guarding &&
+			ArenaLength(ftcore::Vec2{Bodies.ally.x - PartnerStillAt.x, Bodies.ally.y - PartnerStillAt.y}) < 0.01f;
+		PartnerStillFor = bStill ? PartnerStillFor + StepSeconds : 0.f;
+		PartnerStillLongest = FMath::Max(PartnerStillLongest, PartnerStillFor);
+		PartnerStillAt = Bodies.ally;
+		bPartnerStillAt = true;
+		const ftcore::PartnerIntent& Intent = AllyBrain.intent();
+		const uint8 Act = static_cast<uint8>(Intent.act);
+		if (Act != PartnerLastAct || (Intent.act == ftcore::PartnerAct::Attack && Intent.newString))
+		{
+			FlushPartnerAction(); // a new act (or a new string) ends the one before
+			PartnerActFrom = Fight.time();
+			PartnerActAt = Bodies.ally;
+			PartnerActDone = false;
+		}
+		PartnerLastAct = Act;
+		// Carried out: a blow reached its active part, the guard went up, a move covered half a metre. A Wait never
+		// counts.
+		switch (Intent.act)
+		{
+		case ftcore::PartnerAct::Attack: PartnerActDone = PartnerActDone || (Out.ally.attacking && Out.ally.part == ftcore::ArenaPart::Active); break;
+		case ftcore::PartnerAct::Guard: PartnerActDone = PartnerActDone || Out.ally.guarding; break;
+		case ftcore::PartnerAct::MoveTo:
+		case ftcore::PartnerAct::StepBack:
+			PartnerActDone = PartnerActDone || ArenaLength(ftcore::Vec2{Bodies.ally.x - PartnerActAt.x, Bodies.ally.y - PartnerActAt.y}) >= 0.5f;
+			break;
+		default: break;
+		}
+		PartnerActTo = Fight.time() + StepSeconds;
+		// Its idle reason, logged each time it changes (the brain's own report, ftcore::PartnerIntent::idle).
+		const uint8 Why = static_cast<uint8>(Intent.idle);
+		if (Why != PartnerIdleWhy && Intent.idle != ftcore::PartnerIdle::None)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner idle at %.2f s (%s)."), Fight.time(), PartnerIdleWord(Intent.idle));
+		}
+		PartnerIdleWhy = Why;
+		if (Intent.offFrame && Intent.newString)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner string begun off the frame at %.2f s (no station in frame)."), Fight.time());
+		}
+	}
+	else
+	{
+		// Down or out: a stand-still run ends, so a partner that rises where it fell starts a new one.
+		PartnerStillFor = 0.f;
+		bPartnerStillAt = false;
 	}
 	if (bPartner)
 	{
@@ -3160,6 +3316,7 @@ void UFTArenaRunner::StepFight()
 	}
 	// The lead's strike clips run on the held clock, so they stand still through its hit pauses as its action does.
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
+	TrackAllyWeapons(Out);
 	FeedSession();
 	TrackPartner(Out);
 	// The events (this step's Released pooled), then a gift held while Lone: the order is Core's (LoneGiftHold::stepEnd).
@@ -3309,6 +3466,22 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			if (E.target == ftcore::kArenaPlayer)
 			{
 				PlayerHitTime = Now;
+				if (E.source < MaxEnemies)
+				{
+					// The blow's side for the hit flash: lead to striker, in the drawn camera's ground axes.
+					const ftcore::Vec2& By = Bodies.enemies[E.source];
+					const FVector2D D(By.x - Bodies.player.x, By.y - Bodies.player.y);
+					const double Yaw = FMath::DegreesToRadians(static_cast<double>(bCameraPoseNow ? CameraPoseNow.yaw : ViewYaw()));
+					const FVector2D Ahead(FMath::Cos(Yaw), FMath::Sin(Yaw));
+					const FVector2D RightAxis(-FMath::Sin(Yaw), FMath::Cos(Yaw));
+					const FVector2D Local(FVector2D::DotProduct(D, RightAxis), FVector2D::DotProduct(D, Ahead));
+					LastHitFrom = Local.SizeSquared() > 1e-6 ? Local.GetSafeNormal() : FVector2D(0.0, 1.0);
+				}
+				else
+				{
+					LastHitFrom = FVector2D::ZeroVector; // a blow with no enemy behind it (a hazard): no side
+				}
+				LastHitAt = Now;
 			}
 			else if (E.target < MaxEnemies)
 			{
@@ -3316,7 +3489,19 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				PartnerHitEvents += E.source == ftcore::kArenaAlly ? 1 : 0;
 				if (E.source == ftcore::kArenaAlly)
 				{
-					PartnerImpact(E);
+					// A shot's or cast's impact as it arrives (its tracer or bolt has just left), a blow's now.
+					const int32 Lights = FMath::Max(1, static_cast<int32>(Def.fighter.lightCount));
+					const double Flight = FFTLeadWeapons::FlightOf(Def.fighter, static_cast<uint8>(static_cast<int32>(E.move) % Lights));
+					if (Flight > 0.0)
+					{
+						PlayWaitingPartnerImpact(1e300); // one waiting already plays now
+						PartnerImpactWaiting = E;
+						PartnerImpactDue = static_cast<double>(Fight.heldTime()) + Flight;
+					}
+					else
+					{
+						PartnerImpact(E);
+					}
 				}
 				else if (E.source == ftcore::kArenaPlayer && E.amount > 0 && PlayerFigure)
 				{
@@ -3984,6 +4169,10 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(0.85f, 0.95f, 1.f), 0.45f);
 		}
 		Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.2f, 0.15f), ArenaModePulse(Now, PlayerHitTime, kArenaHitTint));
+		// The ready stance while locked on and standing or stepping in a live fight.
+		Pose.bReady = !Fight.over() && Fight.lock() != ftcore::kArenaNobody && !Pose.bAir
+			&& (P.action == ftcore::ArenaAction::Idle || P.action == ftcore::ArenaAction::Move);
+		Pose.ReadyStance = ReadyStanceFor(0, PlayerLook);
 		PlayerFigure->ApplyPose(Pose);
 		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last), and
 		// the gun's reload overlay by the fight's own progress.
@@ -3991,6 +4180,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		LeadWeapons.Paint(DrawnTime);
 	}
 	PlaceAlly(Alpha);
+	AllyWeapons.Paint(DrawnTime);
 	PaintTable(Alpha);
 
 	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
@@ -4761,6 +4951,215 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 }
 #endif
 
+ftcore::ArenaCameraPose UFTArenaRunner::LockRig() const
+{
+	return ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, 0.f);
+}
+
+float UFTArenaRunner::BoomWallShare() const
+{
+	// The spring arm's probe pulls the whole offset (the arm and the socket's shoulder and height) in along the line
+	// from its origin: the share left is the probed lens's distance over the unprobed one's.
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	const USpringArmComponent* Boom = Lead ? Lead->GetBoom() : nullptr;
+	if (!Boom || !Boom->IsCollisionFixApplied())
+	{
+		return 1.f;
+	}
+	const FVector Origin = Boom->GetComponentLocation() + Boom->TargetOffset;
+	const double Full = FVector::Dist(Boom->GetUnfixedCameraPosition(), Origin);
+	const double Used = FVector::Dist(Boom->GetSocketLocation(USpringArmComponent::SocketName), Origin);
+	return Full > 1.0 ? FMath::Clamp(static_cast<float>(Used / Full), 0.05f, 1.f) : 1.f;
+}
+
+float UFTArenaRunner::PartnerHeight() const
+{
+	if (const AFTArenaFighter* Mate = AllyFigure.Get())
+	{
+		// The anchor hangs 45 cm over the head (AFTArenaFighter::GetAnchor).
+		return FMath::Max(0.5f, static_cast<float>(Mate->GetAnchor().Z - Mate->GetActorLocation().Z - 45.0) / 100.f);
+	}
+	return 1.8f;
+}
+
+void UFTArenaRunner::FlushPartnerAction()
+{
+	if (PartnerActFrom >= 0.f && PartnerActDone && PartnerActTo - PartnerActFrom >= kPartnerActMin - 1e-4f)
+	{
+		++PartnerActions;
+	}
+	PartnerActFrom = PartnerActTo = -1.f;
+	PartnerActDone = false;
+}
+
+float UFTArenaRunner::LockAspect() const
+{
+	FVector2D Size(0.0, 0.0);
+	if (GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->GetViewportSize(Size);
+	}
+	return Size.X > 1.0 && Size.Y > 1.0 ? static_cast<float>(Size.X / Size.Y) : 16.f / 9.f;
+}
+
+ftcore::ArenaLeadBody UFTArenaRunner::LeadBody() const
+{
+	ftcore::ArenaLeadBody Body;
+	if (const AFTArenaFighter* Lead = PlayerFigure.Get())
+	{
+		// The anchor hangs 45 cm over the head (AFTArenaFighter::GetAnchor).
+		Body.head = FMath::Max(0.5f, static_cast<float>(Lead->GetAnchor().Z - Lead->GetActorLocation().Z - 45.0) / 100.f);
+	}
+	return Body;
+}
+
+float UFTArenaRunner::LockAimHeight(int32 Target, float Base, float Top) const
+{
+	const AFTArenaFighter* Foe = GetEnemyFigure(Target);
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	const double Floor = Lead ? Lead->GetActorLocation().Z : 0.0;
+	float Tell = -1.f, Weak = -1.f;
+	const ftcore::ArenaEnemyOut& E = Fight.output().enemies[static_cast<size_t>(Target)];
+	if (Foe && (E.part == ftcore::ArenaPart::Startup || E.part == ftcore::ArenaPart::Active))
+	{
+		Tell = static_cast<float>(Foe->GetAnchor().Z - Floor) / 100.f; // the telegraph's bar (the HUD's DrawTell)
+	}
+	FVector At;
+	if (GetBossWeakPoint(Target, At))
+	{
+		Weak = static_cast<float>(At.Z - Floor) / 100.f;
+	}
+	return ftcore::arenaLockAimHeight(Base, Top, Tell, Weak);
+}
+
+void UFTArenaRunner::LogLeadFrameShot(const TCHAR* Shot) const
+{
+#if !UE_BUILD_SHIPPING
+	if (!bLeadShotSampled)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead frame at view %s: not held (no lock on a tall target)."), Shot);
+		return;
+	}
+	const ftcore::ArenaLeadShares& S = LeadShotShares;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead frame at view %s: %s (feet %.3f, head %.3f, left %.3f, right %.3f, ahead %d, visible %d)."),
+		Shot, ftcore::arenaLeadInFrame(ftcore::kArenaLeadFrame, S) ? TEXT("kept") : TEXT("BROKE the rule"), S.feet, S.head, S.left, S.right,
+		S.ahead ? 1 : 0, ftcore::arenaLeadVisible(S) ? 1 : 0);
+#else
+	(void)Shot;
+#endif
+}
+
+#if !UE_BUILD_SHIPPING
+void UFTArenaRunner::ResetLeadFrameChecks()
+{
+	LeadFrameFrames = LeadFrameKept = LeadFrameVisible = TellFrames = TellInPlace = TellPinned = TellEdge = 0;
+	LeadFeetLeast = 1.f;
+	LeadHeadMost = LeadSideWorst = 0.f;
+	for (int32 I = 0; I < 3; ++I)
+	{
+		LeadMissWorst[I] = 0.f;
+		LeadMissAt[I] = -1.f;
+	}
+}
+
+void UFTArenaRunner::SampleLeadFrame()
+{
+	const APlayerController* PC = GetPC();
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	if (!PC || !PC->PlayerCameraManager || !Lead)
+	{
+		return;
+	}
+	const APlayerCameraManager* Cam = PC->PlayerCameraManager;
+	const FVector Eye = Cam->GetCameraLocation();
+	const FRotator Rot = Cam->GetCameraRotation();
+	const double TanH = FMath::Tan(FMath::DegreesToRadians(static_cast<double>(Cam->GetFOVAngle()) * 0.5));
+	const double TanV = TanH / static_cast<double>(LockAspect());
+	const FVector Right = FRotationMatrix(Rot).GetUnitAxis(EAxis::Y) * static_cast<double>(LeadBody().radius) * 100.0;
+	const FVector Feet = Lead->GetActorLocation();
+	const FVector Head = Lead->GetAnchor() - FVector(0.0, 0.0, 45.0);
+	const FVector Points[6] = {Feet, Head, Feet + Right, Feet - Right, Head + Right, Head - Right};
+	ftcore::ArenaLeadShares S;
+	S.ahead = true;
+	S.feet = S.left = 1e9f;
+	S.head = S.right = -1e9f;
+	for (const FVector& P : Points)
+	{
+		const FVector V = Rot.UnrotateVector(P - Eye);
+		if (V.X <= 1.0)
+		{
+			S.ahead = false;
+			break;
+		}
+		const float X = static_cast<float>(0.5 * (1.0 + V.Y / (V.X * TanH)));
+		const float Y = static_cast<float>(0.5 * (1.0 + V.Z / (V.X * TanV)));
+		S.feet = FMath::Min(S.feet, Y);
+		S.head = FMath::Max(S.head, Y);
+		S.left = FMath::Min(S.left, X);
+		S.right = FMath::Max(S.right, X);
+	}
+	bLeadShotSampled = LockTarget >= 0;
+	LeadShotShares = S;
+	if (LockTarget < 0)
+	{
+		return; // only a tall target's hold is the check's (a short one keeps the lead by the framing already)
+	}
+	++LeadFrameFrames;
+	LeadFrameKept += ftcore::arenaLeadInFrame(ftcore::kArenaLeadFrame, S) ? 1 : 0;
+	LeadFrameVisible += ftcore::arenaLeadVisible(S) ? 1 : 0;
+	{
+		// How far past the rule (0: kept), into the three worst.
+		const float Edge = 0.5f * (1.f - ftcore::kArenaLeadFrame.widthMid);
+		const float Miss = !S.ahead ? 1.f + FMath::Max(0.f, 1.f - S.feet)
+			: FMath::Max(FMath::Max(ftcore::kArenaLeadFrame.feetMin - S.feet, S.head - ftcore::kArenaLeadFrame.headMax),
+				FMath::Max(Edge - S.left, S.right - (1.f - Edge)));
+		for (int32 I = 0; Miss > 0.f && I < 3; ++I)
+		{
+			if (Miss > LeadMissWorst[I])
+			{
+				for (int32 J = 2; J > I; --J)
+				{
+					LeadMissWorst[J] = LeadMissWorst[J - 1];
+					LeadMissAt[J] = LeadMissAt[J - 1];
+				}
+				LeadMissWorst[I] = Miss;
+				LeadMissAt[I] = Fight.time();
+				break;
+			}
+		}
+	}
+	if (S.ahead)
+	{
+		LeadFeetLeast = FMath::Min(LeadFeetLeast, S.feet);
+		LeadHeadMost = FMath::Max(LeadHeadMost, S.head);
+		LeadSideWorst = FMath::Max(LeadSideWorst, FMath::Max(0.5f - S.left, S.right - 0.5f));
+	}
+	// The telegraph through a windup: its bar over the body, pinned under the top edge (the HUD's DrawTell), or the
+	// edge marker when the body is out of the frame.
+	const ftcore::ArenaEnemyOut& E = Fight.output().enemies[static_cast<size_t>(LockTarget)];
+	const AFTArenaFighter* Foe = GetEnemyFigure(LockTarget);
+	if (Foe && E.part == ftcore::ArenaPart::Startup)
+	{
+		++TellFrames;
+		const FVector C = Rot.UnrotateVector(Foe->GetChest() - Eye);
+		const FVector O = Rot.UnrotateVector(Foe->GetAnchor() - Eye);
+		const bool bChestIn = C.X > 1.0 && FMath::Abs(C.Y / (C.X * TanH)) <= 1.0 && FMath::Abs(C.Z / (C.X * TanV)) <= 1.0;
+		if (!bChestIn || IsOffFrame(LockTarget))
+		{
+			++TellEdge;
+		}
+		else if (O.X > 1.0 && O.Z / (O.X * TanV) < 0.8)
+		{
+			++TellInPlace;
+		}
+		else
+		{
+			++TellPinned;
+		}
+	}
+}
+#endif
+
 void UFTArenaRunner::ApplyAimCamera()
 {
 	AFTArenaFighter* Figure = PlayerFigure.Get();
@@ -4770,6 +5169,10 @@ void UFTArenaRunner::ApplyAimCamera()
 		return;
 	}
 	bAimCamera = A > 0.f;
+	if (LockLow > 0.f || bLowRig)
+	{
+		return; // SteerCamera gives the boom the low rig, blended with the stance's, while the low lens is on
+	}
 	// The fight's camera pulled in over the right shoulder by the aim stance (ftcore::arenaCameraPose's rig).
 	const ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
 	Figure->SetCameraRig(Pose.arm, Pose.pivot, Pose.side, Pose.up, Pose.fov);
@@ -4819,6 +5222,12 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		Target = -1;
 	}
 #endif
+#if !UE_BUILD_SHIPPING
+	if (bLeadHeld)
+	{
+		SampleLeadFrame(); // the frame the last step's hold drew, as the rendered camera shows it
+	}
+#endif
 	const AFTArenaFighter* Figure = PlayerFigure.Get();
 	// The boom's length now (the aim pulls it in), for the look-up solve.
 	const float ArmNow = Figure && Figure->GetBoom() ? Figure->GetBoom()->TargetArmLength / 100.f : Fit.camera.arm;
@@ -4863,6 +5272,17 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 #if !UE_BUILD_SHIPPING
 	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming ? ftcore::arenaFrameTurn(FrameRules(), Scene.side, Scene.distance) : 0.f;
 #endif
+	// The lens as the boom really has it: its wall probe shortens the arm, the shoulder and the height alike, by this
+	// share (measured on the boom's last update). The lead's rule and the fed camera are solved on that lens; the boom
+	// is given its own lengths (its probe shortens them again).
+	const float WallShare = BoomWallShare();
+	const float Aspect = LockAspect();
+	const ftcore::ArenaLeadBody Body = LeadBody();
+	const ftcore::ArenaCameraPose LensRig = WallScaled(LockRig(), WallShare);
+	ftcore::ArenaLowRules SideRules = ftcore::kArenaLow; // the low shoulder's size at this arm (its side picked below)
+	SideRules.side = ftcore::kArenaLow.side * WallShare;
+	bool bTallLock = false; // a tall target followed outside the aim stance: the lens goes low, the aim is its read point
+	float AimHeight = 0.f;
 	if (bFollowed)
 	{
 		// A tall boss (a hanging one, hover included) is looked up at: the pitch that sends the view through its face from
@@ -4873,6 +5293,35 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		const float Tall = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + Hover;
 		const ftcore::ZoneCamera& Rig = Fit.camera;
 		float WantPitch = ftcore::arenaFrameLockPitch(ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, Rig.lockPitch, ArenaLength(To), FrameTurn, Tall);
+		bTallLock = Tall >= kArenaTallBoss && ArenaAim.alpha() <= 0.f;
+		if (bTallLock)
+		{
+			// The lock on a tall target: the look through what the player must read (the telegraph, else the weak point,
+			// else the chest; ftcore::arenaLockAimPitch) from the low lens, held to the lead's rule below. The low
+			// shoulder goes to the side that keeps that point clear of the lead (ftcore::arenaLowSide, with hysteresis),
+			// and the low share is no more than the arm allows (ftcore::arenaLowFit, worked out again only when the arm,
+			// the aspect or the lead changes).
+			AimHeight = LockAimHeight(Target, Hover, Tall);
+			const ftcore::ArenaPoint3 Aim{To.x, To.y, AimHeight};
+			if (LensRig.arm < ftcore::kArenaHeadKeptArm && !bShortArmLogged)
+			{
+				// Under ftcore::kArenaHeadKeptArm no pitch keeps the whole head (the lock frame's known limit): said once a fight.
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera arm %.2f m at %.2f s, under %.2f m: the lead's head top can leave the frame."),
+					LensRig.arm, Fight.time(), ftcore::kArenaHeadKeptArm);
+				bShortArmLogged = true;
+			}
+			LowSideSign = ftcore::arenaLowSide(ftcore::kArenaLook, LensRig, CameraPitch, Aspect, Body, Aim, LowSideSign, ftcore::kArenaLowSide, SideRules);
+			if (FMath::Abs(LensRig.arm - LowFitArm) > 0.05f || Aspect != LowFitAspect || Body.head != LowFitHead)
+			{
+				LowFit = ftcore::arenaLowFit(ftcore::kArenaLook, ftcore::kArenaLeadFrame, LensRig, Aspect, Body, SideRules);
+				LowFitArm = LensRig.arm;
+				LowFitAspect = Aspect;
+				LowFitHead = Body.head;
+			}
+			ftcore::ArenaLowRules WantRules = SideRules;
+			WantRules.side = LowSideNow * WallShare;
+			WantPitch = ftcore::arenaLockAimPitch(ftcore::kArenaLook, LensRig, Aspect, Aim, Rig.lockPitch, LockLow, WantRules);
+		}
 #if !UE_BUILD_SHIPPING
 		if (AimCheckPhase == 2 || AimCheckPhase == 3)
 		{
@@ -4891,7 +5340,69 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	// its length.
 	// The pose (ftcore::arenaCameraPose): the drawn yaw, the boom and the lens tilt; the rig is the zone's and the aim's.
 	CameraPitch = ftcore::arenaClampViewPitch(ftcore::kArenaLook, CameraPitch);
-	const ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
+	// The lead's rule (ftcore::arenaLeadPitch): while a target is followed outside the aim stance, the pitch is held
+	// where the controlled lead's whole body stays in the frame (feet over 6% of its height, head under 55%, the body in
+	// the middle 70% of its width), from the lens as the boom has it. A tall target brings the lens low and to the
+	// side (ftcore::kArenaLow, eased): it looks up from there, never from further back. The aim stance and the free
+	// look (nothing followed) are outside the rule. On an ordinary lock with the lead in frame it changes nothing.
+	bool bHold = bFollowed && ArenaAim.alpha() <= 0.f;
+#if !UE_BUILD_SHIPPING
+	bHold = bHold && AimCheckPhase != 2 && AimCheckPhase != 3 && AimCheckPhase != 5; // the checks measure the plain lock view
+#endif
+	// Never more than the arm allows this frame: a wall that shortens the arm cuts the share at once, it never eases down.
+	LockLow = FMath::Min(LockLow, LowFit);
+	LockLow = FMath::FInterpConstantTo(LockLow, bHold && bTallLock ? LowFit : 0.f, DeltaSeconds, ftcore::kArenaLow.rate);
+	// The low shoulder crosses over when its side flips (eased), and snaps while the low lens is off (nothing to see).
+	const float LowSideWant = LowSideSign * ftcore::kArenaLow.side;
+	LowSideNow = LockLow > 0.f ? FMath::FInterpConstantTo(LowSideNow, LowSideWant, DeltaSeconds, kArenaLowSideRate) : LowSideWant;
+	ftcore::ArenaLowRules LowRules = SideRules;
+	LowRules.side = LowSideNow * WallShare;
+	ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
+	ftcore::ArenaCameraPose Lens = WallScaled(Pose, WallShare);
+	if (bHold || LockLow > 0.f)
+	{
+		if (bHold)
+		{
+			CameraPitch = ftcore::arenaLeadPitch(ftcore::kArenaLook, ftcore::kArenaLeadFrame, LensRig, Aspect, Body, CameraPitch, LockLow, LowRules).pitch;
+		}
+		Lens = ftcore::arenaPoseAtPitch(ftcore::kArenaLook, LensRig, CameraPitch, LockLow, LowRules);
+		Pose = WallScaled(Lens, 1.f / WallShare); // the boom's own lengths: its probe shortens them to the lens solved
+	}
+	// The partner as a soft term (ftcore::arenaPartnerYaw): a turn of at most kArenaPartnerYaw.maxYaw (5) degrees that
+	// brings it into the frame while the lead keeps its rule, eased at kPartnerYawRate per second with a half-degree
+	// deadband so it does not hunt, and off (eased back to 0) for kPartnerYawQuiet s after the player turns the view.
+	float YawWant = 0.f;
+	const bool bLookedLately = Fight.time() - LastLookInputAt < kPartnerYawQuiet;
+	if (bHold && !bLookedLately && bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0)
+	{
+		const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
+		YawWant = ftcore::arenaPartnerYaw(ftcore::kArenaPartnerYaw, ftcore::kArenaLeadFrame, Lens, Aspect, Body, Mate);
+	}
+	if (FMath::Abs(YawWant - PartnerYawGoal) > 0.5f || YawWant == 0.f)
+	{
+		PartnerYawGoal = YawWant;
+	}
+	PartnerYawNow = FMath::FInterpTo(PartnerYawNow, PartnerYawGoal, DeltaSeconds, kPartnerYawRate);
+	Pose.yaw += PartnerYawNow;
+	Lens.yaw += PartnerYawNow;
+	LockTarget = bHold && bTallLock ? Target : -1;
+	bLeadHeld = bHold;
+	// The aim point above the frame: the UI's edge marker (GetLockAimAbove), where it leaves the top edge.
+	bLockAimAbove = false;
+	LockAimX = 0.5f;
+	if (bHold && bTallLock)
+	{
+		const ftcore::ArenaFramePoint AimAt = ftcore::arenaFramePoint(Lens, Aspect, ftcore::ArenaPoint3{To.x, To.y, AimHeight});
+		bLockAimAbove = !AimAt.ahead || AimAt.y > 1.f;
+		LockAimX = AimAt.ahead ? FMath::Clamp(AimAt.x, 0.f, 1.f) : 0.5f;
+	}
+	// The low rig is given to the boom here, the aim stance's blend included (ApplyAimCamera stands aside while the low
+	// lens is on), so the stance starting on a low lens eases out of it rather than jumping.
+	if (AFTArenaFighter* LowLead = PlayerFigure.Get(); LowLead && (LockLow > 0.f || bLowRig))
+	{
+		LowLead->SetCameraRig(Pose.arm, Pose.pivot, Pose.side, Pose.up, Pose.fov);
+		bLowRig = LockLow > 0.f;
+	}
 	PC->SetControlRotation(FRotator(Pose.boomPitch, Pose.yaw, 0.0));
 #if !UE_BUILD_SHIPPING
 	if (bFrameCheck)
@@ -4901,6 +5412,11 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 #endif
 	CameraPoseNow = Pose;
 	bCameraPoseNow = true;
+	// What the fight's next step is fed (the partner's stationing and its in-play count): this frame's solved lens, the
+	// arm it really has, over the lead where it stands now.
+	CameraLensNow = Lens;
+	FedCamera = ftcore::arenaPoseCamera(Lens, Bodies.player, Aspect, PartnerHeight());
+	bFedCamera = true;
 	if (AFTArenaFighter* Lead = PlayerFigure.Get())
 	{
 		Lead->SetCameraTilt(Pose.tilt);
@@ -5051,6 +5567,16 @@ void UFTArenaRunner::LogFeatureChecks() const
 	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).
 	const bool bGuns = Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns;
 #if !UE_BUILD_SHIPPING
+	if (LeadFrameFrames > 0)
+	{
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("Arena check: lead in frame %s (%d frames on a tall lock, %d kept the rule (feet over %.0f%%, head under %.0f%%, the middle %.0f%%), %d whole body seen; feet least %.3f, head most %.3f, side most %.3f from the middle; telegraph frames %d: %d bar in place, %d pinned under the top edge, %d edge marker; the aim stance and the free look are outside the rule)."),
+			LeadFrameKept == LeadFrameFrames ? TEXT("PASS") : TEXT("FAIL"), LeadFrameFrames, LeadFrameKept, ftcore::kArenaLeadFrame.feetMin * 100.f,
+			ftcore::kArenaLeadFrame.headMax * 100.f, ftcore::kArenaLeadFrame.widthMid * 100.f, LeadFrameVisible, LeadFeetLeast, LeadHeadMost,
+			LeadSideWorst, TellFrames, TellInPlace, TellPinned, TellEdge);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lead in frame worst samples (past the rule by, at fight time): %.3f at %.2f s, %.3f at %.2f s, %.3f at %.2f s (-1 s: none)."),
+			LeadMissWorst[0], LeadMissAt[0], LeadMissWorst[1], LeadMissAt[1], LeadMissWorst[2], LeadMissAt[2]);
+	}
 	if (bFrameCheck)
 	{
 		const ftcore::ZoneCamera& Rig = Fit.camera;
@@ -5620,6 +6146,13 @@ void UFTArenaRunner::Restart()
 	bRestarting = false;
 	ResetTable();
 	LeadWeapons.Restart();
+	AllyWeapons.Restart();
+	bAllyStruck = bAllyStrikeCut = false;
+	AllyTargetDeadLast = -1;
+	PartnerImpactDue = -1.0;
+#if !UE_BUILD_SHIPPING
+	ResetLeadFrameChecks(); // its line is printed per attempt (Finish), its fight times this attempt's
+#endif
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
 	if (AFTArenaFighter* Boss = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr)
@@ -6683,7 +7216,147 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	{
 		Pose.Tint = FLinearColor(1.f, 0.2f, 0.2f);
 	}
+	// The ready stance whenever the fight is live and it is not swinging or guarding.
+	Pose.bReady = !Fight.over() && !Pose.bLying && !Pose.bAttacking && !Pose.bGuard;
+	Pose.ReadyStance = ReadyStanceFor(1, AllyLook);
 	AllyFigure->ApplyPose(Pose);
+}
+
+void UFTArenaRunner::PlayWaitingPartnerImpact(double T)
+{
+	if (PartnerImpactDue >= 0.0 && T + 1e-6 >= PartnerImpactDue)
+	{
+		PartnerImpactDue = -1.0;
+		PartnerImpact(PartnerImpactWaiting);
+	}
+}
+
+void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
+{
+	PlayWaitingPartnerImpact(static_cast<double>(Fight.heldTime())); // a shot's or cast's, on its arrival
+	AFTArenaFighter* Ally = AllyFigure.Get();
+	if (!bPartner || !bAllyOn || !Ally || !AllyLook)
+	{
+		bAllyStruck = false;
+		if (AllyWeapons.IsOn())
+		{
+			AllyWeapons.Track(ftcore::ArenaPlayerOut{}, static_cast<double>(Fight.heldTime())); // out of play: a clip fades
+		}
+		return;
+	}
+	if (!AllyWeapons.IsOn())
+	{
+		if (AllyWeaponsFailed.Get() == Ally)
+		{
+			return; // it could not begin on this figure (no skeletal body): not every step again
+		}
+		AllyWeapons.SetSource(ftcore::kArenaAlly);
+		AllyWeapons.SetImpacts(false); // PartnerImpact plays its blows' impact
+		AllyWeapons.Begin(Ally, *AllyLook, Def.fighter); // again on the same figure: nothing
+		if (!AllyWeapons.IsOn())
+		{
+			AllyWeaponsFailed = Ally;
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: the partner's figure takes no lead weapons (its strike clips and effects); not tried again on it."));
+			return;
+		}
+	}
+	const double T = static_cast<double>(Fight.heldTime());
+	AllyWeapons.Feed(Out.events, T); // its Hit sparks (source kArenaAlly); Core gives its blows no AttackStarted
+	// The ally's light string as the lead's light moves (its blow's index), so the strike clip each lead plays for that
+	// light plays on its body: a new blow is a new index, or the same index begun again (stateTime back).
+	const ftcore::ArenaAllyOut& A = Out.ally;
+	const int32 Lights = FMath::Max(1, static_cast<int32>(Def.fighter.lightCount));
+	const uint8 Move = static_cast<uint8>(static_cast<int32>(A.blow) % Lights);
+	const bool bNewBlow = A.attacking && (!bAllyStruck || Move != AllyStruckBlow || A.stateTime + 1e-4f < AllyStruckTime);
+	if (bNewBlow)
+	{
+		bAllyStrikeCut = false;
+		AllyWeapons.StartStrike(Move, T - static_cast<double>(A.stateTime));
+	}
+	// Cut: a blow that lands on it (its hitstun) or its target down ends the clip (it fades); Core lets the blow itself
+	// run out.
+	if (A.attacking && !bAllyStrikeCut)
+	{
+		for (const ftcore::ArenaEvent& E : Out.events)
+		{
+			if ((E.type == ftcore::ArenaEventType::AllyHit && E.amount > 0) || E.type == ftcore::ArenaEventType::AllyDowned)
+			{
+				bAllyStrikeCut = true;
+			}
+		}
+		// Its target down: cut only when it was down the step before too (the killing blow plays on: Core marks the
+		// target Dead on the step the blow lands).
+		if (A.target >= 0 && A.target == AllyTargetDeadLast)
+		{
+			bAllyStrikeCut = true;
+		}
+	}
+	AllyTargetDeadLast = A.target >= 0 && A.target < MaxEnemies && Out.enemies[static_cast<size_t>(A.target)].brain == ftcore::ArenaBrain::Dead
+		? A.target : -1;
+	const bool bSwinging = A.attacking && !bAllyStrikeCut;
+	bAllyStruck = A.attacking;
+	AllyStruckBlow = Move;
+	AllyStruckTime = A.stateTime;
+	// Its aim: the target's chest, else straight ahead.
+	const FVector Chest = Ally->GetActorLocation() + FVector(0.0, 0.0, 40.0);
+	const AFTArenaFighter* Target = A.target >= 0 && A.target < MaxEnemies ? EnemyFigures[A.target].Get() : nullptr;
+	if (Target)
+	{
+		AllyWeapons.SetAim(Target->GetChest(), true);
+	}
+	else
+	{
+		AllyWeapons.SetAim(Chest + FVector(A.facing.x, A.facing.y, 0.0) * 100.0, false);
+	}
+	ftcore::ArenaPlayerOut P;
+	P.action = bSwinging ? ftcore::ArenaAction::Light : A.guarding ? ftcore::ArenaAction::Guard : ftcore::ArenaAction::Idle;
+	P.part = bSwinging ? A.part : ftcore::ArenaPart::None;
+	P.move = Move;
+	P.facing = A.facing;
+	AllyWeapons.Track(P, T);
+}
+
+const ftcore::ReadyStance* UFTArenaRunner::ReadyStanceFor(int32 Figure, const FFTLeadLook* Look)
+{
+	if (!bReadyStancesRead)
+	{
+		bReadyStancesRead = true;
+		ReadyStances = ftcore::readyStanceDefaults();
+		ftcore::ReadyStanceSet Read = ReadyStances;
+		TArray<uint8> Bytes;
+		std::string Error;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Anim/ready_stance.json");
+		if (FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importReadyStances(FT::BytesAsText(Bytes), Read, &Error))
+		{
+			ReadyStances = Read;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Anim/ready_stance.json; the ready stance uses its built-in tables.\n%s"),
+				*FT::ToFString(Error));
+		}
+	}
+	const int32 I = Figure == 0 ? 0 : 1;
+	if (!ReadyOf[I] || ReadyLookOf[I] != Look)
+	{
+		ReadyLookOf[I] = Look;
+		const std::string Id = Look ? FT::ToUtf8(Look->Name) : std::string();
+		ReadyOf[I] = ftcore::readyStanceFor(ReadyStances, Id);
+		bool bMapped = false;
+		for (size_t L = 0; L < ReadyStances.leadCount; ++L)
+		{
+			bMapped |= FT::ToFString(ReadyStances.leads[L].id).Equals(Look ? Look->Name : FString(), ESearchCase::IgnoreCase);
+		}
+		for (size_t K = 0; ReadyOf[I] && K < ReadyStances.stanceCount; ++K)
+		{
+			if (&ReadyStances.stances[K].stance == ReadyOf[I])
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: ready stance for the %s's look '%s': '%s'%s."), I == 0 ? TEXT("lead") : TEXT("partner"),
+					Look ? *Look->Name : TEXT("-"), *FT::ToFString(ReadyStances.stances[K].id), bMapped ? TEXT("") : TEXT(" (NOT mapped: the fallback)"));
+			}
+		}
+	}
+	return ReadyOf[I];
 }
 
 // ---- The partner (-ArenaPartner): Core's PartnerBrain drives the other lead's body ----
@@ -6709,6 +7382,12 @@ void UFTArenaRunner::BeginPartner()
 	SwitchCamChecks = BenchMorphChecks = BenchMorphUnchecked = 0;
 	BenchMorphWorst = 0.f;
 	bCameraPoseNow = false; // the first frame's step, before any camera is drawn, feeds no stationing
+	bFedCamera = false;
+	LastLookInputAt = -1e9f;
+	LowFitArm = -1.f;
+	LowSideSign = Fit.camera.side < 0.f ? -1.f : 1.f;
+	bLockAimAbove = false;
+
 	PartnerOrders = 0;
 #if !UE_BUILD_SHIPPING
 	bPartner = FParse::Param(FCommandLine::Get(), TEXT("ArenaPartner"));
@@ -6856,6 +7535,12 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 		BenchMorphOwner = PlayerFigure;
 	}
 	LeadWeapons.End();
+	PartnerClipsStarted += AllyWeapons.GetClipsStarted();
+	PartnerClipsWhole += AllyWeapons.GetClipsCompleted();
+	AllyWeapons.End(); // begun again on the new ally figure by TrackAllyWeapons
+	bAllyStruck = bAllyStrikeCut = false;
+	AllyTargetDeadLast = -1;
+	PartnerImpactDue = -1.0; // the shot left from the other figure
 	Swap(PlayerFigure, AllyFigure);
 	Swap(PlayerLook, AllyLook);
 	// The HUD's rows follow the figures: the controlled lead's seat and name are the lead row's (the rows trade places
@@ -7007,28 +7692,6 @@ void UFTArenaRunner::TickHandoff()
 
 namespace
 {
-const TCHAR* PartnerActWord(ftcore::PartnerAct A)
-{
-	switch (A)
-	{
-	case ftcore::PartnerAct::Wait: return TEXT("Wait");
-	case ftcore::PartnerAct::MoveTo: return TEXT("MoveTo");
-	case ftcore::PartnerAct::Attack: return TEXT("Attack");
-	case ftcore::PartnerAct::Guard: return TEXT("Guard");
-	case ftcore::PartnerAct::StepBack: return TEXT("StepBack");
-	}
-	return TEXT("?");
-}
-
-const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
-{
-	static const TCHAR* const Words[] = {TEXT("NotBegun"), TEXT("Down"), TEXT("CannotAct"), TEXT("Guard"), TEXT("Leash"),
-		TEXT("String"), TEXT("Pause"), TEXT("NoTarget"), TEXT("Approach"), TEXT("HeldOff"), TEXT("Start"), TEXT("Budget"),
-		TEXT("Committed")};
-	const size_t I = static_cast<size_t>(W);
-	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
-}
-
 // Whether a world point is inside the player's camera frame (16:9, the camera manager's horizontal FOV).
 bool InCameraView(const APlayerController* PC, const FVector& P)
 {
@@ -7106,7 +7769,9 @@ void UFTArenaRunner::LogHandoffChecks() const
 		int32 Unchecked = BenchMorphUnchecked;
 		float Worst = BenchMorphWorst;
 		const AFTArenaFighter* Owner = BenchMorphOwner.Get();
-		const bool bBenchedNow = Owner && BenchMorphs.Num() > 0 && Owner == AllyFigure.Get();
+		// A benched figure the partner's driver wears its look on (its gauntlet morphs on) is not benched bare.
+		const bool bDriven = AllyWeapons.IsOn();
+		const bool bBenchedNow = Owner && BenchMorphs.Num() > 0 && Owner == AllyFigure.Get() && !bDriven;
 		if (const USkeletalMeshComponent* Benched = bBenchedNow ? Owner->GetLeadSkin() : nullptr)
 		{
 			for (const FName& Morph : BenchMorphs)
@@ -7122,7 +7787,8 @@ void UFTArenaRunner::LogHandoffChecks() const
 		// A benched gauntlet figure with no skin to read is UNCHECKED, never a pass.
 		const TCHAR* Verdict = Worst > 1e-4f ? TEXT("FAIL") : (Unchecked > 0 ? TEXT("UNCHECKED") : (Checks == 0 ? TEXT("n/a, the gauntlet lead never benched") : TEXT("PASS")));
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: benched figure morphs %s (%d checked, %d benched with no skin to read, after %d body changes, worst weight %.3f; the gauntlet lead benched at the end %s)."),
-			Verdict, Checks, Unchecked, HandoffSwitches + HandoffBegun, Worst, bBenchedNow ? TEXT("yes") : TEXT("no"));
+			Verdict, Checks, Unchecked, HandoffSwitches + HandoffBegun, Worst,
+			bBenchedNow ? TEXT("yes") : (bDriven && Owner && Owner == AllyFigure.Get() ? TEXT("as the driven partner, exempt") : TEXT("no")));
 	}
 	if (HandoffSwitches > 0 || SwitchPartnerChecks > 0)
 	{
@@ -7380,6 +8046,41 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner stationing %s (%d steps up, %d with the camera, %d stationed; brain resets %u, fight %d, host %d switches and %d takeovers)."),
 			bSwapsOk && bStationOk ? TEXT("PASS") : TEXT("FAIL"), PartnerOnSteps, PartnerCameraSteps, PartnerStationedSteps,
 			static_cast<uint32>(AllyBrain.swaps()), FightSwaps, SwitchesDone, PartnerTakeovers);
+	}
+	if (bPartner)
+	{
+		// In play: the partner on the screen, and not behind the locked target (ftcore::arenaHiddenBehind), at least 70% of
+		// the steps it was up (ftcore::partnerInFrame at ftcore::kPartnerFrustumMargin) and at least four actions per 20 s
+		// of the fight, each lasting kPartnerActMin s or more and carried out. Under kPartnerPlayMinSteps measured steps: not covered. Then the brain's own report:
+		// the seconds it spent on each idle reason (None is the time it acted) and the strings it began off the frame.
+		FlushPartnerAction();
+		constexpr int32 kPartnerPlayMinSteps = 200;
+		FString Brain;
+		for (size_t I = 0; I < ftcore::kPartnerIdleCount; ++I)
+		{
+			const ftcore::PartnerIdle W = static_cast<ftcore::PartnerIdle>(I);
+			Brain += FString::Printf(TEXT("%s%s %.1f s"), I ? TEXT(", ") : TEXT(""), PartnerIdleWord(W), AllyBrain.idleSeconds(W));
+		}
+		Brain += FString::Printf(TEXT("; strings begun off the frame %u; longest stand-still %.1f s"),
+			static_cast<uint32>(AllyBrain.offFrameStarts()), PartnerStillLongest);
+		if (PartnerFrustumSteps < kPartnerPlayMinSteps)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play not covered (%d steps measured in the play camera's frame of %d up, wanted %d; brain: %s)."),
+				PartnerFrustumSteps, PartnerOnSteps, kPartnerPlayMinSteps, *Brain);
+		}
+		else
+		{
+			// The pass is on the share on screen and not behind the locked target; the plain on-screen share is printed too.
+			const float Seen = static_cast<float>(PartnerSeenSteps) / static_cast<float>(PartnerFrustumSteps);
+			const float Clear = static_cast<float>(PartnerClearSteps) / static_cast<float>(PartnerFrustumSteps);
+			const float Per20 = PartnerPlaySeconds > 0.f ? static_cast<float>(PartnerActions) * 20.f / PartnerPlaySeconds : 0.f;
+			const int32 ClipsStarted = PartnerClipsStarted + AllyWeapons.GetClipsStarted();
+			const int32 ClipsWhole = PartnerClipsWhole + AllyWeapons.GetClipsCompleted();
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; %d actions in %.1f s, %.1f per 20 s, wanted 4; blows with a strike clip %d, played whole %d; brain: %s)."),
+				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, PartnerActions, PartnerPlaySeconds, Per20,
+				ClipsStarted, ClipsWhole, *Brain);
+
+		}
 	}
 	if (bPartnerHeldOut)
 	{

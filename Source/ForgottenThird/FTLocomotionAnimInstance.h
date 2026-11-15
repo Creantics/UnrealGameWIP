@@ -37,6 +37,7 @@
 #include "ftcore/FootHold.h"
 #include "ftcore/Locomotion.h"
 #include "ftcore/MoveTuning.h"
+#include "ftcore/ReadyStance.h"
 #include "ftcore/Slide.h"
 #include "ftcore/Traversal.h"
 
@@ -113,6 +114,10 @@ struct FFTLocomotionAnimProxy : public FAnimInstanceProxy
 private:
 	// The feet held (ftcore::FootHold), on the pose in component space.
 	void HoldFeet(FCSPose<FCompactPose>& CS, const FBoneContainer& Container);
+	// The ready stance (SetReady) over the pose in component space, by ReadyShare: the limb turns, then the pelvis
+	// moved and lowered by what the feet rose.
+	void PoseReady(FCSPose<FCompactPose>& CS, const FBoneContainer& Container);
+	static_assert(NumLimbs == static_cast<int32>(ftcore::kReadyBoneCount), "the ready stance turns the limb bones in their order");
 	struct FLayer
 	{
 		const UAnimSequence* Seq = nullptr;
@@ -146,6 +151,9 @@ private:
 	// The pelvis sinks so a moved foot is within kLegReach of its leg's length (the clips' legs stand nearly straight).
 	static constexpr float kLegReach = 0.96f;
 	FBoneReference PelvisBone;
+	// The ready stance (SetReady) and its share this frame (0: none).
+	const ftcore::ReadyStance* Ready = nullptr;
+	float ReadyShare = 0.f;
 	bool bFootLock = false;
 	ftcore::FootHold Feet;
 	uint32 FeetResetSeen = 0;
@@ -362,6 +370,19 @@ public:
 	// The feet held where they stand while bLock holds (a strike whose clip has the legs; FFTLocomotionAnimProxy::
 	// ftcore::FootHold), stepping when the body has gone too far over one. Any owner.
 	void SetFootLock(bool bLock) { bPushedFootLock = bLock; }
+	// The ready stance (ftcore::ReadyStance) laid over the pose: eased in while bWant holds and the body is on the
+	// ground, out otherwise, faded with the ground speed, giving way to actions and traversals. Stance must outlive
+	// this instance (the host's table); null keeps the last one. Any owner, every frame. -ArenaNoReady: never.
+	void SetReady(bool bWant, const ftcore::ReadyStance* Stance)
+	{
+		bPushedReady = bWant;
+		if (Stance)
+		{
+			PushedReadyStance = Stance;
+		}
+	}
+	// The stance's clock (0 relaxed, 1 ready) and its share of the pose as last stepped.
+	float GetReadyAlpha() const { return ReadyAlpha; }
 	// Drops the held feet and the pelvis's sink at once, for a body put somewhere else (a teleport, a respawn, a death,
 	// a hand-off): the old world anchors would stretch the legs. A jump of over 1.5 m in a frame does the same itself.
 	void ResetFeet() { ++PushedFeetReset; }
@@ -521,6 +542,10 @@ private:
 	uint32 PushedFeetReset = 0;
 	bool bPushedFace = false;
 	bool bPushedAir = false;
+	bool bPushedReady = false;
+	const ftcore::ReadyStance* PushedReadyStance = nullptr;
+	float ReadyAlpha = 0.f;
+	float ReadySpeed = 0.f; // m/s, the ground speed it was stepped at
 	bool bPushedCrouch = false;
 	bool bPushedRoll = false;
 	float PushedVerticalSpeed = 0.f;
