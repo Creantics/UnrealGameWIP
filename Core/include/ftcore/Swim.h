@@ -7,7 +7,8 @@
 // The rules:
 // - Surface: the host's own surface swim moves the body (Swim passes the position through untouched: no clamp, no
 //   edge push); breath refills. A crouch press dives (Diving) where the env allows it: deepAllowed and a column of
-//   at least kSwimDeepMin; else diveRefused (once per press).
+//   at least kSwimDeepMin; else diveRefused (once per press). canDive says, every step, whether a press would dive
+//   (the same test), so the HUD asks it and never copies the rule.
 // - Crouch and jump are edge-triggered: a state change needs a press (up last step, down this one), so a crouch held
 //   through a surfacing does not dive again and a held refused crouch reports diveRefused once. Both down on the same
 //   step at the surface: the jump wins (no dive; the jump is the host's).
@@ -27,7 +28,8 @@
 //   inside it, rising to edgePushSpeed at the edge and past it (edgeDistance 0 or less, -inf included), so a sprint
 //   cannot cross it. No wall, no message. An edgeInward that is zero (or not finite) where the edge pushes: the
 //   last good inward, else straight toward the dive area's centre when the host gives one; with neither, the body
-//   holds its x and y (envOk false). Never no push.
+//   holds its x and y (envOk false). Never no push. Any finite edgeInward, however long, is scaled by its largest
+//   part before it is normalised (as the look is), so it never overflows to a zero direction.
 // - Breath: used 1 s a second under water, sprintBreathRate while sprinting; refilled at the surface or in an air
 //   pocket (empty to full in refillSeconds). warning from warningSeconds left while it is being used; at 0 the
 //   vitality drains drainPerSecond (for the part of the step past empty).
@@ -38,7 +40,8 @@
 //   so one huge step moves at most a quarter second's worth and the clamps still hold. So the results of steps
 //   longer than kSwimMaxStep depend on the frame rate (the dropped time is lost).
 // - Guards: a bad env (position, surface or bed not finite, the bed not under the surface) moves nothing and changes
-//   no state, but time passes: breath is used (or refills) as on a good step, and under water kSwimBadEnvRescue
+//   no state, but time passes: breath is used (or refills) as on a good step, except that its airPocket is not
+//   trusted (under water it does not refill on a bad step), and under water kSwimBadEnvRescue
 //   (2 s) of it without a break is a rescue. The position is the env's if finite, else the last valid one since the
 //   last reset; with none, the env's own, untouched, and positionValid false (the host must not move the body). A
 //   crouch or jump pressed on a bad step is kept until a good step uses it. A column not finite, negative, or off
@@ -178,9 +181,13 @@ struct SwimEnv {
     SwimVec centre;              // with hasCentre: the dive area's centre (its x and y are used)
 };
 
-// What the lead may do while swimming, in every state: the character reads them.
+// What the lead may do while swimming, in every state: the character reads them, the HUD asks them. At the surface
+// too (the host's own surface swim moves the body there): attack false, no attack starts; guard false, no guard or
+// block; dodge false, no dodge roll; weaponsOut false, weapons stay stowed (none drawn); interact true, the interact
+// prompt works. Under water (Diving, Under, Surfacing) and Rescued: the same.
 struct SwimFlags {
     bool attack = false;     // no attacks
+    bool guard = false;      // no guard
     bool dodge = false;      // no dodge roll
     bool weaponsOut = false; // weapons stowed
     bool interact = true;    // interact allowed
@@ -191,6 +198,12 @@ struct SwimStep {
     SwimState from = SwimState::Surface;  // before it
     bool dived = false;       // Surface to Diving this step
     bool diveRefused = false; // a crouch press at the surface where no dive is allowed
+    // A crouch press on this step would start a dive (the dive's own test, diveOpen): Surface, no jump down, a good
+    // env, deepAllowed and a column of at least kSwimDeepMin. Never in Rescued. On the step a press dives, true.
+    bool canDive = false;
+    // A jump press made the swimmer rise this step: Diving or Under to Surfacing (and on to Surface when it gets there
+    // on the same step). False when the swimmer only swims up through the surface (surfaced alone).
+    bool rose = false;
     bool surfaced = false;    // to Surface this step (not by a rescue)
     SwimVec position;         // where the body goes (under water: clamped to the bed's clearance and the surface)
     bool positionValid = true; // false: no valid position yet since the reset (position is the env's own): do not move
@@ -251,6 +264,21 @@ public:
     const SwimStep& last() const { return step_; }
 
 private:
+    // Whether a crouch press dives: the one test for the dive and for SwimStep::canDive.
+    static bool diveOpen(SwimState st, bool jumpDown, const SwimEnv& env, float column) {
+        return st == SwimState::Surface && !jumpDown && env.deepAllowed && column >= kSwimDeepMin;
+    }
+    // A finite v's horizontal part as a unit vector (z 0), scaled by its largest part first so a huge v cannot
+    // overflow to infinity (and a zero direction). False when that part is under 1e-4 m long.
+    static bool unitXY(SwimVec v, SwimVec& out) {
+        const float m = std::fmax(swim_detail::absf(v.x), swim_detail::absf(v.y));
+        if (!(m > 0.f)) return false;
+        const float qx = v.x / m, qy = v.y / m;
+        const float len = std::sqrt(qx * qx + qy * qy); // 1..sqrt(2)
+        if (!(m * len > 1e-4f)) return false;          // m * len may round to +inf: still long enough
+        out = {qx / len, qy / len, 0.f};
+        return true;
+    }
     SwimTuning tuning_{};
     bool tuningOk_ = true;
     SwimState state_ = SwimState::Surface;
@@ -328,8 +356,9 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         state_ = SwimState::Rescued;
     };
 
-    // A bad env: nothing moves and no state changes, but time passes (breath; under water, the rescue after
-    // kSwimBadEnvRescue). The position: the env's if finite, else the last valid, else the env's own (not valid).
+    // A bad env: nothing moves and no state changes, but time passes (breath, its air pocket not trusted; under
+    // water, the rescue after kSwimBadEnvRescue). The position: the env's if finite, else the last valid, else the
+    // env's own (not valid).
     if (!finite(env.position) || !std::isfinite(env.surfaceZ) || !std::isfinite(env.bedZ) ||
         !(env.bedZ < env.surfaceZ)) {
         s.envOk = false;
@@ -345,7 +374,7 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         pendJump_ = pendJump_ || jumpPress;
         if (state_ == SwimState::Rescued) return finish();
         const bool under = state_ != SwimState::Surface;
-        breathe(!under || env.airPocket);
+        breathe(!under);
         if (under) {
             badFor_ += dt;
             if (badFor_ + 1e-6f >= kSwimBadEnvRescue || vitality_ <= 0.f) rescue();
@@ -366,12 +395,11 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         !std::isnan(env.edgeDistance) && env.edgeDistance != std::numeric_limits<float>::infinity();
     const bool inwardOk = finite(env.edgeInward);
     if (!edgeUsable || !inwardOk) s.envOk = false;
-    if (inwardOk) {
-        const float h = std::sqrt(env.edgeInward.x * env.edgeInward.x + env.edgeInward.y * env.edgeInward.y);
-        if (h > 1e-4f) {
-            lastInward_ = {env.edgeInward.x / h, env.edgeInward.y / h, 0.f};
-            hasInward_ = true;
-        }
+    SwimVec inward;
+    const bool inwardHas = inwardOk && unitXY(env.edgeInward, inward);
+    if (inwardHas) {
+        lastInward_ = inward;
+        hasInward_ = true;
     }
 
     // Rescued: left where the env puts it until the host's reset.
@@ -414,8 +442,10 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
     const bool moving = fwd != 0.f || rgt != 0.f;
 
     // The asked state changes: presses only; at the surface a jump down wins over a crouch press.
-    if (state_ == SwimState::Surface && crouchPress && !in.jump && !jumpPress) {
-        if (env.deepAllowed && column >= kSwimDeepMin) {
+    const bool jumpDown = in.jump || jumpPress;
+    s.canDive = diveOpen(state_, jumpDown, env, column);
+    if (state_ == SwimState::Surface && crouchPress && !jumpDown) {
+        if (s.canDive) {
             state_ = SwimState::Diving;
             s.dived = true;
         } else {
@@ -423,6 +453,7 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         }
     } else if ((state_ == SwimState::Diving || state_ == SwimState::Under) && jumpPress) {
         state_ = SwimState::Surfacing;
+        s.rose = true;
     }
 
     // The move.
@@ -459,13 +490,10 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
             else if (env.edgeDistance < t.edgeRampMetres) share = 1.f - env.edgeDistance / t.edgeRampMetres;
             if (share > 0.f) {
                 // This step's inward, else the last good one, else toward the dive area's centre, else hold x, y.
-                const float h = inwardOk ? std::sqrt(env.edgeInward.x * env.edgeInward.x +
-                                                     env.edgeInward.y * env.edgeInward.y)
-                                         : 0.f;
                 SwimVec dir;
                 bool have = false;
-                if (h > 1e-4f) {
-                    dir = {env.edgeInward.x / h, env.edgeInward.y / h, 0.f};
+                if (inwardHas) {
+                    dir = inward;
                     have = true;
                 } else if (hasInward_) {
                     dir = lastInward_;

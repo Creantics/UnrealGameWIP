@@ -454,6 +454,32 @@ void PartnerBrain::account(double dt, double partner, bool lead) {
     }
 }
 
+// Rule 2: `seconds` of attack outside its strings, ending now, into the slots they ran in (the latest first), each
+// filled up to the time it held less the partner's own attack there; what finds no room in the window (or would fall
+// before the fight) goes into the current slot.
+void PartnerBrain::spend(float seconds) {
+    if (!std::isfinite(seconds) || !(seconds > 0.f)) return;
+    const double w = static_cast<double>(s_.t.budgetWindowSeconds);
+    double left = std::min(static_cast<double>(seconds), w);
+    const std::int64_t back = static_cast<std::int64_t>(std::ceil(w / kSlot)) + 1; // the slots a window can touch
+    double end = s_.now; // where the slot's time held so far ends
+    for (std::int64_t i = 0; i < back && left > 1e-12; ++i) {
+        const std::int64_t b = s_.slot - i;
+        if (b < 0) break;
+        const double start = static_cast<double>(b) * kSlot;
+        const std::size_t k = static_cast<std::size_t>(b % static_cast<std::int64_t>(kSlots));
+        const double room = std::max(0.0, (end - start) - static_cast<double>(s_.spentPartner[k]));
+        const double p = std::min(room, left);
+        if (p > 0.0) s_.spentPartner[k] += static_cast<float>(p);
+        left -= p;
+        end = start;
+    }
+    if (left > 1e-12) {
+        const std::size_t k = static_cast<std::size_t>(s_.slot % static_cast<std::int64_t>(kSlots));
+        s_.spentPartner[k] += static_cast<float>(left);
+    }
+}
+
 void PartnerBrain::rolesSwapped() {
     if (!s_.begun) return;
     s_.phase = Phase::Ready;
@@ -480,6 +506,7 @@ void PartnerBrain::rolesSwapped() {
 const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     // As FightSession's tick: not a finite number or under 0 is 0; a long step counts as kMaxPartnerStep.
     dt = std::isfinite(dt) && dt > 0.0 ? std::min(dt, kMaxPartnerStep) : 0.0;
+    if (s_.begun) spend(in.spentSeconds); // counted before this step decides
     decide(dt, in);
     if (s_.begun) {
         // Its attack this step: what runs of the blows it began, or, with none running, the whole step when the host
