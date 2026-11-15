@@ -16,6 +16,15 @@ using namespace ftcore;
 
 namespace {
 
+// The fields of an aggregate of scalars: the most `AnyField`s it can be brace-initialised from (no padding read).
+struct AnyField {
+    template <class T> constexpr operator T() const noexcept { return T{}; }
+};
+template <class T, class... A> constexpr std::size_t aggregateFields() {
+    if constexpr (requires { T{A{}..., AnyField{}}; }) return aggregateFields<T, A..., AnyField>();
+    else return sizeof...(A);
+}
+
 using V = PartnerEnemyView;
 
 struct Scene {
@@ -1706,9 +1715,11 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.targetFor += 0.5; },
         [](PartnerBrainSave& s) { s.targetReached = !s.targetReached; },
     };
-    // One row per field: the 40 tunables (rule 17's switch, a bool padded to a float's size, is a framed row below); rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and
-    // y); begun; side, sideKey, sideFor, swaps, sideTarget, offStation, targetFor, targetReached (8).
-    static_assert(sizeof(PartnerTuning) == 41 * sizeof(float), "a new tunable needs a row here");
+    // One row per field: the 40 tunables before rule 17's switch (its rows are below); rhythm .. downFor (20); a
+    // watch's 4; the intent's 16 (its point as x and y); begun; side, sideKey, sideFor, swaps, sideTarget,
+    // offStation, targetFor, targetReached (8).
+    static_assert(aggregateFields<PartnerTuning>() == 41, "a new tunable needs a row here");
+    static_assert(offsetof(PartnerTuning, circling) == 40 * sizeof(float), "the switch follows the 40 tunables");
     CHECK(std::size(edits) == 40u + 20u + 4u + 16u + 1u + 8u);
     int i = 0;
     for (const Edit e : edits) {
@@ -1744,7 +1755,6 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.guarding = !s.guarding; },
         [](PartnerBrainSave& s) { s.out.framed = !s.out.framed; },
         [](PartnerBrainSave& s) { s.out.frameFallback = !s.out.frameFallback; },
-        [](PartnerBrainSave& s) { s.t.circling = !s.t.circling; },
     };
     int j = 0;
     for (const Edit e : framedEdits) {
@@ -1758,6 +1768,46 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         PartnerBrainSave u = base; // not framed: unseen
         e(u);
         CHECK(u.hash() == base.hash());
+    }
+    // Rule 17's switch is a tunable as rules 13-16's are: on, framed or not, it moves the hash.
+    PartnerBrainSave on = base;
+    on.t.circling = true;
+    CHECK(on.hash() != base.hash());
+    PartnerBrainSave fon = fb;
+    fon.t.circling = true;
+    CHECK(fon.hash() != fb.hash());
+    // Rule 17's state: seen only with the switch on; off (the shipped default), framed or not, the hash is
+    // the one it had before rule 17.
+    const Edit circlingEdits[] = {
+        [](PartnerBrainSave& s) { s.skirmish += 1; },
+        [](PartnerBrainSave& s) { s.skirmishDraws += 1; },
+        [](PartnerBrainSave& s) { s.skirmishOn = !s.skirmishOn; },
+        [](PartnerBrainSave& s) { s.skirmishGoal.x += 1.f; },
+        [](PartnerBrainSave& s) { s.skirmishGoal.y += 1.f; },
+        [](PartnerBrainSave& s) { s.stillFor += 0.5; },
+        [](PartnerBrainSave& s) { s.placeAt.x += 1.f; },
+        [](PartnerBrainSave& s) { s.placeAt.y += 1.f; },
+        [](PartnerBrainSave& s) { s.placeFor += 0.5; },
+        [](PartnerBrainSave& s) { s.skirmishFor += 0.5; },
+        [](PartnerBrainSave& s) { s.skirmishEvery += 0.5; },
+        [](PartnerBrainSave& s) { s.skirmishDir = static_cast<std::int8_t>(-s.skirmishDir); },
+        [](PartnerBrainSave& s) { s.skirmishKind = 1; },
+        [](PartnerBrainSave& s) { s.skirmishOf += 2; },
+    };
+    int k = 0;
+    for (const Edit e : circlingEdits) {
+        CAPTURE(k++);
+        PartnerBrainSave s = fon;
+        e(s);
+        CHECK(s.hash() != fon.hash());
+        PartnerBrain c;
+        c.load(s);
+        CHECK(c.hash() == s.hash());
+        for (const PartnerBrainSave& off : {base, fb}) {
+            PartnerBrainSave u = off;
+            e(u);
+            CHECK(u.hash() == off.hash());
+        }
     }
     // The report (idle seconds, fallback seconds, the intent's idle) is never hashed.
     PartnerBrainSave r = fb;

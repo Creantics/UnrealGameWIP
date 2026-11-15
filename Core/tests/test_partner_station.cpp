@@ -52,7 +52,6 @@ struct Pit {
     std::array<V, kMaxPartnerEnemies> e{};
     std::size_t n = 1;
     explicit Pit(PartnerOrder order, PartnerTuning t = PartnerTuning{}, std::uint32_t seed = 3) {
-        t.circling = true; // rule 17 on, as these held it (off is the shipped default)
         t.budgetShare = 1.f; // the budget out of the way
         t.budgetAllowanceSeconds = 10.f;
         REQUIRE(b.begin(t, seed));

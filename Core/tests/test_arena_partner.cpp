@@ -6,6 +6,7 @@
 #include "ftcore/ArenaZone.h"
 #include "ftcore/FightSession.h"
 #include "ftcore/PartnerBrain.h"
+#include "ftcore/StateHash.h"
 #include "TestAssets.h"
 #include <ostream>
 #include <doctest/doctest.h>
@@ -855,6 +856,113 @@ TEST_CASE("arena partner: a hit into hitstun cuts its running blow, as the lead'
     CHECK(s.partnerBlowsCut == cutSeen);
     CHECK(s.partnerBlowsVoid == 0); // the boss never dies here
     CHECK(spentChecked >= 1);
+}
+
+namespace {
+// The boss rig: the lead guards the strings aimed at it (parried, then paired on the next tick, as pairUntilCounter);
+// the hook takes the lead's hp loss off every bite and scales the partner's by `allyBite` (1: they land and cut its
+// blows; 0: none does). The partner's light lands early, then a long recovery; 40 s.
+ArenaBlowRuling cutHook(void* user, const ArenaBlow& blow) {
+    ArenaBlowRuling r;
+    if (blow.source == kArenaAlly || blow.source == kArenaPlayer) return r;
+    r.damage = blow.target == kArenaAlly ? *static_cast<const float*>(user) : 0.f;
+    return r;
+}
+struct CutPair {
+    int cutInRecovery = 0, cutAfterLanding = 0, hitsAfterCut = 0, damageLost = 0;
+    int counters = 0, cut = 0, allyOnBoss = 0, allyTicks = 0;
+    float pairSeconds = 0.f;
+    std::vector<int> counterAt, leadHits; // the tick of each counter; the tick and hp of each blow the lead lands
+};
+CutPair cutPairRun(float allyBite) {
+    PRig r;
+    r.tuning.guardChance = 0.f;             // every bite at it lands
+    r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way
+    REQUIRE(validPartnerTuning(r.tuning));
+    for (int i = 0; i < 3; ++i) r.def.fighter.light[i] = swing(0.1f, 0.1f, 1.2f, 2.f, 1); // lands, then a long recovery
+    r.enemy(bossKind(5), Vec2{0.f, 0.f});
+    r.def.enemies[0].hp = 100000; // it never dies here
+    r.def.fighter.hp = 1000;
+    r.bodies.player = Vec2{-1.5f, 0.f};
+    r.bodies.ally = Vec2{1.2f, 0.f};
+    r.go(true, 100000);
+    r.fight.setBlowHook(&cutHook, &allyBite);
+    CutPair c;
+    std::size_t seen = 0;
+    bool wasAttacking = false, landed = false, afterCut = false;
+    float lastTime = 0.f;
+    for (int k = 0; k < 40 * 60 && !r.fight.over(); ++k) {
+        const ArenaEnemyOut& e = r.fight.output().enemies[0];
+        r.in.guard = e.brain == ArenaBrain::Attack && e.aim == 1 &&
+                     ((e.part == ArenaPart::Startup && e.stateTime >= 0.27f) || e.part == ArenaPart::Active);
+        r.in.pair = false;
+        for (; seen < r.log.size(); ++seen)
+            if (r.log[seen].e.type == ArenaEventType::Parried) r.in.pair = true;
+        const std::size_t from = r.log.size();
+        const int dealt0 = r.fight.stats().partnerDamage;
+        r.tick();
+        c.pairSeconds += r.out->ally.pairSeconds;
+        ++c.allyTicks;
+        if (r.out->ally.target == 0) ++c.allyOnBoss;
+        const ArenaAttack& a = r.def.fighter.light[0];
+        bool hitInBlow = false;
+        for (std::size_t i = from; i < r.log.size(); ++i) {
+            const ArenaEvent& ev = r.log[i].e;
+            if (ev.type == ArenaEventType::AllyHit && ev.amount > 0 && wasAttacking) hitInBlow = true;
+            if (allyHit(ev) && (hitInBlow || afterCut)) ++c.hitsAfterCut;
+            if (allyHit(ev) && !hitInBlow) landed = true;
+            if (ev.type == ArenaEventType::CounterStagger) {
+                ++c.counters;
+                c.counterAt.push_back(k);
+            }
+            if (leadHit(ev)) {
+                c.leadHits.push_back(k);
+                c.leadHits.push_back(ev.amount);
+            }
+        }
+        if (r.out->ally.attacking && r.out->ally.stateTime < lastTime) landed = false; // a new blow
+        if (r.out->ally.attacking && !wasAttacking) {
+            landed = false;
+            afterCut = false;
+        }
+        if (hitInBlow) {
+            ++c.cut;
+            CHECK_FALSE(r.out->ally.attacking);
+            if (lastTime >= a.startup + a.active) ++c.cutInRecovery;
+            if (landed) ++c.cutAfterLanding;
+            if (r.fight.stats().partnerDamage < dealt0) ++c.damageLost; // what it dealt stays dealt
+            afterCut = true;
+        }
+        wasAttacking = r.out->ally.attacking;
+        lastTime = r.out->ally.stateTime;
+    }
+    CHECK(r.fight.stats().partnerBlowsCut == c.cut);
+    return c;
+}
+} // namespace
+
+TEST_CASE("arena partner: a hit in its blow's recovery, after it landed, cuts it: what it dealt stays, nothing more") {
+    const CutPair c = cutPairRun(1.f);
+    MESSAGE("CUTPAIR cut " << c.cut << " recovery " << c.cutInRecovery << " afterLanding " << c.cutAfterLanding
+                           << " hitsAfter " << c.hitsAfterCut << " lost " << c.damageLost << " counters " << c.counters
+                           << " onBoss " << c.allyOnBoss << "/" << c.allyTicks);
+    CHECK(c.cutInRecovery >= 2);
+    CHECK(c.cutAfterLanding >= 2);
+    CHECK(c.hitsAfterCut == 0);
+    CHECK(c.damageLost == 0);
+}
+
+TEST_CASE("arena partner: the paired counter is the same whether its blows are cut or not") {
+    const CutPair cut = cutPairRun(1.f), clean = cutPairRun(0.f);
+    MESSAGE("CUTPAIR2 cut " << cut.cut << "/" << clean.cut << " counters " << cut.counters << "/" << clean.counters
+                            << " pair s " << cut.pairSeconds << "/" << clean.pairSeconds);
+    REQUIRE(cut.cut >= 2);
+    CHECK(clean.cut == 0);
+    CHECK(cut.counters >= 2);
+    CHECK(cut.counters == clean.counters);
+    CHECK(cut.pairSeconds == clean.pairSeconds);
+    CHECK(cut.counterAt == clean.counterAt); // on the same ticks
+    CHECK(cut.leadHits == clean.leadHits);   // the lead's blows (the counters' among them): the same ticks and hp
 }
 
 TEST_CASE("arena partner: a blow whose target dies before its hit frame deals nothing and ends") {
@@ -2507,8 +2615,9 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
 }
 
 // The shipped default (circling off until its turns hold the ruled limits): with its attack held it stands ready
-// where rules 10-13 put it, facing its target, and makes no moves of its own.
-TEST_CASE("arena partner: rule 17 off (the shipped default), a lead that never attacks: it stands ready, facing its target") {
+// where rules 10-16 put it and makes no moves of its own. Its outputs are the brain's before rule 17 (pinned below):
+// the host turns it to its target when it names one; with none named it keeps its facing, as before rule 17.
+TEST_CASE("arena partner: rule 17 off (the shipped default), a lead that never attacks: it stands ready, no moves of its own") {
     const ArenaTable t = shippedTable();
     CHECK_FALSE(shippedTuning().circling);
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
@@ -2517,7 +2626,6 @@ TEST_CASE("arena partner: rule 17 off (the shipped default), a lead that never a
         CHECK(r.T >= 19.9);
         CHECK(r.leadAttack == 0.0);
         CHECK(r.partnerBlow <= 2.0 + 1e-6);
-        CHECK(r.facingOff == 0.0);
         CHECK(r.skirmishMoves == 0);
     }
 }
@@ -2534,6 +2642,18 @@ TEST_CASE("arena partner: rule 17's circling: at most 3 reversals per 10 s, no h
         REQUIRE(r.circlingTime > 0.0);
         CHECK(10.0 * r.circlingReversals / r.circlingTime <= 3.0);
         CHECK(r.shortestCircling >= 0.4);
+    }
+}
+
+// The floor under that bar, so getting worse fails: today's numbers above with a little headroom.
+TEST_CASE("arena partner: rule 17's circling no worse than today: at most 6.5 reversals per 10 s, no hold under 0.015 s") {
+    const ArenaTable t = shippedTable();
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, true);
+        REQUIRE(r.circlingTime > 0.0);
+        CHECK(10.0 * r.circlingReversals / r.circlingTime <= 6.5);
+        CHECK(r.shortestCircling >= 0.015);
     }
 }
 
@@ -2580,4 +2700,71 @@ TEST_CASE("arena partner: a play camera given but not whole is exactly not given
                 REQUIRE(a.fight.allyHp() == b.fight.allyHp());
             }
         }
+}
+
+namespace {
+struct GroupPin {
+    std::uint64_t intents, state;
+};
+// The shipped group fight of the report above (three enemies, two attacking, the shipped brain), 20 s: every
+// tick's intent and the brain's state hash at the end.
+GroupPin groupFightPin(std::uint8_t order, bool camera) {
+    const ArenaTable t = shippedTable();
+    PRig r(t.fighter("default"));
+    r.def = t.fallback;
+    r.def.enemyCount = 0;
+    for (const char* id : {"skirmisher", "hulk", "duelist"})
+        for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+            if (t.enemyIds[e] == id) {
+                r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+            }
+    REQUIRE(r.def.enemyCount == 3);
+    r.def.attackers = 2;
+    r.tuning = shippedTuning();
+    r.in.partnerOrder = order;
+    r.goShipped(true, 1);
+    r.pairOnParry = true;
+    Vec2 facing = r.fight.playerStartFacing();
+    StateHash h;
+    while (!r.fight.over() && r.fight.time() < 20.f) {
+        r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
+        r.tick();
+        const PartnerIntent& i = r.brain.intent();
+        h.add(i.act).add(i.why).add(i.point.x).add(i.point.y).add(i.enemy).add(i.blows).add(i.newString);
+        h.add(i.blowStart).add(i.blowIndex).add(i.partnerBlow).add(i.breakValue).add(i.extendsStagger);
+        h.add(i.punish).add(i.rise).add(i.riseHealth).add(i.stationed);
+        const Vec2 f = r.out->player.facing;
+        const float k = std::min(1.f, 3.f * kDt);
+        const Vec2 m{facing.x + (f.x - facing.x) * k, facing.y + (f.y - facing.y) * k};
+        const float ml = length(m);
+        if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
+    }
+    return {h.value, r.brain.hash()};
+}
+} // namespace
+// With rule 17 off (the shipped default) the shipped group fight is main's: every tick's intent and the brain's
+// state hash at the end equal the values recorded from main at 102219cb, but for StayClose's intents, which the
+// ally-blow cut (865e5c61) changes: there a damaging hit cuts its blows (3 without the camera, 1 with it); main's
+// values are kept beside them. Spread's run has none cut, and equals main to the bit.
+TEST_CASE("arena partner: rule 17 off, the shipped group fight's intents and state hash are main's (102219cb)") {
+    CHECK_FALSE(shippedTuning().circling);
+    struct Row {
+        std::uint8_t order;
+        bool camera;
+        std::uint64_t intents, state;
+    };
+    const Row rows[] = {
+        {0, false, 13510023720450430857ull, 13607754419378690935ull}, // main: 1509493203624858266ull, 9278585553922132654ull (the blow cut)
+        {0, true, 5572646704335333306ull, 6381732959959279559ull}, // main: 17494647051211174547ull, 6381732959959279559ull (the blow cut)
+        {1, false, 9209459091041298615ull, 9225178481593612560ull},
+        {1, true, 7321489833706842541ull, 8499464587038327255ull},
+    };
+    for (const Row& w : rows) {
+        CAPTURE(int(w.order));
+        CAPTURE(w.camera);
+        const GroupPin p = groupFightPin(w.order, w.camera);
+        CHECK(p.intents == w.intents);
+        CHECK(p.state == w.state);
+    }
 }

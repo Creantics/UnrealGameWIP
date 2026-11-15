@@ -536,17 +536,19 @@ std::uint64_t PartnerBrainSave::hash() const {
     const PartnerTuning d{};
     const bool tuned = t.frustumMargin != d.frustumMargin || t.frustumGiveUpSeconds != d.frustumGiveUpSeconds ||
                        t.engageSeconds != d.engageSeconds || t.repositionEverySeconds != d.repositionEverySeconds ||
-                       t.repositionMeters != d.repositionMeters;
+                       t.repositionMeters != d.repositionMeters || t.circling != d.circling;
     if (framed || tuned) {
         h.add(std::uint8_t{13});
         h.add(t.frustumMargin).add(t.frustumGiveUpSeconds).add(t.engageSeconds).add(t.repositionEverySeconds);
         h.add(t.repositionMeters).add(framed).add(frameRing).add(frameTarget).add(frameAngle).add(frameRadius);
         h.add(frameLast.x).add(frameLast.y).add(noFrame).add(engageFor).add(lastStrike).add(lastGuard).add(lastMove);
         h.add(guarding).add(out.framed).add(out.frameFallback).add(fellBack);
-        h.add(skirmish).add(skirmishDraws).add(skirmishOn).add(skirmishGoal.x).add(skirmishGoal.y).add(stillFor);
-        h.add(placeAt.x).add(placeAt.y).add(placeFor);
-        h.add(skirmishFor).add(skirmishEvery).add(skirmishDir).add(skirmishKind).add(skirmishOf);
-        if (t.circling) h.add(std::uint8_t{17}); // rule 17 on (off hashes as before)
+        if (t.circling) { // rule 17's state: only with it on (off, the hash is main's, to the bit)
+            h.add(std::uint8_t{17});
+            h.add(skirmish).add(skirmishDraws).add(skirmishOn).add(skirmishGoal.x).add(skirmishGoal.y).add(stillFor);
+            h.add(placeAt.x).add(placeAt.y).add(placeFor);
+            h.add(skirmishFor).add(skirmishEvery).add(skirmishDir).add(skirmishKind).add(skirmishOf);
+        }
     }
     return h.value;
 }
@@ -723,7 +725,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     if (s_.begun) spend(in.spentSeconds); // counted before this step decides
     decide(dt, in);
     PartnerIntent& o = s_.out;
-    if (s_.begun && o.framed) skirmishStep(dt, in); // rule 17
+    if (s_.begun && o.framed && s_.t.circling) skirmishStep(dt, in); // rule 17 (off: none of it runs)
     o.idle = idleOf(o, in);
     if (s_.begun) s_.idleSeconds[static_cast<std::size_t>(o.idle)] += dt;
     if (s_.begun && o.framed && s_.fellBack) { // rule 13's fallback: every step spent on it, whatever it does
@@ -810,7 +812,6 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
     // Faces its target (else the nearest enemy standing) at all times, staggered too: the host turns to intent.enemy.
     if (face >= 0 && o.act != PartnerAct::Attack && o.enemy < 0) o.enemy = face;
     if (face < 0) return stop(); // no enemy standing: nothing to keep moving for
-    if (!t.circling) return stop(); // rule 17 off: it stands ready, facing it
     if (!in.canAct) { // staggered: it stands, and that counts toward its stand-still (it moves once it can)
         s_.skirmishOn = false;
         s_.stillFor += dt;

@@ -146,7 +146,9 @@
 //      that is legal (in its arc or not: fallen back, the frame offers nothing better) and at least half
 //      repositionMeters away (why Reposition). With the strings (about every 3-4 s) that is two kinds of action in
 //      every 20 s with the budget free. No new moves: strings, guards and walking are the kit it has.
-//  17. Never still (framed, any enemy standing). While its attack is held (why Budget, a pause, a windup at it it did
+//  17. Never still (framed, PartnerTuning::circling on, any enemy standing). Off (the default): none of it runs, its
+//      state is not touched or hashed, and the brain's outputs are those of the brain before it (the host turns a
+//      waiting partner to its target). While its attack is held (why Budget, a pause, a windup at it it did
 //      not guard, no target, or closing in with the budget out), it walks a goal of its own, in the frame: a new
 //      station of rule 13 at least repositionMeters away, else at least max(1 m, half that) (rule 13's held station
 //      and grace are only read); none: a side-step round its target, either way, turned at least 40 degrees and far
@@ -344,7 +346,8 @@ struct PartnerTuning {
     float repositionEverySeconds = 8.f;  // rule 16 (2..20)
     float repositionMeters = 1.5f;       // rule 16: at least this far (0.5..6)
     // Rule 17 (framed): with its attack held it keeps moving round its target. Off (the default until its turns hold
-    // the ruled limits): it stands ready where its rules put it, facing its target (else the nearest enemy standing).
+    // the ruled limits): it stands ready where its rules put it and the host turns it to its target; rule 17's state
+    // is neither touched nor hashed, so the hash and outputs are the brain's before rule 17.
     bool circling = false;
 };
 
