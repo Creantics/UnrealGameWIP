@@ -274,6 +274,7 @@ struct ArenaFightImpl {
     std::array<Enemy, kMaxArenaEnemies>& foes;
     const ArenaDef& def;
     const ArenaFighter& fi;
+    const ArenaFighter& pk; // the partner's kit (ArenaDef::partnerKit)
     ArenaOutput& out;
     ArenaStats& stats;
     const std::size_t n;
@@ -291,7 +292,7 @@ struct ArenaFightImpl {
     Vec2 camera{};         // ArenaInput::cameraFacing this tick (zero: none)
 
     explicit ArenaFightImpl(ArenaFight& f)
-        : fight(f), pl(f.player_), foes(f.enemy_), def(f.def_), fi(f.def_.fighter), out(f.out_), stats(f.stats_),
+        : fight(f), pl(f.player_), foes(f.enemy_), def(f.def_), fi(f.def_.fighter), pk(f.def_.partnerKit), out(f.out_), stats(f.stats_),
           n(f.enemyCount_) {}
 
     // ---- small things ----
@@ -388,6 +389,8 @@ struct ArenaFightImpl {
     // ---- begin / restart ----
 
     void reset() {
+        if (fight.kitsSwapped_) swapKits(); // each lead its own kit again
+        fight.switchRefusal_ = ArenaSwitchRefusal::Ok;
         fight.rng_ = detail::mixSeed(fight.seed_);
         fight.phase_ = ArenaPhase::Fighting;
         fight.time_ = 0.f;
@@ -403,6 +406,8 @@ struct ArenaFightImpl {
             std::min(255, static_cast<int>(fi.healCharges) + (fight.lone_ ? 0 : fight.chairs_.healCharges())));
         fight.healMax_ = pl.charges;
         pl.rounds = fi.rounds;
+        fight.otherRounds_ = pk.rounds; // the other kit's cylinder, full and not reloading
+        fight.otherReload_ = 0.f;
         fight.allyHp_ = fight.allyMaxHp_;
         fight.tableSeats_ = ArenaTableSeats{};
         fight.ally_ = ArenaFight::AllyState{};
@@ -573,7 +578,8 @@ struct ArenaFightImpl {
     }
 
     void endTick() {
-        if (pl.hp <= 0 && partnerOn() && allyUp()) takeOver();
+        // A fall goes to a standing playable lead (the partner, with its kit playable), else it is the Defeat below.
+        if (pl.hp <= 0 && partnerOn() && allyUp() && pk.playable) takeOver();
         maintainLock();
         pl.parryLeft = std::max(0.f, pl.parryLeft - playerOwn); // a hit pause holds it, as the buffer
         if (pl.buffered != Press::None) pl.bufferAge += playerOwn; // a hit pause holds it
@@ -1826,7 +1832,8 @@ struct ArenaFightImpl {
         } else {
             if (!alive(i) || unhurt(foe)) return; // the hook's own doing
             const float raw = static_cast<float>(scaledDamage(a.damage, r.damage));
-            const float lead = static_cast<float>(fi.light[0].damage);
+            // The cap is the striking lead's own light: the ally's kit (pk), so a switch never changes what it deals.
+            const float lead = static_cast<float>(pk.light[0].damage);
             amount = lose(i, static_cast<int>(std::lround(partnerBlowDamage(raw, lead, *fight.partnerTuning_))));
             stats.partnerDamage += amount;
             ++stats.partnerBlows;
@@ -2715,9 +2722,40 @@ struct ArenaFightImpl {
         return fight.partner_ != nullptr && fight.partnerTuning_ != nullptr && fight.allyMaxHp_ > 0 && !fight.lone_;
     }
 
-    // The partner's k-th blow: the lead fighter's light, wrapping at its chain's length.
+    // The partner's k-th blow: its own kit's light, wrapping at its chain's length.
     const ArenaAttack& allyLight(std::uint8_t k) const {
-        return fi.light[static_cast<std::size_t>(k) % std::max<std::size_t>(fi.lightCount, 1u)];
+        return pk.light[static_cast<std::size_t>(k) % std::max<std::size_t>(pk.lightCount, 1u)];
+    }
+
+    // Per-lead kits: the bodies swapped (a switch, a takeover), so the kits do, in place (fi and pk stay bound).
+    // Leads whose kits differ in max hp: the max goes with its lead too, the player's (the kit's hp) and the ally's
+    // (setAlly's) trading places, so a switch clips neither; after it each kit's hp is its body's max (partnerKit.hp
+    // the partner's, as allyMaxHp). Each body keeps its own hp under its own max, so a trade neither loses nor makes
+    // health. Kits of one max hp (both leads on one kit, as every fight before per-lead kits): nothing trades, the
+    // player's max stays the kit's and the ally's setAlly's, exactly as before. Twice is none. With no ally
+    // (setAlly(0), as a host puts the partner out while swapped) the player's max is its kit's hp and the ally stays
+    // none.
+    void swapKits() {
+        ArenaDef& d = fight.def_;
+        const int playerMax = d.fighter.hp;
+        const int allyMax = fight.allyMaxHp_;
+        const bool trade = allyMax > 0 && d.fighter.hp != d.partnerKit.hp;
+        std::swap(d.fighter, d.partnerKit);
+        if (trade) {
+            d.fighter.hp = allyMax;
+            d.partnerKit.hp = playerMax;
+            fight.allyMaxHp_ = playerMax;
+        }
+        fight.kitsSwapped_ = !fight.kitsSwapped_;
+    }
+
+    // The player now drives the other lead (after swapKits and standInAlly). The rounds and the reload travel with
+    // their kit: the one now held gets back what it had when it was let go (a reload part done goes on from where it
+    // stopped), the one let go keeps what the player left in it. Nothing is refilled. Its stamina is held to its kit's.
+    void takeKit() {
+        std::swap(pl.rounds, fight.otherRounds_);
+        std::swap(pl.reloadLeft, fight.otherReload_);
+        pl.stamina = std::min(pl.stamina, fi.stamina);
     }
 
     // A boss string begun now would aim at the partner: it is up and nearer the boss than the lead (centre to
@@ -2828,6 +2866,13 @@ struct ArenaFightImpl {
         // the next step's (a counter dealt in the enemies' step lands after the brain stepped).
         pin.spentSeconds = pl.pairBrain;
         pl.pairBrain = 0.f;
+        // No kit (a partner kit with no attacks): its budget reads spent every step, so the brain begins no string
+        // (NoBudget) and still guards, moves and repositions; the time is counted as no kit's.
+        const bool noKit = !pk.attacks;
+        if (noKit) {
+            pin.spentSeconds = fight.partnerTuning_->budgetWindowSeconds;
+            if (allyUp()) stats.partnerNoKitSeconds += dt;
+        }
         pin.enemies = std::span<const PartnerEnemyView>(views.data(), n);
         // Stationing (rules 8-12): only with the host's camera. The ring less the ally's body is where it may stand.
         // The full camera (partnerCamera given and whole) turns it on too, from its own place and forward, for rules
@@ -2861,8 +2906,8 @@ struct ArenaFightImpl {
             emit(ArenaEventType::AllyRose, kArenaNobody, kArenaAlly, 0, fight.allyHp_, fight.allyPos_);
             return;
         }
-        if (intent.act == PartnerAct::Attack && intent.newString) ++stats.partnerStrings;
-        if (intent.act == PartnerAct::Attack && intent.blowStart) { // the only step a blow starts on
+        if (intent.act == PartnerAct::Attack && intent.newString && !noKit) ++stats.partnerStrings;
+        if (intent.act == PartnerAct::Attack && intent.blowStart && !noKit) { // the only step a blow starts on
             al.attacking = true;
             al.blow = static_cast<std::uint8_t>(std::clamp(intent.blowIndex, 0, static_cast<int>(kMaxPartnerBlows) - 1));
             al.blows = static_cast<std::uint8_t>(std::clamp(intent.blows, 0, static_cast<int>(kMaxPartnerBlows)));
@@ -2886,7 +2931,7 @@ struct ArenaFightImpl {
             look = arenaSub(foes[static_cast<std::size_t>(intent.enemy)].pos, fight.allyPos_);
         else if (walk)
             look = arenaSub(intent.point, fight.allyPos_);
-        al.facing = arenaTurn(al.facing, arenaUnit(look, al.facing), fi.turnRate * dt);
+        al.facing = arenaTurn(al.facing, arenaUnit(look, al.facing), pk.turnRate * dt);
     }
 
     // ---- the partner's walk: the brain's point as the body walks to it ----
@@ -3152,7 +3197,9 @@ struct ArenaFightImpl {
         ArenaFight::AllyState& al = fight.ally_;
         const Vec2 fellAt = pl.pos;
         const Vec2 fellFacing = pl.facing;
+        swapKits();
         standInAlly();
+        takeKit();
         fight.allyPos_ = fellAt;
         fight.allyHp_ = 0;
         clearAlly();
@@ -3166,13 +3213,29 @@ struct ArenaFightImpl {
 
     // The host's switchLeads: both up, the player takes the partner's body and the partner the player's.
     bool switchLeads() {
-        if (fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting || !partnerOn() || !allyUp() || pl.hp <= 0)
-            return false;
+        ArenaSwitchRefusal& why = fight.switchRefusal_;
+        // The order is ArenaSwitchRefusal's: the permanent reason wins, the busy one is last.
+        why = fight.phase_ == ArenaPhase::NotStarted                     ? ArenaSwitchRefusal::NotFighting
+              : !partnerOn()                                             ? ArenaSwitchRefusal::NoPartner
+              : !pk.playable                                             ? ArenaSwitchRefusal::NotPlayable
+              : pl.hp <= 0                                               ? ArenaSwitchRefusal::PlayerDown
+              : !allyUp()                                                ? ArenaSwitchRefusal::PartnerDown
+              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
+                                                                         : ArenaSwitchRefusal::Ok;
+        if (why == ArenaSwitchRefusal::Ok) return doSwitch();
+        ++stats.leadSwitchesRefused;
+        if (why == ArenaSwitchRefusal::NotPlayable) ++stats.leadSwitchesNotPlayable;
+        return false;
+    }
+
+    bool doSwitch() {
         ArenaFight::AllyState& al = fight.ally_;
         const Vec2 wasAt = pl.pos;
         const Vec2 wasFacing = pl.facing;
         const int wasHp = pl.hp;
+        swapKits();
         standInAlly();
+        takeKit();
         fight.allyPos_ = wasAt;
         fight.allyHp_ = std::min(wasHp, fight.allyMaxHp_);
         clearAlly();
@@ -3239,9 +3302,9 @@ struct ArenaFightImpl {
         }
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
-        if (partnerOn()) { // it lands: the partner is held in the lead fighter's hitstun, which cuts its running blow
+        if (partnerOn()) { // it lands: the partner is held in its own kit's hitstun, which cuts its running blow
             ArenaFight::AllyState& al = fight.ally_;
-            al.hurtLeft = std::max(al.hurtLeft, fi.hitstun);
+            al.hurtLeft = std::max(al.hurtLeft, pk.hitstun);
             al.guarding = false;
             if (al.attacking) { // as the lead's: no damage from it after this, and the time its brain committed stays spent
                 ++stats.partnerBlowsCut;
@@ -3759,8 +3822,11 @@ void ArenaFight::begin(const ArenaDef& d, const ArenaRing& where, Vec2 playerPos
     // A def built in code may say anything; hold it to the capacities.
     def_.enemyCount = static_cast<std::uint8_t>(std::clamp<int>(def_.enemyCount, 1, static_cast<int>(kMaxArenaEnemies)));
     def_.attackers = static_cast<std::uint8_t>(std::clamp<int>(def_.attackers, 1, static_cast<int>(kMaxArenaEnemies)));
-    def_.fighter.lightCount =
-        static_cast<std::uint8_t>(std::clamp<int>(def_.fighter.lightCount, 1, static_cast<int>(kMaxLightChain)));
+    if (kitsSwapped_) allyMaxHp_ = allyHpGiven_; // the last fight ended swapped: the host's ally max again
+    kitsSwapped_ = false; // d's kits as given
+    switchRefusal_ = ArenaSwitchRefusal::Ok;
+    for (ArenaFighter* k : {&def_.fighter, &def_.partnerKit})
+        k->lightCount = static_cast<std::uint8_t>(std::clamp<int>(k->lightCount, 1, static_cast<int>(kMaxLightChain)));
     for (ArenaEnemyKind& k : def_.enemies)
         k.moveCount = static_cast<std::uint8_t>(std::clamp<int>(k.moveCount, 1, static_cast<int>(kMaxArenaMoves)));
     ring_ = where;
@@ -4027,6 +4093,7 @@ float ArenaFight::reloadProgress() const {
 }
 void ArenaFight::setAlly(int maxHp, float radius) {
     allyMaxHp_ = std::max(maxHp, 0);
+    allyHpGiven_ = allyMaxHp_;
     allyHp_ = allyMaxHp_;
     allyRadius_ = std::isfinite(radius) && radius > 0.f ? radius : 0.4f;
 }
@@ -4048,6 +4115,7 @@ void ArenaFight::setPartner(PartnerBrain* brain, const PartnerTuning* tuning) {
 
 bool ArenaFight::swapped() const { return swapped_; }
 bool ArenaFight::switchLeads() { return ArenaFightImpl(*this).switchLeads(); }
+ArenaSwitchRefusal ArenaFight::switchRefusal() const { return switchRefusal_; }
 Vec2 ArenaFight::allyPos() const { return allyPos_; }
 float ArenaFight::allyRadius() const { return allyRadius_; }
 void ArenaFight::setTableSeats(const ArenaTableSeats& seats) {
@@ -4266,6 +4334,7 @@ ArenaDef defaultArenaDef() {
     second.attack.tracking = 2.5f;
     second.minRange = 0.f; second.maxRange = 3.f; second.weight = 0.f; second.tell = ArenaTell::Backhand;
     def.enemyCount = 1;
+    def.partnerKit = def.fighter;
     return def;
 }
 
@@ -4372,10 +4441,15 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
 // ---- ArenaTable ----
 
 const ArenaFighter& ArenaTable::fighter(std::string_view leadId) const {
+    if (const ArenaFighter* own = findFighter(leadId)) return *own;
+    return fighters.empty() ? fallback.fighter : fighters[0];
+}
+
+const ArenaFighter* ArenaTable::findFighter(std::string_view leadId) const {
     const std::size_t count = std::min(fighterIds.size(), fighters.size());
     for (std::size_t i = 0; i < count; ++i)
-        if (std::string_view(fighterIds[i]) == leadId) return fighters[i];
-    return fighters.empty() ? fallback.fighter : fighters[0];
+        if (std::string_view(fighterIds[i]) == leadId) return &fighters[i];
+    return nullptr;
 }
 
 const ArenaFightEntry* ArenaTable::findEntry(std::string_view scene, std::uint32_t beat, std::uint32_t step) const {
@@ -4565,7 +4639,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
                       "releasePoise", "pairWindow", "pairHits", "pairBossPoise", "pairCooldown", "pairPartnerSeconds",
                       "readPower", "readStackPower", "readPoise",
-                      "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
+                      "readWrongPoise", "attacks", "playable", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
                       "hurtJolt", "blockLoadShare", "blockCallGuard", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
                       "takeHalfRearm", "rounds", "reload", "jumpStartup", "jumpAir", "jumpLand", "jumpLandLock",
                       "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight"},
@@ -4580,6 +4654,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
         if (!known) errors.push_back(path + ".weapon: expected one of none, gauntlets, guns, magic");
     }
     arenaBool(j, "attacks", f.attacks, path, errors);
+    arenaBool(j, "playable", f.playable, path, errors);
     arenaInt(j, "hp", f.hp, 1, 100000, path, errors);
     arenaNum(j, "stamina", f.stamina, 0, 100000, true, path, errors);
     arenaNum(j, "staminaRegen", f.staminaRegen, 0, 100000, false, path, errors);
@@ -5057,6 +5132,7 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
     } else {
         arenaUnknownKeys(def, "default", {"enemies", "ring", "attackers", "spawn"}, false, warnings);
         table.fallback.fighter = defaultFighter;
+        table.fallback.partnerKit = defaultFighter;
         table.fallback.bpm = table.bpm;
         table.fallback.partner = table.partner;
         arenaParseFightBody(def, "default", table, table.fallback, errors);
@@ -5091,6 +5167,7 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
             entry.step = static_cast<std::uint32_t>(s.integer(0));
         }
         entry.def.fighter = defaultFighter;
+        entry.def.partnerKit = defaultFighter;
         entry.def.bpm = table.bpm;
         entry.def.partner = table.partner;
         arenaParseFightBody(j, path, table, entry.def, errors);

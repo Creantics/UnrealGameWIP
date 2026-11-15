@@ -721,7 +721,7 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		}
 	}
 	// The ground's wetness on a Solhaven map, as the running clock sets it: the look's own times the night frame's share
-	// (damp by day, full at night).
+	// (dry by day unless the weather wets it, full at night).
 	if (bSolhaven)
 	{
 		const bool bWetNight = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight"));

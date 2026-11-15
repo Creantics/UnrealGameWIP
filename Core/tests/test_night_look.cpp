@@ -22,9 +22,12 @@ TEST_CASE("nightFrame: day leaves the lights as they are") {
     CHECK(f.wetShare == doctest::Approx(NightLook{}.dayWetShare));
 }
 
-TEST_CASE("nightFrame: the ground is damp by day and fully wet at night") {
+TEST_CASE("nightFrame: the ground is dry by day and fully wet at night") {
     const NightLook look;
-    CHECK(0.6f * nightFrame(look, 0.f).wetShare == doctest::Approx(0.35f).epsilon(0.02));
+    CHECK(nightFrame(look, 0.f).wetShare == 0.f);  // day wetness is the weather's job, not a constant
+    NightLook damp;
+    damp.dayWetShare = 0.5f;  // a look may still ask for a damp day
+    CHECK(nightFrame(damp, 0.f).wetShare == doctest::Approx(0.5f));
     CHECK(nightFrame(look, 1.f).wetShare == doctest::Approx(1.f));
     CHECK(nightFrame(look, 7.f).wetShare == doctest::Approx(1.f));
     float last = 0.f;

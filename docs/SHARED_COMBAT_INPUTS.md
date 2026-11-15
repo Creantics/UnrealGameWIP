@@ -363,6 +363,13 @@ the pieces.
   (`FightCheckpoint::inFight`, `joinRequested`, `joinHealth`): a retry to one taken before the join
   starts with one lead again; one taken with a join waiting brings that lead in (the first tick after
   reports `tick.joined`). The host reads `inFight()` after a retry.
+* **Party-only leads (the arena fight).** Each lead's kit in `Data/Battle/arena.json` carries `playable`
+  (default true; the third lead's is false). It is the key, not an empty kit: a party-only lead that fights is
+  still never driven. With a partner kit that is not playable (`ArenaDef::partnerKit`), `ArenaFight::switchLeads`
+  refuses with `ArenaSwitchRefusal::NotPlayable` (counted in `stats().leadSwitchesNotPlayable`; nothing else
+  changes; `switchRefusal()` names the last refusal of any kind), and the host does not send the request to the
+  session (its call reads NOT HERE). A takeover goes to a standing playable lead, else it is a Defeat: the
+  controlled lead's fall with only a party-only partner standing is the Defeat, no takeover.
 * **Down, takeover and defeat.** `def.inFight` names the leads in the fight (both by default; at
   least one). `setLeadHealth` is also the fall feed, so the host calls it on every hp change: a lead
   in the fight at 0 or below (finite) is down, not dead; above 0 it stands again; NaN or an infinity
