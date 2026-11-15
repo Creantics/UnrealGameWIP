@@ -390,6 +390,30 @@ TEST_CASE("ui style: the hit's hairline is pale enough to read on a dark court i
     }
 }
 
+TEST_CASE("ui style: a value line's unfilled track holds 3:1 on a white sky and stays 2:1 under its fill") {
+    // The track is opaque dimmed ink with a 1 px rim of the edge colour at full strength; the fill is the ink itself.
+    const UiColor white{1.f, 1.f, 1.f, 1.f};
+    const UiColor black{0.f, 0.f, 0.f, 1.f};
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle shipped;
+    REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
+    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+                CAPTURE(w);
+                CAPTURE(p);
+                const UiColor ink = uiColor(s, static_cast<UiWorld>(w), static_cast<UiPalette>(p), UiToken::Ink);
+                const UiColor track = uiTrackInk(ink);
+                CHECK(track.a == 1.f);
+                CHECK(uiContrast(track, s.edge, white) >= 3.f);
+                CHECK(uiContrast(ink, track, black) >= 2.f);
+            }
+        }
+    }
+}
+
 TEST_CASE("ui style: the hit flash is full for 80 ms and gone by 300 ms") {
     CHECK(uiHitFlashLevel(-0.01f) == 0.f);
     CHECK(uiHitFlashLevel(0.f) == 1.f);

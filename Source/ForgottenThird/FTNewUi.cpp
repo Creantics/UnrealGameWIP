@@ -311,6 +311,12 @@ FLinearColor Tok(UiToken T, float Alpha = 1.f)
 	return C;
 }
 
+// A value line's unfilled track in the shown world (ftcore::uiTrackInk): the ink dimmed, opaque, at Alpha.
+FLinearColor TrackTok(float Alpha = 1.f)
+{
+	return LinOf(ftcore::uiTrackInk(ftcore::uiColor(Table().Style, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink)), Alpha);
+}
+
 // A non-text mark's colour in the shown world (ink where the marks keep it) and, where they wear accent2, the 1 px ink
 // rim that lets the dark red stand on the dark backing; both at Alpha.
 struct FMarkTok
@@ -341,8 +347,6 @@ constexpr float kContourAlpha = 0.67f;  // of the edge colour's alpha (0.9): abo
 constexpr float kContourSoft = 0.5f;    // a word's outer contour pixel, of its inner one
 constexpr float kRimPx = 1.f;           // an accent2 mark's ink rim, px at 1080p (whole device pixels, at least 1)
 constexpr float kCrispFeather = 0.8f;   // device px: the soft edge of a core, a rim and its knock-out
-constexpr float kShadowEach = 0.205f;   // each of a HUD glyph's four shadow passes: 1 - (1 - 0.205)^4 = 60 percent inside
-constexpr float kShadowMinPx = 30.f;   // a HUD word under this size (px at 1080p) drops its shadow and keeps its 1 px rim
 
 float ContourK(float CoreAlpha)
 {
@@ -633,7 +637,7 @@ struct FPainter
 	FSlateWindowElementList& Out;
 	int32 Layer;
 	float S; // 1080p units to local
-	bool bShadow = false; // the fight HUD's words: a soft drop shadow under each glyph (Text), drawn on the base layer
+	bool bShadow = false; // the fight HUD's words: rim-only (the font's own 1 px dark edge, no soft contour) (Text)
 	FTextRuns* Runs = nullptr; // the fight HUD's kept glyph runs (FTextRuns); null: each pass lays its string out (MakeText)
 
 	const FSlateBrush* White() const { return FCoreStyle::Get().GetBrush(TEXT("WhiteBrush")); }
@@ -734,7 +738,7 @@ struct FPainter
 		const int32 From = End < 0 ? 0 : FMath::Clamp(Start, 0, Str.Len());
 		const int32 To = End < 0 ? Str.Len() : FMath::Clamp(End, From, Str.Len());
 		FTextRun* Run = Runs && To > From ? &Runs->Find(*Str + From, To - From, Font, Geometry.Scale, Unit) : nullptr;
-		// Each pass by its index in the run (FTextRuns): the shadow's glyphs 0, its outlines 1 to 3, the soft contour 4, the
+		// Each pass by its index in the run (FTextRuns; 0 to 3, the old shadow's, are not drawn): the soft contour 4, the
 		// face 5 (6 faded: its edge kept out of the letter).
 		const auto Draw = [&](int32 Pass, const FSlateFontInfo& F, const FLinearColor& Tint, float Back, float Drop = 0.f, int32 L = 3)
 		{
@@ -767,30 +771,9 @@ struct FPainter
 		InnerF.OutlineSettings.OutlineColor.A *= ContourK(C.A);
 		InnerF.OutlineSettings.bSeparateFillAlpha = C.A < 0.999f;
 		const int32 Edge = Font.OutlineSettings.OutlineSize;
-		// The fight HUD's words under kShadowMinPx (at 1080p) keep only the font's own 1 px dark rim: at that size the shadow
-		// and the soft contour blur the letter into the picture. Larger words keep both the shadow and the rim.
-		const bool bRimOnly = bShadow && Font.Size < 0.75f * kShadowMinPx * FMath::Max(S, 0.25f);
-		if (bShadow && !bRimOnly)
-		{
-			// The soft shadow (2 px down, about 4 px of blur, 60 percent black), under every line and word of the painter: the
-			// glyph's own shape and three outline passes 1, 2 and 3 px wider (outline only, fill included, no face), each about
-			// a fifth black, so they stack to 60 percent inside the letter and fall to nothing over 3 to 4 px round it. Slate
-			// sets an outlined glyph down and right by its outline's width, so each pass is set back by that width less the
-			// main pass's, and lies under the letter itself. It takes the place of the soft outer contour pixel.
-			const float Drop = 2.f * S;
-			const float A = kShadowEach * ContourK(C.A);
-			FSlateFontInfo ShadeF = Font;
-			ShadeF.OutlineSettings.OutlineSize = 0;
-			Draw(0, ShadeF, FLinearColor(0.f, 0.f, 0.f, A), -static_cast<float>(Edge), Drop, 0);
-			ShadeF.OutlineSettings.bSeparateFillAlpha = false;
-			ShadeF.OutlineSettings.OutlineColor = FLinearColor(0.f, 0.f, 0.f, A);
-			for (int32 K = 1; K <= 3; ++K)
-			{
-				ShadeF.OutlineSettings.OutlineSize = K * static_cast<int32>(Unit);
-				Draw(K, ShadeF, FLinearColor(0.f, 0.f, 0.f, 0.004f), K * Unit - static_cast<float>(Edge), Drop, 0);
-			}
-		}
-		else if (Edge > 0 && !bRimOnly)
+		// The fight HUD's and the party screen's words, the names included, keep only the font's own 1 px dark rim: a soft
+		// shadow or contour blurs a small letter into the picture and sits heavy under a name.
+		if (Edge > 0 && !bShadow)
 		{
 			FSlateFontInfo OuterF = InnerF;
 			OuterF.OutlineSettings.OutlineSize += 1;
@@ -915,15 +898,22 @@ public:
 
 	// A line from Core. Closed: the first and last points are the same place (a ring), joined without a seam. Rim: a mark
 	// that wears accent2 (MarkTok) carries a crisp 1 px rim in that colour between its core and its dark contour, which
-	// moves out by the rim's width.
-	void Stroke(const ftcore::UiStroke& St, const FLinearColor& C, bool bClosed = false, const FLinearColor* Rim = nullptr)
+	// moves out by the rim's width. bCrispEdge (a ring): a crisp 1 px dark edge at the edge colour's full alpha just
+	// outside the core and rim, inside the soft contour.
+	void Stroke(const ftcore::UiStroke& St, const FLinearColor& C, bool bClosed = false, const FLinearColor* Rim = nullptr,
+		bool bCrispEdge = false)
 	{
 		if (St.count < 2 || C.A <= 0.f)
 		{
 			return;
 		}
 		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
-		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW, kContourFeather * S, bClosed);
+		const float EdgeW = bCrispEdge ? WholePx(1.f) : 0.f;
+		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW + EdgeW, kContourFeather * S, bClosed);
+		if (bCrispEdge)
+		{
+			Ribbon(Parts[Under], St, Table().Edge, ContourK(C.A), RimW + EdgeW, kCrispFeather * Px, bClosed);
+		}
 		if (Rim)
 		{
 			// The rim, the knock-out and the core all fade over the same 0.8 device px, so the knock-out's fade ends inside
@@ -935,15 +925,16 @@ public:
 	}
 
 	// A value line (health, guard, poise, a timer): its core with a crisp 1 px dark edge along both sides (about 60 percent,
-	// its fall under a pixel) in place of the soft contour, so the line's own width reads exactly.
-	void ValueStroke(const ftcore::UiStroke& St, const FLinearColor& C, const FLinearColor* Rim = nullptr)
+	// its fall under a pixel) in place of the soft contour, so the line's own width reads exactly. EdgeK is the edge's share
+	// of the edge colour; an unfilled track takes it whole, so it holds on a white sky.
+	void ValueStroke(const ftcore::UiStroke& St, const FLinearColor& C, const FLinearColor* Rim = nullptr, float EdgeK = kContourAlpha)
 	{
 		if (St.count < 2 || C.A <= 0.f)
 		{
 			return;
 		}
 		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
-		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), WholePx(1.f) + RimW, kCrispFeather * Px, false);
+		Ribbon(Parts[Under], St, Table().Edge, EdgeK * ContourK(C.A), WholePx(1.f) + RimW, kCrispFeather * Px, false);
 		if (Rim)
 		{
 			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, kCrispFeather * Px, false);
@@ -1353,7 +1344,6 @@ constexpr float LeadHpW = 6.f;
 constexpr float PartnerHpW = 4.f;
 constexpr float GuardW = 3.f;
 constexpr float DangerUnderW = 1.f; // a danger word's underline, where the world draws one
-constexpr float TrackInk = 0.3f;    // a value line's full-length track, where the world draws one
 constexpr float LoadDim = 0.45f;    // the lead's name's letters the Load has not reached, where the Load fills the name in
                                     // the accent: the ink's own colour at this share, opaque, so it reads on any picture
 constexpr float PoiseW = 4.f;
@@ -1502,10 +1492,10 @@ void PartyMarks(FLineMesh& Mesh, ftcore::UiStroke& Line, const ftcore::UiPartyRo
 	}
 	if (V.dot)
 	{
-		// The dot is a mark: the world's mark colour (accent2 with its rim where the marks wear it); the underline is ink.
+		// The dot is ink like the underline: the mark colour (red where the marks wear accent2) is kept for the target
+		// mark, low health and defeat.
 		const ftcore::UiPartyDot D = ftcore::uiPartyDot(X0, CapMid(Base, NameAsc), 0.62f * NameAsc);
-		const FMarkTok M = MarkTok(K * A);
-		Mesh.Dot(D.x, D.y, D.r, M.C, M.RimOrNull());
+		Mesh.Dot(D.x, D.y, D.r, Tok(UiToken::Ink, K * A));
 	}
 }
 
@@ -2165,7 +2155,7 @@ public:
 			Runs->BeginFrame();
 		}
 		const FVector2f Size = Geometry.GetLocalSize();
-		// Every word with its shadow, from the kept glyph runs.
+		// Every word rim-only, from the kept glyph runs.
 		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f * HudScale), true, Runs};
 		Mesh.Begin(Geometry, P.S);
 		// The one shade: the subtitles' gradient across the screen's whole bottom while the party stands, darkest at the
@@ -2904,6 +2894,20 @@ private:
 		Mesh.ValueStroke(Line, C, Rim);
 	}
 
+	// A value line's unfilled track the full length (health, guard: one family): untapered, in TrackTok at A, its 1 px
+	// dark edge at the edge colour's full strength.
+	void TrackLine(float X0, float X1, float Y, float Width, std::uint32_t Seed, float S, float A) const
+	{
+		if (A <= 0.f)
+		{
+			return;
+		}
+		const float WD = DevWidth(Width, S);
+		const float YS = SnapLine(Y, Width, S);
+		ftcore::uiStrokeLine(Line, X0, YS, X1, YS, ValueStyle(WD, Seed, S, 0.f), 0.f, 1.f);
+		Mesh.ValueStroke(Line, TrackTok(A), nullptr, 1.f);
+	}
+
 	// Width px at 1080p (at scale S) as a whole number of device pixels, still in px at 1080p: 1 px is 1.33 at 1440p and
 	// would blur, so it draws as one device pixel there, and 3 px as four.
 	float DevWidth(float Width, float S) const { return Mesh.WholeDev(Width * S) / FMath::Max(S, 0.01f); }
@@ -2912,16 +2916,20 @@ private:
 	// whole rows, never a soft half row each side.
 	float SnapLine(float Y, float Width, float S) const { return Mesh.SnapLineY(Y, Mesh.WholeDev(Width * S)); }
 
-	// A whole ring, joined without a seam.
+	// A whole ring, joined without a seam: a true circle (no hand wobble, a point every 1.5 px, so its edge never steps
+	// at 1080p) with a crisp 1 px dark edge right round its outside, so it holds on a mid-tone.
 	void Ring(float CX, float CY, float R, float Width, std::uint32_t Seed, float S, const FLinearColor& C, const FLinearColor* Rim = nullptr) const
 	{
-		ftcore::uiStrokeArc(Line, CX, CY, R, 0.f, 360.f, StrokeStyle(Width, Seed, S, 0.f));
+		ftcore::UiStrokeStyle St = StrokeStyle(Width, Seed, S, 0.f);
+		St.wobble = 0.f;
+		St.step = 1.5f * S;
+		ftcore::uiStrokeArc(Line, CX, CY, R, 0.f, 360.f, St);
 		if (Line.count > 1)
 		{
 			Line.pt[Line.count - 1].x = Line.pt[0].x;
 			Line.pt[Line.count - 1].y = Line.pt[0].y;
 		}
-		Mesh.Stroke(Line, C, true, Rim);
+		Mesh.Stroke(Line, C, true, Rim, true);
 	}
 
 	void Poly(const FVector2f* Pts, int32 N, float HalfWidth, const FLinearColor& C, bool bClosed = false) const
@@ -2992,12 +3000,12 @@ private:
 
 	// An hp line: the hp in the stroke over a hairline track (the track only where the hp is not, so it never reads as a
 	// second line), what was just lost rubbed out to a broken trace, low under a quarter.
-	// In every world the track is the line's own stroke the full length at TrackInk, the value over it at full ink from
+	// In every world the track is the line's own stroke the full length (TrackLine), the value over it at full ink from
 	// the same left edge as the name.
 	void HpLine(float X0, float Len, float Y, float Hp, float Was, float Width, std::uint32_t Seed, float S, float A) const
 	{
 		const float YS = SnapLine(Y, Width, S); // the track and the rub on the value line's own middle
-		ValueLine(X0, X0 + Len, YS, 0.f, 1.f, Width, Seed + 1u, S, Tok(UiToken::Ink, Hud::TrackInk * A), 0.f);
+		TrackLine(X0, X0 + Len, YS, Width, Seed + 1u, S, A);
 		LowValueLine(X0, X0 + Len, YS, Hp, Width, Seed + 1u, S, Hp < Hud::LowHp, A, Hud::ValueTaper);
 		if (Was > Hp + 0.004f)
 		{
@@ -3127,7 +3135,7 @@ private:
 			// right end in the labels' size, as POISE sits by its line.
 			const float G = FMath::Clamp(L.stamina01, 0.f, 1.f);
 			const float GY = CapMid(GuardBase, NoteAsc);
-			ValueLine(X0, X0 + Len, GY, 0.f, 1.f, Hud::GuardW, 205, S, Tok(UiToken::Ink, Hud::TrackInk * A), 0.f);
+			TrackLine(X0, X0 + Len, GY, Hud::GuardW, 205, S, A);
 			LowValueLine(X0, X0 + Len, GY, G, Hud::GuardW, 205, S, G < Hud::LowHp, A, Hud::ValueTaper);
 			P.Text(X0 + Len + 12.f * S, CapTop(GY, NoteAsc), GuardWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
 		}

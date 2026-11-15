@@ -160,9 +160,15 @@ FTCORE_API bool validateUiStyle(const UiStyle& s, std::string* error = nullptr);
 FTCORE_API UiColor uiColor(const UiStyle& s, UiWorld world, UiPalette palette, UiToken token);
 
 // A non-text mark's colour: accent2 in a world whose marks wear it (UiWorldRules::marksAccent2), else `usual`, the
-// mark's own colour (a value line its meter's colour, the current lead's dot and the weak-point mark ink). No palette
+// mark's own colour (a value line its meter's colour and the weak-point mark ink). No palette
 // overrides accent2, so the mark keeps it in every palette; its shape and edge carry it.
 FTCORE_API UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor usual);
+
+// The unfilled track of a value line (health, guard): the text ink dimmed to kUiTrackDim, opaque, with a 1 px rim of
+// the edge colour at full strength. It holds 3:1 against its rim over the brightest sky and stays at least 2:1 dimmer
+// than the ink fill (both checked for every world and palette in the tests).
+inline constexpr float kUiTrackDim = 0.65f;
+FTCORE_API UiColor uiTrackInk(UiColor ink);
 
 // How a danger word is drawn. In a world with UiWorldRules::dangerUnderline the glyphs are ink and the danger colour is
 // the underline beneath them; elsewhere the glyphs are danger and there is no underline. Both colours follow the

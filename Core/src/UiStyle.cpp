@@ -185,6 +185,10 @@ UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor 
     return uiColor(s, world, palette, UiToken::Accent2);
 }
 
+UiColor uiTrackInk(UiColor ink) {
+    return UiColor{ink.r * kUiTrackDim, ink.g * kUiTrackDim, ink.b * kUiTrackDim, 1.f};
+}
+
 UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette) {
     UiDangerWord d;
     d.underline = uiColor(s, world, palette, UiToken::Danger);
