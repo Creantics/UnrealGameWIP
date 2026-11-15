@@ -2212,8 +2212,45 @@ TEST_CASE("per-lead load: a set after a spend on the same step is refused and co
     CHECK(s.setLoad(kLeadB, 25));
     CHECK(s.setLeadHeals(kLeadB, 1));
     CHECK(s.lateSets() == 2);
-    // A begin (and a retry) starts the count again.
+    // A begin starts the count again.
     REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+    CHECK(s.lateSets() == 0);
+}
+
+TEST_CASE("per-lead load: the fence holds for the kept lead's Load and lead B's heal setter; a retry opens it at 0") {
+    FightSession s;
+    REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+    feedPerLead(s);
+    REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+    s.tick(kFrame);
+    REQUIRE(s.keptLead() == kLeadB);
+    REQUIRE(s.keptLoad() == 25);
+    // The kept lead: a spend, then a set of its old value on the same step.
+    s.spendLeadLoad(kLeadB, 10);
+    CHECK_FALSE(s.setLoad(kLeadB, 25));
+    CHECK(s.keptLoad() == 15);
+    CHECK(s.strikeCount().loadOf(kLeadB) == 15);
+    // Lead B's charge: a heal, then a stale set.
+    REQUIRE(s.spendLeadHeal(kLeadB));
+    CHECK_FALSE(s.setLeadHeals(kLeadB, 1));
+    CHECK(s.leadHeals(kLeadB) == 0);
+    CHECK(s.lateSets() == 2);
+    // A retry on the same step (no tick between): the count is 0 and the fence is open for both leads.
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(kFrame).defeated);
+    REQUIRE(s.spendLeadHeal(kLeadA)); // spent on the defeat's step, then the retry
+    s.spendLeadLoad(kLeadA, 5);
+    REQUIRE(s.retry().at == CheckpointAt::FightStart);
+    CHECK(s.lateSets() == 0);
+    CHECK(s.setLoad(kLeadA, 70));
+    CHECK(s.setLeadHeals(kLeadA, 2));
+    CHECK(s.setLoad(kLeadB, 20));
+    CHECK(s.setLeadHeals(kLeadB, 1));
+    CHECK(s.leadLoad(kLeadA) == 70);
+    CHECK(s.leadHeals(kLeadA) == 2);
+    CHECK(s.keptLoad() == 20);
+    CHECK(s.leadHeals(kLeadB) == 1);
     CHECK(s.lateSets() == 0);
 }
 

@@ -313,7 +313,170 @@ bool inReachSpot(const Ground& g, const PartnerTuning& t, const PartnerEnemyView
     return found;
 }
 
+// --- Rules 13-16: the play camera. ---
+using V3 = PartnerVec3;
+float v3Dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+// Rule 13's frustum, shrunk by the margin: a capsule's three points each in front of the camera and within lim of
+// the screen's centre in its -1..1 frame.
+struct Frame {
+    V3 c{}, f{}, u{}, r{};
+    float tanV = 0.f, tanH = 0.f, lim = 0.8f, z0 = 0.f, h = 1.8f;
+    bool point(float x, float y, float z) const {
+        const V3 d{x - c.x, y - c.y, z - c.z};
+        const float depth = v3Dot(d, f);
+        if (!(depth > 0.05f)) return false;
+        const float sx = v3Dot(d, r) / (depth * tanH), sy = v3Dot(d, u) / (depth * tanV);
+        return std::fabs(sx) <= lim && std::fabs(sy) <= lim;
+    }
+    bool sees(Vec2 p) const { return point(p.x, p.y, z0) && point(p.x, p.y, z0 + 0.5f * h) && point(p.x, p.y, z0 + h); }
+};
+
+// The camera view, whole (PartnerCameraView's rules), or not given.
+bool makeFrame(const PartnerCameraView& v, const PartnerTuning& t, Frame& fr) {
+    if (!partnerCameraWhole(v)) return false; // the same test ArenaFight makes
+    const float lf = std::sqrt(v3Dot(v.forward, v.forward)), lu = std::sqrt(v3Dot(v.up, v.up));
+    const V3 f{v.forward.x / lf, v.forward.y / lf, v.forward.z / lf};
+    const float k = v3Dot(v.up, f) / lu;
+    const V3 u0{v.up.x / lu - k * f.x, v.up.y / lu - k * f.y, v.up.z / lu - k * f.z}; // up made square to forward
+    const float l0 = std::sqrt(v3Dot(u0, u0));
+    if (!(l0 > 0.f)) return false; // never with a whole camera (up more than a degree off forward)
+    fr.c = v.pos;
+    fr.f = f;
+    fr.u = V3{u0.x / l0, u0.y / l0, u0.z / l0};
+    fr.r = V3{f.y * fr.u.z - f.z * fr.u.y, f.z * fr.u.x - f.x * fr.u.z, f.x * fr.u.y - f.y * fr.u.x};
+    fr.tanV = std::tan(0.5f * v.verticalFovDegrees * kStDeg);
+    fr.tanH = fr.tanV * v.aspect;
+    fr.lim = 1.f - 2.f * t.frustumMargin;
+    fr.z0 = v.groundZ;
+    fr.h = v.bodyHeight;
+    return true;
+}
+
+// Rule 13's target keep-out: from the camera along the line to the target, the target's silhouette's half-angle, to
+// wedgeBeyondMeters past its far edge (rule 9's wedge's form). Off with the camera on the target.
+struct Keep {
+    bool on = false;
+    Vec2 cam{}, axis{};
+    float length = 0.f, sinH = 0.f, cosH = 1.f;
+    bool in(Vec2 p, float margin) const {
+        if (!on) return false;
+        const Vec2 d = stSub(p, cam);
+        const float along = stDot(d, axis);
+        if (along <= 0.f || along >= length + margin) return false;
+        return std::fabs(stCross(axis, d)) * cosH - along * sinH < margin;
+    }
+};
+Keep makeKeep(const Ground& g, const PartnerEnemyView& e) {
+    Keep k;
+    const Vec2 d = stSub(e.pos, g.cam);
+    const float far = std::hypot(d.x, d.y);
+    if (!(far > 1e-3f)) return k;
+    k.on = true;
+    k.cam = g.cam;
+    k.axis = Vec2{d.x / far, d.y / far};
+    k.sinH = std::min(1.f, e.radius / far);
+    k.cosH = std::sqrt(std::max(0.f, 1.f - k.sinH * k.sinH));
+    k.length = far + e.radius + g.t->wedgeBeyondMeters;
+    return k;
+}
+
+// The angle (degrees) between a and b.
+float stAngle(Vec2 a, Vec2 b) {
+    const Vec2 ua = stUnit(a, Vec2{1.f, 0.f}), ub = stUnit(b, Vec2{1.f, 0.f});
+    return std::acos(std::clamp(stDot(ua, ub), -1.f, 1.f)) / kStDeg;
+}
+
+// Rule 13: a valid station for target e (none: the follow ring round the lead) into `out`, or false. The one held,
+// while it is valid (minFrom 0); else the nearest valid one, the arc's first, at least minFrom from pos (rule 16),
+// which becomes the one held.
+bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, PartnerOrder order, Vec2 pos,
+                  const PartnerEnemyView* e, int tgt, float minFrom, PartnerBrainSave& s, Vec2& out) {
+    const bool close = order == PartnerOrder::StayClose;
+    const float cap = close ? closeCap(t) : kStFar;
+    const Keep k = e ? makeKeep(g, *e) : Keep{};
+    const auto valid = [&](Vec2 q) {
+        return stFinite(q) && g.legal(q) && dist(q, g.lead) <= cap + 1e-4f && !k.in(q, t.wedgeClearMeters) && fr.sees(q);
+    };
+    const Vec2 c = e ? e->pos : g.lead;
+    const std::uint8_t ring = e ? 1 : 2;
+    std::array<float, 3> radii{};
+    int nr = 1;
+    float lo = 110.f, hi = 160.f; // rule 11's
+    if (e) {
+        // Half the reach off its edge, else (a second tier) as far out as still arrives in reach.
+        radii[0] = e->radius + 0.5f * t.reachMeters;
+        radii[1] = e->radius + t.reachMeters - t.stationTolerance;
+        nr = radii[1] > radii[0] + 0.1f ? 2 : 1;
+        lo = close ? t.closeArcMin : t.spreadArcMin;
+        hi = close ? t.closeArcMax : t.spreadArcMax;
+    } else {
+        const float a = std::max(t.followMin, t.personalSpaceMeters + 0.05f);
+        const float b = std::max(close ? std::min(t.followMax, cap) : t.followMax, a);
+        radii = {a, 0.5f * (a + b), b};
+        nr = 3;
+    }
+    if (minFrom <= 0.f && s.frameRing == ring && (ring == 2 || s.frameTarget == tgt)) {
+        const Vec2 q = stAlong(c, stTurn(Vec2{1.f, 0.f}, s.frameAngle), s.frameRadius);
+        if (valid(q)) {
+            s.frameLast = q;
+            out = q;
+            return true;
+        }
+    }
+    Spot best;
+    float bestAngle = 0.f, bestRadius = 0.f;
+    for (int ri = 0; ri < nr; ++ri)
+        for (int a = 0; a < 72; ++a) {
+            const float ang = 5.f * static_cast<float>(a);
+            const Vec2 q = stAlong(c, stTurn(Vec2{1.f, 0.f}, ang), radii[static_cast<std::size_t>(ri)]);
+            if (!valid(q) || dist(q, pos) < minFrom) continue;
+            const float deg = e ? stAngle(stSub(g.lead, c), stSub(q, c)) : stAngle(g.facing, stSub(q, c));
+            const Spot cand{q, (deg >= lo - 1e-3f && deg <= hi + 1e-3f ? 0 : 1) + (e && ri > 0 ? 2 : 0), dist(q, pos)};
+            if (better(cand, best)) {
+                best = cand;
+                bestAngle = ang;
+                bestRadius = radii[static_cast<std::size_t>(ri)];
+            }
+        }
+    if (best.tier >= 9) return false;
+    s.frameRing = ring;
+    s.frameTarget = e ? tgt : -1;
+    s.frameAngle = bestAngle;
+    s.frameRadius = bestRadius;
+    s.frameLast = best.p;
+    out = best.p;
+    return true;
+}
+
+// Why it is not acting (PartnerIdle's rules), from the intent it gives.
+PartnerIdle idleOf(const PartnerIntent& o, const PartnerInput& in) {
+    switch (o.why) {
+    case PartnerWhy::Guard:
+    case PartnerWhy::String:
+    case PartnerWhy::Start:
+    case PartnerWhy::Committed:
+    case PartnerWhy::Reposition: return PartnerIdle::None;
+    case PartnerWhy::Down: return PartnerIdle::Staggered;
+    case PartnerWhy::CannotAct:
+        return in.doing == PartnerDoing::Hurt ? PartnerIdle::Staggered : PartnerIdle::Other;
+    case PartnerWhy::Leash: return PartnerIdle::Moving;
+    case PartnerWhy::Pause: return o.act == PartnerAct::Wait ? PartnerIdle::Pause : PartnerIdle::Moving;
+    case PartnerWhy::NoTarget: return PartnerIdle::NoTarget;
+    case PartnerWhy::Approach: return o.act == PartnerAct::MoveTo ? PartnerIdle::Moving : PartnerIdle::NoTarget;
+    case PartnerWhy::Budget: return PartnerIdle::NoBudget;
+    default: return PartnerIdle::Other; // NotBegun, HeldOff
+    }
+}
+
 } // namespace
+
+bool partnerInFrame(const PartnerCameraView& camera, float margin, Vec2 p) {
+    PartnerTuning t;
+    t.frustumMargin = margin;
+    Frame fr;
+    return pbWithin(margin, 0.f, 0.4f) && stFinite(p) && makeFrame(camera, t, fr) && fr.sees(p);
+}
 
 bool validPartnerTuning(const PartnerTuning& t) {
     return pbWithin(t.leashMeters, 1.f, 10.f) && pbWithin(t.returnMeters, 0.5f, t.leashMeters) &&
@@ -333,7 +496,9 @@ bool validPartnerTuning(const PartnerTuning& t) {
            pbWithin(t.followMax, t.followMin, 10.f) && pbWithin(t.stationTolerance, 0.05f, 2.f) &&
            t.stationTolerance <= 0.5f * t.reachMeters && t.leashMeters >= t.personalSpaceMeters + 1.f &&
            pbWithin(t.stationGiveUpSeconds, 0.5f, 30.f) && pbWithin(t.stationAnySeconds, t.stationGiveUpSeconds, 60.f) &&
-           pbWithin(t.targetHoldSeconds, 0.f, 10.f);
+           pbWithin(t.targetHoldSeconds, 0.f, 10.f) && pbWithin(t.frustumMargin, 0.f, 0.4f) &&
+           pbWithin(t.frustumGiveUpSeconds, 0.f, 30.f) && pbWithin(t.engageSeconds, 0.25f, 10.f) &&
+           pbWithin(t.repositionEverySeconds, 2.f, 20.f) && pbWithin(t.repositionMeters, 0.5f, 6.f);
 }
 
 static_assert(kMaxPartnerStep == kMaxFightStep, "the brain's step bound is the fight's");
@@ -366,6 +531,18 @@ std::uint64_t PartnerBrainSave::hash() const {
     h.add(out.partnerBlow).add(out.breakValue).add(out.extendsStagger).add(out.punish).add(out.rise).add(out.riseHealth);
     h.add(out.stationed).add(begun).add(side).add(sideKey).add(sideFor).add(swaps);
     h.add(sideTarget).add(offStation).add(targetFor).add(targetReached);
+    // Rules 13-16: only once framed or tuned off their defaults (a brain never given a camera hashes as before).
+    const PartnerTuning d{};
+    const bool tuned = t.frustumMargin != d.frustumMargin || t.frustumGiveUpSeconds != d.frustumGiveUpSeconds ||
+                       t.engageSeconds != d.engageSeconds || t.repositionEverySeconds != d.repositionEverySeconds ||
+                       t.repositionMeters != d.repositionMeters;
+    if (framed || tuned) {
+        h.add(std::uint8_t{13});
+        h.add(t.frustumMargin).add(t.frustumGiveUpSeconds).add(t.engageSeconds).add(t.repositionEverySeconds);
+        h.add(t.repositionMeters).add(framed).add(frameRing).add(frameTarget).add(frameAngle).add(frameRadius);
+        h.add(frameLast.x).add(frameLast.y).add(noFrame).add(engageFor).add(lastStrike).add(lastGuard).add(lastMove);
+        h.add(guarding).add(out.framed).add(out.frameFallback).add(fellBack);
+    }
     return h.value;
 }
 
@@ -384,17 +561,40 @@ void PartnerBrain::endString(bool staggered) {
     s_.phase = staggered ? Phase::Ready : Phase::Pause; // rule 6: no pause on a staggered target
 }
 
-int PartnerBrain::chooseTarget(const PartnerInput& in) const {
+int PartnerBrain::chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const {
     const int n = static_cast<int>(std::min(in.enemies.size(), kMaxPartnerEnemies));
     if (in.order == PartnerOrder::StayClose) {
         const int t = in.leadTarget;
-        return t >= 0 && t < n && standing(in.enemies[static_cast<std::size_t>(t)]) ? t : -1;
+        if (t >= 0 && t < n && standing(in.enemies[static_cast<std::size_t>(t)])) return t;
+        if (!framed) return -1;
+        // Rule 15: no lock; the enemy the lead attacks, else the nearest standing one near the lead.
+        const float nearLead = s_.t.closeLeadMeters + s_.t.reachMeters;
+        int hit = -1, close = -1;
+        float dHit = 0.f, dClose = 0.f;
+        for (int i = 0; i < n; ++i) {
+            const View& e = in.enemies[static_cast<std::size_t>(i)];
+            if (!standing(e)) continue;
+            const float d = edge(in.pos, e);
+            if (e.leadAttacking && (hit < 0 || d < dHit)) {
+                hit = i;
+                dHit = d;
+            }
+            if (edge(in.leadPos, e) <= nearLead && (close < 0 || d < dClose)) {
+                close = i;
+                dClose = d;
+            }
+        }
+        return hit >= 0 ? hit : close;
     }
+    // Spread, framed: among the enemies in the frame when any stands there (rule 15), so it fights on screen.
+    bool anySeen = false;
+    for (int i = 0; i < n; ++i)
+        anySeen = anySeen || (standing(in.enemies[static_cast<std::size_t>(i)]) && ((seen >> i) & 1u) != 0);
     int count = 0, all = -1, free = -1;
     float dAll = 0.f, dFree = 0.f;
     for (int i = 0; i < n; ++i) {
         const View& e = in.enemies[static_cast<std::size_t>(i)];
-        if (!standing(e)) continue;
+        if (!standing(e) || (anySeen && ((seen >> i) & 1u) == 0)) continue;
         ++count;
         const float d = edge(in.pos, e);
         if (all < 0 || d < dAll) {
@@ -499,6 +699,12 @@ void PartnerBrain::rolesSwapped() {
     s_.offStation = 0.0;
     s_.targetFor = 0.0;
     s_.targetReached = false;
+    s_.frameRing = 0;
+    s_.frameTarget = -1;
+    s_.noFrame = 0.0;
+    s_.fellBack = false;
+    s_.engageFor = 0.0;
+    s_.guarding = false;
     s_.out = PartnerIntent{};
     ++s_.swaps;
 }
@@ -508,6 +714,37 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     dt = std::isfinite(dt) && dt > 0.0 ? std::min(dt, kMaxPartnerStep) : 0.0;
     if (s_.begun) spend(in.spentSeconds); // counted before this step decides
     decide(dt, in);
+    PartnerIntent& o = s_.out;
+    o.idle = idleOf(o, in);
+    if (s_.begun) s_.idleSeconds[static_cast<std::size_t>(o.idle)] += dt;
+    if (s_.begun && o.framed && s_.fellBack) { // rule 13's fallback: every step spent on it, whatever it does
+        o.frameFallback = true;
+        s_.fallbackSeconds += dt;
+    }
+    if (s_.begun && o.framed) {
+        // Rule 16's kinds, and rule 14's clock: reset by an action's start, counted while it stands in reach with
+        // its next blow fitting the budget.
+        const bool guardNow = o.act == PartnerAct::Guard;
+        if (o.why == PartnerWhy::Start) s_.lastStrike = s_.now;
+        if (guardNow && !s_.guarding) s_.lastGuard = s_.now;
+        if (o.why == PartnerWhy::Reposition) s_.lastMove = s_.now;
+        const bool began = o.why == PartnerWhy::Start || o.why == PartnerWhy::Reposition || (guardNow && !s_.guarding);
+        s_.guarding = guardNow;
+        const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
+        bool eligible = false;
+        if ((o.idle == PartnerIdle::Moving || o.idle == PartnerIdle::Pause) && s_.target >= 0 &&
+            static_cast<std::size_t>(s_.target) < n) {
+            const View& e = in.enemies[static_cast<std::size_t>(s_.target)];
+            const float l = in.blowSeconds[0];
+            const double next = s_.drawn ? s_.lengths[0] : static_cast<double>(l >= 0.1f && l <= 2.f ? l : s_.t.blowSeconds);
+            Ground g;
+            eligible = standing(e) && edge(in.pos, e) <= s_.t.reachMeters && budgetFits(committedLeft() + next) &&
+                       makeGround(in, s_.t, g) && g.roomOk(in.pos) && !g.inWedge(in.pos, 0.f) &&
+                       !makeKeep(g, e).in(in.pos, 0.f);
+        }
+        if (began || o.idle == PartnerIdle::None) s_.engageFor = 0.0;
+        else if (eligible) s_.engageFor += dt;
+    }
     if (s_.begun) {
         // Its attack this step: what runs of the blows it began, or, with none running, the whole step when the host
         // says it attacks anyway.
@@ -520,6 +757,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
 
 const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     PartnerIntent& out = s_.out;
+    const bool wasStill = out.act != PartnerAct::MoveTo && out.act != PartnerAct::StepBack; // the last step's
     out = PartnerIntent{};
     if (!s_.begun) return out;
     const PartnerTuning& t = s_.t;
@@ -539,6 +777,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             s_.offStation = 0.0;
             s_.targetFor = 0.0;
             s_.targetReached = false;
+            s_.frameRing = 0;
+            s_.frameTarget = -1;
+            s_.noFrame = 0.0;
+            s_.fellBack = false;
+            s_.engageFor = 0.0;
         } else {
             s_.downFor += dt;
         }
@@ -562,6 +805,50 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         const View& v = in.enemies[static_cast<std::size_t>(tgt)];
         return pickSide(s_, orderKey(in.order), tgt, stationOn(g, t, v, in.order, in.pos, -1.f),
                         stationOn(g, t, v, in.order, in.pos, 1.f));
+    };
+    const auto followFor = [&]() {
+        return pickSide(s_, orderKey(in.order), -1, followOn(g, t, in.order, in.pos, -1.f),
+                        followOn(g, t, in.order, in.pos, 1.f));
+    };
+    // Rules 13-16: the play camera, when the host gives a whole one with stationing on.
+    Frame fr;
+    const bool fm = st && makeFrame(in.station.camera, t, fr);
+    if (fm) {
+        s_.framed = true;
+        s_.noFrame += dt; // since a valid station was last found
+    }
+    out.framed = fm;
+    // Rule 13's goal for target tgt (-1: none): a valid station, else the one last held while noFrame is under
+    // frustumGiveUpSeconds (whatever the target), else rules 10-11's (reported, and counted in step()).
+    bool stationNow = false; // a valid station was found this step
+    const auto goalFor = [&](int tgt) -> Vec2 {
+        if (!fm) return tgt >= 0 ? stationFor(tgt) : followFor();
+        const View* e = tgt >= 0 ? &in.enemies[static_cast<std::size_t>(tgt)] : nullptr;
+        Vec2 p{};
+        if (frameStation(g, fr, t, in.order, in.pos, e, tgt, 0.f, s_, p)) {
+            s_.noFrame = 0.0;
+            s_.fellBack = false;
+            stationNow = true;
+            return p;
+        }
+        // The grace holds the last station while it stays legal and out of this target's keep-out (it may have
+        // left the frame: the camera can come back to it).
+        if (!s_.fellBack && s_.frameRing != 0 && s_.noFrame + 1e-9 < static_cast<double>(t.frustumGiveUpSeconds) &&
+            g.legal(s_.frameLast) && !(e && makeKeep(g, *e).in(s_.frameLast, t.wedgeClearMeters)))
+            return s_.frameLast;
+        out.frameFallback = true;
+        s_.fellBack = true;
+        s_.frameRing = 0;
+        return tgt >= 0 ? stationFor(tgt) : followFor();
+    };
+    const bool engageDue = fm && s_.engageFor + 1e-9 >= static_cast<double>(t.engageSeconds);
+    // Rule 13's hold: framed, a partner standing within twice stationTolerance of its goal stays put while its own
+    // place is in frame and outside both keep-outs, so a drifting station does not start and stop it every few ticks.
+    const auto near = [&](Vec2 p, const View* e) {
+        const float d = dist(in.pos, p);
+        if (d <= t.stationTolerance) return true;
+        if (!fm || !wasStill || d > 2.f * t.stationTolerance) return false;
+        return fr.sees(in.pos) && !g.inWedge(in.pos, 0.f) && !(e && makeKeep(g, *e).in(in.pos, t.wedgeClearMeters));
     };
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
@@ -609,7 +896,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         }
     } else if (s_.phase == Phase::Pause) {
         s_.clock += dt;
-        if (s_.clock + 1e-9 >= s_.pause || staggered || !haveTarget) {
+        if (s_.clock + 1e-9 >= s_.pause || staggered || !haveTarget || engageDue) { // rule 14: a pause ends
             s_.phase = Phase::Ready;
             s_.clock = 0.0;
         }
@@ -681,11 +968,43 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (s_.phase == Phase::Pause) {
         out.why = PartnerWhy::Pause;
         const View& e = in.enemies[static_cast<std::size_t>(s_.target)];
+        if (fm) { // rule 16: a reposition, when the last guard or move is old and a string was struck since
+            const double other = std::max(s_.lastGuard, s_.lastMove);
+            if (s_.now - other + 1e-9 >= static_cast<double>(t.repositionEverySeconds) && s_.lastStrike > other) {
+                Vec2 q{};
+                bool moved = frameStation(g, fr, t, in.order, in.pos, &e, s_.target, t.repositionMeters, s_, q) ||
+                             frameStation(g, fr, t, in.order, in.pos, &e, s_.target, 0.5f * t.repositionMeters, s_, q);
+                if (moved) {
+                    s_.noFrame = 0.0;
+                    s_.fellBack = false;
+                } else if (s_.frameRing == 0 && s_.side != 0) {
+                    // Fallen back (rule 13): to rule 10's station on the other side, when it is legal (in its arc
+                    // or not: fallen back, the frame gives no better).
+                    const Spot o = stationOn(g, t, e, in.order, in.pos, s_.side < 0 ? 1.f : -1.f);
+                    if (o.tier <= 2 && dist(o.p, in.pos) >= 0.5f * t.repositionMeters) {
+                        s_.side = static_cast<std::int8_t>(-s_.side);
+                        s_.sideFor = 0.0;
+                        q = o.p;
+                        moved = true;
+                        out.frameFallback = true;
+                        s_.fellBack = true;
+                    }
+                }
+                if (moved) {
+                    out.act = PartnerAct::MoveTo;
+                    out.why = PartnerWhy::Reposition;
+                    out.enemy = s_.target;
+                    out.point = q;
+                    return out;
+                }
+            }
+        }
         if (st) { // rule 12: back to the station
-            const Vec2 p = stationFor(s_.target);
-            if (dist(in.pos, p) <= t.stationTolerance && edge(in.pos, e) <= t.reachMeters) s_.offStation = 0.0;
+            const Vec2 p = goalFor(s_.target);
+            const bool there = near(p, &e);
+            if (there && edge(in.pos, e) <= t.reachMeters) s_.offStation = 0.0;
             else s_.offStation += dt;
-            if (dist(in.pos, p) > t.stationTolerance) {
+            if (!there) {
                 out.act = edge(in.pos, e) < t.standoffMeters ? PartnerAct::StepBack : PartnerAct::MoveTo;
                 out.enemy = s_.target;
                 out.point = p;
@@ -700,11 +1019,18 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
 
     // Ready: pick (a Spread target kept targetHoldSeconds unless it falls, leaves reach once reached, or stops being
     // standing), close in, or start a string.
-    int tgt = chooseTarget(in);
+    static_assert(kMaxPartnerEnemies <= 32, "the seen mask");
+    std::uint32_t seen = 0;
+    if (fm)
+        for (std::size_t i = 0; i < n; ++i)
+            if (fr.sees(in.enemies[i].pos)) seen |= 1u << i;
+    int tgt = chooseTarget(in, fm, seen);
     if (in.order == PartnerOrder::Spread && s_.target >= 0 && tgt != s_.target &&
         static_cast<std::size_t>(s_.target) < n && s_.targetFor + 1e-9 < static_cast<double>(t.targetHoldSeconds)) {
         const View& was = in.enemies[static_cast<std::size_t>(s_.target)];
-        if (standing(was) && !(s_.targetReached && edge(in.pos, was) > t.reachMeters)) tgt = s_.target;
+        // Framed, a target gone from the frame is not held over one in it.
+        const bool lost = fm && tgt >= 0 && ((seen >> s_.target) & 1u) == 0 && ((seen >> tgt) & 1u) != 0;
+        if (standing(was) && !lost && !(s_.targetReached && edge(in.pos, was) > t.reachMeters)) tgt = s_.target;
     }
     if (tgt != s_.target) {
         s_.targetFor = 0.0;
@@ -715,9 +1041,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (tgt < 0) {
         out.why = PartnerWhy::NoTarget;
         if (st) { // rule 11
-            const Vec2 p = pickSide(s_, orderKey(in.order), -1, followOn(g, t, in.order, in.pos, -1.f),
-                                    followOn(g, t, in.order, in.pos, 1.f));
-            if (dist(in.pos, p) > t.stationTolerance) {
+            const Vec2 p = goalFor(-1);
+            if (!near(p, nullptr)) {
                 out.act = PartnerAct::MoveTo;
                 out.point = p;
             }
@@ -726,9 +1051,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     }
     const View& e = in.enemies[static_cast<std::size_t>(tgt)];
     if (st) { // rule 12: a string starts only from its station
-        const Vec2 p = stationFor(tgt);
+        const Vec2 p = goalFor(tgt);
         const bool inReach = edge(in.pos, e) <= t.reachMeters;
-        const bool there = dist(in.pos, p) <= t.stationTolerance;
+        const bool there = near(p, &e);
         if (there && inReach) {
             s_.offStation = 0.0; // stationed: the fallback's timers start again
         } else {
@@ -740,15 +1065,19 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             const double off = s_.offStation;
             const bool giveUp = off + 1e-9 >= static_cast<double>(t.stationGiveUpSeconds);
             const bool any = off + 1e-9 >= static_cast<double>(t.stationAnySeconds);
+            // Rule 14: when due, from where it stands outside personal space and both keep-outs. Framed, only from in
+            // the frame, unless no valid station was found this step (then reported: intent.offFrame).
             const bool fromHere =
-                inReach && g.roomOk(in.pos) && ((giveUp && !g.inWedge(in.pos, 0.f)) || any);
+                inReach && g.roomOk(in.pos) && (!fm || !stationNow || fr.sees(in.pos)) &&
+                ((giveUp && !g.inWedge(in.pos, 0.f)) || any ||
+                 (engageDue && !g.inWedge(in.pos, 0.f) && !makeKeep(g, e).in(in.pos, 0.f)));
             if (!fromHere) {
                 Vec2 goal = p;
                 if (giveUp && (!inReach || !g.roomOk(in.pos))) inReachSpot(g, t, e, in.order, in.pos, goal);
                 out.why = PartnerWhy::Approach;
                 out.enemy = tgt;
                 out.point = goal;
-                if (dist(in.pos, goal) > t.stationTolerance) out.act = PartnerAct::MoveTo; // else wait there
+                if (!near(goal, &e)) out.act = PartnerAct::MoveTo; // else wait there
                 return out;
             }
         }
@@ -796,6 +1125,10 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     s_.begunBlows = 1;
     s_.committedEnd = s_.now + s_.lengths[0];
     attack(tgt, true);
+    if (fm && !fr.sees(in.pos)) { // rule 14's last resort: no valid station found, it strikes from off the frame
+        out.offFrame = true;
+        ++s_.offFrameStarts;
+    }
     out.blowStart = true;
     out.blowIndex = 0;
     out.why = PartnerWhy::Start;
@@ -859,7 +1192,9 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
                                             "wedgeBeyondMeters", "wedgeClearMeters", "closeArcMin", "closeArcMax",
                                             "closeLeadMeters", "spreadArcMin", "spreadArcMax", "sideHoldSeconds",
                                             "followMin", "followMax", "stationTolerance", "stationGiveUpSeconds",
-                                            "stationAnySeconds", "targetHoldSeconds"};
+                                            "stationAnySeconds", "targetHoldSeconds", "frustumMargin",
+                                            "frustumGiveUpSeconds", "engageSeconds", "repositionEverySeconds",
+                                            "repositionMeters"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -895,6 +1230,11 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("stationGiveUpSeconds", t.stationGiveUpSeconds, 0.5, 30);
     real("stationAnySeconds", t.stationAnySeconds, 0.5, 60);
     real("targetHoldSeconds", t.targetHoldSeconds, 0, 10);
+    real("frustumMargin", t.frustumMargin, 0, 0.4);
+    real("frustumGiveUpSeconds", t.frustumGiveUpSeconds, 0, 30);
+    real("engageSeconds", t.engageSeconds, 0.25, 10);
+    real("repositionEverySeconds", t.repositionEverySeconds, 2, 20);
+    real("repositionMeters", t.repositionMeters, 0.5, 6);
 
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);

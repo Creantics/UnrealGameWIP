@@ -194,6 +194,8 @@ struct PRig {
     bool step = false;
     bool walk = false;
     bool autopilot = false;
+    bool pairOnParry = false; // the autopilot's partner presses the pair on the tick after each parry, as a host does
+    bool pairDue = false;
 
     explicit PRig(const ArenaFighter& fighter = ruleFighter()) {
         def.fighter = fighter;
@@ -225,13 +227,18 @@ struct PRig {
     void tick() {
         if (autopilot) {
             const std::uint8_t order = in.partnerOrder;
+            const PartnerCameraView camera = in.partnerCamera;
             in = fight.autopilot();
             in.partnerOrder = order;
+            in.partnerCamera = camera;
+            if (pairOnParry) in.pair = pairDue;
+            pairDue = false;
         }
         out = &fight.tick(kDt, in, bodies);
         for (const ArenaEvent& e : out->events) {
             log.push_back(Logged{e, fight.time(), out->enemies[0].aim});
             if (e.type == ArenaEventType::TookOver) std::swap(bodies.player, bodies.ally);
+            if (pairOnParry && e.type == ArenaEventType::Parried) pairDue = true;
         }
         if (step) arenaStep(fight, bodies, kDt);
         if (walk && out->ally.partnerOn) walkAlly();
@@ -2133,4 +2140,154 @@ TEST_CASE("arena partner: a switch on the step its new ally body goes down, and 
         CHECK(s.r.brain.swaps() == 4);
         CHECK(s.r.fight.stats().partnerSwaps == 4);
     }
+}
+
+namespace {
+
+// A third-person camera 4.5 m behind the lead along its facing, 2 m up, pitched 12 degrees down, 90 degrees wide at 16:9.
+PartnerCameraView behindLead(Vec2 lead, Vec2 facing) {
+    constexpr float kRad = 3.14159265f / 180.f;
+    const float p = 12.f * kRad;
+    PartnerCameraView v;
+    v.given = true;
+    v.pos = {lead.x - 4.5f * facing.x, lead.y - 4.5f * facing.y, 2.f};
+    v.forward = {facing.x * std::cos(p), facing.y * std::cos(p), -std::sin(p)};
+    v.up = {facing.x * std::sin(p), facing.y * std::sin(p), std::cos(p)};
+    v.aspect = 16.f / 9.f;
+    v.verticalFovDegrees = 2.f * std::atan(1.f / v.aspect) / kRad;
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given against given (report)") {
+    const ArenaTable t = shippedTable();
+    const char* names[kPartnerIdleCount] = {"none", "noBudget", "noTarget", "moving",
+                                            "staggered", "pause", "other"};
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}})
+        for (const bool camera : {false, true}) {
+            CAPTURE(order);
+            CAPTURE(camera);
+            PRig r(t.fighter("default"));
+            r.def = t.fallback;
+            r.def.enemyCount = 0;
+            for (const char* id : {"skirmisher", "hulk", "duelist"})
+                for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+                    if (t.enemyIds[e] == id) {
+                        r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                        r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+                    }
+            REQUIRE(r.def.enemyCount == 3);
+            r.def.attackers = 2;
+            r.tuning = shippedTuning();
+            r.in.partnerOrder = order;
+            r.goShipped(true, 1);
+            r.pairOnParry = true;
+            Vec2 facing = r.fight.playerStartFacing();
+            double pairSpent = 0;
+            Vec2 lastGoal = r.bodies.ally, lastAt = r.bodies.ally;
+            int goalJumps = 0, repositions = 0;
+            double walked = 0, leadAttack = 0, partnerBlow = 0, lastStart = 0, longestGap = 0, onScreen = 0;
+            bool wasReposition = false;
+            while (!r.fight.over() && r.fight.time() < 20.f) {
+                r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
+                const PartnerCameraView seen = behindLead(r.bodies.player, facing); // on-screen time, given or not
+                r.tick();
+                if (partnerInFrame(seen, 0.f, r.bodies.ally)) onScreen += kDt;
+                const PartnerIntent& pi = r.brain.intent();
+                if (pi.blowStart) {
+                    longestGap = std::max(longestGap, double(r.fight.time()) - lastStart);
+                    lastStart = r.fight.time();
+                }
+                const bool rep = pi.why == PartnerWhy::Reposition;
+                if (rep && !wasReposition) ++repositions;
+                wasReposition = rep;
+                if (length(sub(r.out->ally.goal, lastGoal)) > 0.25f) ++goalJumps; // a goal moved over 15 m/s at 60 Hz
+                lastGoal = r.out->ally.goal;
+                walked += length(sub(r.bodies.ally, lastAt));
+                lastAt = r.bodies.ally;
+                if (r.out->player.action == ArenaAction::Light || r.out->player.action == ArenaAction::Heavy) leadAttack += kDt;
+                if (r.out->ally.part != ArenaPart::None) partnerBlow += kDt;
+                pairSpent += r.out->ally.pairSeconds;
+                // A host camera turns after the lead at about 3 rad/s, not on the tick its facing snaps.
+                const Vec2 f = r.out->player.facing;
+                const float k = std::min(1.f, 3.f * kDt);
+                const Vec2 m{facing.x + (f.x - facing.x) * k, facing.y + (f.y - facing.y) * k};
+                const float ml = length(m);
+                if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
+            }
+            const ArenaStats& s = r.fight.stats();
+            const double T = r.fight.time();
+            longestGap = std::max(longestGap, T - lastStart);
+            std::string shares;
+            for (std::size_t k = 0; k < kPartnerIdleCount; ++k)
+                shares += std::string(" ") + names[k] + " " +
+                          std::to_string(r.brain.idleSeconds(static_cast<PartnerIdle>(k)) / T).substr(0, 5);
+            const std::string head = std::string(order == 0 ? "StayClose" : "Spread") + (camera ? ", camera" : ", no camera");
+            MESSAGE(head << ": " << T << " s, "
+                                   << r.def.enemyCount << " enemies; strings " << s.partnerStrings << ", blows "
+                                   << s.partnerBlows << ", guards " << s.partnerGuards << ", fallback "
+                                   << r.brain.fallbackSeconds() << " s; shares:" << shares);
+            MESSAGE("    goal jumps " << goalJumps << ", walked " << walked << " m, longest gap between blow starts "
+                                      << longestGap << " s, repositions " << repositions << "; lead attacking "
+                                      << leadAttack << " s, partner blows running " << partnerBlow
+                                      << " s + paired counters " << pairSpent
+                                      << " s, the governor's allowance 0.6 x lead + 2 = " << 0.6 * leadAttack + 2.0
+                                      << " s");
+            MESSAGE("    on screen " << onScreen / T << ", goal jumps per 10 s " << 10.0 * goalJumps / T
+                                     << ", off-frame starts " << r.brain.offFrameStarts());
+            CHECK(r.brain.framed() == camera);
+            if (camera) {
+                CHECK(s.partnerStrings >= 1);
+                // On screen at least 0.8 of the fight (measured 0.97 StayClose, 0.94 Spread), and its goal jumps
+                // under 35 times in 10 s (measured 28 StayClose, 21 Spread).
+                CHECK(onScreen / T >= 0.8);
+                CHECK(10.0 * goalJumps / T <= 35.0);
+            }
+        }
+}
+
+TEST_CASE("arena partner: a play camera given but not whole is exactly not given, cameraOn off or on") {
+    const auto broken = [](int k) {
+        PartnerCameraView v = behindLead(Vec2{0.f, 0.f}, Vec2{1.f, 0.f});
+        switch (k) {
+        case 0: v.aspect = 0.f; break;
+        case 1: v.pos.x = std::numeric_limits<float>::quiet_NaN(); break;
+        case 2: v.up = v.forward; break;                                     // up along forward
+        case 3: v.up = {1.5f * v.up.x, 1.5f * v.up.y, 1.5f * v.up.z}; break; // up not unit
+        case 4: v.verticalFovDegrees = 0.f; break;
+        default: v.bodyHeight = 0.f; break;
+        }
+        return v;
+    };
+    for (const bool cameraOn : {false, true})
+        for (int k = 0; k < 6; ++k) {
+            CAPTURE(cameraOn);
+            CAPTURE(k);
+            REQUIRE_FALSE(partnerCameraWhole(broken(k)));
+            PRig a, b;
+            for (PRig* r : {&a, &b}) {
+                r->enemy(biterKind(20, 3.f, 2.f), Vec2{3.f, 0.5f});
+                r->bodies.ally = Vec2{-2.f, 1.f};
+                r->go(true, 100, 7);
+                r->walk = true;
+                r->in.cameraOn = cameraOn;
+                r->in.cameraPos = Vec2{-4.f, 0.f};
+                r->in.cameraFacing = Vec2{1.f, 0.f};
+            }
+            b.in.partnerCamera = broken(k);
+            for (int i = 0; i < 240; ++i) {
+                a.tick();
+                b.tick();
+                CAPTURE(i);
+                REQUIRE(a.out->ally.goal.x == b.out->ally.goal.x);
+                REQUIRE(a.out->ally.goal.y == b.out->ally.goal.y);
+                REQUIRE(a.out->ally.act == b.out->ally.act);
+                REQUIRE(a.out->ally.stationed == b.out->ally.stationed);
+                REQUIRE_FALSE(b.brain.framed());
+                REQUIRE(a.brain.hash() == b.brain.hash());
+                REQUIRE(a.fight.hp() == b.fight.hp());
+                REQUIRE(a.fight.allyHp() == b.fight.allyHp());
+            }
+        }
 }

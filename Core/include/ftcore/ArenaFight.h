@@ -297,6 +297,7 @@
 #include "ftcore/FightAnimator.h" // FightClip
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
+#include "ftcore/PartnerCamera.h"
 #include "ftcore/PressReason.h"
 #include "ftcore/ReadCards.h"
 
@@ -797,6 +798,11 @@ struct ArenaInput {
     // camera, every test that does not ask): no stationing, the partner as before.
     bool cameraOn = false;
     Vec2 cameraPos{};
+    // The play camera in full for the partner's frame rules (PartnerBrain rules 13-16; ftcore/PartnerCamera.h), in
+    // the fight's metres with z up. Not given (the default): cameraOn above decides, as before. Given: stationing is
+    // on whatever cameraOn says, the station view takes this camera's place and forward on the ground (cameraPos and
+    // cameraFacing unused), and the brain keeps its stations in this camera's frame.
+    PartnerCameraView partnerCamera{};
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
