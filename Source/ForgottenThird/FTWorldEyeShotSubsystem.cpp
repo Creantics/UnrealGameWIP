@@ -2,7 +2,10 @@
 
 #include "FTExploreCharacter.h"
 
+#include "Animation/SkeletalMeshActor.h"
 #include "Camera/CameraActor.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Camera/CameraComponent.h"
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
@@ -231,6 +234,44 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadGoEarly="), GoEarly);
 		bGoJump = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadGoJump"));
 	}
+#if !UE_BUILD_SHIPPING
+	// -WorldEyeExtra=<skeletal mesh>@x,y,z,yaw;...: a skeletal mesh actor stood there (plan frame, metres; the feet at z),
+	// in its reference pose with its own materials. A stand-in character for a still: the wave's audit takes it like any
+	// other skeletal actor (an enemy behind the front, say). Not in a shipped build.
+	{
+		FString Extra;
+		TArray<FString> Items;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeExtra="), Extra, false) && Extra.ParseIntoArray(Items, TEXT(";")) > 0)
+		{
+			for (const FString& Item : Items)
+			{
+				FString MeshPath, Where;
+				TArray<FString> P;
+				if (!Item.Split(TEXT("@"), &MeshPath, &Where) || Where.ParseIntoArray(P, TEXT(",")) < 3)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeExtra item \"%s\" is not <mesh>@x,y,z[,yaw]; skipped."), *Item);
+					continue;
+				}
+				USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *MeshPath);
+				if (!Mesh)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeExtra: no skeletal mesh %s; skipped."), *MeshPath);
+					continue;
+				}
+				const ftcore::MassingVec AtM = ftcore::massingEnginePoint(Side, FCString::Atod(*P[0]), FCString::Atod(*P[1]), FCString::Atod(*P[2]));
+				const FVector At(AtM.x * 100.0, AtM.y * 100.0, AtM.z * 100.0);
+				const FRotator Turn(0.0, P.Num() > 3 ? FCString::Atod(*P[3]) : 0.0, 0.0);
+				FActorSpawnParameters Params;
+				Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				if (ASkeletalMeshActor* Stand = InWorld.SpawnActor<ASkeletalMeshActor>(At, Turn, Params))
+				{
+					Stand->GetSkeletalMeshComponent()->SetSkeletalMesh(Mesh);
+					UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: extra %s stood at engine %s, yaw %.1f."), *Mesh->GetName(), *At.ToString(), Turn.Yaw);
+				}
+			}
+		}
+	}
+#endif
 	SideM = Side;
 	// -WorldEyeList=<file>: more eyes after this one in the same run, one a line as
 	// name|eye x,y,z|at x,y,z|lens mm|lead x,y,z or -|go x,y or -|early s  (plan frame; a line starting with # is skipped).
