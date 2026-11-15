@@ -135,6 +135,33 @@ FTCORE_API WorldWaveParams streetWaveParams();
 // these, never from a pointer into a cue or other short-lived buffer.
 FTCORE_API const char* worldWaveWorldId(std::string_view id);
 
+// The wave's clock, in seconds: game time, or a set time while a host holds it (a fixed-step capture). A release goes
+// on from the held time while a wave is set (an offset on game time, so the front never jumps), else back to game
+// time. Only a release of a held clock changes the offset, so a second release while a wave runs keeps it; the offset
+// lasts until a frame ends with no wave set and the clock not held (settle).
+struct WorldWaveClock {
+    void hold(double seconds) {
+        held = true;
+        heldAt = seconds;
+    }
+    void release(double gameNow, bool waveSet) {
+        if (!held) {
+            return;
+        }
+        offset = waveSet ? heldAt - gameNow : 0.0;
+        held = false;
+    }
+    double now(double gameNow) const { return held ? heldAt : gameNow + offset; }
+    void settle(bool waveSet) {
+        if (!waveSet && !held) {
+            offset = 0.0;
+        }
+    }
+    bool held = false;
+    double heldAt = 0.0;
+    double offset = 0.0;
+};
+
 struct CutsceneWaveCue; // Cutscene.h
 // A cutscene's wave cue as the wave's params: its preset's ("street": streetWaveParams), the world it brings through
 // worldWaveWorldId (a static-storage id, not the cue's buffer), and Reverse when the cue says so. Origin and start

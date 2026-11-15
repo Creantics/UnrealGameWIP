@@ -125,6 +125,12 @@ private:
 	// In place: sets walking each follower whose subject mark a shot frames, where the way is clear.
 	void BeginWalks(const ftcore::StageFrame& Frame);
 	void TickWalks(float DeltaSeconds);
+	// The wave cues the plan crossed since the last take: the last of them that can start starts on the world wave
+	// (UFTWorldWaveSubsystem) at its own time, the wave clock now less the game seconds since the cue (the plan's
+	// seconds over PlanSpeed, the rate the plan clock runs at against the game's).
+	void StartCrossedWaves(double PlanSpeed);
+	// Where cue `Cue` starts its wave (world cm): its mark, or its subject's bone; false when neither is found.
+	bool CueOrigin(const ftcore::CutsceneWaveCue& Cue, FVector& Out) const;
 	void LogSwitch(const TCHAR* What) const;
 	void RestoreControl();
 	// Hands the view, the input and the party back.
@@ -175,6 +181,8 @@ private:
 	// frame so it never flips side mid-blend.
 	float OrbitDelta = 0.f;
 	float LeadYaw = 0.f;
+	// In place: the frame the stage was laid with (the wave cues' marks go through it).
+	ftcore::StageFrame StageAt;
 	double PendingSince = 0.0;
 	uint32 PulledShots = 0; // bit per shot the sweep pulled in
 	// In place, by cast member (the lead's slot 0 unused): its walk onto the subject mark it stands in
