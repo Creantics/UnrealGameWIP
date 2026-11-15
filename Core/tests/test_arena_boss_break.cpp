@@ -95,11 +95,17 @@ void hashFight(Fnv& h, const ArenaDef& def, std::uint32_t seed) {
 
 // Its hash held across the riposte reach change (centre to edge), so it cannot see how the reach is measured; the
 // riposte reach tests below pin that.
-TEST_CASE("arena boss break: the break value leaves regular enemies' fights untouched (a golden trace of every shipped "
-          "one)") {
+namespace {
+// The golden trace of every shipped regular fight, each fighter changed by `tweak` (nullptr: as shipped). `fights` is
+// how many it played.
+std::uint64_t regularGolden(void (*tweak)(ArenaFighter&), int& fights) {
     const ArenaTable t = shippedTable();
     Fnv h;
-    int fights = 0;
+    fights = 0;
+    const auto play = [&](ArenaDef def, std::uint32_t seed) {
+        if (tweak) tweak(def.fighter);
+        hashFight(h, def, seed);
+    };
     for (std::size_t e = 0; e < t.enemyIds.size(); ++e) {
         if (isBossId(t.enemyIds[e]) || t.enemies[e].passive) continue;
         ArenaDef def;
@@ -107,7 +113,7 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
         def.enemyCount = 1;
         def.enemies[0] = t.enemies[e];
         def.attackers = 1;
-        for (std::uint32_t seed = 1; seed <= 3; ++seed) hashFight(h, def, seed);
+        for (std::uint32_t seed = 1; seed <= 3; ++seed) play(def, seed);
         ++fights;
     }
     for (const ArenaFightEntry& entry : t.entries) {
@@ -115,11 +121,19 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
         for (std::size_t i = 0; i < entry.def.enemyCount; ++i)
             if (entry.def.enemyKind[i] < t.enemyIds.size() && isBossId(t.enemyIds[entry.def.enemyKind[i]])) boss = true;
         if (boss) continue;
-        hashFight(h, entry.def, 1);
+        play(entry.def, 1);
         ++fights;
     }
-    hashFight(h, t.fallback, 1);
-    MESSAGE("regular golden: " << fights << " fights, hash " << h.h);
+    play(t.fallback, 1);
+    return h.h;
+}
+} // namespace
+
+TEST_CASE("arena boss break: the break value leaves regular enemies' fights untouched (a golden trace of every shipped "
+          "one)") {
+    int fights = 0;
+    const std::uint64_t golden = regularGolden(nullptr, fights);
+    MESSAGE("regular golden: " << fights << " fights, hash " << golden);
     CHECK(fights > 5);
     // Measured on the code before the boss break value; the riposte reach change left it as it was. Re-measured when
     // the regular break-out came to count weight: the default fighter's third light (22 poise) weighs 2.2, so the
@@ -129,8 +143,16 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     // paired counter's 3 s cooldown (rule b): the autopilot pairs every parry, so a second pair inside 3 s is refused
     // and those fights end on other blows. The cooldown alone moved it: with pairCooldown 0 the trace hashes to
     // 5845169181718845176 (the value before the rules), and with the called BLOCK's guard damage put back
-    // (blockCallGuard 1) it stays 7216787019674830117, so the free BLOCK moves no shipped regular fight.
-    CHECK(h.h == 7216787019674830117ull);
+    // (blockCallGuard 1) it stays 7216787019674830117, so the free BLOCK moves no shipped regular fight (the test below).
+    CHECK(golden == 7216787019674830117ull);
+}
+
+TEST_CASE("arena boss break: the golden trace moved for the paired counter's cooldown alone, not for the free BLOCK") {
+    int fights = 0;
+    // No cooldown: the trace from before the rules.
+    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 5845169181718845176ull);
+    // The called BLOCK's guard damage put back: the trace as shipped.
+    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 7216787019674830117ull);
 }
 
 // ---- the boss break value ----

@@ -146,6 +146,19 @@ struct FFTLeadWeapons
 	void DryPressed(double T) { DryAt = T; }
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
+	// Whose events and state these are: the player's (the default) or the partner's body (ftcore::kArenaAlly). Core
+	// gives the partner's blows no AttackStarted, so its host calls StartStrike as each blow begins.
+	void SetSource(uint8 InSource) { Source = InSource; }
+	// Off: no impact of its own (the fist's spark, a shot's or cast's arrival); the host plays the blow's impact (the
+	// partner's, UFTArenaRunner::PartnerImpact), so it is drawn once. The strike clips, muzzle and travel stay.
+	void SetImpacts(bool bOn) { bImpacts = bOn; }
+	// A move's strike clip from its start at T, keyed so its impact lands as it goes active (what AttackStarted plays).
+	void StartStrike(uint8 Move, double T);
+	// The blows whose strike clip played into their recovery uncut (whole), and the blows that started a clip.
+	int32 GetClipsCompleted() const { return ClipsCompleted; }
+	int32 GetClipsStarted() const { return ClipsStarted; }
+	// The strike clip under way's name ("" when none plays), for the capture runs' per-view log.
+	const TCHAR* GetPlayingStrikeName() const { return Animator.actionCount() > 0 && FadeSince < 0.0 ? GetLastStrikeName() : TEXT(""); }
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
 	// fade when the attack ends.
 	void Track(const ftcore::ArenaPlayerOut& P, double T);
@@ -171,6 +184,8 @@ struct FFTLeadWeapons
 	static constexpr double kTracerReach = 300.0;
 	static constexpr double kBoltTime = 0.2;
 	static constexpr double kBoltReach = 320.0;
+	// The flight of Kit's light Move (a shot: kTracerTime, a cast: kBoltTime), 0 for a blow that lands where it is.
+	static double FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move);
 
 	// For -ArenaShotClose's views. The strike under way's limb (after the clip played: hand_l or hand_r, foot_l or
 	// foot_r for a kick), where it is now and whether it is the lead's left; the middle of both forearms (elbows and
@@ -231,6 +246,11 @@ private:
 	void LogAim();
 	const TCHAR* Prefix() const;
 
+	uint8 Source = ftcore::kArenaPlayer;
+	bool bImpacts = true;
+	bool bStrikeClip = false; // the blow under way plays a strike clip
+	int32 ClipsStarted = 0;
+	int32 ClipsCompleted = 0;
 	TWeakObjectPtr<AActor> Figure;
 	TWeakObjectPtr<AFTArenaFighter> ArenaFigure;
 	TWeakObjectPtr<USkeletalMeshComponent> Skin;

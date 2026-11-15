@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "about": "Ready stance over the relaxed idle while a fight is live and the body is not acting (Core/include/ftcore/ReadyStance.h). Degrees in the body's axes: fwd swings a hanging bone's far end forward, out away from the midline, twist turns its front toward the midline. lean tips the trunk forward, turn brings the left shoulder forward, pelvisForward in cm (negative: weight back). Leads map lower-case look names to stances.",
+  "stances": {
+    "expert": {
+      "lean": 10, "pelvisForward": 0,
+      "easeIn": 0.25, "easeOut": 0.4, "fadeFrom": 0.6, "fadeTo": 2.0,
+      "bones": {
+        "clavicle_l": {"fwd": 6}, "clavicle_r": {"fwd": 6},
+        "upperarm_l": {"fwd": 60, "out": -8}, "upperarm_r": {"fwd": 60, "out": -8},
+        "lowerarm_l": {"fwd": 105}, "lowerarm_r": {"fwd": 105},
+        "hand_l": {"fwd": -10}, "hand_r": {"fwd": -10},
+        "thigh_l": {"fwd": 18}, "thigh_r": {"fwd": 18},
+        "calf_l": {"fwd": -36}, "calf_r": {"fwd": -36},
+        "foot_l": {"fwd": 18}, "foot_r": {"fwd": 18}
+      }
+    },
+    "bladed": {
+      "lean": 6, "turn": 20, "pelvisForward": 0,
+      "easeIn": 0.25, "easeOut": 0.4, "fadeFrom": 0.6, "fadeTo": 2.0,
+      "bones": {
+        "upperarm_l": {"fwd": 55, "out": -10}, "lowerarm_l": {"fwd": 100},
+        "upperarm_r": {"fwd": 15, "out": 10}, "lowerarm_r": {"fwd": 45},
+        "thigh_l": {"fwd": 14}, "thigh_r": {"fwd": 14},
+        "calf_l": {"fwd": -28}, "calf_r": {"fwd": -28},
+        "foot_l": {"fwd": 14}, "foot_r": {"fwd": 14}
+      }
+    },
+    "average": {
+      "lean": -4, "pelvisForward": -3,
+      "easeIn": 0.25, "easeOut": 0.4, "fadeFrom": 0.6, "fadeTo": 2.0,
+      "bones": {
+        "upperarm_l": {"fwd": 35, "out": 8}, "upperarm_r": {"fwd": 35, "out": 8},
+        "lowerarm_l": {"fwd": 70}, "lowerarm_r": {"fwd": 70},
+        "thigh_l": {"fwd": 10}, "thigh_r": {"fwd": 10},
+        "calf_l": {"fwd": -20}, "calf_r": {"fwd": -20},
+        "foot_l": {"fwd": 10}, "foot_r": {"fwd": 10}
+      }
+    }
+  },
+  "leads": {"devin": "expert", "duy": "bladed", "third": "average"}
+}

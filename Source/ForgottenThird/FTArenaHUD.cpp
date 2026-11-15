@@ -502,7 +502,17 @@ void AFTArenaHUD::DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVecto
 	const float W = 170.f * S;
 	const float H = 14.f * S;
 	const float BX = Over.X - W * 0.5f;
-	const float BY = Over.Y - 30.f * S;
+	// A tall body's bar (over its head) can be above the frame: then it is pinned under the top edge, with its word
+	// and the Read cards above it in the frame, and a chevron over it points up to where the body goes on.
+	const float Room = (44.f + 24.f + (bCards ? 62.f : 0.f)) * S;
+	const bool bPinned = Over.Y - 30.f * S < Room;
+	const float BY = bPinned ? Room : Over.Y - 30.f * S;
+	if (bPinned)
+	{
+		const float CY = BY - 6.f * S;
+		DrawLine(Over.X - 10.f * S, CY, Over.X, CY - 8.f * S, Color, 3.f * S);
+		DrawLine(Over.X, CY - 8.f * S, Over.X + 10.f * S, CY, Color, 3.f * S);
+	}
 	if (bStartup)
 	{
 		DrawBar(BX, BY, W, H, Fill, Color, kArenaBack);

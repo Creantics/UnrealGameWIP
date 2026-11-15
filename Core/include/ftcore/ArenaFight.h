@@ -734,6 +734,20 @@ struct ArenaPoint3 {
     float z = 0.f;
 };
 
+// A camera pose's whole frustum (ftcore::arenaPoseFrustum makes one from a pose, ftcore::arenaInFrustum tests a point
+// against it, and ftcore::arenaPoseCamera turns it into ArenaInput::partnerCamera): the lens (m: x, y on the floor
+// plane, z up from it), its unit forward and up, the vertical field of view (degrees) and the frame's width per unit
+// of height.
+struct ArenaFrustum {
+    bool on = false; // the host's camera is known this tick
+    ArenaPoint3 pos{};
+    ArenaPoint3 forward{1.f, 0.f, 0.f};
+    ArenaPoint3 up{0.f, 0.f, 1.f};
+    float vfov = 0.f;
+    float aspect = 0.f;
+};
+
+
 // A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
 inline constexpr float kArenaShotHeight = 1.4f;
 // A pitched round that would meet the body under the crosshair (ArenaInput::aimBody) within this far (m, along its

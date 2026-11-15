@@ -277,6 +277,8 @@ private:
 	// off; the camera placed a frame before each view.
 	bool bShotSide = false;
 	bool bShotWorld = false; // -ArenaShotWorld: the side views from a fixed world side, not the lead's
+	bool bShotQuarter = false; // -ArenaShotQuarter: the side views from the front three-quarter (45 degrees ahead of the side)
+	bool bShotAlly = false;    // -ArenaShotAlly: the side views of the partner instead of the lead
 	bool bShotUi = false;    // -ArenaShotUi: views through FScreenshotRequest with the UI (Slate included), window-sized
 	bool bSideAimed = false;
 	UPROPERTY()
