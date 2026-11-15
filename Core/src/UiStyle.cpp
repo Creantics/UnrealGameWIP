@@ -197,11 +197,20 @@ UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette) {
     const UiColor danger = uiColor(s, world, palette, UiToken::Danger);
     UiDangerSet d;
     d.lowUnderlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
-    d.hitFlash = d.lowUnderlined ? uiColor(s, world, palette, UiToken::Backing) : danger;
+    d.hitBanded = d.lowUnderlined;
+    d.hitFlash = d.hitBanded ? UiColor{0.f, 0.f, 0.f, 1.f} : danger;
+    d.hitLine = uiColor(s, world, palette, UiToken::Accent);
     d.lowLine = d.lowUnderlined ? uiColor(s, world, palette, UiToken::Ink) : danger;
     d.lowUnderline = danger;
     d.cueMark = uiMarkColor(s, world, palette, danger);
     return d;
+}
+
+float uiHitFlashLevel(float age) {
+    if (!(age >= 0.f) || age >= kUiHitGone) return 0.f;
+    if (age <= kUiHitFull) return 1.f;
+    const float u = (age - kUiHitFull) / (kUiHitGone - kUiHitFull);
+    return 1.f - u * u * (3.f - 2.f * u);
 }
 
 float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale) {

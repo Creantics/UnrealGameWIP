@@ -230,6 +230,8 @@ struct FUiWorldRow
 	bool bDangerUnderline = false; // a danger word is ink over a danger underline
 	// The rest of the danger colour's places (uiDangerSet); no painter path reads the danger token itself.
 	FLinearColor HitFlash; // the hit's edge flash
+	FLinearColor HitLine;  // the hairline along the banded flash's inner side, drawn only where bHitBanded
+	bool bHitBanded = false;
 	FLinearColor LowLine;  // a low hp or guard line
 	FLinearColor LowUnder; // the 1 px line under it, drawn only where bLowUnder
 	bool bLowUnder = false;
@@ -279,6 +281,8 @@ const FUiTable& Table()
 			R.bDangerUnderline = D.underlined;
 			const ftcore::UiDangerSet DS = ftcore::uiDangerSet(T.Style, World, Pal);
 			R.HitFlash = LinOf(DS.hitFlash);
+			R.HitLine = LinOf(DS.hitLine);
+			R.bHitBanded = DS.hitBanded;
 			R.LowLine = LinOf(DS.lowLine);
 			R.LowUnder = LinOf(DS.lowUnderline);
 			R.bLowUnder = DS.lowUnderlined;
@@ -340,6 +344,7 @@ constexpr float kContourSoft = 0.5f;    // a word's outer contour pixel, of its 
 constexpr float kRimPx = 1.f;           // an accent2 mark's ink rim, px at 1080p (whole device pixels, at least 1)
 constexpr float kCrispFeather = 0.8f;   // device px: the soft edge of a core, a rim and its knock-out
 constexpr float kShadowEach = 0.205f;   // each of a HUD glyph's four shadow passes: 1 - (1 - 0.205)^4 = 60 percent inside
+constexpr float kShadowMinPx = 30.f;   // a HUD word under this size (px at 1080p) drops its shadow and keeps its 1 px rim
 
 float ContourK(float CoreAlpha)
 {
@@ -764,7 +769,10 @@ struct FPainter
 		InnerF.OutlineSettings.OutlineColor.A *= ContourK(C.A);
 		InnerF.OutlineSettings.bSeparateFillAlpha = C.A < 0.999f;
 		const int32 Edge = Font.OutlineSettings.OutlineSize;
-		if (bShadow)
+		// The fight HUD's words under kShadowMinPx (at 1080p) keep only the font's own 1 px dark rim: at that size the shadow
+		// and the soft contour blur the letter into the picture. Larger words keep both the shadow and the rim.
+		const bool bRimOnly = bShadow && Font.Size < 0.75f * kShadowMinPx * FMath::Max(S, 0.25f);
+		if (bShadow && !bRimOnly)
 		{
 			// The soft shadow (2 px down, about 4 px of blur, 60 percent black), under every line and word of the painter: the
 			// glyph's own shape and three outline passes 1, 2 and 3 px wider (outline only, fill included, no face), each about
@@ -784,7 +792,7 @@ struct FPainter
 				Draw(K, ShadeF, FLinearColor(0.f, 0.f, 0.f, 0.004f), K * Unit - static_cast<float>(Edge), Drop, 0);
 			}
 		}
-		else if (Edge > 0)
+		else if (Edge > 0 && !bRimOnly)
 		{
 			FSlateFontInfo OuterF = InnerF;
 			OuterF.OutlineSettings.OutlineSize += 1;
@@ -1051,6 +1059,24 @@ public:
 			Tri(P, I0, I0 + 1, I0 + 3);
 			Tri(P, I0, I0 + 3, I0 + 2);
 		}
+	}
+
+	// A solid rectangle with hard edges (corners in local units, best on device pixel boundaries), on the shade part
+	// (under every line) or the core part (over the lines' dark edges).
+	void Rect(float X0, float Y0, float X1, float Y1, const FLinearColor& C, bool bOnTop)
+	{
+		if (X1 <= X0 || Y1 <= Y0 || C.A <= 0.f)
+		{
+			return;
+		}
+		FPart& P = Parts[bOnTop ? Core : ShadePart];
+		const int32 Base = P.Verts.Num();
+		P.Verts.Add(Vert(X0, Y0, C, C.A));
+		P.Verts.Add(Vert(X1, Y0, C, C.A));
+		P.Verts.Add(Vert(X0, Y1, C, C.A));
+		P.Verts.Add(Vert(X1, Y1, C, C.A));
+		Tri(P, Base, Base + 1, Base + 3);
+		Tri(P, Base, Base + 3, Base + 2);
 	}
 
 	void Flush(FSlateWindowElementList& Out, int32 Layer)
@@ -1364,8 +1390,13 @@ constexpr float ValueTaper = 0.05f;
 constexpr float LeadHpW = 6.f;
 constexpr float PartnerHpW = 4.f;
 constexpr float GuardW = 3.f;
-constexpr float LoadW = 3.f;        // the Load's line under the name, where the marks wear accent2 (else a gold fill)
 constexpr float DangerUnderW = 1.f; // a danger word's underline, where the world draws one
+constexpr float LowUnderW = 2.f;    // a low hp or guard line's underline, where the world draws one: the track's full length
+constexpr float LowUnderGap = 5.f;  // from the line's bottom edge to the underline's top
+constexpr float GuardClear = 12.f;  // from that underline's bottom to the top of anything on the guard row (at least 10)
+constexpr float TrackInk = 0.3f;    // a value line's full-length track, where the world draws one
+constexpr float LoadDim = 0.45f;    // the lead's name's letters the Load has not reached, where the Load fills the name in
+                                    // the accent: the ink's own colour at this share, opaque, so it reads on any picture
 constexpr float PoiseW = 4.f;
 constexpr float FoeHpW = 3.f; // a minor enemy's line, and the second target line under the boss's
 constexpr float TimerW = 3.f; // the windup's and a Qte's shrinking line
@@ -1405,14 +1436,14 @@ static_assert(LeadPx * CapK >= 25.f && PartnerPx * CapK >= 19.f && RowPx * CapK 
 // Ink, 0..1.
 constexpr float PartnerInk = 0.85f; // the partner's name
 constexpr float NoteInk = 0.8f;     // the labels
-constexpr float PrefixInk = 0.7f;   // NEXT MOVE
-constexpr float SlotInk = 0.7f;     // LOAD (and ALONE, ENDED) in the lead's state slot
+constexpr float PrefixInk = 0.8f;   // NEXT MOVE (every label drawn stands at 80 percent ink or more)
+constexpr float SlotInk = 0.8f;     // LOAD (its first three times a save), ALONE and ENDED in the lead's state slot
 // WAIT's line in the state slot: px after the word and long at the wait's start (a TimerW line, as a Qte's).
 constexpr float WaitGap = 10.f;
 constexpr float WaitLen = 80.f;
 constexpr float TooSoonShow = 1.f; // seconds TOO SOON stands in the call slot
 constexpr float GiftGap = 24.f;    // px between GIFT HEAL's cap and GIFT GUARD's word when the GIFT row holds both
-constexpr float LoneHeadInk = 0.7f; // the Lone Carry card's heads, YOU GAIN and YOU GIVE UP
+constexpr float LoneHeadInk = 0.8f; // the Lone Carry card's heads, YOU GAIN and YOU GIVE UP
 // The Lone Carry's card over the party block, left-aligned on its margin, no panel: px from its last line's foot to the
 // block's top, from the title's foot to the heads, between the columns, and between lines over their ascent.
 constexpr float LoneGap = 24.f;
@@ -2519,12 +2550,18 @@ private:
 	}
 
 	// The labels show as their element starts to be drawn, the first three times a save (after the grants, so a label
-	// never stands beside nothing). Every label is cued every tick, so each sees its element's rise. The Load, the guard
-	// and the poise need none: the lead's state slot names the Load every time, and the guard and poise lines carry their
-	// own words whenever they are drawn.
+	// never stands beside nothing). Every label is cued every tick, so each sees its element's rise. LOAD in the lead's
+	// state slot is one: it shows as the slot turns to the Load. The guard and the poise need none: their lines carry
+	// their own words whenever they are drawn.
 	void TickLabels(const UFTArenaRunner& Runner)
 	{
 		if (bTeaching && ftcore::uiFirstUseCue(FirstUse, ftcore::UiFirstUseItem::WeakPointLabel, bWeakOn))
+		{
+			SaveTaught(Runner);
+		}
+		const bool bLoadSlot = View.now.lead.hpMax > 0 && Budget.out.allowed(ftcore::UiMarkKind::Lead) > 0
+			&& ftcore::uiLeadWord(ftcore::uiLeadSlot(View.now.lead), bWaiting, ftcore::uiLoneWord(Lone)) == ftcore::UiLeadWord::Load;
+		if (bTeaching && ftcore::uiFirstUseCue(FirstUse, ftcore::UiFirstUseItem::LoadLabel, bLoadSlot))
 		{
 			SaveTaught(Runner);
 		}
@@ -2901,8 +2938,8 @@ private:
 	float LowPulse() const { return 0.8f + 0.2f * FMath::Cos(UE_TWO_PI * Time); }
 
 	// A value line that turns low (uiDangerSet): ink when not low; low, the low colour pulsing, or, where the world keeps
-	// red to marks and underlines, the line stays ink at full strength and a 1 px red line under the value carries the
-	// pulse, two device pixels below the line's bottom edge.
+	// red to marks and underlines, the line stays ink at full strength and a 2 px red line the track's full length carries
+	// the pulse, 5 px below the line's bottom edge.
 	void LowValueLine(float X0, float X1, float Y, float To01, float Width, std::uint32_t Seed, float S, bool bLow, float A, float Taper) const
 	{
 		const FUiWorldRow& R = Shown();
@@ -2919,8 +2956,8 @@ private:
 			FLinearColor U = R.LowUnder;
 			U.A *= A * LowPulse();
 			const float Bottom = SnapLine(Y, Width, S) + 0.5f * Mesh.WholeDev(Width * S);
-			const float UY = Bottom + Mesh.WholeDev(2.f * S) + 0.5f * Mesh.WholeDev(Hud::DangerUnderW * S);
-			ValueLine(X0, X1, UY, 0.f, To01, Hud::DangerUnderW, Seed + 7u, S, U, 0.f);
+			const float UY = Bottom + Mesh.WholeDev(Hud::LowUnderGap * S) + 0.5f * Mesh.WholeDev(Hud::LowUnderW * S);
+			ValueLine(X0, X1, UY, 0.f, 1.f, Hud::LowUnderW, Seed + 7u, S, U, 0.f);
 		}
 	}
 
@@ -2945,12 +2982,21 @@ private:
 
 	// An hp line: the hp in the stroke over a hairline track (the track only where the hp is not, so it never reads as a
 	// second line), what was just lost rubbed out to a broken trace, low under a quarter.
+	// Where the world underlines a low line (the Unwritten) the track is the line's own stroke the full length at TrackInk,
+	// the value over it at full ink from the same left edge as the name.
 	void HpLine(float X0, float Len, float Y, float Hp, float Was, float Width, std::uint32_t Seed, float S, float A) const
 	{
 		const float YS = SnapLine(Y, Width, S); // the track and the rub on the value line's own middle
-		ftcore::UiStrokeStyle Hair = StrokeStyle(1.f, Seed, S, 0.f);
-		Hair.wobble = 0.3f * S;
-		HLine(X0, X0 + Len, YS, Hp, 1.f, Hair, Tok(UiToken::Ink, 0.8f * A));
+		if (Shown().bLowUnder)
+		{
+			ValueLine(X0, X0 + Len, YS, 0.f, 1.f, Width, Seed + 1u, S, Tok(UiToken::Ink, Hud::TrackInk * A), 0.f);
+		}
+		else
+		{
+			ftcore::UiStrokeStyle Hair = StrokeStyle(1.f, Seed, S, 0.f);
+			Hair.wobble = 0.3f * S;
+			HLine(X0, X0 + Len, YS, Hp, 1.f, Hair, Tok(UiToken::Ink, 0.8f * A));
+		}
 		LowValueLine(X0, X0 + Len, YS, Hp, Width, Seed + 1u, S, Hp < Hud::LowHp, A, Hud::ValueTaper);
 		if (Was > Hp + 0.004f)
 		{
@@ -3019,7 +3065,9 @@ private:
 	{
 		FPartyRows R;
 		const float GuardBase0 = Size.Y - EdgesAt(Size, S).bottom;
-		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (8.f + 0.5f * Hud::LeadHpW) * S;
+		// Where a low hp line is underlined, the guard row's top (its word's caps) stands GuardClear under the underline.
+		const float HpGap = Shown().bLowUnder ? Hud::LowUnderGap + Hud::LowUnderW + Hud::GuardClear : 8.f;
+		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (HpGap + 0.5f * Hud::LeadHpW) * S;
 		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
 		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
 		const float SwapDy = FMath::SmoothStep(0.f, 1.f, RowSwap.left01) * (PY0 - HpY0);
@@ -3071,7 +3119,17 @@ private:
 		const float PBase = Rows.PBase;
 
 		HpLine(X0, Len, HpY, Frac(L.hp, L.hpMax), HpLost.Was, Hud::LeadHpW, 201, S, A);
-		if (GuardShown())
+		if (GuardShown() && Shown().bLowUnder)
+		{
+			// Only while under full: the hp line's family, the same left edge, stroke, track and taper at GuardW, GUARD at its
+			// right end in the labels' size, as POISE sits by its line.
+			const float G = FMath::Clamp(L.stamina01, 0.f, 1.f);
+			const float GY = CapMid(GuardBase, NoteAsc);
+			ValueLine(X0, X0 + Len, GY, 0.f, 1.f, Hud::GuardW, 205, S, Tok(UiToken::Ink, Hud::TrackInk * A), 0.f);
+			LowValueLine(X0, X0 + Len, GY, G, Hud::GuardW, 205, S, G < Hud::LowHp, A, Hud::ValueTaper);
+			P.Text(X0 + Len + 12.f * S, CapTop(GY, NoteAsc), GuardWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
+		}
+		else if (GuardShown())
 		{
 			// GUARD in the labels' size at the row's left, its line from past the word to the hp line's end.
 			const float G = FMath::Clamp(L.stamina01, 0.f, 1.f);
@@ -3082,11 +3140,11 @@ private:
 		{
 			if (L.debt >= 80)
 			{
-				DangerText(P, X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), NoteAsc, DebtW, DebtText, NoteFont, 0.7f * A, LowPulse());
+				DangerText(P, X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), NoteAsc, DebtW, DebtText, NoteFont, Hud::NoteInk * A, LowPulse());
 			}
 			else
 			{
-				P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, Tok(UiToken::Ink, 0.7f * A));
+				P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
 			}
 		}
 
@@ -3099,41 +3157,30 @@ private:
 		const float NameA = FMath::Lerp(1.f, LeadView.ink, K) * A;
 		if (Shown().bMarksAccent2)
 		{
-			// A world whose marks wear accent2 puts no colour on text: the name stays ink and brightens toward the accent
-			// past the threshold, and the Load is a value line under it in the mark colour, kept to the hp line (the live
-			// read-out stays when the party screen lifts the name). Its leading edge is a 2 px tick and the threshold's
-			// shimmer one sweep along it, both in the accent, never the gold.
-			const FLinearColor NameC = FMath::Lerp(Tok(UiToken::Ink, NameA), Tok(UiToken::Accent, NameA), LoadName.bright);
-			P.Text(X0, NameTop, LeadName, LeadNameFont, NameC);
-			if (LoadName.fill > 0.001f)
+			// A world whose marks wear accent2 puts no colour on text and draws no Load bar: the name itself is the Load. While
+			// some is held, the letters it has not reached are the ink's own colour at LoadDim (opaque, so the step reads on a
+			// bright sky and a dark court alike) and the ones it has are the accent at full, filling from the left as the gold
+			// does elsewhere; its edge sits on a device pixel. Past the threshold the whole name is the accent. No tick: the
+			// fill's edge is the place, and no other line stands between the name and its hp line.
+			if (LoadName.fill > 0.001f || LoadName.bright > 0.001f)
 			{
-				const float LoadY = SnapLine(HpY - (0.5f * Hud::LeadHpW + 4.f + 0.5f * Hud::LoadW) * S, Hud::LoadW, S);
-				const float LoadX1 = X0 + LeadNameW;
-				const FMarkTok M = MarkTok(A);
-				const bool bTick = LoadName.fill < 0.999f;
-				// The tick on device pixels: its right edge, its width (two px at 1080p, whole device pixels) and its top and
-				// bottom, so it stays one crisp block as it moves; the line's fill ends at the same snapped edge.
-				const float TX = Mesh.SnapX(X0 + LeadNameW * LoadName.fill);
-				const float Fill = bTick && LeadNameW > 0.f ? FMath::Clamp((TX - X0) / LeadNameW, 0.f, 1.f) : LoadName.fill;
-				ValueLine(X0, LoadX1, LoadY, 0.f, Fill, Hud::LoadW, 207, S, M.C, 0.f, M.RimOrNull());
-				const FLinearColor Acc = Tok(UiToken::Accent, A);
-				if (bTick)
+				const ftcore::UiColor InkU = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
+				FLinearColor Dim = LinOf(ftcore::UiColor{InkU.r * Hud::LoadDim, InkU.g * Hud::LoadDim, InkU.b * Hud::LoadDim, 1.f}, NameA);
+				Dim = FMath::Lerp(Dim, Tok(UiToken::Accent, NameA), LoadName.bright);
+				P.Text(X0, NameTop, LeadName, LeadNameFont, Dim);
+				const float FillX = LoadName.fill >= 0.999f ? X0 + LeadNameW + 8.f * S : Mesh.SnapX(X0 + LeadNameW * LoadName.fill);
+				if (FillX > X0)
 				{
-					const float TW = Mesh.WholePx(2.f);
-					const float TH = (0.5f * Hud::LoadW + 3.f) * S;
-					const float TY0 = Mesh.SnapY(LoadY - TH);
-					const float TY1 = Mesh.SnapY(LoadY + TH);
-					const FVector2f Tick[4] = {FVector2f(TX - TW, TY0), FVector2f(TX, TY0), FVector2f(TX, TY1), FVector2f(TX - TW, TY1)};
-					Mesh.Fill(Tick, 4, Acc);
+					const FPainter G{P.Geometry, P.Out, P.Layer + 1, S}; // over the dim name
+					const float ClipTop = NameTop - 4.f * S;
+					const float ClipH = LeadNameAsc * 1.6f + 8.f * S;
+					Clipped(G, X0 - 4.f * S, ClipTop, FillX - X0 + 4.f * S, ClipH,
+						[&] { G.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Accent, NameA)); });
 				}
-				if (LoadName.shimmer >= 0.f)
-				{
-					const float Band = 0.22f;
-					const float B0 = -Band + (1.f + Band) * LoadName.shimmer;
-					const float From = FMath::Clamp(B0, 0.f, Fill);
-					const float To = FMath::Clamp(B0 + Band, 0.f, Fill);
-					ValueLine(X0, LoadX1, LoadY, From, To, Hud::LoadW, 208, S, Acc, 0.f);
-				}
+			}
+			else
+			{
+				P.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Ink, NameA));
 			}
 		}
 		else
@@ -3181,8 +3228,15 @@ private:
 			break;
 		}
 		case ftcore::UiLeadWord::Load:
-			P.Text(SlotX, NameBase - NoteAsc, LoadWord, NoteFont, SlotC);
+		{
+			// A label: the first three times a save, 4 s each (TickLabels cues it); after, the slot is empty until RELEASE.
+			const float LA = ftcore::uiFirstUseAlpha(FirstUse, ftcore::UiFirstUseItem::LoadLabel);
+			if (LA > 0.f)
+			{
+				P.Text(SlotX, NameBase - NoteAsc, LoadWord, NoteFont, Tok(UiToken::Ink, Hud::SlotInk * LA * A));
+			}
 			break;
+		}
 		case ftcore::UiLeadWord::Release:
 		{
 			// The Load's gold; the accent where the marks wear accent2 (no colour on text there).
@@ -3893,7 +3947,14 @@ private:
 				BreakK = 1.f;
 			}
 		}
-		HitA = UiStateShot() == EUiStateShot::Hit ? 1.f : Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
+		{
+			// A world with the banded flash: full for 80 ms, gone by 300 ms (uiHitFlashLevel); elsewhere the soft flash's pulse.
+			const double HitAge = Now - Runner.GetPlayerHitTime();
+			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f
+				: Shown().bHitBanded ? ftcore::uiHitFlashLevel(static_cast<float>(HitAge)) : Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
+			const ftcore::Settings* Prefs = Runner.GetSettings();
+			bReduceFlashes = Prefs && Prefs->reduceFlashes;
+		}
 		ParryA = Pulse(Now, Runner.GetParryTime(), kParryEdgeLife);
 		bResult = Fight.over();
 		if (bResult)
@@ -4082,10 +4143,46 @@ private:
 	{
 		const float S = P.S;
 		const float CX = Size.X * 0.5f;
-		// A hit: a brief flash in from the screen's edges (under 0.4 s), each edge a soft lens falloff with no inner edge or
-		// line anywhere. Its colour is the world's (uiDangerSet): the danger colour, or where red is kept to marks a cold dark
-		// closing in, a little stronger since a darkening reads less than a colour.
-		if (HitA > 0.f)
+		// A hit. Where red is kept to marks (uiDangerSet hitBanded): on all four edges, since the host gives no attacker's
+		// direction, a near-black band (90 percent at the edge, gone 64 px in) and a 2 px hairline in the text accent 10 px
+		// in with a 1 px dark edge on each side, so the cue reads on a bright sky and a dark court alike; reduced flashes
+		// keep the hairline only. Elsewhere a brief soft flash in the danger colour from the edges, with no line anywhere.
+		if (HitA > 0.f && Shown().bHitBanded)
+		{
+			const FUiWorldRow& R = Shown();
+			if (!bReduceFlashes)
+			{
+				const float D = ftcore::kUiHitBandDepth * S;
+				const float Pk = ftcore::kUiHitBandPeak * HitA;
+				const float Ramp = 1.f - ftcore::kUiHitBandFlat;
+				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, R.HitFlash);
+				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, R.HitFlash);
+				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, R.HitFlash);
+				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, R.HitFlash);
+			}
+			// The hairline: whole device pixels, its edges on pixel boundaries, so it never doubles or blurs at 125 percent.
+			const float Px = Mesh.PxSize();
+			const float W = Mesh.WholePx(ftcore::kUiHitLineW);
+			const float In = Mesh.SnapY((ftcore::kUiHitLineIn - 0.5f * ftcore::kUiHitLineW) * S);
+			const float InX = Mesh.SnapX((ftcore::kUiHitLineIn - 0.5f * ftcore::kUiHitLineW) * S);
+			const float Rgt = Mesh.SnapX(Size.X) - InX;
+			const float Bot = Mesh.SnapY(Size.Y) - In;
+			FLinearColor Line = R.HitLine;
+			Line.A = HitA;
+			FLinearColor Dark = Table().Edge;
+			Dark.A = 0.85f * HitA;
+			// The dark edges first (a frame 1 px wider on each side), then the line over them.
+			auto Frame = [&](float L, float T, float Rr, float B, float Th, const FLinearColor& C, bool bTop)
+			{
+				Mesh.Rect(L, T, Rr, T + Th, C, bTop);
+				Mesh.Rect(L, B - Th, Rr, B, C, bTop);
+				Mesh.Rect(L, T + Th, L + Th, B - Th, C, bTop);
+				Mesh.Rect(Rr - Th, T + Th, Rr, B - Th, C, bTop);
+			};
+			Frame(InX - Px, In - Px, Rgt + Px, Bot + Px, W + 2.f * Px, Dark, true);
+			Frame(InX, In, Rgt, Bot, W, Line, true);
+		}
+		else if (HitA > 0.f)
 		{
 			const FUiWorldRow& R = Shown();
 			const FLinearColor C = R.HitFlash;
@@ -4310,6 +4407,7 @@ private:
 	ftcore::ArenaHudBoss BossSeen;
 	uint8 LockSeen = ftcore::kArenaNobody;
 	float HitA = 0.f, ParryA = 0.f;
+	bool bReduceFlashes = false; // the settings' reduce flashes: the banded flash keeps only its hairline
 	FSlateFontInfo ResultFont;
 	float ResultLineH = 0.f, ResultAsc = 0.f;
 	FString VictoryWord, DefeatWord, AgainWord;

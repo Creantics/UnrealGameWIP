@@ -176,18 +176,34 @@ FTCORE_API UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette 
 
 // Every other place the fight HUD may put the danger colour; the painter reads the danger token nowhere but here and
 // through uiDangerWord. In a world with UiWorldRules::dangerUnderline the red stays on small marks and the 1 px
-// underline: the hit's edge flash is the world's backing (a cold dark vignette), a low hp or guard line keeps the ink
+// underline: the hit's edge flash is a near-black band with no tint and a pale hairline in the accent along its inner
+// side (kUiHitBand* below), a low hp or guard line keeps the ink
 // and carries a 1 px danger underline under its lit length (the pulse moves onto it), and the call cue's triangle, a
 // small mark, wears the mark colour (uiMarkColor). Elsewhere the flash, the low line and the triangle are danger, with
 // no underline.
 struct UiDangerSet {
-    UiColor hitFlash;     // the edge flash when the lead is hit
+    UiColor hitFlash;     // the edge flash when the lead is hit (pure black where hitBanded: the band's alpha makes it near)
+    UiColor hitLine;      // the hairline along the band's inner side, drawn only where hitBanded
+    bool hitBanded = false;
     UiColor lowLine;      // a low value line
     UiColor lowUnderline; // the line under it, drawn only when lowUnderlined
     bool lowUnderlined = false;
     UiColor cueMark;      // the call cue's danger triangle
 };
 FTCORE_API UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette);
+
+// The banded hit flash, in 1080p px from the screen's edge: the band is kUiHitBandPeak black at the edge, held for
+// kUiHitBandFlat of its depth, and falls to nothing at kUiHitBandDepth; the hairline's middle sits kUiHitLineIn in,
+// kUiHitLineW wide, with a 1 px dark edge on each side. With reduced flashes only the hairline is drawn.
+inline constexpr float kUiHitBandDepth = 64.f;
+inline constexpr float kUiHitBandPeak = 0.9f;
+inline constexpr float kUiHitBandFlat = 0.4f;
+inline constexpr float kUiHitLineIn = 10.f;
+inline constexpr float kUiHitLineW = 2.f;
+inline constexpr float kUiHitFull = 0.08f; // seconds at full strength
+inline constexpr float kUiHitGone = 0.3f;  // seconds until it is gone
+// The flash's strength `age` seconds after the hit: 1 until kUiHitFull, a smooth fall to 0 at kUiHitGone, 0 outside.
+FTCORE_API float uiHitFlashLevel(float age);
 
 // A role's size in pixels for a viewport `height` px tall at the player's text scale (1.0..2.0, clamped), never below
 // the floors.

@@ -345,7 +345,10 @@ TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a 
         CHECK(isRed(w.underline));
         const UiDangerSet d = uiDangerSet(s, unw, p);
         CHECK_FALSE(isRed(d.hitFlash));
-        CHECK(d.hitFlash == uiColor(s, unw, p, UiToken::Backing));
+        CHECK(d.hitBanded);
+        CHECK(d.hitFlash == UiColor{0.f, 0.f, 0.f, 1.f});
+        CHECK_FALSE(isRed(d.hitLine));
+        CHECK(d.hitLine == uiColor(s, unw, p, UiToken::Accent));
         CHECK_FALSE(isRed(d.lowLine));
         CHECK(d.lowLine == ink);
         CHECK(d.lowUnderlined);
@@ -356,11 +359,28 @@ TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a 
             const UiDangerSet o = uiDangerSet(s, wo, p);
             const UiColor danger = uiColor(s, wo, p, UiToken::Danger);
             CHECK(o.hitFlash == danger);
+            CHECK_FALSE(o.hitBanded);
             CHECK(o.lowLine == danger);
             CHECK(o.cueMark == danger);
             CHECK_FALSE(o.lowUnderlined);
         }
     }
+}
+
+TEST_CASE("ui style: the hit flash is full for 80 ms and gone by 300 ms") {
+    CHECK(uiHitFlashLevel(-0.01f) == 0.f);
+    CHECK(uiHitFlashLevel(0.f) == 1.f);
+    CHECK(uiHitFlashLevel(0.08f) == 1.f);
+    const float mid = uiHitFlashLevel(0.19f);
+    CHECK(mid > 0.4f);
+    CHECK(mid < 0.6f);
+    CHECK(uiHitFlashLevel(0.25f) < uiHitFlashLevel(0.15f));
+    CHECK(uiHitFlashLevel(0.3f) == 0.f);
+    CHECK(uiHitFlashLevel(1.f) == 0.f);
+    CHECK(kUiHitBandPeak == doctest::Approx(0.9f));
+    CHECK(kUiHitBandDepth == 64.f);
+    // the hairline and its dark edges sit inside the band's outer half
+    CHECK(kUiHitLineIn + 0.5f * kUiHitLineW + 1.f < 0.5f * kUiHitBandDepth);
 }
 
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
