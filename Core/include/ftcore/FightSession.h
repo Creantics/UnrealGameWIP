@@ -357,7 +357,8 @@ struct FightCheckpoint {
     FighterId keptLead = kNoFighter;      // the lead the kept gauge was on (it follows control)
     std::array<int, 2> leadLoad{};        // each lead's stored Load (the kept lead's is keptLoad)
     std::array<int, 2> leadHeals{};       // each lead's stored heal charges
-    bool lone = false;                    // the Lone Carry: on, ended, why, and this fight's lone Releases
+    std::array<int, 2> countLoad{-1, -1}; // each lead's Load as the count read it (-1: no gauge fed)
+    bool lone = false;                   // the Lone Carry: on, ended, why, and this fight's lone Releases
     bool loneEnded = false;
     LoneEnd loneEndedBy = LoneEnd::None;
     std::uint32_t loneReleases = 0;
@@ -535,6 +536,15 @@ public:
         if (cp.hostWritten && isLead(cp.activeLead) && cp.host.heals[cp.activeLead] != kNoLeadValue)
             leadHeals_[cp.activeLead] = clampHeals(cp.host.heals[cp.activeLead]);
         if (keptOn_) count_.setLoad(keptLead_, keptDown_ ? 0 : kept_);
+        // With both leads in the fight a move of control feeds the count the new lead's Load, so the count's
+        // gauges come back as the checkpoint read them, the controlled lead's as the host wrote it (a one-lead
+        // fight leaves the count to the host's feed, as before).
+        if (cp.inFight[kLeadA] && cp.inFight[kLeadB]) {
+            for (const FighterId lead : {kLeadA, kLeadB})
+                if (!keepsLoad(lead)) count_.setLoad(lead, cp.countLoad[lead]);
+            if (cp.hostWritten && isLead(cp.activeLead) && !keepsLoad(cp.activeLead) && count_.hasGauge(cp.activeLead))
+                count_.setLoad(cp.activeLead, leadLoad_[cp.activeLead]);
+        }
         lone_ = cp.lone;
         loneEnded_ = cp.loneEnded;
         loneEndedBy_ = cp.loneEndedBy;
@@ -878,7 +888,7 @@ public:
             h.add(cp->inFight).add(cp->joinRequested).add(cp->joinHealth);
             cp->gift.hashState(h);
             for (const PlaceTable& p : cp->places) p.hashState(h);
-            h.add(cp->keptLead).add(cp->leadLoad).add(cp->leadHeals);
+            h.add(cp->keptLead).add(cp->leadLoad).add(cp->leadHeals).add(cp->countLoad);
             h.add(cp->keptLoad).add(cp->keptDown).add(cp->lone).add(cp->loneEnded).add(cp->loneEndedBy);
             h.add(cp->loneReleases).add(cp->lonePooled);
             if (hasBoss_) cp->boss.hashState(h);
@@ -1478,6 +1488,7 @@ private:
         cp.keptLead = keptLead_;
         cp.leadLoad = leadLoad_;
         cp.leadHeals = leadHeals_;
+        cp.countLoad = {count_.rawLoad(kLeadA), count_.rawLoad(kLeadB)};
         cp.lone = lone_;
         cp.loneEnded = loneEnded_;
         cp.loneEndedBy = loneEndedBy_;

@@ -748,6 +748,7 @@ struct Host {
     void writeHost() {
         FightHostCheckpoint h;
         h.hp = hp;
+        h.load = {s.leadLoad(kLeadA), s.leadLoad(kLeadB)}; // the gauge as a host keeps it: the session's Load
         h.draws = 1234;
         h.partner = brain.save();
         REQUIRE(s.setHostCheckpoint(h) != CheckpointAt::None);
@@ -1075,6 +1076,7 @@ TEST_CASE("fight fate: a fight replayed from a phase checkpoint with the same in
     again.run(lost, 60);
     REQUIRE(again.s.defeated());
     again.retry(CheckpointAt::Phase);
+    CHECK(again.s.strikeCount().loadOf(kLeadB) == again.s.leadLoad(kLeadB)); // the count reads the Load it read then
     const std::vector<Seen> got = again.run(after, frames);
     REQUIRE(got.size() == want.size());
     std::size_t firstDiff = want.size();
