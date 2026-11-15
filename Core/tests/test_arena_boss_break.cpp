@@ -127,7 +127,9 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     // and the hulk (seed 2) breaks out once where it broke out never (16.6 s to 15.5 s). No
     // fight here steps back or starts unseen (one enemy, one token, the autopilot facing it). Re-measured for the
     // paired counter's 3 s cooldown (rule b): the autopilot pairs every parry, so a second pair inside 3 s is refused
-    // and those fights end on other blows.
+    // and those fights end on other blows. The cooldown alone moved it: with pairCooldown 0 the trace hashes to
+    // 5845169181718845176 (the value before the rules), and with the called BLOCK's guard damage put back
+    // (blockCallGuard 1) it stays 7216787019674830117, so the free BLOCK moves no shipped regular fight.
     CHECK(h.h == 7216787019674830117ull);
 }
 

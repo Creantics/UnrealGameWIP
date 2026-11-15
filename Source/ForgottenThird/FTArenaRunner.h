@@ -819,6 +819,7 @@ private:
 	bool bLeadStepOpen = false;
 	int32 StepOpenLoad = 0, StepOpenHeals = 0, StepLoadSpent = 0, StepHealsSpent = 0;
 	int32 LeadLoadSpends = 0, LeadHealSpends = 0, LateSetsSeen = 0;
+	int32 LateSetsRun = 0; // the most late sets any fight of the run saw: no begin resets it (a retry keeps it)
 	// The "per-lead Load" check: the runner's own ledger of the lead without control (its values as it lost control,
 	// or the begin's for the partner, plus the kept Load changes the session reported for it since; -1: none), checked
 	// against the values the session reports when control comes back to it. bOwnDeparted: the ledger is from that

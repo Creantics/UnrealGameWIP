@@ -2482,6 +2482,7 @@ void UFTArenaRunner::FeedSession()
 		const int32 Late = Session->Get().lateSets();
 		ensureMsgf(Late == 0, TEXT("Arena: the session refused %d late per-lead set(s): a set after a spend on its step."), Late);
 		LateSetsSeen = FMath::Max(LateSetsSeen, Late);
+		LateSetsRun = FMath::Max(LateSetsRun, Late);
 	}
 	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
 	if (bPartnerHeldOut && Tick.joined == OtherLead())
@@ -7348,7 +7349,7 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 			bSwitchOk ? TEXT("PASS") : TEXT("FAIL"), SwitchAsks, SwitchesSeen, SwitchAsksRefused, SwitchAsksSame, SwitchesDone, SwitchesRefused,
 			Fight.stats().leadSwitches);
 	}
-	if (bPerLead && LeadMoves > 0)
+	if (bPerLead)
 	{
 		// Per-lead Load: every control move brought the new lead its own Load and heal charges exactly (as it left
 		// them, plus the kept changes since; the begin's for the partner), and the fight's gauge and charges took them.
@@ -7360,10 +7361,11 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	}
 	if (bPerLead)
 	{
-		// The host's order: every set before the step's spends, so the session refused none (lateSets 0).
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: per-lead host order %s (late sets %d; %d Load spends and %d heal charges reported)."),
-			LateSetsSeen > 0 ? TEXT("FAIL") : (LeadLoadSpends + LeadHealSpends > 0 ? TEXT("PASS") : TEXT("not covered")),
-			LateSetsSeen, LeadLoadSpends, LeadHealSpends);
+		// The host's order: every set before the step's spends, so the session refused none (lateSets 0) in any fight
+		// of the run (LateSetsRun: a retry's begin does not wipe an earlier fight's late sets).
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: per-lead host order %s (late sets %d in the run, %d this fight; %d Load spends and %d heal charges reported)."),
+			LateSetsRun > 0 ? TEXT("FAIL") : (LeadLoadSpends + LeadHealSpends > 0 ? TEXT("PASS") : TEXT("not covered")),
+			LateSetsRun, LateSetsSeen, LeadLoadSpends, LeadHealSpends);
 	}
 	if (bPartner && PartnerOnSteps > 0)
 	{

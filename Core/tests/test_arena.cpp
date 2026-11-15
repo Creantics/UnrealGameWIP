@@ -8259,6 +8259,11 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
           "3 staggers, 0 heals, 0 releases, 0 overloads, 4/6 reads right, dealt 520, took 34, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
     CHECK(r.hitsOn[1] == 17);
+    // What the cooldown changed: a pair inside it is refused (spent, nothing dealt), and the fight ends on a riposte
+    // where the counter had led to a Release.
+    CHECK(r.stats.pairsCooled >= 1);
+    CHECK(r.stats.releases == 0);
+    CHECK(r.stats.ripostes == 1);
     // The best run is the skirmisher's 2 of 2 (weight 3): Devin's 2nd blow fills its count and breaks its poise with
     // it. The hulk's count (weight, 7) fills on his 4th blow, before its poise breaks: it breaks out once.
     CHECK(r.stats.breakRunBest == 2);
@@ -8280,6 +8285,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's bre
         CHECK(r.stats.flinches > 0);
         CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
         CHECK(r.stats.breakOuts == (seed == 3 || seed == 6 || seed == 8 ? 2 : 1));
+        if (seed == 3 || seed == 6 || seed == 8) CHECK(r.stats.pairsCooled >= 1); // the refused pair behind the second
         CHECK(r.stats.breakDue == r.stats.breakOuts + r.stats.stepBacks);
         CHECK(arenaFeatureChecks(r.stats).breakOutDue);
         CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::Pass);
