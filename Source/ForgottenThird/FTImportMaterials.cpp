@@ -6,6 +6,7 @@
 #include "FileHelpers.h"
 #include "ForgottenThird.h"
 #include "FTText.h"
+#include "FTWorldWave.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
@@ -114,10 +115,27 @@ void FinishMaster(UMaterial* Material)
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: made %s."), GTag, *Material->GetPathName());
 }
 
+// The world wave's character state (FTWorldWave::AddState with Character on), wired in last. A master that already has
+// it is left as it was; one saved before the state existed takes it here and is saved again.
+void AddCharacterState(UMaterial* Material, bool bExisting, TArray<UPackage*>& Dirty)
+{
+	const int32 Before = Material->GetExpressionCollection().Expressions.Num();
+	FTWorldWave::AddState(GTag, Material, 300, 1000, true);
+	if (bExisting && Material->GetExpressionCollection().Expressions.Num() != Before)
+	{
+		Material->PreEditChange(nullptr);
+		Material->PostEditChange();
+		Material->MarkPackageDirty();
+		Dirty.AddUnique(Material->GetPackage());
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s takes the world wave's character state."), GTag, *Material->GetPathName());
+	}
+}
+
 UMaterial* CharacterMaster(TArray<UPackage*>& Dirty)
 {
 	if (UMaterial* Existing = Cast<UMaterial>(LoadShared(kCharacterMaster, UMaterial::StaticClass())))
 	{
+		AddCharacterState(Existing, true, Dirty);
 		return Existing;
 	}
 	UMaterial* Material = NewMaster(kCharacterMaster, Dirty);
@@ -136,6 +154,7 @@ UMaterial* CharacterMaster(TArray<UPackage*>& Dirty)
 	UMaterialExpressionScalarParameter* Strength = AddParameter<UMaterialExpressionScalarParameter>(Material, TEXT("EmissiveStrength"), 600);
 	Strength->DefaultValue = 1.0f;
 	Inputs->EmissiveColor.Expression = Multiply(Material, Emissive, 0, Strength, 450);
+	AddCharacterState(Material, false, Dirty);
 	FinishMaster(Material);
 	return Material;
 }
@@ -168,6 +187,7 @@ UMaterial* TexturedMaster(TArray<UPackage*>& Dirty)
 {
 	if (UMaterial* Existing = Cast<UMaterial>(LoadShared(kTexturedMaster, UMaterial::StaticClass())))
 	{
+		AddCharacterState(Existing, true, Dirty);
 		return Existing;
 	}
 	UTexture2D* White = SolidTexture(TEXT("T_FTWhite"), FColor::White, true, TC_Default, Dirty);
@@ -208,6 +228,7 @@ UMaterial* TexturedMaster(TArray<UPackage*>& Dirty)
 	Inputs->Normal.Connect(0, Normal);
 	Inputs->AmbientOcclusion.Connect(1, Occlusion);
 	Inputs->EmissiveColor.Connect(0, Multiply(Material, Multiply(Material, EmissiveTex, 0, Emissive, 650), 0, Strength, 750));
+	AddCharacterState(Material, false, Dirty);
 	FinishMaster(Material);
 	return Material;
 }

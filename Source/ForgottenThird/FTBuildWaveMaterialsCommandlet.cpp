@@ -18,8 +18,11 @@
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionPreSkinnedPosition.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
+#include "Materials/MaterialExpressionStaticBool.h"
+#include "Materials/MaterialExpressionStaticSwitch.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialFunction.h"
@@ -214,17 +217,35 @@ UMaterialFunction* BuildStateFunction(UPackage* Package, UMaterialParameterColle
 		FunctionInputs[I] = In;
 	}
 
+	// Character (a static bool, off unless the master passes it on; AddState's bCharacter): the character state, which
+	// drops the leaks and puddles and takes its grime from the pre-skinned local position (State.ush, FTWaveCharacter).
+	UMaterialExpressionFunctionInput* CharacterIn = AddFunctionExpression<UMaterialExpressionFunctionInput>(Function, -1200, 60);
+	CharacterIn->InputName = FName(TEXT("Character"));
+	CharacterIn->InputType = FunctionInput_StaticBool;
+	CharacterIn->PreviewValue = FVector4f(0.f, 0.f, 0.f, 0.f);
+	CharacterIn->bUsePreviewValueAsDefault = true;
+	CharacterIn->SortPriority = 3;
+	CharacterIn->Id = FGuid::NewDeterministicGuid(TEXT("FTWorldWaveState.In.Character"));
+
+	UMaterialExpressionWorldPosition* WorldPos = AddFunctionExpression<UMaterialExpressionWorldPosition>(Function, -900, 100);
 	UMaterialExpressionCustom* Custom = AddFunctionExpression<UMaterialExpressionCustom>(Function, -300, 0);
+	UMaterialExpressionCustom* CharacterCustom = AddFunctionExpression<UMaterialExpressionCustom>(Function, -300, 500);
 	Custom->Description = TEXT("FTWorldWaveState");
-	Custom->OutputType = CMOT_Float3;
 	Custom->Code = FTWorldWaveStateBody;
-	Custom->IncludeFilePaths.Add(FTWorldWaveStateInclude);
-	Custom->Inputs.Reset();
-	AddInput(Custom, TEXT("Base"), FunctionInputs[0]);
-	AddInput(Custom, TEXT("Rough"), FunctionInputs[1]);
-	AddInput(Custom, TEXT("Emis"), FunctionInputs[2]);
-	AddInput(Custom, TEXT("WorldPos"), AddFunctionExpression<UMaterialExpressionWorldPosition>(Function, -900, 100));
+	CharacterCustom->Description = TEXT("FTWorldWaveState (character)");
+	CharacterCustom->Code = FTWorldWaveCharacterBody;
+	for (UMaterialExpressionCustom* Node : {Custom, CharacterCustom})
+	{
+		Node->OutputType = CMOT_Float3;
+		Node->IncludeFilePaths.Add(FTWorldWaveStateInclude);
+		Node->Inputs.Reset();
+		AddInput(Node, TEXT("Base"), FunctionInputs[0]);
+		AddInput(Node, TEXT("Rough"), FunctionInputs[1]);
+		AddInput(Node, TEXT("Emis"), FunctionInputs[2]);
+		AddInput(Node, TEXT("WorldPos"), WorldPos);
+	}
 	AddInput(Custom, TEXT("Normal"), AddFunctionExpression<UMaterialExpressionVertexNormalWS>(Function, -900, 160));
+	AddInput(CharacterCustom, TEXT("LocalPos"), AddFunctionExpression<UMaterialExpressionPreSkinnedPosition>(Function, -900, 560));
 	const FCollectionInput FromCollection[] = {
 		{TEXT("WOrigin"), FTWorldWave::Origin},
 		{TEXT("WOriginScreen"), FTWorldWave::OriginScreen},
@@ -242,19 +263,27 @@ UMaterialFunction* BuildStateFunction(UPackage* Package, UMaterialParameterColle
 			AddFunctionExpression<UMaterialExpressionCollectionParameter>(Function, -900, 240 + 80 * Row++);
 		SetCollectionParameter(Node, Look, In.Parameter);
 		AddInput(Custom, In.Input, Node);
+		AddInput(CharacterCustom, In.Input, Node);
 	}
-	AddOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
-	AddOutput(Custom, TEXT("EmisOut"), CMOT_Float3);
-	Custom->RebuildOutputs();
+	for (UMaterialExpressionCustom* Node : {Custom, CharacterCustom})
+	{
+		AddOutput(Node, TEXT("RoughOut"), CMOT_Float1);
+		AddOutput(Node, TEXT("EmisOut"), CMOT_Float3);
+		Node->RebuildOutputs();
+	}
 
 	const TCHAR* const OutputNames[] = {TEXT("BaseColor"), TEXT("Roughness"), TEXT("Emissive")};
 	for (int32 I = 0; I < 3; ++I)
 	{
+		UMaterialExpressionStaticSwitch* Switch = AddFunctionExpression<UMaterialExpressionStaticSwitch>(Function, -50, -100 + 160 * I);
+		Switch->A.Connect(I, CharacterCustom);
+		Switch->B.Connect(I, Custom);
+		Switch->Value.Connect(0, CharacterIn);
 		UMaterialExpressionFunctionOutput* Out = AddFunctionExpression<UMaterialExpressionFunctionOutput>(Function, 100, -100 + 120 * I);
 		Out->OutputName = FName(OutputNames[I]);
 		Out->SortPriority = I;
 		Out->Id = FGuid::NewDeterministicGuid(FString(TEXT("FTWorldWaveState.Out.")) + OutputNames[I]);
-		Out->A.Connect(I, Custom);
+		Out->A.Connect(0, Switch);
 	}
 
 	Function->PreEditChange(nullptr);
@@ -345,7 +374,9 @@ UMaterial* BuildTwin(const TCHAR* MasterPath)
 		return nullptr;
 	}
 	// The state too (a master built with it already has it: AddState leaves that one as it is).
-	FTWorldWave::AddState(kTag, Twin, -600, 1300);
+	// A character master's twin takes the character state (no leaks or puddles on a body; the thin line at the cut).
+	const bool bCharacter = FString(MasterPath).StartsWith(TEXT("/Game/Characters/"));
+	FTWorldWave::AddState(kTag, Twin, -600, 1300, bCharacter);
 	Twin->PreEditChange(nullptr);
 	Twin->PostEditChange();
 	return Twin;
@@ -438,7 +469,7 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
 	return true;
 }
 
-bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
+bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCharacter)
 {
 	if (!Material)
 	{
@@ -451,11 +482,33 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
 			StateFunctionPath, *Material->GetName());
 		return false;
 	}
+	// Character on: a static true into the call's Character input (the character state; State.ush, FTWaveCharacter).
+	const auto SetCharacter = [Material, X, Y, bCharacter](UMaterialExpressionMaterialFunctionCall* Call)
+	{
+		if (!bCharacter)
+		{
+			return;
+		}
+		for (FFunctionExpressionInput& In : Call->FunctionInputs)
+		{
+			if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")))
+			{
+				if (!In.Input.Expression)
+				{
+					UMaterialExpressionStaticBool* On = AddExpression<UMaterialExpressionStaticBool>(Material, X - 300, Y + 240);
+					On->Value = 1;
+					In.Input.Connect(0, On);
+				}
+				return;
+			}
+		}
+	};
 	for (UMaterialExpression* Expression : Material->GetExpressionCollection().Expressions)
 	{
-		const UMaterialExpressionMaterialFunctionCall* Existing = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
+		UMaterialExpressionMaterialFunctionCall* Existing = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
 		if (Existing && Existing->MaterialFunction && Existing->MaterialFunction->GetPathName() == Function->GetPathName())
 		{
+			SetCharacter(Existing);
 			return true;
 		}
 	}
@@ -493,7 +546,9 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
 		Inputs->EmissiveColor.UseConstant = false;
 	}
 	Route(Inputs->EmissiveColor, 2);
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: world-wave state wired in."), Tag, *Material->GetName());
+	SetCharacter(Call);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: world-wave state wired in%s."), Tag, *Material->GetName(),
+		bCharacter ? TEXT(" (character)") : TEXT(""));
 	return true;
 }
 } // namespace FTWorldWave

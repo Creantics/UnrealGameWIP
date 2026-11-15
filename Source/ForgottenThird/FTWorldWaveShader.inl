@@ -54,6 +54,19 @@ EmisOut = emis;
 return base;
 )HLSL");
 
+// The same state on a character (MF_WorldWaveState with Character on): the inputs above with LocalPos (pre-skinned, cm)
+// in place of Normal. The work is FTWaveCharacter (State.ush).
+static const TCHAR* const FTWorldWaveCharacterBody =
+TEXT(R"HLSL(
+float3 base = Base;
+float rough = Rough;
+float3 emis = Emis;
+FTWaveCharacter(WorldPos, LocalPos, WOrigin, WOriginScreen.w, WRadius, WBand, WDirection, WTime, WKeep0, WKeep1, base, rough, emis);
+RoughOut = rough;
+EmisOut = emis;
+return base;
+)HLSL");
+
 // The post-process (before depth of field, linear scene colour). Inputs: SceneColor (PostProcessInput0), SceneDepthIn
 // (SceneDepth, cm), SceneNormal (the world normal), WorldPos, CamPos, the collection's WOrigin, WOriginScreen, WFoot,
 // WTip, WRadius, WBand, WPrelude, WDirection, WTime, WGround, WGain, WKeep0 (the composed light), and the material's

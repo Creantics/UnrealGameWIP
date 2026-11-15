@@ -118,3 +118,52 @@ void FTWaveSurface(float3 wp, float3 n, float4 origin, float active, float r, fl
 		emis *= 1.0 - ink;
 	}
 }
+
+// A character's state (MF_WorldWaveState with Character on): the surface's colour lines, damp and light death, so a lead
+// matches the wall beside them, but no leak streaks or puddles (on a moving body they swim: a shoulder would take a
+// puddle, a coat storey leaks), and the grime from lp, the pre-skinned local position (cm), so it moves with the body.
+void FTWaveCharacterState(float m, float3 wp, float3 lp, float4 keep0, float4 keep1, inout float3 base, inout float rough,
+	inout float3 emis)
+{
+	if (m <= 0.0)
+	{
+		return;
+	}
+	FTWaveFns W;
+	float lum = dot(base, FTWaveLuma);
+	float3 grey = lerp(lum.xxx, base, 0.07) * float3(0.97, 0.99, 1.03);
+	float g = 0.6 * W.VNoise3(lp / 150.0, 51u) + 0.4 * W.VNoise3(lp / 35.0, 52u);
+	float grime = lerp(0.7, 1.05, g);
+	float3 newBase = grey * 0.5 * grime;
+	float newRough = saturate(rough - 0.08);
+	float kept = max(FTWaveKeep(wp, keep0), FTWaveKeep(wp, keep1));
+	float3 newEmis = kept * dot(emis, FTWaveLuma) * float3(0.72, 0.86, 1.0) * 1.3;
+	base = lerp(base, newBase, m);
+	rough = lerp(rough, newRough, m);
+	emis = lerp(emis, newEmis, m);
+}
+
+// The whole character state. No wet ink: its tau comes from a fixed front speed (kWaveFrontCmPerS), so a slow or stopped
+// front would leave the lead's new half ink black. For front A, a thin matt line at the cut instead: 8 mm wide on the same
+// ragged edge as the world's tear (W.Edge), base x 0.1, roughness 0.85, never emissive. On skin, cloth and props alike.
+void FTWaveCharacter(float3 wp, float3 lp, float4 origin, float active, float r, float w, float direction, float t,
+	float4 keep0, float4 keep1, inout float3 base, inout float rough, inout float3 emis)
+{
+	[branch] if (active < 0.5)
+	{
+		return;
+	}
+	float m = FTWaveSecond(wp, origin.xyz, r, w, direction, t, active);
+	FTWaveCharacterState(m, wp, lp, keep0, keep1, base, rough, emis);
+	if (origin.w > 0.5 && origin.w < 1.5 && r > 0.0)
+	{
+		FTWaveFns W;
+		float d = length(wp - origin.xyz);
+		float e = W.Edge(r, max(w, 1.0), float3(0.0, 0.0, 0.0), t, wp);
+		// No derivatives (ray-tracing hit shaders compile this too): a fixed 3 mm soft edge.
+		float cut = 1.0 - smoothstep(0.4, 0.7, abs(d - e));
+		base = lerp(base, base * 0.1, cut);
+		rough = lerp(rough, 0.85, cut);
+		emis *= 1.0 - cut;
+	}
+}

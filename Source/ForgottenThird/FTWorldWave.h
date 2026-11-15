@@ -172,7 +172,8 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y);
 // Wires MF_WorldWaveState into a master being built: whatever feeds its BaseColor, Roughness and Emissive goes through
 // the state function first (an unconnected input takes the master's constant: 0.5 roughness, no emissive). Call it last,
 // after AddCut, before PostEditChange. Logs and leaves the master as it was when the function is missing; returns
-// whether the state went in.
-bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y);
+// whether the state went in. bCharacter: the character state (no leaks or puddles, grime that moves with the body, the
+// thin line at the cut for front A); on a master that already has the state it is switched on there.
+bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCharacter = false);
 #endif
 } // namespace FTWorldWave
