@@ -215,6 +215,11 @@ void FFTLeadWeapons::Begin(AActor* Owner, USkeletalMeshComponent* Body, const FF
 		*FT::ToFString(ftcore::fightClipName(ftcore::arenaHeavyStrike(Kit))));
 
 	LoadClips(Look);
+	GauntletMorphs.Reset();
+	for (const FString& Morph : Look.GauntletMorphs)
+	{
+		GauntletMorphs.Add(FName(*Morph));
+	}
 	AttachProps();
 	SpawnEffects();
 	Restart();
@@ -364,6 +369,30 @@ void FFTLeadWeapons::AttachProps()
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d of %d gauntlet pieces on %s."), Prefix(), Added.Num(),
 			FTWeaponProps::NumGauntletPieces, *Skin->GetSkeletalMeshAsset()->GetName());
+		// The look's gauntlet morphs (a cuff tucked under the bracer) on while the pieces are worn: set on the body, the
+		// leader, so each piece whose mesh has the morph takes it; the pieces stay on this body for the fight.
+		if (Added.Num() > 0)
+		{
+			int32 Found = 0;
+			for (const FName& Morph : GauntletMorphs)
+			{
+				Skin->SetMorphTarget(Morph, 1.f);
+				for (const USceneComponent* Child : Skin->GetAttachChildren())
+				{
+					const USkeletalMeshComponent* Piece = Cast<USkeletalMeshComponent>(Child);
+					if (Piece && Piece->GetSkeletalMeshAsset() && Piece->GetSkeletalMeshAsset()->FindMorphTarget(Morph))
+					{
+						++Found;
+						break;
+					}
+				}
+			}
+			if (GauntletMorphs.Num() > 0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d gauntlet morph(s) on at 1, %d found on a worn piece (a missing one does nothing)."),
+					Prefix(), GauntletMorphs.Num(), Found);
+			}
+		}
 	}
 	else
 	{

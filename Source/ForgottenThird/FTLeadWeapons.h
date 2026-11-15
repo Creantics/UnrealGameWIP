@@ -208,6 +208,8 @@ private:
 	// The reload and flinch layers after the strike's (StrikeWeight, 0..1, keeps its share of the arms).
 	void PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight);
 	void AttachProps();
+	// The look's GauntletMorphs, kept from Begin for AttachProps.
+	TArray<FName> GauntletMorphs;
 	UStaticMeshComponent* AttachProp(const FTWeaponProps::FPiece& Piece);
 	void SpawnEffects();
 	UFTVfxComponent* MakeEffect(const TCHAR* Effect, USceneComponent* Parent, FName Socket);
