@@ -770,7 +770,7 @@ TEST_CASE("swim: under a bad env time passes: breath runs down and 2 s of it wit
         for (int i = 0; i < 15; ++i) CHECK_FALSE(u.step(SwimInput{}, fb, kDt).rescue);
         CHECK(u.state() != SwimState::Rescued);
     }
-    { // In an air pocket breath refills; at no breath vitality drains and can end it sooner.
+    { // An air pocket on a bad env is not trusted: under water the breath is used, no refill.
         Swim u;
         SwimEnv f = diveToUnder(u, deep());
         f.position.z = -5.f;
@@ -779,8 +779,14 @@ TEST_CASE("swim: under a bad env time passes: breath runs down and 2 s of it wit
         fb.bedZ = 1.f;
         fb.airPocket = true;
         const float before = u.breath();
-        u.step(SwimInput{}, fb, kDt);
-        CHECK(u.breath() > before);
+        CHECK_FALSE(u.step(SwimInput{}, fb, kDt).envOk);
+        CHECK(u.breath() < before);
+        CHECK_FALSE(u.last().refilling);
+        SwimEnv fp = f; // the same pocket on a good env refills
+        fp.airPocket = true;
+        const float mid = u.breath();
+        u.step(SwimInput{}, fp, kDt);
+        CHECK(u.breath() > mid);
         CHECK(u.last().refilling);
     }
     { // At the surface a bad env is no rescue, however long.
@@ -934,6 +940,42 @@ TEST_CASE("swim: edge inputs: NaN or +inf distance is no push, a bad inward the 
     CHECK(z.envOk);
     CHECK(z.pushBack == 1.f);
     CHECK(z.position.x == doctest::Approx(-4.f * kDt));
+}
+
+TEST_CASE("swim: a huge finite inward is scaled before it is normalised: never a zero push, kept as last good") {
+    const float big = std::numeric_limits<float>::max();
+    Swim s;
+    SwimEnv e = diveToUnder(s, deep());
+    e.position = {0.f, 0.f, -5.f};
+    e.edgeDistance = 0.f; // the full push
+    e.edgeInward = {0.f, -big, 0.f};
+    const SwimStep& a = s.step(SwimInput{}, e, kDt);
+    CHECK(a.envOk);
+    CHECK(a.pushBack == 1.f);
+    CHECK(a.position.x == 0.f);
+    CHECK(a.position.y == doctest::Approx(-4.f * kDt));
+    e.edgeInward = {}; // zero: the last good one, which the huge one set (-y), not a zero vector
+    const SwimStep& b = s.step(SwimInput{}, e, kDt);
+    CHECK(b.pushBack == 1.f);
+    CHECK(b.position.x == 0.f);
+    CHECK(b.position.y == doctest::Approx(-4.f * kDt));
+    const float d = 4.f * kDt / std::sqrt(2.f);
+    for (const SwimVec in : {SwimVec{big, big, 0.f}, SwimVec{3e38f, 3e38f, -big}}) {
+        e.edgeInward = in; // its x and y parts overflow if squared as they are; z is ignored
+        const SwimStep& r = s.step(SwimInput{}, e, kDt);
+        CHECK(r.envOk);
+        CHECK(r.position.x == doctest::Approx(d));
+        CHECK(r.position.y == doctest::Approx(d));
+        CHECK(std::isfinite(r.velocity.x));
+    }
+    e.edgeInward = {-big, big, 0.f};
+    const SwimStep& c = s.step(SwimInput{}, e, kDt);
+    CHECK(c.position.x == doctest::Approx(-d));
+    CHECK(c.position.y == doctest::Approx(d));
+    e.edgeInward = {1e-30f, 0.f, 0.f}; // too short to trust: the last good one (-x, +y)
+    const SwimStep& t = s.step(SwimInput{}, e, kDt);
+    CHECK(t.position.x == doctest::Approx(-d));
+    CHECK(t.position.y == doctest::Approx(d));
 }
 
 TEST_CASE("swim: a zero inward at the edge pushes along the last good one, else toward the centre, never no push") {
@@ -1241,4 +1283,130 @@ TEST_CASE("swim: a step allocates nothing") {
         e.position = s.step(in, e, kDt).position;
     }
     CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("swim: canDive is what a crouch press does, at every step of a scripted swim; guard is false throughout") {
+    // A copy of the swim takes each step again with a crouch press: it dives exactly when the step's flag said a
+    // press would. Steps after a held crouch are skipped (no press is possible on them).
+    Swim s;
+    SwimEnv e = deep();
+    bool held = false;
+    int checked = 0, open = 0, shut = 0;
+    bool rescuedShut = false, divedOpen = false, slackOpen = false;
+    bool keptDived = false;
+    for (int i = 0; i < 340; ++i) {
+        SwimInput in = go({1.f, 0.f, -0.5f}); // under water it swims down and stays under (the surface ignores it)
+        SwimEnv env = e;
+        if (i >= 20 && i < 40) {
+            env.deepAllowed = false; // not allowed here
+        } else if (i >= 40 && i < 60) {
+            env.bedZ = -2.5f; // too shallow
+            env.column = 2.5f;
+        } else if (i >= 60 && i < 62) {
+            env.surfaceZ = kNaN; // a bad env: the press made on it is kept for the good step after, none dives
+        } else if (i >= 64 && i < 72) {
+            in.jump = true; // under water a jump rises; at the surface a jump down wins over a press
+        } else if (i >= 300 && i < 320) {
+            env.column = 2.f; // off surface minus bed: taken as 10, so a press dives
+        }
+        if (i == 60) in.crouch = true;             // pressed on a bad env step: kept
+        if (i == 80 || i == 200) in.crouch = true; // the dives
+        if (i == 150) in.jump = true;              // back to the surface
+        if (i == 260) s.setVitality(0.f);          // under water: the next step is a rescue
+        if (i == 280) {                            // carried to the exit
+            s.reset();
+            e.position = {0.f, 0.f, 0.f};
+            env.position = e.position;
+        }
+        const SwimState before = s.state();
+        bool dives = false;
+        if (!held) {
+            Swim probe = s;
+            SwimInput press = in;
+            press.crouch = true;
+            dives = probe.step(press, env, kDt).dived;
+        }
+        const SwimStep& r = s.step(in, env, kDt);
+        CAPTURE(i);
+        CAPTURE(int(before));
+        CHECK_FALSE(r.flags.guard);
+        CHECK_FALSE(r.flags.attack);
+        if (!held) {
+            CHECK(r.canDive == dives);
+            ++checked;
+            (r.canDive ? open : shut) += 1;
+            if (before == SwimState::Rescued) rescuedShut = rescuedShut || !r.canDive;
+            if (i >= 300 && i < 320 && before == SwimState::Surface) slackOpen = slackOpen || r.canDive;
+        }
+        if (r.dived) divedOpen = r.canDive;
+        if (i == 60 || i == 61) CHECK_FALSE(r.dived); // the bad steps: the press waits
+        if (i == 62) {
+            CHECK(before == SwimState::Surface);
+            CHECK(r.dived); // the first good step uses the kept press, no crouch down on it
+            keptDived = r.dived;
+        }
+        if (before != SwimState::Surface) CHECK_FALSE(r.canDive);
+        held = in.crouch;
+        if (r.positionValid) e.position = r.position;
+    }
+    CHECK(checked > 300);
+    CHECK(open > 0);
+    CHECK(shut > 0);
+    CHECK(rescuedShut);
+    CHECK(divedOpen);
+    CHECK(keptDived);
+    CHECK(slackOpen);
+}
+
+TEST_CASE("swim: rose is set on the step a jump press makes the swimmer rise; swimming up through the surface is not") {
+    { // A press under water: rose on that step only, not on the later step that reaches the surface.
+        Swim s;
+        SwimEnv e = diveToUnder(s, deep());
+        const SwimStep& r = s.step(jump(), e, kDt);
+        CHECK(r.rose);
+        CHECK(r.state == SwimState::Surfacing);
+        e.position = r.position;
+        bool surfaced = false;
+        for (int i = 0; i < 200 && !surfaced; ++i) {
+            const SwimStep& u = s.step(SwimInput{}, e, kDt);
+            CHECK_FALSE(u.rose);
+            surfaced = u.surfaced;
+            e.position = u.position;
+        }
+        CHECK(surfaced);
+    }
+    { // A press just under the surface: up to the surface on the press's own step, rose and surfaced together.
+        Swim s;
+        SwimEnv e = diveToUnder(s, deep());
+        e.position.z = -0.01f;
+        const SwimStep& r = s.step(jump(), e, kDt);
+        CHECK(r.rose);
+        CHECK(r.surfaced);
+        CHECK(r.state == SwimState::Surface);
+    }
+    { // A press while still diving rises too.
+        Swim s;
+        SwimEnv e = deep();
+        REQUIRE(s.step(crouch(), e, kDt).dived);
+        e.position = s.last().position;
+        const SwimStep& r = s.step(jump(), e, kDt);
+        CHECK(r.from == SwimState::Diving);
+        CHECK(r.rose);
+    }
+    { // Swimming up through the surface with the look: surfaced, never rose.
+        Swim s;
+        SwimEnv e = diveToUnder(s, deep());
+        bool surfaced = false;
+        for (int i = 0; i < 600 && !surfaced; ++i) {
+            const SwimStep& u = s.step(go({0.f, 0.f, 1.f}), e, kDt);
+            CHECK_FALSE(u.rose);
+            surfaced = u.surfaced;
+            e.position = u.position;
+        }
+        CHECK(surfaced);
+    }
+    { // At the surface a jump is no rise.
+        Swim s;
+        CHECK_FALSE(s.step(jump(), deep(), kDt).rose);
+    }
 }

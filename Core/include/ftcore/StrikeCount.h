@@ -280,6 +280,8 @@ public:
         if (isFighter(f)) loads_[f] = load;
     }
     int loadOf(FighterId f) const { return isFighter(f) && loads_[f] > 0 ? loads_[f] : 0; }
+    // The Load as fed (-1 for a non-fighter or one never fed), for a checkpoint to put back.
+    int rawLoad(FighterId f) const { return isFighter(f) ? loads_[f] : -1; }
     // The fighter was fed a Load of 0 or more (it has a gauge).
     bool hasGauge(FighterId f) const { return isFighter(f) && loads_[f] >= 0; }
     // The last join (setLift on), and whether takeJoin has handed it over yet.
