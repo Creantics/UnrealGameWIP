@@ -520,13 +520,48 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s has no Character input (rebuild it with -run=FTBuildWaveMaterials); %s takes the surface state."), Tag,
 			StateFunctionPath, *Material->GetName());
 	};
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	const auto IsState = [Function](const UMaterialExpression* Expression)
+	{
+		const UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
+		return Call && Call->MaterialFunction && Call->MaterialFunction->GetPathName() == Function->GetPathName();
+	};
+	// The cloth model's fuzz colour (the SubsurfaceColor pin) goes through a second call of the state, as its BaseColor, so
+	// the sheen greys with the cloth under it instead of keeping the first world's colour. Its other inputs keep the
+	// function's defaults and its other outputs are unused. One already there just takes the flag.
+	const auto RouteFuzz = [&]()
+	{
+		if (!Material->GetShadingModels().HasShadingModel(MSM_Cloth) || !Inputs->SubsurfaceColor.Expression)
+		{
+			return;
+		}
+		if (IsState(Inputs->SubsurfaceColor.Expression))
+		{
+			UMaterialExpressionMaterialFunctionCall* Fuzz = Cast<UMaterialExpressionMaterialFunctionCall>(Inputs->SubsurfaceColor.Expression);
+			Fuzz->UpdateFromFunctionResource();
+			SetCharacter(Fuzz);
+			return;
+		}
+		UMaterialExpressionMaterialFunctionCall* Fuzz = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y + 500);
+		if (!Fuzz->SetMaterialFunction(Function) || Fuzz->FunctionInputs.Num() < 3 || Fuzz->FunctionOutputs.Num() < 3)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s's fuzz colour keeps the first world (the state's inputs are not as expected)."), Tag,
+				*Material->GetName());
+			Material->GetExpressionCollection().RemoveExpression(Fuzz);
+			return;
+		}
+		Fuzz->FunctionInputs[0].Input.Connect(Inputs->SubsurfaceColor.OutputIndex, Inputs->SubsurfaceColor.Expression);
+		Inputs->SubsurfaceColor.Connect(0, Fuzz);
+		SetCharacter(Fuzz);
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: the cloth's fuzz colour goes through the world-wave state too."), Tag, *Material->GetName());
+	};
 	UMaterialExpressionMaterialFunctionCall* Existing = nullptr;
 	for (UMaterialExpression* Expression : Material->GetExpressionCollection().Expressions)
 	{
-		UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
-		if (Call && Call->MaterialFunction && Call->MaterialFunction->GetPathName() == Function->GetPathName())
+		// The main call is the one BaseColor's chain holds, not the fuzz's.
+		if (IsState(Expression) && Expression != Inputs->SubsurfaceColor.Expression)
 		{
-			Existing = Call;
+			Existing = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
 			break;
 		}
 	}
@@ -535,6 +570,7 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		// A call saved before the function gained an input lists the old inputs until it is refreshed.
 		Existing->UpdateFromFunctionResource();
 		SetCharacter(Existing);
+		RouteFuzz();
 		return true;
 	}
 	UMaterialExpressionMaterialFunctionCall* Call = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y);
@@ -545,7 +581,6 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		Material->GetExpressionCollection().RemoveExpression(Call);
 		return false;
 	}
-	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	// Each of the master's inputs goes through the call: what fed it feeds the call's input (an unconnected one keeps the
 	// function's default, which is the master's own default too), and the call's output feeds it.
 	const auto Route = [Call](FExpressionInput& MasterInput, int32 Index)
@@ -572,9 +607,32 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 	}
 	Route(Inputs->EmissiveColor, 2);
 	SetCharacter(Call);
+	RouteFuzz();
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: world-wave state wired in%s."), Tag, *Material->GetName(),
 		bCharacter ? TEXT(" (character)") : TEXT(""));
 	return true;
+}
+
+bool CharacterOn(const UMaterial& Material)
+{
+	const FString State = ObjectPath(StateFunctionPath);
+	for (const UMaterialExpression* Expression : Material.GetExpressionCollection().Expressions)
+	{
+		const UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
+		if (!Call || !Call->MaterialFunction || Call->MaterialFunction->GetPathName() != State)
+		{
+			continue;
+		}
+		for (const FFunctionExpressionInput& In : Call->FunctionInputs)
+		{
+			if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")) && In.Input.Expression)
+			{
+				const UMaterialExpressionStaticBool* Flag = Cast<UMaterialExpressionStaticBool>(In.Input.Expression);
+				return !Flag || Flag->Value != 0;
+			}
+		}
+	}
+	return false;
 }
 } // namespace FTWorldWave
 #endif
@@ -708,27 +766,7 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		TArray<FString> More;
 		WornExtra.ParseIntoArray(More, TEXT(";"), true);
 		Worn.Append(More);
-		// Whether the master's state call has its Character input on (a static true, or anything else wired there).
-		const auto CharacterOn = [State](const UMaterial& Material)
-		{
-			for (UMaterialExpression* Expression : Material.GetExpressionCollection().Expressions)
-			{
-				const UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
-				if (!Call || !Call->MaterialFunction || Call->MaterialFunction->GetPathName() != State->GetPathName())
-				{
-					continue;
-				}
-				for (const FFunctionExpressionInput& In : Call->FunctionInputs)
-				{
-					if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")) && In.Input.Expression)
-					{
-						const UMaterialExpressionStaticBool* Flag = Cast<UMaterialExpressionStaticBool>(In.Input.Expression);
-						return !Flag || Flag->Value != 0;
-					}
-				}
-			}
-			return false;
-		};
+		using FTWorldWave::CharacterOn;
 		TArray<UMaterial*> Changed;
 		for (const FString& Path : Worn)
 		{
@@ -739,11 +777,13 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 				continue;
 			}
 			const bool bWasOn = CharacterOn(*Material);
+			const int32 Before = Material->GetExpressionCollection().Expressions.Num();
 			if (!FTWorldWave::AddState(kTag, Material, 300, 1300, true))
 			{
 				return 1;
 			}
-			if (bWasOn && CharacterOn(*Material))
+			// Unchanged only when the flag was on and nothing was added (a cloth master's fuzz call is an addition).
+			if (bWasOn && CharacterOn(*Material) && Material->GetExpressionCollection().Expressions.Num() == Before)
 			{
 				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s already takes the character state."), kTag, *Path);
 				continue;

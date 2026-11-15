@@ -116,12 +116,14 @@ void FinishMaster(UMaterial* Material)
 }
 
 // The world wave's character state (FTWorldWave::AddState with Character on), wired in last. A master that already has
-// it is left as it was; one saved before the state existed takes it here and is saved again.
+// it is left as it was; one saved before the state existed, or with its Character flag off, takes it here and is saved
+// again.
 void AddCharacterState(UMaterial* Material, bool bExisting, TArray<UPackage*>& Dirty)
 {
 	const int32 Before = Material->GetExpressionCollection().Expressions.Num();
+	const bool bWasOn = FTWorldWave::CharacterOn(*Material);
 	FTWorldWave::AddState(GTag, Material, 300, 1000, true);
-	if (bExisting && Material->GetExpressionCollection().Expressions.Num() != Before)
+	if (bExisting && (Material->GetExpressionCollection().Expressions.Num() != Before || bWasOn != FTWorldWave::CharacterOn(*Material)))
 	{
 		Material->PreEditChange(nullptr);
 		Material->PostEditChange();

@@ -482,11 +482,8 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 		return;
 	}
 	EnsureCollection();
-	if (bWave)
-	{
-		StopWave();
-	}
-	// The street wave's definition: ink in water (front A) unless it says otherwise.
+	// The street wave's definition: ink in water (front A) unless it says otherwise. Built and checked before a running
+	// wave is stopped, so a refused start leaves that wave as it was.
 	ftcore::WorldWaveParams Wanted = ftcore::streetWaveParams();
 	Wanted.origin = ToMetres(Origin);
 	Wanted.startTime = StartTime;
@@ -508,6 +505,12 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 		return;
 	}
 	Wanted.toWorld = SecondId;
+	// The cue path (ftcore::worldWaveParamsForCue on CutsceneWaveCue, CutscenePlayer::takeWaveCues) has no caller here yet:
+	// owed, not wired in this commit.
+	if (bWave)
+	{
+		StopWave();
+	}
 	// A wave already set is replaced (Core's restart rule: from zero), after StopWave above has put its things back.
 	const ftcore::WorldWaveRefusal Refusal = ftcore::beginWorldWave(State, Wanted);
 	if (Refusal != ftcore::WorldWaveRefusal::None)
@@ -1029,22 +1032,9 @@ bool TakesWaveState(const UMaterial& Master, bool& bCharacter)
 	{
 		return false;
 	}
-#if WITH_EDITORONLY_DATA
-	for (const UMaterialExpression* Expression : Master.GetExpressionCollection().Expressions)
-	{
-		const UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
-		if (!Call || !Call->MaterialFunction || Call->MaterialFunction->GetPathName() != StatePath)
-		{
-			continue;
-		}
-		for (const FFunctionExpressionInput& In : Call->FunctionInputs)
-		{
-			if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")) && In.Input.Expression)
-			{
-				bCharacter = true;
-			}
-		}
-	}
+#if WITH_EDITOR
+	// The flag's value, not only that something is wired: every master now takes an explicit static bool there.
+	bCharacter = FTWorldWave::CharacterOn(Master);
 #else
 	bCharacter = true;
 #endif
@@ -1068,6 +1058,48 @@ void GatherWorn(const AActor& Actor, TArray<const AActor*>& Out)
 		}
 	}
 }
+// The materials' field on the CPU: FTWaveSecond's edge (Plugins/FTLook/Shaders/Private/Wave/Common.ush, FTWaveFns::Edge
+// with its Tongue lobes and jitter), ported line for line in float as the shader runs it. Kept by hand beside the HLSL;
+// only LogBodyBoundary reads it.
+namespace WaveField
+{
+float Hash3(int32 X, int32 Y, int32 Z, uint32 Seed)
+{
+	uint32 H = static_cast<uint32>(X) * 1597334677u ^ static_cast<uint32>(Y) * 3812015801u ^ static_cast<uint32>(Z) * 2798796415u ^
+			   Seed * 2654435761u;
+	H = (H ^ (H >> 16)) * 0x7feb352du;
+	H = (H ^ (H >> 15)) * 0x846ca68bu;
+	H ^= H >> 16;
+	return static_cast<float>(H >> 8) * (1.f / 16777216.f);
+}
+float Lerp(float A, float B, float S) { return A + S * (B - A); }
+float VNoise3(const FVector3f& P, uint32 Seed)
+{
+	const FVector3f I(FMath::FloorToFloat(P.X), FMath::FloorToFloat(P.Y), FMath::FloorToFloat(P.Z));
+	FVector3f F = P - I;
+	F = F * F * (FVector3f(3.f) - 2.f * F);
+	const int32 X = static_cast<int32>(I.X), Y = static_cast<int32>(I.Y), Z = static_cast<int32>(I.Z);
+	const float X0 = Lerp(Lerp(Hash3(X, Y, Z, Seed), Hash3(X + 1, Y, Z, Seed), F.X), Lerp(Hash3(X, Y + 1, Z, Seed), Hash3(X + 1, Y + 1, Z, Seed), F.X), F.Y);
+	const float X1 = Lerp(Lerp(Hash3(X, Y, Z + 1, Seed), Hash3(X + 1, Y, Z + 1, Seed), F.X),
+		Lerp(Hash3(X, Y + 1, Z + 1, Seed), Hash3(X + 1, Y + 1, Z + 1, Seed), F.X), F.Y);
+	return Lerp(X0, X1, F.Z);
+}
+float Tongue(const FVector3f& Wp, float T)
+{
+	const float A = VNoise3(Wp / 600.f + FVector3f(0.f, 0.f, 0.30f * T), 7u);
+	const float B = VNoise3(Wp / 220.f + FVector3f(3.1f, 0.f, 0.55f * T), 8u);
+	const float C = VNoise3(Wp / 90.f + FVector3f(0.f, 5.7f, 0.2f * T), 15u);
+	const float Body = FMath::Clamp((0.55f * A + 0.3f * B + 0.15f * C - 0.2f) / 0.6f, 0.f, 1.f);
+	return Lerp(0.25f, 1.f, Body);
+}
+// The new world's edge at Wp, cm from the origin (Edge in the shader; w taken as max(w, 1) as FTWaveSecond passes it).
+float Edge(float R, float W, float T, const FVector3f& Wp)
+{
+	W = FMath::Max(W, 1.f);
+	const float J = (VNoise3(Wp / 80.f + FVector3f(0.f, 0.f, 0.4f * T), 13u) - 0.5f) * 60.f + (VNoise3(Wp / 25.f, 14u) - 0.5f) * 20.f;
+	return FMath::Clamp(R - W * Tongue(Wp, T) + J, R - W, R);
+}
+} // namespace WaveField
 } // namespace
 
 void UFTWorldWaveSubsystem::LogBodyBoundary(const AActor& Lead) const
@@ -1078,6 +1110,11 @@ void UFTWorldWaveSubsystem::LogBodyBoundary(const AActor& Lead) const
 	{
 		return;
 	}
+	// The values the collection gets this frame (Step): the reach as the radius, the whole span as the band, the wave's age.
+	const ftcore::WorldWaveShaderConstants C = ftcore::worldWaveShaderConstants(Params, Frame);
+	const FVector3f Origin(C.originCm[0], C.originCm[1], C.originCm[2]);
+	const float R = C.reachCm, W = C.spanCm;
+	const float T = static_cast<float>(FMath::Max(GetClock() - Params.startTime, 0.0));
 	const FBox Box = Body->Bounds.GetBox();
 	const FVector Axis = Box.GetCenter();
 	FHitResult Hit;
@@ -1086,25 +1123,63 @@ void UFTWorldWaveSubsystem::LogBodyBoundary(const AActor& Lead) const
 							   FVector(Axis.X, Axis.Y, Box.Min.Z - 500.0), ECC_Visibility, Query)
 							   ? Hit.ImpactPoint.Z
 							   : Box.Min.Z;
-	const double FeetZ = Box.Min.Z;
-	const double ShoulderZ = Box.Min.Z + 0.82 * (Box.Max.Z - Box.Min.Z);
-	const double MidCm = FMath::Max(static_cast<double>(Frame.radius) - 0.5 * static_cast<double>(Frame.bandWidth), 0.0) * 100.0;
-	// The mid-band sphere's horizontal radius round the origin at height Z; -1 where it does not reach.
-	const auto Across = [this, MidCm](double Z)
+	const double Height = Box.Max.Z - Box.Min.Z;
+	const double Heights[] = {GroundZ, Box.Min.Z, Box.Min.Z + 0.72 * Height, Box.Min.Z + 0.94 * Height}; // ground, feet, chest, head
+	// Along the horizontal line from the origin through the body's axis, at each height: where the field's 0.5 contour
+	// (edge e = distance d) lies, as the horizontal distance from the origin. Stepped at 1 cm across the band (d from r - w
+	// to r, where the edge can lie), then halved to 1 mm; the first crossing from the second world's side. -1: none.
+	FVector2f Out(static_cast<float>(Axis.X) - Origin.X, static_cast<float>(Axis.Y) - Origin.Y);
+	const float AxisAcross = Out.Size();
+	Out = AxisAcross > 1.f ? Out / AxisAcross : FVector2f(1.f, 0.f);
+	const auto Crossing = [&](double Z)
 	{
-		const double Dz = Z - OriginCm.Z;
-		const double Sq = MidCm * MidCm - Dz * Dz;
-		return Sq >= 0.0 ? FMath::Sqrt(Sq) : -1.0;
+		const float Dz = static_cast<float>(Z) - Origin.Z;
+		const auto Point = [&](float S) { return FVector3f(Origin.X + Out.X * S, Origin.Y + Out.Y * S, static_cast<float>(Z)); };
+		const auto Inside = [&](float S) { const FVector3f P = Point(S); return WaveField::Edge(R, W, T, P) - (P - Origin).Size(); };
+		const float Inner = FMath::Max(R - FMath::Max(W, 1.f), 0.f), Outer = R;
+		if (Outer <= FMath::Abs(Dz))
+		{
+			return -1.0;
+		}
+		float S0 = FMath::Sqrt(FMath::Max(Inner * Inner - Dz * Dz, 0.f));
+		const float S1 = FMath::Sqrt(Outer * Outer - Dz * Dz);
+		float F0 = Inside(S0);
+		for (float S = S0 + 1.f; S <= S1 + 1.f; S += 1.f)
+		{
+			const float F = Inside(S);
+			if (F0 > 0.f && F <= 0.f)
+			{
+				float A = S - 1.f, B = S;
+				for (int32 K = 0; K < 10; ++K)
+				{
+					const float M = 0.5f * (A + B);
+					(Inside(M) > 0.f ? A : B) = M;
+				}
+				return static_cast<double>(0.5f * (A + B));
+			}
+			F0 = F;
+		}
+		return -1.0;
 	};
-	const double AxisAcross = FVector2D(Axis.X - OriginCm.X, Axis.Y - OriginCm.Y).Size();
-	const double G = Across(GroundZ), F = Across(FeetZ), S = Across(ShoulderZ);
-	const auto Gap = [G](double V) { return V >= 0.0 && G >= 0.0 ? FString::Printf(TEXT("%+.1f"), V - G) : FString(TEXT("n/a")); };
-	const auto FromAxis = [AxisAcross](double V) { return V >= 0.0 ? FString::Printf(TEXT("%+.1f"), V - AxisAcross) : FString(TEXT("does not reach")); };
+	double Across[4];
+	for (int32 K = 0; K < 4; ++K)
+	{
+		Across[K] = Crossing(Heights[K]);
+	}
+	const auto Gap = [&Across](int32 K)
+	{
+		return Across[K] >= 0.0 && Across[0] >= 0.0 ? FString::Printf(TEXT("%+.1f"), Across[K] - Across[0]) : FString(TEXT("n/a"));
+	};
+	const auto FromAxis = [&Across, AxisAcross](int32 K)
+	{
+		return Across[K] >= 0.0 ? FString::Printf(TEXT("%+.1f"), Across[K] - AxisAcross) : FString(TEXT("none"));
+	};
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("WorldWave: body boundary for %s: radius %.2f m, band %.2f m (mid %.1f cm); origin z %.1f, ground z %.1f, feet z %.1f, shoulders z %.1f; ")
-		TEXT("the front against the ground's line at the feet %s cm, at the shoulders %s cm; from the body's axis (%.1f cm out): ground %s, feet %s, shoulders %s cm."),
-		*Lead.GetName(), Frame.radius, Frame.bandWidth, MidCm, OriginCm.Z, GroundZ, FeetZ, ShoulderZ, *Gap(F), *Gap(S), AxisAcross, *FromAxis(G), *FromAxis(F),
-		*FromAxis(S));
+		TEXT("WorldWave: body boundary for %s (the materials' field, FTWaveSecond's edge on the CPU): reach %.1f cm, span %.1f cm, age %.2f s; ")
+		TEXT("origin z %.1f, ground z %.1f, feet z %.1f, chest z %.1f, head z %.1f; the edge against the ground's at the feet %s cm, chest %s cm, head %s cm; ")
+		TEXT("from the body's axis (%.1f cm out): ground %s, feet %s, chest %s, head %s cm."),
+		*Lead.GetName(), R, W, T, Origin.Z, Heights[0], Heights[1], Heights[2], Heights[3], *Gap(1), *Gap(2), *Gap(3), AxisAcross, *FromAxis(0),
+		*FromAxis(1), *FromAxis(2), *FromAxis(3));
 }
 
 int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
@@ -1118,7 +1193,8 @@ int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
 		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
 		for (UPrimitiveComponent* Primitive : Primitives)
 		{
-			if (!Primitive || !Primitive->IsVisible())
+			// Hidden ones too: a jacket's other state or a stowed weapon is shown later and must already be wave-aware.
+			if (!Primitive)
 			{
 				continue;
 			}

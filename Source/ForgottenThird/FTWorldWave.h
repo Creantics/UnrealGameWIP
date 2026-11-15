@@ -173,7 +173,12 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y);
 // the state function first (an unconnected input takes the master's constant: 0.5 roughness, no emissive). Call it last,
 // after AddCut, before PostEditChange. Logs and leaves the master as it was when the function is missing; returns
 // whether the state went in. bCharacter: the character state (no leaks or puddles, grime that moves with the body, the
-// thin line at the cut for front A); on a master that already has the state it is switched on there.
+// thin line at the cut for front A); on a master that already has the state it is switched on there. A cloth master's
+// fuzz colour (SubsurfaceColor) goes through a second call of the state as its BaseColor.
 bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCharacter = false);
+
+// Whether the master's MF_WorldWaveState call has its Character input on: a static bool whose value is true, or any
+// other expression wired there. False for a master with no state call, an unconnected input or a static false.
+bool CharacterOn(const UMaterial& Material);
 #endif
 } // namespace FTWorldWave

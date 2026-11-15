@@ -598,8 +598,8 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 		Inputs->SubsurfaceColor.Connect(0, Fuzz);
 		Inputs->ClearCoat.Connect(0, G.Scalar(TEXT("Cloth")));
 	}
-	// The world wave's character state, as the other worn masters take it (FTImportMaterials). The cloth's fuzz colour
-	// does not go through it.
+	// The world wave's character state, as the other worn masters take it (FTImportMaterials). On the cloth master the
+	// fuzz colour goes through a second call of it (FTWorldWave::AddState), so the sheen greys with the cloth.
 	FTWorldWave::AddState(TEXT("FTBuildGarment"), Material, 300, 1300, true);
 
 	Material->PreEditChange(nullptr);

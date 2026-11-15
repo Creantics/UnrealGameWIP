@@ -1651,10 +1651,21 @@ public:
 	}
 
 	// Moves the map aside when it exists, else notes it as new; false (logged) when it can't be. A .ftold left by a run
-	// that was killed is the last good map: it is put back first.
+	// that was killed before its save is the last good map: it is put back first, but only when the map is missing or
+	// older than it. One older than the map was left by a run killed after its save (before the .ftold was deleted): the
+	// map is the newer good one, so that .ftold is deleted.
 	bool Begin()
 	{
 		IFileManager& Files = IFileManager::Get();
+		if (Files.FileExists(*Old) && Files.FileExists(*File) && Files.GetTimeStamp(*Old) <= Files.GetTimeStamp(*File))
+		{
+			if (!Files.Delete(*Old, false, true, true))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't delete the stale %s."), *Old);
+				return false;
+			}
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: deleted %s, older than the map (an earlier run saved, then died)."), *Old);
+		}
 		if (Files.FileExists(*Old))
 		{
 			Files.Delete(*File, false, true, true);

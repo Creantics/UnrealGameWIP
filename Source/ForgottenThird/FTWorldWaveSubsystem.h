@@ -118,12 +118,11 @@ public:
 	// The proof dressing round Origin (world cm) within Radius (cm); returns how many things it tracks now.
 	int32 Dress(const FVector& Origin, double Radius);
 
-	// Logs where the front meets a lead's body against where it meets the ground under its feet: the front's mid-band
-	// sphere (radius - band / 2) projected at the feet's, the shoulders' and the ground's heights (the horizontal radius
-	// round the origin at each), each against the ground's, in cm; and how far each lies from the body's own axis. The
-	// body and the ground take the same world-space field (FTWaveSecond), so at any one point they agree; these are the
-	// sphere's curvature between the heights. The ragged edge (+-30 and +-10 cm noise, and the tongues within the band) is
-	// that same field on both. Nothing without a wave or a skeletal body.
+	// Logs where the front meets a lead's body against where it meets the ground under its feet: the materials' own field
+	// (FTWaveSecond's ragged edge, tongues and jitter, ported to the CPU, with the radius, band and age the collection gets
+	// this frame) along the line from the origin through the body's axis, at the ground's, feet's, chest's and head's
+	// heights; each crossing against the ground's, in cm, and how far each lies from the body's axis. Nothing without a
+	// wave or a skeletal body.
 	void LogBodyBoundary(const AActor& Lead) const;
 
 	// Holds the wave clock at Seconds (a fixed-step capture); ReleaseClock goes back to game time.
