@@ -91,6 +91,9 @@ public:
 	// A wave from Origin (world cm) starting at StartTime on the wave clock. A wave already set is replaced; the tracked
 	// things start it from the state the side beyond its front has.
 	void StartWave(const FVector& Origin, double StartTime, bool bReverse);
+	// The same with a whole definition (a cutscene cue's, ftcore::worldWaveParamsForCue): its preset, the world it
+	// brings and its direction; its origin and start time are replaced by Origin and StartTime.
+	void StartWave(const FVector& Origin, double StartTime, const ftcore::WorldWaveParams& Definition);
 	// Ends the wave: the collection cleared, the volume off, the fog and the exposure back, every tracked thing as the
 	// first world has it.
 	void StopWave();
@@ -127,7 +130,8 @@ public:
 	// wave or a skeletal body.
 	void LogBodyBoundary(const AActor& Lead) const;
 
-	// Holds the wave clock at Seconds (a fixed-step capture); ReleaseClock goes back to game time.
+	// Holds the wave clock at Seconds (a fixed-step capture). ReleaseClock goes back to game time; with a wave set, game
+	// time plus the offset that continues from the held time (no jump in the front), which lasts until no wave is set.
 	void SetClock(double Seconds);
 	void ReleaseClock();
 	double GetClock() const;
@@ -254,6 +258,8 @@ private:
 	bool bExposureHeld = false;
 	bool bHoldClock = false;
 	double HeldClock = 0.0;
+	double ClockOffset = 0.0; // ReleaseClock's, while a wave is set
+
 
 	// The switches' dressing and wave, run on the first frame once every actor has begun play (OnWorldBeginPlay comes
 	// before the actors' BeginPlay).
