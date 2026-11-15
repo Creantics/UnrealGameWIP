@@ -234,11 +234,40 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 	}
 	// An interleaved-gradient dither stepped each frame: the pass runs before depth of field, so the temporal upscaler
 	// after it resolves the steps into a smooth volume instead of a fixed speckle.
-	float2 jp = pix + 5.588238 * float(View.StateFrameIndexMod8);
-	float jitter = frac(52.9829189 * frac(0.06711056 * jp.x + 0.00583715 * jp.y));
+	// The pattern stays put and each pixel's offset steps by the golden ratio a frame, so every pixel runs evenly through
+	// its offsets (shifting the pattern itself left a faint diagonal mesh in the plumes' thin filaments).
+	float jitter = frac(frac(52.9829189 * frac(0.06711056 * pix.x + 0.00583715 * pix.y))
+		+ 0.618034 * float(View.StateFrameIndex & 1023u));
 	// Once the front has run on past the eye it thins out: 8 m beyond it the ink starts to go, 25 m beyond it is gone, so
 	// the leaving front does not stand as a black hedge along the sea's horizon in the settled view.
 	float recede = 1.0 - smoothstep(800.0, 2500.0, r - length(o3));
+	// The height band the ink can fill (FTWaveInkSigma's shell keeps to h < 450): the stretch of the ray within 450 cm
+	// over the street's ground, and the last 450/cosN cm before the surface it meets. The march keeps to that band's hull,
+	// so its steps go where the ink can be; the prelude's drop at the origin fills a ball, so it marches the whole shell.
+	float bandLo = -1e9;
+	float bandHi = 1e9;
+	if (rBall <= 0.0)
+	{
+		bandLo = 1e9;
+		bandHi = -1e9;
+		if (abs(rd.z) > 1e-4)
+		{
+			float tG = (ground - camPos.z) / rd.z;
+			float tTop = (ground + 450.0 - camPos.z) / rd.z;
+			bandLo = min(tG, tTop);
+			bandHi = max(tG, tTop);
+		}
+		else if (camPos.z >= ground && camPos.z < ground + 450.0)
+		{
+			bandLo = -1e9;
+			bandHi = 1e9;
+		}
+		if (!sky)
+		{
+			bandLo = min(bandLo, rayLen - 450.0 / cosN);
+			bandHi = max(bandHi, rayLen);
+		}
+	}
 	float T = 1.0;
 	float3 L = float3(0.0, 0.0, 0.0);
 	[unroll]
@@ -247,10 +276,15 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 		float2 seg = k == 0 ? segA : segB;
 		float a = max(seg.x, 0.0);
 		float b = min(seg.y, rayLen);
+		// The per-ray shape is taken on the whole piece of shell, before the band trims it.
+		float shape = W.VNoise3((camPos + rd * (0.5 * (a + b))) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
+		a = max(a, bandLo);
+		b = min(b, bandHi);
 		if (b > a && T > 0.02)
 		{
-			float shape = W.VNoise3((camPos + rd * (0.5 * (a + b))) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
-			int steps = int(clamp((b - a) / 45.0, 4.0, 10.0));
+			// Steps of about 25 cm: under the core's 40-110 cm height and 40-100 cm thickness, so no step steps over it
+			// (longer steps left it as a dither the temporal upscaler couldn't fill in, a screen-door hatch in the band).
+			int steps = int(clamp(ceil((b - a) / 25.0), 4.0, 64.0));
 			float ds = (b - a) / float(steps);
 			[loop]
 			for (int i = 0; i < steps; ++i)
