@@ -184,9 +184,12 @@ void AFTArenaFighter::SetBoomRotation(const FRotator& Rotation)
 	if (GetController())
 	{
 		Boom->bUsePawnControlRotation = true;
+		Boom->SetUsingAbsoluteRotation(false);
 		return;
 	}
+	// Absolute: the body turning under it (its facing) does not drag the boom between this and the arm's tick.
 	Boom->bUsePawnControlRotation = false;
+	Boom->SetUsingAbsoluteRotation(true);
 	Boom->SetWorldRotation(Rotation);
 }
 

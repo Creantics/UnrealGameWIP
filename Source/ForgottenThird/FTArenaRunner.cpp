@@ -1849,6 +1849,7 @@ void UFTArenaRunner::BeginSession()
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
+	PartnerSwapsBase = Fight.stats().partnerSwaps; // the brain's swaps start over with a restart (its begin)
 	PartnerJoinedAt = -1.0;
 	bSwitchAsked = bSwitchAskOpen = bSwitchAskedThisStep = false;
 	SwitchAsks = SwitchesSeen = SwitchesDone = SwitchesRefused = SwitchAsksRefused = SwitchAsksSame = 0;
@@ -6655,7 +6656,11 @@ void UFTArenaRunner::TakeOverBodies(const ftcore::ArenaOutput& Out)
 void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 {
 	DropPendingHandoff(TEXT("another body change in the hold"));
-	BenchMorphs = LeadWeapons.GauntletMorphNames(); // on a body change only
+	if (LeadWeapons.GauntletMorphNames().Num() > 0)
+	{
+		BenchMorphs = LeadWeapons.GauntletMorphNames(); // on a body change only
+		BenchMorphOwner = PlayerFigure;
+	}
 	LeadWeapons.End();
 	Swap(PlayerFigure, AllyFigure);
 	Swap(PlayerLook, AllyLook);
@@ -6680,7 +6685,7 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 	{
 		AllyFigure->ResetFeet();
 		// The benched figure keeps none of the look's gauntlet morphs (End set them back to 0).
-		const USkeletalMeshComponent* Benched = AllyFigure->GetLeadSkin();
+		const USkeletalMeshComponent* Benched = BenchMorphOwner.Get() == AllyFigure ? AllyFigure->GetLeadSkin() : nullptr;
 		for (const FName& Morph : BenchMorphs)
 		{
 			if (Benched)
@@ -6740,7 +6745,12 @@ void UFTArenaRunner::DropPendingHandoff(const TCHAR* Why)
 	TakeoverInputUntil = -1.0;
 	bNamesSwapped = bFiguresSwapped;
 	++HandoffDropped;
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a takeover's hand-off dropped in its hold (%s): no camera move."), Fight.time(), Why);
+	// The view to the lead now controlled (a body change after this sets its own).
+	if (APlayerController* PC = GetPC(); PC && PlayerFigure)
+	{
+		PC->SetViewTargetWithBlend(PlayerFigure, kTakeoverMoveSeconds, EViewTargetBlendFunction::VTBlend_EaseInOut, 2.f);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a takeover's hand-off dropped in its hold (%s): the view eases to the lead now controlled."), Fight.time(), Why);
 }
 
 void UFTArenaRunner::TickHandoff()
@@ -6748,10 +6758,14 @@ void UFTArenaRunner::TickHandoff()
 	if (SwitchCamCheckAt >= 0.0 && Now >= SwitchCamCheckAt)
 	{
 		// The stationing's camera (the pose's lens over the lead) against the drawn camera's, on the ground. Measured,
-		// not a pass or fail: the boom's collision probe may pull the drawn one in, and a capture's view is its own.
+		// not a pass or fail: the boom's collision probe may pull the drawn one in and its lag trails a moving lead.
 		SwitchCamCheckAt = -1.0;
 		const APlayerController* PC = GetPC();
-		if (PC && PC->PlayerCameraManager && bCameraPoseNow)
+		if (PC && PC->PlayerCameraManager && bCameraPoseNow && PC->GetViewTarget() != PlayerFigure.Get())
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: after the switch the view is not the lead's play camera (a capture's): no camera measure."), Fight.time());
+		}
+		else if (PC && PC->PlayerCameraManager && bCameraPoseNow)
 		{
 			const ftcore::ArenaLensAt Lens = ftcore::arenaCameraLens(CameraPoseNow);
 			const FVector Drawn = PC->PlayerCameraManager->GetCameraLocation();
@@ -6887,9 +6901,21 @@ void UFTArenaRunner::LogHandoffChecks() const
 	}
 	if (HandoffSwitches > 0 || HandoffBegun > 0)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: benched figure morphs %s (%d checked after %d body changes, worst weight %.3f)."),
-			BenchMorphChecks == 0 ? TEXT("n/a, no gauntlet morphs") : (BenchMorphWorst <= 1e-4f ? TEXT("PASS") : TEXT("FAIL")), BenchMorphChecks,
-			HandoffSwitches + HandoffBegun, BenchMorphWorst);
+		// At each body change, and again now when the gauntlet lead's figure is the benched one.
+		int32 Checks = BenchMorphChecks;
+		float Worst = BenchMorphWorst;
+		const AFTArenaFighter* Owner = BenchMorphOwner.Get();
+		if (const USkeletalMeshComponent* Benched = Owner && Owner == AllyFigure.Get() ? Owner->GetLeadSkin() : nullptr)
+		{
+			for (const FName& Morph : BenchMorphs)
+			{
+				Worst = FMath::Max(Worst, FMath::Abs(Benched->GetMorphTarget(Morph)));
+				++Checks;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: benched figure morphs %s (%d checked after %d body changes, worst weight %.3f; the gauntlet lead benched at the end %s)."),
+			Checks == 0 ? TEXT("n/a, the gauntlet lead never benched") : (Worst <= 1e-4f ? TEXT("PASS") : TEXT("FAIL")), Checks,
+			HandoffSwitches + HandoffBegun, Worst, Owner && Owner == AllyFigure.Get() ? TEXT("yes") : TEXT("no"));
 	}
 	if (HandoffSwitches > 0 || SwitchPartnerChecks > 0)
 	{
@@ -7123,11 +7149,12 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 		const ftcore::ArenaStats& St = Fight.stats();
 		// The brain's own count of its resets, the fight's count of the resets it asked, and the host's count of the
 		// switches and takeovers it drew: three counters kept in three places.
-		const bool bSwapsOk = AllyBrain.swaps() == static_cast<std::uint32_t>(St.partnerSwaps) && St.partnerSwaps == SwitchesDone + PartnerTakeovers;
+		const int32 FightSwaps = St.partnerSwaps - PartnerSwapsBase;
+		const bool bSwapsOk = AllyBrain.swaps() == static_cast<std::uint32_t>(FightSwaps) && FightSwaps == SwitchesDone + PartnerTakeovers;
 		const bool bStationOk = PartnerCameraSteps > 0 && PartnerStationedSteps == PartnerCameraSteps;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner stationing %s (%d steps up, %d with the camera, %d stationed; brain resets %u, fight %d, host %d switches and %d takeovers)."),
 			bSwapsOk && bStationOk ? TEXT("PASS") : TEXT("FAIL"), PartnerOnSteps, PartnerCameraSteps, PartnerStationedSteps,
-			static_cast<uint32>(AllyBrain.swaps()), St.partnerSwaps, SwitchesDone, PartnerTakeovers);
+			static_cast<uint32>(AllyBrain.swaps()), FightSwaps, SwitchesDone, PartnerTakeovers);
 	}
 	if (bPartnerHeldOut)
 	{

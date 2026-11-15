@@ -1150,9 +1150,13 @@ private:
 	double SwitchCamCheckAt = -1.0, SwitchCamWorst = 0.0;
 	int32 SwitchCamChecks = 0;
 	// The benched figure's gauntlet morphs after each body change (all back to 0: no tucked cuff on the body left).
+	// BenchMorphs: the gauntlet look's morphs, BenchMorphOwner the figure that wears that look.
 	TArray<FName> BenchMorphs;
+	TWeakObjectPtr<AFTArenaFighter> BenchMorphOwner;
 	int32 BenchMorphChecks = 0;
 	float BenchMorphWorst = 0.f;
+	// The fight's partnerSwaps when this session began (a restart begins the brain again, not the fight's stats).
+	int32 PartnerSwapsBase = 0;
 	double HandoffWorstLate = 0.0;
 	float HandoffFrameDt = 0.f;
 	// After a switch: the fight time it happened, the left body's place then, the first step its brain moved it (or
