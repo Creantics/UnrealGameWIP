@@ -105,7 +105,8 @@ inline constexpr int32 kLocalSlot = 31;
 // The custom stencil value reserved for the post's catch-all: a worn or held piece whose master takes no character state
 // (MetaHuman skin, eyes, teeth, grooms, anything a future asset brings) renders custom depth with this value, and
 // PP_WorldWave gives its pixels the character state there (Post.ush kFTWaveCatchStencil, the same number). Needs
-// r.CustomDepth 3 (stencil); UFTWorldWaveSubsystem::AuditWorn raises it at run time when it stencils a piece.
+// r.CustomDepth 3 (stencil), the project's setting (Config/DefaultEngine.ini); UFTWorldWaveSubsystem::AuditWorn only
+// checks it and warns (raising it at run time stalled a frame about 8 s).
 inline constexpr int32 kCatchStencil = 223;
 // The custom stencil value of a worn piece that is wave-aware (every slot's master has FTWaveAware 1). It renders custom
 // depth too, so the custom depth buffer keeps the NEAREST worn surface at each pixel: cloth over skin reads 222 there and
