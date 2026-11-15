@@ -493,6 +493,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_twist_bake.cpp
         tests/test_world_wave.cpp
         tests/test_wave_look.cpp
+        tests/test_inertial.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).
