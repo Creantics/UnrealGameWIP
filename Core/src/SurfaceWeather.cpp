@@ -367,7 +367,57 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tTone *= 1.0 + 0.3 * (A0 - 0.5) * AgF + lerp(0.25, 1.4 * Chip, AgF) * 0.5;\n";
     h += "\t\tRoughMul *= 1.0 + 0.1 * Chip * AgF;\n";
     h += "\t\tfloat DTop = 0.0;\n";  // the tile's exposed stone top
-    if (detail) {
+    if (detail && st.detailHexM > 0.0f) {
+        // Anti-repetition: the tile is read three times on a triangular lattice of detailHexM, each lattice vertex
+        // giving its own turn and offset into the tile, blended by sharpened barycentric weights; the blend's lost
+        // contrast is put back about the means (variance-preserving, by 1/sqrt(sum w^2)). Each vertex goes to the
+        // sample slot of its lattice colour ((a + 2b) mod 3), so a slot keeps its vertex across every triangle edge
+        // and only a zero-weight one swaps: implicit mips stay seam-free with no screen derivatives (ray-tracing safe).
+        h += "\t\tfloat2 DP = Pw / " + num(st.detailTileM) + ";\n";
+        h += "\t\tfloat2 HxP = Pw / " + num(st.detailHexM) + ";\n";
+        h += "\t\tfloat2 HxS = float2(HxP.x - 0.57735027 * HxP.y, 1.15470054 * HxP.y);\n";
+        h += "\t\tfloat2 HxFl = floor(HxS);\n";
+        h += "\t\tint2 HxB = int2(HxFl);\n";
+        h += "\t\tfloat2 HxF = HxS - HxFl;\n";
+        h += "\t\tfloat HxZ = 1.0 - HxF.x - HxF.y;\n";
+        h += "\t\tfloat HxU = step(HxZ, 0.0);\n";  // 1 in the rhombus's upper triangle
+        h += "\t\tint HxK = HxB.x + 2 * HxB.y;\n";
+        h += "\t\tHxK -= 3 * int(floor(float(HxK) / 3.0));\n";
+        // Weights of the triangle's vertices by their place: the corner (base or base + (1,1)), base + (1,0), base + (0,1).
+        h += "\t\tfloat3 HxW = float3(abs(HxZ), lerp(HxF.x, 1.0 - HxF.y, HxU), lerp(HxF.y, 1.0 - HxF.x, HxU));\n";
+        h += "\t\tHxW = pow(max(HxW, 0.0), " + num(st.detailHexSharp) + ");\n";
+        h += "\t\tHxW /= max(HxW.x + HxW.y + HxW.z, 1e-5);\n";
+        h += "\t\tfloat HxVar = clamp(rsqrt(max(dot(HxW, HxW), 1e-4)), 1.0, 1.7320508);\n";
+        h += "\t\tfloat DLr = 0.0;\n\t\tfloat2 DSg = float2(0.0, 0.0);\n\t\tfloat DRr = 0.0;\n\t\tfloat DAo = 0.0;\n";
+        for (int j = 0; j < 3; ++j) {
+            const std::string J = std::to_string(j);
+            h += "\t\tint HxR" + J + " = (" + J + " - HxK + 3) % 3;\n";
+            h += "\t\tint2 HxV" + J + " = HxB + (HxR" + J + " == 0 ? int2(int(HxU), int(HxU)) : (HxR" + J +
+                 " == 1 ? int2(1, 0) : int2(0, 1)));\n";
+            h += "\t\tfloat HxWt" + J + " = HxR" + J + " == 0 ? HxW.x : (HxR" + J + " == 1 ? HxW.y : HxW.z);\n";
+            h += "\t\tfloat HxA" + J + " = " + num(6.2831853f * st.detailHexTurn) + " * SNz.L(HxV" + J + " + int2(13, 97));\n";
+            h += "\t\tfloat HxC" + J + " = cos(HxA" + J + ");\n\t\tfloat HxSn" + J + " = sin(HxA" + J + ");\n";
+            h += "\t\tfloat2 DUv" + J + " = float2(HxC" + J + " * DP.x - HxSn" + J + " * DP.y, HxSn" + J + " * DP.x + HxC" + J +
+                 " * DP.y) + float2(SNz.L(HxV" + J + "), SNz.L(HxV" + J + " + int2(71, 29)));\n";
+            h += "\t\tDLr += HxWt" + J + " * dot(Texture2DSample(DetAlb, DetAlbSampler, DUv" + J +
+                 ").rgb, float3(0.2126, 0.7152, 0.0722));\n";
+            h += "\t\tfloat3 DNm" + J + " = UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv" + J + ")).xyz;\n";
+            // The tile's slope (du, dv) turned back to the world: the transpose of the sample's turn.
+            h += "\t\tfloat2 DGt" + J + " = float2(-DNm" + J + ".x, DNm" + J + ".y) / max(DNm" + J + ".z, 0.2);\n";
+            h += "\t\tDSg += HxWt" + J + " * float2(HxC" + J + " * DGt" + J + ".x + HxSn" + J + " * DGt" + J + ".y, -HxSn" + J +
+                 " * DGt" + J + ".x + HxC" + J + " * DGt" + J + ".y);\n";
+            h += "\t\tfloat3 DRa" + J + " = Texture2DSample(DetRA, DetRASampler, DUv" + J + ").rgb;\n";
+            h += "\t\tDRr += HxWt" + J + " * DRa" + J + ".r;\n";
+            h += "\t\tDAo += HxWt" + J + " * DRa" + J + ".g;\n";
+            h += "\t\tDTop += HxWt" + J + " * DRa" + J + ".b;\n";
+        }
+        h += "\t\tDLr = max(1.0 + (DLr / " + num(st.detailAlbedoMean) + " - 1.0) * HxVar, 0.0);\n";
+        h += "\t\tTone *= lerp(1.0, DLr, " + num(st.detailTone) + ");\n";
+        h += "\t\tSlopeW += DSg * HxVar * " + num(st.detailSlope) + ";\n";
+        h += "\t\tDRr = max(1.0 + (DRr / " + num(st.detailRoughMean) + " - 1.0) * HxVar, 0.0);\n";
+        h += "\t\tRoughMul *= lerp(1.0, DRr, " + num(st.detailRough) + ");\n";
+        h += "\t\tDetAO = lerp(1.0, DAo, " + num(st.detailAO) + ");\n";
+    } else if (detail) {
         // The baked tile on the world's plan (image-down along world +y): albedo ratio to its mean, true slope from a
         // DirectX map (x = -dh/du, y = +dh/dv), roughness ratio and cavity AO. Texture2DSample, so a ray-tracing hit
         // takes its mip from the ray cone.

@@ -106,6 +106,12 @@ struct StreetSurfaceSpec {
     float detailSlope = 0.5f;            // share of the tile's true slope taken into the normal
     float detailRough = 0.6f;            // share of the tile's roughness ratio taken
     float detailAO = 0.7f;               // share of the tile's cavity AO taken
+    // Anti-repetition of the tile (stochastic hex tiling): three reads on a triangular lattice this far apart, each
+    // vertex turned and offset at random, blended with weights raised to detailHexSharp and the contrast restored.
+    // detailHexM <= 0 reads the tile once, straight (the repeat shows at 1 m on long roads).
+    float detailHexM = 0.6f;
+    float detailHexSharp = 4.0f;
+    float detailHexTurn = 1.0f;          // share of a full turn a vertex may take (asphalt has no grain direction)
     float tileM = 0.4f;                  // pavement tile
     float tileJointM = 0.005f;           // half a joint
     float tileBevelM = 0.008f;

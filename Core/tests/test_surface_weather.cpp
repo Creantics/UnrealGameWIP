@@ -312,7 +312,9 @@ TEST_CASE("HLSL: the asphalt detail tile is its own option and replaces the aggr
 
     SurfaceWeatherOptions on = plain;
     on.streetDetail = true;
-    const std::string det = surfaceWeatherHlsl(spec, on);
+    StreetSurfaceSpec straight;
+    straight.detailHexM = 0.0f;  // the single straight read; the hex tiling has its own case below
+    const std::string det = surfaceWeatherHlsl(spec, on, straight);
     for (const char* name : {"float DetAO = 1.0;", "float AgF = 0.0;", "Texture2DSample(DetAlb, DetAlbSampler, DUv)",
                              "UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv))",
                              "Texture2DSample(DetRA, DetRASampler, DUv)", "A *= DetAO;", "DTop = DRa.b;",
@@ -335,6 +337,80 @@ TEST_CASE("HLSL: the asphalt detail tile is its own option and replaces the aggr
     // Ray-tracing safe: no screen derivatives added.
     CHECK(countOf(det, "fwidth") == countOf(off, "fwidth"));
     for (const char* name : {"ddx", "ddy"}) CHECK(det.find(name) == std::string::npos);
+}
+
+TEST_CASE("HLSL: the asphalt tile's anti-repetition reads it three times on a hex lattice, ray-tracing safe") {
+    const SurfaceWeatherSpec spec;
+    SurfaceWeatherOptions plain;
+    plain.grime = false;
+    plain.street = true;
+    SurfaceWeatherOptions on = plain;
+    on.streetDetail = true;
+    const StreetSurfaceSpec st;
+    CHECK(st.detailHexM > 0.0f);  // on by default
+    const std::string hex = surfaceWeatherHlsl(spec, on);
+    for (const char* tex : {"Texture2DSample(DetAlb", "Texture2DSample(DetNrm", "Texture2DSample(DetRA"})
+        CHECK(countOf(hex, tex) == 3);
+    for (const char* uv : {"DetAlbSampler, DUv0)", "DetAlbSampler, DUv1)", "DetAlbSampler, DUv2)"})
+        CHECK(hex.find(uv) != std::string::npos);
+    // Each slot takes the vertex of its lattice colour, so a slot never swaps a weighted vertex across an edge.
+    for (const char* s : {"int HxK = HxB.x + 2 * HxB.y;", "HxK -= 3 * int(floor(float(HxK) / 3.0));",
+                          "int HxR0 = (0 - HxK + 3) % 3;", "int HxR2 = (2 - HxK + 3) % 3;",
+                          // Contrast restored about the means; the slope turned back to the world.
+                          "float HxVar = clamp(rsqrt(max(dot(HxW, HxW), 1e-4)), 1.0, 1.7320508);",
+                          "SlopeW += DSg * HxVar * ", "DetAO = lerp(1.0, DAo, ", "A *= DetAO;", "PolishTop = DTop * Wheel;",
+                          "float AgF = 0.0;"})
+        CHECK(hex.find(s) != std::string::npos);
+    CHECK(hex.find("float2 DUv = ") == std::string::npos);
+    CHECK(countOf(hex, "A *= DetAO;") == 1);
+    // No screen derivatives added; the tile-less road is unchanged by the hex tunings.
+    const std::string off = surfaceWeatherHlsl(spec, plain);
+    CHECK(countOf(hex, "fwidth") == countOf(off, "fwidth"));
+    for (const char* name : {"ddx", "ddy"}) CHECK(hex.find(name) == std::string::npos);
+    StreetSurfaceSpec straight;
+    straight.detailHexM = 0.0f;
+    CHECK(surfaceWeatherHlsl(spec, plain, straight) == off);
+    CHECK(off.find("HxP") == std::string::npos);
+}
+
+TEST_CASE("hex lattice: colour slots keep each vertex across triangle edges, weights sum to one") {
+    // A CPU copy of the emitted lattice maths: for points either side of every edge type, the vertex in each colour
+    // slot that carries weight is the same on both sides.
+    struct Slot { int vx, vy; float w; };
+    auto slots = [](float px, float py, Slot out[3]) {
+        const float sx = px - 0.57735027f * py, sy = 1.15470054f * py;
+        const float fx0 = std::floor(sx), fy0 = std::floor(sy);
+        const int bx = static_cast<int>(fx0), by = static_cast<int>(fy0);
+        const float fx = sx - fx0, fy = sy - fy0, z = 1.0f - fx - fy;
+        const int u = z <= 0.0f ? 1 : 0;
+        int k = bx + 2 * by;
+        k -= 3 * static_cast<int>(std::floor(static_cast<float>(k) / 3.0f));
+        const float w[3] = {std::fabs(z), u ? 1.0f - fy : fx, u ? 1.0f - fx : fy};
+        for (int j = 0; j < 3; ++j) {
+            const int r = (j - k + 3) % 3;
+            out[j] = {bx + (r == 0 ? u : (r == 1 ? 1 : 0)), by + (r == 0 ? u : (r == 1 ? 0 : 1)), w[r]};
+        }
+    };
+    Slot a[3], b[3];
+    int checked = 0;
+    for (int i = -40; i < 40; ++i) {
+        for (int jj = -40; jj < 40; ++jj) {
+            const float px = 0.173f * static_cast<float>(i) + 0.031f, py = 0.149f * static_cast<float>(jj) + 0.017f;
+            slots(px, py, a);
+            CHECK(a[0].w + a[1].w + a[2].w == doctest::Approx(1.0f).epsilon(1e-4));
+            for (const float d : {1e-3f, -1e-3f}) {
+                slots(px + d, py + 0.7f * d, b);
+                for (int j = 0; j < 3; ++j) {
+                    if (a[j].vx != b[j].vx || a[j].vy != b[j].vy) {
+                        CHECK(a[j].w < 0.01f);  // only a vertex at (near) zero weight may change its slot
+                        CHECK(b[j].w < 0.01f);
+                        ++checked;
+                    }
+                }
+            }
+        }
+    }
+    CHECK(checked > 0);  // the sweep did cross edges
 }
 
 TEST_CASE("joint depth: depths, an imperfect grid and its shares") {
