@@ -1306,3 +1306,48 @@ TEST_CASE("updateWorldWave zeroes frontSpeed on its early returns; the state's c
     CHECK(early.origin.z == later.origin.z);
     sameConstants(worldWaveShaderConstants(early, later, e.frame), worldWaveShaderConstants(later, e.frame));
 }
+
+TEST_CASE("WorldWaveClock: game time until held, the held time while held") {
+    WorldWaveClock clock;
+    CHECK(clock.now(12.5) == doctest::Approx(12.5));
+    clock.hold(3.0);
+    CHECK(clock.now(12.5) == doctest::Approx(3.0));
+    CHECK(clock.now(20.0) == doctest::Approx(3.0));
+}
+
+TEST_CASE("WorldWaveClock: a release with a wave set goes on from the held time, no jump") {
+    WorldWaveClock clock;
+    clock.hold(3.0);
+    clock.release(10.0, true);
+    CHECK_FALSE(clock.held);
+    CHECK(clock.now(10.0) == doctest::Approx(3.0));
+    CHECK(clock.now(11.5) == doctest::Approx(4.5));
+}
+
+TEST_CASE("WorldWaveClock: a second release while the wave runs keeps the offset") {
+    WorldWaveClock clock;
+    clock.hold(3.0);
+    clock.release(10.0, true);
+    clock.release(11.0, true);
+    CHECK(clock.now(11.0) == doctest::Approx(4.0));
+    clock.settle(true);
+    CHECK(clock.now(12.0) == doctest::Approx(5.0));
+}
+
+TEST_CASE("WorldWaveClock: a release with no wave is game time; the offset ends when no wave is set") {
+    WorldWaveClock plain;
+    plain.hold(3.0);
+    plain.release(10.0, false);
+    CHECK(plain.now(10.0) == doctest::Approx(10.0));
+
+    WorldWaveClock clock;
+    clock.hold(3.0);
+    clock.release(10.0, true);
+    clock.settle(false);
+    CHECK(clock.now(10.0) == doctest::Approx(10.0));
+
+    WorldWaveClock heldNoWave;
+    heldNoWave.hold(3.0);
+    heldNoWave.settle(false);
+    CHECK(heldNoWave.now(10.0) == doctest::Approx(3.0));
+}
