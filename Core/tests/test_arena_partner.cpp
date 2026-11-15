@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -1055,10 +1056,8 @@ TEST_CASE("arena partner: the player falling with the partner up takes its body;
         REQUIRE(roseAt >= 0);
         const Logged rose = r.log[static_cast<std::size_t>(roseAt)];
         CHECK(rose.t - downed.t == doctest::Approx(r.tuning.downSeconds).epsilon(0.002));
-        // 25% of its 100: the fallen body is the first lead's, whose max went with it (per-lead kits trade the two
-        // maxes on a takeover; before, the partner slot kept setAlly's 80 and it rose at 20)
-        CHECK(rose.e.amount == 25);
-        CHECK(r.fight.allyHp() == 25);
+        CHECK(rose.e.amount == 20); // 25% of its 80 (both leads on one kit: the maxes stay where they were)
+        CHECK(r.fight.allyHp() == 20);
         CHECK(r.fight.stats().partnerRises == 1);
         CHECK(r.fight.phase() == ArenaPhase::Fighting);
         r.bodies.player = Vec2{-1.f, 0.f}; // the bite reaches both now
@@ -1174,6 +1173,30 @@ TEST_CASE("arena partner: 60 s against each shipped boss with the shipped brain 
                    << "), share max " << s.bossAimShareMax << "; ally downed "
                    << r.count(ArenaEventType::AllyDowned) << ", rises " << s.partnerRises << ", takeovers "
                    << s.takeovers);
+        // Hard pin: both leads on the default kit, this fight is main's (1b59533b, before per-lead kits) to the tick.
+        // The constants are main's report, written here by hand: never regenerate them from this build.
+        struct Pin { const char* id; float seconds; int phase, partnerDamage, leadDamage, strings, blows, guards,
+                     bossStrings, atPartner, rises, takeovers; };
+        static constexpr Pin kMain[] = {
+            {"kite_boss", 31.783f, 2, 226, 874, 13, 22, 0, 13, 0, 0, 0},
+            {"stone_bearer", 45.6161f, 2, 299, 1101, 17, 29, 1, 15, 1, 0, 0},
+            {"white_glove", 41.4662f, 2, 240, 860, 17, 24, 1, 11, 2, 0, 0},
+        };
+        const Pin* pin = nullptr;
+        for (const Pin& p : kMain)
+            if (id == p.id) pin = &p;
+        REQUIRE(pin != nullptr);
+        CHECK(std::fabs(r.fight.time() - pin->seconds) < 0.5f * kDt);
+        CHECK(static_cast<int>(r.fight.phase()) == pin->phase);
+        CHECK(s.partnerDamage == pin->partnerDamage);
+        CHECK(s.damageDealt == pin->leadDamage);
+        CHECK(s.partnerStrings == pin->strings);
+        CHECK(s.partnerBlows == pin->blows);
+        CHECK(s.partnerGuards == pin->guards);
+        CHECK(s.bossAttacks == pin->bossStrings);
+        CHECK(s.bossAimedPartner == pin->atPartner);
+        CHECK(s.partnerRises == pin->rises);
+        CHECK(s.takeovers == pin->takeovers);
         CHECK(s.bossAimShareMax <= 0.3f + 1e-6f);
         CHECK(s.partnerStrings >= 1);
     }
@@ -2422,6 +2445,24 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                    << s.partnerBlows << " (cut by a hit " << s.partnerBlowsCut << ", ended at a dead target "
                                    << s.partnerBlowsVoid << "), guards " << s.partnerGuards << ", fallback "
                                    << r.brain.fallbackSeconds() << " s; shares:" << shares);
+            {
+                // Hard pin: the default kit for both leads, main's group fight (1b59533b) to the tick. Main's report
+                // values, written by hand: never regenerate them from this build.
+                struct Pin { int strings, blows, cut, voided, guards, goalJumps; double walked; };
+                static constexpr Pin kMain[2][2] = { // [order][camera]
+                    {{7, 9, 3, 0, 0, 7, 9.41492}, {7, 11, 1, 0, 0, 52, 26.1652}},
+                    {{6, 8, 0, 0, 0, 7, 9.63654}, {6, 8, 0, 0, 0, 42, 23.9698}},
+                };
+                const Pin& pin = kMain[order == 0 ? 0 : 1][camera ? 1 : 0];
+                CHECK(std::fabs(T - 20.0165) < 0.5 * kDt);
+                CHECK(s.partnerStrings == pin.strings);
+                CHECK(s.partnerBlows == pin.blows);
+                CHECK(s.partnerBlowsCut == pin.cut);
+                CHECK(s.partnerBlowsVoid == pin.voided);
+                CHECK(s.partnerGuards == pin.guards);
+                CHECK(goalJumps == pin.goalJumps);
+                CHECK(walked == doctest::Approx(pin.walked).epsilon(1e-5));
+            }
             MESSAGE("    goal jumps " << goalJumps << ", walked " << walked << " m, longest gap between blow starts "
                                       << longestGap << " s, repositions " << repositions << "; lead attacking "
                                       << leadAttack << " s, partner blows running " << partnerBlow
@@ -2803,8 +2844,8 @@ struct KitRun {
     ArenaStats stats;
     float longestStill = 0.f;       // the longest run of ticks the ally neither moved nor attacked nor guarded
 };
-KitRun kitRun(const ArenaFighter& partnerKit) {
-    PRig r;
+KitRun kitRun(const ArenaFighter& partnerKit, const ArenaFighter& leadKit = ruleFighter()) {
+    PRig r(leadKit);
     r.ownPartnerKit = true;
     r.def.partnerKit = partnerKit;
     r.def.fighter.hp = 100000; // the lead never falls: no takeover
@@ -2848,6 +2889,70 @@ KitRun kitRun(const ArenaFighter& partnerKit) {
     return k;
 }
 } // namespace
+
+TEST_CASE("arena partner: per-lead kits: the ally's blow damage is its own kit's, whoever the player holds") {
+    // Rule 7's cap reads the striking lead's own light[0]: the same partner kit beside two leads whose lights differ
+    // deals the same hits (the lead never attacks here, so every Hit is the partner's).
+    ArenaFighter strong = ruleFighter();
+    for (std::size_t k = 0; k < strong.lightCount; ++k) strong.light[k].damage *= 4;
+    const KitRun a = kitRun(kitB(), ruleFighter());
+    const KitRun b = kitRun(kitB(), strong);
+    REQUIRE(!a.hitAmount.empty());
+    CHECK(a.hitAmount == b.hitAmount);
+    CHECK(a.stats.partnerDamage == b.stats.partnerDamage);
+    // And swapped: the ally on the rule kit beside a lead on kit B deals what it deals beside a lead on the rule kit.
+    const KitRun c = kitRun(ruleFighter(), kitB());
+    const KitRun d = kitRun(ruleFighter(), ruleFighter());
+    REQUIRE(!c.hitAmount.empty());
+    CHECK(c.hitAmount == d.hitAmount);
+}
+
+TEST_CASE("arena partner: per-lead kits: rounds and the reload travel with their kit: a switch refills nothing") {
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = kitB(); // lead B: a gun of 6
+    r.enemy(dummyKind(), Vec2{3.f, 0.f});
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.ally = Vec2{-2.f, 1.f};
+    r.go(true, 120);
+    r.tick();
+    REQUIRE(r.fight.switchLeads());
+    REQUIRE(r.fight.rounds() == 6);
+    // Shoot until the cylinder reads `left`, then let go of the trigger.
+    const auto shootTo = [&r](int left) {
+        for (int k = 0; k < 2000 && r.fight.rounds() > left; ++k) {
+            r.in.aim = true;
+            r.in.light = k % 8 == 0;
+            r.tick();
+        }
+        r.in.aim = false;
+        r.in.light = false;
+        REQUIRE(r.fight.rounds() == left);
+    };
+    shootTo(4);
+    REQUIRE(r.fight.switchLeads()); // back to lead A: no gun
+    CHECK(r.fight.roundsMax() == 0);
+    for (int k = 0; k < 120; ++k) r.tick(); // 2 s on lead A
+    REQUIRE(r.fight.switchLeads());
+    CHECK(r.fight.rounds() == 4); // what lead B was let go with, not a full cylinder
+    CHECK_FALSE(r.fight.reloading());
+    shootTo(0);
+    for (int k = 0; k < 2000 && !(r.fight.reloadProgress() > 0.2f); ++k) r.tick();
+    REQUIRE(r.fight.reloading());
+    const float part = r.fight.reloadProgress();
+    REQUIRE(part < 0.9f);
+    const int reloadsBefore = r.fight.stats().reloads;
+    REQUIRE(r.fight.switchLeads()); // let go mid-reload
+    for (int k = 0; k < 600; ++k) r.tick(); // 10 s: longer than the whole reload
+    REQUIRE(r.fight.switchLeads());
+    CHECK(r.fight.rounds() == 0);       // not loaded behind the player's back
+    CHECK(r.fight.reloading());         // the reload goes on ...
+    CHECK(r.fight.reloadProgress() == doctest::Approx(part)); // ... from where it stopped
+    CHECK(r.fight.stats().reloads == reloadsBefore);
+    for (int k = 0; k < 2000 && r.fight.rounds() == 0; ++k) r.tick();
+    CHECK(r.fight.rounds() == 6);
+    CHECK(r.fight.stats().reloads == reloadsBefore + 1);
+}
 
 TEST_CASE("arena partner: per-lead kits: a switch hands the player the other lead's kit and max hp; restart and begin put them back") {
     PRig r;
@@ -3002,7 +3107,6 @@ TEST_CASE("arena partner: per-lead kits: a partner with no attacks (no kit) star
     CHECK(k.stats.partnerBlows == 0);
     CHECK(k.stats.partnerDamage == 0);
     CHECK(k.hitAmount.empty());
-    CHECK(k.stats.partnerNoKitRefused == 0); // its budget reads spent: the brain never asks
     CHECK(k.stats.partnerNoKitSeconds == doctest::Approx(20.f).epsilon(0.01));
     MESSAGE("no kit: 20 s by a dummy, strings " << k.stats.partnerStrings << ", guards " << k.stats.partnerGuards
                                                 << ", longest stand-still " << k.longestStill << " s");
@@ -3111,10 +3215,83 @@ TEST_CASE("arena partner: per-lead kits: a switch to a partner that is not playa
         q.enemy(dummyKind(), Vec2{1.2f, 0.f});
         CHECK_FALSE(q.fight.switchLeads()); // not begun
         CHECK(q.fight.switchRefusal() == ArenaSwitchRefusal::NotFighting);
+        q.fight.setAlly(100, 0.4f);
+        q.fight.setPartner(&q.brain, &q.tuning);
+        CHECK_FALSE(q.fight.switchLeads()); // not begun wins over everything: there is no fight (the player at 0 too)
+        CHECK(q.fight.switchRefusal() == ArenaSwitchRefusal::NotFighting);
+        q.fight.setPartner(nullptr, nullptr);
         q.go(false);
         q.tick();
         CHECK_FALSE(q.fight.switchLeads());
         CHECK(q.fight.switchRefusal() == ArenaSwitchRefusal::NoPartner);
+    }
+}
+
+TEST_CASE("arena partner: per-lead kits: the switch refusal order: the permanent reason wins, one counted per press") {
+    // Not begun, NoPartner, NotPlayable, PlayerDown, PartnerDown, then over or in the hook (ArenaSwitchRefusal).
+    const auto press = [](PRig& r, ArenaSwitchRefusal want) {
+        const ArenaStats before = r.fight.stats();
+        CHECK_FALSE(r.fight.switchLeads());
+        CHECK(r.fight.switchRefusal() == want);
+        CHECK(r.fight.stats().leadSwitchesRefused == before.leadSwitchesRefused + 1);
+        CHECK(r.fight.stats().leadSwitchesNotPlayable ==
+              before.leadSwitchesNotPlayable + (want == ArenaSwitchRefusal::NotPlayable ? 1 : 0));
+        CHECK(r.fight.stats().leadSwitches == before.leadSwitches);
+    };
+    // The partner down, the player up (the downed-and-rises fight's start).
+    const auto partnerDown = [](bool playable) {
+        auto r = std::make_unique<PRig>();
+        r->ownPartnerKit = true;
+        r->def.partnerKit = kitB();
+        r->def.partnerKit.playable = playable;
+        r->enemy(biterKind(150, 3.f, 40.f), Vec2{0.f, 0.f});
+        r->bodies.player = Vec2{0.f, 2.8f};
+        r->bodies.ally = Vec2{1.f, 0.f};
+        r->go(true, 100);
+        r->run(2.f);
+        REQUIRE(r->fight.allyHp() == 0);
+        REQUIRE(r->fight.hp() > 0);
+        REQUIRE(r->fight.phase() == ArenaPhase::Fighting);
+        return r;
+    };
+    SUBCASE("PartnerDown alone") {
+        auto r = partnerDown(true);
+        press(*r, ArenaSwitchRefusal::PartnerDown);
+    }
+    SUBCASE("NotPlayable beats PartnerDown") {
+        auto r = partnerDown(false);
+        press(*r, ArenaSwitchRefusal::NotPlayable);
+    }
+    SUBCASE("NotPlayable beats PlayerDown and NotFighting: the Defeat with a party member standing") {
+        PRig r;
+        r.ownPartnerKit = true;
+        r.def.partnerKit = kitB();
+        r.def.partnerKit.playable = false;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{1.f, 0.f};
+        r.bodies.ally = Vec2{0.f, 3.5f};
+        r.go(true, 120, 1, Vec2{-1.f, 0.f});
+        r.run(2.f);
+        REQUIRE(r.fight.phase() == ArenaPhase::Defeat);
+        REQUIRE(r.fight.allyHp() > 0);
+        press(r, ArenaSwitchRefusal::NotPlayable);
+        press(r, ArenaSwitchRefusal::NotPlayable); // the same word on every press
+    }
+    SUBCASE("PlayerDown beats PartnerDown and NotFighting: both down") {
+        PRig r;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{1.f, 0.f};
+        r.bodies.ally = Vec2{0.f, 3.5f};
+        r.go(true, 80, 1, Vec2{-1.f, 0.f});
+        r.run(2.f);
+        REQUIRE(r.fight.stats().takeovers == 1); // the player took the ally's body; it lies where the player fell
+        press(r, ArenaSwitchRefusal::PartnerDown);
+        r.bodies.player = Vec2{1.f, 0.f}; // back in the bite
+        r.run(8.f);
+        REQUIRE(r.fight.phase() == ArenaPhase::Defeat);
+        REQUIRE(r.fight.hp() <= 0);
+        REQUIRE(r.fight.allyHp() == 0);
+        press(r, ArenaSwitchRefusal::PlayerDown);
     }
 }
 
@@ -3155,6 +3332,34 @@ TEST_CASE("arena partner: per-lead kits: the shipped leads' playable flags") {
     CHECK(t.fighter("duy").playable);
     CHECK_FALSE(t.fighter("third").playable);
     CHECK(t.fallback.fighter.playable);
+}
+
+TEST_CASE("arena partner: per-lead kits: a lead with no kit in the table is found as none, and NoKit is never the lead's") {
+    const ArenaTable t = shippedTable();
+    for (const char* id : {"devin", "duy", "third"}) {
+        CAPTURE(id);
+        const ArenaFighter* own = t.findFighter(id);
+        REQUIRE(own != nullptr);
+        CHECK(own == &t.fighter(id));
+    }
+    CHECK(t.findFighter("nobody") == nullptr);   // no fallback ...
+    CHECK(&t.fighter("nobody") == &t.fighters[0]); // ... where fighter() still gives the default
+    CHECK(ArenaTable{}.findFighter("default") == nullptr);
+    const ArenaFighter none = arenaNoKit();
+    CHECK_FALSE(none.attacks);
+    CHECK_FALSE(arenaPlayable(none));
+    // As the partner it starts no blow, and the switch to it is refused as not playable.
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = none;
+    r.enemy(dummyKind(), Vec2{1.2f, 0.f});
+    r.bodies.player = Vec2{-2.f, 1.f};
+    r.bodies.ally = Vec2{0.f, 0.f};
+    r.go(true, 120);
+    r.run(5.f);
+    CHECK(r.fight.stats().partnerBlows == 0);
+    CHECK_FALSE(r.fight.switchLeads());
+    CHECK(r.fight.switchRefusal() == ArenaSwitchRefusal::NotPlayable);
 }
 
 TEST_CASE("arena partner: per-lead kits: a no-kit partner under attack (report)") {

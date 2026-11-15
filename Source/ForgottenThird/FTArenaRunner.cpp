@@ -335,9 +335,16 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		Table = *Setup.Table;
 	}
 	Def = Setup.Def;
-	// Per-lead kits: the partner fights with the kit of the lead it is (its look's arena.json entry); with no ally
-	// or no table, the lead's own (the one-kit fight as before).
-	Def.partnerKit = Setup.Table && Setup.Ally ? Table.fighter(FT::ToUtf8(Setup.Ally->Name.ToLower())) : Def.fighter;
+	// Per-lead kits: the partner fights with the kit of the lead it is (its look's arena.json entry). No fallback:
+	// with no table, no ally or no entry for it, it is NoKit (no attacks, not playable), never the lead's kit, so a
+	// later change to Def.fighter (the Brief's kit) leaves nothing stale here.
+	const ftcore::ArenaFighter* AllyKit = Setup.Table && Setup.Ally ? Table.findFighter(FT::ToUtf8(Setup.Ally->Name.ToLower())) : nullptr;
+	Def.partnerKit = AllyKit ? *AllyKit : ftcore::arenaNoKit();
+	if (!AllyKit && Setup.Ally)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("Arena: the partner %s has no kit (%s): it is NoKit (no attacks, not playable), never the lead's kit."),
+			*Setup.Ally->Name, Setup.Table ? TEXT("no entry in Data/Battle/arena.json") : TEXT("no arena table"));
+	}
 	Fit = Setup.Fit;
 	LeadSeat = Setup.LeadSeat;
 	AllySeat = Setup.AllySeat;
@@ -1972,6 +1979,11 @@ void UFTArenaRunner::BeginSession()
 		{
 			SessionDef.inFight = {true, true};
 		}
+		// Which lead the player may drive: the kits' own data flag (ftcore::arenaPlayable), the one the fight reads, so
+		// the session and the fight make one rule (no takeover to, no switch to, a party member only). At a begin or a
+		// restart the session's lead (StartLead) holds Def.fighter and the other Def.partnerKit.
+		SessionDef.playable[SessionLead] = ftcore::arenaPlayable(Def.fighter);
+		SessionDef.playable[OtherLead()] = ftcore::arenaPlayable(Def.partnerKit);
 		if (bCountLift)
 		{
 			SessionDef.lift = true;
@@ -2618,6 +2630,13 @@ void UFTArenaRunner::FeedSession()
 		SwitchRefusedWhy = ftcore::uiPartyWhyOf(Tick.switchRefusal);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the session refused the switch to lead %d (refusal %d)."), Fight.time(),
 			static_cast<int32>(Tick.switchRefused), static_cast<int32>(Tick.switchRefusal));
+		// A party member only (a switch waiting in a restored checkpoint): the fight is asked too, so it names and
+		// counts the same refusal (ArenaSwitchRefusal::NotPlayable, leadSwitchesNotPlayable) as an asked one.
+		if (Tick.switchRefusal == ftcore::LeadSwitch::NotPlayable && !Fight.def().partnerKit.playable && !Fight.switchLeads()) // never a swap: refused by the same flag
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the fight's refusal %d (%d refused as not playable)."), Fight.time(),
+				static_cast<int32>(Fight.switchRefusal()), Fight.stats().leadSwitchesNotPlayable);
+		}
 	}
 	if (Tick.loneCarryBegan)
 	{

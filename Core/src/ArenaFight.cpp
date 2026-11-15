@@ -398,6 +398,8 @@ struct ArenaFightImpl {
             std::min(255, static_cast<int>(fi.healCharges) + (fight.lone_ ? 0 : fight.chairs_.healCharges())));
         fight.healMax_ = pl.charges;
         pl.rounds = fi.rounds;
+        fight.otherRounds_ = pk.rounds; // the other kit's cylinder, full and not reloading
+        fight.otherReload_ = 0.f;
         fight.allyHp_ = fight.allyMaxHp_;
         fight.tableSeats_ = ArenaTableSeats{};
         fight.ally_ = ArenaFight::AllyState{};
@@ -1820,7 +1822,8 @@ struct ArenaFightImpl {
         } else {
             if (!alive(i) || unhurt(foe)) return; // the hook's own doing
             const float raw = static_cast<float>(scaledDamage(a.damage, r.damage));
-            const float lead = static_cast<float>(fi.light[0].damage);
+            // The cap is the striking lead's own light: the ally's kit (pk), so a switch never changes what it deals.
+            const float lead = static_cast<float>(pk.light[0].damage);
             amount = lose(i, static_cast<int>(std::lround(partnerBlowDamage(raw, lead, *fight.partnerTuning_))));
             stats.partnerDamage += amount;
             ++stats.partnerBlows;
@@ -2714,28 +2717,34 @@ struct ArenaFightImpl {
         return pk.light[static_cast<std::size_t>(k) % std::max<std::size_t>(pk.lightCount, 1u)];
     }
 
-    // Per-lead kits: the bodies swapped (a switch, a takeover), so the kits do, in place (fi and pk stay bound). The
-    // max hp goes with its lead too: the player's (the kit's hp) and the ally's (setAlly's) trade places, so a switch
-    // between leads of different max hp clips neither; after it each kit's hp is its body's max (partnerKit.hp the
-    // partner's, as allyMaxHp). Twice is none for the player's max and the ally's. With no ally (setAlly(0), as a
-    // host puts the partner out while swapped) the player's max is its kit's hp, which held its body's max, and the
-    // ally stays none.
+    // Per-lead kits: the bodies swapped (a switch, a takeover), so the kits do, in place (fi and pk stay bound).
+    // Leads whose kits differ in max hp: the max goes with its lead too, the player's (the kit's hp) and the ally's
+    // (setAlly's) trading places, so a switch clips neither; after it each kit's hp is its body's max (partnerKit.hp
+    // the partner's, as allyMaxHp). Each body keeps its own hp under its own max, so a trade neither loses nor makes
+    // health. Kits of one max hp (both leads on one kit, as every fight before per-lead kits): nothing trades, the
+    // player's max stays the kit's and the ally's setAlly's, exactly as before. Twice is none. With no ally
+    // (setAlly(0), as a host puts the partner out while swapped) the player's max is its kit's hp and the ally stays
+    // none.
     void swapKits() {
         ArenaDef& d = fight.def_;
         const int playerMax = d.fighter.hp;
         const int allyMax = fight.allyMaxHp_;
+        const bool trade = allyMax > 0 && d.fighter.hp != d.partnerKit.hp;
         std::swap(d.fighter, d.partnerKit);
-        if (allyMax > 0) d.fighter.hp = allyMax;
-        d.partnerKit.hp = playerMax;
-        if (allyMax > 0) fight.allyMaxHp_ = playerMax;
+        if (trade) {
+            d.fighter.hp = allyMax;
+            d.partnerKit.hp = playerMax;
+            fight.allyMaxHp_ = playerMax;
+        }
         fight.kitsSwapped_ = !fight.kitsSwapped_;
     }
 
-    // The player now drives the other lead: what its kit sets afresh (after standInAlly). Its gun is loaded (the
-    // lead reloaded while it was the partner) and its stamina held to the new kit's.
+    // The player now drives the other lead (after swapKits and standInAlly). The rounds and the reload travel with
+    // their kit: the one now held gets back what it had when it was let go (a reload part done goes on from where it
+    // stopped), the one let go keeps what the player left in it. Nothing is refilled. Its stamina is held to its kit's.
     void takeKit() {
-        pl.rounds = fi.rounds;
-        pl.reloadLeft = 0.f;
+        std::swap(pl.rounds, fight.otherRounds_);
+        std::swap(pl.reloadLeft, fight.otherReload_);
         pl.stamina = std::min(pl.stamina, fi.stamina);
     }
 
@@ -2882,7 +2891,6 @@ struct ArenaFightImpl {
             emit(ArenaEventType::AllyRose, kArenaNobody, kArenaAlly, 0, fight.allyHp_, fight.allyPos_);
             return;
         }
-        if (noKit && intent.act == PartnerAct::Attack && intent.blowStart) ++stats.partnerNoKitRefused;
         if (intent.act == PartnerAct::Attack && intent.newString && !noKit) ++stats.partnerStrings;
         if (intent.act == PartnerAct::Attack && intent.blowStart && !noKit) { // the only step a blow starts on
             al.attacking = true;
@@ -2989,14 +2997,21 @@ struct ArenaFightImpl {
     // The host's switchLeads: both up, the player takes the partner's body and the partner the player's.
     bool switchLeads() {
         ArenaSwitchRefusal& why = fight.switchRefusal_;
-        why = fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
-              : !partnerOn()                                           ? ArenaSwitchRefusal::NoPartner
-              : !allyUp()                                              ? ArenaSwitchRefusal::PartnerDown
-              : pl.hp <= 0                                             ? ArenaSwitchRefusal::PlayerDown
-              : !pk.playable                                           ? ArenaSwitchRefusal::NotPlayable
-                                                                       : ArenaSwitchRefusal::Ok;
+        // The order is ArenaSwitchRefusal's: the permanent reason wins, the busy one is last.
+        why = fight.phase_ == ArenaPhase::NotStarted                     ? ArenaSwitchRefusal::NotFighting
+              : !partnerOn()                                             ? ArenaSwitchRefusal::NoPartner
+              : !pk.playable                                             ? ArenaSwitchRefusal::NotPlayable
+              : pl.hp <= 0                                               ? ArenaSwitchRefusal::PlayerDown
+              : !allyUp()                                                ? ArenaSwitchRefusal::PartnerDown
+              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
+                                                                         : ArenaSwitchRefusal::Ok;
+        if (why == ArenaSwitchRefusal::Ok) return doSwitch();
+        ++stats.leadSwitchesRefused;
         if (why == ArenaSwitchRefusal::NotPlayable) ++stats.leadSwitchesNotPlayable;
-        if (why != ArenaSwitchRefusal::Ok) return false;
+        return false;
+    }
+
+    bool doSwitch() {
         ArenaFight::AllyState& al = fight.ally_;
         const Vec2 wasAt = pl.pos;
         const Vec2 wasFacing = pl.facing;
@@ -4209,10 +4224,15 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
 // ---- ArenaTable ----
 
 const ArenaFighter& ArenaTable::fighter(std::string_view leadId) const {
+    if (const ArenaFighter* own = findFighter(leadId)) return *own;
+    return fighters.empty() ? fallback.fighter : fighters[0];
+}
+
+const ArenaFighter* ArenaTable::findFighter(std::string_view leadId) const {
     const std::size_t count = std::min(fighterIds.size(), fighters.size());
     for (std::size_t i = 0; i < count; ++i)
-        if (std::string_view(fighterIds[i]) == leadId) return fighters[i];
-    return fighters.empty() ? fallback.fighter : fighters[0];
+        if (std::string_view(fighterIds[i]) == leadId) return &fighters[i];
+    return nullptr;
 }
 
 const ArenaFightEntry* ArenaTable::findEntry(std::string_view scene, std::uint32_t beat, std::uint32_t step) const {

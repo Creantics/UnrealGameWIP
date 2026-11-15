@@ -442,6 +442,9 @@ enum class ArenaWeapon : std::uint8_t { None, Gauntlets, Guns, Magic };
 FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "guns", "magic". Literals.
 
 // Why ArenaFight::switchLeads refused (ArenaFight::switchRefusal). Append only.
+// When several apply, one wins and is the one named and counted: not begun (NotFighting: there is no fight), then
+// NoPartner (no other lead to name), then the permanent reason NotPlayable, then PlayerDown, then PartnerDown, then
+// NotFighting for the busy rest (over, or inside the step's hook). The player always sees the same word for one lead.
 enum class ArenaSwitchRefusal : std::uint8_t {
     Ok,          // it swapped (or none asked)
     NotFighting, // not begun, over, or asked inside the step's hook
@@ -560,9 +563,19 @@ struct ArenaFighter {
     float reload = 1.2f;
 };
 
-// Whether the player may take this kit as the lead: only one with attacks of its own. A kit without is a party
-// slot, never played alone: the explore start, the explore lead switch and the arena's lead pick pass over it.
-inline bool arenaPlayable(const ArenaFighter& kit) { return kit.attacks; }
+// Whether the player may take this kit as the lead: the kit's own data flag (arena.json "playable"), never inferred
+// from its attacks (a party-only lead may fight). A kit that is not playable is a party member only: the explore
+// start, the explore lead switch, the arena's lead pick, the arena's switch and its takeover all pass over it.
+inline bool arenaPlayable(const ArenaFighter& kit) { return kit.playable; }
+
+// The partner's kit when its lead has none in the table (no table, no ally, or its id not in arena.json): never the
+// lead's kit. It has no attacks and is not playable (the host logs why); its body is the struct's defaults.
+inline ArenaFighter arenaNoKit() {
+    ArenaFighter k;
+    k.attacks = false;
+    k.playable = false;
+    return k;
+}
 
 // A gun kit's shot reaches at least this far (the shipped data holds to it); its kicks are close-in moves.
 inline constexpr float kArenaShotRange = 5.f;
@@ -1123,11 +1136,11 @@ struct ArenaStats {
     int takeovers = 0;         // times the player fell with the partner up and took its body (TookOver)
     int leadSwitches = 0;      // the host's switchLeads that swapped the bodies (both up)
     int leadSwitchesNotPlayable = 0; // the host's switchLeads refused as the partner's kit is not playable
+    int leadSwitchesRefused = 0; // the host's switchLeads refused, for any reason: one per press (the winning one)
     int partnerSwaps = 0;      // times the partner's brain reset for a body change (a switch or a takeover)
-    // Per-lead kits: seconds the partner was up with a kit that has no attacks ("no kit": it starts no blow), and
-    // the blow starts its brain asked for in that time that were refused (0 while the fight fills its budget).
+    // Per-lead kits: seconds the partner was up with a kit that has no attacks ("no kit": it starts no blow; the
+    // fight gives its brain a spent budget, so the brain never asks for one).
     float partnerNoKitSeconds = 0.f;
-    int partnerNoKitRefused = 0;
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -1505,7 +1518,7 @@ public:
     //   timings, range,
     //   arc, tracking and lunge) on its target, while the intent stays Attack. A blow that reaches its target in the
     //   active part lands once, through the same blow path as the player's: the blow hook (Hit, source kArenaAlly,
-    //   poise = the light's x ArenaDef::partner.poise), then partnerBlowDamage of the ruled damage against light[0]'s,
+    //   poise = the light's x ArenaDef::partner.poise), then partnerBlowDamage of the ruled damage against its own kit's light[0] (never the controlled lead's),
     //   rounded (stats().partnerDamage), a Hit event with source kArenaAlly, a boss's break value (kArenaBreakLight x
     //   partner.breakWeight x the ruling's breakScale), the break-out count, poise and armour (a stagger), a boss's
     //   break and a flinch, each as the player's blow would. No hit pause, punish credit or riposte, and nothing in
@@ -1782,6 +1795,8 @@ private:
     AllyState ally_;                            // begin and restart clear it
     bool swapped_ = false;                      // swapped() (begin and restart clear it)
     bool kitsSwapped_ = false;                  // def_.fighter and def_.partnerKit traded (begin and restart undo it)
+    std::uint8_t otherRounds_ = 0;              // the kit not held (def_.partnerKit): its rounds and its reload left,
+    float otherReload_ = 0.f;                   // kept as they were until it is held again (begin fills it)
     ArenaSwitchRefusal switchRefusal_ = ArenaSwitchRefusal::Ok; // the last switchLeads' answer
     int aimStrings_ = 0;                        // boss strings since begin() or restart(): the partner aim's cap ...
     int aimPartner_ = 0;                        // ... and those aimed at the partner
@@ -1813,6 +1828,8 @@ struct ArenaTable {
 
     // The lead's kit, else the "default" one (no allocation).
     FTCORE_API const ArenaFighter& fighter(std::string_view leadId) const;
+    // The lead's own kit, or nullptr when arena.json has none for it (no fallback; no allocation).
+    FTCORE_API const ArenaFighter* findFighter(std::string_view leadId) const;
     // The entry for (scene, beat, step), or nullptr. No allocation.
     FTCORE_API const ArenaFightEntry* findEntry(std::string_view scene, std::uint32_t beat, std::uint32_t step) const;
     // The fight for (scene, beat, step): the entry's, else the default. No allocation.
