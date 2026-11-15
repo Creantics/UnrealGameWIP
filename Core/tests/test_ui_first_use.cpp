@@ -175,6 +175,8 @@ TEST_CASE("ui first use: every item keeps the slot older saves wrote it in; the 
     CHECK(uiFirstUseSlot(UiFirstUseItem::Dodge) == 6u);
     CHECK(uiFirstUseSlot(UiFirstUseItem::Jump) == 7u);
     CHECK(uiFirstUseSlot(UiFirstUseItem::LoneCard) == 9u);
+    CHECK(uiFirstUseSlot(UiFirstUseItem::Dive) == 10u);
+    CHECK(uiFirstUseSlot(UiFirstUseItem::Rise) == 11u);
     // No two items share a slot, and none sits in a retired one (0, 1, 2, 8) or past the top.
     for (std::size_t i = 0; i < kUiFirstUseCount; ++i) {
         CAPTURE(i);
@@ -276,4 +278,33 @@ TEST_CASE("ui first use: the Lone Carry's card counts its first three showings i
     UiFirstUse seen;
     uiFirstUseBegin(seen, 0u, UiFirstUseMode::Seen);
     CHECK_FALSE(uiFirstUseShow(seen, c));
+}
+
+TEST_CASE("ui first use: the swim's DIVE and RISE are controls in their own slots, unseen by older saves") {
+    const UiFirstUseItem swim[] = {UiFirstUseItem::Dive, UiFirstUseItem::Rise};
+    for (const UiFirstUseItem c : swim) {
+        CAPTURE(static_cast<int>(c));
+        CHECK(uiFirstUseControl(c));
+        CHECK(uiFirstUseTimes(c) == 1);
+        // A counted save with every older item at its most, and the old one-bit layout with every bit it had.
+        const std::uint32_t before = kUiFirstUseCounted | 0x3FFFFu;
+        CHECK(uiFirstUseSavedCount(before, c) == 0);
+        CHECK(uiFirstUseSavedCount(0x1FFu, c) == 0);
+        UiFirstUse s;
+        uiFirstUseBegin(s, before, UiFirstUseMode::Saved);
+        CHECK(uiFirstUseShow(s, c)); // counted on showing: the host saves now
+        CHECK(uiFirstUseAlpha(s, c) == 1.f);
+        uiFirstUseUsed(s, c);
+        run(s, 3.f);
+        CHECK(uiFirstUseAlpha(s, c) == 0.f);
+        CHECK_FALSE(uiFirstUseShow(s, c)); // taught once a save
+        const std::uint32_t saved = uiFirstUseSaved(s);
+        CHECK(uiFirstUseSavedCount(saved, c) == 1);
+        CHECK(uiFirstUseSavedCount(uiFirstUseMerge(before, saved), c) == 1);
+        CHECK(uiFirstUseSavedCount(saved, UiFirstUseItem::Jump) == 1); // the rest kept
+        UiFirstUse next;
+        uiFirstUseBegin(next, saved, UiFirstUseMode::Saved);
+        CHECK_FALSE(uiFirstUseShow(next, c));
+    }
+    CHECK(((uiFirstUseMerge(kUiFirstUseCounted | (1u << 20) | (1u << 22), 0u) >> 20) & 0xFu) == 5u); // slots 10, 11
 }

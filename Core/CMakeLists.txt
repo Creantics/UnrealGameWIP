@@ -331,6 +331,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_ui_lone.cpp
         tests/test_ui_party.cpp
         tests/test_ui_stroke.cpp
+        tests/test_ui_swim.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_battle_camera.cpp
