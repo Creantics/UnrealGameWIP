@@ -44,3 +44,11 @@ Content/Maps/World_Solhaven_Strip.umap
 
 # The massing builder's sloped-mesh cache (FTBuildMassingWorld -MeshCache): rebuilt from the tables, local only
 Content/WorldCache/
+
+# Local-only content the Solhaven strip references: scanned, generated and third-party meshes and textures, copied
+# between checkouts and never committed (nothing under these paths is tracked).
+Content/Props/
+Content/Vehicles/
+Content/Look/Env/
+Content/Look/MPC_Env.uasset
+Content/Look/T_Look_Goods.uasset
