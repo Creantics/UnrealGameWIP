@@ -534,6 +534,64 @@ TEST_CASE("partner tall boss: no valid station (the boss fills the frame): the f
     }
 }
 
+// Rule 18's fallback, a string from where the camera does not see it unhidden. The boss fills the frame as above and
+// the lead is 0.6 m from it: every seen, unhidden ring point is in the lead's wedge, so the fallback's best is an
+// unhidden spot out of the frame. A string starts there or at any other unhidden spot, never from a hidden one: walking,
+// it strikes from the unhidden spot; held where it stands (a hidden spot in reach, its host not moving it), rule 14's
+// timers run out and it still starts none there.
+TEST_CASE("partner tall boss: fallen back with an unhidden spot only out of the frame: no string from a hidden spot") {
+    const PartnerTuning t = tbTuning();
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread})
+        for (const bool walks : {true, false}) {
+            CAPTURE(int(order));
+            CAPTURE(walks);
+            TbScene s(t, order, Vec2{-4.6f, 0.f}, 4.f, 12.f, 4.f, -10.f, 40.f);
+            s.in.pos = {1.f, 4.6f}; // behind the boss's flank, hidden, in reach, within the leash
+            REQUIRE(tbHidden(s.v, s.in.pos, s.e[0].pos, TallShape{4.f, 12.f}));
+            int fallback = 0, strikes = 0, hiddenStrikes = 0;
+            for (int i = 0; i < 300; ++i) {
+                const PartnerIntent& o = walks ? s.step() : s.b.step(kDt, s.in);
+                fallback += o.frameFallback ? 1 : 0;
+                if (o.act == PartnerAct::Attack) {
+                    ++strikes;
+                    hiddenStrikes += tbHidden(s.v, s.in.pos, s.e[0].pos, TallShape{4.f, 12.f}) ? 1 : 0;
+                }
+            }
+            MESSAGE("fallback steps " << fallback << ", strike steps " << strikes << " (hidden " << hiddenStrikes
+                                      << "), at " << s.in.pos.x << ", " << s.in.pos.y);
+            CHECK(fallback > 200);
+            CHECK(hiddenStrikes == 0);
+            if (walks) CHECK(strikes > 0); // never idle where it can walk to the unhidden spot
+        }
+}
+
+// And with no unhidden spot at all: the camera 0.5 m behind the lead and the arena a half-plane on the boss's far side
+// (x >= -0.2) leave only ring points behind its body. Fallen back, it strikes from a hidden spot: never idle for it.
+TEST_CASE("partner tall boss: fallen back with every legal ring point hidden: it still strikes") {
+    const PartnerTuning t = tbTuning();
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+        CAPTURE(int(order));
+        TbScene s(t, order, Vec2{-5.2f, 0.f}, 4.f, 12.f, 0.5f, -10.f, 40.f);
+        s.in.station.arenaCentre = {100.f, 0.f};
+        s.in.station.arenaRadius = 100.2f;
+        s.in.pos = {3.f, 4.5f};
+        int fallback = 0, strikes = 0, hiddenStrikes = 0;
+        for (int i = 0; i < 300; ++i) {
+            const PartnerIntent& o = s.step();
+            fallback += o.frameFallback ? 1 : 0;
+            if (o.act == PartnerAct::Attack) {
+                ++strikes;
+                hiddenStrikes += tbHidden(s.v, s.in.pos, s.e[0].pos, TallShape{4.f, 12.f}) ? 1 : 0;
+            }
+        }
+        MESSAGE("fallback steps " << fallback << ", strike steps " << strikes << " (hidden " << hiddenStrikes << "), at "
+                                  << s.in.pos.x << ", " << s.in.pos.y);
+        CHECK(fallback > 200);
+        CHECK(hiddenStrikes > 0); // from behind the body: no unhidden spot is legal
+        CHECK(strikes > 0);       // never idle
+    }
+}
+
 // Rule 18's growth (StayClose): it starts when the tall target's edge is within closeLeadMeters of the lead and ends
 // only kPartnerTallGrowHysteresis past it; never on a target under kPartnerTallMeters, nor for Spread.
 TEST_CASE("partner tall boss: StayClose's growth starts at closeLeadMeters and ends 0.5 m past it; none by a short target or for Spread") {

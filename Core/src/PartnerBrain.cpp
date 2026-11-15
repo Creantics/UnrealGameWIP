@@ -421,9 +421,10 @@ bool walksRound(Vec2 from, Vec2 to, const PartnerEnemyView& e) {
 
 // Rule 18: rule 13's fallback by a tall target e (no valid station): the nearest point of its two station rings that
 // is legal and (StayClose) within the cap; seen and unhidden first, then unhidden, then seen, then neither, a walk
-// round its body after each. False: none (rules 10-11's then). `clear`: the camera sees it unhidden.
+// round its body after each. False: none (rules 10-11's then). `cls`: the spot's class, 0 seen and unhidden, 1
+// unhidden, 2 seen (hidden), 3 neither; the best class of any legal ring point.
 bool tallFallback(const Ground& g, const Frame& fr, const PartnerTuning& t, PartnerOrder order, Vec2 pos,
-                  const PartnerEnemyView& e, Vec2& out, bool& clear) {
+                  const PartnerEnemyView& e, Vec2& out, int& cls) {
     const float cap = order == PartnerOrder::StayClose ? closeCap(t, g) : kStFar;
     const std::array<float, 2> radii{e.radius + 0.5f * t.reachMeters, e.radius + t.reachMeters - t.stationTolerance};
     Spot best;
@@ -438,7 +439,7 @@ bool tallFallback(const Ground& g, const Frame& fr, const PartnerTuning& t, Part
         }
     if (best.tier >= 9) return false;
     out = best.p;
-    clear = best.tier / 2 == 0;
+    cls = best.tier / 2;
     return true;
 }
 
@@ -1246,7 +1247,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // Rule 13's goal for target tgt (-1: none): a valid station, else the one last held while noFrame is under
     // frustumGiveUpSeconds (whatever the target), else rules 10-11's (reported, and counted in step()).
     bool stationNow = false;    // a valid station was found this step
-    bool fallbackClear = false; // rule 18: the fallback by a tall target is a spot the camera sees unhidden
+    int fallbackClass = 3; // rule 18: the class of the fallback by a tall target (tallFallback; 3 without one)
     const auto goalFor = [&](int tgt) -> Vec2 {
         if (!fm) return tgt >= 0 ? stationFor(tgt) : followFor();
         const View* e = tgt >= 0 ? &in.enemies[static_cast<std::size_t>(tgt)] : nullptr;
@@ -1269,7 +1270,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         s_.fellBack = true;
         s_.frameRing = 0;
         Vec2 q{};
-        if (e && tallView(*e) && tallFallback(g, fr, t, in.order, in.pos, *e, q, fallbackClear)) return q; // rule 18
+        if (e && tallView(*e) && tallFallback(g, fr, t, in.order, in.pos, *e, q, fallbackClass)) return q; // rule 18
         return tgt >= 0 ? stationFor(tgt) : followFor();
     };
     const bool engageDue = fm && s_.engageFor + 1e-9 >= static_cast<double>(t.engageSeconds);
@@ -1487,8 +1488,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         const Vec2 p = goalFor(tgt);
         const bool inReach = edge(in.pos, e) <= t.reachMeters;
         // Rule 18: on a tall target a string starts at its station only where the camera sees it unhidden (the
-        // grace's spot may have left the frame), unless fallen back.
-        const bool hiddenOk = s_.fellBack && !fallbackClear; // fallen back with no unhidden spot: never idle for it
+        // grace's spot may have left the frame), unless fallen back. Fallen back, it starts from a spot the camera
+        // does not see when no legal ring point is seen and unhidden (class 1: from an unhidden spot only), and from a
+        // hidden one only when no legal ring point is unhidden (classes 2-3): never idle for it.
+        const bool hiddenOk =
+            s_.fellBack && (fallbackClass >= 2 || (fallbackClass == 1 && !fr.hides(&e, in.pos)));
         const bool there = near(p, &e) && (!fm || !tallView(e) || hiddenOk || fr.clear(&e, in.pos));
         if (there && inReach) {
             s_.offStation = 0.0; // stationed: the fallback's timers start again

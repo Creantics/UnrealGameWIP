@@ -2841,20 +2841,26 @@ TEST_CASE("arena partner: rules 10-13 and 17 over six fight seeds, a lead that n
 // own test below. Means (circling, in one place, on screen):
 //   here  StayClose 2.78, 1.11 s, 0.850; Spread 1.02, 1.40 s, 0.843
 //   main  StayClose 3.66, 1.35 s, 0.839; Spread 4.65, 1.29 s, 0.819
+// The circling mean is also held to no worse than main's (above) plus a noise margin of 0.5 reversals per 10 s, so a
+// slide back towards 52cd3565's value (StayClose 6.33) turns the suite red although it is under the 6.5 bar.
+constexpr double kMainCirclingMean[2] = {3.66, 4.65}; // main 50b62a4f, StayClose and Spread, over the seeds that circled
+constexpr double kCirclingNoise = 0.5;
 TEST_CASE("arena partner: rule 17 circling, the six-seed means meet the bars: at most 6.5 reversals per 10 s, 1.5 s in one place, 0.8 on screen") {
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
         CAPTURE(int(order));
         const SixSeeds& s = sixSeeds(order, true);
-        MESSAGE("seeds that circled " << s.circledCount() << " of " << kSixSeeds);
+        MESSAGE("seeds that circled " << s.circledCount() << " of " << kSixSeeds << ", circling mean " << s.circlingMean()
+                << " (main " << kMainCirclingMean[order] << ")");
         CHECK(s.circledCount() >= 4); // a mean over fewer says little
         CHECK(s.circlingMean() <= 6.5);
+        CHECK(s.circlingMean() <= kMainCirclingMean[order] + kCirclingNoise); // no worse than main
         CHECK(SixSeeds::mean(s.inPlace) <= 1.5);
         CHECK(SixSeeds::mean(s.onScreen) >= 0.8);
     }
 }
 
-// Each bar's worst seed, one test per bar and order: known short where it falls short today (the value in its
-// message), so each turns the suite red the day it passes and becomes a hard check then. Worst seeds (circling, in one
+// Each bar's worst seed, one test per bar and order: the bar itself where it holds today, else a hard pin at today's
+// value (the bar named in its comment) so getting worse fails. Worst seeds (circling, in one
 // place, on screen):
 //   here  StayClose 5.45, 1.28 s, 0.830; Spread 2.14, 2.00 s, 0.804
 //   main  StayClose 5.92, 1.67 s, 0.789; Spread 7.41, 1.72 s, 0.719
@@ -2878,13 +2884,12 @@ TEST_CASE("arena partner: rule 17 circling, Spread's worst seed: at most 6.5 rev
     MESSAGE("worst seed " << SixSeeds::most(s.circling));
     CHECK(SixSeeds::most(s.circling) <= 6.5);
 }
-// Spread's worst seed (4, 2.0 s): the brain's Wait with its budget spent, through the skirmish's dwell
-// (skirmishEvery); the walk stands only where the brain's goal does.
-TEST_CASE("arena partner: rule 17 circling, Spread's worst seed: at most 1.5 s in one place (known short)" *
-          doctest::should_fail()) {
+// Spread's worst seed misses the 1.5 s bar: seed 4, 2.00 s (main 1.72 s), the brain's Wait with its budget spent,
+// through the skirmish's dwell (skirmishEvery); the walk stands only where the brain's goal does. Pinned at 2.00 s.
+TEST_CASE("arena partner: rule 17 circling, Spread's worst seed: at most 2.0 s in one place (bar 1.5 s, missed)") {
     const SixSeeds& s = sixSeeds(1, true);
-    MESSAGE("worst seed " << SixSeeds::most(s.inPlace) << " s");
-    CHECK(SixSeeds::most(s.inPlace) <= 1.5);
+    MESSAGE("worst seed " << SixSeeds::most(s.inPlace) << " s (bar 1.5 s)");
+    CHECK(SixSeeds::most(s.inPlace) <= 2.0 + 1e-6);
 }
 TEST_CASE("arena partner: rule 17 circling, Spread's worst seed: at least 0.8 on screen") {
     const SixSeeds& s = sixSeeds(1, true);
@@ -2908,16 +2913,18 @@ TEST_CASE("arena partner: rule 17 off (the shipped default), a lead that never a
     }
 }
 
-// Known short (reported, the bar kept): rule 17's circling turns at most 3 times in 10 s. Today (StayClose / Spread,
-// seed 1): 3.07 / 0.97 reversals per 10 s while circling.
-TEST_CASE("arena partner: rule 17's circling: at most 3 reversals per 10 s (known short)" * doctest::should_fail()) {
+// Rule 17's circling, seed 1: the bar is at most 3 reversals per 10 s. Spread meets it (0.97); StayClose misses it by
+// a little (3.07: 3 reversals in 9.77 s held) and is pinned at 3.08. (The no-hold-under-0.4 s bar is the six-seed test
+// below, seed 1 included: 0.68 / 0.42 s.)
+TEST_CASE("arena partner: rule 17's circling, seed 1: Spread at most 3 reversals per 10 s, StayClose at most 3.08 (bar 3)") {
     const ArenaTable t = shippedTable();
+    constexpr double kAtMost[2] = {3.08, 3.0};
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
         CAPTURE(int(order));
         const IdleLead r = idleLead(t, order, true);
         REQUIRE(r.circlingTime > 0.0);
-        MESSAGE("reversals per 10 s " << 10.0 * r.circlingReversals / r.circlingTime);
-        CHECK(10.0 * r.circlingReversals / r.circlingTime <= 3.0);
+        MESSAGE("reversals per 10 s " << 10.0 * r.circlingReversals / r.circlingTime << " (bar 3)");
+        CHECK(10.0 * r.circlingReversals / r.circlingTime <= kAtMost[order]);
     }
 }
 

@@ -496,8 +496,8 @@ the pieces.
   leash every step, and the brain and its circling walk read the same growth. With no valid station by
   a tall target, rule 13's fallback is the nearest point of its two station rings that is legal and
   within the cap, seen and unhidden first, then unhidden, then seen (rules 10-11's station only when
-  none is legal); a string from a hidden spot is let through only when that fallback found no unhidden
-  one. Any target under 4 m, or with no height given: none of rule 18 applies.
+  none is legal); a string from a spot the camera does not see is let through only when that fallback
+  found no seen unhidden one, and from a hidden spot only when it found no unhidden one. Any target under 4 m, or with no height given: none of rule 18 applies.
   `PartnerInput::kitAttacks` (default true) says whether the ally's kit has attacks; false (a lead
   whose kit has none) and the brain never starts a blow, with no fallback to the other lead's kit:
   the idle reason is `NoKit`, and it still stations, faces its target and, circling on, moves.

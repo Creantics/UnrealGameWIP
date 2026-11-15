@@ -189,8 +189,9 @@
 //      the boundary does not move the leash by the radius every step; the brain and its circling walk read the same
 //      growth. With no valid station by a tall target, rule 13's fallback is the nearest point of its two station
 //      rings that is legal and within the cap, seen and unhidden first, then unhidden, then seen; a walk round its
-//      body ranks after each (rules 10-11's only with none); a string from a hidden spot is let through only when
-//      that fallback found no unhidden one. Any other target: the distances are as before, to the bit. Every walk (MoveTo or StepBack) is steered last: a goal
+//      body ranks after each (rules 10-11's only with none); a string from a spot the camera does not see is let
+//      through only when that fallback found no seen unhidden one, and from a hidden spot only when it found no
+//      unhidden one. Any other target: the distances are as before, to the bit. Every walk (MoveTo or StepBack) is steered last: a goal
 //      inside a standing tall body (its radius + kPartnerSteerClear) is put out on that circle, and a straight line
 //      that would cross one goes round it the shorter way, by a point on that circle.
 //      Not tall (or no height given): none of it applies.
@@ -502,6 +503,7 @@ struct PartnerBrainSave {
     double lastMove = -1e9;
     bool guarding = false;         // the last step's intent was Guard
     std::uint8_t tallGrowOn = 0;   // rule 18: the targets growing StayClose's cap now, a bit each (with hysteresis)
+    static_assert(kMaxPartnerEnemies <= 8 && kMaxArenaEnemies <= 8, "tallGrowOn: a bit per target in 8 bits");
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};
     double fallbackSeconds = 0.0;
