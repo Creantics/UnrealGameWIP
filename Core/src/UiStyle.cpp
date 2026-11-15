@@ -197,9 +197,12 @@ UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette) {
     const UiColor danger = uiColor(s, world, palette, UiToken::Danger);
     UiDangerSet d;
     d.lowUnderlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
-    d.hitBanded = d.lowUnderlined;
-    d.hitFlash = d.hitBanded ? UiColor{0.f, 0.f, 0.f, 1.f} : danger;
-    d.hitLine = uiColor(s, world, palette, UiToken::Accent);
+    // One hit flash in every world: the black band, and the hairline in the brighter of the text ink and the accent,
+    // so it stays pale on a dark court whichever of the two a world makes its brightest.
+    d.hitFlash = UiColor{0.f, 0.f, 0.f, 1.f};
+    const UiColor ink = uiColor(s, world, palette, UiToken::Ink);
+    const UiColor accent = uiColor(s, world, palette, UiToken::Accent);
+    d.hitLine = luminance(accent) > luminance(ink) ? accent : ink;
     d.lowLine = d.lowUnderlined ? uiColor(s, world, palette, UiToken::Ink) : danger;
     d.lowUnderline = danger;
     d.cueMark = uiMarkColor(s, world, palette, danger);

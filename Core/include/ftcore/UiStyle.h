@@ -175,16 +175,15 @@ struct UiDangerWord {
 FTCORE_API UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette);
 
 // Every other place the fight HUD may put the danger colour; the painter reads the danger token nowhere but here and
-// through uiDangerWord. In a world with UiWorldRules::dangerUnderline the red stays on small marks and the 1 px
-// underline: the hit's edge flash is a near-black band with no tint and a pale hairline in the accent along its inner
-// side (kUiHitBand* below), a low hp or guard line keeps the ink
+// through uiDangerWord. In every world the hit's edge flash is a near-black band with no tint and a pale hairline along
+// its inner side (kUiHitBand* below), the hairline in the brighter of the world's text ink and accent. In a world with
+// UiWorldRules::dangerUnderline the red stays on small marks and the 1 px underline: a low hp or guard line keeps the ink
 // and carries a 1 px danger underline under its lit length (the pulse moves onto it), and the call cue's triangle, a
-// small mark, wears the mark colour (uiMarkColor). Elsewhere the flash, the low line and the triangle are danger, with
-// no underline.
+// small mark, wears the mark colour (uiMarkColor). Elsewhere the low line and the triangle are danger, with no
+// underline.
 struct UiDangerSet {
-    UiColor hitFlash;     // the edge flash when the lead is hit (pure black where hitBanded: the band's alpha makes it near)
-    UiColor hitLine;      // the hairline along the band's inner side, drawn only where hitBanded
-    bool hitBanded = false;
+    UiColor hitFlash;     // the band's colour when the lead is hit: pure black (the band's alpha makes it near)
+    UiColor hitLine;      // the hairline along the band's inner side: the brighter of the text ink and the accent
     UiColor lowLine;      // a low value line
     UiColor lowUnderline; // the line under it, drawn only when lowUnderlined
     bool lowUnderlined = false;

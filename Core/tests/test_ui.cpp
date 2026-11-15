@@ -346,24 +346,46 @@ TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a 
         CHECK(isRed(w.underline));
         const UiDangerSet d = uiDangerSet(s, unw, p);
         CHECK_FALSE(isRed(d.hitFlash));
-        CHECK(d.hitBanded);
         CHECK(d.hitFlash == UiColor{0.f, 0.f, 0.f, 1.f});
         CHECK_FALSE(isRed(d.hitLine));
-        CHECK(d.hitLine == uiColor(s, unw, p, UiToken::Accent));
+        CHECK(d.hitLine == uiColor(s, unw, p, UiToken::Accent)); // its accent outshines its ink
         CHECK_FALSE(isRed(d.lowLine));
         CHECK(d.lowLine == ink);
         CHECK(d.lowUnderlined);
         CHECK(isRed(d.lowUnderline));
         CHECK(d.cueMark == uiColor(s, unw, p, UiToken::Accent2)); // a small mark: the marks' red
-        // The other worlds keep danger on the flash, the low line and the triangle, with no underline.
+        // The other worlds keep danger on the low line and the triangle, with no underline; the hit flash is the same
+        // black band and pale hairline as here.
         for (const UiWorld wo : {UiWorld::Solhaven, UiWorld::Lattice}) {
             const UiDangerSet o = uiDangerSet(s, wo, p);
             const UiColor danger = uiColor(s, wo, p, UiToken::Danger);
-            CHECK(o.hitFlash == danger);
-            CHECK_FALSE(o.hitBanded);
+            CHECK(o.hitFlash == UiColor{0.f, 0.f, 0.f, 1.f});
+            CHECK_FALSE(isRed(o.hitLine));
+            CHECK(o.hitLine == uiColor(s, wo, p, UiToken::Ink)); // ink outshines the accent
             CHECK(o.lowLine == danger);
             CHECK(o.cueMark == danger);
             CHECK_FALSE(o.lowUnderlined);
+        }
+    }
+}
+
+TEST_CASE("ui style: the hit's hairline is pale enough to read on a dark court in every world and palette") {
+    // Rec. 709 luma of the sRGB values, as the stills are measured: 200 of 255 or more at full strength.
+    const auto luma = [](UiColor c) { return 255.f * (0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b); };
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle shipped;
+    REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
+    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+                CAPTURE(w);
+                CAPTURE(p);
+                const UiDangerSet d = uiDangerSet(s, static_cast<UiWorld>(w), static_cast<UiPalette>(p));
+                CHECK(d.hitFlash == UiColor{0.f, 0.f, 0.f, 1.f});
+                CHECK(luma(d.hitLine) >= 200.f);
+            }
         }
     }
 }

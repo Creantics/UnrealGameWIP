@@ -199,7 +199,6 @@ const FTUiText kAutoPlayUi(TEXT("arena.autoplay"));
 const FTUiText kIdleUi(TEXT("arena.idle"));
 const FTUiText kStoryHintUi(TEXT("story.hint"));
 constexpr double kImpactLife = 0.3;    // the tell's flash once the move is active
-constexpr double kHitEdgeLife = 0.35;  // the edge flash when the lead is hit (under 0.4 s)
 constexpr double kParryEdgeLife = 0.4;
 constexpr double kResultFade = 0.3;
 
@@ -230,9 +229,8 @@ struct FUiWorldRow
 	bool bMarksAccent2 = false;    // the marks wear accent2: each carries a 1 px ink rim, and the Load is a line
 	bool bDangerUnderline = false; // a danger word is ink over a danger underline
 	// The rest of the danger colour's places (uiDangerSet); no painter path reads the danger token itself.
-	FLinearColor HitFlash; // the hit's edge flash
-	FLinearColor HitLine;  // the hairline along the banded flash's inner side, drawn only where bHitBanded
-	bool bHitBanded = false;
+	FLinearColor HitFlash; // the hit's edge band (black in every world)
+	FLinearColor HitLine;  // the hairline along the band's inner side
 	FLinearColor LowLine;  // a low hp or guard line
 	FLinearColor LowUnder; // the 1 px line under it, drawn only where bLowUnder
 	bool bLowUnder = false;
@@ -283,7 +281,6 @@ const FUiTable& Table()
 			const ftcore::UiDangerSet DS = ftcore::uiDangerSet(T.Style, World, Pal);
 			R.HitFlash = LinOf(DS.hitFlash);
 			R.HitLine = LinOf(DS.hitLine);
-			R.bHitBanded = DS.hitBanded;
 			R.LowLine = LinOf(DS.lowLine);
 			R.LowUnder = LinOf(DS.lowUnderline);
 			R.bLowUnder = DS.lowUnderlined;
@@ -983,46 +980,6 @@ public:
 		Fill(Pts, 16, C, Rim);
 	}
 
-	// A vignette with no edge at all: an ellipse centred on a screen corner or edge (most of it off the screen) whose alpha
-	// falls from Peak at its centre to nothing at the rim, with zero slope at both ends, so no boundary or patch reads.
-	// Flat: the part of the way out that stays at Peak before the fall starts (0: the fall starts at the centre).
-	void Vignette(float CX, float CY, float RX, float RY, float Peak, const FLinearColor* Colour = nullptr, float Flat = 0.f)
-	{
-		if (Peak <= 0.f || RX <= 0.f || RY <= 0.f)
-		{
-			return;
-		}
-		constexpr int32 Rings = 24;
-		constexpr int32 Segs = 48;
-		FPart& P = Parts[ShadePart];
-		const SlateIndex Base = static_cast<SlateIndex>(P.Verts.Num());
-		const FLinearColor Back = Colour ? *Colour : Tok(UiToken::Backing, 1.f);
-		P.Verts.Add(Vert(CX, CY, Back, Peak));
-		for (int32 R = 1; R <= Rings; ++R)
-		{
-			const float T = static_cast<float>(R) / Rings;
-			const float U = FMath::Clamp((T - Flat) / (1.f - Flat), 0.f, 1.f);
-			const float A = Peak * FMath::Square(1.f - U * U); // flat, then zero slope at the rim: no edge or blob reads
-			for (int32 K = 0; K < Segs; ++K)
-			{
-				const float Ang = K * (2.f * UE_PI / Segs);
-				P.Verts.Add(Vert(CX + RX * T * FMath::Cos(Ang), CY + RY * T * FMath::Sin(Ang), Back, A));
-			}
-		}
-		for (int32 K = 0; K < Segs; ++K)
-		{
-			const int32 K1 = (K + 1) % Segs;
-			Tri(P, Base, Base + 1 + K, Base + 1 + K1);
-			for (int32 R = 1; R < Rings; ++R)
-			{
-				const int32 I0 = Base + 1 + (R - 1) * Segs;
-				const int32 I1 = I0 + Segs;
-				Tri(P, I0 + K, I1 + K, I1 + K1);
-				Tri(P, I0 + K, I1 + K1, I0 + K1);
-			}
-		}
-	}
-
 	// A gradient strip with no edge: alpha Peak along one side (bPeakAtEnd: the bottom or right side), even for the first
 	// 1 - Ramp of the way, then falling to nothing at the other side with zero slope at both ends of the fall. bMitre cuts
 	// both ends at 45 degrees, so four such strips round a screen meet without overlap: a corner takes the nearer edge's
@@ -1656,18 +1613,6 @@ EUiStateShot UiStateShot()
 	return Shot;
 #else
 	return EUiStateShot::None;
-#endif
-}
-
-// Captures only (out of shipping): -UiHitBanded draws the banded hit flash (black band, accent hairline) in every world,
-// to shoot it beside a world's soft flash.
-bool ForceHitBanded()
-{
-#if !UE_BUILD_SHIPPING
-	static const bool bForce = FParse::Param(FCommandLine::Get(), TEXT("UiHitBanded"));
-	return bForce;
-#else
-	return false;
 #endif
 }
 
@@ -3997,7 +3942,7 @@ private:
 			}
 		}
 		{
-			// A world with the banded flash: full for 80 ms, gone by 300 ms (uiHitFlashLevel); elsewhere the soft flash's pulse.
+			// The hit flash: full for 80 ms, gone by 300 ms (uiHitFlashLevel), in every world.
 			// Aged by the widget's own time from the tick the runner's hit stamp changes, so a pause right after a hit lets
 			// the flash finish instead of holding it (the fight's clock stops in a pause; this one does not).
 			const double Stamp = Runner.GetPlayerHitTime();
@@ -4012,7 +3957,7 @@ private:
 			}
 			bHitSeeded = true;
 			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f
-				: (Shown().bHitBanded || ForceHitBanded()) ? ftcore::uiHitFlashLevel(HitAgeOwn) : Pulse(HitAgeOwn, 0.0, kHitEdgeLife);
+				: ftcore::uiHitFlashLevel(HitAgeOwn);
 			const ftcore::Settings* Prefs = Runner.GetSettings();
 			bReduceFlashes = Prefs && Prefs->reduceFlashes;
 		}
@@ -4204,16 +4149,15 @@ private:
 	{
 		const float S = P.S;
 		const float CX = Size.X * 0.5f;
-		// A hit. Where red is kept to marks (uiDangerSet hitBanded): on all four edges, since the host gives no attacker's
-		// direction, a near-black band (90 percent at the edge, gone 64 px in) and a 2 px hairline in the text accent 10 px
-		// in with a 1 px dark edge on each side, so the cue reads on a bright sky and a dark court alike; reduced flashes
-		// keep the hairline only. Elsewhere a brief soft flash in the danger colour from the edges, with no line anywhere;
-		// there too reduced flashes draw no tint, the same hairline only. The four bands meet at mitred corners, so a
-		// corner is the nearer edge's strength, not two stacked.
-		if (HitA > 0.f && (Shown().bHitBanded || ForceHitBanded() || bReduceFlashes))
+		// A hit, the same in every world (uiDangerSet): on all four edges, since the host gives no attacker's direction, a
+		// near-black band (90 percent at the edge, gone 64 px in) and a 2 px hairline in the brighter of the text ink and
+		// the accent 10 px in with a 1 px dark edge on each side, so the cue reads on a bright sky and a dark court alike;
+		// reduced flashes keep the hairline only. The four bands meet at mitred corners, so a corner is the nearer edge's
+		// strength, not two stacked.
+		if (HitA > 0.f)
 		{
 			const FUiWorldRow& R = Shown();
-			const FLinearColor BandC = R.bHitBanded ? R.HitFlash : FLinearColor(0.f, 0.f, 0.f, 1.f);
+			const FLinearColor BandC = R.HitFlash;
 			if (!bReduceFlashes)
 			{
 				const float D = ftcore::kUiHitBandDepth * S;
@@ -4245,17 +4189,6 @@ private:
 			};
 			Frame(InX - Px, In - Px, Rgt + Px, Bot + Px, W + 2.f * Px, Dark, true);
 			Frame(InX, In, Rgt, Bot, W, HairC, true);
-		}
-		else if (HitA > 0.f)
-		{
-			const FUiWorldRow& R = Shown();
-			const FLinearColor C = R.HitFlash;
-			const float Pk = (R.bLowUnder ? 0.45f : 0.3f) * HitA * HitA;
-			const float D = 120.f * S;
-			Mesh.Vignette(CX, 0.f, Size.X * 0.7f, D, Pk, &C);
-			Mesh.Vignette(CX, Size.Y, Size.X * 0.7f, D, Pk, &C);
-			Mesh.Vignette(0.f, Size.Y * 0.5f, D, Size.Y * 0.7f, Pk, &C);
-			Mesh.Vignette(Size.X, Size.Y * 0.5f, D, Size.Y * 0.7f, Pk, &C);
 		}
 		// The result: the word in the subtitle's face at the subtitle's place, and how to fight again in the key hint's.
 		// Both up, and the tag in, by what the safe zone adds to the HUD's own margin.
