@@ -377,8 +377,7 @@ void UFTWorldWaveSubsystem::BindTick(bool bOn)
 void UFTWorldWaveSubsystem::Deinitialize()
 {
 	BindTick(false);
-	// The world is going: the worn pieces' custom depth and r.CustomDepth (global, it outlives the map) go back, then the
-	// state.
+	// The world is going: the worn pieces' custom depth goes back as it was, then the state.
 	RestoreWorn();
 	bWave = false;
 	bBootPending = false;
@@ -425,6 +424,11 @@ void UFTWorldWaveSubsystem::SetClock(double Seconds)
 
 void UFTWorldWaveSubsystem::ReleaseClock()
 {
+	// With a wave set the clock goes on from the held time (an offset on game time), so the front never jumps; with
+	// none it is game time again.
+	const UWorld* World = GetWorld();
+	const double GameNow = World ? World->GetTimeSeconds() : 0.0;
+	ClockOffset = (bHoldClock && bWave) ? HeldClock - GameNow : 0.0;
 	bHoldClock = false;
 }
 
@@ -435,7 +439,7 @@ double UFTWorldWaveSubsystem::GetClock() const
 		return HeldClock;
 	}
 	const UWorld* World = GetWorld();
-	return World ? World->GetTimeSeconds() : 0.0;
+	return (World ? World->GetTimeSeconds() : 0.0) + ClockOffset;
 }
 
 void UFTWorldWaveSubsystem::PostActorTick(UWorld* InWorld, ELevelTick, float)
@@ -443,6 +447,10 @@ void UFTWorldWaveSubsystem::PostActorTick(UWorld* InWorld, ELevelTick, float)
 	if (!InWorld || InWorld != GetWorld() || InWorld->bIsTearingDown)
 	{
 		return;
+	}
+	if (!bWave && !bHoldClock)
+	{
+		ClockOffset = 0.0; // the release's offset lasts only while a wave runs on it
 	}
 	if (bBootPending)
 	{
@@ -486,18 +494,26 @@ void UFTWorldWaveSubsystem::EnsureCollection()
 
 void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, bool bReverse)
 {
+	// The street wave's definition: ink in water (front A) unless it says otherwise.
+	ftcore::WorldWaveParams Definition = ftcore::streetWaveParams();
+	Definition.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
+	StartWave(Origin, StartTime, Definition);
+}
+
+void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, const ftcore::WorldWaveParams& Definition)
+{
 	UWorld* World = GetWorld();
 	if (!World)
 	{
 		return;
 	}
 	EnsureCollection();
-	// The street wave's definition: ink in water (front A) unless it says otherwise. Built and checked before a running
-	// wave is stopped, so a refused start leaves that wave as it was.
-	ftcore::WorldWaveParams Wanted = ftcore::streetWaveParams();
+	// The definition with this start's origin and time, built and checked before a running wave is stopped, so a
+	// refused start leaves that wave as it was.
+	ftcore::WorldWaveParams Wanted = Definition;
 	Wanted.origin = ToMetres(Origin);
 	Wanted.startTime = StartTime;
-	Wanted.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
+	const bool bReverse = Wanted.direction == ftcore::WaveDirection::Reverse;
 #if !UE_BUILD_SHIPPING
 	if (DevFront >= 0) { Wanted.front = static_cast<ftcore::WaveFront>(DevFront); }
 	for (int32 K = 0; K < ftcore::kWaveKeepLights; ++K)
@@ -515,8 +531,9 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 		return;
 	}
 	Wanted.toWorld = SecondId;
-	// The cue path (ftcore::worldWaveParamsForCue on CutsceneWaveCue, CutscenePlayer::takeWaveCues) has no caller here yet:
-	// owed, not wired in this commit.
+	// A cutscene's wave cue comes here through AFTCutsceneDirector (CutscenePlayer::takeWaveCues, then
+	// ftcore::worldWaveParamsForCue for the definition), its world checked again just above. No shipped plan carries a
+	// cue yet: the path is wired, not yet proven in game.
 	// Bad parameters (a non-finite origin or start time, a bad speed or shape) are refused before a running wave is
 	// stopped, as the unknown world is above: a refused start leaves the wave that runs as it was.
 	if (const ftcore::WorldWaveRefusal Early = ftcore::checkWorldWaveParams(Wanted); Early != ftcore::WorldWaveRefusal::None)

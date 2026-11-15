@@ -5,6 +5,7 @@
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "ForgottenThird.h"
@@ -25,6 +26,7 @@
 #include "FTPartyFollower.h"
 #include "FTPauseSubsystem.h"
 #include "FTStepHost.h"
+#include "FTWorldWaveSubsystem.h"
 
 #include "ftcore/StubScreen.h"
 
@@ -97,6 +99,32 @@ int32 SubjectOrdinal(std::string_view Id)
 		}
 	}
 	return -1;
+}
+
+// Outside Shipping, -CutsceneWaveCue=<seconds>,<world>[,reverse] adds one street wave cue on the lead's mark (subj_a)
+// to the plan about to play: the proof of the cue path while no plan in cutscenes.json carries one.
+void AddDevWaveCue(ftcore::CutscenePlan& Plan)
+{
+#if !UE_BUILD_SHIPPING
+	FString Arg;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("CutsceneWaveCue="), Arg, false))
+	{
+		return;
+	}
+	TArray<FString> Parts;
+	Arg.ParseIntoArray(Parts, TEXT(","));
+	ftcore::CutsceneWaveCue Cue;
+	Cue.time = Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 0.f;
+	const bool bWorld = Parts.Num() > 1 && Cue.setWorld(FT::ToUtf8(Parts[1]));
+	Cue.reverse = Parts.Num() > 2 && Parts[2].Equals(TEXT("reverse"), ESearchCase::IgnoreCase);
+	Cue.origin = ftcore::WaveCueOrigin::Mark;
+	const bool bMark = Cue.setMark(ftcore::kCutsceneLeadMark);
+	const bool bAdded = bWorld && bMark && Plan.addWaveCue(Cue);
+	UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: -CutsceneWaveCue=%s %s."), *Arg,
+		bAdded ? TEXT("added on subj_a") : TEXT("refused (seconds within the shots, a world id)"));
+#else
+	(void)Plan;
+#endif
 }
 } // namespace
 
@@ -278,7 +306,9 @@ void AFTCutsceneDirector::Play(const ftcore::CutscenePlan& Plan, bool bAutoPlay)
 		}
 	}
 	bFast = FParse::Param(FCommandLine::Get(), TEXT("AlphaFast"));
-	Player.begin(Plan, bAutoPlay);
+	ftcore::CutscenePlan Playing = Plan;
+	AddDevWaveCue(Playing);
+	Player.begin(Playing, bAutoPlay);
 	ResolveMarkers();
 	LastRealTime = UFTPauseSubsystem::WallSeconds();
 	AppliedShot = -1;
@@ -470,7 +500,9 @@ void AFTCutsceneDirector::BeginInPlace()
 	Cine->PostProcessSettings = Live->PostProcessSettings;
 	Cine->SetPostProcessBlendWeight(Live->PostProcessBlendWeight);
 
+	AddDevWaveCue(StepPlan);
 	Player.begin(StepPlan, bAutoPlayStep && !bBlendTest, true);
+	StageAt = Frame;
 	ResolveStage(Frame);
 	BeginWalks(Frame);
 	LastRealTime = UFTPauseSubsystem::WallSeconds();
@@ -804,6 +836,135 @@ void AFTCutsceneDirector::ApplyInPlace()
 	Cine->SetFieldOfView(Fov);
 }
 
+bool AFTCutsceneDirector::CueOrigin(const ftcore::CutsceneWaveCue& Cue, FVector& Out) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+	if (Cue.origin == ftcore::WaveCueOrigin::Mark)
+	{
+		if (bInPlace)
+		{
+			// In place the marks are the stage's, laid over the map with the frame the stage went down with; an
+			// unknown one starts the wave at the lead's feet, as a missing spot puts the camera by the lead.
+			const ftcore::CutsceneStageMark* Mark = ftcore::findCutsceneStageMark(Cue.mark());
+			if (!Mark)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, wave cue mark %s is no stage mark; the wave starts at the lead's feet."),
+					*FT::ToFString(Cue.mark()));
+				Out = LeadFeet();
+				return true;
+			}
+			Out = CutsceneToUnreal(ftcore::stageToWorld(StageAt, Mark->position));
+			return true;
+		}
+		return FindMarker(Cue.mark(), false, Out);
+	}
+	// Bone: the subject's actor (in place the cast member on its mark; on a map the actor tagged with it), then the
+	// first skeletal mesh on it that has the bone. With no such bone, its feet.
+	const AActor* Body = nullptr;
+	if (bInPlace)
+	{
+		int32 Ordinal = SubjectOrdinal(Cue.subject());
+		if (Ordinal < 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, wave cue subject %s is no subject mark; the lead's bone is taken."),
+				*FT::ToFString(Cue.subject()));
+			Ordinal = 0;
+		}
+		Body = CastMembers.IsValidIndex(Ordinal) ? CastMembers[Ordinal].Get() : nullptr;
+		if (!IsValid(Body))
+		{
+			// No one stands on the mark (a follower out of view): the mark's place, as its shots frame it.
+			const ftcore::CutsceneStageMark* Mark = ftcore::findCutsceneStageMark(Cue.subject());
+			UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: in place, no one stands on %s; the wave starts at %s."),
+				*FT::ToFString(Cue.subject()), Mark ? TEXT("its mark") : TEXT("the lead's feet"));
+			Out = Mark ? CutsceneToUnreal(ftcore::stageToWorld(StageAt, Mark->position)) : LeadFeet();
+			return true;
+		}
+	}
+	else if (!Cue.subject().empty())
+	{
+		const FName Tag(*FT::ToFString(Cue.subject()));
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (It->ActorHasTag(Tag))
+			{
+				Body = *It;
+				break;
+			}
+		}
+	}
+	if (!IsValid(Body))
+	{
+		return false;
+	}
+	const FName Bone(*FT::ToFString(Cue.bone()));
+	TInlineComponentArray<USkeletalMeshComponent*> Meshes(Body);
+	for (const USkeletalMeshComponent* Mesh : Meshes)
+	{
+		if (Mesh && Mesh->GetBoneIndex(Bone) != INDEX_NONE)
+		{
+			Out = Mesh->GetBoneLocation(Bone);
+			return true;
+		}
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: wave cue: no bone %s on %s; the wave starts at its feet."), *Bone.ToString(),
+		*Body->GetName());
+	Out = Body == Lead.Get() ? LeadFeet() : Body->GetActorLocation();
+	return true;
+}
+
+void AFTCutsceneDirector::StartCrossedWaves(double PlanSpeed)
+{
+	const ftcore::CutscenePlayer::CueWindow Crossed = Player.takeWaveCues();
+	if (Crossed.count == 0)
+	{
+		return;
+	}
+	UFTWorldWaveSubsystem* Wave = GetWorld() ? GetWorld()->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr;
+	const ftcore::CutscenePlan& Plan = Player.plan();
+	// Each StartWave replaces the wave before it, so of the cues crossed together (a skip's, the end's) only the last
+	// that starts matters: they are tried from the last back, and the first to start ends the window.
+	for (uint32 K = Crossed.count; K-- > 0;)
+	{
+		const uint32 I = Crossed.first + K;
+		const ftcore::CutsceneWaveCue& Cue = Plan.waveCue(I);
+		const FString WorldId = FT::ToFString(Cue.world());
+		if (!Wave)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: wave cue %u (%s): no world wave in this world; nothing starts."), I, *WorldId);
+			continue;
+		}
+		ftcore::WorldWaveParams Definition;
+		if (!ftcore::worldWaveParamsForCue(Cue, Definition))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: wave cue %u: unknown preset %s or world %s; nothing starts."), I,
+				*FT::ToFString(Cue.preset()), *WorldId);
+			continue;
+		}
+		FVector Origin;
+		if (!CueOrigin(Cue, Origin))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: wave cue %u: no %s %s; nothing starts."), I,
+				Cue.origin == ftcore::WaveCueOrigin::Mark ? TEXT("mark") : TEXT("subject"),
+				*FT::ToFString(Cue.origin == ftcore::WaveCueOrigin::Mark ? Cue.mark() : Cue.subject()));
+			continue;
+		}
+		// The plan clock runs with the game clock (times PlanSpeed under -AlphaFast) while the shots play, so the wave
+		// began the game seconds since the cue ago (a skip's cues, crossed late, start that much into their run).
+		const double Since = FMath::Max(0.0, Player.planTime() - static_cast<double>(Cue.time)) / FMath::Max(PlanSpeed, 1e-3);
+		const double StartTime = Wave->GetClock() - Since;
+		UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: wave cue %u at %.2f s on the plan: a %s %s wave to %s from %s (cm), %.2f s ago%s."), I,
+			Cue.time, Cue.reverse ? TEXT("reverse") : TEXT("forward"), *FT::ToFString(Cue.preset()), *WorldId, *Origin.ToString(), Since,
+			K > 0 ? TEXT("; the earlier cues crossed with it are passed over") : TEXT(""));
+		Wave->StartWave(Origin, StartTime, Definition);
+		return;
+	}
+}
+
 void AFTCutsceneDirector::LogSwitch(const TCHAR* What) const
 {
 	const UCameraComponent* Live = LeadCamera.Get();
@@ -939,13 +1100,15 @@ void AFTCutsceneDirector::Tick(float DeltaSeconds)
 	const double Now = UFTPauseSubsystem::WallSeconds();
 	const double Real = Now - LastRealTime;
 	LastRealTime = Now;
+	const AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
+	const double Speed = ftcore::StubScreen::speedFactor(bFast, Settings ? Settings->GetEffectiveTimeDilation() : 1.0);
 	if (Player.active())
 	{
-		const AWorldSettings* Settings = GetWorld() ? GetWorld()->GetWorldSettings() : nullptr;
-		const double Dilation = Settings ? Settings->GetEffectiveTimeDilation() : 1.0;
-		Player.update(static_cast<double>(DeltaSeconds) * ftcore::StubScreen::speedFactor(bFast, Dilation));
+		Player.update(static_cast<double>(DeltaSeconds) * Speed);
 		Player.tickReal(Real);
 	}
+	// After the press and the update, before Finish: the end of the shots and a skip cross every cue still ahead.
+	StartCrossedWaves(Speed);
 	if (bInPlace && Player.blendingOut() && !bWasBlendingOut)
 	{
 		// The way back aims at the gameplay camera as it was, and picks its side afresh.
