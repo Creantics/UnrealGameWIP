@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 using namespace ftcore;
@@ -367,8 +368,33 @@ TEST_CASE("HLSL: the asphalt's final range: no far lift with the tile, luminance
     }
     const StreetSurfaceSpec st;
     CHECK(st.asphaltAlbedoHi <= 0.2f);
-    CHECK(st.asphaltRoughLo >= 0.85f);
+    // Room for a real binder (0.03-0.05) and for worn stone tops (0.78-0.85) under the clamps.
+    CHECK(st.asphaltAlbedoLo <= 0.03f);
+    CHECK(st.asphaltRoughLo <= 0.78f);
+    CHECK(st.asphaltRoughLo >= 0.7f);
     CHECK(st.asphaltRoughHi <= 0.95f);
+    // The tile lands at its own values: its albedo mean is the tint's luminance, its roughness taken whole.
+    const float tintL = 0.2126f * st.asphaltR + 0.7152f * st.asphaltG + 0.0722f * st.asphaltB;
+    CHECK(st.detailAlbedoMean == doctest::Approx(tintL).epsilon(0.02));
+    CHECK(st.detailRough == doctest::Approx(1.0f));
+    // Worn paint shows the road's own tint, not the old pale one.
+    CHECK(det.find("Alb = lerp(float3(0.093") == std::string::npos);
+    {
+        const std::string worn = "Alb = lerp(float3(";
+        const std::size_t at = det.find(worn);
+        REQUIRE(at != std::string::npos);
+        CHECK(std::strtof(det.c_str() + at + worn.size(), nullptr) == doctest::Approx(st.asphaltR));
+        CHECK(st.asphaltR == doctest::Approx(0.066f));
+    }
+    // Dry asphalt's specular only where the material asks for the output, and only on the asphalt kind.
+    CHECK(det.find("SpecOut") == std::string::npos);
+    SurfaceWeatherOptions spec4 = on;
+    spec4.specOut = true;
+    const std::string sp = surfaceWeatherHlsl(spec, spec4);
+    CHECK(st.asphaltSpecular < 0.5f);
+    CHECK(st.asphaltSpecular >= 0.3f);
+    CHECK(countOf(sp, "SpecOut = SK == 1 ? ") == 1);
+    CHECK(sp.find("SpecOut = SK == 1 ? ") > sp.find("AOOut = A;"));
     CHECK(st.wheelBandRough >= 0.6f);
     CHECK(st.wheelBandRough <= 0.7f);
     CHECK(st.sealRough < st.wheelBandRoughTop);

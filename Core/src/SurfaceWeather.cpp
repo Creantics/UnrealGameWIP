@@ -650,7 +650,7 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\t\tLeft = 1.0;\n";
     h += "\t\t\tPaint = Alb * (0.6 / Mx) * lerp(0.9, 1.0, Fade);\n";
     h += "\t\t}\n";
-    h += "\t\tAlb = lerp(float3(0.093, 0.092, 0.09), Paint, Left);\n";
+    h += "\t\tAlb = lerp(float3(" + num(st.asphaltR) + ", " + num(st.asphaltG) + ", " + num(st.asphaltB) + "), Paint, Left);\n";
     h += "\t\tRgh = lerp(0.85, Rgh, Left);\n";
     h += "\t}\n";
     if (relief) {
@@ -1040,6 +1040,9 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
     h += "NormalOut = normalize(lerp(Nrm, VN, saturate(" + num(spec.soakFlatten) + " * Soak + PudCore)));\n";
     h += "RoughOut = saturate(R);\n";
     h += "AOOut = A;\n";
+    // Dry asphalt's own specular (lower than the default 0.5); a wet road's sheen is its roughness, not this.
+    if (options.specOut)
+        h += streets ? "SpecOut = SK == 1 ? " + num(street.asphaltSpecular) + " : 0.5;\n" : std::string("SpecOut = 0.5;\n");
     h += "return max(C, 0.02);\n";
     return h;
 }

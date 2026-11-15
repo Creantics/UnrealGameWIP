@@ -1,5 +1,6 @@
 #include "ftcore/Roads.h"
 #include "ftcore/RoadGraph.h"
+#include "ftcore/SurfaceWeather.h"
 
 #include "CsvRead.h"
 
@@ -446,10 +447,17 @@ bool spotFree(const std::vector<SideSpan>& spans, double s, double margin) {
 
 RoadColor roadTint(RoadTint tint) {
     switch (tint) {
-    // Aged dense asphalt, neutral grey: with the street layer's far lift (x1.125) and the detail tile's ratio its binder
-    // lands at 0.085 and its exposed stone tops at 0.155 (linear albedo).
-    case RoadTint::Asphalt: return {0.093f, 0.092f, 0.09f, 0.85f};
-    case RoadTint::AsphaltPatch: return {0.105f, 0.104f, 0.102f, 0.8f};
+    // Aged dense asphalt, neutral grey: the street layer's own tint (StreetSurfaceSpec), at the detail tile's albedo mean,
+    // so the tile lands at its own values (binder 0.03-0.05, bare stone tops 0.10-0.20, linear). A patch keeps its old
+    // shade over the road (x1.13).
+    case RoadTint::Asphalt: {
+        const StreetSurfaceSpec st;
+        return {st.asphaltR, st.asphaltG, st.asphaltB, st.asphaltTintRough};
+    }
+    case RoadTint::AsphaltPatch: {
+        const StreetSurfaceSpec st;
+        return {st.asphaltR * 1.13f, st.asphaltG * 1.13f, st.asphaltB * 1.13f, 0.8f};
+    }
     case RoadTint::Pavement: return {0.32f, 0.31f, 0.29f, 0.8f};
     case RoadTint::Kerb: return {0.46f, 0.45f, 0.43f, 0.75f};
     case RoadTint::LineWhite: return {0.78f, 0.78f, 0.76f, 0.6f};
