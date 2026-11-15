@@ -256,9 +256,7 @@ private:
 	double SettledAt = -1.0;  // wave-clock time the radius reached its end, -1 before
 	float CollectionAge = 0.f; // the age (s) the last Step gave the collection's WorldWaveTime; LogBodyBoundary's field uses it
 	bool bExposureHeld = false;
-	bool bHoldClock = false;
-	double HeldClock = 0.0;
-	double ClockOffset = 0.0; // ReleaseClock's, while a wave is set
+	ftcore::WorldWaveClock Clock; // SetClock's hold and ReleaseClock's offset (Core/include/ftcore/WorldWave.h)
 
 
 	// The switches' dressing and wave, run on the first frame once every actor has begun play (OnWorldBeginPlay comes
