@@ -1084,6 +1084,13 @@ struct ArenaStats {
     int partnerStrings = 0;    // its light strings begun
     int partnerGuards = 0;     // enemy blows its guard blocked
     int partnerRises = 0;      // times it stood again after being downed
+    // The cut rule: a damaging unguarded hit on the partner holds it in the lead fighter's hitstun and ends its running
+    // blow (no damage from it after that hit; what it dealt stays; the time its brain committed stays spent), in
+    // startup, active or recovery alike. This differs from the lead: the lead's blow is cut only when the hit puts it in
+    // hitstun (its poise breaks, or it is in the air), while the partner has no poise or armour, so every such hit cuts
+    // its blow. Accepted for now as "a hit into hitstun"; the partner's poise and armour are owed to the per-lead kits.
+    int partnerBlowsCut = 0;   // its running blows a damaging hit on it cut (the cut rule above)
+    int partnerBlowsVoid = 0;  // its blows ended unlanded because their target died before the hit frame
     int bossAttacks = 0;       // boss strings begun (a chained move is the same string; a break move is one), with a
                                // partner or without
     int bossAimedPartner = 0;  // ... of them aimed at the partner

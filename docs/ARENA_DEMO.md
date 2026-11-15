@@ -374,7 +374,9 @@ only when it is up and nearer than the lead, and at most 3 in 10 of its strings 
 (the player stands in the ally's place at its hp) and `AllyDowned` for the fallen body; the host swaps
 `ArenaBodies::player` and `::ally` on `TookOver`, and `swapped()` says which lead the player now drives. Both down is
 the Defeat as before. The stats add `partnerDamage`, `partnerBlows`, `partnerStrings`, `partnerGuards`, `partnerRises`,
-`bossAttacks`, `bossAimedPartner`, `bossAimShareMax` and `takeovers`.
+`partnerBlowsCut` (its running blows a damaging hit on it cut: it has no poise, so every unguarded damaging hit cuts
+its blow, where the lead's is cut only by a poise break or in the air), `partnerBlowsVoid` (blows ended unlanded at a
+target that died before the hit frame), `bossAttacks`, `bossAimedPartner`, `bossAimShareMax` and `takeovers`.
 
 Briefs (Lattice slice 1, off unless asked, never in shipping builds): `-ArenaBrief=bailiff` or `-ArenaBrief=notary` with
 `-ArenaLead=Duy` lays that Brief's kit from `Data/Battle/briefs.json` over the guns lead's own kit: a six-round cylinder

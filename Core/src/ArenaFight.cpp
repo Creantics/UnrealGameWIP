@@ -2880,6 +2880,13 @@ struct ArenaFightImpl {
         const float a0 = al.blowTime;
         const float a1 = a0 + dt;
         const bool aimed = al.target >= 0 && alive(static_cast<std::size_t>(al.target));
+        if (al.target >= 0 && !aimed && !al.landed && a0 < a.startup + a.active) { // its target died before the hit
+            ++stats.partnerBlowsVoid;                                              // frame: it deals nothing and ends
+            al.attacking = false;
+            al.blowTime = 0.f;
+            al.goal = fight.allyPos_;
+            return;
+        }
         if (aimed && a0 < a.startup) {
             const Vec2 to = arenaSub(foes[static_cast<std::size_t>(al.target)].pos, fight.allyPos_);
             al.facing = arenaTurn(al.facing, arenaUnit(to, al.facing), a.tracking * (std::min(a1, a.startup) - a0));
@@ -3015,9 +3022,17 @@ struct ArenaFightImpl {
         }
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
-        if (partnerOn()) { // it lands: the partner is held in the lead fighter's hitstun (its running blow runs out)
-            fight.ally_.hurtLeft = std::max(fight.ally_.hurtLeft, fi.hitstun);
-            fight.ally_.guarding = false;
+        if (partnerOn()) { // it lands: the partner is held in the lead fighter's hitstun, which cuts its running blow
+            ArenaFight::AllyState& al = fight.ally_;
+            al.hurtLeft = std::max(al.hurtLeft, fi.hitstun);
+            al.guarding = false;
+            if (al.attacking) { // as the lead's: no damage from it after this, and the time its brain committed stays spent
+                ++stats.partnerBlowsCut;
+                al.attacking = false;
+                al.blowTime = 0.f;
+                al.landed = false;
+                al.goal = fight.allyPos_;
+            }
         }
         int allyPart = damage;
         bool tookHalf = false; // the chair's heal follows take half, never a table share
