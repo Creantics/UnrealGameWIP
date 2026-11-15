@@ -151,9 +151,12 @@ inline constexpr float kUiRefusedInk = 0.8f;
 struct UiRefusedRows {
     std::array<float, kUiPromptCount> left{}; // seconds each refused row still shows
 };
-// One tick: each prompt in `pressed` (its key went down this tick) whose answer is refused shows for kUiRefusedShow
-// from this press; every other counts down by dt, and one whose answer is no longer refused stops at once.
-FTCORE_API void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& why, UiPromptMask pressed, float dt);
+// One tick: each prompt in `pressed` (its key went down since the last tick) whose answer was refused before the press
+// (`before`, the answers as the last tick read them) and still is (`why`, read after the press was taken) shows for
+// kUiRefusedShow from this press; a press that worked and left its action refused (the last heal, the Pair's cooldown
+// starting) shows nothing. Every other counts down by dt, and one whose answer is no longer refused stops at once.
+FTCORE_API void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& before, const UiPromptReasons& why,
+                              UiPromptMask pressed, float dt);
 // The prompts showing their refusal now (drawn at kUiRefusedInk, their reason word after them).
 FTCORE_API UiPromptMask uiRefusedShowing(const UiRefusedRows& st);
 // The prompts that may stand: present (uiPromptsPresent), less each refused one not showing its refusal.

@@ -13,6 +13,7 @@
 #include "AllocCounter.h"
 #include "TestAssets.h"
 
+#include <algorithm>
 #include <cmath>
 #include <ostream>
 #include <doctest/doctest.h>
@@ -884,4 +885,27 @@ TEST_CASE("ui dialogue view: no reply cursor and no lock reason by default; a cu
     CHECK(v.promptRevision == prompt + 1);
     CHECK(v.beatRevision == beat);
     CHECK_FALSE(updateDialogueView(v, p, flags));
+}
+
+TEST_CASE("ui style: the guard row stands at least 10 device px under a low line's underline at every supported scale") {
+    // HUD scale 80-130 percent on viewports from 720p to 2160p, at Windows display scales 100-200 percent.
+    const float pxs[] = {1.f, 1.f / 1.25f, 1.f / 1.5f, 1.f / 1.75f, 0.5f};
+    for (float px : pxs) {
+        for (int h = 720; h <= 2160; h += 60) {
+            for (int hud = 80; hud <= 130; hud += 5) {
+                const float s = std::max(0.25f, (static_cast<float>(h) * px) / 1080.f * (static_cast<float>(hud) / 100.f));
+                const ftcore::UiLowGuardGaps g = ftcore::uiLowGuardGaps(s, px);
+                CHECK(g.clear >= ftcore::kUiGuardClearMinPx * px * 0.9999f);
+                CHECK(g.gap >= px * 0.9999f);
+                CHECK(g.under >= px * 0.9999f);
+                const float units = g.clear / px; // whole device pixels
+                CHECK(units == doctest::Approx(std::floor(units + 0.5f)));
+            }
+        }
+    }
+    const ftcore::UiLowGuardGaps one = ftcore::uiLowGuardGaps(1.f, 1.f);
+    CHECK(one.gap == 5.f);
+    CHECK(one.under == 2.f);
+    CHECK(one.clear == 12.f);
+    CHECK(ftcore::uiLowGuardGaps(0.75f, 1.f).clear == 10.f); // 720p: 9 px by scale, held at 10
 }

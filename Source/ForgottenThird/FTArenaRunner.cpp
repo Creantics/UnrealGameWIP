@@ -1506,6 +1506,9 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	// reads no keys. Out of focus only the held attack clears (below); the toggled latches stay.
 	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
 	{
+		// The HUD's Guard press count: the key's state taken as it is, so a key pressed in the pause and held after it
+		// counts no press.
+		bGuardWasDown = PC && FTInputBindings::IsDown(*PC, InputAction::Guard);
 		bGuardHeld = false;
 		GuardInput.reset();
 		bInterceptHeld = false;

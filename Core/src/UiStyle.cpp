@@ -213,6 +213,16 @@ float uiHitFlashLevel(float age) {
     return 1.f - u * u * (3.f - 2.f * u);
 }
 
+UiLowGuardGaps uiLowGuardGaps(float s, float px) {
+    const float d = px > 0.f ? px : 1.f;
+    const auto whole = [d](float v) { return std::max(1.f, std::floor(v / d + 0.5f)) * d; };
+    UiLowGuardGaps g;
+    g.gap = whole(kUiLowUnderGap * s);
+    g.under = whole(kUiLowUnderW * s);
+    g.clear = std::max(kUiGuardClearMinPx * d, whole(kUiGuardClear * s));
+    return g;
+}
+
 float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale) {
     const float h = std::max(height, 1.f);
     const float scale = std::clamp(textScale, 1.f, 2.f);

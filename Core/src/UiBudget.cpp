@@ -63,13 +63,14 @@ UiPromptMask uiPromptsDimmed(const UiPromptReasons& why, UiPromptMask noKey) {
     return m;
 }
 
-void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& why, UiPromptMask pressed, float dt) {
+void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& before, const UiPromptReasons& why, UiPromptMask pressed,
+                   float dt) {
     const float step = dt > 0.f ? dt : 0.f;
     for (std::size_t p = 0; p < kUiPromptCount; ++p) {
         float& left = st.left[p];
         if (!pressRefused(why[p])) {
             left = 0.f;
-        } else if ((pressed >> p) & 1u) {
+        } else if (((pressed >> p) & 1u) && pressRefused(before[p])) {
             left = kUiRefusedShow;
         } else {
             left = left > step ? left - step : 0.f;

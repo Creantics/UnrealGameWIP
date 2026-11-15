@@ -1024,8 +1024,11 @@ public:
 	}
 
 	// A gradient strip with no edge: alpha Peak along one side (bPeakAtEnd: the bottom or right side), even for the first
-	// 1 - Ramp of the way, then falling to nothing at the other side with zero slope at both ends of the fall.
-	void Band(float X0, float Y0, float X1, float Y1, bool bAlongY, bool bPeakAtEnd, float Ramp, float Peak, const FLinearColor& C)
+	// 1 - Ramp of the way, then falling to nothing at the other side with zero slope at both ends of the fall. bMitre cuts
+	// both ends at 45 degrees, so four such strips round a screen meet without overlap: a corner takes the nearer edge's
+	// strength (the edges' maximum), never the two stacked.
+	void Band(float X0, float Y0, float X1, float Y1, bool bAlongY, bool bPeakAtEnd, float Ramp, float Peak, const FLinearColor& C,
+		bool bMitre = false)
 	{
 		if (Peak <= 0.f || X1 <= X0 || Y1 <= Y0)
 		{
@@ -1041,17 +1044,18 @@ public:
 			const float D = bPeakAtEnd ? 1.f - T : T; // the share of the way from the peak side
 			const float U = FMath::Clamp((D - (1.f - R)) / R, 0.f, 1.f);
 			const float A = Peak * (1.f - U * U * (3.f - 2.f * U));
+			const float In = bMitre ? D * (bAlongY ? Y1 - Y0 : X1 - X0) : 0.f; // this row's distance from the peak side
 			if (bAlongY)
 			{
 				const float Y = FMath::Lerp(Y0, Y1, T);
-				P.Verts.Add(Vert(X0, Y, C, A));
-				P.Verts.Add(Vert(X1, Y, C, A));
+				P.Verts.Add(Vert(X0 + In, Y, C, A));
+				P.Verts.Add(Vert(X1 - In, Y, C, A));
 			}
 			else
 			{
 				const float X = FMath::Lerp(X0, X1, T);
-				P.Verts.Add(Vert(X, Y0, C, A));
-				P.Verts.Add(Vert(X, Y1, C, A));
+				P.Verts.Add(Vert(X, Y0 + In, C, A));
+				P.Verts.Add(Vert(X, Y1 - In, C, A));
 			}
 		}
 		for (int32 I = 0; I < Steps; ++I)
@@ -1392,9 +1396,6 @@ constexpr float LeadHpW = 6.f;
 constexpr float PartnerHpW = 4.f;
 constexpr float GuardW = 3.f;
 constexpr float DangerUnderW = 1.f; // a danger word's underline, where the world draws one
-constexpr float LowUnderW = 2.f;    // a low hp or guard line's underline, where the world draws one: the track's full length
-constexpr float LowUnderGap = 5.f;  // from the line's bottom edge to the underline's top
-constexpr float GuardClear = 12.f;  // from that underline's bottom to the top of anything on the guard row (at least 10)
 constexpr float TrackInk = 0.3f;    // a value line's full-length track, where the world draws one
 constexpr float LoadDim = 0.45f;    // the lead's name's letters the Load has not reached, where the Load fills the name in
                                     // the accent: the ink's own colour at this share, opaque, so it reads on any picture
@@ -1667,6 +1668,19 @@ bool ForceHitBanded()
 	return bForce;
 #else
 	return false;
+#endif
+}
+
+// The banded flash's flat share (kUiHitBandFlat), or -UiHitBandFlat=0 for captures (out of shipping) to shoot the
+// plain fall from the edge beside it.
+float HitBandFlat()
+{
+#if !UE_BUILD_SHIPPING
+	static float Flat = ftcore::kUiHitBandFlat;
+	static const bool bSet = FParse::Value(FCommandLine::Get(), TEXT("-UiHitBandFlat="), Flat);
+	return bSet ? FMath::Clamp(Flat, 0.f, 0.95f) : ftcore::kUiHitBandFlat;
+#else
+	return ftcore::kUiHitBandFlat;
 #endif
 }
 
@@ -2040,7 +2054,15 @@ public:
 			Why[Heal] = ftcore::PressReason::Full;
 			Pressed |= ftcore::uiPromptBit(ftcore::UiPrompt::Heal);
 		}
-		ftcore::uiRefusedStep(RefusedRows, Why, Pressed, DeltaTime);
+		// A press counts as refused only if it was refused before it (the last tick's answers): one that worked and left
+		// its action refused (the last heal, the Pair's cooldown starting) shows no row.
+		if (!bWhySeeded || UiStateShot() == EUiStateShot::Refused)
+		{
+			WhyBefore = Why;
+			bWhySeeded = true;
+		}
+		ftcore::uiRefusedStep(RefusedRows, WhyBefore, Why, Pressed, DeltaTime);
+		WhyBefore = Why;
 		RefusedShowing = ftcore::uiRefusedShowing(RefusedRows);
 		ftcore::UiPromptMask Teaching = 0;
 		for (int32 I = static_cast<int32>(ftcore::UiPrompt::Attack); I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
@@ -2559,7 +2581,8 @@ private:
 			}
 			bTaughtOnce = true;
 			// Only a played fight under the save's own rule writes it (never a capture switch, autoplay or idle run).
-			bSaveTaught = FirstUseMode() == ftcore::UiFirstUseMode::Saved && !Runner.IsAutoPlay() && !Runner.IsIdle();
+			bSaveTaught = FirstUseMode() == ftcore::UiFirstUseMode::Saved && !Runner.IsAutoPlay() && !Runner.IsIdle()
+				&& UiStateShot() == EUiStateShot::None;
 			ftcore::uiFirstUseBegin(FirstUse, Saved, Mode);
 			// The teaching policy: with Basic controls set to Never no control is shown, so none is taught or counted
 			// (a later fight under another setting still teaches them).
@@ -2993,8 +3016,9 @@ private:
 			FLinearColor U = R.LowUnder;
 			U.A *= A * LowPulse();
 			const float Bottom = SnapLine(Y, Width, S) + 0.5f * Mesh.WholeDev(Width * S);
-			const float UY = Bottom + Mesh.WholeDev(Hud::LowUnderGap * S) + 0.5f * Mesh.WholeDev(Hud::LowUnderW * S);
-			ValueLine(X0, X1, UY, 0.f, 1.f, Hud::LowUnderW, Seed + 7u, S, U, 0.f);
+			const ftcore::UiLowGuardGaps G = ftcore::uiLowGuardGaps(S, Mesh.PxSize());
+			const float UY = Bottom + G.gap + 0.5f * G.under;
+			ValueLine(X0, X1, UY, 0.f, 1.f, ftcore::kUiLowUnderW, Seed + 7u, S, U, 0.f);
 		}
 	}
 
@@ -3093,9 +3117,10 @@ private:
 	{
 		FPartyRows R;
 		const float GuardBase0 = Size.Y - EdgesAt(Size, S).bottom;
-		// The guard row's top (its line and its word's caps) stands GuardClear under the low hp line's underline.
-		const float HpGap = Hud::LowUnderGap + Hud::LowUnderW + Hud::GuardClear;
-		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (HpGap + 0.5f * Hud::LeadHpW) * S;
+		// The guard row's top (its line and its word's caps) stands kUiGuardClear under the low hp line's underline, in
+		// whole device pixels and never under 10 of them (Core's uiLowGuardGaps).
+		const ftcore::UiLowGuardGaps G = ftcore::uiLowGuardGaps(S, Mesh.PxSize());
+		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (G.gap + G.under + G.clear) - 0.5f * Mesh.WholeDev(Hud::LeadHpW * S);
 		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
 		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
 		const float SwapDy = FMath::SmoothStep(0.f, 1.f, RowSwap.left01) * (PY0 - HpY0);
@@ -3645,7 +3670,7 @@ private:
 	// press would be refused now. A press of a refused prompt's key shows its row for kUiRefusedShow s at kUiRefusedInk,
 	// its key cap too, its reason word (the rules' PressReason: COOLDOWN, FULL, CLOSED...) after its word, before its key
 	// cap, at label size (Core's uiRefusedStep); one whose action the import left unbound shows NO KEY in its key box, at
-	// 40 percent ink. Nothing behind them but the bottom
+	// the labels' 80 percent ink. Nothing behind them but the bottom
 	// shade. A gift row is ink like the rest: gold is the lead's own power and a gift is not. The GIFT row is the one that
 	// may hold two: with both gifts GIFT GUARD keeps the margin and GIFT HEAL stands to its left, GiftGap px from GIFT
 	// GUARD's word (or its reason); either alone takes the margin.
@@ -3670,7 +3695,7 @@ private:
 				continue; // nothing reaches it on this device: not drawn
 			}
 			const FLinearColor C = ((RefusedShowing >> I) & 1u) ? Tok(UiToken::Ink, ftcore::kUiRefusedInk)
-				: ((PromptDimmed >> I) & 1u)                       ? Tok(UiToken::Ink, 0.4f)
+				: ((PromptDimmed >> I) & 1u)                       ? Tok(UiToken::Ink, ftcore::kUiRefusedInk)
 																	: Tok(UiToken::Ink);
 			const float Row = static_cast<float>(ftcore::uiPromptRow(static_cast<ftcore::UiPrompt>(I)));
 			const float MidY = Size.Y - E.bottom - (0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
@@ -3973,9 +3998,21 @@ private:
 		}
 		{
 			// A world with the banded flash: full for 80 ms, gone by 300 ms (uiHitFlashLevel); elsewhere the soft flash's pulse.
-			const double HitAge = Now - Runner.GetPlayerHitTime();
+			// Aged by the widget's own time from the tick the runner's hit stamp changes, so a pause right after a hit lets
+			// the flash finish instead of holding it (the fight's clock stops in a pause; this one does not).
+			const double Stamp = Runner.GetPlayerHitTime();
+			if (Stamp != HitStampSeen)
+			{
+				HitStampSeen = Stamp;
+				HitAgeOwn = bHitSeeded ? 0.f : 1e3f;
+			}
+			else
+			{
+				HitAgeOwn = FMath::Min(HitAgeOwn + FMath::Max(DeltaTime, 0.f), 1e3f);
+			}
+			bHitSeeded = true;
 			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f
-				: (Shown().bHitBanded || ForceHitBanded()) ? ftcore::uiHitFlashLevel(static_cast<float>(HitAge)) : Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
+				: (Shown().bHitBanded || ForceHitBanded()) ? ftcore::uiHitFlashLevel(HitAgeOwn) : Pulse(HitAgeOwn, 0.0, kHitEdgeLife);
 			const ftcore::Settings* Prefs = Runner.GetSettings();
 			bReduceFlashes = Prefs && Prefs->reduceFlashes;
 		}
@@ -4170,8 +4207,10 @@ private:
 		// A hit. Where red is kept to marks (uiDangerSet hitBanded): on all four edges, since the host gives no attacker's
 		// direction, a near-black band (90 percent at the edge, gone 64 px in) and a 2 px hairline in the text accent 10 px
 		// in with a 1 px dark edge on each side, so the cue reads on a bright sky and a dark court alike; reduced flashes
-		// keep the hairline only. Elsewhere a brief soft flash in the danger colour from the edges, with no line anywhere.
-		if (HitA > 0.f && (Shown().bHitBanded || ForceHitBanded()))
+		// keep the hairline only. Elsewhere a brief soft flash in the danger colour from the edges, with no line anywhere;
+		// there too reduced flashes draw no tint, the same hairline only. The four bands meet at mitred corners, so a
+		// corner is the nearer edge's strength, not two stacked.
+		if (HitA > 0.f && (Shown().bHitBanded || ForceHitBanded() || bReduceFlashes))
 		{
 			const FUiWorldRow& R = Shown();
 			const FLinearColor BandC = R.bHitBanded ? R.HitFlash : FLinearColor(0.f, 0.f, 0.f, 1.f);
@@ -4179,11 +4218,11 @@ private:
 			{
 				const float D = ftcore::kUiHitBandDepth * S;
 				const float Pk = ftcore::kUiHitBandPeak * HitA;
-				const float Ramp = 1.f - ftcore::kUiHitBandFlat;
-				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, BandC);
-				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, BandC);
-				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, BandC);
-				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, BandC);
+				const float Ramp = 1.f - HitBandFlat();
+				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, BandC, true);
+				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, BandC, true);
+				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, BandC, true);
+				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, BandC, true);
 			}
 			// The hairline: whole device pixels, its edges on pixel boundaries, so it never doubles or blurs at 125 percent.
 			const float Px = Mesh.PxSize();
@@ -4337,6 +4376,8 @@ private:
 	ftcore::UiPromptMask RefusedShowing = 0; // the prompts showing their refusal this tick
 	uint32 PromptPressSeen[ftcore::kUiPromptCount] = {}; // the runner's press counts as last read
 	bool bPressSeeded = false;                          // PromptPressSeen has been read once
+	ftcore::UiPromptReasons WhyBefore{};                // the prompts' answers as the last tick read them
+	bool bWhySeeded = false;
 	std::array<ftcore::UiPromptMask, ftcore::kUiPromptCount> PromptSameKeyBelow{}; // per prompt, the lower ones on its key
 	ftcore::UiPromptReasons Why{};    // each prompt's answer from the rules this tick
 	ftcore::PressReason GiftWhy[2] = {ftcore::PressReason::Absent, ftcore::PressReason::Absent}; // Gift Heal's, Gift Guard's
@@ -4436,6 +4477,9 @@ private:
 	ftcore::ArenaHudBoss BossSeen;
 	uint8 LockSeen = ftcore::kArenaNobody;
 	float HitA = 0.f, ParryA = 0.f;
+	double HitStampSeen = -1e9; // the runner's last hit stamp as read
+	float HitAgeOwn = 1e3f;     // seconds since that hit was seen, on the widget's clock
+	bool bHitSeeded = false;
 	bool bReduceFlashes = false; // the settings' reduce flashes: the banded flash keeps only its hairline
 	FSlateFontInfo ResultFont;
 	float ResultLineH = 0.f, ResultAsc = 0.f;

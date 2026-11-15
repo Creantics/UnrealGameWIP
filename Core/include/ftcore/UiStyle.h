@@ -205,6 +205,22 @@ inline constexpr float kUiHitGone = 0.3f;  // seconds until it is gone
 // The flash's strength `age` seconds after the hit: 1 until kUiHitFull, a smooth fall to 0 at kUiHitGone, 0 outside.
 FTCORE_API float uiHitFlashLevel(float age);
 
+// A low value line's underline and the guard row under it, in 1080p px at HUD scale 1: the underline kUiLowUnderW
+// thick, kUiLowUnderGap below the line's bottom edge, and the guard row's top kUiGuardClear below the underline, never
+// nearer than kUiGuardClearMinPx device pixels at any scale.
+inline constexpr float kUiLowUnderGap = 5.f;
+inline constexpr float kUiLowUnderW = 2.f;
+inline constexpr float kUiGuardClear = 12.f;
+inline constexpr float kUiGuardClearMinPx = 10.f;
+struct UiLowGuardGaps {
+    float gap = 0.f;   // line's bottom edge to the underline's top
+    float under = 0.f; // the underline's thickness
+    float clear = 0.f; // the underline's bottom to the guard row's top
+};
+// Those gaps in local units for the HUD's scale `s` and a device pixel `px` local units wide: each a whole number of
+// device pixels, at least one; the clearance at least kUiGuardClearMinPx device pixels.
+FTCORE_API UiLowGuardGaps uiLowGuardGaps(float s, float px);
+
 // A role's size in pixels for a viewport `height` px tall at the player's text scale (1.0..2.0, clamped), never below
 // the floors.
 FTCORE_API float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale);
