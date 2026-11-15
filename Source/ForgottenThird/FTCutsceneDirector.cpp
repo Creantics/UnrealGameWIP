@@ -10,6 +10,7 @@
 #include "EngineUtils.h"
 #include "ForgottenThird.h"
 #include "FTText.h"
+#include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/WorldSettings.h"
@@ -115,13 +116,15 @@ void AddDevWaveCue(ftcore::CutscenePlan& Plan)
 	Arg.ParseIntoArray(Parts, TEXT(","));
 	ftcore::CutsceneWaveCue Cue;
 	Cue.time = Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 0.f;
-	const bool bWorld = Parts.Num() > 1 && Cue.setWorld(FT::ToUtf8(Parts[1]));
+	// The world is checked here, not only when the cue is crossed, so an unknown name is never logged as added.
+	const bool bWorld = Parts.Num() > 1 && ftcore::worldWaveWorldId(FT::ToUtf8(Parts[1])) != nullptr &&
+		Cue.setWorld(FT::ToUtf8(Parts[1]));
 	Cue.reverse = Parts.Num() > 2 && Parts[2].Equals(TEXT("reverse"), ESearchCase::IgnoreCase);
 	Cue.origin = ftcore::WaveCueOrigin::Mark;
 	const bool bMark = Cue.setMark(ftcore::kCutsceneLeadMark);
 	const bool bAdded = bWorld && bMark && Plan.addWaveCue(Cue);
 	UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: -CutsceneWaveCue=%s %s."), *Arg,
-		bAdded ? TEXT("added on subj_a") : TEXT("refused (seconds within the shots, a world id)"));
+		bAdded ? TEXT("added on subj_a") : TEXT("refused (seconds within the shots; world solhaven, lattice or unwritten)"));
 #else
 	(void)Plan;
 #endif
@@ -887,14 +890,21 @@ bool AFTCutsceneDirector::CueOrigin(const ftcore::CutsceneWaveCue& Cue, FVector&
 	}
 	else if (!Cue.subject().empty())
 	{
+		// The first actor found with the tag; when several have it, the log names the one taken.
 		const FName Tag(*FT::ToFString(Cue.subject()));
+		int32 Matches = 0;
 		for (TActorIterator<AActor> It(World); It; ++It)
 		{
 			if (It->ActorHasTag(Tag))
 			{
-				Body = *It;
-				break;
+				Body = Body ? Body : *It;
+				++Matches;
 			}
+		}
+		if (Matches > 1)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: wave cue subject %s tags %d actors; %s is taken."), *Tag.ToString(),
+				Matches, *Body->GetName());
 		}
 	}
 	if (!IsValid(Body))
@@ -913,7 +923,21 @@ bool AFTCutsceneDirector::CueOrigin(const ftcore::CutsceneWaveCue& Cue, FVector&
 	}
 	UE_LOG(LogForgottenThird, Warning, TEXT("Cutscene: wave cue: no bone %s on %s; the wave starts at its feet."), *Bone.ToString(),
 		*Body->GetName());
-	Out = Body == Lead.Get() ? LeadFeet() : Body->GetActorLocation();
+	if (Body == Lead.Get())
+	{
+		Out = LeadFeet();
+		return true;
+	}
+	// The feet: a character's capsule bottom, else the bottom of its bounds, as a subject marker's place is taken.
+	if (const ACharacter* Character = Cast<ACharacter>(Body))
+	{
+		const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
+		Out = Body->GetActorLocation() - FVector(0.0, 0.0, Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 0.0);
+		return true;
+	}
+	FVector Centre, Extent;
+	Body->GetActorBounds(false, Centre, Extent);
+	Out = Extent.IsNearlyZero() ? Body->GetActorLocation() : FVector(Centre.X, Centre.Y, Centre.Z - Extent.Z);
 	return true;
 }
 

@@ -425,10 +425,15 @@ void UFTWorldWaveSubsystem::SetClock(double Seconds)
 void UFTWorldWaveSubsystem::ReleaseClock()
 {
 	// With a wave set the clock goes on from the held time (an offset on game time), so the front never jumps; with
-	// none it is game time again.
+	// none it is game time again. Only a release of a held clock changes the offset: a second release while a wave
+	// runs keeps it.
+	if (!bHoldClock)
+	{
+		return;
+	}
 	const UWorld* World = GetWorld();
 	const double GameNow = World ? World->GetTimeSeconds() : 0.0;
-	ClockOffset = (bHoldClock && bWave) ? HeldClock - GameNow : 0.0;
+	ClockOffset = bWave ? HeldClock - GameNow : 0.0;
 	bHoldClock = false;
 }
 
