@@ -36,7 +36,7 @@
 #include "ftcore/ExploreDemo.h"
 #endif
 
-namespace
+namespace FTBuildExploreWorld
 {
 const TCHAR* const kExploreMapFolder = TEXT("/Game/Maps");
 
@@ -79,7 +79,7 @@ FRotator Yaw(float Degrees)
 	return FRotator(0.f, Degrees, 0.f);
 }
 #endif
-}
+} // namespace FTBuildExploreWorld
 
 UFTBuildExploreWorldCommandlet::UFTBuildExploreWorldCommandlet()
 {
@@ -92,6 +92,12 @@ UFTBuildExploreWorldCommandlet::UFTBuildExploreWorldCommandlet()
 int32 UFTBuildExploreWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	// The file's helpers (in a namespace named for the file: unity builds put other files' beside them).
+	using FTBuildExploreWorld::Block;
+	using FTBuildExploreWorld::kExploreMapFolder;
+	using FTBuildExploreWorld::M;
+	using FTBuildExploreWorld::MakeTint;
+	using FTBuildExploreWorld::Yaw;
 	// -World=<id>: one of the big worlds of Data/Field/worlds.json instead of the demo map.
 	FString WorldId;
 	if (FParse::Value(*Params, TEXT("World="), WorldId) && !WorldId.IsEmpty())
