@@ -122,6 +122,8 @@ static const float kFTWaveTrueSkyDepth = 1e7;
 // 1: the pass shows its working instead (r the second world's share, g log10 of the depth / 10, b the composed light's
 // lens and the true sky's deck).
 #define FT_WAVE_DEBUG 0
+// The custom stencil value of the post's catch-all (FTWorldWave::kCatchStencil, the same number).
+static const float kFTWaveCatchStencil = 223.0;
 
 // The scene colour at a viewport UV.
 float3 FTWaveScene(float2 vuv)
@@ -276,12 +278,13 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 		float2 seg = k == 0 ? segA : segB;
 		float a = max(seg.x, 0.0);
 		float b = min(seg.y, rayLen);
-		// The per-ray shape is taken on the whole piece of shell, before the band trims it.
-		float shape = W.VNoise3((camPos + rd * (0.5 * (a + b))) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
+		// The per-ray shape is taken on the whole piece of shell, before the band trims it (only for a piece the march walks).
+		float mid = 0.5 * (a + b);
 		a = max(a, bandLo);
 		b = min(b, bandHi);
 		if (b > a && T > 0.02)
 		{
+			float shape = W.VNoise3((camPos + rd * mid) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
 			// Steps of about 25 cm: under the core's 40-110 cm height and 40-100 cm thickness, so no step steps over it
 			// (longer steps left it as a dither the temporal upscaler couldn't fill in, a screen-door hatch in the band).
 			int steps = int(clamp(ceil((b - a) / 25.0), 4.0, 64.0));
@@ -433,7 +436,8 @@ float4 FTWaveBlots(float s, float2 q, float cmPerPx, float pxScale, bool sky, fl
 // the front's own look by WOrigin.w. src: the scene colour; rawDepth: SceneDepth (cm); sceneNormal: the world normal.
 float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float rawDepth, float3 sceneNormal, float3 WorldPos,
 	float3 CamPos, float4 WOrigin, float4 WOriginScreen, float4 WFoot, float4 WTip, float WRadius, float WBand, float WPrelude,
-	float WDirection, float WTime, float WGround, float4 WGain, float4 WKeep0, float SkyDepth)
+	float WDirection, float WTime, float WGround, float4 WGain, float4 WKeep0, float SkyDepth, float customDepth,
+	float customStencil)
 {
 	FTWaveFns W;
 	float2 pix = GetPixelPosition(Parameters);
@@ -600,6 +604,20 @@ float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float raw
 		float3 bg = src * 0.06;
 		float4 blot = FTWaveBlots(ahead, q, cmPerPx, pxScale, sky, invView, twPix, T3, B3, axis, bg);
 		src = lerp(src, blot.rgb, blot.a);
+	}
+
+	// The catch-all: a worn piece whose master takes no character state (tagged kFTWaveCatchStencil by the audit, only
+	// where that piece is the surface seen) gets it here, by the same share m: near grey, half the light (the base's 0.5
+	// and the grime's mean), and for front A the thin matt line at the cut. Wave-aware pieces are never tagged.
+	if (!sky && m > 0.0 && abs(customStencil - kFTWaveCatchStencil) < 0.5 && abs(customDepth - rawDepth) < max(2.0, 0.005 * rawDepth))
+	{
+		float lumC = dot(src, FTWaveLuma);
+		float3 state = lerp(lumC.xxx, src, 0.07) * float3(0.97, 0.99, 1.03) * (0.5 * 0.875);
+		src = lerp(src, state, saturate(m));
+		if (style == 1 && r > 0.0)
+		{
+			src *= lerp(1.0, 0.1, 1.0 - smoothstep(0.4, 0.7, abs(ahead)));
+		}
 	}
 
 	float3 c = FTWaveGrade(src, m, gains, fog, fogLum);

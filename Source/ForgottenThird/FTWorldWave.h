@@ -101,6 +101,11 @@ inline constexpr const TCHAR* ScalarNames[] = {Radius, BandWidth, Prelude, Direc
 // The custom primitive data slots (FCustomPrimitiveData holds 36 floats; the window and decal data use the low ones).
 inline constexpr int32 kTagSlot = 30;
 inline constexpr int32 kLocalSlot = 31;
+// The custom stencil value reserved for the post's catch-all: a worn or held piece whose master takes no character state
+// (MetaHuman skin, eyes, teeth, grooms, anything a future asset brings) renders custom depth with this value, and
+// PP_WorldWave gives its pixels the character state there (Post.ush kFTWaveCatchStencil, the same number). Needs
+// r.CustomDepth 3 (stencil); UFTWorldWaveSubsystem::AuditWorn raises it at run time when it stencils a piece.
+inline constexpr int32 kCatchStencil = 223;
 inline constexpr const TCHAR* TagParameter = TEXT("WorldWaveTag");
 inline constexpr const TCHAR* LocalParameter = TEXT("WorldWaveLocalRadius");
 

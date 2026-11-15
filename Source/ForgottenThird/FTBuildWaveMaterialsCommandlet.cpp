@@ -331,6 +331,9 @@ UMaterial* BuildPostMaterial(UPackage* Package, UMaterialParameterCollection* Lo
 	AddScene(TEXT("SceneColor"), PPI_PostProcessInput0, -800);
 	AddScene(TEXT("SceneDepthIn"), PPI_SceneDepth, -700);
 	AddScene(TEXT("SceneNormal"), PPI_WorldNormal, -650);
+	// The catch-all's tag (FTWorldWave::kCatchStencil) and the tagged piece's own depth, to know it is the one seen.
+	AddScene(TEXT("CustomDepthIn"), PPI_CustomDepth, -900);
+	AddScene(TEXT("CustomStencilIn"), PPI_CustomStencil, -1000);
 	AddInput(Custom, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -1300, -600));
 	AddInput(Custom, TEXT("CamPos"), AddExpression<UMaterialExpressionCameraPositionWS>(Material, -1300, -540));
 
@@ -735,7 +738,13 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	{
 		Errors += FT::CompileErrors(kTag, Material);
 	}
-	bool bOk = Errors == 0;
+	// A compile error saves nothing: a broken material must never overwrite the good file on disk.
+	if (Errors > 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %d compile errors; nothing saved, the files on disk are as they were."), kTag, Errors);
+		return 1;
+	}
+	bool bOk = true;
 	for (UMaterial* Material : Built)
 	{
 		bOk &= Save(Material);

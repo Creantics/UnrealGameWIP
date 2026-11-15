@@ -74,6 +74,6 @@ return base;
 static const TCHAR* const FTWorldWavePostBody =
 TEXT(R"HLSL(
 return FTWavePostMain(Parameters, SceneColor.rgb, SceneDepthIn.r, SceneNormal.xyz, WorldPos, CamPos, WOrigin, WOriginScreen,
-	WFoot, WTip, WRadius, WBand, WPrelude, WDirection, WTime, WGround, WGain, WKeep0, SkyDepth);
+	WFoot, WTip, WRadius, WBand, WPrelude, WDirection, WTime, WGround, WGain, WKeep0, SkyDepth, CustomDepthIn.r, CustomStencilIn.r);
 )HLSL");
 

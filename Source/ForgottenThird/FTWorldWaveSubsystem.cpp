@@ -1198,20 +1198,22 @@ int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
 {
 	TArray<const AActor*> Actors;
 	GatherWorn(Lead, Actors);
-	int32 Slots = 0, Bad = 0, Logged = 0;
+	int32 Slots = 0, Bad = 0, Logged = 0, Tagged = 0, Unconverted = 0;
 	TArray<UMaterialInterface*> Used;
 	for (const AActor* Actor : Actors)
 	{
 		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
 		for (UPrimitiveComponent* Primitive : Primitives)
 		{
-			// Hidden ones too: a jacket's other state or a stowed weapon is shown later and must already be wave-aware.
-			if (!Primitive)
+			// Hidden ones too: a jacket's other state or a stowed weapon is shown later and must already be wave-aware. Not the
+			// editor's own helpers (the camera's proxy mesh): no worn piece, never drawn in the game.
+			if (!Primitive || Primitive->IsEditorOnly() || Primitive->IsVisualizationComponent())
 			{
 				continue;
 			}
 			Used.Reset();
 			Primitive->GetUsedMaterials(Used);
+			int32 Aware = 0, Other = 0;
 			for (UMaterialInterface* Material : Used)
 			{
 				if (!Material)
@@ -1223,9 +1225,11 @@ int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
 				bool bCharacter = false;
 				if (Master && TakesWaveState(*Master, bCharacter) && bCharacter)
 				{
+					++Aware;
 					continue;
 				}
 				++Bad;
+				++Other;
 				const FString Key = Master ? Master->GetPathName() : Material->GetPathName();
 				if (AuditLogged.Contains(Key))
 				{
@@ -1239,12 +1243,48 @@ int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
 					*Key, Master && TakesWaveState(*Master, bCharacter) ? TEXT("takes the ground's state, not the body's (Character off)")
 																		  : TEXT("takes no world-wave state"));
 			}
+			if (Other == 0)
+			{
+				continue;
+			}
+			// The post's catch-all (Post.ush): the piece renders custom depth with the reserved stencil, and its pixels take
+			// the character state there. Translucent slots write no custom depth, so they stay as they are.
+			if (!Primitive->bRenderCustomDepth || Primitive->CustomDepthStencilValue != FTWorldWave::kCatchStencil)
+			{
+				if (Primitive->bRenderCustomDepth && Primitive->CustomDepthStencilValue != 0)
+				{
+					// Someone else's stencil on this piece: left alone, so it stays unconverted and is counted so.
+					Unconverted += Other;
+					UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s: %s already renders custom depth with stencil %d; not tagged for the catch-all."),
+						*Lead.GetName(), *Primitive->GetName(), Primitive->CustomDepthStencilValue);
+					continue;
+				}
+				Primitive->SetCustomDepthStencilValue(FTWorldWave::kCatchStencil);
+				Primitive->SetRenderCustomDepth(true);
+			}
+			++Tagged;
+			if (Aware > 0 && !AuditLogged.Contains(Primitive->GetPathName()))
+			{
+				AuditLogged.Add(Primitive->GetPathName());
+				UE_LOG(LogForgottenThird, Warning,
+					TEXT("WorldWave: %s: %s (%s) mixes %d wave-aware and %d other slots; tagged for the catch-all, so its wave-aware slots take the character state twice."),
+					*Lead.GetName(), *Primitive->GetName(), *Actor->GetName(), Aware, Other);
+			}
 		}
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware (%d newly logged); ")
-		TEXT("attached pieces only, so a stowed weapon not attached to the lead is outside this audit."),
-		*Lead.GetName(), Actors.Num(), Slots, Bad, Logged);
-	return Bad;
+	if (Tagged > 0)
+	{
+		// The stencil needs r.CustomDepth 3 (2 or lower allocates no stencil, and the catch-all would see none).
+		if (IConsoleVariable* Mode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth")); Mode && Mode->GetInt() < 3)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth %d -> 3 for the catch-all's stencil."), Mode->GetInt());
+			Mode->Set(3, ECVF_SetByCode);
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware (%d newly logged), %d primitives tagged for the post's ")
+		TEXT("catch-all (stencil %d), %d slots unconverted; attached pieces only, so a stowed weapon not attached to the lead is outside this audit."),
+		*Lead.GetName(), Actors.Num(), Slots, Bad, Logged, Tagged, FTWorldWave::kCatchStencil, Unconverted);
+	return Unconverted;
 }
 
 bool UFTWorldWaveSubsystem::PawnInFootprint(const FTracked& Item, const APawn* PlayerPawn) const
