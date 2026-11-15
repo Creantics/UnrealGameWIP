@@ -1390,6 +1390,88 @@ TEST_CASE("arena partner: a fight begun Lone takes the partner on the call: join
     CHECK(disagree == 0);
 }
 
+namespace {
+// Bites parried (the guard pressed late in the startup, let go in the recovery) and each parry paired on the next
+// tick, until the first counter-stagger; its tick's ArenaAllyOut::pairSeconds is returned, -1 for no counter.
+float pairUntilCounter(PRig& r) {
+    std::size_t seen = 0;
+    for (int k = 0; k < 600 && !r.fight.over(); ++k) {
+        const ArenaEnemyOut& e = r.fight.output().enemies[0];
+        r.in.guard = e.brain == ArenaBrain::Attack &&
+                     ((e.part == ArenaPart::Startup && e.stateTime >= 0.27f) || e.part == ArenaPart::Active);
+        for (; seen < r.log.size(); ++seen)
+            if (r.log[seen].e.type == ArenaEventType::Parried) r.in.pair = true;
+        r.tick();
+        if (r.count(ArenaEventType::CounterStagger) > 0) return r.out->ally.pairSeconds;
+    }
+    return -1.f;
+}
+} // namespace
+
+TEST_CASE("arena partner: a counter dealt reports pairPartnerSeconds, and its pairCooldown outlasts a lead switch") {
+    PRig r;
+    r.enemy(biterKind(5, 3.f, 1.f), Vec2{1.5f, 0.f});
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.ally = Vec2{-10.f, 0.f}; // out of the bites' and its own blows' reach
+    r.go(true, 100);
+    CHECK(r.fight.output().ally.pairSeconds == 0.f);
+    const float spent = pairUntilCounter(r);
+    CHECK(spent == doctest::Approx(r.def.fighter.pairPartnerSeconds));
+    CHECK(spent == doctest::Approx(1.f));
+    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+    r.in.guard = false;
+    r.tick();
+    CHECK(r.out->ally.pairSeconds == 0.f); // the counter's tick only
+    // The clock is both leads': the switched-to lead's PARTNER press is still cooling.
+    REQUIRE(r.fight.switchLeads());
+    std::swap(r.bodies.player, r.bodies.ally);
+    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+    // No partner in the fight: a counter spends no partner time.
+    PRig q;
+    q.enemy(biterKind(5, 3.f, 1.f), Vec2{1.5f, 0.f});
+    q.bodies.player = Vec2{0.f, 0.f};
+    q.go(false, 100);
+    CHECK(pairUntilCounter(q) == 0.f);
+}
+
+namespace {
+float partnerSpent(const PartnerBrain& b) {
+    float sum = 0.f;
+    for (const float s : b.save().spentPartner) sum += s;
+    return sum;
+}
+} // namespace
+
+TEST_CASE("arena partner: a counter's partner time reaches the brain's budget once (PartnerInput::spentSeconds)") {
+    // The tick of the counter and the next: the brain takes its second on one of them, once.
+    PRig q;
+    q.enemy(biterKind(5, 3.f, 1.f), Vec2{1.5f, 0.f});
+    q.bodies.player = Vec2{0.f, 0.f};
+    q.bodies.ally = Vec2{-10.f, 0.f};
+    q.go(true, 100);
+    std::size_t seen = 0;
+    bool countered = false;
+    for (int k = 0; k < 600 && !countered && !q.fight.over(); ++k) {
+        const ArenaEnemyOut& e = q.fight.output().enemies[0];
+        q.in.guard = e.brain == ArenaBrain::Attack &&
+                     ((e.part == ArenaPart::Startup && e.stateTime >= 0.27f) || e.part == ArenaPart::Active);
+        for (; seen < q.log.size(); ++seen)
+            if (q.log[seen].e.type == ArenaEventType::Parried) q.in.pair = true;
+        const float before = partnerSpent(q.brain);
+        q.tick();
+        if (q.count(ArenaEventType::CounterStagger) > 0) {
+            countered = true;
+            q.in.guard = false;
+            q.in.pair = false;
+            q.tick(); // the brain's next step, if the counter came after it stepped
+            const float gained = partnerSpent(q.brain) - before;
+            CHECK(gained >= 1.f - 1e-3f);           // the counter's second
+            CHECK(gained <= 1.f + 0.25f);           // and no more than two ticks of its own blows on top
+        }
+    }
+    CHECK(countered);
+}
+
 TEST_CASE("arena partner: switchLeads swaps both standing bodies and their hp; refused with the partner down or Lone") {
     PRig r;
     r.enemy(biterKind(150, 3.f, 5.f), Vec2{20.f, 0.f}); // far: nothing lands
