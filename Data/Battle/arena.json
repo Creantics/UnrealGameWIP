@@ -22,9 +22,9 @@
       "guardArcCos": 0, "guardAbsorb": 1, "guardMoveScale": 0.5, "guardBreakTime": 1.2, "parryWindow": 0.15, "parryRearm": 0.5, "riposteReach": 1.8, "parryStop": 0.12, "hurtJolt": 1.4, "softRange": 3.5, "softArcCos": 0.6, "homingReach": 1.0,
       "healCharges": 3, "healAmount": 45, "healTime": 0.9, "healRecovery": 0.4, "healMoveScale": 0.35,
       "lockRange": 15, "lockBreak": 20,
-      "loadShare": 1, "releasePoise": 1, "pairWindow": 0.12, "pairHits": 3,
+      "loadShare": 1, "releasePoise": 1, "pairWindow": 0.12, "pairHits": 3, "pairBossPoise": 0.45, "pairCooldown": 3, "pairPartnerSeconds": 1,
       "readPower": 0.5, "readStackPower": 0.2, "readPoise": 5, "readWrongPoise": 10,
-      "blockLoadShare": 0.25, "takeHalfWindow": 0.25, "takeHalfReach": 4, "takeHalfLoadShare": 1, "takeHalfRearm": 0.5
+      "blockLoadShare": 0.25, "blockCallGuard": 0, "takeHalfWindow": 0.25, "takeHalfReach": 4, "takeHalfLoadShare": 1, "takeHalfRearm": 0.5
     },
     {
       "id": "devin", "weapon": "gauntlets",

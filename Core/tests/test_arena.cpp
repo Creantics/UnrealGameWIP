@@ -3429,6 +3429,55 @@ void parryRun(Rig& rig, int ticks, int pairAt = 0, int pairAgain = 0) {
 
 } // namespace
 
+TEST_CASE("arena guard: a BLOCK call guarded inside its call window costs blockCallGuard of guardDamage; held from before, all") {
+    ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
+    bite.guardDamage = 10.f;
+    CHECK(ArenaFighter{}.blockCallGuard == 0.f);
+    // `parryable`: PARRY (true) or BLOCK (false) on the tell. `pressAt`: the guard's press (1-based tick; the move
+    // begins on the first tick with the enemy at 1.5 m), or 0 for a guard held from before, the enemy at 10 m until
+    // tick 30. Returns the first Blocked event's stamina cost (-1: none).
+    const auto blockCost = [&](bool parryable, int pressAt, float share, int* calls = nullptr) {
+        ArenaFighter f = ruleFighter();
+        f.blockCallGuard = share;
+        ArenaEnemyKind k = hitterKind(bite);
+        k.moves[0].parryable = parryable;
+        Rig rig(f, {k});
+        if (pressAt == 0) {
+            rig.put(0, 10.f, 0.f);
+            rig.in.guard = true;
+            rig.run(30);
+            REQUIRE(rig.count(ArenaEventType::AttackStarted) == 0);
+        }
+        rig.put(0, 1.5f, 0.f);
+        for (int k2 = 1; k2 <= 40; ++k2) {
+            if (pressAt > 0 && k2 == pressAt) rig.in.guard = true;
+            rig.tick();
+        }
+        if (calls) *calls = rig.fight.stats().blockCalls;
+        const Logged* blocked = rig.find(ArenaEventType::Blocked);
+        return blocked ? blocked->event.amount : -1;
+    };
+    int calls = -1;
+    CHECK(blockCost(false, 5, 0.f, &calls) == 0); // pressed in the tell: free
+    CHECK(calls == 1);
+    CHECK(blockCost(false, 0, 0.f, &calls) == 10); // held from before the move began: the whole cost
+    CHECK(calls == 0);
+    CHECK(blockCost(false, 5, 0.5f) == 5);         // the share is data
+    CHECK(blockCost(false, 5, 1.f) == 10);
+    CHECK(blockCost(true, 5, 0.f, &calls) == 10);  // a PARRY call merely blocked (pressed too early to parry) pays
+    CHECK(calls == 0);
+    // The importer: in range, and refused outside it.
+    const auto with = [](const char* v) {
+        return tableJson(std::string(R"([ { "id": "default", "blockCallGuard": )") + v + " } ]", kEnemiesOk);
+    };
+    ArenaTable t;
+    REQUIRE(loadError(with("0.25"), &t).empty());
+    CHECK(t.fighters[0].blockCallGuard == doctest::Approx(0.25f));
+    CHECK(contains(loadError(with("1.5")), "blockCallGuard"));
+    CHECK(contains(loadError(with("-0.5")), "blockCallGuard"));
+    CHECK(loadShipped().fighters[0].blockCallGuard == 0.f);
+}
+
 TEST_CASE("arena Load: it never rises without a parry, and never refills or drains on its own") {
     ArenaAttack bite = swing(0.4f, 0.15f, 0.5f, 2.f, 20);
     bite.guardDamage = 10.f;
@@ -3988,6 +4037,92 @@ TEST_CASE("arena pairOpen: true after a tick exactly when the partner's press on
     CHECK_FALSE(none.fight.pairOpen()); // before the parry
 }
 
+TEST_CASE("arena paired counter: a counter dealt starts pairCooldown; inside it a pair is spent and says Cooldown") {
+    Rig probe(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+    parryRun(probe, 40);
+    const Logged* parried = probe.find(ArenaEventType::Parried);
+    REQUIRE(parried);
+    const int p = parried->tick;
+    CHECK(ruleFighter().pairCooldown == doctest::Approx(3.f));
+    {   // the clock: Cooldown (over Closed) until pairCooldown has passed; a restart clears it
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(rig, p + 1, p);
+        REQUIRE(rig.count(ArenaEventType::CounterStagger) == 1);
+        CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+        CHECK_FALSE(rig.fight.pairOpen());
+        rig.in.guard = false;
+        rig.runFor(ruleFighter().pairCooldown - 0.1f);
+        CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+        rig.runFor(0.2f);
+        CHECK(rig.fight.pressReason(ArenaPress::Pair) != PressReason::Cooldown);
+        Rig again(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(again, p + 1, p);
+        REQUIRE(again.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+        again.fight.restart();
+        CHECK(again.fight.pressReason(ArenaPress::Pair) != PressReason::Cooldown);
+    }
+    // Every bite parried (the guard pressed late in its startup, let go in its recovery) and every parry paired on
+    // the tick after it: with a long clock only the first counter deals; with none, each does.
+    const auto play = [](float cooldown, int& parries, int& counters, int& cooled, int& hp) {
+        ArenaFighter f = ruleFighter();
+        f.pairCooldown = cooldown;
+        Rig rig(f, {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 5))});
+        rig.put(0, 1.5f, 0.f);
+        std::size_t seen = 0;
+        for (int k = 0; k < 1200 && rig.fight.phase() == ArenaPhase::Fighting; ++k) {
+            const ArenaEnemyOut& e = rig.out().enemies[0];
+            rig.in.guard = e.brain == ArenaBrain::Attack &&
+                           ((e.part == ArenaPart::Startup && e.stateTime >= 0.27f) || e.part == ArenaPart::Active);
+            for (; seen < rig.log.size(); ++seen)
+                if (rig.log[seen].event.type == ArenaEventType::Parried) rig.in.pair = true;
+            rig.tick();
+        }
+        parries = rig.count(ArenaEventType::Parried);
+        counters = rig.count(ArenaEventType::CounterStagger);
+        cooled = rig.fight.stats().pairsCooled;
+        hp = rig.fight.enemyHp(0);
+    };
+    int parries = 0, counters = 0, cooled = 0, hp = 0;
+    play(30.f, parries, counters, cooled, hp);
+    REQUIRE(parries >= 2);
+    CHECK(counters == 1);
+    CHECK(cooled == parries - 1);
+    CHECK(hp == 100 - 30); // the spent pairs dealt nothing
+    play(0.f, parries, counters, cooled, hp);
+    REQUIRE(parries >= 2);
+    CHECK(counters >= 2);
+    CHECK(cooled == 0);
+}
+
+TEST_CASE("arena paired counter: pairBossPoise, pairCooldown and pairPartnerSeconds load from data, in range") {
+    CHECK(kArenaBossPairPoise == doctest::Approx(0.45f));
+    const ArenaFighter plain{};
+    CHECK(plain.pairBossPoise == doctest::Approx(0.45f));
+    CHECK(plain.pairCooldown == doctest::Approx(3.f));
+    CHECK(plain.pairPartnerSeconds == doctest::Approx(1.f));
+    const auto with = [](const char* kv) {
+        return tableJson(std::string(R"([ { "id": "default", )") + kv + " } ]", kEnemiesOk);
+    };
+    ArenaTable t;
+    REQUIRE(loadError(with(R"("pairBossPoise": 0.3, "pairCooldown": 5, "pairPartnerSeconds": 0.5)"), &t).empty());
+    REQUIRE(!t.fighters.empty());
+    CHECK(t.fighters[0].pairBossPoise == doctest::Approx(0.3f));
+    CHECK(t.fighters[0].pairCooldown == doctest::Approx(5.f));
+    CHECK(t.fighters[0].pairPartnerSeconds == doctest::Approx(0.5f));
+    CHECK(contains(loadError(with(R"("pairBossPoise": 1.5)")), "pairBossPoise"));
+    CHECK(contains(loadError(with(R"("pairBossPoise": -0.1)")), "pairBossPoise"));
+    CHECK(contains(loadError(with(R"("pairCooldown": 31)")), "pairCooldown"));
+    CHECK(contains(loadError(with(R"("pairCooldown": -1)")), "pairCooldown"));
+    CHECK(contains(loadError(with(R"("pairPartnerSeconds": 11)")), "pairPartnerSeconds"));
+    CHECK(contains(loadError(with(R"("pairPartnerSeconds": "long")")), "pairPartnerSeconds"));
+    // The shipped table carries the ruled values.
+    const ArenaTable shipped = loadShipped();
+    REQUIRE(!shipped.fighters.empty());
+    CHECK(shipped.fighters[0].pairBossPoise == doctest::Approx(0.45f));
+    CHECK(shipped.fighters[0].pairCooldown == doctest::Approx(3.f));
+    CHECK(shipped.fighters[0].pairPartnerSeconds == doctest::Approx(1.f));
+}
+
 // ---- pressReason: the rules' own answer for a key prompt ----
 
 namespace {
@@ -4172,6 +4307,15 @@ TEST_CASE("arena pressReason: at every tick each press's answer is what that pre
         rig.put(0, 1.5f, 0.f);
         runChecked(rig, 70, t, [](Rig& r, int k) { r.in.guard = k >= 19; });
     }
+    {   // a counter dealt (pressed on the parry's tick, about 25), then its pairCooldown: PARTNER says Cooldown
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        rig.put(0, 1.5f, 0.f);
+        runChecked(rig, 260, t, [](Rig& r, int k) {
+            r.in.guard = k >= 19 && k <= 60;
+            r.in.pair = k == 25;
+        });
+        CHECK(rig.fight.stats().counterStaggers == 1);
+    }
     {   // a guard broken by one block
         ArenaAttack crush = swing(0.4f, 0.15f, 0.5f, 2.f, 5);
         crush.guardDamage = 150.f;
@@ -4216,7 +4360,7 @@ TEST_CASE("arena pressReason: at every tick each press's answer is what that pre
         INFO("reason " << static_cast<int>(r));
         CHECK(t.seen[static_cast<std::size_t>(r)] > 0);
     }
-    CHECK(t.seen[static_cast<std::size_t>(PressReason::Cooldown)] == 0); // the fight has no cooldowns; the gift slot does
+    CHECK(t.seen[static_cast<std::size_t>(PressReason::Cooldown)] > 0); // the paired counter's pairCooldown
     CHECK(t.pairOk > 0);
     CHECK(t.edges * 50 < t.checked); // the tick's own regen and reload are rare edges
 }
@@ -8106,14 +8250,20 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
 } // namespace
 
 TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the host's own fight") {
-    // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1.
+    // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1. Re-pinned for
+    // the paired counter's 3 s cooldown (rule b): a pair inside it is refused, so the fight runs 14.4 s, not 17.4 s.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 17.4 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 82/150, 22 hits, 2 taken, 0 blocks, 3 parries, 0 ripostes, 2 evades, 0 guard breaks, "
-          "4 staggers, 0 heals, 1 releases, 0 overloads, 5/6 reads right, dealt 520, took 68, 0 restarts.");
+          "Arena: VICTORY at standalone beat 0 step 0 after 14.4 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 116/150, 22 hits, 1 taken, 0 blocks, 3 parries, 1 ripostes, 1 evades, 0 guard breaks, "
+          "3 staggers, 0 heals, 0 releases, 0 overloads, 4/6 reads right, dealt 520, took 34, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
     CHECK(r.hitsOn[1] == 17);
+    // What the cooldown changed: a pair inside it is refused (spent, nothing dealt), and the fight ends on a riposte
+    // where the counter had led to a Release.
+    CHECK(r.stats.pairsCooled >= 1);
+    CHECK(r.stats.releases == 0);
+    CHECK(r.stats.ripostes == 1);
     // The best run is the skirmisher's 2 of 2 (weight 3): Devin's 2nd blow fills its count and breaks its poise with
     // it. The hulk's count (weight, 7) fills on his 4th blow, before its poise breaks: it breaks out once.
     CHECK(r.stats.breakRunBest == 2);
@@ -8124,16 +8274,18 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
 }
 
 TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's break-out (weight fills it first)") {
-    // Every seed runs past 15 s. The skirmisher still staggers on the blow that fills its count, but Devin's heavy
-    // lights fill the hulk's count of 7 in 4 blows while its poise holds, so it breaks out every seed.
+    // Every seed runs past 14 s. The skirmisher still staggers on the blow that fills its count, but Devin's heavy
+    // lights fill the hulk's count of 7 in 4 blows while its poise holds, so it breaks out every seed: once, or twice
+    // where the paired counter's 3 s cooldown (rule b) refuses a pair and the count fills again (seeds 3, 6 and 8).
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
         CAPTURE(seed);
         CHECK(r.phase == ArenaPhase::Victory);
-        CHECK(r.stats.time > 15.f);
+        CHECK(r.stats.time > 14.f);
         CHECK(r.stats.flinches > 0);
         CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
-        CHECK(r.stats.breakOuts == 1);
+        CHECK(r.stats.breakOuts == (seed == 3 || seed == 6 || seed == 8 ? 2 : 1));
+        if (seed == 3 || seed == 6 || seed == 8) CHECK(r.stats.pairsCooled >= 1); // the refused pair behind the second
         CHECK(r.stats.breakDue == r.stats.breakOuts + r.stats.stepBacks);
         CHECK(arenaFeatureChecks(r.stats).breakOutDue);
         CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::Pass);
