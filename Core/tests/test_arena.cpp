@@ -4096,7 +4096,7 @@ TEST_CASE("arena paired counter: a counter dealt starts pairCooldown; inside it 
 
 TEST_CASE("arena paired counter: pairBossPoise, pairCooldown and pairPartnerSeconds load from data, in range") {
     CHECK(kArenaBossPairPoise == doctest::Approx(0.45f));
-    const ArenaFighter plain;
+    const ArenaFighter plain{};
     CHECK(plain.pairBossPoise == doctest::Approx(0.45f));
     CHECK(plain.pairCooldown == doctest::Approx(3.f));
     CHECK(plain.pairPartnerSeconds == doctest::Approx(1.f));
