@@ -223,8 +223,10 @@ struct PRig {
     void tick() {
         if (autopilot) {
             const std::uint8_t order = in.partnerOrder;
+            const PartnerCameraView camera = in.partnerCamera;
             in = fight.autopilot();
             in.partnerOrder = order;
+            in.partnerCamera = camera;
         }
         out = &fight.tick(kDt, in, bodies);
         for (const ArenaEvent& e : out->events) {
@@ -1759,4 +1761,71 @@ TEST_CASE("arena partner: PARTNER (the pair press) is Closed or Ok while it is i
     r.fight.setPartner(nullptr, nullptr);
     r.fight.setAlly(0, 0.4f);
     CHECK(r.fight.pressReason(ArenaPress::Pair) != PressReason::Absent);
+}
+
+namespace {
+
+// A third-person camera 4.5 m behind the lead along its facing, 2 m up, pitched 12 degrees down, 90 degrees wide at 16:9.
+PartnerCameraView behindLead(Vec2 lead, Vec2 facing) {
+    constexpr float kRad = 3.14159265f / 180.f;
+    const float p = 12.f * kRad;
+    PartnerCameraView v;
+    v.given = true;
+    v.pos = {lead.x - 4.5f * facing.x, lead.y - 4.5f * facing.y, 2.f};
+    v.forward = {facing.x * std::cos(p), facing.y * std::cos(p), -std::sin(p)};
+    v.up = {facing.x * std::sin(p), facing.y * std::sin(p), std::cos(p)};
+    v.aspect = 16.f / 9.f;
+    v.verticalFovDegrees = 2.f * std::atan(1.f / v.aspect) / kRad;
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given against given (report)") {
+    const ArenaTable t = shippedTable();
+    const char* names[kPartnerIdleCount] = {"none", "noBudget", "noTarget", "moving",
+                                            "staggered", "called", "pause", "other"};
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}})
+        for (const bool camera : {false, true}) {
+            CAPTURE(order);
+            CAPTURE(camera);
+            PRig r(t.fighter("default"));
+            r.def = t.fallback;
+            r.def.enemyCount = 0;
+            for (const char* id : {"skirmisher", "hulk", "duelist"})
+                for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+                    if (t.enemyIds[e] == id) {
+                        r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                        r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+                    }
+            REQUIRE(r.def.enemyCount == 3);
+            r.def.attackers = 2;
+            r.tuning = shippedTuning();
+            r.in.partnerOrder = order;
+            r.goShipped(true, 1);
+            Vec2 facing = r.fight.playerStartFacing();
+            while (!r.fight.over() && r.fight.time() < 20.f) {
+                r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
+                r.tick();
+                // A host camera turns after the lead at about 3 rad/s, not on the tick its facing snaps.
+                const Vec2 f = r.out->player.facing;
+                const float k = std::min(1.f, 3.f * kDt);
+                const Vec2 m{facing.x + (f.x - facing.x) * k, facing.y + (f.y - facing.y) * k};
+                const float ml = length(m);
+                if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
+            }
+            const ArenaStats& s = r.fight.stats();
+            const double T = r.fight.time();
+            std::string shares;
+            for (std::size_t k = 0; k < kPartnerIdleCount; ++k)
+                shares += std::string(" ") + names[k] + " " +
+                          std::to_string(r.brain.idleSeconds(static_cast<PartnerIdle>(k)) / T).substr(0, 5);
+            const std::string head = std::string(order == 0 ? "StayClose" : "Spread") + (camera ? ", camera" : ", no camera");
+            MESSAGE(head << ": " << T << " s, "
+                                   << r.def.enemyCount << " enemies; strings " << s.partnerStrings << ", blows "
+                                   << s.partnerBlows << ", guards " << s.partnerGuards << ", fallback "
+                                   << r.brain.fallbackSeconds() << " s; shares:" << shares);
+            CHECK(r.brain.framed() == camera);
+            if (camera) CHECK(s.partnerStrings >= 1);
+        }
 }

@@ -434,6 +434,19 @@ the pieces.
   full committed length plus what is left of one still running, so a blow it begins can never carry a
   rolling window over; the slack left is one slot of the budget ring. A blow whose string ends early
   (target felled, a guard) leaves it running: no new string until it ends (`Wait`, why `Committed`).
+* **The partner's camera (`ArenaInput::partnerCamera`, `ftcore/PartnerCamera.h`).** The play camera,
+  fed every tick, in the fight's metres with z up: `pos`, `forward` and `up` (unit, at right angles),
+  `verticalFovDegrees` (an Unreal camera's FOV is horizontal: vertical = 2 atan(tan(fov / 2) / aspect)),
+  `aspect` (width over height), and the body it frames: `groundZ` (the floor's height) and
+  `bodyHeight` (1.8 by default), both in the same metres. Not given (the default), the partner runs
+  as before, with no stationing. Given and whole, ArenaFight turns stationing on and the brain picks
+  only stations where the partner's feet, middle and head are inside the frame shrunk by
+  `frustumMargin` (10%) on every side and outside the keep-outs round the camera's lines to the lead
+  and to its target. With none for `frustumGiveUpSeconds` (3 s) it falls back to the station it used
+  before and says so (`PartnerIntent::frameFallback`, `PartnerBrain::fallbackSeconds()`). Every step the
+  intent names why the partner is not acting (`PartnerIntent::idle`), and `idleSeconds(reason)` sums them
+  over the fight. `PartnerInput::called` (waiting on an action the player called) is not yet fed by
+  ArenaFight.
 
 ## What the Unreal wrapper needs
 

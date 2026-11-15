@@ -290,6 +290,7 @@
 #include "ftcore/FightAnimator.h" // FightClip
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
+#include "ftcore/PartnerCamera.h"
 #include "ftcore/PressReason.h"
 #include "ftcore/ReadCards.h"
 
@@ -781,6 +782,11 @@ struct ArenaInput {
     Vec2 cameraFacing{};
     // The partner's order (the player's button, ArenaFight::setPartner): 0 StayClose, 1 Spread (PartnerOrder).
     std::uint8_t partnerOrder = 1;
+    // The play camera for the partner's stationing (PartnerBrain rules 8-16; ftcore/PartnerCamera.h), in the fight's
+    // metres with z up. Not given (the default): the partner brain runs without stationing, as before. Given and
+    // whole: each tick feeds the brain a station view (the camera's place and forward on the ground, the lead's
+    // facing, the ring less the ally's radius) and this camera, so its stations stay in frame.
+    PartnerCameraView partnerCamera{};
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).

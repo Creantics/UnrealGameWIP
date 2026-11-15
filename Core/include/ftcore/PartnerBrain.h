@@ -106,6 +106,37 @@
 //      going Down and rolesSwapped(). During a pause it goes back to the
 //      station (StepBack when nearer than standoffMeters to the target's edge, else MoveTo). Later blows of a string
 //      are not held to it; guarding, the budget and the rest are unchanged.
+// The play camera (rules 13-16): only while the host also gives PartnerStationView::camera (whole and finite, see
+// PartnerCameraView) with stationing on. Not given, every rule above is as it was, to the bit: the intents, the save's
+// hash and every golden. Once given in a fight the brain is "framed" (sticky until begin or load).
+//  13. Frustum stationing. A station (rule 10's ring round the target; no target, rule 11's ring round the lead at
+//      followMin..followMax) is valid only if the partner's body there, a capsule of feet (groundZ), middle and head
+//      (groundZ + bodyHeight), is inside the camera's frustum shrunk by frustumMargin (0.10) of the screen's width
+//      and height on every side (each point in front of the camera, |x|, |y| <= 1 - 2 x margin in the screen's -1..1
+//      frame), and outside both keep-outs: rule 9's wedge round the camera-to-lead line, and the target's own: from
+//      the camera along the line to the target, half-angle the target's silhouette (asin(radius / distance)), out to
+//      wedgeBeyondMeters past its far edge, with wedgeClearMeters' clearance (so it never stands in front of the
+//      target, nor hidden behind it). Rule 8 (personal space), the arena and StayClose's cap still rule. Of the valid
+//      stations the nearest to the partner, those in rule 10's arc (rule 11's 110..160 degrees) first; once chosen it
+//      is held, by its angle on its ring, while it stays valid and the target stays. None valid: it keeps going to
+//      the one it last held; after frustumGiveUpSeconds (3.0) with none (or at once when it never held one) it falls
+//      back to rules 10-11's station and says so (intent.frameFallback, and fallbackSeconds()).
+//  14. Engage. With its target within reach and its next blow within the budget, it starts an action within
+//      engageSeconds (2.0): a string, a guard (rule 3) or a reposition (16). The clock counts the steps it stands so
+//      (in reach, the budget fitting, not acting) since its last action began. At engageSeconds a pause ends, and a
+//      string starts from where it stands (ahead of rule 12's 3 s and 6 s and rule 13's wait) when that spot is
+//      outside personal space and outside both keep-outs; inside one it keeps moving out. The budget always wins:
+//      it never starts a blow that does not fit (then the idle reason says NoBudget).
+//  15. StayClose without the lead's target (no lock): the enemy the lead is attacking, else the nearest standing
+//      enemy within closeLeadMeters + reachMeters of the lead; so it never stands idle by a fighting lead.
+//  16. Variety. A pause in which it has not guarded or repositioned for repositionEverySeconds (8.0), with a string
+//      struck since, it repositions: to the nearest valid station of rule 13 at least repositionMeters (1.5) from
+//      where it stands, else at least half that; fallen back (rule 13), to rule 10's station on the other side when
+//      that is in its arc and at least half repositionMeters away (why Reposition). With the strings (about every 3-4 s) that is two kinds of action in every
+//      20 s with the budget free. No new moves: strings, guards and walking are the kit it has.
+// Idle reasons (with or without a camera): every step's intent carries why it is not acting (PartnerIdle), and the
+// brain counts the seconds of each over the fight (idleSeconds; None is the time it acts, so they sum to the time
+// stepped since begin). They are a report: in save and load, never in the hash, and they steer nothing.
 // Two seeded streams (rhythm, defence), drawn at events only: the same seed and script give the same draws at any step.
 // A step that is negative or not a finite number counts as 0, and one step is at most kMaxPartnerStep (the fight's
 // kMaxFightStep), as in FightSession.
@@ -119,10 +150,12 @@
 //     "wedgeHalfDegrees": 25, "wedgeBeyondMeters": 1.0, "wedgeClearMeters": 0.5, "closeArcMin": 60, "closeArcMax": 90,
 //     "closeLeadMeters": 3.5, "spreadArcMin": 120, "spreadArcMax": 180, "sideHoldSeconds": 2.0, "followMin": 2.0,
 //     "followMax": 2.5, "stationTolerance": 0.5, "stationGiveUpSeconds": 3.0, "stationAnySeconds": 6.0,
-//     "targetHoldSeconds": 1.5 }
+//     "targetHoldSeconds": 1.5, "frustumMargin": 0.1, "frustumGiveUpSeconds": 3.0, "engageSeconds": 2.0,
+//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5 }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/PartnerCamera.h" // PartnerVec3, PartnerCameraView
 #include "ftcore/Explore.h"
 
 #include <array>
@@ -168,6 +201,7 @@ struct PartnerStationView {
     bool reviving = false;   // the partner is reviving the lead: personal space is off
     Vec2 arenaCentre{};
     float arenaRadius = 0.f; // where the partner may stand (its body's margin taken off); 0: unbounded
+    PartnerCameraView camera{}; // rules 13-16; not given by default
 };
 
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
@@ -191,14 +225,25 @@ struct PartnerInput {
     // Rule 2: seconds of partner attack time spent outside its own strings since the last step (a paired counter's
     // 1.0 s on the step it lands). Not finite, or under 0: 0. Above budgetWindowSeconds: that. 0: as before.
     float spentSeconds = 0.f;
+    // With canAct false: the host holds the body for an action the player called (a paired counter, a gift), not
+    // hitstun. Only the idle reason reads it.
+    bool called = false;
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
 // Why this intent (for logs and tests).
 enum class PartnerWhy : std::uint8_t {
     NotBegun, Down, CannotAct, Guard, Leash, String, Pause, NoTarget, Approach, HeldOff, Start, Budget,
-    Committed // a blow it began before its string ended still runs out: no new string yet
+    Committed, // a blow it began before its string ended still runs out: no new string yet
+    Reposition // rule 16: a pause's walk to another station
 };
+// Why it is not acting this step. None: it acts (a string, a blow running out, a guard, a reposition). NoBudget: its
+// next blow would break rule 2's budget. NoTarget: no target, or its station is reached and the target is out of
+// reach. Moving: walking to a station, back on the leash, or stepping back. Staggered: hitstun (canAct false,
+// doing Hurt) or down. Called: canAct false for a called action. Pause: the rhythm's pause, standing at its station.
+// Other: held off a windup aimed at it it did not guard, canAct false for any other reason, not begun.
+enum class PartnerIdle : std::uint8_t { None, NoBudget, NoTarget, Moving, Staggered, Called, Pause, Other };
+inline constexpr std::size_t kPartnerIdleCount = 8;
 
 struct PartnerIntent {
     PartnerAct act = PartnerAct::Wait;
@@ -218,6 +263,9 @@ struct PartnerIntent {
     bool rise = false;        // Wait while Down past downSeconds: stand now
     float riseHealth = 0.f;   // with rise: the health to stand at (fraction of max)
     bool stationed = false;   // stationing (rules 8-12) ran this step: point, when set, obeys them
+    bool framed = false;      // rule 13 ran this step (the camera given): point, when set, is a valid station ...
+    bool frameFallback = false; // ... unless this: no valid station for frustumGiveUpSeconds, rules 10-11's instead
+    PartnerIdle idle = PartnerIdle::Other; // a report: never in the hash
 };
 
 struct PartnerTuning {
@@ -260,9 +308,18 @@ struct PartnerTuning {
     float stationAnySeconds = 6.f;    // rule 12's fallback: and this long, from anywhere outside personal space
                                       // (stationGiveUpSeconds..60)
     float targetHoldSeconds = 1.5f;   // rule 1, Spread: a chosen target is kept at least this long (0..10)
+    // The play camera (rules 13-16).
+    float frustumMargin = 0.1f;          // rule 13: of the screen's width and height kept clear each side (0..0.4)
+    float frustumGiveUpSeconds = 3.f;    // rule 13: no valid station this long, rules 10-11's (0..30)
+    float engageSeconds = 2.f;           // rule 14 (0.25..10)
+    float repositionEverySeconds = 8.f;  // rule 16 (2..20)
+    float repositionMeters = 1.5f;       // rule 16: at least this far (0.5..6)
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
+// Rule 13's frame test alone: a partner standing at p (its capsule, the camera's groundZ and bodyHeight) is inside the
+// camera's frustum shrunk by `margin` (0..0.4) of the screen on every side. A camera not given or not whole: false.
+FTCORE_API bool partnerInFrame(const PartnerCameraView& camera, float margin, Vec2 p);
 // Reads Data/Battle/partner_brain.json. A field out of its range, of the wrong type or unknown, a bad version or a
 // file that does not parse: `out` is the defaults and false (`error` says why). A cross-field pair broken (returnMeters
 // over leashMeters, leashMeters under personalSpaceMeters + 1, standoffMeters over reachMeters, stationTolerance over
@@ -326,8 +383,26 @@ struct PartnerBrainSave {
     double offStation = 0.0; // rule 12's fallback: seconds trying to station since it last was stationed
     double targetFor = 0.0;  // rule 1: how long the current target has been held
     bool targetReached = false; // the current target has been within reach since it was chosen
+    // Rules 13-16 (the camera given).
+    bool framed = false;           // a camera was given since begin (sticky)
+    std::uint8_t frameRing = 0;    // the station held: 0 none, 1 on its target's ring, 2 on the lead's follow ring
+    int frameTarget = -1;          // ring 1: the target it is held for
+    float frameAngle = 0.f;        // its direction from the ring's centre (degrees from +x)
+    float frameRadius = 0.f;       // ring 2: its radius
+    Vec2 frameLast{};              // where the held station last was valid (the grace's goal)
+    double noFrame = 0.0;          // seconds with no valid station
+    double engageFor = 0.0;        // rule 14's clock
+    double lastStrike = -1e9;      // rule 16: when the last string, guard and reposition began (on now's clock)
+    double lastGuard = -1e9;
+    double lastMove = -1e9;
+    bool guarding = false;         // the last step's intent was Guard
+    // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
+    std::array<double, kPartnerIdleCount> idleSeconds{};
+    double fallbackSeconds = 0.0;
 
-    // FNV-1a over every field (StateHash.h): two brains with the same hash do the same from here.
+    // FNV-1a over every field that steers play (StateHash.h): two brains with the same hash do the same from here.
+    // The report is left out; rules 13-16's fields count only once framed or with one of their tunables off its
+    // default, so a brain never given a camera hashes as it always did.
     FTCORE_API std::uint64_t hash() const;
 };
 
@@ -361,6 +436,13 @@ public:
     double lastPause() const { return s_.pause; }
     // Seconds left of the blows it has begun (0: none running).
     double committedLeft() const { return s_.committedEnd > s_.now ? s_.committedEnd - s_.now : 0.0; }
+    // The idle report: seconds stepped with each reason since begin (None: acting); they sum to the time stepped.
+    double idleSeconds(PartnerIdle why) const {
+        const std::size_t i = static_cast<std::size_t>(why);
+        return i < kPartnerIdleCount ? s_.idleSeconds[i] : 0.0;
+    }
+    double fallbackSeconds() const { return s_.fallbackSeconds; } // rule 13's fallback, seconds
+    bool framed() const { return s_.framed; }
 
     // Its whole state, for a checkpoint: load(save()) gives a brain that does exactly the same from there.
     const PartnerBrainSave& save() const { return s_; }
@@ -377,7 +459,7 @@ private:
     void account(double dt, double partner, bool lead);
     void spend(float seconds);
     void endString(bool staggered);
-    int chooseTarget(const PartnerInput& in) const;
+    int chooseTarget(const PartnerInput& in, bool framed) const;
 
     PartnerBrainSave s_{};
 };

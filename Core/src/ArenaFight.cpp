@@ -2772,6 +2772,16 @@ struct ArenaFightImpl {
         pin.leadAttacking = leadOn;
         for (std::size_t k = 0; k < kMaxPartnerBlows; ++k) pin.blowSeconds[k] = allyLight(static_cast<std::uint8_t>(k)).total();
         pin.enemies = std::span<const PartnerEnemyView>(views.data(), n);
+        if (in.partnerCamera.given) { // stationing (rules 8-16) in the camera's frame; not given, none, as before
+            const PartnerCameraView& cam = in.partnerCamera;
+            pin.station.on = true;
+            pin.station.cameraPos = {cam.pos.x, cam.pos.y};
+            pin.station.cameraForward = {cam.forward.x, cam.forward.y};
+            pin.station.leadFacing = pl.facing;
+            pin.station.arenaCentre = fight.ring_.centre;
+            pin.station.arenaRadius = std::max(0.f, fight.ring_.radius - fight.allyRadius_);
+            pin.station.camera = cam;
+        }
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
         if (!allyUp()) { // down: it lies where it fell until the brain stands it
