@@ -192,17 +192,26 @@ private:
 	void OnActorSpawned(AActor* Actor);
 	// Puts every primitive the audit changed back as it was, and r.CustomDepth if the audit raised it; stops the re-audit.
 	void RestoreWorn();
+	// r.CustomDepth at 3 (the stencil), raised once if lower and read back: false when the raise is refused (set at a
+	// higher priority, the console say), warned once; the audit then tags nothing, as the catch-all could not work.
+	bool EnsureStencil();
+	// The FTWaveAware marker of a slot's master (-1 none), read once per master for the life of the wave state.
+	float AwareMarker(const UMaterialInterface& Material);
 	struct FWornDepth
 	{
 		TWeakObjectPtr<UPrimitiveComponent> Component;
 		bool bRender = false; // its own custom depth and stencil before the audit set them
 		int32 Stencil = 0;
+		uint32 Pass = 0;      // the last re-audit that saw it on a root (one not seen is put back)
 	};
 	static constexpr float AuditPeriod = 0.5f;
 	TArray<TWeakObjectPtr<AActor>> AuditRoots;
 	TArray<TWeakObjectPtr<AActor>> Spawned; // since the last re-audit
-	TArray<FWornDepth> WornDepth;
+	TMap<FObjectKey, FWornDepth> WornDepth;
+	TMap<FObjectKey, float> AwareMarkers;
+	uint32 AuditPass = 0;
 	int32 CustomDepthBefore = -1; // r.CustomDepth before the audit raised it; -1 untouched
+	bool bStencilRefused = false;  // the raise was refused (warned once)
 	FTimerHandle AuditTimer;
 	FDelegateHandle SpawnHandle;
 	// The audit's scratch, reserved once (no allocation in a re-audit once the arrays have grown).

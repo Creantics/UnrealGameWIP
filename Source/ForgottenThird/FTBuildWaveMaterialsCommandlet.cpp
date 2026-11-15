@@ -11,6 +11,7 @@
 #include "FTStyleParameters.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
@@ -527,28 +528,62 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s has no Character input (rebuild it with -run=FTBuildWaveMaterials); %s takes the surface state."), Tag,
 			StateFunctionPath, *Material->GetName());
 	};
-	// The runtime's marker (FTWorldWave::AwareParameter): a scalar parameter, wired to nothing, whose default the audit reads
-	// from the material's cached parameters in the editor and a cooked build alike: 1 with the character state, 0 without.
-	// Like the flag, one already there is switched on for a character and never off here.
-	const auto SetMarker = [Material, X, Y, bCharacter]()
+	// The runtime's marker (FTWorldWave::AwareParameter): a scalar parameter whose default the audit reads from the
+	// material's cached parameters: 1 with the character state, 0 without. Like the flag, one already there is switched on
+	// for a character and never off here. So that no cook can strip it as unreferenced, it is wired into the main call's
+	// emissive input as (what fed it) + marker * 0, which cannot change the output; a scalar 0 stands in for an unconnected
+	// input (the function's emissive default is black too). Done once: an input already fed that way is left alone.
+	const auto SetMarker = [Material, X, Y, bCharacter](UMaterialExpressionMaterialFunctionCall* MainCall)
 	{
 		const FName Name(AwareParameter);
+		UMaterialExpressionScalarParameter* Marker = nullptr;
 		for (UMaterialExpression* Expression : Material->GetExpressionCollection().Expressions)
 		{
-			if (UMaterialExpressionScalarParameter* Marker = Cast<UMaterialExpressionScalarParameter>(Expression); Marker && Marker->ParameterName == Name)
+			if (UMaterialExpressionScalarParameter* Found = Cast<UMaterialExpressionScalarParameter>(Expression); Found && Found->ParameterName == Name)
 			{
-				if (bCharacter)
-				{
-					Marker->DefaultValue = 1.f;
-				}
+				Marker = Found;
+				break;
+			}
+		}
+		if (Marker)
+		{
+			if (bCharacter)
+			{
+				Marker->DefaultValue = 1.f;
+			}
+		}
+		else
+		{
+			Marker = AddExpression<UMaterialExpressionScalarParameter>(Material, X - 300, Y + 360);
+			Marker->ParameterName = Name;
+			Marker->DefaultValue = bCharacter ? 1.f : 0.f;
+			Marker->Group = FName(TEXT("WorldWave"));
+			Marker->Desc = TEXT("The world wave's runtime marker: 1 when this master takes the character state. Read by the audit; "
+								"added times zero into the state's emissive input so it is kept.");
+		}
+		FExpressionInput& Emis = MainCall->FunctionInputs[2].Input;
+		if (const UMaterialExpressionAdd* Sum = Cast<UMaterialExpressionAdd>(Emis.Expression))
+		{
+			const UMaterialExpressionMultiply* Times = Cast<UMaterialExpressionMultiply>(Sum->B.Expression);
+			if (Times && Times->A.Expression == Marker)
+			{
 				return;
 			}
 		}
-		UMaterialExpressionScalarParameter* Marker = AddExpression<UMaterialExpressionScalarParameter>(Material, X - 300, Y + 360);
-		Marker->ParameterName = Name;
-		Marker->DefaultValue = bCharacter ? 1.f : 0.f;
-		Marker->Group = FName(TEXT("WorldWave"));
-		Marker->Desc = TEXT("The world wave's runtime marker: 1 when this master takes the character state. Read by the audit; wired to nothing.");
+		UMaterialExpressionMultiply* Zeroed = AddExpression<UMaterialExpressionMultiply>(Material, X - 150, Y + 360);
+		Zeroed->A.Connect(0, Marker);
+		Zeroed->ConstB = 0.f;
+		UMaterialExpressionAdd* Kept = AddExpression<UMaterialExpressionAdd>(Material, X - 60, Y + 300);
+		if (Emis.Expression)
+		{
+			Kept->A.Connect(Emis.OutputIndex, Emis.Expression);
+		}
+		else
+		{
+			Kept->ConstA = 0.f;
+		}
+		Kept->B.Connect(0, Zeroed);
+		Emis.Connect(0, Kept);
 	};
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	const auto IsState = [Function](const UMaterialExpression* Expression)
@@ -603,7 +638,7 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		Existing->UpdateFromFunctionResource();
 		SetCharacter(Existing);
 		RouteFuzz();
-		SetMarker();
+		SetMarker(Existing);
 		return true;
 	}
 	UMaterialExpressionMaterialFunctionCall* Call = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y);
@@ -641,7 +676,7 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 	Route(Inputs->EmissiveColor, 2);
 	SetCharacter(Call);
 	RouteFuzz();
-	SetMarker();
+	SetMarker(Call);
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: world-wave state wired in%s."), Tag, *Material->GetName(),
 		bCharacter ? TEXT(" (character)") : TEXT(""));
 	return true;

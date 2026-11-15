@@ -355,6 +355,7 @@ void UFTWorldWaveSubsystem::Initialize(FSubsystemCollectionBase& InCollection)
 	AuditRoots.Reserve(64);
 	Spawned.Reserve(32);
 	WornDepth.Reserve(256);
+	AwareMarkers.Reserve(32);
 	AuditActors.Reserve(16);
 	AuditUsed.Reserve(32);
 	// No tick bound yet: a map with no wave pays nothing (BindTick binds it for a boot switch or a wave).
@@ -1119,6 +1120,7 @@ void UFTWorldWaveSubsystem::ReAudit()
 	}
 	Spawned.Reset();
 	AuditRoots.RemoveAllSwap([](const TWeakObjectPtr<AActor>& Root) { return !Root.IsValid(); });
+	++AuditPass;
 	FAuditCount Total;
 	for (const TWeakObjectPtr<AActor>& Root : AuditRoots)
 	{
@@ -1132,13 +1134,88 @@ void UFTWorldWaveSubsystem::ReAudit()
 			Total.Changed += One.Changed;
 		}
 	}
-	if (Total.Changed > 0)
+	// A piece this pass didn't see on any root (a weapon dropped or detached) goes back as it was; a dead one is dropped.
+	int32 Untagged = 0;
+	for (auto It = WornDepth.CreateIterator(); It; ++It)
+	{
+		FWornDepth& Entry = It.Value();
+		UPrimitiveComponent* Primitive = Entry.Component.Get();
+		if (!IsValid(Primitive))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+		if (Entry.Pass != AuditPass)
+		{
+			Primitive->SetCustomDepthStencilValue(Entry.Stencil);
+			Primitive->SetRenderCustomDepth(Entry.bRender);
+			It.RemoveCurrent();
+			++Untagged;
+		}
+	}
+	if (Total.Changed > 0 || Untagged > 0)
 	{
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("WorldWave: re-audit: %d characters (%d actors), %d primitives at %d, %d at %d, %d slots unconverted, %d changed; %.3f ms."),
+			TEXT("WorldWave: re-audit: %d characters (%d actors), %d primitives at %d, %d at %d, %d slots unconverted, %d changed, %d no longer worn ")
+			TEXT("put back; %.3f ms."),
 			AuditRoots.Num(), Total.Actors, Total.Catch, FTWorldWave::kCatchStencil, Total.Aware, FTWorldWave::kAwareStencil, Total.Unconverted,
-			Total.Changed, (FPlatformTime::Seconds() - Begin) * 1000.0);
+			Total.Changed, Untagged, (FPlatformTime::Seconds() - Begin) * 1000.0);
 	}
+}
+
+bool UFTWorldWaveSubsystem::EnsureStencil()
+{
+	if (bStencilRefused)
+	{
+		return false;
+	}
+	IConsoleVariable* Mode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth"));
+	if (!Mode)
+	{
+		bStencilRefused = true;
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no r.CustomDepth; no worn piece tagged, the catch-all is off."));
+		return false;
+	}
+	const int32 Was = Mode->GetInt();
+	if (Was >= 3)
+	{
+		return true;
+	}
+	// The stencil needs 3 (2 or lower allocates none, and the catch-all would see none). A value set at a higher priority
+	// (the console) ignores this set, so it is read back.
+	Mode->Set(3, ECVF_SetByCode);
+	if (Mode->GetInt() < 3)
+	{
+		bStencilRefused = true;
+		UE_LOG(LogForgottenThird, Warning,
+			TEXT("WorldWave: r.CustomDepth stays %d (set at a higher priority than code); the worn pieces' stencil can't work, so none is tagged and ")
+			TEXT("the pieces not wave-aware keep their own world across the front."),
+			Mode->GetInt());
+		return false;
+	}
+	if (CustomDepthBefore < 0)
+	{
+		CustomDepthBefore = Was;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth %d -> 3 for the worn pieces' stencil."), Was);
+	return true;
+}
+
+float UFTWorldWaveSubsystem::AwareMarker(const UMaterialInterface& Material)
+{
+	const UMaterial* Master = Material.GetMaterial();
+	const FObjectKey Key(Master ? static_cast<const UObject*>(Master) : static_cast<const UObject*>(&Material));
+	if (const float* Found = AwareMarkers.Find(Key))
+	{
+		return *Found;
+	}
+	float Marker = -1.f;
+	if (Master)
+	{
+		FTWorldWave::WaveAware(*Master, &Marker);
+	}
+	AwareMarkers.Add(Key, Marker);
+	return Marker;
 }
 
 void UFTWorldWaveSubsystem::RestoreWorn()
@@ -1152,9 +1229,13 @@ void UFTWorldWaveSubsystem::RestoreWorn()
 		}
 	}
 	SpawnHandle.Reset();
+	// Each piece takes back what it had before the audit first set it. Assumed: nothing else in the game changes a worn
+	// piece's custom depth while a wave state is shown (nothing else uses custom depth today); a setting made by someone
+	// else in that time would be overwritten here.
 	int32 Restored = 0;
-	for (const FWornDepth& Entry : WornDepth)
+	for (const TPair<FObjectKey, FWornDepth>& Pair : WornDepth)
 	{
+		const FWornDepth& Entry = Pair.Value;
 		if (UPrimitiveComponent* Primitive = Entry.Component.Get(); IsValid(Primitive))
 		{
 			Primitive->SetCustomDepthStencilValue(Entry.Stencil);
@@ -1163,6 +1244,9 @@ void UFTWorldWaveSubsystem::RestoreWorn()
 		}
 	}
 	WornDepth.Reset();
+	AwareMarkers.Reset();
+	AuditLogged.Reset();
+	bStencilRefused = false;
 	AuditRoots.Reset();
 	Spawned.Reset();
 	if (CustomDepthBefore >= 0)
@@ -1371,8 +1455,8 @@ UFTWorldWaveSubsystem::FAuditCount UFTWorldWaveSubsystem::AuditWorn(const AActor
 					continue;
 				}
 				++Count.Slots;
-				float Marker = -1.f;
-				if (FTWorldWave::WaveAware(*Material, &Marker))
+				const float Marker = AwareMarker(*Material);
+				if (Marker > 0.5f)
 				{
 					++Aware;
 					const UMaterial* Master = Material->GetMaterial();
@@ -1411,36 +1495,39 @@ UFTWorldWaveSubsystem::FAuditCount UFTWorldWaveSubsystem::AuditWorn(const AActor
 			const int32 Wanted = Other > 0 ? FTWorldWave::kCatchStencil : FTWorldWave::kAwareStencil;
 			const int32 Now = Primitive->CustomDepthStencilValue;
 			const bool bOurs = Primitive->bRenderCustomDepth && (Now == FTWorldWave::kCatchStencil || Now == FTWorldWave::kAwareStencil);
+			const FObjectKey PrimitiveKey(Primitive);
+			FWornDepth* Entry = WornDepth.Find(PrimitiveKey);
 			if (!bOurs)
 			{
 				if (Primitive->bRenderCustomDepth && Now != 0)
 				{
-					// Someone else's stencil on this piece: left alone, its other slots counted unconverted (logged once).
-					Count.Unconverted += Other;
-					if (!AuditLogged.Contains(FObjectKey(Primitive)))
+					// Someone else's stencil on this piece: left alone (and no longer ours to put back), its other slots counted
+					// unconverted (logged once).
+					if (Entry)
 					{
-						AuditLogged.Add(FObjectKey(Primitive));
+						WornDepth.Remove(PrimitiveKey);
+					}
+					Count.Unconverted += Other;
+					if (!AuditLogged.Contains(PrimitiveKey))
+					{
+						AuditLogged.Add(PrimitiveKey);
 						UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s: %s already renders custom depth with stencil %d; left as it is."),
 							*Root.GetName(), *Primitive->GetName(), Now);
 					}
 					continue;
 				}
-				// Its own settings, the first time they change (a piece set back by someone since keeps its first record).
-				bool bRecorded = false;
-				for (const FWornDepth& Entry : WornDepth)
+				if (!EnsureStencil())
 				{
-					if (Entry.Component.Get() == Primitive)
-					{
-						bRecorded = true;
-						break;
-					}
+					Count.Unconverted += Other;
+					continue;
 				}
-				if (!bRecorded)
+				// Its own settings, the first time they change (a piece set back by someone since keeps its first record).
+				if (!Entry)
 				{
-					FWornDepth& Entry = WornDepth.AddDefaulted_GetRef();
-					Entry.Component = Primitive;
-					Entry.bRender = Primitive->bRenderCustomDepth;
-					Entry.Stencil = Now;
+					Entry = &WornDepth.Add(PrimitiveKey);
+					Entry->Component = Primitive;
+					Entry->bRender = Primitive->bRenderCustomDepth;
+					Entry->Stencil = Now;
 				}
 				Primitive->SetCustomDepthStencilValue(Wanted);
 				Primitive->SetRenderCustomDepth(true);
@@ -1450,6 +1537,10 @@ UFTWorldWaveSubsystem::FAuditCount UFTWorldWaveSubsystem::AuditWorn(const AActor
 			{
 				Primitive->SetCustomDepthStencilValue(Wanted); // a slot changed kind since the last audit
 				++Count.Changed;
+			}
+			if (Entry)
+			{
+				Entry->Pass = AuditPass; // still worn: the re-audit keeps it
 			}
 			++(Wanted == FTWorldWave::kCatchStencil ? Count.Catch : Count.Aware);
 			if (Aware > 0 && Other > 0 && !AuditLogged.Contains(FObjectKey(Primitive)))
@@ -1463,16 +1554,6 @@ UFTWorldWaveSubsystem::FAuditCount UFTWorldWaveSubsystem::AuditWorn(const AActor
 	}
 	if (Count.Changed > 0)
 	{
-		// The stencil needs r.CustomDepth 3 (2 or lower allocates no stencil, and the catch-all would see none).
-		if (IConsoleVariable* Mode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth")); Mode && Mode->GetInt() < 3)
-		{
-			if (CustomDepthBefore < 0)
-			{
-				CustomDepthBefore = Mode->GetInt();
-			}
-			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth %d -> 3 for the worn pieces' stencil."), Mode->GetInt());
-			Mode->Set(3, ECVF_SetByCode);
-		}
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware; %d primitives at stencil %d (the catch-all), ")
 			TEXT("%d at %d (wave-aware), %d changed now, %d slots unconverted; the pieces attached to it at any depth."),
 			*Root.GetName(), Count.Actors, Count.Slots, Count.Other, Count.Catch, FTWorldWave::kCatchStencil, Count.Aware, FTWorldWave::kAwareStencil,

@@ -112,15 +112,18 @@ inline constexpr int32 kCatchStencil = 223;
 // the post leaves it alone (its own material gives it the state), while skin seen bare reads 223 and is converted.
 inline constexpr int32 kAwareStencil = 222;
 // The marker every master built with the state carries (AddState): a scalar parameter whose default is 1 on a master that
-// takes the character state and 0 on any other. The audit reads this default (the material's cached parameters, kept in a
-// cooked build too), one code path in the editor and the game; a master without it is not wave-aware.
+// takes the character state and 0 on any other. It is wired into the state call's emissive input times zero (no change to
+// the output) so a cook keeps it as a referenced parameter. The audit reads this default (the material's cached
+// parameters), one code path in the editor and the game; a master without it is not wave-aware.
 inline constexpr const TCHAR* AwareParameter = TEXT("FTWaveAware");
 // Whether Material's master takes the character state, by its FTWaveAware default (an instance's override is ignored).
+// The audit caches the answer per master (UFTWorldWaveSubsystem::AwareMarker).
 inline bool WaveAware(const UMaterialInterface& Material, float* OutValue = nullptr)
 {
+	static const FHashedMaterialParameterInfo Info{FName(AwareParameter)};
 	const UMaterial* Master = Material.GetMaterial();
 	float Value = 0.f;
-	const bool bFound = Master && Master->GetScalarParameterDefaultValue(FHashedMaterialParameterInfo(FName(AwareParameter)), Value);
+	const bool bFound = Master && Master->GetScalarParameterDefaultValue(Info, Value);
 	if (OutValue)
 	{
 		*OutValue = bFound ? Value : -1.f;
