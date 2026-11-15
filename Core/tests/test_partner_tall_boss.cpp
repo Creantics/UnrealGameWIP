@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -230,6 +231,14 @@ struct TallRun {
     bool tallLock = false;
     int switched = -1;       // the switch run: the tick of the switch
     float reachSeen = -1.f;  // ... seconds from it until the new partner stood clear for 0.5 s on end (the run's start)
+    std::vector<float> fromLead; // the partner's distance to the lead, each step it is on and up
+    float leadP50() const {
+        if (fromLead.empty()) return 0.f;
+        std::vector<float> v = fromLead;
+        std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2), v.end());
+        return v[v.size() / 2];
+    }
+    float leadMax() const { return fromLead.empty() ? 0.f : *std::max_element(fromLead.begin(), fromLead.end()); }
     float meanOut() const { return outRuns > 0 ? (seconds - clear) / static_cast<float>(outRuns) : 0.f; }
 };
 
@@ -237,7 +246,7 @@ struct TallRun {
 // partner 2 m behind the lead to its side. The ally body walks to its goal at the lead's speed and is pushed out of the
 // boss's body. switchAt >= 0: the host's switchLeads at that time (s), the bodies swapped as the host does; the run
 // measures until 3 s after it.
-TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f) {
+TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f, const PartnerTuning* tune = nullptr) {
     ArenaDef def;
     def.fighter = tbFighter();
     def.enemyCount = 1;
@@ -249,7 +258,7 @@ TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f)
     bodies.player = Vec2{-(kBossRadius + 0.9f), 0.f};
     bodies.ally = Vec2{bodies.player.x - 2.f, -1.5f};
     PartnerBrain brain;
-    const PartnerTuning tuning = tbTuning();
+    const PartnerTuning tuning = tune ? *tune : tbTuning();
     ArenaFight fight;
     fight.setAlly(def.fighter.hp, kAllyRadius);
     fight.setPartner(&brain, &tuning);
@@ -266,6 +275,7 @@ TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f)
                 r.switched = i;
                 r.seconds = r.clear = r.seen = r.hidden = r.longestOut = r.outMoving = r.outAttacking = 0.f;
                 r.outRuns = r.blows = r.seenBlows = r.insideSteps = r.goalInside = 0;
+                r.fromLead.clear();
                 outFor = clearFor = 0.f;
             }
         }
@@ -286,6 +296,7 @@ TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f)
             const bool seen = partnerInFrame(view, kPartnerFrustumMargin, bodies.ally);
             const bool clear = seen && !tbHidden(view, bodies.ally, bodies.enemies[0]);
             r.seconds += kDt;
+            r.fromLead.push_back(tbDist(bodies.ally, bodies.player));
             r.seen += seen ? kDt : 0.f;
             r.clear += clear ? kDt : 0.f;
             r.hidden += seen && !clear ? kDt : 0.f;
@@ -332,7 +343,8 @@ void tbReport(const char* name, const TallRun& r) {
                  << ", longest " << r.longestOut << " s, mean " << r.meanOut() << " s (walking " << r.outMoving << ", in strings "
                  << r.outAttacking << "); blows " << r.blows << ", from clear "
                  << r.seenBlows << "; inside steps " << r.insideSteps << ", goals inside " << r.goalInside << "; low "
-                 << r.lowMax << std::string(r.switched >= 0 ? "; switch: clear after " : "") << (r.switched >= 0 ? r.reachSeen : 0.f));
+                 << r.lowMax << "; from the lead p50 " << r.leadP50() << " m, max " << r.leadMax() << " m"
+                 << (r.switched >= 0 ? "; switch: clear after " + std::to_string(r.reachSeen) + " s" : std::string()));
 }
 
 } // namespace
@@ -348,7 +360,13 @@ TEST_CASE("partner tall boss: the camera harness is the host's tall lock (the lo
     REQUIRE(partnerCameraWhole(v));
     CHECK(v.pos.z < 1.5f);                 // the low lens: under the zone's pivot height
     CHECK(v.forward.z > 0.2f);             // looking up at the chest
-    CHECK(arenaLeadInFrame(kArenaLeadFrame, arenaLeadShares(cam.lens, kAspect, ArenaLeadBody{})));
+    const ArenaLeadShares lead = arenaLeadShares(cam.lens, kAspect, ArenaLeadBody{});
+    CHECK(arenaLeadInFrame(kArenaLeadFrame, lead));
+    // The lead's feet on the settled low lens, as a share of the frame's height over its bottom edge, against the
+    // partner's bottom margin: a partner standing at the lead's depth must fit under it (kPartnerFrustumMarginBottom).
+    MESSAGE("low lens: " << v.pos.z << " m up, horizontal fov " << cam.lens.fov << ", the lead's feet at " << lead.feet
+                         << " of the frame's height");
+    CHECK(lead.feet > kPartnerFrustumMarginBottom);
 }
 
 TEST_CASE("partner tall boss: in play through the real camera, 20 s, StayClose and Spread") {
@@ -377,10 +395,12 @@ TEST_CASE("partner tall boss: after a lead switch, the new partner reaches a see
     }
 }
 
-// Why StayClose's cap grows on a tall target: through the settled low lens, with the lead at the boss's foot, no
-// station cell the camera sees unhidden lies within closeLeadMeters of the lead; within closeLeadMeters plus the
-// boss's radius some do.
-TEST_CASE("partner tall boss: the seen station cells lie past StayClose's old cap, inside the grown one") {
+// Why StayClose's cap grows on a tall target: through the settled low lens, with the lead at the boss's foot, the
+// grown cap (closeLeadMeters plus the radius, at most tallGrowMaxMeters, under the grown leash less 0.5) holds more of
+// the station cells the camera sees unhidden than the old cap does. Measured (seen, within the old cap, within the
+// grown cap): 30, 0, 21 at a bottom margin of 0.10; 89, 41, 80 at the bottom's own 0.05 (kPartnerFrustumMarginBottom)
+// (96, 48, 87 at 0.04).
+TEST_CASE("partner tall boss: the grown cap holds more of the seen station cells than StayClose's old cap") {
     TallCamera cam;
     const Vec2 lead{-(kBossRadius + 0.9f), 0.f}, boss{0.f, 0.f};
     cam.begin(lead, boss);
@@ -395,10 +415,27 @@ TEST_CASE("partner tall boss: the seen station cells lie past StayClose's old ca
             if (!partnerInFrame(v, t.frustumMargin, q) || tbHidden(v, q, boss)) continue;
             ++all;
             const float dl = tbDist(q, lead);
-            old += dl <= t.closeLeadMeters ? 1 : 0;
-            grown += dl <= t.closeLeadMeters + kBossRadius ? 1 : 0;
+            const float g = std::min(kBossRadius, t.tallGrowMaxMeters);
+            old += dl <= std::min(t.closeLeadMeters, t.leashMeters - 0.5f) ? 1 : 0;
+            grown += dl <= std::min(t.closeLeadMeters + g, t.leashMeters + g - 0.5f) ? 1 : 0;
         }
     MESSAGE("seen station cells: " << all << ", within the old cap " << old << ", within the grown cap " << grown);
-    CHECK(old == 0);
-    CHECK(grown > 0);
+    CHECK(all >= 30);
+    CHECK(grown > old);
+}
+
+// Rule 18's growth is the tall target's radius and no more, clamped to tallGrowMaxMeters (6.0 shipped, over this
+// boss's 2.5 m radius, so it does not bind here). Clamped to 1.0 m, its leash (4 m) and return grow by 1 m, not 2.5:
+// it keeps within that grown leash and nearer the lead than shipped (measured max 3.55 m against 4.42 m).
+TEST_CASE("partner tall boss: StayClose's growth is clamped to tallGrowMaxMeters") {
+    PartnerTuning t = tbTuning();
+    CHECK(t.tallGrowMaxMeters == 6.f);
+    const TallRun shipped = tallRun(PartnerOrder::StayClose);
+    t.tallGrowMaxMeters = 1.f;
+    const TallRun clamped = tallRun(PartnerOrder::StayClose, -1.f, 20.f, &t);
+    tbReport("StayClose, growth clamped to 1 m", clamped);
+    CHECK(shipped.leadMax() > t.leashMeters);                // the grown leash used
+    CHECK(clamped.leadMax() <= t.leashMeters + 1.f + 0.5f); // a little over the grown leash: the step it turns back
+    CHECK(clamped.leadMax() < shipped.leadMax());
+    CHECK(clamped.leadP50() <= shipped.leadP50() + 1e-3f);
 }

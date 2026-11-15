@@ -35,5 +35,6 @@
   "stationGiveUpSeconds": 3.0,
   "stationAnySeconds": 6.0,
   "targetHoldSeconds": 1.5,
+  "tallGrowMaxMeters": 6.0,
   "circling": false
 }

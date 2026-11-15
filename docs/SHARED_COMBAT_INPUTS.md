@@ -445,8 +445,11 @@ the pieces.
   Given and whole, ArenaFight turns stationing on from the camera's own place and forward (over
   `cameraOn`, `cameraPos` and `cameraFacing`), and the brain picks only stations where the partner's
   feet, middle and head are inside the frame shrunk by `kPartnerFrustumMargin` (0.10 of the whole
-  screen's width and height kept clear on each side, so |ndc| <= 1 - 2 x 0.10 = 0.8; the default of
-  `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and outside the
+  screen's width and height kept clear on the left, right and top, so ndc <= 1 - 2 x 0.10 = 0.8; the
+  default of `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and
+  by `kPartnerFrustumMarginBottom` at the bottom (0.05, so ndc >= -0.90, or the margin when that is
+  smaller: the low lock-on camera puts the feet of a partner beside the lead near the bottom edge;
+  feet and head must still both be inside; the one shared function, so host and brain agree) and outside the
   keep-outs round the camera's lines to the lead and to its target. With none valid it holds the last
   station it had for `frustumGiveUpSeconds` (3 s, counted from the last valid station whatever the
   target, on every step: the held station is checked on string and guard steps too; sooner only when
@@ -466,7 +469,12 @@ the pieces.
   target on every step. These walks deal nothing and spend no attack budget; the idle reason is
   unchanged. The host reads `PartnerIntent::skirmish` (the step walks such a goal) and turns the
   partner to `PartnerIntent::enemy`; the report is `skirmishSeconds()`, `skirmishMoves()` and
-  `guardsBegun()`. No lead's kit has a dodge, so the partner never dodges.
+  `guardsBegun()`. No lead's kit has a dodge, so the partner never dodges. Neither its station's
+  side nor (with circling on) its choice between a goal of its own and its rules' walk flips back
+  within 1 s of the last change (`kPartnerSideHoldSeconds`, `kPartnerChoiceHoldSeconds`).
+  `PartnerInput::kitAttacks` (default true) says whether the ally's kit has attacks; false (a lead
+  whose kit has none) and the brain never starts a blow, with no fallback to the other lead's kit:
+  the idle reason is `NoKit`, and it still stations, faces its target and, circling on, moves.
   The cut rule (ArenaFight): a damaging hit the partner does not guard holds it in the lead
   fighter's hitstun and ends its running blow, in startup, active or recovery: nothing more from it,
   what it dealt stays, and the time its brain committed stays spent (`ArenaStats::partnerBlowsCut`).

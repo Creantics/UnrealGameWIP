@@ -7,10 +7,20 @@
 namespace ftcore {
 
 // Rule 13's frame margin, the default of PartnerTuning::frustumMargin: the share of the WHOLE screen's width (and of
-// its height) kept clear on each side. A point is in frame when its normalised device coordinates are within
-// 1 - 2 x margin of the centre on both axes (0.1: |ndc| <= 0.8; 0: the screen's own edges). A host checking "on
-// screen" calls partnerInFrame with this, so the brain and the host can never disagree.
+// its height) kept clear on the left, right and top. A point is in frame when its normalised device coordinates are
+// within 1 - 2 x margin of the centre across and above it (0.1: ndc <= 0.8; 0: the screen's own edges), and within
+// 1 - 2 x kPartnerFrustumMarginBottom below it. A host checking "on screen" calls partnerInFrame with this, so the
+// brain and the host can never disagree.
 inline constexpr float kPartnerFrustumMargin = 0.1f;
+// The bottom edge's own margin: the low lock-on camera puts the feet of a partner beside the lead near the bottom of
+// the frame, where 0.10 left out partners whose whole body is plainly on screen. The bottom keeps this clear, or the
+// margin when that is smaller (a margin of 0 is the screen's own edges on all four sides). Feet and head must still
+// both be inside. It must stay under 0.06: the lock holds the lead's feet at ArenaLockRules::feetMin (0.06) of the
+// frame's height over its bottom edge, and on the tall lock's settled low lens (0.6 m up, horizontal field of view 70
+// degrees, the tall-boss test's camera) they sit at 0.060, so a partner at the lead's depth has its feet there too.
+// 0.05 clears them; a smaller margin raises StayClose's circling turns (six seeds, reversals per 10 s while circling:
+// 5.97 at 0.10, 6.33 at 0.05, 6.62 at 0.04, 7.48 at 0.03) for no further gain on the tall boss.
+inline constexpr float kPartnerFrustumMarginBottom = 0.05f;
 
 struct PartnerVec3 {
     float x = 0.f, y = 0.f, z = 0.f; // the ground plane's x and y, z up

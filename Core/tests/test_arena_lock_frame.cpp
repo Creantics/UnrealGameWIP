@@ -498,19 +498,32 @@ TEST_CASE("arena lock frame: the pose's partner camera is whole and the brain's 
     REQUIRE(partnerCameraWhole(cam));
     CHECK_FALSE(arenaPoseCamera(pose, at, 0.f, height).given);
     const ArenaFrustum f = arenaPoseFrustum(pose, at, aspect);
-    // Ground points around the lead: partnerInFrame (feet, middle, head at kPartnerFrustumMargin) against the frustum
-    // test of the same three points, a point within 1% of the margin's edge left out.
-    const auto all = [&](Vec2 g, float m) {
+    // Ground points around the lead: partnerInFrame (feet, middle, head at kPartnerFrustumMargin across and above,
+    // kPartnerFrustumMarginBottom below) against the frustum's own projection of the same three points, each edge at
+    // its own margin, a point within 1% of an edge left out.
+    const auto all = [&](Vec2 g, float shift) {
+        const ArenaPoint3& w = f.forward;
+        const ArenaPoint3& u = f.up;
+        const ArenaPoint3 r{u.y * w.z - u.z * w.y, u.z * w.x - u.x * w.z, u.x * w.y - u.y * w.x};
+        const float tanV = std::tan(0.5f * f.vfov * 3.14159265358979f / 180.f), tanH = tanV * f.aspect;
+        const float keep = 1.f - 2.f * (kPartnerFrustumMargin + shift);
+        const float keepBelow = 1.f - 2.f * (kPartnerFrustumMarginBottom + shift);
         bool in = true;
-        for (const float z : {0.f, 0.5f * height, height}) in = in && arenaInFrustum(f, ArenaPoint3{g.x, g.y, z}, m);
+        for (const float z : {0.f, 0.5f * height, height}) {
+            const float dx = g.x - f.pos.x, dy = g.y - f.pos.y, dz = z - f.pos.z;
+            const float fwd = dx * w.x + dy * w.y + dz * w.z;
+            const float nx = (dx * r.x + dy * r.y + dz * r.z) / (fwd * tanH);
+            const float ny = (dx * u.x + dy * u.y + dz * u.z) / (fwd * tanV);
+            in = in && fwd > 0.05f && std::fabs(nx) <= keep && ny <= keep && ny >= -keepBelow;
+        }
         return in;
     };
     int tried = 0, agreed = 0, inside = 0;
     for (int i = -20; i <= 20; ++i)
         for (int j = -20; j <= 20; ++j) {
             const Vec2 g{at.x + 0.5f * static_cast<float>(i), at.y + 0.5f * static_cast<float>(j)};
-            const bool surelyIn = all(g, kPartnerFrustumMargin + 0.01f);
-            const bool surelyOut = !all(g, kPartnerFrustumMargin - 0.01f);
+            const bool surelyIn = all(g, 0.01f);
+            const bool surelyOut = !all(g, -0.01f);
             if (!surelyIn && !surelyOut) continue;
             ++tried;
             inside += surelyIn ? 1 : 0;

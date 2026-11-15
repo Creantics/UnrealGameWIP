@@ -211,7 +211,7 @@ TEST_CASE("partner frame: baseline (report)") {
 
 namespace {
 const std::array<std::string, kPartnerIdleCount> kIdleNames = {"none",      "noBudget", "noTarget", "moving",
-                                                               "staggered", "pause",    "other"};
+                                                               "staggered", "pause",    "other",    "noKit"};
 
 void report(const std::string& name, Script& s) {
     MESSAGE(name << ": first act " << s.firstAct << " s, on screen " << s.onScreen / s.elapsed << ", starts " << s.starts
@@ -279,8 +279,11 @@ TEST_CASE("partner frame: no camera, or one not whole, or one with stationing of
 }
 
 TEST_CASE("partner frame: a station just outside each side of the shrunk frame is refused; the margin is kept") {
-    // tan(30) = 0.57735 up, x1.5 across; the margin 0.1 leaves 0.8 of each half.
+    // tan(30) = 0.57735 up, x1.5 across; the margin 0.1 leaves 0.8 of each half across and above, the bottom's own
+    // margin (kPartnerFrustumMarginBottom, 0.05) 0.90 below.
     const float tanV = std::tan(30.f * kRad), tanH = 1.5f * tanV, lim = 0.8f, d = 6.f;
+    const float limBelow = 1.f - 2.f * kPartnerFrustumMarginBottom;
+    CHECK(kPartnerFrustumMarginBottom == 0.05f);
     for (const float yaw : {0.f, 37.f, -140.f}) {
         CAPTURE(yaw);
         const PartnerCameraView mid = levelCamera(0.9f, yaw); // feet and head well inside: the sides rule
@@ -289,13 +292,21 @@ TEST_CASE("partner frame: a station just outside each side of the shrunk frame i
             CHECK(partnerInFrame(mid, 0.1f, along(yaw, d, side * (edgeSide - 0.02f))));
             CHECK_FALSE(partnerInFrame(mid, 0.1f, along(yaw, d, side * (edgeSide + 0.02f))));
         }
-        // Bottom: a camera 1.6 m up sees the feet last; top: one 0.2 m up sees the head (at 1.8) last.
-        const float nearest = 1.6f / (lim * tanV);
+        // Bottom: a camera 1.6 m up sees the feet last, at the bottom's own margin; top: one 0.2 m up sees the head
+        // (at 1.8) last, at the margin. Feet between the two margins' edges are in; the head the same way past the
+        // top's edge is out (the whole body, feet and head, must still be inside).
+        const float nearest = 1.6f / (lim * tanV), nearestBelow = 1.6f / (limBelow * tanV);
         const PartnerCameraView high = levelCamera(1.6f, yaw), low = levelCamera(0.2f, yaw);
-        CHECK(partnerInFrame(high, 0.1f, along(yaw, nearest * 1.01f, 0.f)));
-        CHECK_FALSE(partnerInFrame(high, 0.1f, along(yaw, nearest * 0.99f, 0.f)));
+        CHECK(partnerInFrame(high, 0.1f, along(yaw, nearestBelow * 1.01f, 0.f)));
+        CHECK_FALSE(partnerInFrame(high, 0.1f, along(yaw, nearestBelow * 0.99f, 0.f)));
+        CHECK(partnerInFrame(high, 0.1f, along(yaw, 0.5f * (nearest + nearestBelow), 0.f))); // the bottom's 0.05: in
         CHECK(partnerInFrame(low, 0.1f, along(yaw, nearest * 1.01f, 0.f)));
         CHECK_FALSE(partnerInFrame(low, 0.1f, along(yaw, nearest * 0.99f, 0.f)));
+        CHECK_FALSE(partnerInFrame(low, 0.1f, along(yaw, 0.5f * (nearest + nearestBelow), 0.f))); // the top's 0.1: out
+        // A margin under the bottom's own keeps the margin there too: 0 is the screen's own edge on all four sides.
+        const float nearestEdge = 1.6f / tanV;
+        CHECK(partnerInFrame(high, 0.f, along(yaw, nearestEdge * 1.01f, 0.f)));
+        CHECK_FALSE(partnerInFrame(high, 0.f, along(yaw, nearestEdge * 0.99f, 0.f)));
         // The margin: 0.9 of the half-width is in the whole frame and in a 0.04 margin's, not in a 0.1 margin's.
         const Vec2 wide = along(yaw, d, 0.9f * d * tanH);
         CHECK(partnerInFrame(mid, 0.f, wide));
@@ -306,14 +317,14 @@ TEST_CASE("partner frame: a station just outside each side of the shrunk frame i
         CHECK_FALSE(partnerInFrame(mid, 0.5f, along(yaw, d, 0.f)));
     }
     // A pitched camera: 2 m up, 20 degrees down; where its centre ray meets the ground is in; just short of the
-    // point where the feet meet the shrunk frame's bottom edge is not.
+    // point where the feet meet the shrunk frame's bottom edge (the bottom's own margin) is not.
     PartnerCameraView p = levelCamera(2.f, 0.f);
     const float pitch = 20.f * kRad;
     p.forward = {std::cos(pitch), 0.f, -std::sin(pitch)};
     p.up = {std::sin(pitch), 0.f, std::cos(pitch)};
     const float centre = 2.f / std::tan(pitch);
     CHECK(partnerInFrame(p, 0.1f, {centre, 0.f}));
-    const float foot = 2.f / std::tan(pitch + std::atan(lim * tanV));
+    const float foot = 2.f / std::tan(pitch + std::atan(limBelow * tanV));
     CHECK(partnerInFrame(p, 0.1f, {foot + 0.05f, 0.f}));
     CHECK_FALSE(partnerInFrame(p, 0.1f, {foot - 0.05f, 0.f}));
     // Not given, or not whole: never in frame.
@@ -362,6 +373,8 @@ TEST_CASE("partner frame: every station it walks to is in the shrunk frame and o
                         u.orbit = orbit;
                         u.run(20.0, dt);
                         const double on = s.onScreen / s.elapsed, today = u.onScreen / u.elapsed;
+                        CAPTURE(on);
+                        CAPTURE(today);
                         const int o = order == PartnerOrder::StayClose ? 0 : 1;
                         onSum[o] += on;
                         todaySum[o] += today;
@@ -369,9 +382,11 @@ TEST_CASE("partner frame: every station it walks to is in the shrunk frame and o
                         // On screen (feet, middle and head inside the frame shrunk by kPartnerFrustumMargin) at least
                         // 0.8 of the run: measured 0.89..1.0, except Spread with the camera orbiting (0.70..0.80, the
                         // known short case below). With the camera fixed behind the lead, cameraOn's stationing is
-                        // lower by at least 0.03 (measured 0.04 and more).
+                        // lower by at least 0.03 (measured 0.04 and more at a bottom margin of 0.10), or the stationed
+                        // partner is on screen 0.98 of the run and more, with no room for 0.03 over it: the bottom's own
+                        // margin (0.05) puts StayClose without stationing at 0.96..0.99 here, with it 0.99..1.0.
                         if (o == 0 || orbit == 0.f) CHECK(on >= 0.8);
-                        if (orbit == 0.f) CHECK(on - today >= 0.03);
+                        if (orbit == 0.f) CHECK((on - today >= 0.03 || (on >= 0.98 && on >= today)));
                         // Its goal changes under 20 times in 10 s (measured up to 16); a string from off the frame
                         // (rule 14, no valid station that step) at most once in the 20 s (measured 0 or 1).
                         CHECK(10.0 * s.goalChanges / s.elapsed <= 20.0);
@@ -588,6 +603,61 @@ TEST_CASE("partner frame: determinism, and a save and load mid-fight carries on 
         }
 }
 
+// A lead whose kit has no attacks (PartnerInput::kitAttacks false) never strikes: no blow ever starts, the time it would
+// have is reported as NoKit, and in that state it still stations, faces its target and (rule 17 on) moves. True is today's brain.
+TEST_CASE("partner frame: an ally whose kit has no attacks never strikes, and says NoKit; with attacks it is unchanged") {
+    for (const bool circling : {false, true}) {
+        CAPTURE(circling);
+        PartnerTuning tu;
+        tu.circling = circling;
+        Script today(PartnerOrder::Spread, true, false, 9, tu), kit(PartnerOrder::Spread, true, false, 9, tu),
+            none(PartnerOrder::Spread, true, false, 9, tu);
+        for (Script* s : {&today, &kit, &none}) {
+            s->useCamera();
+            s->orbit = 30.f;
+        }
+        kit.in.kitAttacks = true;
+        none.in.kitAttacks = false;
+        int blows = 0, attacks = 0, faced = 0, noKit = 0, steps = 0;
+        float walked = 0.f;
+        for (int k = 0; k < 1200; ++k) { // 20 s
+            today.stepOnce(1.0 / 60.0);
+            kit.stepOnce(1.0 / 60.0);
+            const Vec2 was = none.in.pos;
+            none.stepOnce(1.0 / 60.0);
+            const PartnerIntent& i = none.b.intent();
+            blows += i.blowStart ? 1 : 0;
+            attacks += i.act == PartnerAct::Attack ? 1 : 0;
+            if (i.idle == PartnerIdle::NoKit) { // in that state it faces its target
+                faced += i.enemy >= 0 ? 1 : 0;
+                ++noKit;
+            }
+            walked += len(minus(none.in.pos, was));
+            ++steps;
+        }
+        // True (set, or the default) is today's brain to the bit.
+        CHECK(kit.out.value == today.out.value);
+        CHECK(kit.b.hash() == today.b.hash());
+        CHECK(today.starts > 0);
+        CHECK(today.b.idleSeconds(PartnerIdle::NoKit) == 0.0);
+        // False: never a blow, never an attack, the reason reported; it faces an enemy and keeps to its stations.
+        CHECK(blows == 0);
+        CHECK(attacks == 0);
+        CHECK(none.starts == 0);
+        CHECK(none.b.idleSeconds(PartnerIdle::NoKit) > 1.0);
+        CHECK(noKit > 60);
+        CHECK(faced == noKit);
+        CHECK(none.framedSteps == steps);
+        CHECK(none.keptOut == 0);
+        if (circling) CHECK(walked > 5.f); // rule 17: with its attack held it keeps moving
+        // Saved and loaded, the count carries on.
+        PartnerBrain c;
+        c.load(none.b.save());
+        CHECK(c.hash() == none.b.hash());
+        CHECK(c.idleSeconds(PartnerIdle::NoKit) == none.b.idleSeconds(PartnerIdle::NoKit));
+    }
+}
+
 TEST_CASE("partner frame: today against framed (report)") {
     for (const bool free : {false, true})
         for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread})
@@ -700,9 +770,11 @@ FramePin orbitPin(PartnerOrder order, bool free, bool lock, double dt) {
 }
 } // namespace
 // With rule 17 off (the shipped default) a framed brain is main's to the bit: every step's intent and the state
-// hash at the end of the orbit (both orders, the free and the locked lead, both steps) equal the values recorded
-// from main at 102219cb, before rule 17's switch.
-TEST_CASE("partner frame: rule 17 off, the framed orbit's intents and state hash are main's (102219cb)") {
+// hash at the end of the orbit (both orders, the free and the locked lead, both steps) are pinned. Main's values
+// (102219cb, before rule 17's switch) are kept beside them: rule 13's side hold (kPartnerSideHoldSeconds) changes the
+// intents where a station flipped side within 1 s, and its clock is in every state hash. The bottom's own frame margin
+// (kPartnerFrustumMarginBottom, 0.05) moves six StayClose rows and one Spread row: stations near the bottom edge now in.
+TEST_CASE("partner frame: rule 17 off, the framed orbit's intents and state hash are pinned (main's beside them)") {
     CHECK_FALSE(PartnerTuning{}.circling);
     struct Row {
         PartnerOrder order;
@@ -710,22 +782,22 @@ TEST_CASE("partner frame: rule 17 off, the framed orbit's intents and state hash
         std::uint64_t intents, state;
     };
     const Row rows[] = {
-        {PartnerOrder::StayClose, false, false, false, 265514111919678174ull, 267639759532034892ull},
-        {PartnerOrder::StayClose, false, false, true, 13494321442008997399ull, 17156234905785402287ull},
-        {PartnerOrder::StayClose, false, true, false, 8697168510642720180ull, 1221592041938500472ull},
-        {PartnerOrder::StayClose, false, true, true, 303441118715888387ull, 6727766592074957145ull},
-        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 3996803732724869128ull},
-        {PartnerOrder::StayClose, true, false, true, 17652568905509306018ull, 16222199093469650799ull},
-        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 4361275200455314555ull},
-        {PartnerOrder::StayClose, true, true, true, 13298922241904239483ull, 526139214294223443ull},
-        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 1762510326365600415ull},
-        {PartnerOrder::Spread, false, false, true, 2849074323208619076ull, 10684946757628589948ull},
-        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 1762510326365600415ull},
-        {PartnerOrder::Spread, false, true, true, 11340955196540186759ull, 18266217942116871286ull},
-        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 7453824002278148186ull},
-        {PartnerOrder::Spread, true, false, true, 3162916615266793425ull, 18348585300907830234ull},
-        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 7453824002278148186ull},
-        {PartnerOrder::Spread, true, true, true, 10578977463318667820ull, 17647298366914853837ull},
+        {PartnerOrder::StayClose, false, false, false, 1357905274653255899ull, 17058893035213404553ull}, // main: 265514111919678174ull, 267639759532034892ull
+        {PartnerOrder::StayClose, false, false, true, 5074212404098555745ull, 8846536987218711040ull}, // main: 13494321442008997399ull, 17156234905785402287ull
+        {PartnerOrder::StayClose, false, true, false, 16086233793491785525ull, 11210696583966370285ull}, // main: 8697168510642720180ull, 1221592041938500472ull
+        {PartnerOrder::StayClose, false, true, true, 13361595823405808389ull, 18050721810852227641ull}, // main: 303441118715888387ull, 6727766592074957145ull
+        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 3796873149745995078ull}, // main: 12318288052270451116ull, 3996803732724869128ull
+        {PartnerOrder::StayClose, true, false, true, 10833352845746964059ull, 12671218101391095369ull}, // main: 17652568905509306018ull, 16222199093469650799ull
+        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 15380270384267954525ull}, // main: 11062567821329793665ull, 4361275200455314555ull
+        {PartnerOrder::StayClose, true, true, true, 5339931848536943146ull, 988359586531716714ull}, // main: 13298922241904239483ull, 526139214294223443ull
+        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 17135771490710060754ull}, // main: 603634575432450118ull, 1762510326365600415ull
+        {PartnerOrder::Spread, false, false, true, 415095739551922365ull, 13833192346209618963ull}, // main: 2849074323208619076ull, 10684946757628589948ull
+        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 17135771490710060754ull}, // main: 603634575432450118ull, 1762510326365600415ull
+        {PartnerOrder::Spread, false, true, true, 415095739551922365ull, 13833192346209618963ull}, // main: 11340955196540186759ull, 18266217942116871286ull
+        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 14156185948042306215ull}, // main: 603634575432450118ull, 7453824002278148186ull
+        {PartnerOrder::Spread, true, false, true, 4724611697778822349ull, 11270257567424076320ull}, // main: 3162916615266793425ull, 18348585300907830234ull
+        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 14156185948042306215ull}, // main: 603634575432450118ull, 7453824002278148186ull
+        {PartnerOrder::Spread, true, true, true, 14658538389056863119ull, 202487308441617432ull}, // main: 10578977463318667820ull, 17647298366914853837ull
     };
     for (const Row& w : rows) {
         CAPTURE(int(w.order));

@@ -113,14 +113,18 @@
 //      tier the ring reachMeters - stationTolerance off it; no target, rule 11's ring round the lead at
 //      followMin..followMax) is valid only if the partner's body there, a capsule of feet (groundZ), middle and head
 //      (groundZ + bodyHeight), is inside the camera's frustum shrunk by frustumMargin (kPartnerFrustumMargin, 0.10) of
-//      the whole screen's width and height on every side (each point in front of the camera, |x|, |y| <= 1 - 2 x margin in the screen's -1..1
-//      frame), and outside both keep-outs: rule 9's wedge round the camera-to-lead line, and the target's own: from
+//      the whole screen's width and height on the left, right and top, and by kPartnerFrustumMarginBottom (0.05, or the
+//      margin when smaller) at the bottom (each point in front of the camera, |x|, y <= 1 - 2 x margin and
+//      y >= -(1 - 2 x the bottom's margin) in the screen's -1..1 frame), and outside both keep-outs: rule 9's wedge round the camera-to-lead line, and the target's own: from
 //      the camera along the line to the target, half-angle the target's silhouette (asin(radius / distance)), out to
 //      wedgeBeyondMeters past its far edge, with wedgeClearMeters' clearance (so it never stands in front of the
 //      target, nor hidden behind it). Rule 8 (personal space), the arena and StayClose's cap still rule. Of the valid
 //      stations the nearest to the partner, those in rule 10's arc (rule 11's 110..160 degrees) first; once chosen it
-//      is held, by its angle on its ring, while it stays valid and the target stays. None valid: it keeps going to
-//      the one it last held (whatever the target, while that spot stays legal and out of the target's keep-out);
+//      is held, by its angle on its ring, while it stays valid and the target stays. A new pick within
+//      kPartnerSideHoldSeconds (1.0) of the held station's last change of side (of the line from the target to the
+//      lead, or of the lead's facing) keeps to its side, so it does not flip across and back. None valid: it keeps
+//      going to the one it last held (whatever the target, while that spot stays legal and out of the target's
+//      keep-out, that last for the first kPartnerSideHoldSeconds after its last valid station);
 //      after frustumGiveUpSeconds (3.0) with none (or at once when it holds none) it falls back to rules 10-11's
 //      station until a valid one is found, and says so on every step it stays fallen back, strings, guards and
 //      repositions included (intent.frameFallback, and fallbackSeconds()). The 3 s run on every step: the station held
@@ -159,10 +163,15 @@
 //      1.0 s; and whenever it has been 0.8 s within 0.5 m of one place (shuffles count; a blow, a guard or no enemy
 //      standing restarts that clock), so it is never 1.5 s in one place (the ruling). With the budget out, in reach
 //      and in the frame, its rules' short walk (under 1 m) to its station is held as a wait, and its rules' longer
-//      walk or step back is kept to its end as one stride, so it does not flip between walking and standing. A
+//      walk or step back is kept to its end as one stride, so it does not flip between walking and standing. Within
+//      kPartnerChoiceHoldSeconds (1.0) of its last change between a goal of its own and its rules' walk, in the frame,
+//      it does not change back: from its own goal it stands rather than take its rules' walk (a step back still
+//      goes), and on its rules' walk a short step stays its rules' (it moves at once when rooted 0.8 s). Within as
+//      long of its last walk a new goal back the way it came (over 90 degrees) is taken only when no side-step keeps
+//      its way. A
 //      stagger counts toward its stand-still. It faces its target, else the nearest enemy standing, on every step
 //      (intent.enemy; the host turns to it). Walking only: it deals nothing and spends no budget; the idle reason is
-//      as before (NoBudget stays NoBudget). It never dodges (no dodge in any lead's kit; rule 3's guard is its
+//      as before (NoBudget stays NoBudget; NoKit stays NoKit). It never dodges (no dodge in any lead's kit; rule 3's guard is its
 //      defence). Reported: intent.skirmish, skirmishSeconds(), skirmishMoves(), guardsBegun(). Not given a camera,
 //      rules 13-17 do not run.
 //  18. A tall target (framed, its body's height, PartnerEnemyView top - base, at least kPartnerTallMeters: the lock's
@@ -174,11 +183,15 @@
 //      string from a spot the camera does not see only once fallen back, reported as offFrame). The outer station
 //      ring is tried first; a station reached only round the body ranks last and is not held (a nearer one may come
 //      back). StayClose by a tall target (one standing whose edge is within closeLeadMeters of the lead, held or not,
-//      so a lead switch keeps them) grows its cap, leash and return by that target's radius: the seen flanks of a body
-//      R round lie about R + reach / 2 round it from the lead. Every walk (MoveTo or StepBack) is steered last: a goal
+//      so a lead switch keeps them) grows its cap, leash and return by that target's radius, at most tallGrowMaxMeters
+//      (the in-frame and not-hidden rules still win): the seen flanks of a body R round lie about R + reach / 2 round
+//      it from the lead. Any other target: the distances are as before, to the bit. Every walk (MoveTo or StepBack) is steered last: a goal
 //      inside a standing tall body (its radius + kPartnerSteerClear) is put out on that circle, and a straight line
 //      that would cross one goes round it the shorter way, by a point on that circle.
 //      Not tall (or no height given): none of it applies.
+// No kit (PartnerInput::kitAttacks false, a lead whose kit has no attacks): it never starts a string or its next blow
+// and no other lead's kit stands in (why and idle NoKit); it still stations, guards, faces its target and, rule 17 on,
+// moves as with its attack held. True (the default) is the brain as before.
 // Idle reasons (with or without a camera): every step's intent carries why it is not acting (PartnerIdle), and the
 // brain counts the seconds of each over the fight (idleSeconds; None is the time it acts, so they sum to the time
 // stepped since begin). They are a report: in save and load, never in the hash, and they steer nothing.
@@ -196,7 +209,7 @@
 //     "closeLeadMeters": 3.5, "spreadArcMin": 120, "spreadArcMax": 180, "sideHoldSeconds": 2.0, "followMin": 2.0,
 //     "followMax": 2.5, "stationTolerance": 0.5, "stationGiveUpSeconds": 3.0, "stationAnySeconds": 6.0,
 //     "targetHoldSeconds": 1.5, "frustumMargin": 0.1, "frustumGiveUpSeconds": 3.0, "engageSeconds": 2.0,
-//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5, "circling": false }
+//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5, "tallGrowMaxMeters": 6.0, "circling": false }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -241,6 +254,12 @@ struct PartnerEnemyView {
 inline constexpr float kPartnerTallMeters = 4.f;
 // Rule 18: a walk keeps this far (m) off a tall target's edge (the partner's body and a little room).
 inline constexpr float kPartnerSteerClear = 0.6f;
+// Rule 13: within this long (s) of the held station's last change of side, a new pick keeps to its side (none valid
+// there: the grace holds), and the grace holds a station in its target's keep-out this long after the last valid one.
+inline constexpr double kPartnerSideHoldSeconds = 1.0;
+// Rule 17: with its attack held, its walk changes between its own goal and its rules' walk (a station, the leash) and
+// back only this long (s) after the last change (out of the frame: at once).
+inline constexpr double kPartnerChoiceHoldSeconds = 1.0;
 
 // Stationing's view (rules 8-12), on the ground plane, fed by the host each step. Off (the default), or any field not
 // a finite number, or arenaRadius under 0, or the partner's or the lead's position not finite: no stationing.
@@ -277,6 +296,10 @@ struct PartnerInput {
     // Rule 2: seconds of partner attack time spent outside its own strings since the last step (a paired counter's
     // 1.0 s on the step it lands). Not finite, or under 0: 0. Above budgetWindowSeconds: that. 0: as before.
     float spentSeconds = 0.f;
+    // The ally's kit has attacks. False (a lead whose kit has none): it never starts a blow, and never takes one of
+    // the other lead's kit; it still stations, faces its target, guards and (rule 17) moves. The host sets it per
+    // lead; true by default, so a host that never says is unchanged.
+    bool kitAttacks = true;
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
@@ -284,16 +307,18 @@ enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
 enum class PartnerWhy : std::uint8_t {
     NotBegun, Down, CannotAct, Guard, Leash, String, Pause, NoTarget, Approach, HeldOff, Start, Budget,
     Committed, // a blow it began before its string ended still runs out: no new string yet
-    Reposition // rule 16: a pause's walk to another station
+    Reposition, // rule 16: a pause's walk to another station
+    NoKit       // its kit has no attacks (PartnerInput::kitAttacks false): no string, no next blow
 };
 // Why it is not acting this step. None: it acts (a string, a blow running out, a guard, a reposition). NoBudget: its
 // next blow would break rule 2's budget. NoTarget: no target, or its station is reached and the target is out of
 // reach. Moving: walking to a station, back on the leash, or stepping back. Staggered: hitstun (canAct false,
 // doing Hurt) or down. Pause: the rhythm's pause, standing at its station. Other: held off a windup aimed at it it
 // did not guard, canAct false for any other reason, not begun. (No "waiting on a called action": ArenaFight never
-// holds the partner's body for one; a paired counter is dealt by the fight and only spends its budget.)
-enum class PartnerIdle : std::uint8_t { None, NoBudget, NoTarget, Moving, Staggered, Pause, Other };
-inline constexpr std::size_t kPartnerIdleCount = 7;
+// holds the partner's body for one; a paired counter is dealt by the fight and only spends its budget.) NoKit: it
+// would start a blow, or its next one, but its kit has none (PartnerInput::kitAttacks false).
+enum class PartnerIdle : std::uint8_t { None, NoBudget, NoTarget, Moving, Staggered, Pause, Other, NoKit };
+inline constexpr std::size_t kPartnerIdleCount = 8;
 
 struct PartnerIntent {
     PartnerAct act = PartnerAct::Wait;
@@ -361,11 +386,14 @@ struct PartnerTuning {
                                       // (stationGiveUpSeconds..60)
     float targetHoldSeconds = 1.5f;   // rule 1, Spread: a chosen target is kept at least this long (0..10)
     // The play camera (rules 13-16).
-    float frustumMargin = kPartnerFrustumMargin;          // rule 13: of the screen's width and height kept clear each side (0..0.4)
+    float frustumMargin = kPartnerFrustumMargin;          // rule 13: of the screen's width and height kept clear left, right
+                                                          // and top (0..0.4); the bottom: kPartnerFrustumMarginBottom
     float frustumGiveUpSeconds = 3.f;    // rule 13: no valid station this long, rules 10-11's (0..30)
     float engageSeconds = 2.f;           // rule 14 (0.25..10)
     float repositionEverySeconds = 8.f;  // rule 16 (2..20)
     float repositionMeters = 1.5f;       // rule 16: at least this far (0.5..6)
+    float tallGrowMaxMeters = 6.f;       // rule 18: StayClose's cap, leash and return grow by a tall target's radius,
+                                         // at most this (0..20)
     // Rule 17 (framed): with its attack held it keeps moving round its target. Off (the default until its turns hold
     // the ruled limits): it stands ready where its rules put it and the host turns it to its target; rule 17's state
     // is neither touched nor hashed, so the hash and outputs are the brain's before rule 17.
@@ -446,6 +474,7 @@ struct PartnerBrainSave {
     float frameAngle = 0.f;        // its direction from the ring's centre (degrees from +x)
     float frameRadius = 0.f;       // its radius from the ring's centre
     Vec2 frameLast{};              // where the held station last was valid (the grace's goal)
+    double frameSideAt = -1e9;     // when the held station last changed side (now's clock; kPartnerSideHoldSeconds)
     double noFrame = 0.0;          // seconds with no valid station
     bool fellBack = false;         // rule 13's fallback holds: on rules 10-11's station until a valid one is found
     double engageFor = 0.0;        // rule 14's clock
@@ -470,6 +499,10 @@ struct PartnerBrainSave {
     std::int8_t skirmishDir = 1;   // the next side-step's way round
     std::int8_t skirmishKind = 0;  // 0 its own goal; 1, 2 its rules' MoveTo, StepBack held (the budget out)
     int skirmishOf = -1;           // the target the goal was taken for
+    std::int8_t choice = 0;        // what it last walked to: 1 its own goal, -1 its rules' walk, 0 neither yet
+    double choiceAt = -1e9;        // when that choice last changed (now's clock; kPartnerChoiceHoldSeconds)
+    Vec2 walkDir{};                // the way it last walked (unit), framed and circling
+    double walkAt = -1e9;          // when (now's clock)
     // The report (rule 17, never hashed).
     double skirmishSeconds = 0.0;  // seconds walking its goals
     std::uint32_t skirmishMoves = 0; // goals chosen
@@ -539,6 +572,7 @@ private:
     void spend(float seconds);
     void endString(bool staggered);
     void skirmishStep(double dt, const PartnerInput& in); // rule 17, after decide, framed
+    void skirmishWalk(double dt, const PartnerInput& in); // skirmishStep's walk; it then records the choice
     void steerRound(const PartnerInput& in);              // rule 18, last, framed
     // seen: bit i set when enemy i stands in the frame (framed only; 0 otherwise).
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;

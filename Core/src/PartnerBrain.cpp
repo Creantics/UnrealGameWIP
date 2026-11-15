@@ -327,16 +327,16 @@ using V3 = PartnerVec3;
 float v3Dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
 // Rule 13's frustum, shrunk by the margin: a capsule's three points each in front of the camera and within lim of
-// the screen's centre in its -1..1 frame.
+// the screen's centre in its -1..1 frame across and above it, within limBelow below it (kPartnerFrustumMarginBottom).
 struct Frame {
     V3 c{}, f{}, u{}, r{};
-    float tanV = 0.f, tanH = 0.f, lim = 0.8f, z0 = 0.f, h = 1.8f;
+    float tanV = 0.f, tanH = 0.f, lim = 0.8f, limBelow = 0.9f, z0 = 0.f, h = 1.8f;
     bool point(float x, float y, float z) const {
         const V3 d{x - c.x, y - c.y, z - c.z};
         const float depth = v3Dot(d, f);
         if (!(depth > 0.05f)) return false;
         const float sx = v3Dot(d, r) / (depth * tanH), sy = v3Dot(d, u) / (depth * tanV);
-        return std::fabs(sx) <= lim && std::fabs(sy) <= lim;
+        return std::fabs(sx) <= lim && sy <= lim && sy >= -limBelow;
     }
     bool sees(Vec2 p) const { return point(p.x, p.y, z0) && point(p.x, p.y, z0 + 0.5f * h) && point(p.x, p.y, z0 + h); }
     // Rule 18: the partner at p hidden behind a tall e from the lens (its middle and its head both behind its body).
@@ -367,6 +367,7 @@ bool makeFrame(const PartnerCameraView& v, const PartnerTuning& t, Frame& fr) {
     fr.tanV = std::tan(0.5f * v.verticalFovDegrees * kStDeg);
     fr.tanH = fr.tanV * v.aspect;
     fr.lim = 1.f - 2.f * t.frustumMargin;
+    fr.limBelow = 1.f - 2.f * std::min(t.frustumMargin, kPartnerFrustumMarginBottom); // the bottom's own margin
     fr.z0 = v.groundZ;
     fr.h = v.bodyHeight;
     return true;
@@ -445,39 +446,49 @@ bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, Part
         radii = {a, 0.5f * (a + b), b};
         nr = 3;
     }
-    if (minFrom <= 0.f && s.frameRing == ring && (ring == 2 || s.frameTarget == tgt)) {
-        const Vec2 q = stAlong(c, stTurn(Vec2{1.f, 0.f}, s.frameAngle), s.frameRadius);
-        // Rule 18: a station still round a tall target's body is not held (a nearer one may be valid again).
-        if (valid(q) && !(tall && walksRound(pos, q, *e))) {
-            s.frameLast = q;
-            out = q;
-            return true;
-        }
+    // The held station's side (of the line from the centre to the lead, or of the lead's facing): 0 none held.
+    const Vec2 sideRef = e ? stSub(g.lead, c) : g.facing;
+    const auto sideOf = [&](Vec2 p) { return stCross(sideRef, stSub(p, c)) >= 0.f ? 1.f : -1.f; };
+    const bool held = s.frameRing == ring && (ring == 2 || s.frameTarget == tgt);
+    const Vec2 was = stAlong(c, stTurn(Vec2{1.f, 0.f}, s.frameAngle), s.frameRadius);
+    const float side = held ? sideOf(was) : 0.f;
+    // Rule 18: a station still round a tall target's body is not held (a nearer one may be valid again).
+    if (minFrom <= 0.f && held && valid(was) && !(tall && walksRound(pos, was, *e))) {
+        s.frameLast = was;
+        out = was;
+        return true;
     }
+    // Within kPartnerSideHoldSeconds of its last change of side, a new pick keeps to its side; none valid there, the
+    // grace holds the last point while the camera sees it unhidden (the other side once the hold is out).
+    const bool keepSide = side != 0.f && s.now - s.frameSideAt < kPartnerSideHoldSeconds;
     Spot best;
     float bestAngle = 0.f, bestRadius = 0.f;
-    for (int ri = 0; ri < nr; ++ri)
-        for (int a = 0; a < 72; ++a) {
-            const float ang = 5.f * static_cast<float>(a);
-            const Vec2 q = stAlong(c, stTurn(Vec2{1.f, 0.f}, ang), radii[static_cast<std::size_t>(ri)]);
-            if (!valid(q) || dist(q, pos) < minFrom) continue;
-            const float deg = e ? stAngle(stSub(g.lead, c), stSub(q, c)) : stAngle(g.facing, stSub(q, c));
-            const bool second = tall ? ri == 0 && nr > 1 : ri > 0; // rule 18: on a tall target the outer ring first
-            // Rule 18: on a tall target a station reached only round its body (out of sight behind it) comes last.
-            const int round = tall && walksRound(pos, q, *e) ? 4 : 0;
-            const Spot cand{q, (deg >= lo - 1e-3f && deg <= hi + 1e-3f ? 0 : 1) + (e && second ? 2 : 0) + round, dist(q, pos)};
-            if (better(cand, best)) {
-                best = cand;
-                bestAngle = ang;
-                bestRadius = radii[static_cast<std::size_t>(ri)];
+    for (int pass = keepSide ? 0 : 1; pass < 2 && best.tier >= 9; ++pass) {
+        if (pass == 1 && keepSide && fr.clear(e, s.frameLast)) return false;
+        for (int ri = 0; ri < nr; ++ri)
+            for (int a = 0; a < 72; ++a) {
+                const float ang = 5.f * static_cast<float>(a);
+                const Vec2 q = stAlong(c, stTurn(Vec2{1.f, 0.f}, ang), radii[static_cast<std::size_t>(ri)]);
+                if (!valid(q) || dist(q, pos) < minFrom || (pass == 0 && sideOf(q) != side)) continue;
+                const float deg = e ? stAngle(stSub(g.lead, c), stSub(q, c)) : stAngle(g.facing, stSub(q, c));
+                const bool second = tall ? ri == 0 && nr > 1 : ri > 0; // rule 18: on a tall target the outer ring first
+                // Rule 18: on a tall target a station reached only round its body (out of sight behind it) comes last.
+                const int round = tall && walksRound(pos, q, *e) ? 4 : 0;
+                const Spot cand{q, (deg >= lo - 1e-3f && deg <= hi + 1e-3f ? 0 : 1) + (e && second ? 2 : 0) + round, dist(q, pos)};
+                if (better(cand, best)) {
+                    best = cand;
+                    bestAngle = ang;
+                    bestRadius = radii[static_cast<std::size_t>(ri)];
+                }
             }
-        }
+    }
     if (best.tier >= 9) return false;
     s.frameRing = ring;
     s.frameTarget = e ? tgt : -1;
     s.frameAngle = bestAngle;
     s.frameRadius = bestRadius;
     s.frameLast = best.p;
+    if (side != 0.f && sideOf(best.p) != side) s.frameSideAt = s.now;
     out = best.p;
     return true;
 }
@@ -498,6 +509,7 @@ PartnerIdle idleOf(const PartnerIntent& o, const PartnerInput& in) {
     case PartnerWhy::NoTarget: return PartnerIdle::NoTarget;
     case PartnerWhy::Approach: return o.act == PartnerAct::MoveTo ? PartnerIdle::Moving : PartnerIdle::NoTarget;
     case PartnerWhy::Budget: return PartnerIdle::NoBudget;
+    case PartnerWhy::NoKit: return PartnerIdle::NoKit;
     default: return PartnerIdle::Other; // NotBegun, HeldOff
     }
 }
@@ -531,7 +543,8 @@ bool validPartnerTuning(const PartnerTuning& t) {
            pbWithin(t.stationGiveUpSeconds, 0.5f, 30.f) && pbWithin(t.stationAnySeconds, t.stationGiveUpSeconds, 60.f) &&
            pbWithin(t.targetHoldSeconds, 0.f, 10.f) && pbWithin(t.frustumMargin, 0.f, 0.4f) &&
            pbWithin(t.frustumGiveUpSeconds, 0.f, 30.f) && pbWithin(t.engageSeconds, 0.25f, 10.f) &&
-           pbWithin(t.repositionEverySeconds, 2.f, 20.f) && pbWithin(t.repositionMeters, 0.5f, 6.f);
+           pbWithin(t.repositionEverySeconds, 2.f, 20.f) && pbWithin(t.repositionMeters, 0.5f, 6.f) &&
+           pbWithin(t.tallGrowMaxMeters, 0.f, 20.f);
 }
 
 static_assert(kMaxPartnerStep == kMaxFightStep, "the brain's step bound is the fight's");
@@ -574,15 +587,17 @@ std::uint64_t PartnerBrainSave::hash() const {
         h.add(std::uint8_t{13});
         h.add(t.frustumMargin).add(t.frustumGiveUpSeconds).add(t.engageSeconds).add(t.repositionEverySeconds);
         h.add(t.repositionMeters).add(framed).add(frameRing).add(frameTarget).add(frameAngle).add(frameRadius);
-        h.add(frameLast.x).add(frameLast.y).add(noFrame).add(engageFor).add(lastStrike).add(lastGuard).add(lastMove);
+        h.add(frameLast.x).add(frameLast.y).add(frameSideAt).add(noFrame).add(engageFor).add(lastStrike).add(lastGuard).add(lastMove);
         h.add(guarding).add(out.framed).add(out.frameFallback).add(fellBack);
         if (t.circling) { // rule 17's state: only with it on (off, the hash is main's, to the bit)
             h.add(std::uint8_t{17});
             h.add(skirmish).add(skirmishDraws).add(skirmishOn).add(skirmishGoal.x).add(skirmishGoal.y).add(stillFor);
             h.add(placeAt.x).add(placeAt.y).add(placeFor);
             h.add(skirmishFor).add(skirmishEvery).add(skirmishDir).add(skirmishKind).add(skirmishOf);
+            h.add(choice).add(choiceAt).add(walkDir.x).add(walkDir.y).add(walkAt);
         }
     }
+    if (t.tallGrowMaxMeters != d.tallGrowMaxMeters) h.add(std::uint8_t{18}).add(t.tallGrowMaxMeters); // default: as before
     return h.value;
 }
 
@@ -786,7 +801,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
             const float l = in.blowSeconds[0];
             const double next = s_.drawn ? s_.lengths[0] : static_cast<double>(l >= 0.1f && l <= 2.f ? l : s_.t.blowSeconds);
             Ground g;
-            eligible = standing(e) && edge(in.pos, e) <= s_.t.reachMeters && budgetFits(committedLeft() + next) &&
+            eligible = in.kitAttacks && standing(e) && edge(in.pos, e) <= s_.t.reachMeters && budgetFits(committedLeft() + next) &&
                        makeGround(in, s_.t, g) && g.roomOk(in.pos) && !g.inWedge(in.pos, 0.f) &&
                        !makeKeep(g, e).in(in.pos, 0.f);
         }
@@ -851,6 +866,27 @@ void PartnerBrain::steerRound(const PartnerInput& in) {
 // keeps moving round its target, facing it: a new valid station of rule 13 every 2-4 s, and never standing more than
 // kSkirmishStill. It deals nothing and spends no budget (MoveTo only).
 void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
+    skirmishWalk(dt, in);
+    // Its choice of walk, for kPartnerChoiceHoldSeconds: its own goal (1) or its rules' walk (-1); a stand is neither.
+    const PartnerIntent& o = s_.out;
+    const std::int8_t now = o.skirmish ? std::int8_t{1}
+                            : (o.act == PartnerAct::MoveTo || o.act == PartnerAct::StepBack) ? std::int8_t{-1}
+                                                                                              : std::int8_t{0};
+    if (now != 0 && now != s_.choice) {
+        s_.choice = now;
+        s_.choiceAt = s_.now;
+    }
+    if (now != 0) { // the way it last walked, for its next goal's turn
+        const Vec2 d = stSub(o.point, in.pos);
+        const float l = std::sqrt(d.x * d.x + d.y * d.y);
+        if (l > 0.05f) {
+            s_.walkDir = Vec2{d.x / l, d.y / l};
+            s_.walkAt = s_.now;
+        }
+    }
+}
+
+void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
     constexpr double kSkirmishStill = 1.0;                   // standing this long (held), it moves: under the ruled 1.5 s
     constexpr double kSkirmishMin = 2.0, kSkirmishMax = 4.0; // a new goal this often, standing, the budget out
     constexpr float kSideStep = 40.f;                        // degrees round its target when no valid station is found
@@ -859,6 +895,7 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
     constexpr float kPlace = 0.5f;      // within this of where it stood kPlaceStill, held, it is in one place: it moves on
     constexpr double kPlaceStill = 0.8; // so that, with the time to leave the place, it stays under the ruled 1.5 s
     constexpr float kMinStride = 1.f;   // its own goal is at least this far: it leaves the place it stood in
+    constexpr float kLeave = 1.5f * kPlace; // and at least this far from where that place began
     PartnerIntent& o = s_.out;
     const PartnerTuning& t = s_.t;
     const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
@@ -897,9 +934,10 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
     }
     const float l = in.blowSeconds[0];
     const double next = s_.drawn ? s_.lengths[0] : static_cast<double>(l >= 0.1f && l <= 2.f ? l : t.blowSeconds);
-    const bool budgetOut = !budgetFits(committedLeft() + next);
+    const bool budgetOut = !in.kitAttacks || !budgetFits(committedLeft() + next); // no kit: held as the budget out
     bool held = false;
     switch (o.why) {
+    case PartnerWhy::NoKit:
     case PartnerWhy::Budget:
     case PartnerWhy::Pause:
     case PartnerWhy::HeldOff:
@@ -922,26 +960,36 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
         s_.stillFor = 0.0;
         if (kind == 0) s_.skirmishSeconds += dt;
     };
+    bool lost = false;
     if (s_.skirmishOn) { // its goal is kept until reached, while legal, out of the target's keep-out and in frame
         const Vec2 q = s_.skirmishGoal;
         if (dist(in.pos, q) > kReached && g.legal(q) && !(e && makeKeep(g, *e).in(q, t.wedgeClearMeters)) &&
             (fr.sees(q) || (s_.skirmishKind == 0 && !fr.sees(in.pos))) && s_.skirmishOf == s_.target &&
             (s_.skirmishKind != 1 || budgetOut) && !rooted)
             return walk(q, s_.skirmishKind);
+        lost = s_.skirmishKind == 0 && dist(in.pos, q) > kReached; // its own goal gone (not reached): a new one now
         s_.skirmishOn = false;
     }
     bool step = false; // its rules' short step, the budget out: a goal of its own replaces it
     // Out of the frame, held: back into it now, to a goal in it (its rules' walk stands if none is found).
     const bool outside = !fr.sees(in.pos);
+    // Within kPartnerChoiceHoldSeconds of its last change between its own goal and its rules' walk (in the frame),
+    // it does not change back: from its own goal it stands rather than take its rules' walk (a step back still goes);
+    // on its rules' walk a short step stays its rules' (out of the frame, or in one place too long: it moves at once).
+    const bool choiceHeld = !outside && s_.now - s_.choiceAt < kPartnerChoiceHoldSeconds;
+    if (choiceHeld && s_.choice == 1 && o.act == PartnerAct::MoveTo && !rooted) {
+        o.act = PartnerAct::Wait;
+        o.point = Vec2{};
+    }
     if (budgetOut && o.act == PartnerAct::MoveTo && e && edge(in.pos, *e) <= t.reachMeters && !outside &&
         (dist(in.pos, o.point) < kShortWalk || (s_.skirmishKind == 0 && s_.skirmishOf == s_.target &&
                                                  dist(in.pos, s_.skirmishGoal) <= t.stationTolerance))) {
         // In reach and in the frame with the budget out, near its station or at its own last goal, it does not walk
         // to its station (it could strike nothing there): it holds, and moves on its own clock below.
         o.act = PartnerAct::Wait;
-        o.why = PartnerWhy::Budget;
+        o.why = in.kitAttacks ? PartnerWhy::Budget : PartnerWhy::NoKit;
     }
-    if (rooted) {
+    if (rooted || lost) {
         step = true; // its rules' walk, or its kept goal, is not moving it: a goal of its own replaces it
     } else if (o.act != PartnerAct::Wait) { // walking its own rule's goal
         if (o.act != PartnerAct::MoveTo && o.act != PartnerAct::StepBack) return;
@@ -960,6 +1008,7 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
             }
         }
         if (!budgetOut && (!outside || fr.sees(o.point))) return;
+        if (choiceHeld && s_.choice == -1) return; // its rules' walk, held: no goal of its own replaces it yet
         // With the budget out, that goal is kept until reached too, else its station's edge (rule 12) or the standoff
         // flips it between walking and standing on alternate steps; a step shorter than kShortWalk, or one out of
         // the frame, is replaced by a goal of its own.
@@ -983,6 +1032,19 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
     bool found = frameStation(g, fr, t, in.order, in.pos, e, e ? s_.target : -1, t.repositionMeters, probe, q) ||
                  frameStation(g, fr, t, in.order, in.pos, e, e ? s_.target : -1,
                               std::max(kMinStride, 0.5f * t.repositionMeters), probe, q);
+    // Within kPartnerChoiceHoldSeconds of its last walk, a goal back the way it came (over 90 degrees) is taken only
+    // when no side-step round its target keeps its way.
+    const bool turnHeld = s_.now - s_.walkAt < kPartnerChoiceHoldSeconds;
+    const auto reverses = [&](Vec2 p) {
+        const Vec2 d = stSub(p, in.pos);
+        return turnHeld && d.x * s_.walkDir.x + d.y * s_.walkDir.y < 0.f;
+    };
+    // Its own goal leaves the place it stood in (else, reached, it is still in one place): kLeave from there.
+    const auto leaves = [&](Vec2 p) { return dist(p, s_.placeAt) >= kLeave; };
+    if (found && !leaves(q)) found = false;
+    const Vec2 back = q;
+    const bool backFound = found && reverses(q);
+    if (backFound) found = false;
     if (!found) { // no valid station: a side-step round its target (or the lead), either way, legal and out of its keep-out
         const Vec2 c = e ? e->pos : in.leadPos;
         const Vec2 from = stSub(in.pos, c);
@@ -990,13 +1052,13 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
         const float rad = std::sqrt(from.x * from.x + from.y * from.y);
         const float half = rad > 0.5f * kMinStride ? std::asin(std::min(1.f, 0.5f * kMinStride / rad)) : 0.f;
         const float turn = std::max(kSideStep, 2.f * half * 57.2957795f);
-        const int tries = 2;
+        const int tries = (rooted || lost) ? 6 : 2; // rooted, or its goal lost: wider, up to three turns each way
         for (int k = 0; k < tries && !found; ++k) {
             const float sgn = static_cast<float>(k % 2 == 0 ? s_.skirmishDir : -s_.skirmishDir);
-            const Vec2 r = stTurn(from, sgn * turn);
+            const Vec2 r = stTurn(from, sgn * turn * static_cast<float>(k / 2 + 1));
             const Vec2 p{c.x + r.x, c.y + r.y};
-            if (stFinite(p) && g.legal(p) && !(e && makeKeep(g, *e).in(p, t.wedgeClearMeters)) &&
-                (!e || (edge(p, *e) <= t.reachMeters && edge(p, *e) >= t.standoffMeters)) && (k >= 2 || fr.sees(p)) &&
+            if (stFinite(p) && !reverses(p) && leaves(p) && g.legal(p) && !(e && makeKeep(g, *e).in(p, t.wedgeClearMeters)) &&
+                (!e || (edge(p, *e) <= t.reachMeters && edge(p, *e) >= t.standoffMeters)) && fr.sees(p) &&
                 (in.order != PartnerOrder::StayClose || dist(p, in.leadPos) <= closeCap(t, g) + 1e-4f)) {
                 q = p;
                 found = true;
@@ -1004,11 +1066,19 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
             }
         }
     }
-    if (!found && outside && budgetOut) { // out of the frame, no in-frame place round its target: the lead's ring
+    // No side-step keeps its way: the station back the way it came (not to replace a goal it lost: it would undo it).
+    if (!found && backFound && !(lost && !rooted)) {
+        q = back;
+        found = true;
+    }
+    // Out of the frame with no in-frame place round its target, or (StayClose) boxed in between its target's keep-out
+    // and its cap, rooted or its goal lost: a station on the lead's ring (leaving its place, when in the frame).
+    const bool boxed = in.order == PartnerOrder::StayClose && (rooted || lost);
+    if (!found && ((outside && budgetOut) || boxed)) {
         PartnerBrainSave lead = s_;
         const View& fe = in.enemies[static_cast<std::size_t>(face)]; // out of the keep-out of the enemy it faces
-        found = frameStation(g, fr, t, in.order, in.pos, nullptr, -1, 0.f, lead, q) &&
-                !makeKeep(g, fe).in(q, t.wedgeClearMeters);
+        found = frameStation(g, fr, t, in.order, in.pos, nullptr, -1, outside ? 0.f : kMinStride, lead, q) &&
+                !makeKeep(g, fe).in(q, t.wedgeClearMeters) && (outside || leaves(q));
     }
     if (!found) { // nowhere to go: its rules' step stands, else it stands (the stand-still report shows it)
         if (!step) s_.stillFor += dt;
@@ -1088,12 +1158,13 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     Frame fr;
     const bool fm = st && makeFrame(in.station.camera, t, fr);
     // Rule 18: StayClose by a tall target (framed; one standing whose edge is within closeLeadMeters of the lead, held
-    // or not, so a lead switch does not shrink them): its cap, leash and return grow by the target's radius.
+    // or not, so a lead switch does not shrink them): its cap, leash and return grow by the target's radius, at most
+    // tallGrowMaxMeters.
     if (fm && in.order == PartnerOrder::StayClose)
         for (std::size_t i = 0; i < n; ++i) {
             const View& e = in.enemies[i];
             if (standing(e) && tallView(e) && dist(e.pos, in.leadPos) - e.radius <= t.closeLeadMeters)
-                g.grow = std::max(g.grow, e.radius);
+                g.grow = std::max(g.grow, std::min(e.radius, t.tallGrowMaxMeters)); // the radius, no more than that
         }
     if (fm) {
         s_.framed = true;
@@ -1126,9 +1197,12 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             return p;
         }
         // The grace holds the last station while it stays legal and out of this target's keep-out (it may have
-        // left the frame: the camera can come back to it).
+        // left the frame: the camera can come back to it). Within kPartnerSideHoldSeconds of its side's last valid
+        // point it holds it in the keep-out too: a short gap is not worth a jump to rules 10-11's and back.
+        const bool sideHeld = s_.noFrame + 1e-9 < kPartnerSideHoldSeconds;
         if (!s_.fellBack && s_.frameRing != 0 && s_.noFrame + 1e-9 < static_cast<double>(t.frustumGiveUpSeconds) &&
-            g.legal(s_.frameLast) && !(e && makeKeep(g, *e).in(s_.frameLast, t.wedgeClearMeters)) && !fr.hides(e, s_.frameLast))
+            g.legal(s_.frameLast) && (sideHeld || !(e && makeKeep(g, *e).in(s_.frameLast, t.wedgeClearMeters))) &&
+            !fr.hides(e, s_.frameLast))
             return s_.frameLast;
         out.frameFallback = true;
         s_.fellBack = true;
@@ -1246,9 +1320,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (s_.phase == Phase::String) {
         if (blowOver) { // the next blow, decided before it starts on its whole length
             const double len = s_.lengths[static_cast<std::size_t>(s_.begunBlows)];
-            if (!budgetFits(running + len)) { // rule 2's budget: it would break it
+            if (!in.kitAttacks || !budgetFits(running + len)) { // no kit, or rule 2's budget: it would break it
                 endString(staggered);
-                out.why = PartnerWhy::Budget;
+                out.why = in.kitAttacks ? PartnerWhy::Budget : PartnerWhy::NoKit;
                 out.enemy = s_.target;
                 return out;
             }
@@ -1414,6 +1488,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             s_.lengths[i] = static_cast<double>(l >= 0.1f && l <= 2.f ? l : t.blowSeconds);
         }
     }
+    if (!in.kitAttacks) { // its kit has no attacks: it never strikes (no other lead's kit stands in)
+        out.why = PartnerWhy::NoKit;
+        out.enemy = tgt;
+        return out;
+    }
     if (!budgetFits(running + s_.lengths[0])) { // rule 2's budget: hold (each later blow is decided as it starts)
         out.why = PartnerWhy::Budget;
         out.enemy = tgt;
@@ -1494,7 +1573,7 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
                                             "followMin", "followMax", "stationTolerance", "stationGiveUpSeconds",
                                             "stationAnySeconds", "targetHoldSeconds", "frustumMargin",
                                             "frustumGiveUpSeconds", "engageSeconds", "repositionEverySeconds",
-                                            "repositionMeters", "circling"};
+                                            "repositionMeters", "tallGrowMaxMeters", "circling"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -1535,6 +1614,7 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("engageSeconds", t.engageSeconds, 0.25, 10);
     real("repositionEverySeconds", t.repositionEverySeconds, 2, 20);
     real("repositionMeters", t.repositionMeters, 0.5, 6);
+    real("tallGrowMaxMeters", t.tallGrowMaxMeters, 0, 20);
     if (const JsonValue v = root["circling"]; !v.isAbsent()) {
         if (v.isBool()) t.circling = v.boolean();
         else errors.push_back("circling: expected true or false");
