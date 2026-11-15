@@ -39,6 +39,10 @@
 #endif
 
 #if WITH_EDITOR
+// Every helper lives in the file's namespace (RULE 09:42): a unity build that pairs this file with another builder
+// must not see two anonymous AddExpression or AddInput.
+namespace FTWorldWave
+{
 namespace
 {
 const TCHAR* const kTag = TEXT("FTBuildWaveMaterials");
@@ -419,8 +423,6 @@ bool Save(UObject* Asset)
 }
 } // namespace
 
-namespace FTWorldWave
-{
 bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
 {
 	if (!Material)
@@ -668,7 +670,7 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	TArray<FString> Packages = {FTWorldWave::CutFunctionPath, FTWorldWave::StateFunctionPath, FTWorldWave::PostMaterialPath};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
 	{
-		Packages.Add(TwinPackage(Master));
+		Packages.Add(FTWorldWave::TwinPackage(Master));
 	}
 	// Some may be loaded already: once the character masters wear the state, a lead mesh a constructor finds at start-up
 	// pulls MF_WorldWaveState in, and its loader holds the file open, so the save couldn't move the new file over it.
@@ -681,7 +683,7 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		if (UPackage* Found = FindPackage(nullptr, *Package))
 		{
 			Loaded.Add(Found);
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: %s was loaded at start; its file is let go and the asset rebuilt in place."), kTag,
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: %s was loaded at start; its file is let go and the asset rebuilt in place."), FTWorldWave::kTag,
 				*Package);
 		}
 	}
@@ -697,35 +699,35 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		Package->MarkAsFullyLoaded();
 		return Package;
 	};
-	IFileManager::Get().MakeDirectory(*FPaths::GetPath(WavePackageFile(FTWorldWave::PostMaterialPath)), true);
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FTWorldWave::WavePackageFile(FTWorldWave::PostMaterialPath)), true);
 
 	UMaterialParameterCollection* Look = FTWorldWave::LoadOrBuild();
 	if (!Look)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s is missing or couldn't be saved (build it with -run=FTBuildLookMaterials)."), kTag,
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s is missing or couldn't be saved (build it with -run=FTBuildLookMaterials)."), FTWorldWave::kTag,
 			FTWorldWave::CollectionPath);
 		return 1;
 	}
 
-	UMaterialFunction* Cut = BuildCutFunction(WavePackage(FTWorldWave::CutFunctionPath), Look);
-	if (!Save(Cut))
+	UMaterialFunction* Cut = FTWorldWave::BuildCutFunction(WavePackage(FTWorldWave::CutFunctionPath), Look);
+	if (!FTWorldWave::Save(Cut))
 	{
 		return 1;
 	}
-	UMaterialFunction* State = BuildStateFunction(WavePackage(FTWorldWave::StateFunctionPath), Look);
-	if (!Save(State))
+	UMaterialFunction* State = FTWorldWave::BuildStateFunction(WavePackage(FTWorldWave::StateFunctionPath), Look);
+	if (!FTWorldWave::Save(State))
 	{
 		return 1;
 	}
-	UMaterial* Post = BuildPostMaterial(WavePackage(FTWorldWave::PostMaterialPath), Look);
+	UMaterial* Post = FTWorldWave::BuildPostMaterial(WavePackage(FTWorldWave::PostMaterialPath), Look);
 	TArray<UMaterial*> Built = {Post};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
 	{
 		// A missing twin is not fatal: the dressing leaves that master's props uncut (it finds no twin) and the rest build.
-		UMaterial* Twin = BuildTwin(Master);
+		UMaterial* Twin = FTWorldWave::BuildTwin(Master);
 		if (!Twin)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("%s: no twin for %s; its props stay uncut."), kTag, Master);
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: no twin for %s; its props stay uncut."), FTWorldWave::kTag, Master);
 			continue;
 		}
 		Built.Add(Twin);
@@ -736,28 +738,28 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	int32 Errors = 0;
 	for (UMaterial* Material : Built)
 	{
-		Errors += FT::CompileErrors(kTag, Material);
+		Errors += FT::CompileErrors(FTWorldWave::kTag, Material);
 	}
 	// A compile error saves nothing: a broken material must never overwrite the good file on disk.
 	if (Errors > 0)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %d compile errors; nothing saved, the files on disk are as they were."), kTag, Errors);
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %d compile errors; nothing saved, the files on disk are as they were."), FTWorldWave::kTag, Errors);
 		return 1;
 	}
 	bool bOk = true;
 	for (UMaterial* Material : Built)
 	{
-		bOk &= Save(Material);
+		bOk &= FTWorldWave::Save(Material);
 	}
 	if (!bOk)
 	{
 		return 1;
 	}
 	// The retired ink material has no replacement; it goes only once everything above is saved.
-	const FString OldInk = WavePackageFile(FTWorldWave::OldInkMaterialPath);
+	const FString OldInk = FTWorldWave::WavePackageFile(FTWorldWave::OldInkMaterialPath);
 	if (IFileManager::Get().FileExists(*OldInk) && !IFileManager::Get().Delete(*OldInk, false, true))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("%s: couldn't remove the retired %s; nothing uses it."), kTag, *OldInk);
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: couldn't remove the retired %s; nothing uses it."), FTWorldWave::kTag, *OldInk);
 	}
 	// -Flags: the surface masters already on disk take an explicit static false on their state call's Character input in
 	// place (what SetCharacter now wires on every build), so none leans on the function's Preview alone.
@@ -769,20 +771,20 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		TArray<UMaterial*> Flagged;
 		for (const TCHAR* Path : Surfaces)
 		{
-			UMaterial* Material = LoadObject<UMaterial>(nullptr, *ObjectPath(Path), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			UMaterial* Material = LoadObject<UMaterial>(nullptr, *FTWorldWave::ObjectPath(Path), nullptr, LOAD_NoWarn | LOAD_Quiet);
 			if (!Material)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: no %s here; skipped."), kTag, Path);
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: no %s here; skipped."), FTWorldWave::kTag, Path);
 				continue;
 			}
 			const int32 Before = Material->GetExpressionCollection().Expressions.Num();
-			if (!FTWorldWave::AddState(kTag, Material, 300, -600, false))
+			if (!FTWorldWave::AddState(FTWorldWave::kTag, Material, 300, -600, false))
 			{
 				return 1;
 			}
 			if (Material->GetExpressionCollection().Expressions.Num() == Before)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: %s already has its flag."), kTag, Path);
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: %s already has its flag."), FTWorldWave::kTag, Path);
 				continue;
 			}
 			Material->PreEditChange(nullptr);
@@ -792,11 +794,11 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		FAssetCompilingManager::Get().FinishAllCompilation();
 		for (UMaterial* Material : Flagged)
 		{
-			if (FT::CompileErrors(kTag, Material) > 0 || !Save(Material))
+			if (FT::CompileErrors(FTWorldWave::kTag, Material) > 0 || !FTWorldWave::Save(Material))
 			{
 				return 1;
 			}
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: %s takes an explicit Character false."), kTag, *Material->GetPathName());
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: %s takes an explicit Character false."), FTWorldWave::kTag, *Material->GetPathName());
 		}
 	}
 	// -Worn: the worn masters already on disk take the character state in place (what their builders now wire in, without
@@ -814,22 +816,22 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		TArray<UMaterial*> Changed;
 		for (const FString& Path : Worn)
 		{
-			UMaterial* Material = LoadObject<UMaterial>(nullptr, *ObjectPath(Path), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			UMaterial* Material = LoadObject<UMaterial>(nullptr, *FTWorldWave::ObjectPath(Path), nullptr, LOAD_NoWarn | LOAD_Quiet);
 			if (!Material)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: no %s here; skipped."), kTag, *Path);
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: no %s here; skipped."), FTWorldWave::kTag, *Path);
 				continue;
 			}
 			const bool bWasOn = CharacterOn(*Material);
 			const int32 Before = Material->GetExpressionCollection().Expressions.Num();
-			if (!FTWorldWave::AddState(kTag, Material, 300, 1300, true))
+			if (!FTWorldWave::AddState(FTWorldWave::kTag, Material, 300, 1300, true))
 			{
 				return 1;
 			}
 			// Unchanged only when the flag was on and nothing was added (a cloth master's fuzz call is an addition).
 			if (bWasOn && CharacterOn(*Material) && Material->GetExpressionCollection().Expressions.Num() == Before)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s already takes the character state."), kTag, *Path);
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s already takes the character state."), FTWorldWave::kTag, *Path);
 				continue;
 			}
 			Material->PreEditChange(nullptr);
@@ -839,18 +841,18 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		FAssetCompilingManager::Get().FinishAllCompilation();
 		for (UMaterial* Material : Changed)
 		{
-			if (FT::CompileErrors(kTag, Material) > 0 || !Save(Material))
+			if (FT::CompileErrors(FTWorldWave::kTag, Material) > 0 || !FTWorldWave::Save(Material))
 			{
 				return 1;
 			}
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s takes the character state."), kTag, *Material->GetPathName());
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s takes the character state."), FTWorldWave::kTag, *Material->GetPathName());
 		}
 	}
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("%s: built MF_WorldWaveCut, MF_WorldWaveState, PP_WorldWave (%d expressions) and %d prop twins; the parameters are in "
 			 "%s. Now rebuild the masters that wire them in: -run=FTBuildSurfaces -Master -Weather, -run=FTImportPlant -Masters, "
 			 "-run=FTImportVehicle -Source=<the car's export>."),
-		kTag, Post->GetExpressionCollection().Expressions.Num(), Built.Num() - 1, FTWorldWave::CollectionPath);
+		FTWorldWave::kTag, Post->GetExpressionCollection().Expressions.Num(), Built.Num() - 1, FTWorldWave::CollectionPath);
 	return 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildWaveMaterials needs an editor build."));
