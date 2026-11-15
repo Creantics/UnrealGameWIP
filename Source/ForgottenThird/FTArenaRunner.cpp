@@ -330,6 +330,15 @@ const TCHAR* UFTArenaRunner::PilotName(bool bAutoPlayRun, bool bIdleRun)
 
 void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 {
+	// The lead's kit must be one the player may drive (ftcore::arenaPlayable): a party member only never starts a fight
+	// as the lead. Refused: no fight begins, one error line (the host checks first; this is the runner's own guard).
+	if (!ftcore::arenaPlayable(Setup.Def.fighter))
+	{
+		UE_CLOG(!bLeadRefused, LogForgottenThird, Error, TEXT("Arena: the fight is refused: the lead's kit (%s) is not playable; no fight begins."),
+			*Setup.KitId);
+		bLeadRefused = true;
+		return;
+	}
 	if (Setup.Table)
 	{
 		Table = *Setup.Table;
@@ -653,7 +662,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 {
 	FrameDelta = DeltaSeconds;
-	if (!bBegun)
+	if (!bBegun || bLeadRefused)
 	{
 		return;
 	}
@@ -2057,7 +2066,12 @@ void UFTArenaRunner::BeginSession()
 		}
 		LoneBargainAt = -1.0;
 		SessionDef.thirdSlot = static_cast<ftcore::SlotState>(ThirdSlot);
-		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
+		if (!Session->Begin(SessionDef, static_cast<double>(SessionHeld)) && !Session->GetLastCheck().playable)
+		{
+			// Core's refusal: no lead in the fight may be driven. The fight stops here (TickFight runs nothing more).
+			UE_CLOG(!bLeadRefused, LogForgottenThird, Error, TEXT("Arena: the fight is refused: no lead in it is playable; it stops."));
+			bLeadRefused = true;
+		}
 		if (PartnerBody())
 		{
 			// A begin keeps the last fight's controlled lead, so ask for this one's. That is a request: the first tick's
@@ -8199,8 +8213,12 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	DropPendingHandoff(TEXT("the fight ended")); // a fight over inside a takeover's hold
 	LogHandoffChecks();
 	const bool bBothDown = Session && Session->Get().down(ftcore::kLeadA) && Session->Get().down(ftcore::kLeadB);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner defeat %s (session defeat %d, both leads down %d)."),
-		!bLost ? TEXT("n/a") : (bSessionDefeated && bBothDown ? TEXT("PASS") : TEXT("FAIL")), bSessionDefeated ? 1 : 0, bBothDown ? 1 : 0);
+	// A party member only as the ally (its kit not playable): the lead's fall is the defeat, with no takeover.
+	const bool bAllyNotPlayable = !ftcore::arenaPlayable(Fight.def().partnerKit);
+	const bool bLoneFall = bAllyNotPlayable && S.takeovers == 0 && PartnerTakeovers == 0 && Session && Session->Get().down(SessionLead);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner defeat %s (session defeat %d, both leads down %d; ally playable %d, the lead down with no takeover %d)."),
+		!bLost ? TEXT("n/a") : (bSessionDefeated && (bAllyNotPlayable ? bLoneFall : bBothDown) ? TEXT("PASS") : TEXT("FAIL")),
+		bSessionDefeated ? 1 : 0, bBothDown ? 1 : 0, bAllyNotPlayable ? 0 : 1, bLoneFall ? 1 : 0);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner fight: falls lead %d, partner %d; takeovers %d; rises %d (fight %d); partner blows %d, strings %d, guards %d; order presses %d."),
 		PartnerLeadFalls, PartnerAllyFalls, PartnerTakeovers, PartnerRises, S.partnerRises, S.partnerBlows, S.partnerStrings, S.partnerGuards, PartnerOrders);
 }

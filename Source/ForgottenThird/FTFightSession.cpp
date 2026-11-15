@@ -18,9 +18,12 @@ bool UFTFightSession::Begin(const ftcore::FightSessionDef& Def, double StartSeco
 {
 	Session->unbindStory(); // a binding lasts one fight (begin unbinds too)
 	const ftcore::FightSessionCheck Check = Session->begin(Def, StartSeconds);
+	LastCheck = Check;
 	if (!Check.ok())
 	{
-		UE_LOG(LogFTFightSession, Warning, TEXT("Fight session: refused tuning kept its defaults:%s%s%s%s%s%s"),
+		// playable: no lead in the fight may be driven; that is not a tuning, the host refuses the fight (one error).
+		UE_LOG(LogFTFightSession, Warning, TEXT("Fight session: refused tuning kept its defaults:%s%s%s%s%s%s%s"),
+			Check.playable ? TEXT("") : TEXT(" playable"),
 			Check.count ? TEXT("") : TEXT(" count"), Check.gift ? TEXT("") : TEXT(" gift"),
 			Check.places ? TEXT("") : TEXT(" places"), Check.table ? TEXT("") : TEXT(" table"),
 			Check.lock ? TEXT("") : TEXT(" lock"), Check.boss ? TEXT("") : TEXT(" boss"));

@@ -263,6 +263,21 @@ void AFTArenaGameMode::StartPlay()
 	AGameModeBase::StartPlay();
 
 	BuildDef(bTable);
+	if (bNoPlayableLead)
+	{
+		LeadRefusal = TEXT("no look in PartyLooks is playable (a kit in arena.json with playable true)");
+	}
+	if (!LeadRefusal.IsEmpty())
+	{
+		if (bStoryStaged)
+		{
+			StoryRefusal = LeadRefusal; // RefuseStory's one error line, and the step leaves for the title
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena: the fight is refused: %s; no fight begins."), *LeadRefusal);
+		}
+	}
 
 	// The enemies' tells: every startup at least kArenaMinTell (the data's loader doesn't hold it to that).
 	float Shortest = 1e9f;
@@ -427,19 +442,21 @@ void AFTArenaGameMode::BuildDef(bool bTable)
 	Def = bTable ? Table.fallback : ftcore::defaultArenaDef();
 	if (bTable)
 	{
-		// The lead's own kit (its attacks and its blocks); a lead without one plays the default fighter.
+		// The lead's own kit (its attacks and its blocks): one lookup, no fallback, as the pickers do. An id the table
+		// lacks, or a kit not playable, refuses the fight (StartPlay).
 		const FString Want = FindKitId();
-		const std::string WantId = FT::ToUtf8(Want);
-		Def.fighter = Table.fighter(WantId);
-		bool bOwn = false;
-		for (const std::string& Id : Table.fighterIds)
+		KitId = Want;
+		if (const ftcore::ArenaFighter* Kit = Table.findFighter(FT::ToUtf8(Want)))
 		{
-			bOwn = bOwn || Id == WantId;
+			Def.fighter = *Kit;
+			if (!ftcore::arenaPlayable(*Kit))
+			{
+				LeadRefusal = FString::Printf(TEXT("the lead's kit \"%s\" is not playable"), *Want);
+			}
 		}
-		KitId = bOwn ? Want : FString(TEXT("default"));
-		if (!bOwn && Want != TEXT("default"))
+		else
 		{
-			UE_LOG(LogForgottenThird, Log, TEXT("Arena: no fighter kit \"%s\" in arena.json; the lead plays the default kit."), *Want);
+			LeadRefusal = FString::Printf(TEXT("no fighter kit \"%s\" in arena.json"), *Want);
 		}
 	}
 	else
@@ -865,13 +882,7 @@ bool AFTArenaGameMode::IsPlayable(const FString& Name) const
 const FFTLeadLook* AFTArenaGameMode::FirstPlayable(const TArray<FFTLeadLook>& Party) const
 {
 	const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
-	if (!First && !Party.IsEmpty())
-	{
-		UE_CLOG(!bNoPlayableWarned, LogForgottenThird, Warning,
-			TEXT("Arena: no look in PartyLooks is playable (a kit in arena.json with playable true); starting as %s anyway."), *Party[0].Name);
-		bNoPlayableWarned = true;
-		First = &Party[0];
-	}
+	bNoPlayableLead = bNoPlayableLead || (!First && !Party.IsEmpty()); // no fallback: StartPlay refuses the fight
 	return First;
 }
 
@@ -882,7 +893,14 @@ FString AFTArenaGameMode::WantedLead() const
 	Want = Want.TrimStartAndEnd();
 	if (!Want.IsEmpty() && !IsPlayable(Want))
 	{
-		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a party member only (its kit is not playable) and can't be the lead; using the first playable lead."), *Want);
+		if (!Table.findFighter(FT::ToUtf8(Want.ToLower())))
+		{
+			UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no such kit \"%s\" in arena.json; using the first playable lead."), *Want);
+		}
+		else
+		{
+			UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a party member only (its kit is not playable) and can't be the lead; using the first playable lead."), *Want);
+		}
 		bLeadWarned = true;
 		Want.Reset();
 	}
@@ -919,7 +937,8 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 				return &Member;
 			}
 		}
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want, *First->Name);
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want,
+			First ? *First->Name : TEXT("none (no look playable)"));
 	}
 	return First;
 }
@@ -944,6 +963,10 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 			RefuseStory();
 		}
 		return; // never a fight on the wrong stage or with part of its line-up
+	}
+	if (!LeadRefusal.IsEmpty() || Runner->IsRefused())
+	{
+		return; // never a fight with a party member only as the lead
 	}
 	if (!Runner->IsBegun())
 	{

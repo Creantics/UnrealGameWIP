@@ -167,19 +167,21 @@ private:
 	// The ground, the zone's dressing, then the runner's fight.
 	void Begin();
 	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first
-	// playable one; null (logged) when the config has none. A look whose kit has no attacks is never picked.
+	// playable one; null (logged) when the config has none, or has none playable (the fight is then refused: LeadRefusal).
+	// A look whose kit is not playable is never picked.
 	const FFTLeadLook* FindLead() const;
 	// The fighter kit's id in arena.json: -ArenaLead=<name> lower-cased (even when no look of that name loads), else
-	// the first playable PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it
-	// lacks. A name whose kit has no attacks (a party slot, ftcore::arenaPlayable) is refused with a warning.
+	// the first playable PartyLooks name lower-cased, else "default" (no PartyLooks). A name with no kit, or whose kit
+	// is not playable (a party member only, ftcore::arenaPlayable), is refused with a warning. BuildDef looks it up once,
+	// with no fallback: an id the table lacks refuses the fight (LeadRefusal).
 	FString FindKitId() const;
 	// -ArenaLead=<name>, trimmed; empty when missing or when that kit has no attacks (warned).
 	FString WantedLead() const;
 	bool IsPlayable(const FString& Name) const;
-	// The first playable look of Party; with none, Party[0] with a warning (once); null only for an empty party.
+	// The first playable look of Party; null for an empty party, or one with no look playable (bNoPlayableLead set).
 	const FFTLeadLook* FirstPlayable(const TArray<FFTLeadLook>& Party) const;
 	mutable bool bLeadWarned = false; // WantedLead warns once
-	mutable bool bNoPlayableWarned = false; // FirstPlayable warns once
+	mutable bool bNoPlayableLead = false; // FirstPlayable found a party with no look playable: the fight is refused
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);
 	void TakeShot(const TCHAR* Name, bool bCounted = true);
@@ -237,6 +239,10 @@ private:
 	// set while loading; the fight never starts and the step leaves for the title, loudly (RefuseStory).
 	FString StoryRefusal;
 	void RefuseStory();
+	// Why no fight can begin with the lead this run has (no PartyLooks look playable, the lead's kit missing from
+	// arena.json, or not playable): set in StartPlay, one error line (a story fight's goes to StoryRefusal); no fight
+	// begins. Core's rule: a party member only is never the lead.
+	FString LeadRefusal;
 	// -ArenaStoryQuitAt=<s> (non-shipping, headless, staged story fights only): at that fight time the screen quits
 	// to the title the way the pause menu's Quit to Title does (FTStep::QuitToTitle). Off (< 0) by default.
 	float StoryQuitAt = -1.f;

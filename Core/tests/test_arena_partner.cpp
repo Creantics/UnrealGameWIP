@@ -3438,6 +3438,16 @@ TEST_CASE("arena partner: per-lead kits: partnerReach and partnerStandoff parse,
     CHECK_FALSE(load(R"("partnerReach":0.3,)", &err).first);
     CHECK_FALSE(load(R"("partnerReach":4.5,)", &err).first);
     CHECK_FALSE(load(R"("partnerReach":2,"partnerStandoff":2.5,)", &err).first);
+    got = load(R"("partnerReach":2,"partnerStandoff":2,)", &err); // standoff equal to reach: accepted
+    REQUIRE_MESSAGE(got.first, err);
+    CHECK(got.second.partnerStandoff == doctest::Approx(2.f));
+    CHECK_FALSE(load(R"("partnerStandoff":1,)", &err).first); // a standoff without a reach would pass the default reach
+    CHECK(err.find("partnerStandoff") != std::string::npos);
+    CHECK_FALSE(load(R"("partnerReach":0,"partnerStandoff":1,)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":-1,)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":3,"partnerStandoff":-0.5,)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":"far",)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":3,"partnerStandoff":"near",)", &err).first);
 }
 
 TEST_CASE("arena partner: per-lead kits: the shipped leads' playable flags") {
@@ -3576,6 +3586,25 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                 CHECK(s.partnerBlows >= 1);
                 CHECK(s.partnerDamage > 0);
                 CHECK(s.partnerNoKitSeconds == 0.f);
+                // Pinned (seed 1): each boss's time to the win and the third's partner damage, so a retune of its
+                // bolt, reach or standoff cannot pass silently. Re-pin with the report's lines when one is meant.
+                struct Pin {
+                    const char* lead;
+                    const char* boss;
+                    float seconds;
+                    int partnerDamage;
+                };
+                static constexpr Pin kThirdPins[] = {
+                    {"devin", "kite_boss", 26.1331f, 136}, {"devin", "stone_bearer", 39.6162f, 196},
+                    {"devin", "white_glove", 36.3663f, 168}, {"duy", "kite_boss", 33.5163f, 150},
+                    {"duy", "stone_bearer", 46.3828f, 261}, {"duy", "white_glove", 42.5662f, 202},
+                };
+                for (const Pin& pin : kThirdPins) {
+                    if (std::string(p.lead) != pin.lead || id != pin.boss) continue;
+                    CHECK(r.fight.over());
+                    CHECK(r.fight.time() == doctest::Approx(pin.seconds).epsilon(1e-4));
+                    CHECK(s.partnerDamage == pin.partnerDamage);
+                }
             }
         }
     }

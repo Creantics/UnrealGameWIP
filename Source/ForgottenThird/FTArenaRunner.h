@@ -192,6 +192,8 @@ public:
 
 	// ---- for AFTArenaHUD and the owner (no allocation) ----
 	bool IsBegun() const { return bBegun; }
+	// The fight was refused (no playable lead: Begin's guard, or the session's check): it never runs.
+	bool IsRefused() const { return bLeadRefused; }
 	// The outcome has come and its line is logged.
 	bool IsFinished() const { return bResultLogged; }
 	const ftcore::ArenaFight& GetFight() const { return Fight; }
@@ -1161,6 +1163,7 @@ private:
 	int32 Stingers = 0;
 
 	bool bBegun = false;
+	bool bLeadRefused = false; // IsRefused
 	bool bFiguresSpawned = false;
 	bool bAutoPlay = false;
 	bool bIdle = false;

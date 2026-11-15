@@ -41,8 +41,10 @@ public:
 	UFTFightSession();
 
 	// Starts a fight at StartSeconds on the fight clock; it always begins. False (with a log line naming each piece)
-	// when a tuning was refused and that piece kept its defaults. A start moved into range is logged, not false.
+	// when a tuning was refused and that piece kept its defaults. A start moved into range is logged, not false. With no
+	// lead in the fight playable (GetLastCheck().playable false) the host must refuse the fight: one error line.
 	bool Begin(const ftcore::FightSessionDef& Def, double StartSeconds);
+	const ftcore::FightSessionCheck& GetLastCheck() const { return LastCheck; }
 	// Moves the fight clock and every piece. FightDeltaSeconds is fight time: 0 during hit-stop.
 	const ftcore::FightTick& Tick(float FightDeltaSeconds);
 	// One shared-input press by Who (an ftcore::FighterId), aimed at Target where the action has one (a gift's lead).
@@ -62,4 +64,5 @@ public:
 
 private:
 	TUniquePtr<ftcore::FightSession> Session;
+	ftcore::FightSessionCheck LastCheck; // the last Begin's
 };

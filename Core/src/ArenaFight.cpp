@@ -4510,7 +4510,9 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "partnerStandoff", f.partnerStandoff, 0, 4, false, path, errors);
     if (f.partnerReach > 0.f && f.partnerReach < 0.5f)
         errors.push_back(path + ".partnerReach: expected 0 (unset) or 0.5..4");
-    if (f.partnerStandoff > 0.f && f.partnerStandoff > (f.partnerReach > 0.f ? f.partnerReach : 4.f))
+    if (f.partnerStandoff > 0.f && f.partnerReach == 0.f) // the default reach may sit below the standoff
+        errors.push_back(path + ".partnerStandoff: expected a partnerReach with it");
+    else if (f.partnerStandoff > f.partnerReach)
         errors.push_back(path + ".partnerStandoff: expected at most partnerReach");
 
     const JsonValue light = j["light"];
