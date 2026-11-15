@@ -31,6 +31,8 @@ public class ForgottenThird : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription" });
 			// ImageCore: FTBuildSurfaces -Windows resizes the window atlases (FImage::ResizeTo).
 			PrivateDependencyModuleNames.Add("ImageCore");
+			// FTMaterialStats reads the masters' shader instruction counts (UMaterialEditingLibrary::GetStatistics).
+			PrivateDependencyModuleNames.Add("MaterialEditor");
 
 			// FTBuildCloth makes Chaos cloth from an imported mesh section.
 			PrivateDependencyModuleNames.AddRange(new string[] { "ClothingSystemEditor", "ClothingSystemEditorInterface", "ClothingSystemRuntimeCommon", "ClothingSystemRuntimeInterface", "SkeletalMeshEditor" });

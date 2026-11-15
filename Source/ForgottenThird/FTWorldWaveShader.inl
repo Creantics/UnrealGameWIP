@@ -10,12 +10,9 @@ static const TCHAR* const FTWorldWavePostInclude = TEXT("/Plugin/FTLook/Private/
 
 // The cut, in MF_WorldWaveCut. Inputs: WorldPos (absolute world position), WOrigin, WRadius, WBand, WDirection, WTime
 // (the collection) and Tag, LocalR (custom primitive data, FTWorldWave::kTagSlot and kLocalSlot). Returns the clip (1
-// keep, 0 cut). InkOut and CoreOut stay 0: the masters that wire them in (AddCut) need no rebuild. No derivatives:
-// ray-tracing hit shaders compile this too.
+// keep, 0 cut). No derivatives: ray-tracing hit shaders compile this too.
 static const TCHAR* const FTWorldWaveCutBody =
 TEXT(R"HLSL(
-InkOut = 0.0;
-CoreOut = float3(0.0, 0.0, 0.0);
 float tag = Tag;
 if (tag < 0.5)
 {

@@ -101,6 +101,11 @@ float FTWaveWetInk(float tau, float3 wp, float3 n)
 void FTWaveSurface(float3 wp, float3 n, float4 origin, float active, float r, float w, float direction, float t, float4 keep0,
 	float4 keep1, inout float3 base, inout float rough, inout float3 emis)
 {
+	// No wave (the collection's WorldWaveOriginScreen.w 0, uniform over the draw): one test and the master's own values.
+	if (active < 0.5)
+	{
+		return;
+	}
 	float m = FTWaveSecond(wp, origin.xyz, r, w, direction, t, active);
 	FTWaveSurfaceState(m, wp, n, keep0, keep1, base, rough, emis);
 	if (active > 0.5 && origin.w > 0.5 && origin.w < 1.5 && r > 0.0)

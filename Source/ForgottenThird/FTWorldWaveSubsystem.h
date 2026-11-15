@@ -26,7 +26,7 @@
 //     first world's look to the Unwritten's (looks.json) by it, never ahead of the ground; the post-process's gains
 //     (waveGains) keep the unreached side in its own light. StopWave puts the first world's look back;
 //   - the surfaces behind the front take the second world's state in their own materials (MF_WorldWaveState: near grey,
-//     a stop down, damp, grimed and leak-stained, their light dead but for -WorldWaveKeep0/1=x,y,z,r cm spheres);
+//     a stop down, damp, grimed and leak-stained, their light dead but for the wave definition's kept lights, ftcore::WorldWaveParams::keep);
 //   - logs each cue (no sound yet);
 //   - steps every tracked thing (ftcore::updateWorldWaveThing): its visibility, its collision (collisionDelay after the
 //     front passes it) and a held arrival's own front (custom primitive data FTWorldWave::kLocalSlot). An arrival that
@@ -89,6 +89,10 @@ public:
 	// first world has it.
 	void StopWave();
 	bool HasWave() const { return bWave; }
+	// Which world a point (world cm) is in now: the side the wave leaves (before its front), the band, or the side it
+	// brings, from Core's classifyWorldWave on the state the shaders' constants come from (worldWaveShaderConstants).
+	// With no wave, the side beyond the front (Old, band 0). For gameplay: enemies, sound, the lead changing with the front.
+	ftcore::WaveClass WhichWorldAt(const FVector& WorldCm) const;
 
 	// The proof dressing round Origin (world cm) within Radius (cm); returns how many things it tracks now.
 	int32 Dress(const FVector& Origin, double Radius);
@@ -188,6 +192,8 @@ private:
 	ftcore::SceneLook LookStart;    // ftcore::waveSkyStart(LookFrom, LookTo)
 	ftcore::SceneLook LookTo;       // the second world's
 	ftcore::SceneLook LookOnActors; // what the look actors carry now
+	/** The map's own sun cloud-shadow flag from before the wave (0/1; -1 not taken), given back by RestoreLook. */
+	int32 SunCloudShadowsMap = -1;
 	float Cover = 0.f;
 	float CoverShare = 0.f;
 	/** The cloud layer's own share (ftcore::stepWaveCloud): it changes only once the view is all one world. */
@@ -203,10 +209,11 @@ private:
 	double LastLookReal = -1.0;
 	/** The map's sky light captures the sky in real time (found at the wave's start): its fill is lifted by the sun lost. */
 	bool bSkyRealTime = false;
-	// The second world's kept lights (-WorldWaveKeep0=x,y,z,r and -WorldWaveKeep1=; cm): every other emissive dies.
-	// The front's look, WorldWaveOrigin.w (-WorldWaveFront=): 0 the refraction band, 1 ink in water, 2 blot dissolve.
-	float FrontStyle = 0.f;
-	FLinearColor Keeps[2] ={FLinearColor(0.f, 0.f, 0.f, 0.f), FLinearColor(0.f, 0.f, 0.f, 0.f)};
+	// The proof's overrides of the wave's definition (Params.front, Params.keep), parsed and applied only outside Shipping:
+	// -WorldWaveFront=A|B|Band, -WorldWaveKeep0/1=x,y,z,r (cm). -1 / false: the definition's own.
+	int32 DevFront = -1;
+	bool bDevKeep[ftcore::kWaveKeepLights] = {false, false};
+	ftcore::WaveKeepLight DevKeep[ftcore::kWaveKeepLights];
 
 	FName VectorParams[7];
 	FName ScalarParams[7];

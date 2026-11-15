@@ -323,20 +323,26 @@ void UFTWorldWaveSubsystem::Initialize(FSubsystemCollectionBase& InCollection)
 		ScalarParams[Next++] = FName(Name);
 	}
 	// The look's collection loads on the first wave (EnsureCollection), so a map that never runs one never loads it.
-	for (int32 K = 0; K < 2; ++K)
+#if !UE_BUILD_SHIPPING // the proof's overrides of the wave's definition (front and kept lights): not in a shipped game
+	for (int32 K = 0; K < ftcore::kWaveKeepLights; ++K)
 	{
 		double Keep[4];
 		if (ParseList(K == 0 ? TEXT("WorldWaveKeep0=") : TEXT("WorldWaveKeep1="), Keep, 4))
 		{
-			Keeps[K] = FLinearColor(static_cast<float>(Keep[0]), static_cast<float>(Keep[1]), static_cast<float>(Keep[2]), static_cast<float>(Keep[3]));
+			bDevKeep[K] = true;
+			DevKeep[K].centre = ToMetres(FVector(Keep[0], Keep[1], Keep[2]));
+			DevKeep[K].radius = static_cast<float>(Keep[3] * 0.01);
 		}
 	}
-	// The front's look (WorldWaveOrigin.w): -WorldWaveFront=A ink in water, B blot dissolve; the refraction band without.
+	// -WorldWaveFront=A ink in water (the definition's default), B blot dissolve, Band the old refraction band.
 	FString FrontName;
 	if (FParse::Value(FCommandLine::Get(), TEXT("WorldWaveFront="), FrontName))
 	{
-		FrontStyle = FrontName.Equals(TEXT("A"), ESearchCase::IgnoreCase) ? 1.f : (FrontName.Equals(TEXT("B"), ESearchCase::IgnoreCase) ? 2.f : 0.f);
+		DevFront = FrontName.Equals(TEXT("A"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::WaveFront::Ink)
+			: FrontName.Equals(TEXT("B"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::WaveFront::Blots)
+			: static_cast<int32>(ftcore::WaveFront::Band);
 	}
+#endif
 	Pawns.Reserve(16);
 	Fogs.Reserve(8);
 	// No tick bound yet: a map with no wave pays nothing (BindTick binds it for a boot switch or a wave).
@@ -475,10 +481,18 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	{
 		StopWave();
 	}
+	// The street wave's definition: ink in water (front A) unless it says otherwise.
 	ftcore::WorldWaveParams Wanted = ftcore::streetWaveParams();
 	Wanted.origin = ToMetres(Origin);
 	Wanted.startTime = StartTime;
 	Wanted.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
+#if !UE_BUILD_SHIPPING
+	if (DevFront >= 0) { Wanted.front = static_cast<ftcore::WaveFront>(DevFront); }
+	for (int32 K = 0; K < ftcore::kWaveKeepLights; ++K)
+	{
+		if (bDevKeep[K]) { Wanted.keep[K] = DevKeep[K]; }
+	}
+#endif
 	// A wave already set is replaced (Core's restart rule: from zero), after StopWave above has put its things back.
 	const ftcore::WorldWaveRefusal Refusal = ftcore::beginWorldWave(State, Wanted);
 	if (Refusal != ftcore::WorldWaveRefusal::None)
@@ -554,6 +568,15 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	BindTick(true);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: a %s wave from %s (cm) at %.3f s on the wave clock (now %.3f); %d things tracked, %d fogs, %d leads."),
 		bReverse ? TEXT("reverse") : TEXT("forward"), *Origin.ToString(), StartTime, GetClock(), Tracked.Num(), Fogs.Num(), Pawns.Num());
+}
+
+ftcore::WaveClass UFTWorldWaveSubsystem::WhichWorldAt(const FVector& WorldCm) const
+{
+	if (!bWave)
+	{
+		return ftcore::WaveClass{};
+	}
+	return ftcore::classifyWorldWave(Frame, Params.origin, ToMetres(WorldCm));
 }
 
 void UFTWorldWaveSubsystem::StopWave()
@@ -660,22 +683,23 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 			Tip = Project(ViewProjection, StreakFootCm + FVector(0.0, 0.0, FTWorldWave::StreakHeightCm));
 		}
 		const float Drawable = bView && Foot.Depth > 10.f && Tip.Depth > 10.f ? 1.f : 0.f;
-		Mpc->SetVectorParameterValue(VectorParams[0], FLinearColor(static_cast<float>(OriginCm.X), static_cast<float>(OriginCm.Y), static_cast<float>(OriginCm.Z), FrontStyle));
+		// Every wave constant from Core's state (WhichWorldAt answers from the same), so the pixels and gameplay agree.
+		const ftcore::WorldWaveShaderConstants C = ftcore::worldWaveShaderConstants(Params, Frame);
+		Mpc->SetVectorParameterValue(VectorParams[0], FLinearColor(C.originCm[0], C.originCm[1], C.originCm[2], C.front));
 		Mpc->SetVectorParameterValue(VectorParams[1], FLinearColor(Foot.U, Foot.V, Foot.Side, 1.f));
 		Mpc->SetVectorParameterValue(VectorParams[2], FLinearColor(Foot.U, Foot.V, Drawable, Foot.Depth));
 		Mpc->SetVectorParameterValue(VectorParams[3], FLinearColor(Tip.U, Tip.V, Drawable, Tip.Depth));
 		// The materials' band runs from the inner edge (r - w) to the tongues' reach (r + lead w): the collection's radius
 		// is the reach and its band the whole span, so the tear's tongues can run ahead of the outer edge the cues use.
-		const float Lead = Frame.radius > 0.f ? Params.tongueLead * Frame.bandWidth : 0.f;
-		Mpc->SetScalarParameterValue(ScalarParams[0], (Frame.radius + Lead) * 100.f);
-		Mpc->SetScalarParameterValue(ScalarParams[1], (Frame.bandWidth + Lead) * 100.f);
+		Mpc->SetScalarParameterValue(ScalarParams[0], C.reachCm);
+		Mpc->SetScalarParameterValue(ScalarParams[1], C.spanCm);
 		Mpc->SetScalarParameterValue(ScalarParams[2], Frame.preludeProgress);
-		Mpc->SetScalarParameterValue(ScalarParams[3], Frame.direction == ftcore::WaveDirection::Reverse ? 1.f : 0.f);
+		Mpc->SetScalarParameterValue(ScalarParams[3], C.reverse);
 		Mpc->SetScalarParameterValue(ScalarParams[4], Frame.cameraInside);
 		Mpc->SetScalarParameterValue(ScalarParams[5], static_cast<float>(FMath::Max(Time - Params.startTime, 0.0)));
 		Mpc->SetScalarParameterValue(ScalarParams[6], static_cast<float>(StreakFootCm.Z));
-		Mpc->SetVectorParameterValue(VectorParams[4], Keeps[0]);
-		Mpc->SetVectorParameterValue(VectorParams[5], Keeps[1]);
+		Mpc->SetVectorParameterValue(VectorParams[4], FLinearColor(C.keepCm[0][0], C.keepCm[0][1], C.keepCm[0][2], C.keepCm[0][3]));
+		Mpc->SetVectorParameterValue(VectorParams[5], FLinearColor(C.keepCm[1][0], C.keepCm[1][1], C.keepCm[1][2], C.keepCm[1][3]));
 	}
 
 	// The sky, light and air (and the post-process's gains) in step with the view's cover.
@@ -860,6 +884,15 @@ void UFTWorldWaveSubsystem::StepLook(UWorld& World, const FVector& Eye, const FM
 	{
 		if (FTScene::ApplyLook(&World, Written, LookOnActors) >= 0)
 		{
+			// The changed world's cover shades the ground; the map's own flag is kept to give back (RestoreLook).
+			if ((Written.cloudCover > 0.f) != (LookOnActors.cloudCover > 0.f))
+			{
+				const int32 Had = FTScene::SetSunCloudShadows(&World, Written.cloudCover > 0.f);
+				if (SunCloudShadowsMap < 0)
+				{
+					SunCloudShadowsMap = Had;
+				}
+			}
 			LookOnActors = Written;
 		}
 		FTScene::ApplyLookParameters(&World, Now);
@@ -908,6 +941,11 @@ void UFTWorldWaveSubsystem::RestoreLook(UWorld& World)
 	if (LookOnActors != LookFrom && FTScene::ApplyLook(&World, LookFrom, LookOnActors) >= 0)
 	{
 		LookOnActors = LookFrom;
+	}
+	if (SunCloudShadowsMap >= 0)
+	{
+		FTScene::SetSunCloudShadows(&World, SunCloudShadowsMap != 0);
+		SunCloudShadowsMap = -1;
 	}
 	FTScene::ApplyLookParameters(&World, LookFrom);
 }

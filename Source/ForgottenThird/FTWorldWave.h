@@ -11,21 +11,22 @@
 // material reading MPC_Look recompiles once. They are not look parameters: SceneLook and looks.json never set them.
 //
 // MPC_Look's wave parameters (engine units, cm):
-//   WorldWaveOrigin        vector  the wave's origin, world cm (w the front's look: 0 the refraction band, 1 ink in water (A), 2 blot dissolve (B), from -WorldWaveFront=)
+//   WorldWaveOrigin        vector  the wave's origin, world cm (w the front's look: 0 the refraction band, 1 ink in water (A), 2 blot dissolve (B): ftcore::WorldWaveParams::front, ink by default)
+//                                  (every wave constant here comes from ftcore::worldWaveShaderConstants)
 //   WorldWaveOriginScreen  vector  xy the origin's viewport UV, z +1 in front of the camera / -1 behind, w 1 while a
 //                                  wave is set (0: every wave material passes through)
 //   WorldWaveStreakFoot    vector  xy the streak's foot (the origin) in viewport UV, z 1 when drawable, w its view
 //                                  depth cm
 //   WorldWaveStreakTip     vector  the same for the streak's tip (StreakHeightCm over the origin)
-//   WorldWaveRadius        scalar  the front's outer edge, cm (0 before the front moves and with no wave)
-//   WorldWaveBand          scalar  the band's width, cm; the inner edge is Radius - Band
+//   WorldWaveRadius        scalar  the tongues' reach, cm (r + tongueLead w; 0 before the front moves and with no wave)
+//   WorldWaveBand          scalar  the whole span, cm (w + tongueLead w); the inner edge is Radius - Band (r - w)
 //   WorldWavePrelude       scalar  0..1 the streak's growth
 //   WorldWaveDirection     scalar  0 Forward (the second world inside the sphere), 1 Reverse (outside)
 //   WorldWaveInside        scalar  0..1 how far the camera is inside (ftcore::updateWorldWave's cameraInside): the
 //                                  second world's sky and fog use it for Forward and 1 - it for Reverse
 //   WorldWaveTime          scalar  seconds on the wave clock, for the moving noise
 //   WorldWaveGround        scalar  the ground's height under the origin, world cm (the ground fog's floor)
-//   WorldWaveKeep0, Keep1  vector  the second world's kept light sources: xyz world cm, w radius cm (0 off); every
+//   WorldWaveKeep0, Keep1  vector  the second world's kept light sources (WorldWaveParams::keep): xyz world cm, w radius cm (0 off); every
 //                                  other emissive dies behind the front
 //   WorldWaveGain          vector  x the first world's lift, y the second's (Core waveGains: the sun and sky the second
 //                                  world is taking down over the whole view, given back where it has not arrived), z the

@@ -148,8 +148,6 @@ UMaterialFunction* BuildCutFunction(UPackage* Package, UMaterialParameterCollect
 	};
 	AddInput(Custom, TEXT("Tag"), AddPrimitiveData(FTWorldWave::TagParameter, FTWorldWave::kTagSlot));
 	AddInput(Custom, TEXT("LocalR"), AddPrimitiveData(FTWorldWave::LocalParameter, FTWorldWave::kLocalSlot));
-	AddOutput(Custom, TEXT("InkOut"), CMOT_Float1);
-	AddOutput(Custom, TEXT("CoreOut"), CMOT_Float3);
 	Custom->RebuildOutputs();
 
 	struct FOutputSpec
@@ -160,8 +158,6 @@ UMaterialFunction* BuildCutFunction(UPackage* Package, UMaterialParameterCollect
 	};
 	const FOutputSpec Outputs[] = {
 		{TEXT("Clip"), TEXT("1 keeps the pixel, 0 clips it: OpacityMask (or Opacity on a translucent master)."), 0},
-		{TEXT("Ink"), TEXT("0 (kept for the masters wired to it)."), 1},
-		{TEXT("Core"), TEXT("0 (kept for the masters wired to it)."), 2},
 	};
 	for (int32 I = 0; I < static_cast<int32>(UE_ARRAY_COUNT(Outputs)); ++I)
 	{
@@ -390,9 +386,9 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
 		return false;
 	}
 	UMaterialExpressionMaterialFunctionCall* Call = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y);
-	if (!Call->SetMaterialFunction(Function) || Call->FunctionOutputs.Num() < 3)
+	if (!Call->SetMaterialFunction(Function) || Call->FunctionOutputs.Num() < 1)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s gives %d outputs, not Clip, Ink and Core; %s takes no world-wave cut."), Tag,
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s gives %d outputs, not Clip; %s takes no world-wave cut."), Tag,
 			CutFunctionPath, Call->FunctionOutputs.Num(), *Material->GetName());
 		Material->GetExpressionCollection().RemoveExpression(Call);
 		return false;
