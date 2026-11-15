@@ -318,6 +318,19 @@ private:
 	FVector WetReview = FVector::ZeroVector;
 	FTimerHandle WetTimer;
 	int32 WetSlots = -1;
+#if !UE_BUILD_SHIPPING
+	// -ExploreSoakSwap=<wetness>,<word>@<off s>[+<on s>]: review only (see the .cpp).
+	void StepSoakSwap();
+	void LogSoakSwap(const TCHAR* Stage);
+	FString SoakSwapWord;
+	float SoakSwapWet = -1.f;
+	float SoakSwapOff = -1.f;
+	float SoakSwapOn = -1.f;
+	double SoakSwapStart = 0.0;
+	int32 SoakSwapStage = 0;
+	bool bSoakSwapBefore = false;
+	FTimerHandle SoakSwapTimer;
+#endif
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 	void HoldBodyAt(float Time);
@@ -352,6 +365,9 @@ private:
 	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
 	UPROPERTY(Transient)
 	FFTWornFronts WornFronts;
+	// The look worn (WearLook), for taking a piece off or putting it on later (FTLook::SetPieceWorn).
+	UPROPERTY(Transient)
+	FFTLeadLook WornLook;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USceneComponent>> GroomComponents;
 	UPROPERTY(Transient)
@@ -591,13 +607,17 @@ private:
 	// What the lead does to the water and the water to it (UFTWaterSubsystem::LeadWater, each tick): splash, rings,
 	// wake, and its wetness on its materials. The four scalar parameters Wetness (0..1), WetLineZ (world cm),
 	// WetLineSoft (cm) and WetSilt (0..1, the water's stain; it stays when dry, with its line) are set on dynamic
-	// instances of the materials of its skeletal meshes, made once the first time it is wet; a material that has no
+	// instances of the materials of its skeletal meshes, made the first time it is wet and again after a look or a mesh
+	// swap; a material that has no
 	// such parameter ignores them. WetDrip is never set (the drips are off), so it stays at its default 0.
 	void StirWater(float DeltaSeconds);
 	void ShowWetness(const ftcore::WaterWetness& Wet);
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetMaterials;
 	bool bWetMaterialsMade = false;
+	// FTLook::WornMeshSerial() when WetMaterials were gathered: a piece's mesh swapped since (an under layer's cut, a
+	// front) has new slots, so they are gathered again and every value written anew.
+	uint32 WetMaterialsSerial = 0;
 	float WetShown = 0.f;
 	float WetLineShown = 0.f;
 	float WetSiltShown = 0.f;
