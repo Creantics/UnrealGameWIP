@@ -5,6 +5,7 @@
 
 #if WITH_EDITOR
 #include "AssetCompilingManager.h"
+#include "Misc/Parse.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "FTImportMaterials.h"
 #include "FTStyleParameters.h"
@@ -227,6 +228,11 @@ UMaterialFunction* BuildStateFunction(UPackage* Package, UMaterialParameterColle
 	CharacterIn->bUsePreviewValueAsDefault = true;
 	CharacterIn->SortPriority = 3;
 	CharacterIn->Id = FGuid::NewDeterministicGuid(TEXT("FTWorldWaveState.In.Character"));
+	// A static bool input takes its default only from a connected Preview (PreviewValue is ignored for it: every master
+	// that left Character unset failed to compile, "Missing Preview connection", and drew the default material).
+	UMaterialExpressionStaticBool* CharacterOff = AddFunctionExpression<UMaterialExpressionStaticBool>(Function, -1450, 60);
+	CharacterOff->Value = 0;
+	CharacterIn->Preview.Connect(0, CharacterOff);
 
 	UMaterialExpressionWorldPosition* WorldPos = AddFunctionExpression<UMaterialExpressionWorldPosition>(Function, -900, 100);
 	UMaterialExpressionCustom* Custom = AddFunctionExpression<UMaterialExpressionCustom>(Function, -300, 0);
@@ -489,22 +495,24 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 			StateFunctionPath, *Material->GetName());
 		return false;
 	}
-	// Character on: a static true into the call's Character input (the character state; State.ush, FTWaveCharacter).
+	// The call's Character input always takes an explicit static bool (besides the function's own false Preview): true for
+	// the character state (State.ush, FTWaveCharacter), false for every other master. A false one already there is
+	// switched on for a character; a true one is never switched off here.
 	const auto SetCharacter = [Material, X, Y, bCharacter, Tag](UMaterialExpressionMaterialFunctionCall* Call)
 	{
-		if (!bCharacter)
-		{
-			return;
-		}
 		for (FFunctionExpressionInput& In : Call->FunctionInputs)
 		{
 			if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")))
 			{
 				if (!In.Input.Expression)
 				{
-					UMaterialExpressionStaticBool* On = AddExpression<UMaterialExpressionStaticBool>(Material, X - 300, Y + 240);
-					On->Value = 1;
-					In.Input.Connect(0, On);
+					UMaterialExpressionStaticBool* Flag = AddExpression<UMaterialExpressionStaticBool>(Material, X - 300, Y + 240);
+					Flag->Value = bCharacter ? 1 : 0;
+					In.Input.Connect(0, Flag);
+				}
+				else if (UMaterialExpressionStaticBool* Flag = Cast<UMaterialExpressionStaticBool>(In.Input.Expression); Flag && bCharacter)
+				{
+					Flag->Value = 1;
 				}
 				return;
 			}
@@ -648,6 +656,111 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	if (!bOk)
 	{
 		return 1;
+	}
+	// -Flags: the surface masters already on disk take an explicit static false on their state call's Character input in
+	// place (what SetCharacter now wires on every build), so none leans on the function's Preview alone.
+	if (FParse::Param(*Params, TEXT("Flags")))
+	{
+		const TCHAR* const Surfaces[] = {TEXT("/Game/Rendering/M_WorldGround"), TEXT("/Game/Rendering/M_WorldSurface"),
+			TEXT("/Game/Rendering/M_WorldSurfaceTex"), TEXT("/Game/Rendering/Windows/M_WorldSurfaceWin"), TEXT("/Game/Rendering/Foliage/M_FTFoliage"),
+			TEXT("/Game/Rendering/Foliage/M_FTBark")};
+		TArray<UMaterial*> Flagged;
+		for (const TCHAR* Path : Surfaces)
+		{
+			UMaterial* Material = LoadObject<UMaterial>(nullptr, *ObjectPath(Path), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			if (!Material)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: no %s here; skipped."), kTag, Path);
+				continue;
+			}
+			const int32 Before = Material->GetExpressionCollection().Expressions.Num();
+			if (!FTWorldWave::AddState(kTag, Material, 300, -600, false))
+			{
+				return 1;
+			}
+			if (Material->GetExpressionCollection().Expressions.Num() == Before)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: %s already has its flag."), kTag, Path);
+				continue;
+			}
+			Material->PreEditChange(nullptr);
+			Material->PostEditChange();
+			Flagged.Add(Material);
+		}
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		for (UMaterial* Material : Flagged)
+		{
+			if (FT::CompileErrors(kTag, Material) > 0 || !Save(Material))
+			{
+				return 1;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: -Flags: %s takes an explicit Character false."), kTag, *Material->GetPathName());
+		}
+	}
+	// -Worn: the worn masters already on disk take the character state in place (what their builders now wire in, without
+	// rebuilding them or touching their instances); -Worn=<path;path> adds more. A master that already has it is not saved.
+	FString WornExtra;
+	if (FParse::Param(*Params, TEXT("Worn")) || FParse::Value(*Params, TEXT("Worn="), WornExtra))
+	{
+		TArray<FString> Worn = {TEXT("/Game/Characters/Shared/Materials/M_FTCharacter"), TEXT("/Game/Characters/Shared/Materials/M_FTCharacterTex"),
+			TEXT("/Game/Characters/Shared/Materials/M_FTHair"), TEXT("/Game/Characters/Shared/Materials/M_FTSkin"),
+			TEXT("/Game/Characters/Shared/Materials/Garment/M_FTGarment"), TEXT("/Game/Characters/Shared/Materials/Garment/M_FTGarmentCloth")};
+		TArray<FString> More;
+		WornExtra.ParseIntoArray(More, TEXT(";"), true);
+		Worn.Append(More);
+		// Whether the master's state call has its Character input on (a static true, or anything else wired there).
+		const auto CharacterOn = [State](const UMaterial& Material)
+		{
+			for (UMaterialExpression* Expression : Material.GetExpressionCollection().Expressions)
+			{
+				const UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
+				if (!Call || !Call->MaterialFunction || Call->MaterialFunction->GetPathName() != State->GetPathName())
+				{
+					continue;
+				}
+				for (const FFunctionExpressionInput& In : Call->FunctionInputs)
+				{
+					if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")) && In.Input.Expression)
+					{
+						const UMaterialExpressionStaticBool* Flag = Cast<UMaterialExpressionStaticBool>(In.Input.Expression);
+						return !Flag || Flag->Value != 0;
+					}
+				}
+			}
+			return false;
+		};
+		TArray<UMaterial*> Changed;
+		for (const FString& Path : Worn)
+		{
+			UMaterial* Material = LoadObject<UMaterial>(nullptr, *ObjectPath(Path), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			if (!Material)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: no %s here; skipped."), kTag, *Path);
+				continue;
+			}
+			const bool bWasOn = CharacterOn(*Material);
+			if (!FTWorldWave::AddState(kTag, Material, 300, 1300, true))
+			{
+				return 1;
+			}
+			if (bWasOn && CharacterOn(*Material))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s already takes the character state."), kTag, *Path);
+				continue;
+			}
+			Material->PreEditChange(nullptr);
+			Material->PostEditChange();
+			Changed.Add(Material);
+		}
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		for (UMaterial* Material : Changed)
+		{
+			if (FT::CompileErrors(kTag, Material) > 0 || !Save(Material))
+			{
+				return 1;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s takes the character state."), kTag, *Material->GetPathName());
+		}
 	}
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("%s: built MF_WorldWaveCut, MF_WorldWaveState, PP_WorldWave (%d expressions) and %d prop twins; the parameters are in "

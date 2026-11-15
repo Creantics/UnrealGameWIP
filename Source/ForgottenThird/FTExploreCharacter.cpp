@@ -3091,6 +3091,18 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		}
 	}
 #endif
+	// Taken out of play (a fight's figure stands in and the body is hidden, a scene holds the lead, no controller): the
+	// water waits. Nothing steps the swim, its breath, a climb out or a rescue (each picks up where it stopped), and
+	// nothing forces the flying mode on a parked body; a body that was swimming stops where it is (flying braking is 0
+	// under water, so a kept velocity would carry it through the whole scene).
+	if (!Controller || IsHidden() || ScenePlaying())
+	{
+		if (bSwimming || bWaterClimbing || bSwimRescue)
+		{
+			Move->Velocity = FVector::ZeroVector;
+		}
+		return;
+	}
 	// A climb out of the water: up the wall's face, then onto its top.
 	if (bWaterClimbing)
 	{
@@ -3115,12 +3127,6 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 	{
 		TickSwimRescue(DeltaSeconds);
 		StirWater(DeltaSeconds);
-		return;
-	}
-	// Taken out of play (a fight's figure stands in and the body is hidden, a scene holds the lead, no controller): the
-	// water waits. Nothing steps the swim, its breath or a rescue, and nothing forces the flying mode on a parked body.
-	if (!Controller || IsHidden() || ScenePlaying())
-	{
 		return;
 	}
 	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
@@ -3165,9 +3171,12 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			: WaterNow.mode == ftcore::WaterMode::DeepWade ? TEXT("wading deep") : TEXT("swimming"),
 			WaterNow.column, WaterNow.submerged * 100.f, WaterNow.speedFactor, GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z);
 	}
-	// Set down out of any water while dived (a fight or a scene ended on dry ground): the swim ends this frame, its state
-	// and pose reset below, its vitality kept.
-	if (bSwimUnder && !bOut && WaterNow.body < 0 && System->Bodies().dive(FTSwimUnits::ToPlan(GetActorLocation())).body < 0)
+	// Set down out of the water column while dived (a fight or a scene ended on dry ground, or on a pier inside a body's
+	// footprint): the swim ends this frame, its state and pose reset below, its vitality kept. Out of the column: inside a
+	// body with the feet at or over its surface (the depth test), or outside every body and every dive area.
+	const bool bFeetDry = WaterNow.body >= 0 && WaterNow.immersion <= 0.f;
+	if (bSwimUnder && !bOut &&
+		(bFeetDry || (WaterNow.body < 0 && System->Bodies().dive(FTSwimUnits::ToPlan(GetActorLocation())).body < 0)))
 	{
 		bSwimUnder = false;
 	}

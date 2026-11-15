@@ -70,6 +70,7 @@ inline constexpr float kSwimMaxStep = 0.25f;      // a longer step is clamped to
 inline constexpr float kSwimColumnSlack = 0.05f;  // the column may differ from surface minus bed by this (m)
 inline constexpr float kSwimSnapOutside = 2.0f;   // a body further outside the column than this is put in at once (m)
 inline constexpr float kSwimBadEnvRescue = 2.0f;  // under water this long on a bad env without a break: a rescue (s)
+inline constexpr float kSwimBedClearanceMax = 2.0f; // SwimTuning::bedClearance's upper bound (m)
 
 struct SwimVec {
     float x = 0.f, y = 0.f, z = 0.f;
@@ -106,7 +107,7 @@ inline constexpr Range kRanges[] = {
     {"swimSpeed", &SwimTuning::swimSpeed, 0.5f, 6.f},
     {"sprintSpeed", &SwimTuning::sprintSpeed, 0.5f, 8.f},
     {"buoyancy", &SwimTuning::buoyancy, 0.f, 2.f},
-    {"bedClearance", &SwimTuning::bedClearance, 0.f, 2.f},
+    {"bedClearance", &SwimTuning::bedClearance, 0.f, kSwimBedClearanceMax},
     {"diveDepth", &SwimTuning::diveDepth, 0.2f, 3.f},
     {"breathSeconds", &SwimTuning::breathSeconds, 5.f, 300.f},
     {"sprintBreathRate", &SwimTuning::sprintBreathRate, 1.f, 5.f},

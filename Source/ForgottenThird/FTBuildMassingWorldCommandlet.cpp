@@ -1614,6 +1614,80 @@ void LogRoofLayouts(const ftcore::MassingRoofCounts& Counts)
 		static_cast<int32>(Counts.layouts[6]), static_cast<int32>(Counts.huts), static_cast<int32>(Counts.sheds),
 		static_cast<int32>(Counts.frames), static_cast<int32>(Counts.stands));
 }
+
+// The old map file, moved aside (to <file>.ftold, which the asset registry ignores) while the new one is built. Unless
+// Commit() is called after the new map is saved, the destructor removes whatever was written in its place and moves the
+// old one back, so no failed run (any of the returns after the set-aside) leaves the checkout without a map.
+class FMapSetAside
+{
+public:
+	explicit FMapSetAside(const FString& InFile) : File(InFile), Old(InFile + TEXT(".ftold")) {}
+	FMapSetAside(const FMapSetAside&) = delete;
+	FMapSetAside& operator=(const FMapSetAside&) = delete;
+
+	~FMapSetAside()
+	{
+		IFileManager& Files = IFileManager::Get();
+		if (bCommitted)
+		{
+			if (bMoved)
+			{
+				Files.Delete(*Old, false, true, true);
+			}
+			return;
+		}
+		if (!bMoved && !bCreated)
+		{
+			return;
+		}
+		Files.Delete(*File, false, true, true);
+		if (bMoved && !Files.Move(*File, *Old))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't put back %s (left as %s)."), *File, *Old);
+			return;
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: build failed; %s."),
+			bMoved ? TEXT("the old map was put back") : TEXT("the new map was removed (there was none before)"));
+	}
+
+	// Moves the map aside when it exists, else notes it as new; false (logged) when it can't be. A .ftold left by a run
+	// that was killed is the last good map: it is put back first.
+	bool Begin()
+	{
+		IFileManager& Files = IFileManager::Get();
+		if (Files.FileExists(*Old))
+		{
+			Files.Delete(*File, false, true, true);
+			if (Files.FileExists(*File) || !Files.Move(*File, *Old))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s from an earlier run couldn't be put back; restore it by hand."), *Old);
+				return false;
+			}
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: put back %s from an earlier run's .ftold."), *File);
+		}
+		if (!Files.FileExists(*File))
+		{
+			bCreated = true;
+			return true;
+		}
+		if (!Files.Move(*Old, *File))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't set aside %s."), *File);
+			return false;
+		}
+		bMoved = true;
+		return true;
+	}
+
+	void Commit() { bCommitted = true; }
+
+private:
+	FString File;
+	FString Old;
+	bool bMoved = false;
+	bool bCreated = false;
+	bool bCommitted = false;
+};
 #endif // WITH_EDITOR
 
 } // namespace
@@ -2420,8 +2494,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 	}
 
-	// A new editor world (so it gets a navigation system), replacing the map.
-	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+	// A new editor world (so it gets a navigation system), replacing the map. The old map is set aside, not deleted, and
+	// comes back on any failure before the new one is saved (FMapSetAside).
+	FMapSetAside OldMap(File);
+	if (!OldMap.Begin())
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't replace %s."), *File);
 		return 1;
@@ -3765,6 +3841,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't save %s."), *File);
 		return 1;
 	}
+	OldMap.Commit();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: saved %s."), *File);
 	if (!DumpFile.IsEmpty())
 	{

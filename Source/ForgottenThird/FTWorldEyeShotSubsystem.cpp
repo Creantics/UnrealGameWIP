@@ -536,6 +536,14 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		bShot = true;
 		return;
 	}
+	// Where the wave's front meets the lead's body against the ground under its feet, at the still's own frame.
+	if (const UFTWorldWaveSubsystem* Wave = World ? World->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr)
+	{
+		if (const APawn* LeadPawn = Player->GetPawn())
+		{
+			Wave->LogBodyBoundary(*LeadPawn);
+		}
+	}
 	// -WorldEyeExecAtShot="cmd;cmd": console commands run on the settled frame of every still (a one-frame diagnostic
 	// such as r.LumenScene.DumpStats, which -ExecCmds would fire on the first frame after the map's load).
 	{
@@ -550,6 +558,15 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: at the shot, ran '%s'."), *Cmd.TrimStartAndEnd());
 			}
 		}
+	}
+	// -WorldEyeViewport: the still is the viewport itself, with the temporal filter's history (a HighResShot renders a
+	// fresh view with none, so per-frame dither the filter resolves in play shows in it raw); its size is the window's.
+	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeViewport")))
+	{
+		FScreenshotRequest::RequestScreenshot(File, false, false);
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: viewport still (temporal history kept) after %.1f s settled."), Waited);
+		bShot = true;
+		return;
 	}
 	Viewport->Exec(World, *FString::Printf(TEXT("HighResShot %s filename=\"%s\""), *Size, *File), *GLog);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: shooting after %.1f s settled."), Waited);

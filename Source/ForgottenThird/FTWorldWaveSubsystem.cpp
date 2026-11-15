@@ -13,6 +13,7 @@
 #include "CollisionShape.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -31,6 +32,9 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialFunctionInterface.h"
+#include "MaterialCachedData.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -493,6 +497,16 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 		if (bDevKeep[K]) { Wanted.keep[K] = DevKeep[K]; }
 	}
 #endif
+	// The second world through worldWaveWorldId: a static-storage id (never a pointer into a cue). An unknown one is
+	// refused before anything starts: no wave, one warning.
+	const char* SecondId = Wanted.toWorld ? ftcore::worldWaveWorldId(Wanted.toWorld) : nullptr;
+	if (!SecondId)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no wave from %s: unknown second world '%s'."), *Origin.ToString(),
+			Wanted.toWorld ? UTF8_TO_TCHAR(Wanted.toWorld) : TEXT("(null)"));
+		return;
+	}
+	Wanted.toWorld = SecondId;
 	// A wave already set is replaced (Core's restart rule: from zero), after StopWave above has put its things back.
 	const ftcore::WorldWaveRefusal Refusal = ftcore::beginWorldWave(State, Wanted);
 	if (Refusal != ftcore::WorldWaveRefusal::None)
@@ -522,14 +536,7 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	}
 	// The look it crosses to: the definition's second world (the Unwritten unless it names another), from the look the map
 	// has now.
-	// Through worldWaveWorldId: a static-storage id (never a pointer into a cue), and an unknown one is refused.
-	const char* SecondId = Params.toWorld ? ftcore::worldWaveWorldId(Params.toWorld) : nullptr;
-	if (!SecondId)
-	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: unknown second world '%s'; the Unwritten instead."),
-			Params.toWorld ? UTF8_TO_TCHAR(Params.toWorld) : TEXT("(null)"));
-		SecondId = ftcore::kWaveDefaultToWorld;
-	}
+	// Checked above, before the wave began.
 	ToWorld = UTF8_TO_TCHAR(SecondId);
 	FromWorld.Reset();
 	bLookBlend = false;
@@ -995,7 +1002,159 @@ void UFTWorldWaveSubsystem::GatherPawns(UWorld& World)
 	for (TActorIterator<AFTExploreCharacter> It(&World); It; ++It)
 	{
 		Pawns.Add(*It);
+		AuditWorn(**It);
 	}
+}
+
+namespace
+{
+// Whether a master takes the world wave's state: MF_WorldWaveState among its functions (the cached data a cooked build
+// keeps too). In the editor, bCharacter says whether the call's Character input is on (the body's state, not the
+// ground's); in a cooked build it is taken as on.
+bool TakesWaveState(const UMaterial& Master, bool& bCharacter)
+{
+	bCharacter = false;
+	const FString StatePath = FString(FTWorldWave::StateFunctionPath) + TEXT(".") + FPackageName::GetShortName(FTWorldWave::StateFunctionPath);
+	bool bFound = false;
+	for (const FMaterialFunctionInfo& Info : Master.GetCachedExpressionData().FunctionInfos)
+	{
+		if (Info.Function && Info.Function->GetPathName() == StatePath)
+		{
+			bFound = true;
+			break;
+		}
+	}
+	if (!bFound)
+	{
+		return false;
+	}
+#if WITH_EDITORONLY_DATA
+	for (const UMaterialExpression* Expression : Master.GetExpressionCollection().Expressions)
+	{
+		const UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
+		if (!Call || !Call->MaterialFunction || Call->MaterialFunction->GetPathName() != StatePath)
+		{
+			continue;
+		}
+		for (const FFunctionExpressionInput& In : Call->FunctionInputs)
+		{
+			if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")) && In.Input.Expression)
+			{
+				bCharacter = true;
+			}
+		}
+	}
+#else
+	bCharacter = true;
+#endif
+	return true;
+}
+
+void GatherWorn(const AActor& Actor, TArray<const AActor*>& Out)
+{
+	if (Out.Contains(&Actor))
+	{
+		return;
+	}
+	Out.Add(&Actor);
+	TArray<AActor*> Attached;
+	Actor.GetAttachedActors(Attached, /*bResetArray*/ true, /*bRecursivelyIncludeAttachedActors*/ false);
+	for (const AActor* Child : Attached)
+	{
+		if (Child)
+		{
+			GatherWorn(*Child, Out);
+		}
+	}
+}
+} // namespace
+
+void UFTWorldWaveSubsystem::LogBodyBoundary(const AActor& Lead) const
+{
+	const UWorld* World = GetWorld();
+	const USkeletalMeshComponent* Body = Lead.FindComponentByClass<USkeletalMeshComponent>();
+	if (!bWave || !World || !Body)
+	{
+		return;
+	}
+	const FBox Box = Body->Bounds.GetBox();
+	const FVector Axis = Box.GetCenter();
+	FHitResult Hit;
+	FCollisionQueryParams Query(TEXT("FTWorldWaveBodyGround"), true, &Lead);
+	const double GroundZ = World->LineTraceSingleByChannel(Hit, FVector(Axis.X, Axis.Y, Box.Min.Z + 50.0),
+							   FVector(Axis.X, Axis.Y, Box.Min.Z - 500.0), ECC_Visibility, Query)
+							   ? Hit.ImpactPoint.Z
+							   : Box.Min.Z;
+	const double FeetZ = Box.Min.Z;
+	const double ShoulderZ = Box.Min.Z + 0.82 * (Box.Max.Z - Box.Min.Z);
+	const double MidCm = FMath::Max(static_cast<double>(Frame.radius) - 0.5 * static_cast<double>(Frame.bandWidth), 0.0) * 100.0;
+	// The mid-band sphere's horizontal radius round the origin at height Z; -1 where it does not reach.
+	const auto Across = [this, MidCm](double Z)
+	{
+		const double Dz = Z - OriginCm.Z;
+		const double Sq = MidCm * MidCm - Dz * Dz;
+		return Sq >= 0.0 ? FMath::Sqrt(Sq) : -1.0;
+	};
+	const double AxisAcross = FVector2D(Axis.X - OriginCm.X, Axis.Y - OriginCm.Y).Size();
+	const double G = Across(GroundZ), F = Across(FeetZ), S = Across(ShoulderZ);
+	const auto Gap = [G](double V) { return V >= 0.0 && G >= 0.0 ? FString::Printf(TEXT("%+.1f"), V - G) : FString(TEXT("n/a")); };
+	const auto FromAxis = [AxisAcross](double V) { return V >= 0.0 ? FString::Printf(TEXT("%+.1f"), V - AxisAcross) : FString(TEXT("does not reach")); };
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("WorldWave: body boundary for %s: radius %.2f m, band %.2f m (mid %.1f cm); origin z %.1f, ground z %.1f, feet z %.1f, shoulders z %.1f; ")
+		TEXT("the front against the ground's line at the feet %s cm, at the shoulders %s cm; from the body's axis (%.1f cm out): ground %s, feet %s, shoulders %s cm."),
+		*Lead.GetName(), Frame.radius, Frame.bandWidth, MidCm, OriginCm.Z, GroundZ, FeetZ, ShoulderZ, *Gap(F), *Gap(S), AxisAcross, *FromAxis(G), *FromAxis(F),
+		*FromAxis(S));
+}
+
+int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
+{
+	TArray<const AActor*> Actors;
+	GatherWorn(Lead, Actors);
+	int32 Slots = 0, Bad = 0, Logged = 0;
+	TArray<UMaterialInterface*> Used;
+	for (const AActor* Actor : Actors)
+	{
+		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
+		for (UPrimitiveComponent* Primitive : Primitives)
+		{
+			if (!Primitive || !Primitive->IsVisible())
+			{
+				continue;
+			}
+			Used.Reset();
+			Primitive->GetUsedMaterials(Used);
+			for (UMaterialInterface* Material : Used)
+			{
+				if (!Material)
+				{
+					continue;
+				}
+				++Slots;
+				const UMaterial* Master = Material->GetMaterial();
+				bool bCharacter = false;
+				if (Master && TakesWaveState(*Master, bCharacter) && bCharacter)
+				{
+					continue;
+				}
+				++Bad;
+				const FString Key = Master ? Master->GetPathName() : Material->GetPathName();
+				if (AuditLogged.Contains(Key))
+				{
+					continue;
+				}
+				AuditLogged.Add(Key);
+				++Logged;
+				UE_LOG(LogForgottenThird, Warning,
+					TEXT("WorldWave: %s wears %s on %s (%s, %s) whose master %s %s; that piece keeps its own world across the front."),
+					*Lead.GetName(), *Material->GetPathName(), *Primitive->GetName(), *Primitive->GetClass()->GetName(), *Actor->GetName(),
+					*Key, Master && TakesWaveState(*Master, bCharacter) ? TEXT("takes the ground's state, not the body's (Character off)")
+																		  : TEXT("takes no world-wave state"));
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware (%d newly logged)."),
+		*Lead.GetName(), Actors.Num(), Slots, Bad, Logged);
+	return Bad;
 }
 
 bool UFTWorldWaveSubsystem::PawnInFootprint(const FTracked& Item, const APawn* PlayerPawn) const

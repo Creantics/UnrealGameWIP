@@ -10,7 +10,7 @@
 // hold's own (the feet the draft under the surface). The bed's clearance is not: the point rides the draft above the
 // feet, so a clearance read straight from Data/Swim/swim.json would put the feet about 1 m into the floor Swim thinks it
 // keeps them off. TuningForRef raises the clearance by the draft, so the data's bedClearance is the FEET's real height
-// off the bed (capped at the tuning's 2 m point clearance, about 0.7 m of feet).
+// off the bed (capped at the tuning's own bound, ftcore::kSwimBedClearanceMax: 2 m of point, about 0.7 m of feet).
 
 #include "CoreMinimal.h"
 
@@ -48,7 +48,7 @@ inline FVector ActorFromRef(const ftcore::SwimVec& Ref, double HalfCm)
 // The tuning Swim is given: the data's (feet) bed clearance raised to the reference point's (the header's note).
 inline ftcore::SwimTuning TuningForRef(ftcore::SwimTuning Tuning)
 {
-	Tuning.bedClearance = FMath::Min(Tuning.bedClearance + ftcore::kWaterSwimDraft, 2.f);
+	Tuning.bedClearance = FMath::Min(Tuning.bedClearance + ftcore::kWaterSwimDraft, ftcore::kSwimBedClearanceMax);
 	return Tuning;
 }
 

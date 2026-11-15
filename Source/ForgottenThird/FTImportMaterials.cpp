@@ -241,6 +241,7 @@ UMaterial* HairMaster(TArray<UPackage*>& Dirty)
 {
 	if (UMaterial* Existing = Cast<UMaterial>(LoadShared(kHairMaster, UMaterial::StaticClass())))
 	{
+		AddCharacterState(Existing, true, Dirty);
 		return Existing;
 	}
 	UTexture2D* White = SolidTexture(TEXT("T_FTWhite"), FColor::White, true, TC_Default, Dirty);
@@ -280,6 +281,7 @@ UMaterial* HairMaster(TArray<UPackage*>& Dirty)
 	Inputs->Specular.Connect(0, Specular);
 	Inputs->Anisotropy.Connect(0, Anisotropy);
 	Inputs->AmbientOcclusion.Connect(1, Occlusion);
+	AddCharacterState(Material, false, Dirty);
 	FinishMaster(Material);
 	return Material;
 }

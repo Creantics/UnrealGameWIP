@@ -7,6 +7,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
@@ -597,6 +598,9 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 		Inputs->SubsurfaceColor.Connect(0, Fuzz);
 		Inputs->ClearCoat.Connect(0, G.Scalar(TEXT("Cloth")));
 	}
+	// The world wave's character state, as the other worn masters take it (FTImportMaterials). The cloth's fuzz colour
+	// does not go through it.
+	FTWorldWave::AddState(TEXT("FTBuildGarment"), Material, 300, 1300, true);
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
