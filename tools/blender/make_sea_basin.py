@@ -2,7 +2,14 @@
 chains off the wall rings, and a shop mannequin's torso standing in the silt at the deep end), by script.
 
     blender -b --factory-startup --python-exit-code 1 --python tools/blender/make_sea_basin.py -- <out_dir>
-            [--seed N] [--grid M] [--previews]
+            [--seed N] [--grid M] [--deck M] [--previews]
+
+Behind the wall's foot, the boat cellar (make_cellar): the one location there reached only by diving. Arch A in the
+wall's face, a vaulted passage west under the quay, a chamber under the clock square whose vault stands over the sea's
+level (the basin's one air pocket, a street drain at its crown, a stair up to a locked grate, a boat's remains on
+trestles, a find on a ledge), and a bent passage back out through breach B. --deck is the street's height over the
+datum (default 2.0 m, to be measured); the vault's crown is 0.45 m under it. The strip builder cuts the wall and the
+paving where pieces.json says.
 
 Written 2026-11-14 during a text-only hold: NOT YET RUN. Run it once, read its previews and pieces.json, and fix what
 the first run shows before anything imports it.
@@ -21,10 +28,11 @@ The frame (every piece shares it, so the strip builder places them all with one 
   * material slots are named sb_<surface> (silt, stone, weed_blade, weed_leaf, rust, rubber, wood, hull, chain, rope,
     mannequin, mannequin_cap). The look materials are assigned in Unreal by slot name; the colours here are for the
     previews only. Weed cards are open strips (two-sided, alpha-tested in Unreal), UV v along the blade.
-  * collision: the bed is its own (complex as simple); crates, the dinghy and the bicycle get simple boxes in Unreal
+  * collision: the bed and the cellar's shell are their own (complex as simple); crates, the dinghy and the bicycle get simple boxes in Unreal
     at import; weed, chains, rope and the torso take none (the swimmer passes through weed; the rest are small).
 
-Writes <out_dir>/basin_<group>.glb for group in bed, stones, weed, debris, chains, mannequin, and pieces.json (the
+Writes <out_dir>/basin_<group>.glb for group in bed, stones, weed, debris, chains, mannequin, cellar, grates (the
+street's two, for the paving's cuts), find (the ledge and its box, for an interact actor), and pieces.json (the
 frame, each group's triangles and bounds, and the places of the debris and the torso in the plan frame), and with
 --previews previews/*.png (Workbench: the basin from over the top; from the deep end looking back at the wall, as the
 swimmer turning back sees the torso; the torso at 1 m and 2 m; the wall's foot at 1 m).
@@ -58,6 +66,10 @@ SLOT_COLOURS = {
     "sb_rope": (0.48, 0.44, 0.33, 1.0),
     "sb_mannequin": (0.70, 0.66, 0.60, 1.0),
     "sb_mannequin_cap": (0.25, 0.25, 0.26, 1.0),
+    "sb_masonry": (0.30, 0.31, 0.29, 1.0),
+    "sb_keystone": (0.62, 0.60, 0.55, 1.0),
+    "sb_metal": (0.20, 0.17, 0.14, 1.0),
+    "sb_find": (0.45, 0.40, 0.30, 1.0),
 }
 
 
@@ -66,11 +78,16 @@ def args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     if not argv or argv[0].startswith("--"):
         raise SystemExit("make_sea_basin: usage: -- <out_dir> [--seed N] [--grid M] [--previews]")
-    o = {"out": os.path.abspath(argv[0]), "seed": 1114, "grid": 0.25, "previews": False}
+    o = {"out": os.path.abspath(argv[0]), "seed": 1114, "grid": 0.25, "previews": False, "deck": 2.0}
     i = 1
     while i < len(argv):
         a = argv[i]
-        if a == "--seed":
+        if a == "--deck":
+            o["deck"] = float(argv[i + 1])
+            if o["deck"] < 1.45:
+                raise SystemExit("make_sea_basin: --deck %.2f leaves the cellar no air pocket (needs 1.45 m or more)" % o["deck"])
+            i += 2
+        elif a == "--seed":
             o["seed"] = int(argv[i + 1])
             i += 2
         elif a == "--grid":
@@ -726,6 +743,300 @@ def make_mannequin(rng, notes):
     return acc
 
 
+# ----------------------------------------------------------------------------------------------- the boat cellar
+# The location behind the wall's foot, reached only by diving (UNDERWATER_PLAN section 8): arch A in the wall's face,
+# passage A west under the quay, the chamber under the clock square (its vault over the sea's level: the basin's one air
+# pocket, with a street drain at its crown and a stair up to a locked grate), passage B bending back to breach B in the
+# wall. Shell faces point inward. Every surface is set from the frame's numbers here; the deck (the street's height over
+# the datum) is --deck, measured in step 1.
+CH_X = (-26.0, -12.0)        # the chamber (plan x 914..928)
+CH_Y = (-22.0, -10.0)        # (plan y 648..660)
+CH_FLOOR = -3.2
+CH_SPRING = 0.4              # the vault springs from the long walls here
+A_Y, A_WIDTH, A_CROWN, A_FLOOR = -18.0, 2.2, -0.9, -3.0
+B_PATH = [(-14.0, -10.0), (-14.0, -6.0), (-6.0, 0.0), (-3.0, 6.5), (0.3, 6.5)]
+B_WIDTH, B_CROWN, B_FLOOR = 1.6, -1.2, -3.2
+DRAIN = (-19.5, -16.0, 0.5)  # the drain's cell in the vault: its low corner (x, y) and size
+STAIR_X, STAIR_WIDTH = -15.4, 1.2
+STAIR_RISE, STAIR_RUN, STAIR_FIRST = 0.173, 0.28, -0.6  # steps from 0.6 m under the water up to the deck
+
+
+def orient(face, verts, want):
+    """face (indices into verts) wound so its normal points along want (a vector)."""
+    p = [Vector(verts[i]) for i in face]
+    n = Vector((0.0, 0.0, 0.0))
+    for k in range(len(p)):
+        a, b = p[k], p[(k + 1) % len(p)]
+        n += Vector(((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y)))  # Newell
+    return face if n.dot(want) >= 0.0 else tuple(reversed(face))
+
+
+def add_quads_inward(acc, slot, quads, inside):
+    """Quads (four points each) facing a point inside the room (or a function of the quad's centre giving it)."""
+    v, f, uv = [], [], []
+    for q in quads:
+        base = len(v)
+        c = sum((Vector(p) for p in q), Vector()) / 4.0
+        target = inside(c) if callable(inside) else Vector(inside)
+        if orient((0, 1, 2, 3), q, target - c) != (0, 1, 2, 3):
+            q = [q[0], q[3], q[2], q[1]]  # turned round (its UVs follow it)
+        v.extend(q)
+        f.append(tuple(range(base, base + 4)))
+        span = max((Vector(q[1]) - Vector(q[0])).length, 1e-3)
+        tall = max((Vector(q[3]) - Vector(q[0])).length, 1e-3)
+        uv.append([(c.x + c.y, c.z), (c.x + c.y + span, c.z), (c.x + c.y + span, c.z + tall), (c.x + c.y, c.z + tall)])
+    acc.add(v, f, slot, uv)
+
+
+def arch_section(width, crown, floor, n=10):
+    """A passage's section, (u across, z): straight walls up to the spring, a round arch of half the width over them."""
+    r = width / 2.0
+    spring = crown - r
+    pts = [(r, floor), (-r, floor), (-r, spring)]
+    for k in range(1, n):
+        a = math.pi - math.pi * k / n
+        pts.append((r * math.cos(a), spring + r * math.sin(a)))
+    pts.append((r, spring))
+    return pts
+
+
+def arch_top(u, width, crown):
+    """The height of an arched opening's top at u across it (|u| <= width / 2)."""
+    r = width / 2.0
+    return crown - r + math.sqrt(max(r * r - u * u, 0.0))
+
+
+def passage(acc, path, width, crown, floor_from, floor_to):
+    """A vaulted passage swept along a level polyline (plan points), mitred at its bends, open at both ends."""
+    section = arch_section(width, crown, 0.0)
+    pts = [Vector((x, y, 0.0)) for x, y in path]
+    n = len(pts)
+    total = sum((pts[i + 1] - pts[i]).length for i in range(n - 1))
+    rings, along = [], 0.0
+    for i in range(n):
+        if i:
+            along += (pts[i] - pts[i - 1]).length
+        t_in = (pts[i] - pts[i - 1]).normalized() if i else (pts[1] - pts[0]).normalized()
+        t_out = (pts[i + 1] - pts[i]).normalized() if i < n - 1 else t_in
+        t = (t_in + t_out).normalized()
+        side = Vector((0.0, 0.0, 1.0)).cross(t).normalized()
+        mitre = 1.0 / max(t.dot(t_out), 0.3)
+        floor = floor_from + (floor_to - floor_from) * (along / total if total > 0 else 0.0)
+        rings.append([tuple(pts[i] + side * (u * mitre) + Vector((0.0, 0.0, floor + z))) for u, z in section])
+    v = [p for ring in rings for p in ring]
+    f, uv = [], []
+    m = len(section)
+    for i in range(n - 1):
+        mid = (pts[i] + pts[i + 1]) / 2.0 + Vector((0.0, 0.0, floor_from + 1.0))
+        for s in range(m):
+            s2 = (s + 1) % m
+            face = (i * m + s, i * m + s2, (i + 1) * m + s2, (i + 1) * m + s)
+            c = sum((Vector(v[k]) for k in face), Vector()) / 4.0
+            f.append(orient(face, v, mid - c))
+            uv.append([(s * 0.3, i * 2.0), ((s + 1) * 0.3, i * 2.0), ((s + 1) * 0.3, (i + 1) * 2.0), (s * 0.3, (i + 1) * 2.0)])
+    acc.add(v, f, "sb_masonry", uv)
+
+
+def wall_with_openings(along, fixed, axis, z_floor, z_top, openings, inside, step=0.25):
+    """A flat wall's quads as columns along it: from the floor to its top (z_top(u)), less each opening (u centre,
+    width, sill, top(u)). axis "x": the wall runs along x at y = fixed; "y": along y at x = fixed."""
+    cuts = {round(along[0] + k * step, 4) for k in range(int((along[1] - along[0]) / step) + 1)}
+    cuts.add(along[1])
+    for uc, w, _sill, _top in openings:
+        for k in range(11):
+            cuts.add(round(uc - w / 2.0 + w * k / 10.0, 4))
+    us = sorted(c for c in cuts if along[0] <= c <= along[1])
+
+    def at(u, z):
+        return (u, fixed, z) if axis == "x" else (fixed, u, z)
+
+    def opening_at(u):
+        for uc, w, sill, top in openings:
+            if abs(u - uc) <= w / 2.0 + 1e-6:
+                return sill, top(u - uc)
+        return None
+
+    quads = []
+    for u0, u1 in zip(us, us[1:]):
+        o = opening_at((u0 + u1) / 2.0)
+        spans = [(z_floor, z_floor, z_top(u0), z_top(u1))]
+        if o is not None:
+            sill, _ = o
+            top0 = opening_at(u0)[1] if opening_at(u0) else z_floor
+            top1 = opening_at(u1)[1] if opening_at(u1) else z_floor
+            spans = []
+            if sill > z_floor + 1e-3:
+                spans.append((z_floor, z_floor, sill, sill))
+            spans.append((min(top0, z_top(u0)), min(top1, z_top(u1)), z_top(u0), z_top(u1)))
+        for b0, b1, t0, t1 in spans:
+            if t0 - b0 > 1e-3 or t1 - b1 > 1e-3:
+                quads.append([at(u0, b0), at(u1, b1), at(u1, t1), at(u0, t0)])
+    return quads
+
+
+def make_cellar(rng, deck, notes):
+    acc = Acc("basin_cellar")
+    crown = deck - 0.45
+    rise = crown - CH_SPRING
+    yc, half = (CH_Y[0] + CH_Y[1]) / 2.0, (CH_Y[1] - CH_Y[0]) / 2.0
+
+    def vault_z(y):
+        return CH_SPRING + rise * math.sqrt(max(1.0 - ((y - yc) / half) ** 2, 0.0))
+
+    inside = Vector(((CH_X[0] + CH_X[1]) / 2.0, yc, -1.0))
+    # The floor: silt over flags, with small lumps.
+    floor_q = []
+    for i in range(28):
+        for j in range(24):
+            x0, y0 = CH_X[0] + i * 0.5, CH_Y[0] + j * 0.5
+
+            def fz(x, y):
+                return CH_FLOOR + 0.05 * fbm(x * 0.7, y * 0.7, 2, 131.0)
+
+            floor_q.append([(x0, y0, fz(x0, y0)), (x0 + 0.5, y0, fz(x0 + 0.5, y0)), (x0 + 0.5, y0 + 0.5, fz(x0 + 0.5, y0 + 0.5)),
+                            (x0, y0 + 0.5, fz(x0, y0 + 0.5))])
+    add_quads_inward(acc, "sb_silt", floor_q, lambda c: c + Vector((0.0, 0.0, 1.0)))
+    # The long walls (up to the spring): the south with the stair's opening, the north with passage B's.
+    stair_open = (STAIR_X, STAIR_WIDTH, STAIR_FIRST, lambda u: CH_SPRING)
+    b_open = (B_PATH[0][0], B_WIDTH, B_FLOOR, lambda u: arch_top(u, B_WIDTH, B_CROWN))
+    add_quads_inward(acc, "sb_masonry", wall_with_openings(CH_X, CH_Y[0], "x", CH_FLOOR, lambda u: CH_SPRING, [stair_open], inside), inside)
+    add_quads_inward(acc, "sb_masonry", wall_with_openings(CH_X, CH_Y[1], "x", CH_FLOOR, lambda u: CH_SPRING, [b_open], inside), inside)
+    # The end walls, up under the vault: the east with arch A, the west plain (the find's ledge on it).
+    a_open = (A_Y, A_WIDTH, CH_FLOOR, lambda u: arch_top(u, A_WIDTH, A_CROWN))
+    add_quads_inward(acc, "sb_masonry", wall_with_openings(CH_Y, CH_X[1], "y", CH_FLOOR, vault_z, [a_open], inside), inside)
+    add_quads_inward(acc, "sb_masonry", wall_with_openings(CH_Y, CH_X[0], "y", CH_FLOOR, vault_z, [], inside), inside)
+    # The vault, its crown cell for the drain left open.
+    vault_q = []
+    nx, ny = int((CH_X[1] - CH_X[0]) / 0.5), 24
+    for i in range(nx):
+        for j in range(ny):
+            x0 = CH_X[0] + i * 0.5
+            y0, y1 = CH_Y[0] + j * (2 * half / ny), CH_Y[0] + (j + 1) * (2 * half / ny)
+            if abs(x0 - DRAIN[0]) < 1e-3 and abs(y0 - DRAIN[1]) < 1e-3:
+                continue
+            vault_q.append([(x0, y0, vault_z(y0)), (x0 + 0.5, y0, vault_z(y0)), (x0 + 0.5, y1, vault_z(y1)), (x0, y1, vault_z(y1))])
+    add_quads_inward(acc, "sb_masonry", vault_q, lambda c: Vector((c.x, yc, CH_FLOOR)))
+    # The drain's shaft up to the street, and its grate (exported with the street pieces).
+    dx, dy, ds = DRAIN
+    z0 = vault_z(dy + ds / 2.0)
+    shaft = []
+    for (ax, ay), (bx, by) in (((dx, dy), (dx + ds, dy)), ((dx + ds, dy), (dx + ds, dy + ds)), ((dx + ds, dy + ds), (dx, dy + ds)), ((dx, dy + ds), (dx, dy))):
+        shaft.append([(ax, ay, vault_z(ay)), (bx, by, vault_z(by)), (bx, by, deck - 0.06), (ax, ay, deck - 0.06)])
+    add_quads_inward(acc, "sb_masonry", shaft, Vector((dx + ds / 2.0, dy + ds / 2.0, z0 + 0.3)))
+    # Passage A (from the wall's face to the chamber's east wall) and passage B (from the north wall to the breach).
+    passage(acc, [(0.3, A_Y), (CH_X[1], A_Y)], A_WIDTH, A_CROWN, A_FLOOR, CH_FLOOR)
+    passage(acc, B_PATH, B_WIDTH, B_CROWN, B_FLOOR, B_FLOOR + 0.1)
+    # Arch A's dressed surround on the wall's face: voussoirs and a pale keystone (the hint from the quay).
+    r = A_WIDTH / 2.0
+    spring = A_CROWN - r
+    for k in range(9):
+        a = math.pi * (k + 0.5) / 9
+        key = k == 4
+        v, f, uv = box(0.3, 0.42 if key else 0.34, 0.38 if key else 0.3)
+        at = (0.12, A_Y + (r + 0.17) * math.cos(a), spring + (r + 0.17) * math.sin(a))
+        acc.add(v, f, "sb_keystone" if key else "sb_masonry", uv, place(at, (a - math.pi / 2, 0.0, 0.0)), smooth=False)
+    # Breach B: the wall slumped round the hole, rubble half closing it.
+    for _ in range(14):
+        bx, by = rng.uniform(-0.5, 1.8), B_PATH[-1][1] + rng.uniform(-1.4, 1.4)
+        size = rng.uniform(0.25, 0.6)
+        v, f, uv = rock(rng)
+        acc.add(v, f, "sb_stone", uv, place((bx, by, max(bed_z(bx, by), B_FLOOR) + size * 0.3), (0.0, 0.0, rng.uniform(0, 6.28)),
+                                           (size, size * 0.8, size * 0.6)))
+    # The stair: from the south wall's opening, out of the water and up to the grate, in a narrow well.
+    steps = int(math.ceil((deck - STAIR_FIRST) / STAIR_RISE))
+    well = []
+    for k in range(steps):
+        z = STAIR_FIRST + k * STAIR_RISE
+        y_front = CH_Y[0] - k * STAIR_RUN
+        v, f, uv = box(STAIR_WIDTH, STAIR_RUN, STAIR_RISE)
+        acc.add(v, f, "sb_masonry", uv, place((STAIR_X, y_front - STAIR_RUN / 2.0, z - STAIR_RISE / 2.0)), smooth=False)
+    y_top = CH_Y[0] - steps * STAIR_RUN
+    # Its roof rises at the flight's pitch from the chamber's spring to the street; past that (y_roof to y_top) the well
+    # is open under the grate.
+    roof_lo, roof_hi = CH_SPRING, deck - 0.06
+    y_roof = CH_Y[0] - max(0.0, (roof_hi - roof_lo)) / max(STAIR_RISE / STAIR_RUN, 1e-3)
+
+    def under_steps(y):
+        return STAIR_FIRST - STAIR_RISE + (CH_Y[0] - y) / STAIR_RUN * STAIR_RISE
+
+    for sx in (STAIR_X - STAIR_WIDTH / 2.0, STAIR_X + STAIR_WIDTH / 2.0):
+        well.append([(sx, CH_Y[0], under_steps(CH_Y[0])), (sx, y_roof, under_steps(y_roof)), (sx, y_roof, roof_hi), (sx, CH_Y[0], roof_lo)])
+        well.append([(sx, y_roof, under_steps(y_roof)), (sx, y_top, under_steps(y_top)), (sx, y_top, roof_hi), (sx, y_roof, roof_hi)])
+    well.append([(STAIR_X - STAIR_WIDTH / 2.0, CH_Y[0], roof_lo), (STAIR_X + STAIR_WIDTH / 2.0, CH_Y[0], roof_lo),
+                 (STAIR_X + STAIR_WIDTH / 2.0, y_roof, roof_hi), (STAIR_X - STAIR_WIDTH / 2.0, y_roof, roof_hi)])
+    add_quads_inward(acc, "sb_masonry", well, lambda c: Vector((STAIR_X, c.y, c.z - 0.5)))
+    # The boat cellar's remains: two trestles, a rotted keel and a few ribs (some broken off), a hoist chain from the vault.
+    for tx in (-22.0, -17.0):
+        v, f, uv = box(0.15, 1.2, 0.8)
+        acc.add(v, f, "sb_wood", uv, place((tx, -19.0, CH_FLOOR + 0.4), (0.0, rng.uniform(-0.05, 0.05), 0.0)), smooth=False)
+    keel = [(-23.2, -19.0, CH_FLOOR + 0.86), (-19.5, -19.02, CH_FLOOR + 0.84), (-15.8, -18.97, CH_FLOOR + 0.9)]
+    v, f, uv = tube(keel, 0.07, 8)
+    acc.add(v, f, "sb_wood", uv)
+    for k, rx in enumerate((-22.6, -21.6, -20.6, -19.6, -18.6, -17.6, -16.6)):
+        for side in (-1, 1):
+            if rng.random() < 0.3:
+                continue  # that side's rib gone
+            reach = rng.uniform(0.45, 1.0)
+            arc = []
+            for s in range(7):
+                a = (math.pi / 2) * reach * s / 6
+                arc.append((rx, -19.0 + side * 0.75 * math.sin(a), CH_FLOOR + 0.9 + 0.75 * (1.0 - math.cos(a))))
+            v, f, uv = tube(arc, 0.03, 6)
+            acc.add(v, f, "sb_wood", uv)
+    links_along(acc, [(-21.0, -16.0, vault_z(-16.0) - 0.05), (-21.0, -16.05, -1.0), (-20.95, -16.1, -1.4)])
+    notes["cellar"] = {
+        "arch_a": plan_point(0.0, A_Y), "breach_b": plan_point(0.0, B_PATH[-1][1]),
+        "chamber": [plan_point(CH_X[0], CH_Y[0]), plan_point(CH_X[1], CH_Y[1])], "floor_z": CH_FLOOR,
+        "air_pocket": {"z": [0.0, round(crown, 2)], "box": [plan_point(CH_X[0], CH_Y[0]), plan_point(CH_X[1], CH_Y[1])]},
+        "drain": plan_point(dx + ds / 2.0, dy + ds / 2.0), "stair_grate": plan_point(STAIR_X, (y_top + y_roof) / 2.0),
+        "deck_z": deck, "passage_a_m": round(abs(CH_X[1] - 0.3), 2),
+        "passage_b_m": round(sum(math.dist(B_PATH[i], B_PATH[i + 1]) for i in range(len(B_PATH) - 1)), 2),
+    }
+    return acc, (y_top, y_roof)
+
+
+def make_grates(deck, stair_y):
+    """The street's two grates over the cellar, to set in the paving's cuts: the drain's at the square, and the stair's
+    locked grate (its frame, bars, a chain round two bars and a padlock)."""
+    acc = Acc("basin_grates")
+    dx, dy, ds = DRAIN
+    for k in range(6):
+        v, f, uv = box(0.025, ds, 0.04)
+        acc.add(v, f, "sb_metal", uv, place((dx + 0.04 + k * (ds - 0.08) / 5.0, dy + ds / 2.0, deck - 0.02)), smooth=False)
+    for y in (dy + 0.02, dy + ds - 0.02):
+        v, f, uv = box(ds, 0.04, 0.05)
+        acc.add(v, f, "sb_metal", uv, place((dx + ds / 2.0, y, deck - 0.025)), smooth=False)
+    y_top, y_roof = stair_y
+    gy0, gy1 = y_top, y_roof  # the well's open top, over the flight's upper steps
+    length = max(abs(gy1 - gy0), 0.6)
+    gyc = (gy0 + gy1) / 2.0
+    for k in range(9):
+        v, f, uv = box(0.022, length, 0.022)
+        acc.add(v, f, "sb_metal", uv, place((STAIR_X - STAIR_WIDTH / 2.0 + 0.07 + k * (STAIR_WIDTH - 0.14) / 8.0, gyc, deck + 0.01)), smooth=False)
+    for y in (gyc - length / 2.0, gyc, gyc + length / 2.0):
+        v, f, uv = box(STAIR_WIDTH, 0.05, 0.03)
+        acc.add(v, f, "sb_metal", uv, place((STAIR_X, y, deck + 0.012)), smooth=False)
+    # The chain through the two middle bars and the padlock hanging from it.
+    cx = STAIR_X - STAIR_WIDTH / 2.0 + 0.07 + 4 * (STAIR_WIDTH - 0.14) / 8.0
+    pts = [(cx - 0.14, gyc, deck + 0.03), (cx - 0.05, gyc + 0.02, deck + 0.05), (cx + 0.05, gyc - 0.02, deck + 0.05), (cx + 0.14, gyc, deck + 0.03)]
+    links_along(acc, pts, pitch=0.06)
+    v, f, uv = box(0.06, 0.025, 0.07)
+    acc.add(v, f, "sb_metal", uv, place((cx, gyc + 0.05, deck + 0.02)), smooth=False)
+    return acc
+
+
+def make_find():
+    """The find on the chamber's west ledge: a sealed tin document box (its text is the story lane's), and the ledge."""
+    acc = Acc("basin_find")
+    v, f, uv = box(0.5, 3.0, 0.3)
+    acc.add(v, f, "sb_masonry", uv, place((CH_X[0] + 0.25, -16.5, 0.2)), smooth=False)
+    v, f, uv = box(0.3, 0.2, 0.1)
+    acc.add(v, f, "sb_find", uv, place((CH_X[0] + 0.25, -16.3, 0.35 + 0.05), (0.0, 0.0, 0.12)), smooth=False)
+    v, f, uv = box(0.31, 0.21, 0.025)
+    acc.add(v, f, "sb_find", uv, place((CH_X[0] + 0.25, -16.3, 0.35 + 0.112), (0.0, 0.0, 0.12)), smooth=False)
+    return acc
+
+
 def plan_point(x, y):
     return [round(PLAN_ORIGIN[0] + x, 2), round(PLAN_ORIGIN[1] + y, 2)]
 
@@ -779,6 +1090,11 @@ def render_previews(out):
     shot("mannequin_2m", (45.0, 2.0, tz + 0.6), (47.0, 2.0, tz + 0.4), lens=28.0)
     shot("mannequin_1m", (46.0, 2.3, tz + 0.5), (47.0, 2.0, tz + 0.3), lens=28.0)
     shot("wall_foot_1m", (1.6, -9.0, bed_z(1.6, -9.0) + 0.9), (0.4, -9.0, bed_z(0.4, -9.0) + 0.2), lens=24.0)
+    # The cellar: arch A from the basin, the chamber from the pocket (up at the drain, across at the find).
+    shot("arch_a_3m", (3.2, A_Y + 0.4, -1.8), (0.0, A_Y, -2.0), lens=24.0)
+    shot("pocket_up_drain", (-18.0, -15.0, 0.2), (DRAIN[0] + 0.25, DRAIN[1] + 0.25, 1.5), lens=18.0)
+    shot("pocket_find_2m", (-23.5, -16.0, 0.3), (CH_X[0] + 0.25, -16.3, 0.4), lens=28.0)
+    shot("chamber_floor", (-13.0, -12.0, -1.6), (-19.5, -19.0, -2.6), lens=18.0)
 
 
 def main():
@@ -795,9 +1111,14 @@ def main():
     groups.append(("debris", make_debris(rng, notes)))
     groups.append(("chains", make_chains(rng, notes)))
     groups.append(("mannequin", make_mannequin(rng, notes)))
+    cellar, stair_y = make_cellar(rng, o["deck"], notes)
+    groups.append(("cellar", cellar))
+    groups.append(("grates", make_grates(o["deck"], stair_y)))
+    groups.append(("find", make_find()))
     report = {
         "frame": {"units": "m", "up": "Z", "plan_origin": list(PLAN_ORIGIN),
-                  "engine_place": "(940 - side/2, side/2 - 670, 0) m, no rotation", "seed": o["seed"], "grid_m": o["grid"]},
+                  "engine_place": "(940 - side/2, side/2 - 670, 0) m, no rotation", "seed": o["seed"], "grid_m": o["grid"],
+                  "deck_m": o["deck"]},
         "bed": {"wall_foot_depth_m": WALL_FOOT_DEPTH, "deep_depth_m": DEEP_DEPTH, "deep_plan_x": PLAN_ORIGIN[0] + DEEP_X,
                 "samples": {"wall_foot": round(bed_z(0.5, 0.0), 2), "x960": round(bed_z(20.0, 0.0), 2),
                             "x980": round(bed_z(40.0, 0.0), 2), "x995": round(bed_z(55.0, 0.0), 2)}},
