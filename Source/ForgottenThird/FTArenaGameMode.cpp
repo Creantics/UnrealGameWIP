@@ -887,7 +887,7 @@ FString AFTArenaGameMode::WantedLead() const
 	Want = Want.TrimStartAndEnd();
 	if (!Want.IsEmpty() && !IsPlayable(Want))
 	{
-		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a support slot with no attack kit and can't be the lead; using the first who has attacks."), *Want);
+		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a party member only (its kit is not playable) and can't be the lead; using the first playable lead."), *Want);
 		bLeadWarned = true;
 		Want.Reset();
 	}

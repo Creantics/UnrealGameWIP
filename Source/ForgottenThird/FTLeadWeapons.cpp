@@ -1195,6 +1195,11 @@ void FFTLeadWeapons::SetAimAtBody(const FVector& Surface, double Bottom, double 
 	const double Reach = FVector::Dist(Joint[0], Joint[1]) + FVector::Dist(Joint[1], Joint[2]) + FVector::Dist(Joint[2], Joint[3]);
 	// The strike height: the shoulder's, or the middle of the hip-to-knee line; within the body, never over the head.
 	double Z = bKick ? (Joint[0].Z + Joint[1].Z) * 0.5 : Joint[0].Z;
+	// A target shorter than that (its top under the strike height): its own chest, not its top (its head).
+	if (Z > FMath::Max(Bottom, Top))
+	{
+		Z = Bottom + 0.6 * (Top - Bottom);
+	}
 	Z = FMath::Clamp(Z, FMath::Min(Bottom, Top), FMath::Max(Bottom, Top));
 	if (Body->DoesSocketExist(Head))
 	{
@@ -1248,13 +1253,46 @@ void FFTLeadWeapons::LogAim()
 	const FVector To = AimPoint - From;
 	const double Cos = FVector::DotProduct(Dir.GetSafeNormal(), To.GetSafeNormal());
 	const double Deg = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Cos, -1.0, 1.0)));
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: aim %s %.1f deg (%s%s)"), Prefix(), GetLastStrikeName(), Deg, What,
-		bAimed ? TEXT(", at the target") : TEXT(", straight ahead"));
+	++AimCount;
+	AimDegSum += Deg;
+	AimDegWorst = FMath::Max(AimDegWorst, Deg);
+	if (bLogEachAim)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: aim %s %.1f deg (%s%s)"), Prefix(), GetLastStrikeName(), Deg, What,
+			bAimed ? TEXT(", at the target") : TEXT(", straight ahead"));
+	}
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets && Body->DoesSocketExist(Knuckle))
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point (%.0f cm up; reach pulled it %.1f cm off the body)"),
-			Prefix(), FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint), AimPoint.Z - Body->GetComponentLocation().Z,
-			ContactPull);
+		const double Fist = FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint);
+		++FistCount;
+		FistSum += Fist;
+		FistWorst = FMath::Max(FistWorst, Fist);
+		if (bLogEachAim)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point (%.0f cm up; reach pulled it %.1f cm off the body)"),
+				Prefix(), Fist, AimPoint.Z - Body->GetComponentLocation().Z, ContactPull);
+		}
+	}
+}
+
+void FFTLeadWeapons::ResetAimSummary()
+{
+	AimCount = FistCount = 0;
+	AimDegSum = AimDegWorst = FistSum = FistWorst = 0.0;
+}
+
+void FFTLeadWeapons::LogAimSummary() const
+{
+	if (AimCount == 0)
+	{
+		return; // no strike aimed (no fighter, or none struck)
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: aim summary: %d strikes, mean %.1f deg, worst %.1f deg"), Prefix(), AimCount,
+		AimDegSum / AimCount, AimDegWorst);
+	if (FistCount > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist summary: %d strikes, mean %.1f cm from the hit point, worst %.1f cm"), Prefix(),
+			FistCount, FistSum / FistCount, FistWorst);
 	}
 }
 

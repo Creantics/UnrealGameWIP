@@ -195,12 +195,29 @@ next member (not during a climb or vault): the pawn stands up if it was crouchin
 the followers line up again behind it. P or LB hides or shows
 the followers, to see the lead alone (hidden followers keep walking the trail). `StartLead=<Name>` and
 `bStartSolo=True` set the start; `-ExploreLead=<Name>` and `-ExploreSolo` do it for `-game` runs, and
-`-ExplorePortrait` hides the followers. The player's last choice is kept across a fight
+`-ExplorePortrait` hides the followers. A member that is not playable never leads; for a still of one,
+`-ExploreShowLook` (review builds only) lets `-ExploreLead` wear it anyway. The player's last choice is kept across a fight
 (`UFTGameInstance`). With a party in config the demo walk has followers too, so the demo map's own
 Duy (a talk spot) can stand beside a following Duy. Without one, the pawn wears its single look
 (`BodyMeshPath` and the rest) as `kPartyNames[0]`, and only the story's field steps have followers.
 The log line per look is `FTExploreCharacter: <Name>: body <mesh> facing <yaw>, <n> pieces (<c> with
 cloth), <g> grooms, clips from <folder>.`
+
+**Under layers.** A piece worn under another (a tee under an open jacket) can wear a cut copy of
+itself while the over piece is worn, so the hidden faces never poke through. `UnderLayers` on a look
+names the under piece, the over piece and the cut (`FFTUnderLayer`, `FTLook.h`):
+
+```
++PartyLooks=(Name="Lead",...,UnderLayers=((Under=/Game/Characters/Lead/Outfit/SK_Tee,OverWord="/Game/Characters/Lead/Outfit/SK_JacketOpen",Cut=/Game/Characters/Lead/Outfit/SK_Tee_uJO)))
+```
+
+`OverWord` is best given as the over piece's full path (with or without the `.Name` suffix); a bare
+word matches an asset name exactly, else in part, and the best match wins. The log warns when a layer
+names no piece, when its word names several pieces only in part, and when two layers overlap. With the
+over piece off (`-LocoNoPiece`, or `FTLook::SetPieceWorn` in play) the whole under piece is worn
+again; a mesh swap keeps the piece's material instances, overrides and morph weights, so wetness and
+dirt carry across it. Review: `-ExploreSoakSwap=<wetness>,<word>@<off s>[+<on s>]` holds the lead wet
+and takes the pieces whose name holds the word off and back on, logging `SOAK_SWAP` per slot.
 
 On autoplay (`StoryCarry.bAutoPlay`) the autopilot walks to the marker and uses it, logging
 `ExploreDemo: field step done at <scene> beat <b> step <i> after <t> s.` (game time, under 10 s).

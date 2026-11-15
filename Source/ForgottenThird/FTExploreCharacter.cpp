@@ -189,8 +189,12 @@ void AFTExploreCharacter::BeginPlay()
 	// -ExploreGreyGround flag under it) are capture tools: compiled out of shipping.
 #if UE_BUILD_SHIPPING
 	const bool bPortrait = false;
+	const bool bShowAnyLook = false;
 #else
 	const bool bPortrait = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait"));
+	// -ExploreShowLook: a capture may wear a look that is not playable (a party member only) on this character, so a
+	// still of that member never needs the arena data changed. Review only.
+	const bool bShowAnyLook = FParse::Param(FCommandLine::Get(), TEXT("ExploreShowLook"));
 #endif
 	// The lead and the party toggle: the player's last choice this session, else the command line, else config. A
 	// portrait shows the lead alone.
@@ -220,15 +224,15 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			return Member.Name.Equals(Lead, ESearchCase::IgnoreCase);
 		}));
-		// A party slot without attacks is never the lead: the first look that has them starts instead.
-		if (!IsPlayableLead(PartyLooks[LeadIndex]))
+		// A party member that is not playable (its kit's data flag) is never the lead: the first playable look starts instead.
+		if (!bShowAnyLook && !IsPlayableLead(PartyLooks[LeadIndex]))
 		{
 			const int32 Playable = PartyLooks.IndexOfByPredicate([this](const FFTLeadLook& Member)
 			{
 				return IsPlayableLead(Member);
 			});
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: %s has no attacks and can't be the lead; starting as %s."),
-				*PartyLooks[LeadIndex].Name, Playable >= 0 ? *PartyLooks[Playable].Name : TEXT("him anyway (no look has attacks)"));
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: %s is a party member only (not playable) and can't be the lead; starting as %s."),
+				*PartyLooks[LeadIndex].Name, Playable >= 0 ? *PartyLooks[Playable].Name : TEXT("that look anyway (no look is playable)"));
 			LeadIndex = Playable >= 0 ? Playable : LeadIndex;
 		}
 		WearLook(PartyLooks[LeadIndex]);
@@ -359,6 +363,33 @@ void AFTExploreCharacter::BeginPlay()
 			WetReview = FVector(Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 1.f, Parts.Num() > 1 ? FCString::Atof(*Parts[1]) : 130.f,
 				Parts.Num() > 2 ? FCString::Atof(*Parts[2]) : 0.f);
 			GetWorldTimerManager().SetTimer(WetTimer, this, &AFTExploreCharacter::SoakForReview, 1.f, true, 0.5f);
+		}
+		// Wet state across a piece's mesh swap: -ExploreSoakSwap=<wetness>,<word>@<off s>[+<on s>] holds the lead at that
+		// wetness through the game's own path (ShowWetness; the water's drive is off), takes off every piece whose asset name
+		// holds the word at <off s> and puts it back at <on s> (FTLook::SetPieceWorn, so an under layer swaps its cut).
+		// SOAK_SWAP lines give each slot's material and Wetness value at each stage; stills before and after show it.
+		FString SoakSwap;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreSoakSwap="), SoakSwap, false))
+		{
+			FString Head, Times, Off, On;
+			if (SoakSwap.Split(TEXT("@"), &Head, &Times) && Head.Split(TEXT(","), &Off, &SoakSwapWord))
+			{
+				SoakSwapWet = FMath::Clamp(FCString::Atof(*Off), 0.f, 1.f);
+				if (!Times.Split(TEXT("+"), &Off, &On))
+				{
+					Off = Times;
+				}
+				SoakSwapOff = FCString::Atof(*Off);
+				SoakSwapOn = On.IsEmpty() ? -1.f : FCString::Atof(*On);
+				SoakSwapStart = FPlatformTime::Seconds();
+				GetWorldTimerManager().SetTimer(SoakSwapTimer, this, &AFTExploreCharacter::StepSoakSwap, 0.25f, true, 0.25f);
+				UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP wetness %.2f, pieces holding '%s' off at %.1f s, on at %.1f s."),
+					SoakSwapWet, *SoakSwapWord, SoakSwapOff, SoakSwapOn);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("SOAK_SWAP: '%s' is not <wetness>,<word>@<off s>[+<on s>]."), *SoakSwap);
+			}
 		}
 		FString Range;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
@@ -611,6 +642,59 @@ void AFTExploreCharacter::FixExposure(float Bias)
 }
 
 #if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::LogSoakSwap(const TCHAR* Stage)
+{
+	static const FHashedMaterialParameterInfo WetnessInfo(TEXT("Wetness"));
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (!Piece || !Piece->GetSkeletalMeshAsset())
+		{
+			continue;
+		}
+		for (int32 Slot = 0; Slot < Piece->GetNumMaterials(); ++Slot)
+		{
+			UMaterialInterface* Material = Piece->GetMaterial(Slot);
+			float Value = -1.f;
+			const bool bHas = Material && Material->GetScalarParameterValue(WetnessInfo, Value);
+			UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP %s: %s%s slot %d %s Wetness %s (serial %u, %d gathered)."), Stage,
+				*Piece->GetSkeletalMeshAsset()->GetName(), Piece->GetVisibleFlag() ? TEXT("") : TEXT(" (off)"), Slot,
+				Material ? *Material->GetName() : TEXT("none"), bHas ? *FString::Printf(TEXT("%.2f"), Value) : TEXT("n/a"),
+				FTLook::WornMeshSerial(), WetMaterials.Num());
+		}
+	}
+}
+
+void AFTExploreCharacter::StepSoakSwap()
+{
+	ShowWetness(ftcore::WaterWetness{SoakSwapWet, 3.f, 0.f});
+	const double Now = FPlatformTime::Seconds() - SoakSwapStart;
+	const bool bOff = SoakSwapStage == 0 && Now >= SoakSwapOff;
+	const bool bOn = SoakSwapStage == 1 && SoakSwapOn >= 0.f && Now >= SoakSwapOn;
+	if (SoakSwapStage == 0 && Now >= SoakSwapOff - 1.0 && !bSoakSwapBefore)
+	{
+		bSoakSwapBefore = true;
+		LogSoakSwap(TEXT("before"));
+	}
+	if (!bOff && !bOn)
+	{
+		return;
+	}
+	int32 Changed = 0;
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (Piece && Piece->GetSkeletalMeshAsset() && Piece->GetSkeletalMeshAsset()->GetName().Contains(SoakSwapWord))
+		{
+			Changed += FTLook::SetPieceWorn(WornLook, WornFronts, *GetMesh(), Pieces, *Piece, bOn, TEXT("FTExploreCharacter"));
+		}
+	}
+	// The carried materials as the swap left them, before ShowWetness gathers them again.
+	LogSoakSwap(bOn ? TEXT("swapped on") : TEXT("swapped off"));
+	++SoakSwapStage;
+	ShowWetness(ftcore::WaterWetness{SoakSwapWet, 3.f, 0.f});
+	UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP %s at %.1f s: %d under piece(s) swapped."), bOn ? TEXT("on") : TEXT("off"), Now, Changed);
+	LogSoakSwap(bOn ? TEXT("after on") : TEXT("after off"));
+}
+
 void AFTExploreCharacter::SoakForReview()
 {
 	const float FeetZ = GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
@@ -881,6 +965,10 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
 		BodyComponent->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
 	}
 	WornFronts = Loaded.Fronts;
+	WornLook = Look;
+	// New pieces: the wet instances are gathered again the next time the lead is wet.
+	WetMaterials.Reset();
+	bWetMaterialsMade = false;
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
 	FTLook::SwapMaterials(*BodyComponent, Pieces, Look.MaterialSwaps, TEXT("FTExploreCharacter"));
@@ -2642,7 +2730,7 @@ void AFTExploreCharacter::HandleSwitchLead()
 	{
 		return;
 	}
-	// The next look the player may play; a party slot without attacks is passed over.
+	// The next look the player may play; a party member that is not playable is passed over, with its reason logged.
 	int32 Next = LeadIndex;
 	for (int32 Step = 1; Step < PartyLooks.Num(); ++Step)
 	{
@@ -2652,6 +2740,7 @@ void AFTExploreCharacter::HandleSwitchLead()
 			Next = Try;
 			break;
 		}
+		UE_LOG(LogForgottenThird, Log, TEXT("FTExploreCharacter: lead switch passes over %s: a party member only (not playable)."), *PartyLooks[Try].Name);
 	}
 	if (Next == LeadIndex)
 	{
@@ -3625,6 +3714,12 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 		}
 	}
 	System->LeadWater(*this, State, At, GetVelocity(), 2.f * Half, DeltaSeconds);
+#if !UE_BUILD_SHIPPING
+	if (SoakSwapWet >= 0.f)
+	{
+		return; // -ExploreSoakSwap holds its own wetness
+	}
+#endif
 	ShowWetness(System->LeadWetness());
 }
 
@@ -3808,10 +3903,17 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 	{
 		return;
 	}
-	if (!bWetMaterialsMade)
+	if (!bWetMaterialsMade || WetMaterialsSerial != FTLook::WornMeshSerial())
 	{
-		// Once: a dynamic instance of every material on the lead's skeletal meshes (body, head, clothes).
+		// A dynamic instance of every material on the lead's skeletal meshes (body, head, clothes): the first time it is
+		// wet, and again once a piece's mesh was swapped (its slots are new; FTLook carries an instance across a swap, so
+		// this mostly finds the same ones). The shown values are forgotten so every one is written to them all.
 		bWetMaterialsMade = true;
+		WetMaterialsSerial = FTLook::WornMeshSerial();
+		WetMaterials.Reset();
+		WetShown = -1.f;
+		WetLineShown = -1.0e9f;
+		WetSiltShown = -1.f;
 		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
 		for (USkeletalMeshComponent* Part : Meshes)
 		{
@@ -3834,7 +3936,7 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 	}
 	// The line is kept over the feet, so it travels with the body; it is written when it has moved a centimetre.
 	const float LineZ = static_cast<float>(GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight()) + Wet.line * 100.f;
-	const bool bWet = FMath::Abs(Wet.wetness - WetShown) > 0.004f || (Wet.wetness <= 0.f && WetShown > 0.f);
+	const bool bWet = FMath::Abs(Wet.wetness - WetShown) > 0.004f || (Wet.wetness <= 0.f && WetShown != 0.f);
 	const bool bLine = FMath::Abs(LineZ - WetLineShown) > 1.f;
 	const bool bSilt = Wet.silt != WetSiltShown;
 	if (!bWet && !bLine && !bSilt)

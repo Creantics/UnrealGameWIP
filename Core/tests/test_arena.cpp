@@ -6624,7 +6624,19 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     const ArenaTable t = loadShipped();
     CHECK(arenaPlayable(t.fighter("devin")));
     CHECK(arenaPlayable(t.fighter("duy")));
-    CHECK_FALSE(arenaPlayable(t.fighter("third"))); // a party slot only
+    CHECK_FALSE(arenaPlayable(t.fighter("third"))); // a party member only: its data flag
+    // The flag decides, never the attacks: a kit that fights but is marked not playable is not playable (the case the
+    // flag was made for: a party member with a fighting kit), and one marked playable with no attacks is playable.
+    {
+        ArenaFighter fights = t.fighter("default");
+        REQUIRE(fights.attacks);
+        fights.playable = false;
+        CHECK_FALSE(arenaPlayable(fights));
+        ArenaFighter still = t.fighter("third");
+        still.playable = true;
+        CHECK_FALSE(still.attacks);
+        CHECK(arenaPlayable(still));
+    }
     // -ArenaLead=Third is refused on this: the host lower-cases the name and asks arenaPlayable (the kit stays pinned).
     // The ids are exact, so the lower-casing matters: "Third" as typed is unknown and reads the first kit, which fights.
     CHECK(&t.fighter("Third") == &t.fighter(t.fighterIds[0]));
