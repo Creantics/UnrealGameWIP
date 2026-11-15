@@ -18,6 +18,7 @@
 //
 // No allocation. Plain data save (PlaceSave).
 
+#include "ftcore/StateHash.h"
 #include "ftcore/Load.h"
 
 #include <array>
@@ -225,6 +226,14 @@ private:
         return PlaceError::NoSeat;
     }
 
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(seats_);
+        for (const Place& p : places_) h.add(p.state).add(p.person);
+    }
+
+private:
     PlaceTuning tuning_{};
     int seats_ = 1;
     std::array<Place, kMaxPlaces> places_{};

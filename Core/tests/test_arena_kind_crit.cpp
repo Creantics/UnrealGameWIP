@@ -603,3 +603,33 @@ TEST_CASE("arena kind crit: the shipped Dealer's moves name clips of its table, 
     for (const char* id : {"idle", "stagger", "open", "face_down", "deal"})
         CHECK_FALSE_MESSAGE(clips[static_cast<std::size_t>(clips.find(id))].additiveIn, id);
 }
+
+TEST_CASE("arena kind crit: the host's own opening, and a shut that bars every opening") {
+    ArenaKindCrit crit = armed();
+    const ArenaEnemyKind kind = dealer();
+    CHECK(crit.openFor(5.0, 2.0));
+    CHECK(crit.isOpen(5.0));
+    CHECK(crit.isOpen(6.9));
+    CHECK_FALSE(crit.isOpen(7.0));
+    CHECK(crit.openFor(6.0, 0.5)); // the longer one stays
+    CHECK(crit.closesAt() == doctest::Approx(7.0));
+    CHECK_FALSE(crit.openFor(6.0, 0.0));
+    CHECK_FALSE(crit.openFor(6.0, -1.0));
+    CHECK_FALSE(crit.openFor(std::numeric_limits<double>::infinity(), 1.0)); // not finite
+
+    crit.setShut(true);
+    CHECK(crit.shut());
+    CHECK_FALSE(crit.isOpen(6.5)); // the open window closed
+    CHECK_FALSE(crit.openFor(8.0, 2.0));
+    CHECK_FALSE(crit.onAttackStarted(0, 10.0, kind));
+    CHECK_FALSE(crit.isOpen(12.5));
+
+    crit.setShut(false);
+    CHECK_FALSE(crit.isOpen(12.5)); // nothing reopens
+    CHECK(crit.onAttackStarted(0, 20.0, kind));
+    CHECK(crit.isOpen(22.5));
+    crit.setShut(true); // a due or open window closes
+    CHECK_FALSE(crit.isOpen(22.5));
+    crit.reset(*testTable().find("white_glove"));
+    CHECK_FALSE(crit.shut()); // reset unshuts
+}

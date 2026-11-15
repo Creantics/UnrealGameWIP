@@ -16,6 +16,7 @@
 // Times as CombatInputs.h (queries included). No allocation.
 
 #include "ftcore/CombatInputs.h"
+#include "ftcore/StateHash.h"
 #include "ftcore/StrikeCount.h"
 
 #include <cstdint>
@@ -140,6 +141,13 @@ private:
         return now_;
     }
 
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(now_).add(open_).add(until_).add(opens_).add(deferrals_);
+    }
+
+private:
     LockTuning tuning_{};
     double now_ = 0.0;
     bool open_ = false;
@@ -185,6 +193,13 @@ public:
     }
     double until() const { return lock_.until(); }
     const WeakPointLock& lock() const { return lock_; }
+
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(locked_);
+        lock_.hashState(h);
+    }
 
 private:
     bool locked_ = false;

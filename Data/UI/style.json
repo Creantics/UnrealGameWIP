@@ -1,35 +1,39 @@
 {
   "version": 1,
-  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The pick swaps this table plus the meter painter.",
+  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The look is this table plus the stroke painters (Core UiStroke). Each world has its own ink and accent. The unwritten ink is a cold grey and its ink_dim is scaled from it as the other worlds' are (luminance x 0.6975); its accent is a cold neutral a step brighter than the ink, and its backing, ally and weak_point are cold neutrals, so its dark blood red (accent2) is the one colour in its HUD. That red fails the 4.5:1 text rule, so text never wears it: marks_accent2 puts it on marks only (value lines, the current lead's dot, the weak-point mark), and danger_underline draws a danger word in ink with the danger red as its underline. A world that leaves either key out has it off. The other lattice and unwritten values are provisional until those worlds' UI passes.",
   "layers": { "hairlines": true, "plates": false, "world_anchored": false, "letterbox": true },
   "line_weight": 3,
   "backing_default": 0.75,
-  "backing_soft": { "hud": 0.24, "dialogue": 0.42 },
-  "edge": { "color": "#0A0908E6", "px": 1 },
+  "backing_soft": { "hud": 0.3, "dialogue": 0.42, "options_contrast": 4.5, "options_max": 0.65 },
+  "edge": { "color": "#0A0908E6", "px": 1, "text": 0.6 },
   "meter": "line",
+  "load": { "gold": "#E9B36B", "bright": "#FFE08A" },
   "fade": { "in": 0.15, "rest": 2.5, "out": 0.6, "rest_alpha": 0.35 },
+  "budget": { "rest": 3, "marks": 10, "hint": 3 },
+  "word_luma_floor": 0.45,
   "min_text_px": 18,
   "min_text_px_absolute": 14,
   "worlds": {
-    "solhaven":  { "ink": "#F3EEE6", "ink_dim": "#D2CBBF", "backing": "#0A0806", "track": "#FFFFFF4D", "accent": "#E9B36B", "accent2": "#C9643C", "danger": "#FF7A5C", "ally": "#8FD3B4", "weak_point": "#FFE08A", "plate": "bronze" },
-    "lattice":   { "ink": "#EEF4F6", "ink_dim": "#C4D1D6", "backing": "#05090C", "track": "#FFFFFF4D", "accent": "#8FD6E8", "accent2": "#A88BE0", "danger": "#FF7A86", "ally": "#9BE3B0", "weak_point": "#FFE08A", "plate": "form_slip" },
-    "unwritten": { "ink": "#F2ECE0", "ink_dim": "#D0C8B8", "backing": "#0B0907", "track": "#FFFFFF4D", "accent": "#E6DDCB", "accent2": "#9E3B2E", "danger": "#FF7A66", "ally": "#9CC7A4", "weak_point": "#F4D58A", "plate": "torn_page" }
+    "solhaven":  { "ink": "#F3EEE6", "ink_dim": "#D2CBBF", "backing": "#0A0806", "track": "#FFFFFF73", "accent": "#E9B36B", "accent2": "#C9643C", "danger": "#FF7A5C", "ally": "#8FD3B4", "weak_point": "#FFE08A", "plate": "bronze" },
+    "lattice":   { "ink": "#EEF4F6", "ink_dim": "#C4D1D6", "backing": "#05090C", "track": "#FFFFFF73", "accent": "#8FD6E8", "accent2": "#A88BE0", "danger": "#FF7A86", "ally": "#9BE3B0", "weak_point": "#FFE08A", "plate": "form_slip" },
+    "unwritten": { "ink": "#DCE1E5", "ink_dim": "#BBC0C3", "backing": "#080A0C", "track": "#FFFFFF73", "accent": "#F4F6F8", "accent2": "#B01E23", "danger": "#FF7A66", "ally": "#A3ADB5", "weak_point": "#C9D1D7", "plate": "torn_page", "marks_accent2": true, "danger_underline": true }
   },
   "palettes": {
     "protan":        { "danger": "#F0A030", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
     "deutan":        { "danger": "#F0A030", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
     "tritan":        { "danger": "#FF7A4A", "ally": "#40C8B0", "weak_point": "#F5A0C8" },
-    "high_contrast": { "ink": "#FFFFFF", "ink_dim": "#FFFFFF", "backing": "#000000", "track": "#FFFFFF73", "danger": "#FF8A00", "ally": "#00E0FF", "weak_point": "#FFFF00" }
+    "high_contrast": { "ink": "#FFFFFF", "ink_dim": "#FFFFFF", "backing": "#000000", "track": "#FFFFFF99", "danger": "#FF8A00", "ally": "#00E0FF", "weak_point": "#FFFF00" }
   },
   "text": {
-    "title":    { "font": "sans_bold", "px": 44, "tracking": 0.08, "upper": true },
-    "heading":  { "font": "sans_bold", "px": 28, "tracking": 0.06, "upper": true },
-    "label":    { "font": "sans",      "px": 18, "tracking": 0.12, "upper": true },
-    "value":    { "font": "sans_bold", "px": 24, "tracking": 0,    "upper": false },
-    "subtitle": { "font": "sans",      "px": 36, "tracking": 0,    "upper": false },
-    "speaker":  { "font": "sans_bold", "px": 24, "tracking": 0.12, "upper": true },
-    "prompt":   { "font": "sans",      "px": 20, "tracking": 0.04, "upper": false },
-    "popup":    { "font": "sans_bold", "px": 28, "tracking": 0.04, "upper": true }
+    "title":    { "font": "serif_sc_bold", "px": 40, "tracking": 0.08, "upper": false },
+    "heading":  { "font": "serif_sc_bold", "px": 28, "tracking": 0.06, "upper": false },
+    "label":    { "font": "serif_sc",      "px": 26, "tracking": 0.08, "upper": false },
+    "value":    { "font": "serif_sc_bold", "px": 28, "tracking": 0,    "upper": false },
+    "subtitle": { "font": "serif",         "px": 36, "tracking": 0,    "upper": false },
+    "speaker":  { "font": "serif_sc_bold", "px": 26, "tracking": 0.08, "upper": false },
+    "prompt":   { "font": "serif",         "px": 26, "tracking": 0.02, "upper": false },
+    "popup":    { "font": "serif_sc_bold", "px": 30, "tracking": 0.04, "upper": false },
+    "verb":     { "font": "serif_sc_bold", "px": 27, "tracking": 0.22, "upper": true }
   },
   "cues": { "danger": "triangle", "ally": "circle", "weak_point": "diamond" }
 }

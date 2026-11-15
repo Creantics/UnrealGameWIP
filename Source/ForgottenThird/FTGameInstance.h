@@ -78,6 +78,9 @@ struct FFTStoryCarry
 	// The beat's `lose` param is "branch" and it names a `sets` flag: a lost fight ends the beat with
 	// resume(0), so a screen may hand a loss back instead of offering only a retry.
 	bool bLossBranch = false;
+	// The fight's third slot (ftcore::SlotState): the beat's `third` param (companion, vacant, hostile).
+	// Companion when the beat names none; an arena fight begins its session with it (FightSessionDef::thirdSlot).
+	uint8 ThirdSlot = 0;
 	bool bDone = false;
 	bool bWon = false; // a fight's result; a fight that comes back done but not won is lost
 };

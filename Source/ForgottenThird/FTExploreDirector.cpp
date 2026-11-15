@@ -728,9 +728,10 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 			UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: no mesh for follower %s."), *Look->Name);
 		}
 		// On a map with a sea it keeps out of it: no follower stands on or over the water (AFTPartyFollower::Place).
-		if (bHasSeaLevel)
+		// Nor in a canal: with water bodies and no sea, the sea level is one nothing lies under.
+		if (bHasSeaLevel || WaterBodies.Num() > 0)
 		{
-			Follower->SetSea(SeaLevel);
+			Follower->SetSea(bHasSeaLevel ? SeaLevel : -1.0e7f);
 		}
 		Followers.Add(Follower);
 	}

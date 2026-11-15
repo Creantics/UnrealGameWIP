@@ -310,6 +310,7 @@ struct VfxEmitter {
     VfxCurve startRotation = VfxCurve::constant(0.f);   // radians
     VfxCurve angularVelocity = VfxCurve::constant(0.f); // radians / second
     VfxBlend blend = VfxBlend::Alpha;
+    bool lit = false; // an alpha sprite that takes the scene's light (drops of water) instead of showing its own colour
     VfxSprite sprite = VfxSprite::Soft;
     float stretch = 0.f; // seconds of travel the billboard stretches along its velocity
     float stretchMax = 8.f;
@@ -433,6 +434,7 @@ struct VfxNiagaraEmitter {
 
     // Renderer
     bool additive = false;
+    bool lit = false; // the emitter's `lit`, for an alpha sprite only
     VfxSprite sprite = VfxSprite::Soft;
     VfxNiagaraFacing facing = VfxNiagaraFacing::Camera;
     bool scaleBySpeed = false; // ScaleSpriteSizeBySpeed: scale lerps min..max as speed goes 0..threshold

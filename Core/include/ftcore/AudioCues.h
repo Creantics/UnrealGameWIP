@@ -20,7 +20,12 @@
 //   fadeOut (seconds, 0..30), gainDb (-40..12). The beat boss's cues carry how the synth places and mixes
 //   them: quant (where a cue sits on the music's grid: "NOW", "TELL", "IMP", "IMP-8", "IMP-60", "END", "8TH",
 //   "BEAT", "BAR" or "BAR-1B"), duckDb (the music's duck, -24..0), duckHoldMs (0..2000), duckRelMs (0..5000),
-//   max (voices at once, 1..32) and prio (steal priority, 0..100). Unknown keys are warnings.
+//   max (voices at once, 1..32) and prio (steal priority, 0..100). Variation and mix routing
+//   (docs/AUDIO_MIX.md): variants (recorded takes, 1..16), avoidLast (recent takes kept out, 0..4;
+//   only ever adds to the automatic no-repeat rule), roundRobin (true/false), pitchCents (+- pitch
+//   jitter, 0..1200), volumeDb (+- volume jitter, 0..12) and mixBus ("music", "ambience", "sfx",
+//   "footsteps", "voice", "ui": the mix bus when it isn't the cue bus). Missing keys keep today's
+//   behaviour: one take, no jitter, the mix bus of the cue bus. Unknown keys are warnings.
 //
 // Mix rules (docs/ASSET_INTAKE.md): 44.1 or 48 kHz, mono or stereo (voice mono), integrated
 // loudness within the bus target's tolerance (sfx: no loudness target), true peak at most -1 dBTP.
@@ -63,6 +68,12 @@ struct AudioCue {
     float duckRelMs = 0.f;
     int maxVoices = 0;               // 0: unlimited
     int priority = 0;                // higher wins a steal
+    int variants = 1;                // recorded takes (ftcore/AudioPick.h)
+    int avoidLast = -1;              // -1: the automatic no-repeat rule
+    bool roundRobin = false;
+    float pitchCents = 0.f;          // +- pitch jitter, cents
+    float volumeDb = 0.f;            // +- volume jitter, dB (gainDb stays the level)
+    int mixBus = -1;                 // -1: follows bus; else an ftcore::MixBus index (ftcore/MixState.h)
 
     bool hasLoopPoints() const { return loopStartSeconds >= 0.f && loopEndSeconds > loopStartSeconds; }
 };

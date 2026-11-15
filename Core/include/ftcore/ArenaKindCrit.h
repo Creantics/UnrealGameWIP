@@ -127,6 +127,13 @@ public:
     FTCORE_API ArenaBlowRuling rule(const ArenaBlow& blow, std::uint8_t slot, Vec2 bossPos, Vec2 bossFacing);
     // Some move of `kind` plays the opensAfter clip (the host's check when it installs the entry).
     FTCORE_API bool opensOn(const ArenaEnemyKind& kind) const;
+    // The host's own opening (a refusal's): the window opens from t for `seconds` (one open at t that closes later is
+    // kept): true. Nothing while shut, for seconds <= 0 or a time not finite: false.
+    FTCORE_API bool openFor(double t, double seconds);
+    // Shut: nothing opens the window (onAttackStarted and openFor open nothing and say false) and a window open or
+    // due closes now. Unshut lets openings through again; nothing reopens. reset() unshuts.
+    FTCORE_API void setShut(bool shut);
+    bool shut() const { return shut_; }
 
     bool isOpen(double t) const { return window_.isOpen(t); }
     double opensAt() const { return opensAt_; }
@@ -154,6 +161,7 @@ private:
     float lastMultiplier_ = 1.0f;
     int lastDamage_ = 0;
     double lastCritAt_ = -1.0e300;
+    bool shut_ = false;
 };
 
 } // namespace ftcore

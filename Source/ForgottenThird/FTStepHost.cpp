@@ -12,6 +12,7 @@
 #include "FTText.h"
 
 #include "ftcore/GameplayPlan.h"
+#include "ftcore/GiftSlot.h"
 #include "ftcore/StoryChain.h"
 #include "ftcore/StoryRunner.h"
 #include "ftcore/WorldLayout.h"
@@ -293,6 +294,12 @@ FString FTStep::Prepare(UFTGameInstance& GI, const StoryRunner& Runner, const FS
 	const bool bRule = ftcore::lossRuleFromName(Runner.param("lose"), Rule);
 	Carry.bCannotLose = bRule && Rule == ftcore::LossRule::Never;
 	Carry.bLossBranch = bRule && Rule == ftcore::LossRule::Branch && !Runner.param("sets").empty();
+	{
+		// The story load refused any other word (StoryBuilder::param); none or companion is Companion.
+		const FString Third = FT::ToFString(Runner.param("third"));
+		if (Third.Equals(TEXT("vacant"), ESearchCase::IgnoreCase)) Carry.ThirdSlot = static_cast<uint8>(ftcore::SlotState::Vacant);
+		else if (Third.Equals(TEXT("hostile"), ESearchCase::IgnoreCase)) Carry.ThirdSlot = static_cast<uint8>(ftcore::SlotState::Hostile);
+	}
 
 	if (!Route.World.IsEmpty())
 	{

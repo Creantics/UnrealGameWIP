@@ -105,7 +105,8 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
         if (shown && kind == DialogueViewKind::Choice) {
             view.optionCount = std::min<std::uint32_t>(r->optionCount(), kDialogueViewOptions);
             for (std::uint32_t i = 0; i < view.optionCount; ++i) {
-                view.options[i] = DialogueViewOption{r->optionText(i), r->optionSelectable(i), r->optionReturns(i)};
+                // No reason yet: the runner's options carry none (the UI then shows the greyed reply alone).
+                view.options[i] = DialogueViewOption{r->optionText(i), r->optionSelectable(i), r->optionReturns(i), std::string_view()};
             }
         }
         view.text = std::string_view();
@@ -128,13 +129,59 @@ bool updateDialogueView(DialogueView& view, const DialoguePresenter& p, const Di
 
     const bool prompt = complete && (kind == DialogueViewKind::Line || kind == DialogueViewKind::Direction);
     if (prompt != view.continuePrompt || flags.autoOn != view.flags.autoOn || flags.skipOn != view.flags.skipOn ||
-        flags.logAvailable != view.flags.logAvailable) {
+        flags.logAvailable != view.flags.logAvailable || flags.cursor != view.flags.cursor) {
         view.continuePrompt = prompt;
         view.flags = flags;
         ++view.promptRevision;
         changed = true;
     }
     return changed;
+}
+
+void uiLoadNameStep(UiLoadName& s, const ArenaHudLead& lead, float dt) {
+    const float fill = lead.releaseAt > 0 ? std::clamp(static_cast<float>(lead.load) / static_cast<float>(lead.releaseAt), 0.f, 1.f) : 0.f;
+    s.fill = fill >= s.fill ? fill : std::max(fill, s.fill - dt / kUiLoadDrain);
+    // A cap at or under the threshold leaves nothing to brighten toward.
+    s.bright = lead.loadCap > lead.releaseAt
+                   ? std::clamp(static_cast<float>(lead.load - lead.releaseAt) / static_cast<float>(lead.loadCap - lead.releaseAt), 0.f, 1.f)
+                   : 0.f;
+    if (!lead.releaseReady) {
+        s.shimmer = -1.f;
+    } else if (!s.ready) {
+        s.shimmer = 0.f; // the threshold just crossed
+    } else if (s.shimmer >= 0.f) {
+        s.shimmer += dt / kUiLoadShimmer;
+        if (s.shimmer > 1.f) s.shimmer = -1.f;
+    }
+    s.ready = lead.releaseReady;
+}
+
+UiLeadSlot uiLeadSlot(const ArenaHudLead& lead) {
+    if (lead.loadMax <= 0) return UiLeadSlot::None;
+    if (lead.releaseReady) return UiLeadSlot::Release;
+    return lead.load > 0 ? UiLeadSlot::Load : UiLeadSlot::None;
+}
+
+int uiSelectedReply(int cursor, std::uint32_t takeable, int count) {
+    if (cursor >= 0 && cursor < count) return cursor;
+    for (int i = 0; i < count && i < 32; ++i)
+        if (takeable & (1u << i)) return i;
+    return -1;
+}
+
+void uiRowSwapStep(UiRowSwap& s, const ArenaHudFrame& f, float dt) {
+    // Without a partner row there is nothing to trade places with, so a change of seat just shows.
+    if (s.lead != 0xFF && f.lead.lead != s.lead && f.partner.present) {
+        s.left01 = 1.f;
+    } else {
+        s.left01 = std::max(0.f, s.left01 - std::max(dt, 0.f) / kUiRowSwap);
+    }
+    s.lead = f.lead.lead;
+}
+
+float uiQteLeft01(const ArenaHudQte& q, float now) {
+    if (!q.live || !(q.to > q.from)) return 0.f;
+    return std::clamp((q.to - now) / (q.to - q.from), 0.f, 1.f);
 }
 
 } // namespace ftcore

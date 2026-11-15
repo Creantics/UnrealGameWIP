@@ -17,6 +17,7 @@ void FFTKiteHost::Begin(ftcore::ArenaFight& Fight, std::size_t InSlot)
 	Slot = InSlot;
 	Crit.reset(Weak);
 	bWasOpen = false;
+	bShut = false;
 	NoteTotal = 0;
 	Crits = 0;
 	Fight.setBlowHook(&FFTKiteHost::RuleBlow, this);
@@ -92,8 +93,36 @@ void FFTKiteHost::OnUnlocked(double At, double Seconds)
 	}
 }
 
+void FFTKiteHost::OpenFor(double At, float Seconds)
+{
+	if (!IsActive() || !(Seconds > 0.f) || (Crit.isOpen(At) && Crit.closesAt() >= At + static_cast<double>(Seconds)))
+	{
+		return; // a longer window stays
+	}
+	OpenWindow(At, Seconds);
+}
+
+void FFTKiteHost::SetShut(bool bInShut)
+{
+	if (bInShut && !bShut && IsActive())
+	{
+		const double T = static_cast<double>(FightPtr->time());
+		if (Crit.isOpen(T))
+		{
+			Crit.close();
+			Note(FFTKiteNote::EKind::CritClosed, T);
+		}
+		bWasOpen = false;
+	}
+	bShut = bInShut;
+}
+
 void FFTKiteHost::OpenWindow(double At, float Seconds)
 {
+	if (bShut)
+	{
+		return;
+	}
 	Crit.open(At, static_cast<double>(Seconds));
 	bWasOpen = true;
 	OnCritOpened(At, Crit.closesAt());
@@ -112,7 +141,16 @@ FFTKiteNote& FFTKiteHost::Note(FFTKiteNote::EKind Kind, double At)
 ftcore::ArenaBlowRuling FFTKiteHost::RuleBlow(void* User, const ftcore::ArenaBlow& Blow)
 {
 	FFTKiteHost* Host = static_cast<FFTKiteHost*>(User);
-	if (!Host || !Host->IsActive() || Blow.target != Host->Slot || Blow.source != ftcore::kArenaPlayer)
+	if (!Host || !Host->IsActive() || Blow.target != Host->Slot)
+	{
+		return ftcore::ArenaBlowRuling();
+	}
+	if (Blow.source == ftcore::kArenaAlly)
+	{
+		// The partner's body's blow (-ArenaPartner): the bars rule it as they rule the lead's; it judges no crit.
+		return Host->Bars(Blow);
+	}
+	if (Blow.source != ftcore::kArenaPlayer)
 	{
 		return ftcore::ArenaBlowRuling();
 	}

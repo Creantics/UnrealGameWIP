@@ -405,6 +405,32 @@ TEST_CASE("story bridge: the lose param is checked, and a lost branch fight resu
     CHECK(r.finished());
 }
 
+TEST_CASE("story bridge: the third param is checked: companion, vacant or hostile, readable at the step") {
+    StoryBuilder b;
+    b.beginChapter("c1", "C");
+    b.beginScene("s1", "One");
+    b.gameplay("CMB", "[fight]");
+    b.param("third", "absent");
+    StoryDatabase db;
+    std::string error;
+    CHECK_FALSE(b.finish(db, &error));
+    CHECK(error.find("third") != std::string::npos);
+
+    for (const char* word : {"companion", "vacant", "hostile"}) {
+        StoryBuilder ok;
+        ok.beginChapter("c1", "C");
+        ok.beginScene("s1", "One");
+        ok.gameplay("CMB", "[fight]");
+        ok.param("third", word);
+        StoryDatabase okDb;
+        REQUIRE_MESSAGE(ok.finish(okDb, &error), error);
+        StoryRunner r(&okDb);
+        REQUIRE(r.start());
+        REQUIRE(r.waitingForGameplay());
+        CHECK(r.param("third") == word);
+    }
+}
+
 // An autosave on a scene change: the runner and the block are taken as the subsystem reports the change (after
 // the runner entered the scene and played up to its first stop), so the block has the new scene open.
 TEST_CASE("story bridge: a save at a scene start loads back across a scene change") {

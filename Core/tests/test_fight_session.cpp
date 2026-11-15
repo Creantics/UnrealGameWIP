@@ -2,6 +2,7 @@
 
 #include "AllocCounter.h"
 
+#include <array>
 #include <cmath>
 #include <doctest/doctest.h>
 
@@ -84,6 +85,7 @@ const char* kPressJson = R"({
 GiftTuning freeGifts() {
     GiftTuning g;
     g.cooldown = {0.0, 0.0, 0.0};
+    g.healsPerFight = 20;
     return g;
 }
 
@@ -596,6 +598,7 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     FightSession s;
     FightSessionDef d;
     d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0; // Guards back to back: the Guard's cooldown starts when its guard ends
     REQUIRE(s.begin(d, 0.0).ok());
     REQUIRE(s.selectGift(Gift::Heal));
     CHECK(s.giveGift(kLeadA).given); // unbound: nothing written
@@ -612,6 +615,13 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     CHECK(s.press(SharedAction::Gift, kThirdSlot, kLeadA).accepted);
     CHECK(s.lastStoryWrite() == SetResult::Ok);
     CHECK(wide("w_a0") == 1);
+    // A Heal at a lead at full health did nothing: not a press in the story either.
+    s.setLeadHealth(kLeadA, 1.0f);
+    CHECK(s.leadHealth(kLeadA) == 1.0f);
+    CHECK(s.giveGift(kLeadA).error == GiftError::NotHurt);
+    CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+    CHECK(wide("w_a0") == 1);
+    s.setLeadHealth(kLeadA, 0.5f);
     REQUIRE(s.selectGift(Gift::Guard));
     CHECK(s.giveGift(kLeadA).given);
     CHECK(wide("w_a1") == 1);
@@ -649,6 +659,50 @@ TEST_CASE("fight session: gift presses at a lead are presses in the story state"
     s.unbindStory();
     CHECK(s.giveGift(kLeadB).given);
     CHECK(wide("w_b0") == 0);
+}
+
+TEST_CASE("fight session: a retry puts the gift tally and the story's press counters back together") {
+    // The host's two calls agree: a retried step (storyEndStep Retry) with no finish(true) rolls back the story's
+    // per-kind counters and, at the next begin, the slot's tally; a kept step (finish(true), then storyEndStep
+    // Keep) keeps both.
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    const auto wide = [&](const char* id) {
+        for (std::uint8_t w = 0; w < kWideSlots; ++w)
+            if (reg.wide[w].id() == id) return storyWide(story, w);
+        return 0xFFFFFFFFu;
+    };
+    FightSession s;
+    FightSessionDef d;
+    d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0;
+    StoryStepMark mark;
+    const auto attempt = [&](int heals) {
+        REQUIRE(s.begin(d, 0.0).ok());
+        REQUIRE(storyMarkStep(story, mark));
+        REQUIRE(s.bindStory(story, reg, mark));
+        REQUIRE(s.selectGift(Gift::Heal));
+        for (int i = 0; i < heals; ++i) CHECK(s.giveGift(kLeadA).given);
+    };
+    attempt(2);
+    CHECK(wide("w_a0") == 2);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 2);
+    // Lost and retried: the story rolls the step back, the next begin the tally.
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    CHECK(wide("w_a0") == 0);
+    attempt(1);
+    CHECK(wide("w_a0") == 1);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+    // Won: both keep this attempt's presses into the next fight.
+    s.finish(true);
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Keep));
+    attempt(0);
+    CHECK(wide("w_a0") == 1);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
 }
 
 TEST_CASE("fight session: refused gift presses at a lead count in the story state too") {
@@ -718,12 +772,30 @@ TEST_CASE("fight session: the active lead is a lead, kept across begin") {
     FightSession s;
     CHECK(s.activeLead() == kLeadA);
     CHECK(s.setActiveLead(kLeadB));
+    CHECK(s.activeLead() == kLeadA); // asked: the step's close moves it
+    CHECK(s.switchRequested() == kLeadB);
+    CHECK(s.tick(kFrame).switched == kLeadB);
     CHECK(s.activeLead() == kLeadB);
+    CHECK(s.switchRequested() == kNoFighter);
     CHECK(!s.setActiveLead(kThirdSlot));
     CHECK(!s.setActiveLead(kNoFighter));
+    CHECK(s.switchRequested() == kNoFighter);
     CHECK(s.activeLead() == kLeadB);
     REQUIRE(s.begin(FightSessionDef{}, 10.0).ok());
     CHECK(s.activeLead() == kLeadB);
+    // A switch asked before a begin: the fight opens on it.
+    CHECK(s.setActiveLead(kLeadA));
+    REQUIRE(s.begin(FightSessionDef{}, 20.0).ok());
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.switchRequested() == kNoFighter);
+    CHECK(s.tick(kFrame).switched == kNoFighter);
+    // The last ask in a step wins; one for the lead in control reports nothing.
+    CHECK(s.setActiveLead(kLeadB));
+    CHECK(s.setActiveLead(kLeadA));
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.switched == kNoFighter);
+    CHECK(t.switchRefused == kNoFighter);
+    CHECK(s.activeLead() == kLeadA);
 }
 
 TEST_CASE("fight session: a fight's frames allocate nothing") {
@@ -855,4 +927,609 @@ TEST_CASE("fight session: a held blow whose settle is dropped expires at base") 
     CHECK(t.heldExpired == static_cast<int>(kMaxHeldBlows));
     CHECK(t.bonuses.empty());
     CHECK(s.tick(kFrame).heldExpired == 0);
+}
+
+TEST_CASE("fight session: the gift HUD reads, and a new fight resets the Heals but not the save-wide total") {
+    FightSession s;
+    FightSessionDef d;
+    REQUIRE(s.begin(d, 0.0).ok());
+    CHECK(s.giftHealsLeft() == 2);
+    CHECK(s.giftHealReadyIn() == 0.0);
+    CHECK(s.giftGuardReadyIn() == 0.0);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.press(SharedAction::Gift, kThirdSlot, kLeadA).accepted);
+    CHECK(s.giftHealsLeft() == 1);
+    CHECK(s.giftHealReadyIn() == doctest::Approx(8.0));
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(13.2)); // 1.2 s of guard, then 12 s
+    CHECK(tickUntil(s, [&] { return s.giftHealReadyIn() == 0.0; }));
+    CHECK(s.giftGuardReadyIn() == doctest::Approx(5.2).epsilon(0.02));
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadB).given);
+    CHECK(s.giftHealsLeft() == 0);
+    CHECK(tickUntil(s, [&] { return s.giftHealReadyIn() == 0.0; }));
+    const GiftResult third = s.giveGift(kLeadA);
+    CHECK_FALSE(third.given);
+    CHECK(third.error == GiftError::NoneLeft);
+    CHECK(s.giftSlot().allPresses() == 4);
+
+    // The fight is won; the next fight: two Heals again, cooldowns clear, the save-wide total kept.
+    s.finish(true);
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK(s.giftHealsLeft() == 2);
+    CHECK(s.giftHealReadyIn() == 0.0);
+    CHECK(s.giftGuardReadyIn() == 0.0);
+    CHECK(s.giftSlot().allPresses() == 4);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 2);
+    CHECK(s.giftSlot().tally().refusedOf(Gift::Heal) == 1);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.giftSlot().allPresses() == 5);
+}
+
+TEST_CASE("fight session: giftReason is what the gift press then answers, at every press of a scripted fight") {
+    // Healths as the host feeds them before a press: unknown, hurt, full, down (0 and an overkill), over 1 (hurt).
+    const float healths[] = {kHealthUnknown, 0.5f, 1.f, 0.f, -0.25f, 1.5f};
+    const Gift gifts[] = {Gift::Heal, Gift::Guard};
+    std::array<int, kPressReasonCount> seen{};
+    for (int pass = 0; pass < 2; ++pass) { // the second with the lead held up at 1 hp (cannotFall): never Down
+        FightSession s;
+        FightSessionDef d;
+        d.cannotFall = {pass == 1, false};
+        REQUIRE(s.begin(d, 0.0).ok());
+        std::array<int, kPressReasonCount> mine{};
+        for (int k = 0; k < 3600; ++k) {
+            if (k == 2500) s.giftSlot().setState(SlotState::Vacant);
+            if (k == 2600) s.giftSlot().setState(SlotState::Hostile);
+            if (k == 2700) s.giftSlot().setState(SlotState::Companion);
+            if (k % 20 == 0) {
+                const Gift g = gifts[(k / 20) % 2];
+                const float h = healths[(k / 60) % 6];
+                const FighterId who = (k / 40) % 5 == 4 ? kThirdSlot : kLeadA; // now and then a target that is no lead
+                const PressReason asked = s.giftReason(g, who, h);
+                const GiftError checked = s.giftCheck(g, who, h);
+                REQUIRE(s.selectGift(g));
+                s.setLeadHealth(who, h); // as the host does before the press: the fall feed too
+                const GiftResult r = s.giveGift(who);
+                INFO("pass " << pass << ", k " << k << ", gift " << static_cast<int>(g) << ", health " << h << ", reason "
+                             << static_cast<int>(asked));
+                CHECK(r.error == checked);
+                CHECK(r.given == (asked == PressReason::Ok));
+                ++mine[static_cast<std::size_t>(asked)];
+            }
+            s.tick(kFrame);
+        }
+        CHECK(!s.defeated()); // the other lead stands throughout
+        CHECK((mine[static_cast<std::size_t>(PressReason::Down)] > 0) == (pass == 0));
+        for (std::size_t i = 0; i < kPressReasonCount; ++i) seen[i] += mine[i];
+    }
+    for (PressReason r : {PressReason::Ok, PressReason::Cooldown, PressReason::Empty, PressReason::Full, PressReason::Absent,
+                          PressReason::Refused, PressReason::Down}) {
+        INFO("reason " << static_cast<int>(r));
+        CHECK(seen[static_cast<std::size_t>(r)] > 0);
+    }
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    // Asking allocates nothing.
+    const auto before = ftcore_test::allocStats().count;
+    for (int i = 0; i < 40; ++i) (void)s.giftReason(Gift::Heal, kLeadA, 0.5f);
+    CHECK(ftcore_test::allocStats().count - before == 0);
+}
+
+TEST_CASE("fight session: a retry (begin after a fight not finished as won) puts the gift tally and threads back") {
+    FightSession s;
+    FightSessionDef d;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given); // a fight won with one press
+    s.finish(true);
+    REQUIRE(s.begin(d, 1.0).ok());
+    REQUIRE(s.giftSlot().allPresses() == 1);
+    // The attempt: two gifts pressed, then lost (no finish, or finish(false)): the retry is back at the start.
+    for (const int how : {0, 1}) {
+        CAPTURE(how);
+        CHECK(s.giveGift(kLeadA).given);
+        REQUIRE(s.selectGift(Gift::Guard));
+        CHECK(s.giveGift(kLeadB).given);
+        CHECK(s.giftSlot().allPresses() == 3);
+        CHECK(s.giftHealsLeft() == 1);
+        if (how == 1) s.finish(false);
+        CHECK_FALSE(s.finishedWon());
+        REQUIRE(s.begin(d, s.now() + 1.0).ok());
+        CHECK(s.giftSlot().allPresses() == 1);
+        CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+        CHECK(s.giftSlot().tally().givenOf(Gift::Guard) == 0);
+        CHECK(s.giftSlot().threads(kLeadA) == 1);
+        CHECK(s.giftSlot().threads(kLeadB) == 0);
+        CHECK(s.giftHealsLeft() == 2); // the per-fight heal count resets
+        CHECK(s.giftGuardReadyIn() == 0.0);
+    }
+    // Two gifts pressed and the fight won: the next fight keeps them, with two Heals again.
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.selectGift(Gift::Guard));
+    CHECK(s.giveGift(kLeadB).given);
+    s.finish(true);
+    CHECK(s.finishedWon());
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK_FALSE(s.finishedWon()); // a begin clears the win
+    CHECK(s.giftSlot().allPresses() == 3);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
+    CHECK(s.giftSlot().threads(kLeadB) == 1);
+    CHECK(s.giftHealsLeft() == 2);
+    // A checkpoint loaded mid-fight is the start a retry goes back to.
+    GiftSave cp = s.giftSlot().save();
+    cp.threads[kLeadB] = 7;
+    REQUIRE(s.giftSlot().load(cp));
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.begin(d, s.now() + 1.0).ok());
+    CHECK(s.giftSlot().threads(kLeadB) == 7);
+    CHECK(s.giftSlot().threads(kLeadA) == 2);
+}
+
+TEST_CASE("fight session: a lead's health that is not a number in 0..1 is stored as unknown and reads as hurt") {
+    struct Case {
+        float in;
+        float stored;
+        bool full;
+    };
+    const Case cases[] = {
+        {0.999f, 0.999f, false},
+        {1.0f, 1.0f, true},
+        {std::numeric_limits<float>::quiet_NaN(), kHealthUnknown, false},
+        {-0.5f, kHealthUnknown, false},
+        {2.0f, kHealthUnknown, false},
+        {std::numeric_limits<float>::infinity(), kHealthUnknown, false},
+        {-std::numeric_limits<float>::infinity(), kHealthUnknown, false},
+        {0.0f, 0.0f, false},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.in);
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        REQUIRE(s.selectGift(Gift::Heal));
+        s.setLeadHealth(kLeadA, c.in);
+        CHECK(s.leadHealth(kLeadA) == c.stored);
+        CHECK_FALSE(std::isnan(s.leadHealth(kLeadA)));
+        const GiftResult r = s.giveGift(kLeadA);
+        if (c.full) {
+            CHECK(r.error == GiftError::NotHurt);
+            CHECK_FALSE(r.given);
+        } else if (std::isfinite(c.in) && c.in <= 0.f) { // 0 and under (finite) is down: no gift stands it up
+            CHECK(s.down(kLeadA));
+            CHECK(r.error == GiftError::Down);
+            CHECK_FALSE(r.given);
+        } else {
+            CHECK(r.given);
+        }
+    }
+    // A bad value after a good one replaces it with unknown, not the last good value.
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.setLeadHealth(kLeadB, 1.0f);
+    s.setLeadHealth(kLeadB, std::numeric_limits<float>::quiet_NaN());
+    CHECK(s.leadHealth(kLeadB) == kHealthUnknown);
+    CHECK(s.leadHealth(kLeadA) == kHealthUnknown);
+}
+
+TEST_CASE("fight session: a phase retry keeps the story bound and leaves its counters exactly as they are") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    REQUIRE(a0 != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    StoryStepMark mark;
+    REQUIRE(storyMarkStep(story, mark));
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.bindStory(story, reg, mark));
+    s.setHostCheckpoint(FightHostCheckpoint{});
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    REQUIRE(s.checkpointPhase(1));
+    s.setHostCheckpoint(FightHostCheckpoint{});
+    CHECK(s.giveGift(kLeadA).given); // in the attempt about to be lost
+    REQUIRE(storyWide(story, a0) == 2);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    s.tick(1.0 / 60.0); // the step closes: the defeat
+    REQUIRE(s.defeated());
+    const StoryState before = story;
+    CHECK(s.retry().at == CheckpointAt::Phase);
+    // Nothing rolled back or forward: every fact, counter, entry copy, event and the retry count as they were.
+    CHECK(story.facts == before.facts);
+    CHECK(story.factsEntry == before.factsEntry);
+    CHECK(story.wide == before.wide);
+    CHECK(story.wideEntry == before.wideEntry);
+    CHECK(story.eventCount == before.eventCount);
+    CHECK(story.eventHead == before.eventHead);
+    CHECK(story.openScene == before.openScene);
+    CHECK(storyWide(story, a0) == 2);
+    // Still bound to the fight-start mark: the next press counts on.
+    CHECK(s.storyBound());
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).given);
+    CHECK(s.lastStoryWrite() == SetResult::Ok);
+    CHECK(storyWide(story, a0) == 3);
+    // A retry to the fight start unbinds, as a begin does.
+    FightSession t;
+    REQUIRE(t.begin(d, 0.0).ok());
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(t.bindStory(story, reg, mark));
+    t.setHostCheckpoint(FightHostCheckpoint{});
+    CHECK(t.retry().at == CheckpointAt::FightStart);
+    CHECK_FALSE(t.storyBound());
+}
+
+TEST_CASE("fight session: a gift refused Down at a lead is no press in the story state") {
+    FactRegistry reg;
+    std::string err;
+    REQUIRE_MESSAGE(importStoryRegistry(kPressCsv, kPressJson, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    REQUIRE(a0 != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    StoryStepMark mark;
+    REQUIRE(storyMarkStep(story, mark));
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(s.bindStory(story, reg, mark));
+    s.setLeadHealth(kLeadA, 0.f);
+    REQUIRE(s.selectGift(Gift::Heal));
+    CHECK(s.giveGift(kLeadA).error == GiftError::Down);
+    CHECK(s.lastStoryWrite() == SetResult::Unchanged);
+    CHECK(storyWide(story, a0) == 0);
+}
+
+TEST_CASE("fight session: a defeat costs only the attempt: currency, Load, gift tally and story counters come back, and nothing else moved") {
+    FactRegistry reg;
+    std::string err;
+    // The press registry with a retry counter bound, so the retry's +1 shows.
+    const std::string csv = std::string(kPressCsv) + "6,w_retry,CTR,65535,0,-,any,-,-,-,-\n";
+    std::string json(kPressJson);
+    json.replace(json.find("\"roles\": {"), 10, "\"roles\": {\n    \"retries\": \"w_retry\",");
+    REQUIRE_MESSAGE(importStoryRegistry(csv, json, reg, &err), err);
+    StoryState story;
+    storyReset(story);
+    REQUIRE(storyBeginScene(story, reg, storySceneOrdinal(reg, "s1")));
+    std::uint8_t a0 = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_a0")) a0 = w;
+    std::uint8_t retries = 0xFF;
+    for (std::uint8_t w = 0; w < kWideSlots; ++w)
+        if (reg.wide[w].id() == std::string_view("w_retry")) retries = w;
+    REQUIRE(a0 != 0xFF);
+    REQUIRE(retries != 0xFF);
+    FightSessionDef d;
+    d.gift = freeGifts();
+    d.gift.guardSeconds = 0.0;
+    d.lift = true;
+    d.keptLead = kLeadA;
+    FightSession s;
+    StoryStepMark mark;
+    // A fight won with one Heal: the tally and story counter the next fight starts from.
+    REQUIRE(s.begin(d, 0.0).ok());
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given);
+    s.finish(true);
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Keep));
+    // The fight, set up with known values; the host's part written.
+    struct Party {
+        std::int64_t currency = 250;
+        std::array<int, 2> load{0, 7};
+        std::array<int, 2> hp{80, 100};
+    } party;
+    REQUIRE(s.begin(d, 4.0).ok());
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
+    s.setLoad(kLeadA, 3); // the kept gauge
+    REQUIRE(s.keptLoad() == 3);
+    FightHostCheckpoint host;
+    host.currency = party.currency;
+    host.load = party.load;
+    host.hp = party.hp;
+    REQUIRE(s.setHostCheckpoint(host) == CheckpointAt::FightStart);
+    const std::uint64_t tallyAt = s.giftSlot().allPresses();
+    REQUIRE(tallyAt == 1);
+    REQUIRE(storyWide(story, a0) == 1);
+    const StoryState storyAt = story;
+    const std::uint64_t hashAt = s.stateHash();
+    // The attempt changes each of them, then is lost.
+    REQUIRE(s.selectGift(Gift::Heal));
+    REQUIRE(s.giveGift(kLeadA).given);
+    party.currency += 75;
+    party.load = {0, 2};
+    party.hp = {0, 0};
+    s.setLoad(kLeadA, 1);
+    s.keptParried(10);
+    for (int i = 0; i < 30; ++i) s.tick(1.0 / 60.0);
+    CHECK(s.keptLoad() != 3);
+    CHECK(s.giftSlot().allPresses() == tallyAt + 1);
+    CHECK(storyWide(story, a0) == 2);
+    CHECK(s.stateHash() != hashAt);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(1.0 / 60.0).defeated);
+    // The retry: the host applies its part, the story rolls the step back (a fight-start retry) and binds anew.
+    const FightCheckpoint& cp = s.retry();
+    REQUIRE(cp.at == CheckpointAt::FightStart);
+    REQUIRE(cp.hostWritten);
+    party.currency = cp.host.currency;
+    party.load = cp.host.load;
+    party.hp = cp.host.hp;
+    REQUIRE(storyEndStep(story, reg, mark, StepEnd::Retry));
+    REQUIRE(storyMarkStep(story, mark));
+    REQUIRE(s.bindStory(story, reg, mark));
+    CHECK(party.currency == 250);
+    CHECK(party.load[kLeadB] == 7);
+    CHECK(party.hp[kLeadA] == 80);
+    CHECK(s.keptLoad() == 3);
+    CHECK(s.giftSlot().allPresses() == tallyAt);
+    CHECK(s.giftSlot().tally().givenOf(Gift::Heal) == 1);
+    CHECK(storyWide(story, a0) == 1);
+    // The whole story state as it was, but the retry counter (exactly +1) and the event ring (the rollback's
+    // event, which the host's log reads).
+    CHECK(story.facts == storyAt.facts);
+    CHECK(story.factsEntry == storyAt.factsEntry);
+    CHECK(story.stamp == storyAt.stamp);
+    CHECK(story.stampEntry == storyAt.stampEntry);
+    CHECK(story.wideEntry == storyAt.wideEntry);
+    CHECK(story.extension == storyAt.extension);
+    CHECK(story.extensionLength == storyAt.extensionLength);
+    CHECK(story.extensionRaw == storyAt.extensionRaw);
+    CHECK(story.openScene == storyAt.openScene);
+    CHECK(story.lastCommitted == storyAt.lastCommitted);
+    CHECK(story.flags == storyAt.flags);
+    CHECK(story.saveSerial == storyAt.saveSerial);
+    CHECK(story.registryHash == storyAt.registryHash);
+    for (std::uint8_t w = 0; w < kWideSlots; ++w) {
+        CAPTURE(static_cast<int>(w));
+        CHECK(story.wide[w] == storyAt.wide[w] + (w == retries ? 1u : 0u));
+    }
+    // Nothing of the session differs from before the fight: every play field hashes the same.
+    CHECK(s.stateHash() == hashAt);
+}
+
+// Tests only: reaches the session's fields so each edit below changes one alone (FightSession's friend, declared
+// only where the test target defines FTCORE_TEST_ACCESS).
+#ifndef FTCORE_TEST_ACCESS
+#error "the test target defines FTCORE_TEST_ACCESS (Core/CMakeLists.txt)"
+#endif
+namespace ftcore {
+struct FightSessionTestAccess {
+    using Edit = void (*)(FightSession&);
+    using CpEdit = void (*)(FightSession&, FightCheckpoint&);
+    struct Row {
+        const char* name;
+        Edit edit;
+    };
+    struct CpRow {
+        const char* name;
+        CpEdit edit;
+    };
+
+    // Each row edits one hashed field alone and must move the hash, so dropping a term from stateHash fails here.
+    // Three terms are framing that no single edit can isolate: hasBoss_, heldCount_ and pendingLoads_ each also
+    // change how many fixed-width items are hashed after them, so the hash moves with or without the term.
+    // A session where every hashed line has something to read: a boss script, a held blow and a pending Load in
+    // their buffers, both checkpoints taken and written.
+    static void fresh(FightSession& s) {
+        FightSessionDef d;
+        d.lift = true;
+        d.keptLead = kLeadA;
+        d.hasBoss = true;
+        d.boss = oneMoveBoss();
+        REQUIRE(s.begin(d, 0.0).ok());
+        s.tick(1.0 / 60.0);
+        REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+        s.phaseCp_ = s.startCp_;
+        s.phaseCp_.at = CheckpointAt::Phase;
+        s.heldCount_ = 1;
+        s.pendingLoads_ = 1;
+    }
+
+    static void run() {
+        static StoryState story;
+        const Row rows[] = {
+            {"now", [](FightSession& s) { s.now_ += 1.0; }},
+            {"count", [](FightSession& s) { s.count_.reset(CountTuning{}, s.now_ + 5.0); }},
+            {"gift", [](FightSession& s) { s.gift_.setState(SlotState::Hostile); }},
+            {"table", [](FightSession& s) { s.table_.reset(TableTuning{}, s.now_ + 5.0); }},
+            {"refusal", [](FightSession& s) { s.refusal_.offer(); }},
+            {"lock", [](FightSession& s) { s.lock_.reset(LockTuning{}, s.now_ + 5.0); }},
+            {"hasBoss", [](FightSession& s) { s.hasBoss_ = false; }},
+            {"boss", [](FightSession& s) { s.boss_.update(s.now_ + 3.0); }},
+            {"activeLead", [](FightSession& s) { s.activeLead_ = kLeadB; }},
+            {"story bound", [](FightSession& s) { s.story_ = &story; }},
+            {"lastStory", [](FightSession& s) { s.lastStory_ = SetResult::Ok; }},
+            {"heldCount", [](FightSession& s) { s.heldCount_ = 2; }},
+            {"heldDropped", [](FightSession& s) { ++s.heldDropped_; }},
+            {"held blow", [](FightSession& s) { s.held_[0].blow = 7; }},
+            {"held enemy", [](FightSession& s) { s.held_[0].enemy = 3; }},
+            {"held move", [](FightSession& s) { s.held_[0].move = 2; }},
+            {"held baseDamage", [](FightSession& s) { s.held_[0].baseDamage = 9; }},
+            {"held landed", [](FightSession& s) { s.held_[0].landed = 2.f; }},
+            {"lastStore A", [](FightSession& s) { s.lastStore_[kLeadA] = 5.0; }},
+            {"lastStore B", [](FightSession& s) { s.lastStore_[kLeadB] = 5.0; }},
+            {"pendingLoads", [](FightSession& s) { s.pendingLoads_ = 2; }},
+            {"pendingLoadsDropped", [](FightSession& s) { ++s.pendingLoadsDropped_; }},
+            {"load lead", [](FightSession& s) { s.loadsIn_[0].lead = kLeadB; }},
+            {"load amount", [](FightSession& s) { s.loadsIn_[0].amount = 3; }},
+            {"load kind", [](FightSession& s) { s.loadsIn_[0].kind = CountLoadKind::LiftSpend; }},
+            {"load kept", [](FightSession& s) { s.loadsIn_[0].kept = true; }},
+            {"mark bonus", [](FightSession& s) { s.marks_[0].bonus = 0.5f; }},
+            {"mark until", [](FightSession& s) { s.marks_[0].until = 1.0; }},
+            {"mark used", [](FightSession& s) { s.marks_[0].used = true; }},
+            {"last mark", [](FightSession& s) { s.marks_[kMaxMarkedEnemies - 1].bonus = 0.5f; }},
+            {"keptOn", [](FightSession& s) { s.keptOn_ = !s.keptOn_; }},
+            {"kept", [](FightSession& s) { ++s.kept_; }},
+            {"keptDown", [](FightSession& s) { s.keptDown_ = !s.keptDown_; }},
+            {"keptCap", [](FightSession& s) { ++s.keptCap_; }},
+            {"blowCap", [](FightSession& s) { s.blowCap_ += 1.f; }},
+            {"keptLead", [](FightSession& s) { s.keptLead_ = kLeadB; }},
+            {"leadLoad B", [](FightSession& s) { ++s.leadLoad_[kLeadB]; }},
+            {"leadHeals A", [](FightSession& s) { ++s.leadHeals_[kLeadA]; }},
+            {"leadHeals B", [](FightSession& s) { ++s.leadHeals_[kLeadB]; }},
+            {"leadLoadDue", [](FightSession& s) { s.leadLoadDue_ = 5; }},
+            {"leadHealsDue", [](FightSession& s) { s.leadHealsDue_ = 5; }},
+            {"leadNowDue", [](FightSession& s) { s.leadNowDue_ = !s.leadNowDue_; }},
+            {"lone", [](FightSession& s) { s.lone_ = !s.lone_; }},
+            {"loneEnded", [](FightSession& s) { s.loneEnded_ = !s.loneEnded_; }},
+            {"loneEndedBy", [](FightSession& s) { s.loneEndedBy_ = LoneEnd::Gift; }},
+            {"loneBeganDue", [](FightSession& s) { s.loneBeganDue_ = !s.loneBeganDue_; }},
+            {"loneEndDue", [](FightSession& s) { s.loneEndDue_ = !s.loneEndDue_; }},
+            {"loneReleases", [](FightSession& s) { ++s.loneReleases_; }},
+            {"loneFolded", [](FightSession& s) { s.loneFolded_ = !s.loneFolded_; }},
+            {"lonePooled", [](FightSession& s) { ++s.lonePooled_; }},
+            {"leadHealth A", [](FightSession& s) { s.leadHealth_[kLeadA] = 0.3f; }},
+            {"leadHealth B", [](FightSession& s) { s.leadHealth_[kLeadB] = 0.3f; }},
+            {"won", [](FightSession& s) { s.won_ = !s.won_; }},
+            {"start", [](FightSession& s) { s.start_ += 1.0; }},
+            {"inFight A", [](FightSession& s) { s.inFight_[kLeadA] = !s.inFight_[kLeadA]; }},
+            {"inFight B", [](FightSession& s) { s.inFight_[kLeadB] = !s.inFight_[kLeadB]; }},
+            {"down A", [](FightSession& s) { s.down_[kLeadA] = !s.down_[kLeadA]; }},
+            {"down B", [](FightSession& s) { s.down_[kLeadB] = !s.down_[kLeadB]; }},
+            {"stepDown A", [](FightSession& s) { s.stepDown_[kLeadA] = !s.stepDown_[kLeadA]; }},
+            {"stepDown B", [](FightSession& s) { s.stepDown_[kLeadB] = !s.stepDown_[kLeadB]; }},
+            {"defeated", [](FightSession& s) { s.defeated_ = !s.defeated_; }},
+            {"fellDue", [](FightSession& s) { s.fellDue_ ^= 1; }},
+            {"roseDue", [](FightSession& s) { s.roseDue_ ^= 1; }},
+            {"heldUpDue", [](FightSession& s) { s.heldUpDue_ ^= 1; }},
+            {"tookOverDue", [](FightSession& s) { s.tookOverDue_ = kLeadB; }},
+            {"defeatedDue", [](FightSession& s) { s.defeatedDue_ = !s.defeatedDue_; }},
+            {"startDue", [](FightSession& s) { s.startDue_ = !s.startDue_; }},
+            {"cpDue", [](FightSession& s) { s.cpDue_ ^= 1; }},
+            {"switchReq", [](FightSession& s) { s.switchReq_ = kLeadB; }},
+            {"switchedDue", [](FightSession& s) { s.switchedDue_ = kLeadB; }},
+            {"switchRefusedDue", [](FightSession& s) { s.switchRefusedDue_ = kLeadB; }},
+            {"switchRefusalDue", [](FightSession& s) { s.switchRefusalDue_ = LeadSwitch::Down; }},
+            {"switchAt", [](FightSession& s) { s.switchAt_ = 5.0; }},
+            {"switchCooldown", [](FightSession& s) { s.switchCooldown_ = 2.0; }},
+            {"joinReq", [](FightSession& s) { s.joinReq_ = kLeadB; }},
+            {"joinHealth", [](FightSession& s) { s.joinHealth_ = 0.5f; }},
+            {"joinedDue", [](FightSession& s) { s.joinedDue_ = kLeadB; }},
+            {"joinRefusedDue", [](FightSession& s) { s.joinRefusedDue_ = kLeadB; }},
+            {"joinRefusalDue", [](FightSession& s) { s.joinRefusalDue_ = LeadJoin::AlreadyIn; }},
+        };
+        const CpRow cpRows[] = {
+            {"at", [](FightSession&, FightCheckpoint& c) { c.at = CheckpointAt::None; }},
+            {"phase", [](FightSession&, FightCheckpoint& c) { ++c.phase; }},
+            {"now", [](FightSession&, FightCheckpoint& c) { c.now += 1.0; }},
+            {"hostWritten", [](FightSession&, FightCheckpoint& c) { c.hostWritten = !c.hostWritten; }},
+            {"activeLead", [](FightSession&, FightCheckpoint& c) { c.activeLead = kLeadB; }},
+            {"switchRequested", [](FightSession&, FightCheckpoint& c) { c.switchRequested = kLeadB; }},
+            {"switchAt", [](FightSession&, FightCheckpoint& c) { c.switchAt = 5.0; }},
+            {"inFight A", [](FightSession&, FightCheckpoint& c) { c.inFight[kLeadA] = !c.inFight[kLeadA]; }},
+            {"inFight B", [](FightSession&, FightCheckpoint& c) { c.inFight[kLeadB] = !c.inFight[kLeadB]; }},
+            {"joinRequested", [](FightSession&, FightCheckpoint& c) { c.joinRequested = kLeadB; }},
+            {"joinHealth", [](FightSession&, FightCheckpoint& c) { c.joinHealth = 0.5f; }},
+            {"leadHealth A", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadA] = 0.3f; }},
+            {"leadHealth B", [](FightSession&, FightCheckpoint& c) { c.leadHealth[kLeadB] = 0.3f; }},
+            {"down A", [](FightSession&, FightCheckpoint& c) { c.down[kLeadA] = !c.down[kLeadA]; }},
+            {"down B", [](FightSession&, FightCheckpoint& c) { c.down[kLeadB] = !c.down[kLeadB]; }},
+            {"gift", [](FightSession&, FightCheckpoint& c) { c.gift.setState(SlotState::Hostile); }},
+            {"keptLoad", [](FightSession&, FightCheckpoint& c) { ++c.keptLoad; }},
+            {"keptDown", [](FightSession&, FightCheckpoint& c) { c.keptDown = !c.keptDown; }},
+            {"keptLead", [](FightSession&, FightCheckpoint& c) { c.keptLead = kLeadB; }},
+            {"leadLoad A", [](FightSession&, FightCheckpoint& c) { ++c.leadLoad[kLeadA]; }},
+            {"leadLoad B", [](FightSession&, FightCheckpoint& c) { ++c.leadLoad[kLeadB]; }},
+            {"leadHeals A", [](FightSession&, FightCheckpoint& c) { ++c.leadHeals[kLeadA]; }},
+            {"leadHeals B", [](FightSession&, FightCheckpoint& c) { ++c.leadHeals[kLeadB]; }},
+            {"countLoad A", [](FightSession&, FightCheckpoint& c) { ++c.countLoad[kLeadA]; }},
+            {"countLoad B", [](FightSession&, FightCheckpoint& c) { ++c.countLoad[kLeadB]; }},
+            {"lone", [](FightSession&, FightCheckpoint& c) { c.lone = !c.lone; }},
+            {"loneEnded", [](FightSession&, FightCheckpoint& c) { c.loneEnded = !c.loneEnded; }},
+            {"loneEndedBy", [](FightSession&, FightCheckpoint& c) { c.loneEndedBy = LoneEnd::Gift; }},
+            {"loneReleases", [](FightSession&, FightCheckpoint& c) { ++c.loneReleases; }},
+            {"lonePooled", [](FightSession&, FightCheckpoint& c) { ++c.lonePooled; }},
+            {"boss",
+             [](FightSession& s, FightCheckpoint& c) {
+                 BossScript b = s.boss_;
+                 b.update(s.now_ + 3.0);
+                 c.boss = b;
+             }},
+            {"host hp A", [](FightSession&, FightCheckpoint& c) { ++c.host.hp[kLeadA]; }},
+            {"host hp B", [](FightSession&, FightCheckpoint& c) { ++c.host.hp[kLeadB]; }},
+            {"host load A", [](FightSession&, FightCheckpoint& c) { ++c.host.load[kLeadA]; }},
+            {"host load B", [](FightSession&, FightCheckpoint& c) { ++c.host.load[kLeadB]; }},
+            {"host heals A", [](FightSession&, FightCheckpoint& c) { ++c.host.heals[kLeadA]; }},
+            {"host heals B", [](FightSession&, FightCheckpoint& c) { ++c.host.heals[kLeadB]; }},
+            {"host draws", [](FightSession&, FightCheckpoint& c) { ++c.host.draws; }},
+            {"host partner", [](FightSession&, FightCheckpoint& c) { ++c.host.partner.rhythm; }},
+            {"host order", [](FightSession&, FightCheckpoint& c) { c.host.order = PartnerOrder::Spread; }},
+            {"host bossHp", [](FightSession&, FightCheckpoint& c) { ++c.host.bossHp; }},
+            {"host bossPhase", [](FightSession&, FightCheckpoint& c) { ++c.host.bossPhase; }},
+            {"host currency", [](FightSession&, FightCheckpoint& c) { ++c.host.currency; }},
+        };
+
+        FightSession base;
+        fresh(base);
+        const std::uint64_t h0 = base.stateHash();
+        std::size_t moved = 0;
+        const auto check = [&](const char* what, auto&& edit) {
+            const std::string name = what;
+            CAPTURE(name);
+            FightSession s;
+            fresh(s);
+            REQUIRE(s.stateHash() == h0); // the same set-up hashes the same
+            edit(s);
+            CHECK(s.stateHash() != h0);
+            ++moved;
+        };
+        for (const Row& r : rows) check(r.name, r.edit);
+        for (std::size_t i = 0; i < kMaxFighters; ++i) {
+            CAPTURE(i);
+            check("places", [i](FightSession& s) { CHECK(s.places_[i].leaveOpen() == PlaceError::None); });
+        }
+        for (const bool phase : {false, true}) {
+            CAPTURE(phase);
+            for (const CpRow& r : cpRows)
+                check(r.name, [&](FightSession& s) { r.edit(s, phase ? s.phaseCp_ : s.startCp_); });
+            for (std::size_t i = 0; i < kMaxFighters; ++i) {
+                CAPTURE(i);
+                check("checkpoint places", [&](FightSession& s) {
+                    CHECK((phase ? s.phaseCp_ : s.startCp_).places[i].leaveOpen() == PlaceError::None);
+                });
+            }
+        }
+        CHECK(moved == std::size(rows) + kMaxFighters * 3 + 2 * std::size(cpRows));
+
+        // What is left out (see the header) moves nothing: the tick's outputs and stale buffer slots.
+        const Edit left[] = {
+            [](FightSession& s) { s.tick_.tookOver = kLeadB; },
+            [](FightSession& s) { s.tick_.leadLoadNow = 5; },
+            [](FightSession& s) { s.bonuses_[0].extraDamage = 5; },
+            [](FightSession& s) { s.loadsOut_[0].amount = 5; },
+            [](FightSession& s) { s.tickLoads_ = 3; },
+            [](FightSession& s) { s.held_[1].blow = 5; },
+            [](FightSession& s) { s.loadsIn_[1].amount = 5; },
+            [](FightSession& s) { ++s.leadLoad_[kLeadA]; }, // the kept lead's stored slot (lead A is kept here)
+        };
+        for (const Edit e : left) {
+            FightSession s;
+            fresh(s);
+            e(s);
+            CHECK(s.stateHash() == h0);
+        }
+    }
+};
+} // namespace ftcore
+
+TEST_CASE("fight session: stateHash moves with every hashed field alone, the checkpoints' payloads among them") {
+    FightSessionTestAccess::run();
 }

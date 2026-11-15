@@ -457,7 +457,9 @@ std::string shopFrontHlsl(const ShopFrontSpec& spec, float fasciaHeight) {
     h += "float3 sfInkC = kInk[sfInkI];\n";
     h += "float sfPanW = 0.76 * bw;\n";
     h += "float sfPanH = max(" + num(fasciaHeight - 2.0f * m) + ", 0.05);\n";
-    h += "float sfX = u * bw - 0.12 * bw;\n";
+    // The facade's across coordinate u runs to the viewer's left on every face (Unreal's frame is left-handed), so the
+    // panel reads from 1 - u: its words start at the viewer's left and aren't mirrored.
+    h += "float sfX = (1.0 - u) * bw - 0.12 * bw;\n";
     h += "float sfY = Up - shopTop - " + num(m) + ";\n";
     h += "bool panel = fascia && inBay && sfX >= 0.0 && sfX <= sfPanW && sfY >= 0.0 && sfY <= sfPanH;\n";
     // A word (shopSignInk): letters sfPanH / 9 a pixel, narrower to fit 92% of the panel, centred.

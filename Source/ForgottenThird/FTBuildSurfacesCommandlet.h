@@ -21,6 +21,12 @@
 // -Only=<id>,<id>,... rebuilds just those surfaces' textures and instances and keeps the others. The master keeps
 // its graph, but its default textures follow the table's first surface: it is saved only when they move. See
 // docs/SCENE_LOOK.md.
+//
+// -Weather (with a full build, -Master or -Windows): the master gets ftcore::surfaceWeatherHlsl's node over its surface,
+// reading the look collection's Wetness (built first by FTBuildLookMaterials): wet up-facing ground, puddles that favour
+// a cambered box's low edge, contact grime and edge darkening; a "Weather" scalar (0..1) scales it per instance. -Master
+// rebuilds M_WorldSurfaceTex alone, in place, from the first surface's built textures, leaving every texture and
+// instance as it is.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

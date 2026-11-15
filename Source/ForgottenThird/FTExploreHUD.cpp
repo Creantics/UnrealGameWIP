@@ -1,8 +1,12 @@
 #include "FTExploreHUD.h"
 
+#include "FTMiniMap.h"
+
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
 
 #include "FTAimReticle.h"
@@ -12,6 +16,7 @@
 #include "FTExploreDirector.h"
 #include "FTPauseOverlay.h"
 #include "FTInputBindings.h"
+#include "FTNewUi.h"
 #include "FTUiText.h"
 
 #include "ftcore/Explore.h"
@@ -65,6 +70,59 @@ AFTExploreDirector* AFTExploreHUD::FindDirector()
 	return CachedDirector.Get();
 }
 
+void AFTExploreHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	if (const AFTExploreDirector* Found = FindDirector())
+	{
+		TryMakeMiniMap(*Found);
+	}
+	// Under the new UI the party screen is a Slate layer over the Canvas HUD, drawn only while the screen is open.
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (FT::NewUiEnabled() && Viewport)
+	{
+		TWeakObjectPtr<AFTExploreHUD> Self(this);
+		NewUiWidget = FT::MakeExplorePartyWidget([Self]() -> const AFTExploreCharacter*
+		{
+			return Self.IsValid() && Self->bShowHUD && !Self->bReticleOnly ? Cast<AFTExploreCharacter>(Self->GetOwningPawn()) : nullptr;
+		});
+		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
+	}
+}
+
+void AFTExploreHUD::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (NewUiWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(NewUiWidget.ToSharedRef());
+	}
+	NewUiWidget.Reset();
+	Super::EndPlay(Reason);
+}
+
+void AFTExploreHUD::TryMakeMiniMap(const AFTExploreDirector& D)
+{
+	if (bMiniMapTried)
+	{
+		return;
+	}
+	bMiniMapTried = true;
+	MiniMap = NewObject<UFTMiniMap>(this);
+	if (!MiniMap->Init(D))
+	{
+		MiniMap = nullptr;
+	}
+}
+
+void AFTExploreHUD::ToggleMapOverlay()
+{
+	if (MiniMap)
+	{
+		MiniMap->ToggleOverlay();
+	}
+}
+
 void AFTExploreHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -101,6 +159,11 @@ void AFTExploreHUD::DrawHUD()
 	}
 	else if (Found->IsWorldMode() || Found->IsOverworld())
 	{
+		TryMakeMiniMap(*Found); // a director that came after BeginPlay
+		if (MiniMap)
+		{
+			MiniMap->Draw(*this, *Canvas, UiScale);
+		}
 		DrawWorld(*Found);
 	}
 	else

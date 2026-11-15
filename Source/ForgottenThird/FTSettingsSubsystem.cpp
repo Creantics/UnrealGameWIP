@@ -9,8 +9,32 @@
 #include "FTPlayerController.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
+#include "FTUiText.h"
+
+#include "ftcore/UiFirstUse.h"
 
 #include <string>
+
+namespace
+{
+// The basic controls row's words come from the interface text table (the other rows still show Core's English).
+const FTUiText kSettingsBasicControlsUi(TEXT("settings.basic_controls"));
+const FTUiText kSettingsBasicFirstFightsUi(TEXT("settings.basic_controls.first_fights"));
+const FTUiText kSettingsBasicAlwaysUi(TEXT("settings.basic_controls.always"));
+const FTUiText kSettingsBasicNeverUi(TEXT("settings.basic_controls.never"));
+constexpr int32 kBasicControlsRow = static_cast<int32>(ftcore::SettingsRow::ShowBasicControls);
+
+const FString& BasicControlsWord(ftcore::ShowBasicControls Policy)
+{
+	switch (Policy)
+	{
+	case ftcore::ShowBasicControls::Always: return kSettingsBasicAlwaysUi.Get();
+	case ftcore::ShowBasicControls::Never: return kSettingsBasicNeverUi.Get();
+	case ftcore::ShowBasicControls::FirstFights: break;
+	}
+	return kSettingsBasicFirstFightsUi.Get();
+}
+} // namespace
 
 void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -22,6 +46,7 @@ void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		RowLabels[I] = FString(UTF8_TO_TCHAR(ftcore::settingsRowLabel(static_cast<ftcore::SettingsRow>(I))));
 	}
+	RowLabels[kBasicControlsRow] = kSettingsBasicControlsUi.Get();
 	Load();
 	MarkChanged();
 }
@@ -70,6 +95,17 @@ bool UFTSettingsSubsystem::Save() const
 	return true;
 }
 
+void UFTSettingsSubsystem::MarkUiFirstUse(uint32 Counts)
+{
+	const uint32 Joined = ftcore::uiFirstUseMerge(Values.uiFirstUse, Counts);
+	if (Joined == Values.uiFirstUse)
+	{
+		return;
+	}
+	Values.uiFirstUse = Joined;
+	Save();
+}
+
 void UFTSettingsSubsystem::MarkChanged()
 {
 	++Revision;
@@ -79,6 +115,7 @@ void UFTSettingsSubsystem::MarkChanged()
 		ftcore::settingsRowValue(Values, static_cast<ftcore::SettingsRow>(I), Buffer, sizeof Buffer);
 		RowValues[I] = FString(UTF8_TO_TCHAR(Buffer));
 	}
+	RowValues[kBasicControlsRow] = BasicControlsWord(Values.showBasicControls);
 }
 
 void UFTSettingsSubsystem::Open(AFTPlayerController* PC)

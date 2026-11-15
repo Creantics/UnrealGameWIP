@@ -1,6 +1,7 @@
 #include "ftcore/UiStyle.h"
 
 #include "ftcore/Json.h"
+#include "ftcore/Settings.h" // the HUD safe margin's range
 
 #include <algorithm>
 #include <cmath>
@@ -16,8 +17,9 @@ constexpr std::array<std::string_view, kUiPaletteCount> kPaletteNames{"default",
 constexpr std::array<std::string_view, kUiTokenCount> kTokenNames{"ink", "ink_dim", "backing", "track", "accent",
     "accent2", "danger", "ally", "weak_point"};
 constexpr std::array<std::string_view, kUiTextRoleCount> kRoleNames{"title", "heading", "label", "value", "subtitle",
-    "speaker", "prompt", "popup"};
-constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans", "sans_bold", "serif", "hand"};
+    "speaker", "prompt", "popup", "verb"};
+constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans",  "sans_bold", "serif",        "hand",
+                                                                 "serif_bold", "serif_sc", "serif_sc_bold"};
 constexpr std::array<std::string_view, 7> kShapeNames{"none", "diamond", "chevron", "circle", "square", "triangle", "ring"};
 constexpr std::array<std::string_view, kUiMeterShapeCount> kMeterNames{"line", "ring", "teeth", "stroke"};
 
@@ -87,6 +89,20 @@ std::string_view uiMeterShapeName(UiMeterShape m) { return kMeterNames[static_ca
 
 float uiEdgePx(const UiStyle& s, float height) { return std::max(1.f, s.edgePx * std::max(height, 1.f) / 1080.f); }
 
+UiMargins uiHudMargins(float width, float height, float basePx, const UiMargins& padding, int safePercent) {
+    const auto pos = [](float v) { return v > 0.f ? v : 0.f; }; // NaN fails the test too
+    const float pct = static_cast<float>(std::clamp(safePercent, Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin)) / 100.f;
+    const float base = pos(basePx);
+    const float w = pos(width) * pct;
+    const float h = pos(height) * pct;
+    UiMargins m;
+    m.left = base + pos(padding.left) + w;
+    m.right = base + pos(padding.right) + w;
+    m.top = base + pos(padding.top) + h;
+    m.bottom = base + pos(padding.bottom) + h;
+    return m;
+}
+
 void uiFadeStep(UiFade& f, bool changed, float dt, const UiFadeTimes& t) {
     const float step = std::max(dt, 0.f);
     if (changed) f.sinceChange = 0.f;
@@ -107,12 +123,18 @@ void uiFadeStep(UiFade& f, bool changed, float dt, const UiFadeTimes& t) {
 UiStyle defaultUiStyle() {
     UiStyle s;
     // ink, ink_dim, backing, track, accent, accent2, danger, ally, weak_point
-    s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0.3f), hex(0xE9B36B), hex(0xC9643C),
+    s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0.45f), hex(0xE9B36B), hex(0xC9643C),
         hex(0xFF7A5C), hex(0x8FD3B4), hex(0xFFE08A)};
-    s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.3f), hex(0x8FD6E8), hex(0xA88BE0),
+    s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.45f), hex(0x8FD6E8), hex(0xA88BE0),
         hex(0xFF7A86), hex(0x9BE3B0), hex(0xFFE08A)};
-    s.world[2] = {hex(0xF2ECE0), hex(0xD0C8B8), hex(0x0B0907), hex(0xFFFFFF, 0.3f), hex(0xE6DDCB), hex(0x9E3B2E),
-        hex(0xFF7A66), hex(0x9CC7A4), hex(0xF4D58A)};
+    // The Unwritten: a cold grey ink, its dim scaled from it as the others are (luminance x 0.6975), a cold neutral
+    // accent a step brighter than the ink, and cold neutral backing, ally and weak point, so the dark blood red in
+    // accent2 is the one colour in its HUD. The red never sits on text (it fails the 4.5:1 rule): it is on marks only,
+    // and a danger word is ink with a danger underline. Danger keeps its red, on marks.
+    s.world[2] = {hex(0xDCE1E5), hex(0xBBC0C3), hex(0x080A0C), hex(0xFFFFFF, 0.45f), hex(0xF4F6F8), hex(0xB01E23),
+        hex(0xFF7A66), hex(0xA3ADB5), hex(0xC9D1D7)};
+    s.rules[2].marksAccent2 = true;
+    s.rules[2].dangerUnderline = true;
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.
     const auto cue = [&](UiPalette p, UiToken t, UiColor c) {
@@ -130,19 +152,20 @@ UiStyle defaultUiStyle() {
     cue(UiPalette::HighContrast, UiToken::Ink, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::InkDim, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::Backing, hex(0x000000));
-    cue(UiPalette::HighContrast, UiToken::Track, hex(0xFFFFFF, 0.45f));
+    cue(UiPalette::HighContrast, UiToken::Track, hex(0xFFFFFF, 0.6f));
     cue(UiPalette::HighContrast, UiToken::Danger, hex(0xFF8A00));
     cue(UiPalette::HighContrast, UiToken::Ally, hex(0x00E0FF));
     cue(UiPalette::HighContrast, UiToken::WeakPoint, hex(0xFFFF00));
 
-    s.text[static_cast<std::size_t>(UiTextRole::Title)] = {UiFont::SansBold, 44.f, 0.08f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Heading)] = {UiFont::SansBold, 28.f, 0.06f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Label)] = {UiFont::Sans, 18.f, 0.12f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Value)] = {UiFont::SansBold, 24.f, 0.f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Subtitle)] = {UiFont::Sans, 36.f, 0.f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Speaker)] = {UiFont::SansBold, 24.f, 0.12f, true};
-    s.text[static_cast<std::size_t>(UiTextRole::Prompt)] = {UiFont::Sans, 20.f, 0.04f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Popup)] = {UiFont::SansBold, 28.f, 0.04f, true};
+    s.text[static_cast<std::size_t>(UiTextRole::Title)] = {UiFont::SerifScBold, 40.f, 0.08f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Heading)] = {UiFont::SerifScBold, 28.f, 0.06f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Label)] = {UiFont::SerifSc, 22.f, 0.08f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Value)] = {UiFont::SerifScBold, 28.f, 0.f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Subtitle)] = {UiFont::Serif, 36.f, 0.f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Speaker)] = {UiFont::SerifScBold, 26.f, 0.08f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Prompt)] = {UiFont::Serif, 22.f, 0.02f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Popup)] = {UiFont::SerifScBold, 30.f, 0.04f, false};
+    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::SerifScBold, 27.f, 0.22f, true};
 
     s.cueShape[static_cast<std::size_t>(UiToken::Danger)] = UiCueShape::Triangle;
     s.cueShape[static_cast<std::size_t>(UiToken::Ally)] = UiCueShape::Circle;
@@ -157,6 +180,19 @@ UiColor uiColor(const UiStyle& s, UiWorld world, UiPalette palette, UiToken toke
     return s.world[static_cast<std::size_t>(world) % kUiWorldCount][t % kUiTokenCount];
 }
 
+UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor usual) {
+    if (!s.rules[static_cast<std::size_t>(world) % kUiWorldCount].marksAccent2) return usual;
+    return uiColor(s, world, palette, UiToken::Accent2);
+}
+
+UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette) {
+    UiDangerWord d;
+    d.underline = uiColor(s, world, palette, UiToken::Danger);
+    d.underlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
+    d.word = d.underlined ? uiColor(s, world, palette, UiToken::Ink) : d.underline;
+    return d;
+}
+
 float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale) {
     const float h = std::max(height, 1.f);
     const float scale = std::clamp(textScale, 1.f, 2.f);
@@ -167,6 +203,57 @@ float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale)
 }
 
 float uiLinePx(const UiStyle& s, float height) { return std::max(1.f, s.lineWeight * std::max(height, 1.f) / 1080.f); }
+
+UiColor uiLumaFloor(UiColor c, float floor) {
+    const float f = std::clamp(floor, 0.f, 1.f);
+    if (luminance(c) >= f) return c;
+    // Luminance rises monotonically with the mix toward white: bisect the smallest mix that reaches the floor.
+    float lo = 0.f, hi = 1.f;
+    for (int i = 0; i < 20; ++i) {
+        const float m = 0.5f * (lo + hi);
+        const UiColor t{c.r + (1.f - c.r) * m, c.g + (1.f - c.g) * m, c.b + (1.f - c.b) * m, c.a};
+        (luminance(t) >= f ? hi : lo) = m;
+    }
+    return UiColor{c.r + (1.f - c.r) * hi, c.g + (1.f - c.g) * hi, c.b + (1.f - c.b) * hi, c.a};
+}
+
+float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture) {
+    const UiColor pic{picture.r, picture.g, picture.b, 1.f};
+    const auto at = [&](float a) { return uiContrast(ink, UiColor{backing.r, backing.g, backing.b, a}, pic); };
+    const float top = std::clamp(s.optionsDimMax, 0.f, 1.f);
+    if (at(0.f) >= s.optionsDimContrast) return 0.f;
+    if (at(top) < s.optionsDimContrast) return top;
+    float lo = 0.f, hi = top; // contrast rises with the dim: bisect the least that reaches the target
+    for (int i = 0; i < 20; ++i) {
+        const float m = 0.5f * (lo + hi);
+        (at(m) >= s.optionsDimContrast ? hi : lo) = m;
+    }
+    return hi;
+}
+
+void uiLumaAdd(UiLumaHistogram& h, UiColor c) {
+    const float l = std::clamp(luminance(c), 0.f, 1.f);
+    const std::size_t i = std::min(UiLumaHistogram::kBins - 1, static_cast<std::size_t>(l * UiLumaHistogram::kBins));
+    ++h.n[i];
+    h.r[i] += c.r;
+    h.g[i] += c.g;
+    h.b[i] += c.b;
+    ++h.total;
+}
+
+UiColor uiLumaBrightest(const UiLumaHistogram& h, float share) {
+    if (h.total == 0) return UiColor{0.f, 0.f, 0.f, 1.f};
+    const std::uint32_t want = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(std::clamp(share, 0.f, 1.f) * h.total));
+    std::uint32_t got = 0;
+    float r = 0.f, g = 0.f, b = 0.f;
+    for (std::size_t i = UiLumaHistogram::kBins; i-- > 0 && got < want;) {
+        got += h.n[i];
+        r += h.r[i];
+        g += h.g[i];
+        b += h.b[i];
+    }
+    return UiColor{r / got, g / got, b / got, 1.f};
+}
 
 float uiContrast(UiColor fg, UiColor bg, UiColor under) {
     const UiColor b = over(bg, under);
@@ -183,6 +270,7 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
     if (s.minTextPxAbsolute < 14.f) return fail(error, "min_text_px_absolute is below 14");
     if (s.backingDefault < 0.f || s.backingDefault > 1.f) return fail(error, "backing_default is outside 0..1");
     if (s.edgePx < 1.f) return fail(error, "edge px is below 1");
+    if (s.edgeText < 0.5f || s.edgeText > 1.f) return fail(error, "edge text is outside 0.5..1");
     if (s.backingSoftHud < 0.f || s.backingSoftHud > 1.f || s.backingSoftDialogue < 0.f || s.backingSoftDialogue > 1.f)
         return fail(error, "backing_soft is outside 0..1");
     if (s.edge.a < 0.5f) return fail(error, "the edge is fainter than 50%");
@@ -259,7 +347,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
         return true;
     };
     const auto colours = [&](JsonValue obj, std::string_view section, std::array<UiColor, kUiTokenCount>& dst,
-                             std::array<bool, kUiTokenCount>* set, bool allowPlate, std::array<char, 24>* plate) {
+                             std::array<bool, kUiTokenCount>* set, bool allowPlate, std::array<char, 24>* plate,
+                             UiWorldRules* rules) {
         if (obj.type() != JsonType::Object) return bad(section, "not an object");
         for (std::uint32_t i = 0; i < obj.size(); ++i) {
             const std::string_view key = obj.key(i);
@@ -267,6 +356,11 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             if (allowPlate && key == "plate") {
                 if (v.type() != JsonType::String || v.string().size() >= 24) return bad(section, "plate");
                 setPlate(*plate, v.string());
+                continue;
+            }
+            if (rules && (key == "marks_accent2" || key == "danger_underline")) {
+                if (v.type() != JsonType::Bool) return bad(section, key);
+                (key == "marks_accent2" ? rules->marksAccent2 : rules->dangerUnderline) = v.boolean();
                 continue;
             }
             std::size_t t = 0;
@@ -299,6 +393,10 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                     if (!number(v.value(j), 0.f, 1.f, s.backingSoftHud)) return bad(key, bk);
                 } else if (bk == "dialogue") {
                     if (!number(v.value(j), 0.f, 1.f, s.backingSoftDialogue)) return bad(key, bk);
+                } else if (bk == "options_contrast") {
+                    if (!number(v.value(j), 1.f, 21.f, s.optionsDimContrast)) return bad(key, bk);
+                } else if (bk == "options_max") {
+                    if (!number(v.value(j), 0.f, 1.f, s.optionsDimMax)) return bad(key, bk);
                 } else {
                     return bad(key, bk);
                 }
@@ -312,6 +410,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                     if (ev.type() != JsonType::String || !parseHex(ev.string(), s.edge)) return bad(key, ek);
                 } else if (ek == "px") {
                     if (!number(ev, 0.f, 8.f, s.edgePx)) return bad(key, ek);
+                } else if (ek == "text") {
+                    if (!number(ev, 0.f, 1.f, s.edgeText)) return bad(key, ek);
                 } else {
                     return bad(key, ek);
                 }
@@ -320,6 +420,14 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             std::size_t m = 0;
             if (v.type() != JsonType::String || !findName(kMeterNames, v.string(), m)) return bad("style", key);
             s.meter = static_cast<UiMeterShape>(m);
+        } else if (key == "load") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view lk = v.key(j);
+                UiColor* dst = lk == "gold" ? &s.loadGold : lk == "bright" ? &s.loadBright : nullptr;
+                const JsonValue lv = v.value(j);
+                if (!dst || lv.type() != JsonType::String || !parseHex(lv.string(), *dst)) return bad(key, lk);
+            }
         } else if (key == "fade") {
             if (v.type() != JsonType::Object) return bad("style", key);
             for (std::uint32_t j = 0; j < v.size(); ++j) {
@@ -328,6 +436,25 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 float* dst = fk == "in" ? &s.fade.in : fk == "rest" ? &s.fade.rest : fk == "out" ? &s.fade.out
                     : fk == "rest_alpha" ? &s.fade.restAlpha : nullptr;
                 if (!dst || !number(fv, 0.f, fk == "rest_alpha" ? 1.f : 30.f, *dst)) return bad(key, fk);
+            }
+        } else if (key == "word_luma_floor") {
+            if (!number(v, 0.f, 1.f, s.wordLumaFloor)) return bad("style", key);
+        } else if (key == "budget") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view bk = v.key(j);
+                const JsonValue bv = v.value(j);
+                float n = 0.f;
+                if (bk == "rest") {
+                    if (!number(bv, 0.f, 30.f, s.budget.rest)) return bad(key, bk);
+                } else if (bk == "hint") {
+                    if (!number(bv, 0.f, 30.f, s.budget.hint)) return bad(key, bk);
+                } else if (bk == "marks") {
+                    if (!number(bv, 2.f, 40.f, n)) return bad(key, bk);
+                    s.budget.marks = static_cast<std::uint8_t>(n);
+                } else {
+                    return bad(key, bk);
+                }
             }
         } else if (key == "layers") {
             if (v.type() != JsonType::Object) return bad("style", key);
@@ -346,7 +473,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             for (std::uint32_t j = 0; j < v.size(); ++j) {
                 std::size_t w = 0;
                 if (!findName(kWorldNames, v.key(j), w)) return bad("worlds", v.key(j));
-                if (!colours(v.value(j), v.key(j), s.world[w], nullptr, true, &s.plate[w])) return false;
+                s.rules[w] = UiWorldRules{};
+                if (!colours(v.value(j), v.key(j), s.world[w], nullptr, true, &s.plate[w], &s.rules[w])) return false;
             }
         } else if (key == "palettes") {
             if (v.type() != JsonType::Object) return bad("style", key);
@@ -354,7 +482,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 std::size_t p = 0;
                 if (!findName(kPaletteNames, v.key(j), p) || p == 0) return bad("palettes", v.key(j));
                 s.paletteOverrides[p].fill(false);
-                if (!colours(v.value(j), v.key(j), s.paletteColor[p], &s.paletteOverrides[p], false, nullptr)) return false;
+                if (!colours(v.value(j), v.key(j), s.paletteColor[p], &s.paletteOverrides[p], false, nullptr, nullptr))
+                    return false;
             }
         } else if (key == "text") {
             if (v.type() != JsonType::Object) return bad("style", key);

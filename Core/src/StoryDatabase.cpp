@@ -328,6 +328,9 @@ void StoryBuilder::param(std::string_view key, std::string_view value) {
         LossRule rule = LossRule::Retry;
         if (!lossRuleFromName(value, rule))
             return fail("param 'lose' is not retry, branch or never: '" + std::string(value) + "'");
+    } else if (key == "third") { // the fight's third slot (SlotState): the host reads these three words
+        if (value != "companion" && value != "vacant" && value != "hostile")
+            return fail("param 'third' is not companion, vacant or hostile: '" + std::string(value) + "'");
     }
     db_.params_.emplace_back(store(key), store(value));
     ++db_.beats_.back().paramCount;

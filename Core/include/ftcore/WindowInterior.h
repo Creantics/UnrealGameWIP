@@ -19,6 +19,7 @@
 
 #include "ftcore/Api.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -65,7 +66,14 @@ inline constexpr std::uint32_t kWindowShops = 4;
 inline constexpr std::uint32_t kWindowAtlasCols = 4;
 inline constexpr std::uint32_t kWindowAtlasRows = 3;
 inline constexpr std::uint32_t kWindowCurtains = 6;
-inline constexpr std::uint32_t kWindowTints = 4;
+inline constexpr std::uint32_t kWindowTints = 8;
+// The lit rooms' light, one per tint: warm incandescent, neutral and cool fluorescent or LED whites (at least two in
+// five neutral or cool, so a lit block at night reads as many homes, not one sodium wash).
+inline constexpr std::array<std::array<float, 3>, kWindowTints> kWindowTintRgb{{
+    {1.0f, 0.70f, 0.45f}, {1.0f, 0.80f, 0.56f}, {1.0f, 0.90f, 0.76f},   // warm
+    {1.0f, 0.96f, 0.90f}, {0.96f, 0.97f, 1.0f},                          // neutral
+    {0.84f, 0.92f, 1.0f}, {0.78f, 0.90f, 1.0f}, {0.80f, 0.96f, 1.0f},   // cool
+}};
 static_assert(kWindowRooms + kWindowShops == kWindowAtlasCols * kWindowAtlasRows);
 // How many times an opening steps its room on past a neighbour's: enough for four neighbours with four different rooms.
 inline constexpr std::uint32_t kWindowAvoidSteps = 4;
@@ -181,5 +189,7 @@ FTCORE_API WindowCurtainHit windowCurtainHit(const WindowGridSpec& spec, float b
 // curtain's, never a curtain's on its own. Its texture reads run on every pixel, outside any branch, so their mips stay
 // right. Allocates: build time only.
 FTCORE_API std::string windowInteriorHlsl(const WindowGridSpec& spec);
+// The HLSL line declaring float3 tints[kWindowTints] from kWindowTintRgb (both window masters use it). Allocates.
+FTCORE_API std::string windowTintTableHlsl();
 
 }  // namespace ftcore

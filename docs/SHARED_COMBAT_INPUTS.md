@@ -111,8 +111,9 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
 * **States** (`SlotState`): `Companion` (gifts work), `Vacant` (button does nothing), `Hostile`
   (button does nothing; the boss uses the tallies). No press is ever discarded. The host sets it
   through `setState`.
-* `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr)`:
-  - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down. A
+* `select(gift)` picks which gift the button gives (the host cycles it); `press(target, t, StrikeCount* count = nullptr, float targetHealth = kHealthUnknown)`:
+  - `Companion`: gives the selected gift to `target` (a lead) unless that gift is cooling down (or,
+    for the Heal, this fight's `healsPerFight` are given: `NoneLeft`). A
     pressed gift cannot be taken back: there is no cancel. Returns `GiftResult { given, gift, target,
     error, healShare, healLoad, guardScale, guardUntil }`, everything the host needs to apply it:
     `Heal` (heal `healShare` of max HP and move `healLoad` Load off the target), `Guard` (the target
@@ -122,7 +123,12 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
     `CountRefused` and the gift is not given). A refused press leaves the heal and guard fields at
     their neutral values (0, 0, 1, 0).
   - Errors (`GiftError`): `Vacant`, `Hostile`, `Cooling`, `BadTarget` (not a lead),
-    `CountRefused`, `NoGift`.
+    `CountRefused`, `NoGift`, `NoneLeft` (the Heal's per-fight count is spent), `Down` (`FightSession`
+    refuses any gift at a lead who is down before the slot sees it: no charge, no cooldown, no thread, no
+    tally, no story press; a gift never stands a lead up), `NotHurt` (a Heal at a
+    lead whose `targetHealth` is exactly 1: no charge, no cooldown, no thread, and unlike the others not
+    tallied; `FightSession` passes what the host gave `setLeadHealth`, which stores anything that is not a
+    number in 0..1 (NaN, an infinity, under 0, over 1) as unknown, and unknown reads as hurt).
   - `Vacant`: nothing happens; `vacantPresses` goes up.
   - `Hostile`: nothing happens; `hostilePresses` goes up (the host reads the tallies).
 * **Threads and cooldowns** follow given gifts only: every given gift adds one thread to its target
@@ -139,11 +145,19 @@ One button, three gifts: `Heal`, `Guard`, `Count`. Never an attack (there is no 
   rejects (returns false, changes nothing) version 0, a newer version or an out-of-range enum. A
   version 1 save (no refused counts) loads with `refused` all 0, and its old per-gift tally loads as
   `given` (version 1 counted given presses only). `SlotState` keeps its stored
-  integers (`Vacant` is 1). Cooldowns and live guards are not saved (a load is never mid-fight);
-  `load` and `resetFight()` clear them. `reset()` wipes the save data too; `setTuning()` changes
-  the tuning and keeps it.
-* Tuning (`GiftTuning`): per-gift `cooldown` (heal 8 s, guard 6 s, count 4 s), `healShare` 0.15,
-  `healLoad` 20, `guardScale` 0 (the guarded lead takes x0), `guardSeconds` 1.2.
+  integers (`Vacant` is 1). Cooldowns, live guards and the fight's Heal count are not saved (a load
+  is never mid-fight); `load` and `resetFight()` clear them. `beginFight(tuning, t)` (what
+  `FightSession::begin` calls) sets the tuning, clears the fight state, selects Heal and makes the
+  slot a Companion, and keeps the save data: the save-wide tally, threads and Vacant and Hostile
+  presses carry from fight to fight, and are recorded as the fight's start. `restoreFightStart()` puts
+  them back to that record (the last `beginFight`, `reset` or `load`). `reset()` wipes the save data
+  too; `setTuning()` changes the tuning and keeps it.
+* Tuning (`GiftTuning`, file `Data/Battle/gifts.json` via `importGiftTuning`): per-gift `cooldown`
+  (heal 8 s and count 4 s from the press; guard 12 s from the guard's end, so 13.2 s press to press),
+  `healShare` 0.15, `healLoad` 20,
+  `healsPerFight` 2, `guardScale` 0.25 (the guarded lead takes x0.25), `guardSeconds` 1.2.
+* HUD: `healsLeft()`, `readyIn(gift, t)` (seconds to ready, 0 when ready); on the session
+  `giftHealsLeft()`, `giftHealReadyIn()`, `giftGuardReadyIn()`.
 
 ## 3. Laying a place (`PlaceTable`)
 
@@ -255,10 +269,18 @@ fighter, the table, the held refusal, its own `WeakPointLock`, and an optional `
 own copy of the boss def) and moves them all on one fight clock. It is what a host holds instead of
 the pieces.
 
-* **One clock.** `begin(def, start)` resets every piece at `start`, clamped to +-`kMaxFightStart`
+* **One clock.** `begin(def, start)` resets every piece at `start` (the gift slot through
+  `beginFight`), clamped to +-`kMaxFightStart`
   (1e9 s; further out a double's spacing outgrows a frame's step and the clock would stop moving;
   NaN starts at 0; `FightSessionCheck::start` reports either move, and the fight begins anyway, so `ok()`
-  leaves it out). `tick(fightDt)`
+  leaves it out). The gift slot's save-wide tally and threads carry over only from a won fight: the
+  host calls `finish(true)` at victory, and a `begin` after a fight not finished as won (lost,
+  abandoned, `finish(false)` or never called) first puts them back to how that fight began
+  (`restoreFightStart`; a `GiftSave` loaded mid-fight is that start), so an abandoned attempt's
+  presses do not count. The story's per-kind press counters follow the same rule through the story step
+  (`storyEndStep`), so the host pairs the two: `finish(true)` wherever the step ends `Keep` (a win, or a
+  loss branch the story keeps), and no `finish(true)` when it ends `Retry` or `Drop`. The story's RAW
+  press total is kept across a retry by design, like the retries counter. The fight's Heal count resets either way. `tick(fightDt)`
   is the only time input after that: it adds the step to the session's clock and updates every piece
   with it, every frame. No session call takes a time; presses and blows are stamped with `now()`.
   A step that is negative or not finite counts as 0, and one step is at most `kMaxFightStep`
@@ -302,13 +324,116 @@ the pieces.
   counters (counter wides) roll back with a scene restart, so a retried fight counts afresh; a raw
   total does not.
 * **Active lead.** `setActiveLead(lead)` names the lead the player's figure fills (`kLeadA` until
-  set; it stays across `begin`). The host sets it at fight start and on every lead switch, and aims
-  its gift presses, count calls and blow reports for the player at `activeLead()`.
+  set; it stays across `begin`, except that a `begin` moves it off a lead not in the fight). The host
+  sets it at fight start and on every lead switch, and aims its gift presses, count calls and blow
+  reports for the player at `activeLead()`. It refuses at once (false) a non-lead or a lead not in
+  the fight. Otherwise it is a request the step's close resolves, after the rises and falls (below):
+  honoured if that lead stands then (`tick.switched`; nothing when it already has control), else refused
+  (`tick.switchRefused`, with `tick.switchRefusal` the `LeadSwitch` reason: Down, FightOver, Lone or Cooldown). True means the request
+  was taken, not that the lead switched. The last request in a step wins (an earlier one raises no event),
+  and `activeLead()` moves only at the close, which is the tick: a checkpoint taken between ticks settles
+  the rises and falls but leaves the switch waiting, and carries it (`FightCheckpoint::switchRequested`),
+  so a retry to it opens on that lead if it stands there (the first tick after reports `tick.switched`
+  when that moves control off the checkpoint's `activeLead`). If it is refused there (Down, Cooldown, Lone), the first tick after
+  reports `tick.switchRefused` and `tick.switchRefusal`, as the close would, and drops it. The host reads `activeLead()` after a
+  retry, never the checkpoint's field. A switch to a lead who stands up in the same
+  step is honoured and one to a lead who falls in it is refused, whatever the call order (checkpoints
+  included), and `tookOver` is the same either way. A request made before `begin` is applied by it.
+  `leadSwitchReason(lead)` previews what a request made now gets at the close (the close calls the same
+  function, after the step's rises and falls, which win when they land on that step): Ok, Same,
+  NotInFight (anything but the two leads, so the third slot never takes control, or a lead not in the
+  fight; `setActiveLead` returns false for it), Down, FightOver (a defeat or `finish(true)`), Lone (a
+  Lone Carry is on and the lead is not the Lone one; the request leaves the carry on) or Cooldown
+  (within `def.leadSwitchCooldownSeconds`, 0..5, default 1, of the last accepted switch; a takeover is
+  never blocked by it and does not start it; `leadSwitchReadyIn()` gives the time left). The tuning is
+  `Data/Battle/lead_switch.json` (`importLeadSwitchTuning`). Checkpoints hold the last switch's time.
+* **Partner joins (host hook).** A fight begun with one lead (`def.inFight`, as a Lone Carry) takes
+  the partner in when the player calls it: the host must end the carry (`endLone(PartnerCalled)`;
+  the join never ends it, and while it is on a switch to the joiner is refused Lone) and
+  calls `joinFight(lead, health)` with the partner's carried health (setLeadHealth's 0..1 scale, above 0).
+  It is a request the step's close resolves after the rises and falls and before the switch, judged by
+  `leadJoinReason(lead)` (the HUD's preview, the same function): Ok brings the lead in standing at that
+  health (`tick.joined`, once); it is not the active lead, and a switch to it is NotInFight until that
+  close, so the player switches on a later step. From then on both leads down is a defeat, one down a
+  takeover, as in any two-lead fight. Refused at the close with `tick.joinRefused` and
+  `tick.joinRefusal` (`LeadJoin`): AlreadyIn, or FightOver (a defeat, including the lone lead's fall on
+  the same step, or `finish(true)`). `joinFight` returns false, asking nothing, for NotALead (the third
+  slot, any non-lead) or a health not in (0, 1]. The last request in a step wins; a join asked before
+  `begin` is dropped. Checkpoints hold the leads in the fight and a waiting join
+  (`FightCheckpoint::inFight`, `joinRequested`, `joinHealth`): a retry to one taken before the join
+  starts with one lead again; one taken with a join waiting brings that lead in (the first tick after
+  reports `tick.joined`). The host reads `inFight()` after a retry.
+* **Down, takeover and defeat.** `def.inFight` names the leads in the fight (both by default; at
+  least one). `setLeadHealth` is also the fall feed, so the host calls it on every hp change: a lead
+  in the fight at 0 or below (finite) is down, not dead; above 0 it stands again; NaN or an infinity
+  changes nothing. A feed only marks the lead; falls and rises settle when the step closes (the next
+  `tick`, or a `checkpointPhase` or checkpoint taken first), against how each lead stood when the step
+  opened, rises first and then falls, so the order of the feeds within a step never matters. A lead
+  that falls and stands within one step does neither. If something fell and no lead in the fight
+  stands, it is a defeat: `tookOver` is not raised and the controlled lead is unchanged (both falling
+  on one step is a defeat). Otherwise, when the controlled lead is down, control passes to the lead
+  that stands (`tick.tookOver`), also when that one stood on this very step, and never back by itself:
+  only the player's switch moves it. The fallen
+  lead is then the uncontrolled body, so the partner's brain drives it: after its `downSeconds` (30)
+  the intent carries `rise` at `riseHealth` (25%), and the host stands the body and feeds that
+  health. Every lead in the fight down when the step closes is a defeat (`tick.defeated`, once); after it nothing
+  falls or stands until `retry` or `begin`. Each fall and rise is reported once, on the next tick
+  (`leadsFell`, `leadsRose`, one bit per lead). A down lead stands only by time (the rise) or at a
+  retry.
+* **The third slot.** `def.thirdSlot` (Companion, Vacant or Hostile; Companion by default) is set on
+  the slot at `begin` and at each retry, before the checkpoint's own state goes back (the checkpoint and
+  `stateHash()` hold it; a host that sets `giftSlot().setState` after `begin` still wins). A Vacant or
+  Hostile slot gives no gift: a press is refused `Vacant` or `Hostile` before any other check, `Down`
+  included, with no charge, cooldown or gift tally (only the slot's own Vacant or Hostile press count),
+  and the Lone Carry stays. `thirdSlot()` and `thirdSlotRefusal()` let the HUD read the state and the
+  reason.
+* **A start checkpoint is never a defeat.** The step closes before the start checkpoint is taken; if
+  that is a defeat (every lead fed 0 before it), none is taken and a retry is a begin again.
+* **A lead that cannot fall.** `def.cannotFall` (per fight, per lead; false by default) marks a lead
+  who cannot go below 1 hp in that fight. The host works out its hp with `blowOnLead(lead, hp,
+  damage, maxHp)`, which returns hp − damage, with the damage first held to 0..hp (so extreme ints
+  never overflow, a negative blow heals nothing and the result never goes under 0), but at least 1 for
+  a marked lead, and feeds
+  `setLeadHealth` itself. A blow that would have taken it to 0 or below raises `tick.heldUp` (one bit
+  per lead, once, on the next tick). A marked lead fed 0 or below never goes down. With every lead in
+  the fight marked, health never loses it: what ends such a fight (a round timer) is the host's.
+* **Checkpoints and retry.** The fight-start checkpoint is taken by the first `setHostCheckpoint`
+  or, failing that, the first tick after a `begin` (`tick.checkpoint`). A boss script whose def has
+  `checkpointAtPhase` (default false) takes another at the end of the tick that changes its phase;
+  for a boss the host runs itself, `checkpointPhase(phase)` does it. The host writes its own part
+  (`FightHostCheckpoint`: each lead's hp and Load, the draw state, the partner's brain, the order
+  button, its own boss's hp and phase, the currency carried) when one is taken. `retry()` goes back
+  to the latest: every piece starts clean at the checkpoint's clock, then the checkpoint's fields
+  (`FightCheckpoint`) are put back exactly, and the host applies its part from the one returned. A
+  defeat costs nothing but the attempt. A checkpoint holds the fight's state only. A retry to the
+  fight start unbinds the story, as `begin` does (the host rolls the step back and binds again); a
+  phase retry keeps the binding and leaves the story state exactly as it is.
+  A tick reports every checkpoint it took in `tick.checkpoints` (bit `1 << CheckpointAt`; the start
+  and a phase one can come on the same tick), and `tick.checkpoint` names the latest. The host writes
+  one part per bit, start first: `setHostCheckpoint(host)` writes the oldest unwritten one and returns
+  which; `setHostCheckpoint(host, at)` writes the named one; `checkpoint(at)` reads either. Each
+  checkpoint carries `hostWritten`; a retry to one whose host part was never written returns it with
+  `hostWritten` false, so the host knows its part (an unbegun brain, all defaults) is empty.
+  The host's part keeps the partner's brain as `PartnerBrainSave` (`brain.save()`, `brain.load()`).
+  Not in the checkpoint, reset clean by design: the last tick's output, pending Load reports, the
+  per-lead store clock and enemy marks. What the host stores itself: the brain's save and anything
+  of a boss it runs. `stateHash()` is FNV-1a over every field that affects play (the gift slot with
+  cooldowns, threads and charges, the Lone Carry and its pool, the boss script, lock, timers, both
+  leads, the checkpoints); `PartnerBrain::hash()` is the brain's. A replay from a checkpoint with the
+  same inputs and seed gives the same pair of hashes on every step.
 * **Boss counters.** `counter(kind, who, shared)`: `shared` is the host's word that the counter carries
   the shared input (a blow judged a shared outcome, or a hit the lead took half of). An open count
   window alone is not it; a shared counter kind without it is refused (`NeedsShared`).
 * The session cannot be copied or moved (its boss script points into its def), and allocates nothing
   after construction.
+* **The partner's brain (`PartnerBrain`).** A step that is negative or not finite counts as 0, and one
+  step is at most `kMaxPartnerStep` (0.25 s). The host gives each light blow's length with the attack
+  intent (`PartnerInput::blowSeconds`, the i-th light; 0 or out of 0.1..2 falls back to the tuning).
+  The intent marks the step a blow begins (`blowStart`, `blowIndex`); a blow begun always runs out,
+  so the host never cancels one. Rule 2's budget is decided before each blow starts, on that blow's
+  full committed length plus what is left of one still running, so a blow it begins can never carry a
+  rolling window over; the slack left is one slot of the budget ring. A blow whose string ends early
+  (target felled, a guard) leaves it running: no new string until it ends (`Wait`, why `Committed`).
 
 ## What the Unreal wrapper needs
 

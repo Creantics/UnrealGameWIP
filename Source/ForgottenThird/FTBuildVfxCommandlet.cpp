@@ -99,13 +99,17 @@ struct FSpriteMaterialSpec
 	const TCHAR* Name;
 	bool bSpark;
 	bool bAdditive;
+	bool bLit = false; // lit by the scene (an emitter's "lit"): drops of water, which must not glow at night
 };
+constexpr int32 kSpriteMaterials = 5;
+constexpr int32 kLitSprite = 4;
 
 const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxSoft"), false, false},
 	{TEXT("M_VfxSoftAdditive"), false, true},
 	{TEXT("M_VfxSpark"), true, false},
 	{TEXT("M_VfxSparkAdditive"), true, true},
+	{TEXT("M_VfxSoftLit"), false, false, true},
 };
 
 FString MaterialPackage(const FSpriteMaterialSpec& Spec)
@@ -147,7 +151,11 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	UMaterial* Material = NewObject<UMaterial>(Package, Spec.Name, RF_Public | RF_Standalone | RF_Transactional);
 	Material->MaterialDomain = MD_Surface;
 	Material->BlendMode = Spec.bAdditive ? BLEND_Additive : BLEND_Translucent;
-	Material->SetShadingModel(MSM_Unlit);
+	Material->SetShadingModel(Spec.bLit ? MSM_DefaultLit : MSM_Unlit);
+	if (Spec.bLit)
+	{
+		Material->TranslucencyLightingMode = TLM_VolumetricNonDirectional;
+	}
 	Material->SetUsageByFlag(MATUSAGE_NiagaraSprites, true);
 
 	UMaterialExpressionTextureCoordinate* UV = AddVfxExpression<UMaterialExpressionTextureCoordinate>(Material, -900, 0);
@@ -165,7 +173,15 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	// Additive: light adds in proportion to alpha. Translucent: the colour over a masked alpha.
 	UMaterialExpressionCustom* Emissive = AddCustom(Material, 0, TEXT("Emissive"), CMOT_Float3,
 		Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask;") : TEXT("return Color.rgb;"), Color, Mask);
-	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Emissive);
+	if (Spec.bLit)
+	{
+		// The colour is the drop's own; the scene lights it.
+		Material->GetEditorOnlyData()->BaseColor.Connect(0, Emissive);
+	}
+	else
+	{
+		Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Emissive);
+	}
 	if (!Spec.bAdditive)
 	{
 		UMaterialExpressionCustom* Opacity =
@@ -329,7 +345,7 @@ TValue* EmitterProperty(UNiagaraStatelessEmitter* Emitter, const TCHAR* Name)
 	return Property->ContainerPtrToValuePtr<TValue>(Emitter);
 }
 
-bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[4])
+bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[kSpriteMaterials])
 {
 	using namespace ftcore;
 
@@ -511,7 +527,7 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 		return false;
 	}
 	const bool bSpark = P.sprite == VfxSprite::Spark;
-	Sprite->Material = Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
+	Sprite->Material = P.lit && Materials[kLitSprite] ? Materials[kLitSprite] : Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
 	Sprite->SortMode = P.additive ? ENiagaraSortMode::None : ENiagaraSortMode::ViewDistance;
 	Sprite->FacingMode = ENiagaraSpriteFacingMode::FaceCamera;
 	Sprite->Alignment = ENiagaraSpriteAlignment::Unaligned;
@@ -541,7 +557,7 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 }
 
 UNiagaraSystem* BuildSystem(UPackage* Package, UNiagaraSystem* Template, const ftcore::VfxNiagaraPlan& Plan,
-	UMaterialInterface* const Materials[4])
+	UMaterialInterface* const Materials[kSpriteMaterials])
 {
 	const FString Name = FPackageName::GetShortName(Package->GetName());
 	UNiagaraSystem* System = CastChecked<UNiagaraSystem>(StaticDuplicateObject(Template, Package, *Name,
@@ -743,7 +759,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 	// Start from nothing: delete every NS_* and the sprite materials up front, before anything loads them. With -Only just
 	// that effect's asset goes, and the materials already built are used.
 	bool bOk = true;
-	UMaterialInterface* Materials[4] = {};
+	UMaterialInterface* Materials[kSpriteMaterials] = {};
 	if (Only.IsEmpty())
 	{
 		TArray<FString> Old;
@@ -764,7 +780,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		}
 		IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(MaterialPackage(SpriteMaterials[0]))), true);
 
-		for (int32 I = 0; I < 4; ++I)
+		for (int32 I = 0; I < kSpriteMaterials; ++I)
 		{
 			UPackage* Package = CreatePackage(*MaterialPackage(SpriteMaterials[I]));
 			UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
@@ -779,10 +795,21 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		{
 			return 1;
 		}
-		for (int32 I = 0; I < 4; ++I)
+		for (int32 I = 0; I < kSpriteMaterials; ++I)
 		{
 			const FString Package = MaterialPackage(SpriteMaterials[I]);
-			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)));
+			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			if (!Materials[I] && SpriteMaterials[I].bLit)
+			{
+				// The lit sprite came after the others were built: made here once, the rest untouched.
+				UPackage* LitPackage = CreatePackage(*Package);
+				UMaterial* Lit = BuildSpriteMaterial(LitPackage, SpriteMaterials[I]);
+				Materials[I] = Lit;
+				FAssetCompilingManager::Get().FinishAllCompilation();
+				bOk &= SaveVfxAsset(LitPackage, Lit);
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx: built the lit sprite material %s."), *Package);
+				continue;
+			}
 			if (!Materials[I])
 			{
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: sprite material %s is missing; run FTBuildVfx without -Only first."), *Package);

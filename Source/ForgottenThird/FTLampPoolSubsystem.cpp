@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FTNightLightData.h"
+#include "FTNightLook.h"
 #include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
@@ -81,23 +82,36 @@ bool UFTLampPoolSubsystem::IsNightNow() const
 	return Clock && Clock->IsRunning() && Clock->GetNightAmount() > 0.5f;
 }
 
+float UFTLampPoolSubsystem::Candela(bool bLamp) const
+{
+	const ftcore::NightLook& Look = FTNight::Look();
+	return bLamp ? (LampCandelaOverride > 0.f ? LampCandelaOverride : Look.lampCandela)
+				 : (ShopCandelaOverride > 0.f ? ShopCandelaOverride : Look.shopCandela);
+}
+
 void UFTLampPoolSubsystem::ApplyValues(USpotLightComponent& Light, bool bLamp) const
 {
 	const UFTNightLightData& D = *Data.Get();
-	const float Candela = bLamp ? (LampCandelaOverride > 0.f ? LampCandelaOverride : D.LampCandela)
-								: (ShopCandelaOverride > 0.f ? ShopCandelaOverride : D.ShopCandela);
-	const float Reach = bLamp ? (LampReachOverride > 0.f ? LampReachOverride : D.LampReach)
-							  : (ShopReachOverride > 0.f ? ShopReachOverride : D.ShopReach);
+	const ftcore::NightLook& Look = FTNight::Look();
+	const float Reach = bLamp ? (LampReachOverride > 0.f ? LampReachOverride : Look.lampReachM * 100.f)
+							  : (ShopReachOverride > 0.f ? ShopReachOverride : Look.shopReachM * 100.f);
 	Light.SetIntensityUnits(ELightUnits::Candelas);
-	Light.SetIntensity(Candela);
+	Light.SetIntensity(Candela(bLamp));
 	Light.SetLightColor(FLinearColor::White, false);
 	Light.SetUseTemperature(true);
-	Light.SetTemperature(bLamp ? D.LampKelvin : D.ShopKelvin);
+	Light.SetTemperature(bLamp ? Look.lampKelvin : Look.shopKelvin);
 	Light.SetAttenuationRadius(Reach);
-	Light.SetOuterConeAngle(bLamp ? D.LampOuter : D.ShopOuter);
-	Light.SetInnerConeAngle(bLamp ? D.LampInner : D.ShopInner);
-	Light.SetSourceRadius(bLamp ? D.LampSource : D.ShopSource);
+	// The lamps' cone and lens from the night spec (wider than the built data's), the shops' from the data.
+	Light.SetOuterConeAngle(bLamp ? FMath::Min(Look.lampOuterDeg, 80.f) : D.ShopOuter);
+	Light.SetInnerConeAngle(bLamp ? FMath::Min(Look.lampInnerDeg, Look.lampOuterDeg) : D.ShopInner);
+	Light.SetSourceRadius(bLamp ? Look.lampSourceCm : D.ShopSource);
+	Light.SetSpecularScale(1.f);
 	Light.SetCastShadows(false);
+	// Shop lights stand inside the bays: no fog lit there (11-14 haze ruling). Street lamps keep the engine's default.
+	if (!bLamp)
+	{
+		Light.SetVolumetricScatteringIntensity(0.f);
+	}
 }
 
 void UFTLampPoolSubsystem::CreatePool()
@@ -119,6 +133,8 @@ void UFTLampPoolSubsystem::CreatePool()
 		Xy.Add(D->LampAt[I].Y);
 	}
 	Lamps.Picker.build(Xy.GetData(), static_cast<size_t>(LampCount), kPickerCellCm);
+	Lamps.Scale.SetNumUninitialized(LampCount);
+	ftcore::nightLampScales(FTNight::Look(), Xy.GetData(), static_cast<size_t>(LampCount), 100.f, Lamps.Scale.GetData());
 	Xy.Reset();
 	for (int32 I = 0; I < ShopCount; ++I)
 	{
@@ -126,6 +142,8 @@ void UFTLampPoolSubsystem::CreatePool()
 		Xy.Add(D->ShopAt[I].Y);
 	}
 	Shops.Picker.build(Xy.GetData(), static_cast<size_t>(ShopCount), kPickerCellCm);
+	Shops.Scale.SetNumUninitialized(ShopCount);
+	ftcore::nightLampScales(FTNight::Look(), Xy.GetData(), static_cast<size_t>(ShopCount), 100.f, Shops.Scale.GetData());
 
 	auto Make = [this, Owner](FPool& Pool, TArray<TObjectPtr<USpotLightComponent>>& Lights, int32 Size, bool bLamp)
 	{
@@ -249,6 +267,7 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 			const FVector At(bLamp ? D.LampAt[Index] : D.ShopAt[Index]);
 			const FRotator Facing = bLamp ? LampFacing : FRotator(D.ShopPitch, D.ShopYaw[Index], 0.f);
 			Light->SetWorldLocationAndRotation(At, Facing);
+			Light->SetIntensity(Candela(bLamp) * (Pool.Scale.IsValidIndex(Index) ? Pool.Scale[Index] : 1.f));
 		}
 	}
 	for (int32 S = 0; S < Size; ++S)
@@ -323,6 +342,15 @@ bool UFTLampPoolSubsystem::ForceNight(float LampCandela, float LampReachCm, floa
 		{
 			ApplyValues(*Light, false);
 		}
+	}
+	// Every slot is filled again below, so each light takes its lamp's crowding share at the new values.
+	for (int32& Held : Lamps.Slot)
+	{
+		Held = INDEX_NONE;
+	}
+	for (int32& Held : Shops.Slot)
+	{
+		Held = INDEX_NONE;
 	}
 	if (!bNight)
 	{

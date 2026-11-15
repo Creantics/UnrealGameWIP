@@ -79,6 +79,8 @@ inline constexpr const TCHAR* GauntletPieces[NumGauntletPieces] = {
 	TEXT("SKM_DevinGauntlet_R_Glove"), TEXT("SKM_DevinGauntlet_R_Strap"), TEXT("SKM_DevinGauntlet_R_Bracer"),
 	TEXT("SKM_DevinGauntlet_L_Glove"), TEXT("SKM_DevinGauntlet_L_Strap"), TEXT("SKM_DevinGauntlet_L_Bracer"),
 };
+// Where the right and left bracers are in GauntletPieces (a look's GauntletBracerR/L replaces them).
+inline constexpr int32 GauntletBracerIndex[2] = {2, 5};
 
 struct FPiece
 {
@@ -101,6 +103,11 @@ FORGOTTENTHIRD_API UStaticMesh* FindMesh(const FPiece& Piece);
 
 struct FFTLeadWeapons
 {
+	// The landed-blow effect of a weapon kit (an NS_ name under /Game/VFX): the lead's, and the partner's at its scale.
+	static const TCHAR* ImpactEffectOf(ftcore::ArenaWeapon W)
+	{
+		return W == ftcore::ArenaWeapon::Magic ? TEXT("spell_impact") : W == ftcore::ArenaWeapon::Guns ? TEXT("gun_impact") : TEXT("gauntlet_spark");
+	}
 	// The clips' fade-out once the attack is over or cut short (s).
 	static constexpr double kFadeOut = 0.15;
 
@@ -110,8 +117,11 @@ struct FFTLeadWeapons
 	// The same on any actor wearing a lead's body (the explore character, fed by ftcore::FieldStrike): Body is its
 	// skinned body, which the props and effects attach to and the clips play on. Again on the same body: nothing.
 	void Begin(AActor* Owner, USkeletalMeshComponent* Body, const FFTLeadLook& Look, const ftcore::ArenaFighter& Kit);
-	// Removes the props and effects it made from the body and forgets it (a look swapped on a body that stays).
+	// Removes the props and effects it made from the body, sets the look's gauntlet morphs back to 0 on it and forgets
+	// it (a look swapped on a body that stays, a lead switch or a takeover).
 	void End();
+	// The look's gauntlet morphs this Begin set on the body (empty: none, or no gauntlets).
+	const TArray<FName>& GauntletMorphNames() const { return GauntletMorphs; }
 	// Where the attacks are aimed this step (world, cm), and whether at a target (else straight ahead).
 	void SetAim(const FVector& HitPoint, bool bAtTarget)
 	{
@@ -125,6 +135,15 @@ struct FFTLeadWeapons
 	void SetActionUpper(float Share) { ActionUpper = Share; }
 	// The leg (0 left, 1 right; -1 none) that keeps the strike clip under that share, for Paint.
 	void SetActionLeg(int32 Side) { ActionLeg = Side; }
+	// The gun between shots (ftcore::arenaReloadLayer, arenaFlinchLayer): the reload overlay posed by the fight's reload
+	// (ArenaFight::reloading, reloadProgress), and the last dry press's fight time. Each a no-op without its clip
+	// (lead_reload, lead_dry_flinch in the look's clip folder; a guns kit only).
+	void SetReload(bool bOn, float Progress)
+	{
+		bReloading = bOn;
+		ReloadProgress = Progress;
+	}
+	void DryPressed(double T) { DryAt = T; }
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
@@ -189,7 +208,14 @@ private:
 	};
 
 	void LoadClips(const FFTLeadLook& Look);
+	// The gun's own clips (a guns kit): its length, or 0 when Folder has none that fits the body.
+	float LoadGunClip(const FString& Folder, const TCHAR* Name, int32 Slot);
+	// The reload and flinch layers after the strike's (StrikeWeight, 0..1, keeps its share of the arms).
+	void PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight);
 	void AttachProps();
+	// The look's GauntletMorphs and bracers (empty: the kit's own), kept from Begin for AttachProps.
+	TArray<FName> GauntletMorphs;
+	FSoftObjectPath GauntletBracer[2];
 	UStaticMeshComponent* AttachProp(const FTWeaponProps::FPiece& Piece);
 	void SpawnEffects();
 	UFTVfxComponent* MakeEffect(const TCHAR* Effect, USceneComponent* Parent, FName Socket);
@@ -247,6 +273,14 @@ private:
 	int32 ActionLeg = -1;
 	int32 AimSide = -1;
 	double ImpactDue = -1.0;
+	// The gun's slots (after the fight clips'), its clips' lengths (0: none), the reload's state and the last dry press.
+	static constexpr int32 kReloadSlot = static_cast<int32>(ftcore::FightClip::Count);
+	static constexpr int32 kFlinchSlot = kReloadSlot + 1;
+	float ReloadClipLength = 0.f;
+	float FlinchClipLength = 0.f;
+	bool bReloading = false;
+	float ReloadProgress = 0.f;
+	double DryAt = -1.0;
 	FVector ImpactAt = FVector::ZeroVector;
 	double LastImpactTime = -1e9;
 	double AimCheckDue = -1.0;

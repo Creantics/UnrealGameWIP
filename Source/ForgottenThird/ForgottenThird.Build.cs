@@ -31,6 +31,8 @@ public class ForgottenThird : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription" });
 			// ImageCore: FTBuildSurfaces -Windows resizes the window atlases (FImage::ResizeTo).
 			PrivateDependencyModuleNames.Add("ImageCore");
+			// FTMaterialStats reads the masters' shader instruction counts (UMaterialEditingLibrary::GetStatistics).
+			PrivateDependencyModuleNames.Add("MaterialEditor");
 
 			// FTBuildCloth makes Chaos cloth from an imported mesh section.
 			PrivateDependencyModuleNames.AddRange(new string[] { "ClothingSystemEditor", "ClothingSystemEditorInterface", "ClothingSystemRuntimeCommon", "ClothingSystemRuntimeInterface", "SkeletalMeshEditor" });
@@ -43,7 +45,7 @@ public class ForgottenThird : ModuleRules
 			PrivateIncludePaths.Add(Path.Combine(NiagaraSource, "NiagaraShader", "Internal"));
 		}
 
-		// Slate: the new game UI (FTNewUi.h; off unless -FTNewUi or ft.NewUi 1), drawn as viewport widgets built in code.
+		// Slate: the new game UI (FTNewUi.h; always on in Shipping, else on unless -FTOldUi or ft.NewUi 0), drawn as viewport widgets built in code.
 		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		
 		// Uncomment if you are using online features

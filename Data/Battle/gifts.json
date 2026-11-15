@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "healCooldown": 8,
+  "guardCooldown": 12,
+  "countCooldown": 4,
+  "healShare": 0.15,
+  "healLoad": 20,
+  "healsPerFight": 2,
+  "guardScale": 0.25,
+  "guardSeconds": 1.2
+}

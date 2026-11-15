@@ -65,21 +65,95 @@ TEST_CASE("input bindings: import reads over the defaults and encode reads back"
     CHECK(back.hold == b.hold);
 }
 
+TEST_CASE("input bindings: a file from before the gift keys moves its gift key over and keeps every other binding") {
+    std::string error;
+    // The old default (gift on G, now gift_heal's): gift_heal keeps G, the heal takes H, the rest as the file says.
+    InputBindings b = defaultInputBindings();
+    REQUIRE(importInputBindings(
+        R"({"version": 1, "keys": {"gift": "G", "guard": "K", "release": "Z"}, "pad": {"gift": "Gamepad_DPad_Up"}})", b, &error));
+    CHECK(std::string(inputKey(b, InputAction::GiftHeal, InputDevice::Keys)) == "G");
+    CHECK(std::string(inputKey(b, InputAction::Gift, InputDevice::Keys)) == "H");
+    CHECK(std::string(inputKey(b, InputAction::Guard, InputDevice::Keys)) == "K");
+    CHECK(std::string(inputKey(b, InputAction::Release, InputDevice::Keys)) == "Z");
+    CHECK(std::string(inputKey(b, InputAction::Gift, InputDevice::Pad)) == "Gamepad_DPad_Up");
+    CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Keys)) == "Y");
+    CHECK(std::string(inputKey(b, InputAction::PartnerOrder, InputDevice::Keys)) == "X");
+    CHECK(std::string(inputKey(b, InputAction::Backlog, InputDevice::Keys)) == "B");
+    // The player's own heal key stays the heal's.
+    InputBindings own = defaultInputBindings();
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"gift": "N"}})", own, &error));
+    CHECK(std::string(inputKey(own, InputAction::Gift, InputDevice::Keys)) == "N");
+    CHECK(std::string(inputKey(own, InputAction::GiftHeal, InputDevice::Keys)) == "G");
+    // A key the player gave to another action leaves the newer action unbound, and the file imports with every one
+    // of the player's bindings kept.
+    struct Case {
+        const char* text;
+        InputAction mine;
+        const char* key;
+        InputAction left;
+    };
+    for (const Case& c : {Case{R"({"version": 1, "keys": {"release": "Y", "guard": "K"}})", InputAction::Release, "Y", InputAction::GiftGuard},
+                          Case{R"({"version": 1, "keys": {"count": "H", "guard": "K"}})", InputAction::Count, "H", InputAction::Gift},
+                          Case{R"({"version": 1, "keys": {"release": "G", "gift": "N", "guard": "K"}})", InputAction::Release, "G", InputAction::GiftHeal},
+                          // A file from before take half (its default T added later) with T bound elsewhere.
+                          Case{R"({"version": 1, "keys": {"release": "T", "guard": "K"}})", InputAction::Release, "T", InputAction::TakeHalf},
+                          // An older default works the same way: no entry for interact, its E given to guard.
+                          Case{R"({"version": 1, "keys": {"guard": "E"}})", InputAction::Guard, "E", InputAction::Interact},
+                          Case{R"({"version": 1, "keys": {"interact": "X", "guard": "K"}})", InputAction::Interact, "X", InputAction::PartnerOrder},
+                          // The backlog's B, in the table since the partner order left it.
+                          Case{R"({"version": 1, "keys": {"interact": "B", "guard": "K"}})", InputAction::Interact, "B", InputAction::Backlog}}) {
+        CAPTURE(c.text);
+        InputBindings t = defaultInputBindings();
+        InputUnbound unbound;
+        REQUIRE(importInputBindings(c.text, t, &error, &unbound));
+        CHECK(std::string(inputKey(t, c.mine, InputDevice::Keys)) == c.key);
+        if (c.mine != InputAction::Guard) CHECK(std::string(inputKey(t, InputAction::Guard, InputDevice::Keys)) == "K");
+        CHECK(std::string(inputKey(t, c.left, InputDevice::Keys)).empty());
+        CHECK(unbound.left[0][static_cast<std::size_t>(c.left)]);
+        CHECK(unbound.count == 1);
+    }
+    // The migrated heal key is the table's default, whatever the table imported over.
+    InputBindings moved = defaultInputBindings();
+    REQUIRE(rebindInput(moved, InputAction::Gift, InputDevice::Keys, "J"));
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"gift": "G"}})", moved, &error));
+    CHECK(std::string(inputKey(moved, InputAction::Gift, InputDevice::Keys)) == "H");
+    // A file from before the gifts with both their keys bound elsewhere: it imports, both gifts unbound.
+    InputBindings gifts = defaultInputBindings();
+    InputUnbound giftsLeft;
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"release": "G", "count": "Y"}})", gifts, &error, &giftsLeft));
+    CHECK(std::string(inputKey(gifts, InputAction::Release, InputDevice::Keys)) == "G");
+    CHECK(std::string(inputKey(gifts, InputAction::Count, InputDevice::Keys)) == "Y");
+    CHECK(std::string(inputKey(gifts, InputAction::GiftHeal, InputDevice::Keys)).empty());
+    CHECK(std::string(inputKey(gifts, InputAction::GiftGuard, InputDevice::Keys)).empty());
+    CHECK(std::string(inputKey(gifts, InputAction::Gift, InputDevice::Keys)) == "H");
+    CHECK(giftsLeft.count == 2);
+    // A file that itself binds one key to two actions is refused whole, whatever the actions.
+    InputBindings twice = defaultInputBindings();
+    const std::string twiceBefore = encodeInputBindings(twice);
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"release": "T", "take_half": "T"}})", twice, &error));
+    CHECK(encodeInputBindings(twice) == twiceBefore);
+    // A file that names gift_heal is a new one: a doubled key there is still refused whole.
+    InputBindings now = defaultInputBindings();
+    const std::string before = encodeInputBindings(now);
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"gift": "G", "gift_heal": "G"}})", now, &error));
+    CHECK(encodeInputBindings(now) == before);
+}
+
 TEST_CASE("input bindings: a bad file is refused whole and changes nothing") {
     const InputBindings start = defaultInputBindings();
     const std::string before = encodeInputBindings(start);
     const char* bad[] = {
         "not json",
         R"({"keys": {"guard": "Z"}})",                       // no version
-        R"({"version": 2})",                                   // unknown version
+        R"({"version": 3})",                                   // unknown version
+        R"({"version": 0})",                                   // unknown version
         R"({"version": 1, "extra": {}})",                      // unknown member
         R"({"version": 1, "keys": {"heal": "H"}})",            // unknown action
         R"({"version": 1, "keys": {"guard": "Left Ctrl"}})",   // not a key name
         R"({"version": 1, "keys": {"guard": 3}})",             // not a string
         R"({"version": 1, "hold": {"jump": "toggle"}})",       // hold on a press action
         R"({"version": 1, "hold": {"guard": "sometimes"}})",   // unknown mode
-        R"({"version": 1, "keys": {"jump": "Z", "guard": "Z"}})", // doubled
-        R"({"version": 1, "keys": {"guard": "E"}})",           // doubled with a default
+        R"({"version": 1, "keys": {"jump": "Z", "guard": "Z"}})", // doubled within the file
     };
     for (const char* text : bad) {
         InputBindings b = start;
@@ -181,8 +255,11 @@ TEST_CASE("input bindings: in every mode no key does two things, and every actio
                     const InputContext cj = inputActionContext(act(j));
                     if (b.keys[d][j].view() != b.keys[d][i].view() || (!readHeld && cj == InputContext::ReadHeld)) continue;
                     // The same key in both contexts is the overlay's shadow, not a double: allowed only while one
-                    // is the Foot action it stands in for.
-                    CHECK_MESSAGE(ci != cj, inputActionKey(a), " and ", inputActionKey(act(j)));
+                    // is the Foot action it stands in for. Crouch and Intercept share the pad's stick click: never
+                    // read in one place (inputActionLive).
+                    const bool apart = inputActionLive(a, true) != inputActionLive(act(j), true) &&
+                                       inputActionLive(a, false) != inputActionLive(act(j), false);
+                    CHECK_MESSAGE((ci != cj || apart), inputActionKey(a), " and ", inputActionKey(act(j)));
                 }
             }
         }
@@ -209,8 +286,14 @@ TEST_CASE("input bindings: a Read-held key may not sit on Read's or Guard's key"
     CHECK_FALSE(rebindInput(b, InputAction::LineNext, InputDevice::Pad, "Gamepad_RightShoulder"));
     CHECK(encodeInputBindings(b) == before);
     std::string error;
-    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"read_pick_2": "Q"}})", b, &error));
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"read": "Q", "read_pick_2": "Q"}})", b, &error));
     CHECK(error.find("read") != std::string::npos);
+    CHECK(encodeInputBindings(b) == before);
+    // With no entry for Read in the file, the file's own key wins and Read is left unbound on the keyboard.
+    InputUnbound left;
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"read_pick_2": "Q"}})", b, &error, &left));
+    CHECK(std::string(inputKey(b, InputAction::Read, InputDevice::Keys)).empty());
+    CHECK(left.left[0][static_cast<std::size_t>(InputAction::Read)]);
 }
 
 namespace {
@@ -272,16 +355,24 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
     const InputBindings b = defaultInputBindings();
     checkLines(b);
     CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) ==
-          "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  G input.heal  "
-          "R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  V input.intercept");
+          "W/A/S/D input.move  LMB input.light  Hold LMB input.heavy  RMB input.aim  Ctrl input.guard  Alt input.dodge  H input.heal  "
+          "G input.gift_heal  Y input.gift_guard  R input.release  F input.count  1/2/3 input.pick  MMB input.lock  Mouse flick input.switch  "
+          "V input.intercept");
+    // On a pad the two gifts are D-pad left and right, and the stick click is intercept in the arena's line.
+    const std::string padArena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr);
+    CHECK(padArena.find("D-pad left input.gift_heal  D-pad right input.gift_guard") != std::string::npos);
+    CHECK(padArena.find("LS click input.intercept") != std::string::npos);
+    CHECK(padArena.find("input.crouch") == std::string::npos);
+    CHECK(inputAllReachable(b));
+    // The field's: crouch on the stick click, and switch lead left out (the party menu does it on a pad).
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr) ==
-          "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  D-pad left input.crouch  "
-          "B input.dodge  X input.use  D-pad right input.lead  "
+          "LS input.move  LS full input.run  A input.jump  RT input.light  Hold RT input.heavy  LT input.aim  LS click input.crouch  "
+          "B input.dodge  X input.use  "
           "Hold View input.party");
-    // None of the retired keys shows on the keyboard lines.
+    // None of the retired keys shows on the keyboard lines (H came back as the heal's).
     const std::string keys = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr) + "  " +
                              inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr);
-    for (const char* old : {"J ", "K ", "I/", "L/", "H ", "U ", "Q/E", "LMB/J"}) {
+    for (const char* old : {"J ", "K ", "I/", "L/", "U ", "Q/E", "LMB/J"}) {
         CAPTURE(old);
         CHECK(keys.find(old) == std::string::npos);
     }
@@ -290,7 +381,7 @@ TEST_CASE("input hints: the arena's and the field's lines name only keys the tab
 TEST_CASE("input hints: the lines follow a rebind and leave out what nothing reaches") {
     InputBindings b = defaultInputBindings();
     REQUIRE(rebindInput(b, InputAction::Guard, InputDevice::Keys, "K"));
-    REQUIRE(rebindInput(b, InputAction::TargetNext, InputDevice::Keys, "X"));
+    REQUIRE(rebindInput(b, InputAction::TargetNext, InputDevice::Keys, "Z")); // X is the partner order's;
     CHECK_FALSE(rebindInput(b, InputAction::Gift, InputDevice::Keys, "")); // no route: refused
     REQUIRE(rebindInput(b, InputAction::Party, InputDevice::Keys, ""));     // its route stays
     REQUIRE(rebindInput(b, InputAction::Jump, InputDevice::Pad, "Gamepad_FaceButton_Top")); // swaps with Count
@@ -298,8 +389,8 @@ TEST_CASE("input hints: the lines follow a rebind and leave out what nothing rea
     const std::string arena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr);
     CHECK(arena.find("K input.guard") != std::string::npos);
     CHECK(arena.find("Ctrl") == std::string::npos);
-    CHECK(arena.find("Mouse flick/X input.switch") != std::string::npos);
-    CHECK(arena.find("G input.heal") != std::string::npos);
+    CHECK(arena.find("Mouse flick/Z input.switch") != std::string::npos);
+    CHECK(arena.find("H input.heal") != std::string::npos);
     // A table with an action nothing reaches (only a hand-built one now) leaves its entry out.
     InputBindings stranded = b;
     stranded.keys[0][static_cast<std::size_t>(InputAction::Gift)] = InputKeyName{};
@@ -310,6 +401,48 @@ TEST_CASE("input hints: the lines follow a rebind and leave out what nothing rea
     // The host's words come through the callback.
     const auto word = [](const char* key, void*) { return std::string("<") + key + ">"; };
     CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, +word).find("Space <input.jump>") != std::string::npos);
+}
+
+TEST_CASE("input bindings: an action the file binds to \"\" is unbound by choice, not listed as left by a collision") {
+    InputBindings b = defaultInputBindings();
+    InputUnbound left;
+    std::string error;
+    // The file unbinds party's P itself (the map hold still reaches it); G given to release leaves gift_heal unbound by
+    // the collision.
+    const bool ok = importInputBindings(R"({"version": 1, "keys": {"party": "", "release": "G"}})", b, &error, &left);
+    INFO(error);
+    REQUIRE(ok);
+    CHECK(std::string(inputKey(b, InputAction::Party, InputDevice::Keys)).empty());
+    CHECK_FALSE(left.left[0][static_cast<std::size_t>(InputAction::Party)]);
+    CHECK(left.left[0][static_cast<std::size_t>(InputAction::GiftHeal)]);
+    CHECK(left.count == 1);
+    CHECK(inputUnboundLine(left) == "NO KEY: gift_heal (keyboard)");
+    // The controls lines: the choice shows its route, never NO KEY; the collision shows NO KEY.
+    const std::string field = inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr, nullptr, &left);
+    CHECK(field.find("Hold M input.party") != std::string::npos);
+    CHECK(field.find("NO KEY input.party") == std::string::npos);
+    const std::string arena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr, nullptr, &left);
+    CHECK(arena.find("NO KEY input.gift_heal") != std::string::npos);
+    // With no route an action can't be unbound by choice: the file is refused, nothing listed.
+    InputBindings refused = defaultInputBindings();
+    InputUnbound none;
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"take_half": ""}})", refused, &error, &none));
+}
+
+TEST_CASE("input hints: an action the import left unbound shows NO KEY, and the fight's notice names each") {
+    InputBindings b = defaultInputBindings();
+    InputUnbound left;
+    std::string error;
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"release": "G", "count": "Y"}})", b, &error, &left));
+    const std::string arena = inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr, nullptr, &left);
+    CHECK(arena.find("NO KEY input.gift_guard") != std::string::npos);
+    CHECK(arena.find("NO KEY input.gift_heal") != std::string::npos);
+    // Without the list an unbound action is left out, as before.
+    CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Keys, nullptr).find("NO KEY") == std::string::npos);
+    // The pad line is untouched: nothing was left unbound there.
+    CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr, nullptr, &left).find("NO KEY") == std::string::npos);
+    CHECK(inputUnboundLine(left) == "NO KEY: gift_heal (keyboard), gift_guard (keyboard)");
+    CHECK(inputUnboundLine(InputUnbound{}).empty());
 }
 
 TEST_CASE("input hints: the jump's arena line is the arena line with the jump after the dodge, on each device") {
@@ -334,4 +467,294 @@ TEST_CASE("input hints: key labels") {
     CHECK(inputKeyLabel("Z") == "Z");
     CHECK(inputRouteLabel("right_stick_flick") == "RS flick");
     CHECK(inputRouteLabel("map_hold").empty());
+}
+
+TEST_CASE("input bindings: the pad's stick click crouches outside a fight and intercepts in one, never both") {
+    const InputBindings b = defaultInputBindings();
+    CHECK(std::string(inputKey(b, InputAction::Crouch, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+    CHECK(std::string(inputKey(b, InputAction::Intercept, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+    CHECK(std::string(inputKey(b, InputAction::LockOn, InputDevice::Pad)) == "Gamepad_RightThumbstick");
+    CHECK(validateInputBindings(b));
+    // Neither fires in the other's place.
+    CHECK(inputActionLive(InputAction::Crouch, false));
+    CHECK_FALSE(inputActionLive(InputAction::Crouch, true));
+    CHECK(inputActionLive(InputAction::Intercept, true));
+    CHECK_FALSE(inputActionLive(InputAction::Intercept, false));
+    for (std::size_t i = 0; i < kInputActionCount; ++i) {
+        const InputAction a = act(i);
+        if (a == InputAction::Crouch || a == InputAction::Intercept) continue;
+        CAPTURE(inputActionKey(a));
+        CHECK(inputActionScope(a) == InputScope::Any);
+        CHECK(inputActionLive(a, true));
+        CHECK(inputActionLive(a, false));
+    }
+    // The pair shares a key without a clash; any other action on that key still clashes.
+    InputAction clash{};
+    CHECK_FALSE(inputKeyClash(b, InputAction::Crouch, InputDevice::Pad, "Gamepad_LeftThumbstick", clash));
+    CHECK(inputKeyClash(b, InputAction::Jump, InputDevice::Pad, "Gamepad_LeftThumbstick", clash));
+    // Switch lead has no pad button: the party menu's route keeps it reachable and the pad's line names no key for it.
+    CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Pad)).empty());
+    CHECK(std::string(inputActionRoute(InputAction::SwitchLead, InputDevice::Pad)) == "party_menu");
+    CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Keys)) == "Tab");
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Pad, nullptr).find("input.lead") == std::string::npos);
+    CHECK(inputHintLine(b, InputHintScreen::Field, InputDevice::Keys, nullptr).find("Tab input.lead") != std::string::npos);
+}
+
+TEST_CASE("input bindings: a fresh profile takes the ruled pad defaults; a version-1 file keeps its D-pad and loses the gifts") {
+    std::string error;
+    // A fresh profile: no file, or one that names nothing on the pad.
+    for (const char* text : {static_cast<const char*>(nullptr), R"({"version": 2, "keys": {"guard": "K"}})"}) {
+        InputBindings b = defaultInputBindings();
+        InputUnbound left;
+        if (text) REQUIRE(importInputBindings(text, b, &error, &left));
+        CHECK(left.count == 0);
+        CHECK(std::string(inputKey(b, InputAction::GiftHeal, InputDevice::Pad)) == "Gamepad_DPad_Left");
+        CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Pad)) == "Gamepad_DPad_Right");
+        CHECK(std::string(inputKey(b, InputAction::Crouch, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+        CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Pad)).empty());
+    }
+    // A file saved before the ruling, as encodeInputBindings wrote it then: crouch and switch lead on D-pad left and
+    // right, the pad gifts "" (they had no button), version 1. The player's D-pad stays theirs; the gifts are NO KEY.
+    const char* old = R"({"version": 1, "keys": {"guard": "LeftControl"}, "pad": {"light": "Gamepad_RightTrigger", )"
+                      R"("crouch": "Gamepad_DPad_Left", "intercept": "Gamepad_LeftThumbstick", "switch_lead": "Gamepad_DPad_Right", )"
+                      R"("gift_heal": "", "gift_guard": "", "partner_order": ""}})";
+    InputBindings b = defaultInputBindings();
+    InputUnbound left;
+    REQUIRE_MESSAGE(importInputBindings(old, b, &error, &left), error);
+    CHECK(std::string(inputKey(b, InputAction::Crouch, InputDevice::Pad)) == "Gamepad_DPad_Left");
+    CHECK(std::string(inputKey(b, InputAction::SwitchLead, InputDevice::Pad)) == "Gamepad_DPad_Right");
+    CHECK(std::string(inputKey(b, InputAction::Intercept, InputDevice::Pad)) == "Gamepad_LeftThumbstick");
+    CHECK(std::string(inputKey(b, InputAction::GiftHeal, InputDevice::Pad)).empty());
+    CHECK(std::string(inputKey(b, InputAction::GiftGuard, InputDevice::Pad)).empty());
+    CHECK(left.left[1][static_cast<std::size_t>(InputAction::GiftHeal)]);
+    CHECK(left.left[1][static_cast<std::size_t>(InputAction::GiftGuard)]);
+    CHECK(left.count == 2);
+    CHECK(inputUnboundLine(left) == "NO KEY: gift_heal (pad), gift_guard (pad)");
+    CHECK(inputHintLine(b, InputHintScreen::Arena, InputDevice::Pad, nullptr, nullptr, &left).find("NO KEY input.gift_heal") !=
+          std::string::npos);
+    // Saved again it is a version-2 file, and the gifts' "" is then the player's own: read back unchanged.
+    const std::string again = encodeInputBindings(b);
+    CHECK(again.rfind("{\"version\": 2", 0) == 0);
+    InputBindings back = defaultInputBindings();
+    InputUnbound backLeft;
+    REQUIRE(importInputBindings(again, back, &error, &backLeft));
+    CHECK(encodeInputBindings(back) == again);
+    CHECK(backLeft.count == 0);
+    // A version-2 file's "" on a pad gift is the player's unbinding, kept.
+    InputBindings mine = defaultInputBindings();
+    REQUIRE(importInputBindings(R"({"version": 2, "pad": {"gift_heal": ""}})", mine, &error));
+    CHECK(std::string(inputKey(mine, InputAction::GiftHeal, InputDevice::Pad)).empty());
+    // A version-1 file that never touched crouch or switch lead takes the new defaults, gifts included.
+    InputBindings fresh = defaultInputBindings();
+    InputUnbound freshLeft;
+    REQUIRE(importInputBindings(R"({"version": 1, "pad": {"gift_heal": "", "gift_guard": ""}})", fresh, &error, &freshLeft));
+    CHECK(freshLeft.count == 0);
+    CHECK(std::string(inputKey(fresh, InputAction::GiftHeal, InputDevice::Pad)) == "Gamepad_DPad_Left");
+    CHECK(std::string(inputKey(fresh, InputAction::GiftGuard, InputDevice::Pad)) == "Gamepad_DPad_Right");
+}
+
+TEST_CASE("input hints: one action's keys, for a key prompt") {
+    InputBindings b = defaultInputBindings();
+    CHECK(inputActionKeys(b, InputAction::Gift, InputDevice::Keys) == "H");
+    CHECK(inputActionKeys(b, InputAction::Gift, InputDevice::Pad) == "D-pad up");
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Keys) == "G");
+    CHECK(inputActionKeys(b, InputAction::GiftGuard, InputDevice::Keys) == "Y");
+    // The pad as ruled: the gifts on D-pad left and right.
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Pad) == "D-pad left");
+    CHECK(inputActionKeys(b, InputAction::GiftGuard, InputDevice::Pad) == "D-pad right");
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Pad) == "LB+X");
+    CHECK(inputActionKeys(b, InputAction::MoveForward, InputDevice::Pad) == "LS");
+    CHECK(inputActionKeys(b, InputAction::Party, InputDevice::Keys) == "P");
+    InputBindings mapOnly = b; // with no key of its own, the party toggle is the map button held
+    mapOnly.keys[static_cast<std::size_t>(InputDevice::Keys)][static_cast<std::size_t>(InputAction::Party)] = InputKeyName{};
+    CHECK(inputActionKeys(mapOnly, InputAction::Party, InputDevice::Keys) == "Hold M");
+    // A pad key of its own wins over the route.
+    REQUIRE(rebindInput(b, InputAction::GiftHeal, InputDevice::Pad, "Gamepad_LeftStick_Left"));
+    CHECK(inputActionKeys(b, InputAction::GiftHeal, InputDevice::Pad) == "LS left");
+    // The route's second button unbound: nothing reaches it, so no key.
+    b.keys[static_cast<std::size_t>(InputDevice::Pad)][static_cast<std::size_t>(InputAction::Interact)] = InputKeyName{};
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Pad).empty());
+    CHECK(inputActionKeys(b, InputAction::TakeHalf, InputDevice::Keys) == "T");
+}
+
+TEST_CASE("input hints: a key prompt whose action the import left unbound has NO KEY, as its own result") {
+    const InputHintEntry* entries = nullptr;
+    const std::size_t count = inputHintEntries(InputHintScreen::ArenaJump, entries);
+    const auto entryOf = [&](InputAction a) -> const InputHintEntry* {
+        for (std::size_t i = 0; i < count; ++i)
+            for (std::uint8_t j = 0; j < entries[i].count; ++j)
+                if (entries[i].actions[j] == a) return &entries[i];
+        return nullptr;
+    };
+    // The defaults: every prompt has its key, none is NO KEY, with or without a list.
+    InputBindings b = defaultInputBindings();
+    const InputUnbound none;
+    for (std::size_t i = 0; i < count; ++i) {
+        for (const InputDevice d : {InputDevice::Keys, InputDevice::Pad}) {
+            const InputPromptKey k = inputPromptKey(b, entries[i], d, &none);
+            CHECK_FALSE(k.noKey);
+            CHECK(k.keys == inputHintKeys(b, entries[i], d));
+        }
+    }
+    const InputPromptKey heal = inputPromptKey(b, InputAction::Gift, InputDevice::Keys, nullptr);
+    CHECK_FALSE(heal.noKey);
+    CHECK(heal.keys == "H");
+    // A newer default on a key the player gave to something else: the gifts are left unbound on the keyboard.
+    InputUnbound left;
+    std::string error;
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"release": "G", "count": "Y"}})", b, &error, &left));
+    for (const InputAction a : {InputAction::GiftHeal, InputAction::GiftGuard}) {
+        CAPTURE(static_cast<int>(a));
+        CHECK(inputNoKey(b, a, InputDevice::Keys, &left));
+        CHECK_FALSE(inputNoKey(b, a, InputDevice::Keys, nullptr)); // no list: no NO KEY
+        CHECK_FALSE(inputNoKey(b, a, InputDevice::Pad, &left));    // nothing left unbound on the pad
+        const InputPromptKey own = inputPromptKey(b, a, InputDevice::Keys, &left);
+        CHECK(own.noKey);
+        CHECK(own.keys == kInputNoKey);
+        const InputHintEntry* e = entryOf(a);
+        REQUIRE(e != nullptr);
+        const InputPromptKey line = inputPromptKey(b, *e, InputDevice::Keys, &left);
+        CHECK(line.noKey);
+        CHECK(line.keys == kInputNoKey);
+        // Without the list the prompt is one nothing reaches: empty and not NO KEY (the old answer).
+        const InputPromptKey bare = inputPromptKey(b, a, InputDevice::Keys, nullptr);
+        CHECK_FALSE(bare.noKey);
+        CHECK(bare.keys.empty());
+        // On the pad the gifts keep their ruled D-pad keys (nothing left unbound there): not NO KEY.
+        const InputPromptKey pad = inputPromptKey(b, a, InputDevice::Pad, &left);
+        CHECK_FALSE(pad.noKey);
+        CHECK(pad.keys == (a == InputAction::GiftHeal ? "D-pad left" : "D-pad right"));
+    }
+    // The actions that took their keys show them.
+    const InputPromptKey release = inputPromptKey(b, InputAction::Release, InputDevice::Keys, &left);
+    CHECK_FALSE(release.noKey);
+    CHECK(release.keys == "G");
+    // A key put back on a marked action wins: it is no longer NO KEY. (Set in place: rebindInput refuses any rebind
+    // while an action stays left unbound, since inputAllReachable takes no list.)
+    InputKeyName& healKey = b.keys[static_cast<std::size_t>(InputDevice::Keys)][static_cast<std::size_t>(InputAction::GiftHeal)];
+    healKey.text[0] = 'J';
+    healKey.text[1] = '\0';
+    CHECK_FALSE(inputNoKey(b, InputAction::GiftHeal, InputDevice::Keys, &left));
+    const InputPromptKey back = inputPromptKey(b, InputAction::GiftHeal, InputDevice::Keys, &left);
+    CHECK_FALSE(back.noKey);
+    CHECK(back.keys == "J");
+}
+
+TEST_CASE("input bindings: the backlog's key is in the table, and no default on either device sits on it") {
+    const InputBindings b = defaultInputBindings();
+    REQUIRE(validateInputBindings(b));
+    const std::string backlog = inputKey(b, InputAction::Backlog, InputDevice::Keys);
+    CHECK(backlog == "B");
+    CHECK(std::string(inputKey(b, InputAction::Backlog, InputDevice::Pad)).empty()); // no pad button (inputPadPending)
+    CHECK(inputPadPending(InputAction::Backlog));
+    CHECK(inputActionScope(InputAction::Backlog) == InputScope::Any); // on in the field and in a fight alike
+    for (std::size_t i = 0; i < kInputActionCount; ++i) {
+        const InputAction a = static_cast<InputAction>(i);
+        if (a == InputAction::Backlog) continue;
+        CAPTURE(inputActionKey(a));
+        for (InputDevice d : {InputDevice::Keys, InputDevice::Pad}) CHECK(std::string(inputKey(b, a, d)) != backlog);
+    }
+    // The partner order left B for X, a key the table and the controller's own keys leave free.
+    CHECK(std::string(inputKey(b, InputAction::PartnerOrder, InputDevice::Keys)) == "X");
+    // Rebinding the partner order onto B finds the backlog there: the clash check names it, and a rebind swaps them.
+    InputAction clash = InputAction::Light;
+    CHECK(inputKeyClash(b, InputAction::PartnerOrder, InputDevice::Keys, "B", clash));
+    CHECK(clash == InputAction::Backlog);
+    InputBindings r = b;
+    InputAction swapped = InputAction::Light;
+    REQUIRE(rebindInput(r, InputAction::PartnerOrder, InputDevice::Keys, "B", &swapped));
+    CHECK(swapped == InputAction::Backlog);
+    CHECK(std::string(inputKey(r, InputAction::Backlog, InputDevice::Keys)) == "X");
+    CHECK(validateInputBindings(r));
+    // Saved and read back, the backlog's key round-trips like any other.
+    InputBindings back = defaultInputBindings();
+    std::string error;
+    REQUIRE_MESSAGE(importInputBindings(encodeInputBindings(r), back, &error), error);
+    CHECK(std::string(inputKey(back, InputAction::Backlog, InputDevice::Keys)) == "X");
+    CHECK(std::string(inputKey(back, InputAction::PartnerOrder, InputDevice::Keys)) == "B");
+}
+
+TEST_CASE("input bindings: no action of either context may take the backlog's key, and a file from before it keeps B on the backlog") {
+    std::string error;
+    const InputBindings b = defaultInputBindings();
+    // A Read-held action (another context) onto B: the clash check names the backlog, and the validator refuses it.
+    InputAction clash = InputAction::Light;
+    CHECK(inputKeyClash(b, InputAction::ReadPick1, InputDevice::Keys, "B", clash));
+    CHECK(clash == InputAction::Backlog);
+    CHECK(inputKeyClash(b, InputAction::Backlog, InputDevice::Keys, "One", clash)); // and the other way
+    CHECK(clash == InputAction::ReadPick1);
+    InputBindings hand = b;
+    hand.keys[0][static_cast<std::size_t>(InputAction::LineNext)] = hand.keys[0][static_cast<std::size_t>(InputAction::Backlog)];
+    CHECK_FALSE(validateInputBindings(hand));
+    // A file as encodeInputBindings wrote it before this table had the backlog: every action named, the partner order
+    // on B (its old default), no backlog entry. It imports with nothing left unbound: the backlog keeps B and the
+    // partner order takes its new key.
+    std::string old = encodeInputBindings(b);
+    const auto cut = [&old](const std::string& from, const std::string& to) {
+        const std::size_t at = old.find(from);
+        REQUIRE(at != std::string::npos);
+        old.replace(at, from.size(), to);
+    };
+    cut(R"("partner_order": "X", "backlog": "B")", R"("partner_order": "B")");
+    cut(R"("partner_order": "", "backlog": "")", R"("partner_order": "")");
+    CHECK(old.find("backlog") == std::string::npos);
+    InputBindings back = defaultInputBindings();
+    InputUnbound left;
+    REQUIRE_MESSAGE(importInputBindings(old, back, &error, &left), error);
+    CHECK(left.count == 0);
+    CHECK(std::string(inputKey(back, InputAction::Backlog, InputDevice::Keys)) == "B");
+    CHECK(std::string(inputKey(back, InputAction::PartnerOrder, InputDevice::Keys)) == "X");
+    CHECK(encodeInputBindings(back) == encodeInputBindings(b));
+    // The player's own partner order on another key stays theirs.
+    InputBindings mine = defaultInputBindings();
+    REQUIRE(importInputBindings(R"({"version": 2, "keys": {"partner_order": "N"}})", mine, &error));
+    CHECK(std::string(inputKey(mine, InputAction::PartnerOrder, InputDevice::Keys)) == "N");
+    CHECK(std::string(inputKey(mine, InputAction::Backlog, InputDevice::Keys)) == "B");
+    // A file that names both on B is the player's own doubling: refused whole.
+    InputBindings both = defaultInputBindings();
+    CHECK_FALSE(importInputBindings(R"({"version": 2, "keys": {"partner_order": "B", "backlog": "B"}})", both, &error));
+}
+
+TEST_CASE("input bindings: the host's reload keeps the table it has when the file is refused, and starts from the defaults when it is read") {
+    // The table now: the player's own (Guard on K, held Guard toggled), as an earlier load left it.
+    InputBindings now = defaultInputBindings();
+    REQUIRE(rebindInput(now, InputAction::Guard, InputDevice::Keys, "K"));
+    now.hold[static_cast<std::size_t>(InputAction::Guard)] = HoldMode::Toggle;
+    REQUIRE(validateInputBindings(now));
+    InputUnbound unbound;
+    unbound.left[0][static_cast<std::size_t>(InputAction::GiftHeal)] = true;
+    unbound.count = 1;
+    const InputBindings before = now;
+
+    // A half-written file (the save cut short) and one that is not bindings at all: refused, the table and the unbound
+    // list exactly as they were, and why in the error.
+    const std::string whole = encodeInputBindings(defaultInputBindings());
+    for (const std::string& text : {whole.substr(0, whole.size() / 2), std::string("{\"version\": 9}"), std::string()}) {
+        CAPTURE(text);
+        std::string error;
+        CHECK(loadInputBindings(true, text, now, unbound, &error) == InputBindingsLoad::Refused);
+        CHECK_FALSE(error.empty());
+        CHECK(std::string(inputKey(now, InputAction::Guard, InputDevice::Keys)) == "K");
+        CHECK(now.hold == before.hold);
+        CHECK(encodeInputBindings(now) == encodeInputBindings(before));
+        CHECK(unbound.count == 1);
+        CHECK(unbound.left[0][static_cast<std::size_t>(InputAction::GiftHeal)]);
+    }
+
+    // A good file read after it: its overrides over the defaults, nothing of the old table carried (the Guard's key
+    // and its toggle back to the defaults where the file names neither), and the unbound list the file's own.
+    std::string error;
+    REQUIRE(loadInputBindings(true, R"({"version": 2, "keys": {"jump": "J"}})", now, unbound, &error) == InputBindingsLoad::Read);
+    const InputBindings defaults = defaultInputBindings();
+    CHECK(std::string(inputKey(now, InputAction::Jump, InputDevice::Keys)) == "J");
+    CHECK(std::string(inputKey(now, InputAction::Guard, InputDevice::Keys)) == inputKey(defaults, InputAction::Guard, InputDevice::Keys));
+    CHECK(now.hold == defaults.hold);
+    CHECK(unbound.count == 0);
+
+    // No file: the defaults, nothing unbound.
+    REQUIRE(rebindInput(now, InputAction::Guard, InputDevice::Keys, "K"));
+    unbound.count = 3;
+    CHECK(loadInputBindings(false, std::string_view(), now, unbound) == InputBindingsLoad::Defaults);
+    CHECK(encodeInputBindings(now) == encodeInputBindings(defaults));
+    CHECK(unbound.count == 0);
 }

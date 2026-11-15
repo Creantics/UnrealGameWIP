@@ -7,7 +7,9 @@
 //
 // Two contexts: Foot (exploring and fighting, one set, so a fight in the field and in the arena answer to the same
 // keys) and ReadHeld (only while Read is held: those keys stand in for whatever Foot gives them). Within a context
-// and a device no key does two things; validateInputBindings checks it and rebindInput swaps on a clash.
+// and a device no key does two things; validateInputBindings checks it and rebindInput swaps on a clash. One pair is
+// the exception: Crouch is read only outside a fight and Intercept only inside one (inputActionScope), so the two may
+// share a key, and by default they share the pad's left stick click.
 //
 // The quick-time and mini-game prompts keep their own four action buttons (ActionButton.h); menus, dialogue and the
 // van keep theirs. Nothing here allocates except import, encode and the error text.
@@ -63,10 +65,17 @@ enum class InputAction : std::uint8_t {
     LineNext,
     // Foot (appended)
     TakeHalf,
+    GiftHeal, // the third slot's two gifts, each picked and given at once (Gift is the lead's own heal)
+    GiftGuard,
+    PartnerOrder, // the partner's order: StayClose and Spread in turn (arena)
+    Backlog,      // the reading screen's backlog (the story context, on under every screen, so it shares no key)
 };
-inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::TakeHalf) + 1;
+inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::Backlog) + 1;
 
 enum class InputContext : std::uint8_t { Foot, ReadHeld };
+// Where a Foot action is read: anywhere, only outside a fight (Field), or only inside one (Fight). A Field action and a
+// Fight action never fire in the same place, so they may share a key (inputKeyClash).
+enum class InputScope : std::uint8_t { Any, Field, Fight };
 enum class InputDevice : std::uint8_t { Keys, Pad };
 inline constexpr std::size_t kInputDeviceCount = 2;
 
@@ -91,6 +100,11 @@ FTCORE_API bool parseInputAction(std::string_view key, InputAction& out);
 FTCORE_API InputContext inputActionContext(InputAction a);
 // Whether the action is held (Aim, Guard, Read, Run, Crouch, Intercept): the ones with a hold-to-toggle option.
 FTCORE_API bool inputActionHeld(InputAction a);
+// Crouch is Field and Intercept is Fight; every other action is Any.
+FTCORE_API InputScope inputActionScope(InputAction a);
+// Whether the host reads the action there: false for a Field action in a fight and a Fight action outside one. A host
+// that reads a shared key asks this first, so the one button does one thing in each place.
+FTCORE_API bool inputActionLive(InputAction a, bool inFight);
 
 FTCORE_API InputBindings defaultInputBindings();
 FTCORE_API const char* inputKey(const InputBindings& b, InputAction a, InputDevice d);
@@ -108,7 +122,9 @@ FTCORE_API bool inputKeyClash(const InputBindings& b, InputAction a, InputDevice
 FTCORE_API bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std::string_view key, InputAction* swapped = nullptr);
 // How an action with no key on that device is still reached: "left_stick" (moving), "left_stick_full" (the stick
 // pushed all the way runs), "mouse_flick" / "right_stick_flick" (locked on, a flick switches the target),
-// "map_hold" (holding the map button shows or hides the party). Null when the action has no such route.
+// "map_hold" (holding the map button shows or hides the party), "guard_interact" (take half on a pad: the pad's Guard
+// button down plus Interact), "party_menu" (switch lead on a pad, ruled 2026-11-14: the party menu does it, so no
+// controls line names a pad key for it). Null when the action has no such route.
 FTCORE_API const char* inputActionRoute(InputAction a, InputDevice d);
 // Holding the map button this long, on either device, is the party toggle (inputActionRoute "map_hold").
 inline constexpr float kInputMapHoldForParty = 0.6f;
@@ -118,10 +134,34 @@ FTCORE_API bool inputAllReachable(const InputBindings& b, InputAction* missing =
 // refusal is a held Guard, so Guard must keep working while Read is held). The first problem in `error`.
 FTCORE_API bool validateInputBindings(const InputBindings& b, std::string* error = nullptr);
 
-// {"version": 1, "keys": {"guard": "LeftControl"}, "pad": {"guard": "Gamepad_LeftShoulder"}, "hold": {"guard": "toggle"}}
-// read over `out` (start it from the defaults); a member left out keeps its value. Unknown actions, bad names,
-// "hold" on a press action and a doubled key are refused, and `out` is left as it was.
-FTCORE_API bool importInputBindings(std::string_view text, InputBindings& out, std::string* error = nullptr);
+// {"version": 2, "keys": {"guard": "LeftControl"}, "pad": {"guard": "Gamepad_LeftShoulder"}, "hold": {"guard": "toggle"}}
+// read over `out`: a key the file names wins, every other key is the table's default, and a hold mode left out keeps
+// its value. Unknown actions, bad names,
+// "hold" on a press action and two of the file's own entries on one key are refused, and `out` is left as it was.
+// An action the file has no entry for takes its default; when a key the file binds is that default, the player's
+// binding wins and the action is left unbound (InputUnbound): the host shows it as NO KEY and says so at a fight's start.
+// Version 1 is a file saved before the pad gifts had buttons: its pad entry "" for gift_heal or gift_guard (the only
+// value it could hold) reads as no entry, so the gift takes its D-pad default or, on a key the file keeps for crouch
+// or switch lead, NO KEY. encodeInputBindings writes kInputBindingsVersion.
+inline constexpr int kInputBindingsVersion = 2;
+struct InputUnbound {
+    std::array<std::array<bool, kInputActionCount>, kInputDeviceCount> left{};
+    std::uint32_t count = 0;
+};
+FTCORE_API bool importInputBindings(std::string_view text, InputBindings& out, std::string* error = nullptr,
+                                    InputUnbound* unbound = nullptr);
+// What the host's (re)load of the player's file did (loadInputBindings).
+enum class InputBindingsLoad : std::uint8_t { Defaults, Read, Refused };
+// The host's (re)load: no file (fileThere false) is the defaults with nothing unbound; a file is its overrides read
+// over the defaults (importInputBindings into a temporary that starts from the defaults, so nothing of the table now
+// carries into it). Only an accepted file or no file writes `bindings` and `unbound`: a refused one (invalid, or a
+// half-written file cut short) leaves both exactly as they were, returns Refused and says why in `error`.
+FTCORE_API InputBindingsLoad loadInputBindings(bool fileThere, std::string_view text, InputBindings& bindings,
+                                               InputUnbound& unbound, std::string* error = nullptr);
+// The partner's order has no pad button and no route until the pad's layout is ruled for it: inputAllReachable lets
+// it go unbound on the pad. The two gifts have D-pad buttons (ruled 2026-11-14) but may still go unbound there, so a
+// version-1 file's NO KEY gifts, saved again, read back.
+FTCORE_API bool inputPadPending(InputAction a);
 // Every binding and every held action's mode; importInputBindings reads it back.
 FTCORE_API std::string encodeInputBindings(const InputBindings& b);
 
@@ -154,14 +194,42 @@ FTCORE_API std::string_view inputKeyLabel(std::string_view key);
 // A route's label ("left_stick" -> "LS", "right_stick_flick" -> "RS flick"); empty for map_hold, which shows as
 // kInputHoldPrefix and the map key.
 FTCORE_API std::string_view inputRouteLabel(std::string_view route);
-// The keys one entry shows on a device, '/' between them, each once; empty when none of its actions is reachable.
-FTCORE_API std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d);
+// What an action the import left unbound (InputUnbound) shows in place of a key, so the player sees it has none.
+inline constexpr const char* kInputNoKey = "NO KEY";
+
+// The keys one entry shows on a device, '/' between them, each once; empty when none of its actions is reachable. An
+// action `unbound` marks on that device shows kInputNoKey.
+FTCORE_API std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d,
+                                     const InputUnbound* unbound = nullptr);
+// The keys that reach one action on a device, as a key prompt shows them: its own key's label; else, for a route of
+// Guard held plus a second button ("guard_interact"), the two keys' labels with '+' between ("LB+X"); else the
+// route's label ("LS", or kInputHoldPrefix and the map key); empty when nothing reaches it. Allocates: build it when
+// the device or the bindings change, not every frame.
+FTCORE_API std::string inputActionKeys(const InputBindings& b, InputAction a, InputDevice d);
+// Whether the import left `a` unbound on that device (`unbound` marks it) and it still has no key there: what it
+// shows in place of a key is kInputNoKey. False with no list. inputHintKeys and inputPromptKey both ask this.
+FTCORE_API bool inputNoKey(const InputBindings& b, InputAction a, InputDevice d, const InputUnbound* unbound);
+// A key prompt's key on a device. `keys`: the controls line's entry as the line shows it (inputHintKeys), or with no
+// entry the action's own keys (inputActionKeys). `noKey`: every action the prompt names was left unbound there by the
+// import (inputNoKey), so `keys` is kInputNoKey: the prompt stands dimmed with NO KEY in its key box, and never
+// vanishes. Empty `keys` (and no noKey): nothing reaches the prompt on that device. Allocates: build it when the device
+// or the bindings change, not every frame.
+struct InputPromptKey {
+    std::string keys;
+    bool noKey = false;
+};
+FTCORE_API InputPromptKey inputPromptKey(const InputBindings& b, const InputHintEntry& e, InputDevice d,
+                                         const InputUnbound* unbound);
+FTCORE_API InputPromptKey inputPromptKey(const InputBindings& b, InputAction a, InputDevice d, const InputUnbound* unbound);
 // The word for a label key (the host's localised text); null shows the key itself.
 using InputHintText = std::string (*)(const char* labelKey, void* user);
 // The whole line: "<keys> <word>" per entry, two spaces apart. Allocates: build it when the device or the
 // bindings change, not every frame.
 FTCORE_API std::string inputHintLine(const InputBindings& b, InputHintScreen screen, InputDevice d, InputHintText text,
-                                     void* user = nullptr);
+                                     void* user = nullptr, const InputUnbound* unbound = nullptr);
+// One line naming each action the import left unbound, with the device: "NO KEY: take_half (keyboard), gift_heal
+// (pad)". Empty when none. A fight's host shows it at the start. Allocates.
+FTCORE_API std::string inputUnboundLine(const InputUnbound& unbound);
 
 // A held input with the toggle option: held, it is down while the key is; toggled, each press flips it.
 class HeldInput {

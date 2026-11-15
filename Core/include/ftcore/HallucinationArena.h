@@ -11,9 +11,14 @@
 // * No offer open, or only shown: the input goes through as it is.
 //
 // The host builds HallucinationInput from the raw input first, ticks the Hallucination, then sends the fight this.
+//
+// The price (Hallucination.h): after the tick, a Refused with weakPointOpenFor() above 0 opens the boss's weak point
+// for that long; while weakPointShutFor() is above 0 it stays shut; hallucinationHeldDamage() is the lead's hp to take.
 
 #include "ftcore/ArenaFight.h"
 #include "ftcore/Hallucination.h"
+
+#include <cmath>
 
 namespace ftcore {
 
@@ -28,6 +33,13 @@ inline ArenaInput hallucinationArenaInput(const Hallucination& h, const ArenaInp
     const float keep = 1.f - h.holdLevel();
     if (h.active() && keep < 1.f) out.move = Vec2{in.move.x * keep, in.move.y * keep};
     return out;
+}
+
+// Held's health cost in hit points for a lead of `maxHp`, on the step Held began (0 on every other step), to the
+// nearest point.
+inline int hallucinationHeldDamage(const Hallucination& h, int maxHp) {
+    if (!(h.heldCost() > 0.f) || maxHp <= 0) return 0;
+    return static_cast<int>(std::lround(static_cast<double>(maxHp) * static_cast<double>(h.heldCost())));
 }
 
 } // namespace ftcore

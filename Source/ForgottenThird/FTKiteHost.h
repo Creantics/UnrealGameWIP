@@ -81,6 +81,11 @@ public:
 	bool IsLocked() const { return LockSession != nullptr && Weak.locked; }
 	// The lock opened (or its open time restarted): the window opens from At for Seconds.
 	void OnUnlocked(double At, double Seconds);
+	// The host's own opening (a refusal's): the window opens from At for Seconds (a longer one open is kept).
+	void OpenFor(double At, float Seconds);
+	// Shut: nothing opens the window (a parry, a stagger, an unlock or OpenFor) and an open one closes now. Begin unshuts.
+	void SetShut(bool bInShut);
+	bool IsShut() const { return bShut; }
 
 	// ---- for the HUD ----
 	const ftcore::CritWindow& GetCrit() const { return Crit; }
@@ -118,6 +123,7 @@ private:
 	const ftcore::FightSession* LockSession = nullptr;
 	// The window was open at the last step (so its end is noted once).
 	bool bWasOpen = false;
+	bool bShut = false;
 
 	std::array<FFTKiteNote, MaxNotes> Notes{};
 	int32_t NoteTotal = 0;

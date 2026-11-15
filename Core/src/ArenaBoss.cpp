@@ -654,8 +654,9 @@ bool importArenaBoss(std::string_view json, ArenaBossDef& out, std::string* erro
             errors.push_back("version: expected 1");
         abUnknownKeys(root, "",
                       {"version", "bpm", "hp", "poise", "staggerTime", "openTime", "intercept", "guestCall",
-                       "weakPoints", "keepOut", "moves", "phases"},
+                       "weakPoints", "keepOut", "moves", "phases", "checkpointAtPhase"},
                       ownKeys, warnings);
+        abBool(root, "checkpointAtPhase", out.checkpointAtPhase, "", errors);
         abNum(root, "bpm", out.bpm, 40.0, 240.0, true, "", errors);
         abInt(root, "hp", out.hp, 1, 100000, true, "", errors);
         abNum(root, "poise", out.poise, 1.0, 10000.0, true, "", errors);
@@ -779,6 +780,7 @@ void ArenaBossRun::begin(const ArenaBossDef& def, double now) {
     liveStart_ = now_;
     cueCount_ = cueNext_ = 0;
     critWasOpen_ = false;
+    critShut_ = false;
     missed_ = false;
 }
 
@@ -812,7 +814,7 @@ void ArenaBossRun::absorb(const CalledResults& results) {
         bool all = true;
         for (std::size_t i = 0; i < strike_.size(); ++i) all = all && strike_.outcome(i) == CalledOutcome::Intercepted;
         if (all) {
-            if (m.opens > 0.0f) {
+            if (m.opens > 0.0f && !critShut_) {
                 crit_.open(r.at, m.opens);
                 critWasOpen_ = true;
                 events_.push(
@@ -962,18 +964,45 @@ const ArenaBossEvents& ArenaBossRun::offerUnlock(UnlockKey key, double t, std::u
     const double until = lock_.until();
     // The window stays open at least as long as the lock (a longer opening already running is kept).
     const double end = critWasOpen_ && crit_.closesAt() > until ? crit_.closesAt() : until;
-    if (critWasOpen_ && crit_.isOpen(now_)) {
+    if (critShut_) {
+        // shut: the lock opens, the weak points stay shut
+    } else if (critWasOpen_ && crit_.isOpen(now_)) {
         if (end > crit_.closesAt()) crit_.open(now_, end - now_); // a new opening: its first crit is flagged again
     } else {
         crit_.open(now_, end - now_);
     }
-    critWasOpen_ = true;
+    critWasOpen_ = critWasOpen_ || !critShut_;
     ArenaBossEvent e{ArenaBossEventType::Unlocked, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_, until};
     if (u == UnlockResult::Unlocked) e.value = key;
     else e.amount = 1;
     events_.push(e);
+    if (!critShut_)
+        events_.push({ArenaBossEventType::CritOpened, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_,
+                      crit_.closesAt()});
+    return events_;
+}
+
+const ArenaBossEvents& ArenaBossRun::openCrit(double t, double seconds) {
+    events_.clear();
+    advance(t);
+    if (critShut_ || !(seconds > 0.0) || !std::isfinite(seconds)) return events_;
+    if (critWasOpen_ && crit_.isOpen(now_) && crit_.closesAt() >= now_ + seconds) return events_; // the longer stays
+    crit_.open(now_, seconds);
+    critWasOpen_ = true;
     events_.push({ArenaBossEventType::CritOpened, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_,
                   crit_.closesAt()});
+    return events_;
+}
+
+const ArenaBossEvents& ArenaBossRun::shutCrit(bool shut, double t) {
+    events_.clear();
+    advance(t);
+    critShut_ = shut;
+    if (shut && critWasOpen_) {
+        crit_.close();
+        critWasOpen_ = false;
+        events_.push({ArenaBossEventType::CritClosed, kArenaBossNoMove, 0, CalledOutcome::Pending, 0, 0, now_, 0.0});
+    }
     return events_;
 }
 
@@ -1066,8 +1095,9 @@ bool importBossScript(std::string_view json, BossScriptDef& out, std::string* er
             errors.push_back("version: expected 1");
         abUnknownKeys(root, "",
                       {"version", "id", "hp", "gauge", "resourceMax", "resourceStart", "wardLimit", "critMultiplier",
-                       "restSeconds", "lock", "key", "moves", "offer", "phases"},
+                       "restSeconds", "lock", "key", "moves", "offer", "phases", "checkpointAtPhase"},
                       {}, warnings);
+        abBool(root, "checkpointAtPhase", out.checkpointAtPhase, "", errors);
         const JsonValue id = root["id"];
         if (!id.isString() || !abId(id.string(), kBossIdCapacity - 1))
             errors.push_back("id: expected an id of a-z, 0-9 and _, up to " + std::to_string(kBossIdCapacity - 1) +

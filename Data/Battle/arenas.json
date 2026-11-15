@@ -36,7 +36,7 @@
       "water": [ { "at": [-10, -12], "radius": 4 } ]
     },
     {
-      "id": "lat_facade_a", "world": "lattice", "district": 5, "bosses": ["duelist"],
+      "id": "lat_facade_a", "world": "lattice", "district": 5, "bosses": ["duelist"], "frameTurnCapDeg": 0,
       "offset": [0, -34], "yaw": -90, "shape": { "kind": "rect", "aspect": 1.6, "corner": 0.3 }, "seed": 22,
       "water": [ { "at": [7, -24], "radius": 3 } ]
     },

@@ -24,7 +24,14 @@ struct WorldClockSpec {
     float latitudeDeg = 22.0f;  // the city's latitude (coastal, subtropical)
     float twilightHigh = 6.0f;  // sun elevation (degrees) at which night starts to fall
     float twilightLow = -6.0f;  // sun elevation at which it is full night
+    // The sun's path turned this many degrees clockwise (seen from above) against the plan's compass: the plan's
+    // north is not the sky's. 58 puts the start hour's sun (kWorldClockStartHours, about 28 degrees up) about 20 degrees
+    // off the city's main north-south street, so it rakes along the street's facades and throws long shadows.
+    float azimuthOffsetDeg = 58.0f;
 };
+
+// The hour a fresh game day starts at (a low morning sun); the map builders bake the same sun into their maps.
+inline constexpr double kWorldClockStartHours = 8.0;
 
 inline constexpr float kWorldClockDefaultDayMinutes = 48.0f;  // 2 real minutes per game hour
 inline constexpr float kWorldClockMinDayMinutes = 1.0f;
@@ -55,7 +62,8 @@ FTCORE_API void worldClockSetDayMinutes(WorldClock& clock, float minutes);
 // Loading a save runs it. No allocation.
 FTCORE_API WorldClock worldClockSanitized(const WorldClock& clock);
 
-// The sun's direction at this hour: a unit vector, x east, y north, z up. No allocation.
+// The sun's direction at this hour: a unit vector, x east, y north, z up (the plan's compass, after
+// azimuthOffsetDeg). No allocation.
 struct SunDirection {
     float east = 0.0f, north = 0.0f, up = 1.0f;
 };
@@ -85,5 +93,14 @@ struct TimeCurves {
 // 0 <= h < 24); then one row per curve (CrowdDensity, Danger, both required, each once) with a value in 0..1 per hour.
 // False with "line N: ..." on anything else. Allocates: load time only.
 FTCORE_API bool parseTimeCurves(std::string_view csv, TimeCurves& out, std::string* error = nullptr);
+
+// A dial's two hands at an hour of the clock: degrees clockwise from twelve as seen from the front of the dial, each
+// in 0..360. The hour hand turns once in 12 h and moves on with the minutes; the minute hand turns once an hour.
+// Non-finite hours give twelve o'clock. No allocation.
+struct ClockHands {
+    double hourDeg = 0.0;
+    double minuteDeg = 0.0;
+};
+FTCORE_API ClockHands clockHands(double hours);
 
 }  // namespace ftcore

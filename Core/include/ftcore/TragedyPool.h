@@ -181,15 +181,22 @@ struct TragedySave {
     bool operator==(const TragedySave&) const = default;
 };
 
-inline TragedySave captureTragedies(const TragedyTable& t, const TragedyPool& p) {
-    TragedySave s;
+// Fills `out` from `p`. Returns how many of the pool's unlocked keys `t` has no row for (at or past its size: a pool
+// of a larger table); those are left out of the save.
+inline int captureTragedies(const TragedyTable& t, const TragedyPool& p, TragedySave& out) {
+    out.unlocked.clear();
     std::vector<std::pair<std::uint32_t, std::size_t>> byOrder;
-    for (std::size_t i = 0; i < t.keys.size() && i < kMaxTragedyKeys; ++i)
-        if (const std::uint32_t o = p.unlockOrder(static_cast<int>(i))) byOrder.emplace_back(o, i);
+    int dropped = 0;
+    for (std::size_t i = 0; i < kMaxTragedyKeys; ++i) {
+        const std::uint32_t o = p.unlockOrder(static_cast<int>(i));
+        if (o == 0) continue;
+        if (i < t.keys.size()) byOrder.emplace_back(o, i);
+        else ++dropped;
+    }
     std::sort(byOrder.begin(), byOrder.end());
-    s.unlocked.reserve(byOrder.size());
-    for (const auto& [order, i] : byOrder) s.unlocked.push_back(t.keys[i].id);
-    return s;
+    out.unlocked.reserve(byOrder.size());
+    for (const auto& [order, i] : byOrder) out.unlocked.push_back(t.keys[i].id);
+    return dropped;
 }
 
 // Unlocks the save's keys, in its order, into `p` (a fresh pool of `t`: a key already unlocked there keeps its own

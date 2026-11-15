@@ -20,7 +20,9 @@
 // (leader pose) and face shapes; grooms bind to the piece they were built for (see FTLook.h).
 //
 // With a party in config (PartyLooks) the pawn wears one member's look and the rest follow it
-// (AFTExploreDirector): Tab or RB switches to the next member, P or LB hides or shows the followers.
+// (AFTExploreDirector). Under the new UI (FT::NewUiEnabled, the default) the party screen takes P and the map key's
+// hold (its last row shows or hides the followers), and Tab alone switches. Under -FTOldUi, as before: Tab or RB
+// switches to the next member, P or LB (or the map key held) hides or shows the followers.
 // StartLead and bStartSolo set the start (-ExploreLead=<Name> and -ExploreSolo for -game runs); the
 // player's last choice is kept across a fight (UFTGameInstance).
 //
@@ -96,6 +98,9 @@
 #include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
+#include "ftcore/UiPartyScreen.h"
+#include "ftcore/WaterBodies.h"
+#include "ftcore/WetPrints.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
 #include "UObject/StrongObjectPtr.h"
@@ -106,7 +111,9 @@ class AFTExploreDirector;
 class FFTExposureProbe;
 class UAnimSequence;
 class AFTPartyVan;
+class APlayerController;
 class UCameraComponent;
+class UDecalComponent;
 class UInputAction;
 class UInputMappingContext;
 class URectLightComponent;
@@ -179,6 +186,15 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
+	// The party screen under the new UI (FT::NewUiEnabled; its explore layer draws it while open) and its rows'
+	// PartyLooks entries (-1: none), found at begin play and after every lead change: the partner is the first other
+	// playable look, the Third the first look the player may not play.
+	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
+	int32 GetPartnerIndex() const { return PartnerIndex; }
+	int32 GetThirdIndex() const { return ThirdIndex; }
+	// Whether the partner's row has a lead to switch to (else it reads NOT HERE and never takes the cursor): the one
+	// truth the screen's step (UiPartyInput::partnerHere) and its drawing read.
+	bool IsPartnerHere() const { return PartyLooks.IsValidIndex(PartnerIndex) && PartnerIndex != LeadIndex; }
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
@@ -210,6 +226,9 @@ protected:
 
 private:
 	void CreateInputObjects();
+	// Maps the context's keys from FTInputBindings (unmapping the old ones first) and notes their generation; Tick calls
+	// it again when the bindings' generation moves (a reload).
+	void MapBoundKeys();
 	UInputAction* MakeAction(const TCHAR* Name, bool bAxis2D);
 
 	void HandleMove(const FInputActionValue& Value);
@@ -229,6 +248,14 @@ private:
 	void TickHeldKeys(float DeltaSeconds);
 	// Whether the game takes the player's keys this frame: on foot, no menu, pause or scene.
 	bool TakesInput();
+	void HandleToggleMap();
+	// The party screen (ftcore::UiPartyScreen, under the new UI only): Party's own key down, or the map key held
+	// kUiPartyHold, opens it (a shorter map press is the map); a flick moves the cursor; letting go picks. The partner's
+	// row switches to that lead, FOLLOW / WAIT HERE toggles the followers. PC null: input is taken away, which shuts it.
+	void TickPartyScreen(const APlayerController* PC, float DeltaSeconds);
+	void FindPartyRows();
+	// Wears PartyLooks[Index] as the lead (not from the van or mid-traversal; a crouch ends).
+	void SwitchLeadTo(int32 Index);
 	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
 	void BeginWeapon(const FFTLeadLook& Look);
 	// Reads Data/Battle/arena.json into WeaponTable once (logged, built-in kits when missing or refused).
@@ -351,6 +378,7 @@ private:
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
+	uint32 KeyGeneration = 0; // the bindings' generation Context's keys were mapped from (FTInputBindings::Generation)
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
@@ -490,6 +518,12 @@ private:
 	bool bRunOn = false;
 	float MapHeld = 0.f;
 	bool bMapHoldUsed = false;
+	// The new UI's party screen, read once with the input objects: it takes the Party action and the map key's hold, and
+	// SwitchLead stays on the keyboard alone.
+	bool bNewUiParty = false;
+	ftcore::UiPartyScreen PartyScreen;
+	int32 PartnerIndex = -1;
+	int32 ThirdIndex = -1;
 	bool bAimRulesTried = false;
 	ftcore::AttackMoveRules AttackMoveTable;
 	ftcore::FieldUnstick Unstick;
@@ -529,4 +563,72 @@ private:
 	float StripStep = 0.1f;
 	double StripAt = -1.0;
 
+	// Water (ftcore::WaterBodies through UFTWaterSubsystem), read each tick: a wade and a deep wade slow the walk by
+	// the state's factor (AddMovementInput); over the swim depth the body is held at the surface (the movement's
+	// flying mode at the swim speed, the feet eased to the swimmer's draft with its bob, the flow pushing it) until
+	// the column is a wade's again. No diving. Jump in the water, facing a wall whose top is within reach, climbs out
+	// onto it (a stand-in for a ladder or steps; TryWaterClimb).
+	void TickWater(float DeltaSeconds);
+	bool TryWaterClimb();
+	ftcore::WaterState WaterNow;
+	bool bSwimming = false;
+	bool bSwimSaid = false;
+	float SwimSavedFly = 0.f;
+	float SwimSavedBrake = 0.f;
+	bool bWaterClimbing = false;
+	float WaterClimbTime = 0.f;
+	float WaterClimbSeconds = 0.9f; // the placed move's length: longer up a ladder
+	// At a ladder (a way out of the map's water) within reach whose wall the body faces or pushes at: up it.
+	bool TryLadderClimb(bool bPressed);
+	FVector WaterClimbFrom = FVector::ZeroVector;
+	FVector WaterClimbTo = FVector::ZeroVector;
+	// What the lead does to the water and the water to it (UFTWaterSubsystem::LeadWater, each tick): splash, rings,
+	// wake, and its wetness on its materials. The four scalar parameters Wetness (0..1), WetLineZ (world cm),
+	// WetLineSoft (cm) and WetSilt (0..1, the water's stain; it stays when dry, with its line) are set on dynamic
+	// instances of the materials of its skeletal meshes, made once the first time it is wet; a material that has no
+	// such parameter ignores them. WetDrip is never set (the drips are off), so it stays at its default 0.
+	void StirWater(float DeltaSeconds);
+	void ShowWetness(const ftcore::WaterWetness& Wet);
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetMaterials;
+	bool bWetMaterialsMade = false;
+	float WetShown = 0.f;
+	float WetLineShown = 0.f;
+	float WetSiltShown = 0.f;
+	// Wet prints (ftcore::WetPrints): on foot on dry ground the lead leaves a print at each plant of its foot phase,
+	// as wet as it is, fading as it dries. A fixed pool of decals, one per Core slot, made once the first time the lead
+	// is wet (in the water, so the hitch is out of sight of any print); a laid
+	// print's decal is placed by a short trace down at the foot (dry walkable ground only, never over water), its colour
+	// carries the print and the engine's fade its age, so what shows is the Core's strength. The party's meshes take no
+	// decals. While the lead is out of the water and wet, or prints show, the live count is logged every 2 s.
+	void TickWetPrints(float DeltaSeconds);
+	void PlaceWetPrint(int32 Index, float DryScale);
+	ftcore::WetPrints WetPrints;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UDecalComponent>> WetPrintDecals;
+	float WetPrintLook = 0.f;  // to the next sweep for faded decals and decal-taking party meshes
+	float WetPrintOut = -1.f;  // seconds out of the water (-1 in it, or before it was ever in)
+	float WetPrintLogAt = 0.f; // the out-of-water time of the next log line
+	bool bWetPrintLoggedDry = true;
+	// A scripted walk for captures and checks (BeginLeadGo, or -LeadGo=<x,y> in the plan frame of -WorldEyeSide after
+	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it presses jump (with -LeadGoJump); the run
+	// quits -LeadGoQuit=<s> after it began. -LeadGoPace=<0.1..1> walks it slower (the stick's push).
+	float LeadGoPace = 1.f;
+	bool bLeadGo = false;
+	bool bLeadGoJump = false;
+	FVector LeadGoTo = FVector::ZeroVector;
+	float LeadGoAfter = -1.f;
+	float LeadGoQuit = 0.f;
+	float LeadGoStuck = 0.f;
+	float LeadGoRan = 0.f;
+	TArray<FVector> LeadGoNext; // the scripted walk's further points, taken in turn as each is reached
+
+public:
+	// The lead walks at a point (cm) from now on.
+	void BeginLeadGo(const FVector& To, bool bJumpWhenHeld);
+	void EndLeadGo() { bLeadGo = false; }
+	// One more point (cm) for the scripted walk, taken once the points before it are reached.
+	void AddLeadGo(const FVector& To) { LeadGoNext.Add(To); }
+	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
+	bool IsSwimming() const { return bSwimming; }
 };

@@ -21,10 +21,24 @@ void ArenaKindCrit::reset(const ArenaKindCritDef& def) {
     lastMultiplier_ = 1.0f;
     lastDamage_ = 0;
     lastCritAt_ = -1.0e300;
+    shut_ = false;
+}
+
+bool ArenaKindCrit::openFor(double t, double seconds) {
+    if (shut_ || !std::isfinite(t) || !(seconds > 0.0) || !std::isfinite(seconds)) return false;
+    if (window_.isOpen(t) && window_.closesAt() >= t + seconds) return true; // the longer one stays
+    opensAt_ = t;
+    window_.open(t, seconds);
+    return true;
+}
+
+void ArenaKindCrit::setShut(bool shut) {
+    if (shut && !shut_) window_.close();
+    shut_ = shut;
 }
 
 bool ArenaKindCrit::onAttackStarted(std::uint8_t move, double t, const ArenaEnemyKind& kind) {
-    if (!std::isfinite(t) || move >= kind.moveCount || opensAfter().empty()) return false;
+    if (shut_ || !std::isfinite(t) || move >= kind.moveCount || opensAfter().empty()) return false;
     const ArenaEnemyMove& m = kind.moves[move];
     if (m.clip() != opensAfter()) return false;
     opensAt_ = t + static_cast<double>(m.attack.startup) + static_cast<double>(m.attack.active);

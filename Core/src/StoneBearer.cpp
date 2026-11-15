@@ -284,6 +284,16 @@ const ArenaBossEvents& StoneBearer::interceptDown(CalledZone zone, double t) {
     return finish();
 }
 
+const ArenaBossEvents& StoneBearer::openCrit(double t, double seconds) {
+    run_.openCrit(t, seconds);
+    return finish();
+}
+
+const ArenaBossEvents& StoneBearer::shutCrit(bool shut, double t) {
+    run_.shutCrit(shut, t);
+    return finish();
+}
+
 const ArenaBossEvents& StoneBearer::interceptUp(double t) {
     run_.interceptUp(t);
     return finish();

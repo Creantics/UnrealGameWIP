@@ -1,9 +1,15 @@
 #include "FTLookSubsystem.h"
 
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkyLight.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "FTLookGrade.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
+#include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
@@ -28,8 +34,14 @@ TAutoConsoleVariable<int32> CVarLook(TEXT("r.FT.Look"), 1,
 	TEXT("The per-world photoreal look: 1 applies the world's look from Data/Look/looks.json when a map starts, 0 keeps the shared look (as -LookOff)."),
 	ECVF_Default);
 
-// Data/Look/looks.json, read once. Empty when it's missing or refused (the problems logged).
 const ftcore::LookTable& LookTable()
+{
+	return FTLook::Table();
+}
+} // namespace
+
+// Data/Look/looks.json, read once. Empty when it's missing or refused (the problems logged).
+const ftcore::LookTable& FTLook::Table()
 {
 	static ftcore::LookTable Table;
 	static bool bLoaded = false;
@@ -60,30 +72,149 @@ const ftcore::LookTable& LookTable()
 	return Table;
 }
 
-// Data/Look/looks.json's render settings, once per run: each console variable set at the game-setting priority, under
-// the project's ini and the command line (-dpcvars=), which keep theirs.
-void ApplyRenderSettings()
+namespace
 {
-	static bool bApplied = false;
-	if (bApplied)
+void SetRenderSettings(const std::vector<ftcore::LookTable::RenderSetting>& Settings, const TCHAR* From);
+
+// The tier variables' values before the run's first tier, so a map off renderTiers.maps gets them back.
+struct FTierBaseline
+{
+	FString Name;
+	FString Value;
+};
+TArray<FTierBaseline> GTierBaseline;
+bool GTierCaptured = false;
+bool GTierSet = false;
+
+void CaptureTierBaseline()
+{
+	const ftcore::LookTable& T = FTLook::Table();
+	if (GTierCaptured || T.renderTiers.empty())
 	{
 		return;
 	}
-	bApplied = true;
-	for (const ftcore::LookTable::RenderSetting& Setting : LookTable().render)
+	GTierCaptured = true;
+	for (const ftcore::LookTable::RenderSetting& Setting : T.renderTiers[0].settings)
+	{
+		const FString Name = FT::ToFString(Setting.name);
+		if (const IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Name))
+		{
+			GTierBaseline.Add({Name, Variable->GetString()});
+		}
+	}
+}
+
+// Back to the values before any tier (nothing when no tier was set this run).
+void RestoreTierBaseline(const FString& Map)
+{
+	if (!GTierSet)
+	{
+		return;
+	}
+	GTierSet = false;
+	for (const FTierBaseline& Base : GTierBaseline)
+	{
+		if (IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Base.Name))
+		{
+			const FString Before = Variable->GetString();
+			Variable->Set(*Base.Value, ECVF_SetByGameSetting);
+			UE_LOG(LogForgottenThird, Display, TEXT("Look: %s %s -> %s (map %s takes no tier)."), *Base.Name, *Before,
+				*Variable->GetString(), *Map);
+		}
+	}
+}
+}
+
+bool FTLook::ApplyRenderTier(const FString& Tier)
+{
+	const ftcore::LookTable::RenderTier* Found = Table().findTier(FT::ToUtf8(Tier));
+	if (!Found)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Look: no render tier '%s' in Data/Look/looks.json."), *Tier);
+		return false;
+	}
+	CaptureTierBaseline();
+	SetRenderSettings(Found->settings, *FString::Printf(TEXT("tier %s"), *FT::ToFString(Found->name)));
+	GTierSet = true;
+	return true;
+}
+
+bool FTLook::ApplyRenderTierFor(const TCHAR* Use)
+{
+	FString Tier;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("LookTier="), Tier) || Tier.IsEmpty())
+	{
+		const ftcore::LookTable& T = Table();
+		Tier = FT::ToFString(FCString::Stricmp(Use, TEXT("cutscene")) == 0 ? T.cutsceneTier : T.playTier);
+	}
+	if (Tier.IsEmpty())
+	{
+		return false; // looks.json has no tiers
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Look: render tier %s for %s."), *Tier, Use);
+	return ApplyRenderTier(Tier);
+}
+
+namespace
+{
+
+// Each console variable set at the game-setting priority, under the project's ini and the command line (-dpcvars=),
+// which keep theirs.
+void SetRenderSettings(const std::vector<ftcore::LookTable::RenderSetting>& Settings, const TCHAR* From)
+{
+	for (const ftcore::LookTable::RenderSetting& Setting : Settings)
 	{
 		const FString Name = FT::ToFString(Setting.name);
 		IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Name);
 		if (!Variable)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("Look: no console variable %s; its render setting is skipped."), *Name);
+			UE_LOG(LogForgottenThird, Warning, TEXT("Look: no console variable %s; its render setting (%s) is skipped."), *Name, From);
 			continue;
 		}
 		const FString Before = Variable->GetString();
 		Variable->Set(*FString::SanitizeFloat(Setting.value), ECVF_SetByGameSetting);
-		UE_LOG(LogForgottenThird, Display, TEXT("Look: %s %s -> %s."), *Name, *Before, *Variable->GetString());
+		UE_LOG(LogForgottenThird, Display, TEXT("Look: %s %s -> %s (%s)."), *Name, *Before, *Variable->GetString(), From);
 	}
 }
+
+// Data/Look/looks.json's render settings once per run; the play tier on a map renderTiers.maps names (or on any map
+// with -LookTier=, a review's), and on every other map the values from before any tier, so an arena, cutscene or demo
+// map renders as it did before the tiers.
+void ApplyRenderSettings(const UWorld& World)
+{
+	static bool bApplied = false;
+	if (!bApplied)
+	{
+		bApplied = true;
+		SetRenderSettings(LookTable().render, TEXT("render"));
+	}
+	const FString Map = World.GetMapName();
+	const FTCHARToUTF8 MapUtf8(*Map);
+	FString Forced;
+	const bool bForced = FParse::Value(FCommandLine::Get(), TEXT("LookTier="), Forced) && !Forced.IsEmpty();
+	if (bForced || LookTable().tiersOnMap(std::string_view(MapUtf8.Get(), static_cast<size_t>(MapUtf8.Length()))))
+	{
+		FTLook::ApplyRenderTierFor(TEXT("play"));
+	}
+	else
+	{
+		RestoreTierBaseline(Map);
+	}
+}
+
+// ft.LookTier <low|standard|high>: sets a render tier from looks.json.
+void LookTierCommand(const TArray<FString>& Args)
+{
+	if (Args.Num() == 0 || !FTLook::ApplyRenderTier(Args[0]))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("ft.LookTier <tier>: one of looks.json's renderTiers (play %s, cutscene %s)."),
+			*FT::ToFString(LookTable().playTier), *FT::ToFString(LookTable().cutsceneTier));
+	}
+}
+
+FAutoConsoleCommand GLookTierCommand(TEXT("ft.LookTier"),
+	TEXT("Sets a render tier from Data/Look/looks.json's renderTiers: ft.LookTier low|standard|high."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&LookTierCommand));
 
 // ft.Look <world|off>: switches the look of the world the console is in.
 void LookCommand(const TArray<FString>& Args, UWorld* World)
@@ -123,7 +254,7 @@ void UFTLookSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Grade = FSceneViewExtensions::NewExtension<FFTLookGradeExtension>(World);
 	if (!FParse::Param(FCommandLine::Get(), TEXT("LookOff")) && CVarLook.GetValueOnGameThread() != 0)
 	{
-		ApplyRenderSettings();
+		ApplyRenderSettings(*World);
 	}
 
 	// -Look=<world> picks it; otherwise the map's name does. -LookOff (or r.FT.Look 0) keeps the shared look.
@@ -205,6 +336,7 @@ void UFTLookSubsystem::Tick(float DeltaTime)
 		if (Written >= 0)
 		{
 			Applied = Wanted;
+			ApplyStillDayShade();
 			UE_LOG(LogForgottenThird, Display, TEXT("Look: %s (%d settings written; grade %s; %s)."),
 				WorldId.IsEmpty() ? TEXT("shared look") : *WorldId, Written, Grade.IsValid() && Grade->IsGrading() ? TEXT("on") : TEXT("off"),
 				bParametersPending ? TEXT("material parameters waiting")
@@ -233,6 +365,40 @@ void UFTLookSubsystem::Tick(float DeltaTime)
 		}
 		bParametersPending = false;
 	}
+}
+
+void UFTLookSubsystem::ApplyStillDayShade()
+{
+	// A running clock writes the day's shadow floor itself; this is for a day world-eye still, which runs none.
+	UWorld* World = GetWorld();
+	const float Amount = WorldId.IsEmpty() ? -1.f : FTDayShade::StillAmount();
+	if (!World || Amount < 0.f)
+	{
+		return;
+	}
+	const ftcore::DayShadeFrame Shade = ftcore::dayShadeFrame(FTDayShade::Look(), FTDayShade::BaseFor(Wanted), Amount);
+	// The look's own sky light (the one ApplyLook writes), scaled.
+	for (TActorIterator<ASkyLight> It(World); It; ++It)
+	{
+		if (USkyLightComponent* SkyLight = It->GetLightComponent())
+		{
+			SkyLight->SetIntensity(Wanted.skyLight * Shade.skyScale);
+			break;
+		}
+	}
+	int32 Fogs = 0;
+	for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+	{
+		if (UExponentialHeightFogComponent* Fog = It->GetComponent())
+		{
+			FTDayShade::WriteFog(*Fog, Shade);
+			++Fogs;
+		}
+	}
+	const bool bPost = FTDayShade::WritePost(*World, Shade);
+	UE_LOG(LogForgottenThird, Display, TEXT("Look: day shade %.2f for the still (sky light %.2f, shadow contrast %.2f, highlight contrast %.2f, diffuse boost %.2f, toe %.2f, exposure floor EV %.2f%s; fog cap %.2f and sky share %.2f %.2f %.2f on %d fogs)."),
+		Amount, Wanted.skyLight * Shade.skyScale, Shade.shadowContrast, Shade.highlightContrast, Shade.diffuseBoost, Shade.filmToe,
+		Shade.minEV100, bPost ? TEXT("") : TEXT("; no look volume"), Shade.fogMaxOpacity, Shade.fogSky[0], Shade.fogSky[1], Shade.fogSky[2], Fogs);
 }
 
 TStatId UFTLookSubsystem::GetStatId() const

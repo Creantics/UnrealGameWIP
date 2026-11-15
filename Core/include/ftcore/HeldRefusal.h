@@ -13,6 +13,8 @@
 // * A button already down when the offer starts does not count: it must be let go and pressed again.
 // * There is no limit on repeats. Nothing here knows time. No allocation.
 
+#include "ftcore/StateHash.h"
+
 #include <cstdint>
 
 namespace ftcore {
@@ -87,6 +89,13 @@ public:
 
 private:
     static constexpr int kMaxRepeats = 1 << 30; // saturates
+public:
+    // Its play state for replay checks (StateHash.h): every field that changes what it does next.
+    void hashState(StateHash& h) const {
+        h.add(state_).add(repeats_).add(down_).add(stale_);
+    }
+
+private:
     RefusalState state_ = RefusalState::Idle;
     int repeats_ = 0;
     bool down_ = false;  // the button, as last reported

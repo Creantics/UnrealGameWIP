@@ -149,6 +149,7 @@
 //       reads it for its strike point and reach; absent: none (hasContact false).
 //   phases: 1..kMaxArenaBossPhases; endAt in [0, 1), strictly falling, the last 0. moves and brokenMoves
 //     (default: moves): 1..kMaxArenaPhaseMoves known move ids, no repeats.
+//   checkpointAtPhase (optional, default false): a retry after a defeat starts at the phase reached.
 //   An unknown key is a warning; anything else wrong is an error with its path, and `out` is left
 //   default.
 //
@@ -571,6 +572,9 @@ struct ArenaBossDef {
     std::uint8_t moveCount = 0;
     std::array<ArenaBossPhase, kMaxArenaBossPhases> phases{};
     std::uint8_t phaseCount = 0;
+    // A retry after a defeat starts at the phase reached (the host takes FightSession's phase checkpoint at each
+    // phase change). Off by default.
+    bool checkpointAtPhase = false;
 
     // Index of the move with that id, or kArenaBossNoMove.
     FTCORE_API std::uint8_t find(std::string_view id) const;
@@ -694,6 +698,14 @@ public:
                                                   UnlockResult* result = nullptr);
     FTCORE_API const ArenaBossEvents& onDeferred(double t);
     FTCORE_API const ArenaBossEvents& relock(double t);
+    // The host's own opening (a refusal's): the weak points open from t for `seconds` (one open now that closes
+    // later is kept), reporting CritOpened (no move). Nothing while shut, or for seconds <= 0 or not finite.
+    FTCORE_API const ArenaBossEvents& openCrit(double t, double seconds);
+    // Shut: nothing opens the weak points (a turned move's opening, an unlock's: the lock itself still opens, and
+    // Unlocked is still reported) and a window open now closes at t (CritClosed). Unshut lets openings through again;
+    // nothing reopens. begin() unshuts.
+    FTCORE_API const ArenaBossEvents& shutCrit(bool shut, double t);
+    bool critShut() const { return critShut_; }
     bool weakPointLocked() const { return lock_.locked(); }
     // The lock is open now (always true for a boss whose points are not locked).
     bool weakPointOpen() const { return lock_.open(now_); }
@@ -740,6 +752,7 @@ private:
     std::uint8_t cueCount_ = 0;
     std::uint8_t cueNext_ = 0;
     bool critWasOpen_ = false;
+    bool critShut_ = false; // shutCrit
     bool missed_ = false; // the live use has had its first miss
 };
 

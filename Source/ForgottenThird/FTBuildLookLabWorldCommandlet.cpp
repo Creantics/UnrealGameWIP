@@ -20,6 +20,7 @@
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
@@ -36,6 +37,14 @@ const TCHAR* const kMapPath = TEXT("/Game/Maps/Look_Lab");
 // surface, whose master isn't built for Nanite.
 UStaticMesh* NaniteCopy(UStaticMesh* Source, const TCHAR* Path)
 {
+	// A copy made by an earlier build is kept as it is (saving over the loaded package fails, and the copy never changes).
+	if (UStaticMesh* Made = LoadObject<UStaticMesh>(nullptr, *(FString(Path) + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet))
+	{
+		if (Made->IsNaniteEnabled())
+		{
+			return Made;
+		}
+	}
 	const FString File = FPackageName::LongPackageNameToFilename(Path, FPackageName::GetAssetPackageExtension());
 	UPackage* Package = CreatePackage(Path);
 	UStaticMesh* Mesh = DuplicateObject<UStaticMesh>(Source, Package, *FPackageName::GetShortName(Path));
@@ -164,6 +173,111 @@ int32 UFTBuildLookLabWorldCommandlet::Main(const FString& Params)
 	Prop(Cube, Plain, TEXT("AlcoveRoof"), Alcove + FVector(0, 0, 365), FVector(3.3, 4.3, 0.3));
 	Prop(NaniteCube, Chrome, TEXT("ChromeSlab"), Alcove + FVector(-250, -350, 110), FVector(1.5, 0.15, 2.2), FRotator(0, 35, 0));
 	Prop(NaniteSphere, Chrome, TEXT("ChromeBall"), Alcove + FVector(-300, 0, 60), FVector(1.2));
+
+
+	// The glass court (ftcore/GlassSurface.h), west of the yard: a shop wall facing a street, the street's far side in
+	// the sun (blocks and lit signs for the panes to mirror). Five bays 3 m wide and 2.5 m high in the wall, a real room
+	// with kit pieces and a lamp behind each: the true pane (thin translucent), the mirror-layer pane, the old lab glass,
+	// glass over a picture (opaque, no room needed) and the true pane on a Nanite mesh (the test: can Nanite carry it).
+	{
+		const auto LoadGlass = [&](const TCHAR* Path) { return Load(Path); };
+		UMaterialInterface* PaneThin = LoadGlass(FTScene::LookGlassPaneMaterial);
+		UMaterialInterface* PaneMirror = LoadGlass(FTScene::LookGlassMirrorMaterial);
+		UMaterialInterface* PaneOver = LoadGlass(FTScene::LookGlassOverMaterial);
+		UMaterialInterface* SignMaster = LoadGlass(FTScene::LookSignMaterial);
+		if (!PaneThin || !PaneMirror || !PaneOver || !SignMaster)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildLookLabWorld: the glass materials are missing; run FTBuildLookMaterials -Glass first."));
+			return 1;
+		}
+		const auto Instance = [&](UMaterialInterface* Parent, const TCHAR* Name)
+		{
+			UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
+			Mic->SetParentEditorOnly(Parent);
+			return Mic;
+		};
+		const auto Pane = [&](UMaterialInterface* Parent, const TCHAR* Name, float Seed)
+		{
+			UMaterialInstanceConstant* Mic = Instance(Parent, Name);
+			Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("PaneSize")), FLinearColor(3.f, 2.5f, 0.f, 0.f));
+			Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Handle")), FLinearColor(0.9f, 0.42f, 0.f, 0.f));
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Seed")), Seed);
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Age")), 0.35f);
+			Mic->PostEditChange();
+			return Mic;
+		};
+		const auto Sign = [&](const TCHAR* Name, const FLinearColor& Color)
+		{
+			UMaterialInstanceConstant* Mic = Instance(SignMaster, Name);
+			Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("SignColor")), Color);
+			Mic->PostEditChange();
+			return Mic;
+		};
+		const FVector Court(-4500, 0, 0);
+		const double Fx = Court.X + 700.0; // the wall's face
+		Prop(NaniteCube, Stone, TEXT("GlassStreet"), Court + FVector(0, 0, -150), FVector(26, 34, 3));
+		// The wall: a base strip, a lintel, piers between the bays; the rooms' back wall, ceiling and partitions.
+		Prop(Cube, Plain, TEXT("GlassWallBase"), FVector(Fx + 15, 50, 5), FVector(0.3, 21, 0.1));
+		Prop(Cube, Plain, TEXT("GlassWallLintel"), FVector(Fx + 15, 50, 320), FVector(0.3, 21, 1.2));
+		Prop(Cube, Plain, TEXT("GlassRoomBack"), FVector(Fx + 345, 50, 190), FVector(0.3, 21, 3.8));
+		Prop(Cube, Plain, TEXT("GlassRoomCeiling"), FVector(Fx + 180, 50, 275), FVector(3.0, 21, 0.3));
+		const double BayY[5] = {-750, -350, 50, 450, 850};
+		for (int32 P = 0; P <= 5; ++P)
+		{
+			const double Y = P < 5 ? BayY[P] - 200.0 : BayY[4] + 200.0;
+			Prop(Cube, Plain, *FString::Printf(TEXT("GlassPier%d"), P), FVector(Fx + 15, Y, 135), FVector(0.3, 1.0, 2.5));
+			Prop(Cube, Plain, *FString::Printf(TEXT("GlassPartition%d"), P), FVector(Fx + 180, Y, 135), FVector(3.0, 0.1, 2.7));
+		}
+		UMaterialInterface* const PaneMaterials[5] = {Pane(PaneThin, TEXT("MI_LabPane_Thin"), 0.37f), Pane(PaneMirror, TEXT("MI_LabPane_Mirror"), 0.37f), Glass,
+			Pane(PaneOver, TEXT("MI_LabPane_Over"), 0.37f), Pane(PaneThin, TEXT("MI_LabPane_Nanite"), 0.37f)};
+		const TCHAR* const PaneLabels[5] = {TEXT("GlassPaneThin"), TEXT("GlassPaneMirror"), TEXT("GlassPaneOld"), TEXT("GlassPaneOver"), TEXT("GlassPaneNanite")};
+		const TCHAR* const Goods[3] = {TEXT("PLANTERS"), TEXT("VENDING"), TEXT("BICYCLE")};
+		UMaterialInterface* const InsideSign = Sign(TEXT("MI_LabSign_Inside"), FLinearColor(0.2f, 0.9f, 1.f));
+		for (int32 B = 0; B < 5; ++B)
+		{
+			// The pane: a cube 1 cm thick, 3 m wide, 2.5 m high, its outer face on the wall's.
+			Prop(B == 4 ? NaniteCube : Cube, PaneMaterials[B], PaneLabels[B], FVector(Fx + 10, BayY[B], 135), FVector(0.01, 3.0, 2.5));
+			if (B == 3)
+			{
+				continue;
+			}
+			// The room's goods (kit pieces), a small lit sign on its back wall and its lamp.
+			for (int32 G = 0; G < 3; ++G)
+			{
+				const FString Path = FString::Printf(TEXT("/Game/Props/BKIT/%s/StaticMeshes/%s.%s"), Goods[G], Goods[G], Goods[G]);
+				if (UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet))
+				{
+					Prop(Mesh, nullptr, *FString::Printf(TEXT("GlassGoods%d_%s"), B, Goods[G]),
+						FVector(Fx + 120.0 + 70.0 * G, BayY[B] - 95.0 + 85.0 * G, 0), FVector(1.0), FRotator(0, 90.0 + 35.0 * G, 0));
+				}
+				else
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildLookLabWorld: %s is missing; the glass court's rooms go without it."), *Path);
+				}
+			}
+			Prop(Cube, InsideSign, *FString::Printf(TEXT("GlassRoomSign%d"), B), FVector(Fx + 325, BayY[B] + 60, 215), FVector(0.05, 0.9, 0.3));
+			APointLight* RoomLamp = World->SpawnActor<APointLight>(FVector(Fx + 170, BayY[B], 245), FRotator::ZeroRotator, Spawn);
+			UPointLightComponent* RoomLight = RoomLamp->PointLightComponent;
+			RoomLight->SetMobility(EComponentMobility::Movable);
+			RoomLight->SetIntensityUnits(ELightUnits::Candelas);
+			// Dim: a shop by day, so the panes' mirror images of the street and the lead show beside the room.
+			RoomLight->SetIntensity(1.5f);
+			RoomLight->SetUseTemperature(true);
+			RoomLight->SetTemperature(3200.f);
+			RoomLight->SetAttenuationRadius(600.f);
+			RoomLight->SetSourceRadius(6.f);
+			RoomLamp->SetActorLabel(*FString::Printf(TEXT("GlassRoomLamp%d"), B));
+		}
+		// The street's far side: blocks in the sun and three lit signs on them, 12 m from the panes.
+		const double Sx = Court.X - 500.0;
+		Prop(Cube, Plain, TEXT("GlassFarBlockA"), FVector(Sx - 170, -700, 250), FVector(3.0, 6.0, 5.0));
+		Prop(NaniteCube, Stone, TEXT("GlassFarBlockB"), FVector(Sx - 170, 50, 400), FVector(3.0, 6.0, 8.0));
+		Prop(Cube, Plain, TEXT("GlassFarBlockC"), FVector(Sx - 170, 800, 300), FVector(3.0, 6.0, 6.0));
+		Prop(NaniteSphere, Chrome, TEXT("GlassFarBall"), FVector(Sx + 120, 450, 60), FVector(1.2));
+		Prop(Cube, Sign(TEXT("MI_LabSign_Red"), FLinearColor(1.f, 0.16f, 0.12f)), TEXT("GlassSignRed"), FVector(Sx, -700, 290), FVector(0.12, 2.4, 0.7));
+		Prop(Cube, Sign(TEXT("MI_LabSign_Yellow"), FLinearColor(1.f, 0.8f, 0.15f)), TEXT("GlassSignYellow"), FVector(Sx, 50, 330), FVector(0.12, 2.8, 0.6));
+		Prop(Cube, Sign(TEXT("MI_LabSign_Green"), FLinearColor(0.2f, 1.f, 0.4f)), TEXT("GlassSignGreen"), FVector(Sx, 800, 290), FVector(0.12, 2.4, 0.7));
+	}
 
 	// Sun, sky, air and the camera finish: the shared look, which -Look=<world> then changes. The sun is low, so the
 	// water, glass and chrome have a bright sky and a long light to reflect.

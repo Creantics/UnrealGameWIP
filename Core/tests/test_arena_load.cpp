@@ -259,6 +259,71 @@ TEST_CASE("arena carry: the Load cap follows the named places; the Release opens
     }
 }
 
+TEST_CASE("arena carry: setLoad holds a lead's own value above 60, clamps to the fight's cap, and judges the overload afresh") {
+    Rig rig({dummyKind()});
+    REQUIRE(rig.fight.loadCap() == kMaxLoad);
+    rig.fight.setLoad(80); // above the kept lead's old cap of 60: the fight's own cap rules
+    CHECK(rig.fight.load() == 80);
+    CHECK_FALSE(rig.fight.overloaded());
+    rig.fight.setLoad(250);
+    CHECK(rig.fight.load() == kMaxLoad);
+    CHECK(rig.fight.overloaded());
+    CHECK(rig.fight.stats().overloads == 1);
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1); // reported once, on the next tick
+    rig.fight.setLoad(kMaxLoad); // still at the cap: no second overload
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+    rig.fight.setLoad(kMaxLoad - 1); // the edge: one under the cap is not overloaded
+    CHECK(rig.fight.load() == kMaxLoad - 1);
+    CHECK_FALSE(rig.fight.overloaded());
+    CHECK(rig.fight.output().player.load == kMaxLoad - 1);
+    rig.fight.setLoad(kMaxLoad); // reaching it again overloads again
+    CHECK(rig.fight.overloaded());
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 2);
+    rig.fight.setLoad(-5);
+    CHECK(rig.fight.load() == 0);
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::LoadStored) == 0); // a set is the lead's value, not a gain or a spend
+    CHECK(rig.count(ArenaEventType::LoadSpent) == 0);
+    {   // a fill not reported yet is the old value's: set under the cap before the tick, no Overloaded comes
+        Rig pending({dummyKind()});
+        pending.fight.giveLoad(kMaxLoad);
+        REQUIRE(pending.fight.overloaded());
+        pending.fight.setLoad(30);
+        pending.tick();
+        CHECK(pending.count(ArenaEventType::Overloaded) == 0);
+        CHECK(pending.fight.stats().overloads == 1); // counted when it filled
+        CHECK(pending.fight.load() == 30);
+    }
+    {   // under a lowered cap the clamp is that cap, and the edge is that cap
+        Rig low({dummyKind()});
+        low.fight.setLoadCap(60);
+        low.fight.setLoad(80);
+        CHECK(low.fight.load() == 60);
+        CHECK(low.fight.overloaded());
+        low.fight.setLoad(59);
+        CHECK_FALSE(low.fight.overloaded());
+    }
+}
+
+TEST_CASE("arena carry: setHealCharges holds a lead's own charges, clamped to 0..healChargesMax; restart resets them") {
+    Rig rig({dummyKind()});
+    const int full = rig.fight.healChargesMax();
+    REQUIRE(full == ruleFighter().healCharges);
+    rig.fight.setHealCharges(1);
+    CHECK(rig.fight.healCharges() == 1);
+    rig.fight.setHealCharges(full + 5);
+    CHECK(rig.fight.healCharges() == full);
+    rig.fight.setHealCharges(-1);
+    CHECK(rig.fight.healCharges() == 0);
+    rig.fight.setLoad(40);
+    rig.fight.restart(); // a retry resets both; the host sets the lead's values after
+    CHECK(rig.fight.healCharges() == full);
+    CHECK(rig.fight.load() == 0);
+}
+
 TEST_CASE("arena carry: setLoadCap clamps to 1..100 and never moves the Load (S3)") {
     Rig rig({dummyKind()});
     rig.fight.giveLoad(30);
@@ -423,6 +488,7 @@ TEST_CASE("arena take half: the HUD view's tookHalf is set on the tick it lands 
     rig.tick();
     fillArenaHudLead(rig.fight, lead);
     CHECK_FALSE(lead.tookHalf);
+    CHECK(lead.debt == -1); // no fight reports Debt yet: the HUD's hook stays empty
 }
 
 TEST_CASE("arena take half: too early or out of reach, the ally takes it all (S12)") {
@@ -514,6 +580,7 @@ TEST_CASE("arena take half: refused inside a dodge's i-frames and while hurt; a 
         rig.fight.begin(rig.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
         placeAlly(rig, s);
         rig.bodies.enemies[1] = Vec2{-1.5f, 0.f};
+        rig.in.cameraFacing = Vec2{-1.f, 0.f}; // the camera sees the quick biter behind
         ArenaAction atLand = ArenaAction::Idle;
         int allyLand = -1;
         for (int k = 1; k <= 120 && allyLand < 0; ++k) {
@@ -897,6 +964,36 @@ TEST_CASE("lone carry: a Release begun while Lone keeps its x1.3 when Lone ends 
         rig.run(40);
         CHECK(releaseDealt(rig) == (lonePress ? 26 : 20));
     }
+}
+
+TEST_CASE("lone carry: the Release's x1.3 scales its damage only; the poise and the boss break value it takes do not") {
+    ArenaEnemyKind boss = dummyKind();
+    boss.boss = true;
+    boss.breakMove = -1;
+    boss.hp = 100000;
+    boss.poise = 10000.f; // never staggered: the poise lost reads whole
+    int dealt[2] = {-1, -1};
+    float poiseLost[2] = {0.f, 0.f};
+    float breakValue[2] = {0.f, 0.f};
+    for (const bool lone : {false, true}) {
+        CAPTURE(lone);
+        Rig rig({boss});
+        rig.fight.setLone(lone);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        rig.run(40);
+        const int at = lone ? 1 : 0;
+        dealt[at] = releaseDealt(rig);
+        poiseLost[at] = boss.poise - rig.fight.enemyPoise(0);
+        breakValue[at] = rig.fight.enemyBreakValue(0);
+    }
+    CHECK(dealt[0] == 20);
+    CHECK(dealt[1] == 26); // 20 x 1.3
+    CHECK(poiseLost[0] > 0.f);
+    CHECK(poiseLost[1] == doctest::Approx(poiseLost[0]));
+    CHECK(breakValue[0] > 0.f);
+    CHECK(breakValue[1] == doctest::Approx(breakValue[0]));
 }
 
 TEST_CASE("lone carry: the Release's x1.3 is one more factor under the single-blow cap") {

@@ -23,13 +23,14 @@
 #include "Templates/UniquePtr.h"
 #include "UObject/SoftObjectPath.h"
 
+#include "ftcore/ArenaGun.h"
 #include "ftcore/BeatChoreo.h"
 
 #include <string>
 #include <vector>
 
-static_assert(static_cast<int32>(ftcore::FightClip::Count) <= UFTLocomotionAnimInstance::MaxActionClips,
-	"an action slot per fight clip");
+static_assert(static_cast<int32>(ftcore::FightClip::Count) + 2 <= UFTLocomotionAnimInstance::MaxActionClips,
+	"an action slot per fight clip, then the gun's reload and dry flinch");
 
 namespace
 {
@@ -214,6 +215,13 @@ void FFTLeadWeapons::Begin(AActor* Owner, USkeletalMeshComponent* Body, const FF
 		*FT::ToFString(ftcore::fightClipName(ftcore::arenaHeavyStrike(Kit))));
 
 	LoadClips(Look);
+	GauntletMorphs.Reset();
+	for (const FString& Morph : Look.GauntletMorphs)
+	{
+		GauntletMorphs.Add(FName(*Morph));
+	}
+	GauntletBracer[0] = Look.GauntletBracerR;
+	GauntletBracer[1] = Look.GauntletBracerL;
 	AttachProps();
 	SpawnEffects();
 	Restart();
@@ -285,11 +293,55 @@ void FFTLeadWeapons::LoadClips(const FFTLeadLook& Look)
 		}
 	}
 	bClips = Loaded > 0;
+	ReloadClipLength = FlinchClipLength = 0.f;
+	if (Kit.rounds > 0)
+	{
+		ReloadClipLength = LoadGunClip(Folder, TEXT("lead_reload"), kReloadSlot);
+		FlinchClipLength = LoadGunClip(Folder, TEXT("lead_dry_flinch"), kFlinchSlot);
+	}
 	if (!Missing.IsEmpty())
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: lead weapon: no %s for %s in %s (retarget them with FTBuildRig -Names=..., docs/ARENA_DEMO.md)%s."),
 			*Missing, *Body->GetName(), *Folder, bClips ? TEXT("; the strikes without one are thrown as the punch on their side") : TEXT("; the attacks play no clips"));
 	}
+}
+
+float FFTLeadWeapons::LoadGunClip(const FString& Folder, const TCHAR* Name, int32 Slot)
+{
+	UFTLocomotionAnimInstance* Instance = Anim.Get();
+	const USkeletalMesh* Body = Skin.IsValid() ? Skin->GetSkeletalMeshAsset() : nullptr;
+	const FString Package = Folder / Name;
+	UAnimSequence* Clip = Instance && Body && !Folder.IsEmpty() && FPackageName::DoesPackageExist(Package)
+		? LoadObject<UAnimSequence>(nullptr, *(Package + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet)
+		: nullptr;
+	if (!Clip || !UFTLocomotionAnimInstance::FitsBody(*Clip, *Body, TEXT("Arena: lead weapon")) || Clip->GetPlayLength() <= 0.f)
+	{
+		// Not made yet: the reload and the dry press play their sounds only.
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: no %s in %s; the gun plays no clip for it."), Name, *Folder);
+		return 0.f;
+	}
+	Instance->SetActionClip(Slot, Clip);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: the gun plays %s (%.2f s)."), Name, Clip->GetPlayLength());
+	return Clip->GetPlayLength();
+}
+
+void FFTLeadWeapons::PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight)
+{
+	const float Age = DryAt >= 0.0 && T >= DryAt ? static_cast<float>(T - DryAt) : -1.f;
+	const ftcore::ArenaGunLayer Flinch = ftcore::arenaFlinchLayer(ftcore::kArenaGun, Age, FlinchClipLength);
+	const ftcore::ArenaGunLayer Reload = ftcore::arenaReloadLayer(ftcore::kArenaGun, bReloading, ReloadProgress, ReloadClipLength);
+	// A strike's clip keeps its share of the arms; the flinch goes over the reload.
+	const float Room = 1.f - FMath::Clamp(StrikeWeight, 0.f, 1.f);
+	const float FlinchWeight = Flinch.weight * Room;
+	const float ReloadWeight = Reload.weight * Room * (1.f - Flinch.weight);
+	if (FlinchWeight + ReloadWeight <= 0.f)
+	{
+		return;
+	}
+	// The gun's clips play on the upper body only, over the locomotion's legs.
+	Instance.SetActionUpper(FMath::Max(ActionUpper, Room));
+	Instance.AddAction(kReloadSlot, Reload.time, ReloadWeight);
+	Instance.AddAction(kFlinchSlot, Flinch.time, FlinchWeight);
 }
 
 void FFTLeadWeapons::AttachProps()
@@ -311,14 +363,81 @@ void FFTLeadWeapons::AttachProps()
 		{
 			Paths.Emplace(FString::Printf(TEXT("%s/%s.%s"), FTWeaponProps::GauntletFolder, Name, Name));
 		}
+		// The look's bracers, where it names them (fitted over its sleeve), in place of the kit's bare-skin ones.
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const int32 At = FTWeaponProps::GauntletBracerIndex[Side];
+			if (!GauntletBracer[Side].IsNull())
+			{
+				Paths[At] = GauntletBracer[Side];
+			}
+		}
 		TArray<TObjectPtr<USkeletalMeshComponent>> Added;
 		FTLook::AddPieces(*Figure.Get(), *Skin.Get(), Paths, Added, Prefix());
+		// Each bracer as it came out: fitted only when a worn piece has its mesh (a path that did not load is skipped).
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const FSoftObjectPath& Want = Paths[FTWeaponProps::GauntletBracerIndex[Side]];
+			bool bFitted = false;
+			for (const TObjectPtr<USkeletalMeshComponent>& Piece : Added)
+			{
+				bFitted = bFitted || (Piece && Piece->GetSkeletalMeshAsset() && FSoftObjectPath(Piece->GetSkeletalMeshAsset()) == Want);
+			}
+			if (!bFitted && FTLook::PieceLeftOff(Want))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s left off by the piece filter."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.GetAssetName());
+			}
+			else if (bFitted)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s fitted (%s)."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.GetAssetName(), GauntletBracer[Side].IsNull() ? TEXT("the kit's, bare-skin fit") : TEXT("the look's"));
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: lead weapon: %s bracer %s FAILED to load (%s): not worn."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.ToString(), GauntletBracer[Side].IsNull() ? TEXT("the kit's") : TEXT("the look's"));
+			}
+		}
 		for (int32 I = 0; I < Added.Num() && I < FTWeaponProps::NumGauntletPieces; ++I)
 		{
 			Gauntlet[I] = Added[I];
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d of %d gauntlet pieces on %s."), Prefix(), Added.Num(),
 			FTWeaponProps::NumGauntletPieces, *Skin->GetSkeletalMeshAsset()->GetName());
+		// The look's gauntlet morphs (a cuff tucked under the bracer) on while the pieces are worn: set on the body, the
+		// leader, so each piece whose mesh has the morph takes it; the pieces stay on this body for the fight.
+		if (Added.Num() > 0)
+		{
+			int32 Found = 0;
+			for (const FName& Morph : GauntletMorphs)
+			{
+				Skin->SetMorphTarget(Morph, 1.f);
+				bool bOnPiece = false;
+				for (const USceneComponent* Child : Skin->GetAttachChildren())
+				{
+					const USkeletalMeshComponent* Piece = Cast<USkeletalMeshComponent>(Child);
+					if (Piece && Piece->GetSkeletalMeshAsset() && Piece->GetSkeletalMeshAsset()->FindMorphTarget(Morph))
+					{
+						bOnPiece = true;
+						break;
+					}
+				}
+				Found += bOnPiece ? 1 : 0;
+				// A morph no worn piece has: named once per run (each switch begins the kit again).
+				static TSet<FName> NamedMissing;
+				if (!bOnPiece && !NamedMissing.Contains(Morph))
+				{
+					NamedMissing.Add(Morph);
+					UE_LOG(LogForgottenThird, Warning, TEXT("%s: lead weapon: gauntlet morph %s is on no worn piece (it does nothing)."), Prefix(), *Morph.ToString());
+				}
+			}
+			if (GauntletMorphs.Num() > 0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d gauntlet morph(s) on at 1, %d found on a worn piece (a missing one does nothing)."),
+					Prefix(), GauntletMorphs.Num(), Found);
+			}
+		}
 	}
 	else
 	{
@@ -365,9 +484,7 @@ void FFTLeadWeapons::SpawnEffects()
 	USceneComponent* Root = Figure->GetRootComponent();
 	FxName[Muzzle] = TEXT("muzzle_flash");
 	FxName[Travel] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_bolt") : TEXT("gun_tracer");
-	FxName[Impact] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_impact")
-		: Kit.weapon == ftcore::ArenaWeapon::Guns ? TEXT("gun_impact")
-		: TEXT("gauntlet_spark");
+	FxName[Impact] = ImpactEffectOf(Kit.weapon);
 	FxName[Ward] = TEXT("spell_ward");
 	switch (Kit.weapon)
 	{
@@ -635,6 +752,14 @@ void FFTLeadWeapons::End()
 		for (const FightClip StrikeClip : kStrikeClips)
 		{
 			Instance->SetActionClip(static_cast<int32>(StrikeClip), nullptr);
+		}
+	}
+	// The look's gauntlet morphs off the body (the leader, so its pieces too): a benched figure keeps no tucked cuff.
+	if (USkeletalMeshComponent* Body = Skin.Get())
+	{
+		for (const FName& Morph : GauntletMorphs)
+		{
+			Body->SetMorphTarget(Morph, 0.f);
 		}
 	}
 	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
@@ -1065,6 +1190,7 @@ void FFTLeadWeapons::Paint(double T)
 	Instance->SetActionUpper(ActionUpper);
 	Instance->SetActionLeg(ActionLeg);
 	float Fade = 1.f;
+	bool bStrikes = true;
 	if (FadeSince >= 0.0)
 	{
 		Fade = static_cast<float>(1.0 - (T - FadeSince) / kFadeOut);
@@ -1072,19 +1198,25 @@ void FFTLeadWeapons::Paint(double T)
 		{
 			Animator.reset();
 			FadeSince = -1.0;
-			return;
+			bStrikes = false;
 		}
 		Fade = FMath::Min(Fade, 1.f);
 	}
-	Animator.update(T);
-	for (std::size_t I = 0; I < Animator.layerCount(); ++I)
+	float StrikeWeight = 0.f;
+	if (bStrikes)
 	{
-		const ftcore::FightLayer& Layer = Animator.layer(I);
-		if (Layer.clip != FightClip::Stance)
+		Animator.update(T);
+		for (std::size_t I = 0; I < Animator.layerCount(); ++I)
 		{
-			Instance->AddAction(static_cast<int32>(Layer.clip), Layer.time, Layer.weight * Fade);
+			const ftcore::FightLayer& Layer = Animator.layer(I);
+			if (Layer.clip != FightClip::Stance)
+			{
+				Instance->AddAction(static_cast<int32>(Layer.clip), Layer.time, Layer.weight * Fade);
+				StrikeWeight += Layer.weight * Fade;
+			}
 		}
 	}
+	PaintGun(*Instance, T, StrikeWeight);
 }
 
 void FFTLeadWeapons::Restart()
@@ -1097,6 +1229,9 @@ void FFTLeadWeapons::Restart()
 	}
 	Animator.reset();
 	FadeSince = -1.0;
+	bReloading = false;
+	ReloadProgress = 0.f;
+	DryAt = -1.0;
 	Strike = FightClip::Stance;
 	LastAction = ftcore::ArenaAction::Idle;
 	LastPart = ftcore::ArenaPart::None;
@@ -1138,6 +1273,7 @@ void FFTLeadWeapons::Reset()
 	ArenaFigure.Reset();
 	Skin.Reset();
 	Anim.Reset();
+	GauntletMorphs.Reset(); // no stale names for a Begin that returns before filling them
 	bClips = false;
 	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{

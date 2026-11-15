@@ -18,6 +18,7 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
+#include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaFight.h"
 
 namespace
@@ -39,7 +40,11 @@ constexpr float kArenaLeadMaxHeight = 210.f;
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
 const FLinearColor kArenaShieldParry(1.f, 0.85f, 0.3f);
-const FLinearColor kFighterTellBlock(1.f, 0.55f, 0.1f);
+// Pale ink-white at the old orange's luminance (about 0.61): the blockable tell, apart from the dodge's red and the
+// gold kept for the lead's Load.
+const FLinearColor kFighterTellBlock(0.63f, 0.615f, 0.575f);
+// The parameter SetBodyPulse drives on the character masters.
+const FName kFighterEmissive(TEXT("Emissive"));
 const FLinearColor kFighterTellDodge(1.f, 0.12f, 0.08f);
 const FLinearColor kFighterTellFlash(1.f, 1.f, 0.85f);
 
@@ -151,7 +156,7 @@ AFTArenaFighter::AFTArenaFighter()
 	Boom->bUsePawnControlRotation = true;
 	// The camera may leave the zone's walls but not pass through the scene: the arm probes the world and is pulled in.
 	Boom->bDoCollisionTest = true;
-	Boom->ProbeSize = 12.f;
+	Boom->ProbeSize = ftcore::kArenaBoomProbe * 100.f; // the probe the zone's lens clearance counts (ArenaCamera.h)
 	Boom->ProbeChannel = ECC_Camera;
 	Boom->bEnableCameraLag = true;
 	Boom->CameraLagSpeed = 9.f;
@@ -168,6 +173,24 @@ void AFTArenaFighter::SetCameraTilt(float Degrees)
 	{
 		Camera->SetRelativeRotation(FRotator(static_cast<double>(Degrees), 0.0, 0.0));
 	}
+}
+
+void AFTArenaFighter::SetBoomRotation(const FRotator& Rotation)
+{
+	if (!Boom)
+	{
+		return;
+	}
+	if (GetController())
+	{
+		Boom->bUsePawnControlRotation = true;
+		Boom->SetUsingAbsoluteRotation(false);
+		return;
+	}
+	// Absolute: the body turning under it (its facing) does not drag the boom between this and the arm's tick.
+	Boom->bUsePawnControlRotation = false;
+	Boom->SetUsingAbsoluteRotation(true);
+	Boom->SetWorldRotation(Rotation);
 }
 
 void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
@@ -187,6 +210,12 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 
 	SkinKind = ESkin::Shapes;
 	bPlayerFigure = bPlayer;
+	if (bPlayer && !FMath::IsNearlyEqual(GNearClippingPlane, ftcore::kArenaLensNearClip * 100.f, 0.01f))
+	{
+		// The zone's lens clearance counts this near plane; a changed one leaves the walls' lens checks short.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: the near clip plane is %.2f cm, but the lens clearance counts %.2f cm (ArenaCamera.h)."),
+			GNearClippingPlane, ftcore::kArenaLensNearClip * 100.f);
+	}
 	bool bLead = false;
 	if (bPlayer)
 	{
@@ -259,6 +288,8 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 		Body->SetVisibility(false);
 		Head->SetVisibility(false);
 		Visor->SetVisibility(false);
+		// The shapes' blade too: a worn body carries only real weapon meshes (the partner has none yet), never the placeholder cube.
+		Blade->SetVisibility(false);
 		Skin->SetVisibility(true);
 	}
 
@@ -306,7 +337,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	return true;
 }
 
-bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters)
+bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters, bool bBreakPulse)
 {
 	if (!Mesh)
 	{
@@ -321,6 +352,13 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	Visor->SetVisibility(false);
 	Blade->SetVisibility(false);
 	Skin->SetSkeletalMesh(Mesh);
+	PulseMaterials.Reset(); // a new mesh: its own materials, made dynamic only for a break tell
+	PulseBase.Reset();
+	PulseGlow = 0.f;
+	if (bBreakPulse)
+	{
+		MakePulseMaterials();
+	}
 	Skin->SetAnimInstanceClass(UFTBeatFighterAnimInstance::StaticClass());
 	Skin->SetRelativeLocation(FVector(0.0, 0.0, SkinHover));
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Mesh) + YawOffset, 0.0));
@@ -419,6 +457,49 @@ bool AFTArenaFighter::SplitCarried(FName HideSlot, TConstArrayView<FFTCarriedPie
 		MakeCarried(Mesh, Split, true);
 	}
 	return true;
+}
+
+void AFTArenaFighter::MakePulseMaterials()
+{
+	PulseMaterials.Reset();
+	PulseBase.Reset();
+	PulseGlow = 0.f;
+	const FHashedMaterialParameterInfo Info(kFighterEmissive);
+	const int32 Count = Skin->GetNumMaterials();
+	for (int32 M = 0; M < Count; ++M)
+	{
+		UMaterialInterface* Material = Skin->GetMaterial(M);
+		FLinearColor Base = FLinearColor::Black;
+		if (!Material || !Material->GetVectorParameterValue(Info, Base))
+		{
+			continue;
+		}
+		if (UMaterialInstanceDynamic* Dynamic = Skin->CreateDynamicMaterialInstance(M))
+		{
+			PulseMaterials.Add(Dynamic);
+			PulseBase.Add(Base);
+		}
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: %s: the break tell can glow on %d of %d materials (Emissive)."),
+		Skin->GetSkeletalMeshAsset() ? *Skin->GetSkeletalMeshAsset()->GetName() : TEXT("?"), PulseMaterials.Num(), Count);
+}
+
+void AFTArenaFighter::SetBodyPulse(float Glow)
+{
+	Glow = FMath::Max(Glow, 0.f);
+	if (SkinKind != ESkin::Creature || (Glow == 0.f && PulseGlow == 0.f))
+	{
+		return;
+	}
+	PulseGlow = Glow;
+	const FLinearColor Warm(1.f, 0.86f, 0.7f);
+	for (int32 M = 0; M < PulseMaterials.Num(); ++M)
+	{
+		if (PulseMaterials[M])
+		{
+			PulseMaterials[M]->SetVectorParameterValue(kFighterEmissive, PulseBase[M] + Warm * Glow);
+		}
+	}
 }
 
 void AFTArenaFighter::ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow)
