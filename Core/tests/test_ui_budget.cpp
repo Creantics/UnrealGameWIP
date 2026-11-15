@@ -525,3 +525,30 @@ TEST_CASE("ui budget: after a retry the first press is judged on the new fight's
     uiRefusedWatchStep(fresh, seed, cooling, pairBit, 0.016f);
     CHECK(uiRefusedShowing(fresh) == 0);
 }
+
+TEST_CASE("ui budget: HEAL only under half health with a charge, a GIFT prompt only while its gift is ready") {
+    UiPromptReasons why{};
+    why.fill(PressReason::Ok);
+    const UiPromptMask all = static_cast<UiPromptMask>((1u << kUiPromptCount) - 1u);
+    const UiPromptMask heal = uiPromptBit(UiPrompt::Heal), gh = uiPromptBit(UiPrompt::GiftHeal), gg = uiPromptBit(UiPrompt::GiftGuard);
+    ArenaHudLead l;
+    l.hpMax = 100;
+    l.hp = 60;
+    l.heals = 2;
+    CHECK((uiPromptsUsable(all, l, why, 0) & heal) == 0); // 60 percent: no HEAL
+    l.hp = 50;
+    CHECK((uiPromptsUsable(all, l, why, 0) & heal) == 0); // half: not under it
+    l.hp = 49;
+    CHECK((uiPromptsUsable(all, l, why, 0) & heal) == heal);
+    l.heals = 0;
+    CHECK((uiPromptsUsable(all, l, why, 0) & heal) == 0); // no charge left
+    CHECK((uiPromptsUsable(all, l, why, heal) & heal) == heal); // its refusal is showing: it stays
+    CHECK((uiPromptsUsable(all, l, why, 0) & (gh | gg)) == (gh | gg));
+    why[static_cast<std::size_t>(UiPrompt::GiftHeal)] = PressReason::Cooldown;
+    why[static_cast<std::size_t>(UiPrompt::GiftGuard)] = PressReason::Absent;
+    CHECK((uiPromptsUsable(all, l, why, 0) & (gh | gg)) == 0);
+    CHECK((uiPromptsUsable(all, l, why, gh) & gh) == gh);
+    // It only takes away: a prompt not shown stays hidden, the basic rows are untouched.
+    CHECK(uiPromptsUsable(0, l, why, 0) == 0);
+    CHECK((uiPromptsUsable(all, l, why, 0) & kUiBasicPrompts) == kUiBasicPrompts);
+}

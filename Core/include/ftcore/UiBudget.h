@@ -132,6 +132,12 @@ FTCORE_API UiPromptReasons uiPromptReasons(const ArenaFight& fight, PressReason 
 // drawn; every other may stand in its row whether its press is taken now or not.
 FTCORE_API UiPromptMask uiPromptsPresent(const UiPromptReasons& why);
 
+// The HUD's clutter rule over the prompts it would show: HEAL only while the lead is under half health with a charge
+// left, each GIFT prompt only while its gift would be taken now (Ok). A prompt whose refusal word is showing (a press
+// just refused) stays, so the answer is never lost. The presses work whatever this says.
+FTCORE_API UiPromptMask uiPromptsUsable(UiPromptMask shown, const ArenaHudLead& lead, const UiPromptReasons& why,
+                                        UiPromptMask refusedShowing);
+
 // The teaching policy over the rules' answer (not a rule: the presses work whatever it says). The basic controls'
 // prompts in `present` stand as `policy` says: FirstFights while the first-use teaching holds them (`teaching`, UiPrompt
 // bits of the controls live in UiFirstUse), Always all, Never none. Every other prompt passes as the rules gave it.

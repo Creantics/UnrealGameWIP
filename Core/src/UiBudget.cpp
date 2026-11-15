@@ -44,6 +44,17 @@ UiPromptMask uiPromptsPresent(const UiPromptReasons& why) {
     return m;
 }
 
+UiPromptMask uiPromptsUsable(UiPromptMask shown, const ArenaHudLead& lead, const UiPromptReasons& why,
+                             UiPromptMask refusedShowing) {
+    UiPromptMask out = shown;
+    const bool healUsable = lead.hpMax > 0 && 2 * lead.hp < lead.hpMax && lead.heals > 0;
+    if (!healUsable) out = static_cast<UiPromptMask>(out & ~uiPromptBit(UiPrompt::Heal));
+    for (const UiPrompt g : {UiPrompt::GiftHeal, UiPrompt::GiftGuard}) {
+        if (why[static_cast<std::size_t>(g)] != PressReason::Ok) out = static_cast<UiPromptMask>(out & ~uiPromptBit(g));
+    }
+    return static_cast<UiPromptMask>(out | (shown & refusedShowing));
+}
+
 UiPromptMask uiPromptsTaught(UiPromptMask present, ShowBasicControls policy, UiPromptMask teaching) {
     UiPromptMask keep = 0; // the basic controls the policy lets stand
     switch (policy) {

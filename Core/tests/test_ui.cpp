@@ -247,121 +247,112 @@ TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while
     CHECK(g.alpha == doctest::Approx(0.4f));
 }
 
-TEST_CASE("ui style: the Unwritten's red is on marks only, and its danger word is ink with a red underline") {
-    std::string err;
-    std::string text;
-    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
-    UiStyle s;
-    REQUIRE_MESSAGE(importUiStyle(text, s, &err), err);
-    const UiWorld unw = UiWorld::Unwritten;
-    // Only the Unwritten sets the rules.
-    CHECK(s.rules[static_cast<std::size_t>(unw)].marksAccent2);
-    CHECK(s.rules[static_cast<std::size_t>(unw)].dangerUnderline);
-    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Solhaven)].marksAccent2);
-    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Solhaven)].dangerUnderline);
-    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Lattice)].marksAccent2);
-    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Lattice)].dangerUnderline);
-    const UiColor red{176.f / 255.f, 30.f / 255.f, 35.f / 255.f, 1.f}; // #B01E23
-    const UiColor usual = s.loadGold;
-    for (const UiPalette p : {UiPalette::Default, UiPalette::Protan, UiPalette::Deutan, UiPalette::Tritan,
-                              UiPalette::HighContrast}) {
-        CAPTURE(static_cast<int>(p));
-        // A mark wears accent2 in the Unwritten and its own colour elsewhere.
-        const UiColor mark = uiMarkColor(s, unw, p, usual);
-        CHECK(mark == uiColor(s, unw, p, UiToken::Accent2));
-        CHECK(mark.r == doctest::Approx(red.r).epsilon(0.003));
-        CHECK(mark.g == doctest::Approx(red.g).epsilon(0.003));
-        CHECK(mark.b == doctest::Approx(red.b).epsilon(0.003));
-        CHECK(uiMarkColor(s, UiWorld::Solhaven, p, usual) == usual);
-        CHECK(uiMarkColor(s, UiWorld::Lattice, p, usual) == usual);
-        // A danger word: ink glyphs over a danger underline in the Unwritten; danger glyphs, no underline elsewhere.
-        const UiDangerWord u = uiDangerWord(s, unw, p);
-        CHECK(u.underlined);
-        CHECK(u.word == uiColor(s, unw, p, UiToken::Ink));
-        CHECK(u.underline == uiColor(s, unw, p, UiToken::Danger));
-        const UiDangerWord sol = uiDangerWord(s, UiWorld::Solhaven, p);
-        CHECK_FALSE(sol.underlined);
-        CHECK(sol.word == uiColor(s, UiWorld::Solhaven, p, UiToken::Danger));
-        // No text token of the Unwritten wears the red.
-        for (const UiToken tk : {UiToken::Ink, UiToken::InkDim, UiToken::Accent})
-            CHECK_FALSE(uiColor(s, unw, p, tk) == uiColor(s, unw, p, UiToken::Accent2));
-    }
-    // In the default palette the Unwritten's ally, weak point and backing are cold neutrals (no channel more than
-    // 0.1 from another), and its accent is brighter than its ink and passes the text rule on the backing and the edge.
-    const UiColor white{1.f, 1.f, 1.f, 1.f};
-    for (const UiToken tk : {UiToken::Ally, UiToken::WeakPoint, UiToken::Backing, UiToken::Accent}) {
-        const UiColor c = uiColor(s, unw, UiPalette::Default, tk);
-        CHECK(std::fabs(c.r - c.g) <= 0.1f);
-        CHECK(std::fabs(c.g - c.b) <= 0.1f);
-        CHECK(std::fabs(c.r - c.b) <= 0.1f);
-        CHECK(c.b >= c.r); // cold: blue at least as strong as red
-    }
-    const UiColor ink = uiColor(s, unw, UiPalette::Default, UiToken::Ink);
-    const UiColor accent = uiColor(s, unw, UiPalette::Default, UiToken::Accent);
-    UiColor back = uiColor(s, unw, UiPalette::Default, UiToken::Backing);
-    back.a = s.backingDefault;
-    CHECK(accent.r + accent.g + accent.b > ink.r + ink.g + ink.b);
-    CHECK(uiContrast(accent, back, white) >= 4.5f);
-    CHECK(uiContrast(accent, s.edge, white) >= 4.5f);
-    // A world object that leaves the keys out has the rules off.
-    UiStyle t;
-    REQUIRE_MESSAGE(importUiStyle(R"({"worlds": {"unwritten": {"ink": "#DCE1E5"}}})", t, &err), err);
-    CHECK_FALSE(t.rules[static_cast<std::size_t>(unw)].marksAccent2);
-    CHECK_FALSE(t.rules[static_cast<std::size_t>(unw)].dangerUnderline);
-    CHECK(uiMarkColor(t, unw, UiPalette::Default, usual) == usual);
-    // The keys take booleans only, and only in a world.
-    CHECK_FALSE(importUiStyle(R"({"worlds": {"unwritten": {"marks_accent2": "yes"}}})", t, &err));
-    CHECK_FALSE(importUiStyle(R"({"palettes": {"protan": {"danger_underline": true}}})", t, &err));
-}
-
-TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a mark, an underline or the hit cue") {
-    // Red: the red channel more than 1.5 times each other one (the blood red, the danger salmon; not the greys, the
-    // gold or the edge).
-    const auto isRed = [](UiColor c) { return c.r > 0.2f && c.r > 1.5f * c.g && c.r > 1.5f * c.b; };
+TEST_CASE("ui style: one danger red in every world, the weak point in Mark, a danger word ink over red") {
     std::string err;
     std::string text;
     REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
     UiStyle shipped;
     REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
     const UiWorld unw = UiWorld::Unwritten;
-    const UiPalette p = UiPalette::Default; // the colour-vision palettes move danger on purpose (ruled to stay)
+    const UiColor c2{230.f / 255.f, 0.f, 18.f / 255.f, 1.f};   // #E60012
+    const UiColor gold{1.f, 224.f / 255.f, 138.f / 255.f, 1.f}; // #FFE08A
     for (const UiStyle& s : {defaultUiStyle(), shipped}) {
-        // The tokens: only accent2 (the marks' red) and danger (fed to marks and underlines below) are red.
-        for (std::size_t t = 0; t < kUiTokenCount; ++t) {
-            const UiToken tk = static_cast<UiToken>(t);
-            CAPTURE(t);
-            if (tk == UiToken::Accent2 || tk == UiToken::Danger) {
-                CHECK(isRed(uiColor(s, unw, p, tk)));
-            } else {
-                CHECK_FALSE(isRed(uiColor(s, unw, p, tk)));
-            }
+        // No world wears accent2 on its marks; every world draws a danger word in ink over a red underline.
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            CHECK_FALSE(s.rules[w].marksAccent2);
+            CHECK(s.rules[w].dangerUnderline);
         }
-        CHECK_FALSE(isRed(s.edge));
-        // Red means danger only: marks, the low-health underline and the hit cue; text and value lines are never red.
-        const UiColor ink = uiColor(s, unw, p, UiToken::Ink);
-        CHECK(isRed(uiMarkColor(s, unw, p, ink)));
-        const UiDangerWord w = uiDangerWord(s, unw, p);
-        CHECK(w.underlined);
-        CHECK_FALSE(isRed(w.word));
-        CHECK(isRed(w.underline));
-        const UiDangerSet d = uiDangerSet(s, unw, p);
-        CHECK(isRed(d.hitCue));
-        CHECK(d.hitCue == uiColor(s, unw, p, UiToken::Danger));
-        CHECK_FALSE(isRed(d.lowLine));
-        CHECK(d.lowLine == uiTrackSet(s, unw, p).fill);
-        CHECK(d.lowUnderlined);
-        CHECK(isRed(d.lowUnderline));
-        CHECK(d.cueMark == uiColor(s, unw, p, UiToken::Accent2)); // a small mark: the marks' red
-        // The other worlds keep danger on the low line and the triangle, with no underline; the hit cue is the same red.
-        for (const UiWorld wo : {UiWorld::Solhaven, UiWorld::Lattice}) {
-            const UiDangerSet o = uiDangerSet(s, wo, p);
-            const UiColor danger = uiColor(s, wo, p, UiToken::Danger);
-            CHECK(o.hitCue == d.hitCue);
-            CHECK(o.lowLine == danger);
-            CHECK(o.cueMark == danger);
-            CHECK_FALSE(o.lowUnderlined);
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            CAPTURE(w);
+            const UiWorld wo = static_cast<UiWorld>(w);
+            CHECK(uiColor(s, wo, UiPalette::Default, UiToken::Danger) == c2);
+            CHECK(uiColor(s, wo, UiPalette::Default, UiToken::WeakPoint) == gold);
+            CHECK(uiMarkColor(s, wo, UiPalette::Default, gold) == gold);
+        }
+        for (const UiPalette p : {UiPalette::Default, UiPalette::Protan, UiPalette::Deutan, UiPalette::Tritan,
+                                  UiPalette::HighContrast}) {
+            CAPTURE(static_cast<int>(p));
+            const UiDangerWord u = uiDangerWord(s, unw, p);
+            CHECK(u.underlined);
+            CHECK(u.word == uiColor(s, unw, p, UiToken::Ink));
+            CHECK(u.underline == uiColor(s, unw, p, UiToken::Danger));
+            const UiDangerWord sol = uiDangerWord(s, UiWorld::Solhaven, p);
+            CHECK(sol.underlined);
+            CHECK(sol.word == uiColor(s, UiWorld::Solhaven, p, UiToken::Ink));
         }
     }
+    // A world object that leaves the keys out has the rules off; the keys take booleans only, and only in a world.
+    UiStyle t;
+    REQUIRE_MESSAGE(importUiStyle(R"({"worlds": {"unwritten": {"ink": "#DCE1E5"}}})", t, &err), err);
+    CHECK_FALSE(t.rules[static_cast<std::size_t>(unw)].marksAccent2);
+    CHECK_FALSE(t.rules[static_cast<std::size_t>(unw)].dangerUnderline);
+    CHECK(uiMarkColor(t, unw, UiPalette::Default, gold) == gold);
+    REQUIRE_MESSAGE(importUiStyle(R"({"worlds": {"unwritten": {"marks_accent2": true}}})", t, &err), err);
+    CHECK(uiMarkColor(t, unw, UiPalette::Default, gold) == uiColor(t, unw, UiPalette::Default, UiToken::Accent2));
+    CHECK_FALSE(importUiStyle(R"({"worlds": {"unwritten": {"marks_accent2": "yes"}}})", t, &err));
+    CHECK_FALSE(importUiStyle(R"({"palettes": {"protan": {"danger_underline": true}}})", t, &err));
+}
+
+TEST_CASE("ui style: red means harm to the player: the hit cue, the lost hp, the low underline, the call triangle") {
+    const auto isRed = [](UiColor c) { return c.r > 0.2f && c.r > 1.5f * c.g && c.r > 1.5f * c.b; };
+    const UiColor black{0.f, 0.f, 0.f, 1.f};
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle shipped;
+    REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
+    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            CAPTURE(w);
+            const UiWorld wo = static_cast<UiWorld>(w);
+            const UiPalette p = UiPalette::Default;
+            // The tokens: danger is red; every token a text, value line or the weak point wears is not.
+            for (const UiToken tk : {UiToken::Ink, UiToken::InkDim, UiToken::Accent, UiToken::Ally, UiToken::WeakPoint,
+                                     UiToken::Backing})
+                CHECK_FALSE(isRed(uiColor(s, wo, p, tk)));
+            CHECK(isRed(uiColor(s, wo, p, UiToken::Danger)));
+            CHECK_FALSE(isRed(s.edge));
+            CHECK_FALSE(isRed(s.loadGold));
+            const UiDangerSet d = uiDangerSet(s, wo, p);
+            CHECK(isRed(d.hitCue));
+            CHECK(isRed(d.lowUnderline));
+            CHECK(d.cueMark == uiColor(s, wo, p, UiToken::Danger));
+            // The darkening layer under the hit cue: the cue's red scaled down, darker than it.
+            CHECK(d.hitDark.r == doctest::Approx(d.hitCue.r * kUiHitDarkK));
+            CHECK(d.hitDark.b == doctest::Approx(d.hitCue.b * kUiHitDarkK));
+            CHECK(uiContrast(d.hitCue, d.hitDark, black) > 1.5f);
+            // The low line: the white fill where the low underline carries the red, else the red itself.
+            if (d.lowUnderlined) CHECK(d.lowLine == uiTrackSet(s, wo, p).fill);
+            else CHECK(d.lowLine == uiColor(s, wo, p, UiToken::Danger));
+        }
+        // Every palette's danger holds 3:1 against both the track's black body and the white fill.
+        for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+            CAPTURE(p);
+            const UiPalette pal = static_cast<UiPalette>(p);
+            const UiTrackSet t = uiTrackSet(s, UiWorld::Solhaven, pal);
+            const UiColor dg = uiColor(s, UiWorld::Solhaven, pal, UiToken::Danger);
+            CHECK(uiContrast(dg, t.body, black) >= 3.f);
+            CHECK(uiContrast(dg, t.fill, black) >= 3.f);
+        }
+    }
+}
+
+TEST_CASE("ui style: the LOAD label shows when Load is first held and for 2 s after each change, then goes") {
+    UiLoadLabel g;
+    CHECK(uiLoadLabelStep(g, 0, 100, false, 0.1f) == 0.f);  // nothing held: no label
+    CHECK(uiLoadLabelStep(g, 10, 100, false, 0.1f) == 1.f); // first held
+    for (int i = 0; i < 19; ++i) uiLoadLabelStep(g, 12, 100, false, 0.1f);
+    CHECK(uiLoadLabelStep(g, 20, 100, false, 0.f) == 1.f);  // 1.9 s: more Load is not a change
+    const float fading = uiLoadLabelStep(g, 20, 100, false, 0.25f);
+    CHECK(fading > 0.f);
+    CHECK(fading < 1.f);
+    CHECK(uiLoadLabelStep(g, 20, 100, false, 0.2f) == 0.f); // gone
+    CHECK(uiLoadLabelStep(g, 40, 100, true, 0.1f) == 1.f);  // the Release opens
+    CHECK(uiLoadLabelStep(g, 40, 100, true, 3.f) == 0.f);
+    CHECK(uiLoadLabelStep(g, 40, 70, true, 0.1f) == 1.f);   // the cap moves
+    CHECK(uiLoadLabelStep(g, 40, 70, true, 3.f) == 0.f);
+    CHECK(uiLoadLabelStep(g, 0, 70, false, 0.1f) == 0.f);   // spent: no label
+    CHECK(uiLoadLabelStep(g, 0, 100, false, 0.1f) == 0.f);  // a cap change with nothing held shows nothing
 }
 
 TEST_CASE("ui style: the hit cue is one red in every world, the danger token of the palette shown") {
@@ -434,8 +425,31 @@ TEST_CASE("ui style: the hit cue is full for 100 ms and gone by 350 ms") {
     CHECK(uiHitFlashLevel(0.3f) < uiHitFlashLevel(0.2f));
     CHECK(uiHitFlashLevel(0.35f) == 0.f);
     CHECK(uiHitFlashLevel(1.f) == 0.f);
-    CHECK(kUiHitGlowPeak == doctest::Approx(0.6f));
     CHECK(kUiHitGlowShare == doctest::Approx(0.06f)); // inside the outer 6 percent of each axis
+}
+
+TEST_CASE("ui style: the hit cue's two layers: a wide dark under a narrower red, both gone at 6 percent in") {
+    const UiHitLayers e = uiHitLayers(0.f, 1.f);
+    CHECK(e.dark == doctest::Approx(0.7f));
+    CHECK(e.red == doctest::Approx(0.75f));
+    const UiHitLayers off = uiHitLayers(0.f, kUiHitOffSide);
+    CHECK(off.dark == doctest::Approx(0.7f * 0.75f));
+    CHECK(off.red == doctest::Approx(0.75f * 0.25f));
+    // Halfway in: (1 - smoothstep(0.5)) = 0.5; the dark falls slower than the red.
+    const UiHitLayers h = uiHitLayers(0.5f, 1.f);
+    CHECK(h.dark == doctest::Approx(0.7f * std::pow(0.5f, 0.4f)));
+    CHECK(h.red == doctest::Approx(0.75f * std::pow(0.5f, 0.7f)));
+    CHECK(h.dark / e.dark > h.red / e.red);
+    CHECK(uiHitLayers(1.f, 1.f).dark == 0.f);
+    CHECK(uiHitLayers(1.f, 1.f).red == 0.f);
+    CHECK(uiHitLayers(2.f, 1.f).red == 0.f);
+    CHECK(uiHitLayers(-1.f, 1.f).red == doctest::Approx(0.75f));
+    CHECK(uiHitLayers(0.f, 0.f).dark == 0.f);
+    for (int i = 0; i < 10; ++i) {
+        const float a = static_cast<float>(i) / 10.f, b = static_cast<float>(i + 1) / 10.f;
+        CHECK(uiHitLayers(b, 1.f).dark <= uiHitLayers(a, 1.f).dark);
+        CHECK(uiHitLayers(b, 1.f).red <= uiHitLayers(a, 1.f).red);
+    }
 }
 
 TEST_CASE("ui style: the hit cue's edges: the struck side at full, the others at a quarter; no side, all four") {
@@ -472,10 +486,14 @@ TEST_CASE("ui style: the GUARD label shows for 2 s after the line appears or its
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
     UiStyle s;
     std::string err;
-    REQUIRE_MESSAGE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#F0A030"}},
+    REQUIRE_MESSAGE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#B06000"}},
         "layers": {"plates": true, "world_anchored": true, "hairlines": false}})", s, &err), err);
     const UiColor d = uiColor(s, UiWorld::Solhaven, UiPalette::Deutan, UiToken::Danger);
-    CHECK(d.g == doctest::Approx(160.f / 255.f));
+    CHECK(d.g == doctest::Approx(96.f / 255.f));
+    // A light danger fails 3:1 against the track's white fill: refused.
+    UiStyle light;
+    CHECK_FALSE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#F0A030"}}})", light, &err));
+    CHECK(err.find("danger on the track") != std::string::npos);
     // The ally colour is the world's own (the deutan list above replaced the built-in list).
     CHECK(uiColor(s, UiWorld::Solhaven, UiPalette::Deutan, UiToken::Ally) ==
           uiColor(s, UiWorld::Solhaven, UiPalette::Default, UiToken::Ally));
@@ -1024,4 +1042,30 @@ TEST_CASE("ui style: the hit flash starts only on a later hit; a retry's reset s
     CHECK(q.seen == 1.25);
     CHECK(uiHitWatchStep(q, 1.25, 0.1f) == doctest::Approx(0.4f));
     CHECK(uiHitWatchStep(q, 1.5, 0.1f) == 0.f); // 0.4 s after the last start: a new cue
+}
+
+TEST_CASE("ui style: each hit's lost health in red for its own 350 ms, a heal clears it") {
+    UiHitSegs s;
+    uiHitSegsStep(s, 1.f, 0.016f); // the first step only reads
+    for (const UiHitSeg& g : s.seg) CHECK(uiHitFlashLevel(g.age) == 0.f);
+    uiHitSegsStep(s, 0.8f, 0.016f);
+    CHECK(s.seg[0].lo == doctest::Approx(0.8f));
+    CHECK(s.seg[0].hi == doctest::Approx(1.f));
+    CHECK(uiHitFlashLevel(s.seg[0].age) == 1.f);
+    uiHitSegsStep(s, 0.7f, 0.1f); // a second blow 100 ms later: its own segment, the first one still live
+    CHECK(s.seg[1].lo == doctest::Approx(0.7f));
+    CHECK(s.seg[1].hi == doctest::Approx(0.8f));
+    CHECK(uiHitFlashLevel(s.seg[1].age) == 1.f);
+    CHECK(uiHitFlashLevel(s.seg[0].age) > 0.f);
+    for (int i = 0; i < 16; ++i) uiHitSegsStep(s, 0.7f, 0.016f); // 256 ms more: the first gone, the second fading
+    CHECK(uiHitFlashLevel(s.seg[0].age) == 0.f);
+    CHECK(uiHitFlashLevel(s.seg[1].age) > 0.f);
+    for (int i = 0; i < 10; ++i) uiHitSegsStep(s, 0.7f, 0.016f);
+    CHECK(uiHitFlashLevel(s.seg[1].age) == 0.f);
+    for (int i = 0; i < 6; ++i) uiHitSegsStep(s, 0.6f - 0.05f * static_cast<float>(i), 0.016f); // more blows than the ring holds
+    int live = 0;
+    for (const UiHitSeg& g : s.seg) live += uiHitFlashLevel(g.age) > 0.f ? 1 : 0;
+    CHECK(live == static_cast<int>(kUiHitSegs));
+    uiHitSegsStep(s, 0.9f, 0.016f); // a heal
+    for (const UiHitSeg& g : s.seg) CHECK(uiHitFlashLevel(g.age) == 0.f);
 }

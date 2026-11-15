@@ -212,7 +212,7 @@ void AFTArenaGameMode::StartPlay()
 		}
 		if (FParse::Value(Cmd, TEXT("ArenaShotHitStrip="), ShotStripPost) && ShotStripPost > 0)
 		{
-			ShotStripPost = FMath::Min(ShotStripPost, 120);
+			ShotStripPost = FMath::Min(ShotStripPost, 12); // the strip stops at the hit plus 12 views
 			ShotHit.Reset();
 			ShotHit.Add(0.0); // one entry, so the strip runs; the frames are its own
 		}
@@ -1677,18 +1677,23 @@ void AFTArenaGameMode::HitStrip(float DeltaSeconds)
 	}
 	if (ShotStripPost > 0)
 	{
-		// The every-frame strip: this frame's view, the frame the stamp moves on logged as the hit's.
+		// The every-frame strip: before the hit only a ring of the last ShotStripRing views (strip_pre_<frame % ring>, each
+		// overwritten), from the frame the stamp moves on (logged as the hit's) every view as strip_<frame>, to the hit
+		// plus ShotStripPost (12 at most), then stop.
 		if (ShotStripHitFrame < 0 && Stamp != ShotHitStamp && Stamp >= 0.0)
 		{
 			ShotStripHitFrame = ShotStripFrame;
 			ShotHitStamp = Stamp;
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip hit lands on frame %d (engine frame %llu)."), ShotStripHitFrame,
-				static_cast<unsigned long long>(GFrameCounter));
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip hit lands on frame %d (engine frame %llu); strip_pre_* hold frames %d to %d."),
+				ShotStripHitFrame, static_cast<unsigned long long>(GFrameCounter), FMath::Max(0, ShotStripHitFrame - ShotStripRing),
+				ShotStripHitFrame - 1);
 		}
 		const double Hold = ShotHoldUntil;
-		TakeShot(*FString::Printf(TEXT("strip_%05d"), ShotStripFrame), false);
+		const FString Name = ShotStripHitFrame >= 0 ? FString::Printf(TEXT("strip_%05d"), ShotStripFrame)
+													: FString::Printf(TEXT("strip_pre_%d"), ShotStripFrame % ShotStripRing);
+		TakeShot(*Name, false);
 		ShotHoldUntil = Hold;
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip view %d (engine frame %llu, step %.4f s)."), ShotStripFrame,
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip view %d as %s (engine frame %llu, step %.4f s)."), ShotStripFrame, *Name,
 			static_cast<unsigned long long>(GFrameCounter), DeltaSeconds);
 		++ShotStripFrame;
 		const bool bDone = ShotStripHitFrame >= 0 ? ShotStripFrame > ShotStripHitFrame + ShotStripPost : ShotStripFrame >= 900;

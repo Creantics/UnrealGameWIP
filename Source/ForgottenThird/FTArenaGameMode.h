@@ -267,10 +267,11 @@ private:
 	// fight running on; the next one due, the hit's stamp and its age, and whether the strip is under way.
 	TArray<double> ShotHit;
 	int32 NextShotHit = 0;
-	// -ArenaShotHitStrip=<n> (capture only): instead of set ages, a view <prefix>_strip_<frame>.png every frame from the
-	// arming on, to n frames past the frame the hit lands (logged), so the strip holds the frames before the hit as well;
-	// the capture keeps the ones it needs. Gives up 900 frames after arming with no hit.
+	// -ArenaShotHitStrip=<n> (capture only, n 12 at most): instead of set ages, a view every frame from the arming on: a
+	// ring of the last ShotStripRing as <prefix>_strip_pre_<frame % ring>.png until the hit lands (the log names their
+	// frames), then <prefix>_strip_<frame>.png to n frames past it. Gives up 900 frames after arming with no hit.
 	int32 ShotStripPost = 0;
+	static constexpr int32 ShotStripRing = 3; // views kept before the hit
 	int32 ShotStripFrame = 0;
 	int32 ShotStripHitFrame = -1;
 	double ShotHitStamp = -1e9;

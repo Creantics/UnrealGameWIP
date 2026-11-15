@@ -167,7 +167,8 @@ FTCORE_API UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palett
 // A value line's three tones (health, guard; one family, every world the same way): the unfilled track's body, black
 // (L 0), with a 1 device px top hairline of the world's ink hue at L kUiTrackHairL; and the fill, white. The fill is
 // judged against the body only (it never sits on the hairline): 21:1. Over any stage one of body and hairline holds
-// 3:1 (the body for a stage at L 0.10 or more, the hairline for one at L 0.107 or less). The palettes do not move them.
+// 3:1 (the body for a stage at L 0.10 or more, the hairline for one at L 0.107 or less). A palette moves only the
+// hairline's hue (its ink's), never a lightness.
 inline constexpr float kUiTrackBodyL = 0.f;
 inline constexpr float kUiTrackHairL = 0.42f;
 struct UiTrackSet {
@@ -188,33 +189,62 @@ struct UiDangerWord {
 FTCORE_API UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette);
 
 // Every other place the fight HUD may put the danger colour; the painter reads the danger token nowhere but here and
-// through uiDangerWord. Red means danger only: weak-point marks, the low-health underline and the hit cue. The hit cue
-// is one red in every world (the Unwritten's danger token in the palette shown): a glow on the screen's edges (kUiHitGlow*
-// below) and the hp just lost drawn in it on the lead's hp line. In a world with UiWorldRules::dangerUnderline the red
-// otherwise stays on small marks and the 1 px underline: a low hp or guard line keeps the fill and carries a 1 px danger
-// underline under its lit length (the pulse moves onto it), and the call cue's triangle, a small mark, wears the mark
-// colour (uiMarkColor). Elsewhere the low line and the triangle are danger, with no underline.
+// through uiDangerWord. Red means harm to the player only: the hit cue, the hp just lost, the low-health underline and
+// the call cue's triangle. The hit cue is one red in every world (the danger token in the palette shown): a glow on the
+// screen's edges over a darkening layer (kUiHitGlow* and kUiHitDarkK below), and the hp just lost drawn in it on the
+// lead's hp line. In a world with UiWorldRules::dangerUnderline a low hp or guard line keeps the fill and carries a 1 px
+// danger underline under its lit length (the pulse moves onto it); elsewhere the low line is danger, with no underline.
+// The weak-point mark is not danger: it wears the WeakPoint token (Mark gold) in every world.
 struct UiDangerSet {
     UiColor hitCue;       // the hit's edge glow and the lost hp while the cue lives
     UiColor lowLine;      // a low value line
     UiColor lowUnderline; // the line under it, drawn only when lowUnderlined
     bool lowUnderlined = false;
     UiColor cueMark;      // the call cue's danger triangle
+    UiColor hitDark;      // the hit cue's darkening layer under the red (danger scaled by kUiHitDarkK)
 };
+// The hit cue's darkening layer: the danger colour's sRGB channels times this (E60012 gives 5A0007).
+inline constexpr float kUiHitDarkK = 0.39f;
 FTCORE_API UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette);
 
-// The hit cue's glow: on each edge, kUiHitGlowPeak at the frame's edge times the edge's weight, a smooth fall to nothing
-// kUiHitGlowShare of that edge's axis in (6 percent of the width at the sides, of the height at top and bottom), under
-// every HUD line and word. The struck side at full, the other three at kUiHitOffSide; with no side (a hazard), all four
-// at full. With reduced flashes only the lost hp is drawn.
+// The hit cue's glow: two layers on each edge, laid over the frame under every HUD line and word, each falling from the
+// frame's edge to nothing kUiHitGlowShare of that edge's axis in (6 percent of the width at the sides, of the height at
+// top and bottom). First a darkening layer in UiDangerSet::hitDark, then the red in hitCue over it (uiHitLayers). The
+// struck side at full, the other three at kUiHitOffSide (the red) or kUiHitDarkOffSide (the dark); with no side (a
+// hazard), all four at full. With reduced flashes only the lost hp is drawn.
 inline constexpr float kUiHitGlowShare = 0.06f;
-inline constexpr float kUiHitGlowPeak = 0.6f;
+inline constexpr float kUiHitGlowPeak = 0.75f;   // the red layer at the struck edge
+inline constexpr float kUiHitGlowPow = 0.7f;     // its fall: (1 - smoothstep)^this
+inline constexpr float kUiHitDarkPeak = 0.7f;    // the dark layer at the struck edge
+inline constexpr float kUiHitDarkPow = 0.4f;     // its fall, wider than the red's
+inline constexpr float kUiHitDarkOffSide = 0.75f; // the dark layer on the three other edges
+// The two layers' alphas at `in` (the share of the way in from the frame's edge, 0 at the edge, 1 at kUiHitGlowShare)
+// on an edge of weight `edge` (from uiHitEdges), before the cue's strength. Where two edges meet, take each layer's
+// larger value of the two edges, never the two stacked.
+struct UiHitLayers {
+    float dark = 0.f;
+    float red = 0.f;
+};
+FTCORE_API UiHitLayers uiHitLayers(float in, float edge);
 inline constexpr float kUiHitOffSide = 0.25f;
 inline constexpr float kUiHitFull = 0.1f;    // seconds at full strength
 inline constexpr float kUiHitGone = 0.35f;   // seconds until it is gone
 inline constexpr float kUiHitRepeat = 1.f / 3.f; // the least time between two cues' starts (3 a second at most)
 // The cue's strength `age` seconds after it starts: 1 until kUiHitFull, a smooth fall to 0 at kUiHitGone, 0 outside.
 FTCORE_API float uiHitFlashLevel(float age);
+// Each blow's lost health in red: its own segment [lo, hi] of the line (0..1), drawn over lo..lo + (hi - lo) times
+// uiHitFlashLevel(age), so every hit shows its loss for kUiHitGone whatever the glow's cap. A fixed ring of the last
+// kUiHitSegs blows (the oldest dropped). A rise (a heal) clears them; so does the first step (it only reads the hp).
+inline constexpr std::size_t kUiHitSegs = 4;
+struct UiHitSeg {
+    float lo = 0.f, hi = 0.f, age = kUiHitGone; // gone until a blow sets it
+};
+struct UiHitSegs {
+    std::array<UiHitSeg, kUiHitSegs> seg{};
+    float last = -1.f; // the hp the last step saw; negative before the first
+    std::uint8_t next = 0;
+};
+FTCORE_API void uiHitSegsStep(UiHitSegs& s, float hp01, float dt);
 // Each edge's weight for a blow from `rightAhead` (the striker from the lead on the camera's ground plane: x right, y
 // ahead; need not be unit): the nearer of left/right or top (ahead)/bottom (behind) at 1, the others at kUiHitOffSide.
 // With no side, or a zero vector, every edge at 1.
@@ -266,6 +296,17 @@ struct UiGuardLabel {
 // One tick: takes the state now, returns the label's alpha (0..1). The first state after a fresh watch that is not Full
 // shows the label as a change would.
 FTCORE_API float uiGuardLabelStep(UiGuardLabel& g, UiGuardState now, float dt);
+
+// The LOAD label beside the Load line under the lead's name, the GUARD label's rule: shown when some Load is first held
+// and for kUiGuardLabelHold seconds after each change (the Release opening or closing, the cap moving), then the same
+// fade. No Load held: no label. Never a permanent label.
+enum class UiLoadState : std::uint8_t { None, Held, Ready };
+struct UiLoadLabel {
+    UiLoadState state = UiLoadState::None;
+    int cap = 0;
+    float since = 1e3f; // seconds since the last change
+};
+FTCORE_API float uiLoadLabelStep(UiLoadLabel& g, int load, int cap, bool releaseReady, float dt);
 
 // A role's size in pixels for a viewport `height` px tall at the player's text scale (1.0..2.0, clamped), never below
 // the floors.
