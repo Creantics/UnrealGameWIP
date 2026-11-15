@@ -1073,8 +1073,11 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		{
 			const AFTArenaFighter* Player = Runner->GetPlayerFigure();
 			const AFTArenaFighter* Ally = Runner->GetAllyFigure();
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena: ready stance at view %s: lead %.2f, partner %.2f"), *Name,
-				Player ? Player->GetReadyAlpha() : 0.f, Ally ? Ally->GetReadyAlpha() : 0.f);
+			const ftcore::ArenaAllyOut& A = Runner->GetFight().output().ally;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: ready stance at view %s: lead %.2f, partner %.2f; partner %s blow %d part %d at %.2f s, clip '%s'"), *Name,
+				Player ? Player->GetReadyAlpha() : 0.f, Ally ? Ally->GetReadyAlpha() : 0.f,
+				A.attacking ? TEXT("in") : A.guarding ? TEXT("guarding, no") : TEXT("no"), static_cast<int32>(A.blow),
+				static_cast<int32>(A.part), A.stateTime, Runner->GetAllyWeapons().GetPlayingStrikeName());
 		}
 		TakeShot(*Name, false);
 		++NextShotAt;

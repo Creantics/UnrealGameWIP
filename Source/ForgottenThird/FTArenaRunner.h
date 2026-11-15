@@ -1395,6 +1395,9 @@ private:
 	// The partner's body's weapon (-ArenaPartner): the same strike clips, props and effects its look plays when it is
 	// the lead, driven from the ally's blows (TrackAllyWeapons); begun on the ally figure, ended on a swap.
 	FFTLeadWeapons AllyWeapons;
+public:
+	const FFTLeadWeapons& GetAllyWeapons() const { return AllyWeapons; }
+private:
 	void TrackAllyWeapons(const ftcore::ArenaOutput& Out);
 	bool bAllyStruck = false;  // the ally was in a blow last step ...
 	uint8 AllyStruckBlow = 0;  // ... this one ...

@@ -154,6 +154,8 @@ struct FFTLeadWeapons
 	// The blows whose strike clip played into their recovery uncut (whole), and the blows that started a clip.
 	int32 GetClipsCompleted() const { return ClipsCompleted; }
 	int32 GetClipsStarted() const { return ClipsStarted; }
+	// The strike clip under way's name ("" when none plays), for the capture runs' per-view log.
+	const TCHAR* GetPlayingStrikeName() const { return Animator.actionCount() > 0 && FadeSince < 0.0 ? GetLastStrikeName() : TEXT(""); }
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
 	// fade when the attack ends.
 	void Track(const ftcore::ArenaPlayerOut& P, double T);
