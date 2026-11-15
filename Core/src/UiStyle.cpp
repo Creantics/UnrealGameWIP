@@ -185,8 +185,26 @@ UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor 
     return uiColor(s, world, palette, UiToken::Accent2);
 }
 
-UiColor uiTrackInk(UiColor ink) {
-    return UiColor{ink.r * kUiTrackDim, ink.g * kUiTrackDim, ink.b * kUiTrackDim, 1.f};
+namespace {
+float unlinear(float l) {
+    const float c = l <= 0.0031308f ? l * 12.92f : 1.055f * std::pow(l, 1.f / 2.4f) - 0.055f;
+    return std::clamp(c, 0.f, 1.f);
+}
+} // namespace
+
+UiTrackSet uiTrackSet(const UiStyle& s, UiWorld world, UiPalette palette) {
+    UiTrackSet t;
+    t.body = UiColor{kUiTrackBodyL, kUiTrackBodyL, kUiTrackBodyL, 1.f};
+    t.fill = UiColor{1.f, 1.f, 1.f, 1.f};
+    // The hairline: the world's ink (its default palette: the palettes do not move the value line) scaled in linear
+    // light to kUiTrackHairL, so it keeps the world's hue.
+    const UiColor ink = uiColor(s, world, UiPalette::Default, UiToken::Ink);
+    (void)palette;
+    const float l = luminance(ink);
+    const float k = l > 1e-4f ? kUiTrackHairL / l : 0.f;
+    t.hairline = l > 1e-4f ? UiColor{unlinear(linear(ink.r) * k), unlinear(linear(ink.g) * k), unlinear(linear(ink.b) * k), 1.f}
+                           : UiColor{unlinear(kUiTrackHairL), unlinear(kUiTrackHairL), unlinear(kUiTrackHairL), 1.f};
+    return t;
 }
 
 UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette) {
@@ -201,13 +219,9 @@ UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette) {
     const UiColor danger = uiColor(s, world, palette, UiToken::Danger);
     UiDangerSet d;
     d.lowUnderlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
-    // One hit flash in every world: the black band, and the hairline in the brighter of the text ink and the accent,
-    // so it stays pale on a dark court whichever of the two a world makes its brightest.
-    d.hitFlash = UiColor{0.f, 0.f, 0.f, 1.f};
-    const UiColor ink = uiColor(s, world, palette, UiToken::Ink);
-    const UiColor accent = uiColor(s, world, palette, UiToken::Accent);
-    d.hitLine = luminance(accent) > luminance(ink) ? accent : ink;
-    d.lowLine = d.lowUnderlined ? uiColor(s, world, palette, UiToken::Ink) : danger;
+    // One hit cue in every world: the Unwritten's danger red in the palette shown.
+    d.hitCue = uiColor(s, UiWorld::Unwritten, palette, UiToken::Danger);
+    d.lowLine = d.lowUnderlined ? uiTrackSet(s, world, palette).fill : danger;
     d.lowUnderline = danger;
     d.cueMark = uiMarkColor(s, world, palette, danger);
     return d;
@@ -220,6 +234,16 @@ float uiHitFlashLevel(float age) {
     return 1.f - u * u * (3.f - 2.f * u);
 }
 
+UiHitEdges uiHitEdges(bool hasSide, float rightX, float aheadY) {
+    UiHitEdges e;
+    const float ax = std::fabs(rightX), ay = std::fabs(aheadY);
+    if (!hasSide || !(ax + ay > 1e-6f)) return e;
+    e.left = e.right = e.top = e.bottom = kUiHitOffSide;
+    if (ax >= ay) (rightX > 0.f ? e.right : e.left) = 1.f;
+    else (aheadY > 0.f ? e.top : e.bottom) = 1.f;
+    return e;
+}
+
 float uiHitWatchStep(UiHitWatch& w, double stamp, float dt) {
     if (!w.seeded) {
         w.seen = stamp;
@@ -228,11 +252,30 @@ float uiHitWatchStep(UiHitWatch& w, double stamp, float dt) {
     } else if (stamp != w.seen) {
         const bool fresh = stamp > w.seen && stamp >= 0.0;
         w.seen = stamp;
-        w.age = fresh ? 0.f : 1e3f;
+        if (!fresh) w.age = 1e3f;
+        else if (w.age >= kUiHitRepeat) w.age = 0.f;
+        else w.age = std::min(w.age + (dt > 0.f ? dt : 0.f), 1e3f); // too soon after the last: no new cue
     } else {
         w.age = std::min(w.age + (dt > 0.f ? dt : 0.f), 1e3f);
     }
     return w.age;
+}
+
+UiGuardState uiGuardState(float stamina01, bool broken) {
+    if (broken) return UiGuardState::Broken;
+    if (!(stamina01 < 0.999f)) return UiGuardState::Full;
+    return stamina01 <= 0.001f ? UiGuardState::Spent : UiGuardState::Under;
+}
+
+float uiGuardLabelStep(UiGuardLabel& g, UiGuardState now, float dt) {
+    if (now != g.state) {
+        g.state = now;
+        g.since = 0.f;
+    } else {
+        g.since = std::min(g.since + (dt > 0.f ? dt : 0.f), 1e3f);
+    }
+    if (g.state == UiGuardState::Full || g.since >= kUiGuardLabelHold + kUiGuardLabelFade) return 0.f;
+    return g.since <= kUiGuardLabelHold ? 1.f : 1.f - (g.since - kUiGuardLabelHold) / kUiGuardLabelFade;
 }
 
 UiLowGuardGaps uiLowGuardGaps(float s, float px) {

@@ -38,6 +38,7 @@
 #include "GenericPlatform/GenericApplication.h"
 #include "HAL/IConsoleManager.h"
 #include "Layout/Clipping.h"
+#include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
@@ -229,8 +230,10 @@ struct FUiWorldRow
 	bool bMarksAccent2 = false;    // the marks wear accent2: each carries a 1 px ink rim, and the Load is a line
 	bool bDangerUnderline = false; // a danger word is ink over a danger underline
 	// The rest of the danger colour's places (uiDangerSet); no painter path reads the danger token itself.
-	FLinearColor HitFlash; // the hit's edge band (black in every world)
-	FLinearColor HitLine;  // the hairline along the band's inner side
+	FLinearColor HitCue;   // the hit's edge glow and the lost hp while it lives (one red in every world)
+	FLinearColor TrackBody; // a value line's unfilled body (uiTrackSet): black
+	FLinearColor TrackHair; // its 1 device px top hairline
+	FLinearColor Fill;      // the value: white
 	FLinearColor LowLine;  // a low hp or guard line
 	FLinearColor LowUnder; // the 1 px line under it, drawn only where bLowUnder
 	bool bLowUnder = false;
@@ -279,8 +282,11 @@ const FUiTable& Table()
 			R.bMarksAccent2 = T.Style.rules[W].marksAccent2;
 			R.bDangerUnderline = D.underlined;
 			const ftcore::UiDangerSet DS = ftcore::uiDangerSet(T.Style, World, Pal);
-			R.HitFlash = LinOf(DS.hitFlash);
-			R.HitLine = LinOf(DS.hitLine);
+			R.HitCue = LinOf(DS.hitCue);
+			const ftcore::UiTrackSet TS = ftcore::uiTrackSet(T.Style, World, Pal);
+			R.TrackBody = LinOf(TS.body);
+			R.TrackHair = LinOf(TS.hairline);
+			R.Fill = LinOf(TS.fill);
 			R.LowLine = LinOf(DS.lowLine);
 			R.LowUnder = LinOf(DS.lowUnderline);
 			R.bLowUnder = DS.lowUnderlined;
@@ -311,10 +317,12 @@ FLinearColor Tok(UiToken T, float Alpha = 1.f)
 	return C;
 }
 
-// A value line's unfilled track in the shown world (ftcore::uiTrackInk): the ink dimmed, opaque, at Alpha.
-FLinearColor TrackTok(float Alpha = 1.f)
+// A value line's fill in the shown world (ftcore::uiTrackSet), at Alpha.
+FLinearColor FillTok(float Alpha = 1.f)
 {
-	return LinOf(ftcore::uiTrackInk(ftcore::uiColor(Table().Style, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink)), Alpha);
+	FLinearColor C = Shown().Fill;
+	C.A *= Alpha;
+	return C;
 }
 
 // A non-text mark's colour in the shown world (ink where the marks keep it) and, where they wear accent2, the 1 px ink
@@ -345,7 +353,7 @@ constexpr float kContourGrow = 1.5f;    // px past the core's edge at 1080p wher
 constexpr float kContourFeather = 2.f;  // px over which it falls to nothing
 constexpr float kContourAlpha = 0.67f;  // of the edge colour's alpha (0.9): about 60 percent
 constexpr float kContourSoft = 0.5f;    // a word's outer contour pixel, of its inner one
-constexpr float kRimPx = 1.f;           // an accent2 mark's ink rim, px at 1080p (whole device pixels, at least 1)
+constexpr float kRimPx = 1.f;           // an accent2 mark's ink rim, in device pixels (one at every size)
 constexpr float kCrispFeather = 0.8f;   // device px: the soft edge of a core, a rim and its knock-out
 
 float ContourK(float CoreAlpha)
@@ -907,8 +915,8 @@ public:
 		{
 			return;
 		}
-		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
-		const float EdgeW = bCrispEdge ? WholePx(1.f) : 0.f;
+		const float RimW = Rim ? kRimPx * Px : 0.f;
+		const float EdgeW = bCrispEdge ? Px : 0.f;
 		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW + EdgeW, kContourFeather * S, bClosed);
 		if (bCrispEdge)
 		{
@@ -933,8 +941,8 @@ public:
 		{
 			return;
 		}
-		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
-		Ribbon(Parts[Under], St, Table().Edge, EdgeK * ContourK(C.A), WholePx(1.f) + RimW, kCrispFeather * Px, false);
+		const float RimW = Rim ? kRimPx * Px : 0.f;
+		Ribbon(Parts[Under], St, Table().Edge, EdgeK * ContourK(C.A), Px + RimW, kCrispFeather * Px, false);
 		if (Rim)
 		{
 			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, kCrispFeather * Px, false);
@@ -950,7 +958,7 @@ public:
 		{
 			return;
 		}
-		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
+		const float RimW = Rim ? kRimPx * Px : 0.f;
 		Convex(Parts[Under], Pts, N, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW, kContourFeather * S);
 		if (Rim)
 		{
@@ -1011,6 +1019,38 @@ public:
 			const int32 I0 = Base + 2 * I;
 			Tri(P, I0, I0 + 1, I0 + 3);
 			Tri(P, I0, I0 + 3, I0 + 2);
+		}
+	}
+
+	// A shaded patch with no edge on the shade part: an N by N grid whose alpha at each point is AlphaAt(U, V), U and V
+	// running 0 to 1 from (X0, Y0) to (X1, Y1). The hit glow's corners, where two edges meet at their maximum.
+	template <typename FnT>
+	void Patch(float X0, float Y0, float X1, float Y1, const FLinearColor& C, FnT&& AlphaAt)
+	{
+		if (X1 <= X0 || Y1 <= Y0)
+		{
+			return;
+		}
+		constexpr int32 N = 16;
+		FPart& P = Parts[ShadePart];
+		const int32 Base = P.Verts.Num();
+		for (int32 J = 0; J <= N; ++J)
+		{
+			const float V = static_cast<float>(J) / N;
+			for (int32 I = 0; I <= N; ++I)
+			{
+				const float U = static_cast<float>(I) / N;
+				P.Verts.Add(Vert(FMath::Lerp(X0, X1, U), FMath::Lerp(Y0, Y1, V), C, AlphaAt(U, V)));
+			}
+		}
+		for (int32 J = 0; J < N; ++J)
+		{
+			for (int32 I = 0; I < N; ++I)
+			{
+				const int32 I0 = Base + J * (N + 1) + I;
+				Tri(P, I0, I0 + 1, I0 + N + 2);
+				Tri(P, I0, I0 + N + 2, I0 + N + 1);
+			}
 		}
 	}
 
@@ -1391,6 +1431,12 @@ constexpr float SlotInk = 0.8f;     // LOAD (its first three times a save), ALON
 constexpr float WaitGap = 10.f;
 constexpr float WaitLen = 80.f;
 constexpr float TooSoonShow = 1.f; // seconds TOO SOON stands in the call slot
+// SHARED's gap after the partner's name, 1080p px: 10 px on the screen with the word's own side bearing.
+constexpr float SharedGap = 6.f;
+// The lead's name's dark rim: 1 device px (the font's own edge, round(uiEdgePx)), hard, at this alpha, as the name fill's
+// passed composite. The fill overlays over it draw no rim of their own (alpha 0, the same size so their glyphs land on
+// the name's): filled and unfilled letters keep the one rim.
+constexpr float NameRimA = 0.85f;
 constexpr float GiftGap = 24.f;    // px between GIFT HEAL's cap and GIFT GUARD's word when the GIFT row holds both
 constexpr float LoneHeadInk = 0.8f; // the Lone Carry card's heads, YOU GAIN and YOU GIVE UP
 // The Lone Carry's card over the party block, left-aligned on its margin, no panel: px from its last line's foot to the
@@ -1606,19 +1652,6 @@ EUiStateShot UiStateShot()
 #endif
 }
 
-// The banded flash's flat share (kUiHitBandFlat), or -UiHitBandFlat=0 for captures (out of shipping) to shoot the
-// plain fall from the edge beside it.
-float HitBandFlat()
-{
-#if !UE_BUILD_SHIPPING
-	static float Flat = ftcore::kUiHitBandFlat;
-	static const bool bSet = FParse::Value(FCommandLine::Get(), TEXT("-UiHitBandFlat="), Flat);
-	return bSet ? FMath::Clamp(Flat, 0.f, 0.95f) : ftcore::kUiHitBandFlat;
-#else
-	return ftcore::kUiHitBandFlat;
-#endif
-}
-
 // The HUD's size over the viewport's scale, margins included: the settings' HUD scale (80-130 percent), or the
 // -FTHudScale=1.1 switch for captures (out of shipping builds).
 float HudScaleFor(const UFTArenaRunner& Runner)
@@ -1813,6 +1846,7 @@ public:
 			WhyWatch.seeded = false;
 			RefusedRows = ftcore::UiRefusedRows{};
 			HitWatch.seeded = false;
+			GuardLabel = ftcore::UiGuardLabel{};
 		}
 		// A lead switch or a takeover traded the seats (the runner's SwapLeadFigures): each hp trail follows its lead to
 		// its new row, and every string built from the controlled lead (its name, its prompts' keys and words) is built
@@ -1877,8 +1911,17 @@ public:
 		Frame.third.giftGuardReady = GiftWhy[1] == ftcore::PressReason::Ok;
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
 		const ftcore::ArenaHudLead& L = View.now.lead;
-		HpLost.Step(Frac(L.hp, L.hpMax), DeltaTime);
-		PartnerLost.Step(Frac(View.now.partner.hp, View.now.partner.hpMax), DeltaTime);
+		// The lost traces and GUARD's label on the engine's frame clock, as the hit cue (TickEvents): the red lost hp is
+		// the trace's length times the cue's level, so both age alike under a fixed step.
+		const float FrameDt = static_cast<float>(FApp::GetDeltaTime());
+		HpLost.Step(Frac(L.hp, L.hpMax), FrameDt);
+		if (Shot == EUiStateShot::Hit)
+		{
+			HpLost.Was = FMath::Max(HpLost.Was, Frac(L.hp, L.hpMax) + 0.25f); // the still's blow: a quarter just lost
+		}
+		GuardLabelA = ftcore::uiGuardLabelStep(GuardLabel,
+			GuardShown() ? ftcore::uiGuardState(L.stamina01, L.guardBroken) : ftcore::UiGuardState::Full, FrameDt);
+		PartnerLost.Step(Frac(View.now.partner.hp, View.now.partner.hpMax), FrameDt);
 		ftcore::uiLoadNameStep(LoadName, L, DeltaTime);
 		if (Shot == EUiStateShot::Release)
 		{
@@ -2216,11 +2259,12 @@ private:
 		NameFont = Spaced(FontFor(UiTextRole::Title, H));
 		NameAsc = Asc(NameFont);
 		LeadNameFont = Spaced(FontPx(UiTextRole::Title, H, Hud::LeadPx));
+		LeadNameFont.OutlineSettings.OutlineColor.A = Table().Edge.A * Hud::NameRimA;
 		LeadNameAsc = Asc(LeadNameFont);
-		// The gold part of the name keeps a 1 px dark outline at 60 percent.
+		// The name's fill overlays (gold, and the accent where marks wear accent2): the name's font with a clear rim, so
+		// the name's own rim is the only one.
 		GoldFont = LeadNameFont;
-		GoldFont.OutlineSettings.OutlineSize = FMath::Max(1, FMath::RoundToInt(H / 1080.f));
-		GoldFont.OutlineSettings.OutlineColor = FLinearColor(Table().Edge.R, Table().Edge.G, Table().Edge.B, 0.6f);
+		GoldFont.OutlineSettings.OutlineColor.A = 0.f;
 		PartnerNameFont = Spaced(FontPx(UiTextRole::Title, H, Hud::PartnerPx));
 		PartnerNameAsc = Asc(PartnerNameFont);
 		FoeNameFont = Spaced(FontPx(UiTextRole::Title, H, Hud::FoePx));
@@ -2894,18 +2938,28 @@ private:
 		Mesh.ValueStroke(Line, C, Rim);
 	}
 
-	// A value line's unfilled track the full length (health, guard: one family): untapered, in TrackTok at A, its 1 px
-	// dark edge at the edge colour's full strength.
-	void TrackLine(float X0, float X1, float Y, float Width, std::uint32_t Seed, float S, float A) const
+	// A value line's unfilled track the full length (health, guard: one family; ftcore::uiTrackSet): an untapered black
+	// body with its 1 px dark edge, and along its top edge a 1 device px hairline at L 0.42 on the unlit length (from
+	// Lit01 on; the fill never sits on it). Over any stage one of the two holds 3:1.
+	void TrackLine(float X0, float X1, float Y, float Width, std::uint32_t Seed, float S, float A, float Lit01 = 0.f) const
 	{
 		if (A <= 0.f)
 		{
 			return;
 		}
+		const FUiWorldRow& R = Shown();
 		const float WD = DevWidth(Width, S);
 		const float YS = SnapLine(Y, Width, S);
 		ftcore::uiStrokeLine(Line, X0, YS, X1, YS, ValueStyle(WD, Seed, S, 0.f), 0.f, 1.f);
-		Mesh.ValueStroke(Line, TrackTok(A), nullptr, 1.f);
+		FLinearColor Body = R.TrackBody;
+		Body.A *= A;
+		Mesh.ValueStroke(Line, Body, nullptr, 1.f);
+		const float HX0 = Mesh.SnapX(X0 + (X1 - X0) * FMath::Clamp(Lit01, 0.f, 1.f));
+		const float HX1 = Mesh.SnapX(X1);
+		const float Top = YS - 0.5f * Mesh.WholeDev(Width * S);
+		FLinearColor Hair = R.TrackHair;
+		Hair.A *= A;
+		Mesh.Rect(HX0, Top, HX1, Top + Mesh.PxSize(), Hair, true);
 	}
 
 	// Width px at 1080p (at scale S) as a whole number of device pixels, still in px at 1080p: 1 px is 1.33 at 1440p and
@@ -2963,7 +3017,7 @@ private:
 		const FUiWorldRow& R = Shown();
 		if (!bLow)
 		{
-			ValueLine(X0, X1, Y, 0.f, To01, Width, Seed, S, Tok(UiToken::Ink, A), Taper);
+			ValueLine(X0, X1, Y, 0.f, To01, Width, Seed, S, FillTok(A), Taper);
 			return;
 		}
 		FLinearColor C = R.LowLine;
@@ -3002,16 +3056,29 @@ private:
 	// second line), what was just lost rubbed out to a broken trace, low under a quarter.
 	// In every world the track is the line's own stroke the full length (TrackLine), the value over it at full ink from
 	// the same left edge as the name.
-	void HpLine(float X0, float Len, float Y, float Hp, float Was, float Width, std::uint32_t Seed, float S, float A) const
+	// RedK (the lead's line only: the hit cue's level, 0 elsewhere): the hp just lost is drawn solid at the line's width
+	// in the hit cue's red over the track, its far end draining back to the fill as the cue fades (gone with the cue by
+	// 350 ms); the rest of the lost part is the trace as before.
+	void HpLine(float X0, float Len, float Y, float Hp, float Was, float Width, std::uint32_t Seed, float S, float A, float RedK = 0.f) const
 	{
 		const float YS = SnapLine(Y, Width, S); // the track and the rub on the value line's own middle
-		TrackLine(X0, X0 + Len, YS, Width, Seed + 1u, S, A);
+		TrackLine(X0, X0 + Len, YS, Width, Seed + 1u, S, A, Hp);
 		LowValueLine(X0, X0 + Len, YS, Hp, Width, Seed + 1u, S, Hp < Hud::LowHp, A, Hud::ValueTaper);
 		if (Was > Hp + 0.004f)
 		{
-			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, Seed + 2u, S, 0.f);
-			Rub.broken = true;
-			HLine(X0, X0 + Len, YS, Hp, Was, Rub, Tok(UiToken::Ink, 0.4f * A));
+			const float RedTo = Hp + (Was - Hp) * FMath::Clamp(RedK, 0.f, 1.f);
+			if (RedTo < Was - 0.002f)
+			{
+				ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, Seed + 2u, S, 0.f);
+				Rub.broken = true;
+				HLine(X0, X0 + Len, YS, RedTo, Was, Rub, Tok(UiToken::Ink, 0.4f * A));
+			}
+			if (RedTo > Hp + 0.002f)
+			{
+				FLinearColor Red = Shown().HitCue;
+				Red.A *= A;
+				ValueLine(X0, X0 + Len, YS, Hp, RedTo, Width, Seed + 3u, S, Red, 0.f);
+			}
 		}
 	}
 
@@ -3128,16 +3195,20 @@ private:
 		const float PY = Rows.PY;
 		const float PBase = Rows.PBase;
 
-		HpLine(X0, Len, HpY, Frac(L.hp, L.hpMax), HpLost.Was, Hud::LeadHpW, 201, S, A);
+		HpLine(X0, Len, HpY, Frac(L.hp, L.hpMax), HpLost.Was, Hud::LeadHpW, 201, S, A, HitA);
 		if (GuardShown())
 		{
 			// Only while under full: the hp line's family, the same left edge, stroke, track and taper at GuardW, GUARD at its
-			// right end in the labels' size, as POISE sits by its line.
+			// right end in the labels' size, as POISE sits by its line, for 2 s after the line appears or its state changes
+			// (ftcore::uiGuardLabelStep), then gone: steady play shows the bare line.
 			const float G = FMath::Clamp(L.stamina01, 0.f, 1.f);
 			const float GY = CapMid(GuardBase, NoteAsc);
-			TrackLine(X0, X0 + Len, GY, Hud::GuardW, 205, S, A);
+			TrackLine(X0, X0 + Len, GY, Hud::GuardW, 205, S, A, G);
 			LowValueLine(X0, X0 + Len, GY, G, Hud::GuardW, 205, S, G < Hud::LowHp, A, Hud::ValueTaper);
-			P.Text(X0 + Len + 12.f * S, CapTop(GY, NoteAsc), GuardWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
+			if (GuardLabelA > 0.f)
+			{
+				P.Text(X0 + Len + 12.f * S, CapTop(GY, NoteAsc), GuardWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A * GuardLabelA));
+			}
 		}
 		if (L.debt >= 0)
 		{
@@ -3174,11 +3245,11 @@ private:
 				const float FillX = LoadName.fill >= 0.999f ? X0 + LeadNameW + 8.f * S : Mesh.SnapX(X0 + LeadNameW * LoadName.fill);
 				if (FillX > X0)
 				{
-					const FPainter G{P.Geometry, P.Out, P.Layer + 1, S}; // over the dim name
+					const FPainter G{P.Geometry, P.Out, P.Layer + 1, S, true, P.Runs}; // over the dim name: rim-only, its run
 					const float ClipTop = NameTop - 4.f * S;
 					const float ClipH = LeadNameAsc * 1.6f + 8.f * S;
 					Clipped(G, X0 - 4.f * S, ClipTop, FillX - X0 + 4.f * S, ClipH,
-						[&] { G.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Accent, NameA)); });
+						[&] { G.Text(X0, NameTop, LeadName, GoldFont, Tok(UiToken::Accent, NameA)); });
 				}
 			}
 			else
@@ -3195,8 +3266,9 @@ private:
 		const FLinearColor Gold = Gold0 + (Bright - Gold0) * LoadName.bright;
 		if (LoadName.fill > 0.001f && !Shown().bMarksAccent2)
 		{
-			const FPainter G{P.Geometry, P.Out, P.Layer + 1, S}; // over the ink name
-			const FPainter E{P.Geometry, P.Out, P.Layer + 2, S}; // over the gold
+			// Rim-only on the name's own shaped run, as the name below: the same glyphs, the same 1 px rim, no soft contour.
+			const FPainter G{P.Geometry, P.Out, P.Layer + 1, S, true, P.Runs}; // over the ink name
+			const FPainter E{P.Geometry, P.Out, P.Layer + 2, S, true, P.Runs}; // over the gold
 			const float FillX = X0 + LeadNameW * LoadName.fill;
 			const float ClipTop = NameTop - 4.f * S;
 			const float ClipH = LeadNameAsc * 1.6f + 8.f * S;
@@ -3287,7 +3359,7 @@ private:
 				A * (bPRefused ? FMath::Lerp(1.f, Hud::PartyRefusedInk, K) : 1.f));
 		}
 		P.Text(X0, PBase - PartnerNameAsc, PartnerName, PartnerNameFont, Tok(UiToken::Ink, PInk * A));
-		float PSlotX = X0 + PartnerNameW + 16.f * S;
+		float PSlotX = X0 + PartnerNameW + Hud::SharedGap * S;
 		if (bPRefused)
 		{
 			const int32 Wi = static_cast<int32>(PWhy);
@@ -3866,6 +3938,13 @@ private:
 		{
 			FVector Weak;
 			bWeakOn = Runner.GetBossWeakPoint(static_cast<int32>(B.slot), Weak) && Project(PC, Weak, Size, WeakAt) && OnScreen(WeakAt);
+			if (!bWeakOn && UiStateShot() == EUiStateShot::Marks)
+			{
+				// The marks' still on a stage whose stand-in boss has no weak point in view: the mark on its chest, so every
+				// stage's still shows one.
+				const AFTArenaFighter* Figure = Runner.GetEnemyFigure(static_cast<int32>(B.slot));
+				bWeakOn = Figure && Project(PC, Figure->GetChest(), Size, WeakAt) && OnScreen(WeakAt);
+			}
 		}
 		// The lock: on the locked body while it is on the screen.
 		bLockOn = false;
@@ -3954,12 +4033,40 @@ private:
 			}
 		}
 		{
-			// The hit flash: full for 80 ms, gone by 300 ms (uiHitFlashLevel), in every world.
-			// Aged by the widget's own time from the tick the runner's hit stamp moves later, so a pause right after a hit
-			// lets the flash finish instead of holding it (the fight's clock stops in a pause; this one does not), and a
-			// retry, which resets the stamp, shows none (uiHitWatchStep).
-			const float HitAge = ftcore::uiHitWatchStep(HitWatch, Runner.GetPlayerHitTime(), DeltaTime);
+			// The hit cue: full for 100 ms, gone by 350 ms (uiHitFlashLevel), in every world, at most three a second.
+			// Aged on the engine's frame clock (FApp's delta: the one the game's step and the captures' strips use; Slate's
+			// own delta is wall time and ran ahead of the fight under a fixed step) from the tick the runner's hit stamp
+			// moves later. It runs in a pause, so a pause right after a hit lets the cue finish, and a retry, which resets
+			// the stamp, shows none (uiHitWatchStep). The struck side is taken when the cue starts, from the blow whose
+			// stamp it is; a stamp with no such blow (a table's share, a hazard) has no side: all four edges.
+			const float HitAge = ftcore::uiHitWatchStep(HitWatch, Runner.GetPlayerHitTime(), static_cast<float>(FApp::GetDeltaTime()));
+			if (HitAge == 0.f)
+			{
+				FVector2D From;
+				double At = -1e9;
+				const bool bSide = Runner.GetLastHitFrom(From, At) && At == HitWatch.seen;
+				HitEdges = ftcore::uiHitEdges(bSide, static_cast<float>(From.X), static_cast<float>(From.Y));
+			}
 			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f : ftcore::uiHitFlashLevel(HitAge);
+			if (UiStateShot() == EUiStateShot::Hit)
+			{
+				HitEdges = ftcore::uiHitEdges(true, 1.f, 0.f); // the still's blow: from the right
+			}
+#if !UE_BUILD_SHIPPING
+			// -UiHitNoCue (captures): the same frame with no cue at all, for the over-the-text diff.
+			static const bool bNoCue = FParse::Param(FCommandLine::Get(), TEXT("UiHitNoCue"));
+			if (bNoCue)
+			{
+				HitA = 0.f;
+			}
+			// -FTUiLogHit (captures): the cue's age, level and edges each frame it lives, for the strips' key.
+			static const bool bLogHit = FParse::Param(FCommandLine::Get(), TEXT("FTUiLogHit"));
+			if (bLogHit && HitAge < 0.5f)
+			{
+				UE_LOG(LogTemp, Display, TEXT("FTNewUi: hit cue age %.3f level %.3f edges L%.2f R%.2f T%.2f B%.2f frame %llu"), HitAge, HitA,
+					HitEdges.left, HitEdges.right, HitEdges.top, HitEdges.bottom, static_cast<unsigned long long>(GFrameCounter));
+			}
+#endif
 			const ftcore::Settings* Prefs = Runner.GetSettings();
 			bReduceFlashes = Prefs && Prefs->reduceFlashes;
 		}
@@ -4151,46 +4258,38 @@ private:
 	{
 		const float S = P.S;
 		const float CX = Size.X * 0.5f;
-		// A hit, the same in every world (uiDangerSet): on all four edges, since the host gives no attacker's direction, a
-		// near-black band (90 percent at the edge, gone 64 px in) and a 2 px hairline in the brighter of the text ink and
-		// the accent 10 px in with a 1 px dark edge on each side, so the cue reads on a bright sky and a dark court alike;
-		// reduced flashes keep the hairline only. The four bands meet at mitred corners, so a corner is the nearer edge's
-		// strength, not two stacked.
-		if (HitA > 0.f)
+		// A hit, the same in every world (uiDangerSet): a red glow on the screen's edges, kUiHitGlowPeak at the frame's edge
+		// times the edge's weight (the struck side full, the others a quarter; all four with no side), a smooth fall to
+		// nothing 6 percent of that edge's axis in, on the shade part under every line and word. Where two edges meet each
+		// point takes the stronger of the two, never the two stacked. Reduced flashes: none (the lost hp keeps the cue).
+		if (HitA > 0.f && !bReduceFlashes)
 		{
-			const FUiWorldRow& R = Shown();
-			const FLinearColor BandC = R.HitFlash;
-			if (!bReduceFlashes)
+			const FLinearColor C = Shown().HitCue;
+			const float DX = ftcore::kUiHitGlowShare * Size.X;
+			const float DY = ftcore::kUiHitGlowShare * Size.Y;
+			const float Pk = ftcore::kUiHitGlowPeak * HitA;
+			const ftcore::UiHitEdges& W = HitEdges;
+			Mesh.Band(DX, 0.f, Size.X - DX, DY, true, false, 1.f, Pk * W.top, C);
+			Mesh.Band(DX, Size.Y - DY, Size.X - DX, Size.Y, true, true, 1.f, Pk * W.bottom, C);
+			Mesh.Band(0.f, DY, DX, Size.Y - DY, false, false, 1.f, Pk * W.left, C);
+			Mesh.Band(Size.X - DX, DY, Size.X, Size.Y - DY, false, true, 1.f, Pk * W.right, C);
+			// The corners: each point the stronger of its two edges' falls (U 0 and V 0 at the corner itself).
+			const auto Fall = [](float T) { const float U = FMath::Clamp(T, 0.f, 1.f); return 1.f - U * U * (3.f - 2.f * U); };
+			const auto Corner = [&](float X0, float Y0, bool bLeft, bool bTop)
 			{
-				const float D = ftcore::kUiHitBandDepth * S;
-				const float Pk = ftcore::kUiHitBandPeak * HitA;
-				const float Ramp = 1.f - HitBandFlat();
-				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, BandC, true);
-				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, BandC, true);
-				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, BandC, true);
-				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, BandC, true);
-			}
-			// The hairline: whole device pixels, its edges on pixel boundaries, so it never doubles or blurs at 125 percent.
-			const float Px = Mesh.PxSize();
-			const float W = Mesh.WholePx(ftcore::kUiHitLineW);
-			const float In = Mesh.SnapY((ftcore::kUiHitLineIn - 0.5f * ftcore::kUiHitLineW) * S);
-			const float InX = Mesh.SnapX((ftcore::kUiHitLineIn - 0.5f * ftcore::kUiHitLineW) * S);
-			const float Rgt = Mesh.SnapX(Size.X) - InX;
-			const float Bot = Mesh.SnapY(Size.Y) - In;
-			FLinearColor HairC = R.HitLine;
-			HairC.A = HitA;
-			FLinearColor Dark = Table().Edge;
-			Dark.A = 0.85f * HitA;
-			// The dark edges first (a frame 1 px wider on each side), then the line over them.
-			auto Frame = [&](float L, float T, float Rr, float B, float Th, const FLinearColor& C, bool bTop)
-			{
-				Mesh.Rect(L, T, Rr, T + Th, C, bTop);
-				Mesh.Rect(L, B - Th, Rr, B, C, bTop);
-				Mesh.Rect(L, T + Th, L + Th, B - Th, C, bTop);
-				Mesh.Rect(Rr - Th, T + Th, Rr, B - Th, C, bTop);
+				const float WX = bLeft ? W.left : W.right;
+				const float WY = bTop ? W.top : W.bottom;
+				Mesh.Patch(X0, Y0, X0 + DX, Y0 + DY, C, [&](float U, float V)
+				{
+					const float FromX = bLeft ? U : 1.f - U; // the share of the way in from the side edge
+					const float FromY = bTop ? V : 1.f - V;
+					return Pk * FMath::Max(WX * Fall(FromX), WY * Fall(FromY));
+				});
 			};
-			Frame(InX - Px, In - Px, Rgt + Px, Bot + Px, W + 2.f * Px, Dark, true);
-			Frame(InX, In, Rgt, Bot, W, HairC, true);
+			Corner(0.f, 0.f, true, true);
+			Corner(Size.X - DX, 0.f, false, true);
+			Corner(0.f, Size.Y - DY, true, false);
+			Corner(Size.X - DX, Size.Y - DY, false, false);
 		}
 		// The result: the word in the subtitle's face at the subtitle's place, and how to fight again in the key hint's.
 		// Both up, and the tag in, by what the safe zone adds to the HUD's own margin.
@@ -4411,8 +4510,11 @@ private:
 	ftcore::ArenaHudBoss BossSeen;
 	uint8 LockSeen = ftcore::kArenaNobody;
 	float HitA = 0.f, ParryA = 0.f;
-	ftcore::UiHitWatch HitWatch; // the runner's last hit stamp as read and the flash's age on the widget's clock
-	bool bReduceFlashes = false; // the settings' reduce flashes: the banded flash keeps only its hairline
+	ftcore::UiHitWatch HitWatch; // the runner's last hit stamp as read and the cue's age on the frame clock
+	ftcore::UiHitEdges HitEdges; // the edges' weights, taken when the cue starts
+	bool bReduceFlashes = false; // the settings' reduce flashes: the cue keeps only the lost hp in red
+	ftcore::UiGuardLabel GuardLabel; // GUARD's 2 s after a guard state change
+	float GuardLabelA = 0.f;
 	FSlateFontInfo ResultFont;
 	float ResultLineH = 0.f, ResultAsc = 0.f;
 	FString VictoryWord, DefeatWord, AgainWord;

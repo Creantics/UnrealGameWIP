@@ -314,7 +314,7 @@ TEST_CASE("ui style: the Unwritten's red is on marks only, and its danger word i
     CHECK_FALSE(importUiStyle(R"({"palettes": {"protan": {"danger_underline": true}}})", t, &err));
 }
 
-TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a mark or an underline") {
+TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a mark, an underline or the hit cue") {
     // Red: the red channel more than 1.5 times each other one (the blood red, the danger salmon; not the greys, the
     // gold or the edge).
     const auto isRed = [](UiColor c) { return c.r > 0.2f && c.r > 1.5f * c.g && c.r > 1.5f * c.b; };
@@ -337,7 +337,7 @@ TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a 
             }
         }
         CHECK_FALSE(isRed(s.edge));
-        // Marks may be red; text, flashes and value lines may not.
+        // Red means danger only: marks, the low-health underline and the hit cue; text and value lines are never red.
         const UiColor ink = uiColor(s, unw, p, UiToken::Ink);
         CHECK(isRed(uiMarkColor(s, unw, p, ink)));
         const UiDangerWord w = uiDangerWord(s, unw, p);
@@ -345,23 +345,18 @@ TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a 
         CHECK_FALSE(isRed(w.word));
         CHECK(isRed(w.underline));
         const UiDangerSet d = uiDangerSet(s, unw, p);
-        CHECK_FALSE(isRed(d.hitFlash));
-        CHECK(d.hitFlash == UiColor{0.f, 0.f, 0.f, 1.f});
-        CHECK_FALSE(isRed(d.hitLine));
-        CHECK(d.hitLine == uiColor(s, unw, p, UiToken::Accent)); // its accent outshines its ink
+        CHECK(isRed(d.hitCue));
+        CHECK(d.hitCue == uiColor(s, unw, p, UiToken::Danger));
         CHECK_FALSE(isRed(d.lowLine));
-        CHECK(d.lowLine == ink);
+        CHECK(d.lowLine == uiTrackSet(s, unw, p).fill);
         CHECK(d.lowUnderlined);
         CHECK(isRed(d.lowUnderline));
         CHECK(d.cueMark == uiColor(s, unw, p, UiToken::Accent2)); // a small mark: the marks' red
-        // The other worlds keep danger on the low line and the triangle, with no underline; the hit flash is the same
-        // black band and pale hairline as here.
+        // The other worlds keep danger on the low line and the triangle, with no underline; the hit cue is the same red.
         for (const UiWorld wo : {UiWorld::Solhaven, UiWorld::Lattice}) {
             const UiDangerSet o = uiDangerSet(s, wo, p);
             const UiColor danger = uiColor(s, wo, p, UiToken::Danger);
-            CHECK(o.hitFlash == UiColor{0.f, 0.f, 0.f, 1.f});
-            CHECK_FALSE(isRed(o.hitLine));
-            CHECK(o.hitLine == uiColor(s, wo, p, UiToken::Ink)); // ink outshines the accent
+            CHECK(o.hitCue == d.hitCue);
             CHECK(o.lowLine == danger);
             CHECK(o.cueMark == danger);
             CHECK_FALSE(o.lowUnderlined);
@@ -369,65 +364,109 @@ TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a 
     }
 }
 
-TEST_CASE("ui style: the hit's hairline is pale enough to read on a dark court in every world and palette") {
-    // Rec. 709 luma of the sRGB values, as the stills are measured: 200 of 255 or more at full strength.
-    const auto luma = [](UiColor c) { return 255.f * (0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b); };
+TEST_CASE("ui style: the hit cue is one red in every world, the danger token of the palette shown") {
     std::string err;
     std::string text;
     REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
     UiStyle shipped;
     REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
     for (const UiStyle& s : {defaultUiStyle(), shipped}) {
-        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
-            for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+        for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+            CAPTURE(p);
+            const UiPalette pal = static_cast<UiPalette>(p);
+            const UiColor red = uiColor(s, UiWorld::Unwritten, pal, UiToken::Danger);
+            for (std::size_t w = 0; w < kUiWorldCount; ++w) {
                 CAPTURE(w);
-                CAPTURE(p);
-                const UiDangerSet d = uiDangerSet(s, static_cast<UiWorld>(w), static_cast<UiPalette>(p));
-                CHECK(d.hitFlash == UiColor{0.f, 0.f, 0.f, 1.f});
-                CHECK(luma(d.hitLine) >= 200.f);
+                CHECK(uiDangerSet(s, static_cast<UiWorld>(w), pal).hitCue == red);
             }
         }
     }
 }
 
-TEST_CASE("ui style: a value line's unfilled track holds 3:1 on a white sky and stays 2:1 under its fill") {
-    // The track is opaque dimmed ink with a 1 px rim of the edge colour at full strength; the fill is the ink itself.
-    const UiColor white{1.f, 1.f, 1.f, 1.f};
+TEST_CASE("ui style: a value line's three tones: black body, L 0.42 hairline, white fill, in both worlds") {
+    // Relative luminance through the contrast of a colour against black: (L + 0.05) / 0.05.
     const UiColor black{0.f, 0.f, 0.f, 1.f};
+    const auto lum = [&](UiColor c) { return uiContrast(c, black, black) * 0.05f - 0.05f; };
     std::string err;
     std::string text;
     REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
     UiStyle shipped;
     REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
     for (const UiStyle& s : {defaultUiStyle(), shipped}) {
-        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+        for (const UiWorld w : {UiWorld::Solhaven, UiWorld::Unwritten, UiWorld::Lattice}) {
             for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
-                CAPTURE(w);
+                CAPTURE(static_cast<int>(w));
                 CAPTURE(p);
-                const UiColor ink = uiColor(s, static_cast<UiWorld>(w), static_cast<UiPalette>(p), UiToken::Ink);
-                const UiColor track = uiTrackInk(ink);
-                CHECK(track.a == 1.f);
-                CHECK(uiContrast(track, s.edge, white) >= 3.f);
-                CHECK(uiContrast(ink, track, black) >= 2.f);
+                const UiPalette pal = static_cast<UiPalette>(p);
+                const UiTrackSet t = uiTrackSet(s, w, pal);
+                CHECK(t.body.a == 1.f);
+                CHECK(t.hairline.a == 1.f);
+                CHECK(lum(t.body) == doctest::Approx(0.f).epsilon(0.001));
+                CHECK(lum(t.hairline) == doctest::Approx(kUiTrackHairL).epsilon(0.01));
+                CHECK(t.fill == UiColor{1.f, 1.f, 1.f, 1.f});
+                // The fill against the body it sits beside: 21:1.
+                CHECK(uiContrast(t.fill, t.body, black) >= 20.9f);
+                // Over every stage from black to white one of the two track tones holds 3:1.
+                for (int i = 0; i <= 100; ++i) {
+                    const float g = static_cast<float>(i) / 100.f;
+                    const UiColor stage{g, g, g, 1.f};
+                    CAPTURE(g);
+                    CHECK(std::max(uiContrast(t.body, stage, stage), uiContrast(t.hairline, stage, stage)) >= 3.f);
+                }
+                // The palettes against the new body (each palette's danger, ally and weak point): every cue that may
+                // stand on or beside the track's body holds 3:1 on it. The lost hp in the cue's red is drawn over the
+                // track and covers the hairline under it, so it is never judged against the hairline.
+                for (const UiToken tk : {UiToken::Danger, UiToken::Ally, UiToken::WeakPoint}) {
+                    CAPTURE(static_cast<int>(tk));
+                    CHECK(uiContrast(uiColor(s, w, pal, tk), t.body, black) >= 3.f);
+                }
+                CHECK(uiContrast(uiDangerSet(s, w, pal).hitCue, t.body, black) >= 3.f);
             }
         }
     }
 }
 
-TEST_CASE("ui style: the hit flash is full for 80 ms and gone by 300 ms") {
+TEST_CASE("ui style: the hit cue is full for 100 ms and gone by 350 ms") {
     CHECK(uiHitFlashLevel(-0.01f) == 0.f);
     CHECK(uiHitFlashLevel(0.f) == 1.f);
-    CHECK(uiHitFlashLevel(0.08f) == 1.f);
-    const float mid = uiHitFlashLevel(0.19f);
-    CHECK(mid > 0.4f);
-    CHECK(mid < 0.6f);
-    CHECK(uiHitFlashLevel(0.25f) < uiHitFlashLevel(0.15f));
-    CHECK(uiHitFlashLevel(0.3f) == 0.f);
+    CHECK(uiHitFlashLevel(0.1f) == 1.f);
+    CHECK(uiHitFlashLevel(0.2f) == doctest::Approx(0.648f).epsilon(0.002));
+    CHECK(uiHitFlashLevel(0.3f) < uiHitFlashLevel(0.2f));
+    CHECK(uiHitFlashLevel(0.35f) == 0.f);
     CHECK(uiHitFlashLevel(1.f) == 0.f);
-    CHECK(kUiHitBandPeak == doctest::Approx(0.9f));
-    CHECK(kUiHitBandDepth == 64.f);
-    // the hairline and its dark edges sit inside the band's outer half
-    CHECK(kUiHitLineIn + 0.5f * kUiHitLineW + 1.f < 0.5f * kUiHitBandDepth);
+    CHECK(kUiHitGlowPeak == doctest::Approx(0.6f));
+    CHECK(kUiHitGlowShare == doctest::Approx(0.06f)); // inside the outer 6 percent of each axis
+}
+
+TEST_CASE("ui style: the hit cue's edges: the struck side at full, the others at a quarter; no side, all four") {
+    CHECK(uiHitEdges(false, 1.f, 0.f) == UiHitEdges{});
+    CHECK(uiHitEdges(true, 0.f, 0.f) == UiHitEdges{});
+    CHECK(uiHitEdges(true, 1.f, 0.2f) == UiHitEdges{0.25f, 1.f, 0.25f, 0.25f});
+    CHECK(uiHitEdges(true, -0.9f, 0.3f) == UiHitEdges{1.f, 0.25f, 0.25f, 0.25f});
+    CHECK(uiHitEdges(true, 0.1f, 2.f) == UiHitEdges{0.25f, 0.25f, 1.f, 0.25f});
+    CHECK(uiHitEdges(true, 0.1f, -1.f) == UiHitEdges{0.25f, 0.25f, 0.25f, 1.f});
+}
+
+TEST_CASE("ui style: the GUARD label shows for 2 s after the line appears or its state changes, then goes") {
+    CHECK(uiGuardState(1.f, false) == UiGuardState::Full);
+    CHECK(uiGuardState(0.5f, false) == UiGuardState::Under);
+    CHECK(uiGuardState(0.1f, false) == UiGuardState::Under); // low is not a state of its own
+    CHECK(uiGuardState(0.f, false) == UiGuardState::Spent);
+    CHECK(uiGuardState(0.5f, true) == UiGuardState::Broken);
+    UiGuardLabel g;
+    CHECK(uiGuardLabelStep(g, UiGuardState::Full, 0.1f) == 0.f);
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 0.1f) == 1.f); // the line appears
+    for (int i = 0; i < 19; ++i) uiGuardLabelStep(g, UiGuardState::Under, 0.1f);
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 0.f) == 1.f); // 1.9 s
+    const float fading = uiGuardLabelStep(g, UiGuardState::Under, 0.25f); // 2.15 s
+    CHECK(fading > 0.f);
+    CHECK(fading < 1.f);
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 0.2f) == 0.f); // 2.35 s: gone
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 5.f) == 0.f);  // steady play: a bare line
+    CHECK(uiGuardLabelStep(g, UiGuardState::Spent, 0.1f) == 1.f); // a change brings it back
+    CHECK(uiGuardLabelStep(g, UiGuardState::Broken, 3.f) == 1.f); // another (the change resets the clock)
+    CHECK(uiGuardLabelStep(g, UiGuardState::Broken, 3.f) == 0.f);
+    CHECK(uiGuardLabelStep(g, UiGuardState::Full, 0.1f) == 0.f); // back to full: the row goes, no label
 }
 
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
@@ -976,4 +1015,13 @@ TEST_CASE("ui style: the hit flash starts only on a later hit; a retry's reset s
     CHECK(uiHitFlashLevel(uiHitWatchStep(e, 0.5, 0.016f)) == 0.f);
     // The new fight's first hit, earlier on its clock than the last fight's, flashes.
     CHECK(uiHitFlashLevel(uiHitWatchStep(w, 0.4, 0.016f)) == 1.f);
+    // At most three cues a second: a later hit under kUiHitRepeat after the last cue's start comes in with no new cue.
+    UiHitWatch q;
+    uiHitWatchStep(q, -1.0, 0.016f);
+    CHECK(uiHitWatchStep(q, 1.0, 0.1f) == 0.f);
+    CHECK(uiHitWatchStep(q, 1.0, 0.2f) == doctest::Approx(0.2f));
+    CHECK(uiHitWatchStep(q, 1.25, 0.1f) == doctest::Approx(0.3f)); // too soon: the age runs on
+    CHECK(q.seen == 1.25);
+    CHECK(uiHitWatchStep(q, 1.25, 0.1f) == doctest::Approx(0.4f));
+    CHECK(uiHitWatchStep(q, 1.5, 0.1f) == 0.f); // 0.4 s after the last start: a new cue
 }

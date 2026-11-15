@@ -267,6 +267,12 @@ private:
 	// fight running on; the next one due, the hit's stamp and its age, and whether the strip is under way.
 	TArray<double> ShotHit;
 	int32 NextShotHit = 0;
+	// -ArenaShotHitStrip=<n> (capture only): instead of set ages, a view <prefix>_strip_<frame>.png every frame from the
+	// arming on, to n frames past the frame the hit lands (logged), so the strip holds the frames before the hit as well;
+	// the capture keeps the ones it needs. Gives up 900 frames after arming with no hit.
+	int32 ShotStripPost = 0;
+	int32 ShotStripFrame = 0;
+	int32 ShotStripHitFrame = -1;
 	double ShotHitStamp = -1e9;
 	double ShotHitAge = 0.0;
 	bool bShotHitArmed = false;

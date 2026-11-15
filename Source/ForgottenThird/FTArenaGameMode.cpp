@@ -210,6 +210,16 @@ void AFTArenaGameMode::StartPlay()
 			}
 			ShotHit.Sort();
 		}
+		if (FParse::Value(Cmd, TEXT("ArenaShotHitStrip="), ShotStripPost) && ShotStripPost > 0)
+		{
+			ShotStripPost = FMath::Min(ShotStripPost, 120);
+			ShotHit.Reset();
+			ShotHit.Add(0.0); // one entry, so the strip runs; the frames are its own
+		}
+		else
+		{
+			ShotStripPost = 0;
+		}
 #endif
 		bShotSide = bShotSide || bShotWorld;
 	}
@@ -1658,6 +1668,34 @@ void AFTArenaGameMode::HitStrip(float DeltaSeconds)
 		{
 			bShotHitArmed = true;
 			ShotHitStamp = Stamp;
+			bShotHitRunning = ShotStripPost > 0;
+		}
+		if (!bShotHitRunning)
+		{
+			return;
+		}
+	}
+	if (ShotStripPost > 0)
+	{
+		// The every-frame strip: this frame's view, the frame the stamp moves on logged as the hit's.
+		if (ShotStripHitFrame < 0 && Stamp != ShotHitStamp && Stamp >= 0.0)
+		{
+			ShotStripHitFrame = ShotStripFrame;
+			ShotHitStamp = Stamp;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip hit lands on frame %d (engine frame %llu)."), ShotStripHitFrame,
+				static_cast<unsigned long long>(GFrameCounter));
+		}
+		const double Hold = ShotHoldUntil;
+		TakeShot(*FString::Printf(TEXT("strip_%05d"), ShotStripFrame), false);
+		ShotHoldUntil = Hold;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip view %d (engine frame %llu, step %.4f s)."), ShotStripFrame,
+			static_cast<unsigned long long>(GFrameCounter), DeltaSeconds);
+		++ShotStripFrame;
+		const bool bDone = ShotStripHitFrame >= 0 ? ShotStripFrame > ShotStripHitFrame + ShotStripPost : ShotStripFrame >= 900;
+		if (bDone)
+		{
+			NextShotHit = ShotHit.Num();
+			bShotHitRunning = false;
 		}
 		return;
 	}
