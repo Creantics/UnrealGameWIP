@@ -224,7 +224,11 @@ TEST_CASE("ui swim: a rescue is a fade to black and back, the ring held until bl
     run(s, fu, surface(45.f), 0.7f);
     CHECK(s.fade == UiSwimFade::Clear);
     CHECK(uiSwimFadeAlpha(s) == 0.f);
-    CHECK(uiSwimHidden(s, surface(45.f)) != kUiSwimHintAll);
+    // Clear again: the fade hides nothing more, only what the swim flags refuse (surface() refuses every action here).
+    CHECK(uiSwimHidden(s, surface(45.f)) == uiSwimHidden(UiSwim{}, surface(45.f)));
+    UiSwimIn armed = surface(45.f);
+    armed.attack = armed.dodge = armed.guard = armed.weaponsOut = true;
+    CHECK(uiSwimHidden(s, armed) == (uiSwimHintBit(UiSwimHint::Crouch) | uiSwimHintBit(UiSwimHint::Jump)));
 }
 
 TEST_CASE("ui swim: with no reset the black ends at its cap") {
