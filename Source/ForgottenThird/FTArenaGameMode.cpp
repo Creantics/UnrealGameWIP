@@ -1158,6 +1158,10 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 				UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s held at fight time %.3f, %.3f s after the attack went active."), *StrikeName,
 					Drawn, Drawn - Weapons.GetLastActiveTime());
 				Weapons.Freeze(Drawn);
+				if (bShotAllyStrikes)
+				{
+					Runner->FreezePartnerImpact(Drawn); // the partner's impact is the runner's, not its weapons'
+				}
 				StrikePhase = 1;
 				if (bShotClose && AimAtStrike())
 				{
@@ -1365,6 +1369,10 @@ bool AFTArenaGameMode::StrikeShot()
 	default:
 		// Back to the fight.
 		Weapons.Thaw();
+		if (bShotAllyStrikes)
+		{
+			Runner->ThawPartnerImpact();
+		}
 		EndCloseCamera();
 		StrikePhase = 0;
 		return true;
@@ -1478,7 +1486,9 @@ bool AFTArenaGameMode::AimAtStrike()
 	if (bShotAllyStrikes)
 	{
 		// The partner's cast: mid-flight from behind and beside the casting hand, looking along the aim at the bolt's
-		// middle; its landing from 1 m short of the hit point, on the partner's side, looking at it.
+		// middle, every other one from in front of the hand looking back at it (the caster's face and the bolt coming
+		// at the lens); its landing from 1 m short of the impact (the runner's, frozen with the view; else the hit
+		// point), on the partner's side, looking at it.
 		const AFTArenaFighter* Ally = Runner->GetAllyFigure();
 		const FFTLeadWeapons& Weapons = Runner->GetAllyWeapons();
 		FName Bone;
@@ -1497,15 +1507,20 @@ bool AFTArenaGameMode::AimAtStrike()
 		}
 		const FVector Side = FVector::CrossProduct(FVector::UpVector, Aim).GetSafeNormal() * (bLeft ? -1.0 : 1.0);
 		const FVector Back = (-Aim * 0.8 + Side * 0.5 + FVector(0.0, 0.0, 0.3)).GetSafeNormal() * kArenaAllyCloseDistance;
-		const FVector From = bStrikeViewImpact ? Hit + Back : Hand + Back;
-		const FVector At = bStrikeViewImpact ? Hit : (Hand + Hit) * 0.5;
+		const FVector Front = (Aim * 0.8 + Side * 0.5 + FVector(0.0, 0.0, 0.3)).GetSafeNormal() * kArenaAllyCloseDistance;
+		const bool bFront = !bStrikeViewImpact && (StrikeShots / 2) % 2 == 0; // s4, s8, ...
+		FVector Impact;
+		const bool bImpact = bStrikeViewImpact && Runner->GetPartnerImpactAt(Impact);
+		const FVector Landing = bImpact ? Impact : Hit;
+		const FVector From = bStrikeViewImpact ? Landing + Back : Hand + (bFront ? Front : Back);
+		const FVector At = bStrikeViewImpact ? Landing : (bFront ? Hand : (Hand + Hit) * 0.5);
 		if (!AimStrikeCamera(From, At))
 		{
 			return false;
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s: partner close camera, %s view, %.0f cm off the %s."), *StrikeName,
-			bStrikeViewImpact ? TEXT("landing") : TEXT("mid-flight"), kArenaAllyCloseDistance,
-			bStrikeViewImpact ? TEXT("hit point") : *Bone.ToString());
+			bStrikeViewImpact ? TEXT("landing") : (bFront ? TEXT("mid-flight front") : TEXT("mid-flight")), kArenaAllyCloseDistance,
+			bStrikeViewImpact ? (bImpact ? TEXT("partner impact") : TEXT("hit point (no partner impact running)")) : *Bone.ToString());
 		return true;
 	}
 	const AFTArenaFighter* Lead = Runner->GetPlayerFigure();

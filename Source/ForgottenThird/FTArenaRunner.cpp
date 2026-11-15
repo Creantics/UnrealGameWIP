@@ -28,6 +28,7 @@
 #include "FTStoryStateSubsystem.h"
 #include "FTText.h"
 #include "FTVfxComponent.h"
+#include "NiagaraComponent.h"
 #include "ForgottenThird.h"
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/PlayerController.h"
@@ -7291,6 +7292,52 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	AllyFigure->ApplyPose(Pose);
 }
 
+void UFTArenaRunner::FreezePartnerImpact(double T)
+{
+	UFTVfxComponent* Vfx = PartnerImpactFx.Get();
+	UNiagaraComponent* Niagara = Vfx ? Vfx->GetNiagara() : nullptr;
+	// T is the drawn clock, up to a step behind the held clock it was played on: one played this step is at age 0.
+	const double Age = FMath::Max(0.0, T - PartnerImpactPlayedAt);
+	if (bPartnerImpactFrozen || !Niagara || !Niagara->IsActive() || PartnerImpactPlayedAt < 0.0 || T - PartnerImpactPlayedAt < -0.1)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view frame %.3f: partner impact not running (last played at %.3f)."), T, PartnerImpactPlayedAt);
+		return;
+	}
+	// From its start again, then on to its age at T (a paused system doesn't advance), as FFTLeadWeapons::Freeze.
+	const bool bRerun = Age > 0.0 && Age <= FFTLeadWeapons::kFreezeRerun;
+	if (bRerun)
+	{
+		Vfx->Play();
+		const int32 Ticks = FMath::Max(1, FMath::CeilToInt32(static_cast<float>(Age) / FFTLeadWeapons::kFreezeTick));
+		Niagara->AdvanceSimulation(Ticks, static_cast<float>(Age) / static_cast<float>(Ticks));
+	}
+	Niagara->SetPaused(true);
+	bPartnerImpactFrozen = true;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: view frame %.3f: partner impact %s at age %.3f (%s), %s."), T, *Vfx->Effect.ToString(), Age,
+		bRerun ? TEXT("run again from its start") : TEXT("as it was"), Niagara->IsPaused() ? TEXT("paused") : TEXT("NOT paused"));
+}
+
+void UFTArenaRunner::ThawPartnerImpact()
+{
+	UFTVfxComponent* Vfx = PartnerImpactFx.Get();
+	if (UNiagaraComponent* Niagara = Vfx ? Vfx->GetNiagara() : nullptr; Niagara && bPartnerImpactFrozen)
+	{
+		Niagara->SetPaused(false);
+	}
+	bPartnerImpactFrozen = false;
+}
+
+bool UFTArenaRunner::GetPartnerImpactAt(FVector& OutAt) const
+{
+	const UFTVfxComponent* Vfx = PartnerImpactFx.Get();
+	if (!bPartnerImpactFrozen || !Vfx)
+	{
+		return false;
+	}
+	OutAt = Vfx->GetComponentLocation();
+	return true;
+}
+
 void UFTArenaRunner::PlayWaitingPartnerImpact(double T)
 {
 	if (PartnerImpactDue >= 0.0 && T + 1e-6 >= PartnerImpactDue)
@@ -7914,6 +7961,7 @@ void UFTArenaRunner::PartnerImpact(const ftcore::ArenaEvent& E)
 	}
 	Vfx->SetWorldLocationAndRotation(At, FRotator::ZeroRotator);
 	const bool bPlayed = Vfx->Play();
+	PartnerImpactPlayedAt = static_cast<double>(Fight.heldTime());
 	UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: %.2f: partner impact %s at %.0f%% on enemy %d (%d hp), %.0f cm from the partner's chest%s."),
 		Fight.time(), *Vfx->Effect.ToString(), kPartnerImpactScale * 100.f, static_cast<int32>(E.target), E.amount,
 		FVector::Dist(At, AllyFigure->GetChest()), bPlayed ? TEXT("") : TEXT(" (no effect asset: not drawn)"));

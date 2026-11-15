@@ -1298,6 +1298,8 @@ private:
 	double SwitchWorstMoved = 0.0, SwitchWorstOut = 0.0;
 	int32 SwitchPartnerChecks = 0;
 	TWeakObjectPtr<class UFTVfxComponent> PartnerImpactFx;
+	double PartnerImpactPlayedAt = -1.0; // the held time it last played (a capture view's freeze reads its age)
+	bool bPartnerImpactFrozen = false;
 	bool bImpactHookLogged[2] = {false, false};
 	bool bSwitchAskOpen = false;
 	bool bSwitchAskedThisStep = false; // AskLeadSwitch's one ask per step (cleared at the step's close, as bSwitchAskOpen)
@@ -1406,6 +1408,12 @@ private:
 public:
 	const FFTLeadWeapons& GetAllyWeapons() const { return AllyWeapons; }
 	FFTLeadWeapons& GetAllyWeapons() { return AllyWeapons; } // a capture view's freeze (-ArenaShotAllyStrikes)
+	// A capture view's freeze of the partner's impact (-ArenaShotAllyStrikes; never in a fight's own path): one still
+	// running is run again to its age at T and paused, as FFTLeadWeapons::Freeze; one line with its age. Thaw lets it go.
+	void FreezePartnerImpact(double T);
+	void ThawPartnerImpact();
+	// Where the partner's impact plays, while it is frozen and running.
+	bool GetPartnerImpactAt(FVector& OutAt) const;
 private:
 	void TrackAllyWeapons(const ftcore::ArenaOutput& Out);
 	bool bAllyStruck = false;  // the ally was in a blow last step ...
