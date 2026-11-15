@@ -500,6 +500,8 @@ struct ArenaFightImpl {
             ao.target = al.target;
             ao.act = al.act;
             ao.partnerOn = true;
+            ao.stationed = al.stationed;
+            ao.pairSeconds = pl.pairSpent;
         }
     }
 
@@ -507,6 +509,7 @@ struct ArenaFightImpl {
 
     void tick(float step, const ArenaInput& in, const ArenaBodies& bodies) {
         out.events.count = 0;
+        pl.pairSpent = 0.f;
         if (fight.phase_ == ArenaPhase::NotStarted) return;
         if (fight.phase_ != ArenaPhase::Fighting) { // over: nothing moves and nothing happens
             closeRead();
@@ -921,7 +924,10 @@ struct ArenaFightImpl {
         if (p == ArenaPress::Heal && fight.healMax_ == 0) return PressReason::Absent;
         if (p == ArenaPress::Shot && fi.weapon != ArenaWeapon::Guns) return PressReason::Absent;
         if (pl.hp <= 0 || pl.action == ArenaAction::Downed) return PressReason::Down;
-        if (p == ArenaPress::Pair) return fight.pairOpen() ? PressReason::Ok : PressReason::Closed;
+        if (p == ArenaPress::Pair) {
+            if (pairCooling(t0)) return PressReason::Cooldown; // over Closed: a press now deals nothing
+            return fight.pairOpen() ? PressReason::Ok : PressReason::Closed;
+        }
         if (pl.action == ArenaAction::GuardBreak) return PressReason::Broken; // canStart starts nothing until it ends
         // A hit pause over the tick's start: the press waits in the buffer (it starts in the tick the pause ends).
         const bool paused = pl.stopUntil > t0;
@@ -1096,23 +1102,37 @@ struct ArenaFightImpl {
 
     // ---- the paired counter ----
 
+    // A counter dealt less than pairCooldown before `at` (fight time) is cooling: a pair now deals nothing.
+    bool pairCooling(float at) const { return at < pl.pairCoolUntil - kArenaEps; }
+
     // A parry and the partner's press within pairWindow of each other (either first) pair once: the parried enemy,
-    // if it is still open, takes pairHits of light[0]'s hits and is staggered.
+    // if it is still open, takes pairHits of light[0]'s hits and is staggered. Inside pairCooldown of the last counter
+    // dealt the pair is spent and deals nothing (both leads share the clock: it lives in the player state a switch
+    // keeps). A counter dealt with a partner on spends pairPartnerSeconds of the partner's attack time.
     void tryPair() {
         if (pl.pairFoe == kArenaNobody || std::fabs(pl.pairParry - pl.pairPress) > fi.pairWindow + kArenaEps) return;
         const std::size_t i = pl.pairFoe;
         pl.pairFoe = kArenaNobody;
         pl.pairParry = -1.0e9f;
         pl.pairPress = -1.0e9f;
+        if (pairCooling(t0)) {
+            ++stats.pairsCooled;
+            return;
+        }
         if (!alive(i) || foes[i].brain != ArenaBrain::Open) return;
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         const int damage = static_cast<int>(fi.pairHits) * fi.light[0].damage;
-        const float pairPoise = k.boss ? kArenaBossPairPoise * k.poise : k.poise; // a boss: a share of its poise
+        const float pairPoise = k.boss ? fi.pairBossPoise * k.poise : k.poise; // a boss: a share of its poise
         ArenaBlowRuling r;
         if (!rule(ArenaEventType::CounterStagger, kArenaPlayer, id(i), 0, damage, pairPoise, pl.pos, pl.facing, foe.pos,
                   r))
             return;
+        pl.pairCoolUntil = t0 + fi.pairCooldown; // dealt (the ruling let it through): the clock starts
+        if (partnerOn()) {
+            pl.pairSpent += fi.pairPartnerSeconds;
+            pl.pairBrain += fi.pairPartnerSeconds; // the brain's rule 2 budget: its spentSeconds at its next step
+        }
         const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
         ++stats.counterStaggers;
@@ -2398,6 +2418,7 @@ struct ArenaFightImpl {
         foe.hitPlayer = false;
         foe.hitAlly = false;
         foe.evaded = false;
+        foe.callFrom = t0;
         foe.cooldown[move] = def.enemies[i].moves[move].cooldown;
         foe.readRight = false;
         foe.breakTimed = timed;
@@ -2482,8 +2503,13 @@ struct ArenaFightImpl {
             return;
         }
         if (guarding && !mv.unblockable) {
+            // A BLOCK call (blockable, not parryable) met by a guard pressed since the move began: blockCallGuard of
+            // the cost. A guard held from before it pays the whole guardDamage, as does a PARRY call merely blocked.
+            const bool called = !mv.parryable && pl.lastGuardPress >= foe.callFrom - kArenaEps;
+            const float cost = called ? a.guardDamage * std::clamp(fi.blockCallGuard, 0.f, 1.f) : a.guardDamage;
+            if (called) ++stats.blockCalls;
             const float before = pl.stamina;
-            pl.stamina = std::max(0.f, before - a.guardDamage);
+            pl.stamina = std::max(0.f, before - cost);
             pl.lastSpend = t0;
             ++stats.blocks;
             emit(ArenaEventType::Blocked, source, kArenaPlayer, foe.move,
@@ -2639,6 +2665,18 @@ struct ArenaFightImpl {
         capChanged(was);
     }
 
+    // The host's setLoad: the lead's own Load, silent but for the overload it reaches.
+    void setLoad(int value) {
+        const bool was = overloadedNow();
+        pl.gauge.value = fi.attacks ? std::clamp(value, 0, fight.capNow()) : 0;
+        out.player.load = pl.gauge.value;
+        if (!overloadedNow()) { // an Overloaded not reported yet was the old value's, not this lead's
+            pl.capFilled = false;
+            pl.giftFilled = false;
+        }
+        capChanged(was);
+    }
+
     // The host's setLone: the Load stays; reaching the cap it now reads overloads once.
     void setLone(bool on, const LoneTuning& t, float blowCap) {
         const bool was = overloadedNow();
@@ -2771,19 +2809,32 @@ struct ArenaFightImpl {
         pin.leadTarget = alive(pl.lock) ? static_cast<int>(pl.lock) : -1;
         pin.leadAttacking = leadOn;
         for (std::size_t k = 0; k < kMaxPartnerBlows; ++k) pin.blowSeconds[k] = allyLight(static_cast<std::uint8_t>(k)).total();
+        // A paired counter's partner time (outside its strings): this step's if the player's counter came first, else
+        // the next step's (a counter dealt in the enemies' step lands after the brain stepped).
+        pin.spentSeconds = pl.pairBrain;
+        pl.pairBrain = 0.f;
         pin.enemies = std::span<const PartnerEnemyView>(views.data(), n);
-        if (in.partnerCamera.given) { // stationing (rules 8-16) in the camera's frame; not given, none, as before
-            const PartnerCameraView& cam = in.partnerCamera;
-            pin.station.on = true;
-            pin.station.cameraPos = {cam.pos.x, cam.pos.y};
-            pin.station.cameraForward = {cam.forward.x, cam.forward.y};
-            pin.station.leadFacing = pl.facing;
-            pin.station.arenaCentre = fight.ring_.centre;
-            pin.station.arenaRadius = std::max(0.f, fight.ring_.radius - fight.allyRadius_);
-            pin.station.camera = cam;
+        // Stationing (rules 8-12): only with the host's camera. The ring less the ally's body is where it may stand.
+        // The full camera (partnerCamera given) turns it on too, from its own place and forward, for rules 13-16.
+        PartnerStationView& st = pin.station;
+        const PartnerCameraView& cam = in.partnerCamera;
+        st.on = in.cameraOn || cam.given;
+        if (st.on) {
+            if (cam.given) {
+                st.cameraPos = {cam.pos.x, cam.pos.y};
+                st.cameraForward = {cam.forward.x, cam.forward.y};
+                st.camera = cam;
+            } else {
+                st.cameraPos = in.cameraPos;
+                st.cameraForward = (in.cameraFacing.x != 0.f || in.cameraFacing.y != 0.f) ? in.cameraFacing : in.view;
+            }
+            st.leadFacing = pl.facing;
+            st.arenaCentre = fight.ring_.centre;
+            st.arenaRadius = std::max(1e-3f, fight.ring_.radius - fight.allyRadius_); // never 0 (unbounded)
         }
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
+        al.stationed = intent.stationed;
         if (!allyUp()) { // down: it lies where it fell until the brain stands it
             clearAlly();
             if (!intent.rise) return;
@@ -2882,6 +2933,7 @@ struct ArenaFightImpl {
         al.facing = fellFacing;
         fight.swapped_ = !fight.swapped_;
         ++stats.takeovers;
+        partnerSwapped();
         emit(ArenaEventType::TookOver, kArenaAlly, kArenaPlayer, 0, pl.hp, pl.pos);
         emit(ArenaEventType::AllyDowned, kArenaNobody, kArenaAlly, 0, 0, fight.allyPos_);
     }
@@ -2901,7 +2953,18 @@ struct ArenaFightImpl {
         al.facing = wasFacing;
         fight.swapped_ = !fight.swapped_;
         ++stats.leadSwitches;
+        partnerSwapped();
         return true;
+    }
+
+    // The partner's brain drives the other body now (a switch, a takeover): what it knew of the old one goes.
+    void partnerSwapped() {
+        // Counted only when the brain itself took it (its swaps() moved): a brain not begun ignores it.
+        if (!fight.partner_ || !partnerOn()) return;
+        const std::uint32_t before = fight.partner_->swaps();
+        fight.partner_->rolesSwapped();
+        fight.ally_.stationed = false;
+        if (fight.partner_->swaps() != before) ++stats.partnerSwaps;
     }
 
     // The player stands in the ally's place at the ally's hp, Idle, its action and string, buffer, lock and poise
@@ -3566,7 +3629,8 @@ bool ArenaFight::pairOpen() const {
     // time_ is the next tick's start, the time tryPair would stamp a press made now.
     const std::uint8_t i = player_.pairFoe;
     return i < enemyCount_ && enemy_[i].brain == ArenaBrain::Open &&
-           time_ - player_.pairParry <= def_.fighter.pairWindow + kArenaEps;
+           time_ - player_.pairParry <= def_.fighter.pairWindow + kArenaEps &&
+           time_ >= player_.pairCoolUntil - kArenaEps; // no counter cooling (tryPair's pairCooling)
 }
 
 PressReason ArenaFight::pressReason(ArenaPress p) const {
@@ -3693,6 +3757,13 @@ bool ArenaFight::lone() const { return lone_; }
 int ArenaFight::spendLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
     return ArenaFightImpl(*this).spendLoad(amount);
+}
+void ArenaFight::setLoad(int value) {
+    if (phase_ == ArenaPhase::Fighting) ArenaFightImpl(*this).setLoad(value);
+}
+void ArenaFight::setHealCharges(int charges) {
+    if (phase_ == ArenaPhase::Fighting)
+        player_.charges = static_cast<std::uint8_t>(std::clamp(charges, 0, static_cast<int>(healMax_)));
 }
 int ArenaFight::hostHeal(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
@@ -4096,11 +4167,12 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             dodgeStamina 0..100000; dodgeCancel, guardAbsorb, guardMoveScale, healMoveScale 0..1;
 //             guardArcCos -1..1; riposteReach (0, 100]; healCharges 0..99; healAmount 0..100000;
 //             lockRange (0, 1000]; lockBreak (0, 1000] and at least lockRange; moveAccel, moveBrake 0..1000;
-//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; parryStop 0..0.3;
+//             loadShare 0..10; releasePoise 0..1000; pairWindow 0..1; pairHits 0..10; pairBossPoise 0..1;
+//             pairCooldown 0..30; pairPartnerSeconds 0..10; parryStop 0..0.3;
 //             softRange 0..100; softArcCos -1..1; homingReach 0..20; hurtJolt 0..kArenaMaxJolt;
 //             attacks a bool; release an attack;
 //             readPower 0..100; readStackPower 0..10; readPoise, readWrongPoise 0..100000;
-//             blockLoadShare 0..1; takeHalfWindow 0.05..0.6; takeHalfReach 1..10; takeHalfLoadShare 0..2;
+//             blockLoadShare 0..1; blockCallGuard 0..1; takeHalfWindow 0.05..0.6; takeHalfReach 1..10; takeHalfLoadShare 0..2;
 //             takeHalfRearm 0..2
 //   bpm       (0, 300], optional; with it every move's startup is a whole number of beats, within
 //             kArenaBeatTolerance. An enemy may carry a bpm of its own, which its startups are checked against
@@ -4257,9 +4329,10 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "dodgeCancel", "guardArcCos", "guardAbsorb", "guardMoveScale", "guardBreakTime", "parryWindow",
                       "parryRearm", "riposteReach", "healCharges", "healAmount", "healTime", "healRecovery",
                       "healMoveScale", "lockRange", "lockBreak", "moveAccel", "moveBrake", "loadShare", "release",
-                      "releasePoise", "pairWindow", "pairHits", "readPower", "readStackPower", "readPoise",
+                      "releasePoise", "pairWindow", "pairHits", "pairBossPoise", "pairCooldown", "pairPartnerSeconds",
+                      "readPower", "readStackPower", "readPoise",
                       "readWrongPoise", "attacks", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
-                      "hurtJolt", "blockLoadShare", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
+                      "hurtJolt", "blockLoadShare", "blockCallGuard", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
                       "takeHalfRearm", "rounds", "reload", "jumpStartup", "jumpAir", "jumpLand", "jumpLandLock",
                       "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight"},
                      false, warnings);
@@ -4311,6 +4384,9 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "releasePoise", f.releasePoise, 0, 1000, false, path, errors);
     arenaNum(j, "pairWindow", f.pairWindow, 0, 1, false, path, errors);
     arenaByte(j, "pairHits", f.pairHits, 0, 10, path, errors);
+    arenaNum(j, "pairBossPoise", f.pairBossPoise, 0, 1, false, path, errors);
+    arenaNum(j, "pairCooldown", f.pairCooldown, 0, 30, false, path, errors);
+    arenaNum(j, "pairPartnerSeconds", f.pairPartnerSeconds, 0, 10, false, path, errors);
     arenaNum(j, "parryStop", f.parryStop, 0, kArenaMaxStop, false, path, errors);
     arenaNum(j, "hurtJolt", f.hurtJolt, 0, kArenaMaxJolt, false, path, errors);
     arenaNum(j, "softRange", f.softRange, 0, 100, false, path, errors);
@@ -4321,6 +4397,7 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "readPoise", f.readPoise, 0, 100000, false, path, errors);
     arenaNum(j, "readWrongPoise", f.readWrongPoise, 0, 100000, false, path, errors);
     arenaNum(j, "blockLoadShare", f.blockLoadShare, 0, 1, false, path, errors);
+    arenaNum(j, "blockCallGuard", f.blockCallGuard, 0, 1, false, path, errors);
     arenaNum(j, "takeHalfWindow", f.takeHalfWindow, 0.05f, 0.6f, false, path, errors);
     arenaNum(j, "takeHalfReach", f.takeHalfReach, 1, 10, false, path, errors);
     arenaNum(j, "takeHalfLoadShare", f.takeHalfLoadShare, 0, 2, false, path, errors);

@@ -252,8 +252,8 @@ public:
 	float GetEnemyMarkBonus(int32 Slot) const;
 	double GetEnemyMarkUntil(int32 Slot) const;
 	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
-	// Load it stored this fight and its last change (-1e9 when none). The kept lead is fixed at the fight's start
-	// (FightSession::keptLead) until the session keeps Load per lead (see GetPartnerLoad's TODO).
+	// Load it stored this fight and its last change (-1e9 when none). The kept gauge follows control
+	// (FightSession::keptLead): it is always on the lead without control, so it is the partner's.
 	int32 GetPartnerLoad() const;
 	int32 GetPartnerLoadCap() const;
 	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }
@@ -339,8 +339,9 @@ public:
 	uint8 GetLeadSeat() const { return LeadSeat; }
 	uint8 GetAllySeat() const { return AllySeat; }
 	// The lead's and the ally's look names (empty for the test human), the HUD's party rows' names.
-	const FString& GetLeadName() const { return LeadName; }
-	const FString& GetAllyName() const { return AllyName; }
+	// They follow the figures: a switch swaps them at once, a takeover when its camera move starts (0.3 s after the fall).
+	const FString& GetLeadName() const { return bNamesSwapped ? AllyName : LeadName; }
+	const FString& GetAllyName() const { return bNamesSwapped ? LeadName : AllyName; }
 	// The third slot as the session holds it (a checkpoint keeps it), and why any gift press is refused in it now
 	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
 	ftcore::SlotState GetThirdSlot() const;
@@ -490,7 +491,25 @@ private:
 	// goal, both leads' health for the session, and the 20 s report windows with the end's checks.
 	void BeginPartner();
 	void TakeOverBodies(const ftcore::ArenaOutput& Out);
-	void SwapLeadFigures();
+	// How the camera goes to the new lead: a cut (a retry), an ease (a switch: kSwitchEaseSeconds), or a takeover's
+	// hold on the fallen lead (kTakeoverHoldSeconds) then a move (kTakeoverMoveSeconds), its names and input with it.
+	enum class EHandoff : uint8 { Cut, Switch, Takeover };
+	static constexpr float kSwitchEaseSeconds = 0.35f;
+	static constexpr float kTakeoverHoldSeconds = 0.3f;
+	static constexpr float kTakeoverMoveSeconds = 0.5f;
+	void SwapLeadFigures(EHandoff Handoff = EHandoff::Cut);
+	void TickHandoff();
+	// After a switch: the partner's first intents on the left body, its first move, and when it leaves the view.
+	void TrackSwitchPartner();
+	void LogHandoffChecks() const;
+	// A takeover's hand-off still in its hold, dropped (the fight ended, another body change, a restart): counted and
+	// logged, the names put with the figures.
+	void DropPendingHandoff(const TCHAR* Why);
+	// A partner blow's Hit: the lead's impact effect at kPartnerImpactScale at the partner's blow point, and the
+	// impact sound hook (both sources call it).
+	static constexpr float kPartnerImpactScale = 0.7f;
+	void PartnerImpact(const ftcore::ArenaEvent& E);
+	void ImpactSoundHook(uint8 Source, const FVector& At, float Scale);
 	void WalkPartner(const ftcore::ArenaOutput& Out);
 	void FeedLeadHealths();
 	void TrackPartner(const ftcore::ArenaOutput& Out);
@@ -775,8 +794,40 @@ private:
 	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)
 	double KiteLockUntil = -1e9; // the kite's lock end last opened
 	int32 KiteUnlocks = 0;
-	// Feeds the lead's Load to the session (the scripted partner has no gauge).
+	// Feeds the lead's Load to the session (the scripted partner has no gauge). In a partner run (bPerLead) it feeds
+	// FeedLeadValues instead.
 	void FeedSessionLoads();
+	// Per-lead Load and heal charges (a partner run, -ArenaPartner): each lead owns both, and the fight's one gauge and
+	// one charge count are FedLead's, the lead the last of the session's leadLoadNow / leadHealsNow gave them (the
+	// controlled lead, but for the step a takeover or the begin's own switch moves control: FedLead moves only when the
+	// session reports the new lead's values). FeedLeadValues feeds FedLead's every step (before blows are judged and
+	// before the session's tick), never the kept lead's; a probe's -ArenaPartnerLoad is set once, at the begin.
+	// ApplyLeadValues puts the reported values in the fight right after the tick, before its Load changes and the
+	// fight's next step. One-lead fights never take this path (the session never reports them): as before.
+	void FeedLeadValues();
+	void ApplyLeadValues(const ftcore::FightTick& Tick, int32 FedLoad, int32 FedHeals);
+	// FightSession's host calls per step: OpenLeadStep feeds FedLead's gauge and charges as the step opens (1), every
+	// spend between that and the session's tick goes through spendLeadLoad / spendLeadHeal (3: SpendLeadLoadNow, the
+	// gift's and the table's; ReportFightSpends, the fight's own Release and heal), and no set of that lead follows
+	// them on the step (the blow hook feeds nothing while the step is open). A spend outside the window (after the
+	// tick, before the next open) is in the next open's feed. The session's lateSets() must stay 0.
+	void OpenLeadStep();
+	void SpendLeadLoadNow(int32 Amount);
+	void ReportFightSpends(const ftcore::ArenaOutput& Out);
+	bool bPerLead = false;
+	uint8 FedLead = 0;
+	bool bLeadStepOpen = false;
+	int32 StepOpenLoad = 0, StepOpenHeals = 0, StepLoadSpent = 0, StepHealsSpent = 0;
+	int32 LeadLoadSpends = 0, LeadHealSpends = 0, LateSetsSeen = 0;
+	int32 LateSetsRun = 0; // the most late sets any fight of the run saw: no begin resets it (a retry keeps it)
+	// The "per-lead Load" check: the runner's own ledger of the lead without control (its values as it lost control,
+	// or the begin's for the partner, plus the kept Load changes the session reported for it since; -1: none), checked
+	// against the values the session reports when control comes back to it. bOwnDeparted: the ledger is from that
+	// lead's own departure (a switch back), not the begin's.
+	int32 OwnLoad[2] = {-1, -1};
+	int32 OwnHeals[2] = {-1, -1};
+	bool bOwnDeparted[2] = {false, false};
+	int32 LeadMoves = 0, LeadMovesChecked = 0, LeadReturnsChecked = 0, LeadValueMisses = 0;
 	// After a session tick: applies its Load changes, notes a Lift and opens the kite's seam on an unlock.
 	void ApplyCountLift(const ftcore::FightTick& Tick);
 	ftcore::ArenaBodies Bodies;
@@ -1104,6 +1155,8 @@ private:
 	bool bPartnerHeldOut = false;
 	int32 PartnerHeldLeaks = 0;
 	int32 PartnerJoinAsks = 0, PartnerJoinsLanded = 0, PartnerJoinsRefused = 0, PartnerJoinDisagree = 0;
+	// Stationing: steps the partner was on (and fed the camera), and of them the steps stationing ran.
+	int32 PartnerOnSteps = 0, PartnerStationedSteps = 0, PartnerCameraSteps = 0;
 	double PartnerJoinedAt = -1.0;
 	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
 	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and
@@ -1113,6 +1166,44 @@ private:
 	// resolved as Same (control already on that lead: a takeover the same step) counts in SwitchAsksSame.
 	float SwitchAt = -1.f;
 	bool bSwitchAsked = false;
+	// -ArenaSwitchBackAt=<s> (dev runs, after -ArenaSwitchAt): one more ask, back to the first lead, at that fight time
+	// (the same send path, AskLeadSwitch), so the per-lead Load check sees a switch and a switch back.
+	float SwitchBackAt = -1.f;
+	bool bSwitchBackAsked = false;
+	// The hand-off (SwapLeadFigures): the HUD's names follow the figures (a takeover's at its move's start); the
+	// takeover's move is due at HandoffMoveAt (Now), its input ignored to TakeoverInputUntil (fight time).
+	bool bNamesSwapped = false;
+	// All three on the fight's clock (Fight.time()). HandoffBegun: takeovers whose hold began; HandoffTakeovers: of them
+	// the moves that started; HandoffDropped: the rest (DropPendingHandoff).
+	double HandoffMoveAt = -1.0, HandoffFellAt = -1.0, TakeoverInputUntil = -1.0;
+	int32 HandoffTakeovers = 0, HandoffMovesOnTime = 0, HandoffSwitches = 0, TakeoverInputsIgnored = 0;
+	int32 HandoffBegun = 0, HandoffDropped = 0;
+	// The play camera's pose as last drawn (SteerCamera): the partner's stationing reads its lens from it, and a switch
+	// hands its rig to the new lead. False until the first frame draws one.
+	ftcore::ArenaCameraPose CameraPoseNow{};
+	bool bCameraPoseNow = false;
+	// After a switch's ease: the pose's lens against the camera manager's, on the ground (cm, measured once per switch).
+	double SwitchCamCheckAt = -1.0, SwitchCamWorst = 0.0;
+	int32 SwitchCamChecks = 0;
+	// The benched figure's gauntlet morphs after each body change (all back to 0: no tucked cuff on the body left).
+	// BenchMorphs: the gauntlet look's morphs, BenchMorphOwner the figure that wears that look.
+	TArray<FName> BenchMorphs;
+	TWeakObjectPtr<AFTArenaFighter> BenchMorphOwner;
+	int32 BenchMorphChecks = 0, BenchMorphUnchecked = 0;
+	float BenchMorphWorst = 0.f;
+	// The fight's partnerSwaps when this session began (a restart begins the brain again, not the fight's stats).
+	int32 PartnerSwapsBase = 0;
+	double HandoffWorstLate = 0.0;
+	float HandoffFrameDt = 0.f;
+	// After a switch: the fight time it happened, the left body's place then, the first step its brain moved it (or
+	// attacked), the first frame it stood out of the camera's view; -1: not yet. The intents logged each 0.25 s to 2 s.
+	double SwitchPartnerAt = -1.0, SwitchPartnerMoved = -1.0, SwitchPartnerOut = -1.0;
+	int32 SwitchPartnerLogs = 0;
+	FVector SwitchPartnerFrom = FVector::ZeroVector;
+	double SwitchWorstMoved = 0.0, SwitchWorstOut = 0.0;
+	int32 SwitchPartnerChecks = 0;
+	TWeakObjectPtr<class UFTVfxComponent> PartnerImpactFx;
+	bool bImpactHookLogged[2] = {false, false};
 	bool bSwitchAskOpen = false;
 	bool bSwitchAskedThisStep = false; // AskLeadSwitch's one ask per step (cleared at the step's close, as bSwitchAskOpen)
 	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0, SwitchAsksRefused = 0, SwitchAsksSame = 0;
