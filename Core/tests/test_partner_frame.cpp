@@ -382,11 +382,19 @@ TEST_CASE("partner frame: every station it walks to is in the shrunk frame and o
                         // On screen (feet, middle and head inside the frame shrunk by kPartnerFrustumMargin) at least
                         // 0.8 of the run: measured 0.89..1.0, except Spread with the camera orbiting (0.70..0.80, the
                         // known short case below). With the camera fixed behind the lead, cameraOn's stationing is
-                        // lower by at least 0.03 (measured 0.04 and more at a bottom margin of 0.10), or the stationed
-                        // partner is on screen 0.98 of the run and more, with no room for 0.03 over it: the bottom's own
-                        // margin (0.05) puts StayClose without stationing at 0.96..0.99 here, with it 0.99..1.0.
+                        // lower by at least 0.03 (measured 0.04 and more at a bottom margin of 0.10).
                         if (o == 0 || orbit == 0.f) CHECK(on >= 0.8);
-                        if (orbit == 0.f) CHECK((on - today >= 0.03 || (on >= 0.98 && on >= today)));
+                        if (orbit == 0.f) {
+                            if (today > 0.95) {
+                                // The ceiling: above 0.95 a 0.03 gain is impossible past 0.98, so the stationed
+                                // partner need only be on screen 0.98 and no less than cameraOn's (the bottom's own
+                                // margin, 0.05, puts StayClose without stationing at 0.96..0.99 here).
+                                CHECK(on >= std::min(today + 0.03, 0.98));
+                                CHECK(on >= today);
+                            } else {
+                                CHECK(on - today >= 0.03);
+                            }
+                        }
                         // Its goal changes under 20 times in 10 s (measured up to 16); a string from off the frame
                         // (rule 14, no valid station that step) at most once in the 20 s (measured 0 or 1).
                         CHECK(10.0 * s.goalChanges / s.elapsed <= 20.0);
@@ -756,8 +764,8 @@ struct FramePin {
     std::uint64_t intents, state;
 };
 // The orbit script (Spread's 0.8-on-screen case's setup), framed throughout, with the tuning `Script` is given.
-FramePin orbitPin(PartnerOrder order, bool free, bool lock, double dt) {
-    Script s(order, true, free, 5);
+FramePin orbitPin(PartnerOrder order, bool free, bool lock, double dt, PartnerTuning tu = {}) {
+    Script s(order, true, free, 5, tu);
     if (!lock) {
         s.in.leadTarget = -1;
         s.leadOnE0 = true;
@@ -766,15 +774,15 @@ FramePin orbitPin(PartnerOrder order, bool free, bool lock, double dt) {
     s.orbit = 30.f;
     s.run(20.0, dt);
     REQUIRE(s.b.framed());
+    for (const V& v : s.e) CHECK_FALSE(v.top - v.base >= kPartnerTallMeters); // rule 18 needs a tall target: none here
     return {s.out.value, s.b.hash()};
 }
 } // namespace
-// With rule 17 off (the shipped default) a framed brain is main's to the bit: every step's intent and the state
-// hash at the end of the orbit (both orders, the free and the locked lead, both steps) are pinned. Main's values
-// (102219cb, before rule 17's switch) are kept beside them: rule 13's side hold (kPartnerSideHoldSeconds) changes the
-// intents where a station flipped side within 1 s, and its clock is in every state hash. The bottom's own frame margin
-// (kPartnerFrustumMarginBottom, 0.05) moves six StayClose rows and one Spread row: stations near the bottom edge now in.
-TEST_CASE("partner frame: rule 17 off, the framed orbit's intents and state hash are pinned (main's beside them)") {
+// With rule 17 off and main's tuning (mainEquivalentTuning: step 2's bottom margin and side hold off) a framed brain
+// is main's to the bit: every step's intent and the state hash at the end of the orbit (both orders, the free and the
+// locked lead, both steps) equal main's pins at a0f48fa7 (recorded at 102219cb), copied by hand: never regenerate
+// them from this build. No target here is tall, so rule 18 cannot act.
+TEST_CASE("partner frame: rule 17 off, main's tuning: the framed orbit's intents and state hash are main's (a0f48fa7)") {
     CHECK_FALSE(PartnerTuning{}.circling);
     struct Row {
         PartnerOrder order;
@@ -782,22 +790,64 @@ TEST_CASE("partner frame: rule 17 off, the framed orbit's intents and state hash
         std::uint64_t intents, state;
     };
     const Row rows[] = {
-        {PartnerOrder::StayClose, false, false, false, 1357905274653255899ull, 17058893035213404553ull}, // main: 265514111919678174ull, 267639759532034892ull
-        {PartnerOrder::StayClose, false, false, true, 5074212404098555745ull, 8846536987218711040ull}, // main: 13494321442008997399ull, 17156234905785402287ull
-        {PartnerOrder::StayClose, false, true, false, 16086233793491785525ull, 11210696583966370285ull}, // main: 8697168510642720180ull, 1221592041938500472ull
-        {PartnerOrder::StayClose, false, true, true, 13361595823405808389ull, 18050721810852227641ull}, // main: 303441118715888387ull, 6727766592074957145ull
-        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 3796873149745995078ull}, // main: 12318288052270451116ull, 3996803732724869128ull
-        {PartnerOrder::StayClose, true, false, true, 10833352845746964059ull, 12671218101391095369ull}, // main: 17652568905509306018ull, 16222199093469650799ull
-        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 15380270384267954525ull}, // main: 11062567821329793665ull, 4361275200455314555ull
-        {PartnerOrder::StayClose, true, true, true, 5339931848536943146ull, 988359586531716714ull}, // main: 13298922241904239483ull, 526139214294223443ull
-        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 17135771490710060754ull}, // main: 603634575432450118ull, 1762510326365600415ull
-        {PartnerOrder::Spread, false, false, true, 415095739551922365ull, 13833192346209618963ull}, // main: 2849074323208619076ull, 10684946757628589948ull
-        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 17135771490710060754ull}, // main: 603634575432450118ull, 1762510326365600415ull
-        {PartnerOrder::Spread, false, true, true, 415095739551922365ull, 13833192346209618963ull}, // main: 11340955196540186759ull, 18266217942116871286ull
-        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 14156185948042306215ull}, // main: 603634575432450118ull, 7453824002278148186ull
-        {PartnerOrder::Spread, true, false, true, 4724611697778822349ull, 11270257567424076320ull}, // main: 3162916615266793425ull, 18348585300907830234ull
-        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 14156185948042306215ull}, // main: 603634575432450118ull, 7453824002278148186ull
-        {PartnerOrder::Spread, true, true, true, 14658538389056863119ull, 202487308441617432ull}, // main: 10578977463318667820ull, 17647298366914853837ull
+        {PartnerOrder::StayClose, false, false, false, 265514111919678174ull, 267639759532034892ull},
+        {PartnerOrder::StayClose, false, false, true, 13494321442008997399ull, 17156234905785402287ull},
+        {PartnerOrder::StayClose, false, true, false, 8697168510642720180ull, 1221592041938500472ull},
+        {PartnerOrder::StayClose, false, true, true, 303441118715888387ull, 6727766592074957145ull},
+        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 3996803732724869128ull},
+        {PartnerOrder::StayClose, true, false, true, 17652568905509306018ull, 16222199093469650799ull},
+        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 4361275200455314555ull},
+        {PartnerOrder::StayClose, true, true, true, 13298922241904239483ull, 526139214294223443ull},
+        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 1762510326365600415ull},
+        {PartnerOrder::Spread, false, false, true, 2849074323208619076ull, 10684946757628589948ull},
+        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 1762510326365600415ull},
+        {PartnerOrder::Spread, false, true, true, 11340955196540186759ull, 18266217942116871286ull},
+        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 7453824002278148186ull},
+        {PartnerOrder::Spread, true, false, true, 3162916615266793425ull, 18348585300907830234ull},
+        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 7453824002278148186ull},
+        {PartnerOrder::Spread, true, true, true, 10578977463318667820ull, 17647298366914853837ull},
+    };
+    const PartnerTuning m = mainEquivalentTuning(PartnerTuning{});
+    for (const Row& w : rows) {
+        CAPTURE(int(w.order));
+        CAPTURE(w.free);
+        CAPTURE(w.lock);
+        CAPTURE(w.fine);
+        const FramePin p = orbitPin(w.order, w.free, w.lock, w.fine ? 1.0 / 60.0 : 0.25, m);
+        CHECK(p.intents == w.intents);
+        CHECK(p.state == w.state);
+    }
+}
+
+// The shipped tuning's pins, this branch's values. 10 of 16 rows' intents move from main's, each by the change
+// named (measured with that change alone on main's tuning): the bottom margin (0.05, stations near the bottom edge
+// now in) or the side hold (1.0 s, a station flipped side within it keeps its side). Every state hash moves: the
+// shipped tuning hashes its bottom margin (below frustumMargin) and its side hold with the hold clock's age (capped
+// at the hold), which main's tuning does not.
+TEST_CASE("partner frame: rule 17 off, the shipped tuning: the framed orbit's intents and state hash are pinned") {
+    CHECK_FALSE(PartnerTuning{}.circling);
+    struct Row {
+        PartnerOrder order;
+        bool free, lock, fine;
+        std::uint64_t intents, state;
+    };
+    const Row rows[] = {
+        {PartnerOrder::StayClose, false, false, false, 1357905274653255899ull, 13697923335789250723ull}, // intents: margin
+        {PartnerOrder::StayClose, false, false, true, 5074212404098555745ull, 18113349732729810429ull}, // intents: margin and side hold
+        {PartnerOrder::StayClose, false, true, false, 16086233793491785525ull, 9942363901030916838ull}, // intents: margin
+        {PartnerOrder::StayClose, false, true, true, 13361595823405808389ull, 12110359588259629963ull}, // intents: margin and side hold
+        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 6243710244904759685ull}, // intents main's
+        {PartnerOrder::StayClose, true, false, true, 10833352845746964059ull, 14428280010697570023ull}, // intents: margin and side hold
+        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 2827425724681207734ull}, // intents main's
+        {PartnerOrder::StayClose, true, true, true, 5339931848536943146ull, 14920154839734768300ull}, // intents: margin and side hold
+        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 7693424927675472466ull}, // intents main's
+        {PartnerOrder::Spread, false, false, true, 415095739551922365ull, 10861859527260200625ull}, // intents: side hold
+        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 7693424927675472466ull}, // intents main's
+        {PartnerOrder::Spread, false, true, true, 415095739551922365ull, 10861859527260200625ull}, // intents: margin and side hold
+        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 14654285743972932987ull}, // intents main's
+        {PartnerOrder::Spread, true, false, true, 4724611697778822349ull, 296234943700345006ull}, // intents: side hold
+        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 14654285743972932987ull}, // intents main's
+        {PartnerOrder::Spread, true, true, true, 14658538389056863119ull, 14732551354894952230ull}, // intents: margin and side hold
     };
     for (const Row& w : rows) {
         CAPTURE(int(w.order));

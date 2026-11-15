@@ -1719,11 +1719,12 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.targetFor += 0.5; },
         [](PartnerBrainSave& s) { s.targetReached = !s.targetReached; },
     };
-    // One row per field: the 41 tunables before rule 17's switch (its rows are below); rhythm .. downFor (20); a
-    // watch's 4; the intent's 16 (its point as x and y); begun; side, sideKey, sideFor, swaps, sideTarget,
-    // offStation, targetFor, targetReached (8).
-    static_assert(aggregateFields<PartnerTuning>() == 42, "a new tunable needs a row here");
-    static_assert(offsetof(PartnerTuning, circling) == 41 * sizeof(float), "the switch follows the 41 tunables");
+    // One row per field: the 41 tunables before step 2's four (framed and rule 17's rows below) and rule 17's switch;
+    // rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and y); begun; side, sideKey, sideFor,
+    // swaps, sideTarget, offStation, targetFor, targetReached (8).
+    static_assert(aggregateFields<PartnerTuning>() == 46, "a new tunable needs a row here");
+    static_assert(offsetof(PartnerTuning, frustumMarginBottom) == 41 * sizeof(float), "step 2's four follow the 41");
+    static_assert(offsetof(PartnerTuning, circling) == 45 * sizeof(float), "the switch follows the 45 tunables");
     CHECK(std::size(edits) == 41u + 20u + 4u + 16u + 1u + 8u);
     int i = 0;
     for (const Edit e : edits) {
@@ -1759,6 +1760,10 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.guarding = !s.guarding; },
         [](PartnerBrainSave& s) { s.out.framed = !s.out.framed; },
         [](PartnerBrainSave& s) { s.out.frameFallback = !s.out.frameFallback; },
+        [](PartnerBrainSave& s) { s.t.frustumMarginBottom += 0.01f; },  // step 2: below frustumMargin, hashed
+        [](PartnerBrainSave& s) { s.t.frameSideHoldSeconds += 0.5f; },  // step 2: above 0, hashed
+        [](PartnerBrainSave& s) { s.frameSideAt = s.now; },             // its clock's age, capped at the hold
+        [](PartnerBrainSave& s) { s.tallGrowOn = 1; },                  // rule 18: hashed only when on
     };
     int j = 0;
     for (const Edit e : framedEdits) {
@@ -1797,6 +1802,13 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.skirmishDir = static_cast<std::int8_t>(-s.skirmishDir); },
         [](PartnerBrainSave& s) { s.skirmishKind = 1; },
         [](PartnerBrainSave& s) { s.skirmishOf += 2; },
+        [](PartnerBrainSave& s) { s.choice = 1; },
+        [](PartnerBrainSave& s) { s.choiceAt += 0.5; },
+        [](PartnerBrainSave& s) { s.walkDir.x += 1.f; },
+        [](PartnerBrainSave& s) { s.walkDir.y += 1.f; },
+        [](PartnerBrainSave& s) { s.walkAt += 0.5; },
+        [](PartnerBrainSave& s) { s.t.choiceHoldSeconds += 0.5f; }, // off its default, hashed
+        [](PartnerBrainSave& s) { s.t.turnHoldSeconds += 0.5f; },
     };
     int k = 0;
     for (const Edit e : circlingEdits) {

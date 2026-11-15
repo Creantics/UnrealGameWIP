@@ -2393,8 +2393,11 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
     const char* names[kPartnerIdleCount] = {"none", "noBudget", "noTarget", "moving",
                                             "staggered", "pause", "other", "noKit"};
     double todayShare[2] = {0, 0}; // on screen with the camera not given, per order
+    // Main's brain (mainEquivalentTuning: step 2's margin and holds off) against the shipped one.
+    for (const bool mainEq : {true, false})
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}})
         for (const bool camera : {false, true}) {
+            CAPTURE(mainEq);
             CAPTURE(order);
             CAPTURE(camera);
             PRig r(t.fighter("default"));
@@ -2408,7 +2411,11 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                     }
             REQUIRE(r.def.enemyCount == 3);
             r.def.attackers = 2;
-            r.tuning = shippedTuning();
+            for (std::size_t e = 0; e < r.def.enemyCount; ++e) { // rule 18 needs a tall target: none here
+                const ArenaBodyCylinder b = arenaBodyCylinder(r.def.enemies[e], Vec2{}, 0.f);
+                CHECK(b.top - b.base < kPartnerTallMeters);
+            }
+            r.tuning = mainEq ? mainEquivalentTuning(shippedTuning()) : shippedTuning();
             r.in.partnerOrder = order;
             r.goShipped(true, 1);
             r.pairOnParry = true;
@@ -2452,7 +2459,8 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             for (std::size_t k = 0; k < kPartnerIdleCount; ++k)
                 shares += std::string(" ") + names[k] + " " +
                           std::to_string(r.brain.idleSeconds(static_cast<PartnerIdle>(k)) / T).substr(0, 5);
-            const std::string head = std::string(order == 0 ? "StayClose" : "Spread") + (camera ? ", camera" : ", no camera");
+            const std::string head = std::string(mainEq ? "main's tuning, " : "shipped, ") +
+                                     (order == 0 ? "StayClose" : "Spread") + (camera ? ", camera" : ", no camera");
             MESSAGE(head << ": " << T << " s, "
                                    << r.def.enemyCount << " enemies; strings " << s.partnerStrings << ", blows "
                                    << s.partnerBlows << " (cut by a hit " << s.partnerBlowsCut << ", ended at a dead target "
@@ -2460,13 +2468,18 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                    << r.brain.fallbackSeconds() << " s; shares:" << shares);
             {
                 // Hard pin: the default kit for both leads, main's group fight (1b59533b) to the tick. Main's report
-                // values, written by hand: never regenerate them from this build.
+                // values, written by hand: never regenerate them from this build. Under main's tuning
+                // (mainEquivalentTuning) every row is main's; the shipped tuning's camera rows are this branch's
+                // (step 2's bottom margin and side hold: see the intents pin below), its rows without one main's.
                 struct Pin { int strings, blows, cut, voided, guards, goalJumps; double walked; };
                 static constexpr Pin kMain[2][2] = { // [order][camera]
                     {{7, 9, 3, 0, 0, 7, 9.41492}, {7, 11, 1, 0, 0, 52, 26.1652}},
                     {{6, 8, 0, 0, 0, 7, 9.63654}, {6, 8, 0, 0, 0, 42, 23.9698}},
                 };
-                const Pin& pin = kMain[order == 0 ? 0 : 1][camera ? 1 : 0];
+                static constexpr Pin kShippedCamera[2] = { // [order], camera given, the shipped tuning
+                    {7, 11, 1, 0, 0, 55, 26.8518}, {5, 7, 0, 0, 0, 36, 24.3878},
+                };
+                const Pin& pin = !mainEq && camera ? kShippedCamera[order == 0 ? 0 : 1] : kMain[order == 0 ? 0 : 1][camera ? 1 : 0];
                 CHECK(std::fabs(T - 20.0165) < 0.5 * kDt);
                 CHECK(s.partnerStrings == pin.strings);
                 CHECK(s.partnerBlows == pin.blows);
@@ -2488,7 +2501,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                      << " goals, guards " << r.brain.guardsBegun() << ", dodges 0 (none in the kit)");
             CHECK(r.brain.framed() == camera);
             if (!camera) todayShare[order] = onScreen / T;
-            if (camera) {
+            if (camera && !mainEq) {
                 CHECK(s.partnerStrings >= 1);
                 // On screen (inside the frame shrunk by kPartnerFrustumMargin) at least 0.8 of the fight (measured
                 // 0.97 StayClose, 0.90 Spread), above cameraOn's stationing by at least 0.02 (measured 0.93 and
@@ -2739,6 +2752,7 @@ constexpr int kSixSeeds = 6;
 struct SixSeeds {
     std::array<double, kSixSeeds> rules{}, circling{}, inPlace{}, onScreen{}, pushes{}, circlingHold{}, bodyTurnHold{};
     std::array<int, kSixSeeds> bodyTurns{}, goalsInBody{};
+    std::array<bool, kSixSeeds> circled{}; // the seed circled at all (its circling rate is a number)
     double hold = 1e9, pushMost = 0, pushFastest = 0, pushMostEnemy = 0, pushMostWalk = 0;
     int enemyInto = 0, walkInto = 0, pushReversals = 0;
     static double mean(const std::array<double, kSixSeeds>& a) {
@@ -2746,6 +2760,18 @@ struct SixSeeds {
         for (const double v : a) m += v;
         return m / kSixSeeds;
     }
+    // The circling rate's mean over the seeds that circled only (a seed that never did is no 0 in it).
+    double circlingMean() const {
+        double m = 0;
+        int k = 0;
+        for (std::size_t i = 0; i < static_cast<std::size_t>(kSixSeeds); ++i)
+            if (circled[i]) {
+                m += circling[i];
+                ++k;
+            }
+        return k > 0 ? m / k : 0.0;
+    }
+    int circledCount() const { return static_cast<int>(std::count(circled.begin(), circled.end(), true)); }
     static double most(const std::array<double, kSixSeeds>& a) { return *std::max_element(a.begin(), a.end()); }
     static double least(const std::array<double, kSixSeeds>& a) { return *std::min_element(a.begin(), a.end()); }
 };
@@ -2760,7 +2786,8 @@ const SixSeeds& sixSeeds(std::uint8_t order, bool circling) {
             const IdleLead r = idleLead(t, order, circling, seed, true);
             const std::size_t i = seed - 1u;
             s.rules[i] = 10.0 * r.rulesReversals / r.T;
-            s.circling[i] = r.circlingTime > 0.0 ? 10.0 * r.circlingReversals / r.circlingTime : 0.0;
+            s.circled[i] = r.circlingTime > 0.0;
+            s.circling[i] = s.circled[i] ? 10.0 * r.circlingReversals / r.circlingTime : 0.0;
             s.inPlace[i] = r.longestInPlace;
             s.onScreen[i] = r.onScreen;
             s.hold = std::min(s.hold, r.shortestHold);
@@ -2792,7 +2819,7 @@ TEST_CASE("arena partner: rules 10-13 and 17 over six fight seeds, a lead that n
                       << s.circlingHold[i] << " s";
             MESSAGE((std::string(order == 0 ? "StayClose" : "Spread") + (circling ? ", circling on" : ", circling off"))
                     << " over " << kSixSeeds << " seeds: rules reversals per 10 s mean " << SixSeeds::mean(s.rules)
-                    << " worst " << SixSeeds::most(s.rules) << "; circling mean " << SixSeeds::mean(s.circling)
+                    << " worst " << SixSeeds::most(s.rules) << "; circling mean " << s.circlingMean() << " (over the " << s.circledCount() << " seeds that circled)"
                     << " worst " << SixSeeds::most(s.circling) << "; shortest hold " << s.hold << " s; on screen mean "
                     << SixSeeds::mean(s.onScreen) << " worst " << SixSeeds::least(s.onScreen) << "; in one place mean "
                     << SixSeeds::mean(s.inPlace) << " worst " << SixSeeds::most(s.inPlace) << " s;"
@@ -2818,7 +2845,9 @@ TEST_CASE("arena partner: rule 17 circling, the six-seed means meet the bars: at
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
         CAPTURE(int(order));
         const SixSeeds& s = sixSeeds(order, true);
-        CHECK(SixSeeds::mean(s.circling) <= 6.5);
+        MESSAGE("seeds that circled " << s.circledCount() << " of " << kSixSeeds);
+        CHECK(s.circledCount() >= 4); // a mean over fewer says little
+        CHECK(s.circlingMean() <= 6.5);
         CHECK(SixSeeds::mean(s.inPlace) <= 1.5);
         CHECK(SixSeeds::mean(s.onScreen) >= 0.8);
     }
@@ -2983,7 +3012,7 @@ struct GroupPin {
 };
 // The shipped group fight of the report above (three enemies, two attacking, the shipped brain), 20 s: every
 // tick's intent and the brain's state hash at the end.
-GroupPin groupFightPin(std::uint8_t order, bool camera) {
+GroupPin groupFightPin(std::uint8_t order, bool camera, bool mainEq = false) {
     const ArenaTable t = shippedTable();
     PRig r(t.fighter("default"));
     r.def = t.fallback;
@@ -2996,7 +3025,7 @@ GroupPin groupFightPin(std::uint8_t order, bool camera) {
             }
     REQUIRE(r.def.enemyCount == 3);
     r.def.attackers = 2;
-    r.tuning = shippedTuning();
+    r.tuning = mainEq ? mainEquivalentTuning(shippedTuning()) : shippedTuning();
     r.in.partnerOrder = order;
     r.goShipped(true, 1);
     r.pairOnParry = true;
@@ -3018,13 +3047,11 @@ GroupPin groupFightPin(std::uint8_t order, bool camera) {
     return {h.value, r.brain.hash()};
 }
 } // namespace
-// With rule 17 off (the shipped default) the shipped group fight is main's: every tick's intent and the brain's
-// state hash at the end equal the values recorded from main at 102219cb, but for StayClose's intents, which the
-// ally-blow cut (865e5c61) changes: there a damaging hit cuts its blows (3 without the camera, 1 with it); and but
-// for the camera's rows, which rule 13's side hold (kPartnerSideHoldSeconds) changes, its clock in the state hash too.
-// The walk's shape (round bodies, the heading rule) is rule 17's circling's only, so changes none of them.
-// Main's values are kept beside them. Spread without the camera equals main to the bit.
-TEST_CASE("arena partner: rule 17 off, the shipped group fight's intents and state hash are pinned (main's beside them)") {
+// With rule 17 off and main's tuning (mainEquivalentTuning) the shipped group fight is main's to the bit: every
+// tick's intent and the brain's state hash at the end equal main's pins (50b62a4f), copied by hand: never regenerate
+// them from this build. No enemy here is tall (checked in the report above), so rule 18 cannot act. The walk's shape
+// (round bodies, the heading rule) is rule 17's circling's only, so changes none of them.
+TEST_CASE("arena partner: rule 17 off, main's tuning: the shipped group fight's intents and state hash are main's") {
     CHECK_FALSE(shippedTuning().circling);
     struct Row {
         std::uint8_t order;
@@ -3032,10 +3059,36 @@ TEST_CASE("arena partner: rule 17 off, the shipped group fight's intents and sta
         std::uint64_t intents, state;
     };
     const Row rows[] = {
-        {0, false, 13510023720450430857ull, 13607754419378690935ull}, // main: 1509493203624858266ull, 9278585553922132654ull (the blow cut)
-        {0, true, 13024001550807287536ull, 11812542337274253764ull}, // main: 17494647051211174547ull, 6381732959959279559ull (the blow cut, the side hold)
+        {0, false, 13510023720450430857ull, 13607754419378690935ull},
+        {0, true, 5572646704335333306ull, 6381732959959279559ull},
         {1, false, 9209459091041298615ull, 9225178481593612560ull},
-        {1, true, 8413671702271960558ull, 12661657288938649677ull}, // main: 7321489833706842541ull, 8499464587038327255ull (the side hold)
+        {1, true, 7321489833706842541ull, 8499464587038327255ull},
+    };
+    for (const Row& w : rows) {
+        CAPTURE(int(w.order));
+        CAPTURE(w.camera);
+        const GroupPin p = groupFightPin(w.order, w.camera, true);
+        CHECK(p.intents == w.intents);
+        CHECK(p.state == w.state);
+    }
+}
+
+// The shipped tuning's pins, this branch's values. Without the camera both rows are main's to the bit (no camera, no
+// frame: step 2's margin and holds never run). With it both orders' intents move, by the side hold alone (measured:
+// the bottom margin alone on main's tuning leaves both main's), and so do their state hashes (the side hold and the
+// bottom margin are hashed off main's values).
+TEST_CASE("arena partner: rule 17 off, the shipped tuning: the shipped group fight's intents and state hash are pinned") {
+    CHECK_FALSE(shippedTuning().circling);
+    struct Row {
+        std::uint8_t order;
+        bool camera;
+        std::uint64_t intents, state;
+    };
+    const Row rows[] = {
+        {0, false, 13510023720450430857ull, 13607754419378690935ull}, // main's
+        {0, true, 13024001550807287536ull, 6219416955076716000ull},   // intents: the side hold
+        {1, false, 9209459091041298615ull, 9225178481593612560ull},   // main's
+        {1, true, 8413671702271960558ull, 16115149057113691648ull},   // intents: the side hold
     };
     for (const Row& w : rows) {
         CAPTURE(int(w.order));
@@ -3693,6 +3746,31 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                 CHECK(s.partnerBlows == 0);
                 CHECK(s.partnerDamage == 0);
             }
+        }
+    }
+}
+
+// Finding 6: a partner whose kit has no attacks is told so (PartnerInput::kitAttacks, from the ally's kit: the brain's
+// NoKit) and deals no paired counter; the same fight with a kit that attacks does.
+TEST_CASE("arena partner: a partner kit with no attacks deals no paired counter; one with attacks does") {
+    for (const bool attacks : {true, false}) {
+        CAPTURE(attacks);
+        PRig r;
+        r.ownPartnerKit = true;
+        r.def.partnerKit = kitB();
+        r.def.partnerKit.attacks = attacks;
+        r.enemy(biterKind(5, 3.f, 1.f), Vec2{1.5f, 0.f});
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.ally = Vec2{-10.f, 0.f}; // out of the bites' and its own blows' reach
+        r.go(true, 100);
+        const float spent = pairUntilCounter(r);
+        CHECK(r.count(ArenaEventType::Parried) > 0);
+        if (attacks) {
+            CHECK(spent == doctest::Approx(r.def.fighter.pairPartnerSeconds));
+            CHECK(r.fight.stats().counterStaggers == 1);
+        } else {
+            CHECK(spent == -1.f);
+            CHECK(r.fight.stats().counterStaggers == 0);
         }
     }
 }

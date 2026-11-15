@@ -185,7 +185,12 @@
 //      back). StayClose by a tall target (one standing whose edge is within closeLeadMeters of the lead, held or not,
 //      so a lead switch keeps them) grows its cap, leash and return by that target's radius, at most tallGrowMaxMeters
 //      (the in-frame and not-hidden rules still win): the seen flanks of a body R round lie about R + reach / 2 round
-//      it from the lead. Any other target: the distances are as before, to the bit. Every walk (MoveTo or StepBack) is steered last: a goal
+//      it from the lead. The growth starts at that edge and ends only kPartnerTallGrowHysteresis past it, so a lead on
+//      the boundary does not move the leash by the radius every step; the brain and its circling walk read the same
+//      growth. With no valid station by a tall target, rule 13's fallback is the nearest point of its two station
+//      rings that is legal and within the cap, seen and unhidden first, then unhidden, then seen; a walk round its
+//      body ranks after each (rules 10-11's only with none); a string from a hidden spot is let through only when
+//      that fallback found no unhidden one. Any other target: the distances are as before, to the bit. Every walk (MoveTo or StepBack) is steered last: a goal
 //      inside a standing tall body (its radius + kPartnerSteerClear) is put out on that circle, and a straight line
 //      that would cross one goes round it the shorter way, by a point on that circle.
 //      Not tall (or no height given): none of it applies.
@@ -209,7 +214,8 @@
 //     "closeLeadMeters": 3.5, "spreadArcMin": 120, "spreadArcMax": 180, "sideHoldSeconds": 2.0, "followMin": 2.0,
 //     "followMax": 2.5, "stationTolerance": 0.5, "stationGiveUpSeconds": 3.0, "stationAnySeconds": 6.0,
 //     "targetHoldSeconds": 1.5, "frustumMargin": 0.1, "frustumGiveUpSeconds": 3.0, "engageSeconds": 2.0,
-//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5, "tallGrowMaxMeters": 6.0, "circling": false }
+//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5, "tallGrowMaxMeters": 6.0, "frustumMarginBottom": 0.05,
+//     "frameSideHoldSeconds": 1.0, "choiceHoldSeconds": 1.0, "turnHoldSeconds": 1.0, "circling": false }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -254,6 +260,8 @@ struct PartnerEnemyView {
 inline constexpr float kPartnerTallMeters = 4.f;
 // Rule 18: a walk keeps this far (m) off a tall target's edge (the partner's body and a little room).
 inline constexpr float kPartnerSteerClear = 0.6f;
+// Rule 18: StayClose's growth by a tall target ends only when its edge is this far (m) past closeLeadMeters.
+inline constexpr float kPartnerTallGrowHysteresis = 0.5f;
 // Rule 13: within this long (s) of the held station's last change of side, a new pick keeps to its side (none valid
 // there: the grace holds), and the grace holds a station in its target's keep-out this long after the last valid one.
 inline constexpr double kPartnerSideHoldSeconds = 1.0;
@@ -394,6 +402,13 @@ struct PartnerTuning {
     float repositionMeters = 1.5f;       // rule 16: at least this far (0.5..6)
     float tallGrowMaxMeters = 6.f;       // rule 18: StayClose's cap, leash and return grow by a tall target's radius,
                                          // at most this (0..20)
+    // Step 2's holds and the bottom margin, as tuning so main's brain is one tuning away (mainEquivalentTuning).
+    // Each is hashed only off main's value (the margin below frustumMargin, a hold above 0).
+    float frustumMarginBottom = kPartnerFrustumMarginBottom; // rule 13: the bottom's margin, the smaller of it and
+                                                             // frustumMargin (0..0.4; main: frustumMargin)
+    float frameSideHoldSeconds = static_cast<float>(kPartnerSideHoldSeconds); // rule 13's side hold (0..5; main: 0)
+    float choiceHoldSeconds = static_cast<float>(kPartnerChoiceHoldSeconds);  // rule 17's choice hold (0..5; main: 0)
+    float turnHoldSeconds = static_cast<float>(kPartnerChoiceHoldSeconds);    // rule 17's turn hold (0..5; main: 0)
     // Rule 17 (framed): with its attack held it keeps moving round its target. Off (the default until its turns hold
     // the ruled limits): it stands ready where its rules put it and the host turns it to its target; rule 17's state
     // is neither touched nor hashed, so the hash and outputs are the brain's before rule 17.
@@ -401,6 +416,10 @@ struct PartnerTuning {
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
+// The shipped tuning with step 2's changes off: bottom margin equal to frustumMargin, the side, choice and turn holds 0.
+// Framed and with rule 17 off its intents and hash are main's (a0f48fa7) to the bit, on any target under
+// kPartnerTallMeters (rule 18 needs a tall one).
+FTCORE_API PartnerTuning mainEquivalentTuning(PartnerTuning t);
 // Rule 13's frame test alone: a partner standing at p (its capsule, the camera's groundZ and bodyHeight) is inside the
 // camera's frustum shrunk by `margin` (0..0.4) of the screen on every side. A camera not given or not whole: false.
 FTCORE_API bool partnerInFrame(const PartnerCameraView& camera, float margin, Vec2 p);
@@ -482,6 +501,7 @@ struct PartnerBrainSave {
     double lastGuard = -1e9;
     double lastMove = -1e9;
     bool guarding = false;         // the last step's intent was Guard
+    std::uint8_t tallGrowOn = 0;   // rule 18: the targets growing StayClose's cap now, a bit each (with hysteresis)
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};
     double fallbackSeconds = 0.0;

@@ -14,8 +14,11 @@
 #include <ostream>
 #include <doctest/doctest.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
+#include <span>
+#include <sstream>
 #include <vector>
 
 using namespace ftcore;
@@ -102,8 +105,13 @@ ArenaFighter tbFighter() {
     return f;
 }
 
-// The tall boss: 2.5 m round, 12 m high, plain (not skinned: no hover, scale 1), a harmless bite about every 2 s.
-ArenaEnemyKind tallBoss() {
+// A tall boss's body: the shipped test's 2.5 m round and 12 m high, or another.
+struct TallShape {
+    float radius = kBossRadius, height = kBossHeight;
+};
+
+// The tall boss: 2.5 m round, 12 m high (or `shape`), plain (not skinned: no hover, scale 1), a harmless bite about every 2 s.
+ArenaEnemyKind tallBoss(TallShape shape = {}) {
     ArenaEnemyKind k;
     k.hp = 1000000;
     k.poise = 1000.f;
@@ -112,8 +120,8 @@ ArenaEnemyKind tallBoss() {
     k.openTime = 1.5f;
     k.downTime = 1.f;
     k.attackDelay = 0.f;
-    k.bodyRadius = kBossRadius;
-    k.height = kBossHeight;
+    k.bodyRadius = shape.radius;
+    k.height = shape.height;
     k.boss = true;
     k.breakMove = -1;
     k.runRange = 40.f;
@@ -205,11 +213,11 @@ struct TallCamera {
 };
 
 // The partner hidden behind the boss from the lens, as the host counts it: its middle and its head both behind.
-bool tbHidden(const PartnerCameraView& cam, Vec2 ally, Vec2 boss) {
+bool tbHidden(const PartnerCameraView& cam, Vec2 ally, Vec2 boss, TallShape shape = {}) {
     const ArenaPoint3 eye{cam.pos.x, cam.pos.y, cam.pos.z};
     const auto behind = [&](float z) {
-        return arenaHiddenBehind(eye, ArenaPoint3{ally.x, ally.y, cam.groundZ + z}, boss, kBossRadius, cam.groundZ,
-                                 cam.groundZ + kBossHeight);
+        return arenaHiddenBehind(eye, ArenaPoint3{ally.x, ally.y, cam.groundZ + z}, boss, shape.radius, cam.groundZ,
+                                 cam.groundZ + shape.height);
     };
     return behind(cam.bodyHeight * 0.55f) && behind(cam.bodyHeight * 0.95f);
 }
@@ -246,16 +254,17 @@ struct TallRun {
 // partner 2 m behind the lead to its side. The ally body walks to its goal at the lead's speed and is pushed out of the
 // boss's body. switchAt >= 0: the host's switchLeads at that time (s), the bodies swapped as the host does; the run
 // measures until 3 s after it.
-TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f, const PartnerTuning* tune = nullptr) {
+TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f, const PartnerTuning* tune = nullptr,
+                TallShape shape = {}) {
     ArenaDef def;
     def.fighter = tbFighter();
     def.enemyCount = 1;
     def.attackers = 1;
-    def.enemies[0] = tallBoss();
+    def.enemies[0] = tallBoss(shape);
     const ArenaRing ring{Vec2{0.f, 0.f}, 30.f};
     ArenaBodies bodies;
     bodies.enemies[0] = Vec2{0.f, 0.f};
-    bodies.player = Vec2{-(kBossRadius + 0.9f), 0.f};
+    bodies.player = Vec2{-(shape.radius + 0.9f), 0.f};
     bodies.ally = Vec2{bodies.player.x - 2.f, -1.5f};
     PartnerBrain brain;
     const PartnerTuning tuning = tune ? *tune : tbTuning();
@@ -281,7 +290,7 @@ TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f,
         }
         ArenaInput in = fight.autopilot();
         in.partnerOrder = order == PartnerOrder::Spread ? 1 : 0;
-        const PartnerCameraView view = cam.step(bodies.player, bodies.enemies[0], kBossHeight, kDt);
+        const PartnerCameraView view = cam.step(bodies.player, bodies.enemies[0], shape.height, kDt);
         const ArenaLensAt lensAt = arenaCameraLens(cam.lens);
         in.cameraOn = true;
         in.cameraPos = Vec2{bodies.player.x + lensAt.x, bodies.player.y + lensAt.y};
@@ -294,7 +303,7 @@ TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f,
         arenaStep(fight, bodies, kDt);
         if (out.ally.partnerOn && fight.allyHp() > 0) {
             const bool seen = partnerInFrame(view, kPartnerFrustumMargin, bodies.ally);
-            const bool clear = seen && !tbHidden(view, bodies.ally, bodies.enemies[0]);
+            const bool clear = seen && !tbHidden(view, bodies.ally, bodies.enemies[0], shape);
             r.seconds += kDt;
             r.fromLead.push_back(tbDist(bodies.ally, bodies.player));
             r.seen += seen ? kDt : 0.f;
@@ -318,13 +327,13 @@ TallRun tallRun(PartnerOrder order, float switchAt = -1.f, float seconds = 20.f,
                 ++r.blows;
                 r.seenBlows += clear ? 1 : 0;
             }
-            if (tbDist(out.ally.goal, bodies.enemies[0]) < kBossRadius + kAllyRadius - 1e-3f) ++r.goalInside;
+            if (tbDist(out.ally.goal, bodies.enemies[0]) < shape.radius + kAllyRadius - 1e-3f) ++r.goalInside;
             // The host's walk: toward the goal at the lead's speed, then out of the boss's body.
             const Vec2 d{out.ally.goal.x - bodies.ally.x, out.ally.goal.y - bodies.ally.y};
             const float far = std::hypot(d.x, d.y), most = def.fighter.moveSpeed * kDt;
             Vec2 next = far > most ? Vec2{bodies.ally.x + d.x * most / far, bodies.ally.y + d.y * most / far} : out.ally.goal;
             const Vec2 e{next.x - bodies.enemies[0].x, next.y - bodies.enemies[0].y};
-            const float apart = std::hypot(e.x, e.y), least = kBossRadius + kAllyRadius;
+            const float apart = std::hypot(e.x, e.y), least = shape.radius + kAllyRadius;
             if (apart < least - 1e-3f) {
                 ++r.insideSteps;
                 const Vec2 dir = apart > 1e-4f ? Vec2{e.x / apart, e.y / apart} : Vec2{1.f, 0.f};
@@ -369,14 +378,18 @@ TEST_CASE("partner tall boss: the camera harness is the host's tall lock (the lo
     CHECK(lead.feet > kPartnerFrustumMarginBottom);
 }
 
-TEST_CASE("partner tall boss: in play through the real camera, 20 s, StayClose and Spread") {
+// Two bodies: the shipped test's (2.5 m round, 12 m high) and a narrower, shorter one (1.5 m round, 6 m high, still
+// over kPartnerTallMeters). Rule 18 says never hidden; clear (on screen and not hidden) at least 0.9 of the run.
+TEST_CASE("partner tall boss: in play through the real camera, 20 s, StayClose and Spread, two boss shapes") {
+    for (const TallShape shape : {TallShape{}, TallShape{1.5f, 6.f}})
     for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
-        const TallRun r = tallRun(order);
+        CAPTURE(shape.radius);
+        const TallRun r = tallRun(order, -1.f, 20.f, nullptr, shape);
         tbReport(order == PartnerOrder::StayClose ? "StayClose" : "Spread", r);
         CHECK(r.tallLock);
         CHECK(r.lowMax > 0.5f);
         CHECK(r.seconds > 19.9f);
-        CHECK(r.clear >= 0.7f * r.seconds); // on screen and not hidden behind the boss
+        CHECK(r.clear >= 0.9f * r.seconds); // on screen and not hidden behind the boss
         CHECK(r.seenBlows >= 4);            // blows begun where the camera sees it
         CHECK(r.insideSteps == 0);          // never a step into the boss's body
         CHECK(r.goalInside == 0);           // nor a goal in it
@@ -384,8 +397,12 @@ TEST_CASE("partner tall boss: in play through the real camera, 20 s, StayClose a
 }
 
 TEST_CASE("partner tall boss: after a lead switch, the new partner reaches a seen station within 3 s") {
+    for (const TallShape shape : {TallShape{}, TallShape{1.5f, 6.f}})
+    for (const float at : {6.f, 13.5f})
     for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
-        const TallRun r = tallRun(order, 6.f, 20.f);
+        CAPTURE(shape.radius);
+        CAPTURE(at);
+        const TallRun r = tallRun(order, at, 20.f, nullptr, shape);
         tbReport(order == PartnerOrder::StayClose ? "StayClose switch" : "Spread switch", r);
         REQUIRE(r.switched >= 0);
         CHECK(r.reachSeen >= 0.f);
@@ -439,3 +456,116 @@ TEST_CASE("partner tall boss: StayClose's growth is clamped to tallGrowMaxMeters
     CHECK(clamped.leadMax() < shipped.leadMax());
     CHECK(clamped.leadP50() <= shipped.leadP50() + 1e-3f);
 }
+
+namespace {
+
+// A brain-level scene: the lead at `lead` facing +x, a camera `back` m behind it and 1.7 m up looking along +x
+// (pitched `pitch` degrees up), a `vfov` degree lens at 16:9; one boss at the origin.
+struct TbScene {
+    PartnerBrain b;
+    PartnerInput in;
+    std::array<PartnerEnemyView, 1> e{};
+    PartnerCameraView v{};
+    TbScene(const PartnerTuning& t, PartnerOrder order, Vec2 lead, float radius, float height, float back = 4.f,
+            float pitch = 0.f, float vfov = 50.f) {
+        REQUIRE(b.begin(t, 1));
+        e[0].pos = {0.f, 0.f};
+        e[0].radius = radius;
+        e[0].kind = PartnerEnemyView::Kind::Boss;
+        e[0].base = 0.f;
+        e[0].top = height;
+        in.order = order;
+        in.leadPos = lead;
+        in.leadTarget = 0;
+        in.pos = {lead.x, lead.y + 2.f};
+        in.station.on = true;
+        in.station.cameraPos = {lead.x - back, lead.y};
+        in.station.cameraForward = {1.f, 0.f};
+        in.station.leadFacing = {1.f, 0.f};
+        const float p = pitch * 3.14159265f / 180.f;
+        v.given = true;
+        v.pos = {lead.x - back, lead.y, 1.7f};
+        v.forward = {std::cos(p), 0.f, std::sin(p)};
+        v.up = {-std::sin(p), 0.f, std::cos(p)};
+        v.aspect = kAspect;
+        v.verticalFovDegrees = vfov;
+        in.station.camera = v;
+        in.enemies = std::span<const PartnerEnemyView>(e.data(), e.size());
+    }
+    // One step; the partner walks toward the intent's point at 4 m/s.
+    const PartnerIntent& step() {
+        const PartnerIntent& o = b.step(kDt, in);
+        if (o.act == PartnerAct::MoveTo || o.act == PartnerAct::StepBack) {
+            const Vec2 d{o.point.x - in.pos.x, o.point.y - in.pos.y};
+            const float l = std::hypot(d.x, d.y), s = std::min(l, 4.f * kDt);
+            if (l > 1e-4f) in.pos = {in.pos.x + d.x / l * s, in.pos.y + d.y / l * s};
+        }
+        return o;
+    }
+};
+
+} // namespace
+
+// Rule 18's fallback with no valid station: the camera 4 m behind the lead, a 40 degree lens and a wide tall boss
+// (4 m round, 12 m high) 1.2 m past the lead filling the frame, so every station ring point is out of the frame, hidden
+// behind the body, in the lead's wedge or in the target's keep-out (the only seen, unhidden ones: its near flanks, by
+// the keep-out's margin). Rule 13 falls back; the fallback is a ring point the camera sees unhidden, not rules 10-11's
+// station, which may stand behind the body; and it strikes from there.
+TEST_CASE("partner tall boss: no valid station (the boss fills the frame): the fallback is a spot the camera sees unhidden") {
+    const PartnerTuning t = tbTuning();
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+        CAPTURE(int(order));
+        TbScene s(t, order, Vec2{-5.2f, 0.f}, 4.f, 12.f, 4.f, -10.f, 40.f);
+        s.in.pos = {3.f, 4.5f}; // behind the boss's flank, out of the frame
+        int fallback = 0, valid = 0, hidden = 0, strikes = 0;
+        for (int i = 0; i < 300; ++i) {
+            const PartnerIntent& o = s.step();
+            fallback += o.frameFallback ? 1 : 0;
+            valid += o.framed && !o.frameFallback ? 1 : 0;
+            if (i >= 240) hidden += tbHidden(s.v, s.in.pos, s.e[0].pos, TallShape{4.f, 12.f}) ? 1 : 0;
+            strikes += o.act == PartnerAct::Attack ? 1 : 0;
+        }
+        MESSAGE("fallback steps " << fallback << ", framed steps on a station " << valid << ", hidden in the last second "
+                                  << hidden << ", strike steps " << strikes << ", at " << s.in.pos.x << ", " << s.in.pos.y);
+        CHECK(fallback > 200);  // the station set is empty (rule 13's fallback holds)
+        CHECK(hidden == 0);     // standing where the camera sees it unhidden
+        CHECK(partnerInFrame(s.v, t.frustumMargin, s.in.pos));
+        CHECK(strikes > 0);     // and it fights from there
+    }
+}
+
+// Rule 18's growth (StayClose): it starts when the tall target's edge is within closeLeadMeters of the lead and ends
+// only kPartnerTallGrowHysteresis past it; never on a target under kPartnerTallMeters, nor for Spread.
+TEST_CASE("partner tall boss: StayClose's growth starts at closeLeadMeters and ends 0.5 m past it; none by a short target or for Spread") {
+    const PartnerTuning t = tbTuning();
+    const float r = 2.5f;
+    const auto leadAt = [&](float edge) { return Vec2{-(r + edge), 0.f}; };
+    {
+        TbScene s(t, PartnerOrder::StayClose, leadAt(t.closeLeadMeters + 0.1f), r, 12.f);
+        s.step();
+        CHECK(s.b.save().tallGrowOn == 0); // past the bar: off
+        s.in.leadPos = leadAt(t.closeLeadMeters - 0.1f);
+        s.step();
+        CHECK(s.b.save().tallGrowOn == 1); // within it: on
+        s.in.leadPos = leadAt(t.closeLeadMeters + 0.3f);
+        s.step();
+        CHECK(s.b.save().tallGrowOn == 1); // within the hysteresis: still on
+        s.in.leadPos = leadAt(t.closeLeadMeters + kPartnerTallGrowHysteresis + 0.1f);
+        s.step();
+        CHECK(s.b.save().tallGrowOn == 0); // past it: off
+        s.in.leadPos = leadAt(t.closeLeadMeters + 0.3f);
+        s.step();
+        CHECK(s.b.save().tallGrowOn == 0); // off, the plain bar again
+    }
+    {
+        TbScene s(t, PartnerOrder::StayClose, leadAt(0.5f), r, kPartnerTallMeters - 0.5f); // not tall
+        for (int i = 0; i < 30; ++i) s.step();
+        CHECK(s.b.save().tallGrowOn == 0);
+    }
+    {
+        TbScene s(t, PartnerOrder::Spread, leadAt(0.5f), r, 12.f);
+        for (int i = 0; i < 30; ++i) s.step();
+        CHECK(s.b.save().tallGrowOn == 0);
+    }
+}
+

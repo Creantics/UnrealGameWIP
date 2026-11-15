@@ -1135,6 +1135,7 @@ struct ArenaFightImpl {
             ++stats.pairsCooled;
             return;
         }
+        if (partnerOn() && !pk.attacks) return; // a partner whose kit has no attacks deals no counter (PartnerIdle::NoKit)
         if (!alive(i) || foes[i].brain != ArenaBrain::Open) return;
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
@@ -2869,6 +2870,7 @@ struct ArenaFightImpl {
         // No kit (a partner kit with no attacks): its budget reads spent every step, so the brain begins no string
         // (NoBudget) and still guards, moves and repositions; the time is counted as no kit's.
         const bool noKit = !pk.attacks;
+        pin.kitAttacks = !noKit; // the brain's NoKit: no string, no next blow, no paired counter (tryPair)
         if (noKit) {
             pin.spentSeconds = fight.partnerTuning_->budgetWindowSeconds;
             if (allyUp()) stats.partnerNoKitSeconds += dt;
