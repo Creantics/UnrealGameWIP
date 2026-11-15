@@ -116,6 +116,7 @@
 
 #include "FTArenaGameMode.generated.h"
 
+struct FFTLeadWeapons;
 struct FFTStoryCarry;
 
 class APlayerController;
