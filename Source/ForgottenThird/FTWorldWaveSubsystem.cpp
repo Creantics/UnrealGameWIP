@@ -507,6 +507,14 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	Wanted.toWorld = SecondId;
 	// The cue path (ftcore::worldWaveParamsForCue on CutsceneWaveCue, CutscenePlayer::takeWaveCues) has no caller here yet:
 	// owed, not wired in this commit.
+	// Bad parameters (a non-finite origin or start time, a bad speed or shape) are refused before a running wave is
+	// stopped, as the unknown world is above: a refused start leaves the wave that runs as it was.
+	if (const ftcore::WorldWaveRefusal Early = ftcore::checkWorldWaveParams(Wanted); Early != ftcore::WorldWaveRefusal::None)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no wave from %s at %f s: %s."), *Origin.ToString(), StartTime,
+			ANSI_TO_TCHAR(ftcore::worldWaveRefusalName(Early)));
+		return;
+	}
 	if (bWave)
 	{
 		StopWave();
@@ -523,6 +531,7 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	bStepping = true;
 	SettledAt = -1.0;
 	Frame = ftcore::WorldWaveFrame{};
+	CollectionAge = 0.f;
 	OriginCm = Origin;
 	// The prelude's streak stands on the road under the origin (the origin itself is over it).
 	StreakFootCm = FVector(Origin.X, Origin.Y, GroundUnder(*World, Origin, 0.0));
@@ -731,7 +740,9 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 		Mpc->SetScalarParameterValue(ScalarParams[2], Frame.preludeProgress);
 		Mpc->SetScalarParameterValue(ScalarParams[3], C.reverse);
 		Mpc->SetScalarParameterValue(ScalarParams[4], Frame.cameraInside);
-		Mpc->SetScalarParameterValue(ScalarParams[5], static_cast<float>(FMath::Max(Time - Params.startTime, 0.0)));
+		// The age the materials hold until the next Step (a settled wave stops stepping, so they keep this one).
+		CollectionAge = static_cast<float>(FMath::Max(Time - Params.startTime, 0.0));
+		Mpc->SetScalarParameterValue(ScalarParams[5], CollectionAge);
 		Mpc->SetScalarParameterValue(ScalarParams[6], static_cast<float>(StreakFootCm.Z));
 		Mpc->SetVectorParameterValue(VectorParams[4], FLinearColor(C.keepCm[0][0], C.keepCm[0][1], C.keepCm[0][2], C.keepCm[0][3]));
 		Mpc->SetVectorParameterValue(VectorParams[5], FLinearColor(C.keepCm[1][0], C.keepCm[1][1], C.keepCm[1][2], C.keepCm[1][3]));
@@ -1110,11 +1121,12 @@ void UFTWorldWaveSubsystem::LogBodyBoundary(const AActor& Lead) const
 	{
 		return;
 	}
-	// The values the collection gets this frame (Step): the reach as the radius, the whole span as the band, the wave's age.
+	// The values the collection holds (the last Step's): the reach as the radius, the whole span as the band, and the age
+	// the materials were given, not the clock's (after the wave settles Step stops and the materials keep that age).
 	const ftcore::WorldWaveShaderConstants C = ftcore::worldWaveShaderConstants(Params, Frame);
 	const FVector3f Origin(C.originCm[0], C.originCm[1], C.originCm[2]);
 	const float R = C.reachCm, W = C.spanCm;
-	const float T = static_cast<float>(FMath::Max(GetClock() - Params.startTime, 0.0));
+	const float T = CollectionAge;
 	const FBox Box = Body->Bounds.GetBox();
 	const FVector Axis = Box.GetCenter();
 	FHitResult Hit;
@@ -1229,7 +1241,8 @@ int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
 			}
 		}
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware (%d newly logged)."),
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware (%d newly logged); ")
+		TEXT("attached pieces only, so a stowed weapon not attached to the lead is outside this audit."),
 		*Lead.GetName(), Actors.Num(), Slots, Bad, Logged);
 	return Bad;
 }

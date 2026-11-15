@@ -58,6 +58,7 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "StaticMeshAttributes.h"
 #include "UObject/Package.h"
+#include "UObject/PackageFileSummary.h"
 #include "UObject/SavePackage.h"
 
 #include "FTExploreDirector.h"
@@ -1650,21 +1651,42 @@ public:
 			bMoved ? TEXT("the old map was put back") : TEXT("the new map was removed (there was none before)"));
 	}
 
-	// Moves the map aside when it exists, else notes it as new; false (logged) when it can't be. A .ftold left by a run
-	// that was killed before its save is the last good map: it is put back first, but only when the map is missing or
-	// older than it. One older than the map was left by a run killed after its save (before the .ftold was deleted): the
-	// map is the newer good one, so that .ftold is deleted.
+	// Whether the map file opens as a whole package: its summary reads with the package tag and a valid version, and the
+	// header, the bulk data start and the payload table it names all lie inside the file (a cut-off write fails this).
+	static bool OpensCleanly(const FString& Path)
+	{
+		const TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*Path, FILEREAD_Silent));
+		if (!Reader)
+		{
+			return false;
+		}
+		const int64 Size = Reader->TotalSize();
+		if (Size < static_cast<int64>(sizeof(int32)) * 8)
+		{
+			return false;
+		}
+		FPackageFileSummary Summary;
+		*Reader << Summary;
+		return !Reader->IsError() && Summary.Tag == static_cast<int32>(PACKAGE_FILE_TAG) && Summary.IsFileVersionValid() &&
+			Summary.TotalHeaderSize > 0 && Summary.TotalHeaderSize <= Size && Summary.BulkDataStartOffset <= Size &&
+			Summary.PayloadTocOffset < Size;
+	}
+
+	// Moves the map aside when it exists, else notes it as new; false (logged) when it can't be. A .ftold is left by a
+	// run that died before deleting it. When the map beside it opens cleanly, that run saved and the map is the good
+	// one, so the .ftold is deleted; otherwise (no map, or one cut off mid-write, whatever its age) the .ftold is the
+	// last good map and is put back first.
 	bool Begin()
 	{
 		IFileManager& Files = IFileManager::Get();
-		if (Files.FileExists(*Old) && Files.FileExists(*File) && Files.GetTimeStamp(*Old) <= Files.GetTimeStamp(*File))
+		if (Files.FileExists(*Old) && Files.FileExists(*File) && OpensCleanly(File))
 		{
 			if (!Files.Delete(*Old, false, true, true))
 			{
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't delete the stale %s."), *Old);
 				return false;
 			}
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: deleted %s, older than the map (an earlier run saved, then died)."), *Old);
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: deleted %s; the map beside it opens cleanly (an earlier run saved, then died)."), *Old);
 		}
 		if (Files.FileExists(*Old))
 		{

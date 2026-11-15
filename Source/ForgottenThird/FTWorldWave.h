@@ -177,8 +177,8 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y);
 // fuzz colour (SubsurfaceColor) goes through a second call of the state as its BaseColor.
 bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCharacter = false);
 
-// Whether the master's MF_WorldWaveState call has its Character input on: a static bool whose value is true, or any
-// other expression wired there. False for a master with no state call, an unconnected input or a static false.
+// Whether the master's MF_WorldWaveState call has its Character input on: a static bool whose value is true. False for
+// a master with no state call, an unconnected input, a static false, or any other expression wired there (logged).
 bool CharacterOn(const UMaterial& Material);
 #endif
 } // namespace FTWorldWave

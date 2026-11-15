@@ -162,7 +162,8 @@ private:
 	// Every material a lead wears (its body, each piece, shoes, glasses, grooms, held weapons and their pieces: every
 	// primitive on the pawn and on the actors attached to it, at any depth) whose master does not take the world wave's
 	// state (MF_WorldWaveState in its functions; with Character on, in the editor) is logged once a run, by its master's
-	// path: that piece would keep its own world across the front. Returns how many slots were not wave-aware.
+	// path: that piece would keep its own world across the front. Returns how many slots were not wave-aware. A stowed
+	// weapon not attached to the lead is outside the audit (its summary line says so).
 	int32 AuditWorn(const AActor& Lead);
 	TSet<FString> AuditLogged; // the masters (and material paths) already logged
 	bool PawnInFootprint(const FTracked& Item, const APawn* PlayerPawn) const;
@@ -198,6 +199,7 @@ private:
 	bool bWave = false;
 	bool bStepping = false;   // a set wave still moving; false once it has settled
 	double SettledAt = -1.0;  // wave-clock time the radius reached its end, -1 before
+	float CollectionAge = 0.f; // the age (s) the last Step gave the collection's WorldWaveTime; LogBodyBoundary's field uses it
 	bool bExposureHeld = false;
 	bool bHoldClock = false;
 	double HeldClock = 0.0;

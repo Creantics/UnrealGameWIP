@@ -529,6 +529,8 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 	// The cloth model's fuzz colour (the SubsurfaceColor pin) goes through a second call of the state, as its BaseColor, so
 	// the sheen greys with the cloth under it instead of keeping the first world's colour. Its other inputs keep the
 	// function's defaults and its other outputs are unused. One already there just takes the flag.
+	// The field is current on a fresh master too: UMaterial::SetShadingModel (Material.cpp, UE 5.8) sets ShadingModels
+	// from the new model at once, not at PostEditChange, and the private ShadingModel has no getter to test besides it.
 	const auto RouteFuzz = [&]()
 	{
 		if (!Material->GetShadingModels().HasShadingModel(MSM_Cloth) || !Inputs->SubsurfaceColor.Expression)
@@ -627,8 +629,15 @@ bool CharacterOn(const UMaterial& Material)
 		{
 			if (In.ExpressionInput && In.ExpressionInput->InputName == FName(TEXT("Character")) && In.Input.Expression)
 			{
-				const UMaterialExpressionStaticBool* Flag = Cast<UMaterialExpressionStaticBool>(In.Input.Expression);
-				return !Flag || Flag->Value != 0;
+				// Only an explicit static bool is read; anything else there (a static bool parameter, say) is unknown, so
+				// it counts as off and is logged rather than guessed.
+				if (const UMaterialExpressionStaticBool* Flag = Cast<UMaterialExpressionStaticBool>(In.Input.Expression))
+				{
+					return Flag->Value != 0;
+				}
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTWorldWave: %s: the state's Character pin takes a %s, not a static bool; read as off."),
+					*Material.GetPathName(), *In.Input.Expression->GetClass()->GetName());
+				return false;
 			}
 		}
 	}
