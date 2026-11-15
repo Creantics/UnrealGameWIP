@@ -2236,7 +2236,9 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                       << " s, the governor's allowance 0.6 x lead + 2 = " << 0.6 * leadAttack + 2.0
                                       << " s");
             MESSAGE("    on screen " << onScreen / T << ", goal jumps per 10 s " << 10.0 * goalJumps / T
-                                     << ", off-frame starts " << r.brain.offFrameStarts());
+                                     << ", off-frame starts " << r.brain.offFrameStarts() << "; rule 17: circling "
+                                     << r.brain.skirmishSeconds() << " s over " << r.brain.skirmishMoves()
+                                     << " goals, guards " << r.brain.guardsBegun() << ", dodges 0 (none in the kit)");
             CHECK(r.brain.framed() == camera);
             if (!camera) todayShare[order] = onScreen / T;
             if (camera) {
@@ -2251,6 +2253,87 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                 CHECK(r.brain.offFrameStarts() == 0);
             }
         }
+}
+
+TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partner keeps to 2 s of blows and never stands still") {
+    const ArenaTable t = shippedTable();
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        PRig r(t.fighter("default"));
+        r.def = t.fallback;
+        r.def.enemyCount = 0;
+        for (const char* id : {"skirmisher", "hulk", "duelist"})
+            for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+                if (t.enemyIds[e] == id) {
+                    r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                    r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+                }
+        REQUIRE(r.def.enemyCount == 3);
+        r.def.attackers = 2;
+        r.tuning = shippedTuning();
+        r.in.partnerOrder = order;
+        r.goShipped(true, 1);
+        r.autopilot = false; // the lead moves, dodges and guards as the autopilot says, and never attacks
+        Vec2 facing = r.fight.playerStartFacing();
+        Vec2 lastGoal = r.bodies.ally, lastAt = r.bodies.ally;
+        int goalJumps = 0;
+        double leadAttack = 0, partnerBlow = 0, onScreen = 0, still = 0, longestStill = 0, facingOff = 0;
+        Vec2 placeAt = r.bodies.ally;
+        double inPlace = 0, longestInPlace = 0;
+        while (!r.fight.over() && r.fight.time() < 20.f) {
+            const std::uint8_t keep = r.in.partnerOrder;
+            r.in = r.fight.autopilot();
+            r.in.partnerOrder = keep;
+            r.in.light = r.in.heavy = r.in.pair = false;
+            r.in.partnerCamera = behindLead(r.bodies.player, facing);
+            r.tick();
+            if (partnerInFrame(r.in.partnerCamera, kPartnerFrustumMargin, r.bodies.ally)) onScreen += kDt;
+            const PartnerIntent& pi = r.brain.intent();
+            if (length(sub(r.out->ally.goal, lastGoal)) > 0.25f) ++goalJumps;
+            lastGoal = r.out->ally.goal;
+            bool anyUp = false;
+            for (std::size_t i = 0; i < r.fight.enemyCount(); ++i) anyUp = anyUp || r.fight.enemyAlive(i);
+            // Standing: its body did not move this tick, no blow of its running, not guarding, with an enemy up.
+            const bool stood = length(sub(r.bodies.ally, lastAt)) < 1e-3f && r.out->ally.part == ArenaPart::None &&
+                               pi.act != PartnerAct::Guard && anyUp && r.out->ally.partnerOn;
+            still = stood ? still + kDt : 0.0;
+            longestStill = std::max(longestStill, still);
+            lastAt = r.bodies.ally;
+            // In one place: the longest stretch it stays within 0.5 m of where the stretch began (shuffles count).
+            const bool held = r.out->ally.part == ArenaPart::None && pi.act != PartnerAct::Guard && anyUp && r.out->ally.partnerOn;
+            if (!held || length(sub(r.bodies.ally, placeAt)) > 0.5f) {
+                placeAt = r.bodies.ally;
+                inPlace = 0.0;
+            } else {
+                inPlace += kDt;
+            }
+            longestInPlace = std::max(longestInPlace, inPlace);
+            // Facing its target (else the nearest enemy up) on every step it is not down.
+            if (anyUp && pi.enemy < 0 && pi.why != PartnerWhy::Down) facingOff += kDt;
+            if (r.out->player.action == ArenaAction::Light || r.out->player.action == ArenaAction::Heavy) leadAttack += kDt;
+            if (r.out->ally.part != ArenaPart::None) partnerBlow += kDt;
+            const Vec2 f = r.out->player.facing;
+            const float k = std::min(1.f, 3.f * kDt);
+            const Vec2 m{facing.x + (f.x - facing.x) * k, facing.y + (f.y - facing.y) * k};
+            const float ml = length(m);
+            if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
+        }
+        const double T = r.fight.time();
+        MESSAGE(std::string(order == 0 ? "StayClose" : "Spread") << ", lead never attacking: " << T << " s; partner blows " << partnerBlow
+                << " s, longest stand-still " << longestStill << " s (within 0.5 m: " << longestInPlace << " s), on screen " << onScreen / T << ", goal jumps per 10 s "
+                << 10.0 * goalJumps / T << "; circling " << r.brain.skirmishSeconds() << " s over "
+                << r.brain.skirmishMoves() << " goals, guards " << r.brain.guardsBegun()
+                << ", dodges 0 (none in the kit); noBudget " << r.brain.idleSeconds(PartnerIdle::NoBudget) << " s");
+        CHECK(T >= 19.9);
+        CHECK(leadAttack == 0.0);
+        CHECK(partnerBlow <= 2.0 + 1e-6); // 0.6 x 0 + 2.0 in the one 20 s window
+        CHECK(longestStill <= 1.5);
+        CHECK(longestInPlace <= 1.5);
+        CHECK(onScreen / T >= 0.8);
+        CHECK(10.0 * goalJumps / T <= 35.0); // the group fight's bound
+        CHECK(facingOff == 0.0);
+        CHECK(r.brain.skirmishMoves() >= 3);
+    }
 }
 
 TEST_CASE("arena partner: a play camera given but not whole is exactly not given, cameraOn off or on") {

@@ -457,6 +457,13 @@ the pieces.
   wait for one); such a start is reported
   (`PartnerIntent::offFrame`, `PartnerBrain::offFrameStarts()`). Every step the intent names why the
   partner is not acting (`PartnerIntent::idle`), and `idleSeconds(reason)` sums them over the fight.
+  With the camera given and its attack held (out of budget, a pause, no target), the partner still
+  looks in the fight (rule 17 in `PartnerBrain.h`): it walks goals of its own round its target, in the
+  frame and out of the keep-outs, a new one every 2-4 s, never 1.5 s in one place, and faces its
+  target on every step. These walks deal nothing and spend no attack budget; the idle reason is
+  unchanged. The host reads `PartnerIntent::skirmish` (the step walks such a goal) and turns the
+  partner to `PartnerIntent::enemy`; the report is `skirmishSeconds()`, `skirmishMoves()` and
+  `guardsBegun()`. No lead's kit has a dodge, so the partner never dodges.
   There is no "called" reason: ArenaFight never holds the partner for an action the player called.
 
 ## What the Unreal wrapper needs
