@@ -2853,12 +2853,13 @@ void UFTArenaRunner::StepFight()
 	if (bPartner)
 	{
 		In.partnerOrder = bPartnerSpread ? 1 : 0;
-		// The partner's stationing (rules 8-12) from the player's camera on the ground (cm to m, as ToWorld); its
-		// forward is cameraFacing, else view. No camera manager (none yet): no stationing this step.
-		const APlayerController* CamPC = GetPC();
-		if (CamPC && CamPC->PlayerCameraManager)
+		// The partner's stationing (rules 8-12) from the lead's own play camera, the end of its boom, on the ground
+		// (cm to m, as ToWorld); its forward is cameraFacing, else view. Not the view target: a capture's side
+		// camera or a switch's blend is not where the player looks from. No figure or boom: no stationing this step.
+		const USpringArmComponent* CamBoom = PlayerFigure ? PlayerFigure->GetBoom() : nullptr;
+		if (CamBoom)
 		{
-			const FVector Cam = CamPC->PlayerCameraManager->GetCameraLocation();
+			const FVector Cam = CamBoom->GetSocketLocation(USpringArmComponent::SocketName);
 			In.cameraOn = true;
 			In.cameraPos = ftcore::Vec2{static_cast<float>(Cam.X / 100.0), static_cast<float>(Cam.Y / 100.0)};
 		}
