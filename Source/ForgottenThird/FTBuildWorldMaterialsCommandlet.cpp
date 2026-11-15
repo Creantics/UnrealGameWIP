@@ -176,7 +176,16 @@ UTexture2D* ImportDetail(const FString& Dir, const FDetailMap& Map)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildWorldMaterials -StreetDetail: couldn't read %s as an 8-bit colour JPEG."), *File);
 		return nullptr;
 	}
-	UPackage* Package = CreatePackage(Map.Asset);
+	// A re-import replaces the saved texture in place: load its package whole first (a partly loaded one can't be saved).
+	UPackage* Package = FPackageName::DoesPackageExist(Map.Asset) ? LoadPackage(nullptr, Map.Asset, LOAD_None) : nullptr;
+	if (Package)
+	{
+		Package->FullyLoad();
+	}
+	else
+	{
+		Package = CreatePackage(Map.Asset);
+	}
 	const FString Name = FPackageName::GetShortName(Map.Asset);
 	UTexture2D* Texture = FindObject<UTexture2D>(Package, *Name);
 	if (!Texture)
