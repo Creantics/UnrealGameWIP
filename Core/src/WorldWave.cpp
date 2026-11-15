@@ -36,6 +36,44 @@ float waveFastPhaseTime(const WorldWaveParams& params) {
     return params.fastSpeed > 0.f ? params.fastRadius / params.fastSpeed : 0.f;
 }
 
+// The longest the origin may follow, seconds after the start.
+constexpr float kWaveFollowCap = 0.3f;
+
+// The shaders' reach (radius + tongueLead * bandWidth) changes at this rate (m/s) at tau seconds after the prelude, with
+// `radius` the radius there: the radius law's derivative, times the band's growth with the radius. 0 before the front
+// moves and once it has settled.
+float waveReachRate(const WorldWaveParams& params, float tau, float radius) {
+    if (!(tau > 0.f) || radius >= params.maxRadius) return 0.f;
+    float rate = params.fastSpeed;
+    const float tau1 = waveFastPhaseTime(params);
+    if (tau > tau1) {
+        const float k = params.easeTime;
+        rate = params.slowSpeed + (k > 0.f ? (params.fastSpeed - params.slowSpeed) * std::exp(-(tau - tau1) / k) : 0.f);
+    }
+    const float bandSlope = params.bandFarRadius > 0.f && radius < params.bandFarRadius
+                                ? (params.bandAtFar - params.bandAtOrigin) / params.bandFarRadius
+                                : 0.f;
+    return rate * (1.f + params.tongueLead * bandSlope);
+}
+
+// Moves `origin` toward `target` by at most `maxStep` metres. A target that is not finite, or so far that the step
+// would not be (an overflow), is ignored. True when the origin moved.
+bool waveFollow(WaveVec3& origin, const WaveVec3& target, float maxStep) {
+    if (!waveFinite(target) || !(maxStep > 0.f)) return false;
+    const WaveVec3 delta{target.x - origin.x, target.y - origin.y, target.z - origin.z};
+    if (!waveFinite(delta)) return false;
+    const float dist = std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+    if (!std::isfinite(dist)) return false;
+    if (!(dist > 0.f)) return false;
+    if (dist <= maxStep) {
+        origin = target;
+        return true;
+    }
+    const float share = maxStep / dist;
+    origin = WaveVec3{origin.x + delta.x * share, origin.y + delta.y * share, origin.z + delta.z * share};
+    return true;
+}
+
 } // namespace
 
 const char* worldWaveCueName(WorldWaveCue cue) {
@@ -55,6 +93,7 @@ const char* worldWaveRefusalName(WorldWaveRefusal refusal) {
     case WorldWaveRefusal::BadSpeed: return "BadSpeed";
     case WorldWaveRefusal::BadMaxRadius: return "BadMaxRadius";
     case WorldWaveRefusal::BadShape: return "BadShape";
+    case WorldWaveRefusal::NotResident: return "not_resident";
     }
     return "Unknown";
 }
@@ -76,13 +115,17 @@ WorldWaveRefusal checkWorldWaveParams(const WorldWaveParams& params) {
     if (params.front != WaveFront::Band && params.front != WaveFront::Ink && params.front != WaveFront::Blots) {
         return WorldWaveRefusal::BadShape;
     }
+    // followSeconds is kept to 0..0.3 where it is used; only a NaN cannot be kept.
+    if (std::isnan(params.followSeconds) || !wavePositive(params.followMaxSpeed)) return WorldWaveRefusal::BadShape;
     return WorldWaveRefusal::None;
 }
 
-WorldWaveRefusal beginWorldWave(WorldWaveState& state, const WorldWaveParams& params) {
-    state = WorldWaveState{};
+WorldWaveRefusal beginWorldWave(WorldWaveState& state, const WorldWaveParams& params, bool resident) {
     const WorldWaveRefusal refusal = checkWorldWaveParams(params);
+    if (refusal == WorldWaveRefusal::None && !resident) return WorldWaveRefusal::NotResident;
+    state = WorldWaveState{};
     state.running = refusal == WorldWaveRefusal::None;
+    if (state.running) state.origin = params.origin;
     return refusal;
 }
 
@@ -140,23 +183,50 @@ WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {
 }
 
 WorldWaveStep updateWorldWave(WorldWaveState& state, const WorldWaveParams& params, double time,
-                              const WaveVec3& viewer) {
+                              const WaveVec3& viewer, const WaveVec3* originNow) {
     WorldWaveStep step;
     // The time rule: once started, a non-finite or earlier time is the last step's (a step of 0).
     if (state.hasLast && (!std::isfinite(time) || time < state.lastTime)) time = state.lastTime;
     step.time = std::isfinite(time) ? time : state.lastTime;
     step.frame.direction = params.direction;
     if (!std::isfinite(time) || checkWorldWaveParams(params) != WorldWaveRefusal::None) return step;
+    // The origin in use: params.origin until a followed point has moved it.
+    if (!state.originMoved) state.origin = params.origin;
     step.frame = evaluateWorldWave(params, time);
     if (time < params.startTime) return step;
 
     const WorldWaveFrame& frame = step.frame;
+    // The follow rule: until it latches, the origin moves toward originNow over the part of this step before the latch
+    // (the start plus followSeconds, or the prelude's end when that is sooner), at most followMaxSpeed. It latches on
+    // the step that reaches followSeconds or first has a radius, with the origin as it then stands.
+    const double since = time - params.startTime;
+    if (!state.originLatched) {
+        const float followFor = waveClamp(params.followSeconds, 0.f, kWaveFollowCap); // check refuses a NaN
+        const float window = followFor < params.prelude ? followFor : params.prelude;
+        const double followEnd = params.startTime + static_cast<double>(window);
+        const double from = state.hasLast ? state.lastTime : params.startTime;
+        const double until = time < followEnd ? time : followEnd;
+        if (originNow != nullptr && until > from) {
+            const float maxStep = params.followMaxSpeed * static_cast<float>(until - from);
+            if (waveFollow(state.origin, *originNow, maxStep)) state.originMoved = true;
+        }
+        if (since >= static_cast<double>(followFor) || frame.radius > 0.f) state.originLatched = true;
+    }
+    // The reach's rate: 0 when the clock is held.
+    const bool held = state.hasLast && !(time > state.lastTime);
+    {
+        constexpr double kWaveTimeCap = 1.0e6; // as evaluateWorldWave holds a huge time
+        const double sinceCapped = since < kWaveTimeCap ? since : kWaveTimeCap;
+        const float tau = static_cast<float>(sinceCapped - static_cast<double>(params.prelude));
+        state.frontSpeed = held ? 0.f : waveReachRate(params, tau, frame.radius);
+    }
+
     // The viewer rule: a non-finite viewer is the last finite one, or the origin, so the cues still fire.
     if (waveFinite(viewer)) {
         state.hasViewer = true;
         state.lastViewer = viewer;
     }
-    const float d = waveDistance(params.origin, state.hasViewer ? state.lastViewer : params.origin);
+    const float d = waveDistance(state.origin, state.hasViewer ? state.lastViewer : state.origin);
     if (!state.preludeFired) {
         state.preludeFired = true;
         step.cues |= worldWaveCueBit(WorldWaveCue::Prelude);
@@ -231,6 +301,16 @@ WorldWaveShaderConstants worldWaveShaderConstants(const WorldWaveParams& params,
         c.keepCm[k][2] = keep.centre.z * 100.f;
         c.keepCm[k][3] = keep.radius * 100.f;
     }
+    return c;
+}
+
+WorldWaveShaderConstants worldWaveShaderConstants(const WorldWaveState& state, const WorldWaveParams& params,
+                                                  const WorldWaveFrame& frame) {
+    WorldWaveShaderConstants c = worldWaveShaderConstants(params, frame);
+    c.originCm[0] = state.origin.x * 100.f;
+    c.originCm[1] = state.origin.y * 100.f;
+    c.originCm[2] = state.origin.z * 100.f;
+    c.frontSpeedCm = state.frontSpeed * 100.f;
     return c;
 }
 

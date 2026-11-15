@@ -290,6 +290,40 @@ bool CutsceneShot::setSubject2(std::string_view id) {
     return cutSetId(subject2Id, subject2Length, id);
 }
 
+// ---- wave cues ----
+
+namespace {
+
+bool cutClearOrSetId(char* buffer, std::uint8_t& length, std::string_view id) {
+    if (id.empty()) {
+        buffer[0] = '\0';
+        length = 0;
+        return true;
+    }
+    return cutSetId(buffer, length, id);
+}
+
+// The id held in a buffer, read back with its length: a valid id that fits.
+bool cutHeldId(const char* buffer, std::uint8_t length) {
+    return length < CutsceneWaveCue::kIdCapacity && isCutsceneId(std::string_view(buffer, length));
+}
+
+} // namespace
+
+bool CutsceneWaveCue::setPreset(std::string_view id) { return cutSetId(presetId, presetLength, id); }
+bool CutsceneWaveCue::setWorld(std::string_view id) { return cutSetId(toWorld, toWorldLength, id); }
+bool CutsceneWaveCue::setMark(std::string_view id) { return cutClearOrSetId(markId, markLength, id); }
+bool CutsceneWaveCue::setSubject(std::string_view id) { return cutClearOrSetId(subjectId, subjectLength, id); }
+bool CutsceneWaveCue::setBone(std::string_view id) { return cutClearOrSetId(boneId, boneLength, id); }
+
+bool CutsceneWaveCue::valid() const {
+    if (!std::isfinite(time) || time < 0.f) return false;
+    if (!cutHeldId(presetId, presetLength) || !cutHeldId(toWorld, toWorldLength)) return false;
+    if (origin == WaveCueOrigin::Mark) return cutHeldId(markId, markLength);
+    if (origin == WaveCueOrigin::Bone) return cutHeldId(subjectId, subjectLength) && cutHeldId(boneId, boneLength);
+    return false;
+}
+
 // ---- plan ----
 
 bool CutscenePlan::add(const CutsceneShot& shot) {
@@ -306,6 +340,20 @@ float CutscenePlan::totalDuration() const {
     float total = 0.f;
     for (std::uint32_t i = 0; i < count_; ++i) total += shots_[i].duration;
     return total;
+}
+
+bool CutscenePlan::addWaveCue(const CutsceneWaveCue& cue) {
+    if (cueCount_ >= kMaxWaveCues || count_ == 0 || !cue.valid()) return false;
+    if (!(cue.time <= totalDuration())) return false;
+    // After every cue at or before its time, so equal times keep the order they were added in.
+    std::uint32_t at = cueCount_;
+    while (at > 0 && cues_[at - 1].time > cue.time) {
+        cues_[at] = cues_[at - 1];
+        --at;
+    }
+    cues_[at] = cue;
+    ++cueCount_;
+    return true;
 }
 
 void CutscenePlan::setBlends(float inSeconds, float outSeconds) {
@@ -331,6 +379,9 @@ void CutscenePlayer::begin(const CutscenePlan& plan, bool autoPlay, bool inPlace
     blendOutTime_ = blends ? plan_.blendOut() : 0.f;
     outFrom_ = 1.f;
     outTime_ = blendOutTime_;
+    planTime_ = 0.0;
+    cueFirst_ = 0;
+    cueNext_ = 0;
     if (plan_.empty()) phase_ = CutscenePhase::Done;
     else phase_ = blendInTime_ > 0.f ? CutscenePhase::BlendIn : CutscenePhase::Playing;
 }
@@ -342,7 +393,14 @@ void CutscenePlayer::leave(float from) {
     phase_ = outTime_ > 0.f ? CutscenePhase::BlendOut : CutscenePhase::Done;
 }
 
+void CutscenePlayer::crossCues(bool all) {
+    const std::uint32_t count = plan_.waveCueCount();
+    while (cueNext_ < count && (all || static_cast<double>(plan_.waveCue(cueNext_).time) <= planTime_)) ++cueNext_;
+}
+
 void CutscenePlayer::update(double gameSeconds) {
+    // A new window of crossed cues, before anything can return, so a cue is never reported twice.
+    cueFirst_ = cueNext_;
     if (!active() || !(gameSeconds > 0.0)) return;
     elapsed_ += gameSeconds;
     double rest = gameSeconds;
@@ -354,8 +412,11 @@ void CutscenePlayer::update(double gameSeconds) {
         phase_ = CutscenePhase::Playing;
     }
     if (phase_ == CutscenePhase::Playing) {
+        const double planBefore = planTime_;
         shotTime_ += rest;
+        planTime_ += rest;
         rest = 0.0;
+        bool ended = false;
         while (shotTime_ >= static_cast<double>(plan_.shot(index_).duration)) {
             const double duration = static_cast<double>(plan_.shot(index_).duration);
             if (index_ + 1 < plan_.size()) {
@@ -365,9 +426,13 @@ void CutscenePlayer::update(double gameSeconds) {
             }
             rest = shotTime_ - duration;
             shotTime_ = duration;
+            planTime_ -= rest; // the shots' end: what is left goes to the blend out (less than this step added)
+            if (planTime_ < planBefore) planTime_ = planBefore; // never back, rounding too
+            ended = true;
             leave(1.f);
             break;
         }
+        crossCues(ended);
     }
     if (phase_ == CutscenePhase::BlendOut) {
         phaseTime_ += rest;
@@ -387,6 +452,11 @@ void CutscenePlayer::tickReal(double realSeconds) {
 bool CutscenePlayer::skip() {
     if (phase_ != CutscenePhase::Playing && phase_ != CutscenePhase::BlendIn) return false;
     skipped_ = true;
+    // The plan clock jumps to the shots' end and every cue still ahead is crossed, after any this frame's update
+    // crossed (the window grows).
+    const double total = static_cast<double>(plan_.totalDuration());
+    if (total > planTime_) planTime_ = total;
+    crossCues(true);
     leave(presence());
     return true;
 }

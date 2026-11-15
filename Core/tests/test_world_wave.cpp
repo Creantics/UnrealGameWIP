@@ -778,3 +778,340 @@ TEST_CASE("updateWorldWaveThing: a non-finite pivot or footprint is never reache
     CHECK_FALSE(a.passed);
     CHECK_FALSE(b.arrived);
 }
+
+// ---- The followed origin, the front's speed, residency ----
+
+namespace {
+
+float waveGap(const WaveVec3& a, const WaveVec3& b) {
+    const float dx = b.x - a.x;
+    const float dy = b.y - a.y;
+    const float dz = b.z - a.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Steps `s` at 60 Hz from step `from` to step `to` (both included), the origin following `target`.
+WorldWaveStep stepFollowing(WorldWaveState& s, const WorldWaveParams& p, int from, int to, const WaveVec3& target) {
+    WorldWaveStep last;
+    for (int i = from; i <= to; ++i) last = updateWorldWave(s, p, i / 60.0, WaveVec3{}, &target);
+    return last;
+}
+
+} // namespace
+
+TEST_CASE("updateWorldWave follow: latches at followSeconds, at any frame rate, with the radius still 0") {
+    WorldWaveParams p; // prelude 0.3
+    p.followSeconds = 0.1f;
+    p.followMaxSpeed = 6.f;
+    const WaveVec3 target{100.f, 0.f, 0.f};
+
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    double latchedAt = -1.0;
+    float latchRadius = -1.f;
+    WaveVec3 before = s.origin;
+    for (int i = 0; i <= 60; ++i) {
+        const double t = i / 60.0;
+        const WorldWaveStep step = updateWorldWave(s, p, t, WaveVec3{}, &target);
+        // Never faster than followMaxSpeed: one step of 1/60 s moves at most 0.1 m.
+        CHECK(waveGap(before, s.origin) <= 6.f / 60.f + 1e-5f);
+        before = s.origin;
+        if (s.originLatched && latchedAt < 0.0) {
+            latchedAt = t;
+            latchRadius = step.frame.radius;
+        }
+    }
+    CHECK(s.originMoved);
+    CHECK(latchedAt > 0.09);
+    CHECK(latchedAt < 0.12);
+    CHECK(latchRadius == 0.f); // the time latched it, not the radius
+    // It followed for exactly followSeconds at followMaxSpeed: 0.6 m toward the target.
+    CHECK(s.origin.x == doctest::Approx(0.6f).epsilon(1e-4));
+    CHECK(s.origin.y == 0.f);
+
+    // One coarse step past followSeconds follows for the same 0.1 s and latches.
+    WorldWaveState coarse;
+    REQUIRE(beginWorldWave(coarse, p) == WorldWaveRefusal::None);
+    updateWorldWave(coarse, p, 0.25, WaveVec3{}, &target);
+    CHECK(coarse.originLatched);
+    CHECK(coarse.origin.x == doctest::Approx(0.6f).epsilon(1e-4));
+
+    // Latched, the origin holds whatever the point does; the next begin clears the latch.
+    const WaveVec3 elsewhere{-50.f, 20.f, 3.f};
+    updateWorldWave(coarse, p, 2.0, WaveVec3{}, &elsewhere);
+    CHECK(coarse.origin.x == doctest::Approx(0.6f).epsilon(1e-4));
+    CHECK(coarse.origin.y == 0.f);
+    REQUIRE(beginWorldWave(coarse, p) == WorldWaveRefusal::None);
+    CHECK_FALSE(coarse.originLatched);
+    CHECK_FALSE(coarse.originMoved);
+    CHECK(coarse.origin.x == p.origin.x);
+}
+
+TEST_CASE("updateWorldWave follow: a prelude shorter than followSeconds latches on the step the radius leaves 0") {
+    WorldWaveParams p;
+    p.prelude = 0.05f;
+    p.followSeconds = 0.3f;
+    const WaveVec3 target{0.f, 100.f, 0.f};
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    int latchStep = -1;
+    for (int i = 0; i <= 30; ++i) {
+        const WorldWaveStep step = updateWorldWave(s, p, i / 60.0, WaveVec3{}, &target);
+        if (s.originLatched && latchStep < 0) {
+            latchStep = i;
+            CHECK(step.frame.radius > 0.f);
+        }
+        if (latchStep < 0) CHECK(step.frame.radius == 0.f);
+    }
+    REQUIRE(latchStep > 0);
+    CHECK(latchStep / 60.0 < 0.3);  // well before followSeconds
+    CHECK(latchStep / 60.0 > 0.05); // and only once the front moves
+    // It followed only through the prelude: 0.05 s at 6 m/s.
+    CHECK(s.origin.y == doctest::Approx(0.3f).epsilon(1e-3));
+}
+
+TEST_CASE("updateWorldWave follow: a moving point is followed at most followMaxSpeed, a slow one exactly, bad input ignored") {
+    WorldWaveParams p;
+    p.followSeconds = 0.3f;
+    p.followMaxSpeed = 6.f;
+
+    // A point running away at 10 m/s: the origin lags, each step at most 6 m/s.
+    WorldWaveState fast;
+    REQUIRE(beginWorldWave(fast, p) == WorldWaveRefusal::None);
+    WaveVec3 before = fast.origin;
+    for (int i = 0; i <= 24; ++i) {
+        const double t = i / 60.0;
+        const WaveVec3 runner{static_cast<float>(10.0 * t), 0.f, 0.f};
+        updateWorldWave(fast, p, t, WaveVec3{}, &runner);
+        CHECK(waveGap(before, fast.origin) <= 6.f / 60.f + 1e-5f);
+        CHECK(fast.origin.x <= runner.x + 1e-5f);
+        before = fast.origin;
+    }
+    CHECK(fast.originLatched);
+    CHECK(fast.origin.x == doctest::Approx(6.f * 0.3f).epsilon(1e-3));
+
+    // A point walking at 2 m/s is matched exactly until the latch.
+    WorldWaveState slow;
+    REQUIRE(beginWorldWave(slow, p) == WorldWaveRefusal::None);
+    for (int i = 0; i <= 12; ++i) {
+        const double t = i / 60.0;
+        const WaveVec3 walker{static_cast<float>(2.0 * t), 0.f, 0.f};
+        updateWorldWave(slow, p, t, WaveVec3{}, &walker);
+        CHECK(slow.origin.x == doctest::Approx(walker.x).epsilon(1e-4));
+    }
+
+    // A non-finite point is ignored (the origin stays put), and so is one so far away the step would overflow.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float huge = std::numeric_limits<float>::max();
+    WorldWaveState bad;
+    REQUIRE(beginWorldWave(bad, p) == WorldWaveRefusal::None);
+    const WaveVec3 notANumber{nan, 0.f, 0.f};
+    const WaveVec3 overflow{huge, -huge, huge};
+    updateWorldWave(bad, p, 0.05, WaveVec3{}, &notANumber);
+    updateWorldWave(bad, p, 0.1, WaveVec3{}, &overflow);
+    CHECK_FALSE(bad.originMoved);
+    CHECK(bad.origin.x == p.origin.x);
+    CHECK(std::isfinite(bad.origin.x));
+    CHECK(std::isfinite(bad.origin.y));
+    // A finite point after them is still followed, for its own step only.
+    const WaveVec3 good{5.f, 0.f, 0.f};
+    updateWorldWave(bad, p, 0.15, WaveVec3{}, &good);
+    CHECK(bad.originMoved);
+    CHECK(bad.origin.x == doctest::Approx(6.f * 0.05f).epsilon(1e-3));
+
+    // followSeconds 0 never follows, whatever the point.
+    WorldWaveParams none;
+    WorldWaveState still;
+    REQUIRE(beginWorldWave(still, none) == WorldWaveRefusal::None);
+    stepFollowing(still, none, 0, 60, good);
+    CHECK(still.originLatched);
+    CHECK_FALSE(still.originMoved);
+    CHECK(still.origin.x == none.origin.x);
+}
+
+TEST_CASE("updateWorldWave follow: a null point steps exactly as before, over a whole wave") {
+    WorldWaveParams p = streetWaveParams();
+    p.origin = WaveVec3{12.f, -3.f, 0.5f};
+    WorldWaveParams q = p;
+    q.followSeconds = 0.3f; // a wave that could follow, given no point
+    const WaveVec3 viewer = offsetFrom(p.origin, 30.f);
+    WorldWaveState a;
+    WorldWaveState b;
+    REQUIRE(beginWorldWave(a, p) == WorldWaveRefusal::None);
+    REQUIRE(beginWorldWave(b, q) == WorldWaveRefusal::None);
+    int frames = 0;
+    for (int i = 0; i <= 60 * 30; ++i) {
+        const double t = i / 60.0;
+        const WorldWaveStep x = updateWorldWave(a, p, t, viewer);
+        const WorldWaveStep y = updateWorldWave(b, q, t, viewer, nullptr);
+        CHECK(x.cues == y.cues);
+        CHECK(x.time == y.time);
+        CHECK(x.frame.radius == y.frame.radius);
+        CHECK(x.frame.bandWidth == y.frame.bandWidth);
+        CHECK(x.frame.preludeProgress == y.frame.preludeProgress);
+        CHECK(x.frame.cameraInside == y.frame.cameraInside);
+        CHECK(x.frame.active == y.frame.active);
+        CHECK(x.frame.settled == y.frame.settled);
+        // The frame is the pure one, and the origin in use is params.origin.
+        CHECK(x.frame.radius == evaluateWorldWave(p, t).radius);
+        CHECK(b.origin.x == p.origin.x);
+        CHECK(b.origin.y == p.origin.y);
+        CHECK(b.origin.z == p.origin.z);
+        ++frames;
+    }
+    CHECK(frames == 1801);
+    CHECK(a.crossed == b.crossed);
+    CHECK(a.crossTime == b.crossTime);
+    CHECK(a.settledFired);
+    CHECK(b.settledFired);
+    CHECK_FALSE(b.originMoved);
+}
+
+TEST_CASE("worldWaveShaderConstants from the state: frontSpeedCm is the reach's rate, 0 held, still or settled") {
+    const WorldWaveParams p = streetWaveParams(); // start 0, prelude 0.3, fast to 20 m, band 2..5 m to 60 m, tongues 1
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    const auto reachCm = [&p](double at) { return worldWaveShaderConstants(p, evaluateWorldWave(p, at)).reachCm; };
+    const auto speedAt = [&s, &p](double at) {
+        const WorldWaveStep step = updateWorldWave(s, p, at, WaveVec3{});
+        return worldWaveShaderConstants(s, p, step.frame).frontSpeedCm;
+    };
+
+    CHECK(speedAt(0.1) == 0.f); // the prelude: the front does not move
+    // The fast phase, the ease with the band still widening, and beyond the band's far radius.
+    const double h = 0.01;
+    for (const double t : {0.55, 1.8, 3.8}) {
+        const float v = speedAt(t);
+        const float central = static_cast<float>((reachCm(t + h) - reachCm(t - h)) / (2.0 * h));
+        MESSAGE("t " << t << " frontSpeedCm " << v << " central " << central);
+        CHECK(v > 0.f);
+        CHECK(v == doctest::Approx(central).epsilon(2e-3));
+        if (t < 1.0) {
+            // 40 m/s, the band widening 3 m over 60 m, the tongues a band ahead: 40 x 1.05 m/s.
+            CHECK(v == doctest::Approx(4200.f).epsilon(1e-4));
+            CHECK(speedAt(t) == 0.f); // the same time again: the clock is held
+        }
+    }
+    CHECK(speedAt(40.0) == 0.f); // settled
+    // The parameters-only constants never carry a speed.
+    CHECK(worldWaveShaderConstants(p, evaluateWorldWave(p, 1.8)).frontSpeedCm == 0.f);
+}
+
+TEST_CASE("beginWorldWave: NotResident refuses good parameters and leaves the state as it was") {
+    WorldWaveParams p = streetWaveParams();
+    p.origin = WaveVec3{4.f, 5.f, 6.f};
+    WorldWaveState s;
+    REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+    const WaveVec3 viewer = offsetFrom(p.origin, 15.f);
+    for (int i = 0; i <= 60; ++i) updateWorldWave(s, p, i / 60.0, viewer);
+    REQUIRE(s.preludeFired);
+    REQUIRE(s.hasLast);
+    const WorldWaveState was = s;
+
+    WorldWaveParams next = p;
+    next.origin = WaveVec3{-40.f, 0.f, 0.f};
+    next.startTime = 2.0;
+    CHECK(beginWorldWave(s, next, false) == WorldWaveRefusal::NotResident);
+    CHECK(s.running == was.running);
+    CHECK(s.preludeFired == was.preludeFired);
+    CHECK(s.frontFired == was.frontFired);
+    CHECK(s.settledFired == was.settledFired);
+    CHECK(s.crossed == was.crossed);
+    CHECK(s.hasLast == was.hasLast);
+    CHECK(s.lastTime == was.lastTime);
+    CHECK(s.lastMargin == was.lastMargin);
+    CHECK(s.origin.x == was.origin.x);
+    CHECK(s.originLatched == was.originLatched);
+    CHECK(s.frontSpeed == was.frontSpeed);
+    // Bad parameters keep their own reason, resident or not; resident, the new wave begins.
+    WorldWaveParams bad = next;
+    bad.fastSpeed = 0.f;
+    WorldWaveState t = was;
+    CHECK(beginWorldWave(t, bad, false) == WorldWaveRefusal::BadSpeed);
+    CHECK_FALSE(t.running);
+    CHECK(beginWorldWave(s, next, true) == WorldWaveRefusal::None);
+    CHECK_FALSE(s.preludeFired);
+    CHECK(s.origin.x == next.origin.x);
+    CHECK(std::string(worldWaveRefusalName(WorldWaveRefusal::NotResident)) == "not_resident");
+
+    // The follow's own guards: a NaN followSeconds, or a followMaxSpeed not above 0, is refused; a followSeconds out of
+    // 0..0.3 is kept to it.
+    WorldWaveParams f = p;
+    f.followSeconds = std::numeric_limits<float>::quiet_NaN();
+    CHECK(checkWorldWaveParams(f) == WorldWaveRefusal::BadShape);
+    f.followSeconds = 5.f;
+    CHECK(checkWorldWaveParams(f) == WorldWaveRefusal::None);
+    f.followSeconds = -1.f;
+    CHECK(checkWorldWaveParams(f) == WorldWaveRefusal::None);
+    for (const float speed : {0.f, -2.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        f.followMaxSpeed = speed;
+        CHECK(checkWorldWaveParams(f) == WorldWaveRefusal::BadShape);
+    }
+    // followSeconds 5 follows for 0.3 s only.
+    WorldWaveParams longer = streetWaveParams();
+    longer.followSeconds = 5.f;
+    WorldWaveState l;
+    REQUIRE(beginWorldWave(l, longer) == WorldWaveRefusal::None);
+    stepFollowing(l, longer, 0, 120, WaveVec3{100.f, 0.f, 0.f});
+    CHECK(l.originLatched);
+    CHECK(l.origin.x == doctest::Approx(6.f * 0.3f).epsilon(1e-3));
+}
+
+TEST_CASE("classifyWorldWaveShader agrees with classifyWorldWave about a followed origin, both directions") {
+    for (const WaveDirection dir : {WaveDirection::Forward, WaveDirection::Reverse}) {
+        WorldWaveParams p = streetWaveParams();
+        p.origin = WaveVec3{410.f, -157.f, 7.5f};
+        p.direction = dir;
+        p.followSeconds = 0.3f;
+        const WaveVec3 hand{413.f, -157.f, 7.5f}; // 3 m off: the origin follows 1.8 m of the way
+        const WaveSide brings = dir == WaveDirection::Forward ? WaveSide::New : WaveSide::Old;
+        const WaveSide leaves = dir == WaveDirection::Forward ? WaveSide::Old : WaveSide::New;
+        WorldWaveState s;
+        REQUIRE(beginWorldWave(s, p) == WorldWaveRefusal::None);
+        int checked = 0;
+        int tongue = 0;
+        int done = -1;
+        for (const double t : {0.35, 0.45, 0.6, 1.0, 2.0, 4.0, 9.0}) {
+            const int upTo = static_cast<int>(std::lround(t * 60.0));
+            const WorldWaveStep step = stepFollowing(s, p, done + 1, upTo, hand);
+            done = upTo;
+            REQUIRE(s.originLatched);
+            REQUIRE(waveGap(s.origin, p.origin) > 1.f); // a constants path still on params.origin fails below
+            const WorldWaveFrame& f = step.frame;
+            const WorldWaveShaderConstants c = worldWaveShaderConstants(s, p, f);
+            CHECK(c.originCm[0] == doctest::Approx(s.origin.x * 100.f));
+            CHECK(c.originCm[1] == doctest::Approx(s.origin.y * 100.f));
+            CHECK(c.originCm[2] == doctest::Approx(s.origin.z * 100.f));
+            const float lead = f.radius > 0.f ? p.tongueLead * f.bandWidth : 0.f;
+            for (int a = 0; a < 16; ++a) {
+                const float az = 6.2831853f * static_cast<float>(a) / 16.f;
+                const float el = 0.4f * std::sin(3.f * az);
+                for (int k = 0; k <= 80; ++k) {
+                    const float d = 0.25f + 2.f * static_cast<float>(k);
+                    if (f.radius > 0.f && (std::fabs(d - (f.radius - f.bandWidth)) < 0.02f ||
+                                           std::fabs(d - f.radius) < 0.02f || std::fabs(d - (f.radius + lead)) < 0.02f)) {
+                        continue;
+                    }
+                    const WaveVec3 pt{s.origin.x + d * std::cos(el) * std::cos(az),
+                                      s.origin.y + d * std::cos(el) * std::sin(az), s.origin.z + d * std::sin(el)};
+                    const WaveClass core = classifyWorldWave(f, s.origin, pt);
+                    const WaveClass gpu = classifyWorldWaveShader(c, pt);
+                    ++checked;
+                    if (core.side == brings) {
+                        CHECK(gpu.side == brings);
+                    } else if (core.side == WaveSide::Band) {
+                        CHECK(gpu.side == WaveSide::Band);
+                    } else if (f.radius > 0.f && d <= f.radius + lead) {
+                        CHECK(gpu.side == WaveSide::Band);
+                        ++tongue;
+                    } else {
+                        CHECK(gpu.side == leaves);
+                    }
+                    CHECK((core.side == brings) == (gpu.side == brings));
+                }
+            }
+        }
+        CHECK(checked > 8000);
+        CHECK(tongue > 0);
+    }
+}
