@@ -77,6 +77,16 @@ struct FFTWaterBodyRow
 	float Batter = 0.f;
 	UPROPERTY()
 	TArray<FVector2D> Points;
+	// Free swim under water (ftcore::WaterBody::swimDeep): dived in inside the dive area (DiveMin..DiveMax, the engine's
+	// frame, metres), or in the whole body when it has none.
+	UPROPERTY()
+	bool bSwimDeep = false;
+	UPROPERTY()
+	bool bHasDiveArea = false;
+	UPROPERTY()
+	FVector2D DiveMin = FVector2D::ZeroVector;
+	UPROPERTY()
+	FVector2D DiveMax = FVector2D::ZeroVector;
 
 	static FFTWaterBodyRow From(const ftcore::WaterBody& Body);
 	ftcore::WaterBody ToBody() const;

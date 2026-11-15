@@ -98,6 +98,10 @@ constexpr double kSeaReach = 20000.0;
 constexpr double kSeaFarReach = 60000.0;
 constexpr double kSeaFarDrop = 40.0; // m under the datum (the bed lies at -33 m at its deepest)
 constexpr double kSeaBedDeepest = 33.0; // m under the datum
+// The wall basin the lead may dive in (plan frame, metres): from the sea's edge out to its buoy line, between these
+// two lines across the coast. -SeaDive=X0,Y0,X1,Y1 sets another box; -SeaDive=none, no free swim.
+constexpr double kSeaDiveSouthY = 620.0;
+constexpr double kSeaDiveNorthY = 720.0;
 // How far (cm) the entry and a goal may lie from the navmesh and still count as on it.
 const FVector kNavProjectExtent(300.0, 300.0, 600.0);
 // The material slot of a sloped box's mesh.
@@ -3320,8 +3324,37 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		if (bSea)
 		{
-			Director->WaterBodies.Add(FFTWaterBodyRow::From(ftcore::waterBodyToEngine(
-				ftcore::waterSea(static_cast<float>(SeaWest), 0.f, static_cast<float>(-kSeaBedDeepest)), static_cast<float>(Side))));
+			ftcore::WaterBody Sea = ftcore::waterSea(static_cast<float>(SeaWest), 0.f, static_cast<float>(-kSeaBedDeepest));
+			// The free swim's dive area, in the plan frame (waterBodyToEngine turns it over with the rest).
+			FString DiveText;
+			const bool bDiveGiven = FParse::Value(*Params, TEXT("SeaDive="), DiveText);
+			if (!(bDiveGiven && DiveText.Equals(TEXT("none"), ESearchCase::IgnoreCase)))
+			{
+				double Box[4] = {SeaWest, kSeaDiveSouthY, SeaWest + ftcore::kWaterBuoyLine, kSeaDiveNorthY};
+				if (bDiveGiven)
+				{
+					TArray<FString> Parts;
+					DiveText.ParseIntoArray(Parts, TEXT(","));
+					if (Parts.Num() == 4)
+					{
+						for (int32 I = 0; I < 4; ++I)
+						{
+							Box[I] = FCString::Atod(*Parts[I]);
+						}
+					}
+					else
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -SeaDive=%s is not X0,Y0,X1,Y1: the wall basin is used."), *DiveText);
+					}
+				}
+				Sea.swimDeep = true;
+				Sea.hasDiveArea = true;
+				Sea.diveMin = {static_cast<float>(FMath::Min(Box[0], Box[2])), static_cast<float>(FMath::Min(Box[1], Box[3]))};
+				Sea.diveMax = {static_cast<float>(FMath::Max(Box[0], Box[2])), static_cast<float>(FMath::Max(Box[1], Box[3]))};
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: water: the sea is dived in x %.0f..%.0f, y %.0f..%.0f (plan)."),
+					Sea.diveMin.x, Sea.diveMax.x, Sea.diveMin.y, Sea.diveMax.y);
+			}
+			Director->WaterBodies.Add(FFTWaterBodyRow::From(ftcore::waterBodyToEngine(Sea, static_cast<float>(Side))));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: water: %d bodies on the director (%s; buoy line %.0f m out)."), Director->WaterBodies.Num(),
 			bSea ? TEXT("canal rows and the sea") : TEXT("canal rows"), ftcore::kWaterBuoyLine);
