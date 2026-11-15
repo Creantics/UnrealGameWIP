@@ -5,6 +5,12 @@
 // body reference point is the lead's feet raised by the swimmer's draft (ftcore::kWaterSwimDraft): at the surface hold
 // the feet hang the draft under the surface, so the point rides on it, and a dive of diveDepth takes the feet that far
 // further down.
+//
+// Swim holds its reference point SwimTuning::bedClearance off the bed and caps it at the surface. The cap is the surface
+// hold's own (the feet the draft under the surface). The bed's clearance is not: the point rides the draft above the
+// feet, so a clearance read straight from Data/Swim/swim.json would put the feet about 1 m into the floor Swim thinks it
+// keeps them off. TuningForRef raises the clearance by the draft, so the data's bedClearance is the FEET's real height
+// off the bed (capped at the tuning's 2 m point clearance, about 0.7 m of feet).
 
 #include "CoreMinimal.h"
 
@@ -38,6 +44,12 @@ inline ftcore::SwimVec RefFromActor(const FVector& ActorCm, double HalfCm)
 inline FVector ActorFromRef(const ftcore::SwimVec& Ref, double HalfCm)
 {
 	return ToEngine(Ref) - FVector(0.0, 0.0, ToCm(ftcore::kWaterSwimDraft) - HalfCm);
+}
+// The tuning Swim is given: the data's (feet) bed clearance raised to the reference point's (the header's note).
+inline ftcore::SwimTuning TuningForRef(ftcore::SwimTuning Tuning)
+{
+	Tuning.bedClearance = FMath::Min(Tuning.bedClearance + ftcore::kWaterSwimDraft, 2.f);
+	return Tuning;
 }
 
 // Whether the step's position may be used to move the body. The core lane's fix round adds SwimStep::positionValid;

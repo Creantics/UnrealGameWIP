@@ -5,6 +5,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <initializer_list>
 
 using namespace ftcore;
 
@@ -68,8 +69,40 @@ TEST_CASE("water dive: the wall side pushes nothing; the open sides are the oute
         const WaterDive d = water.dive({941.f, 670.f}); // 1 m off the wall, 50 m from each long side, 59 m from x 1000
         CHECK(d.allowed);
         CHECK(d.edgeDistance == doctest::Approx(50.f));
-        CHECK(std::fabs(d.edgeInward.y) == doctest::Approx(1.f));
+        // The two long sides tie at 50 m: the south side is tried first and a tie keeps it, so the push is north.
+        CHECK(d.edgeInward.y == 1.f);
         CHECK(d.edgeInward.x == 0.f);
+    }
+    SUBCASE("either side of the tie, the nearer long side wins") {
+        const WaterDive south = water.dive({941.f, 669.f});
+        CHECK(south.edgeDistance == doctest::Approx(49.f));
+        CHECK(south.edgeInward.y == 1.f);
+        const WaterDive north = water.dive({941.f, 671.f});
+        CHECK(north.edgeDistance == doctest::Approx(49.f));
+        CHECK(north.edgeInward.y == -1.f);
+        CHECK(north.edgeInward.x == 0.f);
+    }
+    SUBCASE("exactly on an open side: allowed, zero distance, pushed in") {
+        const WaterDive east = water.dive({1000.f, 670.f});
+        CHECK(east.body == 0);
+        CHECK(east.allowed);
+        CHECK(east.edgeDistance == 0.f);
+        CHECK(east.edgeInward.x == -1.f);
+        CHECK(east.edgeInward.y == 0.f);
+        const WaterDive north = water.dive({960.f, 720.f});
+        CHECK(north.allowed);
+        CHECK(north.edgeDistance == 0.f);
+        CHECK(north.edgeInward.y == -1.f);
+    }
+    SUBCASE("a NaN point is no body, no dive and no edge") {
+        for (const Vec2 p : {Vec2{std::nanf(""), 670.f}, Vec2{960.f, std::nanf("")}}) {
+            const WaterDive d = water.dive(p);
+            CHECK(d.body == -1);
+            CHECK_FALSE(d.allowed);
+            CHECK(d.edgeDistance == doctest::Approx(1.0e9f));
+            CHECK(d.edgeInward.x == 0.f);
+            CHECK(d.edgeInward.y == 0.f);
+        }
     }
     SUBCASE("near the deep end, the buoy side pushes back west") {
         const WaterDive d = water.dive({995.f, 670.f});

@@ -699,6 +699,43 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 			}
 		}
 	}
+	// Dev only: -WorldEyeCard=<x,y,z> (plan metres, as -WorldEye) lays a grey card on the ground there, -WorldEyeCardSize=<m>
+	// a side (default 1): M_WorldSurface at 0.18 albedo, 0.9 rough, no mottle and no weather, 1 cm thick, casting nothing,
+	// so a still shows the light's own colour in sun and shade beside the road's.
+	double CardX = 0.0, CardY = 0.0, CardZ = 0.0;
+	if (ParseTriple(TEXT("WorldEyeCard="), CardX, CardY, CardZ))
+	{
+		double CardSide = 1000.0, CardM = 1.0;
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), CardSide);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeCardSize="), CardM);
+		const ftcore::MassingVec CardAt = ftcore::massingEnginePoint(CardSide, CardX, CardY, CardZ);
+		UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Rendering/M_WorldSurface.M_WorldSurface"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AStaticMeshActor* Card = (Cube && Base)
+			? World.SpawnActor<AStaticMeshActor>(FVector(CardAt.x * 100.0, CardAt.y * 100.0, CardAt.z * 100.0 + 1.0), FRotator::ZeroRotator, Spawn)
+			: nullptr;
+		if (Card)
+		{
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, Card);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+			Grey->SetScalarParameterValue(TEXT("Roughness"), 0.9f);
+			Grey->SetScalarParameterValue(TEXT("Metallic"), 0.f);
+			Grey->SetScalarParameterValue(TEXT("Variation"), 0.f);
+			Grey->SetScalarParameterValue(TEXT("Weather"), 0.f);
+			Grey->SetScalarParameterValue(TEXT("Street"), 0.f);
+			UStaticMeshComponent* Mesh = Card->GetStaticMeshComponent();
+			Mesh->SetMobility(EComponentMobility::Movable);
+			Mesh->SetStaticMesh(Cube);
+			Mesh->SetMaterial(0, Grey);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Mesh->SetCastShadow(false);
+			Card->SetActorScale3D(FVector(CardM, CardM, 0.01));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: grey card %s at %.1f, %.1f, %.1f m (%.2f m)."), Card ? TEXT("laid") : TEXT("not laid"),
+			CardAt.x, CardAt.y, CardAt.z, CardM);
+	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))
 	{
 		// The night spec the running clock reaches at full night (FTNightLook.h), so a still and a played night match: the

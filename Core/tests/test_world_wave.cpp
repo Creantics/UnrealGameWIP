@@ -2,6 +2,8 @@
 
 #include "ftcore/WorldWave.h"
 
+#include "ftcore/Cutscene.h"
+
 #include "AllocCounter.h"
 
 #include <cmath>
@@ -164,6 +166,63 @@ TEST_CASE("WorldWaveParams: the world it brings is the Unwritten unless the defi
     other.toWorld = "lattice";
     CHECK(std::string(other.toWorld) == "lattice");
     CHECK(checkWorldWaveParams(other) == WorldWaveRefusal::None);  // Core does not judge the id
+}
+
+TEST_CASE("worldWaveWorldId: the three worlds as static-storage ids, anything else refused") {
+    const char* sol = worldWaveWorldId("solhaven");
+    const char* lat = worldWaveWorldId("lattice");
+    const char* unw = worldWaveWorldId("unwritten");
+    REQUIRE(sol != nullptr);
+    REQUIRE(lat != nullptr);
+    REQUIRE(unw != nullptr);
+    CHECK(std::string(sol) == "solhaven");
+    CHECK(std::string(lat) == "lattice");
+    CHECK(unw == kWaveDefaultToWorld);
+    // The same pointer whatever buffer the id came from.
+    char buffer[16] = "lattice";
+    CHECK(worldWaveWorldId(std::string_view(buffer, 7)) == lat);
+    CHECK(worldWaveWorldId("") == nullptr);
+    CHECK(worldWaveWorldId("Lattice") == nullptr);
+    CHECK(worldWaveWorldId("lattic") == nullptr);
+    CHECK(worldWaveWorldId("lattice ") == nullptr);
+    CHECK(worldWaveWorldId("nowhere") == nullptr);
+}
+
+TEST_CASE("worldWaveParamsForCue: the cue's world copied as a static id, never a pointer into the cue") {
+    CutsceneWaveCue cue;
+    REQUIRE(cue.setWorld("lattice"));
+    cue.reverse = true;
+    WorldWaveParams p;
+    REQUIRE(worldWaveParamsForCue(cue, p));
+    REQUIRE(p.toWorld != nullptr);
+    CHECK(p.toWorld == worldWaveWorldId("lattice"));
+    const char* begin = reinterpret_cast<const char*>(&cue);
+    CHECK_FALSE((p.toWorld >= begin && p.toWorld < begin + sizeof(cue)));
+    CHECK(p.direction == WaveDirection::Reverse);
+    const WorldWaveParams street = streetWaveParams();
+    CHECK(p.slowSpeed == street.slowSpeed);
+    CHECK(p.tongueLead == street.tongueLead);
+    CHECK(checkWorldWaveParams(p) == WorldWaveRefusal::None);
+    // The id outlives the cue's buffer being rewritten.
+    REQUIRE(cue.setWorld("solhaven"));
+    CHECK(std::string(p.toWorld) == "lattice");
+
+    CutsceneWaveCue plain; // the defaults: street, the Unwritten, forward
+    WorldWaveParams q;
+    REQUIRE(worldWaveParamsForCue(plain, q));
+    CHECK(q.toWorld == kWaveDefaultToWorld);
+    CHECK(q.direction == WaveDirection::Forward);
+
+    WorldWaveParams untouched;
+    untouched.slowSpeed = 3.f;
+    CutsceneWaveCue badWorld;
+    REQUIRE(badWorld.setWorld("nowhere"));
+    CHECK_FALSE(worldWaveParamsForCue(badWorld, untouched));
+    CutsceneWaveCue badPreset;
+    REQUIRE(badPreset.setPreset("alley"));
+    CHECK_FALSE(worldWaveParamsForCue(badPreset, untouched));
+    CHECK(untouched.slowSpeed == 3.f);
+    CHECK(untouched.toWorld == kWaveDefaultToWorld);
 }
 
 TEST_CASE("worldWaveShaderConstants: centimetres, the front's value, the keeps, reach and span from the tongues") {

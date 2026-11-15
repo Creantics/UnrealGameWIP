@@ -909,6 +909,14 @@ int32 AddPlateNavNull(AActor& Built, const ftcore::MassingBox& Box, double Side)
 	return static_cast<int32>(Count);
 }
 
+// SlopedMesh's generator settings, read by it and folded into the mesh cache's key (SlopedCacheName), so a change to
+// any of them names new meshes instead of reusing old ones.
+constexpr double kSlopedUvCm = 100.0; // a UV unit a metre
+constexpr bool bSlopedRecomputeNormals = false;
+constexpr bool bSlopedRecomputeTangents = true;
+constexpr bool bSlopedLightmapUvs = false;
+constexpr ECollisionTraceFlag kSlopedCollision = CTF_UseComplexAsSimple;
+
 // A sloped box's own mesh, its vertices relative to Pivot (cm), each face flat-shaded, with planar UVs in metres on
 // the world and collision from its triangles.
 UStaticMesh* SlopedMesh(UObject* Outer, const FString& Name, EObjectFlags Flags, const ftcore::MassingMesh& Shape, const FVector& Pivot,
@@ -951,17 +959,17 @@ UStaticMesh* SlopedMesh(UObject* Outer, const FString& Name, EObjectFlags Flags,
 			const FVector2D Uv = AbsOut.Z >= AbsOut.X && AbsOut.Z >= AbsOut.Y ? FVector2D(P.X, P.Y)
 				: AbsOut.X >= AbsOut.Y                                          ? FVector2D(P.Y, -P.Z)
 																				: FVector2D(P.X, -P.Z);
-			Uvs[Inst] = FVector2f(Uv / 100.0);
+			Uvs[Inst] = FVector2f(Uv / kSlopedUvCm);
 			Corners[K] = Inst;
 		}
 		Desc.CreatePolygon(Group, TArrayView<const FVertexInstanceID>(Corners, 4));
 	}
 	Mesh->GetStaticMaterials().Add(FStaticMaterial(Material, kMassingSlot, kMassingSlot));
 	FStaticMeshSourceModel& Source = Mesh->AddSourceModel();
-	Source.BuildSettings.bRecomputeNormals = false;
-	Source.BuildSettings.bRecomputeTangents = true;
+	Source.BuildSettings.bRecomputeNormals = bSlopedRecomputeNormals;
+	Source.BuildSettings.bRecomputeTangents = bSlopedRecomputeTangents;
 	// Lit by the shared look's dynamic lights (as the builders' cubes are), so no lightmap channel.
-	Source.BuildSettings.bGenerateLightmapUVs = false;
+	Source.BuildSettings.bGenerateLightmapUVs = bSlopedLightmapUvs;
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
 	// A new mesh keeps an empty section map through its build, and the card task then sees no sections: 0 Lumen
@@ -971,7 +979,7 @@ UStaticMesh* SlopedMesh(UObject* Outer, const FString& Name, EObjectFlags Flags,
 		Mesh->GetSectionInfoMap().Set(0, S, FMeshSectionInfo(S));
 	}
 	Mesh->CreateBodySetup();
-	Mesh->GetBodySetup()->CollisionTraceFlag = CTF_UseComplexAsSimple;
+	Mesh->GetBodySetup()->CollisionTraceFlag = kSlopedCollision;
 	Mesh->Build(true);
 	Mesh->PostEditChange();
 	return Mesh;
@@ -993,29 +1001,41 @@ FVector SlopedShape(const ftcore::MassingBox& Box, double Side, ftcore::MassingM
 // package of its own, named by a hash of its shape and pivot, so a rebuild loads the meshes an earlier run built (their
 // render data and distance fields from the DDC) instead of building them again. A cached mesh wears the world surface;
 // the box's own material goes on its component, so no mesh points into a map package (the rock faces live in the map).
-// Bump the version when SlopedMesh builds something else from the same shape.
-constexpr uint32 kSlopedCacheVersion = 1;
+// The key: the version, SlopedMesh's generator settings (above it), and the shape and pivot quantised to 0.01 cm (so
+// a last-bit float wobble or a -0.0 names the same mesh). Bump the version when SlopedMesh builds something else from
+// the same shape and settings; WarmSlopedCache logs both.
+constexpr uint32 kSlopedCacheVersion = 2;
+constexpr double kSlopedCacheQuantumCm = 0.01;
 // New cached meshes compiled and saved together: a chunk takes about a minute and a half.
 constexpr int32 kSlopedCacheChunk = 100;
 
+uint64 SlopedSettingsHash()
+{
+	const int64 Settings[] = {static_cast<int64>(kSlopedCacheVersion), FMath::RoundToInt64(kSlopedUvCm / kSlopedCacheQuantumCm),
+		bSlopedRecomputeNormals ? 1 : 0, bSlopedRecomputeTangents ? 1 : 0, bSlopedLightmapUvs ? 1 : 0, static_cast<int64>(kSlopedCollision)};
+	return CityHash64(reinterpret_cast<const char*>(Settings), static_cast<uint32>(sizeof(Settings)));
+}
+
 FString SlopedCacheName(const ftcore::MassingMesh& Shape, const FVector& Pivot)
 {
-	TArray<double, TInlineAllocator<64>> Key;
-	Key.Add(static_cast<double>(kSlopedCacheVersion));
+	// Whole quanta: -0.0 and +0.0 both round to integer 0, so the sign of a zero never splits a key.
+	const auto Q = [](double Cm) { return FMath::RoundToInt64(Cm / kSlopedCacheQuantumCm); };
+	TArray<int64, TInlineAllocator<64>> Key;
+	Key.Add(static_cast<int64>(SlopedSettingsHash()));
 	for (const ftcore::MassingVec& V : Shape.v)
 	{
 		const FVector P = Cm(V);
-		Key.Append({P.X, P.Y, P.Z});
+		Key.Append({Q(P.X), Q(P.Y), Q(P.Z)});
 	}
-	Key.Append({Pivot.X, Pivot.Y, Pivot.Z});
+	Key.Append({Q(Pivot.X), Q(Pivot.Y), Q(Pivot.Z)});
 	for (const auto& Quad : Shape.quads)
 	{
 		for (const auto Corner : Quad)
 		{
-			Key.Add(static_cast<double>(Corner));
+			Key.Add(static_cast<int64>(Corner));
 		}
 	}
-	const uint64 Hash = CityHash64(reinterpret_cast<const char*>(Key.GetData()), static_cast<uint32>(Key.Num() * sizeof(double)));
+	const uint64 Hash = CityHash64(reinterpret_cast<const char*>(Key.GetData()), static_cast<uint32>(Key.Num() * sizeof(int64)));
 	return FString::Printf(TEXT("SM_MC_%016llx"), Hash);
 }
 
@@ -1028,6 +1048,8 @@ bool WarmSlopedCache(const FString& Cache, const std::vector<ftcore::MassingBox>
 	bStopped = false;
 	int32 Hits = 0, Left = 0;
 	Built = 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: mesh cache %s: key version %u, generator settings %016llx, quantum %.2f cm."), *Cache,
+		kSlopedCacheVersion, SlopedSettingsHash(), kSlopedCacheQuantumCm);
 	TArray<UPackage*> Pending;
 	TSet<FString> Seen;
 	const auto SavePending = [&Pending]() {
@@ -1095,6 +1117,28 @@ bool WarmSlopedCache(const FString& Cache, const std::vector<ftcore::MassingBox>
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: mesh cache %s: %d meshes found, %d built and saved, %d left for the next run (%.0f s in)."),
 		*Cache, Hits, Built, Left, FPlatformTime::Seconds() - Start);
+	if (bStopped)
+	{
+		return true; // the map is not touched this run
+	}
+	// Every mesh the map will take must load now, before the caller deletes the old map: a package that exists but
+	// won't load (cut short, from another engine) fails the run here with the old map still standing.
+	int32 Unloadable = 0;
+	for (const FString& Name : Seen)
+	{
+		if (!LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s/%s.%s"), *Cache, *Name, *Name)))
+		{
+			if (++Unloadable <= 10)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: mesh cache: %s/%s won't load; delete it and run again."), *Cache, *Name);
+			}
+		}
+	}
+	if (Unloadable > 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: mesh cache: %d of %d meshes won't load; the map is untouched."), Unloadable, Seen.Num());
+		return false;
+	}
 	return true;
 }
 

@@ -142,7 +142,8 @@ FTCORE_API void roadDecalData(const RoadDecal& decal, float out[kRoadDecalData])
 // NormalOut (a world-space normal) as its further outputs. Inputs: LocalPos (the 1 m plate's local position, cm), Kind,
 // Seed, SizeU, SizeW (the instance's custom data), Wetness (0..1), WorldPos (cm), VN (the vertex normal, world),
 // AxisX, AxisY (the plate's local x and y in world space), DetRA (the asphalt detail tile's roughness/AO/stone-top map,
-// a texture object) and HasDetail (1 when DetRA is that tile, 0 for a stand-in). Soft kinds (stains, kerb grime, oil)
+// a texture object), HasDetail (1 when DetRA is that tile, 0 for a stand-in) and CamPos (the camera, world, cm: the
+// tile's read fades to one straight read far off, as the road's does; streetHexUvHlsl). Soft kinds (stains, kerb grime, oil)
 // fade to the ground's colour over their outer 10-15 cm, so the mask's clip doesn't show; most patches are cut square
 // with a tar-sealed edge; wet, they darken and smooth as the surface master's weather does at the same place
 // (surfaceWetHlsl). Paint (opacity, not clipped): aged thermoplastic, its edge straight with a soft 5-10 mm overspray

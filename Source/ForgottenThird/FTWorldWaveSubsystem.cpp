@@ -522,7 +522,14 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	}
 	// The look it crosses to: the definition's second world (the Unwritten unless it names another), from the look the map
 	// has now.
-	const char* SecondId = Params.toWorld && Params.toWorld[0] ? Params.toWorld : ftcore::kWaveDefaultToWorld;
+	// Through worldWaveWorldId: a static-storage id (never a pointer into a cue), and an unknown one is refused.
+	const char* SecondId = Params.toWorld ? ftcore::worldWaveWorldId(Params.toWorld) : nullptr;
+	if (!SecondId)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: unknown second world '%s'; the Unwritten instead."),
+			Params.toWorld ? UTF8_TO_TCHAR(Params.toWorld) : TEXT("(null)"));
+		SecondId = ftcore::kWaveDefaultToWorld;
+	}
 	ToWorld = UTF8_TO_TCHAR(SecondId);
 	FromWorld.Reset();
 	bLookBlend = false;

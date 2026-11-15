@@ -2668,6 +2668,17 @@ void AFTExploreCharacter::SwitchLeadTo(int32 Index)
 		return;
 	}
 	UnCrouch();
+	// A swim pose saved for the old look's mesh is its own: put that rest back before the new look is worn, so the new
+	// look's rest is saved afresh on the next posed step (never the old look's offset and turn on the new mesh).
+	if (bSwimMeshSaved)
+	{
+		if (USkeletalMeshComponent* Body = GetMesh())
+		{
+			Body->SetRelativeLocationAndRotation(SwimMeshLoc, SwimMeshRot);
+		}
+		bSwimMeshSaved = false;
+		SwimPitch = 0.f;
+	}
 	LeadIndex = Index;
 	FindPartyRows(); // the old lead takes the partner's row
 	const FFTLeadLook& Look = PartyLooks[LeadIndex];
@@ -3106,6 +3117,12 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		StirWater(DeltaSeconds);
 		return;
 	}
+	// Taken out of play (a fight's figure stands in and the body is hidden, a scene holds the lead, no controller): the
+	// water waits. Nothing steps the swim, its breath or a rescue, and nothing forces the flying mode on a parked body.
+	if (!Controller || IsHidden() || ScenePlaying())
+	{
+		return;
+	}
 	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
 	const ftcore::WaterMode Was = WaterNow.mode;
 	const bool bOut = !System || !System->HasBodies() || Van.IsValid();
@@ -3147,6 +3164,12 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			WaterNow.mode == ftcore::WaterMode::Dry ? TEXT("dry") : WaterNow.mode == ftcore::WaterMode::Wade ? TEXT("wading")
 			: WaterNow.mode == ftcore::WaterMode::DeepWade ? TEXT("wading deep") : TEXT("swimming"),
 			WaterNow.column, WaterNow.submerged * 100.f, WaterNow.speedFactor, GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z);
+	}
+	// Set down out of any water while dived (a fight or a scene ended on dry ground): the swim ends this frame, its state
+	// and pose reset below, its vitality kept.
+	if (bSwimUnder && !bOut && WaterNow.body < 0 && System->Bodies().dive(FTSwimUnits::ToPlan(GetActorLocation())).body < 0)
+	{
+		bSwimUnder = false;
 	}
 	// Under water the lead swims on whatever the column under it (ftcore::Swim never ejects it).
 	const bool bSwimNow = (WaterNow.mode == ftcore::WaterMode::Swim || (bSwimUnder && !bOut)) && !bTraversing;
@@ -3237,7 +3260,7 @@ void AFTExploreCharacter::LoadSwimTuning()
 	if (IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File)
 		&& ftcore::importSwimTuning(FT::BytesAsText(Bytes), Tuning, &Error, &Notes))
 	{
-		SwimBody.reset(Tuning);
+		SwimBody.reset(FTSwimUnits::TuningForRef(Tuning));
 		for (const std::string& Note : Notes)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("Swim: %s"), *FT::ToFString(Note));
@@ -3246,7 +3269,7 @@ void AFTExploreCharacter::LoadSwimTuning()
 	else
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Swim: no usable Data/Swim/swim.json; the built-in tuning.\n%s"), *FT::ToFString(Error));
-		SwimBody.reset(ftcore::SwimTuning{});
+		SwimBody.reset(FTSwimUnits::TuningForRef(ftcore::SwimTuning{}));
 	}
 	const ftcore::SwimTuning& T = SwimBody.tuning();
 	UE_LOG(LogForgottenThird, Display, TEXT("Swim: %s tuning: %.1f m/s (sprint %.1f), breath %.0f s (warning at %.0f s), dive %.1f m, edge push %.1f m/s over %.0f m."),
@@ -3308,7 +3331,9 @@ bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float De
 	In.forward = static_cast<float>(SwimMoveAxis.Y);
 	In.right = static_cast<float>(SwimMoveAxis.X);
 	In.sprint = bRunOn;
-	In.crouch = bCrouchKeyWas;
+	// The crouch key's real state, and only while the player steers: TickHeldKeys latches bCrouchKeyWas true while input
+	// is taken (a menu, a scene, a fight), which Swim would read as a dive press.
+	In.crouch = TakesInput() && bCrouchKeyWas;
 	In.jump = bJumpHeld;
 	SwimMoveAxis = FVector2D::ZeroVector;
 #if !UE_BUILD_SHIPPING // -LeadGoDive: the scripted walk dives once, swims its route under water and rises at its end
@@ -3318,7 +3343,7 @@ bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float De
 		// The presses: down every other frame until taken (Swim's buttons are edge-triggered, and the held key's state
 		// is not known here).
 		const bool bPressFrame = (GFrameCounter & 1) != 0;
-		if (!bLeadGoDived && Now == ftcore::SwimState::Surface && Env.deepAllowed && Env.column >= ftcore::kSwimDeepMin)
+		if (!bLeadGoDived && Now == ftcore::SwimState::Surface && SwimBody.last().canDive)
 		{
 			In.crouch = bPressFrame;
 		}
@@ -3343,7 +3368,8 @@ bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float De
 #endif
 
 	const bool bWasUnder = bSwimUnder;
-	const ftcore::SwimStep& S = SwimBody.step(In, Env, DeltaSeconds);
+	// A hitch: Swim clamps its step to kSwimMaxStep and drops the rest, so the movement below carries only that step too.
+	const ftcore::SwimStep& S = SwimBody.step(In, Env, FMath::Min(DeltaSeconds, ftcore::kSwimMaxStep));
 #if !UE_BUILD_SHIPPING
 	bLeadGoDived = bLeadGoDived || S.dived;
 	bLeadGoRose = bLeadGoRose || S.state == ftcore::SwimState::Surfacing;
@@ -3402,7 +3428,9 @@ bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float De
 	Move->MaxFlySpeed = (T.sprintSpeed + T.edgePushSpeed) * 100.f;
 	Move->BrakingDecelerationFlying = 0.f;
 	const FVector Velocity = PositionValid(S) ? VelocityToEngine(S.velocity) : FVector::ZeroVector;
-	Move->Velocity = Velocity;
+	// The movement integrates the whole frame: over a hitch the velocity is scaled so the frame moves only Swim's step
+	// (its surface, bed and edge clamps hold).
+	Move->Velocity = DeltaSeconds > S.dt && DeltaSeconds > 0.f ? Velocity * (S.dt / DeltaSeconds) : Velocity;
 	// The body turns to its way across, and pitches along it: head first along the travel, upright (a slight lean) in
 	// a glide or a rise with no stroke.
 	const double Across = Velocity.Size2D();
