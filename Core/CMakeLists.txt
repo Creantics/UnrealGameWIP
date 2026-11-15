@@ -321,6 +321,8 @@ if(FTCORE_BUILD_TESTS)
         tests/AllocHook.cpp
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
+        tests/test_audio_pick.cpp
+        tests/test_mix_state.cpp
         tests/test_look_body.cpp
         tests/test_garment_front.cpp
         tests/test_backlog.cpp
@@ -493,6 +495,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_twist_bake.cpp
         tests/test_world_wave.cpp
         tests/test_wave_look.cpp
+        tests/test_inertial.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).
