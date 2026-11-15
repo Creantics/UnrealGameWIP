@@ -456,6 +456,7 @@ TEST_CASE("partner station: partner_brain.json carries the defaults; the importe
              R"({"version":1,"followMax":0.4})",
              R"({"version":1,"stationTolerance":0})",
              R"({"version":1,"stationTolerance":"0.5"})",
+             R"({"version":1,"reachMeters":0.8,"standoffMeters":0.5,"stationTolerance":0.5})", // over half the reach
          }) {
         CAPTURE(bad);
         CHECK_FALSE(importPartnerBrain(bad, t, &err));
@@ -500,4 +501,114 @@ TEST_CASE("partner station: StayClose keeps its station within 3.5 m of the lead
     CHECK(ang >= 59.5f);
     CHECK(ang <= 90.5f);
     CHECK_FALSE(inWedge(i.point, p.cam(), p.in.leadPos, 0.f, 10.f));
+}
+
+namespace {
+// A walking partner: 4 m/s toward the intent's point on MoveTo or StepBack, for `seconds` at 60 Hz. `lead` moves the
+// lead (and the camera with it) before each step; `each` sees every intent.
+template <class Lead, class Each> void walk(Pit& p, float seconds, Lead lead, Each each) {
+    const float dt = 1.f / 60.f;
+    for (int k = 0; k < static_cast<int>(seconds * 60.f); ++k) {
+        const float now = static_cast<float>(k) * dt;
+        lead(now);
+        const PartnerIntent& i = p.step(dt);
+        each(now, i);
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+            const Vec2 d = minus(i.point, p.in.pos);
+            const float l = len(d), s = std::fmin(l, 4.f * dt);
+            if (l > 1e-6f) p.in.pos = {p.in.pos.x + d.x / l * s, p.in.pos.y + d.y / l * s};
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("partner station: a walking StayClose partner never yo-yos on the leash, for a far target or a boss") {
+    SUBCASE("far target: 7 m from the lead, no station within the cap") {
+        Pit p(PartnerOrder::StayClose);
+        p.e[0].pos = {7.f, 0.f};
+        p.in.pos = {-1.f, -2.5f};
+        int leash = 0, moves = 0;
+        walk(
+            p, 10.f,
+            [&](float now) {
+                p.in.leadPos = {0.f, 0.4f * std::sin(1.5f * now)}; // drifts about a centimetre a step
+                p.camAt(180.f);
+            },
+            [&](float, const PartnerIntent& i) {
+                REQUIRE(i.stationed);
+                if (i.why == PartnerWhy::Leash) ++leash;
+                if (i.act == PartnerAct::MoveTo) {
+                    ++moves;
+                    CHECK(len(minus(i.point, p.in.leadPos)) <= 3.5f + 1e-3f);
+                }
+                CHECK(len(minus(p.in.pos, p.in.leadPos)) <= 4.f);
+            });
+        CHECK(leash == 0);
+        CHECK(moves > 0);
+    }
+    SUBCASE("boss: radius 3 m, the lead 1.2 m off its edge; the arc has nothing within 3.5 m of the lead") {
+        Pit p(PartnerOrder::StayClose);
+        p.e[0].pos = {4.2f, 0.f};
+        p.e[0].radius = 3.f;
+        p.in.pos = {-1.f, 2.5f};
+        int leash = 0, starts = 0;
+        walk(
+            p, 10.f,
+            [&](float now) {
+                p.in.leadPos = {0.f, 0.4f * std::sin(1.5f * now)};
+                p.camAt(180.f);
+            },
+            [&](float, const PartnerIntent& i) {
+                if (i.why == PartnerWhy::Leash) ++leash;
+                if (i.act == PartnerAct::Attack && i.newString) ++starts;
+                if (i.act == PartnerAct::MoveTo) checkGoal(p, i.point);
+            });
+        CHECK(leash == 0);
+        CHECK(starts >= 1);
+    }
+}
+
+TEST_CASE("partner station: with the camera orbiting 30 degrees a second a walking partner reaches its station and strings start; the side holds 2 s") {
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+        CAPTURE(order == PartnerOrder::StayClose);
+        Pit p(order);
+        p.in.pos = {-2.5f, 1.5f};
+        float firstStart = -1.f, lastChange = -10.f, minGap = 100.f;
+        int side = 0, changes = 0, starts = 0, leash = 0, forced = 0;
+        const bool close = order == PartnerOrder::StayClose;
+        const float lo = close ? 60.f : 120.f, hi = close ? 90.f : 180.f;
+        walk(
+            p, 12.f, [&](float now) { p.camAt(180.f + 30.f * now); },
+            [&](float now, const PartnerIntent& i) {
+                if (i.why == PartnerWhy::Leash) ++leash;
+                if (i.act == PartnerAct::MoveTo) checkGoal(p, i.point);
+                if (i.act == PartnerAct::Attack && i.newString) {
+                    ++starts;
+                    if (firstStart < 0.f) firstStart = now;
+                }
+                const int s = p.b.save().side;
+                if (s != 0 && side != 0 && s != side) {
+                    ++changes;
+                    // Inside the hold only the wedge (or 8) may force it: the old side's arc had no station left.
+                    if (now - lastChange < 2.f - 1e-3f) {
+                        ++forced;
+                        CHECK_FALSE(arcFree(p, lo + 3.f, hi - 3.f, close, static_cast<float>(side)));
+                    }
+                    minGap = std::fmin(minGap, now - lastChange);
+                    lastChange = now;
+                } else if (s != 0 && side == 0) {
+                    lastChange = now;
+                }
+                side = s;
+            });
+        CAPTURE(changes);
+        CAPTURE(minGap);
+        CHECK(leash == 0);
+        CHECK(firstStart >= 0.f);
+        CHECK(firstStart <= 3.f);
+        CHECK(starts >= 2);
+        CHECK(changes <= 6); // a full orbit and a third: no flicker
+        MESSAGE("orbit: changes " << changes << " (forced " << forced << "), min gap " << minGap << " s, first start "
+                                  << firstStart << " s, starts " << starts);
+    }
 }

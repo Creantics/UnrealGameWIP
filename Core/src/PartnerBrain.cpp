@@ -171,8 +171,7 @@ bool makeGround(const PartnerInput& in, const PartnerTuning& t, Ground& g) {
     return true;
 }
 
-// A candidate goal: tier 0 in the arc (and, StayClose, within closeLeadMeters), 1 in the arc only, 2 elsewhere on
-// the circle, 3 resolved off it; lower first, then score.
+// A candidate goal: tier 0 in the arc, 2 elsewhere on the circle, 3 resolved off it; lower first, then score.
 struct Spot {
     Vec2 p{};
     int tier = 9;
@@ -180,23 +179,26 @@ struct Spot {
 };
 bool better(const Spot& a, const Spot& b) { return a.tier < b.tier || (a.tier == b.tier && a.score < b.score); }
 
+// StayClose: every station goal within this of the lead, half a metre inside the leash so a drifting lead does not
+// trip it (the return would end at back, the partner walk out again, and so on).
+float closeCap(const PartnerTuning& t) { return std::min(t.closeLeadMeters, t.leashMeters - 0.5f); }
+
 // Rule 10: the best station on side s (+1: counter-clockwise from the lead, seen at the target).
 Spot stationOn(const Ground& g, const PartnerTuning& t, const PartnerEnemyView& e, PartnerOrder order, Vec2 pos,
                float s) {
     const bool close = order == PartnerOrder::StayClose;
     const float lo = close ? t.closeArcMin : t.spreadArcMin, hi = close ? t.closeArcMax : t.spreadArcMax;
-    const float cap = std::min(t.closeLeadMeters, t.leashMeters);
+    const float cap = closeCap(t);
     const float ring = e.radius + 0.5f * t.reachMeters;
     const Vec2 u = stUnit(stSub(g.lead, e.pos), stUnit(stSub(g.cam, e.pos), Vec2{1.f, 0.f}));
     Spot best;
     const auto at = [&](float deg) {
         const Vec2 q = stAlong(e.pos, stTurn(u, s * deg), ring);
         if (!g.legal(q)) return;
-        const float toLead = dist(q, g.lead);
-        if (close && toLead > t.leashMeters) return; // the leash still rules
+        if (close && dist(q, g.lead) > cap) return; // the leash still rules, with room to spare
         Spot c{q, 2, 0.f};
         if (deg >= lo - 1e-3f && deg <= hi + 1e-3f) {
-            c.tier = close && toLead > cap ? 1 : 0;
+            c.tier = 0;
             c.score = dist(q, pos);
         } else {
             c.score = std::max(lo - deg, deg - hi) + 1e-3f * dist(q, pos);
@@ -208,15 +210,17 @@ Spot stationOn(const Ground& g, const PartnerTuning& t, const PartnerEnemyView& 
     at(hi);
     at(0.5f * (lo + hi));
     if (best.tier < 9) return best;
-    best.p = g.resolve(stAlong(e.pos, stTurn(u, s * 0.5f * (lo + hi)), ring), close ? t.leashMeters : kStFar);
+    best.p = g.resolve(stAlong(e.pos, stTurn(u, s * 0.5f * (lo + hi)), ring), close ? cap : kStFar);
     best.tier = 3;
     best.score = dist(best.p, pos);
     return best;
 }
 
-// Rule 11: behind the lead and to a side (110..160 degrees from its facing) on side s, followMin..followMax out.
-Spot followOn(const Ground& g, const PartnerTuning& t, Vec2 pos, float s) {
-    const float lo = std::max(t.followMin, t.personalSpaceMeters + 0.05f), hi = std::max(t.followMax, lo);
+// Rule 11: behind the lead and to a side (110..160 degrees from its facing) on side s, followMin..followMax out
+// (StayClose: at most the close cap).
+Spot followOn(const Ground& g, const PartnerTuning& t, PartnerOrder order, Vec2 pos, float s) {
+    const float lo = std::max(t.followMin, t.personalSpaceMeters + 0.05f);
+    const float hi = std::max(order == PartnerOrder::StayClose ? std::min(t.followMax, closeCap(t)) : t.followMax, lo);
     const float radii[] = {lo, 0.5f * (lo + hi), hi};
     Spot best;
     for (const float r : radii)
@@ -236,7 +240,7 @@ Spot followOn(const Ground& g, const PartnerTuning& t, Vec2 pos, float s) {
 // Rule 10's side (and 11's): the side with a station in its arc; both, the nearer the partner. Chosen afresh for a new
 // key (target and order, or no target); else held sideHoldSeconds unless its own side has none and the other has.
 Vec2 pickSide(PartnerBrainSave& s, int key, const Spot& minus, const Spot& plus) {
-    const auto ok = [](const Spot& x) { return x.tier <= 1; };
+    const auto ok = [](const Spot& x) { return x.tier == 0; };
     const auto prefer = [&]() -> std::int8_t {
         if (ok(minus) != ok(plus)) return ok(minus) ? std::int8_t{-1} : std::int8_t{1};
         return better(minus, plus) ? std::int8_t{-1} : std::int8_t{1};
@@ -275,7 +279,8 @@ bool validPartnerTuning(const PartnerTuning& t) {
            pbWithin(t.closeArcMax, t.closeArcMin, 180.f) && pbWithin(t.closeLeadMeters, 1.f, 10.f) &&
            pbWithin(t.spreadArcMin, 0.f, 180.f) && pbWithin(t.spreadArcMax, t.spreadArcMin, 180.f) &&
            pbWithin(t.sideHoldSeconds, 0.f, 10.f) && pbWithin(t.followMin, 0.5f, 10.f) &&
-           pbWithin(t.followMax, t.followMin, 10.f) && pbWithin(t.stationTolerance, 0.05f, 2.f);
+           pbWithin(t.followMax, t.followMin, 10.f) && pbWithin(t.stationTolerance, 0.05f, 2.f) &&
+           t.stationTolerance <= 0.5f * t.reachMeters;
 }
 
 static_assert(kMaxPartnerStep == kMaxFightStep, "the brain's step bound is the fight's");
@@ -588,7 +593,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (tgt < 0) {
         out.why = PartnerWhy::NoTarget;
         if (st) { // rule 11
-            const Vec2 p = pickSide(s_, 1, followOn(g, t, in.pos, -1.f), followOn(g, t, in.pos, 1.f));
+            const Vec2 p = pickSide(s_, 1, followOn(g, t, in.order, in.pos, -1.f), followOn(g, t, in.order, in.pos, 1.f));
             if (dist(in.pos, p) > t.stationTolerance) {
                 out.act = PartnerAct::MoveTo;
                 out.point = p;
@@ -757,7 +762,8 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
             errors.push_back(std::string(k) + ": unknown field");
     }
     if (errors.empty() && !validPartnerTuning(t))
-        errors.push_back("partner brain: returnMeters over leashMeters, standoffMeters over reachMeters, or a max under its min");
+        errors.push_back("partner brain: returnMeters over leashMeters, standoffMeters over reachMeters, stationTolerance over half "
+                         "reachMeters, or a max under its min");
     if (!errors.empty()) return finish();
     out = t;
     return true;

@@ -60,12 +60,13 @@
 //      emits keeps that clearance. A goal outside the arena (arenaCentre, arenaRadius; 0: unbounded) is pulled in.
 //  10. Stations, on the circle round the target at its radius + half the reach (in reach), by the angle at the
 //      target between the lead and the station: StayClose closeArcMin..Max (60-90) and within closeLeadMeters (3.5,
-//      at most leashMeters) of the lead; Spread spreadArcMin..Max (120-180), any distance. Of the two sides, the one
+//      at most leashMeters - 0.5) of the lead; Spread spreadArcMin..Max (120-180), any distance. Of the two sides, the one
 //      with a station outside the wedge (and personal space and the arena); both: the one nearer the partner. A side
 //      once chosen is kept sideHoldSeconds (2.0) unless the wedge (or 8, or the arena) leaves it no station in its
 //      arc. No station in the arc: the nearest legal point of the circle on that side; none on the circle: the arc's
 //      middle, resolved by 8 and 9 (and if that is out of reach, it waits there and never starts a string).
-//      StayClose's leash still rules (a station is never past leashMeters from the lead), and stationing replaces
+//      StayClose's leash still rules: no station goal (on the circle, resolved or a follow point) is past that cap,
+//      so a lead drifting a little never trips the leash and its return; stationing replaces
 //      the old returnMeters clamp on the approach; the leash's own goal is a resolved point on the partner's side
 //      of the lead, within max(returnMeters, personal space + 0.5).
 //  11. No target: stand followMin..followMax (2.0-2.5) behind the lead (by its facing; zero facing: the camera's
@@ -203,8 +204,9 @@ struct PartnerTuning {
     float budgetWindowSeconds = 20.f;  // rule 2's budget: any rolling window this long (5..30)
     float budgetShare = 0.6f;          // its attack time at most this x the lead's in the window (0..1)
     float budgetAllowanceSeconds = 2.f; // plus this (0..10)
-    // Stationing (rules 8-12). Cross-field limits are applied where used: closeLeadMeters at most leashMeters, the
-    // follow distances at least personal space.
+    // Stationing (rules 8-12). Cross-field limits are applied where used: closeLeadMeters (and, StayClose, followMax)
+    // at most leashMeters - 0.5, the follow distances at least personal space. Checked: stationTolerance at most half
+    // reachMeters (a station is half the reach off the target's edge, so arriving always means in reach).
     float personalSpaceMeters = 1.6f; // rule 8 (0.5..4)
     float wedgeHalfDegrees = 25.f;    // rule 9 (5..60)
     float wedgeBeyondMeters = 1.f;    // rule 9: the wedge runs this far past the lead (0..5)
@@ -217,7 +219,7 @@ struct PartnerTuning {
     float sideHoldSeconds = 2.f;      // rule 10: a side is kept at least this long (0..10)
     float followMin = 2.f;            // rule 11, no target: behind the lead (0.5..10)
     float followMax = 2.5f;           // (followMin..10)
-    float stationTolerance = 0.5f;    // rule 12: a string starts within this of its station (0.05..2)
+    float stationTolerance = 0.5f;    // rule 12: a string starts within this of its station (0.05..2, <= reach/2)
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
