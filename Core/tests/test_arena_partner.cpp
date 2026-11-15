@@ -2892,10 +2892,15 @@ KitRun kitRun(const ArenaFighter& partnerKit, const ArenaFighter& leadKit = rule
 
 TEST_CASE("arena partner: per-lead kits: the ally's blow damage is its own kit's, whoever the player holds") {
     // Rule 7's cap reads the striking lead's own light[0]: the same partner kit beside two leads whose lights differ
-    // deals the same hits (the lead never attacks here, so every Hit is the partner's).
-    ArenaFighter strong = ruleFighter();
+    // deals the same hits (the lead never attacks here, so every Hit is the partner's). The leads' lights sit either
+    // side of kit B's raw 5: a cap read from the held lead would halve part of it beside the weak one (60% of 1) and
+    // none beside the strong one (60% of 40), so the two runs would differ.
+    ArenaFighter weak = ruleFighter(), strong = ruleFighter();
+    for (std::size_t k = 0; k < weak.lightCount; ++k) weak.light[k].damage = 1;
     for (std::size_t k = 0; k < strong.lightCount; ++k) strong.light[k].damage *= 4;
-    const KitRun a = kitRun(kitB(), ruleFighter());
+    REQUIRE(static_cast<float>(kitB().light[0].damage) > 0.6f * static_cast<float>(weak.light[0].damage));
+    REQUIRE(static_cast<float>(kitB().light[0].damage) < 0.6f * static_cast<float>(strong.light[0].damage));
+    const KitRun a = kitRun(kitB(), weak);
     const KitRun b = kitRun(kitB(), strong);
     REQUIRE(!a.hitAmount.empty());
     CHECK(a.hitAmount == b.hitAmount);
@@ -3228,7 +3233,8 @@ TEST_CASE("arena partner: per-lead kits: a switch to a partner that is not playa
 }
 
 TEST_CASE("arena partner: per-lead kits: the switch refusal order: the permanent reason wins, one counted per press") {
-    // Not begun, NoPartner, NotPlayable, PlayerDown, PartnerDown, then over or in the hook (ArenaSwitchRefusal).
+    // Not begun, NoPartner, NotPlayable, then over or in the hook (NotFighting), PlayerDown, PartnerDown: the
+    // session's order (NotPlayable, FightOver, Down; ArenaSwitchRefusal).
     const auto press = [](PRig& r, ArenaSwitchRefusal want) {
         const ArenaStats before = r.fight.stats();
         CHECK_FALSE(r.fight.switchLeads());
@@ -3277,7 +3283,44 @@ TEST_CASE("arena partner: per-lead kits: the switch refusal order: the permanent
         press(r, ArenaSwitchRefusal::NotPlayable);
         press(r, ArenaSwitchRefusal::NotPlayable); // the same word on every press
     }
-    SUBCASE("PlayerDown beats PartnerDown and NotFighting: both down") {
+    SUBCASE("NotFighting in the hook beats PartnerDown") {
+        // The partnerDown fight with a hook that, on the first blow it rules while the partner is down, asks a switch.
+        struct Ask {
+            ArenaFight* fight = nullptr;
+            int asked = 0;
+            bool switched = true;
+            ArenaSwitchRefusal why = ArenaSwitchRefusal::Ok;
+        };
+        PRig r;
+        Ask ask{&r.fight};
+        r.fight.setBlowHook(+[](void* user, const ArenaBlow&) {
+            Ask& a = *static_cast<Ask*>(user);
+            if (a.asked == 0 && a.fight->allyHp() == 0) {
+                ++a.asked;
+                a.switched = a.fight->switchLeads();
+                a.why = a.fight->switchRefusal();
+            }
+            return ArenaBlowRuling{};
+        }, &ask);
+        r.ownPartnerKit = true;
+        r.def.partnerKit = kitB();
+        r.enemy(biterKind(150, 3.f, 40.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{0.f, 2.8f};
+        r.bodies.ally = Vec2{1.f, 0.f};
+        r.go(true, 100);
+        r.run(2.f);
+        REQUIRE(r.fight.allyHp() == 0);
+        REQUIRE(r.fight.phase() == ArenaPhase::Fighting);
+        r.bodies.player = Vec2{0.f, 1.2f}; // in the lead's reach: its light lands, and the hook rules it
+        for (int i = 0; i < 120 && ask.asked == 0; ++i) {
+            r.in.light = true;
+            r.tick();
+        }
+        REQUIRE(ask.asked == 1);
+        CHECK_FALSE(ask.switched);
+        CHECK(ask.why == ArenaSwitchRefusal::NotFighting);
+    }
+    SUBCASE("NotFighting (over) beats PlayerDown and PartnerDown: both down") {
         PRig r;
         r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
         r.bodies.player = Vec2{1.f, 0.f};
@@ -3291,7 +3334,7 @@ TEST_CASE("arena partner: per-lead kits: the switch refusal order: the permanent
         REQUIRE(r.fight.phase() == ArenaPhase::Defeat);
         REQUIRE(r.fight.hp() <= 0);
         REQUIRE(r.fight.allyHp() == 0);
-        press(r, ArenaSwitchRefusal::PlayerDown);
+        press(r, ArenaSwitchRefusal::NotFighting); // as main had it: the fight is over
     }
 }
 

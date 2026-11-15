@@ -3001,9 +3001,9 @@ struct ArenaFightImpl {
         why = fight.phase_ == ArenaPhase::NotStarted                     ? ArenaSwitchRefusal::NotFighting
               : !partnerOn()                                             ? ArenaSwitchRefusal::NoPartner
               : !pk.playable                                             ? ArenaSwitchRefusal::NotPlayable
+              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
               : pl.hp <= 0                                               ? ArenaSwitchRefusal::PlayerDown
               : !allyUp()                                                ? ArenaSwitchRefusal::PartnerDown
-              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
                                                                          : ArenaSwitchRefusal::Ok;
         if (why == ArenaSwitchRefusal::Ok) return doSwitch();
         ++stats.leadSwitchesRefused;

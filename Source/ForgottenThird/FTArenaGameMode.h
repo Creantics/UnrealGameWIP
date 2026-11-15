@@ -170,7 +170,10 @@ private:
 	// -ArenaLead=<name>, trimmed; empty when missing or when that kit has no attacks (warned).
 	FString WantedLead() const;
 	bool IsPlayable(const FString& Name) const;
+	// The first playable look of Party; with none, Party[0] with a warning (once); null only for an empty party.
+	const FFTLeadLook* FirstPlayable(const TArray<FFTLeadLook>& Party) const;
 	mutable bool bLeadWarned = false; // WantedLead warns once
+	mutable bool bNoPlayableWarned = false; // FirstPlayable warns once
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);
 	void TakeShot(const TCHAR* Name, bool bCounted = true);

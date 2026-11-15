@@ -929,7 +929,9 @@ void AFTExploreCharacter::LoadWeaponTable()
 bool AFTExploreCharacter::IsPlayableLead(const FFTLeadLook& Look)
 {
 	LoadWeaponTable();
-	return ftcore::arenaPlayable(WeaponTable.fighter(FT::ToUtf8(Look.Name.ToLower())));
+	// The runner's lookup, no fallback to the first kit: a look with no kit in arena.json is not playable.
+	const ftcore::ArenaFighter* Kit = WeaponTable.findFighter(FT::ToUtf8(Look.Name.ToLower()));
+	return Kit && ftcore::arenaPlayable(*Kit);
 }
 
 void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)

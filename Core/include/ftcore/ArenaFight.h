@@ -443,8 +443,9 @@ FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "
 
 // Why ArenaFight::switchLeads refused (ArenaFight::switchRefusal). Append only.
 // When several apply, one wins and is the one named and counted: not begun (NotFighting: there is no fight), then
-// NoPartner (no other lead to name), then the permanent reason NotPlayable, then PlayerDown, then PartnerDown, then
-// NotFighting for the busy rest (over, or inside the step's hook). The player always sees the same word for one lead.
+// NoPartner (no other lead to name), then the permanent reason NotPlayable, then NotFighting for the rest of the
+// fight's own state (over, or inside the step's hook), then PlayerDown, then PartnerDown: the session's order
+// (FightSession::leadSwitchReason: NotPlayable, FightOver, Down). The player always sees the same word for one lead.
 enum class ArenaSwitchRefusal : std::uint8_t {
     Ok,          // it swapped (or none asked)
     NotFighting, // not begun, over, or asked inside the step's hook

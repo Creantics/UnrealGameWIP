@@ -852,7 +852,22 @@ void AFTArenaGameMode::RefuseStory()
 
 bool AFTArenaGameMode::IsPlayable(const FString& Name) const
 {
-	return ftcore::arenaPlayable(Table.fighter(FT::ToUtf8(Name.ToLower())));
+	// The runner's lookup, no fallback to the first kit: a look with no kit in arena.json is not playable here either.
+	const ftcore::ArenaFighter* Kit = Table.findFighter(FT::ToUtf8(Name.ToLower()));
+	return Kit && ftcore::arenaPlayable(*Kit);
+}
+
+const FFTLeadLook* AFTArenaGameMode::FirstPlayable(const TArray<FFTLeadLook>& Party) const
+{
+	const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
+	if (!First && !Party.IsEmpty())
+	{
+		UE_CLOG(!bNoPlayableWarned, LogForgottenThird, Warning,
+			TEXT("Arena: no look in PartyLooks is playable (a kit in arena.json with playable true); starting as %s anyway."), *Party[0].Name);
+		bNoPlayableWarned = true;
+		First = &Party[0];
+	}
+	return First;
 }
 
 FString AFTArenaGameMode::WantedLead() const
@@ -874,9 +889,7 @@ FString AFTArenaGameMode::FindKitId() const
 	FString Want = WantedLead();
 	if (Want.IsEmpty())
 	{
-		const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
-		const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
-		First = First ? First : (Party.IsEmpty() ? nullptr : &Party[0]);
+		const FFTLeadLook* First = FirstPlayable(GetDefault<AFTExploreCharacter>()->PartyLooks);
 		Want = First ? First->Name : FString(TEXT("default"));
 	}
 	return Want.ToLower();
@@ -890,8 +903,7 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: no PartyLooks in config; the lead is the test human."));
 		return nullptr;
 	}
-	const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
-	First = First ? First : &Party[0];
+	const FFTLeadLook* First = FirstPlayable(Party);
 	const FString Want = WantedLead();
 	if (!Want.IsEmpty())
 	{

@@ -141,7 +141,9 @@
 //   A lead the def marks not playable (def.playable, by lead; true by default) never takes control: when the
 //   controlled lead falls and only that lead stands, it is a defeat (tick.defeated, no tookOver), and a switch to
 //   it, asked in a step or waiting in a checkpoint, is refused NotPlayable (leadSwitchReason). A switch asked
-//   before begin opens the fight on it only if it is playable.
+//   before begin opens the fight on it only if it is playable. Every begin and retry opens on a playable lead in
+//   the fight: control carried from the last fight onto a lead not playable moves to the other; with no lead in
+//   the fight playable, check.playable is false (ok() too), the host's cue to refuse the fight.
 //   A lead the def marks cannotFall (per fight, per lead; false by default) never goes down in that fight: a
 //   blow that would take it to 0 or below leaves it at 1 hp (blowOnLead does the sum for the host) and raises
 //   tick.heldUp once, on the next tick. With every lead in the fight marked, health never loses the fight: what
@@ -296,8 +298,10 @@ struct FightSessionCheck {
     bool start = true; // false: the start was moved: past kMaxFightStart or infinite (clamped to it), or NaN (0)
     bool party = true; // false: no lead in the fight (both are then)
     bool leadSwitch = true; // false: the switch cooldown was refused (not in 0..5): the default 1 s is used
+    bool playable = true;   // false: no lead in the fight is playable (def.playable): the fight is refused, nobody drives
     // Every piece took its tuning. A moved start is reported in `start` but is not a refusal: the fight began.
-    bool ok() const { return count && gift && places && table && lock && boss && lift && kept && cap && lone && party && leadSwitch;
+    bool ok() const {
+        return count && gift && places && table && lock && boss && lift && kept && cap && lone && party && leadSwitch && playable;
     }
 };
 
@@ -676,8 +680,13 @@ private:
         tick_.boss = &kNoBoss;
         c.party = def_.inFight[kLeadA] || def_.inFight[kLeadB];
         inFight_ = c.party ? def_.inFight : std::array<bool, 2>{true, true};
-        // A lead not in this fight is never the controlled one.
+        // A lead not in this fight is never the controlled one, nor is one not playable while the other is.
         if (!inFight_[activeLead_]) activeLead_ = inFight_[kLeadA] ? kLeadA : kLeadB;
+        if (!def_.playable[activeLead_]) {
+            const FighterId other = activeLead_ == kLeadA ? kLeadB : kLeadA;
+            if (inFight_[other] && def_.playable[other]) activeLead_ = other;
+        }
+        c.playable = def_.playable[activeLead_];
         down_ = {false, false};
         stepDown_ = {false, false};
         defeated_ = false;
