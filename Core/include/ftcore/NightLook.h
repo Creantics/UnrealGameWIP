@@ -29,8 +29,9 @@ struct NightLook {
     float exposureEV100 = -1.2f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
     float exposureRangeEV = 1.0f;  // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
     float whiteKelvin = 5600.f;    // the camera's white balance at full night (blended from the day's by NightAmount)
-    float dayWetShare = 0.58f;     // the look's ground wetness by full day, as a share of its own (full at night):
-                                   // Solhaven's 0.6 is about 0.35 by day
+    float dayWetShare = 0.f;       // the look's ground wetness by full day, as a share of its own (full at night):
+                                   // the streets are dry by day by default. Day wetness comes only from the weather
+                                   // state when the weather system drives it (rain, then drying), never from this.
     float lampCandela = 24.f;      // warm-white street lamps
     float lampReachM = 30.f;       // attenuation radius: the inverse-square window is about 0.9 at 15 m, not 0.5
     float lampKelvin = 2400.f;     // orange street glow (2200-2700 K reads as the avenues' warm line)
