@@ -6,6 +6,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
 
 using namespace ftcore;
 
@@ -278,6 +281,26 @@ TEST_CASE("audioPick: edge cases: one variant, out-of-range counts, a reload wit
     const int v = audioPick(ruleOf(4), zero).variant;
     CHECK(v >= 0);
     CHECK(zero.rng != 0);
+}
+
+TEST_CASE("audioCueKeyCollisions: two ids forced to collide are named; distinct keys pass") {
+    std::vector<AudioCue> cues(3);
+    cues[0].id = "SFX-AAA";
+    cues[1].id = "SFX-BBB";
+    cues[2].id = "SFX-CCC";
+    std::vector<std::string> errors;
+    audioCueKeyCollisions(cues, errors);
+    CHECK(errors.empty());
+    // A key function that sends every id starting with "SFX-A" or "SFX-C" to one key.
+    const AudioCueKeyFn forced = [](std::string_view id) -> std::uint32_t {
+        return id.size() > 4 && (id[4] == 'A' || id[4] == 'C') ? 7u : audioCueKey(id);
+    };
+    audioCueKeyCollisions(cues, errors, forced);
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].find("SFX-AAA") != std::string::npos);
+    CHECK(errors[0].find("SFX-CCC") != std::string::npos);
+    CHECK(errors[0].find("cues[2].id") != std::string::npos);
+    CHECK(errors[0].find("SFX-BBB") == std::string::npos);
 }
 
 TEST_CASE("audioPick: no allocation") {

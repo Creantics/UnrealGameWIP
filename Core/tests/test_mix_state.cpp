@@ -235,6 +235,18 @@ TEST_CASE("MixState: a muted bus reaches exactly 0 and comes back") {
     }
 }
 
+TEST_CASE("MixState: a finite boost above +24 dB is clamped, so the gain stays finite") {
+    MixTable t = defaultMixTable();
+    t.gainDb[static_cast<int>(MixMode::Combat)][bus(MixBus::Sfx)] = 1000.f;
+    t.gainDb[static_cast<int>(MixMode::Combat)][bus(MixBus::Music)] = 30.f;
+    MixState mix(t);
+    run(mix, kCombat, 1.0, 60);
+    CHECK(mix.gainDb(MixBus::Sfx) == kMixCeilingDb);
+    CHECK(mix.gainDb(MixBus::Music) == kMixCeilingDb);
+    CHECK(std::isfinite(mix.gains()[MixBus::Sfx]));
+    CHECK(mix.gains()[MixBus::Sfx] == doctest::Approx(std::pow(10.0, 24.0 / 20.0)));
+}
+
 TEST_CASE("MixState: requests flipping every step stay bounded and settle when they stop") {
     MixState mix;
     for (int i = 0; i < 2000; ++i) {

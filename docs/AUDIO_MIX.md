@@ -26,7 +26,9 @@ Rules:
   `audioCueKey` is a 32-bit FNV-1a hash, so two ids can collide. Colliding ids seeded by id alone
   would share a sequence. Use the seed overload that also takes the cue's index in
   `AudioCueTable::cues`. It folds the index in through bijections, so two cues with colliding ids
-  still start from different generator states.
+  still start from different generator states. That four-argument form is the one a game should
+  call. The id-only forms are for tests and tools. `importAudioCues` also refuses a table where two
+  ids share a key (`audioCueKeyCollisions`, an error naming both ids).
 
 API:
 
@@ -115,7 +117,7 @@ O(n x cap), with no allocation.
 
 Gains: a table value of -infinity, or anything at or below -120 dB (`kMixFloorDb`), is a mute.
 The bus ramps to -120 dB, where its linear gain is exactly 0, and comes back as usual. NaN and
-+infinity count as 0 dB. `priority` uses the cue's existing `prio` (0..100). The per-cue `max`
++infinity count as 0 dB. A finite value above +24 dB (`kMixCeilingDb`) counts as +24 dB. `priority` uses the cue's existing `prio` (0..100). The per-cue `max`
 still limits one cue's own voices. That limit is separate from the per-state cap.
 
 ## Data keys (Data/Audio/cues.json)

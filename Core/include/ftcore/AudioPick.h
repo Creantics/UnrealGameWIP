@@ -22,8 +22,12 @@
 #include "ftcore/AudioCues.h" // AudioCue, for audioPickRuleFor
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace ftcore {
 
@@ -139,15 +143,36 @@ inline std::uint32_t audioCueKey(std::string_view cueId) {
 }
 
 // Resets the state and seeds its generator from a game-wide seed and the cue's key, so two cues
-// with one seed still get unrelated sequences.
+// with one seed still get unrelated sequences. For tests and tools: a game should call the
+// four-argument form below (id plus table index), which can't be fooled by a key collision.
 inline void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::uint32_t cueKey) {
     st = AudioPickState{};
     std::uint32_t s = audio_pick_detail::mix(seed ^ audio_pick_detail::mix(cueKey + 0x9E3779B9u));
     st.rng = s ? s : 0x9E3779B9u;
 }
 
+// By id alone; as above, a game should call the four-argument form.
 inline void audioPickSeed(AudioPickState& st, std::uint32_t seed, std::string_view cueId) {
     audioPickSeed(st, seed, audioCueKey(cueId));
+}
+
+// Every pair of cues in `cues` whose ids give the same key under `keyOf` (audioCueKey by default),
+// as one error line per pair naming both ids. importAudioCues refuses a table with any. Load time
+// only: allocates for the messages.
+using AudioCueKeyFn = std::uint32_t (*)(std::string_view);
+inline void audioCueKeyCollisions(const std::vector<AudioCue>& cues, std::vector<std::string>& errors,
+                                  AudioCueKeyFn keyOf = &audioCueKey) {
+    for (std::size_t i = 0; i < cues.size(); ++i) {
+        const std::uint32_t ki = keyOf(cues[i].id);
+        for (std::size_t j = i + 1; j < cues.size(); ++j) {
+            // Equal or empty ids are reported by the importer as duplicate or missing ids instead.
+            if (cues[i].id.empty() || cues[j].id == cues[i].id || keyOf(cues[j].id) != ki) continue;
+            char hex[16];
+            std::snprintf(hex, sizeof hex, "%08X", static_cast<unsigned>(ki));
+            errors.push_back("cues[" + std::to_string(j) + "].id: " + cues[j].id + " and " + cues[i].id +
+                             " (cues[" + std::to_string(i) + "]) share the cue key 0x" + hex + "; rename one");
+        }
+    }
 }
 
 // Seeds from the cue id and its index in the cue table (AudioCueTable::cues). Two cues whose ids

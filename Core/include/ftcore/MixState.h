@@ -32,6 +32,7 @@ inline constexpr int kMixModes = static_cast<int>(MixMode::Count);
 inline constexpr int kMixBuses = static_cast<int>(MixBus::Count);
 inline constexpr int kMixMaxVoices = 32;     // the most voices a cap can keep
 inline constexpr float kMixFloorDb = -120.f; // a bus at or below this is silent (linear gain exactly 0)
+inline constexpr float kMixCeilingDb = 24.f; // table values above this count as this
 
 using MixRequests = std::uint8_t; // bit (1 << mode) per requested state
 
@@ -140,6 +141,7 @@ private:
     float target(MixMode m, int b) const {
         const float v = table_.gainDb[static_cast<int>(m)][b];
         if (std::isnan(v) || v > 1e30f) return 0.f; // NaN and +infinity: unity
+        if (v > kMixCeilingDb) return kMixCeilingDb;  // a finite boost past the ceiling: clamped
         return v <= kMixFloorDb ? kMixFloorDb : v;   // -infinity and anything at or below the floor: silence
     }
     void fill() {

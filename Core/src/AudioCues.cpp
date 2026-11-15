@@ -1,6 +1,6 @@
 #include "ftcore/AudioCues.h"
 
-#include "ftcore/AudioPick.h" // kAudioPickMaxVariants, kAudioPickMaxAvoid
+#include "ftcore/AudioPick.h" // kAudioPickMaxVariants, kAudioPickMaxAvoid, audioCueKeyCollisions
 #include "ftcore/Json.h"
 #include "ftcore/MixState.h" // kMixBusNames
 #include "ftcore/MusicLoop.h"
@@ -194,6 +194,7 @@ bool importAudioCues(std::string_view json, AudioCueTable& out, std::string* err
             }
             table.cues.push_back(std::move(cue));
         }
+        audioCueKeyCollisions(table.cues, errors); // the picker seeds by this key (ftcore/AudioPick.h)
         if (errors.empty()) out = std::move(table);
     }
     if (errors.empty()) return true;
