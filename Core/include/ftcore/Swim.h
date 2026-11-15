@@ -7,7 +7,8 @@
 // The rules:
 // - Surface: the host's own surface swim moves the body (Swim passes the position through untouched: no clamp, no
 //   edge push); breath refills. A crouch press dives (Diving) where the env allows it: deepAllowed and a column of
-//   at least kSwimDeepMin; else diveRefused (once per press).
+//   at least kSwimDeepMin; else diveRefused (once per press). canDive says, every step, whether a press would dive
+//   (the same test), so the HUD asks it and never copies the rule.
 // - Crouch and jump are edge-triggered: a state change needs a press (up last step, down this one), so a crouch held
 //   through a surfacing does not dive again and a held refused crouch reports diveRefused once. Both down on the same
 //   step at the surface: the jump wins (no dive; the jump is the host's).
@@ -178,9 +179,13 @@ struct SwimEnv {
     SwimVec centre;              // with hasCentre: the dive area's centre (its x and y are used)
 };
 
-// What the lead may do while swimming, in every state: the character reads them.
+// What the lead may do while swimming, in every state: the character reads them, the HUD asks them. At the surface
+// too (the host's own surface swim moves the body there): attack false, no attack starts; guard false, no guard or
+// block; dodge false, no dodge roll; weaponsOut false, weapons stay stowed (none drawn); interact true, the interact
+// prompt works. Under water (Diving, Under, Surfacing) and Rescued: the same.
 struct SwimFlags {
     bool attack = false;     // no attacks
+    bool guard = false;      // no guard
     bool dodge = false;      // no dodge roll
     bool weaponsOut = false; // weapons stowed
     bool interact = true;    // interact allowed
@@ -191,6 +196,9 @@ struct SwimStep {
     SwimState from = SwimState::Surface;  // before it
     bool dived = false;       // Surface to Diving this step
     bool diveRefused = false; // a crouch press at the surface where no dive is allowed
+    // A crouch press on this step would start a dive (the dive's own test, diveOpen): Surface, no jump down, a good
+    // env, deepAllowed and a column of at least kSwimDeepMin. Never in Rescued. On the step a press dives, true.
+    bool canDive = false;
     bool surfaced = false;    // to Surface this step (not by a rescue)
     SwimVec position;         // where the body goes (under water: clamped to the bed's clearance and the surface)
     bool positionValid = true; // false: no valid position yet since the reset (position is the env's own): do not move
@@ -251,6 +259,10 @@ public:
     const SwimStep& last() const { return step_; }
 
 private:
+    // Whether a crouch press dives: the one test for the dive and for SwimStep::canDive.
+    static bool diveOpen(SwimState st, bool jumpDown, const SwimEnv& env, float column) {
+        return st == SwimState::Surface && !jumpDown && env.deepAllowed && column >= kSwimDeepMin;
+    }
     SwimTuning tuning_{};
     bool tuningOk_ = true;
     SwimState state_ = SwimState::Surface;
@@ -414,8 +426,10 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
     const bool moving = fwd != 0.f || rgt != 0.f;
 
     // The asked state changes: presses only; at the surface a jump down wins over a crouch press.
-    if (state_ == SwimState::Surface && crouchPress && !in.jump && !jumpPress) {
-        if (env.deepAllowed && column >= kSwimDeepMin) {
+    const bool jumpDown = in.jump || jumpPress;
+    s.canDive = diveOpen(state_, jumpDown, env, column);
+    if (state_ == SwimState::Surface && crouchPress && !jumpDown) {
+        if (s.canDive) {
             state_ = SwimState::Diving;
             s.dived = true;
         } else {

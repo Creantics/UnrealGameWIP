@@ -1242,3 +1242,67 @@ TEST_CASE("swim: a step allocates nothing") {
     }
     CHECK(ftcore_test::allocStats().count == before);
 }
+
+TEST_CASE("swim: canDive is what a crouch press does, at every step of a scripted swim; guard is false throughout") {
+    // A copy of the swim takes each step again with a crouch press: it dives exactly when the step's flag said a
+    // press would. Steps after a held crouch are skipped (no press is possible on them).
+    Swim s;
+    SwimEnv e = deep();
+    bool held = false;
+    int checked = 0, open = 0, shut = 0;
+    bool rescuedShut = false, divedOpen = false, slackOpen = false;
+    for (int i = 0; i < 340; ++i) {
+        SwimInput in = go({1.f, 0.f, -0.5f}); // under water it swims down and stays under (the surface ignores it)
+        SwimEnv env = e;
+        if (i >= 20 && i < 40) {
+            env.deepAllowed = false; // not allowed here
+        } else if (i >= 40 && i < 60) {
+            env.bedZ = -2.5f; // too shallow
+            env.column = 2.5f;
+        } else if (i >= 60 && i < 62) {
+            env.surfaceZ = kNaN; // a bad env: a press is kept for a good step, none dives
+        } else if (i >= 62 && i < 70) {
+            in.jump = true; // a jump down at the surface wins
+        } else if (i >= 300 && i < 320) {
+            env.column = 2.f; // off surface minus bed: taken as 10, so a press dives
+        }
+        if (i == 80 || i == 200) in.crouch = true; // the dives
+        if (i == 150) in.jump = true;              // back to the surface
+        if (i == 260) s.setVitality(0.f);          // under water: the next step is a rescue
+        if (i == 280) {                            // carried to the exit
+            s.reset();
+            e.position = {0.f, 0.f, 0.f};
+            env.position = e.position;
+        }
+        const SwimState before = s.state();
+        bool dives = false;
+        if (!held) {
+            Swim probe = s;
+            SwimInput press = in;
+            press.crouch = true;
+            dives = probe.step(press, env, kDt).dived;
+        }
+        const SwimStep& r = s.step(in, env, kDt);
+        CAPTURE(i);
+        CAPTURE(int(before));
+        CHECK_FALSE(r.flags.guard);
+        CHECK_FALSE(r.flags.attack);
+        if (!held) {
+            CHECK(r.canDive == dives);
+            ++checked;
+            (r.canDive ? open : shut) += 1;
+            if (before == SwimState::Rescued) rescuedShut = rescuedShut || !r.canDive;
+            if (i >= 300 && i < 320 && before == SwimState::Surface) slackOpen = slackOpen || r.canDive;
+        }
+        if (r.dived) divedOpen = r.canDive;
+        if (before != SwimState::Surface) CHECK_FALSE(r.canDive);
+        held = in.crouch;
+        if (r.positionValid) e.position = r.position;
+    }
+    CHECK(checked > 300);
+    CHECK(open > 0);
+    CHECK(shut > 0);
+    CHECK(rescuedShut);
+    CHECK(divedOpen);
+    CHECK(slackOpen);
+}
