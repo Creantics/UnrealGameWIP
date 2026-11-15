@@ -18,5 +18,21 @@
   "overScale": 0.5,
   "budgetWindowSeconds": 20,
   "budgetShare": 0.6,
-  "budgetAllowanceSeconds": 2.0
+  "budgetAllowanceSeconds": 2.0,
+  "personalSpaceMeters": 1.6,
+  "wedgeHalfDegrees": 25,
+  "wedgeBeyondMeters": 1.0,
+  "wedgeClearMeters": 0.5,
+  "closeArcMin": 60,
+  "closeArcMax": 90,
+  "closeLeadMeters": 3.5,
+  "spreadArcMin": 120,
+  "spreadArcMax": 180,
+  "sideHoldSeconds": 2.0,
+  "followMin": 2.0,
+  "followMax": 2.5,
+  "stationTolerance": 0.5,
+  "stationGiveUpSeconds": 3.0,
+  "stationAnySeconds": 6.0,
+  "targetHoldSeconds": 1.5
 }

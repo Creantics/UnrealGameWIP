@@ -101,9 +101,21 @@ struct UiTextStyle {
     bool upper = false;    // shown in capitals (in a small-caps face: all small caps, one even height)
 };
 
+// A world's rules for where its second accent may go. The Unwritten sets both, so its blood red (accent2) never sits on
+// text: it is the one colour in that world's HUD and lives on marks only. A world object in the data that leaves a key
+// out sets it false.
+//   marksAccent2:    a non-text mark (a value line such as the Load's, the current lead's dot, the weak-point mark)
+//                    wears accent2 (uiMarkColor); "marks_accent2" in the data;
+//   dangerUnderline: a danger word is drawn in ink, with danger as its underline (uiDangerWord); "danger_underline".
+struct UiWorldRules {
+    bool marksAccent2 = false;
+    bool dangerUnderline = false;
+};
+
 struct UiStyle {
     // Per world, the default palette; each other palette overrides only the tokens it lists (overridden flags).
     std::array<std::array<UiColor, kUiTokenCount>, kUiWorldCount> world{};
+    std::array<UiWorldRules, kUiWorldCount> rules{};
     std::array<std::array<UiColor, kUiTokenCount>, kUiPaletteCount> paletteColor{};
     std::array<std::array<bool, kUiTokenCount>, kUiPaletteCount> paletteOverrides{};
     std::array<UiTextStyle, kUiTextRoleCount> text{};
@@ -135,7 +147,7 @@ struct UiStyle {
     float minTextPxAbsolute = 14.f; // the floor at any height
 };
 
-// The built-in style (the hairline system with Solhaven amber, Lattice cyan, Unwritten paper; letterbox on).
+// The built-in style (the hairline system with Solhaven amber, Lattice cyan, Unwritten cold grey; letterbox on).
 FTCORE_API UiStyle defaultUiStyle();
 
 // Reads Data/UI/style.json. False on bad JSON, an unknown name, a value out of range, or a failed accessibility rule
@@ -146,6 +158,21 @@ FTCORE_API bool importUiStyle(std::string_view text, UiStyle& out, std::string* 
 FTCORE_API bool validateUiStyle(const UiStyle& s, std::string* error = nullptr);
 
 FTCORE_API UiColor uiColor(const UiStyle& s, UiWorld world, UiPalette palette, UiToken token);
+
+// A non-text mark's colour: accent2 in a world whose marks wear it (UiWorldRules::marksAccent2), else `usual`, the
+// mark's own colour (a value line its meter's colour, the current lead's dot and the weak-point mark ink). No palette
+// overrides accent2, so the mark keeps it in every palette; its shape and edge carry it.
+FTCORE_API UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor usual);
+
+// How a danger word is drawn. In a world with UiWorldRules::dangerUnderline the glyphs are ink and the danger colour is
+// the underline beneath them; elsewhere the glyphs are danger and there is no underline. Both colours follow the
+// palette; the painter still lifts a coloured word to s.wordLumaFloor as it does today.
+struct UiDangerWord {
+    UiColor word;      // the glyphs
+    UiColor underline; // the underline (the danger colour; drawn only when underlined)
+    bool underlined = false;
+};
+FTCORE_API UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette);
 
 // A role's size in pixels for a viewport `height` px tall at the player's text scale (1.0..2.0, clamped), never below
 // the floors.

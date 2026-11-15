@@ -54,10 +54,11 @@ bool uiFirstUseShow(UiFirstUse& s, UiFirstUseItem item) {
     const std::uint32_t bit = uiFirstUseBit(item);
     const std::size_t i = at(item);
     if ((s.live & bit) || s.count[i] >= uiFirstUseTimes(item)) return false;
-    ++s.count[i];
     s.live |= bit;
     s.used &= ~bit;
     s.age[i] = 0.f;
+    if (uiFirstUseCountsOnUse(item)) return false; // counted on its first use
+    ++s.count[i];
     return true;
 }
 
@@ -68,11 +69,15 @@ bool uiFirstUseCue(UiFirstUse& s, UiFirstUseItem item, bool drawn, bool allowed)
     return rose && allowed && uiFirstUseShow(s, item);
 }
 
-void uiFirstUseUsed(UiFirstUse& s, UiFirstUseItem item) {
+bool uiFirstUseUsed(UiFirstUse& s, UiFirstUseItem item) {
     const std::uint32_t bit = uiFirstUseBit(item);
-    if (!uiFirstUseControl(item) || !(s.live & bit) || (s.used & bit)) return;
+    if (!uiFirstUseControl(item) || !(s.live & bit) || (s.used & bit)) return false;
+    const std::size_t i = at(item);
     s.used |= bit;
-    s.age[at(item)] = 0.f;
+    s.age[i] = 0.f;
+    if (!uiFirstUseCountsOnUse(item) || s.count[i] >= uiFirstUseTimes(item)) return false;
+    ++s.count[i];
+    return true;
 }
 
 void uiFirstUseTick(UiFirstUse& s, float dt) {

@@ -127,8 +127,14 @@ UiStyle defaultUiStyle() {
         hex(0xFF7A5C), hex(0x8FD3B4), hex(0xFFE08A)};
     s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.45f), hex(0x8FD6E8), hex(0xA88BE0),
         hex(0xFF7A86), hex(0x9BE3B0), hex(0xFFE08A)};
-    s.world[2] = {hex(0xF2ECE0), hex(0xD0C8B8), hex(0x0B0907), hex(0xFFFFFF, 0.45f), hex(0xE6DDCB), hex(0x9E3B2E),
-        hex(0xFF7A66), hex(0x9CC7A4), hex(0xF4D58A)};
+    // The Unwritten: a cold grey ink, its dim scaled from it as the others are (luminance x 0.6975), a cold neutral
+    // accent a step brighter than the ink, and cold neutral backing, ally and weak point, so the dark blood red in
+    // accent2 is the one colour in its HUD. The red never sits on text (it fails the 4.5:1 rule): it is on marks only,
+    // and a danger word is ink with a danger underline. Danger keeps its red, on marks.
+    s.world[2] = {hex(0xDCE1E5), hex(0xBBC0C3), hex(0x080A0C), hex(0xFFFFFF, 0.45f), hex(0xF4F6F8), hex(0xB01E23),
+        hex(0xFF7A66), hex(0xA3ADB5), hex(0xC9D1D7)};
+    s.rules[2].marksAccent2 = true;
+    s.rules[2].dangerUnderline = true;
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.
     const auto cue = [&](UiPalette p, UiToken t, UiColor c) {
@@ -172,6 +178,19 @@ UiColor uiColor(const UiStyle& s, UiWorld world, UiPalette palette, UiToken toke
     const std::size_t t = static_cast<std::size_t>(token);
     if (p < kUiPaletteCount && t < kUiTokenCount && s.paletteOverrides[p][t]) return s.paletteColor[p][t];
     return s.world[static_cast<std::size_t>(world) % kUiWorldCount][t % kUiTokenCount];
+}
+
+UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor usual) {
+    if (!s.rules[static_cast<std::size_t>(world) % kUiWorldCount].marksAccent2) return usual;
+    return uiColor(s, world, palette, UiToken::Accent2);
+}
+
+UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette) {
+    UiDangerWord d;
+    d.underline = uiColor(s, world, palette, UiToken::Danger);
+    d.underlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
+    d.word = d.underlined ? uiColor(s, world, palette, UiToken::Ink) : d.underline;
+    return d;
 }
 
 float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale) {
@@ -328,7 +347,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
         return true;
     };
     const auto colours = [&](JsonValue obj, std::string_view section, std::array<UiColor, kUiTokenCount>& dst,
-                             std::array<bool, kUiTokenCount>* set, bool allowPlate, std::array<char, 24>* plate) {
+                             std::array<bool, kUiTokenCount>* set, bool allowPlate, std::array<char, 24>* plate,
+                             UiWorldRules* rules) {
         if (obj.type() != JsonType::Object) return bad(section, "not an object");
         for (std::uint32_t i = 0; i < obj.size(); ++i) {
             const std::string_view key = obj.key(i);
@@ -336,6 +356,11 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             if (allowPlate && key == "plate") {
                 if (v.type() != JsonType::String || v.string().size() >= 24) return bad(section, "plate");
                 setPlate(*plate, v.string());
+                continue;
+            }
+            if (rules && (key == "marks_accent2" || key == "danger_underline")) {
+                if (v.type() != JsonType::Bool) return bad(section, key);
+                (key == "marks_accent2" ? rules->marksAccent2 : rules->dangerUnderline) = v.boolean();
                 continue;
             }
             std::size_t t = 0;
@@ -448,7 +473,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
             for (std::uint32_t j = 0; j < v.size(); ++j) {
                 std::size_t w = 0;
                 if (!findName(kWorldNames, v.key(j), w)) return bad("worlds", v.key(j));
-                if (!colours(v.value(j), v.key(j), s.world[w], nullptr, true, &s.plate[w])) return false;
+                s.rules[w] = UiWorldRules{};
+                if (!colours(v.value(j), v.key(j), s.world[w], nullptr, true, &s.plate[w], &s.rules[w])) return false;
             }
         } else if (key == "palettes") {
             if (v.type() != JsonType::Object) return bad("style", key);
@@ -456,7 +482,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 std::size_t p = 0;
                 if (!findName(kPaletteNames, v.key(j), p) || p == 0) return bad("palettes", v.key(j));
                 s.paletteOverrides[p].fill(false);
-                if (!colours(v.value(j), v.key(j), s.paletteColor[p], &s.paletteOverrides[p], false, nullptr)) return false;
+                if (!colours(v.value(j), v.key(j), s.paletteColor[p], &s.paletteOverrides[p], false, nullptr, nullptr))
+                    return false;
             }
         } else if (key == "text") {
             if (v.type() != JsonType::Object) return bad("style", key);

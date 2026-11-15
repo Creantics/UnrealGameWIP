@@ -117,8 +117,11 @@ struct FFTLeadWeapons
 	// The same on any actor wearing a lead's body (the explore character, fed by ftcore::FieldStrike): Body is its
 	// skinned body, which the props and effects attach to and the clips play on. Again on the same body: nothing.
 	void Begin(AActor* Owner, USkeletalMeshComponent* Body, const FFTLeadLook& Look, const ftcore::ArenaFighter& Kit);
-	// Removes the props and effects it made from the body and forgets it (a look swapped on a body that stays).
+	// Removes the props and effects it made from the body, sets the look's gauntlet morphs back to 0 on it and forgets
+	// it (a look swapped on a body that stays, a lead switch or a takeover).
 	void End();
+	// The look's gauntlet morphs this Begin set on the body (empty: none, or no gauntlets).
+	const TArray<FName>& GauntletMorphNames() const { return GauntletMorphs; }
 	// Where the attacks are aimed this step (world, cm), and whether at a target (else straight ahead).
 	void SetAim(const FVector& HitPoint, bool bAtTarget)
 	{

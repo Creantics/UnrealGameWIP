@@ -649,3 +649,25 @@ TEST_CASE("count: a full buffer gives up cues first, then window openings, then 
     CHECK(b.droppedSettles == 1);
     CHECK(b.size() == kMaxCountEvents);
 }
+
+TEST_CASE("count: rawLoad gives the gauge as stored, -1 for none; loadOf and hasGauge read it") {
+    StrikeCount c = count60();
+    CHECK(c.rawLoad(kLeadA) == -1); // reset: no fighter fed
+    CHECK_FALSE(c.hasGauge(kLeadA));
+    CHECK(c.loadOf(kLeadA) == 0);
+    c.setLoad(kLeadA, 40);
+    CHECK(c.rawLoad(kLeadA) == 40);
+    CHECK(c.hasGauge(kLeadA));
+    CHECK(c.loadOf(kLeadA) == 40);
+    c.setLoad(kLeadA, 0); // a gauge at 0 is still a gauge
+    CHECK(c.rawLoad(kLeadA) == 0);
+    CHECK(c.hasGauge(kLeadA));
+    c.setLoad(kLeadA, -1); // put back as never fed
+    CHECK(c.rawLoad(kLeadA) == -1);
+    CHECK_FALSE(c.hasGauge(kLeadA));
+    CHECK(c.rawLoad(kLeadB) == -1);
+    CHECK(c.rawLoad(kNoFighter) == -1);
+    CHECK(c.rawLoad(static_cast<FighterId>(kMaxFighters)) == -1);
+    REQUIRE(c.reset(tempo60(), 0.0));
+    CHECK(c.rawLoad(kLeadA) == -1);
+}

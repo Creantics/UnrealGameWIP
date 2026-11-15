@@ -175,6 +175,24 @@ void AFTArenaFighter::SetCameraTilt(float Degrees)
 	}
 }
 
+void AFTArenaFighter::SetBoomRotation(const FRotator& Rotation)
+{
+	if (!Boom)
+	{
+		return;
+	}
+	if (GetController())
+	{
+		Boom->bUsePawnControlRotation = true;
+		Boom->SetUsingAbsoluteRotation(false);
+		return;
+	}
+	// Absolute: the body turning under it (its facing) does not drag the boom between this and the arm's tick.
+	Boom->bUsePawnControlRotation = false;
+	Boom->SetUsingAbsoluteRotation(true);
+	Boom->SetWorldRotation(Rotation);
+}
+
 void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
 {
 	Boom->TargetArmLength = ArmMeters * 100.f;

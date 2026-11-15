@@ -331,6 +331,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_ui_lone.cpp
         tests/test_ui_party.cpp
         tests/test_ui_stroke.cpp
+        tests/test_ui_swim.cpp
+        tests/test_ui_swim_feed.cpp
+        tests/test_ui_world_change.cpp
         tests/test_banter.cpp
         tests/test_battle.cpp
         tests/test_battle_camera.cpp
@@ -341,7 +344,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_strike_count.cpp
         tests/test_count_lift.cpp
         tests/test_fight_fate.cpp
+        tests/test_swim.cpp
         tests/test_partner_brain.cpp
+        tests/test_partner_station.cpp
         tests/test_combat_inputs.cpp
         tests/test_table_ring.cpp
         tests/test_boss_script.cpp

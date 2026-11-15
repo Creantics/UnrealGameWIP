@@ -792,6 +792,11 @@ struct ArenaInput {
     Vec2 cameraFacing{};
     // The partner's order (the player's button, ArenaFight::setPartner): 0 StayClose, 1 Spread (PartnerOrder).
     std::uint8_t partnerOrder = 1;
+    // The camera for the partner's stationing (PartnerBrain rules 8-12). On: the host's camera is known this tick,
+    // its ground position here and its forward from cameraFacing (else view). Off (the default, a host without a
+    // camera, every test that does not ask): no stationing, the partner as before.
+    bool cameraOn = false;
+    Vec2 cameraPos{};
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -966,6 +971,7 @@ struct ArenaAllyOut {
     int target = -1;                  // the enemy its string (or the brain's intent) is aimed at; -1: none
     std::uint8_t act = 0;             // the brain's intent this tick (PartnerAct as a number)
     bool partnerOn = false;           // a partner is set, an ally is on and the fight is not Lone
+    bool stationed = false;           // stationing ran this tick (ArenaInput::cameraOn, the partner up)
     float pairSeconds = 0.f;          // the partner's attack time the paired counters dealt this tick spent
                                       // (pairPartnerSeconds each), for its budget; 0 with no partner on (appended)
 };
@@ -1064,6 +1070,7 @@ struct ArenaStats {
                                  // seen at a boss string's start (that string counted)
     int takeovers = 0;         // times the player fell with the partner up and took its body (TookOver)
     int leadSwitches = 0;      // the host's switchLeads that swapped the bodies (both up)
+    int partnerSwaps = 0;      // times the partner's brain reset for a body change (a switch or a takeover)
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -1647,6 +1654,7 @@ private:
         bool guarding = false;
         float hurtLeft = 0.f;               // s of hitstun left
         std::uint8_t act = 0;               // the brain's last intent (PartnerAct)
+        bool stationed = false;             // ... and stationing ran for it
     };
 
     ArenaDef def_;

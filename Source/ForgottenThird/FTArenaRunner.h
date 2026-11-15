@@ -502,6 +502,9 @@ private:
 	// After a switch: the partner's first intents on the left body, its first move, and when it leaves the view.
 	void TrackSwitchPartner();
 	void LogHandoffChecks() const;
+	// A takeover's hand-off still in its hold, dropped (the fight ended, another body change, a restart): counted and
+	// logged, the names put with the figures.
+	void DropPendingHandoff(const TCHAR* Why);
 	// A partner blow's Hit: the lead's impact effect at kPartnerImpactScale at the partner's blow point, and the
 	// impact sound hook (both sources call it).
 	static constexpr float kPartnerImpactScale = 0.7f;
@@ -1140,6 +1143,8 @@ private:
 	bool bPartnerHeldOut = false;
 	int32 PartnerHeldLeaks = 0;
 	int32 PartnerJoinAsks = 0, PartnerJoinsLanded = 0, PartnerJoinsRefused = 0, PartnerJoinDisagree = 0;
+	// Stationing: steps the partner was on (and fed the camera), and of them the steps stationing ran.
+	int32 PartnerOnSteps = 0, PartnerStationedSteps = 0, PartnerCameraSteps = 0;
 	double PartnerJoinedAt = -1.0;
 	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
 	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and
@@ -1156,8 +1161,26 @@ private:
 	// The hand-off (SwapLeadFigures): the HUD's names follow the figures (a takeover's at its move's start); the
 	// takeover's move is due at HandoffMoveAt (Now), its input ignored to TakeoverInputUntil (fight time).
 	bool bNamesSwapped = false;
+	// All three on the fight's clock (Fight.time()). HandoffBegun: takeovers whose hold began; HandoffTakeovers: of them
+	// the moves that started; HandoffDropped: the rest (DropPendingHandoff).
 	double HandoffMoveAt = -1.0, HandoffFellAt = -1.0, TakeoverInputUntil = -1.0;
 	int32 HandoffTakeovers = 0, HandoffMovesOnTime = 0, HandoffSwitches = 0, TakeoverInputsIgnored = 0;
+	int32 HandoffBegun = 0, HandoffDropped = 0;
+	// The play camera's pose as last drawn (SteerCamera): the partner's stationing reads its lens from it, and a switch
+	// hands its rig to the new lead. False until the first frame draws one.
+	ftcore::ArenaCameraPose CameraPoseNow{};
+	bool bCameraPoseNow = false;
+	// After a switch's ease: the pose's lens against the camera manager's, on the ground (cm, measured once per switch).
+	double SwitchCamCheckAt = -1.0, SwitchCamWorst = 0.0;
+	int32 SwitchCamChecks = 0;
+	// The benched figure's gauntlet morphs after each body change (all back to 0: no tucked cuff on the body left).
+	// BenchMorphs: the gauntlet look's morphs, BenchMorphOwner the figure that wears that look.
+	TArray<FName> BenchMorphs;
+	TWeakObjectPtr<AFTArenaFighter> BenchMorphOwner;
+	int32 BenchMorphChecks = 0, BenchMorphUnchecked = 0;
+	float BenchMorphWorst = 0.f;
+	// The fight's partnerSwaps when this session began (a restart begins the brain again, not the fight's stats).
+	int32 PartnerSwapsBase = 0;
 	double HandoffWorstLate = 0.0;
 	float HandoffFrameDt = 0.f;
 	// After a switch: the fight time it happened, the left body's place then, the first step its brain moved it (or
