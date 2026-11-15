@@ -866,6 +866,15 @@ public:
 		}
 	}
 
+	// The rim's knock-out: the edge colour at the rim's alpha over the core's own footprint, so the rim shows only as a
+	// ring and a core below full alpha dims toward dark, never paling over the ink under it.
+	static FLinearColor Knock(const FLinearColor& Rim)
+	{
+		FLinearColor K = Table().Edge;
+		K.A = Rim.A;
+		return K;
+	}
+
 	// A line from Core. Closed: the first and last points are the same place (a ring), joined without a seam. Rim: a mark
 	// that wears accent2 (MarkTok) carries a crisp 1 px rim in that colour between its core and its dark contour, which
 	// moves out by the rim's width.
@@ -880,6 +889,7 @@ public:
 		if (Rim)
 		{
 			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, 0.8f * S, bClosed);
+			Ribbon(Parts[Under], St, Knock(*Rim), 1.f, 0.f, 0.8f, bClosed);
 		}
 		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, bClosed);
 	}
@@ -897,6 +907,7 @@ public:
 		if (Rim)
 		{
 			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, 0.8f * S, false);
+			Ribbon(Parts[Under], St, Knock(*Rim), 1.f, 0.f, 0.8f, false);
 		}
 		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, false);
 	}
@@ -913,6 +924,7 @@ public:
 		if (Rim)
 		{
 			Convex(Parts[Under], Pts, N, *Rim, 1.f, RimW, 0.8f * S);
+			Convex(Parts[Under], Pts, N, Knock(*Rim), 1.f, 0.f, 0.8f);
 		}
 		Convex(Parts[Core], Pts, N, C, 1.f, 0.f, 0.8f);
 	}
@@ -1516,7 +1528,10 @@ ftcore::UiFirstUseMode FirstUseMode()
 // take it (ordinary play holds the controlled lead alone, so there it reads NOT HERE and never takes the cursor; with
 // -ArenaPartner, -ArenaSwitchAt shows the real screen and switch); party_refused: the partner row
 // DOWN under the cursor and SWITCH: DOWN in the call slot; party_lone: the screen open on a Lone Carry (ALONE in the state
-// slot), the partner row NOT HERE. A held state never counts a showing or writes the save.
+// slot), the partner row NOT HERE; marks: the Load at 60 percent of the Release's threshold, the debt at 90 and the
+// boss's weak point open; release: the Load past the threshold (RELEASE, the name brightened) with its shimmer held
+// halfway; defeat: the result card's defeat word. With ft.NewUi.World these show each world's marks and danger words.
+// A held state never counts a showing or writes the save.
 enum class EUiStateShot : uint8
 {
 	None,
@@ -1530,6 +1545,9 @@ enum class EUiStateShot : uint8
 	Party,
 	PartyRefused,
 	PartyLone,
+	Marks,
+	Release,
+	Defeat,
 };
 bool IsLoneShot(EUiStateShot S)
 {
@@ -1557,6 +1575,9 @@ EUiStateShot UiStateShot()
 			: V == TEXT("party")                      ? EUiStateShot::Party
 			: V == TEXT("party_refused")              ? EUiStateShot::PartyRefused
 			: V == TEXT("party_lone")                 ? EUiStateShot::PartyLone
+			: V == TEXT("marks")                      ? EUiStateShot::Marks
+			: V == TEXT("release")                    ? EUiStateShot::Release
+			: V == TEXT("defeat")                     ? EUiStateShot::Defeat
 													  : EUiStateShot::None;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena UI: -UiStateShot=%s %s."), *V, S == EUiStateShot::None ? TEXT("is not a state; ignored") : TEXT("held"));
 		return S;
@@ -1802,12 +1823,29 @@ public:
 				Frame.lead.hp = Frame.lead.hpMax * 7 / 10;
 			}
 		}
+		if (Shot == EUiStateShot::Marks || Shot == EUiStateShot::Release)
+		{
+			ftcore::ArenaHudLead& Ld = Frame.lead;
+			if (Ld.loadMax <= 0 || Ld.releaseAt <= 0 || Ld.loadCap <= Ld.releaseAt)
+			{
+				Ld.loadMax = Ld.loadCap = 90; // a lead with no Load of its own: the default cap's numbers
+				Ld.releaseAt = 30;
+			}
+			Ld.load = Shot == EUiStateShot::Marks ? Ld.releaseAt * 6 / 10 : (Ld.releaseAt + Ld.loadCap) / 2;
+			Ld.releaseReady = Shot == EUiStateShot::Release;
+			Ld.overloaded = false;
+			Ld.debt = 90;
+		}
 		Frame.third.giftGuardReady = GiftWhy[1] == ftcore::PressReason::Ok;
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
 		const ftcore::ArenaHudLead& L = View.now.lead;
 		HpLost.Step(Frac(L.hp, L.hpMax), DeltaTime);
 		PartnerLost.Step(Frac(View.now.partner.hp, View.now.partner.hpMax), DeltaTime);
 		ftcore::uiLoadNameStep(LoadName, L, DeltaTime);
+		if (Shot == EUiStateShot::Release)
+		{
+			LoadName.shimmer = 0.45f; // the sweep held halfway for the still
+		}
 		// The rows trade places when the seats do (a lead switch): GetLeadSeat and GetAllySeat must swap on that tick.
 		ftcore::uiRowSwapStep(RowSwap, View.now, DeltaTime);
 		QteLeft = ftcore::uiQteLeft01(L.qte, Fight.time());
@@ -2530,6 +2568,9 @@ private:
 		case EUiStateShot::Wait:
 		case EUiStateShot::Party:
 		case EUiStateShot::PartyRefused:
+		case EUiStateShot::Marks:
+		case EUiStateShot::Release:
+		case EUiStateShot::Defeat:
 			break;
 		}
 	}
@@ -3057,13 +3098,17 @@ private:
 			P.Text(SlotX, NameBase - NoteAsc, LoadWord, NoteFont, SlotC);
 			break;
 		case ftcore::UiLeadWord::Release:
-			P.Text(SlotX, NameBase - NoteAsc, ReleaseWord, NoteFont, Gold);
+		{
+			// The Load's gold; the accent where the marks wear accent2 (no colour on text there).
+			const FLinearColor RelC = Shown().bMarksAccent2 ? Tok(UiToken::Accent, A) : Gold;
+			P.Text(SlotX, NameBase - NoteAsc, ReleaseWord, NoteFont, RelC);
 			if (!ReleaseKey.IsEmpty())
 			{
 				const float CapW = KeyCapW(ReleaseKeyW, S);
-				KeyCap(P, SlotX + ReleaseWordW + 8.f * S + CapW * 0.5f, CapMid(NameBase, NoteAsc), CapW, ReleaseKey, ReleaseKeyW, Gold);
+				KeyCap(P, SlotX + ReleaseWordW + 8.f * S + CapW * 0.5f, CapMid(NameBase, NoteAsc), CapW, ReleaseKey, ReleaseKeyW, RelC);
 			}
 			break;
+		}
 		case ftcore::UiLeadWord::Alone:
 			P.Text(SlotX, NameBase - NoteAsc, LoneAloneWord, NoteFont, SlotC);
 			break;
@@ -3671,7 +3716,7 @@ private:
 		bFoeNames = true;
 		// The weak point while it is open: on the boss's body itself.
 		bWeakOn = false;
-		if (B.present && B.weakPoint == ftcore::UiWeakPoint::Open)
+		if (B.present && (B.weakPoint == ftcore::UiWeakPoint::Open || UiStateShot() == EUiStateShot::Marks))
 		{
 			FVector Weak;
 			bWeakOn = Runner.GetBossWeakPoint(static_cast<int32>(B.slot), Weak) && Project(PC, Weak, Size, WeakAt) && OnScreen(WeakAt);
@@ -3770,6 +3815,13 @@ private:
 			bWon = Fight.phase() == ftcore::ArenaPhase::Victory;
 			ResultA = FMath::Clamp(static_cast<float>(Runner.GetResultAge() / kResultFade), 0.f, 1.f);
 			bAgain = !Runner.IsAutoPlay() && Runner.CanFightAgain();
+		}
+		else if (UiStateShot() == EUiStateShot::Defeat)
+		{
+			bResult = true; // the defeat card held for the still, over the fight
+			bWon = false;
+			ResultA = 1.f;
+			bAgain = false;
 		}
 		static const bool bShotRun = FParse::Param(FCommandLine::Get(), TEXT("ArenaShotUi")); // review stills carry no debug tag
 		TagMode = bShotRun ? 0 : (Runner.IsIdle() ? 2 : (Runner.IsAutoPlay() ? 1 : 0));
