@@ -1388,6 +1388,50 @@ TEST_CASE("arena partner: a fight begun Lone takes the partner on the call: join
     CHECK(disagree == 0);
 }
 
+namespace {
+// Bites parried (the guard pressed late in the startup, let go in the recovery) and each parry paired on the next
+// tick, until the first counter-stagger; its tick's ArenaAllyOut::pairSeconds is returned, -1 for no counter.
+float pairUntilCounter(PRig& r) {
+    std::size_t seen = 0;
+    for (int k = 0; k < 600 && !r.fight.over(); ++k) {
+        const ArenaEnemyOut& e = r.fight.output().enemies[0];
+        r.in.guard = e.brain == ArenaBrain::Attack &&
+                     ((e.part == ArenaPart::Startup && e.stateTime >= 0.27f) || e.part == ArenaPart::Active);
+        for (; seen < r.log.size(); ++seen)
+            if (r.log[seen].e.type == ArenaEventType::Parried) r.in.pair = true;
+        r.tick();
+        if (r.count(ArenaEventType::CounterStagger) > 0) return r.out->ally.pairSeconds;
+    }
+    return -1.f;
+}
+} // namespace
+
+TEST_CASE("arena partner: a counter dealt reports pairPartnerSeconds, and its pairCooldown outlasts a lead switch") {
+    PRig r;
+    r.enemy(biterKind(5, 3.f, 1.f), Vec2{1.5f, 0.f});
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.ally = Vec2{-10.f, 0.f}; // out of the bites' and its own blows' reach
+    r.go(true, 100);
+    CHECK(r.fight.output().ally.pairSeconds == 0.f);
+    const float spent = pairUntilCounter(r);
+    CHECK(spent == doctest::Approx(r.def.fighter.pairPartnerSeconds));
+    CHECK(spent == doctest::Approx(1.f));
+    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+    r.in.guard = false;
+    r.tick();
+    CHECK(r.out->ally.pairSeconds == 0.f); // the counter's tick only
+    // The clock is both leads': the switched-to lead's PARTNER press is still cooling.
+    REQUIRE(r.fight.switchLeads());
+    std::swap(r.bodies.player, r.bodies.ally);
+    CHECK(r.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+    // No partner in the fight: a counter spends no partner time.
+    PRig q;
+    q.enemy(biterKind(5, 3.f, 1.f), Vec2{1.5f, 0.f});
+    q.bodies.player = Vec2{0.f, 0.f};
+    q.go(false, 100);
+    CHECK(pairUntilCounter(q) == 0.f);
+}
+
 TEST_CASE("arena partner: switchLeads swaps both standing bodies and their hp; refused with the partner down or Lone") {
     PRig r;
     r.enemy(biterKind(150, 3.f, 5.f), Vec2{20.f, 0.f}); // far: nothing lands

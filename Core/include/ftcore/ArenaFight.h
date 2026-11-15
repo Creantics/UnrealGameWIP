@@ -102,7 +102,11 @@
 //   - Paired counter: the partner's input (`pair`, a second lead's press the host feeds) within
 //     pairWindow of a parry, before or after it, turns that parry into a counter-stagger: the parried
 //     enemy, if still open, takes pairHits times light[0]'s damage and is staggered (CounterStagger,
-//     then Staggered). A press is used once; a parry pairs with one press.
+//     then Staggered; a boss loses pairBossPoise of its max poise instead, below). A press is used once; a
+//     parry pairs with one press. A counter dealt starts pairCooldown, shared by both leads (a switch or a
+//     takeover keeps it; begin and restart clear it): a parry and a press paired inside it deal nothing and
+//     are both spent (the parry still opens the enemy). With a partner on, a counter dealt reports
+//     pairPartnerSeconds of the partner's attack time (ArenaAllyOut::pairSeconds) for the pair's budget.
 //   - Read (ReadCards.h, the partner's second input, as in Turns): as an enemy move starts (AttackStarted,
 //     each move of a string too) the partner is dealt up to kReadCards cards (CardsDealt): that move and
 //     decoys from the living enemies' other moves, each naming a move and its `tell`, no two tells alike.
@@ -221,7 +225,7 @@
 //   again from 0 once the break move is over and the boss acts as ever, and the next break comes whenever the
 //   threshold is reached again, with no other limit. A Read counter the break's cut brings lands as a Read counter
 //   once the break move has begun (its damage and poise, in the windup, so it adds no value); a stagger in the
-//   windup, by it or any blow, cancels that break and leaves the value at 0. A boss is never barred by setEnemyFlinch. The paired counter takes kArenaBossPairPoise of a boss's max
+//   windup, by it or any blow, cancels that break and leaves the value at 0. A boss is never barred by setEnemyFlinch. The paired counter takes pairBossPoise of a boss's max
 //   poise (times the ruling's poise scale) and staggers it only when that empties it; else it stays Open.
 // * Lock-on: `lock` locks the living enemy within lockRange with the best score of how close it is to
 //   the view direction and how near it is (the worker picks the weighting; nearest wins ties), or
@@ -385,7 +389,7 @@ inline constexpr int kArenaBossAimShareTenths = 3; // 3/10
 inline constexpr float kArenaBossBreakFloor = 0.5f;    // the least threshold (arena.json's floor; the fight's too)
 inline constexpr float kArenaBossBreakWindup = 0.5f;   // the break move's startup
 inline constexpr float kArenaBossBreakRecovery = 1.2f; // the break move's recovery: the punish window
-inline constexpr float kArenaBossPairPoise = 0.6f;     // the share of a boss's max poise the paired counter takes
+inline constexpr float kArenaBossPairPoise = 0.45f;    // ArenaFighter::pairBossPoise's default
 inline constexpr std::size_t kMaxArenaBreakPhases = 4;
 
 // How many whole beats of `bpm` `seconds` lasts (1 or more, within kArenaBeatTolerance), else -1 (also
@@ -515,6 +519,9 @@ struct ArenaFighter {
     float releasePoise = 1.f;   // poise each enemy the Release connects with loses per Load spent
     float pairWindow = 0.12f;   // seconds between a parry and the partner's press that still pair
     std::uint8_t pairHits = 3;  // a counter-stagger is worth this many of light[0]'s hits
+    float pairBossPoise = kArenaBossPairPoise; // the share of a boss's max poise a counter-stagger takes
+    float pairCooldown = 3.f;   // seconds after a counter-stagger dealt before another may be (both leads')
+    float pairPartnerSeconds = 1.f; // the partner's attack time a counter dealt with a partner on counts as
     float readPower = 0.5f;     // a Read counter at one stack: this many of light[0]'s damage ...
     float readStackPower = 0.2f; // ... plus this share for each stack past the first
     float readPoise = 5.f;      // poise a Read counter costs the attacker (upright only)
@@ -955,6 +962,8 @@ struct ArenaAllyOut {
     int target = -1;                  // the enemy its string (or the brain's intent) is aimed at; -1: none
     std::uint8_t act = 0;             // the brain's intent this tick (PartnerAct as a number)
     bool partnerOn = false;           // a partner is set, an ally is on and the fight is not Lone
+    float pairSeconds = 0.f;          // the partner's attack time the paired counters dealt this tick spent
+                                      // (pairPartnerSeconds each), for its budget; 0 with no partner on (appended)
 };
 
 struct ArenaOutput {
@@ -1013,6 +1022,7 @@ struct ArenaStats {
     int releases = 0;
     int overloads = 0;
     int counterStaggers = 0; // parries paired with the partner's press
+    int pairsCooled = 0;     // a parry and a press that paired inside pairCooldown: spent, nothing dealt
     int readsDealt = 0;      // deals of Read cards
     int reads = 0;           // cards picked
     int correctReads = 0;
@@ -1096,7 +1106,7 @@ struct ArenaBlow {
     int damage = 0;                            // hp, before the ruling (and before a guard)
     float poise = 0.f;                         // poise damage, before the ruling (and before armor). A counter-stagger:
                                                // the enemy kind's whole poise, as it breaks it (a boss:
-                                               // kArenaBossPairPoise of it)
+                                               // pairBossPoise of it)
     Vec2 from;                                 // the source's position (the partner's counters: the player's) ...
     Vec2 facing{1.f, 0.f};                     // ... and facing
     Vec2 at;                                   // the target's position
@@ -1228,7 +1238,8 @@ public:
     FTCORE_API std::uint8_t readMove() const;
     FTCORE_API bool readOpen() const;
     FTCORE_API int readStacks() const;
-    // The partner's press would pair now: a parry within pairWindow has opened an enemy still open and not yet paired.
+    // The partner's press would pair now: a parry within pairWindow has opened an enemy still open and not yet paired,
+    // and no counter dealt is cooling down (pairCooldown).
     FTCORE_API bool pairOpen() const;
     // Whether press `p` made now would be taken by the next tick, and if not why: the rules' own answer, read from the
     // predicate the press runs (the refusal startAction applies, canStart, the hit pause, pairOpen), so a key prompt
@@ -1236,7 +1247,8 @@ public:
     // no heal charges, no gun) or the fight has not begun or is won; Down: the player is down or the fight is lost;
     // Broken: the guard is broken; Busy: the press would wait in the buffer (an action not yet cut, a hit pause) and
     // may start when that ends; Overloaded, Stamina, Empty (no charge, no round, too little Load), Closed (Pair: no
-    // window open; a press now still waits pairWindow for a parry): refused. Pair is never Absent while the fight runs:
+    // window open; a press now still waits pairWindow for a parry), Cooldown (Pair: a counter dealt less than
+    // pairCooldown ago; it wins over Closed, as a press now deals nothing either way): refused. Pair is never Absent while the fight runs:
     // the press pairs with a parry whoever feeds it (a partner's host, a script, the Count key in a solo or Lone fight),
     // so PARTNER reads Closed or Ok there, the window's answer. Ok: the press starts its action on the
     // next tick (Guard: the guard is up, or goes up). The answer is the state's now: stamina coming back, or a reload
@@ -1525,6 +1537,8 @@ private:
         float pairPress = -1.0e9f;          // fight time of the partner's last unused press
         float pairParry = -1.0e9f;          // fight time of the last unpaired parry ...
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
+        float pairCoolUntil = -1.0e9f;      // fight time before which a paired counter deals nothing (pairCooldown)
+        float pairSpent = 0.f;              // ArenaAllyOut::pairSeconds this tick
         int readStacks = 0;                 // correct Reads in a row, 0..kMaxReadStacks
         float stopUntil = -1.0e9f;          // fight time a hit pause ends
         float takeHalfPress = -1.0e9f;      // fight time of the last unused take half press that opened a window

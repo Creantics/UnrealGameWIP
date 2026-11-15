@@ -247,8 +247,10 @@ OracleRun playOracle(const ArenaTable& t, float scale) {
     ArenaDef def = bossDef(t, "stone_bearer", true); // a body the riposte reaches round (the kite's is too wide)
     def.enemies[0].hp = 100000;
     def.enemies[0].breakValueAt = {1000.f, 1000.f, 1000.f, 1000.f};
-    def.enemies[0].poise = 10000.f; // no stagger: each pair (6000) leaves it Open, and no tick is skipped for one
+    def.enemies[0].poise = 10000.f; // no stagger: each pair (4500) leaves it Open, and no tick is skipped for one
     const float maxPoise = def.enemies[0].poise;
+    const float share = def.fighter.pairBossPoise; // 0.45 in the data
+    REQUIRE(share == doctest::Approx(0.45f));
     Rig r(def);
     Oracle o;
     o.fight = &r.fight;
@@ -292,7 +294,7 @@ OracleRun playOracle(const ArenaTable& t, float scale) {
             if (e.type == ArenaEventType::Staggered || e.type == ArenaEventType::BrokeOut) skip = true;
         }
         prev = out.enemies[0].brain;
-        if (o.pairPoise >= 0.f) CHECK(o.pairPoise == doctest::Approx(0.6f * maxPoise)); // 60%, not the whole poise
+        if (o.pairPoise >= 0.f) CHECK(o.pairPoise == doctest::Approx(share * maxPoise)); // 45%, not the whole poise
         if (skip || (o.pending == 0.f && r.value() < before)) continue;                 // a stagger, a break, the decay
         CHECK(r.value() == doctest::Approx(before + o.pending));
         ++run.ticksChecked;
@@ -301,9 +303,9 @@ OracleRun playOracle(const ArenaTable& t, float scale) {
             run.checked[k] += o.kinds[k];
             kindsThisTick += o.kinds[k];
         }
-        if (o.pairPoise >= 0.f && kindsThisTick == 1 && o.poiseAtPair > 0.6f * maxPoise + 1e-3f) {
+        if (o.pairPoise >= 0.f && kindsThisTick == 1 && o.poiseAtPair > share * maxPoise + 1e-3f) {
             CHECK(out.enemies[0].brain == ArenaBrain::Open);
-            CHECK(r.fight.enemyPoise(0) == doctest::Approx(o.poiseAtPair - 0.6f * maxPoise));
+            CHECK(r.fight.enemyPoise(0) == doctest::Approx(o.poiseAtPair - share * maxPoise));
             ++run.pairsOpen;
         }
     }

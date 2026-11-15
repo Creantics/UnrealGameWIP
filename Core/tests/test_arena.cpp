@@ -3988,6 +3988,92 @@ TEST_CASE("arena pairOpen: true after a tick exactly when the partner's press on
     CHECK_FALSE(none.fight.pairOpen()); // before the parry
 }
 
+TEST_CASE("arena paired counter: a counter dealt starts pairCooldown; inside it a pair is spent and says Cooldown") {
+    Rig probe(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+    parryRun(probe, 40);
+    const Logged* parried = probe.find(ArenaEventType::Parried);
+    REQUIRE(parried);
+    const int p = parried->tick;
+    CHECK(ruleFighter().pairCooldown == doctest::Approx(3.f));
+    {   // the clock: Cooldown (over Closed) until pairCooldown has passed; a restart clears it
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(rig, p + 1, p);
+        REQUIRE(rig.count(ArenaEventType::CounterStagger) == 1);
+        CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+        CHECK_FALSE(rig.fight.pairOpen());
+        rig.in.guard = false;
+        rig.runFor(ruleFighter().pairCooldown - 0.1f);
+        CHECK(rig.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+        rig.runFor(0.2f);
+        CHECK(rig.fight.pressReason(ArenaPress::Pair) != PressReason::Cooldown);
+        Rig again(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        parryRun(again, p + 1, p);
+        REQUIRE(again.fight.pressReason(ArenaPress::Pair) == PressReason::Cooldown);
+        again.fight.restart();
+        CHECK(again.fight.pressReason(ArenaPress::Pair) != PressReason::Cooldown);
+    }
+    // Every bite parried (the guard pressed late in its startup, let go in its recovery) and every parry paired on
+    // the tick after it: with a long clock only the first counter deals; with none, each does.
+    const auto play = [](float cooldown, int& parries, int& counters, int& cooled, int& hp) {
+        ArenaFighter f = ruleFighter();
+        f.pairCooldown = cooldown;
+        Rig rig(f, {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 5))});
+        rig.put(0, 1.5f, 0.f);
+        std::size_t seen = 0;
+        for (int k = 0; k < 1200 && rig.fight.phase() == ArenaPhase::Fighting; ++k) {
+            const ArenaEnemyOut& e = rig.out().enemies[0];
+            rig.in.guard = e.brain == ArenaBrain::Attack &&
+                           ((e.part == ArenaPart::Startup && e.stateTime >= 0.27f) || e.part == ArenaPart::Active);
+            for (; seen < rig.log.size(); ++seen)
+                if (rig.log[seen].event.type == ArenaEventType::Parried) rig.in.pair = true;
+            rig.tick();
+        }
+        parries = rig.count(ArenaEventType::Parried);
+        counters = rig.count(ArenaEventType::CounterStagger);
+        cooled = rig.fight.stats().pairsCooled;
+        hp = rig.fight.enemyHp(0);
+    };
+    int parries = 0, counters = 0, cooled = 0, hp = 0;
+    play(30.f, parries, counters, cooled, hp);
+    REQUIRE(parries >= 2);
+    CHECK(counters == 1);
+    CHECK(cooled == parries - 1);
+    CHECK(hp == 100 - 30); // the spent pairs dealt nothing
+    play(0.f, parries, counters, cooled, hp);
+    REQUIRE(parries >= 2);
+    CHECK(counters >= 2);
+    CHECK(cooled == 0);
+}
+
+TEST_CASE("arena paired counter: pairBossPoise, pairCooldown and pairPartnerSeconds load from data, in range") {
+    CHECK(kArenaBossPairPoise == doctest::Approx(0.45f));
+    const ArenaFighter plain;
+    CHECK(plain.pairBossPoise == doctest::Approx(0.45f));
+    CHECK(plain.pairCooldown == doctest::Approx(3.f));
+    CHECK(plain.pairPartnerSeconds == doctest::Approx(1.f));
+    const auto with = [](const char* kv) {
+        return tableJson(std::string(R"([ { "id": "default", )") + kv + " } ]", kEnemiesOk);
+    };
+    ArenaTable t;
+    REQUIRE(loadError(with(R"("pairBossPoise": 0.3, "pairCooldown": 5, "pairPartnerSeconds": 0.5)"), &t).empty());
+    REQUIRE(!t.fighters.empty());
+    CHECK(t.fighters[0].pairBossPoise == doctest::Approx(0.3f));
+    CHECK(t.fighters[0].pairCooldown == doctest::Approx(5.f));
+    CHECK(t.fighters[0].pairPartnerSeconds == doctest::Approx(0.5f));
+    CHECK(contains(loadError(with(R"("pairBossPoise": 1.5)")), "pairBossPoise"));
+    CHECK(contains(loadError(with(R"("pairBossPoise": -0.1)")), "pairBossPoise"));
+    CHECK(contains(loadError(with(R"("pairCooldown": 31)")), "pairCooldown"));
+    CHECK(contains(loadError(with(R"("pairCooldown": -1)")), "pairCooldown"));
+    CHECK(contains(loadError(with(R"("pairPartnerSeconds": 11)")), "pairPartnerSeconds"));
+    CHECK(contains(loadError(with(R"("pairPartnerSeconds": "long")")), "pairPartnerSeconds"));
+    // The shipped table carries the ruled values.
+    const ArenaTable shipped = loadShipped();
+    REQUIRE(!shipped.fighters.empty());
+    CHECK(shipped.fighters[0].pairBossPoise == doctest::Approx(0.45f));
+    CHECK(shipped.fighters[0].pairCooldown == doctest::Approx(3.f));
+    CHECK(shipped.fighters[0].pairPartnerSeconds == doctest::Approx(1.f));
+}
+
 // ---- pressReason: the rules' own answer for a key prompt ----
 
 namespace {
@@ -4172,6 +4258,15 @@ TEST_CASE("arena pressReason: at every tick each press's answer is what that pre
         rig.put(0, 1.5f, 0.f);
         runChecked(rig, 70, t, [](Rig& r, int k) { r.in.guard = k >= 19; });
     }
+    {   // a counter dealt (pressed on the parry's tick, about 25), then its pairCooldown: PARTNER says Cooldown
+        Rig rig(ruleFighter(), {hitterKind(swing(0.4f, 0.15f, 0.5f, 2.f, 20))});
+        rig.put(0, 1.5f, 0.f);
+        runChecked(rig, 260, t, [](Rig& r, int k) {
+            r.in.guard = k >= 19 && k <= 60;
+            r.in.pair = k == 25;
+        });
+        CHECK(rig.fight.stats().counterStaggers == 1);
+    }
     {   // a guard broken by one block
         ArenaAttack crush = swing(0.4f, 0.15f, 0.5f, 2.f, 5);
         crush.guardDamage = 150.f;
@@ -4216,7 +4311,7 @@ TEST_CASE("arena pressReason: at every tick each press's answer is what that pre
         INFO("reason " << static_cast<int>(r));
         CHECK(t.seen[static_cast<std::size_t>(r)] > 0);
     }
-    CHECK(t.seen[static_cast<std::size_t>(PressReason::Cooldown)] == 0); // the fight has no cooldowns; the gift slot does
+    CHECK(t.seen[static_cast<std::size_t>(PressReason::Cooldown)] > 0); // the paired counter's pairCooldown
     CHECK(t.pairOk > 0);
     CHECK(t.edges * 50 < t.checked); // the tick's own regen and reload are rare edges
 }
