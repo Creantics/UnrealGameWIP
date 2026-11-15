@@ -76,6 +76,21 @@ enum class WaveDirection : std::uint8_t {
     Reverse,  // it is outside: the sphere holds the world the wave leaves
 };
 
+// How the front is drawn (the shader's WorldWaveOrigin.w): the old refraction band, ink in water (A), or a blot dissolve
+// (B). Part of the wave's definition; the values are the shader's.
+enum class WaveFront : std::uint8_t {
+    Band = 0,
+    Ink = 1,
+    Blots = 2,
+};
+
+// A light the second world keeps (every other emissive dies there): a sphere, metres; radius 0 is none.
+struct WaveKeepLight {
+    WaveVec3 centre;
+    float radius = 0.f;
+};
+inline constexpr int kWaveKeepLights = 2;
+
 struct WorldWaveParams {
     WaveVec3 origin;                              // metres
     double startTime = 0.0;                       // seconds, on the host's wave clock
@@ -95,6 +110,8 @@ struct WorldWaveParams {
     // can reach it. The classification and the cues keep the outer edge r.
     float tongueLead = 0.f;
     WaveDirection direction = WaveDirection::Forward;
+    WaveFront front = WaveFront::Ink;             // ink in water unless a wave's definition picks another
+    WaveKeepLight keep[kWaveKeepLights];          // the composed lights; none by default
 };
 
 // The street preset: the wave run through a street at walking scale, a front that rises up the buildings it meets, the
@@ -185,6 +202,25 @@ FTCORE_API WorldWaveStep updateWorldWave(WorldWaveState& state, const WorldWaveP
                                          const WaveVec3& viewer);
 // Which side of the front a point is on (see the note above).
 FTCORE_API WaveClass classifyWorldWave(const WorldWaveFrame& frame, const WaveVec3& origin, const WaveVec3& point);
+
+// The constants the host gives the wave's shaders for a frame, in their units (cm), from the same state the
+// classification uses, so the pixels and the gameplay agree on which world a point is in. The shaders' band runs from
+// the inner edge (radius - bandWidth) to the tongues' reach (radius + tongueLead * bandWidth): reachCm is that reach and
+// spanCm the whole span, so the tear's tongues can run ahead of the outer edge the cues use.
+struct WorldWaveShaderConstants {
+    float originCm[3] = {0.f, 0.f, 0.f};
+    float front = 0.f;    // WaveFront's value
+    float reachCm = 0.f;  // 0 before the front moves
+    float spanCm = 0.f;
+    float reverse = 0.f;  // 1 for Reverse
+    float keepCm[kWaveKeepLights][4] = {};  // xyz centre, w radius (0 off)
+};
+FTCORE_API WorldWaveShaderConstants worldWaveShaderConstants(const WorldWaveParams& params, const WorldWaveFrame& frame);
+// The shaders' side of a point (metres) from those constants, tongues set aside: inside the inner edge the side the wave
+// brings, beyond the reach the side it leaves, the span between them the band (its value (reach - d) / span). Agrees with
+// classifyWorldWave everywhere but the tongues' lead ahead of the outer edge, which the shaders draw as band and the
+// classification keeps on the side the wave leaves.
+FTCORE_API WaveClass classifyWorldWaveShader(const WorldWaveShaderConstants& constants, const WaveVec3& point);
 
 // Which world a placed thing belongs to. The values are the ones the materials read (see the host's slot constants).
 enum class WorldTag : std::uint8_t {

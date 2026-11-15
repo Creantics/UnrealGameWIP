@@ -502,6 +502,8 @@ UMaterial* BuildFoliage(UTexture2D* const* Maps, UMaterialParameterCollection* L
 	// The world wave's cut (FTWorldWave.h): a tagged plant is clipped on the front's ragged edge. MF_WorldWaveCut reads
 	// the look's collection, so with the environment's (the wind) the master reads two, the most a material may.
 	FTWorldWave::AddCut(kTag, Material, -700, 1700);
+	// ... and behind the front it takes the second world's state (grey, a stop down, damp, grimed).
+	FTWorldWave::AddState(kTag, Material, -700, 1900);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Material);
@@ -549,6 +551,8 @@ UMaterial* BuildBark(UTexture2D* Color, UTexture2D* Normal, UMaterialParameterCo
 	// The world wave's cut (FTWorldWave.h): a tagged plant is clipped on the front's ragged edge. MF_WorldWaveCut reads
 	// the look's collection, so with the environment's (the wind) the master reads two, the most a material may.
 	FTWorldWave::AddCut(kTag, Material, -700, 1700);
+	// ... and behind the front it takes the second world's state (grey, a stop down, damp, grimed).
+	FTWorldWave::AddState(kTag, Material, -700, 1900);
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Material);

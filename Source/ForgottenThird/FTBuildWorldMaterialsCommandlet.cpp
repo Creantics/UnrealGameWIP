@@ -8,6 +8,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
+#include "FTWorldWave.h"
 #include "ImageUtils.h"
 #include "Materials/MaterialExpressionTextureObject.h"
 #include "Misc/FileHelper.h"
@@ -337,6 +338,8 @@ UMaterial* BuildSurfaceMaterial(UPackage* Package, UMaterialParameterCollection*
 	{
 		AddWeather(Material, Custom, WorldPos, Look, Detail);
 	}
+	// The world wave's second-world state behind its front (FTWorldWave.h); missing until FTBuildWaveMaterials has run.
+	FTWorldWave::AddState(TEXT("FTBuildWorldMaterials"), Material, 300, -600);
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();

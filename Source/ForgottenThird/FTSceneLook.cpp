@@ -173,6 +173,8 @@ int32 FTScene::ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftc
 		{
 			FT_LOOK_SET(sunLux, SunLight->SetIntensity(Look.sunLux))
 			FT_LOOK_SET(sunKelvin, SunLight->SetUseTemperature(true); SunLight->SetTemperature(Look.sunKelvin))
+			// The sun's cloud shadows are not the look's: a map keeps what its sun has (only a world wave sets them, through
+			// SetSunCloudShadows, and gives the map's own back).
 			break;
 		}
 	}
@@ -282,6 +284,33 @@ UMaterialParameterCollectionInstance* CollectionInstance(UWorld* World, const TC
 	bBuilt = Collection != nullptr;
 	return Collection ? World->GetParameterCollectionInstance(Collection) : nullptr;
 }
+}
+
+int32 FTScene::SetSunCloudShadows(UWorld* World, bool bCast)
+{
+	if (!World)
+	{
+		return -1;
+	}
+	for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+	{
+#if WITH_EDITORONLY_DATA
+		UDirectionalLightComponent* SunLight = It->GetComponent();
+#else
+		UDirectionalLightComponent* SunLight = Cast<UDirectionalLightComponent>(It->GetLightComponent());
+#endif
+		if (SunLight && SunLight->IsUsedAsAtmosphereSunLight())
+		{
+			const int32 Had = SunLight->bCastCloudShadows ? 1 : 0;
+			if (static_cast<bool>(SunLight->bCastCloudShadows) != bCast)
+			{
+				SunLight->bCastCloudShadows = bCast;
+				SunLight->MarkRenderStateDirty();
+			}
+			return Had;
+		}
+	}
+	return -1;
 }
 
 int32 FTScene::ApplyLookParameters(UWorld* World, const ftcore::SceneLook& Look)

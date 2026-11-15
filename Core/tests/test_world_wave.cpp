@@ -81,6 +81,17 @@ TEST_CASE("evaluateWorldWave: the prelude runs 0.3 s before the front moves") {
     CHECK(moving.radius == doctest::Approx(15.f).epsilon(1e-4));
 }
 
+TEST_CASE("evaluateWorldWave: a huge finite time is a settled wave, not an overflowing cast") {
+    WorldWaveParams p;
+    p.startTime = -1.0e300;
+    const WorldWaveFrame far = evaluateWorldWave(p, 1.0e300);
+    CHECK(far.settled);
+    CHECK_FALSE(far.active);
+    CHECK(far.preludeProgress == doctest::Approx(1.f));
+    CHECK(far.radius == doctest::Approx(p.maxRadius));
+    CHECK(std::isfinite(far.bandWidth));
+}
+
 TEST_CASE("classifyWorldWave: old beyond the front, new inside the band, the band between") {
     WorldWaveParams p;
     p.origin = WaveVec3{10.f, -5.f, 2.f};
@@ -122,6 +133,100 @@ TEST_CASE("classifyWorldWave: Reverse swaps the sides, the band's value stays ge
     const WaveClass band = classifyWorldWave(f, p.origin, offsetFrom(p.origin, 19.f));
     CHECK(band.side == WaveSide::Band);
     CHECK(band.band == doctest::Approx(1.f / w).epsilon(1e-3));
+}
+
+TEST_CASE("WorldWaveParams: ink is the default front, no kept lights; a bad keep or front is refused") {
+    const WorldWaveParams p = streetWaveParams();
+    CHECK(p.front == WaveFront::Ink);
+    CHECK(p.keep[0].radius == 0.f);
+    CHECK(p.keep[1].radius == 0.f);
+    CHECK(checkWorldWaveParams(p) == WorldWaveRefusal::None);
+
+    WorldWaveParams bad = p;
+    bad.keep[1].radius = -1.f;
+    CHECK(checkWorldWaveParams(bad) == WorldWaveRefusal::BadShape);
+    bad = p;
+    bad.keep[0].centre.x = std::numeric_limits<float>::infinity();
+    CHECK(checkWorldWaveParams(bad) == WorldWaveRefusal::BadShape);
+    bad = p;
+    bad.front = static_cast<WaveFront>(7);
+    CHECK(checkWorldWaveParams(bad) == WorldWaveRefusal::BadShape);
+}
+
+TEST_CASE("worldWaveShaderConstants: centimetres, the front's value, the keeps, reach and span from the tongues") {
+    WorldWaveParams p = streetWaveParams();
+    p.origin = WaveVec3{410.f, -157.f, 7.5f};
+    p.front = WaveFront::Blots;
+    p.keep[0] = WaveKeepLight{WaveVec3{419.34f, -157.05f, 7.61f}, 0.2f};
+    const WorldWaveFrame f = evaluateWorldWave(p, 1.2);
+    REQUIRE(f.radius > 0.f);
+    const WorldWaveShaderConstants c = worldWaveShaderConstants(p, f);
+    CHECK(c.originCm[0] == doctest::Approx(41000.f));
+    CHECK(c.originCm[1] == doctest::Approx(-15700.f));
+    CHECK(c.originCm[2] == doctest::Approx(750.f));
+    CHECK(c.front == doctest::Approx(2.f));
+    CHECK(c.reverse == doctest::Approx(0.f));
+    CHECK(c.keepCm[0][0] == doctest::Approx(41934.f));
+    CHECK(c.keepCm[0][3] == doctest::Approx(20.f));
+    CHECK(c.keepCm[1][3] == doctest::Approx(0.f));
+    const float lead = p.tongueLead * f.bandWidth;
+    CHECK(c.reachCm == doctest::Approx((f.radius + lead) * 100.f));
+    CHECK(c.spanCm == doctest::Approx((f.bandWidth + lead) * 100.f));
+
+    // Before the front moves the shaders get no reach, as Core has no front.
+    const WorldWaveShaderConstants still = worldWaveShaderConstants(p, evaluateWorldWave(p, 0.1));
+    CHECK(still.reachCm == 0.f);
+    CHECK(still.spanCm == 0.f);
+}
+
+TEST_CASE("classifyWorldWaveShader agrees with classifyWorldWave on a ring of points, both directions, all phases") {
+    for (const WaveDirection dir : {WaveDirection::Forward, WaveDirection::Reverse}) {
+        WorldWaveParams p = streetWaveParams();
+        p.origin = WaveVec3{410.f, -157.f, 7.5f};
+        p.direction = dir;
+        const WaveSide brings = dir == WaveDirection::Forward ? WaveSide::New : WaveSide::Old;
+        const WaveSide leaves = dir == WaveDirection::Forward ? WaveSide::Old : WaveSide::New;
+        int checked = 0;
+        int tongue = 0;
+        for (const double t : {0.1, 0.35, 0.6, 1.0, 2.0, 4.0, 9.0}) {
+            const WorldWaveFrame f = evaluateWorldWave(p, t);
+            const WorldWaveShaderConstants c = worldWaveShaderConstants(p, f);
+            const float lead = f.radius > 0.f ? p.tongueLead * f.bandWidth : 0.f;
+            for (int a = 0; a < 16; ++a) {
+                const float az = 6.2831853f * static_cast<float>(a) / 16.f;
+                const float el = 0.4f * std::sin(3.f * az);
+                for (int k = 0; k <= 80; ++k) {
+                    const float d = 0.25f + 2.f * static_cast<float>(k);
+                    // Skip the 2 cm either side of an edge, where float rounding may fall either way.
+                    if (f.radius > 0.f && (std::fabs(d - (f.radius - f.bandWidth)) < 0.02f ||
+                                           std::fabs(d - f.radius) < 0.02f || std::fabs(d - (f.radius + lead)) < 0.02f)) {
+                        continue;
+                    }
+                    const WaveVec3 pt{p.origin.x + d * std::cos(el) * std::cos(az),
+                                      p.origin.y + d * std::cos(el) * std::sin(az), p.origin.z + d * std::sin(el)};
+                    const WaveClass core = classifyWorldWave(f, p.origin, pt);
+                    const WaveClass gpu = classifyWorldWaveShader(c, pt);
+                    ++checked;
+                    if (core.side == brings) {
+                        CHECK(gpu.side == brings);
+                    } else if (core.side == WaveSide::Band) {
+                        CHECK(gpu.side == WaveSide::Band);
+                    } else if (f.radius > 0.f && d <= f.radius + lead) {
+                        // The tongues' lead: band to the eye, still the old side to gameplay.
+                        CHECK(gpu.side == WaveSide::Band);
+                        CHECK(gpu.band < p.tongueLead / (1.f + p.tongueLead) + 1e-3f);
+                        ++tongue;
+                    } else {
+                        CHECK(gpu.side == leaves);
+                    }
+                    // Neither ever says the wave has brought a point the other has not.
+                    CHECK((core.side == brings) == (gpu.side == brings));
+                }
+            }
+        }
+        CHECK(checked > 8000);
+        CHECK(tongue > 0);
+    }
 }
 
 TEST_CASE("updateWorldWave: cameraInside ramps over 0.25 s from the moment the inner edge passes") {

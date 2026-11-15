@@ -70,6 +70,12 @@ WorldWaveRefusal checkWorldWaveParams(const WorldWaveParams& params) {
     for (const float v : shape) {
         if (!waveNonNegative(v)) return WorldWaveRefusal::BadShape;
     }
+    for (const WaveKeepLight& k : params.keep) {
+        if (!waveNonNegative(k.radius) || !waveFinite(k.centre)) return WorldWaveRefusal::BadShape;
+    }
+    if (params.front != WaveFront::Band && params.front != WaveFront::Ink && params.front != WaveFront::Blots) {
+        return WorldWaveRefusal::BadShape;
+    }
     return WorldWaveRefusal::None;
 }
 
@@ -117,8 +123,12 @@ WorldWaveParams streetWaveParams() {
 WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {
     WorldWaveFrame frame;
     frame.direction = params.direction;
-    const double since = time - params.startTime;
-    if (!std::isfinite(since) || since < 0.0 || checkWorldWaveParams(params) != WorldWaveRefusal::None) return frame;
+    const double sinceRaw = time - params.startTime;
+    if (!std::isfinite(sinceRaw) || sinceRaw < 0.0 || checkWorldWaveParams(params) != WorldWaveRefusal::None) return frame;
+    // A huge finite time would overflow the casts to float below (undefined): past kWaveTimeCap seconds every wave has
+    // long settled, so the time is held there.
+    constexpr double kWaveTimeCap = 1.0e6;
+    const double since = sinceRaw < kWaveTimeCap ? sinceRaw : kWaveTimeCap;
     frame.preludeProgress =
         params.prelude > 0.f ? waveClamp(static_cast<float>(since / static_cast<double>(params.prelude)), 0.f, 1.f) : 1.f;
     const float tau = static_cast<float>(since - static_cast<double>(params.prelude));
@@ -194,6 +204,45 @@ WaveClass classifyWorldWave(const WorldWaveFrame& frame, const WaveVec3& origin,
     if (r <= 0.f || d > r) {
         c.side = forward ? WaveSide::Old : WaveSide::New;
         c.band = 0.f;
+    } else if (d < r - w) {
+        c.side = forward ? WaveSide::New : WaveSide::Old;
+        c.band = 1.f;
+    } else {
+        c.side = WaveSide::Band;
+        c.band = w > 0.f ? waveClamp((r - d) / w, 0.f, 1.f) : 0.f;
+    }
+    return c;
+}
+
+WorldWaveShaderConstants worldWaveShaderConstants(const WorldWaveParams& params, const WorldWaveFrame& frame) {
+    WorldWaveShaderConstants c;
+    c.originCm[0] = params.origin.x * 100.f;
+    c.originCm[1] = params.origin.y * 100.f;
+    c.originCm[2] = params.origin.z * 100.f;
+    c.front = static_cast<float>(params.front);
+    const float lead = frame.radius > 0.f ? params.tongueLead * frame.bandWidth : 0.f;
+    c.reachCm = frame.radius > 0.f ? (frame.radius + lead) * 100.f : 0.f;
+    c.spanCm = frame.radius > 0.f ? (frame.bandWidth + lead) * 100.f : 0.f;
+    c.reverse = frame.direction == WaveDirection::Reverse ? 1.f : 0.f;
+    for (int k = 0; k < kWaveKeepLights; ++k) {
+        const WaveKeepLight& keep = params.keep[k];
+        c.keepCm[k][0] = keep.centre.x * 100.f;
+        c.keepCm[k][1] = keep.centre.y * 100.f;
+        c.keepCm[k][2] = keep.centre.z * 100.f;
+        c.keepCm[k][3] = keep.radius * 100.f;
+    }
+    return c;
+}
+
+WaveClass classifyWorldWaveShader(const WorldWaveShaderConstants& constants, const WaveVec3& point) {
+    const WaveVec3 origin{constants.originCm[0] * 0.01f, constants.originCm[1] * 0.01f, constants.originCm[2] * 0.01f};
+    const float d = waveDistance(origin, point) * 100.f;
+    const float r = constants.reachCm;
+    const float w = constants.spanCm;
+    const bool forward = constants.reverse < 0.5f;
+    WaveClass c;
+    if (r <= 0.f || d > r) {
+        c.side = forward ? WaveSide::Old : WaveSide::New;
     } else if (d < r - w) {
         c.side = forward ? WaveSide::New : WaveSide::Old;
         c.band = 1.f;

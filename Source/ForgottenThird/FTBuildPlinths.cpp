@@ -1,5 +1,8 @@
 #include "FTBuildPlinths.h"
 
+// Builder code: editor builds only (the commandlets that call it are editor-only).
+#if WITH_EDITOR
+
 #include "ForgottenThird.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -70,3 +73,5 @@ bool FTPlinths::Plan(const ftcore::MassingGround& Ground, const std::vector<ftco
 	}
 	return true;
 }
+
+#endif // WITH_EDITOR
