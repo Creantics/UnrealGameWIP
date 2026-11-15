@@ -1176,28 +1176,17 @@ bool UFTWorldWaveSubsystem::EnsureStencil()
 		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no r.CustomDepth; no worn piece tagged, the catch-all is off."));
 		return false;
 	}
-	const int32 Was = Mode->GetInt();
-	if (Was >= 3)
-	{
-		return true;
-	}
-	// The stencil needs 3 (2 or lower allocates none, and the catch-all would see none). A value set at a higher priority
-	// (the console) ignores this set, so it is read back.
-	Mode->Set(3, ECVF_SetByCode);
+	// The stencil needs 3 (2 or lower allocates none, and the catch-all would see none). The project starts with it
+	// (Config/DefaultEngine.ini): raising it at run time stalled the first frame about 8 s, so this only checks and warns.
 	if (Mode->GetInt() < 3)
 	{
 		bStencilRefused = true;
 		UE_LOG(LogForgottenThird, Warning,
-			TEXT("WorldWave: r.CustomDepth stays %d (set at a higher priority than code); the worn pieces' stencil can't work, so none is tagged and ")
+			TEXT("WorldWave: r.CustomDepth is %d, not 3 (the project's setting); the worn pieces' stencil can't work, so none is tagged and ")
 			TEXT("the pieces not wave-aware keep their own world across the front."),
 			Mode->GetInt());
 		return false;
 	}
-	if (CustomDepthBefore < 0)
-	{
-		CustomDepthBefore = Was;
-	}
-	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth %d -> 3 for the worn pieces' stencil."), Was);
 	return true;
 }
 
@@ -1249,16 +1238,7 @@ void UFTWorldWaveSubsystem::RestoreWorn()
 	bStencilRefused = false;
 	AuditRoots.Reset();
 	Spawned.Reset();
-	if (CustomDepthBefore >= 0)
-	{
-		if (IConsoleVariable* Mode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth")))
-		{
-			Mode->Set(CustomDepthBefore, ECVF_SetByCode);
-		}
-		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth back to %d; %d worn pieces' custom depth as it was."), CustomDepthBefore, Restored);
-		CustomDepthBefore = -1;
-	}
-	else if (Restored > 0)
+	if (Restored > 0)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %d worn pieces' custom depth as it was."), Restored);
 	}

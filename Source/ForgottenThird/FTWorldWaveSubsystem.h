@@ -170,7 +170,7 @@ private:
 	// glasses, grooms, held weapons). A slot is wave-aware when its master's FTWaveAware default is 1 (FTWorldWave::
 	// WaveAware, the same in the editor and a cooked build). Every primitive with a slot renders custom depth: stencil
 	// FTWorldWave::kAwareStencil when every slot is wave-aware (the post leaves it), FTWorldWave::kCatchStencil when any
-	// is not (PP_WorldWave gives its pixels the character state; r.CustomDepth raised to 3 if lower). A primitive's own
+	// is not (PP_WorldWave gives its pixels the character state; r.CustomDepth must be 3, the project's setting). A primitive's own
 	// settings are recorded the first time they are changed, and RestoreWorn puts them back. A primitive that already
 	// renders custom depth with another stencil is left (its other slots counted unconverted, logged once). A master not
 	// wave-aware is logged once a run; a primitive that mixes both kinds takes 223 (its wave-aware slots then take the
@@ -190,10 +190,10 @@ private:
 	// settled state included; never per frame): a weapon drawn, a jacket state shown or a material swapped is corrected.
 	void ReAudit();
 	void OnActorSpawned(AActor* Actor);
-	// Puts every primitive the audit changed back as it was, and r.CustomDepth if the audit raised it; stops the re-audit.
+	// Puts every primitive the audit changed back as it was; stops the re-audit.
 	void RestoreWorn();
-	// r.CustomDepth at 3 (the stencil), raised once if lower and read back: false when the raise is refused (set at a
-	// higher priority, the console say), warned once; the audit then tags nothing, as the catch-all could not work.
+	// r.CustomDepth at 3 (the stencil, the project's setting), checked only: false when it is lower (the setting
+	// overridden, the console say), warned once; the audit then tags nothing, as the catch-all could not work.
 	bool EnsureStencil();
 	// The FTWaveAware marker of a slot's master (-1 none), read once per master for the life of the wave state.
 	float AwareMarker(const UMaterialInterface& Material);
@@ -210,8 +210,7 @@ private:
 	TMap<FObjectKey, FWornDepth> WornDepth;
 	TMap<FObjectKey, float> AwareMarkers;
 	uint32 AuditPass = 0;
-	int32 CustomDepthBefore = -1; // r.CustomDepth before the audit raised it; -1 untouched
-	bool bStencilRefused = false;  // the raise was refused (warned once)
+	bool bStencilRefused = false;  // r.CustomDepth was found below 3 (warned once)
 	FTimerHandle AuditTimer;
 	FDelegateHandle SpawnHandle;
 	// The audit's scratch, reserved once (no allocation in a re-audit once the arrays have grown).
