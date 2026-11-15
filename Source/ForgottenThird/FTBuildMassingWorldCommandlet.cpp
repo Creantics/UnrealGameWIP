@@ -34,6 +34,7 @@
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Hash/CityHash.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
@@ -57,6 +58,7 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "StaticMeshAttributes.h"
 #include "UObject/Package.h"
+#include "UObject/PackageFileSummary.h"
 #include "UObject/SavePackage.h"
 
 #include "FTExploreDirector.h"
@@ -98,6 +100,10 @@ constexpr double kSeaReach = 20000.0;
 constexpr double kSeaFarReach = 60000.0;
 constexpr double kSeaFarDrop = 40.0; // m under the datum (the bed lies at -33 m at its deepest)
 constexpr double kSeaBedDeepest = 33.0; // m under the datum
+// The wall basin the lead may dive in (plan frame, metres): from the sea's edge out to its buoy line, between these
+// two lines across the coast. -SeaDive=X0,Y0,X1,Y1 sets another box; -SeaDive=none, no free swim.
+constexpr double kSeaDiveSouthY = 620.0;
+constexpr double kSeaDiveNorthY = 720.0;
 // How far (cm) the entry and a goal may lie from the navmesh and still count as on it.
 const FVector kNavProjectExtent(300.0, 300.0, 600.0);
 // The material slot of a sloped box's mesh.
@@ -904,11 +910,20 @@ int32 AddPlateNavNull(AActor& Built, const ftcore::MassingBox& Box, double Side)
 	return static_cast<int32>(Count);
 }
 
+// SlopedMesh's generator settings, read by it and folded into the mesh cache's key (SlopedCacheName), so a change to
+// any of them names new meshes instead of reusing old ones.
+constexpr double kSlopedUvCm = 100.0; // a UV unit a metre
+constexpr bool bSlopedRecomputeNormals = false;
+constexpr bool bSlopedRecomputeTangents = true;
+constexpr bool bSlopedLightmapUvs = false;
+constexpr ECollisionTraceFlag kSlopedCollision = CTF_UseComplexAsSimple;
+
 // A sloped box's own mesh, its vertices relative to Pivot (cm), each face flat-shaded, with planar UVs in metres on
 // the world and collision from its triangles.
-UStaticMesh* SlopedMesh(UPackage* Package, const FString& Id, const ftcore::MassingMesh& Shape, const FVector& Pivot, UMaterialInterface* Material)
+UStaticMesh* SlopedMesh(UObject* Outer, const FString& Name, EObjectFlags Flags, const ftcore::MassingMesh& Shape, const FVector& Pivot,
+	UMaterialInterface* Material)
 {
-	UStaticMesh* Mesh = NewObject<UStaticMesh>(Package, *FString::Printf(TEXT("SM_Massing_%s"), *Id), RF_Public);
+	UStaticMesh* Mesh = NewObject<UStaticMesh>(Outer, *Name, Flags);
 	FMeshDescription Desc;
 	FStaticMeshAttributes Attributes(Desc);
 	Attributes.Register();
@@ -945,17 +960,17 @@ UStaticMesh* SlopedMesh(UPackage* Package, const FString& Id, const ftcore::Mass
 			const FVector2D Uv = AbsOut.Z >= AbsOut.X && AbsOut.Z >= AbsOut.Y ? FVector2D(P.X, P.Y)
 				: AbsOut.X >= AbsOut.Y                                          ? FVector2D(P.Y, -P.Z)
 																				: FVector2D(P.X, -P.Z);
-			Uvs[Inst] = FVector2f(Uv / 100.0);
+			Uvs[Inst] = FVector2f(Uv / kSlopedUvCm);
 			Corners[K] = Inst;
 		}
 		Desc.CreatePolygon(Group, TArrayView<const FVertexInstanceID>(Corners, 4));
 	}
 	Mesh->GetStaticMaterials().Add(FStaticMaterial(Material, kMassingSlot, kMassingSlot));
 	FStaticMeshSourceModel& Source = Mesh->AddSourceModel();
-	Source.BuildSettings.bRecomputeNormals = false;
-	Source.BuildSettings.bRecomputeTangents = true;
+	Source.BuildSettings.bRecomputeNormals = bSlopedRecomputeNormals;
+	Source.BuildSettings.bRecomputeTangents = bSlopedRecomputeTangents;
 	// Lit by the shared look's dynamic lights (as the builders' cubes are), so no lightmap channel.
-	Source.BuildSettings.bGenerateLightmapUVs = false;
+	Source.BuildSettings.bGenerateLightmapUVs = bSlopedLightmapUvs;
 	Mesh->CreateMeshDescription(0, MoveTemp(Desc));
 	Mesh->CommitMeshDescription(0);
 	// A new mesh keeps an empty section map through its build, and the card task then sees no sections: 0 Lumen
@@ -965,10 +980,167 @@ UStaticMesh* SlopedMesh(UPackage* Package, const FString& Id, const ftcore::Mass
 		Mesh->GetSectionInfoMap().Set(0, S, FMeshSectionInfo(S));
 	}
 	Mesh->CreateBodySetup();
-	Mesh->GetBodySetup()->CollisionTraceFlag = CTF_UseComplexAsSimple;
+	Mesh->GetBodySetup()->CollisionTraceFlag = kSlopedCollision;
 	Mesh->Build(true);
 	Mesh->PostEditChange();
 	return Mesh;
+}
+
+// A sloped box's shape (ftcore::massingMesh) and its mesh's pivot: under its centre, at its lowest vertex (cm).
+FVector SlopedShape(const ftcore::MassingBox& Box, double Side, ftcore::MassingMesh& Shape)
+{
+	ftcore::massingMesh(Box, Side, 0.0, Shape);
+	double Bottom = Shape.v[0].z;
+	for (const ftcore::MassingVec& V : Shape.v)
+	{
+		Bottom = FMath::Min(Bottom, V.z);
+	}
+	return Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Bottom));
+}
+
+// -MeshCache=<long package path> (say /Game/WorldCache/Massing: local only, in .gitignore): every sloped box's mesh in a
+// package of its own, named by a hash of its shape and pivot, so a rebuild loads the meshes an earlier run built (their
+// render data and distance fields from the DDC) instead of building them again. A cached mesh wears the world surface;
+// the box's own material goes on its component, so no mesh points into a map package (the rock faces live in the map).
+// The key: the version, SlopedMesh's generator settings (above it), and the shape and pivot quantised to 0.01 cm (so
+// a last-bit float wobble or a -0.0 names the same mesh). Bump the version when SlopedMesh builds something else from
+// the same shape and settings; WarmSlopedCache logs both.
+constexpr uint32 kSlopedCacheVersion = 2;
+constexpr double kSlopedCacheQuantumCm = 0.01;
+// New cached meshes compiled and saved together: a chunk takes about a minute and a half.
+constexpr int32 kSlopedCacheChunk = 100;
+
+uint64 SlopedSettingsHash()
+{
+	const int64 Settings[] = {static_cast<int64>(kSlopedCacheVersion), FMath::RoundToInt64(kSlopedUvCm / kSlopedCacheQuantumCm),
+		bSlopedRecomputeNormals ? 1 : 0, bSlopedRecomputeTangents ? 1 : 0, bSlopedLightmapUvs ? 1 : 0, static_cast<int64>(kSlopedCollision)};
+	return CityHash64(reinterpret_cast<const char*>(Settings), static_cast<uint32>(sizeof(Settings)));
+}
+
+FString SlopedCacheName(const ftcore::MassingMesh& Shape, const FVector& Pivot)
+{
+	// Whole quanta: -0.0 and +0.0 both round to integer 0, so the sign of a zero never splits a key.
+	const auto Q = [](double Cm) { return FMath::RoundToInt64(Cm / kSlopedCacheQuantumCm); };
+	TArray<int64, TInlineAllocator<64>> Key;
+	Key.Add(static_cast<int64>(SlopedSettingsHash()));
+	for (const ftcore::MassingVec& V : Shape.v)
+	{
+		const FVector P = Cm(V);
+		Key.Append({Q(P.X), Q(P.Y), Q(P.Z)});
+	}
+	Key.Append({Q(Pivot.X), Q(Pivot.Y), Q(Pivot.Z)});
+	for (const auto& Quad : Shape.quads)
+	{
+		for (const auto Corner : Quad)
+		{
+			Key.Add(static_cast<int64>(Corner));
+		}
+	}
+	const uint64 Hash = CityHash64(reinterpret_cast<const char*>(Key.GetData()), static_cast<uint32>(Key.Num() * sizeof(int64)));
+	return FString::Printf(TEXT("SM_MC_%016llx"), Hash);
+}
+
+// Builds the cached meshes the drawn sloped boxes lack, compiling and saving them kSlopedCacheChunk at a time. Past
+// Budget s from Start (0: no budget) it stops after a save and sets bStopped: the next run carries on from there.
+// False when a save fails.
+bool WarmSlopedCache(const FString& Cache, const std::vector<ftcore::MassingBox>& Boxes, double Side, UMaterialInterface* Material, double Start,
+	double Budget, bool& bStopped, int32& Built)
+{
+	bStopped = false;
+	int32 Hits = 0, Left = 0;
+	Built = 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: mesh cache %s: key version %u, generator settings %016llx, quantum %.2f cm."), *Cache,
+		kSlopedCacheVersion, SlopedSettingsHash(), kSlopedCacheQuantumCm);
+	TArray<UPackage*> Pending;
+	TSet<FString> Seen;
+	const auto SavePending = [&Pending]() {
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		for (UPackage* Pack : Pending)
+		{
+			UStaticMesh* Mesh = FindObject<UStaticMesh>(Pack, *FPackageName::GetShortName(Pack));
+			const FString File = FPackageName::LongPackageNameToFilename(Pack->GetName(), FPackageName::GetAssetPackageExtension());
+			FSavePackageArgs Save;
+			Save.TopLevelFlags = RF_Public | RF_Standalone;
+			Save.SaveFlags = SAVE_NoError;
+			if (!Mesh || !UPackage::SavePackage(Pack, Mesh, *File, Save))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: mesh cache: couldn't save %s."), *File);
+				return false;
+			}
+		}
+		Pending.Reset();
+		return true;
+	};
+	for (const ftcore::MassingBox& Box : Boxes)
+	{
+		if (!Box.sloped || !ftcore::massingVisible(ftcore::massingRole(Box)))
+		{
+			continue;
+		}
+		ftcore::MassingMesh Shape;
+		const FVector Pivot = SlopedShape(Box, Side, Shape);
+		const FString Name = SlopedCacheName(Shape, Pivot);
+		bool bSeen = false;
+		Seen.Add(Name, &bSeen);
+		if (bSeen)
+		{
+			continue;
+		}
+		const FString PackageName = Cache / Name;
+		if (FPackageName::DoesPackageExist(PackageName))
+		{
+			++Hits;
+			continue;
+		}
+		if (bStopped)
+		{
+			++Left;
+			continue;
+		}
+		UPackage* Pack = CreatePackage(*PackageName);
+		UStaticMesh* Mesh = SlopedMesh(Pack, Name, RF_Public | RF_Standalone, Shape, Pivot, Material);
+		FAssetRegistryModule::AssetCreated(Mesh);
+		Pack->MarkPackageDirty();
+		Pending.Add(Pack);
+		++Built;
+		if (Pending.Num() >= kSlopedCacheChunk)
+		{
+			if (!SavePending())
+			{
+				return false;
+			}
+			bStopped = Budget > 0.0 && FPlatformTime::Seconds() - Start > Budget;
+		}
+	}
+	if (!Pending.IsEmpty() && !SavePending())
+	{
+		return false;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: mesh cache %s: %d meshes found, %d built and saved, %d left for the next run (%.0f s in)."),
+		*Cache, Hits, Built, Left, FPlatformTime::Seconds() - Start);
+	if (bStopped)
+	{
+		return true; // the map is not touched this run
+	}
+	// Every mesh the map will take must load now, before the caller deletes the old map: a package that exists but
+	// won't load (cut short, from another engine) fails the run here with the old map still standing.
+	int32 Unloadable = 0;
+	for (const FString& Name : Seen)
+	{
+		if (!LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s/%s.%s"), *Cache, *Name, *Name)))
+		{
+			if (++Unloadable <= 10)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: mesh cache: %s/%s won't load; delete it and run again."), *Cache, *Name);
+			}
+		}
+	}
+	if (Unloadable > 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: mesh cache: %d of %d meshes won't load; the map is untouched."), Unloadable, Seen.Num());
+		return false;
+	}
+	return true;
 }
 
 // The sea bed's skin: the ground's own cells in a plan rectangle (metres) whose four corners all lie more than Under m
@@ -1443,6 +1615,122 @@ void LogRoofLayouts(const ftcore::MassingRoofCounts& Counts)
 		static_cast<int32>(Counts.layouts[6]), static_cast<int32>(Counts.huts), static_cast<int32>(Counts.sheds),
 		static_cast<int32>(Counts.frames), static_cast<int32>(Counts.stands));
 }
+
+// The old map file, moved aside (to <file>.ftold, which the asset registry ignores) while the new one is built. Unless
+// Commit() is called after the new map is saved, the destructor removes whatever was written in its place and moves the
+// old one back, so no failed run (any of the returns after the set-aside) leaves the checkout without a map.
+class FMapSetAside
+{
+public:
+	explicit FMapSetAside(const FString& InFile) : File(InFile), Old(InFile + TEXT(".ftold")) {}
+	FMapSetAside(const FMapSetAside&) = delete;
+	FMapSetAside& operator=(const FMapSetAside&) = delete;
+
+	~FMapSetAside()
+	{
+		IFileManager& Files = IFileManager::Get();
+		if (bCommitted)
+		{
+			if (bMoved)
+			{
+				Files.Delete(*Old, false, true, true);
+			}
+			return;
+		}
+		if (!bMoved && !bCreated)
+		{
+			return;
+		}
+		Files.Delete(*File, false, true, true);
+		if (bMoved && !Files.Move(*File, *Old))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't put back %s (left as %s)."), *File, *Old);
+			return;
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: build failed; %s."),
+			bMoved ? TEXT("the old map was put back") : TEXT("the new map was removed (there was none before)"));
+	}
+
+	// Whether the map file opens as a whole package: its summary reads with the package tag and a valid version, and the
+	// header, the bulk data start and the payload table it names all lie inside the file, and the file ends with the
+	// package tag (a cut-off write fails this).
+	static bool OpensCleanly(const FString& Path)
+	{
+		const TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*Path, FILEREAD_Silent));
+		if (!Reader)
+		{
+			return false;
+		}
+		const int64 Size = Reader->TotalSize();
+		if (Size < static_cast<int64>(sizeof(int32)) * 8)
+		{
+			return false;
+		}
+		FPackageFileSummary Summary;
+		*Reader << Summary;
+		if (Reader->IsError() || Summary.Tag != static_cast<int32>(PACKAGE_FILE_TAG) || !Summary.IsFileVersionValid() ||
+			Summary.TotalHeaderSize <= 0 || Summary.TotalHeaderSize > Size || Summary.BulkDataStartOffset > Size ||
+			Summary.PayloadTocOffset >= Size)
+		{
+			return false;
+		}
+		// Every package file ends with the tag (after the exports, or as the last field of the package trailer's
+		// footer), so a file cut anywhere, the bulk data included, fails here.
+		uint32 Footer = 0;
+		Reader->Seek(Size - static_cast<int64>(sizeof(Footer)));
+		*Reader << Footer;
+		return !Reader->IsError() && Footer == PACKAGE_FILE_TAG;
+	}
+
+	// Moves the map aside when it exists, else notes it as new; false (logged) when it can't be. A .ftold is left by a
+	// run that died before deleting it. When the map beside it opens cleanly, that run saved and the map is the good
+	// one, so the .ftold is deleted; otherwise (no map, or one cut off mid-write, whatever its age) the .ftold is the
+	// last good map and is put back first.
+	bool Begin()
+	{
+		IFileManager& Files = IFileManager::Get();
+		if (Files.FileExists(*Old) && Files.FileExists(*File) && OpensCleanly(File))
+		{
+			if (!Files.Delete(*Old, false, true, true))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't delete the stale %s."), *Old);
+				return false;
+			}
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: deleted %s; the map beside it opens cleanly (an earlier run saved, then died)."), *Old);
+		}
+		if (Files.FileExists(*Old))
+		{
+			Files.Delete(*File, false, true, true);
+			if (Files.FileExists(*File) || !Files.Move(*File, *Old))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s from an earlier run couldn't be put back; restore it by hand."), *Old);
+				return false;
+			}
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: put back %s from an earlier run's .ftold."), *File);
+		}
+		if (!Files.FileExists(*File))
+		{
+			bCreated = true;
+			return true;
+		}
+		if (!Files.Move(*Old, *File))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't set aside %s."), *File);
+			return false;
+		}
+		bMoved = true;
+		return true;
+	}
+
+	void Commit() { bCommitted = true; }
+
+private:
+	FString File;
+	FString Old;
+	bool bMoved = false;
+	bool bCreated = false;
+	bool bCommitted = false;
+};
 #endif // WITH_EDITOR
 
 } // namespace
@@ -1458,9 +1746,23 @@ UFTBuildMassingWorldCommandlet::UFTBuildMassingWorldCommandlet()
 int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	const double RunStart = FPlatformTime::Seconds();
 	FString HeightFile, BoxesFile, WallsFile, GoalsFile, KitFile, DumpFile, EntryText, LookText, WorldText;
 	FString TourFile, CoverageFile, ReadBackFile;
 	FString MapName = TEXT("World_Massing");
+	// -MeshCache=<long package path>: the sloped boxes' meshes cached there (WarmSlopedCache); -BudgetMinutes=N: past N
+	// minutes the cache stops after a saved chunk and the run exits 2 before the map is touched (0: no budget). A long
+	// build becomes stages of about N minutes; the stage that finds every mesh builds the map.
+	FString MeshCache;
+	double BudgetMinutes = 0.0;
+	FParse::Value(*Params, TEXT("MeshCache="), MeshCache);
+	FParse::Value(*Params, TEXT("BudgetMinutes="), BudgetMinutes);
+	MeshCache.RemoveFromEnd(TEXT("/"));
+	if (!MeshCache.IsEmpty() && (!MeshCache.StartsWith(TEXT("/Game/")) || !FPackageName::IsValidLongPackageName(MeshCache / TEXT("SM_MC_0"))))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -MeshCache=%s isn't a /Game/ package path."), *MeshCache);
+		return 1;
+	}
 	FParse::Value(*Params, TEXT("Height="), HeightFile);
 	FParse::Value(*Params, TEXT("Boxes="), BoxesFile);
 	FParse::Value(*Params, TEXT("Walls="), WallsFile);
@@ -2212,8 +2514,33 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
-	// A new editor world (so it gets a navigation system), replacing the map.
-	if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+	// -MeshCache: the sloped boxes' meshes first, before the map is touched, so a run the budget stops leaves the old map
+	// standing and exits 2 (run again). The map itself takes about -MapMinutes (default 12: assembly, navmesh, save): a
+	// run that built meshes and has less than that left of its budget stops too, so no stage runs far past the budget.
+	if (!MeshCache.IsEmpty())
+	{
+		double MapMinutes = 12.0;
+		FParse::Value(*Params, TEXT("MapMinutes="), MapMinutes);
+		bool bStopped = false;
+		int32 CacheBuilt = 0;
+		if (!WarmSlopedCache(MeshCache, Boxes, Side, Base, RunStart, BudgetMinutes * 60.0, bStopped, CacheBuilt))
+		{
+			return 1;
+		}
+		const double Spent = FPlatformTime::Seconds() - RunStart;
+		if (bStopped || (BudgetMinutes > 0.0 && CacheBuilt > 0 && Spent + MapMinutes * 60.0 > BudgetMinutes * 60.0))
+		{
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("FTBuildMassingWorld: %.0f s of the %.0f-minute budget spent on the mesh cache (%s); the map is untouched. Run again."), Spent,
+				BudgetMinutes, bStopped ? TEXT("meshes left") : TEXT("too little left for the map"));
+			return 2;
+		}
+	}
+
+	// A new editor world (so it gets a navigation system), replacing the map. The old map is set aside, not deleted, and
+	// comes back on any failure before the new one is saved (FMapSetAside).
+	FMapSetAside OldMap(File);
+	if (!OldMap.Begin())
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't replace %s."), *File);
 		return 1;
@@ -2443,15 +2770,24 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		if (Box.sloped)
 		{
 			ftcore::MassingMesh Shape;
-			ftcore::massingMesh(Box, Side, 0.0, Shape);
-			double Bottom = Shape.v[0].z;
-			for (const ftcore::MassingVec& V : Shape.v)
+			const FVector Pivot = SlopedShape(Box, Side, Shape);
+			UStaticMesh* Mesh = nullptr;
+			if (MeshCache.IsEmpty())
 			{
-				Bottom = FMath::Min(Bottom, V.z);
+				Mesh = SlopedMesh(Package, FString::Printf(TEXT("SM_Massing_%s"), *Id), RF_Public, Shape, Pivot, Material);
 			}
-			const FVector Pivot = Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Bottom));
-			UStaticMesh* Mesh = SlopedMesh(Package, Id, Shape, Pivot, Material);
-			AStaticMeshActor* Built = Block(World, Spawn, Mesh, nullptr, Id, Pivot, FVector::OneVector, 0.0);
+			else
+			{
+				// Built or found by WarmSlopedCache before the map was replaced.
+				const FString CacheName = SlopedCacheName(Shape, Pivot);
+				Mesh = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s/%s.%s"), *MeshCache, *CacheName, *CacheName));
+				if (!Mesh)
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: mesh cache: %s's mesh %s is missing."), *Id, *CacheName);
+					return 1;
+				}
+			}
+			AStaticMeshActor* Built = Block(World, Spawn, Mesh, MeshCache.IsEmpty() ? nullptr : Material, Id, Pivot, FVector::OneVector, 0.0);
 			if (Replaced[I])
 			{
 				Built->GetStaticMeshComponent()->SetCastShadow(false);
@@ -3320,8 +3656,37 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		if (bSea)
 		{
-			Director->WaterBodies.Add(FFTWaterBodyRow::From(ftcore::waterBodyToEngine(
-				ftcore::waterSea(static_cast<float>(SeaWest), 0.f, static_cast<float>(-kSeaBedDeepest)), static_cast<float>(Side))));
+			ftcore::WaterBody Sea = ftcore::waterSea(static_cast<float>(SeaWest), 0.f, static_cast<float>(-kSeaBedDeepest));
+			// The free swim's dive area, in the plan frame (waterBodyToEngine turns it over with the rest).
+			FString DiveText;
+			const bool bDiveGiven = FParse::Value(*Params, TEXT("SeaDive="), DiveText);
+			if (!(bDiveGiven && DiveText.Equals(TEXT("none"), ESearchCase::IgnoreCase)))
+			{
+				double Box[4] = {SeaWest, kSeaDiveSouthY, SeaWest + ftcore::kWaterBuoyLine, kSeaDiveNorthY};
+				if (bDiveGiven)
+				{
+					TArray<FString> Parts;
+					DiveText.ParseIntoArray(Parts, TEXT(","));
+					if (Parts.Num() == 4)
+					{
+						for (int32 I = 0; I < 4; ++I)
+						{
+							Box[I] = FCString::Atod(*Parts[I]);
+						}
+					}
+					else
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -SeaDive=%s is not X0,Y0,X1,Y1: the wall basin is used."), *DiveText);
+					}
+				}
+				Sea.swimDeep = true;
+				Sea.hasDiveArea = true;
+				Sea.diveMin = {static_cast<float>(FMath::Min(Box[0], Box[2])), static_cast<float>(FMath::Min(Box[1], Box[3]))};
+				Sea.diveMax = {static_cast<float>(FMath::Max(Box[0], Box[2])), static_cast<float>(FMath::Max(Box[1], Box[3]))};
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: water: the sea is dived in x %.0f..%.0f, y %.0f..%.0f (plan)."),
+					Sea.diveMin.x, Sea.diveMax.x, Sea.diveMin.y, Sea.diveMax.y);
+			}
+			Director->WaterBodies.Add(FFTWaterBodyRow::From(ftcore::waterBodyToEngine(Sea, static_cast<float>(Side))));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: water: %d bodies on the director (%s; buoy line %.0f m out)."), Director->WaterBodies.Num(),
 			bSea ? TEXT("canal rows and the sea") : TEXT("canal rows"), ftcore::kWaterBuoyLine);
@@ -3519,6 +3884,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: couldn't save %s."), *File);
 		return 1;
 	}
+	OldMap.Commit();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: saved %s."), *File);
 	if (!DumpFile.IsEmpty())
 	{

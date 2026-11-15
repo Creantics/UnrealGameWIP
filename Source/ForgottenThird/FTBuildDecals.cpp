@@ -8,6 +8,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
@@ -178,6 +179,8 @@ UMaterial* BuildMaterial(UPackage* Package, bool bPaint)
 	UMaterialExpressionConstant* HasDetail = AddNode<UMaterialExpressionConstant>(Material, -900, 1200);
 	HasDetail->R = DetailRA ? 1.f : 0.f;
 	AddCustomInput(Custom, TEXT("HasDetail"), HasDetail);
+	// The camera, for the tile read's far fade (one straight read past the street's detailHexFarM, as the road).
+	AddCustomInput(Custom, TEXT("CamPos"), AddNode<UMaterialExpressionCameraPositionWS>(Material, -900, 1300));
 	if (!DetailRA)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -RoadDecals: no /Game/Look/T_StreetDetail_RA; the paint wears on the tile's means."));

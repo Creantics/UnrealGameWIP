@@ -95,6 +95,7 @@
 #include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
+#include "ftcore/Swim.h"
 #include "ftcore/UiPartyScreen.h"
 #include "ftcore/WaterBodies.h"
 #include "ftcore/WetPrints.h"
@@ -113,6 +114,7 @@ class UInputAction;
 class UInputMappingContext;
 class URectLightComponent;
 class USpringArmComponent;
+class UFTWaterSubsystem;
 
 UCLASS(Config = Game)
 class FORGOTTENTHIRD_API AFTExploreCharacter : public ACharacter
@@ -537,8 +539,13 @@ private:
 	// Water (ftcore::WaterBodies through UFTWaterSubsystem), read each tick: a wade and a deep wade slow the walk by
 	// the state's factor (AddMovementInput); over the swim depth the body is held at the surface (the movement's
 	// flying mode at the swim speed, the feet eased to the swimmer's draft with its bob, the flow pushing it) until
-	// the column is a wade's again. No diving. Jump in the water, facing a wall whose top is within reach, climbs out
-	// onto it (a stand-in for a ladder or steps; TryWaterClimb).
+	// the column is a wade's again. Jump in the water, facing a wall whose top is within reach, climbs out onto it (a
+	// stand-in for a ladder or steps; TryWaterClimb).
+	// In a swimDeep body's dive area (ftcore::WaterBodies::dive) a crouch press at the surface dives: from then on
+	// ftcore::Swim (Data/Swim/swim.json) moves the body in 3D along the camera's look (TickSwimDeep) until it is back at
+	// the surface, with its breath, the outer edge's push and, at no vitality left, a rescue to the nearest way out
+	// (TickSwimRescue). The Third never dives (only a playable lead does), and the followers hold at the bank while the
+	// lead is under. While swimming, at the surface too, the swim's flags hold: no attack, no dodge, weapons stowed.
 	void TickWater(float DeltaSeconds);
 	bool TryWaterClimb();
 	ftcore::WaterState WaterNow;
@@ -546,6 +553,34 @@ private:
 	bool bSwimSaid = false;
 	float SwimSavedFly = 0.f;
 	float SwimSavedBrake = 0.f;
+	// The free swim. False: at the surface (the surface hold moves the body).
+	bool TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds);
+	void LoadSwimTuning();
+	void BeginSwimRescue(const UFTWaterSubsystem& System);
+	void TickSwimRescue(float DeltaSeconds);
+	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
+	void PoseSwim(float TargetPitch, float DeltaSeconds);
+	ftcore::Swim SwimBody;
+	ftcore::SwimFlags SwimFlagsNow;
+	bool bSwimTuningTried = false;
+	bool bSwimUnder = false;       // Diving, Under or Surfacing last step
+	bool bSwimWarned = false;      // the breath warning is logged once a dive
+	bool bSwimHolstered = false;   // the swim stowed the weapons
+	bool bSwimLeadDives = false;   // the lead is a playable lead (the Third never dives)
+	int32 SwimLeadChecked = -2;    // the LeadIndex bSwimLeadDives was found for
+	FVector2D SwimMoveAxis = FVector2D::ZeroVector; // the move stick under water (HandleMove), read by TickSwimDeep
+	float SwimPitch = 0.f;         // the mesh's pitch shown (degrees, nose down negative)
+	FVector SwimMeshLoc = FVector::ZeroVector;
+	FRotator SwimMeshRot = FRotator::ZeroRotator;
+	bool bSwimMeshSaved = false;
+	bool bSwimRescue = false;
+	float SwimRescueTime = 0.f;
+	FVector SwimRescueFrom = FVector::ZeroVector;
+	FVector SwimRescueUp = FVector::ZeroVector;  // over the start at the surface
+	FVector SwimRescueTo = FVector::ZeroVector;
+	bool bLeadGoDive = false;      // -LeadGoDive: a crouch press once in the dive area, a jump press when the route ends
+	bool bLeadGoDived = false;
+	bool bLeadGoRose = false;
 	bool bWaterClimbing = false;
 	float WaterClimbTime = 0.f;
 	float WaterClimbSeconds = 0.9f; // the placed move's length: longer up a ladder
@@ -602,4 +637,13 @@ public:
 	void AddLeadGo(const FVector& To) { LeadGoNext.Add(To); }
 	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
 	bool IsSwimming() const { return bSwimming; }
+	// Under water (diving, under, surfacing) or being carried out by a rescue: the followers hold at the bank.
+	bool IsUnderWater() const { return bSwimUnder || bSwimRescue; }
+	float GetBreathShare() const { return SwimBody.last().breathShare; }
+	bool IsBreathWarning() const { return SwimBody.last().warning; }
+	// For the HUD's breath ring: the swim's last step (breath, breathShare, warning, state, and the canDive and guard
+	// flags the core lane is adding) and the tuning it ran on (breathSeconds, warningSeconds). Both are the lead's own
+	// Swim object, read by const reference; the HUD never steps it.
+	const ftcore::SwimStep& GetSwimStep() const { return SwimBody.last(); }
+	const ftcore::SwimTuning& GetSwimTuning() const { return SwimBody.tuning(); }
 };

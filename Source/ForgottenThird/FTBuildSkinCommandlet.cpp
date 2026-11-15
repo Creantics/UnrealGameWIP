@@ -9,6 +9,7 @@
 #include "Engine/SubsurfaceProfile.h"
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
@@ -254,6 +255,8 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 	Inputs->Specular.Connect(0, SpecularOut);
 	Inputs->AmbientOcclusion.Connect(1, Region);
 	Inputs->Opacity.Connect(0, ScatterOut);
+	// The world wave's character state, as the other worn masters take it (FTImportMaterials).
+	FTWorldWave::AddState(TEXT("FTBuildSkin"), Material, 300, 1300, true);
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();

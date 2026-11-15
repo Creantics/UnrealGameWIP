@@ -51,6 +51,19 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		ReachCm = FMath::Max(ReachMetres, 0.f) * 100.f;
 	}
+	FString Shadows;
+	if (FParse::Value(Cmd, TEXT("LampShadows="), Shadows))
+	{
+		ShadowLamps = Shadows.Equals(TEXT("all"), ESearchCase::IgnoreCase) ? kMaxLamps : FMath::Clamp(FCString::Atoi(*Shadows), 0, kMaxLamps);
+	}
+	else if (FParse::Param(Cmd, TEXT("LampShadows")))
+	{
+		ShadowLamps = kMaxLamps;
+	}
+	if (ShadowLamps > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: shadows on the %d nearest lamps (dev flag)."), ShadowLamps);
+	}
 	WantLamps = FMath::Clamp(WantLamps, 0, kMaxLamps);
 	WantShops = FMath::Clamp(WantShops, 0, kMaxShops);
 	bActive = true;
@@ -275,6 +288,29 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 		if (USpotLightComponent* Light = Lights[S])
 		{
 			Light->SetVisibility(Pool.Slot[S] != INDEX_NONE);
+		}
+	}
+	// -LampShadows: the lamps among the first ShadowLamps picked (nearest first) cast; the rest don't.
+	if (bLamp && ShadowLamps > 0)
+	{
+		const int32 Near = FMath::Min(ShadowLamps, Count);
+		for (int32 S = 0; S < Size; ++S)
+		{
+			USpotLightComponent* Light = Lights[S];
+			const int32 Held = Pool.Slot[S];
+			if (!Light)
+			{
+				continue;
+			}
+			bool bCast = false;
+			for (int32 P = 0; P < Near && Held != INDEX_NONE; ++P)
+			{
+				bCast = bCast || static_cast<int32>(Pool.Picked[P]) == Held;
+			}
+			if ((Light->CastShadows != 0) != bCast)
+			{
+				Light->SetCastShadows(bCast);
+			}
 		}
 	}
 }
