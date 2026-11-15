@@ -24,6 +24,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaCamera.h"
+#include "ftcore/PartnerCamera.h"
 
 namespace ftcore {
 
@@ -168,5 +169,10 @@ FTCORE_API ArenaFrustum arenaPoseFrustum(const ArenaCameraPose& pose, Vec2 at, f
 // True when the point `p` (world m, as the frustum) is ahead of the lens and inside the frame less `margin` (a share
 // of the frame's width and height kept clear each side, 0..0.49). False for a frustum that is off.
 FTCORE_API bool arenaInFrustum(const ArenaFrustum& f, ArenaPoint3 p, float margin = 0.f);
+
+// The same camera as the partner's brain reads it (ArenaInput::partnerCamera; ftcore/PartnerCamera.h): the frustum
+// of arenaPoseFrustum over a floor at z 0, with the partner `bodyHeight` tall. Not given when that frustum is off.
+FTCORE_API PartnerCameraView arenaPoseCamera(const ArenaCameraPose& pose, Vec2 at, float aspect, float bodyHeight);
+
 
 } // namespace ftcore

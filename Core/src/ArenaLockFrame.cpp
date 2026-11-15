@@ -438,4 +438,20 @@ bool arenaInFrustum(const ArenaFrustum& f, ArenaPoint3 p, float margin) {
     return std::fabs(nx) <= keep && std::fabs(ny) <= keep;
 }
 
+PartnerCameraView arenaPoseCamera(const ArenaCameraPose& pose, Vec2 at, float aspect, float bodyHeight) {
+    PartnerCameraView v;
+    const ArenaFrustum f = arenaPoseFrustum(pose, at, aspect);
+    if (!f.on) return v;
+    v.given = true;
+    v.pos = PartnerVec3{f.pos.x, f.pos.y, f.pos.z};
+    v.forward = PartnerVec3{f.forward.x, f.forward.y, f.forward.z};
+    v.up = PartnerVec3{f.up.x, f.up.y, f.up.z};
+    v.verticalFovDegrees = f.vfov;
+    v.aspect = f.aspect;
+    v.groundZ = 0.f;
+    v.bodyHeight = bodyHeight;
+    return v;
+}
+
+
 } // namespace ftcore

@@ -894,7 +894,8 @@ public:
         // The kept lead's stored slot is never read (leadLoad gives the kept gauge, and a move of control onto that
         // lead writes the slot first), so it is left out.
         h.add(keptLead_).add(keepsLoad(kLeadA) ? 0 : leadLoad_[kLeadA]).add(keepsLoad(kLeadB) ? 0 : leadLoad_[kLeadB]);
-        h.add(leadHeals_).add(leadLoadDue_).add(leadHealsDue_).add(leadNowDue_);
+        // The step's spend fence refuses sets, so it is play; lateSets_ is a count for the host's checks only.
+        h.add(leadHeals_).add(leadLoadDue_).add(leadHealsDue_).add(leadNowDue_).add(spentStep_);
         h.add(lone_).add(loneEnded_).add(loneEndedBy_).add(loneBeganDue_).add(loneEndDue_);
         h.add(loneReleases_).add(loneFolded_).add(lonePooled_);
         h.add(leadHealth_).add(won_).add(start_).add(inFight_).add(down_).add(stepDown_).add(defeated_);
@@ -1142,7 +1143,7 @@ public:
         spentStep_[lead] = static_cast<std::uint8_t>(spentStep_[lead] | kSpentLoad);
     }
     // Sets refused since the attempt began (begin or retry) because they came after a spend on their step: a host
-    // in the wrong order. Its tests and its debug build check it stays 0.
+    // in the wrong order. Core's tests check it stays 0 for the right order; a host may check it after each tick.
     int lateSets() const { return lateSets_; }
     // The blow cap (0: none) and a blow's scale kept under it.
     float blowCap() const { return blowCap_; }

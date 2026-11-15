@@ -494,10 +494,10 @@ private:
 	float LastLookInputAt = -1e9f; // fight time of the last look input (the stick or the mouse): the soft turn waits
 	bool bLockAimAbove = false;   // the lock's aim point is above the frame this frame (GetLockAimAbove)
 	float LockAimX = 0.5f;
-	// The lens this frame solved (the arm as the boom's probe leaves it) and its frustum: the fight's next step's feed.
+	// The lens this frame solved (the arm as the boom's probe leaves it) and that camera as the brain reads it: the next step's feed.
 	ftcore::ArenaCameraPose CameraLensNow;
-	ftcore::ArenaFrustum FedFrustum;
-	bool bFedFrustum = false;
+	ftcore::PartnerCameraView FedCamera;
+	bool bFedCamera = false;
 	int32 LockTarget = -1;        // the tall target held to the lead's rule this frame; -1 none
 	bool bLeadHeld = false;       // the last frame held the lead's rule (the next frame's sample measures it)
 	// The lead's cylinder (Core's ReloadStarted, Reloaded and DryPress events): where the reload clip, the dry-press flinch
@@ -1209,7 +1209,7 @@ private:
 	// Stationing: steps the partner was on (and fed the camera), and of them the steps stationing ran.
 	int32 PartnerOnSteps = 0, PartnerStationedSteps = 0, PartnerCameraSteps = 0;
 	// "Arena check: partner in play": the steps the partner (up, in the fight) stood inside the play camera's frustum
-	// (its chest, ArenaInput::frustum), and its distinct actions (a new intent other than Wait, or a new string).
+	// (ftcore::partnerInFrame on ArenaInput::partnerCamera), and its distinct actions (a new intent other than Wait, or a new string).
 	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0;
 	float PartnerPlaySeconds = 0.f;
 	// The act in progress for that count: from when, to the last step seen, where the partner stood at its start, and

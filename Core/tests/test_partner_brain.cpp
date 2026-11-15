@@ -1651,6 +1651,11 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.t.stationGiveUpSeconds += 0.5f; },
         [](PartnerBrainSave& s) { s.t.stationAnySeconds += 0.5f; },
         [](PartnerBrainSave& s) { s.t.targetHoldSeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.t.frustumMargin += 0.05f; },
+        [](PartnerBrainSave& s) { s.t.frustumGiveUpSeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.t.engageSeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.t.repositionEverySeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.t.repositionMeters += 0.5f; },
         [](PartnerBrainSave& s) { s.rhythm += 1; },
         [](PartnerBrainSave& s) { s.defence += 1; },
         [](PartnerBrainSave& s) { s.rhythmDraws += 1; },
@@ -1701,10 +1706,10 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.targetFor += 0.5; },
         [](PartnerBrainSave& s) { s.targetReached = !s.targetReached; },
     };
-    // One row per field: the 35 tunables; rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and
+    // One row per field: the 40 tunables; rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and
     // y); begun; side, sideKey, sideFor, swaps, sideTarget, offStation, targetFor, targetReached (8).
-    static_assert(sizeof(PartnerTuning) == 35 * sizeof(float), "a new tunable needs a row here");
-    CHECK(std::size(edits) == 35u + 20u + 4u + 16u + 1u + 8u);
+    static_assert(sizeof(PartnerTuning) == 40 * sizeof(float), "a new tunable needs a row here");
+    CHECK(std::size(edits) == 40u + 20u + 4u + 16u + 1u + 8u);
     int i = 0;
     for (const Edit e : edits) {
         CAPTURE(i++);
@@ -1719,6 +1724,46 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
     PartnerBrainSave z = base;
     z.now = -0.0;
     CHECK(z.hash() == base.hash());
+
+    // Rules 13-16's fields: seen once framed; unframed (no camera ever given) they leave the hash as it was.
+    PartnerBrainSave fb = base;
+    fb.framed = true;
+    CHECK(fb.hash() != base.hash());
+    const Edit framedEdits[] = {
+        [](PartnerBrainSave& s) { s.frameRing = 1; },
+        [](PartnerBrainSave& s) { s.frameTarget += 2; },
+        [](PartnerBrainSave& s) { s.frameAngle += 5.f; },
+        [](PartnerBrainSave& s) { s.frameRadius += 0.5f; },
+        [](PartnerBrainSave& s) { s.frameLast.x += 1.f; },
+        [](PartnerBrainSave& s) { s.frameLast.y += 1.f; },
+        [](PartnerBrainSave& s) { s.noFrame += 0.5; },
+        [](PartnerBrainSave& s) { s.engageFor += 0.5; },
+        [](PartnerBrainSave& s) { s.lastStrike += 1.0; },
+        [](PartnerBrainSave& s) { s.lastGuard += 1.0; },
+        [](PartnerBrainSave& s) { s.lastMove += 1.0; },
+        [](PartnerBrainSave& s) { s.guarding = !s.guarding; },
+        [](PartnerBrainSave& s) { s.out.framed = !s.out.framed; },
+        [](PartnerBrainSave& s) { s.out.frameFallback = !s.out.frameFallback; },
+    };
+    int j = 0;
+    for (const Edit e : framedEdits) {
+        CAPTURE(j++);
+        PartnerBrainSave s = fb;
+        e(s);
+        CHECK(s.hash() != fb.hash());
+        PartnerBrain c;
+        c.load(s);
+        CHECK(c.hash() == s.hash());
+        PartnerBrainSave u = base; // not framed: unseen
+        e(u);
+        CHECK(u.hash() == base.hash());
+    }
+    // The report (idle seconds, fallback seconds, the intent's idle) is never hashed.
+    PartnerBrainSave r = fb;
+    r.idleSeconds[static_cast<std::size_t>(PartnerIdle::Pause)] += 3.0;
+    r.fallbackSeconds += 1.0;
+    r.out.idle = PartnerIdle::NoBudget;
+    CHECK(r.hash() == fb.hash());
 }
 
 namespace {

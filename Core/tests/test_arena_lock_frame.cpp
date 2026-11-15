@@ -2,6 +2,7 @@
 #include "ftcore/ArenaLockFrame.h"
 #include "ftcore/ArenaLook.h"
 #include "ftcore/ArenaZone.h"
+#include "ftcore/PartnerBrain.h"
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 #include <chrono>
@@ -443,4 +444,35 @@ TEST_CASE("arena lock frame: a pose's frustum sees what its frame shows, and kee
     CHECK_FALSE(arenaInFrustum(f, ArenaPoint3{f.pos.x - 10.f * f.forward.x, f.pos.y - 10.f * f.forward.y, f.pos.z}));
     CHECK_FALSE(arenaInFrustum(ArenaFrustum{}, ArenaPoint3{at.x, at.y, 1.f}));
     CHECK_FALSE(arenaPoseFrustum(pose, at, 0.f).on);
+}
+
+TEST_CASE("arena lock frame: the pose's partner camera is whole and the brain's frame agrees with the frustum") {
+    const ArenaCameraPose pose = arenaPoseAtPitch(kArenaLook, rigOf(6.4f, 1.2f, 70.f, 30.f), 5.f);
+    const float aspect = 16.f / 9.f, height = 1.75f;
+    const Vec2 at{3.f, -2.f};
+    const PartnerCameraView cam = arenaPoseCamera(pose, at, aspect, height);
+    REQUIRE(partnerCameraWhole(cam));
+    CHECK_FALSE(arenaPoseCamera(pose, at, 0.f, height).given);
+    const ArenaFrustum f = arenaPoseFrustum(pose, at, aspect);
+    // Ground points around the lead: partnerInFrame (feet, middle, head at kPartnerFrustumMargin) against the frustum
+    // test of the same three points, a point within 1% of the margin's edge left out.
+    const auto all = [&](Vec2 g, float m) {
+        bool in = true;
+        for (const float z : {0.f, 0.5f * height, height}) in = in && arenaInFrustum(f, ArenaPoint3{g.x, g.y, z}, m);
+        return in;
+    };
+    int tried = 0, agreed = 0, inside = 0;
+    for (int i = -20; i <= 20; ++i)
+        for (int j = -20; j <= 20; ++j) {
+            const Vec2 g{at.x + 0.5f * static_cast<float>(i), at.y + 0.5f * static_cast<float>(j)};
+            const bool surelyIn = all(g, kPartnerFrustumMargin + 0.01f);
+            const bool surelyOut = !all(g, kPartnerFrustumMargin - 0.01f);
+            if (!surelyIn && !surelyOut) continue;
+            ++tried;
+            inside += surelyIn ? 1 : 0;
+            agreed += partnerInFrame(cam, kPartnerFrustumMargin, g) == surelyIn ? 1 : 0;
+        }
+    CHECK(tried > 1000);
+    CHECK(inside > 50);
+    CHECK(agreed == tried);
 }

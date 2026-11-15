@@ -104,7 +104,17 @@ const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
 {
 	static const TCHAR* const Words[] = {TEXT("NotBegun"), TEXT("Down"), TEXT("CannotAct"), TEXT("Guard"), TEXT("Leash"),
 		TEXT("String"), TEXT("Pause"), TEXT("NoTarget"), TEXT("Approach"), TEXT("HeldOff"), TEXT("Start"), TEXT("Budget"),
-		TEXT("Committed")};
+		TEXT("Committed"), TEXT("Reposition")};
+	const size_t I = static_cast<size_t>(W);
+	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
+}
+
+// The brain's own word for why the partner is not acting (ftcore::PartnerIdle).
+const TCHAR* PartnerIdleWord(ftcore::PartnerIdle W)
+{
+	static const TCHAR* const Words[] = {TEXT("None"), TEXT("NoBudget"), TEXT("NoTarget"), TEXT("Moving"), TEXT("Staggered"),
+		TEXT("Pause"), TEXT("Other")};
+	static_assert(UE_ARRAY_COUNT(Words) == ftcore::kPartnerIdleCount, "one word per idle reason");
 	const size_t I = static_cast<size_t>(W);
 	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
 }
@@ -3114,11 +3124,11 @@ void UFTArenaRunner::StepFight()
 		// switch's blend or the boom's lag is not where the player looks from. No pose drawn yet: no stationing.
 		if (bCameraPoseNow)
 		{
-			const ftcore::ArenaLensAt Lens = ftcore::arenaCameraLens(bFedFrustum ? CameraLensNow : CameraPoseNow);
+			const ftcore::ArenaLensAt Lens = ftcore::arenaCameraLens(bFedCamera ? CameraLensNow : CameraPoseNow);
 			In.cameraOn = true;
 			In.cameraPos = ftcore::Vec2{Bodies.player.x + Lens.x, Bodies.player.y + Lens.y};
-			// ... and its whole frustum, the lens over the floor (the partner's in-frame stationing, its in-play count).
-			In.frustum = bFedFrustum ? FedFrustum : ftcore::arenaPoseFrustum(CameraPoseNow, Bodies.player, LockAspect());
+			// ... and that camera in full, the lens over the floor (the brain's frame rules 13-16, the in-play count).
+			In.partnerCamera = bFedCamera ? FedCamera : ftcore::arenaPoseCamera(CameraPoseNow, Bodies.player, LockAspect(), PartnerHeight());
 		}
 	}
 	if (bPartner)
@@ -3139,18 +3149,12 @@ void UFTArenaRunner::StepFight()
 		++PartnerOnSteps;
 		PartnerCameraSteps += In.cameraOn ? 1 : 0;
 		PartnerStationedSteps += Out.ally.stationed ? 1 : 0;
-		// In play: the partner's feet, middle and head all inside the play camera's frustum less the margin the
-		// partner's brain uses (ftcore::kArenaFrustumMargin), and its actions that lasted and were carried out.
-		if (In.frustum.on)
+		// In play: the partner's feet, middle and head all in the frame the brain itself tests (ftcore::partnerInFrame
+		// at ftcore::kPartnerFrustumMargin on the camera it was fed), and its actions that lasted and were carried out.
+		if (ftcore::partnerCameraWhole(In.partnerCamera))
 		{
 			++PartnerFrustumSteps;
-			const float Head = PartnerHeight();
-			bool bAllIn = true;
-			for (const float Z : {0.05f, Head * 0.5f, Head})
-			{
-				bAllIn = bAllIn && ftcore::arenaInFrustum(In.frustum, ftcore::ArenaPoint3{Bodies.ally.x, Bodies.ally.y, Z}, ftcore::kArenaFrustumMargin);
-			}
-			PartnerSeenSteps += bAllIn ? 1 : 0;
+			PartnerSeenSteps += ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally) ? 1 : 0;
 		}
 		PartnerPlaySeconds += StepSeconds;
 		const ftcore::PartnerIntent& Intent = AllyBrain.intent();
@@ -3176,13 +3180,17 @@ void UFTArenaRunner::StepFight()
 		default: break;
 		}
 		PartnerActTo = Fight.time() + StepSeconds;
-		// Its idle reason, logged each time it changes (the brain's own word for why it waits).
-		const uint8 Why = Intent.act == ftcore::PartnerAct::Wait ? static_cast<uint8>(Intent.why) : 0xFF;
-		if (Why != PartnerIdleWhy && Why != 0xFF)
+		// Its idle reason, logged each time it changes (the brain's own report, ftcore::PartnerIntent::idle).
+		const uint8 Why = static_cast<uint8>(Intent.idle);
+		if (Why != PartnerIdleWhy && Intent.idle != ftcore::PartnerIdle::None)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner idle at %.2f s (%s)."), Fight.time(), PartnerWhyWord(Intent.why));
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner idle at %.2f s (%s)."), Fight.time(), PartnerIdleWord(Intent.idle));
 		}
 		PartnerIdleWhy = Why;
+		if (Intent.offFrame && Intent.newString)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner string begun off the frame at %.2f s (no station in frame)."), Fight.time());
+		}
 	}
 	if (bPartner)
 	{
@@ -5145,7 +5153,7 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming ? ftcore::arenaFrameTurn(FrameRules(), Scene.side, Scene.distance) : 0.f;
 #endif
 	// The lens as the boom really has it: its wall probe shortens the arm, the shoulder and the height alike, by this
-	// share (measured on the boom's last update). The lead's rule and the fed frustum are solved on that lens; the boom
+	// share (measured on the boom's last update). The lead's rule and the fed camera are solved on that lens; the boom
 	// is given its own lengths (its probe shortens them again).
 	const float WallShare = BoomWallShare();
 	const float Aspect = LockAspect();
@@ -5278,8 +5286,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	// What the fight's next step is fed (the partner's stationing and its in-play count): this frame's solved lens, the
 	// arm it really has, over the lead where it stands now.
 	CameraLensNow = Lens;
-	FedFrustum = ftcore::arenaPoseFrustum(Lens, Bodies.player, Aspect);
-	bFedFrustum = true;
+	FedCamera = ftcore::arenaPoseCamera(Lens, Bodies.player, Aspect, PartnerHeight());
+	bFedCamera = true;
 	if (AFTArenaFighter* Lead = PlayerFigure.Get())
 	{
 		Lead->SetCameraTilt(Pose.tilt);
@@ -7096,7 +7104,7 @@ void UFTArenaRunner::BeginPartner()
 	SwitchCamChecks = BenchMorphChecks = BenchMorphUnchecked = 0;
 	BenchMorphWorst = 0.f;
 	bCameraPoseNow = false; // the first frame's step, before any camera is drawn, feeds no stationing
-	bFedFrustum = false;
+	bFedCamera = false;
 	LastLookInputAt = -1e9f;
 	LowFitArm = -1.f;
 	LowSideSign = Fit.camera.side < 0.f ? -1.f : 1.f;
@@ -7754,22 +7762,31 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	}
 	if (bPartner)
 	{
-		// In play: the partner on the screen at least 70% of the steps it was up (feet, middle and head inside the play
-		// camera's frustum less ftcore::kArenaFrustumMargin) and at least four actions per 20 s of the fight, each
-		// lasting kPartnerActMin s or more and carried out. Under kPartnerPlayMinSteps measured steps: not covered.
+		// In play: the partner on the screen at least 70% of the steps it was up (ftcore::partnerInFrame at
+		// ftcore::kPartnerFrustumMargin) and at least four actions per 20 s of the fight, each lasting kPartnerActMin s
+		// or more and carried out. Under kPartnerPlayMinSteps measured steps: not covered. Then the brain's own report:
+		// the seconds it spent on each idle reason (None is the time it acted) and the strings it began off the frame.
 		FlushPartnerAction();
 		constexpr int32 kPartnerPlayMinSteps = 200;
+		FString Brain;
+		for (size_t I = 0; I < ftcore::kPartnerIdleCount; ++I)
+		{
+			const ftcore::PartnerIdle W = static_cast<ftcore::PartnerIdle>(I);
+			Brain += FString::Printf(TEXT("%s%s %.1f s"), I ? TEXT(", ") : TEXT(""), PartnerIdleWord(W), AllyBrain.idleSeconds(W));
+		}
+		Brain += FString::Printf(TEXT("; strings begun off the frame %u"), static_cast<uint32>(AllyBrain.offFrameStarts()));
 		if (PartnerFrustumSteps < kPartnerPlayMinSteps)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play not covered (%d steps measured in the play camera's frustum of %d up, wanted %d)."),
-				PartnerFrustumSteps, PartnerOnSteps, kPartnerPlayMinSteps);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play not covered (%d steps measured in the play camera's frame of %d up, wanted %d; brain: %s)."),
+				PartnerFrustumSteps, PartnerOnSteps, kPartnerPlayMinSteps, *Brain);
 		}
 		else
 		{
 			const float Seen = static_cast<float>(PartnerSeenSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Per20 = PartnerPlaySeconds > 0.f ? static_cast<float>(PartnerActions) * 20.f / PartnerPlaySeconds : 0.f;
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen %.0f%% of %d steps, wanted 70%%; %d actions in %.1f s, %.1f per 20 s, wanted 4)."),
-				Seen >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Seen * 100.f, PartnerFrustumSteps, PartnerActions, PartnerPlaySeconds, Per20);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen %.0f%% of %d steps, wanted 70%%; %d actions in %.1f s, %.1f per 20 s, wanted 4; brain: %s)."),
+				Seen >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Seen * 100.f, PartnerFrustumSteps, PartnerActions, PartnerPlaySeconds, Per20, *Brain);
+
 		}
 	}
 	if (bPartnerHeldOut)

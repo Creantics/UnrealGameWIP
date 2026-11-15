@@ -297,6 +297,7 @@
 #include "ftcore/FightAnimator.h" // FightClip
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
+#include "ftcore/PartnerCamera.h"
 #include "ftcore/PressReason.h"
 #include "ftcore/ReadCards.h"
 
@@ -733,9 +734,10 @@ struct ArenaPoint3 {
     float z = 0.f;
 };
 
-// The play camera's whole frustum (ArenaInput::frustum; ftcore::arenaPoseFrustum makes one from a pose, and
-// ftcore::arenaInFrustum tests a point against it): the lens (m: x, y on the floor plane, z up from it), its unit
-// forward and up, the vertical field of view (degrees) and the frame's width per unit of height.
+// A camera pose's whole frustum (ftcore::arenaPoseFrustum makes one from a pose, ftcore::arenaInFrustum tests a point
+// against it, and ftcore::arenaPoseCamera turns it into ArenaInput::partnerCamera): the lens (m: x, y on the floor
+// plane, z up from it), its unit forward and up, the vertical field of view (degrees) and the frame's width per unit
+// of height.
 struct ArenaFrustum {
     bool on = false; // the host's camera is known this tick
     ArenaPoint3 pos{};
@@ -744,9 +746,7 @@ struct ArenaFrustum {
     float vfov = 0.f;
     float aspect = 0.f;
 };
-// The share of the frame's width and height kept clear each side when a point counts as on screen: one margin for
-// the partner's brain and the host's partner-in-play check alike (arenaInFrustum's `margin`).
-inline constexpr float kArenaFrustumMargin = 0.10f;
+
 
 // A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
 inline constexpr float kArenaShotHeight = 1.4f;
@@ -812,9 +812,11 @@ struct ArenaInput {
     // camera, every test that does not ask): no stationing, the partner as before.
     bool cameraOn = false;
     Vec2 cameraPos{};
-    // The same camera's whole frustum (appended): for the partner's in-frame stationing and the host's count of the
-    // steps the partner is seen. off (the default): not known.
-    ArenaFrustum frustum{};
+    // The play camera in full for the partner's frame rules (PartnerBrain rules 13-16; ftcore/PartnerCamera.h), in
+    // the fight's metres with z up. Not given (the default): cameraOn above decides, as before. Given: stationing is
+    // on whatever cameraOn says, the station view takes this camera's place and forward on the ground (cameraPos and
+    // cameraFacing unused), and the brain keeps its stations in this camera's frame.
+    PartnerCameraView partnerCamera{};
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
