@@ -9,6 +9,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionParticleColor.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -100,9 +101,11 @@ struct FSpriteMaterialSpec
 	bool bSpark;
 	bool bAdditive;
 	bool bLit = false; // lit by the scene (an emitter's "lit"): drops of water, which must not glow at night
+	bool bNearFade = false; // faded out near the camera (an emitter's "nearFade"): a ground tell the camera stands in
 };
-constexpr int32 kSpriteMaterials = 5;
+constexpr int32 kSpriteMaterials = 7;
 constexpr int32 kLitSprite = 4;
+constexpr int32 kNearFadeSprite = 5; // the soft one; the spark's is next
 
 const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxSoft"), false, false},
@@ -110,6 +113,8 @@ const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxSpark"), true, false},
 	{TEXT("M_VfxSparkAdditive"), true, true},
 	{TEXT("M_VfxSoftLit"), false, false, true},
+	{TEXT("M_VfxSoftNearFade"), false, false, false, true},
+	{TEXT("M_VfxSparkNearFade"), true, false, false, true},
 };
 
 FString MaterialPackage(const FSpriteMaterialSpec& Spec)
@@ -184,8 +189,19 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	}
 	if (!Spec.bAdditive)
 	{
-		UMaterialExpressionCustom* Opacity =
-			AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1, TEXT("return saturate(Color.a * Mask);"), Color, Mask);
+		// Near-faded: none within ftcore::kVfxNearFadeStart of the lens (the pixel's view depth), all beyond kVfxNearFadeEnd.
+		const FString OpacityCode = Spec.bNearFade
+			? FString::Printf(TEXT("return saturate(Color.a * Mask) * saturate((Depth - %.1f) / %.1f);"), ftcore::kVfxNearFadeStart,
+				  ftcore::kVfxNearFadeEnd - ftcore::kVfxNearFadeStart)
+			: FString(TEXT("return saturate(Color.a * Mask);"));
+		UMaterialExpressionCustom* Opacity = AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1, OpacityCode, Color, Mask);
+		if (Spec.bNearFade)
+		{
+			UMaterialExpressionPixelDepth* Depth = AddVfxExpression<UMaterialExpressionPixelDepth>(Material, -600, 300);
+			FCustomInput& InDepth = Opacity->Inputs.AddDefaulted_GetRef();
+			InDepth.InputName = TEXT("Depth");
+			InDepth.Input.Connect(0, Depth);
+		}
 		Material->GetEditorOnlyData()->Opacity.Connect(0, Opacity);
 	}
 
@@ -527,7 +543,9 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 		return false;
 	}
 	const bool bSpark = P.sprite == VfxSprite::Spark;
-	Sprite->Material = P.lit && Materials[kLitSprite] ? Materials[kLitSprite] : Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
+	Sprite->Material = P.lit && Materials[kLitSprite] ? Materials[kLitSprite]
+		: P.nearFade && Materials[kNearFadeSprite + (bSpark ? 1 : 0)] ? Materials[kNearFadeSprite + (bSpark ? 1 : 0)]
+		: Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
 	Sprite->SortMode = P.additive ? ENiagaraSortMode::None : ENiagaraSortMode::ViewDistance;
 	Sprite->FacingMode = ENiagaraSpriteFacingMode::FaceCamera;
 	Sprite->Alignment = ENiagaraSpriteAlignment::Unaligned;
@@ -799,15 +817,16 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		{
 			const FString Package = MaterialPackage(SpriteMaterials[I]);
 			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
-			if (!Materials[I] && SpriteMaterials[I].bLit)
+			if (!Materials[I] && (SpriteMaterials[I].bLit || SpriteMaterials[I].bNearFade))
 			{
-				// The lit sprite came after the others were built: made here once, the rest untouched.
+				// The lit and near-fade sprites came after the others were built: made here once, the rest untouched.
 				UPackage* LitPackage = CreatePackage(*Package);
 				UMaterial* Lit = BuildSpriteMaterial(LitPackage, SpriteMaterials[I]);
 				Materials[I] = Lit;
 				FAssetCompilingManager::Get().FinishAllCompilation();
 				bOk &= SaveVfxAsset(LitPackage, Lit);
-				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx: built the lit sprite material %s."), *Package);
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx: built the %s sprite material %s."),
+					SpriteMaterials[I].bLit ? TEXT("lit") : TEXT("near-fade"), *Package);
 				continue;
 			}
 			if (!Materials[I])

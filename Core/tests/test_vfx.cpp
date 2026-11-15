@@ -517,6 +517,44 @@ TEST_CASE("vfx: the water's drips are lit streaks, not glowing beads") {
     for (const VfxNiagaraEmitter& p : plan.emitters) CHECK_FALSE(p.lit);
 }
 
+TEST_CASE("vfx: the arena ground tells fade out near the camera") {
+    // The follow camera can stand inside the swoop's 8 m ring: every emitter fades near the lens, the ring unmoved. The
+    // stone tell's ring (under 1 m, at the boss's feet) and the deal tell (a glow on the dealer) need none.
+    CHECK(kVfxNearFadeStart == doctest::Approx(150.f));
+    CHECK(kVfxNearFadeEnd == doctest::Approx(350.f));
+    for (const char* file : {"kite_swoop_tell"}) {
+        CAPTURE(file);
+        VfxEffect e;
+        REQUIRE(loadEffect(file, e));
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        REQUIRE_FALSE(plan.emitters.empty());
+        for (const VfxNiagaraEmitter& p : plan.emitters) {
+            CAPTURE(p.name);
+            CHECK(p.nearFade);
+            CHECK(p.shape == VfxNiagaraShape::Ring);
+        }
+    }
+    // The swoop's ring stays at its reach (8 m out, 7.4 m in).
+    VfxEffect swoop;
+    REQUIRE(loadEffect("kite_swoop_tell", swoop));
+    VfxNiagaraPlan plan;
+    planVfxNiagara(swoop, plan);
+    for (const VfxNiagaraEmitter& p : plan.emitters) CHECK(p.ringRadius >= 740.f);
+    // Off by default, and only for an unlit alpha sprite: an additive one keeps its glow and says so.
+    VfxEffect plain;
+    REQUIRE(importVfxEffect(R"({"name":"p","emitters":[{"name":"a","rate":1,"lifetime":1}]})", plain));
+    planVfxNiagara(plain, plan);
+    CHECK_FALSE(plan.emitters[0].nearFade);
+    VfxEffect glow;
+    REQUIRE(importVfxEffect(R"({"name":"g","emitters":[{"name":"a","rate":1,"lifetime":1,"blend":"additive","nearFade":true}]})", glow));
+    planVfxNiagara(glow, plan);
+    CHECK_FALSE(plan.emitters[0].nearFade);
+    bool said = false;
+    for (const std::string& g : plan.emitters[0].gaps) said = said || g.rfind("nearFade:", 0) == 0;
+    CHECK(said);
+}
+
 TEST_CASE("vfx: one-shot plans report their duration") {
     VfxEffect e;
     std::string err;
