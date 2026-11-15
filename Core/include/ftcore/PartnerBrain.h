@@ -33,6 +33,14 @@
 //      leaves that blow running: no new string starts before it ends (Wait, why Committed). The budget is kept in
 //      0.05 s slots, counted against it (the partner's part slots in, the lead's out): with the lengths the host
 //      keeps, the only slack left is that slot, and it errs on the side of holding back.
+//      Attack time outside its strings (a paired counter: the ruled 1.0 s, reported on the step it lands) comes in as
+//      spentSeconds. On that step, before it decides, the brain puts it on the partner's side of the ring in the slots
+//      it ran in: back from now, each slot filled up to the time it held, less the partner's own attack there. What
+//      finds no room within the window goes into the current slot. So the next string waits exactly as it would
+//      after a string of that length ending now. The brain cannot refuse a counter: every blow it begins fits every
+//      window as counted when it begins, but a counter that lands after a blow was decided can carry that blow's
+//      window over by the counter's own seconds. The host must not also report those seconds as doing Attacking (they
+//      would count twice). It adds no state: save, load and the hash are as before.
 //   3. Defence. When a windup aimed at the partner is first seen (a new one: the enemy entered WindingUp, or its
 //      windupLeft rose) with at least guardWarning s left, one seeded draw: guard with guardChance, else take the blow.
 //      It guards from then until guardHold s after the windup ends. With less warning it is hit. It never parries,
@@ -176,6 +184,9 @@ struct PartnerInput {
     std::array<float, kMaxPartnerBlows> blowSeconds{};
     std::span<const PartnerEnemyView> enemies;
     PartnerStationView station{}; // rules 8-12; off by default
+    // Rule 2: seconds of partner attack time spent outside its own strings since the last step (a paired counter's
+    // 1.0 s on the step it lands). Not finite, or under 0: 0. Above budgetWindowSeconds: that. 0: as before.
+    float spentSeconds = 0.f;
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
@@ -360,6 +371,7 @@ private:
     float draw(std::uint32_t& s, std::uint32_t& n);
     const PartnerIntent& decide(double dt, const PartnerInput& in);
     void account(double dt, double partner, bool lead);
+    void spend(float seconds);
     void endString(bool staggered);
     int chooseTarget(const PartnerInput& in) const;
 
