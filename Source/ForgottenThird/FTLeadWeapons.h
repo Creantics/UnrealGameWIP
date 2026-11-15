@@ -127,7 +127,16 @@ struct FFTLeadWeapons
 	{
 		AimPoint = HitPoint;
 		bAimed = bAtTarget;
+		ContactPull = 0.0;
 	}
+	// The attacks aimed at a target's body (world, cm): Surface its surface point toward this fighter (its XY used),
+	// Bottom..Top the height the body spans, Ranged the point a shot or a cast goes at (the chest or a weak point). A
+	// melee kit (the gauntlets) aims at the point it can reach: the body's surface at the striking shoulder's height (a
+	// kick's: the middle of its hip-to-knee line), never over the fighter's head, pulled in to the arm's (the leg's)
+	// reach from the shoulder (the hip). Its spark lands there, at the fist that reaches it.
+	void SetAimAtBody(const FVector& Surface, double Bottom, double Top, const FVector& Ranged);
+	// Where the attacks are aimed this step (world, cm): SetAim's or SetAimAtBody's point.
+	const FVector& GetAimPoint() const { return AimPoint; }
 	// The aim stance's weight (0..1, ftcore::AimStance::alpha): the pistol arm and the casting hand are raised at the aim
 	// point by it between attacks (the gauntlets keep their guard; kicks are not aimed).
 	void SetAimHold(float Weight) { AimHold = FMath::Clamp(Weight, 0.f, 1.f); }
@@ -288,6 +297,7 @@ private:
 	// none) and when the last strike's aim is checked (below 0: done).
 	FVector AimPoint = FVector::ZeroVector;
 	bool bAimed = false;
+	double ContactPull = 0.0; // cm the reach pulled the melee contact point in from the body's surface (for the log)
 	float AimHold = 0.f;
 	float ActionUpper = 0.f;
 	int32 ActionLeg = -1;

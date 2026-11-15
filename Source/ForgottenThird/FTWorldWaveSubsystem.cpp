@@ -418,28 +418,20 @@ void UFTWorldWaveSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 void UFTWorldWaveSubsystem::SetClock(double Seconds)
 {
-	bHoldClock = true;
-	HeldClock = Seconds;
+	Clock.hold(Seconds);
 }
 
 void UFTWorldWaveSubsystem::ReleaseClock()
 {
-	// With a wave set the clock goes on from the held time (an offset on game time), so the front never jumps; with
-	// none it is game time again.
+	// ftcore::WorldWaveClock: with a wave set the clock goes on from the held time; a second release keeps the offset.
 	const UWorld* World = GetWorld();
-	const double GameNow = World ? World->GetTimeSeconds() : 0.0;
-	ClockOffset = (bHoldClock && bWave) ? HeldClock - GameNow : 0.0;
-	bHoldClock = false;
+	Clock.release(World ? World->GetTimeSeconds() : 0.0, bWave);
 }
 
 double UFTWorldWaveSubsystem::GetClock() const
 {
-	if (bHoldClock)
-	{
-		return HeldClock;
-	}
 	const UWorld* World = GetWorld();
-	return (World ? World->GetTimeSeconds() : 0.0) + ClockOffset;
+	return Clock.now(World ? World->GetTimeSeconds() : 0.0);
 }
 
 void UFTWorldWaveSubsystem::PostActorTick(UWorld* InWorld, ELevelTick, float)
@@ -448,10 +440,7 @@ void UFTWorldWaveSubsystem::PostActorTick(UWorld* InWorld, ELevelTick, float)
 	{
 		return;
 	}
-	if (!bWave && !bHoldClock)
-	{
-		ClockOffset = 0.0; // the release's offset lasts only while a wave runs on it
-	}
+	Clock.settle(bWave); // the release's offset lasts only while a wave runs on it
 	if (bBootPending)
 	{
 		bBootPending = false;

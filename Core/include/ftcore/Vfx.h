@@ -151,6 +151,11 @@ enum class VfxSheetTimeMode : std::uint8_t { Lifetime, Speed, Fps };
 enum class VfxTrailMode : std::uint8_t { PerParticle, Ribbon };
 enum class VfxSubEmitterEvent : std::uint8_t { Birth, Death };
 
+// The camera near-fade of an emitter's `nearFade` (cm from the lens): no opacity within the start, all of it beyond
+// the end, a straight ramp between.
+inline constexpr float kVfxNearFadeStart = 150.f;
+inline constexpr float kVfxNearFadeEnd = 350.f;
+
 // Properties a sub-emitter's particles take from the parent particle (VfxSubEmitter::inherit bits).
 inline constexpr std::uint32_t kVfxInheritColor = 1u << 0;
 inline constexpr std::uint32_t kVfxInheritSize = 1u << 1;
@@ -311,6 +316,9 @@ struct VfxEmitter {
     VfxCurve angularVelocity = VfxCurve::constant(0.f); // radians / second
     VfxBlend blend = VfxBlend::Alpha;
     bool lit = false; // an alpha sprite that takes the scene's light (drops of water) instead of showing its own colour
+    // An alpha sprite that fades out near the camera (a ground tell the follow camera can stand in): gone within
+    // kVfxNearFadeStart of the lens, whole beyond kVfxNearFadeEnd. Not for an additive or lit sprite.
+    bool nearFade = false;
     VfxSprite sprite = VfxSprite::Soft;
     float stretch = 0.f; // seconds of travel the billboard stretches along its velocity
     float stretchMax = 8.f;
@@ -435,6 +443,7 @@ struct VfxNiagaraEmitter {
     // Renderer
     bool additive = false;
     bool lit = false; // the emitter's `lit`, for an alpha sprite only
+    bool nearFade = false; // the emitter's `nearFade`, for an unlit alpha sprite only
     VfxSprite sprite = VfxSprite::Soft;
     VfxNiagaraFacing facing = VfxNiagaraFacing::Camera;
     bool scaleBySpeed = false; // ScaleSpriteSizeBySpeed: scale lerps min..max as speed goes 0..threshold
