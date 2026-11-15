@@ -316,7 +316,6 @@ bool inReachSpot(const Ground& g, const PartnerTuning& t, const PartnerEnemyView
 // --- Rules 13-16: the play camera. ---
 using V3 = PartnerVec3;
 float v3Dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-bool v3Finite(V3 a) { return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z); }
 
 // Rule 13's frustum, shrunk by the margin: a capsule's three points each in front of the camera and within lim of
 // the screen's centre in its -1..1 frame.
