@@ -2468,6 +2468,10 @@ struct IdleLead {
     // made only with a push in the tick (its own walk that tick no reversal), counted as forced.
     int pushes = 0, pushesEnemyInto = 0, pushesWalkInto = 0, pushReversals = 0;
     double pushMost = 0, pushFastest = 0, pushMostEnemy = 0, pushMostWalk = 0; // ... the most by each cause
+    // Its circling walk's shape: the reversals a body in its held line let through (ArenaAllyOut::bodyTurn, forced)
+    // and the shortest hold before one; the circling steps whose goal lies inside a body it is not circling.
+    int bodyTurns = 0, goalsInBody = 0;
+    double shortestBodyTurn = 1e9;
 };
 
 IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::uint32_t seed = 1, bool quiet = false) {
@@ -2577,6 +2581,10 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
                         ++reversals;
                         if (!forced) shortestHold = std::min(shortestHold, hold);
                         if (forced) ++forcedReversals;
+                        if (r.out->ally.bodyTurn) {
+                            ++o.bodyTurns;
+                            o.shortestBodyTurn = std::min(o.shortestBodyTurn, hold);
+                        }
                         else if (blow) ++blowReversals;
                         else if (pi.skirmish || pi.idle == PartnerIdle::NoBudget) {
                             ++circlingReversals;
@@ -2595,7 +2603,14 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
             }
             bool anyUp = false;
             for (std::size_t i = 0; i < r.fight.enemyCount(); ++i) anyUp = anyUp || r.fight.enemyAlive(i);
-            if (pi.skirmish || pi.idle == PartnerIdle::NoBudget) circlingTime += kDt;
+            if (pi.skirmish || pi.idle == PartnerIdle::NoBudget) {
+                circlingTime += kDt;
+                if (pi.act == PartnerAct::MoveTo)
+                    for (std::size_t i = 0; i < r.fight.enemyCount(); ++i)
+                        if (r.fight.enemyAlive(i) && !(pi.skirmish && static_cast<int>(i) == pi.enemy) &&
+                            length(sub(r.out->ally.goal, r.bodies.enemies[i])) < 0.4f + r.def.enemies[i].bodyRadius - 1e-3f)
+                            ++o.goalsInBody;
+            }
             // Standing: its body did not move this tick, no blow of its running, not guarding, with an enemy up.
             const bool stood = length(sub(r.bodies.ally, lastAt)) < 1e-3f && r.out->ally.part == ArenaPart::None &&
                                pi.act != PartnerAct::Guard && anyUp && r.out->ally.partnerOn;
@@ -2676,7 +2691,8 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
 // the time on screen and the longest stretch in one place; the shortest hold before a reversal not forced. Run once.
 constexpr int kSixSeeds = 6;
 struct SixSeeds {
-    std::array<double, kSixSeeds> rules{}, circling{}, inPlace{}, onScreen{}, pushes{}, circlingHold{};
+    std::array<double, kSixSeeds> rules{}, circling{}, inPlace{}, onScreen{}, pushes{}, circlingHold{}, bodyTurnHold{};
+    std::array<int, kSixSeeds> bodyTurns{}, goalsInBody{};
     double hold = 1e9, pushMost = 0, pushFastest = 0, pushMostEnemy = 0, pushMostWalk = 0;
     int enemyInto = 0, walkInto = 0, pushReversals = 0;
     static double mean(const std::array<double, kSixSeeds>& a) {
@@ -2703,6 +2719,9 @@ const SixSeeds& sixSeeds(std::uint8_t order, bool circling) {
             s.onScreen[i] = r.onScreen;
             s.hold = std::min(s.hold, r.shortestHold);
             s.circlingHold[i] = r.shortestCircling;
+            s.bodyTurnHold[i] = r.shortestBodyTurn;
+            s.bodyTurns[i] = r.bodyTurns;
+            s.goalsInBody[i] = r.goalsInBody;
             s.pushes[i] = 10.0 * r.pushes / r.T;
             s.pushMost = std::max(s.pushMost, r.pushMost);
             s.pushFastest = std::max(s.pushFastest, r.pushFastest);
@@ -2736,6 +2755,11 @@ TEST_CASE("arena partner: rules 10-13 and 17 over six fight seeds, a lead that n
                     << " (an enemy into it " << s.enemyInto << ", it into a body " << s.walkInto << ", all seeds); most in one push "
                     << s.pushMost << " m (an enemy into it " << s.pushMostEnemy << ", it into a body " << s.pushMostWalk << "), fastest "
                     << s.pushFastest << " m/s; reversals only with a push (forced) " << s.pushReversals);
+            std::ostringstream shape;
+            for (std::size_t i = 0; i < static_cast<std::size_t>(kSixSeeds); ++i)
+                shape << " | " << i + 1 << ": " << s.bodyTurns[i] << ", " << s.bodyTurnHold[i] << " s, " << s.goalsInBody[i];
+            MESSAGE("    its circling walk per seed (reversals a body let through, shortest hold before one, goals in a body)"
+                    << shape.str());
         }
 }
 
