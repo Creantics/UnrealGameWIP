@@ -1,4 +1,6 @@
 #include "ftcore/AudioCues.h"
+#include "ftcore/AudioPick.h"
+#include "ftcore/MixState.h"
 #include "ftcore/Loudness.h"
 #include "ftcore/Wav.h"
 
@@ -439,6 +441,60 @@ TEST_CASE("importAudioCues reads how the synth places and mixes a cue") {
     refused(R"J("max": 0)J", "cues[0].max");
     refused(R"J("max": 2.5)J", "cues[0].max");
     refused(R"J("prio": 101)J", "cues[0].prio");
+}
+
+TEST_CASE("importAudioCues reads a cue's variants, jitter and mix bus; missing keys keep today's behaviour") {
+    const char* json = R"J({"version": 1, "cues": [
+      {"id": "SFX-STEP", "bus": "sfx", "playback": "oneshot", "variants": 6, "avoidLast": 3,
+       "pitchCents": 50, "volumeDb": 1.5, "mixBus": "footsteps"},
+      {"id": "SFX-UI-TICK", "bus": "sfx", "playback": "oneshot", "variants": 3, "roundRobin": true, "mixBus": "ui"},
+      {"id": "SFX-PLAIN", "bus": "ambience", "playback": "loop"}]})J";
+    AudioCueTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importAudioCues(json, t, &error, &warnings), error);
+    CHECK(warnings.empty());
+    const AudioCue* step = t.find("SFX-STEP");
+    REQUIRE(step);
+    CHECK(step->variants == 6);
+    CHECK(step->avoidLast == 3);
+    CHECK_FALSE(step->roundRobin);
+    CHECK(step->pitchCents == 50.f);
+    CHECK(step->volumeDb == 1.5f);
+    CHECK(step->mixBus == static_cast<int>(MixBus::Footsteps));
+    CHECK(mixBusForCue(*step) == MixBus::Footsteps);
+    const AudioCue* tick = t.find("SFX-UI-TICK");
+    REQUIRE(tick);
+    CHECK(tick->roundRobin);
+    CHECK(mixBusForCue(*tick) == MixBus::Ui);
+    const AudioPickRule rule = audioPickRuleFor(*tick);
+    CHECK(rule.variants == 3);
+    CHECK(rule.roundRobin);
+    const AudioCue* plain = t.find("SFX-PLAIN");
+    REQUIRE(plain);
+    CHECK(plain->variants == 1);
+    CHECK(plain->avoidLast == -1);
+    CHECK_FALSE(plain->roundRobin);
+    CHECK(plain->pitchCents == 0.f);
+    CHECK(plain->volumeDb == 0.f);
+    CHECK(plain->mixBus == -1);
+    CHECK(mixBusForCue(*plain) == MixBus::Ambience);
+    CHECK(plain->file == "Ambience/SFX-PLAIN.wav");
+
+    const auto refused = [](const char* entry, const char* needle) {
+        const std::string text = std::string(R"J({"version": 1, "cues": [{"id": "X", "bus": "sfx", "playback": "oneshot", )J") + entry + "}]}";
+        AudioCueTable table;
+        std::string err;
+        CHECK_FALSE(importAudioCues(text, table, &err));
+        CHECK_MESSAGE(err.find(needle) != std::string::npos, err);
+    };
+    refused(R"J("variants": 0)J", "cues[0].variants");
+    refused(R"J("variants": 17)J", "cues[0].variants");
+    refused(R"J("avoidLast": 5)J", "cues[0].avoidLast");
+    refused(R"J("roundRobin": 1)J", "cues[0].roundRobin");
+    refused(R"J("pitchCents": -10)J", "cues[0].pitchCents");
+    refused(R"J("volumeDb": 20)J", "cues[0].volumeDb");
+    refused(R"J("mixBus": "loud")J", "cues[0].mixBus");
 }
 
 TEST_CASE("the beat boss's music cue is registered as a loop with no tempo") {
