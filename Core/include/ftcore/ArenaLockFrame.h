@@ -155,7 +155,7 @@ FTCORE_API float arenaLowSide(const ArenaLookLimits& limits, const ArenaCameraPo
 // 0 when it is in already, when more than maxYaw would be needed, or when the lead would lose its rule at that yaw.
 struct ArenaPartnerYawRules {
     float maxYaw = 5.f;    // degrees
-    float margin = 0.08f;  // share of the width kept clear each side
+    float margin = kPartnerFrustumMargin; // share of the width kept clear each side: the brain's frame margin
 };
 inline constexpr ArenaPartnerYawRules kArenaPartnerYaw{};
 FTCORE_API float arenaPartnerYaw(const ArenaPartnerYawRules& yawRules, const ArenaLeadFrameRules& rules, const ArenaCameraPose& pose,

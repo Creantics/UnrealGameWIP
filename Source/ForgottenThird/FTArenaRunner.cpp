@@ -1538,6 +1538,11 @@ void UFTArenaRunner::PutBodiesAtStart()
 	PlayerHitTime = -1e9;
 	LastHitFrom = FVector2D::ZeroVector;
 	LastHitAt = -1e9;
+	// The lock camera's eased state starts each fight at rest: no partner turn, no low lens.
+	PartnerYawNow = PartnerYawGoal = 0.f;
+	LockLow = 0.f;
+	LowSideNow = ftcore::kArenaLow.side;
+	bLowRig = false;
 	ParryTime = -1e9;
 	ReleaseTime = -1e9;
 	ReleaseSpent = 0;
@@ -1908,6 +1913,8 @@ void UFTArenaRunner::BeginSession()
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
 	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = 0;
 	PartnerPlaySeconds = 0.f;
+	PartnerStillFor = PartnerStillLongest = 0.f;
+	bPartnerStillAt = false;
 	PartnerLastAct = PartnerIdleWhy = 0xFF;
 	PartnerActFrom = PartnerActTo = -1.f;
 	PartnerActDone = false;
@@ -3157,6 +3164,13 @@ void UFTArenaRunner::StepFight()
 			PartnerSeenSteps += ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally) ? 1 : 0;
 		}
 		PartnerPlaySeconds += StepSeconds;
+		// Standing still: not swinging or guarding and moved under 1 cm since the last step; the longest such run.
+		const bool bStill = bPartnerStillAt && !Out.ally.attacking && !Out.ally.guarding &&
+			ArenaLength(ftcore::Vec2{Bodies.ally.x - PartnerStillAt.x, Bodies.ally.y - PartnerStillAt.y}) < 0.01f;
+		PartnerStillFor = bStill ? PartnerStillFor + StepSeconds : 0.f;
+		PartnerStillLongest = FMath::Max(PartnerStillLongest, PartnerStillFor);
+		PartnerStillAt = Bodies.ally;
+		bPartnerStillAt = true;
 		const ftcore::PartnerIntent& Intent = AllyBrain.intent();
 		const uint8 Act = static_cast<uint8>(Intent.act);
 		if (Act != PartnerLastAct || (Intent.act == ftcore::PartnerAct::Attack && Intent.newString))
@@ -5222,6 +5236,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 #if !UE_BUILD_SHIPPING
 	bHold = bHold && AimCheckPhase != 2 && AimCheckPhase != 3 && AimCheckPhase != 5; // the checks measure the plain lock view
 #endif
+	// Never more than the arm allows this frame: a wall that shortens the arm cuts the share at once, it never eases down.
+	LockLow = FMath::Min(LockLow, LowFit);
 	LockLow = FMath::FInterpConstantTo(LockLow, bHold && bTallLock ? LowFit : 0.f, DeltaSeconds, ftcore::kArenaLow.rate);
 	// The low shoulder crosses over when its side flips (eased), and snaps while the low lens is off (nothing to see).
 	const float LowSideWant = LowSideSign * ftcore::kArenaLow.side;
@@ -7774,7 +7790,8 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 			const ftcore::PartnerIdle W = static_cast<ftcore::PartnerIdle>(I);
 			Brain += FString::Printf(TEXT("%s%s %.1f s"), I ? TEXT(", ") : TEXT(""), PartnerIdleWord(W), AllyBrain.idleSeconds(W));
 		}
-		Brain += FString::Printf(TEXT("; strings begun off the frame %u"), static_cast<uint32>(AllyBrain.offFrameStarts()));
+		Brain += FString::Printf(TEXT("; strings begun off the frame %u; longest stand-still %.1f s"),
+			static_cast<uint32>(AllyBrain.offFrameStarts()), PartnerStillLongest);
 		if (PartnerFrustumSteps < kPartnerPlayMinSteps)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play not covered (%d steps measured in the play camera's frame of %d up, wanted %d; brain: %s)."),

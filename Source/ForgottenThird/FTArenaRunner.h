@@ -1084,8 +1084,9 @@ private:
 	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurn) on top of CameraYaw, which stays on the lock's
 	// line. It goes into CameraYaw once nothing is followed (ftcore::arenaFrameYawStep), so the view never jumps.
 	float FrameTurn = 0.f;
-	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read.
-	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}); }
+	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read (the partner's soft turn
+	// included, as the drawn camera and the control rotation have it).
+	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}) + PartnerYawNow; }
 	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
 	ftcore::ArenaFrameRules FrameRules() const
 	{
@@ -1212,6 +1213,10 @@ private:
 	// (ftcore::partnerInFrame on ArenaInput::partnerCamera), and its distinct actions (a new intent other than Wait, or a new string).
 	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0;
 	float PartnerPlaySeconds = 0.f;
+	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
+	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;
+	ftcore::Vec2 PartnerStillAt{};
+	bool bPartnerStillAt = false;
 	// The act in progress for that count: from when, to the last step seen, where the partner stood at its start, and
 	// whether it was carried out (FlushPartnerAction counts it).
 	float PartnerActFrom = -1.f, PartnerActTo = -1.f;

@@ -188,7 +188,9 @@ TEST_CASE("arena lock frame: the shipped rig keeps the rule as the arm shortens,
     for (const float asked : {0.f, 1.f}) {
         const float floorArm = 3.f;
         float least = z.arm;
-        for (float arm = z.arm; arm >= 1.99f; arm -= 0.1f) {
+        // By whole tenths of a metre (a float step could land at 2.9999 and skip the strict 3 m case).
+        for (int tenths = static_cast<int>(std::lround(z.arm * 10.f)); tenths >= 20; --tenths) {
+            const float arm = static_cast<float>(tenths) / 10.f;
             const ArenaCameraPose rig = shortRig(arm);
             ArenaLowRules lr = kArenaLow; // the low shoulder shrinks with the arm as well (the host passes it scaled)
             lr.side = kArenaLow.side * arm / z.arm;
@@ -217,6 +219,32 @@ TEST_CASE("arena lock frame: the shipped rig keeps the rule as the arm shortens,
         MESSAGE("shipped rig, low asked " << asked << ": the rule kept down to arm " << least << " m");
         CHECK(least <= floorArm);
     }
+}
+
+TEST_CASE("arena lock frame: when not even the whole body fits, the feet are cut and the head stays") {
+    // The shipped rig pulled in closer than 2 m (whole tenths, to 0.7 m): where arenaLeadPitch falls back to its last
+    // case (kept 0), the head is in the frame and the feet are what leaves it. (At 0.5 and 0.6 m the lens is so near
+    // that the head's top passes the frame too: there the least-outside pitch still gives the feet first, by
+    // kArenaFeetGive, but cannot keep the whole head.)
+    const ZoneCamera z{};
+    const float aspect = 16.f / 9.f;
+    int cut = 0;
+    for (int tenths = 19; tenths >= 7; --tenths) {
+        const float arm = static_cast<float>(tenths) / 10.f;
+        const ArenaCameraPose rig = shortRig(arm);
+        CAPTURE(arm);
+        for (float want = kArenaLook.viewMin; want <= kArenaLook.viewMax; want += 15.f) {
+            CAPTURE(want);
+            const ArenaLeadPitch p = arenaLeadPitch(kArenaLook, kArenaLeadFrame, rig, aspect, ArenaLeadBody{}, want);
+            if (p.kept != 0) continue;
+            ++cut;
+            const ArenaCameraPose pose = arenaPoseAtPitch(kArenaLook, rig, p.pitch);
+            CHECK(inView(arenaFramePoint(pose, aspect, ArenaPoint3{0.f, 0.f, ArenaLeadBody{}.head})));
+            CHECK_FALSE(inView(arenaFramePoint(pose, aspect, ArenaPoint3{0.f, 0.f, 0.f})));
+        }
+    }
+    MESSAGE("close rigs where the body cannot fit: " << cut);
+    CHECK(cut > 0);
 }
 
 TEST_CASE("arena lock frame: an ordinary lock is never moved (target up to 2.5 m, 3 to 12 m away, lead in frame)") {
