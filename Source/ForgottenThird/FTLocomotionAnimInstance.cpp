@@ -1694,7 +1694,9 @@ void FFTLocomotionAnimProxy::PoseReady(FCSPose<FCompactPose>& CS, const FBoneCon
 		const FCompactPoseBoneIndex Index = Limb[I].GetCompactPoseIndex(Container);
 		FTransform X = CS.GetComponentSpaceTransform(Index);
 		X.SetRotation((Turn * X.GetRotation()).GetNormalized());
-		CS.SetComponentSpaceTransform(Index, X);
+		// Safe: the bones under it already read in component space (FeetZ's legs) are carried, not left in place.
+		const FBoneTransform Turned(Index, X);
+		CS.SafeSetCSBoneTransforms(MakeArrayView(&Turned, 1));
 	}
 	// The pelvis moved forward (or back) and down by what the bent knees lifted the feet: the soles stay on the floor.
 	const double Rise = FeetZ() - Before;
@@ -1704,7 +1706,8 @@ void FFTLocomotionAnimProxy::PoseReady(FCSPose<FCompactPose>& CS, const FBoneCon
 		const FCompactPoseBoneIndex PelvisI = PelvisBone.GetCompactPoseIndex(Container);
 		FTransform P = CS.GetComponentSpaceTransform(PelvisI);
 		P.AddToTranslation(Move);
-		CS.SetComponentSpaceTransform(PelvisI, P);
+		const FBoneTransform Moved(PelvisI, P); // the legs and the spine (read already) go with it
+		CS.SafeSetCSBoneTransforms(MakeArrayView(&Moved, 1));
 	}
 }
 

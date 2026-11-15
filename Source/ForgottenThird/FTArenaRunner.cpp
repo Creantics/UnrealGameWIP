@@ -450,6 +450,11 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	LeadFrameFrames = LeadFrameKept = LeadFrameVisible = TellFrames = TellInPlace = TellPinned = TellEdge = 0;
 	LeadFeetLeast = 1.f;
 	LeadHeadMost = LeadSideWorst = 0.f;
+	for (int32 I = 0; I < 3; ++I)
+	{
+		LeadMissWorst[I] = 0.f;
+		LeadMissAt[I] = -1.f;
+	}
 	FrameLeadWorst = FrameFoeWorst = FrameTurnMost = FrameRateMost = FrameLensMost = FrameArmMost = FramePrev = 0.f;
 	for (int32 I = 0; I < 4; ++I)
 	{
@@ -3485,7 +3490,19 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				PartnerHitEvents += E.source == ftcore::kArenaAlly ? 1 : 0;
 				if (E.source == ftcore::kArenaAlly)
 				{
-					PartnerImpact(E);
+					// A shot's or cast's impact as it arrives (its tracer or bolt has just left), a blow's now.
+					const int32 Lights = FMath::Max(1, static_cast<int32>(Def.fighter.lightCount));
+					const double Flight = FFTLeadWeapons::FlightOf(Def.fighter, static_cast<uint8>(static_cast<int32>(E.move) % Lights));
+					if (Flight > 0.0)
+					{
+						PlayWaitingPartnerImpact(1e300); // one waiting already plays now
+						PartnerImpactWaiting = E;
+						PartnerImpactDue = static_cast<double>(Fight.heldTime()) + Flight;
+					}
+					else
+					{
+						PartnerImpact(E);
+					}
 				}
 				else if (E.source == ftcore::kArenaPlayer && E.amount > 0 && PlayerFigure)
 				{
@@ -5079,6 +5096,27 @@ void UFTArenaRunner::SampleLeadFrame()
 	++LeadFrameFrames;
 	LeadFrameKept += ftcore::arenaLeadInFrame(ftcore::kArenaLeadFrame, S) ? 1 : 0;
 	LeadFrameVisible += ftcore::arenaLeadVisible(S) ? 1 : 0;
+	{
+		// How far past the rule (0: kept), into the three worst.
+		const float Edge = 0.5f * (1.f - ftcore::kArenaLeadFrame.widthMid);
+		const float Miss = !S.ahead ? 1.f + FMath::Max(0.f, 1.f - S.feet)
+			: FMath::Max(FMath::Max(ftcore::kArenaLeadFrame.feetMin - S.feet, S.head - ftcore::kArenaLeadFrame.headMax),
+				FMath::Max(Edge - S.left, S.right - (1.f - Edge)));
+		for (int32 I = 0; Miss > 0.f && I < 3; ++I)
+		{
+			if (Miss > LeadMissWorst[I])
+			{
+				for (int32 J = 2; J > I; --J)
+				{
+					LeadMissWorst[J] = LeadMissWorst[J - 1];
+					LeadMissAt[J] = LeadMissAt[J - 1];
+				}
+				LeadMissWorst[I] = Miss;
+				LeadMissAt[I] = Fight.time();
+				break;
+			}
+		}
+	}
 	if (S.ahead)
 	{
 		LeadFeetLeast = FMath::Min(LeadFeetLeast, S.feet);
@@ -5525,6 +5563,8 @@ void UFTArenaRunner::LogFeatureChecks() const
 			LeadFrameKept == LeadFrameFrames ? TEXT("PASS") : TEXT("FAIL"), LeadFrameFrames, LeadFrameKept, ftcore::kArenaLeadFrame.feetMin * 100.f,
 			ftcore::kArenaLeadFrame.headMax * 100.f, ftcore::kArenaLeadFrame.widthMid * 100.f, LeadFrameVisible, LeadFeetLeast, LeadHeadMost,
 			LeadSideWorst, TellFrames, TellInPlace, TellPinned, TellEdge);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lead in frame worst samples (past the rule by, at fight time): %.3f at %.2f s, %.3f at %.2f s, %.3f at %.2f s (-1 s: none)."),
+			LeadMissWorst[0], LeadMissAt[0], LeadMissWorst[1], LeadMissAt[1], LeadMissWorst[2], LeadMissAt[2]);
 	}
 	if (bFrameCheck)
 	{
@@ -6097,6 +6137,8 @@ void UFTArenaRunner::Restart()
 	LeadWeapons.Restart();
 	AllyWeapons.Restart();
 	bAllyStruck = bAllyStrikeCut = false;
+	AllyTargetDeadLast = -1;
+	PartnerImpactDue = -1.0;
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
 	if (AFTArenaFighter* Boss = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr)
@@ -7166,8 +7208,18 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	AllyFigure->ApplyPose(Pose);
 }
 
+void UFTArenaRunner::PlayWaitingPartnerImpact(double T)
+{
+	if (PartnerImpactDue >= 0.0 && T + 1e-6 >= PartnerImpactDue)
+	{
+		PartnerImpactDue = -1.0;
+		PartnerImpact(PartnerImpactWaiting);
+	}
+}
+
 void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 {
+	PlayWaitingPartnerImpact(static_cast<double>(Fight.heldTime())); // a shot's or cast's, on its arrival
 	AFTArenaFighter* Ally = AllyFigure.Get();
 	if (!bPartner || !bAllyOn || !Ally || !AllyLook)
 	{
@@ -7180,11 +7232,17 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 	}
 	if (!AllyWeapons.IsOn())
 	{
+		if (AllyWeaponsFailed.Get() == Ally)
+		{
+			return; // it could not begin on this figure (no skeletal body): not every step again
+		}
 		AllyWeapons.SetSource(ftcore::kArenaAlly);
 		AllyWeapons.SetImpacts(false); // PartnerImpact plays its blows' impact
 		AllyWeapons.Begin(Ally, *AllyLook, Def.fighter); // again on the same figure: nothing
 		if (!AllyWeapons.IsOn())
 		{
+			AllyWeaponsFailed = Ally;
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: the partner's figure takes no lead weapons (its strike clips and effects); not tried again on it."));
 			return;
 		}
 	}
@@ -7212,11 +7270,15 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 				bAllyStrikeCut = true;
 			}
 		}
-		if (A.target >= 0 && A.target < MaxEnemies && Out.enemies[static_cast<size_t>(A.target)].brain == ftcore::ArenaBrain::Dead)
+		// Its target down: cut only when it was down the step before too (the killing blow plays on: Core marks the
+		// target Dead on the step the blow lands).
+		if (A.target >= 0 && A.target == AllyTargetDeadLast)
 		{
 			bAllyStrikeCut = true;
 		}
 	}
+	AllyTargetDeadLast = A.target >= 0 && A.target < MaxEnemies && Out.enemies[static_cast<size_t>(A.target)].brain == ftcore::ArenaBrain::Dead
+		? A.target : -1;
 	const bool bSwinging = A.attacking && !bAllyStrikeCut;
 	bAllyStruck = A.attacking;
 	AllyStruckBlow = Move;
@@ -7264,7 +7326,21 @@ const ftcore::ReadyStance* UFTArenaRunner::ReadyStanceFor(int32 Figure, const FF
 	if (!ReadyOf[I] || ReadyLookOf[I] != Look)
 	{
 		ReadyLookOf[I] = Look;
-		ReadyOf[I] = ftcore::readyStanceFor(ReadyStances, Look ? FT::ToUtf8(Look->Name) : std::string());
+		const std::string Id = Look ? FT::ToUtf8(Look->Name) : std::string();
+		ReadyOf[I] = ftcore::readyStanceFor(ReadyStances, Id);
+		bool bMapped = false;
+		for (size_t L = 0; L < ReadyStances.leadCount; ++L)
+		{
+			bMapped |= FT::ToFString(ReadyStances.leads[L].id).Equals(Look ? Look->Name : FString(), ESearchCase::IgnoreCase);
+		}
+		for (size_t K = 0; ReadyOf[I] && K < ReadyStances.stanceCount; ++K)
+		{
+			if (&ReadyStances.stances[K].stance == ReadyOf[I])
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: ready stance for the %s's look '%s': '%s'%s."), I == 0 ? TEXT("lead") : TEXT("partner"),
+					Look ? *Look->Name : TEXT("-"), *FT::ToFString(ReadyStances.stances[K].id), bMapped ? TEXT("") : TEXT(" (NOT mapped: the fallback)"));
+			}
+		}
 	}
 	return ReadyOf[I];
 }
@@ -7449,6 +7525,8 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 	PartnerClipsWhole += AllyWeapons.GetClipsCompleted();
 	AllyWeapons.End(); // begun again on the new ally figure by TrackAllyWeapons
 	bAllyStruck = bAllyStrikeCut = false;
+	AllyTargetDeadLast = -1;
+	PartnerImpactDue = -1.0; // the shot left from the other figure
 	Swap(PlayerFigure, AllyFigure);
 	Swap(PlayerLook, AllyLook);
 	// The HUD's rows follow the figures: the controlled lead's seat and name are the lead row's (the rows trade places
@@ -7677,7 +7755,9 @@ void UFTArenaRunner::LogHandoffChecks() const
 		int32 Unchecked = BenchMorphUnchecked;
 		float Worst = BenchMorphWorst;
 		const AFTArenaFighter* Owner = BenchMorphOwner.Get();
-		const bool bBenchedNow = Owner && BenchMorphs.Num() > 0 && Owner == AllyFigure.Get();
+		// A benched figure the partner's driver wears its look on (its gauntlet morphs on) is not benched bare.
+		const bool bDriven = AllyWeapons.IsOn();
+		const bool bBenchedNow = Owner && BenchMorphs.Num() > 0 && Owner == AllyFigure.Get() && !bDriven;
 		if (const USkeletalMeshComponent* Benched = bBenchedNow ? Owner->GetLeadSkin() : nullptr)
 		{
 			for (const FName& Morph : BenchMorphs)
@@ -7693,7 +7773,8 @@ void UFTArenaRunner::LogHandoffChecks() const
 		// A benched gauntlet figure with no skin to read is UNCHECKED, never a pass.
 		const TCHAR* Verdict = Worst > 1e-4f ? TEXT("FAIL") : (Unchecked > 0 ? TEXT("UNCHECKED") : (Checks == 0 ? TEXT("n/a, the gauntlet lead never benched") : TEXT("PASS")));
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: benched figure morphs %s (%d checked, %d benched with no skin to read, after %d body changes, worst weight %.3f; the gauntlet lead benched at the end %s)."),
-			Verdict, Checks, Unchecked, HandoffSwitches + HandoffBegun, Worst, bBenchedNow ? TEXT("yes") : TEXT("no"));
+			Verdict, Checks, Unchecked, HandoffSwitches + HandoffBegun, Worst,
+			bBenchedNow ? TEXT("yes") : (bDriven && Owner && Owner == AllyFigure.Get() ? TEXT("as the driven partner, exempt") : TEXT("no")));
 	}
 	if (HandoffSwitches > 0 || SwitchPartnerChecks > 0)
 	{

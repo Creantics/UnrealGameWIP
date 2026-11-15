@@ -839,6 +839,19 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 	}
 }
 
+double FFTLeadWeapons::FlightOf(const ftcore::ArenaFighterDef& Kit, uint8 Move)
+{
+	switch (Kit.weapon)
+	{
+	case ftcore::ArenaWeapon::Guns:
+		return ftcore::arenaPlayerStrike(Kit, Move) == FightClip::WeaponRight ? kTracerTime : 0.0;
+	case ftcore::ArenaWeapon::Magic:
+		return kBoltTime;
+	default:
+		return 0.0;
+	}
+}
+
 void FFTLeadWeapons::StartStrike(uint8 Move, double T)
 {
 	// The blow before (a string's) ends here: its clip counted whole when it got into its recovery.

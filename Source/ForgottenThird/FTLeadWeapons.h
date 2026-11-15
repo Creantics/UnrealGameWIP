@@ -184,6 +184,8 @@ struct FFTLeadWeapons
 	static constexpr double kTracerReach = 300.0;
 	static constexpr double kBoltTime = 0.2;
 	static constexpr double kBoltReach = 320.0;
+	// The flight of Kit's light Move (a shot: kTracerTime, a cast: kBoltTime), 0 for a blow that lands where it is.
+	static double FlightOf(const ftcore::ArenaFighterDef& Kit, uint8 Move);
 
 	// For -ArenaShotClose's views. The strike under way's limb (after the clip played: hand_l or hand_r, foot_l or
 	// foot_r for a kick), where it is now and whether it is the lead's left; the middle of both forearms (elbows and

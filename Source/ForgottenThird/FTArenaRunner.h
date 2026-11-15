@@ -1127,6 +1127,10 @@ private:
 	ftcore::ArenaLeadShares LeadShotShares; // the last frame sampled on a tall target (bLeadShotSampled), for LogLeadFrameShot
 	bool bLeadShotSampled = false;
 	float LeadFeetLeast = 1.f, LeadHeadMost = 0.f, LeadSideWorst = 0.f;
+	// The three samples that missed the rule most (how far past it, a share of the frame; 1 + for one behind the
+	// camera) and their fight times, worst first.
+	float LeadMissWorst[3] = {0.f, 0.f, 0.f};
+	float LeadMissAt[3] = {-1.f, -1.f, -1.f};
 	int32 TellFrames = 0, TellInPlace = 0, TellPinned = 0, TellEdge = 0;
 #endif
 
@@ -1403,6 +1407,12 @@ private:
 	uint8 AllyStruckBlow = 0;  // ... this one ...
 	float AllyStruckTime = 0.f; // ... this far in
 	bool bAllyStrikeCut = false; // its blow's clip was cut (it was hit, or its target is down) until its next blow
+	int32 AllyTargetDeadLast = -1; // the blow's target when it was already dead the step before (the killing blow is not cut)
+	TWeakObjectPtr<AFTArenaFighter> AllyWeaponsFailed; // the ally figure its driver could not begin on: not tried again
+	// A partner shot's or cast's impact waits for its flight (FFTLeadWeapons::kTracerTime, kBoltTime).
+	ftcore::ArenaEvent PartnerImpactWaiting{};
+	double PartnerImpactDue = -1.0;
+	void PlayWaitingPartnerImpact(double T);
 	// The partner's strike clips over the fight: started, and played into their recovery uncut (whole); summed across swaps.
 	int32 PartnerClipsStarted = 0, PartnerClipsWhole = 0;
 	// The direction from the lead to its aim target, set each step with the aim; the figure turns to it while
