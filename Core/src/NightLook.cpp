@@ -4,6 +4,7 @@
 #include "ftcore/WorldClock.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -11,17 +12,33 @@ namespace ftcore {
 
 namespace {
 float lerp(float a, float b, float t) { return a + (b - a) * t; }
+// From a to b in ratio (both above 0), so each step of t dims by the same share; straight when either end is 0.
+float lerpRatio(float a, float b, float t) {
+    return a > 0.f && b > 0.f ? a * std::pow(b / a, t) : lerp(a, b, t);
+}
 } // namespace
 
-NightFrame nightFrame(const NightLook& look, float night) {
+float nightDeep(const NightLook& look, float sunElevationDeg) {
+    const float span = look.deepHighDeg - look.deepLowDeg;
+    if (!(span > 0.f)) return sunElevationDeg < look.deepHighDeg ? 1.f : 0.f;
+    const float t = std::clamp((look.deepHighDeg - sunElevationDeg) / span, 0.f, 1.f);
+    return t * t * (3.f - 2.f * t);
+}
+
+NightFrame nightFrame(const NightLook& look, float night) { return nightFrame(look, night, night); }
+
+NightFrame nightFrame(const NightLook& look, float night, float deep) {
     NightFrame f;
     const float n = std::clamp(night, 0.f, 1.f);
+    const float d = std::clamp(deep, 0.f, 1.f);
     const float moon = std::max(look.moonShare, 1e-4f);
-    const float fill = std::max(look.skyFill, 0.f);
+    // The fill as twilight ends, then down in ratio to the deep night's; the dome from the day's down to its own.
+    const float fill = lerpRatio(std::max(look.twilightFill, 0.f), std::max(look.skyFill, 0.f), d);
     f.night = n;
+    f.deep = d;
     f.sunScale = lerp(1.f, moon, n);
     f.skyScale = lerp(1.f, fill, n);
-    f.skyLuminance = lerp(1.f, std::clamp(look.skyLuminance, 1e-4f, 1.f), n);
+    f.skyLuminance = lerpRatio(1.f, std::clamp(look.skyLuminance, 1e-4f, 1.f), d);
     // The capture also sees the dome's own dimming; lift it by that too, so the fill stands where it did.
     f.skyScaleRealTime = lerp(1.f, fill / moon, n) / f.skyLuminance;
     f.tintMix = n;
@@ -38,6 +55,12 @@ NightFrame nightFrame(const NightLook& look, float night) {
     f.wetShare = lerp(std::clamp(look.dayWetShare, 0.f, 1.f), 1.f, n);
     f.whiteKelvin = std::clamp(look.whiteKelvin, 1500.f, 15000.f);
     return f;
+}
+
+float nightCharacterFillLux(const NightLook& look, float night) {
+    const float ref = std::max(look.charFillRefM, 0.1f);
+    const float key = std::max(look.lampCandela, 0.f) / (ref * ref);
+    return key * std::exp2(-std::max(look.charFillStops, 0.f)) * std::clamp(night, 0.f, 1.f);
 }
 
 float nightLampScale(const NightLook& look, std::size_t neighbours) {

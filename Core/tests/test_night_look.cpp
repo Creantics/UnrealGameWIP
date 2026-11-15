@@ -4,6 +4,7 @@
 #include "ftcore/WorldClock.h"
 #include "AllocCounter.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -82,8 +83,11 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     // own stays cool, above), and the fill is strong enough to show an unlit facade.
     CHECK(look.glow[0] > look.glow[2]);
     CHECK(look.skyTint[0] > look.skyTint[2]);
-    CHECK(look.skyFill >= 0.5f);
-    CHECK(look.skyFill <= 1.5f);
+    // Twilight's fill shows an unlit facade; the deep night's leaves the street between lamps dark (11-15 ruling).
+    CHECK(look.twilightFill >= 0.5f);
+    CHECK(look.twilightFill <= 1.5f);
+    CHECK(look.skyFill > 0.f);
+    CHECK(look.skyFill <= 0.05f);
 }
 
 TEST_CASE("nightFrame: the sky dome darkens with the night, near black at full night, smooth through dusk") {
@@ -97,14 +101,15 @@ TEST_CASE("nightFrame: the sky dome darkens with the night, near black at full n
     CHECK(day.skyScaleRealTime == 1.f);
     NightLook plain = look;
     plain.skyLuminance = 1.f;  // with the dome left alone the capture's lift is exactly the old one at every hour
-    // Monotone through dusk, no step; the capture's net fill follows the same curve as before.
-    float last = 2.f;
+    // Monotone through dusk, no step (it falls in ratio, under 20% a twentieth); the capture's net fill follows the
+    // same curve as before.
+    float last = 1.f;
     for (int i = 0; i <= 20; ++i) {
         const float n = static_cast<float>(i) / 20.f;
         const NightFrame f = nightFrame(look, n);
         CHECK(f.skyLuminance <= last);
         CHECK(f.skyLuminance > 0.f);
-        if (i > 0) CHECK(last - f.skyLuminance <= 0.06f);
+        CHECK(f.skyLuminance >= 0.8f * last);
         last = f.skyLuminance;
         const NightFrame old = nightFrame(plain, n);
         CHECK(f.skyScaleRealTime * f.skyLuminance == doctest::Approx(old.skyScaleRealTime));
@@ -114,6 +119,75 @@ TEST_CASE("nightFrame: the sky dome darkens with the night, near black at full n
     NightLook odd;
     odd.skyLuminance = 0.f;  // clamped above zero, so the capture's lift stays finite
     CHECK(std::isfinite(nightFrame(odd, 1.f).skyScaleRealTime));
+}
+
+TEST_CASE("nightFrame: the evening darkens on the sun's depth after NightAmount is full, with no step") {
+    const NightLook look;
+    const WorldClockSpec spec;
+    const auto at = [&](double hours) {
+        return nightFrame(look, nightAmount(spec, hours), nightDeep(look, sunElevationDeg(spec, hours)));
+    };
+    // 19:00: NightAmount is full, but the fill and dome are within 10% of twilight's (the old 19:00 look).
+    const NightFrame seven = at(19.0);
+    CHECK(seven.night == doctest::Approx(1.f));
+    CHECK(seven.skyScale >= 0.9f * look.twilightFill);
+    CHECK(seven.skyLuminance >= 0.9f);
+    // 22:00 and midnight: exactly the spec, the same as a night still.
+    const NightFrame still = nightFrame(look, 1.f);
+    for (const double h : {22.0, 0.0}) {
+        const NightFrame f = at(h);
+        CHECK(f.deep == 1.f);
+        CHECK(f.skyScale == doctest::Approx(still.skyScale));
+        CHECK(f.skyScaleRealTime == doctest::Approx(still.skyScaleRealTime));
+        CHECK(f.skyLuminance == doctest::Approx(still.skyLuminance));
+    }
+    CHECK(still.deep == 1.f);
+    CHECK(still.skyScale == doctest::Approx(look.skyFill));
+    // From the sun 6 degrees up to 60 down, every half degree: the dome never brightens and the fill (once the night is
+    // full) never rises; neither moves more than about 10% a step (2 clock minutes), across the seam at -6 degrees too.
+    // Once the night is full, a real-time capture lands at the fill.
+    float lastDome = 2.f, lastFill = 0.f;
+    for (int i = 0; i <= 132; ++i) {
+        const float e = 6.f - 0.5f * static_cast<float>(i);
+        const float t = std::clamp((spec.twilightHigh - e) / (spec.twilightHigh - spec.twilightLow), 0.f, 1.f);
+        const NightFrame f = nightFrame(look, t * t * (3.f - 2.f * t), nightDeep(look, e));
+        CHECK(f.skyLuminance <= lastDome);
+        if (i > 0) {
+            CHECK(f.skyLuminance >= 0.9f * lastDome);
+            CHECK(f.skyScale <= 1.1f * lastFill);
+            CHECK(f.skyScale >= 0.85f * lastFill);
+            if (e < spec.twilightLow) CHECK(f.skyScale <= lastFill);
+        }
+        if (e <= spec.twilightLow) CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale));
+        lastDome = f.skyLuminance;
+        lastFill = f.skyScale;
+    }
+    // Ends crossed or equal: a step at deepHighDeg, still clamped; zero fill falls straight.
+    NightLook flat = look;
+    flat.deepLowDeg = flat.deepHighDeg;
+    CHECK(nightDeep(flat, flat.deepHighDeg + 1.f) == 0.f);
+    CHECK(nightDeep(flat, flat.deepHighDeg - 1.f) == 1.f);
+    NightLook none = look;
+    none.skyFill = 0.f;
+    CHECK(nightFrame(none, 1.f, 0.5f).skyScale == doctest::Approx(0.5f * look.twilightFill));
+    CHECK(std::isfinite(nightFrame(none, 1.f, 1.f).skyScaleRealTime));
+}
+
+TEST_CASE("nightCharacterFillLux: off by day, two stops under the lamp key at night, cool and from above") {
+    const NightLook look;
+    CHECK(nightCharacterFillLux(look, 0.f) == 0.f);
+    const float key = look.lampCandela / (look.charFillRefM * look.charFillRefM);
+    CHECK(nightCharacterFillLux(look, 1.f) == doctest::Approx(key / 4.f));
+    CHECK(nightCharacterFillLux(look, 7.f) == nightCharacterFillLux(look, 1.f));
+    CHECK(nightCharacterFillLux(look, 0.5f) == doctest::Approx(key / 8.f));
+    CHECK(look.charFillStops == doctest::Approx(2.f));
+    CHECK(look.charFillKelvin > look.whiteKelvin);
+    CHECK(look.charFillPitchDeg < 0.f);
+    NightLook odd;
+    odd.charFillRefM = 0.f;  // a floor on the distance, so the fill stays finite
+    odd.charFillStops = -3.f; // never over the key
+    CHECK(std::isfinite(nightCharacterFillLux(odd, 1.f)));
+    CHECK(nightCharacterFillLux(odd, 1.f) == doctest::Approx(look.lampCandela / 0.01f));
 }
 
 TEST_CASE("nightFrame: exposure locks from half night; no allocation") {
@@ -256,12 +330,13 @@ TEST_CASE("night look: grey-blue ambient, orange lamps, warm glow") {
     CHECK(look.lampKelvin <= 2700.f);
     CHECK(look.glow[0] > look.glow[1]);
     CHECK(look.glow[1] > look.glow[2]);
-    // The fill shows an unlit facade (dark, not black): the captured night sky is a deep blue that carries little
-    // luminance, so the share is over the day's; its tint falls from red to blue, against that blue.
-    CHECK(look.skyFill >= 0.5f);
-    CHECK(look.skyFill <= 1.5f);
-    // A face turned from the moon stays within about two stops of a moonlit one: the fill is many times the moon.
-    CHECK(look.skyFill >= 10.f * look.moonShare);
+    // As twilight ends the fill shows an unlit facade (dark, not black): the captured sky is a deep blue that carries
+    // little luminance, so the share is over the day's, many times the moon; its tint falls from red to blue, against
+    // that blue. In the deep night it falls under the moon, so the lamps carry the street.
+    CHECK(look.twilightFill >= 0.5f);
+    CHECK(look.twilightFill <= 1.5f);
+    CHECK(look.twilightFill >= 10.f * look.moonShare);
+    CHECK(look.skyFill < look.moonShare);
     CHECK(look.skyTint[0] >= look.skyTint[1]);
     CHECK(look.skyTint[1] > look.skyTint[2]);
     CHECK(look.skyTint[2] >= 0.4f);

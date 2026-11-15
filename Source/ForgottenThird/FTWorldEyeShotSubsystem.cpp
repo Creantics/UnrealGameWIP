@@ -28,6 +28,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "FTCharacterFillSubsystem.h"
 #include "FTLampPoolSubsystem.h"
 #include "FTLookSubsystem.h"
 #include "FTNightLightData.h"
@@ -704,6 +705,10 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		int32 Turned = 0;
 		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 		{
+			if (It->ActorHasTag(UFTCharacterFillSubsystem::LightTag))
+			{
+				continue;
+			}
 			if (ULightComponent* Light = It->GetLightComponent())
 			{
 				Light->SetMobility(EComponentMobility::Movable);
@@ -827,6 +832,10 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		int32 Suns = 0, Skies = 0, Volumes = 0;
 		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 		{
+			if (It->ActorHasTag(UFTCharacterFillSubsystem::LightTag))
+			{
+				continue; // the characters' own fill, not the moon
+			}
 			ULightComponent* Light = It->GetLightComponent();
 			// On a Solhaven map the moon stands where the clock puts it at midnight (or -WorldEyeSunHour), not at the
 			// built sun's angle.

@@ -5,6 +5,8 @@
 //   -NightMoon=<share>  the directional light at full night, a share of its day intensity
 //   -NightSky=<share>   the sky light's fill at full night (net of the moon for a real-time capture)
 //   -NightSkyLum=<factor> the sky dome's luminance factor at full night (near black; 1 = the day's sky, dimmed only by the moon)
+//   -NightTwilightFill=<share> the sky light's fill as twilight ends; -NightDeepHigh=<deg> -NightDeepLow=<deg> the sun's
+//                       elevations the fill and dome fall between, from that and the day's dome to the deep night's
 //   -NightFog=<share>   the height fog's own inscattering colour kept
 //   -NightGlow=<scale>  the city glow added to the fog's inscattering (1 = the spec's warm glow, 0 = none)
 //   -NightEV=<ev100>    the night exposure's centre, from half night on

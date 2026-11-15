@@ -24,11 +24,20 @@ namespace ftcore {
 
 struct NightLook {
     float moonShare = 0.07f;       // the directional light at full night, as a share of its day intensity
-    float skyFill = 1.30f;         // the sky light at full night, as a share of its day intensity (net of the moon)
-    float skyLuminance = 0.03f;    // the sky dome's own brightness at full night (SkyAtmosphere SkyLuminanceFactor):
+    float skyFill = 0.01f;         // the sky light in the deep night, as a share of its day intensity (net of the moon):
+                                   // near nothing, so between the lamps reads dark (11-15 ruling)
+    float skyLuminance = 0.03f;    // the sky dome's own brightness in the deep night (SkyAtmosphere SkyLuminanceFactor):
                                    // near black, so the lamps and shops carry the night, not a dimmed day sky. A
                                    // real-time sky capture sees the darker dome too, so its lift takes this back out
                                    // (skyScaleRealTime) and skyFill keeps meaning the fill as a share of the day's.
+    // The dusk into the deep night. NightAmount is full by the sun at -6 degrees (about 18:30), so the fill and the dome
+    // follow a second curve on the sun's elevation (nightDeep): the fill stands at twilightFill and the dome at the day's
+    // as twilight ends, and both fall in ratio to skyFill and skyLuminance from deepHighDeg to deepLowDeg (eased), so the
+    // evening darkens continuously with no step. The defaults put 19:00 within a few percent of the twilight's values
+    // and 21:00 within a few percent of the deep night's.
+    float twilightFill = 1.30f;    // the sky light's fill as twilight ends (the night's old value)
+    float deepHighDeg = -12.f;     // the deep night starts with the sun this far down ...
+    float deepLowDeg = -45.f;      // ... and is full by here (above -53.4, the sun at 22:00, so 22:00 is the spec)
     float fogKeep = 0.08f;         // the height fog's own inscattering colour kept at full night
     float exposureEV100 = -1.2f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
     float exposureRangeEV = 1.0f;  // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
@@ -51,6 +60,13 @@ struct NightLook {
     // but there, not a cobalt black.
     std::array<float, 3> moonTint{0.70f, 0.82f, 1.f};
     std::array<float, 3> skyTint{1.f, 0.72f, 0.46f};
+    // A fill on characters alone (lighting channel 1; the street keeps its dark): cool, from the camera's side and a
+    // little above, charFillStops under the lamp key (a lamp's candela at charFillRefM, a face under a lamp head), so
+    // a face and a silhouette read between lamps. Off unless asked for (-NightCharFill, FTCharacterFillSubsystem.h).
+    float charFillStops = 2.f;
+    float charFillRefM = 4.f;
+    float charFillKelvin = 8000.f;
+    float charFillPitchDeg = -20.f;  // below the camera's own pitch (negative: from above)
     float capRadiusM = 15.f;       // lights within this of each other share their light
     float capShare = 0.2f;         // each neighbour within capRadiusM takes this much off (1 / (1 + capShare n))
     float capFloor = 0.4f;         // no light falls under this share of its candela
@@ -63,6 +79,7 @@ inline constexpr float kExposureLockAt = 0.5f;
 // the sun's share back to skyScale's level.
 struct NightFrame {
     float night = 0.f;
+    float deep = 0.f;                        // the deep night's amount the fill and dome stand at (nightDeep)
     float sunScale = 1.f;
     float skyScale = 1.f;
     float skyScaleRealTime = 1.f;
@@ -79,8 +96,17 @@ struct NightFrame {
     float wetShare = 1.f;                    // the look's wetness times this (dayWetShare by day .. 1 at full night)
 };
 
-// NightAmount is clamped to 0..1. Shares at or under 0 are taken as 1e-4 so the real-time lift stays finite.
+// NightAmount and the deep amount are clamped to 0..1. Shares at or under 0 are taken as 1e-4 so the real-time lift
+// stays finite. The two-argument form takes the deep amount as the night's, so nightFrame(look, 1) is the full deep
+// night (a night still). The clock passes nightDeep at the sun's elevation. No allocation.
 FTCORE_API NightFrame nightFrame(const NightLook& look, float night);
+FTCORE_API NightFrame nightFrame(const NightLook& look, float night, float deep);
+// 0 with the sun above deepHighDeg, 1 below deepLowDeg, eased between. No allocation.
+FTCORE_API float nightDeep(const NightLook& look, float sunElevationDeg);
+
+// The characters-only fill's illuminance (lux) at a NightAmount: 0 by day, the lamp key's at charFillRefM less
+// charFillStops at full night, in between by the night. No allocation.
+FTCORE_API float nightCharacterFillLux(const NightLook& look, float night);
 
 // The intensity share of a light with `neighbours` others within capRadiusM.
 FTCORE_API float nightLampScale(const NightLook& look, std::size_t neighbours);

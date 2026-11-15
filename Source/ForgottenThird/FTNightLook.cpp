@@ -12,6 +12,7 @@
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FTCharacterFillSubsystem.h"
 #include "FTLampPoolSubsystem.h"
 #include "FTLookSubsystem.h"
 #include "FTSceneLook.h"
@@ -33,6 +34,12 @@ ftcore::NightLook Read()
 	FParse::Value(Cmd, TEXT("NightMoon="), L.moonShare);
 	FParse::Value(Cmd, TEXT("NightSky="), L.skyFill);
 	FParse::Value(Cmd, TEXT("NightSkyLum="), L.skyLuminance);
+	FParse::Value(Cmd, TEXT("NightTwilightFill="), L.twilightFill);
+	FParse::Value(Cmd, TEXT("NightDeepHigh="), L.deepHighDeg);
+	FParse::Value(Cmd, TEXT("NightDeepLow="), L.deepLowDeg);
+	FParse::Value(Cmd, TEXT("NightCharFillStops="), L.charFillStops);
+	FParse::Value(Cmd, TEXT("NightCharFillK="), L.charFillKelvin);
+	FParse::Value(Cmd, TEXT("NightCharFillPitch="), L.charFillPitchDeg);
 	FParse::Value(Cmd, TEXT("NightFog="), L.fogKeep);
 	FParse::Value(Cmd, TEXT("NightEV="), L.exposureEV100);
 	FParse::Value(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
@@ -58,6 +65,8 @@ ftcore::NightLook Read()
 		}
 	}
 	L.moonShare = FMath::Max(L.moonShare, 1e-4f);
+	UE_LOG(LogForgottenThird, Display, TEXT("Night: moon %.3f, sky fill %.3f as twilight ends to %.3f in the deep night (sun %.1f to %.1f degrees), dome %.3f."),
+		L.moonShare, L.twilightFill, L.skyFill, L.deepHighDeg, L.deepLowDeg, L.skyLuminance);
 	return L;
 }
 
@@ -106,8 +115,9 @@ FTNight::FSkyFrame FTNight::FrameAt(const ftcore::WorldClockSpec& Spec, double H
 {
 	FSkyFrame F;
 	F.NightAmount = ftcore::nightAmount(Spec, Hours);
-	F.Night = ftcore::nightFrame(Look(), F.NightAmount);
 	const float Elevation = ftcore::sunElevationDeg(Spec, Hours);
+	// The fill and the dome go on darkening after NightAmount is full, by the sun's depth below the horizon.
+	F.Night = ftcore::nightFrame(Look(), F.NightAmount, ftcore::nightDeep(Look(), Elevation));
 	const float Amount = ftcore::duskAmount(Dusk(), Elevation, Hours >= 12.0);
 	F.Dusk = ftcore::duskFrame(Dusk(), Amount);
 	F.Lights = FMath::Max(F.NightAmount, ftcore::duskLights(Dusk(), Elevation));
@@ -314,6 +324,10 @@ void FTNight::ApplyStill(UWorld& World, const FSkyFrame& Frame)
 	int32 Suns = 0, SkyLights = 0, Fogs = 0;
 	for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 	{
+		if (It->ActorHasTag(UFTCharacterFillSubsystem::LightTag))
+		{
+			continue; // the characters' own fill, not a sun
+		}
 		if (ULightComponent* Light = It->GetLightComponent())
 		{
 			Light->SetMobility(EComponentMobility::Movable);
@@ -362,9 +376,9 @@ void FTNight::ApplyStill(UWorld& World, const FSkyFrame& Frame)
 		bLamps = Pool && Pool->ForceNight(Spec.lampCandela * Frame.Lights, Spec.lampReachM * 100.f, Spec.shopCandela * Frame.Lights, Spec.shopReachM * 100.f);
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("WorldEyeShot: dusk %.2f, night %.2f on %d suns, %d sky lights, %d fogs, %d skies (luminance x%.3f), %d volumes; windows' Night %s; "
+		TEXT("WorldEyeShot: dusk %.2f, night %.2f (deep %.2f, sky fill x%.3f) on %d suns, %d sky lights, %d fogs, %d skies (luminance x%.3f), %d volumes; windows' Night %s; "
 			 "lights %.2f%s, daylight %.2f, exposure bias %+.2f EV on %d volumes."),
-		Frame.Dusk.amount, Frame.NightAmount, Suns, SkyLights, Fogs, Scene.NumSkies(), Frame.Night.skyLuminance, Scene.NumVolumes(),
+		Frame.Dusk.amount, Frame.NightAmount, Frame.Night.deep, Frame.Night.skyScale, Suns, SkyLights, Fogs, Scene.NumSkies(), Frame.Night.skyLuminance, Scene.NumVolumes(),
 		bWindows ? TEXT("written") : TEXT("not written"), Frame.Lights, bLamps ? TEXT(" (street lamps and shop lights from the pool)") : TEXT(""),
 		Frame.Daylight, Frame.ExposureBias, Biased);
 }
