@@ -46,6 +46,12 @@ With no "where" an op applies to every strand. Ops run in order:
                                           the tangent plane at the nearest head vertex) and the strand moves with it.
                                           Fills a bare patch from the hair beside it, or thickens a sparse region
                                           (a "group" id tags the copies, so later ops can reshape only them)
+  {"op": "graft", "file": npz[, "group": id]}
+                                          (needs "head") copy donor strands onto new roots: the npz (head_prop.py
+                                          transplant) holds "roots" (cm, this frame) and "donor" (strand indices as the
+                                          strands stand when the op runs); each copy is turned by the turn that takes
+                                          the donor root's head normal to the new root's, so it leaves the scalp at the
+                                          same angle; follow with "lift" to clear the head
   {"op": "length", "scale": s}            cut or extend each strand to s times its arc length, s blended toward 1 by
                                           the mask; an extension carries on along the tip direction
   {"op": "length", "max": cm}             cut each strand to at most this arc length (blended the same way)
@@ -73,6 +79,16 @@ With no "where" an op applies to every strand. Ops run in order:
                                           the strand rises as one: each point's push becomes the running maximum from
                                           the root to that point, applied along the root's normal, so no single point
                                           is pushed out past its neighbours
+  {"op": "rebase", "to": npz, "top_z": cm, "smooth": cm, "iters": n}
+                                          (needs "head") move the groom onto another head in the same frame ("to"
+                                          holds "v" and "f" triangles; "top_z" is the in-game face's top in cm, and a
+                                          "to" whose top is more than 5 mm off it is refused, so an outdated export of
+                                          the face cannot be used by mistake): a scale and shift fitted on the roots by
+                                          closest points (n rounds, default 12), then each root put on the new head's
+                                          nearest surface at its old height off the skin, that move box-averaged over
+                                          "smooth" cm (default 1.5). Whole strands move with their roots, so lengths
+                                          and flow are kept; follow it with "lift" (later ops use the new head). For
+                                          binding the groom to that head with no mesh transfer
   {"op": "shell", "file": npz, "frac": f, "radius": cm, "smooth": cm, "kmin": a, "kmax": b}
                                           (needs "head") give the hair a target volume: "file" holds "v", a surface in
                                           groom space (the outside of a sculpted or scanned hairstyle). At each root the
@@ -253,6 +269,7 @@ def kdtree(V):
 
 
 _head = {}
+_rebase = {}  # set by the rebase op: strand lengths then, to report the change at the end
 
 
 def head_near(q):
@@ -404,6 +421,33 @@ for op in spec.get("ops", []):
             st["g"][len(st) - len(k):] = op["group"]
         print("op dup    %d strands copied" % len(k))
         continue
+    if kind == "graft":
+        if not spec.get("head"):
+            raise SystemExit("graft needs a head")
+        gd = np.load(op["file"])
+        tr, dn = gd["roots"].astype(float), gd["donor"].astype(np.int64)
+        if len(dn) and dn.max() >= len(st):
+            raise SystemExit("graft: donor %d past the %d strands; the npz was made from another groom" % (dn.max(), len(st)))
+        off = offsets(st["n"])
+        _, dnor = head_near(P[off[:-1]][dn])
+        _, tnor = head_near(tr)
+        # Rodrigues turn per copy: donor normal a onto target normal b
+        a, b = dnor, tnor
+        v = np.cross(a, b)
+        c = (a * b).sum(1)
+        K = np.zeros((len(dn), 3, 3))
+        K[:, 0, 1], K[:, 0, 2], K[:, 1, 0], K[:, 1, 2], K[:, 2, 0], K[:, 2, 1] = -v[:, 2], v[:, 1], v[:, 2], -v[:, 0], -v[:, 1], v[:, 0]
+        Rm = np.eye(3)[None] + K + (K @ K) / np.maximum(1 + c, 1e-6)[:, None, None]
+        idx = np.concatenate([np.arange(off[i], off[i + 1]) for i in dn]) if len(dn) else np.zeros(0, int)
+        cid = np.repeat(np.arange(len(dn)), st["n"][dn])
+        rel = P[idx] - np.repeat(P[off[:-1]][dn], st["n"][dn], axis=0)
+        newP = np.repeat(tr, st["n"][dn], axis=0) + np.einsum("kij,kj->ki", Rm[cid], rel)
+        P, W, st = np.concatenate([P, newP]), np.concatenate([W, W[idx]]), np.concatenate([st, st[dn]])
+        if "group" in op and len(dn):
+            st["g"][len(st) - len(dn):] = op["group"]
+        print("op graft  %d strands copied onto new roots (turn p50/max %.1f/%.1f deg)" % (
+            len(dn), *(np.degrees(np.arccos(np.clip(np.percentile(c, [50, 0]), -1, 1))) if len(dn) else (0, 0))))
+        continue
     if kind == "tufts":
         # new locks built from scratch: seeds are existing roots in the region, at least "spacing" cm apart
         m = region(op.get("where"))
@@ -553,6 +597,63 @@ for op in spec.get("ops", []):
                 fix = np.zeros((len(st), 3))
                 fix[k] = onto_head(P[off[:-1]][k], np.zeros((len(k), 3)))
                 P += np.repeat(fix, st["n"], axis=0)
+    elif kind == "rebase":
+        if not spec.get("head"):
+            raise SystemExit("rebase needs a head")
+        from mathutils.bvhtree import BVHTree
+        _, _, _, off = arcs()
+        r = P[off[:-1]]
+        rv, rn = head_near(r)
+        h0 = ((r - rv) * rn).sum(1)
+        td = np.load(op["to"])
+        Tv = td["v"].astype(float)
+        if "top_z" not in op:
+            raise SystemExit("rebase needs top_z: the in-game face's top in cm, to check the export against")
+        if abs(Tv[:, 2].max() - op["top_z"]) > 0.5:
+            raise SystemExit("rebase: %s tops out at z %.2f cm, not the in-game face's %.2f; an outdated export?"
+                             % (op["to"], Tv[:, 2].max(), op["top_z"]))
+        bvh = BVHTree.FromPolygons(Tv.tolist(), td["f"].tolist())
+
+        def nearest(q):
+            hit = [bvh.find_nearest(p) for p in q.tolist()]
+            return np.array([h[0] for h in hit]), np.array([h[1] for h in hit])
+
+        # scale and shift fitted on the roots (the scalp) by closest points, started with the head tops level and the
+        # scale held to 0.8..1.25 (closest-point fits with a free scale otherwise shrink onto one patch)
+        a, s = 1.0, r[::8]
+        b = np.array([0.0, 0.0, Tv[:, 2].max() - _head["v"][:, 2].max()])
+        for _ in range(op.get("iters", 12)):
+            p, _ = nearest(a * s + b)
+            ms, mp = s.mean(0), p.mean(0)
+            a = float(np.clip(((s - ms) * (p - mp)).sum() / ((s - ms) ** 2).sum(), 0.8, 1.25))
+            b = mp - a * ms
+        q = a * r + b
+        p, pn = nearest(q)
+        pn *= np.sign(((p - Tv.mean(0)) * pn).sum(1))[:, None]  # out of the new head
+        D = p + pn * h0[:, None] - r
+        size = op.get("smooth", 1.5)
+        Ds = np.stack([box_smooth(r, D[:, c], size) for c in range(3)], 1)
+        P += np.repeat(Ds, st["n"], axis=0)
+        spec["head"] = op["to"]  # later ops ("lift") work on the new head
+        _head.clear()
+        # the numbers that show it is no restyle: roots' distance off the skin before and after, and how far the
+        # front hairline's roots (the front tenth by y, |x| < 4) slid over the new head beyond the fitted scale and
+        # shift, along the skin (mm); lengths are compared after the last op
+        r1 = r + Ds
+        v1, n1 = head_near(r1)
+        h1 = ((r1 - v1) * n1).sum(1)
+        front = (np.abs(r[:, 0]) < 4) & (r[:, 1] > np.percentile(r[:, 1], 90))
+        slide = Ds - (q - r)
+        slide -= n1 * (slide * n1).sum(1, keepdims=True)
+        sl = np.linalg.norm(slide[front], axis=1) * 10
+        _rebase.update(L0=arcs()[2].copy(), n=len(st))
+        print("op rebase roots off the skin before p50/max %.2f/%.2f mm, after %.2f/%.2f mm; front hairline (%d roots) "
+              "slid p50/p90/max %.1f/%.1f/%.1f mm" % (np.median(np.abs(h0)) * 10, np.abs(h0).max() * 10,
+              np.median(np.abs(h1)) * 10, np.abs(h1).max() * 10, int(front.sum()), *np.percentile(sl, [50, 90, 100])))
+        print("op rebase scale %.3f shift %s, fit residual p50/p90 %.2f/%.2f cm, root move p50/p90 %.2f/%.2f cm, "
+              "smoothing changed it p90 %.2f cm" % (a, np.round(b, 2), *np.percentile(np.linalg.norm(p - q, axis=1),
+              [50, 90]), *np.percentile(np.linalg.norm(Ds, axis=1), [50, 90]),
+              np.percentile(np.linalg.norm(Ds - D, axis=1), 90)))
     elif kind == "lift":
         if not spec.get("head"):
             raise SystemExit("lift needs a head")
@@ -740,6 +841,10 @@ for op in spec.get("ops", []):
         raise SystemExit("unknown op " + kind)
     print("op %-6s %d strands in the region (mask > .5)" % (kind, int((m > 0.5).sum())))
 summary("out")
+if _rebase and _rebase["n"] == len(st):  # strands kept in order since the rebase: their length change
+    dL = (arcs()[2] - _rebase["L0"]) * 10
+    print("rebase length change p50/p99/max %.2f/%.2f/%.2f mm (abs max %.2f)" % (*np.percentile(dL, [50, 99]), dL.max(),
+          np.abs(dL).max()))
 if spec.get("dump"):  # the finished strands as the abc writes them (groom frame, cm): "P" points, "n" points per strand
     np.savez_compressed(spec["dump"], P=P.astype(np.float32), n=st["n"].astype(np.int32), W=W.astype(np.float32),
                         g=st["g"].astype(np.int32))

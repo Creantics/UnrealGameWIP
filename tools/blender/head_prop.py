@@ -44,6 +44,16 @@ of the field bridged to its least bulging curve over skin + min_standoff, smooth
 "relief" and set "standoff" out), bevel (0.9 mm, the shell's edge rounded; 0: flat rim faces),
 colour (sRGB "r,g,b", 0.86,0.84,0.80).
 
+cap: a hair cap under a groom, so the scalp between strands reads as hair: the skin faces near the groom's roots or
+inside the sheet's hairline, set "offset" mm (0.5) out along the skin normals, laid out round the vertical through
+the ears' middle (no seam, the crown at the centre). ROOTS.npz is a groom_strands.py "dump" of the groom on this face.
+Its alpha (NAME_A.png, linear) is the larger of the roots' cover (splatted, blurred "spread" mm (3), full at 2/3 of
+the dense part's level) and the region above "hairline" (the sheet's front-view hairline, symmetric "|x|:z" pairs
+in IPDs from the eyes' midpoint, x across and z up, feathered over "feather" mm (4), in front of the ears only); the
+ears stay bare. NAME_BC.png is "colour" (sRGB, 0.05,0.04,0.035) mottled by "mottle" (0.15); "rough" (0.75) goes in the
+ORM; "tex" (1024) px. NAME_review.png shows the cap's alpha over the skin from the front and the side, the hairline
+in red.
+
 Writes OUT_DIR/NAME.fbx (the prop on the body armature, bind_r3's proven export settings), NAME_BC.png, NAME_N.png
 (DirectX, for UE), NAME_N_gl.png (OpenGL, for the .blend), NAME_ORM.png (R occlusion, G roughness, B metal),
 NAME_fit.blend (body, face and prop, for the review renders) and NAME_log.json."""
@@ -69,12 +79,14 @@ def log(*a):
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    if not argv or argv[0] not in ("glasses", "mask"):
-        sys.exit("head_prop: glasses BODY.fbx FACE.fbx GLASSES.fbx OUT_DIR | mask BODY.fbx FACE.fbx OUT_DIR [k=v ...]")
+    if not argv or argv[0] not in ("glasses", "mask", "cap", "measure", "transplant"):
+        sys.exit("head_prop: glasses BODY.fbx FACE.fbx GLASSES.fbx OUT_DIR | mask BODY.fbx FACE.fbx OUT_DIR | "
+                 "cap BODY.fbx FACE.fbx ROOTS.npz OUT_DIR [k=v ...] | measure BODY.fbx FACE.fbx OUT_DIR roots=A.npz;B.npz [k=v ...] | "
+                 "transplant BODY.fbx FACE.fbx OUT_DIR roots=A.npz [k=v ...]")
     mode = argv[0]
     pos = [a for a in argv[1:] if "=" not in a]
     opt = dict(a.split("=", 1) for a in argv[1:] if "=" in a)
-    need = 4 if mode == "glasses" else 3
+    need = 4 if mode in ("glasses", "cap") else 3
     if len(pos) != need:
         sys.exit("head_prop: %s takes %d paths, got %d" % (mode, need, len(pos)))
     return mode, [os.path.abspath(p) for p in pos], opt
@@ -1277,16 +1289,462 @@ def run_mask(head, out, opt):
     skin_and_export(head, o, name, out, report)
 
 
+# -- hair cap -----------------------------------------------------------------------------------------------------------
+
+def smooth01(t):
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def gauss_blur(img, sigma):
+    """A Gaussian blur of a 2D array by FFT (wrap-around is harmless: the cap's layout leaves a blank border)."""
+    h, w = img.shape
+    fy, fx = np.fft.fftfreq(h)[:, None], np.fft.fftfreq(w)[None, :]
+    k = np.exp(-2 * (math.pi * sigma) ** 2 * (fx * fx + fy * fy))
+    return np.real(np.fft.ifft2(np.fft.fft2(img) * k))
+
+
+def load_roots(head, roots_npz):
+    """The groom's roots (a groom_strands.py dump: Unreal's groom frame, cm) in the face FBX's frame (m): Y flips. The
+    x sign is whichever puts the roots on the skin; exits when neither does (wrong groom or face)."""
+    d = np.load(roots_npz)
+    R0 = d["P"][np.concatenate([[0], np.cumsum(d["n"])[:-1]])]
+    best = None
+    for tag, s in (("x,-y,z", np.array([1, -1, 1])), ("-x,-y,z", np.array([-1, -1, 1]))):
+        R = R0 * s / 100.0
+        dist, _ = signed_dist(head, R[:: max(1, len(R) // 2000)])
+        med = float(np.median(np.abs(dist)))
+        log("roots as %s sit p50 %.2f mm off the skin" % (tag, med / MM))
+        if best is None or med < best[0]:
+            best = (med, tag, R)
+    if best[0] > 3 * MM:
+        sys.exit("head_prop: the roots do not sit on this face (p50 %.1f mm); wrong groom or face" % (best[0] / MM))
+    return best
+
+
+def parse_hairline(opt):
+    hl = np.array([[float(a) for a in p.split(":")] for p in opt.get("hairline", "0:1.1,1.0:0.5,1.2:0").split(",")])
+    return hl[np.argsort(hl[:, 0])]
+
+
+MEASURE_ZONES = ("fringe", "temples", "crown", "nape-occiput")
+
+
+def measure_zones(head, opt):
+    """The zone test and each zone's skin (area, vertices) on this face, for run_measure and the transplant."""
+    hl = parse_hairline(opt)
+    ipd = float(np.linalg.norm(head["eyeL"] - head["eyeR"]))
+    eye_mid, fwd, up, left = head["eye_mid"], head["fwd"], head["up"], head["left"]
+    ear_mid = (head["earL"] + head["earR"]) / 2
+    band, tx = fopt(opt, "band", 25) * MM, fopt(opt, "temple_x", 0.6)
+    crown_c = math.cos(math.radians(fopt(opt, "crown_deg", 32)))
+    back, nape, occ = fopt(opt, "back", 40) * MM, fopt(opt, "nape", 50) * MM, fopt(opt, "occ", 40) * MM
+
+    def zone_of(P):
+        q = P - eye_mid
+        x, z = np.abs(q @ left) / ipd, (q @ up) / ipd
+        hz = np.interp(x, hl[:, 0], hl[:, 1])
+        e = P - ear_mid
+        a, h = e @ fwd, e @ up
+        v = e / np.maximum(np.linalg.norm(e, axis=1, keepdims=True), 1e-12)
+        front = (a > 0) & (z >= hz) & (z <= hz + band / ipd)
+        Z = np.full(len(P), -1)
+        Z[front & (x < tx)] = 0
+        Z[front & (x >= tx) & (x < 1.15)] = 1
+        Z[(v @ up >= crown_c) & (a <= 0)] = 2
+        Z[(a < -back) & (h >= -nape) & (h <= occ)] = 3
+        return Z
+
+    face0, F = head["face0"], head["F"]
+    me = face0.data
+    mi = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("material_index", mi)
+    roles = face_roles(face0, head["eyeL"], head["eyeR"])
+    skin = next(s for s, r in roles.items() if r == "skin")
+    ears = np.zeros(len(F), bool)
+    ears[head["ears"]["L"] + head["ears"]["R"]] = True
+    polys = [list(p.vertices) for p in me.polygons]
+    ks = [k for k in np.nonzero(mi == skin)[0] if not ears[polys[k]].any()]
+    cen = np.array([F[polys[k]].mean(0) for k in ks])
+    area = np.array([sum(0.5 * np.linalg.norm(np.cross(F[polys[k][i]] - F[polys[k][0]], F[polys[k][i + 1]] - F[polys[k][0]]))
+                         for i in range(1, len(polys[k]) - 1)) for k in ks])
+    zc = zone_of(cen)
+    zarea = [float(area[zc == i].sum()) / 1e-4 for i in range(4)]  # cm2
+    ec = cen - ear_mid
+    bb = np.floor((ec @ up) / (10 * MM)).astype(int)
+    bk = (ec @ fwd) < -back
+    bands = list(range(-6, 10))
+    barea = [float(area[bk & (bb == b)].sum()) / 1e-4 for b in bands]
+    sv = np.unique(np.concatenate([polys[k] for k in ks]))
+    return {"hl": hl, "ipd": ipd, "zone_of": zone_of, "zarea": zarea, "sv": sv, "zv": zone_of(F[sv]), "ear_mid": ear_mid,
+            "bands": bands, "barea": barea, "back": back, "polys": [polys[k] for k in ks], "parea": area, "pzone": zc,
+            "pcen": cen}
+
+
+def measure_groom(head, Z, R, opt, P=None, sid=None):
+    """Hairline stations, zone densities and bare shares of roots R (face frame, m); see run_measure. With the
+    strands' points P and their strand ids sid, a station measures the fringe edge instead of the roots: each strand's
+    lowest point in the station band, 5th percentile over the strands."""
+    hl, ipd, zarea, sv, zv = Z["hl"], Z["ipd"], Z["zarea"], Z["sv"], Z["zv"]
+    tol, minf, bare_r = fopt(opt, "tol", 8), fopt(opt, "min_frac", 0.6), fopt(opt, "bare", 4) * MM
+    eye_mid, fwd, left, up = head["eye_mid"], head["fwd"], head["left"], head["up"]
+    q = R - eye_mid
+    sx, rz = (q @ left) / ipd, (q @ up) / ipd
+    rz = rz - np.interp(np.abs(sx), hl[:, 0], hl[:, 1])  # height over the sheet's line at the root's own x
+    ahead = ((R - Z["ear_mid"]) @ fwd) > 0
+    if P is not None:
+        pq = P - eye_mid
+        psx, prz = (pq @ left) / ipd, (pq @ up) / ipd
+        prz = prz - np.interp(np.abs(psx), hl[:, 0], hl[:, 1])
+        pahead = ((P - Z["ear_mid"]) @ fwd) > 0
+    hair = {}
+    for st in (0.0, 0.35, 0.45, 0.55, 0.75, 0.95):
+        for side, sg in ((("L", 1), ("R", -1)) if st > 0 else (("C", 0),)):
+            m = ahead & ((np.abs(sx) < 0.05) if st == 0 else (np.abs(sg * sx - st) < 0.05))
+            if P is None:
+                low, cnt = (np.percentile(rz[m], 2) if m.sum() >= 20 else None), m.sum()
+            else:
+                pm = pahead & ((np.abs(psx) < 0.05) if st == 0 else (np.abs(sg * psx - st) < 0.05))
+                lo = np.full(int(sid[-1]) + 1, np.inf)
+                np.minimum.at(lo, sid[pm], prz[pm])
+                lo = lo[np.isfinite(lo)]
+                low, cnt = (np.percentile(lo, 5) if len(lo) >= 20 else None), len(lo)
+            hair["%s%.2f" % (side, st)] = (round(float(low * ipd / MM), 1)
+                                          if cnt >= 20 else None)
+    er = R - Z["ear_mid"]
+    rb, rk = np.floor((er @ up) / (10 * MM)).astype(int), (er @ fwd) < -Z["back"]
+    prof = {"%+d" % (10 * b): round(float((rk & (rb == b)).sum()) / a, 1) for b, a in zip(Z["bands"], Z["barea"]) if a > 0.5}
+    zr = Z["zone_of"](R)
+    dens = [float((zr == i).sum()) / max(zarea[i], 1e-9) for i in range(4)]
+    kd = KDTree(len(R))
+    for i, p in enumerate(R.tolist()):
+        kd.insert(p, i)
+    kd.balance()
+    F = head["F"]
+    bare = []
+    for i in range(4):
+        vv = F[sv[zv == i]]
+        bare.append(round(100.0 * float(np.mean([kd.find(p)[2] > bare_r for p in vv.tolist()])), 1) if len(vv) else 0.0)
+    fails = [k for k, g in hair.items() if g is None or abs(g) > tol]
+    fails += ["%s %.0f%% of crown" % (MEASURE_ZONES[i], 100 * dens[i] / max(dens[2], 1e-9))
+              for i in (0, 1, 3) if dens[i] < minf * dens[2]]
+    return {"strands": int(len(R)), "hairline_mm": hair, "density_per_cm2": dict(zip(MEASURE_ZONES, [round(d, 1) for d in dens])),
+            "bare_pct": dict(zip(MEASURE_ZONES, bare)), "back_profile_per_cm2": prof, "pass": not fails, "fails": fails}
+
+
+def measure_line(name, row):
+    return "%s %d strands; hairline %s; density %s; bare%% %s; %s" % (
+        name, row["strands"], " ".join("%s:%s" % (k, "none" if g is None else "%+.1f" % g) for k, g in row["hairline_mm"].items()),
+        " ".join("%s %.1f" % kv for kv in row["density_per_cm2"].items()), " ".join("%s %.0f" % kv for kv in row["bare_pct"].items()),
+        "PASS" if row["pass"] else "FAIL: " + ", ".join(row["fails"])) + "; back mm:dens " + " ".join(
+        "%s:%.0f" % kv for kv in row["back_profile_per_cm2"].items())
+
+
+def run_measure(head, out, opt):
+    """Front hairline and root density of each groom dump in roots= (';'-separated) on this face, one table.
+    Hairline: at each station (|x| 0, 0.35, 0.45, 0.55, 0.75, 0.95 IPD from the eye centres' midpoint, each side), the
+    lowest roots (2nd percentile) in a 0.1 IPD band in front of the ears minus the sheet's line, mm (+ = the groom's
+    line higher). Density: roots per cm2 of skin in four zones (fringe band and temples: from the sheet's line to
+    "band" mm (25) above it, |x| under and over "temple_x" (0.6) up to 1.15 IPD; crown: within "crown_deg" (32) of
+    the vertical through the ears' middle and no further forward than it; nape to occiput: "back" mm (40) behind the
+    ears, from "nape" mm (50) below them to "occ" mm (40) above), and the share of each zone's skin vertices with no
+    root within "bare" mm (4). Pass: every station within "tol" mm (8) and every zone at least "min_frac" (0.6) of the
+    crown's density."""
+    Z = measure_zones(head, opt)
+    log("measure: IPD %.1f mm; zone skin areas cm2 %s" % (Z["ipd"] / MM, ", ".join("%s %.1f" % (n, a) for n, a in zip(MEASURE_ZONES, Z["zarea"]))))
+    rows = []
+    for npz in [r for r in opt.get("roots", "").split(";") if r]:
+        med, frame, R = load_roots(head, npz)
+        row = {"groom": os.path.basename(npz).replace("_dump.npz", ""), "frame": frame, "roots_off_skin_p50_mm": round(med / MM, 2)}
+        P = sid = None
+        if opt.get("edge") == "fringe":  # measure the fringe's edge (all strand points), not the root line
+            d = np.load(npz)
+            P = d["P"] * (np.array([1, -1, 1]) if frame == "x,-y,z" else np.array([-1, -1, 1])) / 100.0
+            sid = np.repeat(np.arange(len(d["n"])), d["n"])
+            row["edge"] = "fringe"
+        row.update(measure_groom(head, Z, R, opt, P, sid))
+        rows.append(row)
+        log("measure: " + measure_line(row["groom"], row))
+    rep_ = {"mode": "measure", "ipd_mm": Z["ipd"] / MM, "hairline_ipd": Z["hl"].tolist(),
+            "zone_area_cm2": dict(zip(MEASURE_ZONES, Z["zarea"])), "tol_mm": fopt(opt, "tol", 8),
+            "min_frac": fopt(opt, "min_frac", 0.6), "grooms": rows}
+    with open(os.path.join(out, opt.get("name", "measure") + ".json"), "w") as f:
+        json.dump(rep_, f, indent=1)
+
+
+def run_transplant(head, out, opt):
+    """New roots for one groom (roots=, a groom_strands.py dump) where its root density falls short, each with a donor
+    strand to copy: groom_strands.py's "graft" op then copies the donor onto the new root. Two places: the front (in
+    front of the ears, |x| up to 1.15 IPD, from the sheet's line to "gmax" mm (35) above it), filled to the groom's
+    own front density (the larger of its fringe and temple zones' densities), and the back (the nape-to-occiput zone
+    and up to the crown's lower edge, "back" mm behind the ears), filled to "back_target" times (1.0) its own
+    nape-to-occiput density. A skin point is sampled at the target density and kept with the chance that brings the
+    local density (roots within "r" mm, 4) up to the target; its donor is one of the "k" (8) nearest existing roots,
+    picked at random from those at least as far from the sheet's line (front) or as high (back), so copies carry the
+    neighbouring length and direction. Writes OUT/<name>_graft.npz (roots in the groom's frame, cm, and donor strand
+    indices) and a report with the measure before and after (the new roots counted as roots)."""
+    rng = np.random.default_rng(int(fopt(opt, "seed", 1)))
+    Z = measure_zones(head, opt)
+    npz = opt["roots"]
+    med, frame, R = load_roots(head, npz)
+    sgn = np.array([1, -1, 1]) if frame == "x,-y,z" else np.array([-1, -1, 1])
+    before = measure_groom(head, Z, R, opt)
+    log("transplant: before " + measure_line(os.path.basename(npz), before))
+    ipd, hl, eye_mid = Z["ipd"], Z["hl"], head["eye_mid"]
+    fwd, up, left = head["fwd"], head["up"], head["left"]
+    gmax, rr, kn = fopt(opt, "gmax", 35) * MM, fopt(opt, "r", 4) * MM, int(fopt(opt, "k", 8))
+    dens = before["density_per_cm2"]
+    t_front = max(dens["fringe"], dens["temples"])
+    t_back = fopt(opt, "back_target", 1.0) * dens["nape-occiput"]
+
+    def gap(Pp):  # height over the sheet's line at the point's own x (m)
+        q = Pp - eye_mid
+        return (q @ up) - np.interp(np.abs(q @ left) / ipd, hl[:, 0], hl[:, 1]) * ipd
+
+    def region(Pp):
+        e = Pp - Z["ear_mid"]
+        a, h = e @ fwd, e @ up
+        x = np.abs((Pp - eye_mid) @ left) / ipd
+        g = gap(Pp)
+        front = (a > 0) & (x < 1.15) & (g >= 0) & (g <= gmax)
+        back = (a < -Z["back"]) & (h >= -fopt(opt, "nape", 50) * MM) & (h <= fopt(opt, "back_top", 70) * MM)
+        return np.where(front, 1, np.where(back, 2, 0))
+
+    # skin triangles (fans of the skin polygons) and their regions
+    F = head["F"]
+    tri = np.array([(pp[0], pp[i], pp[i + 1]) for pp in Z["polys"] for i in range(1, len(pp) - 1)])
+    ta = 0.5 * np.linalg.norm(np.cross(F[tri[:, 1]] - F[tri[:, 0]], F[tri[:, 2]] - F[tri[:, 0]]), axis=1)
+    treg = region(F[tri].mean(1))
+    kd = KDTree(len(R))
+    for i, pp in enumerate(R.tolist()):
+        kd.insert(pp, i)
+    kd.balance()
+    cell = math.pi * (rr / 0.01) ** 2  # cm2
+    new, donor, where = [], [], []
+    for rg, target in ((1, t_front), (2, t_back)):
+        sel = np.flatnonzero(treg == rg)
+        A = ta[sel].sum() / 1e-4
+        n = rng.poisson(target * A)
+        if n == 0:
+            continue
+        t = sel[rng.choice(len(sel), n, p=ta[sel] / ta[sel].sum())]
+        u, v = rng.random(n), rng.random(n)
+        flip = u + v > 1
+        u[flip], v[flip] = 1 - u[flip], 1 - v[flip]
+        S = F[tri[t, 0]] + (F[tri[t, 1]] - F[tri[t, 0]]) * u[:, None] + (F[tri[t, 2]] - F[tri[t, 0]]) * v[:, None]
+        S = S[region(S) == rg]
+        local = np.array([len(kd.find_range(pp, rr)) for pp in S.tolist()]) / cell
+        keep = rng.random(len(S)) < np.clip(1 - local / target, 0, 1)
+        S = S[keep]
+        gS = gap(S) if rg == 1 else (S - Z["ear_mid"]) @ up
+        gR = gap(R) if rg == 1 else (R - Z["ear_mid"]) @ up
+        for pp, g in zip(S.tolist(), gS):
+            near = [j for _, j, _ in kd.find_n(pp, kn * 3)]
+            ok = [j for j in near if gR[j] >= g][:kn] or near[:kn]
+            donor.append(int(rng.choice(ok)))
+            new.append(pp)
+            where.append(rg)
+        log("transplant: %s target %.1f roots/cm2 on %.1f cm2: %d new roots" % ("front" if rg == 1 else "back", target, A, len(S)))
+    new = np.array(new).reshape(-1, 3)
+    after = measure_groom(head, Z, np.concatenate([R, new]), opt)
+    log("transplant: after (new roots counted) " + measure_line(os.path.basename(npz), after))
+    name = opt.get("name", "transplant")
+    np.savez(os.path.join(out, name + "_graft.npz"), roots=new * sgn * 100.0, donor=np.array(donor, np.int64),
+             where=np.array(where, np.int64))
+    with open(os.path.join(out, name + ".json"), "w") as f:
+        json.dump({"mode": "transplant", "groom": npz, "frame": frame, "strands_before": int(len(R)),
+                   "new_front": int(sum(1 for w in where if w == 1)), "new_back": int(sum(1 for w in where if w == 2)),
+                   "strands_after": int(len(R) + len(new)), "target_front": t_front, "target_back": t_back,
+                   "before": before, "after": after}, f, indent=1)
+
+
+def run_cap(head, roots_npz, out, opt):
+    name = opt.get("name", "SK_HairCap")
+    res = int(opt.get("tex", 1024))
+    offset, feather, sigma = fopt(opt, "offset", 0.5) * MM, fopt(opt, "feather", 4.0) * MM, fopt(opt, "spread", 3.0) * MM
+    face0, F, sgn = head["face0"], head["F"], head["sgn"]
+    eye_mid, fwd, up, left = head["eye_mid"], head["fwd"], head["up"], head["left"]
+    ipd = float(np.linalg.norm(head["eyeL"] - head["eyeR"]))
+    ear_mid = (head["earL"] + head["earR"]) / 2
+    # the sheet's front-view hairline, symmetric: "|x|:z" pairs in IPDs from the eye centres' midpoint (x across, z up)
+    hl = parse_hairline(opt)
+
+    med, frame, R = load_roots(head, roots_npz)
+
+    def sheet_alpha(p):
+        q = p - eye_mid
+        x, z = np.abs(q @ left) / ipd, (q @ up) / ipd
+        a = smooth01((z - np.interp(x, hl[:, 0], hl[:, 1])) * ipd / feather + 0.5)
+        return a * smooth01(((p - ear_mid) @ fwd) / (10 * MM) + 0.5)  # in front of the ears only
+
+    # how far the groom's front hairline sits from the sheet's, across the face: per band of |x| (0.1 IPD), the
+    # lowest roots (2nd percentile) in front of the ears against the sheet's line there; + = groom's line higher
+    q = R - eye_mid
+    rx, rz = np.abs(q @ left) / ipd, (q @ up) / ipd
+    ahead = ((R - ear_mid) @ fwd) > 0
+    gap = []
+    for b0 in np.arange(0.0, hl[hl[:, 1] >= 0, 0].max(), 0.1):
+        m = ahead & (rx >= b0) & (rx < b0 + 0.1)
+        if m.sum() >= 20:
+            xc = b0 + 0.05
+            gap.append((round(float(xc), 2), round(float((np.percentile(rz[m], 2) - np.interp(xc, hl[:, 0], hl[:, 1]))
+                                                          * ipd / MM), 1)))
+    g = np.array([d for _, d in gap]) if gap else np.zeros(1)
+    log("cap: front hairline, groom minus sheet (mm, + = groom's higher) by |x| in IPD: %s; p50 %.1f, max |%.1f|"
+        % (", ".join("%.2f:%+.1f" % t for t in gap), float(np.median(g)), float(np.abs(g).max())))
+
+    # the cap's faces: skin near a root or inside the sheet's hairline, ears left out
+    me = face0.data
+    mi = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("material_index", mi)
+    roles = face_roles(face0, head["eyeL"], head["eyeR"])
+    skin = next(s for s, r in roles.items() if r == "skin")
+    kd = KDTree(len(R))
+    for i, p in enumerate(R.tolist()):
+        kd.insert(p, i)
+    kd.balance()
+    near = np.array([len(kd.find_range(p, 6 * MM)) > 0 for p in F.tolist()])
+    sel_v = (near | (sheet_alpha(F) > 0.01))
+    ears = np.zeros(len(F), bool)
+    ears[head["ears"]["L"] + head["ears"]["R"]] = True
+    sel_v &= ~ears
+    polys = [tuple(p.vertices) for p in me.polygons]
+    keep = [k for k in np.nonzero(mi == skin)[0] if sel_v[list(polys[k])].any() and not ears[list(polys[k])].any()]
+    used = np.unique(np.concatenate([np.array(polys[k]) for k in keep]))
+    remap = -np.ones(len(F), np.int64)
+    remap[used] = np.arange(len(used))
+    vn = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("normal", vn)
+    M3 = np.array(face0.matrix_world)[:3, :3]
+    vn = vn.reshape(-1, 3) @ M3.T
+    vn /= np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-12)
+    V = F[used] + vn[used] * sgn * offset
+    faces = [tuple(remap[list(polys[k])][::-1] if sgn < 0 else remap[list(polys[k])]) for k in keep]
+
+    # UVs: an azimuthal layout round the vertical through the ears' middle (no seam), the crown at the centre
+    def layout(p, phimax):
+        v = p - ear_mid
+        v = v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
+        phi = np.arccos(np.clip(v @ up, -1, 1))
+        th = np.arctan2(v @ left, v @ fwd)
+        r = 0.5 * phi / phimax
+        return np.stack([0.5 + r * np.sin(th), 0.5 + r * np.cos(th)], 1)
+    v0 = V - ear_mid
+    phimax = float(np.arccos(np.clip((v0 / np.linalg.norm(v0, axis=1, keepdims=True)) @ up, -1, 1)).max()) * 1.04
+    UV = layout(V, phimax)
+
+    # per texel: the cap's surface point (rasterised in the layout), then the alpha there
+    pos = np.zeros((res, res, 3))
+    hit = np.zeros((res, res), bool)
+    px = UV * res - 0.5
+    for f in faces:
+        for k in range(1, len(f) - 1):
+            t = (f[0], f[k], f[k + 1])
+            a, b, c = px[list(t)]
+            lo, hi = np.floor(np.minimum(np.minimum(a, b), c)).astype(int), np.ceil(np.maximum(np.maximum(a, b), c)).astype(int)
+            lo, hi = np.clip(lo, 0, res - 1), np.clip(hi, 0, res - 1)
+            X, Y = np.meshgrid(np.arange(lo[0], hi[0] + 1), np.arange(lo[1], hi[1] + 1))
+            den = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+            if abs(den) < 1e-12:
+                continue
+            l1 = ((b[1] - c[1]) * (X - c[0]) + (c[0] - b[0]) * (Y - c[1])) / den
+            l2 = ((c[1] - a[1]) * (X - c[0]) + (a[0] - c[0]) * (Y - c[1])) / den
+            l3 = 1 - l1 - l2
+            ins = (l1 >= -0.02) & (l2 >= -0.02) & (l3 >= -0.02)
+            if ins.any():
+                P3 = l1[ins, None] * V[t[0]] + l2[ins, None] * V[t[1]] + l3[ins, None] * V[t[2]]
+                pos[Y[ins], X[ins]] = P3
+                hit[Y[ins], X[ins]] = True
+    a_sheet = np.zeros((res, res))
+    a_sheet[hit] = sheet_alpha(pos[hit])
+    # root cover: the roots splatted in the same layout, blurred by "spread" mm, against the dense part's level
+    mm_px = (2 * phimax * float(np.linalg.norm(V - ear_mid, axis=1).mean())) / res
+    ruv = layout(R, phimax) * res - 0.5
+    ix = np.clip(np.round(ruv).astype(int), 0, res - 1)
+    cnt = np.zeros((res, res))
+    np.add.at(cnt, (ix[:, 1], ix[:, 0]), 1.0)
+    dens = gauss_blur(cnt, sigma / mm_px)
+    ref = np.percentile(dens[dens > dens.max() * 0.05], 60)
+    a_root = smooth01(dens / max(ref, 1e-9) * 1.5)
+    alpha = np.where(hit, np.maximum(a_root, a_sheet), 0.0)
+    # bleed the colour/alpha a few texels past the triangles (mip and filter safety): alpha 0 there anyway
+    log("cap: %d faces, %d verts, offset %.2f mm, layout %.2f mm/px; roots %s; alpha > 0.5 on %.0f cm2 (roots %.0f, "
+        "sheet line %.0f)" % (len(faces), len(V), offset / MM, mm_px / MM, frame,
+                              (alpha > 0.5).sum() * (mm_px / MM) ** 2 / 100, (a_root > 0.5).sum() * (mm_px / MM) ** 2 / 100,
+                              ((a_sheet > 0.5) & hit).sum() * (mm_px / MM) ** 2 / 100))
+
+    # maps: hair colour with a slight mottle, the alpha, flat normal, rough non-metal
+    rng = np.random.default_rng(int(opt.get("seed", 3)))
+    col = np.array([float(c) for c in opt.get("colour", "0.05,0.04,0.035").split(",")])
+    Yg, Xg = np.mgrid[0:res, 0:res].astype(float) * mm_px / MM
+    mott = 1.0 + float(opt.get("mottle", 0.15)) * (fbm(Xg, Yg, 6.0, rng) - 0.5) * 2
+    bc = np.clip(col[None, None, :] * mott[..., None], 0, 1)
+    i_bc = save_png(os.path.join(out, name + "_BC.png"), bc, True)
+    save_png(os.path.join(out, name + "_A.png"), np.repeat(alpha[..., None], 3, 2), False)
+    flat = np.zeros((res, res, 3))
+    flat[...] = (0.5, 0.5, 1.0)
+    save_png(os.path.join(out, name + "_N.png"), flat, False)
+    i_n = save_png(os.path.join(out, name + "_N_gl.png"), flat, False)
+    orm = np.zeros((res, res, 3))
+    orm[...] = (1.0, fopt(opt, "rough", 0.75), 0.0)
+    i_orm = save_png(os.path.join(out, name + "_ORM.png"), orm, False)
+
+    # a review sheet: front and side, the face's skin in grey, the cap's alpha in the hair colour, the line in red
+    W = 600
+    img = np.ones((W, 2 * W, 3))
+    span = 0.26
+    def plot(P, vals, colour, panel, ax):
+        u = ((P - eye_mid) @ ax) / span + 0.5
+        v = ((P - eye_mid) @ up) / span + 0.35
+        x, y = (u * W).astype(int) + panel * W, (v * W).astype(int)
+        ok = (x >= panel * W) & (x < (panel + 1) * W) & (y >= 0) & (y < W)
+        img[y[ok], x[ok]] = img[y[ok], x[ok]] * (1 - vals[ok, None]) + np.asarray(colour) * vals[ok, None]
+    sk = F[np.unique(np.concatenate([np.array(polys[k]) for k in np.nonzero(mi == skin)[0]]))]
+    for panel, ax in ((0, left), (1, fwd)):
+        plot(sk, np.full(len(sk), 0.35), (0.6, 0.6, 0.6), panel, ax)
+        plot(pos[hit], alpha[hit] * 0.8, (0.1, 0.07, 0.05), panel, ax)
+    xs = np.linspace(-hl[:, 0].max(), hl[:, 0].max(), 400)
+    for sgnx in (1,):
+        hp = eye_mid[None, :] + (xs[:, None] * left[None, :] + np.interp(np.abs(xs), hl[:, 0], hl[:, 1])[:, None]
+                                 * up[None, :]) * ipd + fwd[None, :] * 0.12
+        plot(hp, np.ones(len(hp)), (0.9, 0.1, 0.1), 0, left)
+    save_png(os.path.join(out, name + "_review.png"), img, True)
+
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(V.tolist(), [], [list(map(int, f)) for f in faces])
+    mesh.update()
+    uvl = mesh.uv_layers.new(name="UVMap")
+    li = np.empty(len(mesh.loops), np.int64)
+    mesh.loops.foreach_get("vertex_index", li)
+    uvl.data.foreach_set("uv", UV[li].ravel())
+    o = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(o)
+    mesh.materials.append(preview_material("M_" + name, i_bc, i_n, i_orm))
+    report = {"mode": "cap", "roots": roots_npz, "roots_frame": frame, "roots_off_skin_p50_mm": med / MM,
+              "offset_mm": offset / MM, "feather_mm": feather / MM, "spread_mm": sigma / MM, "ipd_mm": ipd / MM,
+              "hairline_ipd": hl.tolist(), "hairline_gap_mm": gap, "tex": res, "mm_per_px": mm_px / MM, "colour": col.tolist(),
+              "alpha": name + "_A.png (linear; 1 = hair cover)"}
+    skin_and_export(head, o, name, out, report)
+
+
 def main():
     mode, paths, opt = parse_args()
     if mode == "glasses":
         body, face, gl, out = paths
+    elif mode == "cap":
+        body, face, roots, out = paths
     else:
         body, face, out = paths
     os.makedirs(out, exist_ok=True)
     head = load_head(body, face)
     if mode == "glasses":
         run_glasses(head, gl, out, opt)
+    elif mode == "cap":
+        run_cap(head, roots, out, opt)
+    elif mode == "measure":
+        run_measure(head, out, opt)
+    elif mode == "transplant":
+        run_transplant(head, out, opt)
     else:
         run_mask(head, out, opt)
 
