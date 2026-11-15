@@ -1658,6 +1658,18 @@ EUiStateShot UiStateShot()
 #endif
 }
 
+// Captures only (out of shipping): -UiHitBanded draws the banded hit flash (black band, accent hairline) in every world,
+// to shoot it beside a world's soft flash.
+bool ForceHitBanded()
+{
+#if !UE_BUILD_SHIPPING
+	static const bool bForce = FParse::Param(FCommandLine::Get(), TEXT("UiHitBanded"));
+	return bForce;
+#else
+	return false;
+#endif
+}
+
 // The HUD's size over the viewport's scale, margins included: the settings' HUD scale (80-130 percent), or the
 // -FTHudScale=1.1 switch for captures (out of shipping builds).
 float HudScaleFor(const UFTArenaRunner& Runner)
@@ -2008,7 +2020,8 @@ public:
 		// teaching policy, the player's Basic controls setting (uiPromptsTaught, not a rule): by default the controls stand
 		// while the first-use teaching holds them and go when it ends; Always keeps them, Never shows none.
 		Why = ftcore::uiPromptReasons(Fight, GiftWhy[0], GiftWhy[1]);
-		// The presses since the last tick, by prompt (the runner's counts).
+		// The presses since the last tick, by prompt (the runner's counts). The first read only takes the counts as they
+		// stand, so a widget made while the runner already counted presses shows no refusal for them.
 		ftcore::UiPromptMask Pressed = 0;
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
 		{
@@ -2016,9 +2029,10 @@ public:
 			if (N != PromptPressSeen[I])
 			{
 				PromptPressSeen[I] = N;
-				Pressed |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I));
+				Pressed |= bPressSeeded ? ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I)) : ftcore::UiPromptMask{0};
 			}
 		}
+		bPressSeeded = true;
 		if (UiStateShot() == EUiStateShot::Refused)
 		{
 			// The still: HEAL pressed at full health, its row held showing FULL.
@@ -3961,7 +3975,7 @@ private:
 			// A world with the banded flash: full for 80 ms, gone by 300 ms (uiHitFlashLevel); elsewhere the soft flash's pulse.
 			const double HitAge = Now - Runner.GetPlayerHitTime();
 			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f
-				: Shown().bHitBanded ? ftcore::uiHitFlashLevel(static_cast<float>(HitAge)) : Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
+				: (Shown().bHitBanded || ForceHitBanded()) ? ftcore::uiHitFlashLevel(static_cast<float>(HitAge)) : Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
 			const ftcore::Settings* Prefs = Runner.GetSettings();
 			bReduceFlashes = Prefs && Prefs->reduceFlashes;
 		}
@@ -4157,18 +4171,19 @@ private:
 		// direction, a near-black band (90 percent at the edge, gone 64 px in) and a 2 px hairline in the text accent 10 px
 		// in with a 1 px dark edge on each side, so the cue reads on a bright sky and a dark court alike; reduced flashes
 		// keep the hairline only. Elsewhere a brief soft flash in the danger colour from the edges, with no line anywhere.
-		if (HitA > 0.f && Shown().bHitBanded)
+		if (HitA > 0.f && (Shown().bHitBanded || ForceHitBanded()))
 		{
 			const FUiWorldRow& R = Shown();
+			const FLinearColor Band = R.bHitBanded ? R.HitFlash : FLinearColor(0.f, 0.f, 0.f, 1.f);
 			if (!bReduceFlashes)
 			{
 				const float D = ftcore::kUiHitBandDepth * S;
 				const float Pk = ftcore::kUiHitBandPeak * HitA;
 				const float Ramp = 1.f - ftcore::kUiHitBandFlat;
-				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, R.HitFlash);
-				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, R.HitFlash);
-				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, R.HitFlash);
-				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, R.HitFlash);
+				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, Band);
+				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, Band);
+				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, Band);
+				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, Band);
 			}
 			// The hairline: whole device pixels, its edges on pixel boundaries, so it never doubles or blurs at 125 percent.
 			const float Px = Mesh.PxSize();
@@ -4321,6 +4336,7 @@ private:
 	ftcore::UiRefusedRows RefusedRows;        // each refused prompt's moment after a press of its key (Core's uiRefusedStep)
 	ftcore::UiPromptMask RefusedShowing = 0; // the prompts showing their refusal this tick
 	uint32 PromptPressSeen[ftcore::kUiPromptCount] = {}; // the runner's press counts as last read
+	bool bPressSeeded = false;                          // PromptPressSeen has been read once
 	std::array<ftcore::UiPromptMask, ftcore::kUiPromptCount> PromptSameKeyBelow{}; // per prompt, the lower ones on its key
 	ftcore::UiPromptReasons Why{};    // each prompt's answer from the rules this tick
 	ftcore::PressReason GiftWhy[2] = {ftcore::PressReason::Absent, ftcore::PressReason::Absent}; // Gift Heal's, Gift Guard's
