@@ -1840,3 +1840,212 @@ TEST_CASE("arena partner: a switch and a takeover each tell the brain its body c
         CHECK(r.fight.stats().leadSwitches == 0);
     }
 }
+
+
+
+namespace {
+// Rule 9's keep-out wedge, as the brain judges it (no clearance): from the camera along the camera-to-lead line
+// to wedgeBeyondMeters past the lead, wedgeHalfDegrees either side.
+bool inKeepOut(Vec2 cam, Vec2 lead, Vec2 p, const PartnerTuning& t = PartnerTuning{}) {
+    const Vec2 a = sub(lead, cam);
+    const float l = length(a);
+    if (l < 1e-4f) return false;
+    const Vec2 u{a.x / l, a.y / l};
+    const Vec2 d = sub(p, cam);
+    const float along = d.x * u.x + d.y * u.y;
+    if (along <= 0.f || along >= l + t.wedgeBeyondMeters) return false;
+    const float h = t.wedgeHalfDegrees * 3.14159265f / 180.f;
+    return std::fabs(d.x * u.y - d.y * u.x) * std::cos(h) - along * std::sin(h) < 0.f;
+}
+// A goal the brain chose (MoveTo, StepBack): Wait's goal is only where the body stands (hit, guarding, a string).
+bool moving(const ArenaOutput& o) {
+    const PartnerAct a = static_cast<PartnerAct>(o.ally.act);
+    return a == PartnerAct::MoveTo || a == PartnerAct::StepBack;
+}
+// In the camera's view: in front of it, within halfDegrees of its forward.
+bool inView(Vec2 cam, Vec2 forward, Vec2 p, float halfDegrees) {
+    const Vec2 d = sub(p, cam);
+    const float dl = length(d), fl = length(forward);
+    if (dl < 1e-4f || fl < 1e-4f) return false;
+    return (d.x * forward.x + d.y * forward.y) / (dl * fl) >= std::cos(halfDegrees * 3.14159265f / 180.f);
+}
+} // namespace
+
+TEST_CASE("arena partner: stationed, it stands in the camera's view but out of its keep-out wedge and in the ring") {
+    // The camera off to the lead's right looks at it; the partner comes in from that side. Off, its goal (the bite's
+    // edge on its way in) is in the wedge, so the check below can fail; on, no goal is, and it ends seen from the side.
+    const Vec2 cam{2.5f, -6.f};
+    const Vec2 forward = sub(Vec2{0.f, 0.f}, cam);
+    for (const bool camera : {false, true}) {
+        CAPTURE(camera);
+        PRig r;
+        r.enemy(biterKind(5, 3.f, 5.f), Vec2{2.5f, 0.f}); // a light bite: the partner stays up
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.ally = Vec2{1.f, -2.f};
+        r.go(true, 100);
+        r.walk = true;
+        if (camera) {
+            r.in.cameraOn = true;
+            r.in.cameraPos = cam;
+            r.in.cameraFacing = forward;
+        }
+        int inWedge = 0, stationed = 0, moves = 0;
+        for (int k = 0; k < 90; ++k) {
+            r.tick();
+            REQUIRE(r.fight.allyHp() > 0);
+            stationed += r.out->ally.stationed ? 1 : 0;
+            if (moving(*r.out)) { ++moves; inWedge += inKeepOut(cam, r.bodies.player, r.out->ally.goal) ? 1 : 0; }
+        }
+        if (!camera) {
+            CHECK(stationed == 0);
+            CHECK(inWedge > 0); // the geometry check can fail
+            continue;
+        }
+        CHECK(stationed == 90);
+        CHECK(moves > 20);
+        CHECK(inWedge == 0);
+        CHECK_FALSE(inKeepOut(cam, r.bodies.player, r.bodies.ally));
+        CHECK(inView(cam, forward, r.bodies.ally, 45.f));
+        CHECK_FALSE(inView(cam, Vec2{1.f, 0.f}, r.bodies.ally, 45.f)); // a wrong forward would not see it
+        CHECK(length(sub(r.bodies.ally, r.bodies.player)) >= PartnerTuning{}.personalSpaceMeters - 0.05f);
+    }
+    {   // A small ring: the station it wants is past the wall, so its goal is held at the ring less its body, which
+        // a wrong radius (the ring's own) would not do.
+        PRig r;
+        r.ring = ArenaRing{Vec2{0.f, 0.f}, 4.2f};
+        r.enemy(biterKind(5, 3.f, 5.f), Vec2{3.3f, 0.f});
+        r.bodies.player = Vec2{2.4f, 0.f};
+        r.bodies.ally = Vec2{0.f, -1.5f};
+        r.go(true, 100);
+        r.walk = true;
+        r.in.cameraOn = true;
+        r.in.cameraPos = Vec2{-3.f, 0.f};
+        r.in.cameraFacing = Vec2{1.f, 0.f};
+        const float limit = 4.2f - 0.4f;
+        float most = 0.f;
+        int inWedge = 0, moves = 0;
+        for (int k = 0; k < 120; ++k) {
+            r.tick();
+            REQUIRE(r.out->ally.stationed);
+            most = std::max(most, length(r.out->ally.goal));
+            if (moving(*r.out)) { ++moves; inWedge += inKeepOut(r.in.cameraPos, r.bodies.player, r.out->ally.goal) ? 1 : 0; }
+        }
+        CHECK(most <= limit + 1e-3f);
+        CHECK(most >= limit - 0.05f); // the wall is what holds it
+        CHECK(moves > 20);
+        CHECK(inWedge == 0);
+    }
+}
+
+TEST_CASE("arena partner: cameraOn off gives the old outputs, whatever the camera fields hold") {
+    PRig a, b;
+    for (PRig* r : {&a, &b}) {
+        r->enemy(biterKind(20, 3.f, 2.f), Vec2{3.f, 0.5f});
+        r->bodies.ally = Vec2{-2.f, 1.f};
+        r->go(true, 100, 7);
+        r->walk = true;
+    }
+    b.in.cameraOn = false;
+    b.in.cameraFacing = Vec2{0.f, 1.f};
+    for (int k = 0; k < 240; ++k) {
+        b.in.cameraPos = Vec2{-4.f + 0.01f * static_cast<float>(k), 3.f};
+        a.tick();
+        b.tick();
+        CAPTURE(k);
+        REQUIRE(a.out->ally.goal.x == b.out->ally.goal.x);
+        REQUIRE(a.out->ally.goal.y == b.out->ally.goal.y);
+        REQUIRE(a.out->ally.act == b.out->ally.act);
+        REQUIRE_FALSE(b.out->ally.stationed);
+        REQUIRE(a.brain.hash() == b.brain.hash());
+        REQUIRE(a.fight.hp() == b.fight.hp());
+        REQUIRE(a.fight.allyHp() == b.fight.allyHp());
+    }
+}
+
+namespace {
+// The bite's rig: one biter at the centre, the player within it at (1, 0), the ally at `allyAt`, the camera behind
+// the player. `prep` runs after the begin (the ally's body down to 30: switch, hurt that body, switch back), so the
+// reference fight and the test do the same.
+struct SameStep {
+    PRig r;
+    SameStep(int damage, Vec2 allyAt, bool prep) {
+        r.tuning.downSeconds = 1.f;
+        r.enemy(biterKind(damage, 3.f, 5.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{1.f, 0.f};
+        r.bodies.ally = allyAt;
+        r.go(true, 100, 1, Vec2{-1.f, 0.f});
+        r.in.cameraOn = true;
+        r.in.cameraPos = Vec2{5.f, 0.f};
+        r.in.cameraFacing = Vec2{-1.f, 0.f};
+        if (prep) {
+            REQUIRE(r.fight.switchLeads());
+            std::swap(r.bodies.player, r.bodies.ally);
+            REQUIRE(r.fight.hostHurt(70) == 70);
+            REQUIRE(r.fight.switchLeads());
+            std::swap(r.bodies.player, r.bodies.ally);
+        }
+    }
+};
+// The tick (0-based) the bite first lands on the player in the reference fight.
+int biteTick(int damage, Vec2 allyAt, bool prep) {
+    SameStep ref(damage, allyAt, prep);
+    for (int k = 0; k < 300; ++k) {
+        ref.r.tick();
+        for (const ArenaEvent& e : ref.r.out->events)
+            if ((e.type == ArenaEventType::Hit && e.target == kArenaPlayer) || e.type == ArenaEventType::TookOver)
+                return k;
+    }
+    return -1;
+}
+} // namespace
+
+TEST_CASE("arena partner: a switch on the step its new ally body goes down, and on the step its new lead body falls") {
+    {   // The switch puts the player out of the bite; the bite lands on the ally's body (the old lead's) and downs it.
+        const Vec2 allyAt{0.f, 3.5f};
+        const int at = biteTick(150, allyAt, false);
+        REQUIRE(at > 0);
+        SameStep s(150, allyAt, false);
+        for (int k = 0; k < at; ++k) s.r.tick();
+        REQUIRE(s.r.fight.switchLeads());
+        std::swap(s.r.bodies.player, s.r.bodies.ally);
+        s.r.tick();
+        CHECK(s.r.count(ArenaEventType::AllyDowned) == 1);
+        CHECK(s.r.count(ArenaEventType::TookOver) == 0);
+        CHECK(s.r.fight.allyHp() == 0);
+        CHECK(s.r.fight.hp() > 0);
+        CHECK(s.r.fight.phase() == ArenaPhase::Fighting);
+        CHECK(s.r.brain.swaps() == 1);
+        CHECK(s.r.fight.stats().partnerSwaps == 1);
+        CHECK(s.r.fight.stats().leadSwitches == 1);
+        s.r.tick();
+        CHECK(s.r.brain.down()); // the swap's reset did not hide the fall
+        CHECK_FALSE(s.r.out->ally.stationed);
+        s.r.run(1.5f); // downSeconds 1: it rises and stations again
+        CHECK(s.r.count(ArenaEventType::AllyRose) == 1);
+        CHECK_FALSE(s.r.brain.down());
+        CHECK(s.r.out->ally.stationed);
+        CHECK(s.r.brain.swaps() == 1);
+    }
+    {   // Both bodies in the bite, the ally's at 30: switched onto it, the player falls on that step and the partner
+        // (the old lead's body, up) takes over. Two body changes in one step, each told to the brain once.
+        const Vec2 allyAt{-1.f, 0.f};
+        const int at = biteTick(90, allyAt, true);
+        REQUIRE(at > 0);
+        SameStep s(90, allyAt, true);
+        REQUIRE(s.r.brain.swaps() == 2);
+        for (int k = 0; k < at; ++k) s.r.tick();
+        REQUIRE(s.r.fight.hp() == 100);
+        REQUIRE(s.r.fight.allyHp() == 30);
+        REQUIRE(s.r.fight.switchLeads());
+        std::swap(s.r.bodies.player, s.r.bodies.ally);
+        s.r.tick();
+        CHECK(s.r.count(ArenaEventType::TookOver) == 1);
+        CHECK(s.r.fight.phase() == ArenaPhase::Fighting);
+        CHECK(s.r.fight.hp() > 0);
+        CHECK(s.r.fight.allyHp() == 0);
+        CHECK(s.r.fight.stats().leadSwitches == 3);
+        CHECK(s.r.fight.stats().takeovers == 1);
+        CHECK(s.r.brain.swaps() == 4);
+        CHECK(s.r.fight.stats().partnerSwaps == 4);
+    }
+}

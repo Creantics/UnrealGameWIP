@@ -140,6 +140,9 @@ public:
 	// The lens tilted up on the boom's end by this much (degrees; ftcore::arenaSplitPitch's tilt): a look steeper than
 	// the boom may swing.
 	void SetCameraTilt(float Degrees);
+	// The boom's rotation (the host's control rotation): a figure the controller possesses follows it as before; one
+	// it does not (a lead switched to) is turned to it here, as its own facing is not the view.
+	void SetBoomRotation(const FRotator& Rotation);
 	void ApplyPose(const FFTArenaPose& Pose);
 	// The jump's clock from the fighter's kit (s), so a lead's take-off and landing clips fit Core's arc and landing.
 	void SetJumpTiming(float Startup, float Air, float LandLock) { JumpStartup = Startup; JumpAirTime = Air; JumpLandLock = LandLock; }

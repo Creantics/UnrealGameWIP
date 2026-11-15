@@ -2910,10 +2910,12 @@ struct ArenaFightImpl {
 
     // The partner's brain drives the other body now (a switch, a takeover): what it knew of the old one goes.
     void partnerSwapped() {
+        // Counted only when the brain itself took it (its swaps() moved): a brain not begun ignores it.
         if (!fight.partner_ || !partnerOn()) return;
+        const std::uint32_t before = fight.partner_->swaps();
         fight.partner_->rolesSwapped();
         fight.ally_.stationed = false;
-        ++stats.partnerSwaps;
+        if (fight.partner_->swaps() != before) ++stats.partnerSwaps;
     }
 
     // The player stands in the ally's place at the ally's hp, Idle, its action and string, buffer, lock and poise

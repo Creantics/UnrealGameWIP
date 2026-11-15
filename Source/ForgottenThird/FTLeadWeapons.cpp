@@ -371,11 +371,29 @@ void FFTLeadWeapons::AttachProps()
 			{
 				Paths[At] = GauntletBracer[Side];
 			}
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s (%s)."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
-				*Paths[At].GetAssetName(), GauntletBracer[Side].IsNull() ? TEXT("the kit's, bare-skin fit") : TEXT("the look's"));
 		}
 		TArray<TObjectPtr<USkeletalMeshComponent>> Added;
 		FTLook::AddPieces(*Figure.Get(), *Skin.Get(), Paths, Added, Prefix());
+		// Each bracer as it came out: fitted only when a worn piece has its mesh (a path that did not load is skipped).
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const FSoftObjectPath& Want = Paths[FTWeaponProps::GauntletBracerIndex[Side]];
+			bool bFitted = false;
+			for (const TObjectPtr<USkeletalMeshComponent>& Piece : Added)
+			{
+				bFitted = bFitted || (Piece && Piece->GetSkeletalMeshAsset() && FSoftObjectPath(Piece->GetSkeletalMeshAsset()) == Want);
+			}
+			if (bFitted)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s fitted (%s)."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.GetAssetName(), GauntletBracer[Side].IsNull() ? TEXT("the kit's, bare-skin fit") : TEXT("the look's"));
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: lead weapon: %s bracer %s FAILED to load (%s): not worn."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.ToString(), GauntletBracer[Side].IsNull() ? TEXT("the kit's") : TEXT("the look's"));
+			}
+		}
 		for (int32 I = 0; I < Added.Num() && I < FTWeaponProps::NumGauntletPieces; ++I)
 		{
 			Gauntlet[I] = Added[I];
@@ -390,14 +408,23 @@ void FFTLeadWeapons::AttachProps()
 			for (const FName& Morph : GauntletMorphs)
 			{
 				Skin->SetMorphTarget(Morph, 1.f);
+				bool bOnPiece = false;
 				for (const USceneComponent* Child : Skin->GetAttachChildren())
 				{
 					const USkeletalMeshComponent* Piece = Cast<USkeletalMeshComponent>(Child);
 					if (Piece && Piece->GetSkeletalMeshAsset() && Piece->GetSkeletalMeshAsset()->FindMorphTarget(Morph))
 					{
-						++Found;
+						bOnPiece = true;
 						break;
 					}
+				}
+				Found += bOnPiece ? 1 : 0;
+				// A morph no worn piece has: named once per run (each switch begins the kit again).
+				static TSet<FName> NamedMissing;
+				if (!bOnPiece && !NamedMissing.Contains(Morph))
+				{
+					NamedMissing.Add(Morph);
+					UE_LOG(LogForgottenThird, Warning, TEXT("%s: lead weapon: gauntlet morph %s is on no worn piece (it does nothing)."), Prefix(), *Morph.ToString());
 				}
 			}
 			if (GauntletMorphs.Num() > 0)
@@ -720,6 +747,14 @@ void FFTLeadWeapons::End()
 		for (const FightClip StrikeClip : kStrikeClips)
 		{
 			Instance->SetActionClip(static_cast<int32>(StrikeClip), nullptr);
+		}
+	}
+	// The look's gauntlet morphs off the body (the leader, so its pieces too): a benched figure keeps no tucked cuff.
+	if (USkeletalMeshComponent* Body = Skin.Get())
+	{
+		for (const FName& Morph : GauntletMorphs)
+		{
+			Body->SetMorphTarget(Morph, 0.f);
 		}
 	}
 	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)

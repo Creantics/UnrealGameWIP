@@ -1055,7 +1055,7 @@ struct ArenaStats {
                                  // seen at a boss string's start (that string counted)
     int takeovers = 0;         // times the player fell with the partner up and took its body (TookOver)
     int leadSwitches = 0;      // the host's switchLeads that swapped the bodies (both up)
-    int partnerSwaps = 0;      // times the partner's brain was told its body changed (a switch or a takeover)
+    int partnerSwaps = 0;      // times the partner's brain reset for a body change (a switch or a takeover)
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight

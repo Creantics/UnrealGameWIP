@@ -175,6 +175,21 @@ void AFTArenaFighter::SetCameraTilt(float Degrees)
 	}
 }
 
+void AFTArenaFighter::SetBoomRotation(const FRotator& Rotation)
+{
+	if (!Boom)
+	{
+		return;
+	}
+	if (GetController())
+	{
+		Boom->bUsePawnControlRotation = true;
+		return;
+	}
+	Boom->bUsePawnControlRotation = false;
+	Boom->SetWorldRotation(Rotation);
+}
+
 void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
 {
 	Boom->TargetArmLength = ArmMeters * 100.f;
