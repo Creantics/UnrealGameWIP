@@ -806,8 +806,19 @@ private:
 	// fight's next step. One-lead fights never take this path (the session never reports them): as before.
 	void FeedLeadValues();
 	void ApplyLeadValues(const ftcore::FightTick& Tick, int32 FedLoad, int32 FedHeals);
+	// FightSession's host calls per step: OpenLeadStep feeds FedLead's gauge and charges as the step opens (1), every
+	// spend between that and the session's tick goes through spendLeadLoad / spendLeadHeal (3: SpendLeadLoadNow, the
+	// gift's and the table's; ReportFightSpends, the fight's own Release and heal), and no set of that lead follows
+	// them on the step (the blow hook feeds nothing while the step is open). A spend outside the window (after the
+	// tick, before the next open) is in the next open's feed. The session's lateSets() must stay 0.
+	void OpenLeadStep();
+	void SpendLeadLoadNow(int32 Amount);
+	void ReportFightSpends(const ftcore::ArenaOutput& Out);
 	bool bPerLead = false;
 	uint8 FedLead = 0;
+	bool bLeadStepOpen = false;
+	int32 StepOpenLoad = 0, StepOpenHeals = 0, StepLoadSpent = 0, StepHealsSpent = 0;
+	int32 LeadLoadSpends = 0, LeadHealSpends = 0, LateSetsSeen = 0;
 	// The "per-lead Load" check: the runner's own ledger of the lead without control (its values as it lost control,
 	// or the begin's for the partner, plus the kept Load changes the session reported for it since; -1: none), checked
 	// against the values the session reports when control comes back to it. bOwnDeparted: the ledger is from that
