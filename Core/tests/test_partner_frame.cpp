@@ -51,6 +51,7 @@ struct Script {
     std::vector<std::pair<double, int>> kinds; // action starts: 0 a string, 1 a guard, 2 a reposition
 
     Script(PartnerOrder order, bool station, bool budgetFree, std::uint32_t seed, PartnerTuning tu = {}) {
+        tu.circling = true; // rule 17 on, as these held it (off is the shipped default)
         if (budgetFree) {
             tu.budgetShare = 1.f;
             tu.budgetAllowanceSeconds = 10.f;

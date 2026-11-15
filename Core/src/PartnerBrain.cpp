@@ -546,6 +546,7 @@ std::uint64_t PartnerBrainSave::hash() const {
         h.add(skirmish).add(skirmishDraws).add(skirmishOn).add(skirmishGoal.x).add(skirmishGoal.y).add(stillFor);
         h.add(placeAt.x).add(placeAt.y).add(placeFor);
         h.add(skirmishFor).add(skirmishEvery).add(skirmishDir).add(skirmishKind).add(skirmishOf);
+        if (t.circling) h.add(std::uint8_t{17}); // rule 17 on (off hashes as before)
     }
     return h.value;
 }
@@ -809,6 +810,7 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
     // Faces its target (else the nearest enemy standing) at all times, staggered too: the host turns to intent.enemy.
     if (face >= 0 && o.act != PartnerAct::Attack && o.enemy < 0) o.enemy = face;
     if (face < 0) return stop(); // no enemy standing: nothing to keep moving for
+    if (!t.circling) return stop(); // rule 17 off: it stands ready, facing it
     if (!in.canAct) { // staggered: it stands, and that counts toward its stand-still (it moves once it can)
         s_.skirmishOn = false;
         s_.stillFor += dt;
@@ -1399,7 +1401,7 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
                                             "followMin", "followMax", "stationTolerance", "stationGiveUpSeconds",
                                             "stationAnySeconds", "targetHoldSeconds", "frustumMargin",
                                             "frustumGiveUpSeconds", "engageSeconds", "repositionEverySeconds",
-                                            "repositionMeters"};
+                                            "repositionMeters", "circling"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -1440,6 +1442,10 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("engageSeconds", t.engageSeconds, 0.25, 10);
     real("repositionEverySeconds", t.repositionEverySeconds, 2, 20);
     real("repositionMeters", t.repositionMeters, 0.5, 6);
+    if (const JsonValue v = root["circling"]; !v.isAbsent()) {
+        if (v.isBool()) t.circling = v.boolean();
+        else errors.push_back("circling: expected true or false");
+    }
 
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);

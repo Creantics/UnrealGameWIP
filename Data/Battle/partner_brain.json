@@ -34,5 +34,6 @@
   "stationTolerance": 0.5,
   "stationGiveUpSeconds": 3.0,
   "stationAnySeconds": 6.0,
-  "targetHoldSeconds": 1.5
+  "targetHoldSeconds": 1.5,
+  "circling": false
 }

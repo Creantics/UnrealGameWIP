@@ -180,7 +180,7 @@
 //     "closeLeadMeters": 3.5, "spreadArcMin": 120, "spreadArcMax": 180, "sideHoldSeconds": 2.0, "followMin": 2.0,
 //     "followMax": 2.5, "stationTolerance": 0.5, "stationGiveUpSeconds": 3.0, "stationAnySeconds": 6.0,
 //     "targetHoldSeconds": 1.5, "frustumMargin": 0.1, "frustumGiveUpSeconds": 3.0, "engageSeconds": 2.0,
-//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5 }
+//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5, "circling": false }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -343,6 +343,9 @@ struct PartnerTuning {
     float engageSeconds = 2.f;           // rule 14 (0.25..10)
     float repositionEverySeconds = 8.f;  // rule 16 (2..20)
     float repositionMeters = 1.5f;       // rule 16: at least this far (0.5..6)
+    // Rule 17 (framed): with its attack held it keeps moving round its target. Off (the default until its turns hold
+    // the ruled limits): it stands ready where its rules put it, facing its target (else the nearest enemy standing).
+    bool circling = false;
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);

@@ -2255,10 +2255,18 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
         }
 }
 
-TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partner keeps to 2 s of blows and never stands still") {
-    const ArenaTable t = shippedTable();
-    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
-        CAPTURE(order);
+namespace {
+
+// A lead that never attacks for 20 s of the shipped group fight, the play camera behind it: the partner's numbers.
+struct IdleLead {
+    double T = 0, leadAttack = 0, partnerBlow = 0, longestStill = 0, longestInPlace = 0, onScreen = 0, jumpsPer10 = 0;
+    double facingOff = 0, circlingTime = 0, shortestCircling = 0;
+    int skirmishMoves = 0, circlingReversals = 0;
+};
+
+IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling) {
+    IdleLead o;
+    {
         PRig r(t.fighter("default"));
         r.def = t.fallback;
         r.def.enemyCount = 0;
@@ -2271,6 +2279,7 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
         REQUIRE(r.def.enemyCount == 3);
         r.def.attackers = 2;
         r.tuning = shippedTuning();
+        r.tuning.circling = circling;
         r.in.partnerOrder = order;
         r.goShipped(true, 1);
         r.autopilot = false; // the lead moves, dodges and guards as the autopilot says, and never attacks
@@ -2280,6 +2289,15 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
         double leadAttack = 0, partnerBlow = 0, onScreen = 0, still = 0, longestStill = 0, facingOff = 0;
         Vec2 placeAt = r.bodies.ally;
         double inPlace = 0, longestInPlace = 0;
+        // Goal jumps by kind: a walk begun or ended (the goal is the body while it waits), its own goal re-picked.
+        int flips = 0, repicks = 0;
+        bool wasWalk = false;
+        // Direction reversals: a turn over 90 degrees from any heading it moved on in the last 0.5 s.
+        constexpr int kWin = 30; // 0.5 s of steps
+        std::array<Vec2, kWin> dirs{};
+        std::array<bool, kWin> dirOn{};
+        int slot = 0, reversals = 0, circlingReversals = 0, forcedReversals = 0, blowReversals = 0;
+        double holdFrom = -1.0, shortestCircling = 1e9, circlingTime = 0;
         while (!r.fight.over() && r.fight.time() < 20.f) {
             const std::uint8_t keep = r.in.partnerOrder;
             r.in = r.fight.autopilot();
@@ -2289,10 +2307,54 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
             r.tick();
             if (partnerInFrame(r.in.partnerCamera, kPartnerFrustumMargin, r.bodies.ally)) onScreen += kDt;
             const PartnerIntent& pi = r.brain.intent();
-            if (length(sub(r.out->ally.goal, lastGoal)) > 0.25f) ++goalJumps;
+            const bool walkNow = pi.act == PartnerAct::MoveTo || pi.act == PartnerAct::StepBack;
+            if (length(sub(r.out->ally.goal, lastGoal)) > 0.25f) {
+                ++goalJumps;
+                if (walkNow != wasWalk) ++flips;
+                else ++repicks;
+            }
+            wasWalk = walkNow;
             lastGoal = r.out->ally.goal;
+            {
+                const Vec2 v = sub(r.bodies.ally, lastAt);
+                const float sp = length(v) / static_cast<float>(kDt);
+                bool anyOn = false;
+                for (int i = 0; i < kWin; ++i) anyOn = anyOn || dirOn[static_cast<std::size_t>(i)];
+                if (sp > 0.5f) {
+                    const Vec2 d{v.x / length(v), v.y / length(v)};
+                    if (!anyOn && holdFrom < 0.0) holdFrom = r.fight.time();
+                    bool turned = false;
+                    for (int i = 0; i < kWin; ++i)
+                        if (dirOn[static_cast<std::size_t>(i)] &&
+                            d.x * dirs[static_cast<std::size_t>(i)].x + d.y * dirs[static_cast<std::size_t>(i)].y < 0.f)
+                            turned = true;
+                    if (turned) {
+                        const double hold = r.fight.time() - holdFrom;
+                        // Forced: a wind-up at it (its guard or a step back from the rules). A blow: its own lunge.
+                        // Circling: else, with its attack held for the budget or walking its own goal.
+                        const bool forced = pi.act == PartnerAct::Guard || pi.act == PartnerAct::StepBack;
+                        const bool blow = pi.act == PartnerAct::Attack || r.out->ally.part != ArenaPart::None;
+                        ++reversals;
+                        if (forced) ++forcedReversals;
+                        else if (blow) ++blowReversals;
+                        else if (pi.skirmish || pi.idle == PartnerIdle::NoBudget) {
+                            ++circlingReversals;
+                            shortestCircling = std::min(shortestCircling, hold);
+                        }
+                        holdFrom = r.fight.time();
+                        dirOn.fill(false);
+                    }
+                    dirs[static_cast<std::size_t>(slot)] = d;
+                    dirOn[static_cast<std::size_t>(slot)] = true;
+                } else {
+                    dirOn[static_cast<std::size_t>(slot)] = false;
+                    if (!anyOn) holdFrom = -1.0;
+                }
+                slot = (slot + 1) % kWin;
+            }
             bool anyUp = false;
             for (std::size_t i = 0; i < r.fight.enemyCount(); ++i) anyUp = anyUp || r.fight.enemyAlive(i);
+            if (pi.skirmish || pi.idle == PartnerIdle::NoBudget) circlingTime += kDt;
             // Standing: its body did not move this tick, no blow of its running, not guarding, with an enemy up.
             const bool stood = length(sub(r.bodies.ally, lastAt)) < 1e-3f && r.out->ally.part == ArenaPart::None &&
                                pi.act != PartnerAct::Guard && anyUp && r.out->ally.partnerOn;
@@ -2319,20 +2381,79 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
             if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
         }
         const double T = r.fight.time();
-        MESSAGE(std::string(order == 0 ? "StayClose" : "Spread") << ", lead never attacking: " << T << " s; partner blows " << partnerBlow
+        const std::string head = std::string(order == 0 ? "StayClose" : "Spread") + (circling ? ", circling on" : ", circling off");
+        MESSAGE(head << ", lead never attacking: " << T << " s; partner blows " << partnerBlow
                 << " s, longest stand-still " << longestStill << " s (within 0.5 m: " << longestInPlace << " s), on screen " << onScreen / T << ", goal jumps per 10 s "
                 << 10.0 * goalJumps / T << "; circling " << r.brain.skirmishSeconds() << " s over "
                 << r.brain.skirmishMoves() << " goals, guards " << r.brain.guardsBegun()
                 << ", dodges 0 (none in the kit); noBudget " << r.brain.idleSeconds(PartnerIdle::NoBudget) << " s");
-        CHECK(T >= 19.9);
-        CHECK(leadAttack == 0.0);
-        CHECK(partnerBlow <= 2.0 + 1e-6); // 0.6 x 0 + 2.0 in the one 20 s window
-        CHECK(longestStill <= 1.5);
-        CHECK(longestInPlace <= 1.5);
-        CHECK(onScreen / T >= 0.8);
-        CHECK(10.0 * goalJumps / T <= 35.0); // the group fight's bound
-        CHECK(facingOff == 0.0);
-        CHECK(r.brain.skirmishMoves() >= 3);
+        MESSAGE("    goal jumps: " << flips << " walk begun or ended, " << repicks << " re-picked; reversals " << reversals
+                << ": circling " << circlingReversals << " in " << circlingTime << " s held (" << 10.0 * circlingReversals / circlingTime
+                << " per 10 s), shortest hold " << shortestCircling << " s; forced by a wind-up " << forcedReversals
+                << ", its own blows " << blowReversals << ", else " << reversals - circlingReversals - forcedReversals - blowReversals);
+        o.T = T;
+        o.leadAttack = leadAttack;
+        o.partnerBlow = partnerBlow;
+        o.longestStill = longestStill;
+        o.longestInPlace = longestInPlace;
+        o.onScreen = onScreen / T;
+        o.jumpsPer10 = 10.0 * goalJumps / T;
+        o.facingOff = facingOff;
+        o.circlingTime = circlingTime;
+        o.shortestCircling = shortestCircling;
+        o.skirmishMoves = r.brain.skirmishMoves();
+        o.circlingReversals = circlingReversals;
+    }
+    return o;
+}
+
+} // namespace
+
+TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partner keeps to 2 s of blows and never stands still") {
+    const ArenaTable t = shippedTable();
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, true);
+        CHECK(r.T >= 19.9);
+        CHECK(r.leadAttack == 0.0);
+        CHECK(r.partnerBlow <= 2.0 + 1e-6); // 0.6 x 0 + 2.0 in the one 20 s window
+        CHECK(r.longestStill <= 1.5);
+        CHECK(r.longestInPlace <= 1.5);
+        CHECK(r.onScreen >= 0.8);
+        CHECK(r.jumpsPer10 <= 35.0); // the group fight's bound
+        CHECK(r.facingOff == 0.0);
+        CHECK(r.skirmishMoves >= 3);
+    }
+}
+
+// The shipped default (circling off until its turns hold the ruled limits): with its attack held it stands ready
+// where rules 10-13 put it, facing its target, and makes no moves of its own.
+TEST_CASE("arena partner: rule 17 off (the shipped default), a lead that never attacks: it stands ready, facing its target") {
+    const ArenaTable t = shippedTable();
+    CHECK_FALSE(shippedTuning().circling);
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, false);
+        CHECK(r.T >= 19.9);
+        CHECK(r.leadAttack == 0.0);
+        CHECK(r.partnerBlow <= 2.0 + 1e-6);
+        CHECK(r.facingOff == 0.0);
+        CHECK(r.skirmishMoves == 0);
+    }
+}
+
+// Known short (reported, the bar kept): rule 17's circling turns at most 3 times in 10 s, none held under 0.4 s. Today
+// (StayClose / Spread): 5.9 / 4.8 reversals per 10 s while circling, shortest hold 0.017 / 0.10 s, mostly its straight
+// walk sliding round enemy bodies and rules 10-13 stations turning invalid.
+TEST_CASE("arena partner: rule 17's circling: at most 3 reversals per 10 s, no hold under 0.4 s (known short)" *
+          doctest::should_fail()) {
+    const ArenaTable t = shippedTable();
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, true);
+        REQUIRE(r.circlingTime > 0.0);
+        CHECK(10.0 * r.circlingReversals / r.circlingTime <= 3.0);
+        CHECK(r.shortestCircling >= 0.4);
     }
 }
 

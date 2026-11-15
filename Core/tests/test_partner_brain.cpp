@@ -1706,9 +1706,9 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.targetFor += 0.5; },
         [](PartnerBrainSave& s) { s.targetReached = !s.targetReached; },
     };
-    // One row per field: the 40 tunables; rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and
+    // One row per field: the 40 tunables (rule 17's switch, a bool padded to a float's size, is a framed row below); rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and
     // y); begun; side, sideKey, sideFor, swaps, sideTarget, offStation, targetFor, targetReached (8).
-    static_assert(sizeof(PartnerTuning) == 40 * sizeof(float), "a new tunable needs a row here");
+    static_assert(sizeof(PartnerTuning) == 41 * sizeof(float), "a new tunable needs a row here");
     CHECK(std::size(edits) == 40u + 20u + 4u + 16u + 1u + 8u);
     int i = 0;
     for (const Edit e : edits) {
@@ -1744,6 +1744,7 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.guarding = !s.guarding; },
         [](PartnerBrainSave& s) { s.out.framed = !s.out.framed; },
         [](PartnerBrainSave& s) { s.out.frameFallback = !s.out.frameFallback; },
+        [](PartnerBrainSave& s) { s.t.circling = !s.t.circling; },
     };
     int j = 0;
     for (const Edit e : framedEdits) {
