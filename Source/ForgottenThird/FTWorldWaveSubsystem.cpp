@@ -1357,6 +1357,7 @@ UMaterialInterface* UFTWorldWaveSubsystem::CutMaterialFor(UMaterialInterface* Ma
 
 void UFTWorldWaveSubsystem::ClearCollection(UWorld& World)
 {
+	CollectionAge = 0.f; // the collection's age goes to 0 with it, so the boundary log never reads a stale one
 	UMaterialParameterCollectionInstance* Mpc = MpcLook ? World.GetParameterCollectionInstance(MpcLook) : nullptr;
 	if (!Mpc)
 	{

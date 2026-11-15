@@ -1652,7 +1652,8 @@ public:
 	}
 
 	// Whether the map file opens as a whole package: its summary reads with the package tag and a valid version, and the
-	// header, the bulk data start and the payload table it names all lie inside the file (a cut-off write fails this).
+	// header, the bulk data start and the payload table it names all lie inside the file, and the file ends with the
+	// package tag (a cut-off write fails this).
 	static bool OpensCleanly(const FString& Path)
 	{
 		const TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*Path, FILEREAD_Silent));
@@ -1667,9 +1668,18 @@ public:
 		}
 		FPackageFileSummary Summary;
 		*Reader << Summary;
-		return !Reader->IsError() && Summary.Tag == static_cast<int32>(PACKAGE_FILE_TAG) && Summary.IsFileVersionValid() &&
-			Summary.TotalHeaderSize > 0 && Summary.TotalHeaderSize <= Size && Summary.BulkDataStartOffset <= Size &&
-			Summary.PayloadTocOffset < Size;
+		if (Reader->IsError() || Summary.Tag != static_cast<int32>(PACKAGE_FILE_TAG) || !Summary.IsFileVersionValid() ||
+			Summary.TotalHeaderSize <= 0 || Summary.TotalHeaderSize > Size || Summary.BulkDataStartOffset > Size ||
+			Summary.PayloadTocOffset >= Size)
+		{
+			return false;
+		}
+		// Every package file ends with the tag (after the exports, or as the last field of the package trailer's
+		// footer), so a file cut anywhere, the bulk data included, fails here.
+		uint32 Footer = 0;
+		Reader->Seek(Size - static_cast<int64>(sizeof(Footer)));
+		*Reader << Footer;
+		return !Reader->IsError() && Footer == PACKAGE_FILE_TAG;
 	}
 
 	// Moves the map aside when it exists, else notes it as new; false (logged) when it can't be. A .ftold is left by a
