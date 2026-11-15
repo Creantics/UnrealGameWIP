@@ -490,6 +490,13 @@ ArenaBlowRuling allyHook(void* user, const ArenaBlow& blow) {
     return r;
 }
 
+// The partner time its brain holds in its budget window.
+float partnerSpent(const PartnerBrain& b) {
+    float sum = 0.f;
+    for (const float s : b.save().spentPartner) sum += s;
+    return sum;
+}
+
 } // namespace
 
 TEST_CASE("arena partner: with no partner set, or a null one, a fight is unchanged") {
@@ -802,6 +809,86 @@ TEST_CASE("arena partner: a blow it began runs out after a Guard intent") {
         guarded += w.guardedBlows;
     }
     CHECK(guarded >= 1);
+}
+
+TEST_CASE("arena partner: a hit into hitstun cuts its running blow, as the lead's; the time it committed stays spent") {
+    PRig r;
+    r.tuning.guardChance = 0.f;            // every blow aimed at it lands
+    r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way: it strings all the time
+    REQUIRE(validPartnerTuning(r.tuning));
+    bossRig(r, 2, 1.2f);
+    BlowWatch w;
+    int cutSeen = 0, spentChecked = 0;
+    bool wasAttacking = false;
+    float lastTime = 0.f;
+    std::uint8_t lastBlow = 0;
+    for (int k = 0; k < 30 * 60 && !r.fight.over(); ++k) {
+        const std::size_t from = r.log.size();
+        const float spent0 = partnerSpent(r.brain);
+        r.tick();
+        w.see(*r.out, r.def.fighter, r.tuning, r.fight.time());
+        bool hitInBlow = false;
+        for (std::size_t i = from; i < r.log.size(); ++i) {
+            const ArenaEvent& e = r.log[i].e;
+            if (e.type == ArenaEventType::AllyHit && e.amount > 0 && wasAttacking) hitInBlow = true;
+            if (hitInBlow) CHECK_FALSE(allyHit(e)); // no damage from the cut blow after the hit, this tick included
+        }
+        if (hitInBlow) {
+            ++cutSeen;
+            CHECK_FALSE(r.out->ally.attacking);
+            // Its brain still counts the rest of the blow it committed: over the hitstun, about all of it.
+            const ArenaAttack& a = r.def.fighter.light[lastBlow % r.def.fighter.lightCount];
+            const float rest = a.total() - lastTime - kDt;
+            if (r.fight.time() < 10.f && rest > 4.f * kDt) {
+                for (int j = 0; j < 18; ++j) r.tick(); // 0.3 s, inside the 0.4 s hitstun: no new blow
+                CHECK(partnerSpent(r.brain) - spent0 >= std::min(rest, 0.3f) - 2.f * kDt);
+                ++spentChecked;
+            }
+        }
+        wasAttacking = r.out->ally.attacking;
+        lastTime = r.out->ally.stateTime;
+        lastBlow = r.out->ally.blow;
+    }
+    const ArenaStats& s = r.fight.stats();
+    CHECK(s.takeovers == 0);
+    CHECK(cutSeen >= 2);
+    CHECK(s.partnerBlowsCut == cutSeen);
+    CHECK(s.partnerBlowsVoid == 0); // the boss never dies here
+    CHECK(spentChecked >= 1);
+}
+
+TEST_CASE("arena partner: a blow whose target dies before its hit frame deals nothing and ends") {
+    PRig r;
+    for (int i = 0; i < 3; ++i) r.def.fighter.light[i] = swing(0.5f, 0.1f, 0.3f, 2.f, 10); // its hit frame comes late
+    r.def.fighter.heavy = swing(0.05f, 0.1f, 0.3f, 2.f, 1000);                          // the lead's kills first
+    r.enemy(dummyKind(50), Vec2{0.f, 0.f});
+    r.enemy(dummyKind(), Vec2{25.f, 0.f}); // keeps the fight on, far out of its reach
+    r.bodies.player = Vec2{0.f, -1.2f};
+    r.bodies.ally = Vec2{-1.4f, 0.f};
+    r.go(true, 100, 1, Vec2{0.f, 1.f});
+    bool pressed = false;
+    float killedAt = -1.f;
+    for (int k = 0; k < 6 * 60 && killedAt < 0.f; ++k) {
+        if (!pressed && r.fight.output().ally.attacking && r.fight.output().ally.target == 0 &&
+            r.fight.output().ally.stateTime <= 2.f * kDt) {
+            r.in.heavy = true;
+            pressed = true;
+        }
+        r.tick();
+        if (!r.fight.enemyAlive(0)) killedAt = r.fight.time();
+    }
+    REQUIRE(pressed);
+    REQUIRE(killedAt > 0.f);
+    CHECK(r.count(ArenaEventType::Hit) >= 1); // the lead's
+    r.tick();
+    CHECK_FALSE(r.fight.output().ally.attacking); // ended by the step after the kill at the latest
+    for (int k = 0; k < 30; ++k) r.tick();
+    const ArenaStats& s = r.fight.stats();
+    CHECK(s.partnerBlowsVoid == 1);
+    CHECK(s.partnerBlowsCut == 0);
+    CHECK(s.partnerBlows == 0);
+    CHECK(s.partnerDamage == 0);
+    CHECK(r.allyHits() == 0);
 }
 
 TEST_CASE("arena partner: the player falling with the partner up takes its body; it rises; both down is the Defeat") {
@@ -1440,14 +1527,6 @@ TEST_CASE("arena partner: a counter dealt reports pairPartnerSeconds, and its pa
     q.go(false, 100);
     CHECK(pairUntilCounter(q) == 0.f);
 }
-
-namespace {
-float partnerSpent(const PartnerBrain& b) {
-    float sum = 0.f;
-    for (const float s : b.save().spentPartner) sum += s;
-    return sum;
-}
-} // namespace
 
 TEST_CASE("arena partner: a counter's partner time reaches the brain's budget once (PartnerInput::spentSeconds)") {
     // The tick of the counter and the next: the brain takes its second on one of them, once.
@@ -2227,7 +2306,8 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             const std::string head = std::string(order == 0 ? "StayClose" : "Spread") + (camera ? ", camera" : ", no camera");
             MESSAGE(head << ": " << T << " s, "
                                    << r.def.enemyCount << " enemies; strings " << s.partnerStrings << ", blows "
-                                   << s.partnerBlows << ", guards " << s.partnerGuards << ", fallback "
+                                   << s.partnerBlows << " (cut by a hit " << s.partnerBlowsCut << ", ended at a dead target "
+                                   << s.partnerBlowsVoid << "), guards " << s.partnerGuards << ", fallback "
                                    << r.brain.fallbackSeconds() << " s; shares:" << shares);
             MESSAGE("    goal jumps " << goalJumps << ", walked " << walked << " m, longest gap between blow starts "
                                       << longestGap << " s, repositions " << repositions << "; lead attacking "

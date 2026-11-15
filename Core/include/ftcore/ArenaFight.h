@@ -1070,6 +1070,8 @@ struct ArenaStats {
     int partnerStrings = 0;    // its light strings begun
     int partnerGuards = 0;     // enemy blows its guard blocked
     int partnerRises = 0;      // times it stood again after being downed
+    int partnerBlowsCut = 0;   // its running blows a damaging hit on it cut (its hitstun, as the lead's)
+    int partnerBlowsVoid = 0;  // its blows ended unlanded because their target died before the hit frame
     int bossAttacks = 0;       // boss strings begun (a chained move is the same string; a break move is one), with a
                                // partner or without
     int bossAimedPartner = 0;  // ... of them aimed at the partner
