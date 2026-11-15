@@ -10,19 +10,17 @@
 #include "FTStyleParameters.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
-#include "Materials/MaterialExpressionAdd.h"
-#include "Materials/MaterialExpressionAtmosphericLightVector.h"
 #include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
-#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
-#include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
-#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -112,7 +110,8 @@ UMaterialFunction* BuildCutFunction(UPackage* Package, UMaterialParameterCollect
 	UMaterialExpressionCustom* Custom = AddFunctionExpression<UMaterialExpressionCustom>(Function, -300, 0);
 	Custom->Description = TEXT("FTWorldWaveCut");
 	Custom->OutputType = CMOT_Float1;
-	Custom->Code = FString(FTWorldWaveFnsCode) + FTWorldWaveCutBody;
+	Custom->Code = FTWorldWaveCutBody;
+	Custom->IncludeFilePaths.Add(FTWorldWaveCommonInclude);
 	Custom->Inputs.Reset();
 	AddInput(Custom, TEXT("WorldPos"), AddFunctionExpression<UMaterialExpressionWorldPosition>(Function, -900, -300));
 	AddInput(Custom, TEXT("CamPos"), AddFunctionExpression<UMaterialExpressionCameraPositionWS>(Function, -900, -200));
@@ -149,8 +148,6 @@ UMaterialFunction* BuildCutFunction(UPackage* Package, UMaterialParameterCollect
 	};
 	AddInput(Custom, TEXT("Tag"), AddPrimitiveData(FTWorldWave::TagParameter, FTWorldWave::kTagSlot));
 	AddInput(Custom, TEXT("LocalR"), AddPrimitiveData(FTWorldWave::LocalParameter, FTWorldWave::kLocalSlot));
-	AddOutput(Custom, TEXT("InkOut"), CMOT_Float1);
-	AddOutput(Custom, TEXT("CoreOut"), CMOT_Float3);
 	Custom->RebuildOutputs();
 
 	struct FOutputSpec
@@ -161,8 +158,6 @@ UMaterialFunction* BuildCutFunction(UPackage* Package, UMaterialParameterCollect
 	};
 	const FOutputSpec Outputs[] = {
 		{TEXT("Clip"), TEXT("1 keeps the pixel, 0 clips it: OpacityMask (or Opacity on a translucent master)."), 0},
-		{TEXT("Ink"), TEXT("0..1 the arriving thing's leading strip: lerp the base colour to ink black by it."), 1},
-		{TEXT("Core"), TEXT("The strip's paper-white core: add it to the emissive."), 2},
 	};
 	for (int32 I = 0; I < static_cast<int32>(UE_ARRAY_COUNT(Outputs)); ++I)
 	{
@@ -179,19 +174,109 @@ UMaterialFunction* BuildCutFunction(UPackage* Package, UMaterialParameterCollect
 	return Function;
 }
 
-// The ink post-process (FTWorldWaveShader.inl): after tonemapping, after the world style (priority 0).
-UMaterial* BuildInkMaterial(UPackage* Package, UMaterialParameterCollection* Look)
+struct FCollectionInput
+{
+	const TCHAR* Input;
+	const TCHAR* Parameter;
+};
+
+// The surface state behind the front (State.ush), wired into the surface masters by AddState: BaseColor, Roughness and
+// Emissive in, the same three out.
+UMaterialFunction* BuildStateFunction(UPackage* Package, UMaterialParameterCollection* Look)
+{
+	UMaterialFunction* Function = NewObject<UMaterialFunction>(Package, FName(FPackageName::GetShortName(Package->GetName())),
+		RF_Public | RF_Standalone | RF_Transactional);
+	Function->Description = TEXT("The world wave's surface state: behind the front a surface drains near grey, darkens, goes damp and "
+								 "stained, and its light dies (FTWorldWave.h).");
+	Function->bExposeToLibrary = false;
+
+	struct FInputSpec
+	{
+		const TCHAR* Name;
+		EFunctionInputType Type;
+		FVector4f Preview;
+	};
+	const FInputSpec InputSpecs[] = {
+		{TEXT("BaseColor"), FunctionInput_Vector3, FVector4f(0.5f, 0.5f, 0.5f, 0.f)},
+		{TEXT("Roughness"), FunctionInput_Scalar, FVector4f(0.5f, 0.f, 0.f, 0.f)},
+		{TEXT("Emissive"), FunctionInput_Vector3, FVector4f(0.f, 0.f, 0.f, 0.f)},
+	};
+	UMaterialExpressionFunctionInput* FunctionInputs[3] = {};
+	for (int32 I = 0; I < 3; ++I)
+	{
+		UMaterialExpressionFunctionInput* In = AddFunctionExpression<UMaterialExpressionFunctionInput>(Function, -1200, -300 + 120 * I);
+		In->InputName = FName(InputSpecs[I].Name);
+		In->InputType = InputSpecs[I].Type;
+		In->PreviewValue = InputSpecs[I].Preview;
+		In->bUsePreviewValueAsDefault = true;
+		In->SortPriority = I;
+		In->Id = FGuid::NewDeterministicGuid(FString(TEXT("FTWorldWaveState.In.")) + InputSpecs[I].Name);
+		FunctionInputs[I] = In;
+	}
+
+	UMaterialExpressionCustom* Custom = AddFunctionExpression<UMaterialExpressionCustom>(Function, -300, 0);
+	Custom->Description = TEXT("FTWorldWaveState");
+	Custom->OutputType = CMOT_Float3;
+	Custom->Code = FTWorldWaveStateBody;
+	Custom->IncludeFilePaths.Add(FTWorldWaveStateInclude);
+	Custom->Inputs.Reset();
+	AddInput(Custom, TEXT("Base"), FunctionInputs[0]);
+	AddInput(Custom, TEXT("Rough"), FunctionInputs[1]);
+	AddInput(Custom, TEXT("Emis"), FunctionInputs[2]);
+	AddInput(Custom, TEXT("WorldPos"), AddFunctionExpression<UMaterialExpressionWorldPosition>(Function, -900, 100));
+	AddInput(Custom, TEXT("Normal"), AddFunctionExpression<UMaterialExpressionVertexNormalWS>(Function, -900, 160));
+	const FCollectionInput FromCollection[] = {
+		{TEXT("WOrigin"), FTWorldWave::Origin},
+		{TEXT("WOriginScreen"), FTWorldWave::OriginScreen},
+		{TEXT("WRadius"), FTWorldWave::Radius},
+		{TEXT("WBand"), FTWorldWave::BandWidth},
+		{TEXT("WDirection"), FTWorldWave::Direction},
+		{TEXT("WTime"), FTWorldWave::WaveTime},
+		{TEXT("WKeep0"), FTWorldWave::Keep0},
+		{TEXT("WKeep1"), FTWorldWave::Keep1},
+	};
+	int32 Row = 0;
+	for (const FCollectionInput& In : FromCollection)
+	{
+		UMaterialExpressionCollectionParameter* Node =
+			AddFunctionExpression<UMaterialExpressionCollectionParameter>(Function, -900, 240 + 80 * Row++);
+		SetCollectionParameter(Node, Look, In.Parameter);
+		AddInput(Custom, In.Input, Node);
+	}
+	AddOutput(Custom, TEXT("RoughOut"), CMOT_Float1);
+	AddOutput(Custom, TEXT("EmisOut"), CMOT_Float3);
+	Custom->RebuildOutputs();
+
+	const TCHAR* const OutputNames[] = {TEXT("BaseColor"), TEXT("Roughness"), TEXT("Emissive")};
+	for (int32 I = 0; I < 3; ++I)
+	{
+		UMaterialExpressionFunctionOutput* Out = AddFunctionExpression<UMaterialExpressionFunctionOutput>(Function, 100, -100 + 120 * I);
+		Out->OutputName = FName(OutputNames[I]);
+		Out->SortPriority = I;
+		Out->Id = FGuid::NewDeterministicGuid(FString(TEXT("FTWorldWaveState.Out.")) + OutputNames[I]);
+		Out->A.Connect(I, Custom);
+	}
+
+	Function->PreEditChange(nullptr);
+	Function->PostEditChange();
+	return Function;
+}
+
+// The post-process (FTWorldWaveShader.inl, Post.ush): before depth of field, on the linear scene colour, so the
+// second world's grade sits under the look's own tonemap.
+UMaterial* BuildPostMaterial(UPackage* Package, UMaterialParameterCollection* Look)
 {
 	UMaterial* Material = NewObject<UMaterial>(Package, FName(FPackageName::GetShortName(Package->GetName())),
 		RF_Public | RF_Standalone | RF_Transactional);
 	Material->MaterialDomain = MD_PostProcess;
-	Material->BlendableLocation = BL_SceneColorAfterTonemapping;
+	Material->BlendableLocation = BL_SceneColorBeforeDOF;
 	Material->BlendablePriority = 10;
 
 	UMaterialExpressionCustom* Custom = AddExpression<UMaterialExpressionCustom>(Material, -400, 0);
-	Custom->Description = TEXT("FTWorldWaveInk");
+	Custom->Description = TEXT("FTWorldWavePost");
 	Custom->OutputType = CMOT_Float3;
-	Custom->Code = FString(FTWorldWaveFnsCode) + FTWorldWaveInkBody;
+	Custom->Code = FTWorldWavePostBody;
+	Custom->IncludeFilePaths.Add(FTWorldWavePostInclude);
 	Custom->Inputs.Reset();
 
 	const auto AddScene = [Material, Custom](const TCHAR* Name, ESceneTextureId Id, int32 Y)
@@ -202,17 +287,10 @@ UMaterial* BuildInkMaterial(UPackage* Package, UMaterialParameterCollection* Loo
 	};
 	AddScene(TEXT("SceneColor"), PPI_PostProcessInput0, -800);
 	AddScene(TEXT("SceneDepthIn"), PPI_SceneDepth, -700);
-	AddScene(TEXT("SceneNormalIn"), PPI_WorldNormal, -600);
-	AddInput(Custom, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -1300, -500));
-	AddInput(Custom, TEXT("CamPos"), AddExpression<UMaterialExpressionCameraPositionWS>(Material, -1300, -460));
-	// Toward the sun (the view's first atmosphere light): the hatch's shading on the second world's faces.
-	AddInput(Custom, TEXT("SunDir"), AddExpression<UMaterialExpressionAtmosphericLightVector>(Material, -1300, -430));
+	AddScene(TEXT("SceneNormal"), PPI_WorldNormal, -650);
+	AddInput(Custom, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -1300, -600));
+	AddInput(Custom, TEXT("CamPos"), AddExpression<UMaterialExpressionCameraPositionWS>(Material, -1300, -540));
 
-	struct FCollectionInput
-	{
-		const TCHAR* Input;
-		const TCHAR* Parameter;
-	};
 	const FCollectionInput FromCollection[] = {
 		{TEXT("WOrigin"), FTWorldWave::Origin},
 		{TEXT("WOriginScreen"), FTWorldWave::OriginScreen},
@@ -222,59 +300,24 @@ UMaterial* BuildInkMaterial(UPackage* Package, UMaterialParameterCollection* Loo
 		{TEXT("WBand"), FTWorldWave::BandWidth},
 		{TEXT("WPrelude"), FTWorldWave::Prelude},
 		{TEXT("WDirection"), FTWorldWave::Direction},
-		{TEXT("WInside"), FTWorldWave::CameraInside},
 		{TEXT("WTime"), FTWorldWave::WaveTime},
+		{TEXT("WGround"), FTWorldWave::Ground},
+		{TEXT("WGain"), FTWorldWave::Gain},
+		{TEXT("WKeep0"), FTWorldWave::Keep0},
 	};
 	int32 Row = 0;
 	for (const FCollectionInput& In : FromCollection)
 	{
-		UMaterialExpressionCollectionParameter* Node = AddExpression<UMaterialExpressionCollectionParameter>(Material, -1300, -400 + 70 * Row++);
+		UMaterialExpressionCollectionParameter* Node = AddExpression<UMaterialExpressionCollectionParameter>(Material, -1300, -460 + 70 * Row++);
 		SetCollectionParameter(Node, Look, In.Parameter);
 		AddInput(Custom, In.Input, Node);
 	}
-
-	struct FScalarSpec
-	{
-		const TCHAR* Name;
-		float Value;
-	};
-	const FScalarSpec Scalars[] = {
-		{TEXT("SceneKeep"), 0.15f},  // the scene's colour kept inside the front
-		{TEXT("DisplacePx"), 12.f},  // the band's displacement of the lookup, pixels at 1080p
-		{TEXT("SmearMinPx"), 40.f},  // the band's outward smear, pixels at 1080p
-		{TEXT("SmearMaxPx"), 90.f},
-		{TEXT("LinePx"), 1.5f},      // the ink lines' sampling ring (the silhouettes' is twice it)
-		{TEXT("HatchPx"), 7.f},      // the hatch's spacing on screen
-		{TEXT("Tooth"), 0.2f},       // the paper's grain
-		{TEXT("StreakPx"), 5.f},     // the prelude streak's half width at its foot
-	};
-	UMaterialExpressionScalarParameter* Sky = AddExpression<UMaterialExpressionScalarParameter>(Material, -1000, 300);
+	UMaterialExpressionScalarParameter* Sky = AddExpression<UMaterialExpressionScalarParameter>(Material, -1000, 400);
 	Sky->ParameterName = FTStyle::SkyDepthName();
 	Sky->DefaultValue = FTStyle::DefaultSkyDepth;
 	Sky->Group = TEXT("Scene");
 	Sky->UpdateParameterGuid(true, false);
 	AddInput(Custom, TEXT("SkyDepth"), Sky);
-	Row = 0;
-	for (const FScalarSpec& Spec : Scalars)
-	{
-		UMaterialExpressionScalarParameter* P = AddExpression<UMaterialExpressionScalarParameter>(Material, -1000, 380 + 70 * Row++);
-		P->ParameterName = FName(Spec.Name);
-		P->DefaultValue = Spec.Value;
-		P->Group = TEXT("WorldWave");
-		P->UpdateParameterGuid(true, false);
-		AddInput(Custom, Spec.Name, P);
-	}
-	const auto AddColor = [Material, Custom, &Row](const TCHAR* Name, const float* Rgb)
-	{
-		UMaterialExpressionVectorParameter* P = AddExpression<UMaterialExpressionVectorParameter>(Material, -1000, 380 + 70 * Row++);
-		P->ParameterName = FName(Name);
-		P->DefaultValue = FLinearColor(Rgb[0], Rgb[1], Rgb[2], 1.f);
-		P->Group = TEXT("WorldWave");
-		P->UpdateParameterGuid(true, false);
-		AddInput(Custom, Name, P);
-	};
-	AddColor(TEXT("PaperColor"), FTWorldWave::Paper);
-	AddColor(TEXT("InkColor"), FTWorldWave::Ink);
 
 	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Custom);
 	Material->PreEditChange(nullptr);
@@ -301,6 +344,8 @@ UMaterial* BuildTwin(const TCHAR* MasterPath)
 	{
 		return nullptr;
 	}
+	// The state too (a master built with it already has it: AddState leaves that one as it is).
+	FTWorldWave::AddState(kTag, Twin, -600, 1300);
 	Twin->PreEditChange(nullptr);
 	Twin->PostEditChange();
 	return Twin;
@@ -341,9 +386,9 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
 		return false;
 	}
 	UMaterialExpressionMaterialFunctionCall* Call = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y);
-	if (!Call->SetMaterialFunction(Function) || Call->FunctionOutputs.Num() < 3)
+	if (!Call->SetMaterialFunction(Function) || Call->FunctionOutputs.Num() < 1)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s gives %d outputs, not Clip, Ink and Core; %s takes no world-wave cut."), Tag,
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s gives %d outputs, not Clip; %s takes no world-wave cut."), Tag,
 			CutFunctionPath, Call->FunctionOutputs.Num(), *Material->GetName());
 		Material->GetExpressionCollection().RemoveExpression(Call);
 		return false;
@@ -388,33 +433,67 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
 		Inputs->OpacityMask.Connect(0, Call);
 	}
 
-	// The arriving thing's leading strip: the base colour to ink, the core on the emissive.
-	if (Inputs->BaseColor.Expression)
-	{
-		UMaterialExpressionConstant3Vector* InkColor = AddExpression<UMaterialExpressionConstant3Vector>(Material, X, Y + 150);
-		// Ink is display sRGB; the base colour is linear.
-		InkColor->Constant = FLinearColor::FromSRGBColor(FColor(
-			static_cast<uint8>(Ink[0] * 255.f + 0.5f), static_cast<uint8>(Ink[1] * 255.f + 0.5f), static_cast<uint8>(Ink[2] * 255.f + 0.5f)));
-		UMaterialExpressionLinearInterpolate* Lerp = AddExpression<UMaterialExpressionLinearInterpolate>(Material, X + 300, Y + 150);
-		Lerp->A.Connect(Inputs->BaseColor.OutputIndex, Inputs->BaseColor.Expression);
-		Lerp->B.Connect(0, InkColor);
-		Lerp->Alpha.Connect(1, Call);
-		Inputs->BaseColor.Connect(0, Lerp);
-	}
-	if (Inputs->EmissiveColor.Expression)
-	{
-		UMaterialExpressionAdd* Sum = AddExpression<UMaterialExpressionAdd>(Material, X + 300, Y + 300);
-		Sum->A.Connect(Inputs->EmissiveColor.OutputIndex, Inputs->EmissiveColor.Expression);
-		Sum->B.Connect(2, Call);
-		Inputs->EmissiveColor.Connect(0, Sum);
-	}
-	else
-	{
-		Inputs->EmissiveColor.UseConstant = false;
-		Inputs->EmissiveColor.Connect(2, Call);
-	}
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: world-wave cut wired in%s."), Tag, *Material->GetName(),
 		bWasOpaque ? TEXT(" (opaque -> masked)") : TEXT(""));
+	return true;
+}
+
+bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y)
+{
+	if (!Material)
+	{
+		return false;
+	}
+	UMaterialFunction* Function = LoadObject<UMaterialFunction>(nullptr, *ObjectPath(StateFunctionPath), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Function)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: no %s (run -run=FTBuildWaveMaterials first); %s takes no world-wave state."), Tag,
+			StateFunctionPath, *Material->GetName());
+		return false;
+	}
+	for (UMaterialExpression* Expression : Material->GetExpressionCollection().Expressions)
+	{
+		const UMaterialExpressionMaterialFunctionCall* Existing = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
+		if (Existing && Existing->MaterialFunction && Existing->MaterialFunction->GetPathName() == Function->GetPathName())
+		{
+			return true;
+		}
+	}
+	UMaterialExpressionMaterialFunctionCall* Call = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y);
+	if (!Call->SetMaterialFunction(Function) || Call->FunctionInputs.Num() < 3 || Call->FunctionOutputs.Num() < 3)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s is not BaseColor, Roughness, Emissive in and out; %s takes no world-wave state."), Tag,
+			StateFunctionPath, *Material->GetName());
+		Material->GetExpressionCollection().RemoveExpression(Call);
+		return false;
+	}
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	// Each of the master's inputs goes through the call: what fed it feeds the call's input (an unconnected one keeps the
+	// function's default, which is the master's own default too), and the call's output feeds it.
+	const auto Route = [Call](FExpressionInput& MasterInput, int32 Index)
+	{
+		if (MasterInput.Expression)
+		{
+			Call->FunctionInputs[Index].Input.Connect(MasterInput.OutputIndex, MasterInput.Expression);
+		}
+		MasterInput.Connect(Index, Call);
+	};
+	Route(Inputs->BaseColor, 0);
+	// A constant roughness the master set by hand: carry it in.
+	if (!Inputs->Roughness.Expression && Inputs->Roughness.UseConstant)
+	{
+		UMaterialExpressionConstant* Rough = AddExpression<UMaterialExpressionConstant>(Material, X - 300, Y + 120);
+		Rough->R = Inputs->Roughness.Constant;
+		Call->FunctionInputs[1].Input.Connect(0, Rough);
+		Inputs->Roughness.UseConstant = false;
+	}
+	Route(Inputs->Roughness, 1);
+	if (Inputs->EmissiveColor.UseConstant && !Inputs->EmissiveColor.Expression)
+	{
+		Inputs->EmissiveColor.UseConstant = false;
+	}
+	Route(Inputs->EmissiveColor, 2);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: world-wave state wired in."), Tag, *Material->GetName());
 	return true;
 }
 } // namespace FTWorldWave
@@ -433,7 +512,8 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 #if WITH_EDITOR
 	// Start from nothing under the wave's folder: replace every file up front, before anything loads the old assets.
 	// The look's collection is never deleted; the wave's parameters are added to it in place.
-	TArray<FString> Packages = {FTWorldWave::CutFunctionPath, FTWorldWave::InkMaterialPath};
+	TArray<FString> Packages = {FTWorldWave::CutFunctionPath, FTWorldWave::StateFunctionPath, FTWorldWave::PostMaterialPath,
+		FTWorldWave::OldInkMaterialPath};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
 	{
 		Packages.Add(TwinPackage(Master));
@@ -447,7 +527,7 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 			return 1;
 		}
 	}
-	IFileManager::Get().MakeDirectory(*FPaths::GetPath(WavePackageFile(FTWorldWave::InkMaterialPath)), true);
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(WavePackageFile(FTWorldWave::PostMaterialPath)), true);
 
 	UMaterialParameterCollection* Look = FTWorldWave::LoadOrBuild();
 	if (!Look)
@@ -462,8 +542,13 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
-	UMaterial* Ink = BuildInkMaterial(CreatePackage(FTWorldWave::InkMaterialPath), Look);
-	TArray<UMaterial*> Built = {Ink};
+	UMaterialFunction* State = BuildStateFunction(CreatePackage(FTWorldWave::StateFunctionPath), Look);
+	if (!Save(State))
+	{
+		return 1;
+	}
+	UMaterial* Post = BuildPostMaterial(CreatePackage(FTWorldWave::PostMaterialPath), Look);
+	TArray<UMaterial*> Built = {Post};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
 	{
 		// A missing twin is not fatal: the dressing leaves that master's props uncut (it finds no twin) and the rest build.
@@ -493,9 +578,10 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("%s: built MF_WorldWaveCut, PP_WorldWave_Ink (%d expressions) and %d prop twins; the parameters are in %s. Now rebuild "
-			 "the masters that wire the cut in: -run=FTImportPlant -Masters, -run=FTImportVehicle -Source=<the car's export>."),
-		kTag, Ink->GetExpressionCollection().Expressions.Num(), Built.Num() - 1, FTWorldWave::CollectionPath);
+		TEXT("%s: built MF_WorldWaveCut, MF_WorldWaveState, PP_WorldWave (%d expressions) and %d prop twins; the parameters are in "
+			 "%s. Now rebuild the masters that wire them in: -run=FTBuildSurfaces -Master -Weather, -run=FTImportPlant -Masters, "
+			 "-run=FTImportVehicle -Source=<the car's export>."),
+		kTag, Post->GetExpressionCollection().Expressions.Num(), Built.Num() - 1, FTWorldWave::CollectionPath);
 	return 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildWaveMaterials needs an editor build."));

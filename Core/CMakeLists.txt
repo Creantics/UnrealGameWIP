@@ -192,6 +192,7 @@ add_library(ftcore STATIC
     src/BeatScreen.cpp
     src/TwistBake.cpp
     src/WorldWave.cpp
+    src/WaveLook.cpp
 )
 target_include_directories(ftcore PUBLIC include)
 target_link_libraries(ftcore PRIVATE ftcore_warnings)
@@ -488,6 +489,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_music.cpp
         tests/test_twist_bake.cpp
         tests/test_world_wave.cpp
+        tests/test_wave_look.cpp
     )
     target_link_libraries(ftcore_tests PRIVATE ftcore doctest::doctest ftcore_warnings)
     # The real-data tests read the newengine checkout's assets in place (skipped when absent).

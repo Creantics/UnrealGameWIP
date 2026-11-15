@@ -86,8 +86,8 @@ struct LookTable {
     FTCORE_API float glassValue(std::string_view name, float fallback) const;
     // The render tier of this name (case-insensitive), or null. No allocation.
     FTCORE_API const RenderTier* findTier(std::string_view name) const;
-    // True when the map of this name takes the tiers: there are tiers and its name contains one of tierMaps
-    // (case-insensitive). No allocation.
+    // True when the map of this name takes the tiers: there are tiers and its name is one of tierMaps exactly
+    // (case-insensitive; an editor play session's UEDPIE_<n>_ prefix is dropped first). No allocation.
     FTCORE_API bool tiersOnMap(std::string_view mapName) const;
 };
 

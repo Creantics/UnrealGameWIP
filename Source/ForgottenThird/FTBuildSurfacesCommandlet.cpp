@@ -11,6 +11,7 @@
 #include "FTImportMaterials.h"
 #include "FTJointCollection.h"
 #include "FTText.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
@@ -511,6 +512,8 @@ UMaterial* BuildMaster(TArrayView<UTexture* const> Defaults, UMaterialParameterC
 		Inputs->Roughness.Connect(2, Weather);
 		Inputs->AmbientOcclusion.Connect(3, Weather);
 	}
+	// The world wave's surface state over the lot (FTWorldWave.h); missing until FTBuildWaveMaterials has run.
+	FTWorldWave::AddState(TEXT("FTBuildSurfaces"), Material, 300, -600);
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();
@@ -1058,6 +1061,8 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 		Inputs->Roughness.Connect(2, Weather);
 		Inputs->AmbientOcclusion.Connect(3, Weather);
 	}
+	// The world wave's second-world state behind its front (grey, a stop down, damp, grimed; the lit rooms die).
+	FTWorldWave::AddState(TEXT("FTBuildSurfaces -Windows"), Material, 300, -900);
 	if (bR5 && bShopHoles)
 	{
 		Material->BlendMode = BLEND_Masked;

@@ -3,6 +3,7 @@
 #include "FTCellInstancer.h"
 #include "FTClockTower.h"
 #include "FTExploreCharacter.h"
+#include "FTLookSubsystem.h"
 #include "FTSceneLook.h"
 #include "FTWorldWave.h"
 #include "ForgottenThird.h"
@@ -10,7 +11,9 @@
 #include "Camera/PlayerCameraManager.h"
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
+#include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -37,8 +40,12 @@
 #include "Misc/Parse.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "SceneView.h"
+#include "UObject/UObjectIterator.h"
 #include "UnrealClient.h"
 #include "WorldCollision.h"
+
+#include "ftcore/LookTable.h"
+#include "ftcore/WaveLook.h"
 
 namespace
 {
@@ -315,15 +322,27 @@ void UFTWorldWaveSubsystem::Initialize(FSubsystemCollectionBase& InCollection)
 	{
 		ScalarParams[Next++] = FName(Name);
 	}
-	MpcLook = FTWorldWave::Load();
-	if (!MpcLook)
+	// The look's collection loads on the first wave (EnsureCollection), so a map that never runs one never loads it.
+#if !UE_BUILD_SHIPPING // the proof's overrides of the wave's definition (front and kept lights): not in a shipped game
+	for (int32 K = 0; K < ftcore::kWaveKeepLights; ++K)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no %s; the wave runs with no look (build it with FTBuildLookMaterials)."), FTWorldWave::CollectionPath);
+		double Keep[4];
+		if (ParseList(K == 0 ? TEXT("WorldWaveKeep0=") : TEXT("WorldWaveKeep1="), Keep, 4))
+		{
+			bDevKeep[K] = true;
+			DevKeep[K].centre = ToMetres(FVector(Keep[0], Keep[1], Keep[2]));
+			DevKeep[K].radius = static_cast<float>(Keep[3] * 0.01);
+		}
 	}
-	else if (!MpcLook->GetScalarParameterByName(ScalarParams[0]))
+	// -WorldWaveFront=A ink in water (the definition's default), B blot dissolve, Band the old refraction band.
+	FString FrontName;
+	if (FParse::Value(FCommandLine::Get(), TEXT("WorldWaveFront="), FrontName))
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s has no wave parameters yet (run FTBuildWaveMaterials, then FTBuildLookMaterials)."), FTWorldWave::CollectionPath);
+		DevFront = FrontName.Equals(TEXT("A"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::WaveFront::Ink)
+			: FrontName.Equals(TEXT("B"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::WaveFront::Blots)
+			: static_cast<int32>(ftcore::WaveFront::Band);
 	}
+#endif
 	Pawns.Reserve(16);
 	Fogs.Reserve(8);
 	// No tick bound yet: a map with no wave pays nothing (BindTick binds it for a boot switch or a wave).
@@ -357,6 +376,7 @@ void UFTWorldWaveSubsystem::Deinitialize()
 void UFTWorldWaveSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
+#if !UE_BUILD_SHIPPING // the proof's boot switches: not in a shipped game (its waves start from game code)
 	double Values[4] = {0.0, 0.0, 0.0, 0.0};
 	if (ParseList(TEXT("WorldWaveDress="), Values, 4))
 	{
@@ -379,6 +399,7 @@ void UFTWorldWaveSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 			bBootDress ? *FString::Printf(TEXT(", the dressing round %s within %.0f cm"), *BootDressAt.ToString(), BootDressRadius) : TEXT(""),
 			bBootWave ? *FString::Printf(TEXT(", a %s wave from %s at %.3f s on the wave clock"), bBootReverse ? TEXT("reverse") : TEXT("forward"), *BootWaveAt.ToString(), BootWaveTime) : TEXT(""));
 	}
+#endif
 }
 
 void UFTWorldWaveSubsystem::SetClock(double Seconds)
@@ -430,6 +451,24 @@ void UFTWorldWaveSubsystem::PostActorTick(UWorld* InWorld, ELevelTick, float)
 	}
 }
 
+void UFTWorldWaveSubsystem::EnsureCollection()
+{
+	if (bCollectionTried)
+	{
+		return;
+	}
+	bCollectionTried = true;
+	MpcLook = FTWorldWave::Load();
+	if (!MpcLook)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no %s; the wave runs with no look (build it with FTBuildLookMaterials)."), FTWorldWave::CollectionPath);
+	}
+	else if (!MpcLook->GetScalarParameterByName(ScalarParams[0]))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s has no wave parameters yet (run FTBuildWaveMaterials, then FTBuildLookMaterials)."), FTWorldWave::CollectionPath);
+	}
+}
+
 void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, bool bReverse)
 {
 	UWorld* World = GetWorld();
@@ -437,14 +476,23 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	{
 		return;
 	}
+	EnsureCollection();
 	if (bWave)
 	{
 		StopWave();
 	}
+	// The street wave's definition: ink in water (front A) unless it says otherwise.
 	ftcore::WorldWaveParams Wanted = ftcore::streetWaveParams();
 	Wanted.origin = ToMetres(Origin);
 	Wanted.startTime = StartTime;
 	Wanted.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
+#if !UE_BUILD_SHIPPING
+	if (DevFront >= 0) { Wanted.front = static_cast<ftcore::WaveFront>(DevFront); }
+	for (int32 K = 0; K < ftcore::kWaveKeepLights; ++K)
+	{
+		if (bDevKeep[K]) { Wanted.keep[K] = DevKeep[K]; }
+	}
+#endif
 	// A wave already set is replaced (Core's restart rule: from zero), after StopWave above has put its things back.
 	const ftcore::WorldWaveRefusal Refusal = ftcore::beginWorldWave(State, Wanted);
 	if (Refusal != ftcore::WorldWaveRefusal::None)
@@ -472,6 +520,39 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 			Entry.Written = FogComponent->FogDensity;
 		}
 	}
+	// The look it crosses to: the Unwritten's (the one second world the proof has), from the look the map has now.
+	bLookBlend = false;
+	Cover = bReverse ? 1.f : 0.f;
+	CoverShare = Cover;
+	CloudT = Cover;
+	SkyCover = CloudT >= 1.f ? 0.f : 1.f;
+	LastLookTime = -1.0;
+	bLookTimed = false;
+	LastLookLog = -1.0;
+	if (const UFTLookSubsystem* Looks = World->GetSubsystem<UFTLookSubsystem>())
+	{
+		if (const ftcore::SceneLook* Second = FTLook::Table().find("unwritten"))
+		{
+			LookFrom = Looks->GetLook();
+			LookTo = *Second;
+			LookStart = ftcore::waveSkyStart(LookFrom, LookTo);
+			LookOnActors = LookFrom;
+			bLookBlend = true;
+		}
+	}
+	bSkyRealTime = false;
+	for (TObjectIterator<USkyLightComponent> It; It; ++It)
+	{
+		if (It->GetWorld() == World && It->bRealTimeCapture)
+		{
+			bSkyRealTime = true;
+			break;
+		}
+	}
+	if (!bLookBlend)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no look subsystem or no \"unwritten\" look in looks.json; the sky stays as it is."));
+	}
 	GatherPawns(*World);
 	// Before the front moves everything is on the side beyond it: the first world for Forward, the second for Reverse.
 	for (FTracked& Item : Tracked)
@@ -487,6 +568,15 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	BindTick(true);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: a %s wave from %s (cm) at %.3f s on the wave clock (now %.3f); %d things tracked, %d fogs, %d leads."),
 		bReverse ? TEXT("reverse") : TEXT("forward"), *Origin.ToString(), StartTime, GetClock(), Tracked.Num(), Fogs.Num(), Pawns.Num());
+}
+
+ftcore::WaveClass UFTWorldWaveSubsystem::WhichWorldAt(const FVector& WorldCm) const
+{
+	if (!bWave)
+	{
+		return ftcore::WaveClass{};
+	}
+	return ftcore::classifyWorldWave(Frame, Params.origin, ToMetres(WorldCm));
 }
 
 void UFTWorldWaveSubsystem::StopWave()
@@ -514,6 +604,7 @@ void UFTWorldWaveSubsystem::StopWave()
 	}
 	if (UWorld* World = GetWorld())
 	{
+		RestoreLook(*World);
 		ClearCollection(*World);
 	}
 	if (bWas)
@@ -592,36 +683,30 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 			Tip = Project(ViewProjection, StreakFootCm + FVector(0.0, 0.0, FTWorldWave::StreakHeightCm));
 		}
 		const float Drawable = bView && Foot.Depth > 10.f && Tip.Depth > 10.f ? 1.f : 0.f;
-		Mpc->SetVectorParameterValue(VectorParams[0], FLinearColor(static_cast<float>(OriginCm.X), static_cast<float>(OriginCm.Y), static_cast<float>(OriginCm.Z), 0.f));
+		// Every wave constant from Core's state (WhichWorldAt answers from the same), so the pixels and gameplay agree.
+		const ftcore::WorldWaveShaderConstants C = ftcore::worldWaveShaderConstants(Params, Frame);
+		Mpc->SetVectorParameterValue(VectorParams[0], FLinearColor(C.originCm[0], C.originCm[1], C.originCm[2], C.front));
 		Mpc->SetVectorParameterValue(VectorParams[1], FLinearColor(Foot.U, Foot.V, Foot.Side, 1.f));
 		Mpc->SetVectorParameterValue(VectorParams[2], FLinearColor(Foot.U, Foot.V, Drawable, Foot.Depth));
 		Mpc->SetVectorParameterValue(VectorParams[3], FLinearColor(Tip.U, Tip.V, Drawable, Tip.Depth));
 		// The materials' band runs from the inner edge (r - w) to the tongues' reach (r + lead w): the collection's radius
 		// is the reach and its band the whole span, so the tear's tongues can run ahead of the outer edge the cues use.
-		const float Lead = Frame.radius > 0.f ? Params.tongueLead * Frame.bandWidth : 0.f;
-		Mpc->SetScalarParameterValue(ScalarParams[0], (Frame.radius + Lead) * 100.f);
-		Mpc->SetScalarParameterValue(ScalarParams[1], (Frame.bandWidth + Lead) * 100.f);
+		Mpc->SetScalarParameterValue(ScalarParams[0], C.reachCm);
+		Mpc->SetScalarParameterValue(ScalarParams[1], C.spanCm);
 		Mpc->SetScalarParameterValue(ScalarParams[2], Frame.preludeProgress);
-		Mpc->SetScalarParameterValue(ScalarParams[3], Frame.direction == ftcore::WaveDirection::Reverse ? 1.f : 0.f);
+		Mpc->SetScalarParameterValue(ScalarParams[3], C.reverse);
 		Mpc->SetScalarParameterValue(ScalarParams[4], Frame.cameraInside);
 		Mpc->SetScalarParameterValue(ScalarParams[5], static_cast<float>(FMath::Max(Time - Params.startTime, 0.0)));
+		Mpc->SetScalarParameterValue(ScalarParams[6], static_cast<float>(StreakFootCm.Z));
+		Mpc->SetVectorParameterValue(VectorParams[4], FLinearColor(C.keepCm[0][0], C.keepCm[0][1], C.keepCm[0][2], C.keepCm[0][3]));
+		Mpc->SetVectorParameterValue(VectorParams[5], FLinearColor(C.keepCm[1][0], C.keepCm[1][1], C.keepCm[1][2], C.keepCm[1][3]));
 	}
 
-	// The second world has no haze: the fog thins with the camera's share of it (the material whitens the sky alike).
-	const float NewShare = Frame.direction == ftcore::WaveDirection::Forward ? Frame.cameraInside : 1.f - Frame.cameraInside;
-	for (FFog& Fog : Fogs)
-	{
-		UExponentialHeightFogComponent* FogComponent = Fog.Component.Get();
-		const float Thinned = Fog.Density * (1.f - NewShare);
-		if (FogComponent && FMath::Abs(Thinned - Fog.Written) > 1e-6f)
-		{
-			FogComponent->SetFogDensity(Thinned);
-			Fog.Written = Thinned;
-		}
-	}
+	// The sky, light and air (and the post-process's gains) in step with the view's cover.
+	const APawn* PlayerPawn = Player ? Player->GetPawn() : nullptr;
+	StepLook(World, Eye, ViewProjection, bView, Time, PlayerPawn);
 
 	// The tagged things: shown, solid and cut as the front has them.
-	const APawn* PlayerPawn = Player ? Player->GetPawn() : nullptr;
 	bool bThingsMoving = false;
 	for (FTracked& Item : Tracked)
 	{
@@ -671,7 +756,10 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 		SettledAt = Time;
 	}
 	const double Rest = static_cast<double>(Params.insideRamp) + static_cast<double>(Params.collisionDelay);
-	if (SettledAt >= 0.0 && Time >= SettledAt + Rest && !bThingsMoving)
+	const bool bCloudMoving = (Cover >= ftcore::kWaveCloudFull && CloudT < 1.f) || (Cover <= ftcore::kWaveCloudNone && CloudT > 0.f);
+	const bool bSkyCoverMoving = SkyCover != (CloudT >= 1.f ? 0.f : 1.f);
+	const bool bSkyMoving = bLookBlend && (FMath::Abs(Cover - CoverShare) > 0.005f || bCloudMoving || bSkyCoverMoving);
+	if (SettledAt >= 0.0 && Time >= SettledAt + Rest && !bThingsMoving && !bSkyMoving)
 	{
 		bStepping = false;
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: settled at %.3f s; the step stops until the next wave."), Time - Params.startTime);
@@ -701,18 +789,165 @@ void UFTWorldWaveSubsystem::EnsureVolume(UWorld& World)
 	{
 		World.AddPostProcessVolume(Made);
 	}
-	const FString InkPath = FString(FTWorldWave::InkMaterialPath) + TEXT(".") + FPackageName::GetShortName(FTWorldWave::InkMaterialPath);
-	if (UMaterialInterface* Ink = LoadObject<UMaterialInterface>(nullptr, *InkPath, nullptr, LOAD_NoWarn | LOAD_Quiet))
+	const FString PostPath = FString(FTWorldWave::PostMaterialPath) + TEXT(".") + FPackageName::GetShortName(FTWorldWave::PostMaterialPath);
+	if (UMaterialInterface* Post = LoadObject<UMaterialInterface>(nullptr, *PostPath, nullptr, LOAD_NoWarn | LOAD_Quiet))
 	{
-		Made->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, Ink));
+		Made->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, Post));
 	}
 	else
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no %s (run FTBuildWaveMaterials); the wave runs without its look."), FTWorldWave::InkMaterialPath);
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no %s (run FTBuildWaveMaterials); the wave runs without its post-process."), FTWorldWave::PostMaterialPath);
 	}
 	Made->bEnabled = false;
 	Volume = Made;
 	SetExposureHold(bExposureHeld);
+}
+
+void UFTWorldWaveSubsystem::StepLook(UWorld& World, const FVector& Eye, const FMatrix& ViewProjection, bool bView, double Time,
+	const APawn* PlayerPawn)
+{
+	UMaterialParameterCollectionInstance* Mpc = MpcLook ? World.GetParameterCollectionInstance(MpcLook) : nullptr;
+	if (!bLookBlend)
+	{
+		if (Mpc)
+		{
+			Mpc->SetVectorParameterValue(VectorParams[6], FLinearColor(1.f, 1.f, 0.f, 0.f));
+		}
+		return;
+	}
+	// How much of the view the second world has: a 12 x 7 grid of rays from the eye, each to what it meets (or the sky).
+	if (bView)
+	{
+		constexpr int32 kCols = 12;
+		constexpr int32 kRows = 7;
+		constexpr double kTraceCm = 100000.0;
+		ftcore::WaveViewSample Samples[kCols * kRows];
+		const FMatrix InvViewProjection = ViewProjection.Inverse();
+		const FIntRect Rect(0, 0, kCols, kRows);
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(WorldWaveCover), false);
+		if (PlayerPawn)
+		{
+			Query.AddIgnoredActor(PlayerPawn);
+		}
+		int32 Count = 0;
+		for (int32 Row = 0; Row < kRows; ++Row)
+		{
+			for (int32 Col = 0; Col < kCols; ++Col)
+			{
+				FVector RayFrom;
+				FVector RayDir;
+				FSceneView::DeprojectScreenToWorld(FVector2D(Col + 0.5, Row + 0.5), Rect, InvViewProjection, RayFrom, RayDir);
+				ftcore::WaveViewSample& Sample = Samples[Count++];
+				FHitResult Hit;
+				if (World.LineTraceSingleByChannel(Hit, Eye, Eye + RayDir * kTraceCm, ECC_Visibility, Query))
+				{
+					Sample.point = ToMetres(Hit.ImpactPoint);
+					Sample.hit = true;
+				}
+				else
+				{
+					Sample.dir = {static_cast<float>(RayDir.X), static_cast<float>(RayDir.Y), static_cast<float>(RayDir.Z)};
+					Sample.hit = false;
+				}
+			}
+		}
+		CoverShare = ftcore::worldWaveViewShare(Frame, Params.origin, ToMetres(Eye), Samples, Count);
+	}
+	// The cover follows the share at a limited rate, on the wave clock (a held clock, as in a still's settle, steps on the
+	// world's own frames so the sky still reaches its share).
+	double Dt = bLookTimed ? Time - LastLookTime : 0.0;
+	if (Dt <= 0.0 && bLookTimed)
+	{
+		Dt = World.GetDeltaSeconds();
+	}
+	LastLookTime = Time;
+	bLookTimed = true;
+	constexpr float kCoverRate = 0.8f;
+	Cover = ftcore::stepWaveCover(Cover, CoverShare, static_cast<float>(FMath::Clamp(Dt, 0.0, 0.25)), kCoverRate);
+	// The cloud layer's shape changes only once the whole view is one world, behind the post-process's sky (a layer
+	// reshaped every frame never settles its reconstruction and shows a dot pattern).
+	constexpr float kCloudRate = 1.f;
+	CloudT = ftcore::stepWaveCloud(CloudT, Cover, static_cast<float>(FMath::Clamp(Dt, 0.0, 0.25)), kCloudRate);
+	// The post-process's overcast hides the layer until it has changed, then hands the sky to it (0.75 s).
+	constexpr float kSkyCoverRate = 1.333f;
+	SkyCover = ftcore::stepWaveCover(SkyCover, CloudT >= 1.f ? 0.f : 1.f, static_cast<float>(FMath::Clamp(Dt, 0.0, 0.25)), kSkyCoverRate);
+
+	const ftcore::SceneLook Now = ftcore::waveSkyLook(LookStart, LookTo, Cover, CloudT);
+	// A real-time capture dims with the sun already: its intensity is lifted by the sun lost, so the fill lands where the
+	// look says (ftcore::waveCaptureSkyLight).
+	ftcore::SceneLook Written = Now;
+	if (bSkyRealTime)
+	{
+		Written.skyLight = ftcore::waveCaptureSkyLight(LookFrom, Now);
+	}
+	if (Written != LookOnActors)
+	{
+		if (FTScene::ApplyLook(&World, Written, LookOnActors) >= 0)
+		{
+			// The changed world's cover shades the ground; the map's own flag is kept to give back (RestoreLook).
+			if ((Written.cloudCover > 0.f) != (LookOnActors.cloudCover > 0.f))
+			{
+				const int32 Had = FTScene::SetSunCloudShadows(&World, Written.cloudCover > 0.f);
+				if (SunCloudShadowsMap < 0)
+				{
+					SunCloudShadowsMap = Had;
+				}
+			}
+			LookOnActors = Written;
+		}
+		FTScene::ApplyLookParameters(&World, Now);
+	}
+	if (Mpc)
+	{
+		const ftcore::WaveGains Gains = ftcore::waveGains(LookFrom, Now);
+		Mpc->SetVectorParameterValue(VectorParams[6], FLinearColor(Gains.outside, Gains.inside, Cover, SkyCover));
+		// Twice a second of the wave: the cover and the gains, so a take's brightness can be read against them.
+		const double Since = Time - Params.startTime;
+		if (Since >= 0.0 && (LastLookLog < 0.0 || Since >= LastLookLog + 0.5))
+		{
+			LastLookLog = Since;
+			// The lights as the components have them (the look is not their only writer: a still's day shade sets the sky's).
+			float SunLux = -1.f, SkyIntensity = -1.f;
+			for (TObjectIterator<UDirectionalLightComponent> It; It; ++It)
+			{
+				if (It->GetWorld() == &World && It->IsVisible() && It->bAtmosphereSunLight)
+				{
+					SunLux = It->Intensity;
+					break;
+				}
+			}
+			for (TObjectIterator<USkyLightComponent> It; It; ++It)
+			{
+				if (It->GetWorld() == &World && It->IsVisible())
+				{
+					SkyIntensity = It->Intensity;
+					break;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: look at %.2f s: cover %.3f (share %.3f), key %.2f of %.2f, gains outside %.2f inside %.2f; clouds %.2f, post sky %.2f; sun %.3f lux, sky light %.3f."),
+				Since, Cover, CoverShare, ftcore::waveKeyLight(Now), ftcore::waveKeyLight(LookFrom), Gains.outside, Gains.inside, CloudT, SkyCover,
+				SunLux, SkyIntensity);
+		}
+	}
+}
+
+void UFTWorldWaveSubsystem::RestoreLook(UWorld& World)
+{
+	if (!bLookBlend)
+	{
+		return;
+	}
+	bLookBlend = false;
+	if (LookOnActors != LookFrom && FTScene::ApplyLook(&World, LookFrom, LookOnActors) >= 0)
+	{
+		LookOnActors = LookFrom;
+	}
+	if (SunCloudShadowsMap >= 0)
+	{
+		FTScene::SetSunCloudShadows(&World, SunCloudShadowsMap != 0);
+		SunCloudShadowsMap = -1;
+	}
+	FTScene::ApplyLookParameters(&World, LookFrom);
 }
 
 void UFTWorldWaveSubsystem::SetExposureHold(bool bHold)
