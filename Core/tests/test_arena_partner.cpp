@@ -180,7 +180,7 @@ struct Logged {
 };
 
 // A host: the bodies stay where they are put unless `step` (arenaStep moves the player and the enemies) or `walk`
-// (the ally walks toward ArenaOutput::ally.goal at the lead fighter's moveSpeed, off the living enemies, inside the
+// (the ally walks toward ArenaOutput::ally.goal at its own kit's moveSpeed, off the living enemies, inside the
 // ring). On TookOver it swaps the player's and the ally's bodies, as the game's host does.
 struct PRig {
     ArenaDef def;
@@ -197,6 +197,7 @@ struct PRig {
     bool autopilot = false;
     bool pairOnParry = false; // the autopilot's partner presses the pair on the tick after each parry, as a host does
     bool pairDue = false;
+    bool ownPartnerKit = false; // per-lead kits: the test set def.partnerKit itself (else it is the lead's, as before)
 
     explicit PRig(const ArenaFighter& fighter = ruleFighter()) {
         def.fighter = fighter;
@@ -209,6 +210,7 @@ struct PRig {
     }
     // A custom fight: the bodies are set first.
     void go(bool partner, int allyHp = 100, std::uint32_t seed = 1, Vec2 facing = Vec2{1.f, 0.f}) {
+        if (!ownPartnerKit) def.partnerKit = def.fighter;
         fight.setAlly(allyHp, 0.4f);
         if (partner) fight.setPartner(&brain, &tuning);
         fight.begin(def, ring, bodies.player, facing, seed);
@@ -216,6 +218,7 @@ struct PRig {
     // A shipped fight: its own ring and starts, the ally 1.5 m to the player's side.
     void goShipped(bool partner, std::uint32_t seed) {
         ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+        if (!ownPartnerKit) def.partnerKit = def.fighter;
         fight.setAlly(def.fighter.hp, 0.4f);
         if (partner) fight.setPartner(&brain, &tuning);
         fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, seed);
@@ -252,7 +255,7 @@ struct PRig {
     void walkAlly() {
         const Vec2 d = sub(out->ally.goal, bodies.ally);
         const float far = length(d);
-        const float most = def.fighter.moveSpeed * kDt;
+        const float most = fight.def().partnerKit.moveSpeed * kDt; // the ally's own kit (per-lead kits)
         if (far > most) bodies.ally = Vec2{bodies.ally.x + d.x * most / far, bodies.ally.y + d.y * most / far};
         else bodies.ally = out->ally.goal;
         for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
@@ -1052,8 +1055,10 @@ TEST_CASE("arena partner: the player falling with the partner up takes its body;
         REQUIRE(roseAt >= 0);
         const Logged rose = r.log[static_cast<std::size_t>(roseAt)];
         CHECK(rose.t - downed.t == doctest::Approx(r.tuning.downSeconds).epsilon(0.002));
-        CHECK(rose.e.amount == 20); // 25% of its 80
-        CHECK(r.fight.allyHp() == 20);
+        // 25% of its 100: the fallen body is the first lead's, whose max went with it (per-lead kits trade the two
+        // maxes on a takeover; before, the partner slot kept setAlly's 80 and it rose at 20)
+        CHECK(rose.e.amount == 25);
+        CHECK(r.fight.allyHp() == 25);
         CHECK(r.fight.stats().partnerRises == 1);
         CHECK(r.fight.phase() == ArenaPhase::Fighting);
         r.bodies.player = Vec2{-1.f, 0.f}; // the bite reaches both now
@@ -2766,5 +2771,492 @@ TEST_CASE("arena partner: rule 17 off, the shipped group fight's intents and sta
         const GroupPin p = groupFightPin(w.order, w.camera);
         CHECK(p.intents == w.intents);
         CHECK(p.state == w.state);
+    }
+}
+
+// ---- per-lead kits (ArenaDef::partnerKit) ----
+
+namespace {
+// Lead B's own kit beside the rule kit (lead A): two slower lights of 5 and 4 hp with a longer reach, a gun's
+// cylinder, more hp, poise and hitstun, a slower turn.
+ArenaFighter kitB() {
+    ArenaFighter f = ruleFighter();
+    f.weapon = ArenaWeapon::Guns;
+    f.hp = 120;
+    f.poise = 44.f;
+    f.hitstun = 0.7f;
+    f.turnRate = 9.f;
+    f.lightCount = 2;
+    f.light[0] = swing(0.3f, 0.1f, 0.5f, 2.6f, 5);
+    f.light[1] = swing(0.3f, 0.1f, 0.5f, 2.6f, 4);
+    f.rounds = 6;
+    f.reload = 1.f;
+    return f;
+}
+
+// A 20 s partner fight against one dummy, the ally beside it: every blow the partner began and every Hit it landed.
+struct KitRun {
+    std::vector<float> blowLengths; // the longest stateTime each blow reached (one tick short of its total)
+    std::vector<float> hitAt;       // stateTime at the tick each partner Hit landed
+    std::vector<int> hitAmount;
+    std::vector<float> hitReach;    // ally centre to the dummy's centre at each Hit
+    ArenaStats stats;
+    float longestStill = 0.f;       // the longest run of ticks the ally neither moved nor attacked nor guarded
+};
+KitRun kitRun(const ArenaFighter& partnerKit) {
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = partnerKit;
+    r.def.fighter.hp = 100000; // the lead never falls: no takeover
+    r.tuning.budgetAllowanceSeconds = 10.f;
+    REQUIRE(validPartnerTuning(r.tuning));
+    r.enemy(dummyKind(), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{-1.5f, 0.f};
+    r.bodies.ally = Vec2{1.6f, 0.f};
+    r.go(true, 1000);
+    r.walk = true;
+    KitRun k;
+    bool was = false;
+    std::uint8_t blow = 0;
+    float top = 0.f, still = 0.f;
+    Vec2 at = r.bodies.ally;
+    for (int t = 0; t < 20 * 60; ++t) {
+        const std::size_t from = r.log.size();
+        r.tick();
+        const ArenaAllyOut& a = r.out->ally;
+        if (was && (!a.attacking || a.blow != blow || a.stateTime < top)) {
+            k.blowLengths.push_back(top);
+            top = 0.f;
+        }
+        if (a.attacking) {
+            blow = a.blow;
+            top = std::max(top, a.stateTime);
+        }
+        was = a.attacking;
+        for (std::size_t i = from; i < r.log.size(); ++i)
+            if (allyHit(r.log[i].e)) {
+                k.hitAt.push_back(a.stateTime);
+                k.hitAmount.push_back(r.log[i].e.amount);
+                k.hitReach.push_back(length(sub(r.bodies.ally, r.bodies.enemies[0])));
+            }
+        const bool moved = length(sub(r.bodies.ally, at)) > 1e-4f;
+        at = r.bodies.ally;
+        still = (moved || a.attacking || a.guarding) ? 0.f : still + kDt;
+        k.longestStill = std::max(k.longestStill, still);
+    }
+    k.stats = r.fight.stats();
+    return k;
+}
+} // namespace
+
+TEST_CASE("arena partner: per-lead kits: a switch hands the player the other lead's kit and max hp; restart and begin put them back") {
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = kitB();
+    r.enemy(dummyKind(), Vec2{1.2f, 0.f});
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.ally = Vec2{-2.f, 1.f};
+    r.go(true, 120);
+    r.tick();
+    CHECK(r.fight.def().fighter.lightCount == 3);
+    CHECK(r.fight.roundsMax() == 0);
+    REQUIRE(r.fight.hostHurt(40) == 40); // lead A's body at 60 of 100, lead B's at 120 of 120
+    REQUIRE(r.fight.switchLeads());
+    // The player drives lead B: its moveset, poise, cylinder and max hp; the partner (lead A) its own.
+    CHECK(r.fight.def().fighter.lightCount == 2);
+    CHECK(r.fight.def().fighter.light[0].damage == 5);
+    CHECK(r.fight.def().fighter.weapon == ArenaWeapon::Guns);
+    CHECK(r.fight.def().partnerKit.light[0].damage == 10);
+    CHECK(r.fight.roundsMax() == 6);
+    CHECK(r.fight.rounds() == 6);
+    CHECK(r.fight.def().fighter.poise == doctest::Approx(44.f));
+    CHECK(r.fight.hp() == 120);
+    CHECK(r.fight.allyHp() == 60);
+    CHECK(r.fight.allyMaxHp() == 100); // lead A's max goes with it: nothing clipped
+    CHECK(r.fight.def().partnerKit.hp == 100);
+    CHECK(r.fight.def().fighter.hp == 120);
+    std::swap(r.bodies.player, r.bodies.ally);
+    // The new body's light is lead B's: 5 hp on the dummy beside it.
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.tick();
+    r.in.light = true;
+    std::size_t from = r.log.size();
+    for (int k = 0; k < 40; ++k) r.tick();
+    int dealt = -1;
+    for (std::size_t i = from; i < r.log.size(); ++i)
+        if (leadHit(r.log[i].e) && dealt < 0) dealt = r.log[i].e.amount;
+    CHECK(dealt == 5);
+    // Switched back: lead A's kit and both hp as they were (two switches clip neither).
+    REQUIRE(r.fight.switchLeads());
+    std::swap(r.bodies.player, r.bodies.ally);
+    CHECK(r.fight.def().fighter.lightCount == 3);
+    CHECK(r.fight.roundsMax() == 0);
+    CHECK(r.fight.hp() == 60);
+    CHECK(r.fight.allyHp() == 120);
+    CHECK(r.fight.allyMaxHp() == 120);
+    // Switched, then restart: each lead its own kit and max again.
+    REQUIRE(r.fight.switchLeads());
+    r.fight.restart();
+    CHECK_FALSE(r.fight.swapped());
+    CHECK(r.fight.def().fighter.lightCount == 3);
+    CHECK(r.fight.def().fighter.hp == 100);
+    CHECK(r.fight.def().partnerKit.lightCount == 2);
+    CHECK(r.fight.hp() == 100);
+    CHECK(r.fight.allyMaxHp() == 120);
+    CHECK(r.fight.allyHp() == 120);
+    // Switched, then a new begin (the host's setAlly first): the given kits and the host's ally max.
+    REQUIRE(r.fight.switchLeads());
+    r.fight.begin(r.def, r.ring, r.bodies.player, Vec2{1.f, 0.f}, 1);
+    CHECK(r.fight.def().fighter.lightCount == 3);
+    CHECK(r.fight.allyMaxHp() == 120);
+    CHECK(r.fight.hp() == 100);
+    REQUIRE(r.fight.switchLeads());
+    r.fight.setAlly(150, 0.4f);
+    r.fight.begin(r.def, r.ring, r.bodies.player, Vec2{1.f, 0.f}, 1);
+    CHECK(r.fight.allyMaxHp() == 150);
+    CHECK(r.fight.def().fighter.hp == 100);
+}
+
+TEST_CASE("arena partner: per-lead kits: a takeover swaps the kits too") {
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = kitB();
+    r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{1.f, 0.f};   // within the bite
+    r.bodies.ally = Vec2{0.f, 3.5f};    // out of it
+    r.go(true, 120, 1, Vec2{-1.f, 0.f});
+    r.run(2.f);
+    REQUIRE(r.fight.stats().takeovers == 1);
+    CHECK(r.fight.def().fighter.lightCount == 2);
+    CHECK(r.fight.def().partnerKit.lightCount == 3);
+    CHECK(r.fight.roundsMax() == 6);
+    CHECK(r.fight.allyMaxHp() == 100);
+    CHECK(r.fight.hp() == 120);
+}
+
+TEST_CASE("arena partner: per-lead kits: the ally's timings, reach and damage are its own kit's") {
+    const KitRun a = kitRun(ruleFighter()); // the lead's own kit, as before
+    const KitRun b = kitRun(kitB());
+    REQUIRE(a.hitAmount.size() >= 3);
+    REQUIRE(b.hitAmount.size() >= 3);
+    // Damage: lead A's lights are 10, 11 and 12 (partnerBlowDamage against lead A's 10: 10, 11 or 12 less the over
+    // part's half); lead B's are 5 and 4, under rule 7's 6, so whole.
+    for (int d : a.hitAmount) CHECK(d >= 8);
+    for (int d : b.hitAmount) CHECK((d == 5 || d == 4));
+    // Timings: lead A's blows run 0.6 s and land 0.2 s in; lead B's run 0.9 s and land 0.3 s in.
+    for (float l : a.blowLengths) CHECK(l <= 0.6f + 1e-4f);
+    int whole = 0;
+    for (float l : b.blowLengths) {
+        CHECK(l <= 0.9f + 1e-4f);
+        whole += l > 0.85f ? 1 : 0;
+    }
+    CHECK(whole >= 2);
+    for (float t : a.hitAt) CHECK(t <= 0.3f + 1e-4f);
+    for (float t : b.hitAt) CHECK((t >= 0.3f - 1e-4f && t <= 0.4f + kDt + 1e-4f));
+    // Reach: every Hit within the kit's range plus the dummy's radius.
+    for (float d : b.hitReach) CHECK(d <= 2.6f + 0.45f + 1e-3f);
+    CHECK(b.stats.partnerNoKitSeconds == 0.f);
+}
+
+TEST_CASE("arena partner: per-lead kits: a guns or magic partner's blows are its kit's lights, so its flight comes from its kit") {
+    // The host gives a partner Hit its tracer's or bolt's flight from the clip its kit plays for that blow (the
+    // Hit's move is the blow's index into the partner's own lights). A guns kit's lights are kicks (no flight; its
+    // shot is the player's aimed light only); a magic kit's are casts (a bolt's flight); the lead's gauntlets strike.
+    // The Hit's move counts the string's blows; the host wraps it at the kit's chain (FTArenaRunner, as allyLight).
+    ArenaFighter guns = kitB();
+    ArenaFighter magic = kitB();
+    magic.weapon = ArenaWeapon::Magic;
+    for (const ArenaFighter* kit : {&guns, &magic}) {
+        PRig r;
+        r.ownPartnerKit = true;
+        r.def.fighter.weapon = ArenaWeapon::Gauntlets;
+        r.def.partnerKit = *kit;
+        r.def.fighter.hp = 100000;
+        r.tuning.budgetAllowanceSeconds = 10.f;
+        r.enemy(dummyKind(), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{-1.5f, 0.f};
+        r.bodies.ally = Vec2{1.6f, 0.f};
+        r.go(true, 1000);
+        r.walk = true;
+        r.run(10.f);
+        int hits = 0;
+        for (const Logged& l : r.log) {
+            if (!allyHit(l.e)) continue;
+            ++hits;
+            const auto m = static_cast<std::uint8_t>(l.e.move % kit->lightCount);
+            const FightClip clip = arenaPlayerStrike(r.fight.def().partnerKit, m);
+            CHECK(clip == (kit->weapon == ArenaWeapon::Magic ? FightClip::Cast
+                                                             : (m % 2 == 0 ? FightClip::KickLeft : FightClip::KickRight)));
+            CHECK(arenaPlayerStrike(r.fight.def().fighter, m) != clip); // the lead's kit would read it wrong
+        }
+        CHECK(hits >= 3);
+    }
+}
+
+TEST_CASE("arena partner: per-lead kits: a partner with no attacks (no kit) starts no blow and only stands or walks") {
+    ArenaFighter none = kitB();
+    none.weapon = ArenaWeapon::None;
+    none.attacks = false;
+    const KitRun k = kitRun(none);
+    CHECK(k.stats.partnerStrings == 0);
+    CHECK(k.stats.partnerBlows == 0);
+    CHECK(k.stats.partnerDamage == 0);
+    CHECK(k.hitAmount.empty());
+    CHECK(k.stats.partnerNoKitRefused == 0); // its budget reads spent: the brain never asks
+    CHECK(k.stats.partnerNoKitSeconds == doctest::Approx(20.f).epsilon(0.01));
+    MESSAGE("no kit: 20 s by a dummy, strings " << k.stats.partnerStrings << ", guards " << k.stats.partnerGuards
+                                                << ", longest stand-still " << k.longestStill << " s");
+}
+
+TEST_CASE("arena partner: per-lead kits: the host's setAlly while swapped, then restart, gives each lead its own max") {
+    for (const bool out : {true, false}) {
+        CAPTURE(out);
+        PRig r;
+        r.ownPartnerKit = true;
+        r.def.partnerKit = kitB();
+        r.enemy(dummyKind(), Vec2{20.f, 0.f});
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.ally = Vec2{-2.f, 1.f};
+        r.go(true, 120);
+        r.tick();
+        REQUIRE(r.fight.switchLeads());
+        if (out) { // the host puts the partner out (as Lone), then restarts
+            r.fight.setPartner(nullptr, nullptr);
+            r.fight.setAlly(0, 0.4f);
+        } else { // the host brings it in again at its own kit's max (as the runner: partnerKit.hp, the body's)
+            r.fight.setAlly(r.fight.def().partnerKit.hp, 0.4f);
+            CHECK(r.fight.allyMaxHp() == 100);
+        }
+        r.fight.restart();
+        CHECK_FALSE(r.fight.swapped());
+        CHECK(r.fight.def().fighter.hp == 100);
+        CHECK(r.fight.hp() == 100);
+        CHECK(r.fight.def().fighter.lightCount == 3);
+        CHECK(r.fight.allyMaxHp() == (out ? 0 : 120));
+    }
+}
+
+// The user's ruling: a party-only lead (the Third) is never playable. The key is ArenaFighter::playable, not an
+// empty kit: a party-only lead may fight and is still refused; a playable lead with no attacks is not.
+namespace {
+std::uint64_t switchStateHash(const PRig& r) {
+    StateHash h;
+    const ArenaOutput& o = r.fight.output();
+    h.add(o.player.velocity.x).add(o.player.velocity.y).add(o.player.facing.x).add(o.player.facing.y).add(r.fight.hp());
+    h.add(static_cast<std::uint8_t>(o.player.action));
+    h.add(r.fight.allyPos().x).add(r.fight.allyPos().y).add(r.fight.swapped());
+    h.add(static_cast<std::uint8_t>(r.fight.def().fighter.weapon)).add(r.fight.def().fighter.playable);
+    h.add(static_cast<std::uint8_t>(r.fight.def().partnerKit.weapon)).add(r.fight.def().partnerKit.playable);
+    h.add(r.fight.def().fighter.hp).add(r.fight.def().partnerKit.hp).add(r.fight.stats().leadSwitches);
+    h.add(r.fight.stats().takeovers).add(r.fight.stats().partnerSwaps).add(r.brain.hash());
+    return h.value;
+}
+} // namespace
+
+TEST_CASE("arena partner: per-lead kits: a switch to a partner that is not playable is refused, named and counted") {
+    ArenaFighter party = kitB();
+    party.weapon = ArenaWeapon::None;
+    party.attacks = false;
+    party.playable = false;
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = party;
+    r.enemy(dummyKind(), Vec2{1.2f, 0.f});
+    r.bodies.player = Vec2{-2.f, 1.f};
+    r.bodies.ally = Vec2{0.f, 0.f};
+    r.go(true, 120);
+    r.tick();
+    CHECK(r.fight.switchRefusal() == ArenaSwitchRefusal::Ok); // none asked yet
+    const std::uint64_t before = switchStateHash(r);
+    CHECK_FALSE(r.fight.switchLeads());
+    CHECK(r.fight.switchRefusal() == ArenaSwitchRefusal::NotPlayable);
+    CHECK(r.fight.stats().leadSwitchesNotPlayable == 1);
+    CHECK(switchStateHash(r) == before); // nothing else changed
+    CHECK_FALSE(r.fight.swapped());
+    CHECK(r.fight.def().fighter.playable);
+    CHECK_FALSE(r.fight.def().partnerKit.playable);
+    CHECK_FALSE(r.fight.switchLeads()); // each press counted
+    CHECK(r.fight.stats().leadSwitchesNotPlayable == 2);
+    SUBCASE("a party-only lead that fights is refused too") {
+        PRig q;
+        q.ownPartnerKit = true;
+        q.def.partnerKit = kitB();
+        q.def.partnerKit.playable = false;
+        q.enemy(dummyKind(), Vec2{1.2f, 0.f});
+        q.bodies.player = Vec2{-2.f, 1.f};
+        q.bodies.ally = Vec2{0.f, 0.f};
+        q.go(true, 120);
+        q.tick();
+        CHECK_FALSE(q.fight.switchLeads());
+        CHECK(q.fight.switchRefusal() == ArenaSwitchRefusal::NotPlayable);
+    }
+    SUBCASE("a playable lead with no attacks is not refused") {
+        PRig q;
+        q.ownPartnerKit = true;
+        q.def.partnerKit = party;
+        q.def.partnerKit.playable = true;
+        q.enemy(dummyKind(), Vec2{1.2f, 0.f});
+        q.bodies.player = Vec2{-2.f, 1.f};
+        q.bodies.ally = Vec2{0.f, 0.f};
+        q.go(true, 120);
+        q.tick();
+        CHECK(q.fight.switchLeads());
+        CHECK(q.fight.switchRefusal() == ArenaSwitchRefusal::Ok);
+        CHECK(q.fight.stats().leadSwitchesNotPlayable == 0);
+    }
+    SUBCASE("the other reasons are named, and restart clears the last") {
+        r.fight.restart();
+        CHECK(r.fight.switchRefusal() == ArenaSwitchRefusal::Ok);
+        PRig q;
+        q.enemy(dummyKind(), Vec2{1.2f, 0.f});
+        CHECK_FALSE(q.fight.switchLeads()); // not begun
+        CHECK(q.fight.switchRefusal() == ArenaSwitchRefusal::NotFighting);
+        q.go(false);
+        q.tick();
+        CHECK_FALSE(q.fight.switchLeads());
+        CHECK(q.fight.switchRefusal() == ArenaSwitchRefusal::NoPartner);
+    }
+}
+
+TEST_CASE("arena partner: per-lead kits: a fall with only a non-playable partner standing is a Defeat, no takeover") {
+    // Replaces the pin "a partner kit with no attacks taken over by a switch or a takeover (today)": handing the
+    // player the party-only lead's body was a bug against the user's ruling.
+    for (const bool playable : {false, true}) {
+        CAPTURE(playable);
+        PRig r;
+        r.ownPartnerKit = true;
+        r.def.partnerKit = kitB();
+        r.def.partnerKit.weapon = ArenaWeapon::None;
+        r.def.partnerKit.attacks = false;
+        r.def.partnerKit.playable = playable;
+        r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{1.f, 0.f};
+        r.bodies.ally = Vec2{0.f, 3.5f};
+        r.go(true, 120, 1, Vec2{-1.f, 0.f});
+        r.run(2.f);
+        if (playable) { // the takeover as before: the player drives the standing lead's kit
+            CHECK(r.fight.stats().takeovers == 1);
+            CHECK(r.fight.phase() == ArenaPhase::Fighting);
+            CHECK(r.fight.swapped());
+            CHECK_FALSE(r.fight.def().fighter.attacks);
+        } else {
+            CHECK(r.fight.stats().takeovers == 0);
+            CHECK(r.fight.phase() == ArenaPhase::Defeat);
+            CHECK_FALSE(r.fight.swapped());
+            CHECK(r.fight.def().fighter.playable); // the player kept its own kit
+            CHECK(r.fight.allyHp() > 0);           // the party member still stands
+        }
+    }
+}
+
+TEST_CASE("arena partner: per-lead kits: the shipped leads' playable flags") {
+    const ArenaTable t = shippedTable();
+    CHECK(t.fighter("devin").playable);
+    CHECK(t.fighter("duy").playable);
+    CHECK_FALSE(t.fighter("third").playable);
+    CHECK(t.fallback.fighter.playable);
+}
+
+TEST_CASE("arena partner: per-lead kits: a no-kit partner under attack (report)") {
+    ArenaFighter none = kitB();
+    none.weapon = ArenaWeapon::None;
+    none.attacks = false;
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = none;
+    r.def.fighter.hp = 100000;
+    r.enemy(biterKind(5, 3.f, 1.5f), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{-12.f, 0.f}; // far: the biter's only target in reach is the ally
+    r.bodies.ally = Vec2{1.2f, 0.f};
+    r.go(true, 1000);
+    r.walk = true;
+    r.run(20.f);
+    const ArenaStats& s = r.fight.stats();
+    MESSAGE("no-kit partner bitten at for 20 s: guards " << s.partnerGuards << ", blocked "
+                                                         << r.count(ArenaEventType::AllyBlocked) << ", hurt "
+                                                         << r.count(ArenaEventType::AllyHit) << ", blows "
+                                                         << s.partnerBlows << ", ally hp " << r.fight.allyHp());
+    CHECK(s.partnerBlows == 0);
+}
+
+TEST_CASE("arena partner: per-lead kits: the shipped table gives every fight the same kit twice, so old hashes hold") {
+    const ArenaTable t = shippedTable();
+    auto same = [](const ArenaFighter& x, const ArenaFighter& y) {
+        return x.hp == y.hp && x.lightCount == y.lightCount && x.light[0].damage == y.light[0].damage &&
+               x.light[0].startup == y.light[0].startup && x.turnRate == y.turnRate && x.weapon == y.weapon;
+    };
+    CHECK(same(t.fallback.fighter, t.fallback.partnerKit));
+    for (const ArenaFightEntry& e : t.entries) CHECK(same(e.def.fighter, e.def.partnerKit));
+    const ArenaDef d = defaultArenaDef();
+    CHECK(same(d.fighter, d.partnerKit));
+    // The pins of the shipped group fight above ("rule 17 off ... main's") run on this: unchanged.
+}
+
+TEST_CASE("arena partner: per-lead kits against each shipped boss and the group fight (report)") {
+    // As the two reports above (the bosses 60 s with no pair; the group 20 s, camera not given, with the pair on
+    // each parry, both orders), per lead and partner kit: default + default reproduces those reports to the bit.
+    const ArenaTable t = shippedTable();
+    struct Pair {
+        const char* lead;
+        const char* partner;
+    };
+    const Pair pairs[] = {{"default", "default"}, {"devin", "duy"}, {"duy", "devin"}, {"devin", "third"}, {"duy", "third"}};
+    const char* acts[] = {"wait", "moveTo", "attack", "guard", "stepBack"};
+    for (const Pair& p : pairs) {
+        for (const char* idText : {"kite_boss", "stone_bearer", "white_glove", "group/0", "group/1"}) {
+            const std::string id = idText;
+            CAPTURE(id);
+            const bool group = id.rfind("group", 0) == 0;
+            PRig r(t.fighter(p.lead));
+            if (group) {
+                r.def = t.fallback;
+                r.def.enemyCount = 0;
+                for (const char* e : {"skirmisher", "hulk", "duelist"})
+                    for (std::size_t j = 0; j < t.enemyIds.size(); ++j)
+                        if (t.enemyIds[j] == e) {
+                            r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(j);
+                            r.def.enemies[r.def.enemyCount++] = t.enemies[j];
+                        }
+                r.def.attackers = 2;
+                r.in.partnerOrder = static_cast<std::uint8_t>(id.back() - '0');
+            } else {
+                r.def = shippedBoss(t, idText, false);
+            }
+            r.def.fighter = t.fighter(p.lead);
+            r.def.partnerKit = t.fighter(p.partner);
+            r.ownPartnerKit = true;
+            r.tuning = shippedTuning();
+            r.goShipped(true, 1);
+            r.pairOnParry = group;
+            const float limit = group ? 20.f : 60.f;
+            double actSeconds[5] = {0, 0, 0, 0, 0}, walked = 0;
+            Vec2 at = r.bodies.ally;
+            while (!r.fight.over() && r.fight.time() < limit) {
+                r.tick();
+                actSeconds[static_cast<int>(r.brain.intent().act) % 5] += kDt;
+                walked += length(sub(r.bodies.ally, at));
+                at = r.bodies.ally;
+            }
+            const ArenaStats& s = r.fight.stats();
+            int maxHp = 0;
+            for (std::size_t e = 0; e < r.fight.enemyCount(); ++e) maxHp += r.def.enemies[e].hp;
+            const double all = static_cast<double>(s.partnerDamage + s.damageDealt);
+            std::string actText;
+            for (int a = 0; a < 5; ++a)
+                actText += std::string(a ? ", " : "") + acts[a] + " " + std::to_string(actSeconds[a] / r.fight.time());
+            MESSAGE(std::string(p.lead) << " + partner " << std::string(p.partner) << ", " << id << ": "
+                    << r.fight.time() << " s, phase " << static_cast<int>(r.fight.phase()) << "; partner damage "
+                    << s.partnerDamage << " = " << s.partnerDamage / double(maxHp) << " of " << maxHp << " hp, "
+                    << (all > 0 ? s.partnerDamage / all : 0.0) << " of all (lead " << s.damageDealt << "); strings "
+                    << s.partnerStrings << ", blows " << s.partnerBlows << ", cut " << s.partnerBlowsCut
+                    << ", guards " << s.partnerGuards << ", no kit " << s.partnerNoKitSeconds << " s; aimed at it "
+                    << s.bossAimedPartner << ", hit " << r.count(ArenaEventType::AllyHit) << ", blocked "
+                    << r.count(ArenaEventType::AllyBlocked) << "; ally downed " << r.count(ArenaEventType::AllyDowned) << ", takeovers " << s.takeovers << "; walked " << walked
+                    << " m; acts " << actText);
+            if (std::string(p.partner) == "third") {
+                CHECK(s.partnerBlows == 0);
+                CHECK(s.partnerDamage == 0);
+            }
+        }
     }
 }

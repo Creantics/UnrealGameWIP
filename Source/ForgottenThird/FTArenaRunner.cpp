@@ -335,6 +335,9 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		Table = *Setup.Table;
 	}
 	Def = Setup.Def;
+	// Per-lead kits: the partner fights with the kit of the lead it is (its look's arena.json entry); with no ally
+	// or no table, the lead's own (the one-kit fight as before).
+	Def.partnerKit = Setup.Table && Setup.Ally ? Table.fighter(FT::ToUtf8(Setup.Ally->Name.ToLower())) : Def.fighter;
 	Fit = Setup.Fit;
 	LeadSeat = Setup.LeadSeat;
 	AllySeat = Setup.AllySeat;
@@ -376,6 +379,9 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bBossSplitAtStart = Setup.bBossSplitAtStart;
 	bQuitOnFinish = Setup.bQuitOnFinish;
 	bShots = Setup.bShots;
+	// Every strike's aim line on a capture run (-ArenaShot) or on asking; else one summary at the fight's end.
+	LeadWeapons.SetLogEachAim(bShots || FParse::Param(FCommandLine::Get(), TEXT("ArenaAimEach")));
+	AllyWeapons.SetLogEachAim(bShots || FParse::Param(FCommandLine::Get(), TEXT("ArenaAimEach")));
 	bFightAgain = Setup.bFightAgain;
 	bReplacePawn = Setup.bReplacePawn;
 	bNoLock = Setup.bNoLock;
@@ -1591,7 +1597,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	bAimHeld = AimInput.tick(FTInputBindings::IsDown(*PC, InputAction::Aim), FTInputBindings::Toggles(World, InputAction::Aim));
 	const ftcore::PressHold::Out Press = AttackHold.tickIf(!FTInputBindings::LostFocus(), DeltaSeconds, FTInputBindings::IsDown(*PC, InputAction::Light), ArenaAim.rules().heavyHold,
 		Fight.output().player.action == ftcore::ArenaAction::Light || Fight.output().player.action == ftcore::ArenaAction::Heavy,
-		bAimHeld && Def.fighter.weapon == ftcore::ArenaWeapon::Guns);
+		bAimHeld && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns); // the controlled lead's kit
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
 	bPressDodge |= FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
@@ -1919,6 +1925,8 @@ void UFTArenaRunner::BeginSession()
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
 	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = PartnerClearSteps = 0;
 	PartnerClipsStarted = PartnerClipsWhole = 0;
+	LeadWeapons.ResetAimSummary();
+	AllyWeapons.ResetAimSummary();
 	PartnerPlaySeconds = 0.f;
 	PartnerStillFor = PartnerStillLongest = 0.f;
 	bPartnerStillAt = false;
@@ -2223,6 +2231,18 @@ bool UFTArenaRunner::AskLeadSwitch(const TCHAR* From)
 		SwitchRefusedWhy = ftcore::UiPartyWhy::NotHere;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a lead switch asked (%s); not sent: lead %d has no body in this fight."),
 			Fight.time(), From, static_cast<int32>(Partner));
+		return false;
+	}
+	// A party member only (the partner kit not playable, ftcore::ArenaFighter::playable): never sent to the session.
+	// The fight is asked so it names and counts the refusal (ArenaSwitchRefusal::NotPlayable; nothing else changes);
+	// the call reads NOT HERE, as the session's own word for the third slot.
+	if (!Fight.def().partnerKit.playable)
+	{
+		Fight.switchLeads();
+		++SwitchRefusedSerial;
+		SwitchRefusedWhy = ftcore::UiPartyWhy::NotHere;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a lead switch asked (%s); not sent: the partner is a party member only, not playable (%d refused)."),
+			Fight.time(), From, Fight.stats().leadSwitchesNotPlayable);
 		return false;
 	}
 	// The session takes the request (the step's close resolves it: tick.switched swaps the bodies, or
@@ -3502,8 +3522,10 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				if (E.source == ftcore::kArenaAlly)
 				{
 					// A shot's or cast's impact as it arrives (its tracer or bolt has just left), a blow's now.
-					const int32 Lights = FMath::Max(1, static_cast<int32>(Def.fighter.lightCount));
-					const double Flight = FFTLeadWeapons::FlightOf(Def.fighter, static_cast<uint8>(static_cast<int32>(E.move) % Lights));
+					// The partner's own kit: its blow is that kit's light (ArenaDef::partnerKit).
+					const ftcore::ArenaFighter& Kit = Fight.def().partnerKit;
+					const int32 Lights = FMath::Max(1, static_cast<int32>(Kit.lightCount));
+					const double Flight = FFTLeadWeapons::FlightOf(Kit, static_cast<uint8>(static_cast<int32>(E.move) % Lights));
 					if (Flight > 0.0)
 					{
 						PlayWaitingPartnerImpact(1e300); // one waiting already plays now
@@ -5541,6 +5563,8 @@ void UFTArenaRunner::LogResult() const
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s"), UTF8_TO_TCHAR(Line));
 	}
+	LeadWeapons.LogAimSummary();
+	AllyWeapons.LogAimSummary();
 	LogFeatureChecks();
 	LogCarry();
 	LogTable();
@@ -7135,7 +7159,7 @@ void UFTArenaRunner::BeginCarry(const FFTLeadLook* AllyLookIn)
 	Fight.setLoadCap(CarryCap);
 	Fight.setChairs(CarryChairs);
 	Fight.setCarry(true);
-	Fight.setAlly(kArenaAllyHp, Def.fighter.bodyRadius);
+	Fight.setAlly(kArenaAllyHp, Def.partnerKit.bodyRadius);
 	BeginTable(Places, bCapArg);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: carrying: chairs %s (%d named), Load cap %d, blocks store Load, ally %d hp%s%s."),
 		CarryChairKeys.IsEmpty() ? TEXT("-") : *CarryChairKeys, static_cast<int32>(CarryChairs.count), CarryCap, kArenaAllyHp,
@@ -7155,7 +7179,7 @@ void UFTArenaRunner::SpawnAlly(UWorld* World)
 	if (AllyFigure)
 	{
 		// A lead's look is worn only by a player-side figure; the view stays on the player's figure.
-		AllyFigure->Setup(true, Def.fighter.bodyRadius, kArenaPlayerColor, 0.f, AllyLook);
+		AllyFigure->Setup(true, Def.partnerKit.bodyRadius, kArenaPlayerColor, 0.f, AllyLook);
 		AllyFigure->ResetFeet();
 	}
 }
@@ -7165,7 +7189,7 @@ ftcore::Vec2 UFTArenaRunner::AllyHome(const ftcore::Vec2& Player, const ftcore::
 	// Behind (against the facing) and to the left (the facing turned a quarter anticlockwise), kept in the ring.
 	const ftcore::Vec2 Home{Player.x - Facing.x * kArenaAllyBack - Facing.y * kArenaAllySide,
 		Player.y - Facing.y * kArenaAllyBack + Facing.x * kArenaAllySide};
-	return Fit.ring.clamp(Home, Def.fighter.bodyRadius + 0.5f);
+	return Fit.ring.clamp(Home, Fight.def().partnerKit.bodyRadius + 0.5f);
 }
 
 void UFTArenaRunner::MoveAlly()
@@ -7182,7 +7206,7 @@ void UFTArenaRunner::MoveAlly()
 	{
 		return;
 	}
-	const float Step = FMath::Min(Far, Def.fighter.moveSpeed * kArenaAllyPace * StepSeconds);
+	const float Step = FMath::Min(Far, Fight.def().partnerKit.moveSpeed * kArenaAllyPace * StepSeconds);
 	Bodies.ally.x += To.x / Far * Step;
 	Bodies.ally.y += To.y / Far * Step;
 }
@@ -7264,7 +7288,7 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 		}
 		AllyWeapons.SetSource(ftcore::kArenaAlly);
 		AllyWeapons.SetImpacts(false); // PartnerImpact plays its blows' impact
-		AllyWeapons.Begin(Ally, *AllyLook, Def.fighter); // again on the same figure: nothing
+		AllyWeapons.Begin(Ally, *AllyLook, Fight.def().partnerKit); // its own kit; again on the same figure: nothing
 		if (!AllyWeapons.IsOn())
 		{
 			AllyWeaponsFailed = Ally;
@@ -7277,7 +7301,7 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 	// The ally's light string as the lead's light moves (its blow's index), so the strike clip each lead plays for that
 	// light plays on its body: a new blow is a new index, or the same index begun again (stateTime back).
 	const ftcore::ArenaAllyOut& A = Out.ally;
-	const int32 Lights = FMath::Max(1, static_cast<int32>(Def.fighter.lightCount));
+	const int32 Lights = FMath::Max(1, static_cast<int32>(Fight.def().partnerKit.lightCount));
 	const uint8 Move = static_cast<uint8>(static_cast<int32>(A.blow) % Lights);
 	const bool bNewBlow = A.attacking && (!bAllyStruck || Move != AllyStruckBlow || A.stateTime + 1e-4f < AllyStruckTime);
 	if (bNewBlow)
@@ -7442,11 +7466,11 @@ void UFTArenaRunner::BeginPartner()
 		return;
 	}
 	bAllyOn = true;
-	// Both leads play the one fighter kit here, so the partner's body has the lead fighter's max hp.
-	Fight.setAlly(Def.fighter.hp, Def.fighter.bodyRadius);
+	// The partner's body has its own kit's max hp (ArenaDef::partnerKit).
+	Fight.setAlly(Def.partnerKit.hp, Def.partnerKit.bodyRadius);
 	Fight.setPartner(&AllyBrain, &AllyTuning);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: the partner (-ArenaPartner): the other lead's body, %d hp, driven by the partner brain; order SPREAD (%s: STAY CLOSE / SPREAD); attack budget %.1f x the lead's + %.1f s in any %.0f s; down %.0f s, then up at %.0f%%."),
-		Def.fighter.hp, *FTInputBindings::Key(ftcore::InputAction::PartnerOrder, ftcore::InputDevice::Keys).ToString(), AllyTuning.budgetShare, AllyTuning.budgetAllowanceSeconds, AllyTuning.budgetWindowSeconds, AllyTuning.downSeconds,
+		Def.partnerKit.hp, *FTInputBindings::Key(ftcore::InputAction::PartnerOrder, ftcore::InputDevice::Keys).ToString(), AllyTuning.budgetShare, AllyTuning.budgetAllowanceSeconds, AllyTuning.budgetWindowSeconds, AllyTuning.downSeconds,
 		AllyTuning.riseHealth * 100.f);
 }
 
@@ -7456,8 +7480,9 @@ void UFTArenaRunner::BringPartnerIn()
 	++PartnerJoinsLanded;
 	PartnerJoinedAt = static_cast<double>(Fight.time());
 	bAllyOn = true;
-	// Whole: the health fed to joinFight (1.0). setPartner begins the brain in a running fight.
-	Fight.setAlly(Def.fighter.hp, Def.fighter.bodyRadius);
+	// Whole: the health fed to joinFight (1.0). setPartner begins the brain in a running fight. Its own kit's max
+	// (after a switch, partnerKit.hp is the partner body's max).
+	Fight.setAlly(Fight.def().partnerKit.hp, Fight.def().partnerKit.bodyRadius);
 	Fight.setPartner(&AllyBrain, &AllyTuning);
 	Bodies.ally = PrevBodies.ally = AllyHome(Bodies.player, Fight.output().player.facing);
 	SpawnAlly(GetWorld());
@@ -7512,7 +7537,7 @@ void UFTArenaRunner::PutPartnerOut()
 	bPartnerHeldOut = true;
 	bAllyOn = false;
 	Fight.setPartner(nullptr, nullptr);
-	Fight.setAlly(0, Def.fighter.bodyRadius);
+	Fight.setAlly(0, Fight.def().partnerKit.bodyRadius);
 	if (AllyFigure)
 	{
 		AllyFigure->SetActorHiddenInGame(true);
@@ -7566,9 +7591,11 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 	bFiguresSwapped = !bFiguresSwapped;
 	if (PlayerFigure && PlayerLook)
 	{
-		// The weapon set and jump timing for the figure now controlled (its look's kit).
-		LeadWeapons.Begin(PlayerFigure, *PlayerLook, Def.fighter);
-		PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLandLock);
+		// The weapon set and jump timing for the figure now controlled: its lead's kit, from the kits as given (a
+		// restart swaps the figures back before the fight puts its kits back).
+		const ftcore::ArenaFighter& Kit = bFiguresSwapped ? Def.partnerKit : Def.fighter;
+		LeadWeapons.Begin(PlayerFigure, *PlayerLook, Kit);
+		PlayerFigure->SetJumpTiming(Kit.jumpStartup, Kit.jumpAir, Kit.jumpLandLock);
 	}
 	if (PlayerFigure)
 	{
@@ -7841,7 +7868,7 @@ void UFTArenaRunner::PartnerImpact(const ftcore::ArenaEvent& E)
 	if (!Vfx)
 	{
 		Vfx = NewObject<UFTVfxComponent>(AllyFigure);
-		Vfx->Effect = FName(FFTLeadWeapons::ImpactEffectOf(Def.fighter.weapon));
+		Vfx->Effect = FName(FFTLeadWeapons::ImpactEffectOf(Fight.def().partnerKit.weapon)); // remade on a swap
 		Vfx->bPlayOnBeginPlay = false;
 		Vfx->SetupAttachment(AllyFigure->GetRootComponent());
 		Vfx->SetUsingAbsoluteLocation(true);
@@ -7879,10 +7906,10 @@ void UFTArenaRunner::WalkPartner(const ftcore::ArenaOutput& Out)
 	{
 		return;
 	}
-	// To the fight's goal at the lead fighter's moveSpeed, off the living enemies' bodies, inside the ring.
+	// To the fight's goal at its own kit's moveSpeed, off the living enemies' bodies, inside the ring.
 	const ftcore::Vec2 To{Out.ally.goal.x - Bodies.ally.x, Out.ally.goal.y - Bodies.ally.y};
 	const float Far = ArenaLength(To);
-	const float Most = Def.fighter.moveSpeed * StepSeconds;
+	const float Most = Fight.def().partnerKit.moveSpeed * StepSeconds;
 	if (Far > Most)
 	{
 		Bodies.ally.x += To.x * Most / Far;
@@ -8079,6 +8106,8 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 		}
 		Brain += FString::Printf(TEXT("; strings begun off the frame %u; longest stand-still %.1f s"),
 			static_cast<uint32>(AllyBrain.offFrameStarts()), PartnerStillLongest);
+		// A partner kit with no attacks (no kit): its budget reads spent, so this time is inside noBudget's.
+		Brain += FString::Printf(TEXT("; no kit %.1f s"), Fight.stats().partnerNoKitSeconds);
 		if (PartnerFrustumSteps < kPartnerPlayMinSteps)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play not covered (%d steps measured in the play camera's frame of %d up, wanted %d; brain: %s)."),

@@ -132,7 +132,8 @@ struct FFTLeadWeapons
 	// The attacks aimed at a target's body (world, cm): Surface its surface point toward this fighter (its XY used),
 	// Bottom..Top the height the body spans, Ranged the point a shot or a cast goes at (the chest or a weak point). A
 	// melee kit (the gauntlets) aims at the point it can reach: the body's surface at the striking shoulder's height (a
-	// kick's: the middle of its hip-to-knee line), never over the fighter's head, pulled in to the arm's (the leg's)
+	// kick's: the middle of its hip-to-knee line; a target shorter than that, at 0.6 of its own height), never over the
+	// fighter's head, pulled in to the arm's (the leg's)
 	// reach from the shoulder (the hip). Its spark lands there, at the fist that reaches it.
 	void SetAimAtBody(const FVector& Surface, double Bottom, double Top, const FVector& Ranged);
 	// Where the attacks are aimed this step (world, cm): SetAim's or SetAimAtBody's point.
@@ -166,6 +167,12 @@ struct FFTLeadWeapons
 	// The blows whose strike clip played into their recovery uncut (whole), and the blows that started a clip.
 	int32 GetClipsCompleted() const { return ClipsCompleted; }
 	int32 GetClipsStarted() const { return ClipsStarted; }
+	// The run check's aim log: one end-of-fight summary per fighter (the strikes aimed, the mean and worst aim angle,
+	// and for the gauntlets the mean and worst fist-to-hit distance). bEach also logs every strike's line (the capture
+	// runs). Reset at a fight's begin; a lead switch or a takeover (End, Begin) keeps the sums.
+	void SetLogEachAim(bool bEach) { bLogEachAim = bEach; }
+	void ResetAimSummary();
+	void LogAimSummary() const;
 	// The strike clip under way's name ("" when none plays), for the capture runs' per-view log.
 	const TCHAR* GetPlayingStrikeName() const { return Animator.actionCount() > 0 && FadeSince < 0.0 ? GetLastStrikeName() : TEXT(""); }
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
@@ -251,7 +258,8 @@ private:
 	FVector Chest() const;
 	// The arm aim onto the anim instance for this state (weight 0 when nothing is aimed).
 	void PushArmAim(const ftcore::ArenaPlayerOut& P);
-	// The run check: the aimed direction's angle to the hit point, logged once per attack.
+	// The run check: the aimed direction's angle to the hit point (and the fist's distance to it), summed once per
+	// attack for LogAimSummary and logged per attack when bLogEachAim.
 	void LogAim();
 	const TCHAR* Prefix() const;
 
@@ -260,6 +268,13 @@ private:
 	bool bStrikeClip = false; // the blow under way plays a strike clip
 	int32 ClipsStarted = 0;
 	int32 ClipsCompleted = 0;
+	bool bLogEachAim = false;
+	int32 AimCount = 0;
+	double AimDegSum = 0.0;
+	double AimDegWorst = 0.0;
+	int32 FistCount = 0;
+	double FistSum = 0.0;
+	double FistWorst = 0.0;
 	TWeakObjectPtr<AActor> Figure;
 	TWeakObjectPtr<AFTArenaFighter> ArenaFigure;
 	TWeakObjectPtr<USkeletalMeshComponent> Skin;

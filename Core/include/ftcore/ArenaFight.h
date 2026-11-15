@@ -441,6 +441,16 @@ struct ArenaAttack {
 enum class ArenaWeapon : std::uint8_t { None, Gauntlets, Guns, Magic };
 FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "guns", "magic". Literals.
 
+// Why ArenaFight::switchLeads refused (ArenaFight::switchRefusal). Append only.
+enum class ArenaSwitchRefusal : std::uint8_t {
+    Ok,          // it swapped (or none asked)
+    NotFighting, // not begun, over, or asked inside the step's hook
+    NoPartner,   // no partner on (none set, no ally body, or Lone)
+    PartnerDown, // the partner is down
+    PlayerDown,  // the player is at 0
+    NotPlayable, // the partner's kit is not playable (ArenaFighter::playable): a party member only
+};
+
 // The player's kit. arena.json has one per lead id and a "default"; each lead's own blocks are its guard and
 // parry numbers (guardArcCos, guardAbsorb, guardMoveScale, guardBreakTime, parryWindow, parryRearm).
 struct ArenaFighter {
@@ -450,6 +460,11 @@ struct ArenaFighter {
     // pair and Read still work. Such a kit stores no Load (a parry stores none, giveLoad gives 0), so it never
     // overloads. A lead whose part in a fight is helping the others has none.
     bool attacks = true;
+    // Whether the player may drive this lead (arena.json "playable", default true). A lead that is only ever a party
+    // member has false: as the partner (ArenaDef::partnerKit) switchLeads refuses it (ArenaSwitchRefusal::NotPlayable)
+    // and the player's fall with it the only one standing is a Defeat, no takeover. Not inferred from attacks: a
+    // party-only lead may fight.
+    bool playable = true;
     int hp = 100;
     float stamina = 100.f;
     float staminaRegen = 45.f;  // per second, once staminaDelay has passed since the last spend
@@ -681,6 +696,15 @@ struct ArenaPartnerScales {
 
 struct ArenaDef {
     ArenaFighter fighter;
+    // The partner's kit (per-lead kits): the other lead's, from its own table entry. The partner's blows (its lights:
+    // timings, reach, damage, tracking and lunge), its turn rate and the hitstun a hit holds it in are this kit's. A
+    // switch or a takeover swaps it with `fighter` (the player drives the other lead now), and the two max hp trade
+    // with it (the player's, fighter.hp, and the ally's, setAlly's): each lead keeps its own, and while swapped
+    // partnerKit.hp is the partner body's max; begin and restart put them back. A partner kit with no attacks
+    // (ArenaFighter::attacks false) starts no blow: its budget reads spent, so the brain only waits and walks, and
+    // guards a string aimed at it (ArenaStats::partnerNoKitSeconds). defaultArenaDef() and ArenaTable's fights set it to `fighter`; a
+    // def built in code that sets none gets the default ArenaFighter.
+    ArenaFighter partnerKit;
     std::array<ArenaEnemyKind, kMaxArenaEnemies> enemies{};
     std::uint8_t enemyCount = 1;
     float ringRadius = 12.f;   // the ring the host should build (arenaRingAt)
@@ -980,12 +1004,12 @@ struct ArenaEvents {
 // The partner's ally body this tick (ArenaFight::setPartner). With no partner on, goal is the ally's place and the
 // rest stays at the defaults.
 struct ArenaAllyOut {
-    Vec2 goal;                        // where the host walks the ally body this step (at the lead fighter's moveSpeed):
+    Vec2 goal;                        // where the host walks the ally body this step (at its own kit's moveSpeed):
                                       // its place while it stands, the brain's point on a MoveTo or StepBack, its
                                       // place plus this tick's lunge in a string
     Vec2 facing{1.f, 0.f};            // unit: the facing its blows use
     bool attacking = false;           // in a light string
-    std::uint8_t blow = 0;            // ... the blow's index in it (the light: the lead fighter's light[blow % lightCount])
+    std::uint8_t blow = 0;            // ... the blow's index in it (the light: ArenaDef::partnerKit's light[blow % lightCount])
     float stateTime = 0.f;            // ... seconds into that blow
     ArenaPart part = ArenaPart::None; // ... where the blow is
     bool guarding = false;            // its guard is up: a blow that reaches it is blocked (AllyBlocked)
@@ -1084,7 +1108,7 @@ struct ArenaStats {
     int partnerStrings = 0;    // its light strings begun
     int partnerGuards = 0;     // enemy blows its guard blocked
     int partnerRises = 0;      // times it stood again after being downed
-    // The cut rule: a damaging unguarded hit on the partner holds it in the lead fighter's hitstun and ends its running
+    // The cut rule: a damaging unguarded hit on the partner holds it in its own kit's hitstun and ends its running
     // blow (no damage from it after that hit; what it dealt stays; the time its brain committed stays spent), in
     // startup, active or recovery alike. This differs from the lead: the lead's blow is cut only when the hit puts it in
     // hitstun (its poise breaks, or it is in the air), while the partner has no poise or armour, so every such hit cuts
@@ -1098,7 +1122,12 @@ struct ArenaStats {
                                  // seen at a boss string's start (that string counted)
     int takeovers = 0;         // times the player fell with the partner up and took its body (TookOver)
     int leadSwitches = 0;      // the host's switchLeads that swapped the bodies (both up)
+    int leadSwitchesNotPlayable = 0; // the host's switchLeads refused as the partner's kit is not playable
     int partnerSwaps = 0;      // times the partner's brain reset for a body change (a switch or a takeover)
+    // Per-lead kits: seconds the partner was up with a kit that has no attacks ("no kit": it starts no blow), and
+    // the blow starts its brain asked for in that time that were refused (0 while the fight fills its budget).
+    float partnerNoKitSeconds = 0.f;
+    int partnerNoKitRefused = 0;
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -1472,7 +1501,8 @@ public:
     // repeats. Each tick, after the player's step and before the enemies', the brain gets a view (ArenaInput::
     // partnerOrder, the ally's and the lead's places, each enemy's state and aim) and its intent is applied:
     // * Wait / MoveTo / StepBack: ArenaOutput::ally.goal is the ally's place or the brain's point; the host walks it.
-    // * Attack: a string of the brain's count of the lead fighter's lights (light[k % lightCount]: timings, range,
+    // * Attack: a string of the brain's count of its own kit's lights (ArenaDef::partnerKit's light[k % lightCount]:
+    //   timings, range,
     //   arc, tracking and lunge) on its target, while the intent stays Attack. A blow that reaches its target in the
     //   active part lands once, through the same blow path as the player's: the blow hook (Hit, source kArenaAlly,
     //   poise = the light's x ArenaDef::partner.poise), then partnerBlowDamage of the ruled damage against light[0]'s,
@@ -1483,15 +1513,17 @@ public:
     // * Guard: an enemy blow that reaches the ally (not an unblockable move) is spent on the guard: no hp, AllyBlocked.
     // * Rise: after the brain's downSeconds down, the ally stands at riseHealth of its max hp (at least 1), AllyRose.
     // A blow begun always runs out (the brain counts it to its end): a Guard or any other intent only starts no more.
-    // A blow that lands on the ally (not blocked) holds it in the lead fighter's hitstun (it starts no blow and the
+    // A blow that lands on the ally (not blocked) holds it in its own kit's hitstun (it starts no blow and the
     // brain ends its string); a blow already running still runs out. A boss aims a string at the partner
     // (ArenaEnemyOut::aim 2) when the partner is up and nearer than the lead, centre to centre, and the string keeps
     // (partner-aimed + 1) x 10 <= kArenaBossAimShareTenths x (boss strings + 1) since begin() or restart(), that string
     // counted: its move pick measures to the ally and its windup tracks the ally; its blows still reach whoever stands
     // in them. A downed ally is never aimed at and no blow lands on it.
-    // * Takeover: the player at 0 hp with the partner up is no Defeat. In that tick the two bodies swap: the player
+    // * Takeover: the player at 0 hp with the partner up and playable (ArenaDef::partnerKit's playable) is no Defeat:
+    //   the takeover goes to a standing playable lead, else it is the Defeat. In that tick the two bodies swap: the player
     //   stands in the ally's place with its facing at min(ally hp, the fighter's hp), Idle (no hitstun, buffer or
-    //   jump carried; Load, stamina and charges kept), and the ally in the player's old place at 0 hp, down (its
+    //   jump carried; Load, stamina and charges kept; the kits swap as on switchLeads), and the ally in the player's
+    //   old place at 0 hp, down (its
     //   string, guard and hitstun cleared): Downed (the player, where it fell), then TookOver, then AllyDowned, all
     //   in that tick, and stats().takeovers. The bodies are the
     //   host's: on TookOver it swaps ArenaBodies::player and ::ally before the next tick. A boss string under way
@@ -1499,7 +1531,7 @@ public:
     //   an aim-2 string the downed ally for the blow under way, on which no blow lands (it still reaches the player in
     //   it); from the string's next blow it aims at the player (aim 1; the cap's counts unchanged). The brain keeps
     //   driving the ally (the fallen lead now), which rises after downSeconds as above. The player at 0 with the
-    //   ally down (both in one tick too), or with no partner, is the Defeat as before.
+    //   ally down (both in one tick too), with a partner that is not playable, or with no partner, is the Defeat.
     FTCORE_API void setPartner(PartnerBrain* brain, const PartnerTuning* tuning);
     // The bodies have swapped an odd number of times since begin() or restart() (TookOver): the player drives the
     // other lead.
@@ -1508,10 +1540,16 @@ public:
     // partner on (setPartner, an ally, not Lone), both bodies up and the fight Fighting, the bodies swap now, between
     // ticks: the player stands in the partner's place at its hp, Idle (its action, string, buffer, lock and poise
     // as after a takeover), the partner in the player's old place at the player's hp (its string, guard and
-    // hitstun cleared). Load, stamina and charges stay; swapped() flips; stats().leadSwitches. No event (the host
+    // hitstun cleared). The kits swap with the bodies (ArenaDef::partnerKit; def() shows the swap): the player's
+    // poise, cylinder (full, no reload running) and stamina cap are the new kit's, as on a takeover. Load, stamina and
+    // charges stay; swapped() flips; stats().leadSwitches. No event (the host
     // asked); the host swaps ArenaBodies::player and ::ally before the next tick, as on TookOver. A boss string
-    // under way keeps its aim (the slot, not the body). False, and nothing changes, otherwise or inside the hook.
+    // under way keeps its aim (the slot, not the body). False, and nothing changes, otherwise or inside the hook;
+    // switchRefusal() names why (a partner that is not playable: NotPlayable, counted in
+    // stats().leadSwitchesNotPlayable).
     FTCORE_API bool switchLeads();
+    // Why the last switchLeads since begin() or restart() was refused (Ok: it swapped, or none asked yet).
+    FTCORE_API ArenaSwitchRefusal switchRefusal() const;
     // ---- a set table ----
     // The host's seats at a set table (TableRing.h; begin and restart clear them). While the player or the ally is
     // seated and two or more living bodies sit, the hp an enemy's blow takes from a seated lead (a hit, a guard's
@@ -1727,7 +1765,8 @@ private:
     bool carry_ = false;
     ArenaChairs chairs_;
     std::uint8_t healMax_ = 0;              // the charges the last begin or restart gave
-    int allyMaxHp_ = 0;                     // 0: no ally
+    int allyMaxHp_ = 0;                     // 0: no ally (traded with the player's max while the kits are swapped)
+    int allyHpGiven_ = 0;                   // setAlly's max, as given (begin restores it after a swapped fight)
     float allyRadius_ = 0.4f;
     int allyHp_ = 0;
     Vec2 allyPos_;
@@ -1742,6 +1781,8 @@ private:
     const PartnerTuning* partnerTuning_ = nullptr;
     AllyState ally_;                            // begin and restart clear it
     bool swapped_ = false;                      // swapped() (begin and restart clear it)
+    bool kitsSwapped_ = false;                  // def_.fighter and def_.partnerKit traded (begin and restart undo it)
+    ArenaSwitchRefusal switchRefusal_ = ArenaSwitchRefusal::Ok; // the last switchLeads' answer
     int aimStrings_ = 0;                        // boss strings since begin() or restart(): the partner aim's cap ...
     int aimPartner_ = 0;                        // ... and those aimed at the partner
 };

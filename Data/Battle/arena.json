@@ -59,7 +59,7 @@
       "parryWindow": 0.13, "parryRearm": 0.45, "parryStop": 0.12, "softRange": 5, "softArcCos": 0.4, "homingReach": 1.8
     },
     {
-      "id": "third", "weapon": "none", "attacks": false,
+      "id": "third", "weapon": "none", "attacks": false, "playable": false,
       "guardArcCos": -1, "guardAbsorb": 0.75, "guardMoveScale": 0.35, "guardBreakTime": 1.4,
       "parryWindow": 0.12, "parryRearm": 0.5, "parryStop": 0.16,
       "jumpLight": { "startup": 0.16, "active": 0.1, "recovery": 0.34, "range": 1.9, "arcCos": 0.3, "damage": 8, "poiseDamage": 8, "lunge": 0.3, "tracking": 5, "stamina": 0, "hitStop": 0.05, "jolt": 0.5 }
