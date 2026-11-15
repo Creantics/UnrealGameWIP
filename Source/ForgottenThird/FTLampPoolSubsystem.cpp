@@ -9,6 +9,7 @@
 #include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 
@@ -51,6 +52,7 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		ReachCm = FMath::Max(ReachMetres, 0.f) * 100.f;
 	}
+	ShadowLamps = FMath::Clamp(ConfigShadowLamps, 0, kMaxLamps);
 	FString Shadows;
 	if (FParse::Value(Cmd, TEXT("LampShadows="), Shadows))
 	{
@@ -62,7 +64,16 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	}
 	if (ShadowLamps > 0)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: shadows on the %d nearest lamps (dev flag)."), ShadowLamps);
+		// Shadowed lamps go through MegaLights. Project-setting priority: a -dpcvars or console value still wins.
+		if (bMegaLightsForShadows)
+		{
+			if (IConsoleVariable* MegaLights = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MegaLights.EnableForProject")))
+			{
+				MegaLights->Set(1, ECVF_SetByProjectSetting);
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: shadows on the %d nearest lamps (MegaLights %s)."), ShadowLamps,
+			bMegaLightsForShadows ? TEXT("asked") : TEXT("left as is"));
 	}
 	WantLamps = FMath::Clamp(WantLamps, 0, kMaxLamps);
 	WantShops = FMath::Clamp(WantShops, 0, kMaxShops);

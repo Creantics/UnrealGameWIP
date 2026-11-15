@@ -20,8 +20,12 @@
 // -LampPoolLamps=<n> and -LampPoolShops=<n> shrink the pool (never past kMaxLamps, kMaxShops); -LampPoolRadius=<m>
 // sets the reach.
 //
-// Dev only, default off: -LampShadows=<n> casts shadows from the n lamps nearest the camera (the pick's order), and
-// -LampShadows=all (or a bare -LampShadows) from every pooled lamp; shop lights never cast. For the lamp-shadow trial.
+// Lamp shadows (the night default, trial arm c): every pooled lamp casts, under MegaLights. The default is config, in
+// DefaultGame.ini [/Script/ForgottenThird.FTLampPoolSubsystem]: ShadowLamps (a count of the nearest lamps, clamped to
+// kMaxLamps; 64 = every pooled lamp, since the pool never holds more than kMaxLamps = 64 and holds WantLamps = 48 by
+// default) and bMegaLightsForShadows (sets r.MegaLights.EnableForProject at project-setting priority, so -dpcvars
+// still overrides it). For A/B: -LampShadows=<n> casts from the n nearest, -LampShadows=0 none, -LampShadows=all (or a
+// bare -LampShadows) every pooled lamp. Shop lights never cast.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -35,7 +39,7 @@ class AFTNightLights;
 class UFTNightLightData;
 class USpotLightComponent;
 
-UCLASS()
+UCLASS(Config = Game)
 class FORGOTTENTHIRD_API UFTLampPoolSubsystem : public UTickableWorldSubsystem
 {
 	GENERATED_BODY()
@@ -95,7 +99,12 @@ private:
 	float ReachCm = kReachMetres * 100.f;
 	float LampCandelaOverride = 0.f, LampReachOverride = 0.f, ShopCandelaOverride = 0.f, ShopReachOverride = 0.f;
 	float SincePick = 0.f;
-	int32 ShadowLamps = 0; // -LampShadows: 0 none, a count of the nearest, or kMaxLamps for all
+	// Config defaults (DefaultGame.ini); see the header comment.
+	UPROPERTY(Config)
+	int32 ConfigShadowLamps = 0;
+	UPROPERTY(Config)
+	bool bMegaLightsForShadows = false;
+	int32 ShadowLamps = 0; // in use: 0 none, a count of the nearest, or kMaxLamps for all
 	bool bActive = false;
 	bool bForced = false;
 	bool bPoolMade = false;
