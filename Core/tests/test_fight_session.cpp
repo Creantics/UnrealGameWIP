@@ -1388,6 +1388,8 @@ struct FightSessionTestAccess {
             {"leadLoadDue", [](FightSession& s) { s.leadLoadDue_ = 5; }},
             {"leadHealsDue", [](FightSession& s) { s.leadHealsDue_ = 5; }},
             {"leadNowDue", [](FightSession& s) { s.leadNowDue_ = !s.leadNowDue_; }},
+            {"spentStep A", [](FightSession& s) { s.spentStep_[kLeadA] = 1; }},
+            {"spentStep B", [](FightSession& s) { s.spentStep_[kLeadB] = 2; }},
             {"lone", [](FightSession& s) { s.lone_ = !s.lone_; }},
             {"loneEnded", [](FightSession& s) { s.loneEnded_ = !s.loneEnded_; }},
             {"loneEndedBy", [](FightSession& s) { s.loneEndedBy_ = LoneEnd::Gift; }},
@@ -1519,6 +1521,7 @@ struct FightSessionTestAccess {
             [](FightSession& s) { s.held_[1].blow = 5; },
             [](FightSession& s) { s.loadsIn_[1].amount = 5; },
             [](FightSession& s) { ++s.leadLoad_[kLeadA]; }, // the kept lead's stored slot (lead A is kept here)
+            [](FightSession& s) { ++s.lateSets_; },         // a count for the host's checks, not play
         };
         for (const Edit e : left) {
             FightSession s;
