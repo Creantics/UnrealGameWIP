@@ -1211,6 +1211,27 @@ TEST_CASE("a skip or press before the frame's update gives no cue twice: takeWav
     CHECK(w.count == 4u);
 }
 
+TEST_CASE("two updates, then one read: takeWaveCues gives both frames' cues once, in order") {
+    const CutscenePlan plan = cuedShots();
+    CutscenePlayer p;
+    p.begin(plan);
+    p.update(0.1); // crosses mark_a (0 s)
+    p.update(1.5); // 1.6 s: crosses mark_b (1.5 s); the host took nothing between
+    CHECK(p.firstCueThisUpdate() == 1u); // the frame's own window is the last update's
+    CHECK(p.cuesThisUpdate() == 1u);
+    CutscenePlayer::CueWindow w = p.takeWaveCues();
+    CHECK(w.first == 0u);
+    REQUIRE(w.count == 2u);
+    CHECK(p.plan().waveCue(w.first).mark() == "mark_a");
+    CHECK(p.plan().waveCue(w.first + 1u).mark() == "mark_b");
+    CHECK(p.takeWaveCues().count == 0u); // a second read in the frame gives nothing
+    p.update(1.5); // 3.1 s: crosses mark_c
+    w = p.takeWaveCues();
+    CHECK(w.first == 2u);
+    REQUIRE(w.count == 1u);
+    CHECK(p.plan().waveCue(w.first).mark() == "mark_c");
+}
+
 TEST_CASE("crossing wave cues does not allocate") {
     const CutscenePlan plan = cuedShots();
     CutscenePlayer player;
