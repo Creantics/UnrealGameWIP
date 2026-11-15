@@ -1,6 +1,8 @@
 #include "ftcore/AudioCues.h"
 
+#include "ftcore/AudioPick.h" // kAudioPickMaxVariants, kAudioPickMaxAvoid
 #include "ftcore/Json.h"
+#include "ftcore/MixState.h" // kMixBusNames
 #include "ftcore/MusicLoop.h"
 
 #include <algorithm>
@@ -110,7 +112,8 @@ bool importAudioCues(std::string_view json, AudioCueTable& out, std::string* err
                 continue;
             }
             audUnknownKeys(j, path, {"id", "bus", "playback", "file", "bpm", "offset", "loopStart", "loopEnd", "fadeIn",
-                                     "fadeOut", "gainDb", "quant", "duckDb", "duckHoldMs", "duckRelMs", "max", "prio"},
+                                     "fadeOut", "gainDb", "quant", "duckDb", "duckHoldMs", "duckRelMs", "max", "prio",
+                                     "variants", "avoidLast", "roundRobin", "pitchCents", "volumeDb", "mixBus"},
                            warnings);
             AudioCue cue;
             cue.id = audStr(j["id"].string());
@@ -147,6 +150,31 @@ bool importAudioCues(std::string_view json, AudioCueTable& out, std::string* err
                 const JsonValue v = j["prio"];
                 if (!v.isInteger() || v.integer() < 0 || v.integer() > 100) errors.push_back(path + ".prio: expected a whole number in 0..100");
                 else cue.priority = static_cast<int>(v.integer());
+            }
+            if (j.has("variants")) {
+                const JsonValue v = j["variants"];
+                if (!v.isInteger() || v.integer() < 1 || v.integer() > kAudioPickMaxVariants)
+                    errors.push_back(path + ".variants: expected a whole number in 1..16");
+                else cue.variants = static_cast<int>(v.integer());
+            }
+            if (j.has("avoidLast")) {
+                const JsonValue v = j["avoidLast"];
+                if (!v.isInteger() || v.integer() < 0 || v.integer() > kAudioPickMaxAvoid)
+                    errors.push_back(path + ".avoidLast: expected a whole number in 0..4");
+                else cue.avoidLast = static_cast<int>(v.integer());
+            }
+            if (j.has("roundRobin")) {
+                const JsonValue v = j["roundRobin"];
+                if (!v.isBool()) errors.push_back(path + ".roundRobin: expected true or false");
+                else cue.roundRobin = v.boolean();
+            }
+            audNumber(j, "pitchCents", cue.pitchCents, 0, 1200, path, errors);
+            audNumber(j, "volumeDb", cue.volumeDb, 0, 12, path, errors);
+            if (j.has("mixBus")) {
+                const JsonValue v = j["mixBus"];
+                for (int b = 0; b < kMixBuses && v.isString(); ++b)
+                    if (v.string() == kMixBusNames[b]) cue.mixBus = b;
+                if (cue.mixBus < 0) errors.push_back(path + ".mixBus: expected music, ambience, sfx, footsteps, voice or ui");
             }
             if (j.has("quant")) {
                 const JsonValue v = j["quant"];
