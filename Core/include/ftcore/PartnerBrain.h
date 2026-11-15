@@ -165,6 +165,20 @@
 //      as before (NoBudget stays NoBudget). It never dodges (no dodge in any lead's kit; rule 3's guard is its
 //      defence). Reported: intent.skirmish, skirmishSeconds(), skirmishMoves(), guardsBegun(). Not given a camera,
 //      rules 13-17 do not run.
+//  18. A tall target (framed, its body's height, PartnerEnemyView top - base, at least kPartnerTallMeters: the lock's
+//      tall-boss bar, kArenaLookTallBoss). The low lock lens looks up past the lead's feet, so the near ring round the
+//      lead is out of the frame and the boss's body hides the far side. On a tall target, rule 13's station must also
+//      not be hidden behind the body from the lens (arenaHiddenBehind, the host's own "partner in play" test: its
+//      middle and its head both behind), and so must the grace's spot, rule 13's hold (its station tolerance too: a
+//      station at the frame's edge is walked onto) and rule 14's string from where it stands or from its station (a
+//      string from a spot the camera does not see only once fallen back, reported as offFrame). The outer station
+//      ring is tried first; a station reached only round the body ranks last and is not held (a nearer one may come
+//      back). StayClose by a tall target (one standing whose edge is within closeLeadMeters of the lead, held or not,
+//      so a lead switch keeps them) grows its cap, leash and return by that target's radius: the seen flanks of a body
+//      R round lie about R + reach / 2 round it from the lead. Every walk (MoveTo or StepBack) is steered last: a goal
+//      inside a standing tall body (its radius + kPartnerSteerClear) is put out on that circle, and a straight line
+//      that would cross one goes round it the shorter way, by a point on that circle.
+//      Not tall (or no height given): none of it applies.
 // Idle reasons (with or without a camera): every step's intent carries why it is not acting (PartnerIdle), and the
 // brain counts the seconds of each over the fight (idleSeconds; None is the time it acts, so they sum to the time
 // stepped since begin). They are a report: in save and load, never in the hash, and they steer nothing.
@@ -219,7 +233,14 @@ struct PartnerEnemyView {
     float windupLeft = 0.f; // WindingUp: seconds until the blow lands
     Aim aim = Aim::None;    // WindingUp: whom the blow is aimed at
     bool leadAttacking = false;
+    float base = 0.f; // m over the floor (the camera's groundZ): its body's bottom and top; top <= base: no height
+    float top = 0.f;
 };
+
+// Rule 18: a target at least this tall (top - base, m) is tall (the lock's kArenaLookTallBoss; asserted equal).
+inline constexpr float kPartnerTallMeters = 4.f;
+// Rule 18: a walk keeps this far (m) off a tall target's edge (the partner's body and a little room).
+inline constexpr float kPartnerSteerClear = 0.6f;
 
 // Stationing's view (rules 8-12), on the ground plane, fed by the host each step. Off (the default), or any field not
 // a finite number, or arenaRadius under 0, or the partner's or the lead's position not finite: no stationing.
@@ -518,6 +539,7 @@ private:
     void spend(float seconds);
     void endString(bool staggered);
     void skirmishStep(double dt, const PartnerInput& in); // rule 17, after decide, framed
+    void steerRound(const PartnerInput& in);              // rule 18, last, framed
     // seen: bit i set when enemy i stands in the frame (framed only; 0 otherwise).
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;
 

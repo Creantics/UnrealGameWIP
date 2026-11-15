@@ -2778,7 +2778,10 @@ struct ArenaFightImpl {
             const Enemy& foe = foes[i];
             PartnerEnemyView& v = views[i];
             v.pos = foe.pos;
-            v.radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
+            const ArenaBodyCylinder body = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f);
+            v.radius = body.radius;
+            v.base = body.base; // rule 18: over the floor, as the camera's groundZ
+            v.top = body.top;
             v.kind = def.enemies[i].boss ? PartnerEnemyView::Kind::Boss : PartnerEnemyView::Kind::Regular;
             if (foe.brain == ArenaBrain::Dead) {
                 v.state = PartnerEnemyView::State::Down;

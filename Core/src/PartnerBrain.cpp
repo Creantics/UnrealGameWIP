@@ -1,5 +1,6 @@
 #include "ftcore/PartnerBrain.h"
 
+#include "ftcore/ArenaLockFrame.h"
 #include "ftcore/FightSession.h"
 #include "ftcore/Json.h"
 #include "ftcore/StateHash.h"
@@ -21,6 +22,11 @@ bool present(const View& e) {
     return std::isfinite(e.pos.x) && std::isfinite(e.pos.y) && std::isfinite(e.radius) && e.radius >= 0.f;
 }
 bool standing(const View& e) { return present(e) && e.state != View::State::Down; }
+static_assert(kPartnerTallMeters == kArenaLookTallBoss, "rule 18's bar is the lock's tall-boss bar");
+// Rule 18: a body this tall.
+bool tallView(const View& e) {
+    return present(e) && std::isfinite(e.base) && std::isfinite(e.top) && e.top - e.base >= kPartnerTallMeters;
+}
 bool windingAt(const View& e) {
     return present(e) && e.state == View::State::WindingUp && e.aim == View::Aim::Partner;
 }
@@ -70,6 +76,7 @@ struct Ground {
     bool reviving = false;
     Vec2 centre{};
     float radius = 0.f; // 0: unbounded
+    float grow = 0.f;   // rule 18: StayClose's cap, leash and return grow by this (a tall target's radius)
 
     // Inside the wedge grown by `margin` (on its sides and far end; not behind the camera).
     bool inWedge(Vec2 p, float margin) const {
@@ -196,14 +203,16 @@ bool better(const Spot& a, const Spot& b) { return a.tier < b.tier || (a.tier ==
 
 // StayClose: every station goal within this of the lead, half a metre inside the leash so a drifting lead does not
 // trip it (the return would end at back, the partner walk out again, and so on).
-float closeCap(const PartnerTuning& t) { return std::min(t.closeLeadMeters, t.leashMeters - 0.5f); }
+float closeCap(const PartnerTuning& t, const Ground& g) {
+    return std::min(t.closeLeadMeters + g.grow, t.leashMeters + g.grow - 0.5f);
+}
 
 // Rule 10: the best station on side s (+1: counter-clockwise from the lead, seen at the target).
 Spot stationOn(const Ground& g, const PartnerTuning& t, const PartnerEnemyView& e, PartnerOrder order, Vec2 pos,
                float s) {
     const bool close = order == PartnerOrder::StayClose;
     const float lo = close ? t.closeArcMin : t.spreadArcMin, hi = close ? t.closeArcMax : t.spreadArcMax;
-    const float cap = closeCap(t);
+    const float cap = closeCap(t, g);
     const float ring = e.radius + 0.5f * t.reachMeters;
     const Vec2 u = stUnit(stSub(g.lead, e.pos), stUnit(stSub(g.cam, e.pos), Vec2{1.f, 0.f}));
     Spot best;
@@ -235,7 +244,7 @@ Spot stationOn(const Ground& g, const PartnerTuning& t, const PartnerEnemyView& 
 // (StayClose: at most the close cap).
 Spot followOn(const Ground& g, const PartnerTuning& t, PartnerOrder order, Vec2 pos, float s) {
     const float lo = std::max(t.followMin, t.personalSpaceMeters + 0.05f);
-    const float hi = std::max(order == PartnerOrder::StayClose ? std::min(t.followMax, closeCap(t)) : t.followMax, lo);
+    const float hi = std::max(order == PartnerOrder::StayClose ? std::min(t.followMax, closeCap(t, g)) : t.followMax, lo);
     const float radii[] = {lo, 0.5f * (lo + hi), hi};
     Spot best;
     for (const float r : radii)
@@ -296,7 +305,7 @@ int orderKey(PartnerOrder o) { return o == PartnerOrder::Spread ? 2 : 1; }
 bool inReachSpot(const Ground& g, const PartnerTuning& t, const PartnerEnemyView& e, PartnerOrder order, Vec2 pos,
                  Vec2& out) {
     const float ring = e.radius + 0.5f * t.reachMeters;
-    const float cap = order == PartnerOrder::StayClose ? closeCap(t) : kStFar;
+    const float cap = order == PartnerOrder::StayClose ? closeCap(t, g) : kStFar;
     bool found = false;
     float best = kStFar;
     const auto consider = [&](Vec2 q) {
@@ -330,6 +339,16 @@ struct Frame {
         return std::fabs(sx) <= lim && std::fabs(sy) <= lim;
     }
     bool sees(Vec2 p) const { return point(p.x, p.y, z0) && point(p.x, p.y, z0 + 0.5f * h) && point(p.x, p.y, z0 + h); }
+    // Rule 18: the partner at p hidden behind a tall e from the lens (its middle and its head both behind its body).
+    bool hides(const PartnerEnemyView* e, Vec2 p) const {
+        if (!e || !tallView(*e)) return false;
+        const ArenaPoint3 eye{c.x, c.y, c.z};
+        const auto behind = [&](float z) {
+            return arenaHiddenBehind(eye, ArenaPoint3{p.x, p.y, z0 + z}, e->pos, e->radius, z0 + e->base, z0 + e->top);
+        };
+        return behind(0.55f * h) && behind(0.95f * h);
+    }
+    bool clear(const PartnerEnemyView* e, Vec2 p) const { return sees(p) && !hides(e, p); }
 };
 
 // The camera view, whole (PartnerCameraView's rules), or not given.
@@ -390,13 +409,23 @@ float stAngle(Vec2 a, Vec2 b) {
 // Rule 13: a valid station for target e (none: the follow ring round the lead) into `out`, or false. The one held,
 // while it is valid (minFrom 0); else the nearest valid one, the arc's first, at least minFrom from pos (rule 16),
 // which becomes the one held.
+// Rule 18: the straight walk from `from` to `to` passes within kPartnerSteerClear of the target's body (it must go
+// round it).
+bool walksRound(Vec2 from, Vec2 to, const PartnerEnemyView& e) {
+    const Vec2 a = stSub(from, e.pos), d = stSub(to, from);
+    const float dd = stDot(d, d);
+    const float u = dd > 1e-6f ? std::clamp(-stDot(a, d) / dd, 0.f, 1.f) : 0.f;
+    return std::hypot(a.x + d.x * u, a.y + d.y * u) < e.radius + kPartnerSteerClear;
+}
+
 bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, PartnerOrder order, Vec2 pos,
                   const PartnerEnemyView* e, int tgt, float minFrom, PartnerBrainSave& s, Vec2& out) {
     const bool close = order == PartnerOrder::StayClose;
-    const float cap = close ? closeCap(t) : kStFar;
+    const float cap = close ? closeCap(t, g) : kStFar;
     const Keep k = e ? makeKeep(g, *e) : Keep{};
+    const bool tall = e && tallView(*e); // rule 18
     const auto valid = [&](Vec2 q) {
-        return stFinite(q) && g.legal(q) && dist(q, g.lead) <= cap + 1e-4f && !k.in(q, t.wedgeClearMeters) && fr.sees(q);
+        return stFinite(q) && g.legal(q) && dist(q, g.lead) <= cap + 1e-4f && !k.in(q, t.wedgeClearMeters) && fr.clear(e, q);
     };
     const Vec2 c = e ? e->pos : g.lead;
     const std::uint8_t ring = e ? 1 : 2;
@@ -418,7 +447,8 @@ bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, Part
     }
     if (minFrom <= 0.f && s.frameRing == ring && (ring == 2 || s.frameTarget == tgt)) {
         const Vec2 q = stAlong(c, stTurn(Vec2{1.f, 0.f}, s.frameAngle), s.frameRadius);
-        if (valid(q)) {
+        // Rule 18: a station still round a tall target's body is not held (a nearer one may be valid again).
+        if (valid(q) && !(tall && walksRound(pos, q, *e))) {
             s.frameLast = q;
             out = q;
             return true;
@@ -432,7 +462,10 @@ bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, Part
             const Vec2 q = stAlong(c, stTurn(Vec2{1.f, 0.f}, ang), radii[static_cast<std::size_t>(ri)]);
             if (!valid(q) || dist(q, pos) < minFrom) continue;
             const float deg = e ? stAngle(stSub(g.lead, c), stSub(q, c)) : stAngle(g.facing, stSub(q, c));
-            const Spot cand{q, (deg >= lo - 1e-3f && deg <= hi + 1e-3f ? 0 : 1) + (e && ri > 0 ? 2 : 0), dist(q, pos)};
+            const bool second = tall ? ri == 0 && nr > 1 : ri > 0; // rule 18: on a tall target the outer ring first
+            // Rule 18: on a tall target a station reached only round its body (out of sight behind it) comes last.
+            const int round = tall && walksRound(pos, q, *e) ? 4 : 0;
+            const Spot cand{q, (deg >= lo - 1e-3f && deg <= hi + 1e-3f ? 0 : 1) + (e && second ? 2 : 0) + round, dist(q, pos)};
             if (better(cand, best)) {
                 best = cand;
                 bestAngle = ang;
@@ -726,6 +759,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     decide(dt, in);
     PartnerIntent& o = s_.out;
     if (s_.begun && o.framed && s_.t.circling) skirmishStep(dt, in); // rule 17 (off: none of it runs)
+    if (s_.begun && o.framed) steerRound(in); // rule 18: a walk round a tall target, not through it
     o.idle = idleOf(o, in);
     if (s_.begun) s_.idleSeconds[static_cast<std::size_t>(o.idle)] += dt;
     if (s_.begun && o.framed && s_.fellBack) { // rule 13's fallback: every step spent on it, whatever it does
@@ -767,6 +801,50 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
         account(dt, mine, in.leadAttacking);
     }
     return s_.out;
+}
+
+// Rule 18: a walk (MoveTo, StepBack) whose straight line would cross a tall target's body (its radius +
+// kPartnerSteerClear) goes by a point on that circle, the shorter way round: the tangent from where it stands, at least
+// 20 degrees on (so a partner on the circle walks along it), never past its goal's angle.
+void PartnerBrain::steerRound(const PartnerInput& in) {
+    PartnerIntent& o = s_.out;
+    if (o.act != PartnerAct::MoveTo && o.act != PartnerAct::StepBack) return;
+    if (!stFinite(in.pos) || !stFinite(o.point)) return;
+    const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
+    // Every standing tall body, held or not: a goal inside one (a leash's line through it) is put out on its edge.
+    for (std::size_t i = 0; i < n; ++i) {
+        const View& e = in.enemies[i];
+        if (!standing(e) || !tallView(e)) continue;
+        const Vec2 to = stSub(o.point, e.pos);
+        const float rr = e.radius + kPartnerSteerClear;
+        if (std::hypot(to.x, to.y) < rr)
+            o.point = stAlong(e.pos, stUnit(to, stUnit(stSub(in.pos, e.pos), Vec2{1.f, 0.f})), rr + 0.1f);
+    }
+    // Then round the nearest one the straight walk crosses.
+    int at = -1;
+    float best = kStFar;
+    for (std::size_t i = 0; i < n; ++i) {
+        const View& e = in.enemies[i];
+        if (!standing(e) || !tallView(e) || !walksRound(in.pos, o.point, e)) continue;
+        const float d = dist(in.pos, e.pos) - e.radius;
+        if (d < best) {
+            best = d;
+            at = static_cast<int>(i);
+        }
+    }
+    if (at < 0) return;
+    const View& e = in.enemies[static_cast<std::size_t>(at)];
+    const float rr = e.radius + kPartnerSteerClear;
+    const Vec2 from = stSub(in.pos, e.pos), to = stSub(o.point, e.pos), d = stSub(o.point, in.pos);
+    const float far = std::hypot(from.x, from.y), dd = stDot(d, d);
+    if (far < 1e-3f || dd < 1e-6f) return; // on its centre (the host pushes it out), or not walking
+    const float u = std::clamp(-stDot(from, d) / dd, 0.f, 1.f);
+    if (std::hypot(from.x + d.x * u, from.y + d.y * u) >= rr) return; // the line keeps clear
+    // Inside the circle already (pushed against the body): the point is out on it and on round (the tangent is 0).
+    const float left = std::atan2(stCross(from, to), stDot(from, to)) / kStDeg; // signed, the shorter way
+    const float tangent = std::acos(std::clamp(rr / far, -1.f, 1.f)) / kStDeg;
+    const float turn = std::min(std::max(tangent, 20.f), std::fabs(left));
+    o.point = stAlong(e.pos, stUnit(stTurn(from, left < 0.f ? -turn : turn), Vec2{1.f, 0.f}), rr + 0.1f);
 }
 
 // Rule 17 (framed): with its attack held (the budget out, a pause, a windup at it it did not guard, no target), it
@@ -919,7 +997,7 @@ void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
             const Vec2 p{c.x + r.x, c.y + r.y};
             if (stFinite(p) && g.legal(p) && !(e && makeKeep(g, *e).in(p, t.wedgeClearMeters)) &&
                 (!e || (edge(p, *e) <= t.reachMeters && edge(p, *e) >= t.standoffMeters)) && (k >= 2 || fr.sees(p)) &&
-                (in.order != PartnerOrder::StayClose || dist(p, in.leadPos) <= closeCap(t) + 1e-4f)) {
+                (in.order != PartnerOrder::StayClose || dist(p, in.leadPos) <= closeCap(t, g) + 1e-4f)) {
                 q = p;
                 found = true;
                 if (k % 2 == 1) s_.skirmishDir = static_cast<std::int8_t>(-s_.skirmishDir);
@@ -1009,6 +1087,14 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // Rules 13-16: the play camera, when the host gives a whole one with stationing on.
     Frame fr;
     const bool fm = st && makeFrame(in.station.camera, t, fr);
+    // Rule 18: StayClose by a tall target (framed; one standing whose edge is within closeLeadMeters of the lead, held
+    // or not, so a lead switch does not shrink them): its cap, leash and return grow by the target's radius.
+    if (fm && in.order == PartnerOrder::StayClose)
+        for (std::size_t i = 0; i < n; ++i) {
+            const View& e = in.enemies[i];
+            if (standing(e) && tallView(e) && dist(e.pos, in.leadPos) - e.radius <= t.closeLeadMeters)
+                g.grow = std::max(g.grow, e.radius);
+        }
     if (fm) {
         s_.framed = true;
         s_.noFrame += dt; // since a valid station was last found
@@ -1042,7 +1128,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         // The grace holds the last station while it stays legal and out of this target's keep-out (it may have
         // left the frame: the camera can come back to it).
         if (!s_.fellBack && s_.frameRing != 0 && s_.noFrame + 1e-9 < static_cast<double>(t.frustumGiveUpSeconds) &&
-            g.legal(s_.frameLast) && !(e && makeKeep(g, *e).in(s_.frameLast, t.wedgeClearMeters)))
+            g.legal(s_.frameLast) && !(e && makeKeep(g, *e).in(s_.frameLast, t.wedgeClearMeters)) && !fr.hides(e, s_.frameLast))
             return s_.frameLast;
         out.frameFallback = true;
         s_.fellBack = true;
@@ -1054,9 +1140,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // place is in frame and outside both keep-outs, so a drifting station does not start and stop it every few ticks.
     const auto near = [&](Vec2 p, const View* e) {
         const float d = dist(in.pos, p);
-        if (d <= t.stationTolerance) return true;
+        // Rule 18: on a tall target the tolerance holds only a spot the camera sees unhidden (the station may stand
+        // at the frame's edge, its tolerance past it).
+        if (d <= t.stationTolerance) return !(fm && e && tallView(*e)) || fr.clear(e, in.pos);
         if (!fm || !wasStill || d > 2.f * t.stationTolerance) return false;
-        return fr.sees(in.pos) && !g.inWedge(in.pos, 0.f) && !(e && makeKeep(g, *e).in(in.pos, t.wedgeClearMeters));
+        return fr.clear(e, in.pos) && !g.inWedge(in.pos, 0.f) && !(e && makeKeep(g, *e).in(in.pos, t.wedgeClearMeters));
     };
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
@@ -1126,8 +1214,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (in.order == PartnerOrder::StayClose) {
         const float d = dist(in.pos, in.leadPos);
         // Stationing: the return ends within max(returnMeters, personal space + 0.5), at a resolved point.
-        const float back = st ? std::max(t.returnMeters, t.personalSpaceMeters + 0.5f) : t.returnMeters;
-        if (d > t.leashMeters) s_.returning = true;
+        const float back = st ? std::max(t.returnMeters + g.grow, t.personalSpaceMeters + 0.5f) : t.returnMeters;
+        if (d > t.leashMeters + g.grow) s_.returning = true;
         else if (d <= back) s_.returning = false;
         if (s_.returning) {
             if (s_.phase == Phase::String) endString(staggered);
@@ -1261,7 +1349,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (st) { // rule 12: a string starts only from its station
         const Vec2 p = goalFor(tgt);
         const bool inReach = edge(in.pos, e) <= t.reachMeters;
-        const bool there = near(p, &e);
+        // Rule 18: on a tall target a string starts at its station only where the camera sees it unhidden (the
+        // grace's spot may have left the frame), unless fallen back.
+        const bool there = near(p, &e) && (!fm || !tallView(e) || s_.fellBack || fr.clear(&e, in.pos));
         if (there && inReach) {
             s_.offStation = 0.0; // stationed: the fallback's timers start again
         } else {
@@ -1275,8 +1365,10 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             const bool any = off + 1e-9 >= static_cast<double>(t.stationAnySeconds);
             // Rule 14: when due, from where it stands outside personal space and both keep-outs. Framed, only from in
             // the frame, unless no valid station was found this step (then reported: intent.offFrame).
+            // Rule 18: on a tall target, only from a spot the camera sees unhidden, unless fallen back.
+            const bool seenHere = tallView(e) ? s_.fellBack || fr.clear(&e, in.pos) : !stationNow || fr.sees(in.pos);
             const bool fromHere =
-                inReach && g.roomOk(in.pos) && (!fm || !stationNow || fr.sees(in.pos)) &&
+                inReach && g.roomOk(in.pos) && (!fm || seenHere) &&
                 ((giveUp && !g.inWedge(in.pos, 0.f)) || any ||
                  (engageDue && !g.inWedge(in.pos, 0.f) && !makeKeep(g, e).in(in.pos, 0.f)));
             if (!fromHere) {
@@ -1333,7 +1425,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     s_.begunBlows = 1;
     s_.committedEnd = s_.now + s_.lengths[0];
     attack(tgt, true);
-    if (fm && !fr.sees(in.pos)) { // rule 14's last resort: no valid station found, it strikes from off the frame
+    if (fm && !fr.clear(&e, in.pos)) { // rule 14's last resort: no valid station found, it strikes from off the frame
         out.offFrame = true;
         ++s_.offFrameStarts;
     }
