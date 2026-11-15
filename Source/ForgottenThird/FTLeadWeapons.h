@@ -79,6 +79,8 @@ inline constexpr const TCHAR* GauntletPieces[NumGauntletPieces] = {
 	TEXT("SKM_DevinGauntlet_R_Glove"), TEXT("SKM_DevinGauntlet_R_Strap"), TEXT("SKM_DevinGauntlet_R_Bracer"),
 	TEXT("SKM_DevinGauntlet_L_Glove"), TEXT("SKM_DevinGauntlet_L_Strap"), TEXT("SKM_DevinGauntlet_L_Bracer"),
 };
+// Where the right and left bracers are in GauntletPieces (a look's GauntletBracerR/L replaces them).
+inline constexpr int32 GauntletBracerIndex[2] = {2, 5};
 
 struct FPiece
 {
@@ -101,6 +103,11 @@ FORGOTTENTHIRD_API UStaticMesh* FindMesh(const FPiece& Piece);
 
 struct FFTLeadWeapons
 {
+	// The landed-blow effect of a weapon kit (an NS_ name under /Game/VFX): the lead's, and the partner's at its scale.
+	static const TCHAR* ImpactEffectOf(ftcore::ArenaWeapon W)
+	{
+		return W == ftcore::ArenaWeapon::Magic ? TEXT("spell_impact") : W == ftcore::ArenaWeapon::Guns ? TEXT("gun_impact") : TEXT("gauntlet_spark");
+	}
 	// The clips' fade-out once the attack is over or cut short (s).
 	static constexpr double kFadeOut = 0.15;
 
@@ -110,8 +117,11 @@ struct FFTLeadWeapons
 	// The same on any actor wearing a lead's body (the explore character, fed by ftcore::FieldStrike): Body is its
 	// skinned body, which the props and effects attach to and the clips play on. Again on the same body: nothing.
 	void Begin(AActor* Owner, USkeletalMeshComponent* Body, const FFTLeadLook& Look, const ftcore::ArenaFighter& Kit);
-	// Removes the props and effects it made from the body and forgets it (a look swapped on a body that stays).
+	// Removes the props and effects it made from the body, sets the look's gauntlet morphs back to 0 on it and forgets
+	// it (a look swapped on a body that stays, a lead switch or a takeover).
 	void End();
+	// The look's gauntlet morphs this Begin set on the body (empty: none, or no gauntlets).
+	const TArray<FName>& GauntletMorphNames() const { return GauntletMorphs; }
 	// Where the attacks are aimed this step (world, cm), and whether at a target (else straight ahead).
 	void SetAim(const FVector& HitPoint, bool bAtTarget)
 	{
@@ -203,6 +213,9 @@ private:
 	// The reload and flinch layers after the strike's (StrikeWeight, 0..1, keeps its share of the arms).
 	void PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight);
 	void AttachProps();
+	// The look's GauntletMorphs and bracers (empty: the kit's own), kept from Begin for AttachProps.
+	TArray<FName> GauntletMorphs;
+	FSoftObjectPath GauntletBracer[2];
 	UStaticMeshComponent* AttachProp(const FTWeaponProps::FPiece& Piece);
 	void SpawnEffects();
 	UFTVfxComponent* MakeEffect(const TCHAR* Effect, USceneComponent* Parent, FName Socket);
