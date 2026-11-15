@@ -815,49 +815,14 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 		switch (E.type)
 		{
 		case ftcore::ArenaEventType::AttackStarted:
-		{
-			if (E.source != ftcore::kArenaPlayer)
+			if (E.source == Source)
 			{
-				break;
-			}
-			const FightClip Want = ftcore::arenaPlayerStrike(Kit, E.move);
-			if (Want == FightClip::Stance)
-			{
-				break;
-			}
-			Strike = Want;
-			if (!bClips)
-			{
-				break;
-			}
-			// A strike cut short and fading: the new one starts clean.
-			if (FadeSince >= 0.0)
-			{
-				Animator.reset();
-				FadeSince = -1.0;
-			}
-			// Its impact as the attack goes active.
-			const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, E.move);
-			const double KeyAt = Attack ? T + static_cast<double>(Attack->startup) : -1.0;
-			FightClip Played = FightClip::Stance;
-			if (Want == FightClip::Counter || Want == FightClip::Finisher)
-			{
-				// Long clips (a second of wind-up) on a riposte's short startup: faster, so less of the wind-up is skipped.
-				Played = Animator.play(Want, T, KeyAt, kQuickClipRate) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
-			}
-			else
-			{
-				Played = Animator.playStrike(Want, T, KeyAt);
-			}
-			if (Played != FightClip::Stance)
-			{
-				Strike = Played;
+				StartStrike(E.move, T);
 			}
 			break;
-		}
 		case ftcore::ArenaEventType::Hit:
 			// The fist's spark on the hit point (a shot's or cast's impact plays as it arrives, in Track).
-			if (E.source == ftcore::kArenaPlayer && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+			if (E.source == Source && bImpacts && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 			{
 				ImpactAt = AimPoint;
 				ImpactDue = T;
@@ -874,6 +839,68 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 	}
 }
 
+double FFTLeadWeapons::FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move)
+{
+	switch (Kit.weapon)
+	{
+	case ftcore::ArenaWeapon::Guns:
+		return ftcore::arenaPlayerStrike(Kit, Move) == FightClip::WeaponRight ? kTracerTime : 0.0;
+	case ftcore::ArenaWeapon::Magic:
+		return kBoltTime;
+	default:
+		return 0.0;
+	}
+}
+
+void FFTLeadWeapons::StartStrike(uint8 Move, double T)
+{
+	// The blow before (a string's) ends here: its clip counted whole when it got into its recovery.
+	if (bStrikeClip)
+	{
+		ClipsCompleted += LastPart == ftcore::ArenaPart::Recovery ? 1 : 0;
+		bStrikeClip = false;
+	}
+	if (!IsOn())
+	{
+		return;
+	}
+	const FightClip Want = ftcore::arenaPlayerStrike(Kit, Move);
+	if (Want == FightClip::Stance)
+	{
+		return;
+	}
+	Strike = Want;
+	if (!bClips)
+	{
+		return;
+	}
+	// A strike cut short and fading: the new one starts clean.
+	if (FadeSince >= 0.0)
+	{
+		Animator.reset();
+		FadeSince = -1.0;
+	}
+	// Its impact as the attack goes active.
+	const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, Move);
+	const double KeyAt = Attack ? T + static_cast<double>(Attack->startup) : -1.0;
+	FightClip Played = FightClip::Stance;
+	if (Want == FightClip::Counter || Want == FightClip::Finisher)
+	{
+		// Long clips (a second of wind-up) on a riposte's short startup: faster, so less of the wind-up is skipped.
+		Played = Animator.play(Want, T, KeyAt, kQuickClipRate) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
+	}
+	else
+	{
+		Played = Animator.playStrike(Want, T, KeyAt);
+	}
+	if (Played != FightClip::Stance)
+	{
+		Strike = Played;
+		bStrikeClip = true;
+		++ClipsStarted;
+	}
+}
+
 void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 {
 	if (!IsOn())
@@ -881,6 +908,11 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		return;
 	}
 	const bool bAttacking = IsAttack(P.action);
+	if (!bAttacking && IsAttack(LastAction) && bStrikeClip)
+	{
+		ClipsCompleted += LastPart == ftcore::ArenaPart::Recovery ? 1 : 0;
+		bStrikeClip = false;
+	}
 	const bool bWentActive = bAttacking && P.part == ftcore::ArenaPart::Active
 		&& (LastPart != ftcore::ArenaPart::Active || LastMove != P.move || LastAction != P.action);
 	if (bWentActive)
@@ -938,8 +970,11 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				Vfx->SetParameters(static_cast<float>(FMath::Max(Path.Size(), 1.0) / Reach), 1.f);
 			}
 			Play(Travel, T);
-			ImpactAt = AimPoint;
-			ImpactDue = T + Flight;
+			if (bImpacts)
+			{
+				ImpactAt = AimPoint;
+				ImpactDue = T + Flight;
+			}
 		}
 	}
 	if (ImpactDue >= 0.0 && T + 1e-6 >= ImpactDue)
@@ -1238,6 +1273,8 @@ void FFTLeadWeapons::Restart()
 	LastMove = 0;
 	ActiveCount = 0;
 	LastActiveTime = -1e9;
+	ClipsStarted = ClipsCompleted = 0;
+	bStrikeClip = false;
 	bWarding = false;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;
@@ -1290,6 +1327,8 @@ void FFTLeadWeapons::Reset()
 	Strike = FightClip::Stance;
 	ActiveCount = 0;
 	LastActiveTime = -1e9;
+	ClipsStarted = ClipsCompleted = 0;
+	bStrikeClip = false;
 	bWarding = false;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;

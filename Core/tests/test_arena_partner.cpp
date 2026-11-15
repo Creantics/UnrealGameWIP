@@ -6,6 +6,7 @@
 #include "ftcore/ArenaZone.h"
 #include "ftcore/FightSession.h"
 #include "ftcore/PartnerBrain.h"
+#include "ftcore/StateHash.h"
 #include "TestAssets.h"
 #include <ostream>
 #include <doctest/doctest.h>
@@ -490,6 +491,13 @@ ArenaBlowRuling allyHook(void* user, const ArenaBlow& blow) {
     return r;
 }
 
+// The partner time its brain holds in its budget window.
+float partnerSpent(const PartnerBrain& b) {
+    float sum = 0.f;
+    for (const float s : b.save().spentPartner) sum += s;
+    return sum;
+}
+
 } // namespace
 
 TEST_CASE("arena partner: with no partner set, or a null one, a fight is unchanged") {
@@ -802,6 +810,193 @@ TEST_CASE("arena partner: a blow it began runs out after a Guard intent") {
         guarded += w.guardedBlows;
     }
     CHECK(guarded >= 1);
+}
+
+TEST_CASE("arena partner: a hit into hitstun cuts its running blow, as the lead's; the time it committed stays spent") {
+    PRig r;
+    r.tuning.guardChance = 0.f;            // every blow aimed at it lands
+    r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way: it strings all the time
+    REQUIRE(validPartnerTuning(r.tuning));
+    bossRig(r, 2, 1.2f);
+    BlowWatch w;
+    int cutSeen = 0, spentChecked = 0;
+    bool wasAttacking = false;
+    float lastTime = 0.f;
+    std::uint8_t lastBlow = 0;
+    for (int k = 0; k < 30 * 60 && !r.fight.over(); ++k) {
+        const std::size_t from = r.log.size();
+        const float spent0 = partnerSpent(r.brain);
+        r.tick();
+        w.see(*r.out, r.def.fighter, r.tuning, r.fight.time());
+        bool hitInBlow = false;
+        for (std::size_t i = from; i < r.log.size(); ++i) {
+            const ArenaEvent& e = r.log[i].e;
+            if (e.type == ArenaEventType::AllyHit && e.amount > 0 && wasAttacking) hitInBlow = true;
+            if (hitInBlow) CHECK_FALSE(allyHit(e)); // no damage from the cut blow after the hit, this tick included
+        }
+        if (hitInBlow) {
+            ++cutSeen;
+            CHECK_FALSE(r.out->ally.attacking);
+            // Its brain still counts the rest of the blow it committed: over the hitstun, about all of it.
+            const ArenaAttack& a = r.def.fighter.light[lastBlow % r.def.fighter.lightCount];
+            const float rest = a.total() - lastTime - kDt;
+            if (r.fight.time() < 10.f && rest > 4.f * kDt) {
+                for (int j = 0; j < 18; ++j) r.tick(); // 0.3 s, inside the 0.4 s hitstun: no new blow
+                CHECK(partnerSpent(r.brain) - spent0 >= std::min(rest, 0.3f) - 2.f * kDt);
+                ++spentChecked;
+            }
+        }
+        wasAttacking = r.out->ally.attacking;
+        lastTime = r.out->ally.stateTime;
+        lastBlow = r.out->ally.blow;
+    }
+    const ArenaStats& s = r.fight.stats();
+    CHECK(s.takeovers == 0);
+    CHECK(cutSeen >= 2);
+    CHECK(s.partnerBlowsCut == cutSeen);
+    CHECK(s.partnerBlowsVoid == 0); // the boss never dies here
+    CHECK(spentChecked >= 1);
+}
+
+namespace {
+// The boss rig: the lead guards the strings aimed at it (parried, then paired on the next tick, as pairUntilCounter);
+// the hook takes the lead's hp loss off every bite and scales the partner's by `allyBite` (1: they land and cut its
+// blows; 0: none does). The partner's light lands early, then a long recovery; 40 s.
+ArenaBlowRuling cutHook(void* user, const ArenaBlow& blow) {
+    ArenaBlowRuling r;
+    if (blow.source == kArenaAlly || blow.source == kArenaPlayer) return r;
+    r.damage = blow.target == kArenaAlly ? *static_cast<const float*>(user) : 0.f;
+    return r;
+}
+struct CutPair {
+    int cutInRecovery = 0, cutAfterLanding = 0, hitsAfterCut = 0, damageLost = 0;
+    int counters = 0, cut = 0, allyOnBoss = 0, allyTicks = 0;
+    float pairSeconds = 0.f;
+    std::vector<int> counterAt, leadHits; // the tick of each counter; the tick and hp of each blow the lead lands
+};
+CutPair cutPairRun(float allyBite) {
+    PRig r;
+    r.tuning.guardChance = 0.f;             // every bite at it lands
+    r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way
+    REQUIRE(validPartnerTuning(r.tuning));
+    for (int i = 0; i < 3; ++i) r.def.fighter.light[i] = swing(0.1f, 0.1f, 1.2f, 2.f, 1); // lands, then a long recovery
+    r.enemy(bossKind(5), Vec2{0.f, 0.f});
+    r.def.enemies[0].hp = 100000; // it never dies here
+    r.def.fighter.hp = 1000;
+    r.bodies.player = Vec2{-1.5f, 0.f};
+    r.bodies.ally = Vec2{1.2f, 0.f};
+    r.go(true, 100000);
+    r.fight.setBlowHook(&cutHook, &allyBite);
+    CutPair c;
+    std::size_t seen = 0;
+    bool wasAttacking = false, landed = false, afterCut = false;
+    float lastTime = 0.f;
+    for (int k = 0; k < 40 * 60 && !r.fight.over(); ++k) {
+        const ArenaEnemyOut& e = r.fight.output().enemies[0];
+        r.in.guard = e.brain == ArenaBrain::Attack && e.aim == 1 &&
+                     ((e.part == ArenaPart::Startup && e.stateTime >= 0.27f) || e.part == ArenaPart::Active);
+        r.in.pair = false;
+        for (; seen < r.log.size(); ++seen)
+            if (r.log[seen].e.type == ArenaEventType::Parried) r.in.pair = true;
+        const std::size_t from = r.log.size();
+        const int dealt0 = r.fight.stats().partnerDamage;
+        r.tick();
+        c.pairSeconds += r.out->ally.pairSeconds;
+        ++c.allyTicks;
+        if (r.out->ally.target == 0) ++c.allyOnBoss;
+        const ArenaAttack& a = r.def.fighter.light[0];
+        bool hitInBlow = false;
+        for (std::size_t i = from; i < r.log.size(); ++i) {
+            const ArenaEvent& ev = r.log[i].e;
+            if (ev.type == ArenaEventType::AllyHit && ev.amount > 0 && wasAttacking) hitInBlow = true;
+            if (allyHit(ev) && (hitInBlow || afterCut)) ++c.hitsAfterCut;
+            if (allyHit(ev) && !hitInBlow) landed = true;
+            if (ev.type == ArenaEventType::CounterStagger) {
+                ++c.counters;
+                c.counterAt.push_back(k);
+            }
+            if (leadHit(ev)) {
+                c.leadHits.push_back(k);
+                c.leadHits.push_back(ev.amount);
+            }
+        }
+        if (r.out->ally.attacking && r.out->ally.stateTime < lastTime) landed = false; // a new blow
+        if (r.out->ally.attacking && !wasAttacking) {
+            landed = false;
+            afterCut = false;
+        }
+        if (hitInBlow) {
+            ++c.cut;
+            CHECK_FALSE(r.out->ally.attacking);
+            if (lastTime >= a.startup + a.active) ++c.cutInRecovery;
+            if (landed) ++c.cutAfterLanding;
+            if (r.fight.stats().partnerDamage < dealt0) ++c.damageLost; // what it dealt stays dealt
+            afterCut = true;
+        }
+        wasAttacking = r.out->ally.attacking;
+        lastTime = r.out->ally.stateTime;
+    }
+    CHECK(r.fight.stats().partnerBlowsCut == c.cut);
+    return c;
+}
+} // namespace
+
+TEST_CASE("arena partner: a hit in its blow's recovery, after it landed, cuts it: what it dealt stays, nothing more") {
+    const CutPair c = cutPairRun(1.f);
+    MESSAGE("CUTPAIR cut " << c.cut << " recovery " << c.cutInRecovery << " afterLanding " << c.cutAfterLanding
+                           << " hitsAfter " << c.hitsAfterCut << " lost " << c.damageLost << " counters " << c.counters
+                           << " onBoss " << c.allyOnBoss << "/" << c.allyTicks);
+    CHECK(c.cutInRecovery >= 2);
+    CHECK(c.cutAfterLanding >= 2);
+    CHECK(c.hitsAfterCut == 0);
+    CHECK(c.damageLost == 0);
+}
+
+TEST_CASE("arena partner: the paired counter is the same whether its blows are cut or not") {
+    const CutPair cut = cutPairRun(1.f), clean = cutPairRun(0.f);
+    MESSAGE("CUTPAIR2 cut " << cut.cut << "/" << clean.cut << " counters " << cut.counters << "/" << clean.counters
+                            << " pair s " << cut.pairSeconds << "/" << clean.pairSeconds);
+    REQUIRE(cut.cut >= 2);
+    CHECK(clean.cut == 0);
+    CHECK(cut.counters >= 2);
+    CHECK(cut.counters == clean.counters);
+    CHECK(cut.pairSeconds == clean.pairSeconds);
+    CHECK(cut.counterAt == clean.counterAt); // on the same ticks
+    CHECK(cut.leadHits == clean.leadHits);   // the lead's blows (the counters' among them): the same ticks and hp
+}
+
+TEST_CASE("arena partner: a blow whose target dies before its hit frame deals nothing and ends") {
+    PRig r;
+    for (int i = 0; i < 3; ++i) r.def.fighter.light[i] = swing(0.5f, 0.1f, 0.3f, 2.f, 10); // its hit frame comes late
+    r.def.fighter.heavy = swing(0.05f, 0.1f, 0.3f, 2.f, 1000);                          // the lead's kills first
+    r.enemy(dummyKind(50), Vec2{0.f, 0.f});
+    r.enemy(dummyKind(), Vec2{25.f, 0.f}); // keeps the fight on, far out of its reach
+    r.bodies.player = Vec2{0.f, -1.2f};
+    r.bodies.ally = Vec2{-1.4f, 0.f};
+    r.go(true, 100, 1, Vec2{0.f, 1.f});
+    bool pressed = false;
+    float killedAt = -1.f;
+    for (int k = 0; k < 6 * 60 && killedAt < 0.f; ++k) {
+        if (!pressed && r.fight.output().ally.attacking && r.fight.output().ally.target == 0 &&
+            r.fight.output().ally.stateTime <= 2.f * kDt) {
+            r.in.heavy = true;
+            pressed = true;
+        }
+        r.tick();
+        if (!r.fight.enemyAlive(0)) killedAt = r.fight.time();
+    }
+    REQUIRE(pressed);
+    REQUIRE(killedAt > 0.f);
+    CHECK(r.count(ArenaEventType::Hit) >= 1); // the lead's
+    r.tick();
+    CHECK_FALSE(r.fight.output().ally.attacking); // ended by the step after the kill at the latest
+    for (int k = 0; k < 30; ++k) r.tick();
+    const ArenaStats& s = r.fight.stats();
+    CHECK(s.partnerBlowsVoid == 1);
+    CHECK(s.partnerBlowsCut == 0);
+    CHECK(s.partnerBlows == 0);
+    CHECK(s.partnerDamage == 0);
+    CHECK(r.allyHits() == 0);
 }
 
 TEST_CASE("arena partner: the player falling with the partner up takes its body; it rises; both down is the Defeat") {
@@ -1440,14 +1635,6 @@ TEST_CASE("arena partner: a counter dealt reports pairPartnerSeconds, and its pa
     q.go(false, 100);
     CHECK(pairUntilCounter(q) == 0.f);
 }
-
-namespace {
-float partnerSpent(const PartnerBrain& b) {
-    float sum = 0.f;
-    for (const float s : b.save().spentPartner) sum += s;
-    return sum;
-}
-} // namespace
 
 TEST_CASE("arena partner: a counter's partner time reaches the brain's budget once (PartnerInput::spentSeconds)") {
     // The tick of the counter and the next: the brain takes its second on one of them, once.
@@ -2164,6 +2351,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
     const ArenaTable t = shippedTable();
     const char* names[kPartnerIdleCount] = {"none", "noBudget", "noTarget", "moving",
                                             "staggered", "pause", "other"};
+    double todayShare[2] = {0, 0}; // on screen with the camera not given, per order
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}})
         for (const bool camera : {false, true}) {
             CAPTURE(order);
@@ -2193,7 +2381,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                 r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
                 const PartnerCameraView seen = behindLead(r.bodies.player, facing); // on-screen time, given or not
                 r.tick();
-                if (partnerInFrame(seen, 0.f, r.bodies.ally)) onScreen += kDt;
+                if (partnerInFrame(seen, kPartnerFrustumMargin, r.bodies.ally)) onScreen += kDt;
                 const PartnerIntent& pi = r.brain.intent();
                 if (pi.blowStart) {
                     longestGap = std::max(longestGap, double(r.fight.time()) - lastStart);
@@ -2226,7 +2414,8 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             const std::string head = std::string(order == 0 ? "StayClose" : "Spread") + (camera ? ", camera" : ", no camera");
             MESSAGE(head << ": " << T << " s, "
                                    << r.def.enemyCount << " enemies; strings " << s.partnerStrings << ", blows "
-                                   << s.partnerBlows << ", guards " << s.partnerGuards << ", fallback "
+                                   << s.partnerBlows << " (cut by a hit " << s.partnerBlowsCut << ", ended at a dead target "
+                                   << s.partnerBlowsVoid << "), guards " << s.partnerGuards << ", fallback "
                                    << r.brain.fallbackSeconds() << " s; shares:" << shares);
             MESSAGE("    goal jumps " << goalJumps << ", walked " << walked << " m, longest gap between blow starts "
                                       << longestGap << " s, repositions " << repositions << "; lead attacking "
@@ -2235,16 +2424,237 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                       << " s, the governor's allowance 0.6 x lead + 2 = " << 0.6 * leadAttack + 2.0
                                       << " s");
             MESSAGE("    on screen " << onScreen / T << ", goal jumps per 10 s " << 10.0 * goalJumps / T
-                                     << ", off-frame starts " << r.brain.offFrameStarts());
+                                     << ", off-frame starts " << r.brain.offFrameStarts() << "; rule 17: circling "
+                                     << r.brain.skirmishSeconds() << " s over " << r.brain.skirmishMoves()
+                                     << " goals, guards " << r.brain.guardsBegun() << ", dodges 0 (none in the kit)");
             CHECK(r.brain.framed() == camera);
+            if (!camera) todayShare[order] = onScreen / T;
             if (camera) {
                 CHECK(s.partnerStrings >= 1);
-                // On screen at least 0.8 of the fight (measured 0.97 StayClose, 0.94 Spread), and its goal jumps
-                // under 35 times in 10 s (measured 28 StayClose, 21 Spread).
+                // On screen (inside the frame shrunk by kPartnerFrustumMargin) at least 0.8 of the fight (measured
+                // 0.97 StayClose, 0.90 Spread), above cameraOn's stationing by at least 0.02 (measured 0.93 and
+                // 0.85 without the camera: here cameraOn already looks from behind the lead), its goal jumps under
+                // 35 times in 10 s (measured 26 StayClose, 21 Spread), and no string from off the frame (measured 0).
                 CHECK(onScreen / T >= 0.8);
+                CHECK(onScreen / T - todayShare[order] >= 0.02);
                 CHECK(10.0 * goalJumps / T <= 35.0);
+                CHECK(r.brain.offFrameStarts() == 0);
             }
         }
+}
+
+namespace {
+
+// A lead that never attacks for 20 s of the shipped group fight, the play camera behind it: the partner's numbers.
+struct IdleLead {
+    double T = 0, leadAttack = 0, partnerBlow = 0, longestStill = 0, longestInPlace = 0, onScreen = 0, jumpsPer10 = 0;
+    double facingOff = 0, circlingTime = 0, shortestCircling = 0;
+    int skirmishMoves = 0, circlingReversals = 0;
+};
+
+IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling) {
+    IdleLead o;
+    {
+        PRig r(t.fighter("default"));
+        r.def = t.fallback;
+        r.def.enemyCount = 0;
+        for (const char* id : {"skirmisher", "hulk", "duelist"})
+            for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+                if (t.enemyIds[e] == id) {
+                    r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                    r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+                }
+        REQUIRE(r.def.enemyCount == 3);
+        r.def.attackers = 2;
+        r.tuning = shippedTuning();
+        r.tuning.circling = circling;
+        r.in.partnerOrder = order;
+        r.goShipped(true, 1);
+        r.autopilot = false; // the lead moves, dodges and guards as the autopilot says, and never attacks
+        Vec2 facing = r.fight.playerStartFacing();
+        Vec2 lastGoal = r.bodies.ally, lastAt = r.bodies.ally;
+        int goalJumps = 0;
+        double leadAttack = 0, partnerBlow = 0, onScreen = 0, still = 0, longestStill = 0, facingOff = 0;
+        Vec2 placeAt = r.bodies.ally;
+        double inPlace = 0, longestInPlace = 0;
+        // Goal jumps by kind: a walk begun or ended (the goal is the body while it waits), its own goal re-picked.
+        int flips = 0, repicks = 0;
+        bool wasWalk = false;
+        // Direction reversals: a turn over 90 degrees from any heading it moved on in the last 0.5 s.
+        constexpr int kWin = 30; // 0.5 s of steps
+        std::array<Vec2, kWin> dirs{};
+        std::array<bool, kWin> dirOn{};
+        int slot = 0, reversals = 0, circlingReversals = 0, forcedReversals = 0, blowReversals = 0;
+        double holdFrom = -1.0, shortestCircling = 1e9, circlingTime = 0;
+        while (!r.fight.over() && r.fight.time() < 20.f) {
+            const std::uint8_t keep = r.in.partnerOrder;
+            r.in = r.fight.autopilot();
+            r.in.partnerOrder = keep;
+            r.in.light = r.in.heavy = r.in.pair = false;
+            r.in.partnerCamera = behindLead(r.bodies.player, facing);
+            r.tick();
+            if (partnerInFrame(r.in.partnerCamera, kPartnerFrustumMargin, r.bodies.ally)) onScreen += kDt;
+            const PartnerIntent& pi = r.brain.intent();
+            const bool walkNow = pi.act == PartnerAct::MoveTo || pi.act == PartnerAct::StepBack;
+            if (length(sub(r.out->ally.goal, lastGoal)) > 0.25f) {
+                ++goalJumps;
+                if (walkNow != wasWalk) ++flips;
+                else ++repicks;
+            }
+            wasWalk = walkNow;
+            lastGoal = r.out->ally.goal;
+            {
+                const Vec2 v = sub(r.bodies.ally, lastAt);
+                const float sp = length(v) / static_cast<float>(kDt);
+                bool anyOn = false;
+                for (int i = 0; i < kWin; ++i) anyOn = anyOn || dirOn[static_cast<std::size_t>(i)];
+                if (sp > 0.5f) {
+                    const Vec2 d{v.x / length(v), v.y / length(v)};
+                    if (!anyOn && holdFrom < 0.0) holdFrom = r.fight.time();
+                    bool turned = false;
+                    for (int i = 0; i < kWin; ++i)
+                        if (dirOn[static_cast<std::size_t>(i)] &&
+                            d.x * dirs[static_cast<std::size_t>(i)].x + d.y * dirs[static_cast<std::size_t>(i)].y < 0.f)
+                            turned = true;
+                    if (turned) {
+                        const double hold = r.fight.time() - holdFrom;
+                        // Forced: a wind-up at it (its guard or a step back from the rules). A blow: its own lunge.
+                        // Circling: else, with its attack held for the budget or walking its own goal.
+                        const bool forced = pi.act == PartnerAct::Guard || pi.act == PartnerAct::StepBack;
+                        const bool blow = pi.act == PartnerAct::Attack || r.out->ally.part != ArenaPart::None;
+                        ++reversals;
+                        if (forced) ++forcedReversals;
+                        else if (blow) ++blowReversals;
+                        else if (pi.skirmish || pi.idle == PartnerIdle::NoBudget) {
+                            ++circlingReversals;
+                            shortestCircling = std::min(shortestCircling, hold);
+                        }
+                        holdFrom = r.fight.time();
+                        dirOn.fill(false);
+                    }
+                    dirs[static_cast<std::size_t>(slot)] = d;
+                    dirOn[static_cast<std::size_t>(slot)] = true;
+                } else {
+                    dirOn[static_cast<std::size_t>(slot)] = false;
+                    if (!anyOn) holdFrom = -1.0;
+                }
+                slot = (slot + 1) % kWin;
+            }
+            bool anyUp = false;
+            for (std::size_t i = 0; i < r.fight.enemyCount(); ++i) anyUp = anyUp || r.fight.enemyAlive(i);
+            if (pi.skirmish || pi.idle == PartnerIdle::NoBudget) circlingTime += kDt;
+            // Standing: its body did not move this tick, no blow of its running, not guarding, with an enemy up.
+            const bool stood = length(sub(r.bodies.ally, lastAt)) < 1e-3f && r.out->ally.part == ArenaPart::None &&
+                               pi.act != PartnerAct::Guard && anyUp && r.out->ally.partnerOn;
+            still = stood ? still + kDt : 0.0;
+            longestStill = std::max(longestStill, still);
+            lastAt = r.bodies.ally;
+            // In one place: the longest stretch it stays within 0.5 m of where the stretch began (shuffles count).
+            const bool held = r.out->ally.part == ArenaPart::None && pi.act != PartnerAct::Guard && anyUp && r.out->ally.partnerOn;
+            if (!held || length(sub(r.bodies.ally, placeAt)) > 0.5f) {
+                placeAt = r.bodies.ally;
+                inPlace = 0.0;
+            } else {
+                inPlace += kDt;
+            }
+            longestInPlace = std::max(longestInPlace, inPlace);
+            // Facing its target (else the nearest enemy up) on every step it is not down.
+            if (anyUp && pi.enemy < 0 && pi.why != PartnerWhy::Down) facingOff += kDt;
+            if (r.out->player.action == ArenaAction::Light || r.out->player.action == ArenaAction::Heavy) leadAttack += kDt;
+            if (r.out->ally.part != ArenaPart::None) partnerBlow += kDt;
+            const Vec2 f = r.out->player.facing;
+            const float k = std::min(1.f, 3.f * kDt);
+            const Vec2 m{facing.x + (f.x - facing.x) * k, facing.y + (f.y - facing.y) * k};
+            const float ml = length(m);
+            if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
+        }
+        const double T = r.fight.time();
+        const std::string head = std::string(order == 0 ? "StayClose" : "Spread") + (circling ? ", circling on" : ", circling off");
+        MESSAGE(head << ", lead never attacking: " << T << " s; partner blows " << partnerBlow
+                << " s, longest stand-still " << longestStill << " s (within 0.5 m: " << longestInPlace << " s), on screen " << onScreen / T << ", goal jumps per 10 s "
+                << 10.0 * goalJumps / T << "; circling " << r.brain.skirmishSeconds() << " s over "
+                << r.brain.skirmishMoves() << " goals, guards " << r.brain.guardsBegun()
+                << ", dodges 0 (none in the kit); noBudget " << r.brain.idleSeconds(PartnerIdle::NoBudget) << " s");
+        MESSAGE("    goal jumps: " << flips << " walk begun or ended, " << repicks << " re-picked; reversals " << reversals
+                << ": circling " << circlingReversals << " in " << circlingTime << " s held (" << 10.0 * circlingReversals / circlingTime
+                << " per 10 s), shortest hold " << shortestCircling << " s; forced by a wind-up " << forcedReversals
+                << ", its own blows " << blowReversals << ", else " << reversals - circlingReversals - forcedReversals - blowReversals);
+        o.T = T;
+        o.leadAttack = leadAttack;
+        o.partnerBlow = partnerBlow;
+        o.longestStill = longestStill;
+        o.longestInPlace = longestInPlace;
+        o.onScreen = onScreen / T;
+        o.jumpsPer10 = 10.0 * goalJumps / T;
+        o.facingOff = facingOff;
+        o.circlingTime = circlingTime;
+        o.shortestCircling = shortestCircling;
+        o.skirmishMoves = r.brain.skirmishMoves();
+        o.circlingReversals = circlingReversals;
+    }
+    return o;
+}
+
+} // namespace
+
+TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partner keeps to 2 s of blows and never stands still") {
+    const ArenaTable t = shippedTable();
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, true);
+        CHECK(r.T >= 19.9);
+        CHECK(r.leadAttack == 0.0);
+        CHECK(r.partnerBlow <= 2.0 + 1e-6); // 0.6 x 0 + 2.0 in the one 20 s window
+        CHECK(r.longestStill <= 1.5);
+        CHECK(r.longestInPlace <= 1.5);
+        CHECK(r.onScreen >= 0.8);
+        CHECK(r.jumpsPer10 <= 35.0); // the group fight's bound
+        CHECK(r.facingOff == 0.0);
+        CHECK(r.skirmishMoves >= 3);
+    }
+}
+
+// The shipped default (circling off until its turns hold the ruled limits): with its attack held it stands ready
+// where rules 10-16 put it and makes no moves of its own. Its outputs are the brain's before rule 17 (pinned below):
+// the host turns it to its target when it names one; with none named it keeps its facing, as before rule 17.
+TEST_CASE("arena partner: rule 17 off (the shipped default), a lead that never attacks: it stands ready, no moves of its own") {
+    const ArenaTable t = shippedTable();
+    CHECK_FALSE(shippedTuning().circling);
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, false);
+        CHECK(r.T >= 19.9);
+        CHECK(r.leadAttack == 0.0);
+        CHECK(r.partnerBlow <= 2.0 + 1e-6);
+        CHECK(r.skirmishMoves == 0);
+    }
+}
+
+// Known short (reported, the bar kept): rule 17's circling turns at most 3 times in 10 s, none held under 0.4 s. Today
+// (StayClose / Spread): 5.9 / 4.8 reversals per 10 s while circling, shortest hold 0.017 / 0.10 s, mostly its straight
+// walk sliding round enemy bodies and rules 10-13 stations turning invalid.
+TEST_CASE("arena partner: rule 17's circling: at most 3 reversals per 10 s, no hold under 0.4 s (known short)" *
+          doctest::should_fail()) {
+    const ArenaTable t = shippedTable();
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, true);
+        REQUIRE(r.circlingTime > 0.0);
+        CHECK(10.0 * r.circlingReversals / r.circlingTime <= 3.0);
+        CHECK(r.shortestCircling >= 0.4);
+    }
+}
+
+// The floor under that bar, so getting worse fails: today's numbers above with a little headroom.
+TEST_CASE("arena partner: rule 17's circling no worse than today: at most 6.5 reversals per 10 s, no hold under 0.015 s") {
+    const ArenaTable t = shippedTable();
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        const IdleLead r = idleLead(t, order, true);
+        REQUIRE(r.circlingTime > 0.0);
+        CHECK(10.0 * r.circlingReversals / r.circlingTime <= 6.5);
+        CHECK(r.shortestCircling >= 0.015);
+    }
 }
 
 TEST_CASE("arena partner: a play camera given but not whole is exactly not given, cameraOn off or on") {
@@ -2290,4 +2700,71 @@ TEST_CASE("arena partner: a play camera given but not whole is exactly not given
                 REQUIRE(a.fight.allyHp() == b.fight.allyHp());
             }
         }
+}
+
+namespace {
+struct GroupPin {
+    std::uint64_t intents, state;
+};
+// The shipped group fight of the report above (three enemies, two attacking, the shipped brain), 20 s: every
+// tick's intent and the brain's state hash at the end.
+GroupPin groupFightPin(std::uint8_t order, bool camera) {
+    const ArenaTable t = shippedTable();
+    PRig r(t.fighter("default"));
+    r.def = t.fallback;
+    r.def.enemyCount = 0;
+    for (const char* id : {"skirmisher", "hulk", "duelist"})
+        for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+            if (t.enemyIds[e] == id) {
+                r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+            }
+    REQUIRE(r.def.enemyCount == 3);
+    r.def.attackers = 2;
+    r.tuning = shippedTuning();
+    r.in.partnerOrder = order;
+    r.goShipped(true, 1);
+    r.pairOnParry = true;
+    Vec2 facing = r.fight.playerStartFacing();
+    StateHash h;
+    while (!r.fight.over() && r.fight.time() < 20.f) {
+        r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
+        r.tick();
+        const PartnerIntent& i = r.brain.intent();
+        h.add(i.act).add(i.why).add(i.point.x).add(i.point.y).add(i.enemy).add(i.blows).add(i.newString);
+        h.add(i.blowStart).add(i.blowIndex).add(i.partnerBlow).add(i.breakValue).add(i.extendsStagger);
+        h.add(i.punish).add(i.rise).add(i.riseHealth).add(i.stationed);
+        const Vec2 f = r.out->player.facing;
+        const float k = std::min(1.f, 3.f * kDt);
+        const Vec2 m{facing.x + (f.x - facing.x) * k, facing.y + (f.y - facing.y) * k};
+        const float ml = length(m);
+        if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
+    }
+    return {h.value, r.brain.hash()};
+}
+} // namespace
+// With rule 17 off (the shipped default) the shipped group fight is main's: every tick's intent and the brain's
+// state hash at the end equal the values recorded from main at 102219cb, but for StayClose's intents, which the
+// ally-blow cut (865e5c61) changes: there a damaging hit cuts its blows (3 without the camera, 1 with it); main's
+// values are kept beside them. Spread's run has none cut, and equals main to the bit.
+TEST_CASE("arena partner: rule 17 off, the shipped group fight's intents and state hash are main's (102219cb)") {
+    CHECK_FALSE(shippedTuning().circling);
+    struct Row {
+        std::uint8_t order;
+        bool camera;
+        std::uint64_t intents, state;
+    };
+    const Row rows[] = {
+        {0, false, 13510023720450430857ull, 13607754419378690935ull}, // main: 1509493203624858266ull, 9278585553922132654ull (the blow cut)
+        {0, true, 5572646704335333306ull, 6381732959959279559ull}, // main: 17494647051211174547ull, 6381732959959279559ull (the blow cut)
+        {1, false, 9209459091041298615ull, 9225178481593612560ull},
+        {1, true, 7321489833706842541ull, 8499464587038327255ull},
+    };
+    for (const Row& w : rows) {
+        CAPTURE(int(w.order));
+        CAPTURE(w.camera);
+        const GroupPin p = groupFightPin(w.order, w.camera);
+        CHECK(p.intents == w.intents);
+        CHECK(p.state == w.state);
+    }
 }

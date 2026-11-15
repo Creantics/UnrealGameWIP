@@ -160,6 +160,19 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 			bHeldShort = true;
 		}
 	}
+	// The lead under water (diving, swimming under, or carried out by a rescue): nobody follows it down, and the Third
+	// never dives. Each holds where it last stood dry, at the bank, until the lead is back at the surface; then it eases
+	// back onto its slot from there.
+	if (!bCarried && bHasLastDry)
+	{
+		if (const AFTExploreCharacter* Lead = LeadExplorer.Get(); Lead && Lead->IsUnderWater())
+		{
+			StrayWay = (Ground - LastDry).GetSafeNormal();
+			Spot = LastDry;
+			Stray = Spot - Ground;
+			bHeldShort = true;
+		}
+	}
 	// On a map with a sea it stands on the land: a spot with no footing (out over the water, on ground at or under the sea
 	// level, or over a drop the look down doesn't reach) is given up for a point short of the sea on the way out from
 	// where the lead walked, so it walks the shore beside the lead (in a jump or a fall too). Not while a traversal

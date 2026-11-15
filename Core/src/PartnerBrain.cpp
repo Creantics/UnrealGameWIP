@@ -509,6 +509,7 @@ bool PartnerBrain::begin(const PartnerTuning& t, std::uint32_t seed) {
     s_.t = ok ? t : PartnerTuning{};
     s_.rhythm = mix(seed);
     s_.defence = mix(seed ^ 0xA5C3F00Du);
+    s_.skirmish = mix(seed ^ 0x5C1A7E3Bu);
     s_.begun = true;
     return ok;
 }
@@ -535,13 +536,19 @@ std::uint64_t PartnerBrainSave::hash() const {
     const PartnerTuning d{};
     const bool tuned = t.frustumMargin != d.frustumMargin || t.frustumGiveUpSeconds != d.frustumGiveUpSeconds ||
                        t.engageSeconds != d.engageSeconds || t.repositionEverySeconds != d.repositionEverySeconds ||
-                       t.repositionMeters != d.repositionMeters;
+                       t.repositionMeters != d.repositionMeters || t.circling != d.circling;
     if (framed || tuned) {
         h.add(std::uint8_t{13});
         h.add(t.frustumMargin).add(t.frustumGiveUpSeconds).add(t.engageSeconds).add(t.repositionEverySeconds);
         h.add(t.repositionMeters).add(framed).add(frameRing).add(frameTarget).add(frameAngle).add(frameRadius);
         h.add(frameLast.x).add(frameLast.y).add(noFrame).add(engageFor).add(lastStrike).add(lastGuard).add(lastMove);
         h.add(guarding).add(out.framed).add(out.frameFallback).add(fellBack);
+        if (t.circling) { // rule 17's state: only with it on (off, the hash is main's, to the bit)
+            h.add(std::uint8_t{17});
+            h.add(skirmish).add(skirmishDraws).add(skirmishOn).add(skirmishGoal.x).add(skirmishGoal.y).add(stillFor);
+            h.add(placeAt.x).add(placeAt.y).add(placeFor);
+            h.add(skirmishFor).add(skirmishEvery).add(skirmishDir).add(skirmishKind).add(skirmishOf);
+        }
     }
     return h.value;
 }
@@ -705,6 +712,9 @@ void PartnerBrain::rolesSwapped() {
     s_.fellBack = false;
     s_.engageFor = 0.0;
     s_.guarding = false;
+    s_.skirmishOn = false;
+    s_.stillFor = 0.0;
+    s_.placeFor = 0.0;
     s_.out = PartnerIntent{};
     ++s_.swaps;
 }
@@ -715,6 +725,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     if (s_.begun) spend(in.spentSeconds); // counted before this step decides
     decide(dt, in);
     PartnerIntent& o = s_.out;
+    if (s_.begun && o.framed && s_.t.circling) skirmishStep(dt, in); // rule 17 (off: none of it runs)
     o.idle = idleOf(o, in);
     if (s_.begun) s_.idleSeconds[static_cast<std::size_t>(o.idle)] += dt;
     if (s_.begun && o.framed && s_.fellBack) { // rule 13's fallback: every step spent on it, whatever it does
@@ -726,7 +737,10 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
         // its next blow fitting the budget.
         const bool guardNow = o.act == PartnerAct::Guard;
         if (o.why == PartnerWhy::Start) s_.lastStrike = s_.now;
-        if (guardNow && !s_.guarding) s_.lastGuard = s_.now;
+        if (guardNow && !s_.guarding) {
+            s_.lastGuard = s_.now;
+            ++s_.guardsBegun;
+        }
         if (o.why == PartnerWhy::Reposition) s_.lastMove = s_.now;
         const bool began = o.why == PartnerWhy::Start || o.why == PartnerWhy::Reposition || (guardNow && !s_.guarding);
         s_.guarding = guardNow;
@@ -753,6 +767,185 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
         account(dt, mine, in.leadAttacking);
     }
     return s_.out;
+}
+
+// Rule 17 (framed): with its attack held (the budget out, a pause, a windup at it it did not guard, no target), it
+// keeps moving round its target, facing it: a new valid station of rule 13 every 2-4 s, and never standing more than
+// kSkirmishStill. It deals nothing and spends no budget (MoveTo only).
+void PartnerBrain::skirmishStep(double dt, const PartnerInput& in) {
+    constexpr double kSkirmishStill = 1.0;                   // standing this long (held), it moves: under the ruled 1.5 s
+    constexpr double kSkirmishMin = 2.0, kSkirmishMax = 4.0; // a new goal this often, standing, the budget out
+    constexpr float kSideStep = 40.f;                        // degrees round its target when no valid station is found
+    constexpr float kShortWalk = 1.f;   // with the budget out, its rules' walk shorter than this is a step: it moves on
+    constexpr float kReached = 0.2f;    // its goal is reached this near (so its last stride is not a goal jump)
+    constexpr float kPlace = 0.5f;      // within this of where it stood kPlaceStill, held, it is in one place: it moves on
+    constexpr double kPlaceStill = 0.8; // so that, with the time to leave the place, it stays under the ruled 1.5 s
+    constexpr float kMinStride = 1.f;   // its own goal is at least this far: it leaves the place it stood in
+    PartnerIntent& o = s_.out;
+    const PartnerTuning& t = s_.t;
+    const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
+    const bool haveTarget = s_.target >= 0 && static_cast<std::size_t>(s_.target) < n &&
+                            standing(in.enemies[static_cast<std::size_t>(s_.target)]);
+    int face = haveTarget ? s_.target : -1;
+    if (face < 0) {
+        float best = kStFar;
+        for (std::size_t i = 0; i < n; ++i)
+            if (standing(in.enemies[i]) && dist(in.pos, in.enemies[i].pos) < best) {
+                best = dist(in.pos, in.enemies[i].pos);
+                face = static_cast<int>(i);
+            }
+    }
+    s_.skirmishFor += dt;
+    const auto stop = [&]() {
+        s_.skirmishOn = false;
+        s_.stillFor = 0.0;
+    };
+    // Its clock in one place, run on every framed step whatever it does: shuffles under kPlace count, as standing
+    // does; a blow running, a guard or no enemy standing starts it again.
+    if (face < 0 || o.act == PartnerAct::Attack || o.act == PartnerAct::Guard || s_.committedEnd > s_.now ||
+        dist(in.pos, s_.placeAt) > kPlace) {
+        s_.placeAt = in.pos;
+        s_.placeFor = 0.0;
+    } else {
+        s_.placeFor += dt;
+    }
+    // Faces its target (else the nearest enemy standing) at all times, staggered too: the host turns to intent.enemy.
+    if (face >= 0 && o.act != PartnerAct::Attack && o.enemy < 0) o.enemy = face;
+    if (face < 0) return stop(); // no enemy standing: nothing to keep moving for
+    if (!in.canAct) { // staggered: it stands, and that counts toward its stand-still (it moves once it can)
+        s_.skirmishOn = false;
+        s_.stillFor += dt;
+        return;
+    }
+    const float l = in.blowSeconds[0];
+    const double next = s_.drawn ? s_.lengths[0] : static_cast<double>(l >= 0.1f && l <= 2.f ? l : t.blowSeconds);
+    const bool budgetOut = !budgetFits(committedLeft() + next);
+    bool held = false;
+    switch (o.why) {
+    case PartnerWhy::Budget:
+    case PartnerWhy::Pause:
+    case PartnerWhy::HeldOff:
+    case PartnerWhy::NoTarget: held = true; break;
+    case PartnerWhy::Approach: held = budgetOut; break; // closing to strike: its own goal
+    default: break; // acting (a string, a guard, a blow running out, a reposition) or on the leash
+    }
+    if (!held) return stop();
+    Ground g;
+    Frame fr;
+    if (!makeGround(in, t, g) || !makeFrame(in.station.camera, t, fr)) return stop();
+    const View* e = haveTarget ? &in.enemies[static_cast<std::size_t>(s_.target)] : nullptr;
+    const bool rooted = s_.placeFor + 1e-9 >= kPlaceStill; // in one place this long: a new goal now, whatever it walks
+    // kind 0: its own never-still goal; 1, 2: the walk (MoveTo, StepBack) its rules gave, held with the budget out.
+    const auto walk = [&](Vec2 q, std::int8_t kind) {
+        o.act = kind == 2 ? PartnerAct::StepBack : PartnerAct::MoveTo;
+        o.point = q;
+        o.enemy = face;
+        o.skirmish = kind == 0;
+        s_.stillFor = 0.0;
+        if (kind == 0) s_.skirmishSeconds += dt;
+    };
+    if (s_.skirmishOn) { // its goal is kept until reached, while legal, out of the target's keep-out and in frame
+        const Vec2 q = s_.skirmishGoal;
+        if (dist(in.pos, q) > kReached && g.legal(q) && !(e && makeKeep(g, *e).in(q, t.wedgeClearMeters)) &&
+            (fr.sees(q) || (s_.skirmishKind == 0 && !fr.sees(in.pos))) && s_.skirmishOf == s_.target &&
+            (s_.skirmishKind != 1 || budgetOut) && !rooted)
+            return walk(q, s_.skirmishKind);
+        s_.skirmishOn = false;
+    }
+    bool step = false; // its rules' short step, the budget out: a goal of its own replaces it
+    // Out of the frame, held: back into it now, to a goal in it (its rules' walk stands if none is found).
+    const bool outside = !fr.sees(in.pos);
+    if (budgetOut && o.act == PartnerAct::MoveTo && e && edge(in.pos, *e) <= t.reachMeters && !outside &&
+        (dist(in.pos, o.point) < kShortWalk || (s_.skirmishKind == 0 && s_.skirmishOf == s_.target &&
+                                                 dist(in.pos, s_.skirmishGoal) <= t.stationTolerance))) {
+        // In reach and in the frame with the budget out, near its station or at its own last goal, it does not walk
+        // to its station (it could strike nothing there): it holds, and moves on its own clock below.
+        o.act = PartnerAct::Wait;
+        o.why = PartnerWhy::Budget;
+    }
+    if (rooted) {
+        step = true; // its rules' walk, or its kept goal, is not moving it: a goal of its own replaces it
+    } else if (o.act != PartnerAct::Wait) { // walking its own rule's goal
+        if (o.act != PartnerAct::MoveTo && o.act != PartnerAct::StepBack) return;
+        s_.stillFor = 0.0;
+        if (o.act == PartnerAct::StepBack) { // its rules' step back, as one whole stride (not a step, a stand, a step)
+            const Vec2 d = stSub(o.point, in.pos);
+            const float dl = std::sqrt(d.x * d.x + d.y * d.y);
+            const float len = std::max(dl, kShortWalk);
+            const Vec2 p{in.pos.x + d.x * len / std::max(dl, 1e-4f), in.pos.y + d.y * len / std::max(dl, 1e-4f)};
+            if (dl > 1e-4f && stFinite(p) && g.legal(p) && fr.sees(p) && !(e && makeKeep(g, *e).in(p, t.wedgeClearMeters))) {
+                s_.skirmishOn = true;
+                s_.skirmishGoal = p;
+                s_.skirmishKind = 2;
+                s_.skirmishOf = s_.target;
+                return walk(p, 2);
+            }
+        }
+        if (!budgetOut && (!outside || fr.sees(o.point))) return;
+        // With the budget out, that goal is kept until reached too, else its station's edge (rule 12) or the standoff
+        // flips it between walking and standing on alternate steps; a step shorter than kShortWalk, or one out of
+        // the frame, is replaced by a goal of its own.
+        if (budgetOut && dist(in.pos, o.point) >= kShortWalk && fr.sees(o.point)) {
+            s_.skirmishOn = true;
+            s_.skirmishGoal = o.point;
+            s_.skirmishKind = o.act == PartnerAct::StepBack ? std::int8_t{2} : std::int8_t{1};
+            s_.skirmishOf = s_.target;
+            return walk(o.point, s_.skirmishKind);
+        }
+        step = true;
+    }
+    const bool due = step || outside || s_.stillFor + dt + 1e-9 >= kSkirmishStill ||
+                     (budgetOut && s_.skirmishFor + 1e-9 >= s_.skirmishEvery);
+    if (!due) {
+        s_.stillFor += dt;
+        return;
+    }
+    Vec2 q{};
+    PartnerBrainSave probe = s_; // rule 13's held station and grace are its own: rule 17 only reads them
+    bool found = frameStation(g, fr, t, in.order, in.pos, e, e ? s_.target : -1, t.repositionMeters, probe, q) ||
+                 frameStation(g, fr, t, in.order, in.pos, e, e ? s_.target : -1,
+                              std::max(kMinStride, 0.5f * t.repositionMeters), probe, q);
+    if (!found) { // no valid station: a side-step round its target (or the lead), either way, legal and out of its keep-out
+        const Vec2 c = e ? e->pos : in.leadPos;
+        const Vec2 from = stSub(in.pos, c);
+        // In the frame only; turned far enough that the stride is at least kMinStride.
+        const float rad = std::sqrt(from.x * from.x + from.y * from.y);
+        const float half = rad > 0.5f * kMinStride ? std::asin(std::min(1.f, 0.5f * kMinStride / rad)) : 0.f;
+        const float turn = std::max(kSideStep, 2.f * half * 57.2957795f);
+        const int tries = 2;
+        for (int k = 0; k < tries && !found; ++k) {
+            const float sgn = static_cast<float>(k % 2 == 0 ? s_.skirmishDir : -s_.skirmishDir);
+            const Vec2 r = stTurn(from, sgn * turn);
+            const Vec2 p{c.x + r.x, c.y + r.y};
+            if (stFinite(p) && g.legal(p) && !(e && makeKeep(g, *e).in(p, t.wedgeClearMeters)) &&
+                (!e || (edge(p, *e) <= t.reachMeters && edge(p, *e) >= t.standoffMeters)) && (k >= 2 || fr.sees(p)) &&
+                (in.order != PartnerOrder::StayClose || dist(p, in.leadPos) <= closeCap(t) + 1e-4f)) {
+                q = p;
+                found = true;
+                if (k % 2 == 1) s_.skirmishDir = static_cast<std::int8_t>(-s_.skirmishDir);
+            }
+        }
+    }
+    if (!found && outside && budgetOut) { // out of the frame, no in-frame place round its target: the lead's ring
+        PartnerBrainSave lead = s_;
+        const View& fe = in.enemies[static_cast<std::size_t>(face)]; // out of the keep-out of the enemy it faces
+        found = frameStation(g, fr, t, in.order, in.pos, nullptr, -1, 0.f, lead, q) &&
+                !makeKeep(g, fe).in(q, t.wedgeClearMeters);
+    }
+    if (!found) { // nowhere to go: its rules' step stands, else it stands (the stand-still report shows it)
+        if (!step) s_.stillFor += dt;
+        return;
+    }
+    s_.skirmishOn = true;
+    s_.skirmishGoal = q;
+    s_.skirmishKind = 0;
+    s_.skirmishOf = s_.target;
+    s_.skirmishFor = 0.0;
+    s_.placeFor = 0.0; // a fresh kPlaceStill to leave the place
+    s_.skirmishEvery = kSkirmishMin + (kSkirmishMax - kSkirmishMin) * static_cast<double>(draw(s_.skirmish, s_.skirmishDraws));
+    s_.skirmishDir = static_cast<std::int8_t>(-s_.skirmishDir);
+    ++s_.skirmishMoves;
+    walk(q, 0);
 }
 
 const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
@@ -782,6 +975,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             s_.noFrame = 0.0;
             s_.fellBack = false;
             s_.engageFor = 0.0;
+            s_.skirmishOn = false;
+            s_.stillFor = 0.0;
+            s_.placeFor = 0.0;
         } else {
             s_.downFor += dt;
         }
@@ -816,6 +1012,18 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (fm) {
         s_.framed = true;
         s_.noFrame += dt; // since a valid station was last found
+        // Rule 13's clock counts real time on every step, whatever it does: the station held is checked now too, so
+        // a string or guard neither ages a station still valid nor holds a dead one past frustumGiveUpSeconds.
+        if (!s_.fellBack && s_.frameRing != 0) {
+            const bool onTarget = s_.frameRing == 1 && s_.target >= 0 && static_cast<std::size_t>(s_.target) < n;
+            const View* e = onTarget ? &in.enemies[static_cast<std::size_t>(s_.target)] : nullptr;
+            Vec2 p{};
+            if (frameStation(g, fr, t, in.order, in.pos, e, onTarget ? s_.target : -1, 0.f, s_, p)) s_.noFrame = 0.0;
+            else if (s_.noFrame + 1e-9 >= static_cast<double>(t.frustumGiveUpSeconds)) {
+                s_.fellBack = true; // reported by step() from this step on
+                s_.frameRing = 0;
+            }
+        }
     }
     out.framed = fm;
     // Rule 13's goal for target tgt (-1: none): a valid station, else the one last held while noFrame is under
@@ -1194,7 +1402,7 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
                                             "followMin", "followMax", "stationTolerance", "stationGiveUpSeconds",
                                             "stationAnySeconds", "targetHoldSeconds", "frustumMargin",
                                             "frustumGiveUpSeconds", "engageSeconds", "repositionEverySeconds",
-                                            "repositionMeters"};
+                                            "repositionMeters", "circling"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -1235,6 +1443,10 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("engageSeconds", t.engageSeconds, 0.25, 10);
     real("repositionEverySeconds", t.repositionEverySeconds, 2, 20);
     real("repositionMeters", t.repositionMeters, 0.5, 6);
+    if (const JsonValue v = root["circling"]; !v.isAbsent()) {
+        if (v.isBool()) t.circling = v.boolean();
+        else errors.push_back("circling: expected true or false");
+    }
 
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);

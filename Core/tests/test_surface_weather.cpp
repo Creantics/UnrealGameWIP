@@ -312,7 +312,9 @@ TEST_CASE("HLSL: the asphalt detail tile is its own option and replaces the aggr
 
     SurfaceWeatherOptions on = plain;
     on.streetDetail = true;
-    const std::string det = surfaceWeatherHlsl(spec, on);
+    StreetSurfaceSpec straight;
+    straight.detailHexM = 0.0f;  // the single straight read; the hex tiling has its own case below
+    const std::string det = surfaceWeatherHlsl(spec, on, straight);
     for (const char* name : {"float DetAO = 1.0;", "float AgF = 0.0;", "Texture2DSample(DetAlb, DetAlbSampler, DUv)",
                              "UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv))",
                              "Texture2DSample(DetRA, DetRASampler, DUv)", "A *= DetAO;", "DTop = DRa.b;",
@@ -335,6 +337,170 @@ TEST_CASE("HLSL: the asphalt detail tile is its own option and replaces the aggr
     // Ray-tracing safe: no screen derivatives added.
     CHECK(countOf(det, "fwidth") == countOf(off, "fwidth"));
     for (const char* name : {"ddx", "ddy"}) CHECK(det.find(name) == std::string::npos);
+}
+
+TEST_CASE("HLSL: the asphalt's final range: no far lift with the tile, luminance and roughness clamped, seal glossy") {
+    const SurfaceWeatherSpec spec;
+    SurfaceWeatherOptions plain;
+    plain.grime = false;
+    plain.street = true;
+    SurfaceWeatherOptions on = plain;
+    on.streetDetail = true;
+    const std::string off = surfaceWeatherHlsl(spec, plain);
+    const std::string det = surfaceWeatherHlsl(spec, on);
+    // The tile-less road keeps its chip flecks and their far lift; with the tile neither (it carries its own stones).
+    CHECK(off.find("lerp(0.25, 1.4 * Chip, AgF)") != std::string::npos);
+    CHECK(det.find("lerp(0.25, 1.4 * Chip, AgF)") == std::string::npos);
+    CHECK(det.find("float Chip = smoothstep(0.62, 0.8,") == std::string::npos);
+    CHECK(det.find("RoughMul *= 1.0 + 0.1 * Chip * AgF;") == std::string::npos);
+    for (const std::string* s : {&off, &det}) {
+        CHECK(countOf(*s, "float AsL = dot(Alb, float3(0.2126, 0.7152, 0.0722));") == 1);
+        CHECK(countOf(*s, "float AsR = clamp(Rgh, ") == 1);
+        CHECK(s->find("AsWheel = saturate(max(AsWheel, Wheel));") != std::string::npos);
+        CHECK(s->find("AsSeal = Seal;") != std::string::npos);
+        CHECK(s->find("AsWheel = Damp;") != std::string::npos);
+        // The range comes after every tone and roughness term and before the litter.
+        CHECK(s->find("float AsL") > s->find("Alb *= Tone;"));
+        CHECK(s->find("float AsL") < s->find("Alb = lerp(Alb, LitC, LitW);"));
+        // Street class on the crack gate.
+        CHECK(s->find("float CrackLo = 0.5 - 0.08 * log2(CrackCls);") != std::string::npos);
+    }
+    const StreetSurfaceSpec st;
+    CHECK(st.asphaltAlbedoHi <= 0.2f);
+    CHECK(st.asphaltRoughLo >= 0.85f);
+    CHECK(st.asphaltRoughHi <= 0.95f);
+    CHECK(st.wheelBandRough >= 0.6f);
+    CHECK(st.wheelBandRough <= 0.7f);
+    CHECK(st.sealRough < st.wheelBandRoughTop);
+    // The shared hex snippet on another noise object: the decal's.
+    const std::string hx = streetHexUvHlsl(st, "D", "\t");
+    CHECK(hx.find("D.L(HxV2 + int2(71, 29))") != std::string::npos);
+    CHECK(hx.find("SNz") == std::string::npos);
+    CHECK(det.find(streetHexUvHlsl(st, "SNz", "\t\t")) != std::string::npos);
+}
+
+TEST_CASE("HLSL: the asphalt tile's anti-repetition reads it three times on a hex lattice, ray-tracing safe") {
+    const SurfaceWeatherSpec spec;
+    SurfaceWeatherOptions plain;
+    plain.grime = false;
+    plain.street = true;
+    SurfaceWeatherOptions on = plain;
+    on.streetDetail = true;
+    const StreetSurfaceSpec st;
+    CHECK(st.detailHexM > 0.0f);  // on by default
+    const std::string hex = surfaceWeatherHlsl(spec, on);
+    for (const char* tex : {"Texture2DSample(DetAlb", "Texture2DSample(DetNrm", "Texture2DSample(DetRA"})
+        CHECK(countOf(hex, tex) == 3);
+    for (const char* uv : {"DetAlbSampler, DUv0)", "DetAlbSampler, DUv1)", "DetAlbSampler, DUv2)"})
+        CHECK(hex.find(uv) != std::string::npos);
+    // Each slot takes the vertex of its lattice colour, so a slot never swaps a weighted vertex across an edge.
+    for (const char* s : {"int HxK = HxB.x + 2 * HxB.y;", "HxK -= 3 * int(floor(float(HxK) / 3.0));",
+                          "int HxR0 = (0 - HxK + 3) % 3;", "int HxR2 = (2 - HxK + 3) % 3;",
+                          // Contrast restored about the means; the slope turned back to the world.
+                          "float HxVar = clamp(rsqrt(max(dot(HxW, HxW), 1e-4)), 1.0, 1.7320508);",
+                          "SlopeW += DSg * HxVar * ", "DetAO = lerp(1.0, DAo, ", "A *= DetAO;", "PolishTop = DTop * Wheel;",
+                          "float AgF = 0.0;"})
+        CHECK(hex.find(s) != std::string::npos);
+    CHECK(hex.find("float2 DUv = ") == std::string::npos);
+    CHECK(countOf(hex, "A *= DetAO;") == 1);
+    // No screen derivatives added; the tile-less road is unchanged by the hex tunings.
+    const std::string off = surfaceWeatherHlsl(spec, plain);
+    CHECK(countOf(hex, "fwidth") == countOf(off, "fwidth"));
+    for (const char* name : {"ddx", "ddy"}) CHECK(hex.find(name) == std::string::npos);
+    StreetSurfaceSpec straight;
+    straight.detailHexM = 0.0f;
+    CHECK(surfaceWeatherHlsl(spec, plain, straight) == off);
+    CHECK(off.find("HxP") == std::string::npos);
+    // Without the relief's camera distance there is no far fade: three reads everywhere.
+    CHECK(hex.find("HxNear") == std::string::npos);
+}
+
+TEST_CASE("HLSL: past detailHexFarM the tile is read once, straight, on the camera distance") {
+    const SurfaceWeatherSpec spec;
+    SurfaceWeatherOptions on;
+    on.grime = false;
+    on.street = true;
+    on.jointDepth = true;
+    on.streetDetail = true;
+    const StreetSurfaceSpec st;
+    CHECK(st.detailHexFarM == doctest::Approx(30.f));
+    const std::string h = surfaceWeatherHlsl(spec, on, st);
+    // Three reads per map near, one straight far, each behind its own branch.
+    for (const char* tex : {"Texture2DSample(DetAlb", "Texture2DSample(DetNrm", "Texture2DSample(DetRA"}) CHECK(countOf(h, tex) == 4);
+    for (const char* s : {"float HxNear = 1.0 - smoothstep(24.0, 30.0, RlL);", "float HxFar = 1.0 - HxNear;", "float2 DUvF = DP;",
+                          "HxWt2 *= HxNear;", "HxVar = lerp(1.0, HxVar, HxNear);", "[branch] if (HxNear > 0.0)",
+                          "[branch] if (HxFar > 0.0)", "DSg += HxFar * float2(-DNmF.x, DNmF.y) / max(DNmF.z, 0.2);",
+                          "DTop += HxFar * DRaF.b;"})
+        CHECK_MESSAGE(h.find(s) != std::string::npos, s);
+    // The distance is the relief's, declared before the asphalt reads it; the near reads sit inside the near branch.
+    CHECK(h.find("float RlL = ") < h.find("float HxNear"));
+    CHECK(h.find("[branch] if (HxNear > 0.0)") < h.find("DetAlbSampler, DUv0)"));
+    CHECK(h.find("DetAlbSampler, DUv2)") < h.find("[branch] if (HxFar > 0.0)"));
+    CHECK(countOf(h, "fwidth") == countOf(surfaceWeatherHlsl(spec, on, [] { StreetSurfaceSpec s; s.detailHexFarM = 0.f; return s; }()), "fwidth"));
+    for (const char* name : {"ddx", "ddy"}) CHECK(h.find(name) == std::string::npos);
+    // detailHexFarM 0: the three reads everywhere, as before.
+    StreetSurfaceSpec always;
+    always.detailHexFarM = 0.f;
+    const std::string a = surfaceWeatherHlsl(spec, on, always);
+    CHECK(a.find("HxNear") == std::string::npos);
+    CHECK(countOf(a, "Texture2DSample(DetRA") == 3);
+    // The shared snippet with no distance is unchanged by the fade.
+    CHECK(streetHexUvHlsl(st, "D", "\t").find("HxNear") == std::string::npos);
+    CHECK(streetHexUvHlsl(st, "D", "\t", "Dm").find("smoothstep(24.0, 30.0, Dm)") != std::string::npos);
+}
+
+TEST_CASE("hex lattice: colour slots keep each vertex across triangle edges, weights sum to one") {
+    // A CPU copy of the emitted lattice maths: for points either side of every edge type, the vertex in each colour
+    // slot that carries weight is the same on both sides. The emitted lines it copies, as text, so the two can't drift.
+    {
+        const std::string hx = streetHexUvHlsl(StreetSurfaceSpec{}, "D", "");
+        for (const char* line : {
+                 "float2 HxS = float2(HxP.x - 0.57735027 * HxP.y, 1.15470054 * HxP.y);\n",
+                 "float HxZ = 1.0 - HxF.x - HxF.y;\n",
+                 "float HxU = step(HxZ, 0.0);\n",
+                 "float3 HxW = float3(abs(HxZ), lerp(HxF.x, 1.0 - HxF.y, HxU), lerp(HxF.y, 1.0 - HxF.x, HxU));\n",
+                 "int HxR0 = (0 - HxK + 3) % 3;\n",
+                 "int2 HxV0 = HxB + (HxR0 == 0 ? int2(int(HxU), int(HxU)) : (HxR0 == 1 ? int2(1, 0) : int2(0, 1)));\n",
+                 "int2 HxV1 = HxB + (HxR1 == 0 ? int2(int(HxU), int(HxU)) : (HxR1 == 1 ? int2(1, 0) : int2(0, 1)));\n",
+                 "int2 HxV2 = HxB + (HxR2 == 0 ? int2(int(HxU), int(HxU)) : (HxR2 == 1 ? int2(1, 0) : int2(0, 1)));\n",
+                 "float HxWt1 = HxR1 == 0 ? HxW.x : (HxR1 == 1 ? HxW.y : HxW.z);\n"})
+            CHECK_MESSAGE(hx.find(line) != std::string::npos, line);
+    }
+    struct Slot { int vx, vy; float w; };
+    auto slots = [](float px, float py, Slot out[3]) {
+        const float sx = px - 0.57735027f * py, sy = 1.15470054f * py;
+        const float fx0 = std::floor(sx), fy0 = std::floor(sy);
+        const int bx = static_cast<int>(fx0), by = static_cast<int>(fy0);
+        const float fx = sx - fx0, fy = sy - fy0, z = 1.0f - fx - fy;
+        const int u = z <= 0.0f ? 1 : 0;
+        int k = bx + 2 * by;
+        k -= 3 * static_cast<int>(std::floor(static_cast<float>(k) / 3.0f));
+        const float w[3] = {std::fabs(z), u ? 1.0f - fy : fx, u ? 1.0f - fx : fy};
+        for (int j = 0; j < 3; ++j) {
+            const int r = (j - k + 3) % 3;
+            out[j] = {bx + (r == 0 ? u : (r == 1 ? 1 : 0)), by + (r == 0 ? u : (r == 1 ? 0 : 1)), w[r]};
+        }
+    };
+    Slot a[3], b[3];
+    int checked = 0;
+    for (int i = -40; i < 40; ++i) {
+        for (int jj = -40; jj < 40; ++jj) {
+            const float px = 0.173f * static_cast<float>(i) + 0.031f, py = 0.149f * static_cast<float>(jj) + 0.017f;
+            slots(px, py, a);
+            CHECK(a[0].w + a[1].w + a[2].w == doctest::Approx(1.0f).epsilon(1e-4));
+            for (const float d : {1e-3f, -1e-3f}) {
+                slots(px + d, py + 0.7f * d, b);
+                for (int j = 0; j < 3; ++j) {
+                    if (a[j].vx != b[j].vx || a[j].vy != b[j].vy) {
+                        CHECK(a[j].w < 0.01f);  // only a vertex at (near) zero weight may change its slot
+                        CHECK(b[j].w < 0.01f);
+                        ++checked;
+                    }
+                }
+            }
+        }
+    }
+    CHECK(checked > 0);  // the sweep did cross edges
 }
 
 TEST_CASE("joint depth: depths, an imperfect grid and its shares") {

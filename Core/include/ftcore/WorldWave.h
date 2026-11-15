@@ -62,6 +62,7 @@
 #include "ftcore/Api.h"
 
 #include <cstdint>
+#include <string_view>
 
 namespace ftcore {
 
@@ -90,6 +91,8 @@ struct WaveKeepLight {
     float radius = 0.f;
 };
 inline constexpr int kWaveKeepLights = 2;
+// The second world a wave's definition brings unless it names another (the one second world the proof has).
+inline constexpr const char* kWaveDefaultToWorld = "unwritten";
 
 struct WorldWaveParams {
     WaveVec3 origin;                              // metres
@@ -112,6 +115,9 @@ struct WorldWaveParams {
     WaveDirection direction = WaveDirection::Forward;
     WaveFront front = WaveFront::Ink;             // ink in water unless a wave's definition picks another
     WaveKeepLight keep[kWaveKeepLights];          // the composed lights; none by default
+    // The world the wave brings: its id in Data/Look/looks.json (a string with static storage; the host reads it, Core
+    // does not). The world it leaves is the one whose look the map has when the wave starts (the host's).
+    const char* toWorld = kWaveDefaultToWorld;
     // The origin may follow a moving point (a bone, a hand) for the wave's first followSeconds, kept to 0..0.3 s (a NaN
     // is refused); 0 never follows. While it follows it travels at most followMaxSpeed m/s (above 0). It latches, and
     // holds from then on, at followSeconds or on the step the radius first leaves 0, whichever comes first.
@@ -123,6 +129,17 @@ struct WorldWaveParams {
 // change reaching 60 m about 2.2 s after the prelude (2.5 s after the start), with a wide ragged band whose tongues
 // reach a band's width ahead. Origin, start time and direction are the host's.
 FTCORE_API WorldWaveParams streetWaveParams();
+
+// The world ids a wave may bring (the worlds in Data/Look/looks.json: solhaven, lattice, unwritten), each a string
+// literal with static storage; nullptr for any other id (empty included). WorldWaveParams::toWorld is set only from
+// these, never from a pointer into a cue or other short-lived buffer.
+FTCORE_API const char* worldWaveWorldId(std::string_view id);
+
+struct CutsceneWaveCue; // Cutscene.h
+// A cutscene's wave cue as the wave's params: its preset's ("street": streetWaveParams), the world it brings through
+// worldWaveWorldId (a static-storage id, not the cue's buffer), and Reverse when the cue says so. Origin and start
+// time stay the host's. False, out untouched, for an unknown preset or world.
+FTCORE_API bool worldWaveParamsForCue(const CutsceneWaveCue& cue, WorldWaveParams& out);
 
 struct WorldWaveFrame {
     float radius = 0.f;           // the outer edge, metres
@@ -251,6 +268,8 @@ FTCORE_API WorldWaveShaderConstants worldWaveShaderConstants(const WorldWaveStat
 // brings, beyond the reach the side it leaves, the span between them the band (its value (reach - d) / span). Agrees with
 // classifyWorldWave everywhere but the tongues' lead ahead of the outer edge, which the shaders draw as band and the
 // classification keeps on the side the wave leaves.
+// An approximation of FTWaveSecond in Plugins/FTLook/Shaders/Private/Wave/Common.ush, kept by hand: the doctest checks
+// only this mirror, not the HLSL.
 FTCORE_API WaveClass classifyWorldWaveShader(const WorldWaveShaderConstants& constants, const WaveVec3& point);
 
 // Which world a placed thing belongs to. The values are the ones the materials read (see the host's slot constants).

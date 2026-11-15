@@ -25,6 +25,11 @@
 
 #include "FTArenaFighter.generated.h"
 
+namespace ftcore
+{
+struct ReadyStance;
+}
+
 class UAnimSequence;
 class UCameraComponent;
 class UMaterialInstanceDynamic;
@@ -72,6 +77,10 @@ struct FFTArenaPose
 	float LeanBack = 0.f;  // degrees: hitstun, guard break, stagger, open
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
+	// The ready stance wanted (a live fight, the body not acting) and the lead's (the runner's table; null keeps the
+	// last): UFTLocomotionAnimInstance::SetReady. Off while lying, dodging, swinging, in the air or knocked back.
+	bool bReady = false;
+	const ftcore::ReadyStance* ReadyStance = nullptr;
 	bool bHealing = false;
 	bool bAir = false;      // a jump from take-off to touch-down: the clips' jump, fall and land (UFTLocomotionAnimInstance::SetAir)
 	float AirHeight = 0.f;  // cm the body is drawn over the floor (the jump's arc)
@@ -148,6 +157,8 @@ public:
 	void SetJumpTiming(float Startup, float Air, float LandLock) { JumpStartup = Startup; JumpAirTime = Air; JumpLandLock = LandLock; }
 	// How far the body is drawn lifted off its feet' floor for the jump (cm), for a view that follows it.
 	float GetJumpLift() const { return AirLift; }
+	// The ready stance's clock on a lead's body (0 relaxed .. 1 ready); 0 for other bodies.
+	float GetReadyAlpha() const;
 	// Drops the lead's held feet and sunk pelvis (UFTLocomotionAnimInstance::ResetFeet): the body was put somewhere
 	// else. ApplyPose does it itself when the body goes down.
 	void ResetFeet();

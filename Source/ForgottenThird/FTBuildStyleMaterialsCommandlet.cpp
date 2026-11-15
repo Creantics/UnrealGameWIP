@@ -27,7 +27,7 @@
 #endif
 
 #if WITH_EDITOR
-namespace
+namespace FTBuildStyleMaterials
 {
 struct FInstanceSpec
 {
@@ -163,7 +163,7 @@ bool Save(UPackage* Package, UObject* Asset)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildStyleMaterials: saved %s."), *File);
 	return true;
 }
-}
+} // namespace FTBuildStyleMaterials
 #endif
 
 UFTBuildStyleMaterialsCommandlet::UFTBuildStyleMaterialsCommandlet()
@@ -177,7 +177,7 @@ UFTBuildStyleMaterialsCommandlet::UFTBuildStyleMaterialsCommandlet()
 int32 UFTBuildStyleMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
-	const FInstanceSpec Instances[] = {
+	const FTBuildStyleMaterials::FInstanceSpec Instances[] = {
 		{TEXT("/Game/Rendering/MI_Style_Solhaven"), ftcore::stylePack(ftcore::StylePack::Solhaven)},
 		{TEXT("/Game/Rendering/MI_Style_Lattice"), ftcore::stylePack(ftcore::StylePack::Lattice)},
 		{TEXT("/Game/Rendering/MI_Style_Unwritten"), ftcore::stylePack(ftcore::StylePack::Unwritten)},
@@ -188,30 +188,30 @@ int32 UFTBuildStyleMaterialsCommandlet::Main(const FString& Params)
 	// Start from nothing: replace every file up front, before anything loads the old assets.
 	TArray<const TCHAR*> Packages;
 	Packages.Add(FTStyle::MaterialPackage);
-	for (const FInstanceSpec& Spec : Instances)
+	for (const FTBuildStyleMaterials::FInstanceSpec& Spec : Instances)
 	{
 		Packages.Add(Spec.Package);
 	}
 	for (const TCHAR* Package : Packages)
 	{
-		const FString File = PackageFile(Package);
+		const FString File = FTBuildStyleMaterials::PackageFile(Package);
 		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildStyleMaterials: couldn't replace %s."), *File);
 			return 1;
 		}
 	}
-	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(FTStyle::MaterialPackage)), true);
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FTBuildStyleMaterials::PackageFile(FTStyle::MaterialPackage)), true);
 
 	UPackage* MaterialPackage = CreatePackage(FTStyle::MaterialPackage);
-	UMaterial* Material = BuildStyleMaterial(MaterialPackage);
+	UMaterial* Material = FTBuildStyleMaterials::BuildStyleMaterial(MaterialPackage);
 	TArray<TPair<UPackage*, UObject*>> ToSave;
 	ToSave.Emplace(MaterialPackage, Material);
 
-	for (const FInstanceSpec& Spec : Instances)
+	for (const FTBuildStyleMaterials::FInstanceSpec& Spec : Instances)
 	{
 		UPackage* Package = CreatePackage(Spec.Package);
-		ToSave.Emplace(Package, BuildInstance(Package, Material, Spec.Style));
+		ToSave.Emplace(Package, FTBuildStyleMaterials::BuildInstance(Package, Material, Spec.Style));
 	}
 
 	// Under -NullRHI there may be nothing to compile; with a renderer, let the shaders finish first.
@@ -220,7 +220,7 @@ int32 UFTBuildStyleMaterialsCommandlet::Main(const FString& Params)
 	bool bOk = true;
 	for (const TPair<UPackage*, UObject*>& Item : ToSave)
 	{
-		bOk &= Save(Item.Key, Item.Value);
+		bOk &= FTBuildStyleMaterials::Save(Item.Key, Item.Value);
 	}
 	if (!bOk)
 	{

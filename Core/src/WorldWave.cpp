@@ -1,5 +1,7 @@
 #include "ftcore/WorldWave.h"
 
+#include "ftcore/Cutscene.h"
+
 #include <cmath>
 #include <limits>
 
@@ -161,6 +163,25 @@ WorldWaveParams streetWaveParams() {
     p.bandFarRadius = 60.f;
     p.tongueLead = 1.f;
     return p;
+}
+
+const char* worldWaveWorldId(std::string_view id) {
+    static constexpr const char* kIds[] = {"solhaven", "lattice", kWaveDefaultToWorld};
+    for (const char* known : kIds) {
+        if (id == known) return known;
+    }
+    return nullptr;
+}
+
+bool worldWaveParamsForCue(const CutsceneWaveCue& cue, WorldWaveParams& out) {
+    if (cue.preset() != "street") return false;
+    const char* world = worldWaveWorldId(cue.world());
+    if (!world) return false;
+    WorldWaveParams p = streetWaveParams();
+    p.toWorld = world;
+    p.direction = cue.reverse ? WaveDirection::Reverse : WaveDirection::Forward;
+    out = p;
+    return true;
 }
 
 WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {

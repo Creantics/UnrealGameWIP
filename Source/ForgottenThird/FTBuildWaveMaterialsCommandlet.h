@@ -12,7 +12,8 @@
 //                            rim, and the prelude's streak; outside the front it passes the input through
 //   M_FTCharacter_WaveCut    twins of the prop masters with the cut wired in, for the props the wave dressing tags
 //   M_FTCharacterTex_WaveCut
-// Files under /Game/Look/Wave are replaced. Then rebuild the masters that wire the cut in themselves:
+// Files under /Game/Look/Wave are replaced: every plain run rewrites every wave asset (fresh GUIDs, so a binary diff
+// each time), so run it only when this builder or the wave's shaders change. Then rebuild the masters that wire the cut in themselves:
 //   -run=FTImportPlant -Masters                  (foliage and bark)
 //   -run=FTImportVehicle -Source=<the car's export> (the kei car's body, clear coat and glass)
 

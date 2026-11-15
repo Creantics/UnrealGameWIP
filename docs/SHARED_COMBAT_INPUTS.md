@@ -449,12 +449,30 @@ the pieces.
   `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and outside the
   keep-outs round the camera's lines to the lead and to its target. With none valid it holds the last
   station it had for `frustumGiveUpSeconds` (3 s, counted from the last valid station whatever the
-  target), then falls back to rules 10-11's station and says so on every step it stays fallen back,
+  target, on every step: the held station is checked on string and guard steps too; sooner only when
+  the target's keep-out comes over the spot held), then falls back to rules 10-11's station and says so on every step it stays fallen back,
   strings, guards and repositions included (`PartnerIntent::frameFallback`,
   `PartnerBrain::fallbackSeconds()`). Rule 14's engage starts a string from where the partner stands only
-  inside the frame, unless no valid station was found that step; such a start is reported
+  inside the frame, unless no valid station was found that step (that step's search alone, with no
+  wait for one); such a start is reported
   (`PartnerIntent::offFrame`, `PartnerBrain::offFrameStarts()`). Every step the intent names why the
   partner is not acting (`PartnerIntent::idle`), and `idleSeconds(reason)` sums them over the fight.
+  Rule 17 in `PartnerBrain.h` is behind `PartnerTuning::circling`, off by default until its turns
+  hold the ruled limits; off, none of it runs and a framed partner with its attack held stands ready
+  where rules 10-16 put it, the host turning it to its target. With the switch on, the camera given
+  and its attack held (out of budget, a pause, no target), the partner still
+  looks in the fight: it walks goals of its own round its target, in the
+  frame and out of the keep-outs, a new one every 2-4 s, never 1.5 s in one place, and faces its
+  target on every step. These walks deal nothing and spend no attack budget; the idle reason is
+  unchanged. The host reads `PartnerIntent::skirmish` (the step walks such a goal) and turns the
+  partner to `PartnerIntent::enemy`; the report is `skirmishSeconds()`, `skirmishMoves()` and
+  `guardsBegun()`. No lead's kit has a dodge, so the partner never dodges.
+  The cut rule (ArenaFight): a damaging hit the partner does not guard holds it in the lead
+  fighter's hitstun and ends its running blow, in startup, active or recovery: nothing more from it,
+  what it dealt stays, and the time its brain committed stays spent (`ArenaStats::partnerBlowsCut`).
+  The lead's blow is cut only when the hit puts it in hitstun (a poise break, or in the air); the
+  partner has no poise or armour yet, so every such hit cuts its blow. A blow whose target dies
+  before its hit frame deals nothing and ends (`ArenaStats::partnerBlowsVoid`).
   There is no "called" reason: ArenaFight never holds the partner for an action the player called.
 
 ## What the Unreal wrapper needs

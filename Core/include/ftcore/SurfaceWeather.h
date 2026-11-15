@@ -89,8 +89,27 @@ struct StreetSurfaceSpec {
     // Asphalt detail tile (SurfaceWeatherOptions::streetDetail): a baked 1 m tile of stones and binder, world-mapped on
     // the asphalt; it replaces the procedural aggregate near by (the mips carry it to its mean far off).
     float detailTileM = 1.0f;            // the tile's side in the world
-    float detailAlbedoMean = 0.104f;     // the albedo map's linear luminance mean (the tile adds grain, not tone)
-    float detailRoughMean = 0.848f;      // the roughness channel's mean
+    float detailAlbedoMean = 0.0828f;    // the albedo map's linear luminance mean (the tile adds grain, not tone)
+    float detailRoughMean = 0.892f;      // the roughness channel's mean
+    float detailAOMean = 0.912f;         // the AO channel's mean, and the stone-peak channel's (the paint's stand-ins)
+    float detailPeakMean = 0.235f;
+    // The asphalt's final range (after every tone and roughness term, before the weather): albedo luminance clamped to
+    // asphaltAlbedoLo..Hi (binder about 0.06-0.10, stone tips never past 0.20); off the wheel paths roughness clamped to
+    // asphaltRoughLo..Hi; in a wheel band it goes to wheelBandRough..wheelBandRoughTop (the latter on polished stone
+    // peaks); tar seal (joints, sealed cracks) to sealRough, black and glossy.
+    float asphaltAlbedoLo = 0.05f;
+    float asphaltAlbedoHi = 0.20f;
+    float asphaltRoughLo = 0.85f;
+    float asphaltRoughHi = 0.95f;
+    float wheelBandRough = 0.7f;
+    float wheelBandRoughTop = 0.6f;
+    float sealRough = 0.35f;
+    // Street class by the asphalt slab's width (its short side, or a cambered half's): side lanes up to sideLaneM wide
+    // get crackSideMul times the sealed cracks, a main road from mainRoadM wide crackMainMul times.
+    float sideLaneM = 3.5f;
+    float mainRoadM = 6.0f;
+    float crackSideMul = 2.0f;
+    float crackMainMul = 0.7f;
     // With the tile, a wheel path polishes the exposed stone tops (the tile's blue channel) toward wheelTopRough and the
     // binder only by wheelPolishBinder (the dense binder stays matt; wheelPolish is the tile-less road's).
     float wheelTopRough = 0.55f;
@@ -106,6 +125,15 @@ struct StreetSurfaceSpec {
     float detailSlope = 0.5f;            // share of the tile's true slope taken into the normal
     float detailRough = 0.6f;            // share of the tile's roughness ratio taken
     float detailAO = 0.7f;               // share of the tile's cavity AO taken
+    // Anti-repetition of the tile (stochastic hex tiling): three reads on a triangular lattice this far apart, each
+    // vertex turned and offset at random, blended with weights raised to detailHexSharp and the contrast restored.
+    // detailHexM <= 0 reads the tile once, straight (the repeat shows at 1 m on long roads).
+    float detailHexM = 0.6f;
+    float detailHexSharp = 4.0f;
+    float detailHexTurn = 1.0f;          // share of a full turn a vertex may take (asphalt has no grain direction)
+    // Past this camera distance (m) the tile is read once, straight (a read per map against three): the repeat the hex
+    // reads hide no longer shows there. From 0.8 of it the two blend on the distance. 0 keeps the three reads everywhere.
+    float detailHexFarM = 30.0f;
     float tileM = 0.4f;                  // pavement tile
     float tileJointM = 0.005f;           // half a joint
     float tileBevelM = 0.008f;
@@ -298,5 +326,21 @@ FTCORE_API float streetLatticeValue(int x, int y);
 FTCORE_API float streetNoise(float x, float y);
 // The hash as an HLSL member function, "float L(int2 c) { ... }", one line.
 FTCORE_API const char* streetLatticeHlsl();
+// The asphalt tile's hex anti-repetition UVs (st.detailHexM > 0), as HLSL statements at `indent`, reading Pw (world plan,
+// m) and `noise`.L (streetLatticeHlsl): declares HxVar (the contrast restore) and, for j = 0..2, DUvj (the tile UV),
+// HxWtj (its weight), HxCj and HxSnj (its turn). The street layer and the paint decal both use it, so the paint wears on
+// the same stones the road shows under it.
+//
+// distM, when not empty (and st.detailHexFarM > 0), is an HLSL expression for the pixel's camera distance in metres: the
+// snippet then also declares HxNear (1 near, 0 past detailHexFarM), HxFar (1 - HxNear) and DUvF (the one straight read's
+// UV), scales every HxWtj by HxNear and HxVar toward 1 with it. The caller reads the three under
+// "[branch] if (HxNear > 0.0)" and the straight one, weighted HxFar, under "[branch] if (HxFar > 0.0)": a pixel takes
+// three reads near, one far, four only in the blend band. Each branch's own edge lies where its weight is 0, so the
+// implicit mips' quads that straddle it weigh nothing.
+FTCORE_API std::string streetHexUvHlsl(const StreetSurfaceSpec& st, const std::string& noise, const std::string& indent,
+                                       const std::string& distM = std::string());
+// The street class's crack (and patch) multiplier for an asphalt slab `widthM` across (0: a squarish fill, class 1):
+// crackSideMul up to sideLaneM, crackMainMul from mainRoadM, smoothstep between; as the street layer's CrackCls.
+FTCORE_API float streetCrackClass(float widthM, const StreetSurfaceSpec& st);
 
 }  // namespace ftcore

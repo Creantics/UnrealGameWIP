@@ -734,6 +734,20 @@ struct ArenaPoint3 {
     float z = 0.f;
 };
 
+// A camera pose's whole frustum (ftcore::arenaPoseFrustum makes one from a pose, ftcore::arenaInFrustum tests a point
+// against it, and ftcore::arenaPoseCamera turns it into ArenaInput::partnerCamera): the lens (m: x, y on the floor
+// plane, z up from it), its unit forward and up, the vertical field of view (degrees) and the frame's width per unit
+// of height.
+struct ArenaFrustum {
+    bool on = false; // the host's camera is known this tick
+    ArenaPoint3 pos{};
+    ArenaPoint3 forward{1.f, 0.f, 0.f};
+    ArenaPoint3 up{0.f, 0.f, 1.f};
+    float vfov = 0.f;
+    float aspect = 0.f;
+};
+
+
 // A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
 inline constexpr float kArenaShotHeight = 1.4f;
 // A pitched round that would meet the body under the crosshair (ArenaInput::aimBody) within this far (m, along its
@@ -799,7 +813,8 @@ struct ArenaInput {
     bool cameraOn = false;
     Vec2 cameraPos{};
     // The play camera in full for the partner's frame rules (PartnerBrain rules 13-16; ftcore/PartnerCamera.h), in
-    // the fight's metres with z up. Not given (the default): cameraOn above decides, as before. Given: stationing is
+    // the fight's metres with z up. Not given, or given but not whole (partnerCameraWhole; the default is not given):
+    // cameraOn above decides, as before. Given and whole: stationing is
     // on whatever cameraOn says, the station view takes this camera's place and forward on the ground (cameraPos and
     // cameraFacing unused), and the brain keeps its stations in this camera's frame.
     PartnerCameraView partnerCamera{};
@@ -1069,6 +1084,13 @@ struct ArenaStats {
     int partnerStrings = 0;    // its light strings begun
     int partnerGuards = 0;     // enemy blows its guard blocked
     int partnerRises = 0;      // times it stood again after being downed
+    // The cut rule: a damaging unguarded hit on the partner holds it in the lead fighter's hitstun and ends its running
+    // blow (no damage from it after that hit; what it dealt stays; the time its brain committed stays spent), in
+    // startup, active or recovery alike. This differs from the lead: the lead's blow is cut only when the hit puts it in
+    // hitstun (its poise breaks, or it is in the air), while the partner has no poise or armour, so every such hit cuts
+    // its blow. Accepted for now as "a hit into hitstun"; the partner's poise and armour are owed to the per-lead kits.
+    int partnerBlowsCut = 0;   // its running blows a damaging hit on it cut (the cut rule above)
+    int partnerBlowsVoid = 0;  // its blows ended unlanded because their target died before the hit frame
     int bossAttacks = 0;       // boss strings begun (a chained move is the same string; a break move is one), with a
                                // partner or without
     int bossAimedPartner = 0;  // ... of them aimed at the partner
