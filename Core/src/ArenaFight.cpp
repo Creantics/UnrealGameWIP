@@ -1129,7 +1129,10 @@ struct ArenaFightImpl {
                   r))
             return;
         pl.pairCoolUntil = t0 + fi.pairCooldown; // dealt (the ruling let it through): the clock starts
-        if (partnerOn()) pl.pairSpent += fi.pairPartnerSeconds;
+        if (partnerOn()) {
+            pl.pairSpent += fi.pairPartnerSeconds;
+            pl.pairBrain += fi.pairPartnerSeconds; // the brain's rule 2 budget: its spentSeconds at its next step
+        }
         const int amount = lose(i, scaledDamage(damage, r.damage));
         stats.damageDealt += amount;
         ++stats.counterStaggers;
@@ -2806,6 +2809,10 @@ struct ArenaFightImpl {
         pin.leadTarget = alive(pl.lock) ? static_cast<int>(pl.lock) : -1;
         pin.leadAttacking = leadOn;
         for (std::size_t k = 0; k < kMaxPartnerBlows; ++k) pin.blowSeconds[k] = allyLight(static_cast<std::uint8_t>(k)).total();
+        // A paired counter's partner time (outside its strings): this step's if the player's counter came first, else
+        // the next step's (a counter dealt in the enemies' step lands after the brain stepped).
+        pin.spentSeconds = pl.pairBrain;
+        pl.pairBrain = 0.f;
         pin.enemies = std::span<const PartnerEnemyView>(views.data(), n);
         // Stationing (rules 8-12): only with the host's camera. The ring less the ally's body is where it may stand.
         PartnerStationView& st = pin.station;

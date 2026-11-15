@@ -1563,6 +1563,7 @@ private:
         std::uint8_t pairFoe = kArenaNobody; // ... and the enemy it opened
         float pairCoolUntil = -1.0e9f;      // fight time before which a paired counter deals nothing (pairCooldown)
         float pairSpent = 0.f;              // ArenaAllyOut::pairSeconds this tick
+        float pairBrain = 0.f;              // ... and not yet given to the partner's brain (its next step takes it)
         int readStacks = 0;                 // correct Reads in a row, 0..kMaxReadStacks
         float stopUntil = -1.0e9f;          // fight time a hit pause ends
         float takeHalfPress = -1.0e9f;      // fight time of the last unused take half press that opened a window
