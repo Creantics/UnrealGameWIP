@@ -33,8 +33,21 @@
 //   The host calls both for the controlled lead every step, before it judges blows and before the tick, and for
 //   each lead once when it sets the fight up (begin sets every stored value to 0). A heal charge or Load its
 //   fight spends after that feed and before the tick (a heal, a Release) it spends through spendLeadHeal and
-//   spendLeadLoad, so a switch or takeover on that tick keeps the spent value. leadLoad(lead) and
-//   leadHeals(lead) read them; the kept lead's Load is the kept gauge (keptLoad).
+//   spendLeadLoad, so a switch or takeover on that tick keeps the spent value; a set of that lead's spent value
+//   after it on the same step is refused (false; lateSets() counts it). leadLoad(lead) and leadHeals(lead) read
+//   them; the kept lead's Load is the kept gauge (keptLoad).
+//   Host calls per step, in this order (C = activeLead() as the step opens; its fight has C's gauge and charges):
+//     1. setLoad(C, gauge) and setLeadHeals(C, charges): the host's values as the step opens. A probe's partner
+//        Load (setLoad on the kept lead) goes here too.
+//     2. judgeBlow(...) for each blow; setActiveLead(...) if the player asked to switch.
+//     3. Each spend the step makes: the host's fight spends from its own gauge or charges AND calls
+//        spendLeadLoad(C, amount) (a Release, a gift's Load cost) or spendLeadHeal(C) (a heal), on the step it
+//        spends. No setLoad or setLeadHeals of C after this point on the step.
+//     4. tick(dt).
+//     5. If tick.leadLoadNow (leadHealsNow) is not -1: put it in the host's gauge (charges). Then apply tick.loads
+//        that are not marked kept. Both before the host's fight steps again.
+//   A spend the host's fight makes and tells the session nothing of is not seen: on a switch on that tick the
+//   lead keeps step 1's value. A fight with one lead in it can skip steps 3 and 5 (control never moves).
 //   When control moves (an accepted switch, a takeover by a fall, a retry's carried switch) the lead that had it
 //   keeps the host's last feed (plus the fold below) and the next tick carries the newly controlled lead's own
 //   values: tick.leadLoadNow and tick.leadHealsNow (-1: none this step). While both leads are in the fight they are
@@ -603,6 +616,8 @@ private:
         leadHeals_ = {0, 0};
         leadLoadDue_ = kNoLeadValue;
         leadHealsDue_ = kNoLeadValue;
+        spentStep_ = {0, 0};
+        lateSets_ = 0;
         leadNowDue_ = true; // the attempt's first tick reports the controlled lead's values as fed by then
         c.lone = def_.loneLead == kNoFighter || loneStanceAccepted(def_.loneLead, def_.loneTuning);
         lone_ = c.lone && def_.loneLead != kNoFighter;
@@ -738,6 +753,7 @@ public:
         leadLoadDue_ = kNoLeadValue;
         leadHealsDue_ = kNoLeadValue;
         leadNowDue_ = false;
+        spentStep_ = {0, 0}; // the step closed: the next one's feed is taken again
         for (EnemyMark& m : marks_) {
             if ((m.used && !count_.live()) || (!m.used && now_ > m.until)) m = EnemyMark{};
         }
@@ -1066,14 +1082,21 @@ public:
     // A fighter's Load now, for the Lift (def.lift); negative: no gauge. Feed it before judging its blows.
     // For the kept lead it sets the kept gauge (0..its cap). For any other lead it is also that lead's stored
     // Load (0..kMaxLoad; a negative one stores 0): see Per-lead Load.
-    void setLoad(FighterId f, int load) {
+    // False, and nothing set (lateSets() counts it): a lead whose Load was spent through spendLeadLoad on this
+    // step, since the tick. The feed comes first and the spends after it (see Host calls per step).
+    bool setLoad(FighterId f, int load) {
+        if (isLead(f) && (spentStep_[f] & kSpentLoad) != 0) {
+            ++lateSets_;
+            return false;
+        }
         if (keptOn_ && f == keptLead_) {
             kept_ = load < 0 ? 0 : (load > keptCap_ ? keptCap_ : load);
             count_.setLoad(f, keptDown_ ? 0 : kept_);
-            return;
+            return true;
         }
         if (isLead(f)) leadLoad_[f] = clampLoad(load);
         count_.setLoad(f, load);
+        return true;
     }
     // A lead's own Load (the kept gauge for the kept lead; 0 for a non-lead), and its own heal charges.
     int leadLoad(FighterId lead) const {
@@ -1082,24 +1105,45 @@ public:
     }
     int leadHeals(FighterId lead) const { return isLead(lead) ? leadHeals_[lead] : 0; }
     // A lead's heal charges now (0..kMaxLeadHeals): the host feeds the controlled lead's every step.
-    void setLeadHeals(FighterId lead, int charges) {
-        if (!isLead(lead)) return;
+    // False, and nothing set (lateSets() counts it): a lead whose charge was spent through spendLeadHeal on this
+    // step, since the tick.
+    bool setLeadHeals(FighterId lead, int charges) {
+        if (!isLead(lead)) return false;
+        if ((spentStep_[lead] & kSpentHeal) != 0) {
+            ++lateSets_;
+            return false;
+        }
         leadHeals_[lead] = clampHeals(charges);
+        return true;
     }
     // The spends the host's fight makes between its feed and the tick go through these, so the stored values are
-    // current when control moves on that tick (a switch or a takeover keeps what the session holds). A heal
-    // charge: false (nothing spent) at 0. A Release's or any other Load spend: down to 0; for the kept lead it
-    // spends the kept gauge. Either is fed to the count as a feed would be.
+    // current when control moves on that tick (a switch or a takeover keeps what the session holds), and a set of
+    // that value later on the same step is refused. A heal charge: false (nothing spent) at 0; the count has no
+    // charges, so nothing goes to it. A Release's or any other Load spend: down to 0, and the count's gauge with it;
+    // for the kept lead it spends the kept gauge as it stands (never clipped to its cap: a swap may leave it above),
+    // and nothing while the kept lead is down.
     bool spendLeadHeal(FighterId lead) {
         if (!isLead(lead) || leadHeals_[lead] <= 0) return false;
         --leadHeals_[lead];
+        spentStep_[lead] = static_cast<std::uint8_t>(spentStep_[lead] | kSpentHeal);
         return true;
     }
     void spendLeadLoad(FighterId lead, int amount) {
         if (!isLead(lead) || amount <= 0) return;
-        const int had = leadLoad(lead);
-        setLoad(lead, had > amount ? had - amount : 0);
+        if (keepsLoad(lead)) {
+            if (keptDown_) return;
+            kept_ = kept_ > amount ? kept_ - amount : 0;
+            count_.setLoad(lead, kept_);
+        } else {
+            const int had = leadLoad_[lead];
+            leadLoad_[lead] = had > amount ? had - amount : 0;
+            count_.setLoad(lead, leadLoad_[lead]);
+        }
+        spentStep_[lead] = static_cast<std::uint8_t>(spentStep_[lead] | kSpentLoad);
     }
+    // Sets refused since the attempt began (begin or retry) because they came after a spend on their step: a host
+    // in the wrong order. Its tests and its debug build check it stays 0.
+    int lateSets() const { return lateSets_; }
     // The blow cap (0: none) and a blow's scale kept under it.
     float blowCap() const { return blowCap_; }
     float capBlow(float scale) const { return capBlowScale(scale, blowCap_); }
@@ -1556,6 +1600,10 @@ private:
     std::array<int, 2> leadHeals_{};    // each lead's stored heal charges (setLeadHeals)
     int leadLoadDue_ = kNoLeadValue;    // the next tick's leadLoadNow
     int leadHealsDue_ = kNoLeadValue;   // and its leadHealsNow
+    static constexpr std::uint8_t kSpentHeal = 1;
+    static constexpr std::uint8_t kSpentLoad = 2;
+    std::array<std::uint8_t, 2> spentStep_{}; // per lead: spent through spendLeadHeal / spendLeadLoad since the tick
+    int lateSets_ = 0;                        // sets refused for coming after a spend on their step
     bool leadNowDue_ = false;           // the next tick reports the controlled lead's own values (begin, retry, join)
     float blowCap_ = 0.f;
     void endLoneFor(LoneEnd why) {

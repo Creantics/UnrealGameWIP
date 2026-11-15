@@ -321,6 +321,8 @@ if(FTCORE_BUILD_TESTS)
         tests/AllocHook.cpp
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
+        tests/test_audio_pick.cpp
+        tests/test_mix_state.cpp
         tests/test_look_body.cpp
         tests/test_garment_front.cpp
         tests/test_backlog.cpp
