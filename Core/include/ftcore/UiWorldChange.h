@@ -14,6 +14,7 @@
 #include "ftcore/UiStyle.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -45,9 +46,11 @@ inline bool uiWorldChangeValid(std::int8_t world) {
 }
 
 // One frame. Fires on the frame the camera's world differs from the rows' ink, only when switched on, a wave is moving
-// and something is drawn; with nothing drawn the ink changes unseen, otherwise it waits.
+// and something is drawn; with nothing drawn the ink changes unseen, otherwise it waits. A world that changed during a
+// sweep starts its own on the sweep's last frame, moving or not, so the rows never keep a world they left.
 inline void uiWorldChangeStep(UiWorldChange& s, const UiWorldChangeIn& in, float dt) {
-    const float secs = std::max(dt, 0.f);
+    const float secs = std::isfinite(dt) && dt > 0.f ? dt : 0.f; // a NaN or infinite frame counts as none
+    bool late = false;
     if (s.running) {
         if (in.world == s.from) { // the camera backed out: run back from here, from the other end
             std::swap(s.from, s.shown);
@@ -55,23 +58,23 @@ inline void uiWorldChangeStep(UiWorldChange& s, const UiWorldChangeIn& in, float
             s.flip = !s.flip;
         }
         s.t += secs;
-        if (s.t >= kUiWorldChangeTime) {
-            s.running = false;
-            s.t = 0.f;
-            s.from = kUiWorldNone;
-            s.flip = false;
-        }
-        return; // a third world waits for the end
+        if (s.t < kUiWorldChangeTime) return; // a third world waits for the end
+        s.running = false;
+        s.t = 0.f;
+        s.from = kUiWorldNone;
+        s.flip = false;
+        // A change that came during the sweep: its wave may have settled by now, so it starts without one moving.
+        late = true;
     }
     if (!uiWorldChangeValid(in.world) || in.world == s.shown) return;
     if (!uiWorldChangeValid(s.shown)) {
         s.shown = in.world; // the first world: taken silently
         return;
     }
-    if (in.on && in.moving && in.drawn) {
+    if (in.on && (in.moving || late) && in.drawn) {
         s.from = s.shown;
         s.shown = in.world;
-        s.t = secs; // the crossing's frame is the envelope's first
+        s.t = late ? 0.f : secs; // the crossing's frame is the envelope's first (a late start: from this frame's end)
         s.running = true;
         s.flip = false;
     } else if (!in.drawn) {
