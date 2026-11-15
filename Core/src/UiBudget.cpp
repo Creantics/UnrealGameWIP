@@ -78,6 +78,17 @@ void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& before, const UiPro
     }
 }
 
+void uiRefusedWatchStep(UiRefusedRows& st, UiRefusedWatch& w, const UiPromptReasons& why, UiPromptMask pressed,
+                        float dt) {
+    if (!w.seeded) {
+        w.before = why;
+        w.seeded = true;
+        pressed = 0;
+    }
+    uiRefusedStep(st, w.before, why, pressed, dt);
+    w.before = why;
+}
+
 UiPromptMask uiRefusedShowing(const UiRefusedRows& st) {
     UiPromptMask m = 0;
     for (std::size_t p = 0; p < kUiPromptCount; ++p) {

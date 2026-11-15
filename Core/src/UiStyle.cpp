@@ -216,6 +216,21 @@ float uiHitFlashLevel(float age) {
     return 1.f - u * u * (3.f - 2.f * u);
 }
 
+float uiHitWatchStep(UiHitWatch& w, double stamp, float dt) {
+    if (!w.seeded) {
+        w.seen = stamp;
+        w.age = 1e3f;
+        w.seeded = true;
+    } else if (stamp != w.seen) {
+        const bool fresh = stamp > w.seen && stamp >= 0.0;
+        w.seen = stamp;
+        w.age = fresh ? 0.f : 1e3f;
+    } else {
+        w.age = std::min(w.age + (dt > 0.f ? dt : 0.f), 1e3f);
+    }
+    return w.age;
+}
+
 UiLowGuardGaps uiLowGuardGaps(float s, float px) {
     const float d = px > 0.f ? px : 1.f;
     const auto whole = [d](float v) { return std::max(1.f, std::floor(v / d + 0.5f)) * d; };

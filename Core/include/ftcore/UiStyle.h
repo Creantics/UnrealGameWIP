@@ -203,6 +203,16 @@ inline constexpr float kUiHitFull = 0.08f; // seconds at full strength
 inline constexpr float kUiHitGone = 0.3f;  // seconds until it is gone
 // The flash's strength `age` seconds after the hit: 1 until kUiHitFull, a smooth fall to 0 at kUiHitGone, 0 outside.
 FTCORE_API float uiHitFlashLevel(float age);
+// The flash's age on the view's own clock (it runs in a pause, so a pause right after a hit lets the flash finish).
+// `stamp` is the host's last hit time on its fight clock, negative when the fight has had no hit. The flash starts
+// (age 0) only when the stamp moves later and is not negative; any other change (a retry resetting it) ends it. The
+// first tick after `seeded` is cleared (the view's first, or a retry's) only reads the stamp. Returns the age.
+struct UiHitWatch {
+    double seen = 0.0;
+    float age = 1e3f;
+    bool seeded = false;
+};
+FTCORE_API float uiHitWatchStep(UiHitWatch& w, double stamp, float dt);
 
 // A low value line's underline and the guard row under it, in 1080p px at HUD scale 1: the underline kUiLowUnderW
 // thick, kUiLowUnderGap below the line's bottom edge, and the guard row's top kUiGuardClear below the underline, never

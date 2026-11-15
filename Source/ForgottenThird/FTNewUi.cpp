@@ -1819,6 +1819,10 @@ public:
 			RestartsSeen = Fight.stats().restarts;
 			RowSwap = ftcore::UiRowSwap{};
 			bRebuild = true;
+			// A new fight: no press is judged against the last fight's answers, and its reset hit stamp is no hit.
+			WhyWatch.seeded = false;
+			RefusedRows = ftcore::UiRefusedRows{};
+			HitWatch.seeded = false;
 		}
 		// A lead switch or a takeover traded the seats (the runner's SwapLeadFigures): each hp trail follows its lead to
 		// its new row, and every string built from the controlled lead (its name, its prompts' keys and words) is built
@@ -2001,13 +2005,13 @@ public:
 		}
 		// A press counts as refused only if it was refused before it (the last tick's answers): one that worked and left
 		// its action refused (the last heal, the Pair's cooldown starting) shows no row.
-		if (!bWhySeeded || UiStateShot() == EUiStateShot::Refused)
+		// A view's first tick, and a retry's (the watch is cleared then), only read the answers.
+		if (UiStateShot() == EUiStateShot::Refused)
 		{
-			WhyBefore = Why;
-			bWhySeeded = true;
+			WhyWatch.before = Why;
+			WhyWatch.seeded = true;
 		}
-		ftcore::uiRefusedStep(RefusedRows, WhyBefore, Why, Pressed, DeltaTime);
-		WhyBefore = Why;
+		ftcore::uiRefusedWatchStep(RefusedRows, WhyWatch, Why, Pressed, DeltaTime);
 		RefusedShowing = ftcore::uiRefusedShowing(RefusedRows);
 		ftcore::UiPromptMask Teaching = 0;
 		for (int32 I = static_cast<int32>(ftcore::UiPrompt::Attack); I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
@@ -3943,21 +3947,11 @@ private:
 		}
 		{
 			// The hit flash: full for 80 ms, gone by 300 ms (uiHitFlashLevel), in every world.
-			// Aged by the widget's own time from the tick the runner's hit stamp changes, so a pause right after a hit lets
-			// the flash finish instead of holding it (the fight's clock stops in a pause; this one does not).
-			const double Stamp = Runner.GetPlayerHitTime();
-			if (Stamp != HitStampSeen)
-			{
-				HitStampSeen = Stamp;
-				HitAgeOwn = bHitSeeded ? 0.f : 1e3f;
-			}
-			else
-			{
-				HitAgeOwn = FMath::Min(HitAgeOwn + FMath::Max(DeltaTime, 0.f), 1e3f);
-			}
-			bHitSeeded = true;
-			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f
-				: ftcore::uiHitFlashLevel(HitAgeOwn);
+			// Aged by the widget's own time from the tick the runner's hit stamp moves later, so a pause right after a hit
+			// lets the flash finish instead of holding it (the fight's clock stops in a pause; this one does not), and a
+			// retry, which resets the stamp, shows none (uiHitWatchStep).
+			const float HitAge = ftcore::uiHitWatchStep(HitWatch, Runner.GetPlayerHitTime(), DeltaTime);
+			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f : ftcore::uiHitFlashLevel(HitAge);
 			const ftcore::Settings* Prefs = Runner.GetSettings();
 			bReduceFlashes = Prefs && Prefs->reduceFlashes;
 		}
@@ -4309,8 +4303,7 @@ private:
 	ftcore::UiPromptMask RefusedShowing = 0; // the prompts showing their refusal this tick
 	uint32 PromptPressSeen[ftcore::kUiPromptCount] = {}; // the runner's press counts as last read
 	bool bPressSeeded = false;                          // PromptPressSeen has been read once
-	ftcore::UiPromptReasons WhyBefore{};                // the prompts' answers as the last tick read them
-	bool bWhySeeded = false;
+	ftcore::UiRefusedWatch WhyWatch;          // the prompts' answers as the last tick read them (cleared on a retry)
 	std::array<ftcore::UiPromptMask, ftcore::kUiPromptCount> PromptSameKeyBelow{}; // per prompt, the lower ones on its key
 	ftcore::UiPromptReasons Why{};    // each prompt's answer from the rules this tick
 	ftcore::PressReason GiftWhy[2] = {ftcore::PressReason::Absent, ftcore::PressReason::Absent}; // Gift Heal's, Gift Guard's
@@ -4410,9 +4403,7 @@ private:
 	ftcore::ArenaHudBoss BossSeen;
 	uint8 LockSeen = ftcore::kArenaNobody;
 	float HitA = 0.f, ParryA = 0.f;
-	double HitStampSeen = -1e9; // the runner's last hit stamp as read
-	float HitAgeOwn = 1e3f;     // seconds since that hit was seen, on the widget's clock
-	bool bHitSeeded = false;
+	ftcore::UiHitWatch HitWatch; // the runner's last hit stamp as read and the flash's age on the widget's clock
 	bool bReduceFlashes = false; // the settings' reduce flashes: the banded flash keeps only its hairline
 	FSlateFontInfo ResultFont;
 	float ResultLineH = 0.f, ResultAsc = 0.f;

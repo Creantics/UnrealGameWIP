@@ -931,3 +931,25 @@ TEST_CASE("ui style: the guard row stands at least 10 device px under a low line
     CHECK(one.clear == 12.f);
     CHECK(ftcore::uiLowGuardGaps(0.75f, 1.f).clear == 10.f); // 720p: 9 px by scale, held at 10
 }
+
+TEST_CASE("ui style: the hit flash starts only on a later hit; a retry's reset shows none; a pause lets it finish") {
+    UiHitWatch w;
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, -1e9, 0.016f)) == 0.f); // the first tick only reads the stamp
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, 3.0, 0.016f)) == 1.f);  // a hit
+    // A pause: the fight's stamp holds, the view's clock runs on, the flash finishes.
+    for (int i = 0; i < 30; ++i) uiHitWatchStep(w, 3.0, 0.016f);
+    CHECK(uiHitFlashLevel(w.age) == 0.f);
+    // A retry resets the stamp to "no hit": no flash, whether or not the view also clears its seed.
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, -1e9, 0.016f)) == 0.f);
+    UiHitWatch r;
+    uiHitWatchStep(r, 2.0, 0.016f);
+    CHECK(uiHitFlashLevel(uiHitWatchStep(r, 2.1, 0.016f)) == 1.f);
+    r.seeded = false;
+    CHECK(uiHitFlashLevel(uiHitWatchStep(r, -1e9, 0.016f)) == 0.f);
+    // A stamp that moves earlier but stays non-negative is no hit either.
+    UiHitWatch e;
+    uiHitWatchStep(e, 5.0, 0.016f);
+    CHECK(uiHitFlashLevel(uiHitWatchStep(e, 0.5, 0.016f)) == 0.f);
+    // The new fight's first hit, earlier on its clock than the last fight's, flashes.
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, 0.4, 0.016f)) == 1.f);
+}

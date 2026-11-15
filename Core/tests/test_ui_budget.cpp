@@ -496,3 +496,32 @@ TEST_CASE("ui budget: a press that works and leaves its action refused shows no 
     uiRefusedStep(st, after, after, healBit, 0.016f);
     CHECK(uiRefusedShowing(st) == healBit);
 }
+
+TEST_CASE("ui budget: after a retry the first press is judged on the new fight's answers") {
+    const UiPromptMask pairBit = uiPromptBit(UiPrompt::Pair);
+    UiPromptReasons cooling = allWhy(PressReason::Ok);
+    cooling[static_cast<std::size_t>(UiPrompt::Pair)] = PressReason::Cooldown;
+    UiRefusedRows st;
+    UiRefusedWatch w;
+    // The last fight ends with the Pair cooling down.
+    uiRefusedWatchStep(st, w, cooling, 0, 0.016f);
+    uiRefusedWatchStep(st, w, cooling, 0, 0.016f);
+    // A retry: the view clears the watch and the rows. In the new fight the Pair is usable for a tick, then a press takes
+    // it and its cooldown starts: the press worked, so no row.
+    w.seeded = false;
+    st = UiRefusedRows{};
+    uiRefusedWatchStep(st, w, allWhy(PressReason::Ok), 0, 0.016f);
+    uiRefusedWatchStep(st, w, cooling, pairBit, 0.016f);
+    CHECK(uiRefusedShowing(st) == 0);
+    // Without the reset the same press is judged on the old fight's Cooldown and shows a row: the fault the reset fixes.
+    UiRefusedRows stale;
+    UiRefusedWatch old;
+    uiRefusedWatchStep(stale, old, cooling, 0, 0.016f);
+    uiRefusedWatchStep(stale, old, cooling, pairBit, 0.016f);
+    CHECK(uiRefusedShowing(stale) == pairBit);
+    // The seeding tick counts no press, even one on a refused prompt.
+    UiRefusedRows fresh;
+    UiRefusedWatch seed;
+    uiRefusedWatchStep(fresh, seed, cooling, pairBit, 0.016f);
+    CHECK(uiRefusedShowing(fresh) == 0);
+}

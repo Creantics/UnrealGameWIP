@@ -157,6 +157,15 @@ struct UiRefusedRows {
 // starting) shows nothing. Every other counts down by dt, and one whose answer is no longer refused stops at once.
 FTCORE_API void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& before, const UiPromptReasons& why,
                               UiPromptMask pressed, float dt);
+// The view's side of uiRefusedStep: the answers the last tick read, and whether they belong to this fight. The view
+// clears `seeded` when a fight starts again (a retry) and the rows with it: the first tick after reads the new fight's
+// answers as its `before` and counts no press, so no press is judged against another fight's answers.
+struct UiRefusedWatch {
+    UiPromptReasons before{};
+    bool seeded = false;
+};
+FTCORE_API void uiRefusedWatchStep(UiRefusedRows& st, UiRefusedWatch& w, const UiPromptReasons& why,
+                                   UiPromptMask pressed, float dt);
 // The prompts showing their refusal now (drawn at kUiRefusedInk, their reason word after them).
 FTCORE_API UiPromptMask uiRefusedShowing(const UiRefusedRows& st);
 // The prompts that may stand: present (uiPromptsPresent), less each refused one not showing its refusal.
