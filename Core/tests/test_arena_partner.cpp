@@ -3,6 +3,7 @@
 // fight without one is unchanged.
 
 #include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaZone.h"
 #include "ftcore/FightSession.h"
 #include "ftcore/PartnerBrain.h"
 #include "TestAssets.h"
@@ -1862,7 +1863,8 @@ bool moving(const ArenaOutput& o) {
     const PartnerAct a = static_cast<PartnerAct>(o.ally.act);
     return a == PartnerAct::MoveTo || a == PartnerAct::StepBack;
 }
-// In the camera's view: in front of it, within halfDegrees of its forward.
+// In the camera's view: in front of it, within halfDegrees of its forward. The tests use half the zone camera's
+// default horizontal field of view (ZoneCamera::fov), so "in view" is the play lens's own frame, not a chosen number.
 bool inView(Vec2 cam, Vec2 forward, Vec2 p, float halfDegrees) {
     const Vec2 d = sub(p, cam);
     const float dl = length(d), fl = length(forward);
@@ -1905,8 +1907,9 @@ TEST_CASE("arena partner: stationed, it stands in the camera's view but out of i
         CHECK(moves > 20);
         CHECK(inWedge == 0);
         CHECK_FALSE(inKeepOut(cam, r.bodies.player, r.bodies.ally));
-        CHECK(inView(cam, forward, r.bodies.ally, 45.f));
-        CHECK_FALSE(inView(cam, Vec2{1.f, 0.f}, r.bodies.ally, 45.f)); // a wrong forward would not see it
+        const float halfFov = ZoneCamera{}.fov * 0.5f;
+        CHECK(inView(cam, forward, r.bodies.ally, halfFov));
+        CHECK_FALSE(inView(cam, Vec2{1.f, 0.f}, r.bodies.ally, halfFov)); // a wrong forward would not see it
         CHECK(length(sub(r.bodies.ally, r.bodies.player)) >= PartnerTuning{}.personalSpaceMeters - 0.05f);
     }
     {   // A small ring: the station it wants is past the wall, so its goal is held at the ring less its body, which

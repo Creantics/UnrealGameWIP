@@ -6514,7 +6514,7 @@ void UFTArenaRunner::BeginPartner()
 	HandoffMoveAt = TakeoverInputUntil = SwitchPartnerAt = SwitchCamCheckAt = -1.0;
 	HandoffBegun = HandoffDropped = HandoffTakeovers = HandoffMovesOnTime = HandoffSwitches = TakeoverInputsIgnored = 0;
 	HandoffWorstLate = SwitchCamWorst = 0.0;
-	SwitchCamChecks = BenchMorphChecks = 0;
+	SwitchCamChecks = BenchMorphChecks = BenchMorphUnchecked = 0;
 	BenchMorphWorst = 0.f;
 	bCameraPoseNow = false; // the first frame's step, before any camera is drawn, feeds no stationing
 	PartnerOrders = 0;
@@ -6685,7 +6685,9 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 	{
 		AllyFigure->ResetFeet();
 		// The benched figure keeps none of the look's gauntlet morphs (End set them back to 0).
-		const USkeletalMeshComponent* Benched = BenchMorphOwner.Get() == AllyFigure ? AllyFigure->GetLeadSkin() : nullptr;
+		const bool bGauntletBenched = BenchMorphs.Num() > 0 && BenchMorphOwner.Get() == AllyFigure;
+		const USkeletalMeshComponent* Benched = bGauntletBenched ? AllyFigure->GetLeadSkin() : nullptr;
+		BenchMorphUnchecked += bGauntletBenched && !Benched ? 1 : 0; // benched, but no skin to read
 		for (const FName& Morph : BenchMorphs)
 		{
 			if (Benched)
@@ -6745,12 +6747,16 @@ void UFTArenaRunner::DropPendingHandoff(const TCHAR* Why)
 	TakeoverInputUntil = -1.0;
 	bNamesSwapped = bFiguresSwapped;
 	++HandoffDropped;
-	// The view to the lead now controlled (a body change after this sets its own).
-	if (APlayerController* PC = GetPC(); PC && PlayerFigure)
+	// The view to the lead now controlled (a body change after this sets its own), only from a fighter's play camera
+	// and while the fight goes on: a capture's camera and the result's view stay as they are.
+	APlayerController* PC = GetPC();
+	const bool bMoveView = PC && PlayerFigure && !Fight.over() && Cast<AFTArenaFighter>(PC->GetViewTarget()) != nullptr;
+	if (bMoveView)
 	{
 		PC->SetViewTargetWithBlend(PlayerFigure, kTakeoverMoveSeconds, EViewTargetBlendFunction::VTBlend_EaseInOut, 2.f);
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a takeover's hand-off dropped in its hold (%s): the view eases to the lead now controlled."), Fight.time(), Why);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a takeover's hand-off dropped in its hold (%s): %s."), Fight.time(), Why,
+		bMoveView ? TEXT("the view eases to the lead now controlled") : TEXT("the view stays"));
 }
 
 void UFTArenaRunner::TickHandoff()
@@ -6903,9 +6909,11 @@ void UFTArenaRunner::LogHandoffChecks() const
 	{
 		// At each body change, and again now when the gauntlet lead's figure is the benched one.
 		int32 Checks = BenchMorphChecks;
+		int32 Unchecked = BenchMorphUnchecked;
 		float Worst = BenchMorphWorst;
 		const AFTArenaFighter* Owner = BenchMorphOwner.Get();
-		if (const USkeletalMeshComponent* Benched = Owner && Owner == AllyFigure.Get() ? Owner->GetLeadSkin() : nullptr)
+		const bool bBenchedNow = Owner && BenchMorphs.Num() > 0 && Owner == AllyFigure.Get();
+		if (const USkeletalMeshComponent* Benched = bBenchedNow ? Owner->GetLeadSkin() : nullptr)
 		{
 			for (const FName& Morph : BenchMorphs)
 			{
@@ -6913,9 +6921,14 @@ void UFTArenaRunner::LogHandoffChecks() const
 				++Checks;
 			}
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: benched figure morphs %s (%d checked after %d body changes, worst weight %.3f; the gauntlet lead benched at the end %s)."),
-			Checks == 0 ? TEXT("n/a, the gauntlet lead never benched") : (Worst <= 1e-4f ? TEXT("PASS") : TEXT("FAIL")), Checks,
-			HandoffSwitches + HandoffBegun, Worst, Owner && Owner == AllyFigure.Get() ? TEXT("yes") : TEXT("no"));
+		else
+		{
+			Unchecked += bBenchedNow ? 1 : 0;
+		}
+		// A benched gauntlet figure with no skin to read is UNCHECKED, never a pass.
+		const TCHAR* Verdict = Worst > 1e-4f ? TEXT("FAIL") : (Unchecked > 0 ? TEXT("UNCHECKED") : (Checks == 0 ? TEXT("n/a, the gauntlet lead never benched") : TEXT("PASS")));
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: benched figure morphs %s (%d checked, %d benched with no skin to read, after %d body changes, worst weight %.3f; the gauntlet lead benched at the end %s)."),
+			Verdict, Checks, Unchecked, HandoffSwitches + HandoffBegun, Worst, bBenchedNow ? TEXT("yes") : TEXT("no"));
 	}
 	if (HandoffSwitches > 0 || SwitchPartnerChecks > 0)
 	{

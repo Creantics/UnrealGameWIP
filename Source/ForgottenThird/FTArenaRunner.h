@@ -1153,7 +1153,7 @@ private:
 	// BenchMorphs: the gauntlet look's morphs, BenchMorphOwner the figure that wears that look.
 	TArray<FName> BenchMorphs;
 	TWeakObjectPtr<AFTArenaFighter> BenchMorphOwner;
-	int32 BenchMorphChecks = 0;
+	int32 BenchMorphChecks = 0, BenchMorphUnchecked = 0;
 	float BenchMorphWorst = 0.f;
 	// The fight's partnerSwaps when this session began (a restart begins the brain again, not the fight's stats).
 	int32 PartnerSwapsBase = 0;

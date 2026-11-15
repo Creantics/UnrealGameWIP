@@ -383,7 +383,12 @@ void FFTLeadWeapons::AttachProps()
 			{
 				bFitted = bFitted || (Piece && Piece->GetSkeletalMeshAsset() && FSoftObjectPath(Piece->GetSkeletalMeshAsset()) == Want);
 			}
-			if (bFitted)
+			if (!bFitted && FTLook::PieceLeftOff(Want))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s left off by the piece filter."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.GetAssetName());
+			}
+			else if (bFitted)
 			{
 				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s fitted (%s)."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
 					*Want.GetAssetName(), GauntletBracer[Side].IsNull() ? TEXT("the kit's, bare-skin fit") : TEXT("the look's"));
@@ -1268,6 +1273,7 @@ void FFTLeadWeapons::Reset()
 	ArenaFigure.Reset();
 	Skin.Reset();
 	Anim.Reset();
+	GauntletMorphs.Reset(); // no stale names for a Begin that returns before filling them
 	bClips = false;
 	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{
