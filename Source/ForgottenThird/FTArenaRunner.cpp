@@ -1543,6 +1543,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	LockLow = 0.f;
 	LowSideNow = ftcore::kArenaLow.side;
 	bLowRig = false;
+	bShortArmLogged = false;
 	ParryTime = -1e9;
 	ReleaseTime = -1e9;
 	ReleaseSpent = 0;
@@ -5197,6 +5198,13 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			// the aspect or the lead changes).
 			AimHeight = LockAimHeight(Target, Hover, Tall);
 			const ftcore::ArenaPoint3 Aim{To.x, To.y, AimHeight};
+			if (LensRig.arm < ftcore::kArenaHeadKeptArm && !bShortArmLogged)
+			{
+				// Under ftcore::kArenaHeadKeptArm no pitch keeps the whole head (the lock frame's known limit): said once a fight.
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera arm %.2f m at %.2f s, under %.2f m: the lead's head top can leave the frame."),
+					LensRig.arm, Fight.time(), ftcore::kArenaHeadKeptArm);
+				bShortArmLogged = true;
+			}
 			LowSideSign = ftcore::arenaLowSide(ftcore::kArenaLook, LensRig, CameraPitch, Aspect, Body, Aim, LowSideSign, ftcore::kArenaLowSide, SideRules);
 			if (FMath::Abs(LensRig.arm - LowFitArm) > 0.05f || Aspect != LowFitAspect || Body.head != LowFitHead)
 			{

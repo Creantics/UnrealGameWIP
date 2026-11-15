@@ -96,6 +96,9 @@ FTCORE_API ArenaCameraPose arenaPoseAtPitch(const ArenaLookLimits& limits, const
 // In that last case the feet give way first: a share they pass the bottom edge by counts this much against one of the
 // head's or the sides' (the head and the chest are what the player reads the lead by).
 inline constexpr float kArenaFeetGive = 0.25f;
+// The limit of that last case: with the arm shorter than this (measured: 0.5 and 0.6 m on the shipped rig) the lens is
+// so near that the head's top passes the frame too, whatever the pitch. The host logs once per fight when it is.
+inline constexpr float kArenaHeadKeptArm = 0.7f;
 struct ArenaLeadPitch {
     float pitch = 0.f;
     int kept = 0;

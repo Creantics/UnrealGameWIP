@@ -484,6 +484,7 @@ private:
 	ftcore::ArenaLeadBody LeadBody() const;
 	float LockAimHeight(int32 Target, float Base, float Top) const;
 	float LockLow = 0.f;          // 0..1: the low lens's share (eased at ftcore::kArenaLow.rate toward LowFit)
+	bool bShortArmLogged = false; // the arm under ftcore::kArenaHeadKeptArm was logged this fight
 	bool bLowRig = false;         // the low rig was last given to the boom
 	float LowSideSign = 1.f;      // the low shoulder's side (ftcore::arenaLowSide: +1 right, -1 left)
 	float LowSideNow = 1.2f;      // m: the low shoulder as eased toward that side

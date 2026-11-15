@@ -229,6 +229,7 @@ TEST_CASE("arena lock frame: when not even the whole body fits, the feet are cut
     const ZoneCamera z{};
     const float aspect = 16.f / 9.f;
     int cut = 0;
+    CHECK(kArenaHeadKeptArm == doctest::Approx(0.7f));
     for (int tenths = 19; tenths >= 7; --tenths) {
         const float arm = static_cast<float>(tenths) / 10.f;
         const ArenaCameraPose rig = shortRig(arm);
