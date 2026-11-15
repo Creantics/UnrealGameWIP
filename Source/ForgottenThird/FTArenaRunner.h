@@ -1123,6 +1123,7 @@ private:
 	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
 	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.
 	void SampleLeadFrame();
+	void ResetLeadFrameChecks();
 	int32 LeadFrameFrames = 0, LeadFrameKept = 0, LeadFrameVisible = 0;
 	ftcore::ArenaLeadShares LeadShotShares; // the last frame sampled on a tall target (bLeadShotSampled), for LogLeadFrameShot
 	bool bLeadShotSampled = false;

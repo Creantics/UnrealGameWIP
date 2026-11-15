@@ -447,14 +447,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bFrameCheck = FParse::Param(FCommandLine::Get(), TEXT("ArenaFrameCheck"));
 	bNoFrame = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoFrame"));
 	FrameFrames = FrameSettled = FrameInThird = 0;
-	LeadFrameFrames = LeadFrameKept = LeadFrameVisible = TellFrames = TellInPlace = TellPinned = TellEdge = 0;
-	LeadFeetLeast = 1.f;
-	LeadHeadMost = LeadSideWorst = 0.f;
-	for (int32 I = 0; I < 3; ++I)
-	{
-		LeadMissWorst[I] = 0.f;
-		LeadMissAt[I] = -1.f;
-	}
+	ResetLeadFrameChecks();
 	FrameLeadWorst = FrameFoeWorst = FrameTurnMost = FrameRateMost = FrameLensMost = FrameArmMost = FramePrev = 0.f;
 	for (int32 I = 0; I < 4; ++I)
 	{
@@ -682,6 +675,12 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		}
 	}
 	HeldDelta = FMath::Max(0.f, Fight.heldTime() - HeldBefore);
+	// Over with a partner shot's or cast's impact still waiting: the held clock stands, so its wait runs on the frame's.
+	if (Fight.over() && !bHold && PartnerImpactDue >= 0.0)
+	{
+		PartnerImpactDue -= static_cast<double>(DeltaSeconds);
+		PlayWaitingPartnerImpact(static_cast<double>(Fight.heldTime()));
+	}
 	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
 	if (bPartner)
 	{
@@ -5051,6 +5050,18 @@ void UFTArenaRunner::LogLeadFrameShot(const TCHAR* Shot) const
 }
 
 #if !UE_BUILD_SHIPPING
+void UFTArenaRunner::ResetLeadFrameChecks()
+{
+	LeadFrameFrames = LeadFrameKept = LeadFrameVisible = TellFrames = TellInPlace = TellPinned = TellEdge = 0;
+	LeadFeetLeast = 1.f;
+	LeadHeadMost = LeadSideWorst = 0.f;
+	for (int32 I = 0; I < 3; ++I)
+	{
+		LeadMissWorst[I] = 0.f;
+		LeadMissAt[I] = -1.f;
+	}
+}
+
 void UFTArenaRunner::SampleLeadFrame()
 {
 	const APlayerController* PC = GetPC();
@@ -6139,6 +6150,9 @@ void UFTArenaRunner::Restart()
 	bAllyStruck = bAllyStrikeCut = false;
 	AllyTargetDeadLast = -1;
 	PartnerImpactDue = -1.0;
+#if !UE_BUILD_SHIPPING
+	ResetLeadFrameChecks(); // its line is printed per attempt (Finish), its fight times this attempt's
+#endif
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
 	if (AFTArenaFighter* Boss = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr)
