@@ -1,0 +1,98 @@
+// The world wave's shared helpers (FTBuildWaveMaterials: Source/ForgottenThird/FTBuildWaveMaterialsCommandlet.cpp): the
+// hash, the smooth noise and the front's ragged edge, so the cut a tagged thing is clipped on (MF_WorldWaveCut), the
+// state a surface changes to (MF_WorldWaveState, State.ush) and the post-process's mask (PP_WorldWave, Post.ush) all
+// follow the same edge. Distances in cm. Functions only.
+//
+// The ragged edge: the front's outer edge is r (the host writes the tongues' reach, ahead of the cues' radius); the band
+// runs w inward of it, and the edge the second world reaches is e = r - w * Tongue(direction from the origin, time) plus
+// a fixed world-space jitter of a few decimetres, so narrow tongues run out to the outer edge, the body of the front
+// sits in the band's inner half and the tear is ragged along a wall. The second world is where d < e for a Forward wave
+// and d >= e for a Reverse one.
+
+#pragma once
+
+struct FTWaveFns
+{
+	float Hash3(int3 p, uint seed)
+	{
+		uint3 q = asuint(p);
+		uint h = q.x * 1597334677u ^ q.y * 3812015801u ^ q.z * 2798796415u ^ seed * 2654435761u;
+		h = (h ^ (h >> 16)) * 0x7feb352du;
+		h = (h ^ (h >> 15)) * 0x846ca68bu;
+		h ^= h >> 16;
+		return float(h >> 8) * (1.0 / 16777216.0);
+	}
+	// Smooth value noise on the integer lattice of p, 0..1.
+	float VNoise3(float3 p, uint seed)
+	{
+		float3 i = floor(p);
+		float3 f = frac(p);
+		f = f * f * (3.0 - 2.0 * f);
+		int3 b = int3(i);
+		float n000 = Hash3(b, seed);
+		float n100 = Hash3(b + int3(1, 0, 0), seed);
+		float n010 = Hash3(b + int3(0, 1, 0), seed);
+		float n110 = Hash3(b + int3(1, 1, 0), seed);
+		float n001 = Hash3(b + int3(0, 0, 1), seed);
+		float n101 = Hash3(b + int3(1, 0, 1), seed);
+		float n011 = Hash3(b + int3(0, 1, 1), seed);
+		float n111 = Hash3(b + int3(1, 1, 1), seed);
+		float x0 = lerp(lerp(n000, n100, f.x), lerp(n010, n110, f.x), f.y);
+		float x1 = lerp(lerp(n001, n101, f.x), lerp(n011, n111, f.x), f.y);
+		return lerp(x0, x1, f.z);
+	}
+	float VNoise2(float2 p, uint seed)
+	{
+		return VNoise3(float3(p, 0.5), seed);
+	}
+	// How far into the band the new world's edge stands at a world point (cm): 0 at the outer edge (the tongues' reach), 1
+	// at the inner. Lobes of world-space noise (6 m and 2.2 m cells, drifting with the wave's time) so the tear has the
+	// same size wherever it is; no angular noise, which drew spokes converging on the origin when the eye stood in the
+	// band (11-14 hold at 1.75 s). A third octave (0.9 m) frays the lobes' rims without spiking.
+	float Tongue(float3 wp, float t)
+	{
+		float a = VNoise3(wp / 600.0 + float3(0.0, 0.0, 0.30 * t), 7u);
+		float b = VNoise3(wp / 220.0 + float3(3.1, 0.0, 0.55 * t), 8u);
+		float c = VNoise3(wp / 90.0 + float3(0.0, 5.7, 0.2 * t), 15u);
+		float body = saturate((0.55 * a + 0.3 * b + 0.15 * c - 0.2) / 0.6);
+		return lerp(0.25, 1.0, body);
+	}
+	// The new world's edge at a world point, cm from the origin: the band's lobes, then a fixed jitter in world space
+	// (80 and 25 cm cells, +-30 and +-10 cm) so the tear is ragged along a wall and not a clean line, kept inside the band.
+	// dir is unused now (kept so the callers' signature stands).
+	float Edge(float r, float w, float3 dir, float t, float3 wp)
+	{
+		float j = (VNoise3(wp / 80.0 + float3(0.0, 0.0, 0.4 * t), 13u) - 0.5) * 60.0 + (VNoise3(wp / 25.0, 14u) - 0.5) * 20.0;
+		return clamp(r - w * Tongue(wp, t) + j, r - w, r);
+	}
+	// Thin streaks across the front, 0..1: slivers of the world being taken that trail inward behind the edge.
+	float Streak(float3 dir)
+	{
+		return VNoise3(dir * 160.0, 9u);
+	}
+};
+
+static const float3 FTWaveLuma = float3(0.2126, 0.7152, 0.0722);
+
+// 0 in the first world, 1 in the second, at a world point (cm): soft over about 30 cm across the ragged edge (the
+// refraction band's width), so the cut reads as a seam, not a stencil. active: a
+// wave is set (the collection's WorldWaveOriginScreen.w); reverse: WorldWaveDirection.
+float FTWaveSecond(float3 wp, float3 origin, float r, float w, float direction, float t, float active)
+{
+	if (active < 0.5)
+	{
+		return 0.0;
+	}
+	bool forward = direction < 0.5;
+	if (r <= 0.0)
+	{
+		return forward ? 0.0 : 1.0;
+	}
+	FTWaveFns W;
+	float3 rel = wp - origin;
+	float d = length(rel);
+	float3 dir = rel / max(d, 0.01);
+	float e = W.Edge(r, max(w, 1.0), dir, t, wp);
+	float inside = saturate((e - d) / 30.0 + 0.5);
+	return forward ? inside : 1.0 - inside;
+}

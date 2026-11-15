@@ -158,7 +158,14 @@ TEST_CASE("looks: render tiers apply only on the maps renderTiers.maps names") {
         "cutscene":"a","a":{"r.A":1}},"worlds":{"w":{}}})", t, &error), error);
     REQUIRE(t.tierMaps.size() == 2);
     CHECK(t.tiersOnMap("World_Solhaven"));
-    CHECK(t.tiersOnMap("UEDPIE_0_world_solhaven_strip"));
+    CHECK(t.tiersOnMap("world_solhaven"));
+    CHECK(t.tiersOnMap("UEDPIE_0_world_solhaven"));
+    CHECK(t.tiersOnMap("UEDPIE_12_Look_Lab"));
+    // Exact names only: a map whose name merely contains a listed one does not take the tiers.
+    CHECK_FALSE(t.tiersOnMap("World_Solhaven_Strip"));
+    CHECK_FALSE(t.tiersOnMap("UEDPIE_0_world_solhaven_strip"));
+    CHECK_FALSE(t.tiersOnMap("Old_World_Solhaven"));
+    CHECK_FALSE(t.tiersOnMap("UEDPIE_World_Solhaven"));
     CHECK(t.tiersOnMap("Look_Lab"));
     CHECK_FALSE(t.tiersOnMap("Demo_Arena"));
     CHECK_FALSE(t.tiersOnMap("Cutscene"));

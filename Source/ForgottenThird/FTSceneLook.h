@@ -239,6 +239,11 @@ FORGOTTENTHIRD_API void SpawnLook(UWorld* World, const FActorSpawnParameters& Sp
 // volume yet. See docs/PHOTOREAL_LOOK.md.
 FORGOTTENTHIRD_API int32 ApplyLook(UWorld* World, const ftcore::SceneLook& Look, const ftcore::SceneLook& Current);
 
+// Sets whether World's atmosphere sun casts the cloud layer's shadows. ApplyLook never writes this, so a map keeps what its
+// sun has; a world wave sets it for the changed world's cover and gives the map's own back when its look is restored. The
+// flag as it was (0 or 1), or -1 when World has no atmosphere sun.
+FORGOTTENTHIRD_API int32 SetSunCloudShadows(UWorld* World, bool bCast);
+
 // Writes Look's wetness, water and glow into World's instance of the look's parameter collection (LookCollection), and
 // its sky, wind, clouds and sea into the environment's (EnvCollection). The number of parameters written; 0 when neither
 // collection has been built (no material reads them then); -1, with nothing written, while World has no instance yet of

@@ -77,8 +77,14 @@ const LookTable::RenderTier* LookTable::findTier(std::string_view name) const {
 
 bool LookTable::tiersOnMap(std::string_view mapName) const {
     if (renderTiers.empty()) return false;
+    // An editor play session's world is named UEDPIE_<n>_<map>: the map's own name follows the prefix.
+    if (mapName.size() > 7 && equalsNoCase(mapName.substr(0, 7), "UEDPIE_")) {
+        std::size_t i = 7;
+        while (i < mapName.size() && mapName[i] >= '0' && mapName[i] <= '9') ++i;
+        if (i > 7 && i < mapName.size() && mapName[i] == '_') mapName = mapName.substr(i + 1);
+    }
     for (const std::string& m : tierMaps)
-        if (containsNoCase(mapName, m)) return true;
+        if (equalsNoCase(mapName, m)) return true;
     return false;
 }
 

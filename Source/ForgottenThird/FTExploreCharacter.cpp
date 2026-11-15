@@ -155,6 +155,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+#if !UE_BUILD_SHIPPING // capture and check switches: not in a shipped game
 	{
 		// -LeadGo=<x,y> (plan frame of -WorldEyeSide, default 1000 m) [-LeadGoAfter=<s>] [-LeadGoJump] [-LeadGoQuit=<s>].
 		FString Go;
@@ -174,6 +175,7 @@ void AFTExploreCharacter::BeginPlay()
 		FParse::Value(FCommandLine::Get(), TEXT("LeadGoPace="), LeadGoPace);
 		LeadGoPace = FMath::Clamp(LeadGoPace, 0.1f, 1.f);
 	}
+#endif
 	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
@@ -3004,7 +3006,7 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 {
 	UWorld* World = GetWorld();
 	UCharacterMovementComponent* Move = GetCharacterMovement();
-	// The scripted walk.
+#if !UE_BUILD_SHIPPING // the scripted walk (captures and checks): not in a shipped game
 	if (LeadGoAfter >= 0.f && (LeadGoAfter -= DeltaSeconds) < 0.f)
 	{
 		BeginLeadGo(LeadGoTo, bLeadGoJump);
@@ -3044,6 +3046,7 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			FTRequestExit(0, TEXT("LeadGo"));
 		}
 	}
+#endif
 	// A climb out of the water: up the wall's face, then onto its top.
 	if (bWaterClimbing)
 	{
