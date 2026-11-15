@@ -237,13 +237,19 @@ TEST_CASE("ui world change: a second change inside the sweep starts its own when
         CHECK_FALSE(s.running);
         CHECK(s.shown == kUnw); // the rows wear the world the camera is in
     }
-    // Off: still nothing; with nothing drawn at the end the ink changes unseen.
+    // Nothing drawn when the sweep ends: the late world is taken unseen on that same frame, with no sweep.
     UiWorldChange q;
     run(q, at(kSol), 0.2f);
     uiWorldChangeStep(q, at(kLat), kDt);
-    for (int i = 0; i < 30 && q.running; ++i) uiWorldChangeStep(q, at(kUnw, true, false, false), kDt);
+    REQUIRE(q.running);
+    int left = 0;
+    while (q.running && left < 30) {
+        uiWorldChangeStep(q, at(kUnw, true, false, false), kDt);
+        ++left;
+    }
+    CHECK(left < 30);
     CHECK_FALSE(q.running);
-    CHECK(q.shown == kUnw);
+    CHECK(q.shown == kUnw); // on the sweep's last frame, not a frame later
 }
 
 TEST_CASE("ui world change: stepping allocates nothing") {

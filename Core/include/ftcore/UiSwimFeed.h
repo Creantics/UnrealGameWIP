@@ -19,11 +19,18 @@ struct UiSwimFeed {
     bool jumpHeld = false; // the jump last frame, for its press (the same edge rule as Swim's)
 };
 
-// The column a dive is judged on, guarded as Swim::step guards it.
+// An env Swim::step can move in: a finite position, surface and bed, the bed below the surface. On any other a press
+// is only pended (no state changes), so nothing is offered.
+inline bool uiSwimFeedEnvUsable(const SwimEnv& env) {
+    return std::isfinite(env.position.x) && std::isfinite(env.position.y) && std::isfinite(env.position.z) &&
+           std::isfinite(env.surfaceZ) && std::isfinite(env.bedZ) && env.bedZ < env.surfaceZ;
+}
+
+// The column a dive is judged on, guarded as Swim::step guards it (on a usable env).
 inline float uiSwimFeedColumn(const SwimEnv& env) {
     const float span = env.surfaceZ - env.bedZ;
     const float column = env.column;
-    if (!std::isfinite(column) || column < 0.f || std::fabs(column - span) > kSwimColumnSlack) return span;
+    if (!std::isfinite(column) || column < 0.f || !(std::fabs(column - span) <= kSwimColumnSlack)) return span;
     return column;
 }
 
@@ -47,9 +54,11 @@ inline UiSwimIn uiSwimInFrom(UiSwimFeed& feed, const Swim& swim, const SwimStep&
     in.teach = teach;
     in.rescued = step.state == SwimState::Rescued;
     // TODO(core swim canDive): read step.canDive once Core's tip adds it; until then the same test as Swim::step's dive.
-    in.canDive = step.state == SwimState::Surface && env.deepAllowed && uiSwimFeedColumn(env) >= kSwimDeepMin;
+    in.canDive = step.state == SwimState::Surface && env.deepAllowed && uiSwimFeedEnvUsable(env) &&
+                 uiSwimFeedColumn(env) >= kSwimDeepMin;
     in.canRise = step.state == SwimState::Diving || step.state == SwimState::Under;
     in.dived = step.dived;
+    // TODO(core swim rose): read step.rose once Core's tip adds it, and drop the feed's own jump edge.
     // A rise: Diving or Under to Surfacing, or straight to the surface on the press's own step (only a press does that
     // from Diving; from Under the lead may also swim up through it, which is no rise).
     in.rose = fromUnder && (step.state == SwimState::Surfacing ||

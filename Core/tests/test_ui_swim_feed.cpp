@@ -83,6 +83,34 @@ TEST_CASE("ui swim feed: DIVE is offered exactly where a crouch press dives") {
     }
 }
 
+TEST_CASE("ui swim feed: on an env Swim cannot move in, DIVE is not offered and the press waits") {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (int k = 0; k < 4; ++k) {
+        CAPTURE(k);
+        Lead lead;
+        SwimEnv bad = deep(); // the column stays finite: only the guard tells this env is unusable
+        if (k == 0) bad.surfaceZ = nan;
+        if (k == 1) bad.bedZ = nan;
+        if (k == 2) bad.bedZ = bad.surfaceZ + 1.f; // the bed above the surface
+        if (k == 3) bad.position.z = nan;
+        CHECK_FALSE(uiSwimFeedEnvUsable(bad));
+        lead.env = bad;
+        const UiSwimIn idle = lead.frame(SwimInput{});
+        CHECK_FALSE(idle.canDive);
+        CHECK(uiSwimPromptAlpha(lead.hud, lead.fu, idle, UiFirstUseItem::Dive) == 0.f);
+        const UiSwimIn pressed = lead.frame(press(true));
+        CHECK_FALSE(lead.swim.last().dived); // Swim only pends it
+        CHECK_FALSE(pressed.dived);
+        // The env comes good: Swim dives on its pended press, and the feed reports that dive.
+        lead.env = deep();
+        const UiSwimIn good = lead.frame(press(true));
+        CHECK(lead.swim.last().dived);
+        CHECK(good.dived);
+        CHECK(lead.fu.count[at(UiFirstUseItem::Dive)] == 1);
+    }
+    CHECK(uiSwimFeedEnvUsable(deep()));
+}
+
 TEST_CASE("ui swim feed: real swim steps count DIVE and RISE on use, and a swim up through the surface is no rise") {
     Lead lead;
     UiSwimIn in = lead.frame(SwimInput{});
