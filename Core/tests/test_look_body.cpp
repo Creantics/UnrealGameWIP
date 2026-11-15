@@ -5,7 +5,12 @@
 #include <doctest/doctest.h>
 
 using ftcore::look::NeedsFullBody;
+using ftcore::look::CanonicalPath;
+using ftcore::look::OverlappingLayers;
+using ftcore::look::OverMatch;
 using ftcore::look::PieceLeftOff;
+using ftcore::look::SlotCarry;
+using ftcore::look::UnderChoiceLeftOff;
 using ftcore::look::UnderChoice;
 using ftcore::look::UnderLayer;
 
@@ -89,7 +94,73 @@ TEST_CASE("under layer: empty words and cuts never apply; other pieces pass thro
     CHECK(UnderChoice("", kLayers, {kJacketOpen}).empty());
 }
 
-TEST_CASE("under layer: the first matching layer wins") {
+TEST_CASE("under layer: an exact name beats a part, a longer word beats a shorter, then order") {
     const std::vector<UnderLayer> both = {{kTee, "Jacket", kTeeClosed}, {kTee, "JacketOpen_rr2", kTeeOpen}};
-    CHECK(UnderChoice(kTee, both, {kTee, kJacketOpen}) == kTeeClosed);
+    CHECK(UnderChoice(kTee, both, {kTee, kJacketOpen}) == kTeeOpen);
+    CHECK(UnderChoice(kTee, both, {kTee, kJacketClosed}) == kTeeClosed);
+    const std::string lining = "/Game/Characters/Duy/Jacket/JacketLining.JacketLining";
+    const std::string jacket = "/Game/Characters/Duy/Jacket/Jacket.Jacket";
+    const std::vector<UnderLayer> byName = {{kTee, "JacketLining", kTeeOpen}, {kTee, "Jacket", kTeeClosed}};
+    CHECK(UnderChoice(kTee, byName, {kTee, jacket, lining}) == kTeeOpen);
+    CHECK(UnderChoice(kTee, {{kTee, "Jacket", kTeeClosed}, {kTee, "Lining", kTeeOpen}}, {kTee, jacket, lining}) == kTeeClosed);
+    CHECK(UnderChoice(kTee, {{kTee, "Duy_Jack", kTeeClosed}, {kTee, "Duy_Jacx", kTeeOpen}, {kTee, "Duy_Jack", kTeeOpen}},
+                      {kTee, kJacketOpen}) == kTeeClosed);
+}
+
+TEST_CASE("under layer: a path word names that piece only") {
+    const std::string lining = "/Game/Characters/Duy/Jacket/SK_Duy_JacketOpen_rr2_Lining.SK_Duy_JacketOpen_rr2_Lining";
+    const std::vector<UnderLayer> exact = {{kTee, kJacketOpen, kTeeOpen}};
+    CHECK(UnderChoice(kTee, exact, {kTee, lining}) == kTee);
+    CHECK(UnderChoice(kTee, exact, {kTee, kJacketOpen}) == kTeeOpen);
+    CHECK(UnderChoice(kTee, {{kTee, "/Game/Characters/Duy/Jacket/SK_Duy_JacketOpen_rr2", kTeeOpen}}, {kTee, kJacketOpen}) == kTeeOpen);
+    CHECK(OverMatch(lining, "JacketOpen_rr2") == 1);
+    CHECK(OverMatch(kJacketOpen, "sk_duy_jacketopen_RR2") == 2);
+    CHECK(OverMatch(kJacketOpen, "") == 0);
+}
+
+TEST_CASE("under layer: paths without the asset suffix name the same asset") {
+    CHECK(CanonicalPath("/Game/A/SK_Tee") == "/Game/A/SK_Tee.SK_Tee");
+    CHECK(CanonicalPath("/Game/A/SK_Tee.SK_Tee") == "/Game/A/SK_Tee.SK_Tee");
+    CHECK(CanonicalPath("SK_Tee") == "SK_Tee");
+    CHECK(CanonicalPath("/Game/A/") == "/Game/A/");
+    CHECK(CanonicalPath("") == "");
+    const std::vector<UnderLayer> bare = {{"/Game/Characters/Duy/Tee/SK_Duy_Tee", "JacketOpen_rr2",
+                                           "/Game/Characters/Duy/Tee/SK_Duy_Tee_uJO"}};
+    CHECK(UnderChoice(kTee, bare, {kTee, kJacketOpen}) == "/Game/Characters/Duy/Tee/SK_Duy_Tee_uJO");
+    CHECK(UnderChoice(kTeeOpen, bare, {kTeeOpen}) == "/Game/Characters/Duy/Tee/SK_Duy_Tee");
+}
+
+TEST_CASE("under layer: pieces the command line leaves off cover nothing, and a cut is never dropped") {
+    CHECK(UnderChoiceLeftOff(kTee, kLayers, {kTee, kJacketOpen}, false, {"JacketOpen"}) == kTee);
+    CHECK(UnderChoiceLeftOff(kTee, kLayers, {kTee, kJacketOpen}, false, {"Trousers"}) == kTeeOpen);
+    CHECK(UnderChoiceLeftOff(kTeeOpen, kLayers, {kTeeOpen, kJacketOpen}, false, {"jacketopen"}) == kTee);
+    // The cut's own name holds the left-off word ("uJO") but the jacket is still worn: the whole tee, not none.
+    CHECK(UnderChoiceLeftOff(kTee, kLayers, {kTee, kJacketOpen}, false, {"_uJO"}) == kTee);
+    // Every piece off: the choice is left as UnderChoice gives it (AddPieces leaves it off with the rest).
+    CHECK(UnderChoiceLeftOff(kTee, kLayers, {kTee, kJacketOpen}, true, {}) == kTee);
+    CHECK(UnderChoiceLeftOff(kTee, kLayers, {kTee, kJacketOpen}, false, {}) == kTeeOpen);
+}
+
+TEST_CASE("under layer: overlapping over words for one under piece are listed") {
+    CHECK(OverlappingLayers(kLayers).empty());
+    const std::vector<UnderLayer> overlap = {{kTee, "Jacket", kTeeClosed}, {kTee, "JacketLining", kTeeOpen},
+                                             {kTrousers, "Jacket", kTeeOpen}, {kTee, "jacket", kTeeOpen},
+                                             {kTee, "Jacket", ""}};
+    const std::vector<std::pair<int, int>> pairs = OverlappingLayers(overlap);
+    REQUIRE(pairs.size() == 3);
+    CHECK(pairs[0] == std::pair<int, int>(0, 1));
+    CHECK(pairs[1] == std::pair<int, int>(0, 3));
+    CHECK(pairs[2] == std::pair<int, int>(1, 3));
+    CHECK(OverlappingLayers({{kTee, kJacketOpen, kTeeOpen}, {kTee, "JacketOpen", kTeeClosed}}).empty());
+    CHECK(OverlappingLayers({{kTee, kJacketOpen, kTeeOpen}, {"/Game/Characters/Duy/Tee/SK_Duy_Tee", kJacketOpen, kTeeClosed}}).size() == 1);
+}
+
+TEST_CASE("slot carry: by name in any case, else by index when the counts match") {
+    CHECK(SlotCarry({"Knit", "Trim"}, {"trim", "KNIT"}) == std::vector<int>{1, 0});
+    CHECK(SlotCarry({"Knit", "Trim"}, {"Knit"}) == std::vector<int>{0});
+    CHECK(SlotCarry({"Knit"}, {"Knit_uJO"}) == std::vector<int>{0});
+    CHECK(SlotCarry({"Knit", "Trim"}, {"Other", "Knit", "Trim"}) == std::vector<int>{-1, 0, 1});
+    CHECK(SlotCarry({"", ""}, {"", ""}) == std::vector<int>{0, 1});
+    CHECK(SlotCarry({}, {"Knit"}) == std::vector<int>{-1});
+    CHECK(SlotCarry({"Knit"}, {}).empty());
 }

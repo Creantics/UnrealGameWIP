@@ -1,10 +1,12 @@
 #include "FTLook.h"
 
 #include "Animation/AnimSequence.h"
+#include "Animation/MorphTarget.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
 #include "Misc/PackageName.h"
@@ -165,7 +167,7 @@ std::vector<ftcore::look::FrontAsk> FrontAsks()
 	return Asks;
 }
 
-// The look's pairs for Core: paths as configured, openMade from what PrepareFronts loaded.
+// The look's pairs for Core: paths canonical (an ini path without the asset suffix gains it), openMade from what PrepareFronts loaded.
 std::vector<ftcore::look::FrontPair> FrontPairs(const FFTLeadLook& Look, const FFTWornFronts& Fronts)
 {
 	std::vector<ftcore::look::FrontPair> Pairs;
@@ -174,7 +176,7 @@ std::vector<ftcore::look::FrontPair> FrontPairs(const FFTLeadLook& Look, const F
 	{
 		const FFTGarmentFronts& Pair = Look.Fronts[I];
 		const bool bOpenMade = Fronts.Open.IsValidIndex(I) && Fronts.Open[I] != nullptr;
-		Pairs.push_back({FT::ToUtf8(Pair.Closed.ToString()), FT::ToUtf8(Pair.Open.ToString()),
+		Pairs.push_back({ftcore::look::CanonicalPath(FT::ToUtf8(Pair.Closed.ToString())), ftcore::look::CanonicalPath(FT::ToUtf8(Pair.Open.ToString())),
 			Pair.bOpen ? ftcore::look::Front::Open : ftcore::look::Front::Closed, bOpenMade});
 	}
 	return Pairs;
@@ -192,25 +194,67 @@ void WarnUnmatched(const std::vector<ftcore::look::FrontPair>& Pairs, const std:
 // The under-layer helpers, named for this file (unity builds merge anonymous namespaces across files).
 namespace FTLookLayers
 {
-// The look's under layers for Core: only those whose cut PrepareFronts loaded.
-std::vector<ftcore::look::UnderLayer> UnderLayers(const FFTLeadLook& Look, const FFTWornFronts& Fronts)
+// A path as the engine names its asset: an ini path without the asset suffix gains it, so it equals the loaded mesh's.
+FString Canonical(const FSoftObjectPath& Path)
+{
+	return FromUtf8(ftcore::look::CanonicalPath(FT::ToUtf8(Path.ToString())));
+}
+
+FString Canonical(const UObject& Asset)
+{
+	return Canonical(FSoftObjectPath(&Asset));
+}
+
+// The look's under layers for Core, paths canonical: only those whose cut PrepareFronts loaded, or (bAll) every one.
+std::vector<ftcore::look::UnderLayer> UnderLayers(const FFTLeadLook& Look, const FFTWornFronts& Fronts, bool bAll = false)
 {
 	std::vector<ftcore::look::UnderLayer> Layers;
 	for (int32 I = 0; I < Look.UnderLayers.Num(); ++I)
 	{
-		if (Fronts.Cut.IsValidIndex(I) && Fronts.Cut[I] != nullptr)
+		if (bAll || (Fronts.Cut.IsValidIndex(I) && Fronts.Cut[I] != nullptr))
 		{
 			const FFTUnderLayer& Layer = Look.UnderLayers[I];
-			Layers.push_back({FT::ToUtf8(Layer.Under.ToString()), FT::ToUtf8(Layer.OverWord), FT::ToUtf8(Layer.Cut.ToString())});
+			Layers.push_back({FT::ToUtf8(Canonical(Layer.Under)), FT::ToUtf8(Layer.OverWord), FT::ToUtf8(Canonical(Layer.Cut))});
 		}
 	}
 	return Layers;
 }
 
-// Puts another fitted mesh on a worn piece. The two meshes may have different slot counts: per-slot overrides set for
-// the old mesh would land on the wrong slots, so they go, and the look's swaps are made again on the new slots.
+uint32& Serial()
+{
+	static uint32 Value = 0;
+	return Value;
+}
+
+// Puts another fitted mesh on a worn piece. The two meshes may have different slot counts, so the overrides set for the
+// old mesh are taken off, the look's swaps are made again on the new slots, and then what each old slot showed is
+// carried to its new slot by name (ftcore::look::SlotCarry): see FTLook::SetFront.
 void WearMesh(USkeletalMeshComponent& Piece, USkeletalMesh& Mesh, USkeletalMeshComponent& Body, const FFTWornFronts& Fronts)
 {
+	const USkeletalMesh* Old = Piece.GetSkeletalMeshAsset();
+	const TArray<FName> OldNames = Piece.GetMaterialSlotNames();
+	TArray<UMaterialInterface*, TInlineAllocator<8>> OldShown;
+	TArray<UMaterialInterface*, TInlineAllocator<8>> OldOwn;
+	std::vector<std::string> OldSlots;
+	for (int32 I = 0; I < OldNames.Num(); ++I)
+	{
+		OldShown.Add(Piece.OverrideMaterials.IsValidIndex(I) ? Piece.OverrideMaterials[I].Get() : nullptr);
+		OldOwn.Add(Old && Old->GetMaterials().IsValidIndex(I) ? Old->GetMaterials()[I].MaterialInterface.Get() : nullptr);
+		OldSlots.push_back(FT::ToUtf8(OldNames[I].ToString()));
+	}
+	TArray<TPair<FName, float>, TInlineAllocator<8>> Morphs;
+	if (Old)
+	{
+		for (const UMorphTarget* Morph : Old->GetMorphTargets())
+		{
+			const float Weight = Morph ? Piece.GetMorphTarget(Morph->GetFName()) : 0.f;
+			if (Weight != 0.f)
+			{
+				Morphs.Emplace(Morph->GetFName(), Weight);
+			}
+		}
+	}
+
 	Piece.SetSkeletalMeshAsset(&Mesh);
 	Piece.EmptyOverrideMaterials();
 	Piece.SetLeaderPoseComponent(&Body, /*bForceUpdate=*/true);
@@ -219,25 +263,131 @@ void WearMesh(USkeletalMeshComponent& Piece, USkeletalMesh& Mesh, USkeletalMeshC
 	{
 		FTLook::SwapSlots(Piece, Fronts.SwapFrom[S], Fronts.SwapTo[S]);
 	}
+
+	std::vector<std::string> NewSlots;
+	for (const FName& Name : Piece.GetMaterialSlotNames())
+	{
+		NewSlots.push_back(FT::ToUtf8(Name.ToString()));
+	}
+	const std::vector<int> From = ftcore::look::SlotCarry(OldSlots, NewSlots);
+	const TArray<FSkeletalMaterial>& NewOwn = Mesh.GetMaterials();
+	for (int32 J = 0; J < static_cast<int32>(From.size()); ++J)
+	{
+		const int32 K = From[static_cast<size_t>(J)];
+		UMaterialInterface* Shown = OldShown.IsValidIndex(K) ? OldShown[K] : nullptr;
+		UMaterialInterface* Now = Piece.GetMaterial(J);
+		if (!Shown || Shown == Now)
+		{
+			continue;
+		}
+		if (UMaterialInstanceDynamic* Dynamic = Cast<UMaterialInstanceDynamic>(Shown))
+		{
+			if (Dynamic->Parent == Now)
+			{
+				Piece.SetMaterial(J, Dynamic);
+			}
+			else if (Now)
+			{
+				UMaterialInstanceDynamic* Made = UMaterialInstanceDynamic::Create(Now, &Piece);
+				Made->CopyParameterOverrides(Dynamic);
+				Piece.SetMaterial(J, Made);
+			}
+		}
+		else if (OldOwn[K] && NewOwn.IsValidIndex(J) && NewOwn[J].MaterialInterface == OldOwn[K])
+		{
+			Piece.SetMaterial(J, Shown);
+		}
+	}
+	for (const TPair<FName, float>& Morph : Morphs)
+	{
+		if (Mesh.FindMorphTarget(Morph.Key))
+		{
+			Piece.SetMorphTarget(Morph.Key, Morph.Value);
+		}
+	}
+	++Serial();
 }
 
-// The loaded mesh an under layer path names (one of the layers' under pieces or cuts), else null.
+// The loaded mesh an under layer path names (one of the layers' under pieces or cuts, canonical), else null.
 USkeletalMesh* UnderLayerMesh(const FFTLeadLook& Look, const FFTWornFronts& Fronts, const FString& Path)
 {
 	for (int32 I = 0; I < Look.UnderLayers.Num(); ++I)
 	{
 		const FFTUnderLayer& Layer = Look.UnderLayers[I];
-		if (Fronts.Cut.IsValidIndex(I) && Fronts.Cut[I] && Layer.Cut.ToString().Equals(Path, ESearchCase::IgnoreCase))
+		if (Fronts.Cut.IsValidIndex(I) && Fronts.Cut[I] && Canonical(Layer.Cut).Equals(Path, ESearchCase::IgnoreCase))
 		{
 			return Fronts.Cut[I];
 		}
-		if (Fronts.Under.IsValidIndex(I) && Fronts.Under[I] && Layer.Under.ToString().Equals(Path, ESearchCase::IgnoreCase))
+		if (Fronts.Under.IsValidIndex(I) && Fronts.Under[I] && Canonical(Layer.Under).Equals(Path, ESearchCase::IgnoreCase))
 		{
 			return Fronts.Under[I];
 		}
 	}
 	return nullptr;
 }
+
+// Warns about layers that can't do what they say: an under piece the look doesn't wear, an over word that names none of
+// the look's pieces (or several, all in part, so another piece could stand for the over piece), and two layers of one
+// under piece whose words overlap.
+void WarnLayers(const FFTLeadLook& Look, const TCHAR* Who)
+{
+	TArray<FString> Candidates;
+	for (const FSoftObjectPath& Piece : Look.PiecePaths)
+	{
+		Candidates.AddUnique(Canonical(Piece));
+	}
+	for (const FFTGarmentFronts& Pair : Look.Fronts)
+	{
+		Candidates.AddUnique(Canonical(Pair.Closed));
+		if (!Pair.Open.IsNull())
+		{
+			Candidates.AddUnique(Canonical(Pair.Open));
+		}
+	}
+	const std::vector<ftcore::look::UnderLayer> Layers = UnderLayers(Look, FFTWornFronts(), /*bAll=*/true);
+	for (const ftcore::look::UnderLayer& Layer : Layers)
+	{
+		const FString Under = FromUtf8(Layer.under);
+		const FString UnderName = FPackageName::ObjectPathToObjectName(Under);
+		if (!Candidates.ContainsByPredicate([&Under](const FString& C) { return C.Equals(Under, ESearchCase::IgnoreCase); }))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: under layer %s isn't one of the look's pieces; its cut is never worn."), Who, *Under);
+		}
+		TArray<FString> Named;
+		bool bExact = false;
+		for (const FString& Candidate : Candidates)
+		{
+			const int Match = Candidate.Equals(Under, ESearchCase::IgnoreCase) ? 0 : ftcore::look::OverMatch(FT::ToUtf8(Candidate), Layer.overWord);
+			if (Match > 0)
+			{
+				Named.Add(FPackageName::ObjectPathToObjectName(Candidate));
+				bExact |= Match == 2;
+			}
+		}
+		if (Named.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: under layer over word \"%s\" (for %s) names none of the look's pieces; that cut is never worn."),
+				Who, *FromUtf8(Layer.overWord), *UnderName);
+		}
+		else if (Named.Num() > 1 && !bExact)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: under layer over word \"%s\" (for %s) names %d pieces in part (%s); give the over piece's path."),
+				Who, *FromUtf8(Layer.overWord), *UnderName, Named.Num(), *FString::Join(Named, TEXT(", ")));
+		}
+	}
+	for (const std::pair<int, int>& Pair : ftcore::look::OverlappingLayers(Layers))
+	{
+		const ftcore::look::UnderLayer& A = Layers[static_cast<size_t>(Pair.first)];
+		const ftcore::look::UnderLayer& B = Layers[static_cast<size_t>(Pair.second)];
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: under layers %d and %d of %s have overlapping over words (\"%s\", \"%s\"); the best match wins, give paths to be sure."),
+			Who, Pair.first, Pair.second, *FPackageName::ObjectPathToObjectName(FromUtf8(A.under)), *FromUtf8(A.overWord), *FromUtf8(B.overWord));
+	}
+}
+}
+
+uint32 FTLook::WornMeshSerial()
+{
+	return FTLookLayers::Serial();
 }
 
 FFTWornFronts FTLook::PrepareFronts(const FFTLeadLook& Look, const TCHAR* Who)
@@ -266,16 +416,18 @@ FFTWornFronts FTLook::PrepareFronts(const FFTLeadLook& Look, const TCHAR* Who)
 	}
 	for (const FFTUnderLayer& Layer : Look.UnderLayers)
 	{
-		USkeletalMesh* Under = Cast<USkeletalMesh>(Layer.Under.TryLoad());
+		const FSoftObjectPath UnderPath(FTLookLayers::Canonical(Layer.Under));
+		const FSoftObjectPath CutPath(FTLookLayers::Canonical(Layer.Cut));
+		USkeletalMesh* Under = Cast<USkeletalMesh>(UnderPath.TryLoad());
 		if (!Under)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("%s: under piece %s doesn't load; its cut is never worn."), Who, *Layer.Under.ToString());
 		}
 		// A cut not made yet (no package) leaves the whole piece worn, as an open mesh not made leaves a garment closed.
 		USkeletalMesh* Cut = nullptr;
-		if (Under && !Layer.Cut.IsNull() && FPackageName::DoesPackageExist(Layer.Cut.GetLongPackageName()))
+		if (Under && !CutPath.IsNull() && FPackageName::DoesPackageExist(CutPath.GetLongPackageName()))
 		{
-			Cut = Cast<USkeletalMesh>(Layer.Cut.TryLoad());
+			Cut = Cast<USkeletalMesh>(CutPath.TryLoad());
 			if (!Cut)
 			{
 				UE_LOG(LogForgottenThird, Warning, TEXT("%s: under cut %s doesn't load; the whole %s is worn."), Who, *Layer.Cut.ToString(),
@@ -308,6 +460,10 @@ FFTWornFronts FTLook::PrepareFronts(const FFTLeadLook& Look, const TCHAR* Who)
 	{
 		WarnUnmatched(FrontPairs(Look, Fronts), FrontAsks(), Who);
 	}
+	if (!Look.UnderLayers.IsEmpty())
+	{
+		FTLookLayers::WarnLayers(Look, Who);
+	}
 	return Fronts;
 }
 
@@ -325,7 +481,7 @@ TArray<FSoftObjectPath> FTLook::WornPiecePaths(const FFTLeadLook& Look, const FF
 		Worn.Reserve(Look.PiecePaths.Num());
 		for (const FSoftObjectPath& Piece : Look.PiecePaths)
 		{
-			const ftcore::look::FrontChoice Choice = ftcore::look::WornChoice(FT::ToUtf8(Piece.ToString()), Pairs, Asks);
+			const ftcore::look::FrontChoice Choice = ftcore::look::WornChoice(FT::ToUtf8(FTLookLayers::Canonical(Piece)), Pairs, Asks);
 			if (Choice.pair < 0)
 			{
 				Worn.Add(Piece);
@@ -340,19 +496,17 @@ TArray<FSoftObjectPath> FTLook::WornPiecePaths(const FFTLeadLook& Look, const FF
 	{
 		return Worn;
 	}
-	// The over pieces are those actually worn: a piece the command line leaves off covers nothing.
+	// The over pieces are those actually worn: a piece the command line leaves off covers nothing (UnderChoiceLeftOff).
 	std::vector<std::string> WornNames;
 	for (const FSoftObjectPath& Piece : Worn)
 	{
-		if (!PieceLeftOff(Piece))
-		{
-			WornNames.push_back(FT::ToUtf8(Piece.ToString()));
-		}
+		WornNames.push_back(FT::ToUtf8(FTLookLayers::Canonical(Piece)));
 	}
+	const FPieceFilter& Filter = PieceFilter();
 	for (FSoftObjectPath& Piece : Worn)
 	{
-		const std::string Path = FT::ToUtf8(Piece.ToString());
-		const std::string Choice = ftcore::look::UnderChoice(Path, Layers, WornNames);
+		const std::string Path = FT::ToUtf8(FTLookLayers::Canonical(Piece));
+		const std::string Choice = ftcore::look::UnderChoiceLeftOff(Path, Layers, WornNames, Filter.bNoPieces, Filter.Words);
 		if (Choice != Path)
 		{
 			Piece = FSoftObjectPath(FromUtf8(Choice));
@@ -390,7 +544,7 @@ int32 FTLook::SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USk
 		}
 		// A piece wearing an under layer's cut is its whole piece for its front pair (the pair lists that one); with
 		// no worn pieces, UnderChoice gives that base back.
-		const std::string Path = FT::ToUtf8(FSoftObjectPath(Mesh).ToString());
+		const std::string Path = FT::ToUtf8(FTLookLayers::Canonical(*Mesh));
 		const std::string Base = Layers.empty() ? Path : ftcore::look::UnderChoice(Path, Layers, {});
 		const USkeletalMesh* BaseMesh = Base == Path ? Mesh : FTLookLayers::UnderLayerMesh(Look, Fronts, FromUtf8(Base));
 		const ftcore::look::FrontChoice Choice = ftcore::look::WornChoice(Base, Pairs, Ask);
@@ -409,18 +563,29 @@ int32 FTLook::SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USk
 		++Changed;
 	}
 	// The under pieces follow: each wears the copy the over pieces as now worn call for.
+	return Changed + (Layers.empty() ? 0 : WearUnderLayers(Look, Fronts, Body, Pieces, Who));
+}
+
+int32 FTLook::WearUnderLayers(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
+	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, const TCHAR* Who)
+{
+	const std::vector<ftcore::look::UnderLayer> Layers = FTLookLayers::UnderLayers(Look, Fronts);
 	if (Layers.empty())
 	{
-		return Changed;
+		return 0;
 	}
+	// Worn = shown: a piece taken off (SetPieceWorn) is hidden and covers nothing.
 	std::vector<std::string> WornNames;
 	for (const USkeletalMeshComponent* Piece : Pieces)
 	{
-		if (const USkeletalMesh* Mesh = Piece ? Piece->GetSkeletalMeshAsset() : nullptr)
+		const USkeletalMesh* Mesh = Piece ? Piece->GetSkeletalMeshAsset() : nullptr;
+		if (Mesh && Piece->GetVisibleFlag())
 		{
-			WornNames.push_back(FT::ToUtf8(FSoftObjectPath(Mesh).ToString()));
+			WornNames.push_back(FT::ToUtf8(FTLookLayers::Canonical(*Mesh)));
 		}
 	}
+	const FPieceFilter& Filter = PieceFilter();
+	int32 Changed = 0;
 	for (USkeletalMeshComponent* Piece : Pieces)
 	{
 		const USkeletalMesh* Mesh = Piece ? Piece->GetSkeletalMeshAsset() : nullptr;
@@ -428,17 +593,25 @@ int32 FTLook::SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USk
 		{
 			continue;
 		}
-		const std::string Path = FT::ToUtf8(FSoftObjectPath(Mesh).ToString());
-		const std::string Choice = ftcore::look::UnderChoice(Path, Layers, WornNames);
+		const std::string Path = FT::ToUtf8(FTLookLayers::Canonical(*Mesh));
+		const std::string Choice = ftcore::look::UnderChoiceLeftOff(Path, Layers, WornNames, Filter.bNoPieces, Filter.Words);
 		USkeletalMesh* Other = Choice == Path ? nullptr : FTLookLayers::UnderLayerMesh(Look, Fronts, FromUtf8(Choice));
 		if (!Other || Other == Mesh)
 		{
 			continue;
 		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: under piece %s now wears %s."), Who, *Mesh->GetName(), *Other->GetName());
 		FTLookLayers::WearMesh(*Piece, *Other, Body, Fronts);
 		++Changed;
 	}
 	return Changed;
+}
+
+int32 FTLook::SetPieceWorn(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
+	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, USkeletalMeshComponent& Piece, bool bWorn, const TCHAR* Who)
+{
+	Piece.SetVisibility(bWorn, /*bPropagateToChildren=*/true);
+	return WearUnderLayers(Look, Fronts, Body, Pieces, Who);
 }
 
 bool FTLook::PieceLeftOff(const FSoftObjectPath& Piece)

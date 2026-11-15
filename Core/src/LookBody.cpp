@@ -25,7 +25,7 @@ bool Holds(std::string_view text, std::string_view word) {
     }
     return false;
 }
-bool SamePath(std::string_view a, std::string_view b) {
+bool SameText(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) {
         return false;
     }
@@ -35,6 +35,10 @@ bool SamePath(std::string_view a, std::string_view b) {
         }
     }
     return true;
+}
+
+bool SamePath(std::string_view a, std::string_view b) {
+    return SameText(CanonicalPath(a), CanonicalPath(b));
 }
 
 // The asset name of a path: after the last '.', else after the last '/', else the whole path.
@@ -88,6 +92,28 @@ bool NeedsFullBody(const std::vector<std::string>& coverWords, const std::vector
     return false;
 }
 
+std::string CanonicalPath(std::string_view path) {
+    const std::size_t slash = path.rfind('/');
+    if (slash == std::string_view::npos || slash + 1 >= path.size() || path.find('.', slash) != std::string_view::npos) {
+        return std::string(path);
+    }
+    std::string out(path);
+    out += '.';
+    out += path.substr(slash + 1);
+    return out;
+}
+
+int OverMatch(std::string_view worn, std::string_view overWord) {
+    if (overWord.empty()) {
+        return 0;
+    }
+    if (overWord.find('/') != std::string_view::npos) {
+        return SamePath(worn, overWord) ? 2 : 0;
+    }
+    const std::string_view name = AssetName(worn);
+    return SameText(name, overWord) ? 2 : Holds(name, overWord) ? 1 : 0;
+}
+
 std::string UnderChoice(std::string_view piece, const std::vector<UnderLayer>& layers,
                         const std::vector<std::string>& wornPieces) {
     std::string_view base = piece;
@@ -97,17 +123,91 @@ std::string UnderChoice(std::string_view piece, const std::vector<UnderLayer>& l
             break;
         }
     }
+    const UnderLayer* best = nullptr;
+    int bestRank = 0;
     for (const UnderLayer& layer : layers) {
         if (layer.cut.empty() || layer.overWord.empty() || !SamePath(layer.under, base)) {
             continue;
         }
+        int rank = 0;
         for (const std::string& worn : wornPieces) {
-            if (!IsUnderOrCut(worn, base, layers) && Holds(AssetName(worn), layer.overWord)) {
-                return layer.cut;
+            if (!IsUnderOrCut(worn, base, layers)) {
+                const int match = OverMatch(worn, layer.overWord);
+                rank = match > rank ? match : rank;
+            }
+        }
+        if (rank > bestRank || (rank > 0 && rank == bestRank && layer.overWord.size() > best->overWord.size())) {
+            best = &layer;
+            bestRank = rank;
+        }
+    }
+    if (best) {
+        return best->cut;
+    }
+    return std::string(base);
+}
+
+std::string UnderChoiceLeftOff(std::string_view piece, const std::vector<UnderLayer>& layers,
+                               const std::vector<std::string>& wornPieces, bool noPieces,
+                               const std::vector<std::string>& noWords) {
+    std::vector<std::string> worn;
+    worn.reserve(wornPieces.size());
+    for (const std::string& entry : wornPieces) {
+        if (!PieceLeftOff(AssetName(entry), noPieces, noWords)) {
+            worn.push_back(entry);
+        }
+    }
+    std::string choice = UnderChoice(piece, layers, worn);
+    if (PieceLeftOff(AssetName(choice), noPieces, noWords)) {
+        std::string base = UnderChoice(piece, layers, {});
+        if (!PieceLeftOff(AssetName(base), noPieces, noWords)) {
+            return base;
+        }
+    }
+    return choice;
+}
+
+std::vector<std::pair<int, int>> OverlappingLayers(const std::vector<UnderLayer>& layers) {
+    std::vector<std::pair<int, int>> pairs;
+    const int count = static_cast<int>(layers.size());
+    for (int i = 0; i < count; ++i) {
+        const UnderLayer& a = layers[static_cast<std::size_t>(i)];
+        if (a.cut.empty() || a.overWord.empty()) {
+            continue;
+        }
+        for (int j = i + 1; j < count; ++j) {
+            const UnderLayer& b = layers[static_cast<std::size_t>(j)];
+            if (b.cut.empty() || b.overWord.empty() || !SamePath(a.under, b.under)) {
+                continue;
+            }
+            const bool path = a.overWord.find('/') != std::string::npos || b.overWord.find('/') != std::string::npos;
+            const bool overlap = path ? SamePath(a.overWord, b.overWord)
+                                      : Holds(a.overWord, b.overWord) || Holds(b.overWord, a.overWord);
+            if (overlap) {
+                pairs.emplace_back(i, j);
             }
         }
     }
-    return std::string(base);
+    return pairs;
+}
+
+std::vector<int> SlotCarry(const std::vector<std::string>& oldSlots, const std::vector<std::string>& newSlots) {
+    std::vector<int> from(newSlots.size(), -1);
+    const bool sameCount = oldSlots.size() == newSlots.size();
+    for (std::size_t j = 0; j < newSlots.size(); ++j) {
+        if (!newSlots[j].empty()) {
+            for (std::size_t i = 0; i < oldSlots.size(); ++i) {
+                if (SameText(oldSlots[i], newSlots[j])) {
+                    from[j] = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        if (from[j] < 0 && sameCount) {
+            from[j] = static_cast<int>(j);
+        }
+    }
+    return from;
 }
 
 } // namespace ftcore::look

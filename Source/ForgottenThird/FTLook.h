@@ -72,10 +72,15 @@ struct FFTGarmentFronts
 	bool bOpen = false;
 };
 
-// A cut copy of an under piece (FFTLeadLook::UnderLayers): Cut is worn in place of Under while a worn piece's asset name
-// holds OverWord (any case). One entry per under piece, over piece and front state: OverWord names the over piece's
-// own mesh (its open or its closed half), so each front wears its own cut. A Cut that isn't made yet (no package) never
-// applies, so a look can name a cut before it is imported.
+// A cut copy of an under piece (FFTLeadLook::UnderLayers): Cut is worn in place of Under while the over piece OverWord
+// names is worn. OverWord is best that piece's path (it names that mesh only), else a name: a worn piece whose asset
+// name is the word, else one whose asset name holds it (any case); the best match wins (ftcore::look::UnderChoice), and
+// PrepareFronts warns about two layers of one under piece whose words overlap. One entry per under piece, over piece and
+// front state: OverWord names the over piece's own mesh (its open or its closed half), so each front wears its own cut.
+// Paths may leave off the asset suffix (/Game/A/SK_Tee is /Game/A/SK_Tee.SK_Tee). A Cut that isn't made yet (no
+// package) never applies, so a look can name a cut before it is imported. Example (Config/UserGame.ini, inside a look):
+//   UnderLayers=((Under=/Game/Characters/Lead/Outfit/SK_Tee,OverWord="/Game/Characters/Lead/Outfit/SK_JacketOpen",
+//                 Cut=/Game/Characters/Lead/Outfit/SK_Tee_uJO))
 USTRUCT()
 struct FFTUnderLayer
 {
@@ -207,14 +212,33 @@ FORGOTTENTHIRD_API TArray<FSoftObjectPath> WornPiecePaths(const FFTLeadLook& Loo
 FORGOTTENTHIRD_API bool SetSceneFronts(const FString& Asks);
 
 // Switches the worn pieces of the look's pairs that `Word` names (any case, in the asset name; every pair when empty)
-// to `bOpen`, using the meshes PrepareFronts held. Each such piece component gets the other fitted mesh: its material
-// overrides are dropped (the new mesh's own slots show) and the look's swaps (held in Fronts) applied again on it, quietly
-// where its slots show none of their Froms; the leader pose map
-// is rebuilt on `Body` and the cloth actors are made again. Then each under piece is switched the same way to the copy
-// the new fronts call for (its cut for the over piece as now worn, else the whole piece). A word naming no pair is
+// to `bOpen`, using the meshes PrepareFronts held. Each such piece component gets the other fitted mesh: the new mesh's
+// own slots show with the look's swaps (held in Fronts) applied again on them, quietly where its slots show none of
+// their Froms; then what the old slots showed is carried to the new slots of the same name (else the same index when the
+// counts match): a dynamic instance on the slot's new material is kept (so its owner's pointer stays good), one on
+// another material is made again on the new one with its parameters copied (wetness, dirt), another override is kept
+// where both meshes have the same own material; morph weights are kept where the new mesh has the morph, and custom
+// depth and stencil are the component's own. The leader pose map is rebuilt on `Body` and the cloth actors are made
+// again, and WornMeshSerial moves on. Then the under layers are worn again (WearUnderLayers). A word naming no pair is
 // warned about. Returns how many pieces changed.
 FORGOTTENTHIRD_API int32 SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
 	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, const FString& Word, bool bOpen, const TCHAR* Who);
+
+// Moves on every time a worn piece gets another mesh (SetFront, WearUnderLayers), so an owner holding dynamic
+// instances of its pieces' slots gathers them again when it differs from the one it saw.
+FORGOTTENTHIRD_API uint32 WornMeshSerial();
+
+// Each under piece among `Pieces` gets the copy the over pieces now worn call for (its cut while its over piece is
+// worn, else the whole piece), as SetFront switches a piece. Worn pieces are the visible ones with a mesh; the command
+// line's left-off rule holds (ftcore::look::UnderChoiceLeftOff). Returns how many pieces changed.
+FORGOTTENTHIRD_API int32 WearUnderLayers(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
+	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, const TCHAR* Who);
+
+// Takes a worn piece off (hidden, with its shadow) or puts it back on, then wears the under layers again, so an under
+// piece goes back to whole when its over piece comes off and to its cut when it goes on. This is the one path for
+// taking a piece off or putting it on at run time. Returns how many under pieces changed.
+FORGOTTENTHIRD_API int32 SetPieceWorn(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USkeletalMeshComponent& Body,
+	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, USkeletalMeshComponent& Piece, bool bWorn, const TCHAR* Who);
 
 // Adds a component per piece mesh, attached to the body and posed by it (leader pose). Missing meshes are skipped
 // with a warning that names `Who`. Returns how many of the added pieces have cloth.
