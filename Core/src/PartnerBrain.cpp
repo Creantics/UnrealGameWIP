@@ -749,6 +749,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
 
 const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     PartnerIntent& out = s_.out;
+    const bool wasStill = out.act != PartnerAct::MoveTo && out.act != PartnerAct::StepBack; // the last step's
     out = PartnerIntent{};
     if (!s_.begun) return out;
     const PartnerTuning& t = s_.t;
@@ -827,6 +828,14 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         return tgt >= 0 ? stationFor(tgt) : followFor();
     };
     const bool engageDue = fm && s_.engageFor + 1e-9 >= static_cast<double>(t.engageSeconds);
+    // Rule 13's hold: framed, a partner standing within twice stationTolerance of its goal stays put while its own
+    // place is in frame and outside both keep-outs, so a drifting station does not start and stop it every few ticks.
+    const auto near = [&](Vec2 p, const View* e) {
+        const float d = dist(in.pos, p);
+        if (d <= t.stationTolerance) return true;
+        if (!fm || !wasStill || d > 2.f * t.stationTolerance) return false;
+        return fr.sees(in.pos) && !g.inWedge(in.pos, 0.f) && !(e && makeKeep(g, *e).in(in.pos, t.wedgeClearMeters));
+    };
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
     bool guard = false;
@@ -975,9 +984,10 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         }
         if (st) { // rule 12: back to the station
             const Vec2 p = goalFor(s_.target);
-            if (dist(in.pos, p) <= t.stationTolerance && edge(in.pos, e) <= t.reachMeters) s_.offStation = 0.0;
+            const bool there = near(p, &e);
+            if (there && edge(in.pos, e) <= t.reachMeters) s_.offStation = 0.0;
             else s_.offStation += dt;
-            if (dist(in.pos, p) > t.stationTolerance) {
+            if (!there) {
                 out.act = edge(in.pos, e) < t.standoffMeters ? PartnerAct::StepBack : PartnerAct::MoveTo;
                 out.enemy = s_.target;
                 out.point = p;
@@ -1008,7 +1018,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         out.why = PartnerWhy::NoTarget;
         if (st) { // rule 11
             const Vec2 p = goalFor(-1);
-            if (dist(in.pos, p) > t.stationTolerance) {
+            if (!near(p, nullptr)) {
                 out.act = PartnerAct::MoveTo;
                 out.point = p;
             }
@@ -1019,7 +1029,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (st) { // rule 12: a string starts only from its station
         const Vec2 p = goalFor(tgt);
         const bool inReach = edge(in.pos, e) <= t.reachMeters;
-        const bool there = dist(in.pos, p) <= t.stationTolerance;
+        const bool there = near(p, &e);
         if (there && inReach) {
             s_.offStation = 0.0; // stationed: the fallback's timers start again
         } else {
@@ -1042,7 +1052,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
                 out.why = PartnerWhy::Approach;
                 out.enemy = tgt;
                 out.point = goal;
-                if (dist(in.pos, goal) > t.stationTolerance) out.act = PartnerAct::MoveTo; // else wait there
+                if (!near(goal, &e)) out.act = PartnerAct::MoveTo; // else wait there
                 return out;
             }
         }

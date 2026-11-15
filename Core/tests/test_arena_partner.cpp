@@ -2178,9 +2178,27 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             r.in.partnerOrder = order;
             r.goShipped(true, 1);
             Vec2 facing = r.fight.playerStartFacing();
+            Vec2 lastGoal = r.bodies.ally, lastAt = r.bodies.ally;
+            int goalJumps = 0, repositions = 0;
+            double walked = 0, leadAttack = 0, partnerBlow = 0, lastStart = 0, longestGap = 0;
+            bool wasReposition = false;
             while (!r.fight.over() && r.fight.time() < 20.f) {
                 r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
                 r.tick();
+                const PartnerIntent& pi = r.brain.intent();
+                if (pi.blowStart) {
+                    longestGap = std::max(longestGap, double(r.fight.time()) - lastStart);
+                    lastStart = r.fight.time();
+                }
+                const bool rep = pi.why == PartnerWhy::Reposition;
+                if (rep && !wasReposition) ++repositions;
+                wasReposition = rep;
+                if (length(sub(r.out->ally.goal, lastGoal)) > 0.25f) ++goalJumps; // a goal moved over 15 m/s at 60 Hz
+                lastGoal = r.out->ally.goal;
+                walked += length(sub(r.bodies.ally, lastAt));
+                lastAt = r.bodies.ally;
+                if (r.out->player.action == ArenaAction::Light || r.out->player.action == ArenaAction::Heavy) leadAttack += kDt;
+                if (r.out->ally.part != ArenaPart::None) partnerBlow += kDt;
                 // A host camera turns after the lead at about 3 rad/s, not on the tick its facing snaps.
                 const Vec2 f = r.out->player.facing;
                 const float k = std::min(1.f, 3.f * kDt);
@@ -2190,6 +2208,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             }
             const ArenaStats& s = r.fight.stats();
             const double T = r.fight.time();
+            longestGap = std::max(longestGap, T - lastStart);
             std::string shares;
             for (std::size_t k = 0; k < kPartnerIdleCount; ++k)
                 shares += std::string(" ") + names[k] + " " +
@@ -2199,6 +2218,11 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                    << r.def.enemyCount << " enemies; strings " << s.partnerStrings << ", blows "
                                    << s.partnerBlows << ", guards " << s.partnerGuards << ", fallback "
                                    << r.brain.fallbackSeconds() << " s; shares:" << shares);
+            MESSAGE("    goal jumps " << goalJumps << ", walked " << walked << " m, longest gap between blow starts "
+                                      << longestGap << " s, repositions " << repositions << "; lead attacking "
+                                      << leadAttack << " s, partner blows running " << partnerBlow
+                                      << " s, the governor's allowance 0.6 x lead + 2 = " << 0.6 * leadAttack + 2.0
+                                      << " s");
             CHECK(r.brain.framed() == camera);
             if (camera) CHECK(s.partnerStrings >= 1);
         }

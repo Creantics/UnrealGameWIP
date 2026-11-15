@@ -121,6 +121,8 @@
 //      is held, by its angle on its ring, while it stays valid and the target stays. None valid: it keeps going to
 //      the one it last held; after frustumGiveUpSeconds (3.0) with none (or at once when it never held one) it falls
 //      back to rules 10-11's station and says so (intent.frameFallback, and fallbackSeconds()).
+//      Standing (its last step no MoveTo or StepBack) within twice stationTolerance of its goal, it counts as there
+//      while its own place is in frame and outside both keep-outs, so a drifting station does not start and stop it.
 //  14. Engage. With its target within reach and its next blow within the budget, it starts an action within
 //      engageSeconds (2.0): a string, a guard (rule 3) or a reposition (16). The clock counts the steps it stands so
 //      (in reach, the budget fitting, not acting) since its last action began. At engageSeconds a pause ends, and a
