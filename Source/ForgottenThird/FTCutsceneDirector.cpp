@@ -102,7 +102,7 @@ int32 SubjectOrdinal(std::string_view Id)
 	return -1;
 }
 
-// Outside Shipping, -CutsceneWaveCue=<seconds>,<world>[,reverse] adds one street wave cue on the lead's mark (subj_a)
+// Outside Shipping, -CutsceneWaveCue=<seconds>,<world>[,reverse] (spaces and case ignored) adds one street wave cue on the lead's mark (subj_a)
 // to the plan about to play: the proof of the cue path while no plan in cutscenes.json carries one.
 void AddDevWaveCue(ftcore::CutscenePlan& Plan)
 {
@@ -114,17 +114,28 @@ void AddDevWaveCue(ftcore::CutscenePlan& Plan)
 	}
 	TArray<FString> Parts;
 	Arg.ParseIntoArray(Parts, TEXT(","));
+	// Every part is trimmed and the words lower-cased, so "2, Lattice, Reverse" reads like "2,lattice,reverse".
+	for (FString& Part : Parts)
+	{
+		Part.TrimStartAndEndInline();
+		Part.ToLowerInline();
+	}
 	ftcore::CutsceneWaveCue Cue;
-	Cue.time = Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 0.f;
+	// The time must be a number: Atof would read a typo as 0 s and start the wave on the first frame.
+	const bool bTime = Parts.Num() > 0 && Parts[0].IsNumeric();
+	Cue.time = bTime ? FCString::Atof(*Parts[0]) : 0.f;
 	// The world is checked here, not only when the cue is crossed, so an unknown name is never logged as added.
 	const bool bWorld = Parts.Num() > 1 && ftcore::worldWaveWorldId(FT::ToUtf8(Parts[1])) != nullptr &&
 		Cue.setWorld(FT::ToUtf8(Parts[1]));
-	Cue.reverse = Parts.Num() > 2 && Parts[2].Equals(TEXT("reverse"), ESearchCase::IgnoreCase);
+	// A third part may only be "reverse"; a misspelt word or a fourth part refuses the cue instead of being dropped.
+	Cue.reverse = Parts.Num() > 2 && Parts[2] == TEXT("reverse");
+	const bool bShape = Parts.Num() <= 2 || (Parts.Num() == 3 && Cue.reverse);
 	Cue.origin = ftcore::WaveCueOrigin::Mark;
 	const bool bMark = Cue.setMark(ftcore::kCutsceneLeadMark);
-	const bool bAdded = bWorld && bMark && Plan.addWaveCue(Cue);
+	const bool bAdded = bTime && bWorld && bShape && bMark && Plan.addWaveCue(Cue);
 	UE_LOG(LogForgottenThird, Display, TEXT("Cutscene: -CutsceneWaveCue=%s %s."), *Arg,
-		bAdded ? TEXT("added on subj_a") : TEXT("refused (seconds within the shots; world solhaven, lattice or unwritten)"));
+		bAdded ? TEXT("added on subj_a")
+			   : TEXT("refused (<seconds within the shots>,<solhaven|lattice|unwritten>[,reverse])"));
 #else
 	(void)Plan;
 #endif
