@@ -146,6 +146,14 @@ struct FFTLeadWeapons
 	void DryPressed(double T) { DryAt = T; }
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
+	// Whose events and state these are: the player's (the default) or the partner's body (ftcore::kArenaAlly). Core
+	// gives the partner's blows no AttackStarted, so its host calls StartStrike as each blow begins.
+	void SetSource(uint8 InSource) { Source = InSource; }
+	// A move's strike clip from its start at T, keyed so its impact lands as it goes active (what AttackStarted plays).
+	void StartStrike(uint8 Move, double T);
+	// The blows whose strike clip played into their recovery uncut (whole), and the blows that started a clip.
+	int32 GetClipsCompleted() const { return ClipsCompleted; }
+	int32 GetClipsStarted() const { return ClipsStarted; }
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
 	// fade when the attack ends.
 	void Track(const ftcore::ArenaPlayerOut& P, double T);
@@ -231,6 +239,10 @@ private:
 	void LogAim();
 	const TCHAR* Prefix() const;
 
+	uint8 Source = ftcore::kArenaPlayer;
+	bool bStrikeClip = false; // the blow under way plays a strike clip
+	int32 ClipsStarted = 0;
+	int32 ClipsCompleted = 0;
 	TWeakObjectPtr<AActor> Figure;
 	TWeakObjectPtr<AFTArenaFighter> ArenaFigure;
 	TWeakObjectPtr<USkeletalMeshComponent> Skin;

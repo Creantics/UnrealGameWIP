@@ -246,6 +246,21 @@ TEST_CASE("arena lock frame: when not even the whole body fits, the feet are cut
     }
     MESSAGE("close rigs where the body cannot fit: " << cut);
     CHECK(cut > 0);
+    // Under kArenaHeadKeptArm (0.6 and 0.5 m) the head's top leaves the frame too, at some view the fallback takes.
+    for (const int tenths : {6, 5}) {
+        const float arm = static_cast<float>(tenths) / 10.f;
+        const ArenaCameraPose rig = shortRig(arm);
+        CAPTURE(arm);
+        bool headOut = false;
+        for (float want = kArenaLook.viewMin; want <= kArenaLook.viewMax; want += 15.f) {
+            const ArenaLeadPitch p = arenaLeadPitch(kArenaLook, kArenaLeadFrame, rig, aspect, ArenaLeadBody{}, want);
+            if (p.kept != 0) continue;
+            const ArenaCameraPose pose = arenaPoseAtPitch(kArenaLook, rig, p.pitch);
+            headOut = headOut || !inView(arenaFramePoint(pose, aspect, ArenaPoint3{0.f, 0.f, ArenaLeadBody{}.head}));
+        }
+        CHECK(headOut);
+        CHECK(arm < kArenaHeadKeptArm);
+    }
 }
 
 TEST_CASE("arena lock frame: an ordinary lock is never moved (target up to 2.5 m, 3 to 12 m away, lead in frame)") {

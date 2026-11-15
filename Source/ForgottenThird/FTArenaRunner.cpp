@@ -749,6 +749,7 @@ void UFTArenaRunner::End()
 		Skins[I] = FFTArenaSkin();
 	}
 	LeadWeapons.Reset(); // its components are the player's figure's
+	AllyWeapons.Reset(); // and these the ally's
 	if (AllyFigure)
 	{
 		AllyFigure->Destroy();
@@ -1913,6 +1914,7 @@ void UFTArenaRunner::BeginSession()
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
 	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = PartnerClearSteps = 0;
+	PartnerClipsStarted = PartnerClipsWhole = 0;
 	PartnerPlaySeconds = 0.f;
 	PartnerStillFor = PartnerStillLongest = 0.f;
 	bPartnerStillAt = false;
@@ -3230,6 +3232,12 @@ void UFTArenaRunner::StepFight()
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner string begun off the frame at %.2f s (no station in frame)."), Fight.time());
 		}
 	}
+	else
+	{
+		// Down or out: a stand-still run ends, so a partner that rises where it fell starts a new one.
+		PartnerStillFor = 0.f;
+		bPartnerStillAt = false;
+	}
 	if (bPartner)
 	{
 		TakeOverBodies(Out); // before the step: the bodies are the host's (ArenaFight::setPartner)
@@ -3304,6 +3312,7 @@ void UFTArenaRunner::StepFight()
 	}
 	// The lead's strike clips run on the held clock, so they stand still through its hit pauses as its action does.
 	LeadWeapons.Feed(Out.events, static_cast<double>(Fight.heldTime()));
+	TrackAllyWeapons(Out);
 	FeedSession();
 	TrackPartner(Out);
 	// The events (this step's Released pooled), then a gift held while Lone: the order is Core's (LoneGiftHold::stepEnd).
@@ -4155,6 +4164,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		LeadWeapons.Paint(DrawnTime);
 	}
 	PlaceAlly(Alpha);
+	AllyWeapons.Paint(DrawnTime);
 	PaintTable(Alpha);
 
 	for (int32 I = 0; I < static_cast<int32>(Fight.enemyCount()) && I < MaxEnemies; ++I)
@@ -6085,6 +6095,8 @@ void UFTArenaRunner::Restart()
 	bRestarting = false;
 	ResetTable();
 	LeadWeapons.Restart();
+	AllyWeapons.Restart();
+	bAllyStruck = false;
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
 	if (AFTArenaFighter* Boss = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr)
@@ -7154,6 +7166,57 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	AllyFigure->ApplyPose(Pose);
 }
 
+void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
+{
+	AFTArenaFighter* Ally = AllyFigure.Get();
+	if (!bPartner || !bAllyOn || !Ally || !AllyLook)
+	{
+		bAllyStruck = false;
+		return;
+	}
+	if (!AllyWeapons.IsOn())
+	{
+		AllyWeapons.SetSource(ftcore::kArenaAlly);
+		AllyWeapons.Begin(Ally, *AllyLook, Def.fighter); // again on the same figure: nothing
+		if (!AllyWeapons.IsOn())
+		{
+			return;
+		}
+	}
+	const double T = static_cast<double>(Fight.heldTime());
+	AllyWeapons.Feed(Out.events, T); // its Hit sparks (source kArenaAlly); Core gives its blows no AttackStarted
+	// The ally's light string as the lead's light moves (its blow's index), so the strike clip each lead plays for that
+	// light plays on its body: a new blow is a new index, or the same index begun again (stateTime back).
+	const ftcore::ArenaAllyOut& A = Out.ally;
+	const int32 Lights = FMath::Max(1, static_cast<int32>(Def.fighter.lightCount));
+	const uint8 Move = static_cast<uint8>(static_cast<int32>(A.blow) % Lights);
+	const bool bNewBlow = A.attacking && (!bAllyStruck || Move != AllyStruckBlow || A.stateTime + 1e-4f < AllyStruckTime);
+	if (bNewBlow)
+	{
+		AllyWeapons.StartStrike(Move, T - static_cast<double>(A.stateTime));
+	}
+	bAllyStruck = A.attacking;
+	AllyStruckBlow = Move;
+	AllyStruckTime = A.stateTime;
+	// Its aim: the target's chest, else straight ahead.
+	const FVector Chest = Ally->GetActorLocation() + FVector(0.0, 0.0, 40.0);
+	const AFTArenaFighter* Target = A.target >= 0 && A.target < MaxEnemies ? EnemyFigures[A.target].Get() : nullptr;
+	if (Target)
+	{
+		AllyWeapons.SetAim(Target->GetChest(), true);
+	}
+	else
+	{
+		AllyWeapons.SetAim(Chest + FVector(A.facing.x, A.facing.y, 0.0) * 100.0, false);
+	}
+	ftcore::ArenaPlayerOut P;
+	P.action = A.attacking ? ftcore::ArenaAction::Light : A.guarding ? ftcore::ArenaAction::Guard : ftcore::ArenaAction::Idle;
+	P.part = A.attacking ? A.part : ftcore::ArenaPart::None;
+	P.move = Move;
+	P.facing = A.facing;
+	AllyWeapons.Track(P, T);
+}
+
 const ftcore::ReadyStance* UFTArenaRunner::ReadyStanceFor(int32 Figure, const FFTLeadLook* Look)
 {
 	if (!bReadyStancesRead)
@@ -7359,6 +7422,10 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 		BenchMorphOwner = PlayerFigure;
 	}
 	LeadWeapons.End();
+	PartnerClipsStarted += AllyWeapons.GetClipsStarted();
+	PartnerClipsWhole += AllyWeapons.GetClipsCompleted();
+	AllyWeapons.End(); // begun again on the new ally figure by TrackAllyWeapons
+	bAllyStruck = false;
 	Swap(PlayerFigure, AllyFigure);
 	Swap(PlayerLook, AllyLook);
 	// The HUD's rows follow the figures: the controlled lead's seat and name are the lead row's (the rows trade places
@@ -7889,8 +7956,11 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 			const float Seen = static_cast<float>(PartnerSeenSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Clear = static_cast<float>(PartnerClearSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Per20 = PartnerPlaySeconds > 0.f ? static_cast<float>(PartnerActions) * 20.f / PartnerPlaySeconds : 0.f;
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; %d actions in %.1f s, %.1f per 20 s, wanted 4; brain: %s)."),
-				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, PartnerActions, PartnerPlaySeconds, Per20, *Brain);
+			const int32 ClipsStarted = PartnerClipsStarted + AllyWeapons.GetClipsStarted();
+			const int32 ClipsWhole = PartnerClipsWhole + AllyWeapons.GetClipsCompleted();
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; %d actions in %.1f s, %.1f per 20 s, wanted 4; blows with a strike clip %d, played whole %d; brain: %s)."),
+				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, PartnerActions, PartnerPlaySeconds, Per20,
+				ClipsStarted, ClipsWhole, *Brain);
 
 		}
 	}

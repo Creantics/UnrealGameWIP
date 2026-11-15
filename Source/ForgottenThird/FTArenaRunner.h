@@ -1392,6 +1392,15 @@ private:
 	FFTKiteVfx KiteFx;
 	// The lead's weapon on the player's figure (begun as it is spawned, when it wears a look).
 	FFTLeadWeapons LeadWeapons;
+	// The partner's body's weapon (-ArenaPartner): the same strike clips, props and effects its look plays when it is
+	// the lead, driven from the ally's blows (TrackAllyWeapons); begun on the ally figure, ended on a swap.
+	FFTLeadWeapons AllyWeapons;
+	void TrackAllyWeapons(const ftcore::ArenaOutput& Out);
+	bool bAllyStruck = false;  // the ally was in a blow last step ...
+	uint8 AllyStruckBlow = 0;  // ... this one ...
+	float AllyStruckTime = 0.f; // ... this far in
+	// The partner's strike clips over the fight: started, and played into their recovery uncut (whole); summed across swaps.
+	int32 PartnerClipsStarted = 0, PartnerClipsWhole = 0;
 	// The direction from the lead to its aim target, set each step with the aim; the figure turns to it while
 	// it attacks.
 	ftcore::Vec2 LeadAimDir{1.f, 0.f};
