@@ -175,6 +175,24 @@ void AFTArenaFighter::SetCameraTilt(float Degrees)
 	}
 }
 
+void AFTArenaFighter::SetBoomRotation(const FRotator& Rotation)
+{
+	if (!Boom)
+	{
+		return;
+	}
+	if (GetController())
+	{
+		Boom->bUsePawnControlRotation = true;
+		Boom->SetUsingAbsoluteRotation(false);
+		return;
+	}
+	// Absolute: the body turning under it (its facing) does not drag the boom between this and the arm's tick.
+	Boom->bUsePawnControlRotation = false;
+	Boom->SetUsingAbsoluteRotation(true);
+	Boom->SetWorldRotation(Rotation);
+}
+
 void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees)
 {
 	Boom->TargetArmLength = ArmMeters * 100.f;
@@ -270,6 +288,8 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 		Body->SetVisibility(false);
 		Head->SetVisibility(false);
 		Visor->SetVisibility(false);
+		// The shapes' blade too: a worn body carries only real weapon meshes (the partner has none yet), never the placeholder cube.
+		Blade->SetVisibility(false);
 		Skin->SetVisibility(true);
 	}
 

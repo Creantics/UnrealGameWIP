@@ -2160,6 +2160,92 @@ TEST_CASE("per-lead load: heal, then switch on the same step, switch back: no fr
     CHECK_FALSE(s.spendLeadHeal(kLeadA));
     CHECK(s.leadHeals(kLeadA) == 0);
     CHECK_FALSE(s.spendLeadHeal(kNoFighter));
+    CHECK(s.lateSets() == 0);
+}
+
+TEST_CASE("per-lead load: spend from a kept gauge above the cap spends the amount, never the clip to the cap") {
+    FightSession s;
+    REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+    feedPerLead(s);
+    s.tick(kFrame);
+    s.setLoad(kLeadA, 80);
+    REQUIRE(s.setActiveLead(kLeadB));
+    REQUIRE(s.tick(kFrame).switched == kLeadB);
+    REQUIRE(s.keptLead() == kLeadA);
+    REQUIRE(s.keptLoad() == 80); // above the cap of 60 after the swap
+    s.spendLeadLoad(kLeadA, 5);
+    CHECK(s.keptLoad() == 75); // a spend of 5, not a clip to 60
+    CHECK(s.leadLoad(kLeadA) == 75);
+    CHECK(s.strikeCount().loadOf(kLeadA) == 75);
+    // Down, the kept gauge spends nothing; standing again it counts as it was.
+    s.setKeptDown(true);
+    s.spendLeadLoad(kLeadA, 5);
+    CHECK(s.keptLoad() == 75);
+    s.setKeptDown(false);
+    CHECK(s.strikeCount().loadOf(kLeadA) == 75);
+    CHECK(s.lateSets() == 0);
+}
+
+TEST_CASE("per-lead load: a set after a spend on the same step is refused and counted; the next step's feed is taken") {
+    FightSession s;
+    REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+    feedPerLead(s);
+    s.tick(kFrame);
+    REQUIRE(s.setLoad(kLeadA, 80)); // the step's feed
+    REQUIRE(s.setLeadHeals(kLeadA, 3));
+    REQUIRE(s.spendLeadHeal(kLeadA));
+    CHECK_FALSE(s.setLeadHeals(kLeadA, 3)); // a stale feed after the heal: the free charge refused
+    CHECK(s.leadHeals(kLeadA) == 2);
+    CHECK(s.lateSets() == 1);
+    s.spendLeadLoad(kLeadA, 30);
+    CHECK_FALSE(s.setLoad(kLeadA, 80));
+    CHECK(s.leadLoad(kLeadA) == 50);
+    CHECK(s.strikeCount().loadOf(kLeadA) == 50);
+    CHECK(s.lateSets() == 2);
+    CHECK(s.setLeadHeals(kLeadB, 1)); // the other lead spent nothing: its set stands
+    REQUIRE(s.setActiveLead(kLeadB));
+    const FightTick& t = s.tick(kFrame);
+    REQUIRE(t.switched == kLeadB);
+    CHECK(s.leadHeals(kLeadA) == 2);
+    CHECK(s.keptLoad() == 50);
+    // The tick closed the step: the next feed is taken.
+    CHECK(s.setLoad(kLeadB, 25));
+    CHECK(s.setLeadHeals(kLeadB, 1));
+    CHECK(s.lateSets() == 2);
+    // A begin (and a retry) starts the count again.
+    REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+    CHECK(s.lateSets() == 0);
+}
+
+TEST_CASE("per-lead load: the absent lead's Load fed before the checkpoint, a join, a retry: its gauge and the hash come back") {
+    FightSessionDef d = noSwitchCooldown();
+    d.inFight = {true, false};
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.setLoad(kLeadA, 45);
+    s.setLoad(kLeadB, 30); // the absent lead's Load, before the checkpoint
+    REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+    REQUIRE(s.checkpoint().countLoad[kLeadB] == 30);
+    // The same steps each run: a step, the join, a step.
+    const auto play = [&s]() {
+        s.tick(kFrame);
+        s.setLoad(kLeadA, 45);
+        REQUIRE(s.joinFight(kLeadB, 0.5f));
+        s.tick(kFrame);
+        return s.stateHash();
+    };
+    const std::uint64_t first = play();
+    REQUIRE(s.strikeCount().rawLoad(kLeadB) == 30);
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(kFrame).defeated);
+    REQUIRE(s.retry().at == CheckpointAt::FightStart);
+    CHECK(s.strikeCount().hasGauge(kLeadB));
+    CHECK(s.strikeCount().rawLoad(kLeadB) == 30); // the joiner's gauge is 30 again, not -1
+    CHECK(s.leadLoad(kLeadB) == 30);
+    const std::uint64_t again = play();
+    CHECK(s.strikeCount().rawLoad(kLeadB) == 30);
+    CHECK(again == first);
 }
 
 TEST_CASE("per-lead load: a takeover reports the standing lead's own; the fallen lead's kept gauge is down until it stands") {

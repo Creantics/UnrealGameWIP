@@ -599,6 +599,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	{
 		Now += DeltaSeconds;
 	}
+	HandoffFrameDt = DeltaSeconds;
 	// A view holding the fight's clock holds the lead's own clips too (its locomotion runs on the frame's time), so the
 	// views after it show the pose at their fight time.
 	if (USkeletalMeshComponent* LeadSkin = PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr)
@@ -629,6 +630,8 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	if (bPartner)
 	{
 		CheckSwapInput(); // the figures as drawn this frame
+		TickHandoff();
+		TrackSwitchPartner();
 	}
 	// The legs' speed as the figure hands it to the locomotion (none while dodging or down).
 	{
@@ -1845,6 +1848,8 @@ void UFTArenaRunner::BeginSession()
 	PartnerSessionTookOver = PartnerLeadMismatch = 0;
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
+	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
+	PartnerSwapsBase = Fight.stats().partnerSwaps; // the brain's swaps start over with a restart (its begin)
 	PartnerJoinedAt = -1.0;
 	bSwitchAsked = bSwitchAskOpen = bSwitchAskedThisStep = false;
 	SwitchAsks = SwitchesSeen = SwitchesDone = SwitchesRefused = SwitchAsksRefused = SwitchAsksSame = 0;
@@ -2790,6 +2795,24 @@ void UFTArenaRunner::StepFight()
 		bIntercept = bInterceptHeld;
 		StepTableKey(In);
 	}
+	// The first kTakeoverHoldSeconds of a takeover (the fight's clock, as the camera's move): the camera holds on the
+	// fallen lead and no press is taken (the camera's own forward stays, so the lock still picks from the view).
+	// Cleared here and again after the last assignment (the boss's buttons, autoplay's take-half and guard, the
+	// hallucination) so nothing set on the way leaks into the step.
+	const bool bTakeoverHold = TakeoverInputUntil >= 0.0 && static_cast<double>(Fight.time()) < TakeoverInputUntil;
+	const auto HoldPresses = [&In, &bIntercept]()
+	{
+		In.move = ftcore::Vec2{};
+		In.light = In.heavy = In.dodge = In.jump = In.heal = In.guard = In.lock = In.release = In.pair = In.takeHalf = false;
+		In.lockSwitch = 0;
+		In.read = -1;
+		bIntercept = false;
+	};
+	if (bTakeoverHold)
+	{
+		HoldPresses();
+		++TakeoverInputsIgnored;
+	}
 	const bool bBoss = StoneBearer.IsActive();
 	if (bBoss)
 	{
@@ -2829,6 +2852,10 @@ void UFTArenaRunner::StepFight()
 	{
 		StepHallucination(In);
 	}
+	if (bTakeoverHold)
+	{
+		HoldPresses();
+	}
 	PressSession(In);
 	if (Session)
 	{
@@ -2838,17 +2865,34 @@ void UFTArenaRunner::StepFight()
 	if (bPartner)
 	{
 		In.partnerOrder = bPartnerSpread ? 1 : 0;
+		// The partner's stationing (rules 8-12) from the play camera as the player has it: the active lead's body,
+		// the pivot, the arm and the control rotation (ftcore::arenaCameraLens of the pose last drawn), on the ground
+		// in m; its forward is cameraFacing, else view. Not the view target or a boom: a capture's side camera, a
+		// switch's blend or the boom's lag is not where the player looks from. No pose drawn yet: no stationing.
+		if (bCameraPoseNow)
+		{
+			const ftcore::ArenaLensAt Lens = ftcore::arenaCameraLens(CameraPoseNow);
+			In.cameraOn = true;
+			In.cameraPos = ftcore::Vec2{Bodies.player.x + Lens.x, Bodies.player.y + Lens.y};
+		}
 	}
 	if (bPartner)
 	{
 		TrackSwapCheck(In); // the input this step takes, after a takeover or a switch
 	}
+	const bool bAllyWasUp = Fight.allyHp() > 0; // the brain stations only a body up before and after the step
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	if (bPartner && Session)
 	{
 		// Who is in the fight, step by step: the session's word as of its last close against the fight's this step
 		// (a join lands at a close and the fight takes the partner before its next step).
 		PartnerJoinDisagree += Out.ally.partnerOn != Session->Get().inFight(OtherLead()) ? 1 : 0;
+	}
+	if (bPartner && Out.ally.partnerOn && bAllyWasUp && Fight.allyHp() > 0)
+	{
+		++PartnerOnSteps;
+		PartnerCameraSteps += In.cameraOn ? 1 : 0;
+		PartnerStationedSteps += Out.ally.stationed ? 1 : 0;
 	}
 	if (bPartner)
 	{
@@ -3078,6 +3122,14 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			{
 				// The partner's blow is a Hit too (source kArenaAlly, move = its blow's index, never a heavy's).
 				PartnerHitEvents += E.source == ftcore::kArenaAlly ? 1 : 0;
+				if (E.source == ftcore::kArenaAlly)
+				{
+					PartnerImpact(E);
+				}
+				else if (E.source == ftcore::kArenaPlayer && E.amount > 0 && PlayerFigure)
+				{
+					ImpactSoundHook(E.source, PlayerFigure->GetChest(), 1.f);
+				}
 				BossHitVfx(E);
 				EnemyHitTime[E.target] = Now;
 				// A heavy blow, a riposte or a Release is a heavy reaction.
@@ -4655,9 +4707,13 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		SampleFrame(Target, FrameWant, DeltaSeconds);
 	}
 #endif
+	CameraPoseNow = Pose;
+	bCameraPoseNow = true;
 	if (AFTArenaFighter* Lead = PlayerFigure.Get())
 	{
 		Lead->SetCameraTilt(Pose.tilt);
+		// After a switch the lead in view is not the possessed figure: its boom takes the control rotation here.
+		Lead->SetBoomRotation(FRotator(Pose.boomPitch, Pose.yaw, 0.0));
 	}
 }
 
@@ -5321,10 +5377,14 @@ void UFTArenaRunner::Restart()
 	if (bPartner)
 	{
 		// The fight as it began: each lead in its own figure, the first lead controlled (Fight.restart clears swapped()).
+		DropPendingHandoff(TEXT("a restart"));
 		if (bFiguresSwapped)
 		{
 			SwapLeadFigures();
 		}
+		TakeoverInputUntil = -1.0;
+		SwitchPartnerAt = -1.0;
+		bNamesSwapped = bFiguresSwapped;
 		SessionLead = StartLead;
 	}
 	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
@@ -6450,6 +6510,13 @@ void UFTArenaRunner::BeginPartner()
 	bPartner = false;
 	bPartnerSpread = true;
 	bFiguresSwapped = false;
+	bNamesSwapped = false;
+	HandoffMoveAt = TakeoverInputUntil = SwitchPartnerAt = SwitchCamCheckAt = -1.0;
+	HandoffBegun = HandoffDropped = HandoffTakeovers = HandoffMovesOnTime = HandoffSwitches = TakeoverInputsIgnored = 0;
+	HandoffWorstLate = SwitchCamWorst = 0.0;
+	SwitchCamChecks = BenchMorphChecks = BenchMorphUnchecked = 0;
+	BenchMorphWorst = 0.f;
+	bCameraPoseNow = false; // the first frame's step, before any camera is drawn, feeds no stationing
 	PartnerOrders = 0;
 #if !UE_BUILD_SHIPPING
 	bPartner = FParse::Param(FCommandLine::Get(), TEXT("ArenaPartner"));
@@ -6537,9 +6604,14 @@ void UFTArenaRunner::SwitchLeadBodies()
 	// the input stays on the controller and moves the new body (ArmSwapCheck proves it).
 	std::swap(Bodies.player, Bodies.ally);
 	std::swap(PrevBodies.player, PrevBodies.ally);
-	SwapLeadFigures();
+	SwapLeadFigures(EHandoff::Switch);
 	SessionLead = OtherLead();
 	++SwitchesDone;
+	// The left body's brain intents from the next step: when it first moves and when it leaves the new lead's view.
+	SwitchPartnerAt = static_cast<double>(Fight.time());
+	SwitchPartnerMoved = SwitchPartnerOut = -1.0;
+	SwitchPartnerLogs = 0;
+	SwitchPartnerFrom = AllyFigure ? AllyFigure->GetActorLocation() : FVector::ZeroVector;
 	ArmSwapCheck(true);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the lead switch: control passes to lead %d at %d hp; the other lead's body at %d hp, driven by the partner brain."),
 		Fight.time(), static_cast<int32>(SessionLead), Fight.hp(), Fight.allyHp());
@@ -6572,7 +6644,7 @@ void UFTArenaRunner::TakeOverBodies(const ftcore::ArenaOutput& Out)
 		// Bodies.player, and PlayerFigure (the partner's actor after the swap) is drawn there. ArmSwapCheck proves it.
 		std::swap(Bodies.player, Bodies.ally);
 		std::swap(PrevBodies.player, PrevBodies.ally);
-		SwapLeadFigures();
+		SwapLeadFigures(EHandoff::Takeover);
 		SessionLead = OtherLead();
 		++PartnerTakeovers;
 		ArmSwapCheck();
@@ -6581,8 +6653,14 @@ void UFTArenaRunner::TakeOverBodies(const ftcore::ArenaOutput& Out)
 	}
 }
 
-void UFTArenaRunner::SwapLeadFigures()
+void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 {
+	DropPendingHandoff(TEXT("another body change in the hold"));
+	if (LeadWeapons.GauntletMorphNames().Num() > 0)
+	{
+		BenchMorphs = LeadWeapons.GauntletMorphNames(); // on a body change only
+		BenchMorphOwner = PlayerFigure;
+	}
 	LeadWeapons.End();
 	Swap(PlayerFigure, AllyFigure);
 	Swap(PlayerLook, AllyLook);
@@ -6606,14 +6684,316 @@ void UFTArenaRunner::SwapLeadFigures()
 	if (AllyFigure)
 	{
 		AllyFigure->ResetFeet();
+		// The benched figure keeps none of the look's gauntlet morphs (End set them back to 0).
+		const bool bGauntletBenched = BenchMorphs.Num() > 0 && BenchMorphOwner.Get() == AllyFigure;
+		const USkeletalMeshComponent* Benched = bGauntletBenched ? AllyFigure->GetLeadSkin() : nullptr;
+		BenchMorphUnchecked += bGauntletBenched && !Benched ? 1 : 0; // benched, but no skin to read
+		for (const FName& Morph : BenchMorphs)
+		{
+			if (Benched)
+			{
+				BenchMorphWorst = FMath::Max(BenchMorphWorst, FMath::Abs(Benched->GetMorphTarget(Morph)));
+				++BenchMorphChecks;
+			}
+		}
+	}
+	if (PlayerFigure && bCameraPoseNow)
+	{
+		// The play camera's rig on the new lead's boom (its own is the setup default); SteerCamera turns it.
+		PlayerFigure->SetCameraRig(CameraPoseNow.arm, CameraPoseNow.pivot, CameraPoseNow.side, CameraPoseNow.up, CameraPoseNow.fov);
+		PlayerFigure->SetCameraTilt(CameraPoseNow.tilt);
+		PlayerFigure->SetBoomRotation(FRotator(CameraPoseNow.boomPitch, CameraPoseNow.yaw, 0.0));
 	}
 	PlayerStepAt = -1; // the legs start over from a stand
+	if (Handoff == EHandoff::Takeover)
+	{
+		// No cut: the view stays on the fallen lead's figure (AllyFigure now), the HUD keeps its names and no input is
+		// taken for kTakeoverHoldSeconds; then TickHandoff moves the camera to the new lead over kTakeoverMoveSeconds,
+		// the fallen body in frame at the move's start, and the HUD names the new lead. One clock: the fight's.
+		HandoffFellAt = static_cast<double>(Fight.time());
+		HandoffMoveAt = TakeoverInputUntil = HandoffFellAt + kTakeoverHoldSeconds;
+		++HandoffBegun;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the takeover's hand-off: the camera holds on the fallen lead %.2f s, then moves to the new lead over %.2f s; no input to %.2f."),
+			Fight.time(), kTakeoverHoldSeconds, kTakeoverMoveSeconds, TakeoverInputUntil);
+		return;
+	}
+	bNamesSwapped = bFiguresSwapped;
+	TakeoverInputUntil = -1.0;
 	if (APlayerController* PC = GetPC())
 	{
-		if (PlayerFigure)
+		if (PlayerFigure && Handoff == EHandoff::Switch)
+		{
+			// A switch eases to the new lead (no cut).
+			PC->SetViewTargetWithBlend(PlayerFigure, kSwitchEaseSeconds, EViewTargetBlendFunction::VTBlend_EaseInOut, 2.f);
+			++HandoffSwitches;
+			SwitchCamCheckAt = Now + kSwitchEaseSeconds + 0.5; // the ease done and the boom's lag settled
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the switch's hand-off: the camera eases to the new lead over %.2f s; the HUD names it now."),
+				Fight.time(), kSwitchEaseSeconds);
+		}
+		else if (PlayerFigure)
 		{
 			PC->SetViewTarget(PlayerFigure);
 		}
+	}
+}
+
+void UFTArenaRunner::DropPendingHandoff(const TCHAR* Why)
+{
+	if (HandoffMoveAt < 0.0)
+	{
+		return;
+	}
+	HandoffMoveAt = -1.0;
+	TakeoverInputUntil = -1.0;
+	bNamesSwapped = bFiguresSwapped;
+	++HandoffDropped;
+	// The view to the lead now controlled (a body change after this sets its own), only from a fighter's play camera
+	// and while the fight goes on: a capture's camera and the result's view stay as they are.
+	APlayerController* PC = GetPC();
+	const bool bMoveView = PC && PlayerFigure && !Fight.over() && Cast<AFTArenaFighter>(PC->GetViewTarget()) != nullptr;
+	if (bMoveView)
+	{
+		PC->SetViewTargetWithBlend(PlayerFigure, kTakeoverMoveSeconds, EViewTargetBlendFunction::VTBlend_EaseInOut, 2.f);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: a takeover's hand-off dropped in its hold (%s): %s."), Fight.time(), Why,
+		bMoveView ? TEXT("the view eases to the lead now controlled") : TEXT("the view stays"));
+}
+
+void UFTArenaRunner::TickHandoff()
+{
+	if (SwitchCamCheckAt >= 0.0 && Now >= SwitchCamCheckAt)
+	{
+		// The stationing's camera (the pose's lens over the lead) against the drawn camera's, on the ground. Measured,
+		// not a pass or fail: the boom's collision probe may pull the drawn one in and its lag trails a moving lead.
+		SwitchCamCheckAt = -1.0;
+		const APlayerController* PC = GetPC();
+		if (PC && PC->PlayerCameraManager && bCameraPoseNow && PC->GetViewTarget() != PlayerFigure.Get())
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: after the switch the view is not the lead's play camera (a capture's): no camera measure."), Fight.time());
+		}
+		else if (PC && PC->PlayerCameraManager && bCameraPoseNow)
+		{
+			const ftcore::ArenaLensAt Lens = ftcore::arenaCameraLens(CameraPoseNow);
+			const FVector Drawn = PC->PlayerCameraManager->GetCameraLocation();
+			const double Gap = FVector2D::Distance(FVector2D(Drawn.X, Drawn.Y),
+				FVector2D((Bodies.player.x + Lens.x) * 100.0, (Bodies.player.y + Lens.y) * 100.0));
+			SwitchCamWorst = FMath::Max(SwitchCamWorst, Gap);
+			++SwitchCamChecks;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: after the switch the stationing's camera is %.1f cm from the drawn camera (on the ground)."),
+				Fight.time(), Gap);
+		}
+	}
+	const double T = static_cast<double>(Fight.time());
+	if (HandoffMoveAt < 0.0)
+	{
+		return;
+	}
+	if (T + 1e-6 < HandoffMoveAt)
+	{
+		if (Fight.over())
+		{
+			DropPendingHandoff(TEXT("the fight ended"));
+		}
+		return;
+	}
+	const double Late = T - HandoffMoveAt;
+	HandoffMoveAt = -1.0;
+	++HandoffTakeovers;
+	bNamesSwapped = bFiguresSwapped; // the new lead's name row at the move's start
+	if (APlayerController* PC = GetPC(); PC && PlayerFigure)
+	{
+		PC->SetViewTargetWithBlend(PlayerFigure, kTakeoverMoveSeconds, EViewTargetBlendFunction::VTBlend_EaseInOut, 2.f);
+	}
+	HandoffWorstLate = FMath::Max(HandoffWorstLate, Late);
+	// On time: within the frame that crossed the hold's end (a headless run steps coarser frames than a drawn one).
+	HandoffMovesOnTime += Late <= FMath::Max(0.05, static_cast<double>(HandoffFrameDt) + 0.005) ? 1 : 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the takeover's camera move starts %.2f s after the fall (%.0f ms late), over %.2f s; the HUD names the new lead."),
+		Fight.time(), T - HandoffFellAt, Late * 1000.0, kTakeoverMoveSeconds);
+}
+
+namespace
+{
+const TCHAR* PartnerActWord(ftcore::PartnerAct A)
+{
+	switch (A)
+	{
+	case ftcore::PartnerAct::Wait: return TEXT("Wait");
+	case ftcore::PartnerAct::MoveTo: return TEXT("MoveTo");
+	case ftcore::PartnerAct::Attack: return TEXT("Attack");
+	case ftcore::PartnerAct::Guard: return TEXT("Guard");
+	case ftcore::PartnerAct::StepBack: return TEXT("StepBack");
+	}
+	return TEXT("?");
+}
+
+const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
+{
+	static const TCHAR* const Words[] = {TEXT("NotBegun"), TEXT("Down"), TEXT("CannotAct"), TEXT("Guard"), TEXT("Leash"),
+		TEXT("String"), TEXT("Pause"), TEXT("NoTarget"), TEXT("Approach"), TEXT("HeldOff"), TEXT("Start"), TEXT("Budget"),
+		TEXT("Committed")};
+	const size_t I = static_cast<size_t>(W);
+	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
+}
+
+// Whether a world point is inside the player's camera frame (16:9, the camera manager's horizontal FOV).
+bool InCameraView(const APlayerController* PC, const FVector& P)
+{
+	const APlayerCameraManager* Cam = PC ? PC->PlayerCameraManager.Get() : nullptr;
+	if (!Cam)
+	{
+		return false;
+	}
+	const FVector L = Cam->GetCameraRotation().UnrotateVector(P - Cam->GetCameraLocation());
+	if (L.X <= 1.0)
+	{
+		return false;
+	}
+	const double TanH = FMath::Tan(FMath::DegreesToRadians(static_cast<double>(Cam->GetFOVAngle()) * 0.5));
+	return FMath::Abs(L.Y / L.X) <= TanH && FMath::Abs(L.Z / L.X) <= TanH * 9.0 / 16.0;
+}
+}
+
+void UFTArenaRunner::TrackSwitchPartner()
+{
+	if (SwitchPartnerAt < 0.0 || !AllyFigure)
+	{
+		return;
+	}
+	constexpr double kEvery = 0.25, kFor = 2.0, kOutWanted = 1.0;
+	const double Since = static_cast<double>(Fight.time()) - SwitchPartnerAt;
+	const ftcore::PartnerIntent& Intent = AllyBrain.intent();
+	const FVector At = AllyFigure->GetActorLocation();
+	const double Moved = FVector::Dist2D(At, SwitchPartnerFrom);
+	if (SwitchPartnerMoved < 0.0 && Moved > 5.0)
+	{
+		SwitchPartnerMoved = Since;
+	}
+	// Out of view: neither its chest nor its feet in the new lead's frame.
+	const bool bSeen = InCameraView(GetPC(), AllyFigure->GetChest()) || InCameraView(GetPC(), At);
+	if (SwitchPartnerOut < 0.0 && !bSeen)
+	{
+		SwitchPartnerOut = Since;
+	}
+	if (Since + 1e-6 >= kEvery * SwitchPartnerLogs && SwitchPartnerLogs <= static_cast<int32>(kFor / kEvery))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: switch +%.2f s: the left body's brain %s (%s), %.0f cm from where the switch left it, %s the new lead's view."),
+			Since, PartnerActWord(Intent.act), PartnerWhyWord(Intent.why), Moved, bSeen ? TEXT("in") : TEXT("out of"));
+		++SwitchPartnerLogs;
+	}
+	if (Since >= kFor || Fight.over())
+	{
+		++SwitchPartnerChecks;
+		SwitchWorstMoved = FMath::Max(SwitchWorstMoved, SwitchPartnerMoved < 0.0 ? kFor : SwitchPartnerMoved);
+		SwitchWorstOut = FMath::Max(SwitchWorstOut, SwitchPartnerOut < 0.0 ? kFor : SwitchPartnerOut);
+		const FString MovedWord = SwitchPartnerMoved < 0.0 ? FString(TEXT("never in 2 s")) : FString::Printf(TEXT("at +%.2f s"), SwitchPartnerMoved);
+		const FString OutWord = SwitchPartnerOut < 0.0 ? FString(TEXT("never in 2 s")) : FString::Printf(TEXT("at +%.2f s"), SwitchPartnerOut);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: switch partner: the left body first moved %s, left the new lead's view %s (wanted within %.2f s)."),
+			*MovedWord, *OutWord, kOutWanted);
+		SwitchPartnerAt = -1.0;
+	}
+}
+
+void UFTArenaRunner::LogHandoffChecks() const
+{
+	const bool bNames = bNamesSwapped == bFiguresSwapped;
+	if (HandoffBegun > 0)
+	{
+		// Each takeover's hold either started its camera move (on time: within the frame that crossed it) or was
+		// dropped (the fight ended, another body change, a restart); the fight's clock for both.
+		const bool bOk = HandoffMovesOnTime == HandoffTakeovers && HandoffTakeovers + HandoffDropped == HandoffBegun && bNames;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: takeover hand-off %s (%d takeovers: %d camera moves, %d on time (at most %.0f ms late) after a %.2f s hold, over %.2f s, %d dropped in the hold; %d steps of input ignored; HUD names %s)."),
+			bOk ? TEXT("PASS") : TEXT("FAIL"), HandoffBegun, HandoffTakeovers, HandoffMovesOnTime, HandoffWorstLate * 1000.0, kTakeoverHoldSeconds,
+			kTakeoverMoveSeconds, HandoffDropped, TakeoverInputsIgnored, bNames ? TEXT("with the figures") : TEXT("NOT with the figures"));
+	}
+	if (HandoffSwitches > 0 || HandoffBegun > 0)
+	{
+		// At each body change, and again now when the gauntlet lead's figure is the benched one.
+		int32 Checks = BenchMorphChecks;
+		int32 Unchecked = BenchMorphUnchecked;
+		float Worst = BenchMorphWorst;
+		const AFTArenaFighter* Owner = BenchMorphOwner.Get();
+		const bool bBenchedNow = Owner && BenchMorphs.Num() > 0 && Owner == AllyFigure.Get();
+		if (const USkeletalMeshComponent* Benched = bBenchedNow ? Owner->GetLeadSkin() : nullptr)
+		{
+			for (const FName& Morph : BenchMorphs)
+			{
+				Worst = FMath::Max(Worst, FMath::Abs(Benched->GetMorphTarget(Morph)));
+				++Checks;
+			}
+		}
+		else
+		{
+			Unchecked += bBenchedNow ? 1 : 0;
+		}
+		// A benched gauntlet figure with no skin to read is UNCHECKED, never a pass.
+		const TCHAR* Verdict = Worst > 1e-4f ? TEXT("FAIL") : (Unchecked > 0 ? TEXT("UNCHECKED") : (Checks == 0 ? TEXT("n/a, the gauntlet lead never benched") : TEXT("PASS")));
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: benched figure morphs %s (%d checked, %d benched with no skin to read, after %d body changes, worst weight %.3f; the gauntlet lead benched at the end %s)."),
+			Verdict, Checks, Unchecked, HandoffSwitches + HandoffBegun, Worst, bBenchedNow ? TEXT("yes") : TEXT("no"));
+	}
+	if (HandoffSwitches > 0 || SwitchPartnerChecks > 0)
+	{
+		// The camera and the names are this host's; when the left body leaves the view is the partner brain's
+		// stationing (measured here, not yet a pass or fail).
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: switch hand-off %s (%d switches eased over %.2f s; HUD names %s; the left body first moved within %.2f s, out of view within %.2f s, %d measured; the stationing's camera at most %.1f cm from the drawn one, %d measured)."),
+			bNames ? TEXT("PASS") : TEXT("FAIL"), HandoffSwitches, kSwitchEaseSeconds, bNames ? TEXT("with the figures") : TEXT("NOT with the figures"),
+			SwitchWorstMoved, SwitchWorstOut, SwitchPartnerChecks, SwitchCamWorst, SwitchCamChecks);
+	}
+}
+
+void UFTArenaRunner::PartnerImpact(const ftcore::ArenaEvent& E)
+{
+	if (E.amount <= 0 || E.target >= MaxEnemies || !AllyFigure)
+	{
+		return;
+	}
+	// The blow point: on the struck body's surface toward the partner, at the partner's chest height.
+	const size_t T = static_cast<size_t>(E.target);
+	const ftcore::Vec2& Foe = Bodies.enemies[T];
+	ftcore::Vec2 Dir{Bodies.ally.x - Foe.x, Bodies.ally.y - Foe.y};
+	const float Length = ArenaLength(Dir);
+	Dir = Length > 1e-4f ? ftcore::Vec2{Dir.x / Length, Dir.y / Length} : Fight.output().enemies[T].facing;
+	const float Out = Fight.def().enemies[T].bodyRadius;
+	FVector At = ToWorld(ftcore::Vec2{Foe.x + Dir.x * Out, Foe.y + Dir.y * Out});
+	At.Z = AllyFigure->GetChest().Z;
+	// The lead's own impact effect (both leads play the one fighter kit here), on the partner's figure, at 70%.
+	UFTVfxComponent* Vfx = PartnerImpactFx.Get();
+	if (Vfx && Vfx->GetOwner() != AllyFigure)
+	{
+		Vfx->DestroyComponent(); // the figures swapped: the effect goes with the partner's figure
+		Vfx = nullptr;
+	}
+	if (!Vfx)
+	{
+		Vfx = NewObject<UFTVfxComponent>(AllyFigure);
+		Vfx->Effect = FName(FFTLeadWeapons::ImpactEffectOf(Def.fighter.weapon));
+		Vfx->bPlayOnBeginPlay = false;
+		Vfx->SetupAttachment(AllyFigure->GetRootComponent());
+		Vfx->SetUsingAbsoluteLocation(true);
+		Vfx->SetUsingAbsoluteRotation(true);
+		Vfx->SetUsingAbsoluteScale(true);
+		Vfx->RegisterComponent();
+		Vfx->SetWorldScale3D(FVector(kPartnerImpactScale));
+		Vfx->SetParameters(kPartnerImpactScale, kPartnerImpactScale);
+		PartnerImpactFx = Vfx;
+	}
+	Vfx->SetWorldLocationAndRotation(At, FRotator::ZeroRotator);
+	const bool bPlayed = Vfx->Play();
+	UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: %.2f: partner impact %s at %.0f%% on enemy %d (%d hp), %.0f cm from the partner's chest%s."),
+		Fight.time(), *Vfx->Effect.ToString(), kPartnerImpactScale * 100.f, static_cast<int32>(E.target), E.amount,
+		FVector::Dist(At, AllyFigure->GetChest()), bPlayed ? TEXT("") : TEXT(" (no effect asset: not drawn)"));
+	ImpactSoundHook(E.source, At, kPartnerImpactScale);
+}
+
+void UFTArenaRunner::ImpactSoundHook(uint8 Source, const FVector& At, float Scale)
+{
+	// The one place a landed blow's impact sound plays (the lead's at 1, the partner's at kPartnerImpactScale). No
+	// impact sound is in Data/Audio/cues.json yet: logged once per source until one is.
+	const int32 I = Source == ftcore::kArenaAlly ? 1 : 0;
+	if (!bImpactHookLogged[I])
+	{
+		bImpactHookLogged[I] = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: impact sound hook: the %s's blows at %.0f%% (first at %s); no impact cue yet, silent."),
+			I == 1 ? TEXT("partner") : TEXT("lead"), Scale * 100.f, *At.ToCompactString());
 	}
 }
 
@@ -6775,6 +7155,20 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 			bSwitchOk ? TEXT("PASS") : TEXT("FAIL"), SwitchAsks, SwitchesSeen, SwitchAsksRefused, SwitchAsksSame, SwitchesDone, SwitchesRefused,
 			Fight.stats().leadSwitches);
 	}
+	if (bPartner && PartnerOnSteps > 0)
+	{
+		// Stationing: every step the partner stood up with the camera fed ran it, and its brain was told of every
+		// body change (a switch or a takeover) exactly once.
+		const ftcore::ArenaStats& St = Fight.stats();
+		// The brain's own count of its resets, the fight's count of the resets it asked, and the host's count of the
+		// switches and takeovers it drew: three counters kept in three places.
+		const int32 FightSwaps = St.partnerSwaps - PartnerSwapsBase;
+		const bool bSwapsOk = AllyBrain.swaps() == static_cast<std::uint32_t>(FightSwaps) && FightSwaps == SwitchesDone + PartnerTakeovers;
+		const bool bStationOk = PartnerCameraSteps > 0 && PartnerStationedSteps == PartnerCameraSteps;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner stationing %s (%d steps up, %d with the camera, %d stationed; brain resets %u, fight %d, host %d switches and %d takeovers)."),
+			bSwapsOk && bStationOk ? TEXT("PASS") : TEXT("FAIL"), PartnerOnSteps, PartnerCameraSteps, PartnerStationedSteps,
+			static_cast<uint32>(AllyBrain.swaps()), FightSwaps, SwitchesDone, PartnerTakeovers);
+	}
 	if (bPartnerHeldOut)
 	{
 		// Begun Lone and not called in: out of the fight to its end on both sides (no partner, one lead in the session).
@@ -6825,6 +7219,8 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner swap input %s (%d takeovers, %d switches, %d checked (%d after a switch), %d passed; the new body moved at least %.0f cm with a move input, the fallen one at most %.0f cm, a switched one along the input at least %.2f)."),
 		SwapChecks == 0 ? TEXT("n/a") : (SwapChecksPassed == SwapChecks ? TEXT("PASS") : TEXT("FAIL")), PartnerTakeovers, SwitchesDone, SwapChecks,
 		SwapSwitchChecks, SwapChecksPassed, SwapChecks > 0 ? SwapWorstNew : 0.0, SwapWorstOld, SwapSwitchChecks > 0 ? SwapWorstAlign : 0.0);
+	DropPendingHandoff(TEXT("the fight ended")); // a fight over inside a takeover's hold
+	LogHandoffChecks();
 	const bool bBothDown = Session && Session->Get().down(ftcore::kLeadA) && Session->Get().down(ftcore::kLeadB);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner defeat %s (session defeat %d, both leads down %d)."),
 		!bLost ? TEXT("n/a") : (bSessionDefeated && bBothDown ? TEXT("PASS") : TEXT("FAIL")), bSessionDefeated ? 1 : 0, bBothDown ? 1 : 0);
