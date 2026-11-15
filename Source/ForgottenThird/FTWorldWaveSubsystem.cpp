@@ -1207,10 +1207,16 @@ int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
 		{
 			// Hidden ones too: a jacket's other state or a stowed weapon is shown later and must already be wave-aware. Not the
 			// editor's own helpers (the camera's proxy mesh): no worn piece, never drawn in the game.
-			if (!Primitive || Primitive->IsEditorOnly() || Primitive->IsVisualizationComponent())
+			if (!Primitive || Primitive->IsEditorOnly())
 			{
 				continue;
 			}
+#if WITH_EDITORONLY_DATA
+			if (Primitive->IsVisualizationComponent())
+			{
+				continue;
+			}
+#endif
 			Used.Reset();
 			Primitive->GetUsedMaterials(Used);
 			int32 Aware = 0, Other = 0;
