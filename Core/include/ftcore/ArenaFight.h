@@ -744,6 +744,9 @@ struct ArenaFrustum {
     float vfov = 0.f;
     float aspect = 0.f;
 };
+// The share of the frame's width and height kept clear each side when a point counts as on screen: one margin for
+// the partner's brain and the host's partner-in-play check alike (arenaInFrustum's `margin`).
+inline constexpr float kArenaFrustumMargin = 0.10f;
 
 // A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
 inline constexpr float kArenaShotHeight = 1.4f;

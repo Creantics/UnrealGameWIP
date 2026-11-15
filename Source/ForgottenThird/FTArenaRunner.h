@@ -237,13 +237,22 @@ public:
 	// When enemy Index was last hit (far in the past when never).
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
-	// Where the last enemy blow on the lead came from, seen from the camera as it was drawn then: X to the right, Y
-	// ahead, a unit vector on the ground (the hit flash's side). False before any.
+	// Where the last blow on the lead came from, from the lead toward the striker in the camera's ground frame as it was
+	// drawn then: X to the camera's right, Y ahead, a unit vector (the hit flash's side). False before any blow this
+	// fight, and when the last blow had no enemy behind it (a hazard): no side then.
 	bool GetLastHitFrom(FVector2D& RightAhead, double& At) const
 	{
 		RightAhead = LastHitFrom;
 		At = LastHitAt;
-		return LastHitAt > -1e8;
+		return LastHitAt > -1e8 && !LastHitFrom.IsZero();
+	}
+	// The lock's aim point (the telegraph, else the weak point, else the chest of a tall target) above the frame this
+	// frame: true, with EdgeShare its place on the screen's top edge (X 0 left to 1 right, Y 0 the top). The UI draws
+	// the marker there.
+	bool GetLockAimAbove(FVector2D& EdgeShare) const
+	{
+		EdgeShare = FVector2D(LockAimX, 0.0);
+		return bLockAimAbove;
 	}
 	double GetAllyHitTime() const { return AllyHitTime; }
 	double GetParryTime() const { return ParryTime; }
@@ -466,16 +475,29 @@ private:
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
-	// The lock's frame on a tall target (ftcore/ArenaLockFrame.h): the rig at pitch 0 as the lens has it, the frame's
-	// aspect, the lead's body, and the height (m over the lead's floor) the lock aims at on the target.
-	ftcore::ArenaCameraPose LockRig(float ArmNow) const;
+	// The lock's frame on a tall target (ftcore/ArenaLockFrame.h): the rig at pitch 0 (the zone's and the aim's), the
+	// share of its offset the boom's wall probe leaves, the frame's aspect, the lead's body, and the height (m over the
+	// lead's floor) the lock aims at on the target.
+	ftcore::ArenaCameraPose LockRig() const;
+	float BoomWallShare() const;
 	float LockAspect() const;
 	ftcore::ArenaLeadBody LeadBody() const;
 	float LockAimHeight(int32 Target, float Base, float Top) const;
-	float LockLow = 0.f;          // 0..1: the low lens's share (eased at ftcore::kArenaLow.rate)
+	float LockLow = 0.f;          // 0..1: the low lens's share (eased at ftcore::kArenaLow.rate toward LowFit)
 	bool bLowRig = false;         // the low rig was last given to the boom
+	float LowSideSign = 1.f;      // the low shoulder's side (ftcore::arenaLowSide: +1 right, -1 left)
+	float LowSideNow = 1.2f;      // m: the low shoulder as eased toward that side
+	float LowFit = 1.f;           // the low share the arm allows (ftcore::arenaLowFit), for the arm, aspect and head below
+	float LowFitArm = -1.f, LowFitAspect = 0.f, LowFitHead = 0.f;
 	float PartnerYawNow = 0.f;    // degrees: the partner's soft turn (ftcore::arenaPartnerYaw), eased
 	float PartnerYawGoal = 0.f;
+	float LastLookInputAt = -1e9f; // fight time of the last look input (the stick or the mouse): the soft turn waits
+	bool bLockAimAbove = false;   // the lock's aim point is above the frame this frame (GetLockAimAbove)
+	float LockAimX = 0.5f;
+	// The lens this frame solved (the arm as the boom's probe leaves it) and its frustum: the fight's next step's feed.
+	ftcore::ArenaCameraPose CameraLensNow;
+	ftcore::ArenaFrustum FedFrustum;
+	bool bFedFrustum = false;
 	int32 LockTarget = -1;        // the tall target held to the lead's rule this frame; -1 none
 	bool bLeadHeld = false;       // the last frame held the lead's rule (the next frame's sample measures it)
 	// The lead's cylinder (Core's ReloadStarted, Reloaded and DryPress events): where the reload clip, the dry-press flinch
@@ -1190,6 +1212,14 @@ private:
 	// (its chest, ArenaInput::frustum), and its distinct actions (a new intent other than Wait, or a new string).
 	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0;
 	float PartnerPlaySeconds = 0.f;
+	// The act in progress for that count: from when, to the last step seen, where the partner stood at its start, and
+	// whether it was carried out (FlushPartnerAction counts it).
+	float PartnerActFrom = -1.f, PartnerActTo = -1.f;
+	ftcore::Vec2 PartnerActAt{};
+	bool PartnerActDone = false;
+	void FlushPartnerAction();
+	float PartnerHeight() const;
+
 	uint8 PartnerLastAct = 0xFF, PartnerIdleWhy = 0xFF;
 	double PartnerJoinedAt = -1.0;
 	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a

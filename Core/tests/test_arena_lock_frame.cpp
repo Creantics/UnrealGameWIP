@@ -4,6 +4,7 @@
 #include "ftcore/ArenaZone.h"
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
+#include <chrono>
 #include <cmath>
 
 using namespace ftcore;
@@ -22,9 +23,33 @@ ArenaCameraPose rigOf(float arm, float side, float fov, float yaw = 0.f) {
     return p;
 }
 
-bool keeps(const ArenaCameraPose& rig, float aspect, float pitch, float low = 0.f) {
-    return arenaLeadInFrame(kArenaLeadFrame, arenaLeadShares(arenaPoseAtPitch(kArenaLook, rig, pitch, low), aspect, ArenaLeadBody{}));
+bool keeps(const ArenaCameraPose& rig, float aspect, float pitch, float low = 0.f, const ArenaLowRules& lr = kArenaLow) {
+    return arenaLeadInFrame(kArenaLeadFrame, arenaLeadShares(arenaPoseAtPitch(kArenaLook, rig, pitch, low, lr), aspect, ArenaLeadBody{}));
 }
+
+bool anyKept(const ArenaCameraPose& rig, float aspect, float low = 0.f, const ArenaLowRules& lr = kArenaLow) {
+    for (float q = kArenaLook.viewMin; q <= kArenaLook.viewMax; q += 0.1f)
+        if (keeps(rig, aspect, q, low, lr)) return true;
+    return false;
+}
+
+// How far the lead's extremes pass the frame's edges at a pitch (shares, summed), as the solve's fallback measures it.
+float outside(const ArenaCameraPose& rig, float aspect, float pitch, float low = 0.f) {
+    const ArenaLeadShares s = arenaLeadShares(arenaPoseAtPitch(kArenaLook, rig, pitch, low), aspect, ArenaLeadBody{});
+    if (!s.ahead) return 1e3f;
+    return kArenaFeetGive * std::fmax(0.f, -s.feet) + std::fmax(0.f, s.head - 1.f) + std::fmax(0.f, -s.left) + std::fmax(0.f, s.right - 1.f);
+}
+
+// The zone's rig with a wall shortening its arm to `arm`: the spring arm pulls the lens in along its line, so the
+// shoulder and the height shrink with it.
+ArenaCameraPose shortRig(float arm) {
+    const ZoneCamera z{};
+    ArenaCameraPose p = rigOf(arm, z.side * arm / z.arm, z.fov);
+    p.up = z.up * arm / z.arm;
+    return p;
+}
+
+bool inView(const ArenaFramePoint& q) { return q.ahead && q.x >= 0.f && q.x <= 1.f && q.y >= 0.f && q.y <= 1.f; }
 } // namespace
 
 TEST_CASE("arena lock frame: a point straight down the view's axis is the frame's centre; behind the lens is not ahead") {
@@ -111,7 +136,7 @@ TEST_CASE("arena lock frame: every pitch asked, on every rig, comes back keeping
                 }
     CHECK(held > 0);
     MESSAGE("rigs with a kept pitch: " << rigsKept << " of 288");
-    CHECK(rigsKept >= 160); // measured 170: the narrow lenses on the shortest arms have none
+    CHECK(rigsKept >= 150); // measured 158 (the low shoulder at the zone's 1.2 m): the narrow lenses on the shortest arms have none
     for (const float aspect : aspects)
         for (const float low : {0.f, 1.f}) {
             bool any = false;
@@ -132,15 +157,174 @@ TEST_CASE("arena lock frame: the yaw never moves the lead in the frame (the turn
         CHECK(sb.feet == doctest::Approx(sa.feet).epsilon(1e-4));
         CHECK(sb.head == doctest::Approx(sa.head).epsilon(1e-4));
         CHECK(sb.left == doctest::Approx(sa.left).epsilon(1e-4));
+        CHECK(sb.right == doctest::Approx(sa.right).epsilon(1e-4));
     }
 }
 
-TEST_CASE("arena lock frame: a lens pulled in close gives the weaker rule, then the asked pitch") {
+TEST_CASE("arena lock frame: a lens pulled in close gives the weaker rule, then the pitch that loses the least of the lead") {
     // An arm of 0.5 m: the lead fills the frame, the rule cannot hold.
+    const float aspect = 16.f / 9.f;
     const ArenaCameraPose rig = rigOf(0.5f, 0.3f, 70.f);
-    const ArenaLeadPitch p = arenaLeadPitch(kArenaLook, kArenaLeadFrame, rig, 16.f / 9.f, ArenaLeadBody{}, 30.f);
-    CHECK(p.kept < 2);
-    if (p.kept == 0) CHECK(p.pitch == 30.f);
+    for (const float want : {30.f, 0.f, -30.f, 60.f}) {
+        const ArenaLeadPitch p = arenaLeadPitch(kArenaLook, kArenaLeadFrame, rig, aspect, ArenaLeadBody{}, want);
+        CAPTURE(want);
+        CHECK(p.kept < 2);
+        if (p.kept != 0) continue;
+        // Never the asked pitch as it is: the least outside over the whole range (to a fine brute sweep's 0.01).
+        float least = 1e9f;
+        for (float q = kArenaLook.viewMin; q <= kArenaLook.viewMax; q += 0.1f) least = std::fmin(least, outside(rig, aspect, q));
+        CHECK(outside(rig, aspect, p.pitch) <= least + 0.01f);
+        CHECK(outside(rig, aspect, p.pitch) <= outside(rig, aspect, want));
+    }
+}
+
+TEST_CASE("arena lock frame: the shipped rig keeps the rule as the arm shortens, then keeps the head and chest") {
+    // The zone's rig at 16:9 as a wall shortens its arm (the shoulder and the height shrink with it, as the spring arm
+    // does). The rule holds down to an arm of 2.4 m; the full low lens is whole down to 5 m and the host's low share
+    // yields under that (arenaLowFit). Under 3 m the test asks no more than that the head and the chest stay in frame.
+    const ZoneCamera z{};
+    const float aspect = 16.f / 9.f;
+    for (const float asked : {0.f, 1.f}) {
+        const float floorArm = 3.f;
+        float least = z.arm;
+        for (float arm = z.arm; arm >= 1.99f; arm -= 0.1f) {
+            const ArenaCameraPose rig = shortRig(arm);
+            ArenaLowRules lr = kArenaLow; // the low shoulder shrinks with the arm as well (the host passes it scaled)
+            lr.side = kArenaLow.side * arm / z.arm;
+            // The host's low share: what it asks, no more than the arm allows.
+            const float fit = arenaLowFit(kArenaLook, kArenaLeadFrame, rig, aspect, ArenaLeadBody{}, lr);
+            const float low = std::fmin(asked, fit);
+            if (arm >= 5.f) CHECK(fit == 1.f); // the full low lens down to an arm of 5 m
+            CAPTURE(asked);
+            CAPTURE(fit);
+            CAPTURE(arm);
+            if (anyKept(rig, aspect, low, lr)) least = arm;
+            for (float want = kArenaLook.viewMin; want <= kArenaLook.viewMax; want += 15.f) {
+                CAPTURE(want);
+                const ArenaLeadPitch p = arenaLeadPitch(kArenaLook, kArenaLeadFrame, rig, aspect, ArenaLeadBody{}, want, low, lr);
+                if (arm >= floorArm) {
+                    REQUIRE(p.kept == 2);
+                    CHECK(keeps(rig, aspect, p.pitch, low, lr));
+                    continue;
+                }
+                if (p.kept == 2) continue;
+                const ArenaCameraPose pose = arenaPoseAtPitch(kArenaLook, rig, p.pitch, low, lr);
+                CHECK(inView(arenaFramePoint(pose, aspect, ArenaPoint3{0.f, 0.f, ArenaLeadBody{}.head})));
+                CHECK(inView(arenaFramePoint(pose, aspect, ArenaPoint3{0.f, 0.f, 1.2f})));
+            }
+        }
+        MESSAGE("shipped rig, low asked " << asked << ": the rule kept down to arm " << least << " m");
+        CHECK(least <= floorArm);
+    }
+}
+
+TEST_CASE("arena lock frame: an ordinary lock is never moved (target up to 2.5 m, 3 to 12 m away, lead in frame)") {
+    // The hold runs on every followed target: on an ordinary one, with the lead already in frame, the solved pose is the
+    // unsolved one (pitch within 0.5 degrees, the lens within 2 cm).
+    const ZoneCamera z{};
+    const AimStance aim{};
+    int tried = 0;
+    for (const float aspect : {16.f / 9.f, 21.f / 9.f, 4.f / 3.f})
+        for (float dist = 3.f; dist <= 12.01f; dist += 0.5f)
+            for (float tall = 0.5f; tall <= 2.51f; tall += 0.5f)
+                for (const float turn : {0.f, 20.f, -35.f}) {
+                    const float want = arenaFrameLockPitch(kArenaLook, z.pivot, z.arm, z.up, z.lockPitch, dist, turn, tall);
+                    const ArenaCameraPose drawn = arenaCameraPose(z, aim, ArenaFrameYaw{40.f, turn}, want);
+                    ArenaCameraPose rig = drawn;
+                    rig.boomPitch = rig.tilt = 0.f;
+                    if (!keeps(rig, aspect, want)) continue; // the lead not in frame as asked: not this test's case
+                    ++tried;
+                    const ArenaLeadPitch held = arenaLeadPitch(kArenaLook, kArenaLeadFrame, rig, aspect, ArenaLeadBody{}, want);
+                    const ArenaCameraPose solved = arenaPoseAtPitch(kArenaLook, rig, held.pitch);
+                    CAPTURE(aspect);
+                    CAPTURE(dist);
+                    CAPTURE(tall);
+                    CAPTURE(turn);
+                    CHECK(held.kept == 2);
+                    CHECK(held.evals == 1);
+                    CHECK(std::fabs((solved.boomPitch + solved.tilt) - (drawn.boomPitch + drawn.tilt)) <= 0.5f);
+                    const ArenaLensAt a = arenaCameraLens(solved), b = arenaCameraLens(drawn);
+                    const float d = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+                    CHECK(d <= 0.02f);
+                    CHECK(solved.side == drawn.side);
+                    CHECK(solved.yaw == drawn.yaw);
+                }
+    MESSAGE("ordinary locks with the lead in frame: " << tried);
+    CHECK(tried > 300);
+}
+
+TEST_CASE("arena lock frame: the low shoulder goes to the side that keeps the aim point clear, and holds on a near tie") {
+    const ZoneCamera z{};
+    const float aspect = 16.f / 9.f;
+    const ArenaCameraPose rig = rigOf(z.arm, z.side, z.fov);
+    const float pitch = 20.f;
+    const auto clearFrom = [&](float side, ArenaPoint3 p) {
+        ArenaLowRules lr = kArenaLow;
+        lr.side = side;
+        const ArenaCameraPose pose = arenaPoseAtPitch(kArenaLook, rig, pitch, 1.f, lr);
+        const ArenaFramePoint a = arenaFramePoint(pose, aspect, p);
+        const ArenaLeadShares s = arenaLeadShares(pose, aspect, ArenaLeadBody{});
+        if (!a.ahead || a.y > s.head || a.y < s.feet) return 1.f;
+        return std::fmax(0.f, std::fmax(s.left - a.x, a.x - s.right));
+    };
+    // A point 1 m up and 10 m ahead that the lead hides from the right shoulder and the left one shows.
+    ArenaPoint3 hidden{};
+    bool found = false;
+    for (float y = -8.f; y <= 8.f && !found; y += 0.05f) {
+        const ArenaPoint3 p{10.f, y, 1.f};
+        if (clearFrom(kArenaLow.side, p) <= 0.f && clearFrom(-kArenaLow.side, p) >= 0.1f) {
+            hidden = p;
+            found = true;
+        }
+    }
+    REQUIRE(found);
+    CHECK(arenaLowSide(kArenaLook, rig, pitch, aspect, ArenaLeadBody{}, hidden, 1.f) == -1.f);
+    CHECK(arenaLowSide(kArenaLook, rig, pitch, aspect, ArenaLeadBody{}, ArenaPoint3{hidden.x, -hidden.y, hidden.z}, -1.f) == 1.f);
+    // Clear from where it is (high over the lead's head): no flip.
+    CHECK(arenaLowSide(kArenaLook, rig, pitch, aspect, ArenaLeadBody{}, ArenaPoint3{10.f, 0.f, 9.f}, -1.f) == -1.f);
+    CHECK(arenaLowSide(kArenaLook, rig, pitch, aspect, ArenaLeadBody{}, ArenaPoint3{10.f, 0.f, 9.f}, 1.f) == 1.f);
+    // Hidden from both sides alike (at the lead itself): no flip either way.
+    for (const float cur : {1.f, -1.f}) {
+        CAPTURE(cur);
+        CHECK(arenaLowSide(kArenaLook, rig, pitch, aspect, ArenaLeadBody{}, ArenaPoint3{0.01f, 0.f, 0.9f}, cur) == cur);
+    }
+}
+
+TEST_CASE("arena lock frame: a frame's whole solve on a tall boss costs under 0.1 ms") {
+    // The host's per-frame solve on a 12 m boss, as SteerCamera calls it once a frame: the low side, the aim pitch, the
+    // hold (the lead's rule) and the aim's frame point. The aim far above what the rule allows, the low lens eased in;
+    // and a wall-shortened arm where nothing keeps the rule (the fallback searches the whole range).
+    const ZoneCamera z{};
+    const float aspect = 16.f / 9.f;
+    struct Case {
+        float arm;
+        float low;
+    };
+    for (const Case c : {Case{z.arm, 0.5f}, Case{z.arm, 1.f}, Case{2.5f, 1.f}}) {
+        const ArenaCameraPose rig = rigOf(c.arm, z.side, z.fov, 25.f);
+        ArenaLowRules lr = kArenaLow;
+        const int n = 400;
+        float sink = 0.f;
+        int evals = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < n; ++i) {
+            const float y = rig.yaw * 3.14159265f / 180.f;
+            const ArenaPoint3 aim{8.f * std::cos(y), 8.f * std::sin(y), 8.4f + 0.001f * static_cast<float>(i)};
+            const float side = arenaLowSide(kArenaLook, rig, 20.f, aspect, ArenaLeadBody{}, aim, 1.f, kArenaLowSide, lr);
+            lr.side = side * kArenaLow.side;
+            const float want = arenaLockAimPitch(kArenaLook, rig, aspect, aim, z.lockPitch, c.low, lr);
+            const ArenaLeadPitch held = arenaLeadPitch(kArenaLook, kArenaLeadFrame, rig, aspect, ArenaLeadBody{}, want, c.low, lr);
+            const ArenaFramePoint at = arenaFramePoint(arenaPoseAtPitch(kArenaLook, rig, held.pitch, c.low, lr), aspect, aim);
+            sink += held.pitch + at.x;
+            evals = held.evals;
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / n;
+        CAPTURE(c.arm);
+        CAPTURE(c.low);
+        MESSAGE("solve per frame, arm " << c.arm << " low " << c.low << ": " << ms * 1000.0 << " us, " << evals << " lead tests");
+        CHECK(std::isfinite(sink));
+        CHECK(ms < 0.1);
+    }
 }
 
 TEST_CASE("arena lock frame: the aim height is the telegraph's, else the weak point's, else the chest") {
