@@ -310,7 +310,7 @@ std::uint64_t PartnerBrainSave::hash() const {
     for (const Watch& w : watch) h.add(w.winding).add(w.left).add(w.guard).add(w.hold);
     h.add(out.act).add(out.why).add(out.point.x).add(out.point.y).add(out.enemy).add(out.blows).add(out.newString).add(out.blowStart).add(out.blowIndex);
     h.add(out.partnerBlow).add(out.breakValue).add(out.extendsStagger).add(out.punish).add(out.rise).add(out.riseHealth);
-    h.add(out.stationed).add(begun).add(side).add(sideKey).add(sideFor);
+    h.add(out.stationed).add(begun).add(side).add(sideKey).add(sideFor).add(swaps);
     return h.value;
 }
 
@@ -397,6 +397,25 @@ void PartnerBrain::account(double dt, double partner, bool lead) {
             s_.spentLead[next] = 0.f;
         }
     }
+}
+
+void PartnerBrain::rolesSwapped() {
+    if (!s_.begun) return;
+    s_.phase = Phase::Ready;
+    s_.clock = 0.0;
+    s_.target = -1;
+    s_.returning = false;
+    s_.drawn = false;
+    s_.begunBlows = s_.blows;
+    s_.committedEnd = s_.now; // the old body's blow is not this one's
+    s_.down = false;
+    s_.downFor = 0.0;
+    s_.watch = {};
+    s_.side = 0;
+    s_.sideKey = 0;
+    s_.sideFor = 0.0;
+    s_.out = PartnerIntent{};
+    ++s_.swaps;
 }
 
 const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {

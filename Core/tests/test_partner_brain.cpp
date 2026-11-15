@@ -143,6 +143,8 @@ struct Fight {
     bool partnerAims = true;  // 3 of each 10 at the partner (false: every one at the lead)
     bool leadFights = true;   // false: the lead never attacks
     bool staggered = false;   // the boss staggered throughout (no windups)
+    double swapAt = -1.0;     // >= 0: the roles swap at this time (rolesSwapped, the bodies change places)
+    std::size_t swapStep = 0; // the step it swapped on
     std::vector<double> partnerStep, leadStep; // each step's attack seconds
     void clear() {
         leadAttack = 0.0;
@@ -195,6 +197,14 @@ struct Fight {
             }
             boss[0].leadAttacking = leadOn;
             in.leadAttacking = leadOn;
+            if (swapAt >= 0.0 && swapStep == 0 && now + 1e-9 >= swapAt) {
+                // The brain now drives the other body: idle, where the lead stood; the lead takes the old one.
+                brain.rolesSwapped();
+                std::swap(in.pos, in.leadPos);
+                host.blowLeft = host.hurtLeft = 0.0;
+                host.guarding = false;
+                swapStep = static_cast<std::size_t>(k);
+            }
             host.feed(in);
             const PartnerIntent& it = brain.step(dt, in);
             intents.push_back(it);
@@ -1636,4 +1646,134 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
     PartnerBrainSave z = base;
     z.now = -0.0;
     CHECK(z.hash() == base.hash());
+}
+
+namespace {
+bool acts(const PartnerIntent& it) { return it.act == PartnerAct::Attack || it.act == PartnerAct::MoveTo; }
+} // namespace
+
+TEST_CASE("partner brain: rolesSwapped: the new body acts within 0.5 s, mid-string or mid-pause, where carrying on would idle") {
+    const double dt = 1.0 / 60.0;
+    for (const bool inPause : {false, true}) {
+        for (const std::uint32_t seed : {3u, 7u, 42u, 2026u}) {
+            CAPTURE(inPause);
+            CAPTURE(seed);
+            Scene s(seed);
+            Host h;
+            int k = 0;
+            // Into a string (and, for the pause case, on until its pause begins).
+            for (; k < 600; ++k) {
+                h.feed(s.in);
+                h.apply(s.step(dt), s.b, s.in, dt);
+                if (inPause ? s.b.pausing() : (s.b.stringing() && s.b.committedLeft() > 0.3)) break;
+            }
+            REQUIRE(k < 600);
+            const std::uint32_t draws = s.b.rhythmDraws();
+            PartnerBrain carried;
+            carried.load(s.b.save()); // the same brain, never told
+            s.b.rolesSwapped();
+            CHECK(s.b.swaps() == 1u);
+            CHECK_FALSE(s.b.stringing());
+            CHECK_FALSE(s.b.pausing());
+            CHECK(s.b.committedLeft() == 0.0);
+            CHECK(s.b.target() == -1);
+            // The bodies change places: the brain's is the old lead's, idle, 1.5 m off the target's edge (in reach).
+            std::swap(s.in.pos, s.in.leadPos);
+            Host fresh, old = h;
+            PartnerInput other = s.in;
+            double first = -1.0, firstCarried = -1.0;
+            for (int j = 0; j < 60; ++j) {
+                fresh.feed(s.in);
+                const PartnerIntent& it = s.step(dt);
+                if (first < 0.0 && acts(it)) first = j * dt;
+                fresh.apply(it, s.b, s.in, dt);
+                // The carried brain on the same new body: it runs out the old string or pause first.
+                old.feed(other);
+                other.enemies = std::span<const V>(s.e.data(), s.n);
+                const PartnerIntent& c = carried.step(dt, other);
+                if (firstCarried < 0.0 && acts(c) && c.blowStart) firstCarried = j * dt;
+                old.apply(c, carried, other, dt);
+            }
+            MESSAGE("first act after the swap ", first, " s; carried on, the first new blow ", firstCarried, " s");
+            CHECK(first >= 0.0);
+            CHECK(first <= 0.5);
+            CHECK((firstCarried < 0.0 || firstCarried > 0.5)); // without it the new body would wait
+            CHECK(fresh.strings >= 1);                          // a fresh string from the new position
+            CHECK(s.b.rhythmDraws() >= draws + 2u);             // drawn afresh
+        }
+    }
+}
+
+TEST_CASE("partner brain: rolesSwapped keeps the budget ring: every 20 s window holds across the swap") {
+    struct Case {
+        bool partnerAims;
+        double period;
+    };
+    const Case cases[] = {{true, 5.0}, {false, 5.0}, {false, 2.0}};
+    for (const Case& c : cases) {
+        for (const double at : {11.0, 23.37, 40.0}) {
+            for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+                for (const std::uint32_t seed : {1u, 42u, 2026u}) {
+                    CAPTURE(c.partnerAims);
+                    CAPTURE(c.period);
+                    CAPTURE(at);
+                    CAPTURE(static_cast<int>(order));
+                    CAPTURE(seed);
+                    Fight f;
+                    f.partnerAims = c.partnerAims;
+                    f.period = c.period;
+                    f.swapAt = at;
+                    REQUIRE(f.run(1.0 / 60.0, order, seed, true));
+                    REQUIRE(f.swapStep > 0);
+                    CHECK(f.brain.swaps() == 1u);
+                    CHECK(worstExcess(f.partnerStep, f.leadStep, 1200) <= 1e-3);
+                    CHECK(f.host.overlaps == 0);
+                    // It fights on after the swap.
+                    int after = 0;
+                    for (std::size_t i = f.swapStep; i < f.intents.size(); ++i)
+                        after += f.intents[i].newString ? 1 : 0;
+                    CHECK(after >= 3);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("partner brain: rolesSwapped is in save, load and the hash") {
+    const double dt = 1.0 / 60.0;
+    Scene s(11);
+    Host h;
+    for (int k = 0; k < 150; ++k) {
+        h.feed(s.in);
+        h.apply(s.step(dt), s.b, s.in, dt);
+    }
+    PartnerBrain unswapped;
+    unswapped.load(s.b.save());
+    s.b.rolesSwapped();
+    CHECK(s.b.hash() != unswapped.hash());
+    CHECK(s.b.save().swaps == 1u);
+    // A brain loaded from the swapped save does exactly what the swapped one does from there.
+    PartnerBrain copy;
+    copy.load(s.b.save());
+    CHECK(copy.hash() == s.b.hash());
+    CHECK(copy.swaps() == 1u);
+    std::swap(s.in.pos, s.in.leadPos);
+    PartnerInput in2 = s.in;
+    Host h1, h2;
+    bool same1 = true;
+    for (int k = 0; k < 600; ++k) {
+        h1.feed(s.in);
+        const PartnerIntent& a = s.step(dt);
+        h1.apply(a, s.b, s.in, dt);
+        h2.feed(in2);
+        in2.enemies = std::span<const V>(s.e.data(), s.n);
+        const PartnerIntent& b = copy.step(dt, in2);
+        h2.apply(b, copy, in2, dt);
+        same1 = same1 && same(a, b) && s.b.hash() == copy.hash();
+    }
+    CHECK(same1);
+    // Before begin it does nothing.
+    PartnerBrain idle;
+    idle.rolesSwapped();
+    CHECK(idle.swaps() == 0u);
 }

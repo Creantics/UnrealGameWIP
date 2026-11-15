@@ -275,6 +275,7 @@ struct PartnerBrainSave {
     std::int8_t side = 0;
     int sideKey = 0;
     double sideFor = 0.0;
+    std::uint32_t swaps = 0; // rolesSwapped() calls
 
     // FNV-1a over every field (StateHash.h): two brains with the same hash do the same from here.
     FTCORE_API std::uint64_t hash() const;
@@ -285,6 +286,13 @@ public:
     // False (and the defaults) for bad tuning. seed 0 is taken as 1.
     bool begin(const PartnerTuning& t, std::uint32_t seed);
     const PartnerIntent& step(double dt, const PartnerInput& in);
+    // The body it drives changed (the host calls it on a party switch, tick.switched, and on a takeover). Everything
+    // about the old body goes: the string (its blows, the one still running, a string drawn and held), the pause,
+    // the target, the return, the chosen station side, the windups it watched and being down. The budget ring stays
+    // (the budget is about the pair, not the body), and so do the clock and the seeds. The next step decides afresh
+    // from the new body's position: with a target in reach it starts a string (or moves to its station) at once.
+    void rolesSwapped();
+    std::uint32_t swaps() const { return s_.swaps; }
 
     const PartnerIntent& intent() const { return s_.out; }
     bool down() const { return s_.down; }
