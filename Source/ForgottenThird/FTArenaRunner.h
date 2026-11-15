@@ -34,6 +34,7 @@
 #include "ftcore/TableSet.h"
 #include "ftcore/BeatChoreo.h"
 #include "ftcore/InputBindings.h"
+#include "ftcore/UiPartyScreen.h"
 
 #include "FTArenaBossVfx.h"
 #include "FTFightSession.h"
@@ -251,7 +252,8 @@ public:
 	float GetEnemyMarkBonus(int32 Slot) const;
 	double GetEnemyMarkUntil(int32 Slot) const;
 	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
-	// Load it stored this fight and its last change (-1e9 when none).
+	// Load it stored this fight and its last change (-1e9 when none). The kept lead is fixed at the fight's start
+	// (FightSession::keptLead) until the session keeps Load per lead (see GetPartnerLoad's TODO).
 	int32 GetPartnerLoad() const;
 	int32 GetPartnerLoadCap() const;
 	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }
@@ -343,6 +345,20 @@ public:
 	// (None for a Companion; Vacant or Hostile otherwise). With no session: the fight's def value, and None.
 	ftcore::SlotState GetThirdSlot() const;
 	ftcore::GiftError GetThirdSlotRefusal() const;
+	// The party screen (the new UI, FT::NewUiEnabled): Party down opens it on the fight's party block; a flick moves
+	// the cursor, the release confirms. Open: the look and the target flick are held, the left stick still moves the
+	// lead.
+	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
+	// Why a switch to session lead Lead would be refused now, the party row's word (ftcore::uiPartyLeadWhy over
+	// FightSession::leadSwitchReason). THE one host-side condition ahead of the session: a lead with no body in this
+	// fight cannot be controlled, so the other lead with no body (PartnerBody false: ordinary play, a Lone Carry, a
+	// join not landed yet) is NOT HERE whatever the session says. Everything else is the session's word. Unknown with
+	// no session.
+	ftcore::UiPartyWhy GetLeadSwitchReason(uint8 Lead) const;
+	// The last switch the session refused at a step's close (FightTick::switchRefused), as a count that rises with each
+	// and its word: the HUD's SWITCH: <WORD> call.
+	uint32 GetSwitchRefusedSerial() const { return SwitchRefusedSerial; }
+	ftcore::UiPartyWhy GetSwitchRefusedWhy() const { return SwitchRefusedWhy; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -924,9 +940,32 @@ private:
 	// -ArenaAimCheck's input for one step under the autopilot (replaces In while it aims and fires).
 	void StepAimCheck(ftcore::ArenaInput& In);
 #endif
+	// The one send path of a switch to the partner (the party screen's pick, Tab, the -ArenaSwitchAt probe): sent to the
+	// session whenever the partner has a body in this fight (PartnerBody); the session's tick.switched then swaps the
+	// bodies, the figures, the seats and the camera (SwitchLeadBodies). With no body nothing is sent and the HUD's call
+	// reads SWITCH: NOT HERE; the session refuses the rest at the step's close, and a switch never ends a Lone Carry.
+	// From names the press for the log. One ask per step: a second press in the same step (Tab and the screen's
+	// release in one frame) sends and counts nothing, since the session resolves one request at the close. True when
+	// the session took the request (the step's first ask).
+	bool AskLeadSwitch(const TCHAR* From);
+	// The party screen's step: In with the partner's row's presence (GetLeadSwitchReason, the row's own word), the
+	// -ArenaSwitchAt probe's drive where it runs (ProbePartyInput), and a pick of the partner's row sent by AskLeadSwitch.
+	void StepPartyScreen(ftcore::UiPartyInput In, float DeltaSeconds);
+	// -ArenaSwitchAt=<S> with the party screen (dev runs; SwitchAt stays -1 in Shipping): the probe asks its switch as
+	// the player would, on the screen (ftcore::uiPartyProbeInput): keys up from S-1.2 s, Party held from S-1 s, the
+	// cursor flicked up to the partner at S-0.6 s, let go at S (the pick); Party held again from S+0.4 s to S+1.6 s, so
+	// the screen stands open on the new lead (its dot, the rows traded). False outside that window: the player's own
+	// input (or none, under the autopilot).
+	bool ProbePartyInput(ftcore::UiPartyInput& In) const;
 	ftcore::Vec2 Stick;
 	bool bStickFlicked = false;
 	bool bMouseFlicked = false;
+	// The party screen's state (bPartyScreenOn: FT::NewUiEnabled, read at Begin), and the last refused switch (see
+	// GetSwitchRefusedSerial).
+	bool bPartyScreenOn = false;
+	ftcore::UiPartyScreen PartyScreen;
+	uint32 SwitchRefusedSerial = 0;
+	ftcore::UiPartyWhy SwitchRefusedWhy = ftcore::UiPartyWhy::Unknown;
 
 	double Now = 0.0;
 	double TellSince[ftcore::kMaxArenaEnemies] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)
@@ -1069,9 +1108,14 @@ private:
 	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
 	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and
 	// the camera. Asked by the probe, switched by the session, swapped by the fight, refused by the fight.
+	// Every host request the session took counts in SwitchAsks (AskLeadSwitch); one still open at a step's close and
+	// refused there (cooldown, a body down) counts in SwitchAsksRefused, a player's answer, not a mismatch; one the close
+	// resolved as Same (control already on that lead: a takeover the same step) counts in SwitchAsksSame.
 	float SwitchAt = -1.f;
 	bool bSwitchAsked = false;
-	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0;
+	bool bSwitchAskOpen = false;
+	bool bSwitchAskedThisStep = false; // AskLeadSwitch's one ask per step (cleared at the step's close, as bSwitchAskOpen)
+	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0, SwitchAsksRefused = 0, SwitchAsksSame = 0;
 	// The partner's blows: the session ruled them (RuleSessionBlow's partner path), their Hit events, their joins.
 	int32 PartnerBlowsRuled = 0, PartnerHitEvents = 0, PartnerJoins = 0;
 	// After a takeover or a lead switch: the figures' places once drawn, the steps since with a move input (and the

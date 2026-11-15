@@ -391,6 +391,21 @@ bool importInputBindings(std::string_view text, InputBindings& out, std::string*
     return true;
 }
 
+InputBindingsLoad loadInputBindings(bool fileThere, std::string_view text, InputBindings& bindings, InputUnbound& unbound,
+                                    std::string* error) {
+    if (!fileThere) {
+        bindings = defaultInputBindings();
+        unbound = InputUnbound{};
+        return InputBindingsLoad::Defaults;
+    }
+    InputBindings next = defaultInputBindings();
+    InputUnbound left;
+    if (!importInputBindings(text, next, error, &left)) return InputBindingsLoad::Refused;
+    bindings = next;
+    unbound = left;
+    return InputBindingsLoad::Read;
+}
+
 std::string encodeInputBindings(const InputBindings& b) {
     std::string s = "{\"version\": " + std::to_string(kInputBindingsVersion);
     for (std::size_t d = 0; d < kInputDeviceCount; ++d) {
