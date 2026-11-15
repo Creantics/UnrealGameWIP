@@ -21,7 +21,9 @@ NightFrame nightFrame(const NightLook& look, float night) {
     f.night = n;
     f.sunScale = lerp(1.f, moon, n);
     f.skyScale = lerp(1.f, fill, n);
-    f.skyScaleRealTime = lerp(1.f, fill / moon, n);
+    f.skyLuminance = lerp(1.f, std::clamp(look.skyLuminance, 1e-4f, 1.f), n);
+    // The capture also sees the dome's own dimming; lift it by that too, so the fill stands where it did.
+    f.skyScaleRealTime = lerp(1.f, fill / moon, n) / f.skyLuminance;
     f.tintMix = n;
     f.fogKeep = lerp(1.f, std::max(look.fogKeep, 0.f), n);
     for (std::size_t c = 0; c < 3; ++c) {

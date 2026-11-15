@@ -343,7 +343,7 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	}
 	if (UWorld* World = GetWorld())
 	{
-		DuskScene.Apply(*World, Sky.Dusk, false);
+		DuskScene.Apply(*World, Sky.Dusk, Sky.Night.skyLuminance, false);
 		// The proof bay's ceiling fixtures with the shop lights, written when the share moves a step or reaches an end.
 		if (bForce || AppliedBayLights < 0.f || FMath::Abs(Sky.Lights - AppliedBayLights) >= 0.01f ||
 			(Sky.Lights != AppliedBayLights && (Sky.Lights == 0.f || Sky.Lights == 1.f)))
@@ -472,7 +472,8 @@ void UFTWorldClockSubsystem::Tick(float DeltaTime)
 			WriteWetness();
 			if (UWorld* DuskWorld = GetWorld())
 			{
-				DuskScene.Settled(*DuskWorld, FTNight::FrameAt(Spec, Clock.hours).Dusk);
+				const FTNight::FSkyFrame Settle = FTNight::FrameAt(Spec, Clock.hours);
+				DuskScene.Settled(*DuskWorld, Settle.Dusk, Settle.Night.skyLuminance);
 			}
 			// The look has just written its own sky light and volume over the clock's: light them again on this tick,
 			// even under a paused -TimeOfDay, with the day's shadow floor over the look's values.

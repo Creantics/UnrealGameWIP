@@ -32,6 +32,7 @@ ftcore::NightLook Read()
 	const TCHAR* Cmd = FCommandLine::Get();
 	FParse::Value(Cmd, TEXT("NightMoon="), L.moonShare);
 	FParse::Value(Cmd, TEXT("NightSky="), L.skyFill);
+	FParse::Value(Cmd, TEXT("NightSkyLum="), L.skyLuminance);
 	FParse::Value(Cmd, TEXT("NightFog="), L.fogKeep);
 	FParse::Value(Cmd, TEXT("NightEV="), L.exposureEV100);
 	FParse::Value(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
@@ -85,6 +86,8 @@ ftcore::DuskLook ReadDusk()
 
 // A step of the dusk amount worth writing the sky and lens for.
 constexpr float kDuskStep = 0.01f;
+// A step of the night's sky factor worth writing, as a log ratio (about 2%).
+constexpr float kSkyRatioStep = 0.02f;
 } // namespace
 
 const ftcore::NightLook& FTNight::Look()
@@ -208,10 +211,10 @@ bool FTNight::WriteWindowLights(UWorld& World, float Lights, float Daylight)
 	return true;
 }
 
-void FTNight::FDuskScene::Gather(UWorld& World)
+void FTNight::FDuskScene::GatherSkies(UWorld& World)
 {
+	bSkiesGathered = true;
 	Skies.Reset();
-	Volumes.Reset();
 	for (TActorIterator<ASkyAtmosphere> It(&World); It; ++It)
 	{
 		if (USkyAtmosphereComponent* Sky = It->GetComponent())
@@ -219,6 +222,11 @@ void FTNight::FDuskScene::Gather(UWorld& World)
 			Skies.Add({Sky, Sky->SkyLuminanceFactor});
 		}
 	}
+}
+
+void FTNight::FDuskScene::Gather(UWorld& World)
+{
+	Volumes.Reset();
 	for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
 	{
 		const FPostProcessSettings& S = It->Settings;
@@ -234,20 +242,24 @@ void FTNight::FDuskScene::Gather(UWorld& World)
 	}
 }
 
-bool FTNight::FDuskScene::Apply(UWorld& World, const ftcore::DuskFrame& Frame, bool bForce)
+bool FTNight::FDuskScene::Apply(UWorld& World, const ftcore::DuskFrame& Frame, float NightSky, bool bForce)
 {
 	const float Amount = Frame.amount;
+	const float Night = FMath::Clamp(NightSky, 1e-4f, 1.f);
 	const bool bEnding = Amount <= 0.f && Applied > 0.f;
-	if (!bForce && !bEnding && FMath::Abs(Amount - Applied) < kDuskStep)
+	const bool bDusk = bForce || bEnding || FMath::Abs(Amount - Applied) >= kDuskStep;
+	// The night's factor runs from 1 down to about 0.03: a step in ratio, so the darkest end moves as smoothly as the day's.
+	const bool bNight = bForce || FMath::Abs(FMath::Loge(Night / AppliedSky)) >= kSkyRatioStep || (Night == 1.f && AppliedSky != 1.f);
+	if (!bDusk && !bNight)
 	{
 		return false;
 	}
-	if (Applied <= 0.f && Amount > 0.f)
+	if (!bSkiesGathered)
 	{
-		Gather(World); // the day's own values, after the look has written them
+		GatherSkies(World); // the map's own factors: nothing else writes them, so they are the day's whenever read
 	}
-	Applied = Amount;
-	const FLinearColor Glow = Color(Frame.skyGlow);
+	AppliedSky = Night;
+	const FLinearColor Glow = Color(Frame.skyGlow) * Night;
 	for (const FSky& S : Skies)
 	{
 		if (USkyAtmosphereComponent* Sky = S.Sky.Get())
@@ -255,6 +267,15 @@ bool FTNight::FDuskScene::Apply(UWorld& World, const ftcore::DuskFrame& Frame, b
 			Sky->SetSkyLuminanceFactor(FLinearColor(S.Factor.R * Glow.R, S.Factor.G * Glow.G, S.Factor.B * Glow.B, S.Factor.A));
 		}
 	}
+	if (!bDusk)
+	{
+		return true;
+	}
+	if (Applied <= 0.f && Amount > 0.f)
+	{
+		Gather(World); // the volumes' own values, after the look has written them
+	}
+	Applied = Amount;
 	for (const FVolume& V : Volumes)
 	{
 		if (APostProcessVolume* Volume = V.Volume.Get())
@@ -272,7 +293,7 @@ bool FTNight::FDuskScene::Apply(UWorld& World, const ftcore::DuskFrame& Frame, b
 	return true;
 }
 
-void FTNight::FDuskScene::Settled(UWorld& World, const ftcore::DuskFrame& Frame)
+void FTNight::FDuskScene::Settled(UWorld& World, const ftcore::DuskFrame& Frame, float NightSky)
 {
 	if (Applied > 0.f)
 	{
@@ -285,7 +306,7 @@ void FTNight::FDuskScene::Settled(UWorld& World, const ftcore::DuskFrame& Frame)
 			}
 		}
 	}
-	Apply(World, Frame, true);
+	Apply(World, Frame, NightSky, true);
 }
 
 void FTNight::ApplyStill(UWorld& World, const FSkyFrame& Frame)
@@ -319,7 +340,7 @@ void FTNight::ApplyStill(UWorld& World, const FSkyFrame& Frame)
 		}
 	}
 	FDuskScene Scene;
-	Scene.Apply(World, Frame.Dusk, true);
+	Scene.Apply(World, Frame.Dusk, Frame.Night.skyLuminance, true);
 	const bool bWindows = WriteWindowLights(World, Frame.Lights, Frame.Daylight);
 	// The dusk row's exposure bias over the volumes' own, and the street lamps and shop spill lights at the lights' share.
 	int32 Biased = 0;
@@ -341,9 +362,9 @@ void FTNight::ApplyStill(UWorld& World, const FSkyFrame& Frame)
 		bLamps = Pool && Pool->ForceNight(Spec.lampCandela * Frame.Lights, Spec.lampReachM * 100.f, Spec.shopCandela * Frame.Lights, Spec.shopReachM * 100.f);
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("WorldEyeShot: dusk %.2f, night %.2f on %d suns, %d sky lights, %d fogs, %d skies, %d volumes; windows' Night %s; lights %.2f%s, "
-			 "daylight %.2f, exposure bias %+.2f EV on %d volumes."),
-		Frame.Dusk.amount, Frame.NightAmount, Suns, SkyLights, Fogs, Scene.NumSkies(), Scene.NumVolumes(),
+		TEXT("WorldEyeShot: dusk %.2f, night %.2f on %d suns, %d sky lights, %d fogs, %d skies (luminance x%.3f), %d volumes; windows' Night %s; "
+			 "lights %.2f%s, daylight %.2f, exposure bias %+.2f EV on %d volumes."),
+		Frame.Dusk.amount, Frame.NightAmount, Suns, SkyLights, Fogs, Scene.NumSkies(), Frame.Night.skyLuminance, Scene.NumVolumes(),
 		bWindows ? TEXT("written") : TEXT("not written"), Frame.Lights, bLamps ? TEXT(" (street lamps and shop lights from the pool)") : TEXT(""),
 		Frame.Daylight, Frame.ExposureBias, Biased);
 }

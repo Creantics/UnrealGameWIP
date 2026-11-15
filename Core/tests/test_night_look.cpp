@@ -55,8 +55,9 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     const NightFrame still = nightFrame(look, 7.f); // clamped
     CHECK(clock.sunScale == doctest::Approx(look.moonShare));
     CHECK(clock.skyScale == doctest::Approx(look.skyFill));
-    // A real-time sky, lit by a moon at moonShare, lands at skyFill net.
-    CHECK(clock.skyScaleRealTime * clock.sunScale == doctest::Approx(look.skyFill));
+    // A real-time sky, lit by a moon at moonShare under a dome dimmed to skyLuminance, lands at skyFill net.
+    CHECK(clock.skyScaleRealTime * clock.sunScale * clock.skyLuminance == doctest::Approx(look.skyFill));
+    CHECK(clock.skyLuminance == doctest::Approx(look.skyLuminance));
     CHECK(clock.fogGlow[0] == doctest::Approx(look.glow[0]));
     CHECK(clock.lockExposure);
     CHECK(clock.exposureEV100 == doctest::Approx(look.exposureEV100));
@@ -83,6 +84,36 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(look.skyTint[0] > look.skyTint[2]);
     CHECK(look.skyFill >= 0.5f);
     CHECK(look.skyFill <= 1.5f);
+}
+
+TEST_CASE("nightFrame: the sky dome darkens with the night, near black at full night, smooth through dusk") {
+    const NightLook look;
+    // The night sky is near black navy, not a dimmed day sky (the lamps carry the night).
+    CHECK(look.skyLuminance >= 0.02f);
+    CHECK(look.skyLuminance <= 0.05f);
+    // Day exactly as before: the dome untouched and the capture's lift unchanged, to the bit.
+    const NightFrame day = nightFrame(look, 0.f);
+    CHECK(day.skyLuminance == 1.f);
+    CHECK(day.skyScaleRealTime == 1.f);
+    NightLook plain = look;
+    plain.skyLuminance = 1.f;  // with the dome left alone the capture's lift is exactly the old one at every hour
+    // Monotone through dusk, no step; the capture's net fill follows the same curve as before.
+    float last = 2.f;
+    for (int i = 0; i <= 20; ++i) {
+        const float n = static_cast<float>(i) / 20.f;
+        const NightFrame f = nightFrame(look, n);
+        CHECK(f.skyLuminance <= last);
+        CHECK(f.skyLuminance > 0.f);
+        if (i > 0) CHECK(last - f.skyLuminance <= 0.06f);
+        last = f.skyLuminance;
+        const NightFrame old = nightFrame(plain, n);
+        CHECK(f.skyScaleRealTime * f.skyLuminance == doctest::Approx(old.skyScaleRealTime));
+        CHECK(f.sunScale == old.sunScale);  // the moon is not raised to make up for the darker dome
+    }
+    CHECK(nightFrame(look, 1.f).skyLuminance == doctest::Approx(look.skyLuminance));
+    NightLook odd;
+    odd.skyLuminance = 0.f;  // clamped above zero, so the capture's lift stays finite
+    CHECK(std::isfinite(nightFrame(odd, 1.f).skyScaleRealTime));
 }
 
 TEST_CASE("nightFrame: exposure locks from half night; no allocation") {

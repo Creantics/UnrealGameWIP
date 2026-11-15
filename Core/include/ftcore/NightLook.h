@@ -25,6 +25,10 @@ namespace ftcore {
 struct NightLook {
     float moonShare = 0.07f;       // the directional light at full night, as a share of its day intensity
     float skyFill = 1.30f;         // the sky light at full night, as a share of its day intensity (net of the moon)
+    float skyLuminance = 0.03f;    // the sky dome's own brightness at full night (SkyAtmosphere SkyLuminanceFactor):
+                                   // near black, so the lamps and shops carry the night, not a dimmed day sky. A
+                                   // real-time sky capture sees the darker dome too, so its lift takes this back out
+                                   // (skyScaleRealTime) and skyFill keeps meaning the fill as a share of the day's.
     float fogKeep = 0.08f;         // the height fog's own inscattering colour kept at full night
     float exposureEV100 = -1.2f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
     float exposureRangeEV = 1.0f;  // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
@@ -62,6 +66,7 @@ struct NightFrame {
     float sunScale = 1.f;
     float skyScale = 1.f;
     float skyScaleRealTime = 1.f;
+    float skyLuminance = 1.f;                // the sky atmosphere's luminance factor (1 by day)
     float tintMix = 0.f;
     float fogKeep = 1.f;                     // the fog's day colour times this ...
     std::array<float, 3> fogGlow{0.f, 0.f, 0.f}; // ... plus this

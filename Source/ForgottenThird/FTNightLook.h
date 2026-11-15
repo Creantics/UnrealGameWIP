@@ -4,6 +4,7 @@
 // running night and a night still look the same. ftcore::NightLook's defaults, with these switches over them (read once):
 //   -NightMoon=<share>  the directional light at full night, a share of its day intensity
 //   -NightSky=<share>   the sky light's fill at full night (net of the moon for a real-time capture)
+//   -NightSkyLum=<factor> the sky dome's luminance factor at full night (near black; 1 = the day's sky, dimmed only by the moon)
 //   -NightFog=<share>   the height fog's own inscattering colour kept
 //   -NightGlow=<scale>  the city glow added to the fog's inscattering (1 = the spec's warm glow, 0 = none)
 //   -NightEV=<ev100>    the night exposure's centre, from half night on
@@ -100,20 +101,23 @@ inline FLinearColor FogColor(const FLinearColor& Day, const FSkyFrame& F)
 	return Tint(Day, F.Dusk.fogMul) * F.Night.fogKeep + Color(F.Night.fogGlow);
 }
 
-// The dusk's sky and lens: the sky atmospheres' luminance factor and the post-process volumes' lens flare and bloom.
-// Their own values are read as a dusk starts (after the look has written them) and written back as it ends; between,
-// they are written when the amount has moved a step. Allocates only as a dusk starts.
+// The dusk's and the night's sky, and the dusk's lens: the sky atmospheres' luminance factor (their own times the dusk's
+// glow times the night's NightFrame::skyLuminance) and the post-process volumes' lens flare and bloom. The skies' own
+// factors are read on the first write (nothing else writes them); the volumes' as a dusk starts (after the look has
+// written them), and written back as it ends. Between, the sky is written when the dusk amount or the night's factor has
+// moved a step, the volumes when the dusk amount has. Allocates only on those reads.
 class FORGOTTENTHIRD_API FDuskScene
 {
 public:
-	// Returns true when it wrote.
-	bool Apply(UWorld& World, const ftcore::DuskFrame& Frame, bool bForce);
+	// Returns true when it wrote. NightSky is the night frame's skyLuminance (1 by day).
+	bool Apply(UWorld& World, const ftcore::DuskFrame& Frame, float NightSky, bool bForce);
 	// The look has just written the volumes (its bloom among them): read their bloom again and write the dusk over it.
-	void Settled(UWorld& World, const ftcore::DuskFrame& Frame);
+	void Settled(UWorld& World, const ftcore::DuskFrame& Frame, float NightSky);
 	int32 NumSkies() const { return Skies.Num(); }
 	int32 NumVolumes() const { return Volumes.Num(); }
 
 private:
+	void GatherSkies(UWorld& World);
 	void Gather(UWorld& World);
 	struct FSky
 	{
@@ -129,6 +133,8 @@ private:
 	TArray<FSky> Skies;
 	TArray<FVolume> Volumes;
 	float Applied = 0.f;
+	float AppliedSky = 1.f;
+	bool bSkiesGathered = false;
 };
 
 // A still at an hour (-WorldEyeSunHour): the map's lights, sky lights, fog, sky, lens and windows' Night as the clock
