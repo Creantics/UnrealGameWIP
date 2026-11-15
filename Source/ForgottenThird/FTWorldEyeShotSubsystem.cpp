@@ -258,15 +258,15 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 					UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeExtra: no skeletal mesh %s; skipped."), *MeshPath);
 					continue;
 				}
-				const ftcore::MassingVec AtM = ftcore::massingEnginePoint(Side, FCString::Atod(*P[0]), FCString::Atod(*P[1]), FCString::Atod(*P[2]));
-				const FVector At(AtM.x * 100.0, AtM.y * 100.0, AtM.z * 100.0);
+				const ftcore::MassingVec ExtraM = ftcore::massingEnginePoint(Side, FCString::Atod(*P[0]), FCString::Atod(*P[1]), FCString::Atod(*P[2]));
+				const FVector ExtraAt(ExtraM.x * 100.0, ExtraM.y * 100.0, ExtraM.z * 100.0);
 				const FRotator Turn(0.0, P.Num() > 3 ? FCString::Atod(*P[3]) : 0.0, 0.0);
 				FActorSpawnParameters Params;
 				Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-				if (ASkeletalMeshActor* Stand = InWorld.SpawnActor<ASkeletalMeshActor>(At, Turn, Params))
+				if (ASkeletalMeshActor* Stand = InWorld.SpawnActor<ASkeletalMeshActor>(ExtraAt, Turn, Params))
 				{
 					Stand->GetSkeletalMeshComponent()->SetSkeletalMesh(Mesh);
-					UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: extra %s stood at engine %s, yaw %.1f."), *Mesh->GetName(), *At.ToString(), Turn.Yaw);
+					UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: extra %s stood at engine %s, yaw %.1f."), *Mesh->GetName(), *ExtraAt.ToString(), Turn.Yaw);
 				}
 			}
 		}
