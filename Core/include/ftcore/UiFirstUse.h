@@ -1,11 +1,12 @@
 #pragma once
 // What the HUD teaches: a short label beside an element the first three times it shows in a save, the basic controls
-// through the first fight, and the swim's DIVE and RISE the first time each applies (UiSwim.h), each control until a
-// second after its first use (once a save).
+// through the first fight, and the swim's DIVE and RISE until first used (UiSwim.h), each control until a second after
+// its first use (once a save).
 //
-// The counts live in Settings::uiFirstUse (uiFirstUseSaved packs them). An item is counted the moment it shows, so a
-// fight cut short does not show it for nothing again; the host saves only when uiFirstUseShow or uiFirstUseCue reports
-// a change, never per frame.
+// The counts live in Settings::uiFirstUse (uiFirstUseSaved packs them). A label or a fight control is counted the
+// moment it shows, so a fight cut short does not show it for nothing again; DIVE and RISE are counted on their first
+// use (uiFirstUseCountsOnUse), so a player who never dives is still taught later. The host saves only when
+// uiFirstUseShow, uiFirstUseCue or uiFirstUseUsed reports a change, never per frame.
 //
 //   UiFirstUse fu; uiFirstUseBegin(fu, settings.uiFirstUse, mode);
 //   on fight start: for each control, uiFirstUseShow(fu, item);
@@ -61,6 +62,10 @@ constexpr bool uiFirstUseControl(UiFirstUseItem item) {
     return (item >= UiFirstUseItem::Attack && item <= UiFirstUseItem::Jump) || item == UiFirstUseItem::Dive
         || item == UiFirstUseItem::Rise;
 }
+// Counted on its first use rather than on showing: the swim's DIVE and RISE.
+constexpr bool uiFirstUseCountsOnUse(UiFirstUseItem item) {
+    return item == UiFirstUseItem::Dive || item == UiFirstUseItem::Rise;
+}
 // How many times a save shows the item: a label three, a control once.
 constexpr std::uint8_t uiFirstUseTimes(UiFirstUseItem item) { return uiFirstUseControl(item) ? 1 : kUiFirstUseLabelTimes; }
 
@@ -94,14 +99,15 @@ FTCORE_API std::uint32_t uiFirstUseSaved(const UiFirstUse& s);
 FTCORE_API std::uint32_t uiFirstUseMerge(std::uint32_t a, std::uint32_t b);
 
 FTCORE_API void uiFirstUseBegin(UiFirstUse& s, std::uint32_t saved, UiFirstUseMode mode);
-// Shows the item if the save has shown it fewer than uiFirstUseTimes and it is not on screen now (a live label is never
-// restarted); true when that changed the counts (the host saves then).
+// Shows the item if the save has counted it fewer than uiFirstUseTimes and it is not on screen now (a live label is
+// never restarted); true when that changed the counts (the host saves then). An item counted on use shows uncounted.
 FTCORE_API bool uiFirstUseShow(UiFirstUse& s, UiFirstUseItem item);
 // A label's element drawn this tick or not: the label shows when the element starts to be drawn, not on every tick it
 // stays. With `allowed` false that start passes and counts nothing. True when the counts changed.
 FTCORE_API bool uiFirstUseCue(UiFirstUse& s, UiFirstUseItem item, bool drawn, bool allowed = true);
-// A live control was used: it fades kUiFirstUseAfter later. Its first use only; anything else is ignored.
-FTCORE_API void uiFirstUseUsed(UiFirstUse& s, UiFirstUseItem item);
+// A live control was used: it fades kUiFirstUseAfter later. Its first use only; anything else is ignored. True when that
+// changed the counts (an item counted on use; the host saves then).
+FTCORE_API bool uiFirstUseUsed(UiFirstUse& s, UiFirstUseItem item);
 FTCORE_API void uiFirstUseTick(UiFirstUse& s, float dt);
 // 0 when not live.
 FTCORE_API float uiFirstUseAlpha(const UiFirstUse& s, UiFirstUseItem item);

@@ -1,8 +1,9 @@
 #pragma once
 // The underwater HUD (UI round 18a): no bar and no number for breath. From warningSeconds of breath left the picture's
 // edges darken and its clear middle narrows (the Tunnel ring, drawn by the host under every mark); a heartbeat rate
-// and beat for the audio lane; a rescue shows only a fade to black and back; the hints the swim flags refuse hide; DIVE
-// and RISE stand the first time each applies, under the teaching setting.
+// and beat for the audio lane; a rescue shows only a fade to black and back; the hints the swim flags refuse hide, and
+// Crouch and Jump always (their keys read DIVE and RISE in the water); DIVE and RISE stand whenever each applies until
+// first used, under the teaching setting (counted on use, so a save that never dived is taught again).
 //
 // This header does not include Swim.h: the host fills UiSwimIn from its swim step each frame.
 //
@@ -71,8 +72,8 @@ struct UiSwim {
     float bpm = 0.f;            // the heart rate; 0 when off
 };
 
-// The hints the swim hides, a bit each (uiSwimHintBit). Crouch and Jump are a proposal: their keys are DIVE and RISE
-// under water.
+// The hints the swim hides, a bit each (uiSwimHintBit). Crouch and Jump hide whenever the lead swims (ruled): their keys
+// read DIVE and RISE there.
 enum class UiSwimHint : std::uint8_t { Attack, Aim, Dodge, Guard, Crouch, Jump };
 using UiSwimHints = std::uint32_t;
 constexpr UiSwimHints uiSwimHintBit(UiSwimHint h) { return 1u << static_cast<unsigned>(h); }
@@ -182,14 +183,15 @@ inline bool uiSwimStep(UiSwim& s, UiFirstUse& firstUse, const UiSwimIn& in, floa
         }
     }
 
-    // DIVE and RISE: shown the first time each applies (FirstFights only), gone once used.
-    bool changed = false;
+    // DIVE and RISE: shown whenever each applies until first used (FirstFights only). Showing counts nothing; the first
+    // use counts (uiFirstUseCountsOnUse), and that is the only change the host saves.
     if (in.teach == ShowBasicControls::FirstFights && in.swimming && s.fade == UiSwimFade::Clear) {
-        if (in.canDive) changed = uiFirstUseShow(firstUse, UiFirstUseItem::Dive) || changed;
-        if (in.canRise) changed = uiFirstUseShow(firstUse, UiFirstUseItem::Rise) || changed;
+        if (in.canDive) uiFirstUseShow(firstUse, UiFirstUseItem::Dive);
+        if (in.canRise) uiFirstUseShow(firstUse, UiFirstUseItem::Rise);
     }
-    if (in.dived) uiFirstUseUsed(firstUse, UiFirstUseItem::Dive);
-    if (in.rose) uiFirstUseUsed(firstUse, UiFirstUseItem::Rise);
+    bool changed = false;
+    if (in.dived) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Dive) || changed;
+    if (in.rose) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Rise) || changed;
     uiFirstUseTick(firstUse, secs);
     return changed;
 }
@@ -209,16 +211,16 @@ inline float uiSwimFadeAlpha(const UiSwim& s) {
     return 0.f;
 }
 
-// The hints to leave out of the controls line: what the swim flags refuse, and every hint while the rescue fades.
+// The hints to leave out of the controls line: Crouch and Jump in the water, what the swim flags refuse, and every hint
+// while the rescue fades.
 inline UiSwimHints uiSwimHidden(const UiSwim& s, const UiSwimIn& in) {
     if (s.fade != UiSwimFade::Clear) return kUiSwimHintAll;
     if (!in.swimming) return 0u;
-    UiSwimHints hidden = uiSwimHintBit(UiSwimHint::Crouch);
+    UiSwimHints hidden = uiSwimHintBit(UiSwimHint::Crouch) | uiSwimHintBit(UiSwimHint::Jump);
     if (!in.attack) hidden |= uiSwimHintBit(UiSwimHint::Attack);
     if (!in.weaponsOut) hidden |= uiSwimHintBit(UiSwimHint::Aim);
     if (!in.dodge) hidden |= uiSwimHintBit(UiSwimHint::Dodge);
     if (!in.guard) hidden |= uiSwimHintBit(UiSwimHint::Guard);
-    if (in.under) hidden |= uiSwimHintBit(UiSwimHint::Jump);
     return hidden;
 }
 

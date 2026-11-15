@@ -127,7 +127,9 @@ UiStyle defaultUiStyle() {
         hex(0xFF7A5C), hex(0x8FD3B4), hex(0xFFE08A)};
     s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.45f), hex(0x8FD6E8), hex(0xA88BE0),
         hex(0xFF7A86), hex(0x9BE3B0), hex(0xFFE08A)};
-    s.world[2] = {hex(0xF2ECE0), hex(0xD0C8B8), hex(0x0B0907), hex(0xFFFFFF, 0.45f), hex(0xE6DDCB), hex(0x9E3B2E),
+    // The Unwritten: a cold grey ink, its dim scaled from it as the others are (luminance x 0.6975), the dark blood red
+    // in accent2 (as the accent it fails the text rule; the accent waits for that ruling).
+    s.world[2] = {hex(0xDCE1E5), hex(0xBBC0C3), hex(0x0B0907), hex(0xFFFFFF, 0.45f), hex(0xE6DDCB), hex(0xB01E23),
         hex(0xFF7A66), hex(0x9CC7A4), hex(0xF4D58A)};
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.

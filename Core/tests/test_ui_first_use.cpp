@@ -292,12 +292,13 @@ TEST_CASE("ui first use: the swim's DIVE and RISE are controls in their own slot
         CHECK(uiFirstUseSavedCount(0x1FFu, c) == 0);
         UiFirstUse s;
         uiFirstUseBegin(s, before, UiFirstUseMode::Saved);
-        CHECK(uiFirstUseShow(s, c)); // counted on showing: the host saves now
+        CHECK_FALSE(uiFirstUseShow(s, c)); // shown, but counted on use: nothing to save yet
         CHECK(uiFirstUseAlpha(s, c) == 1.f);
-        uiFirstUseUsed(s, c);
+        CHECK(uiFirstUseUsed(s, c)); // the first use counts: the host saves now
         run(s, 3.f);
         CHECK(uiFirstUseAlpha(s, c) == 0.f);
         CHECK_FALSE(uiFirstUseShow(s, c)); // taught once a save
+        CHECK(uiFirstUseAlpha(s, c) == 0.f);
         const std::uint32_t saved = uiFirstUseSaved(s);
         CHECK(uiFirstUseSavedCount(saved, c) == 1);
         CHECK(uiFirstUseSavedCount(uiFirstUseMerge(before, saved), c) == 1);
@@ -307,4 +308,46 @@ TEST_CASE("ui first use: the swim's DIVE and RISE are controls in their own slot
         CHECK_FALSE(uiFirstUseShow(next, c));
     }
     CHECK(((uiFirstUseMerge(kUiFirstUseCounted | (1u << 20) | (1u << 22), 0u) >> 20) & 0xFu) == 5u); // slots 10, 11
+}
+
+TEST_CASE("ui first use: DIVE and RISE count on use, so shown and not used shows again; the fight's controls on showing") {
+    CHECK(uiFirstUseCountsOnUse(UiFirstUseItem::Dive));
+    CHECK(uiFirstUseCountsOnUse(UiFirstUseItem::Rise));
+    for (std::size_t i = 0; i < kUiFirstUseCount; ++i) {
+        const UiFirstUseItem item = static_cast<UiFirstUseItem>(i);
+        if (item != UiFirstUseItem::Dive && item != UiFirstUseItem::Rise) CHECK_FALSE(uiFirstUseCountsOnUse(item));
+    }
+    const UiFirstUseItem c = UiFirstUseItem::Dive;
+    UiFirstUse s;
+    uiFirstUseBegin(s, 0u, UiFirstUseMode::Saved);
+    // Shown and never used: it stands, counts nothing, and the save shows it again.
+    CHECK_FALSE(uiFirstUseShow(s, c));
+    run(s, 10.f);
+    CHECK(uiFirstUseAlpha(s, c) == 1.f); // a control's clock waits for its use
+    CHECK(s.count[at(c)] == 0);
+    uiFirstUseEnd(s);
+    CHECK(uiFirstUseSavedCount(uiFirstUseSaved(s), c) == 0);
+    UiFirstUse next;
+    uiFirstUseBegin(next, uiFirstUseSaved(s), UiFirstUseMode::Saved);
+    CHECK_FALSE(uiFirstUseShow(next, c));
+    CHECK(uiFirstUseAlpha(next, c) == 1.f); // shown again
+    // Used: counted once, a second use counts nothing, and the save marks it seen.
+    CHECK(uiFirstUseUsed(next, c));
+    CHECK(next.count[at(c)] == 1);
+    CHECK_FALSE(uiFirstUseUsed(next, c));
+    CHECK(next.count[at(c)] == 1);
+    UiFirstUse later;
+    uiFirstUseBegin(later, uiFirstUseSaved(next), UiFirstUseMode::Saved);
+    CHECK_FALSE(uiFirstUseShow(later, c));
+    CHECK(uiFirstUseAlpha(later, c) == 0.f);
+    // Used without being shown: nothing counts (it never stood).
+    UiFirstUse unseen;
+    uiFirstUseBegin(unseen, 0u, UiFirstUseMode::Saved);
+    CHECK_FALSE(uiFirstUseUsed(unseen, UiFirstUseItem::Rise));
+    CHECK(unseen.count[at(UiFirstUseItem::Rise)] == 0);
+    // A fight control still counts the moment it shows, and its use reports no change.
+    CHECK(uiFirstUseShow(unseen, UiFirstUseItem::Dodge));
+    CHECK(unseen.count[at(UiFirstUseItem::Dodge)] == 1);
+    CHECK_FALSE(uiFirstUseUsed(unseen, UiFirstUseItem::Dodge));
+    CHECK(unseen.count[at(UiFirstUseItem::Dodge)] == 1);
 }

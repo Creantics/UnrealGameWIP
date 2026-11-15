@@ -1,14 +1,14 @@
 #pragma once
 // The HUD as the world changes (UI round 18b). By default it does nothing while the wave passes the camera: no banner,
 // no name, no change on screen. With the exception switched on, the lead and partner rows and the prompts take the new
-// world's ink over 0.3 s as the front crosses the camera, sweeping along them.
+// world's Ink, InkDim and Accent together over 0.3 s as the front crosses the camera, sweeping along them.
 //
 // The host reads the world at the camera each frame (the world wave's WhichWorldAt at the camera, mapped to a UiWorld
 // index) and passes it in; this view edge-detects it.
 //
 //   UiWorldChange s; each frame: uiWorldChangeStep(s, in, dt);
-//   per glyph run at x along the sweep (0 first): lerp(uiColor(style, s.from, ..), uiColor(style, s.shown, ..),
-//   uiWorldChangeMix(s, x)); with nothing running, the ink is s.shown's.
+//   per glyph run at x along the sweep (0 first): uiWorldChangeColor(s, style, palette, token, x) for its token (Ink,
+//   InkDim and Accent lerp at one uiWorldChangeMix; every other token, and all with nothing running, are s.shown's).
 //
 // Header-only, plain values, zero allocation.
 #include "ftcore/UiStyle.h"
@@ -87,6 +87,23 @@ inline float uiWorldChangeMix(const UiWorldChange& s, float x) {
     const float along = s.flip ? 1.f - x01 : x01;
     const float c = std::clamp((s.t - along * kUiWorldChangeSpread) / kUiWorldChangeBlend, 0.f, 1.f);
     return c * c * (3.f - 2.f * c);
+}
+
+// The tokens the sweep carries, together: body ink, labels and the accent. Every other token stays the shown world's.
+inline constexpr bool uiWorldChangeSwept(UiToken token) {
+    return token == UiToken::Ink || token == UiToken::InkDim || token == UiToken::Accent;
+}
+
+// A token's colour at x along the sweep. A swept token lerps (sRGB, alpha too) from the going world's colour to the
+// coming world's at uiWorldChangeMix(s, x), the same mix for all three; any other token, and every token with nothing
+// running, is the shown world's. Solhaven's until a world is known.
+inline UiColor uiWorldChangeColor(const UiWorldChange& s, const UiStyle& style, UiPalette palette, UiToken token, float x) {
+    const UiWorld to = uiWorldChangeValid(s.shown) ? static_cast<UiWorld>(s.shown) : UiWorld::Solhaven;
+    const UiColor c = uiColor(style, to, palette, token);
+    if (!s.running || !uiWorldChangeSwept(token) || !uiWorldChangeValid(s.from)) return c;
+    const UiColor a = uiColor(style, static_cast<UiWorld>(s.from), palette, token);
+    const float m = uiWorldChangeMix(s, x);
+    return UiColor{a.r + (c.r - a.r) * m, a.g + (c.g - a.g) * m, a.b + (c.b - a.b) * m, a.a + (c.a - a.a) * m};
 }
 
 } // namespace ftcore

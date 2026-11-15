@@ -244,9 +244,6 @@ TEST_CASE("ui swim: the hints the swim flags refuse hide, and only in the water"
         | uiSwimHintBit(UiSwimHint::Dodge) | uiSwimHintBit(UiSwimHint::Guard);
     const UiSwimHints top = uiSwimHidden(s, surface(45.f));
     CHECK((top & flagged) == flagged);
-    CHECK((top & uiSwimHintBit(UiSwimHint::Crouch)) != 0u);
-    CHECK((top & uiSwimHintBit(UiSwimHint::Jump)) == 0u);
-    CHECK((uiSwimHidden(s, under(30.f)) & uiSwimHintBit(UiSwimHint::Jump)) != 0u);
     // Each bit follows its own flag.
     UiSwimIn in = under(30.f);
     in.attack = true;
@@ -261,27 +258,53 @@ TEST_CASE("ui swim: the hints the swim flags refuse hide, and only in the water"
     CHECK((uiSwimHidden(s, in) & flagged) == 0u);
 }
 
-TEST_CASE("ui swim: DIVE and RISE stand the first time each applies, by the teaching setting") {
+TEST_CASE("ui swim: Crouch and Jump hide whenever the lead swims, their keys reading DIVE and RISE") {
+    UiSwim s;
+    const UiSwimHints keys = uiSwimHintBit(UiSwimHint::Crouch) | uiSwimHintBit(UiSwimHint::Jump);
+    CHECK((uiSwimHidden(s, UiSwimIn{}) & keys) == 0u); // on land: both stand
+    // At the surface and under, with every swim flag allowing: still both hidden, and only those two.
+    UiSwimIn top = surface(45.f);
+    UiSwimIn deep = under(30.f);
+    UiSwimIn* const both[] = {&top, &deep};
+    for (UiSwimIn* in : both) {
+        in->attack = true;
+        in->dodge = true;
+        in->guard = true;
+        in->weaponsOut = true;
+        CHECK(uiSwimHidden(s, *in) == keys);
+    }
+    // Their keys read DIVE at the surface and RISE under (Always, so the teaching does not decide).
+    top.teach = ShowBasicControls::Always;
+    deep.teach = ShowBasicControls::Always;
+    UiFirstUse fu = taught();
+    CHECK(uiSwimPromptAlpha(s, fu, top, UiFirstUseItem::Dive) == 1.f);
+    CHECK(uiSwimPromptAlpha(s, fu, deep, UiFirstUseItem::Rise) == 1.f);
+}
+
+TEST_CASE("ui swim: DIVE and RISE stand whenever each applies until first used, counted on use") {
     UiSwim s;
     UiFirstUse fu = taught();
-    CHECK(run(s, fu, surface(45.f), kDt)); // DIVE counted on showing: the host saves now
+    CHECK_FALSE(run(s, fu, surface(45.f), kDt)); // DIVE shown, counted on use: nothing to save yet
     CHECK(uiSwimPromptAlpha(s, fu, surface(45.f), UiFirstUseItem::Dive) == 1.f);
     CHECK(uiSwimPromptAlpha(s, fu, surface(45.f), UiFirstUseItem::Rise) == 0.f);
-    CHECK_FALSE(run(s, fu, surface(45.f), 1.f)); // standing: not counted again
+    CHECK_FALSE(run(s, fu, surface(45.f), 1.f));
+    CHECK(fu.count[at(UiFirstUseItem::Dive)] == 0);
     UiSwimIn shallow = surface(45.f);
     shallow.canDive = false;
     CHECK(uiSwimPromptAlpha(s, fu, shallow, UiFirstUseItem::Dive) == 0.f); // drawn only where it applies
-    // The dive: DIVE used and gone, RISE shown (and counted) under water.
+    // The dive: DIVE used (counted, the host saves), RISE shown under water and not yet counted.
     UiSwimIn dive = under(45.f);
     dive.dived = true;
     CHECK(run(s, fu, dive, kDt));
-    CHECK(uiSwimPromptAlpha(s, fu, under(45.f), UiFirstUseItem::Dive) == 0.f);
+    CHECK(fu.count[at(UiFirstUseItem::Dive)] == 1);
+    CHECK(fu.count[at(UiFirstUseItem::Rise)] == 0);
     CHECK(uiSwimPromptAlpha(s, fu, under(45.f), UiFirstUseItem::Rise) == 1.f);
     UiSwimIn rise = under(45.f);
     rise.canRise = false; // Surfacing
     rise.rose = true;
-    CHECK_FALSE(run(s, fu, rise, kDt));
+    CHECK(run(s, fu, rise, kDt)); // RISE used: counted
     CHECK_FALSE(run(s, fu, surface(45.f), 3.f));
+    CHECK(uiFirstUseAlpha(fu, UiFirstUseItem::Dive) == 0.f); // gone a second after its use, faded
     CHECK(uiSwimPromptAlpha(s, fu, surface(45.f), UiFirstUseItem::Dive) == 0.f);
     CHECK_FALSE(run(s, fu, under(45.f), 1.f));
     CHECK(uiSwimPromptAlpha(s, fu, under(45.f), UiFirstUseItem::Rise) == 0.f);
@@ -293,6 +316,18 @@ TEST_CASE("ui swim: DIVE and RISE stand the first time each applies, by the teac
     UiSwim later;
     CHECK_FALSE(run(later, next, surface(45.f), 1.f));
     CHECK(uiSwimPromptAlpha(later, next, surface(45.f), UiFirstUseItem::Dive) == 0.f);
+
+    // Shown and never used: the save still teaches it next time.
+    UiFirstUse skip = taught();
+    UiSwim w;
+    CHECK_FALSE(run(w, skip, surface(45.f), 5.f));
+    CHECK_FALSE(run(w, skip, UiSwimIn{}, 1.f)); // out of the water without a dive
+    CHECK(uiFirstUseSavedCount(uiFirstUseSaved(skip), UiFirstUseItem::Dive) == 0);
+    UiFirstUse again;
+    uiFirstUseBegin(again, uiFirstUseSaved(skip), UiFirstUseMode::Saved);
+    UiSwim w2;
+    CHECK_FALSE(run(w2, again, surface(45.f), kDt));
+    CHECK(uiSwimPromptAlpha(w2, again, surface(45.f), UiFirstUseItem::Dive) == 1.f);
 
     // Never: nothing shown, nothing counted.
     UiFirstUse none = taught();
@@ -314,9 +349,10 @@ TEST_CASE("ui swim: DIVE and RISE stand the first time each applies, by the teac
     CHECK(uiSwimPromptAlpha(later, next, deep, UiFirstUseItem::Rise) == 1.f);
     uiSwimStep(later, next, rescued(), kDt);
     CHECK(uiSwimPromptAlpha(later, next, deep, UiFirstUseItem::Rise) == 0.f);
-    // Teaching held through a fade: a fresh save under a rescue counts nothing until it clears.
+    // Teaching held through a fade: a fresh save under a rescue shows and counts nothing until it clears.
     UiFirstUse fresh = taught();
     CHECK_FALSE(uiSwimStep(later, fresh, surface(45.f), kDt));
+    CHECK(uiFirstUseAlpha(fresh, UiFirstUseItem::Dive) == 0.f);
     CHECK(fresh.count[at(UiFirstUseItem::Dive)] == 0);
 }
 

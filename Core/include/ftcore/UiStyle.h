@@ -135,7 +135,7 @@ struct UiStyle {
     float minTextPxAbsolute = 14.f; // the floor at any height
 };
 
-// The built-in style (the hairline system with Solhaven amber, Lattice cyan, Unwritten paper; letterbox on).
+// The built-in style (the hairline system with Solhaven amber, Lattice cyan, Unwritten cold grey; letterbox on).
 FTCORE_API UiStyle defaultUiStyle();
 
 // Reads Data/UI/style.json. False on bad JSON, an unknown name, a value out of range, or a failed accessibility rule

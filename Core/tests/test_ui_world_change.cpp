@@ -119,14 +119,86 @@ TEST_CASE("ui world change: the camera backing out runs the sweep back without a
     CHECK(s.shown == kSol);
 }
 
+namespace {
+
+// A style with a distinct colour for every world and token, so no two worlds share one.
+UiStyle distinctStyle() {
+    UiStyle st;
+    for (std::size_t w = 0; w < kUiWorldCount; ++w)
+        for (std::size_t t = 0; t < kUiTokenCount; ++t) {
+            const float fw = static_cast<float>(w);
+            const float ft = static_cast<float>(t);
+            st.world[w][t] = UiColor{0.1f + 0.3f * fw, 0.05f * ft, 0.9f - 0.3f * fw, 1.f - 0.2f * fw};
+        }
+    return st;
+}
+
+} // namespace
+
+TEST_CASE("ui world change: the sweep carries Ink, InkDim and Accent together; every other token is the shown world's") {
+    CHECK(uiWorldChangeSwept(UiToken::Ink));
+    CHECK(uiWorldChangeSwept(UiToken::InkDim));
+    CHECK(uiWorldChangeSwept(UiToken::Accent));
+    CHECK_FALSE(uiWorldChangeSwept(UiToken::Backing));
+    CHECK_FALSE(uiWorldChangeSwept(UiToken::Accent2));
+    CHECK_FALSE(uiWorldChangeSwept(UiToken::Danger));
+    const UiStyle st = distinctStyle();
+    const UiPalette pal = UiPalette::Default;
+    const UiToken swept[] = {UiToken::Ink, UiToken::InkDim, UiToken::Accent};
+
+    UiWorldChange s;
+    CHECK(uiWorldChangeColor(s, st, pal, UiToken::Ink, 0.f) == uiColor(st, UiWorld::Solhaven, pal, UiToken::Ink)); // none yet
+    run(s, at(kSol), 0.5f);
+    for (std::size_t t = 0; t < kUiTokenCount; ++t) {
+        const UiToken token = static_cast<UiToken>(t);
+        CHECK(uiWorldChangeColor(s, st, pal, token, 0.5f) == uiColor(st, UiWorld::Solhaven, pal, token)); // settled
+    }
+    uiWorldChangeStep(s, at(kLat), kDt);
+    run(s, at(kLat), 2.f * kDt);
+    REQUIRE(s.running);
+    const float xs[] = {0.f, 0.25f, 0.5f}; // reached by 0.1 s in
+    for (const float x : xs) {
+        CAPTURE(x);
+        const float m = uiWorldChangeMix(s, x);
+        CHECK(m > 0.f);
+        CHECK(m < 1.f);
+        for (const UiToken token : swept) {
+            CAPTURE(static_cast<int>(token));
+            const UiColor a = uiColor(st, UiWorld::Solhaven, pal, token);
+            const UiColor c = uiColor(st, UiWorld::Lattice, pal, token);
+            const UiColor v = uiWorldChangeColor(s, st, pal, token, x);
+            // One mix for all three tokens and every channel.
+            CHECK(v.r == doctest::Approx(a.r + (c.r - a.r) * m));
+            CHECK(v.g == doctest::Approx(a.g + (c.g - a.g) * m));
+            CHECK(v.b == doctest::Approx(a.b + (c.b - a.b) * m));
+            CHECK(v.a == doctest::Approx(a.a + (c.a - a.a) * m));
+        }
+        CHECK(uiWorldChangeColor(s, st, pal, UiToken::Danger, x) == uiColor(st, UiWorld::Lattice, pal, UiToken::Danger));
+        CHECK(uiWorldChangeColor(s, st, pal, UiToken::Backing, x) == uiColor(st, UiWorld::Lattice, pal, UiToken::Backing));
+    }
+    // A palette that overrides a token holds it through the sweep: both ends are the override.
+    UiStyle high = st;
+    const std::size_t hcAt = static_cast<std::size_t>(UiPalette::HighContrast);
+    const std::size_t inkAt = static_cast<std::size_t>(UiToken::Ink);
+    const UiColor white{1.f, 1.f, 1.f, 1.f};
+    high.paletteColor[hcAt][inkAt] = white;
+    high.paletteOverrides[hcAt][inkAt] = true;
+    CHECK(uiWorldChangeColor(s, high, UiPalette::HighContrast, UiToken::Ink, 0.5f) == white);
+    run(s, at(kLat), 0.4f);
+    REQUIRE_FALSE(s.running);
+    for (const UiToken token : swept)
+        CHECK(uiWorldChangeColor(s, st, pal, token, 1.f) == uiColor(st, UiWorld::Lattice, pal, token)); // done
+}
+
 TEST_CASE("ui world change: stepping allocates nothing") {
+    const UiStyle st = defaultUiStyle();
     const bool counting = ftcore_test::allocHookInstalled();
     const auto before = ftcore_test::allocStats().count;
     UiWorldChange s;
     float sum = 0.f;
     for (int i = 0; i < 300; ++i) {
         uiWorldChangeStep(s, at((i / 20) % 2 ? kLat : kSol), kDt);
-        sum += uiWorldChangeMix(s, 0.25f);
+        sum += uiWorldChangeMix(s, 0.25f) + uiWorldChangeColor(s, st, UiPalette::Default, UiToken::Accent, 0.25f).r;
     }
     if (counting) CHECK(ftcore_test::allocStats().count == before);
     CHECK(sum > 0.f);

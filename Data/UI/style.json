@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The look is this table plus the stroke painters (Core UiStroke). The lattice and unwritten values are provisional until those worlds' UI passes.",
+  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The look is this table plus the stroke painters (Core UiStroke). Each world has its own ink and accent. The unwritten ink is a cold grey and its ink_dim is scaled from it as the other worlds' are (luminance x 0.6975); its dark blood red sits in accent2, since as the accent it fails the 4.5:1 text rule, and its accent waits for that ruling. The other lattice and unwritten values are provisional until those worlds' UI passes.",
   "layers": { "hairlines": true, "plates": false, "world_anchored": false, "letterbox": true },
   "line_weight": 3,
   "backing_default": 0.75,
@@ -16,7 +16,7 @@
   "worlds": {
     "solhaven":  { "ink": "#F3EEE6", "ink_dim": "#D2CBBF", "backing": "#0A0806", "track": "#FFFFFF73", "accent": "#E9B36B", "accent2": "#C9643C", "danger": "#FF7A5C", "ally": "#8FD3B4", "weak_point": "#FFE08A", "plate": "bronze" },
     "lattice":   { "ink": "#EEF4F6", "ink_dim": "#C4D1D6", "backing": "#05090C", "track": "#FFFFFF73", "accent": "#8FD6E8", "accent2": "#A88BE0", "danger": "#FF7A86", "ally": "#9BE3B0", "weak_point": "#FFE08A", "plate": "form_slip" },
-    "unwritten": { "ink": "#F2ECE0", "ink_dim": "#D0C8B8", "backing": "#0B0907", "track": "#FFFFFF73", "accent": "#E6DDCB", "accent2": "#9E3B2E", "danger": "#FF7A66", "ally": "#9CC7A4", "weak_point": "#F4D58A", "plate": "torn_page" }
+    "unwritten": { "ink": "#DCE1E5", "ink_dim": "#BBC0C3", "backing": "#0B0907", "track": "#FFFFFF73", "accent": "#E6DDCB", "accent2": "#B01E23", "danger": "#FF7A66", "ally": "#9CC7A4", "weak_point": "#F4D58A", "plate": "torn_page" }
   },
   "palettes": {
     "protan":        { "danger": "#F0A030", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
