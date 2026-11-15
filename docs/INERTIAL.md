@@ -12,7 +12,8 @@ When the body switches clips (idle, run, strike, hit, land) the pose either pops
 - **Translations.** A direction and a length. Only the length decays.
 - **Limits, by design:**
   - a start velocity that would grow the offset (pointing away from the new pose) is taken as 0, so the offset never grows;
-  - only the part of a translation's velocity along the offset is kept, and for a rotation only the turn about the offset's axis.
+  - only the part of a translation's velocity along the offset is kept, and for a rotation only the turn about the offset's axis;
+  - the start rate is the old output's own velocity: both old poses are measured against the one new pose passed to `begin`, so a new clip that is itself moving adds its velocity from the first frame on.
 - **Units.** Seconds, centimetres, radians. A non-finite or negative dt counts as 0, and every divide is guarded.
 
 ## API
@@ -53,7 +54,7 @@ public:
 
 ## Calling it from Unreal (not yet wired)
 
-`UFTLocomotionAnimInstance`'s proxy samples and blends its layers in `Evaluate(FPoseContext&)`. It would own one `ftcore::InertialBlend` and two fixed arrays of `InertialJoint` (the compact pose's local transforms, cm and radians, with quaternions copied component for component), all sized once when the bones are bound.
+`UFTLocomotionAnimInstance`'s proxy samples and blends its layers in `Evaluate(FPoseContext&)`. It would own one `ftcore::InertialBlend` and fixed arrays of `InertialJoint` for the new pose, the output and the last two outputs (the compact pose's local transforms, cm and radians, with quaternions copied component for component), all sized once when the bones are bound. This section was written from the header; check `Evaluate`'s body before wiring it.
 
 1. Each `Evaluate` builds the new pose as it does today.
 2. **On a clip switch:**
