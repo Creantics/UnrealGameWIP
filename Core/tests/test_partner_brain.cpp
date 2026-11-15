@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace ftcore;
@@ -1944,6 +1945,9 @@ double worstAtBlow(const std::vector<double>& partner, const std::vector<double>
 
 struct CounterRun {
     std::vector<double> partner, lead; // each step's attack seconds (the counters' where they ran)
+    std::vector<double> ctr;           // each step's counter seconds alone (also in partner)
+    std::vector<std::pair<std::size_t, std::size_t>> spans; // each counter's first and last step with its time
+    std::vector<std::size_t> landed;   // each counter's landing step
     double own = 0.0;                  // the partner's own blows
     double worstAtStart = -1e9;        // the worst window as each of its blows began
     int held = 0;
@@ -1974,12 +1978,25 @@ CounterRun runCounters(bool tell) {
         const bool counter = k >= 120 && (k - 120) % 180 == 0;
         if (counter) {
             double left = 1.0;
+            std::size_t first = r.partner.size(), last = 0;
             for (std::size_t j = r.partner.size(); j-- > 0 && left > 1e-12;) {
                 const double p = std::min(std::max(0.0, dt - r.partner[j]), left);
                 r.partner[j] += p;
+                r.ctr[j] += p;
                 left -= p;
+                if (p > 0.0) {
+                    first = j;
+                    last = std::max(last, j);
+                }
             }
-            if (left > 1e-12 && !r.partner.empty()) r.partner.back() += left;
+            if (left > 1e-12 && !r.partner.empty()) {
+                r.partner.back() += left;
+                r.ctr.back() += left;
+                last = r.partner.size() - 1;
+                first = std::min(first, last);
+            }
+            r.spans.emplace_back(first, last);
+            r.landed.push_back(static_cast<std::size_t>(k));
         }
         in.spentSeconds = tell && counter ? 1.f : 0.f;
         host.feed(in);
@@ -1992,6 +2009,7 @@ CounterRun runCounters(bool tell) {
         const double was = host.attackTime;
         host.apply(it, brain, in, dt);
         r.partner.push_back(host.attackTime - was);
+        r.ctr.push_back(0.0);
         r.lead.push_back(leadOn ? dt : 0.0);
     }
     r.own = host.attackTime;
@@ -2029,14 +2047,14 @@ TEST_CASE("partner brain: a paired counter's 1.0 s (spentSeconds) makes the next
         ib.push_back(b.step(dt));
         ic.push_back(c.step(dt));
     }
-    CHECK(firstString(ic) == 60); // with nothing spent, at once
+    CHECK(firstString(ic) == 60u); // with nothing spent, at once
     CHECK(ia[60].why == PartnerWhy::Budget);
     CHECK(ib[60].why == PartnerWhy::Budget);
     const std::size_t at = firstString(ia);
     REQUIRE(at != kSame);
     CHECK(firstString(ib) == at);
-    CHECK(at > 90);
-    CHECK(at < 200);
+    CHECK(at > 90u);
+    CHECK(at < 200u);
     // Exactly as A from the counter's step on.
     CHECK(firstDiff(std::vector<PartnerIntent>(ia.begin() + 60, ia.end()),
                     std::vector<PartnerIntent>(ib.begin() + 60, ib.end())) == kSame);
@@ -2046,8 +2064,8 @@ TEST_CASE("partner brain: a paired counter's 1.0 s (spentSeconds) makes the next
 TEST_CASE("partner brain: with paired counters at the 3 s cooldown every window holds as each blow begins") {
     const CounterRun told = runCounters(true);
     const CounterRun blind = runCounters(false);
-    MESSAGE("told: own ", told.own, " s, worst at a start ", told.worstAtStart, ", held ", told.held,
-            "; blind: own ", blind.own, " s, worst ", blind.worstAtStart);
+    MESSAGE("told: own " << told.own << " s, worst at a start " << told.worstAtStart << ", held " << told.held
+                         << "; blind: own " << blind.own << " s, worst " << blind.worstAtStart);
     // Told, every blow it begins fits every window with the counters so far (the brain places a counter by 0.05 s
     // slot, this ledger by step: they may differ by one slot at a window's edge).
     CHECK(told.worstAtStart <= PartnerBrainSave::kSlot + 1e-3);
@@ -2056,6 +2074,56 @@ TEST_CASE("partner brain: with paired counters at the 3 s cooldown every window 
     CHECK(told.own < blind.own);
     CHECK(told.strings > 1); // it still fights
     CHECK(told.overlaps == 0);
+}
+
+TEST_CASE("partner brain: with paired counters at the 3 s cooldown the ruled bound holds over every window") {
+    // The ruled bound: over any 20 s window, the partner's attack time is at most 0.60 x the lead's plus 2.0 s, plus
+    // at most 1.0 s for each paired counter whose time falls in it. At the cooldown, 7 land in some window.
+    struct Worst {
+        double base = -1e9;       // over 0.60 x lead + 2.0
+        double ruled = -1e9;      // over that plus the counter seconds in the window
+        double perCounter = -1e9; // over that plus 1.0 s for each counter with time in the window
+        std::size_t landed = 0;   // the most counters landed in one window
+    };
+    const auto worstOf = [](const CounterRun& r) {
+        const std::size_t w = 1200; // 20 s of 1/60 s steps
+        const std::size_t n = r.partner.size();
+        std::vector<double> p(n + 1, 0.0), l(n + 1, 0.0), c(n + 1, 0.0); // prefix sums
+        for (std::size_t j = 0; j < n; ++j) {
+            p[j + 1] = p[j] + r.partner[j];
+            l[j + 1] = l[j] + r.lead[j];
+            c[j + 1] = c[j] + r.ctr[j];
+        }
+        Worst out;
+        for (std::size_t e = 0; e + 1 < n + w; ++e) { // windows (e - w, e], clipped to the fight
+            const std::size_t from = e + 1 > w ? e + 1 - w : 0;
+            if (from >= n) break;
+            const std::size_t to = std::min(e, n - 1) + 1; // steps [from, to)
+            const double base = (p[to] - p[from]) - 0.6 * (l[to] - l[from]) - 2.0;
+            std::size_t ran = 0, landedIn = 0;
+            for (std::size_t i = 0; i < r.spans.size(); ++i) {
+                if (r.spans[i].second >= from && r.spans[i].first < to) ++ran;
+                if (r.landed[i] >= from && r.landed[i] < to) ++landedIn;
+            }
+            out.base = std::max(out.base, base);
+            out.ruled = std::max(out.ruled, base - (c[to] - c[from]));
+            out.perCounter = std::max(out.perCounter, base - 1.0 * static_cast<double>(ran));
+            out.landed = std::max(out.landed, landedIn);
+        }
+        return out;
+    };
+    const CounterRun told = runCounters(true);
+    const CounterRun blind = runCounters(false);
+    const Worst t = worstOf(told);
+    const Worst b = worstOf(blind);
+    MESSAGE("told: over the base " << t.base << ", over the ruled " << t.ruled << ", over 1.0 s a counter "
+                                   << t.perCounter << "; blind: over the base " << b.base);
+    const double slack = PartnerBrainSave::kSlot + 1e-3; // the brain's 0.05 s slots against this ledger's steps
+    CHECK(t.landed == 7u);
+    CHECK(t.ruled <= slack);
+    CHECK(t.perCounter <= slack);
+    CHECK(t.base < b.base); // it pays the counters back: never told, it carries windows further over
+    CHECK(told.held > 0);
 }
 
 TEST_CASE("partner brain: spentSeconds of 0, not finite or under 0 is today's brain; above the window is the window") {
