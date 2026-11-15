@@ -611,4 +611,9 @@ public:
 	bool IsUnderWater() const { return bSwimUnder || bSwimRescue; }
 	float GetBreathShare() const { return SwimBody.last().breathShare; }
 	bool IsBreathWarning() const { return SwimBody.last().warning; }
+	// For the HUD's breath ring: the swim's last step (breath, breathShare, warning, state, and the canDive and guard
+	// flags the core lane is adding) and the tuning it ran on (breathSeconds, warningSeconds). Both are the lead's own
+	// Swim object, read by const reference; the HUD never steps it.
+	const ftcore::SwimStep& GetSwimStep() const { return SwimBody.last(); }
+	const ftcore::SwimTuning& GetSwimTuning() const { return SwimBody.tuning(); }
 };

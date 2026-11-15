@@ -520,7 +520,11 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 			Entry.Written = FogComponent->FogDensity;
 		}
 	}
-	// The look it crosses to: the Unwritten's (the one second world the proof has), from the look the map has now.
+	// The look it crosses to: the definition's second world (the Unwritten unless it names another), from the look the map
+	// has now.
+	const char* SecondId = Params.toWorld && Params.toWorld[0] ? Params.toWorld : ftcore::kWaveDefaultToWorld;
+	ToWorld = UTF8_TO_TCHAR(SecondId);
+	FromWorld.Reset();
 	bLookBlend = false;
 	Cover = bReverse ? 1.f : 0.f;
 	CoverShare = Cover;
@@ -531,7 +535,8 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	LastLookLog = -1.0;
 	if (const UFTLookSubsystem* Looks = World->GetSubsystem<UFTLookSubsystem>())
 	{
-		if (const ftcore::SceneLook* Second = FTLook::Table().find("unwritten"))
+		FromWorld = Looks->GetWorldLook();
+		if (const ftcore::SceneLook* Second = FTLook::Table().find(SecondId))
 		{
 			LookFrom = Looks->GetLook();
 			LookTo = *Second;
@@ -551,7 +556,7 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	}
 	if (!bLookBlend)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no look subsystem or no \"unwritten\" look in looks.json; the sky stays as it is."));
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no look subsystem or no \"%s\" look in looks.json; the sky stays as it is."), *ToWorld);
 	}
 	GatherPawns(*World);
 	// Before the front moves everything is on the side beyond it: the first world for Forward, the second for Reverse.
@@ -577,6 +582,16 @@ ftcore::WaveClass UFTWorldWaveSubsystem::WhichWorldAt(const FVector& WorldCm) co
 		return ftcore::WaveClass{};
 	}
 	return ftcore::classifyWorldWave(Frame, Params.origin, ToMetres(WorldCm));
+}
+
+ftcore::WaveClass UFTWorldWaveSubsystem::WhichWorldAtShader(const FVector& WorldCm) const
+{
+	if (!bWave)
+	{
+		return ftcore::WaveClass{};
+	}
+	// The constants Step wrote to MPC_Look this frame, made again from the same state (a few multiplies, no allocation).
+	return ftcore::classifyWorldWaveShader(ftcore::worldWaveShaderConstants(Params, Frame), ToMetres(WorldCm));
 }
 
 void UFTWorldWaveSubsystem::StopWave()
@@ -661,6 +676,8 @@ void UFTWorldWaveSubsystem::Step(UWorld& World)
 			// Leads spawned since the start.
 			GatherPawns(World);
 		}
+		// For the HUD and sound: the cue as an event too (FrontPassedListener is the front passing the listener).
+		OnCue.Broadcast(Cue, Time - Params.startTime);
 	}
 	// The eye holds its exposure from the wave's start, so the change reads as the world's.
 	if (!bExposureHeld && Time >= Params.startTime)

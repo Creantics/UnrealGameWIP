@@ -23,11 +23,11 @@
 //     0.001 up and down), so the change reads as the world's, not the eye's;
 //   - traces a 12 x 7 grid of view rays for the share of the view the second world has (ftcore::worldWaveViewShare),
 //     follows it at a limited rate (stepWaveCover) and blends the look actors' sun, sky light, fog and clouds from the
-//     first world's look to the Unwritten's (looks.json) by it, never ahead of the ground; the post-process's gains
+//     first world's look to the second's (the definition's toWorld in looks.json, the Unwritten by default) by it, never ahead of the ground; the post-process's gains
 //     (waveGains) keep the unreached side in its own light. StopWave puts the first world's look back;
 //   - the surfaces behind the front take the second world's state in their own materials (MF_WorldWaveState: near grey,
 //     a stop down, damp, grimed and leak-stained, their light dead but for the wave definition's kept lights, ftcore::WorldWaveParams::keep);
-//   - logs each cue (no sound yet);
+//   - logs each cue (no sound yet) and raises it on OnCue;
 //   - steps every tracked thing (ftcore::updateWorldWaveThing): its visibility, its collision (collisionDelay after the
 //     front passes it) and a held arrival's own front (custom primitive data FTWorldWave::kLocalSlot). An arrival that
 //     would come in round the player or a lead (AFTExploreCharacter) waits, not drawn and not solid, until its footprint
@@ -71,6 +71,10 @@ class UMaterialParameterCollection;
 class UPrimitiveComponent;
 class UStaticMesh;
 
+// A wave cue as it fires (Prelude, FrontPassedListener: the front has passed the listener, Settled), with the seconds since
+// the wave's start. Raised on the game thread in the post-actor tick, after the cue's log line.
+DECLARE_MULTICAST_DELEGATE_TwoParams(FFTWorldWaveCueEvent, ftcore::WorldWaveCue /*Cue*/, double /*SecondsSinceStart*/);
+
 UCLASS()
 class FORGOTTENTHIRD_API UFTWorldWaveSubsystem : public UWorldSubsystem
 {
@@ -93,6 +97,23 @@ public:
 	// brings, from Core's classifyWorldWave on the state the shaders' constants come from (worldWaveShaderConstants).
 	// With no wave, the side beyond the front (Old, band 0). For gameplay: enemies, sound, the lead changing with the front.
 	ftcore::WaveClass WhichWorldAt(const FVector& WorldCm) const;
+	// The same by the SHADER rule (ftcore::classifyWorldWaveShader on the constants written to MPC_Look this frame): the
+	// tongues change pixels up to a band's width ahead of the outer edge, so a point there is Band here while WhichWorldAt
+	// still says Old. With no wave, Old, band 0. For the HUD and effects that must agree with what is drawn.
+	ftcore::WaveClass WhichWorldAtShader(const FVector& WorldCm) const;
+	bool IsInShaderBand(const FVector& WorldCm) const { return WhichWorldAtShader(WorldCm).side == ftcore::WaveSide::Band; }
+
+	// The wave set now (last StartWave; read with HasWave): its origin (world cm), its direction, and the ids of the two
+	// worlds it changes between (looks.json ids: the map's look at the start, empty for the shared look, and the wave
+	// definition's toWorld). Forward brings ToWorld over FromWorld; Reverse runs the same pair back.
+	const FVector& GetOriginCm() const { return OriginCm; }
+	ftcore::WaveDirection GetDirection() const { return Params.direction; }
+	bool IsReverse() const { return Params.direction == ftcore::WaveDirection::Reverse; }
+	const FString& GetFromWorld() const { return FromWorld; }
+	const FString& GetToWorld() const { return ToWorld; }
+
+	// Each cue as it fires (see FFTWorldWaveCueEvent). Bind with AddUObject / AddRaw and remove on teardown.
+	FFTWorldWaveCueEvent OnCue;
 
 	// The proof dressing round Origin (world cm) within Radius (cm); returns how many things it tracks now.
 	int32 Dress(const FVector& Origin, double Radius);
@@ -157,6 +178,8 @@ private:
 	ftcore::WorldWaveState State;
 	ftcore::WorldWaveFrame Frame;
 	FVector OriginCm = FVector::ZeroVector;
+	FString FromWorld; // the map's look id when the wave started (empty: the shared look)
+	FString ToWorld;   // Params.toWorld, for the getters
 	// The ground under the origin (one trace at StartWave): the prelude streak's foot.
 	FVector StreakFootCm = FVector::ZeroVector;
 	bool bWave = false;

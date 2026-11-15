@@ -153,6 +153,19 @@ TEST_CASE("WorldWaveParams: ink is the default front, no kept lights; a bad keep
     CHECK(checkWorldWaveParams(bad) == WorldWaveRefusal::BadShape);
 }
 
+TEST_CASE("WorldWaveParams: the world it brings is the Unwritten unless the definition names another") {
+    const WorldWaveParams plain;
+    REQUIRE(plain.toWorld != nullptr);
+    CHECK(std::string(plain.toWorld) == "unwritten");
+    const WorldWaveParams street = streetWaveParams();
+    REQUIRE(street.toWorld != nullptr);
+    CHECK(std::string(street.toWorld) == std::string(kWaveDefaultToWorld));
+    WorldWaveParams other = street;
+    other.toWorld = "lattice";
+    CHECK(std::string(other.toWorld) == "lattice");
+    CHECK(checkWorldWaveParams(other) == WorldWaveRefusal::None);  // Core does not judge the id
+}
+
 TEST_CASE("worldWaveShaderConstants: centimetres, the front's value, the keeps, reach and span from the tongues") {
     WorldWaveParams p = streetWaveParams();
     p.origin = WaveVec3{410.f, -157.f, 7.5f};

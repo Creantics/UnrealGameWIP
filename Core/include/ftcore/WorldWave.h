@@ -90,6 +90,8 @@ struct WaveKeepLight {
     float radius = 0.f;
 };
 inline constexpr int kWaveKeepLights = 2;
+// The second world a wave's definition brings unless it names another (the one second world the proof has).
+inline constexpr const char* kWaveDefaultToWorld = "unwritten";
 
 struct WorldWaveParams {
     WaveVec3 origin;                              // metres
@@ -112,6 +114,9 @@ struct WorldWaveParams {
     WaveDirection direction = WaveDirection::Forward;
     WaveFront front = WaveFront::Ink;             // ink in water unless a wave's definition picks another
     WaveKeepLight keep[kWaveKeepLights];          // the composed lights; none by default
+    // The world the wave brings: its id in Data/Look/looks.json (a string with static storage; the host reads it, Core
+    // does not). The world it leaves is the one whose look the map has when the wave starts (the host's).
+    const char* toWorld = kWaveDefaultToWorld;
 };
 
 // The street preset: the wave run through a street at walking scale, a front that rises up the buildings it meets, the
