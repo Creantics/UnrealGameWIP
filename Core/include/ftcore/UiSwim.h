@@ -5,7 +5,7 @@
 // Crouch and Jump always (their keys read DIVE and RISE in the water); DIVE and RISE stand whenever each applies until
 // first used, under the teaching setting (counted on use, so a save that never dived is taught again).
 //
-// This header does not include Swim.h: the host fills UiSwimIn from its swim step each frame.
+// This header does not include Swim.h: UiSwimFeed.h fills UiSwimIn from the lead's real Swim step each frame.
 //
 //   UiSwim s; UiSwimIn in = <from the step>;
 //   each frame: if (uiSwimStep(s, firstUse, in, dt)) save uiFirstUseSaved(firstUse);
@@ -38,7 +38,6 @@ inline constexpr float kUiSwimHeartDrain = 144.f; // bpm as the vitality runs ou
 // What the host reads from its swim step (Swim.h's SwimStep and tuning) each frame.
 struct UiSwimIn {
     bool swimming = false;  // the lead's swim was stepped this frame
-    bool under = false;     // Diving, Under or Surfacing
     bool rescued = false;   // Rescued: from the rescue step until the host's reset at the exit
     bool canDive = false;   // a dive press now would dive
     bool canRise = false;   // a rise press now would surface (Diving or Under)
@@ -84,6 +83,11 @@ inline float uiSwimEase(float x) {
     const float c = std::clamp(x, 0.f, 1.f);
     return c * c * (3.f - 2.f * c);
 }
+// The x in 0..1 whose uiSwimEase is y (y clamped to 0..1).
+inline float uiSwimEaseInverse(float y) {
+    const float c = std::clamp(y, 0.f, 1.f);
+    return std::clamp(0.5f - std::sin(std::asin(1.f - 2.f * c) / 3.f), 0.f, 1.f);
+}
 // 0 at warningSeconds of breath left or more, 1 at none (a step at 0 when warningSeconds is 0).
 inline float uiSwimBreathCurve(float breath, float warningSeconds) {
     if (!(warningSeconds > 0.f)) return breath > 0.f ? 0.f : 1.f;
@@ -107,17 +111,18 @@ inline float uiSwimHeartRate(float breathCurve, float drainCurve, bool draining)
 // One frame. `firstUse` is the explore HUD's teaching (nothing else ticks it); true when its counts changed (the host
 // saves then, never per frame).
 inline bool uiSwimStep(UiSwim& s, UiFirstUse& firstUse, const UiSwimIn& in, float dt) {
-    const float secs = std::max(dt, 0.f);
+    const float secs = std::isfinite(dt) && dt > 0.f ? dt : 0.f; // a NaN or infinite frame counts as none
 
-    // The rescue: to black, held while rescued and a moment after the reset, then back.
+    // The rescue: to black, held while rescued and a moment after the reset, then back. A rescue while the picture
+    // comes back goes to black again from the alpha it has reached, never popping to black.
     if (in.rescued && !s.wasRescued) {
         if (s.fade == UiSwimFade::Clear) {
             s.fade = UiSwimFade::Out;
             s.fadeT = 0.f;
         } else if (s.fade == UiSwimFade::In) {
-            s.fade = UiSwimFade::Black;
-            s.fadeT = 0.f;
-            s.fadeAfter = 0.f;
+            const float alpha = 1.f - uiSwimEase(s.fadeT / kUiSwimFadeIn);
+            s.fade = UiSwimFade::Out;
+            s.fadeT = kUiSwimFadeOut * uiSwimEaseInverse(alpha);
         }
     }
     s.wasRescued = in.rescued;
@@ -184,14 +189,15 @@ inline bool uiSwimStep(UiSwim& s, UiFirstUse& firstUse, const UiSwimIn& in, floa
     }
 
     // DIVE and RISE: shown whenever each applies until first used (FirstFights only). Showing counts nothing; the first
-    // use counts (uiFirstUseCountsOnUse), and that is the only change the host saves.
-    if (in.teach == ShowBasicControls::FirstFights && in.swimming && s.fade == UiSwimFade::Clear) {
-        if (in.canDive) uiFirstUseShow(firstUse, UiFirstUseItem::Dive);
-        if (in.canRise) uiFirstUseShow(firstUse, UiFirstUseItem::Rise);
-    }
+    // use counts (uiFirstUseCountsOnUse), and that is the only change the host saves. A use counts even on the frame
+    // the prompt would first have applied, before it was ever drawn (ruled: a use is a use).
     bool changed = false;
-    if (in.dived) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Dive) || changed;
-    if (in.rose) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Rise) || changed;
+    if (in.teach == ShowBasicControls::FirstFights && in.swimming && s.fade == UiSwimFade::Clear) {
+        if (in.canDive || in.dived) uiFirstUseShow(firstUse, UiFirstUseItem::Dive);
+        if (in.canRise || in.rose) uiFirstUseShow(firstUse, UiFirstUseItem::Rise);
+        if (in.dived) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Dive) || changed;
+        if (in.rose) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Rise) || changed;
+    }
     uiFirstUseTick(firstUse, secs);
     return changed;
 }
